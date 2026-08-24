@@ -1,6 +1,7 @@
 package authz_keycloak
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
@@ -18,7 +19,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/shared"
-	"github.com/wklken/apisix-go/pkg/store"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -29,7 +29,7 @@ type Plugin struct {
 	client *resty.Client
 
 	clientRelease func()
-	clientSecret  *store.ResolvedSecret
+	keycloakCredentialState
 
 	mu                  sync.Mutex
 	discovery           discoveryData
@@ -296,32 +296,7 @@ func (p *Plugin) PostInit() error {
 	if err != nil {
 		return err
 	}
-	p.client = value.(*resty.Client)
-	p.clientRelease = release
-
-	return nil
-}
-
-func (p *Plugin) MaterializeSecrets() error {
-	if p.config.ClientSecret == "" {
-		return nil
-	}
-	clientSecret, err := store.MaterializeSecret(p.config.ClientSecret)
-	if err != nil {
-		return fmt.Errorf("resolve %s client_secret reference: credential unavailable", name)
-	}
-	p.clientSecret = clientSecret
-	p.config.ClientSecret = clientSecret.Descriptor()
-	return nil
-}
-
-func (p *Plugin) Stop() {
-	if p.clientRelease != nil {
-		p.clientRelease()
-		p.clientRelease = nil
-	}
-	p.clientSecret.Destroy()
-	p.clientSecret = nil
+	return p.installKeycloakClient(value.(*resty.Client), release)
 }
 
 func (p *Plugin) Config() any {
@@ -437,6 +412,9 @@ func (p *Plugin) evaluatePermissions(r *http.Request, token string) (int, string
 		}
 		return http.StatusForbidden, `{"error":"access_denied","error_description":"not_authorized"}`, nil
 	}
+	if err := p.keycloakRuntimeReady(); err != nil {
+		return http.StatusServiceUnavailable, err.Error(), nil
+	}
 
 	endpoint, err := p.tokenEndpoint()
 	if err != nil {
@@ -451,7 +429,11 @@ func (p *Plugin) evaluatePermissions(r *http.Request, token string) (int, string
 		form.Add("permission", permission)
 	}
 
-	resp, err := p.client.R().
+	client, err := p.keycloakRestyClient()
+	if err != nil {
+		return http.StatusServiceUnavailable, err.Error(), nil
+	}
+	resp, err := client.R().
 		SetHeader("Content-Type", "application/x-www-form-urlencoded").
 		SetHeader("Authorization", token).
 		SetBody(form.Encode()).
@@ -483,7 +465,11 @@ func (p *Plugin) permissionsForRequest(r *http.Request) ([]string, error) {
 		return nil, err
 	}
 
-	resp, err := p.client.R().
+	client, err := p.keycloakRestyClient()
+	if err != nil {
+		return nil, err
+	}
+	resp, err := client.R().
 		SetHeader("Authorization", "Bearer "+accessToken).
 		SetQueryParams(map[string]string{
 			"uri":         r.URL.Path,
@@ -505,6 +491,9 @@ func (p *Plugin) permissionsForRequest(r *http.Request) ([]string, error) {
 }
 
 func (p *Plugin) serviceAccountAccessToken() (string, error) {
+	if err := p.keycloakRuntimeReady(); err != nil {
+		return "", err
+	}
 	endpoint, err := p.tokenEndpoint()
 	if err != nil {
 		return "", err
@@ -531,12 +520,9 @@ func (p *Plugin) serviceAccountAccessToken() (string, error) {
 	}
 
 	if cachedToken.refreshToken != "" && now.Before(cachedToken.refreshTokenExpiresAt) {
-		form := url.Values{}
-		form.Set("grant_type", "refresh_token")
-		form.Set("client_id", p.config.ClientID)
-		form.Set("refresh_token", cachedToken.refreshToken)
-
-		refreshed, err := p.requestServiceAccountToken(endpoint, form)
+		refreshed, err := p.requestServiceAccountToken(
+			endpoint, "refresh_token", cachedToken.refreshToken,
+		)
 		if err != nil {
 			return "", err
 		}
@@ -545,11 +531,7 @@ func (p *Plugin) serviceAccountAccessToken() (string, error) {
 		}
 	}
 
-	form := url.Values{}
-	form.Set("grant_type", "client_credentials")
-	form.Set("client_id", p.config.ClientID)
-
-	response, err := p.requestServiceAccountToken(endpoint, form)
+	response, err := p.requestServiceAccountToken(endpoint, "client_credentials", "")
 	if err != nil {
 		return "", err
 	}
@@ -560,50 +542,98 @@ func (p *Plugin) serviceAccountAccessToken() (string, error) {
 	return p.cacheServiceAccountToken(cacheKey, response, tokenCache{}), nil
 }
 
-func (p *Plugin) requestServiceAccountToken(endpoint string, form url.Values) (tokenEndpointResponse, error) {
+func (p *Plugin) requestServiceAccountToken(
+	endpoint string, grantType string, refreshToken string,
+) (tokenEndpointResponse, error) {
 	var response tokenEndpointResponse
-	err := p.withClientSecret(func(clientSecret string) error {
-		requestForm := cloneForm(form)
-		requestForm.Set("client_secret", clientSecret)
-		resp, err := p.client.R().
-			SetHeader("Content-Type", "application/x-www-form-urlencoded").
-			SetBody(requestForm.Encode()).
-			Post(endpoint)
-		if err != nil {
-			return err
+	result, err := p.postTokenForm(endpoint, func(clientSecret string) url.Values {
+		form := url.Values{}
+		form.Set("grant_type", grantType)
+		form.Set("client_id", p.config.ClientID)
+		form.Set("client_secret", clientSecret)
+		if refreshToken != "" {
+			form.Set("refresh_token", refreshToken)
 		}
-		if resp.StatusCode() != http.StatusOK {
-			return fmt.Errorf("token endpoint returned %d", resp.StatusCode())
-		}
-		return json.Unmarshal(resp.Body(), &response)
+		return form
 	})
 	if err != nil {
 		return tokenEndpointResponse{}, err
 	}
+	if result.status != http.StatusOK {
+		clear(result.body)
+		return tokenEndpointResponse{}, fmt.Errorf("token endpoint returned %d", result.status)
+	}
+	if err := json.Unmarshal(result.body, &response); err != nil {
+		clear(result.body)
+		return tokenEndpointResponse{}, err
+	}
+	clear(result.body)
 	return response, nil
 }
 
-func (p *Plugin) withClientSecret(call func(string) error) error {
-	if p.clientSecret == nil {
-		if p.config.ClientSecret != "" {
-			return errors.New("credential unavailable")
-		}
-		return call("")
-	}
-	clientSecret := p.clientSecret.Bytes()
-	if len(clientSecret) == 0 {
-		return errors.New("credential unavailable")
-	}
-	defer clear(clientSecret)
-	return call(string(clientSecret))
+type tokenFormResult struct {
+	status int
+	header http.Header
+	body   []byte
 }
 
-func cloneForm(form url.Values) url.Values {
-	cloned := make(url.Values, len(form)+1)
-	for key, values := range form {
-		cloned[key] = append([]string(nil), values...)
+type tokenFormTransport struct {
+	base http.RoundTripper
+}
+
+func (transport tokenFormTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	baseTransport := transport.base
+	if baseTransport == nil {
+		baseTransport = http.DefaultTransport
 	}
-	return cloned
+	response, err := baseTransport.RoundTrip(request)
+	request.Body = http.NoBody
+	request.GetBody = nil
+	return response, err
+}
+
+func (p *Plugin) postTokenForm(
+	endpoint string, buildForm func(string) url.Values,
+) (tokenFormResult, error) {
+	var result tokenFormResult
+	err := p.withClientSecret(func(clientSecret string) error {
+		form := buildForm(clientSecret)
+		encoded := []byte(form.Encode())
+		defer clear(encoded)
+
+		request, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(encoded))
+		if err != nil {
+			return err
+		}
+		request.GetBody = nil
+		request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		client, err := p.keycloakHTTPClient()
+		if err != nil {
+			request.Body = http.NoBody
+			return err
+		}
+		requestClient := *client
+		requestClient.Transport = tokenFormTransport{base: client.Transport}
+		response, err := requestClient.Do(request)
+		request.Body = http.NoBody
+		request.GetBody = nil
+		clear(encoded)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = response.Body.Close() }()
+		body, err := io.ReadAll(response.Body)
+		if err != nil {
+			return err
+		}
+		result = tokenFormResult{
+			status: response.StatusCode,
+			header: response.Header.Clone(),
+			body:   body,
+		}
+		return nil
+	})
+	return result, err
 }
 
 func (p *Plugin) cacheServiceAccountToken(cacheKey string, response tokenEndpointResponse, previous tokenCache) string {
@@ -656,7 +686,7 @@ func (p *Plugin) serviceAccountCacheKey(endpoint string) string {
 		"%s\x00%s\x00%s\x00%d\x00%d\x00%d\x00%d\x00%d\x00%s",
 		endpoint,
 		p.config.ClientID,
-		p.clientSecret.Fingerprint(),
+		fmt.Sprintf("%x", p.clientSecretDigestSnapshot()),
 		p.config.CacheTTLSeconds,
 		p.config.AccessTokenExpiresIn,
 		p.config.AccessTokenExpiresLeeway,
@@ -731,7 +761,11 @@ func (p *Plugin) discover() (discoveryData, error) {
 		p.mu.Unlock()
 		return discovery, nil
 	}
-	resp, err := p.client.R().Get(p.config.Discovery)
+	client, err := p.keycloakRestyClient()
+	if err != nil {
+		return discoveryData{}, err
+	}
+	resp, err := client.R().Get(p.config.Discovery)
 	if err != nil {
 		return discoveryData{}, err
 	}
@@ -842,34 +876,28 @@ func (p *Plugin) generateTokenUsingPasswordGrant(w http.ResponseWriter, r *http.
 		return
 	}
 
-	form := url.Values{}
-	form.Set("grant_type", "password")
-	form.Set("client_id", p.config.ClientID)
-	form.Set("username", username)
-	form.Set("password", password)
-
-	var resp *resty.Response
-	err = p.withClientSecret(func(clientSecret string) error {
-		requestForm := cloneForm(form)
-		requestForm.Set("client_secret", clientSecret)
-		resp, err = p.client.R().
-			SetHeader("Content-Type", "application/x-www-form-urlencoded").
-			SetBody(requestForm.Encode()).
-			Post(endpoint)
-		return err
+	result, err := p.postTokenForm(endpoint, func(clientSecret string) url.Values {
+		form := url.Values{}
+		form.Set("grant_type", "password")
+		form.Set("client_id", p.config.ClientID)
+		form.Set("username", username)
+		form.Set("password", password)
+		form.Set("client_secret", clientSecret)
+		return form
 	})
 	if err != nil {
 		_ = util.WriteJSONMessage(w, http.StatusUnauthorized, "Accessing token endpoint URL failed.")
 		return
 	}
+	defer clear(result.body)
 
-	for key, values := range resp.Header() {
+	for key, values := range result.header {
 		for _, value := range values {
 			w.Header().Add(key, value)
 		}
 	}
-	w.WriteHeader(resp.StatusCode())
-	_, _ = w.Write(resp.Body())
+	w.WriteHeader(result.status)
+	_, _ = w.Write(result.body)
 }
 
 func fetchJWTToken(r *http.Request) string {

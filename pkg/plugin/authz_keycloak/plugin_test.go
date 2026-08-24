@@ -826,9 +826,8 @@ func TestMaterializeSecretsRedactsClientSecretUsesResolvedFormsAndStopsOwner(t *
 		ClientSecret:  "$ENV://AUTHZ_KEYCLOAK_CLIENT_SECRET",
 	})
 
-	if !strings.Contains(p.config.ClientSecret, "$ENV://AUTHZ_KEYCLOAK_CLIENT_SECRET#sha256:") ||
-		strings.Contains(p.config.ClientSecret, "environment-secret") {
-		t.Fatalf("client_secret = %q, want safe environment descriptor", p.config.ClientSecret)
+	if p.config.ClientSecret != scopedKeycloakDescriptor("environment-secret") {
+		t.Fatalf("client_secret = %q, want resolved content descriptor", p.config.ClientSecret)
 	}
 	cacheKey := p.serviceAccountCacheKey(keycloak.URL)
 	if strings.Contains(cacheKey, "environment-secret") || strings.Contains(cacheKey, p.config.ClientSecret) {

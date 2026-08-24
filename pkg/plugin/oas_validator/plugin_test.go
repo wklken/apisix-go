@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -31,6 +32,9 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	p := &Plugin{config: cfg}
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
+	}
+	if err := base.MaterializePluginSecrets(p); err != nil {
+		t.Fatalf("MaterializePluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
@@ -158,6 +162,9 @@ func TestPostInitRejectsInvalidInlineSpec(t *testing.T) {
 	p := &Plugin{config: Config{Spec: "invalid json string"}}
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.MaterializeSecrets(); err != nil {
+		t.Fatalf("MaterializeSecrets() error = %v", err)
 	}
 
 	err := p.PostInit()
@@ -1276,6 +1283,9 @@ func TestHandlerLazilyRejectsExternalSchemaRefCycle(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
+	if err := p.MaterializeSecrets(); err != nil {
+		t.Fatalf("MaterializeSecrets() error = %v", err)
+	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v, want lazy external ref resolution", err)
 	}
@@ -1318,6 +1328,9 @@ func TestHandlerLazilyRejectsMissingExternalSchemaRef(t *testing.T) {
 	p := &Plugin{config: Config{Spec: spec, SpecURLAllowedAddresses: []string{"127.0.0.1"}}}
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.MaterializeSecrets(); err != nil {
+		t.Fatalf("MaterializeSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v, want lazy external ref resolution", err)

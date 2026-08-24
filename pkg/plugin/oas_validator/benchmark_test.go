@@ -8,6 +8,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
 
 // BenchmarkValidatorRefresh measures validation latency with a fresh spec and
@@ -33,6 +35,9 @@ func BenchmarkValidatorRefresh(b *testing.B) {
 			p := &Plugin{config: Config{SpecURL: server.URL}}
 			if err := p.Init(); err != nil {
 				b.Fatalf("Init() error = %v", err)
+			}
+			if err := base.MaterializePluginSecrets(p); err != nil {
+				b.Fatalf("MaterializePluginSecrets() error = %v", err)
 			}
 			if err := p.PostInit(); err != nil {
 				b.Fatalf("PostInit() error = %v", err)

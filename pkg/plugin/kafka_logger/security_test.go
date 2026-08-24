@@ -43,7 +43,7 @@ func runSCRAMInvalidUTF8Helper() {
 		}},
 		KafkaTopic: "apisix-logs",
 	}}
-	mechanism, err := p.saslMechanism()
+	mechanism, err := p.saslMechanism(p.config.Brokers)
 	if err != nil {
 		fmt.Printf("terminated error=%v\n", err)
 		os.Exit(0)

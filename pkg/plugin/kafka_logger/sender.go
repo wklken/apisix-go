@@ -29,14 +29,14 @@ type kafkaGoSender struct {
 	writer *kafka.Writer
 }
 
-func (p *Plugin) newWriter() (*kafka.Writer, error) {
-	mechanism, err := p.saslMechanism()
+func (p *Plugin) newWriter(brokers []Broker) (*kafka.Writer, error) {
+	mechanism, err := p.saslMechanism(brokers)
 	if err != nil {
 		return nil, err
 	}
 
 	writer := &kafka.Writer{
-		Addr:         kafka.TCP(p.brokerAddresses()...),
+		Addr:         kafka.TCP(p.brokerAddresses(brokers)...),
 		RequiredAcks: kafka.RequiredAcks(p.config.RequiredAcks),
 		Async:        p.config.ProducerType == "async",
 		BatchSize:    p.config.ProducerBatchNum,
@@ -55,8 +55,8 @@ func (p *Plugin) newWriter() (*kafka.Writer, error) {
 	return writer, nil
 }
 
-func (p *Plugin) saslMechanism() (sasl.Mechanism, error) {
-	for _, broker := range p.config.Brokers {
+func (*Plugin) saslMechanism(brokers []Broker) (sasl.Mechanism, error) {
+	for _, broker := range brokers {
 		if broker.SASLConfig == nil {
 			continue
 		}
@@ -84,9 +84,9 @@ func (p *Plugin) saslMechanism() (sasl.Mechanism, error) {
 	return nil, nil
 }
 
-func (p *Plugin) brokerAddresses() []string {
-	addresses := make([]string, 0, len(p.config.Brokers)+len(p.config.BrokerList))
-	for _, broker := range p.config.Brokers {
+func (p *Plugin) brokerAddresses(brokers []Broker) []string {
+	addresses := make([]string, 0, len(brokers)+len(p.config.BrokerList))
+	for _, broker := range brokers {
 		addresses = append(addresses, net.JoinHostPort(broker.Host, strconv.Itoa(broker.Port)))
 	}
 

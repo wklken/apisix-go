@@ -2,6 +2,7 @@ package kafka_logger
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"net"
@@ -10,12 +11,16 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/felixge/httpsnoop"
+	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
+	"github.com/wklken/apisix-go/pkg/secret"
+	"github.com/wklken/apisix-go/pkg/store"
 
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 )
@@ -24,7 +29,14 @@ type Plugin struct {
 	base.BaseLoggerPlugin
 	config Config
 	sender kafkaSender
-	stop   sync.Once
+
+	lifecycleMu sync.RWMutex
+	stopped     atomic.Bool
+
+	saslPasswords       []secret.Value
+	saslBrokerIndexes   []int
+	legacySASLPasswords []*store.ResolvedSecret
+	secretsPrepared     bool
 }
 
 const (
@@ -287,9 +299,134 @@ func (p *Plugin) Init() error {
 	return nil
 }
 
+func (p *Plugin) MaterializeScopedSecrets(
+	ctx context.Context,
+	access base.ScopedSecretAccess,
+) error {
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+	if p.stopped.Load() {
+		return secret.ErrCredentialUnavailable
+	}
+	if p.secretsPrepared {
+		return nil
+	}
+	values := make([]secret.Value, 0, len(p.config.Brokers))
+	indexes := make([]int, 0, len(p.config.Brokers))
+	descriptors := make([]string, 0, len(p.config.Brokers))
+	for index := range p.config.Brokers {
+		config := p.config.Brokers[index].SASLConfig
+		if config == nil {
+			continue
+		}
+		value, err := access.Materialize(
+			ctx, "brokers.*.sasl_config.password", config.Password,
+		)
+		if err != nil || value.Use(validateKafkaPassword) != nil {
+			return kafkaPasswordUnavailable()
+		}
+		descriptor, err := value.Descriptor(capability.SecretPluginConfig)
+		if err != nil {
+			return kafkaPasswordUnavailable()
+		}
+		values = append(values, value)
+		indexes = append(indexes, index)
+		descriptors = append(descriptors, descriptor.String())
+	}
+	for position, index := range indexes {
+		p.config.Brokers[index].SASLConfig.Password = descriptors[position]
+	}
+	p.saslPasswords = values
+	p.saslBrokerIndexes = indexes
+	p.secretsPrepared = true
+	return nil
+}
+
+// MaterializeSecrets is the transitional process-local compatibility path.
+// Immutable generation preparation uses MaterializeScopedSecrets instead.
+func (p *Plugin) MaterializeSecrets() error {
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+	if p.stopped.Load() {
+		return secret.ErrCredentialUnavailable
+	}
+	if p.secretsPrepared {
+		return nil
+	}
+	indexes := make([]int, 0, len(p.config.Brokers))
+	owners := make([]*store.ResolvedSecret, 0, len(p.config.Brokers))
+	descriptors := make([]string, 0, len(p.config.Brokers))
+	destroy := func() {
+		for _, owner := range owners {
+			owner.Destroy()
+		}
+	}
+	for index := range p.config.Brokers {
+		config := p.config.Brokers[index].SASLConfig
+		if config == nil {
+			continue
+		}
+		resolver := p.DataEncryption()
+		if !resolver.Configured() {
+			destroy()
+			return errors.New("data-encryption resolver is required")
+		}
+		resolved, err := resolver.ResolveForContext(
+			config.Password, name+".brokers.*.sasl_config.password",
+		)
+		if err != nil {
+			destroy()
+			return kafkaPasswordUnavailable()
+		}
+		owner, err := store.MaterializeSecret(resolved)
+		if err != nil {
+			destroy()
+			return kafkaPasswordUnavailable()
+		}
+		plaintext := owner.Bytes()
+		if validateKafkaPassword(string(plaintext)) != nil {
+			clear(plaintext)
+			owner.Destroy()
+			destroy()
+			return kafkaPasswordUnavailable()
+		}
+		digest := sha256.Sum256(plaintext)
+		clear(plaintext)
+		descriptor, err := secret.NewDescriptor(capability.SecretPluginConfig, digest)
+		if err != nil {
+			owner.Destroy()
+			destroy()
+			return kafkaPasswordUnavailable()
+		}
+		indexes = append(indexes, index)
+		owners = append(owners, owner)
+		descriptors = append(descriptors, descriptor.String())
+	}
+	for position, index := range indexes {
+		p.config.Brokers[index].SASLConfig.Password = descriptors[position]
+	}
+	p.legacySASLPasswords = owners
+	p.saslBrokerIndexes = indexes
+	p.secretsPrepared = true
+	return nil
+}
+
+func validateKafkaPassword(value string) error {
+	if strings.TrimSpace(value) == "" {
+		return secret.ErrCredentialUnavailable
+	}
+	return nil
+}
+
+func kafkaPasswordUnavailable() error {
+	return fmt.Errorf("%s broker password: %w", name, secret.ErrCredentialUnavailable)
+}
+
 func (p *Plugin) PostInit() error {
-	if !p.DataEncryption().Configured() {
-		return errors.New("data-encryption resolver is required")
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+	if p.stopped.Load() || !p.secretsPrepared {
+		return secret.ErrCredentialUnavailable
 	}
 	p.applyDefaults()
 	if err := base.PrepareExprRegexps(
@@ -301,9 +438,6 @@ func (p *Plugin) PostInit() error {
 		return err
 	}
 	if err := validateBodyExpression("include_resp_body_expr", p.config.IncludeRespBodyExpr); err != nil {
-		return err
-	}
-	if err := p.resolveSecrets(); err != nil {
 		return err
 	}
 	if err := p.validateSharedSASLIdentity(); err != nil {
@@ -326,14 +460,19 @@ func (p *Plugin) PostInit() error {
 	)
 
 	if p.sender == nil {
-		writer, err := p.newWriter()
-		if err != nil {
+		if err := p.withPrivateBrokersLocked(func(brokers []Broker) error {
+			writer, err := p.newWriter(brokers)
+			if err != nil {
+				return err
+			}
+			p.sender = &kafkaGoSender{writer: writer}
+			return nil
+		}); err != nil {
 			return err
 		}
-		p.sender = &kafkaGoSender{writer: writer}
 	}
 
-	p.BatchProcessor = base.NewBatchProcessor("kafka logger", base.BatchDefaults{
+	processor := base.NewBatchProcessor("kafka logger", base.BatchDefaults{
 		BatchMaxSize:       p.config.BatchMaxSize,
 		MaxRetryCount:      p.config.MaxRetryCount,
 		RetryDelaySec:      p.config.RetryDelay,
@@ -342,6 +481,15 @@ func (p *Plugin) PostInit() error {
 		MaxPendingEntries:  p.config.MaxPendingEntries,
 		PluginID:           name,
 	}, p.RouteID, p.ServerAddr, p.SendBatch)
+	if p.stopped.Load() {
+		processor.Stop()
+		if closer, ok := p.sender.(interface{ Close() error }); ok {
+			_ = closer.Close()
+		}
+		p.sender = nil
+		return secret.ErrCredentialUnavailable
+	}
+	p.BatchProcessor = processor
 	return nil
 }
 
@@ -364,13 +512,36 @@ func validateBodyExpression(field string, expression [][]any) error {
 }
 
 func (p *Plugin) Stop() {
-	p.stop.Do(func() {
-		p.StopWithCleanup(func() {
-			if closer, ok := p.sender.(interface{ Close() error }); ok {
-				_ = closer.Close()
-			}
-		})
-	})
+	if p.stopped.Swap(true) {
+		return
+	}
+	p.lifecycleMu.Lock()
+	processor := p.BatchProcessor
+	p.lifecycleMu.Unlock()
+	cleanup := func() {
+		p.lifecycleMu.Lock()
+		defer p.lifecycleMu.Unlock()
+		if closer, ok := p.sender.(interface{ Close() error }); ok {
+			_ = closer.Close()
+		}
+		p.sender = nil
+		p.BatchProcessor = nil
+		for _, owner := range p.legacySASLPasswords {
+			owner.Destroy()
+		}
+		p.legacySASLPasswords = nil
+		for index := range p.saslPasswords {
+			p.saslPasswords[index] = secret.Value{}
+		}
+		p.saslPasswords = nil
+		p.saslBrokerIndexes = nil
+		p.secretsPrepared = false
+	}
+	if processor != nil {
+		processor.StopWithCleanup(cleanup)
+	} else {
+		cleanup()
+	}
 }
 
 func (p *Plugin) validateSharedSASLIdentity() error {
@@ -396,20 +567,71 @@ func (p *Plugin) validateSharedSASLIdentity() error {
 	return nil
 }
 
-func (p *Plugin) resolveSecrets() error {
-	resolver := p.DataEncryption()
-	for i := range p.config.Brokers {
-		config := p.config.Brokers[i].SASLConfig
-		if config == nil {
-			continue
-		}
-		resolved, err := resolver.ResolveForContext(config.Password, "kafka-logger.brokers.*.sasl_config.password")
-		if err != nil {
-			return fmt.Errorf("kafka-logger brokers[%d].sasl_config.password: %w", i, err)
-		}
-		config.Password = resolved
+func (p *Plugin) withPrivateBrokersLocked(use func([]Broker) error) error {
+	if use == nil || p.stopped.Load() || !p.secretsPrepared {
+		return secret.ErrCredentialUnavailable
 	}
-	return nil
+	brokers := make([]Broker, len(p.config.Brokers))
+	for index, broker := range p.config.Brokers {
+		brokers[index] = Broker{Host: broker.Host, Port: broker.Port}
+		if broker.SASLConfig != nil {
+			config := *broker.SASLConfig
+			config.Password = ""
+			brokers[index].SASLConfig = &config
+		}
+	}
+	defer clearKafkaBrokerClone(brokers)
+	if len(p.saslBrokerIndexes) == 0 {
+		return use(brokers)
+	}
+	if len(p.saslPasswords) > 0 {
+		if len(p.saslPasswords) != len(p.saslBrokerIndexes) {
+			return secret.ErrCredentialUnavailable
+		}
+		var visit func(int) error
+		visit = func(position int) error {
+			if position == len(p.saslPasswords) {
+				return use(brokers)
+			}
+			return p.saslPasswords[position].Use(func(password string) error {
+				index := p.saslBrokerIndexes[position]
+				brokers[index].SASLConfig.Password = password
+				defer func() { brokers[index].SASLConfig.Password = "" }()
+				return visit(position + 1)
+			})
+		}
+		return visit(0)
+	}
+	if len(p.legacySASLPasswords) != len(p.saslBrokerIndexes) {
+		return secret.ErrCredentialUnavailable
+	}
+	var visit func(int) error
+	visit = func(position int) error {
+		if position == len(p.legacySASLPasswords) {
+			return use(brokers)
+		}
+		plaintext := p.legacySASLPasswords[position].Bytes()
+		if len(plaintext) == 0 {
+			return secret.ErrCredentialUnavailable
+		}
+		defer clear(plaintext)
+		index := p.saslBrokerIndexes[position]
+		brokers[index].SASLConfig.Password = string(plaintext)
+		defer func() { brokers[index].SASLConfig.Password = "" }()
+		return visit(position + 1)
+	}
+	return visit(0)
+}
+
+func clearKafkaBrokerClone(brokers []Broker) {
+	for index := range brokers {
+		if brokers[index].SASLConfig != nil {
+			*brokers[index].SASLConfig = SASLConfig{}
+			brokers[index].SASLConfig = nil
+		}
+		brokers[index] = Broker{}
+	}
+	clear(brokers)
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
@@ -431,7 +653,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 
 		metrics := httpsnoop.CaptureMetrics(next, writer, r)
 		if p.config.MetaFormat == "origin" {
-			_ = p.Fire(map[string]any{
+			_ = p.enqueueKafkaLogIfRunning(map[string]any{
 				originLogKey: buildOriginRequestLog(r, requestBody, p.config.IncludeReqBody),
 			})
 			return
@@ -451,7 +673,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			base.NestedLogMap(logFields, "response")["body"] = recorder.BodyTruncated(p.config.MaxRespBodyBytes)
 		}
 
-		_ = p.Fire(logFields)
+		_ = p.enqueueKafkaLogIfRunning(logFields)
 	}
 	return http.HandlerFunc(fn)
 }
@@ -462,7 +684,7 @@ func (p *Plugin) RunLogPhase(snapshot base.LogSnapshot) error {
 		if p.config.IncludeReqBody && base.SnapshotExpressionMatches(snapshot, p.config.IncludeReqBodyExpr) {
 			body = base.SnapshotRequestBody(snapshot, p.config.MaxReqBodyBytes)
 		}
-		return p.EnqueueLog(map[string]any{originLogKey: kafkaSnapshotOrigin(snapshot, body)})
+		return p.enqueueKafkaLogIfRunning(map[string]any{originLogKey: kafkaSnapshotOrigin(snapshot, body)})
 	}
 	var fields map[string]any
 	if len(p.LogFormat) > 0 {
@@ -479,6 +701,18 @@ func (p *Plugin) RunLogPhase(snapshot base.LogSnapshot) error {
 		if body := base.SnapshotResponseBody(snapshot, p.config.MaxRespBodyBytes); body != "" {
 			base.NestedLogMap(fields, "response")["body"] = body
 		}
+	}
+	return p.enqueueKafkaLogIfRunning(fields)
+}
+
+func (p *Plugin) enqueueKafkaLogIfRunning(fields map[string]any) error {
+	p.lifecycleMu.RLock()
+	defer p.lifecycleMu.RUnlock()
+	if p.stopped.Load() {
+		return base.ErrLogQueueUnavailable
+	}
+	if p.BatchProcessor == nil {
+		return p.Fire(fields)
 	}
 	return p.EnqueueLog(fields)
 }
@@ -568,6 +802,11 @@ func (p *Plugin) Send(log map[string]any) {
 }
 
 func (p *Plugin) SendBatch(ctx context.Context, entries []map[string]any, batchMaxSize int) (int, error) {
+	p.lifecycleMu.RLock()
+	defer p.lifecycleMu.RUnlock()
+	if p.stopped.Load() || p.sender == nil {
+		return 0, secret.ErrCredentialUnavailable
+	}
 	message, err := encodeKafkaBatch(entries, batchMaxSize)
 	if err != nil {
 		return 0, fmt.Errorf("failed to marshal kafka log message: %w", err)

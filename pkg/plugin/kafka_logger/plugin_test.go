@@ -5,8 +5,12 @@ import (
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -16,13 +20,572 @@ import (
 	"time"
 
 	"github.com/segmentio/kafka-go"
+	plain "github.com/segmentio/kafka-go/sasl/plain"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
+	"github.com/wklken/apisix-go/pkg/capability"
+	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
+	"github.com/wklken/apisix-go/pkg/secret"
 	"github.com/wklken/apisix-go/pkg/testutil"
 	"github.com/wklken/apisix-go/pkg/util"
 )
+
+type kafkaScopedSecretCall struct {
+	Scope secret.Scope
+	Raw   string
+}
+
+type kafkaScopedSecretBroker struct {
+	mu     sync.Mutex
+	values map[string]string
+	fail   map[string]error
+	calls  []kafkaScopedSecretCall
+}
+
+func (*kafkaScopedSecretBroker) AuthorizeCandidate(
+	context.Context, secret.AttemptID, generation.ApplyTicket, generation.PublicationSet,
+) error {
+	return nil
+}
+
+func (*kafkaScopedSecretBroker) AuthorizeRecovery(
+	context.Context, secret.AttemptID, generation.RevisionSet,
+	map[generation.Domain]generation.PublishedGeneration,
+) error {
+	return errors.New("recovery is not used by this Kafka logger fixture")
+}
+
+func (broker *kafkaScopedSecretBroker) ResolveScoped(
+	ctx context.Context, scope secret.Scope, raw string,
+) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	broker.mu.Lock()
+	defer broker.mu.Unlock()
+	broker.calls = append(broker.calls, kafkaScopedSecretCall{Scope: scope, Raw: raw})
+	if err := broker.fail[raw]; err != nil {
+		return "", err
+	}
+	value, ok := broker.values[raw]
+	if !ok {
+		return "", errors.New("missing private Kafka password test value")
+	}
+	return value, nil
+}
+
+func (*kafkaScopedSecretBroker) RevokeAttempt(context.Context, secret.AttemptID) error {
+	return nil
+}
+
+func (broker *kafkaScopedSecretBroker) callsSnapshot() []kafkaScopedSecretCall {
+	broker.mu.Lock()
+	defer broker.mu.Unlock()
+	return append([]kafkaScopedSecretCall(nil), broker.calls...)
+}
+
+func newKafkaScopedSecretHarness(
+	t *testing.T, config Config, values map[string]string,
+) (secret.GenerationCapability, secret.Scope, *kafkaScopedSecretBroker, func()) {
+	t.Helper()
+	key := generation.ResourceKey{Kind: "routes", ID: "kafka-scoped"}
+	document, err := json.Marshal(map[string]any{
+		"id": "kafka-scoped", "plugins": map[string]any{name: config},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := generation.NewSnapshot(90, []generation.Resource{{
+		Key: key, Value: document,
+	}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := generation.PublicationCandidate{
+		Artifact: generation.GenerationArtifact{
+			Domain: generation.DomainHTTP, Revision: 90,
+			Digest: snapshot.Digest(), Snapshot: snapshot.SnapshotID(),
+		},
+		Snapshot: snapshot,
+		Closure:  []generation.ResourceKey{key},
+		Decisions: []generation.ResourceDecision{{
+			Key: key, Disposition: generation.DispositionPublished, Code: "kafka-scoped-test",
+		}},
+	}
+	ticket := generation.ApplyTicket{
+		DesiredRevision: 90, DesiredDigest: snapshot.Digest(),
+		RequiredDomains: []generation.Domain{generation.DomainHTTP},
+	}
+	publication := generation.PublicationSet{
+		DesiredRevision: 90,
+		Domains: map[generation.Domain]generation.PublicationCandidate{
+			generation.DomainHTTP: candidate,
+		},
+	}
+	manifest, err := capability.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := capability.NewSecretDeclarationCatalog(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	broker := &kafkaScopedSecretBroker{values: values, fail: make(map[string]error)}
+	registration, err := secret.NewScopedMaterializer(broker, catalog).RegisterCandidate(
+		context.Background(), ticket, publication,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capabilityValue, err := secret.NewGenerationCapability(registration, 90)
+	if err != nil {
+		_ = registration.Close(context.Background())
+		t.Fatal(err)
+	}
+	scope := secret.Scope{
+		Generation: 90, Attempt: registration.AttemptID(), Domain: generation.DomainHTTP,
+		Plugin: name, Resource: key, Source: capability.SecretPluginConfig,
+	}
+	return capabilityValue, scope, broker, func() {
+		if err := registration.Close(context.Background()); err != nil {
+			t.Errorf("close Kafka scoped attempt: %v", err)
+		}
+	}
+}
+
+func kafkaPasswordDescriptor(plaintext string) string {
+	digest := sha256.Sum256([]byte(plaintext))
+	return fmt.Sprintf("plugin_config#sha256:%s", hex.EncodeToString(digest[:]))
+}
+
+func TestMaterializeScopedSecretsOwnsEveryKafkaBrokerPassword(t *testing.T) {
+	const (
+		firstRaw  = "$ENV://KAFKA_FIRST_PASSWORD"
+		secondRaw = "$secret://vault/kafka/second-password"
+	)
+	config := Config{
+		Brokers: []Broker{
+			{Host: "kafka-a", Port: 9092, SASLConfig: &SASLConfig{
+				Mechanism: "PLAIN", User: "first-user", Password: firstRaw,
+			}},
+			{Host: "kafka-plain", Port: 9092},
+			{Host: "kafka-b", Port: 9092, SASLConfig: &SASLConfig{
+				Mechanism: "PLAIN", User: "second-user", Password: secondRaw,
+			}},
+		},
+		KafkaTopic: "apisix-logs",
+	}
+	capabilityValue, scope, broker, closeAttempt := newKafkaScopedSecretHarness(
+		t, config, map[string]string{firstRaw: "first-private", secondRaw: "second-private"},
+	)
+	defer closeAttempt()
+	p := &Plugin{config: config}
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	if err := base.MaterializeScopedPluginSecrets(
+		context.Background(), scope, capabilityValue, p,
+	); err != nil {
+		t.Fatal(err)
+	}
+	calls := broker.callsSnapshot()
+	wantRaw := []string{firstRaw, secondRaw}
+	if len(calls) != 2 {
+		t.Fatalf("password materialization calls = %#v, want exactly two", calls)
+	}
+	for index, call := range calls {
+		wantScope := scope
+		wantScope.Field = "brokers.*.sasl_config.password"
+		if call.Scope != wantScope || call.Raw != wantRaw[index] {
+			t.Fatalf("call %d = %#v, want scope %#v raw %q", index, call, wantScope, wantRaw[index])
+		}
+	}
+	if got := p.config.Brokers[0].SASLConfig.Password; got != kafkaPasswordDescriptor("first-private") {
+		t.Fatalf("first public password = %q", got)
+	}
+	if got := p.config.Brokers[2].SASLConfig.Password; got != kafkaPasswordDescriptor("second-private") {
+		t.Fatalf("second public password = %q", got)
+	}
+	if p.config.Brokers[1].SASLConfig != nil {
+		t.Fatal("broker without SASL gained a private configuration")
+	}
+	if err := p.PostInit(); err == nil || !strings.Contains(err.Error(), "share one SASL identity") {
+		t.Fatalf("PostInit() error = %v, want mixed non-secret SASL identity rejection", err)
+	}
+	if p.sender != nil || p.BatchProcessor != nil {
+		t.Fatal("mixed SASL identities caused writer or batch side effects")
+	}
+}
+
+func TestKafkaRejectsSharedSASLIdentityWithDifferentResolvedPasswords(t *testing.T) {
+	const (
+		firstRaw  = "$ENV://KAFKA_SHARED_FIRST"
+		secondRaw = "$secret://vault/kafka/shared-second"
+	)
+	config := Config{
+		Brokers: []Broker{
+			{Host: "kafka-a", Port: 9092, SASLConfig: &SASLConfig{
+				Mechanism: "PLAIN", User: "logger", Password: firstRaw,
+			}},
+			{Host: "kafka-b", Port: 9092, SASLConfig: &SASLConfig{
+				Mechanism: "PLAIN", User: "logger", Password: secondRaw,
+			}},
+		},
+		KafkaTopic: "apisix-logs",
+	}
+	capabilityValue, scope, _, closeAttempt := newKafkaScopedSecretHarness(
+		t, config, map[string]string{firstRaw: "first-private", secondRaw: "second-private"},
+	)
+	defer closeAttempt()
+	p := &Plugin{config: config}
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	if err := base.MaterializeScopedPluginSecrets(
+		context.Background(), scope, capabilityValue, p,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.PostInit(); err == nil || !strings.Contains(err.Error(), "share one SASL identity") {
+		t.Fatalf("PostInit() error = %v, want resolved password identity rejection", err)
+	}
+	if p.sender != nil || p.BatchProcessor != nil {
+		t.Fatal("different resolved SASL passwords caused writer or batch side effects")
+	}
+	p.Stop()
+}
+
+func TestKafkaAcceptsDifferentReferencesWithSameResolvedSASLPassword(t *testing.T) {
+	const (
+		firstRaw  = "$ENV://KAFKA_SHARED_EQUAL_FIRST"
+		secondRaw = "$secret://vault/kafka/shared-equal-second"
+		plaintext = "same-private-password"
+	)
+	config := Config{
+		Brokers: []Broker{
+			{Host: "kafka-a", Port: 9092, SASLConfig: &SASLConfig{
+				Mechanism: "PLAIN", User: "logger", Password: firstRaw,
+			}},
+			{Host: "kafka-b", Port: 9092, SASLConfig: &SASLConfig{
+				Mechanism: "PLAIN", User: "logger", Password: secondRaw,
+			}},
+		},
+		KafkaTopic: "apisix-logs",
+	}
+	capabilityValue, scope, _, closeAttempt := newKafkaScopedSecretHarness(
+		t, config, map[string]string{firstRaw: plaintext, secondRaw: plaintext},
+	)
+	defer closeAttempt()
+	p := &Plugin{config: config}
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	if err := base.MaterializeScopedPluginSecrets(
+		context.Background(), scope, capabilityValue, p,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if p.config.Brokers[0].SASLConfig.Password != p.config.Brokers[1].SASLConfig.Password {
+		t.Fatalf("equal resolved passwords produced different descriptors: %#v", p.config.Brokers)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v, want equal resolved password identity", err)
+	}
+	p.Stop()
+}
+
+func TestKafkaScopedPasswordFailureIsAtomicAndRetryable(t *testing.T) {
+	const (
+		firstRaw  = "$ENV://KAFKA_ATOMIC_FIRST"
+		secondRaw = "$secret://vault/kafka/atomic-second"
+	)
+	config := Config{
+		Brokers: []Broker{
+			{Host: "kafka-a", Port: 9092, SASLConfig: &SASLConfig{
+				Mechanism: "PLAIN", User: "logger", Password: firstRaw,
+			}},
+			{Host: "kafka-b", Port: 9092, SASLConfig: &SASLConfig{
+				Mechanism: "PLAIN", User: "logger", Password: secondRaw,
+			}},
+		},
+		KafkaTopic: "apisix-logs",
+	}
+	capabilityValue, scope, broker, closeAttempt := newKafkaScopedSecretHarness(
+		t, config, map[string]string{firstRaw: "first-private", secondRaw: "second-private"},
+	)
+	defer closeAttempt()
+	broker.fail[secondRaw] = errors.New("resolver leaked " + secondRaw)
+	p := &Plugin{config: config}
+	err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p)
+	if !errors.Is(err, secret.ErrCredentialUnavailable) || strings.Contains(err.Error(), secondRaw) {
+		t.Fatalf("first materialization error = %v, want redacted unavailable", err)
+	}
+	if p.config.Brokers[0].SASLConfig.Password != firstRaw ||
+		p.config.Brokers[1].SASLConfig.Password != secondRaw ||
+		p.secretsPrepared || len(p.saslPasswords) != 0 || len(p.saslBrokerIndexes) != 0 {
+		t.Fatal("failed materialization installed partial public or private state")
+	}
+	broker.mu.Lock()
+	delete(broker.fail, secondRaw)
+	broker.calls = nil
+	broker.mu.Unlock()
+	if err := base.MaterializeScopedPluginSecrets(
+		context.Background(), scope, capabilityValue, p,
+	); err != nil {
+		t.Fatalf("same-instance retry error = %v", err)
+	}
+	if calls := broker.callsSnapshot(); len(calls) != 2 {
+		t.Fatalf("retry calls = %#v, want both passwords", calls)
+	}
+	if p.config.Brokers[0].SASLConfig.Password != kafkaPasswordDescriptor("first-private") ||
+		p.config.Brokers[1].SASLConfig.Password != kafkaPasswordDescriptor("second-private") {
+		t.Fatalf("retry public brokers = %#v", p.config.Brokers)
+	}
+	p.Stop()
+}
+
+func TestKafkaConcurrentScopedPasswordMaterializationIsSingleFlight(t *testing.T) {
+	const raw = "$ENV://KAFKA_SINGLEFLIGHT_PASSWORD"
+	config := Config{
+		Brokers: []Broker{{Host: "kafka-a", Port: 9092, SASLConfig: &SASLConfig{
+			Mechanism: "PLAIN", User: "logger", Password: raw,
+		}}},
+		KafkaTopic: "apisix-logs",
+	}
+	capabilityValue, scope, broker, closeAttempt := newKafkaScopedSecretHarness(
+		t, config, map[string]string{raw: "singleflight-private"},
+	)
+	defer closeAttempt()
+	p := &Plugin{config: config}
+	start := make(chan struct{})
+	errs := make(chan error, 16)
+	var group sync.WaitGroup
+	for range 16 {
+		group.Go(func() {
+			<-start
+			errs <- base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p)
+		})
+	}
+	close(start)
+	group.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if calls := broker.callsSnapshot(); len(calls) != 1 {
+		t.Fatalf("singleflight calls = %#v, want one", calls)
+	}
+	p.Stop()
+}
+
+func TestKafkaWritersAndPasswordsAreAttemptOwned(t *testing.T) {
+	const raw = "$ENV://KAFKA_GENERATION_PASSWORD"
+	newConfig := func() Config {
+		return Config{
+			Brokers: []Broker{{Host: "127.0.0.1", Port: 9092, SASLConfig: &SASLConfig{
+				Mechanism: "PLAIN", User: "logger", Password: raw,
+			}}},
+			KafkaTopic: "apisix-logs",
+		}
+	}
+	newScoped := func(password string) (*Plugin, func()) {
+		config := newConfig()
+		capabilityValue, scope, _, closeAttempt := newKafkaScopedSecretHarness(
+			t, config, map[string]string{raw: password},
+		)
+		p := &Plugin{config: config}
+		if err := p.Init(); err != nil {
+			closeAttempt()
+			t.Fatal(err)
+		}
+		if err := base.MaterializeScopedPluginSecrets(
+			context.Background(), scope, capabilityValue, p,
+		); err != nil {
+			closeAttempt()
+			t.Fatal(err)
+		}
+		if err := p.PostInit(); err != nil {
+			closeAttempt()
+			t.Fatal(err)
+		}
+		return p, func() {
+			p.Stop()
+			closeAttempt()
+		}
+	}
+	first, closeFirst := newScoped("generation-first")
+	second, closeSecond := newScoped("generation-second")
+	defer closeSecond()
+	firstSender := first.sender.(*kafkaGoSender)
+	secondSender := second.sender.(*kafkaGoSender)
+	if firstSender.writer == secondSender.writer {
+		t.Fatal("two attempts shared a credential-bearing Kafka writer")
+	}
+	firstMechanism := firstSender.writer.Transport.(*kafka.Transport).SASL.(plain.Mechanism)
+	secondMechanism := secondSender.writer.Transport.(*kafka.Transport).SASL.(plain.Mechanism)
+	if firstMechanism.Password != "generation-first" || secondMechanism.Password != "generation-second" {
+		t.Fatalf("attempt writer passwords = %q/%q", firstMechanism.Password, secondMechanism.Password)
+	}
+	if first.config.Brokers[0].SASLConfig.Password == "generation-first" ||
+		second.config.Brokers[0].SASLConfig.Password == "generation-second" {
+		t.Fatal("private password escaped into public broker config")
+	}
+	closeFirst()
+	if second.sender != secondSender || second.stopped.Load() {
+		t.Fatal("stopping first attempt changed the second writer")
+	}
+}
+
+func TestKafkaPrivateBrokerCloneIsClearedAfterWriterConstruction(t *testing.T) {
+	const raw = "$secret://vault/kafka/clone-password"
+	config := Config{
+		Brokers: []Broker{{Host: "127.0.0.1", Port: 9092, SASLConfig: &SASLConfig{
+			Mechanism: "PLAIN", User: "logger", Password: raw,
+		}}},
+		KafkaTopic: "apisix-logs",
+	}
+	capabilityValue, scope, _, closeAttempt := newKafkaScopedSecretHarness(
+		t, config, map[string]string{raw: "clone-private"},
+	)
+	defer closeAttempt()
+	p := &Plugin{config: config}
+	if err := base.MaterializeScopedPluginSecrets(
+		context.Background(), scope, capabilityValue, p,
+	); err != nil {
+		t.Fatal(err)
+	}
+	var retained []Broker
+	if err := p.withPrivateBrokersLocked(func(brokers []Broker) error {
+		if got := brokers[0].SASLConfig.Password; got != "clone-private" {
+			t.Fatalf("private clone password = %q", got)
+		}
+		retained = brokers
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if retained[0] != (Broker{}) {
+		t.Fatalf("retained private broker clone = %#v, want cleared", retained[0])
+	}
+	p.Stop()
+}
+
+type blockingKafkaSender struct {
+	entered   chan struct{}
+	release   chan struct{}
+	enterOnce sync.Once
+	mu        sync.Mutex
+	closes    int
+}
+
+func (s *blockingKafkaSender) Send(context.Context, kafkaMessage) error {
+	s.enterOnce.Do(func() { close(s.entered) })
+	<-s.release
+	return nil
+}
+
+func (s *blockingKafkaSender) Close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.closes++
+	return nil
+}
+
+func (s *blockingKafkaSender) closeCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.closes
+}
+
+func TestKafkaStopDrainsActiveSendAndPreventsResurrection(t *testing.T) {
+	sender := &blockingKafkaSender{entered: make(chan struct{}), release: make(chan struct{})}
+	p := &Plugin{
+		config: Config{
+			BrokerList: map[string]int{"127.0.0.1": 9092},
+			KafkaTopic: "apisix-logs",
+		},
+		sender: sender,
+	}
+	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	p.sender = sender
+	if err := p.MaterializeSecrets(); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatal(err)
+	}
+
+	sendDone := make(chan error, 1)
+	go func() {
+		_, err := p.SendBatch(context.Background(), []map[string]any{{"route_id": "r1"}}, 1)
+		sendDone <- err
+	}()
+	select {
+	case <-sender.entered:
+	case <-time.After(time.Second):
+		t.Fatal("active Kafka send did not start")
+	}
+	stopDone := make(chan struct{})
+	go func() {
+		p.Stop()
+		close(stopDone)
+	}()
+	select {
+	case <-stopDone:
+		t.Fatal("Stop returned before the active Kafka send drained")
+	case <-time.After(25 * time.Millisecond):
+	}
+	close(sender.release)
+	if err := <-sendDone; err != nil {
+		t.Fatalf("active SendBatch() error = %v", err)
+	}
+	select {
+	case <-stopDone:
+	case <-time.After(time.Second):
+		t.Fatal("Stop did not finish after the active Kafka send drained")
+	}
+	if sender.closeCount() != 1 {
+		t.Fatalf("Kafka sender close count = %d, want 1", sender.closeCount())
+	}
+	if p.sender != nil || p.BatchProcessor != nil || p.secretsPrepared ||
+		len(p.saslPasswords) != 0 || len(p.legacySASLPasswords) != 0 || len(p.saslBrokerIndexes) != 0 {
+		t.Fatal("Stop retained Kafka writer, processor, or private password owners")
+	}
+	queued := len(p.FireChan)
+	if err := p.RunLogPhase(base.LogSnapshot{}); !errors.Is(err, base.ErrLogQueueUnavailable) {
+		t.Fatalf("post-Stop RunLogPhase() error = %v", err)
+	}
+	if len(p.FireChan) != queued {
+		t.Fatal("post-Stop RunLogPhase enqueued work")
+	}
+	if _, err := p.SendBatch(
+		context.Background(),
+		[]map[string]any{{"route_id": "late"}},
+		1,
+	); !errors.Is(
+		err,
+		secret.ErrCredentialUnavailable,
+	) {
+		t.Fatalf("post-Stop SendBatch() error = %v", err)
+	}
+	if err := p.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) {
+		t.Fatalf("post-Stop MaterializeSecrets() error = %v", err)
+	}
+	if err := p.PostInit(); !errors.Is(err, secret.ErrCredentialUnavailable) {
+		t.Fatalf("post-Stop PostInit() error = %v", err)
+	}
+	p.Stop()
+	if sender.closeCount() != 1 {
+		t.Fatalf("idempotent Stop close count = %d, want 1", sender.closeCount())
+	}
+}
 
 func TestRunLogPhaseOriginPreservesHTTPFraming(t *testing.T) {
 	delivered := make(chan map[string]any, 1)
@@ -86,7 +649,7 @@ func TestSendBatchPassesParentContextToKafka(t *testing.T) {
 }
 
 func TestSendBatchPreservesKafkaMarshalErrorContext(t *testing.T) {
-	p := &Plugin{}
+	p := &Plugin{config: Config{Timeout: 1}, sender: &captureSender{}}
 	_, err := p.SendBatch(context.Background(), []map[string]any{{"bad": make(chan int)}}, 1)
 	if err == nil || !strings.Contains(err.Error(), "failed to marshal kafka log message") {
 		t.Fatalf("SendBatch() error = %v, want kafka marshal context", err)
@@ -161,17 +724,24 @@ func newTestPlugin(t *testing.T, cfg Config, sender kafkaSender) *Plugin {
 		t.Fatalf("Init() error = %v", err)
 	}
 	p.sender = sender
+	if err := p.MaterializeSecrets(); err != nil {
+		t.Fatalf("MaterializeSecrets() error = %v", err)
+	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
+	t.Cleanup(p.Stop)
 
 	return p
 }
 
 func TestPostInitRejectsMissingDataEncryptionResolver(t *testing.T) {
-	p := &Plugin{}
-	if err := p.PostInit(); err == nil || err.Error() != "data-encryption resolver is required" {
-		t.Fatalf("PostInit() error = %v, want missing resolver error", err)
+	p := &Plugin{config: Config{Brokers: []Broker{{
+		Host: "127.0.0.1", Port: 9092,
+		SASLConfig: &SASLConfig{User: "logger", Password: "private"},
+	}}}}
+	if err := p.MaterializeSecrets(); err == nil || err.Error() != "data-encryption resolver is required" {
+		t.Fatalf("MaterializeSecrets() error = %v, want missing resolver error", err)
 	}
 }
 
@@ -216,7 +786,7 @@ func TestNewWriterLeavesTopicForPerMessageRouting(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	writer, err := p.newWriter()
+	writer, err := p.newWriter(p.config.Brokers)
 	if err != nil {
 		t.Fatalf("newWriter() error = %v", err)
 	}
@@ -248,7 +818,7 @@ func TestPostInitAcceptsDeprecatedBrokerListAndAppliesDefaults(t *testing.T) {
 		KafkaTopic: "apisix-logs",
 	}, sender)
 
-	got := p.brokerAddresses()
+	got := p.brokerAddresses(p.config.Brokers)
 	if len(got) != 1 || got[0] != "127.0.0.1:9092" {
 		t.Fatalf("broker addresses = %v, want [127.0.0.1:9092]", got)
 	}
@@ -284,8 +854,8 @@ func TestPostInitRejectsInvalidEncryptedSASLPassword(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := p.PostInit(); err == nil {
-		t.Fatal("PostInit() error = nil, want strict encrypted SASL password rejection")
+	if err := p.MaterializeSecrets(); err == nil {
+		t.Fatal("MaterializeSecrets() error = nil, want strict encrypted SASL password rejection")
 	}
 }
 
@@ -310,12 +880,15 @@ func TestPostInitResolvesRotatedEncryptedSASLPassword(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
+	if err := p.MaterializeSecrets(); err != nil {
+		t.Fatalf("MaterializeSecrets() error = %v", err)
+	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
-	t.Cleanup(func() { p.BatchProcessor.Stop() })
-	if got := p.config.Brokers[0].SASLConfig.Password; got != "kafka-secret" {
-		t.Fatalf("SASL password = %q, want resolved plaintext", got)
+	t.Cleanup(p.Stop)
+	if got := p.config.Brokers[0].SASLConfig.Password; got != kafkaPasswordDescriptor("kafka-secret") {
+		t.Fatalf("SASL password = %q, want resolved descriptor", got)
 	}
 }
 
@@ -331,7 +904,7 @@ func TestPostInitRejectsMixedBrokerSASLIdentities(t *testing.T) {
 				{
 					Host:       "10.0.0.2",
 					Port:       9092,
-					SASLConfig: &SASLConfig{Mechanism: "PLAIN", User: "logger", Password: "two"},
+					SASLConfig: &SASLConfig{Mechanism: "PLAIN", User: "other", Password: "two"},
 				},
 			},
 			KafkaTopic: "apisix-logs",
@@ -341,6 +914,9 @@ func TestPostInitRejectsMixedBrokerSASLIdentities(t *testing.T) {
 	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.MaterializeSecrets(); err != nil {
+		t.Fatalf("MaterializeSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err == nil {
 		t.Fatal("PostInit() error = nil, want mixed SASL identity rejection")
@@ -657,7 +1233,7 @@ func TestSASLMechanismDefaultsToPlain(t *testing.T) {
 		KafkaTopic: "apisix-logs",
 	}}
 
-	mechanism, err := p.saslMechanism()
+	mechanism, err := p.saslMechanism(p.config.Brokers)
 	if err != nil {
 		t.Fatalf("saslMechanism() error = %v", err)
 	}
@@ -684,7 +1260,7 @@ func TestNewWriterUsesBrokerSASLConfig(t *testing.T) {
 	}}
 	p.applyDefaults()
 
-	writer, err := p.newWriter()
+	writer, err := p.newWriter(p.config.Brokers)
 	if err != nil {
 		t.Fatalf("newWriter() error = %v", err)
 	}

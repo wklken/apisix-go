@@ -6,24 +6,598 @@ import (
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	brotli "github.com/andybalholm/brotli"
+	"github.com/go-resty/resty/v2"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
+	"github.com/wklken/apisix-go/pkg/capability"
+	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
+	"github.com/wklken/apisix-go/pkg/secret"
 	"github.com/wklken/apisix-go/pkg/testutil"
 	"github.com/wklken/apisix-go/pkg/util"
 )
+
+type httpLoggerScopedSecretCall struct {
+	Scope secret.Scope
+	Raw   string
+}
+
+type httpLoggerScopedSecretBroker struct {
+	mu     sync.Mutex
+	values map[string]string
+	fail   map[string]error
+	calls  []httpLoggerScopedSecretCall
+}
+
+func (*httpLoggerScopedSecretBroker) AuthorizeCandidate(
+	context.Context, secret.AttemptID, generation.ApplyTicket, generation.PublicationSet,
+) error {
+	return nil
+}
+
+func (*httpLoggerScopedSecretBroker) AuthorizeRecovery(
+	context.Context, secret.AttemptID, generation.RevisionSet,
+	map[generation.Domain]generation.PublishedGeneration,
+) error {
+	return errors.New("recovery is not used by this HTTP logger fixture")
+}
+
+func (broker *httpLoggerScopedSecretBroker) ResolveScoped(
+	ctx context.Context, scope secret.Scope, raw string,
+) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	broker.mu.Lock()
+	defer broker.mu.Unlock()
+	broker.calls = append(broker.calls, httpLoggerScopedSecretCall{Scope: scope, Raw: raw})
+	if err := broker.fail[raw]; err != nil {
+		return "", err
+	}
+	value, ok := broker.values[raw]
+	if !ok {
+		return "", errors.New("missing private HTTP authorization test value")
+	}
+	return value, nil
+}
+
+func (*httpLoggerScopedSecretBroker) RevokeAttempt(context.Context, secret.AttemptID) error {
+	return nil
+}
+
+func (broker *httpLoggerScopedSecretBroker) scopedCalls() []httpLoggerScopedSecretCall {
+	broker.mu.Lock()
+	defer broker.mu.Unlock()
+	return append([]httpLoggerScopedSecretCall(nil), broker.calls...)
+}
+
+func newHTTPLoggerScopedSecretHarness(
+	t *testing.T,
+	revision uint64,
+	resourceID string,
+	config Config,
+	values map[string]string,
+) (secret.GenerationCapability, secret.Scope, *httpLoggerScopedSecretBroker, func()) {
+	t.Helper()
+	key := generation.ResourceKey{Kind: "routes", ID: resourceID}
+	document, err := json.Marshal(map[string]any{
+		"id": resourceID, "plugins": map[string]any{name: config},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := generation.NewSnapshot(revision, []generation.Resource{{
+		Key: key, Value: document,
+	}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := generation.PublicationCandidate{
+		Artifact: generation.GenerationArtifact{
+			Domain: generation.DomainHTTP, Revision: revision,
+			Digest: snapshot.Digest(), Snapshot: snapshot.SnapshotID(),
+		},
+		Snapshot: snapshot,
+		Closure:  []generation.ResourceKey{key},
+		Decisions: []generation.ResourceDecision{{
+			Key: key, Disposition: generation.DispositionPublished, Code: "http-logger-test",
+		}},
+	}
+	ticket := generation.ApplyTicket{
+		DesiredRevision: revision,
+		DesiredDigest:   snapshot.Digest(),
+		RequiredDomains: []generation.Domain{generation.DomainHTTP},
+	}
+	publication := generation.PublicationSet{
+		DesiredRevision: revision,
+		Domains: map[generation.Domain]generation.PublicationCandidate{
+			generation.DomainHTTP: candidate,
+		},
+	}
+	manifest, err := capability.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := capability.NewSecretDeclarationCatalog(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	broker := &httpLoggerScopedSecretBroker{
+		values: values,
+		fail:   make(map[string]error),
+	}
+	registration, err := secret.NewScopedMaterializer(broker, catalog).RegisterCandidate(
+		context.Background(), ticket, publication,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capabilityValue, err := secret.NewGenerationCapability(registration, revision)
+	if err != nil {
+		_ = registration.Close(context.Background())
+		t.Fatal(err)
+	}
+	scope := secret.Scope{
+		Generation: revision,
+		Attempt:    registration.AttemptID(),
+		Domain:     generation.DomainHTTP,
+		Plugin:     name,
+		Resource:   key,
+		Source:     capability.SecretPluginConfig,
+	}
+	return capabilityValue, scope, broker, func() {
+		if err := registration.Close(context.Background()); err != nil {
+			t.Errorf("close HTTP logger scoped attempt: %v", err)
+		}
+	}
+}
+
+func httpAuthorizationDescriptor(plaintext string) string {
+	digest := sha256.Sum256([]byte(plaintext))
+	return fmt.Sprintf("plugin_config#sha256:%s", hex.EncodeToString(digest[:]))
+}
+
+func newRawHTTPLoggerPlugin(t *testing.T, config Config) *Plugin {
+	t.Helper()
+	p := &Plugin{config: config}
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func TestMaterializeScopedSecretsOwnsHTTPAuthorization(t *testing.T) {
+	for index, authHeader := range []*string{nil, new(string)} {
+		name := "nil"
+		if authHeader != nil {
+			name = "empty"
+		}
+		t.Run(name, func(t *testing.T) {
+			config := Config{URI: "http://127.0.0.1/logs", AuthHeader: authHeader}
+			capabilityValue, scope, broker, closeAttempt := newHTTPLoggerScopedSecretHarness(
+				t, uint64(index+1), "http-optional", config, nil,
+			)
+			defer closeAttempt()
+			p := newRawHTTPLoggerPlugin(t, config)
+			if err := base.MaterializeScopedPluginSecrets(
+				context.Background(), scope, capabilityValue, p,
+			); err != nil {
+				t.Fatal(err)
+			}
+			if calls := broker.scopedCalls(); len(calls) != 0 {
+				t.Fatalf("optional auth_header calls = %#v, want none", calls)
+			}
+			if err := p.PostInit(); err != nil {
+				t.Fatalf("PostInit() without authorization error = %v", err)
+			}
+			t.Cleanup(p.Stop)
+		})
+	}
+
+	ciphertext := encryptHTTPLoggerTestValue(t, "qeddd145sfvddff3", "Bearer ciphertext")
+	for index, tt := range []struct {
+		name     string
+		raw      string
+		resolved string
+	}{
+		{name: "literal", raw: "Bearer literal", resolved: "Bearer literal"},
+		{name: "ciphertext", raw: ciphertext, resolved: "Bearer ciphertext"},
+		{name: "environment", raw: "$ENV://HTTP_LOGGER_AUTH", resolved: "Bearer environment"},
+		{name: "managed", raw: "$secret://vault/http-logger/auth", resolved: "Bearer managed"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			receivedAuthorization := make(chan string, 1)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				receivedAuthorization <- r.Header.Get("Authorization")
+				w.WriteHeader(http.StatusAccepted)
+			}))
+			t.Cleanup(server.Close)
+			raw := tt.raw
+			config := Config{URI: server.URL, AuthHeader: &raw, BatchMaxSize: 1}
+			capabilityValue, scope, broker, closeAttempt := newHTTPLoggerScopedSecretHarness(
+				t, uint64(10+index), "http-private", config,
+				map[string]string{tt.raw: tt.resolved},
+			)
+			defer closeAttempt()
+			p := newRawHTTPLoggerPlugin(t, config)
+			if err := base.MaterializeScopedPluginSecrets(
+				context.Background(), scope, capabilityValue, p,
+			); err != nil {
+				t.Fatal(err)
+			}
+			calls := broker.scopedCalls()
+			wantScope := scope
+			wantScope.Field = "auth_header"
+			if len(calls) != 1 || calls[0].Scope != wantScope || calls[0].Raw != tt.raw {
+				t.Fatalf("auth_header calls = %#v, want scope %#v raw %q", calls, wantScope, tt.raw)
+			}
+			if p.config.AuthHeader == nil || *p.config.AuthHeader != httpAuthorizationDescriptor(tt.resolved) {
+				t.Fatalf("public auth_header = %#v, want resolved descriptor", p.config.AuthHeader)
+			}
+			if p.client != nil || p.BatchProcessor != nil {
+				t.Fatal("materialization caused client or batch side effects")
+			}
+			if err := p.PostInit(); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(p.Stop)
+			if _, err := p.SendBatch(
+				context.Background(), []map[string]any{{"path": "/scoped"}}, 1,
+			); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case got := <-receivedAuthorization:
+				if got != tt.resolved {
+					t.Fatalf("Authorization = %q, want %q", got, tt.resolved)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("timed out waiting for scoped HTTP logger request")
+			}
+		})
+	}
+
+	const blankRaw = "$secret://vault/http-logger/blank"
+	blankConfig := Config{URI: "http://127.0.0.1/logs", AuthHeader: new(blankRaw)}
+	blankCapability, blankScope, _, closeBlank := newHTTPLoggerScopedSecretHarness(
+		t, 29, "http-blank", blankConfig, map[string]string{blankRaw: " \t "},
+	)
+	defer closeBlank()
+	blankPlugin := newRawHTTPLoggerPlugin(t, blankConfig)
+	err := base.MaterializeScopedPluginSecrets(
+		context.Background(), blankScope, blankCapability, blankPlugin,
+	)
+	if err == nil || !strings.Contains(err.Error(), "credential unavailable") {
+		t.Fatalf("blank materialization error = %v, want credential unavailable", err)
+	}
+	if blankPlugin.config.AuthHeader == nil || *blankPlugin.config.AuthHeader != blankRaw ||
+		blankPlugin.secretsPrepared || blankPlugin.authHeaderSet {
+		t.Fatal("blank resolved authorization installed partial state")
+	}
+
+	const failedRaw = "$secret://vault/http-logger/failure"
+	failedConfig := Config{URI: "http://127.0.0.1/logs", AuthHeader: new(failedRaw)}
+	capabilityValue, scope, broker, closeAttempt := newHTTPLoggerScopedSecretHarness(
+		t, 30, "http-retry", failedConfig, map[string]string{failedRaw: "Bearer recovered"},
+	)
+	defer closeAttempt()
+	broker.fail[failedRaw] = errors.New("resolver leaked " + failedRaw)
+	p := newRawHTTPLoggerPlugin(t, failedConfig)
+	err = base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p)
+	if err == nil || !strings.Contains(err.Error(), "credential unavailable") ||
+		strings.Contains(err.Error(), failedRaw) {
+		t.Fatalf("first materialization error = %v, want redacted unavailable", err)
+	}
+	if p.config.AuthHeader == nil || *p.config.AuthHeader != failedRaw ||
+		p.client != nil || p.BatchProcessor != nil {
+		t.Fatal("failed materialization installed partial public or runtime state")
+	}
+	broker.mu.Lock()
+	delete(broker.fail, failedRaw)
+	broker.mu.Unlock()
+	if err := base.MaterializeScopedPluginSecrets(
+		context.Background(), scope, capabilityValue, p,
+	); err != nil {
+		t.Fatalf("same-instance retry error = %v", err)
+	}
+	if p.config.AuthHeader == nil || *p.config.AuthHeader != httpAuthorizationDescriptor("Bearer recovered") {
+		t.Fatalf("retry auth_header = %#v, want resolved descriptor", p.config.AuthHeader)
+	}
+}
+
+func TestStopPreventsHandlerAndLogPhaseFromEnqueueing(t *testing.T) {
+	p := newTestPlugin(t, Config{URI: "http://127.0.0.1/logs"})
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	p.Stop()
+	before := len(p.FireChan)
+
+	handlerDone := make(chan struct{})
+	go func() {
+		handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/stopped", nil))
+		close(handlerDone)
+	}()
+	select {
+	case <-handlerDone:
+	case <-time.After(time.Second):
+		t.Fatal("handler blocked after Stop")
+	}
+	if got := len(p.FireChan); got != before {
+		t.Fatalf("handler FireChan length = %d, want unchanged %d after Stop", got, before)
+	}
+
+	err := p.RunLogPhase(base.LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{Method: http.MethodGet, URI: "/stopped"},
+		Outcome: apisixctx.ResponseOutcome{Status: http.StatusNoContent},
+	})
+	if !errors.Is(err, base.ErrLogQueueUnavailable) {
+		t.Fatalf("RunLogPhase() error = %v, want queue unavailable after Stop", err)
+	}
+	if got := len(p.FireChan); got != before {
+		t.Fatalf("log phase FireChan length = %d, want unchanged %d after Stop", got, before)
+	}
+	p.Stop()
+}
+
+func TestConcurrentHandlerAndLogPhaseStopWithoutQueueResurrection(t *testing.T) {
+	for iteration := range 20 {
+		p := newTestPlugin(t, Config{URI: "http://127.0.0.1/logs"})
+		handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		}))
+		start := make(chan struct{})
+		var workers sync.WaitGroup
+		workers.Add(2)
+		go func() {
+			defer workers.Done()
+			<-start
+			handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/race", nil))
+		}()
+		go func() {
+			defer workers.Done()
+			<-start
+			_ = p.RunLogPhase(base.LogSnapshot{
+				Request: apisixlog.RequestLogSnapshot{Method: http.MethodGet, URI: "/race"},
+				Outcome: apisixctx.ResponseOutcome{Status: http.StatusNoContent},
+			})
+		}()
+		close(start)
+		p.Stop()
+		workers.Wait()
+		before := len(p.FireChan)
+		if err := p.RunLogPhase(base.LogSnapshot{}); !errors.Is(err, base.ErrLogQueueUnavailable) {
+			t.Fatalf("iteration %d: post-Stop RunLogPhase() error = %v", iteration, err)
+		}
+		if got := len(p.FireChan); got != before {
+			t.Fatalf("iteration %d: post-Stop FireChan length = %d, want %d", iteration, got, before)
+		}
+	}
+}
+
+func TestHTTPLoggerInstancesShareNeutralClientWithoutAuthorizationBleed(t *testing.T) {
+	received := make(chan string, 3)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		received <- r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	t.Cleanup(server.Close)
+
+	newScoped := func(revision uint64, resourceID, raw, resolved string) (*Plugin, func()) {
+		config := Config{URI: server.URL, AuthHeader: new(raw), BatchMaxSize: 1}
+		capabilityValue, scope, _, closeAttempt := newHTTPLoggerScopedSecretHarness(
+			t, revision, resourceID, config, map[string]string{raw: resolved},
+		)
+		p := newRawHTTPLoggerPlugin(t, config)
+		if err := base.MaterializeScopedPluginSecrets(
+			context.Background(), scope, capabilityValue, p,
+		); err != nil {
+			t.Fatal(err)
+		}
+		if err := p.PostInit(); err != nil {
+			t.Fatal(err)
+		}
+		return p, func() {
+			p.Stop()
+			closeAttempt()
+		}
+	}
+
+	first, closeFirst := newScoped(51, "http-client-first", "$secret://http/first", "Bearer first")
+	second, closeSecond := newScoped(52, "http-client-second", "$secret://http/second", "Bearer second")
+	t.Cleanup(closeSecond)
+	if first.client != second.client {
+		t.Fatal("structurally identical instances did not share the neutral HTTP client")
+	}
+	if got := first.client.Header.Get("Authorization"); got != "" {
+		t.Fatalf("shared client retained Authorization = %q", got)
+	}
+	if _, err := first.SendBatch(context.Background(), []map[string]any{{"generation": 51}}, 1); err != nil {
+		t.Fatal(err)
+	}
+	if got := <-received; got != "Bearer first" {
+		t.Fatalf("first Authorization = %q", got)
+	}
+	if _, err := second.SendBatch(context.Background(), []map[string]any{{"generation": 52}}, 1); err != nil {
+		t.Fatal(err)
+	}
+	if got := <-received; got != "Bearer second" {
+		t.Fatalf("second Authorization = %q", got)
+	}
+
+	closeFirst()
+	if _, err := second.SendBatch(context.Background(), []map[string]any{{"generation": "52-again"}}, 1); err != nil {
+		t.Fatalf("second instance after first Stop: %v", err)
+	}
+	if got := <-received; got != "Bearer second" {
+		t.Fatalf("second Authorization after first Stop = %q", got)
+	}
+}
+
+func TestSendBatchScrubsRetainedAuthorizationAndBodyState(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Authorization", "Bearer response-private")
+		_, _ = w.Write([]byte("private response"))
+	}))
+	t.Cleanup(server.Close)
+
+	var retainedRequest *resty.Request
+	var retainedResponse *resty.Response
+	var retainedRawResponse *http.Response
+	client := resty.New()
+	client.OnAfterResponse(func(_ *resty.Client, response *resty.Response) error {
+		retainedRequest = response.Request
+		retainedResponse = response
+		retainedRawResponse = response.RawResponse
+		return nil
+	})
+	authorization := "Bearer retained-private"
+	p := &Plugin{config: Config{URI: server.URL, AuthHeader: &authorization, ConcatMethod: "json"}}
+	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.MaterializeSecrets(); err != nil {
+		t.Fatal(err)
+	}
+	p.client = client
+	t.Cleanup(p.Stop)
+	if _, err := p.SendBatch(
+		context.Background(), []map[string]any{{"private": "request"}}, 1,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if retainedRequest == nil || retainedResponse == nil || retainedRawResponse == nil {
+		t.Fatal("Resty hook did not retain request, response, and raw response state")
+	}
+	if got := retainedRequest.Header.Get("Authorization"); got != "" {
+		t.Fatalf("retained request Authorization = %q", got)
+	}
+	if retainedRequest.Body != nil {
+		t.Fatalf("retained request Body = %#v, want nil", retainedRequest.Body)
+	}
+	if retainedRequest.RawRequest == nil {
+		t.Fatal("retained raw request unexpectedly nil")
+	}
+	if got := retainedRequest.RawRequest.Header.Get("Authorization"); got != "" {
+		t.Fatalf("retained raw request Authorization = %q", got)
+	}
+	if retainedRequest.RawRequest.Body != http.NoBody || retainedRequest.RawRequest.GetBody != nil {
+		t.Fatalf(
+			"retained raw body = %#v GetBody present = %t, want scrubbed",
+			retainedRequest.RawRequest.Body, retainedRequest.RawRequest.GetBody != nil,
+		)
+	}
+	if retainedResponse.Request != nil || retainedResponse.RawResponse != nil || len(retainedResponse.Body()) != 0 {
+		t.Fatalf("retained response still references request/raw/body: %#v", retainedResponse)
+	}
+	if got := retainedRawResponse.Header.Get("Authorization"); got != "" {
+		t.Fatalf("retained raw response Authorization = %q", got)
+	}
+	if retainedRawResponse.Body != http.NoBody || retainedRawResponse.Request != nil {
+		t.Fatalf(
+			"retained raw response Body = %#v Request present = %t, want detached",
+			retainedRawResponse.Body, retainedRawResponse.Request != nil,
+		)
+	}
+}
+
+func TestStopDrainsActiveSendAndDropsPrivateAuthorization(t *testing.T) {
+	requestStarted := make(chan struct{})
+	releaseRequest := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		close(requestStarted)
+		<-releaseRequest
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	t.Cleanup(server.Close)
+
+	raw := "$secret://http/active"
+	config := Config{URI: server.URL, AuthHeader: &raw, BatchMaxSize: 1}
+	capabilityValue, scope, _, closeAttempt := newHTTPLoggerScopedSecretHarness(
+		t, 61, "http-active", config, map[string]string{raw: "Bearer active"},
+	)
+	defer closeAttempt()
+	p := newRawHTTPLoggerPlugin(t, config)
+	if err := base.MaterializeScopedPluginSecrets(
+		context.Background(), scope, capabilityValue, p,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatal(err)
+	}
+
+	sendDone := make(chan error, 1)
+	go func() {
+		_, err := p.SendBatch(context.Background(), []map[string]any{{"active": true}}, 1)
+		sendDone <- err
+	}()
+	select {
+	case <-requestStarted:
+	case <-time.After(time.Second):
+		t.Fatal("active send did not reach backend")
+	}
+	stopDone := make(chan struct{})
+	go func() {
+		p.Stop()
+		close(stopDone)
+	}()
+	select {
+	case <-stopDone:
+		t.Fatal("Stop returned before active send drained")
+	case <-time.After(30 * time.Millisecond):
+	}
+	close(releaseRequest)
+	if err := <-sendDone; err != nil {
+		t.Fatalf("active SendBatch() error = %v", err)
+	}
+	select {
+	case <-stopDone:
+	case <-time.After(time.Second):
+		t.Fatal("Stop did not return after active send drained")
+	}
+	if p.client != nil || p.clientRelease != nil || p.BatchProcessor != nil ||
+		p.authHeaderSet || p.legacyAuthHeader != nil || p.secretsPrepared {
+		t.Fatalf("private/runtime state survived Stop: %#v", p)
+	}
+	if _, err := p.SendBatch(
+		context.Background(),
+		[]map[string]any{{"late": true}},
+		1,
+	); !errors.Is(
+		err,
+		secret.ErrCredentialUnavailable,
+	) {
+		t.Fatalf("post-Stop SendBatch() error = %v", err)
+	}
+	if err := p.MaterializeScopedSecrets(
+		context.Background(),
+		base.ScopedSecretAccess{},
+	); !errors.Is(
+		err,
+		secret.ErrCredentialUnavailable,
+	) {
+		t.Fatalf("post-Stop materialization error = %v", err)
+	}
+	p.Stop()
+}
 
 func TestRunLogPhasePreservesDefaultFieldsAndRouteLabels(t *testing.T) {
 	delivered := make(chan map[string]any, 1)
@@ -211,16 +785,21 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
+	if err := p.MaterializeSecrets(); err != nil {
+		t.Fatalf("MaterializeSecrets() error = %v", err)
+	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
+	t.Cleanup(p.Stop)
 	return p
 }
 
-func TestPostInitRejectsMissingDataEncryptionResolver(t *testing.T) {
-	p := &Plugin{}
-	if err := p.PostInit(); err == nil || err.Error() != "data-encryption resolver is required" {
-		t.Fatalf("PostInit() error = %v, want missing resolver error", err)
+func TestMaterializeSecretsRejectsMissingDataEncryptionResolver(t *testing.T) {
+	authHeader := "Bearer private"
+	p := &Plugin{config: Config{URI: "http://127.0.0.1/logs", AuthHeader: &authHeader}}
+	if err := p.MaterializeSecrets(); err == nil || err.Error() != "data-encryption resolver is required" {
+		t.Fatalf("MaterializeSecrets() error = %v, want missing resolver error", err)
 	}
 }
 
@@ -257,7 +836,6 @@ func TestConfigPreservesExplicitZeroRetryDelay(t *testing.T) {
 	}
 
 	p := newTestPlugin(t, cfg)
-	t.Cleanup(p.BatchProcessor.Stop)
 	if p.config.RetryDelay != 0 {
 		t.Fatalf("retry_delay = %d, want explicit zero", p.config.RetryDelay)
 	}
@@ -278,7 +856,6 @@ func TestPostInitNormalizesOfficialInBodyExpression(t *testing.T) {
 			},
 		},
 	})
-	t.Cleanup(p.BatchProcessor.Stop)
 
 	second := p.config.IncludeRespBodyExpr[1].([]any)
 	if second[1] != "~" {
@@ -289,7 +866,7 @@ func TestPostInitNormalizesOfficialInBodyExpression(t *testing.T) {
 	}
 }
 
-func TestPostInitRejectsInvalidEncryptedAuthHeader(t *testing.T) {
+func TestMaterializeSecretsRejectsInvalidEncryptedAuthHeader(t *testing.T) {
 	authHeader := "not-a-ciphertext"
 	p := &Plugin{config: Config{URI: "http://127.0.0.1/logs", AuthHeader: &authHeader}}
 	p.SetDependencies(base.Dependencies{
@@ -298,12 +875,12 @@ func TestPostInitRejectsInvalidEncryptedAuthHeader(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := p.PostInit(); err == nil {
-		t.Fatal("PostInit() error = nil, want strict encrypted auth_header rejection")
+	if err := p.MaterializeSecrets(); err == nil {
+		t.Fatal("MaterializeSecrets() error = nil, want strict encrypted auth_header rejection")
 	}
 }
 
-func TestPostInitResolvesEncryptedAuthHeader(t *testing.T) {
+func TestMaterializeSecretsOwnsEncryptedAuthHeader(t *testing.T) {
 	key := "qeddd145sfvddff3"
 	authHeader := encryptHTTPLoggerTestValue(t, key, "Bearer secret")
 	p := &Plugin{config: Config{URI: "http://127.0.0.1/logs", AuthHeader: &authHeader}}
@@ -311,12 +888,18 @@ func TestPostInitResolvesEncryptedAuthHeader(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
+	if err := p.MaterializeSecrets(); err != nil {
+		t.Fatalf("MaterializeSecrets() error = %v", err)
+	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
-	t.Cleanup(func() { p.BatchProcessor.Stop() })
-	if p.config.AuthHeader == nil || *p.config.AuthHeader != "Bearer secret" {
-		t.Fatalf("auth_header = %v, want decrypted value", p.config.AuthHeader)
+	t.Cleanup(p.Stop)
+	if p.config.AuthHeader == nil || *p.config.AuthHeader != httpAuthorizationDescriptor("Bearer secret") {
+		t.Fatalf("auth_header = %v, want resolved descriptor", p.config.AuthHeader)
+	}
+	if p.legacyAuthHeader == nil {
+		t.Fatal("legacy private auth_header was not retained by its owner")
 	}
 }
 

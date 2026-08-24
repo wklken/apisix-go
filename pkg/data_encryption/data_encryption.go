@@ -31,19 +31,18 @@ func EncryptPluginMetadata(
 	if len(keyring) == 0 {
 		return ErrKeyUnavailable
 	}
-	var encryptErr error
-	catalog.ForEach(name, capability.SecretPluginMetadata, func(declaration capability.SecretDeclaration) {
-		if encryptErr != nil {
-			return
-		}
-		if err := encryptField(metadata, name, declaration.Field, keyring); err != nil {
-			encryptErr = fmt.Errorf("%s.%s: %w", name, declaration.Field, err)
-		}
-	})
-	if encryptErr != nil {
-		return encryptErr
-	}
-	return nil
+	return catalog.TransformDeclaredFields(
+		name,
+		capability.SecretPluginMetadata,
+		metadata,
+		func(declaration capability.SecretDeclaration, _ string, value any) (any, error) {
+			encrypted, err := encryptLeaf(value, keyring, name+"."+declaration.Field)
+			if err != nil {
+				return value, fmt.Errorf("%s.%s: %w", name, declaration.Field, err)
+			}
+			return encrypted, nil
+		},
+	)
 }
 
 func EncryptPluginConfigs(
@@ -62,74 +61,25 @@ func EncryptPluginConfigs(
 		if !ok {
 			continue
 		}
-		var encryptErr error
-		catalog.ForEach(name, capability.SecretPluginConfig, func(declaration capability.SecretDeclaration) {
-			if encryptErr != nil {
-				return
-			}
-			if err := encryptField(pluginConfig, name, declaration.Field, keyring); err != nil {
-				encryptErr = fmt.Errorf("%s.%s: %w", name, declaration.Field, err)
-			}
-		})
-		if encryptErr != nil {
-			return encryptErr
-		}
-	}
-	return nil
-}
-
-func encryptField(config map[string]any, pluginName string, path string, keyring []string) error {
-	return encryptPath(config, strings.Split(path, "."), keyring, pluginName+"."+path)
-}
-
-func encryptPath(current any, segments []string, keyring []string, context string) error {
-	if len(segments) == 0 {
-		return nil
-	}
-	segment := segments[0]
-	switch value := current.(type) {
-	case map[string]any:
-		if segment == "*" {
-			for _, child := range value {
-				if err := encryptPath(child, segments[1:], keyring, context); err != nil {
-					return err
-				}
-			}
-			return nil
-		}
-		keys := matchingMapKeys(value, segment)
-		if len(keys) == 0 {
-			return nil
-		}
-		for _, key := range keys {
-			child := value[key]
-			if len(segments) == 1 {
-				encrypted, err := encryptValue(child, keyring, context)
+		if err := catalog.TransformDeclaredFields(
+			name,
+			capability.SecretPluginConfig,
+			pluginConfig,
+			func(declaration capability.SecretDeclaration, _ string, value any) (any, error) {
+				encrypted, err := encryptLeaf(value, keyring, name+"."+declaration.Field)
 				if err != nil {
-					return err
+					return value, fmt.Errorf("%s.%s: %w", name, declaration.Field, err)
 				}
-				value[key] = encrypted
-				continue
-			}
-			if err := encryptPath(child, segments[1:], keyring, context); err != nil {
-				return err
-			}
-		}
-		return nil
-	case []any:
-		if segment != "*" {
-			return nil
-		}
-		for _, child := range value {
-			if err := encryptPath(child, segments[1:], keyring, context); err != nil {
-				return err
-			}
+				return encrypted, nil
+			},
+		); err != nil {
+			return err
 		}
 	}
 	return nil
 }
 
-func encryptValue(value any, keyring []string, context string) (any, error) {
+func encryptLeaf(value any, keyring []string, context string) (any, error) {
 	switch typed := value.(type) {
 	case string:
 		if typed == "" {
@@ -161,22 +111,6 @@ func encryptValue(value any, keyring []string, context string) (any, error) {
 			return nil, err
 		}
 		return encryptedValuePrefix + ciphertext, nil
-	case map[string]any:
-		for key, child := range typed {
-			encrypted, err := encryptValue(child, keyring, context)
-			if err != nil {
-				return nil, err
-			}
-			typed[key] = encrypted
-		}
-	case []any:
-		for i, child := range typed {
-			encrypted, err := encryptValue(child, keyring, context)
-			if err != nil {
-				return nil, err
-			}
-			typed[i] = encrypted
-		}
 	}
 	return value, nil
 }
@@ -205,12 +139,17 @@ func decryptPluginConfigsWithResolver(
 		if !ok {
 			continue
 		}
-		catalog.ForEach(name, capability.SecretPluginConfig, func(declaration capability.SecretDeclaration) {
-			if declaration.Strict {
-				return
-			}
-			decryptField(pluginConfig, name, declaration.Field, resolver)
-		})
+		_ = catalog.TransformDeclaredFields(
+			name,
+			capability.SecretPluginConfig,
+			pluginConfig,
+			func(declaration capability.SecretDeclaration, _ string, value any) (any, error) {
+				if declaration.Strict {
+					return value, nil
+				}
+				return decryptLeaf(value, resolver, name+"."+declaration.Field), nil
+			},
+		)
 	}
 }
 
@@ -233,12 +172,17 @@ func DecryptPluginConfigWithResolver(
 	if !ok {
 		return
 	}
-	catalog.ForEach(pluginName, capability.SecretPluginConfig, func(declaration capability.SecretDeclaration) {
-		if declaration.Strict {
-			return
-		}
-		decryptField(pluginConfig, pluginName, declaration.Field, resolver)
-	})
+	_ = catalog.TransformDeclaredFields(
+		pluginName,
+		capability.SecretPluginConfig,
+		pluginConfig,
+		func(declaration capability.SecretDeclaration, _ string, value any) (any, error) {
+			if declaration.Strict {
+				return value, nil
+			}
+			return decryptLeaf(value, resolver, pluginName+"."+declaration.Field), nil
+		},
+	)
 }
 
 func DecryptPluginMetadata(
@@ -254,75 +198,23 @@ func DecryptPluginMetadata(
 		return
 	}
 	resolver := NewResolver(true, keyring)
-	catalog.ForEach(name, capability.SecretPluginMetadata, func(declaration capability.SecretDeclaration) {
-		if declaration.Strict {
-			return
-		}
-		decryptField(metadata, name, declaration.Field, resolver)
-	})
-}
-
-func decryptField(config map[string]any, pluginName string, path string, resolver Resolver) {
-	decryptPath(config, strings.Split(path, "."), resolver, pluginName+"."+path)
-}
-
-func decryptPath(current any, segments []string, resolver Resolver, context string) {
-	if len(segments) == 0 {
-		return
-	}
-	segment := segments[0]
-	switch value := current.(type) {
-	case map[string]any:
-		if segment == "*" {
-			for _, child := range value {
-				decryptPath(child, segments[1:], resolver, context)
+	_ = catalog.TransformDeclaredFields(
+		name,
+		capability.SecretPluginMetadata,
+		metadata,
+		func(declaration capability.SecretDeclaration, _ string, value any) (any, error) {
+			if declaration.Strict {
+				return value, nil
 			}
-			return
-		}
-		keys := matchingMapKeys(value, segment)
-		if len(keys) == 0 {
-			return
-		}
-		for _, key := range keys {
-			child := value[key]
-			if len(segments) == 1 {
-				value[key] = decryptValue(child, resolver, context)
-				continue
-			}
-			decryptPath(child, segments[1:], resolver, context)
-		}
-	case []any:
-		if segment != "*" {
-			return
-		}
-		for _, child := range value {
-			decryptPath(child, segments[1:], resolver, context)
-		}
-	}
+			return decryptLeaf(value, resolver, name+"."+declaration.Field), nil
+		},
+	)
 }
 
-func matchingMapKeys(value map[string]any, segment string) []string {
-	keys := make([]string, 0, 1)
-	for key := range value {
-		if strings.EqualFold(key, segment) {
-			keys = append(keys, key)
-		}
-	}
-	return keys
-}
-
-func decryptValue(value any, resolver Resolver, context string) any {
+func decryptLeaf(value any, resolver Resolver, context string) any {
 	switch typed := value.(type) {
 	case string:
 		return resolver.ResolveOptionalForContext(typed, context)
-	case map[string]any:
-		for key, child := range typed {
-			typed[key] = decryptValue(child, resolver, context)
-		}
-	case []any:
-		for i, child := range typed {
-			typed[i] = decryptValue(child, resolver, context)
-		}
 	}
 	return value
 }

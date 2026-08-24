@@ -9,10 +9,18 @@ import (
 )
 
 type definition struct {
-	factory  string
-	schema   *util.CompiledSchema
-	validate func(any) error
-	lookup   func(any) (string, error)
+	factory    string
+	schemaText string
+	schema     *util.CompiledSchema
+	validate   func(any) error
+	lookup     func(any) (string, error)
+}
+
+// SchemaWitness is a read-only view of the raw structural schema owned by one
+// consumer factory. Resolved validation remains encapsulated by this package.
+type SchemaWitness struct {
+	Factory string
+	Schema  string
 }
 
 type keyAuth struct {
@@ -106,6 +114,17 @@ const ldapAuthSchema = `
   }
 }`
 
+const jweDecryptSchema = `
+{
+  "type": "object",
+  "required": ["key", "secret"],
+  "properties": {
+    "key": {"type": "string"},
+    "secret": {"type": "string"},
+    "is_base64_encoded": {"type": "boolean"}
+  }
+}`
+
 const wolfRBACSchema = `
 {
   "type": "object",
@@ -128,16 +147,17 @@ var definitions = []definition{
 		hmacAuthSchema,
 		lookupParsed(func(config hmacAuth) string { return config.KeyID }),
 	),
-	{
-		factory: "jwe-decrypt",
-		validate: func(config any) error {
+	newCustomDefinition(
+		"jwe-decrypt",
+		jweDecryptSchema,
+		func(config any) error {
 			var parsed jweDecrypt
 			if err := util.Parse(config, &parsed); err != nil {
 				return err
 			}
 			return validateJWEDecrypt(parsed)
 		},
-		lookup: func(config any) (string, error) {
+		func(config any) (string, error) {
 			var parsed jweDecrypt
 			if err := util.Parse(config, &parsed); err != nil {
 				return "", err
@@ -148,7 +168,7 @@ var definitions = []definition{
 			}
 			return key, nil
 		},
-	},
+	),
 	newSchemaDefinition(
 		"jwt-auth",
 		jwtAuthSchema,
@@ -190,10 +210,22 @@ func newSchemaDefinition(
 		panic("compile consumer schema: " + err.Error())
 	}
 	return definition{
-		factory: name,
-		schema:  compiled,
-		lookup:  lookup,
+		factory:    name,
+		schemaText: schema,
+		schema:     compiled,
+		lookup:     lookup,
 	}
+}
+
+func newCustomDefinition(
+	name string,
+	schema string,
+	validate func(any) error,
+	lookup func(any) (string, error),
+) definition {
+	definition := newSchemaDefinition(name, schema, lookup)
+	definition.validate = validate
+	return definition
 }
 
 func lookupParsed[T any](key func(T) string) func(any) (string, error) {
@@ -221,6 +253,16 @@ func Factories() []string {
 func Supports(factory string) bool {
 	_, ok := definitionsByFactory[factory]
 	return ok
+}
+
+// SchemaWitnessForFactory returns the immutable raw schema for factory without
+// exposing the compiled validator or the registry's backing definition.
+func SchemaWitnessForFactory(factory string) (SchemaWitness, bool) {
+	definition, ok := definitionsByFactory[factory]
+	if !ok {
+		return SchemaWitness{}, false
+	}
+	return SchemaWitness{Factory: factory, Schema: definition.schemaText}, true
 }
 
 // ValidateResolved validates one resolved consumer plugin configuration.

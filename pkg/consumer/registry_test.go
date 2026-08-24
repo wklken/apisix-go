@@ -4,6 +4,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 func TestFactoriesAreDeterministicAndDefensive(t *testing.T) {
@@ -113,5 +115,125 @@ func TestLookupKeyPreservesAllConsumerFactories(t *testing.T) {
 	}
 	if _, err := LookupKey("unknown", map[string]any{}); err == nil || !strings.Contains(err.Error(), "unknown") {
 		t.Fatalf("LookupKey(unknown) error = %v", err)
+	}
+}
+
+func TestSchemaWitnessForFactoryRejectsUnknown(t *testing.T) {
+	witness, ok := SchemaWitnessForFactory("unknown")
+	if ok || witness != (SchemaWitness{}) {
+		t.Fatalf("SchemaWitnessForFactory(unknown) = %#v/%v", witness, ok)
+	}
+}
+
+func TestSchemaWitnessForFactoryCoversRegistry(t *testing.T) {
+	for _, factory := range Factories() {
+		witness, ok := SchemaWitnessForFactory(factory)
+		if !ok {
+			t.Fatalf("SchemaWitnessForFactory(%q) not found", factory)
+		}
+		if witness.Factory != factory {
+			t.Fatalf("SchemaWitnessForFactory(%q).Factory = %q", factory, witness.Factory)
+		}
+		if witness.Schema == "" {
+			t.Fatalf("SchemaWitnessForFactory(%q).Schema is empty", factory)
+		}
+		if _, err := util.CompileSchema(witness.Schema); err != nil {
+			t.Fatalf("compile %q consumer schema: %v", factory, err)
+		}
+
+		witness.Schema = "mutated"
+		again, ok := SchemaWitnessForFactory(factory)
+		if !ok || again.Schema == "mutated" {
+			t.Fatalf("SchemaWitnessForFactory(%q) exposed mutable registry state", factory)
+		}
+	}
+}
+
+func TestSchemaWitnessRegularSchemaRejectsInvalidTypes(t *testing.T) {
+	witness, ok := SchemaWitnessForFactory("key-auth")
+	if !ok {
+		t.Fatal("key-auth schema witness not found")
+	}
+	compiled, err := util.CompileSchema(witness.Schema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := compiled.Validate(map[string]any{"key": 1}); err == nil {
+		t.Fatal("key-auth raw schema accepted a non-string key")
+	}
+}
+
+func TestJWEDecryptSchemaWitnessIsStructuralOnly(t *testing.T) {
+	witness, ok := SchemaWitnessForFactory("jwe-decrypt")
+	if !ok {
+		t.Fatal("jwe-decrypt schema witness not found")
+	}
+	compiled, err := util.CompileSchema(witness.Schema)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	accepted := []map[string]any{
+		{"key": "", "secret": ""},
+		{"key": "$ENV://JWE_KEY", "secret": "$secret://vault/jwe/secret"},
+		{"key": "kid", "secret": "$encrypted://ciphertext", "is_base64_encoded": true},
+		{"key": "kid", "secret": "short"},
+	}
+	for _, config := range accepted {
+		if err := compiled.Validate(config); err != nil {
+			t.Errorf("JWE raw schema rejected %#v: %v", config, err)
+		}
+	}
+
+	rejected := []map[string]any{
+		{"secret": "value"},
+		{"key": "kid"},
+		{"key": 1, "secret": "value"},
+		{"key": "kid", "secret": false},
+		{"key": "kid", "secret": "value", "is_base64_encoded": "true"},
+	}
+	for _, config := range rejected {
+		if err := compiled.Validate(config); err == nil {
+			t.Errorf("JWE raw schema accepted %#v", config)
+		}
+	}
+}
+
+func TestJWEDecryptResolvedValidationDiagnosticsRemainStable(t *testing.T) {
+	tests := []struct {
+		name   string
+		config map[string]any
+		want   string
+	}{
+		{
+			name:   "key type is checked first",
+			config: map[string]any{"key": 1, "secret": false},
+			want:   "jwe-decrypt consumer key must be a string",
+		},
+		{
+			name:   "secret type",
+			config: map[string]any{"key": "kid", "secret": false},
+			want:   "jwe-decrypt consumer secret must be a string",
+		},
+		{
+			name:   "short secret",
+			config: map[string]any{"key": "kid", "secret": "short"},
+			want:   "the secret length should be 32 chars",
+		},
+		{
+			name: "invalid base64",
+			config: map[string]any{
+				"key": "kid", "secret": "%%%", "is_base64_encoded": true,
+			},
+			want: "jwe-decrypt consumer secret base64 decode: illegal base64 data at input byte 0",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := ValidateResolved("jwe-decrypt", test.config)
+			if err == nil || err.Error() != test.want {
+				t.Fatalf("ValidateResolved() error = %v, want %q", err, test.want)
+			}
+		})
 	}
 }

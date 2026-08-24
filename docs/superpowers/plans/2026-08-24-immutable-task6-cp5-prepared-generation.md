@@ -723,7 +723,7 @@ go test -race ./pkg/compiler -run 'TestWorkerCompilerFactoryClose|TestWorkerComp
 
 **Files:** review all changed `pkg/compiler/**`; verify accepted S1/S2/S3/A1/M1/M2/X1; cross-check Task 6 total plan, C6.4 Task 10, original Task 6, and CP6 handoff
 
-- [ ] **Step 0: Freeze the complete accepted CP5 range**
+- [x] **Step 0: Freeze the complete accepted CP5 range**
 
 Use the reviewed pre-CP5 integration boundary, not the final clean worktree
 diff, as the immutable review base:
@@ -742,7 +742,7 @@ clean. Every independent reviewer receives the full
 `$CP5_BASE...$CP5_HEAD` range; reviewing only the last task or an uncommitted
 diff is invalid.
 
-- [ ] **Step 1: Close the deferred review ledger**
+- [x] **Step 1: Close the deferred review ledger**
 
 Run and record the real factory-path proof that closes the two Task 1 minors:
 
@@ -761,7 +761,7 @@ sleep or scheduler probe. Run it under ordinary and race tests and record both
 Task 1 minors plus the Task 2 minor closed in the progress ledger before CP5
 acceptance.
 
-- [ ] **Step 2: Map and run compiler/runtime/plugin contract gates**
+- [x] **Step 2: Map and run compiler/runtime/plugin contract gates**
 
 First use `go test -list` for every package/regex and retain the non-zero match
 list. Then run:
@@ -789,7 +789,7 @@ accepted S1/S2/S3/M1/M2/A1/X1 leaf SHA evidence rather than pretending the
 top-level plugin subset re-tests every plugin leaf; the Task 6 final acceptance
 owns the wider changed-leaf aggregation.
 
-- [ ] **Step 3: Run lint, generator, build, and range checks**
+- [x] **Step 3: Run lint, generator, build, and range checks**
 
 ```bash
 source .envrc
@@ -800,7 +800,7 @@ make build
 git diff --check "$CP5_BASE...$CP5_HEAD"
 ```
 
-- [ ] **Step 4: Run type-aware public API and stale-assumption scans**
+- [x] **Step 4: Run type-aware public API and stale-assumption scans**
 
 ```bash
 go doc -all ./pkg/compiler
@@ -822,7 +822,7 @@ private terminal-failure helper; record the exact file/line whitelist and fail
 on any exported or outside-materializer occurrence. Confirm no CP5 code selects
 effective HTTP/stream sets.
 
-- [ ] **Step 5: Synchronize downstream contracts**
+- [x] **Step 5: Synchronize downstream contracts**
 
 Record: no public binding view; CP5 return does not mean all bindings exist; Task 7/8 compute exact specs and may not directly call plugin construction/lifecycle/resource acquisition; CP6 consumes only the base bundle and cannot forge an ApplyTicket; `SecretPluginConfig` occurrence is authority, not inventory. If another plan retains the rejected contract, update it before implementation or record explicit accepted supersession. Never implement both.
 
@@ -843,11 +843,11 @@ Audited referenced-plan ledger (2026-08-25):
 | `2026-08-24-immutable-task6-c6.4-plugin-runtime.md` | Historical single checkpoint wording could be mistaken for a one-commit delivery shape | Task 10 already requires base owner plus later complete specs; accepted delivery is the reviewed immutable CP5 commit range | C6.6 audits compatibility; it creates no prepared adapter |
 | `2026-08-24-immutable-task6-cp6-production-cutover.md` | Risk of treating the filename as a production cutover | The plan explicitly consumes only defensive base views, forbids forged tickets/second paths, and labels the filename historical | Task 7/8 compile snapshots; Task 9 alone wires provider/journal activation |
 
-- [ ] **Step 6: Request independent review**
+- [x] **Step 6: Request independent review**
 
 Ask one read-only reviewer to verify exact candidate/recovery identity, zero speculative bindings, immediate ownership, task-before-resource reverse teardown, third-plugin failure, source authority, no public binding/raw handles, discard preservation, close/materialize/factory races, redaction, Task 7/8 deferral, and Task 9 activation ownership. Independently validate every finding and rerun affected gates.
 
-- [ ] **Step 7: Record the accepted integration range**
+- [x] **Step 7: Record the accepted integration range**
 
 ```bash
 git status --short

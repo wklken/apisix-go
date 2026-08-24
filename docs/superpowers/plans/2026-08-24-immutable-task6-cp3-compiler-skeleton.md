@@ -59,22 +59,15 @@ CP2 contracts @ 176b218d
 The package exports immutable definitions through behavior, not mutable schema maps:
 
 ```go
-type ValidationPhase uint8
-
-const (
-    ValidationRaw ValidationPhase = iota + 1
-    ValidationResolved
-)
-
 type Registry struct { /* immutable compiled definitions */ }
 
-func NewRegistry(catalog *capability.SecretDeclarationCatalog) (*Registry, error)
+func NewRegistry() (*Registry, error)
 func (r *Registry) Factories() []string
-func (r *Registry) Validate(factory string, config any, phase ValidationPhase) error
+func (r *Registry) ValidateResolved(factory string, config any) error
 func (r *Registry) LookupKey(factory string, config any) (string, error)
 ```
 
-`Registry` owns exactly: `basic-auth`, `key-auth`, `jwt-auth`, `hmac-auth`, `ldap-auth`, `jwe-decrypt`, and `wolf-rbac`. The consumer schema is canonical here; secret-capable paths are derived from the manifest catalog passed to the constructor, not copied into another table. Returned errors are redacted at compiler boundaries; legacy Store may wrap them with its existing factory context.
+`Registry` owns exactly: `basic-auth`, `key-auth`, `jwt-auth`, `hmac-auth`, `ldap-auth`, `jwe-decrypt`, and `wolf-rbac`. This checkpoint owns resolved schema/lookup behavior only. CP3.3 adds raw secret-envelope admission using the manifest catalog; secret-capable paths are never copied into this registry. Returned errors are redacted at compiler boundaries; legacy Store may wrap them with its existing factory context.
 
 ### Steps
 
@@ -82,7 +75,7 @@ func (r *Registry) LookupKey(factory string, config any) (string, error)
 - [ ] Move, do not copy, the six JSON schemas and JWE custom validation into `pkg/consumer`.
 - [ ] Define `wolf-rbac` with both `server` and `wolf_url`; retain `appid` as lookup key.
 - [ ] Move lookup-key extraction/type validation into the registry so CP5 does not reimplement Store structs/switches.
-- [ ] Make Store snapshot preparation consume registry `Validate(..., ValidationResolved)` and `LookupKey` while preserving duplicate-key/reference indexing behavior.
+- [ ] Make Store snapshot preparation consume registry `ValidateResolved` and `LookupKey` while preserving duplicate-key/reference indexing behavior.
 - [ ] Keep raw-reference resolution order unchanged in Store during this checkpoint.
 - [ ] Delete private Store compiled schemas, schema structs used only for validation/lookup, and `mustCompileConsumerSchema` after zero call-site proof.
 - [ ] Add a relationship test proving registry factories and fields equal the manifest `consumer_config` declarations.

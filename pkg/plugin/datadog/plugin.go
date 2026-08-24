@@ -240,6 +240,12 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	metadata, err := p.loadMetadata()
+	if err != nil {
+		return err
+	}
+	p.metadata = metadata
+
 	if !p.config.preferNameSet {
 		p.config.PreferName = true
 	}
@@ -258,7 +264,6 @@ func (p *Plugin) PostInit() error {
 	if p.config.InactiveTimeout == 0 {
 		p.config.InactiveTimeout = int(logger_batch.DefaultInactiveTimeout / time.Second)
 	}
-	p.metadata = loadMetadata()
 	if p.config.Host != "" {
 		p.metadata.Host = p.config.Host
 	}
@@ -623,8 +628,12 @@ func requestScheme(r *http.Request) string {
 	return "http"
 }
 
-func loadMetadata() Metadata {
-	return metadataWithDefaults(base.LoadPluginMetadata[Metadata](name))
+func (p *Plugin) loadMetadata() (Metadata, error) {
+	var configured Metadata
+	if _, err := p.MetadataView().Decode(name, &configured); err != nil {
+		return Metadata{}, fmt.Errorf("%s metadata decode failed: %w", name, err)
+	}
+	return metadataWithDefaults(configured), nil
 }
 
 func metadataWithDefaults(configured Metadata) Metadata {

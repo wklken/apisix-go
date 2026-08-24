@@ -18,6 +18,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
 	"github.com/wklken/apisix-go/pkg/resource"
+	"github.com/wklken/apisix-go/pkg/runtime"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -34,6 +35,68 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Cleanup(p.Stop)
 
 	return p
+}
+
+func newTestPluginWithMetadata(t *testing.T, cfg Config, documents map[string][]byte) *Plugin {
+	t.Helper()
+
+	p := &Plugin{config: cfg}
+	p.SetDependencies(base.Dependencies{Metadata: mustMetadataView(t, documents)})
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+	t.Cleanup(p.Stop)
+	return p
+}
+
+func mustMetadataView(t *testing.T, documents map[string][]byte) runtime.MetadataView {
+	t.Helper()
+	view, err := runtime.NewMetadataView(documents)
+	if err != nil {
+		t.Fatalf("NewMetadataView() error = %v", err)
+	}
+	return view
+}
+
+func TestPreparedGenerationsRetainMetadataNamespace(t *testing.T) {
+	n := newTestPluginWithMetadata(t, Config{}, map[string][]byte{
+		name: []byte(`{"namespace":"n"}`),
+	})
+	n1 := newTestPluginWithMetadata(t, Config{}, map[string][]byte{
+		name: []byte(`{"namespace":"n1"}`),
+	})
+
+	if got := n.metricLines(metricEntry{})[0]; !strings.HasPrefix(got, "n.") {
+		t.Fatalf("N metric = %q, want n. prefix", got)
+	}
+	if got := n1.metricLines(metricEntry{})[0]; !strings.HasPrefix(got, "n1.") {
+		t.Fatalf("N+1 metric = %q, want n1. prefix", got)
+	}
+}
+
+func TestPostInitRejectsInvalidMetadataBeforeSideEffects(t *testing.T) {
+	p := &Plugin{}
+	p.SetDependencies(base.Dependencies{Metadata: mustMetadataView(t, map[string][]byte{
+		name: []byte(`{"namespace":true}`),
+	})})
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	err := p.PostInit()
+	if err == nil || !strings.Contains(err.Error(), "datadog metadata decode failed") {
+		t.Fatalf("PostInit() error = %v, want redacted metadata decode failure", err)
+	}
+	if p.BatchProcessor != nil || p.conn != nil || p.config.BatchName != "" {
+		t.Fatalf(
+			"side effects published after invalid metadata: processor=%v conn=%v batch=%q",
+			p.BatchProcessor,
+			p.conn,
+			p.config.BatchName,
+		)
+	}
 }
 
 func TestPostInitSetsDatadogDefaults(t *testing.T) {

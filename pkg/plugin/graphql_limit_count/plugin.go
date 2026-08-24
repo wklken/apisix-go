@@ -315,6 +315,12 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	var metadata Metadata
+	if _, err := p.MetadataView().Decode("limit-count", &metadata); err != nil {
+		return fmt.Errorf("%s metadata decode failed: %w", name, err)
+	}
+	p.metadata = metadata
+
 	effective := p.StaticConfig()
 	if effective == nil {
 		return fmt.Errorf("effective config is required")
@@ -425,9 +431,6 @@ func (p *Plugin) PostInit() error {
 	p.maxSize = 1048576
 	if effective.Config.GraphQL.MaxSize > 0 {
 		p.maxSize = effective.Config.GraphQL.MaxSize
-	}
-	if p.metadata == (Metadata{}) {
-		p.metadata = base.LoadPluginMetadata[Metadata]("limit-count")
 	}
 	return nil
 }

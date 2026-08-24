@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/runtime"
 )
 
 var errHijackCalled = errors.New("hijack called")
@@ -47,6 +48,83 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	}
 
 	return p
+}
+
+func newTestPluginWithMetadata(t *testing.T, cfg Config, documents map[string][]byte) *Plugin {
+	t.Helper()
+
+	p := &Plugin{config: cfg}
+	p.SetDependencies(base.Dependencies{Metadata: mustMetadataView(t, documents)})
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+	return p
+}
+
+func mustMetadataView(t *testing.T, documents map[string][]byte) runtime.MetadataView {
+	t.Helper()
+	view, err := runtime.NewMetadataView(documents)
+	if err != nil {
+		t.Fatalf("NewMetadataView() error = %v", err)
+	}
+	return view
+}
+
+func TestPreparedGenerationsRetainMetadataOrigins(t *testing.T) {
+	config := Config{AllowOriginsByMetadata: []string{"tenant"}}
+	n := newTestPluginWithMetadata(t, config, map[string][]byte{
+		name: []byte(`{"allow_origins":{"tenant":"https://n.example"}}`),
+	})
+	n1 := newTestPluginWithMetadata(t, config, map[string][]byte{
+		name: []byte(`{"allow_origins":{"tenant":"https://n1.example"}}`),
+	})
+
+	assertOrigin := func(t *testing.T, p *Plugin, origin string, want bool) {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+		req.Header.Set("Origin", origin)
+		res := httptest.NewRecorder()
+		p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		})).ServeHTTP(res, req)
+		got := res.Header().Get("Access-Control-Allow-Origin")
+		if (got == origin) != want {
+			t.Fatalf("origin %q allowed = %t, want %t (header %q)", origin, got == origin, want, got)
+		}
+	}
+
+	assertOrigin(t, n, "https://n.example", true)
+	assertOrigin(t, n, "https://n1.example", false)
+	assertOrigin(t, n1, "https://n1.example", true)
+	assertOrigin(t, n1, "https://n.example", false)
+}
+
+func TestPostInitRejectsInvalidMetadataBeforeSideEffects(t *testing.T) {
+	p := &Plugin{config: Config{
+		AllowOriginsByMetadata: []string{"tenant"},
+		AllowOriginsByRegex:    []string{`^https://allowed[.]example$`},
+	}}
+	p.SetDependencies(base.Dependencies{Metadata: mustMetadataView(t, map[string][]byte{
+		name: []byte(`{"allow_origins":true}`),
+	})})
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	err := p.PostInit()
+	if err == nil || !strings.Contains(err.Error(), "cors metadata decode failed") {
+		t.Fatalf("PostInit() error = %v, want redacted metadata decode failure", err)
+	}
+	if p.cors != nil || len(p.originRegex) != 0 || p.config.AllowOrigins != "" {
+		t.Fatalf(
+			"side effects published after invalid metadata: cors=%v regex=%d allow_origins=%q",
+			p.cors,
+			len(p.originRegex),
+			p.config.AllowOrigins,
+		)
+	}
 }
 
 func countVaryToken(header http.Header, want string) int {

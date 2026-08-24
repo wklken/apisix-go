@@ -16,6 +16,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/limitbase"
 	"github.com/wklken/apisix-go/pkg/resource"
+	"github.com/wklken/apisix-go/pkg/runtime"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -32,6 +33,90 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	}
 
 	return p
+}
+
+func newTestPluginWithMetadata(t *testing.T, cfg Config, documents map[string][]byte) *Plugin {
+	t.Helper()
+
+	p := &Plugin{config: cfg}
+	p.SetDependencies(base.Dependencies{
+		Config:   &config.EffectiveConfig{},
+		Metadata: mustMetadataView(t, documents),
+	})
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+	t.Cleanup(p.Stop)
+	return p
+}
+
+func mustMetadataView(t *testing.T, documents map[string][]byte) runtime.MetadataView {
+	t.Helper()
+	view, err := runtime.NewMetadataView(documents)
+	if err != nil {
+		t.Fatalf("NewMetadataView() error = %v", err)
+	}
+	return view
+}
+
+func TestPreparedGenerationsRetainLimitCountMetadataAlias(t *testing.T) {
+	config := Config{Count: 2, TimeWindow: 60}
+	n := newTestPluginWithMetadata(t, config, map[string][]byte{
+		"limit-count":         []byte(`{"limit_header":"X-N-Limit"}`),
+		"graphql-limit-count": []byte(`{"limit_header":"X-Wrong"}`),
+	})
+	n1 := newTestPluginWithMetadata(t, config, map[string][]byte{
+		"limit-count":         []byte(`{"limit_header":"X-N1-Limit"}`),
+		"graphql-limit-count": []byte(`{"limit_header":"X-Wrong"}`),
+	})
+
+	assertHeader := func(t *testing.T, p *Plugin, want string) {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(`{"query":"{ viewer }"}`))
+		req.Header.Set("Content-Type", "application/json")
+		res := httptest.NewRecorder()
+		p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		})).ServeHTTP(res, req)
+		if got := res.Header().Get(want); got != "2" {
+			t.Fatalf("%s = %q, want 2; headers = %#v", want, got, res.Header())
+		}
+		if got := res.Header().Get("X-Wrong"); got != "" {
+			t.Fatalf("X-Wrong = %q, want empty", got)
+		}
+	}
+
+	assertHeader(t, n, "X-N-Limit")
+	assertHeader(t, n1, "X-N1-Limit")
+}
+
+func TestPostInitRejectsInvalidMetadataBeforeSideEffects(t *testing.T) {
+	p := &Plugin{config: Config{Count: 2, TimeWindow: 60}}
+	p.SetDependencies(base.Dependencies{
+		Config: &config.EffectiveConfig{},
+		Metadata: mustMetadataView(t, map[string][]byte{
+			"limit-count": []byte(`{"limit_header":1}`),
+		}),
+	})
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	err := p.PostInit()
+	if err == nil || !strings.Contains(err.Error(), "graphql-limit-count metadata decode failed") {
+		t.Fatalf("PostInit() error = %v, want redacted metadata decode failure", err)
+	}
+	if p.counters != nil || p.redisLimiter != nil || p.groupRegistered || p.config.Key != "" {
+		t.Fatalf(
+			"side effects published after invalid metadata: counters=%v redis=%v group=%t key=%q",
+			p.counters,
+			p.redisLimiter,
+			p.groupRegistered,
+			p.config.Key,
+		)
+	}
 }
 
 func TestPostInitRequiresEffectiveConfig(t *testing.T) {

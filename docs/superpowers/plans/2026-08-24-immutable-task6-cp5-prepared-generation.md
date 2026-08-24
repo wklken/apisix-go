@@ -563,7 +563,7 @@ go test -race ./pkg/compiler -run 'TestEffectiveBindingMaterializer|TestPrepareG
 
 **Files:** create `pkg/compiler/worker_factory.go`, `pkg/compiler/worker_factory_test.go`; modify `pkg/compiler/prepared_generation.go`
 
-- [ ] **Step 1: Write RED transaction tests**
+- [x] **Step 1: Write RED transaction tests**
 
 Add tests for frozen order, base owner transfer, zero plugins without specs,
 registration/consumer/metadata failure cleanup, catalog digest mismatch,
@@ -588,7 +588,7 @@ bind-private-materializer-authority
 transfer-prepared-generation
 ```
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```bash
 source .envrc
@@ -596,7 +596,7 @@ export GOFLAGS=-mod=readonly
 go test ./pkg/compiler -run '^TestWorkerCompilerFactoryPrepareGeneration' -count=1
 ```
 
-- [ ] **Step 3: Implement factory and transaction**
+- [x] **Step 3: Implement factory and transaction**
 
 The factory privately owns compiler, an exact defensive effective-config clone,
 attempt factory, metadata/consumer preparers, shared resource registry, default
@@ -632,7 +632,7 @@ consumer, metadata, and registration-close errors must not remain reachable via
 `Error`, formatting, `Unwrap`, or `As`. Registration cleanup transferred to a
 successful generation must already apply the same redaction boundary.
 
-- [ ] **Step 4: Prove transfer and run GREEN/race**
+- [x] **Step 4: Prove transfer and run GREEN/race**
 
 ```bash
 source .envrc

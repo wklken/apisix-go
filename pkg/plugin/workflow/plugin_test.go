@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -558,8 +559,9 @@ func TestMaterializeSecretsOwnsNestedLimitCountReferenceBeforePostInit(t *testin
 		t.Fatalf("MaterializePluginSecrets() error = %v", err)
 	}
 	key, _ := p.config.Rules[0].Actions[0].Config["key"].(string)
-	if !strings.Contains(key, "$ENV://WORKFLOW_LIMIT_COUNT_KEY#sha256:") || strings.Contains(key, "remote_addr") {
-		t.Fatalf("nested limit-count key = %q, want safe environment descriptor", key)
+	wantKey := fmt.Sprintf("plugin_config#sha256:%x", sha256.Sum256([]byte("remote_addr")))
+	if key != wantKey {
+		t.Fatalf("nested limit-count key = %q, want content descriptor %q", key, wantKey)
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
@@ -622,9 +624,9 @@ func TestNestedLimitCountValidatesRedisClusterReferenceBeforeDescriptorRewrite(t
 		t.Fatalf("redis_cluster_nodes = %#v, want one safe descriptor", nodes)
 	}
 	descriptor, _ := nodes[0].(string)
-	if !strings.Contains(descriptor, "$ENV://WORKFLOW_REDIS_CLUSTER_NODE#sha256:") ||
-		strings.Contains(descriptor, "127.0.0.1:6379") {
-		t.Fatalf("redis cluster descriptor = %q, want safe environment descriptor", descriptor)
+	wantDescriptor := fmt.Sprintf("plugin_config#sha256:%x", sha256.Sum256([]byte("127.0.0.1:6379")))
+	if descriptor != wantDescriptor {
+		t.Fatalf("redis cluster descriptor = %q, want content descriptor %q", descriptor, wantDescriptor)
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v, want original valid node reference accepted", err)

@@ -386,7 +386,24 @@ const schema = `
 		"required": ["redis_cluster_nodes", "redis_cluster_name"]
 	  }
 	}
+}
+`
+
+const metadataSchema = `
+{
+  "type": "object",
+  "properties": {
+    "limit_header": {
+      "type": "string"
+    },
+    "remaining_header": {
+      "type": "string"
+    },
+    "reset_header": {
+      "type": "string"
+    }
   }
+}
 `
 
 type Config struct {
@@ -446,6 +463,7 @@ func (p *Plugin) Init() error {
 	p.Name = name
 	p.Priority = priority
 	p.Schema = schema
+	p.MetadataSchema = metadataSchema
 
 	return nil
 }
@@ -459,6 +477,11 @@ func (p *Plugin) PostInit() error {
 	if retired {
 		return secret.ErrCredentialUnavailable
 	}
+	var metadata Metadata
+	if _, err := p.MetadataView().Decode(name, &metadata); err != nil {
+		return fmt.Errorf("limit-count metadata decode failed: %w", err)
+	}
+	p.metadata = metadata
 
 	if p.config.Key == "" {
 		p.config.Key = "remote_addr"
@@ -568,10 +591,6 @@ func (p *Plugin) PostInit() error {
 		body, _ := json.Marshal(map[string]string{"error_msg": p.config.RejectedMsg})
 		p.config.rejectBody = util.BytesToString(body)
 	}
-	if p.metadata == (Metadata{}) {
-		p.metadata = base.LoadPluginMetadata[Metadata](name)
-	}
-
 	if len(p.config.Rules) > 0 {
 		if err := p.validateRules(); err != nil {
 			return err

@@ -173,13 +173,17 @@ func (p *Plugin) PostInit() error {
 	if err := p.requirePreparedOASSecrets(); err != nil {
 		return err
 	}
+	var metadata Metadata
+	if _, err := p.MetadataView().Decode(name, &metadata); err != nil {
+		return fmt.Errorf("oas-validator metadata decode failed: %w", err)
+	}
+	p.metadata = metadata
 	if p.config.Timeout == 0 {
 		p.config.Timeout = 10000
 	}
 	if p.config.RejectionStatusCode == 0 {
 		p.config.RejectionStatusCode = http.StatusBadRequest
 	}
-	p.metadata = base.LoadPluginMetadata[Metadata](name)
 	if p.config.Spec != "" {
 		return p.withInlineSpec(func(plaintext string) error {
 			if len(plaintext) > maxOASTotalBytes {

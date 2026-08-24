@@ -15,11 +15,18 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/runtime"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
+	t.Helper()
+	return newTestPluginWithMetadata(t, cfg, nil)
+}
+
+func newTestPluginWithMetadata(t *testing.T, cfg Config, metadata map[string]any) *Plugin {
 	t.Helper()
 	if cfg.SpecURL != "" && len(cfg.SpecURLAllowedAddresses) == 0 {
 		parsed, err := url.Parse(cfg.SpecURL)
@@ -30,6 +37,7 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	}
 
 	p := &Plugin{config: cfg}
+	p.SetDependencies(base.Dependencies{Metadata: mustMetadataView(t, metadata)})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -41,6 +49,22 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	}
 
 	return p
+}
+
+func mustMetadataView(t *testing.T, metadata map[string]any) runtime.MetadataView {
+	t.Helper()
+	if len(metadata) == 0 {
+		return runtime.MetadataView{}
+	}
+	document, err := json.Marshal(metadata)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	view, err := runtime.NewMetadataView(map[string][]byte{name: document})
+	if err != nil {
+		t.Fatalf("NewMetadataView() error = %v", err)
+	}
+	return view
 }
 
 func TestHandlerValidatesInlineOpenAPISpec(t *testing.T) {
@@ -155,6 +179,82 @@ func TestMetadataSchemaRejectsNonpositiveSpecURLTTL(t *testing.T) {
 	}
 	if err := util.Validate(map[string]any{"spec_url_ttl": 0}, metadataSchema); err == nil {
 		t.Fatal("zero spec_url_ttl accepted")
+	}
+}
+
+func TestPreparedGenerationsRetainMetadataTTL(t *testing.T) {
+	var firstFetches atomic.Int32
+	firstServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		firstFetches.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(testSpec()))
+	}))
+	defer firstServer.Close()
+	var secondFetches atomic.Int32
+	secondServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		secondFetches.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(testSpec()))
+	}))
+	defer secondServer.Close()
+
+	first := newTestPluginWithMetadata(t, Config{SpecURL: firstServer.URL}, map[string]any{"spec_url_ttl": 10})
+	second := newTestPluginWithMetadata(t, Config{SpecURL: secondServer.URL}, map[string]any{"spec_url_ttl": 20})
+	defer first.Stop()
+	defer second.Stop()
+	var nowSeconds atomic.Int64
+	nowSeconds.Store(100)
+	currentTime := func() time.Time { return time.Unix(nowSeconds.Load(), 0) }
+	first.now = currentTime
+	second.now = currentTime
+
+	if _, err := first.validator(); err != nil {
+		t.Fatalf("generation N validator() error = %v", err)
+	}
+	if _, err := second.validator(); err != nil {
+		t.Fatalf("generation N+1 validator() error = %v", err)
+	}
+	nowSeconds.Store(115)
+	if _, err := first.validator(); err != nil {
+		t.Fatalf("generation N expired validator() error = %v", err)
+	}
+	if _, err := second.validator(); err != nil {
+		t.Fatalf("generation N+1 cached validator() error = %v", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for firstFetches.Load() != 2 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := firstFetches.Load(); got != 2 {
+		t.Fatalf("generation N fetches = %d, want refresh after 10s TTL", got)
+	}
+	if got := secondFetches.Load(); got != 1 {
+		t.Fatalf("generation N+1 fetches = %d, want cached at 15s with 20s TTL", got)
+	}
+	if second.refreshDone != nil {
+		t.Fatal("generation N+1 unexpectedly started a refresh worker")
+	}
+}
+
+func TestMetadataDecodeFailsBeforeInlineSpecValidation(t *testing.T) {
+	p := &Plugin{config: Config{Spec: testSpec()}}
+	p.SetDependencies(base.Dependencies{Metadata: mustMetadataView(t, map[string]any{
+		"spec_url_ttl": "invalid",
+	})})
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := base.MaterializePluginSecrets(p); err != nil {
+		t.Fatalf("MaterializePluginSecrets() error = %v", err)
+	}
+	err := p.PostInit()
+	defer p.Stop()
+	if err == nil {
+		t.Fatal("PostInit() error = nil for invalid metadata")
+	}
+	if p.compiled.Load() != nil {
+		t.Fatal("metadata decode failure published an OpenAPI validator")
 	}
 }
 

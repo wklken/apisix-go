@@ -25,6 +25,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/limitbase"
 	"github.com/wklken/apisix-go/pkg/plugin/real_ip"
 	"github.com/wklken/apisix-go/pkg/resource"
+	"github.com/wklken/apisix-go/pkg/runtime"
 	"github.com/wklken/apisix-go/pkg/store"
 	"github.com/wklken/apisix-go/pkg/util"
 )
@@ -119,6 +120,37 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	return p
 }
 
+func newTestPluginWithMetadata(t *testing.T, cfg Config, metadata map[string]any) *Plugin {
+	t.Helper()
+
+	p := &Plugin{config: cfg}
+	p.SetDependencies(base.Dependencies{Metadata: mustMetadataView(t, metadata)})
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := base.MaterializePluginSecrets(p); err != nil {
+		t.Fatalf("MaterializePluginSecrets() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+	t.Cleanup(p.Stop)
+	return p
+}
+
+func mustMetadataView(t *testing.T, metadata map[string]any) runtime.MetadataView {
+	t.Helper()
+	document, err := json.Marshal(metadata)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	view, err := runtime.NewMetadataView(map[string][]byte{name: document})
+	if err != nil {
+		t.Fatalf("NewMetadataView() error = %v", err)
+	}
+	return view
+}
+
 func resolvedLimitCountKeyForTest(t *testing.T, p *Plugin, request *http.Request) string {
 	t.Helper()
 	var resolved string
@@ -201,6 +233,97 @@ func TestSchemaAcceptsRootRedisPolicyFields(t *testing.T) {
 	}
 	if err := util.Validate(config, p.GetSchema()); err != nil {
 		t.Fatalf("schema rejected root redis policy fields: %v", err)
+	}
+}
+
+func TestMetadataSchemaAcceptsQuotaHeaderNames(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := util.Validate(map[string]any{
+		"limit_header":     "X-Limit-N",
+		"remaining_header": "X-Remaining-N",
+		"reset_header":     "X-Reset-N",
+	}, p.GetMetadataSchema()); err != nil {
+		t.Fatalf("valid metadata rejected: %v", err)
+	}
+	for _, field := range []string{"limit_header", "remaining_header", "reset_header"} {
+		if err := util.Validate(map[string]any{field: 1}, p.GetMetadataSchema()); err == nil {
+			t.Fatalf("non-string %s accepted", field)
+		}
+	}
+}
+
+func TestPreparedGenerationsRetainMetadataHeaders(t *testing.T) {
+	first := newTestPluginWithMetadata(t, Config{Count: 2, TimeWindow: 60}, map[string]any{
+		"limit_header":     "X-Limit-N",
+		"remaining_header": "X-Remaining-N",
+		"reset_header":     "X-Reset-N",
+	})
+	second := newTestPluginWithMetadata(t, Config{Count: 2, TimeWindow: 60}, map[string]any{
+		"limit_header":     "X-Limit-N-Plus-One",
+		"remaining_header": "X-Remaining-N-Plus-One",
+		"reset_header":     "X-Reset-N-Plus-One",
+	})
+
+	serve := func(p *Plugin) *httptest.ResponseRecorder {
+		t.Helper()
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodGet, "/", nil)
+		request.RemoteAddr = "192.0.2.10:1234"
+		p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		})).ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusNoContent {
+			t.Fatalf("response status = %d, want %d", recorder.Code, http.StatusNoContent)
+		}
+		return recorder
+	}
+
+	firstResponse := serve(first)
+	for _, header := range []string{"X-Limit-N", "X-Remaining-N", "X-Reset-N"} {
+		if firstResponse.Header().Get(header) == "" {
+			t.Fatalf("generation N response missing %s", header)
+		}
+	}
+	if got := firstResponse.Header().Get("X-Limit-N-Plus-One"); got != "" {
+		t.Fatalf("generation N response leaked N+1 header = %q", got)
+	}
+
+	secondResponse := serve(second)
+	for _, header := range []string{"X-Limit-N-Plus-One", "X-Remaining-N-Plus-One", "X-Reset-N-Plus-One"} {
+		if secondResponse.Header().Get(header) == "" {
+			t.Fatalf("generation N+1 response missing %s", header)
+		}
+	}
+	if got := secondResponse.Header().Get("X-Limit-N"); got != "" {
+		t.Fatalf("generation N+1 response leaked N header = %q", got)
+	}
+}
+
+func TestMetadataDecodeFailsBeforeLimitCountGroupRegistration(t *testing.T) {
+	p := &Plugin{config: Config{
+		Count:      1,
+		TimeWindow: 60,
+		Group:      t.Name(),
+	}}
+	p.SetDependencies(base.Dependencies{Metadata: mustMetadataView(t, map[string]any{
+		"remaining_header": 1,
+	})})
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := base.MaterializePluginSecrets(p); err != nil {
+		t.Fatalf("MaterializePluginSecrets() error = %v", err)
+	}
+	err := p.PostInit()
+	defer p.Stop()
+	if err == nil {
+		t.Fatal("PostInit() error = nil for invalid metadata")
+	}
+	if p.groupRegistered || p.limiter != nil {
+		t.Fatalf("decode failure registered resources: group=%v limiter=%v", p.groupRegistered, p.limiter)
 	}
 }
 

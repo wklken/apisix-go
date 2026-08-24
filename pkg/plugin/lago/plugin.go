@@ -3,6 +3,7 @@ package lago
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -10,14 +11,19 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-resty/resty/v2"
 	"github.com/wklken/apisix-go/pkg/apisix/log"
+	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
+	"github.com/wklken/apisix-go/pkg/secret"
 	"github.com/wklken/apisix-go/pkg/shared"
+	"github.com/wklken/apisix-go/pkg/store"
 )
 
 type Plugin struct {
@@ -28,6 +34,14 @@ type Plugin struct {
 	now    func() time.Time
 
 	clientRelease func()
+	lifecycleMu   sync.RWMutex
+	stopped       atomic.Bool
+
+	token           secret.Value
+	tokenSet        bool
+	legacyToken     *store.ResolvedSecret
+	secretsPrepared bool
+	ready           bool
 }
 
 const (
@@ -235,16 +249,94 @@ func (p *Plugin) Init() error {
 	return nil
 }
 
-func (p *Plugin) PostInit() error {
-	if !p.DataEncryption().Configured() {
+func (p *Plugin) MaterializeScopedSecrets(
+	ctx context.Context,
+	access base.ScopedSecretAccess,
+) error {
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+	if p.stopped.Load() {
+		return secret.ErrCredentialUnavailable
+	}
+	if p.secretsPrepared {
+		return nil
+	}
+	value, err := access.Materialize(ctx, "token", p.config.Token)
+	if err != nil || value.Use(validateLagoToken) != nil {
+		return lagoTokenUnavailable()
+	}
+	descriptor, err := value.Descriptor(capability.SecretPluginConfig)
+	if err != nil {
+		return lagoTokenUnavailable()
+	}
+	p.token = value
+	p.tokenSet = true
+	p.config.Token = descriptor.String()
+	p.secretsPrepared = true
+	return nil
+}
+
+// MaterializeSecrets is the transitional process-local compatibility path.
+// Immutable generation preparation uses MaterializeScopedSecrets instead.
+func (p *Plugin) MaterializeSecrets() error {
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+	if p.stopped.Load() {
+		return secret.ErrCredentialUnavailable
+	}
+	if p.secretsPrepared {
+		return nil
+	}
+	resolver := p.DataEncryption()
+	if !resolver.Configured() {
 		return errors.New("data-encryption resolver is required")
 	}
-	resolved, err := p.DataEncryption().ResolveForContext(p.config.Token, "lago.token")
+	resolved, err := resolver.ResolveForContext(p.config.Token, name+".token")
 	if err != nil {
-		return fmt.Errorf("lago token: %w", err)
+		return lagoTokenUnavailable()
 	}
-	p.config.Token = resolved
+	owner, err := store.MaterializeSecret(resolved)
+	if err != nil {
+		return lagoTokenUnavailable()
+	}
+	plaintext := owner.Bytes()
+	defer clear(plaintext)
+	if validateLagoToken(string(plaintext)) != nil {
+		owner.Destroy()
+		return lagoTokenUnavailable()
+	}
+	digest := sha256.Sum256(plaintext)
+	descriptor, err := secret.NewDescriptor(capability.SecretPluginConfig, digest)
+	if err != nil {
+		owner.Destroy()
+		return lagoTokenUnavailable()
+	}
+	p.legacyToken = owner
+	p.config.Token = descriptor.String()
+	p.secretsPrepared = true
+	return nil
+}
 
+func validateLagoToken(value string) error {
+	if strings.TrimSpace(value) == "" {
+		return secret.ErrCredentialUnavailable
+	}
+	return nil
+}
+
+func lagoTokenUnavailable() error {
+	return fmt.Errorf("%s token: %w", name, secret.ErrCredentialUnavailable)
+}
+
+func (p *Plugin) PostInit() error {
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+	if p.stopped.Load() || !p.secretsPrepared {
+		return secret.ErrCredentialUnavailable
+	}
+	if p.ready {
+		return nil
+	}
 	if p.config.EndpointURI == "" {
 		p.config.EndpointURI = "/api/v1/events/batch"
 	}
@@ -310,27 +402,57 @@ func (p *Plugin) PostInit() error {
 	if err != nil {
 		return err
 	}
-	p.client = value.(*resty.Client)
-	p.clientRelease = release
-
-	p.BatchProcessor = base.NewBatchProcessor("lago logger", base.BatchDefaults{
+	sharedClient := value.(*resty.Client)
+	processor := base.NewBatchProcessor("lago logger", base.BatchDefaults{
 		PluginID:           name,
 		BatchMaxSize:       p.config.BatchMaxSize,
 		MaxRetryCount:      p.config.MaxRetryCount,
 		RetryDelaySec:      p.config.RetryDelay,
 		BufferDurationSec:  p.config.BufferDuration,
 		InactiveTimeoutSec: p.config.InactiveTimeout,
-	}, p.RouteID, p.ServerAddr, p.SendBatch)
+	}, p.RouteID, p.ServerAddr, p.sendBatchFromProcessor)
+	if p.stopped.Load() {
+		processor.Stop()
+		release()
+		return secret.ErrCredentialUnavailable
+	}
+	p.client = sharedClient
+	p.clientRelease = release
+	p.BatchProcessor = processor
+	p.ready = true
 	return nil
 }
 
 func (p *Plugin) Stop() {
-	p.StopWithCleanup(func() {
+	if p.stopped.Swap(true) {
+		return
+	}
+	p.lifecycleMu.Lock()
+	processor := p.BatchProcessor
+	p.lifecycleMu.Unlock()
+	cleanup := func() {
+		p.lifecycleMu.Lock()
+		defer p.lifecycleMu.Unlock()
 		if p.clientRelease != nil {
 			p.clientRelease()
 			p.clientRelease = nil
 		}
-	})
+		p.client = nil
+		p.BatchProcessor = nil
+		if p.legacyToken != nil {
+			p.legacyToken.Destroy()
+			p.legacyToken = nil
+		}
+		p.token = secret.Value{}
+		p.tokenSet = false
+		p.secretsPrepared = false
+		p.ready = false
+	}
+	if processor != nil {
+		processor.StopWithCleanup(cleanup)
+	} else {
+		cleanup()
+	}
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
@@ -363,13 +485,24 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			responseBody = recorder.body.String()
 		}
 
-		_ = p.Fire(p.logFields(r, recorder.status, requestBody, responseBody, requestStart, recorder.Header()))
+		_ = p.enqueueLagoLogIfRunning(
+			p.logFields(r, recorder.status, requestBody, responseBody, requestStart, recorder.Header()),
+		)
 	}
 	return http.HandlerFunc(fn)
 }
 
 func (p *Plugin) RunLogPhase(snapshot base.LogSnapshot) error {
-	return p.EnqueueLog(p.lagoSnapshotFields(snapshot))
+	return p.enqueueLagoLogIfRunning(p.lagoSnapshotFields(snapshot))
+}
+
+func (p *Plugin) enqueueLagoLogIfRunning(fields map[string]any) error {
+	p.lifecycleMu.RLock()
+	defer p.lifecycleMu.RUnlock()
+	if p.stopped.Load() || !p.ready || p.BatchProcessor == nil {
+		return base.ErrLogQueueUnavailable
+	}
+	return p.EnqueueLog(fields)
 }
 
 func (p *Plugin) lagoSnapshotFields(snapshot base.LogSnapshot) map[string]any {
@@ -421,6 +554,27 @@ func (p *Plugin) Send(fields map[string]any) {
 }
 
 func (p *Plugin) SendBatch(ctx context.Context, entries []map[string]any, _ int) (int, error) {
+	return p.sendBatch(ctx, entries, false)
+}
+
+func (p *Plugin) sendBatchFromProcessor(
+	ctx context.Context,
+	entries []map[string]any,
+	_ int,
+) (int, error) {
+	return p.sendBatch(ctx, entries, true)
+}
+
+func (p *Plugin) sendBatch(
+	ctx context.Context,
+	entries []map[string]any,
+	allowRetiredDrain bool,
+) (int, error) {
+	p.lifecycleMu.RLock()
+	defer p.lifecycleMu.RUnlock()
+	if (!allowRetiredDrain && p.stopped.Load()) || !p.ready || p.client == nil {
+		return 0, secret.ErrCredentialUnavailable
+	}
 	if len(p.config.EndpointAddrs) == 0 {
 		return 0, nil
 	}
@@ -430,12 +584,40 @@ func (p *Plugin) SendBatch(ctx context.Context, entries []map[string]any, _ int)
 		events = append(events, p.buildEvent(entry))
 	}
 	endpoint := p.endpointURL()
-	resp, err := p.client.R().
+	request := p.client.R().
 		SetContext(ctx).
 		SetHeader("Content-Type", "application/json").
-		SetHeader("Authorization", "Bearer "+p.config.Token).
-		SetBody(lagoPayload{Events: events}).
-		Post(endpoint)
+		SetBody(lagoPayload{Events: events})
+	var resp *resty.Response
+	defer func() {
+		request.Header.Del("Authorization")
+		request.Body = nil
+		if request.RawRequest != nil {
+			request.RawRequest.Header.Del("Authorization")
+			request.RawRequest.Body = http.NoBody
+			request.RawRequest.GetBody = nil
+		}
+		if resp != nil {
+			if responseBody := resp.Body(); len(responseBody) > 0 {
+				clear(responseBody)
+				resp.SetBody(nil)
+			}
+			if resp.RawResponse != nil {
+				resp.RawResponse.Header.Del("Authorization")
+				resp.RawResponse.Request = nil
+				resp.RawResponse.Body = http.NoBody
+			}
+			resp.Request = nil
+			resp.RawResponse = nil
+		}
+	}()
+
+	err := p.useTokenLocked(allowRetiredDrain, func(token string) error {
+		request.SetHeader("Authorization", "Bearer "+token)
+		var err error
+		resp, err = request.Post(endpoint)
+		return err
+	})
 	if err != nil {
 		return 0, fmt.Errorf("failed to send Lago event to endpoint %s: %w", endpoint, err)
 	}
@@ -448,6 +630,24 @@ func (p *Plugin) SendBatch(ctx context.Context, entries []map[string]any, _ int)
 		)
 	}
 	return 0, nil
+}
+
+func (p *Plugin) useTokenLocked(allowRetiredDrain bool, use func(string) error) error {
+	if (!allowRetiredDrain && p.stopped.Load()) || !p.secretsPrepared {
+		return secret.ErrCredentialUnavailable
+	}
+	if p.tokenSet {
+		return p.token.Use(use)
+	}
+	if p.legacyToken == nil {
+		return secret.ErrCredentialUnavailable
+	}
+	plaintext := p.legacyToken.Bytes()
+	defer clear(plaintext)
+	if len(plaintext) == 0 {
+		return secret.ErrCredentialUnavailable
+	}
+	return use(string(plaintext))
 }
 
 func (p *Plugin) buildEvent(fields map[string]any) lagoEvent {

@@ -2,6 +2,8 @@ package dingtalk_auth
 
 import (
 	"bytes"
+	"context"
+	"crypto/sha256"
 	"crypto/subtle"
 	"crypto/tls"
 	"fmt"
@@ -10,9 +12,13 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
+	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/secret"
+	"github.com/wklken/apisix-go/pkg/store"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -20,10 +26,27 @@ type Plugin struct {
 	base.BasePlugin
 	config Config
 
-	client           *http.Client
-	tokenCache       map[string]tokenCacheEntry
-	mu               sync.Mutex
-	oauthStateReplay base.OAuthStateReplayCache
+	lifecycleMu sync.RWMutex
+	client      *http.Client
+
+	tokenMu    sync.Mutex
+	tokenCache map[tokenCacheKey]tokenCacheEntry
+
+	oauthStateReplay *base.OAuthStateReplayCache
+
+	appSecret       secret.Value
+	appSecretSet    bool
+	legacyAppSecret *store.ResolvedSecret
+	appSecretDigest [sha256.Size]byte
+
+	sessionSecret          secret.Value
+	sessionSecretSet       bool
+	sessionSecretFallbacks []secret.Value
+	legacySessionSecret    *store.ResolvedSecret
+	legacySessionFallbacks []*store.ResolvedSecret
+
+	secretsPrepared bool
+	retired         bool
 }
 
 const (
@@ -87,16 +110,12 @@ const schema = `
       "default": true
     },
     "secret": {
-      "type": "string",
-      "minLength": 8,
-      "maxLength": 32
+      "type": "string"
     },
     "secret_fallbacks": {
       "type": "array",
       "items": {
-        "type": "string",
-        "minLength": 8,
-        "maxLength": 32
+        "type": "string"
       }
     },
     "cookie_expires_in": {
@@ -157,6 +176,12 @@ type tokenCacheEntry struct {
 	expiresAt   time.Time
 }
 
+type tokenCacheKey struct {
+	accessTokenURL string
+	appKey         string
+	appSecret      [sha256.Size]byte
+}
+
 type tokenResponse struct {
 	AccessToken string `json:"accessToken"`
 }
@@ -184,6 +209,11 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+	if p.retired || !p.secretsPrepared {
+		return secret.ErrCredentialUnavailable
+	}
 	if p.config.CodeHeader == "" {
 		p.config.CodeHeader = "X-DingTalk-Code"
 	}
@@ -224,13 +254,212 @@ func (p *Plugin) PostInit() error {
 		}
 	}
 	if p.tokenCache == nil {
-		p.tokenCache = make(map[string]tokenCacheEntry)
+		p.tokenCache = make(map[tokenCacheKey]tokenCacheEntry)
+	}
+	if p.oauthStateReplay == nil {
+		p.oauthStateReplay = &base.OAuthStateReplayCache{}
+	}
+	return nil
+}
+
+// MaterializeScopedSecrets admits the exact DingTalk OAuth and session fields
+// for one immutable generation. Public config is replaced only after every
+// current and fallback value has resolved and passed its semantic contract.
+func (p *Plugin) MaterializeScopedSecrets(
+	ctx context.Context,
+	access base.ScopedSecretAccess,
+) error {
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+	if p.retired {
+		return secret.ErrCredentialUnavailable
+	}
+	if p.secretsPrepared {
+		return nil
+	}
+
+	appSecret, appDescriptor, err := materializeScopedDingTalkSecret(
+		ctx, access, "app_secret", p.config.AppSecret, validateDingTalkAppSecret,
+	)
+	if err != nil {
+		return secret.ErrCredentialUnavailable
+	}
+	sessionSecret, sessionDescriptor, err := materializeScopedDingTalkSecret(
+		ctx, access, "secret", p.config.Secret, validateDingTalkSessionSecret,
+	)
+	if err != nil {
+		return secret.ErrCredentialUnavailable
+	}
+	fallbacks := make([]secret.Value, len(p.config.SecretFallbacks))
+	fallbackDescriptors := make([]string, len(p.config.SecretFallbacks))
+	installed := false
+	defer func() {
+		if installed {
+			return
+		}
+		appSecret = secret.Value{}
+		sessionSecret = secret.Value{}
+		for i := range fallbacks {
+			fallbacks[i] = secret.Value{}
+		}
+	}()
+	for i, raw := range p.config.SecretFallbacks {
+		fallback, descriptor, materializeErr := materializeScopedDingTalkSecret(
+			ctx, access, "secret_fallbacks", raw, validateDingTalkSessionSecret,
+		)
+		if materializeErr != nil {
+			return secret.ErrCredentialUnavailable
+		}
+		fallbacks[i] = fallback
+		fallbackDescriptors[i] = descriptor
+	}
+
+	p.appSecret = appSecret
+	p.appSecretSet = true
+	p.appSecretDigest = appSecret.Digest()
+	p.sessionSecret = sessionSecret
+	p.sessionSecretSet = true
+	p.sessionSecretFallbacks = fallbacks
+	p.config.AppSecret = appDescriptor
+	p.config.Secret = sessionDescriptor
+	p.config.SecretFallbacks = fallbackDescriptors
+	p.secretsPrepared = true
+	installed = true
+	return nil
+}
+
+func materializeScopedDingTalkSecret(
+	ctx context.Context,
+	access base.ScopedSecretAccess,
+	field string,
+	raw string,
+	validate func(string) error,
+) (secret.Value, string, error) {
+	value, err := access.Materialize(ctx, field, raw)
+	if err != nil || value.Use(validate) != nil {
+		return secret.Value{}, "", secret.ErrCredentialUnavailable
+	}
+	descriptor, err := value.Descriptor(capability.SecretPluginConfig)
+	if err != nil {
+		return secret.Value{}, "", secret.ErrCredentialUnavailable
+	}
+	return value, descriptor.String(), nil
+}
+
+// MaterializeSecrets is the transitional process-local compatibility path.
+// Immutable generation preparation uses MaterializeScopedSecrets instead.
+func (p *Plugin) MaterializeSecrets() error {
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+	if p.retired {
+		return secret.ErrCredentialUnavailable
+	}
+	if p.secretsPrepared {
+		return nil
+	}
+
+	appSecret, appDescriptor, appDigest, err := p.materializeLegacyDingTalkSecret(
+		p.config.AppSecret, "app_secret", validateDingTalkAppSecret,
+	)
+	if err != nil {
+		return secret.ErrCredentialUnavailable
+	}
+	sessionSecret, sessionDescriptor, _, err := p.materializeLegacyDingTalkSecret(
+		p.config.Secret, "secret", validateDingTalkSessionSecret,
+	)
+	if err != nil {
+		appSecret.Destroy()
+		return secret.ErrCredentialUnavailable
+	}
+	fallbacks := make([]*store.ResolvedSecret, len(p.config.SecretFallbacks))
+	fallbackDescriptors := make([]string, len(p.config.SecretFallbacks))
+	installed := false
+	defer func() {
+		if installed {
+			return
+		}
+		appSecret.Destroy()
+		sessionSecret.Destroy()
+		for i, fallback := range fallbacks {
+			if fallback != nil {
+				fallback.Destroy()
+				fallbacks[i] = nil
+			}
+		}
+	}()
+	for i, raw := range p.config.SecretFallbacks {
+		fallback, descriptor, _, materializeErr := p.materializeLegacyDingTalkSecret(
+			raw, "secret_fallbacks", validateDingTalkSessionSecret,
+		)
+		if materializeErr != nil {
+			return secret.ErrCredentialUnavailable
+		}
+		fallbacks[i] = fallback
+		fallbackDescriptors[i] = descriptor
+	}
+
+	p.legacyAppSecret = appSecret
+	p.appSecretDigest = appDigest
+	p.legacySessionSecret = sessionSecret
+	p.legacySessionFallbacks = fallbacks
+	p.config.AppSecret = appDescriptor
+	p.config.Secret = sessionDescriptor
+	p.config.SecretFallbacks = fallbackDescriptors
+	p.secretsPrepared = true
+	installed = true
+	return nil
+}
+
+func (p *Plugin) materializeLegacyDingTalkSecret(
+	raw string,
+	field string,
+	validate func(string) error,
+) (*store.ResolvedSecret, string, [sha256.Size]byte, error) {
+	if resolver := p.DataEncryption(); resolver.Configured() {
+		raw = resolver.ResolveOptionalForContext(raw, name+"."+field)
+	}
+	value, err := store.MaterializeSecret(raw)
+	if err != nil {
+		return nil, "", [sha256.Size]byte{}, secret.ErrCredentialUnavailable
+	}
+	plaintext := value.Bytes()
+	defer clear(plaintext)
+	if err := validate(string(plaintext)); err != nil {
+		value.Destroy()
+		return nil, "", [sha256.Size]byte{}, secret.ErrCredentialUnavailable
+	}
+	digest := sha256.Sum256(plaintext)
+	descriptor, err := secret.NewDescriptor(capability.SecretPluginConfig, digest)
+	if err != nil {
+		value.Destroy()
+		return nil, "", [sha256.Size]byte{}, secret.ErrCredentialUnavailable
+	}
+	return value, descriptor.String(), digest, nil
+}
+
+func validateDingTalkAppSecret(plaintext string) error {
+	if strings.TrimSpace(plaintext) == "" {
+		return secret.ErrCredentialUnavailable
+	}
+	return nil
+}
+
+func validateDingTalkSessionSecret(plaintext string) error {
+	length := utf8.RuneCountInString(plaintext)
+	if length < 8 || length > 32 {
+		return secret.ErrCredentialUnavailable
 	}
 	return nil
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p.lifecycleMu.RLock()
+		defer p.lifecycleMu.RUnlock()
+		if p.retired || !p.secretsPrepared {
+			http.Error(w, util.BuildMessageResponse("credential unavailable"), http.StatusServiceUnavailable)
+			return
+		}
 		r.Header.Del("X-Userinfo")
 
 		if userinfo, ok := p.userInfoFromSession(r); ok {
@@ -292,13 +521,14 @@ func (p *Plugin) redirectToProvider(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := time.Now()
-	sealed, err := base.SealOAuthSession(
-		[]byte(state),
-		p.config.Secret,
-		p.oauthStateFingerprint(),
-		now,
-		now.Add(base.OAuthStateLifetime),
-	)
+	var sealed string
+	err = p.useSessionSecretsLocked(func(current string, _ []string) error {
+		var sealErr error
+		sealed, sealErr = base.SealOAuthSession(
+			[]byte(state), current, p.oauthStateFingerprint(), now, now.Add(base.OAuthStateLifetime),
+		)
+		return sealErr
+	})
 	if err != nil {
 		http.Error(w, util.BuildMessageResponse("Failed to create OAuth state"), http.StatusInternalServerError)
 		return
@@ -318,19 +548,20 @@ func (p *Plugin) verifyAndConsumeOAuthState(r *http.Request) bool {
 		return false
 	}
 	now := time.Now()
-	state, err := base.OpenOAuthSession(
-		cookie.Value,
-		p.config.Secret,
-		p.config.SecretFallbacks,
-		p.oauthStateFingerprint(),
-		now,
-	)
+	var state []byte
+	err = p.useSessionSecretsLocked(func(current string, fallbacks []string) error {
+		var openErr error
+		state, openErr = base.OpenOAuthSession(
+			cookie.Value, current, fallbacks, p.oauthStateFingerprint(), now,
+		)
+		return openErr
+	})
 	stateValues, ok := r.URL.Query()["state"]
 	if err != nil || !ok || len(stateValues) != 1 || stateValues[0] == "" ||
 		subtle.ConstantTimeCompare(state, []byte(stateValues[0])) != 1 {
 		return false
 	}
-	return p.oauthStateReplay.Consume(cookie.Value, now)
+	return p.oauthStateReplay != nil && p.oauthStateReplay.Consume(cookie.Value, now)
 }
 
 func (p *Plugin) oauthStateFingerprint() string {
@@ -377,62 +608,70 @@ func oauthRedirectWithState(rawURI string, state string) (string, error) {
 }
 
 func (p *Plugin) accessToken(r *http.Request) (string, error) {
-	cacheKey := strings.Join([]string{p.config.AccessTokenURL, p.config.AppKey, p.config.AppSecret}, "#")
+	cacheKey := tokenCacheKey{
+		accessTokenURL: p.config.AccessTokenURL,
+		appKey:         p.config.AppKey,
+		appSecret:      p.appSecretDigest,
+	}
 
-	p.mu.Lock()
+	p.tokenMu.Lock()
 	cached, ok := p.tokenCache[cacheKey]
 	if ok && time.Now().Before(cached.expiresAt) {
-		p.mu.Unlock()
+		p.tokenMu.Unlock()
 		return cached.accessToken, nil
 	}
-	p.mu.Unlock()
+	p.tokenMu.Unlock()
 
 	accessToken, err := p.fetchAccessToken(r)
 	if err != nil {
 		return "", err
 	}
 
-	p.mu.Lock()
+	p.tokenMu.Lock()
 	p.tokenCache[cacheKey] = tokenCacheEntry{
 		accessToken: accessToken,
 		expiresAt:   time.Now().Add(tokenCacheTTL),
 	}
-	p.mu.Unlock()
+	p.tokenMu.Unlock()
 	return accessToken, nil
 }
 
 func (p *Plugin) fetchAccessToken(r *http.Request) (string, error) {
-	body, err := json.Marshal(map[string]string{
-		"appKey":    p.config.AppKey,
-		"appSecret": p.config.AppSecret,
+	var token string
+	err := p.useAppSecretLocked(func(appSecret string) error {
+		body, err := json.Marshal(map[string]string{
+			"appKey": p.config.AppKey, "appSecret": appSecret,
+		})
+		if err != nil {
+			return err
+		}
+		defer clear(body)
+		req, err := http.NewRequestWithContext(
+			r.Context(), http.MethodPost, p.config.AccessTokenURL, bytes.NewReader(body),
+		)
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := p.client.Do(req)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode != http.StatusOK {
+			return fmt.Errorf("unexpected response status: %d", resp.StatusCode)
+		}
+		var response tokenResponse
+		if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+			return err
+		}
+		if response.AccessToken == "" {
+			return fmt.Errorf("dingtalk token response missing accessToken")
+		}
+		token = response.AccessToken
+		return nil
 	})
-	if err != nil {
-		return "", err
-	}
-
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, p.config.AccessTokenURL, bytes.NewReader(body))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := p.client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("unexpected response status: %d", resp.StatusCode)
-	}
-
-	var token tokenResponse
-	if err := json.NewDecoder(resp.Body).Decode(&token); err != nil {
-		return "", err
-	}
-	if token.AccessToken == "" {
-		return "", fmt.Errorf("dingtalk token response missing accessToken")
-	}
-	return token.AccessToken, nil
+	return token, err
 }
 
 func (p *Plugin) fetchUserInfo(r *http.Request, accessToken string, code string) (map[string]any, bool, error) {
@@ -483,8 +722,16 @@ func (p *Plugin) userInfoFromSession(r *http.Request) (map[string]any, bool) {
 		return nil, false
 	}
 
-	payload, ok := base.VerifySessionValue(cookie.Value, p.config.Secret, p.config.SecretFallbacks)
-	if !ok {
+	var payload []byte
+	err = p.useSessionSecretsLocked(func(current string, fallbacks []string) error {
+		var ok bool
+		payload, ok = base.VerifySessionValue(cookie.Value, current, fallbacks)
+		if !ok {
+			return secret.ErrCredentialUnavailable
+		}
+		return nil
+	})
+	if err != nil {
 		return nil, false
 	}
 
@@ -507,9 +754,16 @@ func (p *Plugin) sessionCookie(userinfo map[string]any) (*http.Cookie, error) {
 		return nil, err
 	}
 
+	var value string
+	if err := p.useSessionSecretsLocked(func(current string, _ []string) error {
+		value = base.SignSessionValue(payload, current)
+		return nil
+	}); err != nil {
+		return nil, err
+	}
 	return &http.Cookie{
 		Name:     sessionCookieName,
-		Value:    base.SignSessionValue(payload, p.config.Secret),
+		Value:    value,
 		Path:     "/",
 		HttpOnly: true,
 		Secure:   *p.config.CookieSecure,
@@ -524,4 +778,131 @@ func (p *Plugin) transport() http.RoundTripper {
 		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec
 	}
 	return transport
+}
+
+func (p *Plugin) useAppSecretLocked(use func(string) error) error {
+	if use == nil || p.retired || !p.secretsPrepared {
+		return secret.ErrCredentialUnavailable
+	}
+	if p.appSecretSet {
+		return p.appSecret.Use(use)
+	}
+	if p.legacyAppSecret == nil {
+		return secret.ErrCredentialUnavailable
+	}
+	plaintext := p.legacyAppSecret.Bytes()
+	if len(plaintext) == 0 {
+		return secret.ErrCredentialUnavailable
+	}
+	defer clear(plaintext)
+	return use(string(plaintext))
+}
+
+func (p *Plugin) useSessionSecretsLocked(use func(string, []string) error) error {
+	if use == nil || p.retired || !p.secretsPrepared {
+		return secret.ErrCredentialUnavailable
+	}
+	if p.sessionSecretSet {
+		return p.sessionSecret.Use(func(current string) error {
+			fallbacks := make([]string, len(p.sessionSecretFallbacks))
+			defer clearStrings(fallbacks)
+			return useScopedDingTalkFallbacks(p.sessionSecretFallbacks, fallbacks, 0, func() error {
+				return use(current, fallbacks)
+			})
+		})
+	}
+	if p.legacySessionSecret == nil {
+		return secret.ErrCredentialUnavailable
+	}
+	current := p.legacySessionSecret.Bytes()
+	if len(current) == 0 {
+		return secret.ErrCredentialUnavailable
+	}
+	defer clear(current)
+	fallbackBytes := make([][]byte, len(p.legacySessionFallbacks))
+	fallbacks := make([]string, len(p.legacySessionFallbacks))
+	defer func() {
+		for i := range fallbackBytes {
+			clear(fallbackBytes[i])
+		}
+		clearStrings(fallbacks)
+	}()
+	for i, owner := range p.legacySessionFallbacks {
+		if owner == nil {
+			return secret.ErrCredentialUnavailable
+		}
+		fallbackBytes[i] = owner.Bytes()
+		if len(fallbackBytes[i]) == 0 {
+			return secret.ErrCredentialUnavailable
+		}
+		fallbacks[i] = string(fallbackBytes[i])
+	}
+	return use(string(current), fallbacks)
+}
+
+func useScopedDingTalkFallbacks(
+	values []secret.Value,
+	plaintext []string,
+	index int,
+	use func() error,
+) error {
+	if index == len(values) {
+		return use()
+	}
+	return values[index].Use(func(value string) error {
+		plaintext[index] = value
+		defer func() { plaintext[index] = "" }()
+		return useScopedDingTalkFallbacks(values, plaintext, index+1, use)
+	})
+}
+
+func clearStrings(values []string) {
+	for i := range values {
+		values[i] = ""
+	}
+}
+
+// Stop drains active handlers, closes the generation's idle connections,
+// clears mutable caches, and then retires every private secret owner.
+func (p *Plugin) Stop() {
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+	if p.retired {
+		return
+	}
+	p.retired = true
+	if p.client != nil {
+		p.client.CloseIdleConnections()
+		p.client = nil
+	}
+	p.tokenMu.Lock()
+	clear(p.tokenCache)
+	p.tokenCache = nil
+	p.tokenMu.Unlock()
+	p.oauthStateReplay = nil
+	if p.legacyAppSecret != nil {
+		p.legacyAppSecret.Destroy()
+		p.legacyAppSecret = nil
+	}
+	if p.legacySessionSecret != nil {
+		p.legacySessionSecret.Destroy()
+		p.legacySessionSecret = nil
+	}
+	for i, fallback := range p.legacySessionFallbacks {
+		if fallback != nil {
+			fallback.Destroy()
+		}
+		p.legacySessionFallbacks[i] = nil
+	}
+	p.legacySessionFallbacks = nil
+	p.appSecret = secret.Value{}
+	p.appSecretSet = false
+	p.appSecretDigest = [sha256.Size]byte{}
+	p.sessionSecret = secret.Value{}
+	p.sessionSecretSet = false
+	for i := range p.sessionSecretFallbacks {
+		p.sessionSecretFallbacks[i] = secret.Value{}
+	}
+	p.sessionSecretFallbacks = nil
+	p.secretsPrepared = false
 }

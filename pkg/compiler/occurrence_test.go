@@ -107,7 +107,7 @@ func TestFinalFactoryOccurrencesIgnorePluginMetadataTombstones(t *testing.T) {
 	}
 }
 
-func TestScopedSecretSupportFailsClosedOnlyForDeclaredPluginConfig(t *testing.T) {
+func TestValidateScopedSecretSupportDoesNotAcceptPhantomNoOps(t *testing.T) {
 	compiler := newTestCompiler(t)
 	undeclared := factoryOccurrenceSpec{
 		domain: generation.DomainHTTP, resource: generation.ResourceKey{Kind: "routes", ID: "r1"},
@@ -117,15 +117,27 @@ func TestScopedSecretSupportFailsClosedOnlyForDeclaredPluginConfig(t *testing.T)
 		t.Fatalf("undeclared factory support error = %v", err)
 	}
 
-	declared := undeclared
-	declared.factory = "basic-auth"
-	err := validateScopedSecretSupport([]factoryOccurrenceSpec{declared, declared}, compiler.schemas.catalog)
-	if !errors.Is(err, ErrInvalidInput) || strings.Contains(err.Error(), "basic-auth") {
-		t.Fatalf("declared legacy-only factory error = %v, want redacted ErrInvalidInput", err)
+	compilerDiscard := undeclared
+	compilerDiscard.factory = "basic-auth"
+	if err := validateScopedSecretSupport(
+		[]factoryOccurrenceSpec{compilerDiscard, compilerDiscard},
+		compiler.schemas.catalog,
+	); err != nil {
+		t.Fatalf("compiler-discard factory support error = %v", err)
 	}
 
-	declared.source = capability.SecretConsumerConfig
-	if err := validateScopedSecretSupport([]factoryOccurrenceSpec{declared}, compiler.schemas.catalog); err != nil {
+	realDeclaration := undeclared
+	realDeclaration.factory = "response-rewrite"
+	err := validateScopedSecretSupport([]factoryOccurrenceSpec{realDeclaration}, compiler.schemas.catalog)
+	if !errors.Is(err, ErrInvalidInput) || strings.Contains(err.Error(), "response-rewrite") {
+		t.Fatalf("unowned plugin-target factory error = %v, want redacted ErrInvalidInput", err)
+	}
+
+	compilerDiscard.source = capability.SecretConsumerConfig
+	if err := validateScopedSecretSupport(
+		[]factoryOccurrenceSpec{compilerDiscard},
+		compiler.schemas.catalog,
+	); err != nil {
 		t.Fatalf("consumer occurrence incorrectly required plugin scoped support: %v", err)
 	}
 }

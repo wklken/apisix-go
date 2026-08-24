@@ -214,6 +214,22 @@ func NewSecretDeclarationCatalog(manifest *Manifest) (*SecretDeclarationCatalog,
 					declaration.Source,
 				)
 			}
+			target := declaration.EffectiveTarget()
+			if !validSecretMaterializationTarget(target) {
+				return nil, fmt.Errorf(
+					"plugin %q declaration %d: unknown materialization target %q",
+					plugin.Name,
+					declarationIndex,
+					target,
+				)
+			}
+			if target == SecretMaterializationCompilerDiscard && declaration.Source != SecretPluginConfig {
+				return nil, fmt.Errorf(
+					"plugin %q declaration %d: compiler_discard target requires plugin_config source",
+					plugin.Name,
+					declarationIndex,
+				)
+			}
 			if !canonicalSecretFieldPath(declaration.Field) {
 				return nil, fmt.Errorf(
 					"plugin %q declaration %d: field %q is not a canonical wildcard path",
@@ -265,6 +281,9 @@ func NewSecretDeclarationCatalog(manifest *Manifest) (*SecretDeclarationCatalog,
 		}
 		if left.Field != right.Field {
 			return left.Field < right.Field
+		}
+		if left.EffectiveTarget() != right.EffectiveTarget() {
+			return left.EffectiveTarget() < right.EffectiveTarget()
 		}
 		return !left.Strict && right.Strict
 	})
@@ -338,12 +357,13 @@ type secretDeclarationKey struct {
 
 func encodeSecretDeclarations(declarations []SecretDeclaration) []byte {
 	var encoded bytes.Buffer
-	encoded.WriteString("apisix-go/secret-declarations/v1")
+	encoded.WriteString("apisix-go/secret-declarations/v2")
 	writeCanonicalUint64(&encoded, uint64(len(declarations)))
 	for _, declaration := range declarations {
 		writeCanonicalString(&encoded, declaration.Factory)
 		writeCanonicalString(&encoded, string(declaration.Source))
 		writeCanonicalString(&encoded, declaration.Field)
+		writeCanonicalString(&encoded, string(declaration.EffectiveTarget()))
 		if declaration.Strict {
 			encoded.WriteByte(1)
 		} else {
@@ -366,6 +386,10 @@ func writeCanonicalUint64(encoded *bytes.Buffer, value uint64) {
 
 func validSecretDeclarationSource(source SecretDeclarationSource) bool {
 	return source == SecretPluginConfig || source == SecretPluginMetadata || source == SecretConsumerConfig
+}
+
+func validSecretMaterializationTarget(target SecretMaterializationTarget) bool {
+	return target == SecretMaterializationPlugin || target == SecretMaterializationCompilerDiscard
 }
 
 func conflictingSecretPolicyError(

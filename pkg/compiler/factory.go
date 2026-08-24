@@ -64,6 +64,9 @@ func (factory *attemptFactory) prepareCandidateAttempt(
 	if err != nil {
 		return nil, err
 	}
+	if err := validateScopedSecretSupport(occurrences, factory.compiler.schemas.catalog); err != nil {
+		return nil, errors.Join(errAttemptPreparationFailed, err)
+	}
 	if !publicationCanPrepare(set) {
 		return nil, errAttemptPreparationFailed
 	}
@@ -118,6 +121,9 @@ func (factory *attemptFactory) prepareRecoveryAttempt(
 	if err != nil {
 		return nil, err
 	}
+	if err := validateScopedSecretSupport(occurrences, factory.compiler.schemas.catalog); err != nil {
+		return nil, errors.Join(errAttemptPreparationFailed, err)
+	}
 	registration, err := factory.materializer.RegisterRecovery(
 		ctx, revisions, cloneRecoveryPublicationsForPreparation(verified),
 	)
@@ -156,6 +162,9 @@ func (factory *attemptFactory) prepareRegisteredAttempt(
 	}
 	prepared := &registeredAttempt{attempt: attempt, registration: registration}
 
+	if err := prepareCompilerDiscardSecrets(ctx, attempt, factory.compiler.schemas.catalog); err != nil {
+		return nil, prepared.fail(ctx, err)
+	}
 	prepared.metadata, err = factory.metadata.PrepareMetadata(ctx, attempt)
 	if err != nil {
 		return nil, prepared.fail(ctx, err)
@@ -166,9 +175,6 @@ func (factory *attemptFactory) prepareRegisteredAttempt(
 	}
 	if prepared.consumers == nil {
 		return nil, prepared.fail(ctx, errAttemptPreparationFailed)
-	}
-	if err := validateScopedSecretSupport(occurrences, factory.compiler.schemas.catalog); err != nil {
-		return nil, prepared.fail(ctx, err)
 	}
 	prepared.plugins, err = factory.plugins.PreparePlugins(
 		ctx, attempt, prepared.metadata, consumerLookupView{bindings: prepared.consumers},

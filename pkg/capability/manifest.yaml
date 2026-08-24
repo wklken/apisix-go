@@ -832,6 +832,7 @@ plugins:
         source: "plugin_config"
         field: "key"
         strict: false
+        target: "compiler_discard"
       - factory: "key-auth"
         source: "consumer_config"
         field: "key"
@@ -869,10 +870,12 @@ plugins:
         source: "plugin_config"
         field: "secret"
         strict: false
+        target: "compiler_discard"
       - factory: "jwt-auth"
         source: "plugin_config"
         field: "private_key"
         strict: false
+        target: "compiler_discard"
       - factory: "jwt-auth"
         source: "consumer_config"
         field: "key"
@@ -926,10 +929,12 @@ plugins:
         source: "plugin_config"
         field: "key"
         strict: false
+        target: "compiler_discard"
       - factory: "jwe-decrypt"
         source: "plugin_config"
         field: "secret"
         strict: false
+        target: "compiler_discard"
       - factory: "jwe-decrypt"
         source: "consumer_config"
         field: "key"
@@ -971,6 +976,7 @@ plugins:
         source: "plugin_config"
         field: "password"
         strict: false
+        target: "compiler_discard"
       - factory: "basic-auth"
         source: "consumer_config"
         field: "username"
@@ -1086,6 +1092,10 @@ plugins:
         source: "plugin_config"
         field: "secret"
         strict: false
+      - factory: "dingtalk-auth"
+        source: "plugin_config"
+        field: "secret_fallbacks"
+        strict: false
     implementation: "dingtalk-auth"
     namespace: "apisix"
     domains: ["http"]
@@ -1163,6 +1173,10 @@ plugins:
       - factory: "saml-auth"
         source: "plugin_config"
         field: "secret"
+        strict: false
+      - factory: "saml-auth"
+        source: "plugin_config"
+        field: "secret_fallbacks"
         strict: false
     implementation: "saml-auth"
     namespace: "apisix"
@@ -1324,6 +1338,7 @@ plugins:
         source: "plugin_config"
         field: "secret"
         strict: false
+        target: "compiler_discard"
       - factory: "hmac-auth"
         source: "consumer_config"
         field: "key_id"
@@ -1393,6 +1408,7 @@ plugins:
         source: "plugin_config"
         field: "user_dn"
         strict: false
+        target: "compiler_discard"
       - factory: "ldap-auth"
         source: "consumer_config"
         field: "user_dn"

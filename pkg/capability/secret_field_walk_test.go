@@ -3,6 +3,7 @@ package capability
 import (
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -203,6 +204,63 @@ func TestTransformDeclaredFieldsDoesNotVisitMapKeys(t *testing.T) {
 	}
 	if want := []any{"plain-value"}; !reflect.DeepEqual(values, want) {
 		t.Fatalf("values = %#v, want map values only %#v", values, want)
+	}
+}
+
+func TestTransformDeclaredFieldsForTargetFiltersManifestTarget(t *testing.T) {
+	manifest := testManifest()
+	manifest.Plugins[0].SecretDeclarations = []SecretDeclaration{
+		{
+			Factory: "request-id", Source: SecretPluginConfig, Field: "auth.discard",
+			Target: SecretMaterializationCompilerDiscard,
+		},
+		{
+			Factory: "request-id", Source: SecretPluginConfig, Field: "auth.plugin",
+		},
+	}
+	catalog := mustDeclarationCatalog(t, manifest)
+	document := map[string]any{"auth": map[string]any{"discard": "old-discard", "plugin": "old-plugin"}}
+	var visited []string
+	err := catalog.TransformDeclaredFieldsForTarget(
+		"request-id",
+		SecretPluginConfig,
+		SecretMaterializationCompilerDiscard,
+		document,
+		func(declaration SecretDeclaration, _ string, _ any) (any, error) {
+			visited = append(visited, declaration.Field)
+			return "new-discard", nil
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"auth.discard"}; !reflect.DeepEqual(visited, want) {
+		t.Fatalf("visited fields = %#v, want %#v", visited, want)
+	}
+	if want := map[string]any{
+		"auth": map[string]any{"discard": "new-discard", "plugin": "old-plugin"},
+	}; !reflect.DeepEqual(
+		document,
+		want,
+	) {
+		t.Fatalf("document = %#v, want %#v", document, want)
+	}
+}
+
+func TestTransformDeclaredFieldsForTargetRejectsInvalidTarget(t *testing.T) {
+	catalog := testWalkCatalog(t, "token")
+	err := catalog.TransformDeclaredFieldsForTarget(
+		"request-id",
+		SecretPluginConfig,
+		SecretMaterializationTarget("other"),
+		map[string]any{"token": "value"},
+		func(SecretDeclaration, string, any) (any, error) {
+			t.Fatal("transform called for invalid target")
+			return nil, nil
+		},
+	)
+	if err == nil || !strings.Contains(err.Error(), "unknown materialization target") {
+		t.Fatalf("TransformDeclaredFieldsForTarget() error = %v, want invalid target", err)
 	}
 }
 

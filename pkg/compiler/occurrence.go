@@ -143,11 +143,15 @@ func validateScopedSecretSupport(
 		if occurrence.source != capability.SecretPluginConfig {
 			continue
 		}
-		hasDeclarations := false
-		catalog.ForEach(occurrence.factory, capability.SecretPluginConfig, func(capability.SecretDeclaration) {
-			hasDeclarations = true
+		requiresPluginOwner := false
+		catalog.ForEach(occurrence.factory, capability.SecretPluginConfig, func(
+			declaration capability.SecretDeclaration,
+		) {
+			if declaration.EffectiveTarget() == capability.SecretMaterializationPlugin {
+				requiresPluginOwner = true
+			}
 		})
-		if hasDeclarations {
+		if requiresPluginOwner {
 			factories[occurrence.factory] = struct{}{}
 		}
 	}

@@ -339,28 +339,29 @@ func TestRegisteredAttemptCloseIsConcurrentAndIdempotent(t *testing.T) {
 	}
 }
 
-func TestAttemptFactoryRejectsLegacyOnlySecretFactoryBeforePluginHook(t *testing.T) {
+func TestAttemptFactoryRejectsUnownedPluginTargetBeforeRegistration(t *testing.T) {
 	factory, materializer, pluginPreparer, trace := newRecordingAttemptFactory(t)
 	desired := mustGenerationSnapshot(t, 46, []generation.Resource{
 		resourceValue(
 			"routes", "r1",
-			`{"id":"r1","plugins":{"basic-auth":{"password":"$ENV://PASSWORD"}}}`,
+			`{"id":"r1","plugins":{"response-rewrite":{"body":"$ENV://BODY"}}}`,
 		),
 	}, nil)
 	prepared, err := factory.prepareCandidateAttempt(
 		context.Background(), ticketForSnapshot(desired, generation.DomainHTTP), desired, nil,
 	)
 	if prepared != nil || !errors.Is(err, errAttemptPreparationFailed) {
-		t.Fatalf("legacy-only preparation = %#v/%v", prepared, err)
+		t.Fatalf("unowned plugin-target preparation = %#v/%v", prepared, err)
 	}
 	if pluginPreparer.lookup != nil {
-		t.Fatal("legacy-only factory reached plugin hook")
+		t.Fatal("unowned plugin-target factory reached plugin hook")
 	}
-	if materializer.registration.closed != 1 {
-		t.Fatalf("legacy-only registration close calls = %d", materializer.registration.closed)
+	if materializer.candidateCalls != 0 || materializer.registration != nil {
+		t.Fatalf("unowned plugin-target registration = %d/%#v, want zero/nil",
+			materializer.candidateCalls, materializer.registration)
 	}
-	if slices.Contains(*trace, "plugin") {
-		t.Fatalf("legacy-only preparation trace called plugin hook: %v", *trace)
+	if len(*trace) != 0 || slices.Contains(*trace, "plugin") {
+		t.Fatalf("unowned plugin-target preparation trace = %v, want empty", *trace)
 	}
 }
 

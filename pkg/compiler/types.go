@@ -12,6 +12,8 @@ var ErrInvalidInput = errors.New("invalid compiler input")
 
 var ErrPreparedSetMismatch = errors.New("prepared publication set mismatch")
 
+var ErrWorkerCompilerFactoryClosed = errors.New("worker compiler factory is closed")
+
 type Compiler struct {
 	manifest *capability.Manifest
 	schemas  *schemaSet

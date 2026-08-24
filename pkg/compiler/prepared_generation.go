@@ -2,6 +2,7 @@ package compiler
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"sync"
 
@@ -13,6 +14,8 @@ import (
 	"github.com/wklken/apisix-go/pkg/runtime"
 	"github.com/wklken/apisix-go/pkg/secret"
 )
+
+var errPreparedGenerationCleanupFailed = errors.New("prepared generation cleanup failed")
 
 // PreparedGeneration owns one fully prepared candidate or recovered
 // generation until it is discarded or transferred to a runtime owner.
@@ -127,7 +130,9 @@ func (prepared *PreparedGeneration) Close(ctx context.Context) error {
 		cleanup := prepared.cleanup
 		prepared.materializeMu.Unlock()
 		if cleanup != nil {
-			prepared.closeErr = cleanup.Close(cleanupCtx)
+			if cleanup.Close(cleanupCtx) != nil {
+				prepared.closeErr = errPreparedGenerationCleanupFailed
+			}
 		}
 
 		prepared.materializeMu.Lock()

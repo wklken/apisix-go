@@ -1,10 +1,12 @@
 package compiler
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"sync"
 
 	"github.com/wklken/apisix-go/pkg/capability"
@@ -15,9 +17,10 @@ import (
 )
 
 var (
-	errWorkerGenerationPreparationFailed = errors.New("worker generation preparation failed")
-	errWorkerGenerationCleanupFailed     = errors.New("worker generation cleanup failed")
-	errWorkerRegistrationCleanupFailed   = errors.New("worker attempt registration cleanup failed")
+	errWorkerGenerationPreparationFailed  = errors.New("worker generation preparation failed")
+	errWorkerGenerationCleanupFailed      = errors.New("worker generation cleanup failed")
+	errWorkerRegistrationCleanupFailed    = errors.New("worker attempt registration cleanup failed")
+	errWorkerCompilerFactoryCleanupFailed = errors.New("worker compiler factory cleanup failed")
 )
 
 type workerFactoryCheckpointState struct {
@@ -42,6 +45,9 @@ type WorkerCompilerFactory struct {
 
 	liveMu sync.Mutex
 	live   map[secret.AttemptID]*PreparedGeneration
+
+	closeOnce sync.Once
+	closeErr  error
 
 	checkpoint func(string, workerFactoryCheckpointState) error
 }
@@ -102,13 +108,13 @@ func (factory *WorkerCompilerFactory) PrepareGeneration(
 	if factory == nil || ctx == nil {
 		return nil, fmt.Errorf("%w: worker compiler factory and context are required", ErrInvalidInput)
 	}
-	if err := ctx.Err(); err != nil {
-		return nil, workerGenerationFailure(err, nil)
-	}
 	factory.gate.RLock()
 	defer factory.gate.RUnlock()
 	if factory.closed {
-		return nil, workerGenerationFailure(nil, nil)
+		return nil, ErrWorkerCompilerFactoryClosed
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, workerGenerationFailure(err, nil)
 	}
 
 	registered, err := factory.attempts.prepareCandidateAttempt(ctx, ticket, desired, previous)
@@ -129,13 +135,13 @@ func (factory *WorkerCompilerFactory) PrepareRecovery(
 	if factory == nil || ctx == nil {
 		return nil, fmt.Errorf("%w: worker compiler factory and context are required", ErrInvalidInput)
 	}
-	if err := ctx.Err(); err != nil {
-		return nil, workerGenerationFailure(err, nil)
-	}
 	factory.gate.RLock()
 	defer factory.gate.RUnlock()
 	if factory.closed {
-		return nil, workerGenerationFailure(nil, nil)
+		return nil, ErrWorkerCompilerFactoryClosed
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, workerGenerationFailure(err, nil)
 	}
 
 	registered, err := factory.attempts.prepareRecoveryAttempt(ctx, revisions, committed)
@@ -143,6 +149,50 @@ func (factory *WorkerCompilerFactory) PrepareRecovery(
 		return nil, workerGenerationFailure(err, nil)
 	}
 	return factory.transferRegisteredGeneration(ctx, registered, onFailure)
+}
+
+// Close terminally stops every live generation before closing the shared
+// resource registry. Repeated calls replay the first safe cleanup result.
+func (factory *WorkerCompilerFactory) Close(ctx context.Context) error {
+	if factory == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	cleanupCtx := context.WithoutCancel(ctx)
+	factory.closeOnce.Do(func() {
+		factory.gate.Lock()
+		factory.closed = true
+		factory.liveMu.Lock()
+		type liveGeneration struct {
+			attemptID secret.AttemptID
+			prepared  *PreparedGeneration
+		}
+		live := make([]liveGeneration, 0, len(factory.live))
+		for attemptID, prepared := range factory.live {
+			live = append(live, liveGeneration{attemptID: attemptID, prepared: prepared})
+		}
+		factory.liveMu.Unlock()
+		factory.gate.Unlock()
+
+		slices.SortFunc(live, func(left, right liveGeneration) int {
+			return bytes.Compare(left.attemptID[:], right.attemptID[:])
+		})
+		cleanupFailed := false
+		for _, generationOwner := range live {
+			if generationOwner.prepared.Close(cleanupCtx) != nil {
+				cleanupFailed = true
+			}
+		}
+		if factory.registry != nil && factory.registry.Close(cleanupCtx) != nil {
+			cleanupFailed = true
+		}
+		if cleanupFailed {
+			factory.closeErr = errWorkerCompilerFactoryCleanupFailed
+		}
+	})
+	return factory.closeErr
 }
 
 // transferRegisteredGeneration is the single candidate/recovery ownership

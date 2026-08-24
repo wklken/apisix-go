@@ -353,9 +353,10 @@ func TestPreparedGenerationCanceledCloseQuiescesTasksBeforeReleaseAndReplaysErro
 	if releasedBeforeTaskExit.Load() {
 		t.Error("release callback ran before task exit")
 	}
-	if !errors.Is(firstErr, releaseErr) || errors.Is(firstErr, context.Canceled) {
-		t.Fatalf("first Close() error = %v, want sentinel release error only", firstErr)
+	if errors.Is(firstErr, context.Canceled) {
+		t.Fatalf("first Close() error = %v, cleanup inherited caller cancellation", firstErr)
 	}
+	assertWorkerErrorRedacted(t, firstErr, releaseErr)
 	for range concurrentCallers {
 		if err := <-concurrentErrs; err != firstErr {
 			t.Fatalf("concurrent Close() error = %v, want replayed %v", err, firstErr)

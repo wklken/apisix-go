@@ -16,6 +16,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/hmac_auth"
 	"github.com/wklken/apisix-go/pkg/plugin/key_auth"
 	"github.com/wklken/apisix-go/pkg/resource"
@@ -81,6 +82,9 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
+	if err := base.MaterializePluginSecrets(p); err != nil {
+		t.Fatalf("MaterializePluginSecrets() error = %v", err)
+	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
@@ -130,9 +134,9 @@ func TestMultiAuthRejectsDisabledNestedPluginBeforeConstruction(t *testing.T) {
 	}
 	p.SetPluginEnabledChecker(func(name string) bool { return name != "unknown-auth" })
 
-	err := p.PostInit()
+	err := p.MaterializeSecrets()
 	if err == nil || !strings.Contains(err.Error(), "unknown-auth") || !strings.Contains(err.Error(), "disabled") {
-		t.Fatalf("PostInit() error = %v, want disabled unknown-auth rejection before construction", err)
+		t.Fatalf("MaterializeSecrets() error = %v, want disabled unknown-auth rejection before construction", err)
 	}
 	if len(p.auths) != 0 {
 		t.Fatalf("configured auth plugins after rejection = %d, want no child constructed", len(p.auths))
@@ -146,6 +150,9 @@ func TestMultiAuthRejectsDisabledNestedPluginBeforeConstruction(t *testing.T) {
 		t.Fatalf("enabled Init() error = %v", err)
 	}
 	enabled.SetPluginEnabledChecker(func(string) bool { return true })
+	if err := enabled.MaterializeSecrets(); err != nil {
+		t.Fatalf("enabled MaterializeSecrets() error = %v", err)
+	}
 	if err := enabled.PostInit(); err != nil {
 		t.Fatalf("enabled PostInit() error = %v", err)
 	}
@@ -523,7 +530,9 @@ func TestPostInitAllowsAuthPluginEntryWithMultiplePlugins(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-
+	if err := p.MaterializeSecrets(); err != nil {
+		t.Fatalf("MaterializeSecrets() error = %v", err)
+	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v, want all plugins in an entry to be accepted", err)
 	}
@@ -851,9 +860,9 @@ func TestPostInitRejectsUnsupportedAuthPlugin(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	err := p.PostInit()
+	err := p.MaterializeSecrets()
 	if err == nil || !strings.Contains(err.Error(), "unknown-auth") {
-		t.Fatalf("PostInit() error = %v, want unknown-auth", err)
+		t.Fatalf("MaterializeSecrets() error = %v, want unknown-auth", err)
 	}
 }
 
@@ -873,10 +882,11 @@ func TestUnownedSecretReferenceRejectsNestedAuthPlugin(t *testing.T) {
 		t.Fatalf("Init() error = %v", err)
 	}
 
-	err := p.PostInit()
-	if err == nil ||
-		!strings.Contains(err.Error(), "unowned secret reference") ||
-		!strings.Contains(err.Error(), "realm") {
-		t.Fatalf("PostInit() error = %v, want nested auth secret rejection", err)
+	err := p.MaterializeSecrets()
+	if err == nil || !strings.Contains(err.Error(), "child preparation failed") {
+		t.Fatalf("MaterializeSecrets() error = %v, want redacted nested auth secret rejection", err)
+	}
+	if strings.Contains(err.Error(), "MULTI_AUTH_REALM") {
+		t.Fatalf("MaterializeSecrets() error exposed raw secret reference: %v", err)
 	}
 }

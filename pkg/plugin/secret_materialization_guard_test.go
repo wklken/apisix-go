@@ -59,7 +59,7 @@ func TestSecretMaterializationGuardRejectsScopedLegacyResolution(t *testing.T) {
 		"ai_rate_limiting", "csrf", "kafka_proxy", "response_rewrite",
 		"elasticsearch_logger", "error_log_logger", "google_cloud_logging",
 		"http_logger", "kafka_logger", "lago", "loggly", "rocketmq_logger",
-		"sls_logger", "splunk_hec_logging", "tencent_cloud_cls",
+		"sls_logger", "splunk_hec_logging", "tencent_cloud_cls", "workflow", "multi_auth",
 	}
 	fset := token.NewFileSet()
 	files := make(map[string]*ast.File)

@@ -1,18 +1,25 @@
 package workflow
 
 import (
+	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/capability"
+	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/plugin/limit_count"
 	"github.com/wklken/apisix-go/pkg/resource"
+	"github.com/wklken/apisix-go/pkg/store"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -23,6 +30,140 @@ type recordingWorkflowStopper struct {
 
 func (s recordingWorkflowStopper) Stop() {
 	*s.order = append(*s.order, s.name)
+}
+
+type scriptedWorkflowPreparedChild struct {
+	factory string
+	child   any
+	name    string
+	order   *[]string
+	entered chan struct{}
+	onClose func()
+	close   sync.Once
+}
+
+func (child *scriptedWorkflowPreparedChild) Factory() string { return child.factory }
+func (child *scriptedWorkflowPreparedChild) Instance() any   { return child.child }
+func (child *scriptedWorkflowPreparedChild) Close() {
+	child.close.Do(func() {
+		if child.onClose != nil {
+			child.onClose()
+		}
+		if child.entered != nil {
+			select {
+			case <-child.entered:
+			default:
+				close(child.entered)
+			}
+		}
+		*child.order = append(*child.order, child.name)
+		if stopper, ok := child.child.(interface{ Stop() }); ok {
+			stopper.Stop()
+		}
+	})
+}
+
+type scriptedWorkflowPreparer struct {
+	t            *testing.T
+	failAt       int
+	selfStopName string
+	failErr      error
+	factory      string
+	closeEntered chan struct{}
+	onPrepare    func()
+	afterPrepare func(int)
+	onClose      func()
+	calls        []base.CompositeChildSpec
+	closeOrder   []string
+}
+
+type workflowConsumerLookup struct {
+	groups map[string]resource.ConsumerGroup
+	calls  int
+}
+
+func (*workflowConsumerLookup) ConsumerByPluginKey(string, string) (resource.Consumer, bool) {
+	return resource.Consumer{}, false
+}
+
+func (*workflowConsumerLookup) ConsumerByID(string) (resource.Consumer, bool) {
+	return resource.Consumer{}, false
+}
+
+func (lookup *workflowConsumerLookup) ConsumerGroupByID(id string) (resource.ConsumerGroup, bool) {
+	lookup.calls++
+	group, ok := lookup.groups[id]
+	return group, ok
+}
+
+func (preparer *scriptedWorkflowPreparer) Prepare(
+	_ context.Context,
+	_ base.ScopedSecretAccess,
+	spec base.CompositeChildSpec,
+) (base.PreparedCompositeChild, error) {
+	if preparer.onPrepare != nil {
+		preparer.onPrepare()
+	}
+	preparer.calls = append(preparer.calls, spec)
+	index := len(preparer.calls) - 1
+	if index == preparer.failAt {
+		preparer.closeOrder = append(preparer.closeOrder, preparer.selfStopName)
+		if preparer.failErr != nil {
+			return nil, preparer.failErr
+		}
+		return nil, errors.New("scripted child preparation failed")
+	}
+	child := &limit_count.Plugin{}
+	if err := child.Init(); err != nil {
+		preparer.t.Fatalf("child Init() error = %v", err)
+	}
+	if err := util.Parse(spec.Config, child.Config()); err != nil {
+		preparer.t.Fatalf("parse child config: %v", err)
+	}
+	if err := child.PostInit(); err != nil {
+		preparer.t.Fatalf("child PostInit() error = %v", err)
+	}
+	factory := spec.Factory
+	if preparer.factory != "" {
+		factory = preparer.factory
+	}
+	if preparer.afterPrepare != nil {
+		preparer.afterPrepare(index)
+	}
+	return &scriptedWorkflowPreparedChild{
+		factory: factory,
+		child:   child,
+		name:    fmt.Sprintf("child-%d", index),
+		order:   &preparer.closeOrder,
+		entered: preparer.closeEntered,
+		onClose: preparer.onClose,
+	}, nil
+}
+
+type blockingWorkflowContextChild struct {
+	entered chan struct{}
+	release chan struct{}
+	onSet   func()
+}
+
+func (*blockingWorkflowContextChild) Init() error       { return nil }
+func (*blockingWorkflowContextChild) PostInit() error   { return nil }
+func (*blockingWorkflowContextChild) Config() any       { return &struct{}{} }
+func (*blockingWorkflowContextChild) GetSchema() string { return `{}` }
+func (child *blockingWorkflowContextChild) SetResourceContext(resource.Route, resource.Service) {
+	close(child.entered)
+	if child.onSet != nil {
+		child.onSet()
+	}
+	<-child.release
+}
+
+func validScopedLimitCountConfig() map[string]any {
+	return map[string]any{
+		"count":       2,
+		"time_window": 60,
+		"key":         "remote_addr",
+	}
 }
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -43,15 +184,26 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 }
 
 func TestSetResourceContextForwardsRouteScopeToChildren(t *testing.T) {
-	p := newTestPlugin(t, Config{Rules: []Rule{{Actions: []Action{{
-		Name: "limit-req",
-		Config: map[string]any{
-			"rate":  1,
-			"burst": 0,
-			"key":   "remote_addr",
-		},
-	}}}}})
+	p := &Plugin{config: Config{
+		Rules: []Rule{{Actions: []Action{{
+			Name: "limit-req",
+			Config: map[string]any{
+				"rate":  1,
+				"burst": 0,
+				"key":   "remote_addr",
+			},
+		}}}},
+	}}
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	if err := base.MaterializePluginSecrets(p); err != nil {
+		t.Fatal(err)
+	}
 	p.SetResourceContext(resource.Route{ID: "route-1"}, resource.Service{})
+	if err := p.PostInit(); err != nil {
+		t.Fatal(err)
+	}
 
 	child := p.children[actionPosition{rule: 0, action: 0}]
 	if child == nil {
@@ -184,6 +336,24 @@ func TestWorkflowRejectsDisabledNestedPluginBeforeConstruction(t *testing.T) {
 	}
 }
 
+func TestValidatePreMaterializationRejectsEveryInvalidLimitActionSchema(t *testing.T) {
+	for _, actionName := range []string{"limit-req", "limit-conn", "limit-count"} {
+		t.Run(actionName, func(t *testing.T) {
+			p := &Plugin{config: Config{Rules: []Rule{{Actions: []Action{{
+				Name: actionName, Config: map[string]any{},
+			}}}}}}
+			if err := p.Init(); err != nil {
+				t.Fatalf("Init() error = %v", err)
+			}
+
+			err := p.ValidatePreMaterialization()
+			if err == nil || !strings.Contains(err.Error(), actionName) {
+				t.Fatalf("ValidatePreMaterialization() error = %v, want %s schema rejection", err, actionName)
+			}
+		})
+	}
+}
+
 func TestHandlerReturnsConfiguredStatusForMatchingCase(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		Rules: []Rule{
@@ -304,7 +474,7 @@ func TestHandlerSupportsRestyExpressionOperators(t *testing.T) {
 	}
 }
 
-func TestPostInitRejectsUnsupportedAction(t *testing.T) {
+func TestValidatePreMaterializationRejectsUnsupportedAction(t *testing.T) {
 	p := &Plugin{config: Config{
 		Rules: []Rule{
 			{Actions: []Action{{Name: "unsupported-action"}}},
@@ -313,13 +483,9 @@ func TestPostInitRejectsUnsupportedAction(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := base.MaterializePluginSecrets(p); err != nil {
-		t.Fatalf("MaterializePluginSecrets() error = %v", err)
-	}
-
-	err := p.PostInit()
+	err := p.ValidatePreMaterialization()
 	if err == nil || !strings.Contains(err.Error(), "unsupported workflow action") {
-		t.Fatalf("PostInit() error = %v, want unsupported workflow action error", err)
+		t.Fatalf("ValidatePreMaterialization() error = %v, want unsupported workflow action error", err)
 	}
 }
 
@@ -384,8 +550,13 @@ func TestStopRetiresChildrenInReverseOrderAndIsIdempotent(t *testing.T) {
 		},
 	}
 
-	p.Stop()
-	p.Stop()
+	var wait sync.WaitGroup
+	for range 8 {
+		wait.Go(func() {
+			p.Stop()
+		})
+	}
+	wait.Wait()
 	if got := strings.Join(order, ","); got != "second,first" {
 		t.Fatalf("Stop order = %q, want second,first exactly once", got)
 	}
@@ -394,7 +565,7 @@ func TestStopRetiresChildrenInReverseOrderAndIsIdempotent(t *testing.T) {
 	}
 }
 
-func TestPostInitValidatesTerminalReturnCode(t *testing.T) {
+func TestValidatePreMaterializationValidatesTerminalReturnCode(t *testing.T) {
 	for _, test := range []struct {
 		code    int
 		wantErr bool
@@ -416,19 +587,15 @@ func TestPostInitValidatesTerminalReturnCode(t *testing.T) {
 			if err := p.Init(); err != nil {
 				t.Fatalf("Init() error = %v", err)
 			}
-			if err := base.MaterializePluginSecrets(p); err != nil {
-				t.Fatalf("MaterializePluginSecrets() error = %v", err)
-			}
-
-			err := p.PostInit()
+			err := p.ValidatePreMaterialization()
 			if test.wantErr {
 				if err == nil || !strings.Contains(err.Error(), "return action code") {
-					t.Fatalf("PostInit() error = %v, want return action code error", err)
+					t.Fatalf("ValidatePreMaterialization() error = %v, want return action code error", err)
 				}
 				return
 			}
 			if err != nil {
-				t.Fatalf("PostInit() error = %v, want nil", err)
+				t.Fatalf("ValidatePreMaterialization() error = %v, want nil", err)
 			}
 		})
 	}
@@ -462,7 +629,763 @@ func TestValidatePreMaterializationRejectsInvalidLimitCountActionBeforeSecretRes
 	}
 }
 
-func TestPostInitRejectsLimitCountGroup(t *testing.T) {
+func TestMaterializeScopedSecretsUsesStableSiblingPositions(t *testing.T) {
+	preparer := &scriptedWorkflowPreparer{t: t, failAt: -1}
+	p := &Plugin{config: Config{Rules: []Rule{{Actions: []Action{
+		{Name: "limit-count", Config: validScopedLimitCountConfig()},
+		{Name: "limit-count", Config: validScopedLimitCountConfig()},
+	}}}}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	p.SetDependencies(base.Dependencies{CompositeChildren: preparer})
+
+	if err := p.MaterializeScopedSecrets(context.Background(), base.ScopedSecretAccess{}); err != nil {
+		t.Fatalf("MaterializeScopedSecrets() error = %v", err)
+	}
+	if len(preparer.calls) != 2 {
+		t.Fatalf("Prepare calls = %d, want 2", len(preparer.calls))
+	}
+	if got := preparer.calls[0].Position; got != "workflow/rule/0/action/0" {
+		t.Fatalf("first child position = %q", got)
+	}
+	if got := preparer.calls[1].Position; got != "workflow/rule/0/action/1" {
+		t.Fatalf("second child position = %q", got)
+	}
+	if preparer.calls[0].Factory != "limit-count" || preparer.calls[1].Factory != "limit-count" {
+		t.Fatalf(
+			"child factories = %q/%q, want exact limit-count",
+			preparer.calls[0].Factory,
+			preparer.calls[1].Factory,
+		)
+	}
+	p.Stop()
+}
+
+func TestMaterializeScopedSecretsFailureStopsEarlierChildrenInReverseOnce(t *testing.T) {
+	preparer := &scriptedWorkflowPreparer{t: t, failAt: 2, selfStopName: "third-self"}
+	p := &Plugin{config: Config{Rules: []Rule{{Actions: []Action{
+		{Name: "limit-count", Config: validScopedLimitCountConfig()},
+		{Name: "limit-count", Config: validScopedLimitCountConfig()},
+		{Name: "limit-count", Config: validScopedLimitCountConfig()},
+	}}}}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	p.SetDependencies(base.Dependencies{CompositeChildren: preparer})
+
+	err := p.MaterializeScopedSecrets(context.Background(), base.ScopedSecretAccess{})
+	if err == nil {
+		t.Fatal("MaterializeScopedSecrets() error = nil, want third child failure")
+	}
+	p.Stop()
+	p.Stop()
+	if got := strings.Join(preparer.closeOrder, ","); got != "third-self,child-1,child-0" {
+		t.Fatalf("cleanup order = %q, want third-self,child-1,child-0 exactly once", got)
+	}
+	for _, action := range p.config.Rules[0].Actions {
+		if action.limitReq != nil || action.limitConn != nil || action.limitCount != nil {
+			t.Fatalf("failed scoped preparation published runtime child: %#v", action)
+		}
+	}
+}
+
+func TestMaterializeScopedSecretsRejectsForeignFactoryAndClosesItOnce(t *testing.T) {
+	preparer := &scriptedWorkflowPreparer{t: t, failAt: -1, factory: "limit-req"}
+	p := &Plugin{config: Config{Rules: []Rule{{Actions: []Action{{
+		Name: "limit-count", Config: validScopedLimitCountConfig(),
+	}}}}}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	p.SetDependencies(base.Dependencies{CompositeChildren: preparer})
+
+	err := p.MaterializeScopedSecrets(context.Background(), base.ScopedSecretAccess{})
+	if err == nil {
+		t.Fatal("MaterializeScopedSecrets() error = nil, want foreign factory rejection")
+	}
+	p.Stop()
+	if got := strings.Join(preparer.closeOrder, ","); got != "child-0" {
+		t.Fatalf("foreign child cleanup = %q, want child-0 exactly once", got)
+	}
+}
+
+func TestMaterializeScopedSecretsRejectsAllInvalidChildrenBeforePreparation(t *testing.T) {
+	preparer := &scriptedWorkflowPreparer{t: t, failAt: -1}
+	p := &Plugin{config: Config{Rules: []Rule{{Actions: []Action{
+		{
+			Name: "limit-count",
+			Config: map[string]any{
+				"count":       2,
+				"time_window": 60,
+				"key":         "$ENV://WORKFLOW_FIRST_CHILD_KEY",
+			},
+		},
+		{
+			Name: "limit-count",
+			Config: map[string]any{
+				"count": 2,
+				"key":   "remote_addr",
+			},
+		},
+	}}}}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	p.SetDependencies(base.Dependencies{CompositeChildren: preparer})
+
+	err := p.MaterializeScopedSecrets(context.Background(), base.ScopedSecretAccess{})
+	if err == nil || !strings.Contains(err.Error(), "time_window") {
+		t.Fatalf("MaterializeScopedSecrets() error = %v, want later schema rejection", err)
+	}
+	if len(preparer.calls) != 0 {
+		t.Fatalf("Prepare calls = %d, want zero before complete validation", len(preparer.calls))
+	}
+	if got := p.config.Rules[0].Actions[0].Config["key"]; got != "$ENV://WORKFLOW_FIRST_CHILD_KEY" {
+		t.Fatalf("first child config = %v, want untouched reference after validation failure", got)
+	}
+}
+
+func newScopedWorkflowWithPreparer(
+	t *testing.T,
+	preparer base.CompositeChildPreparer,
+) *Plugin {
+	t.Helper()
+	p := &Plugin{config: Config{Rules: []Rule{{Actions: []Action{{
+		Name: "limit-count", Config: validScopedLimitCountConfig(),
+	}}}}}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	p.SetDependencies(base.Dependencies{CompositeChildren: preparer})
+	if err := p.MaterializeScopedSecrets(context.Background(), base.ScopedSecretAccess{}); err != nil {
+		t.Fatalf("MaterializeScopedSecrets() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+	return p
+}
+
+func startBlockingWorkflowRequest(t *testing.T, p *Plugin) (chan struct{}, <-chan struct{}) {
+	t.Helper()
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	done := make(chan struct{})
+	handler := p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		close(entered)
+		<-release
+	}))
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	request.RemoteAddr = "192.0.2.77:1234"
+	go func() {
+		defer close(done)
+		handler.ServeHTTP(httptest.NewRecorder(), request)
+	}()
+	<-entered
+	return release, done
+}
+
+func requireWorkflowOperationCompletes(t *testing.T, done <-chan struct{}, operation string) {
+	t.Helper()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatalf("%s deadlocked during synchronous lifecycle reentry", operation)
+	}
+}
+
+func TestScopedWorkflowHandlerLeaseDefersCloseWithoutBlockingStop(t *testing.T) {
+	closeEntered := make(chan struct{})
+	preparer := &scriptedWorkflowPreparer{t: t, failAt: -1, closeEntered: closeEntered}
+	p := newScopedWorkflowWithPreparer(t, preparer)
+	release, requestDone := startBlockingWorkflowRequest(t, p)
+	started := make(chan struct{})
+	stopDone := make(chan struct{})
+	go func() {
+		close(started)
+		p.Stop()
+		close(stopDone)
+	}()
+	<-started
+	requireWorkflowOperationCompletes(t, stopDone, "Stop")
+	select {
+	case <-closeEntered:
+		t.Fatal("Stop closed the workflow child while its handler was active")
+	default:
+	}
+	close(release)
+	<-requestDone
+	<-closeEntered
+}
+
+func TestScopedWorkflowHandlerLeaseDefersOldCloseWithoutBlockingRematerialization(t *testing.T) {
+	closeEntered := make(chan struct{})
+	preparer := &scriptedWorkflowPreparer{t: t, failAt: -1, closeEntered: closeEntered}
+	p := newScopedWorkflowWithPreparer(t, preparer)
+	release, requestDone := startBlockingWorkflowRequest(t, p)
+	started := make(chan struct{})
+	materializeDone := make(chan struct{})
+	var materializeErr error
+	go func() {
+		close(started)
+		materializeErr = p.MaterializeScopedSecrets(context.Background(), base.ScopedSecretAccess{})
+		close(materializeDone)
+	}()
+	<-started
+	requireWorkflowOperationCompletes(t, materializeDone, "rematerialization")
+	select {
+	case <-closeEntered:
+		t.Fatal("rematerialization closed the workflow child while its handler was active")
+	default:
+	}
+	close(release)
+	<-requestDone
+	if materializeErr != nil {
+		t.Fatalf("MaterializeScopedSecrets() error = %v", materializeErr)
+	}
+	<-closeEntered
+	p.Stop()
+	if got := strings.Join(preparer.closeOrder, ","); got != "child-0,child-1" {
+		t.Fatalf("retirement order = %q, want old then current exactly once", got)
+	}
+}
+
+func TestScopedWorkflowHandlerLeaseAllowsPostInitAndResourceContextReentry(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		operation func(*Plugin) error
+	}{
+		{
+			name: "PostInit",
+			operation: func(p *Plugin) error {
+				err := p.PostInit()
+				if errors.Is(err, errWorkflowLifecycleBusy) {
+					return nil
+				}
+				return err
+			},
+		},
+		{
+			name: "SetResourceContext",
+			operation: func(p *Plugin) error {
+				p.SetResourceContext(resource.Route{ID: "route-updated"}, resource.Service{})
+				return nil
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			preparer := &scriptedWorkflowPreparer{t: t, failAt: -1}
+			p := newScopedWorkflowWithPreparer(t, preparer)
+			release, requestDone := startBlockingWorkflowRequest(t, p)
+			started := make(chan struct{})
+			operationDone := make(chan struct{})
+			var operationErr error
+			go func() {
+				close(started)
+				operationErr = test.operation(p)
+				close(operationDone)
+			}()
+			<-started
+			requireWorkflowOperationCompletes(t, operationDone, test.name)
+			close(release)
+			<-requestDone
+			if operationErr != nil {
+				t.Fatalf("%s error = %v", test.name, operationErr)
+			}
+			p.Stop()
+		})
+	}
+}
+
+func TestScopedWorkflowActiveHandlerDefersResourceContextToNextGeneration(t *testing.T) {
+	preparer := &scriptedWorkflowPreparer{t: t, failAt: -1}
+	p := &Plugin{config: Config{Rules: []Rule{{Actions: []Action{{
+		Name: "limit-count", Config: validScopedLimitCountConfig(),
+	}}}}}}
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	p.SetDependencies(base.Dependencies{CompositeChildren: preparer})
+	if err := p.MaterializeScopedSecrets(context.Background(), base.ScopedSecretAccess{}); err != nil {
+		t.Fatal(err)
+	}
+	p.SetResourceContext(resource.Route{ID: "route-current"}, resource.Service{})
+	if err := p.PostInit(); err != nil {
+		t.Fatal(err)
+	}
+	current := p.children[actionPosition{rule: 0, action: 0}]
+	if dump := fmt.Sprintf("%#v", current); !strings.Contains(dump, `routeID:"route-current"`) {
+		t.Fatalf("current child = %s, want initial route context", dump)
+	}
+
+	release, requestDone := startBlockingWorkflowRequest(t, p)
+	p.SetResourceContext(resource.Route{ID: "route-next"}, resource.Service{})
+	if dump := fmt.Sprintf("%#v", current); strings.Contains(dump, `routeID:"route-next"`) ||
+		!strings.Contains(dump, `routeID:"route-current"`) {
+		t.Fatalf("active child = %s, want unchanged current route", dump)
+	}
+	close(release)
+	<-requestDone
+
+	if err := p.MaterializeScopedSecrets(context.Background(), base.ScopedSecretAccess{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatal(err)
+	}
+	next := p.children[actionPosition{rule: 0, action: 0}]
+	if next == current {
+		t.Fatal("rematerialization retained the previous child")
+	}
+	if dump := fmt.Sprintf("%#v", next); !strings.Contains(dump, `routeID:"route-next"`) {
+		t.Fatalf("next child = %s, want deferred route context", dump)
+	}
+	p.Stop()
+}
+
+func TestScopedWorkflowContextUpdatePreventsNewHandlerLease(t *testing.T) {
+	child := &blockingWorkflowContextChild{entered: make(chan struct{}), release: make(chan struct{})}
+	runtimeConfig := Config{Rules: []Rule{{Actions: []Action{{
+		Name: "return", Return: ReturnAction{Code: http.StatusForbidden},
+	}}}}}
+	generation := &workflowGeneration{
+		config: runtimeConfig,
+		children: map[actionPosition]workflowChild{
+			{rule: 0, action: 0}: child,
+		},
+	}
+	p := &Plugin{config: runtimeConfig, current: generation, children: generation.children}
+
+	contextDone := make(chan struct{})
+	go func() {
+		defer close(contextDone)
+		p.SetResourceContext(resource.Route{ID: "route-exclusive"}, resource.Service{})
+	}()
+	requireWorkflowOperationCompletes(t, child.entered, "context update entry")
+
+	recorder := httptest.NewRecorder()
+	downstreamCalled := make(chan struct{}, 1)
+	handlerStarted := make(chan struct{})
+	handlerDone := make(chan struct{})
+	go func() {
+		defer close(handlerDone)
+		close(handlerStarted)
+		p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			downstreamCalled <- struct{}{}
+			w.WriteHeader(http.StatusNoContent)
+		})).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
+	}()
+	<-handlerStarted
+	select {
+	case <-handlerDone:
+		t.Fatal("handler completed before the context update finished")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(child.release)
+	requireWorkflowOperationCompletes(t, contextDone, "context update release")
+	requireWorkflowOperationCompletes(t, handlerDone, "handler retry after context update")
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("status after context update = %d, want workflow %d", recorder.Code, http.StatusForbidden)
+	}
+	select {
+	case <-downstreamCalled:
+		t.Fatal("handler bypassed workflow policy during the context update")
+	default:
+	}
+	p.Stop()
+}
+
+func TestScopedWorkflowContextUpdateStopOverlapWakesHandlerAfterSetter(t *testing.T) {
+	child := &blockingWorkflowContextChild{entered: make(chan struct{}), release: make(chan struct{})}
+	closeEntered := make(chan struct{})
+	var closeOrder []string
+	owner := &scriptedWorkflowPreparedChild{
+		factory: "test", child: child, name: "context-child", order: &closeOrder, entered: closeEntered,
+	}
+	runtimeConfig := Config{Rules: []Rule{{Actions: []Action{{
+		Name: "return", Return: ReturnAction{Code: http.StatusForbidden},
+	}}}}}
+	generation := &workflowGeneration{
+		config: runtimeConfig,
+		children: map[actionPosition]workflowChild{
+			{rule: 0, action: 0}: child,
+		},
+		owners: []base.PreparedCompositeChild{owner},
+	}
+	p := &Plugin{
+		config: runtimeConfig, current: generation, children: generation.children, childOwners: generation.owners,
+	}
+
+	contextDone := make(chan struct{})
+	go func() {
+		defer close(contextDone)
+		p.SetResourceContext(resource.Route{ID: "route-exclusive"}, resource.Service{})
+	}()
+	requireWorkflowOperationCompletes(t, child.entered, "context update entry")
+
+	recorder := httptest.NewRecorder()
+	handlerStarted := make(chan struct{})
+	handlerDone := make(chan struct{})
+	go func() {
+		defer close(handlerDone)
+		close(handlerStarted)
+		p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		})).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
+	}()
+	<-handlerStarted
+	select {
+	case <-handlerDone:
+		t.Fatal("handler completed before the context update finished")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	stopDone := make(chan struct{})
+	go func() {
+		defer close(stopDone)
+		p.Stop()
+	}()
+	requireWorkflowOperationCompletes(t, stopDone, "Stop during context update")
+	select {
+	case <-closeEntered:
+		t.Fatal("Stop closed the child before the context-update lease was released")
+	default:
+	}
+	select {
+	case <-handlerDone:
+		t.Fatal("Stop woke the handler before the context setter finished")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(child.release)
+	requireWorkflowOperationCompletes(t, contextDone, "context update release")
+	requireWorkflowOperationCompletes(t, closeEntered, "retired context child close")
+	requireWorkflowOperationCompletes(t, handlerDone, "handler retry after retired context update")
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("status after Stop = %d, want downstream %d", recorder.Code, http.StatusNoContent)
+	}
+	if got := strings.Join(closeOrder, ","); got != "context-child" {
+		t.Fatalf("close order = %q, want context-child exactly once", got)
+	}
+}
+
+func TestScopedWorkflowContextSetterAllowsLifecycleReentry(t *testing.T) {
+	child := &blockingWorkflowContextChild{entered: make(chan struct{}), release: make(chan struct{})}
+	closeEntered := make(chan struct{})
+	var closeOrder []string
+	owner := &scriptedWorkflowPreparedChild{
+		factory: "test", child: child, name: "context-child", order: &closeOrder, entered: closeEntered,
+	}
+	runtimeConfig := Config{Rules: []Rule{{Actions: []Action{{
+		Name: "return", Return: ReturnAction{Code: http.StatusForbidden},
+	}}}}}
+	generation := &workflowGeneration{
+		config: runtimeConfig,
+		children: map[actionPosition]workflowChild{
+			{rule: 0, action: 0}: child,
+		},
+		owners: []base.PreparedCompositeChild{owner},
+	}
+	p := &Plugin{
+		config: runtimeConfig, current: generation, children: generation.children, childOwners: generation.owners,
+	}
+	reentered := make(chan struct{})
+	child.onSet = func() {
+		p.Stop()
+		p.SetResourceContext(resource.Route{ID: "route-after-stop"}, resource.Service{})
+		_ = p.PostInit()
+		close(reentered)
+	}
+
+	contextDone := make(chan struct{})
+	go func() {
+		defer close(contextDone)
+		p.SetResourceContext(resource.Route{ID: "route-exclusive"}, resource.Service{})
+	}()
+	requireWorkflowOperationCompletes(t, child.entered, "context setter entry")
+	requireWorkflowOperationCompletes(t, reentered, "context setter lifecycle reentry")
+	select {
+	case <-closeEntered:
+		t.Fatal("reentrant Stop closed the child before the context-update lease was released")
+	default:
+	}
+	close(child.release)
+	requireWorkflowOperationCompletes(t, contextDone, "context setter release")
+	requireWorkflowOperationCompletes(t, closeEntered, "reentrant Stop child close")
+	if got := strings.Join(closeOrder, ","); got != "context-child" {
+		t.Fatalf("close order = %q, want context-child exactly once", got)
+	}
+}
+
+func TestMaterializeScopedSecretsRejectsNilAndPreCanceledContextForReturnOnlyWorkflow(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		context func() context.Context
+		want    error
+	}{
+		{name: "nil", context: func() context.Context { return nil }, want: errWorkflowChildPreparation},
+		{
+			name: "pre-canceled",
+			context: func() context.Context {
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+				return ctx
+			},
+			want: context.Canceled,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			p := &Plugin{config: Config{Rules: []Rule{{Actions: []Action{{
+				Name: "return", Return: ReturnAction{Code: http.StatusNoContent},
+			}}}}}}
+			if err := p.Init(); err != nil {
+				t.Fatal(err)
+			}
+			err := p.MaterializeScopedSecrets(test.context(), base.ScopedSecretAccess{})
+			if !errors.Is(err, test.want) {
+				t.Fatalf("MaterializeScopedSecrets() error = %v, want %v", err, test.want)
+			}
+			if p.current != nil {
+				t.Fatal("canceled return-only workflow published a generation")
+			}
+		})
+	}
+}
+
+func TestMaterializeScopedSecretsCancellationBeforeCommitKeepsOldGeneration(t *testing.T) {
+	preparer := &scriptedWorkflowPreparer{t: t, failAt: -1}
+	p := &Plugin{config: Config{Rules: []Rule{{Actions: []Action{
+		{Name: "limit-count", Config: validScopedLimitCountConfig()},
+		{Name: "limit-count", Config: validScopedLimitCountConfig()},
+	}}}}}
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	p.SetDependencies(base.Dependencies{CompositeChildren: preparer})
+	if err := p.MaterializeScopedSecrets(context.Background(), base.ScopedSecretAccess{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatal(err)
+	}
+	old := p.current
+
+	ctx, cancel := context.WithCancel(context.Background())
+	preparer.afterPrepare = func(index int) {
+		if index == 3 {
+			cancel()
+		}
+	}
+	err := p.MaterializeScopedSecrets(ctx, base.ScopedSecretAccess{})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("MaterializeScopedSecrets() error = %v, want context.Canceled", err)
+	}
+	if p.current != old {
+		t.Fatal("commit cancellation replaced the last-good generation")
+	}
+	if got := strings.Join(preparer.closeOrder, ","); got != "child-3,child-2" {
+		t.Fatalf("staged cleanup order = %q, want child-3,child-2", got)
+	}
+
+	preparer.afterPrepare = nil
+	p.Stop()
+	if got := strings.Join(preparer.closeOrder, ","); got != "child-3,child-2,child-1,child-0" {
+		t.Fatalf("final cleanup order = %q, want staged then old generation exactly once", got)
+	}
+}
+
+func TestMaterializeScopedSecretsCancellationWinsTokenInvalidation(t *testing.T) {
+	preparer := &scriptedWorkflowPreparer{t: t, failAt: -1}
+	p := &Plugin{config: Config{Rules: []Rule{{Actions: []Action{{
+		Name: "limit-count", Config: validScopedLimitCountConfig(),
+	}}}}}}
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	p.SetDependencies(base.Dependencies{CompositeChildren: preparer})
+	if err := p.MaterializeScopedSecrets(context.Background(), base.ScopedSecretAccess{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatal(err)
+	}
+	old := p.current
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var invalidatingToken uint64
+	preparer.afterPrepare = func(index int) {
+		if index == 1 {
+			cancel()
+			_, invalidatingToken = p.beginPreparation()
+		}
+	}
+	err := p.MaterializeScopedSecrets(ctx, base.ScopedSecretAccess{})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("MaterializeScopedSecrets() error = %v, want canonical context.Canceled", err)
+	}
+	if p.current != old {
+		t.Fatal("cancellation plus token invalidation replaced the last-good generation")
+	}
+	if got := strings.Join(preparer.closeOrder, ","); got != "child-1" {
+		t.Fatalf("staged cleanup order = %q, want child-1 exactly once", got)
+	}
+
+	p.finishPreparation(invalidatingToken)
+	preparer.afterPrepare = nil
+	p.Stop()
+	if got := strings.Join(preparer.closeOrder, ","); got != "child-1,child-0" {
+		t.Fatalf("final cleanup order = %q, want staged then old generation exactly once", got)
+	}
+}
+
+func TestScopedWorkflowPrepareAllowsSynchronousLifecycleReentry(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		reenter func(*Plugin)
+	}{
+		{
+			name: "SetResourceContext",
+			reenter: func(p *Plugin) {
+				p.SetResourceContext(resource.Route{ID: "route-from-prepare"}, resource.Service{})
+			},
+		},
+		{
+			name: "Stop",
+			reenter: func(p *Plugin) {
+				p.Stop()
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			preparer := &scriptedWorkflowPreparer{t: t, failAt: -1}
+			p := &Plugin{config: Config{Rules: []Rule{{Actions: []Action{{
+				Name: "limit-count", Config: validScopedLimitCountConfig(),
+			}}}}}}
+			if err := p.Init(); err != nil {
+				t.Fatal(err)
+			}
+			p.SetDependencies(base.Dependencies{CompositeChildren: preparer})
+			preparer.onPrepare = func() { test.reenter(p) }
+
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				_ = p.MaterializeScopedSecrets(context.Background(), base.ScopedSecretAccess{})
+			}()
+			requireWorkflowOperationCompletes(t, done, "Prepare -> "+test.name)
+			p.Stop()
+		})
+	}
+}
+
+func TestScopedWorkflowCloseAllowsSynchronousLifecycleReentry(t *testing.T) {
+	preparer := &scriptedWorkflowPreparer{t: t, failAt: -1}
+	p := &Plugin{config: Config{Rules: []Rule{{Actions: []Action{{
+		Name: "limit-count", Config: validScopedLimitCountConfig(),
+	}}}}}}
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	preparer.onClose = func() {
+		p.SetResourceContext(resource.Route{ID: "route-from-close"}, resource.Service{})
+		p.Stop()
+	}
+	p.SetDependencies(base.Dependencies{CompositeChildren: preparer})
+	if err := p.MaterializeScopedSecrets(context.Background(), base.ScopedSecretAccess{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		p.Stop()
+	}()
+	requireWorkflowOperationCompletes(t, done, "Close -> lifecycle")
+	if got := strings.Join(preparer.closeOrder, ","); got != "child-0" {
+		t.Fatalf("close order = %q, want child-0 exactly once", got)
+	}
+}
+
+func TestScopedWorkflowHandlerAllowsSynchronousLifecycleReentryAndDefersReverseClose(t *testing.T) {
+	closeEntered := make(chan struct{})
+	preparer := &scriptedWorkflowPreparer{t: t, failAt: -1, closeEntered: closeEntered}
+	p := &Plugin{config: Config{Rules: []Rule{{Actions: []Action{
+		{Name: "limit-count", Config: validScopedLimitCountConfig()},
+		{Name: "limit-count", Config: validScopedLimitCountConfig()},
+	}}}}}
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	p.SetDependencies(base.Dependencies{CompositeChildren: preparer})
+	if err := p.MaterializeScopedSecrets(context.Background(), base.ScopedSecretAccess{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatal(err)
+	}
+
+	nextReturned := make(chan struct{})
+	handler := p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		p.Stop()
+		p.SetResourceContext(resource.Route{ID: "route-from-handler"}, resource.Service{})
+		_ = p.PostInit()
+		select {
+		case <-closeEntered:
+			t.Error("handler reentry closed children before the active lease was released")
+		default:
+		}
+		close(nextReturned)
+	}))
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		request := httptest.NewRequest(http.MethodGet, "/", nil)
+		request.RemoteAddr = "192.0.2.88:1234"
+		handler.ServeHTTP(httptest.NewRecorder(), request)
+	}()
+	requireWorkflowOperationCompletes(t, nextReturned, "child/downstream lifecycle reentry")
+	requireWorkflowOperationCompletes(t, done, "handler lease release")
+	select {
+	case <-closeEntered:
+	case <-time.After(time.Second):
+		t.Fatal("retired children were not closed after the last active lease")
+	}
+	if got := strings.Join(preparer.closeOrder, ","); got != "child-1,child-0" {
+		t.Fatalf("close order = %q, want child-1,child-0 exactly once", got)
+	}
+}
+
+func TestMaterializeScopedSecretsRedactsInjectedPreparerErrors(t *testing.T) {
+	poison := "vault/path/password/WORKFLOW_POISON"
+	preparer := &scriptedWorkflowPreparer{
+		t: t, failAt: 0, selfStopName: "failed-self", failErr: errors.New(poison),
+	}
+	p := &Plugin{config: Config{Rules: []Rule{{Actions: []Action{{
+		Name: "limit-count", Config: validScopedLimitCountConfig(),
+	}}}}}}
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	p.SetDependencies(base.Dependencies{CompositeChildren: preparer})
+
+	err := p.MaterializeScopedSecrets(context.Background(), base.ScopedSecretAccess{})
+	if err == nil || err.Error() != "workflow child preparation failed" || strings.Contains(err.Error(), poison) {
+		t.Fatalf("MaterializeScopedSecrets() error = %v, want fixed redacted failure", err)
+	}
+
+	preparer.failErr = fmt.Errorf("%s: %w", poison, context.Canceled)
+	preparer.failAt = len(preparer.calls)
+	err = p.MaterializeScopedSecrets(context.Background(), base.ScopedSecretAccess{})
+	if err != context.Canceled {
+		t.Fatalf("MaterializeScopedSecrets() cancellation = %v, want canonical context.Canceled", err)
+	}
+}
+
+func TestValidatePreMaterializationRejectsLimitCountGroup(t *testing.T) {
 	p := &Plugin{config: Config{
 		Rules: []Rule{
 			{Actions: []Action{{
@@ -478,13 +1401,9 @@ func TestPostInitRejectsLimitCountGroup(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := base.MaterializePluginSecrets(p); err != nil {
-		t.Fatalf("MaterializePluginSecrets() error = %v", err)
-	}
-
-	err := p.PostInit()
+	err := p.ValidatePreMaterialization()
 	if err == nil || !strings.Contains(err.Error(), "group is not supported") {
-		t.Fatalf("PostInit() error = %v, want unsupported group validation error", err)
+		t.Fatalf("ValidatePreMaterialization() error = %v, want unsupported group validation error", err)
 	}
 }
 
@@ -692,6 +1611,66 @@ func TestConsumerWorkflowLimitCountOverridesRouteLimitCount(t *testing.T) {
 	}
 	if recorder.Code != http.StatusNoContent {
 		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusNoContent)
+	}
+}
+
+func TestScopedWorkflowConsumerGroupLookupNeverFallsBackToStore(t *testing.T) {
+	manifest, err := capability.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := capability.NewSecretDeclarationCatalog(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	storage, err := store.Open(
+		filepath.Join(t.TempDir(), "workflow-consumer.db"),
+		make(chan *store.Event),
+		data_encryption.NewService(false, nil, catalog),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if closeErr := storage.Close(); closeErr != nil {
+			t.Fatalf("close store: %v", closeErr)
+		}
+	})
+	if err := store.WriteBucketValueForTest(
+		storage,
+		"consumer_groups",
+		"group-stale",
+		[]byte(`{"id":"group-stale","plugins":{"stale-store-plugin":{}}}`),
+	); err != nil {
+		t.Fatal(err)
+	}
+	previous := store.ReplaceGlobalStoreForTest(storage)
+	t.Cleanup(func() { store.ReplaceGlobalStoreForTest(previous) })
+
+	lookup := &workflowConsumerLookup{groups: map[string]resource.ConsumerGroup{}}
+	p := &Plugin{}
+	p.SetDependencies(base.Dependencies{Consumers: lookup})
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req = apisixctx.WithApisixVars(req, nil)
+	apisixctx.AttachConsumer(req, resource.Consumer{
+		Username: "jack",
+		GroupID:  "group-stale",
+		Plugins: map[string]resource.PluginConfig{
+			"consumer-plugin": map[string]any{},
+		},
+	})
+	req = apisixctx.WithConsumerPluginOverrides(req, map[string]struct{}{"workflow": {}})
+
+	got := p.withConsumerActionOverride(req, "limit-count")
+	if lookup.calls != 1 {
+		t.Fatalf("immutable group lookup calls = %d, want 1", lookup.calls)
+	}
+	if apisixctx.ConsumerPluginOverrides(got, "stale-store-plugin") {
+		t.Fatal("immutable lookup miss fell back to stale process-global Store")
+	}
+	if !apisixctx.ConsumerPluginOverrides(got, "consumer-plugin") ||
+		!apisixctx.ConsumerPluginOverrides(got, "limit-count") {
+		t.Fatal("consumer/action override union was not preserved")
 	}
 }
 

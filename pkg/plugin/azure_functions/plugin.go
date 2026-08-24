@@ -3,6 +3,7 @@ package azure_functions
 import (
 	"context"
 	"crypto/sha256"
+	"fmt"
 	"net/http"
 	"sync"
 
@@ -75,6 +76,16 @@ const schema = `
 }
 `
 
+const metadataSchema = `
+{
+  "type": "object",
+  "properties": {
+    "master_apikey": {"type": "string"},
+    "master_clientid": {"type": "string"}
+  }
+}
+`
+
 type Config struct {
 	FunctionURI      string         `json:"function_uri"`
 	Authorization    *Authorization `json:"authorization,omitempty"`
@@ -99,13 +110,16 @@ func (p *Plugin) Init() error {
 	p.Name = name
 	p.Priority = priority
 	p.Schema = schema
+	p.MetadataSchema = metadataSchema
 	p.Processor = p.processRequest
 
 	return nil
 }
 
 func (p *Plugin) PostInit() error {
-	p.loadMetadata()
+	if err := p.loadMetadata(); err != nil {
+		return err
+	}
 	p.Plugin.Config = function_upstream.Config{
 		FunctionURI:      p.config.FunctionURI,
 		Timeout:          p.config.Timeout,
@@ -245,6 +259,11 @@ func (p *Plugin) Stop() {
 	p.routeAPIKeySet = false
 }
 
-func (p *Plugin) loadMetadata() {
-	p.metadata = base.LoadPluginMetadata[Metadata](name)
+func (p *Plugin) loadMetadata() error {
+	var metadata Metadata
+	if _, err := p.MetadataView().Decode(name, &metadata); err != nil {
+		return fmt.Errorf("%s metadata decode failed: %w", name, err)
+	}
+	p.metadata = metadata
+	return nil
 }

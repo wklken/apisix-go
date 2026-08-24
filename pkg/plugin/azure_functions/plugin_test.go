@@ -5,9 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -18,7 +23,9 @@ import (
 	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/function_upstream"
+	pluginruntime "github.com/wklken/apisix-go/pkg/runtime"
 	"github.com/wklken/apisix-go/pkg/secret"
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -36,6 +43,132 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	}
 
 	return p
+}
+
+func TestMetadataSchemaAcceptsAzureAuthorization(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	for _, tt := range []struct {
+		name     string
+		metadata map[string]any
+		wantErr  bool
+	}{
+		{
+			name: "authorization",
+			metadata: map[string]any{
+				"master_apikey":   "key-a",
+				"master_clientid": "client-a",
+			},
+		},
+		{name: "empty"},
+		{
+			name: "additive",
+			metadata: map[string]any{
+				"master_apikey": "key-a",
+				"extra":         "accepted",
+			},
+		},
+		{
+			name: "apikey wrong type",
+			metadata: map[string]any{
+				"master_apikey": 1,
+			},
+			wantErr: true,
+		},
+		{
+			name: "clientid wrong type",
+			metadata: map[string]any{
+				"master_clientid": true,
+			},
+			wantErr: true,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			err := util.Validate(tt.metadata, p.GetMetadataSchema())
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("Validate() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestPostInitDecodesMetadataWithRouteAuthorizationPresent(t *testing.T) {
+	view, err := pluginruntime.NewMetadataView(map[string][]byte{
+		name: []byte(`{"master_apikey":1}`),
+	})
+	if err != nil {
+		t.Fatalf("NewMetadataView() error = %v", err)
+	}
+	p := &Plugin{config: Config{
+		FunctionURI: "http://function.invalid",
+		Authorization: &Authorization{
+			APIKey:   "route-key",
+			ClientID: "route-client",
+		},
+	}}
+	p.SetDependencies(base.Dependencies{Metadata: view})
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	err = p.PostInit()
+	if err == nil {
+		t.Fatal("PostInit() error = nil for invalid metadata with route authorization present")
+	}
+	if !strings.Contains(err.Error(), "azure-functions metadata decode failed") {
+		t.Fatalf("PostInit() error = %v, want metadata decode failure", err)
+	}
+}
+
+func TestProductionDoesNotUseGlobalMetadataFallback(t *testing.T) {
+	_, testFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller() failed")
+	}
+	productionPath := filepath.Join(filepath.Dir(testFile), "plugin.go")
+	fileSet := token.NewFileSet()
+	file, err := parser.ParseFile(fileSet, productionPath, nil, 0)
+	if err != nil {
+		t.Fatalf("ParseFile(%q) error = %v", productionPath, err)
+	}
+
+	forbidden := map[string]struct{}{
+		"LoadPluginMetadata":         {},
+		"GetPluginMetadata":          {},
+		"GetValidatedPluginMetadata": {},
+		"GetPluginMetadataRaw":       {},
+	}
+	var calls []string
+	ast.Inspect(file, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		selector := selectorFromCall(call.Fun)
+		if _, ok := forbidden[selector]; ok {
+			calls = append(calls, fmt.Sprintf("%s at %s", selector, fileSet.Position(call.Pos())))
+		}
+		return true
+	})
+	if len(calls) != 0 {
+		t.Fatalf("production metadata fallback calls = %v", calls)
+	}
+}
+
+func selectorFromCall(expression ast.Expr) string {
+	switch expression := expression.(type) {
+	case *ast.SelectorExpr:
+		return expression.Sel.Name
+	case *ast.IndexExpr:
+		return selectorFromCall(expression.X)
+	case *ast.IndexListExpr:
+		return selectorFromCall(expression.X)
+	default:
+		return ""
+	}
 }
 
 func TestHandlerInvokesAzureFunctionAndRelaysResponse(t *testing.T) {
@@ -95,6 +228,102 @@ func TestHandlerInvokesAzureFunctionAndRelaysResponse(t *testing.T) {
 	if !strings.Contains(gotHost, "127.0.0.1") {
 		t.Fatalf("function Host = %q, want function host", gotHost)
 	}
+}
+
+func TestPreparedGenerationsRetainMetadataAuthorization(t *testing.T) {
+	pN := newTestPluginWithMetadata(t, []byte(
+		`{"master_apikey":"n-key","master_clientid":"n-client"}`,
+	))
+	pNPlusOne := newTestPluginWithMetadata(t, []byte(
+		`{"master_apikey":"n1-key","master_clientid":"n1-client"}`,
+	))
+
+	requestN := httptest.NewRequest(http.MethodGet, "http://example.com/azure", nil)
+	pN.processRequest(requestN, function_upstream.Config{})
+	if got := requestN.Header.Get("X-Functions-Key"); got != "n-key" {
+		t.Fatalf("generation N key = %q, want n-key", got)
+	}
+	if got := requestN.Header.Get("X-Functions-Clientid"); got != "n-client" {
+		t.Fatalf("generation N client id = %q, want n-client", got)
+	}
+
+	requestNPlusOne := httptest.NewRequest(http.MethodGet, "http://example.com/azure", nil)
+	pNPlusOne.processRequest(requestNPlusOne, function_upstream.Config{})
+	if got := requestNPlusOne.Header.Get("X-Functions-Key"); got != "n1-key" {
+		t.Fatalf("generation N+1 key = %q, want n1-key", got)
+	}
+	if got := requestNPlusOne.Header.Get("X-Functions-Clientid"); got != "n1-client" {
+		t.Fatalf("generation N+1 client id = %q, want n1-client", got)
+	}
+}
+
+func TestScopedRouteAuthorizationOverridesMetadataAuthorization(t *testing.T) {
+	const raw = "$ENV://AZURE_ROUTE_PRIORITY_KEY"
+	routeConfig := Config{
+		FunctionURI: "http://function.invalid",
+		Authorization: &Authorization{
+			APIKey:   raw,
+			ClientID: "route-client",
+		},
+	}
+	broker := &azureScopedBroker{values: map[string]string{raw: "scoped-route-key"}}
+	capabilityValue, registration, scope := registerAzureScopedRouteConfigAt(
+		t, broker, 1, routeConfig,
+	)
+	t.Cleanup(func() {
+		if err := registration.Close(context.Background()); err != nil {
+			t.Error(err)
+		}
+	})
+
+	metadata, err := pluginruntime.NewMetadataView(map[string][]byte{
+		name: []byte(`{"master_apikey":"metadata-key","master_clientid":"metadata-client"}`),
+	})
+	if err != nil {
+		t.Fatalf("NewMetadataView() error = %v", err)
+	}
+	p := &Plugin{config: routeConfig}
+	p.SetDependencies(base.Dependencies{Metadata: metadata})
+	if err := base.MaterializeScopedPluginSecrets(
+		context.Background(), scope, capabilityValue, p,
+	); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
+	}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+	t.Cleanup(p.Stop)
+
+	request := httptest.NewRequest(http.MethodGet, "http://example.com/azure", nil)
+	p.processRequest(request, function_upstream.Config{})
+	if got := request.Header.Get("X-Functions-Key"); got != "scoped-route-key" {
+		t.Fatalf("route API key = %q, want scoped-route-key", got)
+	}
+	if got := request.Header.Get("X-Functions-Clientid"); got != "route-client" {
+		t.Fatalf("route client id = %q, want route-client", got)
+	}
+}
+
+func newTestPluginWithMetadata(t *testing.T, document []byte) *Plugin {
+	t.Helper()
+
+	view, err := pluginruntime.NewMetadataView(map[string][]byte{name: document})
+	if err != nil {
+		t.Fatalf("NewMetadataView() error = %v", err)
+	}
+	p := &Plugin{config: Config{FunctionURI: "http://function.invalid"}}
+	p.SetDependencies(base.Dependencies{Metadata: view})
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+	t.Cleanup(p.Stop)
+	return p
 }
 
 func TestRunRequestPhasePublishesUpstreamSource(t *testing.T) {

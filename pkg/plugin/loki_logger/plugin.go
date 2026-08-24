@@ -246,14 +246,14 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	var metadata pluginMetadata
+	if _, err := p.MetadataView().Decode(name, &metadata); err != nil {
+		return fmt.Errorf("loki-logger metadata decode failed: %w", err)
+	}
 	if err := base.PrepareExprRegexps(
 		p.config.IncludeReqBodyExpr, p.config.IncludeRespBodyExpr,
 	); err != nil {
 		return err
-	}
-	var metadata pluginMetadata
-	if _, err := p.MetadataView().Decode(name, &metadata); err != nil {
-		return fmt.Errorf("loki-logger metadata decode failed: %w", err)
 	}
 	if p.config.EndpointURI == "" {
 		p.config.EndpointURI = "/loki/api/v1/push"

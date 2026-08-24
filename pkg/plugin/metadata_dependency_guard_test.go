@@ -27,6 +27,13 @@ func f() { var target any; _ = state.GetPluginMetadata("x", &target) }`,
 		"parenthesized store call": `package fixture
 import state "github.com/wklken/apisix-go/pkg/store"
 func f() { var target any; _ = (state.GetPluginMetadata)("x", &target) }`,
+		"package store function value": `package fixture
+import state "github.com/wklken/apisix-go/pkg/store"
+var load = state.GetPluginMetadata
+func f() { var target any; _ = load("x", &target) }`,
+		"local base function value": `package fixture
+import metadata "github.com/wklken/apisix-go/pkg/plugin/base"
+func f() { load := metadata.LoadPluginMetadata[map[string]any]; _ = load("x") }`,
 		"dot store import": `package fixture
 import . "github.com/wklken/apisix-go/pkg/store"
 func f() { _ = GetPluginMetadataRaw("x") }`,
@@ -136,14 +143,11 @@ func metadataDependencyViolations(fset *token.FileSet, file *ast.File) []string 
 	}
 
 	var violations []string
+	selectorFields := make(map[token.Pos]struct{})
 	ast.Inspect(file, func(node ast.Node) bool {
-		call, ok := node.(*ast.CallExpr)
-		if !ok {
-			return true
-		}
-		called := metadataCalledExpression(call.Fun)
-		switch expression := called.(type) {
+		switch expression := node.(type) {
 		case *ast.SelectorExpr:
+			selectorFields[expression.Sel.Pos()] = struct{}{}
 			alias, ok := expression.X.(*ast.Ident)
 			if !ok {
 				return true
@@ -152,32 +156,20 @@ func metadataDependencyViolations(fset *token.FileSet, file *ast.File) []string 
 			_, storeImport := storeAliases[alias.Name]
 			if (baseImport && expression.Sel.Name == "LoadPluginMetadata") ||
 				(storeImport && forbiddenStoreMetadataCall(expression.Sel.Name)) {
-				violations = append(violations, fset.Position(call.Pos()).String())
+				violations = append(violations, fset.Position(expression.Pos()).String())
 			}
 		case *ast.Ident:
+			if _, selectorField := selectorFields[expression.Pos()]; selectorField {
+				return true
+			}
 			if (baseDot && expression.Name == "LoadPluginMetadata") ||
 				(storeDot && forbiddenStoreMetadataCall(expression.Name)) {
-				violations = append(violations, fset.Position(call.Pos()).String())
+				violations = append(violations, fset.Position(expression.Pos()).String())
 			}
 		}
 		return true
 	})
 	return violations
-}
-
-func metadataCalledExpression(expression ast.Expr) ast.Expr {
-	for {
-		switch wrapped := expression.(type) {
-		case *ast.ParenExpr:
-			expression = wrapped.X
-		case *ast.IndexExpr:
-			expression = wrapped.X
-		case *ast.IndexListExpr:
-			expression = wrapped.X
-		default:
-			return expression
-		}
-	}
 }
 
 func forbiddenStoreMetadataCall(name string) bool {

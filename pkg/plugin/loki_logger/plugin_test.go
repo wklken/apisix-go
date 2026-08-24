@@ -598,7 +598,12 @@ func TestPreparedGenerationsRetainMetadataFormat(t *testing.T) {
 }
 
 func TestMetadataDecodeFailsBeforeLokiClientAndProcessorAcquisition(t *testing.T) {
-	p := &Plugin{config: Config{EndpointAddrs: []string{"http://127.0.0.1:3100"}}}
+	const pattern = "^/loki-metadata-decode-failure-4c2e$"
+	expressions := [][]any{{"$uri", "~", pattern}}
+	p := &Plugin{config: Config{
+		EndpointAddrs:      []string{"http://127.0.0.1:3100"},
+		IncludeReqBodyExpr: expressions,
+	}}
 	p.SetDependencies(base.Dependencies{Metadata: mustMetadataView(t, map[string]any{
 		"max_pending_entries": "invalid",
 	})})
@@ -617,6 +622,10 @@ func TestMetadataDecodeFailsBeforeLokiClientAndProcessorAcquisition(t *testing.T
 			p.clientRelease != nil,
 			p.BatchProcessor,
 		)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/loki-metadata-decode-failure-4c2e", nil)
+	if base.ExprMatched(request, expressions, 0) {
+		t.Fatal("metadata decode failure retained a prepared expression regexp")
 	}
 }
 

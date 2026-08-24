@@ -165,14 +165,14 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	var metadata pluginMetadata
+	if _, err := p.MetadataView().Decode(name, &metadata); err != nil {
+		return fmt.Errorf("file-logger metadata decode failed: %w", err)
+	}
 	if err := base.PrepareExprRegexps(
 		p.config.IncludeReqBodyExpr, p.config.IncludeRespBodyExpr, p.config.Match,
 	); err != nil {
 		return err
-	}
-	var metadata pluginMetadata
-	if _, err := p.MetadataView().Decode(name, &metadata); err != nil {
-		return fmt.Errorf("file-logger metadata decode failed: %w", err)
 	}
 	if p.config.Path == "" {
 		p.config.Path = metadata.Path

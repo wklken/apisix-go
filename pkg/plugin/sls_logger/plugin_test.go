@@ -1170,13 +1170,16 @@ func TestPreparedGenerationsRetainMetadataFormat(t *testing.T) {
 }
 
 func TestMetadataDecodeFailsBeforeSLSProcessorAcquisition(t *testing.T) {
+	const pattern = "^/sls-metadata-decode-failure-3d8f$"
+	expressions := [][]any{{"$uri", "~", pattern}}
 	p := &Plugin{config: Config{
-		Host:            "127.0.0.1",
-		Port:            10009,
-		Project:         "project-a",
-		Logstore:        "store-a",
-		AccessKeyID:     "id",
-		AccessKeySecret: "secret",
+		Host:               "127.0.0.1",
+		Port:               10009,
+		Project:            "project-a",
+		Logstore:           "store-a",
+		AccessKeyID:        "id",
+		AccessKeySecret:    "secret",
+		IncludeReqBodyExpr: expressions,
 	}}
 	p.SetDependencies(base.Dependencies{
 		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
@@ -1197,6 +1200,10 @@ func TestMetadataDecodeFailsBeforeSLSProcessorAcquisition(t *testing.T) {
 	}
 	if p.BatchProcessor != nil {
 		t.Fatalf("decode failure acquired processor: %v", p.BatchProcessor)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/sls-metadata-decode-failure-3d8f", nil)
+	if base.ExprMatched(request, expressions, 0) {
+		t.Fatal("metadata decode failure retained a prepared expression regexp")
 	}
 }
 

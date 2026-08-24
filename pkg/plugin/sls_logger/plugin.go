@@ -281,14 +281,14 @@ func (p *Plugin) PostInit() error {
 	if p.ready {
 		return nil
 	}
+	var metadata pluginMetadata
+	if _, err := p.MetadataView().Decode(name, &metadata); err != nil {
+		return fmt.Errorf("sls-logger metadata decode failed: %w", err)
+	}
 	if err := base.PrepareExprRegexps(
 		p.config.IncludeReqBodyExpr, p.config.IncludeRespBodyExpr,
 	); err != nil {
 		return err
-	}
-	var metadata pluginMetadata
-	if _, err := p.MetadataView().Decode(name, &metadata); err != nil {
-		return fmt.Errorf("sls-logger metadata decode failed: %w", err)
 	}
 
 	if p.config.SSLVerify == nil {

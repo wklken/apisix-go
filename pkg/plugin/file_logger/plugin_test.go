@@ -1068,7 +1068,12 @@ func TestPreparedGenerationsRetainMetadataPathAndFormat(t *testing.T) {
 }
 
 func TestMetadataDecodeFailsBeforeFileWriterAcquisition(t *testing.T) {
-	p := &Plugin{config: Config{Path: filepath.Join(t.TempDir(), "decode-failure.log")}}
+	const pattern = "^/file-metadata-decode-failure-7b9a$"
+	match := []any{[]any{"$uri", "~", pattern}}
+	p := &Plugin{config: Config{
+		Path:  filepath.Join(t.TempDir(), "decode-failure.log"),
+		Match: match,
+	}}
 	p.SetDependencies(base.Dependencies{Metadata: mustMetadataView(t, map[string]any{
 		"path": 42,
 	})})
@@ -1088,6 +1093,10 @@ func TestMetadataDecodeFailsBeforeFileWriterAcquisition(t *testing.T) {
 			p.logger,
 			p.processor,
 		)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/file-metadata-decode-failure-7b9a", nil)
+	if base.ExprMatched(request, match, 0) {
+		t.Fatal("metadata decode failure retained a prepared expression regexp")
 	}
 }
 

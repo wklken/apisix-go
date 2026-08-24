@@ -160,6 +160,16 @@ func (p *PreparedGeneration) DiscardPrepared(
 func (p *PreparedGeneration) Close(context.Context) error
 ```
 
+The `onFailure` parameter is a synchronous, event-only notification boundary.
+It may copy or enqueue the immutable `runtime.TaskFailure` and must return; it
+must not synchronously call `PreparedGeneration.Close`, `DiscardPrepared`,
+`WorkerCompilerFactory.Close`, or wait for an actor that performs those
+lifecycle calls. `TaskRegistry.Stop` waits the counted task that invokes this
+callback, so lifecycle re-entry would form a shutdown cycle. The future worker
+control loop must enqueue the event and perform lifecycle transitions only
+after the callback returns; CP5 does not add an unowned goroutine or silently
+change the runtime registry contract.
+
 `PublicationSet` returns a deep defensive clone. `MetadataView` is the immutable decode-only value. `ConsumerLookup` returns `consumerLookupView`, never `*runtime.ConsumerBindings`. After close, `MetadataView` is zero and `ConsumerLookup` is inert; a previously returned consumer view becomes inert because its owned `ConsumerBindings` is closed. No public method returns attempt capability, registration, tasks, resources, leases, plugin instances, or bindings.
 
 The compiler-private Task 7/8 bridge is:
@@ -682,15 +692,15 @@ go test -race ./pkg/compiler -run 'TestWorkerCompilerFactoryPrepareRecoveryTrans
 
 ### Task 7: Linearize Factory Close, Generation Close, and Materialization
 
-**Files:** modify worker factory, prepared generation, materializer tests
+**Files:** modify worker factory, prepared generation, types, and focused close/materializer tests
 
 - [ ] **Step 1: Write RED race tests**
 
-Cover reject-after-close, close all live generations before registry, blocked preparation, blocked second-lease materialization, generation close race, and cached concurrent factory close. In every allowed ordering, no task/plugin/lease/consumer/registration/registry entry leaks.
+Cover reject-after-close, close all live generations before registry, blocked preparation, blocked second-lease materialization, generation close race, and cached concurrent factory close. A closed factory must return the exact public sentinel before canceled/deadline context handling and before side effects. Snapshot identity must come from the live-map key even when concurrent generation Close has already cleared its mutable attempt field but is blocked before detach. Factory-owned Close invocation order is deterministic; no claim is made about cleanup already begun externally. Prove an event-only failure callback can publish and return before lifecycle teardown continues. In every allowed ordering, no task/plugin/lease/consumer/registration/registry entry leaks.
 
 - [ ] **Step 2: Implement close linearization**
 
-Factory close marks closed under `gate.Lock`, snapshots live generations, closes them in deterministic private identity order without holding factory locks, then closes shared registry, joins and caches errors. New preparation returns `ErrWorkerCompilerFactoryClosed` without side effects.
+Factory close marks closed under `gate.Lock`, snapshots live generations as exact `(live map key, pointer)` pairs, closes them in deterministic map-key identity order without holding factory locks, then closes shared registry, joins and caches errors. New preparation checks closed under `gate.RLock` before caller cancellation and returns exact `ErrWorkerCompilerFactoryClosed` without side effects. The synchronous `onFailure` callback remains event-only and cannot re-enter lifecycle methods; Task7 does not change `pkg/runtime` or add an asynchronous dispatcher.
 
 Apply the same bounded error-redaction contract to successful-generation and
 factory-close cleanup results: no plugin/resource/registration provider error
@@ -703,8 +713,8 @@ Generation close and materialization use one private serialized gate. Materializ
 ```bash
 source .envrc
 export GOFLAGS=-mod=readonly
-go test ./pkg/compiler -run '^TestWorkerCompilerFactoryClose' -count=1
-go test -race ./pkg/compiler -run 'TestWorkerCompilerFactoryCloseRaces|TestWorkerCompilerFactoryConcurrentClose|TestEffectiveBindingMaterializerCloseRace' -count=1
+go test ./pkg/compiler -run '^TestWorkerCompilerFactoryClose|^TestPreparedGenerationCanceledCloseQuiescesTasksBeforeReleaseAndReplaysError$|^TestPreparedGenerationConcurrent' -count=1
+go test -race ./pkg/compiler -run 'TestWorkerCompilerFactoryClose|TestWorkerCompilerFactoryConcurrentClose|TestWorkerCompilerFactoryCloseWaitsForAdmittedPreparation|TestWorkerCompilerFactoryCloseWaitsForAdmittedMaterialization|TestEffectiveBindingMaterializerCloseRace|TestPreparedGenerationConcurrent' -count=1
 ```
 
 ---

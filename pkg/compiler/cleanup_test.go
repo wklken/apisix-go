@@ -8,6 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestCleanupStackQuiescesThenReleasesInReverseOrder(t *testing.T) {
@@ -158,6 +159,76 @@ func TestCleanupStackRejectsLateOwnership(t *testing.T) {
 	}
 	if err := stack.Own(cleanupRelease, "late", late); !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("late Own() error = %v, want ErrInvalidInput", err)
+	}
+	if got := lateCalls.Load(); got != 0 {
+		t.Fatalf("late cleanup calls = %d, want 0", got)
+	}
+}
+
+func TestCleanupStackRejectsOwnershipAfterSealWhileCleanupBlocked(t *testing.T) {
+	var stack cleanupStack
+	var originalCalls atomic.Int64
+	var lateCalls atomic.Int64
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseBlockedCleanup := func() {
+		releaseOnce.Do(func() {
+			close(release)
+		})
+	}
+	t.Cleanup(releaseBlockedCleanup)
+
+	if err := stack.Own(cleanupRelease, "original", func(context.Context) error {
+		originalCalls.Add(1)
+		close(entered)
+		<-release
+		return nil
+	}); err != nil {
+		t.Fatalf("Own(original) error = %v", err)
+	}
+
+	closeDone := make(chan error, 1)
+	go func() {
+		closeDone <- stack.Close(context.Background())
+	}()
+
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for cleanup to start")
+	}
+
+	lateOwnDone := make(chan error, 1)
+	go func() {
+		lateOwnDone <- stack.Own(cleanupRelease, "late", func(context.Context) error {
+			lateCalls.Add(1)
+			return nil
+		})
+	}()
+	select {
+	case err := <-lateOwnDone:
+		if !errors.Is(err, ErrInvalidInput) {
+			t.Fatalf("late Own() error = %v, want ErrInvalidInput", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("late Own() blocked while cleanup callback was running")
+	}
+	if got := lateCalls.Load(); got != 0 {
+		t.Fatalf("late cleanup calls before release = %d, want 0", got)
+	}
+
+	releaseBlockedCleanup()
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for Close()")
+	}
+	if got := originalCalls.Load(); got != 1 {
+		t.Fatalf("original cleanup calls = %d, want 1", got)
 	}
 	if got := lateCalls.Load(); got != 0 {
 		t.Fatalf("late cleanup calls = %d, want 0", got)

@@ -12,10 +12,68 @@ import (
 
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/store"
 	"github.com/wklken/apisix-go/pkg/testutil"
 	"github.com/wklken/apisix-go/pkg/util"
 )
+
+type keyAuthConsumerLookup struct {
+	mu      sync.RWMutex
+	byKey   map[string]resource.Consumer
+	byID    map[string]resource.Consumer
+	keyCall []string
+	idCall  []string
+	closed  bool
+}
+
+func (lookup *keyAuthConsumerLookup) ConsumerByPluginKey(plugin, key string) (resource.Consumer, bool) {
+	lookup.mu.Lock()
+	defer lookup.mu.Unlock()
+	lookup.keyCall = append(lookup.keyCall, plugin+"\x00"+key)
+	if lookup.closed {
+		return resource.Consumer{}, false
+	}
+	consumer, ok := lookup.byKey[key]
+	return consumer, ok
+}
+
+func (lookup *keyAuthConsumerLookup) ConsumerByID(id string) (resource.Consumer, bool) {
+	lookup.mu.Lock()
+	defer lookup.mu.Unlock()
+	lookup.idCall = append(lookup.idCall, id)
+	if lookup.closed {
+		return resource.Consumer{}, false
+	}
+	consumer, ok := lookup.byID[id]
+	return consumer, ok
+}
+
+func (*keyAuthConsumerLookup) ConsumerGroupByID(string) (resource.ConsumerGroup, bool) {
+	return resource.ConsumerGroup{}, false
+}
+
+func (lookup *keyAuthConsumerLookup) close() {
+	lookup.mu.Lock()
+	defer lookup.mu.Unlock()
+	lookup.closed = true
+	lookup.byKey = nil
+	lookup.byID = nil
+}
+
+func newLookupTestPlugin(t *testing.T, cfg Config, lookup base.ConsumerLookup) *Plugin {
+	t.Helper()
+	p := &Plugin{config: cfg}
+	p.SetDependencies(base.Dependencies{Consumers: lookup})
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
 
 var (
 	testStoreOnce sync.Once
@@ -130,6 +188,162 @@ func TestHandlerAcceptsHeaderKeyAndAttachesConsumer(t *testing.T) {
 	if rr.Code != http.StatusNoContent {
 		t.Fatalf("response code = %d, want %d; body=%s", rr.Code, http.StatusNoContent, rr.Body.String())
 	}
+}
+
+func TestHandlerUsesInjectedConsumerLookupAuthoritatively(t *testing.T) {
+	addKeyAuthConsumer(t, "store-key-user", "overlap-key")
+	lookup := &keyAuthConsumerLookup{byKey: map[string]resource.Consumer{
+		"overlap-key": {Username: "lookup-key-user", Plugins: map[string]resource.PluginConfig{}},
+	}}
+	hideCredentials := true
+	p := newLookupTestPlugin(t, Config{HideCredentials: &hideCredentials}, lookup)
+
+	t.Run("lookup consumer wins and header precedence is preserved", func(t *testing.T) {
+		request := httptest.NewRequest(
+			http.MethodGet, "http://example.com/get?apikey=query-poison&keep=1", nil,
+		)
+		request = ctx.WithApisixVars(request, map[string]string{})
+		request.Header.Set("apikey", "overlap-key")
+		response := httptest.NewRecorder()
+		p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if got := ctx.GetApisixVar(r, "$consumer_name"); got != "lookup-key-user" {
+				t.Fatalf("consumer_name = %v, want lookup-key-user", got)
+			}
+			if got := r.Header.Get("apikey"); got != "" {
+				t.Fatalf("apikey header = %q, want hidden", got)
+			}
+			if got := r.URL.Query().Get("apikey"); got != "query-poison" {
+				t.Fatalf("query apikey = %q, want untouched header-precedence value", got)
+			}
+			w.WriteHeader(http.StatusNoContent)
+		})).ServeHTTP(response, request)
+		if response.Code != http.StatusNoContent {
+			t.Fatalf("response code = %d, want 204; body=%s", response.Code, response.Body.String())
+		}
+	})
+
+	t.Run("lookup miss never falls through to Store", func(t *testing.T) {
+		miss := newLookupTestPlugin(t, Config{}, &keyAuthConsumerLookup{})
+		request := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+		request.Header.Set("apikey", "overlap-key")
+		response := httptest.NewRecorder()
+		miss.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+			t.Fatal("non-nil lookup miss reached Store poison consumer")
+		})).ServeHTTP(response, request)
+		if response.Code != http.StatusUnauthorized {
+			t.Fatalf("response code = %d, want 401", response.Code)
+		}
+	})
+
+	lookup.mu.RLock()
+	defer lookup.mu.RUnlock()
+	if len(lookup.keyCall) != 1 || lookup.keyCall[0] != name+"\x00overlap-key" {
+		t.Fatalf("lookup calls = %#v, want exact factory/key", lookup.keyCall)
+	}
+}
+
+func TestHandlerUsesInjectedAnonymousConsumerByID(t *testing.T) {
+	addConsumer(t, "key-lookup-anonymous")
+	lookup := &keyAuthConsumerLookup{byID: map[string]resource.Consumer{
+		"key-lookup-anonymous": {Username: "lookup-key-anonymous", Plugins: map[string]resource.PluginConfig{}},
+	}}
+	p := newLookupTestPlugin(t, Config{AnonymousConsumer: "key-lookup-anonymous"}, lookup)
+	request := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	request = ctx.WithApisixVars(request, map[string]string{})
+	response := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := ctx.GetApisixVar(r, "$consumer_name"); got != "lookup-key-anonymous" {
+			t.Fatalf("consumer_name = %v, want lookup-key-anonymous", got)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want 204", response.Code)
+	}
+	lookup.mu.RLock()
+	defer lookup.mu.RUnlock()
+	if len(lookup.idCall) != 1 || lookup.idCall[0] != "key-lookup-anonymous" {
+		t.Fatalf("anonymous lookup calls = %#v", lookup.idCall)
+	}
+
+	miss := newLookupTestPlugin(
+		t, Config{AnonymousConsumer: "key-lookup-anonymous"}, &keyAuthConsumerLookup{},
+	)
+	missResponse := httptest.NewRecorder()
+	miss.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("non-nil anonymous lookup miss reached Store poison consumer")
+	})).ServeHTTP(missResponse, httptest.NewRequest(http.MethodGet, "http://example.com/get", nil))
+	if missResponse.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous miss response code = %d, want 401", missResponse.Code)
+	}
+}
+
+func TestInjectedLookupInvalidKeyUsesAnonymousAndHidesAllCredentials(t *testing.T) {
+	hideCredentials := true
+	lookup := &keyAuthConsumerLookup{byID: map[string]resource.Consumer{
+		"lookup-anonymous": {Username: "lookup-anonymous", Plugins: map[string]resource.PluginConfig{}},
+	}}
+	p := newLookupTestPlugin(t, Config{
+		HideCredentials: &hideCredentials, AnonymousConsumer: "lookup-anonymous",
+	}, lookup)
+	request := httptest.NewRequest(
+		http.MethodGet, "http://example.com/get?apikey=query-credential&keep=1", nil,
+	)
+	request = ctx.WithApisixVars(request, map[string]string{})
+	request.Header.Set("apikey", "invalid-header-credential")
+	response := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := ctx.GetApisixVar(r, "$consumer_name"); got != "lookup-anonymous" {
+			t.Fatalf("consumer_name = %v, want lookup-anonymous", got)
+		}
+		if r.Header.Get("apikey") != "" || r.URL.Query().Get("apikey") != "" {
+			t.Fatal("anonymous fallback retained injected key credentials")
+		}
+		if got := r.URL.Query().Get("keep"); got != "1" {
+			t.Fatalf("keep query = %q, want 1", got)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want 204; body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestKeyAuthConsumerLookupsAreGenerationIsolated(t *testing.T) {
+	firstLookup := &keyAuthConsumerLookup{byKey: map[string]resource.Consumer{
+		"overlap": {Username: "key-generation-n", Plugins: map[string]resource.PluginConfig{}},
+	}}
+	secondLookup := &keyAuthConsumerLookup{byKey: map[string]resource.Consumer{
+		"overlap": {Username: "key-generation-n-plus-one", Plugins: map[string]resource.PluginConfig{}},
+	}}
+	first := newLookupTestPlugin(t, Config{}, firstLookup)
+	second := newLookupTestPlugin(t, Config{}, secondLookup)
+
+	assertConsumer := func(p *Plugin, want string) {
+		t.Helper()
+		request := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+		request = ctx.WithApisixVars(request, map[string]string{})
+		request.Header.Set("apikey", "overlap")
+		response := httptest.NewRecorder()
+		p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if got := ctx.GetApisixVar(r, "$consumer_name"); got != want {
+				t.Errorf("consumer_name = %v, want %s", got, want)
+			}
+			w.WriteHeader(http.StatusNoContent)
+		})).ServeHTTP(response, request)
+		if response.Code != http.StatusNoContent {
+			t.Errorf("response code = %d, want 204; body=%s", response.Code, response.Body.String())
+		}
+	}
+
+	var group sync.WaitGroup
+	for range 16 {
+		group.Go(func() { assertConsumer(first, "key-generation-n") })
+		group.Go(func() { assertConsumer(second, "key-generation-n-plus-one") })
+	}
+	group.Wait()
+	firstLookup.close()
+	assertConsumer(second, "key-generation-n-plus-one")
 }
 
 func TestHandlerDoesNotWriteConsumerToStdout(t *testing.T) {

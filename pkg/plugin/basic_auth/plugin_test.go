@@ -12,9 +12,77 @@ import (
 
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/store"
 	"github.com/wklken/apisix-go/pkg/testutil"
 )
+
+type basicAuthConsumerLookup struct {
+	mu      sync.RWMutex
+	byKey   map[string]resource.Consumer
+	byID    map[string]resource.Consumer
+	keyCall []string
+	idCall  []string
+	closed  bool
+}
+
+func (lookup *basicAuthConsumerLookup) ConsumerByPluginKey(plugin, key string) (resource.Consumer, bool) {
+	lookup.mu.Lock()
+	defer lookup.mu.Unlock()
+	lookup.keyCall = append(lookup.keyCall, plugin+"\x00"+key)
+	if lookup.closed {
+		return resource.Consumer{}, false
+	}
+	consumer, ok := lookup.byKey[key]
+	return consumer, ok
+}
+
+func (lookup *basicAuthConsumerLookup) ConsumerByID(id string) (resource.Consumer, bool) {
+	lookup.mu.Lock()
+	defer lookup.mu.Unlock()
+	lookup.idCall = append(lookup.idCall, id)
+	if lookup.closed {
+		return resource.Consumer{}, false
+	}
+	consumer, ok := lookup.byID[id]
+	return consumer, ok
+}
+
+func (*basicAuthConsumerLookup) ConsumerGroupByID(string) (resource.ConsumerGroup, bool) {
+	return resource.ConsumerGroup{}, false
+}
+
+func (lookup *basicAuthConsumerLookup) close() {
+	lookup.mu.Lock()
+	defer lookup.mu.Unlock()
+	lookup.closed = true
+	lookup.byKey = nil
+	lookup.byID = nil
+}
+
+func basicAuthBoundConsumer(lookupUsername, consumerUsername, password string) resource.Consumer {
+	return resource.Consumer{
+		Username: consumerUsername,
+		Plugins: map[string]resource.PluginConfig{name: map[string]any{
+			"username": lookupUsername,
+			"password": password,
+		}},
+	}
+}
+
+func newLookupTestPlugin(t *testing.T, cfg Config, lookup base.ConsumerLookup) *Plugin {
+	t.Helper()
+	p := &Plugin{config: cfg}
+	p.SetDependencies(base.Dependencies{Consumers: lookup})
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
 
 var (
 	testStoreOnce sync.Once
@@ -138,6 +206,124 @@ func TestHandlerAcceptsBasicAuthAndAttachesConsumer(t *testing.T) {
 	if rr.Code != http.StatusNoContent {
 		t.Fatalf("response code = %d, want %d; body=%s", rr.Code, http.StatusNoContent, rr.Body.String())
 	}
+}
+
+func TestHandlerUsesInjectedConsumerLookupAuthoritatively(t *testing.T) {
+	addBasicAuthConsumer(t, "basic-lookup-key", "store-password")
+	lookup := &basicAuthConsumerLookup{byKey: map[string]resource.Consumer{
+		"basic-lookup-key": basicAuthBoundConsumer("basic-lookup-key", "lookup-basic-user", "lookup-password"),
+	}}
+	p := newLookupTestPlugin(t, Config{}, lookup)
+
+	t.Run("resolved lookup consumer wins over Store poison", func(t *testing.T) {
+		request := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+		request = ctx.WithApisixVars(request, map[string]string{})
+		request.Header.Set("Authorization", basicHeader("basic-lookup-key", "lookup-password"))
+		response := httptest.NewRecorder()
+		p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if got := ctx.GetApisixVar(r, "$consumer_name"); got != "lookup-basic-user" {
+				t.Fatalf("consumer_name = %v, want lookup-basic-user", got)
+			}
+			w.WriteHeader(http.StatusNoContent)
+		})).ServeHTTP(response, request)
+		if response.Code != http.StatusNoContent {
+			t.Fatalf("response code = %d, want 204; body=%s", response.Code, response.Body.String())
+		}
+	})
+
+	t.Run("lookup miss never falls through to Store", func(t *testing.T) {
+		miss := newLookupTestPlugin(t, Config{}, &basicAuthConsumerLookup{})
+		request := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+		request.Header.Set("Authorization", basicHeader("basic-lookup-key", "store-password"))
+		response := httptest.NewRecorder()
+		miss.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+			t.Fatal("non-nil lookup miss reached Store poison consumer")
+		})).ServeHTTP(response, request)
+		if response.Code != http.StatusUnauthorized {
+			t.Fatalf("response code = %d, want 401", response.Code)
+		}
+	})
+
+	lookup.mu.RLock()
+	defer lookup.mu.RUnlock()
+	if len(lookup.keyCall) != 1 || lookup.keyCall[0] != name+"\x00basic-lookup-key" {
+		t.Fatalf("lookup calls = %#v, want exact factory/key", lookup.keyCall)
+	}
+}
+
+func TestHandlerUsesInjectedAnonymousConsumerByID(t *testing.T) {
+	addBasicAuthConsumer(t, "basic-lookup-anonymous", "store-password")
+	lookup := &basicAuthConsumerLookup{byID: map[string]resource.Consumer{
+		"basic-lookup-anonymous": {Username: "lookup-basic-anonymous", Plugins: map[string]resource.PluginConfig{}},
+	}}
+	p := newLookupTestPlugin(t, Config{AnonymousConsumer: "basic-lookup-anonymous"}, lookup)
+	request := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	request = ctx.WithApisixVars(request, map[string]string{})
+	response := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := ctx.GetApisixVar(r, "$consumer_name"); got != "lookup-basic-anonymous" {
+			t.Fatalf("consumer_name = %v, want lookup-basic-anonymous", got)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want 204", response.Code)
+	}
+	lookup.mu.RLock()
+	defer lookup.mu.RUnlock()
+	if len(lookup.idCall) != 1 || lookup.idCall[0] != "basic-lookup-anonymous" {
+		t.Fatalf("anonymous lookup calls = %#v", lookup.idCall)
+	}
+
+	miss := newLookupTestPlugin(
+		t, Config{AnonymousConsumer: "basic-lookup-anonymous"}, &basicAuthConsumerLookup{},
+	)
+	missResponse := httptest.NewRecorder()
+	miss.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("non-nil anonymous lookup miss reached Store poison consumer")
+	})).ServeHTTP(missResponse, httptest.NewRequest(http.MethodGet, "http://example.com/get", nil))
+	if missResponse.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous miss response code = %d, want 401", missResponse.Code)
+	}
+}
+
+func TestBasicAuthConsumerLookupsAreGenerationIsolated(t *testing.T) {
+	firstLookup := &basicAuthConsumerLookup{byKey: map[string]resource.Consumer{
+		"overlap": basicAuthBoundConsumer("overlap", "basic-generation-n", "password-n"),
+	}}
+	secondLookup := &basicAuthConsumerLookup{byKey: map[string]resource.Consumer{
+		"overlap": basicAuthBoundConsumer("overlap", "basic-generation-n-plus-one", "password-n-plus-one"),
+	}}
+	first := newLookupTestPlugin(t, Config{}, firstLookup)
+	second := newLookupTestPlugin(t, Config{}, secondLookup)
+
+	assertConsumer := func(p *Plugin, password, want string) {
+		t.Helper()
+		request := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+		request = ctx.WithApisixVars(request, map[string]string{})
+		request.Header.Set("Authorization", basicHeader("overlap", password))
+		response := httptest.NewRecorder()
+		p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if got := ctx.GetApisixVar(r, "$consumer_name"); got != want {
+				t.Errorf("consumer_name = %v, want %s", got, want)
+			}
+			w.WriteHeader(http.StatusNoContent)
+		})).ServeHTTP(response, request)
+		if response.Code != http.StatusNoContent {
+			t.Errorf("response code = %d, want 204; body=%s", response.Code, response.Body.String())
+		}
+	}
+
+	var group sync.WaitGroup
+	for range 16 {
+		group.Go(func() { assertConsumer(first, "password-n", "basic-generation-n") })
+		group.Go(func() {
+			assertConsumer(second, "password-n-plus-one", "basic-generation-n-plus-one")
+		})
+	}
+	group.Wait()
+	firstLookup.close()
+	assertConsumer(second, "password-n-plus-one", "basic-generation-n-plus-one")
 }
 
 func TestBasicAuthorizationErrorsDoNotExposeCredentials(t *testing.T) {

@@ -27,7 +27,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/util"
 
 	"github.com/golang-jwt/jwt/v5"
-	"golang.org/x/oauth2"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -37,14 +36,20 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := base.MaterializePluginSecrets(p); err != nil {
-		t.Fatalf("MaterializePluginSecrets() error = %v", err)
-	}
+	materializeOIDCTestPlugin(t, p)
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
+	t.Cleanup(p.Stop)
 
 	return p
+}
+
+func materializeOIDCTestPlugin(t *testing.T, p *Plugin) {
+	t.Helper()
+	if err := base.MaterializePluginSecrets(p); err != nil {
+		t.Fatalf("MaterializePluginSecrets() error = %v", err)
+	}
 }
 
 func TestHandlerIntrospectsBearerTokenFromDiscovery(t *testing.T) {
@@ -804,9 +809,8 @@ func TestMaterializeSecretsParsesPublicKeyAndKeepsOnlyDescriptor(t *testing.T) {
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
-	if !strings.Contains(p.config.PublicKey, "$ENV://OPENID_CONNECT_PUBLIC_KEY#sha256:") ||
-		strings.Contains(p.config.PublicKey, resolved) {
-		t.Fatalf("PublicKey = %q, want safe environment descriptor", p.config.PublicKey)
+	if p.config.PublicKey != oidcDescriptor(resolved) || strings.Contains(p.config.PublicKey, resolved) {
+		t.Fatalf("PublicKey = %q, want safe resolved-content descriptor", p.config.PublicKey)
 	}
 	if p.staticPublicKey == nil {
 		t.Fatal("staticPublicKey is nil after environment resolution")
@@ -980,6 +984,7 @@ func TestPostInitRequiresClientSecretForSelectedFlow(t *testing.T) {
 			if err := p.Init(); err != nil {
 				t.Fatalf("Init() error = %v", err)
 			}
+			materializeOIDCTestPlugin(t, p)
 			err := p.PostInit()
 			if test.wantErr && err == nil {
 				t.Fatal("PostInit() error = nil, want missing client_secret error")
@@ -1362,6 +1367,7 @@ func TestPostInitRejectsEmptyConfiguredAudience(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
+	materializeOIDCTestPlugin(t, p)
 	if err := p.PostInit(); err == nil {
 		t.Fatal("PostInit() error = nil, want empty audience rejection")
 	}
@@ -1385,6 +1391,7 @@ func TestPostInitValidatesTokenSigningAlgorithm(t *testing.T) {
 			if err := p.Init(); err != nil {
 				t.Fatalf("Init() error = %v", err)
 			}
+			materializeOIDCTestPlugin(t, p)
 			if err := p.PostInit(); err != nil {
 				t.Fatalf("PostInit() error = %v", err)
 			}
@@ -1403,6 +1410,7 @@ func TestPostInitValidatesTokenSigningAlgorithm(t *testing.T) {
 			if err := p.Init(); err != nil {
 				t.Fatalf("Init() error = %v", err)
 			}
+			materializeOIDCTestPlugin(t, p)
 			if err := p.PostInit(); err == nil {
 				t.Fatal("PostInit() error = nil")
 			}
@@ -1515,18 +1523,6 @@ func TestAuthorizationSessionUsesPluginClock(t *testing.T) {
 	}
 }
 
-func TestOAuthTokenExpiryUsesPluginClock(t *testing.T) {
-	startedAt := time.Date(2026, 8, 14, 1, 2, 3, 0, time.UTC)
-	p := &Plugin{now: func() time.Time { return startedAt }}
-	response := p.tokenResponseFromOAuth2(&oauth2.Token{
-		AccessToken: "access-token",
-		Expiry:      startedAt.Add(90 * time.Second),
-	})
-	if response.ExpiresIn != 90 {
-		t.Fatalf("ExpiresIn = %d, want 90", response.ExpiresIn)
-	}
-}
-
 func TestSchemaRequiresSecureCookieForSameSiteNone(t *testing.T) {
 	p := &Plugin{}
 	if err := p.Init(); err != nil {
@@ -1609,6 +1605,7 @@ func TestPostInitRejectsInvalidClaimSchema(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
+	materializeOIDCTestPlugin(t, p)
 	if err := p.PostInit(); err == nil {
 		t.Fatal("PostInit() error = nil, want invalid claim_schema rejection")
 	}
@@ -1673,6 +1670,7 @@ func TestPostInitRequiresSessionSecretForCodeFlow(t *testing.T) {
 		ClientID:  "apisix",
 		Discovery: "http://idp.example.com/.well-known/openid-configuration",
 	}}
+	materializeOIDCTestPlugin(t, p)
 	if err := p.PostInit(); err == nil {
 		t.Fatal("PostInit() error = nil, want session.secret validation error")
 	}
@@ -2919,6 +2917,7 @@ func TestPostInitMapsDeprecatedSessionLifetimeAndDefersRedis(t *testing.T) {
 		Discovery: "http://idp.example.com/.well-known/openid-configuration",
 		Session:   SessionConfig{Secret: "0123456789abcdef", Storage: "redis"},
 	}}
+	materializeOIDCTestPlugin(t, p)
 	if err := p.PostInit(); err == nil {
 		t.Fatal("PostInit() error = nil, want missing redis config error")
 	}

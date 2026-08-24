@@ -22,12 +22,12 @@ import (
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/shared"
-	"github.com/wklken/apisix-go/pkg/store"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
 type Plugin struct {
 	base.BasePlugin
+	oidcSecretState
 	config Config
 
 	client              *http.Client
@@ -406,6 +406,19 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	releaseWork, err := p.acquireOIDCWork()
+	if err != nil {
+		return err
+	}
+	defer releaseWork()
+	if err := p.requirePreparedOIDCSecrets(); err != nil {
+		return err
+	}
+	clientSecretPresent, privateKeyPresent, publicKeyPresent, sessionSecretPresent,
+		_, sessionSecretLength, err := p.oidcSecretPresence()
+	if err != nil {
+		return err
+	}
 	if p.now == nil {
 		p.now = time.Now
 	}
@@ -443,19 +456,17 @@ func (p *Plugin) PostInit() error {
 	}
 	if p.config.TokenEndpointAuthMethod == "private_key_jwt" ||
 		p.config.IntrospectionEndpointAuthMethod == "private_key_jwt" {
-		privateKey, err := parseRSAPrivateKey([]byte(p.config.ClientRSAPrivateKey))
-		if err != nil {
-			return fmt.Errorf("invalid client_rsa_private_key: %w", err)
+		if !privateKeyPresent {
+			return errors.New("client_rsa_private_key is required for private_key_jwt")
 		}
-		p.clientRSAPrivateKey = privateKey
 	}
 	if (p.config.TokenEndpointAuthMethod == "client_secret_jwt" ||
-		p.config.IntrospectionEndpointAuthMethod == "client_secret_jwt") && p.config.ClientSecret == "" {
+		p.config.IntrospectionEndpointAuthMethod == "client_secret_jwt") && !clientSecretPresent {
 		return errors.New("client_secret is required for client_secret_jwt")
 	}
-	if p.config.ClientSecret == "" {
+	if !clientSecretPresent {
 		if p.config.BearerOnly {
-			if p.config.PublicKey == "" && !p.config.UseJWKS &&
+			if !publicKeyPresent && !p.config.UseJWKS &&
 				p.config.IntrospectionEndpointAuthMethod != "private_key_jwt" {
 				return errors.New("client_secret is required for bearer introspection")
 			}
@@ -490,7 +501,7 @@ func (p *Plugin) PostInit() error {
 		p.config.UnauthAction = "auth"
 	}
 	if !p.config.BearerOnly {
-		if len(p.config.Session.Secret) < 16 {
+		if !sessionSecretPresent || sessionSecretLength < 16 {
 			return errors.New("openid-connect session.secret must be at least 16 characters for code flow")
 		}
 		if p.config.Session.Storage == "" {
@@ -562,30 +573,23 @@ func (p *Plugin) PostInit() error {
 		return err
 	}
 
-	p.client = &http.Client{
+	client := &http.Client{
 		Timeout:   time.Duration(p.config.Timeout) * time.Second,
 		Transport: p.transport(),
 	}
+	if p.beforeReadyPublish != nil {
+		p.beforeReadyPublish()
+	}
+	p.lifecycleMu.Lock()
+	if p.retired.Load() {
+		p.lifecycleMu.Unlock()
+		client.CloseIdleConnections()
+		return errOIDCCredentialsUnavailable
+	}
+	p.client = client
+	p.ready.Store(true)
+	p.lifecycleMu.Unlock()
 
-	return nil
-}
-
-func (p *Plugin) MaterializeSecrets() error {
-	if p.config.PublicKey == "" {
-		return nil
-	}
-	key, err := store.MaterializeSecret(p.config.PublicKey)
-	if err != nil {
-		return errors.New("resolve openid-connect public_key reference: credential unavailable")
-	}
-	defer key.Destroy()
-	encoded := key.Bytes()
-	defer clear(encoded)
-	p.staticPublicKey, err = parsePublicKey(encoded)
-	if err != nil {
-		return errors.New("failed to parse public key")
-	}
-	p.config.PublicKey = key.Descriptor()
 	return nil
 }
 
@@ -644,7 +648,7 @@ func (p *Plugin) configureRedisSessionStore() error {
 	configUID.Add(redisConfig.Host)
 	configUID.Add(redisConfig.Port)
 	configUID.Add(redisConfig.Username)
-	configUID.Add(redisConfig.Password)
+	configUID.Add(fmt.Sprintf("%x", p.redisPasswordDigestSnapshot()))
 	configUID.Add(redisConfig.Database)
 	configUID.Add(redisConfig.SSL)
 	configUID.Add(*redisConfig.SSLVerify)
@@ -654,44 +658,78 @@ func (p *Plugin) configureRedisSessionStore() error {
 	configUID.Add(redisConfig.ReadTimeout)
 	configUID.Add(redisConfig.KeepaliveTimeout)
 
-	options := &redis.Options{
-		Addr:            net.JoinHostPort(redisConfig.Host, strconv.Itoa(redisConfig.Port)),
-		Username:        redisConfig.Username,
-		Password:        redisConfig.Password,
-		DB:              redisConfig.Database,
-		DialTimeout:     time.Duration(redisConfig.ConnectTimeout) * time.Millisecond,
-		WriteTimeout:    time.Duration(redisConfig.SendTimeout) * time.Millisecond,
-		ReadTimeout:     time.Duration(redisConfig.ReadTimeout) * time.Millisecond,
-		ConnMaxIdleTime: time.Duration(redisConfig.KeepaliveTimeout) * time.Millisecond,
-	}
-	if redisConfig.SSL {
-		options.TLSConfig = &tls.Config{
-			ServerName:         redisConfig.ServerName,
-			InsecureSkipVerify: !*redisConfig.SSLVerify,
+	return p.withRedisPassword(func(redisPassword string) error {
+		options := &redis.Options{
+			Addr:            net.JoinHostPort(redisConfig.Host, strconv.Itoa(redisConfig.Port)),
+			Username:        redisConfig.Username,
+			Password:        redisPassword,
+			DB:              redisConfig.Database,
+			DialTimeout:     time.Duration(redisConfig.ConnectTimeout) * time.Millisecond,
+			WriteTimeout:    time.Duration(redisConfig.SendTimeout) * time.Millisecond,
+			ReadTimeout:     time.Duration(redisConfig.ReadTimeout) * time.Millisecond,
+			ConnMaxIdleTime: time.Duration(redisConfig.KeepaliveTimeout) * time.Millisecond,
 		}
-	}
-	client := redis.NewClient(options)
-	value, release, err := shared.AcquireClient(
-		shared.ClientKey(name+"-session", configUID),
-		func() (any, error) { return client, nil },
-		shared.CloseRedisClient,
-	)
-	if err != nil {
-		return err
-	}
-	p.sessionStore = &redisSessionStore{
-		client: value.(*redis.Client),
-	}
-	p.clientRelease = release
-
-	return nil
+		if redisConfig.SSL {
+			options.TLSConfig = &tls.Config{
+				ServerName:         redisConfig.ServerName,
+				InsecureSkipVerify: !*redisConfig.SSLVerify,
+			}
+		}
+		client := redis.NewClient(options)
+		value, release, err := shared.AcquireClient(
+			shared.ClientKey(name+"-session", configUID),
+			func() (any, error) { return client, nil },
+			shared.CloseRedisClient,
+		)
+		if err != nil {
+			return err
+		}
+		p.sessionStore = &redisSessionStore{
+			client: value.(*redis.Client),
+		}
+		p.clientRelease = release
+		return nil
+	})
 }
 
 func (p *Plugin) Stop() {
-	if p.clientRelease != nil {
-		p.clientRelease()
-		p.clientRelease = nil
-	}
+	p.stopOnce.Do(func() {
+		workWait := p.retireOIDCWork()
+		usesWait := p.oidcUsesDone()
+		if workWait != nil {
+			<-workWait
+		}
+		if usesWait != nil {
+			<-usesWait
+		}
+
+		p.providerMu.Lock()
+		if p.provider != nil {
+			p.provider.oauth2Config.ClientSecret = ""
+		}
+		p.provider = nil
+		p.providerMu.Unlock()
+
+		if p.client != nil {
+			p.client.CloseIdleConnections()
+			p.client = nil
+		}
+		if p.clientRelease != nil {
+			p.clientRelease()
+			p.clientRelease = nil
+		}
+		p.sessionStore = nil
+
+		p.mu.Lock()
+		p.discovery = discoveryData{}
+		p.discoveryLoaded = false
+		p.mu.Unlock()
+
+		owners := p.dropOIDCSecrets()
+		for _, owner := range owners {
+			owner.Destroy()
+		}
+	})
 }
 
 func (p *Plugin) Config() any {
@@ -700,6 +738,12 @@ func (p *Plugin) Config() any {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
+		releaseWork, workErr := p.acquireReadyOIDCWork()
+		if workErr != nil {
+			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+			return
+		}
+		defer releaseWork()
 		clientXAccessToken := ""
 		if p.config.BearerOnly {
 			clientXAccessToken = apisixctx.RestoreTrustedRequestHeader(r, "X-Access-Token")

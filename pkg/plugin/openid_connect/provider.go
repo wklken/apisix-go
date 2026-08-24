@@ -21,7 +21,13 @@ type providerClient struct {
 // newProviderClient builds a provider from an already-fetched discovery
 // document so the configured discovery URL does not have to match
 // issuer + "/.well-known/openid-configuration".
-func newProviderClient(ctx context.Context, doc discoveryData, cfg Config, httpClient *http.Client) *providerClient {
+func newProviderClient(
+	ctx context.Context,
+	doc discoveryData,
+	cfg Config,
+	clientSecret string,
+	httpClient *http.Client,
+) *providerClient {
 	provider := (&oidc.ProviderConfig{
 		IssuerURL:   doc.Issuer,
 		AuthURL:     doc.AuthorizationEndpoint,
@@ -43,7 +49,7 @@ func newProviderClient(ctx context.Context, doc discoveryData, cfg Config, httpC
 	return &providerClient{
 		oauth2Config: oauth2.Config{
 			ClientID:     cfg.ClientID,
-			ClientSecret: cfg.ClientSecret,
+			ClientSecret: clientSecret,
 			Endpoint: oauth2.Endpoint{
 				AuthURL:   doc.AuthorizationEndpoint,
 				TokenURL:  doc.TokenEndpoint,
@@ -59,8 +65,17 @@ func newProviderClient(ctx context.Context, doc discoveryData, cfg Config, httpC
 }
 
 func (p *Plugin) providerClient(r *http.Request) (*providerClient, error) {
+	releaseWork, err := p.acquireReadyOIDCWork()
+	if err != nil {
+		return nil, err
+	}
+	defer releaseWork()
 	p.providerMu.Lock()
 	if p.provider != nil {
+		if p.retired.Load() {
+			p.providerMu.Unlock()
+			return nil, errOIDCCredentialsUnavailable
+		}
 		client := p.provider
 		p.providerMu.Unlock()
 		return client, nil
@@ -73,29 +88,16 @@ func (p *Plugin) providerClient(r *http.Request) (*providerClient, error) {
 	}
 	// The provider is built once per plugin instance so the verifier keeps
 	// its JWKS remote-key-set cache instead of refetching keys per request.
-	client := newProviderClient(context.Background(), discovery, p.config, p.client)
-
-	p.providerMu.Lock()
-	if p.provider == nil {
-		p.provider = client
-	}
-	client = p.provider
-	p.providerMu.Unlock()
-	return client, nil
-}
-
-// tokenResponseFromOAuth2 converts an oauth2 token into the APISIX session
-// shape, keeping the raw id_token from the token response.
-func (p *Plugin) tokenResponseFromOAuth2(token *oauth2.Token) tokenResponse {
-	response := tokenResponse{
-		AccessToken:  token.AccessToken,
-		RefreshToken: token.RefreshToken,
-	}
-	if idToken, ok := token.Extra("id_token").(string); ok {
-		response.IDToken = idToken
-	}
-	if !token.Expiry.IsZero() {
-		response.ExpiresIn = int64(token.Expiry.Sub(p.currentTime()).Seconds())
-	}
-	return response
+	var client *providerClient
+	err = p.withClientSecret(func(clientSecret string) error {
+		built := newProviderClient(context.Background(), discovery, p.config, clientSecret, p.client)
+		p.providerMu.Lock()
+		if p.provider == nil {
+			p.provider = built
+		}
+		client = p.provider
+		p.providerMu.Unlock()
+		return nil
+	})
+	return client, err
 }

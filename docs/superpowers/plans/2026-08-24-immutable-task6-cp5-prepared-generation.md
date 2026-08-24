@@ -489,6 +489,7 @@ validate exact effective spec/source authority
 -> inject CompositeChildren into outer Dependencies
 -> NewFactoryInstance
 -> Init
+-> compile schema and validate the caller-owned config
 -> decode caller-owned config
 -> scoped secret preparation only for exact plugin-config occurrence
 -> apply caller-supplied route/service or stream resource context
@@ -531,8 +532,9 @@ metadata, safe consumers, and tasks. Never populate `DataEncryption`. Before
 constructing the outer plugin, create the X1
 `plugin.NewCompositeChildPreparer` from those dependencies plus the exact
 attempt, effective scope, and effective provenance; inject it as
-`CompositeChildren`. Use `plugin.NewFactoryInstance`, then `Init`, defensive
-decode, source-specific secret handling, caller-supplied resource context,
+`CompositeChildren`. Use `plugin.NewFactoryInstance`, then `Init`, compile and
+validate the schema against a defensive config clone, decode,
+source-specific secret handling, caller-supplied resource context,
 `PostInit`, optional `StartObservingWithTasks(tasks)`, descriptor resolution,
 and `plugin.BindAttemptResolvedPlugin` with config/filter/error identity. A
 failure after child or observer acquisition stops the partial outer owner and

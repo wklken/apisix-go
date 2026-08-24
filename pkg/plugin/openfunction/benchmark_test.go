@@ -18,6 +18,9 @@ func BenchmarkStaticConfigPath(b *testing.B) {
 	if err := p.Init(); err != nil {
 		b.Fatalf("Init() error = %v", err)
 	}
+	if err := p.MaterializeSecrets(); err != nil {
+		b.Fatalf("MaterializeSecrets() error = %v", err)
+	}
 	if err := p.PostInit(); err != nil {
 		b.Fatalf("PostInit() error = %v", err)
 	}

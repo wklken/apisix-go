@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -25,6 +26,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/runtime"
 	"github.com/wklken/apisix-go/pkg/secret"
 	"github.com/wklken/apisix-go/pkg/testutil"
 	"github.com/wklken/apisix-go/pkg/util"
@@ -54,6 +56,440 @@ func TestMaterializeSecretsRejectsMissingDataEncryptionResolver(t *testing.T) {
 	if err := base.MaterializePluginSecrets(p); err == nil || !strings.Contains(err.Error(), "credential unavailable") {
 		t.Fatalf("PostInit() error = %v, want missing resolver error", err)
 	}
+}
+
+func TestMetadataSchemaIsExplicitForErrorLogLogger(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if p.GetMetadataSchema() == "" {
+		t.Fatal("error-log-logger metadata schema is empty")
+	}
+	if p.GetMetadataSchema() != p.GetSchema() {
+		t.Fatal("metadata schema diverged from the additive error-log-logger schema")
+	}
+	if err := util.Validate(map[string]any{
+		"tcp": map[string]any{"host": "127.0.0.1", "port": 19001},
+	}, p.GetMetadataSchema()); err != nil {
+		t.Fatalf("metadata schema rejected valid TCP document: %v", err)
+	}
+}
+
+func TestPostInitUsesPreparedErrorLogMetadata(t *testing.T) {
+	p := newPreparedMetadataPlugin(t, Config{}, map[string]any{
+		"tcp":   map[string]any{"host": "127.0.0.1", "port": 19001},
+		"level": "INFO",
+	})
+
+	if p.config.TCP == nil || p.config.TCP.Host != "127.0.0.1" || p.config.TCP.Port != 19001 {
+		t.Fatalf("prepared metadata TCP config = %#v, want metadata-selected sink", p.config.TCP)
+	}
+	if p.config.Level != "INFO" {
+		t.Fatalf("prepared metadata level = %q, want INFO", p.config.Level)
+	}
+}
+
+func TestRouteErrorLogConfigOverridesPreparedMetadata(t *testing.T) {
+	p := newPreparedMetadataPlugin(t, Config{
+		TCP:   &TCPConfig{Host: "127.0.0.1", Port: 19002},
+		Level: "ERROR",
+	}, map[string]any{
+		"tcp":   map[string]any{"host": "127.0.0.1", "port": 19001},
+		"level": "INFO",
+	})
+
+	if p.config.TCP == nil || p.config.TCP.Host != "127.0.0.1" || p.config.TCP.Port != 19002 {
+		t.Fatalf("route config TCP = %#v, want route-selected sink", p.config.TCP)
+	}
+	if p.config.Level != "ERROR" {
+		t.Fatalf("route config level = %q, want ERROR", p.config.Level)
+	}
+}
+
+func TestPreparedGenerationsRetainErrorLogMetadata(t *testing.T) {
+	first := newPreparedMetadataPlugin(t, Config{}, map[string]any{
+		"tcp":   map[string]any{"host": "127.0.0.1", "port": 19011},
+		"level": "WARN",
+	})
+	second := newPreparedMetadataPlugin(t, Config{}, map[string]any{
+		"tcp":   map[string]any{"host": "127.0.0.1", "port": 19012},
+		"level": "DEBUG",
+	})
+
+	if got := first.config.TCP; got == nil || got.Port != 19011 || first.config.Level != "WARN" {
+		t.Fatalf("generation N config = %#v/%q, want 19011/WARN", got, first.config.Level)
+	}
+	if got := second.config.TCP; got == nil || got.Port != 19012 || second.config.Level != "DEBUG" {
+		t.Fatalf("generation N+1 config = %#v/%q, want 19012/DEBUG", got, second.config.Level)
+	}
+}
+
+func TestPreparedErrorLogMetadataSecretsArePrivateAndRedacted(t *testing.T) {
+	clickhouseEndpoint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("X-ClickHouse-Key"); got != "metadata-clickhouse-secret" {
+			t.Errorf("ClickHouse key = %q, want resolved metadata secret", got)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(clickhouseEndpoint.Close)
+
+	p := newPreparedMetadataPlugin(t, Config{}, map[string]any{
+		"clickhouse": map[string]any{
+			"endpoint_addr": clickhouseEndpoint.URL,
+			"user":          "default",
+			"password":      "metadata-clickhouse-secret",
+			"database":      "logs",
+			"logtable":      "error_logs",
+		},
+		"kafka": map[string]any{
+			"brokers": []any{
+				map[string]any{
+					"host": "broker-a",
+					"port": 9092,
+					"sasl_config": map[string]any{
+						"user":     "user-a",
+						"password": "metadata-kafka-secret-a",
+					},
+				},
+				map[string]any{
+					"host": "broker-b",
+					"port": 9093,
+					"sasl_config": map[string]any{
+						"user":     "user-b",
+						"password": "metadata-kafka-secret-b",
+					},
+				},
+			},
+			"kafka_topic": "apisix-error-logs",
+		},
+		"level": "INFO",
+	})
+
+	if p.config.Clickhouse.Password == "metadata-clickhouse-secret" ||
+		!strings.Contains(p.config.Clickhouse.Password, "plugin_metadata#sha256:") {
+		t.Fatalf("public ClickHouse password = %q, want metadata descriptor", p.config.Clickhouse.Password)
+	}
+	if len(p.metadataKafkaPasswords) != 2 {
+		t.Fatalf("metadata Kafka private values = %d, want two broker values", len(p.metadataKafkaPasswords))
+	}
+	if p.config.Kafka.Brokers[0].SASLConfig.Password == "metadata-kafka-secret-a" ||
+		p.config.Kafka.Brokers[1].SASLConfig.Password == "metadata-kafka-secret-b" {
+		t.Fatalf("public Kafka config retained metadata plaintext: %#v", p.config.Kafka.Brokers)
+	}
+
+	if err := p.SendLogs(context.Background(), []string{`2026/08/24 [error] metadata secret`}); err != nil {
+		t.Fatalf("SendLogs() error = %v", err)
+	}
+
+	writerSender, ok := p.kafkaSender.(*kafkaGoSender)
+	if !ok {
+		t.Fatalf("kafka sender type = %T, want kafkaGoSender", p.kafkaSender)
+	}
+	transport, ok := writerSender.writer.Transport.(*kafka.Transport)
+	if !ok || transport.SASL == nil {
+		t.Fatal("metadata Kafka writer has no SASL transport")
+	}
+	mechanism, ok := transport.SASL.(plain.Mechanism)
+	if !ok || mechanism.Password != "metadata-kafka-secret-a" {
+		t.Fatalf(
+			"metadata Kafka mechanism = %#v/%T, want first resolved metadata password",
+			transport.SASL,
+			transport.SASL,
+		)
+	}
+
+	// The metadata path must not need the S2 plugin-config resolver.
+	if p.metadataSelected && p.secretsMaterialized {
+		t.Fatal("metadata-selected instance invoked plugin-config secret materialization")
+	}
+	p.Stop()
+	if p.metadataClickhousePassword != nil || len(p.metadataKafkaPasswords) != 0 {
+		t.Fatal("Stop() retained metadata private secret references")
+	}
+}
+
+func TestStartObservingWithTasksRejectsMissingOrStoppedRegistry(t *testing.T) {
+	p := newObserverTestPlugin(t, &fakeKafkaSender{})
+	if err := p.StartObservingWithTasks(nil); err == nil {
+		t.Fatal("StartObservingWithTasks(nil) error = nil, want admission rejection")
+	}
+	if p.observerStop != nil {
+		t.Fatal("nil registry installed an observer")
+	}
+
+	registry := runtime.NewTaskRegistry(context.Background(), nil)
+	if _, err := registry.Stop(context.Background()); err != nil {
+		t.Fatalf("registry.Stop() error = %v", err)
+	}
+	if err := p.StartObservingWithTasks(registry); err == nil {
+		t.Fatal("StartObservingWithTasks(stopped) error = nil, want admission rejection")
+	}
+	if p.observerStop != nil {
+		t.Fatal("stopped registry installed an observer")
+	}
+}
+
+func TestRejectedObserverAdmissionPreservesCurrentGeneration(t *testing.T) {
+	currentSender := &fakeKafkaSender{}
+	current := newObserverTestPlugin(t, currentSender)
+	currentTasks := runtime.NewTaskRegistry(context.Background(), nil)
+	if err := current.StartObservingWithTasks(currentTasks); err != nil {
+		t.Fatalf("start current observer: %v", err)
+	}
+
+	stoppedTasks := runtime.NewTaskRegistry(context.Background(), nil)
+	stopTaskRegistry(t, stoppedTasks)
+	rejected := newObserverTestPlugin(t, &fakeKafkaSender{})
+	if err := rejected.StartObservingWithTasks(stoppedTasks); err == nil {
+		t.Fatal("rejected observer admission error = nil")
+	}
+
+	logger.Warn("current generation survives rejected observer admission")
+	waitFor(t, func() bool { return currentSender.messagesCount() == 1 }, "current generation delivery")
+	stopTaskRegistry(t, currentTasks)
+}
+
+func TestObserverAdmissionStopRaceHasNoLeakOrCurrentLoss(t *testing.T) {
+	for iteration := range 32 {
+		currentSender := &fakeKafkaSender{delivered: make(chan struct{}, 1)}
+		current := newObserverTestPlugin(t, currentSender)
+		currentTasks := runtime.NewTaskRegistry(context.Background(), nil)
+		if err := current.StartObservingWithTasks(currentTasks); err != nil {
+			t.Fatalf("iteration %d: start current observer: %v", iteration, err)
+		}
+
+		candidate := newObserverTestPlugin(t, &fakeKafkaSender{})
+		candidateTasks := runtime.NewTaskRegistry(context.Background(), nil)
+		startResult := make(chan error, 1)
+		go func() {
+			startResult <- candidate.StartObservingWithTasks(candidateTasks)
+		}()
+		stopResult := make(chan error, 1)
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			_, err := candidateTasks.Stop(ctx)
+			stopResult <- err
+		}()
+
+		startErr := <-startResult
+		if err := <-stopResult; err != nil {
+			t.Fatalf("iteration %d: concurrent registry Stop() error = %v", iteration, err)
+		}
+		if candidate.observerStop != nil {
+			t.Fatalf("iteration %d: candidate retained observer stop after registry retirement", iteration)
+		}
+		candidate.Stop()
+
+		if startErr != nil {
+			logger.Warn(fmt.Sprintf("current generation survives admission race %d", iteration))
+			select {
+			case <-currentSender.delivered:
+			case <-time.After(2 * time.Second):
+				t.Fatalf("iteration %d: current observer lost after rejected admission: %v", iteration, startErr)
+			}
+		}
+		stopTaskRegistry(t, currentTasks)
+	}
+}
+
+func TestStartObservingWithTasksRejectsStoppedPlugin(t *testing.T) {
+	p := newObserverTestPlugin(t, &fakeKafkaSender{})
+	p.Stop()
+
+	registry := runtime.NewTaskRegistry(context.Background(), nil)
+	if err := p.StartObservingWithTasks(registry); !errors.Is(err, errObserverLifecycleStopped) {
+		t.Fatalf("StartObservingWithTasks() error = %v, want stopped lifecycle", err)
+	}
+	p.observerLifecycleMu.Lock()
+	observerStop := p.observerStop
+	stopped := p.observerStopped
+	p.observerLifecycleMu.Unlock()
+	if observerStop != nil || !stopped {
+		t.Fatalf("stopped observer state = stop:%v stopped:%v", observerStop != nil, stopped)
+	}
+	stopTaskRegistry(t, registry)
+}
+
+func TestExternalStopRacesObserverAdmissionWithoutLeak(t *testing.T) {
+	for iteration := range 64 {
+		p := newObserverTestPlugin(t, &fakeKafkaSender{})
+		registry := runtime.NewTaskRegistry(context.Background(), nil)
+		startResult := make(chan error, 1)
+		stopDone := make(chan struct{})
+		go func() { startResult <- p.StartObservingWithTasks(registry) }()
+		go func() {
+			p.Stop()
+			close(stopDone)
+		}()
+
+		startErr := <-startResult
+		<-stopDone
+		if startErr != nil && !errors.Is(startErr, errObserverLifecycleStopped) {
+			t.Fatalf("iteration %d: start error = %v", iteration, startErr)
+		}
+		p.observerLifecycleMu.Lock()
+		observerStop := p.observerStop
+		stopped := p.observerStopped
+		p.observerLifecycleMu.Unlock()
+		if observerStop != nil || !stopped {
+			t.Fatalf(
+				"iteration %d: observer state = stop:%v stopped:%v",
+				iteration,
+				observerStop != nil,
+				stopped,
+			)
+		}
+		stopTaskRegistry(t, registry)
+	}
+}
+
+func TestPreparedGenerationsReplaceErrorLogObserverSafely(t *testing.T) {
+	firstSender := &fakeKafkaSender{}
+	first := newObserverTestPlugin(t, firstSender)
+	firstTasks := runtime.NewTaskRegistry(context.Background(), nil)
+	if err := first.StartObservingWithTasks(firstTasks); err != nil {
+		t.Fatalf("start first observer: %v", err)
+	}
+
+	secondSender := &fakeKafkaSender{}
+	second := newObserverTestPlugin(t, secondSender)
+	secondTasks := runtime.NewTaskRegistry(context.Background(), nil)
+	if err := second.StartObservingWithTasks(secondTasks); err != nil {
+		t.Fatalf("start second observer: %v", err)
+	}
+
+	first.Stop()
+	logger.Warn("prepared error-log generation marker")
+	waitFor(t, func() bool { return secondSender.messagesCount() == 1 }, "replacement observer delivery")
+	if got := firstSender.messagesCount(); got != 0 {
+		t.Fatalf("retired generation deliveries = %d, want zero", got)
+	}
+
+	stopTaskRegistry(t, firstTasks)
+	stopTaskRegistry(t, secondTasks)
+}
+
+func TestTaskStopUnregistersObserverAndClosesResourcesOnce(t *testing.T) {
+	sender := &fakeKafkaSender{}
+	p := newObserverTestPlugin(t, sender)
+	registry := runtime.NewTaskRegistry(context.Background(), nil)
+	if err := p.StartObservingWithTasks(registry); err != nil {
+		t.Fatalf("StartObservingWithTasks() error = %v", err)
+	}
+
+	logger.Warn("error-log task stop marker")
+	waitFor(t, func() bool { return sender.messagesCount() == 1 }, "task observer delivery")
+	stopTaskRegistry(t, registry)
+	if got := sender.closeCallsCount(); got != 1 {
+		t.Fatalf("Kafka close calls = %d, want one after task stop", got)
+	}
+
+	logger.Warn("after error-log task stop")
+	time.Sleep(100 * time.Millisecond)
+	if got := sender.messagesCount(); got != 1 {
+		t.Fatalf("post-stop observer deliveries = %d, want one", got)
+	}
+	p.Stop()
+	if got := sender.closeCallsCount(); got != 1 {
+		t.Fatalf("Kafka close calls after idempotent Stop = %d, want one", got)
+	}
+}
+
+func TestPreparationFailureClosesErrorLogResourcesInReverseOrder(t *testing.T) {
+	sender := &fakeKafkaSender{blockSend: make(chan struct{})}
+	p := newObserverTestPlugin(t, sender)
+	registry := runtime.NewTaskRegistry(context.Background(), nil)
+	if err := p.StartObservingWithTasks(registry); err != nil {
+		t.Fatalf("StartObservingWithTasks() error = %v", err)
+	}
+
+	logger.Warn("error-log in-flight marker")
+	waitFor(t, func() bool { return sender.messagesCount() == 1 }, "in-flight send")
+
+	stopped := make(chan struct{})
+	go func() {
+		p.Stop()
+		close(stopped)
+	}()
+	time.Sleep(100 * time.Millisecond)
+	if got := sender.closeCallsCount(); got != 0 {
+		t.Fatalf("Kafka closed before in-flight send completed: %d", got)
+	}
+
+	close(sender.blockSend)
+	select {
+	case <-stopped:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for reverse cleanup")
+	}
+	if got := sender.closeCallsCount(); got != 1 {
+		t.Fatalf("Kafka close calls = %d, want one after in-flight completion", got)
+	}
+	stopTaskRegistry(t, registry)
+}
+
+func newPreparedMetadataPlugin(t *testing.T, config Config, metadata map[string]any) *Plugin {
+	t.Helper()
+	view, err := runtime.NewMetadataView(map[string][]byte{
+		name: mustJSONBytes(t, metadata),
+	})
+	if err != nil {
+		t.Fatalf("NewMetadataView() error = %v", err)
+	}
+	p := &Plugin{config: config}
+	p.SetDependencies(base.Dependencies{Metadata: view})
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+	t.Cleanup(p.Stop)
+	return p
+}
+
+func newObserverTestPlugin(t *testing.T, sender kafkaSender) *Plugin {
+	t.Helper()
+	p := &Plugin{
+		config: Config{
+			Kafka: &KafkaConfig{
+				Brokers:    []KafkaBroker{{Host: "127.0.0.1", Port: 9092}},
+				KafkaTopic: "apisix-error-logs",
+			},
+			Level:        "INFO",
+			BatchMaxSize: 1,
+		},
+		kafkaSender: sender,
+	}
+	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+	t.Cleanup(p.Stop)
+	return p
+}
+
+func stopTaskRegistry(t *testing.T, registry *runtime.TaskRegistry) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if residuals, err := registry.Stop(ctx); err != nil {
+		t.Fatalf("TaskRegistry.Stop() residuals=%v error=%v", residuals, err)
+	}
+}
+
+func mustJSONBytes(t *testing.T, value any) []byte {
+	t.Helper()
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	return encoded
 }
 
 func TestMaterializeSecretsRejectsInvalidEncryptedClickHousePassword(t *testing.T) {
@@ -1084,6 +1520,7 @@ func TestMetadataSchemaRejectsMissingSink(t *testing.T) {
 type fakeKafkaSender struct {
 	mu         sync.Mutex
 	messages   []kafkaMessage
+	delivered  chan struct{}
 	closeCalls int
 	closeErr   error
 	blockSend  chan struct{}
@@ -1093,6 +1530,12 @@ func (f *fakeKafkaSender) Send(_ context.Context, message kafkaMessage) error {
 	f.mu.Lock()
 	f.messages = append(f.messages, message)
 	f.mu.Unlock()
+	if f.delivered != nil {
+		select {
+		case f.delivered <- struct{}{}:
+		default:
+		}
+	}
 	if f.blockSend != nil {
 		<-f.blockSend
 	}

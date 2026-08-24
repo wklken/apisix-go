@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/wklken/apisix-go/pkg/generation"
-	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/runtime"
 	"github.com/wklken/apisix-go/pkg/secret"
 )
@@ -106,6 +105,16 @@ type mutatingTicketMaterializer struct {
 	*recordingAttemptMaterializer
 }
 
+type mutatingSetMaterializer struct {
+	*recordingAttemptMaterializer
+}
+
+type candidateResultMaterializer struct {
+	*recordingAttemptMaterializer
+	result *recordingFactoryRegistration
+	err    error
+}
+
 func (materializer *mutatingTicketMaterializer) RegisterCandidate(
 	_ context.Context,
 	ticket generation.ApplyTicket,
@@ -119,6 +128,32 @@ func (materializer *mutatingTicketMaterializer) RegisterCandidate(
 	}
 	materializer.registration = registration
 	return registration, nil
+}
+
+func (materializer *mutatingSetMaterializer) RegisterCandidate(
+	_ context.Context,
+	ticket generation.ApplyTicket,
+	set generation.PublicationSet,
+) (secret.AttemptRegistration, error) {
+	materializer.candidateCalls++
+	*materializer.trace = append(*materializer.trace, "register-candidate")
+	registration := &recordingFactoryRegistration{
+		id: secret.CandidateAttemptID(ticket, set), trace: materializer.trace,
+	}
+	materializer.registration = registration
+	clear(set.Domains)
+	return registration, nil
+}
+
+func (materializer *candidateResultMaterializer) RegisterCandidate(
+	context.Context,
+	generation.ApplyTicket,
+	generation.PublicationSet,
+) (secret.AttemptRegistration, error) {
+	materializer.candidateCalls++
+	*materializer.trace = append(*materializer.trace, "register-candidate")
+	materializer.registration = materializer.result
+	return materializer.result, materializer.err
 }
 
 func (materializer *recordingAttemptMaterializer) RegisterCandidate(
@@ -180,19 +215,6 @@ func (registration *recordingFactoryRegistration) Close(ctx context.Context) err
 	return registration.closeErr
 }
 
-type recordingMetadataPreparer struct {
-	trace *[]string
-	err   error
-}
-
-func (preparer recordingMetadataPreparer) PrepareMetadata(
-	context.Context,
-	PreparationAttempt,
-) (runtime.MetadataView, error) {
-	*preparer.trace = append(*preparer.trace, "metadata")
-	return runtime.MetadataView{}, preparer.err
-}
-
 type recordingConsumerPreparer struct {
 	trace    *[]string
 	err      error
@@ -202,46 +224,13 @@ type recordingConsumerPreparer struct {
 func (preparer recordingConsumerPreparer) PrepareConsumers(
 	context.Context,
 	PreparationAttempt,
-	runtime.MetadataView,
 ) (*runtime.ConsumerBindings, error) {
 	*preparer.trace = append(*preparer.trace, "consumer")
 	return preparer.bindings, preparer.err
 }
 
-type recordingPluginPreparer struct {
-	trace  *[]string
-	err    error
-	owner  *recordingPreparedPlugins
-	lookup base.ConsumerLookup
-}
-
-func (preparer *recordingPluginPreparer) PreparePlugins(
-	_ context.Context,
-	_ PreparationAttempt,
-	_ runtime.MetadataView,
-	lookup base.ConsumerLookup,
-) (PreparedPlugins, error) {
-	*preparer.trace = append(*preparer.trace, "plugin")
-	preparer.lookup = lookup
-	return preparer.owner, preparer.err
-}
-
-type recordingPreparedPlugins struct {
-	trace    *[]string
-	closeErr error
-	closeCtx error
-	closed   int
-}
-
-func (plugins *recordingPreparedPlugins) Close(ctx context.Context) error {
-	plugins.closed++
-	plugins.closeCtx = ctx.Err()
-	*plugins.trace = append(*plugins.trace, "plugin-close")
-	return plugins.closeErr
-}
-
-func TestAttemptFactoryRegistersExactFinalSetBeforeHooks(t *testing.T) {
-	factory, materializer, pluginPreparer, trace := newRecordingAttemptFactory(t)
+func TestAttemptFactoryRegistersExactFinalSetWithoutPreparingConsumers(t *testing.T) {
+	factory, materializer, consumers, trace := newRecordingAttemptFactory(t)
 	desired := mustGenerationSnapshot(t, 41, []generation.Resource{
 		resourceValue("routes", "r1", `{"id":"r1","plugins":{"request-id":{}}}`),
 	}, nil)
@@ -258,29 +247,28 @@ func TestAttemptFactoryRegistersExactFinalSetBeforeHooks(t *testing.T) {
 	if !reflect.DeepEqual(materializer.candidateSet, want) {
 		t.Fatalf("registered set = %#v, want %#v", materializer.candidateSet, want)
 	}
-	if got, wantTrace := *trace, []string{
-		"register-candidate",
-		"metadata",
-		"consumer",
-		"plugin",
-	}; !slices.Equal(
-		got,
-		wantTrace,
-	) {
-		t.Fatalf("prepare trace = %v, want %v", got, wantTrace)
+	if !reflect.DeepEqual(prepared.publication, want) {
+		t.Fatalf("owned publication = %#v, want %#v", prepared.publication, want)
 	}
-	if _, exposesClose := pluginPreparer.lookup.(*runtime.ConsumerBindings); exposesClose {
-		t.Fatal("plugin hook received ConsumerBindings close authority")
+	if got, wantTrace := *trace, []string{"register-candidate"}; !slices.Equal(got, wantTrace) {
+		t.Fatalf("prepare trace = %v, want %v", got, wantTrace)
 	}
 	if prepared.attempt.AttemptID() != materializer.registration.id {
 		t.Fatal("prepared attempt identity differs from registration")
 	}
+	bindings, err := consumers.PrepareConsumers(context.Background(), prepared.attempt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bindings.Close()
 
 	if err := prepared.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if got, wantTrace := (*trace)[4:], []string{"plugin-close", "registration-close"}; !slices.Equal(got, wantTrace) {
-		t.Fatalf("close trace = %v, want %v", got, wantTrace)
+	if got, wantTrace := *trace, []string{
+		"register-candidate", "consumer", "registration-close",
+	}; !slices.Equal(got, wantTrace) {
+		t.Fatalf("trace = %v, want %v", got, wantTrace)
 	}
 }
 
@@ -327,48 +315,63 @@ func TestAttemptFactoryOwnsTicketBeforeRegistration(t *testing.T) {
 	}
 }
 
-func TestAttemptFactoryHookFailureCleansPartialOwnersWithUncanceledContext(t *testing.T) {
-	factory, materializer, pluginPreparer, trace := newRecordingAttemptFactory(t)
-	pluginErr := errors.New("plugin hook failed")
-	closeErr := errors.New("plugin close failed")
-	pluginPreparer.err = pluginErr
-	pluginPreparer.owner.closeErr = closeErr
-	desired := mustGenerationSnapshot(t, 43, []generation.Resource{
+func TestAttemptFactoryOwnsPublicationBeforeRegistration(t *testing.T) {
+	factory, materializer, _, _ := newRecordingAttemptFactory(t)
+	factory.materializer = &mutatingSetMaterializer{recordingAttemptMaterializer: materializer}
+	desired := mustGenerationSnapshot(t, 491, []generation.Resource{
 		resourceValue("routes", "r1", `{"id":"r1","plugins":{"request-id":{}}}`),
 	}, nil)
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	// Cancellation before preparation is rejected without registration.
-	if _, err := factory.prepareCandidateAttempt(
-		ctx,
-		ticketForSnapshot(desired, generation.DomainHTTP),
-		desired,
-		nil,
-	); !errors.Is(
-		err,
-		context.Canceled,
-	) {
-		t.Fatalf("canceled prepare error = %v", err)
-	}
-	if materializer.candidateCalls != 0 {
-		t.Fatal("canceled preparation registered an attempt")
-	}
 
-	pluginPreparer.owner.closeCtx = context.Canceled
 	prepared, err := factory.prepareCandidateAttempt(
 		context.Background(), ticketForSnapshot(desired, generation.DomainHTTP), desired, nil,
 	)
-	if prepared != nil || !errors.Is(err, pluginErr) || !errors.Is(err, closeErr) {
-		t.Fatalf("partial hook result = %#v/%v", prepared, err)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if pluginPreparer.owner.closed != 1 || materializer.registration.closed != 1 ||
-		pluginPreparer.owner.closeCtx != nil || materializer.registration.closeCtx != nil {
-		t.Fatalf("cleanup owners/contexts plugin=%d/%v registration=%d/%v",
-			pluginPreparer.owner.closed, pluginPreparer.owner.closeCtx,
-			materializer.registration.closed, materializer.registration.closeCtx)
+	if len(prepared.publication.Domains) != 1 {
+		t.Fatalf("owned publication domains = %d, want one", len(prepared.publication.Domains))
 	}
-	if got, want := (*trace)[len(*trace)-2:], []string{"plugin-close", "registration-close"}; !slices.Equal(got, want) {
-		t.Fatalf("cleanup trace = %v, want suffix %v", *trace, want)
+	if _, ok := prepared.attempt.Candidate(generation.DomainHTTP); !ok {
+		t.Fatal("attempt candidate was mutated through registration input")
+	}
+	if err := prepared.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAttemptFactoryClosesRegistrationReturnedWithError(t *testing.T) {
+	factory, materializer, _, trace := newRecordingAttemptFactory(t)
+	registerErr := errors.New("candidate registration failed")
+	closeErr := errors.New("candidate registration cleanup failed")
+	registration := &recordingFactoryRegistration{trace: trace, closeErr: closeErr}
+	factory.materializer = &candidateResultMaterializer{
+		recordingAttemptMaterializer: materializer,
+		result:                       registration,
+		err:                          registerErr,
+	}
+	desired := mustGenerationSnapshot(t, 492, nil, nil)
+
+	prepared, err := factory.prepareCandidateAttempt(
+		context.Background(), ticketForSnapshot(desired, generation.DomainHTTP), desired, nil,
+	)
+	if prepared != nil || !errors.Is(err, registerErr) || !errors.Is(err, closeErr) {
+		t.Fatalf("registration failure = %#v/%v, want joined register/close errors", prepared, err)
+	}
+	if registration.closed != 1 || registration.closeCtx != nil {
+		t.Fatalf("registration cleanup = %d/%v, want 1/<nil>", registration.closed, registration.closeCtx)
+	}
+}
+
+func TestAttemptFactoryRejectsTypedNilRegistration(t *testing.T) {
+	factory, materializer, _, _ := newRecordingAttemptFactory(t)
+	factory.materializer = &candidateResultMaterializer{recordingAttemptMaterializer: materializer}
+	desired := mustGenerationSnapshot(t, 493, nil, nil)
+
+	prepared, err := factory.prepareCandidateAttempt(
+		context.Background(), ticketForSnapshot(desired, generation.DomainHTTP), desired, nil,
+	)
+	if prepared != nil || !errors.Is(err, errAttemptPreparationFailed) {
+		t.Fatalf("typed-nil registration = %#v/%v, want preparation failure", prepared, err)
 	}
 }
 
@@ -390,8 +393,46 @@ func TestAttemptFactoryRejectsRegistrationWithWrongAttemptID(t *testing.T) {
 	}
 }
 
+func TestAttemptFactoryClosesRegistrationWhenCapabilityConstructionFails(t *testing.T) {
+	factory, _, _, trace := newRecordingAttemptFactory(t)
+	registration := &recordingFactoryRegistration{trace: trace}
+	prepared, err := factory.prepareRegisteredAttempt(
+		context.Background(),
+		1,
+		generation.PublicationSet{DesiredRevision: 1},
+		nil,
+		registration,
+	)
+	if prepared != nil || !errors.Is(err, errAttemptPreparationFailed) {
+		t.Fatalf("capability failure = %#v/%v, want preparation failure", prepared, err)
+	}
+	if registration.closed != 1 {
+		t.Fatalf("capability failure close calls = %d, want one", registration.closed)
+	}
+}
+
+func TestAttemptFactoryClosesRegistrationWhenAttemptConstructionFails(t *testing.T) {
+	factory, _, _, trace := newRecordingAttemptFactory(t)
+	registration := &recordingFactoryRegistration{trace: trace}
+	registration.id[0] = 1
+	prepared, err := factory.prepareRegisteredAttempt(
+		context.Background(),
+		1,
+		generation.PublicationSet{DesiredRevision: 1},
+		[]factoryOccurrenceSpec{{}},
+		registration,
+	)
+	if prepared != nil || !errors.Is(err, errAttemptPreparationFailed) {
+		t.Fatalf("attempt construction failure = %#v/%v, want preparation failure", prepared, err)
+	}
+	if registration.closed != 1 {
+		t.Fatalf("attempt construction failure close calls = %d, want one", registration.closed)
+	}
+}
+
 func TestRegisteredAttemptCloseIsConcurrentAndIdempotent(t *testing.T) {
-	factory, materializer, pluginPreparer, _ := newRecordingAttemptFactory(t)
+	factory, materializer, _, _ := newRecordingAttemptFactory(t)
+	closeErr := errors.New("registration close failed")
 	desired := mustGenerationSnapshot(t, 45, []generation.Resource{
 		resourceValue("routes", "r1", `{"id":"r1","plugins":{"request-id":{}}}`),
 	}, nil)
@@ -401,24 +442,24 @@ func TestRegisteredAttemptCloseIsConcurrentAndIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	materializer.registration.closeErr = closeErr
 
 	var wait sync.WaitGroup
 	for range 16 {
 		wait.Go(func() {
-			if err := prepared.Close(context.Background()); err != nil {
-				t.Errorf("Close() error = %v", err)
+			if err := prepared.Close(context.Background()); !errors.Is(err, closeErr) {
+				t.Errorf("Close() error = %v, want %v", err, closeErr)
 			}
 		})
 	}
 	wait.Wait()
-	if pluginPreparer.owner.closed != 1 || materializer.registration.closed != 1 {
-		t.Fatalf("close calls plugin=%d registration=%d, want 1/1",
-			pluginPreparer.owner.closed, materializer.registration.closed)
+	if materializer.registration.closed != 1 {
+		t.Fatalf("registration close calls = %d, want 1", materializer.registration.closed)
 	}
 }
 
 func TestAttemptFactoryRejectsUnownedPluginTargetBeforeRegistration(t *testing.T) {
-	factory, materializer, pluginPreparer, trace := newRecordingAttemptFactoryWithCompiler(
+	factory, materializer, _, trace := newRecordingAttemptFactoryWithCompiler(
 		t, newUnsupportedPluginTargetTestCompiler(t),
 	)
 	desired := mustGenerationSnapshot(t, 46, []generation.Resource{
@@ -433,14 +474,11 @@ func TestAttemptFactoryRejectsUnownedPluginTargetBeforeRegistration(t *testing.T
 	if prepared != nil || !errors.Is(err, errAttemptPreparationFailed) {
 		t.Fatalf("unowned plugin-target preparation = %#v/%v", prepared, err)
 	}
-	if pluginPreparer.lookup != nil {
-		t.Fatal("unowned plugin-target factory reached plugin hook")
-	}
 	if materializer.candidateCalls != 0 || materializer.registration != nil {
 		t.Fatalf("unowned plugin-target registration = %d/%#v, want zero/nil",
 			materializer.candidateCalls, materializer.registration)
 	}
-	if len(*trace) != 0 || slices.Contains(*trace, "plugin") {
+	if len(*trace) != 0 {
 		t.Fatalf("unowned plugin-target preparation trace = %v, want empty", *trace)
 	}
 }
@@ -497,7 +535,7 @@ func TestAttemptFactoryRejectsUnownedPluginTargetBeforeScopedRegistration(t *tes
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
 			broker := &countingScopedBroker{}
-			factory, materializer, pluginPreparer, trace := newScopedAttemptFactoryWithCompiler(
+			factory, materializer, _, trace := newScopedAttemptFactoryWithCompiler(
 				t, newUnsupportedPluginTargetTestCompiler(t), broker,
 			)
 			if err := test.prepare(factory); !errors.Is(err, errAttemptPreparationFailed) {
@@ -514,16 +552,16 @@ func TestAttemptFactoryRejectsUnownedPluginTargetBeforeScopedRegistration(t *tes
 					broker.revokeCalls,
 				)
 			}
-			if pluginPreparer.lookup != nil || len(*trace) != 0 {
-				t.Fatalf("unowned plugin-target hooks = lookup:%#v trace:%v, want none", pluginPreparer.lookup, *trace)
+			if len(*trace) != 0 {
+				t.Fatalf("unowned plugin-target trace = %v, want none", *trace)
 			}
 		})
 	}
 }
 
-func TestAttemptFactoryCompilerDiscardFailureCleansRegistrationBeforeHooks(t *testing.T) {
+func TestAttemptFactoryRegistrationDoesNotPreparePluginSecrets(t *testing.T) {
 	broker := &countingScopedBroker{resolveErr: errors.New("resolver exposed $ENV://FAIL")}
-	factory, materializer, pluginPreparer, trace := newScopedAttemptFactory(t, broker)
+	factory, materializer, _, trace := newScopedAttemptFactory(t, broker)
 	desired := mustGenerationSnapshot(t, 464, []generation.Resource{
 		resourceValue(
 			"routes", "r1",
@@ -533,8 +571,8 @@ func TestAttemptFactoryCompilerDiscardFailureCleansRegistrationBeforeHooks(t *te
 	prepared, err := factory.prepareCandidateAttempt(
 		context.Background(), ticketForSnapshot(desired, generation.DomainHTTP), desired, nil,
 	)
-	if prepared != nil || !errors.Is(err, errAttemptPreparationFailed) {
-		t.Fatalf("compiler-discard failure = %#v/%v, want preparation failure", prepared, err)
+	if err != nil {
+		t.Fatal(err)
 	}
 	if materializer.candidateCalls != 1 || materializer.last == nil {
 		t.Fatalf(
@@ -543,14 +581,20 @@ func TestAttemptFactoryCompilerDiscardFailureCleansRegistrationBeforeHooks(t *te
 			materializer.last,
 		)
 	}
-	if broker.candidateAuthorizations != 1 || broker.resolveCalls != 1 || broker.revokeCalls != 1 {
+	if broker.candidateAuthorizations != 1 || broker.resolveCalls != 0 || broker.revokeCalls != 0 {
 		t.Fatalf(
-			"scoped broker calls = authorize:%d resolve:%d revoke:%d, want 1/1/1",
+			"scoped broker calls = authorize:%d resolve:%d revoke:%d, want 1/0/0",
 			broker.candidateAuthorizations, broker.resolveCalls, broker.revokeCalls,
 		)
 	}
-	if pluginPreparer.lookup != nil || len(*trace) != 0 {
-		t.Fatalf("compiler-discard failure hooks = lookup:%#v trace:%v, want none", pluginPreparer.lookup, *trace)
+	if len(*trace) != 0 {
+		t.Fatalf("downstream preparation trace = %v, want none", *trace)
+	}
+	if err := prepared.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if broker.revokeCalls != 1 {
+		t.Fatalf("close revocations = %d, want one", broker.revokeCalls)
 	}
 }
 
@@ -582,6 +626,8 @@ func TestAttemptFactoryAllowsValidEmptyAndDeleteOnlyPublications(t *testing.T) {
 
 type wrongIDMaterializer struct{ *recordingAttemptMaterializer }
 
+type wrongRecoveryIDMaterializer struct{ *recordingAttemptMaterializer }
+
 func (materializer *wrongIDMaterializer) RegisterCandidate(
 	ctx context.Context,
 	ticket generation.ApplyTicket,
@@ -594,9 +640,56 @@ func (materializer *wrongIDMaterializer) RegisterCandidate(
 	return registration, err
 }
 
+func (materializer *wrongRecoveryIDMaterializer) RegisterRecovery(
+	ctx context.Context,
+	revisions generation.RevisionSet,
+	published map[generation.Domain]generation.PublishedGeneration,
+) (secret.AttemptRegistration, error) {
+	registration, err := materializer.recordingAttemptMaterializer.RegisterRecovery(ctx, revisions, published)
+	if err == nil {
+		materializer.registration.id[0]++
+	}
+	return registration, err
+}
+
+func TestAttemptFactoryRejectsRecoveryRegistrationWithWrongAttemptID(t *testing.T) {
+	factory, materializer, _, _ := newRecordingAttemptFactory(t)
+	factory.materializer = &wrongRecoveryIDMaterializer{recordingAttemptMaterializer: materializer}
+
+	prepared, err := factory.prepareRecoveryAttempt(
+		context.Background(),
+		generation.RevisionSet{Desired: 9, HTTP: 5, Stream: 6},
+		factoryRecoveryPublished(t),
+	)
+	if prepared != nil || !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("wrong recovery registration ID = %#v/%v, want ErrInvalidInput", prepared, err)
+	}
+	if materializer.registration == nil || materializer.registration.closed != 1 {
+		t.Fatalf("wrong recovery registration cleanup = %#v", materializer.registration)
+	}
+}
+
+func factoryRecoveryPublished(t *testing.T) map[generation.Domain]generation.PublishedGeneration {
+	t.Helper()
+	return map[generation.Domain]generation.PublishedGeneration{
+		generation.DomainHTTP: publishedForDomain(
+			generation.DomainHTTP,
+			mustGenerationSnapshot(t, 5, []generation.Resource{
+				resourceValue("routes", "http-route", `{"id":"http-route"}`),
+			}, nil),
+		),
+		generation.DomainStream: publishedForDomain(
+			generation.DomainStream,
+			mustGenerationSnapshot(t, 6, []generation.Resource{
+				resourceValue("stream_routes", "stream-route", `{"id":"stream-route"}`),
+			}, nil),
+		),
+	}
+}
+
 func newRecordingAttemptFactory(
 	t *testing.T,
-) (*attemptFactory, *recordingAttemptMaterializer, *recordingPluginPreparer, *[]string) {
+) (*attemptFactory, *recordingAttemptMaterializer, *recordingConsumerPreparer, *[]string) {
 	t.Helper()
 	return newRecordingAttemptFactoryWithCompiler(t, newTestCompiler(t))
 }
@@ -604,7 +697,7 @@ func newRecordingAttemptFactory(
 func newRecordingAttemptFactoryWithCompiler(
 	t *testing.T,
 	compiler *Compiler,
-) (*attemptFactory, *recordingAttemptMaterializer, *recordingPluginPreparer, *[]string) {
+) (*attemptFactory, *recordingAttemptMaterializer, *recordingConsumerPreparer, *[]string) {
 	t.Helper()
 	trace := &[]string{}
 	materializer := &recordingAttemptMaterializer{digest: compiler.schemas.catalog.Digest(), trace: trace}
@@ -612,27 +705,18 @@ func newRecordingAttemptFactoryWithCompiler(
 	if err != nil {
 		t.Fatal(err)
 	}
-	pluginPreparer := &recordingPluginPreparer{
-		trace: trace,
-		owner: &recordingPreparedPlugins{trace: trace},
-	}
-	factory, err := newAttemptFactory(
-		compiler,
-		materializer,
-		recordingMetadataPreparer{trace: trace},
-		recordingConsumerPreparer{trace: trace, bindings: bindings},
-		pluginPreparer,
-	)
+	consumerPreparer := &recordingConsumerPreparer{trace: trace, bindings: bindings}
+	factory, err := newAttemptFactory(compiler, materializer)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return factory, materializer, pluginPreparer, trace
+	return factory, materializer, consumerPreparer, trace
 }
 
 func newScopedAttemptFactory(
 	t *testing.T,
 	broker *countingScopedBroker,
-) (*attemptFactory, *countingMaterializer, *recordingPluginPreparer, *[]string) {
+) (*attemptFactory, *countingMaterializer, *recordingConsumerPreparer, *[]string) {
 	t.Helper()
 	return newScopedAttemptFactoryWithCompiler(t, newTestCompiler(t), broker)
 }
@@ -641,7 +725,7 @@ func newScopedAttemptFactoryWithCompiler(
 	t *testing.T,
 	compiler *Compiler,
 	broker *countingScopedBroker,
-) (*attemptFactory, *countingMaterializer, *recordingPluginPreparer, *[]string) {
+) (*attemptFactory, *countingMaterializer, *recordingConsumerPreparer, *[]string) {
 	t.Helper()
 	trace := &[]string{}
 	materializer := &countingMaterializer{
@@ -651,21 +735,12 @@ func newScopedAttemptFactoryWithCompiler(
 	if err != nil {
 		t.Fatal(err)
 	}
-	pluginPreparer := &recordingPluginPreparer{
-		trace: trace,
-		owner: &recordingPreparedPlugins{trace: trace},
-	}
-	factory, err := newAttemptFactory(
-		compiler,
-		materializer,
-		recordingMetadataPreparer{trace: trace},
-		recordingConsumerPreparer{trace: trace, bindings: bindings},
-		pluginPreparer,
-	)
+	consumerPreparer := &recordingConsumerPreparer{trace: trace, bindings: bindings}
+	factory, err := newAttemptFactory(compiler, materializer)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return factory, materializer, pluginPreparer, trace
+	return factory, materializer, consumerPreparer, trace
 }
 
 func cloneRecoveryMapForFactoryTest(

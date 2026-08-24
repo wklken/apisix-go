@@ -9,9 +9,6 @@ import (
 	"sync"
 
 	"github.com/wklken/apisix-go/pkg/generation"
-	"github.com/wklken/apisix-go/pkg/plugin/base"
-	"github.com/wklken/apisix-go/pkg/resource"
-	"github.com/wklken/apisix-go/pkg/runtime"
 	"github.com/wklken/apisix-go/pkg/secret"
 )
 
@@ -20,30 +17,20 @@ var errAttemptPreparationFailed = errors.New("generation attempt preparation fai
 type attemptFactory struct {
 	compiler     *Compiler
 	materializer secret.Materializer
-	metadata     MetadataPreparer
-	consumers    ConsumerPreparer
-	plugins      PluginPreparer
 }
 
 func newAttemptFactory(
 	compiler *Compiler,
 	materializer secret.Materializer,
-	metadata MetadataPreparer,
-	consumers ConsumerPreparer,
-	plugins PluginPreparer,
 ) (*attemptFactory, error) {
 	if compiler == nil || compiler.manifest == nil || compiler.schemas == nil ||
-		isNilInterface(materializer) || isNilInterface(metadata) ||
-		isNilInterface(consumers) || isNilInterface(plugins) {
+		isNilInterface(materializer) {
 		return nil, fmt.Errorf("%w: attempt factory dependencies are required", ErrInvalidInput)
 	}
 	if materializer.DeclarationDigest() != compiler.schemas.catalog.Digest() {
 		return nil, fmt.Errorf("%w: secret declaration catalog mismatch", ErrInvalidInput)
 	}
-	return &attemptFactory{
-		compiler: compiler, materializer: materializer,
-		metadata: metadata, consumers: consumers, plugins: plugins,
-	}, nil
+	return &attemptFactory{compiler: compiler, materializer: materializer}, nil
 }
 
 func (factory *attemptFactory) prepareCandidateAttempt(
@@ -106,7 +93,7 @@ func (factory *attemptFactory) prepareCandidateAttempt(
 		)
 	}
 	return factory.prepareRegisteredAttempt(
-		ctx, ticket.DesiredRevision, ownedSet.Domains, occurrences, compositeChildren, registration,
+		ctx, ticket.DesiredRevision, ownedSet, occurrences, registration,
 	)
 }
 
@@ -165,58 +152,39 @@ func (factory *attemptFactory) prepareRecoveryAttempt(
 		)
 	}
 	return factory.prepareRegisteredAttempt(
-		ctx, revisions.Desired, candidates, occurrences, compositeChildren, registration,
+		ctx,
+		revisions.Desired,
+		generation.PublicationSet{DesiredRevision: revisions.Desired, Domains: candidates},
+		occurrences,
+		registration,
 	)
 }
 
 func (factory *attemptFactory) prepareRegisteredAttempt(
 	ctx context.Context,
 	generationNumber uint64,
-	candidates map[generation.Domain]generation.PublicationCandidate,
+	publication generation.PublicationSet,
 	occurrences []factoryOccurrenceSpec,
-	compositeChildren []compositeChildOccurrenceSpec,
 	registration secret.AttemptRegistration,
 ) (*registeredAttempt, error) {
 	capabilityValue, err := secret.NewGenerationCapability(registration, generationNumber)
 	if err != nil {
 		return nil, errors.Join(errAttemptPreparationFailed, registration.Close(context.WithoutCancel(ctx)))
 	}
-	attempt, err := newPreparationAttempt(generationNumber, candidates, capabilityValue, occurrences)
-	if err != nil {
-		return nil, errors.Join(errAttemptPreparationFailed, registration.Close(context.WithoutCancel(ctx)))
-	}
-	boundCompositeChildren, err := bindCompositeChildOccurrences(attempt, compositeChildren)
-	if err != nil {
-		return nil, errors.Join(errAttemptPreparationFailed, registration.Close(context.WithoutCancel(ctx)))
-	}
-	prepared := &registeredAttempt{attempt: attempt, registration: registration}
-
-	if err := prepareCompilerDiscardSecrets(
-		ctx, attempt, factory.compiler.schemas.catalog, boundCompositeChildren...,
-	); err != nil {
-		return nil, prepared.fail(ctx, err)
-	}
-	prepared.metadata, err = factory.metadata.PrepareMetadata(ctx, attempt)
-	if err != nil {
-		return nil, prepared.fail(ctx, err)
-	}
-	prepared.consumers, err = factory.consumers.PrepareConsumers(ctx, attempt, prepared.metadata)
-	if err != nil {
-		return nil, prepared.fail(ctx, err)
-	}
-	if prepared.consumers == nil {
-		return nil, prepared.fail(ctx, errAttemptPreparationFailed)
-	}
-	prepared.plugins, err = factory.plugins.PreparePlugins(
-		ctx, attempt, prepared.metadata, consumerLookupView{bindings: prepared.consumers},
+	attempt, err := newPreparationAttempt(
+		generationNumber,
+		clonePreparationCandidates(publication.Domains),
+		capabilityValue,
+		occurrences,
 	)
 	if err != nil {
-		return nil, prepared.fail(ctx, err)
+		return nil, errors.Join(errAttemptPreparationFailed, registration.Close(context.WithoutCancel(ctx)))
 	}
-	if isNilInterface(prepared.plugins) {
-		return nil, prepared.fail(ctx, errAttemptPreparationFailed)
-	}
-	return prepared, nil
+	return &registeredAttempt{
+		attempt:      attempt,
+		publication:  clonePublicationSetForPreparation(publication),
+		registration: registration,
+	}, nil
 }
 
 func validateAttemptFactoryContext(factory *attemptFactory, ctx context.Context) error {
@@ -241,32 +209,12 @@ func publicationCanPrepare(set generation.PublicationSet) bool {
 	return decisions == 0
 }
 
-type consumerLookupView struct{ bindings *runtime.ConsumerBindings }
-
-func (view consumerLookupView) ConsumerByPluginKey(plugin, key string) (resource.Consumer, bool) {
-	return view.bindings.ConsumerByPluginKey(plugin, key)
-}
-
-func (view consumerLookupView) ConsumerByID(id string) (resource.Consumer, bool) {
-	return view.bindings.ConsumerByID(id)
-}
-
-func (view consumerLookupView) ConsumerGroupByID(id string) (resource.ConsumerGroup, bool) {
-	return view.bindings.ConsumerGroupByID(id)
-}
-
 type registeredAttempt struct {
 	attempt      PreparationAttempt
-	metadata     runtime.MetadataView
-	consumers    *runtime.ConsumerBindings
-	plugins      PreparedPlugins
+	publication  generation.PublicationSet
 	registration secret.AttemptRegistration
 	closeOnce    sync.Once
 	closeErr     error
-}
-
-func (prepared *registeredAttempt) fail(ctx context.Context, cause error) error {
-	return errors.Join(errAttemptPreparationFailed, cause, prepared.Close(context.WithoutCancel(ctx)))
 }
 
 func (prepared *registeredAttempt) Close(ctx context.Context) error {
@@ -278,18 +226,9 @@ func (prepared *registeredAttempt) Close(ctx context.Context) error {
 	}
 	cleanupCtx := context.WithoutCancel(ctx)
 	prepared.closeOnce.Do(func() {
-		var cleanupErrors []error
-		if !isNilInterface(prepared.plugins) {
-			cleanupErrors = append(cleanupErrors, prepared.plugins.Close(cleanupCtx))
+		if !isNilInterface(prepared.registration) {
+			prepared.closeErr = prepared.registration.Close(cleanupCtx)
 		}
-		if prepared.consumers != nil {
-			prepared.consumers.Close()
-		}
-		if prepared.registration != nil {
-			cleanupErrors = append(cleanupErrors, prepared.registration.Close(cleanupCtx))
-		}
-		prepared.metadata = runtime.MetadataView{}
-		prepared.closeErr = errors.Join(cleanupErrors...)
 	})
 	return prepared.closeErr
 }
@@ -321,5 +260,3 @@ func cloneApplyTicketForPreparation(ticket generation.ApplyTicket) generation.Ap
 	ticket.RequiredDomains = slices.Clone(ticket.RequiredDomains)
 	return ticket
 }
-
-var _ base.ConsumerLookup = consumerLookupView{}

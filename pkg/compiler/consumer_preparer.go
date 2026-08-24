@@ -39,7 +39,6 @@ func newConsumerBindingPreparer(
 func (preparer *consumerBindingPreparer) PrepareConsumers(
 	ctx context.Context,
 	attempt PreparationAttempt,
-	_ runtime.MetadataView,
 ) (*runtime.ConsumerBindings, error) {
 	if ctx == nil || preparer == nil || preparer.catalog == nil ||
 		attempt.authority == nil || !attempt.capability.Valid() ||

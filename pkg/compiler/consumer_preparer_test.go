@@ -2,6 +2,7 @@ package compiler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -17,6 +18,54 @@ type consumerPreparationBroker struct {
 	resolved map[string]string
 	scopes   []secret.Scope
 	revoked  []secret.AttemptID
+}
+
+type consumerAttemptFactory struct {
+	registration *attemptFactory
+	consumers    *consumerBindingPreparer
+}
+
+type preparedConsumerAttempt struct {
+	*registeredAttempt
+	consumers *runtime.ConsumerBindings
+}
+
+func (factory *consumerAttemptFactory) prepareCandidateAttempt(
+	ctx context.Context,
+	ticket generation.ApplyTicket,
+	desired generation.Snapshot,
+	previous map[generation.Domain]generation.PublishedGeneration,
+) (*preparedConsumerAttempt, error) {
+	registered, err := factory.registration.prepareCandidateAttempt(ctx, ticket, desired, previous)
+	if err != nil {
+		return nil, err
+	}
+	consumers, err := factory.consumers.PrepareConsumers(ctx, registered.attempt)
+	if err != nil {
+		return nil, errors.Join(err, registered.Close(context.WithoutCancel(ctx)))
+	}
+	return &preparedConsumerAttempt{registeredAttempt: registered, consumers: consumers}, nil
+}
+
+func (factory *consumerAttemptFactory) prepareRecoveryAttempt(
+	ctx context.Context,
+	revisions generation.RevisionSet,
+	committed map[generation.Domain]generation.PublishedGeneration,
+) (*preparedConsumerAttempt, error) {
+	registered, err := factory.registration.prepareRecoveryAttempt(ctx, revisions, committed)
+	if err != nil {
+		return nil, err
+	}
+	consumers, err := factory.consumers.PrepareConsumers(ctx, registered.attempt)
+	if err != nil {
+		return nil, errors.Join(err, registered.Close(context.WithoutCancel(ctx)))
+	}
+	return &preparedConsumerAttempt{registeredAttempt: registered, consumers: consumers}, nil
+}
+
+func (prepared *preparedConsumerAttempt) Close(ctx context.Context) error {
+	prepared.consumers.Close()
+	return prepared.registeredAttempt.Close(ctx)
 }
 
 func (*consumerPreparationBroker) AuthorizeCandidate(
@@ -61,7 +110,7 @@ func (broker *consumerPreparationBroker) RevokeAttempt(
 func newConsumerAttemptFactory(
 	t *testing.T,
 	broker *consumerPreparationBroker,
-) (*attemptFactory, *Compiler) {
+) (*consumerAttemptFactory, *Compiler) {
 	t.Helper()
 	compiler := newTestCompiler(t)
 	materializer := secret.NewScopedMaterializer(broker, compiler.schemas.catalog)
@@ -69,22 +118,11 @@ func newConsumerAttemptFactory(
 	if err != nil {
 		t.Fatal(err)
 	}
-	trace := &[]string{}
-	pluginPreparer := &recordingPluginPreparer{
-		trace: trace,
-		owner: &recordingPreparedPlugins{trace: trace},
-	}
-	factory, err := newAttemptFactory(
-		compiler,
-		materializer,
-		recordingMetadataPreparer{trace: trace},
-		preparer,
-		pluginPreparer,
-	)
+	factory, err := newAttemptFactory(compiler, materializer)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return factory, compiler
+	return &consumerAttemptFactory{registration: factory, consumers: preparer}, compiler
 }
 
 func TestConsumerBindingPreparerMaterializesExactFinalConsumerOccurrences(t *testing.T) {
@@ -298,7 +336,7 @@ func TestConsumerBindingPreparerKeepsOverlappingGenerationsIndependent(t *testin
 		"$ENV://PASS_N_PLUS_1": "resolved-password-n-plus-1",
 	}}
 	factory, _ := newConsumerAttemptFactory(t, broker)
-	prepare := func(revision uint64, id, usernameRef, passwordRef string) *registeredAttempt {
+	prepare := func(revision uint64, id, usernameRef, passwordRef string) *preparedConsumerAttempt {
 		t.Helper()
 		desired := mustGenerationSnapshot(t, revision, []generation.Resource{
 			resourceValue(
@@ -397,7 +435,7 @@ func TestConsumerBindingPreparerRejectsForeignOccurrenceBeforeMaterialization(t 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := preparer.PrepareConsumers(context.Background(), attempt, runtime.MetadataView{}); err == nil {
+	if _, err := preparer.PrepareConsumers(context.Background(), attempt); err == nil {
 		t.Fatal("foreign consumer occurrence unexpectedly succeeded")
 	}
 	if len(broker.scopes) != 0 {
@@ -451,6 +489,14 @@ func TestConsumerBindingPreparerUsesExactCommittedHTTPRecovery(t *testing.T) {
 	if err := prepared.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestConsumerPreparerHasNoMetadataDependency(t *testing.T) {
+	preparer, err := newConsumerBindingPreparer(newTestCompiler(t).schemas.catalog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = preparer.PrepareConsumers(context.Background(), PreparationAttempt{})
 }
 
 var (

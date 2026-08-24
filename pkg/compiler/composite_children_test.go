@@ -319,7 +319,7 @@ func TestBindCompositeChildOccurrencesRequiresExactOuterAuthority(t *testing.T) 
 func TestValidateScopedSecretSupportRejectsNestedBeforeRegistration(t *testing.T) {
 	compiler := newUnsupportedNestedPluginTargetTestCompiler(t)
 	broker := &countingScopedBroker{}
-	factory, materializer, pluginPreparer, trace := newScopedAttemptFactoryWithCompiler(t, compiler, broker)
+	factory, materializer, _, trace := newScopedAttemptFactoryWithCompiler(t, compiler, broker)
 	snapshot := mustGenerationSnapshot(t, 905, []generation.Resource{
 		resourceValue(
 			"routes",
@@ -345,11 +345,10 @@ func TestValidateScopedSecretSupportRejectsNestedBeforeRegistration(t *testing.T
 		t.Fatalf("recovery nested support = %v registrations=%d", recoveryErr, materializer.recoveryCalls)
 	}
 	if broker.candidateAuthorizations != 0 || broker.recoveryAuthorizations != 0 ||
-		broker.resolveCalls != 0 || broker.revokeCalls != 0 || pluginPreparer.lookup != nil || len(*trace) != 0 {
+		broker.resolveCalls != 0 || broker.revokeCalls != 0 || len(*trace) != 0 {
 		t.Fatalf(
-			"nested support reached side effects: broker=%#v lookup=%#v trace=%v",
+			"nested support reached side effects: broker=%#v trace=%v",
 			broker,
-			pluginPreparer.lookup,
 			*trace,
 		)
 	}

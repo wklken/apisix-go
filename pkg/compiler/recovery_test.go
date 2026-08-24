@@ -247,12 +247,7 @@ func TestAttemptFactoryRegistersExactRecoveryAndUsesDistinctAttemptIdentity(t *t
 	if !reflect.DeepEqual(materializer.recoveryState, want) {
 		t.Fatalf("registered recovery = %#v, want %#v", materializer.recoveryState, want)
 	}
-	if got, wantTrace := *trace, []string{
-		"register-recovery",
-		"metadata",
-		"consumer",
-		"plugin",
-	}; !slices.Equal(
+	if got, wantTrace := *trace, []string{"register-recovery"}; !slices.Equal(
 		got,
 		wantTrace,
 	) {

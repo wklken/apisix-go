@@ -8,7 +8,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/plugin"
-	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/runtime"
 	"github.com/wklken/apisix-go/pkg/secret"
 )
@@ -213,18 +212,5 @@ type MetadataPreparer interface {
 }
 
 type ConsumerPreparer interface {
-	PrepareConsumers(context.Context, PreparationAttempt, runtime.MetadataView) (*runtime.ConsumerBindings, error)
-}
-
-type PluginPreparer interface {
-	PreparePlugins(
-		context.Context,
-		PreparationAttempt,
-		runtime.MetadataView,
-		base.ConsumerLookup,
-	) (PreparedPlugins, error)
-}
-
-type PreparedPlugins interface {
-	Close(context.Context) error
+	PrepareConsumers(context.Context, PreparationAttempt) (*runtime.ConsumerBindings, error)
 }

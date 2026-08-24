@@ -878,7 +878,7 @@ from a pre-commit worktree.
 | Activation gap | CP5/CP6 do not fabricate `ApplyTicket`; Task 9 owns provider/journal/coordinator |
 | Deferred scope | no HTTP/stream snapshot, merge, `_meta` wrapper, cluster/router/listener, or activation in CP5 |
 | Verification | focused unit/race, lint, generator, build, diff, AST/rg, independent review recorded honestly |
-| Delivery | one integration-owner local checkpoint commit; no worker commit/push/PR/release/master mutation |
+| Delivery | accepted immutable `CP5_BASE...CP5_HEAD` integration-owner commit range; clean worktree; no unreviewed diff, empty/squash commit, push/PR/release/master mutation |
 
 ## Explicit Deferrals
 

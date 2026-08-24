@@ -7,16 +7,14 @@ import (
 
 	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/generation"
-	"github.com/wklken/apisix-go/pkg/runtime"
 	"go.yaml.in/yaml/v3"
 )
 
-func New(manifest *capability.Manifest, dependencies runtime.RuntimeDependencies) (*Compiler, error) {
+// New constructs the side-effect-free publication compiler. Generation-local
+// runtime dependencies are created only after the final set is registered.
+func New(manifest *capability.Manifest) (*Compiler, error) {
 	if manifest == nil {
 		return nil, fmt.Errorf("%w: capability manifest is required", ErrInvalidInput)
-	}
-	if err := dependencies.Validate(); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrInvalidInput, err)
 	}
 	encoded, err := yaml.Marshal(manifest)
 	if err != nil {
@@ -30,7 +28,7 @@ func New(manifest *capability.Manifest, dependencies runtime.RuntimeDependencies
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInvalidInput, err)
 	}
-	return &Compiler{manifest: validatedManifest, dependencies: dependencies, schemas: schemas}, nil
+	return &Compiler{manifest: validatedManifest, schemas: schemas}, nil
 }
 
 func (compiler *Compiler) PreparePublication(

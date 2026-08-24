@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -13,6 +14,12 @@ import (
 	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/generation"
 )
+
+func TestGenerationCapabilityExposesNoRegistrationLifecycleAuthority(t *testing.T) {
+	if _, exists := reflect.TypeFor[GenerationCapability]().MethodByName("Close"); exists {
+		t.Fatal("GenerationCapability exposes Close registration lifecycle authority")
+	}
+}
 
 type testAttemptResolver struct {
 	resolve func(context.Context, Scope, string) (string, error)
@@ -921,7 +928,7 @@ func TestClosureIsDomainAndDispositionBound(t *testing.T) {
 		resolve: func(_ context.Context, _ Scope, raw string) (string, error) { return raw, nil },
 	}
 	materializer := NewMaterializer(service, factory)
-	key := generation.ResourceKey{Kind: "routes", ID: "r1"}
+	key := generation.ResourceKey{Kind: "services", ID: "shared"}
 	ticket, set := testPublication(t, 9, generation.DomainHTTP, key)
 	_, streamSet := testPublication(t, 9, generation.DomainStream, key)
 	ticket.RequiredDomains = []generation.Domain{generation.DomainHTTP, generation.DomainStream}
@@ -1233,6 +1240,13 @@ func TestRecoveryValidationRejectsInvalidRevisionAndEmptyMap(t *testing.T) {
 		ErrInvalidCapability,
 	) {
 		t.Fatalf("revision mismatch error = %v", err)
+	}
+	if _, err := materializer.RegisterRecovery(
+		context.Background(),
+		generation.RevisionSet{Desired: 9, HTTP: 9, Stream: 8},
+		published,
+	); !errors.Is(err, ErrInvalidCapability) {
+		t.Fatalf("missing committed stream error = %v, want ErrInvalidCapability", err)
 	}
 }
 

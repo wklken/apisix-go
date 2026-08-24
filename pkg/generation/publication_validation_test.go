@@ -1,6 +1,9 @@
 package generation
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 func TestValidatePublicationCandidateAcceptsCompleteClosure(t *testing.T) {
 	snapshot := publicationValidationSnapshot(t, 7)
@@ -112,6 +115,50 @@ func TestValidatePublicationCandidateRejectsClosureAndDecisionGaps(t *testing.T)
 	}
 }
 
+func TestValidatePublicationCandidateRejectsCrossDomainResourcesAndTombstones(t *testing.T) {
+	tests := map[string]struct {
+		domain  Domain
+		kind    string
+		deleted bool
+	}{
+		"stream http resource":  {domain: DomainStream, kind: "routes"},
+		"stream http tombstone": {domain: DomainStream, kind: "routes", deleted: true},
+		"http stream resource":  {domain: DomainHTTP, kind: "stream_routes"},
+		"http stream tombstone": {domain: DomainHTTP, kind: "stream_routes", deleted: true},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			key := ResourceKey{Kind: test.kind, ID: "cross-domain"}
+			var resources []Resource
+			var tombstones []Tombstone
+			disposition := DispositionPublished
+			if test.deleted {
+				tombstones = []Tombstone{{Key: key, Revision: 7}}
+				disposition = DispositionDeleted
+			} else {
+				resources = []Resource{{Key: key, Value: []byte(`{}`)}}
+			}
+			snapshot, err := NewSnapshot(7, resources, tombstones)
+			if err != nil {
+				t.Fatal(err)
+			}
+			candidate := PublicationCandidate{
+				Artifact: GenerationArtifact{
+					Domain: test.domain, Revision: 7, Digest: snapshot.Digest(), Snapshot: snapshot.SnapshotID(),
+				},
+				Snapshot: snapshot,
+				Closure:  []ResourceKey{key},
+				Decisions: []ResourceDecision{{
+					Key: key, Disposition: disposition, Code: "cross-domain",
+				}},
+			}
+			if err := ValidatePublicationCandidate(test.domain, 7, candidate); err != ErrInvalidClosure {
+				t.Fatalf("ValidatePublicationCandidate() error = %v, want %v", err, ErrInvalidClosure)
+			}
+		})
+	}
+}
+
 func TestValidatePublicationSetRejectsInvalidTicketDomainsAndRevision(t *testing.T) {
 	snapshot := publicationValidationSnapshot(t, 7)
 	candidate := publicationValidationCandidate(snapshot, DomainHTTP)
@@ -155,7 +202,7 @@ func TestValidatePublicationSetRejectsInvalidTicketDomainsAndRevision(t *testing
 
 func TestValidatePublicationSetAcceptsEachRequiredDomain(t *testing.T) {
 	httpSnapshot := publicationValidationSnapshot(t, 7)
-	streamSnapshot := publicationValidationSnapshot(t, 7)
+	streamSnapshot := publicationValidationStreamSnapshot(t, 7)
 	ticket := ApplyTicket{
 		DesiredRevision: 7,
 		RequiredDomains: []Domain{DomainHTTP, DomainStream},
@@ -172,6 +219,58 @@ func TestValidatePublicationSetAcceptsEachRequiredDomain(t *testing.T) {
 	}
 }
 
+func TestValidateRecoverySetRequiresExactDomainCoverage(t *testing.T) {
+	http := PublishedGeneration(publicationValidationCandidate(publicationValidationSnapshot(t, 5), DomainHTTP))
+	stream := PublishedGeneration(
+		publicationValidationCandidate(publicationValidationStreamSnapshot(t, 7), DomainStream),
+	)
+	validRevisions := RevisionSet{Desired: 9, HTTP: 5, Stream: 7}
+	validPublished := map[Domain]PublishedGeneration{DomainHTTP: http, DomainStream: stream}
+	if err := ValidateRecoverySet(validRevisions, validPublished); err != nil {
+		t.Fatalf("ValidateRecoverySet() error = %v", err)
+	}
+	if err := ValidateRecoverySet(RevisionSet{Desired: 9}, nil); err != nil {
+		t.Fatalf("ValidateRecoverySet(empty recovery) error = %v", err)
+	}
+
+	tests := map[string]struct {
+		revisions RevisionSet
+		published map[Domain]PublishedGeneration
+	}{
+		"zero desired": {
+			revisions: RevisionSet{HTTP: 5},
+			published: map[Domain]PublishedGeneration{DomainHTTP: http},
+		},
+		"missing stream": {
+			revisions: validRevisions,
+			published: map[Domain]PublishedGeneration{DomainHTTP: http},
+		},
+		"extra stream": {
+			revisions: RevisionSet{Desired: 9, HTTP: 5},
+			published: validPublished,
+		},
+		"unknown domain": {
+			revisions: RevisionSet{Desired: 9, HTTP: 5},
+			published: map[Domain]PublishedGeneration{DomainHTTP: http, "unknown": stream},
+		},
+		"future http": {
+			revisions: RevisionSet{Desired: 4, HTTP: 5},
+			published: map[Domain]PublishedGeneration{DomainHTTP: http},
+		},
+		"revision mismatch": {
+			revisions: RevisionSet{Desired: 9, HTTP: 6},
+			published: map[Domain]PublishedGeneration{DomainHTTP: http},
+		},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			if err := ValidateRecoverySet(test.revisions, test.published); !errors.Is(err, ErrIntegrity) {
+				t.Fatalf("ValidateRecoverySet() error = %v, want ErrIntegrity", err)
+			}
+		})
+	}
+}
+
 func publicationValidationSnapshot(t *testing.T, revision uint64) Snapshot {
 	t.Helper()
 	snapshot, err := NewSnapshot(revision, []Resource{
@@ -185,20 +284,37 @@ func publicationValidationSnapshot(t *testing.T, revision uint64) Snapshot {
 	return snapshot
 }
 
+func publicationValidationStreamSnapshot(t *testing.T, revision uint64) Snapshot {
+	t.Helper()
+	snapshot, err := NewSnapshot(revision, []Resource{
+		{Key: ResourceKey{Kind: "stream_routes", ID: "r1"}, Value: []byte(`{"server_addr":"127.0.0.1"}`)},
+	}, []Tombstone{
+		{Key: ResourceKey{Kind: "stream_routes", ID: "gone"}, Revision: revision - 1},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return snapshot
+}
+
 func publicationValidationCandidate(snapshot Snapshot, domain Domain) PublicationCandidate {
+	routeKind := "routes"
+	if domain == DomainStream {
+		routeKind = "stream_routes"
+	}
 	return PublicationCandidate{
 		Artifact: GenerationArtifact{
 			Domain: domain, Revision: snapshot.Revision(), Digest: snapshot.Digest(), Snapshot: snapshot.SnapshotID(),
 		},
 		Snapshot: snapshot,
 		Closure: []ResourceKey{
-			{Kind: "routes", ID: "r1"},
-			{Kind: "routes", ID: "gone"},
+			{Kind: routeKind, ID: "r1"},
+			{Kind: routeKind, ID: "gone"},
 			{Kind: "services", ID: "quarantined"},
 		},
 		Decisions: []ResourceDecision{
-			{Key: ResourceKey{Kind: "routes", ID: "r1"}, Disposition: DispositionPublished, Code: "published"},
-			{Key: ResourceKey{Kind: "routes", ID: "gone"}, Disposition: DispositionDeleted, Code: "deleted"},
+			{Key: ResourceKey{Kind: routeKind, ID: "r1"}, Disposition: DispositionPublished, Code: "published"},
+			{Key: ResourceKey{Kind: routeKind, ID: "gone"}, Disposition: DispositionDeleted, Code: "deleted"},
 			{
 				Key:         ResourceKey{Kind: "services", ID: "quarantined"},
 				Disposition: DispositionQuarantined,

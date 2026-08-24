@@ -6,15 +6,13 @@ import (
 
 	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/generation"
-	"github.com/wklken/apisix-go/pkg/runtime"
 )
 
 var ErrInvalidInput = errors.New("invalid compiler input")
 
 type Compiler struct {
-	manifest     *capability.Manifest
-	dependencies runtime.RuntimeDependencies
-	schemas      *schemaSet
+	manifest *capability.Manifest
+	schemas  *schemaSet
 }
 
 type normalizedInput struct {

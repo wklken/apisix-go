@@ -10,7 +10,10 @@
 2. Resource kind/domain classification moves to `pkg/generation` before the compiler is created. Etcd and Store callers consume it in the same prerequisite change; no second editable list is added to `pkg/compiler`.
 3. Task 5 resolves structural references and explicit `$secret://manager/id/...` resource references. Field-level encryption/secret declarations and plugin-metadata admission remain Task 6 responsibilities because the current manifest has no enumerable declaration contract and metadata schemas require plugin instances.
 4. `WorkerCompilerFactory` moves to Task 6. A successful factory-created generation cannot exist before `PreparedGeneration.Close` owns its `TaskRegistry`.
-5. Cluster acquisition moves to Task 7. Task 5 remains pure and does not call `RuntimeDependencies.Secrets`, `Resources` or `Tasks`.
+5. Cluster acquisition moves to Task 7. Task 5 remains pure. CP3.4 removes
+   `RuntimeDependencies` from the compiler constructor entirely; attempt-local
+   runtime preparation receives those capabilities only after exact
+   registration.
 6. Normalization keeps raw bytes, an exact-number generic document and a typed structural view. Typed resource values alone are not canonical because `resource.Route.UnmarshalJSON` performs nested decoding that can convert exact numbers to `float64`.
 7. A missing predecessor is represented by a failed map lookup, never by a zero `generation.PublishedGeneration`.
 
@@ -19,9 +22,11 @@
 ```text
                  C0 canonical managed-resource taxonomy
                               |
-Wave B RuntimeDependencies ---+---> Task 5 pure publication preparation
-                                         |
-Wave A4 Descriptor ---------------------->+---> Task 6 materialization + atomic worker factory
+Wave B RuntimeDependencies ---------------------> Task 6 attempt-local preparation
+                              |                   |
+Wave A4 Descriptor -----------+---> Task 5 pure publication preparation
+                                                  |
+                                                  +---> Task 6 materialization + atomic worker factory
                                                    |
                                                    v
                                   Task 7 leased clusters + immutable HTTP runtime
@@ -96,12 +101,12 @@ Do not create `worker_factory.go`, modify `pkg/resource`, call Store parsing met
 
 ### Step 1: Lock input and journal contracts with failing tests
 
-Add tests for ticket/snapshot revision and digest mismatch, a non-empty required-domain ticket missing a candidate, a valid empty required-domain ticket producing an empty set, invalid dependencies rejected before any runtime dependency call, deterministic candidate ordering and a produced candidate accepted by the real journal Stage contract.
+Add tests for ticket/snapshot revision and digest mismatch, a non-empty required-domain ticket missing a candidate, a valid empty required-domain ticket producing an empty set, deterministic candidate ordering and a produced candidate accepted by the real journal Stage contract. CP3.4 later removed the unused constructor dependency validation rather than retaining a forbidden capability on the pure compiler.
 
 The compiler consumes:
 
 ```go
-func New(*capability.Manifest, runtime.RuntimeDependencies) (*Compiler, error)
+func New(*capability.Manifest) (*Compiler, error)
 func (c *Compiler) PreparePublication(
     context.Context,
     generation.ApplyTicket,
@@ -110,7 +115,9 @@ func (c *Compiler) PreparePublication(
 ) (generation.PublicationSet, error)
 ```
 
-`New` validates and stores the manifest/dependencies, but Task 5 `Prepare` treats `Secrets`, `Resources` and `Tasks` as forbidden capabilities. Spy implementations must prove zero calls.
+`New` validates and stores only manifest-derived schema state. Task 5
+`PreparePublication` has no `Secrets`, `Resources` or `Tasks` capability to
+call.
 
 ### Step 2: Normalize every managed kind without side effects
 

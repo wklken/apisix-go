@@ -65,7 +65,7 @@ func TestCompilerNewRejectsUnregisteredManifestFactory(t *testing.T) {
 			break
 		}
 	}
-	_, err := New(manifest, testRuntimeDependencies(t))
+	_, err := New(manifest)
 	if !errors.Is(err, ErrInvalidInput) || !strings.Contains(err.Error(), "unregistered-schema-factory") {
 		t.Fatalf("unregistered factory error = %v, want redacted ErrInvalidInput", err)
 	}

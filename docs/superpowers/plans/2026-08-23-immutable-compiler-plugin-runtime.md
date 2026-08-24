@@ -42,7 +42,9 @@
 
 - `pkg/secret/materializer.go` — scoped, redacted dynamic-secret materialization backed by the immutable encryption service and a managed-reference resolver.
 - `pkg/secret/materializer_test.go` — scope, digest, redaction and cancellation tests.
-- `pkg/runtime/dependencies.go` — exact `RuntimeDependencies` contract shared by compiler, plugins and later workers.
+- `pkg/runtime/dependencies.go` — exact `RuntimeDependencies` contract shared by
+  attempt-local runtime preparers, plugins and later workers; the pure compiler
+  does not retain it.
 - `pkg/runtime/resource_registry.go` — concurrent digest-keyed resource acquisition, reference counting, retry and shutdown.
 - `pkg/runtime/resource_registry_test.go` — equal/different identity, failed factory, release and race tests.
 - `pkg/runtime/task_registry.go` — named plugin/generation tasks, cancellation, panic policy, join and residual reporting.
@@ -417,10 +419,8 @@ type compileHTTPFunc func(context.Context, generation.GenerationArtifact, route.
 type compileStreamFunc func(context.Context, generation.GenerationArtifact, []resource.StreamRoute, []string, func(stream.Result)) (*StreamSnapshot, error)
 
 type Compiler struct {
-	manifest     *capability.Manifest
-	dependencies runtime.RuntimeDependencies
-	compileHTTP  compileHTTPFunc
-	compileStream compileStreamFunc
+	manifest *capability.Manifest
+	// validated schema state is private and side-effect free
 }
 
 type WorkerCompilerFactory struct {
@@ -433,7 +433,7 @@ type WorkerCompilerFactory struct {
 	closed       bool
 }
 
-func New(*capability.Manifest, runtime.RuntimeDependencies) (*Compiler, error)
+func New(*capability.Manifest) (*Compiler, error)
 func NewWorkerCompilerFactory(*capability.Manifest, *config.EffectiveConfig, secret.Materializer) (*WorkerCompilerFactory, error)
 func (f *WorkerCompilerFactory) PrepareGeneration(context.Context, generation.ApplyTicket, generation.Snapshot,
 	map[generation.Domain]generation.PublishedGeneration, func(runtime.TaskFailure)) (*PreparedGeneration, error)
@@ -1119,7 +1119,10 @@ Execute only the linked brief. Task 5 produces `PreparePublication`; Task 6 comp
 
 **Interfaces:**
 
-- Consumes: `generation.ApplyTicket`, immutable desired `generation.Snapshot`, previous `map[generation.Domain]generation.PublishedGeneration`, `capability.Manifest` and `runtime.RuntimeDependencies`.
+- Consumes: `generation.ApplyTicket`, immutable desired `generation.Snapshot`,
+  previous `map[generation.Domain]generation.PublishedGeneration` and
+  `capability.Manifest`. Attempt-local preparers receive runtime dependencies
+  only after the exact final publication set is registered.
 - Produces: `compiler.New`, `NewWorkerCompilerFactory`, worker-local generation compiler construction, the pure normalize/validate/resolve phases, complete `generation.PublicationCandidate` values and no external side effect.
 
 - [ ] **Step 1: Write a failing phase-order and no-side-effect test**
@@ -1190,7 +1193,7 @@ func (f *WorkerCompilerFactory) PrepareGeneration(ctx context.Context, ticket ge
 }
 ```
 
-`newRecordingMaterializer` returns registration-bound test attempts and panics if a scope reaches the resolver with a mismatched generation or `AttemptID`; the `GenerationCapability` rejection therefore occurs before delegation. `PrepareRecovery` performs the same ownership transaction using `RegisterRecovery(revisions, verifiedPublished)` and never calls Task 5 disposition. `Close` locks, marks `closed`, unlocks and calls `resources.Close(ctx)`; it never closes a generation task registry already transferred to a successful `PreparedGeneration`. The exec worker passes the plan 05 scoped IPC materializer, not an IPC pointer to the supervisor, local service, resolver callback or raw keyring. `New` validates dependencies and stores the exact manifest/dependency values plus non-nil `compileHTTP` and `compileStream` function fields.
+`newRecordingMaterializer` returns registration-bound test attempts and panics if a scope reaches the resolver with a mismatched generation or `AttemptID`; the `GenerationCapability` rejection therefore occurs before delegation. `PrepareRecovery` performs the same ownership transaction using `RegisterRecovery(revisions, verifiedPublished)` and never calls Task 5 disposition. `Close` locks, marks `closed`, unlocks and calls `resources.Close(ctx)`; it never closes a generation task registry already transferred to a successful `PreparedGeneration`. The exec worker passes the plan 05 scoped IPC materializer, not an IPC pointer to the supervisor, local service, resolver callback or raw keyring. `compiler.New` validates and owns only the manifest-derived pure schema state; the attempt factory acquires generation-local runtime dependencies after exact registration.
 
 - [ ] **Step 4: Implement strict normalization from snapshot bytes**
 

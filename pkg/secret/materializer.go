@@ -512,13 +512,6 @@ func (capability GenerationCapability) Materialize(ctx context.Context, scope Sc
 	return capability.attempt.Materialize(ctx, scope, raw)
 }
 
-func (capability GenerationCapability) Close(ctx context.Context) error {
-	if capability.attempt == nil {
-		return ErrInvalidCapability
-	}
-	return capability.attempt.Close(ctx)
-}
-
 func validateCandidateRegistration(ticket generation.ApplyTicket, set generation.PublicationSet) error {
 	if err := generation.ValidatePublicationSet(ticket, set); err != nil {
 		return ErrInvalidCapability
@@ -533,27 +526,10 @@ func validateRecoveryRegistration(
 	revisions generation.RevisionSet,
 	published map[generation.Domain]generation.PublishedGeneration,
 ) error {
-	if revisions.Desired == 0 || len(published) == 0 {
+	if len(published) == 0 || generation.ValidateRecoverySet(revisions, published) != nil {
 		return ErrInvalidCapability
 	}
-	for domain, value := range published {
-		revision := revisionForDomain(revisions, domain)
-		if revision == 0 || generation.ValidatePublishedGeneration(domain, revision, value) != nil {
-			return ErrInvalidCapability
-		}
-	}
 	return nil
-}
-
-func revisionForDomain(revisions generation.RevisionSet, domain generation.Domain) uint64 {
-	switch domain {
-	case generation.DomainHTTP:
-		return revisions.HTTP
-	case generation.DomainStream:
-		return revisions.Stream
-	default:
-		return 0
-	}
 }
 
 type closureIndex map[generation.Domain]map[generation.ResourceKey]struct{}

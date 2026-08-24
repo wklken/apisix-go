@@ -223,6 +223,17 @@ The public package need not expose mutable compiled schema maps.
 - Modify: `pkg/compiler/types.go`
 - Modify focused generation validation only if exact recovery coverage is centralized
 
+### Corrected prerequisites found by source review
+
+- [x] Make `compiler.New(*capability.Manifest)` a pure constructor and remove
+  the unused `RuntimeDependencies` field. Requiring a `GenerationCapability`
+  before final-set registration is a construction cycle.
+- [x] Centralize exact recovery coverage in
+  `generation.ValidateRecoverySet`; both compiler recovery and secret
+  registration consume it.
+- [x] Remove `GenerationCapability.Close`; `AttemptRegistration` remains the
+  sole lifecycle owner retained by the preparation transaction.
+
 ### Contracts
 
 ```go
@@ -231,7 +242,9 @@ type PreparationAttempt struct { /* unexported authority */ }
 func (a PreparationAttempt) Generation() uint64
 func (a PreparationAttempt) AttemptID() secret.AttemptID
 func (a PreparationAttempt) Candidate(domain generation.Domain) (generation.PublicationCandidate, bool)
-func (a PreparationAttempt) Secrets() secret.GenerationCapability
+func (a PreparationAttempt) Occurrences(source capability.SecretDeclarationSource) []FactoryOccurrence
+func (a PreparationAttempt) MaterializeSecret(context.Context, FactoryOccurrence, string, string) (secret.Value, error)
+func (a PreparationAttempt) PrepareScopedPluginSecrets(context.Context, FactoryOccurrence, plugin.FactoryInstance) error
 
 type MetadataPreparer interface {
     PrepareMetadata(context.Context, PreparationAttempt) (runtime.MetadataView, error)
@@ -242,7 +255,7 @@ type ConsumerPreparer interface {
 }
 
 type PluginPreparer interface {
-    PreparePlugins(context.Context, PreparationAttempt, runtime.MetadataView, *runtime.ConsumerBindings) (PreparedPlugins, error)
+    PreparePlugins(context.Context, PreparationAttempt, runtime.MetadataView, base.ConsumerLookup) (PreparedPlugins, error)
 }
 
 type PreparedPlugins interface {
@@ -250,7 +263,30 @@ type PreparedPlugins interface {
 }
 ```
 
-Hooks receive immutable bound access, not Store, materializer, registration, or raw keyring handles.
+Hooks receive immutable attempt-bound occurrence access, not Store, materializer,
+registration, raw keyring, `GenerationCapability.Close`, or
+`ConsumerBindings.Close` authority. `GenerationCapability.Close` is removed;
+the factory retains the sole `AttemptRegistration` cleanup owner.
+
+`plugin.FactoryInstance` is created only by the plugin package and retains the
+exact private registry key together with the constructed plugin instance. Its
+fields are not externally writable. Scoped preparation verifies that bound key
+against `FactoryOccurrence.Factory`; it must not infer factory identity from
+`Plugin.GetName` or the concrete Go type because aliases may have different
+names and distinct factories may share one concrete type.
+
+`FactoryOccurrence` identity is `(Domain, ResourceKey, Source, Factory)` and is
+enumerated only from the revalidated final publication snapshots. The list
+keeps cross-domain occurrences distinct and uses fixed domain/resource/factory
+ordering. `plugins/plugins` enablement is not an occurrence. Support checks may
+deduplicate by factory, but preparation never deduplicates instances before the
+attempt-bound instance identity exists.
+
+This checkpoint deliberately calls these **publication-level occurrences**.
+Current `_meta.disable` and composite child factories (`multi-auth`, `workflow`)
+are not represented by the compiler structural view. Their exact effective
+occurrence extraction and scoped enforcement belong to their leaf/composite
+migration checkpoints; CP3.4 must not claim that coverage early.
 
 ### Candidate flow
 
@@ -258,7 +294,9 @@ Hooks receive immutable bound access, not Store, materializer, registration, or 
 - [ ] Call `RegisterCandidate(ticket, exactFinalSet)` and immediately install reverse cleanup ownership.
 - [ ] Create `GenerationCapability` with the final registration and desired revision.
 - [ ] Call metadata, consumer, then plugin hooks in exact order.
-- [ ] Before plugin preparation, every effective factory with manifest `plugin_config` declarations must implement CP2 `ScopedSecretMaterializer`; absence fails without calling legacy code.
+- [ ] Before plugin preparation, every publication-level `plugin_config`
+  factory with manifest declarations must implement CP2
+  `ScopedSecretMaterializer`; absence fails without calling legacy code.
 - [ ] Add a poison dual-interface fixture proving the new factory never calls `MaterializePluginSecrets` or legacy `MaterializeSecrets`.
 - [ ] Hook failure closes prepared objects then registration exactly once using cleanup context independent of canceled request context.
 

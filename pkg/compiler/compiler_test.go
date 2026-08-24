@@ -11,10 +11,7 @@ import (
 	"testing"
 
 	"github.com/wklken/apisix-go/pkg/capability"
-	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/generation"
-	"github.com/wklken/apisix-go/pkg/runtime"
-	"github.com/wklken/apisix-go/pkg/secret"
 	"github.com/wklken/apisix-go/pkg/store"
 )
 
@@ -62,13 +59,6 @@ func TestCompilerRejectsTicketSnapshotAndDependencyContractViolations(t *testing
 		generation.DispositionQuarantined,
 		"dependency-unavailable",
 	)
-	if compiler.dependencies.Resources.Len() != 0 {
-		t.Fatal("pure compiler acquired a runtime resource")
-	}
-	residuals, err := compiler.dependencies.Tasks.Stop(context.Background())
-	if err != nil || len(residuals) != 0 {
-		t.Fatalf("pure compiler task registry = %v/%v, want no started tasks", residuals, err)
-	}
 }
 
 func TestCompilerStopsWhenContextIsCanceledAfterCompilationStarts(t *testing.T) {
@@ -184,14 +174,11 @@ func TestFinalizePublicationRejectsForgedPostRefinementSet(t *testing.T) {
 	}
 }
 
-func TestCompilerNewRequiresManifestAndCompleteRuntimeDependencies(t *testing.T) {
-	if _, err := New(nil, runtime.RuntimeDependencies{}); !errors.Is(err, ErrInvalidInput) {
+func TestCompilerNewRequiresValidatedManifest(t *testing.T) {
+	if _, err := New(nil); !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("nil manifest error = %v, want ErrInvalidInput", err)
 	}
-	if _, err := New(mustManifest(t), runtime.RuntimeDependencies{}); !errors.Is(err, ErrInvalidInput) {
-		t.Fatalf("incomplete dependencies error = %v, want ErrInvalidInput", err)
-	}
-	if _, err := New(&capability.Manifest{}, testRuntimeDependencies(t)); !errors.Is(err, ErrInvalidInput) {
+	if _, err := New(&capability.Manifest{}); !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("unvalidated manifest error = %v, want ErrInvalidInput", err)
 	}
 }
@@ -455,52 +442,13 @@ func TestCompilerPublicationIsAcceptedByRealJournalStage(t *testing.T) {
 	}
 }
 
-type panicAttemptRegistration struct{}
-
-func (panicAttemptRegistration) AttemptID() secret.AttemptID {
-	return secret.AttemptID{1}
-}
-
-func (panicAttemptRegistration) Materialize(context.Context, secret.Scope, string) (secret.Value, error) {
-	panic("pure compiler materialized a secret")
-}
-
-func (panicAttemptRegistration) Close(context.Context) error {
-	return nil
-}
-
 func newTestCompiler(t *testing.T) *Compiler {
 	t.Helper()
-	compiler, err := New(mustManifest(t), testRuntimeDependencies(t))
+	compiler, err := New(mustManifest(t))
 	if err != nil {
 		t.Fatal(err)
 	}
 	return compiler
-}
-
-func testRuntimeDependencies(t *testing.T) runtime.RuntimeDependencies {
-	t.Helper()
-	resources := runtime.NewResourceRegistry()
-	if err := resources.Close(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	tasks := runtime.NewTaskRegistry(
-		context.Background(),
-		func(runtime.TaskFailure) { panic("pure compiler started a task") },
-	)
-	if residuals, err := tasks.Stop(context.Background()); err != nil || len(residuals) != 0 {
-		t.Fatalf("stop task sentinel = %v/%v", residuals, err)
-	}
-	secrets, err := secret.NewGenerationCapability(panicAttemptRegistration{}, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return runtime.RuntimeDependencies{
-		Config:    &config.EffectiveConfig{},
-		Secrets:   secrets,
-		Resources: resources,
-		Tasks:     tasks,
-	}
 }
 
 func ticketForSnapshot(snapshot generation.Snapshot, domains ...generation.Domain) generation.ApplyTicket {

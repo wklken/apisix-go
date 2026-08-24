@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"sync"
 
@@ -834,6 +835,28 @@ func cloneEffectiveStringAnyMap(source map[string]any) (map[string]any, error) {
 }
 
 func cloneEffectiveBindingValue(value any) (any, error) {
+	return cloneEffectiveBindingValuePath(value, make(map[effectiveBindingReferenceIdentity]struct{}))
+}
+
+type effectiveBindingReferenceIdentity struct {
+	kind     reflect.Kind
+	pointer  uintptr
+	length   int
+	capacity int
+}
+
+func cloneEffectiveBindingValuePath(
+	value any,
+	path map[effectiveBindingReferenceIdentity]struct{},
+) (any, error) {
+	identity, tracked := effectiveBindingValueIdentity(value)
+	if tracked {
+		if _, cyclic := path[identity]; cyclic {
+			return nil, fmt.Errorf("cyclic effective-binding JSON value %T is unsupported", value)
+		}
+		path[identity] = struct{}{}
+		defer delete(path, identity)
+	}
 	switch value := value.(type) {
 	case nil:
 		return nil, nil
@@ -847,7 +870,7 @@ func cloneEffectiveBindingValue(value any) (any, error) {
 	case map[string]any:
 		cloned := make(map[string]any, len(value))
 		for key, nested := range value {
-			owned, err := cloneEffectiveBindingValue(nested)
+			owned, err := cloneEffectiveBindingValuePath(nested, path)
 			if err != nil {
 				return nil, err
 			}
@@ -857,7 +880,7 @@ func cloneEffectiveBindingValue(value any) (any, error) {
 	case []any:
 		cloned := make([]any, len(value))
 		for index, nested := range value {
-			owned, err := cloneEffectiveBindingValue(nested)
+			owned, err := cloneEffectiveBindingValuePath(nested, path)
 			if err != nil {
 				return nil, err
 			}
@@ -866,6 +889,28 @@ func cloneEffectiveBindingValue(value any) (any, error) {
 		return cloned, nil
 	default:
 		return nil, fmt.Errorf("unsupported effective-binding JSON value %T", value)
+	}
+}
+
+func effectiveBindingValueIdentity(value any) (effectiveBindingReferenceIdentity, bool) {
+	switch value := value.(type) {
+	case map[string]any:
+		if value == nil {
+			return effectiveBindingReferenceIdentity{}, false
+		}
+		return effectiveBindingReferenceIdentity{
+			kind: reflect.Map, pointer: reflect.ValueOf(value).Pointer(),
+		}, true
+	case []any:
+		if value == nil {
+			return effectiveBindingReferenceIdentity{}, false
+		}
+		return effectiveBindingReferenceIdentity{
+			kind: reflect.Slice, pointer: reflect.ValueOf(value).Pointer(),
+			length: len(value), capacity: cap(value),
+		}, true
+	default:
+		return effectiveBindingReferenceIdentity{}, false
 	}
 }
 

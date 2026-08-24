@@ -9,6 +9,9 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io"
+	"os"
+	"os/exec"
 	"reflect"
 	"strings"
 	"sync"
@@ -686,6 +689,81 @@ func TestEffectiveBindingMaterializerDefensivelyOwnsAllMutableInputs(t *testing.
 	if got := identity.ErrorResponse.(map[string]any)["nested"].([]any)[0]; got != "error-original" {
 		t.Fatalf("error identity aliased caller input: %v", got)
 	}
+}
+
+func TestEffectiveBindingMaterializerRejectsCyclicJSONValues(t *testing.T) {
+	cycleKind := os.Getenv("APISIX_GO_EFFECTIVE_BINDING_CYCLE")
+	if cycleKind != "" {
+		var value any
+		switch cycleKind {
+		case "map":
+			cycle := map[string]any{}
+			cycle["self"] = cycle
+			value = cycle
+		case "slice":
+			cycle := make([]any, 1)
+			cycle[0] = cycle
+			value = cycle
+		default:
+			t.Fatalf("unknown cycle kind %q", cycleKind)
+		}
+		if cloned, err := cloneEffectiveBindingValue(value); err == nil || cloned != nil {
+			t.Fatalf("cyclic %s clone = %#v/%v, want nil/error", cycleKind, cloned, err)
+		}
+		return
+	}
+
+	for _, cycleKind := range []string{"map", "slice"} {
+		t.Run(cycleKind, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			command := exec.CommandContext(
+				ctx, os.Args[0], "-test.run=^TestEffectiveBindingMaterializerRejectsCyclicJSONValues$",
+			)
+			command.Env = append(os.Environ(), "APISIX_GO_EFFECTIVE_BINDING_CYCLE="+cycleKind)
+			command.Stdout = io.Discard
+			command.Stderr = io.Discard
+			err := command.Run()
+			if ctx.Err() != nil {
+				t.Fatalf("cyclic %s clone did not fail closed before timeout", cycleKind)
+			}
+			if err != nil {
+				t.Fatalf("cyclic %s clone subprocess exited with %v, want clean rejection", cycleKind, err)
+			}
+		})
+	}
+
+	t.Run("shared map siblings", func(t *testing.T) {
+		shared := map[string]any{"nested": []any{"original"}}
+		clonedValue, err := cloneEffectiveBindingValue(map[string]any{"left": shared, "right": shared})
+		if err != nil {
+			t.Fatal(err)
+		}
+		cloned := clonedValue.(map[string]any)
+		left := cloned["left"].(map[string]any)["nested"].([]any)
+		right := cloned["right"].(map[string]any)["nested"].([]any)
+		shared["nested"].([]any)[0] = "caller-mutated"
+		left[0] = "left-mutated"
+		if right[0] != "original" {
+			t.Fatalf("shared map sibling was rejected or aliased: right=%#v", right)
+		}
+	})
+
+	t.Run("shared slice siblings", func(t *testing.T) {
+		shared := []any{map[string]any{"value": "original"}}
+		clonedValue, err := cloneEffectiveBindingValue([]any{shared, shared})
+		if err != nil {
+			t.Fatal(err)
+		}
+		cloned := clonedValue.([]any)
+		left := cloned[0].([]any)[0].(map[string]any)
+		right := cloned[1].([]any)[0].(map[string]any)
+		shared[0].(map[string]any)["value"] = "caller-mutated"
+		left["value"] = "left-mutated"
+		if right["value"] != "original" {
+			t.Fatalf("shared slice sibling was rejected or aliased: right=%#v", right)
+		}
+	})
 }
 
 func TestEffectiveBindingMaterializerRejectsNonJSONMutableValues(t *testing.T) {

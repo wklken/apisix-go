@@ -119,6 +119,18 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	return p
 }
 
+func resolvedLimitCountKeyForTest(t *testing.T, p *Plugin, request *http.Request) string {
+	t.Helper()
+	var resolved string
+	if err := p.withResolvedLimitCountKey(request, func(key string) error {
+		resolved = key
+		return nil
+	}); err != nil {
+		t.Fatalf("withResolvedLimitCountKey() error = %v", err)
+	}
+	return resolved
+}
+
 func TestPostInitAcceptsRootRedisPolicyFields(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		Count:                 "$http_x_limit",
@@ -134,8 +146,16 @@ func TestPostInitAcceptsRootRedisPolicyFields(t *testing.T) {
 		RedisKeepalivePool:    80,
 	})
 
-	if p.config.Redis.RedisHost != "127.0.0.1" {
-		t.Fatalf("Redis.RedisHost = %q, want 127.0.0.1", p.config.Redis.RedisHost)
+	if p.config.Redis.RedisHost != limitCountDescriptor("127.0.0.1") {
+		t.Fatalf("Redis.RedisHost = %q, want content descriptor", p.config.Redis.RedisHost)
+	}
+	if err := p.withLimitCountRedisHost(func(host string) error {
+		if host != "127.0.0.1" {
+			t.Fatalf("private Redis host = %q, want 127.0.0.1", host)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
 	if p.config.Redis.RedisPort != 6380 {
 		t.Fatalf("Redis.RedisPort = %d, want 6380", p.config.Redis.RedisPort)
@@ -332,7 +352,15 @@ func TestPostInitBuildsRedisClusterOptionsFromRootFields(t *testing.T) {
 		RedisKeepalivePool:    80,
 	})
 
-	options := p.redisClusterConnConfig().ClusterOptions()
+	var options *redis.ClusterOptions
+	if err := p.withLimitCountRedisNodes(func(nodes []string) error {
+		runtimeConfig := p.redisClusterConnConfig()
+		runtimeConfig.Nodes = slices.Clone(nodes)
+		options = runtimeConfig.ClusterOptions()
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if len(options.Addrs) != 2 || options.Addrs[0] != "127.0.0.1:5000" {
 		t.Fatalf("cluster addresses = %#v", options.Addrs)
 	}
@@ -496,13 +524,12 @@ func TestMaterializeSecretsRedactsEnvironmentKeyAndStopsOwner(t *testing.T) {
 		TimeWindow: 60,
 		Key:        "$ENV://LIMIT_COUNT_KEY",
 	})
-	if !strings.Contains(p.config.Key, "$ENV://LIMIT_COUNT_KEY#sha256:") ||
-		strings.Contains(p.config.Key, "remote_addr") {
-		t.Fatalf("key = %q, want safe environment descriptor", p.config.Key)
+	if p.config.Key != limitCountDescriptor("remote_addr") {
+		t.Fatalf("key = %q, want resolved content descriptor", p.config.Key)
 	}
 	request := httptest.NewRequest(http.MethodGet, "/", nil)
 	request.RemoteAddr = "192.0.2.10:1234"
-	if got := p.resolveKey(request); got != "192.0.2.10" {
+	if got := resolvedLimitCountKeyForTest(t, p, request); got != "192.0.2.10" {
 		t.Fatalf("resolveKey() = %q, want materialized remote_addr behavior", got)
 	}
 	owner := p.keySecret
@@ -527,9 +554,8 @@ func TestMaterializeSecretsRedactsRedisHostAndBuildsResolvedClient(t *testing.T)
 		Policy:     "redis",
 		RedisHost:  "$ENV://LIMIT_COUNT_REDIS_HOST",
 	})
-	if !strings.Contains(p.config.Redis.RedisHost, "$ENV://LIMIT_COUNT_REDIS_HOST#sha256:") ||
-		strings.Contains(p.config.Redis.RedisHost, "127.0.0.2") {
-		t.Fatalf("Redis host = %q, want safe environment descriptor", p.config.Redis.RedisHost)
+	if p.config.Redis.RedisHost != limitCountDescriptor("127.0.0.2") {
+		t.Fatalf("Redis host = %q, want resolved content descriptor", p.config.Redis.RedisHost)
 	}
 	if p.config.RedisHost != p.config.Redis.RedisHost {
 		t.Fatalf("root Redis host = %q, want canonical descriptor %q", p.config.RedisHost, p.config.Redis.RedisHost)
@@ -565,10 +591,13 @@ func TestMaterializeSecretsRedactsRedisClusterNodesAndBuildsResolvedClient(t *te
 		RedisClusterNodes: []string{"$ENV://LIMIT_COUNT_REDIS_NODE_0", "$ENV://LIMIT_COUNT_REDIS_NODE_1"},
 		RedisClusterName:  "redis-cluster-1",
 	})
-	for i, reference := range []string{"$ENV://LIMIT_COUNT_REDIS_NODE_0", "$ENV://LIMIT_COUNT_REDIS_NODE_1"} {
-		if !strings.Contains(p.config.RedisCluster.RedisClusterNodes[i], reference+"#sha256:") ||
-			strings.Contains(p.config.RedisCluster.RedisClusterNodes[i], "127.0.0.1") {
-			t.Fatalf("Redis cluster node %d = %q, want safe descriptor", i, p.config.RedisCluster.RedisClusterNodes[i])
+	for i, resolved := range []string{"127.0.0.1:5000", "127.0.0.1:5001"} {
+		if p.config.RedisCluster.RedisClusterNodes[i] != limitCountDescriptor(resolved) {
+			t.Fatalf(
+				"Redis cluster node %d = %q, want resolved content descriptor",
+				i,
+				p.config.RedisCluster.RedisClusterNodes[i],
+			)
 		}
 	}
 	if !slices.Equal(p.config.RedisClusterNodes, p.config.RedisCluster.RedisClusterNodes) {
@@ -1914,12 +1943,12 @@ func TestResolveKeySupportsAPISIXArgumentAndHTTPHostVariables(t *testing.T) {
 	request.Host = "example-1.com"
 
 	argumentPlugin := &Plugin{config: Config{KeyType: "var", Key: "arg_key"}}
-	if got := argumentPlugin.resolveKey(request); got != "redis-user" {
+	if got := resolvedLimitCountKeyForTest(t, argumentPlugin, request); got != "redis-user" {
 		t.Fatalf("arg_key = %q, want redis-user", got)
 	}
 
 	hostPlugin := &Plugin{config: Config{KeyType: "var", Key: "http_host"}}
-	if got := hostPlugin.resolveKey(request); got != "example-1.com" {
+	if got := resolvedLimitCountKeyForTest(t, hostPlugin, request); got != "example-1.com" {
 		t.Fatalf("http_host = %q, want example-1.com", got)
 	}
 }

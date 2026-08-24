@@ -1,16 +1,29 @@
 package authz_casdoor
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/capability"
+	"github.com/wklken/apisix-go/pkg/generation"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/secret"
+	"github.com/wklken/apisix-go/pkg/store"
+	"github.com/wklken/apisix-go/pkg/testutil"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -29,11 +42,614 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 		t.Fatalf("Init() error = %v", err)
 	}
 	p.newState = func() (string, error) { return "state-1", nil }
+	if err := p.MaterializeSecrets(); err != nil {
+		t.Fatalf("MaterializeSecrets() error = %v", err)
+	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
 
 	return p
+}
+
+// TestMaterializeScopedSecretsOwnsCasdoorSessionSecrets catches installing the
+// primary before the last fallback succeeds, hashing raw references instead of
+// resolved plaintext, and resolving fallback elements with indexed authority
+// or in a different order than configuration.
+func TestMaterializeScopedSecretsOwnsCasdoorSessionSecrets(t *testing.T) {
+	const (
+		currentValue  = "current-secret-current-secret-current-secret"
+		fallbackValue = "fallback-one-fallback-one-fallback-one"
+		rotatedValue  = "rotated-two-rotated-two-rotated-two"
+	)
+	contextual, err := testutil.DataEncryptionService(true, []string{"0123456789abcdef"}).
+		EncryptForContext(currentValue, "authz-casdoor.client_secret")
+	if err != nil {
+		t.Fatalf("EncryptForContext() error = %v", err)
+	}
+	fallbackRaw := "$ENV://CASDOOR_FALLBACK_ONE"
+	rotatedRaw := "$secret://vault/casdoor/client-secret?version=2"
+	config := Config{
+		EndpointAddr:          "https://door.example.com",
+		ClientID:              "client-a",
+		ClientSecret:          contextual,
+		ClientSecretFallbacks: []string{fallbackRaw, rotatedRaw},
+		CallbackURL:           "https://gateway.example.com/callback",
+	}
+	values := map[string]string{
+		contextual:  currentValue,
+		fallbackRaw: fallbackValue,
+		rotatedRaw:  rotatedValue,
+	}
+	capabilityValue, scope, broker, closeAttempt := newCasdoorScopedSecretHarness(
+		t, 1, "casdoor-scoped", config, values,
+	)
+	defer closeAttempt()
+	p := &Plugin{config: config}
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	if err := base.MaterializeScopedPluginSecrets(
+		context.Background(), scope, capabilityValue, p,
+	); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
+	}
+
+	calls := broker.scopedCalls()
+	if len(calls) != 3 {
+		t.Fatalf("scoped calls = %#v, want current plus two fallbacks", calls)
+	}
+	wantFields := []string{"client_secret", "client_secret_fallbacks", "client_secret_fallbacks"}
+	wantRaw := []string{contextual, fallbackRaw, rotatedRaw}
+	for i, call := range calls {
+		if call.Raw != wantRaw[i] || call.Scope.Generation != scope.Generation ||
+			call.Scope.Attempt != scope.Attempt || call.Scope.Domain != generation.DomainHTTP ||
+			call.Scope.Plugin != name || call.Scope.Resource != scope.Resource ||
+			call.Scope.Source != capability.SecretPluginConfig || call.Scope.Field != wantFields[i] {
+			t.Fatalf("scoped call[%d] = %#v, want exact %q container authority", i, call, wantFields[i])
+		}
+	}
+	if got, want := p.config.ClientSecret, casdoorDescriptor(currentValue); got != want {
+		t.Fatalf("client_secret descriptor = %q, want resolved-plaintext descriptor %q", got, want)
+	}
+	for i, resolved := range []string{fallbackValue, rotatedValue} {
+		if got, want := p.config.ClientSecretFallbacks[i], casdoorDescriptor(resolved); got != want {
+			t.Fatalf("fallback descriptor[%d] = %q, want %q", i, got, want)
+		}
+	}
+	if p.client != nil {
+		t.Fatal("scoped materialization constructed an HTTP client before PostInit")
+	}
+
+	failedConfig := config
+	failedConfig.ClientSecretFallbacks = append([]string(nil), config.ClientSecretFallbacks...)
+	failCapability, failScope, failBroker, closeFailure := newCasdoorScopedSecretHarness(
+		t, 2, "casdoor-failure", failedConfig, values,
+	)
+	defer closeFailure()
+	failBroker.setFailure(rotatedRaw)
+	failed := &Plugin{config: failedConfig}
+	if err := failed.Init(); err != nil {
+		t.Fatal(err)
+	}
+	err = base.MaterializeScopedPluginSecrets(context.Background(), failScope, failCapability, failed)
+	if err == nil || err.Error() != "materialize plugin secrets: credential unavailable" {
+		t.Fatalf("Nth fallback materialization error = %v, want fixed redaction", err)
+	}
+	if strings.Contains(err.Error(), rotatedRaw) || strings.Contains(err.Error(), rotatedValue) {
+		t.Fatalf("Nth fallback error leaked secret details: %v", err)
+	}
+	if failed.config.ClientSecret != failedConfig.ClientSecret ||
+		fmt.Sprint(failed.config.ClientSecretFallbacks) != fmt.Sprint(failedConfig.ClientSecretFallbacks) ||
+		failed.clientSecretSet || failed.clientSecret != (secret.Value{}) ||
+		len(failed.clientSecretFallbacks) != 0 || failed.secretsPrepared || failed.client != nil {
+		t.Fatalf("Nth fallback failure retained partial state: %#v", failed)
+	}
+	failBroker.setFailure("")
+	if err := base.MaterializeScopedPluginSecrets(
+		context.Background(), failScope, failCapability, failed,
+	); err != nil {
+		t.Fatalf("same-instance retry error = %v", err)
+	}
+	if got := failBroker.scopedCalls(); len(got) != 6 {
+		t.Fatalf("failure plus retry calls = %#v, want two complete ordered attempts", got)
+	}
+	if failed.config.ClientSecret != casdoorDescriptor(currentValue) ||
+		failed.config.ClientSecretFallbacks[0] != casdoorDescriptor(fallbackValue) ||
+		failed.config.ClientSecretFallbacks[1] != casdoorDescriptor(rotatedValue) {
+		t.Fatalf("retry installed wrong descriptors: %#v", failed.config)
+	}
+}
+
+func TestCasdoorScopedSecretRawFormsUseResolvedDescriptors(t *testing.T) {
+	contextual, err := testutil.DataEncryptionService(true, []string{"0123456789abcdef"}).
+		EncryptForContext("contextual-secret-contextual-secret", "authz-casdoor.client_secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rotated, err := testutil.DataEncryptionService(true, []string{"fedcba9876543210"}).
+		EncryptForContext("rotated-secret-rotated-secret-rotated", "authz-casdoor.client_secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name     string
+		raw      string
+		resolved string
+	}{
+		{
+			name:     "literal",
+			raw:      "literal-secret-literal-secret-literal",
+			resolved: "literal-secret-literal-secret-literal",
+		},
+		{name: "environment", raw: "$ENV://CASDOOR_CURRENT", resolved: "environment-secret-environment-secret"},
+		{name: "managed", raw: "$secret://vault/casdoor/current", resolved: "managed-secret-managed-secret-managed"},
+		{name: "contextual ciphertext", raw: contextual, resolved: "contextual-secret-contextual-secret"},
+		{name: "rotated ciphertext", raw: rotated, resolved: "rotated-secret-rotated-secret-rotated"},
+	}
+	for index, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			config := Config{
+				EndpointAddr: "https://door.example.com", ClientID: "client-a",
+				ClientSecret: test.raw, CallbackURL: "https://gateway.example.com/callback",
+			}
+			capabilityValue, scope, broker, closeAttempt := newCasdoorScopedSecretHarness(
+				t, uint64(10+index), "casdoor-raw-form", config,
+				map[string]string{test.raw: test.resolved},
+			)
+			defer closeAttempt()
+			p := &Plugin{config: config}
+			if err := base.MaterializeScopedPluginSecrets(
+				context.Background(), scope, capabilityValue, p,
+			); err != nil {
+				t.Fatal(err)
+			}
+			if calls := broker.scopedCalls(); len(calls) != 1 || calls[0].Raw != test.raw ||
+				calls[0].Scope.Field != "client_secret" {
+				t.Fatalf("scoped calls = %#v, want exact current secret", calls)
+			}
+			if got, want := p.config.ClientSecret, casdoorDescriptor(test.resolved); got != want {
+				t.Fatalf("descriptor = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+func TestCasdoorResolvedSecretLengthFailureIsAtomicAndRetryable(t *testing.T) {
+	const (
+		currentRaw  = "$ENV://CASDOOR_LENGTH_CURRENT"
+		fallbackRaw = "$secret://vault/casdoor/length-fallback"
+	)
+	for _, test := range []struct {
+		name       string
+		shortRaw   string
+		shortValue string
+	}{
+		{name: "current", shortRaw: currentRaw, shortValue: "too-short-current"},
+		{name: "fallback", shortRaw: fallbackRaw, shortValue: "too-short-fallback"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			config := Config{
+				EndpointAddr: "https://door.example.com", ClientID: "client-a",
+				ClientSecret: currentRaw, ClientSecretFallbacks: []string{fallbackRaw},
+				CallbackURL: "https://gateway.example.com/callback",
+			}
+			values := map[string]string{
+				currentRaw:  "current-long-current-long-current-long",
+				fallbackRaw: "fallback-long-fallback-long-fallback-long",
+			}
+			values[test.shortRaw] = test.shortValue
+			capabilityValue, scope, broker, closeAttempt := newCasdoorScopedSecretHarness(
+				t, 20, "casdoor-length", config, values,
+			)
+			defer closeAttempt()
+			p := &Plugin{config: config}
+			err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p)
+			if err == nil || err.Error() != "materialize plugin secrets: credential unavailable" {
+				t.Fatalf("short resolved %s error = %v, want fixed redaction", test.name, err)
+			}
+			if strings.Contains(err.Error(), test.shortRaw) || strings.Contains(err.Error(), test.shortValue) {
+				t.Fatalf("length failure leaked raw or resolved secret: %v", err)
+			}
+			if p.config.ClientSecret != config.ClientSecret ||
+				fmt.Sprint(p.config.ClientSecretFallbacks) != fmt.Sprint(config.ClientSecretFallbacks) ||
+				p.secretsPrepared || p.clientSecretSet || len(p.clientSecretFallbacks) != 0 {
+				t.Fatalf("length failure retained partial state: %#v", p)
+			}
+			broker.setValue(test.shortRaw, "retry-secret-retry-secret-retry-secret")
+			if err := base.MaterializeScopedPluginSecrets(
+				context.Background(), scope, capabilityValue, p,
+			); err != nil {
+				t.Fatalf("same-instance retry error = %v", err)
+			}
+		})
+	}
+}
+
+func TestCasdoorConcurrentScopedMaterializationIsSingleflight(t *testing.T) {
+	config := Config{
+		EndpointAddr: "https://door.example.com", ClientID: "client-a",
+		ClientSecret: "$ENV://CASDOOR_SINGLEFLIGHT_CURRENT",
+		ClientSecretFallbacks: []string{
+			"$secret://vault/casdoor/singleflight-one",
+			"$secret://vault/casdoor/singleflight-two",
+		},
+		CallbackURL: "https://gateway.example.com/callback",
+	}
+	values := map[string]string{
+		config.ClientSecret:             "current-singleflight-current-singleflight",
+		config.ClientSecretFallbacks[0]: "fallback-one-singleflight-fallback-one",
+		config.ClientSecretFallbacks[1]: "fallback-two-singleflight-fallback-two",
+	}
+	capabilityValue, scope, broker, closeAttempt := newCasdoorScopedSecretHarness(
+		t, 30, "casdoor-singleflight", config, values,
+	)
+	defer closeAttempt()
+	p := &Plugin{config: config}
+	start := make(chan struct{})
+	errorsOut := make(chan error, 32)
+	var group sync.WaitGroup
+	for range 32 {
+		group.Go(func() {
+			<-start
+			errorsOut <- base.MaterializeScopedPluginSecrets(
+				context.Background(), scope, capabilityValue, p,
+			)
+		})
+	}
+	close(start)
+	group.Wait()
+	close(errorsOut)
+	for err := range errorsOut {
+		if err != nil {
+			t.Fatalf("concurrent materialization error = %v", err)
+		}
+	}
+	if calls := broker.scopedCalls(); len(calls) != 3 {
+		t.Fatalf("concurrent resolver calls = %#v, want one ordered materialization", calls)
+	}
+}
+
+func TestCasdoorLegacyMaterializationAndStopOwnAllSecretHandles(t *testing.T) {
+	const (
+		currentRaw  = "$ENV://CASDOOR_LEGACY_CURRENT"
+		fallbackRaw = "$ENV://CASDOOR_LEGACY_FALLBACK"
+		current     = "legacy-current-legacy-current-legacy-current"
+		fallback    = "legacy-fallback-legacy-fallback-legacy-fallback"
+		literal     = "legacy-literal-legacy-literal-legacy-literal"
+	)
+	t.Setenv("CASDOOR_LEGACY_CURRENT", current)
+	t.Setenv("CASDOOR_LEGACY_FALLBACK", fallback)
+	p := &Plugin{config: Config{
+		EndpointAddr: "https://door.example.com", ClientID: "client-a",
+		ClientSecret: currentRaw, ClientSecretFallbacks: []string{literal, fallbackRaw},
+		CallbackURL: "https://gateway.example.com/callback",
+	}}
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.MaterializeSecrets(); err != nil {
+		t.Fatalf("MaterializeSecrets() error = %v", err)
+	}
+	if got, want := p.config.ClientSecret, casdoorDescriptor(current); got != want {
+		t.Fatalf("legacy current descriptor = %q, want %q", got, want)
+	}
+	for i, resolved := range []string{literal, fallback} {
+		if got, want := p.config.ClientSecretFallbacks[i], casdoorDescriptor(resolved); got != want {
+			t.Fatalf("legacy fallback descriptor[%d] = %q, want %q", i, got, want)
+		}
+	}
+	currentHandle := p.legacyClientSecret
+	fallbackHandles := append([]*store.ResolvedSecret(nil), p.legacyClientSecretFallbacks...)
+	if currentHandle == nil || len(fallbackHandles) != 2 {
+		t.Fatalf("legacy handles = %p/%#v, want current plus two fallbacks", currentHandle, fallbackHandles)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+	if p.client == nil {
+		t.Fatal("PostInit did not construct neutral HTTP client")
+	}
+
+	var group sync.WaitGroup
+	for range 16 {
+		group.Go(p.Stop)
+	}
+	group.Wait()
+	p.Stop()
+	if got := currentHandle.Bytes(); got != nil {
+		t.Fatalf("saved current handle bytes = %q, want destroyed", got)
+	}
+	for i, handle := range fallbackHandles {
+		if got := handle.Bytes(); got != nil {
+			t.Fatalf("saved fallback handle[%d] bytes = %q, want destroyed", i, got)
+		}
+	}
+	if !p.retired || p.client != nil || p.secretsPrepared || p.clientSecretSet ||
+		p.clientSecret != (secret.Value{}) || len(p.clientSecretFallbacks) != 0 ||
+		p.legacyClientSecret != nil || len(p.legacyClientSecretFallbacks) != 0 {
+		t.Fatalf("retired plugin retained secret/client state: %#v", p)
+	}
+	if err := p.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) {
+		t.Fatalf("post-retirement MaterializeSecrets() error = %v, want credential unavailable", err)
+	}
+	if err := p.PostInit(); !errors.Is(err, secret.ErrCredentialUnavailable) {
+		t.Fatalf("post-retirement PostInit() error = %v, want credential unavailable", err)
+	}
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("retired plugin called next handler")
+	})).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "https://gateway.example.com/orders", nil))
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("retired handler status = %d, want 503", rr.Code)
+	}
+}
+
+func TestCasdoorLegacyNthFallbackFailureIsAtomicAndRetryable(t *testing.T) {
+	const (
+		currentRaw  = "$ENV://CASDOOR_LEGACY_ATOMIC_CURRENT"
+		fallbackRaw = "$ENV://CASDOOR_LEGACY_ATOMIC_FALLBACK"
+		current     = "legacy-atomic-current-legacy-atomic-current"
+		fallback    = "legacy-atomic-fallback-legacy-atomic-fallback"
+	)
+	t.Setenv("CASDOOR_LEGACY_ATOMIC_CURRENT", current)
+	t.Setenv("CASDOOR_LEGACY_ATOMIC_FALLBACK", "short")
+	config := Config{
+		EndpointAddr: "https://door.example.com", ClientID: "client-a",
+		ClientSecret: currentRaw,
+		ClientSecretFallbacks: []string{
+			"first-fallback-first-fallback-first-fallback",
+			fallbackRaw,
+		},
+		CallbackURL: "https://gateway.example.com/callback",
+	}
+	p := &Plugin{config: config}
+	err := p.MaterializeSecrets()
+	if !errors.Is(err, secret.ErrCredentialUnavailable) || err.Error() != "credential unavailable" {
+		t.Fatalf("Nth fallback legacy error = %v, want fixed credential unavailable", err)
+	}
+	if p.config.ClientSecret != config.ClientSecret ||
+		fmt.Sprint(p.config.ClientSecretFallbacks) != fmt.Sprint(config.ClientSecretFallbacks) ||
+		p.legacyClientSecret != nil || len(p.legacyClientSecretFallbacks) != 0 ||
+		p.secretsPrepared || p.client != nil {
+		t.Fatalf("failed legacy materialization retained partial state: %#v", p)
+	}
+	t.Setenv("CASDOOR_LEGACY_ATOMIC_FALLBACK", fallback)
+	if err := p.MaterializeSecrets(); err != nil {
+		t.Fatalf("same-instance legacy retry error = %v", err)
+	}
+	if got, want := p.config.ClientSecret, casdoorDescriptor(current); got != want {
+		t.Fatalf("legacy retry current descriptor = %q, want %q", got, want)
+	}
+	if got, want := p.config.ClientSecretFallbacks[1], casdoorDescriptor(fallback); got != want {
+		t.Fatalf("legacy retry fallback descriptor = %q, want %q", got, want)
+	}
+	p.Stop()
+}
+
+func TestCasdoorPostInitDoesNotResolveSecrets(t *testing.T) {
+	const raw = "$ENV://CASDOOR_POST_INIT_MUST_NOT_RESOLVE"
+	t.Setenv("CASDOOR_POST_INIT_MUST_NOT_RESOLVE", "post-init-secret-post-init-secret-post-init")
+	p := &Plugin{config: Config{
+		EndpointAddr: "https://door.example.com", ClientID: "client-a",
+		ClientSecret: raw, CallbackURL: "https://gateway.example.com/callback",
+	}}
+	if err := p.PostInit(); !errors.Is(err, secret.ErrCredentialUnavailable) {
+		t.Fatalf("PostInit() error = %v, want credential unavailable before preparation", err)
+	}
+	if p.config.ClientSecret != raw || p.legacyClientSecret != nil || p.client != nil || p.secretsPrepared {
+		t.Fatalf("PostInit resolved or installed secret state: %#v", p)
+	}
+	if err := p.MaterializeSecrets(); err != nil {
+		t.Fatalf("explicit legacy materialization error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit after explicit preparation error = %v", err)
+	}
+	p.Stop()
+}
+
+func TestCasdoorOAuthRequestDoesNotRetainClientSecretBody(t *testing.T) {
+	const (
+		raw      = "$secret://vault/casdoor/retention"
+		resolved = "retention-secret-retention-secret-retention-secret"
+	)
+	config := Config{
+		EndpointAddr: "http://casdoor.invalid", ClientID: "client-a",
+		ClientSecret: raw, CallbackURL: "http://gateway.example.com/callback",
+	}
+	p, closeAttempt := newScopedCasdoorPlugin(
+		t, 60, "casdoor-retention", config, map[string]string{raw: resolved},
+	)
+	defer closeAttempt()
+	transport := &retainingCasdoorTransport{}
+	p.client = &http.Client{Transport: transport}
+
+	p.lifecycleMu.RLock()
+	accessToken, lifetime, err := p.fetchAccessTokenLocked(
+		httptest.NewRequest(http.MethodGet, "http://gateway.example.com/callback", nil),
+		"code-a",
+	)
+	p.lifecycleMu.RUnlock()
+	if err != nil || accessToken != "token-a" || lifetime != 3600 {
+		t.Fatalf("fetchAccessTokenLocked() = %q/%d/%v, want token response", accessToken, lifetime, err)
+	}
+	if transport.request == nil {
+		t.Fatal("retaining transport did not observe OAuth request")
+	}
+	if transport.request.GetBody != nil {
+		t.Fatal("retained OAuth request exposes replayable credential body")
+	}
+	body, readErr := io.ReadAll(transport.request.Body)
+	if readErr != nil {
+		t.Fatalf("read retained OAuth request body: %v", readErr)
+	}
+	if len(body) != 0 || strings.Contains(string(body), resolved) ||
+		strings.Contains(transport.request.URL.String(), resolved) ||
+		strings.Contains(fmt.Sprint(transport.request.Header), resolved) {
+		t.Fatalf("retained OAuth request exposes client secret: body=%q request=%#v", body, transport.request)
+	}
+	if p.config.ClientSecret != casdoorDescriptor(resolved) {
+		t.Fatalf("public client_secret = %q, want descriptor", p.config.ClientSecret)
+	}
+	p.Stop()
+}
+
+func TestCasdoorScopedGenerationsKeepSessionFallbacksIsolated(t *testing.T) {
+	const (
+		secretN       = "generation-n-generation-n-generation-n"
+		secretN1      = "generation-n1-generation-n1-generation-n1"
+		secretForeign = "generation-x-generation-x-generation-x"
+	)
+	newConfig := func(current string, fallbacks ...string) Config {
+		return Config{
+			EndpointAddr: "https://door.example.com", ClientID: "client-a",
+			ClientSecret: current, ClientSecretFallbacks: fallbacks,
+			CallbackURL: "https://gateway.example.com/callback",
+		}
+	}
+	pN, closeN := newScopedCasdoorPlugin(
+		t, 40, "same-route", newConfig("$ENV://CASDOOR_N"),
+		map[string]string{"$ENV://CASDOOR_N": secretN},
+	)
+	defer closeN()
+	pN1, closeN1 := newScopedCasdoorPlugin(
+		t, 41, "same-route", newConfig("$ENV://CASDOOR_N1", "$secret://vault/casdoor/n"),
+		map[string]string{
+			"$ENV://CASDOOR_N1":         secretN1,
+			"$secret://vault/casdoor/n": secretN,
+		},
+	)
+	defer closeN1()
+	foreign, closeForeign := newScopedCasdoorPlugin(
+		t, 42, "same-route", newConfig("$ENV://CASDOOR_FOREIGN"),
+		map[string]string{"$ENV://CASDOOR_FOREIGN": secretForeign},
+	)
+	defer closeForeign()
+
+	cookieN := sealCasdoorTestSession(t, pN, "token-n")
+	assertCasdoorSessionAccepted(t, pN, cookieN, true)
+	assertCasdoorSessionAccepted(t, pN1, cookieN, true)
+	assertCasdoorSessionAccepted(t, foreign, cookieN, false)
+	cookieN1 := sealCasdoorTestSession(t, pN1, "token-n1")
+	assertCasdoorSessionAccepted(t, pN, cookieN1, false)
+	assertCasdoorSessionAccepted(t, pN1, cookieN1, true)
+
+	pN.Stop()
+	assertCasdoorSessionAccepted(t, pN1, cookieN, true)
+	assertCasdoorSessionAccepted(t, pN1, cookieN1, true)
+	retired := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "https://gateway.example.com/orders", nil)
+	req.AddCookie(cookieN)
+	pN.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("retired N accepted a session")
+	})).ServeHTTP(retired, req)
+	if retired.Code != http.StatusServiceUnavailable {
+		t.Fatalf("retired N status = %d, want 503", retired.Code)
+	}
+}
+
+func TestCasdoorCallbackAndStopKeepScopedSecretUseAttemptOwned(t *testing.T) {
+	const (
+		raw      = "$ENV://CASDOOR_CALLBACK_SECRET"
+		resolved = "callback-secret-callback-secret-callback-secret"
+	)
+	requestEntered := make(chan string, 1)
+	releaseRequest := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseRequest) }) }
+	casdoor := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			requestEntered <- "parse-error"
+			return
+		}
+		requestEntered <- r.PostForm.Get("client_secret")
+		<-releaseRequest
+		_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "token-a", "expires_in": 3600})
+	}))
+	defer func() {
+		release()
+		casdoor.Close()
+	}()
+	config := Config{
+		EndpointAddr: casdoor.URL, ClientID: "client-a", ClientSecret: raw,
+		CallbackURL: "http://gateway.example.com/callback",
+	}
+	p, closeAttempt := newScopedCasdoorPlugin(
+		t, 50, "casdoor-callback", config, map[string]string{raw: resolved},
+	)
+	defer closeAttempt()
+
+	initial := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})).ServeHTTP(
+		initial,
+		httptest.NewRequest(http.MethodGet, "http://gateway.example.com/orders", nil),
+	)
+	loginCookie := findSessionCookie(initial.Result().Cookies())
+	if loginCookie == nil {
+		t.Fatal("initial request did not set a session cookie")
+	}
+	callbackDone := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		req := httptest.NewRequest(
+			http.MethodGet,
+			"http://gateway.example.com/callback?code=code-a&state=state-1",
+			nil,
+		)
+		req.AddCookie(loginCookie)
+		rr := httptest.NewRecorder()
+		p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})).ServeHTTP(rr, req)
+		callbackDone <- rr
+	}()
+	select {
+	case got := <-requestEntered:
+		if got != resolved {
+			t.Fatalf("OAuth client_secret = %q, want resolved scoped value", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for OAuth callback request")
+	}
+
+	stopStarted := make(chan struct{})
+	var stopStartedOnce sync.Once
+	p.testLifecycleHook = func(event string) {
+		if event == lifecycleBeforeStopWait {
+			stopStartedOnce.Do(func() { close(stopStarted) })
+		}
+	}
+	stopDone := make(chan struct{}, 2)
+	go func() { p.Stop(); stopDone <- struct{}{} }()
+	go func() { p.Stop(); stopDone <- struct{}{} }()
+	select {
+	case <-stopStarted:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for Stop retirement gate")
+	}
+	select {
+	case <-stopDone:
+		t.Fatal("Stop returned while OAuth callback was in flight")
+	case <-time.After(100 * time.Millisecond):
+	}
+	release()
+	select {
+	case rr := <-callbackDone:
+		if rr.Code != http.StatusFound {
+			t.Fatalf("callback status = %d, want 302", rr.Code)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for callback completion")
+	}
+	for range 2 {
+		select {
+		case <-stopDone:
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for concurrent Stop")
+		}
+	}
+	if !p.retired || p.client != nil || p.secretsPrepared || p.clientSecretSet ||
+		p.clientSecret != (secret.Value{}) || len(p.clientSecretFallbacks) != 0 {
+		t.Fatalf("Stop retained scoped callback state: %#v", p)
+	}
 }
 
 func TestUnauthenticatedRequestRedirectsToCasdoorAuthorize(t *testing.T) {
@@ -642,8 +1258,8 @@ func TestSessionSecretsRequireCryptographicLength(t *testing.T) {
 		},
 	} {
 		t.Run(test.name+" schema", func(t *testing.T) {
-			if err := util.Validate(test.config, p.GetSchema()); err == nil {
-				t.Fatal("Validate() error = nil, want weak session secret rejection")
+			if err := util.Validate(test.config, p.GetSchema()); err != nil {
+				t.Fatalf("Validate() error = %v, want raw string admitted before resolution", err)
 			}
 		})
 	}
@@ -672,13 +1288,17 @@ func TestSessionSecretsRequireCryptographicLength(t *testing.T) {
 			},
 		},
 	} {
-		t.Run(test.name+" PostInit", func(t *testing.T) {
+		t.Run(test.name+" materialization", func(t *testing.T) {
 			instance := &Plugin{config: test.config}
 			if err := instance.Init(); err != nil {
 				t.Fatalf("Init() error = %v", err)
 			}
-			if err := instance.PostInit(); err == nil {
-				t.Fatal("PostInit() error = nil, want weak session secret rejection")
+			if err := instance.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) {
+				t.Fatalf("MaterializeSecrets() error = %v, want resolved weak secret rejection", err)
+			}
+			if instance.secretsPrepared || instance.legacyClientSecret != nil ||
+				len(instance.legacyClientSecretFallbacks) != 0 || instance.client != nil {
+				t.Fatalf("failed materialization retained secret state: %#v", instance)
 			}
 		})
 	}
@@ -691,4 +1311,250 @@ func findSessionCookie(cookies []*http.Cookie) *http.Cookie {
 		}
 	}
 	return nil
+}
+
+func newScopedCasdoorPlugin(
+	t *testing.T,
+	revision uint64,
+	resourceID string,
+	config Config,
+	values map[string]string,
+) (*Plugin, func()) {
+	t.Helper()
+	capabilityValue, scope, _, closeAttempt := newCasdoorScopedSecretHarness(
+		t, revision, resourceID, config, values,
+	)
+	p := &Plugin{config: config}
+	p.newState = func() (string, error) { return "state-1", nil }
+	if err := p.Init(); err != nil {
+		closeAttempt()
+		t.Fatal(err)
+	}
+	p.newState = func() (string, error) { return "state-1", nil }
+	if err := base.MaterializeScopedPluginSecrets(
+		context.Background(), scope, capabilityValue, p,
+	); err != nil {
+		closeAttempt()
+		t.Fatal(err)
+	}
+	if err := p.PostInit(); err != nil {
+		closeAttempt()
+		t.Fatal(err)
+	}
+	return p, closeAttempt
+}
+
+func sealCasdoorTestSession(t *testing.T, p *Plugin, accessToken string) *http.Cookie {
+	t.Helper()
+	rr := httptest.NewRecorder()
+	p.lifecycleMu.RLock()
+	err := p.setSessionCookieLocked(rr, sessionData{
+		AccessToken: accessToken,
+		ClientID:    p.config.ClientID,
+	}, time.Hour)
+	p.lifecycleMu.RUnlock()
+	if err != nil {
+		t.Fatalf("setSessionCookieLocked() error = %v", err)
+	}
+	cookie := findSessionCookie(rr.Result().Cookies())
+	if cookie == nil {
+		t.Fatal("test session cookie was not set")
+	}
+	return cookie
+}
+
+func assertCasdoorSessionAccepted(t *testing.T, p *Plugin, cookie *http.Cookie, want bool) {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "https://gateway.example.com/orders", nil)
+	req.AddCookie(cookie)
+	rr := httptest.NewRecorder()
+	called := false
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+	if called != want {
+		t.Fatalf("session accepted = %t, want %t (status %d)", called, want, rr.Code)
+	}
+	if want && rr.Code != http.StatusNoContent {
+		t.Fatalf("accepted session status = %d, want 204", rr.Code)
+	}
+	if !want && rr.Code != http.StatusFound {
+		t.Fatalf("rejected session status = %d, want authorization redirect", rr.Code)
+	}
+}
+
+type retainingCasdoorTransport struct {
+	request *http.Request
+}
+
+func (transport *retainingCasdoorTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	transport.request = request
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader(`{"access_token":"token-a","expires_in":3600}`)),
+		Request:    request,
+	}, nil
+}
+
+func casdoorDescriptor(plaintext string) string {
+	digest := sha256.Sum256([]byte(plaintext))
+	return "plugin_config#sha256:" + hex.EncodeToString(digest[:])
+}
+
+type casdoorScopedSecretCall struct {
+	Scope secret.Scope
+	Raw   string
+}
+
+type casdoorScopedSecretBroker struct {
+	mu      sync.Mutex
+	values  map[string]string
+	failRaw string
+	calls   []casdoorScopedSecretCall
+}
+
+func (*casdoorScopedSecretBroker) AuthorizeCandidate(
+	context.Context,
+	secret.AttemptID,
+	generation.ApplyTicket,
+	generation.PublicationSet,
+) error {
+	return nil
+}
+
+func (*casdoorScopedSecretBroker) AuthorizeRecovery(
+	context.Context,
+	secret.AttemptID,
+	generation.RevisionSet,
+	map[generation.Domain]generation.PublishedGeneration,
+) error {
+	return nil
+}
+
+func (broker *casdoorScopedSecretBroker) ResolveScoped(
+	_ context.Context,
+	scope secret.Scope,
+	raw string,
+) (string, error) {
+	broker.mu.Lock()
+	defer broker.mu.Unlock()
+	broker.calls = append(broker.calls, casdoorScopedSecretCall{Scope: scope, Raw: raw})
+	if raw == broker.failRaw {
+		return "", fmt.Errorf("resolver failed for %s private-casdoor-session", raw)
+	}
+	if value, ok := broker.values[raw]; ok {
+		return value, nil
+	}
+	return "", errors.New("missing private Casdoor test value")
+}
+
+func (*casdoorScopedSecretBroker) RevokeAttempt(context.Context, secret.AttemptID) error {
+	return nil
+}
+
+func (broker *casdoorScopedSecretBroker) scopedCalls() []casdoorScopedSecretCall {
+	broker.mu.Lock()
+	defer broker.mu.Unlock()
+	return append([]casdoorScopedSecretCall(nil), broker.calls...)
+}
+
+func (broker *casdoorScopedSecretBroker) setFailure(raw string) {
+	broker.mu.Lock()
+	defer broker.mu.Unlock()
+	broker.failRaw = raw
+}
+
+func (broker *casdoorScopedSecretBroker) setValue(raw, value string) {
+	broker.mu.Lock()
+	defer broker.mu.Unlock()
+	broker.values[raw] = value
+}
+
+func newCasdoorScopedSecretHarness(
+	t *testing.T,
+	revision uint64,
+	resourceID string,
+	config Config,
+	values map[string]string,
+) (secret.GenerationCapability, secret.Scope, *casdoorScopedSecretBroker, func()) {
+	t.Helper()
+	key := generation.ResourceKey{Kind: "routes", ID: resourceID}
+	document, err := json.Marshal(map[string]any{
+		"id": resourceID,
+		"plugins": map[string]any{name: map[string]any{
+			"endpoint_addr":           config.EndpointAddr,
+			"client_id":               config.ClientID,
+			"client_secret":           config.ClientSecret,
+			"client_secret_fallbacks": config.ClientSecretFallbacks,
+			"callback_url":            config.CallbackURL,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := generation.NewSnapshot(
+		revision,
+		[]generation.Resource{{Key: key, Value: document}},
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := generation.PublicationCandidate{
+		Artifact: generation.GenerationArtifact{
+			Domain: generation.DomainHTTP, Revision: revision,
+			Digest: snapshot.Digest(), Snapshot: snapshot.SnapshotID(),
+		},
+		Snapshot: snapshot,
+		Closure:  []generation.ResourceKey{key},
+		Decisions: []generation.ResourceDecision{{
+			Key: key, Disposition: generation.DispositionPublished, Code: "authz-casdoor-test",
+		}},
+	}
+	ticket := generation.ApplyTicket{
+		DesiredRevision: revision,
+		DesiredDigest:   snapshot.Digest(),
+		RequiredDomains: []generation.Domain{generation.DomainHTTP},
+	}
+	publication := generation.PublicationSet{
+		DesiredRevision: revision,
+		Domains: map[generation.Domain]generation.PublicationCandidate{
+			generation.DomainHTTP: candidate,
+		},
+	}
+	manifest, err := capability.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := capability.NewSecretDeclarationCatalog(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	broker := &casdoorScopedSecretBroker{values: maps.Clone(values)}
+	registration, err := secret.NewScopedMaterializer(broker, catalog).RegisterCandidate(
+		context.Background(), ticket, publication,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capabilityValue, err := secret.NewGenerationCapability(registration, revision)
+	if err != nil {
+		_ = registration.Close(context.Background())
+		t.Fatal(err)
+	}
+	scope := secret.Scope{
+		Generation: revision,
+		Attempt:    registration.AttemptID(),
+		Domain:     generation.DomainHTTP,
+		Plugin:     name,
+		Resource:   key,
+		Source:     capability.SecretPluginConfig,
+	}
+	return capabilityValue, scope, broker, func() {
+		if err := registration.Close(context.Background()); err != nil {
+			t.Errorf("close Casdoor scoped attempt: %v", err)
+		}
+	}
 }

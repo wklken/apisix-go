@@ -3,23 +3,30 @@ package splunk_hec_logging
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"net/url"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/felixge/httpsnoop"
 	"github.com/go-resty/resty/v2"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
+	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
+	"github.com/wklken/apisix-go/pkg/secret"
 	"github.com/wklken/apisix-go/pkg/shared"
+	"github.com/wklken/apisix-go/pkg/store"
 )
 
 type Plugin struct {
@@ -30,6 +37,14 @@ type Plugin struct {
 	logFormatExtra map[string]string
 
 	clientRelease func()
+	lifecycleMu   sync.RWMutex
+	stopped       atomic.Bool
+
+	token           secret.Value
+	tokenSet        bool
+	legacyToken     *store.ResolvedSecret
+	secretsPrepared bool
+	ready           bool
 }
 
 const (
@@ -187,18 +202,94 @@ func (p *Plugin) Init() error {
 	return nil
 }
 
-func (p *Plugin) PostInit() error {
-	if !p.DataEncryption().Configured() {
+func (p *Plugin) MaterializeScopedSecrets(
+	ctx context.Context,
+	access base.ScopedSecretAccess,
+) error {
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+	if p.stopped.Load() {
+		return secret.ErrCredentialUnavailable
+	}
+	if p.secretsPrepared {
+		return nil
+	}
+	value, err := access.Materialize(ctx, "endpoint.token", p.config.Endpoint.Token)
+	if err != nil || value.Use(validateSplunkToken) != nil {
+		return splunkTokenUnavailable()
+	}
+	descriptor, err := value.Descriptor(capability.SecretPluginConfig)
+	if err != nil {
+		return splunkTokenUnavailable()
+	}
+	p.token = value
+	p.tokenSet = true
+	p.config.Endpoint.Token = descriptor.String()
+	p.secretsPrepared = true
+	return nil
+}
+
+// MaterializeSecrets is the transitional process-local compatibility path.
+// Immutable generation preparation uses MaterializeScopedSecrets instead.
+func (p *Plugin) MaterializeSecrets() error {
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+	if p.stopped.Load() {
+		return secret.ErrCredentialUnavailable
+	}
+	if p.secretsPrepared {
+		return nil
+	}
+	resolver := p.DataEncryption()
+	if !resolver.Configured() {
 		return errors.New("data-encryption resolver is required")
 	}
-	resolved, err := p.DataEncryption().ResolveForContext(
-		p.config.Endpoint.Token,
-		"splunk-hec-logging.endpoint.token",
-	)
+	resolved, err := resolver.ResolveForContext(p.config.Endpoint.Token, name+".endpoint.token")
 	if err != nil {
-		return fmt.Errorf("splunk-hec-logging endpoint.token: %w", err)
+		return splunkTokenUnavailable()
 	}
-	p.config.Endpoint.Token = resolved
+	owner, err := store.MaterializeSecret(resolved)
+	if err != nil {
+		return splunkTokenUnavailable()
+	}
+	plaintext := owner.Bytes()
+	defer clear(plaintext)
+	if validateSplunkToken(string(plaintext)) != nil {
+		owner.Destroy()
+		return splunkTokenUnavailable()
+	}
+	digest := sha256.Sum256(plaintext)
+	descriptor, err := secret.NewDescriptor(capability.SecretPluginConfig, digest)
+	if err != nil {
+		owner.Destroy()
+		return splunkTokenUnavailable()
+	}
+	p.legacyToken = owner
+	p.config.Endpoint.Token = descriptor.String()
+	p.secretsPrepared = true
+	return nil
+}
+
+func validateSplunkToken(value string) error {
+	if strings.TrimSpace(value) == "" {
+		return secret.ErrCredentialUnavailable
+	}
+	return nil
+}
+
+func splunkTokenUnavailable() error {
+	return fmt.Errorf("%s endpoint.token: %w", name, secret.ErrCredentialUnavailable)
+}
+
+func (p *Plugin) PostInit() error {
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+	if p.stopped.Load() || !p.secretsPrepared {
+		return secret.ErrCredentialUnavailable
+	}
+	if p.ready {
+		return nil
+	}
 
 	if p.config.Endpoint.Timeout == 0 {
 		p.config.Endpoint.Timeout = 10
@@ -221,7 +312,6 @@ func (p *Plugin) PostInit() error {
 
 	configUID := shared.NewConfigUID()
 	configUID.Add(p.config.Endpoint.URI)
-	configUID.Add(p.config.Endpoint.Token)
 	configUID.Add(p.config.Endpoint.Channel)
 	configUID.Add(p.config.Endpoint.Timeout)
 	configUID.Add(p.config.Endpoint.KeepaliveTimeout)
@@ -230,7 +320,6 @@ func (p *Plugin) PostInit() error {
 	client := resty.New()
 	client.SetTimeout(time.Duration(p.config.Endpoint.Timeout) * time.Second)
 	client.SetHeader("Content-Type", "application/json")
-	client.SetHeader("Authorization", "Splunk "+p.config.Endpoint.Token)
 	client.SetTLSClientConfig(&tls.Config{InsecureSkipVerify: !p.sslVerify()})
 	if p.config.Endpoint.Channel != "" {
 		client.SetHeader("X-Splunk-Request-Channel", p.config.Endpoint.Channel)
@@ -243,8 +332,7 @@ func (p *Plugin) PostInit() error {
 	if err != nil {
 		return err
 	}
-	p.client = value.(*resty.Client)
-	p.clientRelease = release
+	sharedClient := value.(*resty.Client)
 
 	metadata := base.LoadPluginMetadata[pluginMetadata](name)
 	switch {
@@ -263,7 +351,7 @@ func (p *Plugin) PostInit() error {
 		p.config.MaxPendingEntries = metadata.MaxPendingEntries
 	}
 
-	p.BatchProcessor = base.NewBatchProcessor(name, base.BatchDefaults{
+	processor := base.NewBatchProcessor(name, base.BatchDefaults{
 		PluginID:           name,
 		BatchMaxSize:       p.config.BatchMaxSize,
 		MaxRetryCount:      p.config.MaxRetryCount,
@@ -271,17 +359,49 @@ func (p *Plugin) PostInit() error {
 		BufferDurationSec:  p.config.BufferDuration,
 		InactiveTimeoutSec: p.config.InactiveTimeout,
 		MaxPendingEntries:  p.config.MaxPendingEntries,
-	}, p.RouteID, p.ServerAddr, p.SendBatch)
+	}, p.RouteID, p.ServerAddr, p.sendBatchFromProcessor)
+	if p.stopped.Load() {
+		processor.Stop()
+		release()
+		return secret.ErrCredentialUnavailable
+	}
+	p.client = sharedClient
+	p.clientRelease = release
+	p.BatchProcessor = processor
+	p.ready = true
 	return nil
 }
 
 func (p *Plugin) Stop() {
-	p.StopWithCleanup(func() {
+	if p.stopped.Swap(true) {
+		return
+	}
+	p.lifecycleMu.Lock()
+	processor := p.BatchProcessor
+	p.lifecycleMu.Unlock()
+	cleanup := func() {
+		p.lifecycleMu.Lock()
+		defer p.lifecycleMu.Unlock()
 		if p.clientRelease != nil {
 			p.clientRelease()
 			p.clientRelease = nil
 		}
-	})
+		p.client = nil
+		p.BatchProcessor = nil
+		if p.legacyToken != nil {
+			p.legacyToken.Destroy()
+			p.legacyToken = nil
+		}
+		p.token = secret.Value{}
+		p.tokenSet = false
+		p.secretsPrepared = false
+		p.ready = false
+	}
+	if processor != nil {
+		processor.StopWithCleanup(cleanup)
+	} else {
+		cleanup()
+	}
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
@@ -302,7 +422,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 				}
 			}
 		}
-		_ = p.Fire(logFields)
+		_ = p.enqueueSplunkIfRunning(logFields)
 	})
 }
 
@@ -340,6 +460,18 @@ func (p *Plugin) RunLogPhase(snapshot base.LogSnapshot) error {
 				fields[key] = base.SnapshotValue(snapshot, value)
 			}
 		}
+	}
+	return p.enqueueSplunkIfRunning(fields)
+}
+
+func (p *Plugin) enqueueSplunkIfRunning(fields map[string]any) error {
+	p.lifecycleMu.RLock()
+	defer p.lifecycleMu.RUnlock()
+	if p.stopped.Load() || !p.ready {
+		return base.ErrLogQueueUnavailable
+	}
+	if p.BatchProcessor == nil {
+		return p.Fire(fields)
 	}
 	return p.EnqueueLog(fields)
 }
@@ -467,12 +599,63 @@ func (p *Plugin) Send(log map[string]any) {
 }
 
 func (p *Plugin) SendBatch(ctx context.Context, entries []map[string]any, _ int) (int, error) {
+	return p.sendBatch(ctx, entries, false)
+}
+
+func (p *Plugin) sendBatchFromProcessor(
+	ctx context.Context,
+	entries []map[string]any,
+	_ int,
+) (int, error) {
+	return p.sendBatch(ctx, entries, true)
+}
+
+func (p *Plugin) sendBatch(
+	ctx context.Context,
+	entries []map[string]any,
+	allowRetiredDrain bool,
+) (int, error) {
+	p.lifecycleMu.RLock()
+	defer p.lifecycleMu.RUnlock()
+	if (!allowRetiredDrain && p.stopped.Load()) || !p.ready || p.client == nil {
+		return 0, secret.ErrCredentialUnavailable
+	}
 	body, err := p.encodeBatch(entries)
 	if err != nil {
 		return 0, err
 	}
+	defer clear(body)
 
-	resp, err := p.client.R().SetContext(ctx).SetBody(body).Post(p.config.Endpoint.URI)
+	request := p.client.R().SetContext(ctx).SetBody(body)
+	var resp *resty.Response
+	defer func() {
+		request.Header.Del("Authorization")
+		request.Body = nil
+		if request.RawRequest != nil {
+			request.RawRequest.Header.Del("Authorization")
+			request.RawRequest.Body = http.NoBody
+			request.RawRequest.GetBody = nil
+		}
+		if resp != nil {
+			if responseBody := resp.Body(); len(responseBody) > 0 {
+				clear(responseBody)
+				resp.SetBody(nil)
+			}
+			if resp.RawResponse != nil {
+				resp.RawResponse.Header.Del("Authorization")
+				resp.RawResponse.Request = nil
+				resp.RawResponse.Body = http.NoBody
+			}
+			resp.Request = nil
+			resp.RawResponse = nil
+		}
+	}()
+	err = p.useTokenLocked(allowRetiredDrain, func(token string) error {
+		request.SetHeader("Authorization", "Splunk "+token)
+		var sendErr error
+		resp, sendErr = request.Post(p.config.Endpoint.URI)
+		return sendErr
+	})
 	if err != nil {
 		return 0, fmt.Errorf("failed to send log to Splunk HEC endpoint %s: %w", p.config.Endpoint.URI, err)
 	}
@@ -489,6 +672,24 @@ func (p *Plugin) SendBatch(ctx context.Context, entries []map[string]any, _ int)
 			resp.StatusCode(), p.config.Endpoint.URI, message)
 	}
 	return 0, nil
+}
+
+func (p *Plugin) useTokenLocked(allowRetiredDrain bool, use func(string) error) error {
+	if use == nil || (!allowRetiredDrain && p.stopped.Load()) || !p.secretsPrepared {
+		return secret.ErrCredentialUnavailable
+	}
+	if p.tokenSet {
+		return p.token.Use(use)
+	}
+	if p.legacyToken == nil {
+		return secret.ErrCredentialUnavailable
+	}
+	plaintext := p.legacyToken.Bytes()
+	if len(plaintext) == 0 {
+		return secret.ErrCredentialUnavailable
+	}
+	defer clear(plaintext)
+	return use(string(plaintext))
 }
 
 func (p *Plugin) encodeBatch(entries []map[string]any) ([]byte, error) {

@@ -19,12 +19,15 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/segmentio/kafka-go"
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/plugin"
 	"github.com/wklken/apisix-go/pkg/plugin/kafka_proxy"
 	pxy "github.com/wklken/apisix-go/pkg/proxy"
 	"github.com/wklken/apisix-go/pkg/resource"
@@ -499,6 +502,152 @@ func TestBuildReverseHandlerRejectsKafkaNonUpgrade(t *testing.T) {
 	handler.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusUpgradeRequired {
 		t.Fatalf("non-upgrade status = %d, want 426", recorder.Code)
+	}
+}
+
+func TestKafkaProxyMetadataBindingKeepsHandlerAcrossResponsePlanTerminal(t *testing.T) {
+	routeResource := resource.Route{ID: "kafka-metadata-route", Uri: "/kafka"}
+	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
+	t.Cleanup(builder.Stop)
+	bindings, err := builder.initPluginBindingsStrict(
+		materializedPluginSources(
+			map[string]resource.PluginConfig{
+				"kafka-proxy": map[string]any{
+					"sasl": map[string]any{
+						"username": "metadata-user",
+						"password": "metadata-password",
+					},
+					"_meta": map[string]any{
+						"filter": []any{[]any{"arg_enabled", "==", "yes"}},
+						"error_response": map[string]any{
+							"message": "metadata unavailable",
+						},
+					},
+				},
+			},
+			plugin.ResourceProvenance{Kind: plugin.ResourceRoute, ID: routeResource.ID},
+		),
+		builder.pluginRouteContext(routeResource),
+		pluginInitOptions{},
+	)
+	if err != nil {
+		t.Fatalf("initPluginBindingsStrict() error = %v", err)
+	}
+	if len(bindings) != 1 {
+		t.Fatalf("metadata bindings = %d, want 1", len(bindings))
+	}
+	wrapped, ok := bindings[0].Plugin.(metadataPlugin)
+	if !ok || wrapped.filter == nil || wrapped.errorResponse == nil {
+		t.Fatalf("kafka metadata binding = %T/%#v, want filter and error_response wrapper", bindings[0].Plugin, wrapped)
+	}
+	owner, ok := wrapped.Plugin.(*kafka_proxy.Plugin)
+	if !ok {
+		t.Fatalf("metadata wrapper owner = %T, want *kafka_proxy.Plugin", wrapped.Plugin)
+	}
+
+	var (
+		terminalCalls atomic.Int32
+		retained      *http.Request
+		wantPassword  string
+		wantStatus    int
+	)
+	terminalHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		terminalCalls.Add(1)
+		retained = r
+		if got := kafka_proxy.SASLPassword(r); got != wantPassword {
+			t.Errorf("terminal SASLPassword() = %q, want %q", got, wantPassword)
+		}
+		w.WriteHeader(wantStatus)
+	})
+	terminalCandidate := plugin.RouteTerminalCandidate{
+		Identity: "kafka-proxy",
+		Scope:    plugin.ScopeRoute,
+		Protocol: plugin.ProtocolKafka,
+		Provenance: plugin.ResourceProvenance{
+			Kind: plugin.ResourceRoute,
+			ID:   routeResource.ID,
+		},
+		Terminal: routeKafkaTerminal{handler: terminalHandler},
+	}
+	plan, err := plugin.BuildResponsePlan(plugin.ResponsePlanInput{
+		StaticBindings: bindings,
+		RouteTerminals: []plugin.RouteTerminalCandidate{terminalCandidate},
+	})
+	if err != nil {
+		t.Fatalf("BuildResponsePlan() error = %v", err)
+	}
+	pipeline, err := newRequestPipelineWithLog(bindings, nil)
+	if err != nil {
+		t.Fatalf("newRequestPipelineWithLog() error = %v", err)
+	}
+	fallback := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("ordinary fallback ran despite Kafka route terminal ownership")
+	})
+	ordinary := ensureRouteLifecycle(plan.Install(pipeline, fallback))
+	transparent, err := buildTransparentUpgradeHandler(pipeline, plan, fallback, true)
+	if err != nil {
+		t.Fatalf("buildTransparentUpgradeHandler() error = %v", err)
+	}
+	transparent = ensureRouteLifecycle(transparent)
+
+	run := func(name string, handler http.Handler, enabled string, upgrade bool, password string, status int) {
+		t.Helper()
+		t.Run(name, func(t *testing.T) {
+			terminalCalls.Store(0)
+			retained = nil
+			wantPassword = password
+			wantStatus = status
+			request := httptest.NewRequest(
+				http.MethodGet,
+				"http://gateway.test/kafka?enabled="+enabled,
+				nil,
+			)
+			if upgrade {
+				request.Header.Set("Connection", "upgrade")
+				request.Header.Set("Upgrade", "websocket")
+			}
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			if response.Code != status || terminalCalls.Load() != 1 {
+				t.Fatalf(
+					"response/terminal calls = %d/%d, want %d/1",
+					response.Code,
+					terminalCalls.Load(),
+					status,
+				)
+			}
+			if retained == nil {
+				t.Fatal("route terminal did not retain request")
+			}
+			if got := kafka_proxy.SASLPassword(retained); got != "" {
+				t.Fatalf("retained terminal request password = %q, want cleared", got)
+			}
+			if lifecycle := apisixctx.GetRequestLifecycle(retained); lifecycle == nil {
+				t.Fatal("route terminal request lost production lifecycle")
+			}
+		})
+	}
+
+	run("ordinary non-upgrade once", ordinary, "yes", false, "metadata-password", http.StatusUpgradeRequired)
+	run("transparent upgrade once", transparent, "yes", true, "metadata-password", http.StatusSwitchingProtocols)
+	run("metadata filter bypass", transparent, "no", true, "", http.StatusSwitchingProtocols)
+
+	owner.Stop()
+	terminalCalls.Store(0)
+	response := httptest.NewRecorder()
+	ordinary.ServeHTTP(
+		response,
+		httptest.NewRequest(http.MethodGet, "http://gateway.test/kafka?enabled=yes", nil),
+	)
+	if response.Code != http.StatusInternalServerError ||
+		strings.TrimSpace(response.Body.String()) != `{"message":"metadata unavailable"}` ||
+		terminalCalls.Load() != 0 {
+		t.Fatalf(
+			"metadata error response/status/calls = %q/%d/%d",
+			response.Body.String(),
+			response.Code,
+			terminalCalls.Load(),
+		)
 	}
 }
 

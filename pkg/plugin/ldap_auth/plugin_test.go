@@ -13,11 +13,65 @@ import (
 
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/store"
 	"github.com/wklken/apisix-go/pkg/testutil"
 	"github.com/wklken/apisix-go/pkg/util"
 )
+
+type ldapConsumerLookup struct {
+	mu       sync.RWMutex
+	byKey    map[string]resource.Consumer
+	calls    []string
+	onLookup func()
+	closed   bool
+}
+
+func (lookup *ldapConsumerLookup) ConsumerByPluginKey(plugin, key string) (resource.Consumer, bool) {
+	lookup.mu.Lock()
+	defer lookup.mu.Unlock()
+	lookup.calls = append(lookup.calls, plugin+"\x00"+key)
+	if lookup.onLookup != nil {
+		lookup.onLookup()
+	}
+	if lookup.closed {
+		return resource.Consumer{}, false
+	}
+	consumer, ok := lookup.byKey[key]
+	return consumer, ok
+}
+
+func (*ldapConsumerLookup) ConsumerByID(string) (resource.Consumer, bool) {
+	return resource.Consumer{}, false
+}
+
+func (*ldapConsumerLookup) ConsumerGroupByID(string) (resource.ConsumerGroup, bool) {
+	return resource.ConsumerGroup{}, false
+}
+
+func (lookup *ldapConsumerLookup) close() {
+	lookup.mu.Lock()
+	defer lookup.mu.Unlock()
+	lookup.closed = true
+	lookup.byKey = nil
+}
+
+func newLookupTestPlugin(t *testing.T, lookup base.ConsumerLookup, authenticate ldapAuthenticator) *Plugin {
+	t.Helper()
+	p := &Plugin{
+		config:       Config{BaseDN: "dc=example,dc=org", LDAPURI: "ldap://127.0.0.1:389"},
+		authenticate: authenticate,
+	}
+	p.SetDependencies(base.Dependencies{Consumers: lookup})
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
 
 var (
 	testStoreOnce sync.Once
@@ -181,6 +235,106 @@ func TestHandlerAuthenticatesLDAPUserAndAttachesConsumer(t *testing.T) {
 	if rr.Code != http.StatusNoContent {
 		t.Fatalf("status = %d, want 204; body=%s", rr.Code, rr.Body.String())
 	}
+}
+
+func TestHandlerUsesInjectedConsumerLookupAfterLDAPBind(t *testing.T) {
+	const userDN = "cn=lookup-user,dc=example,dc=org"
+	addLDAPConsumer(t, "store-poison-user", userDN)
+	var orderMu sync.Mutex
+	var order []string
+	lookup := &ldapConsumerLookup{
+		byKey: map[string]resource.Consumer{userDN: {
+			Username: "lookup-ldap-user",
+			Plugins:  map[string]resource.PluginConfig{name: map[string]any{"user_dn": userDN}},
+		}},
+		onLookup: func() {
+			orderMu.Lock()
+			order = append(order, "lookup")
+			orderMu.Unlock()
+		},
+	}
+	p := newLookupTestPlugin(t, lookup, func(username, password string, _ Config) error {
+		if username != "lookup-user" || password != "secret" {
+			t.Fatalf("bind credentials = %q/%q", username, password)
+		}
+		orderMu.Lock()
+		order = append(order, "bind")
+		orderMu.Unlock()
+		return nil
+	})
+	response := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := ctx.GetApisixVar(r, "$consumer_name"); got != "lookup-ldap-user" {
+			t.Fatalf("consumer_name = %v, want lookup-ldap-user", got)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(response, ldapRequest("lookup-user", "secret"))
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204; body=%s", response.Code, response.Body.String())
+	}
+	orderMu.Lock()
+	if strings.Join(order, ",") != "bind,lookup" {
+		t.Fatalf("operation order = %v, want bind then lookup", order)
+	}
+	orderMu.Unlock()
+	lookup.mu.RLock()
+	if len(lookup.calls) != 1 || lookup.calls[0] != name+"\x00"+userDN {
+		t.Fatalf("lookup calls = %#v, want exact factory/user_dn", lookup.calls)
+	}
+	lookup.mu.RUnlock()
+}
+
+func TestInjectedLDAPLookupMissDoesNotFallBackToStore(t *testing.T) {
+	const userDN = "cn=ldap-poison-miss,dc=example,dc=org"
+	addLDAPConsumer(t, "ldap-poison-miss-store-user", userDN)
+	bindCalls := 0
+	p := newLookupTestPlugin(t, &ldapConsumerLookup{}, func(username, password string, _ Config) error {
+		bindCalls++
+		return nil
+	})
+	response := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("non-nil LDAP lookup miss reached Store poison consumer")
+	})).ServeHTTP(response, ldapRequest("ldap-poison-miss", "secret"))
+	if bindCalls != 1 {
+		t.Fatalf("LDAP bind calls = %d, want one before lookup", bindCalls)
+	}
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", response.Code)
+	}
+}
+
+func TestLDAPConsumerLookupsAreGenerationIsolated(t *testing.T) {
+	const userDN = "cn=overlap,dc=example,dc=org"
+	firstLookup := &ldapConsumerLookup{byKey: map[string]resource.Consumer{
+		userDN: {Username: "ldap-generation-n", Plugins: map[string]resource.PluginConfig{}},
+	}}
+	secondLookup := &ldapConsumerLookup{byKey: map[string]resource.Consumer{
+		userDN: {Username: "ldap-generation-n-plus-one", Plugins: map[string]resource.PluginConfig{}},
+	}}
+	first := newLookupTestPlugin(t, firstLookup, func(string, string, Config) error { return nil })
+	second := newLookupTestPlugin(t, secondLookup, func(string, string, Config) error { return nil })
+	assertConsumer := func(p *Plugin, want string) {
+		t.Helper()
+		response := httptest.NewRecorder()
+		p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if got := ctx.GetApisixVar(r, "$consumer_name"); got != want {
+				t.Errorf("consumer_name = %v, want %s", got, want)
+			}
+			w.WriteHeader(http.StatusNoContent)
+		})).ServeHTTP(response, ldapRequest("overlap", "secret"))
+		if response.Code != http.StatusNoContent {
+			t.Errorf("status = %d, want 204", response.Code)
+		}
+	}
+	var group sync.WaitGroup
+	for range 16 {
+		group.Go(func() { assertConsumer(first, "ldap-generation-n") })
+		group.Go(func() { assertConsumer(second, "ldap-generation-n-plus-one") })
+	}
+	group.Wait()
+	firstLookup.close()
+	assertConsumer(second, "ldap-generation-n-plus-one")
 }
 
 func TestUserDNEscapesRFC4514Metacharacters(t *testing.T) {

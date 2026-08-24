@@ -237,9 +237,9 @@ func parseRBACToken(raw string) (rbacToken, error) {
 }
 
 func (p *Plugin) consumerByAppID(appID string) (resource.Consumer, consumerConfig, error) {
-	consumer, err := store.GetConsumerByPluginKey(name, appID)
-	if err != nil {
-		return resource.Consumer{}, consumerConfig{}, err
+	consumer, ok := p.consumerRecordByAppID(appID)
+	if !ok {
+		return resource.Consumer{}, consumerConfig{}, store.ErrNotFound
 	}
 
 	raw, ok := consumer.Plugins[name]
@@ -252,6 +252,18 @@ func (p *Plugin) consumerByAppID(appID string) (resource.Consumer, consumerConfi
 	}
 	cfg.applyDefaults(p.config)
 	return consumer, cfg, nil
+}
+
+func (p *Plugin) consumerRecordByAppID(appID string) (resource.Consumer, bool) {
+	if lookup := p.ConsumerLookup(); lookup != nil {
+		return lookup.ConsumerByPluginKey(name, appID)
+	}
+	return legacyWolfConsumerByAppID(appID)
+}
+
+func legacyWolfConsumerByAppID(appID string) (resource.Consumer, bool) {
+	consumer, err := store.GetConsumerByPluginKey(name, appID)
+	return consumer, err == nil
 }
 
 func (p *Plugin) checkPermission(

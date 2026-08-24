@@ -5,13 +5,18 @@ import (
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -19,12 +24,924 @@ import (
 	"github.com/elastic/go-elasticsearch/v8/esapi"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
+	"github.com/wklken/apisix-go/pkg/capability"
+	"github.com/wklken/apisix-go/pkg/data_encryption"
+	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
+	"github.com/wklken/apisix-go/pkg/secret"
 	"github.com/wklken/apisix-go/pkg/store"
 	"github.com/wklken/apisix-go/pkg/testutil"
 	"github.com/wklken/apisix-go/pkg/util"
 )
+
+type elasticsearchScopedSecretCall struct {
+	Scope secret.Scope
+	Raw   string
+}
+
+type elasticsearchScopedSecretBroker struct {
+	mu     sync.Mutex
+	values map[string]string
+	fail   map[string]error
+	calls  []elasticsearchScopedSecretCall
+}
+
+func (*elasticsearchScopedSecretBroker) AuthorizeCandidate(
+	context.Context, secret.AttemptID, generation.ApplyTicket, generation.PublicationSet,
+) error {
+	return nil
+}
+
+func (*elasticsearchScopedSecretBroker) AuthorizeRecovery(
+	context.Context, secret.AttemptID, generation.RevisionSet,
+	map[generation.Domain]generation.PublishedGeneration,
+) error {
+	return errors.New("recovery is not used by this leaf fixture")
+}
+
+func (broker *elasticsearchScopedSecretBroker) ResolveScoped(
+	ctx context.Context, scope secret.Scope, raw string,
+) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	broker.mu.Lock()
+	defer broker.mu.Unlock()
+	broker.calls = append(broker.calls, elasticsearchScopedSecretCall{Scope: scope, Raw: raw})
+	if err := broker.fail[raw]; err != nil {
+		return "", err
+	}
+	if value, ok := broker.values[raw]; ok {
+		return value, nil
+	}
+	return raw, nil
+}
+
+func (*elasticsearchScopedSecretBroker) RevokeAttempt(context.Context, secret.AttemptID) error {
+	return nil
+}
+
+func newElasticsearchScopedSecretHarness(
+	t *testing.T, revision uint64, resourceID string, rawConfig map[string]any, values map[string]string,
+) (secret.GenerationCapability, secret.Scope, *elasticsearchScopedSecretBroker, func()) {
+	t.Helper()
+	key := generation.ResourceKey{Kind: "routes", ID: resourceID}
+	resourceJSON, err := json.Marshal(map[string]any{
+		"plugins": map[string]any{name: rawConfig},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := generation.NewSnapshot(revision, []generation.Resource{{
+		Key: key, Value: resourceJSON,
+	}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := generation.PublicationCandidate{
+		Artifact: generation.GenerationArtifact{
+			Domain: generation.DomainHTTP, Revision: revision,
+			Digest: snapshot.Digest(), Snapshot: snapshot.SnapshotID(),
+		},
+		Snapshot: snapshot,
+		Closure:  []generation.ResourceKey{key},
+		Decisions: []generation.ResourceDecision{{
+			Key: key, Disposition: generation.DispositionPublished, Code: "elasticsearch-test",
+		}},
+	}
+	ticket := generation.ApplyTicket{
+		DesiredRevision: revision, RequiredDomains: []generation.Domain{generation.DomainHTTP},
+	}
+	set := generation.PublicationSet{
+		DesiredRevision: revision,
+		Domains: map[generation.Domain]generation.PublicationCandidate{
+			generation.DomainHTTP: candidate,
+		},
+	}
+	manifest, err := capability.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := capability.NewSecretDeclarationCatalog(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	broker := &elasticsearchScopedSecretBroker{values: values, fail: make(map[string]error)}
+	registration, err := secret.NewScopedMaterializer(broker, catalog).
+		RegisterCandidate(context.Background(), ticket, set)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capabilityValue, err := secret.NewGenerationCapability(registration, revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := secret.Scope{
+		Generation: revision, Attempt: registration.AttemptID(), Domain: generation.DomainHTTP,
+		Plugin: name, Resource: key, Source: capability.SecretPluginConfig,
+	}
+	return capabilityValue, scope, broker, func() {
+		if err := registration.Close(context.Background()); err != nil {
+			t.Fatalf("close scoped secret registration: %v", err)
+		}
+	}
+}
+
+func assertElasticsearchDescriptorFor(t *testing.T, value, plaintext string) {
+	t.Helper()
+	digest := sha256.Sum256([]byte(plaintext))
+	want := "plugin_config#sha256:" + hex.EncodeToString(digest[:])
+	if value != want {
+		t.Fatalf("elasticsearch descriptor = %q, want %q", value, want)
+	}
+}
+
+func TestMaterializeScopedSecretsOwnsElasticsearchCredentials(t *testing.T) {
+	contextual, err := data_encryption.EncryptForContext(
+		"contextual-password", "0123456789abcdef", name+".auth.password",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name          string
+		passwordRaw   string
+		password      string
+		authorization *string
+		resolvedAuth  string
+		lowerAuth     string
+		wantCalls     []string
+	}{
+		{
+			name:        "literal and absent optional",
+			passwordRaw: "literal-password",
+			password:    "literal-password",
+			wantCalls:   []string{"auth.password"},
+		},
+		{
+			name:        "contextual ciphertext",
+			passwordRaw: contextual,
+			password:    "contextual-password",
+			wantCalls:   []string{"auth.password"},
+		},
+		{
+			name:          "environment and exact Authorization",
+			passwordRaw:   "$ENV://ES_PASSWORD",
+			password:      "environment-password",
+			authorization: new("$secret://vault/es-token"),
+			resolvedAuth:  "Bearer managed",
+			wantCalls:     []string{"auth.password", "headers.Authorization"},
+		},
+		{
+			name:        "lowercase authorization is ordinary",
+			passwordRaw: "$secret://vault/es-password",
+			password:    "managed-password",
+			lowerAuth:   "ordinary-lowercase",
+			wantCalls:   []string{"auth.password"},
+		},
+	}
+	for index, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			headers := map[string]string{"X-Cluster": "logs"}
+			if tt.authorization != nil {
+				headers["Authorization"] = *tt.authorization
+			}
+			if tt.lowerAuth != "" {
+				headers["authorization"] = tt.lowerAuth
+			}
+			raw := map[string]any{
+				"auth":    map[string]any{"username": "elastic", "password": tt.passwordRaw},
+				"headers": headers,
+			}
+			values := map[string]string{tt.passwordRaw: tt.password}
+			if tt.authorization != nil {
+				values[*tt.authorization] = tt.resolvedAuth
+			}
+			capabilityValue, scope, broker, closeAttempt := newElasticsearchScopedSecretHarness(
+				t,
+				uint64(index+1),
+				"es-route",
+				raw,
+				values,
+			)
+			defer closeAttempt()
+			p := &Plugin{config: Config{
+				EndpointAddrs: []string{"http://127.0.0.1:9200"},
+				Field:         FieldConfig{Index: "logs"},
+				LogFormat: map[string]string{
+					"request_id": "$request_id",
+				},
+				Auth:    &AuthConfig{Username: "elastic", Password: tt.passwordRaw},
+				Headers: headers,
+			}}
+			if err := p.Init(); err != nil {
+				t.Fatal(err)
+			}
+			if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+				t.Fatal(err)
+			}
+			if len(broker.calls) != len(tt.wantCalls) {
+				t.Fatalf("resolver calls = %#v, want %v", broker.calls, tt.wantCalls)
+			}
+			for i, field := range tt.wantCalls {
+				wantScope := scope
+				wantScope.Field = field
+				if broker.calls[i].Scope != wantScope {
+					t.Fatalf("resolver call %d scope = %#v, want %#v", i, broker.calls[i].Scope, wantScope)
+				}
+			}
+			assertElasticsearchDescriptorFor(t, p.config.Auth.Password, tt.password)
+			if tt.authorization != nil {
+				assertElasticsearchDescriptorFor(t, p.config.Headers["Authorization"], tt.resolvedAuth)
+			}
+			if tt.lowerAuth != "" && p.config.Headers["authorization"] != tt.lowerAuth {
+				t.Fatalf(
+					"lowercase authorization = %q, want ordinary header unchanged",
+					p.config.Headers["authorization"],
+				)
+			}
+		})
+	}
+}
+
+func TestMaterializeScopedSecretsFailureIsAtomicRetryableAndSingleflight(t *testing.T) {
+	const (
+		passwordRaw      = "$ENV://ES_RETRY_PASSWORD"
+		authorizationRaw = "$secret://vault/es-retry-token"
+	)
+	raw := map[string]any{
+		"auth":    map[string]any{"username": "elastic", "password": passwordRaw},
+		"headers": map[string]string{"Authorization": authorizationRaw},
+	}
+	capabilityValue, scope, broker, closeAttempt := newElasticsearchScopedSecretHarness(
+		t, 20, "es-retry", raw, map[string]string{
+			passwordRaw: "retry-password", authorizationRaw: "Bearer retry-token",
+		},
+	)
+	defer closeAttempt()
+	p := &Plugin{config: Config{
+		Auth:    &AuthConfig{Username: "elastic", Password: passwordRaw},
+		Headers: map[string]string{"Authorization": authorizationRaw},
+	}}
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	broker.fail[authorizationRaw] = errors.New("private resolver failure")
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err == nil {
+		t.Fatal("first materialization error = nil")
+	}
+	if p.config.Auth.Password != passwordRaw || p.config.Headers["Authorization"] != authorizationRaw ||
+		p.password != nil || p.authorization != nil {
+		t.Fatalf(
+			"failed materialization retained partial state: config=%#v password=%#v authorization=%#v",
+			p.config,
+			p.password,
+			p.authorization,
+		)
+	}
+	broker.mu.Lock()
+	delete(broker.fail, authorizationRaw)
+	broker.mu.Unlock()
+
+	const workers = 32
+	start := make(chan struct{})
+	errs := make([]error, workers)
+	var group sync.WaitGroup
+	for index := range workers {
+		group.Go(func() {
+			<-start
+			errs[index] = base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p)
+		})
+	}
+	close(start)
+	group.Wait()
+	for index, err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent retry %d error = %v", index, err)
+		}
+	}
+	if len(broker.calls) != 4 {
+		t.Fatalf(
+			"resolver calls = %#v, want failed password/auth then one successful password/auth sequence",
+			broker.calls,
+		)
+	}
+	for index, field := range []string{"auth.password", "headers.Authorization", "auth.password", "headers.Authorization"} {
+		wantScope := scope
+		wantScope.Field = field
+		if broker.calls[index].Scope != wantScope {
+			t.Fatalf("resolver call %d scope = %#v, want %#v", index, broker.calls[index].Scope, wantScope)
+		}
+	}
+	assertElasticsearchDescriptorFor(t, p.config.Auth.Password, "retry-password")
+	assertElasticsearchDescriptorFor(t, p.config.Headers["Authorization"], "Bearer retry-token")
+}
+
+func TestMaterializeScopedSecretsRejectsBlankCredentialsAndRetries(t *testing.T) {
+	for index, field := range []string{"auth.password", "headers.Authorization"} {
+		t.Run(field, func(t *testing.T) {
+			passwordRaw := "$ENV://ES_BLANK_PASSWORD"
+			authorizationRaw := "$ENV://ES_BLANK_AUTHORIZATION"
+			raw := map[string]any{
+				"auth":    map[string]any{"username": "elastic", "password": passwordRaw},
+				"headers": map[string]string{"Authorization": authorizationRaw},
+			}
+			values := map[string]string{passwordRaw: "password", authorizationRaw: "Bearer token"}
+			if field == "auth.password" {
+				values[passwordRaw] = " \t "
+			} else {
+				values[authorizationRaw] = "\n"
+			}
+			capabilityValue, scope, broker, closeAttempt := newElasticsearchScopedSecretHarness(
+				t, uint64(30+index), "es-blank", raw, values,
+			)
+			defer closeAttempt()
+			p := &Plugin{config: Config{
+				Auth:    &AuthConfig{Username: "elastic", Password: passwordRaw},
+				Headers: map[string]string{"Authorization": authorizationRaw},
+			}}
+			if err := p.Init(); err != nil {
+				t.Fatal(err)
+			}
+			if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err == nil {
+				t.Fatal("blank materialization error = nil")
+			}
+			if p.config.Auth.Password != passwordRaw || p.config.Headers["Authorization"] != authorizationRaw {
+				t.Fatal("blank materialization changed public config")
+			}
+			broker.mu.Lock()
+			broker.values[passwordRaw] = "password"
+			broker.values[authorizationRaw] = "Bearer token"
+			broker.mu.Unlock()
+			if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+				t.Fatalf("retry materialization error = %v", err)
+			}
+		})
+	}
+}
+
+func TestAuthorizationIsolationAcrossElasticsearchGenerations(t *testing.T) {
+	type observedRequest struct {
+		path          string
+		authorization string
+	}
+	observed := make(chan observedRequest, 8)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		observed <- observedRequest{path: r.URL.Path, authorization: r.Header.Get("Authorization")}
+		w.Header().Set("X-Elastic-Product", "Elasticsearch")
+		w.WriteHeader(http.StatusOK)
+		if r.URL.Path == "/" {
+			_, _ = w.Write([]byte(`{"version":{"number":"8.11.0"}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"errors":false}`))
+	}))
+	t.Cleanup(server.Close)
+
+	first := newTestPlugin(t, Config{
+		EndpointAddrs: []string{server.URL}, Field: FieldConfig{Index: "logs"},
+		Auth: &AuthConfig{Username: "elastic", Password: "first-password"}, BatchMaxSize: 1,
+	})
+	second := newTestPlugin(t, Config{
+		EndpointAddrs: []string{server.URL}, Field: FieldConfig{Index: "logs"},
+		Auth:    &AuthConfig{Username: "elastic", Password: "second-password"},
+		Headers: map[string]string{"Authorization": "Bearer second-token"}, BatchMaxSize: 1,
+	})
+	t.Cleanup(first.Stop)
+	t.Cleanup(second.Stop)
+	if len(first.clients) != 1 || len(second.clients) != 1 {
+		t.Fatalf("client counts = %d/%d, want one per generation", len(first.clients), len(second.clients))
+	}
+	var firstRef, secondRef *esClientRef
+	for _, ref := range first.clients {
+		firstRef = ref
+	}
+	for _, ref := range second.clients {
+		secondRef = ref
+	}
+	if firstRef.client == secondRef.client || firstRef.credentials == secondRef.credentials {
+		t.Fatal("two generations reused a credential-bearing Elasticsearch client")
+	}
+	if firstRef.credentials.transport != secondRef.credentials.transport {
+		t.Fatal("credential-neutral transport was not reused across compatible generations")
+	}
+	if _, err := first.SendBatch(context.Background(), []map[string]any{{"generation": 1}}, 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := second.SendBatch(context.Background(), []map[string]any{{"generation": 2}}, 1); err != nil {
+		t.Fatal(err)
+	}
+
+	want := map[string]int{
+		"Basic " + base64.StdEncoding.EncodeToString([]byte("elastic:first-password")): 2,
+		"Bearer second-token": 2,
+	}
+	for range 4 {
+		select {
+		case request := <-observed:
+			if request.path != "/" && request.path != "/_bulk" {
+				t.Fatalf("request path = %q", request.path)
+			}
+			want[request.authorization]--
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for generation requests")
+		}
+	}
+	for authorization, remaining := range want {
+		if remaining != 0 {
+			t.Fatalf("Authorization %q remaining count = %d", authorization, remaining)
+		}
+	}
+	assertElasticsearchClientRetainsNone(t, firstRef.client,
+		"first-password", "Basic "+base64.StdEncoding.EncodeToString([]byte("elastic:first-password")))
+	assertElasticsearchClientRetainsNone(t, secondRef.client, "second-password", "Bearer second-token")
+}
+
+func assertElasticsearchClientRetainsNone(t *testing.T, client any, forbidden ...string) {
+	t.Helper()
+	if path, value, ok := findElasticsearchRetainedSecret(
+		reflect.ValueOf(client), "client", forbidden, make(map[uintptr]struct{}), 0,
+	); ok {
+		t.Fatalf("Elasticsearch client retained secret at %s: %q", path, value)
+	}
+}
+
+func findElasticsearchRetainedSecret(
+	value reflect.Value,
+	path string,
+	forbidden []string,
+	visited map[uintptr]struct{},
+	depth int,
+) (string, string, bool) {
+	if !value.IsValid() || depth > 14 {
+		return "", "", false
+	}
+	for value.Kind() == reflect.Interface {
+		if value.IsNil() {
+			return "", "", false
+		}
+		value = value.Elem()
+	}
+	if value.Kind() == reflect.Pointer {
+		if value.IsNil() {
+			return "", "", false
+		}
+		pointer := value.Pointer()
+		if _, ok := visited[pointer]; ok {
+			return "", "", false
+		}
+		visited[pointer] = struct{}{}
+		if value.Type() == reflect.TypeFor[*http.Transport]() {
+			return "", "", false
+		}
+		return findElasticsearchRetainedSecret(value.Elem(), path, forbidden, visited, depth+1)
+	}
+	switch value.Kind() {
+	case reflect.String:
+		text := value.String()
+		for _, secretValue := range forbidden {
+			if secretValue != "" && strings.Contains(text, secretValue) {
+				return path, text, true
+			}
+		}
+	case reflect.Slice:
+		if value.Type().Elem().Kind() == reflect.Uint8 {
+			text := string(value.Bytes())
+			for _, secretValue := range forbidden {
+				if secretValue != "" && strings.Contains(text, secretValue) {
+					return path, text, true
+				}
+			}
+			return "", "", false
+		}
+		for index := range value.Len() {
+			if foundPath, text, ok := findElasticsearchRetainedSecret(
+				value.Index(index), fmt.Sprintf("%s[%d]", path, index), forbidden, visited, depth+1,
+			); ok {
+				return foundPath, text, true
+			}
+		}
+	case reflect.Map:
+		iterator := value.MapRange()
+		for iterator.Next() {
+			if foundPath, text, ok := findElasticsearchRetainedSecret(
+				iterator.Value(), path+"[map]", forbidden, visited, depth+1,
+			); ok {
+				return foundPath, text, true
+			}
+		}
+	case reflect.Struct:
+		credentialType := reflect.TypeFor[elasticsearchCredentialTransport]()
+		for index := range value.NumField() {
+			field := value.Type().Field(index)
+			if value.Type() == credentialType && (field.Name == "owner" || field.Name == "transport") {
+				continue
+			}
+			if foundPath, text, ok := findElasticsearchRetainedSecret(
+				value.Field(index), path+"."+field.Name, forbidden, visited, depth+1,
+			); ok {
+				return foundPath, text, true
+			}
+		}
+	}
+	return "", "", false
+}
+
+func TestLowercaseAuthorizationRemainsOrdinaryHeader(t *testing.T) {
+	received := make(chan string, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		received <- r.Header.Get("Authorization")
+		w.Header().Set("X-Elastic-Product", "Elasticsearch")
+		w.WriteHeader(http.StatusOK)
+		if r.URL.Path == "/" {
+			_, _ = w.Write([]byte(`{"version":{"number":"8.11.0"}}`))
+		} else {
+			_, _ = w.Write([]byte(`{"errors":false}`))
+		}
+	}))
+	t.Cleanup(server.Close)
+	p := newTestPlugin(t, Config{
+		EndpointAddrs: []string{server.URL}, Field: FieldConfig{Index: "logs"},
+		Auth:    &AuthConfig{Username: "elastic", Password: "private-password"},
+		Headers: map[string]string{"authorization": "ordinary-lowercase"}, BatchMaxSize: 1,
+	})
+	t.Cleanup(p.Stop)
+	if _, err := p.SendBatch(context.Background(), []map[string]any{{"path": "/"}}, 1); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		select {
+		case got := <-received:
+			if got != "ordinary-lowercase" {
+				t.Fatalf("Authorization = %q, want ordinary lowercase header to retain precedence", got)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for Elasticsearch request")
+		}
+	}
+}
+
+type retainingElasticsearchRoundTripper struct {
+	request *http.Request
+}
+
+func (transport *retainingElasticsearchRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	transport.request = req
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader(`{"errors":false}`)),
+		Request:    req,
+	}, nil
+}
+
+func TestElasticsearchCredentialTransportClearsRetainedAuthorization(t *testing.T) {
+	retained := &retainingElasticsearchRoundTripper{}
+	authorization := "Bearer private-token"
+	owner := &Plugin{
+		config:              Config{Headers: map[string]string{"Authorization": "descriptor"}},
+		legacyAuthorization: &authorization,
+	}
+	credentials := &elasticsearchCredentialTransport{
+		owner: owner, transport: retained, override: true,
+	}
+	var derived []byte
+	credentials.afterDerive = func(value []byte) { derived = value }
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/_bulk", strings.NewReader("{}\n"))
+	req.Header.Set("Authorization", "ordinary")
+	resp, err := credentials.RoundTrip(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if req.Header.Get("Authorization") != "ordinary" {
+		t.Fatalf("caller request Authorization = %q, want untouched ordinary value", req.Header.Get("Authorization"))
+	}
+	if retained.request == req {
+		t.Fatal("credential transport passed the caller request directly")
+	}
+	if got := retained.request.Header.Get("Authorization"); got != "" {
+		t.Fatalf("retained request Authorization = %q, want cleared after RoundTrip", got)
+	}
+	if resp.Request != retained.request || resp.Request.Header.Get("Authorization") != "" {
+		t.Fatal("response retained credential-bearing request header")
+	}
+	if len(derived) == 0 {
+		t.Fatal("credential transport did not derive request-local Authorization bytes")
+	}
+	for index, value := range derived {
+		if value != 0 {
+			t.Fatalf("derived Authorization byte %d = %d, want zero after RoundTrip", index, value)
+		}
+	}
+	credentialType := reflect.TypeFor[elasticsearchCredentialTransport]()
+	for field := range credentialType.Fields() {
+		if field.Type.Kind() == reflect.String || field.Type.Kind() == reflect.Slice ||
+			field.Type.Kind() == reflect.Array {
+			t.Fatalf("credential transport persistently retains credential-capable field %s %s", field.Name, field.Type)
+		}
+	}
+	credentials.destroy()
+	if credentials.owner != nil || credentials.transport != nil {
+		t.Fatal("destroy retained credential transport state")
+	}
+}
+
+func TestStopDrainsActiveElasticsearchSendAndPreventsResurrection(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Elastic-Product", "Elasticsearch")
+		if r.URL.Path == "/" {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"version":{"number":"8.11.0"}}`))
+			return
+		}
+		close(started)
+		<-release
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"errors":false}`))
+	}))
+	t.Cleanup(func() {
+		releaseOnce.Do(func() { close(release) })
+		server.Close()
+	})
+	p := newTestPlugin(t, Config{
+		EndpointAddrs: []string{server.URL}, Field: FieldConfig{Index: "logs"},
+		Auth: &AuthConfig{Username: "elastic", Password: "private-password"}, BatchMaxSize: 1,
+	})
+	stopAttempted := make(chan struct{})
+	var stopAttemptOnce sync.Once
+	p.stopBeforeLock = func() { stopAttemptOnce.Do(func() { close(stopAttempted) }) }
+	activeResult := make(chan error, 1)
+	go func() {
+		_, err := p.SendBatch(context.Background(), []map[string]any{{"active": true}}, 1)
+		activeResult <- err
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for active Elasticsearch send")
+	}
+
+	stopDone := make(chan struct{})
+	go func() {
+		p.Stop()
+		close(stopDone)
+	}()
+	select {
+	case <-stopAttempted:
+	case <-time.After(time.Second):
+		t.Fatal("Stop did not reach the credential drain barrier")
+	}
+	select {
+	case <-stopDone:
+		t.Fatal("Stop returned before active credential use drained")
+	default:
+	}
+
+	releaseOnce.Do(func() { close(release) })
+	select {
+	case err := <-activeResult:
+		if err != nil {
+			t.Fatalf("active send error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("active send did not finish")
+	}
+	select {
+	case <-stopDone:
+	case <-time.After(time.Second):
+		t.Fatal("Stop did not finish after active send drained")
+	}
+	if len(p.clients) != 0 || p.password != nil || p.legacyPassword != nil ||
+		p.authorization != nil || p.legacyAuthorization != nil {
+		t.Fatal("Stop retained client or credential state")
+	}
+	p.Stop()
+	if _, err := p.SendBatch(
+		context.Background(),
+		[]map[string]any{{"late": true}},
+		1,
+	); !errors.Is(
+		err,
+		secret.ErrCredentialUnavailable,
+	) {
+		t.Fatalf("post-Stop send error = %v, want credential unavailable", err)
+	}
+	if err := p.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) {
+		t.Fatalf("post-Stop materialization error = %v, want no resurrection", err)
+	}
+}
+
+func TestStopDrainsActiveScopedElasticsearchSend(t *testing.T) {
+	const rawPassword = "$secret://vault/es-scoped-stop"
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Elastic-Product", "Elasticsearch")
+		if r.URL.Path == "/" {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"version":{"number":"8.11.0"}}`))
+			return
+		}
+		close(started)
+		<-release
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"errors":false}`))
+	}))
+	t.Cleanup(func() {
+		releaseOnce.Do(func() { close(release) })
+		server.Close()
+	})
+	raw := map[string]any{
+		"endpoint_addrs": []string{server.URL},
+		"field":          map[string]any{"index": "logs"},
+		"log_format":     map[string]any{"request_id": "$request_id"},
+		"auth":           map[string]any{"username": "elastic", "password": rawPassword},
+	}
+	capabilityValue, scope, _, closeAttempt := newElasticsearchScopedSecretHarness(
+		t, 41, "es-scoped-stop", raw, map[string]string{rawPassword: "scoped-password"},
+	)
+	defer closeAttempt()
+	p := &Plugin{config: Config{
+		EndpointAddrs: []string{server.URL}, Field: FieldConfig{Index: "logs"},
+		LogFormat: map[string]string{"request_id": "$request_id"},
+		Auth:      &AuthConfig{Username: "elastic", Password: rawPassword}, BatchMaxSize: 1,
+	}}
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatal(err)
+	}
+	stopAttempted := make(chan struct{})
+	p.stopBeforeLock = func() { close(stopAttempted) }
+	activeResult := make(chan error, 1)
+	go func() {
+		_, err := p.SendBatch(context.Background(), []map[string]any{{"active": true}}, 1)
+		activeResult <- err
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for scoped send")
+	}
+	stopDone := make(chan struct{})
+	go func() {
+		p.Stop()
+		close(stopDone)
+	}()
+	select {
+	case <-stopAttempted:
+	case <-time.After(time.Second):
+		t.Fatal("scoped Stop did not reach drain barrier")
+	}
+	select {
+	case <-stopDone:
+		t.Fatal("scoped Stop returned before active use drained")
+	default:
+	}
+	releaseOnce.Do(func() { close(release) })
+	select {
+	case err := <-activeResult:
+		if err != nil {
+			t.Fatalf("active scoped send error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("active scoped send did not finish")
+	}
+	select {
+	case <-stopDone:
+	case <-time.After(time.Second):
+		t.Fatal("scoped Stop did not finish")
+	}
+	if p.password != nil || p.authorization != nil || len(p.clients) != 0 {
+		t.Fatal("scoped Stop retained credentials or clients")
+	}
+}
+
+func TestPostInitCannotPublishBatchProcessorAfterStop(t *testing.T) {
+	tests := []struct {
+		name    string
+		prepare func(*testing.T, *Plugin) func()
+	}{
+		{
+			name: "legacy",
+			prepare: func(t *testing.T, p *Plugin) func() {
+				t.Helper()
+				p.SetDependencies(base.Dependencies{
+					DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+				})
+				if err := p.MaterializeSecrets(); err != nil {
+					t.Fatalf("MaterializeSecrets() error = %v", err)
+				}
+				return func() {}
+			},
+		},
+		{
+			name: "scoped",
+			prepare: func(t *testing.T, p *Plugin) func() {
+				t.Helper()
+				const rawPassword = "$secret://vault/es-post-init-stop"
+				raw := map[string]any{
+					"endpoint_addrs": []string{"http://127.0.0.1:9200"},
+					"field":          map[string]any{"index": "logs"},
+					"log_format":     map[string]any{"request_id": "$request_id"},
+					"auth": map[string]any{
+						"username": "elastic", "password": rawPassword,
+					},
+				}
+				capabilityValue, scope, _, closeAttempt := newElasticsearchScopedSecretHarness(
+					t, 42, "es-post-init-stop", raw,
+					map[string]string{rawPassword: "scoped-post-init-password"},
+				)
+				if err := base.MaterializeScopedPluginSecrets(
+					context.Background(), scope, capabilityValue, p,
+				); err != nil {
+					closeAttempt()
+					t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
+				}
+				return closeAttempt
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := &Plugin{config: Config{
+				EndpointAddrs: []string{"http://127.0.0.1:9200"},
+				Field:         FieldConfig{Index: "logs"},
+				LogFormat:     map[string]string{"request_id": "$request_id"},
+				Auth: &AuthConfig{
+					Username: "elastic", Password: "legacy-post-init-password",
+				},
+			}}
+			if tt.name == "scoped" {
+				p.config.Auth.Password = "$secret://vault/es-post-init-stop"
+			}
+			if err := p.Init(); err != nil {
+				t.Fatal(err)
+			}
+			closeAttempt := tt.prepare(t, p)
+			defer closeAttempt()
+
+			atPublishBarrier := make(chan struct{})
+			releasePostInit := make(chan struct{})
+			var candidate *logger_batch.Processor
+			p.postInitBeforePublish = func(processor *logger_batch.Processor) {
+				candidate = processor
+				close(atPublishBarrier)
+				<-releasePostInit
+			}
+			postInitResult := make(chan error, 1)
+			go func() { postInitResult <- p.PostInit() }()
+			select {
+			case <-atPublishBarrier:
+			case <-time.After(time.Second):
+				t.Fatal("PostInit did not reach the batch publication barrier")
+			}
+
+			stopDone := make(chan struct{})
+			go func() {
+				p.Stop()
+				close(stopDone)
+			}()
+			select {
+			case <-stopDone:
+			case <-time.After(time.Second):
+				t.Fatal("Stop did not finish while PostInit was paused before publication")
+			}
+			close(releasePostInit)
+			select {
+			case err := <-postInitResult:
+				if !errors.Is(err, secret.ErrCredentialUnavailable) {
+					t.Fatalf("PostInit() after Stop error = %v, want credential unavailable", err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("PostInit did not return after publication barrier was released")
+			}
+			if p.BatchProcessor != nil {
+				t.Fatal("PostInit published a batch processor after Stop")
+			}
+			if candidate == nil || candidate.Push(map[string]any{"late": true}) {
+				t.Fatal("PostInit left the unpublished batch processor alive after Stop")
+			}
+			p.Stop()
+			if !p.stopped || p.BatchProcessor != nil || len(p.clients) != 0 ||
+				p.password != nil || p.legacyPassword != nil ||
+				p.authorization != nil || p.legacyAuthorization != nil {
+				t.Fatal("repeated Stop left Elasticsearch generation state")
+			}
+		})
+	}
+}
 
 func TestNewElasticsearchClientUsesOfficialBulkTransport(t *testing.T) {
 	const (
@@ -65,16 +982,21 @@ func TestNewElasticsearchClientUsesOfficialBulkTransport(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	client, err := newElasticsearchClient(
-		server.URL, username, password,
-		map[string]string{"X-Cluster": "logs"},
-		10*time.Second,
-		true,
-	)
+	sslVerify := true
+	p := &Plugin{config: Config{
+		Auth: &AuthConfig{Username: username}, Headers: map[string]string{"X-Cluster": "logs"},
+		Timeout: 10, SslVerify: &sslVerify,
+	}}
+	ownedPassword := password
+	p.legacyPassword = &ownedPassword
+	client, credentials, release, err := p.newPluginOwnedClient(server.URL)
 	if err != nil {
-		t.Fatalf("newElasticsearchClient() error = %v", err)
+		t.Fatalf("newPluginOwnedClient() error = %v", err)
 	}
-	t.Cleanup(func() { _ = client.Close(context.Background()) })
+	t.Cleanup(func() {
+		credentials.destroy()
+		release()
+	})
 
 	resp, err := (esapi.BulkRequest{
 		Body:    strings.NewReader("{}\n"),
@@ -201,6 +1123,9 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
+	if err := p.MaterializeSecrets(); err != nil {
+		t.Fatalf("MaterializeSecrets() error = %v", err)
+	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
@@ -208,9 +1133,9 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 }
 
 func TestPostInitRejectsMissingDataEncryptionResolver(t *testing.T) {
-	p := &Plugin{}
-	if err := p.PostInit(); err == nil || err.Error() != "data-encryption resolver is required" {
-		t.Fatalf("PostInit() error = %v, want missing resolver error", err)
+	p := &Plugin{config: Config{Auth: &AuthConfig{Username: "elastic", Password: "private"}}}
+	if err := p.MaterializeSecrets(); err == nil || err.Error() != "data-encryption resolver is required" {
+		t.Fatalf("MaterializeSecrets() error = %v, want missing resolver error", err)
 	}
 }
 
@@ -346,8 +1271,8 @@ func TestPostInitRejectsInvalidEncryptedAuthPassword(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := p.PostInit(); err == nil {
-		t.Fatal("PostInit() error = nil, want strict encrypted auth.password rejection")
+	if err := p.MaterializeSecrets(); err == nil {
+		t.Fatal("MaterializeSecrets() error = nil, want strict encrypted auth.password rejection")
 	}
 }
 
@@ -369,13 +1294,14 @@ func TestPostInitResolvesRotatedEncryptedAuthPassword(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
+	if err := p.MaterializeSecrets(); err != nil {
+		t.Fatalf("MaterializeSecrets() error = %v", err)
+	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
 	t.Cleanup(func() { p.BatchProcessor.Stop() })
-	if p.config.Auth.Password != "elasticsearch-secret" {
-		t.Fatalf("auth.password = %q, want resolved plaintext", p.config.Auth.Password)
-	}
+	assertElasticsearchDescriptorFor(t, p.config.Auth.Password, "elasticsearch-secret")
 }
 
 func TestSendWritesBulkNDJSONWithHeadersAndAuth(t *testing.T) {

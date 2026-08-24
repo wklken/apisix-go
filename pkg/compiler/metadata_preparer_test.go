@@ -247,7 +247,6 @@ func TestMetadataPreparerReturnsEmptyViewForStreamOnlyAttempt(t *testing.T) {
 
 func TestMetadataPreparerMaterializesAzureMetadataWithExactOccurrence(t *testing.T) {
 	compiler := newTestCompiler(t)
-	installAzureMetadataSchema(t, compiler)
 	raw := `{"master_apikey":"$ENV://AZURE_MASTER_APIKEY","master_clientid":"client-n"}`
 	snapshot := metadataSnapshot(t, 104, raw)
 	ticket, set := metadataPublicationSet(snapshot)
@@ -298,7 +297,6 @@ func TestMetadataPreparerMaterializesAzureMetadataWithExactOccurrence(t *testing
 
 func TestMetadataPreparerKeepsCandidateAndRecoveryAttemptsDistinct(t *testing.T) {
 	compiler := newTestCompiler(t)
-	installAzureMetadataSchema(t, compiler)
 	candidateSnapshot := metadataSnapshot(t, 105, `{"master_apikey":"$ENV://AZURE_CANDIDATE"}`)
 	candidateTicket, candidateSet := metadataPublicationSet(candidateSnapshot)
 	recoverySnapshot := metadataSnapshot(t, 106, `{"master_apikey":"$ENV://AZURE_RECOVERY"}`)
@@ -380,7 +378,6 @@ func TestMetadataPreparerKeepsCandidateAndRecoveryAttemptsDistinct(t *testing.T)
 
 func TestMetadataPreparerMaterializationFailureIsRedacted(t *testing.T) {
 	compiler := newTestCompiler(t)
-	installAzureMetadataSchema(t, compiler)
 	snapshot := mustGenerationSnapshot(t, 106, []generation.Resource{
 		resourceValue("plugin_metadata", "azure-functions", `{"master_apikey":"$secret://vault/private/path"}`),
 		resourceValue("secrets", "vault/private", `{}`),
@@ -463,7 +460,6 @@ func TestMetadataPreparerReturnsEmptyViewForNoPublishedMetadata(t *testing.T) {
 
 func TestMetadataPreparerHonorsCancellationBeforeResolverAccess(t *testing.T) {
 	compiler := newTestCompiler(t)
-	installAzureMetadataSchema(t, compiler)
 	snapshot := metadataSnapshot(t, 108, `{"master_apikey":"$ENV://CANCELED"}`)
 	ticket, set := metadataPublicationSet(snapshot)
 	broker := &metadataPreparationBroker{resolved: "must-not-resolve"}
@@ -815,26 +811,6 @@ func metadataStringField(document map[string]any, want string) string {
 		}
 	}
 	return ""
-}
-
-func installAzureMetadataSchema(t *testing.T, compiler *Compiler) {
-	t.Helper()
-	compiled, err := util.CompileSchema(`{
-		"type":"object",
-		"properties":{
-			"master_apikey":{"type":"string"},
-			"master_clientid":{"type":"string"}
-		}
-	}`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	entry, ok := compiler.schemas.factories["azure-functions"]
-	if !ok {
-		t.Fatal("azure-functions schema entry is missing")
-	}
-	entry.metadata = compiled
-	compiler.schemas.factories["azure-functions"] = entry
 }
 
 func installErrorLogMetadataSchema(t *testing.T, compiler *Compiler) {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -16,11 +17,14 @@ import (
 
 	"github.com/redis/go-redis/v9"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/capability"
+	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_proxy"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_proxy_multi"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_runtime"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/resource"
+	"github.com/wklken/apisix-go/pkg/secret"
 	"github.com/wklken/apisix-go/pkg/testutil"
 )
 
@@ -32,6 +36,9 @@ func newTestPlugin(t *testing.T, cfg Config, now func() time.Time) *Plugin {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
+	if err := base.MaterializePluginSecrets(p); err != nil {
+		t.Fatalf("MaterializePluginSecrets() error = %v", err)
+	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
@@ -39,10 +46,543 @@ func newTestPlugin(t *testing.T, cfg Config, now func() time.Time) *Plugin {
 	return p
 }
 
-func TestPostInitRejectsMissingDataEncryptionResolver(t *testing.T) {
-	p := &Plugin{}
-	if err := p.PostInit(); err == nil || err.Error() != "data-encryption resolver is required" {
-		t.Fatalf("PostInit() error = %v, want missing resolver error", err)
+type scopedSecretCall struct {
+	Scope secret.Scope
+	Raw   string
+}
+
+type scopedSecretBroker struct {
+	mu     sync.Mutex
+	values map[string]string
+	fail   map[string]error
+	calls  []scopedSecretCall
+}
+
+func (*scopedSecretBroker) AuthorizeCandidate(
+	context.Context, secret.AttemptID, generation.ApplyTicket, generation.PublicationSet,
+) error {
+	return nil
+}
+
+func (*scopedSecretBroker) AuthorizeRecovery(
+	context.Context, secret.AttemptID, generation.RevisionSet,
+	map[generation.Domain]generation.PublishedGeneration,
+) error {
+	return errors.New("recovery is not used by this leaf fixture")
+}
+
+func (broker *scopedSecretBroker) ResolveScoped(
+	ctx context.Context, scope secret.Scope, raw string,
+) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	broker.mu.Lock()
+	defer broker.mu.Unlock()
+	broker.calls = append(broker.calls, scopedSecretCall{Scope: scope, Raw: raw})
+	if err := broker.fail[raw]; err != nil {
+		return "", err
+	}
+	if value, ok := broker.values[raw]; ok {
+		return value, nil
+	}
+	return raw, nil
+}
+
+func (*scopedSecretBroker) RevokeAttempt(context.Context, secret.AttemptID) error { return nil }
+
+func newScopedSecretHarness(
+	t *testing.T, values map[string]string,
+) (secret.GenerationCapability, secret.Scope, *scopedSecretBroker, func()) {
+	t.Helper()
+	const revision = uint64(7)
+	key := generation.ResourceKey{Kind: "routes", ID: "ai-rate-test"}
+	snapshot, err := generation.NewSnapshot(revision, []generation.Resource{{
+		Key: key, Value: []byte(`{"plugins":{"ai-rate-limiting":{}}}`),
+	}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := generation.PublicationCandidate{
+		Artifact: generation.GenerationArtifact{
+			Domain: generation.DomainHTTP, Revision: revision,
+			Digest: snapshot.Digest(), Snapshot: snapshot.SnapshotID(),
+		},
+		Snapshot: snapshot,
+		Closure:  []generation.ResourceKey{key},
+		Decisions: []generation.ResourceDecision{{
+			Key: key, Disposition: generation.DispositionPublished, Code: "ai-rate-test",
+		}},
+	}
+	ticket := generation.ApplyTicket{
+		DesiredRevision: revision, RequiredDomains: []generation.Domain{generation.DomainHTTP},
+	}
+	set := generation.PublicationSet{
+		DesiredRevision: revision,
+		Domains: map[generation.Domain]generation.PublicationCandidate{
+			generation.DomainHTTP: candidate,
+		},
+	}
+	manifest, err := capability.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := capability.NewSecretDeclarationCatalog(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	broker := &scopedSecretBroker{values: maps.Clone(values), fail: make(map[string]error)}
+	registration, err := secret.NewScopedMaterializer(broker, catalog).
+		RegisterCandidate(context.Background(), ticket, set)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capabilityValue, err := secret.NewGenerationCapability(registration, revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := secret.Scope{
+		Generation: revision,
+		Attempt:    registration.AttemptID(),
+		Domain:     generation.DomainHTTP,
+		Plugin:     name,
+		Resource:   key,
+		Source:     capability.SecretPluginConfig,
+	}
+	return capabilityValue, scope, broker, func() {
+		if err := registration.Close(context.Background()); err != nil {
+			t.Fatalf("close scoped secret registration: %v", err)
+		}
+	}
+}
+
+func assertSecretDescriptor(t *testing.T, field, value string) {
+	t.Helper()
+	const prefix = "plugin_config#sha256:"
+	if !strings.HasPrefix(value, prefix) || len(value) != len(prefix)+64 {
+		t.Fatalf("%s = %q, want descriptor", field, value)
+	}
+}
+
+type constructorCapture struct {
+	redisOptions    []*redis.Options
+	failoverOptions []*redis.FailoverOptions
+	client          redisClient
+}
+
+func captureRedisConstructors(t *testing.T, client redisClient) *constructorCapture {
+	t.Helper()
+	capture := &constructorCapture{client: client}
+	oldRedisClient := newRedisClient
+	oldFailoverClient := newRedisFailoverClient
+	newRedisClient = func(options *redis.Options) redisClient {
+		capture.redisOptions = append(capture.redisOptions, options)
+		return capture.client
+	}
+	newRedisFailoverClient = func(options *redis.FailoverOptions) redisClient {
+		capture.failoverOptions = append(capture.failoverOptions, options)
+		return capture.client
+	}
+	t.Cleanup(func() {
+		newRedisClient = oldRedisClient
+		newRedisFailoverClient = oldFailoverClient
+	})
+	return capture
+}
+
+func TestMaterializeScopedSecretsOwnsRedisAndSentinelPasswords(t *testing.T) {
+	const (
+		redisRaw    = "$ENV://AI_REDIS_PASSWORD"
+		sentinelRaw = "$secret://vault/ai-sentinel-password"
+	)
+	capabilityValue, scope, broker, closeAttempt := newScopedSecretHarness(t, map[string]string{
+		redisRaw:    "redis-password",
+		sentinelRaw: "sentinel-password",
+	})
+	defer closeAttempt()
+
+	p := &Plugin{config: Config{
+		Limit:            1,
+		TimeWindow:       60,
+		Policy:           "redis-sentinel",
+		RedisMasterName:  "mymaster",
+		RedisSentinels:   []RedisSentinel{{Host: "127.0.0.1", Port: 26379}},
+		RedisPassword:    redisRaw,
+		SentinelPassword: sentinelRaw,
+	}}
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
+	}
+	if len(broker.calls) != 2 {
+		t.Fatalf("scoped calls = %d, want 2", len(broker.calls))
+	}
+	if got := broker.calls[0].Scope.Field; got != "redis_password" {
+		t.Fatalf("first scope field = %q, want redis_password", got)
+	}
+	if got := broker.calls[1].Scope.Field; got != "sentinel_password" {
+		t.Fatalf("second scope field = %q, want sentinel_password", got)
+	}
+	for _, call := range broker.calls {
+		if call.Scope.Generation != scope.Generation ||
+			call.Scope.Attempt != scope.Attempt ||
+			call.Scope.Domain != generation.DomainHTTP ||
+			call.Scope.Plugin != name ||
+			call.Scope.Resource != scope.Resource ||
+			call.Scope.Source != capability.SecretPluginConfig {
+			t.Fatalf(
+				"scoped authority = %#v, want generation/attempt/http/%s/%#v/%s",
+				call.Scope, name, scope.Resource, capability.SecretPluginConfig,
+			)
+		}
+	}
+	assertSecretDescriptor(t, "redis_password", p.config.RedisPassword)
+	assertSecretDescriptor(t, "sentinel_password", p.config.SentinelPassword)
+	if p.redis != nil {
+		t.Fatal("scoped materialization constructed Redis client before PostInit")
+	}
+	if p.redisPassword == nil || p.sentinelPassword == nil {
+		t.Fatal("scoped materialization did not retain private credential values")
+	}
+
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+	client := p.redis.(*redis.Client)
+	if client.Options().Password != "redis-password" {
+		t.Fatalf("Redis client did not receive admitted credentials")
+	}
+	var gotSentinelPassword string
+	if err := p.sentinelPassword.Use(func(value string) error {
+		gotSentinelPassword = value
+		return nil
+	}); err != nil || gotSentinelPassword != "sentinel-password" {
+		t.Fatalf("sentinel private credential = %q, err = %v", gotSentinelPassword, err)
+	}
+	p.Stop()
+	if p.redisPassword != nil || p.sentinelPassword != nil {
+		t.Fatal("Stop() retained scoped credential values")
+	}
+	if err := client.Ping(t.Context()).Err(); !strings.Contains(err.Error(), redis.ErrClosed.Error()) {
+		t.Fatalf("Ping() after Stop = %v, want closed client", err)
+	}
+}
+
+func TestMaterializeScopedSecretsIsIdempotent(t *testing.T) {
+	const (
+		redisRaw    = "$ENV://AI_IDEMPOTENT_REDIS_PASSWORD"
+		sentinelRaw = "$secret://vault/ai-idempotent-sentinel-password"
+	)
+	capabilityValue, scope, broker, closeAttempt := newScopedSecretHarness(t, map[string]string{
+		redisRaw:    "redis-password",
+		sentinelRaw: "sentinel-password",
+	})
+	defer closeAttempt()
+
+	p := &Plugin{config: Config{
+		Limit:            1,
+		TimeWindow:       60,
+		Policy:           "redis-sentinel",
+		RedisMasterName:  "mymaster",
+		RedisSentinels:   []RedisSentinel{{Host: "127.0.0.1", Port: 26379}},
+		RedisPassword:    redisRaw,
+		SentinelPassword: sentinelRaw,
+	}}
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+			t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
+		}
+	}
+	if len(broker.calls) != 2 {
+		t.Fatalf("scoped calls = %d, want exactly 2 after repeated materialization", len(broker.calls))
+	}
+}
+
+func TestMaterializeScopedSecretsConcurrentCallsMaterializeOnce(t *testing.T) {
+	const (
+		redisRaw    = "$ENV://AI_CONCURRENT_REDIS_PASSWORD"
+		sentinelRaw = "$secret://vault/ai-concurrent-sentinel-password"
+	)
+	capabilityValue, scope, broker, closeAttempt := newScopedSecretHarness(t, map[string]string{
+		redisRaw:    "redis-password",
+		sentinelRaw: "sentinel-password",
+	})
+	defer closeAttempt()
+
+	p := &Plugin{config: Config{
+		Limit:            1,
+		TimeWindow:       60,
+		Policy:           "redis-sentinel",
+		RedisMasterName:  "mymaster",
+		RedisSentinels:   []RedisSentinel{{Host: "127.0.0.1", Port: 26379}},
+		RedisPassword:    redisRaw,
+		SentinelPassword: sentinelRaw,
+	}}
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	const callers = 8
+	errs := make(chan error, callers)
+	var wg sync.WaitGroup
+	for range callers {
+		wg.Go(func() {
+			errs <- base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p)
+		})
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent MaterializeScopedPluginSecrets() error = %v", err)
+		}
+	}
+	if len(broker.calls) != 2 {
+		t.Fatalf("scoped calls = %d, want exactly 2 for concurrent materialization", len(broker.calls))
+	}
+}
+
+func TestPostInitPassesScopedCredentialsToFailoverConstructor(t *testing.T) {
+	const (
+		redisRaw    = "$ENV://AI_CONSTRUCTOR_REDIS_PASSWORD"
+		sentinelRaw = "$secret://vault/ai-constructor-sentinel-password"
+	)
+	capabilityValue, scope, _, closeAttempt := newScopedSecretHarness(t, map[string]string{
+		redisRaw:    "resolved-redis-password",
+		sentinelRaw: "resolved-sentinel-password",
+	})
+	defer closeAttempt()
+	fake := &countingRedis{}
+	capture := captureRedisConstructors(t, fake)
+
+	p := &Plugin{config: Config{
+		Limit:            1,
+		TimeWindow:       60,
+		Policy:           "redis-sentinel",
+		RedisMasterName:  "mymaster",
+		RedisSentinels:   []RedisSentinel{{Host: "127.0.0.1", Port: 26379}},
+		RedisPassword:    redisRaw,
+		SentinelPassword: sentinelRaw,
+	}}
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
+	}
+	if len(capture.failoverOptions) != 0 {
+		t.Fatal("constructor ran during scoped materialization")
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+	if len(capture.failoverOptions) != 1 {
+		t.Fatalf("failover constructor calls = %d, want 1", len(capture.failoverOptions))
+	}
+	options := capture.failoverOptions[0]
+	if options.Password != "resolved-redis-password" || options.SentinelPassword != "resolved-sentinel-password" {
+		t.Fatalf(
+			"constructor credentials = (%q, %q), want resolved private values",
+			options.Password, options.SentinelPassword,
+		)
+	}
+	if options.Password == p.config.RedisPassword || options.SentinelPassword == p.config.SentinelPassword {
+		t.Fatal("constructor received public descriptor instead of private credential")
+	}
+	p.Stop()
+}
+
+func TestPostInitPassesScopedPasswordToRedisConstructor(t *testing.T) {
+	const raw = "$ENV://AI_REDIS_CONSTRUCTOR_PASSWORD"
+	capabilityValue, scope, _, closeAttempt := newScopedSecretHarness(t, map[string]string{
+		raw: "resolved-redis-password",
+	})
+	defer closeAttempt()
+	fake := &countingRedis{}
+	capture := captureRedisConstructors(t, fake)
+
+	p := &Plugin{config: Config{
+		Limit:         1,
+		TimeWindow:    60,
+		Policy:        "redis",
+		RedisHost:     "127.0.0.1",
+		RedisPassword: raw,
+	}}
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+	if len(capture.redisOptions) != 1 || len(capture.failoverOptions) != 0 {
+		t.Fatalf(
+			"constructor calls = (%d, %d), want one Redis constructor",
+			len(capture.redisOptions), len(capture.failoverOptions),
+		)
+	}
+	options := capture.redisOptions[0]
+	if options.Password != "resolved-redis-password" || options.Password == p.config.RedisPassword {
+		t.Fatalf("Redis constructor password = %q, public config = %q", options.Password, p.config.RedisPassword)
+	}
+	p.Stop()
+}
+
+func TestPostInitValidatesBeforeRedisConstructors(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		config Config
+	}{
+		{
+			name:   "missing redis endpoint",
+			config: Config{Limit: 1, TimeWindow: 60, Policy: "redis"},
+		},
+		{
+			name: "invalid rule",
+			config: Config{
+				Limit: 1, TimeWindow: 60, Policy: "redis", RedisHost: "127.0.0.1",
+				Rules: []Rule{{Count: 0, TimeWindow: 60, Key: "${remote_addr}"}},
+			},
+		},
+		{
+			name:   "invalid quota",
+			config: Config{Limit: 0, TimeWindow: 60, Policy: "redis", RedisHost: "127.0.0.1"},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fake := &countingRedis{}
+			capture := captureRedisConstructors(t, fake)
+			p := &Plugin{config: test.config}
+			if err := p.Init(); err != nil {
+				t.Fatal(err)
+			}
+			if err := p.PostInit(); err == nil {
+				t.Fatal("PostInit() error = nil, want validation failure")
+			}
+			if len(capture.redisOptions) != 0 || len(capture.failoverOptions) != 0 {
+				t.Fatalf(
+					"constructor calls = (%d, %d), want zero",
+					len(capture.redisOptions), len(capture.failoverOptions),
+				)
+			}
+		})
+	}
+}
+
+func TestMaterializeScopedSecretsSkipsEmptyLocalCredentials(t *testing.T) {
+	capabilityValue, scope, broker, closeAttempt := newScopedSecretHarness(t, nil)
+	defer closeAttempt()
+
+	p := &Plugin{config: Config{
+		Limit:            1,
+		TimeWindow:       60,
+		Policy:           "local",
+		RedisPassword:    "",
+		SentinelPassword: "",
+	}}
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
+	}
+	if len(broker.calls) != 0 {
+		t.Fatalf("scoped calls = %d, want zero for local policy", len(broker.calls))
+	}
+	if p.redis != nil || p.redisPassword != nil || p.sentinelPassword != nil {
+		t.Fatal("local policy constructed or retained Redis credentials")
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("local PostInit() error = %v", err)
+	}
+}
+
+func TestMaterializeScopedSecretsSkipsNonEmptyLocalCredentialsWithoutParsing(t *testing.T) {
+	const (
+		redisRaw    = "$ENV://AI_LOCAL_REDIS_PASSWORD"
+		sentinelRaw = "$secret://vault/ai-local-sentinel-password"
+	)
+	capabilityValue, scope, broker, closeAttempt := newScopedSecretHarness(t, nil)
+	defer closeAttempt()
+
+	p := &Plugin{config: Config{
+		Limit:            1,
+		TimeWindow:       60,
+		Policy:           "local",
+		RedisPassword:    redisRaw,
+		SentinelPassword: sentinelRaw,
+	}}
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
+	}
+	if len(broker.calls) != 0 {
+		t.Fatalf("scoped calls = %d, want zero for local policy", len(broker.calls))
+	}
+	if p.config.RedisPassword != "" || p.config.SentinelPassword != "" {
+		t.Fatalf("local unused credentials retained in public config: %#v", p.config)
+	}
+}
+
+func TestMaterializeScopedSecretsIsAtomicAndRedactsFailure(t *testing.T) {
+	const (
+		redisRaw    = "$ENV://AI_ATOMIC_REDIS_PASSWORD"
+		sentinelRaw = "$secret://vault/ai-atomic-sentinel-password"
+	)
+	capabilityValue, scope, broker, closeAttempt := newScopedSecretHarness(t, map[string]string{
+		redisRaw: "redis-password",
+	})
+	defer closeAttempt()
+	broker.fail[sentinelRaw] = errors.New("sentinel-plaintext-must-not-escape")
+
+	p := &Plugin{config: Config{
+		Limit:            1,
+		TimeWindow:       60,
+		Policy:           "redis-sentinel",
+		RedisMasterName:  "mymaster",
+		RedisSentinels:   []RedisSentinel{{Host: "127.0.0.1", Port: 26379}},
+		RedisPassword:    redisRaw,
+		SentinelPassword: sentinelRaw,
+	}}
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p)
+	if err == nil || err.Error() != "materialize plugin secrets: credential unavailable" {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v, want redacted credential error", err)
+	}
+	if strings.Contains(err.Error(), sentinelRaw) || strings.Contains(err.Error(), "sentinel-plaintext") {
+		t.Fatalf("MaterializeScopedPluginSecrets() leaked credential reference: %v", err)
+	}
+	if p.config.RedisPassword != redisRaw || p.config.SentinelPassword != sentinelRaw {
+		t.Fatalf("failed materialization partially changed public config: %#v", p.config)
+	}
+	if p.redisPassword != nil || p.sentinelPassword != nil || p.secretsMaterialized {
+		t.Fatal("failed materialization retained private state")
+	}
+}
+
+func TestMaterializeSecretsRejectsMissingDataEncryptionResolver(t *testing.T) {
+	p := &Plugin{config: Config{
+		Limit:         1,
+		TimeWindow:    60,
+		Policy:        "redis",
+		RedisHost:     "127.0.0.1",
+		RedisPassword: "encrypted-password",
+	}}
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.MaterializeSecrets(); err == nil || err.Error() != "data-encryption resolver is required" {
+		t.Fatalf("MaterializeSecrets() error = %v, want missing resolver error", err)
 	}
 }
 
@@ -153,6 +693,9 @@ func TestPostInitRequiresRedisEndpointAndAcceptsSentinelCredentials(t *testing.T
 	if err := sentinel.Init(); err != nil {
 		t.Fatal(err)
 	}
+	if err := base.MaterializePluginSecrets(sentinel); err != nil {
+		t.Fatalf("sentinel MaterializePluginSecrets() error = %v", err)
+	}
 	if err := sentinel.PostInit(); err != nil {
 		t.Fatalf("sentinel config PostInit() error = %v", err)
 	}
@@ -182,7 +725,7 @@ func TestPostInitRejectsConflictingQuotaModes(t *testing.T) {
 	}
 }
 
-func TestPostInitRejectsPlaintextRedisPasswordWhenEncryptionIsEnabled(t *testing.T) {
+func TestMaterializeSecretsRejectsPlaintextRedisPasswordWhenEncryptionIsEnabled(t *testing.T) {
 	p := &Plugin{config: Config{
 		Limit:         1,
 		TimeWindow:    60,
@@ -196,11 +739,11 @@ func TestPostInitRejectsPlaintextRedisPasswordWhenEncryptionIsEnabled(t *testing
 	if err := p.Init(); err != nil {
 		t.Fatal(err)
 	}
-	err := p.PostInit()
+	err := base.MaterializePluginSecrets(p)
 	if err == nil ||
-		!strings.Contains(err.Error(), "redis_password") ||
+		!strings.Contains(err.Error(), "credential unavailable") ||
 		strings.Contains(err.Error(), "plaintext-secret") {
-		t.Fatalf("PostInit() error = %v, want redacted redis_password validation error", err)
+		t.Fatalf("MaterializePluginSecrets() error = %v, want redacted credential validation error", err)
 	}
 }
 
@@ -221,6 +764,15 @@ func TestPostInitStrictlyResolvesBothRedisPasswordsAndAppliesTimeouts(t *testing
 	if err := p.Init(); err != nil {
 		t.Fatal(err)
 	}
+	if err := base.MaterializePluginSecrets(p); err != nil {
+		t.Fatalf("MaterializePluginSecrets() error = %v", err)
+	}
+	assertSecretDescriptor(t, "redis_password", p.config.RedisPassword)
+	assertSecretDescriptor(t, "sentinel_password", p.config.SentinelPassword)
+	if p.redisPasswordLegacy == nil || *p.redisPasswordLegacy == "" ||
+		p.sentinelPasswordLegacy == nil || *p.sentinelPasswordLegacy == "" {
+		t.Fatal("legacy materialization did not retain private credentials")
+	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
@@ -239,12 +791,15 @@ func TestPostInitStrictlyResolvesBothRedisPasswordsAndAppliesTimeouts(t *testing
 		)
 	}
 	p.Stop()
+	if p.redisPasswordLegacy != nil || p.sentinelPasswordLegacy != nil {
+		t.Fatal("Stop() retained legacy credential values")
+	}
 	if err := p.redis.(*redis.Client).Ping(t.Context()).Err(); !strings.Contains(err.Error(), redis.ErrClosed.Error()) {
 		t.Fatalf("Ping() error after Stop = %v, want redis client closed", err)
 	}
 }
 
-func TestPostInitRejectsPlaintextSentinelPasswordWithoutLeakingIt(t *testing.T) {
+func TestMaterializeSecretsRejectsPlaintextSentinelPasswordWithoutLeakingIt(t *testing.T) {
 	p := &Plugin{config: Config{
 		Limit:            1,
 		TimeWindow:       60,
@@ -259,11 +814,11 @@ func TestPostInitRejectsPlaintextSentinelPasswordWithoutLeakingIt(t *testing.T) 
 	if err := p.Init(); err != nil {
 		t.Fatal(err)
 	}
-	err := p.PostInit()
+	err := base.MaterializePluginSecrets(p)
 	if err == nil ||
-		!strings.Contains(err.Error(), "sentinel_password") ||
+		!strings.Contains(err.Error(), "credential unavailable") ||
 		strings.Contains(err.Error(), "sentinel-plaintext") {
-		t.Fatalf("PostInit() error = %v, want redacted sentinel_password validation error", err)
+		t.Fatalf("MaterializePluginSecrets() error = %v, want redacted credential validation error", err)
 	}
 }
 
@@ -1369,6 +1924,83 @@ func (c *countingRedis) Eval(ctx context.Context, script string, keys []string, 
 }
 
 func (c *countingRedis) Close() error { return nil }
+
+type blockingCloseRedis struct {
+	started    chan struct{}
+	release    chan struct{}
+	closeCalls atomic.Int32
+}
+
+func (c *blockingCloseRedis) Eval(context.Context, string, []string, ...any) *redis.Cmd {
+	return redis.NewCmdResult(nil, nil)
+}
+
+func (c *blockingCloseRedis) Close() error {
+	if c.closeCalls.Add(1) == 1 {
+		close(c.started)
+	}
+	<-c.release
+	return nil
+}
+
+func TestStopClosesClientOnceBeforeDroppingPrivateValues(t *testing.T) {
+	const (
+		redisRaw    = "$ENV://AI_STOP_REDIS_PASSWORD"
+		sentinelRaw = "$secret://vault/ai-stop-sentinel-password"
+	)
+	capabilityValue, scope, _, closeAttempt := newScopedSecretHarness(t, map[string]string{
+		redisRaw:    "resolved-redis-password",
+		sentinelRaw: "resolved-sentinel-password",
+	})
+	defer closeAttempt()
+
+	p := &Plugin{config: Config{
+		Limit:            1,
+		TimeWindow:       60,
+		Policy:           "redis-sentinel",
+		RedisMasterName:  "mymaster",
+		RedisSentinels:   []RedisSentinel{{Host: "127.0.0.1", Port: 26379}},
+		RedisPassword:    redisRaw,
+		SentinelPassword: sentinelRaw,
+	}}
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
+	}
+	legacyRedis := "legacy-redis-password"
+	legacySentinel := "legacy-sentinel-password"
+	p.redisPasswordLegacy = &legacyRedis
+	p.sentinelPasswordLegacy = &legacySentinel
+	fake := &blockingCloseRedis{started: make(chan struct{}), release: make(chan struct{})}
+	p.redis = fake
+
+	done := make(chan struct{}, 2)
+	go func() {
+		p.Stop()
+		done <- struct{}{}
+	}()
+	<-fake.started
+	if p.redisPassword == nil || p.sentinelPassword == nil ||
+		p.redisPasswordLegacy == nil || p.sentinelPasswordLegacy == nil {
+		t.Fatal("Stop() dropped private values before client close completed")
+	}
+	go func() {
+		p.Stop()
+		done <- struct{}{}
+	}()
+	close(fake.release)
+	<-done
+	<-done
+	if got := fake.closeCalls.Load(); got != 1 {
+		t.Fatalf("client Close() calls = %d, want exactly once", got)
+	}
+	if p.redisPassword != nil || p.sentinelPassword != nil ||
+		p.redisPasswordLegacy != nil || p.sentinelPasswordLegacy != nil {
+		t.Fatal("Stop() retained private credential values after client close")
+	}
+}
 
 func (c *countingRedis) commandsOf(command string) int {
 	c.mu.Lock()

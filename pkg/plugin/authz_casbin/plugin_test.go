@@ -1,17 +1,17 @@
 package authz_casbin
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	projectjson "github.com/wklken/apisix-go/pkg/json"
-	"github.com/wklken/apisix-go/pkg/store"
-	"github.com/wklken/apisix-go/pkg/testutil"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/runtime"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -93,10 +93,30 @@ func TestSchemaRejectsTwoCompleteConfigurationPairs(t *testing.T) {
 	}
 }
 
-var (
-	metadataStoreOnce   sync.Once
-	metadataStoreEvents chan *store.Event
-)
+func TestMetadataSchemaRequiresCasbinModelAndPolicy(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	for _, metadata := range []map[string]any{
+		{},
+		{"model": testModel},
+		{"policy": testPolicy},
+		{"model": "", "policy": testPolicy},
+		{"model": testModel, "policy": ""},
+	} {
+		if err := util.Validate(metadata, p.GetMetadataSchema()); err == nil {
+			t.Fatalf("metadata %#v validated, want required non-empty model and policy", metadata)
+		}
+	}
+	if err := util.Validate(map[string]any{
+		"model":  testModel,
+		"policy": testPolicy,
+	}, p.GetMetadataSchema()); err != nil {
+		t.Fatalf("complete metadata should validate: %v", err)
+	}
+}
 
 const testModel = `
 [request_definition]
@@ -129,6 +149,82 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	}
 
 	return p
+}
+
+func newTestPluginWithMetadata(t *testing.T, cfg Config, modelText, policyText string) *Plugin {
+	t.Helper()
+
+	document, err := projectjson.Marshal(map[string]string{"model": modelText, "policy": policyText})
+	if err != nil {
+		t.Fatalf("marshal metadata: %v", err)
+	}
+	metadata, err := runtime.NewMetadataView(map[string][]byte{name: document})
+	if err != nil {
+		t.Fatalf("NewMetadataView() error = %v", err)
+	}
+	p := &Plugin{config: cfg}
+	p.SetDependencies(base.Dependencies{Metadata: metadata})
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+
+	return p
+}
+
+func serveRequest(t *testing.T, p *Plugin, user string) int {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/orders/123", nil)
+	req.Header.Set("X-User", user)
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+	return rr.Code
+}
+
+func TestPreparedGenerationsRetainCasbinMetadata(t *testing.T) {
+	policyAlice := "p, alice, /orders/123, GET"
+	policyBob := "p, bob, /orders/123, GET"
+	pluginN := newTestPluginWithMetadata(t, Config{Username: "X-User"}, testModel, policyAlice)
+	pluginNPlusOne := newTestPluginWithMetadata(t, Config{Username: "X-User"}, testModel, policyBob)
+
+	for _, test := range []struct {
+		name   string
+		plugin *Plugin
+		user   string
+		want   int
+	}{
+		{name: "N allows Alice", plugin: pluginN, user: "alice", want: http.StatusNoContent},
+		{name: "N forbids Bob", plugin: pluginN, user: "bob", want: http.StatusForbidden},
+		{name: "N+1 forbids Alice", plugin: pluginNPlusOne, user: "alice", want: http.StatusForbidden},
+		{name: "N+1 allows Bob", plugin: pluginNPlusOne, user: "bob", want: http.StatusNoContent},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := serveRequest(t, test.plugin, test.user); got != test.want {
+				t.Fatalf("status = %d, want %d", got, test.want)
+			}
+		})
+	}
+}
+
+func TestRouteCasbinConfigOverridesPreparedMetadata(t *testing.T) {
+	routePolicy := "p, alice, /orders/123, GET"
+	metadataPolicy := "p, bob, /orders/123, GET"
+	p := newTestPluginWithMetadata(t, Config{
+		Model:    testModel,
+		Policy:   routePolicy,
+		Username: "X-User",
+	}, testModel, metadataPolicy)
+
+	if got := serveRequest(t, p, "alice"); got != http.StatusNoContent {
+		t.Fatalf("route policy status for Alice = %d, want %d", got, http.StatusNoContent)
+	}
+	if got := serveRequest(t, p, "bob"); got != http.StatusForbidden {
+		t.Fatalf("route policy status for Bob = %d, want %d", got, http.StatusForbidden)
+	}
 }
 
 func TestHandlerAllowsRequestWhenPolicyMatchesHeaderUser(t *testing.T) {
@@ -234,116 +330,37 @@ func TestPostInitLoadsModelAndPolicyFromPaths(t *testing.T) {
 	}
 }
 
-func TestHandlerLoadsCasbinModelAndPolicyFromPluginMetadata(t *testing.T) {
-	putCasbinMetadata(t, testModel, testPolicy)
-	p := newTestPlugin(t, Config{Username: "X-User"})
-
-	req := httptest.NewRequest(http.MethodGet, "/orders/123", nil)
-	req.Header.Set("X-User", "alice")
-	rr := httptest.NewRecorder()
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	})).ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusNoContent {
-		t.Fatalf("status = %d, want 204; body=%s", rr.Code, rr.Body.String())
-	}
-}
-
-func TestHandlerReloadsCasbinPluginMetadata(t *testing.T) {
-	putCasbinMetadata(t, testModel, `p, alice, /orders/123, GET`)
-	p := newTestPlugin(t, Config{Username: "X-User"})
-
-	first := httptest.NewRequest(http.MethodGet, "/orders/123", nil)
-	first.Header.Set("X-User", "alice")
-	firstRecorder := httptest.NewRecorder()
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	})).ServeHTTP(firstRecorder, first)
-	if firstRecorder.Code != http.StatusNoContent {
-		t.Fatalf("initial status = %d, want 204", firstRecorder.Code)
-	}
-
-	putCasbinMetadata(t, testModel, `p, bob, /orders/123, GET`)
-	updated := httptest.NewRequest(http.MethodGet, "/orders/123", nil)
-	updated.Header.Set("X-User", "bob")
-	updatedRecorder := httptest.NewRecorder()
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusAccepted)
-	})).ServeHTTP(updatedRecorder, updated)
-
-	if updatedRecorder.Code != http.StatusAccepted {
-		t.Fatalf("updated status = %d, want 202; body=%s", updatedRecorder.Code, updatedRecorder.Body.String())
-	}
-}
-
-func putCasbinMetadata(t *testing.T, modelText, policyText string) {
-	t.Helper()
-	metadataStoreOnce.Do(func() {
-		metadataStoreEvents = make(chan *store.Event, 8)
-		s, err := store.GetStore(
-			t.TempDir()+"/authz-casbin.db",
-			metadataStoreEvents,
-			testutil.DataEncryptionService(false, nil),
-		)
-		if err != nil {
-			t.Fatalf("open store: %v", err)
-		}
-		s.Start()
-	})
-
-	body, err := projectjson.Marshal(map[string]string{"model": modelText, "policy": policyText})
-	if err != nil {
-		t.Fatalf("marshal metadata: %v", err)
-	}
-	metadataStoreEvents <- &store.Event{
-		Type:  store.EventTypePut,
-		Key:   []byte("/apisix/plugin_metadata/authz-casbin"),
-		Value: body,
-	}
-
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		var metadata Metadata
-		if err := store.GetPluginMetadata(name, &metadata); err == nil &&
-			metadata.Model == modelText && metadata.Policy == policyText {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatal("timed out waiting for authz-casbin plugin metadata")
-}
-
-func TestConcurrentEnforceWhilePolicyReloads(t *testing.T) {
-	putCasbinMetadata(t, testModel, `p, alice, /orders/123, GET`)
-	p := newTestPlugin(t, Config{Username: "X-User"})
+func TestConcurrentEnforceUsesPreparedGenerations(t *testing.T) {
+	pluginN := newTestPluginWithMetadata(t, Config{Username: "X-User"}, testModel,
+		"p, alice, /orders/123, GET")
+	pluginNPlusOne := newTestPluginWithMetadata(t, Config{Username: "X-User"}, testModel,
+		"p, bob, /orders/123, GET")
 
 	var wg sync.WaitGroup
-	stop := make(chan struct{})
-	for range 4 {
-		wg.Go(func() {
-			for {
-				select {
-				case <-stop:
-					return
-				default:
+	errs := make(chan error, 8*128)
+	for _, test := range []struct {
+		plugin *Plugin
+		user   string
+		want   int
+	}{
+		{plugin: pluginN, user: "alice", want: http.StatusNoContent},
+		{plugin: pluginN, user: "bob", want: http.StatusForbidden},
+		{plugin: pluginNPlusOne, user: "alice", want: http.StatusForbidden},
+		{plugin: pluginNPlusOne, user: "bob", want: http.StatusNoContent},
+	} {
+		for range 2 {
+			wg.Go(func() {
+				for range 128 {
+					if got := serveRequest(t, test.plugin, test.user); got != test.want {
+						errs <- fmt.Errorf("user %s status = %d, want %d", test.user, got, test.want)
+					}
 				}
-				enforcer, err := p.currentEnforcer()
-				if err != nil {
-					continue
-				}
-				if _, err := enforcer.Enforce("alice", "/orders/123", "GET"); err != nil {
-					continue
-				}
-			}
-		})
+			})
+		}
 	}
-
-	// Reload the policy while requests authorize concurrently.
-	for range 5 {
-		putCasbinMetadata(t, testModel, "p, alice, /orders/123, GET\np, bob, /orders/123, GET")
-		putCasbinMetadata(t, testModel, `p, alice, /orders/123, GET`)
-	}
-	close(stop)
 	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
+	}
 }

@@ -1,15 +1,14 @@
 package authz_casbin
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
-	"sync"
 
 	"github.com/casbin/casbin/v2"
 	"github.com/casbin/casbin/v2/model"
 	stringadapter "github.com/casbin/casbin/v2/persist/string-adapter"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
-	"github.com/wklken/apisix-go/pkg/store"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -17,8 +16,6 @@ type Plugin struct {
 	base.BasePlugin
 	config   Config
 	enforcer *casbin.SyncedEnforcer
-	mu       sync.Mutex
-	metadata Metadata
 }
 
 const (
@@ -68,6 +65,23 @@ const schema = `
 }
 `
 
+const metadataSchema = `
+{
+  "type": "object",
+  "properties": {
+    "model": {
+      "type": "string",
+      "minLength": 1
+    },
+    "policy": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "required": ["model", "policy"]
+}
+`
+
 type Config struct {
 	ModelPath  string `json:"model_path,omitempty"`
 	PolicyPath string `json:"policy_path,omitempty"`
@@ -85,6 +99,7 @@ func (p *Plugin) Init() error {
 	p.Name = name
 	p.Priority = priority
 	p.Schema = schema
+	p.MetadataSchema = metadataSchema
 
 	return nil
 }
@@ -98,8 +113,21 @@ func (p *Plugin) PostInit() error {
 		p.enforcer = enforcer
 		return nil
 	}
-	_, err := p.metadataEnforcer()
-	return err
+
+	var metadata Metadata
+	found, err := p.MetadataView().Decode(name, &metadata)
+	if err != nil {
+		return err
+	}
+	if !found || metadata.Model == "" || metadata.Policy == "" {
+		return fmt.Errorf("not enough configuration to create enforcer")
+	}
+	enforcer, err := newInlineEnforcer(metadata.Model, metadata.Policy)
+	if err != nil {
+		return err
+	}
+	p.enforcer = enforcer
+	return nil
 }
 
 func (p *Plugin) Config() any {
@@ -135,14 +163,18 @@ func (p *Plugin) newEnforcer() (*casbin.SyncedEnforcer, error) {
 	}
 
 	if p.config.Model != "" && p.config.Policy != "" {
-		m, err := model.NewModelFromString(p.config.Model)
-		if err != nil {
-			return nil, err
-		}
-		return casbin.NewSyncedEnforcer(m, stringadapter.NewAdapter(p.config.Policy))
+		return newInlineEnforcer(p.config.Model, p.config.Policy)
 	}
 
 	return nil, fmt.Errorf("not enough configuration to create enforcer")
+}
+
+func newInlineEnforcer(modelText, policyText string) (*casbin.SyncedEnforcer, error) {
+	m, err := model.NewModelFromString(modelText)
+	if err != nil {
+		return nil, err
+	}
+	return casbin.NewSyncedEnforcer(m, stringadapter.NewAdapter(policyText))
 }
 
 func (p *Plugin) hasRouteConfig() bool {
@@ -151,42 +183,10 @@ func (p *Plugin) hasRouteConfig() bool {
 }
 
 func (p *Plugin) currentEnforcer() (*casbin.SyncedEnforcer, error) {
-	if p.hasRouteConfig() {
-		if p.enforcer == nil {
-			return nil, fmt.Errorf("casbin enforcer is not initialized")
-		}
-		return p.enforcer, nil
+	if p.enforcer == nil {
+		return nil, errors.New("casbin enforcer is not initialized")
 	}
-	return p.metadataEnforcer()
-}
-
-func (p *Plugin) metadataEnforcer() (*casbin.SyncedEnforcer, error) {
-	var metadata Metadata
-	if err := store.GetPluginMetadata(name, &metadata); err != nil {
-		return nil, err
-	}
-	if metadata.Model == "" || metadata.Policy == "" {
-		return nil, fmt.Errorf("not enough configuration to create enforcer")
-	}
-
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.enforcer != nil && p.metadata == metadata {
-		return p.enforcer, nil
-	}
-
-	m, err := model.NewModelFromString(metadata.Model)
-	if err != nil {
-		return nil, err
-	}
-	enforcer, err := casbin.NewSyncedEnforcer(m, stringadapter.NewAdapter(metadata.Policy))
-	if err != nil {
-		return nil, err
-	}
-	p.enforcer = enforcer
-	p.metadata = metadata
-
-	return enforcer, nil
+	return p.enforcer, nil
 }
 
 func (p *Plugin) username(r *http.Request) string {

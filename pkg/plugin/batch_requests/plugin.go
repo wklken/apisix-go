@@ -3,7 +3,6 @@ package batch_requests
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -18,7 +17,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
-	"github.com/wklken/apisix-go/pkg/store"
+	"github.com/wklken/apisix-go/pkg/runtime"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -75,16 +74,6 @@ const metadataSchema = `
   }
 }
 `
-
-var compiledBatchLimitsSchema = mustCompileBatchLimitsSchema()
-
-func mustCompileBatchLimitsSchema() *util.CompiledSchema {
-	compiled, err := util.CompileSchema(metadataSchema)
-	if err != nil {
-		panic("compile batch-requests metadata schema: " + err.Error())
-	}
-	return compiled
-}
 
 type Config struct{}
 
@@ -192,39 +181,21 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 }
 
 func NewHandler(dispatcher http.Handler) http.Handler {
-	return newMetadataHandler(dispatcher, loadLimits)
+	return NewHandlerWithLimits(dispatcher, Limits{})
+}
+
+func NewHandlerFromMetadata(dispatcher http.Handler, view runtime.MetadataView) (http.Handler, error) {
+	var limits Limits
+	if _, err := view.Decode(name, &limits); err != nil {
+		return nil, fmt.Errorf("batch-requests metadata decode failed: %w", err)
+	}
+	return NewHandlerWithLimits(dispatcher, limits), nil
 }
 
 func NewHandlerWithLimits(dispatcher http.Handler, limits Limits) http.Handler {
 	limits = applyLimitDefaults(limits)
 	batchDispatcher := newBatchDispatcher(dispatcher, limits.MaxConcurrency)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		serveBatchRequest(batchDispatcher, limits, w, r)
-	})
-}
-
-func newMetadataHandler(dispatcher http.Handler, loader func() (Limits, error)) http.Handler {
-	// Seed the Store-owned last-good snapshot before the public endpoint serves
-	// its first request. Later router generations repeat this validation against
-	// the same active Store.
-	initial, err := loader()
-	if err != nil {
-		initial = Limits{}
-	}
-	initial = applyLimitDefaults(initial)
-	batchDispatcher := newBatchDispatcher(dispatcher, initial.MaxConcurrency)
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		limits, err := loader()
-		if err != nil {
-			if writeErr := util.WriteJSON(w, http.StatusBadRequest, ErrorResponse{
-				ErrorMessage: fmt.Sprintf("invalid configuration: %s", err),
-			}); writeErr != nil {
-				logger.Debugf("failed to write batch-requests error response: %s", writeErr)
-			}
-			return
-		}
-		limits = applyLimitDefaults(limits)
-		batchDispatcher.setLimit(limits.MaxConcurrency)
 		serveBatchRequest(batchDispatcher, limits, w, r)
 	})
 }
@@ -419,27 +390,6 @@ func applyLimitDefaults(limits Limits) Limits {
 	return limits
 }
 
-func loadLimits() (Limits, error) {
-	var limits Limits
-	usedLastGood, err := store.GetValidatedPluginMetadata(
-		name,
-		func(metadata map[string]any) error {
-			return compiledBatchLimitsSchema.Validate(metadata)
-		},
-		&limits,
-	)
-	if errors.Is(err, store.ErrNotFound) {
-		return applyLimitDefaults(Limits{}), nil
-	}
-	if err != nil {
-		logger.Errorf("validate plugin_metadata %s: %s", name, err)
-		if !usedLastGood {
-			return Limits{}, err
-		}
-	}
-	return applyLimitDefaults(limits), nil
-}
-
 func validMethod(method string) bool {
 	switch method {
 	case http.MethodGet, http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodPatch,
@@ -471,16 +421,6 @@ func newBatchDispatcher(handler http.Handler, limit int) *batchDispatcher {
 		limit:   limit,
 		changed: make(chan struct{}),
 	}
-}
-
-func (d *batchDispatcher) setLimit(limit int) {
-	d.mu.Lock()
-	if d.limit != limit {
-		d.limit = limit
-		close(d.changed)
-		d.changed = make(chan struct{})
-	}
-	d.mu.Unlock()
 }
 
 func (d *batchDispatcher) acquire(ctx context.Context) bool {

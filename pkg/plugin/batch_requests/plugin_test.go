@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -19,6 +18,7 @@ import (
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/logger"
+	"github.com/wklken/apisix-go/pkg/runtime"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -574,46 +574,201 @@ func TestHandlerDistinguishesMissingPipelineFromEmptyPipeline(t *testing.T) {
 	}
 }
 
-func TestMetadataHandlerRejectsInvalidInitialMetadata(t *testing.T) {
-	handler := newMetadataHandler(http.NewServeMux(), func() (Limits, error) {
-		return Limits{}, errors.New("max_body_size must be positive")
-	})
-	req := httptest.NewRequest(
-		http.MethodPost,
-		DefaultURI,
-		strings.NewReader(`{"pipeline":[{"path":"/inner"}]}`),
-	)
-	res := httptest.NewRecorder()
-	handler.ServeHTTP(res, req)
-
-	if res.Code != http.StatusBadRequest {
-		t.Fatalf("response code = %d, want 400; body=%q", res.Code, res.Body.String())
+func TestNewHandlerFromMetadataDecodesFinalLimitsOnce(t *testing.T) {
+	source := []byte(`{"max_pipeline_items":1}`)
+	metadata := map[string][]byte{name: source}
+	view, err := runtime.NewMetadataView(metadata)
+	if err != nil {
+		t.Fatalf("NewMetadataView() error = %v", err)
 	}
-	if !strings.Contains(res.Body.String(), "invalid configuration") {
-		t.Fatalf("response body = %q, want invalid configuration", res.Body.String())
+	handler, err := NewHandlerFromMetadata(http.NotFoundHandler(), view)
+	if err != nil {
+		t.Fatalf("NewHandlerFromMetadata() error = %v", err)
+	}
+
+	// Neither mutation of the original byte slice nor replacement of its map
+	// entry may change the fixed handler after construction.
+	source[len(source)-2] = '2'
+	metadata[name] = []byte(`{"max_pipeline_items":20}`)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, newBatchRequest(t, 2))
+	if res.Code != http.StatusBadRequest {
+		t.Fatalf("response code = %d, want 400 for the construction-time limit; body=%q", res.Code, res.Body.String())
 	}
 }
 
-func TestMetadataHandlerSeedsBeforeFirstRequest(t *testing.T) {
-	var loads atomic.Int32
-	handler := newMetadataHandler(http.NewServeMux(), func() (Limits, error) {
-		loads.Add(1)
-		return Limits{MaxBodySize: defaultMaxBodySize, MaxPipelineItems: defaultMaxPipelineItems}, nil
+func TestPreparedGenerationsRetainBatchRequestLimits(t *testing.T) {
+	var calls atomic.Int32
+	dispatcher := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusNoContent)
 	})
-	if got := loads.Load(); got != 1 {
-		t.Fatalf("metadata loads after construction = %d, want 1 seed", got)
+
+	viewN, err := runtime.NewMetadataView(map[string][]byte{
+		name: []byte(`{"max_pipeline_items":1}`),
+	})
+	if err != nil {
+		t.Fatalf("NewMetadataView(N) error = %v", err)
+	}
+	viewN1, err := runtime.NewMetadataView(map[string][]byte{
+		name: []byte(`{"max_pipeline_items":2}`),
+	})
+	if err != nil {
+		t.Fatalf("NewMetadataView(N+1) error = %v", err)
+	}
+	handlerN, err := NewHandlerFromMetadata(dispatcher, viewN)
+	if err != nil {
+		t.Fatalf("NewHandlerFromMetadata(N) error = %v", err)
+	}
+	handlerN1, err := NewHandlerFromMetadata(dispatcher, viewN1)
+	if err != nil {
+		t.Fatalf("NewHandlerFromMetadata(N+1) error = %v", err)
+	}
+
+	resN := httptest.NewRecorder()
+	handlerN.ServeHTTP(resN, newBatchRequest(t, 2))
+	if resN.Code != http.StatusBadRequest {
+		t.Fatalf("N response code = %d, want 400; body=%q", resN.Code, resN.Body.String())
+	}
+	resN1 := httptest.NewRecorder()
+	handlerN1.ServeHTTP(resN1, newBatchRequest(t, 2))
+	if resN1.Code != http.StatusOK {
+		t.Fatalf("N+1 response code = %d, want 200; body=%q", resN1.Code, resN1.Body.String())
+	}
+	responsesN1 := decodeAllPipelineResponses(t, resN1.Body.String())
+	if len(responsesN1) != 2 {
+		t.Fatalf("N+1 responses length = %d, want exactly 2", len(responsesN1))
+	}
+	for i, response := range responsesN1 {
+		if response.Status != http.StatusNoContent {
+			t.Fatalf("N+1 response[%d] status = %d, want 204", i, response.Status)
+		}
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("dispatcher calls after N+1 two-item request = %d, want 2", got)
+	}
+
+	resN1TooMany := httptest.NewRecorder()
+	handlerN1.ServeHTTP(resN1TooMany, newBatchRequest(t, 3))
+	if resN1TooMany.Code != http.StatusBadRequest {
+		t.Fatalf("N+1 three-item response code = %d, want 400; body=%q", resN1TooMany.Code, resN1TooMany.Body.String())
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("dispatcher calls after N+1 three-item request = %d, want unchanged at 2", got)
+	}
+}
+
+func TestNewHandlerFromMetadataBindsMaxConcurrency(t *testing.T) {
+	view, err := runtime.NewMetadataView(map[string][]byte{
+		name: []byte(`{"max_concurrency":1}`),
+	})
+	if err != nil {
+		t.Fatalf("NewMetadataView() error = %v", err)
+	}
+
+	var calls atomic.Int32
+	firstEntered := make(chan struct{})
+	firstExited := make(chan struct{})
+	releaseWorker := make(chan struct{})
+	var released atomic.Bool
+	release := func() {
+		if released.CompareAndSwap(false, true) {
+			close(releaseWorker)
+		}
+	}
+	t.Cleanup(release)
+	dispatcher := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		call := calls.Add(1)
+		if call == 1 {
+			close(firstEntered)
+			<-releaseWorker
+			defer close(firstExited)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	handler, err := NewHandlerFromMetadata(dispatcher, view)
+	if err != nil {
+		t.Fatalf("NewHandlerFromMetadata() error = %v", err)
+	}
+
+	itemTimeout := 1
+	body, err := json.Marshal(Request{
+		Timeout: &itemTimeout,
+		Pipeline: []PipelineRequest{
+			{Path: "/first"},
+			{Path: "/second"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	outerCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	req := httptest.NewRequest(http.MethodPost, DefaultURI, bytes.NewReader(body)).WithContext(outerCtx)
+	result := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		res := httptest.NewRecorder()
+		handler.ServeHTTP(res, req)
+		result <- res
+	}()
+	select {
+	case <-firstEntered:
+	case <-time.After(time.Second):
+		t.Fatal("first dispatcher call did not enter")
+	}
+
+	var res *httptest.ResponseRecorder
+	select {
+	case res = <-result:
+	case <-time.After(time.Second):
+		t.Fatal("batch handler did not return after the outer request deadline")
+	}
+	if res.Code != http.StatusOK {
+		t.Fatalf("batch response code = %d, want 200; body=%q", res.Code, res.Body.String())
+	}
+	responses := decodeAllPipelineResponses(t, res.Body.String())
+	if len(responses) != 2 || responses[0].Status != http.StatusGatewayTimeout ||
+		responses[1].Status != http.StatusGatewayTimeout {
+		t.Fatalf("pipeline responses = %#v, want two timeout responses", responses)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("dispatcher calls = %d, want one worker while the concurrency slot is occupied", got)
+	}
+
+	release()
+	select {
+	case <-firstExited:
+	case <-time.After(time.Second):
+		t.Fatal("first dispatcher worker did not exit after release")
+	}
+}
+
+func TestNewHandlerFromMetadataUsesDefaultsWhenDocumentIsAbsent(t *testing.T) {
+	view, err := runtime.NewMetadataView(nil)
+	if err != nil {
+		t.Fatalf("NewMetadataView() error = %v", err)
+	}
+	handler, err := NewHandlerFromMetadata(http.NotFoundHandler(), view)
+	if err != nil {
+		t.Fatalf("NewHandlerFromMetadata() error = %v", err)
 	}
 
 	res := httptest.NewRecorder()
-	handler.ServeHTTP(
-		res,
-		httptest.NewRequest(http.MethodPost, DefaultURI, strings.NewReader(`{"pipeline":[{"path":"/missing"}]}`)),
-	)
-	if res.Code != http.StatusOK {
-		t.Fatalf("response code = %d, want 200; body=%q", res.Code, res.Body.String())
+	handler.ServeHTTP(res, newBatchRequest(t, defaultMaxPipelineItems+1))
+	if res.Code != http.StatusBadRequest {
+		t.Fatalf("response code = %d, want default max-pipeline rejection; body=%q", res.Code, res.Body.String())
 	}
-	if got := loads.Load(); got != 2 {
-		t.Fatalf("metadata loads after request = %d, want seed plus request load", got)
+}
+
+func TestNewHandlerFromMetadataRejectsInvalidLimitsSynchronously(t *testing.T) {
+	view, err := runtime.NewMetadataView(map[string][]byte{
+		name: []byte(`{"max_pipeline_items":"two"}`),
+	})
+	if err != nil {
+		t.Fatalf("NewMetadataView() error = %v", err)
+	}
+	if handler, err := NewHandlerFromMetadata(http.NotFoundHandler(), view); err == nil || handler != nil {
+		t.Fatalf("NewHandlerFromMetadata() = (%v, %v), want nil handler and synchronous error", handler, err)
 	}
 }
 
@@ -1120,6 +1275,19 @@ func TestDispatchPipelineRequestTimeoutWhenHandlerIgnoringCancellation(t *testin
 	if elapsed >= 200*time.Millisecond {
 		t.Fatalf("dispatch took %s, want return before 200ms", elapsed)
 	}
+}
+
+func newBatchRequest(t *testing.T, pipelineItems int) *http.Request {
+	t.Helper()
+	items := make([]PipelineRequest, pipelineItems)
+	for i := range items {
+		items[i].Path = "/pipeline"
+	}
+	body, err := json.Marshal(Request{Pipeline: items})
+	if err != nil {
+		t.Fatalf("marshal batch request: %v", err)
+	}
+	return httptest.NewRequest(http.MethodPost, DefaultURI, bytes.NewReader(body))
 }
 
 func decodePipelineResponses(t *testing.T, body string) []PipelineResponse {

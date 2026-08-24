@@ -723,67 +723,137 @@ go test -race ./pkg/compiler -run 'TestWorkerCompilerFactoryClose|TestWorkerComp
 
 **Files:** review all changed `pkg/compiler/**`; verify accepted S1/S2/S3/A1/M1/M2/X1; cross-check Task 6 total plan, C6.4 Task 10, original Task 6, and CP6 handoff
 
-- [ ] **Step 1: Run focused unit and race gates**
+- [ ] **Step 0: Freeze the complete accepted CP5 range**
+
+Use the reviewed pre-CP5 integration boundary, not the final clean worktree
+diff, as the immutable review base:
+
+```bash
+CP5_BASE=042decf69a000d42b300155b3ac33a1c8a5a4737
+CP5_HEAD=$(git rev-parse HEAD) # only after Task 7 and any accepted deferred-test fix are integrated
+git status --short
+git diff --stat "$CP5_BASE...$CP5_HEAD"
+git diff --name-only "$CP5_BASE...$CP5_HEAD"
+git diff --check "$CP5_BASE...$CP5_HEAD"
+```
+
+Record both immutable SHAs. The final integration worktree must otherwise be
+clean. Every independent reviewer receives the full
+`$CP5_BASE...$CP5_HEAD` range; reviewing only the last task or an uncommitted
+diff is invalid.
+
+- [ ] **Step 1: Close the deferred review ledger**
+
+Run and record the real factory-path proof that closes the two Task 1 minors:
 
 ```bash
 source .envrc
 export GOFLAGS=-mod=readonly
-go test ./pkg/compiler ./pkg/runtime ./pkg/plugin \
-  -run 'PreparedGeneration|EffectiveBindingMaterializer|PrepareGeneration|PrepareRecovery|Cleanup|Discard|FactoryClose|ScopedSecretMaterialization|FactoryInstance' -count=1
-go test -race ./pkg/compiler ./pkg/runtime ./pkg/plugin \
-  -run 'PreparedGeneration|EffectiveBindingMaterializer|PrepareGeneration|PrepareRecovery|Cleanup|Discard|FactoryClose|ScopedSecretMaterialization|FactoryInstance' -count=1
+go test ./pkg/compiler -run '^TestWorkerCompilerFactoryPrepareGenerationUsesRealAliasAndCatalog$' -count=1
 ```
 
-Record any unrelated baseline failure exactly; never call a narrowed rerun full-package passing.
+Add deterministic
+`TestCleanupStackRejectsOwnershipAfterSealWhileCleanupBlocked`: block an owned
+cleanup callback after Close has sealed the ledger, call `Own` concurrently,
+assert it immediately returns `ErrInvalidInput`, then release cleanup and prove
+the original owner ran once. Use channels and bounded deadlock guards, never a
+sleep or scheduler probe. Run it under ordinary and race tests and record both
+Task 1 minors plus the Task 2 minor closed in the progress ledger before CP5
+acceptance.
 
-- [ ] **Step 2: Run lint, generator, build, and diff checks**
+- [ ] **Step 2: Map and run compiler/runtime/plugin contract gates**
+
+First use `go test -list` for every package/regex and retain the non-zero match
+list. Then run:
+
+```bash
+source .envrc
+export GOFLAGS=-mod=readonly
+go test ./pkg/compiler -count=1
+go test -race ./pkg/compiler \
+  -run 'PreparedGeneration|EffectiveBindingMaterializer|PrepareGeneration|PrepareRecovery|CleanupStack|Discard|WorkerCompilerFactoryClose' -count=1
+go test ./pkg/runtime -run '^(TestTaskRegistry|TestResourceRegistry)' -count=1
+go test -race ./pkg/runtime -run '^(TestTaskRegistry|TestResourceRegistry)' -count=1
+go test ./pkg/plugin \
+  -run '^(TestCompositeChildPreparer|TestDescriptorForFactory|TestDescriptorBinding|TestAttemptInstanceKey|TestBindAttemptResolvedPlugin|TestNewFactoryInstance|TestSupportsScopedSecretMaterialization|TestRawResolverFactoriesSupportScopedSecretMaterialization)' \
+  -count=1
+go test -race ./pkg/plugin \
+  -run '^(TestCompositeChildPreparer|TestDescriptorBinding|TestAttemptInstanceKey|TestBindAttemptResolvedPlugin|TestNewFactoryInstance|TestSupportsScopedSecretMaterialization|TestRawResolverFactoriesSupportScopedSecretMaterialization)' \
+  -count=1
+```
+
+Re-run the exact Task 7 focused/race commands on the integrated `CP5_HEAD`;
+worker-worktree evidence alone is insufficient. Record any unrelated baseline
+failure exactly; never call a narrowed rerun full-package passing. Reuse the
+accepted S1/S2/S3/M1/M2/A1/X1 leaf SHA evidence rather than pretending the
+top-level plugin subset re-tests every plugin leaf; the Task 6 final acceptance
+owns the wider changed-leaf aggregation.
+
+- [ ] **Step 3: Run lint, generator, build, and range checks**
 
 ```bash
 source .envrc
 export GOFLAGS=-mod=readonly
 golangci-lint run ./pkg/compiler/... ./pkg/runtime/... ./pkg/plugin/...
-go run ./cmd/capability-gen -check
+go run ./cmd/capability-gen -repo-root . -check
 make build
-git diff --check
+git diff --check "$CP5_BASE...$CP5_HEAD"
 ```
 
-- [ ] **Step 3: Run public API and stale-assumption scans**
+- [ ] **Step 4: Run type-aware public API and stale-assumption scans**
 
 ```bash
-rg -n --glob '*.go' \
-  'PrepareConsumers\([^\n]*MetadataView|type PluginPreparer|type PreparedPlugins|registeredAttempt\.(metadata|consumers|plugins)' pkg cmd
+go doc -all ./pkg/compiler
+go test ./pkg/compiler \
+  -run 'TestPreparedGenerationPublicAPIExposesNoRuntimeHandles|TestEffectiveBindingMaterializerSurfacesStayCompilerPrivate' \
+  -count=1
 rg -n --glob '*.go' --glob '!**/*_test.go' \
-  'PreparedBindingView|BindingView\(|PluginBinding\(|\[\]plugin\.Binding|map\[.*\]plugin\.Binding' pkg/compiler
+  'type PluginPreparer|type PreparedPlugins|registeredAttempt\.(metadata|consumers|plugins)|PreparedBindingView|BindingView\(|PluginBinding\(' pkg cmd
 rg -n --glob '*.go' --glob '!**/*_test.go' \
-  'func \(.*PreparedGeneration.*\).*(AttemptRegistration|GenerationCapability|Materializer|TaskRegistry|ResourceRegistry|ConsumerBindings|ResourceLease|plugin\.Plugin|plugin\.Binding|FactoryInstance|store\.Store|data_encryption)' pkg/compiler
-rg -n --glob '*.go' \
   'Occurrences\(capability\.SecretPluginConfig\).*all|all.*Occurrences\(capability\.SecretPluginConfig\)|inventory-all-runtime-plugins' \
-  pkg/compiler docs/superpowers/plans/2026-08-24-immutable-task6-cp5-prepared-generation.md
+  pkg/compiler
 ```
 
-The package-private `materializeEffectiveBindings` return is the only allowed production `[]plugin.Binding` in CP5. Confirm no CP5 code selects effective HTTP/stream sets.
+Inspect the `go doc -all` output and assert the exact accepted methods on
+`PreparedGeneration` and `WorkerCompilerFactory`; do not rely on a single-line
+signature regex. The only allowed production `[]plugin.Binding` occurrences
+are the private effective materializer's return, local accumulation, and its
+private terminal-failure helper; record the exact file/line whitelist and fail
+on any exported or outside-materializer occurrence. Confirm no CP5 code selects
+effective HTTP/stream sets.
 
-- [ ] **Step 4: Synchronize downstream contracts**
+- [ ] **Step 5: Synchronize downstream contracts**
 
 Record: no public binding view; CP5 return does not mean all bindings exist; Task 7/8 compute exact specs and may not directly call plugin construction/lifecycle/resource acquisition; CP6 consumes only the base bundle and cannot forge an ApplyTicket; `SecretPluginConfig` occurrence is authority, not inventory. If another plan retains the rejected contract, update it before implementation or record explicit accepted supersession. Never implement both.
 
-- [ ] **Step 5: Request independent review**
+Create a referenced-plan ledger covering the original Task 6, Task 6 total,
+C6.4, and CP6 handoff with columns `file`, `old contract`, `authoritative
+supersession`, and `future owner`. In particular, explicitly supersede the
+original claims that Prepare returns HTTP/Stream/Probe views or finishes every
+plugin lease before return: CP5 returns the defensive base owner and private
+materialization authority; Immutable Task 7/8 supplies exact effective specs
+and snapshots; Task 9 remains the sole activation owner.
+
+- [ ] **Step 6: Request independent review**
 
 Ask one read-only reviewer to verify exact candidate/recovery identity, zero speculative bindings, immediate ownership, task-before-resource reverse teardown, third-plugin failure, source authority, no public binding/raw handles, discard preservation, close/materialize/factory races, redaction, Task 7/8 deferral, and Task 9 activation ownership. Independently validate every finding and rerun affected gates.
 
-- [ ] **Step 6: Commit as integration owner only**
+- [ ] **Step 7: Record the accepted integration range**
 
 ```bash
 git status --short
-git diff --stat
-git diff -- pkg/compiler pkg/runtime
-git diff --check
-git add pkg/compiler
-git add pkg/runtime  # only if independently justified
-git commit -m "feat(compiler): own prepared plugin generations"
+git diff --stat "$CP5_BASE...$CP5_HEAD"
+git diff --name-only "$CP5_BASE...$CP5_HEAD"
+git diff --check "$CP5_BASE...$CP5_HEAD"
 ```
 
-Do not stage unrelated plans/files. Do not push, open a PR, merge to `master`, or start Task 7/8 from a pre-commit worktree.
+If Tasks 1–7 and the accepted deferred-test repair are already integrated and
+the worktree is clean, record the immutable accepted range; do not create an
+empty or squash commit. Only review remediation that changes files gets its own
+precise commit, followed by a new `CP5_HEAD` and every invalidated gate. Plan
+status commits remain separate from product/test commits. Do not stage unrelated
+files. Do not push, open a PR, merge to `master`, or start Immutable Task 7/8
+from a pre-commit worktree.
 
 ## Acceptance Ledger
 

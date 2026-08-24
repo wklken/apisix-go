@@ -645,11 +645,25 @@ go test -race ./pkg/compiler -run 'TestWorkerCompilerFactoryPrepareGenerationTra
 
 ### Task 6: Implement Recovery Without Desired-State or Disposition Access
 
-**Files:** modify worker factory/tests and `pkg/compiler/factory_test.go`
+**Files:** modify `pkg/compiler/worker_factory.go`; create
+`pkg/compiler/worker_factory_recovery_test.go`; modify existing factory tests
+only when an exact lower-boundary assertion is missing
 
 - [ ] **Step 1: Write RED tests**
 
-Cover committed-only input, independent domain revisions, mismatch before registration, zero plugins without specs, and base owner transfer. Any candidate/disposition call must panic.
+Cover committed-only input, independent domain revisions, mismatch before
+registration, zero plugins without specs, base owner transfer, and a real
+candidate/recovery resource-isolation path. Any candidate registration call
+must panic. The recording recovery materializer raw-captures the map it receives
+without cloning; mutate that received map after transfer and prove the prepared
+owner remains unchanged, so recorder cloning cannot hide a factory alias.
+
+For the isolation path, run real `PrepareGeneration` and `PrepareRecovery` at
+the same desired fence, supply both generations the same effective plugin spec
+using each attempt's exact occurrence, materialize both, and assert their
+`InstanceKey.Attempt` values equal the real CandidateAttemptID and
+RecoveryAttemptID, differ, and occupy distinct shared-registry resources. Do
+not treat the old fixture-only `...DoNotShare` test as production evidence.
 
 - [ ] **Step 2: Implement exact recovery**
 
@@ -660,8 +674,8 @@ Call registration-only `prepareRecoveryAttempt`, then the same task/consumer/met
 ```bash
 source .envrc
 export GOFLAGS=-mod=readonly
-go test ./pkg/compiler -run '^TestWorkerCompilerFactoryPrepareRecovery|^TestPrepareRecoveryAttempt' -count=1
-go test -race ./pkg/compiler -run 'TestWorkerCompilerFactoryPrepareRecoveryTransfersBaseOwners|TestEffectiveBindingMaterializerCandidateAndRecoveryAttemptsDoNotAlias' -count=1
+go test ./pkg/compiler -run '^TestWorkerCompilerFactoryPrepareRecovery|^TestAttemptFactory.*Recovery' -count=1
+go test -race ./pkg/compiler -run 'TestWorkerCompilerFactoryPrepareRecoveryTransfersBaseOwners|TestWorkerCompilerFactoryPrepareRecoveryPreservesIndependentCommittedDomains|TestWorkerCompilerFactoryPrepareRecoveryDoesNotAliasCandidateResources' -count=1
 ```
 
 ---

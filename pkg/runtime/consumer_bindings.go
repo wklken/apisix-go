@@ -15,7 +15,6 @@ var (
 	errConsumerGroupIDRequired      = errors.New("consumer bindings: consumer group id is required")
 	errConsumerGroupIDDuplicate     = errors.New("consumer bindings: duplicate consumer group id")
 	errCredentialPluginRequired     = errors.New("consumer bindings: credential plugin is required")
-	errCredentialKeyRequired        = errors.New("consumer bindings: credential key is required")
 	errCredentialConsumerIDRequired = errors.New("consumer bindings: credential consumer id is required")
 	errCredentialDuplicate          = errors.New("consumer bindings: duplicate credential")
 	errCredentialConsumerUnknown    = errors.New("consumer bindings: credential references unknown consumer")
@@ -196,9 +195,6 @@ func buildConsumerCredentialIndex(
 	for _, record := range ordered {
 		if record.Plugin == "" {
 			return nil, errCredentialPluginRequired
-		}
-		if record.Key == "" {
-			return nil, errCredentialKeyRequired
 		}
 		if record.ConsumerID == "" {
 			return nil, errCredentialConsumerIDRequired

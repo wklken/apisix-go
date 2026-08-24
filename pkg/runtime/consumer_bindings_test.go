@@ -90,6 +90,21 @@ func TestConsumerBindingsIndexesAnonymousConsumerAndCredential(t *testing.T) {
 	}
 }
 
+func TestConsumerBindingsPreservesEmptyCredentialLookupKeyCompatibility(t *testing.T) {
+	bindings, err := NewConsumerBindings(
+		[]ConsumerRecord{{ID: "consumer-1", Consumer: resource.Consumer{Username: "consumer-1"}}},
+		nil,
+		[]ConsumerCredentialBinding{{Plugin: "basic-auth", Key: "", ConsumerID: "consumer-1"}},
+	)
+	if err != nil {
+		t.Fatalf("NewConsumerBindings() error = %v", err)
+	}
+	consumer, ok := bindings.ConsumerByPluginKey("basic-auth", "")
+	if !ok || consumer.Username != "consumer-1" {
+		t.Fatalf("ConsumerByPluginKey(empty) = (%+v, %v)", consumer, ok)
+	}
+}
+
 func TestConsumerBindingsRejectsInvalidInputDeterministicallyAndRedacted(t *testing.T) {
 	validConsumer := resource.Consumer{Username: "alice"}
 	tests := []struct {
@@ -127,12 +142,6 @@ func TestConsumerBindingsRejectsInvalidInputDeterministicallyAndRedacted(t *test
 			consumers:   []ConsumerRecord{{ID: "consumer-1", Consumer: validConsumer}},
 			credentials: []ConsumerCredentialBinding{{Plugin: "", Key: "secret-key", ConsumerID: "consumer-1"}},
 			want:        "consumer bindings: credential plugin is required",
-		},
-		{
-			name:        "empty key",
-			consumers:   []ConsumerRecord{{ID: "consumer-1", Consumer: validConsumer}},
-			credentials: []ConsumerCredentialBinding{{Plugin: "key-auth", Key: "", ConsumerID: "consumer-1"}},
-			want:        "consumer bindings: credential key is required",
 		},
 		{
 			name:        "empty credential consumer id",

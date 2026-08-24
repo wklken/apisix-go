@@ -461,7 +461,7 @@ go test -race ./pkg/compiler -run 'TestPreparedGenerationConcurrent|TestPrepared
 
 **Produces:** compiler-internal bindings for future exact Task 7/8 specs; no inventory and no public lookup.
 
-- [ ] **Step 1: Write RED API and validation tests**
+- [x] **Step 1: Write RED API and validation tests**
 
 Add:
 
@@ -479,7 +479,7 @@ func TestEffectiveBindingMaterializerCloseRaceIsLinearized(t *testing.T)
 
 The raw-occurrence test creates a candidate containing route, service, plugin-config, global, consumer, and stream resources, then supplies zero specs. Assert zero plugin construction and leases. Enumerating `attempt.Occurrences(SecretPluginConfig)` alone must never trigger construction.
 
-- [ ] **Step 2: Write RED lifecycle and third-plugin tests**
+- [x] **Step 2: Write RED lifecycle and third-plugin tests**
 
 Record this order:
 
@@ -511,7 +511,7 @@ in reverse, consumers to close, and registration to close, all exactly once.
 An observer-start failure must use the same cleanup path and leave no task or
 binding. Return no partial bindings.
 
-- [ ] **Step 3: Run RED**
+- [x] **Step 3: Run RED**
 
 ```bash
 source .envrc
@@ -519,13 +519,13 @@ export GOFLAGS=-mod=readonly
 go test ./pkg/compiler -run 'TestEffectiveBindingMaterializer|TestPrepareGenerationThirdPluginFailure' -count=1
 ```
 
-- [ ] **Step 4: Validate supplied specs without inference**
+- [x] **Step 4: Validate supplied specs without inference**
 
 Do not scan candidates to invent instances. For plugin config, index `attempt.Occurrences(SecretPluginConfig)` only to authorize the supplied exact domain/resource/factory. For prepared consumer, validate exact defensive A1 consumer/group config and never resolve its secrets again. For system, require `ScopeSystem`, compiler-recognized derived owner, and manifest proof of no secret declaration.
 
 Require valid domain, execution owner, source, factory, scope, provenance, config, manifest compatibility, and no duplicate canonical spec. Do not implement route precedence, global/404, consumer composition, request-context derivation, `_meta`, or stream merge.
 
-- [ ] **Step 5: Construct and own exact instances**
+- [x] **Step 5: Construct and own exact instances**
 
 Build the base dependencies with effective config, attempt capability,
 metadata, safe consumers, and tasks. Never populate `DataEncryption`. Before
@@ -544,11 +544,11 @@ Derive `runtime.ResourceKey` from the complete attempt-owned instance key plus d
 
 If any spec fails, mark the generation terminal under the materialization gate, release the gate, and invoke generation cleanup so tasks quiesce before resource shutdown. Join redacted primary and cleanup errors; return no bindings.
 
-- [ ] **Step 6: Keep effective wrappers deferred**
+- [x] **Step 6: Keep effective wrappers deferred**
 
 Returned internal bindings contain base callbacks, resolved descriptor, attempt identity, scope, provenance, and manifest priority. Task 7/8 owns `_meta` wrapper and partition. Filter/error values enter instance identity only. X1 children remain under the outer instance; do not create top-level child bindings.
 
-- [ ] **Step 7: Run GREEN and race**
+- [x] **Step 7: Run GREEN and race**
 
 ```bash
 source .envrc

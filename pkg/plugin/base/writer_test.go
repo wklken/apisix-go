@@ -384,6 +384,120 @@ func newPipelineRequest(target string, transformCount int) *http.Request {
 	return req.WithContext(context.WithValue(req.Context(), transformPipelineContextKey{}, pipeline))
 }
 
+func TestTransformPipelineOwnerZeroesSharedBodyAfterServeHTTP(t *testing.T) {
+	const privateBody = "private-response-body"
+	request := httptest.NewRequest(http.MethodGet, "/pipeline-owner", nil)
+	response := httptest.NewRecorder()
+	var bodyAlias []byte
+	handler := WithTransformPipeline(2)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writer := GetOrCreateTransformResponseWriter(r)
+		_, _ = writer.Write([]byte(privateBody))
+		bodyAlias = writer.Body()
+		writer.Commit(w)
+	}))
+	handler.ServeHTTP(response, request)
+
+	if response.Body.String() != privateBody {
+		t.Fatalf("response body = %q, want %q", response.Body.String(), privateBody)
+	}
+	pipeline, _ := request.Context().Value(transformPipelineContextKey{}).(*pipelineBuffer)
+	if pipeline == nil || pipeline.buf.Len() != 0 {
+		t.Fatalf("pipeline after ServeHTTP = %#v, want empty buffer", pipeline)
+	}
+	for index, value := range bodyAlias {
+		if value != 0 {
+			t.Fatalf("pipeline backing byte %d = %d, want zero", index, value)
+		}
+	}
+}
+
+func TestTransformPipelineOwnerZeroesTailAfterShorterReplacement(t *testing.T) {
+	const (
+		privateBody = "private-response-body-with-a-long-tail"
+		finalBody   = "short"
+	)
+	request := httptest.NewRequest(http.MethodGet, "/pipeline-shorter-replacement", nil)
+	response := httptest.NewRecorder()
+	var bodyAlias []byte
+	handler := WithTransformPipeline(2)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writer := GetOrCreateTransformResponseWriter(r)
+		writer.Header().Set("X-Rewritten", "yes")
+		writer.WriteHeader(http.StatusAccepted)
+		_, _ = writer.Write([]byte(privateBody))
+		bodyAlias = writer.Body()
+		writer.ReplaceBody([]byte(finalBody))
+		writer.Commit(w)
+	}))
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusAccepted || response.Body.String() != finalBody {
+		t.Fatalf("response = %d/%q, want 202/%q", response.Code, response.Body.String(), finalBody)
+	}
+	if got := response.Header().Get("X-Rewritten"); got != "yes" {
+		t.Fatalf("X-Rewritten = %q, want yes", got)
+	}
+	if got := response.Header().Get("Content-Length"); got != "" {
+		t.Fatalf("Content-Length = %q, want invalidated", got)
+	}
+	for index, value := range bodyAlias {
+		if value != 0 {
+			t.Fatalf("pipeline old backing byte %d = %d, want zero", index, value)
+		}
+	}
+}
+
+func TestTransformPipelineOwnerZeroesSharedBodyAfterPanic(t *testing.T) {
+	const privateBody = "panic-private-body"
+	request := httptest.NewRequest(http.MethodGet, "/pipeline-panic", nil)
+	var bodyAlias []byte
+	handler := WithTransformPipeline(2)(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		writer := GetOrCreateTransformResponseWriter(r)
+		_, _ = writer.Write([]byte(privateBody))
+		bodyAlias = writer.Body()
+		panic("pipeline panic")
+	}))
+	func() {
+		defer func() {
+			if recovered := recover(); recovered != "pipeline panic" {
+				t.Fatalf("recovered panic = %#v, want pipeline panic", recovered)
+			}
+		}()
+		handler.ServeHTTP(httptest.NewRecorder(), request)
+	}()
+
+	pipeline, _ := request.Context().Value(transformPipelineContextKey{}).(*pipelineBuffer)
+	if pipeline == nil || pipeline.buf.Len() != 0 {
+		t.Fatalf("pipeline after panic = %#v, want empty buffer", pipeline)
+	}
+	for index, value := range bodyAlias {
+		if value != 0 {
+			t.Fatalf("panic pipeline backing byte %d = %d, want zero", index, value)
+		}
+	}
+}
+
+func TestNestedTransformPipelineDoesNotClearOuterBodyEarly(t *testing.T) {
+	const body = "outer-owned-body"
+	request := httptest.NewRequest(http.MethodGet, "/nested-pipeline", nil)
+	outer := WithTransformPipeline(2)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		nested := WithTransformPipeline(2)(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+			writer := GetOrCreateTransformResponseWriter(r)
+			_, _ = writer.Write([]byte(body))
+		}))
+		nested.ServeHTTP(w, r)
+		writer := GetOrCreateTransformResponseWriter(r)
+		if got := string(writer.Body()); got != body {
+			t.Fatalf("outer pipeline body after nested return = %q, want %q", got, body)
+		}
+		writer.Commit(w)
+	}))
+	response := httptest.NewRecorder()
+	outer.ServeHTTP(response, request)
+	if response.Body.String() != body {
+		t.Fatalf("nested pipeline response body = %q, want %q", response.Body.String(), body)
+	}
+}
+
 func TestSingleTransformUsesStandaloneBuffer(t *testing.T) {
 	req := newPipelineRequest("/test", 1)
 	writer := GetOrCreateTransformResponseWriter(req)

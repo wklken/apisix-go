@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -164,6 +165,30 @@ func TestPrepareCompilerDiscardSecretsRejectsNonStringAndRedactsFailure(t *testi
 			raw:  `{"id":"discard-route","plugins":{"basic-auth":{"password":{"nested":"value"}}}}`,
 		},
 		{
+			name: "empty object",
+			raw:  `{"id":"discard-route","plugins":{"basic-auth":{"password":{}}}}`,
+		},
+		{
+			name: "empty array",
+			raw:  `{"id":"discard-route","plugins":{"basic-auth":{"password":[]}}}`,
+		},
+		{
+			name: "number",
+			raw:  `{"id":"discard-route","plugins":{"basic-auth":{"password":7}}}`,
+		},
+		{
+			name: "boolean",
+			raw:  `{"id":"discard-route","plugins":{"basic-auth":{"password":true}}}`,
+		},
+		{
+			name: "null",
+			raw:  `{"id":"discard-route","plugins":{"basic-auth":{"password":null}}}`,
+		},
+		{
+			name: "nested empty composite",
+			raw:  `{"id":"discard-route","plugins":{"basic-auth":{"password":{"nested":{}}}}}`,
+		},
+		{
 			name:    "resolver",
 			raw:     `{"id":"discard-route","plugins":{"basic-auth":{"password":"$ENV://SENSITIVE_NAME"}}}`,
 			failRaw: "$ENV://SENSITIVE_NAME",
@@ -194,6 +219,11 @@ func TestPrepareCompilerDiscardSecretsRejectsNonStringAndRedactsFailure(t *testi
 			for _, sensitive := range []string{"SENSITIVE_NAME", "$ENV://", "resolved-plaintext"} {
 				if strings.Contains(err.Error(), sensitive) {
 					t.Fatalf("error leaked %q: %v", sensitive, err)
+				}
+			}
+			if tt.failRaw == "" {
+				if scopes, _ := broker.calls(); len(scopes) != 0 {
+					t.Fatalf("malformed compiler-discard value reached resolver: %#v", scopes)
 				}
 			}
 		})
@@ -240,34 +270,123 @@ func TestPrepareCompilerDiscardSecretsIsAtomicAcrossAttempts(t *testing.T) {
 		t.Fatalf("attempt calls = %#v / %#v", scopes, raws)
 	}
 
-	foreignBroker := &discardPreparationBroker{}
-	validAttempt, foreignRegistration := recoveryDiscardPreparationAttempt(t, compiler, foreignBroker, 75, second)
+	sourceBroker := &discardPreparationBroker{}
+	sourceAttempt, sourceRegistration := recoveryDiscardPreparationAttempt(t, compiler, sourceBroker, 75, second)
 	t.Cleanup(func() {
-		if err := foreignRegistration.Close(context.Background()); err != nil {
+		if err := sourceRegistration.Close(context.Background()); err != nil {
 			t.Error(err)
 		}
 	})
-	foreignAttempt, err := newPreparationAttempt(
-		validAttempt.Generation(),
-		validAttempt.candidates,
-		validAttempt.capability,
+	var sourceOccurrence FactoryOccurrence
+	for _, occurrence := range sourceAttempt.Occurrences(capability.SecretPluginConfig) {
+		if occurrence.Factory() == "basic-auth" &&
+			occurrence.Resource() == (generation.ResourceKey{Kind: "routes", ID: "discard-route"}) {
+			sourceOccurrence = occurrence
+			break
+		}
+	}
+	if sourceOccurrence.authority == nil {
+		t.Fatal("source preparation attempt did not expose the discard occurrence")
+	}
+	targetBroker := &discardPreparationBroker{}
+	targetAttempt, targetRegistration := recoveryDiscardPreparationAttempt(t, compiler, targetBroker, 76, second)
+	t.Cleanup(func() {
+		if err := targetRegistration.Close(context.Background()); err != nil {
+			t.Error(err)
+		}
+	})
+	targetAttempt.occurrences = []FactoryOccurrence{sourceOccurrence}
+	if targetAttempt.owns(sourceOccurrence) {
+		t.Fatal("cross-attempt occurrence unexpectedly has target authority")
+	}
+	if err := prepareCompilerDiscardSecrets(
+		context.Background(), targetAttempt, compiler.schemas.catalog,
+	); err == nil {
+		t.Fatal("cross-attempt occurrence unexpectedly succeeded")
+	}
+	if scopes, _ := targetBroker.calls(); len(scopes) != 0 {
+		t.Fatalf("cross-attempt occurrence reached resolver: %#v", scopes)
+	}
+
+	crossDomainOccurrence := sourceOccurrence
+	crossDomainOccurrence.domain = generation.DomainStream
+	crossDomainOccurrence.resource = generation.ResourceKey{Kind: "stream_routes", ID: "foreign-route"}
+	targetAttempt.occurrences = []FactoryOccurrence{crossDomainOccurrence}
+	if targetAttempt.owns(crossDomainOccurrence) {
+		t.Fatal("cross-domain occurrence unexpectedly has target authority")
+	}
+	if err := prepareCompilerDiscardSecrets(
+		context.Background(), targetAttempt, compiler.schemas.catalog,
+	); err == nil {
+		t.Fatal("cross-domain occurrence unexpectedly succeeded")
+	}
+	if scopes, _ := targetBroker.calls(); len(scopes) != 0 {
+		t.Fatalf("cross-domain occurrence reached resolver: %#v", scopes)
+	}
+}
+
+func TestPrepareCompilerDiscardSecretsSkipsPluginTargetCandidates(t *testing.T) {
+	compiler := newTestCompiler(t)
+	declaration, ok := compiler.schemas.catalog.Lookup(
+		"response-rewrite", capability.SecretPluginConfig, "body",
+	)
+	if !ok || declaration.EffectiveTarget() != capability.SecretMaterializationPlugin {
+		t.Fatalf("response-rewrite body declaration = %#v/%v, want plugin target", declaration, ok)
+	}
+	snapshot := mustGenerationSnapshot(t, 76, []generation.Resource{
+		resourceValue("routes", "r1", "{"),
+	}, nil)
+	published := publishedForDomain(generation.DomainHTTP, snapshot)
+	registration := &recordingFactoryRegistration{
+		id:    secret.AttemptID{1},
+		trace: new([]string),
+	}
+	capabilityValue, err := secret.NewGenerationCapability(registration, 76)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt, err := newPreparationAttempt(
+		76,
+		map[generation.Domain]generation.PublicationCandidate{
+			generation.DomainHTTP: generation.PublicationCandidate(published),
+		},
+		capabilityValue,
 		[]factoryOccurrenceSpec{{
 			domain:   generation.DomainHTTP,
-			resource: generation.ResourceKey{Kind: "routes", ID: "foreign-route"},
+			resource: generation.ResourceKey{Kind: "routes", ID: "r1"},
 			source:   capability.SecretPluginConfig,
-			factory:  "basic-auth",
+			factory:  "response-rewrite",
 		}},
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := prepareCompilerDiscardSecrets(
-		context.Background(), foreignAttempt, compiler.schemas.catalog,
-	); err == nil {
-		t.Fatal("foreign occurrence unexpectedly succeeded")
+	if err := prepareCompilerDiscardSecrets(context.Background(), attempt, compiler.schemas.catalog); err != nil {
+		t.Fatalf("plugin-target-only preparation = %v, want nil", err)
 	}
-	if scopes, _ := foreignBroker.calls(); len(scopes) != 0 {
-		t.Fatalf("foreign occurrence reached resolver: %#v", scopes)
+}
+
+func TestPrepareCompilerDiscardSecretsMatchesTerminalKeysCaseInsensitively(t *testing.T) {
+	compiler := newTestCompiler(t)
+	broker := &discardPreparationBroker{}
+	snapshot := mustGenerationSnapshot(t, 78, []generation.Resource{
+		resourceValue(
+			"routes", "discard-route",
+			`{"id":"discard-route","plugins":{"basic-auth":{"PASSWORD":"$ENV://CASE_INSENSITIVE"}}}`,
+		),
+	}, nil)
+	attempt, registration := recoveryDiscardPreparationAttempt(t, compiler, broker, 79, snapshot)
+	t.Cleanup(func() {
+		if err := registration.Close(context.Background()); err != nil {
+			t.Error(err)
+		}
+	})
+	if err := prepareCompilerDiscardSecrets(context.Background(), attempt, compiler.schemas.catalog); err != nil {
+		t.Fatal(err)
+	}
+	_, raws := broker.calls()
+	if !slices.Equal(raws, []string{"$ENV://CASE_INSENSITIVE"}) {
+		t.Fatalf("case-insensitive materialization raws = %#v, want one reference", raws)
 	}
 }
 

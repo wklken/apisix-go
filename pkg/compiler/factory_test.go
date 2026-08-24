@@ -24,6 +24,84 @@ type recordingAttemptMaterializer struct {
 	recoveryCalls  int
 }
 
+type countingScopedBroker struct {
+	candidateAuthorizations int
+	recoveryAuthorizations  int
+	resolveCalls            int
+	revokeCalls             int
+	resolveErr              error
+}
+
+func (broker *countingScopedBroker) AuthorizeCandidate(
+	context.Context,
+	secret.AttemptID,
+	generation.ApplyTicket,
+	generation.PublicationSet,
+) error {
+	broker.candidateAuthorizations++
+	return nil
+}
+
+func (broker *countingScopedBroker) AuthorizeRecovery(
+	context.Context,
+	secret.AttemptID,
+	generation.RevisionSet,
+	map[generation.Domain]generation.PublishedGeneration,
+) error {
+	broker.recoveryAuthorizations++
+	return nil
+}
+
+func (broker *countingScopedBroker) ResolveScoped(
+	context.Context,
+	secret.Scope,
+	string,
+) (string, error) {
+	broker.resolveCalls++
+	if broker.resolveErr != nil {
+		return "", broker.resolveErr
+	}
+	return "resolved", nil
+}
+
+func (broker *countingScopedBroker) RevokeAttempt(context.Context, secret.AttemptID) error {
+	broker.revokeCalls++
+	return nil
+}
+
+type countingMaterializer struct {
+	delegate       secret.Materializer
+	candidateCalls int
+	recoveryCalls  int
+	last           secret.AttemptRegistration
+}
+
+func (materializer *countingMaterializer) RegisterCandidate(
+	ctx context.Context,
+	ticket generation.ApplyTicket,
+	set generation.PublicationSet,
+) (secret.AttemptRegistration, error) {
+	materializer.candidateCalls++
+	registration, err := materializer.delegate.RegisterCandidate(ctx, ticket, set)
+	materializer.last = registration
+	return registration, err
+}
+
+func (materializer *countingMaterializer) RegisterRecovery(
+	ctx context.Context,
+	revisions generation.RevisionSet,
+	published map[generation.Domain]generation.PublishedGeneration,
+) (secret.AttemptRegistration, error) {
+	materializer.recoveryCalls++
+	registration, err := materializer.delegate.RegisterRecovery(ctx, revisions, published)
+	materializer.last = registration
+	return registration, err
+}
+
+func (materializer *countingMaterializer) DeclarationDigest() [32]byte {
+	return materializer.delegate.DeclarationDigest()
+}
+
 type mutatingTicketMaterializer struct {
 	*recordingAttemptMaterializer
 }
@@ -365,6 +443,113 @@ func TestAttemptFactoryRejectsUnownedPluginTargetBeforeRegistration(t *testing.T
 	}
 }
 
+func TestAttemptFactoryRejectsUnownedPluginTargetBeforeScopedRegistration(t *testing.T) {
+	tests := map[string]struct {
+		prepare func(*attemptFactory) error
+		check   func(*countingMaterializer)
+	}{
+		"candidate": {
+			prepare: func(factory *attemptFactory) error {
+				desired := mustGenerationSnapshot(t, 461, []generation.Resource{
+					resourceValue(
+						"routes", "r1",
+						`{"id":"r1","plugins":{"response-rewrite":{"body":"$ENV://BODY"}}}`,
+					),
+				}, nil)
+				_, err := factory.prepareCandidateAttempt(
+					context.Background(), ticketForSnapshot(desired, generation.DomainHTTP), desired, nil,
+				)
+				return err
+			},
+			check: func(materializer *countingMaterializer) {
+				if materializer.candidateCalls != 0 {
+					t.Fatalf("candidate registrations = %d, want zero", materializer.candidateCalls)
+				}
+			},
+		},
+		"recovery": {
+			prepare: func(factory *attemptFactory) error {
+				snapshot := mustGenerationSnapshot(t, 462, []generation.Resource{
+					resourceValue(
+						"routes", "r1",
+						`{"id":"r1","plugins":{"response-rewrite":{"body":"$ENV://BODY"}}}`,
+					),
+				}, nil)
+				_, err := factory.prepareRecoveryAttempt(
+					context.Background(),
+					generation.RevisionSet{Desired: 463, HTTP: snapshot.Revision()},
+					map[generation.Domain]generation.PublishedGeneration{
+						generation.DomainHTTP: publishedForDomain(generation.DomainHTTP, snapshot),
+					},
+				)
+				return err
+			},
+			check: func(materializer *countingMaterializer) {
+				if materializer.recoveryCalls != 0 {
+					t.Fatalf("recovery registrations = %d, want zero", materializer.recoveryCalls)
+				}
+			},
+		},
+	}
+
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			broker := &countingScopedBroker{}
+			factory, materializer, pluginPreparer, trace := newScopedAttemptFactory(t, broker)
+			if err := test.prepare(factory); !errors.Is(err, errAttemptPreparationFailed) {
+				t.Fatalf("unowned plugin-target error = %v, want preparation failure", err)
+			}
+			test.check(materializer)
+			if broker.candidateAuthorizations != 0 || broker.recoveryAuthorizations != 0 ||
+				broker.resolveCalls != 0 || broker.revokeCalls != 0 {
+				t.Fatalf(
+					"scoped broker calls = candidate-authorize:%d recovery-authorize:%d resolve:%d revoke:%d, want all zero",
+					broker.candidateAuthorizations,
+					broker.recoveryAuthorizations,
+					broker.resolveCalls,
+					broker.revokeCalls,
+				)
+			}
+			if pluginPreparer.lookup != nil || len(*trace) != 0 {
+				t.Fatalf("unowned plugin-target hooks = lookup:%#v trace:%v, want none", pluginPreparer.lookup, *trace)
+			}
+		})
+	}
+}
+
+func TestAttemptFactoryCompilerDiscardFailureCleansRegistrationBeforeHooks(t *testing.T) {
+	broker := &countingScopedBroker{resolveErr: errors.New("resolver exposed $ENV://FAIL")}
+	factory, materializer, pluginPreparer, trace := newScopedAttemptFactory(t, broker)
+	desired := mustGenerationSnapshot(t, 464, []generation.Resource{
+		resourceValue(
+			"routes", "r1",
+			`{"id":"r1","plugins":{"basic-auth":{"password":"$ENV://FAIL"}}}`,
+		),
+	}, nil)
+	prepared, err := factory.prepareCandidateAttempt(
+		context.Background(), ticketForSnapshot(desired, generation.DomainHTTP), desired, nil,
+	)
+	if prepared != nil || !errors.Is(err, errAttemptPreparationFailed) {
+		t.Fatalf("compiler-discard failure = %#v/%v, want preparation failure", prepared, err)
+	}
+	if materializer.candidateCalls != 1 || materializer.last == nil {
+		t.Fatalf(
+			"candidate registration = %d/%#v, want one registration",
+			materializer.candidateCalls,
+			materializer.last,
+		)
+	}
+	if broker.candidateAuthorizations != 1 || broker.resolveCalls != 1 || broker.revokeCalls != 1 {
+		t.Fatalf(
+			"scoped broker calls = authorize:%d resolve:%d revoke:%d, want 1/1/1",
+			broker.candidateAuthorizations, broker.resolveCalls, broker.revokeCalls,
+		)
+	}
+	if pluginPreparer.lookup != nil || len(*trace) != 0 {
+		t.Fatalf("compiler-discard failure hooks = lookup:%#v trace:%v, want none", pluginPreparer.lookup, *trace)
+	}
+}
+
 func TestAttemptFactoryAllowsValidEmptyAndDeleteOnlyPublications(t *testing.T) {
 	tests := map[string]generation.Snapshot{
 		"valid empty": mustGenerationSnapshot(t, 47, nil, nil),
@@ -412,6 +597,37 @@ func newRecordingAttemptFactory(
 	compiler := newTestCompiler(t)
 	trace := &[]string{}
 	materializer := &recordingAttemptMaterializer{digest: compiler.schemas.catalog.Digest(), trace: trace}
+	bindings, err := runtime.NewConsumerBindings(nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pluginPreparer := &recordingPluginPreparer{
+		trace: trace,
+		owner: &recordingPreparedPlugins{trace: trace},
+	}
+	factory, err := newAttemptFactory(
+		compiler,
+		materializer,
+		recordingMetadataPreparer{trace: trace},
+		recordingConsumerPreparer{trace: trace, bindings: bindings},
+		pluginPreparer,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return factory, materializer, pluginPreparer, trace
+}
+
+func newScopedAttemptFactory(
+	t *testing.T,
+	broker *countingScopedBroker,
+) (*attemptFactory, *countingMaterializer, *recordingPluginPreparer, *[]string) {
+	t.Helper()
+	compiler := newTestCompiler(t)
+	trace := &[]string{}
+	materializer := &countingMaterializer{
+		delegate: secret.NewScopedMaterializer(broker, compiler.schemas.catalog),
+	}
 	bindings, err := runtime.NewConsumerBindings(nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)

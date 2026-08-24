@@ -3,6 +3,7 @@ package compiler
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/wklken/apisix-go/pkg/capability"
@@ -30,6 +31,9 @@ func prepareCompilerDiscardSecrets(
 
 	inputs := make(map[generation.Domain]normalizedInput)
 	for _, occurrence := range attempt.Occurrences(capability.SecretPluginConfig) {
+		if !hasCompilerDiscardDeclaration(catalog, occurrence.Factory()) {
+			continue
+		}
 		if !attempt.owns(occurrence) {
 			return errCompilerDiscardPreparationFailed
 		}
@@ -62,6 +66,11 @@ func prepareCompilerDiscardSecrets(
 		}
 		config, exists := normalized.view.plugins[occurrence.Factory()]
 		if !exists {
+			return errCompilerDiscardPreparationFailed
+		}
+		if err := validateCompilerDiscardTerminals(
+			catalog, occurrence.Factory(), config,
+		); err != nil {
 			return errCompilerDiscardPreparationFailed
 		}
 		if err := catalog.TransformDeclaredFieldsForTarget(
@@ -97,4 +106,77 @@ func prepareCompilerDiscardSecrets(
 		}
 	}
 	return nil
+}
+
+func hasCompilerDiscardDeclaration(
+	catalog *capability.SecretDeclarationCatalog,
+	factory string,
+) bool {
+	if catalog == nil {
+		return false
+	}
+	found := false
+	catalog.ForEach(factory, capability.SecretPluginConfig, func(
+		declaration capability.SecretDeclaration,
+	) {
+		if declaration.EffectiveTarget() == capability.SecretMaterializationCompilerDiscard {
+			found = true
+		}
+	})
+	return found
+}
+
+func validateCompilerDiscardTerminals(
+	catalog *capability.SecretDeclarationCatalog,
+	factory string,
+	document any,
+) error {
+	valid := true
+	catalog.ForEach(factory, capability.SecretPluginConfig, func(
+		declaration capability.SecretDeclaration,
+	) {
+		if !valid || declaration.EffectiveTarget() != capability.SecretMaterializationCompilerDiscard {
+			return
+		}
+		segments := strings.Split(declaration.Field, ".")
+		if slices.Contains(segments, "*") {
+			valid = false
+			return
+		}
+		if !validCompilerDiscardPath(document, segments) {
+			valid = false
+		}
+	})
+	if !valid {
+		return errCompilerDiscardPreparationFailed
+	}
+	return nil
+}
+
+func validCompilerDiscardPath(current any, segments []string) bool {
+	if len(segments) == 0 {
+		_, ok := current.(string)
+		return ok
+	}
+
+	value, ok := current.(map[string]any)
+	if !ok {
+		return true
+	}
+	segment := segments[0]
+	for key, child := range value {
+		if !strings.EqualFold(key, segment) {
+			continue
+		}
+		if len(segments) == 1 {
+			if _, ok := child.(string); !ok {
+				return false
+			}
+			continue
+		}
+		if !validCompilerDiscardPath(child, segments[1:]) {
+			return false
+		}
+	}
+	return true
 }

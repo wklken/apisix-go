@@ -1,6 +1,7 @@
 package store
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/wklken/apisix-go/pkg/resource"
@@ -73,5 +74,22 @@ func TestPrepareConsumerSnapshotRejectsNonStringJWEKey(t *testing.T) {
 	snapshot, err := storage.prepareConsumerSnapshot([]byte("jwe-user"), value)
 	if err == nil {
 		t.Fatalf("prepareConsumerSnapshot() = %+v, nil; want jwe-decrypt key type error", snapshot)
+	}
+}
+
+func TestPrepareConsumerSnapshotKeepsJWEKeyReferenceOutOfLiteralIndex(t *testing.T) {
+	storage := &Store{dataEncryption: testDataEncryption()}
+	value := []byte(
+		`{"username":"jwe-user","plugins":{"jwe-decrypt":{"key":"$ENV://JWE_KEY","secret":"01234567890123456789012345678901"}}}`,
+	)
+	snapshot, err := storage.prepareConsumerSnapshot([]byte("jwe-user"), value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.pluginKeys) != 0 {
+		t.Fatalf("literal plugin keys = %#v, want none", snapshot.pluginKeys)
+	}
+	if got, want := snapshot.referencePlugins, []string{"jwe-decrypt"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("reference plugins = %#v, want %#v", got, want)
 	}
 }

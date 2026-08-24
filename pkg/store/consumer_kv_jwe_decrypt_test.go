@@ -48,6 +48,16 @@ func TestConsumerKVAddValidatesJWEDecryptConsumerConfig(t *testing.T) {
 			wantErr: "jwe-decrypt consumer secret must be a string",
 		},
 		{
+			name:    "environment secret reference remains raw",
+			value:   `{"username":"jwe-env-secret","plugins":{"jwe-decrypt":{"key":"jwe-key","secret":"$ENV://JWE_SECRET"}}}`,
+			wantErr: "the secret length should be 32 chars",
+		},
+		{
+			name:    "managed secret reference remains raw",
+			value:   `{"username":"jwe-managed-secret","plugins":{"jwe-decrypt":{"key":"jwe-key","secret":"$secret://vault/secret"}}}`,
+			wantErr: "the secret length should be 32 chars",
+		},
+		{
 			name:    "raw secret must be exactly 32 characters",
 			value:   `{"username":"jwe-long-raw","plugins":{"jwe-decrypt":{"key":"jwe-key","secret":"123456789012345678901234567890123"}}}`,
 			wantErr: "the secret length should be 32 chars",

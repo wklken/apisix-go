@@ -197,6 +197,25 @@ func TestConsumerSnapshotValidatesWolfRBACConsumerSchema(t *testing.T) {
 	}
 }
 
+func TestConsumerSnapshotLeavesUnsupportedPluginConfigurationUntouched(t *testing.T) {
+	consumerStore := &Store{
+		dataEncryption: testDataEncryption(),
+		consumerKV:     make(map[string][]byte),
+		consumerToKeys: make(map[string][]string),
+	}
+	value := []byte(`{"username":"jack","plugins":{"custom-auth":{"key":123,"extra":false}}}`)
+	if err := consumerStore.consumerKVAdd([]byte("jack"), value); err != nil {
+		t.Fatalf("consumerKVAdd() unsupported plugin error = %v", err)
+	}
+	if len(consumerStore.consumerToKeys["jack"]) != 0 {
+		t.Fatalf("unsupported plugin lookup keys = %#v, want none", consumerStore.consumerToKeys["jack"])
+	}
+	stored, ok := consumerStore.consumerValues["jack"]
+	if !ok || stored.Plugins["custom-auth"] == nil {
+		t.Fatalf("unsupported plugin configuration was not retained: %#v", stored)
+	}
+}
+
 func TestConsumerSnapshotRejectsInvalidHMACAuthUpdateAndKeepsLastGood(t *testing.T) {
 	consumerStore := &Store{
 		dataEncryption: testDataEncryption(),

@@ -331,17 +331,11 @@ Append base ownership immediately after acquisition and transfer only after base
 
 - [ ] **Step 3: Run CP5 gates**
 
-```bash
-source .envrc
-export GOFLAGS=-mod=readonly
-go test ./pkg/compiler ./pkg/runtime ./pkg/plugin \
-  -run 'PreparedGeneration|PrepareGeneration|PrepareRecovery|Cleanup|Discard|FactoryClose' -count=1
-go test -race ./pkg/compiler ./pkg/runtime ./pkg/plugin \
-  -run 'PreparedGeneration|PrepareGeneration|PrepareRecovery|Cleanup|Discard|FactoryClose' -count=1
-golangci-lint run ./pkg/compiler/... ./pkg/runtime/... ./pkg/plugin/...
-make build
-git diff --check
-```
+Run the exact mapped compiler/runtime/plugin ordinary and race gates, lint,
+canonical generator, build, complete-range diff/API/stale scans, and independent
+review in the CP5 child plan's Task 8. The child gate is authoritative because
+it first proves every package regex has real matches; do not reuse the earlier
+cross-package `FactoryClose` regex that selected zero runtime tests.
 
 Expected: recovery never reads desired state or computes disposition; raw source occurrences are never claimed as effective binding inventory; partial base or supplied-effective-spec preparation closes every acquired owner exactly once in reverse order.
 

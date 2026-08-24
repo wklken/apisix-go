@@ -12,6 +12,19 @@
 
 **Task 6 execution amendment:** Use `2026-08-24-immutable-task6-execution-brief.md`. It freezes the manifest-owned secret catalog before the service/materializer cutover, adds the publication domain to every secret scope, and keeps the post-foundation implementation lanes file-exclusive until integration.
 
+**Task 6 CP5 audited supersession (2026-08-25):** The implemented contract is
+the reviewed split in
+`2026-08-24-immutable-task6-cp5-prepared-generation.md`. Any older Task 6 text
+below that says `PrepareGeneration`/`PrepareRecovery` constructs every effective
+plugin/resource lease before returning, or that base `PreparedGeneration`
+already exposes HTTP, Stream, or Probe results, is retained only as rejected
+design history. CP5 returns the defensive base owner plus compiler-private
+effective-spec materialization authority. Immutable Task 7 computes HTTP/TLS
+specs and snapshots, Immutable Task 8 computes stream/MQTT specs and snapshots,
+and the joint Task 9 remains the only activation/cutover owner. Raw
+`SecretPluginConfig` occurrences authorize admitted sources; they are never an
+effective runtime inventory.
+
 **Tech Stack:** Go 1.26, standard-library `context`, `crypto/sha256`, `encoding/json`, `net/http`, `sync`, existing `go-chi/chi`, `pkg/capability`, `pkg/config`, `pkg/data_encryption`, `pkg/generation`, `pkg/plugin`, `pkg/proxy`, `pkg/resource`, `pkg/stream` and bbolt-backed `generation.Journal`.
 
 **Spec:** `docs/superpowers/plans/2026-08-23-apisix-go-convergence-program-spec.md`

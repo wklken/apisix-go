@@ -834,6 +834,15 @@ plugin lease before return: CP5 returns the defensive base owner and private
 materialization authority; Immutable Task 7/8 supplies exact effective specs
 and snapshots; Task 9 remains the sole activation owner.
 
+Audited referenced-plan ledger (2026-08-25):
+
+| File | Old contract or risk | Authoritative supersession | Future owner |
+| --- | --- | --- | --- |
+| `2026-08-23-immutable-compiler-plugin-runtime.md` | Original Task 6 prose constructs all effective plugins/leases before return and describes HTTP/Stream/Probe on the base owner | Its top-level Task 6 CP5 audit amendment plus this plan: base owner now, private exact-spec materialization later | Immutable Task 7 HTTP/TLS; Task 8 stream/MQTT; joint Task 9 activation |
+| `2026-08-24-immutable-task6-total-plan.md` | Earlier duplicated cross-package CP5 regex selected zero runtime tests | Total Task 8 now delegates to this Task 8's mapped non-zero gates; its base-owner/private-materializer split already agrees | CP6 consumes the accepted range only |
+| `2026-08-24-immutable-task6-c6.4-plugin-runtime.md` | Historical single checkpoint wording could be mistaken for a one-commit delivery shape | Task 10 already requires base owner plus later complete specs; accepted delivery is the reviewed immutable CP5 commit range | C6.6 audits compatibility; it creates no prepared adapter |
+| `2026-08-24-immutable-task6-cp6-production-cutover.md` | Risk of treating the filename as a production cutover | The plan explicitly consumes only defensive base views, forbids forged tickets/second paths, and labels the filename historical | Task 7/8 compile snapshots; Task 9 alone wires provider/journal activation |
+
 - [ ] **Step 6: Request independent review**
 
 Ask one read-only reviewer to verify exact candidate/recovery identity, zero speculative bindings, immediate ownership, task-before-resource reverse teardown, third-plugin failure, source authority, no public binding/raw handles, discard preservation, close/materialize/factory races, redaction, Task 7/8 deferral, and Task 9 activation ownership. Independently validate every finding and rerun affected gates.

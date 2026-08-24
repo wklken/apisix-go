@@ -326,7 +326,7 @@ func TestDependencyClosureDoesNotApplyHTTPOnlyPluginDependenciesToStream(t *test
 		resourceValue(
 			"services",
 			"shared",
-			`{"id":"shared","plugins":{"grpc-transcode":{"proto_id":"http-only-proto"}}}`,
+			`{"id":"shared","plugins":{"grpc-transcode":{"proto_id":"http-only-proto","service":"test.Service","method":"Call"}}}`,
 		),
 		resourceValue("stream_routes", "stream", `{"id":"stream","service_id":"shared","upstream":{"nodes":{}}}`),
 	}, nil)
@@ -447,7 +447,7 @@ func TestDependencyClosureDoesNotLeakHTTPOnlyPluginIssuesIntoStream(t *testing.T
 		resourceValue(
 			"services",
 			"shared",
-			`{"id":"shared","plugins":{"traffic-split":{"credential":"$secret://invalid","rules":[{"weighted_upstreams":[{"upstream_id":0}]}]}}}`,
+			`{"id":"shared","plugins":{"traffic-split":{"credential":"$secret://invalid","rules":[]}}}`,
 		),
 		resourceValue("stream_routes", "stream", `{"id":"stream","service_id":"shared","upstream":{"nodes":{}}}`),
 	}, nil)
@@ -465,7 +465,7 @@ func TestDependencyClosureDoesNotLeakHTTPOnlyPluginIssuesIntoStream(t *testing.T
 		set.Domains[generation.DomainHTTP],
 		generation.ResourceKey{Kind: "services", ID: "shared"},
 		generation.DispositionFailClosed,
-		"reference-invalid",
+		"secret-reference-invalid",
 	)
 	assertDecision(
 		t,

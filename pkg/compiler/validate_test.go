@@ -10,7 +10,7 @@ import (
 )
 
 func validate(input normalizedInput, manifest *capability.Manifest) validationResult {
-	result, err := validateContext(context.Background(), input, manifest)
+	result, err := validateContext(context.Background(), input, manifest, nil)
 	if err != nil {
 		panic(err)
 	}

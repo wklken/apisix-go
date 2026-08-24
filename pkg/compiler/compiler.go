@@ -26,7 +26,11 @@ func New(manifest *capability.Manifest, dependencies runtime.RuntimeDependencies
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInvalidInput, err)
 	}
-	return &Compiler{manifest: validatedManifest, dependencies: dependencies}, nil
+	schemas, err := newSchemaSet(validatedManifest)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInvalidInput, err)
+	}
+	return &Compiler{manifest: validatedManifest, dependencies: dependencies, schemas: schemas}, nil
 }
 
 func (compiler *Compiler) PreparePublication(
@@ -69,7 +73,7 @@ func (compiler *Compiler) PreparePublication(
 			)
 		}
 	}
-	validation, err := validateContext(ctx, input, compiler.manifest)
+	validation, err := validateContext(ctx, input, compiler.manifest, compiler.schemas)
 	if err != nil {
 		return generation.PublicationSet{}, err
 	}

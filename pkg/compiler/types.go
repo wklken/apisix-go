@@ -14,6 +14,7 @@ var ErrInvalidInput = errors.New("invalid compiler input")
 type Compiler struct {
 	manifest     *capability.Manifest
 	dependencies runtime.RuntimeDependencies
+	schemas      *schemaSet
 }
 
 type normalizedInput struct {

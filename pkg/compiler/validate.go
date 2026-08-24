@@ -14,6 +14,7 @@ func validateContext(
 	ctx context.Context,
 	input normalizedInput,
 	manifest *capability.Manifest,
+	schemas *schemaSet,
 ) (validationResult, error) {
 	result := validationResult{
 		graph:          newDependencyGraph(),
@@ -30,6 +31,7 @@ func validateContext(
 		}
 		addStructuralEdges(&result.graph, input, resource)
 		validatePluginNames(resource, manifest, &result.issues)
+		validateRawSchemas(resource, schemas, &result.issues, result.issuesByDomain)
 		addDocumentEdges(&result.graph, resource, manifest, &result.issues, result.issuesByDomain)
 	}
 	baseIssues := slices.Clone(result.issues)

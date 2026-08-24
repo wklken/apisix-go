@@ -235,7 +235,7 @@ func enforceEffectiveClosure(
 	if err != nil {
 		return err
 	}
-	validation, err := validateContext(ctx, input, manifest)
+	validation, err := validateContext(ctx, input, manifest, nil)
 	if err != nil {
 		return err
 	}

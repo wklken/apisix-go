@@ -2,16 +2,23 @@ package feishu_auth
 
 import (
 	"bytes"
+	"context"
+	"crypto/sha256"
 	"crypto/subtle"
 	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
+	"unicode/utf8"
 
+	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_common"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/secret"
+	"github.com/wklken/apisix-go/pkg/store"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -19,8 +26,23 @@ type Plugin struct {
 	base.BasePlugin
 	config Config
 
-	client           *http.Client
-	oauthStateReplay base.OAuthStateReplayCache
+	lifecycleMu sync.RWMutex
+	client      *http.Client
+
+	oauthStateReplay *base.OAuthStateReplayCache
+
+	appSecret       secret.Value
+	appSecretSet    bool
+	legacyAppSecret *store.ResolvedSecret
+
+	sessionSecret          secret.Value
+	sessionSecretSet       bool
+	sessionSecretFallbacks []secret.Value
+	legacySessionSecret    *store.ResolvedSecret
+	legacySessionFallbacks []*store.ResolvedSecret
+
+	secretsPrepared bool
+	retired         bool
 }
 
 const (
@@ -80,16 +102,12 @@ const schema = `
       "default": true
     },
     "secret": {
-      "type": "string",
-      "minLength": 8,
-      "maxLength": 32
+      "type": "string"
     },
     "secret_fallbacks": {
       "type": "array",
       "items": {
-        "type": "string",
-        "minLength": 8,
-        "maxLength": 32
+        "type": "string"
       }
     },
     "cookie_expires_in": {
@@ -173,6 +191,11 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+	if p.retired || !p.secretsPrepared {
+		return secret.ErrCredentialUnavailable
+	}
 	if p.config.CodeHeader == "" {
 		p.config.CodeHeader = "X-Feishu-Code"
 	}
@@ -212,11 +235,193 @@ func (p *Plugin) PostInit() error {
 			Transport: p.transport(),
 		}
 	}
+	if p.oauthStateReplay == nil {
+		p.oauthStateReplay = &base.OAuthStateReplayCache{}
+	}
+	return nil
+}
+
+// MaterializeScopedSecrets admits the exact Feishu OAuth and session fields
+// for one immutable generation. Public descriptors are installed only after
+// every current and fallback value has resolved and passed validation.
+func (p *Plugin) MaterializeScopedSecrets(
+	ctx context.Context,
+	access base.ScopedSecretAccess,
+) error {
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+	if p.retired {
+		return secret.ErrCredentialUnavailable
+	}
+	if p.secretsPrepared {
+		return nil
+	}
+
+	appSecret, appDescriptor, err := materializeScopedFeishuSecret(
+		ctx, access, "app_secret", p.config.AppSecret, validateFeishuAppSecret,
+	)
+	if err != nil {
+		return secret.ErrCredentialUnavailable
+	}
+	sessionSecret, sessionDescriptor, err := materializeScopedFeishuSecret(
+		ctx, access, "secret", p.config.Secret, validateFeishuSessionSecret,
+	)
+	if err != nil {
+		return secret.ErrCredentialUnavailable
+	}
+	fallbacks := make([]secret.Value, len(p.config.SecretFallbacks))
+	fallbackDescriptors := make([]string, len(p.config.SecretFallbacks))
+	for i, raw := range p.config.SecretFallbacks {
+		fallback, descriptor, materializeErr := materializeScopedFeishuSecret(
+			ctx, access, "secret_fallbacks", raw, validateFeishuSessionSecret,
+		)
+		if materializeErr != nil {
+			return secret.ErrCredentialUnavailable
+		}
+		fallbacks[i] = fallback
+		fallbackDescriptors[i] = descriptor
+	}
+
+	p.appSecret = appSecret
+	p.appSecretSet = true
+	p.sessionSecret = sessionSecret
+	p.sessionSecretSet = true
+	p.sessionSecretFallbacks = fallbacks
+	p.config.AppSecret = appDescriptor
+	p.config.Secret = sessionDescriptor
+	p.config.SecretFallbacks = fallbackDescriptors
+	p.secretsPrepared = true
+	return nil
+}
+
+func materializeScopedFeishuSecret(
+	ctx context.Context,
+	access base.ScopedSecretAccess,
+	field string,
+	raw string,
+	validate func(string) error,
+) (secret.Value, string, error) {
+	value, err := access.Materialize(ctx, field, raw)
+	if err != nil || value.Use(validate) != nil {
+		return secret.Value{}, "", secret.ErrCredentialUnavailable
+	}
+	descriptor, err := value.Descriptor(capability.SecretPluginConfig)
+	if err != nil {
+		return secret.Value{}, "", secret.ErrCredentialUnavailable
+	}
+	return value, descriptor.String(), nil
+}
+
+// MaterializeSecrets is the transitional process-local compatibility path.
+// Immutable generation preparation uses MaterializeScopedSecrets instead.
+func (p *Plugin) MaterializeSecrets() error {
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+	if p.retired {
+		return secret.ErrCredentialUnavailable
+	}
+	if p.secretsPrepared {
+		return nil
+	}
+
+	appSecret, appDescriptor, err := p.materializeLegacyFeishuSecret(
+		p.config.AppSecret, "app_secret", validateFeishuAppSecret,
+	)
+	if err != nil {
+		return secret.ErrCredentialUnavailable
+	}
+	sessionSecret, sessionDescriptor, err := p.materializeLegacyFeishuSecret(
+		p.config.Secret, "secret", validateFeishuSessionSecret,
+	)
+	if err != nil {
+		appSecret.Destroy()
+		return secret.ErrCredentialUnavailable
+	}
+	fallbacks := make([]*store.ResolvedSecret, len(p.config.SecretFallbacks))
+	fallbackDescriptors := make([]string, len(p.config.SecretFallbacks))
+	installed := false
+	defer func() {
+		if installed {
+			return
+		}
+		appSecret.Destroy()
+		sessionSecret.Destroy()
+		for _, fallback := range fallbacks {
+			fallback.Destroy()
+		}
+	}()
+	for i, raw := range p.config.SecretFallbacks {
+		fallback, descriptor, materializeErr := p.materializeLegacyFeishuSecret(
+			raw, "secret_fallbacks", validateFeishuSessionSecret,
+		)
+		if materializeErr != nil {
+			return secret.ErrCredentialUnavailable
+		}
+		fallbacks[i] = fallback
+		fallbackDescriptors[i] = descriptor
+	}
+
+	p.legacyAppSecret = appSecret
+	p.legacySessionSecret = sessionSecret
+	p.legacySessionFallbacks = fallbacks
+	p.config.AppSecret = appDescriptor
+	p.config.Secret = sessionDescriptor
+	p.config.SecretFallbacks = fallbackDescriptors
+	p.secretsPrepared = true
+	installed = true
+	return nil
+}
+
+func (p *Plugin) materializeLegacyFeishuSecret(
+	raw string,
+	field string,
+	validate func(string) error,
+) (*store.ResolvedSecret, string, error) {
+	if resolver := p.DataEncryption(); resolver.Configured() {
+		raw = resolver.ResolveOptionalForContext(raw, name+"."+field)
+	}
+	value, err := store.MaterializeSecret(raw)
+	if err != nil {
+		return nil, "", secret.ErrCredentialUnavailable
+	}
+	plaintext := value.Bytes()
+	defer clear(plaintext)
+	if err := validate(string(plaintext)); err != nil {
+		value.Destroy()
+		return nil, "", secret.ErrCredentialUnavailable
+	}
+	digest := sha256.Sum256(plaintext)
+	descriptor, err := secret.NewDescriptor(capability.SecretPluginConfig, digest)
+	if err != nil {
+		value.Destroy()
+		return nil, "", secret.ErrCredentialUnavailable
+	}
+	return value, descriptor.String(), nil
+}
+
+func validateFeishuAppSecret(plaintext string) error {
+	if strings.TrimSpace(plaintext) == "" {
+		return secret.ErrCredentialUnavailable
+	}
+	return nil
+}
+
+func validateFeishuSessionSecret(plaintext string) error {
+	length := utf8.RuneCountInString(plaintext)
+	if length < 8 || length > 32 {
+		return secret.ErrCredentialUnavailable
+	}
 	return nil
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p.lifecycleMu.RLock()
+		defer p.lifecycleMu.RUnlock()
+		if p.retired || !p.secretsPrepared {
+			http.Error(w, util.BuildMessageResponse("credential unavailable"), http.StatusServiceUnavailable)
+			return
+		}
 		r.Header.Del("X-Userinfo")
 
 		if userinfo, ok := p.userInfoFromSession(r); ok {
@@ -268,13 +473,14 @@ func (p *Plugin) redirectToProvider(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := time.Now()
-	sealed, err := base.SealOAuthSession(
-		[]byte(state),
-		p.config.Secret,
-		p.oauthStateFingerprint(),
-		now,
-		now.Add(base.OAuthStateLifetime),
-	)
+	var sealed string
+	err = p.useSessionSecretsLocked(func(current string, _ []string) error {
+		var sealErr error
+		sealed, sealErr = base.SealOAuthSession(
+			[]byte(state), current, p.oauthStateFingerprint(), now, now.Add(base.OAuthStateLifetime),
+		)
+		return sealErr
+	})
 	if err != nil {
 		http.Error(w, util.BuildMessageResponse("Failed to create OAuth state"), http.StatusInternalServerError)
 		return
@@ -293,20 +499,44 @@ func (p *Plugin) verifyAndConsumeOAuthState(r *http.Request) bool {
 	if err != nil || cookie.Value == "" {
 		return false
 	}
-	now := time.Now()
-	state, err := base.OpenOAuthSession(
-		cookie.Value,
-		p.config.Secret,
-		p.config.SecretFallbacks,
-		p.oauthStateFingerprint(),
-		now,
-	)
 	stateValues, ok := r.URL.Query()["state"]
-	if err != nil || !ok || len(stateValues) != 1 || stateValues[0] == "" ||
-		subtle.ConstantTimeCompare(state, []byte(stateValues[0])) != 1 {
+	if !ok || len(stateValues) != 1 || stateValues[0] == "" {
 		return false
 	}
-	return p.oauthStateReplay.Consume(cookie.Value, now)
+	now := time.Now()
+	stateMatches := false
+	err = p.useSessionSecretsLocked(func(current string, fallbacks []string) error {
+		return useOpenedFeishuOAuthState(
+			cookie.Value, current, fallbacks, p.oauthStateFingerprint(), now,
+			func(state []byte) error {
+				stateMatches = subtle.ConstantTimeCompare(state, []byte(stateValues[0])) == 1
+				return nil
+			},
+		)
+	})
+	if err != nil || !stateMatches {
+		return false
+	}
+	return p.oauthStateReplay != nil && p.oauthStateReplay.Consume(cookie.Value, now)
+}
+
+func useOpenedFeishuOAuthState(
+	value string,
+	current string,
+	fallbacks []string,
+	fingerprint string,
+	now time.Time,
+	use func([]byte) error,
+) error {
+	if use == nil {
+		return secret.ErrCredentialUnavailable
+	}
+	state, err := base.OpenOAuthSession(value, current, fallbacks, fingerprint, now)
+	if err != nil {
+		return err
+	}
+	defer clear(state)
+	return use(state)
 }
 
 func (p *Plugin) oauthStateFingerprint() string {
@@ -354,40 +584,52 @@ func oauthRedirectWithState(rawURI string, state string) (string, error) {
 }
 
 func (p *Plugin) fetchAccessToken(r *http.Request, code string) (string, error) {
-	body, err := json.Marshal(map[string]string{
-		"grant_type":    "authorization_code",
-		"client_id":     p.config.AppID,
-		"client_secret": p.config.AppSecret,
-		"redirect_uri":  p.config.AuthRedirectURI,
-		"code":          code,
+	var accessToken string
+	err := p.useAppSecretLocked(func(appSecret string) error {
+		body, err := json.Marshal(map[string]string{
+			"grant_type":    "authorization_code",
+			"client_id":     p.config.AppID,
+			"client_secret": appSecret,
+			"redirect_uri":  p.config.AuthRedirectURI,
+			"code":          code,
+		})
+		if err != nil {
+			return err
+		}
+		defer clear(body)
+
+		req, err := http.NewRequestWithContext(
+			r.Context(), http.MethodPost, p.config.AccessTokenURL, bytes.NewReader(body),
+		)
+		if err != nil {
+			return err
+		}
+		defer func() {
+			req.Body = http.NoBody
+			req.GetBody = nil
+		}()
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err := p.client.Do(req)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode != http.StatusOK {
+			return fmt.Errorf("unexpected response status: %d", resp.StatusCode)
+		}
+
+		var token tokenResponse
+		if err := json.NewDecoder(resp.Body).Decode(&token); err != nil {
+			return err
+		}
+		if token.AccessToken == "" || token.ExpiresIn == 0 {
+			return fmt.Errorf("missing access_token or expires_in in response")
+		}
+		accessToken = token.AccessToken
+		return nil
 	})
-	if err != nil {
-		return "", err
-	}
-
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, p.config.AccessTokenURL, bytes.NewReader(body))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := p.client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("unexpected response status: %d", resp.StatusCode)
-	}
-
-	var token tokenResponse
-	if err := json.NewDecoder(resp.Body).Decode(&token); err != nil {
-		return "", err
-	}
-	if token.AccessToken == "" || token.ExpiresIn == 0 {
-		return "", fmt.Errorf("missing access_token or expires_in in response")
-	}
-	return token.AccessToken, nil
+	return accessToken, err
 }
 
 func (p *Plugin) fetchUserInfo(r *http.Request, accessToken string) (map[string]any, error) {
@@ -426,19 +668,39 @@ func (p *Plugin) userInfoFromSession(r *http.Request) (map[string]any, bool) {
 		return nil, false
 	}
 
-	payload, ok := base.VerifySessionValue(cookie.Value, p.config.Secret, p.config.SecretFallbacks)
-	if !ok {
-		return nil, false
-	}
-
 	var session sessionPayload
-	if err := json.Unmarshal(payload, &session); err != nil {
+	err = p.useSessionSecretsLocked(func(current string, fallbacks []string) error {
+		return useVerifiedFeishuSessionPayload(
+			cookie.Value, current, fallbacks,
+			func(payload []byte) error {
+				return json.Unmarshal(payload, &session)
+			},
+		)
+	})
+	if err != nil {
 		return nil, false
 	}
 	if session.ExpiresAt <= time.Now().Unix() || session.UserInfo == nil {
 		return nil, false
 	}
 	return session.UserInfo, true
+}
+
+func useVerifiedFeishuSessionPayload(
+	value string,
+	current string,
+	fallbacks []string,
+	use func([]byte) error,
+) error {
+	if use == nil {
+		return secret.ErrCredentialUnavailable
+	}
+	payload, ok := base.VerifySessionValue(value, current, fallbacks)
+	if !ok {
+		return secret.ErrCredentialUnavailable
+	}
+	defer clear(payload)
+	return use(payload)
 }
 
 func (p *Plugin) sessionCookie(userinfo map[string]any) (*http.Cookie, error) {
@@ -449,10 +711,18 @@ func (p *Plugin) sessionCookie(userinfo map[string]any) (*http.Cookie, error) {
 	if err != nil {
 		return nil, err
 	}
+	defer clear(payload)
 
+	var value string
+	if err := p.useSessionSecretsLocked(func(current string, _ []string) error {
+		value = signAndClearFeishuSessionPayload(payload, current)
+		return nil
+	}); err != nil {
+		return nil, err
+	}
 	return &http.Cookie{
 		Name:     sessionCookieName,
-		Value:    base.SignSessionValue(payload, p.config.Secret),
+		Value:    value,
 		Path:     "/",
 		HttpOnly: true,
 		Secure:   *p.config.CookieSecure,
@@ -461,8 +731,133 @@ func (p *Plugin) sessionCookie(userinfo map[string]any) (*http.Cookie, error) {
 	}, nil
 }
 
+func signAndClearFeishuSessionPayload(payload []byte, current string) string {
+	defer clear(payload)
+	return base.SignSessionValue(payload, current)
+}
+
 func (p *Plugin) transport() http.RoundTripper {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	ai_common.ApplyTransportSSLVerify(transport, p.config.SSLVerify)
 	return transport
+}
+
+func (p *Plugin) useAppSecretLocked(use func(string) error) error {
+	if use == nil || p.retired || !p.secretsPrepared {
+		return secret.ErrCredentialUnavailable
+	}
+	if p.appSecretSet {
+		return p.appSecret.Use(use)
+	}
+	if p.legacyAppSecret == nil {
+		return secret.ErrCredentialUnavailable
+	}
+	plaintext := p.legacyAppSecret.Bytes()
+	if len(plaintext) == 0 {
+		return secret.ErrCredentialUnavailable
+	}
+	defer clear(plaintext)
+	return use(string(plaintext))
+}
+
+func (p *Plugin) useSessionSecretsLocked(use func(string, []string) error) error {
+	if use == nil || p.retired || !p.secretsPrepared {
+		return secret.ErrCredentialUnavailable
+	}
+	if p.sessionSecretSet {
+		return p.sessionSecret.Use(func(current string) error {
+			fallbacks := make([]string, len(p.sessionSecretFallbacks))
+			defer clearFeishuStrings(fallbacks)
+			return useScopedFeishuFallbacks(p.sessionSecretFallbacks, fallbacks, 0, func() error {
+				return use(current, fallbacks)
+			})
+		})
+	}
+	if p.legacySessionSecret == nil {
+		return secret.ErrCredentialUnavailable
+	}
+	current := p.legacySessionSecret.Bytes()
+	if len(current) == 0 {
+		return secret.ErrCredentialUnavailable
+	}
+	defer clear(current)
+	fallbackBytes := make([][]byte, len(p.legacySessionFallbacks))
+	fallbacks := make([]string, len(p.legacySessionFallbacks))
+	defer func() {
+		for i := range fallbackBytes {
+			clear(fallbackBytes[i])
+		}
+		clearFeishuStrings(fallbacks)
+	}()
+	for i, owner := range p.legacySessionFallbacks {
+		if owner == nil {
+			return secret.ErrCredentialUnavailable
+		}
+		fallbackBytes[i] = owner.Bytes()
+		if len(fallbackBytes[i]) == 0 {
+			return secret.ErrCredentialUnavailable
+		}
+		fallbacks[i] = string(fallbackBytes[i])
+	}
+	return use(string(current), fallbacks)
+}
+
+func useScopedFeishuFallbacks(
+	values []secret.Value,
+	plaintext []string,
+	index int,
+	use func() error,
+) error {
+	if index == len(values) {
+		return use()
+	}
+	return values[index].Use(func(value string) error {
+		plaintext[index] = value
+		defer func() { plaintext[index] = "" }()
+		return useScopedFeishuFallbacks(values, plaintext, index+1, use)
+	})
+}
+
+func clearFeishuStrings(values []string) {
+	for i := range values {
+		values[i] = ""
+	}
+}
+
+// Stop drains active handlers before retiring the generation's client,
+// replay state, and private secret owners.
+func (p *Plugin) Stop() {
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+	if p.retired {
+		return
+	}
+	p.retired = true
+	if p.client != nil {
+		p.client.CloseIdleConnections()
+		p.client = nil
+	}
+	p.oauthStateReplay = nil
+	if p.legacyAppSecret != nil {
+		p.legacyAppSecret.Destroy()
+		p.legacyAppSecret = nil
+	}
+	if p.legacySessionSecret != nil {
+		p.legacySessionSecret.Destroy()
+		p.legacySessionSecret = nil
+	}
+	for i, fallback := range p.legacySessionFallbacks {
+		fallback.Destroy()
+		p.legacySessionFallbacks[i] = nil
+	}
+	p.legacySessionFallbacks = nil
+	p.appSecret = secret.Value{}
+	p.appSecretSet = false
+	p.sessionSecret = secret.Value{}
+	p.sessionSecretSet = false
+	for i := range p.sessionSecretFallbacks {
+		p.sessionSecretFallbacks[i] = secret.Value{}
+	}
+	p.sessionSecretFallbacks = nil
+	p.secretsPrepared = false
 }

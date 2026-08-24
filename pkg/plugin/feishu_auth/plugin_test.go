@@ -1,18 +1,782 @@
 package feishu_auth
 
 import (
+	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/capability"
+	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/secret"
+	"github.com/wklken/apisix-go/pkg/testutil"
 	"github.com/wklken/apisix-go/pkg/util"
 )
+
+type feishuScopedSecretCall struct {
+	Scope secret.Scope
+	Raw   string
+}
+
+type retainingFeishuOAuthTransport struct {
+	request *http.Request
+	body    string
+}
+
+func (transport *retainingFeishuOAuthTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	body, err := io.ReadAll(request.Body)
+	if err != nil {
+		return nil, err
+	}
+	transport.request = request
+	transport.body = string(body)
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     make(http.Header),
+		Body: io.NopCloser(strings.NewReader(
+			`{"access_token":"retained-token","expires_in":7200}`,
+		)),
+		Request: request,
+	}, nil
+}
+
+type feishuScopedSecretBroker struct {
+	mu     sync.Mutex
+	values map[string]string
+	calls  []feishuScopedSecretCall
+}
+
+func (*feishuScopedSecretBroker) AuthorizeCandidate(
+	context.Context,
+	secret.AttemptID,
+	generation.ApplyTicket,
+	generation.PublicationSet,
+) error {
+	return nil
+}
+
+func (*feishuScopedSecretBroker) AuthorizeRecovery(
+	context.Context,
+	secret.AttemptID,
+	generation.RevisionSet,
+	map[generation.Domain]generation.PublishedGeneration,
+) error {
+	return nil
+}
+
+func (broker *feishuScopedSecretBroker) ResolveScoped(
+	_ context.Context,
+	scope secret.Scope,
+	raw string,
+) (string, error) {
+	broker.mu.Lock()
+	defer broker.mu.Unlock()
+	broker.calls = append(broker.calls, feishuScopedSecretCall{Scope: scope, Raw: raw})
+	value, ok := broker.values[raw]
+	if !ok {
+		return "", errors.New("missing private Feishu test value")
+	}
+	return value, nil
+}
+
+func (*feishuScopedSecretBroker) RevokeAttempt(context.Context, secret.AttemptID) error {
+	return nil
+}
+
+func (broker *feishuScopedSecretBroker) scopedCalls() []feishuScopedSecretCall {
+	broker.mu.Lock()
+	defer broker.mu.Unlock()
+	return append([]feishuScopedSecretCall(nil), broker.calls...)
+}
+
+func (broker *feishuScopedSecretBroker) setValue(raw, value string) {
+	broker.mu.Lock()
+	defer broker.mu.Unlock()
+	broker.values[raw] = value
+}
+
+func newFeishuScopedSecretHarness(
+	t *testing.T,
+	revision uint64,
+	resourceID string,
+	config Config,
+	values map[string]string,
+) (secret.GenerationCapability, secret.Scope, *feishuScopedSecretBroker, func()) {
+	t.Helper()
+	key := generation.ResourceKey{Kind: "routes", ID: resourceID}
+	document, err := json.Marshal(map[string]any{
+		"id": resourceID,
+		"plugins": map[string]any{name: map[string]any{
+			"app_id": config.AppID, "app_secret": config.AppSecret,
+			"secret": config.Secret, "secret_fallbacks": config.SecretFallbacks,
+			"auth_redirect_uri": config.AuthRedirectURI, "redirect_uri": config.RedirectURI,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := generation.NewSnapshot(
+		revision,
+		[]generation.Resource{{Key: key, Value: document}},
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := generation.PublicationCandidate{
+		Artifact: generation.GenerationArtifact{
+			Domain: generation.DomainHTTP, Revision: revision,
+			Digest: snapshot.Digest(), Snapshot: snapshot.SnapshotID(),
+		},
+		Snapshot: snapshot,
+		Closure:  []generation.ResourceKey{key},
+		Decisions: []generation.ResourceDecision{{
+			Key: key, Disposition: generation.DispositionPublished, Code: "feishu-auth-test",
+		}},
+	}
+	ticket := generation.ApplyTicket{
+		DesiredRevision: revision,
+		DesiredDigest:   snapshot.Digest(),
+		RequiredDomains: []generation.Domain{generation.DomainHTTP},
+	}
+	publication := generation.PublicationSet{
+		DesiredRevision: revision,
+		Domains: map[generation.Domain]generation.PublicationCandidate{
+			generation.DomainHTTP: candidate,
+		},
+	}
+	manifest, err := capability.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := capability.NewSecretDeclarationCatalog(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	broker := &feishuScopedSecretBroker{values: values}
+	registration, err := secret.NewScopedMaterializer(broker, catalog).RegisterCandidate(
+		context.Background(), ticket, publication,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capabilityValue, err := secret.NewGenerationCapability(registration, revision)
+	if err != nil {
+		_ = registration.Close(context.Background())
+		t.Fatal(err)
+	}
+	scope := secret.Scope{
+		Generation: revision,
+		Attempt:    registration.AttemptID(),
+		Domain:     generation.DomainHTTP,
+		Plugin:     name,
+		Resource:   key,
+		Source:     capability.SecretPluginConfig,
+	}
+	return capabilityValue, scope, broker, func() {
+		if err := registration.Close(context.Background()); err != nil {
+			t.Errorf("close Feishu scoped attempt: %v", err)
+		}
+	}
+}
+
+func assertFeishuDescriptor(t *testing.T, got, plaintext string) {
+	t.Helper()
+	digest := sha256.Sum256([]byte(plaintext))
+	want := "plugin_config#sha256:" + hex.EncodeToString(digest[:])
+	if got != want {
+		t.Fatalf("descriptor = %q, want %q", got, want)
+	}
+}
+
+func TestMaterializeScopedSecretsOwnsFeishuOAuthAndSessionSecrets(t *testing.T) {
+	const (
+		appSecretRaw = "$ENV://FEISHU_APP_SECRET"
+		sessionRaw   = "$secret://vault/feishu/session"
+		fallbackOne  = "$ENV://FEISHU_SESSION_PREVIOUS"
+		fallbackTwo  = "$secret://vault/feishu/oldest"
+	)
+	config := Config{
+		AppID: "app-id", AppSecret: appSecretRaw,
+		Secret: sessionRaw, SecretFallbacks: []string{fallbackOne, fallbackTwo},
+		AuthRedirectURI: "https://gateway.example.com/callback",
+		RedirectURI:     "https://login.feishu.cn/oauth",
+	}
+	capabilityValue, scope, broker, closeAttempt := newFeishuScopedSecretHarness(
+		t, 70, "feishu-scoped", config, map[string]string{
+			appSecretRaw: "resolved-app-secret", sessionRaw: "会话密钥八个字符",
+			fallbackOne: "short", fallbackTwo: "session-oldest",
+		},
+	)
+	defer closeAttempt()
+	p := &Plugin{config: config}
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+
+	err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p)
+	if err == nil {
+		t.Fatal("third-value materialization error = nil")
+	}
+	if strings.Contains(err.Error(), fallbackOne) || strings.Contains(err.Error(), "short") {
+		t.Fatalf("third-value materialization error leaked private data: %v", err)
+	}
+	if p.config.AppSecret != appSecretRaw || p.config.Secret != sessionRaw ||
+		strings.Join(p.config.SecretFallbacks, "|") != strings.Join(config.SecretFallbacks, "|") {
+		t.Fatalf("failed materialization changed public config: %#v", p.config)
+	}
+	if p.client != nil || p.oauthStateReplay != nil || p.appSecretSet ||
+		p.appSecret != (secret.Value{}) || p.sessionSecretSet ||
+		p.sessionSecret != (secret.Value{}) || len(p.sessionSecretFallbacks) != 0 ||
+		p.secretsPrepared {
+		t.Fatal("failed materialization installed private, client, or replay state")
+	}
+	if err := p.PostInit(); err == nil {
+		t.Fatal("PostInit succeeded without installed secrets")
+	}
+
+	broker.setValue(fallbackOne, "session-previous")
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("retry materialization error = %v", err)
+	}
+	assertFeishuDescriptor(t, p.config.AppSecret, "resolved-app-secret")
+	assertFeishuDescriptor(t, p.config.Secret, "会话密钥八个字符")
+	assertFeishuDescriptor(t, p.config.SecretFallbacks[0], "session-previous")
+	assertFeishuDescriptor(t, p.config.SecretFallbacks[1], "session-oldest")
+
+	calls := broker.scopedCalls()
+	wantFields := []string{
+		"app_secret", "secret", "secret_fallbacks",
+		"app_secret", "secret", "secret_fallbacks", "secret_fallbacks",
+	}
+	wantRaw := []string{
+		appSecretRaw, sessionRaw, fallbackOne,
+		appSecretRaw, sessionRaw, fallbackOne, fallbackTwo,
+	}
+	if len(calls) != len(wantFields) {
+		t.Fatalf("resolver calls = %#v, want fields %v", calls, wantFields)
+	}
+	for i, field := range wantFields {
+		wantScope := scope
+		wantScope.Field = field
+		if calls[i].Scope != wantScope || calls[i].Raw != wantRaw[i] {
+			t.Fatalf("resolver call %d = %#v, want scope %#v raw %q", i, calls[i], wantScope, wantRaw[i])
+		}
+	}
+
+	var tokenBody map[string]string
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&tokenBody); err != nil {
+			t.Fatalf("decode token body: %v", err)
+		}
+		_, _ = w.Write([]byte(`{"access_token":"scoped-token","expires_in":7200}`))
+	}))
+	defer api.Close()
+	p.config.AccessTokenURL = api.URL
+	if err := p.PostInit(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(p.Stop)
+	token, err := p.fetchAccessToken(httptest.NewRequest(http.MethodGet, "http://gateway.test", nil), "code-a")
+	if err != nil || token != "scoped-token" {
+		t.Fatalf("fetchAccessToken() = (%q, %v), want scoped-token", token, err)
+	}
+	if tokenBody["client_id"] != "app-id" || tokenBody["client_secret"] != "resolved-app-secret" {
+		t.Fatalf("token body = %#v, want resolved private app secret", tokenBody)
+	}
+}
+
+func TestFeishuOAuthRequestDoesNotRetainAppSecretBody(t *testing.T) {
+	const appSecret = "retained-app-secret"
+	p := newTestPlugin(t, Config{
+		AppID: "app-id", AppSecret: appSecret, Secret: "session-secret",
+		AuthRedirectURI: "https://gateway.example.com/callback",
+		RedirectURI:     "https://login.feishu.cn/oauth",
+		AccessTokenURL:  "http://feishu.invalid/token",
+	})
+	transport := &retainingFeishuOAuthTransport{}
+	p.client = &http.Client{Transport: transport}
+
+	token, err := p.fetchAccessToken(
+		httptest.NewRequest(http.MethodGet, "http://gateway.example.com/callback", nil),
+		"code-a",
+	)
+	if err != nil || token != "retained-token" {
+		t.Fatalf("fetchAccessToken() = (%q, %v), want retained-token", token, err)
+	}
+	if !strings.Contains(transport.body, appSecret) {
+		t.Fatalf("OAuth request body = %q, want private app secret during send", transport.body)
+	}
+	if transport.request == nil {
+		t.Fatal("retaining transport did not observe OAuth request")
+	}
+	if transport.request.Body != http.NoBody || transport.request.GetBody != nil {
+		t.Fatalf(
+			"retained OAuth body = %#v GetBody present = %t, want scrubbed",
+			transport.request.Body,
+			transport.request.GetBody != nil,
+		)
+	}
+	if strings.Contains(transport.request.URL.String(), appSecret) ||
+		strings.Contains(transport.request.Header.Get("Authorization"), appSecret) {
+		t.Fatalf("retained OAuth request exposes app secret: %#v", transport.request)
+	}
+}
+
+func TestFeishuDerivedOAuthAndSessionPayloadsAreCleared(t *testing.T) {
+	const (
+		sessionSecret = "session-secret"
+		fingerprint   = "feishu-derived-test"
+	)
+	now := time.Unix(1_800_000_000, 0)
+
+	t.Run("opened oauth state", func(t *testing.T) {
+		sealed, err := base.SealOAuthSession(
+			[]byte("state-a"), sessionSecret, fingerprint, now, now.Add(time.Minute),
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var retained []byte
+		err = useOpenedFeishuOAuthState(
+			sealed, sessionSecret, nil, fingerprint, now,
+			func(state []byte) error {
+				retained = state
+				if string(state) != "state-a" {
+					t.Fatalf("opened state = %q, want state-a", state)
+				}
+				return nil
+			},
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertFeishuBytesCleared(t, retained)
+	})
+
+	t.Run("verified session payload", func(t *testing.T) {
+		payload := []byte(`{"userinfo":{"open_id":"ou-a"},"expires_at":1800000060}`)
+		signed := base.SignSessionValue(payload, sessionSecret)
+		var retained []byte
+		err := useVerifiedFeishuSessionPayload(
+			signed, sessionSecret, nil,
+			func(verified []byte) error {
+				retained = verified
+				var session sessionPayload
+				if err := json.Unmarshal(verified, &session); err != nil {
+					return err
+				}
+				if session.UserInfo["open_id"] != "ou-a" {
+					t.Fatalf("verified session = %#v", session)
+				}
+				return nil
+			},
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertFeishuBytesCleared(t, retained)
+	})
+
+	t.Run("session signing input", func(t *testing.T) {
+		payload := []byte("session-signing-input")
+		signed := signAndClearFeishuSessionPayload(payload, sessionSecret)
+		verified, ok := base.VerifySessionValue(signed, sessionSecret, nil)
+		if !ok || string(verified) != "session-signing-input" {
+			t.Fatalf("signed payload verification = %q/%t", verified, ok)
+		}
+		clear(verified)
+		assertFeishuBytesCleared(t, payload)
+	})
+}
+
+func assertFeishuBytesCleared(t *testing.T, payload []byte) {
+	t.Helper()
+	if len(payload) == 0 {
+		t.Fatal("derived payload was not retained by the test")
+	}
+	for index, value := range payload {
+		if value != 0 {
+			t.Fatalf("derived payload byte %d = %d, want zero", index, value)
+		}
+	}
+}
+
+func TestFeishuSchemaDefersSessionSecretLengthUntilResolution(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	for _, raw := range []string{"short", "$ENV://X", "$secret://vault/a/path/longer/than/thirty-two/bytes"} {
+		config := map[string]any{
+			"app_id": "app-id", "app_secret": "$ENV://A",
+			"secret": raw, "secret_fallbacks": []any{raw},
+			"auth_redirect_uri": "https://gateway.example.com/callback",
+			"redirect_uri":      "https://login.feishu.cn/oauth",
+		}
+		if err := util.Validate(config, p.GetSchema()); err != nil {
+			t.Fatalf("schema rejected raw session secret %q before resolution: %v", raw, err)
+		}
+	}
+}
+
+func TestFeishuResolvedSessionSecretRuneCountBounds(t *testing.T) {
+	tests := []struct {
+		name     string
+		resolved string
+		wantErr  bool
+	}{
+		{name: "seven runes rejected", resolved: "会话密钥七字符", wantErr: true},
+		{name: "eight runes accepted", resolved: "会话密钥八个字符"},
+		{name: "thirty two runes accepted", resolved: strings.Repeat("界", 32)},
+		{name: "thirty three runes rejected", resolved: strings.Repeat("界", 33), wantErr: true},
+	}
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			const raw = "$ENV://FEISHU_SESSION_BOUNDARY"
+			config := Config{
+				AppID: "app-id", AppSecret: "app-secret", Secret: raw,
+				AuthRedirectURI: "https://gateway.example.com/callback",
+				RedirectURI:     "https://login.feishu.cn/oauth",
+			}
+			capabilityValue, scope, broker, closeAttempt := newFeishuScopedSecretHarness(
+				t, uint64(80+i), "feishu-boundary", config,
+				map[string]string{"app-secret": "app-secret", raw: tt.resolved},
+			)
+			defer closeAttempt()
+			p := &Plugin{config: config}
+			err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p)
+			if tt.wantErr {
+				if err == nil || p.config.Secret != raw || p.secretsPrepared {
+					t.Fatalf("resolved rune count %d result = %v, config=%#v", len([]rune(tt.resolved)), err, p.config)
+				}
+			} else {
+				if err != nil {
+					t.Fatal(err)
+				}
+				assertFeishuDescriptor(t, p.config.Secret, tt.resolved)
+			}
+			if calls := broker.scopedCalls(); len(calls) != 2 || calls[0].Scope.Field != "app_secret" ||
+				calls[1].Scope.Field != "secret" {
+				t.Fatalf("boundary resolver calls = %#v, want app_secret then secret only", calls)
+			}
+		})
+	}
+}
+
+func TestFeishuLegacyMaterializationDecryptsContextualSecrets(t *testing.T) {
+	const (
+		key               = "0123456789abcdef"
+		appPlaintext      = "legacy-app-secret"
+		sessionPlaintext  = "legacy-session"
+		fallbackPlaintext = "legacy-fallback"
+	)
+	service := testutil.DataEncryptionService(true, []string{key})
+	appRaw, err := service.EncryptForContext(appPlaintext, name+".app_secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionRaw, err := service.EncryptForContext(sessionPlaintext, name+".secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fallbackRaw, err := service.EncryptForContext(fallbackPlaintext, name+".secret_fallbacks")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := &Plugin{config: Config{
+		AppID: "app-id", AppSecret: appRaw, Secret: sessionRaw,
+		SecretFallbacks: []string{fallbackRaw},
+		AuthRedirectURI: "https://gateway.example.com/callback",
+		RedirectURI:     "https://login.feishu.cn/oauth",
+	}}
+	p.SetDependencies(base.Dependencies{DataEncryption: service.Resolver()})
+	if err := p.MaterializeSecrets(); err != nil {
+		t.Fatalf("MaterializeSecrets() error = %v", err)
+	}
+	t.Cleanup(p.Stop)
+	assertFeishuDescriptor(t, p.config.AppSecret, appPlaintext)
+	assertFeishuDescriptor(t, p.config.Secret, sessionPlaintext)
+	assertFeishuDescriptor(t, p.config.SecretFallbacks[0], fallbackPlaintext)
+	if p.client != nil || p.oauthStateReplay != nil {
+		t.Fatal("legacy materialization caused PostInit side effects")
+	}
+}
+
+func TestFeishuConcurrentScopedMaterializationIsSingleFlight(t *testing.T) {
+	config := Config{
+		AppID: "app-id", AppSecret: "$ENV://FEISHU_CONCURRENT_APP",
+		Secret:          "$ENV://FEISHU_CONCURRENT_SESSION",
+		SecretFallbacks: []string{"$ENV://FEISHU_CONCURRENT_OLD"},
+		AuthRedirectURI: "https://gateway.example.com/callback",
+		RedirectURI:     "https://login.feishu.cn/oauth",
+	}
+	capabilityValue, scope, broker, closeAttempt := newFeishuScopedSecretHarness(
+		t, 71, "feishu-concurrent", config, map[string]string{
+			config.AppSecret: "concurrent-app", config.Secret: "concurrent-session",
+			config.SecretFallbacks[0]: "concurrent-old",
+		},
+	)
+	defer closeAttempt()
+	p := &Plugin{config: config}
+	start := make(chan struct{})
+	errs := make(chan error, 24)
+	var group sync.WaitGroup
+	for range 24 {
+		group.Go(func() {
+			<-start
+			errs <- base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p)
+		})
+	}
+	close(start)
+	group.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if calls := broker.scopedCalls(); len(calls) != 3 {
+		t.Fatalf("concurrent resolver calls = %#v, want one ordered materialization", calls)
+	}
+}
+
+func newScopedFeishuTestPlugin(
+	t *testing.T,
+	revision uint64,
+	resourceID string,
+	config Config,
+	values map[string]string,
+) (*Plugin, func()) {
+	t.Helper()
+	capabilityValue, scope, _, closeAttempt := newFeishuScopedSecretHarness(
+		t, revision, resourceID, config, values,
+	)
+	p := &Plugin{config: config}
+	if err := p.Init(); err != nil {
+		closeAttempt()
+		t.Fatal(err)
+	}
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		closeAttempt()
+		t.Fatal(err)
+	}
+	if err := p.PostInit(); err != nil {
+		closeAttempt()
+		t.Fatal(err)
+	}
+	return p, func() {
+		p.Stop()
+		closeAttempt()
+	}
+}
+
+func TestFeishuGenerationOAuthAndSessionStateIsIsolated(t *testing.T) {
+	var tokenRequests atomic.Int32
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		tokenRequests.Add(1)
+		var body map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		_, _ = w.Write([]byte(`{"access_token":"token-` + body["client_secret"] + `","expires_in":7200}`))
+	}))
+	defer api.Close()
+	const (
+		appRaw      = "$ENV://FEISHU_GENERATION_APP"
+		sessionRaw  = "$ENV://FEISHU_GENERATION_SESSION"
+		fallbackRaw = "$ENV://FEISHU_GENERATION_FALLBACK"
+	)
+	baseConfig := Config{
+		AppID: "shared-app", AppSecret: appRaw, Secret: sessionRaw,
+		AuthRedirectURI: "https://gateway.example.com/callback",
+		RedirectURI:     "https://login.feishu.cn/oauth", AccessTokenURL: api.URL,
+	}
+	n, closeN := newScopedFeishuTestPlugin(t, 72, "same-route", baseConfig, map[string]string{
+		appRaw: "app-generation-n", sessionRaw: "session-generation-n",
+	})
+	defer closeN()
+	nPlusOne, closeNPlusOne := newScopedFeishuTestPlugin(
+		t, 73, "same-route", baseConfig, map[string]string{
+			appRaw: "app-generation-next", sessionRaw: "session-generation-next",
+		},
+	)
+	defer closeNPlusOne()
+
+	request := httptest.NewRequest(http.MethodGet, "http://gateway.test", nil)
+	if token, err := n.fetchAccessToken(request, "code-n"); err != nil || token != "token-app-generation-n" {
+		t.Fatalf("N fetchAccessToken() = (%q, %v)", token, err)
+	}
+	if token, err := nPlusOne.fetchAccessToken(
+		request,
+		"code-next",
+	); err != nil ||
+		token != "token-app-generation-next" {
+		t.Fatalf("N+1 fetchAccessToken() = (%q, %v)", token, err)
+	}
+	if tokenRequests.Load() != 2 {
+		t.Fatalf("token requests = %d, want generation-private requests", tokenRequests.Load())
+	}
+
+	cookie, err := n.sessionCookie(map[string]any{"open_id": "generation-n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	requestN := httptest.NewRequest(http.MethodGet, "http://gateway.test", nil)
+	requestN.AddCookie(cookie)
+	if user, ok := n.userInfoFromSession(requestN); !ok || user["open_id"] != "generation-n" {
+		t.Fatalf("N rejected its own cookie: %#v/%t", user, ok)
+	}
+	requestNext := httptest.NewRequest(http.MethodGet, "http://gateway.test", nil)
+	requestNext.AddCookie(cookie)
+	if _, ok := nPlusOne.userInfoFromSession(requestNext); ok {
+		t.Fatal("N+1 accepted an unrelated N session cookie")
+	}
+
+	rotatedConfig := baseConfig
+	rotatedConfig.SecretFallbacks = []string{fallbackRaw}
+	rotated, closeRotated := newScopedFeishuTestPlugin(
+		t, 74, "same-route", rotatedConfig, map[string]string{
+			appRaw: "app-generation-n", sessionRaw: "session-generation-next",
+			fallbackRaw: "session-generation-n",
+		},
+	)
+	defer closeRotated()
+	requestRotated := httptest.NewRequest(http.MethodGet, "http://gateway.test", nil)
+	requestRotated.AddCookie(cookie)
+	if user, ok := rotated.userInfoFromSession(requestRotated); !ok || user["open_id"] != "generation-n" {
+		t.Fatal("configured fallback did not verify the previous generation cookie")
+	}
+	stateResponse := httptest.NewRecorder()
+	n.redirectToProvider(stateResponse, httptest.NewRequest(http.MethodGet, "http://gateway.test", nil))
+	stateCookie := findFeishuStateCookie(stateResponse.Result().Cookies())
+	stateRedirect, err := url.Parse(stateResponse.Header().Get("Location"))
+	if err != nil || stateCookie == nil {
+		t.Fatalf("N OAuth state setup = (%#v, %v)", stateCookie, err)
+	}
+	rotatedCallback := httptest.NewRequest(
+		http.MethodGet,
+		"http://gateway.test/callback?state="+url.QueryEscape(stateRedirect.Query().Get("state")),
+		nil,
+	)
+	rotatedCallback.AddCookie(stateCookie)
+	if !rotated.verifyAndConsumeOAuthState(rotatedCallback) {
+		t.Fatal("configured fallback did not open the previous generation OAuth state")
+	}
+
+	n.Stop()
+	nextCookie, err := nPlusOne.sessionCookie(map[string]any{"open_id": "generation-next"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	requestNextOwn := httptest.NewRequest(http.MethodGet, "http://gateway.test", nil)
+	requestNextOwn.AddCookie(nextCookie)
+	if _, ok := nPlusOne.userInfoFromSession(requestNextOwn); !ok {
+		t.Fatal("retiring N invalidated N+1 session state")
+	}
+}
+
+func TestFeishuStopDrainsActiveRequestAndPreventsResurrection(t *testing.T) {
+	tokenStarted := make(chan struct{})
+	releaseToken := make(chan struct{})
+	var tokenOnce sync.Once
+	var releaseOnce sync.Once
+	var providerCalls atomic.Int32
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		providerCalls.Add(1)
+		switch r.URL.Path {
+		case "/token":
+			tokenOnce.Do(func() { close(tokenStarted) })
+			<-releaseToken
+			_, _ = w.Write([]byte(`{"access_token":"active-token","expires_in":7200}`))
+		case "/userinfo":
+			_, _ = w.Write([]byte(`{"code":0,"data":{"open_id":"active-user"}}`))
+		}
+	}))
+	t.Cleanup(func() {
+		releaseOnce.Do(func() { close(releaseToken) })
+		api.Close()
+	})
+	p := newTestPlugin(t, Config{
+		AppID: "app-id", AppSecret: "active-app-secret", Secret: "active-session",
+		AuthRedirectURI: "https://gateway.example.com/callback",
+		RedirectURI:     "https://login.feishu.cn/oauth",
+		AccessTokenURL:  api.URL + "/token", UserInfoURL: api.URL + "/userinfo",
+	})
+
+	handlerDone := make(chan int, 1)
+	go func() {
+		req := httptest.NewRequest(http.MethodGet, "http://gateway.test/orders", nil)
+		req.Header.Set("X-Feishu-Code", "active-code")
+		rr := httptest.NewRecorder()
+		p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusAccepted)
+		})).ServeHTTP(rr, req)
+		handlerDone <- rr.Code
+	}()
+	select {
+	case <-tokenStarted:
+	case <-time.After(time.Second):
+		t.Fatal("active token request did not start")
+	}
+	stopDone := make(chan struct{})
+	go func() {
+		p.Stop()
+		close(stopDone)
+	}()
+	select {
+	case <-stopDone:
+		t.Fatal("Stop returned before active token request drained")
+	case <-time.After(20 * time.Millisecond):
+	}
+	releaseOnce.Do(func() { close(releaseToken) })
+	select {
+	case code := <-handlerDone:
+		if code != http.StatusAccepted {
+			t.Fatalf("active handler status = %d, want 202", code)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("active handler did not finish")
+	}
+	select {
+	case <-stopDone:
+	case <-time.After(time.Second):
+		t.Fatal("Stop did not finish after active request drained")
+	}
+	p.Stop()
+	if p.client != nil || p.oauthStateReplay != nil || p.appSecretSet ||
+		p.legacyAppSecret != nil || p.sessionSecretSet || p.legacySessionSecret != nil ||
+		len(p.sessionSecretFallbacks) != 0 || len(p.legacySessionFallbacks) != 0 ||
+		p.secretsPrepared {
+		t.Fatal("Stop retained Feishu client, replay, or secret state")
+	}
+	late := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("retired plugin reached next handler")
+	})).ServeHTTP(late, httptest.NewRequest(http.MethodGet, "http://gateway.test", nil))
+	if late.Code != http.StatusServiceUnavailable || providerCalls.Load() != 2 {
+		t.Fatalf("post-Stop status/provider calls = %d/%d, want 503/2", late.Code, providerCalls.Load())
+	}
+	if err := p.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) {
+		t.Fatalf("post-Stop materialization error = %v, want credential unavailable", err)
+	}
+	if err := p.PostInit(); !errors.Is(err, secret.ErrCredentialUnavailable) {
+		t.Fatalf("post-Stop PostInit error = %v, want credential unavailable", err)
+	}
+}
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
@@ -21,9 +785,13 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
+	if err := p.MaterializeSecrets(); err != nil {
+		t.Fatalf("MaterializeSecrets() error = %v", err)
+	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
+	t.Cleanup(p.Stop)
 
 	return p
 }

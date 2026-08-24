@@ -2,6 +2,7 @@ package sls_logger
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -11,20 +12,29 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/felixge/httpsnoop"
+	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
+	"github.com/wklken/apisix-go/pkg/secret"
 
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 )
 
 type Plugin struct {
 	base.BaseLoggerPlugin
-	config Config
+	config      Config
+	lifecycleMu sync.RWMutex
+	stopOnce    sync.Once
+	stopped     atomic.Bool
+
+	secretsPrepared bool
+	ready           bool
 
 	addr string
 
@@ -193,26 +203,89 @@ func (p *Plugin) Init() error {
 	return nil
 }
 
-func (p *Plugin) PostInit() error {
+func (p *Plugin) MaterializeScopedSecrets(
+	ctx context.Context,
+	access base.ScopedSecretAccess,
+) error {
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+	if p.stopped.Load() {
+		return secret.ErrCredentialUnavailable
+	}
+	if p.secretsPrepared {
+		return nil
+	}
+	value, err := access.Materialize(ctx, "access_key_secret", p.config.AccessKeySecret)
+	if err != nil || value.Use(validateSLSAccessKeySecret) != nil {
+		return slsAccessKeySecretUnavailable()
+	}
+	descriptor, err := value.Descriptor(capability.SecretPluginConfig)
+	if err != nil {
+		return slsAccessKeySecretUnavailable()
+	}
+	p.config.AccessKeySecret = descriptor.String()
+	p.secretsPrepared = true
+	return nil
+}
+
+// MaterializeSecrets is the transitional process-local compatibility path.
+// Immutable generation preparation uses MaterializeScopedSecrets instead.
+func (p *Plugin) MaterializeSecrets() error {
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+	if p.stopped.Load() {
+		return secret.ErrCredentialUnavailable
+	}
+	if p.secretsPrepared {
+		return nil
+	}
 	if !p.DataEncryption().Configured() {
 		return errors.New("data-encryption resolver is required")
+	}
+	resolved, err := p.DataEncryption().ResolveForContext(
+		p.config.AccessKeySecret,
+		name+".access_key_secret",
+	)
+	if err != nil || validateSLSAccessKeySecret(resolved) != nil {
+		return slsAccessKeySecretUnavailable()
+	}
+	plaintext := []byte(resolved)
+	digest := sha256.Sum256(plaintext)
+	clear(plaintext)
+	descriptor, err := secret.NewDescriptor(capability.SecretPluginConfig, digest)
+	if err != nil {
+		return slsAccessKeySecretUnavailable()
+	}
+	p.config.AccessKeySecret = descriptor.String()
+	p.secretsPrepared = true
+	return nil
+}
+
+func validateSLSAccessKeySecret(value string) error {
+	if strings.TrimSpace(value) == "" {
+		return secret.ErrCredentialUnavailable
+	}
+	return nil
+}
+
+func slsAccessKeySecretUnavailable() error {
+	return fmt.Errorf("%s access_key_secret: %w", name, secret.ErrCredentialUnavailable)
+}
+
+func (p *Plugin) PostInit() error {
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+	if p.stopped.Load() || !p.secretsPrepared {
+		return secret.ErrCredentialUnavailable
+	}
+	if p.ready {
+		return nil
 	}
 	if err := base.PrepareExprRegexps(
 		p.config.IncludeReqBodyExpr, p.config.IncludeRespBodyExpr,
 	); err != nil {
 		return err
 	}
-	_, err := p.DataEncryption().ResolveForContext(
-		p.config.AccessKeySecret,
-		"sls-logger.access_key_secret",
-	)
-	if err != nil {
-		return fmt.Errorf("sls-logger access_key_secret: %w", err)
-	}
-	// The official schema requires this field, so validate encrypted material
-	// fail-closed. The syslog transport does not authenticate with it: clear the
-	// plaintext immediately and never serialize it into the log message.
-	p.config.AccessKeySecret = ""
 
 	if p.config.SSLVerify == nil {
 		verify := true
@@ -255,7 +328,7 @@ func (p *Plugin) PostInit() error {
 		p.config.IncludeReqBodyExpr, p.config.IncludeRespBodyExpr,
 	)
 
-	p.BatchProcessor = base.NewBatchProcessor("sls logger", base.BatchDefaults{
+	processor := base.NewBatchProcessor("sls logger", base.BatchDefaults{
 		BatchMaxSize:       p.config.BatchMaxSize,
 		MaxRetryCount:      p.config.MaxRetryCount,
 		RetryDelaySec:      p.config.RetryDelay,
@@ -263,7 +336,13 @@ func (p *Plugin) PostInit() error {
 		InactiveTimeoutSec: p.config.InactiveTimeout,
 		MaxPendingEntries:  p.config.MaxPendingEntries,
 		PluginID:           name,
-	}, p.RouteID, p.ServerAddr, p.SendBatch)
+	}, p.RouteID, p.ServerAddr, p.sendBatchFromProcessor)
+	if p.stopped.Load() {
+		processor.Stop()
+		return secret.ErrCredentialUnavailable
+	}
+	p.BatchProcessor = processor
+	p.ready = true
 
 	return nil
 }
@@ -302,7 +381,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			base.NestedLogMap(logFields, "response")["body"] = recorder.BodyTruncated(p.config.MaxRespBodyBytes)
 		}
 
-		_ = p.Fire(logFields)
+		_ = p.enqueueSLSIfRunning(logFields)
 	}
 	return http.HandlerFunc(fn)
 }
@@ -328,6 +407,15 @@ func (p *Plugin) RunLogPhase(snapshot base.LogSnapshot) error {
 		if body := base.SnapshotResponseBody(snapshot, p.config.MaxRespBodyBytes); body != "" {
 			base.NestedLogMap(fields, "response")["body"] = body
 		}
+	}
+	return p.enqueueSLSIfRunning(fields)
+}
+
+func (p *Plugin) enqueueSLSIfRunning(fields map[string]any) error {
+	p.lifecycleMu.RLock()
+	defer p.lifecycleMu.RUnlock()
+	if p.stopped.Load() || !p.ready {
+		return base.ErrLogQueueUnavailable
 	}
 	return p.EnqueueLog(fields)
 }
@@ -399,6 +487,28 @@ func (p *Plugin) Send(log map[string]any) {
 }
 
 func (p *Plugin) SendBatch(ctx context.Context, entries []map[string]any, batchMaxSize int) (int, error) {
+	return p.sendBatch(ctx, entries, batchMaxSize, false)
+}
+
+func (p *Plugin) sendBatchFromProcessor(
+	ctx context.Context,
+	entries []map[string]any,
+	batchMaxSize int,
+) (int, error) {
+	return p.sendBatch(ctx, entries, batchMaxSize, true)
+}
+
+func (p *Plugin) sendBatch(
+	ctx context.Context,
+	entries []map[string]any,
+	batchMaxSize int,
+	allowRetiredDrain bool,
+) (int, error) {
+	p.lifecycleMu.RLock()
+	defer p.lifecycleMu.RUnlock()
+	if (!allowRetiredDrain && p.stopped.Load()) || !p.secretsPrepared || !p.ready {
+		return 0, secret.ErrCredentialUnavailable
+	}
 	_ = batchMaxSize
 
 	messages := make([]string, 0, len(entries))
@@ -406,6 +516,30 @@ func (p *Plugin) SendBatch(ctx context.Context, entries []map[string]any, batchM
 		messages = append(messages, p.buildMessage(entry))
 	}
 	return 0, p.sendMessage(ctx, strings.Join(messages, ""))
+}
+
+// Stop prevents new work, drains pending batch entries, then drops all
+// generation readiness state. The access key secret is not retained here: it
+// was used only during materialization and replaced by its public descriptor.
+func (p *Plugin) Stop() {
+	p.stopOnce.Do(func() {
+		p.stopped.Store(true)
+		p.lifecycleMu.Lock()
+		processor := p.BatchProcessor
+		p.lifecycleMu.Unlock()
+		cleanup := func() {
+			p.lifecycleMu.Lock()
+			defer p.lifecycleMu.Unlock()
+			p.BatchProcessor = nil
+			p.secretsPrepared = false
+			p.ready = false
+		}
+		if processor != nil {
+			processor.StopWithCleanup(cleanup)
+		} else {
+			cleanup()
+		}
+	})
 }
 
 func (p *Plugin) sendMessage(ctx context.Context, message string) error {

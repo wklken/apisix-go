@@ -119,7 +119,7 @@ accepted relevant leaf corrections --------+              |
 
 | Owner | Exclusive production paths | Exclusive test paths |
 | --- | --- | --- |
-| X1-I integration owner | `pkg/compiler/composite_children.go`, minimum target-aware edits in `occurrence.go`, `hooks.go`, and accepted S3-0 `discarded_secret_preparer.go`; `pkg/plugin/base/composite.go`, `pkg/plugin/base/types.go`, `pkg/plugin/composite_preparer.go`, `pkg/plugin/instance.go`, minimum helper in `pkg/plugin/base/secrets.go` | corresponding compiler/plugin/base tests; `pkg/plugin/schema_witness_test.go` only if its inventory requires the accessor |
+| X1-I integration owner | `pkg/compiler/composite_children.go`, the candidate/recovery orchestration in `factory.go`, minimum target-aware edits in `occurrence.go`, `hooks.go`, and accepted S3-0 `discarded_secret_preparer.go`; `pkg/plugin/base/composite.go`, `pkg/plugin/base/types.go`, `pkg/plugin/composite_preparer.go`, `pkg/plugin/instance.go`, minimum helpers in `pkg/plugin/base/secrets.go` and `pkg/secret/materializer.go` | corresponding compiler/plugin/base/secret tests; `pkg/plugin/schema_witness_test.go` only if its inventory requires the accessor |
 | X1-W workflow worker | `pkg/plugin/workflow/**` | same package only |
 | X1-A multi-auth worker | `pkg/plugin/multi_auth/**` | same package only |
 | X1-G integration owner | one shared AST contract test under `pkg/plugin` only if package-local scans cannot prove the invariant | no leaf production files |
@@ -164,7 +164,7 @@ conflicts semantically; it never takes whole-file ours/theirs for convenience.
 - Produces: an evidence note containing `X1_BASE`, clean status, dependency
   proofs, and passing package baselines; no source change.
 
-- [ ] **Step 1: Record and validate the exact baseline**
+- [x] **Step 1: Record and validate the exact baseline**
 
 ```bash
 source .envrc
@@ -185,7 +185,7 @@ accepted `limit-count` and auth package states agree with the integration
 ledger. If a dependency is missing or a signature differs, stop and refresh
 this plan before branching.
 
-- [ ] **Step 2: Run package baselines**
+- [x] **Step 2: Run package baselines**
 
 ```bash
 go test ./pkg/plugin/workflow ./pkg/plugin/multi_auth -count=1
@@ -196,7 +196,7 @@ go test -race ./pkg/plugin/workflow ./pkg/plugin/multi_auth \
 Expected: PASS, or record an exact pre-existing failure before mutation. Do not
 call a narrowed selector a full package pass.
 
-- [ ] **Step 3: Record legacy edges as architecture RED**
+- [x] **Step 3: Record legacy edges as architecture RED**
 
 ```bash
 rg -n 'MaterializePluginSecrets|store\.GetConsumerGroup|func \(p \*Plugin\) PostInit|func \(p \*Plugin\) Stop' \
@@ -213,6 +213,7 @@ constructs in `PostInit` and has no outer `Stop`.
 **Files:**
 - Create: `pkg/compiler/composite_children.go`
 - Create: `pkg/compiler/composite_children_test.go`
+- Modify: `pkg/compiler/factory.go`
 - Modify: `pkg/compiler/occurrence.go`
 - Modify: `pkg/compiler/hooks.go`
 - Modify after accepted S3-0: `pkg/compiler/discarded_secret_preparer.go`
@@ -220,6 +221,8 @@ constructs in `PostInit` and has no outer `Stop`.
 - Create: `pkg/plugin/base/composite.go`
 - Modify: `pkg/plugin/base/types.go`
 - Modify: `pkg/plugin/base/secrets.go`
+- Modify: `pkg/secret/materializer.go`
+- Modify: `pkg/secret/materializer_test.go`
 - Create: `pkg/plugin/composite_preparer.go`
 - Create: `pkg/plugin/composite_preparer_test.go`
 - Modify: `pkg/plugin/instance.go`
@@ -243,6 +246,7 @@ type compositeChildOccurrenceSpec struct {
 func compositeChildOccurrenceSpecsFromCandidates(
     context.Context,
     map[generation.Domain]generation.PublicationCandidate,
+    []factoryOccurrenceSpec, // exact final outer occurrences
 ) ([]compositeChildOccurrenceSpec, error)
 
 // Bound only after newPreparationAttempt creates package-private authority.
@@ -337,7 +341,7 @@ candidate selected before registration. It does not mean a final HTTP/stream
 runtime plugin binding; precedence/merge, runtime scope/provenance, and resource
 context are still owned by Immutable Compiler Tasks 7/8.
 
-- [ ] **Step 1: Write RED final-candidate child inventory tests**
+- [x] **Step 1: Write RED final-candidate child inventory tests**
 
 Add candidate and recovery cases for a route/service containing workflow
 `limit-count` children and all seven multi-auth child factories. Assert
@@ -356,7 +360,7 @@ candidate clone. Add a nested `limit-count` support test proving the pure gate
 rejects a missing scoped owner with zero candidate/recovery registration calls
 and zero resolver calls.
 
-- [ ] **Step 2: Run compiler RED**
+- [x] **Step 2: Run compiler RED**
 
 ```bash
 go test ./pkg/compiler \
@@ -366,11 +370,12 @@ go test ./pkg/compiler \
 
 Expected: compile/test failure because CP3/S3-0 only see top-level factories.
 
-- [ ] **Step 3: Implement pure nested extraction and pre-registration support**
+- [x] **Step 3: Implement pure nested extraction and pre-registration support**
 
-Parse only normalized final candidate clones. Candidate/recovery paths call
-`compositeChildOccurrenceSpecsFromCandidates` before registration and pass its
-result to `validateCompositeScopedSecretSupport`. After registration and
+Parse only normalized final candidate clones and consume only exact final outer
+occurrences already admitted for that manifest domain. Candidate/recovery paths
+call `compositeChildOccurrenceSpecsFromCandidates` before registration and pass
+its result to `validateCompositeScopedSecretSupport`. After registration and
 `newPreparationAttempt`, `bindCompositeChildOccurrences` replaces each pure
 outer spec with the exact package-private `FactoryOccurrence` owned by that
 attempt; missing, extra, duplicate, or mismatched outer authority fails before
@@ -405,7 +410,7 @@ and `_meta` is not part of its child config. Do not invent a nested-child
 `_meta` contract; nested action/auth config remains governed by each current
 composite schema and compatibility tests.
 
-- [ ] **Step 4: Extend S3-0 discard without weakening occurrence authority**
+- [x] **Step 4: Extend S3-0 discard without weakening occurrence authority**
 
 `materializeCompositeSecret` accepts only a bound
 `compositeChildOccurrence`, proves its outer occurrence belongs to this attempt
@@ -432,7 +437,7 @@ materialize, ignore, or retain these phantom fields itself.
 
 #### Task 2B: Add the cycle-free runtime child preparer
 
-- [ ] **Step 1: Write RED seam tests**
+- [x] **Step 1: Write RED seam tests**
 
 Use a package-local sentinel implementing `base.ScopedSecretMaterializer`,
 immutable dependency probes, and idempotent `Stop`. Temporarily replace one
@@ -460,7 +465,7 @@ effective outer scope/provenance stay equal. Add a case where source provenance
 differs from effective provenance and prove secret authority follows the source
 while the binding/child key follows the effective values.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```bash
 go test ./pkg/plugin/base ./pkg/plugin -run '^TestCompositeChildPreparer' -count=1
@@ -468,7 +473,7 @@ go test ./pkg/plugin/base ./pkg/plugin -run '^TestCompositeChildPreparer' -count
 
 Expected: compile failure because the new seam and position do not exist.
 
-- [ ] **Step 3: Implement the lower-layer contract only**
+- [x] **Step 3: Implement the lower-layer contract only**
 
 Add the types exactly above. Refactor the existing scoped body only enough to
 expose:
@@ -485,6 +490,13 @@ It calls the same scoped-only implementation as
 `MaterializeScopedPluginSecrets`; it never reconstructs a scope, accepts a
 capability, or falls back to legacy materialization. Preserve the unresolved
 reference scan and fixed redacted error.
+
+Bind the passed `ScopedSecretAccess` to the exact private registration authority
+held by `Dependencies.Secrets`, not only its deterministic attempt ID and
+generation. Keep that identity comparison inside `pkg/secret`; expose no
+registration lifecycle method or internal field. When a broker terminates the
+request context while returning a redacted credential error, recover the
+canonical cancellation from `ctx.Err()`.
 
 Implement `compositeChildPreparer.Prepare` in this order:
 
@@ -514,7 +526,7 @@ After construction, every failure calls child `Stop` once when supported.
 Returned `Close` uses `sync.Once`. Return context cancellation unchanged; map
 all other errors to a fixed safe factory/position diagnostic without raw input.
 
-- [ ] **Step 4: Run GREEN and race tests**
+- [x] **Step 4: Run GREEN and race tests**
 
 ```bash
 go test ./pkg/plugin/base ./pkg/plugin -run '^TestCompositeChildPreparer' -count=1
@@ -527,7 +539,7 @@ git diff --check
 
 Expected: PASS; no unrelated formatting.
 
-- [ ] **Step 5: Integration-owner review and commit**
+- [x] **Step 5: Integration-owner review and commit**
 
 Verify non-composite `InstanceKey` golden tests are unchanged because the new
 field is omitted when empty. Only the integration owner runs:
@@ -536,8 +548,9 @@ field is omitted when empty. Only the integration owner runs:
 git add pkg/plugin/base/composite.go pkg/plugin/base/types.go \
   pkg/plugin/base/secrets.go pkg/plugin/composite_preparer.go \
   pkg/plugin/composite_preparer_test.go pkg/plugin/instance.go \
+  pkg/secret/materializer.go pkg/secret/materializer_test.go \
   pkg/compiler/composite_children.go pkg/compiler/composite_children_test.go \
-  pkg/compiler/occurrence.go pkg/compiler/hooks.go \
+  pkg/compiler/factory.go pkg/compiler/occurrence.go pkg/compiler/hooks.go \
   pkg/compiler/discarded_secret_preparer.go \
   pkg/compiler/discarded_secret_preparer_test.go
 git diff --cached --check

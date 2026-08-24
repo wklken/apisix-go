@@ -21,6 +21,47 @@ func TestGenerationCapabilityExposesNoRegistrationLifecycleAuthority(t *testing.
 	}
 }
 
+func TestGenerationCapabilitySameAuthorityRequiresExactRegistration(t *testing.T) {
+	resource := generation.ResourceKey{Kind: "routes", ID: "same-publication"}
+	ticket, set := testPublication(t, 9, generation.DomainHTTP, resource)
+	firstRegistration, err := NewScopedMaterializer(&testScopedBroker{}, testCatalog(t)).
+		RegisterCandidate(context.Background(), ticket, set)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = firstRegistration.Close(context.Background()) }()
+	secondRegistration, err := NewScopedMaterializer(&testScopedBroker{}, testCatalog(t)).
+		RegisterCandidate(context.Background(), ticket, set)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = secondRegistration.Close(context.Background()) }()
+	first, err := NewGenerationCapability(firstRegistration, 9)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstAlias, err := NewGenerationCapability(firstRegistration, 9)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := NewGenerationCapability(secondRegistration, 9)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.AttemptID() != second.AttemptID() || first.Generation() != second.Generation() {
+		t.Fatal("same-publication fixture does not share public attempt/generation identity")
+	}
+	if !first.SameAuthority(firstAlias) {
+		t.Fatal("SameAuthority(alias of exact registration) = false")
+	}
+	if first.SameAuthority(second) || second.SameAuthority(first) {
+		t.Fatal("SameAuthority accepted an independent registration with the same public identity")
+	}
+	if first.SameAuthority(GenerationCapability{}) || (GenerationCapability{}).SameAuthority(first) {
+		t.Fatal("SameAuthority accepted a zero capability")
+	}
+}
+
 type testAttemptResolver struct {
 	resolve func(context.Context, Scope, string) (string, error)
 	close   func(context.Context) error

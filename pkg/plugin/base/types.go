@@ -31,12 +31,13 @@ type ConsumerLookup interface {
 }
 
 type Dependencies struct {
-	Config         *config.EffectiveConfig
-	DataEncryption data_encryption.Resolver
-	Secrets        secret.GenerationCapability
-	Metadata       runtime.MetadataView
-	Consumers      ConsumerLookup
-	Tasks          *runtime.TaskRegistry
+	Config            *config.EffectiveConfig
+	DataEncryption    data_encryption.Resolver
+	Secrets           secret.GenerationCapability
+	Metadata          runtime.MetadataView
+	Consumers         ConsumerLookup
+	Tasks             *runtime.TaskRegistry
+	CompositeChildren CompositeChildPreparer
 }
 
 type BasePlugin struct {
@@ -73,6 +74,10 @@ func (p *BasePlugin) ConsumerLookup() ConsumerLookup {
 
 func (p *BasePlugin) TaskRegistry() *runtime.TaskRegistry {
 	return p.dependencies.Tasks
+}
+
+func (p *BasePlugin) CompositeChildPreparer() CompositeChildPreparer {
+	return p.dependencies.CompositeChildren
 }
 
 func (p *BasePlugin) GetName() string {

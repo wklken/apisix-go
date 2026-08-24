@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
+	"reflect"
 	"strings"
 	"sync"
 
@@ -500,6 +501,19 @@ func (capability GenerationCapability) Generation() uint64 {
 
 func (capability GenerationCapability) Valid() bool {
 	return capability.generation != 0 && capability.AttemptID() != (AttemptID{})
+}
+
+// SameAuthority reports whether both capabilities refer to the exact same
+// registration and generation. It exposes no registration lifecycle methods
+// or internal authority fields and fails closed for non-pointer registrations.
+func (capability GenerationCapability) SameAuthority(other GenerationCapability) bool {
+	if !capability.Valid() || !other.Valid() || capability.generation != other.generation {
+		return false
+	}
+	left := reflect.ValueOf(capability.attempt)
+	right := reflect.ValueOf(other.attempt)
+	return left.IsValid() && right.IsValid() && left.Type() == right.Type() &&
+		left.Kind() == reflect.Pointer && left.Pointer() == right.Pointer()
 }
 
 func (capability GenerationCapability) Materialize(ctx context.Context, scope Scope, raw string) (Value, error) {

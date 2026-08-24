@@ -122,6 +122,28 @@ func (attempt PreparationAttempt) MaterializeSecret(
 	return attempt.capability.Materialize(ctx, scope, raw)
 }
 
+func (attempt PreparationAttempt) materializeCompositeSecret(
+	ctx context.Context,
+	occurrence compositeChildOccurrence,
+	field string,
+	raw string,
+) (secret.Value, error) {
+	if ctx == nil || field == "" || occurrence.factory == "" ||
+		!attempt.owns(occurrence.outer) ||
+		occurrence.outer.source != capability.SecretPluginConfig {
+		return secret.Value{}, fmt.Errorf("%w: composite secret occurrence authority is invalid", ErrInvalidInput)
+	}
+	return attempt.capability.Materialize(ctx, secret.Scope{
+		Generation: attempt.generation,
+		Attempt:    attempt.AttemptID(),
+		Domain:     occurrence.outer.domain,
+		Plugin:     occurrence.factory,
+		Resource:   occurrence.outer.resource,
+		Source:     occurrence.outer.source,
+		Field:      field,
+	}, raw)
+}
+
 func (attempt PreparationAttempt) PrepareScopedPluginSecrets(
 	ctx context.Context,
 	occurrence FactoryOccurrence,

@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/generation"
@@ -64,6 +65,69 @@ type scopedSecretTestPlugin struct {
 	legacyCalls int
 }
 
+type scopedBrokerCancellationMode uint8
+
+const (
+	scopedBrokerCancel scopedBrokerCancellationMode = iota
+	scopedBrokerDeadline
+)
+
+type scopedCancelingBroker struct {
+	mode   scopedBrokerCancellationMode
+	cancel context.CancelFunc
+	calls  int
+}
+
+func (*scopedCancelingBroker) AuthorizeCandidate(
+	context.Context,
+	secret.AttemptID,
+	generation.ApplyTicket,
+	generation.PublicationSet,
+) error {
+	return nil
+}
+
+func (*scopedCancelingBroker) AuthorizeRecovery(
+	context.Context,
+	secret.AttemptID,
+	generation.RevisionSet,
+	map[generation.Domain]generation.PublishedGeneration,
+) error {
+	return errors.New("recovery is not used by cancellation fixture")
+}
+
+func (broker *scopedCancelingBroker) ResolveScoped(
+	ctx context.Context,
+	_ secret.Scope,
+	_ string,
+) (string, error) {
+	broker.calls++
+	if broker.mode == scopedBrokerCancel {
+		broker.cancel()
+	} else {
+		<-ctx.Done()
+	}
+	return "", errors.New("broker normalized cancellation")
+}
+
+func (*scopedCancelingBroker) RevokeAttempt(context.Context, secret.AttemptID) error { return nil }
+
+type scopedCancellationPlugin struct {
+	config struct {
+		AuthHeader string `json:"auth_header"`
+	}
+}
+
+func (plugin *scopedCancellationPlugin) Config() any { return &plugin.config }
+
+func (plugin *scopedCancellationPlugin) MaterializeScopedSecrets(
+	ctx context.Context,
+	access ScopedSecretAccess,
+) error {
+	_, err := access.Materialize(ctx, "auth_header", plugin.config.AuthHeader)
+	return err
+}
+
 func (plugin *scopedSecretTestPlugin) Config() any { return plugin.config }
 
 func (plugin *scopedSecretTestPlugin) MaterializeSecrets() error {
@@ -106,6 +170,34 @@ func TestScopedSecretAccessBindsAuthorityAndChildOnlyChangesFactory(t *testing.T
 	wantChild.Field = "secret"
 	if got, want := registration.scopes, []secret.Scope{wantParent, wantChild}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("materialized scopes = %#v, want %#v", got, want)
+	}
+}
+
+func TestCompositeChildPreparerScopedAccessValidForExactCapabilityOnly(t *testing.T) {
+	id := secret.AttemptID{1}
+	capabilityValue, _ := scopedSecretTestCapability(t, 9, id)
+	access := ScopedSecretAccess{
+		scope:      scopedSecretTestScope(9, id),
+		capability: capabilityValue,
+	}
+	if !access.ValidFor(capabilityValue) {
+		t.Fatal("ValidFor(exact capability) = false")
+	}
+	otherAttempt, _ := scopedSecretTestCapability(t, 9, secret.AttemptID{2})
+	otherGeneration, _ := scopedSecretTestCapability(t, 10, id)
+	for name, candidate := range map[string]secret.GenerationCapability{
+		"zero":             {},
+		"other attempt":    otherAttempt,
+		"other generation": otherGeneration,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if access.ValidFor(candidate) {
+				t.Fatalf("ValidFor(%s) = true", name)
+			}
+		})
+	}
+	if (ScopedSecretAccess{}).ValidFor(capabilityValue) {
+		t.Fatal("zero access ValidFor(valid capability) = true")
 	}
 }
 
@@ -190,6 +282,132 @@ func TestScopedAndLegacySecretWrappersDoNotCrossCall(t *testing.T) {
 	}
 	if plugin.legacyCalls != 1 || plugin.scopedCalls != 1 {
 		t.Fatalf("scoped wrapper calls = legacy:%d scoped:%d", plugin.legacyCalls, plugin.scopedCalls)
+	}
+}
+
+func TestCompositeChildPreparerScopedSecretHelperNeverFallsBackToLegacy(t *testing.T) {
+	id := secret.AttemptID{1}
+	capabilityValue, _ := scopedSecretTestCapability(t, 9, id)
+	access := ScopedSecretAccess{
+		scope:      scopedSecretTestScope(9, id),
+		capability: capabilityValue,
+	}
+	plugin := &secretMaterializationTestPlugin{config: struct {
+		Token string `json:"token"`
+	}{Token: "$ENV://COMPOSITE_TOKEN"}}
+
+	err := MaterializeScopedCompositeChildSecrets(context.Background(), access, plugin)
+	if err == nil || !strings.Contains(err.Error(), "unowned secret reference") {
+		t.Fatalf("MaterializeScopedCompositeChildSecrets() error = %v, want unresolved reference", err)
+	}
+	if plugin.materializeCalls != 0 {
+		t.Fatalf("legacy materializer calls = %d, want zero", plugin.materializeCalls)
+	}
+}
+
+func TestCompositeChildPreparerScopedSecretHelperPreservesCancellation(t *testing.T) {
+	id := secret.AttemptID{1}
+	capabilityValue, _ := scopedSecretTestCapability(t, 9, id)
+	access := ScopedSecretAccess{
+		scope:      scopedSecretTestScope(9, id),
+		capability: capabilityValue,
+	}
+	plugin := &scopedSecretTestPlugin{scopedErr: errors.Join(errors.New("poison must stay private"), context.Canceled)}
+
+	err := MaterializeScopedCompositeChildSecrets(context.Background(), access, plugin)
+	if err != context.Canceled {
+		t.Fatalf("MaterializeScopedCompositeChildSecrets() error = %v, want context.Canceled", err)
+	}
+	if plugin.legacyCalls != 0 || plugin.scopedCalls != 1 {
+		t.Fatalf("materializer calls = scoped:%d legacy:%d, want 1/0", plugin.scopedCalls, plugin.legacyCalls)
+	}
+}
+
+func TestCompositeChildPreparerScopedSecretHelperRecoversBrokerContextTermination(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		mode scopedBrokerCancellationMode
+		want error
+	}{
+		{name: "cancel", mode: scopedBrokerCancel, want: context.Canceled},
+		{name: "deadline", mode: scopedBrokerDeadline, want: context.DeadlineExceeded},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			resource := generation.ResourceKey{Kind: "routes", ID: "broker-" + test.name}
+			snapshot, err := generation.NewSnapshot(82, []generation.Resource{{
+				Key: resource, Value: []byte(`{"plugins":{"http-logger":{}}}`),
+			}}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ticket := generation.ApplyTicket{
+				DesiredRevision: 82,
+				RequiredDomains: []generation.Domain{generation.DomainHTTP},
+			}
+			set := generation.PublicationSet{
+				DesiredRevision: 82,
+				Domains: map[generation.Domain]generation.PublicationCandidate{
+					generation.DomainHTTP: {
+						Artifact: generation.GenerationArtifact{
+							Domain: generation.DomainHTTP, Revision: 82,
+							Digest: snapshot.Digest(), Snapshot: snapshot.SnapshotID(),
+						},
+						Snapshot: snapshot,
+						Closure:  []generation.ResourceKey{resource},
+						Decisions: []generation.ResourceDecision{{
+							Key: resource, Disposition: generation.DispositionPublished, Code: "cancel-test",
+						}},
+					},
+				},
+			}
+			manifest, err := capability.Load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			catalog, err := capability.NewSecretDeclarationCatalog(manifest)
+			if err != nil {
+				t.Fatal(err)
+			}
+			broker := &scopedCancelingBroker{mode: test.mode}
+			registration, err := secret.NewScopedMaterializer(broker, catalog).
+				RegisterCandidate(context.Background(), ticket, set)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = registration.Close(context.Background()) }()
+			capabilityValue, err := secret.NewGenerationCapability(registration, 82)
+			if err != nil {
+				t.Fatal(err)
+			}
+			access := ScopedSecretAccess{
+				scope: secret.Scope{
+					Generation: 82,
+					Attempt:    registration.AttemptID(),
+					Domain:     generation.DomainHTTP,
+					Plugin:     "http-logger",
+					Resource:   resource,
+					Source:     capability.SecretPluginConfig,
+				},
+				capability: capabilityValue,
+			}
+			plugin := &scopedCancellationPlugin{}
+			plugin.config.AuthHeader = "$ENV://BROKER_CANCELLATION"
+			var ctx context.Context
+			if test.mode == scopedBrokerCancel {
+				ctx, broker.cancel = context.WithCancel(context.Background())
+			} else {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithTimeout(context.Background(), 100*time.Millisecond)
+				defer cancel()
+			}
+			err = MaterializeScopedCompositeChildSecrets(ctx, access, plugin)
+			if err != test.want {
+				t.Fatalf("MaterializeScopedCompositeChildSecrets() error = %v, want %v", err, test.want)
+			}
+			if broker.calls != 1 {
+				t.Fatalf("broker calls = %d, want 1", broker.calls)
+			}
+		})
 	}
 }
 

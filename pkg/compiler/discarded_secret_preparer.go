@@ -19,6 +19,7 @@ func prepareCompilerDiscardSecrets(
 	ctx context.Context,
 	attempt PreparationAttempt,
 	catalog *capability.SecretDeclarationCatalog,
+	compositeChildren ...compositeChildOccurrence,
 ) error {
 	if ctx == nil || catalog == nil || attempt.authority == nil ||
 		!attempt.capability.Valid() || attempt.Generation() == 0 ||
@@ -68,35 +69,45 @@ func prepareCompilerDiscardSecrets(
 		if !exists {
 			return errCompilerDiscardPreparationFailed
 		}
-		if err := validateCompilerDiscardTerminals(
-			catalog, occurrence.Factory(), config,
+		if err := prepareCompilerDiscardDocument(
+			ctx,
+			catalog,
+			occurrence.Factory(),
+			config,
+			func(field, reference string) error {
+				value, err := attempt.MaterializeSecret(ctx, occurrence, field, reference)
+				if err != nil {
+					return err
+				}
+				return value.Use(func(string) error { return nil })
+			},
 		); err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return ctxErr
+			}
 			return errCompilerDiscardPreparationFailed
 		}
-		if err := catalog.TransformDeclaredFieldsForTarget(
-			occurrence.Factory(),
-			capability.SecretPluginConfig,
-			capability.SecretMaterializationCompilerDiscard,
-			config,
-			func(declaration capability.SecretDeclaration, pointer string, raw any) (any, error) {
-				if strings.Count(pointer, "/") != len(strings.Split(declaration.Field, ".")) {
-					return raw, errCompilerDiscardPreparationFailed
-				}
-				reference, ok := raw.(string)
-				if !ok {
-					return raw, errCompilerDiscardPreparationFailed
-				}
-				if reference == "" {
-					return raw, nil
-				}
-				value, err := attempt.MaterializeSecret(ctx, occurrence, declaration.Field, reference)
+	}
+
+	for _, child := range compositeChildren {
+		if !attempt.owns(child.outer) || child.outer.source != capability.SecretPluginConfig ||
+			child.factory == "" || child.position == "" || child.config == nil {
+			return errCompilerDiscardPreparationFailed
+		}
+		if !hasCompilerDiscardDeclaration(catalog, child.factory) {
+			continue
+		}
+		if err := prepareCompilerDiscardDocument(
+			ctx,
+			catalog,
+			child.factory,
+			child.config,
+			func(field, reference string) error {
+				value, err := attempt.materializeCompositeSecret(ctx, child, field, reference)
 				if err != nil {
-					return raw, errCompilerDiscardPreparationFailed
+					return err
 				}
-				if err := value.Use(func(string) error { return nil }); err != nil {
-					return raw, errCompilerDiscardPreparationFailed
-				}
-				return raw, nil
+				return value.Use(func(string) error { return nil })
 			},
 		); err != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {
@@ -106,6 +117,41 @@ func prepareCompilerDiscardSecrets(
 		}
 	}
 	return nil
+}
+
+func prepareCompilerDiscardDocument(
+	ctx context.Context,
+	catalog *capability.SecretDeclarationCatalog,
+	factory string,
+	document any,
+	materialize func(field, reference string) error,
+) error {
+	if ctx == nil || catalog == nil || factory == "" || materialize == nil ||
+		validateCompilerDiscardTerminals(catalog, factory, document) != nil {
+		return errCompilerDiscardPreparationFailed
+	}
+	return catalog.TransformDeclaredFieldsForTarget(
+		factory,
+		capability.SecretPluginConfig,
+		capability.SecretMaterializationCompilerDiscard,
+		document,
+		func(declaration capability.SecretDeclaration, pointer string, raw any) (any, error) {
+			if strings.Count(pointer, "/") != len(strings.Split(declaration.Field, ".")) {
+				return raw, errCompilerDiscardPreparationFailed
+			}
+			reference, ok := raw.(string)
+			if !ok {
+				return raw, errCompilerDiscardPreparationFailed
+			}
+			if reference == "" {
+				return raw, nil
+			}
+			if err := materialize(declaration.Field, reference); err != nil {
+				return raw, errCompilerDiscardPreparationFailed
+			}
+			return raw, nil
+		},
+	)
 }
 
 func hasCompilerDiscardDeclaration(

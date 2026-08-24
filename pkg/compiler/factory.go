@@ -67,6 +67,17 @@ func (factory *attemptFactory) prepareCandidateAttempt(
 	if err := validateScopedSecretSupport(occurrences, factory.compiler.schemas.catalog); err != nil {
 		return nil, errors.Join(errAttemptPreparationFailed, err)
 	}
+	compositeChildren, err := compositeChildOccurrenceSpecsFromCandidates(
+		ctx, set.Domains, occurrences,
+	)
+	if err != nil {
+		return nil, errors.Join(errAttemptPreparationFailed, err)
+	}
+	if err := validateCompositeScopedSecretSupport(
+		compositeChildren, factory.compiler.schemas.catalog,
+	); err != nil {
+		return nil, errors.Join(errAttemptPreparationFailed, err)
+	}
 	if !publicationCanPrepare(set) {
 		return nil, errAttemptPreparationFailed
 	}
@@ -95,7 +106,7 @@ func (factory *attemptFactory) prepareCandidateAttempt(
 		)
 	}
 	return factory.prepareRegisteredAttempt(
-		ctx, ticket.DesiredRevision, ownedSet.Domains, occurrences, registration,
+		ctx, ticket.DesiredRevision, ownedSet.Domains, occurrences, compositeChildren, registration,
 	)
 }
 
@@ -124,6 +135,17 @@ func (factory *attemptFactory) prepareRecoveryAttempt(
 	if err := validateScopedSecretSupport(occurrences, factory.compiler.schemas.catalog); err != nil {
 		return nil, errors.Join(errAttemptPreparationFailed, err)
 	}
+	compositeChildren, err := compositeChildOccurrenceSpecsFromCandidates(
+		ctx, candidates, occurrences,
+	)
+	if err != nil {
+		return nil, errors.Join(errAttemptPreparationFailed, err)
+	}
+	if err := validateCompositeScopedSecretSupport(
+		compositeChildren, factory.compiler.schemas.catalog,
+	); err != nil {
+		return nil, errors.Join(errAttemptPreparationFailed, err)
+	}
 	registration, err := factory.materializer.RegisterRecovery(
 		ctx, revisions, cloneRecoveryPublicationsForPreparation(verified),
 	)
@@ -142,7 +164,9 @@ func (factory *attemptFactory) prepareRecoveryAttempt(
 			fmt.Errorf("%w: recovery registration identity mismatch", ErrInvalidInput), cleanupErr,
 		)
 	}
-	return factory.prepareRegisteredAttempt(ctx, revisions.Desired, candidates, occurrences, registration)
+	return factory.prepareRegisteredAttempt(
+		ctx, revisions.Desired, candidates, occurrences, compositeChildren, registration,
+	)
 }
 
 func (factory *attemptFactory) prepareRegisteredAttempt(
@@ -150,6 +174,7 @@ func (factory *attemptFactory) prepareRegisteredAttempt(
 	generationNumber uint64,
 	candidates map[generation.Domain]generation.PublicationCandidate,
 	occurrences []factoryOccurrenceSpec,
+	compositeChildren []compositeChildOccurrenceSpec,
 	registration secret.AttemptRegistration,
 ) (*registeredAttempt, error) {
 	capabilityValue, err := secret.NewGenerationCapability(registration, generationNumber)
@@ -160,9 +185,15 @@ func (factory *attemptFactory) prepareRegisteredAttempt(
 	if err != nil {
 		return nil, errors.Join(errAttemptPreparationFailed, registration.Close(context.WithoutCancel(ctx)))
 	}
+	boundCompositeChildren, err := bindCompositeChildOccurrences(attempt, compositeChildren)
+	if err != nil {
+		return nil, errors.Join(errAttemptPreparationFailed, registration.Close(context.WithoutCancel(ctx)))
+	}
 	prepared := &registeredAttempt{attempt: attempt, registration: registration}
 
-	if err := prepareCompilerDiscardSecrets(ctx, attempt, factory.compiler.schemas.catalog); err != nil {
+	if err := prepareCompilerDiscardSecrets(
+		ctx, attempt, factory.compiler.schemas.catalog, boundCompositeChildren...,
+	); err != nil {
 		return nil, prepared.fail(ctx, err)
 	}
 	prepared.metadata, err = factory.metadata.PrepareMetadata(ctx, attempt)

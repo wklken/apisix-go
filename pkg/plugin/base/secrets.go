@@ -2,6 +2,7 @@ package base
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"sort"
@@ -47,6 +48,15 @@ func (access ScopedSecretAccess) Child(factory string) (ScopedSecretAccess, erro
 	return child, nil
 }
 
+// ValidFor reports whether access and expected belong to the same valid
+// generation attempt. It reveals no underlying scope or capability fields.
+func (access ScopedSecretAccess) ValidFor(expected secret.GenerationCapability) bool {
+	if !expected.Valid() || validateScopedSecretAuthority(access.scope, access.capability) != nil {
+		return false
+	}
+	return access.capability.SameAuthority(expected)
+}
+
 type ScopedSecretMaterializer interface {
 	MaterializeScopedSecrets(context.Context, ScopedSecretAccess) error
 }
@@ -62,6 +72,32 @@ func MaterializeScopedPluginSecrets(
 	if err := validateScopedSecretAuthority(baseScope, capabilityValue); err != nil {
 		return err
 	}
+	return materializeScopedPluginSecrets(
+		ctx,
+		ScopedSecretAccess{scope: baseScope, capability: capabilityValue},
+		p,
+	)
+}
+
+// MaterializeScopedCompositeChildSecrets runs the same scoped-only body for a
+// child whose authority was derived with ScopedSecretAccess.Child. It never
+// crosses into the transitional process-global materializer.
+func MaterializeScopedCompositeChildSecrets(
+	ctx context.Context,
+	access ScopedSecretAccess,
+	p any,
+) error {
+	if err := validateScopedSecretAuthority(access.scope, access.capability); err != nil {
+		return err
+	}
+	return materializeScopedPluginSecrets(ctx, access, p)
+}
+
+func materializeScopedPluginSecrets(
+	ctx context.Context,
+	access ScopedSecretAccess,
+	p any,
+) error {
 	materializer, ownsSecrets := p.(ScopedSecretMaterializer)
 	if !ownsSecrets {
 		if owner, ok := p.(configOwner); ok {
@@ -69,8 +105,21 @@ func MaterializeScopedPluginSecrets(
 		}
 		return nil
 	}
-	access := ScopedSecretAccess{scope: baseScope, capability: capabilityValue}
 	if err := materializer.MaterializeScopedSecrets(ctx, access); err != nil {
+		if ctx != nil {
+			if contextErr := ctx.Err(); errors.Is(contextErr, context.Canceled) {
+				return context.Canceled
+			}
+			if contextErr := ctx.Err(); errors.Is(contextErr, context.DeadlineExceeded) {
+				return context.DeadlineExceeded
+			}
+		}
+		if errors.Is(err, context.Canceled) {
+			return context.Canceled
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			return context.DeadlineExceeded
+		}
 		return redactedSecretMaterializationError{}
 	}
 	if owner, ok := p.(configOwner); ok {

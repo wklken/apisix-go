@@ -21,9 +21,10 @@ type InstanceKey struct {
 // of one materialized plugin instance. Ordering-only and enablement metadata
 // deliberately remain outside the identity.
 type InstanceIdentityInput struct {
-	PluginConfig  any `json:"plugin_config"`
-	Filter        any `json:"filter,omitempty"`
-	ErrorResponse any `json:"error_response,omitempty"`
+	PluginConfig      any    `json:"plugin_config"`
+	Filter            any    `json:"filter,omitempty"`
+	ErrorResponse     any    `json:"error_response,omitempty"`
+	CompositePosition string `json:"composite_position,omitempty"`
 }
 
 func NewInstanceKey(

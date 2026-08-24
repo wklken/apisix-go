@@ -694,11 +694,11 @@ go test -race ./pkg/compiler -run 'TestWorkerCompilerFactoryPrepareRecoveryTrans
 
 **Files:** modify worker factory, prepared generation, types, and focused close/materializer tests
 
-- [ ] **Step 1: Write RED race tests**
+- [x] **Step 1: Write RED race tests**
 
 Cover reject-after-close, close all live generations before registry, blocked preparation, blocked second-lease materialization, generation close race, and cached concurrent factory close. A closed factory must return the exact public sentinel before canceled/deadline context handling and before side effects. Snapshot identity must come from the live-map key even when concurrent generation Close has already cleared its mutable attempt field but is blocked before detach. Factory-owned Close invocation order is deterministic; no claim is made about cleanup already begun externally. Prove an event-only failure callback can publish and return before lifecycle teardown continues. In every allowed ordering, no task/plugin/lease/consumer/registration/registry entry leaks.
 
-- [ ] **Step 2: Implement close linearization**
+- [x] **Step 2: Implement close linearization**
 
 Factory close marks closed under `gate.Lock`, snapshots live generations as exact `(live map key, pointer)` pairs, closes them in deterministic map-key identity order without holding factory locks, then closes shared registry, joins and caches errors. New preparation checks closed under `gate.RLock` before caller cancellation and returns exact `ErrWorkerCompilerFactoryClosed` without side effects. The synchronous `onFailure` callback remains event-only and cannot re-enter lifecycle methods; Task7 does not change `pkg/runtime` or add an asynchronous dispatcher.
 
@@ -708,7 +708,7 @@ may remain reachable through formatting or the unwrap tree.
 
 Generation close and materialization use one private serialized gate. Materialization owns the final acquired lease before releasing the gate; close seals cleanup only after admitted materialization exits. On materialization failure, mark terminal, unlock, then run close to avoid deadlock.
 
-- [ ] **Step 3: Run GREEN and race**
+- [x] **Step 3: Run GREEN and race**
 
 ```bash
 source .envrc

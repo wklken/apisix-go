@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"maps"
 	"path/filepath"
 	"slices"
 	"sync/atomic"
@@ -152,6 +153,34 @@ func TestCompilerBuildsCanonicalCandidatesIncludingEmptyRequiredDomain(t *testin
 	gotRaw, found := set.Domains[generation.DomainHTTP].Snapshot.Lookup(generation.ResourceKey{Kind: "routes", ID: "a"})
 	if !found || !bytes.Equal(gotRaw, rawRoute) {
 		t.Fatalf("published bytes = %q/%v, want exact %q", gotRaw, found, rawRoute)
+	}
+}
+
+func TestFinalizePublicationRejectsForgedPostRefinementSet(t *testing.T) {
+	desired := mustGenerationSnapshot(t, 44, []generation.Resource{
+		resourceValue("routes", "r1", `{"id":"r1"}`),
+	}, nil)
+	ticket := ticketForSnapshot(desired, generation.DomainHTTP)
+	set, err := newTestCompiler(t).PreparePublication(context.Background(), ticket, desired, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	forged := generation.PublicationSet{
+		DesiredRevision: set.DesiredRevision,
+		Domains:         make(map[generation.Domain]generation.PublicationCandidate, len(set.Domains)),
+	}
+	maps.Copy(forged.Domains, set.Domains)
+	candidate := forged.Domains[generation.DomainHTTP]
+	candidate.Decisions = nil
+	forged.Domains[generation.DomainHTTP] = candidate
+
+	got, err := finalizePublication(ticket, forged)
+	if !errors.Is(err, generation.ErrInvalidClosure) {
+		t.Fatalf("finalize forged publication error = %v, want ErrInvalidClosure", err)
+	}
+	if got.DesiredRevision != 0 || len(got.Domains) != 0 {
+		t.Fatalf("finalize forged publication returned partial set: %#v", got)
 	}
 }
 

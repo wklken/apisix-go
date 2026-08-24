@@ -101,6 +101,16 @@ func (compiler *Compiler) PreparePublication(
 	if err := ctx.Err(); err != nil {
 		return generation.PublicationSet{}, err
 	}
+	return finalizePublication(ticket, set)
+}
+
+func finalizePublication(
+	ticket generation.ApplyTicket,
+	set generation.PublicationSet,
+) (generation.PublicationSet, error) {
+	if err := generation.ValidatePublicationSet(ticket, set); err != nil {
+		return generation.PublicationSet{}, fmt.Errorf("validate final publication set: %w", err)
+	}
 	return set, nil
 }
 

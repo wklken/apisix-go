@@ -118,6 +118,33 @@ func (factory *WorkerCompilerFactory) PrepareGeneration(
 	return factory.transferRegisteredGeneration(ctx, registered, onFailure)
 }
 
+// PrepareRecovery verifies committed publication state, registers its recovery
+// attempt, and transfers the same generation owners as candidate preparation.
+func (factory *WorkerCompilerFactory) PrepareRecovery(
+	ctx context.Context,
+	revisions generation.RevisionSet,
+	committed map[generation.Domain]generation.PublishedGeneration,
+	onFailure func(runtime.TaskFailure),
+) (*PreparedGeneration, error) {
+	if factory == nil || ctx == nil {
+		return nil, fmt.Errorf("%w: worker compiler factory and context are required", ErrInvalidInput)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, workerGenerationFailure(err, nil)
+	}
+	factory.gate.RLock()
+	defer factory.gate.RUnlock()
+	if factory.closed {
+		return nil, workerGenerationFailure(nil, nil)
+	}
+
+	registered, err := factory.attempts.prepareRecoveryAttempt(ctx, revisions, committed)
+	if err != nil {
+		return nil, workerGenerationFailure(err, nil)
+	}
+	return factory.transferRegisteredGeneration(ctx, registered, onFailure)
+}
+
 // transferRegisteredGeneration is the single candidate/recovery ownership
 // transfer. Future recovery preparation supplies only its registered attempt.
 func (factory *WorkerCompilerFactory) transferRegisteredGeneration(

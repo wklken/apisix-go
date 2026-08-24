@@ -170,7 +170,9 @@ Shared-file ownership is serial:
 
 ## Task 3: CP3 — Build the pure C6.5 factory skeleton
 
-**Files:** `pkg/compiler/**` and focused tests only.
+**Detailed execution plan:** [`2026-08-24-immutable-task6-cp3-compiler-skeleton.md`](2026-08-24-immutable-task6-cp3-compiler-skeleton.md).
+
+**Files:** serial ownership across `pkg/consumer`, schema-only `pkg/plugin` seams, `pkg/compiler/**`, and focused generation validation. Consumer schemas cannot remain Store-private or be copied into plugin.
 
 - [ ] Extract/consume pure `preparePublication` and build a schema-witness set without secret access or Store reads.
 - [ ] A schema witness may call only the lifecycle necessary to expose schemas. If a factory `Init` needs runtime configuration, add a narrow schema-provider seam; do not construct a fake empty dependency bundle and hope all plugins initialize.

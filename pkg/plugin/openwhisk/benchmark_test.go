@@ -22,6 +22,9 @@ func BenchmarkStaticConfigPath(b *testing.B) {
 	if err := p.Init(); err != nil {
 		b.Fatalf("Init() error = %v", err)
 	}
+	if err := p.MaterializeSecrets(); err != nil {
+		b.Fatalf("MaterializeSecrets() error = %v", err)
+	}
 	if err := p.PostInit(); err != nil {
 		b.Fatalf("PostInit() error = %v", err)
 	}
@@ -31,12 +34,14 @@ func BenchmarkStaticConfigPath(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		built, err := p.buildActionRequest(req)
+		err := p.buildActionRequest(req, func(built *http.Request) error {
+			if built == nil {
+				b.Fatal("buildActionRequest() supplied nil request")
+			}
+			return nil
+		})
 		if err != nil {
 			b.Fatalf("buildActionRequest() error = %v", err)
-		}
-		if built == nil {
-			b.Fatal("buildActionRequest() returned nil request")
 		}
 	}
 }

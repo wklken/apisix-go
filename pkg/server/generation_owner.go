@@ -47,6 +47,7 @@ type generationOwner struct {
 	drainOnce     sync.Once
 
 	closeOnce sync.Once
+	closeDone chan struct{}
 	closeErr  error
 }
 
@@ -55,8 +56,9 @@ func newGenerationOwner(prepared *compiler.PreparedGeneration) *generationOwner 
 		return nil
 	}
 	return &generationOwner{
-		prepared: prepared,
-		drained:  make(chan struct{}),
+		prepared:  prepared,
+		drained:   make(chan struct{}),
+		closeDone: make(chan struct{}),
 	}
 }
 
@@ -206,6 +208,7 @@ func (owner *generationOwner) closePrepared(ctx context.Context) error {
 	}
 	owner.closeOnce.Do(func() {
 		owner.closeErr = owner.prepared.Close(ctx)
+		close(owner.closeDone)
 	})
 	return owner.closeErr
 }

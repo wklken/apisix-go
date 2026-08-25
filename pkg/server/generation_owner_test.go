@@ -132,6 +132,11 @@ func TestGenerationOwnerDoesNotClosePreparedOnDrain(t *testing.T) {
 	owner := fixture.owner
 	owner.activateDomains(ownerDomainHTTP)
 	owner.deactivateDomains(ownerDomainHTTP)
+	select {
+	case <-owner.closeDone:
+		t.Fatal("close completion signaled before prepared generation closed")
+	default:
+	}
 	assertDrained(t, owner)
 
 	if got := fixture.registration.closeCalls.Load(); got != 0 {
@@ -182,6 +187,11 @@ func TestGenerationOwnerClosePreparedWaitsForDrainAndClosesOnce(t *testing.T) {
 	}
 	if got := fixture.registration.closeCalls.Load(); got != 1 {
 		t.Fatalf("prepared generation close calls = %d, want 1", got)
+	}
+	select {
+	case <-owner.closeDone:
+	default:
+		t.Fatal("close completion was not signaled")
 	}
 	if fixture.prepared.HTTP() != nil {
 		t.Fatal("closePrepared() left HTTP snapshot visible")

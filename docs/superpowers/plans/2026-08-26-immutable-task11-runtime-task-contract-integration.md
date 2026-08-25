@@ -71,7 +71,9 @@ func (owner *TaskOwner) Go(
 ) error
 ```
 
-`NewTaskOwner` rejects a nil registry with `ErrTaskRegistryRequired`, a blank/outer-whitespace prefix with `ErrTaskOwnerRequired`, and a criticality other than `TaskPlugin` or `TaskCore` with `ErrTaskCriticalityInvalid`. It stores the exact prefix without trimming or later mutation. It does not inspect registry stop state; actual admission remains atomic inside `TaskRegistry.Go`.
+`NewTaskOwner` rejects a nil registry with `ErrTaskRegistryRequired`, a prefix for which `strings.TrimSpace(prefix) == ""` or `strings.TrimSpace(prefix) != prefix` with `ErrTaskOwnerRequired`, and a criticality other than `TaskPlugin` or `TaskCore` with `ErrTaskCriticalityInvalid`. It stores the exact prefix without trimming or later mutation. It does not inspect registry stop state; actual admission remains atomic inside `TaskRegistry.Go`.
+
+This constructor deliberately does **not** validate prefix syntax, character repertoire, separator count, or length. A prefix is opaque runtime ownership identity. The compiler's `pluginTaskOwnerPrefix` and the shared-resource constructors are the production policy boundaries that emit bounded prefixes; `TaskOwner` must not duplicate or silently tighten those producer-specific contracts.
 
 `TaskOwner.Go` accepts a component only when it is 1-64 ASCII bytes, begins and ends with `[a-z0-9]`, and every interior byte is `[a-z0-9-]`. It rejects uppercase, whitespace, `/`, empty components, leading/trailing `-`, and values longer than 64 bytes with `ErrTaskComponentInvalid`. A valid call delegates exactly once:
 
@@ -124,6 +126,8 @@ plugin/<sanitized-factory>/<64 lower-case hex SHA-256 characters>
 ```
 
 The prefix is at most 120 bytes and a full owner including `/` plus the maximum 64-byte component is at most 185 bytes. The readable factory segment is not an identity boundary: the digest includes the original unsanitized factory, so two raw factories that sanitize identically remain isolated.
+
+The shared-resource constructors likewise own their production prefix bounds: proxy-cluster identity uses the fixed `core/proxy-cluster/` segment plus a 64-character lower-case hexadecimal `ClusterKey`; file-writer and stream prefixes are the fixed strings in the table below. They pass those already-bounded values to `NewTaskOwner`. Do not move these policies into the generic runtime constructor.
 
 | Lifecycle owner | Prefix | Component examples | Criticality | Stop owner |
 | --- | --- | --- | --- | --- |
@@ -264,6 +268,8 @@ func TestTaskOwnerStopReportsExactDeduplicatedResidual(t *testing.T) {
 ```
 
 Add a table test for nil registry; blank, padded, and empty prefix; invalid criticality; empty/uppercase/slashed/whitespace/leading-hyphen/trailing-hyphen/65-byte component; and nil callback. Assert the exact stable error listed in the frozen contract and assert `registry.Active()` remains empty after every validation failure.
+
+Add `TestNewTaskOwnerTreatsPrefixAsOpaqueProducerIdentity`: construct an owner with `"Custom Owner/" + strings.Repeat("segment/", 512) + "tail"`; admit component `health-refresh` with a callback that closes `started` and blocks on `release`; after `<-started`, assert `registry.Active()` contains that exact unmodified prefix plus `/health-refresh`, then close `release` and stop the registry. This is a contract test that prefix syntax and length are not generic `TaskOwner` policy. Do not use this deliberately non-production prefix in compiler/shared-resource tests.
 
 - [ ] **Step 2: Write failing request panic join/replay tests**
 
@@ -1024,16 +1030,18 @@ rg -n 'selected\.instance\.String\(\)|InstanceKey\.String\(\).*Task|Task.*Instan
   pkg/compiler pkg/plugin --glob '*.go'
 rg -n 'pluginTaskOwnerPrefix|canonicalPluginTaskOwnerIdentity|sanitizePluginTaskOwnerFactory' \
   pkg/compiler/plugin_task_owner.go pkg/compiler/effective_binding_materializer.go
+rg -n --glob '*.go' --glob '!**/*_test.go' 'NewTaskOwner\(' pkg
 rg -n 'NewRequestTaskGroup|func \(g \*RequestTaskGroup\)' pkg/runtime/request_tasks.go
 ```
 
-Expected: the raw goroutine, raw wait-group, raw plugin-registry, and raw `InstanceKey.String()` scans return no production match. The canonical helper scan shows the three definitions and the materializer call to `pluginTaskOwnerPrefix`. The last command shows only the unchanged constructor, `Go`, and `Wait` methods.
+Expected: the raw goroutine, raw wait-group, raw plugin-registry, and raw `InstanceKey.String()` scans return no production match. The canonical helper scan shows the three definitions and the materializer call to `pluginTaskOwnerPrefix`. Review every production `NewTaskOwner` call reported by the constructor scan: plugin callers must consume `pluginTaskOwnerPrefix`, proxy cluster callers must consume the fixed prefix plus 64-character lower-case hex key, and file-writer/stream callers must consume their fixed prefixes. The last command shows only the unchanged constructor, `Go`, and `Wait` methods.
 
 - [ ] **Step 5: Perform independent merge-level review**
 
 Review `b0220dce..HEAD` for:
 
 - exact compiler prefix `plugin/<1-48-byte-sanitized-factory>/<64-lowercase-hex-sha256>` derived from the canonical bytes of every `selected.instance` identity field, not raw `InstanceKey.String()`, a resource ID, or mutable plugin state;
+- generic `NewTaskOwner` validates only registry, nonblank/no-outer-whitespace opaque prefix, and criticality; it does not enforce prefix syntax or length, while every production constructor call supplies a bounded producer-owned prefix;
 - no generation registry captured by shared cluster/file-writer/stream owners;
 - `TaskPlugin` versus `TaskCore` classification from the naming table;
 - stop-before-release and exact residual behavior;
@@ -1075,5 +1083,6 @@ Return:
 - **Current-source accuracy:** the plan names `effective_binding_materializer.go`, not nonexistent `materialize.go`; uses `BasePlugin.TaskRegistry()` only as a deletion target; and includes the extra rocketmq raw goroutine found at the base.
 - **Lifecycle accuracy:** cross-generation shared cluster, process-shared file writers, and persistent stream runtime are not assigned to a prepared generation.
 - **API restraint:** no `RequestTaskGroup` method is added; its private panic state only delays fatal propagation until join. `TaskOwner` is concrete and has only constructor plus `Go`.
+- **Validation ownership:** `NewTaskOwner` owns only nil-registry, nonblank/no-outer-whitespace prefix, and criticality validation. `TaskOwner.Go` alone owns the 1-64 byte component grammar. Compiler and shared-resource constructors own every production prefix syntax/length bound.
 - **No placeholders:** every production signature, owner prefix, component rule, test command, dependency edge, and final gate is fixed above.
 - **Type consistency:** compiler, base plugin, error-log observer, composite dependency propagation, and generation plan all consume the same `*runtime.TaskOwner` type; compiler owner construction always passes through `pluginTaskOwnerPrefix(selected.instance)`.

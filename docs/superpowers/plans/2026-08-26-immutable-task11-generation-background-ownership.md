@@ -18,13 +18,14 @@
 - Do not bind a shared resource to `PreparedGeneration.tasks`. A task registry must live at least as long as the state it mutates.
 - Every `runtime.TaskSpec.Owner` is stable and bounded. Do not include request data, URLs, target addresses, log paths, raw resource IDs, or secret/config plaintext. Plugin owners consume Contract C's canonical bounded hashed prefix; shared-resource owners use the exact bounded digests frozen below. Never use raw `InstanceKey.String()`.
 - Plugins never construct `runtime.TaskSpec`, concatenate a prefix, or select criticality. They call the injected `TaskOwner.Go` with a fixed validated component. Shared cluster/file-writer resources create their own `TaskCore` owners as frozen by Contract C.
+- `TaskPlugin` and `TaskCore` have intentionally different panic contracts. `TaskPlugin` panics are recovered by `TaskRegistry`, reported with the exact full owner, and fail only that owner. `TaskCore` panics are not recovered: active-health, file-writer signal, and persistent stream runtime panic tests must use subprocesses and prove worker-fatal termination rather than claiming report-and-continue isolation.
 - A task function returns `nil` after expected cancellation. It returns an error only when the owner should be reported failed. Never format panic values or secrets into an owner or log.
 - No dependency changes. No broad `go test ./...`, `go test ./pkg/...`, or `make test`.
 - Each behavior implementation task is one independently reviewable commit. Before every behavior commit, run its focused normal/race tests, scoped lint for touched packages, `make build`, and `git diff --check`.
 
 ## Required Contract Dependencies
 
-Every implementation task in this plan starts only after both the reviewed Contract C Task 2 head and `Task11-0 / retryable teardown and residual propagation` are integrated. Contract C owns `runtime.TaskOwner`, `base.Dependencies`, compiler injection, the error-log observer seam, and the final AST gate. Task11-0 owns retryable `ResourceRegistry` final-close state and residual propagation. This plan consumes both contracts and must not reimplement them. The current compiler has no `materialize.go`; its real injection point is `pkg/compiler/effective_binding_materializer.go`, where `selected.instance` is already validated.
+Every implementation task in this plan starts only after both the reviewed Contract C Task 2 head and `Task11-0 / retryable teardown and residual propagation` are integrated. Contract C owns `runtime.TaskOwner`, `base.Dependencies`, compiler injection, the error-log observer seam, and the final AST gate. Task11-0 owns retryable `ResourceRegistry` final-close state, residual propagation, and the compiler cleanup phases `cleanupQuiesce -> cleanupResourceFinalize -> cleanupRelease`. A retryable resource finalizer remains pending and blocks every one-shot release. This plan consumes both contracts and must not reimplement them. The current compiler has no `materialize.go`; its real injection point is `pkg/compiler/effective_binding_materializer.go`, where `selected.instance` is already validated.
 
 ```go
 // Supplied by Contract C Task 2; consumed unchanged here.
@@ -40,7 +41,7 @@ Contract C computes `pluginTaskOwnerPrefix(selected.instance)` as `plugin/<1-48-
 
 Digest-reused resources require a second, separate rule, not another field on `base.Dependencies`:
 
-- `proxy.Cluster` is acquired from the factory-wide `runtime.ResourceRegistry`. Its factory calls `proxy.NewOwnedCluster(config, observer, onFailure)`, which computes `ClusterKey`, creates a resource-local `TaskRegistry`, then `runtime.NewTaskOwner(registry, "core/proxy-cluster/"+hexKey, runtime.TaskCore)`. Every target task uses the same component `active-health`, so residuals contain exactly one deduplicated full owner. `(*Cluster).CloseContext(ctx) error` stops that registry before closing transports. Under Task11-0, a deadline/residual keeps the resource entry in closing state and makes the same final lease retryable; cluster, observer lease, and transports remain owned until a later successful retry. Generation N retirement must not cancel a cluster still leased by N+1.
+- `proxy.Cluster` is acquired from the factory-wide `runtime.ResourceRegistry`. Its factory calls `proxy.NewOwnedCluster(config, observer, onFailure)`, which computes `ClusterKey`, creates a resource-local `TaskRegistry`, then `runtime.NewTaskOwner(registry, "core/proxy-cluster/"+hexKey, runtime.TaskCore)`. Every target task uses the same component `active-health`, so residuals contain exactly one deduplicated full owner. `(*Cluster).CloseContext(ctx) error` stops that registry before closing transports. The prepared generation registers its HTTP cluster lease with `cleanup.Own(cleanupResourceFinalize, "http-cluster/"+owned.Name, slot.release)`, never `cleanupRelease`: generation tasks quiesce first, the retryable final lease runs second, and registration/consumer/plugin one-shot releases run only after every resource finalizer is terminal. Under Task11-0, a deadline/residual keeps the resource entry in closing state and makes the same final lease retryable; cluster, observer lease, and transports remain owned until a later successful retry. Generation N retirement must not cancel a cluster still leased by N+1.
 - `sharedFileWriters` is process-global. Each non-empty watcher epoch creates a registry-local `TaskRegistry`, then `runtime.NewTaskOwner(registry, "core/file-writer-registry", runtime.TaskCore)`, and uses component `signal-watch`; the last lease stops and joins that epoch before closing the last writer. It never receives the plugin generation owner.
 
 If the runtime-contract subplan does not expose the generation preparation `TaskFailure` sink to `PreparedGeneration.acquireHTTPCluster`, add exactly one stored package-private callback on `PreparedGeneration`, populated by `transferRegisteredGeneration`; do not add a second public task API.
@@ -70,7 +71,7 @@ The implementer must rerun the command immediately before Task 12. Any new produ
 
 | Task | Exclusive production responsibility | Consumes | Produces | Depends on |
 | --- | --- | --- | --- | --- |
-| 1 | `pkg/proxy/active_health.go`, `cluster.go`; `pkg/compiler/http_cluster.go` | resource registry, ClusterKey, failure sink | cross-generation resource-owned health | Contract C Task 2 + Task11-0 teardown |
+| 1 | `pkg/proxy/active_health.go`, `cluster.go`; `pkg/compiler/http_cluster.go`; `pkg/server/generation_engine_test.go` | resource registry, ClusterKey, failure sink, `cleanupResourceFinalize` | cross-generation resource-owned health and real engine/factory/Prepared final-lease retry evidence | Contract C Task 2 + Task11-0 teardown |
 | 2 | `pkg/plugin/proxy_cache/disk.go`, `plugin.go` | plugin task owner | owned disk sweep | Contract C Task 2 + Task11-0 teardown |
 | 3 | `pkg/plugin/graphql_proxy_cache/plugin.go` | plugin task owner | owned GraphQL disk sweep | Contract C Task 2 + Task11-0 teardown |
 | 4 | `pkg/plugin/limit_count/delayed_sync.go`, `plugin.go` | plugin task owner | owned delayed sync and final flush | Contract C Task 2 + Task11-0 teardown |
@@ -97,9 +98,9 @@ Tasks 1-7 and 11 can be developed as a frozen-base parallel wave only after the 
 - Modify: `pkg/proxy/cluster_test.go`
 - Modify: `pkg/compiler/http_cluster.go`
 - Modify: `pkg/compiler/http_cluster_test.go`
-- Modify only if required by the dependency above: `pkg/compiler/prepared_generation.go`, `worker_factory.go`, focused tests
+- Modify: `pkg/server/generation_engine_test.go`
 
-**Consumes:** Factory-wide cluster `ResourceRegistry`, canonical `ClusterKey`, task failure sink, and Task11-0's retryable final-release/closing-entry contract.
+**Consumes:** Factory-wide cluster `ResourceRegistry`, canonical `ClusterKey`, task failure sink, and Task11-0's exact `cleanupResourceFinalize` plus retryable final-release/closing-entry contract.
 
 **Produces:** `core/proxy-cluster/<hex-digest>/active-health` `TaskCore` workers stopped only by the last resource lease. Multiple target workers intentionally share this exact full owner and are deduplicated in residuals.
 
@@ -145,15 +146,81 @@ func TestHTTPClusterFinalReleaseRetriesAfterHealthResidual(t *testing.T) {
 }
 ```
 
+Add this end-to-end regression in `pkg/server/generation_engine_test.go`. Its test-local fixture builds an actual `GenerationEngine` and `WorkerCompilerFactory`, prepares a real HTTP route with an inline upstream and active check, and installs a `proxy.ClusterObserver` whose `SetHealth` callback has two independently releasable gates. `activeHealthGenerationInput` returns the exact expected owner by hashing the same effective `proxy.ClusterConfig`; it does not inspect a private registry or add a production API.
+
+```go
+func TestGenerationEngineDiscardRetriesHTTPClusterResourceFinalization(t *testing.T) {
+	fixture, observer, target := newActiveHealthGenerationEngineFixture(t)
+	firstGate := observer.NextGate(t)
+	firstTicket, firstDesired, wantOwner := activeHealthGenerationInput(t, 1, target)
+	firstSet, err := fixture.engine.Prepare(context.Background(), firstTicket, firstDesired, nil)
+	if err != nil { t.Fatal(err) }
+	firstGate.AwaitEntered(t)
+
+	short, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	first := fixture.engine.DiscardPrepared(short, firstSet)
+	var residual *runtime.TaskResidualError
+	if !errors.As(first, &residual) || !errors.Is(first, context.DeadlineExceeded) ||
+		!reflect.DeepEqual(residual.Residuals(), []runtime.TaskResidual{{Owner: wantOwner}}) {
+		t.Fatalf("first discard = %v, residuals = %v", first, residual)
+	}
+	key := mustEnginePreparedKey(t, firstSet)
+	if fixture.engine.pending[key] == nil {
+		t.Fatal("resource-finalization residual detached the Prepared/factory owner")
+	}
+
+	firstGate.Release()
+	if err := fixture.engine.DiscardPrepared(context.Background(), firstSet); err != nil {
+		t.Fatalf("retry discard = %v", err)
+	}
+	if fixture.engine.pending[key] != nil {
+		t.Fatal("terminal retry retained pending ownership")
+	}
+
+	secondGate := observer.NextGate(t)
+	secondTicket, secondDesired, secondOwner := activeHealthGenerationInput(t, 2, target)
+	if secondOwner != wantOwner { t.Fatalf("same config owner changed: %q / %q", wantOwner, secondOwner) }
+	secondSet, err := fixture.engine.Prepare(context.Background(), secondTicket, secondDesired, nil)
+	if err != nil { t.Fatalf("same-key Prepare after retry = %v", err) }
+	secondGate.AwaitEntered(t) // a replacement was acquired only after the closing entry became terminal
+	secondGate.Release()
+	if err := fixture.engine.DiscardPrepared(context.Background(), secondSet); err != nil { t.Fatal(err) }
+}
+```
+
+This test must use `GenerationEngine.Prepare` and `DiscardPrepared`; it must not call `runtime.Acquire`, `PreparedGeneration.Close`, or the cluster finalizer directly. Therefore the residual crosses the real engine record, factory-owned `PreparedGeneration`, cleanup phase machine, final lease, and cluster-local task registry. The first failed attempt must retain the pending record and closing resource; the explicit exact-set retry completes retirement; a later `Prepare` of the same cluster key must acquire a replacement rather than hang behind or overlap the old entry.
+
+Add `TestActiveHealthTaskPanicUsesCoreFatalPolicy` in `pkg/proxy/active_health_test.go`. Its subprocess uses an observer that panics with a stable marker from `SetHealth`. Assert non-zero exit and the marker in combined output; do not install an expectation that `TaskFailure` is reported or that the process continues.
+
+```go
+func TestActiveHealthTaskPanicUsesCoreFatalPolicy(t *testing.T) {
+	if os.Getenv("APISIX_GO_TEST_ACTIVE_HEALTH_CORE_PANIC") == "1" {
+		runActiveHealthCorePanicFixture(t, "active-health-core-fatal")
+		fmt.Fprintln(os.Stderr, "active-health-returned-after-core-panic")
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestActiveHealthTaskPanicUsesCoreFatalPolicy$")
+	cmd.Env = append(os.Environ(), "APISIX_GO_TEST_ACTIVE_HEALTH_CORE_PANIC=1")
+	output, err := cmd.CombinedOutput()
+	if err == nil || !bytes.Contains(output, []byte("active-health-core-fatal")) ||
+		bytes.Contains(output, []byte("active-health-returned-after-core-panic")) {
+		t.Fatalf("core panic subprocess = %v, output = %s", err, output)
+	}
+}
+```
+
+`runActiveHealthCorePanicFixture` is test-local: construct an owned cluster with one immediately failing health target, make the observer panic with the marker on its first transition, and block the helper caller until the task either panics or incorrectly returns. Do not recover inside the helper.
+
 Generation N close alone must not report a cluster residual while N+1 retains the lease. On the final release, every target shares the exact `wantOwner`; even several blocked probes produce one deduplicated residual entry independent of target identity.
 
 - [ ] **Step 2: Capture RED**
 
 ```bash
-bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test ./pkg/compiler ./pkg/proxy -run "^(TestHTTPClusterHealthOutlivesCreatingGenerationWhileReused|TestHTTPClusterFinalReleaseRetriesAfterHealthResidual)$" -count=1'
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test ./pkg/compiler ./pkg/proxy ./pkg/server -run "^(TestHTTPClusterHealthOutlivesCreatingGenerationWhileReused|TestHTTPClusterFinalReleaseRetriesAfterHealthResidual|TestGenerationEngineDiscardRetriesHTTPClusterResourceFinalization|TestActiveHealthTaskPanicUsesCoreFatalPolicy)$" -count=1'
 ```
 
-Expected: FAIL because `activeHealthChecker.Start` creates raw goroutines and its lifetime is hidden inside `Cluster.Close`.
+Expected: FAIL because, even after Task11-0 has installed the correct cleanup phase, `activeHealthChecker.Start` still creates raw goroutines and `Cluster.Close` has no context-bounded retryable resource owner.
 
 - [ ] **Step 3: Implement a resource-local registry**
 
@@ -164,6 +231,20 @@ cluster, err := proxy.NewOwnedCluster(owned, observerLease.Observer(), prepared.
 ```
 
 `NewOwnedCluster` computes the prefix `"core/proxy-cluster/" + hex.EncodeToString(digest[:])`, constructs a `TaskCore` owner, and calls `owner.Go("active-health", ...)` for every target. All targets therefore share the exact full owner and residuals deduplicate to one entry.
+
+Task11-0 is already integrated before this task and has registered the HTTP lease in its middle phase:
+
+```go
+if err := prepared.cleanup.Own(
+	cleanupResourceFinalize,
+	"http-cluster/"+owned.Name,
+	slot.release,
+); err != nil {
+	return nil, err
+}
+```
+
+Preserve this registration while changing the cluster factory to `NewOwnedCluster`; do not move it back to `cleanupRelease` or wrap the lease in a new one-shot callback. `cleanupQuiesce` must finish every generation-owned plugin task before this callback runs. A retryable `slot.release` result remains pending in `cleanupResourceFinalize` and prohibits `cleanupRelease`; a terminal resource-finalization error is recorded once while the phase continues, and only after every resource finalizer is terminal may one-shot registration, consumer, plugin, observer, and secret releases run.
 
 The resource finalizer enforces this order:
 
@@ -180,16 +261,16 @@ return nil
 - [ ] **Step 4: GREEN and race**
 
 ```bash
-bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test ./pkg/compiler ./pkg/proxy -run "^(TestHTTPCluster|TestCluster|TestActiveHealth)" -count=1'
-bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test -race ./pkg/compiler ./pkg/proxy -run "^(TestHTTPCluster|TestCluster|TestActiveHealth)" -count=1'
-bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && golangci-lint run ./pkg/compiler/... ./pkg/proxy/... && make build'
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test ./pkg/compiler ./pkg/proxy ./pkg/server -run "^(TestHTTPCluster|TestCluster|TestActiveHealth|TestGenerationEngineDiscardRetriesHTTPClusterResourceFinalization)" -count=1'
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test -race ./pkg/compiler ./pkg/proxy ./pkg/server -run "^(TestHTTPClusterHealthOutlivesCreatingGenerationWhileReused|TestHTTPClusterFinalReleaseRetriesAfterHealthResidual|TestGenerationEngineDiscardRetriesHTTPClusterResourceFinalization|TestActiveHealthTaskPanicUsesCoreFatalPolicy)$" -count=1'
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && golangci-lint run ./pkg/compiler/... ./pkg/proxy/... ./pkg/server/... && make build'
 git diff --check
 ```
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add pkg/proxy/active_health.go pkg/proxy/active_health_test.go pkg/proxy/cluster.go pkg/proxy/cluster_test.go pkg/compiler/http_cluster.go pkg/compiler/http_cluster_test.go pkg/compiler/prepared_generation.go pkg/compiler/worker_factory.go
+git add pkg/proxy/active_health.go pkg/proxy/active_health_test.go pkg/proxy/cluster.go pkg/proxy/cluster_test.go pkg/compiler/http_cluster.go pkg/compiler/http_cluster_test.go pkg/server/generation_engine_test.go
 git commit -m "refactor(proxy): own active health by cluster resource"
 ```
 
@@ -602,7 +683,7 @@ Inspect `git diff --cached --name-only` before committing; the glob must not sta
 
 **Produces:** `<instance-owner>/file-log-writer` under the injected `TaskPlugin` owner and `core/file-writer-registry/signal-watch` under a registry-local `TaskCore` owner.
 
-- [ ] Add `TestFileLoggerProcessorUsesPluginTaskOwner`, `TestFileLoggerBlockingWriteIsNamedResidualAndDefersLeaseRelease`, `TestSharedWriterWatcherSurvivesOldGenerationRelease`, and `TestSharedWriterWatcherStopsAndRestartsByRegistryEpoch`. The overlap test acquires the same canonical path from old/new plugin instances, releases old, sends SIGUSR1 through the injected channel seam, and proves the new lease reopens.
+- [ ] Add `TestFileLoggerProcessorUsesPluginTaskOwner`, `TestFileLoggerBlockingWriteIsNamedResidualAndDefersLeaseRelease`, `TestSharedWriterWatcherSurvivesOldGenerationRelease`, `TestSharedWriterWatcherStopsAndRestartsByRegistryEpoch`, and subprocess `TestFileWriterSignalTaskPanicUsesCoreFatalPolicy`. The overlap test acquires the same canonical path from old/new plugin instances, releases old, sends SIGUSR1 through the injected channel seam, and proves the new lease reopens. The subprocess injects a watcher callback that panics with a stable marker, asserts non-zero exit plus that marker, and asserts no post-panic continuation marker; it must not expect a `TaskFailure` report because `signal-watch` is `TaskCore`.
 
 ```go
 func TestSharedWriterWatcherSurvivesOldGenerationRelease(t *testing.T) {
@@ -618,10 +699,29 @@ func TestSharedWriterWatcherSurvivesOldGenerationRelease(t *testing.T) {
 	next.release()
 }
 ```
+
+Use the same subprocess structure for the core watcher; the injected signal source and reopen callback are existing Task 9 test seams, not production exports:
+
+```go
+func TestFileWriterSignalTaskPanicUsesCoreFatalPolicy(t *testing.T) {
+	if os.Getenv("APISIX_GO_TEST_FILE_WRITER_CORE_PANIC") == "1" {
+		runFileWriterSignalCorePanicFixture(t, "file-writer-core-fatal")
+		fmt.Fprintln(os.Stderr, "file-writer-returned-after-core-panic")
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestFileWriterSignalTaskPanicUsesCoreFatalPolicy$")
+	cmd.Env = append(os.Environ(), "APISIX_GO_TEST_FILE_WRITER_CORE_PANIC=1")
+	output, err := cmd.CombinedOutput()
+	if err == nil || !bytes.Contains(output, []byte("file-writer-core-fatal")) ||
+		bytes.Contains(output, []byte("file-writer-returned-after-core-panic")) {
+		t.Fatalf("core panic subprocess = %v, output = %s", err, output)
+	}
+}
+```
 - [ ] RED:
 
 ```bash
-bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test ./pkg/plugin/file_logger -run "^(TestFileLoggerProcessorUsesPluginTaskOwner|TestFileLoggerBlockingWriteIsNamedResidualAndDefersLeaseRelease|TestSharedWriterWatcherSurvivesOldGenerationRelease|TestSharedWriterWatcherStopsAndRestartsByRegistryEpoch)$" -count=1'
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test ./pkg/plugin/file_logger -run "^(TestFileLoggerProcessorUsesPluginTaskOwner|TestFileLoggerBlockingWriteIsNamedResidualAndDefersLeaseRelease|TestSharedWriterWatcherSurvivesOldGenerationRelease|TestSharedWriterWatcherStopsAndRestartsByRegistryEpoch|TestFileWriterSignalTaskPanicUsesCoreFatalPolicy)$" -count=1'
 ```
 
 - [ ] Make `newFileLoggerProcessor(owner *runtime.TaskOwner, sink fileLoggerSink) (*fileLoggerProcessor, error)` and call `owner.Go("file-log-writer", processor.run)` before publishing. Registry cancellation seals admission and drains records/barriers; last completion closes observer and releases the writer lease. Remove the late-cleanup goroutine from `stopWithCleanup`.
@@ -629,8 +729,8 @@ bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test ./pkg/plugin/
 - [ ] GREEN/race/gates:
 
 ```bash
-bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test ./pkg/plugin/file_logger -run "^(TestFileLogger|TestFlushAndReopen|TestHandlerWritesToCurrentPath|TestHandlerKeepsUnlinked)" -count=1'
-bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test -race ./pkg/plugin/file_logger -run "^(TestFileLogger|TestFlushAndReopen|TestHandlerWritesToCurrentPath|TestHandlerKeepsUnlinked)" -count=1'
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test ./pkg/plugin/file_logger -run "^(TestFileLogger|TestFlushAndReopen|TestHandlerWritesToCurrentPath|TestHandlerKeepsUnlinked|TestFileWriterSignalTaskPanicUsesCoreFatalPolicy)" -count=1'
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test -race ./pkg/plugin/file_logger -run "^(TestFileLogger|TestFlushAndReopen|TestHandlerWritesToCurrentPath|TestHandlerKeepsUnlinked|TestFileWriterSignalTaskPanicUsesCoreFatalPolicy)" -count=1'
 bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && golangci-lint run ./pkg/plugin/file_logger/... && make build'
 git diff --check
 ```
@@ -735,7 +835,26 @@ func TestRuntimeCloseReportsBlockingConnectionResidualAndLaterJoins(t *testing.T
 }
 ```
 
-Add a subprocess `TestRuntimeConnectionTaskPanicUsesCoreFatalPolicy` whose router panics with a unique marker. Assert non-zero exit and marker in output. This proves the local owner is `TaskCore`, not a recoverable plugin owner.
+Add a subprocess `TestRuntimeConnectionTaskPanicUsesCoreFatalPolicy` whose router panics with a unique marker. Assert non-zero exit, marker in output, and absence of a post-panic continuation marker. This proves the local owner is `TaskCore`, not a recoverable plugin owner; do not expect a registry failure report or continuation.
+
+```go
+func TestRuntimeConnectionTaskPanicUsesCoreFatalPolicy(t *testing.T) {
+	if os.Getenv("APISIX_GO_TEST_STREAM_CORE_PANIC") == "1" {
+		runStreamConnectionCorePanicFixture(t, "stream-core-fatal")
+		fmt.Fprintln(os.Stderr, "stream-returned-after-core-panic")
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestRuntimeConnectionTaskPanicUsesCoreFatalPolicy$")
+	cmd.Env = append(os.Environ(), "APISIX_GO_TEST_STREAM_CORE_PANIC=1")
+	output, err := cmd.CombinedOutput()
+	if err == nil || !bytes.Contains(output, []byte("stream-core-fatal")) ||
+		bytes.Contains(output, []byte("stream-returned-after-core-panic")) {
+		t.Fatalf("core panic subprocess = %v, output = %s", err, output)
+	}
+}
+```
+
+The three helpers intentionally do not install recovery. Their only bounded synchronization is enough to keep the subprocess alive until the owned callback reaches the injected panic; timeout belongs to the parent command/test harness, not to a recovery path.
 
 - [ ] Capture RED:
 
@@ -813,16 +932,17 @@ After each task, the reviewer must inspect:
 3. Admission: task is registered before its plugin/resource is published; failure rolls back all acquired state.
 4. Stop order: reject new work, cancel/wake, drain/join, then close transports/secrets/writers and remove publications.
 5. Residual visibility: an injected cancellation-ignoring callback appears under the expected owner.
-6. Panic policy: plugin/resource task panic reports that owner; it is not mislabeled core and does not crash unrelated owners.
-7. Concurrency: repeated/concurrent Stop, generation overlap, task admission versus rollback, and last-lease release are race-tested.
-8. Scope: request and persistent server runtime work has not been moved into a generation registry.
-9. Retryable teardown: a failed final close retains the closing entry and every subordinate resource; only a successful retry releases transports/observers and deletes the entry, each exactly once.
+6. Plugin panic policy: a `TaskPlugin` panic is recovered by the registry, reports the exact full owner and raw identity to the configured failure sink, fails only that owner, and leaves unrelated owners admissible. Review the focused plugin panic test in the task's normal and race gates.
+7. Core panic policy: active-health, file-writer `signal-watch`, and persistent stream `TaskCore` panics are never recovered or reported as isolated plugin failures. Their subprocess tests prove non-zero worker termination with the stable marker and no post-panic continuation; no in-process test may deliberately trigger them.
+8. Concurrency: repeated/concurrent Stop, generation overlap, task admission versus rollback, and last-lease release are race-tested.
+9. Scope: request work has not been moved into a generation registry, and the persistent stream runtime keeps its own runtime-local core registry.
+10. Retryable teardown: generation tasks quiesce before `cleanupResourceFinalize`; a failed cluster final close retains the Prepared/factory/engine record, closing entry, and every subordinate resource. Only a terminal retry permits one-shot release, removes the closing entry, and makes the same key acquirable again, each release exactly once.
 
 ## Plan Self-Review
 
-- **Coverage:** Every original generation/background file is assigned. `rocketmq_logger/plugin.go:242` and all seven `WaitGroup.Go` cancellation helpers are explicit. Current extra raw-go sites are classified into the request plan rather than silently ignored. AI probe panic completion and retryable cluster final close have dedicated regressions.
-- **Dependency consistency:** Every implementation task starts from Contract C Task 2 plus `Task11-0 / retryable teardown and residual propagation`, consumes the exact compiler-injected `*runtime.TaskOwner`, and does not reference nonexistent `materialize.go`. Shared cluster and writer resources construct lifecycle-local `TaskCore` owners rather than borrowing a generation owner.
-- **Testability:** Every behavior task starts with a focused RED test, names the expected failure cause, and has normal/race/lint/build commands. Cross-generation cluster and writer reuse receive explicit executable tests.
+- **Coverage:** Every original generation/background file is assigned. `rocketmq_logger/plugin.go:242` and all seven `WaitGroup.Go` cancellation helpers are explicit. Current extra raw-go sites are classified into the request plan rather than silently ignored. AI probe panic completion, retryable cluster final close, and all three resource/runtime `TaskCore` fatal paths have dedicated regressions.
+- **Dependency consistency:** Every implementation task starts from Contract C Task 2 plus `Task11-0 / retryable teardown and residual propagation`, consumes the exact compiler-injected `*runtime.TaskOwner`, and does not reference nonexistent `materialize.go`. Shared cluster and writer resources construct lifecycle-local `TaskCore` owners rather than borrowing a generation owner. HTTP leases use Task11-0's exact `cleanupResourceFinalize` phase between generation quiescence and one-shot release.
+- **Testability:** Every behavior task starts with a focused RED test, names the expected failure cause, and has normal/race/lint/build commands. Cross-generation cluster and writer reuse receive explicit executable tests. The cluster-specific engine discard test crosses real engine, factory, Prepared, final-lease, and resource-registry boundaries; the three core-panic tests are subprocess-only.
 - **No placeholders:** Owner strings, criticality, constructor changes, stop order, focused commands, and commit subjects are specified. Test helpers shown in skeletons are test-local helpers to implement in the named test file, not production APIs.
 - **File fence:** Generation Task 5 integrates `ai_proxy_multi/plugin.go` and `plugin_test.go` first; request AI flush Task 7 starts from that reviewed head and is never dispatched in parallel.
 - **Known risk:** Logger shutdown is the highest-risk sequence because the generation registry currently stops before plugin `Stop`. Task 8 therefore makes owner cancellation itself seal/drain the processor, and Task 10 runs RocketMQ shutdown inside a pre-admitted owned task. Do not retain the old cleanup goroutine as a fallback.

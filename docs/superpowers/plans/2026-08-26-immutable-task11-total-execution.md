@@ -121,7 +121,7 @@ Implement Contract C Task 1, review it, and integrate it first. Task11-0 Task 1 
 
 Success criteria:
 
-- `TaskOwner` has only constructor plus `Go` and validates bounded prefix/component syntax.
+- `TaskOwner` has only constructor plus `Go`; it rejects blank/outer-whitespace prefixes and validates bounded component syntax, while each production prefix constructor separately proves its exact bounded format.
 - `RequestTaskGroup` method set is unchanged.
 - raw panic identity is replayed only after all accepted children join.
 - compiler owner derives from `selected.instance`, not mutable plugin state.
@@ -131,7 +131,12 @@ Success criteria:
 
 ### Wave 1: Independent ownership migrations
 
-From reviewed Contract C Task 2, run up to three disjoint units concurrently, replenishing slots only after review/integration:
+Use two explicit starting lines, never one generic frozen base:
+
+- Request units 1, 2, 3, 4, and 6 may start from reviewed Contract C Task 1 when their files are disjoint from active prerequisite work.
+- Every generation/shared-resource unit starts only from one reviewed head containing both Contract C Task 2 and complete Task11-0.
+
+Run up to three disjoint units concurrently, replenishing slots only after review/integration:
 
 - generation active-health resource ownership;
 - generation proxy-cache cleanup;

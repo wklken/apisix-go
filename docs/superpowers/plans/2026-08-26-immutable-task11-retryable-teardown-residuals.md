@@ -4,7 +4,7 @@
 
 **Goal:** Make generation, factory, engine, server, and shared-resource teardown retryable so a bounded task residual never releases dependent resources, while terminal cleanup still runs exactly once and retains every unrelated cleanup error.
 
-**Architecture:** `runtime.TaskRegistry.Stop` keeps its existing `([]TaskResidual, error)` signature and wraps deadline or cancellation causes in one structured residual error that remains discoverable through `errors.As` and preserves `errors.Is`. Compiler cleanup becomes a strict two-phase state machine: retry pending quiescers until all succeed, then execute every release exactly once. Prepared generations, factories, generation owners, the generation engine, server shutdown, and the shared resource registry advance only across terminal phase boundaries; an incomplete attempt retains ownership for a later caller-driven retry and never spins.
+**Architecture:** `runtime.TaskRegistry.Stop` keeps its existing `([]TaskResidual, error)` signature and wraps deadline or cancellation causes in one structured residual error that remains discoverable through `errors.As` and preserves `errors.Is`. Compiler cleanup becomes a strict three-phase state machine: retry pending quiescers until all succeed, retry resource finalization without dropping ownership, then execute every one-shot release exactly once. Prepared generations, factories, generation owners, the generation engine, server shutdown, and the shared resource registry advance only across terminal phase boundaries; an incomplete attempt retains ownership for a later caller-driven retry and never spins.
 
 **Tech Stack:** Go 1.26 standard library (`context`, `errors`, `slices`, `sync`), existing `runtime.TaskRegistry`, compiler `cleanupStack` and `PreparedGeneration`, `WorkerCompilerFactory`, server `generationOwner` and `GenerationEngine`, `runtime.ResourceRegistry`, focused Go tests, race detector, golangci-lint, and repository build targets.
 
@@ -17,7 +17,8 @@
 - Start from reviewed Task 11 planning head `167c11c451573df7e521f73c7d7863990bb4c3ea`, whose product-code base is `b0220dcebd64a1d2d687be84d1f14ab501dfffd0`. Re-establish the exact integration SHA before implementation; do not treat this planning worktree as an implementation base after other Task 11 commits land.
 - Preserve `TaskRegistry.Stop(ctx) ([]TaskResidual, error)`. Do not add `Done`, `Wait`, `Complete`, `Retry`, status, callback, or channel methods to the residual error or task registry.
 - The structured residual error exposes only a stable `Error()`, `Unwrap()`, and defensive `Residuals()`. Its string never includes owner names, raw resource IDs, plugin configuration, or callback errors.
-- A quiesce failure is incomplete, even when its cause is not a context error. No release callback may run until every quiescer in the relevant cleanup set has succeeded.
+- A quiesce failure is incomplete, even when its cause is not a context error. No resource-finalization or release callback may run until every quiescer in the relevant cleanup set has succeeded.
+- `cleanupResourceFinalize` is the exact middle-phase constant. A finalizer error is incomplete when its chain contains `*runtime.TaskResidualError`, `context.Canceled`, `context.DeadlineExceeded`, or `ErrPreparedGenerationCleanupIncomplete`: do not mark that step done and do not enter one-shot release. A non-incomplete finalizer error is terminal: mark that step done, retain the error exactly once, continue other finalizers, and enter release only after every finalizer is terminal.
 - A release callback is attempted exactly once. Its error is terminal, retained, joined with other terminal release errors, and replayed on later calls without invoking the callback again.
 - Preserve existing safe-marker/redaction contracts: `PreparedGeneration` and `WorkerCompilerFactory` may add the structured residual carrier to their error chain, but must not expose raw provider, registration, plugin, resource, or resolver cleanup errors that current tests require them to redact.
 - Add one safe compiler sentinel, `compiler.ErrPreparedGenerationCleanupIncomplete`, because `cleanupStack` treats every quiesce error as retryable even when it is not a task/context error. Cross-package owners use `errors.Is` on this sentinel; no completion/status method is added to `PreparedGeneration`.
@@ -34,8 +35,9 @@
 | Boundary | Current source behavior | Required behavior |
 | --- | --- | --- |
 | `runtime.TaskRegistry.Stop` | Returns structured residuals separately, but the error is only `ctx.Err`; callers that convert the error to a safe marker lose residual identity. | Return the same residual slice and a stable typed carrier wrapping the context cause; `errors.Is` and `errors.As` both survive wrapping and joins. |
-| `compiler.cleanupStack.Close` | `sync.Once` makes the first deadline terminal and runs release callbacks even after quiesce fails. | Seal once, retry only unfinished quiescers, prohibit release until all quiescers succeed, then run every release once and cache terminal release errors. |
-| `compiler.cleanupStack.Rollback` | Removes checkpoint-owned steps before running them and releases after a quiesce error. | Retain a failed suffix, retry it or let final generation close own it, and truncate only after its quiesce barrier and releases finish. |
+| `compiler.cleanupStack.Close` | `sync.Once` makes the first deadline terminal and runs release callbacks even after quiesce fails. | Seal once; retry unfinished quiescers, then retry unfinished resource finalizers, then run every release once and cache all terminal finalizer/release errors. |
+| `compiler.cleanupStack.Rollback` | Removes checkpoint-owned steps before running them and releases after a quiesce error. | Retain a failed suffix, retry it or let final generation close own it, and truncate only after its quiesce, resource-finalization, and release phases finish. |
+| HTTP cluster lease cleanup | Registers `slot.release` as `cleanupRelease`, so a bounded shared-resource final close would be consumed as one-shot. | Register `http-cluster/<name>` with `cleanupResourceFinalize`, retaining retry authority until shared tasks quiesce. |
 | `PreparedGeneration.Close` | Sets terminal, caches the first result, clears fields, revokes snapshots, and detaches even when task stop times out. | Hide observations immediately, but retain snapshots/resources/cleanup/factory membership across incomplete attempts; clear and detach only after cleanup becomes terminal. |
 | `WorkerCompilerFactory.Close` | Caches the first result and closes the shared registry after any generation close result. | Reject new preparation once, retry live generations in stable order, and close the shared registry only after all live generations are terminal. |
 | `generationOwner.closePrepared` | `closeOnce` caches the first prepared close result and closes `closeDone` even when cleanup is incomplete. | Retry after drain; close `closeDone` and clear ownership only on terminal prepared close. |
@@ -95,9 +97,9 @@ The actual implementation should inline `errors.As` at the small number of state
 
 - `TaskResidualError` in an error chain means ownership is incomplete and retryable.
 - A direct `context.Canceled` or `context.DeadlineExceeded` from a wait boundary also means incomplete, even when no task carrier is present.
-- `cleanupStack` itself treats every quiesce callback error as incomplete. Its owner does not need to infer phase from the error.
+- `cleanupStack` treats every quiesce callback error as incomplete. In the resource-finalization phase it uses the four frozen incomplete classifiers above; other finalizer failures are terminal and retained exactly once.
 - `PreparedGeneration.Close` joins the safe exported sentinel `compiler.ErrPreparedGenerationCleanupIncomplete` whenever `cleanup.terminallyClosed()` is false. `generationOwner`, `GenerationEngine`, and `Server` preserve and classify it with `errors.Is`.
-- A release callback error is terminal because the release callback has already consumed its one allowed invocation.
+- A one-shot release callback error is terminal because the callback has already consumed its one allowed invocation. Terminal resource-finalization errors are likewise retained once, but all other finalizers still run before releases.
 - Safe marker errors remain stable. They may be joined with `TaskResidualError` and context causes, but raw sensitive cleanup errors remain redacted at the existing compiler boundary.
 
 ### Resource acquisition while a key is closing
@@ -118,13 +120,13 @@ closing[key] -> zero accepting references, resource still owned, terminal close 
 | Task | Production files | Test files | Depends on |
 | --- | --- | --- | --- |
 | 1. Structured residual carrier | `pkg/runtime/task_registry.go` | `pkg/runtime/task_registry_test.go` | reviewed Contract C Task 1 head; both touch these files, so this task starts afterward and never from a sibling base |
-| 2. Retryable two-phase cleanup | `pkg/compiler/cleanup.go` | `pkg/compiler/cleanup_test.go` plus affected focused compiler tests | Task 1 |
+| 2. Retryable three-phase cleanup | `pkg/compiler/cleanup.go`, `pkg/compiler/http_cluster.go` | `pkg/compiler/cleanup_test.go`, `pkg/compiler/http_cluster_test.go` plus affected focused compiler tests | Task 1 |
 | 3. Prepared generation and factory retry | `pkg/compiler/prepared_generation.go`, `pkg/compiler/worker_factory.go` | `pkg/compiler/worker_factory_close_test.go`, affected `pkg/compiler/worker_factory_test.go` and `worker_factory_recovery_test.go` | Tasks 1-2 |
 | 4. Retryable generation owner | `pkg/server/generation_owner.go` | `pkg/server/generation_owner_test.go` | Task 3 |
 | 5. Engine discard, retirement, and close | `pkg/server/generation_engine.go` | `pkg/server/generation_engine_test.go` | Task 4 |
-| 6. Server phase retry | `pkg/server/server.go` | `pkg/server/server_test.go` | Task 5 |
+| 6. Server phase retry and real owner-carrier chain | `pkg/server/server.go` | `pkg/server/server_test.go`, create `pkg/server/task_residual_chain_test.go` | Task 5 and reviewed Contract C Task 2 |
 | 7. Retryable shared-resource final close | `pkg/runtime/resource_registry.go` | `pkg/runtime/resource_registry_test.go` | Task 1; integrate before final Task 8 and before generation shared-resource work |
-| 8. Integrated gate and handoff | no new product files | all tests above | Tasks 1-7 and reviewed Contract C Task 1 |
+| 8. Integrated gate and handoff | no new product files | all tests above | Tasks 1-7 and reviewed Contract C Task 2 |
 
 Dependency graph:
 
@@ -135,13 +137,14 @@ Task 1 residual carrier
 
 Tasks 1-7 -> Task 8 integrated Task11-0 gate
 
-Contract C Task 1 -> Task11-0 Task 1 -> Tasks 2-7 -> Task 8
+Contract C Task 1 -> Task11-0 Task 1 -> Tasks 2-5 and Task 7
 Contract C Task 1 -> Contract C Task 2 may proceed beside Task11-0 after file ownership is checked
+Contract C Task 2 + Task 5 -> Task 6 exact plugin-owner residual chain
 Contract C Task 2 + integrated Task11-0 -> generation/background/shared-resource plan
 Contract C Task 1 -> request/connection plan may proceed independently
 ```
 
-Tasks 2-6 are one strict semantic chain and must integrate in order. Task 7 may be developed from the reviewed Task 1 head in an isolated worktree, but its verification must be regenerated after Tasks 2-6 integrate because compiler factories own a `ResourceRegistry`. Do not run two workers against overlapping files.
+Tasks 2-6 are one strict semantic chain and must integrate in order. Task 2's resource-finalization phase is the prerequisite that lets generation-owned HTTP cluster leases safely consume Task 7 retryable registry closes. Task 7 may be developed from the reviewed Task 1 head in an isolated worktree, but its verification must be regenerated after Tasks 2-6 integrate because compiler factories own a `ResourceRegistry`. Do not run two workers against overlapping files.
 
 ---
 
@@ -263,17 +266,19 @@ git commit -m "fix(runtime): preserve task residual identity"
 
 ---
 
-### Task 2: Make Cleanup Strictly Quiesce, Then Release, Then Cache
+### Task 2: Make Cleanup Strictly Quiesce, Finalize Resources, Then Release
 
 **Files:**
 
 - Modify: `pkg/compiler/cleanup.go`
+- Modify: `pkg/compiler/http_cluster.go`
 - Modify: `pkg/compiler/cleanup_test.go`
+- Modify: `pkg/compiler/http_cluster_test.go`
 
 **Interfaces:**
 
-- Consumes: Task 1 residual carrier; existing phase order, reverse order, checkpoints, and ownership sealing.
-- Produces: retryable `cleanupStack.Close`; a failed checkpoint rollback remains owned; releases execute exactly once only after all relevant quiescers succeed.
+- Consumes: Task 1 residual carrier plus existing reverse order, checkpoints, ownership sealing, and HTTP cluster lease registration.
+- Produces: exact phase order `cleanupQuiesce -> cleanupResourceFinalize -> cleanupRelease`; retryable `cleanupStack.Close`; failed checkpoint suffixes remain owned; HTTP cluster leases retain retry authority; releases execute exactly once only after all relevant quiescers and resource finalizers become terminal.
 
 - [ ] **Step 1: Replace replay-first-error tests with RED retry/barrier oracles**
 
@@ -344,19 +349,46 @@ func TestCleanupStackTerminalReleaseErrorsJoinAndNeverRetry(t *testing.T) {
 
 Add `TestCleanupStackRollbackRetainsSuffixWhenQuiesceFails`: create a base release, checkpoint, suffix quiescer that fails once, and suffix release. First `Rollback` returns the quiesce error, runs no suffix release, and preserves the suffix. Second `Rollback` succeeds, releases the suffix once, and subsequent `Close` runs only the base release.
 
+Add `TestCleanupStackResourceFinalizationResidualDefersReleaseAndRetries`: register, in deliberately interleaved order, one successful quiescer, two `cleanupResourceFinalize` callbacks, and one `cleanupRelease`. Make the first finalizer return `errors.Join(runtimeResidualFixture(t), context.DeadlineExceeded)` on attempt one and succeed on attempt two. The first Close must run both finalizers, leave only the incomplete finalizer undone, run no release, and preserve `errors.As(..., *runtime.TaskResidualError)` plus `errors.Is(..., context.DeadlineExceeded)`. The second Close retries only that finalizer, then runs the release once.
+
+Implement `runtimeResidualFixture` in `cleanup_test.go` by starting one cancellation-ignoring callback in a real `runtime.TaskRegistry`, waiting for its `started` channel, and calling `Stop` with an already-canceled context; return the resulting `stopErr` plus a release function. Do not construct `TaskResidualError` directly because its fields are intentionally private.
+
+Add `TestCleanupStackResourceFinalizationTerminalErrorIsRecordedOnceAndAllowsRelease`: one finalizer returns an ordinary `terminalFinalizeErr`, another succeeds, and a release returns `releaseErr`. Both finalizers run once, the release runs once after both are terminal, and every terminal replay satisfies `errors.Is` for both errors without invoking any callback again.
+
+Add `TestCleanupStackResourceFinalizationIncompleteClassifiers` as a table covering `TaskResidualError`, `context.Canceled`, `context.DeadlineExceeded`, and `ErrPreparedGenerationCleanupIncomplete`; each case remains unfinished and blocks release. An ordinary error is the terminal control case.
+
+Add `TestHTTPClusterLeaseUsesRetryableResourceFinalizationPhase` in `pkg/compiler/http_cluster_test.go`. Acquire a real HTTP cluster lease with an observer/release trace, then append a one-shot `cleanupRelease` sentinel. Add a quiescer that fails once. Attempt one must run neither cluster finalization nor the sentinel; attempt two must trace cluster lease finalization before the sentinel. This distinguishes the new middle phase from the current `cleanupRelease` registration without depending on Task 7's later retryable registry implementation. Task 7 separately proves that a structured residual from that final lease retains the resource and retries.
+
 Update `TestCleanupStackConcurrentCloseRunsEachStepOnce` so one leader performs the callback and every waiter sees the same attempt result; a later call starts a retry only after the first incomplete attempt has returned.
 
 - [ ] **Step 2: Run RED**
 
 ```bash
-bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test ./pkg/compiler -run "^TestCleanupStack" -count=1'
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test ./pkg/compiler -run "^(TestCleanupStack|TestHTTPClusterLeaseUsesRetryableResourceFinalizationPhase)$" -count=1'
 ```
 
-Expected: FAIL because current `Close` releases after failed quiescence and `sync.Once` prevents retry; current `Rollback` truncates before cleanup.
+Expected: FAIL because current cleanup has no resource-finalization phase, releases after failed quiescence, and uses `sync.Once`; current `Rollback` truncates before cleanup, and the HTTP cluster lease is registered as one-shot release.
 
 - [ ] **Step 3: Implement a serialized attempt state machine**
 
-Replace `cleanupStack.closeOnce` with the exact private attempt and terminal state below. Extend `cleanupStep` with `done bool`. Preserve reverse ordering and callback execution outside `mu`.
+Replace `cleanupStack.closeOnce` with the exact private attempt and terminal state below. Extend `cleanupStep` with `done bool`, add the middle phase and its checkpoint length, and declare the safe sentinel here so Task 3 consumes rather than redefines it. Preserve reverse ordering and callback execution outside `mu`.
+
+```go
+var ErrPreparedGenerationCleanupIncomplete = errors.New("prepared generation cleanup is incomplete")
+
+const (
+	cleanupQuiesce cleanupPhase = iota
+	cleanupResourceFinalize
+	cleanupRelease
+)
+
+type cleanupCheckpoint struct {
+	owner      *cleanupStack
+	quiescers  int
+	finalizers int
+	releases   int
+}
+```
 
 ```go
 type cleanupAttempt struct {
@@ -365,13 +397,15 @@ type cleanupAttempt struct {
 }
 
 type cleanupStack struct {
-	mu        sync.Mutex
-	quiescers []cleanupStep
-	releases  []cleanupStep
-	sealed    bool
-	active    *cleanupAttempt
-	terminal  bool
-	closeErr  error
+	mu             sync.Mutex
+	quiescers      []cleanupStep
+	finalizers     []cleanupStep
+	releases       []cleanupStep
+	sealed         bool
+	active         *cleanupAttempt
+	terminalErrors []error
+	terminal       bool
+	closeErr       error
 }
 ```
 
@@ -381,13 +415,29 @@ type cleanupStack struct {
 2. If terminal, return the cached terminal error.
 3. If another attempt is active, capture its pointer, unlock, and wait for `attempt.done` or the caller context. After the attempt finishes, return `attempt.err`; do not silently launch another retry from the same call.
 4. Otherwise install `active = &cleanupAttempt{done: make(chan struct{})}` and run every unfinished quiescer in reverse order. Mark only successful quiescers done.
-5. If any quiescer failed, publish the joined attempt error, close the attempt barrier, and return without running a release.
-6. After every quiescer is done, run every unfinished release in reverse order. Mark each release done regardless of its return value. Join all release errors.
-7. Set terminal, cache the joined release result, publish it to concurrent waiters, and replay it forever.
+5. If any quiescer failed, publish the joined attempt error, close the attempt barrier, and return without running a finalizer or release.
+6. After every quiescer is done, run every unfinished resource finalizer in reverse order. Use a local `var residual *runtime.TaskResidualError` and classify with `errors.As(err, &residual)`, `errors.Is(err, context.Canceled)`, `errors.Is(err, context.DeadlineExceeded)`, or `errors.Is(err, ErrPreparedGenerationCleanupIncomplete)`. For an incomplete result, leave that step undone and retain it for a later public attempt. For nil or an ordinary terminal error, mark it done; append a terminal error to `terminalErrors` exactly once. Continue the remaining finalizers so independent resources make progress.
+7. If any finalizer remains incomplete, publish the current attempt's transient errors joined with previously retained terminal errors, and return without running a release. Never append a transient error to `terminalErrors`.
+8. After every finalizer is done, run every unfinished release in reverse order. Mark each release done regardless of its return value and append each release error to `terminalErrors` once.
+9. Set terminal, cache `errors.Join(terminalErrors...)`, publish it to concurrent waiters, and replay it forever.
 
 Before closing an attempt's `done`, store its joined error, clear `active` only if it is still that exact attempt, and publish terminal state when appropriate. This makes concurrent waiters receive the attempt they joined while a call arriving afterward may become the next retry leader.
 
-`Rollback` uses the same phase executor for only the checkpoint suffix. It does not seal the whole stack. On quiesce failure it leaves that suffix in place with successful suffix quiescers marked done. On terminal suffix completion it truncates both slices to the checkpoint. Invalid/foreign/sealed checkpoint behavior remains unchanged.
+`Rollback` uses the same three-phase executor for only the checkpoint suffix. It does not seal the whole stack. On incomplete quiesce or resource finalization it leaves that suffix in place with successful/terminal suffix steps marked done. Suffix terminal errors are attempt-local: return them from Rollback exactly once but do not append them to the whole stack's later Close result. On terminal suffix completion truncate all three slices to the checkpoint. Invalid/foreign/sealed checkpoint behavior remains unchanged.
+
+Change the HTTP cluster registration at the existing call site, without adding a wrapper API:
+
+```go
+if err := prepared.cleanup.Own(
+	cleanupResourceFinalize,
+	"http-cluster/"+owned.Name,
+	slot.release,
+); err != nil {
+	return nil, err
+}
+```
+
+HTTP cluster lease release is resource finalization because `ResourceLease.Release(ctx)` can retain the live cluster and retry authority after task residuals. Registrations, snapshots, metrics detach, and other callbacks that cannot be retried after invocation remain `cleanupRelease`.
 
 Keep `Close(ctx context.Context) error` and `Rollback(ctx context.Context, checkpoint cleanupCheckpoint) error` unchanged. Add exactly one package-private observation for the owning `PreparedGeneration` state machine:
 
@@ -400,19 +450,20 @@ It returns true only after all releases were attempted and their errors cached. 
 - [ ] **Step 4: Run GREEN, call-site tests, and race coverage**
 
 ```bash
-bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test ./pkg/compiler -run "^(TestCleanupStack|TestWorkerCompilerFactoryPrepareGenerationCleansFailedDependenciesInOrder|TestWorkerCompilerFactoryPrepareGenerationOwnsPartialConsumersBeforeError|TestPreparedGenerationAttachHTTPSerializesWithClose|TestPreparedGenerationAttachStreamSerializesWithClose)$" -count=1'
-bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test -race ./pkg/compiler -run "^(TestCleanupStackConcurrentCloseRunsEachStepOnce|TestCleanupStackQuiesceFailureDefersEveryReleaseAndRetriesOnlyPendingQuiescer)$" -count=1'
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test ./pkg/compiler -run "^(TestCleanupStack|TestHTTPClusterLeaseUsesRetryableResourceFinalizationPhase|TestWorkerCompilerFactoryPrepareGenerationCleansFailedDependenciesInOrder|TestWorkerCompilerFactoryPrepareGenerationOwnsPartialConsumersBeforeError|TestPreparedGenerationAttachHTTPSerializesWithClose|TestPreparedGenerationAttachStreamSerializesWithClose)$" -count=1'
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test -race ./pkg/compiler -run "^(TestCleanupStackConcurrentCloseRunsEachStepOnce|TestCleanupStackQuiesceFailureDefersEveryReleaseAndRetriesOnlyPendingQuiescer|TestCleanupStackResourceFinalizationResidualDefersReleaseAndRetries|TestHTTPClusterLeaseUsesRetryableResourceFinalizationPhase)$" -count=1'
 ```
 
-Expected: PASS; no release trace appears before every quiescer succeeds, checkpoint rollback retains failed ownership, and all release callbacks remain exact-once.
+Expected: PASS; no finalizer runs before quiescence, no release runs before every finalizer is terminal, incomplete finalizers retry, terminal errors remain joined, checkpoint rollback retains failed ownership, and all one-shot releases remain exact-once.
 
 - [ ] **Step 5: Review and commit**
 
-Inspect the diff to confirm only `cleanup.go` and its tests changed.
+Inspect the diff to confirm only the four Task 2 files changed and that every existing `cleanupRelease` call site was classified deliberately.
 
 ```bash
-git add pkg/compiler/cleanup.go pkg/compiler/cleanup_test.go
-git commit -m "fix(compiler): make cleanup quiescence retryable"
+git add pkg/compiler/cleanup.go pkg/compiler/cleanup_test.go \
+  pkg/compiler/http_cluster.go pkg/compiler/http_cluster_test.go
+git commit -m "fix(compiler): make cleanup phases retryable"
 ```
 
 ---
@@ -431,7 +482,7 @@ git commit -m "fix(compiler): make cleanup quiescence retryable"
 **Interfaces:**
 
 - Consumes: Task 2 terminal/incomplete cleanup result; Task 1 residual carrier; existing compiler safe markers.
-- Produces: safe `ErrPreparedGenerationCleanupIncomplete`; retryable `PreparedGeneration.Close`/`DiscardPrepared`; retryable stable-order factory close; shared registry close only after every prepared generation becomes terminal.
+- Produces: retryable `PreparedGeneration.Close`/`DiscardPrepared`; retryable stable-order factory close; shared registry close only after every prepared generation becomes terminal. Task 2 owns the safe `ErrPreparedGenerationCleanupIncomplete` definition; this task preserves and classifies it.
 
 - [ ] **Step 1: Add a PreparedGeneration RED oracle**
 
@@ -444,7 +495,9 @@ func TestPreparedGenerationCloseResidualRetainsOwnersUntilRetry(t *testing.T) {
 	prepared.tasks = tasks
 	if err := prepared.cleanup.Own(cleanupQuiesce, "generation-tasks", func(ctx context.Context) error {
 		residuals, stopErr := tasks.Stop(ctx)
-		if stopErr != nil || len(residuals) != 0 { return stopErr }
+		if stopErr != nil || len(residuals) != 0 {
+			return errors.Join(errWorkerGenerationCleanupFailed, stopErr)
+		}
 		return nil
 	}); err != nil { t.Fatal(err) }
 	set := prepared.PublicationSet()
@@ -494,16 +547,18 @@ Preserve the original `set` captured before closing because public observations 
 Add:
 
 - `TestWorkerCompilerFactoryCloseResidualRetainsGenerationAndDefersRegistry`: two live generations in stable AttemptID order; one task blocks. First short close reports the structured residual and safe factory marker, closes any independently terminal generation, retains the blocked generation in `live`, and leaves `factory.registry` unclosed. After release, retry closes the retained generation then registry.
+- `TestWorkerCompilerFactoryGenerationTaskQuiescerJoinsSafeMarkerAndExactCarrier`: at the existing `create-task-registry` checkpoint, admit one cancellation-ignoring task with a fixed exact owner and let preparation complete. A bounded real `factory.Close` must satisfy `errors.Is(err, errWorkerGenerationCleanupFailed)`, `errors.As(err, &residual)`, and exact equality of `residual.Residuals()` to that owner. This test must not replace the real `generation-tasks` cleanup callback with a fake.
 - `TestWorkerCompilerFactoryCloseRetryPreservesIndependentTerminalErrors`: a terminal safe error from one prepared owner remains in the final factory error after a different owner first returns a residual and later succeeds.
 - `TestWorkerCompilerFactoryConcurrentRetryHasOneAttemptLeader`: concurrent callers join one close attempt; no prepared release or registry close executes twice.
+- `TestWorkerCompilerFactoryCloseRetriesOrdinaryQuiesceFailureWithoutCachingIt`: inject a generation cleanup quiescer that returns one ordinary error and then succeeds. First Close must contain `ErrPreparedGenerationCleanupIncomplete` plus the safe factory marker, retain the generation, leave the registry open, and leave `factory.closeErrors` unchanged. The later Close retries and succeeds; the ordinary transient must not appear in the terminal result.
 
 - [ ] **Step 3: Run RED**
 
 ```bash
-bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test ./pkg/compiler -run "^(TestPreparedGenerationCloseResidualRetainsOwnersUntilRetry|TestWorkerCompilerFactoryCloseResidualRetainsGenerationAndDefersRegistry|TestWorkerCompilerFactoryCloseRetryPreservesIndependentTerminalErrors|TestWorkerCompilerFactoryConcurrentRetryHasOneAttemptLeader)$" -count=1'
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test ./pkg/compiler -run "^(TestPreparedGenerationCloseResidualRetainsOwnersUntilRetry|TestWorkerCompilerFactoryCloseResidualRetainsGenerationAndDefersRegistry|TestWorkerCompilerFactoryGenerationTaskQuiescerJoinsSafeMarkerAndExactCarrier|TestWorkerCompilerFactoryCloseRetryPreservesIndependentTerminalErrors|TestWorkerCompilerFactoryConcurrentRetryHasOneAttemptLeader|TestWorkerCompilerFactoryCloseRetriesOrdinaryQuiesceFailureWithoutCachingIt)$" -count=1'
 ```
 
-Expected: FAIL because `closeOnce` clears/detaches the prepared generation and the factory closes its registry after the first incomplete attempt.
+Expected: FAIL because the real generation-task quiescer replaces `stopErr` with only a safe marker, `closeOnce` clears/detaches the prepared generation, ordinary quiesce failure is cached, and the factory closes its registry after the first incomplete attempt.
 
 - [ ] **Step 4: Implement retryable PreparedGeneration close**
 
@@ -522,7 +577,7 @@ cleanupTerminal bool
 closeErr        error
 ```
 
-- Export exactly `var ErrPreparedGenerationCleanupIncomplete = errors.New("prepared generation cleanup is incomplete")`; it is a safe classifier, not a raw cleanup wrapper or status method.
+- Consume the exact `ErrPreparedGenerationCleanupIncomplete` declared by Task 2; do not redefine it or add a status method.
 - `closeStarted` runs once and `terminal = true` is set before the first cleanup attempt, so no observation or attachment is admitted after close starts.
 - An incomplete cleanup result returns `errors.Join(errPreparedGenerationCleanupFailed, ErrPreparedGenerationCleanupIncomplete, safeResidualCause)` and retains `cleanup`, snapshots, attempts, tasks, resources, binding operations, and `detach` internally.
 - `safeResidualCause` contains only `TaskResidualError`, its context cause, and existing constant safe markers. Raw registration/provider/plugin cleanup text is not exposed.
@@ -553,18 +608,35 @@ closeErr      error
 
 1. Snapshots `live` by AttemptID and sorts it as today.
 2. Calls every live generation so independent owners can make progress; records terminal safe errors once.
-3. If any generation error contains `*runtime.TaskResidualError` or a context-incomplete wait, returns the accumulated terminal safe errors joined with the current retryable error and does not call `registry.Close`.
+3. Classifies an attempt as incomplete when any generation error contains `*runtime.TaskResidualError`, `ErrPreparedGenerationCleanupIncomplete`, `context.Canceled`, or `context.DeadlineExceeded`. Return accumulated terminal safe errors joined with the current retryable error and do not call `registry.Close`. Never append any incomplete error—including an ordinary quiescer error wrapped by `ErrPreparedGenerationCleanupIncomplete`—to `closeErrors`.
 4. Only after the live map is empty calls the retryable resource registry close.
 5. Caches a terminal `errWorkerCompilerFactoryCleanupFailed` only after the registry close is terminal. Repeated terminal calls do no work.
 
 Do not delete `live` directly from the factory attempt; only the generation's terminal `detach` removes its exact AttemptID mapping.
 Pass the current caller `ctx` to every prepared-generation and registry close attempt; remove `cleanupCtx := context.WithoutCancel(ctx)` from `WorkerCompilerFactory.Close`. A factory retry is useful only when each public attempt has an independent bound.
 
+At the real generation-task registration in `pkg/compiler/worker_factory.go`, preserve both the safe marker and exact owner carrier:
+
+```go
+tasks := runtime.NewTaskRegistry(context.WithoutCancel(ctx), onFailure)
+if err := cleanup.Own(cleanupQuiesce, "generation-tasks", func(stopCtx context.Context) error {
+	residuals, stopErr := tasks.Stop(stopCtx)
+	if stopErr != nil || len(residuals) != 0 {
+		return errors.Join(errWorkerGenerationCleanupFailed, stopErr)
+	}
+	return nil
+}); err != nil {
+	return nil, err
+}
+```
+
+Do not replace `stopErr` with only the safe marker: doing so destroys the `TaskResidualError` required by every upper retry boundary. The marker remains the stable/redacted compiler-facing message while `errors.As` recovers the exact carrier.
+
 - [ ] **Step 6: Run GREEN, existing redaction/order tests, and race**
 
 ```bash
 bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test ./pkg/compiler -run "^(TestPreparedGenerationCloseResidualRetainsOwnersUntilRetry|TestWorkerCompilerFactoryClose|TestWorkerCompilerFactoryConcurrentCloseDiscardAndFactoryCloseRunOnce|TestWorkerCompilerFactoryPrepareGenerationRedactsProviderAndCleanupErrors|TestWorkerCompilerFactoryPrepareRecoveryRedactsRegistrationAndPartialCloseErrors)$" -count=1'
-bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test -race ./pkg/compiler -run "^(TestPreparedGenerationCloseResidualRetainsOwnersUntilRetry|TestWorkerCompilerFactoryCloseResidualRetainsGenerationAndDefersRegistry|TestWorkerCompilerFactoryConcurrentRetryHasOneAttemptLeader|TestWorkerCompilerFactoryConcurrentCloseDiscardAndFactoryCloseRunOnce)$" -count=1'
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test -race ./pkg/compiler -run "^(TestPreparedGenerationCloseResidualRetainsOwnersUntilRetry|TestWorkerCompilerFactoryCloseResidualRetainsGenerationAndDefersRegistry|TestWorkerCompilerFactoryGenerationTaskQuiescerJoinsSafeMarkerAndExactCarrier|TestWorkerCompilerFactoryCloseRetriesOrdinaryQuiesceFailureWithoutCachingIt|TestWorkerCompilerFactoryConcurrentRetryHasOneAttemptLeader|TestWorkerCompilerFactoryConcurrentCloseDiscardAndFactoryCloseRunOnce)$" -count=1'
 ```
 
 Expected: PASS; safe-marker equality/redaction stays intact where terminal, residual/context causes remain discoverable when incomplete, and registry close stays last.
@@ -690,11 +762,20 @@ Add `TestGenerationEngineDiscardResidualRetainsExactSetForRetry`:
 
 1. Prepare one non-synthetic pending generation and admit a blocking generation task through the fixture seam.
 2. Call `DiscardPrepared` with a 10 ms context.
-3. Assert `errors.As(err, *runtime.TaskResidualError)`, `errors.Is(err, context.DeadlineExceeded)`, the pending record remains under the same `preparedKey`, `discarding` is false after the attempt publishes, and activation remains rejected while the record is terminally closing.
+3. Assert `errors.As(err, *runtime.TaskResidualError)`, `errors.Is(err, context.DeadlineExceeded)`, the pending record remains under the same `preparedKey`, its completed attempt pointer records `terminal == false`, and activation remains rejected while the record is terminally closing.
 4. Release the task and call `DiscardPrepared` again with the exact set; assert success and pending deletion.
 5. Assert a mismatched set never joins or advances the retained cleanup.
 
 Extend `TestGenerationEngineDiscardConcurrentWaitersReplayThenForget`: all callers that joined one attempt receive that attempt's result. A residual result resets the record for a later explicit retry instead of deleting it; a terminal result deletes only after all joined waiters have read it.
+
+Add `TestGenerationEngineDiscardOldWaiterReadsFirstAttemptWhenSecondFinishesFirst`, using the existing package-private engine checkpoint hook and a new `discard-waiter-observed` checkpoint outside `engine.mu`:
+
+1. Start attempt A, join it with a waiter, and force A to publish a structured residual.
+2. Block that waiter at `discard-waiter-observed` after it has captured A's pointer and observed `<-A.done`, but before it returns `A.err`.
+3. Start a later explicit attempt B, allow B to finish successfully and delete the terminal pending record.
+4. Release the old waiter. It must return A's residual, not B's nil result and not a value read through the mutable `pendingRecord`.
+
+The checkpoint callback must run outside every engine lock and is test synchronization only; no sleep-based ordering is accepted.
 
 - [ ] **Step 2: Add retirement and engine-close RED tests**
 
@@ -709,30 +790,33 @@ Add:
 - [ ] **Step 3: Run RED**
 
 ```bash
-bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test ./pkg/server -run "^(TestGenerationEngineDiscardResidualRetainsExactSetForRetry|TestGenerationEngineDiscardConcurrentWaitersReplayThenForget|TestGenerationEngineRetirementResidualRetainsOwnerAndStreamMetrics|TestGenerationEngineCloseCancelsActiveRetirementAttemptBeforeRetry|TestGenerationEngineCloseDeadlineReturnsWithoutWaitingForever|TestGenerationEngineCloseRetryClosesPendingRetirementsThenFactory|TestGenerationEngineClosePreservesIndependentCleanupErrorsAcrossRetry)$" -count=1'
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test ./pkg/server -run "^(TestGenerationEngineDiscardResidualRetainsExactSetForRetry|TestGenerationEngineDiscardConcurrentWaitersReplayThenForget|TestGenerationEngineDiscardOldWaiterReadsFirstAttemptWhenSecondFinishesFirst|TestGenerationEngineRetirementResidualRetainsOwnerAndStreamMetrics|TestGenerationEngineCloseCancelsActiveRetirementAttemptBeforeRetry|TestGenerationEngineCloseDeadlineReturnsWithoutWaitingForever|TestGenerationEngineCloseRetryClosesPendingRetirementsThenFactory|TestGenerationEngineClosePreservesIndependentCleanupErrorsAcrossRetry)$" -count=1'
 ```
 
 Expected: FAIL because current discard forgets the record, retirement forgets any failed owner, and engine `closeOnce` advances to factory and waits without a retryable phase boundary.
 
 - [ ] **Step 4: Make discard attempts replayable, not terminal by default**
 
-Keep `pendingRecord`, but treat `discardDone` as one attempt barrier rather than lifetime completion:
+Keep `pendingRecord`, but replace its mutable attempt fields with one exact per-attempt pointer:
 
 ```go
+type discardAttempt struct {
+	done     chan struct{}
+	err      error
+	waiters  int
+	terminal bool
+}
+
 type pendingRecord struct {
-	key            preparedKey
-	set            generation.PublicationSet
-	owner          *generationOwner
-	synthetic      bool
-	discarding     bool
-	discardDone    chan struct{}
-	discardErr     error
-	discardTerminal bool
-	discardWaiters int
+	key       preparedKey
+	set       generation.PublicationSet
+	owner     *generationOwner
+	synthetic bool
+	discard   *discardAttempt
 }
 ```
 
-The leader invokes discard once with the caller `ctx`, not `context.WithoutCancel(ctx)`. On incomplete error it publishes the attempt, sets `discarding = false`, creates a fresh barrier only when a later leader claims the next attempt, and retains the record. Joined waiters read the completed attempt result before counters permit terminal deletion. On terminal completion, mark terminal and delete only after current waiters drain. Synthetic records remain terminal without cleanup.
+The leader installs a fresh `attempt := &discardAttempt{done: make(chan struct{})}`, invokes discard once with the caller `ctx` (not `context.WithoutCancel(ctx)`), and publishes `attempt.err` plus `attempt.terminal` before closing `attempt.done`. A joiner captures that exact pointer under `engine.mu`, increments that attempt's waiter count, waits on its `done` or caller context, and reads only `attempt.err`; it never follows `record.discard` after the wait. On incomplete completion, retain the record and allow only a later new public call to replace `record.discard` with a new attempt. On terminal completion, delete the record only after that attempt's joined waiters have consumed its result. Synthetic records publish a terminal attempt without cleanup. A newer attempt may finish before an old waiter runs, but pointer identity makes the old result immutable to that waiter.
 
 - [ ] **Step 5: Make retirement retain incomplete owners**
 
@@ -788,7 +872,7 @@ Use the caller context for every engine-close wait and retryable child close. Or
 
 ```bash
 bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test ./pkg/server -run "^(TestGenerationEngineDiscard|TestGenerationEngineRollback|TestGenerationEngineFinalize|TestGenerationEngineClose|TestGenerationEngineRetirement|TestGenerationEngineStreamMetrics|TestGenerationEnginePublicSurfaceIsFrozen)$" -count=1'
-bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test -race ./pkg/server -run "^(TestGenerationEngineDiscardConcurrentWaitersReplayThenForget|TestGenerationEngineRetirementResidualRetainsOwnerAndStreamMetrics|TestGenerationEngineCloseCancelsActiveRetirementAttemptBeforeRetry|TestGenerationEngineCloseDeadlineReturnsWithoutWaitingForever|TestGenerationEngineCloseRetryClosesPendingRetirementsThenFactory|TestGenerationEngineConcurrentCloseAndReleaseReplaysFirstCleanupError)$" -count=1'
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test -race ./pkg/server -run "^(TestGenerationEngineDiscardConcurrentWaitersReplayThenForget|TestGenerationEngineDiscardOldWaiterReadsFirstAttemptWhenSecondFinishesFirst|TestGenerationEngineRetirementResidualRetainsOwnerAndStreamMetrics|TestGenerationEngineCloseCancelsActiveRetirementAttemptBeforeRetry|TestGenerationEngineCloseDeadlineReturnsWithoutWaitingForever|TestGenerationEngineCloseRetryClosesPendingRetirementsThenFactory|TestGenerationEngineConcurrentCloseAndReleaseReplaysFirstCleanupError)$" -count=1'
 ```
 
 Expected: PASS; no retained owner is forgotten, metrics clear only after terminal retirement, and a close deadline returns without CPU polling or unbounded waits.
@@ -810,11 +894,12 @@ git commit -m "fix(server): retry generation engine teardown"
 
 - Modify: `pkg/server/server.go`
 - Modify: `pkg/server/server_test.go`
+- Create: `pkg/server/task_residual_chain_test.go`
 
 **Interfaces:**
 
-- Consumes: Task 5 retryable `GenerationEngine.Close`; existing `shutdownAttempt(ctx) (error, bool)` phase state machine.
-- Produces: engine-phase retry that preserves earlier terminal shutdown errors and never reaches resolver/journal/observability while generation ownership is incomplete.
+- Consumes: Task 5 retryable `GenerationEngine.Close`; Task 3's real generation-task quiescer; Contract C Task 2's exact compiler-injected `TaskOwner`; existing `shutdownAttempt(ctx) (error, bool)` phase state machine.
+- Produces: engine-phase retry that preserves the exact owner carrier and earlier terminal shutdown errors and never reaches resolver/journal/observability while generation ownership is incomplete.
 
 - [ ] **Step 1: Add RED shutdown phase tests**
 
@@ -851,13 +936,23 @@ Have the fake engine return the captured `residualErr` on its first call, then n
 
 Add `TestServerShutdownEngineResidualPreservesEarlierTerminalDrainError`: make HTTP drain return a terminal marker while route drain times out once, then on the next attempt make engine return a residual once. Final successful shutdown must still satisfy `errors.Is(final, terminalDrainErr)` and must not contain the transient context deadline.
 
+Create `pkg/server/task_residual_chain_test.go` with `TestServerShutdownPreservesExactGenerationOwnerThroughRealChain`. This must exercise one real lifecycle chain, not stitch together separately fabricated wrapper errors:
+
+1. Starting from reviewed Contract C Task 2, construct a real `WorkerCompilerFactory`, real `GenerationEngine`, and `Server` pointing at that engine. Prepare and activate a snapshot with one `error-log-logger` binding. Its `StartObservingWithTasks(*runtime.TaskOwner)` admission is the real transfer from the compiler-created task owner into `PreparedGeneration.tasks`; do not call `TaskRegistry.Go`, `PreparedGeneration.Close`, `factory.Close`, or a fake engine directly from the test.
+2. Use an inline `httptest.Server` ClickHouse endpoint whose handler signals `deliveryStarted` and blocks on `releaseDelivery`. Configure batch size one, emit one application log after activation, and wait for `deliveryStarted`. The observer task's cancellation path now blocks in the real logger processor shutdown, deterministically leaving the admitted `/observer` task active.
+3. Build the exact expected owner independently from the known activated `plugin.InstanceKey`: use the returned publication attempt, system scope/provenance, and canonical config digest, encode fields exactly as Contract C freezes, hash with SHA-256, and form `plugin/error-log-logger/<64-lower-hex>/observer`. Do not copy the owner from the returned residual and do not use a regexp or suffix-only assertion.
+4. Call `server.Shutdown(shortCtx)`. Assert one `*runtime.TaskResidualError` is reachable, its defensive `Residuals()` equals exactly `[]runtime.TaskResidual{{Owner: wantOwner}}`, the same chain satisfies `errors.Is` for `context.DeadlineExceeded` and `compiler.ErrPreparedGenerationCleanupIncomplete`, and the rendered server wrapper contains only its stable operation label rather than owner/config data. `pkg/compiler/worker_factory_close_test.go` separately asserts the compiler-private `errWorkerGenerationCleanupFailed` on this same real generation-task quiescer.
+5. Assert the prepared record, factory membership, engine owner/metrics, resolver, journal, and observability owners remain intact after attempt one. Close `releaseDelivery`; call `server.Shutdown(context.Background())` again; assert terminal completion, exactly-once plugin/resource release, and no residual owner. Later server calls replay only terminal errors.
+
+Keep all synchronization channel-driven. If the existing ClickHouse fixture cannot expose handler entry without importing integration-only code, keep the minimal `httptest.Server` inline. Do not add a production test hook or exported owner/status API.
+
 - [ ] **Step 2: Run RED**
 
 ```bash
-bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test ./pkg/server -run "^(TestServerShutdownEngineResidualRetriesBeforeLaterOwners|TestServerShutdownEngineResidualPreservesEarlierTerminalDrainError)$" -count=1'
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test ./pkg/server -run "^(TestServerShutdownEngineResidualRetriesBeforeLaterOwners|TestServerShutdownEngineResidualPreservesEarlierTerminalDrainError|TestServerShutdownPreservesExactGenerationOwnerThroughRealChain)$" -count=1'
 ```
 
-Expected: FAIL because current code sets `engineClosed = true` and advances to the resolver phase after any engine error.
+Expected: FAIL because the current real quiescer loses the structured owner carrier and current server code sets `engineClosed = true` and advances to the resolver phase after any engine error.
 
 - [ ] **Step 3: Gate engine phase advancement on terminal close**
 
@@ -886,7 +981,7 @@ The actual code must not classify a nil error as a context error. Keep resolver,
 
 ```bash
 bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test ./pkg/server -run "^TestServer(Shutdown|RepeatedShutdown)" -count=1'
-bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test -race ./pkg/server -run "^(TestServerShutdownEngineResidualRetriesBeforeLaterOwners|TestServerShutdownEngineResidualPreservesEarlierTerminalDrainError|TestServerRepeatedShutdownReplaysFirstTerminalCleanupError|TestServerShutdownTimeoutDoesNotReleaseEngineResolverOrJournal)$" -count=1'
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test -race ./pkg/server -run "^(TestServerShutdownEngineResidualRetriesBeforeLaterOwners|TestServerShutdownEngineResidualPreservesEarlierTerminalDrainError|TestServerShutdownPreservesExactGenerationOwnerThroughRealChain|TestServerRepeatedShutdownReplaysFirstTerminalCleanupError|TestServerShutdownTimeoutDoesNotReleaseEngineResolverOrJournal)$" -count=1'
 ```
 
 Expected: PASS; later owners remain untouched until engine terminal completion, earlier terminal errors survive, and transient residual deadlines do not poison terminal replay.
@@ -894,7 +989,7 @@ Expected: PASS; later owners remain untouched until engine terminal completion, 
 - [ ] **Step 5: Review and commit**
 
 ```bash
-git add pkg/server/server.go pkg/server/server_test.go
+git add pkg/server/server.go pkg/server/server_test.go pkg/server/task_residual_chain_test.go
 git commit -m "fix(server): retry incomplete shutdown phases"
 ```
 
@@ -981,21 +1076,27 @@ Add:
 - `TestResourceRegistryCloseResidualRetainsEntriesAndRetries`: first Close reports the structured residual; second Close after task release succeeds; acquisitions are rejected from the first Close onward.
 - `TestResourceRegistryCloseRetriesResidualButNotTerminalReleaseError`: one entry has a retryable residual and another returns `errCloseFixture` terminally. The terminal callback runs once; after retry, final registry error still satisfies `errors.Is(err, errCloseFixture)`.
 - `TestResourceRegistryConcurrentFinalReleaseAndCloseSerializeAttempts`: release and registry Close race; there is one active finalizer call, one reference decrement, and one terminal resource release.
+- `TestResourceEntryConcurrentJoinersReplayResidualBeforeLaterRetry`: start the final lease `Release` and, after the entry is in `closing`, start `ResourceRegistry.Close` so both calls join the same blocked `resourceCloseAttempt`. Return one structured residual and assert both callers receive that exact attempt result while the finalizer count is one. Only a third call made after attempt one publishes may create attempt two; after task exit it succeeds, makes the finalizer count two, closes the terminal barrier, and releases the resource exactly once.
 - Update `TestResourceRegistryLeaseConcurrentReleaseRunsCloseOnce`: terminal errors replay; retryable residual attempts may run again only on a later call after the first attempt ends.
 
 - [ ] **Step 4: Run RED**
 
 ```bash
-bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test ./pkg/runtime -run "^(TestResourceRegistryFinalReleaseResidualRetainsResourceForRetry|TestResourceRegistryAcquireWaitsForClosingIdentityBeforeReplacement|TestResourceRegistryAcquireClosingIdentityHonorsContext|TestResourceRegistryAcquireClosingIdentityReturnsRegistryClosed|TestResourceRegistryCloseResidualRetainsEntriesAndRetries|TestResourceRegistryCloseRetriesResidualButNotTerminalReleaseError|TestResourceRegistryConcurrentFinalReleaseAndCloseSerializeAttempts)$" -count=1'
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test ./pkg/runtime -run "^(TestResourceRegistryFinalReleaseResidualRetainsResourceForRetry|TestResourceRegistryAcquireWaitsForClosingIdentityBeforeReplacement|TestResourceRegistryAcquireClosingIdentityHonorsContext|TestResourceRegistryAcquireClosingIdentityReturnsRegistryClosed|TestResourceRegistryCloseResidualRetainsEntriesAndRetries|TestResourceRegistryCloseRetriesResidualButNotTerminalReleaseError|TestResourceRegistryConcurrentFinalReleaseAndCloseSerializeAttempts|TestResourceEntryConcurrentJoinersReplayResidualBeforeLaterRetry)$" -count=1'
 ```
 
 Expected: FAIL because entry/lease/registry `sync.Once` values cache the first timeout and the key is detached before terminal close.
 
 - [ ] **Step 5: Implement explicit accepting, closing, and terminal entry state**
 
-Replace entry `closeOnce` with serialized close-attempt fields and a terminal barrier:
+Replace entry `closeOnce` with one exact per-attempt pointer and a terminal barrier:
 
 ```go
+type resourceCloseAttempt struct {
+	done chan struct{}
+	err  error
+}
+
 type resourceEntry struct {
 	ready         chan struct{}
 	value         any
@@ -1004,16 +1105,15 @@ type resourceEntry struct {
 	creatorCanceled bool
 	references    int
 
-	closeMu          sync.Mutex
-	closeInProgress  bool
-	closeAttemptDone chan struct{}
-	terminal         bool
-	terminalErr      error
-	terminalDone     chan struct{}
+	closeMu      sync.Mutex
+	closeAttempt *resourceCloseAttempt
+	terminal     bool
+	terminalErr  error
+	terminalDone chan struct{}
 }
 ```
 
-Initialize `terminalDone` with every entry. A close attempt waits for `ready`, serializes with another attempt, and calls `closeResource(ctx)` outside all registry/entry locks. If the returned error contains `*TaskResidualError` or is a context error, publish it as an incomplete attempt and leave `terminalDone` open. Otherwise cache it as terminal, close `terminalDone`, and never call the finalizer again.
+Initialize `terminalDone` with every entry. A close leader installs `attempt := &resourceCloseAttempt{done: make(chan struct{})}`, waits for `ready`, and calls `closeResource(ctx)` outside all registry/entry locks. A joiner captures that exact pointer, waits on `attempt.done` or its own context, and returns only the captured `attempt.err`; it never loops inside the same call and never follows a newer `entry.closeAttempt`. If the leader's returned error contains `*TaskResidualError` or is a context error, publish it to `attempt.err`, close `attempt.done`, clear the active pointer only if it is still that attempt, and leave `terminalDone` open. Only a later new Release/Close call may install the retry attempt. Otherwise cache the result as terminal, close `terminalDone`, and never call the finalizer again.
 
 Replace `closing map[*resourceEntry]struct{}` with `closing map[ResourceKey]*resourceEntry`; add one registry terminal-close channel initialized by `NewResourceRegistry`. The final reference moves the exact entry from `entries[key]` to `closing[key]` before invoking close. It removes the closing mapping only after entry terminal completion.
 
@@ -1054,7 +1154,7 @@ type ResourceLease[T any] struct {
 }
 ```
 
-On the first `Release`, decrement this lease's reference once and record whether it became the final reference. A non-final lease replays its completed release result. The final lease invokes or joins the entry close attempt; if incomplete, it retains retry authority. A later `Release` calls close again without decrementing. After entry terminal completion it caches/replays the terminal error. Preserve type-mismatch and canceled-acquisition joining of a terminal final-close error.
+On the first `Release`, decrement this lease's reference once and record whether it became the final reference. A non-final lease replays its completed release result. The final lease invokes or joins at most one entry close attempt per public `Release` call; if incomplete, it retains retry authority. It must not hold `ResourceLease.mu` while running or waiting for the entry finalizer. A later new `Release` calls close again without decrementing. After entry terminal completion it caches/replays the terminal error. Preserve type-mismatch and canceled-acquisition joining of a terminal final-close error.
 
 - [ ] **Step 7: Make Acquire wait behind closing and make registry Close retry**
 
@@ -1073,13 +1173,13 @@ case <-ctx.Done():
 
 After `entry.terminalDone`, loop; normal reserve creates the replacement only if registry remains open.
 
-Registry `Close` sets `closed = true` and closes `closedDone` once, preventing and waking acquisitions. Every attempt snapshots both accepting and closing entries, attempts each terminal close once, retains incomplete entries, and accumulates independent terminal errors once. It becomes terminal only after every entry is terminal, then caches `errors.Join(terminalErrors...)`. A later Close retries only incomplete entries. `Len` continues to count accepting entries only.
+Registry `Close` sets `closed = true` and closes `closedDone` once, preventing and waking acquisitions. A concurrent caller captures the exact active `resourceRegistryCloseAttempt`, waits on that attempt's `done` or its own context, and returns the captured attempt result without launching a retry. Every leader attempt snapshots both accepting and closing entries, attempts each terminal close once, retains incomplete entries, and accumulates independent terminal errors once. It becomes terminal only after every entry is terminal, then caches `errors.Join(terminalErrors...)`. Only a later new Close after an incomplete attempt has published retries incomplete entries. `Len` continues to count accepting entries only.
 
 - [ ] **Step 8: Run GREEN, existing registry suite, and race**
 
 ```bash
 bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test ./pkg/runtime -run "^TestResourceRegistry" -count=1'
-bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test -race ./pkg/runtime -run "^(TestResourceRegistryConcurrentFirstAcquireHasSingleCreator|TestResourceRegistryFinalReleaseResidualRetainsResourceForRetry|TestResourceRegistryAcquireWaitsForClosingIdentityBeforeReplacement|TestResourceRegistryConcurrentFinalReleaseAndCloseSerializeAttempts|TestResourceRegistryCloseResidualRetainsEntriesAndRetries|TestResourceRegistryLeaseConcurrentReleaseRunsCloseOnce)$" -count=1'
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test -race ./pkg/runtime -run "^(TestResourceRegistryConcurrentFirstAcquireHasSingleCreator|TestResourceRegistryFinalReleaseResidualRetainsResourceForRetry|TestResourceRegistryAcquireWaitsForClosingIdentityBeforeReplacement|TestResourceRegistryConcurrentFinalReleaseAndCloseSerializeAttempts|TestResourceRegistryCloseResidualRetainsEntriesAndRetries|TestResourceEntryConcurrentJoinersReplayResidualBeforeLaterRetry|TestResourceRegistryLeaseConcurrentReleaseRunsCloseOnce)$" -count=1'
 ```
 
 Expected: PASS; no replacement overlaps a closing resource, context-bound acquisitions return, the same final lease can retry, registry close is terminal only after all entries are terminal, and terminal callbacks remain exact-once.
@@ -1105,7 +1205,7 @@ git commit -m "fix(runtime): retry shared resource final close"
 
 **Interfaces:**
 
-- Consumes: Tasks 1-7 and reviewed Contract C Task 1.
+- Consumes: Tasks 1-7 and reviewed Contract C Task 2; Task 6 is the only Task11-0 task that must wait for Contract C Task 2 because its real observer-owner chain consumes that interface.
 - Produces: one reviewed retryable teardown substrate for generation/shared-resource work; request plan remains independently unblocked after Contract C Task 1.
 
 - [ ] **Step 1: Run focused normal suites**
@@ -1160,15 +1260,15 @@ Expected:
 Review the exact Task11-0 commit range for:
 
 1. `errors.Is` context preservation and defensive residual copies.
-2. No release after any failed quiescer.
+2. Strict phase order: no finalizer after a failed quiescer and no one-shot release before every resource finalizer is terminal; transient finalizer errors are never cached.
 3. Prepared generation retains every resource and its factory map entry across a residual.
 4. Factory registry close occurs only after every live generation is terminal.
 5. `generationOwner.closeDone` means terminal close.
-6. Pending discard and retirement state survive incomplete attempts.
+6. Pending discard, resource entry close, and registry close joiners each read the exact attempt pointer they captured; later attempts cannot rewrite an old waiter's result.
 7. Engine Close has no unbounded wait after caller cancellation and no retry spin.
 8. Server cannot reach resolver/journal/observability before terminal engine close.
 9. A closing resource key admits neither a reference nor a replacement factory.
-10. Reference decrement, release callback, owner detach, metric unregister, and terminal barrier close are each exact-once.
+10. Reference decrement, terminal-finalizer recording, one-shot release callback, owner detach, metric unregister, and terminal barrier close are each exact-once.
 11. Existing raw cleanup details remain redacted at compiler safe-marker boundaries.
 12. No product file outside the Task 1-7 responsibility table changed.
 
@@ -1182,10 +1282,12 @@ Do not create an empty commit. If the independent review requires a cross-task c
 git add pkg/runtime/task_registry.go pkg/runtime/task_registry_test.go \
   pkg/runtime/resource_registry.go pkg/runtime/resource_registry_test.go \
   pkg/compiler/cleanup.go pkg/compiler/cleanup_test.go \
+  pkg/compiler/http_cluster.go pkg/compiler/http_cluster_test.go \
   pkg/compiler/prepared_generation.go pkg/compiler/worker_factory.go \
   pkg/compiler/worker_factory_close_test.go pkg/server/generation_owner.go \
   pkg/server/generation_owner_test.go pkg/server/generation_engine.go \
-  pkg/server/generation_engine_test.go pkg/server/server.go pkg/server/server_test.go
+  pkg/server/generation_engine_test.go pkg/server/server.go pkg/server/server_test.go \
+  pkg/server/task_residual_chain_test.go
 git commit -m "fix(runtime): complete retryable teardown integration"
 ```
 
@@ -1196,7 +1298,8 @@ Return:
 - integrated head SHA and ordered Task11-0 commits;
 - exact normal/race/lint/build/diff commands and results;
 - final `TaskResidualError` method set;
-- RED evidence that first-attempt cleanup released resources on the old base and GREEN evidence that retry retained then released them once;
+- RED evidence that the old base crossed quiesce/resource-finalization barriers and lost the carrier, plus GREEN evidence that retry retained then finalized/released each owner once;
+- exact owner from the real transfer -> `PreparedGeneration` -> factory -> engine -> server residual-chain test;
 - closing-key acquisition behavior and its context/registry-close results;
 - confirmation that generation/background work now has both prerequisites: Contract C Task 2 and Task11-0;
 - confirmation that request/connection work remains eligible after Contract C Task 1, subject to its documented AI shared-file ordering;
@@ -1206,12 +1309,12 @@ Return:
 
 ## Self-Review Checklist
 
-- **Spec coverage:** Tasks 1-7 cover structured residual propagation, retryable cleanup, PreparedGeneration, WorkerCompilerFactory, generationOwner, GenerationEngine discard/retirement/Close, server shutdown phase retry, and ResourceRegistry final-close retry.
+- **Spec coverage:** Tasks 1-7 cover structured residual propagation, three-phase retryable cleanup, PreparedGeneration, WorkerCompilerFactory, generationOwner, GenerationEngine discard/retirement/Close, the real transfer-to-server owner carrier, server shutdown phase retry, and ResourceRegistry final-close retry.
 - **Ordering:** Generation/background/shared-resource work waits for Contract C Task 2 plus Task11-0. Request/connection work may proceed after Contract C Task 1.
 - **API restraint:** `TaskRegistry.Stop` is unchanged; `TaskResidualError` has only stable `Error`, `Unwrap`, and defensive `Residuals`; no completion/status channel is exposed.
-- **Barrier correctness:** every failed quiescer blocks all release callbacks; terminal releases are attempted once and replay their errors.
+- **Barrier correctness:** every failed quiescer blocks finalization and release; incomplete resource finalization blocks one-shot release and retries; terminal finalization errors are retained once; releases are attempted once and replay their errors.
 - **Ownership correctness:** a residual retains prepared fields, factory membership, engine records, metrics, registry closing entries, and the actual resource.
-- **Retry correctness:** retries are triggered by later close/discard/shutdown calls or existing internal barriers, never a busy loop.
+- **Retry correctness:** retries are triggered by later close/discard/shutdown calls or existing internal barriers, never a busy loop; waiters replay only the immutable attempt they joined.
 - **Error correctness:** context causes survive `errors.Is`, residual data survives `errors.As`, unrelated terminal errors remain joined, and compiler raw cleanup details stay redacted.
 - **Acquisition correctness:** a key in closing state blocks same-key replacement, honors acquisition context, and returns registry-closed when terminal registry shutdown wins.
 - **Verification:** every behavior task has named RED/GREEN/race commands, scoped lint/build/diff gates, exact files, review checks, and a local commit subject.

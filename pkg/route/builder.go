@@ -1192,31 +1192,16 @@ func (a *trafficSplitRuntimeAcquirer) Acquire(
 	if upstream == nil {
 		return nil, fmt.Errorf("traffic-split upstream is nil")
 	}
-	resourceUpstream, err := trafficSplitResourceUpstream(upstream, targets, priorities)
-	if err != nil {
-		return nil, err
-	}
-	transportOption, err := a.builder.buildTransportOption(a.route, resourceUpstream)
-	if err != nil {
-		return nil, err
-	}
 	if a.builder.clusterRegistry == nil {
 		a.builder.clusterRegistry = pxy.NewClusterRegistry(pxy.NopClusterObserver{})
 		a.builder.ownsClusterRegistry = true
 	}
-	clusterConfig, err := buildClusterConfigWithTransport(
-		a.route,
-		resourceUpstream,
-		targets,
-		transportOption,
-		&a.builder.staticConfig.Config,
-		priorities,
+	clusterConfig, err := planTrafficSplitClusterWithSSLResolver(
+		a.route, upstream, targets, priorities, a.builder.getSSL, &a.builder.staticConfig.Config,
 	)
 	if err != nil {
 		return nil, err
 	}
-	clusterConfig.Retries = max(upstream.Retries, 0)
-	clusterConfig.RetriesConfigured = upstream.RetriesConfigured()
 	lease, err := a.builder.clusterRegistry.Acquire(clusterConfig)
 	if err != nil {
 		return nil, fmt.Errorf("acquire traffic-split upstream cluster: %w", err)
@@ -1227,60 +1212,6 @@ func (a *trafficSplitRuntimeAcquirer) Acquire(
 		LoadBalancer: cluster.LoadBalancer(),
 		RoundTripper: cluster.RoundTripper(),
 	}, nil
-}
-
-func trafficSplitResourceUpstream(
-	upstream *traffic_split.Upstream,
-	targets map[string]int,
-	priorities map[string]int,
-) (resource.Upstream, error) {
-	scheme := upstream.Scheme
-	if scheme == "" {
-		scheme = "http"
-	}
-	result := resource.Upstream{
-		Type:         upstream.Type,
-		Scheme:       scheme,
-		TLS:          upstream.TLS,
-		Timeout:      upstream.Timeout,
-		Checks:       upstream.Checks,
-		HashOn:       upstream.HashOn,
-		Key:          upstream.Key,
-		PassHost:     upstream.PassHost,
-		UpstreamHost: upstream.UpstreamHost,
-		Retries:      upstream.Retries,
-		Nodes:        make([]resource.Node, 0, len(targets)),
-	}
-	addresses := slices.Sorted(maps.Keys(targets))
-	for _, target := range addresses {
-		parsed, err := url.Parse(target)
-		if err != nil {
-			return resource.Upstream{}, fmt.Errorf("parse traffic-split target %q: %w", target, err)
-		}
-		if parsed.Hostname() == "" {
-			return resource.Upstream{}, fmt.Errorf("traffic-split target %q has no host", target)
-		}
-		port := parsed.Port()
-		if port == "" {
-			switch strings.ToLower(parsed.Scheme) {
-			case "https", "grpcs":
-				port = "443"
-			default:
-				port = "80"
-			}
-		}
-		numericPort, err := strconv.Atoi(port)
-		if err != nil || numericPort < 1 || numericPort > 65535 {
-			return resource.Upstream{}, fmt.Errorf("traffic-split target %q has invalid port", target)
-		}
-		result.Nodes = append(result.Nodes, resource.Node{
-			Host:     parsed.Hostname(),
-			Port:     numericPort,
-			Weight:   targets[target],
-			Priority: priorities[target],
-		})
-	}
-	return result, nil
 }
 
 type pluginEnabledCheckerSetter interface {

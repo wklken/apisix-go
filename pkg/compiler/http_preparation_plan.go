@@ -15,6 +15,7 @@ import (
 type httpPreparationPlan struct {
 	resources         httpResourceSet
 	plugins           *routepkg.HTTPPluginPlan
+	enabledFactories  []string
 	publicAPIRegistry *public_api.Registry
 }
 
@@ -63,8 +64,13 @@ func (prepared *PreparedGeneration) planHTTPPreparation(
 	if err != nil {
 		return nil, err
 	}
+	enabledFactories := slices.Clone(prepared.effective.Config.Plugins)
+	if resources.dynamicPlugins {
+		enabledFactories = slices.Clone(resources.enabledPlugins)
+	}
 	return &httpPreparationPlan{
 		resources: resources, plugins: plannedPlugins,
+		enabledFactories:  enabledFactories,
 		publicAPIRegistry: public_api.NewRegistry(),
 	}, nil
 }

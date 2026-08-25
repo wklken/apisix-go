@@ -4,11 +4,14 @@ import (
 	"fmt"
 	"maps"
 	"net"
+	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 
 	appconfig "github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/plugin"
+	"github.com/wklken/apisix-go/pkg/plugin/traffic_split"
 	"github.com/wklken/apisix-go/pkg/proxy"
 	"github.com/wklken/apisix-go/pkg/resource"
 )
@@ -21,6 +24,110 @@ type UpstreamPlan struct {
 	Transport     proxy.TransportOption
 	Targets       map[string]int
 	Priorities    map[string]int
+}
+
+// PlanTrafficSplitCluster derives the same canonical cluster identity as the
+// ordinary upstream path while leaving acquisition to the compiler.
+func PlanTrafficSplitCluster(
+	routeResource resource.Route,
+	upstream *traffic_split.Upstream,
+	targets map[string]int,
+	priorities map[string]int,
+	ssls map[string]resource.SSL,
+	staticConfig *appconfig.Config,
+) (proxy.ClusterConfig, error) {
+	return planTrafficSplitClusterWithSSLResolver(
+		routeResource, upstream, targets, priorities, plannedSSLResolver(ssls), staticConfig,
+	)
+}
+
+func planTrafficSplitClusterWithSSLResolver(
+	routeResource resource.Route,
+	upstream *traffic_split.Upstream,
+	targets map[string]int,
+	priorities map[string]int,
+	resolveSSL sslResolver,
+	staticConfig *appconfig.Config,
+) (proxy.ClusterConfig, error) {
+	if upstream == nil {
+		return proxy.ClusterConfig{}, fmt.Errorf("traffic-split upstream is nil")
+	}
+	resourceUpstream, err := trafficSplitResourceUpstream(
+		upstream,
+		maps.Clone(targets),
+		maps.Clone(priorities),
+	)
+	if err != nil {
+		return proxy.ClusterConfig{}, err
+	}
+	transport, err := buildTransportOptionWithSSLResolver(
+		cloneCompileRoute(routeResource),
+		resourceUpstream,
+		resolveSSL,
+		staticConfig,
+	)
+	if err != nil {
+		return proxy.ClusterConfig{}, err
+	}
+	config, err := buildClusterConfigWithTransport(
+		cloneCompileRoute(routeResource), resourceUpstream,
+		maps.Clone(targets), transport, staticConfig, maps.Clone(priorities),
+	)
+	if err != nil {
+		return proxy.ClusterConfig{}, err
+	}
+	config.Retries = max(upstream.Retries, 0)
+	config.RetriesConfigured = upstream.RetriesConfigured()
+	config.Targets = maps.Clone(config.Targets)
+	config.Priorities = maps.Clone(config.Priorities)
+	config.Checks = cloneCompileAnyMap(config.Checks)
+	return config, nil
+}
+
+func trafficSplitResourceUpstream(
+	upstream *traffic_split.Upstream,
+	targets map[string]int,
+	priorities map[string]int,
+) (resource.Upstream, error) {
+	scheme := upstream.Scheme
+	if scheme == "" {
+		scheme = "http"
+	}
+	result := resource.Upstream{
+		Type: upstream.Type, Scheme: scheme, TLS: upstream.TLS,
+		Timeout: upstream.Timeout, Checks: upstream.Checks,
+		HashOn: upstream.HashOn, Key: upstream.Key,
+		PassHost: upstream.PassHost, UpstreamHost: upstream.UpstreamHost,
+		Retries: upstream.Retries,
+		Nodes:   make([]resource.Node, 0, len(targets)),
+	}
+	for _, target := range slices.Sorted(maps.Keys(targets)) {
+		parsed, err := url.Parse(target)
+		if err != nil {
+			return resource.Upstream{}, fmt.Errorf("parse traffic-split target %q: %w", target, err)
+		}
+		if parsed.Hostname() == "" {
+			return resource.Upstream{}, fmt.Errorf("traffic-split target %q has no host", target)
+		}
+		port := parsed.Port()
+		if port == "" {
+			switch strings.ToLower(parsed.Scheme) {
+			case "https", "grpcs":
+				port = "443"
+			default:
+				port = "80"
+			}
+		}
+		numericPort, err := strconv.Atoi(port)
+		if err != nil || numericPort < 1 || numericPort > 65535 {
+			return resource.Upstream{}, fmt.Errorf("traffic-split target %q has invalid port", target)
+		}
+		result.Nodes = append(result.Nodes, resource.Node{
+			Host: parsed.Hostname(), Port: numericPort,
+			Weight: targets[target], Priority: priorities[target],
+		})
+	}
+	return result, nil
 }
 
 // PlanRouteUpstream resolves and validates one route's ordinary upstream

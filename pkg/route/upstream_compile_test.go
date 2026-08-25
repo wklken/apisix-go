@@ -5,6 +5,7 @@ import (
 
 	appconfig "github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/plugin"
+	"github.com/wklken/apisix-go/pkg/plugin/traffic_split"
 	"github.com/wklken/apisix-go/pkg/resource"
 )
 
@@ -60,6 +61,47 @@ func TestPlanRouteUpstreamPrecedenceAndValidation(t *testing.T) {
 		if _, err := PlanRouteUpstream(resource.Route{ID: "bad", Upstream: upstream}, resource.Service{}, nil, nil, static); err == nil {
 			t.Fatalf("invalid upstream %d error = nil", index)
 		}
+	}
+}
+
+func TestPlanTrafficSplitClusterMatchesCanonicalOrdinaryConfig(t *testing.T) {
+	static := &testEffectiveConfig().Config
+	routeResource := resource.Route{ID: "r1"}
+	ordinary, err := PlanRouteUpstream(routeResource, resource.Service{}, nil, nil, static)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ordinary.ClusterConfig != nil {
+		t.Fatal("empty ordinary upstream unexpectedly created a cluster")
+	}
+
+	ordinary, err = PlanRouteUpstream(resource.Route{ID: "r1", Upstream: resource.Upstream{
+		Scheme: "http", Nodes: []resource.Node{{Host: "127.0.0.1", Port: 9080, Weight: 1}},
+	}}, resource.Service{}, nil, nil, static)
+	if err != nil {
+		t.Fatal(err)
+	}
+	traffic, err := PlanTrafficSplitCluster(
+		resource.Route{ID: "r1"},
+		&traffic_split.Upstream{Scheme: "http"},
+		map[string]int{"http://127.0.0.1:9080": 1},
+		map[string]int{"http://127.0.0.1:9080": 0},
+		nil,
+		static,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ordinaryKey, err := ordinary.ClusterConfig.Key()
+	if err != nil {
+		t.Fatal(err)
+	}
+	trafficKey, err := traffic.Key()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ordinaryKey != trafficKey {
+		t.Fatalf("ordinary/traffic cluster key = %x/%x", ordinaryKey, trafficKey)
 	}
 }
 

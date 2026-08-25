@@ -1087,3 +1087,30 @@ func performRequestWithHandler(t *testing.T, p *Plugin, next http.Handler) {
 		t.Fatalf("response code = %d, want %d", rr.Code, http.StatusNoContent)
 	}
 }
+
+type testRuntimeAcquirer struct{}
+
+func (testRuntimeAcquirer) Acquire(
+	*Upstream,
+	map[string]int,
+	map[string]int,
+) (*Runtime, error) {
+	return &Runtime{}, nil
+}
+
+func TestPostInitDropsPreparationAuthorities(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	p.SetRuntimeAcquirer(testRuntimeAcquirer{})
+	p.SetUpstreamResolver(func(string) (resource.Upstream, error) {
+		return resource.Upstream{}, nil
+	})
+	if err := p.PostInit(); err != nil {
+		t.Fatal(err)
+	}
+	if p.runtimeAcquirer != nil || p.upstreamResolver != nil || p.runtimeAcquirerSet {
+		t.Fatal("PostInit retained preparation-only runtime authority")
+	}
+}

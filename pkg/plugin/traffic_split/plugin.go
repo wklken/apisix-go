@@ -357,6 +357,11 @@ func (p *Plugin) SetUpstreamResolver(resolver ResourceUpstreamResolver) {
 }
 
 func (p *Plugin) PostInit() error {
+	defer func() {
+		p.runtimeAcquirer = nil
+		p.runtimeAcquirerSet = false
+		p.upstreamResolver = nil
+	}()
 	if p.config.MaxBodySize <= 0 {
 		p.config.MaxBodySize = base.DefaultRequestBodyMaxBytes
 	}

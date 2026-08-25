@@ -1608,6 +1608,8 @@ baseline and are not reported as Task 7 passes.
 ### Task 8: Compile an Immutable Stream Router Snapshot
 
 > **Execution amendment:** Before the joint cutover, land only additive detached router/snapshot/compiler work. Do not remove `Router.Reload`, change listener/runtime installation ownership, or route the legacy event path through the new compiler. Those destructive steps execute with Task 9 in the single joint cutover.
+>
+> **Executable child plan:** [`2026-08-25-immutable-task8-stream-snapshot.md`](2026-08-25-immutable-task8-stream-snapshot.md) supersedes the provisional interfaces below where it requires compiler-materialized protocol bindings, a frozen detached router, dynamic `/plugins` stream-domain taxonomy, and exact legacy service/upstream merge semantics.
 
 **Files:**
 

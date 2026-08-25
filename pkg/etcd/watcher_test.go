@@ -97,6 +97,28 @@ func TestDesiredBatchFromEtcdWatchCarriesRevisionDeleteAndDomains(t *testing.T) 
 	}
 }
 
+func TestDesiredBatchFromEtcdWatchMarksPluginsForHTTPAndStream(t *testing.T) {
+	batch, err := desiredBatchFromEtcdWatch("/apisix", clientv3.WatchResponse{
+		Header: etcdserverpb.ResponseHeader{ClusterId: 0xabc, Revision: 72},
+		Events: []*clientv3.Event{{
+			Type: mvccpb.PUT,
+			Kv: &mvccpb.KeyValue{
+				Key: []byte("/apisix/plugins"), Value: []byte(`[]`), ModRevision: 72,
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(batch.Mutations) != 1 ||
+		batch.Mutations[0].Key != (generation.ResourceKey{Kind: "plugins", ID: "plugins"}) ||
+		!slices.Equal(batch.RequiredDomains, []generation.Domain{
+			generation.DomainHTTP, generation.DomainStream,
+		}) {
+		t.Fatalf("plugins batch = %+v", batch)
+	}
+}
+
 func TestDesiredBatchFromEtcdWatchUsesLastEventRevisionNotDelayedHeader(t *testing.T) {
 	watchPut := func(modRevision int64, id string) clientv3.WatchResponse {
 		return clientv3.WatchResponse{

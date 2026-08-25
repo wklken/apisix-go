@@ -178,7 +178,15 @@ func (s *responseExecution) selectRequestResponseMode(r *http.Request) error {
 			continue
 		}
 		selector := binding.Plugin.(base.RequestResponseModeSelector)
-		mode := selector.SelectResponseMode(r)
+		mode, err := guardValue(binding.factoryKey, PhaseBodyFilter, func() (base.RequestResponseMode, error) {
+			return selector.SelectResponseMode(r), nil
+		})
+		if panicErr, ok := err.(*PanicError); ok {
+			panic(panicErr)
+		}
+		if err != nil {
+			return err
+		}
 		if mode != base.RequestResponseModeBounded && mode != base.RequestResponseModeStreaming {
 			return fmt.Errorf("factory %q selected unsupported request response mode %d", binding.factoryKey, mode)
 		}
@@ -579,19 +587,37 @@ func (s *responseExecution) runTransforms(
 ) error {
 	for _, phase := range []ResponsePhaseMask{ResponsePhaseHeader, ResponsePhaseBufferedBody} {
 		for _, binding := range s.plan {
-			if binding.Phases&phase == 0 || !eligible(binding.Plugin, source) {
+			if binding.Phases&phase == 0 {
 				continue
 			}
 			switch phase {
 			case ResponsePhaseHeader:
-				if err := binding.Plugin.(base.HeaderFilterPlugin).RunHeaderFilter(s.request, state); err != nil {
+				if !eligible(binding, source, PhaseHeaderFilter) {
+					continue
+				}
+				err := guardCall(binding.factoryKey, PhaseHeaderFilter, func() error {
+					return binding.Plugin.(base.HeaderFilterPlugin).RunHeaderFilter(s.request, state)
+				})
+				if panicErr, ok := err.(*PanicError); ok {
+					panic(panicErr)
+				}
+				if err != nil {
 					return err
 				}
 			case ResponsePhaseBufferedBody:
-				if err := binding.Plugin.(base.BufferedBodyFilterPlugin).RunBufferedBodyFilter(
-					s.request,
-					state,
-				); err != nil {
+				if !eligible(binding, source, PhaseBodyFilter) {
+					continue
+				}
+				err := guardCall(binding.factoryKey, PhaseBodyFilter, func() error {
+					return binding.Plugin.(base.BufferedBodyFilterPlugin).RunBufferedBodyFilter(
+						s.request,
+						state,
+					)
+				})
+				if panicErr, ok := err.(*PanicError); ok {
+					panic(panicErr)
+				}
+				if err != nil {
 					return err
 				}
 			}
@@ -605,13 +631,19 @@ func (s *responseExecution) runStores(
 	source apisixctx.ResponseSource,
 ) {
 	for _, binding := range s.plan {
-		if binding.Phases&ResponsePhaseFinalStore == 0 || !eligible(binding.Plugin, source) {
+		if binding.Phases&ResponsePhaseFinalStore == 0 || !eligible(binding, source, PhaseBodyFilter) {
 			continue
 		}
-		if err := binding.Plugin.(base.FinalResponseStorePlugin).RunFinalResponseStore(
-			s.request,
-			base.CloneResponseState(state),
-		); err != nil {
+		err := guardCall(binding.factoryKey, PhaseBodyFilter, func() error {
+			return binding.Plugin.(base.FinalResponseStorePlugin).RunFinalResponseStore(
+				s.request,
+				base.CloneResponseState(state),
+			)
+		})
+		if panicErr, ok := err.(*PanicError); ok {
+			panic(panicErr)
+		}
+		if err != nil {
 			logger.Errorf(
 				"final response store failed factory=%q resource=%s/%q: %v",
 				sanitizeDiagnostic(binding.factoryKey),
@@ -623,12 +655,18 @@ func (s *responseExecution) runStores(
 	}
 }
 
-func eligible(plugin Plugin, source apisixctx.ResponseSource) bool {
+func eligible(binding ResponseBinding, source apisixctx.ResponseSource, phase Phase) bool {
 	if source == apisixctx.ResponseSourceCacheHit {
 		return false
 	}
-	if checker, ok := plugin.(base.ResponseEligibility); ok {
-		return checker.AppliesToResponseSource(source)
+	if checker, ok := binding.Plugin.(base.ResponseEligibility); ok {
+		eligible, err := guardValue(binding.factoryKey, phase, func() (bool, error) {
+			return checker.AppliesToResponseSource(source), nil
+		})
+		if panicErr, ok := err.(*PanicError); ok {
+			panic(panicErr)
+		}
+		return eligible
 	}
 	return source == apisixctx.ResponseSourceUpstream
 }

@@ -37,6 +37,7 @@ type responseOwnerTestPlugin struct {
 type dualModeResponseTestPlugin struct {
 	base.BasePlugin
 	mode          base.RequestResponseMode
+	selectMode    func(*http.Request) base.RequestResponseMode
 	bufferedCalls atomic.Int32
 	streamCalls   atomic.Int32
 }
@@ -54,7 +55,10 @@ func (*dualModeResponseTestPlugin) Config() any {
 	return responseModeTestConfig{modes: base.ResponseModeBounded | base.ResponseModeStreaming}
 }
 func (*dualModeResponseTestPlugin) Handler(next http.Handler) http.Handler { return next }
-func (p *dualModeResponseTestPlugin) SelectResponseMode(*http.Request) base.RequestResponseMode {
+func (p *dualModeResponseTestPlugin) SelectResponseMode(r *http.Request) base.RequestResponseMode {
+	if p.selectMode != nil {
+		return p.selectMode(r)
+	}
 	return p.mode
 }
 

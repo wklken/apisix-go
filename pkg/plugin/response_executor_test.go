@@ -155,6 +155,111 @@ func upstreamTerminal(status int, body []byte) http.Handler {
 	})
 }
 
+func TestBufferedPluginPanicCarriesBindingIdentity(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		factory string
+		phase   Phase
+		plugin  func(any) Plugin
+	}{
+		{
+			name:    "mode selector",
+			factory: "ai-rate-limiting",
+			phase:   PhaseBodyFilter,
+			plugin: func(panicValue any) Plugin {
+				plugin := newDualModeResponseTestPlugin(base.RequestResponseModeBounded)
+				plugin.Name = "non-canonical-mode-selector"
+				plugin.selectMode = func(*http.Request) base.RequestResponseMode { panic(panicValue) }
+				return plugin
+			},
+		},
+		{
+			name:    "response eligibility",
+			factory: "echo",
+			phase:   PhaseHeaderFilter,
+			plugin: func(panicValue any) Plugin {
+				plugin := newResponseTestPlugin(
+					"non-canonical-eligibility",
+					1,
+					responseTestConfig{stage: "none", header: true},
+				)
+				plugin.eligible = func(apisixctx.ResponseSource) bool { panic(panicValue) }
+				return plugin
+			},
+		},
+		{
+			name:    "header filter",
+			factory: "echo",
+			phase:   PhaseHeaderFilter,
+			plugin: func(panicValue any) Plugin {
+				plugin := newResponseTestPlugin(
+					"non-canonical-header",
+					1,
+					responseTestConfig{stage: "none", header: true},
+				)
+				plugin.header = func(*http.Request, *base.ResponseState) error { panic(panicValue) }
+				return plugin
+			},
+		},
+		{
+			name:    "buffered body filter",
+			factory: "body-transformer",
+			phase:   PhaseBodyFilter,
+			plugin: func(panicValue any) Plugin {
+				plugin := newResponseTestPlugin(
+					"non-canonical-body",
+					1,
+					responseTestConfig{stage: "none", body: true},
+				)
+				plugin.body = func(*http.Request, *base.ResponseState) error { panic(panicValue) }
+				return plugin
+			},
+		},
+		{
+			name:    "final response store",
+			factory: "proxy-cache",
+			phase:   PhaseBodyFilter,
+			plugin: func(panicValue any) Plugin {
+				plugin := newResponseTestPlugin("non-canonical-store", 1, nil)
+				plugin.store = func(*http.Request, base.ResponseState) error { panic(panicValue) }
+				return plugin
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			panicValue := &struct{ callback string }{callback: test.name}
+			plugin := test.plugin(panicValue)
+			binding := checkedResponseBinding(t, test.factory, plugin, ScopeRoute, "route")
+			response := newResponseCommitRecorder()
+			recovered := recoverCallbackPanic(t, func() {
+				serveBufferedTestPipeline(
+					t,
+					[]Binding{binding},
+					nil,
+					newBufferedTestExecutor(t, []Binding{binding}),
+					upstreamTerminal(http.StatusOK, []byte("uncommitted")),
+					response,
+				)
+			})
+			panicErr, ok := recovered.(*PanicError)
+			if !ok {
+				t.Fatalf("panic = %T, want *PanicError", recovered)
+			}
+			if panicErr.Factory != test.factory || panicErr.Phase != test.phase ||
+				panicErr.Value != panicValue || len(panicErr.Stack) == 0 {
+				t.Fatalf("panic metadata = %#v", panicErr)
+			}
+			if len(response.statuses) != 0 || response.body.Len() != 0 {
+				t.Fatalf(
+					"response committed after plugin panic: statuses=%v body=%q",
+					response.statuses,
+					response.body.String(),
+				)
+			}
+		})
+	}
+}
+
 func TestSwitchingWriterTransparentModePreservesEveryUnderlyingOptionalInterfaceAndBytes(t *testing.T) {
 	executor := newBufferedTestExecutor(t, nil)
 	t.Run("minimal header only", func(t *testing.T) {
@@ -654,6 +759,7 @@ func TestFinalStoreErrorsContinueAndCommitUnchangedResponse(t *testing.T) {
 
 func TestFinalStorePanicDoesNotClaimOrAttemptRollback(t *testing.T) {
 	order := make([]string, 0, 3)
+	panicValue := &struct{ callback string }{callback: "store"}
 	first := newResponseTestPlugin("global-store", 300, nil)
 	first.store = func(*http.Request, base.ResponseState) error {
 		order = append(order, "first-side-effect")
@@ -662,7 +768,7 @@ func TestFinalStorePanicDoesNotClaimOrAttemptRollback(t *testing.T) {
 	panicking := newResponseTestPlugin("panicking-store", 200, nil)
 	panicking.store = func(*http.Request, base.ResponseState) error {
 		order = append(order, "panic")
-		panic("store panic")
+		panic(panicValue)
 	}
 	last := newResponseTestPlugin("last-store", 100, nil)
 	last.store = func(*http.Request, base.ResponseState) error {
@@ -674,16 +780,26 @@ func TestFinalStorePanicDoesNotClaimOrAttemptRollback(t *testing.T) {
 		checkedResponseBinding(t, "proxy-cache", panicking, ScopeRoute, "route"),
 		checkedResponseBinding(t, "graphql-proxy-cache", last, ScopeRoute, "route"),
 	}
-	response := httptest.NewRecorder()
+	response := newResponseCommitRecorder()
 	defer func() {
-		if got := recover(); got != "store panic" {
-			t.Fatalf("panic = %#v, want store panic", got)
+		recovered := recover()
+		got, ok := recovered.(*PanicError)
+		if !ok {
+			t.Fatalf("panic = %T, want *PanicError", recovered)
+		}
+		if got.Factory != "proxy-cache" || got.Phase != PhaseBodyFilter ||
+			got.Value != panicValue || len(got.Stack) == 0 {
+			t.Fatalf("panic metadata = %#v", got)
 		}
 		if !reflect.DeepEqual(order, []string{"first-side-effect", "panic"}) {
 			t.Fatalf("store order = %v", order)
 		}
-		if response.Body.Len() != 0 {
-			t.Fatalf("response committed after store panic: %q", response.Body.String())
+		if len(response.statuses) != 0 || response.body.Len() != 0 {
+			t.Fatalf(
+				"response committed after store panic: statuses=%v body=%q",
+				response.statuses,
+				response.body.String(),
+			)
 		}
 	}()
 	serveBufferedTestPipeline(
@@ -694,6 +810,43 @@ func TestFinalStorePanicDoesNotClaimOrAttemptRollback(t *testing.T) {
 		upstreamTerminal(http.StatusOK, []byte("uncommitted")),
 		response,
 	)
+}
+
+func TestFinalResponseCommitterPanicRemainsRaw(t *testing.T) {
+	plugin := newResponseTestPlugin("body-transformer", 1, responseTestConfig{stage: "none", body: true})
+	binding := checkedResponseBinding(t, "body-transformer", plugin, ScopeRoute, "route")
+	panicValue := &struct{ owner string }{owner: "core committer"}
+	executor := newBufferedTestExecutor(t, []Binding{binding}).WithFinalResponseCommitter(
+		finalResponseCommitterFunc(func(
+			http.ResponseWriter,
+			*http.Request,
+			*base.ResponseState,
+			BaseCommit,
+		) {
+			panic(panicValue)
+		}),
+	)
+	response := newResponseCommitRecorder()
+	recovered := recoverCallbackPanic(t, func() {
+		serveBufferedTestPipeline(
+			t,
+			[]Binding{binding},
+			nil,
+			executor,
+			upstreamTerminal(http.StatusOK, []byte("uncommitted")),
+			response,
+		)
+	})
+	if recovered != panicValue {
+		t.Fatalf("panic = %#v, want original core panic %#v", recovered, panicValue)
+	}
+	if len(response.statuses) != 0 || response.body.Len() != 0 {
+		t.Fatalf(
+			"response committed after committer panic: statuses=%v body=%q",
+			response.statuses,
+			response.body.String(),
+		)
+	}
 }
 
 func TestFinalCommitterBaseCommitPreservesPrivate103AndRunsOnce(t *testing.T) {

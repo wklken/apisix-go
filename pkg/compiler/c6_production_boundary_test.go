@@ -11,29 +11,20 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"testing"
 )
 
 const (
 	c6ModulePath     = "github.com/wklken/apisix-go"
-	c6CompilerPath   = c6ModulePath + "/pkg/compiler"
-	c6RuntimePath    = c6ModulePath + "/pkg/runtime"
 	c6GenerationPath = c6ModulePath + "/pkg/generation"
 
 	c6ApplyTicketOwner = "pkg/store/journal_apply.go"
-	c6StoreDirectory   = "pkg/store"
 )
 
 var c6ProductionRoots = []string{
 	"cmd",
-	"pkg/config",
-	"pkg/etcd",
-	"pkg/store",
-	"pkg/server",
-	"pkg/route",
-	"pkg/stream",
+	"pkg",
 }
 
 type c6BoundaryAudit struct {
@@ -49,11 +40,15 @@ type c6TicketConstruction struct {
 }
 
 var c6AllowedTicketConstructions = map[c6TicketConstruction]int{
-	{c6ApplyTicketOwner, "(*Store).ApplyDesired", "zero-value composite"}:   3,
-	{c6ApplyTicketOwner, "(*Store).ApplyDesired", "composite literal"}:      1,
-	{c6ApplyTicketOwner, "(*Store).ApplyDesired", "zero-value declaration"}: 1,
-	{c6ApplyTicketOwner, "loadCursorTx", "zero-value composite"}:            3,
-	{c6ApplyTicketOwner, "applyTicketFromWire", "composite literal"}:        1,
+	{c6ApplyTicketOwner, "(*Store).ApplyDesired", "zero-value composite"}:                         3,
+	{c6ApplyTicketOwner, "(*Store).ApplyDesired", "composite literal"}:                            1,
+	{c6ApplyTicketOwner, "(*Store).ApplyDesired", "zero-value declaration"}:                       1,
+	{c6ApplyTicketOwner, "loadCursorTx", "zero-value composite"}:                                  3,
+	{c6ApplyTicketOwner, "applyTicketFromWire", "composite literal"}:                              1,
+	{c6ApplyTicketOwner, "decodeCursorRecord", "aggregate zero-value composite"}:                  10,
+	{c6ApplyTicketOwner, "loadCursorRecordForTicketTx", "aggregate zero-value composite"}:         4,
+	{"pkg/store/journal_publish.go", "loadStagedPublicationTx", "aggregate zero-value composite"}: 3,
+	{"pkg/store/journal_publish.go", "decodeStagedPublication", "aggregate zero-value composite"}: 7,
 }
 
 func TestC6ProductionBoundaryGuardRejectsForbiddenFixture(t *testing.T) {
@@ -89,6 +84,96 @@ func allocateTicket() { _ = new(gen.ApplyTicket) }
 		"pkg/route/ticket_aggregate.go": `package route
 import gen "github.com/wklken/apisix-go/pkg/generation"
 func forgeFromAggregate() gen.ApplyTicket { return [1]gen.ApplyTicket{}[0] }
+`,
+		"pkg/route/ticket_elided_aggregate.go": `package route
+import gen "github.com/wklken/apisix-go/pkg/generation"
+func forgeFromElidedAggregate() gen.ApplyTicket { return [1]gen.ApplyTicket{{}}[0] }
+`,
+		"pkg/route/ticket_zero_aggregate.go": `package route
+import gen "github.com/wklken/apisix-go/pkg/generation"
+func forgeFromZeroAggregate() gen.ApplyTicket {
+	var tickets [1]gen.ApplyTicket
+	return tickets[0]
+}
+`,
+		"pkg/route/ticket_zero_holder.go": `package route
+import gen "github.com/wklken/apisix-go/pkg/generation"
+type ticketHolder struct { Ticket gen.ApplyTicket }
+func forgeFromZeroHolder() gen.ApplyTicket {
+	var holder ticketHolder
+	return holder.Ticket
+}
+`,
+		"pkg/route/ticket_generic.go": `package route
+import gen "github.com/wklken/apisix-go/pkg/generation"
+func zero[T any]() (value T) { return }
+func forgeFromGeneric() gen.ApplyTicket { return zero[gen.ApplyTicket]() }
+`,
+		"pkg/route/ticket_inferred_generic.go": `package route
+import gen "github.com/wklken/apisix-go/pkg/generation"
+func zeroLike[T any](_ T) (value T) { return }
+func forgeFromInferredGeneric(ticket gen.ApplyTicket) gen.ApplyTicket { return zeroLike(ticket) }
+`,
+		"pkg/route/ticket_inferred_generic_pointer.go": `package route
+import gen "github.com/wklken/apisix-go/pkg/generation"
+func zeroPointer[T any](_ T) *T { return new(T) }
+func forgeFromInferredPointer(ticket gen.ApplyTicket) gen.ApplyTicket { return *zeroPointer(ticket) }
+`,
+		"pkg/route/ticket_inferred_generic_slice.go": `package route
+import gen "github.com/wklken/apisix-go/pkg/generation"
+func zeroSlice[T any](_ T) []T { return make([]T, 1) }
+func forgeFromInferredSlice(ticket gen.ApplyTicket) gen.ApplyTicket { return zeroSlice(ticket)[0] }
+`,
+		"pkg/route/ticket_inferred_generic_transport.go": `package route
+import gen "github.com/wklken/apisix-go/pkg/generation"
+func identity[T any](value T) T { return value }
+func genericTransport(ticket gen.ApplyTicket) gen.ApplyTicket { return identity(ticket) }
+`,
+		"pkg/route/ticket_generic_type.go": `package route
+import gen "github.com/wklken/apisix-go/pkg/generation"
+type ticketBox[T any] struct { Value T }
+func genericTypeTransport(box ticketBox[gen.ApplyTicket]) gen.ApplyTicket { return box.Value }
+`,
+		"pkg/helper/generic.go": `package helper
+func Identity[T any](value T) T { return value }
+`,
+		"pkg/server/ticket_cross_package_generic.go": `package server
+import gen "github.com/wklken/apisix-go/pkg/generation"
+import "github.com/wklken/apisix-go/pkg/helper"
+func crossPackageGeneric(ticket gen.ApplyTicket) gen.ApplyTicket { return helper.Identity(ticket) }
+`,
+		"pkg/route/ticket_generic_containers.go": `package route
+import gen "github.com/wklken/apisix-go/pkg/generation"
+type containerBox[T any] struct { Value T }
+type genericContainers struct {
+	Slice containerBox[[]gen.ApplyTicket]
+	Map containerBox[map[string]gen.ApplyTicket]
+	Channel containerBox[chan gen.ApplyTicket]
+	Function containerBox[func() gen.ApplyTicket]
+}
+`,
+		"pkg/route/ticket_generic_interface.go": `package route
+import gen "github.com/wklken/apisix-go/pkg/generation"
+type ticketSource interface { Next() gen.ApplyTicket }
+type sourceBox[T any] struct { Value T }
+type genericInterface struct { Source sourceBox[ticketSource] }
+type nestedSourceBox[T ticketSource] struct { Value sourceBox[T] }
+`,
+		"pkg/route/ticket_holder_construction.go": `package route
+import gen "github.com/wklken/apisix-go/pkg/generation"
+type constructedTicketHolder struct { Ticket gen.ApplyTicket }
+func (holder constructedTicketHolder) ticket() gen.ApplyTicket { return holder.Ticket }
+func forgeFromHolderLiteral() gen.ApplyTicket { holder := constructedTicketHolder{}; return holder.Ticket }
+func forgeFromHolderNew() gen.ApplyTicket { return new(constructedTicketHolder).Ticket }
+func forgeFromHolderMethod() gen.ApplyTicket { return constructedTicketHolder{}.ticket() }
+`,
+		"pkg/route/ticket_alias.go": `package route
+import gen "github.com/wklken/apisix-go/pkg/generation"
+type TicketAlias = gen.ApplyTicket
+`,
+		"pkg/route/ticket_dot_import.go": `package route
+import . "github.com/wklken/apisix-go/pkg/generation"
+type DotTicketAlias = ApplyTicket
 `,
 		"pkg/store/journal_apply.go": `package store
 import gen "github.com/wklken/apisix-go/pkg/generation"
@@ -131,11 +216,24 @@ func unrelated(factory localFactory) { factory.PrepareGeneration() }
 		"pkg/route/ticket_literal_named_result.go",
 		"pkg/route/ticket_conversion.go",
 		"pkg/route/ticket_new.go",
-		"pkg/route/ticket_aggregate.go", "ApplyTicket authority outside pkg/store",
+		"pkg/route/ticket_aggregate.go",
+		"pkg/route/ticket_elided_aggregate.go",
+		"pkg/route/ticket_zero_aggregate.go", "aggregate zero-value declaration",
+		"pkg/route/ticket_zero_holder.go",
+		"pkg/route/ticket_generic.go", "ApplyTicket authority type use",
+		"pkg/route/ticket_inferred_generic.go", "generic type argument",
+		"pkg/route/ticket_inferred_generic_pointer.go",
+		"pkg/route/ticket_inferred_generic_slice.go",
+		"pkg/route/ticket_inferred_generic_transport.go",
+		"pkg/route/ticket_generic_type.go",
+		"pkg/server/ticket_cross_package_generic.go",
+		"pkg/route/ticket_generic_containers.go",
+		"pkg/route/ticket_generic_interface.go",
+		"pkg/route/ticket_holder_construction.go", "aggregate zero-value composite", "aggregate new",
+		"pkg/route/ticket_alias.go",
+		"pkg/route/ticket_dot_import.go",
 		"pkg/store/journal_apply.go", "forgedInJournalFile",
 		"pkg/store/ticket_aggregate.go", "aggregate extraction",
-		"pkg/server/compiler_import.go", c6CompilerPath,
-		"pkg/stream/runtime_import.go", c6RuntimePath,
 	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("diagnostics = %q, want substring %q", joined, want)
@@ -155,10 +253,29 @@ func transport(ticket gen.ApplyTicket) gen.ApplyTicket { return ticket }
 `,
 		"pkg/store/pointers.go": `package store
 import gen "github.com/wklken/apisix-go/pkg/generation"
+func identityPointer[T any](value T) T { return value }
+type pointerEnvelope[T any] struct { Value T }
+type pointerTicketSource interface { Next() *gen.ApplyTicket }
 func pointerTypes() {
 	_ = new(*gen.ApplyTicket)
 	_ = (*gen.ApplyTicket)(nil)
+	_ = identityPointer((*gen.ApplyTicket)(nil))
+	_ = pointerEnvelope[*gen.ApplyTicket]{}
+	_ = pointerEnvelope[pointerTicketSource]{}
 }
+`,
+		"pkg/server/transport.go": `package server
+import gen "github.com/wklken/apisix-go/pkg/generation"
+type envelope struct { Ticket gen.ApplyTicket }
+func transport(ticket gen.ApplyTicket) gen.ApplyTicket { return ticket }
+`,
+		"pkg/server/compiler_import.go": `package server
+import build "github.com/wklken/apisix-go/pkg/compiler"
+var factory *build.WorkerCompilerFactory
+`,
+		"pkg/stream/runtime_import.go": `package stream
+import lifecycle "github.com/wklken/apisix-go/pkg/runtime"
+var registry *lifecycle.ResourceRegistry
 `,
 	}
 	fset := token.NewFileSet()
@@ -288,75 +405,30 @@ func auditC6ProductionBoundary(fset *token.FileSet, files map[string]*ast.File) 
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
-	boundaryImporter := newC6BoundaryImporter()
+	boundaryImporter := newC6BoundaryImporter(fset, packages)
 	for _, key := range keys {
 		pkgFiles := packages[key]
-		audit.diagnostics = append(
-			audit.diagnostics,
-			c6ForbiddenImportViolations(fset, pkgFiles)...,
-		)
-		c6AuditTypedPackage(fset, boundaryImporter, pkgFiles, &audit)
+		c6AuditTypedPackage(fset, boundaryImporter.check(pkgFiles), pkgFiles, &audit)
 	}
 	sort.Strings(audit.diagnostics)
 	return audit
 }
 
-func c6ForbiddenImportViolations(fset *token.FileSet, pkgFiles *c6PackageFiles) []string {
-	filePaths := make([]string, 0, len(pkgFiles.files))
-	for filePath := range pkgFiles.files {
-		filePaths = append(filePaths, filePath)
-	}
-	sort.Strings(filePaths)
-	var diagnostics []string
-	for _, filePath := range filePaths {
-		file := pkgFiles.files[filePath]
-		for _, declaration := range file.Imports {
-			importPath, err := strconv.Unquote(declaration.Path.Value)
-			if err != nil {
-				continue
-			}
-			switch importPath {
-			case c6CompilerPath, c6RuntimePath:
-				diagnostics = append(diagnostics, fmt.Sprintf(
-					"%s: forbidden pre-Task-9 production import %s",
-					fset.Position(declaration.Pos()), importPath,
-				))
-			}
-		}
-	}
-	return diagnostics
-}
-
 func c6AuditTypedPackage(
 	fset *token.FileSet,
-	boundaryImporter types.Importer,
+	info *types.Info,
 	pkgFiles *c6PackageFiles,
 	audit *c6BoundaryAudit,
 ) {
 	filePaths := make([]string, 0, len(pkgFiles.files))
-	parsed := make([]*ast.File, 0, len(pkgFiles.files))
 	for filePath := range pkgFiles.files {
 		filePaths = append(filePaths, filePath)
 	}
 	sort.Strings(filePaths)
-	for _, filePath := range filePaths {
-		parsed = append(parsed, pkgFiles.files[filePath])
-	}
-	info := &types.Info{
-		Types: make(map[ast.Expr]types.TypeAndValue),
-		Uses:  make(map[*ast.Ident]types.Object),
-	}
-	config := types.Config{
-		Importer: boundaryImporter,
-		Error:    func(error) {},
-	}
-	_, _ = config.Check(c6ModulePath+"/"+pkgFiles.directory, fset, parsed, info)
 
 	for _, filePath := range filePaths {
 		file := pkgFiles.files[filePath]
-		if pkgFiles.directory != c6StoreDirectory {
-			c6AuditForeignTicketTypeUses(fset, info, filePath, file, audit)
-		}
+		c6AuditTicketTypeAuthority(fset, info, filePath, file, audit)
 		for _, declaration := range file.Decls {
 			switch declaration := declaration.(type) {
 			case *ast.GenDecl:
@@ -371,14 +443,37 @@ func c6AuditTypedPackage(
 	}
 }
 
-func c6AuditForeignTicketTypeUses(
+func c6AuditTicketTypeAuthority(
 	fset *token.FileSet,
 	info *types.Info,
 	filePath string,
 	file *ast.File,
 	audit *c6BoundaryAudit,
 ) {
+	parents := make(map[ast.Node]ast.Node)
+	var stack []ast.Node
 	ast.Inspect(file, func(node ast.Node) bool {
+		if node == nil {
+			stack = stack[:len(stack)-1]
+			return true
+		}
+		if len(stack) > 0 {
+			parents[node] = stack[len(stack)-1]
+		}
+		stack = append(stack, node)
+		return true
+	})
+
+	ast.Inspect(file, func(node ast.Node) bool {
+		if identifier, ok := node.(*ast.Ident); ok {
+			if instance, instantiated := info.Instances[identifier]; instantiated &&
+				c6InstanceUsesTicketValue(instance) {
+				audit.diagnostics = append(audit.diagnostics, fmt.Sprintf(
+					"%s: forbidden generation.ApplyTicket generic type argument",
+					fset.Position(identifier.Pos()),
+				))
+			}
+		}
 		var expression ast.Expr
 		switch node := node.(type) {
 		case *ast.Ident:
@@ -389,15 +484,53 @@ func c6AuditForeignTicketTypeUses(
 			return true
 		}
 		typeAndValue, ok := info.Types[expression]
-		if !ok || !typeAndValue.IsType() || !isC6ApplyTicketValueType(typeAndValue.Type) {
+		if !ok || !typeAndValue.IsType() || !isC6ApplyTicketValueType(typeAndValue.Type) ||
+			c6TicketTypeUseIsTransport(expression, parents, info) {
 			return true
 		}
 		audit.diagnostics = append(audit.diagnostics, fmt.Sprintf(
-			"%s: forbidden generation.ApplyTicket authority outside pkg/store",
+			"%s: forbidden generation.ApplyTicket authority type use",
 			fset.Position(expression.Pos()),
 		))
 		return true
 	})
+}
+
+func c6TicketTypeUseIsTransport(
+	expression ast.Expr,
+	parents map[ast.Node]ast.Node,
+	info *types.Info,
+) bool {
+	for node := ast.Node(expression); node != nil; node = parents[node] {
+		switch parent := parents[node].(type) {
+		case *ast.StarExpr:
+			return true
+		case *ast.Field:
+			fieldList, ok := parents[parent].(*ast.FieldList)
+			if !ok {
+				continue
+			}
+			switch owner := parents[fieldList].(type) {
+			case *ast.StructType:
+				return owner.Fields == fieldList
+			case *ast.FuncType:
+				return owner.Params == fieldList || owner.Results == fieldList
+			}
+		case *ast.CompositeLit:
+			if isC6ApplyTicketValueType(info.TypeOf(parent)) {
+				return true
+			}
+		case *ast.CallExpr:
+			if _, constructed := c6ApplyTicketConstructionCall(info, parent); constructed {
+				return true
+			}
+		case *ast.ValueSpec:
+			if len(parent.Values) == 0 && isC6ApplyTicketValueType(info.TypeOf(parent.Type)) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func c6AuditConstructionExpressions(
@@ -418,12 +551,18 @@ func c6AuditConstructionExpressions(
 				fset, info, filePath, function+".<literal>", expression.Type.Results, audit,
 			)
 		case *ast.CompositeLit:
-			if isC6ApplyTicketValueType(info.TypeOf(expression.Type)) {
+			valueType := info.TypeOf(expression)
+			if isC6ApplyTicketValueType(valueType) {
 				form := "composite literal"
 				if len(expression.Elts) == 0 {
 					form = "zero-value composite"
 				}
 				c6RecordTicketConstruction(fset, filePath, function, form, expression.Pos(), audit)
+			} else if c6TypeContainsApplyTicketValue(valueType) &&
+				c6CompositeLeavesTicketZero(valueType, expression) {
+				c6RecordTicketConstruction(
+					fset, filePath, function, "aggregate zero-value composite", expression.Pos(), audit,
+				)
 			}
 		case *ast.CallExpr:
 			if form, constructed := c6ApplyTicketConstructionCall(info, expression); constructed {
@@ -547,6 +686,12 @@ func c6TypeContainsApplyTicketValue(value types.Type) bool {
 				return true
 			}
 		}
+	case *types.Tuple:
+		for variable := range value.Variables() {
+			if c6TypeContainsApplyTicketValue(variable.Type()) {
+				return true
+			}
+		}
 	}
 	return false
 }
@@ -565,12 +710,16 @@ func c6AuditZeroValueDeclarations(
 	for _, specification := range declaration.Specs {
 		value, ok := specification.(*ast.ValueSpec)
 		if !ok || value.Type == nil || len(value.Values) != 0 ||
-			!isC6ApplyTicketValueType(info.TypeOf(value.Type)) {
+			!c6TypeContainsApplyTicketValue(info.TypeOf(value.Type)) {
 			continue
+		}
+		form := "aggregate zero-value declaration"
+		if isC6ApplyTicketValueType(info.TypeOf(value.Type)) {
+			form = "zero-value declaration"
 		}
 		for _, name := range value.Names {
 			c6RecordTicketConstruction(
-				fset, filePath, function, "zero-value declaration", name.Pos(), audit,
+				fset, filePath, function, form, name.Pos(), audit,
 			)
 		}
 	}
@@ -588,11 +737,15 @@ func c6AuditNamedResults(
 		return
 	}
 	for _, result := range results.List {
-		if len(result.Names) == 0 || !isC6ApplyTicketValueType(info.TypeOf(result.Type)) {
+		if len(result.Names) == 0 || !c6TypeContainsApplyTicketValue(info.TypeOf(result.Type)) {
 			continue
 		}
+		form := "aggregate named result"
+		if isC6ApplyTicketValueType(info.TypeOf(result.Type)) {
+			form = "named result"
+		}
 		for _, name := range result.Names {
-			c6RecordTicketConstruction(fset, filePath, function, "named result", name.Pos(), audit)
+			c6RecordTicketConstruction(fset, filePath, function, form, name.Pos(), audit)
 		}
 	}
 }
@@ -606,8 +759,95 @@ func c6ApplyTicketConstructionCall(info *types.Info, call *ast.CallExpr) (string
 		return "", false
 	}
 	builtin, ok := info.Uses[identifier].(*types.Builtin)
-	return "new", ok && builtin.Name() == "new" &&
-		isC6ApplyTicketValueType(info.TypeOf(call.Args[0]))
+	if !ok || builtin.Name() != "new" {
+		return "", false
+	}
+	argumentType := info.TypeOf(call.Args[0])
+	if isC6ApplyTicketValueType(argumentType) {
+		return "new", true
+	}
+	return "aggregate new", c6TypeContainsApplyTicketValue(argumentType)
+}
+
+func c6InstanceUsesTicketValue(instance types.Instance) bool {
+	for argument := range instance.TypeArgs.Types() {
+		if c6GenericTypeArgumentContainsTicket(argument, make(map[types.Type]struct{})) {
+			return true
+		}
+	}
+	return false
+}
+
+func c6GenericTypeArgumentContainsTicket(value types.Type, seen map[types.Type]struct{}) bool {
+	if value == nil {
+		return false
+	}
+	value = types.Unalias(value)
+	if isC6ApplyTicketValueType(value) {
+		return true
+	}
+	if _, visited := seen[value]; visited {
+		return false
+	}
+	seen[value] = struct{}{}
+
+	switch value := value.(type) {
+	case *types.Named:
+		for argument := range value.TypeArgs().Types() {
+			if c6GenericTypeArgumentContainsTicket(argument, seen) {
+				return true
+			}
+		}
+		return c6GenericTypeArgumentContainsTicket(value.Underlying(), seen)
+	case *types.Pointer:
+		// A pointer is transport-only at the generic boundary. Do not walk the
+		// pointed-to object graph and mistake ownership for value construction.
+		return false
+	case *types.Array:
+		return value.Len() > 0 && c6GenericTypeArgumentContainsTicket(value.Elem(), seen)
+	case *types.Slice:
+		return c6GenericTypeArgumentContainsTicket(value.Elem(), seen)
+	case *types.Map:
+		return c6GenericTypeArgumentContainsTicket(value.Key(), seen) ||
+			c6GenericTypeArgumentContainsTicket(value.Elem(), seen)
+	case *types.Chan:
+		return c6GenericTypeArgumentContainsTicket(value.Elem(), seen)
+	case *types.Struct:
+		for field := range value.Fields() {
+			if c6GenericTypeArgumentContainsTicket(field.Type(), seen) {
+				return true
+			}
+		}
+	case *types.Tuple:
+		for variable := range value.Variables() {
+			if c6GenericTypeArgumentContainsTicket(variable.Type(), seen) {
+				return true
+			}
+		}
+	case *types.Signature:
+		return c6GenericTypeArgumentContainsTicket(value.Params(), seen) ||
+			c6GenericTypeArgumentContainsTicket(value.Results(), seen)
+	case *types.Interface:
+		for method := range value.ExplicitMethods() {
+			if c6GenericTypeArgumentContainsTicket(method.Type(), seen) {
+				return true
+			}
+		}
+		for embedded := range value.EmbeddedTypes() {
+			if c6GenericTypeArgumentContainsTicket(embedded, seen) {
+				return true
+			}
+		}
+	case *types.TypeParam:
+		return c6GenericTypeArgumentContainsTicket(value.Constraint(), seen)
+	case *types.Union:
+		for term := range value.Terms() {
+			if c6GenericTypeArgumentContainsTicket(term.Type(), seen) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func c6RecordTicketConstruction(
@@ -677,22 +917,76 @@ func c6ConstructionCountsEqual(
 }
 
 type c6BoundaryImporter struct {
-	standard types.Importer
-	packages map[string]*types.Package
+	fset          *token.FileSet
+	standard      types.Importer
+	localPackages map[string]*c6PackageFiles
+	packages      map[string]*types.Package
+	infos         map[string]*types.Info
+	checking      map[string]bool
 }
 
-func newC6BoundaryImporter() *c6BoundaryImporter {
+func newC6BoundaryImporter(
+	fset *token.FileSet,
+	packageFiles map[string]*c6PackageFiles,
+) *c6BoundaryImporter {
 	boundaryImporter := &c6BoundaryImporter{
-		standard: importer.Default(),
-		packages: make(map[string]*types.Package),
+		fset:          fset,
+		standard:      importer.Default(),
+		localPackages: make(map[string]*c6PackageFiles),
+		packages:      make(map[string]*types.Package),
+		infos:         make(map[string]*types.Info),
+		checking:      make(map[string]bool),
+	}
+	for _, files := range packageFiles {
+		boundaryImporter.localPackages[c6ModulePath+"/"+files.directory] = files
 	}
 	boundaryImporter.packages[c6GenerationPath] = c6GenerationTypesPackage()
 	return boundaryImporter
 }
 
+func (boundaryImporter *c6BoundaryImporter) check(pkgFiles *c6PackageFiles) *types.Info {
+	importPath := c6ModulePath + "/" + pkgFiles.directory
+	if checked := boundaryImporter.infos[importPath]; checked != nil {
+		return checked
+	}
+	info := &types.Info{
+		Types:     make(map[ast.Expr]types.TypeAndValue),
+		Uses:      make(map[*ast.Ident]types.Object),
+		Instances: make(map[*ast.Ident]types.Instance),
+	}
+	boundaryImporter.infos[importPath] = info
+	if boundaryImporter.checking[importPath] {
+		return info
+	}
+	boundaryImporter.checking[importPath] = true
+	defer delete(boundaryImporter.checking, importPath)
+
+	filePaths := make([]string, 0, len(pkgFiles.files))
+	for filePath := range pkgFiles.files {
+		filePaths = append(filePaths, filePath)
+	}
+	sort.Strings(filePaths)
+	parsed := make([]*ast.File, 0, len(filePaths))
+	for _, filePath := range filePaths {
+		parsed = append(parsed, pkgFiles.files[filePath])
+	}
+	config := types.Config{Importer: boundaryImporter, Error: func(error) {}}
+	checked, _ := config.Check(importPath, boundaryImporter.fset, parsed, info)
+	if importPath != c6GenerationPath && checked != nil {
+		boundaryImporter.packages[importPath] = checked
+	}
+	return info
+}
+
 func (boundaryImporter *c6BoundaryImporter) Import(importPath string) (*types.Package, error) {
 	if imported := boundaryImporter.packages[importPath]; imported != nil {
 		return imported, nil
+	}
+	if local := boundaryImporter.localPackages[importPath]; local != nil {
+		boundaryImporter.check(local)
+		if imported := boundaryImporter.packages[importPath]; imported != nil {
+			return imported, nil
+		}
 	}
 	if imported, err := boundaryImporter.standard.Import(importPath); err == nil {
 		boundaryImporter.packages[importPath] = imported

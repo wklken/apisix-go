@@ -131,7 +131,7 @@ func TestWorkerCompilerFactoryPrepareRecoveryCompilesSystemRouteHTTPSnapshot(t *
 	}
 	if factory.registry.Len() != 3 || prepared.ConsumerLookup() == nil ||
 		prepared.PublicationSet().DesiredRevision != revisions.Desired || prepared.HTTP() == nil ||
-		prepared.HTTP().Revision() != revisions.HTTP {
+		prepared.HTTP().Revision() != revisions.HTTP || prepared.HTTP().TLSConfig() == nil {
 		t.Fatalf("system-route recovery returned unusable owner/resource count %d", factory.registry.Len())
 	}
 	if err := prepared.Close(context.Background()); err != nil {

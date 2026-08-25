@@ -20,20 +20,21 @@ var errPreparedGenerationCleanupFailed = errors.New("prepared generation cleanup
 // PreparedGeneration owns one fully prepared candidate or recovered
 // generation until it is discarded or transferred to a runtime owner.
 type PreparedGeneration struct {
-	publication  generation.PublicationSet
-	attempt      PreparationAttempt
-	metadata     runtime.MetadataView
-	consumers    *runtime.ConsumerBindings
-	lookup       consumerLookupView
-	tasks        *runtime.TaskRegistry
-	effective    *config.EffectiveConfig
-	manifest     *capability.Manifest
-	registry     *runtime.ResourceRegistry
-	materializer secret.Materializer
-	cleanup      *cleanupStack
-	detach       func()
-	bindingOps   effectiveBindingOps
-	httpSnapshot *HTTPSnapshot
+	publication        generation.PublicationSet
+	attempt            PreparationAttempt
+	metadata           runtime.MetadataView
+	consumers          *runtime.ConsumerBindings
+	lookup             consumerLookupView
+	tasks              *runtime.TaskRegistry
+	effective          *config.EffectiveConfig
+	manifest           *capability.Manifest
+	registry           *runtime.ResourceRegistry
+	materializer       secret.Materializer
+	cleanup            *cleanupStack
+	detach             func()
+	bindingOps         effectiveBindingOps
+	trustedClientCAPEM []byte
+	httpSnapshot       *HTTPSnapshot
 
 	materializeMu    sync.Mutex
 	bindingOpsMu     sync.Mutex

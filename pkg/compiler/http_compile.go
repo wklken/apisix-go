@@ -6,6 +6,7 @@ import (
 
 	"github.com/wklken/apisix-go/pkg/generation"
 	routepkg "github.com/wklken/apisix-go/pkg/route"
+	"github.com/wklken/apisix-go/pkg/tlsconfig"
 )
 
 func (prepared *PreparedGeneration) compileAndAttachHTTP(ctx context.Context) error {
@@ -42,9 +43,17 @@ func (prepared *PreparedGeneration) compileAndAttachHTTP(ctx context.Context) er
 	if err != nil {
 		return err
 	}
+	tlsSnapshot, err := tlsconfig.Compile(tlsconfig.Input{
+		Config: &prepared.effective.Config, SSLs: plan.resources.ssls,
+		TrustedClientCAPEM: prepared.trustedClientCAPEM,
+	})
+	if err != nil {
+		return err
+	}
 	return prepared.attachHTTP(&HTTPSnapshot{
 		artifact:    candidate.Artifact,
 		handler:     router.Handler(),
+		tlsSnapshot: tlsSnapshot,
 		quarantined: preparedRoutes.quarantined,
 	})
 }

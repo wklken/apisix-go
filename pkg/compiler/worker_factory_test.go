@@ -125,7 +125,8 @@ func TestWorkerCompilerFactoryPrepareGenerationCompilesSystemOnlyHTTPSnapshot(t 
 		t.Fatalf("resource leases after preparation = %d, want one system binding", got)
 	}
 	if prepared.ConsumerLookup() == nil || prepared.PublicationSet().DesiredRevision != desired.Revision() ||
-		prepared.HTTP() == nil || prepared.HTTP().Revision() != desired.Revision() {
+		prepared.HTTP() == nil || prepared.HTTP().Revision() != desired.Revision() ||
+		prepared.HTTP().TLSConfig() == nil {
 		t.Fatal("system-only HTTP input did not preserve a usable compiled generation owner")
 	}
 	if err := prepared.Close(context.Background()); err != nil {
@@ -563,6 +564,24 @@ func TestWorkerCompilerFactoryPrepareGenerationConstructorValidation(t *testing.
 				t.Fatalf("constructor = %#v/%v, want nil/ErrInvalidInput", factory, err)
 			}
 		})
+	}
+}
+
+func TestNewWorkerCompilerFactoryFailsClosedOnUnreadableTrustedClientCA(t *testing.T) {
+	manifest := mustManifest(t)
+	compiler, err := New(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	effective := workerTestEffective(manifest)
+	effective.Config.Apisix.Ssl.SslTrustedCertificate = t.TempDir() + "/missing-ca.pem"
+	factory, err := NewWorkerCompilerFactory(
+		manifest,
+		effective,
+		&workerTestMaterializer{digest: compiler.schemas.catalog.Digest()},
+	)
+	if factory != nil || err == nil || !strings.Contains(err.Error(), "read trusted client CA") {
+		t.Fatalf("constructor = %#v/%v, want unreadable trusted CA failure", factory, err)
 	}
 }
 

@@ -5,22 +5,28 @@ import (
 	"crypto/sha256"
 	"crypto/tls"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 
 	"github.com/wklken/apisix-go/pkg/generation"
+	"github.com/wklken/apisix-go/pkg/tlsconfig"
 )
 
 func TestHTTPSnapshotTLSConfigReturnsClone(t *testing.T) {
 	t.Parallel()
 
+	tlsSnapshot, err := tlsconfig.CompileBase(tlsconfig.BaseInput{})
+	if err != nil {
+		t.Fatal(err)
+	}
 	snapshot := &HTTPSnapshot{
 		artifact: generation.GenerationArtifact{
 			Domain: generation.DomainHTTP, Revision: 7,
 			Digest: sha256.Sum256([]byte("http-7")),
 		},
 		handler:     http.NotFoundHandler(),
-		tlsConfig:   &tls.Config{MinVersion: tls.VersionTLS12},
+		tlsSnapshot: tlsSnapshot,
 		quarantined: []generation.ResourceKey{{Kind: "routes", ID: "bad"}},
 	}
 	first := snapshot.TLSConfig()
@@ -90,5 +96,44 @@ func TestCompileAndAttachHTTPSkipsStreamOnlyGeneration(t *testing.T) {
 	}
 	if prepared.HTTP() != nil {
 		t.Fatal("stream-only generation exposed an HTTP snapshot")
+	}
+}
+
+func TestCompileAndAttachHTTPIncludesGenerationTLSConfig(t *testing.T) {
+	snapshot := mustGenerationSnapshot(t, 19, nil, nil)
+	candidate := compileDomain(t, generation.DomainHTTP, snapshot, generation.PublishedGeneration{}, false)
+	prepared, _ := newEffectiveBindingMaterializerFixture(
+		t,
+		nil,
+		map[generation.Domain]generation.PublicationCandidate{generation.DomainHTTP: candidate},
+	)
+	t.Cleanup(func() { _ = prepared.Close(context.Background()) })
+
+	if err := prepared.compileAndAttachHTTP(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := prepared.HTTP().TLSConfig(); got == nil || got.MinVersion != tls.VersionTLS12 {
+		t.Fatalf("prepared HTTP TLS config = %#v, want owned TLS 1.2+ config", got)
+	}
+}
+
+func TestCompileAndAttachHTTPRejectsInvalidGenerationSSL(t *testing.T) {
+	snapshot := mustGenerationSnapshot(t, 20, []generation.Resource{
+		resourceValue("ssls", "broken", `{"id":"broken","sni":"api.example.test","cert":"bad","key":"bad"}`),
+	}, nil)
+	candidate := compileDomain(t, generation.DomainHTTP, snapshot, generation.PublishedGeneration{}, false)
+	prepared, _ := newEffectiveBindingMaterializerFixture(
+		t,
+		nil,
+		map[generation.Domain]generation.PublicationCandidate{generation.DomainHTTP: candidate},
+	)
+	t.Cleanup(func() { _ = prepared.Close(context.Background()) })
+
+	err := prepared.compileAndAttachHTTP(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "load certificate") {
+		t.Fatalf("compileAndAttachHTTP() error = %v, want invalid TLS material", err)
+	}
+	if prepared.HTTP() != nil {
+		t.Fatal("invalid generation SSL published an HTTP snapshot")
 	}
 }

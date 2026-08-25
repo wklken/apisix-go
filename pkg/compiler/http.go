@@ -10,6 +10,7 @@ import (
 
 	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/resource"
+	"github.com/wklken/apisix-go/pkg/tlsconfig"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -141,7 +142,7 @@ func httpResourceDecodeError(key generation.ResourceKey, err error) error {
 type HTTPSnapshot struct {
 	artifact    generation.GenerationArtifact
 	handler     http.Handler
-	tlsConfig   *tls.Config
+	tlsSnapshot *tlsconfig.Snapshot
 	quarantined []generation.ResourceKey
 	closed      atomic.Bool
 }
@@ -161,10 +162,10 @@ func (snapshot *HTTPSnapshot) Handler() http.Handler {
 }
 
 func (snapshot *HTTPSnapshot) TLSConfig() *tls.Config {
-	if snapshot == nil || snapshot.closed.Load() || snapshot.tlsConfig == nil {
+	if snapshot == nil || snapshot.closed.Load() || snapshot.tlsSnapshot == nil {
 		return nil
 	}
-	return snapshot.tlsConfig.Clone()
+	return snapshot.tlsSnapshot.TLSConfig()
 }
 
 func (snapshot *HTTPSnapshot) Quarantined() []generation.ResourceKey {

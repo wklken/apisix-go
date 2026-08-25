@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"slices"
 	"testing"
 	"time"
 
@@ -15,7 +16,39 @@ import (
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/store"
 	"github.com/wklken/apisix-go/pkg/testutil"
+	"github.com/wklken/apisix-go/pkg/tlsconfig"
 )
+
+func TestFrontendTLSBaseMatchesCanonicalCompiler(t *testing.T) {
+	tests := []*config.Config{
+		nil,
+		{Apisix: config.Apisix{EnableHttp2: true, Ssl: config.Ssl{
+			Enable: true, SslProtocols: "TLSv1.2 TLSv1.3", SslCiphers: frontendTLS12Cipher,
+			SslSessionTickets: true,
+		}}},
+		{Apisix: config.Apisix{Ssl: config.Ssl{
+			Enable: true, SslProtocols: "TLSv1.3",
+		}}},
+	}
+	for index, cfg := range tests {
+		legacy, err := buildFrontendTLSConfig(cfg)
+		if err != nil {
+			t.Fatalf("case %d legacy config: %v", index, err)
+		}
+		canonical, err := tlsconfig.CompileBase(tlsconfig.BaseInput{Config: cfg})
+		if err != nil {
+			t.Fatalf("case %d canonical config: %v", index, err)
+		}
+		compiled := canonical.TLSConfig()
+		if legacy.MinVersion != compiled.MinVersion || legacy.MaxVersion != compiled.MaxVersion ||
+			legacy.SessionTicketsDisabled != compiled.SessionTicketsDisabled ||
+			legacy.ClientAuth != compiled.ClientAuth ||
+			!slices.Equal(legacy.CipherSuites, compiled.CipherSuites) ||
+			!slices.Equal(legacy.NextProtos, compiled.NextProtos) {
+			t.Fatalf("case %d legacy base diverged: legacy=%#v canonical=%#v", index, legacy, compiled)
+		}
+	}
+}
 
 func TestFrontendTLSHandshakeUsesPerResourceClientCA(t *testing.T) {
 	events := make(chan *store.Event)

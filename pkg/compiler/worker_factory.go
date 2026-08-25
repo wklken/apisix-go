@@ -5,8 +5,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"reflect"
 	"slices"
+	"strings"
 	"sync"
 
 	"github.com/wklken/apisix-go/pkg/capability"
@@ -31,14 +33,15 @@ type workerFactoryCheckpointState struct {
 // WorkerCompilerFactory owns the immutable compiler inputs and shared runtime
 // registry used to prepare candidate generations.
 type WorkerCompilerFactory struct {
-	compiler     *Compiler
-	effective    *config.EffectiveConfig
-	materializer secret.Materializer
-	attempts     *attemptFactory
-	consumers    ConsumerPreparer
-	metadata     MetadataPreparer
-	registry     *runtime.ResourceRegistry
-	bindingOps   effectiveBindingOps
+	compiler           *Compiler
+	effective          *config.EffectiveConfig
+	materializer       secret.Materializer
+	attempts           *attemptFactory
+	consumers          ConsumerPreparer
+	metadata           MetadataPreparer
+	registry           *runtime.ResourceRegistry
+	bindingOps         effectiveBindingOps
+	trustedClientCAPEM []byte
 
 	gate   sync.RWMutex
 	closed bool
@@ -76,6 +79,10 @@ func NewWorkerCompilerFactory(
 	if err := ownedEffective.Profiles.Validate(compiler.manifest); err != nil {
 		return nil, fmt.Errorf("%w: effective config profile selection is invalid", ErrInvalidInput)
 	}
+	trustedClientCAPEM, err := readWorkerTrustedClientCA(&ownedEffective.Config)
+	if err != nil {
+		return nil, err
+	}
 	attempts, err := newAttemptFactory(compiler, materializer)
 	if err != nil {
 		return nil, err
@@ -92,8 +99,24 @@ func NewWorkerCompilerFactory(
 		compiler: compiler, effective: ownedEffective, materializer: materializer,
 		attempts: attempts, consumers: consumers, metadata: metadata,
 		registry: runtime.NewResourceRegistry(), bindingOps: defaultEffectiveBindingOps(),
-		live: make(map[secret.AttemptID]*PreparedGeneration),
+		trustedClientCAPEM: trustedClientCAPEM,
+		live:               make(map[secret.AttemptID]*PreparedGeneration),
 	}, nil
+}
+
+func readWorkerTrustedClientCA(cfg *config.Config) ([]byte, error) {
+	if cfg == nil {
+		return nil, nil
+	}
+	path := strings.TrimSpace(cfg.Apisix.Ssl.SslTrustedCertificate)
+	if path == "" {
+		return nil, nil
+	}
+	certificatePEM, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read trusted client CA %q: %w", path, err)
+	}
+	return bytes.Clone(certificatePEM), nil
 }
 
 // PrepareGeneration compiles, registers, and atomically transfers one complete
@@ -293,7 +316,8 @@ func (factory *WorkerCompilerFactory) transferRegisteredGeneration(
 		lookup: consumerLookupView{bindings: bindings}, tasks: tasks,
 		effective: factory.effective, manifest: factory.compiler.manifest,
 		registry: factory.registry, materializer: factory.materializer, cleanup: cleanup,
-		bindingOps: factory.bindingOps.withDefaults(attemptID),
+		bindingOps:         factory.bindingOps.withDefaults(attemptID),
+		trustedClientCAPEM: bytes.Clone(factory.trustedClientCAPEM),
 	}
 	if err := factory.runCheckpoint("bind-private-materializer-authority", state); err != nil {
 		return fail(err)

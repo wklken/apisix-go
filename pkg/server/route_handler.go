@@ -17,6 +17,7 @@ import (
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/observability/metrics"
+	"github.com/wklken/apisix-go/pkg/plugin"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/batch_requests"
 )
@@ -136,71 +137,128 @@ func serveRouteRequestForHTTPGeneration(
 	lifecycle.SetFinalRequest(request)
 
 	defer func() {
-		recovered := recover()
-		bodyLimitFinalized := false
-		if bodyLimitState != nil {
-			bodyLimitFinalized = bodyLimitState.writeCanonicalResponse(wrapped, request)
+		primary := recover()
+		isHandlerAbort := primary == http.ErrAbortHandler
+		pluginPanic, isPluginPanic := primary.(*plugin.PanicError)
+		isUnknownCorePanic := primary != nil && !isHandlerAbort && !isPluginPanic
+		var firstCoreCleanupPanic any
+		outcomeBeforeCleanup := capture.Outcome()
+
+		if bodyLimitState != nil && isUnknownCorePanic {
+			bodyLimitState.disableCanonicalResponse()
+		}
+		bodyLimitRejected := bodyLimitState != nil && bodyLimitState.canonicalResponsePending()
+		if bodyLimitState != nil && !isUnknownCorePanic {
+			if recovered := captureCleanupPanic(func() {
+				bodyLimitState.writeCanonicalResponse(wrapped, request)
+			}); recovered != nil {
+				firstCoreCleanupPanic = recovered
+			}
 		}
 		outcome := capture.Outcome()
-		aborted := false
-		isHandlerAbort := recovered == http.ErrAbortHandler
+		pluginPostCommitAbort := false
 
 		switch {
-		case recovered == nil:
+		case primary == nil:
 			outcome.Kind = apisixctx.RequestOutcomeCompleted
-		case bodyLimitFinalized:
-			logger.Errorf("recovered request panic after body-limit rejection: %v\n%s", recovered, debug.Stack())
-			metrics.RecordRequestPanic(metrics.RequestPanicPreCommit)
-			outcome.Kind = apisixctx.RequestOutcomeRecoveredPanic
 		case isHandlerAbort:
 			outcome.Kind = apisixctx.RequestOutcomeHandlerAbort
-		default:
-			logger.Errorf("recovered request panic: %v\n%s", recovered, debug.Stack())
+		case isPluginPanic && bodyLimitRejected:
+			logger.Errorf("recovered %s after body-limit rejection\n%s", pluginPanic, pluginPanic.Stack)
+			metrics.RecordRequestPanic(metrics.RequestPanicPlugin, metrics.RequestPanicPreCommit)
+			outcome.Kind = apisixctx.RequestOutcomeRecoveredPanic
+		case isPluginPanic:
+			logger.Errorf("recovered %s\n%s", pluginPanic, pluginPanic.Stack)
 			apisixctx.SetRequestResponseSource(request, apisixctx.ResponseSourceAPISIX)
 			if outcome.Committed || outcome.Flushed || outcome.Hijacked {
-				metrics.RecordRequestPanic(requestPanicStage(outcome))
+				metrics.RecordRequestPanic(metrics.RequestPanicPlugin, requestPanicStage(outcome))
 				outcome.Kind = apisixctx.RequestOutcomeAbortedPanic
-				aborted = true
+				pluginPostCommitAbort = true
 			} else {
-				metrics.RecordRequestPanic(metrics.RequestPanicPreCommit)
-				if !writeStableInternalError(wrapped) {
-					outcome = capture.Outcome()
-					aborted = true
-				} else {
-					outcome = capture.Outcome()
+				metrics.RecordRequestPanic(metrics.RequestPanicPlugin, metrics.RequestPanicPreCommit)
+				ok, writerPanic := writeStableInternalError(wrapped)
+				if writerPanic != nil && firstCoreCleanupPanic == nil {
+					firstCoreCleanupPanic = writerPanic
 				}
+				outcome = capture.Outcome()
 				outcome.Kind = apisixctx.RequestOutcomeRecoveredPanic
-				if aborted {
+				if !ok {
 					outcome.Kind = apisixctx.RequestOutcomeAbortedPanic
+					pluginPostCommitAbort = writerPanic == nil
 				}
 			}
+		case isUnknownCorePanic:
+			logger.Errorf("request core invariant panic: %v\n%s", primary, debug.Stack())
+			metrics.RecordRequestPanic(metrics.RequestPanicCore, requestPanicStageBeforeCommit(outcomeBeforeCleanup))
+			outcome.Kind = apisixctx.RequestOutcomeAbortedPanic
+		}
+		if firstCoreCleanupPanic != nil {
+			metrics.RecordRequestPanic(metrics.RequestPanicCore, requestPanicStageBeforeCommit(outcome))
+			outcome.Kind = apisixctx.RequestOutcomeAbortedPanic
 		}
 
 		lifecycle.Complete(outcome, time.Now())
-		for _, failure := range lifecycle.Finalize() {
+		finalization := lifecycle.FinalizeResult()
+		for _, failure := range finalization.Failures {
 			logFinalizerFailure(failure)
-			if failure.PanicValue != nil {
-				metrics.RecordRequestPanic(metrics.RequestPanicFinalizer)
+			if owner, ok := finalizerPanicOwner(failure); ok {
+				metrics.RecordRequestPanic(owner, metrics.RequestPanicFinalizer)
 			}
 		}
-		apisixctx.RecycleVars(request)
+		if recovered := captureCleanupPanic(
+			func() { apisixctx.RecycleVars(request) },
+		); recovered != nil {
+			metrics.RecordRequestPanic(metrics.RequestPanicCore, metrics.RequestPanicFinalizer)
+			if firstCoreCleanupPanic == nil {
+				firstCoreCleanupPanic = recovered
+			}
+		}
 
-		if outcome.Hijacked && (isHandlerAbort || aborted) {
+		mustAbort := primary != nil || firstCoreCleanupPanic != nil || finalization.FatalPanic != nil
+		if outcome.Hijacked && mustAbort {
 			if len(generationHijacks) != 0 {
 				for _, connection := range generationHijacks {
-					if err := connection.Close(); err != nil {
-						logger.Errorf("close hijacked request connection: %s", err)
+					closePanic := captureCleanupPanic(func() {
+						if err := connection.Close(); err != nil {
+							logger.Errorf("close hijacked request connection: %s", err)
+						}
+					})
+					if closePanic != nil {
+						metrics.RecordRequestPanic(metrics.RequestPanicCore, metrics.RequestPanicPostHijack)
+						// generationConn.Close releases only after the raw connection
+						// closes. Preserve the lease invariant when that close panics.
+						_ = captureCleanupPanic(connection.unregister)
+						_ = captureCleanupPanic(connection.release)
+						if firstCoreCleanupPanic == nil {
+							firstCoreCleanupPanic = closePanic
+						}
 					}
 				}
-			} else if err := capture.CloseHijacked(); err != nil {
-				logger.Errorf("close hijacked request connection: %s", err)
+			} else if closePanic := captureCleanupPanic(func() {
+				if err := capture.CloseHijacked(); err != nil {
+					logger.Errorf("close hijacked request connection: %s", err)
+				}
+			}); closePanic != nil {
+				metrics.RecordRequestPanic(metrics.RequestPanicCore, metrics.RequestPanicPostHijack)
+				if firstCoreCleanupPanic == nil {
+					firstCoreCleanupPanic = closePanic
+				}
 			}
 		}
-		if isHandlerAbort {
-			panic(recovered)
+		if isUnknownCorePanic {
+			panic(primary)
 		}
-		if aborted {
+		if firstCoreCleanupPanic != nil {
+			panic(firstCoreCleanupPanic)
+		}
+		if finalization.FatalPanic != nil {
+			panic(finalization.FatalPanic.PanicValue)
+		}
+		if pluginPostCommitAbort {
 			panic(http.ErrAbortHandler)
+		}
+		if isHandlerAbort {
+			panic(primary)
 		}
 	}()
 
@@ -248,21 +306,45 @@ func requestPanicStage(outcome apisixctx.ResponseOutcome) metrics.RequestPanicSt
 	return metrics.RequestPanicPostCommit
 }
 
-func writeStableInternalError(w http.ResponseWriter) (ok bool) {
-	defer func() {
-		if recover() != nil {
-			ok = false
-		}
-	}()
-
-	for key := range w.Header() {
-		w.Header().Del(key)
+func requestPanicStageBeforeCommit(outcome apisixctx.ResponseOutcome) metrics.RequestPanicStage {
+	if !outcome.Committed && !outcome.Flushed && !outcome.Hijacked {
+		return metrics.RequestPanicPreCommit
 	}
-	w.Header().Set("Content-Type", "application/json; charset=UTF-8")
-	w.WriteHeader(http.StatusInternalServerError)
-	const body = `{"message":"Internal Server Error"}`
-	written, err := w.Write([]byte(body))
-	return err == nil && written == len(body)
+	return requestPanicStage(outcome)
+}
+
+func captureCleanupPanic(call func()) (panicValue any) {
+	defer func() { panicValue = recover() }()
+	call()
+	return nil
+}
+
+func writeStableInternalError(w http.ResponseWriter) (ok bool, panicValue any) {
+	panicValue = captureCleanupPanic(func() {
+		for key := range w.Header() {
+			w.Header().Del(key)
+		}
+		w.Header().Set("Content-Type", "application/json; charset=UTF-8")
+		w.WriteHeader(http.StatusInternalServerError)
+		const body = `{"message":"Internal Server Error"}`
+		written, err := w.Write([]byte(body))
+		ok = err == nil && written == len(body)
+	})
+	return ok, panicValue
+}
+
+func finalizerPanicOwner(failure apisixctx.FinalizerFailure) (metrics.RequestPanicOwner, bool) {
+	var pluginPanic *plugin.PanicError
+	if errors.As(failure.Err, &pluginPanic) {
+		return metrics.RequestPanicPluginFinalizer, true
+	}
+	if failure.PanicValue == nil {
+		return "", false
+	}
+	if failure.Kind == apisixctx.FinalizerOwnerCoreInvariant {
+		return metrics.RequestPanicCoreFinalizer, true
+	}
+	return metrics.RequestPanicPluginFinalizer, true
 }
 
 func logFinalizerFailure(failure apisixctx.FinalizerFailure) {

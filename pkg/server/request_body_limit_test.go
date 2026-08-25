@@ -387,7 +387,7 @@ func TestConfiguredHTTPHandlerReturnsCanonicalOverflowBeforePanic(t *testing.T) 
 	}}
 	route := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		_, _ = io.ReadAll(r.Body)
-		panic("after request body overflow")
+		panic(testPluginPanic("test-plugin", "after request body overflow"))
 	})
 	routes := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		generation.Serve(t, w, r, route)
@@ -476,5 +476,21 @@ func TestRequestBodyLimitReadFromDoesNotBlockOverflowState(t *testing.T) {
 	case <-readFromDone:
 	case <-time.After(time.Second):
 		t.Fatal("ReadFrom did not finish after its blocker was released")
+	}
+}
+
+func TestRequestBodyLimitCanonicalWriterPanicClearsCanonicalizingState(t *testing.T) {
+	want := &struct{ message string }{message: "canonical writer"}
+	writer := &failingRouteResponseWriter{header: make(http.Header), panicValue: want}
+	state := &requestBodyLimitState{rejected: true}
+	request := httptest.NewRequest(http.MethodPost, "/upload", nil)
+
+	if got := recoverPanic(func() { state.writeCanonicalResponse(writer, request) }); got != want {
+		t.Fatalf("panic = %#v, want original %#v", got, want)
+	}
+	writer.panicValue = nil
+	writer.writeN = len(requestBodyLimitTestMessage)
+	if !state.writeCanonicalResponse(writer, request) {
+		t.Fatal("second canonical response was suppressed after writer panic")
 	}
 }

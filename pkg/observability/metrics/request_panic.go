@@ -4,6 +4,16 @@ import "github.com/prometheus/client_golang/prometheus"
 
 const requestPanicsMetric = "http_request_panics_total"
 
+// RequestPanicOwner identifies one bounded panic ownership boundary.
+type RequestPanicOwner string
+
+const (
+	RequestPanicPlugin          RequestPanicOwner = "plugin"
+	RequestPanicCore            RequestPanicOwner = "core"
+	RequestPanicPluginFinalizer RequestPanicOwner = "plugin_finalizer"
+	RequestPanicCoreFinalizer   RequestPanicOwner = "core_finalizer"
+)
+
 // RequestPanicStage identifies one of the bounded request panic boundaries.
 type RequestPanicStage string
 
@@ -24,9 +34,9 @@ func newRequestPanicMetrics(registry *prometheus.Registry, prefix string) *prome
 	metric := prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: prefix + requestPanicsMetric,
-			Help: "Recovered HTTP request panics by bounded stage",
+			Help: "Recovered HTTP request panics by bounded owner and stage",
 		},
-		[]string{"stage"},
+		[]string{"owner", "stage"},
 	)
 	if registry != nil {
 		registry.MustRegister(metric)
@@ -34,13 +44,22 @@ func newRequestPanicMetrics(registry *prometheus.Registry, prefix string) *prome
 	return metric
 }
 
-// RecordRequestPanic records a panic at a known boundary. Invalid stages are
-// ignored so arbitrary panic values never become metric labels.
-func RecordRequestPanic(stage RequestPanicStage) {
-	if !validRequestPanicStage(stage) || requestPanics == nil {
+// RecordRequestPanic records a panic at a known boundary. Invalid owners or
+// stages are ignored so arbitrary panic values never become metric labels.
+func RecordRequestPanic(owner RequestPanicOwner, stage RequestPanicStage) {
+	if !validRequestPanicOwner(owner) || !validRequestPanicStage(stage) || requestPanics == nil {
 		return
 	}
-	requestPanics.WithLabelValues(string(stage)).Inc()
+	requestPanics.WithLabelValues(string(owner), string(stage)).Inc()
+}
+
+func validRequestPanicOwner(owner RequestPanicOwner) bool {
+	switch owner {
+	case RequestPanicPlugin, RequestPanicCore, RequestPanicPluginFinalizer, RequestPanicCoreFinalizer:
+		return true
+	default:
+		return false
+	}
 }
 
 func validRequestPanicStage(stage RequestPanicStage) bool {

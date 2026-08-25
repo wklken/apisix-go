@@ -17,14 +17,27 @@ import (
 const requestBodyTooLargeMessage = "request body too large"
 
 type requestBodyLimitState struct {
-	mu             sync.Mutex
-	responseWriter http.ResponseWriter
-	rejected       bool
-	committed      bool
-	canonicalizing bool
+	mu                sync.Mutex
+	responseWriter    http.ResponseWriter
+	rejected          bool
+	committed         bool
+	canonicalizing    bool
+	canonicalDisabled bool
 }
 
 type requestBodyLimitContextKey struct{}
+
+func (s *requestBodyLimitState) canonicalResponsePending() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.rejected && !s.committed && !s.canonicalizing && !s.canonicalDisabled
+}
+
+func (s *requestBodyLimitState) disableCanonicalResponse() {
+	s.mu.Lock()
+	s.canonicalDisabled = true
+	s.mu.Unlock()
+}
 
 func (s *requestBodyLimitState) reject() {
 	s.mu.Lock()
@@ -151,20 +164,21 @@ func (s *requestBodyLimitState) wrapResponseWriter(w http.ResponseWriter) http.R
 
 func (s *requestBodyLimitState) writeCanonicalResponse(w http.ResponseWriter, r *http.Request) bool {
 	s.mu.Lock()
-	if !s.rejected || s.committed || s.canonicalizing {
+	if !s.rejected || s.committed || s.canonicalizing || s.canonicalDisabled {
 		s.mu.Unlock()
 		return false
 	}
 	s.canonicalizing = true
 	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		s.canonicalizing = false
+		s.mu.Unlock()
+	}()
 
 	clearResponseHeaders(w)
 	apisixctx.SetRequestResponseSource(r, apisixctx.ResponseSourceAPISIX)
 	_ = util.WriteJSONMessage(w, http.StatusRequestEntityTooLarge, requestBodyTooLargeMessage)
-
-	s.mu.Lock()
-	s.canonicalizing = false
-	s.mu.Unlock()
 	return true
 }
 

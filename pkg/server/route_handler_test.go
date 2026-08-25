@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -129,6 +130,7 @@ type failingRouteResponseWriter struct {
 	writeN      int
 	writeErr    error
 	panicWrite  bool
+	panicValue  any
 }
 
 func (w *failingRouteResponseWriter) Header() http.Header { return w.header }
@@ -136,6 +138,9 @@ func (w *failingRouteResponseWriter) Header() http.Header { return w.header }
 func (w *failingRouteResponseWriter) WriteHeader(status int) { w.writeStatus = status }
 
 func (w *failingRouteResponseWriter) Write([]byte) (int, error) {
+	if w.panicValue != nil {
+		panic(w.panicValue)
+	}
 	if w.panicWrite {
 		panic("response write failed")
 	}
@@ -865,7 +870,7 @@ func TestGenerationHijackPanicClosesConnectionAndReleasesLease(t *testing.T) {
 		if _, _, err := w.(http.Hijacker).Hijack(); err != nil {
 			t.Fatalf("Hijack() error = %v", err)
 		}
-		panic("after generation hijack")
+		panic(testPluginPanic("test-plugin", "after generation hijack"))
 	})
 	mustAbortHandlerPanic(t, func() {
 		serveRouteRequestForHTTPGeneration(
@@ -892,13 +897,23 @@ func mustAbortHandlerPanic(t *testing.T, fn func()) {
 	fn()
 }
 
-func TestRouteHandlerPanicBeforeCommitReturnsStableJSON(t *testing.T) {
+func recoverPanic(fn func()) (recovered any) {
+	defer func() { recovered = recover() }()
+	fn()
+	return nil
+}
+
+func testPluginPanic(factory string, value any) *pluginpkg.PanicError {
+	return &pluginpkg.PanicError{Factory: factory, Phase: pluginpkg.PhaseAccess, Value: value}
+}
+
+func TestGuardedPluginPanicBeforeCommitReturnsStableJSON(t *testing.T) {
 	generation := newRouteRequestGenerationFixture(t, 321)
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, "/panic", nil)
 	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("X-Leaked", "secret")
-		panic("application panic")
+		panic(testPluginPanic("test-plugin", "application panic"))
 	})
 
 	generation.Serve(t, recorder, request, handler)
@@ -914,6 +929,143 @@ func TestRouteHandlerPanicBeforeCommitReturnsStableJSON(t *testing.T) {
 	}
 	if recorder.Header().Get("X-Leaked") != "" {
 		t.Fatal("panic response leaked pre-commit headers")
+	}
+}
+
+func TestUnknownRouteInvariantPanicEscapesAfterCleanup(t *testing.T) {
+	generation := newRouteRequestGenerationFixture(t, 340)
+	want := &struct{ message string }{message: "core invariant"}
+	var finalized atomic.Int32
+	var derived *http.Request
+	recorder := httptest.NewRecorder()
+	handler := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		derived = r
+		apisixctx.RegisterApisixVar(r, "$core_marker", "live")
+		if !apisixctx.GetRequestLifecycle(r).AddFinalizer("observe", func() error {
+			finalized.Add(1)
+			return nil
+		}) {
+			t.Fatal("failed to register observer finalizer")
+		}
+		panic(want)
+	})
+
+	if got := recoverPanic(func() {
+		generation.Serve(t, recorder, httptest.NewRequest(http.MethodGet, "/core", nil), handler)
+	}); got != want {
+		t.Fatalf("panic = %#v, want original %#v", got, want)
+	}
+	if recorder.Body.Len() != 0 || recorder.Header().Get("Content-Type") != "" {
+		t.Fatalf(
+			"unknown core panic wrote synthetic response: headers=%v body=%q",
+			recorder.Header(),
+			recorder.Body.String(),
+		)
+	}
+	if got := finalized.Load(); got != 1 {
+		t.Fatalf("finalizers = %d, want 1", got)
+	}
+	if got := apisixctx.GetApisixVar(derived, "$core_marker"); got != "" {
+		t.Fatalf("request state after recycle = %#v, want empty", got)
+	}
+	if got := generation.leases.releases.Load(); got != 1 {
+		t.Fatalf("generation releases = %d, want 1", got)
+	}
+}
+
+func TestUnknownRouteInvariantPanicAfterCommitEscapesByIdentity(t *testing.T) {
+	tests := []struct {
+		name      string
+		newWriter func(*testing.T) (http.ResponseWriter, func(*testing.T))
+		commit    func(http.ResponseWriter)
+	}{
+		{
+			name: "write",
+			newWriter: func(*testing.T) (http.ResponseWriter, func(*testing.T)) {
+				recorder := httptest.NewRecorder()
+				return recorder, func(t *testing.T) {
+					if got := recorder.Body.String(); got != "committed" {
+						t.Fatalf("body = %q, want committed", got)
+					}
+				}
+			},
+			commit: func(w http.ResponseWriter) { _, _ = w.Write([]byte("committed")) },
+		},
+		{
+			name: "flush",
+			newWriter: func(*testing.T) (http.ResponseWriter, func(*testing.T)) {
+				writer := &flushingRouteResponseWriter{header: make(http.Header)}
+				return writer, func(t *testing.T) {
+					if writer.flushes != 1 {
+						t.Fatalf("flushes = %d, want 1", writer.flushes)
+					}
+				}
+			},
+			commit: func(w http.ResponseWriter) { w.(http.Flusher).Flush() },
+		},
+		{
+			name: "hijack",
+			newWriter: func(t *testing.T) (http.ResponseWriter, func(*testing.T)) {
+				left, right := net.Pipe()
+				closed := &atomic.Int32{}
+				t.Cleanup(func() { _ = right.Close() })
+				writer := &hijackingRouteResponseWriter{
+					header: make(http.Header),
+					conn:   &countingCloseConn{Conn: left, closed: closed},
+				}
+				return writer, func(t *testing.T) {
+					if got := closed.Load(); got != 1 {
+						t.Fatalf("hijack close count = %d, want 1", got)
+					}
+				}
+			},
+			commit: func(w http.ResponseWriter) {
+				if _, _, err := w.(http.Hijacker).Hijack(); err != nil {
+					panic(err)
+				}
+			},
+		},
+	}
+	for index, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			generation := newRouteRequestGenerationFixture(t, 348+uint64(index))
+			writer, assertWriter := test.newWriter(t)
+			want := &struct{ stage string }{stage: test.name}
+			var finalized atomic.Int32
+			var derived *http.Request
+			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				derived = r
+				apisixctx.RegisterApisixVar(r, "$post_commit_marker", "live")
+				if !apisixctx.GetRequestLifecycle(r).AddFinalizer("observe", func() error {
+					finalized.Add(1)
+					return nil
+				}) {
+					t.Fatal("failed to register observer finalizer")
+				}
+				test.commit(w)
+				panic(want)
+			})
+
+			if got := recoverPanic(func() {
+				generation.Serve(t, writer, httptest.NewRequest(http.MethodGet, "/core", nil), handler)
+			}); got != want {
+				t.Fatalf("panic = %#v, want original %#v", got, want)
+			}
+			assertWriter(t)
+			if finalized.Load() != 1 {
+				t.Fatalf("finalizers = %d, want 1", finalized.Load())
+			}
+			if got := apisixctx.GetApisixVar(derived, "$post_commit_marker"); got != "" {
+				t.Fatalf("request state after recycle = %#v, want empty", got)
+			}
+			wantReleases := int64(1)
+			if test.name == "hijack" {
+				wantReleases = 2
+			}
+			if got := generation.leases.releases.Load(); got != wantReleases {
+				t.Fatalf("generation releases = %d, want %d", got, wantReleases)
+			}
+		})
 	}
 }
 
@@ -939,7 +1091,7 @@ func TestPluginPhaseClosurePreTerminalPanicLogsAndRecycles(t *testing.T) {
 	handler := pipeline.Then(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		derived = r
 		apisixctx.RegisterApisixVar(r, "$panic_marker", "visible-to-finalizer")
-		panic("before terminal response")
+		panic(testPluginPanic("test-plugin", "before terminal response"))
 	}))
 	recorder := httptest.NewRecorder()
 
@@ -1111,7 +1263,7 @@ func TestRouteHandlerBodyLimitFinalizesCanonicalOutcomeBeforePanicRecovery(t *te
 			t.Fatal("failed to register body-limit panic finalizer")
 		}
 		_, _ = io.ReadAll(r.Body)
-		panic("after request body overflow")
+		panic(testPluginPanic("test-plugin", "after request body overflow"))
 	})
 	handler := limitRequestBody(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		generation.Serve(t, w, r, route)
@@ -1178,10 +1330,18 @@ func TestRouteHandlerPanicResponseWriteFailureStillFinalizesAndAborts(t *testing
 				}) {
 					t.Fatal("failed to register finalizers")
 				}
-				panic("application panic")
+				panic(testPluginPanic("test-plugin", "application panic"))
 			})
 
-			mustAbortHandlerPanic(t, func() { generation.Serve(t, test.writer, request, handler) })
+			if test.writer.panicWrite {
+				if got := recoverPanic(
+					func() { generation.Serve(t, test.writer, request, handler) },
+				); got != "response write failed" {
+					t.Fatalf("panic = %#v, want original response writer panic", got)
+				}
+			} else {
+				mustAbortHandlerPanic(t, func() { generation.Serve(t, test.writer, request, handler) })
+			}
 			if got, want := strings.Join(calls, ","), "observe,first"; got != want {
 				t.Fatalf("finalizer calls = %q, want %q", got, want)
 			}
@@ -1203,12 +1363,170 @@ func TestRouteHandlerPanicResponseWriteFailureStillFinalizesAndAborts(t *testing
 	}
 }
 
+func TestRouteHandlerStable500WriterPanicEscapesAfterCleanup(t *testing.T) {
+	generation := newRouteRequestGenerationFixture(t, 341)
+	want := &struct{ message string }{message: "stable 500 writer"}
+	writer := &failingRouteResponseWriter{header: make(http.Header), panicValue: want}
+	var finalized atomic.Int32
+	var derived *http.Request
+	handler := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		derived = r
+		apisixctx.RegisterApisixVar(r, "$writer_marker", "live")
+		if !apisixctx.GetRequestLifecycle(r).AddFinalizer("observe", func() error {
+			finalized.Add(1)
+			return nil
+		}) {
+			t.Fatal("failed to register writer observer")
+		}
+		panic(testPluginPanic("test-plugin", "plugin failure"))
+	})
+
+	if got := recoverPanic(func() {
+		generation.Serve(t, writer, httptest.NewRequest(http.MethodGet, "/panic", nil), handler)
+	}); got != want {
+		t.Fatalf("panic = %#v, want writer panic %#v", got, want)
+	}
+	if finalized.Load() != 1 {
+		t.Fatalf("finalizers = %d, want 1", finalized.Load())
+	}
+	if got := apisixctx.GetApisixVar(derived, "$writer_marker"); got != "" {
+		t.Fatalf("request state after recycle = %#v, want empty", got)
+	}
+	if got := generation.leases.releases.Load(); got != 1 {
+		t.Fatalf("generation releases = %d, want 1", got)
+	}
+}
+
+func TestRequestBodyLimitCanonicalWriterPanicEscapesAfterCleanup(t *testing.T) {
+	generation := newRouteRequestGenerationFixture(t, 342)
+	want := &struct{ message string }{message: "canonical 413 writer"}
+	writer := &failingRouteResponseWriter{header: make(http.Header), panicValue: want}
+	var finalized atomic.Int32
+	var derived *http.Request
+	route := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		derived = r
+		apisixctx.RegisterApisixVar(r, "$body_limit_marker", "live")
+		if !apisixctx.GetRequestLifecycle(r).AddFinalizer("observe", func() error {
+			finalized.Add(1)
+			return nil
+		}) {
+			t.Fatal("failed to register body-limit observer")
+		}
+		_, _ = io.ReadAll(r.Body)
+	})
+	handler := limitRequestBody(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		generation.Serve(t, w, r, route)
+	}), 3)
+	request := httptest.NewRequest(http.MethodPost, "/upload", strings.NewReader("abcd"))
+	request.ContentLength = -1
+
+	if got := recoverPanic(func() { handler.ServeHTTP(writer, request) }); got != want {
+		t.Fatalf("panic = %#v, want canonical writer panic %#v", got, want)
+	}
+	if finalized.Load() != 1 {
+		t.Fatalf("finalizers = %d, want 1", finalized.Load())
+	}
+	if got := apisixctx.GetApisixVar(derived, "$body_limit_marker"); got != "" {
+		t.Fatalf("request state after recycle = %#v, want empty", got)
+	}
+	if got := generation.leases.releases.Load(); got != 1 {
+		t.Fatalf("generation releases = %d, want 1", got)
+	}
+}
+
+func TestUnknownRouteInvariantPanicSuppressesCanonicalBodyLimitResponse(t *testing.T) {
+	generation := newRouteRequestGenerationFixture(t, 345)
+	want := &struct{ message string }{message: "core after body overflow"}
+	recorder := httptest.NewRecorder()
+	route := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		_, _ = io.ReadAll(r.Body)
+		panic(want)
+	})
+	handler := limitRequestBody(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		generation.Serve(t, w, r, route)
+	}), 3)
+	request := httptest.NewRequest(http.MethodPost, "/upload", strings.NewReader("abcd"))
+	request.ContentLength = -1
+
+	if got := recoverPanic(func() { handler.ServeHTTP(recorder, request) }); got != want {
+		t.Fatalf("panic = %#v, want original %#v", got, want)
+	}
+	if recorder.Body.Len() != 0 || recorder.Header().Get("Content-Type") != "" {
+		t.Fatalf(
+			"unknown core panic wrote canonical response: headers=%v body=%q",
+			recorder.Header(),
+			recorder.Body.String(),
+		)
+	}
+	if got := generation.leases.releases.Load(); got != 1 {
+		t.Fatalf("generation releases = %d, want 1", got)
+	}
+}
+
+func TestRouteHandlerCoreFinalizerPanicRunsAllCleanupAndWinsPluginAbort(t *testing.T) {
+	generation := newRouteRequestGenerationFixture(t, 343)
+	want := &struct{ message string }{message: "core finalizer"}
+	var calls []string
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		lifecycle := apisixctx.GetRequestLifecycle(r)
+		if !lifecycle.AddFinalizer("first", func() error {
+			calls = append(calls, "first")
+			return nil
+		}) || !lifecycle.AddCoreInvariantFinalizer("core", func() error {
+			calls = append(calls, "core")
+			panic(want)
+		}) || !lifecycle.AddFinalizer("last", func() error {
+			calls = append(calls, "last")
+			return nil
+		}) {
+			t.Fatal("failed to register precedence finalizers")
+		}
+		_, _ = w.Write([]byte("committed"))
+		panic(testPluginPanic("test-plugin", "post-commit"))
+	})
+
+	if got := recoverPanic(func() {
+		generation.Serve(t, httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/panic", nil), handler)
+	}); got != want {
+		t.Fatalf("panic = %#v, want core finalizer %#v", got, want)
+	}
+	if got, wantCalls := strings.Join(calls, ","), "last,core,first"; got != wantCalls {
+		t.Fatalf("finalizer calls = %q, want %q", got, wantCalls)
+	}
+	if got := generation.leases.releases.Load(); got != 1 {
+		t.Fatalf("generation releases = %d, want 1", got)
+	}
+}
+
+func TestRouteHandlerPrimaryCorePanicWinsCoreFinalizerPanic(t *testing.T) {
+	generation := newRouteRequestGenerationFixture(t, 344)
+	primary := &struct{ message string }{message: "primary"}
+	finalizer := &struct{ message string }{message: "finalizer"}
+	handler := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		if !apisixctx.GetRequestLifecycle(r).AddCoreInvariantFinalizer("core", func() error {
+			panic(finalizer)
+		}) {
+			t.Fatal("failed to register core finalizer")
+		}
+		panic(primary)
+	})
+
+	if got := recoverPanic(func() {
+		generation.Serve(t, httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/panic", nil), handler)
+	}); got != primary {
+		t.Fatalf("panic = %#v, want primary %#v", got, primary)
+	}
+	if got := generation.leases.releases.Load(); got != 1 {
+		t.Fatalf("generation releases = %d, want 1", got)
+	}
+}
+
 func TestRouteHandlerPanicAfterWriteAbortsWithoutSecondResponse(t *testing.T) {
 	generation := newRouteRequestGenerationFixture(t, 328)
 	recorder := httptest.NewRecorder()
 	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("first"))
-		panic("after write")
+		panic(testPluginPanic("test-plugin", "after write"))
 	})
 
 	mustAbortHandlerPanic(t, func() {
@@ -1224,7 +1542,7 @@ func TestRouteHandlerPanicAfterFlushAbortsWithoutSecondResponse(t *testing.T) {
 	writer := &flushingRouteResponseWriter{header: make(http.Header)}
 	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.(http.Flusher).Flush()
-		panic("after flush")
+		panic(testPluginPanic("test-plugin", "after flush"))
 	})
 
 	mustAbortHandlerPanic(t, func() {
@@ -1248,7 +1566,7 @@ func TestRouteHandlerPanicAfterHijackAbortsWithoutSecondResponse(t *testing.T) {
 		if _, _, err := w.(http.Hijacker).Hijack(); err != nil {
 			t.Fatalf("Hijack() error = %v", err)
 		}
-		panic("after hijack")
+		panic(testPluginPanic("test-plugin", "after hijack"))
 	})
 
 	mustAbortHandlerPanic(t, func() {
@@ -1306,6 +1624,50 @@ func (c *countingCloseConn) Close() error {
 	return c.Conn.Close()
 }
 
+type panicCloseConn struct {
+	net.Conn
+	panicValue any
+}
+
+func (c *panicCloseConn) Close() error { panic(c.panicValue) }
+
+func TestRouteHandlerHijackClosePanicEscapesAfterLeaseCleanup(t *testing.T) {
+	fixture := newCountedHTTPLeaseFixture(t, 346)
+	routes := newGenerationRouteHandler(fixture.Acquire)
+	parent, ok := fixture.Acquire()
+	if !ok {
+		t.Fatal("parent lease unavailable")
+	}
+	left, right := net.Pipe()
+	t.Cleanup(func() {
+		_ = left.Close()
+		_ = right.Close()
+	})
+	want := &struct{ message string }{message: "hijack close"}
+	writer := &hijackingRouteResponseWriter{
+		header: make(http.Header),
+		conn:   &panicCloseConn{Conn: left, panicValue: want},
+	}
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if _, _, err := w.(http.Hijacker).Hijack(); err != nil {
+			t.Fatalf("Hijack() error = %v", err)
+		}
+		panic(testPluginPanic("test-plugin", "after hijack"))
+	})
+
+	if got := recoverPanic(func() {
+		serveRouteRequestForHTTPGeneration(
+			writer, httptest.NewRequest(http.MethodGet, "/hijack", nil), handler, &parent, routes,
+		)
+	}); got != want {
+		t.Fatalf("panic = %#v, want close panic %#v", got, want)
+	}
+	parent.Release()
+	if got := fixture.releases.Load(); got != 2 {
+		t.Fatalf("generation releases = %d, want request plus hijack", got)
+	}
+}
+
 func TestRouteHandlerAbortHandlerRunsFinalizersWithoutNewMetric(t *testing.T) {
 	generation := newRouteRequestGenerationFixture(t, 332)
 	recorder := httptest.NewRecorder()
@@ -1325,6 +1687,33 @@ func TestRouteHandlerAbortHandlerRunsFinalizersWithoutNewMetric(t *testing.T) {
 	mustAbortHandlerPanic(t, func() { generation.Serve(t, recorder, request, handler) })
 	if outcome.Kind != apisixctx.RequestOutcomeHandlerAbort {
 		t.Fatalf("finalizer outcome = %#v, want handler_abort", outcome)
+	}
+}
+
+func TestRouteHandlerCoreFinalizerPanicWinsExactAbortHandler(t *testing.T) {
+	generation := newRouteRequestGenerationFixture(t, 347)
+	want := &struct{ message string }{message: "core finalizer after abort"}
+	var finalized atomic.Int32
+	handler := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		if !apisixctx.GetRequestLifecycle(r).AddCoreInvariantFinalizer("core", func() error {
+			finalized.Add(1)
+			panic(want)
+		}) {
+			t.Fatal("failed to register core finalizer")
+		}
+		panic(http.ErrAbortHandler)
+	})
+
+	if got := recoverPanic(func() {
+		generation.Serve(t, httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/abort", nil), handler)
+	}); got != want {
+		t.Fatalf("panic = %#v, want core finalizer %#v", got, want)
+	}
+	if finalized.Load() != 1 {
+		t.Fatalf("core finalizers = %d, want 1", finalized.Load())
+	}
+	if got := generation.leases.releases.Load(); got != 1 {
+		t.Fatalf("generation releases = %d, want 1", got)
 	}
 }
 
@@ -1376,7 +1765,7 @@ func TestRouteHandlerFinalizerPanicDoesNotSkipOtherFinalizers(t *testing.T) {
 				t.Fatalf("failed to register %s finalizer", registration.owner)
 			}
 		}
-		panic("application panic")
+		panic(testPluginPanic("test-plugin", "application panic"))
 	})
 
 	generation.Serve(t, httptest.NewRecorder(), request, handler)
@@ -1416,6 +1805,56 @@ func TestRequestPanicStageUsesOnlyBoundedValues(t *testing.T) {
 	}
 }
 
+func TestFinalizerPanicOwnerUsesGuardedErrorContent(t *testing.T) {
+	guarded := testPluginPanic("http-logger", "raw plugin value")
+	tests := []struct {
+		name    string
+		failure apisixctx.FinalizerFailure
+		want    metrics.RequestPanicOwner
+		wantOK  bool
+	}{
+		{
+			name: "core composite returned guarded plugin panic",
+			failure: apisixctx.FinalizerFailure{
+				Kind: apisixctx.FinalizerOwnerCoreInvariant,
+				Err:  fmt.Errorf("log composite: %w", guarded),
+			},
+			want:   metrics.RequestPanicPluginFinalizer,
+			wantOK: true,
+		},
+		{
+			name: "raw core invariant panic",
+			failure: apisixctx.FinalizerFailure{
+				Kind:       apisixctx.FinalizerOwnerCoreInvariant,
+				PanicValue: "core",
+			},
+			want:   metrics.RequestPanicCoreFinalizer,
+			wantOK: true,
+		},
+		{
+			name: "raw plugin finalizer panic",
+			failure: apisixctx.FinalizerFailure{
+				Kind:       apisixctx.FinalizerOwnerPlugin,
+				PanicValue: "plugin",
+			},
+			want:   metrics.RequestPanicPluginFinalizer,
+			wantOK: true,
+		},
+		{
+			name:    "ordinary error",
+			failure: apisixctx.FinalizerFailure{Kind: apisixctx.FinalizerOwnerPlugin, Err: errors.New("failed")},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, ok := finalizerPanicOwner(test.failure)
+			if got != test.want || ok != test.wantOK {
+				t.Fatalf("finalizerPanicOwner() = %q, %v, want %q, %v", got, ok, test.want, test.wantOK)
+			}
+		})
+	}
+}
+
 func TestRouteHandlerPanicStillReleasesRouteGeneration(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("prepared response"))
@@ -1426,12 +1865,14 @@ func TestRouteHandlerPanicStillReleasesRouteGeneration(t *testing.T) {
 	})
 	writer := &failingRouteResponseWriter{header: make(http.Header), panicWrite: true}
 
-	mustAbortHandlerPanic(t, func() {
+	if got := recoverPanic(func() {
 		generation.routes.ServeHTTP(
 			writer,
 			httptest.NewRequest(http.MethodGet, "http://gateway.test/panic", nil),
 		)
-	})
+	}); got != "response write failed" {
+		t.Fatalf("panic = %#v, want original response writer panic", got)
+	}
 	if got := generation.acquires.Load(); got != 1 {
 		t.Fatalf("acquire count after prepared-handler panic = %d, want 1", got)
 	}

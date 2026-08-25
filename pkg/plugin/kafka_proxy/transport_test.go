@@ -8,9 +8,28 @@ import (
 	"io"
 	"net"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
+
+type watcherTestConn struct {
+	net.Conn
+	closeStarted     chan struct{}
+	closeStartedOnce sync.Once
+	releaseClose     <-chan struct{}
+	closeCount       atomic.Int32
+}
+
+func (c *watcherTestConn) Close() error {
+	c.closeCount.Add(1)
+	c.closeStartedOnce.Do(func() { close(c.closeStarted) })
+	if c.releaseClose != nil {
+		<-c.releaseClose
+	}
+	return c.Conn.Close()
+}
 
 func TestTransportRoundTripPreservesKafkaFrames(t *testing.T) {
 	request := kafkaTestFrame([]byte("request-frame"))
@@ -175,4 +194,71 @@ func TestKafkaTargetAddressValidation(t *testing.T) {
 	if got, err := kafkaTargetAddress("127.0.0.1:9092"); err != nil || got != "127.0.0.1:9092" {
 		t.Fatalf("kafkaTargetAddress(plain) = %q/%v, want passthrough", got, err)
 	}
+}
+
+func TestCloseOnContextDoneStopJoinsClose(t *testing.T) {
+	base, peer := net.Pipe()
+	t.Cleanup(func() { _ = base.Close(); _ = peer.Close() })
+	releaseClose := make(chan struct{})
+	conn := &watcherTestConn{
+		Conn:         base,
+		closeStarted: make(chan struct{}),
+		releaseClose: releaseClose,
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	stop := closeOnContextDone(ctx, conn)
+	cancel()
+	<-conn.closeStarted
+
+	stopDone := make(chan struct{})
+	go func() {
+		stop()
+		close(stopDone)
+	}()
+	select {
+	case <-stopDone:
+		t.Fatal("stop returned before the canceled connection close completed")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(releaseClose)
+	select {
+	case <-stopDone:
+	case <-time.After(time.Second):
+		t.Fatal("stop did not return after the canceled connection close completed")
+	}
+}
+
+func TestCloseOnContextDoneStopIsIdempotent(t *testing.T) {
+	t.Run("canceled", func(t *testing.T) {
+		base, peer := net.Pipe()
+		t.Cleanup(func() { _ = base.Close(); _ = peer.Close() })
+		conn := &watcherTestConn{Conn: base, closeStarted: make(chan struct{})}
+		ctx, cancel := context.WithCancel(context.Background())
+		stop := closeOnContextDone(ctx, conn)
+		cancel()
+		<-conn.closeStarted
+		stop()
+		stop()
+		if got := conn.closeCount.Load(); got != 1 {
+			t.Fatalf("connection close count = %d, want 1", got)
+		}
+	})
+
+	t.Run("stop-before-cancel", func(t *testing.T) {
+		base, peer := net.Pipe()
+		t.Cleanup(func() { _ = base.Close(); _ = peer.Close() })
+		conn := &watcherTestConn{Conn: base, closeStarted: make(chan struct{})}
+		ctx, cancel := context.WithCancel(context.Background())
+		stop := closeOnContextDone(ctx, conn)
+		stop()
+		select {
+		case <-conn.closeStarted:
+			t.Fatal("normal stop closed a live connection")
+		case <-time.After(50 * time.Millisecond):
+		}
+		cancel()
+		if got := conn.closeCount.Load(); got != 0 {
+			t.Fatalf("connection close count = %d, want 0", got)
+		}
+	})
 }

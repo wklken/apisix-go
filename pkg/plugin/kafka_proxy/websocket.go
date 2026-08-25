@@ -14,6 +14,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/segmentio/kafka-go"
+	"github.com/wklken/apisix-go/pkg/runtime"
 )
 
 var (
@@ -91,7 +92,15 @@ func ServeWebSocket(w http.ResponseWriter, r *http.Request, target string, optio
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 	closeOnCancel := closeConnectionsOnCancel(ctx, conn.UnderlyingConn(), backend)
-	defer closeOnCancel()
+	watcherStopped := false
+	stopWatcher := func() {
+		if watcherStopped {
+			return
+		}
+		watcherStopped = true
+		closeOnCancel()
+	}
+	defer stopWatcher()
 
 	bridge := &websocketBridge{
 		conn:         conn,
@@ -99,20 +108,66 @@ func ServeWebSocket(w http.ResponseWriter, r *http.Request, target string, optio
 		readTimeout:  transport.readTimeout,
 		writeTimeout: transport.writeTimeout,
 	}
-	results := make(chan error, 2)
-	go func() { results <- bridge.clientToKafka(ctx, backend) }()
-	go func() { results <- bridge.kafkaToClient(ctx, backend) }()
+	tasks := runtime.NewRequestTaskGroup(ctx, "connection/kafka-proxy")
+	results := make(chan directionResult, 2)
+	for _, direction := range []func(context.Context, net.Conn) error{
+		bridge.clientToKafka,
+		bridge.kafkaToClient,
+	} {
+		run := direction
+		if err := tasks.Go(func(taskCtx context.Context) error {
+			result := directionResult{}
+			defer func() { results <- result }()
+			result.err = run(taskCtx, backend)
+			result.completed = true
+			return result.err
+		}); err != nil {
+			panic(err)
+		}
+	}
 
 	first := <-results
 	cancel()
 	_ = conn.Close()
 	_ = backend.Close()
 	second := <-results
-	if websocketBridgeNormalClose(ctx, first) ||
-		(errors.Is(first, context.Canceled) && websocketBridgeNormalClose(ctx, second)) {
+	var stopPanicked bool
+	var stopPanic any
+	func() {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				stopPanicked = true
+				stopPanic = recovered
+			}
+		}()
+		stopWatcher()
+	}()
+	var waitPanic bool
+	var waitPanicValue any
+	var waitErr error
+	func() {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				waitPanic = true
+				waitPanicValue = recovered
+			}
+		}()
+		waitErr = tasks.Wait()
+	}()
+	if waitPanic {
+		panic(waitPanicValue)
+	}
+	if stopPanicked {
+		panic(stopPanic)
+	}
+	if !first.completed {
+		return waitErr
+	}
+	if websocketBridgeNormalClose(ctx, first.err) ||
+		(errors.Is(first.err, context.Canceled) && websocketBridgeNormalClose(ctx, second.err)) {
 		return nil
 	}
-	return &websocketProxyError{hijacked: true, err: first}
+	return &websocketProxyError{hijacked: true, err: first.err}
 }
 
 // ServePubSubWebSocket owns the APISIX 3.17 Kafka PubSub protocol. Each
@@ -331,6 +386,11 @@ type websocketBridge struct {
 	writeTimeout time.Duration
 }
 
+type directionResult struct {
+	err       error
+	completed bool
+}
+
 func (b *websocketBridge) clientToKafka(ctx context.Context, backend net.Conn) error {
 	for {
 		payload, err := b.readMessage()
@@ -419,17 +479,7 @@ func (b *websocketBridge) writeClose(code uint16, reason string) error {
 }
 
 func closeConnectionsOnCancel(ctx context.Context, connections ...net.Conn) func() {
-	done := make(chan struct{})
-	go func() {
-		select {
-		case <-ctx.Done():
-			for _, conn := range connections {
-				_ = conn.Close()
-			}
-		case <-done:
-		}
-	}()
-	return func() { close(done) }
+	return newConnectionCancellationWatcher(ctx, connections...)
 }
 
 func websocketBridgeNormalClose(ctx context.Context, err error) bool {

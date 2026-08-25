@@ -234,3 +234,60 @@ func TestCleanupStackRejectsOwnershipAfterSealWhileCleanupBlocked(t *testing.T) 
 		t.Fatalf("late cleanup calls = %d, want 0", got)
 	}
 }
+
+func TestCleanupStackRollbackRunsOnlyLaterStepsInReversePhaseOrder(t *testing.T) {
+	var stack cleanupStack
+	var order []string
+	own := func(phase cleanupPhase, name string) {
+		t.Helper()
+		if err := stack.Own(phase, name, func(context.Context) error {
+			order = append(order, name)
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	own(cleanupRelease, "base-release")
+	own(cleanupQuiesce, "base-quiesce")
+	checkpoint, err := stack.Checkpoint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	own(cleanupRelease, "route-release-1")
+	own(cleanupQuiesce, "route-quiesce")
+	own(cleanupRelease, "route-release-2")
+
+	if err := stack.Rollback(context.Background(), checkpoint); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"route-quiesce", "route-release-2", "route-release-1"}; !reflect.DeepEqual(order, want) {
+		t.Fatalf("rollback order = %v, want %v", order, want)
+	}
+	if err := stack.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"route-quiesce", "route-release-2", "route-release-1", "base-quiesce", "base-release"}; !reflect.DeepEqual(order, want) {
+		t.Fatalf("close after rollback order = %v, want %v", order, want)
+	}
+}
+
+func TestCleanupStackRollbackRejectsForeignOrSealedCheckpoint(t *testing.T) {
+	var first cleanupStack
+	var second cleanupStack
+	checkpoint, err := first.Checkpoint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := second.Rollback(context.Background(), checkpoint); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("foreign checkpoint error = %v, want ErrInvalidInput", err)
+	}
+	if err := first.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := first.Checkpoint(); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("sealed checkpoint error = %v, want ErrInvalidInput", err)
+	}
+	if err := first.Rollback(context.Background(), checkpoint); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("sealed rollback error = %v, want ErrInvalidInput", err)
+	}
+}

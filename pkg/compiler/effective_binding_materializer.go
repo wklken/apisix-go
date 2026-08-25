@@ -158,6 +158,24 @@ func (prepared *PreparedGeneration) materializeEffectiveBindings(
 	ctx context.Context,
 	specs []effectiveBindingSpec,
 ) ([]plugin.Binding, error) {
+	return prepared.materializeEffectiveBindingsWithPolicy(ctx, specs, false)
+}
+
+// materializeEffectiveBindingsRecoverable gives HTTP route quarantine an
+// isolated cleanup scope. A failed route releases only resources acquired
+// after its checkpoint; cleanup failure still terminally closes the generation.
+func (prepared *PreparedGeneration) materializeEffectiveBindingsRecoverable(
+	ctx context.Context,
+	specs []effectiveBindingSpec,
+) ([]plugin.Binding, error) {
+	return prepared.materializeEffectiveBindingsWithPolicy(ctx, specs, true)
+}
+
+func (prepared *PreparedGeneration) materializeEffectiveBindingsWithPolicy(
+	ctx context.Context,
+	specs []effectiveBindingSpec,
+	recoverable bool,
+) ([]plugin.Binding, error) {
 	if prepared == nil {
 		return nil, errEffectiveBindingMaterializationFailed
 	}
@@ -181,7 +199,32 @@ func (prepared *PreparedGeneration) materializeEffectiveBindings(
 	prepared.bindingOpsMu.Unlock()
 	validated, err := prepared.validateEffectiveBindingSpecs(specs)
 	if err != nil {
+		if recoverable {
+			prepared.materializeMu.Unlock()
+			return nil, recoverableEffectiveBindingError(err)
+		}
 		return prepared.failEffectiveBindingMaterializationLocked(ctx, err)
+	}
+	var checkpoint cleanupCheckpoint
+	if recoverable {
+		checkpoint, err = prepared.cleanup.Checkpoint()
+		if err != nil {
+			return prepared.failEffectiveBindingMaterializationLocked(ctx, err)
+		}
+	}
+	fail := func(primary error) ([]plugin.Binding, error) {
+		if !recoverable {
+			return prepared.failEffectiveBindingMaterializationLocked(ctx, primary)
+		}
+		rollbackErr := prepared.cleanup.Rollback(context.WithoutCancel(ctx), checkpoint)
+		if rollbackErr != nil {
+			return prepared.failEffectiveBindingMaterializationLocked(
+				ctx,
+				errors.Join(primary, rollbackErr),
+			)
+		}
+		prepared.materializeMu.Unlock()
+		return nil, recoverableEffectiveBindingError(primary)
 	}
 
 	bindings := make([]plugin.Binding, 0, len(validated))
@@ -192,20 +235,34 @@ func (prepared *PreparedGeneration) materializeEffectiveBindings(
 		}
 		ownerName := "plugin-binding/" + selected.spec.factory
 		if ownErr := prepared.cleanup.Own(cleanupRelease, ownerName, slot.cleanup); ownErr != nil {
-			return prepared.failEffectiveBindingMaterializationLocked(ctx, ownErr)
+			return fail(ownErr)
 		}
 		lease, acquireErr := prepared.acquireEffectiveBinding(ctx, selected, operations, slot)
 		if acquireErr != nil {
-			return prepared.failEffectiveBindingMaterializationLocked(ctx, acquireErr)
+			return fail(acquireErr)
 		}
 		slot.adoptLease(lease)
 		if err := ctx.Err(); err != nil {
-			return prepared.failEffectiveBindingMaterializationLocked(ctx, err)
+			return fail(err)
 		}
 		bindings = append(bindings, lease.Value())
 	}
 	prepared.materializeMu.Unlock()
 	return bindings, nil
+}
+
+func recoverableEffectiveBindingError(primary error) error {
+	causes := []error{errEffectiveBindingMaterializationFailed}
+	if errors.Is(primary, context.Canceled) {
+		causes = append(causes, context.Canceled)
+	}
+	if errors.Is(primary, context.DeadlineExceeded) {
+		causes = append(causes, context.DeadlineExceeded)
+	}
+	if len(causes) == 1 && primary != nil {
+		causes = append(causes, redactedEffectiveBindingCause{})
+	}
+	return errors.Join(causes...)
 }
 
 func (prepared *PreparedGeneration) validateEffectiveBindingSpecs(
@@ -823,8 +880,10 @@ func cloneEffectiveBindingRuntimeContext(
 	if !value.configured {
 		return effectiveBindingRuntimeContext{}, nil
 	}
-	if domain != generation.DomainHTTP || resourceContext.kind != effectiveBindingContextHTTP ||
-		value.publicAPIRegistry == nil || value.runtimeAcquirer == nil || value.upstreamResolver == nil {
+	if domain != generation.DomainHTTP || value.publicAPIRegistry == nil ||
+		(resourceContext.kind != effectiveBindingContextHTTP && resourceContext.kind != effectiveBindingContextNone) ||
+		(resourceContext.kind == effectiveBindingContextHTTP &&
+			(value.runtimeAcquirer == nil || value.upstreamResolver == nil)) {
 		return effectiveBindingRuntimeContext{}, fmt.Errorf(
 			"%w: HTTP runtime context is incomplete",
 			ErrInvalidInput,

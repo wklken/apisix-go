@@ -211,3 +211,57 @@ func TestCloneEffectiveBindingRuntimeContextRejectsIncompleteHTTPContext(t *test
 		t.Fatalf("clone runtime context error = %v, want ErrInvalidInput", err)
 	}
 }
+
+func TestCloneEffectiveBindingRuntimeContextAllowsGenerationWideHTTPContext(t *testing.T) {
+	registry := public_api.NewRegistry()
+	cloned, err := cloneEffectiveBindingRuntimeContext(
+		generation.DomainHTTP,
+		effectiveBindingResourceContext{kind: effectiveBindingContextNone},
+		effectiveBindingRuntimeContext{
+			configured: true, publicAPIRegistry: registry,
+			enabledFactories: []string{"request-context"},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cloned.configured || cloned.publicAPIRegistry != registry || cloned.runtimeAcquirer != nil ||
+		cloned.upstreamResolver != nil {
+		t.Fatalf("generation-wide runtime context = %#v", cloned)
+	}
+}
+
+func TestRecoverableEffectiveBindingMaterializationRollsBackOnlyFailedRoute(t *testing.T) {
+	prepared, fixture := newEffectiveBindingMaterializerFixture(
+		t,
+		[]string{"request-id", "response-rewrite"},
+		nil,
+	)
+	defaults := prepared.bindingOps.withDefaults(prepared.attempt.AttemptID())
+	prepared.bindingOps.postInit = func(instance plugin.Plugin) error {
+		if instance.GetName() == "request-id" {
+			return errors.New("route-scoped post-init failure")
+		}
+		return defaults.postInit(instance)
+	}
+
+	bindings, err := prepared.materializeEffectiveBindingsRecoverable(
+		context.Background(),
+		[]effectiveBindingSpec{fixture.pluginSpec("request-id", "bad-route")},
+	)
+	if !errors.Is(err, errEffectiveBindingMaterializationFailed) || bindings != nil {
+		t.Fatalf("recoverable route failure = (%#v, %v)", bindings, err)
+	}
+	if prepared.terminal || fixture.registry.Len() != 0 {
+		t.Fatalf("recoverable route failure terminal/leases = %v/%d", prepared.terminal, fixture.registry.Len())
+	}
+
+	prepared.bindingOps.postInit = defaults.postInit
+	bindings, err = prepared.materializeEffectiveBindingsRecoverable(
+		context.Background(),
+		[]effectiveBindingSpec{fixture.pluginSpec("response-rewrite", "good-route")},
+	)
+	if err != nil || len(bindings) != 1 || bindings[0].Plugin == nil {
+		t.Fatalf("later route materialization = (%#v, %v), want one binding", bindings, err)
+	}
+}

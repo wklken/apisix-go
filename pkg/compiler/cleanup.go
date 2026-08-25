@@ -21,6 +21,12 @@ type cleanupStep struct {
 	run  func(context.Context) error
 }
 
+type cleanupCheckpoint struct {
+	owner     *cleanupStack
+	quiescers int
+	releases  int
+}
+
 type cleanupStack struct {
 	mu        sync.Mutex
 	quiescers []cleanupStep
@@ -28,6 +34,43 @@ type cleanupStack struct {
 	sealed    bool
 	closeOnce sync.Once
 	closeErr  error
+}
+
+func (s *cleanupStack) Checkpoint() (cleanupCheckpoint, error) {
+	if s == nil {
+		return cleanupCheckpoint{}, fmt.Errorf("%w: cleanup stack is required", ErrInvalidInput)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.sealed {
+		return cleanupCheckpoint{}, fmt.Errorf("%w: cleanup ownership is sealed", ErrInvalidInput)
+	}
+	return cleanupCheckpoint{owner: s, quiescers: len(s.quiescers), releases: len(s.releases)}, nil
+}
+
+func (s *cleanupStack) Rollback(ctx context.Context, checkpoint cleanupCheckpoint) error {
+	if s == nil {
+		return fmt.Errorf("%w: cleanup stack is required", ErrInvalidInput)
+	}
+	s.mu.Lock()
+	if s.sealed || checkpoint.owner != s || checkpoint.quiescers < 0 || checkpoint.releases < 0 ||
+		checkpoint.quiescers > len(s.quiescers) || checkpoint.releases > len(s.releases) {
+		s.mu.Unlock()
+		return fmt.Errorf("%w: cleanup checkpoint is invalid", ErrInvalidInput)
+	}
+	quiescers := append([]cleanupStep(nil), s.quiescers[checkpoint.quiescers:]...)
+	releases := append([]cleanupStep(nil), s.releases[checkpoint.releases:]...)
+	s.quiescers = s.quiescers[:checkpoint.quiescers]
+	s.releases = s.releases[:checkpoint.releases]
+	s.mu.Unlock()
+
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	var cleanupErrs []error
+	cleanupErrs = append(cleanupErrs, runCleanupSteps(ctx, "quiesce", quiescers)...)
+	cleanupErrs = append(cleanupErrs, runCleanupSteps(ctx, "release", releases)...)
+	return errors.Join(cleanupErrs...)
 }
 
 func (s *cleanupStack) Own(

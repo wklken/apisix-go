@@ -304,6 +304,22 @@ Run an independent merge-level review, repair every Critical/Important finding,
 rerun invalidated gates, commit Task 8 locally, and only then fast-forward local
 `master`. Do not push or create a PR.
 
+## Acceptance record
+
+Accepted on 2026-08-25 at reviewed implementation commit `826badfe`. The review
+found and then verified closure of two Important issues: candidate closure now
+preserves the legacy rule that a route-level `upstream_id` suppresses service
+lookup, and every route's exact occurrence/spec is validated before the single
+batch materialization begins. The final review reported no remaining Critical,
+Important, or Minor finding.
+
+Generation/compiler/stream package tests, focused race tests, lint including
+the touched etcd package, the focused `/plugins` HTTP+stream publication tests,
+capability generation, build, boundary guards, and diff checks passed. The full
+etcd package retains the pre-existing
+`TestDesiredBatchFromEtcdProviderAuthorityRequiresSnapshotTransfer` fixture
+failure reproduced on the unchanged Task 7 master baseline `9c46edda`.
+
 ## Task 9 handoff ledger
 
 Task 8 intentionally leaves these owners alive:

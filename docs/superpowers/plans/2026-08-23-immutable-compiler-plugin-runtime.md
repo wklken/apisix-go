@@ -1628,7 +1628,7 @@ baseline and are not reported as Task 7 passes.
   paired with post-merge effective stream plugin specs.
 - Produces: immutable `stream.Router`, `compiler.StreamSnapshot`; no listener is opened during compilation.
 
-- [ ] **Step 1: Write the failing immutable stream test**
+- [x] **Step 1: Write the failing immutable stream test**
 
 ```go
 func TestCompileRouterDoesNotObserveInputMutation(t *testing.T) {
@@ -1647,13 +1647,13 @@ func TestStreamSnapshotRetainsArtifactIdentity(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run stream snapshot tests and confirm RED**
+- [x] **Step 2: Run stream snapshot tests and confirm RED**
 
 Run: `bash -lc 'source .envrc && go test ./pkg/stream -run "^TestCompileRouter" -count=1'`
 
 Expected: FAIL because `CompileRouter` and `RouteIDs` do not exist.
 
-- [ ] **Step 3: Build complete route entries before publishing a router**
+- [x] **Step 3: Build complete route entries before publishing a router**
 
 ```go
 func CompileRouter(routes []resource.StreamRoute, enabled []string, onResult func(Result)) (*Router, error) {
@@ -1675,7 +1675,7 @@ occurrences into bindings, or construct/inject composite children itself.
 
 Defer this step to the joint cutover. There, change stream runtime construction to receive listeners plus an immutable router. It may install a new router only through the generation activation boundary; it does not mutate an existing router.
 
-- [ ] **Step 5: Produce `compiler.StreamSnapshot` without binding**
+- [x] **Step 5: Produce `compiler.StreamSnapshot` without binding**
 
 ```go
 func compileStream(ctx context.Context, artifact generation.GenerationArtifact,
@@ -1690,18 +1690,30 @@ func (s *StreamSnapshot) Revision() uint64 { return s.artifact.Revision }
 func (s *StreamSnapshot) Router() *stream.Router { return s.router }
 ```
 
-- [ ] **Step 6: Run stream compiler and race tests**
+- [x] **Step 6: Run stream compiler and race tests**
 
 Run before the joint cutover: `bash -lc 'source .envrc && go test -race ./pkg/compiler ./pkg/stream -run "^(TestCompilerStream|TestCompileRouter|TestRouter)" -count=1'`
 
 Expected before the joint cutover: PASS for detached compilation and input isolation. The runtime-install and absence-of-`Reload` cases run in Task 9, where concurrent connections must observe exactly one immutable router each.
 
-- [ ] **Step 7: Commit immutable stream compilation**
+- [x] **Step 7: Commit immutable stream compilation**
 
 ```bash
 git add pkg/compiler pkg/stream
 git commit -m "refactor(stream): compile immutable router snapshots"
 ```
+
+**Acceptance record (2026-08-25):** Task 8 detached stream preparation was
+independently reviewed at `826badfe` after repairing legacy route-upstream
+precedence in the candidate closure and validating every route occurrence
+before any binding materialization. No Critical, Important, or Minor finding
+remains. Generation/compiler/stream package tests, focused race tests, lint,
+the `/plugins` HTTP+stream etcd tests, capability generation, build, boundary
+guards, and diff checks passed. The full etcd package's
+`TestDesiredBatchFromEtcdProviderAuthorityRequiresSnapshotTransfer` failure was
+reproduced unchanged on the Task 7 master baseline `9c46edda`; it remains a
+pre-existing fixture failure, not a Task 8 pass. Step 4 intentionally remains
+open for the Task 9 joint activation cutover.
 
 ---
 

@@ -611,7 +611,7 @@ Refresh this snapshot whenever integration HEAD changes.
 | CP6/C6.6 | **accepted** | integration/caller/boundary audit accepted from CP5 `8cae3365` |
 | local `master` merge | **accepted** | fast-forwarded to Task 6 acceptance `990deb01` |
 | Immutable Task 7 | **accepted** | independently reviewed implementation `1054da15`; local `master` fast-forwarded to closeout `9c46edda` |
-| Immutable Task 8 | **planned** | executable child plan `2026-08-25-immutable-task8-stream-snapshot.md` from accepted Task 7 baseline `9c46edda` |
+| Immutable Task 8 | **accepted** | independently reviewed implementation `826badfe`; detached stream snapshot only, with Task 9 retaining activation and connection retirement |
 
 ---
 

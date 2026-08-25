@@ -35,6 +35,7 @@ type PreparedGeneration struct {
 	bindingOps         effectiveBindingOps
 	trustedClientCAPEM []byte
 	httpSnapshot       *HTTPSnapshot
+	streamSnapshot     *StreamSnapshot
 
 	materializeMu    sync.Mutex
 	bindingOpsMu     sync.Mutex
@@ -113,6 +114,34 @@ func (prepared *PreparedGeneration) attachHTTP(snapshot *HTTPSnapshot) error {
 	return nil
 }
 
+// Stream returns the detached, authority-free stream snapshot prepared for
+// this generation. An HTTP-only or closed generation returns nil.
+func (prepared *PreparedGeneration) Stream() *StreamSnapshot {
+	if prepared == nil {
+		return nil
+	}
+	prepared.materializeMu.Lock()
+	defer prepared.materializeMu.Unlock()
+	if prepared.terminal {
+		return nil
+	}
+	return prepared.streamSnapshot
+}
+
+func (prepared *PreparedGeneration) attachStream(snapshot *StreamSnapshot) error {
+	if prepared == nil || snapshot == nil || snapshot.artifact.Domain != generation.DomainStream ||
+		snapshot.Revision() == 0 || snapshot.Router() == nil {
+		return ErrInvalidInput
+	}
+	prepared.materializeMu.Lock()
+	defer prepared.materializeMu.Unlock()
+	if prepared.terminal || prepared.streamSnapshot != nil {
+		return ErrInvalidInput
+	}
+	prepared.streamSnapshot = snapshot
+	return nil
+}
+
 // DiscardPrepared releases this generation only when set is its complete
 // publication identity.
 func (prepared *PreparedGeneration) DiscardPrepared(
@@ -169,6 +198,10 @@ func (prepared *PreparedGeneration) Close(ctx context.Context) error {
 			prepared.httpSnapshot.revoke()
 		}
 		prepared.httpSnapshot = nil
+		if prepared.streamSnapshot != nil {
+			prepared.streamSnapshot.revoke()
+		}
+		prepared.streamSnapshot = nil
 		prepared.attempt = PreparationAttempt{}
 		prepared.metadata = runtime.MetadataView{}
 		prepared.consumers = nil

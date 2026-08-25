@@ -103,6 +103,9 @@ func TestPreparedGenerationAccessorsAreInertAfterClose(t *testing.T) {
 			t.Fatal("ConsumerLookup() returned a live consumer after Close")
 		}
 	}
+	if prepared.HTTP() != nil || prepared.Stream() != nil {
+		t.Fatal("closed generation exposed a protocol snapshot")
+	}
 	if _, ok := previousLookup.ConsumerByID("consumer-1"); ok {
 		t.Fatal("previously returned ConsumerLookup remained live after Close")
 	}
@@ -392,6 +395,7 @@ func TestPreparedGenerationPublicAPIExposesNoRuntimeHandles(t *testing.T) {
 		"MetadataView":    {},
 		"ConsumerLookup":  {},
 		"HTTP":            {},
+		"Stream":          {},
 		"DiscardPrepared": {},
 		"Close":           {},
 	}
@@ -599,6 +603,7 @@ func assertPreparedGenerationMethodSet(t *testing.T) {
 	metadataType := reflect.TypeFor[runtime.MetadataView]()
 	consumerLookupType := reflect.TypeFor[base.ConsumerLookup]()
 	httpSnapshotType := reflect.TypeFor[*HTTPSnapshot]()
+	streamSnapshotType := reflect.TypeFor[*StreamSnapshot]()
 	errorType := reflect.TypeFor[error]()
 	expected := map[string]struct {
 		inputs  []reflect.Type
@@ -608,6 +613,7 @@ func assertPreparedGenerationMethodSet(t *testing.T) {
 		"MetadataView":   {outputs: []reflect.Type{metadataType}},
 		"ConsumerLookup": {outputs: []reflect.Type{consumerLookupType}},
 		"HTTP":           {outputs: []reflect.Type{httpSnapshotType}},
+		"Stream":         {outputs: []reflect.Type{streamSnapshotType}},
 		"DiscardPrepared": {
 			inputs: []reflect.Type{contextType, publicationType}, outputs: []reflect.Type{errorType},
 		},

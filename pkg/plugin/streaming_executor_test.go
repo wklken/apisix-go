@@ -1,14 +1,21 @@
 package plugin
 
 import (
+	"bufio"
 	"errors"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/compression"
 	corsplugin "github.com/wklken/apisix-go/pkg/plugin/cors"
@@ -19,6 +26,166 @@ type plan16StreamingPlugin struct {
 	closes   *int
 	finishes *int
 }
+
+type task10StreamingCloser struct {
+	name  string
+	order *[]string
+	err   error
+	panic any
+}
+
+func (c task10StreamingCloser) Close() error {
+	*c.order = append(*c.order, c.name)
+	if c.panic != nil {
+		panic(c.panic)
+	}
+	return c.err
+}
+
+type task10StreamingFinalizer struct {
+	name    string
+	order   *[]string
+	err     error
+	panic   any
+	cause   *error
+	started chan<- struct{}
+	release <-chan struct{}
+	calls   *atomic.Int32
+}
+
+func (f task10StreamingFinalizer) FinishStreamingResponse(cause error) error {
+	if f.calls != nil {
+		f.calls.Add(1)
+	}
+	if f.cause != nil {
+		*f.cause = cause
+	}
+	if f.order != nil {
+		*f.order = append(*f.order, f.name)
+	}
+	if f.started != nil {
+		f.started <- struct{}{}
+	}
+	if f.release != nil {
+		<-f.release
+	}
+	if f.panic != nil {
+		panic(f.panic)
+	}
+	return f.err
+}
+
+func TestStreamingFinishPanicDoesNotSkipRemainingCleanup(t *testing.T) {
+	panicValue := errors.New("finish panic")
+	order := make([]string, 0, 3)
+	finish := &streamingFinish{finalizers: []streamingFinalizerEntry{
+		{factory: "first", phase: PhaseBodyFilter, finalizer: task10StreamingFinalizer{name: "first", order: &order}},
+		{
+			factory: "panic", phase: PhaseBodyFilter,
+			finalizer: task10StreamingFinalizer{name: "panic", order: &order, panic: panicValue},
+		},
+		{factory: "last", phase: PhaseBodyFilter, finalizer: task10StreamingFinalizer{name: "last", order: &order}},
+	}}
+
+	result := finish.finish(nil)
+	if !reflect.DeepEqual(order, []string{"last", "panic", "first"}) {
+		t.Fatalf("finish order = %v, want reverse order with cleanup after panic", order)
+	}
+	if result.Err != nil || len(result.Panics) != 1 {
+		t.Fatalf("finish result = %#v, want one panic and no ordinary error", result)
+	}
+	got := result.Panics[0]
+	if got.Factory != "panic" || got.Phase != PhaseBodyFilter || got.Value != panicValue || len(got.Stack) == 0 {
+		t.Fatalf("finish panic = %#v, want attributed panic", got)
+	}
+}
+
+func TestStreamingFinishPreservesFirstOrdinaryError(t *testing.T) {
+	want := errors.New("close failed")
+	order := make([]string, 0, 2)
+	finish := &streamingFinish{closers: []streamingCloserEntry{
+		{
+			factory: "registered-first", phase: PhaseBodyFilter,
+			closer: task10StreamingCloser{name: "registered-first", order: &order, err: errors.New("later failure")},
+		},
+		{
+			factory: "registered-last", phase: PhaseBodyFilter,
+			closer: task10StreamingCloser{name: "registered-last", order: &order, err: want},
+		},
+	}}
+
+	result := finish.finish(nil)
+	if !errors.Is(result.Err, want) || len(result.Panics) != 0 {
+		t.Fatalf("finish result = %#v, want first reverse-order error", result)
+	}
+	if !reflect.DeepEqual(order, []string{"registered-last", "registered-first"}) {
+		t.Fatalf("closer order = %v, want reverse registration order", order)
+	}
+}
+
+func TestStreamingFinishConcurrentCallersWaitForCachedDetachedResult(t *testing.T) {
+	wantErr := errors.New("finish error")
+	panicValue := errors.New("finish panic")
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	var calls atomic.Int32
+	finish := &streamingFinish{finalizers: []streamingFinalizerEntry{
+		{
+			factory: "ordinary", phase: PhaseBodyFilter,
+			finalizer: task10StreamingFinalizer{err: wantErr},
+		},
+		{
+			factory: "blocking", phase: PhaseBodyFilter,
+			finalizer: task10StreamingFinalizer{
+				panic: panicValue, started: started, release: release, calls: &calls,
+			},
+		},
+	}}
+
+	const callers = 8
+	results := make(chan streamingFinishResult, callers)
+	var ready sync.WaitGroup
+	ready.Add(callers)
+	for range callers {
+		go func() {
+			ready.Done()
+			results <- finish.finish(nil)
+		}()
+	}
+	ready.Wait()
+	<-started
+	select {
+	case result := <-results:
+		t.Fatalf("concurrent finish returned before active cleanup completed: %#v", result)
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(release)
+
+	got := make([]streamingFinishResult, 0, callers)
+	for range callers {
+		got = append(got, <-results)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("finalizer calls = %d, want 1", calls.Load())
+	}
+	for index, result := range got {
+		if !errors.Is(result.Err, wantErr) || len(result.Panics) != 1 {
+			t.Fatalf("result[%d] = %#v, want cached error and panic", index, result)
+		}
+		panicErr := result.Panics[0]
+		if panicErr.Factory != "blocking" || panicErr.Value != panicValue || len(panicErr.Stack) == 0 {
+			t.Fatalf("result[%d] panic = %#v", index, panicErr)
+		}
+	}
+	if got[0].Panics[0] == got[1].Panics[0] || &got[0].Panics[0].Stack[0] == &got[1].Panics[0].Stack[0] {
+		t.Fatal("concurrent finish results share mutable panic or stack storage")
+	}
+}
+
+var (
+	_ io.Closer                       = task10StreamingCloser{}
+	_ base.StreamingResponseFinalizer = task10StreamingFinalizer{}
+)
 
 func resolvedPlan16Binding(t *testing.T, factory string, p Plugin, id string) Binding {
 	t.Helper()
@@ -143,13 +310,44 @@ func (p *plan16LateSourceProtocolPlugin) RunExclusiveProtocol(
 	return base.ProtocolResponded, r, apisixctx.ResponseSourceAPISIX, nil
 }
 
+type task10ProtocolPanicPlugin struct {
+	plan16ProtocolPlugin
+	beforePanic any
+	afterPanic  any
+	callNext    bool
+	returnErr   error
+}
+
+func (p *task10ProtocolPanicPlugin) RunExclusiveProtocol(
+	w http.ResponseWriter,
+	r *http.Request,
+	next http.Handler,
+) (base.ProtocolDisposition, *http.Request, apisixctx.ResponseSource, error) {
+	if p.beforePanic != nil {
+		panic(p.beforePanic)
+	}
+	if p.callNext && next != nil {
+		next.ServeHTTP(w, r)
+	}
+	if p.afterPanic != nil {
+		panic(p.afterPanic)
+	}
+	if p.returnErr != nil {
+		return base.ProtocolResponded, r, apisixctx.ResponseSourceUnknown, p.returnErr
+	}
+	return base.ProtocolResponded, r, apisixctx.ResponseSourceAPISIX, nil
+}
+
 type plan16CompressionPlugin struct {
 	base.BasePlugin
-	coding       compression.Coding
-	rank         int
-	eligible     func(compression.ResponseMeta) bool
-	registerCall *int
-	wrapCall     *int
+	coding        compression.Coding
+	rank          int
+	eligible      func(compression.ResponseMeta) bool
+	registerCall  *int
+	wrapCall      *int
+	registerPanic any
+	wrapPanic     any
+	finalizer     base.StreamingResponseFinalizer
 }
 
 type plan16BarePlugin struct{ base.BasePlugin }
@@ -169,6 +367,9 @@ func (p *plan16CompressionPlugin) RunStreamingHeaderFilter(_ *http.Request, _ *b
 }
 
 func (p *plan16CompressionPlugin) RegisterCompressionOffers(*http.Request, *compression.State) []compression.Offer {
+	if p.registerPanic != nil {
+		panic(p.registerPanic)
+	}
 	if p.registerCall != nil {
 		*p.registerCall++
 	}
@@ -181,13 +382,639 @@ func (p *plan16CompressionPlugin) WrapCompression(
 	_ *compression.State,
 	_ compression.Decision,
 ) (http.ResponseWriter, error) {
+	if p.wrapPanic != nil {
+		panic(p.wrapPanic)
+	}
 	if p.wrapCall != nil {
 		*p.wrapCall++
+	}
+	if p.finalizer != nil {
+		return &task10FinalizingWriter{ResponseWriter: w, finalizer: p.finalizer}, nil
 	}
 	return w, nil
 }
 
 var _ CompressionOfferPlugin = (*plan16CompressionPlugin)(nil)
+
+type task10HeaderPanicPlugin struct {
+	base.BasePlugin
+	panicValue any
+}
+
+func (*task10HeaderPanicPlugin) Init() error                            { return nil }
+func (*task10HeaderPanicPlugin) PostInit() error                        { return nil }
+func (*task10HeaderPanicPlugin) Config() any                            { return nil }
+func (*task10HeaderPanicPlugin) Handler(next http.Handler) http.Handler { return next }
+func (p *task10HeaderPanicPlugin) RunStreamingHeaderFilter(
+	*http.Request,
+	*base.StreamingResponseState,
+) error {
+	panic(p.panicValue)
+}
+
+type task10BodyPanicPlugin struct {
+	base.BasePlugin
+	panicValue any
+	returned   http.ResponseWriter
+}
+
+type task10FinalizingWriter struct {
+	http.ResponseWriter
+	finalizer base.StreamingResponseFinalizer
+}
+
+func (w *task10FinalizingWriter) FinishStreamingResponse(cause error) error {
+	return w.finalizer.FinishStreamingResponse(cause)
+}
+
+type task10FinalizerBodyPlugin struct {
+	base.BasePlugin
+	finalizer base.StreamingResponseFinalizer
+}
+
+func (*task10FinalizerBodyPlugin) Init() error                            { return nil }
+func (*task10FinalizerBodyPlugin) PostInit() error                        { return nil }
+func (*task10FinalizerBodyPlugin) Config() any                            { return nil }
+func (*task10FinalizerBodyPlugin) Handler(next http.Handler) http.Handler { return next }
+func (p *task10FinalizerBodyPlugin) WrapStreamingResponse(
+	w http.ResponseWriter,
+	_ *http.Request,
+) (http.ResponseWriter, error) {
+	return &task10FinalizingWriter{ResponseWriter: w, finalizer: p.finalizer}, nil
+}
+
+func (*task10BodyPanicPlugin) Init() error                            { return nil }
+func (*task10BodyPanicPlugin) PostInit() error                        { return nil }
+func (*task10BodyPanicPlugin) Config() any                            { return nil }
+func (*task10BodyPanicPlugin) Handler(next http.Handler) http.Handler { return next }
+func (p *task10BodyPanicPlugin) WrapStreamingResponse(
+	w http.ResponseWriter,
+	_ *http.Request,
+) (http.ResponseWriter, error) {
+	if p.panicValue != nil {
+		panic(p.panicValue)
+	}
+	if p.returned != nil {
+		return p.returned, nil
+	}
+	return w, nil
+}
+
+type task10ModeConfig struct{}
+
+func (task10ModeConfig) DescribeResponseMode() (base.ResponseModeDescriptor, error) {
+	return base.ResponseModeDescriptor{
+		Modes: base.ResponseModeBounded | base.ResponseModeStreaming,
+	}, nil
+}
+
+type task10ModePanicPlugin struct {
+	base.BasePlugin
+	panicValue any
+}
+
+func (*task10ModePanicPlugin) Init() error                            { return nil }
+func (*task10ModePanicPlugin) PostInit() error                        { return nil }
+func (*task10ModePanicPlugin) Config() any                            { return task10ModeConfig{} }
+func (*task10ModePanicPlugin) Handler(next http.Handler) http.Handler { return next }
+func (p *task10ModePanicPlugin) SelectResponseMode(*http.Request) base.RequestResponseMode {
+	panic(p.panicValue)
+}
+
+func (*task10ModePanicPlugin) RunBufferedBodyFilter(*http.Request, *base.ResponseState) error {
+	return nil
+}
+
+func (*task10ModePanicPlugin) WrapStreamingResponse(
+	w http.ResponseWriter,
+	_ *http.Request,
+) (http.ResponseWriter, error) {
+	return w, nil
+}
+
+type task10MinimalWriter struct {
+	header     http.Header
+	writePanic any
+}
+
+func (w *task10MinimalWriter) Header() http.Header {
+	if w.header == nil {
+		w.header = make(http.Header)
+	}
+	return w.header
+}
+
+func (*task10MinimalWriter) WriteHeader(int) {}
+
+func (w *task10MinimalWriter) Write(body []byte) (int, error) {
+	if w.writePanic != nil {
+		panic(w.writePanic)
+	}
+	return len(body), nil
+}
+
+type task10AllOptionalWriter struct{ task10MinimalWriter }
+
+func (*task10AllOptionalWriter) Flush()                   {}
+func (*task10AllOptionalWriter) FlushError() error        { return nil }
+func (*task10AllOptionalWriter) CloseNotify() <-chan bool { return make(chan bool) }
+func (*task10AllOptionalWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	return nil, nil, nil
+}
+
+func (*task10AllOptionalWriter) ReadFrom(reader io.Reader) (int64, error) {
+	return io.Copy(io.Discard, reader)
+}
+func (*task10AllOptionalWriter) SetReadDeadline(time.Time) error  { return nil }
+func (*task10AllOptionalWriter) SetWriteDeadline(time.Time) error { return nil }
+func (*task10AllOptionalWriter) EnableFullDuplex() error          { return nil }
+func (*task10AllOptionalWriter) Push(string, *http.PushOptions) error {
+	return nil
+}
+func (*task10AllOptionalWriter) WriteString(value string) (int, error) { return len(value), nil }
+
+type task10PanicOptionalWriter struct{}
+
+func (w *task10PanicOptionalWriter) Header() http.Header {
+	panic("Header")
+}
+func (*task10PanicOptionalWriter) WriteHeader(int)           { panic("WriteHeader") }
+func (*task10PanicOptionalWriter) Write([]byte) (int, error) { panic("Write") }
+func (*task10PanicOptionalWriter) Flush()                    { panic("Flush") }
+func (*task10PanicOptionalWriter) FlushError() error         { panic("FlushError") }
+func (*task10PanicOptionalWriter) CloseNotify() <-chan bool  { panic("CloseNotify") }
+func (*task10PanicOptionalWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	panic("Hijack")
+}
+func (*task10PanicOptionalWriter) ReadFrom(io.Reader) (int64, error) { panic("ReadFrom") }
+func (*task10PanicOptionalWriter) SetReadDeadline(time.Time) error   { panic("SetReadDeadline") }
+func (*task10PanicOptionalWriter) SetWriteDeadline(time.Time) error  { panic("SetWriteDeadline") }
+func (*task10PanicOptionalWriter) EnableFullDuplex() error           { panic("EnableFullDuplex") }
+func (*task10PanicOptionalWriter) Push(string, *http.PushOptions) error {
+	panic("Push")
+}
+func (*task10PanicOptionalWriter) WriteString(string) (int, error) { panic("WriteString") }
+
+func captureTask10Panic(call func()) (recovered any) {
+	defer func() { recovered = recover() }()
+	call()
+	return nil
+}
+
+func requireTask10StreamingPanic(t *testing.T, recovered any, factory, operation string) {
+	t.Helper()
+	panicErr, ok := recovered.(*PanicError)
+	if !ok {
+		t.Fatalf("%s panic = %T(%v), want *PanicError", operation, recovered, recovered)
+	}
+	if panicErr.Factory != factory || panicErr.Phase != PhaseBodyFilter || panicErr.Value != operation ||
+		len(panicErr.Stack) == 0 {
+		t.Fatalf(
+			"%s panic = %#v, want factory=%q phase=%q value=%q",
+			operation,
+			panicErr,
+			factory,
+			PhaseBodyFilter,
+			operation,
+		)
+	}
+}
+
+func TestStreamingHeaderPanicIsAttributed(t *testing.T) {
+	plugin := &task10HeaderPanicPlugin{panicValue: errors.New("header panic")}
+	plugin.Name = "cors"
+	binding := resolvedPlan16Binding(t, "cors", plugin, "header-panic")
+	executor, err := NewStreamingResponseExecutor([]Binding{binding})
+	if err != nil {
+		t.Fatalf("NewStreamingResponseExecutor() error = %v", err)
+	}
+	err = executor.runHeaderFilters(
+		httptest.NewRequest(http.MethodGet, "/", nil),
+		&base.StreamingResponseState{Status: http.StatusOK, Header: make(http.Header)},
+	)
+	var panicErr *PanicError
+	if !errors.As(err, &panicErr) || panicErr.Factory != "cors" || panicErr.Phase != PhaseHeaderFilter ||
+		panicErr.Value != plugin.panicValue {
+		t.Fatalf("header error = %#v, want attributed panic", err)
+	}
+}
+
+func TestStreamingModeSelectorPanicIsAttributed(t *testing.T) {
+	plugin := &task10ModePanicPlugin{panicValue: errors.New("selector panic")}
+	plugin.Name = "ai-rate-limiting"
+	binding := resolvedPlan16Binding(t, "ai-rate-limiting", plugin, "selector-panic")
+	executor, err := NewStreamingResponseExecutor([]Binding{binding})
+	if err != nil {
+		t.Fatalf("NewStreamingResponseExecutor() error = %v", err)
+	}
+	_, err = executor.wrapBody(
+		&task10MinimalWriter{}, httptest.NewRequest(http.MethodGet, "/", nil), &streamingFinish{},
+	)
+	var panicErr *PanicError
+	if !errors.As(err, &panicErr) || panicErr.Factory != "ai-rate-limiting" ||
+		panicErr.Phase != PhaseBodyFilter || panicErr.Value != plugin.panicValue {
+		t.Fatalf("selector error = %#v, want attributed panic", err)
+	}
+}
+
+func TestStreamingResponseWrapperConstructionPanicIsAttributed(t *testing.T) {
+	plugin := &task10BodyPanicPlugin{panicValue: errors.New("wrapper panic")}
+	plugin.Name = "proxy-buffering"
+	binding := resolvedPlan16Binding(t, "proxy-buffering", plugin, "wrapper-panic")
+	executor, err := NewStreamingResponseExecutor([]Binding{binding})
+	if err != nil {
+		t.Fatalf("NewStreamingResponseExecutor() error = %v", err)
+	}
+	_, err = executor.wrapBody(
+		&task10MinimalWriter{}, httptest.NewRequest(http.MethodGet, "/", nil), &streamingFinish{},
+	)
+	var panicErr *PanicError
+	if !errors.As(err, &panicErr) || panicErr.Factory != "proxy-buffering" ||
+		panicErr.Phase != PhaseBodyFilter || panicErr.Value != plugin.panicValue {
+		t.Fatalf("wrapper error = %#v, want attributed panic", err)
+	}
+}
+
+func TestCompressionRegistrationPanicIsAttributed(t *testing.T) {
+	plugin := &plan16CompressionPlugin{coding: compression.Gzip, rank: 1, registerPanic: errors.New("register panic")}
+	plugin.Name = "gzip"
+	binding := resolvedPlan16Binding(t, "gzip", plugin, "register-panic")
+	executor, err := NewStreamingResponseExecutor([]Binding{binding})
+	if err != nil {
+		t.Fatalf("NewStreamingResponseExecutor() error = %v", err)
+	}
+	_, _, err = executor.registerCompressionOffers(httptest.NewRequest(http.MethodGet, "/", nil))
+	var panicErr *PanicError
+	if !errors.As(err, &panicErr) || panicErr.Factory != "gzip" || panicErr.Phase != PhaseBodyFilter ||
+		panicErr.Value != plugin.registerPanic {
+		t.Fatalf("registration error = %#v, want attributed panic", err)
+	}
+}
+
+func TestCompressionWrapperPanicIsAttributed(t *testing.T) {
+	plugin := &plan16CompressionPlugin{coding: compression.Gzip, rank: 1, wrapPanic: errors.New("wrap panic")}
+	plugin.Name = "gzip"
+	binding := resolvedPlan16Binding(t, "gzip", plugin, "wrap-panic")
+	executor, err := NewStreamingResponseExecutor([]Binding{binding})
+	if err != nil {
+		t.Fatalf("NewStreamingResponseExecutor() error = %v", err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	request.Header.Set("Accept-Encoding", "gzip")
+	request, negotiation, err := executor.registerCompressionOffers(request)
+	if err != nil {
+		t.Fatalf("registerCompressionOffers() error = %v", err)
+	}
+	_, err = (&streamingFinish{compression: negotiation}).applyCompression(
+		&task10MinimalWriter{}, request, http.StatusOK,
+	)
+	var panicErr *PanicError
+	if !errors.As(err, &panicErr) || panicErr.Factory != "gzip" || panicErr.Phase != PhaseBodyFilter ||
+		panicErr.Value != plugin.wrapPanic {
+		t.Fatalf("compression wrapper error = %#v, want attributed panic", err)
+	}
+}
+
+func TestStreamingReturnedWriterPanicsAreAttributedForEveryOperation(t *testing.T) {
+	plugin := &task10BodyPanicPlugin{returned: &task10PanicOptionalWriter{}}
+	plugin.Name = "proxy-buffering"
+	binding := resolvedPlan16Binding(t, "proxy-buffering", plugin, "writer-panic")
+	executor, err := NewStreamingResponseExecutor([]Binding{binding})
+	if err != nil {
+		t.Fatalf("NewStreamingResponseExecutor() error = %v", err)
+	}
+	w, err := executor.wrapBody(
+		&task10MinimalWriter{}, httptest.NewRequest(http.MethodGet, "/", nil), &streamingFinish{},
+	)
+	if err != nil {
+		t.Fatalf("wrapBody() error = %v", err)
+	}
+	tests := []struct {
+		name string
+		call func()
+	}{
+		{"Header", func() { _ = w.Header() }},
+		{"WriteHeader", func() { w.WriteHeader(http.StatusOK) }},
+		{"Write", func() { _, _ = w.Write(nil) }},
+		{"WriteString", func() { _, _ = io.WriteString(w, "x") }},
+		{"ReadFrom", func() { _, _ = w.(io.ReaderFrom).ReadFrom(strings.NewReader("x")) }},
+		{"Flush", func() { w.(http.Flusher).Flush() }},
+		{"FlushError", func() { _ = w.(interface{ FlushError() error }).FlushError() }},
+		{"Hijack", func() { _, _, _ = w.(http.Hijacker).Hijack() }},
+		{"CloseNotify", func() { _ = w.(interface{ CloseNotify() <-chan bool }).CloseNotify() }},
+		{"Push", func() { _ = w.(http.Pusher).Push("/x", nil) }},
+		{"SetReadDeadline", func() { _ = http.NewResponseController(w).SetReadDeadline(time.Now()) }},
+		{"SetWriteDeadline", func() { _ = http.NewResponseController(w).SetWriteDeadline(time.Now()) }},
+		{"EnableFullDuplex", func() { _ = http.NewResponseController(w).EnableFullDuplex() }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			requireTask10StreamingPanic(t, captureTask10Panic(test.call), "proxy-buffering", test.name)
+		})
+	}
+}
+
+func TestStreamingWriterGuardPreservesExactOptionalInterfaceSet(t *testing.T) {
+	plugin := &task10BodyPanicPlugin{}
+	plugin.Name = "proxy-buffering"
+	binding := resolvedPlan16Binding(t, "proxy-buffering", plugin, "optional-set")
+	executor, err := NewStreamingResponseExecutor([]Binding{binding})
+	if err != nil {
+		t.Fatalf("NewStreamingResponseExecutor() error = %v", err)
+	}
+	tests := []struct {
+		name       string
+		downstream http.ResponseWriter
+		want       bool
+	}{
+		{name: "unsupported", downstream: &task10MinimalWriter{}, want: false},
+		{name: "supported", downstream: &task10AllOptionalWriter{}, want: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			wrapped, err := executor.wrapBody(
+				test.downstream, httptest.NewRequest(http.MethodGet, "/", nil), &streamingFinish{},
+			)
+			if err != nil {
+				t.Fatalf("wrapBody() error = %v", err)
+			}
+			got := []bool{
+				implements[http.Flusher](wrapped),
+				implements[interface{ FlushError() error }](wrapped),
+				implements[interface{ CloseNotify() <-chan bool }](wrapped),
+				implements[http.Hijacker](wrapped),
+				implements[io.ReaderFrom](wrapped),
+				implements[interface {
+					SetReadDeadline(time.Time) error
+					SetWriteDeadline(time.Time) error
+				}](wrapped),
+				implements[interface{ EnableFullDuplex() error }](wrapped),
+				implements[http.Pusher](wrapped),
+				implements[io.StringWriter](wrapped),
+			}
+			for index, supported := range got {
+				if supported != test.want {
+					t.Fatalf("optional capability[%d] = %t, want %t (writer=%T)", index, supported, test.want, wrapped)
+				}
+			}
+		})
+	}
+}
+
+func TestStreamingWriterGuardPreservesRawDownstreamPanicIdentity(t *testing.T) {
+	want := errors.New("downstream writer panic")
+	plugin := &task10BodyPanicPlugin{}
+	plugin.Name = "proxy-buffering"
+	binding := resolvedPlan16Binding(t, "proxy-buffering", plugin, "downstream-panic")
+	executor, err := NewStreamingResponseExecutor([]Binding{binding})
+	if err != nil {
+		t.Fatalf("NewStreamingResponseExecutor() error = %v", err)
+	}
+	w, err := executor.wrapBody(
+		&task10MinimalWriter{writePanic: want},
+		httptest.NewRequest(http.MethodGet, "/", nil),
+		&streamingFinish{},
+	)
+	if err != nil {
+		t.Fatalf("wrapBody() error = %v", err)
+	}
+	recovered := captureTask10Panic(func() { _, _ = w.Write(nil) })
+	if recovered != want {
+		t.Fatalf("downstream panic = %#v, want original %#v", recovered, want)
+	}
+}
+
+func task10ProtocolExecutor(t *testing.T, terminal base.ExclusiveProtocolTerminal) *StreamingResponseExecutor {
+	t.Helper()
+	executor, err := NewStreamingResponseExecutor(nil)
+	if err != nil {
+		t.Fatalf("NewStreamingResponseExecutor() error = %v", err)
+	}
+	executor, err = executor.WithRouteTerminals([]RouteTerminalCandidate{{
+		Identity: "ai-proxy", Protocol: ProtocolAI, Scope: ScopeRoute,
+		Provenance: ResourceProvenance{Kind: ResourceRoute, ID: "protocol-panic"},
+		Terminal:   terminal,
+	}})
+	if err != nil {
+		t.Fatalf("WithRouteTerminals() error = %v", err)
+	}
+	return executor
+}
+
+func TestProtocolPanicBeforeNextIsAttributed(t *testing.T) {
+	want := errors.New("before next")
+	terminal := &task10ProtocolPanicPlugin{beforePanic: want}
+	terminal.Name = "terminal"
+	_, _, err := task10ProtocolExecutor(t, terminal).RunExclusiveProtocol(
+		&task10MinimalWriter{}, httptest.NewRequest(http.MethodGet, "/", nil), http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}),
+	)
+	var panicErr *PanicError
+	if !errors.As(err, &panicErr) || panicErr.Factory != "ai-proxy" || panicErr.Phase != PhaseProtocol ||
+		panicErr.Value != want {
+		t.Fatalf("protocol error = %#v, want attributed before-next panic", err)
+	}
+}
+
+func TestProtocolPanicAfterNextIsAttributed(t *testing.T) {
+	want := errors.New("after next")
+	terminal := &task10ProtocolPanicPlugin{callNext: true, afterPanic: want}
+	terminal.Name = "terminal"
+	nextCalls := 0
+	_, _, err := task10ProtocolExecutor(t, terminal).RunExclusiveProtocol(
+		&task10MinimalWriter{},
+		httptest.NewRequest(http.MethodGet, "/", nil),
+		http.HandlerFunc(func(http.ResponseWriter, *http.Request) { nextCalls++ }),
+	)
+	var panicErr *PanicError
+	if nextCalls != 1 || !errors.As(err, &panicErr) || panicErr.Factory != "ai-proxy" ||
+		panicErr.Phase != PhaseProtocol || panicErr.Value != want {
+		t.Fatalf("protocol next/error = %d/%#v, want one next and attributed after-next panic", nextCalls, err)
+	}
+}
+
+func TestProtocolNextPanicEscapesUnchanged(t *testing.T) {
+	want := errors.New("raw downstream panic")
+	terminal := &task10ProtocolPanicPlugin{callNext: true}
+	terminal.Name = "terminal"
+	recovered := captureTask10Panic(func() {
+		_, _, _ = task10ProtocolExecutor(t, terminal).RunExclusiveProtocol(
+			&task10MinimalWriter{},
+			httptest.NewRequest(http.MethodGet, "/", nil),
+			http.HandlerFunc(func(http.ResponseWriter, *http.Request) { panic(want) }),
+		)
+	})
+	if recovered != want {
+		t.Fatalf("next panic = %#v, want original %#v", recovered, want)
+	}
+}
+
+func task10FinalizerExecutor(
+	t *testing.T,
+	finalizer base.StreamingResponseFinalizer,
+) *StreamingResponseExecutor {
+	t.Helper()
+	plugin := &task10FinalizerBodyPlugin{finalizer: finalizer}
+	plugin.Name = "proxy-buffering"
+	binding := resolvedPlan16Binding(t, "proxy-buffering", plugin, "finish-precedence")
+	executor, err := NewStreamingResponseExecutor([]Binding{binding})
+	if err != nil {
+		t.Fatalf("NewStreamingResponseExecutor() error = %v", err)
+	}
+	return executor
+}
+
+func TestStreamingFinishPanicIsPrimaryWithoutTerminalPanic(t *testing.T) {
+	want := errors.New("finish panic")
+	executor := task10FinalizerExecutor(t, task10StreamingFinalizer{panic: want})
+	recovered := captureTask10Panic(func() {
+		executor.Then(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})).ServeHTTP(
+			httptest.NewRecorder(),
+			httptest.NewRequest(http.MethodGet, "/", nil),
+		)
+	})
+	panicErr, ok := recovered.(*PanicError)
+	if !ok || panicErr.Factory != "proxy-buffering" || panicErr.Phase != PhaseBodyFilter || panicErr.Value != want {
+		t.Fatalf("finish panic = %#v, want attributed primary panic", recovered)
+	}
+}
+
+func TestStreamingFinishPanicWinsOverOrdinaryProtocolError(t *testing.T) {
+	want := errors.New("finish panic")
+	executor := task10FinalizerExecutor(t, task10StreamingFinalizer{panic: want})
+	terminal := &task10ProtocolPanicPlugin{returnErr: errors.New("protocol error")}
+	terminal.Name = "terminal"
+	var err error
+	executor, err = executor.WithRouteTerminals([]RouteTerminalCandidate{{
+		Identity: "ai-proxy", Protocol: ProtocolAI, Scope: ScopeRoute,
+		Provenance: ResourceProvenance{Kind: ResourceRoute, ID: "finish-precedence"},
+		Terminal:   terminal,
+	}})
+	if err != nil {
+		t.Fatalf("WithRouteTerminals() error = %v", err)
+	}
+	recovered := captureTask10Panic(func() {
+		executor.Then(nil).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
+	})
+	panicErr, ok := recovered.(*PanicError)
+	if !ok || panicErr.Factory != "proxy-buffering" || panicErr.Value != want {
+		t.Fatalf("finish panic = %#v, want finish panic ahead of ordinary protocol error", recovered)
+	}
+}
+
+func TestStreamingTerminalPanicPreservesIdentityAndUsesStableFinishCause(t *testing.T) {
+	want := errors.New("sensitive terminal panic")
+	var cause error
+	executor := task10FinalizerExecutor(t, task10StreamingFinalizer{cause: &cause})
+	recovered := captureTask10Panic(func() {
+		executor.Then(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { panic(want) })).ServeHTTP(
+			httptest.NewRecorder(),
+			httptest.NewRequest(http.MethodGet, "/", nil),
+		)
+	})
+	if recovered != want {
+		t.Fatalf("terminal panic = %#v, want original %#v", recovered, want)
+	}
+	if cause != errStreamingPanic {
+		t.Fatalf("finish cause = %#v, want stable errStreamingPanic", cause)
+	}
+	if strings.Contains(cause.Error(), "sensitive terminal panic") {
+		t.Fatalf("finish cause disclosed raw panic: %q", cause)
+	}
+}
+
+func TestStreamingOrdinaryFinishErrorKeepsCommitPolicy(t *testing.T) {
+	want := errors.New("finish error")
+	t.Run("precommit stable error", func(t *testing.T) {
+		executor := task10FinalizerExecutor(t, task10StreamingFinalizer{err: want})
+		response := httptest.NewRecorder()
+		recovered := captureTask10Panic(func() {
+			executor.Then(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})).ServeHTTP(
+				response,
+				httptest.NewRequest(http.MethodGet, "/", nil),
+			)
+		})
+		if recovered != nil || response.Code != http.StatusInternalServerError {
+			t.Fatalf("precommit finish = panic:%#v status:%d, want stable 500", recovered, response.Code)
+		}
+	})
+	t.Run("postcommit abort", func(t *testing.T) {
+		executor := task10FinalizerExecutor(t, task10StreamingFinalizer{err: want})
+		recovered := captureTask10Panic(func() {
+			executor.Then(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte("committed"))
+			})).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
+		})
+		if recovered != http.ErrAbortHandler {
+			t.Fatalf("postcommit finish panic = %#v, want http.ErrAbortHandler", recovered)
+		}
+	})
+}
+
+func TestStreamingCommitPanicPreservesIdentityAndUsesStableFinishCause(t *testing.T) {
+	want := errors.New("sensitive commit panic")
+	var cause error
+	executor := task10FinalizerExecutor(t, task10StreamingFinalizer{cause: &cause})
+	state := &base.ResponseState{Status: http.StatusOK, Header: make(http.Header)}
+	recovered := captureTask10Panic(func() {
+		_ = executor.CommitResponse(
+			httptest.NewRecorder(),
+			httptest.NewRequest(http.MethodGet, "/", nil),
+			state,
+			func(http.ResponseWriter, *base.ResponseState) { panic(want) },
+		)
+	})
+	if recovered != want || cause != errStreamingPanic {
+		t.Fatalf("commit panic/cause = %#v/%#v, want original/stable sentinel", recovered, cause)
+	}
+}
+
+func TestStreamingAdditionalFinishPanicIsLoggedWithoutReplacingPrimary(t *testing.T) {
+	bodyValue := errors.New("body secret")
+	compressionValue := errors.New("compression secret")
+	bodyFinalizer := task10StreamingFinalizer{panic: bodyValue}
+	compressionFinalizer := task10StreamingFinalizer{panic: compressionValue}
+	bodyPlugin := &task10FinalizerBodyPlugin{finalizer: bodyFinalizer}
+	bodyPlugin.Name = "proxy-buffering"
+	compressionPlugin := &plan16CompressionPlugin{
+		coding: compression.Gzip, rank: 1, finalizer: compressionFinalizer,
+	}
+	compressionPlugin.Name = "gzip"
+	executor, err := NewStreamingResponseExecutor([]Binding{
+		resolvedPlan16Binding(t, "proxy-buffering", bodyPlugin, "body-finish"),
+		resolvedPlan16Binding(t, "gzip", compressionPlugin, "compression-finish"),
+	})
+	if err != nil {
+		t.Fatalf("NewStreamingResponseExecutor() error = %v", err)
+	}
+	observed := make(chan logger.Entry, 1)
+	stopObserver := logger.ReplaceObserver(t.Name(), func(entry logger.Entry) {
+		if strings.Contains(entry.Message, "additional streaming finish panic") {
+			observed <- entry
+		}
+	})
+	t.Cleanup(stopObserver)
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	request.Header.Set("Accept-Encoding", "gzip")
+	recovered := captureTask10Panic(func() {
+		executor.Then(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte("committed"))
+		})).ServeHTTP(httptest.NewRecorder(), request)
+	})
+	panicErr, ok := recovered.(*PanicError)
+	if !ok || panicErr.Factory != "gzip" || panicErr.Value != compressionValue {
+		t.Fatalf("primary finish panic = %#v, want last-registered compression finalizer panic", recovered)
+	}
+	select {
+	case entry := <-observed:
+		if !strings.Contains(entry.Message, `factory="proxy-buffering"`) ||
+			!strings.Contains(entry.Message, `phase="body_filter"`) ||
+			strings.Contains(entry.Message, "body secret") {
+			t.Fatalf("additional finish log = %q", entry.Message)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("additional finish panic was not logged")
+	}
+}
 
 func TestStreamingExecutorRegistersCompressionAndWrapsOnlyFrozenWinner(t *testing.T) {
 	gzipRegisters, gzipWraps := 0, 0

@@ -2,11 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add one immutable named-task binding contract, inject exact plugin task owners during effective binding materialization, integrate the generation/request ownership migrations, and make a repository AST gate reject every remaining unowned production goroutine.
+**Goal:** Add one immutable named-task binding contract, inject exact plugin task owners during effective binding materialization, integrate the generation/request ownership migrations, and make a repository syntax-plus-type gate reject every remaining unowned production goroutine.
 
-**Architecture:** `runtime.TaskRegistry` remains the only generation task registry and `RequestTaskGroup` remains the only request/connection join primitive. A new concrete `runtime.TaskOwner` binds one registry, immutable owner prefix, and immutable criticality; the compiler derives a bounded non-sensitive plugin prefix from a canonical hash of every field in the already-validated `selected.instance`, while shared proxy/file-writer resources and the persistent stream runtime use their own lifecycle-local core registries rather than borrowing a generation registry. The final AST gate scans production syntax without package allowlists and rejects both raw `go` statements and syntactic `sync.WaitGroup.Go` admissions outside the two canonical runtime primitives.
+**Architecture:** `runtime.TaskRegistry` remains the only generation task registry and `RequestTaskGroup` remains the only request/connection join primitive. A new concrete `runtime.TaskOwner` binds one registry, immutable owner prefix, and immutable criticality; the compiler derives a bounded non-sensitive plugin prefix from a canonical hash of every field in the already-validated `selected.instance`, while shared proxy/file-writer resources and the persistent stream runtime use their own lifecycle-local core registries rather than borrowing a generation registry. The final no-allowlist gate scans raw `go` syntax and uses `go/types` method identity for `sync.WaitGroup.Go`, so pointer, alias, embedded, constructor, and selector forms cannot evade ownership enforcement.
 
-**Tech Stack:** Go 1.26 standard library (`context`, `go/ast`, `go/parser`, `go/token`, `io/fs`, `path/filepath`, `sync`), existing `runtime.TaskRegistry`, `runtime.RequestTaskGroup`, compiler effective binding materialization, focused/race Go tests, golangci-lint, and the repository build.
+**Tech Stack:** Go 1.26 standard library (`context`, `encoding/json`, `go/ast`, `go/importer`, `go/parser`, `go/token`, `go/types`, `io`, `io/fs`, `os`, `os/exec`, `path/filepath`, `sync`), existing `runtime.TaskRegistry`, `runtime.RequestTaskGroup`, compiler effective binding materialization, focused/race Go tests, golangci-lint, and the repository build.
 
 **Spec:** Task 11, lines 1961-2038 of `docs/superpowers/plans/2026-08-23-immutable-compiler-plugin-runtime.md`; retryable teardown prerequisite `docs/superpowers/plans/2026-08-26-immutable-task11-retryable-teardown-residuals.md`; generation migration plan `docs/superpowers/plans/2026-08-26-immutable-task11-generation-background-ownership.md`; request migration plan `docs/superpowers/plans/2026-08-26-immutable-task11-request-concurrency-ownership.md`.
 
@@ -23,7 +23,7 @@
 - Shared resources must follow their actual lifecycle. A factory-wide shared `proxy.Cluster`, the process-shared file-writer registry, and the persistent stream runtime must not attach work to the first generation that happens to construct or use them.
 - Plugin owner strings must never embed raw `InstanceKey.String()`, resource IDs, newlines, slashes, configuration values, or attempt bytes. The compiler emits only a sanitized 1-48 byte factory segment plus a 64-character lower-case SHA-256 digest of the complete canonical `InstanceKey` identity.
 - Do not edit or stage the four user-owned untracked review documents under `docs/reviews/`.
-- This plan owns only the shared runtime/compiler contract, the error-log observer seam, cross-plan integration, and the final AST gate. Generation/background production migrations belong to the generation plan; request/connection migrations belong to the request plan.
+- This plan owns only the shared runtime/compiler contract, the error-log observer seam, cross-plan integration, and the final syntax-plus-type goroutine gate. Generation/background production migrations belong to the generation plan; request/connection migrations belong to the request plan.
 - No push or PR is authorized. Each implementation task may create a local reviewed commit for integration.
 
 ---
@@ -37,6 +37,7 @@
 5. The four target directories currently contain 32 raw production `go` statements in 20 files and nine production `sync.WaitGroup.Go` calls. The raw inventory additionally reveals `pkg/plugin/rocketmq_logger/plugin.go`, which the stale top-level Files list omitted.
 6. `proxy.Cluster` is interned in a factory-wide `runtime.ResourceRegistry` by configuration digest and can be shared by N and N+1. Binding active-health work to N's `PreparedGeneration.tasks` would cancel a cluster still leased by N+1.
 7. `file_logger.sharedFileWriters` is process-shared and starts/stops its signal watcher as the path registry transitions between zero/non-zero leases. `stream.Runtime` also outlives individual prepared generations and switches routers through a lease source. Both require lifecycle-local core registries.
+8. `golang.org/x/tools/go/packages` is not present in `go.mod`; historical `go.sum` module-file checksums are not an available dependency. The goroutine gate therefore uses standard-library `go/types` plus `go list -deps -export -json`, adds no module dependency, and fails closed if any production Go file in the scanned roots is not in the typed package set.
 
 ---
 
@@ -188,7 +189,7 @@ Call sites must additionally obey all of these rules:
 | Retryable teardown plan | files named in `2026-08-26-immutable-task11-retryable-teardown-residuals.md` | retryable teardown and residual semantics required by generation-owned shutdown | may run after its own declared prerequisites; must be integrated before generation work starts |
 | Generation plan | files named in `2026-08-26-immutable-task11-generation-background-ownership.md` | all generation/shared/core background loops and shutdown helpers migrated | must start from one reviewed head containing C Task 2 and the complete teardown plan; it may edit the remaining error-log shutdown helper only after C is integrated |
 | Request plan | files named in `2026-08-26-immutable-task11-request-concurrency-ownership.md` | all request/connection concurrency migrated with unchanged `RequestTaskGroup` API | may start from C Task 1; any AI shared call site overlapping teardown/generation work is serialized from their integrated head rather than developed in parallel |
-| Contract C, Task 5 | create `pkg/runtime/goroutine_contract_test.go` | syntax gate for raw `go` and `sync.WaitGroup.Go` | teardown, generation, and request outputs integrated |
+| Contract C, Task 5 | create `pkg/runtime/goroutine_contract_test.go` | raw-`go` syntax plus type-resolved `sync.WaitGroup.Go` gate | teardown, generation, and request outputs integrated |
 
 Do not run C Task 2 and the generation plan from the same base: both must touch `error_log_logger/plugin.go`. C owns `StartObservingWithTasks` and its owner seam first. Integrate C Task 2 and the retryable teardown plan, then recreate the generation worktree from that combined reviewed head; the generation plan owns only the remaining shutdown cancellation watcher. The request plan may proceed after C Task 1, except an AI shared call site also touched by teardown/generation is explicitly removed from the parallel wave and continued only from the later integrated head.
 
@@ -754,167 +755,180 @@ Reject any local goroutine wrapper, call-site panic suppression, `WaitContext`, 
 
 ---
 
-### Task 5: Add the No-Allowlist Production Goroutine AST Gate
+### Task 5: Add the No-Allowlist Production Goroutine Type Gate
 
 **Files:**
 - Create: `pkg/runtime/goroutine_contract_test.go`
 
 **Interfaces:**
 - Consumes: integrated retryable-teardown, generation, and request migrations; canonical goroutine creation remains only in `pkg/runtime/task_registry.go` and `pkg/runtime/request_tasks.go`, which are outside the scanned feature directories.
-- Produces: `TestProductionGoroutinesUseOwnedRuntime`, rejecting raw `*ast.GoStmt` and syntactic `sync.WaitGroup.Go` in `pkg/plugin`, `pkg/proxy`, `pkg/route`, and `pkg/stream`.
+- Produces: `TestProductionGoroutinesUseOwnedRuntime`, rejecting raw `*ast.GoStmt` and every type-resolved `sync.(*WaitGroup).Go` selection in `pkg/plugin`, `pkg/proxy`, `pkg/route`, and `pkg/stream`.
 
 - [ ] **Step 1: Write the scanner and first run it against the frozen base for RED evidence**
 
-The test must use the test source path, not current working directory, to locate the repository:
+Do not use a name/shape heuristic for `WaitGroup.Go`: it misses pointer declarations, aliases, promoted methods, and constructor expressions. `golang.org/x/tools/go/packages` is not an existing dependency, so the gate must use `go list` export metadata plus standard-library `go/types` without changing `go.mod` or `go.sum`.
+
+First write RED fixtures against these exact test-private interfaces, before implementing them:
 
 ```go
-package runtime
+func typedWaitGroupGoSelections(files []*ast.File, info *types.Info) []token.Pos
+func typeCheckWaitGroupFixture(t *testing.T, source string) ([]*ast.File, *types.Info)
+```
 
-import (
-	"go/ast"
-	"go/parser"
-	"go/token"
-	"io/fs"
-	"path/filepath"
-	goruntime "runtime"
-	"strings"
-	"testing"
-)
+`TestTypedWaitGroupGoSelectionsCoversReceiverForms` is a table with one expected match in every independently parsed source:
 
-func TestProductionGoroutinesUseOwnedRuntime(t *testing.T) {
-	root := taskContractRepositoryRoot(t)
-	for _, relativeDir := range []string{"pkg/plugin", "pkg/proxy", "pkg/route", "pkg/stream"} {
-		dir := filepath.Join(root, relativeDir)
-		err := filepath.WalkDir(dir, func(path string, entry fs.DirEntry, walkErr error) error {
-			if walkErr != nil { return walkErr }
-			if entry.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
-				return nil
-			}
-			fset := token.NewFileSet()
-			file, err := parser.ParseFile(fset, path, nil, 0)
-			if err != nil { return err }
-			variables, fields := waitGroupSyntax(file)
-			ast.Inspect(file, func(node ast.Node) bool {
-				switch typed := node.(type) {
-				case *ast.GoStmt:
-					position := fset.Position(typed.Go)
-					t.Errorf("unowned go statement: %s:%d", taskContractRelative(root, path), position.Line)
-				case *ast.CallExpr:
-					selector, ok := typed.Fun.(*ast.SelectorExpr)
-					if ok && selector.Sel.Name == "Go" && isWaitGroupSyntax(selector.X, variables, fields) {
-						position := fset.Position(selector.Sel.Pos())
-						t.Errorf("unowned sync.WaitGroup.Go: %s:%d", taskContractRelative(root, path), position.Line)
-					}
-				}
-				return true
-			})
-			return nil
-		})
-		if err != nil { t.Fatalf("walk %s: %v", relativeDir, err) }
-	}
-}
-
-func taskContractRepositoryRoot(t *testing.T) string {
-	t.Helper()
-	_, source, _, ok := goruntime.Caller(0)
-	if !ok { t.Fatal("locate goroutine contract source") }
-	return filepath.Clean(filepath.Join(filepath.Dir(source), "../.."))
-}
-
-func taskContractRelative(root, path string) string {
-	relative, err := filepath.Rel(root, path)
-	if err != nil { return path }
-	return filepath.ToSlash(relative)
+```go
+tests := map[string]string{
+	"pointer variable": `package fixture; import "sync"; func f() { var wg *sync.WaitGroup; wg.Go(func(){}) }`,
+	"type alias": `package fixture; import "sync"; type WG = sync.WaitGroup; func f() { var wg WG; wg.Go(func(){}) }`,
+	"defined embedding": `package fixture; import "sync"; type WG struct { sync.WaitGroup }; func f() { var wg WG; wg.Go(func(){}) }`,
+	"anonymous pointer embedding": `package fixture; import "sync"; type WG struct { *sync.WaitGroup }; func f(wg WG) { wg.Go(func(){}) }`,
+	"new expression": `package fixture; import "sync"; func f() { new(sync.WaitGroup).Go(func(){}) }`,
+	"import alias": `package fixture; import s "sync"; func f() { var wg s.WaitGroup; wg.Go(func(){}) }`,
+	"dot import": `package fixture; import . "sync"; func f() { var wg WaitGroup; wg.Go(func(){}) }`,
+	"paren star selector": `package fixture; import "sync"; type holder struct { wg *sync.WaitGroup }; func f(h holder) { ((*h.wg)).Go(func(){}) }`,
+	"method value": `package fixture; import "sync"; func f() { var wg sync.WaitGroup; start := wg.Go; start(func(){}) }`,
+	"method expression": `package fixture; import "sync"; func f() { var wg sync.WaitGroup; (*sync.WaitGroup).Go(&wg, func(){}) }`,
 }
 ```
 
-Implement `waitGroupSyntax` without `go/types`: discover the file's actual `sync` import alias; collect identifiers declared as `sync.WaitGroup`, identifiers assigned `sync.WaitGroup{}`, and named struct fields of that type. Use these exact test-private helpers:
+For every row, call `typeCheckWaitGroupFixture`, then require `len(typedWaitGroupGoSelections(files, info)) == 1`. Add `TestTypedWaitGroupGoSelectionsDoesNotFlagOtherGoMethods` with a local `TaskOwner`-shaped type whose `Go(func())` method is invoked through `new(owner).Go(func(){})`; require zero matches. The fixture helper parses with `parser.AllErrors`, type-checks with `types.Config{Importer: importer.Default()}`, populates both `Types` and `Selections`, and fails the test on any parse or type error. These tests fail to compile until the typed detector exists and become permanent regression coverage for the exact LOCAL-10 forms plus method-value/method-expression escapes.
+
+Use this exact fixture helper:
 
 ```go
-func waitGroupSyntax(file *ast.File) (map[string]struct{}, map[string]struct{}) {
-	syncAliases := make(map[string]struct{})
-	dotSync := false
-	for _, imported := range file.Imports {
-		if imported.Path.Value != `"sync"` {
-			continue
-		}
-		alias := "sync"
-		if imported.Name != nil {
-			alias = imported.Name.Name
-		}
-		switch alias {
-		case "_":
-			continue
-		case ".":
-			dotSync = true
-		default:
-			syncAliases[alias] = struct{}{}
-		}
+func typeCheckWaitGroupFixture(t *testing.T, source string) ([]*ast.File, *types.Info) {
+	t.Helper()
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "fixture.go", source, parser.AllErrors)
+	if err != nil { t.Fatalf("parse fixture: %v", err) }
+	info := &types.Info{
+		Types:      make(map[ast.Expr]types.TypeAndValue),
+		Selections: make(map[*ast.SelectorExpr]*types.Selection),
 	}
-	isWaitGroupType := func(expression ast.Expr) bool {
-		if identifier, ok := expression.(*ast.Ident); ok {
-			return dotSync && identifier.Name == "WaitGroup"
-		}
-		selector, ok := expression.(*ast.SelectorExpr)
-		if !ok || selector.Sel.Name != "WaitGroup" {
-			return false
-		}
-		identifier, ok := selector.X.(*ast.Ident)
-		if !ok {
-			return false
-		}
-		_, ok = syncAliases[identifier.Name]
-		return ok
+	configuration := types.Config{Importer: importer.Default()}
+	if _, err := configuration.Check("fixture", fset, []*ast.File{file}, info); err != nil {
+		t.Fatalf("type-check fixture: %v", err)
 	}
+	return []*ast.File{file}, info
+}
+```
 
-	variables := make(map[string]struct{})
-	fields := make(map[string]struct{})
-	ast.Inspect(file, func(node ast.Node) bool {
-		switch typed := node.(type) {
-		case *ast.ValueSpec:
-			if typed.Type != nil && isWaitGroupType(typed.Type) {
-				for _, name := range typed.Names { variables[name.Name] = struct{}{} }
-			}
-		case *ast.AssignStmt:
-			for index, right := range typed.Rhs {
-				literal, ok := right.(*ast.CompositeLit)
-				if !ok || !isWaitGroupType(literal.Type) || index >= len(typed.Lhs) { continue }
-				if name, ok := typed.Lhs[index].(*ast.Ident); ok { variables[name.Name] = struct{}{} }
-			}
-		case *ast.StructType:
-			for _, field := range typed.Fields.List {
-				if !isWaitGroupType(field.Type) { continue }
-				for _, name := range field.Names { fields[name.Name] = struct{}{} }
-			}
-		}
-		return true
-	})
-	return variables, fields
+Run the fixture RED gate before adding the detector:
+
+```bash
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test ./pkg/runtime -run "^TestTypedWaitGroupGoSelections" -count=1'
+```
+
+Expected: FAIL to compile because `typedWaitGroupGoSelections` and the fixture type-check helper do not exist. Do not weaken or skip a fixture to reach GREEN.
+
+Implement receiver detection from the selected method object, not the selector spelling or receiver AST:
+
+```go
+func typedWaitGroupGoSelections(files []*ast.File, info *types.Info) []token.Pos {
+	var positions []token.Pos
+	for _, file := range files {
+		ast.Inspect(file, func(node ast.Node) bool {
+			selector, ok := node.(*ast.SelectorExpr)
+			if !ok || selector.Sel.Name != "Go" { return true }
+			selection := info.Selections[selector]
+			if selection == nil { return true }
+			method, ok := selection.Obj().(*types.Func)
+			if !ok || !isSyncWaitGroupGoMethod(method) { return true }
+			positions = append(positions, selector.Sel.Pos())
+			return true
+		})
+	}
+	return positions
 }
 
-func isWaitGroupSyntax(
-	expression ast.Expr,
-	variables map[string]struct{},
-	fields map[string]struct{},
-) bool {
-	switch typed := expression.(type) {
-	case *ast.Ident:
-		_, ok := variables[typed.Name]
-		return ok
-	case *ast.SelectorExpr:
-		_, ok := fields[typed.Sel.Name]
-		return ok
-	case *ast.ParenExpr:
-		return isWaitGroupSyntax(typed.X, variables, fields)
-	case *ast.StarExpr:
-		return isWaitGroupSyntax(typed.X, variables, fields)
-	default:
+func isSyncWaitGroupGoMethod(method *types.Func) bool {
+	if method.Name() != "Go" || method.Pkg() == nil || method.Pkg().Path() != "sync" {
 		return false
 	}
+	signature, ok := method.Type().(*types.Signature)
+	if !ok || signature.Recv() == nil { return false }
+	receiver := signature.Recv().Type()
+	if pointer, ok := receiver.(*types.Pointer); ok { receiver = pointer.Elem() }
+	named, ok := receiver.(*types.Named)
+	return ok && named.Obj().Pkg() != nil &&
+		named.Obj().Pkg().Path() == "sync" && named.Obj().Name() == "WaitGroup"
 }
 ```
 
-Do not flag arbitrary `.Go` calls, because `TaskOwner.Go` is the required owned admission. Do not add a file/package exception when a new syntax shape appears; extend the structural detector and add a focused parser fixture inside `goroutine_contract_test.go`.
+`selection.Obj()` is the declared `sync.(*WaitGroup).Go` method even when the selection is reached through an alias or a promoted anonymous field. Therefore this detects `var wg *sync.WaitGroup`, local aliases, embedded/defined wrapper types, `new(sync.WaitGroup).Go`, import aliases, dot imports, parenthesized/star/field selectors, method values, and method expressions. A user-defined `TaskOwner.Go` resolves to a method whose package is not `sync` and is not reported.
+
+Next implement the production loader with these exact private records and functions:
+
+```go
+type taskContractGoListPackage struct {
+	Dir        string
+	ImportPath string
+	Export     string
+	GoFiles    []string
+	CgoFiles   []string
+	DepOnly    bool
+}
+
+type taskContractTypedPackage struct {
+	importPath string
+	files      []*ast.File
+	info       *types.Info
+}
+
+func loadTaskContractPackages(t *testing.T, root string) ([]taskContractTypedPackage, *token.FileSet)
+func taskContractProductionFiles(t *testing.T, root string) map[string]struct{}
+func taskContractGoEnvironment() []string
+func taskContractRepositoryRoot(t *testing.T) string
+func taskContractRelative(root, path string) string
+```
+
+`loadTaskContractPackages` must:
+
+1. execute from `root`: `go list -deps -export -json ./pkg/plugin/... ./pkg/proxy/... ./pkg/route/... ./pkg/stream/...`; `taskContractGoEnvironment` copies `os.Environ`, removes any existing `GOFLAGS=` entry, and appends exactly `GOFLAGS=-mod=readonly`, preserving the sourced `.envrc` cache/runtime variables without duplicate environment keys;
+2. decode the complete JSON stream, fail on command/decode errors, and map every non-empty `ImportPath -> Export` value, including standard-library and module dependencies;
+3. select non-`DepOnly` packages whose cleaned `Dir` is under one of the four exact scanned roots; this is a directory boundary, not a package allowlist;
+4. parse every `GoFiles` and `CgoFiles` entry with one shared `token.FileSet`, record its cleaned absolute path, and fail on any parse error;
+5. compare the loaded path set with `taskContractProductionFiles`, which walks all four roots and returns every non-test `.go` file. Fail on either a loaded file outside the walked set or a walked production file absent from the typed set. Thus a future build-tagged, ignored, or otherwise untyped production file fails closed instead of escaping the gate;
+6. create `importer.ForCompiler(fset, "gc", lookup)` where `lookup(importPath)` opens the exact export file from the map and errors if no export exists;
+7. type-check every selected package using `types.Config{Importer: compiledImporter}` and `types.Info{Types: map[ast.Expr]types.TypeAndValue{}, Selections: map[*ast.SelectorExpr]*types.Selection{}}`; fail on any type-check error rather than continuing with partial type information.
+
+The current frozen roots contain no production build constraints, so the loaded/walked equality holds. Do not add an exception for a future platform file: extend the loader to an explicit build-context matrix if such a file is introduced.
+
+Finally implement the gate over the typed packages:
+
+```go
+func TestProductionGoroutinesUseOwnedRuntime(t *testing.T) {
+	root := taskContractRepositoryRoot(t)
+	packages, fset := loadTaskContractPackages(t, root)
+	for _, loaded := range packages {
+		for _, file := range loaded.files {
+			ast.Inspect(file, func(node ast.Node) bool {
+				statement, ok := node.(*ast.GoStmt)
+				if !ok { return true }
+				position := fset.Position(statement.Go)
+				t.Errorf("unowned go statement: %s:%d", taskContractRelative(root, position.Filename), position.Line)
+				return true
+			})
+			for _, position := range typedWaitGroupGoSelections([]*ast.File{file}, loaded.info) {
+				location := fset.Position(position)
+				t.Errorf("unowned sync.WaitGroup.Go: %s:%d", taskContractRelative(root, location.Filename), location.Line)
+			}
+		}
+	}
+}
+```
+
+Do not flag arbitrary `.Go` calls, because `TaskOwner.Go` is the required owned admission. Do not add a file/package/type exception when a new syntax shape appears; extend the typed loader and add a focused type-checked fixture inside `goroutine_contract_test.go`.
+
+Run the fixtures to GREEN, then run the production gate on the frozen base for inventory RED:
+
+```bash
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test ./pkg/runtime -run "^TestTypedWaitGroupGoSelections" -count=1'
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test ./pkg/runtime -run "^TestProductionGoroutinesUseOwnedRuntime$" -count=1'
+```
+
+Expected: fixture tests PASS, proving every required receiver form is detected and `TaskOwner.Go`-shaped methods are not. The production gate then FAILS on the frozen base with the inventory below; a `go list`, file-set equality, export lookup, parse, or type-check error is itself a hard test failure, never a skipped scan.
 
 On frozen base `b0220dce`, the first run must report 32 raw statements across these exact 20 files:
 
@@ -946,20 +960,31 @@ It must additionally report nine `sync.WaitGroup.Go` calls in `stream/runtime.go
 - [ ] **Step 2: Run the gate on the integrated Task11 head**
 
 ```bash
-bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test ./pkg/runtime -run "^TestProductionGoroutinesUseOwnedRuntime$" -count=1'
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test ./pkg/runtime -run "^(TestTypedWaitGroupGoSelections|TestProductionGoroutinesUseOwnedRuntime)" -count=1'
 ```
 
-Expected: PASS with no package/file allowlist and no production feature goroutine exception.
+Expected: PASS with all LOCAL-10 fixtures, no package/file/type allowlist, no untyped production file, and no production feature goroutine exception.
 
 - [ ] **Step 3: Run the scanner and task registry under race**
 
 ```bash
-bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test -race ./pkg/runtime -run "^(TestProductionGoroutinesUseOwnedRuntime|TestTaskOwner|TestTaskRegistry|TestRequestTaskGroup)" -count=1'
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test -race ./pkg/runtime -run "^(TestTypedWaitGroupGoSelections|TestProductionGoroutinesUseOwnedRuntime|TestTaskOwner|TestTaskRegistry|TestRequestTaskGroup)" -count=1'
 ```
 
 Expected: PASS.
 
-- [ ] **Step 4: Commit the governance gate**
+- [ ] **Step 4: Review the typed-gate completeness before commit**
+
+```bash
+git diff -- go.mod go.sum
+rg -n 'waitGroupSyntax|isWaitGroupSyntax' pkg/runtime/goroutine_contract_test.go
+rg -n 'typedWaitGroupGoSelections|isSyncWaitGroupGoMethod|Selections|ForCompiler|exec\.Command\("go", "list", "-deps", "-export", "-json"' \
+  pkg/runtime/goroutine_contract_test.go
+```
+
+Expected: `go.mod` and `go.sum` have no diff; the obsolete syntax helpers have no match; the typed detector, `types.Info.Selections`, compiled-export importer, and exact `go list` command are present. Review the fixture table against all ten forms (the eight LOCAL-10 receiver/import forms plus method value and method expression) and verify the negative fixture resolves a real non-`sync` `Go` method. Verify the walked/typed file-set equality fails in both directions and every loader/type error calls `t.Fatal`/`t.Fatalf`. Reject any package path, file path, receiver-expression, type-name, or import-name allowlist.
+
+- [ ] **Step 5: Commit the governance gate**
 
 ```bash
 git add pkg/runtime/goroutine_contract_test.go
@@ -975,7 +1000,7 @@ git commit -m "test(runtime): reject unowned production goroutines"
 - Modify only to repair a confirmed Task11 integration defect in the owning file; do not perform cleanup outside the Task11 diff
 
 **Interfaces:**
-- Consumes: reviewed C contract, retryable teardown, generation plan, request plan, and AST gate commits. This gate must not start until all five inputs are integrated.
+- Consumes: reviewed C contract, retryable teardown, generation plan, request plan, and typed goroutine gate commits. This gate must not start until all five inputs are integrated.
 - Produces: one locally integrated Task11 head ready for the parent Task11 merge decision.
 
 - [ ] **Step 1: Record the exact integrated identity and diff scope**
@@ -998,7 +1023,7 @@ bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test -race \
   ./pkg/plugin/limit_count ./pkg/plugin/ai_proxy_multi ./pkg/plugin/batch_requests \
   ./pkg/plugin/kafka_proxy ./pkg/plugin/mqtt_proxy ./pkg/plugin/proxy_mirror \
   ./pkg/plugin/mcp_bridge ./pkg/plugin/ai_stream \
-  -run "(Task|Owner|Ownership|Cancel|Shutdown|Drain|Residual|Health|Observer|Signal|Batch|Mirror|Bridge|Timeout|Lease|Panic|Flush|ProductionGoroutines)" -count=1'
+  -run "(Task|Owner|Ownership|Cancel|Shutdown|Drain|Residual|Health|Observer|Signal|Batch|Mirror|Bridge|Timeout|Lease|Panic|Flush|TypedWaitGroupGoCalls|ProductionGoroutines)" -count=1'
 ```
 
 Expected: PASS with no race. If the regex selects no tests in a package, record that package and run its exact test names from the sibling plan rather than treating `[no tests to run]` as evidence.
@@ -1047,7 +1072,8 @@ Review `b0220dce..HEAD` for:
 - stop-before-release and exact residual behavior;
 - request timeout still waits before generation/dispatch lease release;
 - unknown child panic joins owned siblings, re-panics with exact identity, remains fatal, and leaves Task10 `ErrAbortHandler` behavior unchanged;
-- no raw goroutine, `WaitGroup.Go`, proxy-only compatibility method, unused stop channel, dead wait group, or test-only production helper.
+- no raw goroutine, type-resolved `sync.WaitGroup.Go`, proxy-only compatibility method, unused stop channel, dead wait group, or test-only production helper;
+- the typed gate resolves method identity to `sync.(*WaitGroup).Go`, covers pointer/alias/embedded/new/import-alias/dot-import/paren-star-selector fixtures, rejects untyped walked files, and leaves non-`sync` methods such as `TaskOwner.Go` unreported.
 
 Any finding is repaired in its owning sibling plan/worktree, re-reviewed, then reintegrated. Do not patch an overlapping integration file opportunistically.
 
@@ -1067,7 +1093,7 @@ Before committing, compare `git diff --cached --name-only` with the reviewed Tas
 Return:
 
 - integrated head SHA and commit list;
-- AST base failure count (32 raw `go`, nine `WaitGroup.Go`) and final PASS;
+- typed-gate base failure count (32 raw `go`, nine type-resolved `sync.WaitGroup.Go`) and final PASS, including all LOCAL-10 fixtures;
 - normal/race/lint/build command results with durations;
 - final `TaskOwner` API and plugin/core owner naming table;
 - canonical plugin prefix golden value `plugin/http-logger/eebdc1a3ae6a40e8b498bb2196cfcf690391d188aa945150ad0be04271ba4ced`, plus evidence that long/newline/slash resource IDs remain hidden and distinct keys remain isolated;
@@ -1079,10 +1105,11 @@ Return:
 
 ## Self-Review Checklist
 
-- **Spec coverage:** Task 1 owns the named task primitive; Task 2 injects canonical hashed plugin names; Task 3 starts only after C Task 2 plus retryable teardown and migrates generation/shutdown ownership; Task 4 starts from C Task 1 for non-overlapping request work; Task 5 waits for teardown, generation, and request outputs before enforcing the no-raw-goroutine rule; Task 6 waits for every input and runs race/lint/build plus merge review.
+- **Spec coverage:** Task 1 owns the named task primitive; Task 2 injects canonical hashed plugin names; Task 3 starts only after C Task 2 plus retryable teardown and migrates generation/shutdown ownership; Task 4 starts from C Task 1 for non-overlapping request work; Task 5 waits for teardown, generation, and request outputs before enforcing raw-`go` syntax and type-resolved `sync.WaitGroup.Go`; Task 6 waits for every input and runs race/lint/build plus merge review.
 - **Current-source accuracy:** the plan names `effective_binding_materializer.go`, not nonexistent `materialize.go`; uses `BasePlugin.TaskRegistry()` only as a deletion target; and includes the extra rocketmq raw goroutine found at the base.
 - **Lifecycle accuracy:** cross-generation shared cluster, process-shared file writers, and persistent stream runtime are not assigned to a prepared generation.
 - **API restraint:** no `RequestTaskGroup` method is added; its private panic state only delays fatal propagation until join. `TaskOwner` is concrete and has only constructor plus `Go`.
 - **Validation ownership:** `NewTaskOwner` owns only nil-registry, nonblank/no-outer-whitespace prefix, and criticality validation. `TaskOwner.Go` alone owns the 1-64 byte component grammar. Compiler and shared-resource constructors own every production prefix syntax/length bound.
+- **Gate completeness:** `go/types` method identity, not AST receiver shape, detects every `sync.(*WaitGroup).Go` selection; walked-versus-typed file equality is fail-closed; fixtures cover LOCAL-10 and prove `TaskOwner.Go` is not a false positive; no `x/tools` dependency or allowlist is introduced.
 - **No placeholders:** every production signature, owner prefix, component rule, test command, dependency edge, and final gate is fixed above.
 - **Type consistency:** compiler, base plugin, error-log observer, composite dependency propagation, and generation plan all consume the same `*runtime.TaskOwner` type; compiler owner construction always passes through `pluginTaskOwnerPrefix(selected.instance)`.

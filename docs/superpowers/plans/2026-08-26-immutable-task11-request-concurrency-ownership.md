@@ -629,7 +629,7 @@ git commit -m "refactor(ai-stream): own periodic flush by request"
 
 **Files:** No product or global gate files. Contract C alone owns `pkg/runtime/goroutine_contract_test.go`.
 
-**Consumes:** Reviewed Tasks 1-7 integrated in dependency order and Contract C's final AST gate.
+**Consumes:** Reviewed Tasks 1-7 integrated in dependency order and Contract C's final syntax-plus-type goroutine gate.
 
 **Produces:** Reusable combined verification evidence and four independent boundary reviews; no duplicate syntax authority.
 

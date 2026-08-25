@@ -25,7 +25,7 @@
 
 ## Required Contract Dependencies
 
-Every implementation task in this plan starts only after both the reviewed Contract C Task 2 head and `Task11-0 / retryable teardown and residual propagation` are integrated. Contract C owns `runtime.TaskOwner`, `base.Dependencies`, compiler injection, the error-log observer seam, and the final AST gate. Task11-0 owns retryable `ResourceRegistry` final-close state, residual propagation, and the compiler cleanup phases `cleanupQuiesce -> cleanupResourceFinalize -> cleanupRelease`. A retryable resource finalizer remains pending and blocks every one-shot release. This plan consumes both contracts and must not reimplement them. The current compiler has no `materialize.go`; its real injection point is `pkg/compiler/effective_binding_materializer.go`, where `selected.instance` is already validated.
+Every implementation task in this plan starts only after both the reviewed Contract C Task 2 head and `Task11-0 / retryable teardown and residual propagation` are integrated. Contract C owns `runtime.TaskOwner`, `base.Dependencies`, compiler injection, the error-log observer seam, and the final syntax-plus-type goroutine gate. Task11-0 owns retryable `ResourceRegistry` final-close state, residual propagation, and the compiler cleanup phases `cleanupQuiesce -> cleanupResourceFinalize -> cleanupRelease`. A retryable resource finalizer remains pending and blocks every one-shot release. This plan consumes both contracts and must not reimplement them. The current compiler has no `materialize.go`; its real injection point is `pkg/compiler/effective_binding_materializer.go`, where `selected.instance` is already validated.
 
 ```go
 // Supplied by Contract C Task 2; consumed unchanged here.
@@ -78,13 +78,13 @@ The implementer must rerun the command immediately before Task 12. Any new produ
 | 5 | `pkg/plugin/ai_proxy_multi/health.go`, `plugin.go`, `plugin_test.go` | plugin task owner | owned health coordinator and probes | Contract C Task 2 + Task11-0 teardown |
 | 6 | `pkg/plugin/oas_validator/plugin.go` | plugin task owner | owned lazy refresh loop | Contract C Task 2 + Task11-0 teardown |
 | 7 | `pkg/plugin/log_rotate/plugin.go` | plugin task owner | owned coalescing rotation worker | Contract C Task 2 + Task11-0 teardown |
-| 8 | `pkg/plugin/logger_batch`, all production logger constructors | plugin task owner | generation-owned delivery/scheduler/shutdown | Contract C Task 2 + Task11-0 teardown |
+| 8 | `pkg/plugin/logger_batch`, all production logger constructors, error-log delegation tests, `pkg/server/task_residual_chain_test.go` | plugin task owner, frozen Task11-0 deferred compatibility checkpoint | generation-owned delivery/scheduler/shutdown plus exact real-chain residual evidence | Contract C Task 2 + complete Task11-0 hand-off |
 | 9 | `pkg/plugin/file_logger` | plugin owner plus registry-local owner | owned processor and SIGUSR1 watcher | Contract C Task 2 + Task11-0 teardown + 8 |
 | 10 | seven logger cancellation helpers and `rocketmq_logger` | owned logger delivery lifecycle | joined cancellation and sender shutdown | Contract C Task 2 + Task11-0 teardown + 8; C owns error-log observer seam first |
 | 11 | `pkg/stream/runtime.go` | runtime-local core task owner | owned listener/connection lifetime across router generations | Contract C Task 2 + Task11-0 teardown |
 | 12 | no new behavior | all earlier tasks, request plan, and Contract C Task 5 | final inventory/gates | Contract C Task 2 + Task11-0 teardown + 1-11 + request plan + Contract C Task 5 |
 
-Tasks 1-7 and 11 can be developed as a frozen-base parallel wave only after the reviewed Contract C Task 2 and Task11-0 teardown heads are integrated. Tasks 8-10 are sequential because the concrete logger processor lifecycle is their shared interface. Generation Task 5 owns `pkg/plugin/ai_proxy_multi/plugin.go` and `plugin_test.go`; request-plan AI flush Task 7 must start from Generation Task 5's reviewed integrated head, never in parallel. Task 12 runs only after this plan, the request plan, and Contract C Task 5 are integrated.
+Tasks 1-7 and 11 can be developed as a frozen-base parallel wave only after the reviewed Contract C Task 2 and Task11-0 teardown heads are integrated. Tasks 8-10 are sequential because the concrete logger processor lifecycle is their shared interface. Generation Task 8 starts from the complete Task11-0 implementation/handoff head: Task11-0 Tasks 1-7 and its prerequisite integration gates are terminal, while Task11-0 Task 8 Step 3 is an explicitly deferred compatibility obligation implemented inside Generation Task 8. That deferred test is not a prerequisite for starting Generation Task 8, so there is no dependency cycle. Generation Task 5 owns `pkg/plugin/ai_proxy_multi/plugin.go` and `plugin_test.go`; request-plan AI flush Task 7 must start from Generation Task 5's reviewed integrated head, never in parallel. Task 12 runs only after this plan, the request plan, and Contract C Task 5 are integrated.
 
 ---
 
@@ -603,6 +603,8 @@ git diff --check
 
 - Modify: `pkg/plugin/logger_batch/processor.go`, `processor_test.go`
 - Modify: `pkg/plugin/base/types.go`, `types_test.go`
+- Modify: `pkg/plugin/error_log_logger/plugin.go`, `plugin_test.go`
+- Create: `pkg/server/task_residual_chain_test.go`
 - Modify every production result of:
 
 ```bash
@@ -611,11 +613,11 @@ rg -l 'base\.NewBatchProcessor|logger_batch\.New(WithContext)?' pkg/plugin --glo
 
 At the frozen base this is `clickhouse_logger`, `datadog`, `elasticsearch_logger`, `error_log_logger`, `google_cloud_logging`, `http_logger`, `kafka_logger`, `lago`, `loggly`, `loki_logger`, `rocketmq_logger`, `skywalking_logger`, `sls_logger`, `splunk_hec_logging`, `syslog`, `tcp_logger`, `tencent_cloud_cls`, `udp_logger`, `zipkin`, plus `base/types.go`.
 
-**Consumes:** plugin task registry/owner and current bounded delivery/shutdown settings.
+**Consumes:** Reviewed Contract C Task 2, the complete Task11-0 implementation/handoff head, the compiler-injected plugin `TaskOwner`, and current bounded delivery/shutdown settings. Task11-0 Task 8 Step 3 is consumed here as a deferred compatibility checkpoint, not as a prerequisite test result.
 
-**Produces:** `<owner>/batch-scheduler`, `<owner>/batch-worker`, and `<owner>/batch-shutdown` tasks under the compiler-frozen `TaskPlugin` owner; multiple workers share/deduplicate `batch-worker`. There is no `context.Background` delivery root or detached cleanup waiter.
+**Produces:** `<owner>/batch-scheduler`, `<owner>/batch-worker`, and `<owner>/batch-shutdown` tasks under one compiler-frozen `TaskPlugin` owner; multiple workers share/deduplicate `batch-worker`. The private `schedulerDone` barrier makes the deterministic and real-chain residual set exactly sorted `<owner>/batch-shutdown`, `<owner>/batch-worker`; `<owner>/observer` and `<owner>/batch-scheduler` are forbidden from that snapshot. There is no `context.Background` delivery root or detached cleanup waiter.
 
-- [ ] Add RED tests:
+- [ ] **Step 1: Add primitive ownership and shutdown RED tests**
 
 ```go
 func TestProcessorRegistersOwnedWorkersAndDrainsOnRegistryStop(t *testing.T) {
@@ -631,15 +633,52 @@ func TestProcessorRegistersOwnedWorkersAndDrainsOnRegistryStop(t *testing.T) {
 }
 ```
 
-Add `TestProcessorBlockingDeliveryRemainsNamedResidual`, `TestProcessorLastWorkerRunsCleanupExactlyOnce`, `TestProcessorTaskAdmissionRollbackOwnsNoObserverOrEntries`, and `TestProcessorDirectShutdownAndRegistryStopRace`. Retain the existing timeout accounting, retry cancellation, partial suffix accounting, timer generation, and deferred cleanup tests.
+Add `TestProcessorBatchShutdownRunsCleanupExactlyOnceAfterLastWorker`, `TestProcessorTaskAdmissionRollbackOwnsNoObserverOrEntries`, and `TestProcessorDirectShutdownAndRegistryStopRace`. Retain the existing timeout accounting, retry cancellation, partial suffix accounting, timer generation, and deferred cleanup tests.
 
-- [ ] RED:
+- [ ] **Step 2: Add the frozen deterministic residual-set RED**
 
-```bash
-bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test ./pkg/plugin/logger_batch ./pkg/plugin/base -run "^(TestProcessorRegistersOwnedWorkersAndDrainsOnRegistryStop|TestProcessorBlockingDeliveryRemainsNamedResidual|TestProcessorLastWorkerRunsCleanupExactlyOnce|TestProcessorTaskAdmissionRollbackOwnsNoObserverOrEntries|TestProcessorDirectShutdownAndRegistryStopRace)$" -count=1'
+Add `TestProcessorBlockingDeliveryResidualSetIsWorkerAndShutdown` in `pkg/plugin/logger_batch/processor_test.go`. Use one real registry and `TaskOwner` with this independent exact prefix:
+
+```go
+ownerPrefix := "plugin/error-log-logger/" + strings.Repeat("a", 64)
+want := []runtime.TaskResidual{
+	{Owner: ownerPrefix + "/batch-shutdown"},
+	{Owner: ownerPrefix + "/batch-worker"},
+}
 ```
 
-- [ ] Extend the exact constructor contract:
+Configure `MaxConcurrentDeliveries: 1`; the delivery callback closes `deliveryStarted`, ignores its callback context, and waits on `releaseDelivery`. Push exactly one entry and wait for `deliveryStarted`. Call `StopWithCleanup` with an atomic cleanup counter and require it to return while delivery remains blocked. Then call the real registry `Stop(shortCtx)` and require `errors.As(err, *runtime.TaskResidualError)`, `errors.Is(err, context.DeadlineExceeded)`, and exact equality between both returned/resident residual slices and `want`. Explicitly reject `ownerPrefix+"/batch-scheduler"` and `ownerPrefix+"/observer"`; suffix-only matching is forbidden. Close `releaseDelivery`, retry `registry.Stop(context.Background())`, and assert no residual and cleanup exactly once.
+
+This is the deterministic seam: it injects the delivery callback and does not depend on network timeout. `StopWithCleanup` returning proves only that the scheduler has sealed admission and published the terminal drain; the blocked delivery intentionally keeps `/batch-worker` and the pre-admitted `/batch-shutdown` task active.
+
+- [ ] **Step 3: Add error-log observer delegation RED**
+
+Add `TestErrorLogObserverDelegatesBlockingBatchShutdownWithoutRemainingResidual` in `pkg/plugin/error_log_logger/plugin_test.go`. Build the plugin with the same real registry/owner prefix and Task-8-owned batch processor using the blocking delivery callback. Call the Contract C signature `StartObservingWithTasks(*runtime.TaskOwner)`, emit one entry, and wait for delivery entry. Run `p.Stop()` in a goroutine and require it to return while delivery remains blocked. Then stop the registry with a deadline and require exact equality with the same two-element `want` above.
+
+The test must prove `/observer` is absent because `Plugin.Stop` has completed observer delegation, and `/batch-scheduler` is absent because `StopWithCleanup` waited for `schedulerDone`. Release delivery, retry registry Stop, and assert no residual and cleanup exactly once. Do not add an observer hook, exported task-state accessor, sleep, or an expected set learned from the observed residual.
+
+- [ ] **Step 4: Add the real compiler-to-server chain RED**
+
+Create `pkg/server/task_residual_chain_test.go` with `TestServerShutdownPreservesExactGenerationOwnersThroughRealChain`:
+
+1. Construct a real `WorkerCompilerFactory`, real `GenerationEngine`, and `Server`. Prepare and activate a snapshot with one `error-log-logger` binding. `StartObservingWithTasks(*runtime.TaskOwner)` and the Task 8 batch constructor must receive the same compiler-derived owner. The test must not call `TaskRegistry.Go`, `PreparedGeneration.Close`, `factory.Close`, or a fake engine.
+2. Use an inline blocking ClickHouse `httptest.Server`, batch size one, one worker, and a delivery timeout longer than the bounded shutdown attempt. Its handler closes `deliveryStarted` and waits on `releaseDelivery` even after request-context cancellation. Emit one application log and wait for handler entry before shutdown.
+3. Independently construct `ownerPrefix` from the known activated `plugin.InstanceKey`, using Contract C's frozen canonical field order and SHA-256. Include the returned attempt, system scope/provenance, and canonical config digest; do not call the compiler's private owner helper and do not read the expected prefix from actual residuals. The exact sorted expectation is `/batch-shutdown` followed by `/batch-worker`; `/observer` and `/batch-scheduler` are forbidden.
+4. Call `server.Shutdown(shortCtx)`. Require `errors.As(err, *runtime.TaskResidualError)`, exact equality with the independently constructed two-element set, `errors.Is(err, context.DeadlineExceeded)`, and `errors.Is(err, compiler.ErrPreparedGenerationCleanupIncomplete)`. Assert the prepared/factory/engine owner and the later resolver, journal, and observability owners remain retained.
+5. Close `releaseDelivery`, call `server.Shutdown(context.Background())`, and assert terminal completion, no residual, and exactly-once plugin/resource/processor cleanup.
+
+The server test is the compatibility authority. The lower processor and error-log tests make its component set deterministic; the server test proves the exact set survives transfer into `PreparedGeneration`, factory close, engine close, and server phase retry without redaction, suffix inference, or accidental observer/scheduler residuals.
+
+- [ ] **Step 5: Capture both RED layers**
+
+```bash
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test ./pkg/plugin/logger_batch ./pkg/plugin/base -run "^(TestProcessorRegistersOwnedWorkersAndDrainsOnRegistryStop|TestProcessorBatchShutdownRunsCleanupExactlyOnceAfterLastWorker|TestProcessorTaskAdmissionRollbackOwnsNoObserverOrEntries|TestProcessorDirectShutdownAndRegistryStopRace)$" -count=1'
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test ./pkg/plugin/logger_batch ./pkg/plugin/error_log_logger ./pkg/server -run "^(TestProcessorBlockingDeliveryResidualSetIsWorkerAndShutdown|TestErrorLogObserverDelegatesBlockingBatchShutdownWithoutRemainingResidual|TestServerShutdownPreservesExactGenerationOwnersThroughRealChain)$" -count=1'
+```
+
+Expected: FAIL because the frozen implementation has raw workers/detached cleanup, cannot preserve the exact two-owner set, and cannot carry it through real server shutdown.
+
+- [ ] **Step 6: Extend the exact constructor contract**
 
 ```go
 type Config struct {
@@ -652,9 +691,28 @@ func NewWithContext(Config, ContextDeliveryFunc) (*Processor, error)
 
 Production constructors require the owner field. `base.NewBatchProcessor` also returns `(*logger_batch.Processor, error)` and receives `tasks *runtime.TaskOwner`; every plugin PostInit passes `p.TaskOwner()` and propagates the error before publishing the processor. Direct unit tests create a local registry and `TaskPlugin` owner.
 
-- [ ] Replace timer callback and raw workers with `Tasks.Go("batch-scheduler", ...)`, repeated `Tasks.Go("batch-worker", ...)`, and `Tasks.Go("batch-shutdown", ...)`. The scheduler owns timer reset/coalescing. Workers do not exit merely because their individual task context is canceled: registry cancellation first seals admission and queues a terminal drain, then workers finish admitted batches using bounded delivery contexts. The last worker closes `workersDone`, runs cleanup once, and closes shutdown state; no waiter goroutine is required. A callback that ignores cancellation remains active under the deduplicated `/batch-worker` residual.
-- [ ] Preserve direct `Shutdown(ctx)`: seal once, wait for the same owned workers, return the caller deadline, but never release sink resources before callbacks exit. Repeated calls return the cached result. `StopWithCleanup` registers cleanup before initiating shutdown so last-worker completion cannot race past it.
-- [ ] GREEN/race for primitive and all constructor callers:
+- [ ] **Step 7: Implement the private scheduler and shutdown barriers**
+
+Replace the timer callback and raw workers with pre-admitted `Tasks.Go("batch-scheduler", ...)`, repeated `Tasks.Go("batch-worker", ...)`, and one `Tasks.Go("batch-shutdown", ...)`. Add private `schedulerDone`, `workersDone`, and terminal shutdown state; expose none of them.
+
+The scheduler owns timer reset/coalescing. On owner cancellation or explicit stop it atomically seals `Push`, flushes the final buffered batch, queues the terminal drain, wakes workers, closes `schedulerDone`, and returns. Only after `schedulerDone` closes may `/batch-scheduler` disappear from a residual snapshot. Workers ignore cancellation only to finish already admitted batches with their existing bounded delivery contexts; the final worker closes `workersDone` but does not directly free sink resources.
+
+The pre-admitted `/batch-shutdown` callback waits for `schedulerDone`, then `workersDone`, runs registered final cleanup exactly once, closes terminal shutdown state, and returns. It is the only task that waits for workers and invokes final cleanup. This ordering keeps `/batch-shutdown` active beside `/batch-worker` for a blocked delivery and removes the detached cleanup waiter.
+
+`StopWithCleanup(cleanup)` must register cleanup before initiating shutdown, synchronously initiate scheduler sealing, wait for `schedulerDone`, and return without waiting for `workersDone`. This is required so `error_log_logger.Plugin.Stop` can finish `/observer` before generation registry Stop snapshots residuals. `Shutdown(ctx)` initiates the same state machine and waits for terminal shutdown with the caller context; a deadline returns without releasing sink resources or hiding the still-owned worker/shutdown tasks. Concurrent/repeated Stop, Shutdown, registry cancellation, and final-worker exit must share the same exact-once state.
+
+Admission is atomic with publication: if scheduler, any worker, or shutdown task admission fails, seal the un-published processor, wake every admitted callback, wait for its private barriers, close the observer, and return the admission error. No constructor failure may publish a processor, retain entries, or leave an owner active.
+
+- [ ] **Step 8: Run exact compatibility GREEN and race gates**
+
+```bash
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test ./pkg/plugin/logger_batch ./pkg/plugin/error_log_logger ./pkg/server -run "^(TestProcessorBlockingDeliveryResidualSetIsWorkerAndShutdown|TestErrorLogObserverDelegatesBlockingBatchShutdownWithoutRemainingResidual|TestServerShutdownPreservesExactGenerationOwnersThroughRealChain)$" -count=1'
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test -race ./pkg/plugin/logger_batch ./pkg/plugin/error_log_logger ./pkg/server -run "^(TestProcessorBlockingDeliveryResidualSetIsWorkerAndShutdown|TestErrorLogObserverDelegatesBlockingBatchShutdownWithoutRemainingResidual|TestServerShutdownPreservesExactGenerationOwnersThroughRealChain)$" -count=1'
+```
+
+Expected: PASS. Both lower-level tests and the real compiler -> `PreparedGeneration` -> factory -> engine -> server chain return exactly the independently derived sorted worker/shutdown set; the retry releases each owner and cleanup once.
+
+- [ ] **Step 9: Run primitive, constructor-caller, lint, and build gates**
 
 ```bash
 bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test ./pkg/plugin/logger_batch ./pkg/plugin/base -run "^(TestProcessor|TestBaseLogger|TestNewBatchProcessor)" -count=1'
@@ -664,14 +722,24 @@ bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && golangci-lint run ./p
 git diff --check
 ```
 
-- [ ] Commit:
+- [ ] **Step 10: Review and commit**
+
+Review `error_log_logger.StartObservingWithTasks`, `Plugin.Stop`, `logger_batch.Processor.StopWithCleanup`, scheduler/worker/shutdown callbacks, and the server shutdown phase together. Confirm observer and scheduler termination precede the residual snapshot, worker and shutdown remain for the same blocked delivery, both use the exact compiler prefix, no cleanup runs before worker exit, and Task11-0 retains the incomplete generation/server phase. If the reviewed state machine legitimately changes the complete component set, update Task11-0's frozen mapping and all three exact-equality tests in the same reviewed correction; never weaken to suffix matching or copy observed residuals into `want`.
 
 ```bash
-git add pkg/plugin/logger_batch pkg/plugin/base pkg/plugin/*_logger pkg/plugin/datadog pkg/plugin/error_log_logger pkg/plugin/google_cloud_logging pkg/plugin/lago pkg/plugin/loggly pkg/plugin/skywalking_logger pkg/plugin/sls_logger pkg/plugin/splunk_hec_logging pkg/plugin/syslog pkg/plugin/zipkin
+git add pkg/plugin/logger_batch/processor.go pkg/plugin/logger_batch/processor_test.go \
+  pkg/plugin/base/types.go pkg/plugin/base/types_test.go \
+  pkg/plugin/clickhouse_logger pkg/plugin/datadog pkg/plugin/elasticsearch_logger \
+  pkg/plugin/error_log_logger pkg/plugin/google_cloud_logging pkg/plugin/http_logger \
+  pkg/plugin/kafka_logger pkg/plugin/lago pkg/plugin/loggly pkg/plugin/loki_logger \
+  pkg/plugin/rocketmq_logger pkg/plugin/skywalking_logger pkg/plugin/sls_logger \
+  pkg/plugin/splunk_hec_logging pkg/plugin/syslog pkg/plugin/tcp_logger \
+  pkg/plugin/tencent_cloud_cls pkg/plugin/udp_logger pkg/plugin/zipkin \
+  pkg/server/task_residual_chain_test.go
 git commit -m "refactor(logger): own batch delivery tasks"
 ```
 
-Inspect `git diff --cached --name-only` before committing; the glob must not stage unrelated plugin files.
+Before committing, rerun the production constructor inventory and inspect `git diff --cached --name-only`. The staged set must contain every and only Task 8 constructor caller, the four explicitly named processor/base files, `error_log_logger/plugin_test.go`, and `pkg/server/task_residual_chain_test.go`; do not stage unrelated plugin files.
 
 ---
 
@@ -903,11 +971,20 @@ bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test ./pkg/runtime
 bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test -race ./pkg/runtime ./pkg/compiler ./pkg/proxy ./pkg/plugin/proxy_cache ./pkg/plugin/graphql_proxy_cache ./pkg/plugin/limit_count ./pkg/plugin/ai_proxy_multi ./pkg/plugin/oas_validator ./pkg/plugin/log_rotate ./pkg/plugin/logger_batch ./pkg/plugin/file_logger ./pkg/plugin/rocketmq_logger -run "(Task|Owner|Residual|Stop|Shutdown|Cleanup|Health|Refresh|Rotation|Processor|DelayedSync|Cluster)" -count=1'
 ```
 
+- [ ] Re-run Task 8's frozen compatibility checkpoint as an exact normal/race gate:
+
+```bash
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test ./pkg/plugin/logger_batch ./pkg/plugin/error_log_logger ./pkg/server -run "^(TestProcessorBlockingDeliveryResidualSetIsWorkerAndShutdown|TestErrorLogObserverDelegatesBlockingBatchShutdownWithoutRemainingResidual|TestServerShutdownPreservesExactGenerationOwnersThroughRealChain)$" -count=1'
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test -race ./pkg/plugin/logger_batch ./pkg/plugin/error_log_logger ./pkg/server -run "^(TestProcessorBlockingDeliveryResidualSetIsWorkerAndShutdown|TestErrorLogObserverDelegatesBlockingBatchShutdownWithoutRemainingResidual|TestServerShutdownPreservesExactGenerationOwnersThroughRealChain)$" -count=1'
+```
+
+Expected: every package selects a test; both commands return the independently constructed sorted `/batch-shutdown`, `/batch-worker` set with no observer/scheduler residual, then complete a clean retry.
+
 - [ ] Run scoped logger cancellation packages normal/race, then lint/build:
 
 ```bash
 bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test -race ./pkg/plugin/error_log_logger ./pkg/plugin/tcp_logger ./pkg/plugin/syslog ./pkg/plugin/udp_logger ./pkg/plugin/datadog ./pkg/plugin/sls_logger ./pkg/plugin/loggly -run "(Cancel|Stop|Shutdown|Delivery)" -count=1'
-bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && golangci-lint run ./pkg/runtime/... ./pkg/compiler/... ./pkg/proxy/... ./pkg/plugin/proxy_cache/... ./pkg/plugin/graphql_proxy_cache/... ./pkg/plugin/limit_count/... ./pkg/plugin/ai_proxy_multi/... ./pkg/plugin/oas_validator/... ./pkg/plugin/log_rotate/... ./pkg/plugin/logger_batch/... ./pkg/plugin/file_logger/... ./pkg/plugin/rocketmq_logger/... ./pkg/plugin/error_log_logger/... ./pkg/plugin/tcp_logger/... ./pkg/plugin/syslog/... ./pkg/plugin/udp_logger/... ./pkg/plugin/datadog/... ./pkg/plugin/sls_logger/... ./pkg/plugin/loggly/...'
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && golangci-lint run ./pkg/runtime/... ./pkg/compiler/... ./pkg/proxy/... ./pkg/server/... ./pkg/plugin/proxy_cache/... ./pkg/plugin/graphql_proxy_cache/... ./pkg/plugin/limit_count/... ./pkg/plugin/ai_proxy_multi/... ./pkg/plugin/oas_validator/... ./pkg/plugin/log_rotate/... ./pkg/plugin/logger_batch/... ./pkg/plugin/file_logger/... ./pkg/plugin/rocketmq_logger/... ./pkg/plugin/error_log_logger/... ./pkg/plugin/tcp_logger/... ./pkg/plugin/syslog/... ./pkg/plugin/udp_logger/... ./pkg/plugin/datadog/... ./pkg/plugin/sls_logger/... ./pkg/plugin/loggly/...'
 bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && make build'
 git diff --check
 ```
@@ -937,12 +1014,13 @@ After each task, the reviewer must inspect:
 8. Concurrency: repeated/concurrent Stop, generation overlap, task admission versus rollback, and last-lease release are race-tested.
 9. Scope: request work has not been moved into a generation registry, and the persistent stream runtime keeps its own runtime-local core registry.
 10. Retryable teardown: generation tasks quiesce before `cleanupResourceFinalize`; a failed cluster final close retains the Prepared/factory/engine record, closing entry, and every subordinate resource. Only a terminal retry permits one-shot release, removes the closing entry, and makes the same key acquirable again, each release exactly once.
+11. Logger residual compatibility: `StopWithCleanup` returns only after private `schedulerDone`; blocked delivery leaves the exact independently derived sorted `/batch-shutdown`, `/batch-worker` set. `/observer` and `/batch-scheduler` are absent in processor, error-log delegation, and real server-chain tests; retry performs cleanup exactly once without advancing Task11-0 server phases early.
 
 ## Plan Self-Review
 
 - **Coverage:** Every original generation/background file is assigned. `rocketmq_logger/plugin.go:242` and all seven `WaitGroup.Go` cancellation helpers are explicit. Current extra raw-go sites are classified into the request plan rather than silently ignored. AI probe panic completion, retryable cluster final close, and all three resource/runtime `TaskCore` fatal paths have dedicated regressions.
-- **Dependency consistency:** Every implementation task starts from Contract C Task 2 plus `Task11-0 / retryable teardown and residual propagation`, consumes the exact compiler-injected `*runtime.TaskOwner`, and does not reference nonexistent `materialize.go`. Shared cluster and writer resources construct lifecycle-local `TaskCore` owners rather than borrowing a generation owner. HTTP leases use Task11-0's exact `cleanupResourceFinalize` phase between generation quiescence and one-shot release.
-- **Testability:** Every behavior task starts with a focused RED test, names the expected failure cause, and has normal/race/lint/build commands. Cross-generation cluster and writer reuse receive explicit executable tests. The cluster-specific engine discard test crosses real engine, factory, Prepared, final-lease, and resource-registry boundaries; the three core-panic tests are subprocess-only.
+- **Dependency consistency:** Every implementation task starts from Contract C Task 2 plus `Task11-0 / retryable teardown and residual propagation`, consumes the exact compiler-injected `*runtime.TaskOwner`, and does not reference nonexistent `materialize.go`. Shared cluster and writer resources construct lifecycle-local `TaskCore` owners rather than borrowing a generation owner. HTTP leases use Task11-0's exact `cleanupResourceFinalize` phase between generation quiescence and one-shot release. Task11-0's deferred logger checkpoint is consumed inside Generation Task 8 rather than made its own prerequisite, so the hand-off is complete without a dependency cycle.
+- **Testability:** Every behavior task starts with a focused RED test, names the expected failure cause, and has normal/race/lint/build commands. Cross-generation cluster and writer reuse receive explicit executable tests. The cluster-specific engine discard test crosses real engine, factory, Prepared, final-lease, and resource-registry boundaries; the three core-panic tests are subprocess-only. Task 8 freezes the complete residual set at processor, error-log delegation, and real server-chain layers and re-runs all three in the final normal/race gate.
 - **No placeholders:** Owner strings, criticality, constructor changes, stop order, focused commands, and commit subjects are specified. Test helpers shown in skeletons are test-local helpers to implement in the named test file, not production APIs.
 - **File fence:** Generation Task 5 integrates `ai_proxy_multi/plugin.go` and `plugin_test.go` first; request AI flush Task 7 starts from that reviewed head and is never dispatched in parallel.
 - **Known risk:** Logger shutdown is the highest-risk sequence because the generation registry currently stops before plugin `Stop`. Task 8 therefore makes owner cancellation itself seal/drain the processor, and Task 10 runs RocketMQ shutdown inside a pre-admitted owned task. Do not retain the old cleanup goroutine as a fallback.

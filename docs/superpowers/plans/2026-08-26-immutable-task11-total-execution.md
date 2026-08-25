@@ -4,7 +4,7 @@
 
 **Goal:** Remove every unowned production goroutine under `pkg/plugin`, `pkg/proxy`, `pkg/route`, and `pkg/stream`; bind each task to the exact generation, request/connection, or shared-resource lifetime; preserve Task 10 panic identity and cleanup semantics; and make cancellation-ignoring work visible as a bounded residual.
 
-**Architecture:** Contract C first freezes the only two task APIs: generation/shared work enters through an immutable `runtime.TaskOwner`, and request/connection work enters through the existing `runtime.RequestTaskGroup`. The compiler derives plugin owners from `selected.instance`. Generation work, request work, and shared-resource work then migrate in reviewed frozen-base waves with exclusive file ownership. Contract C finally adds one repository AST gate and runs the integrated race/lint/build review.
+**Architecture:** Contract C first freezes the only two task APIs: generation/shared work enters through an immutable `runtime.TaskOwner`, and request/connection work enters through the existing `runtime.RequestTaskGroup`. The compiler derives plugin owners from `selected.instance`. Generation work, request work, and shared-resource work then migrate in reviewed frozen-base waves with exclusive file ownership. Contract C finally adds one repository syntax-plus-type gate and runs the integrated race/lint/build review.
 
 **Tech Stack:** Go 1.26, `runtime.TaskRegistry`, `runtime.TaskOwner`, `runtime.RequestTaskGroup`, compiler `PreparedGeneration`, plugin `base.Dependencies`, `runtime.ResourceRegistry`, Go AST, focused tests, race detector, golangci-lint, and worktree-based local integration.
 
@@ -67,7 +67,7 @@ Coverage is exclusive:
 
 | Owner plan | Scope |
 | --- | --- |
-| Contract C | `runtime.TaskOwner`, `RequestTaskGroup` join-before-repanic, compiler/base injection, error-log observer seam, final AST gate, total integration |
+| Contract C | `runtime.TaskOwner`, `RequestTaskGroup` join-before-repanic, compiler/base injection, error-log observer seam, final syntax-plus-type gate, total integration |
 | Teardown plan | retryable generation/factory/server teardown, structured residual propagation, quiesce-before-release, and retryable shared-resource final close |
 | Generation plan | active health, cache cleanup, delayed sync, AI health, OAS refresh, log rotation, logger batch/file/RocketMQ shutdown, seven logger cancellation helpers, persistent stream runtime |
 | Request plan | stream bridge, batch requests, Kafka, proxy mirror, MQTT, MCP, and request-scoped AI periodic flush |
@@ -90,7 +90,7 @@ Generation after C Task 2 + teardown
 └── Generation tasks 8 -> 9 -> 10 (logger sequence)
 
 All generation + request outputs
-└── Contract C Task 5 AST gate
+└── Contract C Task 5 syntax-plus-type gate
     └── Contract C Task 6 integrated verification and review
 ```
 
@@ -191,7 +191,7 @@ Progress is computed from accepted implementation units, not agent activity. A p
 
 Task 11 is complete only when all are true:
 
-- the authoritative AST gate finds no raw `go` or syntactic `sync.WaitGroup.Go` under `pkg/plugin`, `pkg/proxy`, `pkg/route`, or `pkg/stream`;
+- the authoritative syntax-plus-type gate finds no raw `go` statement or type-resolved `sync.(*WaitGroup).Go` under `pkg/plugin`, `pkg/proxy`, `pkg/route`, or `pkg/stream`;
 - every plugin owner is attempt-qualified through compiler `selected.instance`;
 - every plugin owner is bounded and collision-resistant without embedding raw untrusted resource IDs;
 - no shared cluster, file-writer epoch, or persistent stream runtime borrows a generation registry;

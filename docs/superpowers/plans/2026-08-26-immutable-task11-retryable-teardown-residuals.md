@@ -124,9 +124,9 @@ closing[key] -> zero accepting references, resource still owned, terminal close 
 | 3. Prepared generation and factory retry | `pkg/compiler/prepared_generation.go`, `pkg/compiler/worker_factory.go` | `pkg/compiler/worker_factory_close_test.go`, affected `pkg/compiler/worker_factory_test.go` and `worker_factory_recovery_test.go` | Tasks 1-2 |
 | 4. Retryable generation owner | `pkg/server/generation_owner.go` | `pkg/server/generation_owner_test.go` | Task 3 |
 | 5. Engine discard, retirement, and close | `pkg/server/generation_engine.go` | `pkg/server/generation_engine_test.go` | Task 4 |
-| 6. Server phase retry and real owner-carrier chain | `pkg/server/server.go` | `pkg/server/server_test.go`, create `pkg/server/task_residual_chain_test.go` | Task 5 and reviewed Contract C Task 2 |
+| 6. Server phase retry | `pkg/server/server.go` | `pkg/server/server_test.go` | Task 5 |
 | 7. Retryable shared-resource final close | `pkg/runtime/resource_registry.go` | `pkg/runtime/resource_registry_test.go` | Task 1; integrate before final Task 8 and before generation shared-resource work |
-| 8. Integrated gate and handoff | no new product files | all tests above | Tasks 1-7 and reviewed Contract C Task 2 |
+| 8. Integrated gate and handoff | no new product files | all tests above; defer `pkg/server/task_residual_chain_test.go` to Generation Task 8 | Tasks 1-7 and reviewed Contract C Task 2; post-generation compatibility checkpoint also waits for Generation Task 8 |
 
 Dependency graph:
 
@@ -139,8 +139,8 @@ Tasks 1-7 -> Task 8 integrated Task11-0 gate
 
 Contract C Task 1 -> Task11-0 Task 1 -> Tasks 2-5 and Task 7
 Contract C Task 1 -> Contract C Task 2 may proceed beside Task11-0 after file ownership is checked
-Contract C Task 2 + Task 5 -> Task 6 exact plugin-owner residual chain
 Contract C Task 2 + integrated Task11-0 -> generation/background/shared-resource plan
+integrated Task11-0 + Generation Task 8 -> deferred exact plugin-owner residual-chain checkpoint
 Contract C Task 1 -> request/connection plan may proceed independently
 ```
 
@@ -894,12 +894,11 @@ git commit -m "fix(server): retry generation engine teardown"
 
 - Modify: `pkg/server/server.go`
 - Modify: `pkg/server/server_test.go`
-- Create: `pkg/server/task_residual_chain_test.go`
 
 **Interfaces:**
 
-- Consumes: Task 5 retryable `GenerationEngine.Close`; Task 3's real generation-task quiescer; Contract C Task 2's exact compiler-injected `TaskOwner`; existing `shutdownAttempt(ctx) (error, bool)` phase state machine.
-- Produces: engine-phase retry that preserves the exact owner carrier and earlier terminal shutdown errors and never reaches resolver/journal/observability while generation ownership is incomplete.
+- Consumes: Task 5 retryable `GenerationEngine.Close` and the existing `shutdownAttempt(ctx) (error, bool)` phase state machine.
+- Produces: engine-phase retry that preserves structured carriers and earlier terminal shutdown errors and never reaches resolver/journal/observability while generation ownership is incomplete. The exact real plugin-owner chain is deliberately deferred to Generation Task 8 as frozen below.
 
 - [ ] **Step 1: Add RED shutdown phase tests**
 
@@ -936,23 +935,15 @@ Have the fake engine return the captured `residualErr` on its first call, then n
 
 Add `TestServerShutdownEngineResidualPreservesEarlierTerminalDrainError`: make HTTP drain return a terminal marker while route drain times out once, then on the next attempt make engine return a residual once. Final successful shutdown must still satisfy `errors.Is(final, terminalDrainErr)` and must not contain the transient context deadline.
 
-Create `pkg/server/task_residual_chain_test.go` with `TestServerShutdownPreservesExactGenerationOwnerThroughRealChain`. This must exercise one real lifecycle chain, not stitch together separately fabricated wrapper errors:
-
-1. Starting from reviewed Contract C Task 2, construct a real `WorkerCompilerFactory`, real `GenerationEngine`, and `Server` pointing at that engine. Prepare and activate a snapshot with one `error-log-logger` binding. Its `StartObservingWithTasks(*runtime.TaskOwner)` admission is the real transfer from the compiler-created task owner into `PreparedGeneration.tasks`; do not call `TaskRegistry.Go`, `PreparedGeneration.Close`, `factory.Close`, or a fake engine directly from the test.
-2. Use an inline `httptest.Server` ClickHouse endpoint whose handler signals `deliveryStarted` and blocks on `releaseDelivery`. Configure batch size one, emit one application log after activation, and wait for `deliveryStarted`. The observer task's cancellation path now blocks in the real logger processor shutdown, deterministically leaving the admitted `/observer` task active.
-3. Build the exact expected owner independently from the known activated `plugin.InstanceKey`: use the returned publication attempt, system scope/provenance, and canonical config digest, encode fields exactly as Contract C freezes, hash with SHA-256, and form `plugin/error-log-logger/<64-lower-hex>/observer`. Do not copy the owner from the returned residual and do not use a regexp or suffix-only assertion.
-4. Call `server.Shutdown(shortCtx)`. Assert one `*runtime.TaskResidualError` is reachable, its defensive `Residuals()` equals exactly `[]runtime.TaskResidual{{Owner: wantOwner}}`, the same chain satisfies `errors.Is` for `context.DeadlineExceeded` and `compiler.ErrPreparedGenerationCleanupIncomplete`, and the rendered server wrapper contains only its stable operation label rather than owner/config data. `pkg/compiler/worker_factory_close_test.go` separately asserts the compiler-private `errWorkerGenerationCleanupFailed` on this same real generation-task quiescer.
-5. Assert the prepared record, factory membership, engine owner/metrics, resolver, journal, and observability owners remain intact after attempt one. Close `releaseDelivery`; call `server.Shutdown(context.Background())` again; assert terminal completion, exactly-once plugin/resource release, and no residual owner. Later server calls replay only terminal errors.
-
-Keep all synchronization channel-driven. If the existing ClickHouse fixture cannot expose handler entry without importing integration-only code, keep the minimal `httptest.Server` inline. Do not add a production test hook or exported owner/status API.
+Do **not** add the previously proposed ClickHouse `/observer`-only real-chain fixture here. In current `error_log_logger.Plugin.Stop`, the observer task calls `BatchProcessor.StopWithCleanup`; after Generation Task 8 migrates the processor, that same cancellation also owns `/batch-worker` and `/batch-shutdown`. Blocking ClickHouse delivery therefore cannot stably leave only `/observer`. There is no current server-visible seam that blocks `observerStop` without also entering batch shutdown, and adding a public/test-only production hook solely for this assertion is prohibited. The post-migration exact-chain test and its deterministic lower-level oracle are frozen under Task 8's deferred compatibility checkpoint.
 
 - [ ] **Step 2: Run RED**
 
 ```bash
-bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test ./pkg/server -run "^(TestServerShutdownEngineResidualRetriesBeforeLaterOwners|TestServerShutdownEngineResidualPreservesEarlierTerminalDrainError|TestServerShutdownPreservesExactGenerationOwnerThroughRealChain)$" -count=1'
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test ./pkg/server -run "^(TestServerShutdownEngineResidualRetriesBeforeLaterOwners|TestServerShutdownEngineResidualPreservesEarlierTerminalDrainError)$" -count=1'
 ```
 
-Expected: FAIL because the current real quiescer loses the structured owner carrier and current server code sets `engineClosed = true` and advances to the resolver phase after any engine error.
+Expected: FAIL because current server code sets `engineClosed = true` and advances to the resolver phase after any engine error.
 
 - [ ] **Step 3: Gate engine phase advancement on terminal close**
 
@@ -981,7 +972,7 @@ The actual code must not classify a nil error as a context error. Keep resolver,
 
 ```bash
 bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test ./pkg/server -run "^TestServer(Shutdown|RepeatedShutdown)" -count=1'
-bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test -race ./pkg/server -run "^(TestServerShutdownEngineResidualRetriesBeforeLaterOwners|TestServerShutdownEngineResidualPreservesEarlierTerminalDrainError|TestServerShutdownPreservesExactGenerationOwnerThroughRealChain|TestServerRepeatedShutdownReplaysFirstTerminalCleanupError|TestServerShutdownTimeoutDoesNotReleaseEngineResolverOrJournal)$" -count=1'
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test -race ./pkg/server -run "^(TestServerShutdownEngineResidualRetriesBeforeLaterOwners|TestServerShutdownEngineResidualPreservesEarlierTerminalDrainError|TestServerRepeatedShutdownReplaysFirstTerminalCleanupError|TestServerShutdownTimeoutDoesNotReleaseEngineResolverOrJournal)$" -count=1'
 ```
 
 Expected: PASS; later owners remain untouched until engine terminal completion, earlier terminal errors survive, and transient residual deadlines do not poison terminal replay.
@@ -989,7 +980,7 @@ Expected: PASS; later owners remain untouched until engine terminal completion, 
 - [ ] **Step 5: Review and commit**
 
 ```bash
-git add pkg/server/server.go pkg/server/server_test.go pkg/server/task_residual_chain_test.go
+git add pkg/server/server.go pkg/server/server_test.go
 git commit -m "fix(server): retry incomplete shutdown phases"
 ```
 
@@ -1200,13 +1191,15 @@ git commit -m "fix(runtime): retry shared resource final close"
 **Files:**
 
 - Verify all files from Tasks 1-7.
+- Before generation work, do not create `pkg/server/task_residual_chain_test.go`.
+- Generation Task 8 owns the deferred creation of `pkg/server/task_residual_chain_test.go` and the supporting assertions in its already-owned `pkg/plugin/logger_batch/processor_test.go` and `pkg/plugin/error_log_logger/plugin_test.go`.
 - Do not modify Contract C's `pkg/runtime/goroutine_contract_test.go`.
 - Do not edit generation/background or request/connection production files in this task.
 
 **Interfaces:**
 
-- Consumes: Tasks 1-7 and reviewed Contract C Task 2; Task 6 is the only Task11-0 task that must wait for Contract C Task 2 because its real observer-owner chain consumes that interface.
-- Produces: one reviewed retryable teardown substrate for generation/shared-resource work; request plan remains independently unblocked after Contract C Task 1.
+- Consumes for the prerequisite gate: Tasks 1-7 and reviewed Contract C Task 2. The deferred compatibility checkpoint additionally consumes Generation Task 8's owned logger scheduler/worker/shutdown lifecycle.
+- Produces: one reviewed retryable teardown substrate that unblocks generation/shared-resource work, plus one explicit post-Generation-Task-8 exact-owner checkpoint for final Task 11 integration. The deferred checkpoint is not a prerequisite of Generation Task 8 itself, avoiding a dependency cycle. Request work remains independently unblocked after Contract C Task 1.
 
 - [ ] **Step 1: Run focused normal suites**
 
@@ -1226,7 +1219,43 @@ bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test -race ./pkg/r
 
 Expected: PASS with no race and with at least one selected test in each package.
 
-- [ ] **Step 3: Run scoped lint, build, and diff checks**
+- [ ] **Step 3: Hand the exact real-chain compatibility test to Generation Task 8**
+
+The current `/observer`-only ClickHouse fixture is invalid after Generation Task 8: the same compiler-injected owner also admits `batch-scheduler`, `batch-worker`, and `batch-shutdown`, and blocking delivery intentionally holds the worker and shutdown owner. Generation Task 8 must add the following two-layer oracle in its own RED/GREEN commit, after adding the owner-aware processor APIs but before claiming that task complete. Its production state machine must include a private `schedulerDone` lifecycle barrier (not an exported test hook): the scheduler closes it only after sealing admission and publishing the terminal drain; `StopWithCleanup` registers cleanup, initiates shutdown, waits for `schedulerDone`, and returns without waiting for `workersDone`. The pre-admitted `/batch-shutdown` task alone waits for workers and runs final cleanup. Thus return from `Plugin.Stop` proves both observer delegation and scheduler exit while blocked delivery still keeps worker/shutdown active.
+
+First add `TestProcessorBlockingDeliveryResidualSetIsWorkerAndShutdown` in `pkg/plugin/logger_batch/processor_test.go`. Use one `TaskOwner` with exact prefix `plugin/error-log-logger/` plus 64 `a` bytes, `MaxConcurrentDeliveries: 1`, and a delivery callback that closes `deliveryStarted`, ignores its callback context, and waits on `releaseDelivery`. Push exactly one entry and wait for `deliveryStarted`; call `StopWithCleanup`, require it to return after the private scheduler barrier while delivery remains blocked, then stop the real registry with a deadline. Independently expect this sorted set:
+
+```go
+want := []runtime.TaskResidual{
+	{Owner: ownerPrefix + "/batch-shutdown"},
+	{Owner: ownerPrefix + "/batch-worker"},
+}
+```
+
+The processor test must also assert that `/batch-scheduler` is absent because it has sealed admission and published the terminal drain before the residual snapshot. Close `releaseDelivery`, retry `registry.Stop(context.Background())`, and assert no residual plus cleanup exactly once. This lower-level test is the deterministic seam: it uses the injected delivery callback rather than a network timeout and freezes the complete post-migration processor residual set.
+
+Next add `TestErrorLogObserverDelegatesBlockingBatchShutdownWithoutRemainingResidual` in `pkg/plugin/error_log_logger/plugin_test.go`. Build the plugin with the same real registry/owner and a Task-8-owned processor using the blocking delivery callback; start the observer, push one entry, wait for delivery, and call `p.Stop()` in a goroutine. Assert `p.Stop()` returns while delivery is still blocked: `StopWithCleanup` must only register cleanup and delegate waiting to `/batch-shutdown`. Then stop the registry with a deadline and assert the exact same two-element set above, proving `/observer` has returned and cannot contaminate the server oracle. Release delivery and prove retry is clean. Do not add an observer hook, exported task-state API, sleep, or suffix-only assertion.
+
+Finally create `pkg/server/task_residual_chain_test.go` with `TestServerShutdownPreservesExactGenerationOwnersThroughRealChain`:
+
+1. Construct a real `WorkerCompilerFactory`, real `GenerationEngine`, and `Server`. Prepare and activate a snapshot with one `error-log-logger` binding. `StartObservingWithTasks(*runtime.TaskOwner)` and Task 8's batch constructor must receive the same real compiler-derived owner; the test must not call `TaskRegistry.Go`, `PreparedGeneration.Close`, `factory.Close`, or a fake engine.
+2. Use an inline blocking ClickHouse `httptest.Server`, batch size one, one worker, and a delivery timeout longer than the bounded server-shutdown attempt. Its handler closes `deliveryStarted` and waits on `releaseDelivery` even after request-context cancellation. Emit one application log and wait for handler entry before shutdown.
+3. Independently construct `ownerPrefix` from the known activated `plugin.InstanceKey`: returned attempt, system scope/provenance, and canonical config digest encoded exactly as Contract C freezes, followed by SHA-256. Do not learn the expected value from the actual residual. The exact sorted expectation is `ownerPrefix+"/batch-shutdown"`, then `ownerPrefix+"/batch-worker"`; `/observer` and `/batch-scheduler` are forbidden.
+4. Call `server.Shutdown(shortCtx)`. Assert `errors.As(err, &residual)`, exact equality with the two-element set, `errors.Is(err, context.DeadlineExceeded)`, and `errors.Is(err, compiler.ErrPreparedGenerationCleanupIncomplete)`. Assert prepared/factory/engine ownership and later resolver/journal/observability owners remain retained.
+5. Close `releaseDelivery`, call `server.Shutdown(context.Background())`, and assert terminal completion, no residual, and exactly-once plugin/resource/processor cleanup.
+
+Generation Task 8 RED/GREEN and race commands:
+
+```bash
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test ./pkg/plugin/logger_batch ./pkg/plugin/error_log_logger ./pkg/server -run "^(TestProcessorBlockingDeliveryResidualSetIsWorkerAndShutdown|TestErrorLogObserverDelegatesBlockingBatchShutdownWithoutRemainingResidual|TestServerShutdownPreservesExactGenerationOwnersThroughRealChain)$" -count=1'
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test -race ./pkg/plugin/logger_batch ./pkg/plugin/error_log_logger ./pkg/server -run "^(TestProcessorBlockingDeliveryResidualSetIsWorkerAndShutdown|TestErrorLogObserverDelegatesBlockingBatchShutdownWithoutRemainingResidual|TestServerShutdownPreservesExactGenerationOwnersThroughRealChain)$" -count=1'
+```
+
+RED before Task 8: batch workers/shutdown are not registry-owned, so the lower oracle and real server chain cannot return the frozen two-owner set. GREEN after Task 8: both lower-level tests and the real transfer -> `PreparedGeneration` -> factory -> engine -> server chain return exactly the independently derived set, and retry releases once.
+
+Review checkpoint before accepting Generation Task 8: inspect `error_log_logger.StartObservingWithTasks`, `Plugin.Stop`, `logger_batch.Processor.StopWithCleanup`, and the scheduler/worker/shutdown callbacks together. Confirm observer and scheduler termination precede the residual snapshot, worker and shutdown remain for the same blocked delivery, both use the exact compiler prefix, and no cleanup runs before worker exit. If Task 8's reviewed state machine changes the legitimate complete component set, update this frozen mapping and both lower/server exact-equality tests in the same reviewed Task 8 correction; never weaken to suffix matching or copy the observed residual into `want`.
+
+- [ ] **Step 4: Run scoped lint, build, and diff checks**
 
 ```bash
 bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && golangci-lint run ./pkg/runtime/... ./pkg/compiler/... ./pkg/server/...'
@@ -1236,7 +1265,7 @@ git diff --check b0220dcebd64a1d2d687be84d1f14ab501dfffd0..HEAD
 
 Expected: lint reports zero issues, build succeeds, and diff check prints nothing.
 
-- [ ] **Step 4: Run API, placeholder, and lifecycle scans**
+- [ ] **Step 5: Run API, placeholder, and lifecycle scans**
 
 ```bash
 rg -n 'type TaskResidualError|func \(e \*TaskResidualError\) (Error|Unwrap|Residuals)' pkg/runtime/task_registry.go
@@ -1255,7 +1284,7 @@ Expected:
 - third scan returns no first-attempt cache controlling a retryable teardown boundary; an unrelated exact-once field requires a line-by-line written justification;
 - red-flag scan returns no unresolved implementation text.
 
-- [ ] **Step 5: Perform an independent merge-level review**
+- [ ] **Step 6: Perform an independent merge-level review**
 
 Review the exact Task11-0 commit range for:
 
@@ -1274,7 +1303,7 @@ Review the exact Task11-0 commit range for:
 
 Any confirmed finding returns to its owning task, repeats that task's smallest RED/GREEN/race gate, and then repeats the affected integrated checks.
 
-- [ ] **Step 6: Create an integration correction commit only when reviewed corrections exist**
+- [ ] **Step 7: Create an integration correction commit only when reviewed corrections exist**
 
 Do not create an empty commit. If the independent review requires a cross-task correction in files already owned by this plan:
 
@@ -1286,12 +1315,11 @@ git add pkg/runtime/task_registry.go pkg/runtime/task_registry_test.go \
   pkg/compiler/prepared_generation.go pkg/compiler/worker_factory.go \
   pkg/compiler/worker_factory_close_test.go pkg/server/generation_owner.go \
   pkg/server/generation_owner_test.go pkg/server/generation_engine.go \
-  pkg/server/generation_engine_test.go pkg/server/server.go pkg/server/server_test.go \
-  pkg/server/task_residual_chain_test.go
+  pkg/server/generation_engine_test.go pkg/server/server.go pkg/server/server_test.go
 git commit -m "fix(runtime): complete retryable teardown integration"
 ```
 
-- [ ] **Step 7: Hand off exact dependency evidence**
+- [ ] **Step 8: Hand off exact dependency evidence**
 
 Return:
 
@@ -1299,7 +1327,7 @@ Return:
 - exact normal/race/lint/build/diff commands and results;
 - final `TaskResidualError` method set;
 - RED evidence that the old base crossed quiesce/resource-finalization barriers and lost the carrier, plus GREEN evidence that retry retained then finalized/released each owner once;
-- exact owner from the real transfer -> `PreparedGeneration` -> factory -> engine -> server residual-chain test;
+- at the prerequisite handoff, explicit status that the real-chain exact-owner test is deferred to Generation Task 8 and is not yet evidence; at the post-generation handoff, GREEN evidence for the independently derived exact set `<prefix>/batch-shutdown`, `<prefix>/batch-worker` through transfer -> `PreparedGeneration` -> factory -> engine -> server;
 - closing-key acquisition behavior and its context/registry-close results;
 - confirmation that generation/background work now has both prerequisites: Contract C Task 2 and Task11-0;
 - confirmation that request/connection work remains eligible after Contract C Task 1, subject to its documented AI shared-file ordering;
@@ -1309,13 +1337,13 @@ Return:
 
 ## Self-Review Checklist
 
-- **Spec coverage:** Tasks 1-7 cover structured residual propagation, three-phase retryable cleanup, PreparedGeneration, WorkerCompilerFactory, generationOwner, GenerationEngine discard/retirement/Close, the real transfer-to-server owner carrier, server shutdown phase retry, and ResourceRegistry final-close retry.
-- **Ordering:** Generation/background/shared-resource work waits for Contract C Task 2 plus Task11-0. Request/connection work may proceed after Contract C Task 1.
+- **Spec coverage:** Tasks 1-7 cover structured residual propagation, three-phase retryable cleanup, PreparedGeneration, WorkerCompilerFactory, generationOwner, GenerationEngine discard/retirement/Close, server shutdown phase retry, and ResourceRegistry final-close retry. Generation Task 8 owns the post-migration real transfer-to-server exact-owner carrier checkpoint.
+- **Ordering:** Generation/background/shared-resource work waits for Contract C Task 2 plus the Task11-0 prerequisite gate. The deferred exact-owner checkpoint waits for Generation Task 8 and gates final Task 11 integration without blocking Generation Task 8 from starting. Request/connection work may proceed after Contract C Task 1.
 - **API restraint:** `TaskRegistry.Stop` is unchanged; `TaskResidualError` has only stable `Error`, `Unwrap`, and defensive `Residuals`; no completion/status channel is exposed.
 - **Barrier correctness:** every failed quiescer blocks finalization and release; incomplete resource finalization blocks one-shot release and retries; terminal finalization errors are retained once; releases are attempted once and replay their errors.
 - **Ownership correctness:** a residual retains prepared fields, factory membership, engine records, metrics, registry closing entries, and the actual resource.
 - **Retry correctness:** retries are triggered by later close/discard/shutdown calls or existing internal barriers, never a busy loop; waiters replay only the immutable attempt they joined.
 - **Error correctness:** context causes survive `errors.Is`, residual data survives `errors.As`, unrelated terminal errors remain joined, and compiler raw cleanup details stay redacted.
 - **Acquisition correctness:** a key in closing state blocks same-key replacement, honors acquisition context, and returns registry-closed when terminal registry shutdown wins.
-- **Verification:** every behavior task has named RED/GREEN/race commands, scoped lint/build/diff gates, exact files, review checks, and a local commit subject.
+- **Verification:** every behavior task has named RED/GREEN/race commands, scoped lint/build/diff gates, exact files, review checks, and a local commit subject; the post-generation compatibility checkpoint has separate exact normal/race commands and cannot be reported at the prerequisite handoff.
 - **Scope:** no dependency, product feature, public owner status API, push, PR, broad test aggregation, or unrelated refactor is included.

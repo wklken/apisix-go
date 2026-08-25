@@ -14,17 +14,30 @@ import (
 
 func TestPlanHTTPPluginsPrecedenceAndExactSources(t *testing.T) {
 	input := PlanningInput{
-		Routes: []resource.Route{{ID: "r1", ServiceID: "s1", PluginConfigID: "pc1", Plugins: map[string]resource.PluginConfig{
-			"proxy-rewrite": map[string]any{"host": "route.example"},
-		}}},
-		Services: map[string]resource.Service{"s1": {ID: "s1", Plugins: map[string]resource.PluginConfig{
-			"proxy-rewrite": map[string]any{"host": "service.example"},
-			"kafka-logger":  map[string]any{"broker_list": map[string]any{"host": "127.0.0.1", "port": 9092}},
-		}}},
-		PluginConfigs: map[string]resource.PluginConfigRule{"pc1": {Plugins: map[string]resource.PluginConfig{
-			"proxy-rewrite":    map[string]any{"host": "plugin-config.example"},
-			"response-rewrite": map[string]any{"status_code": 201},
-		}}},
+		Routes: []resource.Route{
+			{
+				ID:             "r1",
+				ServiceID:      "s1",
+				PluginConfigID: "pc1",
+				Plugins: map[string]resource.PluginConfig{
+					"proxy-rewrite": map[string]any{"host": "route.example"},
+				},
+			},
+		},
+		Services: map[string]resource.Service{
+			"s1": {ID: "s1", Plugins: map[string]resource.PluginConfig{
+				"proxy-rewrite": map[string]any{"host": "service.example"},
+				"kafka-logger": map[string]any{
+					"broker_list": map[string]any{"host": "127.0.0.1", "port": 9092},
+				},
+			}},
+		},
+		PluginConfigs: map[string]resource.PluginConfigRule{
+			"pc1": {Plugins: map[string]resource.PluginConfig{
+				"proxy-rewrite":    map[string]any{"host": "plugin-config.example"},
+				"response-rewrite": map[string]any{"status_code": 201},
+			}},
+		},
 		EnabledPlugins: []string{"proxy-rewrite", "response-rewrite", "kafka-logger"},
 	}
 
@@ -36,11 +49,36 @@ func TestPlanHTTPPluginsPrecedenceAndExactSources(t *testing.T) {
 		t.Fatalf("routes = %d, want 1", len(plan.Routes))
 	}
 	route := plan.Routes[0]
-	assertPluginPlanSource(t, route.Local, "proxy-rewrite", generation.ResourceKey{Kind: "routes", ID: "r1"})
-	assertPluginPlanSource(t, route.Local, "response-rewrite", generation.ResourceKey{Kind: "plugin_configs", ID: "pc1"})
-	assertPluginPlanSource(t, route.ServicePlans, "kafka-logger", generation.ResourceKey{Kind: "services", ID: "s1"})
-	assertPluginPlanSource(t, route.System, "request-context", generation.ResourceKey{Kind: "system", ID: "request-context"})
-	assertPluginPlanSource(t, plan.System, "request-context", generation.ResourceKey{Kind: "system", ID: "request-context"})
+	assertPluginPlanSource(
+		t,
+		route.Local,
+		"proxy-rewrite",
+		generation.ResourceKey{Kind: "routes", ID: "r1"},
+	)
+	assertPluginPlanSource(
+		t,
+		route.Local,
+		"response-rewrite",
+		generation.ResourceKey{Kind: "plugin_configs", ID: "pc1"},
+	)
+	assertPluginPlanSource(
+		t,
+		route.ServicePlans,
+		"kafka-logger",
+		generation.ResourceKey{Kind: "services", ID: "s1"},
+	)
+	assertPluginPlanSource(
+		t,
+		route.System,
+		"request-context",
+		generation.ResourceKey{Kind: "system", ID: "request-context"},
+	)
+	assertPluginPlanSource(
+		t,
+		plan.System,
+		"request-context",
+		generation.ResourceKey{Kind: "system", ID: "request-context"},
+	)
 	if got := pluginPlanNamed(route.Local, "proxy-rewrite").Config.(map[string]any)["host"]; got != "route.example" {
 		t.Fatalf("proxy-rewrite host = %v, want route winner", got)
 	}
@@ -64,12 +102,16 @@ func TestPlanHTTPPluginsUsesLegacyStablePriorityOrder(t *testing.T) {
 
 func TestPlanHTTPPluginsDisabledWinnerDoesNotRestoreLoser(t *testing.T) {
 	plan, err := PlanHTTPPlugins(context.Background(), PlanningInput{
-		Routes: []resource.Route{{ID: "r1", PluginConfigID: "pc1", Plugins: map[string]resource.PluginConfig{
-			"proxy-rewrite": map[string]any{"_meta": map[string]any{"disable": true}},
-		}}},
-		PluginConfigs: map[string]resource.PluginConfigRule{"pc1": {Plugins: map[string]resource.PluginConfig{
-			"proxy-rewrite": map[string]any{"host": "loser.example"},
-		}}},
+		Routes: []resource.Route{
+			{ID: "r1", PluginConfigID: "pc1", Plugins: map[string]resource.PluginConfig{
+				"proxy-rewrite": map[string]any{"_meta": map[string]any{"disable": true}},
+			}},
+		},
+		PluginConfigs: map[string]resource.PluginConfigRule{
+			"pc1": {Plugins: map[string]resource.PluginConfig{
+				"proxy-rewrite": map[string]any{"host": "loser.example"},
+			}},
+		},
 		EnabledPlugins: []string{"proxy-rewrite"},
 	})
 	if err != nil {
@@ -90,15 +132,39 @@ func TestPlanHTTPPluginsConsumerGlobalMetadataAndInputIsolation(t *testing.T) {
 		}}},
 		GlobalRules: []resource.GlobalRule{
 			{ID: "g1", Plugins: map[string]resource.PluginConfig{"cors": map[string]any{}}},
-			{ID: "g2", Plugins: map[string]resource.PluginConfig{"cors": map[string]any{}, "response-rewrite": map[string]any{"status_code": 202}}},
+			{
+				ID: "g2",
+				Plugins: map[string]resource.PluginConfig{
+					"cors":             map[string]any{},
+					"response-rewrite": map[string]any{"status_code": 202},
+				},
+			},
 		},
-		Consumers: map[string]resource.Consumer{"alice": {Username: "alice", GroupID: "group-a", Plugins: map[string]resource.PluginConfig{
-			"limit-count": map[string]any{"count": 20}, "key-auth": map[string]any{"key": "secret"},
-		}}},
-		ConsumerGroups: map[string]resource.ConsumerGroup{"group-a": {Plugins: map[string]resource.PluginConfig{
-			"limit-count": map[string]any{"count": 10}, "proxy-rewrite": map[string]any{"host": "group.example"},
-		}}},
-		EnabledPlugins: []string{"example-plugin", "response-rewrite", "cors", "limit-count", "proxy-rewrite"},
+		Consumers: map[string]resource.Consumer{
+			"alice": {
+				Username: "alice",
+				GroupID:  "group-a",
+				Plugins: map[string]resource.PluginConfig{
+					"limit-count": map[string]any{
+						"count": 20,
+					}, "key-auth": map[string]any{"key": "secret"},
+				},
+			},
+		},
+		ConsumerGroups: map[string]resource.ConsumerGroup{
+			"group-a": {Plugins: map[string]resource.PluginConfig{
+				"limit-count": map[string]any{
+					"count": 10,
+				}, "proxy-rewrite": map[string]any{"host": "group.example"},
+			}},
+		},
+		EnabledPlugins: []string{
+			"example-plugin",
+			"response-rewrite",
+			"cors",
+			"limit-count",
+			"proxy-rewrite",
+		},
 	}
 	plan, err := PlanHTTPPlugins(context.Background(), input)
 	if err != nil {
@@ -107,10 +173,25 @@ func TestPlanHTTPPluginsConsumerGlobalMetadataAndInputIsolation(t *testing.T) {
 	if pluginPlanNamed(plan.Global, "cors") != nil {
 		t.Fatal("duplicate global plugin was not removed from all rules")
 	}
-	assertPluginPlanSource(t, plan.Global, "response-rewrite", generation.ResourceKey{Kind: "global_rules", ID: "g2"})
+	assertPluginPlanSource(
+		t,
+		plan.Global,
+		"response-rewrite",
+		generation.ResourceKey{Kind: "global_rules", ID: "g2"},
+	)
 	consumer := plan.Consumers["alice"]
-	assertPluginPlanSource(t, consumer, "limit-count", generation.ResourceKey{Kind: "consumers", ID: "alice"})
-	assertPluginPlanSource(t, consumer, "proxy-rewrite", generation.ResourceKey{Kind: "consumer_groups", ID: "group-a"})
+	assertPluginPlanSource(
+		t,
+		consumer,
+		"limit-count",
+		generation.ResourceKey{Kind: "consumers", ID: "alice"},
+	)
+	assertPluginPlanSource(
+		t,
+		consumer,
+		"proxy-rewrite",
+		generation.ResourceKey{Kind: "consumer_groups", ID: "group-a"},
+	)
 	if pluginPlanNamed(consumer, "key-auth") != nil {
 		t.Fatal("credential-only auth plugin entered consumer execution plans")
 	}
@@ -129,7 +210,11 @@ func TestPlanHTTPPluginsConsumerGlobalMetadataAndInputIsolation(t *testing.T) {
 		t.Fatal(err)
 	}
 	if applied.Priority != 99 || applied.Plugin == raw {
-		t.Fatalf("Apply() priority/plugin = (%d, %T), want priority 99 and metadata wrapper", applied.Priority, applied.Plugin)
+		t.Fatalf(
+			"Apply() priority/plugin = (%d, %T), want priority 99 and metadata wrapper",
+			applied.Priority,
+			applied.Plugin,
+		)
 	}
 
 	nested["value"] = "after"
@@ -192,7 +277,12 @@ func TestPlanHTTPPluginsQuarantinesRouteErrorsAndFailsGenerationWideSources(t *t
 	t.Run("route metadata is quarantined", func(t *testing.T) {
 		plan, err := PlanHTTPPlugins(context.Background(), PlanningInput{
 			Routes: []resource.Route{
-				{ID: "bad", Plugins: map[string]resource.PluginConfig{"example-plugin": map[string]any{"_meta": "invalid"}}},
+				{
+					ID: "bad",
+					Plugins: map[string]resource.PluginConfig{
+						"example-plugin": map[string]any{"_meta": "invalid"},
+					},
+				},
 				{ID: "good"},
 			},
 			EnabledPlugins: []string{"example-plugin"},
@@ -220,7 +310,9 @@ func TestPlanHTTPPluginsQuarantinesRouteErrorsAndFailsGenerationWideSources(t *t
 
 	t.Run("missing consumer group fails generation", func(t *testing.T) {
 		_, err := PlanHTTPPlugins(context.Background(), PlanningInput{
-			Consumers: map[string]resource.Consumer{"alice": {Username: "alice", GroupID: "missing"}},
+			Consumers: map[string]resource.Consumer{
+				"alice": {Username: "alice", GroupID: "missing"},
+			},
 		})
 		if err == nil {
 			t.Fatal("missing consumer group error = nil")
@@ -264,9 +356,11 @@ func TestPlanHTTPPluginsAppliesStrictPolicyAndRouteCompatibilityBeforeSideEffect
 	}
 
 	_, err = PlanHTTPPlugins(context.Background(), PlanningInput{
-		GlobalRules: []resource.GlobalRule{{ID: "strict-global", Plugins: map[string]resource.PluginConfig{
-			"jwt-auth": map[string]any{"hide_credentials": true},
-		}}},
+		GlobalRules: []resource.GlobalRule{
+			{ID: "strict-global", Plugins: map[string]resource.PluginConfig{
+				"jwt-auth": map[string]any{"hide_credentials": true},
+			}},
+		},
 		EnabledPlugins: []string{"jwt-auth"}, Profiles: strict,
 	})
 	if err == nil {
@@ -274,7 +368,12 @@ func TestPlanHTTPPluginsAppliesStrictPolicyAndRouteCompatibilityBeforeSideEffect
 	}
 }
 
-func assertPluginPlanSource(t *testing.T, plans []PluginPlan, factory string, want generation.ResourceKey) {
+func assertPluginPlanSource(
+	t *testing.T,
+	plans []PluginPlan,
+	factory string,
+	want generation.ResourceKey,
+) {
 	t.Helper()
 	plan := pluginPlanNamed(plans, factory)
 	if plan == nil || plan.Source != want {

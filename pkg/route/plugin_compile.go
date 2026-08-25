@@ -29,13 +29,24 @@ type PluginPlan struct {
 // Apply installs the already-compiled metadata wrapper and priority on one materialized binding.
 func (plan PluginPlan) Apply(binding plugin.Binding) (plugin.Binding, error) {
 	if binding.Plugin == nil {
-		return plugin.Binding{}, fmt.Errorf("apply plugin plan %q: binding plugin is required", plan.Factory)
+		return plugin.Binding{}, fmt.Errorf(
+			"apply plugin plan %q: binding plugin is required",
+			plan.Factory,
+		)
 	}
 	if binding.Descriptor.Factory != plan.Factory || binding.Scope != plan.Scope ||
 		binding.Provenance != plan.Provenance {
-		return plugin.Binding{}, fmt.Errorf("apply plugin plan %q: binding authority does not match plan", plan.Factory)
+		return plugin.Binding{}, fmt.Errorf(
+			"apply plugin plan %q: binding authority does not match plan",
+			plan.Factory,
+		)
 	}
-	wrapper, err := newMetadataPluginWithDescriptor(plan.Factory, binding.Plugin, plan.metadata, binding.Descriptor)
+	wrapper, err := newMetadataPluginWithDescriptor(
+		plan.Factory,
+		binding.Plugin,
+		plan.metadata,
+		binding.Descriptor,
+	)
 	if err != nil {
 		return plugin.Binding{}, fmt.Errorf("apply plugin plan %q: %w", plan.Factory, err)
 	}
@@ -135,7 +146,11 @@ func PlanHTTPPlugins(ctx context.Context, input PlanningInput) (*HTTPPluginPlan,
 			var exists bool
 			group, exists = input.ConsumerGroups[consumer.GroupID]
 			if !exists {
-				return nil, fmt.Errorf("plan consumer %q: consumer group %q is missing", id, consumer.GroupID)
+				return nil, fmt.Errorf(
+					"plan consumer %q: consumer group %q is missing",
+					id,
+					consumer.GroupID,
+				)
 			}
 			group = clonePlanningConsumerGroup(group)
 		}
@@ -155,7 +170,10 @@ func PlanHTTPPlugins(ctx context.Context, input PlanningInput) (*HTTPPluginPlan,
 		}
 		planned, err := planRoutePlugins(supplied, input, enabled)
 		if err != nil {
-			result.Quarantined = append(result.Quarantined, generation.ResourceKey{Kind: "routes", ID: supplied.ID})
+			result.Quarantined = append(
+				result.Quarantined,
+				generation.ResourceKey{Kind: "routes", ID: supplied.ID},
+			)
 			continue
 		}
 		result.Routes = append(result.Routes, planned)
@@ -163,7 +181,11 @@ func PlanHTTPPlugins(ctx context.Context, input PlanningInput) (*HTTPPluginPlan,
 	return result, nil
 }
 
-func planRoutePlugins(routeResource resource.Route, input PlanningInput, enabled plugin.EnabledSet) (PlannedRoute, error) {
+func planRoutePlugins(
+	routeResource resource.Route,
+	input PlanningInput,
+	enabled plugin.EnabledSet,
+) (PlannedRoute, error) {
 	routeResource = cloneCompileRoute(routeResource)
 	if routeResource.ID == "" {
 		return PlannedRoute{}, fmt.Errorf("route id is required")
@@ -187,7 +209,10 @@ func planRoutePlugins(routeResource resource.Route, input PlanningInput, enabled
 	if routeResource.PluginConfigID != "" {
 		rule, exists := input.PluginConfigs[routeResource.PluginConfigID]
 		if !exists {
-			return PlannedRoute{}, fmt.Errorf("plugin config %q is missing", routeResource.PluginConfigID)
+			return PlannedRoute{}, fmt.Errorf(
+				"plugin config %q is missing",
+				routeResource.PluginConfigID,
+			)
 		}
 		pluginConfigs = cloneCompilePluginConfigs(rule.Plugins)
 	}
@@ -226,7 +251,13 @@ func planRoutePlugins(routeResource resource.Route, input PlanningInput, enabled
 	if err != nil {
 		return PlannedRoute{}, err
 	}
-	return PlannedRoute{Route: routeResource, Service: service, Local: localPlans, ServicePlans: servicePlans, System: systemPlans}, nil
+	return PlannedRoute{
+		Route:        routeResource,
+		Service:      service,
+		Local:        localPlans,
+		ServicePlans: servicePlans,
+		System:       systemPlans,
+	}, nil
 }
 
 func validatePlannedRouteURIs(routeResource resource.Route) error {
@@ -255,15 +286,31 @@ func validatePlannedRouteURIs(routeResource resource.Route) error {
 	return nil
 }
 
-func planPluginSources(sources []materializedPluginSource, enabled plugin.EnabledSet, allowRequestContext bool) ([]PluginPlan, error) {
+func planPluginSources(
+	sources []materializedPluginSource,
+	enabled plugin.EnabledSet,
+	allowRequestContext bool,
+) ([]PluginPlan, error) {
 	plans := make([]PluginPlan, 0, len(sources))
 	for _, source := range sources {
-		if !enabled.Contains(source.name) && !(allowRequestContext && source.name == "request-context") {
-			return nil, fmt.Errorf("plugin %q from %s %q is disabled", source.name, source.provenance.Kind, source.provenance.ID)
+		if !enabled.Contains(source.name) &&
+			(!allowRequestContext || source.name != "request-context") {
+			return nil, fmt.Errorf(
+				"plugin %q from %s %q is disabled",
+				source.name,
+				source.provenance.Kind,
+				source.provenance.ID,
+			)
 		}
 		config, metadata, err := parsePluginMetadata(cloneCompileValue(source.config))
 		if err != nil {
-			return nil, fmt.Errorf("plugin %q from %s %q: %w", source.name, source.provenance.Kind, source.provenance.ID, err)
+			return nil, fmt.Errorf(
+				"plugin %q from %s %q: %w",
+				source.name,
+				source.provenance.Kind,
+				source.provenance.ID,
+				err,
+			)
 		}
 		if metadata.disabled {
 			continue
@@ -277,7 +324,9 @@ func planPluginSources(sources []materializedPluginSource, enabled plugin.Enable
 			Factory: source.name, Config: cloneCompileValue(config), Scope: source.scope,
 			Provenance: source.provenance, Source: sourceGenerationKey(source.provenance),
 			FilterIdentity: cloneCompileValue(metadata.identityFilter),
-			ErrorResponse:  cloneCompileValue(metadata.errorResponse), Priority: priority, metadata: metadata,
+			ErrorResponse: cloneCompileValue(
+				metadata.errorResponse,
+			), Priority: priority, metadata: metadata,
 		})
 	}
 	return plans, nil

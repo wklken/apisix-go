@@ -12,20 +12,49 @@ import (
 func TestPlanRouteUpstreamPrecedenceAndValidation(t *testing.T) {
 	static := &testEffectiveConfig().Config
 	upstreams := map[string]resource.Upstream{
-		"route-ref":   {Name: "route-ref", Scheme: "http", Nodes: []resource.Node{{Host: "route-ref", Port: 80, Weight: 1}}},
-		"service-ref": {Name: "service-ref", Scheme: "http", Nodes: []resource.Node{{Host: "service-ref", Port: 80, Weight: 1}}},
+		"route-ref": {
+			Name:   "route-ref",
+			Scheme: "http",
+			Nodes:  []resource.Node{{Host: "route-ref", Port: 80, Weight: 1}},
+		},
+		"service-ref": {
+			Name:   "service-ref",
+			Scheme: "http",
+			Nodes:  []resource.Node{{Host: "service-ref", Port: 80, Weight: 1}},
+		},
 	}
-	route := resource.Route{ID: "r1", Upstream: resource.Upstream{Name: "inline-route", Scheme: "http", Nodes: []resource.Node{{Host: "inline", Port: 80, Weight: 2}}}, UpstreamID: "route-ref"}
-	service := resource.Service{ID: "s1", Upstream: resource.Upstream{Name: "inline-service", Scheme: "http", Nodes: []resource.Node{{Host: "service", Port: 80, Weight: 1}}}, UpstreamID: "service-ref"}
+	route := resource.Route{
+		ID: "r1",
+		Upstream: resource.Upstream{
+			Name:   "inline-route",
+			Scheme: "http",
+			Nodes:  []resource.Node{{Host: "inline", Port: 80, Weight: 2}},
+		},
+		UpstreamID: "route-ref",
+	}
+	service := resource.Service{
+		ID: "s1",
+		Upstream: resource.Upstream{
+			Name:   "inline-service",
+			Scheme: "http",
+			Nodes:  []resource.Node{{Host: "service", Port: 80, Weight: 1}},
+		},
+		UpstreamID: "service-ref",
+	}
 	plan, err := PlanRouteUpstream(route, service, upstreams, nil, static)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.Upstream.Name != "inline-route" || plan.Provenance != (plugin.ResourceProvenance{Kind: plugin.ResourceRoute, ID: "r1"}) {
+	if plan.Upstream.Name != "inline-route" ||
+		plan.Provenance != (plugin.ResourceProvenance{Kind: plugin.ResourceRoute, ID: "r1"}) {
 		t.Fatalf("winner = (%q, %+v), want inline route", plan.Upstream.Name, plan.Provenance)
 	}
 	if plan.Targets["http://inline:80"] != 2 || plan.ClusterConfig == nil {
-		t.Fatalf("targets/cluster = (%+v, %v), want inline target and cluster", plan.Targets, plan.ClusterConfig)
+		t.Fatalf(
+			"targets/cluster = (%+v, %v), want inline target and cluster",
+			plan.Targets,
+			plan.ClusterConfig,
+		)
 	}
 	for _, test := range []struct {
 		name       string
@@ -44,21 +73,42 @@ func TestPlanRouteUpstreamPrecedenceAndValidation(t *testing.T) {
 				t.Fatal(err)
 			}
 			if got.Upstream.Name != test.wantName || got.Provenance != test.provenance {
-				t.Fatalf("winner = (%q, %+v), want (%q, %+v)", got.Upstream.Name, got.Provenance, test.wantName, test.provenance)
+				t.Fatalf(
+					"winner = (%q, %+v), want (%q, %+v)",
+					got.Upstream.Name,
+					got.Provenance,
+					test.wantName,
+					test.provenance,
+				)
 			}
 		})
 	}
 
 	invalid := []resource.Upstream{
-		{Scheme: "http", PassHost: "rewrite", Nodes: []resource.Node{{Host: "node", Port: 80, Weight: 1}}},
-		{Scheme: "http", PassHost: "invalid", Nodes: []resource.Node{{Host: "node", Port: 80, Weight: 1}}},
+		{
+			Scheme:   "http",
+			PassHost: "rewrite",
+			Nodes:    []resource.Node{{Host: "node", Port: 80, Weight: 1}},
+		},
+		{
+			Scheme:   "http",
+			PassHost: "invalid",
+			Nodes:    []resource.Node{{Host: "node", Port: 80, Weight: 1}},
+		},
 		{Scheme: "http", Nodes: []resource.Node{{Host: "", Port: 80, Weight: 1}}},
 		{Scheme: "http", Nodes: []resource.Node{{Host: "node", Port: 70000, Weight: 1}}},
 		{Scheme: "http", Nodes: []resource.Node{{Host: "node", Port: 80, Weight: -1}}},
 		{Scheme: "http", Nodes: []resource.Node{{Host: "node", Port: 80, Weight: 0}}},
 	}
 	for index, upstream := range invalid {
-		if _, err := PlanRouteUpstream(resource.Route{ID: "bad", Upstream: upstream}, resource.Service{}, nil, nil, static); err == nil {
+		_, err := PlanRouteUpstream(
+			resource.Route{ID: "bad", Upstream: upstream},
+			resource.Service{},
+			nil,
+			nil,
+			static,
+		)
+		if err == nil {
 			t.Fatalf("invalid upstream %d error = nil", index)
 		}
 	}
@@ -117,8 +167,15 @@ func TestPlanRouteUpstreamClusterIdentity(t *testing.T) {
 	plan := func(name string, cert, key string) UpstreamPlan {
 		upstream := base
 		upstream.Name = name
-		result, err := PlanRouteUpstream(resource.Route{ID: "r1", Upstream: upstream}, resource.Service{}, nil,
-			map[string]resource.SSL{"ssl-1": {ID: "ssl-1", Cert: cert, Key: key, Status: 1}}, static)
+		result, err := PlanRouteUpstream(
+			resource.Route{ID: "r1", Upstream: upstream},
+			resource.Service{},
+			nil,
+			map[string]resource.SSL{
+				"ssl-1": {ID: "ssl-1", Cert: cert, Key: key, Status: 1},
+			},
+			static,
+		)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -133,7 +190,13 @@ func TestPlanRouteUpstreamClusterIdentity(t *testing.T) {
 	rotatedKey, _ := rotated.ClusterConfig.Key()
 	renamedKey, _ := renamed.ClusterConfig.Key()
 	if firstKey != sameKey || firstKey == rotatedKey || firstKey == renamedKey {
-		t.Fatalf("cluster keys same/rotated/renamed = %x/%x/%x/%x", firstKey, sameKey, rotatedKey, renamedKey)
+		t.Fatalf(
+			"cluster keys same/rotated/renamed = %x/%x/%x/%x",
+			firstKey,
+			sameKey,
+			rotatedKey,
+			renamedKey,
+		)
 	}
 }
 
@@ -145,26 +208,51 @@ func TestPlanRouteUpstreamEmptyClusterRulesAndInputIsolation(t *testing.T) {
 	}{
 		{scheme: "http", wantCluster: true}, {scheme: "kafka"}, {scheme: "grpc", wantCluster: true}, {scheme: "grpcs", wantCluster: true},
 	} {
-		plan, err := PlanRouteUpstream(resource.Route{ID: "r1", Upstream: resource.Upstream{Scheme: test.scheme}}, resource.Service{}, nil, nil, static)
+		plan, err := PlanRouteUpstream(
+			resource.Route{ID: "r1", Upstream: resource.Upstream{Scheme: test.scheme}},
+			resource.Service{},
+			nil,
+			nil,
+			static,
+		)
 		if err != nil {
 			t.Fatalf("scheme %s: %v", test.scheme, err)
 		}
 		if (plan.ClusterConfig != nil) != test.wantCluster {
-			t.Fatalf("scheme %s cluster = %v, want %v", test.scheme, plan.ClusterConfig != nil, test.wantCluster)
+			t.Fatalf(
+				"scheme %s cluster = %v, want %v",
+				test.scheme,
+				plan.ClusterConfig != nil,
+				test.wantCluster,
+			)
 		}
 	}
 
 	checks := map[string]any{"active": map[string]any{"type": "http"}}
 	nodes := []resource.Node{{Host: "node", Port: 80, Weight: 1}}
-	upstream := resource.Upstream{Name: "owned", Scheme: "http", Nodes: nodes, Checks: checks, TLS: &resource.UpstreamTLS{Verify: true}}
-	plan, err := PlanRouteUpstream(resource.Route{ID: "r1", Upstream: upstream}, resource.Service{}, nil, nil, static)
+	upstream := resource.Upstream{
+		Name:   "owned",
+		Scheme: "http",
+		Nodes:  nodes,
+		Checks: checks,
+		TLS:    &resource.UpstreamTLS{Verify: true},
+	}
+	plan, err := PlanRouteUpstream(
+		resource.Route{ID: "r1", Upstream: upstream},
+		resource.Service{},
+		nil,
+		nil,
+		static,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	nodes[0].Host = "mutated"
 	checks["active"].(map[string]any)["type"] = "mutated"
 	upstream.TLS.Verify = false
-	if plan.Upstream.Nodes[0].Host != "node" || plan.Upstream.Checks["active"].(map[string]any)["type"] != "http" || !plan.Upstream.TLS.Verify {
+	if plan.Upstream.Nodes[0].Host != "node" ||
+		plan.Upstream.Checks["active"].(map[string]any)["type"] != "http" ||
+		!plan.Upstream.TLS.Verify {
 		t.Fatalf("plan observed source mutation: %+v", plan.Upstream)
 	}
 

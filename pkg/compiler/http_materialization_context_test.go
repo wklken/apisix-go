@@ -44,25 +44,32 @@ func (*runtimeContextPlugin) GetSchema() string                      { return `{
 func (*runtimeContextPlugin) GetMetadataSchema() string              { return "" }
 func (*runtimeContextPlugin) GetPriority() int                       { return 0 }
 func (*runtimeContextPlugin) GetName() string                        { return "runtime-context-test" }
+
 func (p *runtimeContextPlugin) SetPluginEnabledChecker(checker func(string) bool) {
 	p.enabled = checker
 }
+
 func (p *runtimeContextPlugin) SetPublicAPIRegistry(registry *public_api.Registry) {
 	p.registry = registry
 }
+
 func (p *runtimeContextPlugin) ValidatePreMaterialization() error {
 	p.prevalidated = true
 	return nil
 }
+
 func (p *runtimeContextPlugin) SetRouteContext(routeID string, serverAddr string) {
 	p.routeID, p.serverAddr = routeID, serverAddr
 }
+
 func (p *runtimeContextPlugin) SetResourceContext(route resource.Route, service resource.Service) {
 	p.route, p.service = route, service
 }
+
 func (p *runtimeContextPlugin) SetRuntimeAcquirer(acquirer traffic_split.RuntimeAcquirer) {
 	p.runtimeAcquirer = acquirer
 }
+
 func (p *runtimeContextPlugin) SetUpstreamResolver(resolver traffic_split.ResourceUpstreamResolver) {
 	p.upstreamResolver = resolver
 }

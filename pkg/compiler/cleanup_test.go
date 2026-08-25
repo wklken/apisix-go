@@ -115,7 +115,8 @@ func TestCleanupStackReplaysJoinedErrors(t *testing.T) {
 	if !errors.Is(first, quiesceErr) || !errors.Is(first, releaseErr) {
 		t.Fatalf("Close() error = %v, want both cleanup errors", first)
 	}
-	if !strings.Contains(first.Error(), "tasks") || !strings.Contains(first.Error(), "registration") {
+	if !strings.Contains(first.Error(), "tasks") ||
+		!strings.Contains(first.Error(), "registration") {
 		t.Fatalf("Close() error = %v, want failing owner names", first)
 	}
 	replayed := stack.Close(context.Background())
@@ -141,7 +142,10 @@ func TestCleanupStackRejectsLateOwnership(t *testing.T) {
 		{name: "nil callback", phase: cleanupRelease, owner: "registration"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if err := stack.Own(test.phase, test.owner, test.run); !errors.Is(err, ErrInvalidInput) {
+			if err := stack.Own(test.phase, test.owner, test.run); !errors.Is(
+				err,
+				ErrInvalidInput,
+			) {
 				t.Fatalf("Own() error = %v, want ErrInvalidInput", err)
 			}
 		})
@@ -260,13 +264,15 @@ func TestCleanupStackRollbackRunsOnlyLaterStepsInReversePhaseOrder(t *testing.T)
 	if err := stack.Rollback(context.Background(), checkpoint); err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"route-quiesce", "route-release-2", "route-release-1"}; !reflect.DeepEqual(order, want) {
+	want := []string{"route-quiesce", "route-release-2", "route-release-1"}
+	if !reflect.DeepEqual(order, want) {
 		t.Fatalf("rollback order = %v, want %v", order, want)
 	}
 	if err := stack.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"route-quiesce", "route-release-2", "route-release-1", "base-quiesce", "base-release"}; !reflect.DeepEqual(order, want) {
+	want = append(want, "base-quiesce", "base-release")
+	if !reflect.DeepEqual(order, want) {
 		t.Fatalf("close after rollback order = %v, want %v", order, want)
 	}
 }

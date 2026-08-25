@@ -62,7 +62,10 @@ func (prepared *PreparedGeneration) effectiveHTTPBindingSpec(
 ) (effectiveBindingSpec, error) {
 	if prepared == nil || prepared.attempt.authority == nil || plan.Factory == "" ||
 		plan.Source.Kind == "" || plan.Source.ID == "" {
-		return effectiveBindingSpec{}, fmt.Errorf("%w: HTTP binding plan is incomplete", ErrInvalidInput)
+		return effectiveBindingSpec{}, fmt.Errorf(
+			"%w: HTTP binding plan is incomplete",
+			ErrInvalidInput,
+		)
 	}
 	source, err := prepared.effectiveHTTPBindingSource(executionOwner, plan)
 	if err != nil {
@@ -83,15 +86,22 @@ func (prepared *PreparedGeneration) effectiveHTTPBindingSource(
 ) (effectiveBindingSource, error) {
 	switch plan.Source.Kind {
 	case "system":
-		if plan.Source != executionOwner || plan.Source.ID != plan.Factory || plan.Scope != plugin.ScopeSystem ||
+		if plan.Source != executionOwner || plan.Source.ID != plan.Factory ||
+			plan.Scope != plugin.ScopeSystem ||
 			plan.Provenance != (plugin.ResourceProvenance{Kind: plugin.ResourceSystem, ID: plan.Factory}) {
-			return effectiveBindingSource{}, fmt.Errorf("%w: system HTTP binding authority is invalid", ErrInvalidInput)
+			return effectiveBindingSource{}, fmt.Errorf(
+				"%w: system HTTP binding authority is invalid",
+				ErrInvalidInput,
+			)
 		}
 		return effectiveBindingSource{kind: effectiveBindingSystem, resource: plan.Source}, nil
 	case "consumers":
 		if plan.Scope != plugin.ScopeConsumer ||
 			plan.Provenance != (plugin.ResourceProvenance{Kind: plugin.ResourceConsumer, ID: plan.Source.ID}) {
-			return effectiveBindingSource{}, fmt.Errorf("%w: consumer HTTP binding authority is invalid", ErrInvalidInput)
+			return effectiveBindingSource{}, fmt.Errorf(
+				"%w: consumer HTTP binding authority is invalid",
+				ErrInvalidInput,
+			)
 		}
 		return effectiveBindingSource{
 			kind: effectiveBindingPreparedConsumer, resource: plan.Source,
@@ -100,10 +110,14 @@ func (prepared *PreparedGeneration) effectiveHTTPBindingSource(
 	default:
 		wantScope, wantProvenance, ok := effectivePluginSourceIdentity(plan.Source)
 		if !ok || plan.Scope != wantScope || plan.Provenance != wantProvenance {
-			return effectiveBindingSource{}, fmt.Errorf("%w: HTTP binding source was relabeled", ErrInvalidInput)
+			return effectiveBindingSource{}, fmt.Errorf(
+				"%w: HTTP binding source was relabeled",
+				ErrInvalidInput,
+			)
 		}
 		for _, occurrence := range prepared.attempt.Occurrences(capability.SecretPluginConfig) {
-			if occurrence.Domain() == generation.DomainHTTP && occurrence.Resource() == plan.Source &&
+			if occurrence.Domain() == generation.DomainHTTP &&
+				occurrence.Resource() == plan.Source &&
 				occurrence.Factory() == plan.Factory {
 				return effectiveBindingSource{
 					kind: effectiveBindingPluginConfig, resource: plan.Source,
@@ -111,6 +125,9 @@ func (prepared *PreparedGeneration) effectiveHTTPBindingSource(
 				}, nil
 			}
 		}
-		return effectiveBindingSource{}, fmt.Errorf("%w: exact HTTP factory occurrence is missing", ErrInvalidInput)
+		return effectiveBindingSource{}, fmt.Errorf(
+			"%w: exact HTTP factory occurrence is missing",
+			ErrInvalidInput,
+		)
 	}
 }

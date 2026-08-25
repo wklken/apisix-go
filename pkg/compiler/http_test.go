@@ -39,7 +39,8 @@ func TestHTTPSnapshotAccessorsRejectZeroOwner(t *testing.T) {
 	t.Parallel()
 
 	var snapshot *HTTPSnapshot
-	if snapshot.Revision() != 0 || snapshot.Handler() != nil || snapshot.TLSConfig() != nil || snapshot.Quarantined() != nil {
+	if snapshot.Revision() != 0 || snapshot.Handler() != nil || snapshot.TLSConfig() != nil ||
+		snapshot.Quarantined() != nil {
 		t.Fatal("nil HTTPSnapshot exposed candidate data")
 	}
 }
@@ -77,9 +78,13 @@ func TestPreparedGenerationAttachHTTPSerializesWithClose(t *testing.T) {
 }
 
 func TestCompileAndAttachHTTPSkipsStreamOnlyGeneration(t *testing.T) {
-	prepared, _ := newEffectiveBindingMaterializerFixture(t, nil, map[generation.Domain]generation.PublicationCandidate{
-		generation.DomainStream: {},
-	})
+	prepared, _ := newEffectiveBindingMaterializerFixture(
+		t,
+		nil,
+		map[generation.Domain]generation.PublicationCandidate{
+			generation.DomainStream: {},
+		},
+	)
 	if err := prepared.compileAndAttachHTTP(context.Background()); err != nil {
 		t.Fatal(err)
 	}

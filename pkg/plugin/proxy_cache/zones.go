@@ -490,10 +490,6 @@ func acquireMemoryZoneIn(zones []appconfig.Zone, name string) *memoryZone {
 	return zone
 }
 
-func memoryZoneCapacity(name string) int64 {
-	return memoryZoneCapacityIn(configuredZones(), name)
-}
-
 func memoryZoneCapacityIn(zones []appconfig.Zone, name string) int64 {
 	for _, zone := range zones {
 		if zone.Name != name {
@@ -506,10 +502,6 @@ func memoryZoneCapacityIn(zones []appconfig.Zone, name string) int64 {
 		return 0
 	}
 	return 0
-}
-
-func cacheZoneFingerprint(name string) string {
-	return cacheZoneFingerprintIn(configuredZones(), name)
 }
 
 func cacheZoneFingerprintIn(zones []appconfig.Zone, name string) string {

@@ -53,11 +53,17 @@ func (prepared *PreparedGeneration) httpRuntimeContextForRoute(
 ) (effectiveBindingRuntimeContext, error) {
 	if prepared == nil || ctx == nil || prepared.effective == nil || plan == nil || plan.publicAPIRegistry == nil ||
 		routeResource.ID == "" {
-		return effectiveBindingRuntimeContext{}, fmt.Errorf("%w: HTTP route runtime context is incomplete", ErrInvalidInput)
+		return effectiveBindingRuntimeContext{}, fmt.Errorf(
+			"%w: HTTP route runtime context is incomplete",
+			ErrInvalidInput,
+		)
 	}
 	ownedRoute, err := cloneEffectiveRoute(routeResource)
 	if err != nil {
-		return effectiveBindingRuntimeContext{}, fmt.Errorf("%w: HTTP route runtime context is invalid", ErrInvalidInput)
+		return effectiveBindingRuntimeContext{}, fmt.Errorf(
+			"%w: HTTP route runtime context is invalid",
+			ErrInvalidInput,
+		)
 	}
 	resolver := func(id string) (resource.Upstream, error) {
 		upstream, exists := plan.resources.upstreams[id]

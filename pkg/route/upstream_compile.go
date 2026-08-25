@@ -120,7 +120,10 @@ func trafficSplitResourceUpstream(
 		}
 		numericPort, err := strconv.Atoi(port)
 		if err != nil || numericPort < 1 || numericPort > 65535 {
-			return resource.Upstream{}, fmt.Errorf("traffic-split target %q has invalid port", target)
+			return resource.Upstream{}, fmt.Errorf(
+				"traffic-split target %q has invalid port",
+				target,
+			)
 		}
 		result.Nodes = append(result.Nodes, resource.Node{
 			Host: parsed.Hostname(), Port: numericPort,
@@ -243,10 +246,18 @@ func planUpstreamNodes(upstream resource.Upstream) (map[string]int, map[string]i
 			return nil, nil, fmt.Errorf("invalid upstream node %q:%d", host, port)
 		}
 		if !node.WeightConfigured() {
-			return nil, nil, fmt.Errorf("invalid upstream node %q:%d: weight is required", host, port)
+			return nil, nil, fmt.Errorf(
+				"invalid upstream node %q:%d: weight is required",
+				host,
+				port,
+			)
 		}
 		if weight < 0 {
-			return nil, nil, fmt.Errorf("invalid upstream node %q:%d: weight must be non-negative", host, port)
+			return nil, nil, fmt.Errorf(
+				"invalid upstream node %q:%d: weight must be non-negative",
+				host,
+				port,
+			)
 		}
 		target := fmt.Sprintf("%s://%s", targetScheme, net.JoinHostPort(host, strconv.Itoa(port)))
 		targets[target] = weight
@@ -261,7 +272,9 @@ func planUpstreamNodes(upstream resource.Upstream) (map[string]int, map[string]i
 			}
 		}
 		if !positive {
-			return nil, nil, fmt.Errorf("invalid upstream node weights: at least one upstream node must have a positive weight")
+			return nil, nil, fmt.Errorf(
+				"invalid upstream node weights: at least one upstream node must have a positive weight",
+			)
 		}
 	}
 	return targets, priorities, nil

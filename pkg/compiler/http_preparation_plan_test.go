@@ -11,16 +11,30 @@ import (
 
 func TestPlanHTTPPreparationUsesPublishedCandidateAndPreparedConsumers(t *testing.T) {
 	snapshot, err := generation.NewSnapshot(31, []generation.Resource{
-		resourceValue("routes", "r1", `{"id":"r1","uri":"/v1","service_id":"s1","plugin_config_id":"pc1"}`),
+		resourceValue(
+			"routes",
+			"r1",
+			`{"id":"r1","uri":"/v1","service_id":"s1","plugin_config_id":"pc1"}`,
+		),
 		resourceValue("services", "s1", `{"id":"s1"}`),
 		resourceValue("plugin_configs", "pc1", `{"id":"pc1","plugins":{"request-id":{}}}`),
-		resourceValue("consumers", "consumer-1", `{"username":"consumer-1","plugins":{"key-auth":{"key":"consumer-key"}}}`),
+		resourceValue(
+			"consumers",
+			"consumer-1",
+			`{"username":"consumer-1","plugins":{"key-auth":{"key":"consumer-key"}}}`,
+		),
 		resourceValue("plugins", "plugins", `[{"name":"request-id"}]`),
 	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	candidate := compileDomain(t, generation.DomainHTTP, snapshot, generation.PublishedGeneration{}, false)
+	candidate := compileDomain(
+		t,
+		generation.DomainHTTP,
+		snapshot,
+		generation.PublishedGeneration{},
+		false,
+	)
 	consumers, err := runtime.NewConsumerBindings([]runtime.ConsumerRecord{{
 		ID: "consumer-1", Consumer: resource.Consumer{
 			Username: "consumer-1",
@@ -54,7 +68,11 @@ func TestPlanHTTPPreparationUsesPublishedCandidateAndPreparedConsumers(t *testin
 		t.Fatalf("planned route bindings = %#v", got)
 	}
 	if _, exists := plan.plugins.Consumers["consumer-1"]; !exists {
-		t.Fatalf("prepared consumer plans/ids = %#v/%#v", plan.plugins.Consumers, plan.resources.consumerIDs)
+		t.Fatalf(
+			"prepared consumer plans/ids = %#v/%#v",
+			plan.plugins.Consumers,
+			plan.resources.consumerIDs,
+		)
 	}
 }
 
@@ -72,7 +90,13 @@ func TestPlanHTTPPreparationRejectsCandidateOutsideAttempt(t *testing.T) {
 		t.Fatal(err)
 	}
 	owned := compileDomain(t, generation.DomainHTTP, first, generation.PublishedGeneration{}, false)
-	foreign := compileDomain(t, generation.DomainHTTP, second, generation.PublishedGeneration{}, false)
+	foreign := compileDomain(
+		t,
+		generation.DomainHTTP,
+		second,
+		generation.PublishedGeneration{},
+		false,
+	)
 	prepared, _ := newEffectiveBindingMaterializerFixture(
 		t,
 		nil,

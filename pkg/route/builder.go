@@ -2910,23 +2910,23 @@ func (b *Builder) buildReverseHandlerWithTerminals(
 		-1*time.Second,
 	)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		r = pxy.WithHealthReporter(r, healthReporter(lb))
-		if err := bufferRequestBodyIfNeeded(w, r); err != nil {
-			ctx.SetRequestResponseSource(r, ctx.ResponseSourceAPISIX)
-			var maxBytesErr *http.MaxBytesError
-			if errors.As(err, &maxBytesErr) {
-				_ = util.WriteJSON(w, http.StatusRequestEntityTooLarge, err.Error())
-			} else {
-				_ = util.WriteJSON(w, http.StatusBadRequest, err.Error())
+			r = pxy.WithHealthReporter(r, healthReporter(lb))
+			if err := bufferRequestBodyIfNeeded(w, r); err != nil {
+				ctx.SetRequestResponseSource(r, ctx.ResponseSourceAPISIX)
+				var maxBytesErr *http.MaxBytesError
+				if errors.As(err, &maxBytesErr) {
+					_ = util.WriteJSON(w, http.StatusRequestEntityTooLarge, err.Error())
+				} else {
+					_ = util.WriteJSON(w, http.StatusBadRequest, err.Error())
+				}
+				return
 			}
-			return
-		}
-		r = attachHTTPRetriesCompiled(r, upstream, lb, compiledTargets)
-		selectProxyHandler(r, proxyHandler, streamingProxyHandler).ServeHTTP(w, r)
-	}), routeProtocolTerminals{
-		dubbo:     routeDubboTerminal{lb: lb, targets: compiledTargets, retries: httpRetryCount(upstream)},
-		httpDubbo: routeHTTPDubboTerminal{lb: lb, targets: compiledTargets, retries: httpRetryCount(upstream)},
-	}, nil
+			r = attachHTTPRetriesCompiled(r, upstream, lb, compiledTargets)
+			selectProxyHandler(r, proxyHandler, streamingProxyHandler).ServeHTTP(w, r)
+		}), routeProtocolTerminals{
+			dubbo:     routeDubboTerminal{lb: lb, targets: compiledTargets, retries: httpRetryCount(upstream)},
+			httpDubbo: routeHTTPDubboTerminal{lb: lb, targets: compiledTargets, retries: httpRetryCount(upstream)},
+		}, nil
 }
 
 func validateHTTPUpstreamType(upstream resource.Upstream) error {

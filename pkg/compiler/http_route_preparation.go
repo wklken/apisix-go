@@ -73,9 +73,7 @@ func (prepared *PreparedGeneration) prepareHTTPRoutes(
 		)
 		if routeErr == nil {
 			result.routes = append(result.routes, compiled)
-			for key, binding := range additions {
-				serviceBindings[key] = binding
-			}
+			maps.Copy(serviceBindings, additions)
 			continue
 		}
 		rollbackErr := prepared.cleanup.Rollback(context.WithoutCancel(ctx), checkpoint)
@@ -185,7 +183,10 @@ func (prepared *PreparedGeneration) prepareOneHTTPRoute(
 			return preparedHTTPRoute{}, nil, fmt.Errorf("prepared HTTP consumer %q has no username", id)
 		}
 		if _, duplicate := consumerRecords[consumer.Username]; duplicate {
-			return preparedHTTPRoute{}, nil, fmt.Errorf("prepared HTTP consumer username %q is duplicated", consumer.Username)
+			return preparedHTTPRoute{}, nil, fmt.Errorf(
+				"prepared HTTP consumer username %q is duplicated",
+				consumer.Username,
+			)
 		}
 		consumerRecords[consumer.Username] = routepkg.PreparedConsumerRecord{
 			Consumer: consumer, Bindings: bindings,

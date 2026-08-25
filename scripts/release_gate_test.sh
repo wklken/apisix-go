@@ -101,11 +101,15 @@ require_pattern '-X[[:space:]]+[[:punct:]]?github\.com/wklken/apisix-go/pkg/vers
 require_pattern '-X[[:space:]]+[[:punct:]]?github\.com/wklken/apisix-go/pkg/version\.Commit=\$\(COMMIT\)' "$makefile"
 require_pattern '-X[[:space:]]+[[:punct:]]?github\.com/wklken/apisix-go/pkg/version\.BuildTime=\$\(BUILD_TIME\)' "$makefile"
 require_pattern '-X[[:space:]]+[[:punct:]]?github\.com/wklken/apisix-go/pkg/version\.GoVersion=\$\(GO_VERSION\)' "$makefile"
-require_fixed 'APISIX_GO_SKIP_PLUGIN_INTEGRATION=1 go test ./t/plugin -count=1' "$makefile"
+require_fixed 'GO_CACHE_RUNNER ?= bash scripts/go_cache.sh run --' "$makefile"
+require_fixed 'APISIX_GO_SKIP_PLUGIN_INTEGRATION=1 $(GO_CACHE_RUNNER) go test ./t/plugin -count=1' "$makefile"
 require_fixed '.PHONY: test-plugin-status' "$makefile"
 require_fixed 'plugin status test %s was not found' "$makefile"
 require_fixed '.PHONY: test-plugin-smoke' "$makefile"
-require_fixed 'APISIX_GO_PLUGIN_SMOKE_CASE="$(PLUGIN_SMOKE_CASE)" go test ./t/plugin -run '\''^TestPluginIntegration$$'\'' -count=1 -v' "$makefile"
+require_fixed 'APISIX_GO_PLUGIN_SMOKE_CASE="$(PLUGIN_SMOKE_CASE)" $(GO_CACHE_RUNNER) go test ./t/plugin -run '\''^TestPluginIntegration$$'\'' -count=1 -v' "$makefile"
+require_fixed '.PHONY: cache-gc-test' "$makefile"
+require_fixed '.PHONY: cache-gc' "$makefile"
+require_fixed '.PHONY: cache-clean-shared' "$makefile"
 require_job_fixed "$unit_workflow" build-and-unit 'run: make test-plugin-harness'
 require_job_fixed "$unit_workflow" build-and-unit 'run: bash scripts/release_gate_test.sh'
 require_job_fixed "$plugin_status_workflow" plugin-status 'run: bash scripts/plugin_status_gate_test.sh'

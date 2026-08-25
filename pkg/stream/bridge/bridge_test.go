@@ -289,6 +289,7 @@ func TestPumpHalfClosePanicReturnsAfterPeerCleanup(t *testing.T) {
 func TestPumpIncompleteDirectionWaitsForPeerErrorAfterGoexit(t *testing.T) {
 	peerErr := errors.New("peer ordinary error")
 	goexitStarted := make(chan struct{})
+	releaseGoexit := make(chan struct{})
 	left := newScriptedConn(t, func([]byte) (int, error) {
 		return 0, errors.New("left connection should not be read")
 	})
@@ -306,7 +307,10 @@ func TestPumpIncompleteDirectionWaitsForPeerErrorAfterGoexit(t *testing.T) {
 			outcome.panicValue = recover()
 			done <- outcome
 		}()
-		outcome.err = Pump(context.Background(), left, right, &goexitReader{started: goexitStarted}, time.Second)
+		outcome.err = Pump(context.Background(), left, right, &goexitReader{
+			started: goexitStarted,
+			release: releaseGoexit,
+		}, time.Second)
 	}()
 	select {
 	case <-goexitStarted:
@@ -318,6 +322,7 @@ func TestPumpIncompleteDirectionWaitsForPeerErrorAfterGoexit(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("peer direction did not reach Read")
 	}
+	close(releaseGoexit)
 	outcome := <-done
 	if outcome.panicValue != nil {
 		t.Fatalf("Pump() unexpectedly panicked: %#v", outcome.panicValue)
@@ -464,10 +469,12 @@ func (r *gatedEOFReader) Read([]byte) (int, error) {
 
 type goexitReader struct {
 	started chan struct{}
+	release <-chan struct{}
 }
 
 func (r *goexitReader) Read([]byte) (int, error) {
 	close(r.started)
+	<-r.release
 	goruntime.Goexit()
 	return 0, nil
 }

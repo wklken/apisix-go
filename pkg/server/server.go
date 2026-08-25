@@ -20,9 +20,12 @@ import (
 	"github.com/felixge/httpsnoop"
 	"github.com/go-chi/chi/v5"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/capability"
+	"github.com/wklken/apisix-go/pkg/compiler"
 	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/etcd"
+	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/observability/metrics"
@@ -31,7 +34,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/server_info"
 	pxy "github.com/wklken/apisix-go/pkg/proxy"
 	"github.com/wklken/apisix-go/pkg/resource"
-	"github.com/wklken/apisix-go/pkg/route"
+	"github.com/wklken/apisix-go/pkg/secret"
 	"github.com/wklken/apisix-go/pkg/store"
 	streamruntime "github.com/wklken/apisix-go/pkg/stream"
 	"github.com/wklken/apisix-go/pkg/tlsconfig"
@@ -41,12 +44,8 @@ import (
 
 var ErrMissingStreamUpstream = errors.New("missing stream upstream")
 
-var (
-	errStandaloneHTTPRoutePublication = errors.New("standalone HTTP route publication")
-	errStandaloneStreamPublication    = errors.New("standalone stream publication")
-)
-
 type configProducer interface {
+	Start(context.Context) error
 	Stop() error
 }
 
@@ -56,48 +55,73 @@ type streamRuntimeOwner interface {
 }
 
 type etcdClientOwner interface {
+	FetchAllContext(context.Context) error
 	Watch(context.Context)
 	Close() error
 }
 
 type etcdConfigProducer struct {
-	client etcdClientOwner
-	ctx    context.Context
-	cancel context.CancelFunc
-	done   chan struct{}
+	client       etcdClientOwner
+	afterInitial func(context.Context)
+	ctx          context.Context
+	cancel       context.CancelFunc
+	startDone    chan struct{}
+	watchDone    chan struct{}
 
 	lifecycleMu sync.Mutex
 	started     bool
 	stopped     bool
 	stopOnce    sync.Once
+	startOnce   sync.Once
+	startErr    error
 	stopErr     error
 }
 
-func newEtcdConfigProducer(parent context.Context, client etcdClientOwner) *etcdConfigProducer {
-	if parent == nil {
-		parent = context.Background()
-	}
-	ctx, cancel := context.WithCancel(parent)
+func newEtcdConfigProducer(client etcdClientOwner) *etcdConfigProducer {
 	return &etcdConfigProducer{
-		client: client,
-		ctx:    ctx,
-		cancel: cancel,
-		done:   make(chan struct{}),
+		client:    client,
+		startDone: make(chan struct{}),
+		watchDone: make(chan struct{}),
 	}
 }
 
-func (p *etcdConfigProducer) Start() {
-	p.lifecycleMu.Lock()
-	if p.started || p.stopped || p.client == nil {
+func (p *etcdConfigProducer) Start(parent context.Context) error {
+	p.startOnce.Do(func() {
+		defer close(p.startDone)
+		if parent == nil {
+			parent = context.Background()
+		}
+		p.lifecycleMu.Lock()
+		if p.stopped || p.client == nil {
+			p.startErr = context.Canceled
+			p.lifecycleMu.Unlock()
+			close(p.watchDone)
+			return
+		}
+		p.ctx, p.cancel = context.WithCancel(parent)
+		p.started = true
+		ctx := p.ctx
 		p.lifecycleMu.Unlock()
-		return
-	}
-	p.started = true
-	p.lifecycleMu.Unlock()
-	go func() {
-		defer close(p.done)
-		p.client.Watch(p.ctx)
-	}()
+
+		if err := p.client.FetchAllContext(ctx); err != nil {
+			if ctx.Err() != nil {
+				p.startErr = ctx.Err()
+				close(p.watchDone)
+				return
+			}
+			metrics.RecordEtcdReachable(false)
+			logger.Errorf("initial etcd reconciliation failed; serving recovered generation: %v", err)
+		}
+		if p.afterInitial != nil {
+			p.afterInitial(ctx)
+		}
+		go func() {
+			defer close(p.watchDone)
+			p.client.Watch(ctx)
+		}()
+	})
+	<-p.startDone
+	return p.startErr
 }
 
 func (p *etcdConfigProducer) Stop() error {
@@ -107,9 +131,12 @@ func (p *etcdConfigProducer) Stop() error {
 		started := p.started
 		p.lifecycleMu.Unlock()
 
-		p.cancel()
+		if p.cancel != nil {
+			p.cancel()
+		}
 		if started {
-			<-p.done
+			<-p.startDone
+			<-p.watchDone
 		}
 		if p.client != nil {
 			p.stopErr = p.client.Close()
@@ -118,9 +145,161 @@ func (p *etcdConfigProducer) Stop() error {
 	return p.stopErr
 }
 
+type standaloneConfigProducer struct {
+	watcher *config.StandaloneFileWatcher
+}
+
+func (p *standaloneConfigProducer) Start(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if p == nil || p.watcher == nil {
+		return errors.New("standalone config watcher is required")
+	}
+	startDone := make(chan error, 1)
+	go func() {
+		startDone <- p.watcher.StartAndReconcile()
+	}()
+	select {
+	case err := <-startDone:
+		return err
+	case <-ctx.Done():
+		return errors.Join(ctx.Err(), p.watcher.Stop(), <-startDone)
+	}
+}
+
+func (p *standaloneConfigProducer) Stop() error {
+	if p == nil || p.watcher == nil {
+		return nil
+	}
+	return p.watcher.Stop()
+}
+
+type generationEngineOwner interface {
+	generation.PublicationEngine
+	InstallRecovery(context.Context, generation.RecoveryState) error
+	Close(context.Context) error
+	acquireHTTP() (httpGenerationLease, bool)
+	acquireStream() (streamGenerationLease, bool)
+}
+
+type newServerFactories struct {
+	initObservability func(string) (func(context.Context) error, error)
+	newFactory        func(
+		*capability.Manifest,
+		*config.EffectiveConfig,
+		secret.Materializer,
+		compiler.WorkerRuntimeObservers,
+	) (*compiler.WorkerCompilerFactory, error)
+	newEngine      func(*Server, *compiler.WorkerCompilerFactory) (generationEngineOwner, error)
+	newCoordinator func(generation.Journal, generation.PublicationEngine) *generation.Coordinator
+	closeFactory   func(*compiler.WorkerCompilerFactory, context.Context) error
+	closeResolver  func(*secret.GenerationSecretResolver, context.Context) error
+	closeJournal   func(generation.Journal) error
+}
+
+type serverRuntimeFactories struct {
+	newStream func(
+		context.Context,
+		[]config.TcpListen,
+		streamruntime.RouterSource,
+	) (streamRuntimeOwner, error)
+	startHTTP   func(*Server, context.Context) (<-chan error, error)
+	newProducer func(*Server, context.Context) (configProducer, error)
+}
+
+func defaultServerRuntimeFactories() serverRuntimeFactories {
+	return serverRuntimeFactories{
+		newStream: func(
+			ctx context.Context,
+			listeners []config.TcpListen,
+			source streamruntime.RouterSource,
+		) (streamRuntimeOwner, error) {
+			return streamruntime.NewRuntime(ctx, listeners, source)
+		},
+		startHTTP: func(server *Server, ctx context.Context) (<-chan error, error) {
+			return server.startHTTPListenerRuntime(ctx)
+		},
+		newProducer: func(server *Server, ctx context.Context) (configProducer, error) {
+			return server.constructConfigProducer(ctx)
+		},
+	}
+}
+
+func (factories serverRuntimeFactories) withDefaults() serverRuntimeFactories {
+	defaults := defaultServerRuntimeFactories()
+	if factories.newStream == nil {
+		factories.newStream = defaults.newStream
+	}
+	if factories.startHTTP == nil {
+		factories.startHTTP = defaults.startHTTP
+	}
+	if factories.newProducer == nil {
+		factories.newProducer = defaults.newProducer
+	}
+	return factories
+}
+
+func defaultNewServerFactories() newServerFactories {
+	return newServerFactories{
+		initObservability: otel.Init,
+		newFactory:        compiler.NewWorkerCompilerFactory,
+		newEngine: func(server *Server, factory *compiler.WorkerCompilerFactory) (generationEngineOwner, error) {
+			return NewGenerationEngine(server, factory)
+		},
+		newCoordinator: generation.NewCoordinator,
+		closeFactory: func(factory *compiler.WorkerCompilerFactory, ctx context.Context) error {
+			return factory.Close(ctx)
+		},
+		closeResolver: func(resolver *secret.GenerationSecretResolver, ctx context.Context) error {
+			return resolver.Close(ctx)
+		},
+		closeJournal: func(journal generation.Journal) error { return journal.Close() },
+	}
+}
+
+func (factories newServerFactories) withDefaults() newServerFactories {
+	defaults := defaultNewServerFactories()
+	if factories.initObservability == nil {
+		factories.initObservability = defaults.initObservability
+	}
+	if factories.newFactory == nil {
+		factories.newFactory = defaults.newFactory
+	}
+	if factories.newEngine == nil {
+		factories.newEngine = defaults.newEngine
+	}
+	if factories.newCoordinator == nil {
+		factories.newCoordinator = defaults.newCoordinator
+	}
+	if factories.closeFactory == nil {
+		factories.closeFactory = defaults.closeFactory
+	}
+	if factories.closeResolver == nil {
+		factories.closeResolver = defaults.closeResolver
+	}
+	if factories.closeJournal == nil {
+		factories.closeJournal = defaults.closeJournal
+	}
+	return factories
+}
+
 type Server struct {
-	staticConfig   *config.EffectiveConfig
-	dataEncryption data_encryption.Service
+	staticConfig     *config.EffectiveConfig
+	dataEncryption   data_encryption.Service
+	manifest         *capability.Manifest
+	resolver         *secret.GenerationSecretResolver
+	journal          generation.Journal
+	engine           generationEngineOwner
+	coordinator      *generation.Coordinator
+	closeResolver    func(*secret.GenerationSecretResolver, context.Context) error
+	closeJournal     func(generation.Journal) error
+	runtimeFactories serverRuntimeFactories
+	shutdownHTTP     func(context.Context) error
+	drainRoutes      func(context.Context) error
 
 	addr            string
 	addrs           []string
@@ -138,24 +317,39 @@ type Server struct {
 	httpPublicationGeneration uint64
 	httpPublicationErr        error
 
-	events            chan *store.Event
-	storage           *store.Store
-	etcdClient        *etcd.ConfigClient
-	standaloneWatcher *config.StandaloneFileWatcher
-	producer          configProducer
+	storage  *store.Store
+	producer configProducer
 
-	lifecycleMu       sync.Mutex
-	lifecycleCancel   context.CancelFunc
-	startupDone       chan struct{}
-	schedulerDone     chan struct{}
-	startupInProgress bool
-	shutdownRequested bool
+	lifecycleMu         sync.Mutex
+	lifecycleCancel     context.CancelFunc
+	startupDone         chan struct{}
+	schedulerDone       chan struct{}
+	startupInProgress   bool
+	shutdownRequested   bool
+	listenersRejected   bool
+	lateProducerStopErr error
 
-	shutdownMu         sync.Mutex
-	shutdownDone       chan struct{}
-	shutdownInProgress bool
-	shutdownComplete   bool
-	shutdownErr        error
+	shutdownMu          sync.Mutex
+	shutdownDone        chan struct{}
+	shutdownInProgress  bool
+	shutdownComplete    bool
+	shutdownErr         error
+	shutdownErrors      []error
+	shutdownPhase       uint8
+	httpDrained         bool
+	routesDrained       bool
+	streamDrained       bool
+	compatibilityClosed bool
+	engineClosed        bool
+	resolverClosed      bool
+	journalClosed       bool
+	expirationStopped   bool
+	exporterStopped     bool
+	tracingStopped      bool
+
+	producerStopOnce sync.Once
+	producerStopDone chan struct{}
+	producerStopErr  error
 
 	listenerMu sync.Mutex
 	listeners  []net.Listener
@@ -167,37 +361,172 @@ type Server struct {
 
 const startupCleanupTimeout = time.Second
 
-func NewServer(effective *config.EffectiveConfig, encryption data_encryption.Service) (*Server, error) {
-	if effective == nil {
-		return nil, errors.New("effective config is required")
+const (
+	shutdownPhaseInitial uint8 = iota
+	shutdownPhaseProducerStopped
+	shutdownPhaseLeasesRejected
+	shutdownPhaseDrained
+	shutdownPhaseEngineClosed
+	shutdownPhaseResolverClosed
+	shutdownPhaseJournalClosed
+	shutdownPhaseObservabilityClosed
+)
+
+func NewServer(
+	effective *config.EffectiveConfig,
+	manifest *capability.Manifest,
+	encryption data_encryption.Service,
+	resolver *secret.GenerationSecretResolver,
+	journal generation.Journal,
+	recovery generation.RecoveryState,
+) (*Server, error) {
+	return newServerWithFactories(
+		effective,
+		manifest,
+		encryption,
+		resolver,
+		journal,
+		recovery,
+		defaultNewServerFactories(),
+	)
+}
+
+func newServerWithFactories(
+	effective *config.EffectiveConfig,
+	manifest *capability.Manifest,
+	encryption data_encryption.Service,
+	resolver *secret.GenerationSecretResolver,
+	journal generation.Journal,
+	recovery generation.RecoveryState,
+	factories newServerFactories,
+) (*Server, error) {
+	if err := validateNewServerDependencies(effective, manifest, encryption, resolver, journal); err != nil {
+		return nil, err
 	}
+	factories = factories.withDefaults()
 	cfg := &effective.Config
-	events := make(chan *store.Event)
-	storage, err := store.GetStore(config.JournalPath(effective), events, encryption)
-	if err != nil {
-		return nil, fmt.Errorf("open store: %w", err)
-	}
-	routes := newRouteHandler(http.NotFoundHandler(), nil)
-	handler := newConfiguredHTTPHandler(routes, cfg)
 	addrs := configuredListenAddresses(cfg)
-	otelShutdown, err := otel.Init("apisix-go")
-	if err != nil {
-		_ = storage.Stop()
-		return nil, fmt.Errorf("initialize tracing: %w", err)
+	server := &Server{
+		staticConfig:     effective,
+		dataEncryption:   encryption,
+		manifest:         manifest,
+		resolver:         resolver,
+		journal:          journal,
+		closeResolver:    factories.closeResolver,
+		closeJournal:     factories.closeJournal,
+		runtimeFactories: defaultServerRuntimeFactories(),
+		addr:             addrs[0],
+		addrs:            addrs,
+		reloadEventChan:  make(chan struct{}, 1),
 	}
-	return &Server{
-		staticConfig:    effective,
-		dataEncryption:  encryption,
-		addr:            addrs[0],
-		addrs:           addrs,
-		server:          newConfiguredHTTPServer(handler, cfg),
-		routes:          routes,
-		clusters:        pxy.NewClusterRegistry(newClusterObserver(cfg)),
-		reloadEventChan: make(chan struct{}, 1),
-		events:          events,
-		storage:         storage,
-		otelShutdown:    otelShutdown,
-	}, nil
+
+	otelShutdown, err := factories.initObservability("apisix-go")
+	if err != nil {
+		return nil, errors.Join(
+			fmt.Errorf("initialize tracing: %w", err),
+			factories.closeResolver(resolver, context.Background()),
+			factories.closeJournal(journal),
+		)
+	}
+	server.otelShutdown = otelShutdown
+	cleanupTransferred := func(primary error) error {
+		return errors.Join(
+			primary,
+			factories.closeResolver(resolver, context.Background()),
+			factories.closeJournal(journal),
+			otelShutdown(context.Background()),
+		)
+	}
+	observers := compiler.WorkerRuntimeObservers{Cluster: newClusterObserver(cfg)}
+	if streamProxyModeEnabled(cfg) {
+		observers.Stream = logStreamResult
+	}
+	factory, err := factories.newFactory(
+		manifest,
+		effective,
+		secret.NewMaterializer(encryption, resolver),
+		observers,
+	)
+	if err != nil {
+		return nil, cleanupTransferred(fmt.Errorf("create worker compiler factory: %w", err))
+	}
+	engine, err := factories.newEngine(server, factory)
+	if err != nil {
+		return nil, errors.Join(
+			fmt.Errorf("create generation engine: %w", err),
+			factories.closeFactory(factory, context.Background()),
+			factories.closeResolver(resolver, context.Background()),
+			factories.closeJournal(journal),
+			otelShutdown(context.Background()),
+		)
+	}
+	server.engine = engine
+	server.coordinator = factories.newCoordinator(journal, engine)
+	if server.coordinator == nil {
+		return nil, errors.Join(
+			errors.New("create generation coordinator: nil coordinator"),
+			engine.Close(context.Background()),
+			factories.closeResolver(resolver, context.Background()),
+			factories.closeJournal(journal),
+			otelShutdown(context.Background()),
+		)
+	}
+	if err := engine.InstallRecovery(context.Background(), recovery); err != nil {
+		return nil, errors.Join(
+			fmt.Errorf("install generation recovery: %w", err),
+			engine.Close(context.Background()),
+			factories.closeResolver(resolver, context.Background()),
+			factories.closeJournal(journal),
+			otelShutdown(context.Background()),
+		)
+	}
+	if server.routes == nil {
+		return nil, errors.Join(
+			errors.New("generation engine did not bind HTTP runtime"),
+			engine.Close(context.Background()),
+			factories.closeResolver(resolver, context.Background()),
+			factories.closeJournal(journal),
+			otelShutdown(context.Background()),
+		)
+	}
+	server.server = newConfiguredHTTPServer(newConfiguredHTTPHandler(server.routes, cfg), cfg)
+	return server, nil
+}
+
+func validateNewServerDependencies(
+	effective *config.EffectiveConfig,
+	manifest *capability.Manifest,
+	encryption data_encryption.Service,
+	resolver *secret.GenerationSecretResolver,
+	journal generation.Journal,
+) error {
+	switch {
+	case effective == nil:
+		return errors.New("effective config is required")
+	case manifest == nil:
+		return errors.New("capability manifest is required")
+	case !encryption.Configured():
+		return errors.New("data encryption service is required")
+	case resolver == nil:
+		return errors.New("generation secret resolver is required")
+	case nilInterface(journal):
+		return errors.New("generation journal is required")
+	default:
+		return nil
+	}
+}
+
+func nilInterface(value any) bool {
+	if value == nil {
+		return true
+	}
+	ref := reflect.ValueOf(value)
+	switch ref.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return ref.IsNil()
+	default:
+		return false
+	}
 }
 
 func newClusterObserver(cfg *config.Config) pxy.ClusterObserver {
@@ -541,8 +870,14 @@ func (s *Server) retainProducer(producer configProducer) error {
 	s.lifecycleMu.Lock()
 	if s.shutdownRequested {
 		s.lifecycleMu.Unlock()
-		_ = producer.Stop()
-		return context.Canceled
+		stopErr := producer.Stop()
+		s.lifecycleMu.Lock()
+		s.lateProducerStopErr = errors.Join(
+			s.lateProducerStopErr,
+			wrapCleanupError("stop late config producer", stopErr),
+		)
+		s.lifecycleMu.Unlock()
+		return errors.Join(context.Canceled, stopErr)
 	}
 	s.producer = producer
 	s.lifecycleMu.Unlock()
@@ -570,44 +905,12 @@ func (s *Server) startReloadScheduler(ctx context.Context) {
 	}()
 }
 
-func (s *Server) lifecycleResourcesForShutdown() (
-	context.CancelFunc,
-	configProducer,
-	chan struct{},
-	chan struct{},
-) {
-	s.lifecycleMu.Lock()
-	s.shutdownRequested = true
-	cancel := s.lifecycleCancel
-	producer := s.producer
-	startupDone := s.startupDone
-	schedulerDone := s.schedulerDone
-	s.lifecycleMu.Unlock()
-	return cancel, producer, startupDone, schedulerDone
-}
-
 func (s *Server) cleanupAfterStart() error {
 	ctx, cancel := context.WithTimeout(context.Background(), startupCleanupTimeout)
 	err := s.shutdown(ctx)
 	cancel()
 	if err == nil {
 		return nil
-	}
-	// Stop producers and reload work even when HTTP quiescence is not yet
-	// possible. Route generations and Store remain owned until active handlers
-	// have exited and a later shutdown attempt can safely release them.
-	lifecycleCtx, lifecycleCancel := context.WithTimeout(context.Background(), startupCleanupTimeout)
-	if lifecycleErr, _ := s.stopProducerAndScheduler(lifecycleCtx); lifecycleErr != nil {
-		err = errors.Join(err, lifecycleErr)
-	}
-	lifecycleCancel()
-	s.closeOwnedListeners()
-	if s.server != nil {
-		// A startup error must not be held hostage by a request that cannot
-		// drain. Close listeners and active connections as a bounded fallback.
-		// net/http does not terminate handler goroutines, so dependency cleanup
-		// continues only after those handlers release their route generation.
-		_ = s.server.Close()
 	}
 	go func() {
 		if cleanupErr := s.shutdown(context.Background()); cleanupErr != nil {
@@ -618,9 +921,16 @@ func (s *Server) cleanupAfterStart() error {
 }
 
 func (s *Server) retainListener(listener net.Listener) {
+	s.lifecycleMu.Lock()
+	if s.listenersRejected {
+		s.lifecycleMu.Unlock()
+		_ = listener.Close()
+		return
+	}
 	s.listenerMu.Lock()
 	s.listeners = append(s.listeners, listener)
 	s.listenerMu.Unlock()
+	s.lifecycleMu.Unlock()
 }
 
 func (s *Server) releaseListener(listener net.Listener) {
@@ -673,57 +983,55 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 		}
 	}
 	metrics.SetConfigApplyStreamRequired(streamProxyModeEnabled(cfg))
-	if standaloneConfigProvider(cfg) == "" {
-		s.registerAcknowledgedStoreUpdateHook(ctx)
-	}
-
-	logger.Info("Starting storage")
-	s.storage.Start()
-	if err := s.startConfigProvider(ctx); err != nil {
+	factories := s.runtimeFactories.withDefaults()
+	s.runtimeFactories = factories
+	if err := s.startImmutableStreamRuntime(ctx, factories.newStream); err != nil {
 		return err
 	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-
-	if standaloneConfigProvider(cfg) != "" {
-		logger.Info("build the routes")
-		builder := route.NewBuilderWithClusterRegistry(
-			s.storage, s.addr, s.clusters, s.staticConfig, s.dataEncryption.Resolver(),
-		)
-		if err := buildAndInstallInitialRoutes(s.routes, builder); err != nil {
-			metrics.RecordConfigApplyStageFailure(metrics.ConfigApplyStageHTTPRoutes)
-			return err
-		}
-		metrics.RecordConfigApplyStageSuccess(metrics.ConfigApplyStageHTTPRoutes)
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-	}
-	previousStreamRuntime := s.streamRuntime
-	if err := s.startStreamProxy(ctx); err != nil {
+	if err := s.startPrometheusExportServer(); err != nil {
 		return err
 	}
-	if err := ctx.Err(); err != nil {
+	serveErrors, err := factories.startHTTP(s, ctx)
+	if err != nil {
+		return fmt.Errorf("start HTTP listeners: %w", err)
+	}
+	producer, err := factories.newProducer(s, ctx)
+	if err != nil {
+		return fmt.Errorf("construct config producer: %w", err)
+	}
+	if err := s.retainProducer(producer); err != nil {
+		return fmt.Errorf("retain config producer: %w", err)
+	}
+	producerStartDone := make(chan error, 1)
+	go func() {
+		producerStartDone <- producer.Start(ctx)
+	}()
+	select {
+	case err := <-producerStartDone:
+		if err != nil {
+			return fmt.Errorf("start config producer: %w", err)
+		}
+	case <-ctx.Done():
+		return ctx.Err()
+	case err := <-serveErrors:
+		if err == nil || errors.Is(err, http.ErrServerClosed) {
+			return nil
+		}
 		return err
 	}
-	if s.standaloneWatcher != nil {
-		if err := s.standaloneWatcher.StartAndReconcile(); err != nil {
-			return fmt.Errorf("start standalone config watcher: %w", err)
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case err := <-serveErrors:
+		if err == nil || errors.Is(err, http.ErrServerClosed) {
+			return nil
 		}
-		provider := standaloneConfigProvider(cfg)
-		logger.Infof("watch standalone config %s", config.StandaloneConfigFile(provider))
+		return err
 	}
-
-	// start the reloader
-	s.startReloadScheduler(ctx)
-
-	return s.startServing(
-		ctx,
-		previousStreamRuntime,
-		s.startPrometheusExportServer,
-		s.startHTTPListeners,
-	)
 }
 
 func (s *Server) startServing(
@@ -816,59 +1124,320 @@ func (s *Server) shutdown(ctx context.Context) error {
 }
 
 func (s *Server) shutdownAttempt(ctx context.Context) (error, bool) {
-	if s.server != nil {
-		if err := s.server.Shutdown(ctx); err != nil {
-			return fmt.Errorf("stop HTTP server: %w", err), false
+	if s.shutdownPhase < shutdownPhaseProducerStopped {
+		cancel, startupDone := s.requestShutdown()
+		producerErr, complete := s.stopProducerBarrier(ctx)
+		if !complete {
+			return producerErr, false
 		}
+		if cancel != nil {
+			cancel()
+		}
+		if err := waitForLifecycle(ctx, startupDone); err != nil {
+			return errors.Join(producerErr, fmt.Errorf("wait for server startup: %w", err)), false
+		}
+		s.lifecycleMu.Lock()
+		producerErr = errors.Join(producerErr, s.lateProducerStopErr)
+		s.lifecycleMu.Unlock()
+		s.appendShutdownError(producerErr)
+		s.shutdownPhase = shutdownPhaseProducerStopped
 	}
-	if err := s.stopPrometheusExpirationRuntime(ctx); err != nil {
-		return err, false
+	if s.shutdownPhase < shutdownPhaseLeasesRejected {
+		s.lifecycleMu.Lock()
+		s.listenersRejected = true
+		s.lifecycleMu.Unlock()
+		s.closeOwnedListeners()
+		if s.routes != nil {
+			s.routes.RejectNew()
+		}
+		s.initiateStreamRuntimeClose()
+		s.shutdownPhase = shutdownPhaseLeasesRejected
 	}
+	if s.shutdownPhase < shutdownPhaseDrained {
+		drainErr, complete := s.drainRuntimeOwners(ctx)
+		if !complete {
+			return errors.Join(errors.Join(s.shutdownErrors...), drainErr), false
+		}
+		s.appendShutdownError(drainErr)
+		s.shutdownPhase = shutdownPhaseDrained
+	}
+	if s.shutdownPhase < shutdownPhaseEngineClosed {
+		if s.engine == nil && !s.compatibilityClosed {
+			compatibilityErr, complete := s.closeCompatibilityOwners(ctx)
+			if !complete {
+				return errors.Join(errors.Join(s.shutdownErrors...), compatibilityErr), false
+			}
+			s.appendShutdownError(compatibilityErr)
+			s.compatibilityClosed = true
+		}
+		if s.engine != nil && !s.engineClosed {
+			s.appendShutdownError(wrapCleanupError("close generation engine", s.engine.Close(ctx)))
+			s.engineClosed = true
+		}
+		s.shutdownPhase = shutdownPhaseEngineClosed
+	}
+	if s.shutdownPhase < shutdownPhaseResolverClosed {
+		if s.resolver != nil && !s.resolverClosed {
+			closer := s.closeResolver
+			if closer == nil {
+				closer = func(resolver *secret.GenerationSecretResolver, ctx context.Context) error {
+					return resolver.Close(ctx)
+				}
+			}
+			s.appendShutdownError(wrapCleanupError("close generation secret resolver", closer(s.resolver, ctx)))
+			s.resolverClosed = true
+		} else if s.closeResolver != nil && !s.resolverClosed {
+			s.appendShutdownError(wrapCleanupError("close generation secret resolver", s.closeResolver(nil, ctx)))
+			s.resolverClosed = true
+		}
+		s.shutdownPhase = shutdownPhaseResolverClosed
+	}
+	if s.shutdownPhase < shutdownPhaseJournalClosed {
+		if s.journal != nil && !s.journalClosed {
+			closer := s.closeJournal
+			if closer == nil {
+				closer = func(journal generation.Journal) error { return journal.Close() }
+			}
+			s.appendShutdownError(wrapCleanupError("close generation journal", closer(s.journal)))
+			s.journalClosed = true
+		}
+		s.shutdownPhase = shutdownPhaseJournalClosed
+	}
+	if s.shutdownPhase < shutdownPhaseObservabilityClosed {
+		observabilityErr, complete := s.closeObservability(ctx)
+		if !complete {
+			return errors.Join(errors.Join(s.shutdownErrors...), observabilityErr), false
+		}
+		s.appendShutdownError(observabilityErr)
+		s.shutdownPhase = shutdownPhaseObservabilityClosed
+	}
+	return errors.Join(s.shutdownErrors...), true
+}
 
-	producerErr, lifecycleComplete := s.stopProducerAndScheduler(ctx)
-	if !lifecycleComplete {
-		return producerErr, false
+func (s *Server) requestShutdown() (context.CancelFunc, chan struct{}) {
+	s.lifecycleMu.Lock()
+	s.shutdownRequested = true
+	cancel := s.lifecycleCancel
+	startupDone := s.startupDone
+	startupInProgress := s.startupInProgress
+	s.lifecycleMu.Unlock()
+	if !startupInProgress {
+		startupDone = nil
 	}
+	return cancel, startupDone
+}
+
+func (s *Server) closeCompatibilityOwners(ctx context.Context) (error, bool) {
 	var errs []error
-	if producerErr != nil {
-		errs = append(errs, producerErr)
+	s.lifecycleMu.Lock()
+	schedulerDone := s.schedulerDone
+	s.lifecycleMu.Unlock()
+	if err := waitForLifecycle(ctx, schedulerDone); err != nil {
+		return fmt.Errorf("wait for legacy reload scheduler: %w", err), false
 	}
+	if s.clusters != nil {
+		s.clusters.Close()
+		s.clusters = nil
+	}
+	if s.storage != nil {
+		if err := s.storage.Stop(); err != nil {
+			errs = append(errs, fmt.Errorf("stop legacy store: %w", err))
+		}
+		s.storage = nil
+	}
+	return errors.Join(errs...), true
+}
 
+func (s *Server) appendShutdownError(err error) {
+	if err != nil {
+		s.shutdownErrors = append(s.shutdownErrors, err)
+	}
+}
+
+func wrapCleanupError(operation string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("%s: %w", operation, err)
+}
+
+func (s *Server) stopProducerBarrier(ctx context.Context) (error, bool) {
+	s.producerStopOnce.Do(func() {
+		s.lifecycleMu.Lock()
+		producer := s.producer
+		s.lifecycleMu.Unlock()
+		s.producerStopDone = make(chan struct{})
+		go func() {
+			defer close(s.producerStopDone)
+			if producer != nil {
+				s.producerStopErr = wrapCleanupError("stop config producer", producer.Stop())
+			}
+		}()
+	})
+	select {
+	case <-s.producerStopDone:
+		return s.producerStopErr, true
+	case <-ctx.Done():
+		return ctx.Err(), false
+	}
+}
+
+func (s *Server) initiateStreamRuntimeClose() {
+	if s.streamDrained {
+		return
+	}
 	s.streamReloadMu.Lock()
 	streamRuntime := s.streamRuntime
-	if streamRuntime != nil {
-		if err := streamRuntime.Close(ctx); err != nil {
-			errs = append(errs, fmt.Errorf("stop stream runtime: %w", err))
+	s.streamReloadMu.Unlock()
+	if streamRuntime == nil {
+		s.streamDrained = true
+		return
+	}
+
+	closeCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := streamRuntime.Close(closeCtx); err != nil {
+		if contextError(err) {
+			return
 		}
+		s.appendShutdownError(wrapCleanupError("drain stream runtime", err))
+	}
+	s.streamDrained = true
+	s.clearStreamRuntime(streamRuntime)
+}
+
+func (s *Server) drainRuntimeOwners(ctx context.Context) (error, bool) {
+	var errs []error
+	incomplete := false
+	if !s.httpDrained {
+		shutdownHTTP := s.shutdownHTTP
+		if shutdownHTTP == nil && s.server != nil {
+			shutdownHTTP = s.server.Shutdown
+		}
+		if shutdownHTTP == nil {
+			s.httpDrained = true
+		} else if err := shutdownHTTP(ctx); err != nil {
+			wrapped := wrapCleanupError("drain HTTP server", err)
+			if contextError(err) {
+				errs = append(errs, wrapped)
+				incomplete = true
+			} else {
+				s.appendShutdownError(wrapped)
+				s.httpDrained = true
+			}
+		} else {
+			s.httpDrained = true
+		}
+	}
+	if !s.routesDrained {
+		drainRoutes := s.drainRoutes
+		if drainRoutes == nil && s.routes != nil {
+			drainRoutes = s.routes.Drain
+		}
+		if drainRoutes == nil {
+			s.routesDrained = true
+		} else if err := drainRoutes(ctx); err != nil {
+			wrapped := wrapCleanupError("drain HTTP generation leases", err)
+			if contextError(err) {
+				errs = append(errs, wrapped)
+				incomplete = true
+			} else {
+				s.appendShutdownError(wrapped)
+				s.routesDrained = true
+			}
+		} else {
+			s.routesDrained = true
+		}
+	}
+	if !s.streamDrained {
+		s.streamReloadMu.Lock()
+		streamRuntime := s.streamRuntime
+		s.streamReloadMu.Unlock()
+		if streamRuntime == nil {
+			s.streamDrained = true
+		} else if err := streamRuntime.Close(ctx); err != nil {
+			wrapped := wrapCleanupError("drain stream runtime", err)
+			if contextError(err) {
+				errs = append(errs, wrapped)
+				incomplete = true
+			} else {
+				s.appendShutdownError(wrapped)
+				s.streamDrained = true
+				s.clearStreamRuntime(streamRuntime)
+			}
+		} else {
+			s.streamDrained = true
+			s.clearStreamRuntime(streamRuntime)
+		}
+	}
+	if ctx.Err() != nil {
+		incomplete = true
+		if len(errs) == 0 {
+			errs = append(errs, ctx.Err())
+		}
+	}
+	return errors.Join(errs...), !incomplete && s.httpDrained && s.routesDrained && s.streamDrained
+}
+
+func (s *Server) clearStreamRuntime(streamRuntime streamRuntimeOwner) {
+	s.streamReloadMu.Lock()
+	if s.streamRuntime == streamRuntime {
 		s.streamRuntime = nil
 		s.streamRoutes = nil
 	}
 	s.streamReloadMu.Unlock()
-	if streamRuntime != nil {
-		metrics.SetStreamRoutes(nil)
-	}
-	if s.routes != nil {
-		s.routes.Close()
-	}
-	if s.clusters != nil {
-		s.clusters.Close()
-	}
-	if s.storage != nil {
-		if err := s.storage.Stop(); err != nil {
-			errs = append(errs, fmt.Errorf("stop store: %w", err))
+	metrics.SetStreamRoutes(nil)
+}
+
+func contextError(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+}
+
+func (s *Server) closeObservability(ctx context.Context) (error, bool) {
+	var errs []error
+	incomplete := false
+	if !s.expirationStopped {
+		if err := s.stopPrometheusExpirationRuntime(ctx); err != nil {
+			if contextError(err) {
+				errs = append(errs, err)
+				incomplete = true
+			} else {
+				s.appendShutdownError(err)
+				s.expirationStopped = true
+			}
+		} else {
+			s.expirationStopped = true
 		}
 	}
-	if s.prometheusServer != nil {
-		if err := s.prometheusServer.Shutdown(ctx); err != nil {
-			errs = append(errs, fmt.Errorf("stop prometheus export server: %w", err))
+	if !s.exporterStopped {
+		if s.prometheusServer == nil {
+			s.exporterStopped = true
+		} else if err := s.prometheusServer.Shutdown(ctx); err != nil {
+			wrapped := wrapCleanupError("stop prometheus export server", err)
+			if contextError(err) {
+				errs = append(errs, wrapped)
+				incomplete = true
+			} else {
+				s.appendShutdownError(wrapped)
+				s.exporterStopped = true
+			}
+		} else {
+			s.exporterStopped = true
 		}
 	}
-	if s.otelShutdown != nil {
-		if err := s.otelShutdown(ctx); err != nil {
-			errs = append(errs, fmt.Errorf("stop tracing: %w", err))
+	if !s.tracingStopped && !incomplete {
+		if s.otelShutdown != nil {
+			s.appendShutdownError(wrapCleanupError("stop tracing", s.otelShutdown(ctx)))
+		}
+		s.tracingStopped = true
+	}
+	if ctx.Err() != nil {
+		incomplete = true
+		if len(errs) == 0 {
+			errs = append(errs, ctx.Err())
 		}
 	}
-	return errors.Join(errs...), true
+	return errors.Join(errs...), !incomplete && s.expirationStopped && s.exporterStopped && s.tracingStopped
 }
 
 func (s *Server) startPrometheusExpiration(ctx context.Context) error {
@@ -915,42 +1484,6 @@ func (s *Server) stopPrometheusExpirationRuntime(ctx context.Context) error {
 	return nil
 }
 
-func (s *Server) stopProducerAndScheduler(ctx context.Context) (error, bool) {
-	cancel, producer, startupDone, schedulerDone := s.lifecycleResourcesForShutdown()
-	var errs []error
-	if producer != nil {
-		if err := producer.Stop(); err != nil {
-			errs = append(errs, fmt.Errorf("stop config producer: %w", err))
-		}
-	} else {
-		s.lifecycleMu.Lock()
-		standaloneWatcher := s.standaloneWatcher
-		etcdClient := s.etcdClient
-		s.lifecycleMu.Unlock()
-		if standaloneWatcher != nil {
-			if err := standaloneWatcher.Stop(); err != nil {
-				errs = append(errs, fmt.Errorf("stop standalone config watcher: %w", err))
-			}
-		} else if etcdClient != nil {
-			if err := etcdClient.Close(); err != nil {
-				errs = append(errs, fmt.Errorf("close etcd client: %w", err))
-			}
-		}
-	}
-	if cancel != nil {
-		cancel()
-	}
-	if err := waitForLifecycle(ctx, startupDone); err != nil {
-		errs = append(errs, fmt.Errorf("wait for startup: %w", err))
-		return errors.Join(errs...), false
-	}
-	if err := waitForLifecycle(ctx, schedulerDone); err != nil {
-		errs = append(errs, fmt.Errorf("wait for reload scheduler: %w", err))
-		return errors.Join(errs...), false
-	}
-	return errors.Join(errs...), true
-}
-
 func waitForLifecycle(ctx context.Context, done chan struct{}) error {
 	if done == nil {
 		return nil
@@ -987,22 +1520,21 @@ func (s *Server) startStreamProxy(ctx context.Context) error {
 		return fail(fmt.Errorf("upstream PROXY protocol is not supported"))
 	}
 
-	// Serialize the initial load/publication with acknowledged dynamic reloads.
-	// An event committed after the initial read either blocks here and reloads
-	// the published runtime, or completes first and is included by this read.
+	// Compatibility path for Store-era tests. Production Start uses
+	// startImmutableStreamRuntime and never selects this helper.
 	s.streamReloadMu.Lock()
 	defer s.streamReloadMu.Unlock()
 	routes, candidate, err := s.loadStreamRoutes()
 	if err != nil {
 		return fail(fmt.Errorf("load stream routes: %w", err))
 	}
-	runtime, err := streamruntime.NewRuntime(
-		ctx,
-		streamConfig.Tcp,
-		routes,
-		cfg.StreamPlugins,
-		logStreamResult,
-	)
+	router, err := streamruntime.NewRouter(routes, cfg.StreamPlugins, logStreamResult)
+	if err != nil {
+		return fail(fmt.Errorf("start stream proxy: %w", err))
+	}
+	runtime, err := streamruntime.NewRuntime(ctx, streamConfig.Tcp, func() (streamruntime.RouterLease, bool) {
+		return streamruntime.RouterLease{Router: router, Release: func() {}}, true
+	})
 	if err != nil {
 		return fail(fmt.Errorf("start stream proxy: %w", err))
 	}
@@ -1019,6 +1551,71 @@ func (s *Server) startStreamProxy(ctx context.Context) error {
 	metrics.SetStreamRoutes(streamRouteIDs(routes))
 	metrics.RecordConfigApplyStageSuccess(metrics.ConfigApplyStageStreams)
 	logger.Infof("stream proxy listening on %v", runtime.Addresses())
+	return nil
+}
+
+func (s *Server) startImmutableStreamRuntime(
+	ctx context.Context,
+	newRuntime func(
+		context.Context,
+		[]config.TcpListen,
+		streamruntime.RouterSource,
+	) (streamRuntimeOwner, error),
+) error {
+	cfg := &s.staticConfig.Config
+	if !streamProxyModeEnabled(cfg) {
+		return nil
+	}
+	fail := func(err error) error {
+		metrics.RecordConfigApplyStageFailure(metrics.ConfigApplyStageStreams)
+		return err
+	}
+	streamConfig := cfg.Apisix.StreamProxy
+	if len(streamConfig.Tcp) == 0 {
+		return fail(fmt.Errorf("stream mode requires at least one TCP listener"))
+	}
+	if len(streamConfig.Udp) > 0 {
+		return fail(fmt.Errorf("UDP stream listeners are not supported"))
+	}
+	proxyProtocol := cfg.Apisix.ProxyProtocol
+	if proxyProtocol.EnableTCPPP {
+		return fail(fmt.Errorf("stream PROXY protocol is not supported"))
+	}
+	if proxyProtocol.EnableTCPPPToUpstream {
+		return fail(fmt.Errorf("upstream PROXY protocol is not supported"))
+	}
+
+	s.streamReloadMu.Lock()
+	defer s.streamReloadMu.Unlock()
+	if s.engine == nil {
+		return fail(errors.New("generation engine is required for stream runtime"))
+	}
+	runtime, err := newRuntime(
+		ctx,
+		streamConfig.Tcp,
+		func() (streamruntime.RouterLease, bool) {
+			lease, ok := s.engine.acquireStream()
+			if !ok {
+				return streamruntime.RouterLease{}, false
+			}
+			return streamruntime.RouterLease{Router: lease.Router, Release: lease.Release}, true
+		},
+	)
+	if err != nil {
+		return fail(fmt.Errorf("start stream proxy: %w", err))
+	}
+	s.lifecycleMu.Lock()
+	if s.shutdownRequested {
+		s.lifecycleMu.Unlock()
+		_ = runtime.Close(context.Background())
+		return fail(context.Canceled)
+	}
+	s.streamRuntime = runtime
+	s.lifecycleMu.Unlock()
+	metrics.RecordConfigApplyStageSuccess(metrics.ConfigApplyStageStreams)
+	if addressOwner, ok := runtime.(interface{ Addresses() []string }); ok {
+		logger.Infof("stream proxy listening on %v", addressOwner.Addresses())
+	}
 	return nil
 }
 
@@ -1305,96 +1902,19 @@ func logStreamResult(result streamruntime.Result) {
 	)
 }
 
-func (s *Server) startConfigProvider(ctx context.Context) error {
+func (s *Server) constructConfigProducer(ctx context.Context) (configProducer, error) {
 	provider := standaloneConfigProvider(&s.staticConfig.Config)
 	if provider != "" {
-		path := config.StandaloneConfigFile(provider)
-		watcher := config.NewStandaloneFileWatcher(path, provider, s.events, s.dataEncryption)
-		s.lifecycleMu.Lock()
-		s.standaloneWatcher = watcher
-		s.lifecycleMu.Unlock()
-		if err := s.retainProducer(watcher); err != nil {
-			return fmt.Errorf("retain standalone config watcher: %w", err)
-		}
-		snapshot, err := s.storage.SnapshotBuckets(config.StandaloneBuckets())
-		if err != nil {
-			return fmt.Errorf("snapshot standalone store: %w", err)
-		}
-		watcher.SeedCurrentSnapshot(snapshot)
-		initialResult, err := watcher.ReloadSnapshot()
-		if err != nil {
-			return fmt.Errorf("load standalone config: %w", err)
-		}
-		if err := s.storage.Sync(); err != nil {
-			metrics.RecordConfigApplyStageFailure(metrics.ConfigApplyStageProvider)
-			return fmt.Errorf("sync initial standalone config: %w", err)
-		}
-		metrics.RecordConfigApplyQuarantine(initialResult.QuarantinedResourceCount())
-		metrics.RecordConfigApplyStageSuccess(metrics.ConfigApplyStageProvider)
-		watcher.SetAcknowledgedReloadCallback(func(result config.StandaloneReloadResult, err error) error {
-			if applyErr := applyStandaloneSnapshot(
-				result,
-				err,
-				s.storage.Sync,
-				func() error { return s.reload(ctx) },
-				func() error {
-					if s.streamRuntime == nil {
-						return nil
-					}
-					return s.reloadStreamRoutes()
-				},
-			); applyErr != nil {
-				if errors.Is(applyErr, errStandaloneHTTPRoutePublication) {
-					metrics.RecordConfigApplyStageSuccess(metrics.ConfigApplyStageProvider)
-					metrics.RecordConfigApplyStageFailure(metrics.ConfigApplyStageHTTPRoutes)
-				} else if errors.Is(applyErr, errStandaloneStreamPublication) {
-					metrics.RecordConfigApplyStageSuccess(metrics.ConfigApplyStageProvider)
-					metrics.RecordConfigApplyStageFailure(metrics.ConfigApplyStageStreams)
-				} else {
-					metrics.RecordConfigApplyStageFailure(metrics.ConfigApplyStageProvider)
-				}
-				logger.Errorf("apply standalone config: %s", applyErr)
-				return applyErr
-			}
-			metrics.RecordConfigApplyStageSuccess(metrics.ConfigApplyStageProvider)
-			if result.AffectsHTTPRoutes() {
-				metrics.RecordConfigApplyStageSuccess(metrics.ConfigApplyStageHTTPRoutes)
-			}
-			if result.AffectsStreams() && s.streamRuntime != nil {
-				metrics.RecordConfigApplyStageSuccess(metrics.ConfigApplyStageStreams)
-			}
-			return nil
-		})
-		return nil
+		watcher := config.NewStandaloneFileWatcher(
+			config.StandaloneConfigFile(provider),
+			provider,
+			s.coordinator,
+			s.dataEncryption,
+		)
+		producer := &standaloneConfigProducer{watcher: watcher}
+		return producer, nil
 	}
-	return s.startEtcdWatcher(ctx)
-}
-
-func applyStandaloneSnapshot(
-	result config.StandaloneReloadResult,
-	err error,
-	syncStore func() error,
-	reloadRoutes func() error,
-	reloadStreams func() error,
-) error {
-	if err != nil {
-		return err
-	}
-	metrics.RecordConfigApplyQuarantine(result.QuarantinedResourceCount())
-	if err := syncStore(); err != nil {
-		return err
-	}
-	if result.AffectsHTTPRoutes() {
-		if err := reloadRoutes(); err != nil {
-			return fmt.Errorf("%w: %w", errStandaloneHTTPRoutePublication, err)
-		}
-	}
-	if result.AffectsStreams() {
-		if err := reloadStreams(); err != nil {
-			return fmt.Errorf("%w: %w", errStandaloneStreamPublication, err)
-		}
-	}
-	return nil
+	return s.constructEtcdConfigProducer(ctx)
 }
 
 func standaloneConfigProvider(cfg *config.Config) string {
@@ -1408,7 +1928,7 @@ func standaloneConfigProvider(cfg *config.Config) string {
 	return provider
 }
 
-func (s *Server) startEtcdWatcher(ctx context.Context) error {
+func (s *Server) constructEtcdConfigProducer(ctx context.Context) (configProducer, error) {
 	cfg := &s.staticConfig.Config
 	etcdConfig := cfg.Deployment.Etcd
 	prefix := etcdConfig.Prefix
@@ -1426,7 +1946,7 @@ func (s *Server) startEtcdWatcher(ctx context.Context) error {
 			etcdConfig.TLS.Verify,
 		)
 		if err != nil {
-			return fmt.Errorf("build etcd TLS config: %w", err)
+			return nil, fmt.Errorf("build etcd TLS config: %w", err)
 		}
 	}
 	logger.Info("Starting etcd client")
@@ -1435,42 +1955,31 @@ func (s *Server) startEtcdWatcher(ctx context.Context) error {
 		username,
 		password,
 		prefix,
-		s.events,
+		s.coordinator,
 		etcdClientOptions(etcdConfig, tlsConfig),
 	)
 	if err != nil {
-		return fmt.Errorf("start etcd client: %w", err)
+		return nil, fmt.Errorf("start etcd client: %w", err)
 	}
-	s.lifecycleMu.Lock()
-	s.etcdClient = etcdClient
-	s.lifecycleMu.Unlock()
-	producer := newEtcdConfigProducer(ctx, etcdClient)
-	if err := s.retainProducer(producer); err != nil {
-		return fmt.Errorf("retain etcd config watcher: %w", err)
-	}
-	logger.Info("fetch full data from etcd")
-	err = fetchAndSyncInitialEtcdConfigContext(ctx, etcdClient.FetchAllContext, s.storage.Sync)
-	if err != nil {
-		return fmt.Errorf("fetch initial etcd config: %w", err)
-	}
+	producer := newEtcdConfigProducer(etcdClient)
 	if serverInfoReportingEnabled(cfg) {
-		nodeID := server_info.CurrentInfo(cfg.Apisix.ID).ID
-		attr := cfg.PluginAttr["server-info"]
-		_, err := etcdClient.StartServerInfoReporter(
-			ctx,
-			nodeID,
-			server_info.ReportTTL(attr),
-			func() ([]byte, error) {
-				return json.Marshal(server_info.CurrentInfo(cfg.Apisix.ID))
-			},
-		)
-		if err != nil {
-			logger.Warnf("start server-info reporter fail: %s", err)
+		producer.afterInitial = func(ctx context.Context) {
+			nodeID := server_info.CurrentInfo(cfg.Apisix.ID).ID
+			attr := cfg.PluginAttr["server-info"]
+			_, reporterErr := etcdClient.StartServerInfoReporter(
+				ctx,
+				nodeID,
+				server_info.ReportTTL(attr),
+				func() ([]byte, error) {
+					return json.Marshal(server_info.CurrentInfo(cfg.Apisix.ID))
+				},
+			)
+			if reporterErr != nil {
+				logger.Warnf("start server-info reporter fail: %s", reporterErr)
+			}
 		}
 	}
-	logger.Info("watch etcd")
-	producer.Start()
-	return nil
+	return producer, nil
 }
 
 func etcdHealthCheckInterval(timeout int) time.Duration {
@@ -1549,10 +2058,6 @@ func serverInfoReportingEnabled(cfg *config.Config) bool {
 // returned so the command can cancel the root context and enter the normal
 // shutdown path.
 func (s *Server) startHTTPListeners(ctx context.Context) error {
-	addrs := s.addrs
-	if len(addrs) == 0 {
-		addrs = []string{s.addr}
-	}
 	cfg := &s.staticConfig.Config
 	tlsAddrs := configuredTLSListenAddresses(cfg)
 	var tlsConfig *tls.Config
@@ -1563,6 +2068,43 @@ func (s *Server) startHTTPListeners(ctx context.Context) error {
 			return fmt.Errorf("build frontend TLS config: %w", err)
 		}
 	}
+	serveErrors, err := s.serveHTTPListenerRuntime(tlsAddrs, tlsConfig)
+	if err != nil {
+		return err
+	}
+	select {
+	case <-ctx.Done():
+		return nil
+	case err := <-serveErrors:
+		return err
+	}
+}
+
+func (s *Server) startHTTPListenerRuntime(ctx context.Context) (<-chan error, error) {
+	cfg := &s.staticConfig.Config
+	tlsAddrs := configuredTLSListenAddresses(cfg)
+	var tlsConfig *tls.Config
+	if len(tlsAddrs) > 0 {
+		if s.engine == nil {
+			return nil, errors.New("generation engine is required for TLS listeners")
+		}
+		var err error
+		tlsConfig, err = buildGenerationFrontendTLSConfig(cfg, s.engine.acquireHTTP)
+		if err != nil {
+			return nil, fmt.Errorf("build frontend TLS config: %w", err)
+		}
+	}
+	return s.serveHTTPListenerRuntime(tlsAddrs, tlsConfig)
+}
+
+func (s *Server) serveHTTPListenerRuntime(
+	tlsAddrs []string,
+	tlsConfig *tls.Config,
+) (<-chan error, error) {
+	addrs := s.addrs
+	if len(addrs) == 0 {
+		addrs = []string{s.addr}
+	}
 	serveErrors := make(chan error, len(addrs)+len(tlsAddrs))
 	listeners := make([]net.Listener, 0, len(addrs)+len(tlsAddrs))
 	for _, addr := range addrs {
@@ -1570,7 +2112,7 @@ func (s *Server) startHTTPListeners(ctx context.Context) error {
 		listener, err := net.Listen("tcp", addr)
 		if err != nil {
 			s.closeOwnedListeners()
-			return fmt.Errorf("open listener %s: %w", addr, err)
+			return nil, fmt.Errorf("open listener %s: %w", addr, err)
 		}
 		s.retainListener(listener)
 		listeners = append(listeners, listener)
@@ -1580,7 +2122,7 @@ func (s *Server) startHTTPListeners(ctx context.Context) error {
 		listener, err := net.Listen("tcp", addr)
 		if err != nil {
 			s.closeOwnedListeners()
-			return fmt.Errorf("open TLS listener %s: %w", addr, err)
+			return nil, fmt.Errorf("open TLS listener %s: %w", addr, err)
 		}
 		tlsListener := tls.NewListener(listener, tlsConfig)
 		s.retainListener(tlsListener)
@@ -1595,12 +2137,7 @@ func (s *Server) startHTTPListeners(ctx context.Context) error {
 		}(listener)
 	}
 
-	select {
-	case <-ctx.Done():
-		return nil
-	case err := <-serveErrors:
-		return err
-	}
+	return serveErrors, nil
 }
 
 func frontendHTTP2Enabled(cfg *config.Config) bool {

@@ -253,68 +253,6 @@ func TestFetchAndSyncInitialEtcdConfigPropagatesSyncError(t *testing.T) {
 	}
 }
 
-func TestApplyStandaloneSnapshotSkipsReloadWhenSyncFails(t *testing.T) {
-	wantErr := context.Canceled
-	var routes, streams int
-	err := applyStandaloneSnapshot(
-		config.StandaloneReloadResult{
-			ChangedHTTPRouteBuckets: []string{"routes"},
-			ChangedStreamBuckets:    []string{"stream_routes"},
-		},
-		nil,
-		func() error { return wantErr },
-		func() error { routes++; return nil },
-		func() error { streams++; return nil },
-	)
-	if !errors.Is(err, wantErr) {
-		t.Fatalf("applyStandaloneSnapshot() error = %v, want %v", err, wantErr)
-	}
-	if routes != 0 || streams != 0 {
-		t.Fatalf("reloads = routes:%d streams:%d, want none", routes, streams)
-	}
-}
-
-func TestApplyStandaloneSnapshotPublishesProviderQuarantineCount(t *testing.T) {
-	oldQuarantine := metrics.ConfigApplyQuarantined
-	metrics.ConfigApplyQuarantined = prometheus.NewGauge(prometheus.GaugeOpts{
-		Name: "test_standalone_provider_quarantine",
-	})
-	t.Cleanup(func() {
-		metrics.RecordConfigApplyQuarantine(0)
-		metrics.ConfigApplyQuarantined = oldQuarantine
-	})
-
-	result := config.StandaloneReloadResult{QuarantinedResources: []store.ResourceKey{{
-		Bucket: "routes",
-		ID:     "invalid-route",
-	}}}
-	if err := applyStandaloneSnapshot(
-		result,
-		nil,
-		func() error { return nil },
-		func() error { return nil },
-		func() error { return nil },
-	); err != nil {
-		t.Fatalf("applyStandaloneSnapshot() error = %v", err)
-	}
-	if got := configApplyGaugeValue(t, metrics.ConfigApplyQuarantined); got != 1 {
-		t.Fatalf("provider quarantine gauge = %v, want 1", got)
-	}
-
-	if err := applyStandaloneSnapshot(
-		config.StandaloneReloadResult{},
-		nil,
-		func() error { return nil },
-		func() error { return nil },
-		func() error { return nil },
-	); err != nil {
-		t.Fatalf("clear applyStandaloneSnapshot() error = %v", err)
-	}
-	if got := configApplyGaugeValue(t, metrics.ConfigApplyQuarantined); got != 0 {
-		t.Fatalf("cleared provider quarantine gauge = %v, want 0", got)
-	}
-}
-
 func TestReloadPublishesValidGenerationForLegacyMalformedRowsAndKeepsReadinessBlocked(t *testing.T) {
 	oldFailures, oldReady, oldQuarantine := metrics.ConfigApplyFailures, metrics.ConfigApplyReady, metrics.ConfigApplyQuarantined
 	metrics.ConfigApplyFailures = prometheus.NewCounter(prometheus.CounterOpts{

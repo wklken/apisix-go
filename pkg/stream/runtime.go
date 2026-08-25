@@ -34,7 +34,7 @@ type Runtime struct {
 	closeDone chan struct{}
 }
 
-func NewRuntime(
+func newLegacyRuntime(
 	ctx context.Context,
 	specs []config.TcpListen,
 	routes []resource.StreamRoute,
@@ -59,7 +59,7 @@ func NewRuntime(
 	}, router)
 }
 
-func newGenerationRuntime(
+func NewRuntime(
 	ctx context.Context,
 	specs []config.TcpListen,
 	source RouterSource,

@@ -218,13 +218,13 @@ func TestRuntimePinsRouterLeaseForConnectionLifetime(t *testing.T) {
 	old := newRouterLeaseFixture(71, true, nil)
 	next := newRouterLeaseFixture(72, false, nil)
 	source := newSwitchableRouterSource(old)
-	runtime, err := newGenerationRuntime(
+	runtime, err := NewRuntime(
 		context.Background(),
 		[]config.TcpListen{{Addr: "127.0.0.1:0"}},
 		source.Acquire,
 	)
 	if err != nil {
-		t.Fatalf("newGenerationRuntime() error = %v", err)
+		t.Fatalf("NewRuntime() error = %v", err)
 	}
 	t.Cleanup(func() { _ = runtime.Close(context.Background()) })
 
@@ -250,13 +250,13 @@ func TestRuntimePinsRouterLeaseForConnectionLifetime(t *testing.T) {
 }
 
 func TestRuntimeRejectsConnectionWhenRouterUnavailable(t *testing.T) {
-	runtime, err := newGenerationRuntime(
+	runtime, err := NewRuntime(
 		context.Background(),
 		[]config.TcpListen{{Addr: "127.0.0.1:0"}},
 		func() (RouterLease, bool) { return RouterLease{}, false },
 	)
 	if err != nil {
-		t.Fatalf("newGenerationRuntime() error = %v", err)
+		t.Fatalf("NewRuntime() error = %v", err)
 	}
 	t.Cleanup(func() { _ = runtime.Close(context.Background()) })
 
@@ -273,13 +273,13 @@ func TestRuntimeRejectsConnectionWhenRouterUnavailable(t *testing.T) {
 
 func TestRuntimeReleasesLeaseWhenServeReturnsError(t *testing.T) {
 	fixture := newRouterLeaseFixture(73, false, errors.New("serve failure"))
-	runtime, err := newGenerationRuntime(
+	runtime, err := NewRuntime(
 		context.Background(),
 		[]config.TcpListen{{Addr: "127.0.0.1:0"}},
 		fixture.Acquire,
 	)
 	if err != nil {
-		t.Fatalf("newGenerationRuntime() error = %v", err)
+		t.Fatalf("NewRuntime() error = %v", err)
 	}
 	t.Cleanup(func() { _ = runtime.Close(context.Background()) })
 
@@ -293,13 +293,13 @@ func TestRuntimeReleasesLeaseWhenServeReturnsError(t *testing.T) {
 
 func TestRuntimeTerminalCloseCancelsConnectionsAndReleasesLeases(t *testing.T) {
 	fixture := newRouterLeaseFixture(74, true, nil)
-	runtime, err := newGenerationRuntime(
+	runtime, err := NewRuntime(
 		context.Background(),
 		[]config.TcpListen{{Addr: "127.0.0.1:0"}},
 		fixture.Acquire,
 	)
 	if err != nil {
-		t.Fatalf("newGenerationRuntime() error = %v", err)
+		t.Fatalf("NewRuntime() error = %v", err)
 	}
 	conn, revision := dialRuntimeRevision(t, runtime)
 	if revision != 74 {
@@ -348,13 +348,13 @@ func TestRuntimeAcceptFailureDoesNotAcquireLease(t *testing.T) {
 }
 
 func TestNewGenerationRuntimeRequiresRouterSource(t *testing.T) {
-	_, err := newGenerationRuntime(
+	_, err := NewRuntime(
 		context.Background(),
 		[]config.TcpListen{{Addr: "127.0.0.1:0"}},
 		nil,
 	)
 	if err == nil {
-		t.Fatal("newGenerationRuntime() accepted a nil router source")
+		t.Fatal("NewRuntime() accepted a nil router source")
 	}
 }
 
@@ -362,13 +362,13 @@ func TestRuntimeSourceRollbackAffectsOnlyNewConnections(t *testing.T) {
 	old := newRouterLeaseFixture(76, true, nil)
 	next := newRouterLeaseFixture(77, false, nil)
 	source := newSwitchableRouterSource(old)
-	runtime, err := newGenerationRuntime(
+	runtime, err := NewRuntime(
 		context.Background(),
 		[]config.TcpListen{{Addr: "127.0.0.1:0"}},
 		source.Acquire,
 	)
 	if err != nil {
-		t.Fatalf("newGenerationRuntime() error = %v", err)
+		t.Fatalf("NewRuntime() error = %v", err)
 	}
 	t.Cleanup(func() { _ = runtime.Close(context.Background()) })
 
@@ -407,6 +407,36 @@ func waitForAccept(t *testing.T, listener *scriptedListener) {
 	case <-listener.accepted:
 	case <-time.After(time.Second):
 		t.Fatal("listener did not call Accept")
+	}
+}
+
+func TestRuntimeCanceledCloseRejectsSynchronouslyAndLaterCloseJoins(t *testing.T) {
+	listener := newScriptedListener("127.0.0.1:21000")
+	runtime := newTestRuntime(t, listener)
+	release := make(chan struct{})
+	runtime.wg.Go(func() {
+		<-release
+	})
+
+	closeCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := runtime.Close(closeCtx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Close(canceled context) error = %v, want %v", err, context.Canceled)
+	}
+	select {
+	case <-listener.closed:
+	default:
+		t.Fatal("Close(canceled context) returned before rejecting the listener")
+	}
+	select {
+	case <-runtime.closeDone:
+		t.Fatal("Close(canceled context) joined the blocked runtime")
+	default:
+	}
+
+	close(release)
+	if err := runtime.Close(context.Background()); err != nil {
+		t.Fatalf("Close() retry error = %v", err)
 	}
 }
 
@@ -483,7 +513,7 @@ func TestRuntimeServesConfiguredListenerAndReloadsRoutes(t *testing.T) {
 
 	ctx := t.Context()
 	results := make(chan Result, 2)
-	runtime, err := NewRuntime(
+	runtime, err := newLegacyRuntime(
 		ctx,
 		[]config.TcpListen{{Addr: "127.0.0.1:0"}},
 		[]resource.StreamRoute{runtimeTestRoute(t, "first", firstAddr)},
@@ -523,7 +553,7 @@ func TestRuntimeCloseCancelsActiveStream(t *testing.T) {
 	upstream, upstreamAddr := startBlockingStreamUpstream(t)
 	defer func() { _ = upstream.Close() }()
 
-	runtime, err := NewRuntime(
+	runtime, err := newLegacyRuntime(
 		context.Background(),
 		[]config.TcpListen{{Addr: "127.0.0.1:0"}},
 		[]resource.StreamRoute{runtimeTestRoute(t, "blocking", upstreamAddr)},
@@ -560,7 +590,7 @@ func TestRuntimeCancellationBoundsBackpressure(t *testing.T) {
 	defer release()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	runtime, err := NewRuntime(
+	runtime, err := newLegacyRuntime(
 		ctx,
 		[]config.TcpListen{{Addr: "127.0.0.1:0"}},
 		[]resource.StreamRoute{runtimeTestRoute(t, "backpressure", upstreamAddr)},
@@ -613,7 +643,7 @@ func TestRuntimeCancellationBoundsBackpressure(t *testing.T) {
 }
 
 func TestNewRuntimeRejectsTLSAndInvalidAddress(t *testing.T) {
-	if _, err := NewRuntime(
+	if _, err := newLegacyRuntime(
 		context.Background(),
 		[]config.TcpListen{{Addr: "127.0.0.1:0", Tls: true}},
 		nil,
@@ -622,7 +652,7 @@ func TestNewRuntimeRejectsTLSAndInvalidAddress(t *testing.T) {
 	); err == nil {
 		t.Fatal("NewRuntime() accepted unsupported TLS listener")
 	}
-	if _, err := NewRuntime(
+	if _, err := newLegacyRuntime(
 		context.Background(),
 		[]config.TcpListen{{Addr: "not-an-address"}},
 		nil,
@@ -642,12 +672,13 @@ func TestNewRuntimeRejectsEmptyListenersAndUnsupportedFlags(t *testing.T) {
 		{name: "proxy protocol", spec: config.TcpListen{Addr: "127.0.0.1:0", ProxyProtocol: true}},
 		{name: "proxy protocol upstream", spec: config.TcpListen{Addr: "127.0.0.1:0", ProxyProtocolToUpstream: true}},
 	}
-	if _, err := NewRuntime(context.Background(), nil, nil, nil, nil); err == nil {
+	if _, err := newLegacyRuntime(context.Background(), nil, nil, nil, nil); err == nil {
 		t.Fatal("NewRuntime() accepted an empty listener set")
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			if _, err := NewRuntime(context.Background(), []config.TcpListen{test.spec}, nil, nil, nil); err == nil {
+			listeners := []config.TcpListen{test.spec}
+			if _, err := newLegacyRuntime(context.Background(), listeners, nil, nil, nil); err == nil {
 				t.Fatalf("NewRuntime() accepted unsupported %s", test.name)
 			}
 		})
@@ -693,7 +724,7 @@ func TestNewRuntimeRejectsUnsupportedAndUnresolvedRoutes(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if _, err := NewRuntime(
+			if _, err := newLegacyRuntime(
 				context.Background(),
 				[]config.TcpListen{{Addr: "127.0.0.1:0"}},
 				[]resource.StreamRoute{test.route},
@@ -720,7 +751,7 @@ func TestNewRuntimeRollsBackEarlierListenerOnBindFailure(t *testing.T) {
 	}
 	defer func() { _ = occupied.Close() }()
 
-	if _, err := NewRuntime(
+	if _, err := newLegacyRuntime(
 		context.Background(),
 		[]config.TcpListen{
 			{Addr: firstAddress},
@@ -742,7 +773,7 @@ func TestNewRuntimeRollsBackEarlierListenerOnBindFailure(t *testing.T) {
 func TestRuntimeReloadRejectsInvalidRoutesAndKeepsLastGood(t *testing.T) {
 	upstream, upstreamAddr := startStreamUpstream(t, []byte("last-good"))
 	defer func() { _ = upstream.Close() }()
-	runtime, err := NewRuntime(
+	runtime, err := newLegacyRuntime(
 		context.Background(),
 		[]config.TcpListen{{Addr: "127.0.0.1:0"}},
 		[]resource.StreamRoute{runtimeTestRoute(t, "last-good", upstreamAddr)},

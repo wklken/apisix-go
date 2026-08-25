@@ -355,6 +355,134 @@ func TestRouteHandlerNilGenerationSourceAndReleaseFailClosed(t *testing.T) {
 	})
 }
 
+func TestRouteHandlerRejectNewAndDrainActiveGenerationRequest(t *testing.T) {
+	fixture := newCountedHTTPLeaseFixture(t, 313)
+	routes := newGenerationRouteHandler(fixture.Acquire)
+	started := make(chan struct{})
+	unblock := make(chan struct{})
+	requestDone := make(chan struct{})
+	writer := &blockingHeaderRouteResponseWriter{
+		header: make(http.Header), started: started, unblock: unblock,
+	}
+	go func() {
+		routes.ServeHTTP(writer, httptest.NewRequest(http.MethodGet, "/active", nil))
+		close(requestDone)
+	}()
+	<-started
+
+	drainCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := routes.Drain(drainCtx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Drain(active request) error = %v, want %v", err, context.Canceled)
+	}
+	response := httptest.NewRecorder()
+	routes.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/late", nil))
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("late request status = %d, want %d", response.Code, http.StatusServiceUnavailable)
+	}
+	if got := fixture.acquires.Load(); got != 1 {
+		t.Fatalf("acquire count after RejectNew = %d, want 1", got)
+	}
+
+	close(unblock)
+	<-requestDone
+	if err := routes.Drain(context.Background()); err != nil {
+		t.Fatalf("Drain() after request completion error = %v", err)
+	}
+	if got := fixture.releases.Load(); got != 1 {
+		t.Fatalf("release count = %d, want 1", got)
+	}
+}
+
+func TestRouteHandlerDrainWaitsForRetainedBatchChild(t *testing.T) {
+	fixture := newCountedHTTPLeaseFixture(t, 314)
+	routes := newGenerationRouteHandler(fixture.Acquire)
+	parent, ok := fixture.Acquire()
+	if !ok {
+		t.Fatal("parent lease unavailable")
+	}
+	var child batch_requests.DispatchLease
+	handler := http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		factory := batch_requests.DispatchLeaseFactoryFromRequest(request)
+		if factory == nil {
+			t.Fatal("dispatch lease factory is nil")
+		}
+		var acquired bool
+		child, acquired = factory()
+		if !acquired {
+			t.Fatal("dispatch child lease was not retained")
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	serveRouteRequestForHTTPGeneration(
+		httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/batch", nil), handler, &parent, routes,
+	)
+	parent.Release()
+
+	drainCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := routes.Drain(drainCtx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Drain(retained batch child) error = %v, want %v", err, context.Canceled)
+	}
+	child.Release()
+	if err := routes.Drain(context.Background()); err != nil {
+		t.Fatalf("Drain() after batch child release error = %v", err)
+	}
+	if got := fixture.acquires.Load(); got != 2 {
+		t.Fatalf("acquire count = %d, want parent plus child", got)
+	}
+	if got := fixture.releases.Load(); got != 2 {
+		t.Fatalf("release count = %d, want parent plus child", got)
+	}
+}
+
+func TestRouteHandlerRejectNewClosesHijackBeforeDrain(t *testing.T) {
+	fixture := newCountedHTTPLeaseFixture(t, 315)
+	routes := newGenerationRouteHandler(fixture.Acquire)
+	parent, ok := fixture.Acquire()
+	if !ok {
+		t.Fatal("parent lease unavailable")
+	}
+	left, right := net.Pipe()
+	closed := &atomic.Int32{}
+	raw := &countingCloseConn{Conn: left, closed: closed}
+	t.Cleanup(func() { _ = right.Close() })
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if _, _, err := w.(http.Hijacker).Hijack(); err != nil {
+			t.Fatalf("Hijack() error = %v", err)
+		}
+	})
+	serveRouteRequestForHTTPGeneration(
+		&hijackingRouteResponseWriter{header: make(http.Header), conn: raw},
+		httptest.NewRequest(http.MethodGet, "/hijack", nil), handler, &parent, routes,
+	)
+	parent.Release()
+
+	routes.RejectNew()
+	if got := closed.Load(); got != 1 {
+		t.Fatalf("hijacked close count after RejectNew = %d, want 1", got)
+	}
+	if err := routes.Drain(context.Background()); err != nil {
+		t.Fatalf("Drain() after hijack rejection error = %v", err)
+	}
+	if got := fixture.releases.Load(); got != 2 {
+		t.Fatalf("release count = %d, want request plus hijack", got)
+	}
+}
+
+func TestRouteHandlerRejectNewAndDrainNilGenerationSource(t *testing.T) {
+	routes := newGenerationRouteHandler(nil)
+	routes.RejectNew()
+	if err := routes.Drain(context.Background()); err != nil {
+		t.Fatalf("Drain(nil source) error = %v", err)
+	}
+	response := httptest.NewRecorder()
+	routes.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/", nil))
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusServiceUnavailable)
+	}
+}
+
 func TestRouteHandlerBatchDispatchRetainsParentGenerationAfterSwap(t *testing.T) {
 	old := newCountedHTTPLeaseFixture(t, 303)
 	next := newCountedHTTPLeaseFixture(t, 304)

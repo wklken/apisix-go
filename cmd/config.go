@@ -35,30 +35,27 @@ func parseSetOverrides(values []string) (map[string]any, error) {
 }
 
 func loadEffectiveForCommand(configPath string, setValues []string) (*config.EffectiveConfig, error) {
-	manifest, err := capability.Load()
-	if err != nil {
-		return nil, fmt.Errorf("load capability manifest: %w", err)
-	}
-	return loadEffectiveForManifest(configPath, setValues, manifest)
+	_, effective, _, err := loadEffectiveForStartup(configPath, setValues)
+	return effective, err
 }
 
 func loadEffectiveForStartup(
 	configPath string,
 	setValues []string,
-) (*config.EffectiveConfig, *capability.SecretDeclarationCatalog, error) {
+) (*capability.Manifest, *config.EffectiveConfig, *capability.SecretDeclarationCatalog, error) {
 	manifest, err := capability.Load()
 	if err != nil {
-		return nil, nil, fmt.Errorf("load capability manifest: %w", err)
+		return nil, nil, nil, fmt.Errorf("load capability manifest: %w", err)
 	}
 	effective, err := loadEffectiveForManifest(configPath, setValues, manifest)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	catalog, err := capability.NewSecretDeclarationCatalog(manifest)
 	if err != nil {
-		return nil, nil, fmt.Errorf("build secret declaration catalog: %w", err)
+		return nil, nil, nil, fmt.Errorf("build secret declaration catalog: %w", err)
 	}
-	return effective, catalog, nil
+	return manifest, effective, catalog, nil
 }
 
 func loadEffectiveForManifest(

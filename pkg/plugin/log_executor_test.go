@@ -3,10 +3,15 @@ package plugin
 import (
 	"context"
 	"errors"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -444,6 +449,139 @@ func TestLogCompositeDistinguishesCorePanicFromGuardedCallbackFailure(t *testing
 			t.Fatalf("raw orchestration finalization = %#v, want fatal core panic", result)
 		}
 	})
+}
+
+func TestLogCompositeClonesSnapshotsOutsidePluginGuards(t *testing.T) {
+	_, currentFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("locate log executor test source")
+	}
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, filepath.Join(filepath.Dir(currentFile), "log_executor.go"), nil, 0)
+	if err != nil {
+		t.Fatalf("parse log_executor.go: %v", err)
+	}
+	var runComposite *ast.FuncDecl
+	for _, declaration := range file.Decls {
+		function, ok := declaration.(*ast.FuncDecl)
+		if ok && function.Name.Name == "runComposite" {
+			runComposite = function
+			break
+		}
+	}
+	if runComposite == nil {
+		t.Fatal("runComposite declaration not found")
+	}
+	parents := make(map[ast.Node]ast.Node)
+	stack := make([]ast.Node, 0)
+	ast.Inspect(runComposite.Body, func(node ast.Node) bool {
+		if node == nil {
+			stack = stack[:len(stack)-1]
+			return false
+		}
+		if len(stack) > 0 {
+			parents[node] = stack[len(stack)-1]
+		}
+		stack = append(stack, node)
+		return true
+	})
+
+	wantCallbacks := map[string]bool{
+		"RunLogPhase":          false,
+		"RunSnapshotFinalizer": false,
+	}
+	ast.Inspect(runComposite.Body, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		selector, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		callback, tracked := wantCallbacks[selector.Sel.Name]
+		if !tracked {
+			return true
+		}
+		if callback {
+			t.Fatalf("multiple %s callback sites in runComposite", selector.Sel.Name)
+		}
+		wantCallbacks[selector.Sel.Name] = true
+		if len(call.Args) != 1 {
+			t.Fatalf("%s arguments = %d, want one pre-cloned snapshot", selector.Sel.Name, len(call.Args))
+		}
+		snapshot, ok := call.Args[0].(*ast.Ident)
+		if !ok {
+			t.Fatalf(
+				"%s snapshot argument is %T, want identifier cloned outside guard",
+				selector.Sel.Name,
+				call.Args[0],
+			)
+		}
+		closure := task6Ancestor[*ast.FuncLit](parents, call)
+		guard := task6Ancestor[*ast.CallExpr](parents, closure)
+		if closure == nil || guard == nil || task6CalledName(guard) != "guardCall" {
+			t.Fatalf("%s is not the sole callback inside guardCall", selector.Sel.Name)
+		}
+		ast.Inspect(closure.Body, func(guarded ast.Node) bool {
+			if clone, ok := guarded.(*ast.CallExpr); ok && task6CalledName(clone) == "CloneLogSnapshotForPolicy" {
+				t.Fatalf("%s clone remains inside plugin guard", selector.Sel.Name)
+			}
+			return true
+		})
+		loop := task6Ancestor[*ast.RangeStmt](parents, guard)
+		if loop == nil || !task6LoopDefinesClone(loop, closure, snapshot.Name, guard.Pos()) {
+			t.Fatalf("%s has no preceding per-callback clone outside guard", selector.Sel.Name)
+		}
+		return true
+	})
+	for callback, found := range wantCallbacks {
+		if !found {
+			t.Fatalf("%s callback site not found", callback)
+		}
+	}
+}
+
+func task6Ancestor[T ast.Node](parents map[ast.Node]ast.Node, node ast.Node) T {
+	var zero T
+	for node != nil {
+		node = parents[node]
+		if ancestor, ok := node.(T); ok {
+			return ancestor
+		}
+	}
+	return zero
+}
+
+func task6CalledName(call *ast.CallExpr) string {
+	switch called := call.Fun.(type) {
+	case *ast.Ident:
+		return called.Name
+	case *ast.SelectorExpr:
+		return called.Sel.Name
+	default:
+		return ""
+	}
+}
+
+func task6LoopDefinesClone(loop *ast.RangeStmt, closure *ast.FuncLit, name string, before token.Pos) bool {
+	found := false
+	ast.Inspect(loop.Body, func(node ast.Node) bool {
+		if node == closure {
+			return false
+		}
+		assignment, ok := node.(*ast.AssignStmt)
+		if !ok || assignment.Pos() >= before || len(assignment.Lhs) != 1 || len(assignment.Rhs) != 1 {
+			return true
+		}
+		identifier, ok := assignment.Lhs[0].(*ast.Ident)
+		clone, cloneOK := assignment.Rhs[0].(*ast.CallExpr)
+		if ok && cloneOK && identifier.Name == name && task6CalledName(clone) == "CloneLogSnapshotForPolicy" {
+			found = true
+		}
+		return true
+	})
+	return found
 }
 
 func TestLogSnapshotSanitizerRunsBeforeLoggerAndFinalizer(t *testing.T) {

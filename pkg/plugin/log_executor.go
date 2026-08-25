@@ -472,8 +472,9 @@ func (e LogExecutor) runComposite(
 		if !ok {
 			continue
 		}
+		callbackSnapshot := base.CloneLogSnapshotForPolicy(snapshot, binding.Policy)
 		if err := guardCall(binding.Factory, PhaseLog, func() error {
-			return callback.RunLogPhase(base.CloneLogSnapshotForPolicy(snapshot, binding.Policy))
+			return callback.RunLogPhase(callbackSnapshot)
 		}); err != nil && firstErr == nil {
 			firstErr = logCallbackFailure("log callback", binding.Factory, err)
 		}
@@ -486,8 +487,9 @@ func (e LogExecutor) runComposite(
 		if !ok {
 			continue
 		}
+		callbackSnapshot := base.CloneLogSnapshotForPolicy(snapshot, binding.Policy)
 		if err := guardCall(binding.Factory, PhaseFinalizer, func() error {
-			return callback.RunSnapshotFinalizer(base.CloneLogSnapshotForPolicy(snapshot, binding.Policy))
+			return callback.RunSnapshotFinalizer(callbackSnapshot)
 		}); err != nil && firstErr == nil {
 			firstErr = logCallbackFailure("snapshot finalizer", binding.Factory, err)
 		}

@@ -1,10 +1,14 @@
 package proxy_mirror
 
 import (
+	"bytes"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"os/exec"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -112,6 +116,11 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	return p
 }
 
+func withMirrorLifecycle(req *http.Request) (*http.Request, *apisixctx.RequestLifecycle) {
+	lifecycle := apisixctx.NewRequestLifecycle(time.Now())
+	return apisixctx.WithRequestLifecycle(req, lifecycle), lifecycle
+}
+
 func newMirrorServer(t *testing.T) (*httptest.Server, <-chan mirrorRequest) {
 	t.Helper()
 
@@ -143,7 +152,12 @@ func TestHandlerMirrorsRequestAndPreservesUpstreamBody(t *testing.T) {
 		Host: mirror.URL,
 	})
 
-	req := httptest.NewRequest(http.MethodPost, "http://example.com/original?x=1", strings.NewReader("payload"))
+	req, lifecycle := withMirrorLifecycle(httptest.NewRequest(
+		http.MethodPost,
+		"http://example.com/original?x=1",
+		strings.NewReader("payload"),
+	))
+	t.Cleanup(func() { lifecycle.FinalizeResult() })
 	req.Header.Set("X-Test", "yes")
 	req.Host = "original.example"
 	rr := httptest.NewRecorder()
@@ -189,7 +203,8 @@ func TestMirrorStripsHopByHopAndSensitiveHeadersByDefault(t *testing.T) {
 	defer mirror.Close()
 
 	p := newTestPlugin(t, Config{Host: mirror.URL})
-	req := httptest.NewRequest(http.MethodGet, "http://example.com/original", nil)
+	req, lifecycle := withMirrorLifecycle(httptest.NewRequest(http.MethodGet, "http://example.com/original", nil))
+	t.Cleanup(func() { lifecycle.FinalizeResult() })
 	req.Header = http.Header{
 		"Authorization":       {"Bearer secret"},
 		"Proxy-Authorization": {"Basic secret"},
@@ -243,7 +258,8 @@ func TestMirrorKeepsSensitiveHeadersWhenExplicitlyEnabled(t *testing.T) {
 	defer mirror.Close()
 
 	p := newTestPlugin(t, Config{Host: mirror.URL, KeepSensitiveHeaders: true})
-	req := httptest.NewRequest(http.MethodGet, "http://example.com/original", nil)
+	req, lifecycle := withMirrorLifecycle(httptest.NewRequest(http.MethodGet, "http://example.com/original", nil))
+	t.Cleanup(func() { lifecycle.FinalizeResult() })
 	req.Header.Set("Authorization", "Bearer secret")
 	req.Header.Set("Cookie", "session=secret")
 	req.Header.Set("X-API-KEY", "secret")
@@ -279,7 +295,12 @@ func TestMirrorKeepsSensitiveHeadersWhenExplicitlyEnabled(t *testing.T) {
 
 func TestBeforeProxyRejectsOversizedMirrorBodyBeforePrimaryUpstream(t *testing.T) {
 	p := newTestPlugin(t, Config{Host: "http://mirror.example.com", MaxBodySize: 5})
-	req := httptest.NewRequest(http.MethodPost, "http://example.com/original", strings.NewReader("123456789"))
+	req, lifecycle := withMirrorLifecycle(httptest.NewRequest(
+		http.MethodPost,
+		"http://example.com/original",
+		strings.NewReader("123456789"),
+	))
+	t.Cleanup(func() { lifecycle.FinalizeResult() })
 	var hookErr error
 	var forwarded *http.Request
 	p.Handler(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
@@ -304,7 +325,12 @@ func TestHandlerMirrorsFinalizedRequestAfterLowerPriorityPlugins(t *testing.T) {
 	defer mirror.Close()
 
 	p := newTestPlugin(t, Config{Host: mirror.URL})
-	req := httptest.NewRequest(http.MethodPost, "http://example.com/original", strings.NewReader("before"))
+	req, lifecycle := withMirrorLifecycle(httptest.NewRequest(
+		http.MethodPost,
+		"http://example.com/original",
+		strings.NewReader("before"),
+	))
+	t.Cleanup(func() { lifecycle.FinalizeResult() })
 	rr := httptest.NewRecorder()
 	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r.URL.Path = "/final"
@@ -327,7 +353,8 @@ func TestHandlerRegistersBeforeProxyHookWithoutExecutingIt(t *testing.T) {
 
 	p := newTestPlugin(t, Config{Host: mirror.URL})
 	body := &readSpyBody{Reader: strings.NewReader("payload")}
-	req := httptest.NewRequest(http.MethodPost, "http://example.com/original", body)
+	req, lifecycle := withMirrorLifecycle(httptest.NewRequest(http.MethodPost, "http://example.com/original", body))
+	t.Cleanup(func() { lifecycle.FinalizeResult() })
 	var forwarded *http.Request
 
 	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -382,7 +409,7 @@ func TestProxyMirrorHookRegistrationCarriesOwnerAndPhase(t *testing.T) {
 	}
 }
 
-func TestMirrorAdmissionBoundsInFlightAndStopCancels(t *testing.T) {
+func TestMirrorAdmissionBoundsInFlightAndStopDoesNotCancel(t *testing.T) {
 	started := make(chan struct{}, maxInFlightMirrors+1)
 	release := make(chan struct{})
 	var releaseOnce sync.Once
@@ -412,11 +439,17 @@ func TestMirrorAdmissionBoundsInFlightAndStopCancels(t *testing.T) {
 	}()
 
 	p := newTestPlugin(t, Config{Host: mirror.URL})
+	lifecycles := make([]*apisixctx.RequestLifecycle, 0, maxInFlightMirrors+1)
 	for range maxInFlightMirrors {
-		req := httptest.NewRequest(http.MethodPost, "http://example.com/mirror", strings.NewReader("payload"))
+		req, lifecycle := withMirrorLifecycle(httptest.NewRequest(
+			http.MethodPost,
+			"http://example.com/mirror",
+			strings.NewReader("payload"),
+		))
 		if err := p.mirrorFinalizedRequest(req); err != nil {
 			t.Fatalf("mirrorFinalizedRequest() error = %v", err)
 		}
+		lifecycles = append(lifecycles, lifecycle)
 	}
 	for i := range maxInFlightMirrors {
 		select {
@@ -427,7 +460,11 @@ func TestMirrorAdmissionBoundsInFlightAndStopCancels(t *testing.T) {
 	}
 
 	body := &readSpyBody{Reader: strings.NewReader("dropped")}
-	dropped := httptest.NewRequest(http.MethodPost, "http://example.com/dropped", body)
+	dropped, droppedLifecycle := withMirrorLifecycle(httptest.NewRequest(
+		http.MethodPost,
+		"http://example.com/dropped",
+		body,
+	))
 	if err := p.mirrorFinalizedRequest(dropped); err != nil {
 		t.Fatalf("saturated mirrorFinalizedRequest() error = %v", err)
 	}
@@ -449,17 +486,21 @@ func TestMirrorAdmissionBoundsInFlightAndStopCancels(t *testing.T) {
 	select {
 	case <-stopDone:
 	case <-time.After(2 * time.Second):
-		t.Fatal("Plugin.Stop() did not cancel and join blocked mirrors")
+		t.Fatal("Plugin.Stop() waited for request-owned mirrors")
 	}
 	releaseMirrors()
 	select {
 	case <-activeZero:
 	case <-time.After(2 * time.Second):
-		t.Fatal("blocked mirror handlers did not observe cancellation")
+		t.Fatal("blocked mirror handlers did not finish after release")
 	}
 
 	postStopBody := &readSpyBody{Reader: strings.NewReader("post-stop")}
-	postStop := httptest.NewRequest(http.MethodPost, "http://example.com/post-stop", postStopBody)
+	postStop, postStopLifecycle := withMirrorLifecycle(httptest.NewRequest(
+		http.MethodPost,
+		"http://example.com/post-stop",
+		postStopBody,
+	))
 	if err := p.mirrorFinalizedRequest(postStop); err != nil {
 		t.Fatalf("post-stop mirrorFinalizedRequest() error = %v", err)
 	}
@@ -472,11 +513,17 @@ func TestMirrorAdmissionBoundsInFlightAndStopCancels(t *testing.T) {
 	if got := active.Load(); got != 0 {
 		t.Fatalf("active mirrors after Stop() = %d, want 0", got)
 	}
+	droppedLifecycle.FinalizeResult()
+	postStopLifecycle.FinalizeResult()
+	for _, lifecycle := range lifecycles {
+		lifecycle.FinalizeResult()
+	}
 }
 
-func TestConcurrentStopCallsWaitForInFlightMirrors(t *testing.T) {
+func TestConcurrentStopCallsDoNotOwnInFlightMirrors(t *testing.T) {
 	entered := make(chan struct{})
 	release := make(chan struct{})
+	var releaseOnce sync.Once
 	p := newTestPlugin(t, Config{Host: "http://mirror.example.com"})
 	p.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		close(entered)
@@ -488,11 +535,14 @@ func TestConcurrentStopCallsWaitForInFlightMirrors(t *testing.T) {
 			Request:    r,
 		}, nil
 	})
-	if err := p.mirrorFinalizedRequest(httptest.NewRequest(
+	releaseMirror := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(releaseMirror)
+	req, lifecycle := withMirrorLifecycle(httptest.NewRequest(
 		http.MethodPost,
 		"http://example.com/mirror",
 		strings.NewReader("payload"),
-	)); err != nil {
+	))
+	if err := p.mirrorFinalizedRequest(req); err != nil {
 		t.Fatalf("mirrorFinalizedRequest() error = %v", err)
 	}
 	select {
@@ -506,20 +556,6 @@ func TestConcurrentStopCallsWaitForInFlightMirrors(t *testing.T) {
 		p.Stop()
 		close(firstDone)
 	}()
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		p.mirrorMu.Lock()
-		stopped := p.mirrorStopped
-		p.mirrorMu.Unlock()
-		if stopped {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("Stop() did not mark the plugin stopped")
-		}
-		time.Sleep(time.Millisecond)
-	}
-
 	secondDone := make(chan struct{})
 	go func() {
 		p.Stop()
@@ -527,29 +563,34 @@ func TestConcurrentStopCallsWaitForInFlightMirrors(t *testing.T) {
 	}()
 	select {
 	case <-firstDone:
-		t.Fatal("first Stop() returned before in-flight mirror completed")
-	case <-time.After(25 * time.Millisecond):
+	case <-time.After(2 * time.Second):
+		t.Fatal("first Stop() waited for request-owned mirror")
 	}
 	select {
 	case <-secondDone:
-		t.Fatal("concurrent Stop() returned before in-flight mirror completed")
-	case <-time.After(25 * time.Millisecond):
+	case <-time.After(2 * time.Second):
+		t.Fatal("concurrent Stop() waited for request-owned mirror")
 	}
 
-	close(release)
+	finalized := make(chan apisixctx.FinalizationResult, 1)
+	go func() { finalized <- lifecycle.FinalizeResult() }()
 	select {
-	case <-firstDone:
-	case <-time.After(2 * time.Second):
-		t.Fatal("first Stop() did not join in-flight mirror")
+	case result := <-finalized:
+		t.Fatalf("request lifecycle finalized before delivery release: %#v", result)
+	case <-time.After(25 * time.Millisecond):
 	}
+	releaseMirror()
 	select {
-	case <-secondDone:
+	case result := <-finalized:
+		if len(result.Failures) != 0 || result.FatalPanic != nil {
+			t.Fatalf("finalization result = %#v, want success", result)
+		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("concurrent Stop() did not wait for first Stop()")
+		t.Fatal("request lifecycle did not join in-flight mirror")
 	}
 }
 
-func TestStopClosesIdleConnectionsAfterMirrorsDrain(t *testing.T) {
+func TestStopClosesIdleConnectionsWithoutOwningMirrors(t *testing.T) {
 	p := newTestPlugin(t, Config{Host: "http://mirror.example.com"})
 	release := make(chan struct{})
 	var releaseOnce sync.Once
@@ -568,11 +609,12 @@ func TestStopClosesIdleConnectionsAfterMirrorsDrain(t *testing.T) {
 	p.client.Transport = clientTransport
 	p.h2cClient.Transport = h2cTransport
 
-	if err := p.mirrorFinalizedRequest(httptest.NewRequest(
+	req, lifecycle := withMirrorLifecycle(httptest.NewRequest(
 		http.MethodPost,
 		"http://example.com/mirror",
 		strings.NewReader("payload"),
-	)); err != nil {
+	))
+	if err := p.mirrorFinalizedRequest(req); err != nil {
 		t.Fatalf("mirrorFinalizedRequest() error = %v", err)
 	}
 	select {
@@ -590,27 +632,48 @@ func TestStopClosesIdleConnectionsAfterMirrorsDrain(t *testing.T) {
 	}
 
 	select {
-	case <-clientTransport.canceled:
+	case <-clientTransport.closed:
 	case <-time.After(2 * time.Second):
-		t.Fatal("Stop() did not cancel the in-flight mirror")
+		t.Fatal("client idle connections were not closed by Stop()")
 	}
 	select {
-	case <-clientTransport.closed:
-		t.Fatal("client idle connections closed before mirrors drained")
 	case <-h2cTransport.closed:
-		t.Fatal("h2c idle connections closed before mirrors drained")
-	case <-stopDone:
-		t.Fatal("Stop() returned before mirrors drained")
+	case <-time.After(2 * time.Second):
+		t.Fatal("h2c idle connections were not closed by Stop()")
+	}
+	select {
+	case <-clientTransport.canceled:
+		t.Fatal("Stop() canceled the request-owned mirror")
 	default:
 	}
 
+	select {
+	case <-stopDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop() did not return after closing idle connections")
+	}
+	select {
+	case <-stopDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("concurrent Stop() did not return after closing idle connections")
+	}
+
+	finalized := make(chan apisixctx.FinalizationResult, 1)
+	go func() { finalized <- lifecycle.FinalizeResult() }()
+	select {
+	case result := <-finalized:
+		t.Fatalf("request lifecycle joined before delivery release: %#v", result)
+	case <-time.After(25 * time.Millisecond):
+	}
+
 	releaseMirrors()
-	for range 2 {
-		select {
-		case <-stopDone:
-		case <-time.After(2 * time.Second):
-			t.Fatal("Stop() did not finish after mirrors drained")
+	select {
+	case result := <-finalized:
+		if len(result.Failures) != 0 || result.FatalPanic != nil {
+			t.Fatalf("finalization result = %#v, want success", result)
 		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("request lifecycle did not join mirror after release")
 	}
 
 	if got := clientTransport.closeCount.Load(); got != 1 {
@@ -632,8 +695,17 @@ func TestStopClosesIdleConnectionsAfterMirrorsDrain(t *testing.T) {
 func TestStopDoesNotWaitForPrimaryRequestBodyRead(t *testing.T) {
 	p := newTestPlugin(t, Config{Host: "http://mirror.example.com"})
 	body := &blockingBody{entered: make(chan struct{}), release: make(chan struct{})}
+	p.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusNoContent,
+			Body:       io.NopCloser(strings.NewReader("")),
+			Header:     make(http.Header),
+			Request:    r,
+		}, nil
+	})
 	req := httptest.NewRequest(http.MethodPost, "http://example.com/mirror", nil)
 	req.Body = body
+	req, lifecycle := withMirrorLifecycle(req)
 	hookDone := make(chan error, 1)
 	go func() {
 		hookDone <- p.mirrorFinalizedRequest(req)
@@ -663,6 +735,329 @@ func TestStopDoesNotWaitForPrimaryRequestBodyRead(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("primary request body read did not finish")
+	}
+	if result := lifecycle.FinalizeResult(); len(result.Failures) != 0 || result.FatalPanic != nil {
+		t.Fatalf("finalization result = %#v, want success", result)
+	}
+}
+
+func TestMirrorRequiresRequestLifecycleBeforeBodyRead(t *testing.T) {
+	p := newTestPlugin(t, Config{Host: "http://mirror.example.com"})
+	var started atomic.Int32
+	p.client.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
+		started.Add(1)
+		return &http.Response{
+			StatusCode: http.StatusNoContent,
+			Body:       io.NopCloser(strings.NewReader("")),
+			Header:     make(http.Header),
+		}, nil
+	})
+	body := &readSpyBody{Reader: strings.NewReader("payload")}
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/mirror", body)
+
+	err := p.mirrorFinalizedRequest(req)
+	if err == nil || err.Error() != "proxy-mirror request lifecycle is required" {
+		t.Fatalf("mirrorFinalizedRequest() error = %v, want stable lifecycle error", err)
+	}
+	if body.reads != 0 {
+		t.Fatalf("request body reads = %d, want 0", body.reads)
+	}
+	if started.Load() != 0 {
+		t.Fatalf("mirror transport starts = %d, want 0", started.Load())
+	}
+}
+
+func TestMirrorLifecycleWaitsForDelivery(t *testing.T) {
+	p := newTestPlugin(t, Config{Host: "http://mirror.example.com"})
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	p.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		close(entered)
+		<-release
+		return &http.Response{
+			StatusCode: http.StatusNoContent,
+			Body:       io.NopCloser(strings.NewReader("")),
+			Header:     make(http.Header),
+			Request:    r,
+		}, nil
+	})
+	releaseMirrors := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(releaseMirrors)
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/mirror", strings.NewReader("payload"))
+	lifecycle := apisixctx.NewRequestLifecycle(time.Now())
+	req = apisixctx.WithRequestLifecycle(req, lifecycle)
+
+	if err := p.mirrorFinalizedRequest(req); err != nil {
+		t.Fatalf("mirrorFinalizedRequest() error = %v", err)
+	}
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for mirror transport")
+	}
+	if got := len(p.mirrorAdmission); got != 1 {
+		t.Fatalf("admission tokens before finalization = %d, want 1", got)
+	}
+
+	finalized := make(chan apisixctx.FinalizationResult, 1)
+	go func() { finalized <- lifecycle.FinalizeResult() }()
+	select {
+	case result := <-finalized:
+		t.Fatalf("lifecycle finalized before mirror delivery: %#v", result)
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	releaseMirrors()
+	select {
+	case result := <-finalized:
+		if len(result.Failures) != 0 || result.FatalPanic != nil {
+			t.Fatalf("finalization result = %#v, want success", result)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("lifecycle finalization did not join mirror delivery")
+	}
+	if got := len(p.mirrorAdmission); got != 0 {
+		t.Fatalf("admission tokens after finalization = %d, want 0", got)
+	}
+}
+
+func TestMirrorTaskPanicIsBoundedByPluginFinalizer(t *testing.T) {
+	if os.Getenv("APISIX_GO_PROXY_MIRROR_PANIC_HELPER") == "1" {
+		testMirrorTaskPanicIsBoundedByPluginFinalizerHelper(t)
+		return
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestMirrorTaskPanicIsBoundedByPluginFinalizer$", "-test.v")
+	cmd.Env = append(os.Environ(), "APISIX_GO_PROXY_MIRROR_PANIC_HELPER=1")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("proxy-mirror task panic escaped lifecycle owner: %v\n%s", err, out)
+	}
+	if !bytes.Contains(out, []byte("proxy-mirror-owner-recovered")) {
+		t.Fatalf("missing lifecycle recovery marker in output: %s", out)
+	}
+}
+
+func testMirrorTaskPanicIsBoundedByPluginFinalizerHelper(t *testing.T) {
+	p := newTestPlugin(t, Config{Host: "http://mirror.example.com"})
+	wantPanic := &struct{ marker string }{marker: "proxy-mirror"}
+	p.client.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
+		panic(wantPanic)
+	})
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/mirror", strings.NewReader("payload"))
+	lifecycle := apisixctx.NewRequestLifecycle(time.Now())
+	req = apisixctx.WithRequestLifecycle(req, lifecycle)
+	if err := p.mirrorFinalizedRequest(req); err != nil {
+		t.Fatalf("mirrorFinalizedRequest() error = %v", err)
+	}
+	var later atomic.Int32
+	if !lifecycle.AddFinalizer("later", func() error {
+		later.Add(1)
+		return nil
+	}) {
+		t.Fatal("failed to register later finalizer")
+	}
+
+	result := lifecycle.FinalizeResult()
+	if later.Load() != 1 {
+		t.Fatalf("later finalizer calls = %d, want 1", later.Load())
+	}
+	if result.FatalPanic != nil {
+		t.Fatalf("proxy-mirror panic became fatal: %#v", result.FatalPanic)
+	}
+	if len(result.Failures) != 1 {
+		t.Fatalf("finalizer failures = %#v, want one proxy-mirror failure", result.Failures)
+	}
+	failure := result.Failures[0]
+	if failure.Kind != apisixctx.FinalizerOwnerPlugin || failure.Owner != name || failure.PanicValue != wantPanic {
+		t.Fatalf("proxy-mirror failure = %#v, want plugin owner and exact panic %#v", failure, wantPanic)
+	}
+	_, _ = fmt.Fprintln(os.Stdout, "proxy-mirror-owner-recovered")
+}
+
+func TestMirrorAdmissionRemainsBoundedPerRequest(t *testing.T) {
+	p := newTestPlugin(t, Config{Host: "http://mirror.example.com"})
+	releases := make(map[string]chan struct{}, maxInFlightMirrors+1)
+	releaseOnce := make(map[string]*sync.Once, maxInFlightMirrors+1)
+	started := make(chan string, maxInFlightMirrors+1)
+	var transportMu sync.Mutex
+	p.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		path := r.URL.Path
+		started <- path
+		transportMu.Lock()
+		release := releases[path]
+		transportMu.Unlock()
+		<-release
+		return &http.Response{
+			StatusCode: http.StatusNoContent,
+			Body:       io.NopCloser(strings.NewReader("")),
+			Header:     make(http.Header),
+			Request:    r,
+		}, nil
+	})
+
+	lifecycles := make([]*apisixctx.RequestLifecycle, 0, maxInFlightMirrors+1)
+	for i := range maxInFlightMirrors {
+		path := fmt.Sprintf("/mirror/%d", i)
+		transportMu.Lock()
+		releases[path] = make(chan struct{})
+		releaseOnce[path] = &sync.Once{}
+		transportMu.Unlock()
+		req := httptest.NewRequest(http.MethodPost, "http://example.com"+path, strings.NewReader("payload"))
+		lifecycle := apisixctx.NewRequestLifecycle(time.Now())
+		req = apisixctx.WithRequestLifecycle(req, lifecycle)
+		if err := p.mirrorFinalizedRequest(req); err != nil {
+			t.Fatalf("mirrorFinalizedRequest(%s) error = %v", path, err)
+		}
+		lifecycles = append(lifecycles, lifecycle)
+	}
+	transportMu.Lock()
+	releases["/mirror/16"] = make(chan struct{})
+	releaseOnce["/mirror/16"] = &sync.Once{}
+	transportMu.Unlock()
+	closeRelease := func(path string) {
+		transportMu.Lock()
+		release := releases[path]
+		once := releaseOnce[path]
+		transportMu.Unlock()
+		if once != nil {
+			once.Do(func() { close(release) })
+		}
+	}
+	t.Cleanup(func() {
+		transportMu.Lock()
+		paths := make([]string, 0, len(releases))
+		for path := range releases {
+			paths = append(paths, path)
+		}
+		transportMu.Unlock()
+		for _, path := range paths {
+			closeRelease(path)
+		}
+	})
+	for i := range maxInFlightMirrors {
+		select {
+		case got := <-started:
+			if got == "" {
+				t.Fatal("mirror transport reported an empty path")
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timed out waiting for mirror %d/%d to start", i+1, maxInFlightMirrors)
+		}
+	}
+
+	droppedBody := &readSpyBody{Reader: strings.NewReader("dropped")}
+	dropped := httptest.NewRequest(http.MethodPost, "http://example.com/mirror/16", droppedBody)
+	droppedLifecycle := apisixctx.NewRequestLifecycle(time.Now())
+	dropped = apisixctx.WithRequestLifecycle(dropped, droppedLifecycle)
+	if err := p.mirrorFinalizedRequest(dropped); err != nil {
+		t.Fatalf("saturated mirrorFinalizedRequest() error = %v", err)
+	}
+	if droppedBody.reads != 0 {
+		t.Fatalf("saturated request body reads = %d, want 0", droppedBody.reads)
+	}
+
+	firstFinalized := make(chan apisixctx.FinalizationResult, 1)
+	go func() { firstFinalized <- lifecycles[0].FinalizeResult() }()
+	closeRelease("/mirror/0")
+	select {
+	case result := <-firstFinalized:
+		if len(result.Failures) != 0 || result.FatalPanic != nil {
+			t.Fatalf("first finalization result = %#v, want success", result)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("first request lifecycle did not release its mirror")
+	}
+
+	nextBody := &readSpyBody{Reader: strings.NewReader("next")}
+	next := httptest.NewRequest(http.MethodPost, "http://example.com/mirror/16", nextBody)
+	nextLifecycle := apisixctx.NewRequestLifecycle(time.Now())
+	next = apisixctx.WithRequestLifecycle(next, nextLifecycle)
+	if err := p.mirrorFinalizedRequest(next); err != nil {
+		t.Fatalf("post-completion mirrorFinalizedRequest() error = %v", err)
+	}
+	if nextBody.reads == 0 {
+		t.Fatal("post-completion request body was not read after admission")
+	}
+	lifecycles = append(lifecycles, nextLifecycle)
+
+	for path := range releases {
+		if path == "/mirror/0" {
+			continue
+		}
+		closeRelease(path)
+	}
+	for _, lifecycle := range lifecycles[1:] {
+		lifecycle.FinalizeResult()
+	}
+}
+
+func TestStopDoesNotOwnRequestTasks(t *testing.T) {
+	p := newTestPlugin(t, Config{Host: "http://mirror.example.com"})
+	release := make(chan struct{})
+	entered := make(chan struct{})
+	canceled := make(chan struct{})
+	var releaseOnce sync.Once
+	transport := &closeRecordingTransport{
+		started:  entered,
+		release:  release,
+		canceled: canceled,
+	}
+	p.client.Transport = transport
+	releaseMirror := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(releaseMirror)
+
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/mirror", strings.NewReader("payload"))
+	lifecycle := apisixctx.NewRequestLifecycle(time.Now())
+	req = apisixctx.WithRequestLifecycle(req, lifecycle)
+	if err := p.mirrorFinalizedRequest(req); err != nil {
+		t.Fatalf("mirrorFinalizedRequest() error = %v", err)
+	}
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for mirror transport")
+	}
+
+	stopDone := make(chan struct{})
+	go func() {
+		p.Stop()
+		close(stopDone)
+	}()
+	select {
+	case <-stopDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Plugin.Stop() waited for request-owned mirror task")
+	}
+	select {
+	case <-canceled:
+		t.Fatal("Plugin.Stop() canceled request-owned mirror task")
+	default:
+	}
+	if got := transport.closeCount.Load(); got != 1 {
+		t.Fatalf("client CloseIdleConnections() calls = %d, want 1", got)
+	}
+
+	finalized := make(chan apisixctx.FinalizationResult, 1)
+	go func() { finalized <- lifecycle.FinalizeResult() }()
+	select {
+	case result := <-finalized:
+		t.Fatalf("request lifecycle joined before delivery release: %#v", result)
+	case <-time.After(25 * time.Millisecond):
+	}
+	releaseMirror()
+	select {
+	case result := <-finalized:
+		if len(result.Failures) != 0 || result.FatalPanic != nil {
+			t.Fatalf("finalization result = %#v, want success", result)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("request lifecycle did not join mirror task")
+	}
+	p.Stop()
+	if got := transport.closeCount.Load(); got != 1 {
+		t.Fatalf("client CloseIdleConnections() calls after repeated Stop() = %d, want 1", got)
 	}
 }
 
@@ -704,11 +1099,11 @@ func TestHandlerMirrorsUnaryGRPCOverHTTP2(t *testing.T) {
 	p := newTestPlugin(t, Config{Host: mirror.URL})
 	p.client = mirror.Client()
 
-	req := httptest.NewRequest(
+	req, lifecycle := withMirrorLifecycle(httptest.NewRequest(
 		http.MethodPost,
 		"http://example.com/greeter.SayHello",
 		strings.NewReader("\x00\x00\x00\x00\x03abc"),
-	)
+	))
 	req.Header.Set("Content-Type", "application/grpc")
 	rr := httptest.NewRecorder()
 	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -732,6 +1127,9 @@ func TestHandlerMirrorsUnaryGRPCOverHTTP2(t *testing.T) {
 	case <-seen:
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for mirrored gRPC request")
+	}
+	if result := lifecycle.FinalizeResult(); len(result.Failures) != 0 || result.FatalPanic != nil {
+		t.Fatalf("finalization result = %#v, want success", result)
 	}
 }
 
@@ -824,7 +1222,7 @@ func TestSchemaAcceptsOfficialHTTPAndHTTPSHosts(t *testing.T) {
 }
 
 func performRequest(p *Plugin, rawURL string) *httptest.ResponseRecorder {
-	req := httptest.NewRequest(http.MethodGet, rawURL, nil)
+	req, lifecycle := withMirrorLifecycle(httptest.NewRequest(http.MethodGet, rawURL, nil))
 	rr := httptest.NewRecorder()
 
 	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -834,6 +1232,7 @@ func performRequest(p *Plugin, rawURL string) *httptest.ResponseRecorder {
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})).ServeHTTP(rr, req)
+	lifecycle.FinalizeResult()
 	return rr
 }
 

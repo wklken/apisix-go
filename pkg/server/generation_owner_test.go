@@ -3,17 +3,20 @@ package server
 import (
 	"context"
 	"errors"
+	"reflect"
 	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+	"unsafe"
 
 	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/compiler"
 	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/proxy"
+	"github.com/wklken/apisix-go/pkg/runtime"
 	"github.com/wklken/apisix-go/pkg/secret"
 	streamruntime "github.com/wklken/apisix-go/pkg/stream"
 )
@@ -196,6 +199,196 @@ func TestGenerationOwnerClosePreparedWaitsForDrainAndClosesOnce(t *testing.T) {
 	if fixture.prepared.HTTP() != nil {
 		t.Fatal("closePrepared() left HTTP snapshot visible")
 	}
+}
+
+func TestGenerationOwnerTerminalCloseReplaysWithCanceledContext(t *testing.T) {
+	fixture := newTestGenerationOwner(t, 51, true, false)
+	owner := fixture.owner
+	owner.activateDomains(ownerDomainHTTP)
+	owner.deactivateDomains(ownerDomainHTTP)
+
+	if err := owner.closePrepared(context.Background()); err != nil {
+		t.Fatalf("terminal close = %v", err)
+	}
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := owner.closePrepared(canceled); err != nil {
+		t.Fatalf("terminal replay with canceled context = %v, want cached nil", err)
+	}
+}
+
+func TestGenerationOwnerPreparedResidualKeepsCloseDoneOpenUntilRetry(t *testing.T) {
+	fixture := newTestGenerationOwner(t, 49, true, false)
+	owner := fixture.owner
+	owner.activateDomains(ownerDomainHTTP)
+	owner.deactivateDomains(ownerDomainHTTP)
+
+	release := make(chan struct{})
+	started := make(chan struct{})
+	tasks := generationOwnerTaskRegistry(t, fixture.prepared)
+	if err := tasks.Go(
+		runtime.TaskSpec{Owner: "server-test/blocking-generation", Criticality: runtime.TaskPlugin},
+		func(context.Context) error {
+			close(started)
+			<-release
+			return nil
+		},
+	); err != nil {
+		t.Fatal(err)
+	}
+	<-started
+
+	shortCtx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	first := owner.closePrepared(shortCtx)
+	var residual *runtime.TaskResidualError
+	if !errors.As(first, &residual) || !errors.Is(first, context.DeadlineExceeded) {
+		t.Fatalf("first close = %v, residual = %#v", first, residual)
+	}
+	select {
+	case <-owner.closeDone:
+		t.Fatal("incomplete prepared close signaled terminal closeDone")
+	default:
+	}
+	if owner.prepared == nil {
+		t.Fatal("incomplete close dropped prepared ownership")
+	}
+
+	close(release)
+	if err := owner.closePrepared(context.Background()); err != nil {
+		t.Fatalf("retry close = %v", err)
+	}
+	select {
+	case <-owner.closeDone:
+	default:
+		t.Fatal("terminal retry did not close closeDone")
+	}
+	if owner.prepared != nil {
+		t.Fatal("terminal close retained prepared owner")
+	}
+}
+
+func TestGenerationOwnerConcurrentCloseAttemptsSerializeAndHonorCallerContext(t *testing.T) {
+	fixture := newTestGenerationOwner(t, 50, true, false)
+	owner := fixture.owner
+	owner.activateDomains(ownerDomainHTTP)
+	owner.deactivateDomains(ownerDomainHTTP)
+
+	release := make(chan struct{})
+	started := make(chan struct{})
+	taskCanceled := make(chan struct{})
+	tasks := generationOwnerTaskRegistry(t, fixture.prepared)
+	if err := tasks.Go(
+		runtime.TaskSpec{Owner: "server-test/concurrent-blocking-generation", Criticality: runtime.TaskPlugin},
+		func(taskCtx context.Context) error {
+			close(started)
+			<-taskCtx.Done()
+			close(taskCanceled)
+			<-release
+			return nil
+		},
+	); err != nil {
+		t.Fatal(err)
+	}
+	<-started
+
+	leaderCtx, cancelLeader := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancelLeader()
+	leaderResult := make(chan error, 1)
+	go func() { leaderResult <- owner.closePrepared(leaderCtx) }()
+	select {
+	case <-taskCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("leader did not enter prepared cleanup")
+	}
+
+	waiterCtx, cancelWaiter := context.WithTimeout(context.Background(), 5*time.Millisecond)
+	defer cancelWaiter()
+	if err := owner.closePrepared(waiterCtx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("active-attempt waiter error = %v, want deadline exceeded", err)
+	}
+	leaderErr := <-leaderResult
+	var residual *runtime.TaskResidualError
+	if !errors.As(leaderErr, &residual) || !errors.Is(leaderErr, context.DeadlineExceeded) {
+		t.Fatalf("leader close = %v, residual = %#v", leaderErr, residual)
+	}
+	select {
+	case <-owner.closeDone:
+		t.Fatal("incomplete leader close signaled terminal closeDone")
+	default:
+	}
+
+	close(release)
+	if err := owner.closePrepared(context.Background()); err != nil {
+		t.Fatalf("retry close = %v", err)
+	}
+}
+
+func TestGenerationOwnerTerminalWaiterReturnPublishesCloseDone(t *testing.T) {
+	fixture := newTestGenerationOwner(t, 52, true, false)
+	owner := fixture.owner
+	owner.activateDomains(ownerDomainHTTP)
+	owner.deactivateDomains(ownerDomainHTTP)
+
+	release := make(chan struct{})
+	started := make(chan struct{})
+	tasks := generationOwnerTaskRegistry(t, fixture.prepared)
+	if err := tasks.Go(
+		runtime.TaskSpec{Owner: "server-test/terminal-publication", Criticality: runtime.TaskPlugin},
+		func(context.Context) error {
+			close(started)
+			<-release
+			return nil
+		},
+	); err != nil {
+		t.Fatal(err)
+	}
+	<-started
+
+	leaderResult := make(chan error, 1)
+	go func() { leaderResult <- owner.closePrepared(context.Background()) }()
+	var attempt *generationCloseAttempt
+	for attempt == nil {
+		owner.closeMu.Lock()
+		attempt = owner.closeAttempt
+		owner.closeMu.Unlock()
+	}
+
+	const waiters = 256
+	violations := make(chan struct{}, waiters)
+	var group sync.WaitGroup
+	group.Add(waiters)
+	for range waiters {
+		go func() {
+			defer group.Done()
+			if err := waitGenerationCloseAttempt(context.Background(), attempt); err != nil {
+				return
+			}
+			select {
+			case <-owner.closeDone:
+			default:
+				violations <- struct{}{}
+			}
+		}()
+	}
+	close(release)
+	if err := <-leaderResult; err != nil {
+		t.Fatalf("leader close = %v", err)
+	}
+	group.Wait()
+	close(violations)
+	if len(violations) != 0 {
+		t.Fatalf("%d terminal waiters returned before closeDone publication", len(violations))
+	}
+}
+
+func generationOwnerTaskRegistry(t *testing.T, prepared *compiler.PreparedGeneration) *runtime.TaskRegistry {
+	t.Helper()
+	field := reflect.ValueOf(prepared).Elem().FieldByName("tasks")
+	if !field.IsValid() || field.IsNil() {
+		t.Fatal("prepared generation has no task registry")
+	}
+	return (*runtime.TaskRegistry)(unsafe.Pointer(field.Pointer()))
 }
 
 type generationOwnerFixture struct {

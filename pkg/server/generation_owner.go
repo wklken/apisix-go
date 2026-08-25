@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"sync"
 
 	"github.com/wklken/apisix-go/pkg/compiler"
@@ -46,9 +47,16 @@ type generationOwner struct {
 	drained       chan struct{}
 	drainOnce     sync.Once
 
-	closeOnce sync.Once
-	closeDone chan struct{}
-	closeErr  error
+	closeMu       sync.Mutex
+	closeAttempt  *generationCloseAttempt
+	closeTerminal bool
+	closeDone     chan struct{}
+	closeErr      error
+}
+
+type generationCloseAttempt struct {
+	done chan struct{}
+	err  error
 }
 
 func newGenerationOwner(prepared *compiler.PreparedGeneration) *generationOwner {
@@ -189,9 +197,16 @@ func (owner *generationOwner) signalDrainedLocked() {
 }
 
 func (owner *generationOwner) closePrepared(ctx context.Context) error {
-	if owner == nil || owner.prepared == nil {
+	if owner == nil {
 		return nil
 	}
+	owner.closeMu.Lock()
+	if owner.closeTerminal {
+		err := owner.closeErr
+		owner.closeMu.Unlock()
+		return err
+	}
+	owner.closeMu.Unlock()
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -206,11 +221,79 @@ func (owner *generationOwner) closePrepared(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	owner.closeOnce.Do(func() {
-		owner.closeErr = owner.prepared.Close(ctx)
+
+	owner.closeMu.Lock()
+	if owner.closeTerminal {
+		err := owner.closeErr
+		owner.closeMu.Unlock()
+		return err
+	}
+	if owner.closeAttempt != nil {
+		attempt := owner.closeAttempt
+		owner.closeMu.Unlock()
+		return waitGenerationCloseAttempt(ctx, attempt)
+	}
+	owner.mu.Lock()
+	prepared := owner.prepared
+	owner.mu.Unlock()
+	if prepared == nil {
+		owner.closeTerminal = true
+		owner.closeErr = nil
 		close(owner.closeDone)
-	})
-	return owner.closeErr
+		owner.closeMu.Unlock()
+		return nil
+	}
+	attempt := &generationCloseAttempt{done: make(chan struct{})}
+	owner.closeAttempt = attempt
+	owner.closeMu.Unlock()
+
+	closeErr := prepared.Close(ctx)
+	if errors.Is(closeErr, compiler.ErrPreparedGenerationCleanupIncomplete) {
+		owner.closeMu.Lock()
+		attempt.err = closeErr
+		if owner.closeAttempt == attempt {
+			owner.closeAttempt = nil
+		}
+		close(attempt.done)
+		owner.closeMu.Unlock()
+		return closeErr
+	}
+
+	owner.mu.Lock()
+	if owner.prepared == prepared {
+		owner.prepared = nil
+	}
+	owner.mu.Unlock()
+	owner.closeMu.Lock()
+	owner.closeTerminal = true
+	owner.closeErr = closeErr
+	attempt.err = closeErr
+	if owner.closeAttempt == attempt {
+		owner.closeAttempt = nil
+	}
+	close(owner.closeDone)
+	close(attempt.done)
+	owner.closeMu.Unlock()
+	return closeErr
+}
+
+func waitGenerationCloseAttempt(ctx context.Context, attempt *generationCloseAttempt) error {
+	select {
+	case <-attempt.done:
+		return attempt.err
+	default:
+	}
+	select {
+	case <-attempt.done:
+		return attempt.err
+	case <-ctx.Done():
+		select {
+		case <-attempt.done:
+			return attempt.err
+		default:
+			return ctx.Err()
+		}
+	}
 }
 
 type httpGenerationLease struct {

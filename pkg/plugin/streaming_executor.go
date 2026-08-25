@@ -260,16 +260,34 @@ func guardStreamingOwnerWriter(factory string, phase Phase, w http.ResponseWrite
 	return httpsnoop.Wrap(w, streamingWriterHooks(&streamingWriterOwner{factory: factory, phase: phase}))
 }
 
+func guardStreamingFinishCall(factory string, phase Phase, call func() error) (err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			if panicErr, ok := recovered.(*PanicError); ok {
+				err = panicErr
+				return
+			}
+			err = &PanicError{
+				Factory: factory,
+				Phase:   phase,
+				Value:   recovered,
+				Stack:   debug.Stack(),
+			}
+		}
+	}()
+	return call()
+}
+
 func (f *streamingFinish) finish(cause error) streamingFinishResult {
 	if f == nil {
 		return streamingFinishResult{}
 	}
 	f.once.Do(func() {
 		for _, entry := range slices.Backward(f.closers) {
-			f.recordFinishError(guardCall(entry.factory, entry.phase, entry.closer.Close))
+			f.recordFinishError(guardStreamingFinishCall(entry.factory, entry.phase, entry.closer.Close))
 		}
 		for _, entry := range slices.Backward(f.finalizers) {
-			f.recordFinishError(guardCall(entry.factory, entry.phase, func() error {
+			f.recordFinishError(guardStreamingFinishCall(entry.factory, entry.phase, func() error {
 				return entry.finalizer.FinishStreamingResponse(cause)
 			}))
 		}
@@ -1191,8 +1209,13 @@ func (e *StreamingResponseExecutor) Then(next http.Handler) http.Handler {
 			logStreamingFinishPanics(result.Panics)
 			panic(panicValue)
 		}
-		finishResult := finish.finish(runErr)
-		if panicErr := streamingPanicError(runErr); panicErr != nil {
+		panicErr := streamingPanicError(runErr)
+		finishCause := runErr
+		if panicErr != nil {
+			finishCause = errStreamingPanic
+		}
+		finishResult := finish.finish(finishCause)
+		if panicErr != nil {
 			logStreamingFinishPanics(finishResult.Panics)
 			panic(panicErr)
 		}

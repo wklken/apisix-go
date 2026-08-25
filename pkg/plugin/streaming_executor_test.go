@@ -100,6 +100,71 @@ func TestStreamingFinishPanicDoesNotSkipRemainingCleanup(t *testing.T) {
 	}
 }
 
+func TestStreamingFinishAbortSentinelPanicDoesNotSkipRemainingCleanup(t *testing.T) {
+	tests := []struct {
+		name   string
+		finish func(*[]string) *streamingFinish
+	}{
+		{
+			name: "closer",
+			finish: func(order *[]string) *streamingFinish {
+				return &streamingFinish{closers: []streamingCloserEntry{
+					{
+						factory: "first",
+						phase:   PhaseBodyFilter,
+						closer:  task10StreamingCloser{name: "first", order: order},
+					},
+					{
+						factory: "abort", phase: PhaseBodyFilter,
+						closer: task10StreamingCloser{name: "abort", order: order, panic: http.ErrAbortHandler},
+					},
+					{
+						factory: "last",
+						phase:   PhaseBodyFilter,
+						closer:  task10StreamingCloser{name: "last", order: order},
+					},
+				}}
+			},
+		},
+		{
+			name: "finalizer",
+			finish: func(order *[]string) *streamingFinish {
+				return &streamingFinish{finalizers: []streamingFinalizerEntry{
+					{
+						factory: "first", phase: PhaseBodyFilter,
+						finalizer: task10StreamingFinalizer{name: "first", order: order},
+					},
+					{
+						factory: "abort", phase: PhaseBodyFilter,
+						finalizer: task10StreamingFinalizer{name: "abort", order: order, panic: http.ErrAbortHandler},
+					},
+					{
+						factory: "last", phase: PhaseBodyFilter,
+						finalizer: task10StreamingFinalizer{name: "last", order: order},
+					},
+				}}
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			order := make([]string, 0, 3)
+			result := test.finish(&order).finish(nil)
+			if !reflect.DeepEqual(order, []string{"last", "abort", "first"}) {
+				t.Fatalf("finish order = %v, want reverse order with cleanup after abort sentinel", order)
+			}
+			if result.Err != nil || len(result.Panics) != 1 {
+				t.Fatalf("finish result = %#v, want one panic and no ordinary error", result)
+			}
+			panicErr := result.Panics[0]
+			if panicErr.Factory != "abort" || panicErr.Phase != PhaseBodyFilter ||
+				panicErr.Value != http.ErrAbortHandler || len(panicErr.Stack) == 0 {
+				t.Fatalf("abort panic = %#v, want attributed sentinel", panicErr)
+			}
+		})
+	}
+}
+
 func TestStreamingFinishPreservesFirstOrdinaryError(t *testing.T) {
 	want := errors.New("close failed")
 	order := make([]string, 0, 2)
@@ -178,6 +243,86 @@ func TestStreamingFinishConcurrentCallersWaitForCachedDetachedResult(t *testing.
 		}
 	}
 	if got[0].Panics[0] == got[1].Panics[0] || &got[0].Panics[0].Stack[0] == &got[1].Panics[0].Stack[0] {
+		t.Fatal("concurrent finish results share mutable panic or stack storage")
+	}
+}
+
+func TestStreamingFinishAbortSentinelIsCompleteAndCachedForConcurrentCallers(t *testing.T) {
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	order := make([]string, 0, 3)
+	var firstCalls atomic.Int32
+	var abortCalls atomic.Int32
+	var lastCalls atomic.Int32
+	finish := &streamingFinish{finalizers: []streamingFinalizerEntry{
+		{
+			factory: "first", phase: PhaseBodyFilter,
+			finalizer: task10StreamingFinalizer{name: "first", order: &order, calls: &firstCalls},
+		},
+		{
+			factory: "abort", phase: PhaseBodyFilter,
+			finalizer: task10StreamingFinalizer{
+				name: "abort", order: &order, panic: http.ErrAbortHandler, calls: &abortCalls,
+			},
+		},
+		{
+			factory: "last", phase: PhaseBodyFilter,
+			finalizer: task10StreamingFinalizer{
+				name: "last", order: &order, started: started, release: release, calls: &lastCalls,
+			},
+		},
+	}}
+
+	type outcome struct {
+		result    streamingFinishResult
+		recovered any
+	}
+	const callers = 8
+	outcomes := make(chan outcome, callers)
+	var ready sync.WaitGroup
+	ready.Add(callers)
+	for range callers {
+		go func() {
+			ready.Done()
+			got := outcome{}
+			func() {
+				defer func() { got.recovered = recover() }()
+				got.result = finish.finish(nil)
+			}()
+			outcomes <- got
+		}()
+	}
+	ready.Wait()
+	<-started
+	select {
+	case got := <-outcomes:
+		t.Fatalf("concurrent finish returned before active cleanup completed: %#v", got)
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(release)
+
+	results := make([]streamingFinishResult, 0, callers)
+	for range callers {
+		got := <-outcomes
+		if got.recovered != nil {
+			t.Fatalf("finish caller recovered raw panic: %#v", got.recovered)
+		}
+		if len(got.result.Panics) != 1 || got.result.Panics[0].Value != http.ErrAbortHandler {
+			t.Fatalf("finish result = %#v, want cached attributed abort sentinel", got.result)
+		}
+		results = append(results, got.result)
+	}
+	if firstCalls.Load() != 1 || abortCalls.Load() != 1 || lastCalls.Load() != 1 {
+		t.Fatalf(
+			"finalizer calls first/abort/last = %d/%d/%d, want 1/1/1",
+			firstCalls.Load(), abortCalls.Load(), lastCalls.Load(),
+		)
+	}
+	if !reflect.DeepEqual(order, []string{"last", "abort", "first"}) {
+		t.Fatalf("finish order = %v, want complete reverse cleanup", order)
+	}
+	if results[0].Panics[0] == results[1].Panics[0] ||
+		&results[0].Panics[0].Stack[0] == &results[1].Panics[0].Stack[0] {
 		t.Fatal("concurrent finish results share mutable panic or stack storage")
 	}
 }
@@ -845,6 +990,64 @@ func TestProtocolNextPanicEscapesUnchanged(t *testing.T) {
 	})
 	if recovered != want {
 		t.Fatalf("next panic = %#v, want original %#v", recovered, want)
+	}
+}
+
+func TestStreamingProtocolPanicUsesStableFinishCause(t *testing.T) {
+	tests := []struct {
+		name     string
+		before   bool
+		want     error
+		wantNext int
+	}{
+		{name: "before next", before: true, want: errors.New("sensitive before-next panic")},
+		{name: "after next", want: errors.New("sensitive after-next panic"), wantNext: 1},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var cause error
+			finishPanic := errors.New("finish panic")
+			executor := task10FinalizerExecutor(t, task10StreamingFinalizer{
+				cause: &cause,
+				panic: finishPanic,
+			})
+			terminal := &task10ProtocolPanicPlugin{callNext: !test.before}
+			if test.before {
+				terminal.beforePanic = test.want
+			} else {
+				terminal.afterPanic = test.want
+			}
+			terminal.Name = "terminal"
+			var err error
+			executor, err = executor.WithRouteTerminals([]RouteTerminalCandidate{{
+				Identity: "ai-proxy", Protocol: ProtocolAI, Scope: ScopeRoute,
+				Provenance: ResourceProvenance{Kind: ResourceRoute, ID: "stable-finish-cause"},
+				Terminal:   terminal,
+			}})
+			if err != nil {
+				t.Fatalf("WithRouteTerminals() error = %v", err)
+			}
+			nextCalls := 0
+			recovered := captureTask10Panic(func() {
+				executor.Then(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+					nextCalls++
+				})).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
+			})
+			panicErr, ok := recovered.(*PanicError)
+			if !ok || panicErr.Factory != "ai-proxy" || panicErr.Phase != PhaseProtocol ||
+				panicErr.Value != test.want {
+				t.Fatalf("protocol panic = %#v, want original attributed panic", recovered)
+			}
+			if nextCalls != test.wantNext {
+				t.Fatalf("next calls = %d, want %d", nextCalls, test.wantNext)
+			}
+			if cause != errStreamingPanic {
+				t.Fatalf("finish cause = %#v, want stable errStreamingPanic", cause)
+			}
+			if panicErr.Value == finishPanic {
+				t.Fatal("finish panic replaced the protocol panic")
+			}
+		})
 	}
 }
 

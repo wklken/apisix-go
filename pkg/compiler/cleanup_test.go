@@ -603,6 +603,82 @@ func TestCleanupStackConcurrentRollbackReplaysIncompleteAttempt(t *testing.T) {
 	}
 }
 
+func TestCleanupStackCloseReplaysIncompleteRollbackBeforeLaterRetry(t *testing.T) {
+	var stack cleanupStack
+	var quiesceCalls atomic.Int32
+	var suffixReleaseCalls atomic.Int32
+	var baseReleaseCalls atomic.Int32
+	transient := errors.New("rollback remains incomplete")
+	if err := stack.Own(cleanupRelease, "base", func(context.Context) error {
+		baseReleaseCalls.Add(1)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	checkpoint, err := stack.Checkpoint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	entered := make(chan struct{})
+	allowReturn := make(chan struct{})
+	if err := stack.Own(cleanupQuiesce, "suffix-quiesce", func(context.Context) error {
+		if quiesceCalls.Add(1) == 1 {
+			close(entered)
+			<-allowReturn
+			return transient
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := stack.Own(cleanupRelease, "suffix-release", func(context.Context) error {
+		suffixReleaseCalls.Add(1)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	rollbackDone := make(chan error, 1)
+	go func() { rollbackDone <- stack.Rollback(context.Background(), checkpoint) }()
+	<-entered
+	waiting := make(chan struct{}, 1)
+	closeDone := make(chan error, 1)
+	go func() {
+		closeDone <- stack.Close(&cleanupWaiterContext{
+			Context: context.Background(),
+			waiting: waiting,
+		})
+	}()
+	<-waiting
+	close(allowReturn)
+
+	rollbackErr := <-rollbackDone
+	closeErr := <-closeDone
+	if !errors.Is(rollbackErr, transient) || closeErr != rollbackErr {
+		t.Fatalf("cleanup results = (%v, %v), want one immutable transient attempt", rollbackErr, closeErr)
+	}
+	if quiesceCalls.Load() != 1 || suffixReleaseCalls.Load() != 0 || baseReleaseCalls.Load() != 0 {
+		t.Fatalf(
+			"attempt calls = quiesce:%d suffix-release:%d base-release:%d, want 1/0/0",
+			quiesceCalls.Load(),
+			suffixReleaseCalls.Load(),
+			baseReleaseCalls.Load(),
+		)
+	}
+
+	if err := stack.Close(context.Background()); err != nil {
+		t.Fatalf("later Close error = %v", err)
+	}
+	if quiesceCalls.Load() != 2 || suffixReleaseCalls.Load() != 1 || baseReleaseCalls.Load() != 1 {
+		t.Fatalf(
+			"terminal calls = quiesce:%d suffix-release:%d base-release:%d, want 2/1/1",
+			quiesceCalls.Load(),
+			suffixReleaseCalls.Load(),
+			baseReleaseCalls.Load(),
+		)
+	}
+}
+
 type cleanupCancelAfterAttemptContext struct {
 	context.Context
 	done        <-chan struct{}

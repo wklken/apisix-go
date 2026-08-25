@@ -4,11 +4,37 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
+	"os"
+	"os/exec"
+	"sync"
 	"testing"
 	"time"
 )
+
+var bridgeRawPanic = &struct{ marker string }{marker: "bridge-raw-panic"}
+
+type panicReadConn struct {
+	net.Conn
+}
+
+func (c *panicReadConn) Read([]byte) (int, error) {
+	panic(bridgeRawPanic)
+}
+
+type peerCloseConn struct {
+	net.Conn
+}
+
+func (c *peerCloseConn) Read(p []byte) (int, error) {
+	n, err := c.Conn.Read(p)
+	if err != nil {
+		fmt.Println("bridge-peer-closed")
+	}
+	return n, err
+}
 
 type controlledReader struct {
 	started chan struct{}
@@ -26,6 +52,336 @@ type deadlineRecordingConn struct {
 	net.Conn
 	writeDeadline chan time.Time
 	written       bytes.Buffer
+}
+
+type scriptedConn struct {
+	net.Conn
+	readFunc  func([]byte) (int, error)
+	closed    chan struct{}
+	closeErr  error
+	closeOnce sync.Once
+}
+
+func (c *scriptedConn) Read(p []byte) (int, error) {
+	return c.readFunc(p)
+}
+
+func (c *scriptedConn) Close() error {
+	c.closeOnce.Do(func() { close(c.closed) })
+	_ = c.Conn.Close()
+	return c.closeErr
+}
+
+type halfCloseRecordingConn struct {
+	net.Conn
+	closeWriteErr  error
+	closeWriteDone chan struct{}
+	closeWriteOnce sync.Once
+}
+
+func (c *halfCloseRecordingConn) CloseWrite() error {
+	c.closeWriteOnce.Do(func() { close(c.closeWriteDone) })
+	return c.closeWriteErr
+}
+
+func newScriptedConn(t *testing.T, readFunc func([]byte) (int, error)) *scriptedConn {
+	t.Helper()
+	conn, peer := net.Pipe()
+	result := &scriptedConn{
+		Conn:     conn,
+		readFunc: readFunc,
+		closed:   make(chan struct{}),
+	}
+	t.Cleanup(func() { _ = result.Close() })
+	t.Cleanup(func() { _ = peer.Close() })
+	return result
+}
+
+func TestPumpRawDirectionPanicReturnsFromOwnerAfterPeerCleanup(t *testing.T) {
+	cmd := exec.Command(os.Args[0], "-test.run=^TestPumpRawDirectionPanicHelper$")
+	cmd.Env = append(os.Environ(), "APISIX_GO_BRIDGE_PANIC_HELPER=1")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("helper exited before owner recovery: %v\n%s", err, out)
+	}
+	if !bytes.Contains(out, []byte("bridge-owner-recovered")) ||
+		!bytes.Contains(out, []byte("bridge-peer-closed")) {
+		t.Fatalf("missing ownership markers: %s", out)
+	}
+}
+
+func TestPumpRawDirectionPanicHelper(t *testing.T) {
+	if os.Getenv("APISIX_GO_BRIDGE_PANIC_HELPER") != "1" {
+		return
+	}
+
+	leftBase, leftPeer := net.Pipe()
+	rightBase, rightPeer := net.Pipe()
+	left := &panicReadConn{Conn: leftBase}
+	right := &peerCloseConn{Conn: rightBase}
+	defer func() { _ = leftPeer.Close() }()
+	defer func() { _ = rightPeer.Close() }()
+	defer func() {
+		recovered := recover()
+		if recovered != bridgeRawPanic {
+			fmt.Fprintf(os.Stderr, "recovered panic = %#v, want %#v\n", recovered, bridgeRawPanic)
+			os.Exit(1)
+		}
+		fmt.Println("bridge-owner-recovered")
+	}()
+
+	if err := Pump(context.Background(), left, right, nil, time.Second); err != nil {
+		fmt.Fprintf(os.Stderr, "Pump() error = %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func TestPumpEOFWaitsForReverseDirection(t *testing.T) {
+	reverseReadStarted := make(chan struct{})
+	releaseReverseRead := make(chan struct{})
+	left := newScriptedConn(t, func([]byte) (int, error) {
+		return 0, errors.New("left connection should not be read")
+	})
+	right := newScriptedConn(t, func([]byte) (int, error) {
+		close(reverseReadStarted)
+		<-releaseReverseRead
+		return 0, io.EOF
+	})
+	leftHalfClose := &halfCloseRecordingConn{
+		Conn:           left,
+		closeWriteDone: make(chan struct{}),
+	}
+	rightHalfClose := &halfCloseRecordingConn{
+		Conn:           right,
+		closeWriteDone: make(chan struct{}),
+	}
+
+	pumpDone := make(chan error, 1)
+	go func() {
+		pumpDone <- Pump(context.Background(), leftHalfClose, rightHalfClose, bytes.NewReader(nil), time.Second)
+	}()
+
+	select {
+	case <-rightHalfClose.closeWriteDone:
+	case <-time.After(time.Second):
+		t.Fatal("Pump() did not half-close the first destination")
+	}
+	select {
+	case <-reverseReadStarted:
+	case <-time.After(time.Second):
+		t.Fatal("reverse direction did not start")
+	}
+	select {
+	case <-leftHalfClose.closeWriteDone:
+		t.Fatal("Pump() half-closed the reverse destination before reverse completion")
+	default:
+	}
+	select {
+	case err := <-pumpDone:
+		t.Fatalf("Pump() returned before reverse completion: %v", err)
+	default:
+	}
+
+	close(releaseReverseRead)
+	select {
+	case err := <-pumpDone:
+		if err != nil {
+			t.Fatalf("Pump() error = %v, want nil", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Pump() did not return after both directions completed")
+	}
+	select {
+	case <-leftHalfClose.closeWriteDone:
+	default:
+		t.Fatal("Pump() did not half-close the reverse destination")
+	}
+}
+
+func TestPumpHardErrorWaitsForReverseDirection(t *testing.T) {
+	firstErr := errors.New("first copy error")
+	secondErr := errors.New("second copy error")
+	reverseReadStarted := make(chan struct{})
+	reverseCloseObserved := make(chan struct{})
+	releaseReverseRead := make(chan struct{})
+	left := newScriptedConn(t, func([]byte) (int, error) {
+		return 0, errors.New("left connection should not be read")
+	})
+	var right *scriptedConn
+	right = newScriptedConn(t, func([]byte) (int, error) {
+		close(reverseReadStarted)
+		<-right.closed
+		close(reverseCloseObserved)
+		<-releaseReverseRead
+		return 0, secondErr
+	})
+
+	pumpDone := make(chan error, 1)
+	go func() {
+		pumpDone <- Pump(context.Background(), left, right, errorReader{err: firstErr}, time.Second)
+	}()
+	select {
+	case <-reverseReadStarted:
+	case <-time.After(time.Second):
+		t.Fatal("reverse direction did not start")
+	}
+	select {
+	case <-reverseCloseObserved:
+	case <-time.After(time.Second):
+		t.Fatal("hard copy error did not close the reverse endpoint")
+	}
+	select {
+	case err := <-pumpDone:
+		t.Fatalf("Pump() returned before reverse completion: %v", err)
+	default:
+	}
+
+	close(releaseReverseRead)
+	select {
+	case err := <-pumpDone:
+		if !errors.Is(err, firstErr) {
+			t.Fatalf("Pump() error = %v, want first copy error %v", err, firstErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Pump() did not wait for reverse completion")
+	}
+}
+
+func TestPumpCancellationWaitsForBothDirections(t *testing.T) {
+	leftReadStarted := make(chan struct{})
+	rightReadStarted := make(chan struct{})
+	leftReleaseRead := make(chan struct{})
+	rightReleaseRead := make(chan struct{})
+	leftCloseObserved := make(chan struct{})
+	rightCloseObserved := make(chan struct{})
+	var left *scriptedConn
+	left = newScriptedConn(t, func([]byte) (int, error) {
+		close(leftReadStarted)
+		<-left.closed
+		close(leftCloseObserved)
+		<-leftReleaseRead
+		return 0, net.ErrClosed
+	})
+	var right *scriptedConn
+	right = newScriptedConn(t, func([]byte) (int, error) {
+		close(rightReadStarted)
+		<-right.closed
+		close(rightCloseObserved)
+		<-rightReleaseRead
+		return 0, net.ErrClosed
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	pumpDone := make(chan error, 1)
+	go func() { pumpDone <- Pump(ctx, left, right, nil, time.Second) }()
+	select {
+	case <-leftReadStarted:
+	case <-time.After(time.Second):
+		t.Fatal("left direction did not start")
+	}
+	select {
+	case <-rightReadStarted:
+	case <-time.After(time.Second):
+		t.Fatal("right direction did not start")
+	}
+
+	cancel()
+	select {
+	case <-leftCloseObserved:
+	case <-time.After(time.Second):
+		t.Fatal("cancellation did not close the left endpoint")
+	}
+	select {
+	case <-rightCloseObserved:
+	case <-time.After(time.Second):
+		t.Fatal("cancellation did not close the right endpoint")
+	}
+	select {
+	case err := <-pumpDone:
+		t.Fatalf("Pump() returned before both directions completed: %v", err)
+	default:
+	}
+
+	close(leftReleaseRead)
+	select {
+	case err := <-pumpDone:
+		t.Fatalf("Pump() returned before right direction completed: %v", err)
+	default:
+	}
+	close(rightReleaseRead)
+	select {
+	case err := <-pumpDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Pump() error = %v, want context canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Pump() did not return after cancellation cleanup")
+	}
+}
+
+func TestPumpFirstCopyErrorPrecedence(t *testing.T) {
+	firstErr := errors.New("first copy error")
+	secondErr := errors.New("second copy error")
+	reverseReadStarted := make(chan struct{})
+	left := newScriptedConn(t, func([]byte) (int, error) {
+		return 0, errors.New("left connection should not be read")
+	})
+	var right *scriptedConn
+	right = newScriptedConn(t, func([]byte) (int, error) {
+		close(reverseReadStarted)
+		<-right.closed
+		return 0, secondErr
+	})
+	leftErrorReady := make(chan struct{})
+	releaseLeftError := make(chan struct{})
+	firstReader := &gatedErrorReader{
+		ready:   leftErrorReady,
+		release: releaseLeftError,
+		err:     firstErr,
+	}
+
+	pumpDone := make(chan error, 1)
+	go func() { pumpDone <- Pump(context.Background(), left, right, firstReader, time.Second) }()
+	select {
+	case <-reverseReadStarted:
+	case <-time.After(time.Second):
+		t.Fatal("reverse direction did not start")
+	}
+	select {
+	case <-leftErrorReady:
+	case <-time.After(time.Second):
+		t.Fatal("first direction did not start")
+	}
+	close(releaseLeftError)
+
+	select {
+	case err := <-pumpDone:
+		if !errors.Is(err, firstErr) || errors.Is(err, secondErr) {
+			t.Fatalf("Pump() error = %v, want first error %v over second %v", err, firstErr, secondErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Pump() did not return after both errors")
+	}
+}
+
+type errorReader struct {
+	err error
+}
+
+func (r errorReader) Read([]byte) (int, error) {
+	return 0, r.err
+}
+
+type gatedErrorReader struct {
+	ready   chan struct{}
+	release chan struct{}
+	err     error
+}
+
+func (r *gatedErrorReader) Read([]byte) (int, error) {
+	close(r.ready)
+	<-r.release
+	return 0, r.err
 }
 
 func (c *deadlineRecordingConn) SetWriteDeadline(deadline time.Time) error {

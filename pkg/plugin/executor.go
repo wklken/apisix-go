@@ -351,7 +351,7 @@ func wrapAuthenticationWithStaticCORS(
 		state.beforeAuthentication = w.Header().Clone()
 		authentication.ServeHTTP(w, r)
 	}))
-	for _, binding := range slices.Backward(ordered) {
+	for _, binding := range ordered {
 		if binding.Plugin != nil {
 			handler = pluginMiddlewareHandler(binding, handler)
 		}

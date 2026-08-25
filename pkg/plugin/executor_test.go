@@ -1696,6 +1696,45 @@ func TestRequestPipelineCORSAddsHeadersToAuthenticationRejection(t *testing.T) {
 	}
 }
 
+func TestRequestPipelineRouteCORSOwnsAuthenticationRejectionAcrossStaticScopes(t *testing.T) {
+	routeCORS := newExecutorCORSPlugin(t, corsplugin.Config{
+		AllowOrigins: "https://client.example",
+		AllowMethods: http.MethodGet,
+		AllowHeaders: "X-Route",
+	})
+	globalCORS := newExecutorCORSPlugin(t, corsplugin.Config{
+		AllowOrigins: "https://client.example",
+		AllowMethods: http.MethodGet,
+		AllowHeaders: "X-Global",
+	})
+	auth := newExecutorRequestPlugin(
+		"auth",
+		1,
+		func(w http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+			w.WriteHeader(http.StatusUnauthorized)
+			return base.StopRequest(r)
+		},
+	)
+	pipeline := NewRequestPipeline([]Binding{
+		pipelineBinding("cors", routeCORS, ScopeRoute, 4000),
+		pipelineBinding("cors", globalCORS, ScopeGlobal, 4000),
+		pipelineBinding("jwt-auth", auth, ScopeRoute, 1),
+	}, nil)
+	request := httptest.NewRequest(http.MethodGet, "http://example.com/resource", nil)
+	request.Header.Set("Origin", "https://client.example")
+	response := httptest.NewRecorder()
+	pipeline.Then(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("terminal called after authentication rejection")
+	})).ServeHTTP(response, request)
+
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("authentication status = %d, want 401", response.Code)
+	}
+	if got := response.Header().Get("Access-Control-Allow-Headers"); got != "X-Route" {
+		t.Fatalf("authentication CORS allow headers = %q, want route policy X-Route", got)
+	}
+}
+
 func TestRequestPipelineCORSPreflightRunsBeforeAuthentication(t *testing.T) {
 	cors := newExecutorCORSPlugin(t, corsplugin.Config{
 		AllowOrigins: "https://client.example",
@@ -1732,6 +1771,51 @@ func TestRequestPipelineCORSPreflightRunsBeforeAuthentication(t *testing.T) {
 	}
 	if authCalls != 0 || terminalCalls != 0 {
 		t.Fatalf("auth/terminal calls = %d/%d, want 0/0", authCalls, terminalCalls)
+	}
+}
+
+func TestRequestPipelineRouteCORSOwnsPreflightAcrossStaticScopes(t *testing.T) {
+	routeCORS := newExecutorCORSPlugin(t, corsplugin.Config{
+		AllowOrigins: "https://client.example",
+		AllowMethods: http.MethodGet,
+		AllowHeaders: "X-Route",
+	})
+	globalCORS := newExecutorCORSPlugin(t, corsplugin.Config{
+		AllowOrigins: "https://client.example",
+		AllowMethods: http.MethodGet,
+		AllowHeaders: "X-Global",
+	})
+	authCalls := 0
+	auth := newExecutorRequestPlugin(
+		"auth",
+		1,
+		func(w http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+			authCalls++
+			w.WriteHeader(http.StatusUnauthorized)
+			return base.StopRequest(r)
+		},
+	)
+	pipeline := NewRequestPipeline([]Binding{
+		pipelineBinding("cors", routeCORS, ScopeRoute, 4000),
+		pipelineBinding("cors", globalCORS, ScopeGlobal, 4000),
+		pipelineBinding("jwt-auth", auth, ScopeRoute, 1),
+	}, nil)
+	request := httptest.NewRequest(http.MethodOptions, "http://example.com/resource", nil)
+	request.Header.Set("Origin", "https://client.example")
+	request.Header.Set("Access-Control-Request-Method", http.MethodGet)
+	response := httptest.NewRecorder()
+	pipeline.Then(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("terminal called after CORS preflight")
+	})).ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("preflight status = %d, want 200", response.Code)
+	}
+	if got := response.Header().Get("Access-Control-Allow-Headers"); got != "X-Route" {
+		t.Fatalf("preflight CORS allow headers = %q, want route policy X-Route", got)
+	}
+	if authCalls != 0 {
+		t.Fatalf("authentication calls = %d, want 0", authCalls)
 	}
 }
 

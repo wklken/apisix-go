@@ -323,15 +323,6 @@ func closeRetainedGenerationConn(connection *generationConn) (panicValue any, cl
 		return nil, nil
 	}
 	panicValue = captureCleanupPanic(func() { closeErr = connection.Close() })
-	if panicValue == nil {
-		return nil, closeErr
-	}
-	// generationConn.Close performs unregister/release after the raw close.
-	// sync.Once is consumed even when any of those steps panics, so finish both
-	// callbacks independently here. Their lease/unregister implementations are
-	// idempotent; the original Close panic retains precedence.
-	_ = captureCleanupPanic(connection.unregister)
-	_ = captureCleanupPanic(connection.release)
 	return panicValue, closeErr
 }
 

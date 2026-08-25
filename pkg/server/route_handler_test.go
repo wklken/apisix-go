@@ -936,6 +936,112 @@ func TestGenerationHijackRebuildClosePanicReleasesAndUnregisters(t *testing.T) {
 	}
 }
 
+func TestGenerationHijackHandlerClosePanicStillReleasesAndUnregisters(t *testing.T) {
+	routes := newGenerationRouteHandler(nil)
+	var parentReleases atomic.Int32
+	var childReleases atomic.Int32
+	parent := httpGenerationLease{
+		Release: func() { parentReleases.Add(1) },
+		retain: func() (httpGenerationLease, bool) {
+			return httpGenerationLease{Release: func() { childReleases.Add(1) }}, true
+		},
+	}
+	left, right := net.Pipe()
+	t.Cleanup(func() {
+		_ = left.Close()
+		_ = right.Close()
+	})
+	want := &struct{ message string }{message: "handler close panic"}
+	raw := &panicCloseConn{Conn: left, panicValue: want}
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		connection, _, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Fatalf("Hijack() error = %v", err)
+		}
+		_ = connection.Close()
+	})
+
+	if got := recoverPanic(func() {
+		serveRouteRequestForHTTPGeneration(
+			&hijackingRouteResponseWriter{header: make(http.Header), conn: raw},
+			httptest.NewRequest(http.MethodGet, "/hijack", nil), handler, &parent, routes,
+		)
+	}); got != want {
+		t.Fatalf("panic = %#v, want original close panic %#v", got, want)
+	}
+	parent.Release()
+	if got := parentReleases.Load(); got != 1 {
+		t.Fatalf("parent releases = %d, want 1", got)
+	}
+	if got := childReleases.Load(); got != 1 {
+		t.Fatalf("child releases = %d, want 1", got)
+	}
+	routes.mu.Lock()
+	hijacked, active := len(routes.hijacked), routes.generationActive
+	routes.mu.Unlock()
+	if hijacked != 0 || active != 0 {
+		t.Fatalf("retained hijack state = map:%d active:%d, want zero", hijacked, active)
+	}
+	routes.RejectNew()
+	if err := routes.Drain(context.Background()); err != nil {
+		t.Fatalf("Drain() error = %v", err)
+	}
+}
+
+func TestGenerationHijackNaturalClosePanicDoesNotLeakOnRejectNew(t *testing.T) {
+	routes := newGenerationRouteHandler(nil)
+	var parentReleases atomic.Int32
+	var childReleases atomic.Int32
+	parent := httpGenerationLease{
+		Release: func() { parentReleases.Add(1) },
+		retain: func() (httpGenerationLease, bool) {
+			return httpGenerationLease{Release: func() { childReleases.Add(1) }}, true
+		},
+	}
+	left, right := net.Pipe()
+	t.Cleanup(func() {
+		_ = left.Close()
+		_ = right.Close()
+	})
+	want := &struct{ message string }{message: "natural close panic"}
+	raw := &panicCloseConn{Conn: left, panicValue: want}
+	var connection net.Conn
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		var err error
+		connection, _, err = w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Fatalf("Hijack() error = %v", err)
+		}
+	})
+
+	serveRouteRequestForHTTPGeneration(
+		&hijackingRouteResponseWriter{header: make(http.Header), conn: raw},
+		httptest.NewRequest(http.MethodGet, "/hijack", nil), handler, &parent, routes,
+	)
+	parent.Release()
+	if got := recoverPanic(func() { _ = connection.Close() }); got != want {
+		t.Fatalf("Close() panic = %#v, want %#v", got, want)
+	}
+	routes.RejectNew()
+	drainContext, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := routes.Drain(drainContext); err != nil {
+		t.Fatalf("Drain() error = %v", err)
+	}
+	if got := parentReleases.Load(); got != 1 {
+		t.Fatalf("parent releases = %d, want 1", got)
+	}
+	if got := childReleases.Load(); got != 1 {
+		t.Fatalf("child releases = %d, want exactly 1", got)
+	}
+	routes.mu.Lock()
+	hijacked, active := len(routes.hijacked), routes.generationActive
+	routes.mu.Unlock()
+	if hijacked != 0 || active != 0 {
+		t.Fatalf("retained hijack state = map:%d active:%d, want zero", hijacked, active)
+	}
+}
+
 func TestRegisterGenerationHijackClosedAfterRetainClosePanicReleasesLease(t *testing.T) {
 	routes := newGenerationRouteHandler(nil)
 	var parentReleases atomic.Int32

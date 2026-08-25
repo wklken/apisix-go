@@ -42,6 +42,8 @@ type peerCloseConn struct {
 	readReadyOnce sync.Once
 	closed        chan struct{}
 	closeOnce     sync.Once
+	exited        chan struct{}
+	exitOnce      sync.Once
 }
 
 func (c *peerCloseConn) Read(p []byte) (int, error) {
@@ -58,6 +60,11 @@ func (c *peerCloseConn) Read(p []byte) (int, error) {
 		default:
 			fmt.Fprintln(os.Stderr, "bridge-peer-read-ended-before-close")
 		}
+		c.exitOnce.Do(func() {
+			if c.exited != nil {
+				close(c.exited)
+			}
+		})
 	}
 	return n, err
 }
@@ -137,6 +144,28 @@ type panicHalfCloseConn struct {
 	closeWriteOnce sync.Once
 }
 
+type panicIsError struct {
+	panicValue any
+}
+
+func (err *panicIsError) Error() string { return "panic while matching copy error" }
+
+func (err *panicIsError) Is(error) bool { panic(err.panicValue) }
+
+type gatedReadDeadlineErrorConn struct {
+	net.Conn
+	ready     chan struct{}
+	readyOnce sync.Once
+	release   <-chan struct{}
+	err       error
+}
+
+func (c *gatedReadDeadlineErrorConn) SetReadDeadline(time.Time) error {
+	c.readyOnce.Do(func() { close(c.ready) })
+	<-c.release
+	return c.err
+}
+
 func (c *panicHalfCloseConn) CloseWrite() error {
 	c.closeWriteOnce.Do(func() { close(c.closeWriteDone) })
 	panic(c.panicValue)
@@ -169,9 +198,13 @@ func TestPumpRawDirectionPanicReturnsFromOwnerAfterPeerCleanup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("helper exited before owner recovery (ctx err %v): %v\n%s", helperCtx.Err(), err, out)
 	}
-	if !bytes.Contains(out, []byte("bridge-owner-recovered")) ||
-		!bytes.Contains(out, []byte("bridge-peer-closed")) {
+	peerIndex := bytes.Index(out, []byte("bridge-peer-closed"))
+	ownerIndex := bytes.Index(out, []byte("bridge-owner-recovered"))
+	if peerIndex < 0 || ownerIndex < 0 {
 		t.Fatalf("missing ownership markers: %s", out)
+	}
+	if peerIndex > ownerIndex {
+		t.Fatalf("owner recovered before peer cleanup: %s", out)
 	}
 }
 
@@ -186,7 +219,12 @@ func TestPumpRawDirectionPanicHelper(t *testing.T) {
 	rightReadReady := make(chan struct{})
 	releaseLeftRead := make(chan struct{})
 	left := &panicReadConn{Conn: leftBase, readReady: leftReadReady, release: releaseLeftRead}
-	right := &peerCloseConn{Conn: rightBase, readReady: rightReadReady, closed: make(chan struct{})}
+	right := &peerCloseConn{
+		Conn:      rightBase,
+		readReady: rightReadReady,
+		closed:    make(chan struct{}),
+		exited:    make(chan struct{}),
+	}
 	defer func() { _ = leftPeer.Close() }()
 	defer func() { _ = rightPeer.Close() }()
 	pumpDone := make(chan struct{})
@@ -196,6 +234,12 @@ func TestPumpRawDirectionPanicHelper(t *testing.T) {
 			recovered := recover()
 			if recovered != bridgeRawPanic {
 				fmt.Fprintf(os.Stderr, "recovered panic = %#v, want %#v\n", recovered, bridgeRawPanic)
+				os.Exit(1)
+			}
+			select {
+			case <-right.exited:
+			default:
+				fmt.Fprintln(os.Stderr, "bridge-owner-recovered-before-peer-exit")
 				os.Exit(1)
 			}
 			fmt.Println("bridge-owner-recovered")
@@ -369,9 +413,13 @@ func TestPumpChildPanicPrecedesCleanupPanicAfterJoin(t *testing.T) {
 	})
 	leftAttempted := make(chan struct{})
 	left := &panicCloseConn{Conn: leftBase, panicValue: cleanupPanic, closeAttempted: leftAttempted}
+	childReady := make(chan struct{})
+	releaseChild := make(chan struct{})
+	peerReadStarted := make(chan struct{})
 	peerExited := make(chan struct{})
 	var right *scriptedConn
 	right = newScriptedConn(t, func([]byte) (int, error) {
+		close(peerReadStarted)
 		<-right.closed
 		close(peerExited)
 		return 0, net.ErrClosed
@@ -383,8 +431,15 @@ func TestPumpChildPanicPrecedesCleanupPanicAfterJoin(t *testing.T) {
 			outcome.panicValue = recover()
 			done <- outcome
 		}()
-		outcome.err = Pump(context.Background(), left, right, &panicReader{value: childPanic}, time.Second)
+		outcome.err = Pump(context.Background(), left, right, &gatedPanicReader{
+			ready:   childReady,
+			release: releaseChild,
+			value:   childPanic,
+		}, time.Second)
 	}()
+	<-childReady
+	<-peerReadStarted
+	close(releaseChild)
 	outcome := <-done
 	if outcome.err != nil || outcome.panicValue != childPanic {
 		t.Fatalf("Pump() outcome = (%v, %#v), want child panic %#v", outcome.err, outcome.panicValue, childPanic)
@@ -414,9 +469,13 @@ func TestPumpCleanupPanicReplaysAfterAllCleanup(t *testing.T) {
 	})
 	leftAttempted := make(chan struct{})
 	left := &panicCloseConn{Conn: leftBase, panicValue: cleanupPanic, closeAttempted: leftAttempted}
+	copyErrorReady := make(chan struct{})
+	releaseCopyError := make(chan struct{})
+	peerReadStarted := make(chan struct{})
 	peerExited := make(chan struct{})
 	var right *scriptedConn
 	right = newScriptedConn(t, func([]byte) (int, error) {
+		close(peerReadStarted)
 		<-right.closed
 		close(peerExited)
 		return 0, net.ErrClosed
@@ -428,8 +487,15 @@ func TestPumpCleanupPanicReplaysAfterAllCleanup(t *testing.T) {
 			outcome.panicValue = recover()
 			done <- outcome
 		}()
-		outcome.err = Pump(context.Background(), left, right, errorReader{err: copyErr}, time.Second)
+		outcome.err = Pump(context.Background(), left, right, &gatedErrorReader{
+			ready:   copyErrorReady,
+			release: releaseCopyError,
+			err:     copyErr,
+		}, time.Second)
 	}()
+	<-copyErrorReady
+	<-peerReadStarted
+	close(releaseCopyError)
 	outcome := <-done
 	if outcome.err != nil || outcome.panicValue != cleanupPanic {
 		t.Fatalf("Pump() outcome = (%v, %#v), want cleanup panic %#v", outcome.err, outcome.panicValue, cleanupPanic)
@@ -448,6 +514,128 @@ func TestPumpCleanupPanicReplaysAfterAllCleanup(t *testing.T) {
 	case <-peerExited:
 	default:
 		t.Fatal("cleanup panic replayed before peer direction joined")
+	}
+}
+
+func TestPumpErrorNormalizationPanicReturnsAfterCleanupAndJoin(t *testing.T) {
+	normalizePanic := &struct{ marker string }{marker: "normalize-panic"}
+	leftReader := &gatedEOFReader{started: make(chan struct{}), release: make(chan struct{})}
+	left := newScriptedConn(t, func([]byte) (int, error) {
+		return 0, errors.New("left connection should not be read")
+	})
+	peerDeadlineStarted := make(chan struct{})
+	releasePeerError := make(chan struct{})
+	rightBase := newScriptedConn(t, func([]byte) (int, error) {
+		return 0, errors.New("right connection should not be read")
+	})
+	rightDeadline := &gatedReadDeadlineErrorConn{
+		Conn:    rightBase,
+		ready:   peerDeadlineStarted,
+		release: releasePeerError,
+		err:     &panicIsError{panicValue: normalizePanic},
+	}
+	right := &halfCloseRecordingConn{
+		Conn:           rightDeadline,
+		closeWriteDone: make(chan struct{}),
+	}
+	done := make(chan pumpOutcome, 1)
+	go func() {
+		outcome := pumpOutcome{}
+		defer func() {
+			outcome.panicValue = recover()
+			done <- outcome
+		}()
+		outcome.err = Pump(context.Background(), left, right, leftReader, time.Second)
+	}()
+	<-leftReader.started
+	<-peerDeadlineStarted
+	close(leftReader.release)
+	<-right.closeWriteDone
+	close(releasePeerError)
+	outcome := <-done
+	if outcome.err != nil || outcome.panicValue != normalizePanic {
+		t.Fatalf(
+			"Pump() outcome = (%v, %#v), want normalization panic %#v",
+			outcome.err,
+			outcome.panicValue,
+			normalizePanic,
+		)
+	}
+	select {
+	case <-left.closed:
+	default:
+		t.Fatal("normalization panic bypassed left endpoint cleanup")
+	}
+	select {
+	case <-rightBase.closed:
+	default:
+		t.Fatal("normalization panic bypassed right endpoint cleanup")
+	}
+}
+
+func TestPumpChildPanicPrecedesOwnerAndCleanupPanics(t *testing.T) {
+	childPanic := &struct{ marker string }{marker: "child-panic"}
+	ownerPanic := &struct{ marker string }{marker: "half-close-panic"}
+	cleanupPanic := &struct{ marker string }{marker: "cleanup-panic"}
+	leftReader := &gatedEOFReader{started: make(chan struct{}), release: make(chan struct{})}
+	leftBase := newScriptedConn(t, func([]byte) (int, error) {
+		return 0, errors.New("left connection should not be read")
+	})
+	leftCloseAttempted := make(chan struct{})
+	left := &panicCloseConn{
+		Conn:           leftBase,
+		panicValue:     cleanupPanic,
+		closeAttempted: leftCloseAttempted,
+	}
+	peerReadStarted := make(chan struct{})
+	peerExited := make(chan struct{})
+	var rightBase *scriptedConn
+	rightBase = newScriptedConn(t, func([]byte) (int, error) {
+		close(peerReadStarted)
+		<-rightBase.closed
+		close(peerExited)
+		panic(childPanic)
+	})
+	right := &panicHalfCloseConn{
+		Conn:           rightBase,
+		panicValue:     ownerPanic,
+		closeWriteDone: make(chan struct{}),
+	}
+	done := make(chan pumpOutcome, 1)
+	go func() {
+		outcome := pumpOutcome{}
+		defer func() {
+			outcome.panicValue = recover()
+			done <- outcome
+		}()
+		outcome.err = Pump(context.Background(), left, right, leftReader, time.Second)
+	}()
+	<-leftReader.started
+	<-peerReadStarted
+	close(leftReader.release)
+	outcome := <-done
+	if outcome.err != nil || outcome.panicValue != childPanic {
+		t.Fatalf("Pump() outcome = (%v, %#v), want child panic %#v", outcome.err, outcome.panicValue, childPanic)
+	}
+	select {
+	case <-right.closeWriteDone:
+	default:
+		t.Fatal("half-close owner panic was not attempted")
+	}
+	select {
+	case <-leftCloseAttempted:
+	default:
+		t.Fatal("cleanup panic endpoint was not attempted")
+	}
+	select {
+	case <-rightBase.closed:
+	default:
+		t.Fatal("peer endpoint was not closed")
+	}
+	select {
+	case <-peerExited:
+	default:
+		t.Fatal("child panic replayed before peer direction joined")
 	}
 }
 
@@ -479,11 +667,15 @@ func (r *goexitReader) Read([]byte) (int, error) {
 	return 0, nil
 }
 
-type panicReader struct {
-	value any
+type gatedPanicReader struct {
+	ready   chan struct{}
+	release <-chan struct{}
+	value   any
 }
 
-func (r *panicReader) Read([]byte) (int, error) {
+func (r *gatedPanicReader) Read([]byte) (int, error) {
+	close(r.ready)
+	<-r.release
 	panic(r.value)
 }
 
@@ -555,6 +747,13 @@ func TestPumpHardErrorWaitsForReverseDirection(t *testing.T) {
 	reverseReadStarted := make(chan struct{})
 	reverseCloseObserved := make(chan struct{})
 	releaseReverseRead := make(chan struct{})
+	firstErrorReady := make(chan struct{})
+	releaseFirstError := make(chan struct{})
+	firstReader := &gatedErrorReader{
+		ready:   firstErrorReady,
+		release: releaseFirstError,
+		err:     firstErr,
+	}
 	left := newScriptedConn(t, func([]byte) (int, error) {
 		return 0, errors.New("left connection should not be read")
 	})
@@ -569,13 +768,19 @@ func TestPumpHardErrorWaitsForReverseDirection(t *testing.T) {
 
 	pumpDone := make(chan error, 1)
 	go func() {
-		pumpDone <- Pump(context.Background(), left, right, errorReader{err: firstErr}, time.Second)
+		pumpDone <- Pump(context.Background(), left, right, firstReader, time.Second)
 	}()
+	select {
+	case <-firstErrorReady:
+	case <-time.After(time.Second):
+		t.Fatal("first direction did not start")
+	}
 	select {
 	case <-reverseReadStarted:
 	case <-time.After(time.Second):
 		t.Fatal("reverse direction did not start")
 	}
+	close(releaseFirstError)
 	select {
 	case <-reverseCloseObserved:
 	case <-time.After(time.Second):
@@ -713,14 +918,6 @@ func TestPumpFirstCopyErrorPrecedence(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("Pump() did not return after both errors")
 	}
-}
-
-type errorReader struct {
-	err error
-}
-
-func (r errorReader) Read([]byte) (int, error) {
-	return 0, r.err
 }
 
 type gatedErrorReader struct {

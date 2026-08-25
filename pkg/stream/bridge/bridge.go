@@ -126,7 +126,11 @@ func Pump(ctx context.Context, left, right net.Conn, leftReader io.Reader, idle 
 			return finish(ctxErr)
 		}
 		if second.completed && !second.eof {
-			return finish(normalizeCopyError(second.err))
+			panicValue, normalized := normalizeCopyErrorResult(second.err)
+			if panicValue != nil {
+				return finishWithPanic(nil, panicValue)
+			}
+			return finish(normalized)
 		}
 		return finish(nil)
 	}
@@ -162,7 +166,11 @@ func Pump(ctx context.Context, left, right net.Conn, leftReader io.Reader, idle 
 			}
 			return finish(nil)
 		}
-		return finish(normalizeCopyError(second.err))
+		panicValue, normalized := normalizeCopyErrorResult(second.err)
+		if panicValue != nil {
+			return finishWithPanic(nil, panicValue)
+		}
+		return finish(normalized)
 	}
 
 	cleanup()
@@ -170,10 +178,18 @@ func Pump(ctx context.Context, left, right net.Conn, leftReader io.Reader, idle 
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return finish(ctxErr)
 	}
-	if err := normalizeCopyError(first.err); err != nil {
-		return finish(err)
+	panicValue, normalized := normalizeCopyErrorResult(first.err)
+	if panicValue != nil {
+		return finishWithPanic(nil, panicValue)
 	}
-	return finish(normalizeCopyError(second.err))
+	if normalized != nil {
+		return finish(normalized)
+	}
+	panicValue, normalized = normalizeCopyErrorResult(second.err)
+	if panicValue != nil {
+		return finishWithPanic(nil, panicValue)
+	}
+	return finish(normalized)
 }
 
 func copyDirection(
@@ -275,4 +291,10 @@ func normalizeCopyError(err error) error {
 		return nil
 	}
 	return err
+}
+
+func normalizeCopyErrorResult(err error) (panicValue any, normalized error) {
+	defer func() { panicValue = recover() }()
+	normalized = normalizeCopyError(err)
+	return nil, normalized
 }

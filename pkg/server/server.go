@@ -32,7 +32,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/server_info"
 	pxy "github.com/wklken/apisix-go/pkg/proxy"
 	"github.com/wklken/apisix-go/pkg/secret"
-	"github.com/wklken/apisix-go/pkg/store"
 	streamruntime "github.com/wklken/apisix-go/pkg/stream"
 	"github.com/wklken/apisix-go/pkg/tlsconfig"
 	"github.com/wklken/apisix-go/pkg/version"
@@ -285,7 +284,6 @@ func (factories newServerFactories) withDefaults() newServerFactories {
 type Server struct {
 	staticConfig     *config.EffectiveConfig
 	dataEncryption   data_encryption.Service
-	manifest         *capability.Manifest
 	resolver         *secret.GenerationSecretResolver
 	journal          generation.Journal
 	engine           generationEngineOwner
@@ -296,15 +294,12 @@ type Server struct {
 	shutdownHTTP     func(context.Context) error
 	drainRoutes      func(context.Context) error
 
-	addr            string
 	addrs           []string
 	server          *http.Server
 	routes          *routeHandler
-	clusters        *pxy.ClusterRegistry
 	streamRuntime   streamRuntimeOwner
 	streamRuntimeMu sync.Mutex
 
-	storage  *store.Store
 	producer configProducer
 
 	lifecycleMu         sync.Mutex
@@ -315,23 +310,22 @@ type Server struct {
 	listenersRejected   bool
 	lateProducerStopErr error
 
-	shutdownMu          sync.Mutex
-	shutdownDone        chan struct{}
-	shutdownInProgress  bool
-	shutdownComplete    bool
-	shutdownErr         error
-	shutdownErrors      []error
-	shutdownPhase       uint8
-	httpDrained         bool
-	routesDrained       bool
-	streamDrained       bool
-	compatibilityClosed bool
-	engineClosed        bool
-	resolverClosed      bool
-	journalClosed       bool
-	expirationStopped   bool
-	exporterStopped     bool
-	tracingStopped      bool
+	shutdownMu         sync.Mutex
+	shutdownDone       chan struct{}
+	shutdownInProgress bool
+	shutdownComplete   bool
+	shutdownErr        error
+	shutdownErrors     []error
+	shutdownPhase      uint8
+	httpDrained        bool
+	routesDrained      bool
+	streamDrained      bool
+	engineClosed       bool
+	resolverClosed     bool
+	journalClosed      bool
+	expirationStopped  bool
+	exporterStopped    bool
+	tracingStopped     bool
 
 	producerStopOnce sync.Once
 	producerStopDone chan struct{}
@@ -395,13 +389,11 @@ func newServerWithFactories(
 	server := &Server{
 		staticConfig:     effective,
 		dataEncryption:   encryption,
-		manifest:         manifest,
 		resolver:         resolver,
 		journal:          journal,
 		closeResolver:    factories.closeResolver,
 		closeJournal:     factories.closeJournal,
 		runtimeFactories: defaultServerRuntimeFactories(),
-		addr:             addrs[0],
 		addrs:            addrs,
 	}
 
@@ -1101,11 +1093,6 @@ func (s *Server) shutdownAttempt(ctx context.Context) (error, bool) {
 		s.shutdownPhase = shutdownPhaseDrained
 	}
 	if s.shutdownPhase < shutdownPhaseEngineClosed {
-		if s.engine == nil && !s.compatibilityClosed {
-			compatibilityErr := s.closeCompatibilityOwners()
-			s.appendShutdownError(compatibilityErr)
-			s.compatibilityClosed = true
-		}
 		if s.engine != nil && !s.engineClosed {
 			s.appendShutdownError(wrapCleanupError("close generation engine", s.engine.Close(ctx)))
 			s.engineClosed = true
@@ -1161,21 +1148,6 @@ func (s *Server) requestShutdown() (context.CancelFunc, chan struct{}) {
 		startupDone = nil
 	}
 	return cancel, startupDone
-}
-
-func (s *Server) closeCompatibilityOwners() error {
-	var errs []error
-	if s.clusters != nil {
-		s.clusters.Close()
-		s.clusters = nil
-	}
-	if s.storage != nil {
-		if err := s.storage.Stop(); err != nil {
-			errs = append(errs, fmt.Errorf("stop legacy store: %w", err))
-		}
-		s.storage = nil
-	}
-	return errors.Join(errs...)
 }
 
 func (s *Server) appendShutdownError(err error) {
@@ -1707,33 +1679,6 @@ func serverInfoReportingEnabled(cfg *config.Config) bool {
 	return strings.EqualFold(cfg.Deployment.RoleTraditional.ConfigProvider, "etcd")
 }
 
-// startHTTPListeners binds every configured HTTP and TLS listener and blocks
-// until ctx is cancelled or a listener fails. Bind and serve failures are
-// returned so the command can cancel the root context and enter the normal
-// shutdown path.
-func (s *Server) startHTTPListeners(ctx context.Context) error {
-	cfg := &s.staticConfig.Config
-	tlsAddrs := configuredTLSListenAddresses(cfg)
-	var tlsConfig *tls.Config
-	if len(tlsAddrs) > 0 {
-		var err error
-		tlsConfig, err = buildFrontendTLSConfig(cfg)
-		if err != nil {
-			return fmt.Errorf("build frontend TLS config: %w", err)
-		}
-	}
-	serveErrors, err := s.serveHTTPListenerRuntime(tlsAddrs, tlsConfig)
-	if err != nil {
-		return err
-	}
-	select {
-	case <-ctx.Done():
-		return nil
-	case err := <-serveErrors:
-		return err
-	}
-}
-
 func (s *Server) startHTTPListenerRuntime(ctx context.Context) (<-chan error, error) {
 	cfg := &s.staticConfig.Config
 	tlsAddrs := configuredTLSListenAddresses(cfg)
@@ -1756,9 +1701,6 @@ func (s *Server) serveHTTPListenerRuntime(
 	tlsConfig *tls.Config,
 ) (<-chan error, error) {
 	addrs := s.addrs
-	if len(addrs) == 0 {
-		addrs = []string{s.addr}
-	}
 	serveErrors := make(chan error, len(addrs)+len(tlsAddrs))
 	listeners := make([]net.Listener, 0, len(addrs)+len(tlsAddrs))
 	for _, addr := range addrs {

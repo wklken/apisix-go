@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -28,7 +27,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/observability/metrics"
 	"github.com/wklken/apisix-go/pkg/secret"
-	"github.com/wklken/apisix-go/pkg/store"
 	streamruntime "github.com/wklken/apisix-go/pkg/stream"
 	"github.com/wklken/apisix-go/pkg/testutil"
 )
@@ -883,13 +881,13 @@ func TestConfiguredHTTPServerAndFrontendTLSAdvertiseHTTP2(t *testing.T) {
 		t.Fatal("TLS-only HTTP/2 configuration enabled plaintext h2c")
 	}
 
-	tlsConfig := mustFrontendTLSConfig(t, cfg)
+	tlsConfig := mustGenerationFrontendTLSConfig(t, cfg)
 	if !slices.Contains(tlsConfig.NextProtos, "h2") {
 		t.Fatalf("frontend TLS protocols = %v, want h2", tlsConfig.NextProtos)
 	}
 
 	cfg.Apisix.Ssl.Listen[0].EnableHttp2 = false
-	if protocols := mustFrontendTLSConfig(t, cfg).NextProtos; slices.Contains(protocols, "h2") {
+	if protocols := mustGenerationFrontendTLSConfig(t, cfg).NextProtos; slices.Contains(protocols, "h2") {
 		t.Fatalf("disabled frontend TLS protocols = %v, must not advertise h2", protocols)
 	}
 }
@@ -982,72 +980,6 @@ func TestEtcdClientOptionsUseConfiguredWatchAndResyncDelay(t *testing.T) {
 	}
 }
 
-func TestFrontendTLSGetCertificateSelectsFromPublishedIndex(t *testing.T) {
-	events := make(chan *store.Event)
-	storage, err := store.GetStore(t.TempDir()+"/frontend-tls.db", events, testutil.DataEncryptionService(false, nil))
-	if err != nil {
-		t.Fatalf("get store: %v", err)
-	}
-	storage.Start()
-	t.Cleanup(func() { _ = storage.Stop() })
-
-	cert, key := frontendTestCertificatePEM(t, "api.example.test")
-	put := func(bucket, id string, value []byte) {
-		event := store.NewEvent()
-		event.Type = store.EventTypePut
-		event.Key = []byte("/apisix/" + bucket + "/" + id)
-		event.Value = value
-		events <- event
-	}
-	ssl := func(id string, snis []string, status int) []byte {
-		snisJSON := "[]"
-		if len(snis) > 0 {
-			snisJSON = `["` + strings.Join(snis, `","`) + `"]`
-		}
-		return []byte(`{"id":"` + id + `","snis":` + snisJSON +
-			`,"cert":"` + cert + `","key":"` + key + `","status":` + strconv.Itoa(status) + `}`)
-	}
-	put("ssls", "ssl-wild", ssl("ssl-wild", []string{"*.example.test"}, 1))
-	put("ssls", "ssl-exact", ssl("ssl-exact", []string{"api.example.test"}, 1))
-	put("ssls", "ssl-disabled", ssl("ssl-disabled", []string{"disabled.example.org"}, 0))
-	if err := storage.Sync(); err != nil {
-		t.Fatalf("SSL storage sync: %v", err)
-	}
-
-	cfg := &config.Config{Apisix: config.Apisix{Ssl: config.Ssl{FallbackSNI: "api.example.test"}}}
-	getCertificate := mustFrontendTLSConfig(t, cfg).GetCertificate
-	selected, err := getCertificate(&tls.ClientHelloInfo{ServerName: "api.example.test"})
-	if err != nil {
-		t.Fatalf("GetCertificate(exact) error = %v", err)
-	}
-	if selected == nil || len(selected.Certificate) == 0 {
-		t.Fatal("GetCertificate(exact) returned an empty certificate")
-	}
-
-	wildcard, err := getCertificate(&tls.ClientHelloInfo{ServerName: "a.example.test"})
-	if err != nil {
-		t.Fatalf("GetCertificate(wildcard) error = %v", err)
-	}
-	if wildcard == nil || len(wildcard.Certificate) == 0 {
-		t.Fatal("GetCertificate(wildcard) returned an empty certificate")
-	}
-
-	if _, err := getCertificate(&tls.ClientHelloInfo{ServerName: "disabled.example.org"}); err == nil {
-		t.Fatal("GetCertificate(disabled) error = nil")
-	}
-	if _, err := getCertificate(&tls.ClientHelloInfo{ServerName: "unknown.example.org"}); err == nil {
-		t.Fatal("GetCertificate(unknown) error = nil")
-	}
-
-	fallback, err := getCertificate(&tls.ClientHelloInfo{})
-	if err != nil {
-		t.Fatalf("GetCertificate(empty SNI with fallback) error = %v", err)
-	}
-	if fallback == nil || len(fallback.Certificate) == 0 {
-		t.Fatal("GetCertificate(empty SNI with fallback) returned an empty certificate")
-	}
-}
-
 func TestFrontendHTTP2DefaultsWithoutConfig(t *testing.T) {
 	if frontendHTTP2Enabled(nil) {
 		t.Fatal("frontendHTTP2Enabled() = true without config")
@@ -1087,7 +1019,7 @@ func TestEtcdTLSRequiredForCertKeyAndSNI(t *testing.T) {
 	}
 }
 
-func TestStartReturnsListenError(t *testing.T) {
+func TestStartHTTPListenerRuntimeReturnsListenError(t *testing.T) {
 	occupied, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("occupy listener: %v", err)
@@ -1097,23 +1029,15 @@ func TestStartReturnsListenError(t *testing.T) {
 
 	server := &Server{
 		staticConfig: &config.EffectiveConfig{},
-		addr:         address,
 		addrs:        []string{address},
 		server:       newConfiguredHTTPServer(http.NotFoundHandler(), nil),
 	}
-	done := make(chan error, 1)
-	go func() { done <- server.startHTTPListeners(t.Context()) }()
-
-	select {
-	case err := <-done:
-		if err == nil {
-			t.Fatal("Start() error = nil for an occupied listener address")
-		}
-		if !strings.Contains(err.Error(), occupied.Addr().String()) {
-			t.Fatalf("Start() error = %v, want the occupied address in the error", err)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("Start() did not return a listener bind error")
+	_, err = server.startHTTPListenerRuntime(t.Context())
+	if err == nil {
+		t.Fatal("startHTTPListenerRuntime() error = nil for an occupied listener address")
+	}
+	if !strings.Contains(err.Error(), occupied.Addr().String()) {
+		t.Fatalf("startHTTPListenerRuntime() error = %v, want the occupied address in the error", err)
 	}
 }
 
@@ -2162,7 +2086,7 @@ func TestPluginConfiguredConsultsEnabledPlugins(t *testing.T) {
 }
 
 func TestFrontendTLSConfigDefaultsWithoutHTTP2(t *testing.T) {
-	tlsConfig := mustFrontendTLSConfig(t, nil)
+	tlsConfig := mustGenerationFrontendTLSConfig(t, nil)
 	if !reflect.DeepEqual(tlsConfig.NextProtos, []string{"http/1.1"}) {
 		t.Fatalf("NextProtos = %v, want only http/1.1", tlsConfig.NextProtos)
 	}

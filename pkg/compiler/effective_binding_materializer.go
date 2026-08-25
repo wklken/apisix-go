@@ -158,7 +158,7 @@ func (prepared *PreparedGeneration) materializeEffectiveBindings(
 	ctx context.Context,
 	specs []effectiveBindingSpec,
 ) ([]plugin.Binding, error) {
-	return prepared.materializeEffectiveBindingsWithPolicy(ctx, specs, false)
+	return prepared.materializeEffectiveBindingsWithPolicy(ctx, specs, false, nil)
 }
 
 // materializeEffectiveBindingsRecoverable gives HTTP route quarantine an
@@ -168,13 +168,25 @@ func (prepared *PreparedGeneration) materializeEffectiveBindingsRecoverable(
 	ctx context.Context,
 	specs []effectiveBindingSpec,
 ) ([]plugin.Binding, error) {
-	return prepared.materializeEffectiveBindingsWithPolicy(ctx, specs, true)
+	return prepared.materializeEffectiveBindingsWithPolicy(ctx, specs, true, nil)
+}
+
+func (prepared *PreparedGeneration) materializeEffectiveBindingsRecoverableFinalized(
+	ctx context.Context,
+	specs []effectiveBindingSpec,
+	finalize func([]plugin.Binding) ([]plugin.Binding, error),
+) ([]plugin.Binding, error) {
+	if finalize == nil {
+		return nil, errEffectiveBindingMaterializationFailed
+	}
+	return prepared.materializeEffectiveBindingsWithPolicy(ctx, specs, true, finalize)
 }
 
 func (prepared *PreparedGeneration) materializeEffectiveBindingsWithPolicy(
 	ctx context.Context,
 	specs []effectiveBindingSpec,
 	recoverable bool,
+	finalize func([]plugin.Binding) ([]plugin.Binding, error),
 ) ([]plugin.Binding, error) {
 	if prepared == nil {
 		return nil, errEffectiveBindingMaterializationFailed
@@ -246,6 +258,12 @@ func (prepared *PreparedGeneration) materializeEffectiveBindingsWithPolicy(
 			return fail(err)
 		}
 		bindings = append(bindings, lease.Value())
+	}
+	if finalize != nil {
+		bindings, err = finalize(bindings)
+		if err != nil {
+			return fail(err)
+		}
 	}
 	prepared.materializeMu.Unlock()
 	return bindings, nil

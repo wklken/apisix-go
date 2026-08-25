@@ -265,3 +265,20 @@ func TestRecoverableEffectiveBindingMaterializationRollsBackOnlyFailedRoute(t *t
 		t.Fatalf("later route materialization = (%#v, %v), want one binding", bindings, err)
 	}
 }
+
+func TestRecoverableEffectiveBindingFinalizerFailureRollsBackMaterializedBindings(t *testing.T) {
+	prepared, fixture := newEffectiveBindingMaterializerFixture(t, []string{"request-id"}, nil)
+	bindings, err := prepared.materializeEffectiveBindingsRecoverableFinalized(
+		context.Background(),
+		[]effectiveBindingSpec{fixture.pluginSpec("request-id", "bad-finalizer")},
+		func([]plugin.Binding) ([]plugin.Binding, error) {
+			return nil, errors.New("metadata wrapper failure")
+		},
+	)
+	if !errors.Is(err, errEffectiveBindingMaterializationFailed) || bindings != nil {
+		t.Fatalf("finalizer failure = (%#v, %v)", bindings, err)
+	}
+	if prepared.terminal || fixture.registry.Len() != 0 {
+		t.Fatalf("finalizer rollback terminal/leases = %v/%d", prepared.terminal, fixture.registry.Len())
+	}
+}

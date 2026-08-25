@@ -1,6 +1,7 @@
 package compiler
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/wklken/apisix-go/pkg/capability"
@@ -8,6 +9,50 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin"
 	routepkg "github.com/wklken/apisix-go/pkg/route"
 )
+
+func (prepared *PreparedGeneration) materializeHTTPPluginPlans(
+	ctx context.Context,
+	executionOwner generation.ResourceKey,
+	plans []routepkg.PluginPlan,
+	resourceContext effectiveBindingResourceContext,
+	runtimeContext effectiveBindingRuntimeContext,
+	recoverable bool,
+) ([]plugin.Binding, error) {
+	if len(plans) == 0 {
+		return nil, nil
+	}
+	specs := make([]effectiveBindingSpec, 0, len(plans))
+	for _, plan := range plans {
+		spec, err := prepared.effectiveHTTPBindingSpec(
+			executionOwner,
+			plan,
+			resourceContext,
+			runtimeContext,
+		)
+		if err != nil {
+			return nil, err
+		}
+		specs = append(specs, spec)
+	}
+	finalize := func(bindings []plugin.Binding) ([]plugin.Binding, error) {
+		if len(bindings) != len(plans) {
+			return nil, fmt.Errorf("%w: HTTP binding result count is invalid", ErrInvalidInput)
+		}
+		result := make([]plugin.Binding, len(bindings))
+		for index, binding := range bindings {
+			applied, err := plans[index].Apply(binding)
+			if err != nil {
+				return nil, err
+			}
+			result[index] = applied
+		}
+		return result, nil
+	}
+	if recoverable {
+		return prepared.materializeEffectiveBindingsRecoverableFinalized(ctx, specs, finalize)
+	}
+	return prepared.materializeEffectiveBindingsWithPolicy(ctx, specs, false, finalize)
+}
 
 func (prepared *PreparedGeneration) effectiveHTTPBindingSpec(
 	executionOwner generation.ResourceKey,

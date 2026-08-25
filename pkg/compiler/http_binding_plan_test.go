@@ -1,6 +1,7 @@
 package compiler
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -42,6 +43,35 @@ func TestEffectiveHTTPBindingSpecSelectsExactAttemptOccurrence(t *testing.T) {
 		effectiveBindingRuntimeContext{},
 	); !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("missing exact occurrence error = %v, want ErrInvalidInput", err)
+	}
+}
+
+func TestMaterializeHTTPPluginPlansAppliesPlanMetadataInTransaction(t *testing.T) {
+	prepared, _ := newEffectiveBindingMaterializerFixture(t, []string{"request-id"}, nil)
+	priority := 123
+	bindings, err := prepared.materializeHTTPPluginPlans(
+		context.Background(),
+		generation.ResourceKey{Kind: "routes", ID: "route-1"},
+		[]routepkg.PluginPlan{{
+			Factory: "request-id", Config: map[string]any{}, Scope: plugin.ScopeRoute,
+			Provenance: plugin.ResourceProvenance{Kind: plugin.ResourcePluginConfig, ID: "plugin-config-1"},
+			Source:     generation.ResourceKey{Kind: "plugin_configs", ID: "plugin-config-1"},
+			Priority:   &priority,
+		}},
+		effectiveBindingResourceContext{
+			kind: effectiveBindingContextHTTP, route: resource.Route{ID: "route-1"},
+		},
+		effectiveBindingRuntimeContext{},
+		true,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bindings) != 1 || bindings[0].Priority != priority ||
+		bindings[0].Provenance != (plugin.ResourceProvenance{
+			Kind: plugin.ResourcePluginConfig, ID: "plugin-config-1",
+		}) {
+		t.Fatalf("materialized HTTP bindings = %#v", bindings)
 	}
 }
 

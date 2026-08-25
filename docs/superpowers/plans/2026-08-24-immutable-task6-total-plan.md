@@ -343,6 +343,8 @@ Expected: recovery never reads desired state or computes disposition; raw source
 
 ### Task 9: Execute CP6/C6.6 Integration and Compatibility Audit
 
+**Current status at accepted CP5 `8cae3365`: accepted.** CP6 completed the compatibility audit and independent review without changing the legacy production owner, installing a prepared generation, or deleting a legacy API.
+
 **Child plan:**
 `docs/superpowers/plans/2026-08-24-immutable-task6-cp6-production-cutover.md`
 
@@ -587,28 +589,23 @@ Conflict edges:
 - M1-B waits for S1; M1-C/D wait for S2; M2 `error_log_logger` waits for M2-C0 and S2-E1.
 - X1 `workflow` waits for S1 `limit_count`; X1 `multi_auth` waits for A1 and applicable S3 child support.
 
-## Ready/Blocked Matrix at `9ebcd2b5`
+## Ready/Blocked Matrix at accepted CP5 `8cae3365`
 
 Refresh this snapshot whenever integration HEAD changes.
 
 | Work unit | State | Branch rule / blocker |
 | --- | --- | --- |
-| S3-0 | **ready, highest priority** | current HEAD; serial manifest/catalog/compiler owner |
-| S1 eight leaves | **ready** | rolling HEAD containing `e5b6a73e`; merge before M1-B/X1 workflow |
-| S2 fifteen leaves | **ready** | rolling HEAD containing `e5b6a73e`; S2-E1 unblocks M2 error-log |
-| M1-A1/A2 except Azure | **package work ready; integration needs M2-C0** | newest accepted HEAD; final view producer must merge before lane acceptance |
-| M1 Azure | **blocked** | needs accepted S3-FN1 and M2-C0 |
-| M2-C0 | **logically ready, integration-serialized** | schedule after S3-0 to avoid compiler conflicts; HTTP-only metadata producer |
-| A1 Groups A/B/C | **blocked** | needs accepted S3-0 |
-| S3 real leaves | **blocked** | needs S3-0; accept S3-FN1 Azure before M1 Azure |
-| M1-B | **blocked** | needs S1 |
-| M1-C/D | **blocked** | needs S2 |
-| M2 four ordinary leaves | **blocked** | needs M2-C0 |
-| M2 error-log | **blocked** | needs M2-C0 and S2-E1 |
-| X1 | **blocked** | needs child leaf integrations |
-| CP5 | **blocked** | needs S1/S2/S3/A1/M1/M2/X1 |
-| CP6/C6.6 | **blocked** | needs CP5 |
-| local `master` merge | **blocked** | needs clean Task 6 acceptance and review |
+| S3-0 | **accepted** | ancestor `a5c866e5` |
+| S1 eight leaves | **accepted** | last lane-owned leaf `8e499178` |
+| S2 fifteen leaves | **accepted** | acceptance guard `723e092c` |
+| M1 | **accepted** | final `ec301a7a` |
+| M2 | **accepted** | final `077e19d8` |
+| A1 Groups A/B/C | **accepted** | final `397583e9` |
+| S3 real leaves | **accepted** | last lane-owned leaf `1a3d4ae8` |
+| X1 | **accepted** | product checkpoint `b31d2a6d` |
+| CP5 | **accepted** | final acceptance `8cae3365` |
+| CP6/C6.6 | **accepted** | integration/caller/boundary audit accepted from CP5 `8cae3365` |
+| local `master` merge | **ready after CP6 commit** | fast-forward only after the accepted staged diff is committed and rechecked |
 | Immutable Task 7 worktrees | **blocked** | branch only from post-Task-6 local master |
 
 ---

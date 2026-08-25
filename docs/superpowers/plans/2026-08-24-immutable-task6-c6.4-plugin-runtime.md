@@ -158,7 +158,7 @@ Shared-file ownership is serial:
   source .envrc
   GOFLAGS=-mod=readonly go test -race ./pkg/capability ./pkg/data_encryption ./pkg/secret \
     -run '(Declaration|Catalog|Parity|ConsumerConfig|Collection|Scope)' -count=1
-  GOFLAGS=-mod=readonly go run ./cmd/capability-gen -check
+  GOFLAGS=-mod=readonly go run ./cmd/capability-gen -repo-root . -check
   git diff --check
   ```
 
@@ -347,6 +347,8 @@ subject to their lane-specific S1/S2/S3 dependencies.
 
 ## Task 10: CP5 — Complete PreparedGeneration ownership
 
+**Status:** accepted at `8cae3365`; the compiler-private effective-binding materializer has no production caller and remains reserved for complete Task 7/8 specs.
+
 **Files:** `pkg/compiler/**`, common runtime types/tests.
 
 **Child plan:**
@@ -382,6 +384,8 @@ subject to their lane-specific S1/S2/S3 dependencies.
 
 ## Task 11: CP6 — Audit the current production compatibility boundary
 
+**Status:** accepted from CP5 `8cae3365` after independent review; this is an integration gate, not a production cutover. No legacy production API was deleted.
+
 **Child plan:**
 [`2026-08-24-immutable-task6-cp6-production-cutover.md`](2026-08-24-immutable-task6-cp6-production-cutover.md).
 
@@ -394,8 +398,10 @@ specific repair.
   `PrepareGeneration` path. Do not synthesize a ticket, expose the private
   materializer, or add a prepared Builder/MQTT/retirement adapter.
 - [ ] Keep the one existing Store/Builder/Router production path buildable.
-  Record decoded snapshot/plaintext, global consumer lookup, mutable stream,
-  and registration-retirement seams with exact Task 7/8/9 deletion owners.
+  Record the acknowledged Store-event-to-reload provider path, decoded
+  snapshot/plaintext, package-global consumer-group and SNI/TLS lookups,
+  mutable stream, and registration-retirement seams with exact Task 7/8/9
+  deletion owners.
 - [ ] Delete legacy plugin/global paths only after AST and `rg` scans prove zero production call sites:
 
   ```text
@@ -422,7 +428,7 @@ specific repair.
 
   ```bash
   source .envrc
-  GOFLAGS=-mod=readonly go run ./cmd/capability-gen -check
+  GOFLAGS=-mod=readonly go run ./cmd/capability-gen -repo-root . -check
   make lint
   GOFLAGS=-mod=readonly make build
   git diff --check

@@ -34,7 +34,7 @@
 ```bash
 source .envrc
 GOFLAGS=-mod=readonly go test -race ./pkg/capability ./pkg/data_encryption -run '(Declaration|Manifest|Strict|Optional|Parity)' -count=1
-GOFLAGS=-mod=readonly go run ./cmd/capability-gen -check
+GOFLAGS=-mod=readonly go run ./cmd/capability-gen -repo-root . -check
 ```
 
 ### C6.2 — Encryption service/catalog cutover
@@ -103,6 +103,8 @@ The manifest adds a distinct `consumer_config` declaration source without expand
 
 **Depends on:** C6.2–C6.5, including all C6.4 leaf and composite migrations.
 
+**Current status:** CP5 is accepted at `8cae3365`; C6.6 is accepted as an integration/compatibility gate after independent review. Production prepared-generation installation has not occurred, and the CP6 legacy deletion set is empty.
+
 Keep `cmd/root.go`, standalone ingestion, and the current Builder/server/stream
 production owner buildable without manufacturing an `ApplyTicket`, adding a
 second selectable path, or exposing the compiler-private materializer. Build an
@@ -112,6 +114,15 @@ stream construction with explicit Task 7/8/9 deletion owners. Run the parent
 Task 6 focused race commands, capability generator check, scoped lint, build,
 dead-code/call-site scans, and an independent merge-level review. Merge the
 complete Task 6 branch into local `master` only after all gates pass.
+
+The live provider path remains `etcd.ConfigClient.sendBatch` -> acknowledged
+Store event -> durable Store apply/hooks -> Server HTTP/stream reload. The
+allowlisted Store journal can construct `generation.ApplyTicket`, but there is
+no production edge from that ticket to `WorkerCompilerFactory.PrepareGeneration`
+or `PrepareRecovery`. Task 7 owns immutable HTTP/TLS/effective-plugin snapshots,
+Task 8 owns immutable stream/MQTT snapshots, and the joint Task 9 unit alone owns
+provider/coordinator/journal installation, rollback, acknowledgement, retirement,
+and final legacy deletion.
 
 ## Authoritative Task 7/8 Effective-Binding Input Amendment
 
@@ -162,4 +173,4 @@ occurrences without duplicating the compilation owned by those tasks.
   `pkg/data_encryption` imports required by the still-live Builder are retained
   only when the C6.6 caller ledger assigns their deletion to the joint Task 9
   cutover.
-- Focused race gates, `cmd/capability-gen -check`, scoped lint, `make build`, `git diff --check`, and independent review pass.
+- Focused race gates, `go run ./cmd/capability-gen -repo-root . -check`, scoped lint, `make build`, `git diff --check`, and independent review pass.

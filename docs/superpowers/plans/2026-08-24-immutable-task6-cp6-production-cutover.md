@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - Start from the dynamic accepted CP5 HEAD containing reviewed S1, S2, S3, A1, M1, M2, X1, and CP5 checkpoints. Do not use `40c04a26`, `e5b6a73e`, `9ebcd2b5`, or another stale fixed baseline.
-- Record the actual accepted HEAD and component SHAs before editing. Visible or unstaged work is not an accepted checkpoint.
+- Record the actual accepted HEAD and component SHAs before editing. Visible or unstaged work is not an accepted checkpoint. The PreparedGeneration observation surface is the subject of the no-authority rule; existing authority-bound producer hooks such as `PreparationAttempt` are separate inputs and must not be misreported as PreparedGeneration observations.
 - Run Go commands after `source .envrc && export GOFLAGS=-mod=readonly`.
 - Never fabricate `generation.ApplyTicket`. Candidate preparation needs the real coordinator ticket; recovery needs verified committed publications. Both production callers belong to Task 9.
 - Do not create a second production path, runtime flag, prepared route constructor, prepared stream reload API, or test-only proxy described as production integration.
@@ -32,12 +32,13 @@ Re-run this table at accepted CP5 HEAD; line numbers may move.
 | Current owner | Verified call | Why CP6 retains it | Final owner |
 | --- | --- | --- | --- |
 | `cmd/root.go:startWithOptions` | constructs `data_encryption.Service`, passes it to `server.NewServer`, starts server | server still owns Store ingestion and reload | Task 9 removes permanent Store/raw-keyring resolver seam |
+| `pkg/etcd/watcher.go`, `pkg/store/store.go`, `pkg/server/server.go` | `ConfigClient.sendBatch` emits acknowledged Store events; durable Store apply/hooks trigger registered HTTP/stream reload callbacks | desired-batch helpers and `generation.NewCoordinator` have no production caller | Task 9 replaces provider-to-reload delivery with provider/coordinator/journal activation and acknowledgement |
 | `pkg/server/server.go`, `reload.go` | construct `route.Builder` with Store, clusters, config, encryption resolver | no legal prepared activation exists | Task 7 compiles; Task 9 installs/deletes |
-| `pkg/route/builder.go` | reads `GetConfigSnapshot`, services, upstreams, plugin-configs, SSL, global rules, metadata, consumers; constructs/materializes plugins | complete HTTP effective specs do not exist | Task 7 replaces construction; Task 9 removes callers |
-| `pkg/server/tls.go` | reads Store SNI certificate selectors | immutable TLS selector does not exist | Task 7 compiles; Task 9 activates/deletes |
+| `pkg/route/builder.go` | reads one `GetConfigSnapshot` for routes/global rules/plugin metadata/services/upstreams/plugin-configs/SSL; constructs/materializes plugins; authenticated requests still read consumer groups through package-global Store access | complete HTTP effective specs do not exist and consumers are not snapshot-owned | Task 7 replaces construction and binds consumers; Task 9 removes callers |
+| `pkg/server/tls.go` | SNI callbacks read package-global Store certificate/config selectors | immutable TLS selector does not exist | Task 7 compiles; Task 9 activates/deletes |
 | `pkg/server/server.go` | prepares stream routes, reads upstream/service, reloads stream, commits last-good | immutable stream snapshot is absent | Task 8 compiles; Task 9 activates/deletes |
 | `pkg/stream/runtime.go`, `router.go` | mutable reload creates MQTT state and uses legacy materialization | stream instance/connection lifetime is not generation-owned | Task 8 constructs; Task 9 installs/retires |
-| `pkg/server/route_handler.go` | replaces HTTP handler and calls current stop callback | HTTP snapshot and prepared lifetime are not one transaction | Task 7 defines lifetime; Task 9 swaps/drains |
+| `pkg/server/route_handler.go` | retires/swaps the HTTP handler, closes hijacked connections, waits asynchronously for old requests to drain, then calls the old stop callback | HTTP snapshot and prepared lifetime are not one transaction | Task 7 defines lifetime; Task 9 swaps/drains |
 
 ## Boundary Classification
 
@@ -74,6 +75,8 @@ Task 9 may delete those paths only when the same reviewed unit proves:
 
 The checkpoint is **C6.6 Task 6 integration gate**. It does not mean a generation was installed, the existing journal ticket reaches compiler preparation, route/stream lifetime is generation-bound, N/N+1 rollback is wired, Store plaintext is eliminated, or provider acknowledgement uses the immutable runtime.
 
+**Execution status:** accepted after independent merge-level review. The deletion set is empty; the unchanged Store/Builder/Router owner remains the sole production path, and no prepared generation was installed.
+
 ## File Structure at Execution
 
 - Create `pkg/compiler/c6_production_boundary_test.go` as the single import-aware pre-Task-9 authority/second-path guard.
@@ -102,18 +105,28 @@ git log --oneline --decorate -20
 export C6_CP5_HEAD
 C6_CP5_HEAD="$(git rev-parse HEAD)"
 test -n "$C6_CP5_HEAD"
+for checkpoint_sha in \
+  a5c866e5 fcad5b38 077e19d8 1a3d4ae8 8e499178 397583e9 \
+  723e092c ec301a7a b31d2a6d 042decf6 51960ab6 7bfc3941 \
+  b67e3340 c669ce19 c98649f4 dbd87d0a 2918b735 faabe39c; do
+  git merge-base --is-ancestor "$checkpoint_sha" "$C6_CP5_HEAD"
+done
 ```
 
-Stop if a lane/CP5 checkpoint is missing, unreviewed, or only an unstaged foreign diff.
+Stop if a lane/CP5 checkpoint is missing, unreviewed, or only an unstaged foreign diff. `git log -20` is orientation only and does not replace the explicit ancestor checks. Record S1/S3 as their last lane-owned leaf because their tracked plans do not name separate aggregate acceptance commits.
 
 - [ ] **Step 2: Record CP5's exact accepted API from source**
 
 ```bash
 rg -n 'type PreparedGeneration|func \([^)]*PreparedGeneration|type WorkerCompilerFactory|func \([^)]*WorkerCompilerFactory' pkg/compiler --glob '*.go'
 rg -n 'PublicationSet|MetadataView|ConsumerLookup|Registration|TaskRegistry|ResourceRegistry|GenerationCapability|Bindings\(' pkg/compiler --glob '*.go'
+go doc ./pkg/compiler.PreparedGeneration
+go doc ./pkg/compiler.WorkerCompilerFactory
+go doc ./pkg/compiler.PreparationAttempt
+go doc ./pkg/compiler.FactoryOccurrence
 ```
 
-Do not copy an in-flight plan's guessed method names. Record exact compiled accessors. Accepted public observation is defensive publication, metadata, and consumer data plus CP5 identity/close/discard. Return any public registration/task/resource/secret/plugin enumeration handle to CP5.
+Do not copy an in-flight plan's guessed method names. Record exact compiled accessors. Accepted `PreparedGeneration` observation is defensive publication, metadata, and consumer data plus close/discard. Existing `PreparationAttempt`, `FactoryOccurrence`, `MetadataPreparer`, and `ConsumerPreparer` are authority-bound producer hooks, not PreparedGeneration observations. If PreparedGeneration itself exposes a public registration/task/resource/secret/plugin-enumeration handle, stop CP6 and return to CP5 remediation.
 
 - [ ] **Step 3: Prove the effective-binding primitive is private**
 
@@ -177,8 +190,23 @@ First use temporary fixture packages to prove the helper rejects new production
 construction/fabrication of `generation.ApplyTicket` outside the exact existing
 `pkg/store/journal_apply.go` journal owner, every pre-Task-9 call to compiler
 `PrepareGeneration`/`PrepareRecovery`, a second selectable activation path, and
-new compiler/runtime imports of Store/global resolver state. Resolve
-aliases/selectors; text matching is insufficient.
+any pre-Task-9 direct compiler/runtime import in the inspected legacy
+production roots. Resolve aliases/types; text matching is insufficient.
+
+Before a concrete activation flag, constructor, interface, or registration site
+exists, prove the "second path" boundary structurally: reject all compiler
+or runtime imports in those roots and ticket construction outside the exact
+journal file/function/form allowlist. This stronger pre-Task-9 rule also blocks
+constructor-inferred or interface-dispatched prepare calls without pretending
+to perform whole-program data-flow analysis. Do not add a keyword heuristic;
+Task 7/8 must update the direct-import boundary only when they introduce a named
+detached owner, and Task 9 must update it for the real activation contract.
+
+Before Task 9, only `pkg/store` may name or transport the `ApplyTicket` type;
+other inspected roots fail on any direct or aliased type use, including an
+aggregate-carrier expression. Store parameters, fields, and pointer-only type
+uses remain valid transport, while direct Store construction remains locked to
+the journal file/function/form allowlist.
 
 - [ ] **Step 2: Confirm fixture RED, then helper GREEN**
 
@@ -270,8 +298,8 @@ Re-run the exact guard, declaration package, and every importer. Record an empty
 | Residual | Task 7 | Task 8 | Joint Task 9 |
 | --- | --- | --- | --- |
 | Builder/effective HTTP plugin construction | compile route/plugin-config/service/global/not-found/consumer/metadata precedence | none | install snapshot, delete Builder/global reads |
-| `ConfigSnapshot` decoded/plaintext config/metadata | remove HTTP dependence | none | delete builder/plaintext buffers/buckets after last caller |
-| Store consumer/group and SNI/SSL reads | bind consumer/TLS into HTTP generation | none | atomically activate and delete old reads |
+| `ConfigSnapshot` decoded/plaintext routes/global rules/plugin metadata/services/upstreams/plugin-configs/SSL | remove HTTP dependence | none | delete builder/plaintext buffers/buckets after last caller |
+| Package-global Store consumer-group and SNI/SSL reads | bind consumer/TLS into HTTP generation | none | atomically activate and delete old reads |
 | MQTT creation and legacy materialization | none | compile exact stream specs, MQTT owner, immutable router | install/rollback, delete mutable reload/materialization |
 | HTTP/stream retirement | define request lifetime | define connection lifetime | retain N through N+1 finalize, then drain once |
 | registration installation | contribute HTTP owner | contribute stream owner | provider ticket, journal stage/activate/commit/finalize/ack |
@@ -323,7 +351,7 @@ git diff --check "${C6_CP5_HEAD}...HEAD"
 ```bash
 source .envrc
 export GOFLAGS=-mod=readonly
-go run ./cmd/capability-gen -check
+go run ./cmd/capability-gen -repo-root . -check
 go test ./pkg/capability ./pkg/generation ./pkg/secret ./pkg/data_encryption ./pkg/store \
   ./pkg/runtime ./pkg/compiler ./pkg/plugin ./pkg/route ./pkg/server ./pkg/stream ./cmd \
   -run 'Catalog|Publication|Attempt|Materializ|Metadata|Consumer|Prepared|Cleanup|Close|Discard|C6|Builder|Reload|RouteHandler|Stream|MQTT' -count=1

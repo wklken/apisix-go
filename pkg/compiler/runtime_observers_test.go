@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/proxy"
@@ -25,6 +26,21 @@ type recordingRuntimeObserver struct {
 type clusterObserverTarget struct {
 	cluster string
 	target  string
+}
+
+type blockingDeleteRuntimeObserver struct {
+	*recordingRuntimeObserver
+	deleteStarted chan struct{}
+	allowDelete   chan struct{}
+	blockOnce     sync.Once
+}
+
+func (observer *blockingDeleteRuntimeObserver) DeleteCluster(cluster string) {
+	observer.blockOnce.Do(func() {
+		close(observer.deleteStarted)
+		<-observer.allowDelete
+	})
+	observer.recordingRuntimeObserver.DeleteCluster(cluster)
 }
 
 func workerTestRuntimeObservers() WorkerRuntimeObservers {
@@ -204,5 +220,63 @@ func TestClusterObserverSharedTargetDeletesOnlyAfterFinalReference(t *testing.T)
 	clusters, targets, _ = observer.snapshot()
 	if len(clusters) != 1 || len(targets) != 1 {
 		t.Fatalf("final shared release = clusters=%v targets=%v", clusters, targets)
+	}
+}
+
+func TestClusterObserverSerializesFinalDeleteWithSameNameAcquire(t *testing.T) {
+	observer := &blockingDeleteRuntimeObserver{
+		recordingRuntimeObserver: &recordingRuntimeObserver{},
+		deleteStarted:            make(chan struct{}),
+		allowDelete:              make(chan struct{}),
+	}
+	registry, err := newClusterObserverRegistry(observer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := registry.acquire("orders", nil)
+	old.activate()
+	releaseDone := make(chan struct{})
+	go func() {
+		old.Release()
+		close(releaseDone)
+	}()
+
+	select {
+	case <-observer.deleteStarted:
+	case <-time.After(time.Second):
+		t.Fatal("old generation did not reach final metric deletion")
+	}
+	nextLease := make(chan *clusterObserverLease, 1)
+	go func() {
+		next := registry.acquire("orders", nil)
+		next.activate()
+		nextLease <- next
+	}()
+
+	var (
+		next  *clusterObserverLease
+		raced bool
+	)
+	select {
+	case next = <-nextLease:
+		raced = true
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(observer.allowDelete)
+	select {
+	case <-releaseDone:
+	case <-time.After(time.Second):
+		t.Fatal("old generation metric deletion did not complete")
+	}
+	if next == nil {
+		select {
+		case next = <-nextLease:
+		case <-time.After(time.Second):
+			t.Fatal("replacement acquire did not resume after deletion")
+		}
+	}
+	next.Release()
+	if raced {
+		t.Fatal("same-name replacement acquired before old metric deletion completed")
 	}
 }

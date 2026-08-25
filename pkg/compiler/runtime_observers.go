@@ -116,6 +116,7 @@ func (lease *clusterObserverLease) activate() {
 		registry := lease.registry
 		initialize := make([]clusterObserverTargetKey, 0, len(lease.targets))
 		registry.mu.Lock()
+		defer registry.mu.Unlock()
 		nameRef := registry.names[lease.name]
 		nameRef.initialized = true
 		registry.names[lease.name] = nameRef
@@ -128,7 +129,6 @@ func (lease *clusterObserverLease) activate() {
 				initialize = append(initialize, key)
 			}
 		}
-		registry.mu.Unlock()
 		if statusObserver, ok := registry.sink.(proxy.UpstreamStatusObserver); ok {
 			for _, key := range initialize {
 				statusObserver.SetUpstreamStatus(key.cluster, key.target, true)
@@ -146,6 +146,7 @@ func (lease *clusterObserverLease) Release() {
 		deleteTargets := make([]clusterObserverTargetKey, 0, len(lease.targets))
 		deleteCluster := false
 		registry.mu.Lock()
+		defer registry.mu.Unlock()
 		for _, target := range lease.targets {
 			key := clusterObserverTargetKey{cluster: lease.name, target: target}
 			ref := registry.targets[key]
@@ -167,8 +168,6 @@ func (lease *clusterObserverLease) Release() {
 		} else {
 			registry.names[lease.name] = nameRef
 		}
-		registry.mu.Unlock()
-
 		if statusObserver, ok := registry.sink.(proxy.UpstreamStatusObserver); ok {
 			for _, key := range deleteTargets {
 				statusObserver.DeleteUpstreamStatus(key.cluster, key.target)

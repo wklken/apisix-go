@@ -29,6 +29,12 @@ type ServerInfoReporter struct {
 	ttl     int64
 	leaseID clientv3.LeaseID
 	mu      sync.Mutex
+
+	lifecycleMu sync.Mutex
+	cancel      context.CancelFunc
+	done        chan struct{}
+	started     bool
+	stopOnce    sync.Once
 }
 
 func serverInfoKey(prefix string, nodeID string) string {
@@ -101,24 +107,41 @@ func (r *ServerInfoReporter) Start(ctx context.Context, provider func() ([]byte,
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	r.lifecycleMu.Lock()
+	if r.started {
+		r.lifecycleMu.Unlock()
+		return errors.New("server-info reporter is already started")
+	}
+	r.started = true
+	runCtx, cancel := context.WithCancel(ctx)
+	r.cancel = cancel
+	r.done = make(chan struct{})
+	done := r.done
+	r.lifecycleMu.Unlock()
+
 	if payload, err := provider(); err != nil {
+		cancel()
+		close(done)
 		return fmt.Errorf("build server-info payload: %w", err)
-	} else if err := r.Report(ctx, payload); err != nil {
+	} else if err := r.Report(runCtx, payload); err != nil {
+		cancel()
+		close(done)
 		return err
 	}
 
 	interval := max(time.Duration(r.ttl)*time.Second/2, time.Second)
 	go func() {
+		defer close(done)
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
 			select {
-			case <-ctx.Done():
+			case <-runCtx.Done():
 				return
 			case <-ticker.C:
 				payload, err := provider()
 				if err == nil {
-					err = r.Report(ctx, payload)
+					err = r.Report(runCtx, payload)
 				}
 				if err != nil {
 					logger.Warnf("server-info report failed: %s", err)
@@ -126,6 +149,28 @@ func (r *ServerInfoReporter) Start(ctx context.Context, provider func() ([]byte,
 			}
 		}
 	}()
+	return nil
+}
+
+// Stop cancels and joins the reporter. Repeated calls replay the first result.
+func (r *ServerInfoReporter) Stop() error {
+	if r == nil {
+		return nil
+	}
+	r.stopOnce.Do(func() {
+		r.lifecycleMu.Lock()
+		cancel, done, started := r.cancel, r.done, r.started
+		r.lifecycleMu.Unlock()
+		if !started {
+			return
+		}
+		if cancel != nil {
+			cancel()
+		}
+		if done != nil {
+			<-done
+		}
+	})
 	return nil
 }
 
@@ -143,9 +188,37 @@ func (c *ConfigClient) StartServerInfoReporter(
 	if strings.Trim(nodeID, "/") == "" {
 		return nil, errors.New("server-info node ID is empty")
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	reporter := newServerInfoReporter(c.client, serverInfoKey(c.prefix, nodeID), ttl)
-	if err := reporter.Start(ctx, provider); err != nil {
+	c.lifecycleMu.Lock()
+	if c.closed {
+		c.lifecycleMu.Unlock()
+		return nil, errors.New("etcd config client is closed")
+	}
+	c.ensureLifetimeLocked()
+	lifetime := c.lifetimeCtx
+	c.reporterStarts.Add(1)
+	c.lifecycleMu.Unlock()
+	defer c.reporterStarts.Done()
+
+	reporterCtx, cancelReporter := context.WithCancel(ctx)
+	stopLifetimeCancel := context.AfterFunc(lifetime, cancelReporter)
+	if err := reporter.Start(reporterCtx, provider); err != nil {
+		stopLifetimeCancel()
+		cancelReporter()
 		return nil, err
 	}
+	c.lifecycleMu.Lock()
+	if c.closed {
+		c.lifecycleMu.Unlock()
+		stopLifetimeCancel()
+		cancelReporter()
+		_ = reporter.Stop()
+		return nil, errors.New("etcd config client closed while starting server-info reporter")
+	}
+	c.reporters[reporter] = struct{}{}
+	c.lifecycleMu.Unlock()
 	return reporter, nil
 }

@@ -131,9 +131,34 @@ func TestServerInfoReporterStartCancellationStopsRefresh(t *testing.T) {
 	}
 
 	cancel()
-	time.Sleep(1100 * time.Millisecond)
+	if err := reporter.Stop(); err != nil {
+		t.Fatal(err)
+	}
 	if client.putCount != 1 || providerCalls.Load() != 1 {
 		t.Fatalf("put/provider after cancellation = %d/%d, want no refresh", client.putCount, providerCalls.Load())
+	}
+}
+
+func TestConfigClientCloseCancelsAndJoinsServerInfoReporter(t *testing.T) {
+	leaseClient := &fakeServerInfoLeaseClient{nextLeaseID: 42}
+	reporter := newServerInfoReporter(leaseClient, "/apisix/data_plane/server_info/node-a", 60*time.Second)
+	if err := reporter.Start(context.Background(), func() ([]byte, error) {
+		return []byte(`{"id":"node-a"}`), nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	configClient := newEtcdTestConfigClient(&recordingDesiredApplier{})
+	configClient.reporters[reporter] = struct{}{}
+	if err := configClient.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-reporter.done:
+	default:
+		t.Fatal("ConfigClient.Close returned before joining server-info reporter")
+	}
+	if err := configClient.Close(); err != nil {
+		t.Fatalf("repeated Close() error = %v", err)
 	}
 }
 

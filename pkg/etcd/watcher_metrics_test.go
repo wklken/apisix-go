@@ -8,6 +8,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
+	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/observability/metrics"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/mvccpb"
@@ -16,14 +17,11 @@ import (
 
 func TestFetchAllRecordsReachabilityAndAppliedRevision(t *testing.T) {
 	reachable, revision := installEtcdRuntimeMetrics(t)
-	_, events := newWatcherStore(t)
-	client := &ConfigClient{
-		events:         events,
-		requestTimeout: time.Second,
-		knownKeys:      make(map[string]struct{}),
-		loadSnapshot: func(context.Context) (*clientv3.GetResponse, error) {
-			return &clientv3.GetResponse{Header: &etcdserverpb.ResponseHeader{Revision: 17}}, nil
-		},
+	client := newEtcdTestConfigClient(&recordingDesiredApplier{})
+	client.loadSnapshot = func(context.Context) (*clientv3.GetResponse, error) {
+		return &clientv3.GetResponse{
+			Header: &etcdserverpb.ResponseHeader{ClusterId: 1, Revision: 17},
+		}, nil
 	}
 	if err := client.FetchAll(); err != nil {
 		t.Fatalf("FetchAll() error = %v", err)
@@ -39,12 +37,10 @@ func TestFetchAllRecordsReachabilityAndAppliedRevision(t *testing.T) {
 func TestFetchAllFailureMarksUnreachableWithoutAdvancingRevision(t *testing.T) {
 	reachable, revision := installEtcdRuntimeMetrics(t)
 	metrics.RecordEtcdAppliedRevision(11)
-	client := &ConfigClient{
-		requestTimeout: 50 * time.Millisecond,
-		knownKeys:      make(map[string]struct{}),
-		loadSnapshot: func(context.Context) (*clientv3.GetResponse, error) {
-			return nil, errors.New("unavailable")
-		},
+	client := newEtcdTestConfigClient(&recordingDesiredApplier{})
+	client.requestTimeout = 50 * time.Millisecond
+	client.loadSnapshot = func(context.Context) (*clientv3.GetResponse, error) {
+		return nil, errors.New("unavailable")
 	}
 	if err := client.FetchAll(); err == nil {
 		t.Fatal("FetchAll() error = nil, want unavailable")
@@ -57,31 +53,35 @@ func TestFetchAllFailureMarksUnreachableWithoutAdvancingRevision(t *testing.T) {
 	}
 }
 
-func TestApplySnapshotDoesNotRecordRejectedResourceRevision(t *testing.T) {
+func TestApplySnapshotRecordsAcknowledgedQuarantinedResourceRevision(t *testing.T) {
 	old := metrics.EtcdModifyIndexes
 	metrics.EtcdModifyIndexes = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{Name: "test_watcher_etcd_modify_index"},
 		[]string{"key"},
 	)
 	t.Cleanup(func() { metrics.EtcdModifyIndexes = old })
-	_, events := newWatcherStore(t)
-	client := &ConfigClient{
-		prefix:    canonicalEtcdPrefix("/apisix"),
-		events:    events,
-		knownKeys: make(map[string]struct{}),
-	}
+	applier := &recordingDesiredApplier{apply: func(
+		_ context.Context,
+		batch generation.DesiredBatch,
+	) (generation.Acknowledgement, error) {
+		return acknowledgedEtcdTestBatch(batch, 1, generation.DispositionLastGood), nil
+	}}
+	client := newEtcdTestConfigClient(applier)
 	if err := client.applySnapshot(context.Background(), &clientv3.GetResponse{
-		Header: &etcdserverpb.ResponseHeader{Revision: 20},
+		Header: &etcdserverpb.ResponseHeader{ClusterId: 1, Revision: 20},
 		Kvs: []*mvccpb.KeyValue{{
 			Key:         []byte("/apisix/ssls/bad"),
 			Value:       []byte(`{"id":"bad","cert":"bad","key":"bad","status":1}`),
 			ModRevision: 20,
 		}},
 	}); err != nil {
-		t.Fatalf("applySnapshot() error = %v, want invalid resource quarantined", err)
+		t.Fatalf("applySnapshot() error = %v", err)
 	}
-	if got := metricGaugeValue(t, metrics.EtcdModifyIndexes.WithLabelValues("ssls")); got != 0 {
-		t.Fatalf("rejected SSL modify index = %v, want 0", got)
+	if got := metricGaugeValue(t, metrics.EtcdModifyIndexes.WithLabelValues("ssls")); got != 20 {
+		t.Fatalf("acknowledged SSL modify index = %v, want 20", got)
+	}
+	if got := client.quarantine["/apisix/ssls/bad"]; got != 20 {
+		t.Fatalf("quarantine revision = %d, want 20", got)
 	}
 }
 
@@ -94,17 +94,14 @@ func TestWatchApplyFailureKeepsReachabilityWhileSnapshotRecoveryStarts(t *testin
 	}
 	close(watchResponses)
 	recoveryStarted := make(chan struct{})
-	client := &ConfigClient{
-		requestTimeout: time.Second,
-		knownKeys:      make(map[string]struct{}),
-		openWatch: func(context.Context, int64) clientv3.WatchChan {
-			return watchResponses
-		},
-		loadSnapshot: func(ctx context.Context) (*clientv3.GetResponse, error) {
-			close(recoveryStarted)
-			<-ctx.Done()
-			return nil, ctx.Err()
-		},
+	client := newEtcdTestConfigClient(&recordingDesiredApplier{})
+	client.openWatch = func(context.Context, int64) clientv3.WatchChan {
+		return watchResponses
+	}
+	client.loadSnapshot = func(ctx context.Context) (*clientv3.GetResponse, error) {
+		close(recoveryStarted)
+		<-ctx.Done()
+		return nil, ctx.Err()
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -137,26 +134,24 @@ func TestWatchHealthCheckRecoversWhileWatchRemainsOpen(t *testing.T) {
 	watchStream := make(chan clientv3.WatchResponse)
 	firstProbe := make(chan struct{})
 	releaseRecovery := make(chan struct{})
-	client := &ConfigClient{
-		requestTimeout:      time.Second,
-		healthCheckInterval: time.Millisecond,
-		healthCheck: func(ctx context.Context) error {
-			select {
-			case <-firstProbe:
-			default:
-				close(firstProbe)
-				return errors.New("etcd unavailable")
-			}
-			select {
-			case <-releaseRecovery:
-				return nil
-			case <-ctx.Done():
-				return ctx.Err()
-			}
-		},
-		openWatch: func(context.Context, int64) clientv3.WatchChan {
-			return watchStream
-		},
+	client := newEtcdTestConfigClient(&recordingDesiredApplier{})
+	client.healthCheckInterval = time.Millisecond
+	client.healthCheck = func(ctx context.Context) error {
+		select {
+		case <-firstProbe:
+		default:
+			close(firstProbe)
+			return errors.New("etcd unavailable")
+		}
+		select {
+		case <-releaseRecovery:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	client.openWatch = func(context.Context, int64) clientv3.WatchChan {
+		return watchStream
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -199,23 +194,21 @@ func TestWatchHealthCheckCancellationJoinsMonitor(t *testing.T) {
 	monitorExited := make(chan struct{})
 	probeDeadline := make(chan time.Time, 1)
 	watchStream := make(chan clientv3.WatchResponse)
-	client := &ConfigClient{
-		requestTimeout:      2 * time.Second,
-		healthCheckInterval: time.Hour,
-		healthCheck: func(ctx context.Context) error {
-			deadline, ok := ctx.Deadline()
-			if !ok {
-				return errors.New("health probe context has no deadline")
-			}
-			probeDeadline <- deadline
-			close(monitorStarted)
-			<-ctx.Done()
-			close(monitorExited)
-			return ctx.Err()
-		},
-		openWatch: func(context.Context, int64) clientv3.WatchChan {
-			return watchStream
-		},
+	client := newEtcdTestConfigClient(&recordingDesiredApplier{})
+	client.requestTimeout = 2 * time.Second
+	client.healthCheck = func(ctx context.Context) error {
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			return errors.New("health probe context has no deadline")
+		}
+		probeDeadline <- deadline
+		close(monitorStarted)
+		<-ctx.Done()
+		close(monitorExited)
+		return ctx.Err()
+	}
+	client.openWatch = func(context.Context, int64) clientv3.WatchChan {
+		return watchStream
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -254,27 +247,25 @@ func TestWatchTimeoutKeepsReachabilityAndAppliedRevision(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	var opens int
-	client := &ConfigClient{
-		watchTimeout: 10 * time.Millisecond,
-		lastRevision: 40,
-		knownKeys:    make(map[string]struct{}),
-		openWatch: func(watchCtx context.Context, revision int64) clientv3.WatchChan {
-			if revision != 41 {
-				t.Fatalf("watch revision = %d, want 41", revision)
-			}
-			opens++
-			stream := make(chan clientv3.WatchResponse)
-			if opens == 2 {
-				cancel()
-				close(stream)
-				return stream
-			}
-			go func() {
-				<-watchCtx.Done()
-				close(stream)
-			}()
+	client := newEtcdTestConfigClient(&recordingDesiredApplier{})
+	client.watchTimeout = 10 * time.Millisecond
+	client.lastRevision = 40
+	client.openWatch = func(watchCtx context.Context, revision int64) clientv3.WatchChan {
+		if revision != 41 {
+			t.Fatalf("watch revision = %d, want 41", revision)
+		}
+		opens++
+		stream := make(chan clientv3.WatchResponse)
+		if opens == 2 {
+			cancel()
+			close(stream)
 			return stream
-		},
+		}
+		go func() {
+			<-watchCtx.Done()
+			close(stream)
+		}()
+		return stream
 	}
 	client.Watch(ctx)
 	if opens != 2 {

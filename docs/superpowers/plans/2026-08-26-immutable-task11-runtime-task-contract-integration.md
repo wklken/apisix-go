@@ -1023,7 +1023,7 @@ bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test -race \
   ./pkg/plugin/limit_count ./pkg/plugin/ai_proxy_multi ./pkg/plugin/batch_requests \
   ./pkg/plugin/kafka_proxy ./pkg/plugin/mqtt_proxy ./pkg/plugin/proxy_mirror \
   ./pkg/plugin/mcp_bridge ./pkg/plugin/ai_stream \
-  -run "(Task|Owner|Ownership|Cancel|Shutdown|Drain|Residual|Health|Observer|Signal|Batch|Mirror|Bridge|Timeout|Lease|Panic|Flush|TypedWaitGroupGoCalls|ProductionGoroutines)" -count=1'
+  -run "(Task|Owner|Ownership|Cancel|Shutdown|Drain|Residual|Health|Observer|Signal|Batch|Mirror|Bridge|Timeout|Lease|Panic|Flush|TypedWaitGroupGoSelections|ProductionGoroutines)" -count=1'
 ```
 
 Expected: PASS with no race. If the regex selects no tests in a package, record that package and run its exact test names from the sibling plan rather than treating `[no tests to run]` as evidence.

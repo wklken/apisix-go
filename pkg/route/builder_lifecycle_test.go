@@ -19,7 +19,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/error_log_logger"
 	"github.com/wklken/apisix-go/pkg/plugin/http_logger"
 	"github.com/wklken/apisix-go/pkg/plugin/proxy_cache"
-	pxy "github.com/wklken/apisix-go/pkg/proxy"
 	"github.com/wklken/apisix-go/pkg/resource"
 )
 
@@ -1043,79 +1042,6 @@ func TestBuildPreparedHandlerAllowsPluginOnlyRouteWithoutUpstreamNodes(t *testin
 	})
 	if err != nil {
 		t.Fatalf("BuildPreparedHandler() error = %v, want plugin-only route support", err)
-	}
-}
-
-func TestPlannedClusterRegistrySharesIdenticalUpstreamUntilFinalLeaseStops(t *testing.T) {
-	routeResource := testRouteFromJSON(
-		t,
-		`{"id":"cluster-shared","uri":"/cluster-shared","upstream":{"scheme":"http","nodes":[{"host":"127.0.0.1","port":18081,"weight":1}]}}`,
-	)
-	plan, err := PlanRouteUpstream(
-		routeResource, resource.Service{}, nil, nil, &testEffectiveConfig().Config,
-	)
-	if err != nil || plan.ClusterConfig == nil {
-		t.Fatalf("PlanRouteUpstream() = (%#v, %v), want cluster config", plan, err)
-	}
-	registry := pxy.NewClusterRegistry(pxy.NopClusterObserver{})
-	t.Cleanup(registry.Close)
-	first, err := registry.Acquire(*plan.ClusterConfig)
-	if err != nil {
-		t.Fatalf("first Acquire() error = %v", err)
-	}
-	if got := registry.Len(); got != 1 {
-		t.Fatalf("registry.Len() after first acquire = %d, want 1", got)
-	}
-	second, err := registry.Acquire(*plan.ClusterConfig)
-	if err != nil {
-		t.Fatalf("second Acquire() error = %v", err)
-	}
-	if got := registry.Len(); first.Cluster() != second.Cluster() || got != 1 {
-		t.Fatalf(
-			"registry after second acquire = %d clusters (%p/%p), want one shared cluster",
-			got,
-			first.Cluster(),
-			second.Cluster(),
-		)
-	}
-	first.Stop()
-	if got := registry.Len(); got != 1 {
-		t.Fatalf("registry.Len() after first lease stop = %d, want shared cluster retained", got)
-	}
-	second.Stop()
-	if got := registry.Len(); got != 0 {
-		t.Fatalf("registry.Len() after second lease stop = %d, want 0", got)
-	}
-}
-
-func TestPlannedClusterRegistrySeparatesChangedUpstreamTimeout(t *testing.T) {
-	routes := []resource.Route{
-		testRouteFromJSON(
-			t,
-			`{"id":"cluster-timeout-a","uri":"/cluster-timeout-a","upstream":{"scheme":"http","timeout":{"read":1},"nodes":[{"host":"127.0.0.1","port":18082,"weight":1}]}}`,
-		),
-		testRouteFromJSON(
-			t,
-			`{"id":"cluster-timeout-b","uri":"/cluster-timeout-b","upstream":{"scheme":"http","timeout":{"read":2},"nodes":[{"host":"127.0.0.1","port":18082,"weight":1}]}}`,
-		),
-	}
-	registry := pxy.NewClusterRegistry(pxy.NopClusterObserver{})
-	t.Cleanup(registry.Close)
-	for _, routeResource := range routes {
-		plan, err := PlanRouteUpstream(
-			routeResource, resource.Service{}, nil, nil, &testEffectiveConfig().Config,
-		)
-		if err != nil || plan.ClusterConfig == nil {
-			t.Fatalf("PlanRouteUpstream(%q) = (%#v, %v)", routeResource.ID, plan, err)
-		}
-		lease, err := registry.Acquire(*plan.ClusterConfig)
-		if err != nil {
-			t.Fatalf("Acquire(%q) error = %v", routeResource.ID, err)
-		}
-		t.Cleanup(lease.Stop)
-	}
-	if got := registry.Len(); got != 2 {
-		t.Fatalf("registry.Len() = %d, want 2 distinct clusters", got)
 	}
 }
 

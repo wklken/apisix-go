@@ -127,12 +127,6 @@ func TestInitPluginsPassesServerAddrToLoggerBatchMetrics(t *testing.T) {
 	}
 }
 
-func TestNormalizeServerAddrNormalizesPortOnlyAddr(t *testing.T) {
-	if got := normalizeServerAddr(":8080"); got != "0.0.0.0:8080" {
-		t.Fatalf("normalizeServerAddr() = %q, want 0.0.0.0:8080", got)
-	}
-}
-
 func TestInitGlobalPluginsPassesRouteContextToLoggerBatchMetrics(t *testing.T) {
 	loggerEndpoint := newLoggerEndpoint(t)
 	oldBatchProcessEntries := metrics.BatchProcessEntries

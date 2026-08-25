@@ -358,15 +358,19 @@ func TestTerminalOwnerUsesPluginConfigWinnerProvenance(t *testing.T) {
 		service.ID,
 	)
 	sources := append(localSources, serviceSources...)
-	candidates, err := routeTerminalCandidates(
-		sources,
-		resource.Upstream{},
+	bindings := make([]plugin.Binding, 0, len(sources))
+	for _, source := range sources {
+		bindings = append(bindings, plugin.Binding{
+			Descriptor: plugin.Descriptor{Factory: source.name},
+			Scope:      source.scope, Provenance: source.provenance,
+		})
+	}
+	candidates := preparedRouteTerminalCandidates(
+		bindings,
 		plugin.ResourceProvenance{Kind: plugin.ResourceRoute, ID: route.ID},
+		resource.Upstream{},
 		routeProtocolTerminals{dubbo: routeDubboTerminal{}},
 	)
-	if err != nil {
-		t.Fatalf("routeTerminalCandidates() error = %v", err)
-	}
 	if len(candidates) != 1 || candidates[0].Identity != "dubbo-proxy" ||
 		candidates[0].Provenance != (plugin.ResourceProvenance{
 			Kind: plugin.ResourcePluginConfig,
@@ -378,15 +382,12 @@ func TestTerminalOwnerUsesPluginConfigWinnerProvenance(t *testing.T) {
 
 func TestRouteTerminalCandidatesUseResolvedKafkaUpstreamProvenance(t *testing.T) {
 	provenance := plugin.ResourceProvenance{Kind: plugin.ResourceUpstream, ID: "kafka-upstream"}
-	candidates, err := routeTerminalCandidates(
+	candidates := preparedRouteTerminalCandidates(
 		nil,
-		resource.Upstream{Scheme: "kafka"},
 		provenance,
+		resource.Upstream{Scheme: "kafka"},
 		routeProtocolTerminals{kafka: routeKafkaTerminal{handler: http.NotFoundHandler()}},
 	)
-	if err != nil {
-		t.Fatalf("routeTerminalCandidates() error = %v", err)
-	}
 	if len(candidates) != 1 || candidates[0].Identity != "kafka-proxy" ||
 		candidates[0].Protocol != plugin.ProtocolKafka || candidates[0].Provenance != provenance {
 		t.Fatalf("Kafka candidates = %#v, want resolved upstream provenance", candidates)

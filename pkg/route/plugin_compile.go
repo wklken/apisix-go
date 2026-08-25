@@ -560,14 +560,6 @@ type pluginMetadata struct {
 	errorResponse  any
 }
 
-func (m pluginMetadata) instanceIdentity(config any) plugin.InstanceIdentityInput {
-	return plugin.InstanceIdentityInput{
-		PluginConfig:  config,
-		Filter:        m.identityFilter,
-		ErrorResponse: m.errorResponse,
-	}
-}
-
 func parsePluginMetadata(config resource.PluginConfig) (resource.PluginConfig, pluginMetadata, error) {
 	values, ok := config.(map[string]any)
 	if !ok {

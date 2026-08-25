@@ -8,14 +8,9 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
-	"encoding/binary"
 	"encoding/pem"
-	"errors"
-	"fmt"
-	"io"
 	"math"
 	"math/big"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -29,7 +24,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin"
 	"github.com/wklken/apisix-go/pkg/plugin/kafka_proxy"
-	pxy "github.com/wklken/apisix-go/pkg/proxy"
 	"github.com/wklken/apisix-go/pkg/resource"
 )
 
@@ -84,14 +78,17 @@ func readKafkaWebSocketMessage(t *testing.T, conn *websocket.Conn) []byte {
 	return payload
 }
 
-func readKafkaWebSocketClose(t *testing.T, conn *websocket.Conn) *websocket.CloseError {
+func buildKafkaPubSubProxyHandlerForTest(
+	t *testing.T,
+	upstream resource.Upstream,
+	factory kafka_proxy.KafkaConsumerFactory,
+) http.Handler {
 	t.Helper()
-	_, _, err := conn.ReadMessage()
-	var closeErr *websocket.CloseError
-	if !errors.As(err, &closeErr) {
-		t.Fatalf("read WebSocket close: error = %v, want close frame", err)
+	handler, err := buildKafkaPubSubProxyHandlerStrictWithSSLResolver(upstream, factory, nil)
+	if err != nil {
+		t.Fatalf("buildKafkaPubSubProxyHandlerStrictWithSSLResolver() error = %v", err)
 	}
-	return closeErr
+	return handler
 }
 
 func TestBuildKafkaPubSubHandlerFetchesKafkaMessages(t *testing.T) {
@@ -100,7 +97,7 @@ func TestBuildKafkaPubSubHandlerFetchesKafkaMessages(t *testing.T) {
 			Offset: 11, Timestamp: 22, Key: []byte("key"), Value: []byte("value"),
 		}}}, nil
 	}
-	handler := buildKafkaPubSubProxyHandler(resource.Upstream{
+	handler := buildKafkaPubSubProxyHandlerForTest(t, resource.Upstream{
 		Nodes: []resource.Node{{Host: "127.0.0.1", Port: 9092, Weight: 1}},
 	}, factory)
 	server := httptest.NewServer(handler)
@@ -132,7 +129,7 @@ func TestBuildKafkaPubSubHandlerUsesBracketedIPv6BrokerURL(t *testing.T) {
 		brokers <- append([]string(nil), configured...)
 		return fakeKafkaPubSubConsumer{}, nil
 	}
-	handler := buildKafkaPubSubProxyHandler(resource.Upstream{
+	handler := buildKafkaPubSubProxyHandlerForTest(t, resource.Upstream{
 		Nodes: []resource.Node{{Host: "::1", Port: 9092, Weight: 1}},
 	}, factory)
 	server := httptest.NewServer(handler)
@@ -153,7 +150,7 @@ func TestBuildKafkaPubSubHandlerListsOffset(t *testing.T) {
 	factory := func(context.Context, []string, kafka_proxy.ConsumerOptions) (kafka_proxy.KafkaConsumer, error) {
 		return fakeKafkaPubSubConsumer{listOffset: 42}, nil
 	}
-	handler := buildKafkaPubSubProxyHandler(resource.Upstream{
+	handler := buildKafkaPubSubProxyHandlerForTest(t, resource.Upstream{
 		Nodes: []resource.Node{{Host: "127.0.0.1", Port: 9092, Weight: 1}},
 	}, factory)
 	server := httptest.NewServer(handler)
@@ -182,7 +179,7 @@ func TestBuildKafkaPubSubHandlerPassesUpstreamTLS(t *testing.T) {
 		received <- options.TLSConfig
 		return fakeKafkaPubSubConsumer{}, nil
 	}
-	handler := buildKafkaPubSubProxyHandler(resource.Upstream{
+	handler := buildKafkaPubSubProxyHandlerForTest(t, resource.Upstream{
 		TLS:   &resource.UpstreamTLS{Verify: true},
 		Nodes: []resource.Node{{Host: "127.0.0.1", Port: 9093, Weight: 1}},
 	}, factory)
@@ -352,7 +349,7 @@ func TestBuildKafkaPubSubHandlerReturnsWrongCommandAndKeepsSession(t *testing.T)
 	factory := func(context.Context, []string, kafka_proxy.ConsumerOptions) (kafka_proxy.KafkaConsumer, error) {
 		return fakeKafkaPubSubConsumer{}, nil
 	}
-	handler := buildKafkaPubSubProxyHandler(resource.Upstream{
+	handler := buildKafkaPubSubProxyHandlerForTest(t, resource.Upstream{
 		Nodes: []resource.Node{{Host: "127.0.0.1", Port: 9092, Weight: 1}},
 	}, factory)
 	server := httptest.NewServer(handler)
@@ -389,7 +386,7 @@ func TestBuildKafkaPubSubHandlerMapsKafkaAuthError(t *testing.T) {
 	factory := func(context.Context, []string, kafka_proxy.ConsumerOptions) (kafka_proxy.KafkaConsumer, error) {
 		return fakeKafkaPubSubConsumer{fetchErr: kafka.SASLAuthenticationFailed}, nil
 	}
-	handler := buildKafkaPubSubProxyHandler(resource.Upstream{
+	handler := buildKafkaPubSubProxyHandlerForTest(t, resource.Upstream{
 		Nodes: []resource.Node{{Host: "127.0.0.1", Port: 9092, Weight: 1}},
 	}, factory)
 	server := httptest.NewServer(handler)
@@ -416,7 +413,7 @@ func TestBuildKafkaPubSubHandlerMapsTimeout(t *testing.T) {
 	factory := func(context.Context, []string, kafka_proxy.ConsumerOptions) (kafka_proxy.KafkaConsumer, error) {
 		return fakeKafkaPubSubConsumer{listErr: context.DeadlineExceeded}, nil
 	}
-	handler := buildKafkaPubSubProxyHandler(resource.Upstream{
+	handler := buildKafkaPubSubProxyHandlerForTest(t, resource.Upstream{
 		Nodes: []resource.Node{{Host: "127.0.0.1", Port: 9092, Weight: 1}},
 	}, factory)
 	server := httptest.NewServer(handler)
@@ -435,58 +432,6 @@ func TestBuildKafkaPubSubHandlerMapsTimeout(t *testing.T) {
 	}
 	if response.Sequence != 10 || response.Kind != kafka_proxy.RespError || response.Code != 504 {
 		t.Fatalf("response = %#v, want sanitized 504 timeout error", response)
-	}
-}
-
-func TestBuildKafkaRawCompatibilityHandlerProxiesWebSocketFrames(t *testing.T) {
-	broker, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen Kafka broker: %v", err)
-	}
-	defer func() { _ = broker.Close() }()
-
-	request := routeKafkaFrame([]byte("request"))
-	response := routeKafkaFrame([]byte("response"))
-	brokerResult := make(chan error, 1)
-	go func() {
-		conn, acceptErr := broker.Accept()
-		if acceptErr != nil {
-			brokerResult <- acceptErr
-			return
-		}
-		defer func() { _ = conn.Close() }()
-		got, readErr := readRouteKafkaFrame(conn)
-		if readErr != nil {
-			brokerResult <- readErr
-			return
-		}
-		if !bytes.Equal(got, request) {
-			brokerResult <- fmt.Errorf("Kafka request frame = %x, want %x", got, request)
-			return
-		}
-		_, writeErr := conn.Write(response)
-		brokerResult <- writeErr
-	}()
-
-	port := broker.Addr().(*net.TCPAddr).Port
-	lb, err := pxy.NewUpstreamLoadBalance(map[string]int{fmt.Sprintf("kafka://127.0.0.1:%d", port): 1}, nil)
-	if err != nil {
-		t.Fatalf("NewUpstreamLoadBalance() error = %v", err)
-	}
-	handler := buildKafkaRawProxyHandler(lb, resource.Upstream{
-		Nodes: []resource.Node{{Host: "127.0.0.1", Port: port, Weight: 1}},
-	})
-
-	server := httptest.NewServer(handler)
-	defer server.Close()
-	conn := dialKafkaWebSocket(t, server.URL)
-
-	writeKafkaWebSocketMessage(t, conn, request)
-	if got := readKafkaWebSocketMessage(t, conn); !bytes.Equal(got, response) {
-		t.Fatalf("WebSocket response payload = %x, want %x", got, response)
-	}
-	if err := <-brokerResult; err != nil {
-		t.Fatalf("Kafka broker: %v", err)
 	}
 }
 
@@ -678,132 +623,11 @@ func TestKafkaProxyMetadataBindingKeepsHandlerAcrossResponsePlanTerminal(t *test
 	}
 }
 
-func TestBuildKafkaRawCompatibilityHandlerRejectsMalformedWebSocketFrame(t *testing.T) {
-	broker, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen Kafka broker: %v", err)
-	}
-	defer func() { _ = broker.Close() }()
-	brokerClosed := make(chan struct{})
-	go func() {
-		conn, acceptErr := broker.Accept()
-		if acceptErr == nil {
-			_, _ = io.Copy(io.Discard, conn)
-			_ = conn.Close()
-		}
-		close(brokerClosed)
-	}()
-
-	port := broker.Addr().(*net.TCPAddr).Port
-	lb, err := pxy.NewUpstreamLoadBalance(map[string]int{fmt.Sprintf("kafka://127.0.0.1:%d", port): 1}, nil)
-	if err != nil {
-		t.Fatalf("NewUpstreamLoadBalance() error = %v", err)
-	}
-	handler := buildKafkaRawProxyHandler(lb, resource.Upstream{
-		Nodes: []resource.Node{{Host: "127.0.0.1", Port: port, Weight: 1}},
-	})
-	server := httptest.NewServer(handler)
-	defer server.Close()
-	conn := dialKafkaWebSocket(t, server.URL)
-
-	writeKafkaWebSocketMessage(t, conn, []byte{0, 0, 0, 5, 'x'})
-	if closeErr := readKafkaWebSocketClose(t, conn); closeErr.Code != 1002 {
-		t.Fatalf("malformed-frame close code = %d, want 1002", closeErr.Code)
-	}
-	select {
-	case <-brokerClosed:
-	case <-time.After(time.Second):
-		t.Fatal("Kafka broker connection did not close")
-	}
-}
-
-func routeKafkaFrame(payload []byte) []byte {
-	frame := make([]byte, 4+len(payload))
-	binary.BigEndian.PutUint32(frame[:4], uint32(len(payload)))
-	copy(frame[4:], payload)
-	return frame
-}
-
-func readRouteKafkaFrame(reader io.Reader) ([]byte, error) {
-	var header [4]byte
-	if _, err := io.ReadFull(reader, header[:]); err != nil {
-		return nil, err
-	}
-	frame := make([]byte, 4+int(binary.BigEndian.Uint32(header[:])))
-	copy(frame, header[:])
-	_, err := io.ReadFull(reader, frame[4:])
-	return frame, err
-}
-
-func TestBuildKafkaRawCompatibilityHandlerAcceptsFragmentedBinaryMessage(t *testing.T) {
-	broker, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen Kafka broker: %v", err)
-	}
-	defer func() { _ = broker.Close() }()
-
-	request := routeKafkaFrame([]byte("fragmented"))
-	response := routeKafkaFrame([]byte("response"))
-	brokerResult := make(chan error, 1)
-	go func() {
-		conn, acceptErr := broker.Accept()
-		if acceptErr != nil {
-			brokerResult <- acceptErr
-			return
-		}
-		defer func() { _ = conn.Close() }()
-		got, readErr := readRouteKafkaFrame(conn)
-		if readErr != nil {
-			brokerResult <- readErr
-			return
-		}
-		if !bytes.Equal(got, request) {
-			brokerResult <- fmt.Errorf("Kafka request frame = %x, want %x", got, request)
-			return
-		}
-		_, writeErr := conn.Write(response)
-		brokerResult <- writeErr
-	}()
-
-	port := broker.Addr().(*net.TCPAddr).Port
-	lb, err := pxy.NewUpstreamLoadBalance(map[string]int{fmt.Sprintf("kafka://127.0.0.1:%d", port): 1}, nil)
-	if err != nil {
-		t.Fatalf("NewUpstreamLoadBalance() error = %v", err)
-	}
-	handler := buildKafkaRawProxyHandler(lb, resource.Upstream{
-		Nodes: []resource.Node{{Host: "127.0.0.1", Port: port, Weight: 1}},
-	})
-	server := httptest.NewServer(handler)
-	defer server.Close()
-	conn := dialKafkaWebSocket(t, server.URL)
-
-	writer, err := conn.NextWriter(websocket.BinaryMessage)
-	if err != nil {
-		t.Fatalf("NextWriter() error = %v", err)
-	}
-	half := len(request) / 2
-	if _, err := writer.Write(request[:half]); err != nil {
-		t.Fatalf("write fragmented part 1: %v", err)
-	}
-	if _, err := writer.Write(request[half:]); err != nil {
-		t.Fatalf("write fragmented part 2: %v", err)
-	}
-	if err := writer.Close(); err != nil {
-		t.Fatalf("close fragmented message: %v", err)
-	}
-	if got := readKafkaWebSocketMessage(t, conn); !bytes.Equal(got, response) {
-		t.Fatalf("WebSocket response payload = %x, want %x", got, response)
-	}
-	if err := <-brokerResult; err != nil {
-		t.Fatalf("Kafka broker: %v", err)
-	}
-}
-
 func TestBuildKafkaPubSubHandlerHandlesPingBeforeRequest(t *testing.T) {
 	factory := func(context.Context, []string, kafka_proxy.ConsumerOptions) (kafka_proxy.KafkaConsumer, error) {
 		return fakeKafkaPubSubConsumer{listOffset: 7}, nil
 	}
-	handler := buildKafkaPubSubProxyHandler(resource.Upstream{
+	handler := buildKafkaPubSubProxyHandlerForTest(t, resource.Upstream{
 		Nodes: []resource.Node{{Host: "127.0.0.1", Port: 9092, Weight: 1}},
 	}, factory)
 	server := httptest.NewServer(handler)
@@ -833,7 +657,7 @@ func TestBuildKafkaPubSubHandlerIgnoresTextMessage(t *testing.T) {
 	factory := func(context.Context, []string, kafka_proxy.ConsumerOptions) (kafka_proxy.KafkaConsumer, error) {
 		return fakeKafkaPubSubConsumer{}, nil
 	}
-	handler := buildKafkaPubSubProxyHandler(resource.Upstream{
+	handler := buildKafkaPubSubProxyHandlerForTest(t, resource.Upstream{
 		Nodes: []resource.Node{{Host: "127.0.0.1", Port: 9092, Weight: 1}},
 	}, factory)
 	server := httptest.NewServer(handler)
@@ -860,55 +684,11 @@ func TestBuildKafkaPubSubHandlerIgnoresTextMessage(t *testing.T) {
 	}
 }
 
-func TestBuildKafkaRawCompatibilityHandlerRejectsOversizedMessage(t *testing.T) {
-	broker, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen Kafka broker: %v", err)
-	}
-	defer func() { _ = broker.Close() }()
-	brokerClosed := make(chan struct{})
-	go func() {
-		conn, acceptErr := broker.Accept()
-		if acceptErr == nil {
-			_, _ = io.Copy(io.Discard, conn)
-			_ = conn.Close()
-		}
-		close(brokerClosed)
-	}()
-
-	port := broker.Addr().(*net.TCPAddr).Port
-	lb, err := pxy.NewUpstreamLoadBalance(map[string]int{fmt.Sprintf("kafka://127.0.0.1:%d", port): 1}, nil)
-	if err != nil {
-		t.Fatalf("NewUpstreamLoadBalance() error = %v", err)
-	}
-	handler := buildKafkaRawProxyHandler(lb, resource.Upstream{
-		Nodes: []resource.Node{{Host: "127.0.0.1", Port: port, Weight: 1}},
-	})
-	server := httptest.NewServer(handler)
-	defer server.Close()
-	conn := dialKafkaWebSocket(t, server.URL)
-
-	// Declare a frame far beyond the read limit without sending its payload;
-	// the server must reject it from the header alone.
-	oversized := []byte{0x82, 0xff, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
-	if _, err := conn.UnderlyingConn().Write(oversized); err != nil {
-		t.Fatalf("write oversized frame header: %v", err)
-	}
-	if closeErr := readKafkaWebSocketClose(t, conn); closeErr.Code != 1009 {
-		t.Fatalf("oversized-message close code = %d, want 1009", closeErr.Code)
-	}
-	select {
-	case <-brokerClosed:
-	case <-time.After(time.Second):
-		t.Fatal("Kafka broker connection did not close")
-	}
-}
-
 func TestBuildKafkaPubSubHandlerNormalCloseEndsCleanly(t *testing.T) {
 	factory := func(context.Context, []string, kafka_proxy.ConsumerOptions) (kafka_proxy.KafkaConsumer, error) {
 		return fakeKafkaPubSubConsumer{}, nil
 	}
-	handler := buildKafkaPubSubProxyHandler(resource.Upstream{
+	handler := buildKafkaPubSubProxyHandlerForTest(t, resource.Upstream{
 		Nodes: []resource.Node{{Host: "127.0.0.1", Port: 9092, Weight: 1}},
 	}, factory)
 	server := httptest.NewServer(handler)

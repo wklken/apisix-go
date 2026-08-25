@@ -26,6 +26,9 @@ func (e *PanicError) Error() string {
 func guardCall(factory string, phase Phase, call func() error) (err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
+			if recovered == http.ErrAbortHandler {
+				panic(recovered)
+			}
 			if panicErr, ok := recovered.(*PanicError); ok {
 				err = panicErr
 				return
@@ -44,6 +47,9 @@ func guardCall(factory string, phase Phase, call func() error) (err error) {
 func guardValue[T any](factory string, phase Phase, call func() (T, error)) (value T, err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
+			if recovered == http.ErrAbortHandler {
+				panic(recovered)
+			}
 			if panicErr, ok := recovered.(*PanicError); ok {
 				err = panicErr
 				return

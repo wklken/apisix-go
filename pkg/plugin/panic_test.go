@@ -52,6 +52,78 @@ func TestGuardCallAttributesRawPanic(t *testing.T) {
 	}
 }
 
+func TestGuardCallAndValuePreserveExactAbortHandler(t *testing.T) {
+	tests := []struct {
+		name string
+		run  func()
+	}{
+		{
+			name: "call",
+			run: func() {
+				_ = guardCall("request-id", PhaseRewrite, func() error { panic(http.ErrAbortHandler) })
+			},
+		},
+		{
+			name: "value",
+			run: func() {
+				_, _ = guardValue("response-rewrite", PhaseBodyFilter, func() (string, error) {
+					panic(http.ErrAbortHandler)
+				})
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := recoverCallbackPanic(t, test.run); got != http.ErrAbortHandler {
+				t.Fatalf("panic = %#v, want exact http.ErrAbortHandler", got)
+			}
+		})
+	}
+}
+
+func TestGuardCallAndValueAttributeAbortLookalikes(t *testing.T) {
+	helpers := []struct {
+		name   string
+		invoke func(any) error
+	}{
+		{
+			name: "call",
+			invoke: func(value any) error {
+				return guardCall("request-id", PhaseRewrite, func() error { panic(value) })
+			},
+		},
+		{
+			name: "value",
+			invoke: func(value any) error {
+				_, err := guardValue("request-id", PhaseRewrite, func() (string, error) { panic(value) })
+				return err
+			},
+		},
+	}
+	lookalikes := []struct {
+		name  string
+		value error
+	}{
+		{name: "same message", value: errors.New(http.ErrAbortHandler.Error())},
+		{name: "wrapped sentinel", value: fmt.Errorf("wrapped: %w", http.ErrAbortHandler)},
+	}
+	for _, helper := range helpers {
+		for _, lookalike := range lookalikes {
+			t.Run(helper.name+"/"+lookalike.name, func(t *testing.T) {
+				err := helper.invoke(lookalike.value)
+				got, ok := err.(*PanicError)
+				if !ok {
+					t.Fatalf("error = %T, want *PanicError", err)
+				}
+				if got.Factory != "request-id" || got.Phase != PhaseRewrite || got.Value != lookalike.value ||
+					len(got.Stack) == 0 {
+					t.Fatalf("panic metadata = %#v", got)
+				}
+			})
+		}
+	}
+}
+
 func TestGuardValuePreservesReturnsAndTypedPanic(t *testing.T) {
 	wantErr := errors.New("ordinary selector error")
 	wantValue := &struct{ name string }{name: "selected"}
@@ -317,5 +389,13 @@ func recoverHandlerPanic(t *testing.T, handler http.Handler) (recovered any) {
 	defer func() { recovered = recover() }()
 	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
 	t.Fatal("handler did not panic")
+	return nil
+}
+
+func recoverCallbackPanic(t *testing.T, call func()) (recovered any) {
+	t.Helper()
+	defer func() { recovered = recover() }()
+	call()
+	t.Fatal("callback did not panic")
 	return nil
 }

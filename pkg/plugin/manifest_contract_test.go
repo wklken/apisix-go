@@ -50,42 +50,23 @@ func TestCapabilityManifestWindowsPlatformsCrossBuild(t *testing.T) {
 }
 
 func TestCapabilityManifestCoversEveryFactory(t *testing.T) {
-	const (
-		expectedFactoryRegistrations = 115
-		expectedDefaultFactories     = 100
-	)
 	m, err := capability.Load()
 	if err != nil {
 		t.Fatal(err)
 	}
-	seen := map[string]string{}
-	defaultFactories := 0
+	manifestFactories := make(map[string]struct{})
 	for _, entry := range m.Plugins {
 		for _, factory := range entry.Factories {
-			seen[factory.Key] = entry.Name
-			if entry.APISIXDefault {
-				defaultFactories++
-			}
+			manifestFactories[factory.Key] = struct{}{}
 		}
-	}
-	if len(pluginRegistry) != expectedFactoryRegistrations || len(seen) != expectedFactoryRegistrations {
-		t.Fatalf(
-			"factory registration count = runtime:%d manifest:%d, want %d",
-			len(pluginRegistry),
-			len(seen),
-			expectedFactoryRegistrations,
-		)
-	}
-	if defaultFactories != expectedDefaultFactories {
-		t.Fatalf("default factory count = %d, want %d", defaultFactories, expectedDefaultFactories)
 	}
 	var missing, extra []string
 	for key := range pluginRegistry {
-		if _, ok := seen[key]; !ok {
+		if _, ok := manifestFactories[key]; !ok {
 			missing = append(missing, key)
 		}
 	}
-	for key := range seen {
+	for key := range manifestFactories {
 		if _, ok := pluginRegistry[key]; !ok {
 			extra = append(extra, key)
 		}

@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	stdjson "encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -16,11 +17,11 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/wklken/apisix-go/pkg/plugin/base"
-	"github.com/wklken/apisix-go/pkg/store"
-	"github.com/wklken/apisix-go/pkg/testutil"
 	"github.com/wklken/apisix-go/pkg/util"
 	"golang.org/x/net/http2"
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
@@ -42,6 +43,7 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
 
 	p := &Plugin{config: cfg}
+	p.SetProtoResolver(testProtoResolver)
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -208,6 +210,7 @@ func TestPostInitRejectsStreamingMethodDescriptor(t *testing.T) {
 	p := &Plugin{config: Config{
 		ProtoID: "streaming-build-proto", Service: "echo.EchoService", Method: "Echo",
 	}}
+	p.SetProtoResolver(testProtoResolver)
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -708,6 +711,7 @@ service EchoService {
 		Service: "echo.EchoService",
 		Method:  "Echo",
 	}}
+	p.SetProtoResolver(testProtoResolver)
 	_ = p.Init()
 	if _, err := p.loadBinding(); err == nil {
 		t.Fatal("loadBinding() error = nil, want missing import error")
@@ -1171,17 +1175,27 @@ func TestHandlerRejectsMalformedGRPCStatusDetails(t *testing.T) {
 }
 
 func TestPostInitRejectsMissingProtoResource(t *testing.T) {
-	restore := stubProtoContent(t, "other-proto", testDescriptorContent(t))
-	defer restore()
+	p := &Plugin{config: Config{
+		ProtoID: "echo-proto",
+		Service: "echo.EchoService",
+		Method:  "Echo",
+	}}
+	p.SetProtoResolver(func(string) (string, error) { return "", errProtoNotFound })
+	_ = p.Init()
+	if err := p.PostInit(); !errors.Is(err, errProtoNotFound) {
+		t.Fatalf("PostInit() error = %v, want errProtoNotFound", err)
+	}
+}
 
+func TestPostInitRejectsMissingProtoResolver(t *testing.T) {
 	p := &Plugin{config: Config{
 		ProtoID: "echo-proto",
 		Service: "echo.EchoService",
 		Method:  "Echo",
 	}}
 	_ = p.Init()
-	if err := p.PostInit(); err == nil {
-		t.Fatal("PostInit() error = nil, want missing proto error")
+	if err := p.PostInit(); !errors.Is(err, errProtoResolverRequired) {
+		t.Fatalf("PostInit() error = %v, want errProtoResolverRequired", err)
 	}
 }
 
@@ -1194,6 +1208,7 @@ func TestPostInitRejectsInvalidDescriptorResource(t *testing.T) {
 		Service: "echo.EchoService",
 		Method:  "Echo",
 	}}
+	p.SetProtoResolver(testProtoResolver)
 	_ = p.Init()
 	if err := p.PostInit(); err == nil || !strings.Contains(err.Error(), "FileDescriptorSet") {
 		t.Fatalf("PostInit() error = %v, want descriptor-set error", err)
@@ -1220,6 +1235,88 @@ func TestLoadBindingCachesUnchangedDescriptor(t *testing.T) {
 	if first != second {
 		t.Fatal("loadBinding() returned different bindings for unchanged descriptor")
 	}
+}
+
+func TestLoadBindingReleasesResolverAfterTerminalResult(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		var calls atomic.Int32
+		content := testDescriptorContent(t)
+		p := &Plugin{config: Config{
+			ProtoID: "echo-proto",
+			Service: "echo.EchoService",
+			Method:  "Echo",
+		}}
+		p.SetProtoResolver(func(id string) (string, error) {
+			calls.Add(1)
+			if id != "echo-proto" {
+				return "", errProtoNotFound
+			}
+			return content, nil
+		})
+
+		const readers = 16
+		bindings := make(chan *methodBinding, readers)
+		errorsSeen := make(chan error, readers)
+		var group sync.WaitGroup
+		for range readers {
+			group.Go(func() {
+				binding, err := p.loadBinding()
+				bindings <- binding
+				errorsSeen <- err
+			})
+		}
+		group.Wait()
+		close(bindings)
+		close(errorsSeen)
+
+		for err := range errorsSeen {
+			if err != nil {
+				t.Fatalf("loadBinding() error = %v", err)
+			}
+		}
+		var first *methodBinding
+		for binding := range bindings {
+			if first == nil {
+				first = binding
+				continue
+			}
+			if binding != first {
+				t.Fatal("concurrent loadBinding() returned different cached bindings")
+			}
+		}
+		if calls.Load() != 1 {
+			t.Fatalf("resolver calls = %d, want 1", calls.Load())
+		}
+		if p.protoResolver != nil {
+			t.Fatal("successful terminal load retained proto resolver")
+		}
+	})
+
+	t.Run("error", func(t *testing.T) {
+		terminalErr := errors.New("terminal resolver failure")
+		calls := 0
+		p := &Plugin{config: Config{
+			ProtoID: "echo-proto",
+			Service: "echo.EchoService",
+			Method:  "Echo",
+		}}
+		p.SetProtoResolver(func(string) (string, error) {
+			calls++
+			return "", terminalErr
+		})
+
+		for range 2 {
+			if _, err := p.loadBinding(); !errors.Is(err, terminalErr) {
+				t.Fatalf("loadBinding() error = %v, want terminal failure", err)
+			}
+		}
+		if calls != 1 {
+			t.Fatalf("resolver calls = %d, want 1", calls)
+		}
+		if p.protoResolver != nil {
+			t.Fatal("failed terminal load retained proto resolver")
+		}
+	})
 }
 
 func TestConfigAcceptsNumericProtoID(t *testing.T) {
@@ -1252,25 +1349,27 @@ func TestSchemaRejectsFractionalDeadline(t *testing.T) {
 	}
 }
 
+var testProtoResolver ProtoResolver
+
 func stubProtoContent(t *testing.T, id string, content string) func() {
 	t.Helper()
 
-	previous := fetchProtoContent
-	fetchProtoContent = func(got string) (string, error) {
+	previous := testProtoResolver
+	testProtoResolver = func(got string) (string, error) {
 		if got != id {
 			return "", errProtoNotFound
 		}
 		return content, nil
 	}
 	return func() {
-		fetchProtoContent = previous
+		testProtoResolver = previous
 	}
 }
 
 func stubProtoSources(t *testing.T, sources map[string]string) func() {
 	t.Helper()
-	previous := fetchProtoContent
-	fetchProtoContent = func(id string) (string, error) {
+	previous := testProtoResolver
+	testProtoResolver = func(id string) (string, error) {
 		content, ok := sources[id]
 		if !ok {
 			return "", errProtoNotFound
@@ -1278,7 +1377,7 @@ func stubProtoSources(t *testing.T, sources map[string]string) func() {
 		return content, nil
 	}
 	return func() {
-		fetchProtoContent = previous
+		testProtoResolver = previous
 	}
 }
 
@@ -1623,56 +1722,3 @@ func unframeGRPCMessageForTest(t *testing.T, frame []byte) []byte {
 }
 
 var _ = protoregistry.NotFound
-
-func TestLoadBindingRefetchesOnProtoGenerationChange(t *testing.T) {
-	events := make(chan *store.Event)
-	storage, err := store.GetStore(
-		t.TempDir()+"/grpc-generation.db",
-		events,
-		testutil.DataEncryptionService(false, nil),
-	)
-	if err != nil {
-		t.Fatalf("get store: %v", err)
-	}
-	storage.Start()
-	t.Cleanup(func() { _ = storage.Stop() })
-
-	content := testDescriptorContent(t)
-	putProto := func() {
-		event := store.NewEvent()
-		event.Type = store.EventTypePut
-		event.Key = []byte("/apisix/protos/echo-proto")
-		event.Value = []byte(`{"id":"echo-proto","content":"` + content + `"}`)
-		events <- event
-		if err := storage.Sync(); err != nil {
-			t.Fatalf("Sync() error = %v", err)
-		}
-	}
-	putProto()
-
-	p := newTestPlugin(t, Config{
-		ProtoID: "echo-proto",
-		Service: "echo.EchoService",
-		Method:  "Echo",
-	})
-	first, err := p.loadBinding()
-	if err != nil {
-		t.Fatalf("first loadBinding() error = %v", err)
-	}
-	second, err := p.loadBinding()
-	if err != nil {
-		t.Fatalf("second loadBinding() error = %v", err)
-	}
-	if first != second {
-		t.Fatal("loadBinding() returned different bindings without a proto change")
-	}
-
-	putProto()
-	third, err := p.loadBinding()
-	if err != nil {
-		t.Fatalf("loadBinding() after proto change error = %v", err)
-	}
-	if third == nil {
-		t.Fatal("loadBinding() after proto change returned nil")
-	}
-}

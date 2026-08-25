@@ -15,7 +15,6 @@ import (
 
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/secret"
-	"github.com/wklken/apisix-go/pkg/store"
 )
 
 func TestScopedSecretsRejectResolvedBlankCredentialsAndRetryExactFields(t *testing.T) {
@@ -83,8 +82,7 @@ func TestScopedSecretsRejectResolvedBlankCredentialsAndRetryExactFields(t *testi
 			if p.config.Comprehend.AccessKeyID != rawAccess ||
 				p.config.Comprehend.SecretAccessKey != rawSecret ||
 				p.config.Comprehend.SessionToken != rawToken ||
-				p.legacySet || p.scopedSet || p.scopedSessionTokenSet ||
-				p.accessKeyID != nil || p.secretAccessKey != nil || p.sessionToken != nil ||
+				p.scopedSet || p.scopedSessionTokenSet ||
 				p.scopedAccessKeyID != (secret.Value{}) ||
 				p.scopedSecretAccessKey != (secret.Value{}) ||
 				p.scopedSessionToken != (secret.Value{}) {
@@ -117,7 +115,7 @@ func TestScopedSecretsRejectResolvedBlankCredentialsAndRetryExactFields(t *testi
 	}
 }
 
-func TestMaterializeSecretsRejectsResolvedBlankCredentialsAndRetries(t *testing.T) {
+func TestMaterializeSecretsFailsClosedWithoutScopedCredentials(t *testing.T) {
 	const (
 		accessEnv = "AWS_LEGACY_VALIDATION_ACCESS"
 		secretEnv = "AWS_LEGACY_VALIDATION_SECRET"
@@ -133,10 +131,6 @@ func TestMaterializeSecretsRejectsResolvedBlankCredentialsAndRetries(t *testing.
 		{name: "present optional token resolves whitespace", invalidEnv: tokenEnv, blank: "  "},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			t.Setenv(accessEnv, "legacy-access")
-			t.Setenv(secretEnv, "legacy-secret")
-			t.Setenv(tokenEnv, "legacy-token")
-			t.Setenv(test.invalidEnv, test.blank)
 			p := &Plugin{config: awsScopedConfig(
 				"$ENV://"+accessEnv,
 				"$ENV://"+secretEnv,
@@ -146,28 +140,9 @@ func TestMaterializeSecretsRejectsResolvedBlankCredentialsAndRetries(t *testing.
 			if err := p.Init(); err != nil {
 				t.Fatal(err)
 			}
-			original := p.config.Comprehend
-
 			if err := p.MaterializeSecrets(); !errors.Is(err, errAWSCredentialsUnavailable) {
-				t.Fatalf("MaterializeSecrets() error = %v, want redacted credential unavailable", err)
+				t.Fatalf("MaterializeSecrets() error = %v, want credential unavailable", err)
 			}
-			if p.config.Comprehend != original || p.legacySet || p.scopedSet ||
-				p.accessKeyID != nil || p.secretAccessKey != nil || p.sessionToken != nil {
-				t.Fatalf("blank legacy credential installed state: config=%#v", p.config.Comprehend)
-			}
-
-			t.Setenv(test.invalidEnv, "legacy-retry")
-			if err := p.MaterializeSecrets(); err != nil {
-				t.Fatalf("same-instance MaterializeSecrets() retry error = %v", err)
-			}
-			resolved := map[string]string{
-				accessEnv: "legacy-access",
-				secretEnv: "legacy-secret",
-				tokenEnv:  "legacy-token",
-			}
-			resolved[test.invalidEnv] = "legacy-retry"
-			assertAWSDescriptors(t, p, resolved[accessEnv], resolved[secretEnv], resolved[tokenEnv])
-			p.Stop()
 		})
 	}
 }
@@ -247,7 +222,7 @@ func TestScopedSecretsConcurrentMaterializeResolvesOnce(t *testing.T) {
 	)
 }
 
-func TestConcurrentScopedThenLegacyMaterializeKeepsFirstPreparation(t *testing.T) {
+func TestMaterializeSecretsFailsClosedWhileScopedPreparationIsInFlight(t *testing.T) {
 	const (
 		rawAccess = "$ENV://AWS_CROSS_MODE_ACCESS_NOT_SET"
 		rawSecret = "$ENV://AWS_CROSS_MODE_SECRET_NOT_SET"
@@ -272,15 +247,6 @@ func TestConcurrentScopedThenLegacyMaterializeKeepsFirstPreparation(t *testing.T
 	if err := p.Init(); err != nil {
 		t.Fatal(err)
 	}
-	legacyWaiting := make(chan struct{})
-	var preparationOnce sync.Once
-	p.setAWSCredentialTestHooks(awsCredentialTestHooks{
-		preparation: func(kind awsPreparationKind, phase awsPreparationPhase) {
-			if kind == awsPreparationLegacy && phase == awsPreparationWaiting {
-				preparationOnce.Do(func() { close(legacyWaiting) })
-			}
-		},
-	})
 	scopedDone := make(chan error, 1)
 	go func() {
 		scopedDone <- base.MaterializeScopedPluginSecrets(
@@ -292,55 +258,26 @@ func TestConcurrentScopedThenLegacyMaterializeKeepsFirstPreparation(t *testing.T
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for scoped cross-mode resolution")
 	}
-	legacyDone := make(chan error, 1)
-	go func() {
-		legacyDone <- p.MaterializeSecrets()
-	}()
-	select {
-	case <-legacyWaiting:
-	case <-time.After(time.Second):
+	if err := p.MaterializeSecrets(); !errors.Is(err, errAWSCredentialsUnavailable) {
 		close(release)
 		<-scopedDone
-		t.Fatal("timed out waiting for legacy materializer at the preparation gate")
-	}
-	state := p.awsCredentialLifecycleSnapshot()
-	if !state.preparationActive || state.preparationWaiters == 0 {
-		close(release)
-		<-scopedDone
-		t.Fatalf("cross-mode preparation state = %#v, want active leader and waiting follower", state)
-	}
-	select {
-	case err := <-legacyDone:
-		close(release)
-		<-scopedDone
-		t.Fatalf("legacy cross-mode follower returned before scoped preparation: %v", err)
-	default:
+		t.Fatalf("MaterializeSecrets() error = %v, want credential unavailable", err)
 	}
 	close(release)
 	if err := <-scopedDone; err != nil {
 		t.Fatalf("scoped cross-mode materialization error = %v", err)
 	}
-	if err := <-legacyDone; err != nil {
-		t.Fatalf("legacy cross-mode follower error = %v", err)
-	}
 	assertAWSScopedCalls(t, scope, broker.callsSnapshot(),
 		[]string{"comprehend.access_key_id", "comprehend.secret_access_key", "comprehend.session_token"},
 		[]string{rawAccess, rawSecret, rawToken},
 	)
-	if !p.scopedSet || p.legacySet || p.accessKeyID != nil || p.secretAccessKey != nil || p.sessionToken != nil {
-		t.Fatalf(
-			"cross-mode follower state: scoped=%v legacy=%v handles=(%v,%v,%v)",
-			p.scopedSet,
-			p.legacySet,
-			p.accessKeyID != nil,
-			p.secretAccessKey != nil,
-			p.sessionToken != nil,
-		)
+	if !p.scopedSet {
+		t.Fatal("scoped credentials were not installed after legacy entry point failed closed")
 	}
 	p.Stop()
 }
 
-func TestMaterializeSecretsConcurrentCallsAreIdempotent(t *testing.T) {
+func TestMaterializeSecretsConcurrentCallsFailClosed(t *testing.T) {
 	const (
 		accessEnv = "AWS_LEGACY_SINGLEFLIGHT_ACCESS"
 		secretEnv = "AWS_LEGACY_SINGLEFLIGHT_SECRET"
@@ -372,28 +309,8 @@ func TestMaterializeSecretsConcurrentCallsAreIdempotent(t *testing.T) {
 	wg.Wait()
 	close(errs)
 	for err := range errs {
-		if err != nil {
-			t.Fatalf("concurrent legacy materialization error = %v", err)
-		}
-	}
-	if !p.legacySet || p.scopedSet || p.accessKeyID == nil || p.secretAccessKey == nil || p.sessionToken == nil {
-		t.Fatalf(
-			"concurrent legacy state: legacy=%v scoped=%v handles=(%v,%v,%v)",
-			p.legacySet,
-			p.scopedSet,
-			p.accessKeyID != nil,
-			p.secretAccessKey != nil,
-			p.sessionToken != nil,
-		)
-	}
-	assertAWSDescriptors(
-		t, p, "legacy-singleflight-access", "legacy-singleflight-secret", "legacy-singleflight-token",
-	)
-	owners := []*store.ResolvedSecret{p.accessKeyID, p.secretAccessKey, p.sessionToken}
-	p.Stop()
-	for index, owner := range owners {
-		if got := owner.Bytes(); got != nil {
-			t.Fatalf("legacy singleflight owner[%d] after Stop() = %q, want nil", index, got)
+		if !errors.Is(err, errAWSCredentialsUnavailable) {
+			t.Fatalf("concurrent MaterializeSecrets() error = %v, want credential unavailable", err)
 		}
 	}
 }
@@ -439,8 +356,7 @@ func TestScopedSecretsStopDuringMaterializeDoesNotRevive(t *testing.T) {
 	if err := <-materializeDone; err == nil || err.Error() != "materialize plugin secrets: credential unavailable" {
 		t.Fatalf("materialization racing Stop() error = %v, want redacted terminal failure", err)
 	}
-	if p.legacySet || p.scopedSet || p.scopedSessionTokenSet ||
-		p.accessKeyID != nil || p.secretAccessKey != nil || p.sessionToken != nil ||
+	if p.scopedSet || p.scopedSessionTokenSet ||
 		p.scopedAccessKeyID != (secret.Value{}) ||
 		p.scopedSecretAccessKey != (secret.Value{}) ||
 		p.scopedSessionToken != (secret.Value{}) {
@@ -696,7 +612,7 @@ func assertObjectGraphExcludes(t *testing.T, roots []any, forbidden []string) {
 	}
 }
 
-func TestLegacyAWSStopWaitsForResponseDestroysHandlesAndConcurrentStopsAreSafe(t *testing.T) {
+func TestScopedAWSStopWaitsForResponseAndConcurrentStopsAreSafe(t *testing.T) {
 	const (
 		accessEnv = "AWS_LEGACY_STOP_ACCESS"
 		secretEnv = "AWS_LEGACY_STOP_SECRET"
@@ -732,7 +648,6 @@ func TestLegacyAWSStopWaitsForResponseDestroysHandlesAndConcurrentStopsAreSafe(t
 			}
 		},
 	})
-	owners := []*store.ResolvedSecret{p.accessKeyID, p.secretAccessKey, p.sessionToken}
 	requestDone := make(chan error, 1)
 	go func() {
 		_, err := p.detectToxicContent(httptest.NewRequest(http.MethodPost, "/", nil), "hello")
@@ -783,13 +698,8 @@ func TestLegacyAWSStopWaitsForResponseDestroysHandlesAndConcurrentStopsAreSafe(t
 			t.Fatal("concurrent Stop() did not finish after legacy request")
 		}
 	}
-	for index, owner := range owners {
-		if got := owner.Bytes(); got != nil {
-			t.Fatalf("legacy owner[%d] bytes after concurrent Stop() = %q, want nil", index, got)
-		}
-	}
 	state = p.awsCredentialLifecycleSnapshot()
-	if state.accessKeyIDSet || state.secretAccessKeySet || state.sessionTokenSet || state.legacySet {
-		t.Fatal("legacy state remained after concurrent Stop()")
+	if state.scopedAccessKeyIDSet || state.scopedSecretAccessKeySet || state.scopedSessionTokenSet || state.scopedSet {
+		t.Fatal("scoped state remained after concurrent Stop()")
 	}
 }

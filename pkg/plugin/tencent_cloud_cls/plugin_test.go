@@ -345,8 +345,12 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 		t.Fatalf("Init() error = %v", err)
 	}
 	p.now = func() time.Time { return time.Unix(1710000000, 0) }
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatalf("MaterializeSecrets() error = %v", err)
+	capabilityValue, scope, _, cleanup := newCLSScopedSecretHarness(
+		t, 1, "test-route", cfg, map[string]string{cfg.SecretKey: cfg.SecretKey},
+	)
+	t.Cleanup(cleanup)
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
@@ -358,8 +362,8 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 
 func TestPostInitRejectsMissingDataEncryptionResolver(t *testing.T) {
 	p := &Plugin{}
-	if err := p.MaterializeSecrets(); err == nil || err.Error() != "data-encryption resolver is required" {
-		t.Fatalf("MaterializeSecrets() error = %v, want missing resolver error", err)
+	if err := p.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) {
+		t.Fatalf("MaterializeSecrets() error = %v, want credential unavailable", err)
 	}
 }
 
@@ -413,8 +417,12 @@ func TestEffectiveLogFormatRejectsEmptyBeforeSideEffects(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatalf("MaterializeSecrets() error = %v", err)
+	capabilityValue, scope, _, cleanup := newCLSScopedSecretHarness(
+		t, 1, "empty-log-format", p.config, map[string]string{p.config.SecretKey: p.config.SecretKey},
+	)
+	t.Cleanup(cleanup)
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	t.Cleanup(p.Stop)
 	err := p.PostInit()
@@ -443,8 +451,12 @@ func newRawTestPlugin(t *testing.T, cfg Config, metadata runtime.MetadataView) *
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatalf("MaterializeSecrets() error = %v", err)
+	capabilityValue, scope, _, cleanup := newCLSScopedSecretHarness(
+		t, 1, "raw-metadata", p.config, map[string]string{p.config.SecretKey: p.config.SecretKey},
+	)
+	t.Cleanup(cleanup)
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
@@ -528,8 +540,8 @@ func TestPostInitRejectsInvalidEncryptedSecretKey(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := p.MaterializeSecrets(); err == nil {
-		t.Fatal("MaterializeSecrets() error = nil, want strict encrypted secret_key rejection")
+	if err := p.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) {
+		t.Fatalf("MaterializeSecrets() error = %v, want credential unavailable", err)
 	}
 }
 
@@ -550,8 +562,12 @@ func TestPostInitResolvesRotatedEncryptedSecretKey(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatalf("MaterializeSecrets() error = %v", err)
+	capabilityValue, scope, _, cleanup := newCLSScopedSecretHarness(
+		t, 1, "rotated-secret", p.config, map[string]string{p.config.SecretKey: "cls-secret"},
+	)
+	t.Cleanup(cleanup)
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
@@ -1013,7 +1029,7 @@ func TestCLSStopBeforePostInitPreventsPublication(t *testing.T) {
 	}
 }
 
-func TestCLSLegacyStopDestroysSecretOwner(t *testing.T) {
+func TestCLSMaterializeSecretsFailsClosed(t *testing.T) {
 	p := &Plugin{config: Config{
 		CLSHost: "cls.example.com", CLSTopic: "topic-a", SecretID: "secret-id",
 		SecretKey: "legacy-private-key", LogFormat: map[string]string{"id": "$request_id"},
@@ -1025,23 +1041,8 @@ func TestCLSLegacyStopDestroysSecretOwner(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatal(err)
 	}
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatalf("MaterializeSecrets() error = %v", err)
-	}
-	owner := p.legacySecretKey
-	if owner == nil {
-		t.Fatal("legacy materialization did not install an owner")
-	}
-	if err := p.PostInit(); err != nil {
-		t.Fatalf("PostInit() error = %v", err)
-	}
-	p.Stop()
-	if plaintext := owner.Bytes(); len(plaintext) != 0 {
-		clear(plaintext)
-		t.Fatal("saved legacy owner still exposes plaintext after Stop")
-	}
-	if p.legacySecretKey != nil || p.client != nil || p.BatchProcessor != nil {
-		t.Fatal("legacy Stop retained owner/client/batch processor")
+	if err := p.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) {
+		t.Fatalf("MaterializeSecrets() error = %v, want credential unavailable", err)
 	}
 }
 
@@ -1375,8 +1376,12 @@ func TestMetadataDecodeFailsBeforeCLSClientAndProcessorAcquisition(t *testing.T)
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatalf("MaterializeSecrets() error = %v", err)
+	capabilityValue, scope, _, cleanup := newCLSScopedSecretHarness(
+		t, 1, "invalid-metadata", p.config, map[string]string{p.config.SecretKey: p.config.SecretKey},
+	)
+	t.Cleanup(cleanup)
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	err := p.PostInit()
 	defer p.Stop()

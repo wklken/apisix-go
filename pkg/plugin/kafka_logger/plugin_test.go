@@ -556,7 +556,7 @@ func TestKafkaStopDrainsActiveSendAndPreventsResurrection(t *testing.T) {
 		t.Fatalf("Kafka sender close count = %d, want 1", sender.closeCount())
 	}
 	if p.sender != nil || p.BatchProcessor != nil || p.secretsPrepared ||
-		len(p.saslPasswords) != 0 || len(p.legacySASLPasswords) != 0 || len(p.saslBrokerIndexes) != 0 {
+		len(p.saslPasswords) != 0 || len(p.saslBrokerIndexes) != 0 {
 		t.Fatal("Stop retained Kafka writer, processor, or private password owners")
 	}
 	queued := len(p.FireChan)
@@ -734,8 +734,16 @@ func newTestPluginWithMetadata(
 		t.Fatalf("Init() error = %v", err)
 	}
 	p.sender = sender
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatalf("MaterializeSecrets() error = %v", err)
+	values := make(map[string]string)
+	for _, broker := range cfg.Brokers {
+		if broker.SASLConfig != nil {
+			values[broker.SASLConfig.Password] = broker.SASLConfig.Password
+		}
+	}
+	capabilityValue, scope, _, cleanup := newKafkaScopedSecretHarness(t, cfg, values)
+	t.Cleanup(cleanup)
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
@@ -826,8 +834,8 @@ func TestPostInitRejectsMissingDataEncryptionResolver(t *testing.T) {
 		Host: "127.0.0.1", Port: 9092,
 		SASLConfig: &SASLConfig{User: "logger", Password: "private"},
 	}}}}
-	if err := p.MaterializeSecrets(); err == nil || err.Error() != "data-encryption resolver is required" {
-		t.Fatalf("MaterializeSecrets() error = %v, want missing resolver error", err)
+	if err := p.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) {
+		t.Fatalf("MaterializeSecrets() error = %v, want credential unavailable", err)
 	}
 }
 
@@ -961,34 +969,37 @@ func TestPostInitRejectsInvalidEncryptedSASLPassword(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := p.MaterializeSecrets(); err == nil {
-		t.Fatal("MaterializeSecrets() error = nil, want strict encrypted SASL password rejection")
+	if err := p.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) {
+		t.Fatalf("MaterializeSecrets() error = %v, want credential unavailable", err)
 	}
 }
 
 func TestPostInitResolvesRotatedEncryptedSASLPassword(t *testing.T) {
 	oldKey := "old-keyring-item"
-	newKey := "qeddd145sfvddff3"
 	password := encryptKafkaLoggerTestValue(t, oldKey, "kafka-secret")
+	config := Config{
+		Brokers: []Broker{{
+			Host:       "127.0.0.1",
+			Port:       9092,
+			SASLConfig: &SASLConfig{User: "logger", Password: password},
+		}},
+		KafkaTopic: "apisix-logs",
+	}
 	p := &Plugin{
-		config: Config{
-			Brokers: []Broker{{
-				Host:       "127.0.0.1",
-				Port:       9092,
-				SASLConfig: &SASLConfig{User: "logger", Password: password},
-			}},
-			KafkaTopic: "apisix-logs",
-		},
+		config: config,
 		sender: &captureSender{},
 	}
-	p.SetDependencies(base.Dependencies{
-		DataEncryption: testutil.DataEncryptionService(true, []string{newKey, oldKey}).Resolver(),
-	})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatalf("MaterializeSecrets() error = %v", err)
+	capabilityValue, scope, _, cleanup := newKafkaScopedSecretHarness(
+		t, config, map[string]string{password: "kafka-secret"},
+	)
+	t.Cleanup(cleanup)
+	if err := base.MaterializeScopedPluginSecrets(
+		context.Background(), scope, capabilityValue, p,
+	); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
@@ -1000,30 +1011,36 @@ func TestPostInitResolvesRotatedEncryptedSASLPassword(t *testing.T) {
 }
 
 func TestPostInitRejectsMixedBrokerSASLIdentities(t *testing.T) {
-	p := &Plugin{
-		config: Config{
-			Brokers: []Broker{
-				{
-					Host:       "127.0.0.1",
-					Port:       9092,
-					SASLConfig: &SASLConfig{Mechanism: "PLAIN", User: "logger", Password: "one"},
-				},
-				{
-					Host:       "10.0.0.2",
-					Port:       9092,
-					SASLConfig: &SASLConfig{Mechanism: "PLAIN", User: "other", Password: "two"},
-				},
+	config := Config{
+		Brokers: []Broker{
+			{
+				Host:       "127.0.0.1",
+				Port:       9092,
+				SASLConfig: &SASLConfig{Mechanism: "PLAIN", User: "logger", Password: "one"},
 			},
-			KafkaTopic: "apisix-logs",
+			{
+				Host:       "10.0.0.2",
+				Port:       9092,
+				SASLConfig: &SASLConfig{Mechanism: "PLAIN", User: "other", Password: "two"},
+			},
 		},
+		KafkaTopic: "apisix-logs",
+	}
+	p := &Plugin{
+		config: config,
 		sender: &captureSender{},
 	}
-	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatalf("MaterializeSecrets() error = %v", err)
+	capabilityValue, scope, _, cleanup := newKafkaScopedSecretHarness(
+		t, config, map[string]string{"one": "one", "two": "two"},
+	)
+	t.Cleanup(cleanup)
+	if err := base.MaterializeScopedPluginSecrets(
+		context.Background(), scope, capabilityValue, p,
+	); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err == nil {
 		t.Fatal("PostInit() error = nil, want mixed SASL identity rejection")

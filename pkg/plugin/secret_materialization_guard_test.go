@@ -54,6 +54,70 @@ func TestSecretMaterializationGuardRejectsDirectResolution(t *testing.T) {
 	}
 }
 
+func TestProductionPluginsDoNotReadGlobalStore(t *testing.T) {
+	fset := token.NewFileSet()
+	var violations []string
+	err := filepath.WalkDir(".", func(filePath string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() || filepath.Ext(filePath) != ".go" || strings.HasSuffix(filePath, "_test.go") {
+			return nil
+		}
+
+		file, err := parser.ParseFile(fset, filePath, nil, 0)
+		if err != nil {
+			return err
+		}
+		violations = append(violations, productionStoreImportViolations(fset, file)...)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk plugin sources: %v", err)
+	}
+	if len(violations) > 0 {
+		sort.Strings(violations)
+		t.Fatalf("production plugins import pkg/store: %s", strings.Join(violations, ", "))
+	}
+}
+
+func TestProductionStoreImportGuardRejectsAliasesDotImportsAndFunctionValues(t *testing.T) {
+	tests := map[string]string{
+		"default import": `package fixture
+import "github.com/wklken/apisix-go/pkg/store"
+var _ = store.GetConsumer`,
+		"alias function value": `package fixture
+import state "github.com/wklken/apisix-go/pkg/store"
+var lookup = state.GetConsumer`,
+		"dot import": `package fixture
+import . "github.com/wklken/apisix-go/pkg/store"
+var lookup = GetConsumer`,
+	}
+	for name, source := range tests {
+		t.Run(name, func(t *testing.T) {
+			fset := token.NewFileSet()
+			file, err := parser.ParseFile(fset, "fixture.go", source, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			violations := productionStoreImportViolations(fset, file)
+			if len(violations) != 1 {
+				t.Fatalf("store import violations = %v, want one", violations)
+			}
+		})
+	}
+}
+
+func productionStoreImportViolations(fset *token.FileSet, file *ast.File) []string {
+	var violations []string
+	for _, spec := range file.Imports {
+		if strings.Trim(spec.Path.Value, `"`) == "github.com/wklken/apisix-go/pkg/store" {
+			violations = append(violations, fset.Position(spec.Pos()).String()+": imports pkg/store")
+		}
+	}
+	return violations
+}
+
 func TestSecretMaterializationGuardRejectsScopedLegacyResolution(t *testing.T) {
 	packages := []string{
 		"ai_rate_limiting", "csrf", "kafka_proxy", "response_rewrite",

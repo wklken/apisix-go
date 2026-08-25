@@ -27,7 +27,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/ai_protocols"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/secret"
-	"github.com/wklken/apisix-go/pkg/store"
 )
 
 type Plugin struct {
@@ -37,8 +36,6 @@ type Plugin struct {
 	now                   func() time.Time
 	nonce                 func() string
 	failMode              ai_common.SafetyFailMode
-	accessKeyID           *store.ResolvedSecret
-	accessKeySecret       *store.ResolvedSecret
 	scopedAccessKeyID     secret.Value
 	scopedAccessKeySecret secret.Value
 	scopedCredentialsSet  bool

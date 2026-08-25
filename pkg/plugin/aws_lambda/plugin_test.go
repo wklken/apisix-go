@@ -23,7 +23,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/function_upstream"
 	"github.com/wklken/apisix-go/pkg/secret"
-	"github.com/wklken/apisix-go/pkg/store"
 	"github.com/wklken/apisix-go/pkg/testutil"
 )
 
@@ -34,8 +33,10 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatalf("MaterializeSecrets() error = %v", err)
+	capabilityValue, scope, _, cleanup := newAWSLambdaScopedSecretHarness(t, 1, "test-route", cfg, nil)
+	t.Cleanup(cleanup)
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
@@ -421,11 +422,11 @@ func TestAWSLambdaIAMSignatureGenerationIsolationAndHeaderCleanup(t *testing.T) 
 func TestAWSLambdaStopRetiresScopedAndLegacyCredentialsFailClosed(t *testing.T) {
 	tests := []struct {
 		name    string
-		prepare func(*testing.T) (*Plugin, []*store.ResolvedSecret, func())
+		prepare func(*testing.T) (*Plugin, func())
 	}{
 		{
 			name: "scoped",
-			prepare: func(t *testing.T) (*Plugin, []*store.ResolvedSecret, func()) {
+			prepare: func(t *testing.T) (*Plugin, func()) {
 				auth := &Authorization{APIKey: "$ENV://AWS_STOP_API", IAM: &IAM{
 					AccessKey: "$secret://aws/stop-access", SecretKey: "$secret://aws/stop-secret",
 				}}
@@ -450,36 +451,14 @@ func TestAWSLambdaStopRetiresScopedAndLegacyCredentialsFailClosed(t *testing.T) 
 					closeAttempt()
 					t.Fatal(err)
 				}
-				return p, nil, closeAttempt
-			},
-		},
-		{
-			name: "legacy",
-			prepare: func(t *testing.T) (*Plugin, []*store.ResolvedSecret, func()) {
-				p := &Plugin{config: Config{
-					FunctionURI: "http://lambda.invalid",
-					Authorization: &Authorization{APIKey: "stop-api", IAM: &IAM{
-						AccessKey: "stop-access", SecretKey: "stop-secret",
-					}},
-				}}
-				if err := p.Init(); err != nil {
-					t.Fatal(err)
-				}
-				if err := p.MaterializeSecrets(); err != nil {
-					t.Fatal(err)
-				}
-				handles := []*store.ResolvedSecret{p.legacyAPIKey, p.legacyAccess, p.legacySecret}
-				if err := p.PostInit(); err != nil {
-					t.Fatal(err)
-				}
-				return p, handles, func() {}
+				return p, closeAttempt
 			},
 		},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			p, legacyHandles, cleanup := test.prepare(t)
+			p, cleanup := test.prepare(t)
 			defer cleanup()
 			var wg sync.WaitGroup
 			for range 8 {
@@ -491,14 +470,8 @@ func TestAWSLambdaStopRetiresScopedAndLegacyCredentialsFailClosed(t *testing.T) 
 			p.Stop()
 
 			if !p.retired || p.apiKeySet || p.iamSet || p.apiKey != (secret.Value{}) ||
-				p.iamAccessKey != (secret.Value{}) || p.iamSecretKey != (secret.Value{}) ||
-				p.legacyAPIKey != nil || p.legacyAccess != nil || p.legacySecret != nil {
+				p.iamAccessKey != (secret.Value{}) || p.iamSecretKey != (secret.Value{}) {
 				t.Fatalf("post-Stop credential state retained: %#v", p)
-			}
-			for i, handle := range legacyHandles {
-				if got := handle.Bytes(); got != nil {
-					t.Fatalf("saved legacy handle %d bytes = %q, want nil", i, got)
-				}
 			}
 			if err := p.PostInit(); !errors.Is(err, secret.ErrCredentialUnavailable) {
 				t.Fatalf("post-Stop PostInit() error = %v, want credential unavailable", err)
@@ -526,7 +499,7 @@ func TestAWSLambdaStopRetiresScopedAndLegacyCredentialsFailClosed(t *testing.T) 
 	}
 }
 
-func TestAWSLambdaLegacyMaterializationIsAtomicRedactedAndRetryable(t *testing.T) {
+func TestAWSLambdaMaterializeSecretsFailsClosedAtomically(t *testing.T) {
 	const secretEnv = "AWS_LAMBDA_LEGACY_SECRET_RETRY"
 	t.Setenv(secretEnv, " \t")
 	p := &Plugin{config: Config{
@@ -552,14 +525,8 @@ func TestAWSLambdaLegacyMaterializationIsAtomicRedactedAndRetryable(t *testing.T
 	}
 
 	t.Setenv(secretEnv, "legacy-secret")
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatalf("same-instance MaterializeSecrets() retry error = %v", err)
-	}
-	assertAWSLambdaAuthorizationDescriptors(t, p.config.Authorization, original, map[string]string{
-		"$ENV://" + secretEnv: "legacy-secret",
-	})
-	if p.legacyAPIKey == nil || p.legacyAccess == nil || p.legacySecret == nil {
-		t.Fatalf("legacy retry owners = %p/%p/%p, want all installed", p.legacyAPIKey, p.legacyAccess, p.legacySecret)
+	if err := p.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) {
+		t.Fatalf("same-instance MaterializeSecrets() error = %v, want credential unavailable", err)
 	}
 	p.Stop()
 }

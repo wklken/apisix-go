@@ -3,9 +3,6 @@ package clickhouse_logger
 import (
 	"bytes"
 	"context"
-	"crypto/aes"
-	"crypto/cipher"
-	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -22,6 +19,11 @@ import (
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
+	return newTestPluginWithSecrets(t, cfg, nil)
+}
+
+func newTestPluginWithSecrets(t *testing.T, cfg Config, values map[string]string) *Plugin {
+	t.Helper()
 	if len(cfg.LogFormat) == 0 {
 		cfg.LogFormat = map[string]string{"request_id": "$request_id"}
 	}
@@ -31,24 +33,16 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := base.MaterializePluginSecrets(p); err != nil {
-		t.Fatalf("MaterializePluginSecrets() error = %v", err)
+	capabilityValue, scope, _, cleanup := newScopedSecretHarness(t, name, values)
+	t.Cleanup(cleanup)
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
 
 	return p
-}
-
-func TestMaterializeSecretsRejectsMissingDataEncryptionResolver(t *testing.T) {
-	p := &Plugin{config: clickHouseScopedConfig("default", "secret")}
-	if err := p.Init(); err != nil {
-		t.Fatalf("Init() error = %v", err)
-	}
-	if err := p.MaterializeSecrets(); err == nil || err.Error() != "data-encryption resolver is required" {
-		t.Fatalf("MaterializeSecrets() error = %v, want missing resolver error", err)
-	}
 }
 
 func TestEffectiveLogFormatRouteWins(t *testing.T) {
@@ -128,8 +122,10 @@ func newRawTestPlugin(t *testing.T, cfg Config, metadata runtime.MetadataView) *
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := base.MaterializePluginSecrets(p); err != nil {
-		t.Fatalf("MaterializePluginSecrets() error = %v", err)
+	capabilityValue, scope, _, cleanup := newScopedSecretHarness(t, name, nil)
+	t.Cleanup(cleanup)
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
@@ -221,8 +217,10 @@ func TestMetadataDecodeFailsBeforeClickHouseClientAndProcessorAcquisition(t *tes
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := base.MaterializePluginSecrets(p); err != nil {
-		t.Fatalf("MaterializePluginSecrets() error = %v", err)
+	capabilityValue, scope, _, cleanup := newScopedSecretHarness(t, name, nil)
+	t.Cleanup(cleanup)
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	err := p.PostInit()
 	defer p.Stop()
@@ -268,54 +266,17 @@ func TestPostInitSetsClickHouseDefaults(t *testing.T) {
 	}
 }
 
-func TestMaterializeSecretsOwnsClickHouseUserEnvironmentReference(t *testing.T) {
-	t.Setenv("CLICK_HOUSE_USER", "fixture-user")
-
-	p := &Plugin{config: Config{
-		EndpointAddrs: []string{"http://127.0.0.1:8123"},
-		User:          "$ENV://CLICK_HOUSE_USER",
-		Password:      "secret",
-		Database:      "default",
-		LogTable:      "apisix_logs",
-		LogFormat:     map[string]string{"request_id": "$request_id"},
-	}}
-	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
-	if err := p.Init(); err != nil {
-		t.Fatalf("Init() error = %v", err)
-	}
-	if err := base.MaterializePluginSecrets(p); err != nil {
-		t.Fatalf("MaterializePluginSecrets() error = %v", err)
-	}
-	if !strings.Contains(p.config.User, "plugin_config#sha256:") ||
-		strings.Contains(p.config.User, "fixture-user") {
-		t.Fatalf("user = %q, want safe descriptor", p.config.User)
-	}
-	if err := p.PostInit(); err != nil {
-		t.Fatalf("PostInit() error = %v", err)
-	}
-	t.Cleanup(p.Stop)
-	var got string
-	if err := p.resolvedUser(func(value string) error {
-		got = value
-		return nil
-	}); err != nil {
-		t.Fatalf("resolved user callback error = %v", err)
-	}
-	if got != "fixture-user" {
-		t.Fatalf("resolved user = %q, want fixture-user", got)
-	}
-}
-
 func TestPostInitResolvesClickHouseUserFromEnvironment(t *testing.T) {
 	t.Setenv("CLICK_HOUSE_USER", "fixture-user")
+	const rawUser = "$ENV://CLICK_HOUSE_USER"
 
-	p := newTestPlugin(t, Config{
+	p := newTestPluginWithSecrets(t, Config{
 		EndpointAddrs: []string{"http://127.0.0.1:8123"},
-		User:          "$ENV://CLICK_HOUSE_USER",
+		User:          rawUser,
 		Password:      "secret",
 		Database:      "default",
 		LogTable:      "apisix_logs",
-	})
+	}, map[string]string{rawUser: "fixture-user"})
 
 	if !strings.Contains(p.config.User, "plugin_config#sha256:") ||
 		strings.Contains(p.config.User, "fixture-user") {
@@ -330,46 +291,20 @@ func TestPostInitResolvesClickHouseUserFromEnvironment(t *testing.T) {
 	}
 	if got != "fixture-user" {
 		t.Fatalf("resolved user = %q, want fixture-user", got)
-	}
-}
-
-func TestPostInitRejectsInvalidClickHouseUserEnvironmentReference(t *testing.T) {
-	for _, test := range []struct {
-		name string
-		user string
-	}{
-		{name: "missing-name", user: "$ENV://"},
-		{name: "missing-value", user: "$ENV://CLICK_HOUSE_USER_MISSING"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			p := &Plugin{config: Config{
-				EndpointAddrs: []string{"http://127.0.0.1:8123"},
-				User:          test.user,
-				Password:      "secret",
-				Database:      "default",
-				LogTable:      "apisix_logs",
-			}}
-			p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
-			if err := p.Init(); err != nil {
-				t.Fatalf("Init() error = %v", err)
-			}
-			if err := base.MaterializePluginSecrets(p); err == nil {
-				t.Fatalf("MaterializePluginSecrets() error = nil, want invalid environment reference rejection")
-			}
-		})
 	}
 }
 
 func TestPostInitPreservesEmptyClickHouseUserEnvironmentValue(t *testing.T) {
 	t.Setenv("CLICK_HOUSE_USER_EMPTY", "")
+	const rawUser = "$ENV://CLICK_HOUSE_USER_EMPTY"
 
-	p := newTestPlugin(t, Config{
+	p := newTestPluginWithSecrets(t, Config{
 		EndpointAddrs: []string{"http://127.0.0.1:8123"},
-		User:          "$ENV://CLICK_HOUSE_USER_EMPTY",
+		User:          rawUser,
 		Password:      "secret",
 		Database:      "default",
 		LogTable:      "apisix_logs",
-	})
+	}, map[string]string{rawUser: ""})
 
 	if !strings.Contains(p.config.User, "plugin_config#sha256:") {
 		t.Fatalf("user = %q, want safe empty-environment descriptor", p.config.User)
@@ -383,64 +318,6 @@ func TestPostInitPreservesEmptyClickHouseUserEnvironmentValue(t *testing.T) {
 	}
 	if got != "" {
 		t.Fatalf("resolved user = %q, want preserved empty environment value", got)
-	}
-}
-
-func TestMaterializeSecretsRejectsInvalidEncryptedPassword(t *testing.T) {
-	p := &Plugin{config: Config{
-		EndpointAddrs: []string{"http://127.0.0.1:8123"},
-		User:          "default",
-		Password:      "not-a-ciphertext",
-		Database:      "default",
-		LogTable:      "apisix_logs",
-	}}
-	p.SetDependencies(base.Dependencies{
-		DataEncryption: testutil.DataEncryptionService(true, []string{"qeddd145sfvddff3"}).Resolver(),
-	})
-	if err := p.Init(); err != nil {
-		t.Fatalf("Init() error = %v", err)
-	}
-	if err := base.MaterializePluginSecrets(p); err == nil {
-		t.Fatal("MaterializePluginSecrets() error = nil, want strict encrypted password rejection")
-	}
-}
-
-func TestMaterializeSecretsResolvesRotatedEncryptedPassword(t *testing.T) {
-	oldKey := "old-keyring-item"
-	newKey := "qeddd145sfvddff3"
-	p := &Plugin{config: Config{
-		EndpointAddrs: []string{"http://127.0.0.1:8123"},
-		User:          "default",
-		Password:      encryptClickHouseTestValue(t, oldKey, "clickhouse-secret"),
-		Database:      "default",
-		LogTable:      "apisix_logs",
-		LogFormat:     map[string]string{"request_id": "$request_id"},
-	}}
-	p.SetDependencies(base.Dependencies{
-		DataEncryption: testutil.DataEncryptionService(true, []string{newKey, oldKey}).Resolver(),
-	})
-	if err := p.Init(); err != nil {
-		t.Fatalf("Init() error = %v", err)
-	}
-	if err := base.MaterializePluginSecrets(p); err != nil {
-		t.Fatalf("MaterializePluginSecrets() error = %v", err)
-	}
-	if !strings.HasPrefix(p.config.Password, "plugin_config#sha256:") {
-		t.Fatalf("password = %q, want safe descriptor", p.config.Password)
-	}
-	if err := p.PostInit(); err != nil {
-		t.Fatalf("PostInit() error = %v", err)
-	}
-	t.Cleanup(p.Stop)
-	var resolved string
-	if err := p.resolvedPassword(func(value string) error {
-		resolved = value
-		return nil
-	}); err != nil {
-		t.Fatalf("resolved password callback error = %v", err)
-	}
-	if resolved != "clickhouse-secret" {
-		t.Fatalf("resolved password = %q, want clickhouse-secret", resolved)
 	}
 }
 
@@ -913,22 +790,6 @@ func TestSchemaAcceptsBatchAndMaxPendingFields(t *testing.T) {
 	if err := util.Validate(config, p.GetSchema()); err != nil {
 		t.Fatalf("schema rejected batch and max pending fields: %v", err)
 	}
-}
-
-func encryptClickHouseTestValue(t *testing.T, key string, value string) string {
-	t.Helper()
-	padding := aes.BlockSize - len(value)%aes.BlockSize
-	padded := append([]byte(value), make([]byte, padding)...)
-	for i := len(padded) - padding; i < len(padded); i++ {
-		padded[i] = byte(padding)
-	}
-	block, err := aes.NewCipher([]byte(key))
-	if err != nil {
-		t.Fatalf("NewCipher() error = %v", err)
-	}
-	ciphertext := make([]byte, len(padded))
-	cipher.NewCBCEncrypter(block, []byte(key)).CryptBlocks(ciphertext, padded)
-	return base64.StdEncoding.EncodeToString(ciphertext)
 }
 
 func TestBuildInsertBodySurfacesMarshalError(t *testing.T) {

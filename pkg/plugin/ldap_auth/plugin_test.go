@@ -78,6 +78,21 @@ var (
 	testEvents    chan *store.Event
 )
 
+type storeBackedLDAPLookup struct{}
+
+func (storeBackedLDAPLookup) ConsumerByPluginKey(plugin, key string) (resource.Consumer, bool) {
+	consumer, err := store.GetConsumerByPluginKey(plugin, key)
+	return consumer, err == nil
+}
+
+func (storeBackedLDAPLookup) ConsumerByID(string) (resource.Consumer, bool) {
+	return resource.Consumer{}, false
+}
+
+func (storeBackedLDAPLookup) ConsumerGroupByID(string) (resource.ConsumerGroup, bool) {
+	return resource.ConsumerGroup{}, false
+}
+
 func setupStore(t *testing.T) {
 	t.Helper()
 
@@ -145,6 +160,7 @@ func newTestPluginWithConfig(t *testing.T, overrides map[string]any, authenticat
 		config:       config,
 		authenticate: authenticate,
 	}
+	p.SetDependencies(base.Dependencies{Consumers: storeBackedLDAPLookup{}})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}

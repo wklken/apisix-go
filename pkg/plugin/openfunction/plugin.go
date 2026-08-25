@@ -2,7 +2,6 @@ package openfunction
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/base64"
 	"net/http"
 	"sync"
@@ -11,17 +10,15 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/function_upstream"
 	"github.com/wklken/apisix-go/pkg/secret"
-	"github.com/wklken/apisix-go/pkg/store"
 )
 
 type Plugin struct {
 	function_upstream.Plugin
 	config Config
 
-	serviceTokenMu     sync.RWMutex
-	serviceToken       secret.Value
-	serviceTokenSet    bool
-	legacyServiceToken *store.ResolvedSecret
+	serviceTokenMu  sync.RWMutex
+	serviceToken    secret.Value
+	serviceTokenSet bool
 
 	// testLifecycleHook is a package-local synchronization seam for lifecycle
 	// tests; it is nil in production.
@@ -131,7 +128,7 @@ func (p *Plugin) MaterializeScopedSecrets(
 	if p.config.Authorization == nil || p.config.Authorization.ServiceToken == "" {
 		return nil
 	}
-	if p.serviceTokenSet || p.legacyServiceToken != nil {
+	if p.serviceTokenSet {
 		return nil
 	}
 
@@ -163,26 +160,10 @@ func (p *Plugin) MaterializeSecrets() error {
 	if p.config.Authorization == nil || p.config.Authorization.ServiceToken == "" {
 		return nil
 	}
-	if p.serviceTokenSet || p.legacyServiceToken != nil {
+	if p.serviceTokenSet {
 		return nil
 	}
-
-	resolved, err := store.MaterializeSecret(p.config.Authorization.ServiceToken)
-	if err != nil {
-		return errOpenFunctionCredentialUnavailable
-	}
-	bytes := resolved.Bytes()
-	digest := sha256.Sum256(bytes)
-	clear(bytes)
-	descriptor, err := secret.NewDescriptor(capability.SecretPluginConfig, digest)
-	if err != nil {
-		resolved.Destroy()
-		return errOpenFunctionCredentialUnavailable
-	}
-
-	p.legacyServiceToken = resolved
-	p.config.Authorization.ServiceToken = descriptor.String()
-	return nil
+	return errOpenFunctionCredentialUnavailable
 }
 
 func (p *Plugin) processRequest(r *http.Request, _ function_upstream.Config) {
@@ -204,21 +185,6 @@ func (p *Plugin) processRequest(r *http.Request, _ function_upstream.Config) {
 		})
 		return
 	}
-	if p.legacyServiceToken == nil {
-		return
-	}
-	if hook := p.testLifecycleHook; hook != nil {
-		hook(lifecycleBeforeAuthorizationUse)
-	}
-
-	value := p.legacyServiceToken.Bytes()
-	if len(value) != 0 {
-		r.Header.Set(
-			"Authorization",
-			"Basic "+base64.StdEncoding.EncodeToString(value),
-		)
-	}
-	clear(value)
 }
 
 func (p *Plugin) Stop() {
@@ -231,10 +197,6 @@ func (p *Plugin) Stop() {
 
 	p.serviceTokenMu.Lock()
 	defer p.serviceTokenMu.Unlock()
-	if p.legacyServiceToken != nil {
-		p.legacyServiceToken.Destroy()
-		p.legacyServiceToken = nil
-	}
 	p.serviceToken = secret.Value{}
 	p.serviceTokenSet = false
 }

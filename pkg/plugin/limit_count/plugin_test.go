@@ -26,7 +26,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/real_ip"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/runtime"
-	"github.com/wklken/apisix-go/pkg/store"
+	"github.com/wklken/apisix-go/pkg/secret"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -110,8 +110,10 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := base.MaterializePluginSecrets(p); err != nil {
-		t.Fatalf("MaterializePluginSecrets() error = %v", err)
+	capabilityValue, scope, _, cleanup := newScopedSecretHarness(t, 1, "test-route", nil)
+	t.Cleanup(cleanup)
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
@@ -128,8 +130,10 @@ func newTestPluginWithMetadata(t *testing.T, cfg Config, metadata map[string]any
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := base.MaterializePluginSecrets(p); err != nil {
-		t.Fatalf("MaterializePluginSecrets() error = %v", err)
+	capabilityValue, scope, _, cleanup := newScopedSecretHarness(t, 1, "test-route", nil)
+	t.Cleanup(cleanup)
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
@@ -314,8 +318,10 @@ func TestMetadataDecodeFailsBeforeLimitCountGroupRegistration(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := base.MaterializePluginSecrets(p); err != nil {
-		t.Fatalf("MaterializePluginSecrets() error = %v", err)
+	capabilityValue, scope, _, cleanup := newScopedSecretHarness(t, 3, "metadata-invalid", nil)
+	t.Cleanup(cleanup)
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	err := p.PostInit()
 	defer p.Stop()
@@ -639,14 +645,15 @@ func TestHandlerRouteQuotaRemainsSharedAcrossAuthenticatedConsumers(t *testing.T
 	}
 }
 
-func TestMaterializeSecretsRedactsEnvironmentKeyAndStopsOwner(t *testing.T) {
+func TestScopedSecretsRedactEnvironmentKeyAndStopCleanly(t *testing.T) {
 	t.Setenv("LIMIT_COUNT_KEY", "remote_addr")
-
-	p := newTestPlugin(t, Config{
+	const raw = "$ENV://LIMIT_COUNT_KEY"
+	p, cleanup := prepareScopedLimitCountPlugin(t, 50, "plugin-key", Config{
 		Count:      2,
 		TimeWindow: 60,
-		Key:        "$ENV://LIMIT_COUNT_KEY",
-	})
+		Key:        raw,
+	}, map[string]string{raw: "remote_addr"})
+	defer cleanup()
 	if p.config.Key != limitCountDescriptor("remote_addr") {
 		t.Fatalf("key = %q, want resolved content descriptor", p.config.Key)
 	}
@@ -655,28 +662,22 @@ func TestMaterializeSecretsRedactsEnvironmentKeyAndStopsOwner(t *testing.T) {
 	if got := resolvedLimitCountKeyForTest(t, p, request); got != "192.0.2.10" {
 		t.Fatalf("resolveKey() = %q, want materialized remote_addr behavior", got)
 	}
-	owner := p.keySecret
-	if owner == nil {
-		t.Fatal("referenced key owner is not retained by the plugin generation")
-	}
 	p.Stop()
-	if p.keySecret != nil {
-		t.Fatal("Stop() retained the referenced key owner")
-	}
-	if got := owner.Bytes(); got != nil {
-		t.Fatalf("Stop() left referenced key bytes = %q, want destroyed handle", got)
+	if p.scopedSet || p.scopedKeySecret != (secret.Value{}) {
+		t.Fatal("Stop() retained scoped key state")
 	}
 }
 
-func TestMaterializeSecretsRedactsRedisHostAndBuildsResolvedClient(t *testing.T) {
+func TestScopedSecretsRedactRedisHostAndBuildResolvedClient(t *testing.T) {
 	t.Setenv("LIMIT_COUNT_REDIS_HOST", "127.0.0.2")
-
-	p := newTestPlugin(t, Config{
+	const raw = "$ENV://LIMIT_COUNT_REDIS_HOST"
+	p, cleanup := prepareScopedLimitCountPlugin(t, 51, "plugin-host", Config{
 		Count:      2,
 		TimeWindow: 60,
 		Policy:     "redis",
-		RedisHost:  "$ENV://LIMIT_COUNT_REDIS_HOST",
-	})
+		RedisHost:  raw,
+	}, map[string]string{raw: "127.0.0.2"})
+	defer cleanup()
 	if p.config.Redis.RedisHost != limitCountDescriptor("127.0.0.2") {
 		t.Fatalf("Redis host = %q, want resolved content descriptor", p.config.Redis.RedisHost)
 	}
@@ -690,30 +691,25 @@ func TestMaterializeSecretsRedactsRedisHostAndBuildsResolvedClient(t *testing.T)
 	if options := client.(*redis.Client).Options(); options.Addr != "127.0.0.2:6379" {
 		t.Fatalf("Redis address = %q, want 127.0.0.2:6379", options.Addr)
 	}
-	owner := p.redisHostSecret
-	if owner == nil {
-		t.Fatal("Redis host owner is not retained by the plugin generation")
-	}
 	p.Stop()
-	if p.redisHostSecret != nil {
-		t.Fatal("Stop() retained the Redis host owner")
-	}
-	if got := owner.Bytes(); got != nil {
-		t.Fatalf("Stop() left Redis host bytes = %q, want destroyed handle", got)
+	if p.scopedSet || p.scopedRedisHost != (secret.Value{}) {
+		t.Fatal("Stop() retained scoped Redis host state")
 	}
 }
 
-func TestMaterializeSecretsRedactsRedisClusterNodesAndBuildsResolvedClient(t *testing.T) {
+func TestScopedSecretsRedactRedisClusterNodesAndBuildResolvedClient(t *testing.T) {
 	t.Setenv("LIMIT_COUNT_REDIS_NODE_0", "127.0.0.1:5000")
 	t.Setenv("LIMIT_COUNT_REDIS_NODE_1", "127.0.0.1:5001")
 
-	p := newTestPlugin(t, Config{
+	raws := []string{"$ENV://LIMIT_COUNT_REDIS_NODE_0", "$ENV://LIMIT_COUNT_REDIS_NODE_1"}
+	p, cleanup := prepareScopedLimitCountPlugin(t, 52, "plugin-cluster", Config{
 		Count:             2,
 		TimeWindow:        60,
 		Policy:            "redis-cluster",
-		RedisClusterNodes: []string{"$ENV://LIMIT_COUNT_REDIS_NODE_0", "$ENV://LIMIT_COUNT_REDIS_NODE_1"},
+		RedisClusterNodes: raws,
 		RedisClusterName:  "redis-cluster-1",
-	})
+	}, map[string]string{raws[0]: "127.0.0.1:5000", raws[1]: "127.0.0.1:5001"})
+	defer cleanup()
 	for i, resolved := range []string{"127.0.0.1:5000", "127.0.0.1:5001"} {
 		if p.config.RedisCluster.RedisClusterNodes[i] != limitCountDescriptor(resolved) {
 			t.Fatalf(
@@ -738,18 +734,9 @@ func TestMaterializeSecretsRedactsRedisClusterNodesAndBuildsResolvedClient(t *te
 	if options := client.(*redis.ClusterClient).Options(); !slices.Equal(options.Addrs, want) {
 		t.Fatalf("Redis cluster addresses = %#v, want %#v", options.Addrs, want)
 	}
-	owners := append([]*store.ResolvedSecret(nil), p.redisClusterNodeSecrets...)
-	if len(owners) != 2 {
-		t.Fatal("Redis cluster node owners are not retained by the plugin generation")
-	}
 	p.Stop()
-	if p.redisClusterNodeSecrets != nil {
-		t.Fatal("Stop() retained Redis cluster node owners")
-	}
-	for i, owner := range owners {
-		if got := owner.Bytes(); got != nil {
-			t.Fatalf("Stop() left Redis cluster node %d bytes = %q, want destroyed handle", i, got)
-		}
+	if p.scopedSet || len(p.scopedRedisClusterNodes) != 0 {
+		t.Fatal("Stop() retained scoped Redis cluster node state")
 	}
 }
 
@@ -1749,6 +1736,11 @@ func TestHandlerResolvesStringCountAndTimeWindow(t *testing.T) {
 	if err := util.Parse(config, p.Config()); err != nil {
 		t.Fatalf("Parse() error = %v", err)
 	}
+	capabilityValue, scope, _, cleanup := newScopedSecretHarness(t, 60, "string-count", nil)
+	t.Cleanup(cleanup)
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
+	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
@@ -2066,11 +2058,17 @@ func TestResolveKeySupportsAPISIXArgumentAndHTTPHostVariables(t *testing.T) {
 	request.Host = "example-1.com"
 
 	argumentPlugin := &Plugin{config: Config{KeyType: "var", Key: "arg_key"}}
+	argumentCapability, argumentScope, _, argumentCleanup := newScopedSecretHarness(t, 61, "argument-key", nil)
+	t.Cleanup(argumentCleanup)
+	materializeScopedLimitCount(t, argumentPlugin, argumentCapability, argumentScope)
 	if got := resolvedLimitCountKeyForTest(t, argumentPlugin, request); got != "redis-user" {
 		t.Fatalf("arg_key = %q, want redis-user", got)
 	}
 
 	hostPlugin := &Plugin{config: Config{KeyType: "var", Key: "http_host"}}
+	hostCapability, hostScope, _, hostCleanup := newScopedSecretHarness(t, 62, "host-key", nil)
+	t.Cleanup(hostCleanup)
+	materializeScopedLimitCount(t, hostPlugin, hostCapability, hostScope)
 	if got := resolvedLimitCountKeyForTest(t, hostPlugin, request); got != "example-1.com" {
 		t.Fatalf("http_host = %q, want example-1.com", got)
 	}
@@ -2097,6 +2095,11 @@ func TestHandlerResolvesStringRuleCountAndTimeWindow(t *testing.T) {
 	}
 	if err := util.Parse(config, p.Config()); err != nil {
 		t.Fatalf("Parse() error = %v", err)
+	}
+	capabilityValue, scope, _, cleanup := newScopedSecretHarness(t, 64, "string-rule", nil)
+	t.Cleanup(cleanup)
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
@@ -2636,6 +2639,9 @@ func TestSlidingStoreConstructorsCoverConfiguredPolicies(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			plugin := &Plugin{config: test.config}
+			capabilityValue, scope, _, cleanup := newScopedSecretHarness(t, 63, "sliding-"+test.name, nil)
+			t.Cleanup(cleanup)
+			materializeScopedLimitCount(t, plugin, capabilityValue, scope)
 			if _, err := plugin.newSlidingStore(); err != nil {
 				t.Fatalf("newSlidingStore() error = %v", err)
 			}

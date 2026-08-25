@@ -474,8 +474,14 @@ func TestSendBatchScrubsRetainedAuthorizationAndBodyState(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatal(err)
 	}
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatal(err)
+	capabilityValue, scope, _, cleanup := newHTTPLoggerScopedSecretHarness(
+		t, 1, "http-scrub", p.config, map[string]string{authorization: authorization},
+	)
+	t.Cleanup(cleanup)
+	if err := base.MaterializeScopedPluginSecrets(
+		context.Background(), scope, capabilityValue, p,
+	); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	p.client = client
 	t.Cleanup(p.Stop)
@@ -575,7 +581,7 @@ func TestStopDrainsActiveSendAndDropsPrivateAuthorization(t *testing.T) {
 		t.Fatal("Stop did not return after active send drained")
 	}
 	if p.client != nil || p.clientRelease != nil || p.BatchProcessor != nil ||
-		p.authHeaderSet || p.legacyAuthHeader != nil || p.secretsPrepared {
+		p.authHeaderSet || p.secretsPrepared {
 		t.Fatalf("private/runtime state survived Stop: %#v", p)
 	}
 	if _, err := p.SendBatch(
@@ -793,8 +799,14 @@ func newTestPluginWithMetadata(t *testing.T, cfg Config, metadata runtime.Metada
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatalf("MaterializeSecrets() error = %v", err)
+	values := make(map[string]string)
+	if cfg.AuthHeader != nil {
+		values[*cfg.AuthHeader] = *cfg.AuthHeader
+	}
+	capabilityValue, scope, _, cleanup := newHTTPLoggerScopedSecretHarness(t, 1, "test-route", cfg, values)
+	t.Cleanup(cleanup)
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
@@ -875,8 +887,8 @@ func mustMetadataView(t *testing.T, documents map[string][]byte) runtime.Metadat
 func TestMaterializeSecretsRejectsMissingDataEncryptionResolver(t *testing.T) {
 	authHeader := "Bearer private"
 	p := &Plugin{config: Config{URI: "http://127.0.0.1/logs", AuthHeader: &authHeader}}
-	if err := p.MaterializeSecrets(); err == nil || err.Error() != "data-encryption resolver is required" {
-		t.Fatalf("MaterializeSecrets() error = %v, want missing resolver error", err)
+	if err := p.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) {
+		t.Fatalf("MaterializeSecrets() error = %v, want credential unavailable", err)
 	}
 }
 
@@ -952,12 +964,12 @@ func TestMaterializeSecretsRejectsInvalidEncryptedAuthHeader(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := p.MaterializeSecrets(); err == nil {
-		t.Fatal("MaterializeSecrets() error = nil, want strict encrypted auth_header rejection")
+	if err := p.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) {
+		t.Fatalf("MaterializeSecrets() error = %v, want credential unavailable", err)
 	}
 }
 
-func TestMaterializeSecretsOwnsEncryptedAuthHeader(t *testing.T) {
+func TestMaterializeSecretsFailsClosedForEncryptedAuthHeader(t *testing.T) {
 	key := "qeddd145sfvddff3"
 	authHeader := encryptHTTPLoggerTestValue(t, key, "Bearer secret")
 	p := &Plugin{config: Config{URI: "http://127.0.0.1/logs", AuthHeader: &authHeader}}
@@ -965,18 +977,8 @@ func TestMaterializeSecretsOwnsEncryptedAuthHeader(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatalf("MaterializeSecrets() error = %v", err)
-	}
-	if err := p.PostInit(); err != nil {
-		t.Fatalf("PostInit() error = %v", err)
-	}
-	t.Cleanup(p.Stop)
-	if p.config.AuthHeader == nil || *p.config.AuthHeader != httpAuthorizationDescriptor("Bearer secret") {
-		t.Fatalf("auth_header = %v, want resolved descriptor", p.config.AuthHeader)
-	}
-	if p.legacyAuthHeader == nil {
-		t.Fatal("legacy private auth_header was not retained by its owner")
+	if err := p.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) {
+		t.Fatalf("MaterializeSecrets() error = %v, want credential unavailable", err)
 	}
 }
 

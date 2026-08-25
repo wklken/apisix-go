@@ -1610,23 +1610,13 @@ func (p *Plugin) stopLimitCount() {
 	}
 
 	p.credentialMu.Lock()
-	keySecret := p.keySecret
-	redisHostSecret := p.redisHostSecret
-	nodeSecrets := p.redisClusterNodeSecrets
-	p.keySecret = nil
-	p.redisHostSecret = nil
-	p.redisClusterNodeSecrets = nil
 	p.scopedKeySecret = secret.Value{}
 	p.scopedRedisHost = secret.Value{}
 	p.scopedRedisClusterNodes = nil
 	p.keyPresent = false
 	p.redisHostPresent = false
 	p.redisNodesPresent = false
-	p.legacySet = false
 	p.scopedSet = false
-	p.legacyKey = ""
-	p.legacyRedisHost = ""
-	p.legacyRedisNodes = nil
 	p.keyDigest = [32]byte{}
 	p.redisHostDigest = [32]byte{}
 	p.redisNodeDigests = nil
@@ -1634,11 +1624,6 @@ func (p *Plugin) stopLimitCount() {
 	p.redisHostField = ""
 	p.redisNodesField = ""
 	p.credentialMu.Unlock()
-	keySecret.Destroy()
-	redisHostSecret.Destroy()
-	for _, owner := range nodeSecrets {
-		owner.Destroy()
-	}
 }
 
 func (p *Plugin) withResolvedLimitCountKey(

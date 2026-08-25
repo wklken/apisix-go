@@ -3,7 +3,6 @@ package openwhisk
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"crypto/tls"
 	"encoding/base64"
 	"errors"
@@ -22,7 +21,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/secret"
-	"github.com/wklken/apisix-go/pkg/store"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -34,7 +32,6 @@ type Plugin struct {
 	lifecycleMu     sync.RWMutex
 	serviceToken    secret.Value
 	serviceTokenSet bool
-	legacyToken     *store.ResolvedSecret
 	retired         bool
 
 	// testLifecycleHook is a package-local synchronization seam for lifecycle
@@ -138,7 +135,7 @@ func (p *Plugin) Init() error {
 func (p *Plugin) PostInit() error {
 	p.lifecycleMu.Lock()
 	defer p.lifecycleMu.Unlock()
-	if p.retired || (!p.serviceTokenSet && p.legacyToken == nil) {
+	if p.retired || !p.serviceTokenSet {
 		return secret.ErrCredentialUnavailable
 	}
 	if p.config.Timeout == 0 {
@@ -199,7 +196,7 @@ func (p *Plugin) MaterializeScopedSecrets(
 	if p.retired {
 		return secret.ErrCredentialUnavailable
 	}
-	if p.serviceTokenSet || p.legacyToken != nil {
+	if p.serviceTokenSet {
 		return nil
 	}
 
@@ -234,31 +231,10 @@ func (p *Plugin) MaterializeSecrets() error {
 	if p.retired {
 		return secret.ErrCredentialUnavailable
 	}
-	if p.serviceTokenSet || p.legacyToken != nil {
+	if p.serviceTokenSet {
 		return nil
 	}
-
-	resolved, err := store.MaterializeSecret(p.config.ServiceToken)
-	if err != nil {
-		return secret.ErrCredentialUnavailable
-	}
-	plaintext := resolved.Bytes()
-	if len(bytes.TrimSpace(plaintext)) == 0 {
-		clear(plaintext)
-		resolved.Destroy()
-		return secret.ErrCredentialUnavailable
-	}
-	digest := sha256.Sum256(plaintext)
-	clear(plaintext)
-	descriptor, err := secret.NewDescriptor(capability.SecretPluginConfig, digest)
-	if err != nil {
-		resolved.Destroy()
-		return secret.ErrCredentialUnavailable
-	}
-
-	p.legacyToken = resolved
-	p.config.ServiceToken = descriptor.String()
-	return nil
+	return secret.ErrCredentialUnavailable
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
@@ -351,15 +327,7 @@ func (p *Plugin) useServiceTokenLocked(use func(string) error) error {
 	if p.serviceTokenSet {
 		return p.serviceToken.Use(use)
 	}
-	if p.legacyToken == nil {
-		return secret.ErrCredentialUnavailable
-	}
-	plaintext := p.legacyToken.Bytes()
-	if len(plaintext) == 0 {
-		return secret.ErrCredentialUnavailable
-	}
-	defer clear(plaintext)
-	return use(string(plaintext))
+	return secret.ErrCredentialUnavailable
 }
 
 // Stop first waits for every request holding the lifecycle read gate, then
@@ -377,10 +345,6 @@ func (p *Plugin) Stop() {
 	if p.client != nil {
 		p.client.CloseIdleConnections()
 		p.client = nil
-	}
-	if p.legacyToken != nil {
-		p.legacyToken.Destroy()
-		p.legacyToken = nil
 	}
 	p.serviceToken = secret.Value{}
 	p.serviceTokenSet = false

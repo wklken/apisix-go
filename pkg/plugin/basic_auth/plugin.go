@@ -12,7 +12,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/resource"
-	"github.com/wklken/apisix-go/pkg/store"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -175,27 +174,19 @@ func (p *Plugin) anonymousConsumerResult(w http.ResponseWriter, r *http.Request)
 }
 
 func (p *Plugin) consumerByUsername(username string) (resource.Consumer, bool) {
-	if lookup := p.ConsumerLookup(); lookup != nil {
-		return lookup.ConsumerByPluginKey(name, username)
+	lookup := p.ConsumerLookup()
+	if lookup == nil {
+		return resource.Consumer{}, false
 	}
-	return legacyBasicAuthConsumerByUsername(username)
+	return lookup.ConsumerByPluginKey(name, username)
 }
 
 func (p *Plugin) consumerByID(id string) (resource.Consumer, bool) {
-	if lookup := p.ConsumerLookup(); lookup != nil {
-		return lookup.ConsumerByID(id)
+	lookup := p.ConsumerLookup()
+	if lookup == nil {
+		return resource.Consumer{}, false
 	}
-	return legacyBasicAuthConsumerByID(id)
-}
-
-func legacyBasicAuthConsumerByUsername(username string) (resource.Consumer, bool) {
-	consumer, err := store.GetConsumerByPluginKey(name, username)
-	return consumer, err == nil
-}
-
-func legacyBasicAuthConsumerByID(id string) (resource.Consumer, bool) {
-	consumer, err := store.GetConsumer(id)
-	return consumer, err == nil
+	return lookup.ConsumerByID(id)
 }
 
 func (p *Plugin) writeAuthError(w http.ResponseWriter, body string) {

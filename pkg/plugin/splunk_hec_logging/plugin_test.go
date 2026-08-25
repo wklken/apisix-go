@@ -417,7 +417,11 @@ func TestSplunkRejectsPrePostInitLogEnqueue(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatal(err)
 	}
-	if err := p.MaterializeSecrets(); err != nil {
+	capabilityValue, scope, _, cleanup := newSplunkScopedSecretHarness(
+		t, 1, "pre-post-init", p.config, map[string]string{p.config.Endpoint.Token: p.config.Endpoint.Token},
+	)
+	t.Cleanup(cleanup)
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
 		t.Fatal(err)
 	}
 	before := len(p.FireChan)
@@ -455,7 +459,7 @@ func TestSplunkStopFlushesPendingBatchBeforeCleanup(t *testing.T) {
 		t.Fatal("Stop dropped pending Splunk batch")
 	}
 	if p.client != nil || p.clientRelease != nil || p.BatchProcessor != nil ||
-		p.tokenSet || p.legacyToken != nil || p.secretsPrepared || p.ready {
+		p.tokenSet || p.secretsPrepared || p.ready {
 		t.Fatalf("pending drain completed before cleanup: %#v", p)
 	}
 }
@@ -507,7 +511,7 @@ func TestSplunkStopDrainsActiveSendAndPreventsResurrection(t *testing.T) {
 		t.Fatal("Stop did not finish after active send drained")
 	}
 	if p.client != nil || p.clientRelease != nil || p.BatchProcessor != nil ||
-		p.tokenSet || p.legacyToken != nil || p.secretsPrepared || p.ready {
+		p.tokenSet || p.secretsPrepared || p.ready {
 		t.Fatalf("private/runtime state survived Stop: %#v", p)
 	}
 	if _, err := p.SendBatch(
@@ -669,8 +673,12 @@ func newTestPluginWithMetadata(t *testing.T, cfg Config, metadata map[string]any
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatalf("MaterializeSecrets() error = %v", err)
+	capabilityValue, scope, _, cleanup := newSplunkScopedSecretHarness(
+		t, 1, "test-route", cfg, map[string]string{cfg.Endpoint.Token: cfg.Endpoint.Token},
+	)
+	t.Cleanup(cleanup)
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
@@ -698,8 +706,8 @@ func mustMetadataView(t *testing.T, metadata map[string]any) runtime.MetadataVie
 
 func TestPostInitRejectsMissingDataEncryptionResolver(t *testing.T) {
 	p := &Plugin{config: Config{Endpoint: Endpoint{Token: "private"}}}
-	if err := p.MaterializeSecrets(); err == nil || err.Error() != "data-encryption resolver is required" {
-		t.Fatalf("MaterializeSecrets() error = %v, want missing resolver error", err)
+	if err := p.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) {
+		t.Fatalf("MaterializeSecrets() error = %v, want credential unavailable", err)
 	}
 }
 
@@ -733,8 +741,8 @@ func TestPostInitRejectsInvalidEncryptedToken(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := p.MaterializeSecrets(); err == nil {
-		t.Fatal("MaterializeSecrets() error = nil, want strict encrypted endpoint.token rejection")
+	if err := p.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) {
+		t.Fatalf("MaterializeSecrets() error = %v, want credential unavailable", err)
 	}
 }
 
@@ -748,8 +756,12 @@ func TestPostInitResolvesRotatedEncryptedToken(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatalf("MaterializeSecrets() error = %v", err)
+	capabilityValue, scope, _, cleanup := newSplunkScopedSecretHarness(
+		t, 1, "rotated-token", p.config, map[string]string{p.config.Endpoint.Token: "splunk-token"},
+	)
+	t.Cleanup(cleanup)
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
@@ -868,8 +880,12 @@ func TestMetadataDecodeFailsBeforeSplunkClientAndProcessorAcquisition(t *testing
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatalf("MaterializeSecrets() error = %v", err)
+	capabilityValue, scope, _, cleanup := newSplunkScopedSecretHarness(
+		t, 1, "invalid-metadata", p.config, map[string]string{p.config.Endpoint.Token: p.config.Endpoint.Token},
+	)
+	t.Cleanup(cleanup)
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	err := p.PostInit()
 	defer p.Stop()

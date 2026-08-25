@@ -360,8 +360,13 @@ func TestDingTalkLegacyMaterializationDecryptsContextualSecrets(t *testing.T) {
 		RedirectURI:     "https://login.dingtalk.com/oauth2/auth",
 	}}
 	p.SetDependencies(base.Dependencies{DataEncryption: service.Resolver()})
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatalf("MaterializeSecrets() error = %v", err)
+	capabilityValue, scope, _, cleanup := newDingTalkScopedSecretHarness(
+		t, 1, "test-route", p.config,
+		map[string]string{appRaw: appPlaintext, sessionRaw: sessionPlaintext, fallbackRaw: fallbackPlaintext},
+	)
+	t.Cleanup(cleanup)
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	assertDingTalkDescriptor(t, p.config.AppSecret, appPlaintext)
 	assertDingTalkDescriptor(t, p.config.Secret, sessionPlaintext)
@@ -619,9 +624,8 @@ func TestDingTalkStopDrainsActiveRefreshAndPreventsResurrection(t *testing.T) {
 	}
 	p.Stop()
 	if p.client != nil || p.tokenCache != nil || p.oauthStateReplay != nil ||
-		p.appSecretSet || p.legacyAppSecret != nil || p.sessionSecretSet ||
-		p.legacySessionSecret != nil || len(p.sessionSecretFallbacks) != 0 ||
-		len(p.legacySessionFallbacks) != 0 || p.secretsPrepared {
+		p.appSecretSet || p.sessionSecretSet ||
+		len(p.sessionSecretFallbacks) != 0 || p.secretsPrepared {
 		t.Fatal("Stop retained DingTalk client, cache, replay, or secret state")
 	}
 	late := httptest.NewRecorder()
@@ -643,8 +647,17 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatalf("MaterializeSecrets() error = %v", err)
+	values := map[string]string{
+		cfg.AppSecret: cfg.AppSecret,
+		cfg.Secret:    cfg.Secret,
+	}
+	for _, raw := range cfg.SecretFallbacks {
+		values[raw] = raw
+	}
+	capabilityValue, scope, _, cleanup := newDingTalkScopedSecretHarness(t, 1, "test-route", cfg, values)
+	t.Cleanup(cleanup)
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)

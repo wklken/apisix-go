@@ -2,7 +2,6 @@ package ai_rag
 
 import (
 	"context"
-	"crypto/sha256"
 	"errors"
 	"net/http"
 	"strings"
@@ -11,7 +10,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/secret"
-	"github.com/wklken/apisix-go/pkg/store"
 )
 
 var errRAGCredentialsUnavailable = errors.New("ai-rag provider credentials are unavailable")
@@ -24,10 +22,6 @@ type ragCredentialState struct {
 	credentialMu       sync.Mutex
 	stopOnce           sync.Once
 
-	embeddingAPIKey *store.ResolvedSecret
-	searchAPIKey    *store.ResolvedSecret
-	legacySet       bool
-
 	scopedEmbeddingAPIKey secret.Value
 	scopedSearchAPIKey    secret.Value
 	scopedSet             bool
@@ -38,11 +32,6 @@ type ragCredentialState struct {
 }
 
 type ragCredentialSnapshot struct {
-	legacy bool
-
-	embeddingAPIKey *store.ResolvedSecret
-	searchAPIKey    *store.ResolvedSecret
-
 	scopedEmbeddingAPIKey secret.Value
 	scopedSearchAPIKey    secret.Value
 }
@@ -55,45 +44,7 @@ func (p *Plugin) MaterializeSecrets() error {
 	if prepared, err := p.ragPreparationState(); err != nil || prepared {
 		return err
 	}
-
-	embeddingAPIKey, err := store.MaterializeSecret(
-		p.config.EmbeddingsProvider.AzureOpenAI.APIKey,
-	)
-	if err != nil || !validLegacyRAGKey(embeddingAPIKey) {
-		embeddingAPIKey.Destroy()
-		return errRAGCredentialsUnavailable
-	}
-	searchAPIKey, err := store.MaterializeSecret(
-		p.config.VectorSearchProvider.AzureAISearch.APIKey,
-	)
-	if err != nil || !validLegacyRAGKey(searchAPIKey) {
-		destroyLegacyRAGKeys(embeddingAPIKey, searchAPIKey)
-		return errRAGCredentialsUnavailable
-	}
-	embeddingDescriptor, err := legacyRAGDescriptor(embeddingAPIKey)
-	if err != nil {
-		destroyLegacyRAGKeys(embeddingAPIKey, searchAPIKey)
-		return errRAGCredentialsUnavailable
-	}
-	searchDescriptor, err := legacyRAGDescriptor(searchAPIKey)
-	if err != nil {
-		destroyLegacyRAGKeys(embeddingAPIKey, searchAPIKey)
-		return errRAGCredentialsUnavailable
-	}
-
-	p.credentialMu.Lock()
-	if p.retired {
-		p.credentialMu.Unlock()
-		destroyLegacyRAGKeys(embeddingAPIKey, searchAPIKey)
-		return errRAGCredentialsUnavailable
-	}
-	p.embeddingAPIKey = embeddingAPIKey
-	p.searchAPIKey = searchAPIKey
-	p.legacySet = true
-	p.config.EmbeddingsProvider.AzureOpenAI.APIKey = embeddingDescriptor
-	p.config.VectorSearchProvider.AzureAISearch.APIKey = searchDescriptor
-	p.credentialMu.Unlock()
-	return nil
+	return errRAGCredentialsUnavailable
 }
 
 // MaterializeScopedSecrets resolves exactly the two manifest-owned provider
@@ -173,7 +124,7 @@ func (p *Plugin) ragPreparationState() (bool, error) {
 	if p.retired {
 		return false, errRAGCredentialsUnavailable
 	}
-	return p.legacySet || p.scopedSet, nil
+	return p.scopedSet, nil
 }
 
 func validScopedRAGKey(value secret.Value) bool {
@@ -185,35 +136,10 @@ func validScopedRAGKey(value secret.Value) bool {
 	return valid
 }
 
-func validLegacyRAGKey(value *store.ResolvedSecret) bool {
-	if value == nil {
-		return false
-	}
-	plaintext := value.Bytes()
-	defer clear(plaintext)
-	return strings.TrimSpace(string(plaintext)) != ""
-}
-
-func legacyRAGDescriptor(value *store.ResolvedSecret) (string, error) {
-	if value == nil {
-		return "", errRAGCredentialsUnavailable
-	}
-	plaintext := value.Bytes()
-	defer clear(plaintext)
-	descriptor, err := secret.NewDescriptor(
-		capability.SecretPluginConfig,
-		sha256.Sum256(plaintext),
-	)
-	if err != nil {
-		return "", err
-	}
-	return descriptor.String(), nil
-}
-
 func (p *Plugin) installRAGClient(client *http.Client) error {
 	p.credentialMu.Lock()
 	defer p.credentialMu.Unlock()
-	if p.retired || (!p.legacySet && !p.scopedSet) {
+	if p.retired || !p.scopedSet {
 		client.CloseIdleConnections()
 		return errRAGCredentialsUnavailable
 	}
@@ -242,34 +168,22 @@ func (p *Plugin) withRAGKey(embedding bool, use func(string) error) error {
 	}
 	defer release()
 
-	if !snapshot.legacy {
-		value := snapshot.scopedSearchAPIKey
-		if embedding {
-			value = snapshot.scopedEmbeddingAPIKey
-		}
-		return value.Use(func(plaintext string) error {
-			if strings.TrimSpace(plaintext) == "" {
-				return errRAGCredentialsUnavailable
-			}
-			return use(plaintext)
-		})
-	}
-	value := snapshot.searchAPIKey
+	value := snapshot.scopedSearchAPIKey
 	if embedding {
-		value = snapshot.embeddingAPIKey
+		value = snapshot.scopedEmbeddingAPIKey
 	}
-	plaintext := value.Bytes()
-	defer clear(plaintext)
-	if strings.TrimSpace(string(plaintext)) == "" {
-		return errRAGCredentialsUnavailable
-	}
-	return use(string(plaintext))
+	return value.Use(func(plaintext string) error {
+		if strings.TrimSpace(plaintext) == "" {
+			return errRAGCredentialsUnavailable
+		}
+		return use(plaintext)
+	})
 }
 
 func (p *Plugin) acquireRAGCredentials() (ragCredentialSnapshot, func(), error) {
 	p.credentialMu.Lock()
 	defer p.credentialMu.Unlock()
-	if p.retired || (!p.legacySet && !p.scopedSet) || p.client == nil {
+	if p.retired || !p.scopedSet || p.client == nil {
 		return ragCredentialSnapshot{}, nil, errRAGCredentialsUnavailable
 	}
 	if p.activeUses == 0 {
@@ -277,9 +191,6 @@ func (p *Plugin) acquireRAGCredentials() (ragCredentialSnapshot, func(), error) 
 	}
 	p.activeUses++
 	return ragCredentialSnapshot{
-		legacy:                p.legacySet,
-		embeddingAPIKey:       p.embeddingAPIKey,
-		searchAPIKey:          p.searchAPIKey,
 		scopedEmbeddingAPIKey: p.scopedEmbeddingAPIKey,
 		scopedSearchAPIKey:    p.scopedSearchAPIKey,
 	}, p.releaseRAGCredentialUse, nil
@@ -310,21 +221,10 @@ func (p *Plugin) Stop() {
 		}
 
 		p.credentialMu.Lock()
-		embeddingAPIKey := p.embeddingAPIKey
-		searchAPIKey := p.searchAPIKey
-		p.embeddingAPIKey = nil
-		p.searchAPIKey = nil
-		p.legacySet = false
 		p.scopedEmbeddingAPIKey = secret.Value{}
 		p.scopedSearchAPIKey = secret.Value{}
 		p.scopedSet = false
 		p.client = nil
 		p.credentialMu.Unlock()
-		destroyLegacyRAGKeys(embeddingAPIKey, searchAPIKey)
 	})
-}
-
-func destroyLegacyRAGKeys(embeddingAPIKey, searchAPIKey *store.ResolvedSecret) {
-	embeddingAPIKey.Destroy()
-	searchAPIKey.Destroy()
 }

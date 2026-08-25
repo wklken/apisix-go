@@ -38,8 +38,12 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatalf("MaterializeSecrets() error = %v", err)
+	capabilityValue, scope, _, cleanup := newOpenWhiskScopedSecretHarness(
+		t, 1, "test-route", cfg.ServiceToken, cfg.ServiceToken,
+	)
+	t.Cleanup(cleanup)
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
@@ -426,10 +430,10 @@ func TestMaterializeScopedSecretsOwnsOpenWhiskServiceToken(t *testing.T) {
 				t.Fatalf("blank materialization error = %q, want constant redaction", err)
 			}
 			if p.config.ServiceToken != raw || p.serviceTokenSet ||
-				p.serviceToken != (secret.Value{}) || p.legacyToken != nil || p.client != nil {
+				p.serviceToken != (secret.Value{}) || p.client != nil {
 				t.Fatalf(
-					"failed materialization retained state: config=%q scoped=%v value=%#v legacy=%p client=%p",
-					p.config.ServiceToken, p.serviceTokenSet, p.serviceToken, p.legacyToken, p.client,
+					"failed materialization retained state: config=%q scoped=%v value=%#v client=%p",
+					p.config.ServiceToken, p.serviceTokenSet, p.serviceToken, p.client,
 				)
 			}
 			broker.setValue(raw, "retry-user:retry-pass")
@@ -483,11 +487,10 @@ func TestOpenWhiskScopedMaterializationFailureIsAtomicRedactedAndRetryable(t *te
 		strings.Contains(err.Error(), "private-openwhisk-token") {
 		t.Fatalf("materialization error leaked secret details: %v", err)
 	}
-	if p.config.ServiceToken != raw || p.serviceTokenSet || p.serviceToken != (secret.Value{}) ||
-		p.legacyToken != nil || p.client != nil {
+	if p.config.ServiceToken != raw || p.serviceTokenSet || p.serviceToken != (secret.Value{}) || p.client != nil {
 		t.Fatalf(
-			"failed materialization retained state: config=%q scoped=%v value=%#v legacy=%p client=%p",
-			p.config.ServiceToken, p.serviceTokenSet, p.serviceToken, p.legacyToken, p.client,
+			"failed materialization retained state: config=%q scoped=%v value=%#v client=%p",
+			p.config.ServiceToken, p.serviceTokenSet, p.serviceToken, p.client,
 		)
 	}
 	broker.setFailure("")
@@ -533,16 +536,16 @@ func TestOpenWhiskScopedMaterializationRejectsWrongAuthority(t *testing.T) {
 			if got := broker.scopedCalls(); len(got) != 0 {
 				t.Fatalf("wrong authority reached resolver: %#v", got)
 			}
-			if p.config.ServiceToken != raw || p.serviceTokenSet || p.legacyToken != nil {
+			if p.config.ServiceToken != raw || p.serviceTokenSet {
 				t.Fatal("wrong authority changed plugin secret state")
 			}
 		})
 	}
 }
 
-func TestOpenWhiskLegacyMaterializationUsesResolvedPlaintextDescriptor(t *testing.T) {
+func TestOpenWhiskScopedMaterializationUsesResolvedPlaintextDescriptor(t *testing.T) {
 	const raw = "$ENV://OPENWHISK_LEGACY_SERVICE_TOKEN"
-	t.Setenv("OPENWHISK_LEGACY_SERVICE_TOKEN", "legacy-user:legacy-pass")
+	const resolved = "legacy-user:legacy-pass"
 	p := &Plugin{config: Config{
 		APIHost:      "http://openwhisk.invalid",
 		ServiceToken: raw,
@@ -552,8 +555,12 @@ func TestOpenWhiskLegacyMaterializationUsesResolvedPlaintextDescriptor(t *testin
 	if err := p.Init(); err != nil {
 		t.Fatal(err)
 	}
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatalf("MaterializeSecrets() error = %v", err)
+	capabilityValue, scope, _, cleanup := newOpenWhiskScopedSecretHarness(
+		t, 1, "scoped-descriptor", raw, resolved,
+	)
+	t.Cleanup(cleanup)
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	digest := sha256.Sum256([]byte("legacy-user:legacy-pass"))
 	wantDescriptor := "plugin_config#sha256:" + hex.EncodeToString(digest[:])
@@ -565,7 +572,7 @@ func TestOpenWhiskLegacyMaterializationUsesResolvedPlaintextDescriptor(t *testin
 	}
 }
 
-func TestOpenWhiskLegacyEmptyFailureCanRetryWithoutRetainedState(t *testing.T) {
+func TestOpenWhiskMaterializeSecretsFailsClosedWithoutRetainedState(t *testing.T) {
 	for index, resolved := range []string{"", " \t\n"} {
 		t.Run(fmt.Sprintf("reject resolved whitespace %d", index), func(t *testing.T) {
 			const raw = "$ENV://OPENWHISK_LEGACY_EMPTY_RETRY"
@@ -575,22 +582,13 @@ func TestOpenWhiskLegacyEmptyFailureCanRetryWithoutRetainedState(t *testing.T) {
 			if !errors.Is(err, secret.ErrCredentialUnavailable) || err.Error() != "credential unavailable" {
 				t.Fatalf("MaterializeSecrets() error = %v, want constant credential unavailable", err)
 			}
-			if p.config.ServiceToken != raw || p.serviceTokenSet || p.serviceToken != (secret.Value{}) ||
-				p.legacyToken != nil || p.client != nil {
+			if p.config.ServiceToken != raw || p.serviceTokenSet ||
+				p.serviceToken != (secret.Value{}) || p.client != nil {
 				t.Fatal("failed legacy materialization retained secret or client state")
 			}
 			t.Setenv("OPENWHISK_LEGACY_EMPTY_RETRY", "retry-user:retry-pass")
-			if err := p.MaterializeSecrets(); err != nil {
-				t.Fatalf("same-instance legacy retry error = %v", err)
-			}
-			digest := sha256.Sum256([]byte("retry-user:retry-pass"))
-			wantDescriptor := "plugin_config#sha256:" + hex.EncodeToString(digest[:])
-			if p.config.ServiceToken != wantDescriptor || p.legacyToken == nil {
-				t.Fatalf(
-					"legacy retry state = %q/%p, want installed descriptor",
-					p.config.ServiceToken,
-					p.legacyToken,
-				)
+			if err := p.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) {
+				t.Fatalf("same-instance MaterializeSecrets() error = %v, want credential unavailable", err)
 			}
 		})
 	}
@@ -845,7 +843,7 @@ func TestOpenWhiskGenerationsDoNotShareAuthorizationOrRetirement(t *testing.T) {
 	}
 }
 
-func TestOpenWhiskScopedAndLegacyRequestsBlockStopUntilUpstreamRetires(t *testing.T) {
+func TestOpenWhiskScopedRequestsBlockStopUntilUpstreamRetires(t *testing.T) {
 	tests := []struct {
 		name    string
 		prepare func(*testing.T, string) (*Plugin, func())
@@ -860,19 +858,6 @@ func TestOpenWhiskScopedAndLegacyRequestsBlockStopUntilUpstreamRetires(t *testin
 				)
 			},
 			want: "Basic c2NvcGVkLXVzZXI6c2NvcGVkLXBhc3M=",
-		},
-		{
-			name: "legacy",
-			prepare: func(t *testing.T, apiHost string) (*Plugin, func()) {
-				p := newTestPlugin(t, Config{
-					APIHost:      apiHost,
-					ServiceToken: "legacy-user:legacy-pass",
-					Namespace:    "guest",
-					Action:       "hello",
-				})
-				return p, func() {}
-			},
-			want: "Basic bGVnYWN5LXVzZXI6bGVnYWN5LXBhc3M=",
 		},
 	}
 	for _, test := range tests {
@@ -895,11 +880,6 @@ func TestOpenWhiskScopedAndLegacyRequestsBlockStopUntilUpstreamRetires(t *testin
 			}()
 			p, closeAttempt := test.prepare(t, api.URL)
 			defer closeAttempt()
-			legacyHandle := p.legacyToken
-			if test.name == "legacy" && legacyHandle == nil {
-				t.Fatal("legacy preparation did not retain a materialized secret handle")
-			}
-
 			requestDone := make(chan *httptest.ResponseRecorder, 1)
 			go func() { requestDone <- performRequest(p, "barrier") }()
 			var gotAuthorization string
@@ -955,15 +935,12 @@ func TestOpenWhiskScopedAndLegacyRequestsBlockStopUntilUpstreamRetires(t *testin
 			if got := upstreamCalls.Load(); got != 1 {
 				t.Fatalf("upstream calls after retired request = %d, want 1", got)
 			}
-			if p.client != nil || p.legacyToken != nil || p.serviceTokenSet ||
+			if p.client != nil || p.serviceTokenSet ||
 				p.serviceToken != (secret.Value{}) || !p.retired {
 				t.Fatalf(
-					"retired state = client:%p legacy:%p scoped:%v value:%#v retired:%v",
-					p.client, p.legacyToken, p.serviceTokenSet, p.serviceToken, p.retired,
+					"retired state = client:%p scoped:%v value:%#v retired:%v",
+					p.client, p.serviceTokenSet, p.serviceToken, p.retired,
 				)
-			}
-			if legacyHandle != nil && legacyHandle.Bytes() != nil {
-				t.Fatal("saved legacy materialized handle retained bytes after Stop")
 			}
 			p.Stop()
 		})

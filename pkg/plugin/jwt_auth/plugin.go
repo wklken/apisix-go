@@ -12,7 +12,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/resource"
-	"github.com/wklken/apisix-go/pkg/store"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -238,27 +237,19 @@ func (p *Plugin) findConsumer(r *http.Request) (resource.Consumer, jwtToken, str
 }
 
 func (p *Plugin) consumerByPluginKey(key string) (resource.Consumer, bool) {
-	if lookup := p.ConsumerLookup(); lookup != nil {
-		return lookup.ConsumerByPluginKey(name, key)
+	lookup := p.ConsumerLookup()
+	if lookup == nil {
+		return resource.Consumer{}, false
 	}
-	return legacyJWTConsumerByPluginKey(key)
+	return lookup.ConsumerByPluginKey(name, key)
 }
 
 func (p *Plugin) consumerByID(id string) (resource.Consumer, bool) {
-	if lookup := p.ConsumerLookup(); lookup != nil {
-		return lookup.ConsumerByID(id)
+	lookup := p.ConsumerLookup()
+	if lookup == nil {
+		return resource.Consumer{}, false
 	}
-	return legacyJWTConsumerByID(id)
-}
-
-func legacyJWTConsumerByPluginKey(key string) (resource.Consumer, bool) {
-	consumer, err := store.GetConsumerByPluginKey(name, key)
-	return consumer, err == nil
-}
-
-func legacyJWTConsumerByID(id string) (resource.Consumer, bool) {
-	consumer, err := store.GetConsumer(id)
-	return consumer, err == nil
+	return lookup.ConsumerByID(id)
 }
 
 // verifyToken parses and verifies a raw JWT against a consumer configuration.

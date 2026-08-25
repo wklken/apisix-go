@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -28,8 +29,19 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatalf("MaterializeSecrets() error = %v", err)
+	raw := ""
+	if cfg.Authorization != nil {
+		raw = cfg.Authorization.ServiceToken
+	}
+	broker := &openFunctionScopedBroker{values: map[string]string{raw: raw}}
+	capabilityValue, registration, scope := registerOpenFunctionScopedRoute(t, broker, raw)
+	t.Cleanup(func() {
+		if err := registration.Close(context.Background()); err != nil {
+			t.Error(err)
+		}
+	})
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
@@ -319,35 +331,15 @@ func TestOpenFunctionGenerationsDoNotShareAuthorizationOrRetirement(t *testing.T
 	}
 }
 
-func TestOpenFunctionLegacyMaterializationUsesDescriptorAndPrivateValue(t *testing.T) {
+func TestOpenFunctionMaterializeSecretsFailsClosed(t *testing.T) {
 	const raw = "$ENV://OPENFUNCTION_LEGACY_TOKEN"
 	t.Setenv("OPENFUNCTION_LEGACY_TOKEN", "legacy-service-token")
 	p := &Plugin{config: Config{
 		FunctionURI:   "http://function.invalid",
 		Authorization: &Authorization{ServiceToken: raw},
 	}}
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatalf("MaterializeSecrets() error = %v", err)
-	}
-	if p.config.Authorization.ServiceToken == raw ||
-		strings.Contains(p.config.Authorization.ServiceToken, "legacy-service-token") ||
-		!strings.HasPrefix(p.config.Authorization.ServiceToken, "plugin_config#sha256:") {
-		t.Fatalf("legacy public token = %q, want descriptor only", p.config.Authorization.ServiceToken)
-	}
-	req := httptest.NewRequest(http.MethodGet, "http://example.com/openfunction", nil)
-	p.processRequest(req, function_upstream.Config{})
-	if got := req.Header.Get("Authorization"); got != "Basic bGVnYWN5LXNlcnZpY2UtdG9rZW4=" {
-		t.Fatalf("legacy Authorization = %q, want resolved value", got)
-	}
-	p.Stop()
-	p.Stop()
-	if p.legacyServiceToken != nil || p.serviceTokenSet || p.serviceToken != (secret.Value{}) {
-		t.Fatalf(
-			"secret state after Stop = legacy:%p scoped:%v value:%#v",
-			p.legacyServiceToken,
-			p.serviceTokenSet,
-			p.serviceToken,
-		)
+	if err := p.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) {
+		t.Fatalf("MaterializeSecrets() error = %v, want credential unavailable", err)
 	}
 }
 
@@ -435,7 +427,18 @@ func TestOpenFunctionLegacyProcessAndStopDoNotRaceCredentialUse(t *testing.T) {
 		FunctionURI:   "http://function.invalid",
 		Authorization: &Authorization{ServiceToken: "legacy-concurrent-token"},
 	}}
-	if err := p.MaterializeSecrets(); err != nil {
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	const raw = "legacy-concurrent-token"
+	broker := &openFunctionScopedBroker{values: map[string]string{raw: raw}}
+	capabilityValue, registration, scope := registerOpenFunctionScopedRoute(t, broker, raw)
+	t.Cleanup(func() {
+		if err := registration.Close(context.Background()); err != nil {
+			t.Error(err)
+		}
+	})
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
 		t.Fatal(err)
 	}
 
@@ -520,12 +523,11 @@ func TestMaterializeScopedSecretsFailureCanRetryWithoutRetainedState(t *testing.
 	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err == nil {
 		t.Fatal("first MaterializeScopedPluginSecrets() error = nil")
 	}
-	if p.serviceToken != (secret.Value{}) || p.serviceTokenSet || p.legacyServiceToken != nil {
+	if p.serviceToken != (secret.Value{}) || p.serviceTokenSet {
 		t.Fatalf(
-			"secret state after failed materialization = value:%#v set:%v legacy:%p",
+			"secret state after failed materialization = value:%#v set:%v",
 			p.serviceToken,
 			p.serviceTokenSet,
-			p.legacyServiceToken,
 		)
 	}
 	if got := p.config.Authorization.ServiceToken; got != raw {
@@ -537,12 +539,11 @@ func TestMaterializeScopedSecretsFailureCanRetryWithoutRetainedState(t *testing.
 	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
 		t.Fatalf("retry MaterializeScopedPluginSecrets() error = %v", err)
 	}
-	if !p.serviceTokenSet || p.serviceToken == (secret.Value{}) || p.legacyServiceToken != nil {
+	if !p.serviceTokenSet || p.serviceToken == (secret.Value{}) {
 		t.Fatalf(
-			"secret state after retry = value:%#v set:%v legacy:%p",
+			"secret state after retry = value:%#v set:%v",
 			p.serviceToken,
 			p.serviceTokenSet,
-			p.legacyServiceToken,
 		)
 	}
 	if got := p.config.Authorization.ServiceToken; got == raw || !strings.HasPrefix(got, "plugin_config#sha256:") {
@@ -589,20 +590,10 @@ func TestOpenFunctionDoesNotRetainPlaintextOrBasicCredentialFields(t *testing.T)
 		{
 			name: "legacy",
 			prepare: func(t *testing.T) *Plugin {
-				p := &Plugin{config: Config{
+				return newTestPlugin(t, Config{
 					FunctionURI:   "http://function.invalid",
 					Authorization: &Authorization{ServiceToken: token},
-				}}
-				if err := p.Init(); err != nil {
-					t.Fatal(err)
-				}
-				if err := p.MaterializeSecrets(); err != nil {
-					t.Fatal(err)
-				}
-				if err := p.PostInit(); err != nil {
-					t.Fatal(err)
-				}
-				return p
+				})
 			},
 		},
 	}

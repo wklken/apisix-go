@@ -5,14 +5,12 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
-	"slices"
 	"strings"
 	"sync"
 
 	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/secret"
-	"github.com/wklken/apisix-go/pkg/store"
 )
 
 var errLimitCountCredentialsUnavailable = secret.ErrCredentialUnavailable
@@ -33,10 +31,6 @@ type limitCountSecretState struct {
 	credentialMu sync.Mutex
 	stopOnce     sync.Once
 
-	keySecret               *store.ResolvedSecret
-	redisHostSecret         *store.ResolvedSecret
-	redisClusterNodeSecrets []*store.ResolvedSecret
-
 	scopedKeySecret         secret.Value
 	scopedRedisHost         secret.Value
 	scopedRedisClusterNodes []secret.Value
@@ -44,12 +38,7 @@ type limitCountSecretState struct {
 	keyPresent        bool
 	redisHostPresent  bool
 	redisNodesPresent bool
-	legacySet         bool
 	scopedSet         bool
-
-	legacyKey        string
-	legacyRedisHost  string
-	legacyRedisNodes []string
 
 	keyDigest        [sha256.Size]byte
 	redisHostDigest  [sha256.Size]byte
@@ -65,12 +54,6 @@ type limitCountSecretState struct {
 }
 
 type limitCountSecretSnapshot struct {
-	legacy bool
-
-	keySecret               *store.ResolvedSecret
-	redisHostSecret         *store.ResolvedSecret
-	redisClusterNodeSecrets []*store.ResolvedSecret
-
 	scopedKey               secret.Value
 	scopedRedisHost         secret.Value
 	scopedRedisClusterNodes []secret.Value
@@ -78,22 +61,12 @@ type limitCountSecretSnapshot struct {
 	keyPresent        bool
 	redisHostPresent  bool
 	redisNodesPresent bool
-
-	legacyKey        string
-	legacyRedisHost  string
-	legacyRedisNodes []string
 }
 
 type stagedLimitCountSecrets struct {
-	legacy bool
-
 	keySelection   secretFieldSelection
 	hostSelection  secretFieldSelection
 	nodesSelection secretFieldSelection
-
-	keyOwner   *store.ResolvedSecret
-	hostOwner  *store.ResolvedSecret
-	nodeOwners []*store.ResolvedSecret
 
 	scopedKey   secret.Value
 	scopedHost  secret.Value
@@ -106,10 +79,6 @@ type stagedLimitCountSecrets struct {
 	keyDigest   [sha256.Size]byte
 	hostDigest  [sha256.Size]byte
 	nodeDigests [][sha256.Size]byte
-
-	legacyKey   string
-	legacyHost  string
-	legacyNodes []string
 }
 
 func selectLimitCountSecretFields(config Config) (
@@ -158,50 +127,7 @@ func (p *Plugin) MaterializeSecrets() error {
 	if prepared, err := p.limitCountPreparationState(); err != nil || prepared {
 		return err
 	}
-	keySelection, hostSelection, nodesSelection := selectLimitCountSecretFields(p.config)
-	nodes := selectedLimitCountNodes(p.config, nodesSelection)
-	staged := stagedLimitCountSecrets{
-		legacy: true, keySelection: keySelection, hostSelection: hostSelection,
-		nodesSelection: nodesSelection, legacyKey: keySelection.raw,
-		legacyHost: hostSelection.raw, legacyNodes: append([]string(nil), nodes...),
-	}
-	var err error
-	if keySelection.raw != "" {
-		staged.keyOwner, err = materializeLimitCountLegacyValue(keySelection.raw)
-		if err != nil {
-			return fmt.Errorf("resolve limit-count key: %w", errLimitCountCredentialsUnavailable)
-		}
-		staged.keyDigest, staged.keyDescriptor = legacyLimitCountDigest(staged.keyOwner, keySelection.raw)
-	}
-	if hostSelection.raw != "" {
-		staged.hostOwner, err = materializeLimitCountLegacyValue(hostSelection.raw)
-		if err != nil {
-			staged.destroyLegacy()
-			return fmt.Errorf("resolve limit-count Redis host: %w", errLimitCountCredentialsUnavailable)
-		}
-		staged.hostDigest, staged.hostDescriptor = legacyLimitCountDigest(staged.hostOwner, hostSelection.raw)
-	}
-	staged.nodeOwners = make([]*store.ResolvedSecret, len(nodes))
-	staged.nodeDescriptors = make([]string, len(nodes))
-	staged.nodeDigests = make([][sha256.Size]byte, len(nodes))
-	for index, raw := range nodes {
-		staged.nodeOwners[index], err = materializeLimitCountLegacyValue(raw)
-		if err != nil {
-			staged.destroyLegacy()
-			return fmt.Errorf(
-				"resolve limit-count Redis cluster node %d: %w",
-				index,
-				errLimitCountCredentialsUnavailable,
-			)
-		}
-		staged.nodeDigests[index], staged.nodeDescriptors[index] = legacyLimitCountDigest(
-			staged.nodeOwners[index], raw,
-		)
-		if staged.nodeDescriptors[index] == "" {
-			staged.nodeDescriptors[index] = raw
-		}
-	}
-	return p.installLimitCountSecrets(staged)
+	return errLimitCountCredentialsUnavailable
 }
 
 // MaterializeScopedSecrets resolves the selected aliases using their exact
@@ -287,30 +213,22 @@ func (p *Plugin) limitCountPreparationState() (bool, error) {
 	if p.retired {
 		return false, errLimitCountCredentialsUnavailable
 	}
-	return p.legacySet || p.scopedSet, nil
+	return p.scopedSet, nil
 }
 
 func (p *Plugin) installLimitCountSecrets(staged stagedLimitCountSecrets) error {
 	p.credentialMu.Lock()
 	defer p.credentialMu.Unlock()
 	if p.retired {
-		staged.destroyLegacy()
 		return errLimitCountCredentialsUnavailable
 	}
-	p.keySecret = staged.keyOwner
-	p.redisHostSecret = staged.hostOwner
-	p.redisClusterNodeSecrets = staged.nodeOwners
 	p.scopedKeySecret = staged.scopedKey
 	p.scopedRedisHost = staged.scopedHost
 	p.scopedRedisClusterNodes = staged.scopedNodes
 	p.keyPresent = staged.keySelection.raw != ""
 	p.redisHostPresent = staged.hostSelection.raw != ""
 	p.redisNodesPresent = staged.nodesSelection.field != ""
-	p.legacySet = staged.legacy
-	p.scopedSet = !staged.legacy
-	p.legacyKey = staged.legacyKey
-	p.legacyRedisHost = staged.legacyHost
-	p.legacyRedisNodes = staged.legacyNodes
+	p.scopedSet = true
 	p.keyDigest = staged.keyDigest
 	p.redisHostDigest = staged.hostDigest
 	p.redisNodeDigests = staged.nodeDigests
@@ -346,27 +264,6 @@ func (p *Plugin) installLimitCountSecrets(staged stagedLimitCountSecrets) error 
 	return nil
 }
 
-func materializeLimitCountLegacyValue(raw string) (*store.ResolvedSecret, error) {
-	if strings.TrimSpace(raw) == "" {
-		return nil, errLimitCountCredentialsUnavailable
-	}
-	value, err := store.MaterializeSecret(raw)
-	if err != nil || !validLimitCountLegacyValue(value) {
-		value.Destroy()
-		return nil, errLimitCountCredentialsUnavailable
-	}
-	return value, nil
-}
-
-func validLimitCountLegacyValue(value *store.ResolvedSecret) bool {
-	if value == nil {
-		return false
-	}
-	plaintext := value.Bytes()
-	defer clear(plaintext)
-	return strings.TrimSpace(string(plaintext)) != ""
-}
-
 func validLimitCountScopedValue(value secret.Value) bool {
 	valid := false
 	_ = value.Use(func(plaintext string) error {
@@ -374,19 +271,6 @@ func validLimitCountScopedValue(value secret.Value) bool {
 		return nil
 	})
 	return valid
-}
-
-func legacyLimitCountDigest(
-	owner *store.ResolvedSecret, literal string,
-) ([sha256.Size]byte, string) {
-	if owner == nil {
-		return sha256.Sum256([]byte(literal)), ""
-	}
-	plaintext := owner.Bytes()
-	defer clear(plaintext)
-	digest := sha256.Sum256(plaintext)
-	descriptor, _ := secret.NewDescriptor(capability.SecretPluginConfig, digest)
-	return digest, descriptor.String()
 }
 
 func scopedLimitCountDescriptor(
@@ -399,18 +283,10 @@ func scopedLimitCountDescriptor(
 	return descriptor.Digest(), descriptor.String(), nil
 }
 
-func (staged *stagedLimitCountSecrets) destroyLegacy() {
-	staged.keyOwner.Destroy()
-	staged.hostOwner.Destroy()
-	for _, owner := range staged.nodeOwners {
-		owner.Destroy()
-	}
-}
-
 func (p *Plugin) acquireLimitCountSecrets() (limitCountSecretSnapshot, func(), error) {
 	p.credentialMu.Lock()
 	defer p.credentialMu.Unlock()
-	if p.retired || (!p.legacySet && !p.scopedSet) {
+	if p.retired || !p.scopedSet {
 		return limitCountSecretSnapshot{}, nil, errLimitCountCredentialsUnavailable
 	}
 	if p.activeUses == 0 {
@@ -418,15 +294,10 @@ func (p *Plugin) acquireLimitCountSecrets() (limitCountSecretSnapshot, func(), e
 	}
 	p.activeUses++
 	return limitCountSecretSnapshot{
-		legacy:    p.legacySet,
-		keySecret: p.keySecret, redisHostSecret: p.redisHostSecret,
-		redisClusterNodeSecrets: append([]*store.ResolvedSecret(nil), p.redisClusterNodeSecrets...),
-		scopedKey:               p.scopedKeySecret, scopedRedisHost: p.scopedRedisHost,
+		scopedKey: p.scopedKeySecret, scopedRedisHost: p.scopedRedisHost,
 		scopedRedisClusterNodes: append([]secret.Value(nil), p.scopedRedisClusterNodes...),
 		keyPresent:              p.keyPresent, redisHostPresent: p.redisHostPresent,
 		redisNodesPresent: p.redisNodesPresent,
-		legacyKey:         p.legacyKey, legacyRedisHost: p.legacyRedisHost,
-		legacyRedisNodes: append([]string(nil), p.legacyRedisNodes...),
 	}, p.releaseLimitCountSecretUse, nil
 }
 
@@ -443,95 +314,35 @@ func (p *Plugin) releaseLimitCountSecretUse() {
 func (p *Plugin) withLimitCountKey(use func(string) error) error {
 	snapshot, release, err := p.acquireLimitCountSecrets()
 	if err != nil {
-		if p.limitCountAllowsUnpreparedLiteral() && !isLimitCountSecretReference(p.config.Key) {
-			return use(p.config.Key)
-		}
 		return err
 	}
 	defer release()
 	if !snapshot.keyPresent {
 		return use(p.config.Key)
 	}
-	if !snapshot.legacy {
-		return snapshot.scopedKey.Use(use)
-	}
-	if snapshot.keySecret == nil {
-		return use(snapshot.legacyKey)
-	}
-	plaintext := snapshot.keySecret.Bytes()
-	defer clear(plaintext)
-	if len(plaintext) == 0 {
-		return errLimitCountCredentialsUnavailable
-	}
-	return use(string(plaintext))
+	return snapshot.scopedKey.Use(use)
 }
 
 func (p *Plugin) withLimitCountRedisHost(use func(string) error) error {
 	snapshot, release, err := p.acquireLimitCountSecrets()
 	if err != nil {
-		if p.limitCountAllowsUnpreparedLiteral() &&
-			!isLimitCountSecretReference(p.config.Redis.RedisHost) {
-			return use(p.config.Redis.RedisHost)
-		}
 		return err
 	}
 	defer release()
 	if !snapshot.redisHostPresent {
 		return use(p.config.Redis.RedisHost)
 	}
-	if !snapshot.legacy {
-		return snapshot.scopedRedisHost.Use(use)
-	}
-	if snapshot.redisHostSecret == nil {
-		return use(snapshot.legacyRedisHost)
-	}
-	plaintext := snapshot.redisHostSecret.Bytes()
-	defer clear(plaintext)
-	if len(plaintext) == 0 {
-		return errLimitCountCredentialsUnavailable
-	}
-	return use(string(plaintext))
+	return snapshot.scopedRedisHost.Use(use)
 }
 
 func (p *Plugin) withLimitCountRedisNodes(use func([]string) error) error {
 	snapshot, release, err := p.acquireLimitCountSecrets()
 	if err != nil {
-		if p.limitCountAllowsUnpreparedLiteral() {
-			if slices.ContainsFunc(
-				p.config.RedisCluster.RedisClusterNodes,
-				isLimitCountSecretReference,
-			) {
-				return err
-			}
-			return use(append([]string(nil), p.config.RedisCluster.RedisClusterNodes...))
-		}
 		return err
 	}
 	defer release()
 	if !snapshot.redisNodesPresent {
 		return use(append([]string(nil), p.config.RedisCluster.RedisClusterNodes...))
-	}
-	if snapshot.legacy {
-		nodes := append([]string(nil), snapshot.legacyRedisNodes...)
-		for index, owner := range snapshot.redisClusterNodeSecrets {
-			if owner == nil {
-				continue
-			}
-			plaintext := owner.Bytes()
-			if len(plaintext) == 0 {
-				for nodeIndex := range nodes {
-					nodes[nodeIndex] = ""
-				}
-				return fmt.Errorf("limit-count Redis cluster node %d credential unavailable", index)
-			}
-			nodes[index] = string(plaintext)
-			clear(plaintext)
-		}
-		err := use(nodes)
-		for index := range nodes {
-			nodes[index] = ""
-		}
-		return err
 	}
 	nodes := make([]string, len(snapshot.scopedRedisClusterNodes))
 	var useNode func(int) error
@@ -553,26 +364,5 @@ func (p *Plugin) limitCountCredentialDigests() (
 ) {
 	p.credentialMu.Lock()
 	defer p.credentialMu.Unlock()
-	if !p.retired && !p.legacySet && !p.scopedSet {
-		_, hostSelection, nodesSelection := selectLimitCountSecretFields(p.config)
-		hostDigest := sha256.Sum256([]byte(hostSelection.raw))
-		nodes := selectedLimitCountNodes(p.config, nodesSelection)
-		nodeDigests := make([][sha256.Size]byte, len(nodes))
-		for index, node := range nodes {
-			nodeDigests[index] = sha256.Sum256([]byte(node))
-		}
-		return [sha256.Size]byte{}, hostDigest, nodeDigests
-	}
 	return p.keyDigest, p.redisHostDigest, append([][sha256.Size]byte(nil), p.redisNodeDigests...)
-}
-
-func (p *Plugin) limitCountAllowsUnpreparedLiteral() bool {
-	p.credentialMu.Lock()
-	defer p.credentialMu.Unlock()
-	return !p.retired && !p.legacySet && !p.scopedSet
-}
-
-func isLimitCountSecretReference(raw string) bool {
-	upper := strings.ToUpper(raw)
-	return strings.HasPrefix(upper, "$ENV://") || strings.HasPrefix(raw, "$secret://")
 }

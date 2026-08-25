@@ -79,6 +79,21 @@ var (
 	testEvents    chan *store.Event
 )
 
+type storeBackedJWELookup struct{}
+
+func (storeBackedJWELookup) ConsumerByPluginKey(plugin, key string) (resource.Consumer, bool) {
+	consumer, err := store.GetConsumerByPluginKey(plugin, key)
+	return consumer, err == nil
+}
+
+func (storeBackedJWELookup) ConsumerByID(string) (resource.Consumer, bool) {
+	return resource.Consumer{}, false
+}
+
+func (storeBackedJWELookup) ConsumerGroupByID(string) (resource.ConsumerGroup, bool) {
+	return resource.ConsumerGroup{}, false
+}
+
 func setupStore(t *testing.T) {
 	t.Helper()
 
@@ -131,6 +146,7 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
 
 	p := &Plugin{config: cfg}
+	p.SetDependencies(base.Dependencies{Consumers: storeBackedJWELookup{}})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}

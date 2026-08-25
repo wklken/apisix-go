@@ -3,7 +3,6 @@ package ai_aliyun_content_moderation
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -14,7 +13,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/secret"
-	"github.com/wklken/apisix-go/pkg/store"
 )
 
 var errAliyunCredentialsUnavailable = errors.New(
@@ -29,44 +27,10 @@ func (p *Plugin) MaterializeSecrets() error {
 	if p.stopped {
 		return errAliyunCredentialsUnavailable
 	}
-	if p.scopedCredentialsSet || (p.accessKeyID != nil && p.accessKeySecret != nil) {
+	if p.scopedCredentialsSet {
 		return nil
 	}
-
-	accessKeyID, err := store.MaterializeSecret(p.config.AccessKeyID)
-	if err != nil {
-		return errAliyunCredentialsUnavailable
-	}
-	accessKeySecret, err := store.MaterializeSecret(p.config.AccessKeySecret)
-	if err != nil {
-		accessKeyID.Destroy()
-		return errAliyunCredentialsUnavailable
-	}
-	idDescriptor, err := legacyAliyunDescriptor(accessKeyID)
-	if err != nil {
-		accessKeyID.Destroy()
-		accessKeySecret.Destroy()
-		return errAliyunCredentialsUnavailable
-	}
-	secretDescriptor, err := legacyAliyunDescriptor(accessKeySecret)
-	if err != nil {
-		accessKeyID.Destroy()
-		accessKeySecret.Destroy()
-		return errAliyunCredentialsUnavailable
-	}
-
-	oldAccessKeyID := p.accessKeyID
-	oldAccessKeySecret := p.accessKeySecret
-	p.accessKeyID = accessKeyID
-	p.accessKeySecret = accessKeySecret
-	p.scopedAccessKeyID = secret.Value{}
-	p.scopedAccessKeySecret = secret.Value{}
-	p.scopedCredentialsSet = false
-	p.config.AccessKeyID = idDescriptor
-	p.config.AccessKeySecret = secretDescriptor
-	oldAccessKeyID.Destroy()
-	oldAccessKeySecret.Destroy()
-	return nil
+	return errAliyunCredentialsUnavailable
 }
 
 // MaterializeScopedSecrets resolves exactly the two manifest-owned Aliyun
@@ -103,44 +67,22 @@ func (p *Plugin) MaterializeScopedSecrets(
 		return errAliyunCredentialsUnavailable
 	}
 
-	oldAccessKeyID := p.accessKeyID
-	oldAccessKeySecret := p.accessKeySecret
-	p.accessKeyID = nil
-	p.accessKeySecret = nil
 	p.scopedAccessKeyID = accessKeyID
 	p.scopedAccessKeySecret = accessKeySecret
 	p.scopedCredentialsSet = true
 	p.config.AccessKeyID = idDescriptor.String()
 	p.config.AccessKeySecret = secretDescriptor.String()
-	oldAccessKeyID.Destroy()
-	oldAccessKeySecret.Destroy()
 	return nil
-}
-
-func legacyAliyunDescriptor(value *store.ResolvedSecret) (string, error) {
-	if value == nil {
-		return "", errAliyunCredentialsUnavailable
-	}
-	plaintext := value.Bytes()
-	defer clear(plaintext)
-	digest := sha256.Sum256(plaintext)
-	descriptor, err := secret.NewDescriptor(capability.SecretPluginConfig, digest)
-	if err != nil {
-		return "", err
-	}
-	return descriptor.String(), nil
 }
 
 func (p *Plugin) credentialsReady() bool {
 	p.secretMu.RLock()
 	defer p.secretMu.RUnlock()
-	return !p.stopped && (p.scopedCredentialsSet ||
-		(p.accessKeyID != nil && p.accessKeySecret != nil))
+	return !p.stopped && p.scopedCredentialsSet
 }
 
 // useAliyunCredentials keeps secret values available for the complete
-// callback, including request signing and transport submission. Legacy bytes
-// are cloned by ResolvedSecret.Bytes and cleared after the callback returns.
+// callback, including request signing and transport submission.
 func (p *Plugin) useAliyunCredentials(use func(id, accessKeySecret string) error) error {
 	if use == nil {
 		return errAliyunCredentialsUnavailable
@@ -160,17 +102,7 @@ func (p *Plugin) useAliyunCredentials(use func(id, accessKeySecret string) error
 			})
 		})
 	}
-	if p.accessKeyID == nil || p.accessKeySecret == nil {
-		return errAliyunCredentialsUnavailable
-	}
-	accessKeyID := p.accessKeyID.Bytes()
-	accessKeySecret := p.accessKeySecret.Bytes()
-	defer clear(accessKeyID)
-	defer clear(accessKeySecret)
-	if len(accessKeyID) == 0 || len(accessKeySecret) == 0 {
-		return errAliyunCredentialsUnavailable
-	}
-	return use(string(accessKeyID), string(accessKeySecret))
+	return errAliyunCredentialsUnavailable
 }
 
 func (p *Plugin) buildFormBodyWithCredentials(
@@ -253,15 +185,9 @@ func (p *Plugin) Stop() {
 		}
 		p.secretMu.Lock()
 		p.stopped = true
-		accessKeyID := p.accessKeyID
-		accessKeySecret := p.accessKeySecret
-		p.accessKeyID = nil
-		p.accessKeySecret = nil
 		p.scopedAccessKeyID = secret.Value{}
 		p.scopedAccessKeySecret = secret.Value{}
 		p.scopedCredentialsSet = false
 		p.secretMu.Unlock()
-		accessKeyID.Destroy()
-		accessKeySecret.Destroy()
 	})
 }

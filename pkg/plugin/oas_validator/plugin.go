@@ -406,8 +406,7 @@ func (p *Plugin) Stop() {
 		if workWait != nil {
 			<-workWait
 		}
-		legacy := p.dropOASSecrets()
-		legacy.destroyLegacy()
+		p.dropOASSecrets()
 		p.compiled.Store(nil)
 		p.compiledAt.Store(0)
 	})

@@ -2,8 +2,6 @@ package kafka_logger
 
 import (
 	"context"
-	"crypto/sha256"
-	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -20,7 +18,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
 	"github.com/wklken/apisix-go/pkg/secret"
-	"github.com/wklken/apisix-go/pkg/store"
 
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 )
@@ -33,10 +30,9 @@ type Plugin struct {
 	lifecycleMu sync.RWMutex
 	stopped     atomic.Bool
 
-	saslPasswords       []secret.Value
-	saslBrokerIndexes   []int
-	legacySASLPasswords []*store.ResolvedSecret
-	secretsPrepared     bool
+	saslPasswords     []secret.Value
+	saslBrokerIndexes []int
+	secretsPrepared   bool
 }
 
 const (
@@ -369,60 +365,11 @@ func (p *Plugin) MaterializeSecrets() error {
 	if p.secretsPrepared {
 		return nil
 	}
-	indexes := make([]int, 0, len(p.config.Brokers))
-	owners := make([]*store.ResolvedSecret, 0, len(p.config.Brokers))
-	descriptors := make([]string, 0, len(p.config.Brokers))
-	destroy := func() {
-		for _, owner := range owners {
-			owner.Destroy()
-		}
-	}
 	for index := range p.config.Brokers {
-		config := p.config.Brokers[index].SASLConfig
-		if config == nil {
-			continue
-		}
-		resolver := p.DataEncryption()
-		if !resolver.Configured() {
-			destroy()
-			return errors.New("data-encryption resolver is required")
-		}
-		resolved, err := resolver.ResolveForContext(
-			config.Password, name+".brokers.*.sasl_config.password",
-		)
-		if err != nil {
-			destroy()
+		if p.config.Brokers[index].SASLConfig != nil {
 			return kafkaPasswordUnavailable()
 		}
-		owner, err := store.MaterializeSecret(resolved)
-		if err != nil {
-			destroy()
-			return kafkaPasswordUnavailable()
-		}
-		plaintext := owner.Bytes()
-		if validateKafkaPassword(string(plaintext)) != nil {
-			clear(plaintext)
-			owner.Destroy()
-			destroy()
-			return kafkaPasswordUnavailable()
-		}
-		digest := sha256.Sum256(plaintext)
-		clear(plaintext)
-		descriptor, err := secret.NewDescriptor(capability.SecretPluginConfig, digest)
-		if err != nil {
-			owner.Destroy()
-			destroy()
-			return kafkaPasswordUnavailable()
-		}
-		indexes = append(indexes, index)
-		owners = append(owners, owner)
-		descriptors = append(descriptors, descriptor.String())
 	}
-	for position, index := range indexes {
-		p.config.Brokers[index].SASLConfig.Password = descriptors[position]
-	}
-	p.legacySASLPasswords = owners
-	p.saslBrokerIndexes = indexes
 	p.secretsPrepared = true
 	return nil
 }
@@ -545,10 +492,6 @@ func (p *Plugin) Stop() {
 		}
 		p.sender = nil
 		p.BatchProcessor = nil
-		for _, owner := range p.legacySASLPasswords {
-			owner.Destroy()
-		}
-		p.legacySASLPasswords = nil
 		for index := range p.saslPasswords {
 			p.saslPasswords[index] = secret.Value{}
 		}
@@ -621,25 +564,7 @@ func (p *Plugin) withPrivateBrokersLocked(use func([]Broker) error) error {
 		}
 		return visit(0)
 	}
-	if len(p.legacySASLPasswords) != len(p.saslBrokerIndexes) {
-		return secret.ErrCredentialUnavailable
-	}
-	var visit func(int) error
-	visit = func(position int) error {
-		if position == len(p.legacySASLPasswords) {
-			return use(brokers)
-		}
-		plaintext := p.legacySASLPasswords[position].Bytes()
-		if len(plaintext) == 0 {
-			return secret.ErrCredentialUnavailable
-		}
-		defer clear(plaintext)
-		index := p.saslBrokerIndexes[position]
-		brokers[index].SASLConfig.Password = string(plaintext)
-		defer func() { brokers[index].SASLConfig.Password = "" }()
-		return visit(position + 1)
-	}
-	return visit(0)
+	return secret.ErrCredentialUnavailable
 }
 
 func clearKafkaBrokerClone(brokers []Broker) {

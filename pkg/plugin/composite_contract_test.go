@@ -85,7 +85,7 @@ func newAuthPlugin() {}
 	}
 }
 
-func TestWorkflowStoreLookupStaysInsideNamedLegacySeam(t *testing.T) {
+func TestWorkflowProductionHasNoStoreImport(t *testing.T) {
 	const source = "workflow/plugin.go"
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, source, nil, 0)
@@ -93,30 +93,8 @@ func TestWorkflowStoreLookupStaysInsideNamedLegacySeam(t *testing.T) {
 		t.Fatalf("parse %s: %v", source, err)
 	}
 
-	var matches int
-	for _, declaration := range file.Decls {
-		function, ok := declaration.(*ast.FuncDecl)
-		if !ok || function.Body == nil {
-			continue
-		}
-		ast.Inspect(function.Body, func(node ast.Node) bool {
-			selector, ok := node.(*ast.SelectorExpr)
-			if !ok || selector.Sel.Name != "GetConsumerGroup" {
-				return true
-			}
-			owner, ok := selector.X.(*ast.Ident)
-			if !ok || owner.Name != "store" {
-				return true
-			}
-			matches++
-			if function.Name.Name != "legacyConsumerGroupByIDWhenLookupIsNil" {
-				t.Errorf("store.GetConsumerGroup escapes the named legacy seam at %s", fset.Position(selector.Pos()))
-			}
-			return true
-		})
-	}
-	if matches != 1 {
-		t.Fatalf("store.GetConsumerGroup matches = %d, want exactly 1 named legacy seam", matches)
+	if violations := productionStoreImportViolations(fset, file); len(violations) != 0 {
+		t.Fatalf("workflow production Store imports = %v, want none", violations)
 	}
 }
 

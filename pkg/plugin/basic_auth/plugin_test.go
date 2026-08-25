@@ -90,6 +90,22 @@ var (
 	testEvents    chan *store.Event
 )
 
+type storeBackedBasicAuthLookup struct{}
+
+func (storeBackedBasicAuthLookup) ConsumerByPluginKey(plugin, key string) (resource.Consumer, bool) {
+	consumer, err := store.GetConsumerByPluginKey(plugin, key)
+	return consumer, err == nil
+}
+
+func (storeBackedBasicAuthLookup) ConsumerByID(id string) (resource.Consumer, bool) {
+	consumer, err := store.GetConsumer(id)
+	return consumer, err == nil
+}
+
+func (storeBackedBasicAuthLookup) ConsumerGroupByID(string) (resource.ConsumerGroup, bool) {
+	return resource.ConsumerGroup{}, false
+}
+
 func setupStore(t *testing.T) {
 	t.Helper()
 
@@ -177,6 +193,7 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
 
 	p := &Plugin{config: cfg}
+	p.SetDependencies(base.Dependencies{Consumers: storeBackedBasicAuthLookup{}})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}

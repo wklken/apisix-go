@@ -631,7 +631,7 @@ func TestOIDCStopWinsBeforePostInitReadyPublication(t *testing.T) {
 		t.Fatal("Stop did not finish after PostInit left publication barrier")
 	}
 	if p.ready.Load() || p.client != nil || p.provider != nil || p.sessionStore != nil ||
-		p.clientRelease != nil || p.legacySet || p.scopedSet {
+		p.clientRelease != nil || p.scopedSet {
 		t.Fatalf("retired PostInit left ready/runtime state: %#v", p)
 	}
 }
@@ -854,7 +854,7 @@ func idpURL(r *http.Request) string {
 	return "http://" + r.Host
 }
 
-func TestMaterializeSecretsOIDCAllFiveFields(t *testing.T) {
+func TestMaterializeSecretsOIDCAllFiveFieldsFailsClosed(t *testing.T) {
 	privateKey, publicKey := oidcRSAFixtures(t)
 	values := []string{
 		"legacy-client-secret", privateKey, publicKey,
@@ -875,36 +875,8 @@ func TestMaterializeSecretsOIDCAllFiveFields(t *testing.T) {
 			Redis:  &SessionRedisConfig{Password: "$ENV://" + envNames[4]},
 		},
 	}}
-	if err := base.MaterializePluginSecrets(p); err != nil {
-		t.Fatal(err)
-	}
-	gotDescriptors := []string{
-		p.config.ClientSecret, p.config.ClientRSAPrivateKey, p.config.PublicKey,
-		p.config.Session.Secret, p.config.Session.Redis.Password,
-	}
-	for index, value := range values {
-		if gotDescriptors[index] != oidcDescriptor(value) {
-			t.Fatalf("legacy descriptor[%d] = %q", index, gotDescriptors[index])
-		}
-	}
-	if p.clientRSAPrivateKey == nil || p.staticPublicKey == nil {
-		t.Fatal("legacy materialization did not install derived RSA keys")
-	}
-	if err := p.withClientSecret(func(value string) error {
-		if value != values[0] {
-			t.Fatalf("legacy client secret = %q", value)
-		}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if err := p.withRedisPassword(func(value string) error {
-		if value != values[4] {
-			t.Fatalf("legacy Redis password = %q", value)
-		}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
+	if err := base.MaterializePluginSecrets(p); !errors.Is(err, secret.ErrCredentialUnavailable) {
+		t.Fatalf("MaterializePluginSecrets() error = %v, want credential unavailable", err)
 	}
 }
 
@@ -953,18 +925,17 @@ func TestOIDCStopDrainsScopedClientSecretUseAndDropsState(t *testing.T) {
 	}
 	<-stopDone
 	if p.scopedClientSecret != (secret.Value{}) || p.scopedRedisPassword != (secret.Value{}) ||
-		p.scopedSet || p.legacySet || p.clientRSAPrivateKey != nil || p.staticPublicKey != nil ||
+		p.scopedSet || p.clientRSAPrivateKey != nil || p.staticPublicKey != nil ||
 		p.sessionSecretKey != [sha256.Size]byte{} || p.activeUses != 0 {
 		t.Fatalf(
-			"Stop() retained scoped/derived state: scoped=%v legacy=%v active=%d",
+			"Stop() retained scoped/derived state: scoped=%v active=%d",
 			p.scopedSet,
-			p.legacySet,
 			p.activeUses,
 		)
 	}
 }
 
-func TestOIDCStopDrainsLegacyUseAndDestroysOwners(t *testing.T) {
+func TestOIDCLegacyMaterializeEntryPointFailsClosed(t *testing.T) {
 	const (
 		envName   = "OIDC_STOP_LEGACY_CLIENT"
 		plaintext = "legacy-stop-client-secret"
@@ -974,40 +945,8 @@ func TestOIDCStopDrainsLegacyUseAndDestroysOwners(t *testing.T) {
 		ClientID: "apisix", ClientSecret: "$ENV://" + envName,
 		Discovery: "https://idp.test", BearerOnly: true,
 	}}
-	if err := base.MaterializePluginSecrets(p); err != nil {
-		t.Fatal(err)
-	}
-	owner := p.legacyOwners[0]
-	entered := make(chan struct{})
-	release := make(chan struct{})
-	useDone := make(chan error, 1)
-	go func() {
-		useDone <- p.withClientSecret(func(string) error {
-			close(entered)
-			<-release
-			return nil
-		})
-	}()
-	<-entered
-	stopDone := make(chan struct{})
-	go func() {
-		p.Stop()
-		close(stopDone)
-	}()
-	select {
-	case <-stopDone:
-		close(release)
-		<-useDone
-		t.Fatal("Stop() returned before legacy client-secret callback completed")
-	case <-time.After(20 * time.Millisecond):
-	}
-	close(release)
-	if err := <-useDone; err != nil {
-		t.Fatal(err)
-	}
-	<-stopDone
-	if owner.Bytes() != nil {
-		t.Fatal("Stop() did not destroy legacy client-secret bytes")
+	if err := base.MaterializePluginSecrets(p); !errors.Is(err, secret.ErrCredentialUnavailable) {
+		t.Fatalf("MaterializePluginSecrets() error = %v, want credential unavailable", err)
 	}
 }
 
@@ -1053,7 +992,7 @@ func TestOIDCStopWaitsForMaterializationAndPreventsResurrection(t *testing.T) {
 		t.Fatalf("materialization racing Stop error = %v", err)
 	}
 	<-stopDone
-	if p.scopedSet || p.legacySet || p.scopedClientSecret != (secret.Value{}) {
+	if p.scopedSet || p.scopedClientSecret != (secret.Value{}) {
 		t.Fatal("materialization resurrected scoped state after Stop")
 	}
 }
@@ -1116,9 +1055,9 @@ func TestOIDCPostInitAfterStopPublishesNothing(t *testing.T) {
 	p := &Plugin{config: Config{
 		ClientID: "apisix", Discovery: "https://idp.test", BearerOnly: true, UseJWKS: true,
 	}}
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatal(err)
-	}
+	capabilityValue, scope, _, closeAttempt := newOIDCScopedSecretHarness(t, 43, "postinit-after-stop", nil)
+	defer closeAttempt()
+	materializeScopedOIDCSecrets(t, p, capabilityValue, scope)
 	p.Stop()
 	if err := p.PostInit(); !errors.Is(err, secret.ErrCredentialUnavailable) {
 		t.Fatalf("PostInit() after Stop error = %v", err)

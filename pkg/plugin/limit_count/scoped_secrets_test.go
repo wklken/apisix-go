@@ -21,7 +21,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/secret"
-	"github.com/wklken/apisix-go/pkg/store"
 )
 
 type scopedSecretCall struct {
@@ -359,7 +358,7 @@ func TestScopedSecretsLimitCountResolvedBlanksAreAtomicAndRetryable(t *testing.T
 			if err == nil || err.Error() != "materialize plugin secrets: credential unavailable" {
 				t.Fatalf("blank materialization error = %v", err)
 			}
-			if p.config.Key != raw || p.legacySet || p.scopedSet {
+			if p.config.Key != raw || p.scopedSet {
 				t.Fatalf("blank materialization installed state: %#v", p.config)
 			}
 			broker.setValue(raw, "remote_addr")
@@ -370,36 +369,15 @@ func TestScopedSecretsLimitCountResolvedBlanksAreAtomicAndRetryable(t *testing.T
 	}
 }
 
-func TestLegacyLimitCountResolvedBlankIsAtomicAndRetryable(t *testing.T) {
-	const env = "LIMIT_COUNT_LEGACY_BLANK_KEY"
-	for _, blank := range []string{"", " \t"} {
-		t.Run(fmt.Sprintf("blank-%q", blank), func(t *testing.T) {
-			t.Setenv(env, blank)
-			p := &Plugin{config: Config{Count: 1, TimeWindow: 60, Key: "$ENV://" + env}}
-			if err := p.MaterializeSecrets(); !errors.Is(err, errLimitCountCredentialsUnavailable) {
-				t.Fatalf("MaterializeSecrets() error = %v", err)
-			}
-			if p.config.Key != "$ENV://"+env || p.keySecret != nil || p.legacySet || p.scopedSet {
-				t.Fatalf("blank legacy materialization installed state: %#v", p.config)
-			}
-			t.Setenv(env, "remote_addr")
-			if err := p.MaterializeSecrets(); err != nil {
-				t.Fatalf("retry MaterializeSecrets() error = %v", err)
-			}
-			p.Stop()
-		})
-	}
-}
-
-func TestMaterializeSecretsLimitCountLiteralsAreDescriptorOnly(t *testing.T) {
+func TestScopedSecretsLimitCountLiteralsAreDescriptorOnly(t *testing.T) {
 	nodes := []string{"node-0.test:6379", "node-1.test:6379"}
+	capabilityValue, scope, _, closeAttempt := newScopedSecretHarness(t, 26, "literal-descriptors", nil)
+	defer closeAttempt()
 	p := &Plugin{config: Config{
 		Count: 1, TimeWindow: 60, Key: "remote_addr", Policy: "redis-cluster",
 		RedisHost: "redis.test:6379", RedisClusterNodes: slices.Clone(nodes),
 	}}
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatal(err)
-	}
+	materializeScopedLimitCount(t, p, capabilityValue, scope)
 	defer p.Stop()
 	if p.config.Key != limitCountDescriptor("remote_addr") ||
 		p.config.RedisHost != limitCountDescriptor("redis.test:6379") ||
@@ -434,71 +412,6 @@ func TestMaterializeSecretsLimitCountLiteralsAreDescriptorOnly(t *testing.T) {
 		return nil
 	}); err != nil {
 		t.Fatal(err)
-	}
-}
-
-func TestLegacyLimitCountNthClusterNodeFailureIsBoundedAtomicAndRetryable(t *testing.T) {
-	const (
-		env0 = "LIMIT_COUNT_LEGACY_NODE_0"
-		env1 = "LIMIT_COUNT_LEGACY_NODE_1"
-	)
-	t.Setenv(env0, "node-0.test:6379")
-	t.Setenv(env1, " \t")
-	raws := []string{"$ENV://" + env0, "$ENV://" + env1}
-	p := &Plugin{config: Config{
-		Count: 1, TimeWindow: 60, RedisClusterNodes: slices.Clone(raws),
-	}}
-	err := p.MaterializeSecrets()
-	if err == nil || err.Error() != "resolve limit-count Redis cluster node 1: credential unavailable" {
-		t.Fatalf("MaterializeSecrets() error = %v", err)
-	}
-	for _, raw := range raws {
-		if strings.Contains(err.Error(), raw) {
-			t.Fatalf("node failure leaked raw reference %q", raw)
-		}
-	}
-	if !slices.Equal(p.config.RedisClusterNodes, raws) || p.legacySet || p.scopedSet ||
-		len(p.redisClusterNodeSecrets) != 0 {
-		t.Fatalf("node failure installed partial state: %#v", p.config)
-	}
-	t.Setenv(env1, "node-1.test:6379")
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatalf("retry MaterializeSecrets() error = %v", err)
-	}
-	p.Stop()
-}
-
-func TestLegacyLimitCountConcurrentMaterializationKeepsSingleOwnership(t *testing.T) {
-	const (
-		env     = "LIMIT_COUNT_LEGACY_SINGLEFLIGHT_KEY"
-		workers = 32
-	)
-	t.Setenv(env, "remote_addr")
-	p := &Plugin{config: Config{Count: 1, TimeWindow: 60, Key: "$ENV://" + env}}
-	start := make(chan struct{})
-	errs := make(chan error, workers)
-	for range workers {
-		go func() {
-			<-start
-			errs <- p.MaterializeSecrets()
-		}()
-	}
-	close(start)
-	for range workers {
-		if err := <-errs; err != nil {
-			t.Fatalf("concurrent legacy materialization error = %v", err)
-		}
-	}
-	owner := p.keySecret
-	if owner == nil || !p.legacySet || p.scopedSet {
-		t.Fatalf("legacy state = owner:%p modes:%v/%v", owner, p.legacySet, p.scopedSet)
-	}
-	if err := p.MaterializeSecrets(); err != nil || p.keySecret != owner {
-		t.Fatalf("repeat materialization = %v owner:%p want:%p", err, p.keySecret, owner)
-	}
-	p.Stop()
-	if owner.Bytes() != nil {
-		t.Fatal("Stop() did not destroy single legacy owner")
 	}
 }
 
@@ -725,100 +638,75 @@ func TestScopedSecretsLimitCountGenerationInstancesDoNotCrossUseKeys(t *testing.
 	}
 }
 
-func TestLimitCountStopDrainsScopedAndLegacyCallbacksAndDestroysOwners(t *testing.T) {
-	for _, mode := range []string{"scoped", "legacy"} {
-		t.Run(mode, func(t *testing.T) {
-			const plaintext = "stop-redis.test"
-			var (
-				p            *Plugin
-				legacyOwner  *store.ResolvedSecret
-				closeAttempt = func() {}
-			)
-			if mode == "scoped" {
-				const raw = "$ENV://LIMIT_COUNT_STOP_HOST"
-				capabilityValue, scope, _, closeScoped := newScopedSecretHarness(
-					t, 40, "stop-scoped", map[string]string{raw: plaintext},
-				)
-				closeAttempt = closeScoped
-				p = &Plugin{config: Config{Count: 1, TimeWindow: 60, RedisHost: raw}}
-				materializeScopedLimitCount(t, p, capabilityValue, scope)
-			} else {
-				t.Setenv("LIMIT_COUNT_STOP_HOST", plaintext)
-				p = &Plugin{config: Config{
-					Count: 1, TimeWindow: 60, RedisHost: "$ENV://LIMIT_COUNT_STOP_HOST",
-				}}
-				if err := p.MaterializeSecrets(); err != nil {
-					t.Fatal(err)
-				}
-				legacyOwner = p.redisHostSecret
+func TestLimitCountStopDrainsScopedCallbacksAndDestroysSecrets(t *testing.T) {
+	const plaintext = "stop-redis.test"
+	const raw = "$ENV://LIMIT_COUNT_STOP_HOST"
+	capabilityValue, scope, _, closeAttempt := newScopedSecretHarness(
+		t, 40, "stop-scoped", map[string]string{raw: plaintext},
+	)
+	defer closeAttempt()
+	p := &Plugin{config: Config{Count: 1, TimeWindow: 60, RedisHost: raw}}
+	materializeScopedLimitCount(t, p, capabilityValue, scope)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	callbackDone := make(chan error, 1)
+	go func() {
+		callbackDone <- p.withLimitCountRedisHost(func(host string) error {
+			if host != plaintext {
+				return fmt.Errorf("host = %q", host)
 			}
-			defer closeAttempt()
-			entered := make(chan struct{})
-			release := make(chan struct{})
-			callbackDone := make(chan error, 1)
-			go func() {
-				callbackDone <- p.withLimitCountRedisHost(func(host string) error {
-					if host != plaintext {
-						return fmt.Errorf("host = %q", host)
-					}
-					close(entered)
-					<-release
-					return nil
-				})
-			}()
-			<-entered
-			firstStop := make(chan struct{})
-			secondStop := make(chan struct{})
-			go func() { p.Stop(); close(firstStop) }()
-			go func() { p.Stop(); close(secondStop) }()
-			deadline := time.Now().Add(time.Second)
-			for {
-				p.credentialMu.Lock()
-				retired, active := p.retired, p.activeUses
-				p.credentialMu.Unlock()
-				if retired && active == 1 {
-					break
-				}
-				if time.Now().After(deadline) {
-					t.Fatal("timed out waiting for credential drain")
-				}
-				time.Sleep(time.Millisecond)
-			}
-			for _, stopped := range []chan struct{}{firstStop, secondStop} {
-				select {
-				case <-stopped:
-					t.Fatal("Stop() returned before callback release")
-				default:
-				}
-			}
-			if err := p.withLimitCountRedisHost(
-				func(string) error { return nil },
-			); !errors.Is(
-				err,
-				errLimitCountCredentialsUnavailable,
-			) {
-				t.Fatalf("credential use after retirement error = %v", err)
-			}
-			close(release)
-			if err := <-callbackDone; err != nil {
-				t.Fatal(err)
-			}
-			<-firstStop
-			<-secondStop
-			p.Stop()
-			if legacyOwner != nil && legacyOwner.Bytes() != nil {
-				t.Fatal("legacy owner retained bytes after Stop()")
-			}
-			p.credentialMu.Lock()
-			retained := p.keySecret != nil || p.redisHostSecret != nil ||
-				len(p.redisClusterNodeSecrets) != 0 || p.scopedKeySecret != (secret.Value{}) ||
-				p.scopedRedisHost != (secret.Value{}) || len(p.scopedRedisClusterNodes) != 0 ||
-				p.legacySet || p.scopedSet || len(p.redisNodeDigests) != 0 || p.activeUses != 0
-			p.credentialMu.Unlock()
-			if retained {
-				t.Fatal("Stop() retained credential state")
-			}
+			close(entered)
+			<-release
+			return nil
 		})
+	}()
+	<-entered
+	firstStop := make(chan struct{})
+	secondStop := make(chan struct{})
+	go func() { p.Stop(); close(firstStop) }()
+	go func() { p.Stop(); close(secondStop) }()
+	deadline := time.Now().Add(time.Second)
+	for {
+		p.credentialMu.Lock()
+		retired, active := p.retired, p.activeUses
+		p.credentialMu.Unlock()
+		if retired && active == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for credential drain")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	for _, stopped := range []chan struct{}{firstStop, secondStop} {
+		select {
+		case <-stopped:
+			t.Fatal("Stop() returned before callback release")
+		default:
+		}
+	}
+	if err := p.withLimitCountRedisHost(
+		func(string) error { return nil },
+	); !errors.Is(
+		err,
+		errLimitCountCredentialsUnavailable,
+	) {
+		t.Fatalf("credential use after retirement error = %v", err)
+	}
+	close(release)
+	if err := <-callbackDone; err != nil {
+		t.Fatal(err)
+	}
+	<-firstStop
+	<-secondStop
+	p.Stop()
+	p.credentialMu.Lock()
+	retained := p.scopedKeySecret != (secret.Value{}) ||
+		p.scopedRedisHost != (secret.Value{}) || len(p.scopedRedisClusterNodes) != 0 ||
+		p.scopedSet || len(p.redisNodeDigests) != 0 || p.activeUses != 0
+	p.credentialMu.Unlock()
+	if retained {
+		t.Fatal("Stop() retained credential state")
 	}
 }
 
@@ -846,7 +734,7 @@ func TestScopedSecretsLimitCountStopDuringMaterializeCannotRevive(t *testing.T) 
 	if err := <-done; err == nil || err.Error() != "materialize plugin secrets: credential unavailable" {
 		t.Fatalf("materialization racing Stop() error = %v", err)
 	}
-	if p.config.Key != raw || p.legacySet || p.scopedSet || p.scopedKeySecret != (secret.Value{}) {
+	if p.config.Key != raw || p.scopedSet || p.scopedKeySecret != (secret.Value{}) {
 		t.Fatal("materialization revived stopped plugin")
 	}
 	calls := len(broker.callsSnapshot())
@@ -947,9 +835,6 @@ func TestLimitCountPostInitAfterStopPublishesNothing(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			p := &Plugin{config: test.config}
-			if err := p.MaterializeSecrets(); err != nil {
-				t.Fatal(err)
-			}
 			p.Stop()
 			if err := p.PostInit(); !errors.Is(err, secret.ErrCredentialUnavailable) {
 				t.Fatalf("PostInit() error = %v, want ErrCredentialUnavailable", err)
@@ -967,9 +852,12 @@ func TestLimitCountPostInitAndStopAreLifecycleSerialized(t *testing.T) {
 		Count: 1, TimeWindow: 60, Key: "constant-key", KeyType: "constant",
 		Policy: "local", Group: "postinit-first",
 	}}
-	if err := p.MaterializeSecrets(); err != nil {
+	if err := p.Init(); err != nil {
 		t.Fatal(err)
 	}
+	capabilityValue, scope, _, closeAttempt := newScopedSecretHarness(t, 88, "postinit-first", nil)
+	defer closeAttempt()
+	materializeScopedLimitCount(t, p, capabilityValue, scope)
 	p.credentialMu.Lock()
 	postDone := make(chan error, 1)
 	go func() { postDone <- p.PostInit() }()
@@ -1004,9 +892,12 @@ func TestLimitCountPostInitAndStopAreLifecycleSerialized(t *testing.T) {
 		Count: 1, TimeWindow: 60, Key: "constant-key", KeyType: "constant",
 		Policy: "local", Group: "stop-first",
 	}}
-	if err := stoppedFirst.MaterializeSecrets(); err != nil {
+	if err := stoppedFirst.Init(); err != nil {
 		t.Fatal(err)
 	}
+	stoppedCapability, stoppedScope, _, stoppedClose := newScopedSecretHarness(t, 89, "stop-first", nil)
+	defer stoppedClose()
+	materializeScopedLimitCount(t, stoppedFirst, stoppedCapability, stoppedScope)
 	stoppedFirst.Stop()
 	if err := stoppedFirst.PostInit(); !errors.Is(err, secret.ErrCredentialUnavailable) {
 		t.Fatalf("stop-first PostInit() error = %v", err)
@@ -1015,58 +906,43 @@ func TestLimitCountPostInitAndStopAreLifecycleSerialized(t *testing.T) {
 }
 
 func TestLimitCountStopWaitsForActualKeyConsumption(t *testing.T) {
-	for _, mode := range []string{"scoped", "legacy"} {
-		t.Run(mode, func(t *testing.T) {
-			const raw = "$ENV://LIMIT_COUNT_BLOCKED_CONSTANT"
-			p := &Plugin{config: Config{
-				Count: 1, TimeWindow: 60, Key: raw, KeyType: "constant", Policy: "local",
-			}}
-			var closeAttempt func()
-			if mode == "scoped" {
-				capabilityValue, scope, _, closeScoped := newScopedSecretHarness(
-					t, 90, "blocked-key", map[string]string{raw: "private-limit-key"},
-				)
-				closeAttempt = closeScoped
-				materializeScopedLimitCount(t, p, capabilityValue, scope)
-			} else {
-				t.Setenv("LIMIT_COUNT_BLOCKED_CONSTANT", "private-limit-key")
-				if err := p.MaterializeSecrets(); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if closeAttempt != nil {
-				defer closeAttempt()
-			}
-			store := newBlockingLimitCountStore()
-			p.localLimiterStore = store
-			if err := p.PostInit(); err != nil {
-				t.Fatal(err)
-			}
-			handlerDone := make(chan struct{})
-			go func() {
-				p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})).ServeHTTP(
-					httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil),
-				)
-				close(handlerDone)
-			}()
-			<-store.entered
-			stopDone := make(chan struct{})
-			go func() {
-				p.Stop()
-				close(stopDone)
-			}()
-			select {
-			case <-stopDone:
-				t.Fatal("Stop() returned before limiter consumed the resolved key")
-			case <-time.After(20 * time.Millisecond):
-			}
-			close(store.release)
-			<-handlerDone
-			<-stopDone
-			if store.key != "route:unknown:private-limit-key" {
-				t.Fatalf("limiter consumed key %q", store.key)
-			}
-			assertLimitCountStoppedPublicationState(t, p)
-		})
+	const raw = "$ENV://LIMIT_COUNT_BLOCKED_CONSTANT"
+	p := &Plugin{config: Config{
+		Count: 1, TimeWindow: 60, Key: raw, KeyType: "constant", Policy: "local",
+	}}
+	capabilityValue, scope, _, closeAttempt := newScopedSecretHarness(
+		t, 90, "blocked-key", map[string]string{raw: "private-limit-key"},
+	)
+	defer closeAttempt()
+	materializeScopedLimitCount(t, p, capabilityValue, scope)
+	store := newBlockingLimitCountStore()
+	p.localLimiterStore = store
+	if err := p.PostInit(); err != nil {
+		t.Fatal(err)
 	}
+	handlerDone := make(chan struct{})
+	go func() {
+		p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})).ServeHTTP(
+			httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil),
+		)
+		close(handlerDone)
+	}()
+	<-store.entered
+	stopDone := make(chan struct{})
+	go func() {
+		p.Stop()
+		close(stopDone)
+	}()
+	select {
+	case <-stopDone:
+		t.Fatal("Stop() returned before limiter consumed the resolved key")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(store.release)
+	<-handlerDone
+	<-stopDone
+	if store.key != "route:unknown:private-limit-key" {
+		t.Fatalf("limiter consumed key %q", store.key)
+	}
+	assertLimitCountStoppedPublicationState(t, p)
 }

@@ -3,7 +3,6 @@ package feishu_auth
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"crypto/subtle"
 	"fmt"
 	"net/http"
@@ -18,7 +17,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/ai_common"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/secret"
-	"github.com/wklken/apisix-go/pkg/store"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -31,15 +29,12 @@ type Plugin struct {
 
 	oauthStateReplay *base.OAuthStateReplayCache
 
-	appSecret       secret.Value
-	appSecretSet    bool
-	legacyAppSecret *store.ResolvedSecret
+	appSecret    secret.Value
+	appSecretSet bool
 
 	sessionSecret          secret.Value
 	sessionSecretSet       bool
 	sessionSecretFallbacks []secret.Value
-	legacySessionSecret    *store.ResolvedSecret
-	legacySessionFallbacks []*store.ResolvedSecret
 
 	secretsPrepared bool
 	retired         bool
@@ -317,86 +312,10 @@ func materializeScopedFeishuSecret(
 func (p *Plugin) MaterializeSecrets() error {
 	p.lifecycleMu.Lock()
 	defer p.lifecycleMu.Unlock()
-	if p.retired {
-		return secret.ErrCredentialUnavailable
-	}
-	if p.secretsPrepared {
+	if !p.retired && p.secretsPrepared {
 		return nil
 	}
-
-	appSecret, appDescriptor, err := p.materializeLegacyFeishuSecret(
-		p.config.AppSecret, "app_secret", validateFeishuAppSecret,
-	)
-	if err != nil {
-		return secret.ErrCredentialUnavailable
-	}
-	sessionSecret, sessionDescriptor, err := p.materializeLegacyFeishuSecret(
-		p.config.Secret, "secret", validateFeishuSessionSecret,
-	)
-	if err != nil {
-		appSecret.Destroy()
-		return secret.ErrCredentialUnavailable
-	}
-	fallbacks := make([]*store.ResolvedSecret, len(p.config.SecretFallbacks))
-	fallbackDescriptors := make([]string, len(p.config.SecretFallbacks))
-	installed := false
-	defer func() {
-		if installed {
-			return
-		}
-		appSecret.Destroy()
-		sessionSecret.Destroy()
-		for _, fallback := range fallbacks {
-			fallback.Destroy()
-		}
-	}()
-	for i, raw := range p.config.SecretFallbacks {
-		fallback, descriptor, materializeErr := p.materializeLegacyFeishuSecret(
-			raw, "secret_fallbacks", validateFeishuSessionSecret,
-		)
-		if materializeErr != nil {
-			return secret.ErrCredentialUnavailable
-		}
-		fallbacks[i] = fallback
-		fallbackDescriptors[i] = descriptor
-	}
-
-	p.legacyAppSecret = appSecret
-	p.legacySessionSecret = sessionSecret
-	p.legacySessionFallbacks = fallbacks
-	p.config.AppSecret = appDescriptor
-	p.config.Secret = sessionDescriptor
-	p.config.SecretFallbacks = fallbackDescriptors
-	p.secretsPrepared = true
-	installed = true
-	return nil
-}
-
-func (p *Plugin) materializeLegacyFeishuSecret(
-	raw string,
-	field string,
-	validate func(string) error,
-) (*store.ResolvedSecret, string, error) {
-	if resolver := p.DataEncryption(); resolver.Configured() {
-		raw = resolver.ResolveOptionalForContext(raw, name+"."+field)
-	}
-	value, err := store.MaterializeSecret(raw)
-	if err != nil {
-		return nil, "", secret.ErrCredentialUnavailable
-	}
-	plaintext := value.Bytes()
-	defer clear(plaintext)
-	if err := validate(string(plaintext)); err != nil {
-		value.Destroy()
-		return nil, "", secret.ErrCredentialUnavailable
-	}
-	digest := sha256.Sum256(plaintext)
-	descriptor, err := secret.NewDescriptor(capability.SecretPluginConfig, digest)
-	if err != nil {
-		value.Destroy()
-		return nil, "", secret.ErrCredentialUnavailable
-	}
-	return value, descriptor.String(), nil
+	return secret.ErrCredentialUnavailable
 }
 
 func validateFeishuAppSecret(plaintext string) error {
@@ -749,15 +668,7 @@ func (p *Plugin) useAppSecretLocked(use func(string) error) error {
 	if p.appSecretSet {
 		return p.appSecret.Use(use)
 	}
-	if p.legacyAppSecret == nil {
-		return secret.ErrCredentialUnavailable
-	}
-	plaintext := p.legacyAppSecret.Bytes()
-	if len(plaintext) == 0 {
-		return secret.ErrCredentialUnavailable
-	}
-	defer clear(plaintext)
-	return use(string(plaintext))
+	return secret.ErrCredentialUnavailable
 }
 
 func (p *Plugin) useSessionSecretsLocked(use func(string, []string) error) error {
@@ -773,33 +684,7 @@ func (p *Plugin) useSessionSecretsLocked(use func(string, []string) error) error
 			})
 		})
 	}
-	if p.legacySessionSecret == nil {
-		return secret.ErrCredentialUnavailable
-	}
-	current := p.legacySessionSecret.Bytes()
-	if len(current) == 0 {
-		return secret.ErrCredentialUnavailable
-	}
-	defer clear(current)
-	fallbackBytes := make([][]byte, len(p.legacySessionFallbacks))
-	fallbacks := make([]string, len(p.legacySessionFallbacks))
-	defer func() {
-		for i := range fallbackBytes {
-			clear(fallbackBytes[i])
-		}
-		clearFeishuStrings(fallbacks)
-	}()
-	for i, owner := range p.legacySessionFallbacks {
-		if owner == nil {
-			return secret.ErrCredentialUnavailable
-		}
-		fallbackBytes[i] = owner.Bytes()
-		if len(fallbackBytes[i]) == 0 {
-			return secret.ErrCredentialUnavailable
-		}
-		fallbacks[i] = string(fallbackBytes[i])
-	}
-	return use(string(current), fallbacks)
+	return secret.ErrCredentialUnavailable
 }
 
 func useScopedFeishuFallbacks(
@@ -838,19 +723,6 @@ func (p *Plugin) Stop() {
 		p.client = nil
 	}
 	p.oauthStateReplay = nil
-	if p.legacyAppSecret != nil {
-		p.legacyAppSecret.Destroy()
-		p.legacyAppSecret = nil
-	}
-	if p.legacySessionSecret != nil {
-		p.legacySessionSecret.Destroy()
-		p.legacySessionSecret = nil
-	}
-	for i, fallback := range p.legacySessionFallbacks {
-		fallback.Destroy()
-		p.legacySessionFallbacks[i] = nil
-	}
-	p.legacySessionFallbacks = nil
 	p.appSecret = secret.Value{}
 	p.appSecretSet = false
 	p.sessionSecret = secret.Value{}

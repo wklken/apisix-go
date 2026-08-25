@@ -20,6 +20,7 @@ type httpResourceSet struct {
 	services         map[string]resource.Service
 	upstreams        map[string]resource.Upstream
 	pluginConfigs    map[string]resource.PluginConfigRule
+	protos           map[string]string
 	globalRules      []resource.GlobalRule
 	ssls             map[string]resource.SSL
 	enabledPlugins   []string
@@ -54,6 +55,7 @@ func decodeHTTPResourceSet(
 		services:      make(map[string]resource.Service),
 		upstreams:     make(map[string]resource.Upstream),
 		pluginConfigs: make(map[string]resource.PluginConfigRule),
+		protos:        make(map[string]string),
 		ssls:          make(map[string]resource.SSL),
 	}
 	for _, key := range input.keys() {
@@ -92,6 +94,12 @@ func decodeHTTPResourceSet(
 				return httpResourceSet{}, httpResourceDecodeError(key, err)
 			}
 			result.pluginConfigs[key.ID] = value
+		case "protos":
+			var value resource.Proto
+			if err := util.Parse(normalized.document, &value); err != nil {
+				return httpResourceSet{}, httpResourceDecodeError(key, err)
+			}
+			result.protos[key.ID] = value.Content
 		case "global_rules":
 			var value resource.GlobalRule
 			if err := util.Parse(normalized.document, &value); err != nil {

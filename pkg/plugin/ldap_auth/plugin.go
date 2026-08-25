@@ -14,7 +14,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/resource"
-	"github.com/wklken/apisix-go/pkg/store"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -157,15 +156,11 @@ func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.Re
 }
 
 func (p *Plugin) consumerByUserDN(userDN string) (resource.Consumer, bool) {
-	if lookup := p.ConsumerLookup(); lookup != nil {
-		return lookup.ConsumerByPluginKey(name, userDN)
+	lookup := p.ConsumerLookup()
+	if lookup == nil {
+		return resource.Consumer{}, false
 	}
-	return legacyLDAPConsumerByUserDN(userDN)
-}
-
-func legacyLDAPConsumerByUserDN(userDN string) (resource.Consumer, bool) {
-	consumer, err := store.GetConsumerByPluginKey(name, userDN)
-	return consumer, err == nil
+	return lookup.ConsumerByPluginKey(name, userDN)
 }
 
 type basicUser struct {

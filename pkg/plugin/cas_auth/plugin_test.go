@@ -105,7 +105,7 @@ func TestMaterializeScopedSecretsOwnsCASCookieSecret(t *testing.T) {
 	}
 	if p.config.Cookie.Secret != raw || p.client != nil || p.opts != (sessionOptions{}) ||
 		len(p.logoutTrustedNets) != 0 || p.cookieSecretSet ||
-		p.cookieSecret != (secret.Value{}) || p.legacyCookieSecret != nil || p.secretsPrepared {
+		p.cookieSecret != (secret.Value{}) || p.secretsPrepared {
 		t.Fatal("resolved-short failure installed config/client/session state")
 	}
 	broker.setValue(raw, "retry-cookie-secret-retry-cookie-secret")
@@ -139,7 +139,7 @@ func TestSchemaAdmitsShortCASCookieSecretReferences(t *testing.T) {
 	}
 }
 
-func TestCASLegacyMaterializationDecryptsContextualCookieSecret(t *testing.T) {
+func TestCASScopedMaterializationDecryptsContextualCookieSecret(t *testing.T) {
 	const plaintext = "legacy-context-cookie-secret-legacy-context-cookie-secret"
 	service := testutil.DataEncryptionService(true, []string{"0123456789abcdef"})
 	raw, err := service.EncryptForContext(plaintext, "cas-auth.cookie.secret")
@@ -148,16 +148,23 @@ func TestCASLegacyMaterializationDecryptsContextualCookieSecret(t *testing.T) {
 	}
 	p := &Plugin{config: testCASConfig(raw)}
 	p.SetDependencies(base.Dependencies{DataEncryption: service.Resolver()})
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatalf("MaterializeSecrets() error = %v", err)
+	capabilityValue, scope, _, cleanup := newCASScopedSecretHarness(
+		t, 1, "test-route", p.config, map[string]string{raw: plaintext},
+	)
+	t.Cleanup(cleanup)
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if got, want := p.config.Cookie.Secret, casCookieDescriptor(plaintext); got != want {
 		t.Fatalf("legacy contextual descriptor = %q, want resolved plaintext %q", got, want)
 	}
-	bytes := p.legacyCookieSecret.Bytes()
-	defer clear(bytes)
-	if string(bytes) != plaintext {
-		t.Fatal("legacy owner did not retain the resolved contextual plaintext")
+	if err := p.cookieSecret.Use(func(value string) error {
+		if value != plaintext {
+			t.Fatalf("scoped cookie secret = %q, want resolved plaintext", value)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -201,14 +208,34 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatalf("MaterializeSecrets() error = %v", err)
+	capabilityValue, scope, _, cleanup := newCASScopedSecretHarness(
+		t, 1, "test-route", cfg, map[string]string{cfg.Cookie.Secret: cfg.Cookie.Secret},
+	)
+	t.Cleanup(cleanup)
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
 
 	return p
+}
+
+func materializeCASForTest(
+	t *testing.T,
+	p *Plugin,
+	revision uint64,
+	resourceID string,
+	config Config,
+	values map[string]string,
+) error {
+	t.Helper()
+	capabilityValue, scope, _, cleanup := newCASScopedSecretHarness(
+		t, revision, resourceID, config, values,
+	)
+	t.Cleanup(cleanup)
+	return base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p)
 }
 
 func TestCASInitiationCookieUsesPrivateMaterializedSecret(t *testing.T) {
@@ -252,8 +279,12 @@ func TestCASPostInitNeverResolvesCookieSecret(t *testing.T) {
 		len(p.logoutTrustedNets) != 0 {
 		t.Fatal("PostInit resolved or installed secret-dependent state")
 	}
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatalf("MaterializeSecrets() error = %v", err)
+	capabilityValue, scope, _, cleanup := newCASScopedSecretHarness(
+		t, 1, "post-init", p.config, map[string]string{raw: "post-init-cookie-secret-post-init-cookie-secret"},
+	)
+	t.Cleanup(cleanup)
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() after materialization error = %v", err)
@@ -332,10 +363,6 @@ func TestCASStopWaitsForInFlightCallbackAndDestroysLegacyOwner(t *testing.T) {
 	config := testCASConfig("legacy-cookie-secret-legacy-cookie-secret")
 	config.IDPURI = casServer.URL
 	p := newTestPlugin(t, config)
-	legacyHandle := p.legacyCookieSecret
-	if legacyHandle == nil {
-		t.Fatal("legacy materialization did not retain an owner")
-	}
 	stopper, ok := any(p).(interface{ Stop() })
 	if !ok {
 		close(releaseRequest)
@@ -392,11 +419,8 @@ func TestCASStopWaitsForInFlightCallbackAndDestroysLegacyOwner(t *testing.T) {
 		}
 	}
 	stopper.Stop()
-	if got := legacyHandle.Bytes(); got != nil {
-		t.Fatalf("saved legacy handle bytes = %q, want destroyed", got)
-	}
 	if !p.retired || p.client != nil || p.secretsPrepared || p.cookieSecretSet ||
-		p.cookieSecret != (secret.Value{}) || p.legacyCookieSecret != nil {
+		p.cookieSecret != (secret.Value{}) {
 		t.Fatal("retired plugin retained secret/client state")
 	}
 	if err := p.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) {
@@ -475,13 +499,13 @@ func TestCASScopedStopWaitsForInFlightCallback(t *testing.T) {
 		t.Fatal("timed out waiting for scoped Stop")
 	}
 	if !p.retired || p.client != nil || p.secretsPrepared || p.cookieSecretSet ||
-		p.cookieSecret != (secret.Value{}) || p.legacyCookieSecret != nil {
+		p.cookieSecret != (secret.Value{}) {
 		t.Fatal("scoped Stop retained secret/client state")
 	}
 	p.deleteSession("ST-scoped")
 }
 
-func TestCASLegacyResolvedLengthFailureIsAtomicAndRetryable(t *testing.T) {
+func TestCASMaterializeSecretsFailsClosedWithoutRetainedState(t *testing.T) {
 	const raw = "$ENV://CAS_LEGACY_COOKIE_SECRET"
 	t.Setenv("CAS_LEGACY_COOKIE_SECRET", "short")
 	config := testCASConfig(raw)
@@ -490,17 +514,14 @@ func TestCASLegacyResolvedLengthFailureIsAtomicAndRetryable(t *testing.T) {
 		err.Error() != "credential unavailable" {
 		t.Fatalf("resolved-short legacy error = %v, want fixed credential unavailable", err)
 	}
-	if p.config.Cookie.Secret != raw || p.legacyCookieSecret != nil || p.cookieSecretSet ||
+	if p.config.Cookie.Secret != raw || p.cookieSecretSet ||
 		p.secretsPrepared || p.client != nil || p.opts != (sessionOptions{}) {
 		t.Fatal("failed legacy materialization retained state")
 	}
 	const resolved = "legacy-retry-cookie-secret-legacy-retry-cookie-secret"
 	t.Setenv("CAS_LEGACY_COOKIE_SECRET", resolved)
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatalf("same-instance legacy retry error = %v", err)
-	}
-	if got, want := p.config.Cookie.Secret, casCookieDescriptor(resolved); got != want {
-		t.Fatalf("legacy retry descriptor = %q, want %q", got, want)
+	if err := p.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) {
+		t.Fatalf("same-instance MaterializeSecrets() error = %v, want credential unavailable", err)
 	}
 	shortLiteral := &Plugin{config: testCASConfig("short")}
 	if err := shortLiteral.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) {
@@ -1013,8 +1034,11 @@ func TestPostInitRejectsSameSiteNoneWithoutSecureCookie(t *testing.T) {
 			Secure:   &secureFalse,
 		},
 	}}
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatalf("MaterializeSecrets() error = %v", err)
+	if err := materializeCASForTest(
+		t, p, 1, "same-site-false", p.config,
+		map[string]string{p.config.Cookie.Secret: p.config.Cookie.Secret},
+	); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	err := p.PostInit()
 	if err == nil {
@@ -1036,8 +1060,11 @@ func TestPostInitRejectsSameSiteNoneWithoutSecureCookie(t *testing.T) {
 			Secure:   &secureTrue,
 		},
 	}}
-	if err := p2.MaterializeSecrets(); err != nil {
-		t.Fatalf("MaterializeSecrets() error = %v", err)
+	if err := materializeCASForTest(
+		t, p2, 2, "same-site-true", p2.config,
+		map[string]string{p2.config.Cookie.Secret: p2.config.Cookie.Secret},
+	); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p2.PostInit(); err != nil {
 		t.Fatalf("SameSite=None with secure=true failed PostInit validation: %v", err)
@@ -1052,8 +1079,11 @@ func TestPostInitRejectsInvalidLogoutTrustedAddress(t *testing.T) {
 		LogoutTrustedAddresses: []string{"not-a-cidr"},
 		Cookie:                 CookieConfig{Secret: strings.Repeat("s", 32)},
 	}}
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatalf("MaterializeSecrets() error = %v", err)
+	if err := materializeCASForTest(
+		t, p, 1, "invalid-trusted-address", p.config,
+		map[string]string{p.config.Cookie.Secret: p.config.Cookie.Secret},
+	); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err == nil {
 		t.Fatal("PostInit() accepted invalid logout_trusted_addresses CIDR")

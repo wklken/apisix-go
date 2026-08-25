@@ -19,7 +19,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/secret"
-	"github.com/wklken/apisix-go/pkg/store"
 )
 
 type scopedSecretCall struct {
@@ -372,8 +371,10 @@ func TestAliyunStopIsIdempotentAndConcurrentWithCredentialUse(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatal(err)
 	}
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatal(err)
+	capabilityValue, scope, _, cleanup := newScopedSecretHarness(t, name, nil)
+	defer cleanup()
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	entered := make(chan struct{})
 	release := make(chan struct{})
@@ -493,138 +494,98 @@ func retainedRequestMaterial(request *http.Request) []byte {
 	return material
 }
 
-func TestAliyunRequestStopBoundaryForScopedAndLegacyCredentials(t *testing.T) {
-	tests := []struct {
-		name   string
-		scoped bool
-	}{
-		{name: "scoped", scoped: true},
-		{name: "legacy", scoped: false},
+func TestAliyunRequestStopBoundaryForScopedCredentials(t *testing.T) {
+	p := &Plugin{config: Config{
+		Endpoint:        "http://moderation.example",
+		RegionID:        "cn-shanghai",
+		AccessKeyID:     "access-id",
+		AccessKeySecret: "access-secret",
+	}}
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
 	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			p := &Plugin{config: Config{
-				Endpoint:        "http://moderation.example",
-				RegionID:        "cn-shanghai",
-				AccessKeyID:     "access-id",
-				AccessKeySecret: "access-secret",
-			}}
-			if err := p.Init(); err != nil {
-				t.Fatal(err)
-			}
-			var closeAttempt func()
-			if test.scoped {
-				capabilityValue, scope, _, closeScopedAttempt := newScopedSecretHarness(t, name, map[string]string{
-					"access-id":     "resolved-access-id",
-					"access-secret": "resolved-access-secret",
-				})
-				closeAttempt = closeScopedAttempt
-				if err := base.MaterializeScopedPluginSecrets(
-					context.Background(), scope, capabilityValue, p,
-				); err != nil {
-					t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
-				}
-			} else if err := p.MaterializeSecrets(); err != nil {
-				t.Fatalf("MaterializeSecrets() error = %v", err)
-			}
-			defer func() {
-				if closeAttempt != nil {
-					closeAttempt()
-				}
-			}()
-			if err := p.PostInit(); err != nil {
-				t.Fatalf("PostInit() error = %v", err)
-			}
-			p.now = func() time.Time { return time.Unix(1, 0) }
-			p.nonce = func() string { return "nonce" }
-			requestAccessKeyID, requestAccessKeySecret := "access-id", "access-secret"
-			if test.scoped {
-				requestAccessKeyID, requestAccessKeySecret = "resolved-access-id", "resolved-access-secret"
-			}
-			expectedForm, expectedSignature := expectedAliyunForm(
-				requestAccessKeyID, requestAccessKeySecret,
-			)
-			var legacyAccessKeyID, legacyAccessKeySecret *store.ResolvedSecret
-			if !test.scoped {
-				legacyAccessKeyID = p.accessKeyID
-				legacyAccessKeySecret = p.accessKeySecret
-			}
-			transport := &blockingRoundTripper{
-				entered: make(chan struct{}),
-				release: make(chan struct{}),
-			}
-			p.client = &http.Client{Transport: transport}
-			requestDone := make(chan struct{})
-			var statusCode int
-			var responseBody []byte
-			var requestErr error
-			go func() {
-				statusCode, responseBody, requestErr = p.sendModerationRequest(
-					context.Background(), "session", "hello", "llm_query_moderation",
-				)
-				close(requestDone)
-			}()
-			<-transport.entered
-			stopAttempted := make(chan struct{})
-			p.stopStarted = func() { close(stopAttempted) }
-			stopDone := make(chan struct{})
-			go func() {
-				p.Stop()
-				close(stopDone)
-			}()
-			<-stopAttempted
-			if transport.request.GetBody != nil {
-				t.Fatal("request retained GetBody after signed request construction")
-			}
-			select {
-			case <-stopDone:
-				t.Fatal("Stop() completed before request release")
-			case <-time.After(50 * time.Millisecond):
-			}
-			close(transport.release)
-			<-requestDone
-			<-stopDone
-			if requestErr != nil || statusCode != http.StatusOK ||
-				string(responseBody) != `{"Data":{"RiskLevel":"low"}}` {
-				t.Fatalf(
-					"request result = (%d, %q, %v), want successful response",
-					statusCode,
-					responseBody,
-					requestErr,
-				)
-			}
-			select {
-			case <-transport.body.closed:
-			default:
-				t.Fatal("response body was not closed before request completion")
-			}
-			if p.accessKeyID != nil || p.accessKeySecret != nil {
-				t.Fatal("legacy credential owners retained after Stop()")
-			}
-			if !test.scoped {
-				if got := legacyAccessKeyID.Bytes(); got != nil {
-					t.Fatalf("legacy access-key id bytes retained after Stop(): %x", got)
-				}
-				if got := legacyAccessKeySecret.Bytes(); got != nil {
-					t.Fatalf("legacy access-key secret bytes retained after Stop(): %x", got)
-				}
-			}
-			if p.scopedCredentialsSet || p.scopedAccessKeyID.Digest() != [32]byte{} ||
-				p.scopedAccessKeySecret.Digest() != [32]byte{} {
-				t.Fatal("scoped credential values retained after Stop()")
-			}
-			retained := retainedRequestMaterial(transport.request)
-			for _, forbidden := range [][]byte{
-				[]byte(requestAccessKeyID), expectedForm, []byte(expectedSignature),
-				[]byte(url.QueryEscape(expectedSignature)),
-			} {
-				if bytes.Contains(retained, forbidden) {
-					t.Fatalf("retained request material contains credential/form bytes %q: %q", forbidden, retained)
-				}
-			}
-			p.Stop()
-		})
+	capabilityValue, scope, _, closeAttempt := newScopedSecretHarness(t, name, map[string]string{
+		"access-id":     "resolved-access-id",
+		"access-secret": "resolved-access-secret",
+	})
+	defer closeAttempt()
+	if err := base.MaterializeScopedPluginSecrets(
+		context.Background(), scope, capabilityValue, p,
+	); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+	p.now = func() time.Time { return time.Unix(1, 0) }
+	p.nonce = func() string { return "nonce" }
+	requestAccessKeyID, requestAccessKeySecret := "resolved-access-id", "resolved-access-secret"
+	expectedForm, expectedSignature := expectedAliyunForm(
+		requestAccessKeyID, requestAccessKeySecret,
+	)
+	transport := &blockingRoundTripper{
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	p.client = &http.Client{Transport: transport}
+	requestDone := make(chan struct{})
+	var statusCode int
+	var responseBody []byte
+	var requestErr error
+	go func() {
+		statusCode, responseBody, requestErr = p.sendModerationRequest(
+			context.Background(), "session", "hello", "llm_query_moderation",
+		)
+		close(requestDone)
+	}()
+	<-transport.entered
+	stopAttempted := make(chan struct{})
+	p.stopStarted = func() { close(stopAttempted) }
+	stopDone := make(chan struct{})
+	go func() {
+		p.Stop()
+		close(stopDone)
+	}()
+	<-stopAttempted
+	if transport.request.GetBody != nil {
+		t.Fatal("request retained GetBody after signed request construction")
+	}
+	select {
+	case <-stopDone:
+		t.Fatal("Stop() completed before request release")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(transport.release)
+	<-requestDone
+	<-stopDone
+	if requestErr != nil || statusCode != http.StatusOK ||
+		string(responseBody) != `{"Data":{"RiskLevel":"low"}}` {
+		t.Fatalf(
+			"request result = (%d, %q, %v), want successful response",
+			statusCode,
+			responseBody,
+			requestErr,
+		)
+	}
+	select {
+	case <-transport.body.closed:
+	default:
+		t.Fatal("response body was not closed before request completion")
+	}
+	if p.scopedCredentialsSet || p.scopedAccessKeyID.Digest() != [32]byte{} ||
+		p.scopedAccessKeySecret.Digest() != [32]byte{} {
+		t.Fatal("scoped credential values retained after Stop()")
+	}
+	retained := retainedRequestMaterial(transport.request)
+	for _, forbidden := range [][]byte{
+		[]byte(requestAccessKeyID), expectedForm, []byte(expectedSignature),
+		[]byte(url.QueryEscape(expectedSignature)),
+	} {
+		if bytes.Contains(retained, forbidden) {
+			t.Fatalf("retained request material contains credential/form bytes %q: %q", forbidden, retained)
+		}
+	}
+	p.Stop()
 }
 
 func equalStrings(left, right []string) bool {

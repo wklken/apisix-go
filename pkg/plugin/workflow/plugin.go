@@ -18,7 +18,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/limit_count"
 	"github.com/wklken/apisix-go/pkg/plugin/limit_req"
 	"github.com/wklken/apisix-go/pkg/resource"
-	"github.com/wklken/apisix-go/pkg/store"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -961,16 +960,11 @@ func (p *Plugin) withConsumerActionOverride(r *http.Request, actionName string) 
 
 	overrides := make(map[string]struct{}, len(consumer.Plugins)+1)
 	if consumer.GroupID != "" {
-		var group resource.ConsumerGroup
-		var found bool
 		if lookup := p.ConsumerLookup(); lookup != nil {
-			group, found = lookup.ConsumerGroupByID(consumer.GroupID)
-		} else {
-			group, found = legacyConsumerGroupByIDWhenLookupIsNil(consumer.GroupID)
-		}
-		if found {
-			for pluginName := range group.Plugins {
-				overrides[pluginName] = struct{}{}
+			if group, found := lookup.ConsumerGroupByID(consumer.GroupID); found {
+				for pluginName := range group.Plugins {
+					overrides[pluginName] = struct{}{}
+				}
 			}
 		}
 	}
@@ -979,13 +973,6 @@ func (p *Plugin) withConsumerActionOverride(r *http.Request, actionName string) 
 	}
 	overrides[actionName] = struct{}{}
 	return apisixctx.WithConsumerPluginOverrides(r, overrides)
-}
-
-// C6.6 deletes this compatibility branch after the immutable consumer view is
-// mandatory for every workflow instance.
-func legacyConsumerGroupByIDWhenLookupIsNil(id string) (resource.ConsumerGroup, bool) {
-	group, err := store.GetConsumerGroup(id)
-	return group, err == nil
 }
 
 func matchRule(r *http.Request, rule Rule, resolve pluginexpr.Resolver) bool {

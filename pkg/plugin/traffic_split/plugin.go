@@ -19,7 +19,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/chash"
 	pluginexpr "github.com/wklken/apisix-go/pkg/plugin/expr"
 	"github.com/wklken/apisix-go/pkg/resource"
-	"github.com/wklken/apisix-go/pkg/store"
 )
 
 type Plugin struct {
@@ -227,10 +226,6 @@ type compiledTarget struct {
 
 type overrideKey struct{}
 
-type upstreamResolver func(id string) (*Upstream, error)
-
-var getUpstreamByID upstreamResolver = loadUpstreamByID
-
 func WithOverride(r *http.Request, override *Override) *http.Request {
 	if override == nil {
 		return r
@@ -350,8 +345,8 @@ func (p *Plugin) SetRuntimeAcquirer(acquirer RuntimeAcquirer) {
 	p.runtimeAcquirerSet = true
 }
 
-// SetUpstreamResolver supplies the route builder's Store-scoped resolver
-// before PostInit. Standalone plugin callers retain the package Store fallback.
+// SetUpstreamResolver supplies the immutable generation's upstream resolver
+// before PostInit.
 func (p *Plugin) SetUpstreamResolver(resolver ResourceUpstreamResolver) {
 	p.upstreamResolver = resolver
 }
@@ -764,7 +759,7 @@ func overrideFromNode(upstream *Upstream, node Node) *Override {
 
 func (p *Plugin) resolveUpstreamByID(id string) (*Upstream, error) {
 	if p.upstreamResolver == nil {
-		return getUpstreamByID(id)
+		return nil, fmt.Errorf("traffic-split upstream resolver is required")
 	}
 	stored, err := p.upstreamResolver(id)
 	if err != nil {
@@ -833,14 +828,6 @@ func splitAddr(addr string) (string, int) {
 	}
 
 	return addr, 0
-}
-
-func loadUpstreamByID(id string) (*Upstream, error) {
-	stored, err := store.GetUpstream(id)
-	if err != nil {
-		return nil, err
-	}
-	return upstreamFromResource(stored), nil
 }
 
 func upstreamFromResource(stored resource.Upstream) *Upstream {

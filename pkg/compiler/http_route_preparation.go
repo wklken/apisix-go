@@ -86,13 +86,10 @@ func (prepared *PreparedGeneration) prepareHTTPRoutes(
 		}
 		result.quarantined = append(result.quarantined, routeKey)
 	}
-	notFoundRuntime := effectiveBindingRuntimeContext{
-		configured: true, enabledFactories: slices.Clone(plan.enabledFactories),
-		publicAPIRegistry: plan.publicAPIRegistry,
-		serverAddr:        httpPreparationServerAddr(prepared),
-		proxyCacheZones:   slices.Clone(prepared.effective.Config.Apisix.ProxyCache.Zones),
+	notFoundRuntime, err := prepared.httpRuntimeContextForNotFound(plan)
+	if err != nil {
+		return nil, err
 	}
-	var err error
 	result.notFound, err = prepared.materializeHTTPPlansByOwner(
 		ctx,
 		append(slices.Clone(plan.plugins.System), plan.plugins.Global...),
@@ -105,6 +102,24 @@ func (prepared *PreparedGeneration) prepareHTTPRoutes(
 		return nil, err
 	}
 	return result, nil
+}
+
+func (prepared *PreparedGeneration) httpRuntimeContextForNotFound(
+	plan *httpPreparationPlan,
+) (effectiveBindingRuntimeContext, error) {
+	if prepared == nil || prepared.effective == nil || plan == nil || plan.publicAPIRegistry == nil {
+		return effectiveBindingRuntimeContext{}, fmt.Errorf(
+			"%w: HTTP not-found runtime context is incomplete",
+			ErrInvalidInput,
+		)
+	}
+	return effectiveBindingRuntimeContext{
+		configured: true, enabledFactories: slices.Clone(plan.enabledFactories),
+		publicAPIRegistry: plan.publicAPIRegistry,
+		serverAddr:        httpPreparationServerAddr(prepared),
+		proxyCacheZones:   slices.Clone(prepared.effective.Config.Apisix.ProxyCache.Zones),
+		protoResolver:     plan.protoResolver,
+	}, nil
 }
 
 func (prepared *PreparedGeneration) prepareOneHTTPRoute(

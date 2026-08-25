@@ -80,6 +80,22 @@ var (
 	testEvents    chan *store.Event
 )
 
+type storeBackedKeyAuthLookup struct{}
+
+func (storeBackedKeyAuthLookup) ConsumerByPluginKey(plugin, key string) (resource.Consumer, bool) {
+	consumer, err := store.GetConsumerByPluginKey(plugin, key)
+	return consumer, err == nil
+}
+
+func (storeBackedKeyAuthLookup) ConsumerByID(id string) (resource.Consumer, bool) {
+	consumer, err := store.GetConsumer(id)
+	return consumer, err == nil
+}
+
+func (storeBackedKeyAuthLookup) ConsumerGroupByID(string) (resource.ConsumerGroup, bool) {
+	return resource.ConsumerGroup{}, false
+}
+
 func setupStore(t *testing.T) {
 	t.Helper()
 
@@ -159,6 +175,7 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
 
 	p := &Plugin{config: cfg}
+	p.SetDependencies(base.Dependencies{Consumers: storeBackedKeyAuthLookup{}})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}

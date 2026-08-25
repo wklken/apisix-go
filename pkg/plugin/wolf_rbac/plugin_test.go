@@ -82,6 +82,21 @@ var (
 	testEvents    chan *store.Event
 )
 
+type storeBackedWolfLookup struct{}
+
+func (storeBackedWolfLookup) ConsumerByPluginKey(plugin, key string) (resource.Consumer, bool) {
+	consumer, err := store.GetConsumerByPluginKey(plugin, key)
+	return consumer, err == nil
+}
+
+func (storeBackedWolfLookup) ConsumerByID(string) (resource.Consumer, bool) {
+	return resource.Consumer{}, false
+}
+
+func (storeBackedWolfLookup) ConsumerGroupByID(string) (resource.ConsumerGroup, bool) {
+	return resource.ConsumerGroup{}, false
+}
+
 func setupStore(t *testing.T) {
 	t.Helper()
 
@@ -135,6 +150,7 @@ func newTestPlugin(t *testing.T, cfg Config, registries ...*public_api.Registry)
 	t.Helper()
 
 	p := &Plugin{config: cfg}
+	p.SetDependencies(base.Dependencies{Consumers: storeBackedWolfLookup{}})
 	registry := public_api.NewRegistry()
 	if len(registries) > 0 && registries[0] != nil {
 		registry = registries[0]

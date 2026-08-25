@@ -12,7 +12,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/secret"
-	"github.com/wklken/apisix-go/pkg/store"
 )
 
 var errKeycloakCredentialsUnavailable = errors.New("credential unavailable")
@@ -26,10 +25,8 @@ type keycloakCredentialState struct {
 	credentialMu sync.Mutex
 	stopOnce     sync.Once
 
-	clientSecret       *store.ResolvedSecret
 	scopedClientSecret secret.Value
 	clientSecretDigest [sha256.Size]byte
-	legacySet          bool
 	scopedSet          bool
 
 	activeUses int
@@ -38,9 +35,7 @@ type keycloakCredentialState struct {
 }
 
 type keycloakCredentialSnapshot struct {
-	legacy       bool
-	clientSecret *store.ResolvedSecret
-	scopedValue  secret.Value
+	scopedValue secret.Value
 }
 
 // MaterializeSecrets is the transitional process-local preparation path used
@@ -52,24 +47,7 @@ func (p *Plugin) MaterializeSecrets() error {
 		return err
 	}
 
-	raw := p.config.ClientSecret
-	if raw == "" {
-		return p.installLegacyClientSecret(nil, sha256.Sum256(nil), "")
-	}
-	clientSecret, err := store.MaterializeSecret(raw)
-	if err != nil || !validLegacyClientSecret(clientSecret) {
-		clientSecret.Destroy()
-		return errKeycloakCredentialsUnavailable
-	}
-	plaintext := clientSecret.Bytes()
-	digest := sha256.Sum256(plaintext)
-	clear(plaintext)
-	descriptor, err := secret.NewDescriptor(capability.SecretPluginConfig, digest)
-	if err != nil {
-		clientSecret.Destroy()
-		return errKeycloakCredentialsUnavailable
-	}
-	return p.installLegacyClientSecret(clientSecret, digest, descriptor.String())
+	return errKeycloakCredentialsUnavailable
 }
 
 // MaterializeScopedSecrets resolves only the exact manifest-owned optional
@@ -127,23 +105,7 @@ func (p *Plugin) keycloakPreparationState() (bool, error) {
 	if p.retired {
 		return false, errKeycloakCredentialsUnavailable
 	}
-	return p.legacySet || p.scopedSet, nil
-}
-
-func (p *Plugin) installLegacyClientSecret(
-	clientSecret *store.ResolvedSecret, digest [sha256.Size]byte, descriptor string,
-) error {
-	p.credentialMu.Lock()
-	defer p.credentialMu.Unlock()
-	if p.retired {
-		clientSecret.Destroy()
-		return errKeycloakCredentialsUnavailable
-	}
-	p.clientSecret = clientSecret
-	p.clientSecretDigest = digest
-	p.legacySet = true
-	p.config.ClientSecret = descriptor
-	return nil
+	return p.scopedSet, nil
 }
 
 func (p *Plugin) installScopedClientSecret(
@@ -159,15 +121,6 @@ func (p *Plugin) installScopedClientSecret(
 	p.scopedSet = true
 	p.config.ClientSecret = descriptor
 	return nil
-}
-
-func validLegacyClientSecret(value *store.ResolvedSecret) bool {
-	if value == nil {
-		return false
-	}
-	plaintext := value.Bytes()
-	defer clear(plaintext)
-	return strings.TrimSpace(string(plaintext)) != ""
 }
 
 func validScopedClientSecret(value secret.Value) bool {
@@ -188,32 +141,21 @@ func (p *Plugin) withClientSecret(call func(string) error) error {
 		return err
 	}
 	defer release()
-	if !snapshot.legacy {
-		if snapshot.scopedValue == (secret.Value{}) {
-			return call("")
-		}
-		return snapshot.scopedValue.Use(func(plaintext string) error {
-			if strings.TrimSpace(plaintext) == "" {
-				return errKeycloakCredentialsUnavailable
-			}
-			return call(plaintext)
-		})
-	}
-	if snapshot.clientSecret == nil {
+	if snapshot.scopedValue == (secret.Value{}) {
 		return call("")
 	}
-	plaintext := snapshot.clientSecret.Bytes()
-	defer clear(plaintext)
-	if strings.TrimSpace(string(plaintext)) == "" {
-		return errKeycloakCredentialsUnavailable
-	}
-	return call(string(plaintext))
+	return snapshot.scopedValue.Use(func(plaintext string) error {
+		if strings.TrimSpace(plaintext) == "" {
+			return errKeycloakCredentialsUnavailable
+		}
+		return call(plaintext)
+	})
 }
 
 func (p *Plugin) acquireKeycloakCredential() (keycloakCredentialSnapshot, func(), error) {
 	p.credentialMu.Lock()
 	defer p.credentialMu.Unlock()
-	if p.retired || (!p.legacySet && !p.scopedSet) {
+	if p.retired || !p.scopedSet {
 		return keycloakCredentialSnapshot{}, nil, errKeycloakCredentialsUnavailable
 	}
 	if p.activeUses == 0 {
@@ -221,9 +163,7 @@ func (p *Plugin) acquireKeycloakCredential() (keycloakCredentialSnapshot, func()
 	}
 	p.activeUses++
 	return keycloakCredentialSnapshot{
-		legacy:       p.legacySet,
-		clientSecret: p.clientSecret,
-		scopedValue:  p.scopedClientSecret,
+		scopedValue: p.scopedClientSecret,
 	}, p.releaseKeycloakCredentialUse, nil
 }
 
@@ -264,7 +204,7 @@ func (p *Plugin) keycloakRestyClient() (*resty.Client, error) {
 func (p *Plugin) keycloakRuntimeReady() error {
 	p.credentialMu.Lock()
 	defer p.credentialMu.Unlock()
-	if p.retired || (!p.legacySet && !p.scopedSet) || p.client == nil {
+	if p.retired || !p.scopedSet || p.client == nil {
 		return errKeycloakCredentialsUnavailable
 	}
 	return nil
@@ -273,7 +213,7 @@ func (p *Plugin) keycloakRuntimeReady() error {
 func (p *Plugin) installKeycloakClient(client *resty.Client, clientRelease func()) error {
 	p.credentialMu.Lock()
 	defer p.credentialMu.Unlock()
-	if p.retired || (!p.legacySet && !p.scopedSet) {
+	if p.retired || !p.scopedSet {
 		clientRelease()
 		return errKeycloakCredentialsUnavailable
 	}
@@ -299,14 +239,10 @@ func (p *Plugin) Stop() {
 		}
 
 		p.credentialMu.Lock()
-		clientSecret := p.clientSecret
-		p.clientSecret = nil
 		p.scopedClientSecret = secret.Value{}
 		p.clientSecretDigest = [sha256.Size]byte{}
-		p.legacySet = false
 		p.scopedSet = false
 		p.client = nil
 		p.credentialMu.Unlock()
-		clientSecret.Destroy()
 	})
 }

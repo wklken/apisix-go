@@ -34,7 +34,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/secret"
-	"github.com/wklken/apisix-go/pkg/store"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -43,15 +42,12 @@ type Plugin struct {
 	config      Config
 	lifecycleMu sync.RWMutex
 
-	spPrivateKey        secret.Value
-	legacySPPrivateKey  *store.ResolvedSecret
-	sessionSecret       secret.Value
-	sessionSecretSet    bool
-	sessionFallbacks    []secret.Value
-	legacySessionSecret *store.ResolvedSecret
-	legacyFallbacks     []*store.ResolvedSecret
-	secretsPrepared     bool
-	retired             bool
+	spPrivateKey     secret.Value
+	sessionSecret    secret.Value
+	sessionSecretSet bool
+	sessionFallbacks []secret.Value
+	secretsPrepared  bool
+	retired          bool
 
 	// spKeyPair is staged during secret materialization. PostInit consumes it
 	// without reading the public private-key descriptor as PEM.
@@ -325,103 +321,10 @@ func materializeScopedSAMLSessionSecret(
 func (p *Plugin) MaterializeSecrets() error {
 	p.lifecycleMu.Lock()
 	defer p.lifecycleMu.Unlock()
-	if p.retired {
-		return secret.ErrCredentialUnavailable
-	}
-	if p.secretsPrepared {
+	if !p.retired && p.secretsPrepared {
 		return nil
 	}
-
-	privateKey, privateDescriptor, keyPair, err := p.materializeLegacyPrivateKey(p.config.SPPrivateKey)
-	if err != nil {
-		return secret.ErrCredentialUnavailable
-	}
-	sessionSecret, sessionDescriptor, err := p.materializeLegacySecret(
-		p.config.Secret, "secret", validateSAMLSessionSecret,
-	)
-	if err != nil {
-		privateKey.Destroy()
-		return secret.ErrCredentialUnavailable
-	}
-	fallbacks := make([]*store.ResolvedSecret, len(p.config.SecretFallbacks))
-	fallbackDescriptors := make([]string, len(p.config.SecretFallbacks))
-	installed := false
-	defer func() {
-		if installed {
-			return
-		}
-		privateKey.Destroy()
-		sessionSecret.Destroy()
-		for _, fallback := range fallbacks {
-			fallback.Destroy()
-		}
-	}()
-	for i, raw := range p.config.SecretFallbacks {
-		fallback, descriptor, fallbackErr := p.materializeLegacySecret(
-			raw, "secret_fallbacks", validateSAMLSessionSecret,
-		)
-		if fallbackErr != nil {
-			return secret.ErrCredentialUnavailable
-		}
-		fallbacks[i] = fallback
-		fallbackDescriptors[i] = descriptor
-	}
-
-	p.legacySPPrivateKey = privateKey
-	p.legacySessionSecret = sessionSecret
-	p.legacyFallbacks = fallbacks
-	p.spKeyPair = keyPair
-	p.config.SPPrivateKey = privateDescriptor
-	p.config.Secret = sessionDescriptor
-	p.config.SecretFallbacks = fallbackDescriptors
-	p.secretsPrepared = true
-	installed = true
-	return nil
-}
-
-func (p *Plugin) materializeLegacyPrivateKey(raw string) (*store.ResolvedSecret, string, *samlKeyPair, error) {
-	value, descriptor, err := p.materializeLegacySecret(raw, "sp_private_key", func(plaintext string) error {
-		_, _, parseErr := parseKeyPair(p.config.SPCert, plaintext)
-		return parseErr
-	})
-	if err != nil {
-		return nil, "", nil, secret.ErrCredentialUnavailable
-	}
-	plaintext := value.Bytes()
-	defer clear(plaintext)
-	cert, key, err := parseKeyPair(p.config.SPCert, string(plaintext))
-	if err != nil {
-		value.Destroy()
-		return nil, "", nil, secret.ErrCredentialUnavailable
-	}
-	return value, descriptor, &samlKeyPair{cert: cert, key: key}, nil
-}
-
-func (p *Plugin) materializeLegacySecret(
-	raw string,
-	field string,
-	validate func(string) error,
-) (*store.ResolvedSecret, string, error) {
-	if resolver := p.DataEncryption(); resolver.Configured() {
-		raw = resolver.ResolveOptionalForContext(raw, name+"."+field)
-	}
-	value, err := store.MaterializeSecret(raw)
-	if err != nil {
-		return nil, "", secret.ErrCredentialUnavailable
-	}
-	plaintext := value.Bytes()
-	defer clear(plaintext)
-	if err := validate(string(plaintext)); err != nil {
-		value.Destroy()
-		return nil, "", secret.ErrCredentialUnavailable
-	}
-	digest := sha256.Sum256(plaintext)
-	descriptor, err := secret.NewDescriptor(capability.SecretPluginConfig, digest)
-	if err != nil {
-		value.Destroy()
-		return nil, "", secret.ErrCredentialUnavailable
-	}
-	return value, descriptor.String(), nil
+	return secret.ErrCredentialUnavailable
 }
 
 func validateSAMLSessionSecret(plaintext string) error {
@@ -442,19 +345,6 @@ func (p *Plugin) Stop() {
 	p.retired = true
 	p.spIDPMetadata = nil
 	p.spKeyPair = nil
-	if p.legacySPPrivateKey != nil {
-		p.legacySPPrivateKey.Destroy()
-		p.legacySPPrivateKey = nil
-	}
-	if p.legacySessionSecret != nil {
-		p.legacySessionSecret.Destroy()
-		p.legacySessionSecret = nil
-	}
-	for i, fallback := range p.legacyFallbacks {
-		fallback.Destroy()
-		p.legacyFallbacks[i] = nil
-	}
-	p.legacyFallbacks = nil
 	p.spPrivateKey = secret.Value{}
 	p.sessionSecret = secret.Value{}
 	p.sessionSecretSet = false
@@ -1024,33 +914,7 @@ func (p *Plugin) useSessionSecretsLocked(use func(string, []string) error) error
 			})
 		})
 	}
-	if p.legacySessionSecret == nil {
-		return secret.ErrCredentialUnavailable
-	}
-	current := p.legacySessionSecret.Bytes()
-	if len(current) == 0 {
-		return secret.ErrCredentialUnavailable
-	}
-	defer clear(current)
-	fallbackBytes := make([][]byte, len(p.legacyFallbacks))
-	fallbacks := make([]string, len(p.legacyFallbacks))
-	defer func() {
-		for i := range fallbackBytes {
-			clear(fallbackBytes[i])
-		}
-		clearSAMLStrings(fallbacks)
-	}()
-	for i, owner := range p.legacyFallbacks {
-		if owner == nil {
-			return secret.ErrCredentialUnavailable
-		}
-		fallbackBytes[i] = owner.Bytes()
-		if len(fallbackBytes[i]) == 0 {
-			return secret.ErrCredentialUnavailable
-		}
-		fallbacks[i] = string(fallbackBytes[i])
-	}
-	return use(string(current), fallbacks)
+	return secret.ErrCredentialUnavailable
 }
 
 func useScopedSAMLFallbacks(

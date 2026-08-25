@@ -447,7 +447,7 @@ func newBlockingRocketMQPlugin(t *testing.T, sender rocketmqSender) *Plugin {
 		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
 	})
 	p.sender = sender
-	if err := p.MaterializeSecrets(); err != nil {
+	if err := materializeRocketMQForTest(t, p, 1, "blocking", p.config.SecretKey); err != nil {
 		t.Fatal(err)
 	}
 	if err := p.PostInit(); err != nil {
@@ -492,7 +492,7 @@ func TestRocketMQStopDrainsActiveSendAndPreventsResurrection(t *testing.T) {
 		t.Fatalf("sender shutdown count = %d, want 1", sender.shutdownCount())
 	}
 	if p.sender != nil || p.BatchProcessor != nil || p.secretKeySet ||
-		p.legacySecretKey != nil || p.secretsPrepared {
+		p.secretsPrepared {
 		t.Fatalf("private/runtime state survived Stop: %#v", p)
 	}
 	if _, err := p.SendBatch(
@@ -566,7 +566,7 @@ func TestRocketMQRejectsLogEnqueueBeforePostInit(t *testing.T) {
 	if len(p.FireChan) != queued {
 		t.Fatal("pre-materialization RunLogPhase enqueued work")
 	}
-	if err := p.MaterializeSecrets(); err != nil {
+	if err := materializeRocketMQForTest(t, p, 1, "pre-post-init", p.config.SecretKey); err != nil {
 		t.Fatal(err)
 	}
 	if err := p.RunLogPhase(base.LogSnapshot{}); !errors.Is(err, base.ErrLogQueueUnavailable) {
@@ -599,7 +599,7 @@ func TestRocketMQConcurrentPostInitAndStopCannotPublishSender(t *testing.T) {
 	p.SetDependencies(base.Dependencies{
 		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
 	})
-	if err := p.MaterializeSecrets(); err != nil {
+	if err := materializeRocketMQForTest(t, p, 1, "concurrent-post-init", p.config.SecretKey); err != nil {
 		t.Fatal(err)
 	}
 	factoryEntered := make(chan struct{})
@@ -643,7 +643,7 @@ func TestRocketMQConcurrentPostInitAndStopCannotPublishSender(t *testing.T) {
 		t.Fatal("concurrent Stop did not finish")
 	}
 	if p.sender != nil || p.BatchProcessor != nil || p.secretKeySet ||
-		p.legacySecretKey != nil || p.secretsPrepared {
+		p.secretsPrepared {
 		t.Fatalf("concurrent PostInit/Stop published state: %#v", p)
 	}
 	if sender.shutdownCount() != 1 {
@@ -799,8 +799,18 @@ func newTestPluginWithMetadata(
 		t.Fatalf("Init() error = %v", err)
 	}
 	p.sender = sender
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatalf("MaterializeSecrets() error = %v", err)
+	rawConfig := make(map[string]any)
+	document, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	if err := json.Unmarshal(document, &rawConfig); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	values := map[string]string{cfg.SecretKey: cfg.SecretKey}
+	capabilityValue, scope, _ := newRocketMQScopedSecretHarness(t, 1, "test-route", rawConfig, values)
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
@@ -808,6 +818,32 @@ func newTestPluginWithMetadata(
 	t.Cleanup(p.Stop)
 
 	return p
+}
+
+func materializeRocketMQForTest(
+	t *testing.T,
+	p *Plugin,
+	revision uint64,
+	resourceID string,
+	resolvedSecretKey string,
+) error {
+	t.Helper()
+	rawConfig := make(map[string]any)
+	document, err := json.Marshal(p.config)
+	if err != nil {
+		return err
+	}
+	if err := json.Unmarshal(document, &rawConfig); err != nil {
+		return err
+	}
+	values := map[string]string{}
+	if p.config.SecretKey != "" {
+		values[p.config.SecretKey] = resolvedSecretKey
+	}
+	capabilityValue, scope, _ := newRocketMQScopedSecretHarness(
+		t, revision, resourceID, rawConfig, values,
+	)
+	return base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p)
 }
 
 func mustMetadataView(t *testing.T, metadata map[string]any) apisixruntime.MetadataView {
@@ -827,9 +863,9 @@ func mustMetadataView(t *testing.T, metadata map[string]any) apisixruntime.Metad
 }
 
 func TestMaterializeSecretsRejectsMissingDataEncryptionResolver(t *testing.T) {
-	p := &Plugin{}
-	if err := p.MaterializeSecrets(); err == nil || err.Error() != "data-encryption resolver is required" {
-		t.Fatalf("MaterializeSecrets() error = %v, want missing resolver error", err)
+	p := &Plugin{config: Config{SecretKey: "private"}}
+	if err := p.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) {
+		t.Fatalf("MaterializeSecrets() error = %v, want credential unavailable", err)
 	}
 }
 
@@ -922,7 +958,7 @@ func TestPostInitRejectsUnsupportedTLS(t *testing.T) {
 		t.Fatal("MaterializeSecrets() error = nil, want unsupported use_tls rejection")
 	}
 	if !strings.Contains(err.Error(), "use_tls") || !strings.Contains(err.Error(), "not supported") {
-		t.Fatalf("MaterializeSecrets() error = %q, want use_tls unsupported message", err)
+		t.Fatalf("PostInit() error = %q, want use_tls unsupported message", err)
 	}
 }
 
@@ -942,8 +978,8 @@ func TestPostInitRejectsInvalidEncryptedSecretKey(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := p.MaterializeSecrets(); err == nil {
-		t.Fatal("MaterializeSecrets() error = nil, want strict encrypted secret_key rejection")
+	if err := p.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) {
+		t.Fatalf("MaterializeSecrets() error = %v, want credential unavailable", err)
 	}
 }
 
@@ -979,8 +1015,8 @@ func TestPostInitRejectsInvalidBodyExpressions(t *testing.T) {
 			if err := p.Init(); err != nil {
 				t.Fatalf("Init() error = %v", err)
 			}
-			if err := p.MaterializeSecrets(); err != nil {
-				t.Fatalf("MaterializeSecrets() error = %v", err)
+			if err := materializeRocketMQForTest(t, p, 1, "body-expr-"+test.name, p.config.SecretKey); err != nil {
+				t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 			}
 			err := p.PostInit()
 			if err == nil {
@@ -1015,8 +1051,8 @@ func TestPostInitAcceptsOfficialNestedBodyExpressions(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatalf("MaterializeSecrets() error = %v", err)
+	if err := materializeRocketMQForTest(t, p, 1, "official-body-expr", p.config.SecretKey); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
@@ -1042,8 +1078,8 @@ func TestPostInitResolvesRotatedEncryptedSecretKey(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatalf("MaterializeSecrets() error = %v", err)
+	if err := materializeRocketMQForTest(t, p, 1, "rotated-secret", "rocketmq-secret"); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
@@ -1198,8 +1234,8 @@ func TestMetadataDecodeFailsBeforeRocketMQSenderAndProcessorAcquisition(t *testi
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatalf("MaterializeSecrets() error = %v", err)
+	if err := materializeRocketMQForTest(t, p, 1, "invalid-metadata", p.config.SecretKey); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	err := p.PostInit()
 	defer p.Stop()

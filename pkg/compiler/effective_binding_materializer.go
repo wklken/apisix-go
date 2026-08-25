@@ -15,6 +15,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/plugin"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/plugin/grpc_transcode"
 	"github.com/wklken/apisix-go/pkg/plugin/public_api"
 	"github.com/wklken/apisix-go/pkg/plugin/traffic_split"
 	"github.com/wklken/apisix-go/pkg/resource"
@@ -68,6 +69,7 @@ type effectiveBindingRuntimeContext struct {
 	proxyCacheZones   []appconfig.Zone
 	runtimeAcquirer   traffic_split.RuntimeAcquirer
 	upstreamResolver  traffic_split.ResourceUpstreamResolver
+	protoResolver     grpc_transcode.ProtoResolver
 }
 
 type effectiveBindingSpec struct {
@@ -680,6 +682,11 @@ func (operations effectiveBindingOps) withDefaults(attempt [32]byte) effectiveBi
 			if setter, ok := instance.(interface{ SetConfiguredZones([]appconfig.Zone) }); ok {
 				setter.SetConfiguredZones(slices.Clone(value.proxyCacheZones))
 			}
+			if setter, ok := instance.(interface {
+				SetProtoResolver(grpc_transcode.ProtoResolver)
+			}); ok {
+				setter.SetProtoResolver(value.protoResolver)
+			}
 		}
 	}
 	if operations.preMaterialize == nil {
@@ -949,6 +956,7 @@ func cloneEffectiveBindingRuntimeContext(
 		proxyCacheZones:   slices.Clone(value.proxyCacheZones),
 		runtimeAcquirer:   value.runtimeAcquirer,
 		upstreamResolver:  value.upstreamResolver,
+		protoResolver:     value.protoResolver,
 	}, nil
 }
 

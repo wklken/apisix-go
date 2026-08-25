@@ -20,7 +20,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/secret"
-	"github.com/wklken/apisix-go/pkg/store"
 	"github.com/wklken/apisix-go/pkg/testutil"
 )
 
@@ -414,8 +413,7 @@ func TestScopedSecretsKeycloakFailureAndBlankAreAtomicAndRetryable(t *testing.T)
 					t.Fatalf("materialization error %q contains %q", err, sensitive)
 				}
 			}
-			if p.config.ClientSecret != raw || p.legacySet || p.scopedSet ||
-				p.clientSecret != nil || p.scopedClientSecret != (secret.Value{}) {
+			if p.config.ClientSecret != raw || p.scopedSet || p.scopedClientSecret != (secret.Value{}) {
 				t.Fatalf("failed materialization installed state: config=%#v", p.config)
 			}
 			broker.setFailure(raw, nil)
@@ -430,11 +428,10 @@ func TestScopedSecretsKeycloakFailureAndBlankAreAtomicAndRetryable(t *testing.T)
 	}
 }
 
-func TestLegacyKeycloakBlankClientSecretIsAtomicAndRetryable(t *testing.T) {
+func TestLegacyKeycloakMaterializationFailsClosed(t *testing.T) {
 	const env = "KEYCLOAK_LEGACY_BLANK_SECRET"
 	for _, blank := range []string{"", " \t"} {
 		t.Run(fmt.Sprintf("blank-%q", blank), func(t *testing.T) {
-			t.Setenv(env, blank)
 			p := &Plugin{config: scopedKeycloakConfig(
 				"http://keycloak.test/token", "$ENV://"+env,
 			)}
@@ -444,17 +441,6 @@ func TestLegacyKeycloakBlankClientSecretIsAtomicAndRetryable(t *testing.T) {
 			if err := p.MaterializeSecrets(); !errors.Is(err, errKeycloakCredentialsUnavailable) {
 				t.Fatalf("MaterializeSecrets() error = %v, want unavailable", err)
 			}
-			if p.config.ClientSecret != "$ENV://"+env || p.clientSecret != nil || p.legacySet || p.scopedSet {
-				t.Fatalf("blank legacy materialization installed state: %#v", p.config)
-			}
-			t.Setenv(env, "legacy-retry-client-secret")
-			if err := p.MaterializeSecrets(); err != nil {
-				t.Fatalf("retry MaterializeSecrets() error = %v", err)
-			}
-			if p.config.ClientSecret != scopedKeycloakDescriptor("legacy-retry-client-secret") {
-				t.Fatalf("legacy retry descriptor = %q", p.config.ClientSecret)
-			}
-			p.Stop()
 		})
 	}
 }
@@ -506,7 +492,7 @@ func TestScopedSecretsKeycloakConcurrentMaterializationIsSingleFlight(t *testing
 	assertScopedKeycloakCall(t, scope, broker.callsSnapshot(), raw)
 }
 
-func TestLegacyKeycloakConcurrentMaterializationKeepsSingleOwner(t *testing.T) {
+func TestLegacyKeycloakConcurrentMaterializationFailsClosed(t *testing.T) {
 	const workers = 32
 	p := &Plugin{config: scopedKeycloakConfig(
 		"http://keycloak.test/token", "legacy-singleflight-client-secret",
@@ -524,20 +510,9 @@ func TestLegacyKeycloakConcurrentMaterializationKeepsSingleOwner(t *testing.T) {
 	}
 	close(start)
 	for range workers {
-		if err := <-errs; err != nil {
-			t.Fatalf("concurrent legacy materialization error = %v", err)
+		if err := <-errs; !errors.Is(err, errKeycloakCredentialsUnavailable) {
+			t.Fatalf("concurrent legacy materialization error = %v, want unavailable", err)
 		}
-	}
-	owner := p.clientSecret
-	if owner == nil || !p.legacySet || p.scopedSet {
-		t.Fatalf("legacy singleflight state = owner:%p legacy:%v scoped:%v", owner, p.legacySet, p.scopedSet)
-	}
-	if err := p.MaterializeSecrets(); err != nil || p.clientSecret != owner {
-		t.Fatalf("repeat materialization = %v owner:%p want owner:%p", err, p.clientSecret, owner)
-	}
-	p.Stop()
-	if got := owner.Bytes(); got != nil {
-		t.Fatalf("Stop() retained legacy owner bytes = %q", got)
 	}
 }
 
@@ -552,7 +527,7 @@ func TestPostInitDoesNotResolveKeycloakClientSecret(t *testing.T) {
 	if !errors.Is(err, errKeycloakCredentialsUnavailable) {
 		t.Fatalf("PostInit() error = %v, want unprepared credential failure", err)
 	}
-	if p.config.ClientSecret != raw || p.clientSecret != nil || p.legacySet || p.scopedSet {
+	if p.config.ClientSecret != raw || p.scopedSet {
 		t.Fatalf("PostInit() resolved or changed client secret state: %#v", p.config)
 	}
 }
@@ -650,35 +625,23 @@ func (transport *blockingKeycloakTransport) RoundTrip(request *http.Request) (*h
 	}, nil
 }
 
-func prepareKeycloakStopPlugin(
-	t *testing.T, mode, endpoint, clientSecret string,
-) (*Plugin, *store.ResolvedSecret, func()) {
+func prepareKeycloakStopPlugin(t *testing.T, endpoint, clientSecret string) (*Plugin, func()) {
 	t.Helper()
 	p := &Plugin{config: scopedKeycloakConfig(endpoint, clientSecret)}
 	if err := p.Init(); err != nil {
 		t.Fatal(err)
 	}
-	closeAttempt := func() {}
-	var legacyOwner *store.ResolvedSecret
-	if mode == "scoped" {
-		raw := "$ENV://KEYCLOAK_STOP_" + strings.ToUpper(mode)
-		p.config.ClientSecret = raw
-		capabilityValue, scope, _, closeScopedAttempt := newScopedSecretHarness(
-			t, 60, "stop-"+mode, map[string]string{raw: clientSecret},
-		)
-		closeAttempt = closeScopedAttempt
-		materializeScopedKeycloak(t, p, capabilityValue, scope)
-	} else {
-		if err := p.MaterializeSecrets(); err != nil {
-			t.Fatal(err)
-		}
-		legacyOwner = p.clientSecret
-	}
+	raw := "$ENV://KEYCLOAK_STOP_SCOPED"
+	p.config.ClientSecret = raw
+	capabilityValue, scope, _, closeScopedAttempt := newScopedSecretHarness(
+		t, 60, "stop-scoped", map[string]string{raw: clientSecret},
+	)
+	materializeScopedKeycloak(t, p, capabilityValue, scope)
 	if err := p.PostInit(); err != nil {
-		closeAttempt()
+		closeScopedAttempt()
 		t.Fatal(err)
 	}
-	return p, legacyOwner, closeAttempt
+	return p, closeScopedAttempt
 }
 
 func waitForKeycloakRetirement(t *testing.T, p *Plugin) {
@@ -698,14 +661,12 @@ func waitForKeycloakRetirement(t *testing.T, p *Plugin) {
 }
 
 func TestKeycloakTokenFormsStayInsideCredentialCallbackAndStopBarrier(t *testing.T) {
-	for _, mode := range []string{"scoped", "legacy"} {
+	for _, mode := range []string{"scoped"} {
 		for _, grant := range []string{"client_credentials", "refresh_token"} {
 			t.Run(mode+"/"+grant, func(t *testing.T) {
 				clientSecret := mode + "-" + grant + "-client-secret"
 				endpoint := "http://keycloak-" + mode + "-" + grant + ".test/token"
-				p, legacyOwner, closeAttempt := prepareKeycloakStopPlugin(
-					t, mode, endpoint, clientSecret,
-				)
+				p, closeAttempt := prepareKeycloakStopPlugin(t, endpoint, clientSecret)
 				defer closeAttempt()
 				sharedCache.Lock()
 				delete(sharedCache.serviceAccountToken, p.serviceAccountCacheKey(endpoint))
@@ -823,17 +784,13 @@ func TestKeycloakTokenFormsStayInsideCredentialCallbackAndStopBarrier(t *testing
 				if bytes.Contains(formBody, []byte(p.config.ClientSecret)) {
 					t.Fatalf("outbound form contains public descriptor %q", p.config.ClientSecret)
 				}
-				if legacyOwner != nil && legacyOwner.Bytes() != nil {
-					t.Fatal("legacy Stop() retained credential owner bytes")
-				}
 				if token, err := p.serviceAccountAccessToken(); !errors.Is(err, errKeycloakCredentialsUnavailable) ||
 					token != "" {
 					t.Fatalf("service account work after Stop() = %q, %v", token, err)
 				}
 				p.credentialMu.Lock()
-				stateRetained := p.client != nil || p.clientSecret != nil ||
-					p.scopedClientSecret != (secret.Value{}) || p.clientSecretDigest != [sha256.Size]byte{} ||
-					p.legacySet || p.scopedSet || !p.retired || p.activeUses != 0
+				stateRetained := p.client != nil || p.scopedClientSecret != (secret.Value{}) ||
+					p.clientSecretDigest != [sha256.Size]byte{} || p.scopedSet || !p.retired || p.activeUses != 0
 				p.credentialMu.Unlock()
 				if stateRetained {
 					t.Fatal("Stop() retained Keycloak credential/client state")
@@ -874,8 +831,7 @@ func TestScopedSecretsKeycloakStopDuringMaterializeCannotRevive(t *testing.T) {
 	if err := <-done; err == nil || err.Error() != "materialize plugin secrets: credential unavailable" {
 		t.Fatalf("materialization racing Stop() error = %v", err)
 	}
-	if p.config.ClientSecret != raw || p.clientSecret != nil ||
-		p.scopedClientSecret != (secret.Value{}) || p.legacySet || p.scopedSet {
+	if p.config.ClientSecret != raw || p.scopedClientSecret != (secret.Value{}) || p.scopedSet {
 		t.Fatalf("materialization revived stopped state: %#v", p.config)
 	}
 	callCount := len(broker.callsSnapshot())

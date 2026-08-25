@@ -2,9 +2,7 @@ package http_logger
 
 import (
 	"context"
-	"crypto/sha256"
 	"crypto/tls"
-	"errors"
 	"fmt"
 	"maps"
 	"net/http"
@@ -25,7 +23,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/secret"
 	"github.com/wklken/apisix-go/pkg/shared"
-	"github.com/wklken/apisix-go/pkg/store"
 )
 
 const (
@@ -159,10 +156,9 @@ type Plugin struct {
 	lifecycleMu sync.RWMutex
 	stopped     atomic.Bool
 
-	authHeader       secret.Value
-	authHeaderSet    bool
-	legacyAuthHeader *store.ResolvedSecret
-	secretsPrepared  bool
+	authHeader      secret.Value
+	authHeaderSet   bool
+	secretsPrepared bool
 }
 
 type Config struct {
@@ -280,35 +276,7 @@ func (p *Plugin) MaterializeSecrets() error {
 		p.secretsPrepared = true
 		return nil
 	}
-	resolver := p.DataEncryption()
-	if !resolver.Configured() {
-		return errors.New("data-encryption resolver is required")
-	}
-	resolved, err := resolver.ResolveForContext(*p.config.AuthHeader, name+".auth_header")
-	if err != nil {
-		return httpAuthorizationUnavailable()
-	}
-	owner, err := store.MaterializeSecret(resolved)
-	if err != nil {
-		return httpAuthorizationUnavailable()
-	}
-	plaintext := owner.Bytes()
-	defer clear(plaintext)
-	if err := validateHTTPAuthorization(string(plaintext)); err != nil {
-		owner.Destroy()
-		return httpAuthorizationUnavailable()
-	}
-	digest := sha256.Sum256(plaintext)
-	descriptor, err := secret.NewDescriptor(capability.SecretPluginConfig, digest)
-	if err != nil {
-		owner.Destroy()
-		return httpAuthorizationUnavailable()
-	}
-	public := descriptor.String()
-	p.legacyAuthHeader = owner
-	p.config.AuthHeader = &public
-	p.secretsPrepared = true
-	return nil
+	return httpAuthorizationUnavailable()
 }
 
 func validateHTTPAuthorization(value string) error {
@@ -457,10 +425,6 @@ func (p *Plugin) Stop() {
 		}
 		p.client = nil
 		p.BatchProcessor = nil
-		if p.legacyAuthHeader != nil {
-			p.legacyAuthHeader.Destroy()
-			p.legacyAuthHeader = nil
-		}
 		p.authHeader = secret.Value{}
 		p.authHeaderSet = false
 		p.secretsPrepared = false
@@ -794,7 +758,7 @@ func (p *Plugin) sendBody(ctx context.Context, body []byte) error {
 		return err
 	}
 	var err error
-	if p.authHeaderSet || p.legacyAuthHeader != nil {
+	if p.authHeaderSet {
 		err = p.useAuthorizationLocked(func(authorization string) error {
 			request.SetHeader("Authorization", authorization)
 			return send()
@@ -824,13 +788,5 @@ func (p *Plugin) useAuthorizationLocked(use func(string) error) error {
 	if p.authHeaderSet {
 		return p.authHeader.Use(use)
 	}
-	if p.legacyAuthHeader == nil {
-		return secret.ErrCredentialUnavailable
-	}
-	plaintext := p.legacyAuthHeader.Bytes()
-	if len(plaintext) == 0 {
-		return secret.ErrCredentialUnavailable
-	}
-	defer clear(plaintext)
-	return use(string(plaintext))
+	return secret.ErrCredentialUnavailable
 }

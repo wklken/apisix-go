@@ -3,7 +3,6 @@ package cas_auth
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"encoding/xml"
 	"fmt"
 	"io"
@@ -22,7 +21,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/secret"
-	"github.com/wklken/apisix-go/pkg/store"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -34,12 +32,11 @@ type Plugin struct {
 	opts              sessionOptions
 	logoutTrustedNets []*net.IPNet
 
-	lifecycleMu        sync.RWMutex
-	cookieSecret       secret.Value
-	cookieSecretSet    bool
-	legacyCookieSecret *store.ResolvedSecret
-	secretsPrepared    bool
-	retired            bool
+	lifecycleMu     sync.RWMutex
+	cookieSecret    secret.Value
+	cookieSecretSet bool
+	secretsPrepared bool
+	retired         bool
 }
 
 const (
@@ -271,33 +268,7 @@ func (p *Plugin) MaterializeSecrets() error {
 	if p.secretsPrepared {
 		return nil
 	}
-
-	raw := p.config.Cookie.Secret
-	if resolver := p.DataEncryption(); resolver.Configured() {
-		raw = resolver.ResolveOptionalForContext(raw, name+".cookie.secret")
-	}
-	value, err := store.MaterializeSecret(raw)
-	if err != nil {
-		return secret.ErrCredentialUnavailable
-	}
-	plaintext := value.Bytes()
-	if utf8.RuneCount(plaintext) < minCookieSecretLen {
-		clear(plaintext)
-		value.Destroy()
-		return secret.ErrCredentialUnavailable
-	}
-	digest := sha256.Sum256(plaintext)
-	clear(plaintext)
-	descriptor, err := secret.NewDescriptor(capability.SecretPluginConfig, digest)
-	if err != nil {
-		value.Destroy()
-		return secret.ErrCredentialUnavailable
-	}
-
-	p.legacyCookieSecret = value
-	p.config.Cookie.Secret = descriptor.String()
-	p.secretsPrepared = true
-	return nil
+	return secret.ErrCredentialUnavailable
 }
 
 func validateCookieSecret(plaintext string) error {
@@ -557,15 +528,7 @@ func (p *Plugin) useCookieSecretLocked(use func(string) error) error {
 	if p.cookieSecretSet {
 		return p.cookieSecret.Use(use)
 	}
-	if p.legacyCookieSecret == nil {
-		return secret.ErrCredentialUnavailable
-	}
-	plaintext := p.legacyCookieSecret.Bytes()
-	if len(plaintext) == 0 {
-		return secret.ErrCredentialUnavailable
-	}
-	defer clear(plaintext)
-	return use(string(plaintext))
+	return secret.ErrCredentialUnavailable
 }
 
 func (p *Plugin) logout(w http.ResponseWriter, r *http.Request) {
@@ -709,10 +672,6 @@ func (p *Plugin) Stop() {
 	if p.client != nil {
 		p.client.CloseIdleConnections()
 		p.client = nil
-	}
-	if p.legacyCookieSecret != nil {
-		p.legacyCookieSecret.Destroy()
-		p.legacyCookieSecret = nil
 	}
 	p.cookieSecret = secret.Value{}
 	p.cookieSecretSet = false

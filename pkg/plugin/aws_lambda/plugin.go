@@ -3,7 +3,6 @@ package aws_lambda
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"io"
 	"net/http"
 	"strings"
@@ -15,7 +14,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/function_upstream"
 	"github.com/wklken/apisix-go/pkg/secret"
-	"github.com/wklken/apisix-go/pkg/store"
 )
 
 type Plugin struct {
@@ -28,9 +26,6 @@ type Plugin struct {
 	iamAccessKey  secret.Value
 	iamSecretKey  secret.Value
 	iamSet        bool
-	legacyAPIKey  *store.ResolvedSecret
-	legacyAccess  *store.ResolvedSecret
-	legacySecret  *store.ResolvedSecret
 	retired       bool
 }
 
@@ -267,88 +262,21 @@ func (p *Plugin) MaterializeSecrets() error {
 	if auth.IAM != nil && (auth.IAM.AccessKey == "" || auth.IAM.SecretKey == "") {
 		return secret.ErrCredentialUnavailable
 	}
-	var apiKey, accessKey, secretKey *store.ResolvedSecret
-	var apiDescriptor, accessDescriptor, secretDescriptor string
-	var err error
-	destroyStaged := func() {
-		if apiKey != nil {
-			apiKey.Destroy()
-		}
-		if accessKey != nil {
-			accessKey.Destroy()
-		}
-		if secretKey != nil {
-			secretKey.Destroy()
-		}
-	}
-	if auth.APIKey != "" {
-		apiKey, apiDescriptor, err = materializeLegacyAWSLambdaCredential(auth.APIKey)
-		if err != nil {
-			destroyStaged()
-			return secret.ErrCredentialUnavailable
-		}
-	}
-	if auth.IAM != nil {
-		accessKey, accessDescriptor, err = materializeLegacyAWSLambdaCredential(auth.IAM.AccessKey)
-		if err != nil {
-			destroyStaged()
-			return secret.ErrCredentialUnavailable
-		}
-		secretKey, secretDescriptor, err = materializeLegacyAWSLambdaCredential(auth.IAM.SecretKey)
-		if err != nil {
-			destroyStaged()
-			return secret.ErrCredentialUnavailable
-		}
-	}
-
-	p.legacyAPIKey = apiKey
-	p.legacyAccess = accessKey
-	p.legacySecret = secretKey
-	if auth.APIKey != "" {
-		auth.APIKey = apiDescriptor
-	}
-	if auth.IAM != nil {
-		auth.IAM.AccessKey = accessDescriptor
-		auth.IAM.SecretKey = secretDescriptor
-	}
-	return nil
-}
-
-func materializeLegacyAWSLambdaCredential(raw string) (*store.ResolvedSecret, string, error) {
-	value, err := store.MaterializeSecret(raw)
-	if err != nil {
-		return nil, "", secret.ErrCredentialUnavailable
-	}
-	plaintext := value.Bytes()
-	if len(bytes.TrimSpace(plaintext)) == 0 {
-		clear(plaintext)
-		value.Destroy()
-		return nil, "", secret.ErrCredentialUnavailable
-	}
-	digest := sha256.Sum256(plaintext)
-	clear(plaintext)
-	descriptor, err := secret.NewDescriptor(capability.SecretPluginConfig, digest)
-	if err != nil {
-		value.Destroy()
-		return nil, "", secret.ErrCredentialUnavailable
-	}
-	return value, descriptor.String(), nil
+	return secret.ErrCredentialUnavailable
 }
 
 func (p *Plugin) credentialsInstalledLocked() bool {
-	return p.apiKeySet || p.iamSet || p.legacyAPIKey != nil ||
-		p.legacyAccess != nil || p.legacySecret != nil
+	return p.apiKeySet || p.iamSet
 }
 
 func (p *Plugin) credentialsPreparedLocked() bool {
 	if p.config.Authorization == nil {
 		return true
 	}
-	if p.config.Authorization.APIKey != "" && !p.apiKeySet && p.legacyAPIKey == nil {
+	if p.config.Authorization.APIKey != "" && !p.apiKeySet {
 		return false
 	}
-	if p.config.Authorization.IAM != nil && !p.iamSet &&
-		(p.legacyAccess == nil || p.legacySecret == nil) {
+	if p.config.Authorization.IAM != nil && !p.iamSet {
 		return false
 	}
 	return true
@@ -388,15 +316,7 @@ func (p *Plugin) useAPIKeyLocked(use func(string) error) error {
 	if p.apiKeySet {
 		return p.apiKey.Use(use)
 	}
-	if p.legacyAPIKey == nil {
-		return secret.ErrCredentialUnavailable
-	}
-	plaintext := p.legacyAPIKey.Bytes()
-	if len(plaintext) == 0 {
-		return secret.ErrCredentialUnavailable
-	}
-	defer clear(plaintext)
-	return use(string(plaintext))
+	return secret.ErrCredentialUnavailable
 }
 
 func (p *Plugin) useIAMLocked(use func(string, string) error) error {
@@ -407,19 +327,7 @@ func (p *Plugin) useIAMLocked(use func(string, string) error) error {
 			})
 		})
 	}
-	if p.legacyAccess == nil || p.legacySecret == nil {
-		return secret.ErrCredentialUnavailable
-	}
-	accessKey := p.legacyAccess.Bytes()
-	secretKey := p.legacySecret.Bytes()
-	if len(accessKey) == 0 || len(secretKey) == 0 {
-		clear(accessKey)
-		clear(secretKey)
-		return secret.ErrCredentialUnavailable
-	}
-	defer clear(accessKey)
-	defer clear(secretKey)
-	return use(string(accessKey), string(secretKey))
+	return secret.ErrCredentialUnavailable
 }
 
 func removeClientIAMHeaders(headers http.Header) {
@@ -477,18 +385,6 @@ func (p *Plugin) Stop() {
 		return
 	}
 	p.retired = true
-	if p.legacyAPIKey != nil {
-		p.legacyAPIKey.Destroy()
-		p.legacyAPIKey = nil
-	}
-	if p.legacyAccess != nil {
-		p.legacyAccess.Destroy()
-		p.legacyAccess = nil
-	}
-	if p.legacySecret != nil {
-		p.legacySecret.Destroy()
-		p.legacySecret = nil
-	}
 	p.apiKey = secret.Value{}
 	p.apiKeySet = false
 	p.iamAccessKey = secret.Value{}

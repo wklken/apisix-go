@@ -16,6 +16,7 @@ func TestDecodeHTTPResourceSetUsesOnlyPublishedCandidate(t *testing.T) {
 		resourceValue("services", "s1", `{"id":"s1","upstream_id":"u1"}`),
 		resourceValue("upstreams", "u1", `{"id":"u1","nodes":{"127.0.0.1:9080":1}}`),
 		resourceValue("plugin_configs", "pc1", `{"id":"pc1","plugins":{"request-id":{}}}`),
+		resourceValue("protos", "root.proto", `{"id":"root.proto","content":"syntax = proto3;"}`),
 		resourceValue("global_rules", "g1", `{"id":"g1","plugins":{"cors":{}}}`),
 		resourceValue("ssls", "ssl1", `{"id":"ssl1","sni":"api.example.test","cert":"cert","key":"key"}`),
 		resourceValue("consumers", "alice", `{"username":"alice","plugins":{}}`),
@@ -39,6 +40,9 @@ func TestDecodeHTTPResourceSetUsesOnlyPublishedCandidate(t *testing.T) {
 	}
 	if len(resources.pluginConfigs) != 1 || len(resources.globalRules) != 1 || len(resources.ssls) != 1 {
 		t.Fatalf("decoded HTTP resources are incomplete: %#v", resources)
+	}
+	if len(resources.protos) != 1 || resources.protos["root.proto"] != "syntax = proto3;" {
+		t.Fatalf("decoded HTTP protos = %#v", resources.protos)
 	}
 	if !resources.dynamicPlugins || !slices.Equal(resources.enabledPlugins, []string{"request-id"}) {
 		t.Fatalf("enabled plugins = %v/%v", resources.enabledPlugins, resources.dynamicPlugins)

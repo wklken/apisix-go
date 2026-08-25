@@ -458,7 +458,7 @@ func TestLogglyStopDrainsActiveSendAndPreventsResurrection(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("Stop did not finish after active send drained")
 	}
-	if p.httpClient != nil || p.BatchProcessor != nil || p.legacyToken != nil ||
+	if p.httpClient != nil || p.BatchProcessor != nil ||
 		p.tokenSet || p.secretsPrepared || p.ready {
 		t.Fatal("Stop retained client, processor, or private token")
 	}
@@ -509,7 +509,7 @@ func TestLogglyStopFlushesPendingBatchBeforeCleanup(t *testing.T) {
 	default:
 		t.Fatal("Stop dropped the pending Loggly batch before delivery")
 	}
-	if p.httpClient != nil || p.BatchProcessor != nil || p.legacyToken != nil ||
+	if p.httpClient != nil || p.BatchProcessor != nil ||
 		p.tokenSet || p.secretsPrepared || p.ready {
 		t.Fatal("pending drain completed before runtime cleanup")
 	}
@@ -597,8 +597,12 @@ func newTestPluginWithMetadata(t *testing.T, cfg Config, metadata map[string]any
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatalf("MaterializeSecrets() error = %v", err)
+	capabilityValue, scope, _, cleanup := newLogglyScopedSecretHarness(
+		t, 1, "test-route", cfg, map[string]string{cfg.CustomerToken: cfg.CustomerToken},
+	)
+	t.Cleanup(cleanup)
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
@@ -626,8 +630,8 @@ func mustMetadataView(t *testing.T, metadata map[string]any) runtime.MetadataVie
 
 func TestPostInitRejectsMissingDataEncryptionResolver(t *testing.T) {
 	p := &Plugin{config: Config{CustomerToken: "private"}}
-	if err := p.MaterializeSecrets(); err == nil || err.Error() != "data-encryption resolver is required" {
-		t.Fatalf("MaterializeSecrets() error = %v, want missing resolver error", err)
+	if err := p.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) {
+		t.Fatalf("MaterializeSecrets() error = %v, want credential unavailable", err)
 	}
 }
 
@@ -668,8 +672,8 @@ func TestPostInitRejectsInvalidEncryptedCustomerToken(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := p.MaterializeSecrets(); err == nil {
-		t.Fatal("MaterializeSecrets() error = nil, want strict encrypted customer_token rejection")
+	if err := p.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) {
+		t.Fatalf("MaterializeSecrets() error = %v, want credential unavailable", err)
 	}
 }
 
@@ -683,8 +687,12 @@ func TestPostInitResolvesRotatedEncryptedCustomerToken(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatalf("MaterializeSecrets() error = %v", err)
+	capabilityValue, scope, _, cleanup := newLogglyScopedSecretHarness(
+		t, 1, "rotated-token", p.config, map[string]string{p.config.CustomerToken: "loggly-token"},
+	)
+	t.Cleanup(cleanup)
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
@@ -1330,8 +1338,12 @@ func TestMetadataDecodeFailsBeforeLogglyClientAndProcessorAcquisition(t *testing
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatalf("MaterializeSecrets() error = %v", err)
+	capabilityValue, scope, _, cleanup := newLogglyScopedSecretHarness(
+		t, 1, "invalid-metadata", p.config, map[string]string{p.config.CustomerToken: p.config.CustomerToken},
+	)
+	t.Cleanup(cleanup)
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	err := p.PostInit()
 	defer p.Stop()

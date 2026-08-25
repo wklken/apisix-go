@@ -9,6 +9,7 @@ import (
 
 	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/plugin"
+	"github.com/wklken/apisix-go/pkg/plugin/grpc_transcode"
 	"github.com/wklken/apisix-go/pkg/plugin/public_api"
 	"github.com/wklken/apisix-go/pkg/plugin/traffic_split"
 	"github.com/wklken/apisix-go/pkg/resource"
@@ -33,6 +34,7 @@ type runtimeContextPlugin struct {
 	service          resource.Service
 	runtimeAcquirer  traffic_split.RuntimeAcquirer
 	upstreamResolver traffic_split.ResourceUpstreamResolver
+	protoResolver    grpc_transcode.ProtoResolver
 	prevalidated     bool
 }
 
@@ -74,12 +76,17 @@ func (p *runtimeContextPlugin) SetUpstreamResolver(resolver traffic_split.Resour
 	p.upstreamResolver = resolver
 }
 
+func (p *runtimeContextPlugin) SetProtoResolver(resolver grpc_transcode.ProtoResolver) {
+	p.protoResolver = resolver
+}
+
 func TestDefaultEffectiveBindingOpsInjectCompleteHTTPRuntimeContext(t *testing.T) {
 	registry := public_api.NewRegistry()
 	acquirer := testTrafficSplitRuntimeAcquirer{}
 	resolver := traffic_split.ResourceUpstreamResolver(func(string) (resource.Upstream, error) {
 		return resource.Upstream{}, nil
 	})
+	protoResolver := grpc_transcode.ProtoResolver(func(string) (string, error) { return "proto", nil })
 	runtimeContext := effectiveBindingRuntimeContext{
 		configured:        true,
 		enabledFactories:  []string{"request-id", "workflow"},
@@ -87,6 +94,7 @@ func TestDefaultEffectiveBindingOpsInjectCompleteHTTPRuntimeContext(t *testing.T
 		serverAddr:        "127.0.0.1:9080",
 		runtimeAcquirer:   acquirer,
 		upstreamResolver:  resolver,
+		protoResolver:     protoResolver,
 	}
 	resourceContext := effectiveBindingResourceContext{
 		kind:    effectiveBindingContextHTTP,
@@ -113,8 +121,8 @@ func TestDefaultEffectiveBindingOpsInjectCompleteHTTPRuntimeContext(t *testing.T
 		instance.route.ID != "route-1" || instance.service.ID != "service-1" {
 		t.Fatalf("route context = %#v", instance)
 	}
-	if instance.runtimeAcquirer == nil || instance.upstreamResolver == nil {
-		t.Fatal("traffic-split runtime context was not injected")
+	if instance.runtimeAcquirer == nil || instance.upstreamResolver == nil || instance.protoResolver == nil {
+		t.Fatal("HTTP plugin runtime context was not injected")
 	}
 }
 
@@ -130,6 +138,7 @@ func TestEffectiveBindingMaterializerAppliesHTTPRuntimeContextBeforePostInit(t *
 		upstreamResolver: func(string) (resource.Upstream, error) {
 			return resource.Upstream{}, nil
 		},
+		protoResolver: func(string) (string, error) { return "proto", nil },
 	}
 
 	var order []string
@@ -178,6 +187,7 @@ func TestCloneEffectiveBindingRuntimeContextOwnsEnabledFactories(t *testing.T) {
 	resolver := traffic_split.ResourceUpstreamResolver(func(string) (resource.Upstream, error) {
 		return resource.Upstream{}, nil
 	})
+	protoResolver := grpc_transcode.ProtoResolver(func(string) (string, error) { return "proto", nil })
 	cloned, err := cloneEffectiveBindingRuntimeContext(
 		generation.DomainHTTP,
 		effectiveBindingResourceContext{
@@ -190,6 +200,7 @@ func TestCloneEffectiveBindingRuntimeContextOwnsEnabledFactories(t *testing.T) {
 			publicAPIRegistry: registry,
 			runtimeAcquirer:   testTrafficSplitRuntimeAcquirer{},
 			upstreamResolver:  resolver,
+			protoResolver:     protoResolver,
 		},
 	)
 	if err != nil {
@@ -202,6 +213,9 @@ func TestCloneEffectiveBindingRuntimeContextOwnsEnabledFactories(t *testing.T) {
 	}
 	if cloned.publicAPIRegistry != registry {
 		t.Fatal("generation-local public API registry identity changed")
+	}
+	if resolved, err := cloned.protoResolver("root.proto"); err != nil || resolved != "proto" {
+		t.Fatalf("cloned proto resolver = %q, %v", resolved, err)
 	}
 }
 

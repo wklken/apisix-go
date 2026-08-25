@@ -23,6 +23,8 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/store"
 	"github.com/wklken/apisix-go/pkg/testutil"
 	"github.com/wklken/apisix-go/pkg/util"
@@ -32,6 +34,22 @@ var (
 	testStoreOnce sync.Once
 	testEvents    chan *store.Event
 )
+
+type storeBackedJWTLookup struct{}
+
+func (storeBackedJWTLookup) ConsumerByPluginKey(plugin, key string) (resource.Consumer, bool) {
+	consumer, err := store.GetConsumerByPluginKey(plugin, key)
+	return consumer, err == nil
+}
+
+func (storeBackedJWTLookup) ConsumerByID(id string) (resource.Consumer, bool) {
+	consumer, err := store.GetConsumer(id)
+	return consumer, err == nil
+}
+
+func (storeBackedJWTLookup) ConsumerGroupByID(string) (resource.ConsumerGroup, bool) {
+	return resource.ConsumerGroup{}, false
+}
 
 func setupStore(t *testing.T) {
 	t.Helper()
@@ -120,6 +138,7 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
 
 	p := &Plugin{config: cfg}
+	p.SetDependencies(base.Dependencies{Consumers: storeBackedJWTLookup{}})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}

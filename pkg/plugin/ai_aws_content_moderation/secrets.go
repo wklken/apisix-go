@@ -2,7 +2,6 @@ package ai_aws_content_moderation
 
 import (
 	"context"
-	"crypto/sha256"
 	"errors"
 	"strings"
 	"sync"
@@ -10,7 +9,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/secret"
-	"github.com/wklken/apisix-go/pkg/store"
 )
 
 var errAWSCredentialsUnavailable = errors.New("ai-aws-content-moderation credentials are unavailable")
@@ -23,11 +21,6 @@ type awsCredentialState struct {
 	credentialMu       sync.Mutex
 	testHooksMu        sync.Mutex
 	testHooks          awsCredentialTestHooks
-
-	accessKeyID     *store.ResolvedSecret
-	secretAccessKey *store.ResolvedSecret
-	sessionToken    *store.ResolvedSecret
-	legacySet       bool
 
 	scopedAccessKeyID     secret.Value
 	scopedSecretAccessKey secret.Value
@@ -43,8 +36,7 @@ type awsCredentialState struct {
 type awsPreparationKind uint8
 
 const (
-	awsPreparationLegacy awsPreparationKind = iota
-	awsPreparationScoped
+	awsPreparationScoped awsPreparationKind = iota
 )
 
 type awsPreparationPhase uint8
@@ -67,11 +59,6 @@ type awsCredentialLifecycleSnapshot struct {
 	preparationActive  bool
 	preparationWaiters int
 
-	accessKeyIDSet     bool
-	secretAccessKeySet bool
-	sessionTokenSet    bool
-	legacySet          bool
-
 	scopedAccessKeyIDSet     bool
 	scopedSecretAccessKeySet bool
 	scopedSessionTokenSet    bool
@@ -83,12 +70,6 @@ type awsCredentialLifecycleSnapshot struct {
 }
 
 type awsCredentialSnapshot struct {
-	legacy bool
-
-	accessKeyID     *store.ResolvedSecret
-	secretAccessKey *store.ResolvedSecret
-	sessionToken    *store.ResolvedSecret
-
 	scopedAccessKeyID     secret.Value
 	scopedSecretAccessKey secret.Value
 	scopedSessionToken    secret.Value
@@ -96,68 +77,7 @@ type awsCredentialSnapshot struct {
 }
 
 func (p *Plugin) MaterializeSecrets() error {
-	p.beginAWSPreparation(awsPreparationLegacy)
-	defer p.endAWSPreparation()
-	if prepared, err := p.preparationState(); err != nil || prepared {
-		return err
-	}
-
-	accessKeyID, err := store.MaterializeSecret(p.config.Comprehend.AccessKeyID)
-	if err != nil || !validLegacyAWSSecret(accessKeyID) {
-		accessKeyID.Destroy()
-		return errAWSCredentialsUnavailable
-	}
-	secretAccessKey, err := store.MaterializeSecret(p.config.Comprehend.SecretAccessKey)
-	if err != nil || !validLegacyAWSSecret(secretAccessKey) {
-		accessKeyID.Destroy()
-		secretAccessKey.Destroy()
-		return errAWSCredentialsUnavailable
-	}
-	var sessionToken *store.ResolvedSecret
-	if p.config.Comprehend.SessionToken != "" {
-		sessionToken, err = store.MaterializeSecret(p.config.Comprehend.SessionToken)
-		if err != nil || !validLegacyAWSSecret(sessionToken) {
-			destroyLegacyAWSCredentials(accessKeyID, secretAccessKey, sessionToken)
-			return errAWSCredentialsUnavailable
-		}
-	}
-
-	accessDescriptor, err := legacyAWSSecretDescriptor(accessKeyID)
-	if err != nil {
-		destroyLegacyAWSCredentials(accessKeyID, secretAccessKey, sessionToken)
-		return errAWSCredentialsUnavailable
-	}
-	secretDescriptor, err := legacyAWSSecretDescriptor(secretAccessKey)
-	if err != nil {
-		destroyLegacyAWSCredentials(accessKeyID, secretAccessKey, sessionToken)
-		return errAWSCredentialsUnavailable
-	}
-	var sessionDescriptor string
-	if sessionToken != nil {
-		sessionDescriptor, err = legacyAWSSecretDescriptor(sessionToken)
-		if err != nil {
-			destroyLegacyAWSCredentials(accessKeyID, secretAccessKey, sessionToken)
-			return errAWSCredentialsUnavailable
-		}
-	}
-
-	p.credentialMu.Lock()
-	if p.retired {
-		p.credentialMu.Unlock()
-		destroyLegacyAWSCredentials(accessKeyID, secretAccessKey, sessionToken)
-		return errAWSCredentialsUnavailable
-	}
-	p.accessKeyID = accessKeyID
-	p.secretAccessKey = secretAccessKey
-	p.sessionToken = sessionToken
-	p.legacySet = true
-	p.config.Comprehend.AccessKeyID = accessDescriptor
-	p.config.Comprehend.SecretAccessKey = secretDescriptor
-	if sessionToken != nil {
-		p.config.Comprehend.SessionToken = sessionDescriptor
-	}
-	p.credentialMu.Unlock()
-	return nil
+	return errAWSCredentialsUnavailable
 }
 
 func (p *Plugin) MaterializeScopedSecrets(
@@ -285,10 +205,6 @@ func (p *Plugin) awsCredentialLifecycleSnapshot() awsCredentialLifecycleSnapshot
 	p.preparationMu.Unlock()
 
 	p.credentialMu.Lock()
-	snapshot.accessKeyIDSet = p.accessKeyID != nil
-	snapshot.secretAccessKeySet = p.secretAccessKey != nil
-	snapshot.sessionTokenSet = p.sessionToken != nil
-	snapshot.legacySet = p.legacySet
 	snapshot.scopedAccessKeyIDSet = p.scopedAccessKeyID != (secret.Value{})
 	snapshot.scopedSecretAccessKeySet = p.scopedSecretAccessKey != (secret.Value{})
 	snapshot.scopedSessionTokenSet = p.scopedSessionToken != (secret.Value{})
@@ -306,7 +222,7 @@ func (p *Plugin) preparationState() (bool, error) {
 	if p.retired {
 		return false, errAWSCredentialsUnavailable
 	}
-	return p.legacySet || p.scopedSet, nil
+	return p.scopedSet, nil
 }
 
 func validScopedAWSSecret(value secret.Value) bool {
@@ -318,33 +234,8 @@ func validScopedAWSSecret(value secret.Value) bool {
 	return valid
 }
 
-func validLegacyAWSSecret(value *store.ResolvedSecret) bool {
-	if value == nil {
-		return false
-	}
-	plaintext := value.Bytes()
-	defer clear(plaintext)
-	return strings.TrimSpace(string(plaintext)) != ""
-}
-
 func scopedAWSSecretDescriptor(value secret.Value) (string, error) {
 	descriptor, err := value.Descriptor(capability.SecretPluginConfig)
-	if err != nil {
-		return "", err
-	}
-	return descriptor.String(), nil
-}
-
-func legacyAWSSecretDescriptor(value *store.ResolvedSecret) (string, error) {
-	if value == nil {
-		return "", errAWSCredentialsUnavailable
-	}
-	plaintext := value.Bytes()
-	defer clear(plaintext)
-	descriptor, err := secret.NewDescriptor(
-		capability.SecretPluginConfig,
-		sha256.Sum256(plaintext),
-	)
 	if err != nil {
 		return "", err
 	}
@@ -361,34 +252,22 @@ func (p *Plugin) useAWSCredentials(use func(accessKeyID, secretAccessKey, sessio
 	}
 	defer release()
 
-	if !snapshot.legacy {
-		return snapshot.scopedAccessKeyID.Use(func(accessKeyID string) error {
-			return snapshot.scopedSecretAccessKey.Use(func(secretAccessKey string) error {
-				if !snapshot.scopedSessionTokenSet {
-					return use(accessKeyID, secretAccessKey, "")
-				}
-				return snapshot.scopedSessionToken.Use(func(sessionToken string) error {
-					return use(accessKeyID, secretAccessKey, sessionToken)
-				})
+	return snapshot.scopedAccessKeyID.Use(func(accessKeyID string) error {
+		return snapshot.scopedSecretAccessKey.Use(func(secretAccessKey string) error {
+			if !snapshot.scopedSessionTokenSet {
+				return use(accessKeyID, secretAccessKey, "")
+			}
+			return snapshot.scopedSessionToken.Use(func(sessionToken string) error {
+				return use(accessKeyID, secretAccessKey, sessionToken)
 			})
 		})
-	}
-	accessKeyID := snapshot.accessKeyID.Bytes()
-	secretAccessKey := snapshot.secretAccessKey.Bytes()
-	var sessionToken []byte
-	if snapshot.sessionToken != nil {
-		sessionToken = snapshot.sessionToken.Bytes()
-	}
-	defer clear(accessKeyID)
-	defer clear(secretAccessKey)
-	defer clear(sessionToken)
-	return use(string(accessKeyID), string(secretAccessKey), string(sessionToken))
+	})
 }
 
 func (p *Plugin) acquireAWSCredentials() (awsCredentialSnapshot, func(), error) {
 	p.credentialMu.Lock()
 	defer p.credentialMu.Unlock()
-	if p.retired || (!p.scopedSet && !p.legacySet) {
+	if p.retired || !p.scopedSet {
 		return awsCredentialSnapshot{}, nil, errAWSCredentialsUnavailable
 	}
 	if p.activeUses == 0 {
@@ -396,10 +275,6 @@ func (p *Plugin) acquireAWSCredentials() (awsCredentialSnapshot, func(), error) 
 	}
 	p.activeUses++
 	snapshot := awsCredentialSnapshot{
-		legacy:                p.legacySet,
-		accessKeyID:           p.accessKeyID,
-		secretAccessKey:       p.secretAccessKey,
-		sessionToken:          p.sessionToken,
 		scopedAccessKeyID:     p.scopedAccessKeyID,
 		scopedSecretAccessKey: p.scopedSecretAccessKey,
 		scopedSessionToken:    p.scopedSessionToken,
@@ -429,24 +304,10 @@ func (p *Plugin) Stop() {
 	}
 
 	p.credentialMu.Lock()
-	accessKeyID := p.accessKeyID
-	secretAccessKey := p.secretAccessKey
-	sessionToken := p.sessionToken
-	p.accessKeyID = nil
-	p.secretAccessKey = nil
-	p.sessionToken = nil
-	p.legacySet = false
 	p.scopedAccessKeyID = secret.Value{}
 	p.scopedSecretAccessKey = secret.Value{}
 	p.scopedSessionToken = secret.Value{}
 	p.scopedSet = false
 	p.scopedSessionTokenSet = false
 	p.credentialMu.Unlock()
-	destroyLegacyAWSCredentials(accessKeyID, secretAccessKey, sessionToken)
-}
-
-func destroyLegacyAWSCredentials(accessKeyID, secretAccessKey, sessionToken *store.ResolvedSecret) {
-	accessKeyID.Destroy()
-	secretAccessKey.Destroy()
-	sessionToken.Destroy()
 }

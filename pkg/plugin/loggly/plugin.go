@@ -3,9 +3,7 @@ package loggly
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"crypto/tls"
-	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -23,7 +21,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
 	"github.com/wklken/apisix-go/pkg/secret"
-	"github.com/wklken/apisix-go/pkg/store"
 
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 )
@@ -36,7 +33,6 @@ type Plugin struct {
 
 	token           secret.Value
 	tokenSet        bool
-	legacyToken     *store.ResolvedSecret
 	secretsPrepared bool
 	ready           bool
 
@@ -295,34 +291,7 @@ func (p *Plugin) MaterializeSecrets() error {
 	if p.secretsPrepared {
 		return nil
 	}
-	resolver := p.DataEncryption()
-	if !resolver.Configured() {
-		return errors.New("data-encryption resolver is required")
-	}
-	resolved, err := resolver.ResolveForContext(p.config.CustomerToken, name+".customer_token")
-	if err != nil {
-		return logglyTokenUnavailable()
-	}
-	owner, err := store.MaterializeSecret(resolved)
-	if err != nil {
-		return logglyTokenUnavailable()
-	}
-	plaintext := owner.Bytes()
-	defer clear(plaintext)
-	if err := validateLogglyToken(string(plaintext)); err != nil {
-		owner.Destroy()
-		return logglyTokenUnavailable()
-	}
-	digest := sha256.Sum256(plaintext)
-	descriptor, err := secret.NewDescriptor(capability.SecretPluginConfig, digest)
-	if err != nil {
-		owner.Destroy()
-		return logglyTokenUnavailable()
-	}
-	p.legacyToken = owner
-	p.config.CustomerToken = descriptor.String()
-	p.secretsPrepared = true
-	return nil
+	return logglyTokenUnavailable()
 }
 
 func validateLogglyToken(value string) error {
@@ -699,10 +668,6 @@ func (p *Plugin) Stop() {
 		}
 		p.httpClient = nil
 		p.BatchProcessor = nil
-		if p.legacyToken != nil {
-			p.legacyToken.Destroy()
-			p.legacyToken = nil
-		}
 		p.token = secret.Value{}
 		p.tokenSet = false
 		p.secretsPrepared = false
@@ -871,13 +836,5 @@ func (p *Plugin) useTokenLocked(allowRetiredDrain bool, use func(string) error) 
 	if p.tokenSet {
 		return p.token.Use(use)
 	}
-	if p.legacyToken == nil {
-		return secret.ErrCredentialUnavailable
-	}
-	plaintext := p.legacyToken.Bytes()
-	if len(plaintext) == 0 {
-		return secret.ErrCredentialUnavailable
-	}
-	defer clear(plaintext)
-	return use(string(plaintext))
+	return secret.ErrCredentialUnavailable
 }

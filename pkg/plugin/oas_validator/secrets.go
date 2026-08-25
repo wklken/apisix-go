@@ -2,7 +2,6 @@ package oas_validator
 
 import (
 	"context"
-	"crypto/sha256"
 	"maps"
 	"sort"
 	"sync"
@@ -11,7 +10,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/secret"
-	"github.com/wklken/apisix-go/pkg/store"
 )
 
 type oasSecretState struct {
@@ -25,21 +23,15 @@ type oasSecretState struct {
 	preparationActive bool
 
 	credentialMu  sync.Mutex
-	legacyInline  *store.ResolvedSecret
-	legacyHeaders map[string]*store.ResolvedSecret
 	scopedInline  secret.Value
 	scopedHeaders map[string]secret.Value
 	headerNames   []string
-	legacySet     bool
 	scopedSet     bool
 	activeUses    int
 	usesDone      chan struct{}
 }
 
 type stagedOASSecrets struct {
-	legacy            bool
-	legacyInline      *store.ResolvedSecret
-	legacyHeaders     map[string]*store.ResolvedSecret
 	scopedInline      secret.Value
 	scopedHeaders     map[string]secret.Value
 	headerNames       []string
@@ -48,9 +40,6 @@ type stagedOASSecrets struct {
 }
 
 type oasSecretSnapshot struct {
-	legacy        bool
-	legacyInline  *store.ResolvedSecret
-	legacyHeaders map[string]*store.ResolvedSecret
 	scopedInline  secret.Value
 	scopedHeaders map[string]secret.Value
 	headerNames   []string
@@ -63,37 +52,10 @@ func (p *Plugin) MaterializeSecrets() error {
 	if prepared, err := p.oasPreparationState(); err != nil || prepared {
 		return err
 	}
-	staged := stagedOASSecrets{
-		legacy:            true,
-		legacyHeaders:     make(map[string]*store.ResolvedSecret, len(p.config.SpecURLRequestHeaders)),
-		headerDescriptors: make(map[string]string, len(p.config.SpecURLRequestHeaders)),
-		headerNames:       sortedOASHeaderNames(p.config.SpecURLRequestHeaders),
+	if p.config.Spec == "" && len(p.config.SpecURLRequestHeaders) == 0 {
+		return nil
 	}
-	var err error
-	if p.config.Spec != "" {
-		staged.legacyInline, err = store.MaterializeSecret(p.config.Spec)
-		if err != nil {
-			return secret.ErrCredentialUnavailable
-		}
-		staged.inlineDescriptor, err = legacyOASDescriptor(staged.legacyInline)
-		if err != nil {
-			staged.destroyLegacy()
-			return secret.ErrCredentialUnavailable
-		}
-	}
-	for _, name := range staged.headerNames {
-		staged.legacyHeaders[name], err = store.MaterializeSecret(p.config.SpecURLRequestHeaders[name])
-		if err != nil {
-			staged.destroyLegacy()
-			return secret.ErrCredentialUnavailable
-		}
-		staged.headerDescriptors[name], err = legacyOASDescriptor(staged.legacyHeaders[name])
-		if err != nil {
-			staged.destroyLegacy()
-			return secret.ErrCredentialUnavailable
-		}
-	}
-	return p.installOASSecrets(staged)
+	return secret.ErrCredentialUnavailable
 }
 
 // MaterializeScopedSecrets resolves one attempt's optional inline document and
@@ -146,29 +108,12 @@ func sortedOASHeaderNames(headers map[string]string) []string {
 	return names
 }
 
-func legacyOASDescriptor(value *store.ResolvedSecret) (string, error) {
-	plaintext := value.Bytes()
-	defer clear(plaintext)
-	descriptor, err := secret.NewDescriptor(capability.SecretPluginConfig, sha256.Sum256(plaintext))
-	if err != nil {
-		return "", err
-	}
-	return descriptor.String(), nil
-}
-
 func scopedOASDescriptor(value secret.Value) (string, error) {
 	descriptor, err := value.Descriptor(capability.SecretPluginConfig)
 	if err != nil {
 		return "", err
 	}
 	return descriptor.String(), nil
-}
-
-func (staged *stagedOASSecrets) destroyLegacy() {
-	staged.legacyInline.Destroy()
-	for _, value := range staged.legacyHeaders {
-		value.Destroy()
-	}
 }
 
 func (p *Plugin) beginOASPreparation() {
@@ -196,23 +141,19 @@ func (p *Plugin) oasPreparationState() (bool, error) {
 	if p.retired.Load() {
 		return false, secret.ErrCredentialUnavailable
 	}
-	return p.legacySet || p.scopedSet, nil
+	return p.scopedSet, nil
 }
 
 func (p *Plugin) installOASSecrets(staged stagedOASSecrets) error {
 	p.credentialMu.Lock()
 	defer p.credentialMu.Unlock()
 	if p.retired.Load() {
-		staged.destroyLegacy()
 		return secret.ErrCredentialUnavailable
 	}
-	p.legacyInline = staged.legacyInline
-	p.legacyHeaders = staged.legacyHeaders
 	p.scopedInline = staged.scopedInline
 	p.scopedHeaders = staged.scopedHeaders
 	p.headerNames = staged.headerNames
-	p.legacySet = staged.legacy
-	p.scopedSet = !staged.legacy
+	p.scopedSet = true
 	if staged.inlineDescriptor != "" {
 		p.config.Spec = staged.inlineDescriptor
 	}
@@ -232,7 +173,7 @@ func (p *Plugin) requirePreparedOASSecrets() error {
 	}
 	p.credentialMu.Lock()
 	defer p.credentialMu.Unlock()
-	if p.retired.Load() || (!p.legacySet && !p.scopedSet) {
+	if p.retired.Load() || !p.scopedSet {
 		return secret.ErrCredentialUnavailable
 	}
 	return nil
@@ -241,19 +182,16 @@ func (p *Plugin) requirePreparedOASSecrets() error {
 func (p *Plugin) acquireOASSecrets() (oasSecretSnapshot, func(), error) {
 	p.credentialMu.Lock()
 	defer p.credentialMu.Unlock()
-	if p.retired.Load() || (!p.legacySet && !p.scopedSet) {
+	if p.retired.Load() || !p.scopedSet {
 		return oasSecretSnapshot{}, nil, secret.ErrCredentialUnavailable
 	}
 	if p.activeUses == 0 {
 		p.usesDone = make(chan struct{})
 	}
 	p.activeUses++
-	legacyHeaders := make(map[string]*store.ResolvedSecret, len(p.legacyHeaders))
-	maps.Copy(legacyHeaders, p.legacyHeaders)
 	scopedHeaders := make(map[string]secret.Value, len(p.scopedHeaders))
 	maps.Copy(scopedHeaders, p.scopedHeaders)
 	return oasSecretSnapshot{
-		legacy: p.legacySet, legacyInline: p.legacyInline, legacyHeaders: legacyHeaders,
 		scopedInline: p.scopedInline, scopedHeaders: scopedHeaders,
 		headerNames: append([]string(nil), p.headerNames...),
 	}, p.releaseOASSecretUse, nil
@@ -278,15 +216,7 @@ func (p *Plugin) withInlineSpec(use func(string) error) error {
 		return err
 	}
 	defer release()
-	if !snapshot.legacy {
-		return snapshot.scopedInline.Use(use)
-	}
-	plaintext := snapshot.legacyInline.Bytes()
-	defer clear(plaintext)
-	if plaintext == nil {
-		return secret.ErrCredentialUnavailable
-	}
-	return use(string(plaintext))
+	return snapshot.scopedInline.Use(use)
 }
 
 func (p *Plugin) withRequestHeaders(use func(map[string]string) error) error {
@@ -305,21 +235,11 @@ func (p *Plugin) withRequestHeaders(use func(map[string]string) error) error {
 			return use(headers)
 		}
 		name := snapshot.headerNames[index]
-		if !snapshot.legacy {
-			return snapshot.scopedHeaders[name].Use(func(plaintext string) error {
-				headers[name] = plaintext
-				defer func() { headers[name] = "" }()
-				return visit(index + 1)
-			})
-		}
-		plaintext := snapshot.legacyHeaders[name].Bytes()
-		if plaintext == nil {
-			return secret.ErrCredentialUnavailable
-		}
-		headers[name] = string(plaintext)
-		clear(plaintext)
-		defer func() { headers[name] = "" }()
-		return visit(index + 1)
+		return snapshot.scopedHeaders[name].Use(func(plaintext string) error {
+			headers[name] = plaintext
+			defer func() { headers[name] = "" }()
+			return visit(index + 1)
+		})
 	}
 	return visit(0)
 }
@@ -330,20 +250,13 @@ func (p *Plugin) retireOASSecrets() <-chan struct{} {
 	return p.usesDone
 }
 
-func (p *Plugin) dropOASSecrets() stagedOASSecrets {
+func (p *Plugin) dropOASSecrets() {
 	p.credentialMu.Lock()
 	defer p.credentialMu.Unlock()
-	legacy := stagedOASSecrets{
-		legacyInline: p.legacyInline, legacyHeaders: p.legacyHeaders,
-	}
-	p.legacyInline = nil
-	p.legacyHeaders = nil
 	p.scopedInline = secret.Value{}
 	p.scopedHeaders = nil
 	p.headerNames = nil
-	p.legacySet = false
 	p.scopedSet = false
-	return legacy
 }
 
 func (p *Plugin) publishOASValidator(compiled *compiledSpec) bool {

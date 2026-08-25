@@ -411,8 +411,12 @@ func TestSAMLLegacyMaterializationDecryptsContextualAndRotatedSecrets(t *testing
 	p.SetDependencies(base.Dependencies{
 		DataEncryption: testutil.DataEncryptionService(true, []string{currentKey, oldKey}).Resolver(),
 	})
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatalf("MaterializeSecrets() error = %v", err)
+	capabilityValue, scope, _, cleanup := newSAMLScopedSecretHarness(t, 1, "test-route", p.config, map[string]string{
+		config.SPPrivateKey: privateKey, config.Secret: session, oldFallback: fallback,
+	})
+	t.Cleanup(cleanup)
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	t.Cleanup(p.Stop)
 	assertSAMLDescriptor(t, p.config.SPPrivateKey, privateKey)
@@ -430,8 +434,12 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatalf("MaterializeSecrets() error = %v", err)
+	capabilityValue, scope, _, cleanup := newSAMLScopedSecretHarness(
+		t, 1, "test-route", cfg, samlTestSecretValues(cfg),
+	)
+	t.Cleanup(cleanup)
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
@@ -439,6 +447,17 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Cleanup(p.Stop)
 
 	return p
+}
+
+func samlTestSecretValues(cfg Config) map[string]string {
+	values := map[string]string{
+		cfg.SPPrivateKey: cfg.SPPrivateKey,
+		cfg.Secret:       cfg.Secret,
+	}
+	for _, fallback := range cfg.SecretFallbacks {
+		values[fallback] = fallback
+	}
+	return values
 }
 
 type failingReader struct{}
@@ -1075,8 +1094,12 @@ func TestMaterializeSecretsRejectsInvalidSPKeyPair(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := p.MaterializeSecrets(); err == nil {
-		t.Fatal("MaterializeSecrets() error = nil, want invalid SP key pair rejection")
+	capabilityValue, scope, _, cleanup := newSAMLScopedSecretHarness(
+		t, 1, "invalid-key", cfg, samlTestSecretValues(cfg),
+	)
+	t.Cleanup(cleanup)
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err == nil {
+		t.Fatal("MaterializeScopedPluginSecrets() error = nil, want invalid SP key pair rejection")
 	}
 }
 
@@ -1208,8 +1231,7 @@ func TestStopDrainsActiveHandlerAndPreventsResurrection(t *testing.T) {
 	<-handlerDone
 	<-stopDone
 	p.Stop()
-	if p.spKeyPair != nil || p.spIDPMetadata != nil || p.secretsPrepared ||
-		p.legacySPPrivateKey != nil || p.legacySessionSecret != nil {
+	if p.spKeyPair != nil || p.spIDPMetadata != nil || p.secretsPrepared {
 		t.Fatalf("Stop left private runtime state: %#v", p)
 	}
 	late := httptest.NewRecorder()

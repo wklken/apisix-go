@@ -286,9 +286,6 @@ func TestScopedSecretsClickHousePasswordFailureIsAtomic(t *testing.T) {
 	if p.config.User != originalUser || p.config.Password != originalPassword {
 		t.Fatalf("config changed on failed preparation: user=%q password=%q", p.config.User, p.config.Password)
 	}
-	if p.userSecret != nil || p.passwordSecret != nil {
-		t.Fatal("legacy credential state installed after failed scoped preparation")
-	}
 	if p.scopedUser != (secret.Value{}) || p.scopedPassword != (secret.Value{}) {
 		t.Fatal("scoped values installed after failed preparation")
 	}
@@ -306,8 +303,10 @@ func TestPostInitNeverCallsClickHouseDataEncryption(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := base.MaterializePluginSecrets(p); err != nil {
-		t.Fatalf("MaterializePluginSecrets() error = %v", err)
+	capabilityValue, scope, _, cleanup := newScopedSecretHarness(t, name, nil)
+	t.Cleanup(cleanup)
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	p.SetDependencies(base.Dependencies{})
 	if err := p.PostInit(); err != nil {
@@ -448,7 +447,6 @@ func TestStopWaitsForClickHouseDeliveryAndClearsSecrets(t *testing.T) {
 		name       string
 		prepare    func(*testing.T, string) (*Plugin, func())
 		wantScoped bool
-		wantLegacy bool
 	}{
 		{
 			name: "scoped",
@@ -458,30 +456,6 @@ func TestStopWaitsForClickHouseDeliveryAndClearsSecrets(t *testing.T) {
 				)
 			},
 			wantScoped: true,
-		},
-		{
-			name: "legacy",
-			prepare: func(t *testing.T, endpoint string) (*Plugin, func()) {
-				const envName = "CLICK_HOUSE_LIFECYCLE_USER"
-				t.Setenv(envName, "legacy-user")
-				p := &Plugin{config: clickHouseScopedConfig("$ENV://"+envName, "legacy-password")}
-				p.config.EndpointAddrs = []string{endpoint}
-				p.config.BatchMaxSize = 1
-				p.SetDependencies(base.Dependencies{
-					DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
-				})
-				if err := p.Init(); err != nil {
-					t.Fatalf("Init() error = %v", err)
-				}
-				if err := base.MaterializePluginSecrets(p); err != nil {
-					t.Fatalf("MaterializePluginSecrets() error = %v", err)
-				}
-				if err := p.PostInit(); err != nil {
-					t.Fatalf("PostInit() error = %v", err)
-				}
-				return p, func() {}
-			},
-			wantLegacy: true,
 		},
 	}
 
@@ -505,18 +479,10 @@ func TestStopWaitsForClickHouseDeliveryAndClearsSecrets(t *testing.T) {
 
 			p, closeAttempt := test.prepare(t, server.URL)
 			defer closeAttempt()
-			legacyUserOwner := p.userSecret
-			legacyPasswordOwner := p.passwordSecret
 			if test.wantScoped && (!p.scopedUserSet || !p.scopedPasswordSet) {
 				t.Fatalf(
 					"scoped preparation flags = user %v/password %v, want both set",
 					p.scopedUserSet, p.scopedPasswordSet,
-				)
-			}
-			if test.wantLegacy && (p.userSecret == nil || p.passwordSecret == nil) {
-				t.Fatalf(
-					"legacy owners = user %v/password %v, want both present",
-					p.userSecret != nil, p.passwordSecret != nil,
 				)
 			}
 
@@ -564,9 +530,6 @@ func TestStopWaitsForClickHouseDeliveryAndClearsSecrets(t *testing.T) {
 			if test.wantScoped && (!p.scopedUserSet || !p.scopedPasswordSet) {
 				t.Fatal("scoped values were cleared before delivery exited")
 			}
-			if test.wantLegacy && (p.userSecret == nil || p.passwordSecret == nil) {
-				t.Fatal("legacy owners were cleared before delivery exited")
-			}
 
 			releaseDeliveryNow()
 			select {
@@ -589,17 +552,6 @@ func TestStopWaitsForClickHouseDeliveryAndClearsSecrets(t *testing.T) {
 						"scoped flags after Stop = user %v/password %v, want false",
 						p.scopedUserSet, p.scopedPasswordSet,
 					)
-				}
-			}
-			if test.wantLegacy {
-				if p.userSecret != nil || p.passwordSecret != nil {
-					t.Fatal("legacy owners retained after Stop")
-				}
-				if legacyUserOwner == nil || legacyPasswordOwner == nil {
-					t.Fatal("legacy owners were not captured before Stop")
-				}
-				if legacyUserOwner.Bytes() != nil || legacyPasswordOwner.Bytes() != nil {
-					t.Fatal("legacy owner bytes were not destroyed before references were dropped")
 				}
 			}
 

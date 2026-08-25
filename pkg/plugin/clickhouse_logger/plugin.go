@@ -17,7 +17,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
 	"github.com/wklken/apisix-go/pkg/secret"
 	"github.com/wklken/apisix-go/pkg/shared"
-	"github.com/wklken/apisix-go/pkg/store"
 )
 
 type Plugin struct {
@@ -26,10 +25,7 @@ type Plugin struct {
 
 	client *resty.Client
 
-	clientRelease  func()
-	userSecret     *store.ResolvedSecret
-	passwordSecret *store.ResolvedSecret
-
+	clientRelease     func()
 	scopedUser        secret.Value
 	scopedPassword    secret.Value
 	scopedUserSet     bool
@@ -314,10 +310,6 @@ func (p *Plugin) Stop() {
 			p.clientRelease()
 			p.clientRelease = nil
 		}
-		p.userSecret.Destroy()
-		p.userSecret = nil
-		p.passwordSecret.Destroy()
-		p.passwordSecret = nil
 		p.scopedUser = secret.Value{}
 		p.scopedPassword = secret.Value{}
 		p.scopedUserSet = false

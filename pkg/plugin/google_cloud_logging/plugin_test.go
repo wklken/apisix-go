@@ -425,7 +425,7 @@ func TestSendBatchCancelsGoogleEntriesPostWithContext(t *testing.T) {
 
 func TestStopDrainsActiveGoogleSendAndDropsPrivateState(t *testing.T) {
 	pemKey, _ := testPrivateKey(t)
-	for index, mode := range []string{"legacy", "scoped"} {
+	for index, mode := range []string{"inline", "scoped"} {
 		t.Run(mode, func(t *testing.T) {
 			started := make(chan struct{})
 			release := make(chan struct{})
@@ -447,27 +447,15 @@ func TestStopDrainsActiveGoogleSendAndDropsPrivateState(t *testing.T) {
 			rawConfig := googleInlineRawConfig(rawPrivateKey)
 			rawConfig["auth_config"].(map[string]any)["entries_uri"] = server.URL
 			p := newRawGooglePlugin(t, rawConfig)
-			var closeAttempt func()
-			if mode == "legacy" {
-				p.SetDependencies(base.Dependencies{
-					DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
-				})
-				if err := p.MaterializeSecrets(); err != nil {
-					t.Fatal(err)
-				}
-				closeAttempt = func() {}
-			} else {
-				capabilityValue, scope, _, closeScopedAttempt := newGoogleScopedSecretHarness(
-					t, uint64(40+index), "google-stop", rawConfig,
-					map[string]string{rawPrivateKey: pemKey},
-				)
-				closeAttempt = closeScopedAttempt
-				if err := base.MaterializeScopedPluginSecrets(
-					context.Background(), scope, capabilityValue, p,
-				); err != nil {
-					closeAttempt()
-					t.Fatal(err)
-				}
+			capabilityValue, scope, _, closeAttempt := newGoogleScopedSecretHarness(
+				t, uint64(40+index), "google-stop", rawConfig,
+				map[string]string{rawPrivateKey: pemKey},
+			)
+			if err := base.MaterializeScopedPluginSecrets(
+				context.Background(), scope, capabilityValue, p,
+			); err != nil {
+				closeAttempt()
+				t.Fatal(err)
 			}
 			defer closeAttempt()
 			if err := p.PostInit(); err != nil {
@@ -753,8 +741,22 @@ func newTestPluginWithMetadata(t *testing.T, cfg Config, metadata runtime.Metada
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatalf("MaterializeSecrets() error = %v", err)
+	rawConfig := make(map[string]any)
+	document, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	if err := json.Unmarshal(document, &rawConfig); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	values := make(map[string]string)
+	if cfg.AuthConfig != nil {
+		values[cfg.AuthConfig.PrivateKey] = cfg.AuthConfig.PrivateKey
+	}
+	capabilityValue, scope, _, cleanup := newGoogleScopedSecretHarness(t, 1, "test-route", rawConfig, values)
+	t.Cleanup(cleanup)
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
@@ -833,8 +835,8 @@ func mustMetadataView(t *testing.T, documents map[string][]byte) runtime.Metadat
 
 func TestMaterializeSecretsRejectsMissingDataEncryptionResolver(t *testing.T) {
 	p := &Plugin{config: Config{AuthConfig: &AuthConfig{PrivateKey: "private"}}}
-	if err := p.MaterializeSecrets(); err == nil || err.Error() != "data-encryption resolver is required" {
-		t.Fatalf("MaterializeSecrets() error = %v, want missing resolver error", err)
+	if err := p.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) {
+		t.Fatalf("MaterializeSecrets() error = %v, want credential unavailable", err)
 	}
 }
 
@@ -926,28 +928,33 @@ func TestMaterializeSecretsRejectsInvalidEncryptedPrivateKey(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := p.MaterializeSecrets(); err == nil {
-		t.Fatal("MaterializeSecrets() error = nil, want strict encrypted private_key rejection")
+	if err := p.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) {
+		t.Fatalf("MaterializeSecrets() error = %v, want credential unavailable", err)
 	}
 }
 
 func TestMaterializeSecretsResolvesRotatedEncryptedPrivateKey(t *testing.T) {
 	oldKey := "old-keyring-item"
-	newKey := "qeddd145sfvddff3"
 	pemKey, _ := testPrivateKey(t)
-	p := &Plugin{config: Config{AuthConfig: &AuthConfig{
+	config := Config{AuthConfig: &AuthConfig{
 		ClientEmail: "svc@example.iam.gserviceaccount.com",
 		PrivateKey:  encryptGooglePrivateKeyTestValue(t, oldKey, pemKey),
 		ProjectID:   "project-a",
-	}}}
-	p.SetDependencies(base.Dependencies{
-		DataEncryption: testutil.DataEncryptionService(true, []string{newKey, oldKey}).Resolver(),
-	})
+	}}
+	p := &Plugin{config: config}
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatalf("MaterializeSecrets() error = %v", err)
+	rawConfig := googleInlineRawConfig(config.AuthConfig.PrivateKey)
+	capabilityValue, scope, _, cleanup := newGoogleScopedSecretHarness(
+		t, 1, "google-rotated", rawConfig,
+		map[string]string{config.AuthConfig.PrivateKey: pemKey},
+	)
+	t.Cleanup(cleanup)
+	if err := base.MaterializeScopedPluginSecrets(
+		context.Background(), scope, capabilityValue, p,
+	); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
@@ -957,7 +964,7 @@ func TestMaterializeSecretsResolvesRotatedEncryptedPrivateKey(t *testing.T) {
 		t.Fatalf("private_key = %q, want descriptor %q", got, want)
 	}
 	if p.resolvedAuth == nil || p.resolvedAuth.PrivateKey != pemKey {
-		t.Fatal("legacy materialization did not retain private resolved auth")
+		t.Fatal("materialization did not retain private resolved auth")
 	}
 }
 
@@ -1571,8 +1578,18 @@ func TestSendBatchTimesOutTokenEndpoint(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatalf("MaterializeSecrets() error = %v", err)
+	rawConfig := googleInlineRawConfig(pemKey)
+	rawAuthConfig := rawConfig["auth_config"].(map[string]any)
+	rawAuthConfig["token_uri"] = tokenServer.URL
+	rawAuthConfig["entries_uri"] = entryServer.URL
+	capabilityValue, scope, _, cleanup := newGoogleScopedSecretHarness(
+		t, 1, "google-timeout-token", rawConfig, map[string]string{pemKey: pemKey},
+	)
+	t.Cleanup(cleanup)
+	if err := base.MaterializeScopedPluginSecrets(
+		context.Background(), scope, capabilityValue, p,
+	); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
@@ -1620,8 +1637,18 @@ func TestSendBatchTimesOutWriteEndpoint(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatalf("MaterializeSecrets() error = %v", err)
+	rawConfig := googleInlineRawConfig(pemKey)
+	rawAuthConfig := rawConfig["auth_config"].(map[string]any)
+	rawAuthConfig["token_uri"] = tokenServer.URL
+	rawAuthConfig["entries_uri"] = entryServer.URL
+	capabilityValue, scope, _, cleanup := newGoogleScopedSecretHarness(
+		t, 2, "google-timeout-write", rawConfig, map[string]string{pemKey: pemKey},
+	)
+	t.Cleanup(cleanup)
+	if err := base.MaterializeScopedPluginSecrets(
+		context.Background(), scope, capabilityValue, p,
+	); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)

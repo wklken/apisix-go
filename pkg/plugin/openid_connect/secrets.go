@@ -5,14 +5,12 @@ import (
 	"crypto"
 	"crypto/rsa"
 	"crypto/sha256"
-	"strings"
 	"sync"
 	"sync/atomic"
 
 	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/secret"
-	"github.com/wklken/apisix-go/pkg/store"
 )
 
 var errOIDCCredentialsUnavailable = secret.ErrCredentialUnavailable
@@ -33,9 +31,6 @@ type oidcSecretState struct {
 	credentialMu sync.Mutex
 	stopOnce     sync.Once
 
-	legacyOwners [5]*store.ResolvedSecret
-	legacySet    bool
-
 	scopedClientSecret  secret.Value
 	scopedRedisPassword secret.Value
 	scopedSet           bool
@@ -54,9 +49,6 @@ type oidcSecretState struct {
 }
 
 type stagedOIDCSecrets struct {
-	legacy bool
-	owners [5]*store.ResolvedSecret
-
 	scopedClientSecret  secret.Value
 	scopedRedisPassword secret.Value
 
@@ -70,10 +62,6 @@ type stagedOIDCSecrets struct {
 }
 
 type oidcSecretSnapshot struct {
-	legacy bool
-
-	clientSecretOwner  *store.ResolvedSecret
-	redisPasswordOwner *store.ResolvedSecret
 	scopedClientSecret secret.Value
 	scopedRedisSecret  secret.Value
 	privateKey         *rsa.PrivateKey
@@ -99,43 +87,12 @@ func (p *Plugin) MaterializeSecrets() error {
 		return err
 	}
 
-	raws := p.oidcSecretRaws()
-	staged := stagedOIDCSecrets{legacy: true}
-	for index, raw := range raws {
-		if raw == "" {
-			continue
-		}
-		owner, err := store.MaterializeSecret(raw)
-		if err != nil || owner == nil {
-			owner.Destroy()
-			staged.destroyLegacy()
+	for _, raw := range p.oidcSecretRaws() {
+		if raw != "" {
 			return errOIDCCredentialsUnavailable
 		}
-		staged.owners[index] = owner
-		plaintext := owner.Bytes()
-		if len(plaintext) == 0 {
-			clear(plaintext)
-			staged.destroyLegacy()
-			return errOIDCCredentialsUnavailable
-		}
-		if err := staged.derive(index, plaintext); err != nil {
-			clear(plaintext)
-			staged.destroyLegacy()
-			return errOIDCCredentialsUnavailable
-		}
-		descriptor, err := secret.NewDescriptor(
-			capability.SecretPluginConfig, sha256.Sum256(plaintext),
-		)
-		staged.digests[index] = sha256.Sum256(plaintext)
-		clear(plaintext)
-		if err != nil {
-			staged.destroyLegacy()
-			return errOIDCCredentialsUnavailable
-		}
-		staged.present[index] = true
-		staged.descriptors[index] = descriptor.String()
 	}
-	return p.installOIDCSecrets(staged)
+	return nil
 }
 
 func (p *Plugin) MaterializeScopedSecrets(
@@ -231,12 +188,6 @@ func (staged *stagedOIDCSecrets) derive(index int, plaintext []byte) error {
 	return nil
 }
 
-func (staged *stagedOIDCSecrets) destroyLegacy() {
-	for _, owner := range staged.owners {
-		owner.Destroy()
-	}
-}
-
 func (p *Plugin) beginOIDCPreparation() {
 	p.preparationMu.Lock()
 	if p.preparationCond == nil {
@@ -262,21 +213,18 @@ func (p *Plugin) oidcPreparationState() (bool, error) {
 	if p.retired.Load() {
 		return false, errOIDCCredentialsUnavailable
 	}
-	return p.legacySet || p.scopedSet, nil
+	return p.scopedSet, nil
 }
 
 func (p *Plugin) installOIDCSecrets(staged stagedOIDCSecrets) error {
 	p.credentialMu.Lock()
 	defer p.credentialMu.Unlock()
 	if p.retired.Load() {
-		staged.destroyLegacy()
 		return errOIDCCredentialsUnavailable
 	}
-	p.legacyOwners = staged.owners
-	p.legacySet = staged.legacy
 	p.scopedClientSecret = staged.scopedClientSecret
 	p.scopedRedisPassword = staged.scopedRedisPassword
-	p.scopedSet = !staged.legacy
+	p.scopedSet = true
 	p.clientSecretPresent = staged.present[0]
 	p.privateKeyPresent = staged.present[1]
 	p.publicKeyPresent = staged.present[2]
@@ -309,7 +257,7 @@ func (p *Plugin) installOIDCSecrets(staged stagedOIDCSecrets) error {
 func (p *Plugin) acquireOIDCSecrets() (oidcSecretSnapshot, func(), error) {
 	p.credentialMu.Lock()
 	defer p.credentialMu.Unlock()
-	if p.retired.Load() || (!p.legacySet && !p.scopedSet) {
+	if p.retired.Load() || !p.scopedSet {
 		return oidcSecretSnapshot{}, nil, errOIDCCredentialsUnavailable
 	}
 	if p.activeUses == 0 {
@@ -317,9 +265,6 @@ func (p *Plugin) acquireOIDCSecrets() (oidcSecretSnapshot, func(), error) {
 	}
 	p.activeUses++
 	return oidcSecretSnapshot{
-		legacy:               p.legacySet,
-		clientSecretOwner:    p.legacyOwners[0],
-		redisPasswordOwner:   p.legacyOwners[4],
 		scopedClientSecret:   p.scopedClientSecret,
 		scopedRedisSecret:    p.scopedRedisPassword,
 		privateKey:           p.clientRSAPrivateKey,
@@ -349,24 +294,13 @@ func (p *Plugin) withClientSecret(use func(string) error) error {
 	}
 	snapshot, release, err := p.acquireOIDCSecrets()
 	if err != nil {
-		if plaintext, ok := p.unpreparedOIDCLiteral(p.config.ClientSecret); ok {
-			return use(plaintext)
-		}
 		return err
 	}
 	defer release()
 	if !snapshot.clientSecretPresent {
 		return use("")
 	}
-	if !snapshot.legacy {
-		return snapshot.scopedClientSecret.Use(use)
-	}
-	plaintext := snapshot.clientSecretOwner.Bytes()
-	defer clear(plaintext)
-	if len(plaintext) == 0 {
-		return errOIDCCredentialsUnavailable
-	}
-	return use(string(plaintext))
+	return snapshot.scopedClientSecret.Use(use)
 }
 
 func (p *Plugin) withRedisPassword(use func(string) error) error {
@@ -381,15 +315,7 @@ func (p *Plugin) withRedisPassword(use func(string) error) error {
 	if !snapshot.redisPasswordPresent {
 		return use("")
 	}
-	if !snapshot.legacy {
-		return snapshot.scopedRedisSecret.Use(use)
-	}
-	plaintext := snapshot.redisPasswordOwner.Bytes()
-	defer clear(plaintext)
-	if len(plaintext) == 0 {
-		return errOIDCCredentialsUnavailable
-	}
-	return use(string(plaintext))
+	return snapshot.scopedRedisSecret.Use(use)
 }
 
 func (p *Plugin) withOIDCPrivateKey(use func(*rsa.PrivateKey) error) error {
@@ -428,12 +354,6 @@ func (p *Plugin) withOIDCSessionKey(use func([]byte) error) error {
 	}
 	snapshot, release, err := p.acquireOIDCSecrets()
 	if err != nil {
-		if plaintext, ok := p.unpreparedOIDCLiteral(p.config.Session.Secret); ok {
-			key := sha256.Sum256([]byte(plaintext))
-			clone := cloneSessionKey(key)
-			defer clear(clone)
-			return use(clone)
-		}
 		return err
 	}
 	defer release()
@@ -448,7 +368,7 @@ func (p *Plugin) withOIDCSessionKey(use func([]byte) error) error {
 func (p *Plugin) requirePreparedOIDCSecrets() error {
 	p.credentialMu.Lock()
 	defer p.credentialMu.Unlock()
-	if p.retired.Load() || (!p.legacySet && !p.scopedSet) {
+	if p.retired.Load() || !p.scopedSet {
 		return errOIDCCredentialsUnavailable
 	}
 	return nil
@@ -457,7 +377,7 @@ func (p *Plugin) requirePreparedOIDCSecrets() error {
 func (p *Plugin) oidcSecretPresence() (bool, bool, bool, bool, bool, int, error) {
 	p.credentialMu.Lock()
 	defer p.credentialMu.Unlock()
-	if p.retired.Load() || (!p.legacySet && !p.scopedSet) {
+	if p.retired.Load() || !p.scopedSet {
 		return false, false, false, false, false, 0, errOIDCCredentialsUnavailable
 	}
 	return p.clientSecretPresent, p.privateKeyPresent, p.publicKeyPresent,
@@ -474,12 +394,8 @@ func (p *Plugin) derivedSessionKey() ([]byte, error) {
 		p.credentialMu.Unlock()
 		return nil, errOIDCCredentialsUnavailable
 	}
-	if !p.legacySet && !p.scopedSet {
+	if !p.scopedSet {
 		p.credentialMu.Unlock()
-		if plaintext, ok := p.unpreparedOIDCLiteral(p.config.Session.Secret); ok {
-			key := sha256.Sum256([]byte(plaintext))
-			return cloneSessionKey(key), nil
-		}
 		return nil, errOIDCCredentialsUnavailable
 	}
 	if !p.sessionSecretPresent {
@@ -494,15 +410,6 @@ func (p *Plugin) redisPasswordDigestSnapshot() [sha256.Size]byte {
 	p.credentialMu.Lock()
 	defer p.credentialMu.Unlock()
 	return p.redisPasswordDigest
-}
-
-func (p *Plugin) unpreparedOIDCLiteral(raw string) (string, bool) {
-	p.credentialMu.Lock()
-	defer p.credentialMu.Unlock()
-	if p.retired.Load() || p.legacySet || p.scopedSet || raw == "" || isOIDCSecretReference(raw) {
-		return "", false
-	}
-	return raw, true
 }
 
 func (p *Plugin) acquireOIDCWork() (func(), error) {
@@ -554,12 +461,9 @@ func (p *Plugin) oidcUsesDone() <-chan struct{} {
 	return p.usesDone
 }
 
-func (p *Plugin) dropOIDCSecrets() [5]*store.ResolvedSecret {
+func (p *Plugin) dropOIDCSecrets() {
 	p.credentialMu.Lock()
 	defer p.credentialMu.Unlock()
-	owners := p.legacyOwners
-	p.legacyOwners = [5]*store.ResolvedSecret{}
-	p.legacySet = false
 	p.scopedClientSecret = secret.Value{}
 	p.scopedRedisPassword = secret.Value{}
 	p.scopedSet = false
@@ -573,12 +477,4 @@ func (p *Plugin) dropOIDCSecrets() [5]*store.ResolvedSecret {
 	p.redisPasswordDigest = [sha256.Size]byte{}
 	p.clientRSAPrivateKey = nil
 	p.staticPublicKey = nil
-	return owners
-}
-
-func isOIDCSecretReference(raw string) bool {
-	upper := strings.ToUpper(raw)
-	return strings.HasPrefix(upper, "$ENV://") ||
-		strings.HasPrefix(raw, "$secret://") ||
-		strings.HasPrefix(raw, "plugin_config#sha256:")
 }

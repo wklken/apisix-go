@@ -85,6 +85,7 @@ func (prepared *PreparedGeneration) httpRuntimeContextForRoute(
 			prepared: prepared, ctx: ctx, route: ownedRoute, ssls: plan.resources.ssls,
 		},
 		upstreamResolver: resolver,
+		protoResolver:    plan.protoResolver,
 	}, nil
 }
 

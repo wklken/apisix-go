@@ -2,7 +2,6 @@ package azure_functions
 
 import (
 	"context"
-	"crypto/sha256"
 	"fmt"
 	"net/http"
 	"sync"
@@ -11,7 +10,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/function_upstream"
 	"github.com/wklken/apisix-go/pkg/secret"
-	"github.com/wklken/apisix-go/pkg/store"
 )
 
 type Plugin struct {
@@ -19,10 +17,9 @@ type Plugin struct {
 	config   Config
 	metadata Metadata
 
-	routeSecretsMu    sync.RWMutex
-	routeAPIKey       secret.Value
-	routeAPIKeySet    bool
-	legacyRouteAPIKey *store.ResolvedSecret
+	routeSecretsMu sync.RWMutex
+	routeAPIKey    secret.Value
+	routeAPIKeySet bool
 }
 
 const (
@@ -147,7 +144,7 @@ func (p *Plugin) MaterializeScopedSecrets(
 	if p.config.Authorization == nil || p.config.Authorization.APIKey == "" {
 		return nil
 	}
-	installed := p.routeAPIKeySet || p.legacyRouteAPIKey != nil
+	installed := p.routeAPIKeySet
 	raw := p.config.Authorization.APIKey
 	if installed {
 		return nil
@@ -162,7 +159,7 @@ func (p *Plugin) MaterializeScopedSecrets(
 		return err
 	}
 
-	if p.routeAPIKeySet || p.legacyRouteAPIKey != nil {
+	if p.routeAPIKeySet {
 		return nil
 	}
 	p.routeAPIKey = value
@@ -179,32 +176,10 @@ func (p *Plugin) MaterializeSecrets() error {
 	if p.config.Authorization == nil || p.config.Authorization.APIKey == "" {
 		return nil
 	}
-	installed := p.routeAPIKeySet || p.legacyRouteAPIKey != nil
-	raw := p.config.Authorization.APIKey
-	if installed {
+	if p.routeAPIKeySet {
 		return nil
 	}
-
-	resolved, err := store.MaterializeSecret(raw)
-	if err != nil {
-		return err
-	}
-	bytes := resolved.Bytes()
-	digest := sha256.Sum256(bytes)
-	clear(bytes)
-	descriptor, err := secret.NewDescriptor(capability.SecretPluginConfig, digest)
-	if err != nil {
-		resolved.Destroy()
-		return err
-	}
-
-	if p.routeAPIKeySet || p.legacyRouteAPIKey != nil {
-		resolved.Destroy()
-		return nil
-	}
-	p.legacyRouteAPIKey = resolved
-	p.config.Authorization.APIKey = descriptor.String()
-	return nil
+	return secret.ErrCredentialUnavailable
 }
 
 func (p *Plugin) processRequest(r *http.Request, _ function_upstream.Config) {
@@ -234,12 +209,6 @@ func (p *Plugin) processRequest(r *http.Request, _ function_upstream.Config) {
 			}
 			return nil
 		})
-	} else if p.legacyRouteAPIKey != nil {
-		value := p.legacyRouteAPIKey.Bytes()
-		if len(value) != 0 {
-			r.Header.Set("X-Functions-Key", string(value))
-		}
-		clear(value)
 	}
 	if p.config.Authorization.ClientID != "" {
 		r.Header.Set("X-Functions-Clientid", p.config.Authorization.ClientID)
@@ -251,10 +220,6 @@ func (p *Plugin) Stop() {
 
 	p.routeSecretsMu.Lock()
 	defer p.routeSecretsMu.Unlock()
-	if p.legacyRouteAPIKey != nil {
-		p.legacyRouteAPIKey.Destroy()
-		p.legacyRouteAPIKey = nil
-	}
 	p.routeAPIKey = secret.Value{}
 	p.routeAPIKeySet = false
 }

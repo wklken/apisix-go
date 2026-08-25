@@ -19,7 +19,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/secret"
-	"github.com/wklken/apisix-go/pkg/store"
 	"github.com/wklken/apisix-go/pkg/testutil"
 )
 
@@ -516,7 +515,7 @@ func TestScopedSecretsRAGRejectResolvedBlankKeysAndRetry(t *testing.T) {
 	}
 }
 
-func TestLegacyRAGRejectsResolvedBlankKeysAndRetries(t *testing.T) {
+func TestLegacyRAGMaterializationFailsClosed(t *testing.T) {
 	const (
 		embeddingEnv = "RAG_LEGACY_BLANK_EMBEDDING"
 		searchEnv    = "RAG_LEGACY_BLANK_SEARCH"
@@ -532,9 +531,6 @@ func TestLegacyRAGRejectsResolvedBlankKeysAndRetries(t *testing.T) {
 		{name: "search whitespace", invalidEnv: searchEnv, blank: " \t"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			t.Setenv(embeddingEnv, "legacy-embedding")
-			t.Setenv(searchEnv, "legacy-search")
-			t.Setenv(test.invalidEnv, test.blank)
 			p := &Plugin{config: ragConfig(
 				"http://127.0.0.1", "$ENV://"+embeddingEnv,
 				"http://127.0.0.1", "$ENV://"+searchEnv,
@@ -542,30 +538,9 @@ func TestLegacyRAGRejectsResolvedBlankKeysAndRetries(t *testing.T) {
 			if err := p.Init(); err != nil {
 				t.Fatal(err)
 			}
-			original := p.config
 			if err := p.MaterializeSecrets(); !errors.Is(err, errRAGCredentialsUnavailable) {
 				t.Fatalf("MaterializeSecrets() error = %v, want credential unavailable", err)
 			}
-			if p.config != original || p.embeddingAPIKey != nil || p.searchAPIKey != nil || p.legacySet || p.scopedSet {
-				t.Fatalf("blank legacy key installed state: config=%#v", p.config)
-			}
-
-			t.Setenv(test.invalidEnv, "legacy-retry")
-			if err := p.MaterializeSecrets(); err != nil {
-				t.Fatalf("same-instance MaterializeSecrets() retry error = %v", err)
-			}
-			wantEmbedding := "legacy-embedding"
-			wantSearch := "legacy-search"
-			if test.invalidEnv == embeddingEnv {
-				wantEmbedding = "legacy-retry"
-			} else {
-				wantSearch = "legacy-retry"
-			}
-			if p.config.EmbeddingsProvider.AzureOpenAI.APIKey != wantRAGDescriptor(wantEmbedding) ||
-				p.config.VectorSearchProvider.AzureAISearch.APIKey != wantRAGDescriptor(wantSearch) {
-				t.Fatalf("legacy retry descriptors = %#v, want content-only digests", p.config)
-			}
-			p.Stop()
 		})
 	}
 }
@@ -625,7 +600,7 @@ func TestScopedSecretsRAGConcurrentMaterializationIsSingleFlight(t *testing.T) {
 	assertRAGScopedCalls(t, scope, broker.callsSnapshot(), []string{embeddingRaw, searchRaw})
 }
 
-func TestLegacyRAGConcurrentMaterializationKeepsSingleOwnership(t *testing.T) {
+func TestLegacyRAGConcurrentMaterializationFailsClosed(t *testing.T) {
 	const workers = 64
 	p := &Plugin{config: ragConfig(
 		"http://127.0.0.1", "legacy-concurrent-embedding",
@@ -644,34 +619,13 @@ func TestLegacyRAGConcurrentMaterializationKeepsSingleOwnership(t *testing.T) {
 	}
 	close(start)
 	for range workers {
-		if err := <-errs; err != nil {
-			t.Fatalf("concurrent legacy materialization error = %v", err)
+		if err := <-errs; !errors.Is(err, errRAGCredentialsUnavailable) {
+			t.Fatalf("concurrent legacy materialization error = %v, want credential unavailable", err)
 		}
-	}
-	embeddingOwner := p.embeddingAPIKey
-	searchOwner := p.searchAPIKey
-	if embeddingOwner == nil || searchOwner == nil || !p.legacySet || p.scopedSet {
-		t.Fatalf(
-			"legacy singleflight state = (%p,%p legacy=%v scoped=%v)",
-			embeddingOwner,
-			searchOwner,
-			p.legacySet,
-			p.scopedSet,
-		)
-	}
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatalf("repeated MaterializeSecrets() error = %v", err)
-	}
-	if p.embeddingAPIKey != embeddingOwner || p.searchAPIKey != searchOwner {
-		t.Fatal("repeated legacy materialization replaced credential owners")
-	}
-	p.Stop()
-	if embeddingOwner.Bytes() != nil || searchOwner.Bytes() != nil {
-		t.Fatal("Stop() did not destroy the single legacy owners")
 	}
 }
 
-func TestRAGConcurrentScopedThenLegacyKeepsScopedOwnership(t *testing.T) {
+func TestRAGLegacyEntryPointWaitsForScopedMaterialization(t *testing.T) {
 	const (
 		embeddingRaw = "$ENV://RAG_CROSS_MODE_EMBEDDING_NOT_SET"
 		searchRaw    = "$ENV://RAG_CROSS_MODE_SEARCH_NOT_SET"
@@ -708,42 +662,28 @@ func TestRAGConcurrentScopedThenLegacyKeepsScopedOwnership(t *testing.T) {
 		t.Fatal("timed out waiting for scoped cross-mode leader")
 	}
 	legacyDone := make(chan error, 1)
-	go func() { legacyDone <- p.MaterializeSecrets() }()
-	waitForRAGPreparationWaiter(t, p)
+	go func() {
+		legacyDone <- p.MaterializeSecrets()
+	}()
+	select {
+	case err := <-legacyDone:
+		close(release)
+		<-scopedDone
+		t.Fatalf("MaterializeSecrets() returned before scoped materialization completed: %v", err)
+	default:
+	}
 	close(release)
 	if err := <-scopedDone; err != nil {
 		t.Fatalf("scoped cross-mode materialization error = %v", err)
 	}
 	if err := <-legacyDone; err != nil {
-		t.Fatalf("legacy cross-mode follower error = %v", err)
+		t.Fatalf("MaterializeSecrets() error after scoped materialization = %v", err)
 	}
 	assertRAGScopedCalls(t, scope, broker.callsSnapshot(), []string{embeddingRaw, searchRaw})
-	if !p.scopedSet || p.legacySet || p.embeddingAPIKey != nil || p.searchAPIKey != nil {
-		t.Fatalf(
-			"cross-mode state = scoped:%v legacy:%v owners:(%p,%p)",
-			p.scopedSet,
-			p.legacySet,
-			p.embeddingAPIKey,
-			p.searchAPIKey,
-		)
+	if !p.scopedSet {
+		t.Fatal("scoped credentials were not installed")
 	}
 	p.Stop()
-}
-
-func waitForRAGPreparationWaiter(t *testing.T, p *Plugin) {
-	t.Helper()
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		p.preparationMu.Lock()
-		active := p.preparationActive
-		waiters := p.preparationWaiters
-		p.preparationMu.Unlock()
-		if active && waiters > 0 {
-			return
-		}
-		time.Sleep(time.Millisecond)
-	}
-	t.Fatal("timed out waiting for a serialized RAG preparation follower")
 }
 
 func TestScopedSecretsRAGStopDuringMaterializeCannotReviveState(t *testing.T) {
@@ -789,7 +729,7 @@ func TestScopedSecretsRAGStopDuringMaterializeCannotReviveState(t *testing.T) {
 	}
 	if p.config.EmbeddingsProvider.AzureOpenAI.APIKey != embeddingRaw ||
 		p.config.VectorSearchProvider.AzureAISearch.APIKey != searchRaw ||
-		p.embeddingAPIKey != nil || p.searchAPIKey != nil || p.legacySet || p.scopedSet {
+		p.scopedSet {
 		t.Fatalf("materialization revived retired state: config=%#v", p.config)
 	}
 	callCount := len(broker.callsSnapshot())
@@ -998,37 +938,19 @@ func waitForRAGRetirement(t *testing.T, p *Plugin, transport *blockingRAGTranspo
 	t.Fatal("timed out waiting for retired client with one active credential use")
 }
 
-func TestRAGStopDrainsProviderUseAndRetiresScopedAndLegacyCredentials(t *testing.T) {
-	for _, mode := range []string{"scoped", "legacy"} {
+func TestRAGStopDrainsProviderUseAndRetiresScopedCredentials(t *testing.T) {
+	for _, mode := range []string{"scoped"} {
 		t.Run(mode, func(t *testing.T) {
 			var (
 				p            *Plugin
 				closeAttempt func()
-				legacyOwners []*store.ResolvedSecret
 			)
-			if mode == "scoped" {
-				p, closeAttempt = prepareScopedRAGPlugin(
-					t, 30, "stop-scoped",
-					"http://provider.test/embedding", "http://provider.test/search",
-					"stop-scoped-embedding", "stop-scoped-search",
-				)
-				defer closeAttempt()
-			} else {
-				p = &Plugin{config: ragConfig(
-					"http://provider.test/embedding", "stop-legacy-embedding",
-					"http://provider.test/search", "stop-legacy-search",
-				)}
-				if err := p.Init(); err != nil {
-					t.Fatal(err)
-				}
-				if err := p.MaterializeSecrets(); err != nil {
-					t.Fatal(err)
-				}
-				legacyOwners = []*store.ResolvedSecret{p.embeddingAPIKey, p.searchAPIKey}
-				if err := p.PostInit(); err != nil {
-					t.Fatal(err)
-				}
-			}
+			p, closeAttempt = prepareScopedRAGPlugin(
+				t, 30, "stop-scoped",
+				"http://provider.test/embedding", "http://provider.test/search",
+				"stop-scoped-embedding", "stop-scoped-search",
+			)
+			defer closeAttempt()
 
 			transport := &blockingRAGTransport{
 				entered: make(chan *http.Request, 1),
@@ -1090,29 +1012,19 @@ func TestRAGStopDrainsProviderUseAndRetiresScopedAndLegacyCredentials(t *testing
 			if _, present := retainedRequest.Header[http.CanonicalHeaderKey("api-key")]; present {
 				t.Fatal("retained provider request still has api-key header")
 			}
-			for index, owner := range legacyOwners {
-				if got := owner.Bytes(); got != nil {
-					t.Fatalf("legacy owner[%d] after Stop() = %q, want destroyed", index, got)
-				}
-			}
 			p.credentialMu.Lock()
 			clientSet := p.client != nil
-			embeddingOwnerSet := p.embeddingAPIKey != nil
-			searchOwnerSet := p.searchAPIKey != nil
 			scopedEmbeddingSet := p.scopedEmbeddingAPIKey != (secret.Value{})
 			scopedSearchSet := p.scopedSearchAPIKey != (secret.Value{})
-			legacySet := p.legacySet
 			scopedSet := p.scopedSet
 			retired := p.retired
 			activeUses := p.activeUses
 			p.credentialMu.Unlock()
-			if clientSet || embeddingOwnerSet || searchOwnerSet || scopedEmbeddingSet ||
-				scopedSearchSet || legacySet || scopedSet || !retired || activeUses != 0 {
+			if clientSet || scopedEmbeddingSet || scopedSearchSet || scopedSet || !retired || activeUses != 0 {
 				t.Fatalf(
-					"retained RAG state after Stop(): client=%v owners=(%v,%v) "+
-						"scoped_values=(%v,%v) modes=(%v,%v) retired=%v active_uses=%d",
-					clientSet, embeddingOwnerSet, searchOwnerSet,
-					scopedEmbeddingSet, scopedSearchSet, legacySet, scopedSet, retired, activeUses,
+					"retained RAG state after Stop(): client=%v scoped_values=(%v,%v) "+
+						"scoped=%v retired=%v active_uses=%d",
+					clientSet, scopedEmbeddingSet, scopedSearchSet, scopedSet, retired, activeUses,
 				)
 			}
 		})

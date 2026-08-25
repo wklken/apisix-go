@@ -3,9 +3,7 @@ package lago
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"crypto/tls"
-	"errors"
 	"fmt"
 	"math/rand"
 	"net/http"
@@ -23,7 +21,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
 	"github.com/wklken/apisix-go/pkg/secret"
 	"github.com/wklken/apisix-go/pkg/shared"
-	"github.com/wklken/apisix-go/pkg/store"
 )
 
 type Plugin struct {
@@ -39,7 +36,6 @@ type Plugin struct {
 
 	token           secret.Value
 	tokenSet        bool
-	legacyToken     *store.ResolvedSecret
 	secretsPrepared bool
 	ready           bool
 }
@@ -287,34 +283,7 @@ func (p *Plugin) MaterializeSecrets() error {
 	if p.secretsPrepared {
 		return nil
 	}
-	resolver := p.DataEncryption()
-	if !resolver.Configured() {
-		return errors.New("data-encryption resolver is required")
-	}
-	resolved, err := resolver.ResolveForContext(p.config.Token, name+".token")
-	if err != nil {
-		return lagoTokenUnavailable()
-	}
-	owner, err := store.MaterializeSecret(resolved)
-	if err != nil {
-		return lagoTokenUnavailable()
-	}
-	plaintext := owner.Bytes()
-	defer clear(plaintext)
-	if validateLagoToken(string(plaintext)) != nil {
-		owner.Destroy()
-		return lagoTokenUnavailable()
-	}
-	digest := sha256.Sum256(plaintext)
-	descriptor, err := secret.NewDescriptor(capability.SecretPluginConfig, digest)
-	if err != nil {
-		owner.Destroy()
-		return lagoTokenUnavailable()
-	}
-	p.legacyToken = owner
-	p.config.Token = descriptor.String()
-	p.secretsPrepared = true
-	return nil
+	return lagoTokenUnavailable()
 }
 
 func validateLagoToken(value string) error {
@@ -439,10 +408,6 @@ func (p *Plugin) Stop() {
 		}
 		p.client = nil
 		p.BatchProcessor = nil
-		if p.legacyToken != nil {
-			p.legacyToken.Destroy()
-			p.legacyToken = nil
-		}
 		p.token = secret.Value{}
 		p.tokenSet = false
 		p.secretsPrepared = false
@@ -639,15 +604,7 @@ func (p *Plugin) useTokenLocked(allowRetiredDrain bool, use func(string) error) 
 	if p.tokenSet {
 		return p.token.Use(use)
 	}
-	if p.legacyToken == nil {
-		return secret.ErrCredentialUnavailable
-	}
-	plaintext := p.legacyToken.Bytes()
-	defer clear(plaintext)
-	if len(plaintext) == 0 {
-		return secret.ErrCredentialUnavailable
-	}
-	return use(string(plaintext))
+	return secret.ErrCredentialUnavailable
 }
 
 func (p *Plugin) buildEvent(fields map[string]any) lagoEvent {

@@ -13,7 +13,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/resource"
-	"github.com/wklken/apisix-go/pkg/store"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -140,15 +139,11 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 }
 
 func (p *Plugin) consumerByKey(key string) (resource.Consumer, bool) {
-	if lookup := p.ConsumerLookup(); lookup != nil {
-		return lookup.ConsumerByPluginKey(name, key)
+	lookup := p.ConsumerLookup()
+	if lookup == nil {
+		return resource.Consumer{}, false
 	}
-	return legacyJWEConsumerByKey(key)
-}
-
-func legacyJWEConsumerByKey(key string) (resource.Consumer, bool) {
-	consumer, err := store.GetConsumerByPluginKey(name, key)
-	return consumer, err == nil
+	return lookup.ConsumerByPluginKey(name, key)
 }
 
 func (p *Plugin) fetchToken(r *http.Request) string {

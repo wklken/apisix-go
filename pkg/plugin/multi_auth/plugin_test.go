@@ -2,6 +2,7 @@ package multi_auth
 
 import (
 	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
@@ -22,12 +23,71 @@ import (
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/store"
 	"github.com/wklken/apisix-go/pkg/testutil"
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 var (
 	testStoreOnce sync.Once
 	testEvents    chan *store.Event
 )
+
+type storeBackedMultiAuthLookup struct{}
+
+func (storeBackedMultiAuthLookup) ConsumerByPluginKey(plugin, key string) (resource.Consumer, bool) {
+	consumer, err := store.GetConsumerByPluginKey(plugin, key)
+	return consumer, err == nil
+}
+
+func (storeBackedMultiAuthLookup) ConsumerByID(id string) (resource.Consumer, bool) {
+	consumer, err := store.GetConsumer(id)
+	return consumer, err == nil
+}
+
+func (storeBackedMultiAuthLookup) ConsumerGroupByID(string) (resource.ConsumerGroup, bool) {
+	return resource.ConsumerGroup{}, false
+}
+
+type storeBackedMultiAuthChildPreparer struct{}
+
+func (storeBackedMultiAuthChildPreparer) Prepare(
+	ctx context.Context,
+	_ base.ScopedSecretAccess,
+	spec base.CompositeChildSpec,
+) (base.PreparedCompositeChild, error) {
+	if ctx == nil {
+		return nil, errAuthChildPreparation
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	child, err := newAuthPlugin(spec.Factory)
+	if err != nil {
+		return nil, err
+	}
+	owner := &legacyPreparedAuthChild{factory: spec.Factory, child: child}
+	fail := func(err error) (base.PreparedCompositeChild, error) {
+		owner.Close()
+		return nil, err
+	}
+	if err := child.Init(); err != nil {
+		return fail(err)
+	}
+	setter, ok := child.(interface{ SetDependencies(base.Dependencies) })
+	if !ok {
+		return fail(errAuthChildPreparation)
+	}
+	setter.SetDependencies(base.Dependencies{Consumers: storeBackedMultiAuthLookup{}})
+	if err := util.Parse(spec.Config, child.Config()); err != nil {
+		return fail(err)
+	}
+	if err := base.MaterializePluginSecrets(child); err != nil {
+		return fail(err)
+	}
+	if err := child.PostInit(); err != nil {
+		return fail(err)
+	}
+	return owner, nil
+}
 
 func setupStore(t *testing.T) {
 	t.Helper()
@@ -79,11 +139,12 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
 
 	p := &Plugin{config: cfg}
+	p.SetDependencies(base.Dependencies{CompositeChildren: storeBackedMultiAuthChildPreparer{}})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := base.MaterializePluginSecrets(p); err != nil {
-		t.Fatalf("MaterializePluginSecrets() error = %v", err)
+	if err := p.MaterializeScopedSecrets(context.Background(), base.ScopedSecretAccess{}); err != nil {
+		t.Fatalf("MaterializeScopedSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)

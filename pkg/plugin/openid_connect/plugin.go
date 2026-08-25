@@ -725,10 +725,7 @@ func (p *Plugin) Stop() {
 		p.discoveryLoaded = false
 		p.mu.Unlock()
 
-		owners := p.dropOIDCSecrets()
-		for _, owner := range owners {
-			owner.Destroy()
-		}
+		p.dropOIDCSecrets()
 	})
 }
 

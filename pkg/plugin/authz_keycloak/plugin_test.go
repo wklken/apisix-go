@@ -1,6 +1,7 @@
 package authz_keycloak
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -19,6 +20,7 @@ import (
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/secret"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -49,8 +51,10 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := base.MaterializePluginSecrets(p); err != nil {
-		t.Fatalf("MaterializePluginSecrets() error = %v", err)
+	capabilityValue, scope, _, cleanup := newScopedSecretHarness(t, 1, "test-route", nil)
+	t.Cleanup(cleanup)
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
@@ -808,7 +812,7 @@ func TestPostInitAppliesKeepaliveAndTLSOptions(t *testing.T) {
 	}
 }
 
-func TestMaterializeSecretsRedactsClientSecretUsesResolvedFormsAndStopsOwner(t *testing.T) {
+func TestScopedSecretRedactsClientSecretUsesResolvedFormsAndStopsCleanly(t *testing.T) {
 	t.Setenv("AUTHZ_KEYCLOAK_CLIENT_SECRET", "environment-secret")
 	forms := make(chan url.Values, 1)
 	keycloak := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -820,11 +824,22 @@ func TestMaterializeSecretsRedactsClientSecretUsesResolvedFormsAndStopsOwner(t *
 	}))
 	t.Cleanup(keycloak.Close)
 
-	p := newTestPlugin(t, Config{
+	p := &Plugin{config: Config{
 		TokenEndpoint: keycloak.URL,
 		ClientID:      "apisix",
 		ClientSecret:  "$ENV://AUTHZ_KEYCLOAK_CLIENT_SECRET",
+	}}
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	capabilityValue, scope, _, cleanup := newScopedSecretHarness(t, 2, "resolved-form", map[string]string{
+		"$ENV://AUTHZ_KEYCLOAK_CLIENT_SECRET": "environment-secret",
 	})
+	defer cleanup()
+	materializeScopedKeycloak(t, p, capabilityValue, scope)
+	if err := p.PostInit(); err != nil {
+		t.Fatal(err)
+	}
 
 	if p.config.ClientSecret != scopedKeycloakDescriptor("environment-secret") {
 		t.Fatalf("client_secret = %q, want resolved content descriptor", p.config.ClientSecret)
@@ -840,16 +855,9 @@ func TestMaterializeSecretsRedactsClientSecretUsesResolvedFormsAndStopsOwner(t *
 		t.Fatalf("client_secret form value = %q, want materialized environment value", got)
 	}
 
-	owner := p.clientSecret
-	if owner == nil {
-		t.Fatal("client secret owner is not retained by the plugin generation")
-	}
 	p.Stop()
-	if p.clientSecret != nil {
-		t.Fatal("Stop() retained the client secret owner")
-	}
-	if got := owner.Bytes(); got != nil {
-		t.Fatalf("Stop() left client secret bytes = %q, want destroyed handle", got)
+	if p.scopedSet || p.scopedClientSecret != (secret.Value{}) {
+		t.Fatal("Stop() retained scoped client secret state")
 	}
 }
 

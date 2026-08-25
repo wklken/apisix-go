@@ -28,7 +28,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
 	"github.com/wklken/apisix-go/pkg/secret"
 	"github.com/wklken/apisix-go/pkg/shared"
-	"github.com/wklken/apisix-go/pkg/store"
 	"github.com/wklken/apisix-go/pkg/util"
 	"golang.org/x/oauth2"
 )
@@ -374,40 +373,7 @@ func (p *Plugin) MaterializeSecrets() error {
 		p.secretsPrepared = true
 		return nil
 	}
-	resolver := p.DataEncryption()
-	if !resolver.Configured() {
-		return errors.New("data-encryption resolver is required")
-	}
-	resolved, err := resolver.ResolveForContext(
-		p.config.AuthConfig.PrivateKey,
-		name+".auth_config.private_key",
-	)
-	if err != nil {
-		return googlePrivateKeyUnavailable()
-	}
-	owner, err := store.MaterializeSecret(resolved)
-	if err != nil {
-		return googlePrivateKeyUnavailable()
-	}
-	privateKey := owner.Bytes()
-	defer func() {
-		clear(privateKey)
-		owner.Destroy()
-	}()
-	resolvedAuth, err := p.buildResolvedInlineAuth(string(privateKey))
-	if err != nil {
-		return googlePrivateKeyUnavailable()
-	}
-	digest := sha256.Sum256(privateKey)
-	descriptor, err := secret.NewDescriptor(capability.SecretPluginConfig, digest)
-	if err != nil {
-		return googlePrivateKeyUnavailable()
-	}
-
-	p.resolvedAuth = resolvedAuth
-	p.config.AuthConfig.PrivateKey = descriptor.String()
-	p.secretsPrepared = true
-	return nil
+	return googlePrivateKeyUnavailable()
 }
 
 func (p *Plugin) buildResolvedInlineAuth(privateKey string) (*AuthConfig, error) {

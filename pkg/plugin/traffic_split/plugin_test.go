@@ -18,6 +18,7 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
 
 	p := &Plugin{config: cfg}
+	p.SetUpstreamResolver(testUpstreamResolver)
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -200,6 +201,7 @@ func TestHandlerUsesWeightedRoundRobin(t *testing.T) {
 
 func TestParsedInlineUpstreamDefaultsRetriesToOtherNodes(t *testing.T) {
 	p := &Plugin{}
+	p.SetUpstreamResolver(testUpstreamResolver)
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -233,6 +235,7 @@ func TestParsedInlineUpstreamDefaultsRetriesToOtherNodes(t *testing.T) {
 
 func TestParsedInlineUpstreamPreservesExplicitZeroRetries(t *testing.T) {
 	p := &Plugin{}
+	p.SetUpstreamResolver(testUpstreamResolver)
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -827,6 +830,7 @@ func TestConfigAcceptsNumericUpstreamID(t *testing.T) {
 	})
 
 	p := &Plugin{}
+	p.SetUpstreamResolver(testUpstreamResolver)
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -1036,14 +1040,52 @@ func TestHandlerRejectsInvalidUpstreamIDBeforeRuleMatching(t *testing.T) {
 	}
 }
 
-func withTestUpstreamResolver(t *testing.T, resolver upstreamResolver) {
+var testUpstreamResolver ResourceUpstreamResolver
+
+func withTestUpstreamResolver(t *testing.T, resolver func(string) (*Upstream, error)) {
 	t.Helper()
 
-	old := getUpstreamByID
-	getUpstreamByID = resolver
+	old := testUpstreamResolver
+	testUpstreamResolver = func(id string) (resource.Upstream, error) {
+		upstream, err := resolver(id)
+		if err != nil {
+			return resource.Upstream{}, err
+		}
+		return resourceFromUpstream(upstream)
+	}
 	t.Cleanup(func() {
-		getUpstreamByID = old
+		testUpstreamResolver = old
 	})
+}
+
+func resourceFromUpstream(upstream *Upstream) (resource.Upstream, error) {
+	if upstream == nil {
+		return resource.Upstream{}, nil
+	}
+	nodes := make([]map[string]any, 0, len(upstream.Nodes))
+	for _, node := range upstream.Nodes {
+		encoded := map[string]any{
+			"host": node.Host, "port": node.Port, "priority": node.Priority,
+		}
+		if node.weightSet {
+			encoded["weight"] = node.Weight
+		}
+		nodes = append(nodes, encoded)
+	}
+	raw, err := json.Marshal(map[string]any{
+		"type": upstream.Type, "scheme": upstream.Scheme, "tls": upstream.TLS,
+		"pass_host": upstream.PassHost, "upstream_host": upstream.UpstreamHost,
+		"hash_on": upstream.HashOn, "key": upstream.Key, "timeout": upstream.Timeout,
+		"retries": upstream.Retries, "checks": upstream.Checks, "nodes": nodes,
+	})
+	if err != nil {
+		return resource.Upstream{}, err
+	}
+	var stored resource.Upstream
+	if err := json.Unmarshal(raw, &stored); err != nil {
+		return resource.Upstream{}, err
+	}
+	return stored, nil
 }
 
 func performRequest(t *testing.T, p *Plugin) *Override {

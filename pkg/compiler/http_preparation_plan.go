@@ -3,10 +3,12 @@ package compiler
 import (
 	"context"
 	"fmt"
+	"maps"
 	"reflect"
 	"slices"
 
 	"github.com/wklken/apisix-go/pkg/generation"
+	"github.com/wklken/apisix-go/pkg/plugin/grpc_transcode"
 	"github.com/wklken/apisix-go/pkg/plugin/public_api"
 	"github.com/wklken/apisix-go/pkg/resource"
 	routepkg "github.com/wklken/apisix-go/pkg/route"
@@ -17,6 +19,7 @@ type httpPreparationPlan struct {
 	plugins           *routepkg.HTTPPluginPlan
 	enabledFactories  []string
 	publicAPIRegistry *public_api.Registry
+	protoResolver     grpc_transcode.ProtoResolver
 }
 
 func (prepared *PreparedGeneration) planHTTPPreparation(
@@ -78,5 +81,17 @@ func (prepared *PreparedGeneration) planHTTPPreparation(
 		resources: resources, plugins: plannedPlugins,
 		enabledFactories:  enabledFactories,
 		publicAPIRegistry: registry,
+		protoResolver:     newHTTPProtoResolver(resources.protos),
 	}, nil
+}
+
+func newHTTPProtoResolver(source map[string]string) grpc_transcode.ProtoResolver {
+	protos := maps.Clone(source)
+	return func(id string) (string, error) {
+		content, exists := protos[id]
+		if !exists {
+			return "", fmt.Errorf("proto %q is missing", id)
+		}
+		return content, nil
+	}
 }

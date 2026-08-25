@@ -303,15 +303,22 @@ func TestSendBatchUsesPrivateTokenAndScrubsRetainedRequestState(t *testing.T) {
 		retainedRawResponse = response.RawResponse
 		return nil
 	})
-	p := &Plugin{config: lagoTestConfig(server.URL, "retained-private")}
+	config := lagoTestConfig(server.URL, "retained-private")
+	p := &Plugin{config: config}
 	p.SetDependencies(base.Dependencies{
 		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
 	})
 	if err := p.Init(); err != nil {
 		t.Fatal(err)
 	}
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatal(err)
+	capabilityValue, scope, _, cleanup := newLagoScopedSecretHarness(
+		t, 1, "lago-scrub", config, map[string]string{config.Token: config.Token},
+	)
+	t.Cleanup(cleanup)
+	if err := base.MaterializeScopedPluginSecrets(
+		context.Background(), scope, capabilityValue, p,
+	); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	p.config.EndpointURI = "/api/v1/events/batch"
 	p.config.Timeout = 1000
@@ -442,7 +449,7 @@ func TestLagoStopDrainsActiveSendAndPreventsResurrection(t *testing.T) {
 		t.Fatal("Stop did not return after active Lago request drained")
 	}
 	if p.client != nil || p.clientRelease != nil || p.BatchProcessor != nil ||
-		p.tokenSet || p.legacyToken != nil || p.secretsPrepared || p.ready {
+		p.tokenSet || p.secretsPrepared || p.ready {
 		t.Fatalf("private/runtime state survived Stop: %#v", p)
 	}
 	if _, err := p.SendBatch(
@@ -478,12 +485,16 @@ func TestLagoStopDrainsActiveSendAndPreventsResurrection(t *testing.T) {
 }
 
 func TestLagoRejectsPrePostInitLogEnqueue(t *testing.T) {
-	p := newRawLagoPlugin(t, lagoTestConfig("http://127.0.0.1:3000", "unready-private"))
-	p.SetDependencies(base.Dependencies{
-		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
-	})
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatal(err)
+	config := lagoTestConfig("http://127.0.0.1:3000", "unready-private")
+	p := newRawLagoPlugin(t, config)
+	capabilityValue, scope, _, cleanup := newLagoScopedSecretHarness(
+		t, 1, "lago-unready", config, map[string]string{config.Token: config.Token},
+	)
+	t.Cleanup(cleanup)
+	if err := base.MaterializeScopedPluginSecrets(
+		context.Background(), scope, capabilityValue, p,
+	); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	before := len(p.FireChan)
 	if err := p.RunLogPhase(base.LogSnapshot{}); !errors.Is(err, base.ErrLogQueueUnavailable) {
@@ -519,18 +530,22 @@ func TestLagoStopFlushesPendingBatchBeforeCleanup(t *testing.T) {
 		t.Fatal("Stop dropped the pending Lago batch before delivery")
 	}
 	if p.client != nil || p.clientRelease != nil || p.BatchProcessor != nil ||
-		p.tokenSet || p.legacyToken != nil || p.secretsPrepared || p.ready {
+		p.tokenSet || p.secretsPrepared || p.ready {
 		t.Fatalf("pending drain completed before runtime cleanup: %#v", p)
 	}
 }
 
 func TestLagoConcurrentPostInitAndStopCannotPublishRuntime(t *testing.T) {
-	p := newRawLagoPlugin(t, lagoTestConfig("http://127.0.0.1:3000", "post-init-private"))
-	p.SetDependencies(base.Dependencies{
-		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
-	})
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatal(err)
+	config := lagoTestConfig("http://127.0.0.1:3000", "post-init-private")
+	p := newRawLagoPlugin(t, config)
+	capabilityValue, scope, _, cleanup := newLagoScopedSecretHarness(
+		t, 1, "lago-concurrent", config, map[string]string{config.Token: config.Token},
+	)
+	t.Cleanup(cleanup)
+	if err := base.MaterializeScopedPluginSecrets(
+		context.Background(), scope, capabilityValue, p,
+	); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 
 	p.lifecycleMu.Lock()
@@ -560,7 +575,7 @@ func TestLagoConcurrentPostInitAndStopCannotPublishRuntime(t *testing.T) {
 		t.Fatal("concurrent Stop did not finish")
 	}
 	if p.client != nil || p.clientRelease != nil || p.BatchProcessor != nil ||
-		p.tokenSet || p.legacyToken != nil || p.secretsPrepared || p.ready {
+		p.tokenSet || p.secretsPrepared || p.ready {
 		t.Fatalf("concurrent PostInit/Stop published runtime state: %#v", p)
 	}
 	p.Stop()
@@ -686,8 +701,12 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatalf("MaterializeSecrets() error = %v", err)
+	capabilityValue, scope, _, cleanup := newLagoScopedSecretHarness(
+		t, 1, "test-route", cfg, map[string]string{cfg.Token: cfg.Token},
+	)
+	t.Cleanup(cleanup)
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
@@ -699,8 +718,8 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 
 func TestMaterializeSecretsRejectsMissingDataEncryptionResolver(t *testing.T) {
 	p := &Plugin{config: Config{Token: "private"}}
-	if err := p.MaterializeSecrets(); err == nil || err.Error() != "data-encryption resolver is required" {
-		t.Fatalf("MaterializeSecrets() error = %v, want missing resolver error", err)
+	if err := p.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) {
+		t.Fatalf("MaterializeSecrets() error = %v, want credential unavailable", err)
 	}
 }
 
@@ -744,23 +763,26 @@ func TestPostInitRejectsInvalidEncryptedToken(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := p.MaterializeSecrets(); err == nil {
-		t.Fatal("MaterializeSecrets() error = nil, want strict encrypted token rejection")
+	if err := p.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) {
+		t.Fatalf("MaterializeSecrets() error = %v, want credential unavailable", err)
 	}
 }
 
 func TestPostInitResolvesRotatedEncryptedToken(t *testing.T) {
 	oldKey := "old-keyring-item"
-	newKey := "qeddd145sfvddff3"
-	p := &Plugin{config: Config{Token: encryptLagoTestValue(t, oldKey, "lago-token")}}
-	p.SetDependencies(base.Dependencies{
-		DataEncryption: testutil.DataEncryptionService(true, []string{newKey, oldKey}).Resolver(),
-	})
+	config := Config{Token: encryptLagoTestValue(t, oldKey, "lago-token")}
+	p := &Plugin{config: config}
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatalf("MaterializeSecrets() error = %v", err)
+	capabilityValue, scope, _, cleanup := newLagoScopedSecretHarness(
+		t, 1, "lago-rotated", config, map[string]string{config.Token: "lago-token"},
+	)
+	t.Cleanup(cleanup)
+	if err := base.MaterializeScopedPluginSecrets(
+		context.Background(), scope, capabilityValue, p,
+	); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)

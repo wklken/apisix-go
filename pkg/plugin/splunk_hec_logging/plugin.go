@@ -3,9 +3,7 @@ package splunk_hec_logging
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"crypto/tls"
-	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -26,7 +24,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
 	"github.com/wklken/apisix-go/pkg/secret"
 	"github.com/wklken/apisix-go/pkg/shared"
-	"github.com/wklken/apisix-go/pkg/store"
 )
 
 type Plugin struct {
@@ -42,7 +39,6 @@ type Plugin struct {
 
 	token           secret.Value
 	tokenSet        bool
-	legacyToken     *store.ResolvedSecret
 	secretsPrepared bool
 	ready           bool
 }
@@ -240,34 +236,7 @@ func (p *Plugin) MaterializeSecrets() error {
 	if p.secretsPrepared {
 		return nil
 	}
-	resolver := p.DataEncryption()
-	if !resolver.Configured() {
-		return errors.New("data-encryption resolver is required")
-	}
-	resolved, err := resolver.ResolveForContext(p.config.Endpoint.Token, name+".endpoint.token")
-	if err != nil {
-		return splunkTokenUnavailable()
-	}
-	owner, err := store.MaterializeSecret(resolved)
-	if err != nil {
-		return splunkTokenUnavailable()
-	}
-	plaintext := owner.Bytes()
-	defer clear(plaintext)
-	if validateSplunkToken(string(plaintext)) != nil {
-		owner.Destroy()
-		return splunkTokenUnavailable()
-	}
-	digest := sha256.Sum256(plaintext)
-	descriptor, err := secret.NewDescriptor(capability.SecretPluginConfig, digest)
-	if err != nil {
-		owner.Destroy()
-		return splunkTokenUnavailable()
-	}
-	p.legacyToken = owner
-	p.config.Endpoint.Token = descriptor.String()
-	p.secretsPrepared = true
-	return nil
+	return splunkTokenUnavailable()
 }
 
 func validateSplunkToken(value string) error {
@@ -391,10 +360,6 @@ func (p *Plugin) Stop() {
 		}
 		p.client = nil
 		p.BatchProcessor = nil
-		if p.legacyToken != nil {
-			p.legacyToken.Destroy()
-			p.legacyToken = nil
-		}
 		p.token = secret.Value{}
 		p.tokenSet = false
 		p.secretsPrepared = false
@@ -684,15 +649,7 @@ func (p *Plugin) useTokenLocked(allowRetiredDrain bool, use func(string) error) 
 	if p.tokenSet {
 		return p.token.Use(use)
 	}
-	if p.legacyToken == nil {
-		return secret.ErrCredentialUnavailable
-	}
-	plaintext := p.legacyToken.Bytes()
-	if len(plaintext) == 0 {
-		return secret.ErrCredentialUnavailable
-	}
-	defer clear(plaintext)
-	return use(string(plaintext))
+	return secret.ErrCredentialUnavailable
 }
 
 func (p *Plugin) encodeBatch(entries []map[string]any) ([]byte, error) {

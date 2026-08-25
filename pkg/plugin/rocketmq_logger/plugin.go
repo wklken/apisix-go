@@ -2,8 +2,6 @@ package rocketmq_logger
 
 import (
 	"context"
-	"crypto/sha256"
-	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -22,7 +20,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
 	"github.com/wklken/apisix-go/pkg/secret"
-	"github.com/wklken/apisix-go/pkg/store"
 )
 
 type Plugin struct {
@@ -36,7 +33,6 @@ type Plugin struct {
 
 	secretKey       secret.Value
 	secretKeySet    bool
-	legacySecretKey *store.ResolvedSecret
 	secretsPrepared bool
 	ready           bool
 }
@@ -225,10 +221,6 @@ func (p *Plugin) Stop() {
 		p.sender = nil
 		p.senderFactory = nil
 		p.BatchProcessor = nil
-		if p.legacySecretKey != nil {
-			p.legacySecretKey.Destroy()
-			p.legacySecretKey = nil
-		}
 		p.secretKey = secret.Value{}
 		p.secretKeySet = false
 		p.secretsPrepared = false
@@ -324,38 +316,11 @@ func (p *Plugin) MaterializeSecrets() error {
 	if err := validateRocketMQTLS(p.config.UseTLS); err != nil {
 		return err
 	}
-	resolver := p.DataEncryption()
-	if !resolver.Configured() {
-		return errors.New("data-encryption resolver is required")
-	}
 	if p.config.SecretKey == "" {
 		p.secretsPrepared = true
 		return nil
 	}
-	resolved, err := resolver.ResolveForContext(p.config.SecretKey, name+".secret_key")
-	if err != nil {
-		return rocketMQSecretKeyUnavailable()
-	}
-	owner, err := store.MaterializeSecret(resolved)
-	if err != nil {
-		return rocketMQSecretKeyUnavailable()
-	}
-	plaintext := owner.Bytes()
-	defer clear(plaintext)
-	if validateRocketMQSecretKey(string(plaintext)) != nil {
-		owner.Destroy()
-		return rocketMQSecretKeyUnavailable()
-	}
-	digest := sha256.Sum256(plaintext)
-	descriptor, err := secret.NewDescriptor(capability.SecretPluginConfig, digest)
-	if err != nil {
-		owner.Destroy()
-		return rocketMQSecretKeyUnavailable()
-	}
-	p.legacySecretKey = owner
-	p.config.SecretKey = descriptor.String()
-	p.secretsPrepared = true
-	return nil
+	return rocketMQSecretKeyUnavailable()
 }
 
 func validateRocketMQTLS(useTLS bool) error {
@@ -476,15 +441,6 @@ func (p *Plugin) withPrivateConfigLocked(use func(*Config) error) error {
 			defer func() { config.SecretKey = "" }()
 			return use(&config)
 		})
-	}
-	if p.legacySecretKey != nil {
-		plaintext := p.legacySecretKey.Bytes()
-		defer clear(plaintext)
-		if len(plaintext) == 0 {
-			return secret.ErrCredentialUnavailable
-		}
-		config.SecretKey = string(plaintext)
-		defer func() { config.SecretKey = "" }()
 	}
 	return use(&config)
 }

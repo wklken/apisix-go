@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha1"
-	"crypto/sha256"
 	"crypto/tls"
 	"encoding/hex"
 	"errors"
@@ -27,7 +26,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
 	"github.com/wklken/apisix-go/pkg/secret"
 	"github.com/wklken/apisix-go/pkg/shared"
-	"github.com/wklken/apisix-go/pkg/store"
 	"google.golang.org/protobuf/encoding/protowire"
 )
 
@@ -49,7 +47,6 @@ type Plugin struct {
 
 	secretKey       secret.Value
 	secretKeySet    bool
-	legacySecretKey *store.ResolvedSecret
 	secretsPrepared bool
 
 	// testLifecycleHook is a package-local synchronization seam for lifecycle
@@ -284,34 +281,7 @@ func (p *Plugin) MaterializeSecrets() error {
 	if isSecretReference(p.config.SecretID) {
 		return clsSecretKeyUnavailable()
 	}
-	resolver := p.DataEncryption()
-	if !resolver.Configured() {
-		return errors.New("data-encryption resolver is required")
-	}
-	resolved, err := resolver.ResolveForContext(p.config.SecretKey, name+".secret_key")
-	if err != nil {
-		return clsSecretKeyUnavailable()
-	}
-	owner, err := store.MaterializeSecret(resolved)
-	if err != nil {
-		return clsSecretKeyUnavailable()
-	}
-	plaintext := owner.Bytes()
-	defer clear(plaintext)
-	if err := validateCLSSecretKey(string(plaintext)); err != nil {
-		owner.Destroy()
-		return clsSecretKeyUnavailable()
-	}
-	digest := sha256.Sum256(plaintext)
-	descriptor, err := secret.NewDescriptor(capability.SecretPluginConfig, digest)
-	if err != nil {
-		owner.Destroy()
-		return clsSecretKeyUnavailable()
-	}
-	p.legacySecretKey = owner
-	p.config.SecretKey = descriptor.String()
-	p.secretsPrepared = true
-	return nil
+	return clsSecretKeyUnavailable()
 }
 
 func validateCLSSecretKey(value string) error {
@@ -431,10 +401,6 @@ func (p *Plugin) Stop() {
 		p.client = nil
 		p.BatchProcessor = nil
 		p.ready = false
-		if p.legacySecretKey != nil {
-			p.legacySecretKey.Destroy()
-			p.legacySecretKey = nil
-		}
 		p.secretKey = secret.Value{}
 		p.secretKeySet = false
 		p.secretsPrepared = false
@@ -657,12 +623,6 @@ func (p *Plugin) useSigningConfigLocked(use func(*Config) error) error {
 			defer func() { privateConfig.SecretKey = "" }()
 			return usePrivateConfig()
 		})
-	}
-	if p.legacySecretKey != nil {
-		plaintext := p.legacySecretKey.Bytes()
-		defer clear(plaintext)
-		privateConfig.SecretKey = string(plaintext)
-		return usePrivateConfig()
 	}
 	return secret.ErrCredentialUnavailable
 }

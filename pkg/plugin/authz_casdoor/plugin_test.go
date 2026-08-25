@@ -22,7 +22,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/secret"
-	"github.com/wklken/apisix-go/pkg/store"
 	"github.com/wklken/apisix-go/pkg/testutil"
 	"github.com/wklken/apisix-go/pkg/util"
 )
@@ -42,8 +41,14 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 		t.Fatalf("Init() error = %v", err)
 	}
 	p.newState = func() (string, error) { return "state-1", nil }
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatalf("MaterializeSecrets() error = %v", err)
+	values := map[string]string{cfg.ClientSecret: cfg.ClientSecret}
+	for _, fallback := range cfg.ClientSecretFallbacks {
+		values[fallback] = fallback
+	}
+	capabilityValue, scope, _, cleanup := newCasdoorScopedSecretHarness(t, 1, "test-route", cfg, values)
+	t.Cleanup(cleanup)
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
@@ -328,60 +333,13 @@ func TestCasdoorLegacyMaterializationAndStopOwnAllSecretHandles(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatal(err)
 	}
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatalf("MaterializeSecrets() error = %v", err)
-	}
-	if got, want := p.config.ClientSecret, casdoorDescriptor(current); got != want {
-		t.Fatalf("legacy current descriptor = %q, want %q", got, want)
-	}
-	for i, resolved := range []string{literal, fallback} {
-		if got, want := p.config.ClientSecretFallbacks[i], casdoorDescriptor(resolved); got != want {
-			t.Fatalf("legacy fallback descriptor[%d] = %q, want %q", i, got, want)
-		}
-	}
-	currentHandle := p.legacyClientSecret
-	fallbackHandles := append([]*store.ResolvedSecret(nil), p.legacyClientSecretFallbacks...)
-	if currentHandle == nil || len(fallbackHandles) != 2 {
-		t.Fatalf("legacy handles = %p/%#v, want current plus two fallbacks", currentHandle, fallbackHandles)
-	}
-	if err := p.PostInit(); err != nil {
-		t.Fatalf("PostInit() error = %v", err)
-	}
-	if p.client == nil {
-		t.Fatal("PostInit did not construct neutral HTTP client")
-	}
-
-	var group sync.WaitGroup
-	for range 16 {
-		group.Go(p.Stop)
-	}
-	group.Wait()
-	p.Stop()
-	if got := currentHandle.Bytes(); got != nil {
-		t.Fatalf("saved current handle bytes = %q, want destroyed", got)
-	}
-	for i, handle := range fallbackHandles {
-		if got := handle.Bytes(); got != nil {
-			t.Fatalf("saved fallback handle[%d] bytes = %q, want destroyed", i, got)
-		}
-	}
-	if !p.retired || p.client != nil || p.secretsPrepared || p.clientSecretSet ||
-		p.clientSecret != (secret.Value{}) || len(p.clientSecretFallbacks) != 0 ||
-		p.legacyClientSecret != nil || len(p.legacyClientSecretFallbacks) != 0 {
-		t.Fatalf("retired plugin retained secret/client state: %#v", p)
-	}
 	if err := p.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) {
-		t.Fatalf("post-retirement MaterializeSecrets() error = %v, want credential unavailable", err)
+		t.Fatalf("MaterializeSecrets() error = %v, want credential unavailable", err)
 	}
-	if err := p.PostInit(); !errors.Is(err, secret.ErrCredentialUnavailable) {
-		t.Fatalf("post-retirement PostInit() error = %v, want credential unavailable", err)
-	}
-	rr := httptest.NewRecorder()
-	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-		t.Fatal("retired plugin called next handler")
-	})).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "https://gateway.example.com/orders", nil))
-	if rr.Code != http.StatusServiceUnavailable {
-		t.Fatalf("retired handler status = %d, want 503", rr.Code)
+	if p.config.ClientSecret != currentRaw ||
+		fmt.Sprint(p.config.ClientSecretFallbacks) != fmt.Sprint([]string{literal, fallbackRaw}) ||
+		p.secretsPrepared || p.client != nil {
+		t.Fatalf("failed materialization retained state: %#v", p)
 	}
 }
 
@@ -410,19 +368,12 @@ func TestCasdoorLegacyNthFallbackFailureIsAtomicAndRetryable(t *testing.T) {
 	}
 	if p.config.ClientSecret != config.ClientSecret ||
 		fmt.Sprint(p.config.ClientSecretFallbacks) != fmt.Sprint(config.ClientSecretFallbacks) ||
-		p.legacyClientSecret != nil || len(p.legacyClientSecretFallbacks) != 0 ||
 		p.secretsPrepared || p.client != nil {
 		t.Fatalf("failed legacy materialization retained partial state: %#v", p)
 	}
 	t.Setenv("CASDOOR_LEGACY_ATOMIC_FALLBACK", fallback)
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatalf("same-instance legacy retry error = %v", err)
-	}
-	if got, want := p.config.ClientSecret, casdoorDescriptor(current); got != want {
-		t.Fatalf("legacy retry current descriptor = %q, want %q", got, want)
-	}
-	if got, want := p.config.ClientSecretFallbacks[1], casdoorDescriptor(fallback); got != want {
-		t.Fatalf("legacy retry fallback descriptor = %q, want %q", got, want)
+	if err := p.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) {
+		t.Fatalf("same-instance MaterializeSecrets() error = %v, want credential unavailable", err)
 	}
 	p.Stop()
 }
@@ -437,14 +388,11 @@ func TestCasdoorPostInitDoesNotResolveSecrets(t *testing.T) {
 	if err := p.PostInit(); !errors.Is(err, secret.ErrCredentialUnavailable) {
 		t.Fatalf("PostInit() error = %v, want credential unavailable before preparation", err)
 	}
-	if p.config.ClientSecret != raw || p.legacyClientSecret != nil || p.client != nil || p.secretsPrepared {
+	if p.config.ClientSecret != raw || p.client != nil || p.secretsPrepared {
 		t.Fatalf("PostInit resolved or installed secret state: %#v", p)
 	}
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatalf("explicit legacy materialization error = %v", err)
-	}
-	if err := p.PostInit(); err != nil {
-		t.Fatalf("PostInit after explicit preparation error = %v", err)
+	if err := p.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) {
+		t.Fatalf("MaterializeSecrets() error = %v, want credential unavailable", err)
 	}
 	p.Stop()
 }
@@ -1296,8 +1244,7 @@ func TestSessionSecretsRequireCryptographicLength(t *testing.T) {
 			if err := instance.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) {
 				t.Fatalf("MaterializeSecrets() error = %v, want resolved weak secret rejection", err)
 			}
-			if instance.secretsPrepared || instance.legacyClientSecret != nil ||
-				len(instance.legacyClientSecretFallbacks) != 0 || instance.client != nil {
+			if instance.secretsPrepared || instance.client != nil {
 				t.Fatalf("failed materialization retained secret state: %#v", instance)
 			}
 		})

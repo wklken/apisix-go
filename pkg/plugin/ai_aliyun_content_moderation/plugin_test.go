@@ -28,8 +28,10 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := base.MaterializePluginSecrets(p); err != nil {
-		t.Fatalf("MaterializePluginSecrets() error = %v", err)
+	capabilityValue, scope, _, cleanup := newScopedSecretHarness(t, name, nil)
+	t.Cleanup(cleanup)
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
@@ -340,7 +342,7 @@ func TestHandlerSkipsWhenCheckRequestDisabled(t *testing.T) {
 	}
 }
 
-func TestMaterializeSecretsResolvesCredentialsAndRedactsConfig(t *testing.T) {
+func TestScopedSecretsResolveCredentialsAndRedactConfig(t *testing.T) {
 	t.Setenv("APISIX_GO_ALIYUN_ACCESS_ID", "resolved-access-id")
 	t.Setenv("APISIX_GO_ALIYUN_ACCESS_SECRET", "resolved-access-secret")
 	p := &Plugin{config: Config{
@@ -352,8 +354,13 @@ func TestMaterializeSecretsResolvesCredentialsAndRedactsConfig(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatal(err)
 	}
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatalf("MaterializeSecrets() error = %v", err)
+	capabilityValue, scope, _, cleanup := newScopedSecretHarness(t, name, map[string]string{
+		"$ENV://APISIX_GO_ALIYUN_ACCESS_ID":     "resolved-access-id",
+		"$ENV://APISIX_GO_ALIYUN_ACCESS_SECRET": "resolved-access-secret",
+	})
+	defer cleanup()
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if strings.Contains(p.config.AccessKeyID, "resolved-access-id") ||
 		strings.Contains(p.config.AccessKeySecret, "resolved-access-secret") {
@@ -848,8 +855,10 @@ func TestPostInitRejectsRealtimeResponseFailClosedMode(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := base.MaterializePluginSecrets(p); err != nil {
-		t.Fatalf("MaterializePluginSecrets() error = %v", err)
+	capabilityValue, scope, _, cleanup := newScopedSecretHarness(t, name, nil)
+	defer cleanup()
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err == nil {
 		t.Fatal("PostInit() error = nil, want realtime fail-closed configuration error")

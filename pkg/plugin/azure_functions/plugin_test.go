@@ -35,8 +35,18 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatalf("MaterializeSecrets() error = %v", err)
+	broker := &azureScopedBroker{values: map[string]string{}}
+	if cfg.Authorization != nil && cfg.Authorization.APIKey != "" {
+		broker.values[cfg.Authorization.APIKey] = cfg.Authorization.APIKey
+	}
+	capabilityValue, registration, scope := registerAzureScopedRouteConfigAt(t, broker, 1, cfg)
+	t.Cleanup(func() {
+		if err := registration.Close(context.Background()); err != nil {
+			t.Error(err)
+		}
+	})
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
@@ -687,12 +697,11 @@ func TestAzureStopIsIdempotentAndDropsRouteValue(t *testing.T) {
 	}
 	p.Stop()
 	p.Stop()
-	if p.routeAPIKeySet || p.routeAPIKey != (secret.Value{}) || p.legacyRouteAPIKey != nil {
+	if p.routeAPIKeySet || p.routeAPIKey != (secret.Value{}) {
 		t.Fatalf(
-			"route secret state after Stop = set:%v value:%#v legacy:%p",
+			"route secret state after Stop = set:%v value:%#v",
 			p.routeAPIKeySet,
 			p.routeAPIKey,
-			p.legacyRouteAPIKey,
 		)
 	}
 }

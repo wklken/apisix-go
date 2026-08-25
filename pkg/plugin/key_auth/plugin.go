@@ -11,7 +11,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/resource"
-	"github.com/wklken/apisix-go/pkg/store"
 )
 
 type Plugin struct {
@@ -252,34 +251,23 @@ func (p *Plugin) anonymousConsumerResult(w http.ResponseWriter, r *http.Request)
 }
 
 func (p *Plugin) consumerByKey(key string) (resource.Consumer, error) {
-	if lookup := p.ConsumerLookup(); lookup != nil {
-		consumer, ok := lookup.ConsumerByPluginKey(name, key)
-		if !ok {
-			return resource.Consumer{}, errKeyAuthConsumerNotFound
-		}
-		return consumer, nil
+	lookup := p.ConsumerLookup()
+	if lookup == nil {
+		return resource.Consumer{}, errKeyAuthConsumerNotFound
 	}
-	return legacyKeyAuthConsumerByKey(key)
+	consumer, ok := lookup.ConsumerByPluginKey(name, key)
+	if !ok {
+		return resource.Consumer{}, errKeyAuthConsumerNotFound
+	}
+	return consumer, nil
 }
 
 func (p *Plugin) consumerByID(id string) (resource.Consumer, bool) {
-	if lookup := p.ConsumerLookup(); lookup != nil {
-		return lookup.ConsumerByID(id)
+	lookup := p.ConsumerLookup()
+	if lookup == nil {
+		return resource.Consumer{}, false
 	}
-	return legacyKeyAuthConsumerByID(id)
-}
-
-func legacyKeyAuthConsumerByKey(key string) (resource.Consumer, error) {
-	consumer, err := store.GetConsumerByPluginKey(name, key)
-	if errors.Is(err, store.ErrNotFound) {
-		return resource.Consumer{}, errKeyAuthConsumerNotFound
-	}
-	return consumer, err
-}
-
-func legacyKeyAuthConsumerByID(id string) (resource.Consumer, bool) {
-	consumer, err := store.GetConsumer(id)
-	return consumer, err == nil
+	return lookup.ConsumerByID(id)
 }
 
 func (p *Plugin) writeAuthError(w http.ResponseWriter, status int, body string) {

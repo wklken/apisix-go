@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -22,7 +21,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/secret"
-	"github.com/wklken/apisix-go/pkg/store"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -34,14 +32,12 @@ type Plugin struct {
 	newState func() (string, error)
 	now      func() time.Time
 
-	lifecycleMu                 sync.RWMutex
-	clientSecret                secret.Value
-	clientSecretSet             bool
-	clientSecretFallbacks       []secret.Value
-	legacyClientSecret          *store.ResolvedSecret
-	legacyClientSecretFallbacks []*store.ResolvedSecret
-	secretsPrepared             bool
-	retired                     bool
+	lifecycleMu           sync.RWMutex
+	clientSecret          secret.Value
+	clientSecretSet       bool
+	clientSecretFallbacks []secret.Value
+	secretsPrepared       bool
+	retired               bool
 
 	// testLifecycleHook is a package-local synchronization seam for lifecycle
 	// tests; it is nil in production.
@@ -254,64 +250,7 @@ func (p *Plugin) MaterializeSecrets() error {
 	if p.secretsPrepared {
 		return nil
 	}
-
-	current, currentDescriptor, err := materializeLegacyCasdoorSecret(p.config.ClientSecret)
-	if err != nil {
-		return secret.ErrCredentialUnavailable
-	}
-	fallbacks := make([]*store.ResolvedSecret, len(p.config.ClientSecretFallbacks))
-	fallbackDescriptors := make([]string, len(p.config.ClientSecretFallbacks))
-	installed := false
-	destroyStaged := func() {
-		if installed {
-			return
-		}
-		current.Destroy()
-		for i, fallback := range fallbacks {
-			if fallback != nil {
-				fallback.Destroy()
-				fallbacks[i] = nil
-			}
-		}
-	}
-	defer destroyStaged()
-	for i, raw := range p.config.ClientSecretFallbacks {
-		fallback, descriptor, materializeErr := materializeLegacyCasdoorSecret(raw)
-		if materializeErr != nil {
-			return secret.ErrCredentialUnavailable
-		}
-		fallbacks[i] = fallback
-		fallbackDescriptors[i] = descriptor
-	}
-
-	p.legacyClientSecret = current
-	p.legacyClientSecretFallbacks = fallbacks
-	p.config.ClientSecret = currentDescriptor
-	p.config.ClientSecretFallbacks = fallbackDescriptors
-	p.secretsPrepared = true
-	installed = true
-	return nil
-}
-
-func materializeLegacyCasdoorSecret(raw string) (*store.ResolvedSecret, string, error) {
-	value, err := store.MaterializeSecret(raw)
-	if err != nil {
-		return nil, "", secret.ErrCredentialUnavailable
-	}
-	plaintext := value.Bytes()
-	if utf8.RuneCount(plaintext) < minSessionSecretLength {
-		clear(plaintext)
-		value.Destroy()
-		return nil, "", secret.ErrCredentialUnavailable
-	}
-	digest := sha256.Sum256(plaintext)
-	clear(plaintext)
-	descriptor, err := secret.NewDescriptor(capability.SecretPluginConfig, digest)
-	if err != nil {
-		value.Destroy()
-		return nil, "", secret.ErrCredentialUnavailable
-	}
-	return value, descriptor.String(), nil
+	return secret.ErrCredentialUnavailable
 }
 
 func validateCasdoorSessionSecret(plaintext string) error {
@@ -554,15 +493,7 @@ func (p *Plugin) useClientSecretLocked(use func(string) error) error {
 	if p.clientSecretSet {
 		return p.clientSecret.Use(use)
 	}
-	if p.legacyClientSecret == nil {
-		return secret.ErrCredentialUnavailable
-	}
-	plaintext := p.legacyClientSecret.Bytes()
-	if len(plaintext) == 0 {
-		return secret.ErrCredentialUnavailable
-	}
-	defer clear(plaintext)
-	return use(string(plaintext))
+	return secret.ErrCredentialUnavailable
 }
 
 func (p *Plugin) useSessionSecretsLocked(use func(string, []string) error) error {
@@ -582,33 +513,7 @@ func (p *Plugin) useSessionSecretsLocked(use func(string, []string) error) error
 			})
 		})
 	}
-	if p.legacyClientSecret == nil {
-		return secret.ErrCredentialUnavailable
-	}
-	current := p.legacyClientSecret.Bytes()
-	if len(current) == 0 {
-		return secret.ErrCredentialUnavailable
-	}
-	defer clear(current)
-	fallbackBytes := make([][]byte, len(p.legacyClientSecretFallbacks))
-	fallbacks := make([]string, len(p.legacyClientSecretFallbacks))
-	defer func() {
-		for i := range fallbackBytes {
-			clear(fallbackBytes[i])
-			fallbacks[i] = ""
-		}
-	}()
-	for i, owner := range p.legacyClientSecretFallbacks {
-		if owner == nil {
-			return secret.ErrCredentialUnavailable
-		}
-		fallbackBytes[i] = owner.Bytes()
-		if len(fallbackBytes[i]) == 0 {
-			return secret.ErrCredentialUnavailable
-		}
-		fallbacks[i] = string(fallbackBytes[i])
-	}
-	return use(string(current), fallbacks)
+	return secret.ErrCredentialUnavailable
 }
 
 func useScopedCasdoorFallbacks(
@@ -643,17 +548,6 @@ func (p *Plugin) Stop() {
 		p.client.CloseIdleConnections()
 		p.client = nil
 	}
-	if p.legacyClientSecret != nil {
-		p.legacyClientSecret.Destroy()
-		p.legacyClientSecret = nil
-	}
-	for i, fallback := range p.legacyClientSecretFallbacks {
-		if fallback != nil {
-			fallback.Destroy()
-		}
-		p.legacyClientSecretFallbacks[i] = nil
-	}
-	p.legacyClientSecretFallbacks = nil
 	p.clientSecret = secret.Value{}
 	p.clientSecretSet = false
 	for i := range p.clientSecretFallbacks {

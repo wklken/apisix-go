@@ -17,7 +17,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/resource"
-	"github.com/wklken/apisix-go/pkg/store"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -284,29 +283,19 @@ func (p *Plugin) authenticate(r *http.Request) (resource.Consumer, int, error) {
 }
 
 func (p *Plugin) consumerByPluginKey(key string) (resource.Consumer, bool) {
-	if lookup := p.ConsumerLookup(); lookup != nil {
-		return lookup.ConsumerByPluginKey(name, key)
+	lookup := p.ConsumerLookup()
+	if lookup == nil {
+		return resource.Consumer{}, false
 	}
-
-	return legacyHMACConsumerByPluginKey(key)
+	return lookup.ConsumerByPluginKey(name, key)
 }
 
 func (p *Plugin) consumerByID(id string) (resource.Consumer, bool) {
-	if lookup := p.ConsumerLookup(); lookup != nil {
-		return lookup.ConsumerByID(id)
+	lookup := p.ConsumerLookup()
+	if lookup == nil {
+		return resource.Consumer{}, false
 	}
-
-	return legacyHMACConsumerByID(id)
-}
-
-func legacyHMACConsumerByPluginKey(key string) (resource.Consumer, bool) {
-	consumer, err := store.GetConsumerByPluginKey(name, key)
-	return consumer, err == nil
-}
-
-func legacyHMACConsumerByID(id string) (resource.Consumer, bool) {
-	consumer, err := store.GetConsumer(id)
-	return consumer, err == nil
+	return lookup.ConsumerByID(id)
 }
 
 func (p *Plugin) algorithmAllowed(algorithm string) bool {

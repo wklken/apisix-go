@@ -372,127 +372,86 @@ func TestPostInitDoesNotSelfMaterializeOASSecrets(t *testing.T) {
 	}
 }
 
-func TestOASStopDropsScopedAndDestroysLegacySecrets(t *testing.T) {
+func TestOASStopDropsScopedSecrets(t *testing.T) {
 	const raw = "$ENV://OAS_STOP_INLINE_SPEC"
-	for _, mode := range []string{"scoped", "legacy"} {
-		t.Run(mode, func(t *testing.T) {
-			p := &Plugin{config: Config{Spec: raw}}
-			var (
-				closeAttempt func()
-				legacyOwner  = p.legacyInline
-			)
-			if mode == "scoped" {
-				capabilityValue, scope, _, closeScoped := newOASScopedSecretHarness(
-					t, map[string]string{raw: testSpec()},
-				)
-				closeAttempt = closeScoped
-				materializeScopedOASSecrets(t, p, capabilityValue, scope)
-			} else {
-				t.Setenv("OAS_STOP_INLINE_SPEC", testSpec())
-				if err := p.MaterializeSecrets(); err != nil {
-					t.Fatal(err)
-				}
-				legacyOwner = p.legacyInline
-			}
-			if closeAttempt != nil {
-				defer closeAttempt()
-			}
-			if err := p.PostInit(); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := p.validator(); err != nil {
-				t.Fatal(err)
-			}
-			p.Stop()
-			p.Stop()
-			if p.legacyInline != nil || p.legacyHeaders != nil ||
-				p.scopedInline != (secret.Value{}) || p.scopedHeaders != nil ||
-				p.legacySet || p.scopedSet || len(p.headerNames) != 0 {
-				t.Fatalf(
-					"Stop() retained secret state: legacy=%v scoped=%v headers=%d",
-					p.legacySet, p.scopedSet, len(p.headerNames),
-				)
-			}
-			if legacyOwner != nil && legacyOwner.Bytes() != nil {
-				t.Fatal("Stop() did not destroy legacy inline owner")
-			}
-			if _, err := p.validator(); !errors.Is(err, secret.ErrCredentialUnavailable) {
-				t.Fatalf("post-Stop validator() error = %v", err)
-			}
-			if err := p.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) {
-				t.Fatalf("post-Stop MaterializeSecrets() error = %v", err)
-			}
-		})
+	capabilityValue, scope, _, closeAttempt := newOASScopedSecretHarness(
+		t, map[string]string{raw: testSpec()},
+	)
+	defer closeAttempt()
+	p := &Plugin{config: Config{Spec: raw}}
+	materializeScopedOASSecrets(t, p, capabilityValue, scope)
+	if err := p.PostInit(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.validator(); err != nil {
+		t.Fatal(err)
+	}
+	p.Stop()
+	p.Stop()
+	if p.scopedInline != (secret.Value{}) || p.scopedHeaders != nil ||
+		p.scopedSet || len(p.headerNames) != 0 {
+		t.Fatalf(
+			"Stop() retained scoped secret state: scoped=%v headers=%d",
+			p.scopedSet, len(p.headerNames),
+		)
+	}
+	if _, err := p.validator(); !errors.Is(err, secret.ErrCredentialUnavailable) {
+		t.Fatalf("post-Stop validator() error = %v", err)
 	}
 }
 
-func TestOASStopWaitsForScopedAndLegacyHeaderFetch(t *testing.T) {
+func TestOASStopWaitsForScopedHeaderFetch(t *testing.T) {
 	const raw = "$ENV://OAS_BLOCKED_FETCH_HEADER"
-	for _, mode := range []string{"scoped", "legacy"} {
-		t.Run(mode, func(t *testing.T) {
-			entered := make(chan struct{})
-			release := make(chan struct{})
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.Header.Get("Authorization") != "Bearer blocked" {
-					http.Error(w, "missing header", http.StatusUnauthorized)
-					return
-				}
-				close(entered)
-				<-release
-				w.Header().Set("Content-Type", "application/json")
-				_, _ = w.Write([]byte(testSpec()))
-			}))
-			defer server.Close()
-			p := &Plugin{config: Config{
-				SpecURL: server.URL, SpecURLAllowedAddresses: []string{"127.0.0.1"},
-				SpecURLRequestHeaders: map[string]string{"Authorization": raw},
-			}}
-			var closeAttempt func()
-			if mode == "scoped" {
-				capabilityValue, scope, _, closeScoped := newOASScopedSecretHarness(
-					t, map[string]string{raw: "Bearer blocked"},
-				)
-				closeAttempt = closeScoped
-				materializeScopedOASSecrets(t, p, capabilityValue, scope)
-			} else {
-				t.Setenv("OAS_BLOCKED_FETCH_HEADER", "Bearer blocked")
-				if err := p.MaterializeSecrets(); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if closeAttempt != nil {
-				defer closeAttempt()
-			}
-			if err := p.PostInit(); err != nil {
-				t.Fatal(err)
-			}
-			validatorDone := make(chan error, 1)
-			go func() {
-				_, err := p.validator()
-				validatorDone <- err
-			}()
-			<-entered
-			stopDone := make(chan struct{})
-			go func() {
-				p.Stop()
-				close(stopDone)
-			}()
-			select {
-			case <-stopDone:
-				close(release)
-				<-validatorDone
-				t.Fatal("Stop() returned before header-bearing fetch completed")
-			case <-time.After(20 * time.Millisecond):
-			}
-			close(release)
-			if err := <-validatorDone; !errors.Is(err, secret.ErrCredentialUnavailable) {
-				t.Fatalf("validator() error = %v, want %v", err, secret.ErrCredentialUnavailable)
-			}
-			<-stopDone
-			if p.legacyHeaders != nil || p.scopedHeaders != nil || p.legacySet || p.scopedSet {
-				t.Fatalf("Stop() retained header state: legacy=%v scoped=%v", p.legacySet, p.scopedSet)
-			}
-		})
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer blocked" {
+			http.Error(w, "missing header", http.StatusUnauthorized)
+			return
+		}
+		close(entered)
+		<-release
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(testSpec()))
+	}))
+	defer server.Close()
+	p := &Plugin{config: Config{
+		SpecURL: server.URL, SpecURLAllowedAddresses: []string{"127.0.0.1"},
+		SpecURLRequestHeaders: map[string]string{"Authorization": raw},
+	}}
+	capabilityValue, scope, _, closeAttempt := newOASScopedSecretHarness(
+		t, map[string]string{raw: "Bearer blocked"},
+	)
+	defer closeAttempt()
+	materializeScopedOASSecrets(t, p, capabilityValue, scope)
+	if err := p.PostInit(); err != nil {
+		t.Fatal(err)
+	}
+	validatorDone := make(chan error, 1)
+	go func() {
+		_, err := p.validator()
+		validatorDone <- err
+	}()
+	<-entered
+	stopDone := make(chan struct{})
+	go func() {
+		p.Stop()
+		close(stopDone)
+	}()
+	select {
+	case <-stopDone:
+		close(release)
+		<-validatorDone
+		t.Fatal("Stop() returned before header-bearing fetch completed")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(release)
+	if err := <-validatorDone; !errors.Is(err, secret.ErrCredentialUnavailable) {
+		t.Fatalf("validator() error = %v, want %v", err, secret.ErrCredentialUnavailable)
+	}
+	<-stopDone
+	if p.scopedHeaders != nil || p.scopedSet {
+		t.Fatalf("Stop() retained scoped header state: scoped=%v", p.scopedSet)
 	}
 }
 
@@ -524,10 +483,10 @@ func TestScopedSecretsOASStopDuringMaterializeCannotRevive(t *testing.T) {
 	if err := <-materializeDone; !errors.Is(err, secret.ErrCredentialUnavailable) {
 		t.Fatalf("materialization after Stop error = %v", err)
 	}
-	if p.config.Spec != raw || p.scopedInline != (secret.Value{}) || p.scopedSet || p.legacySet {
+	if p.config.Spec != raw || p.scopedInline != (secret.Value{}) || p.scopedSet {
 		t.Fatalf(
-			"stopped materialization revived state: config=%#v legacy=%v scoped=%v",
-			p.config, p.legacySet, p.scopedSet,
+			"stopped materialization revived state: config=%#v scoped=%v",
+			p.config, p.scopedSet,
 		)
 	}
 	calls := len(broker.callsSnapshot())

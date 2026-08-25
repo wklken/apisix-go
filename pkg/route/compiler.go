@@ -9,6 +9,8 @@ import (
 	"slices"
 
 	"github.com/go-chi/chi/v5"
+	appconfig "github.com/wklken/apisix-go/pkg/config"
+	"github.com/wklken/apisix-go/pkg/plugin/public_api"
 	"github.com/wklken/apisix-go/pkg/resource"
 )
 
@@ -17,14 +19,17 @@ import (
 // handles, but route compilation cannot create or own either one.
 type PreparedRoute struct {
 	Route   resource.Route
+	Hosts   []string
 	Handler http.Handler
 }
 
 // CompileInput contains only owned values and already-prepared handlers.
 type CompileInput struct {
-	Revision uint64
-	Routes   []PreparedRoute
-	NotFound http.Handler
+	Revision          uint64
+	Routes            []PreparedRoute
+	NotFound          http.Handler
+	StaticConfig      *appconfig.Config
+	PublicAPIRegistry *public_api.Registry
 }
 
 // Snapshot is an immutable detached HTTP router snapshot.
@@ -71,6 +76,7 @@ func CompileHTTP(ctx context.Context, input CompileInput) (*Snapshot, error) {
 		}
 		routes[index] = PreparedRoute{
 			Route:   cloneCompileRoute(supplied.Route),
+			Hosts:   slices.Clone(supplied.Hosts),
 			Handler: supplied.Handler,
 		}
 	}
@@ -107,11 +113,15 @@ func CompileHTTP(ctx context.Context, input CompileInput) (*Snapshot, error) {
 			}
 			effectiveURIs[identity] = uri
 		}
+		hosts := prepared.Hosts
+		if hosts == nil {
+			hosts = prepared.Route.EffectiveHosts()
+		}
 		for _, uri := range uris {
 			if err := registrar.registerRouteWithHosts(
 				prepared.Route.Methods,
 				uri,
-				prepared.Route.EffectiveHosts(),
+				hosts,
 				prepared.Handler,
 			); err != nil {
 				return nil, fmt.Errorf("compile HTTP route %q URI %q: %w", prepared.Route.ID, uri, err)
@@ -122,6 +132,14 @@ func CompileHTTP(ctx context.Context, input CompileInput) (*Snapshot, error) {
 		input.NotFound = http.NotFoundHandler()
 	}
 	mux.NotFound(input.NotFound.ServeHTTP)
+	if (input.StaticConfig == nil) != (input.PublicAPIRegistry == nil) {
+		return nil, fmt.Errorf("compile HTTP: static config and public API registry must be supplied together")
+	}
+	if input.StaticConfig != nil {
+		if err := registerExtraRoutesStrict(mux, input.StaticConfig, input.PublicAPIRegistry); err != nil {
+			return nil, fmt.Errorf("compile HTTP extra routes: %w", err)
+		}
+	}
 	return &Snapshot{revision: input.Revision, handler: mux}, nil
 }
 

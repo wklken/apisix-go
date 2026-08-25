@@ -15,7 +15,7 @@ func TestCompileHTTPDoesNotObserveInputMutation(t *testing.T) {
 	input := CompileInput{
 		Revision: 7,
 		Routes: []PreparedRoute{{
-			Route: resource.Route{ID: "r1", Uri: "/before"},
+			Route: resource.Route{ID: "r1", Uri: "/before"}, Hosts: []string{"service.example"},
 			Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(http.StatusNoContent)
 			}),
@@ -27,7 +27,14 @@ func TestCompileHTTPDoesNotObserveInputMutation(t *testing.T) {
 	}
 
 	input.Routes[0].Route.Uri = "/after"
-	assertCompiledHTTPStatus(t, snapshot.Handler(), http.MethodGet, "/before", http.StatusNoContent)
+	input.Routes[0].Hosts[0] = "mutated.example"
+	request := httptest.NewRequest(http.MethodGet, "http://service.example/before", nil)
+	response := httptest.NewRecorder()
+	snapshot.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("service-inherited host status = %d, want %d", response.Code, http.StatusNoContent)
+	}
+	assertCompiledHTTPStatus(t, snapshot.Handler(), http.MethodGet, "/before", http.StatusNotFound)
 	assertCompiledHTTPStatus(t, snapshot.Handler(), http.MethodGet, "/after", http.StatusNotFound)
 }
 

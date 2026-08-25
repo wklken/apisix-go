@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	appconfig "github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/cacheutil"
 )
@@ -56,7 +57,11 @@ func (p *Plugin) cleanupPeriod() time.Duration {
 }
 
 func diskZonePath(name string) (string, int64, bool, error) {
-	for _, zone := range configuredZones() {
+	return diskZonePathIn(configuredZones(), name)
+}
+
+func diskZonePathIn(zones []appconfig.Zone, name string) (string, int64, bool, error) {
+	for _, zone := range zones {
 		if zone.Name != name {
 			continue
 		}

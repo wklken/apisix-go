@@ -71,8 +71,8 @@ func TestPlanTrafficSplitClusterMatchesCanonicalOrdinaryConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ordinary.ClusterConfig != nil {
-		t.Fatal("empty ordinary upstream unexpectedly created a cluster")
+	if ordinary.ClusterConfig == nil {
+		t.Fatal("empty ordinary upstream did not prepare an authority-owned transport cluster")
 	}
 
 	ordinary, err = PlanRouteUpstream(resource.Route{ID: "r1", Upstream: resource.Upstream{
@@ -143,7 +143,7 @@ func TestPlanRouteUpstreamEmptyClusterRulesAndInputIsolation(t *testing.T) {
 		scheme      string
 		wantCluster bool
 	}{
-		{scheme: "http"}, {scheme: "kafka"}, {scheme: "grpc", wantCluster: true}, {scheme: "grpcs", wantCluster: true},
+		{scheme: "http", wantCluster: true}, {scheme: "kafka"}, {scheme: "grpc", wantCluster: true}, {scheme: "grpcs", wantCluster: true},
 	} {
 		plan, err := PlanRouteUpstream(resource.Route{ID: "r1", Upstream: resource.Upstream{Scheme: test.scheme}}, resource.Service{}, nil, nil, static)
 		if err != nil {
@@ -195,5 +195,18 @@ func TestPlanRouteUpstreamEmptyClusterRulesAndInputIsolation(t *testing.T) {
 	}
 	if beforeKey != afterKey {
 		t.Fatal("planned cluster identity changed after SSL input mutation")
+	}
+}
+
+func TestPlanRouteUpstreamAppliesStrictTLSPolicyBeforeClusterAcquisition(t *testing.T) {
+	static := appconfig.Config{
+		SecurityProfile: appconfig.SecurityStrict,
+	}
+	_, err := PlanRouteUpstream(resource.Route{ID: "strict", Upstream: resource.Upstream{
+		Scheme: "https", Nodes: []resource.Node{{Host: "node", Port: 443, Weight: 1}},
+		TLS: &resource.UpstreamTLS{Verify: false},
+	}}, resource.Service{}, nil, nil, &static)
+	if err == nil {
+		t.Fatal("strict TLS upstream without verification was not rejected")
 	}
 }

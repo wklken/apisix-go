@@ -391,6 +391,7 @@ func TestPreparedGenerationPublicAPIExposesNoRuntimeHandles(t *testing.T) {
 		"PublicationSet":  {},
 		"MetadataView":    {},
 		"ConsumerLookup":  {},
+		"HTTP":            {},
 		"DiscardPrepared": {},
 		"Close":           {},
 	}
@@ -597,6 +598,7 @@ func assertPreparedGenerationMethodSet(t *testing.T) {
 	publicationType := reflect.TypeFor[generation.PublicationSet]()
 	metadataType := reflect.TypeFor[runtime.MetadataView]()
 	consumerLookupType := reflect.TypeFor[base.ConsumerLookup]()
+	httpSnapshotType := reflect.TypeFor[*HTTPSnapshot]()
 	errorType := reflect.TypeFor[error]()
 	expected := map[string]struct {
 		inputs  []reflect.Type
@@ -605,6 +607,7 @@ func assertPreparedGenerationMethodSet(t *testing.T) {
 		"PublicationSet": {outputs: []reflect.Type{publicationType}},
 		"MetadataView":   {outputs: []reflect.Type{metadataType}},
 		"ConsumerLookup": {outputs: []reflect.Type{consumerLookupType}},
+		"HTTP":           {outputs: []reflect.Type{httpSnapshotType}},
 		"DiscardPrepared": {
 			inputs: []reflect.Type{contextType, publicationType}, outputs: []reflect.Type{errorType},
 		},

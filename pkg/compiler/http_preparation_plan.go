@@ -59,7 +59,7 @@ func (prepared *PreparedGeneration) planHTTPPreparation(
 		PluginConfigs: resources.pluginConfigs, GlobalRules: resources.globalRules,
 		Consumers: consumers, ConsumerGroups: consumerGroups,
 		EnabledPlugins: slices.Clone(prepared.effective.Config.Plugins),
-		DynamicPlugins: dynamicPlugins,
+		DynamicPlugins: dynamicPlugins, Profiles: prepared.effective.Profiles,
 	})
 	if err != nil {
 		return nil, err
@@ -68,9 +68,13 @@ func (prepared *PreparedGeneration) planHTTPPreparation(
 	if resources.dynamicPlugins {
 		enabledFactories = slices.Clone(resources.enabledPlugins)
 	}
+	registry := public_api.NewRegistry()
+	if err := routepkg.SeedPublicAPIRegistry(registry, &prepared.effective.Config); err != nil {
+		return nil, err
+	}
 	return &httpPreparationPlan{
 		resources: resources, plugins: plannedPlugins,
 		enabledFactories:  enabledFactories,
-		publicAPIRegistry: public_api.NewRegistry(),
+		publicAPIRegistry: registry,
 	}, nil
 }

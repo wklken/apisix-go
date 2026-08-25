@@ -83,6 +83,7 @@ func TestWorkerCompilerFactoryPrepareRecoveryTransfersBaseOwners(t *testing.T) {
 		"prepare-consumers",
 		"prepare-metadata",
 		"bind-private-materializer-authority",
+		"compile-http-snapshot",
 		"transfer-prepared-generation",
 	}
 	if !slices.Equal(trace, wantTrace) {
@@ -115,7 +116,7 @@ func TestWorkerCompilerFactoryPrepareRecoveryTransfersBaseOwners(t *testing.T) {
 	}
 }
 
-func TestWorkerCompilerFactoryPrepareRecoveryConstructsNoPluginsWithoutSpecs(t *testing.T) {
+func TestWorkerCompilerFactoryPrepareRecoveryCompilesSystemRouteHTTPSnapshot(t *testing.T) {
 	factory, _ := newWorkerRecoveryTestFactory(t)
 	revisions := generation.RevisionSet{Desired: 9, HTTP: 5}
 	snapshot := mustGenerationSnapshot(t, 5, []generation.Resource{
@@ -128,9 +129,10 @@ func TestWorkerCompilerFactoryPrepareRecoveryConstructsNoPluginsWithoutSpecs(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	if factory.registry.Len() != 0 || prepared.ConsumerLookup() == nil ||
-		prepared.PublicationSet().DesiredRevision != revisions.Desired {
-		t.Fatalf("zero-spec recovery returned unusable owner/resource count %d", factory.registry.Len())
+	if factory.registry.Len() != 3 || prepared.ConsumerLookup() == nil ||
+		prepared.PublicationSet().DesiredRevision != revisions.Desired || prepared.HTTP() == nil ||
+		prepared.HTTP().Revision() != revisions.HTTP {
+		t.Fatalf("system-route recovery returned unusable owner/resource count %d", factory.registry.Len())
 	}
 	if err := prepared.Close(context.Background()); err != nil {
 		t.Fatal(err)
@@ -247,8 +249,8 @@ func TestWorkerCompilerFactoryPrepareRecoveryDoesNotAliasCandidateResources(t *t
 		t.Fatalf("candidate/recovery instance attempts = %x/%x, want %x/%x",
 			candidateBinding.InstanceKey.Attempt, recoveryBinding.InstanceKey.Attempt, candidateID, recoveryID)
 	}
-	if got := factory.registry.Len(); got != 2 {
-		t.Fatalf("shared registry resources = %d, want 2", got)
+	if got := factory.registry.Len(); got != 4 {
+		t.Fatalf("candidate/recovery compiled resources = %d, want 4 isolated resources", got)
 	}
 	if err := recovery.Close(context.Background()); err != nil {
 		t.Fatal(err)

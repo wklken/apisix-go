@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"sync/atomic"
 
 	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/resource"
@@ -138,28 +139,43 @@ func httpResourceDecodeError(key generation.ResourceKey, err error) error {
 // HTTPSnapshot is the authority-free HTTP/TLS observation surface of one
 // prepared generation. Activation and cleanup remain generation-owned.
 type HTTPSnapshot struct {
-	artifact  generation.GenerationArtifact
-	handler   http.Handler
-	tlsConfig *tls.Config
+	artifact    generation.GenerationArtifact
+	handler     http.Handler
+	tlsConfig   *tls.Config
+	quarantined []generation.ResourceKey
+	closed      atomic.Bool
 }
 
 func (snapshot *HTTPSnapshot) Revision() uint64 {
-	if snapshot == nil {
+	if snapshot == nil || snapshot.closed.Load() {
 		return 0
 	}
 	return snapshot.artifact.Revision
 }
 
 func (snapshot *HTTPSnapshot) Handler() http.Handler {
-	if snapshot == nil {
+	if snapshot == nil || snapshot.closed.Load() {
 		return nil
 	}
 	return snapshot.handler
 }
 
 func (snapshot *HTTPSnapshot) TLSConfig() *tls.Config {
-	if snapshot == nil || snapshot.tlsConfig == nil {
+	if snapshot == nil || snapshot.closed.Load() || snapshot.tlsConfig == nil {
 		return nil
 	}
 	return snapshot.tlsConfig.Clone()
+}
+
+func (snapshot *HTTPSnapshot) Quarantined() []generation.ResourceKey {
+	if snapshot == nil || snapshot.closed.Load() {
+		return nil
+	}
+	return slices.Clone(snapshot.quarantined)
+}
+
+func (snapshot *HTTPSnapshot) revoke() {
+	if snapshot != nil {
+		snapshot.closed.Store(true)
+	}
 }

@@ -69,6 +69,7 @@ func TestWorkerCompilerFactoryPrepareGenerationTransfersBaseOwners(t *testing.T)
 		"prepare-consumers",
 		"prepare-metadata",
 		"bind-private-materializer-authority",
+		"compile-http-snapshot",
 		"transfer-prepared-generation",
 	}
 	if !slices.Equal(trace, wantTrace) {
@@ -111,7 +112,7 @@ func TestWorkerCompilerFactoryPrepareGenerationTransfersBaseOwners(t *testing.T)
 	}
 }
 
-func TestWorkerCompilerFactoryPrepareGenerationConstructsNoPluginsWithoutSpecs(t *testing.T) {
+func TestWorkerCompilerFactoryPrepareGenerationCompilesSystemOnlyHTTPSnapshot(t *testing.T) {
 	factory, _ := newWorkerTestFactory(t)
 	desired := mustGenerationSnapshot(t, 802, nil, nil)
 	prepared, err := factory.PrepareGeneration(
@@ -120,11 +121,12 @@ func TestWorkerCompilerFactoryPrepareGenerationConstructsNoPluginsWithoutSpecs(t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := factory.registry.Len(); got != 0 {
-		t.Fatalf("resource leases after preparation = %d, want 0", got)
+	if got := factory.registry.Len(); got != 1 {
+		t.Fatalf("resource leases after preparation = %d, want one system binding", got)
 	}
-	if prepared.ConsumerLookup() == nil || prepared.PublicationSet().DesiredRevision != desired.Revision() {
-		t.Fatal("zero effective specs did not preserve a usable generation owner")
+	if prepared.ConsumerLookup() == nil || prepared.PublicationSet().DesiredRevision != desired.Revision() ||
+		prepared.HTTP() == nil || prepared.HTTP().Revision() != desired.Revision() {
+		t.Fatal("system-only HTTP input did not preserve a usable compiled generation owner")
 	}
 	if err := prepared.Close(context.Background()); err != nil {
 		t.Fatal(err)

@@ -163,6 +163,13 @@ func PlanRouteUpstream(
 	if err := validatePlannedPassHost(resolved); err != nil {
 		return UpstreamPlan{}, err
 	}
+	if err := validateSecurityUpstreamPolicy(
+		staticConfig.Profiles(),
+		resolved,
+		fmt.Sprintf("%s %q for route %q", provenance.Kind, provenance.ID, routeResource.ID),
+	); err != nil {
+		return UpstreamPlan{}, fmt.Errorf("route %q: %w", routeResource.ID, err)
+	}
 	targets, priorities, err := planUpstreamNodes(resolved)
 	if err != nil {
 		return UpstreamPlan{}, err
@@ -182,9 +189,6 @@ func PlanRouteUpstream(
 		return UpstreamPlan{}, err
 	}
 	plan.Transport = transport
-	if len(targets) == 0 && scheme != "grpc" && scheme != "grpcs" {
-		return plan, nil
-	}
 	clusterConfig, err := buildClusterConfigWithTransport(
 		cloneCompileRoute(routeResource), resolved, maps.Clone(targets), transport,
 		staticConfig, maps.Clone(priorities),

@@ -33,6 +33,7 @@ type PreparedGeneration struct {
 	cleanup      *cleanupStack
 	detach       func()
 	bindingOps   effectiveBindingOps
+	httpSnapshot *HTTPSnapshot
 
 	materializeMu    sync.Mutex
 	bindingOpsMu     sync.Mutex
@@ -82,6 +83,33 @@ func (prepared *PreparedGeneration) ConsumerLookup() base.ConsumerLookup {
 		return nil
 	}
 	return prepared.lookup
+}
+
+// HTTP returns the detached, authority-free HTTP/TLS snapshot prepared for
+// this generation. A stream-only or closed generation returns nil.
+func (prepared *PreparedGeneration) HTTP() *HTTPSnapshot {
+	if prepared == nil {
+		return nil
+	}
+	prepared.materializeMu.Lock()
+	defer prepared.materializeMu.Unlock()
+	if prepared.terminal {
+		return nil
+	}
+	return prepared.httpSnapshot
+}
+
+func (prepared *PreparedGeneration) attachHTTP(snapshot *HTTPSnapshot) error {
+	if prepared == nil || snapshot == nil || snapshot.Revision() == 0 || snapshot.Handler() == nil {
+		return ErrInvalidInput
+	}
+	prepared.materializeMu.Lock()
+	defer prepared.materializeMu.Unlock()
+	if prepared.terminal || prepared.httpSnapshot != nil {
+		return ErrInvalidInput
+	}
+	prepared.httpSnapshot = snapshot
+	return nil
 }
 
 // DiscardPrepared releases this generation only when set is its complete
@@ -136,6 +164,10 @@ func (prepared *PreparedGeneration) Close(ctx context.Context) error {
 		}
 
 		prepared.materializeMu.Lock()
+		if prepared.httpSnapshot != nil {
+			prepared.httpSnapshot.revoke()
+		}
+		prepared.httpSnapshot = nil
 		prepared.attempt = PreparationAttempt{}
 		prepared.metadata = runtime.MetadataView{}
 		prepared.consumers = nil

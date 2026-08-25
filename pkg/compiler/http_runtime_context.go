@@ -74,6 +74,7 @@ func (prepared *PreparedGeneration) httpRuntimeContextForRoute(
 		configured: true, enabledFactories: slices.Clone(plan.enabledFactories),
 		publicAPIRegistry: plan.publicAPIRegistry,
 		serverAddr:        httpPreparationServerAddr(prepared),
+		proxyCacheZones:   slices.Clone(prepared.effective.Config.Apisix.ProxyCache.Zones),
 		runtimeAcquirer: &preparedTrafficSplitRuntimeAcquirer{
 			prepared: prepared, ctx: ctx, route: ownedRoute, ssls: plan.resources.ssls,
 		},

@@ -11,6 +11,7 @@ import (
 	"sync"
 
 	"github.com/wklken/apisix-go/pkg/capability"
+	appconfig "github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/plugin"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -64,6 +65,7 @@ type effectiveBindingRuntimeContext struct {
 	enabledFactories  []string
 	publicAPIRegistry *public_api.Registry
 	serverAddr        string
+	proxyCacheZones   []appconfig.Zone
 	runtimeAcquirer   traffic_split.RuntimeAcquirer
 	upstreamResolver  traffic_split.ResourceUpstreamResolver
 }
@@ -675,6 +677,9 @@ func (operations effectiveBindingOps) withDefaults(attempt [32]byte) effectiveBi
 			if setter, ok := instance.(interface{ SetPublicAPIRegistry(*public_api.Registry) }); ok {
 				setter.SetPublicAPIRegistry(value.publicAPIRegistry)
 			}
+			if setter, ok := instance.(interface{ SetConfiguredZones([]appconfig.Zone) }); ok {
+				setter.SetConfiguredZones(slices.Clone(value.proxyCacheZones))
+			}
 		}
 	}
 	if operations.preMaterialize == nil {
@@ -941,6 +946,7 @@ func cloneEffectiveBindingRuntimeContext(
 		enabledFactories:  enabled,
 		publicAPIRegistry: value.publicAPIRegistry,
 		serverAddr:        value.serverAddr,
+		proxyCacheZones:   slices.Clone(value.proxyCacheZones),
 		runtimeAcquirer:   value.runtimeAcquirer,
 		upstreamResolver:  value.upstreamResolver,
 	}, nil

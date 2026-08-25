@@ -40,6 +40,23 @@ func TestRequestVarUsesEffectiveRemoteIP(t *testing.T) {
 	}
 }
 
+func TestPostInitUsesGenerationLocalConfiguredZones(t *testing.T) {
+	if err := RefreshConfiguredZones([]appconfig.Zone{{Name: "legacy-zone", MemorySize: "1M"}}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = RefreshConfiguredZones(nil) })
+
+	instance := &Plugin{config: Config{CacheZone: "candidate-zone", CacheStrategy: "memory"}}
+	instance.SetConfiguredZones([]appconfig.Zone{{Name: "candidate-zone", MemorySize: "2M"}})
+	if err := instance.PostInit(); err != nil {
+		t.Fatalf("PostInit() observed legacy zone snapshot: %v", err)
+	}
+	t.Cleanup(instance.Stop)
+	if instance.memoryZone == nil || instance.memoryZone.capacity != 2<<20 {
+		t.Fatalf("candidate memory zone = %#v, want generation-local 2M zone", instance.memoryZone)
+	}
+}
+
 func (w *cacheHitCountingWriter) Header() http.Header {
 	w.headerCalls++
 	return w.ResponseWriter.Header()

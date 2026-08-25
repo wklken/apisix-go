@@ -91,7 +91,10 @@ func RefreshConfiguredZones(zones []appconfig.Zone) error {
 // configured zone's storage strategy. A configured disk_path makes a zone
 // disk-backed; a zone without one is memory-backed.
 func ValidateCacheZoneStrategy(name, strategy string) error {
-	zones := configuredZones()
+	return validateCacheZoneStrategy(configuredZones(), name, strategy)
+}
+
+func validateCacheZoneStrategy(zones []appconfig.Zone, name, strategy string) error {
 	seen, err := validateZoneDefinitions(zones)
 	if err != nil {
 		return err
@@ -452,7 +455,11 @@ func releaseMemoryZoneRef(name string, zone *memoryZone) {
 }
 
 func declaredCacheZone(name string) bool {
-	for _, zone := range configuredZones() {
+	return declaredCacheZoneIn(configuredZones(), name)
+}
+
+func declaredCacheZoneIn(zones []appconfig.Zone, name string) bool {
+	for _, zone := range zones {
 		if zone.Name == name {
 			return true
 		}
@@ -461,16 +468,20 @@ func declaredCacheZone(name string) bool {
 }
 
 func acquireMemoryZone(name string) *memoryZone {
+	return acquireMemoryZoneIn(configuredZones(), name)
+}
+
+func acquireMemoryZoneIn(zones []appconfig.Zone, name string) *memoryZone {
 	memoryZoneRegistry.Lock()
 	defer memoryZoneRegistry.Unlock()
-	fingerprint := cacheZoneFingerprint(name)
+	fingerprint := cacheZoneFingerprintIn(zones, name)
 	zone := memoryZoneRegistry.zones[name]
 	if zone == nil || zone.fingerprint != fingerprint {
 		zone = &memoryZone{
 			entries:     make(map[string]cacheEntry),
 			vary:        make(map[string]varyIndex),
 			loaded:      make(map[string]bool),
-			capacity:    memoryZoneCapacity(name),
+			capacity:    memoryZoneCapacityIn(zones, name),
 			fingerprint: fingerprint,
 		}
 		memoryZoneRegistry.zones[name] = zone
@@ -480,7 +491,11 @@ func acquireMemoryZone(name string) *memoryZone {
 }
 
 func memoryZoneCapacity(name string) int64 {
-	for _, zone := range configuredZones() {
+	return memoryZoneCapacityIn(configuredZones(), name)
+}
+
+func memoryZoneCapacityIn(zones []appconfig.Zone, name string) int64 {
+	for _, zone := range zones {
 		if zone.Name != name {
 			continue
 		}
@@ -494,7 +509,11 @@ func memoryZoneCapacity(name string) int64 {
 }
 
 func cacheZoneFingerprint(name string) string {
-	for _, zone := range configuredZones() {
+	return cacheZoneFingerprintIn(configuredZones(), name)
+}
+
+func cacheZoneFingerprintIn(zones []appconfig.Zone, name string) string {
+	for _, zone := range zones {
 		if zone.Name != name {
 			continue
 		}

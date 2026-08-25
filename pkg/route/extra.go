@@ -79,6 +79,16 @@ func registerPrometheusPublicEndpoint(registry *public_api.Registry, staticConfi
 	return nil
 }
 
+// SeedPublicAPIRegistry installs generation-wide public endpoints before any
+// route plugin is materialized. Later route/plugin registrations retain the
+// legacy last-writer ordering within this generation-local registry.
+func SeedPublicAPIRegistry(registry *public_api.Registry, staticConfig *config.Config) error {
+	if registry == nil || staticConfig == nil {
+		return fmt.Errorf("seed public API registry: registry and static config are required")
+	}
+	return registerPrometheusPublicEndpoint(registry, staticConfig)
+}
+
 func pluginEnabled(staticConfig *config.Config, name string) bool {
 	if staticConfig == nil {
 		return false

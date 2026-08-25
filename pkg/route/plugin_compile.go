@@ -6,6 +6,7 @@ import (
 	"maps"
 	"slices"
 
+	appconfig "github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/plugin"
 	"github.com/wklken/apisix-go/pkg/resource"
@@ -64,6 +65,7 @@ type PlanningInput struct {
 	ConsumerGroups map[string]resource.ConsumerGroup
 	EnabledPlugins []string
 	DynamicPlugins []string
+	Profiles       appconfig.ProfileSelection
 }
 
 type HTTPPluginPlan struct {
@@ -102,6 +104,9 @@ func PlanHTTPPlugins(ctx context.Context, input PlanningInput) (*HTTPPluginPlan,
 	}
 
 	globalRules := deduplicateGlobalRules(clonePlanningGlobalRules(input.GlobalRules))
+	if err := validateSecurityGlobalRulePolicy(input.Profiles, globalRules, ""); err != nil {
+		return nil, fmt.Errorf("plan global rules: %w", err)
+	}
 	for _, rule := range globalRules {
 		if rule.ID == "" {
 			return nil, fmt.Errorf("plan global rule: id is required")
@@ -141,7 +146,7 @@ func PlanHTTPPlugins(ctx context.Context, input PlanningInput) (*HTTPPluginPlan,
 		result.Consumers[id] = plans
 	}
 
-	for _, supplied := range input.Routes {
+	for _, supplied := range normalizeRouteOrder(input.Routes) {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
@@ -162,6 +167,12 @@ func planRoutePlugins(routeResource resource.Route, input PlanningInput, enabled
 	routeResource = cloneCompileRoute(routeResource)
 	if routeResource.ID == "" {
 		return PlannedRoute{}, fmt.Errorf("route id is required")
+	}
+	if err := validateRouteCompatibility(routeResource); err != nil {
+		return PlannedRoute{}, err
+	}
+	if err := validatePlannedRouteURIs(routeResource); err != nil {
+		return PlannedRoute{}, err
 	}
 	var service resource.Service
 	if routeResource.ServiceID != "" {
@@ -185,6 +196,16 @@ func planRoutePlugins(routeResource resource.Route, input PlanningInput, enabled
 		pluginConfigs, routeResource.PluginConfigID,
 		service.Plugins, routeResource.ServiceID,
 	)
+	if err := validateSecurityMaterializedPluginSources(
+		input.Profiles,
+		append(slices.Clone(local), serviceSources...),
+		routeResource.ID,
+	); err != nil {
+		return PlannedRoute{}, err
+	}
+	if err := validateSecurityGlobalRulePolicy(input.Profiles, input.GlobalRules, routeResource.ID); err != nil {
+		return PlannedRoute{}, err
+	}
 	localPlans, err := planPluginSources(local, enabled, false)
 	if err != nil {
 		return PlannedRoute{}, err
@@ -206,6 +227,32 @@ func planRoutePlugins(routeResource resource.Route, input PlanningInput, enabled
 		return PlannedRoute{}, err
 	}
 	return PlannedRoute{Route: routeResource, Service: service, Local: localPlans, ServicePlans: servicePlans, System: systemPlans}, nil
+}
+
+func validatePlannedRouteURIs(routeResource resource.Route) error {
+	uris := routeResource.Uris
+	if len(uris) == 0 && routeResource.Uri != "" {
+		uris = []string{routeResource.Uri}
+	}
+	effective := make(map[string]string, len(uris))
+	for _, uri := range uris {
+		converted, err := convertURI(uri)
+		if err != nil {
+			return fmt.Errorf("route %q URI %q: %w", routeResource.ID, uri, err)
+		}
+		identity := effectiveRouteURI(converted)
+		if previous, exists := effective[identity]; exists {
+			return fmt.Errorf(
+				"route %q: duplicate effective URI %q (from %q and %q)",
+				routeResource.ID,
+				identity,
+				previous,
+				uri,
+			)
+		}
+		effective[identity] = uri
+	}
+	return nil
 }
 
 func planPluginSources(sources []materializedPluginSource, enabled plugin.EnabledSet, allowRequestContext bool) ([]PluginPlan, error) {

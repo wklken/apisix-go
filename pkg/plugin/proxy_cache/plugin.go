@@ -13,6 +13,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	appconfig "github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/cacheutil"
@@ -43,6 +44,24 @@ type Plugin struct {
 	cleanupMu       sync.Mutex
 	cleanupStop     chan struct{}
 	cleanupDone     chan struct{}
+
+	configuredZones []appconfig.Zone
+	zonesSet        bool
+}
+
+// SetConfiguredZones supplies the generation-local proxy-cache zone snapshot
+// before PostInit. Legacy Builder instances that do not call this setter keep
+// using the process compatibility registry until Task 9 removes that adapter.
+func (p *Plugin) SetConfiguredZones(zones []appconfig.Zone) {
+	p.configuredZones = append([]appconfig.Zone(nil), zones...)
+	p.zonesSet = true
+}
+
+func (p *Plugin) effectiveConfiguredZones() []appconfig.Zone {
+	if p.zonesSet {
+		return append([]appconfig.Zone(nil), p.configuredZones...)
+	}
+	return configuredZones()
 }
 
 const (
@@ -247,7 +266,8 @@ func (p *Plugin) PostInit() error {
 	if err := validateCacheStatuses(p.config.CacheHTTPStatus); err != nil {
 		return err
 	}
-	if err := ValidateCacheZoneStrategy(p.config.CacheZone, p.config.CacheStrategy); err != nil {
+	zones := p.effectiveConfiguredZones()
+	if err := validateCacheZoneStrategy(zones, p.config.CacheZone, p.config.CacheStrategy); err != nil {
 		return err
 	}
 	if err := validateCacheKey(p.config.CacheKey); err != nil {
@@ -268,15 +288,15 @@ func (p *Plugin) PostInit() error {
 	p.diskEnabled = false
 	p.diskSize = 0
 	p.lastCleanup = time.Time{}
-	if p.config.CacheStrategy == "memory" && declaredCacheZone(p.config.CacheZone) {
-		p.memoryZone = acquireMemoryZone(p.config.CacheZone)
+	if p.config.CacheStrategy == "memory" && declaredCacheZoneIn(zones, p.config.CacheZone) {
+		p.memoryZone = acquireMemoryZoneIn(zones, p.config.CacheZone)
 		p.lock = &p.memoryZone.lock
 		p.entries = p.memoryZone.entries
 		p.vary = p.memoryZone.vary
 		p.loaded = p.memoryZone.loaded
 	}
 	if p.config.CacheStrategy == "disk" {
-		root, diskSize, configured, err := diskZonePath(p.config.CacheZone)
+		root, diskSize, configured, err := diskZonePathIn(zones, p.config.CacheZone)
 		if err != nil {
 			return err
 		}

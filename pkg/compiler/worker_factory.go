@@ -301,6 +301,15 @@ func (factory *WorkerCompilerFactory) transferRegisteredGeneration(
 	if err := ctx.Err(); err != nil {
 		return fail(err)
 	}
+	if err := prepared.compileAndAttachHTTP(ctx); err != nil {
+		return fail(err)
+	}
+	if err := factory.runCheckpoint("compile-http-snapshot", state); err != nil {
+		return fail(err)
+	}
+	if err := ctx.Err(); err != nil {
+		return fail(err)
+	}
 
 	prepared.detach = func() {
 		factory.liveMu.Lock()

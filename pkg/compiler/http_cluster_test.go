@@ -2,11 +2,22 @@ package compiler
 
 import (
 	"context"
+	"errors"
+	"slices"
 	"testing"
 
 	"github.com/wklken/apisix-go/pkg/proxy"
 	"github.com/wklken/apisix-go/pkg/runtime"
 )
+
+type cleanupTraceClusterObserver struct {
+	proxy.NopClusterObserver
+	calls *[]string
+}
+
+func (observer cleanupTraceClusterObserver) DeleteCluster(string) {
+	*observer.calls = append(*observer.calls, "finalize-cluster")
+}
 
 func TestAcquireHTTPClusterSharesCanonicalConfigAndGenerationOwnsEveryLease(t *testing.T) {
 	prepared, fixture := newEffectiveBindingMaterializerFixture(t, nil, nil)
@@ -147,5 +158,64 @@ func TestAcquireHTTPClusterExactConfigSharesObserverLifetime(t *testing.T) {
 	clusters, targets, _ = observer.snapshot()
 	if len(clusters) != 1 || len(targets) != 1 {
 		t.Fatalf("final exact-config retirement = clusters=%v targets=%v", clusters, targets)
+	}
+}
+
+func TestHTTPClusterLeaseUsesRetryableResourceFinalizationPhase(t *testing.T) {
+	prepared, fixture := newEffectiveBindingMaterializerFixture(t, nil, nil)
+	var calls []string
+	clusterObservers, err := newClusterObserverRegistry(cleanupTraceClusterObserver{calls: &calls})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared.clusterObservers = clusterObservers
+	cluster, err := prepared.acquireHTTPCluster(context.Background(), proxy.ClusterConfig{
+		Name: "retryable-finalizer",
+		Targets: map[string]int{
+			"http://127.0.0.1:9080": 1,
+		},
+		MaxInFlight: proxy.DefaultMaxInFlight,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := prepared.cleanup.Own(cleanupRelease, "sentinel", func(context.Context) error {
+		calls = append(calls, "release-sentinel")
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	quiesceAttempts := 0
+	transient := errors.New("tasks still running")
+	if err := prepared.cleanup.Own(cleanupQuiesce, "retryable-tasks", func(context.Context) error {
+		quiesceAttempts++
+		if quiesceAttempts == 1 {
+			return transient
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := prepared.cleanup.Close(context.Background()); !errors.Is(err, transient) {
+		t.Fatalf("first Close error = %v, want %v", err, transient)
+	}
+	if cluster.Closed() || fixture.registry.Len() != 1 || len(calls) != 0 {
+		t.Fatalf(
+			"first attempt cluster closed/registry/calls = %v/%d/%v",
+			cluster.Closed(),
+			fixture.registry.Len(),
+			calls,
+		)
+	}
+	if err := prepared.cleanup.Close(context.Background()); err != nil {
+		t.Fatalf("retry Close error = %v", err)
+	}
+	want := []string{"finalize-cluster", "release-sentinel"}
+	if !slices.Equal(calls, want) {
+		t.Fatalf("calls = %v, want %v", calls, want)
+	}
+	if !cluster.Closed() || fixture.registry.Len() != 0 {
+		t.Fatalf("terminal cluster closed/registry = %v/%d", cluster.Closed(), fixture.registry.Len())
 	}
 }

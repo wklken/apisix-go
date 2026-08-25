@@ -49,7 +49,11 @@ func (prepared *PreparedGeneration) acquireHTTPCluster(
 		return nil, fmt.Errorf("%w: HTTP cluster identity is invalid", ErrInvalidInput)
 	}
 	slot := &httpClusterLeaseSlot{}
-	if err := prepared.cleanup.Own(cleanupRelease, "http-cluster/"+owned.Name, slot.release); err != nil {
+	if err := prepared.cleanup.Own(
+		cleanupResourceFinalize,
+		"http-cluster/"+owned.Name,
+		slot.release,
+	); err != nil {
 		return nil, err
 	}
 	lease, err := runtime.Acquire(

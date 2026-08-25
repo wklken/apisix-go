@@ -3,12 +3,15 @@ package compiler
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
-	"strings"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/wklken/apisix-go/pkg/runtime"
 )
 
 func TestCleanupStackQuiescesThenReleasesInReverseOrder(t *testing.T) {
@@ -41,20 +44,24 @@ func TestCleanupStackQuiescesThenReleasesInReverseOrder(t *testing.T) {
 
 func TestCleanupStackConcurrentCloseRunsEachStepOnce(t *testing.T) {
 	var stack cleanupStack
-	var tasks atomic.Int64
-	var registration atomic.Int64
+	transient := errors.New("tasks still running")
+	var attempts atomic.Int64
+	var releases atomic.Int64
 	entered := make(chan struct{})
-	release := make(chan struct{})
+	allowReturn := make(chan struct{})
 	if err := stack.Own(cleanupRelease, "registration", func(context.Context) error {
-		registration.Add(1)
+		releases.Add(1)
 		return nil
 	}); err != nil {
 		t.Fatalf("Own(registration) error = %v", err)
 	}
 	if err := stack.Own(cleanupQuiesce, "tasks", func(context.Context) error {
-		tasks.Add(1)
-		close(entered)
-		<-release
+		attempt := attempts.Add(1)
+		if attempt == 1 {
+			close(entered)
+			<-allowReturn
+			return transient
+		}
 		return nil
 	}); err != nil {
 		t.Fatalf("Own(tasks) error = %v", err)
@@ -62,69 +69,144 @@ func TestCleanupStackConcurrentCloseRunsEachStepOnce(t *testing.T) {
 
 	const callers = 32
 	errs := make(chan error, callers)
-	var callersReady sync.WaitGroup
-	callersReady.Add(callers)
-	for range callers {
+	go func() {
+		errs <- stack.Close(context.Background())
+	}()
+	<-entered
+
+	waiting := make(chan struct{}, callers-1)
+	for range callers - 1 {
 		go func() {
-			callersReady.Done()
-			errs <- stack.Close(context.Background())
+			errs <- stack.Close(&cleanupWaiterContext{
+				Context: context.Background(),
+				waiting: waiting,
+			})
 		}()
 	}
-	callersReady.Wait()
-	<-entered
-	close(release)
+	for range callers - 1 {
+		<-waiting
+	}
+	close(allowReturn)
+
+	var first error
 	for range callers {
-		if err := <-errs; err != nil {
-			t.Fatalf("concurrent Close() error = %v", err)
+		err := <-errs
+		if !errors.Is(err, transient) {
+			t.Fatalf("concurrent Close() error = %v, want %v", err, transient)
+		}
+		if first == nil {
+			first = err
+		} else if err != first {
+			t.Fatalf("concurrent Close() result = %p, want attempt result %p", err, first)
 		}
 	}
-	if got := tasks.Load(); got != 1 {
-		t.Fatalf("task cleanup calls = %d, want 1", got)
+	if got := attempts.Load(); got != 1 {
+		t.Fatalf("task cleanup calls in shared attempt = %d, want 1", got)
 	}
-	if got := registration.Load(); got != 1 {
-		t.Fatalf("registration cleanup calls = %d, want 1", got)
+	if got := releases.Load(); got != 0 {
+		t.Fatalf("registration cleanup calls before retry = %d, want 0", got)
+	}
+
+	if err := stack.Close(context.Background()); err != nil {
+		t.Fatalf("retry Close() error = %v", err)
+	}
+	if got := attempts.Load(); got != 2 {
+		t.Fatalf("task cleanup calls after retry = %d, want 2", got)
+	}
+	if got := releases.Load(); got != 1 {
+		t.Fatalf("registration cleanup calls after retry = %d, want 1", got)
 	}
 }
 
-func TestCleanupStackReplaysJoinedErrors(t *testing.T) {
-	quiesceErr := errors.New("tasks did not quiesce")
-	releaseErr := errors.New("registration did not release")
+type cleanupWaiterContext struct {
+	context.Context
+	waiting chan<- struct{}
+	once    sync.Once
+}
+
+func (ctx *cleanupWaiterContext) Done() <-chan struct{} {
+	ctx.once.Do(func() {
+		ctx.waiting <- struct{}{}
+	})
+	return ctx.Context.Done()
+}
+
+func TestCleanupStackQuiesceFailureDefersEveryReleaseAndRetriesOnlyPendingQuiescer(t *testing.T) {
 	var stack cleanupStack
-	var calls atomic.Int64
-	for _, test := range []struct {
-		phase cleanupPhase
-		name  string
-		err   error
-	}{
-		{phase: cleanupRelease, name: "registration", err: releaseErr},
-		{phase: cleanupRelease, name: "consumers"},
-		{phase: cleanupQuiesce, name: "tasks", err: quiesceErr},
-	} {
-		if err := stack.Own(test.phase, test.name, func(ctx context.Context) error {
-			if ctx == nil {
-				t.Errorf("%s cleanup received nil context", test.name)
-			}
-			calls.Add(1)
-			return test.err
-		}); err != nil {
-			t.Fatalf("Own(%q) error = %v", test.name, err)
+	var calls []string
+	var quiesceAttempts int
+	transient := errors.New("tasks still running")
+	if err := stack.Own(cleanupRelease, "registration", func(context.Context) error {
+		calls = append(calls, "release-registration")
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := stack.Own(cleanupQuiesce, "already-done", func(context.Context) error {
+		calls = append(calls, "quiesce-already-done")
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := stack.Own(cleanupQuiesce, "tasks", func(context.Context) error {
+		quiesceAttempts++
+		calls = append(calls, fmt.Sprintf("quiesce-tasks-%d", quiesceAttempts))
+		if quiesceAttempts == 1 {
+			return transient
 		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
 
-	first := stack.Close(nil) //nolint:staticcheck // Close explicitly normalizes a nil cleanup context.
-	if !errors.Is(first, quiesceErr) || !errors.Is(first, releaseErr) {
-		t.Fatalf("Close() error = %v, want both cleanup errors", first)
+	if err := stack.Close(context.Background()); !errors.Is(err, transient) {
+		t.Fatalf("first Close error = %v, want %v", err, transient)
 	}
-	if !strings.Contains(first.Error(), "tasks") ||
-		!strings.Contains(first.Error(), "registration") {
-		t.Fatalf("Close() error = %v, want failing owner names", first)
+	if slices.Contains(calls, "release-registration") {
+		t.Fatalf("release crossed failed quiesce: %v", calls)
 	}
-	replayed := stack.Close(context.Background())
-	if replayed != first {
-		t.Fatalf("replayed Close() error = %v, want cached result %v", replayed, first)
+	if stack.terminallyClosed() {
+		t.Fatal("failed quiesce terminally closed cleanup")
 	}
-	if got := calls.Load(); got != 3 {
-		t.Fatalf("cleanup calls after replay = %d, want 3", got)
+	if err := stack.Close(context.Background()); err != nil {
+		t.Fatalf("retry Close error = %v", err)
+	}
+	want := []string{"quiesce-tasks-1", "quiesce-already-done", "quiesce-tasks-2", "release-registration"}
+	if !slices.Equal(calls, want) {
+		t.Fatalf("calls = %v, want %v", calls, want)
+	}
+	if err := stack.Close(context.Background()); err != nil || quiesceAttempts != 2 {
+		t.Fatalf("terminal replay = %v, attempts = %d", err, quiesceAttempts)
+	}
+	if !stack.terminallyClosed() {
+		t.Fatal("successful retry did not terminally close cleanup")
+	}
+}
+
+func TestCleanupStackTerminalReleaseErrorsJoinAndNeverRetry(t *testing.T) {
+	first := errors.New("first release")
+	second := errors.New("second release")
+	var stack cleanupStack
+	var calls atomic.Int32
+	for _, item := range []struct {
+		name string
+		err  error
+	}{
+		{name: "first", err: first}, {name: "second", err: second},
+	} {
+		if err := stack.Own(cleanupRelease, item.name, func(context.Context) error {
+			calls.Add(1)
+			return item.err
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	closeErr := stack.Close(context.Background())
+	if !errors.Is(closeErr, first) || !errors.Is(closeErr, second) {
+		t.Fatalf("Close error = %v, want both releases", closeErr)
+	}
+	if replay := stack.Close(context.Background()); replay != closeErr || calls.Load() != 2 {
+		t.Fatalf("terminal replay = %v, calls = %d", replay, calls.Load())
 	}
 }
 
@@ -275,6 +357,252 @@ func TestCleanupStackRollbackRunsOnlyLaterStepsInReversePhaseOrder(t *testing.T)
 	if !reflect.DeepEqual(order, want) {
 		t.Fatalf("close after rollback order = %v, want %v", order, want)
 	}
+}
+
+func TestCleanupStackRollbackRetainsSuffixWhenQuiesceFails(t *testing.T) {
+	var stack cleanupStack
+	var calls []string
+	if err := stack.Own(cleanupRelease, "base-release", func(context.Context) error {
+		calls = append(calls, "base-release")
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	checkpoint, err := stack.Checkpoint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	quiesceAttempts := 0
+	transient := errors.New("suffix tasks still running")
+	if err := stack.Own(cleanupQuiesce, "suffix-quiesce", func(context.Context) error {
+		quiesceAttempts++
+		calls = append(calls, fmt.Sprintf("suffix-quiesce-%d", quiesceAttempts))
+		if quiesceAttempts == 1 {
+			return transient
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := stack.Own(cleanupRelease, "suffix-release", func(context.Context) error {
+		calls = append(calls, "suffix-release")
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := stack.Rollback(context.Background(), checkpoint); !errors.Is(err, transient) {
+		t.Fatalf("first Rollback error = %v, want %v", err, transient)
+	}
+	if slices.Contains(calls, "suffix-release") {
+		t.Fatalf("release crossed failed rollback quiesce: %v", calls)
+	}
+	if err := stack.Rollback(context.Background(), checkpoint); err != nil {
+		t.Fatalf("retry Rollback error = %v", err)
+	}
+	if err := stack.Close(context.Background()); err != nil {
+		t.Fatalf("Close error = %v", err)
+	}
+	want := []string{"suffix-quiesce-1", "suffix-quiesce-2", "suffix-release", "base-release"}
+	if !slices.Equal(calls, want) {
+		t.Fatalf("calls = %v, want %v", calls, want)
+	}
+}
+
+func TestCleanupStackResourceFinalizationResidualDefersReleaseAndRetries(t *testing.T) {
+	releaseResidual, residualErr := runtimeResidualFixture(t)
+	defer releaseResidual()
+
+	var stack cleanupStack
+	var calls []string
+	if err := stack.Own(cleanupRelease, "registration", func(context.Context) error {
+		calls = append(calls, "release-registration")
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := stack.Own(cleanupResourceFinalize, "already-done", func(context.Context) error {
+		calls = append(calls, "finalize-already-done")
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := stack.Own(cleanupQuiesce, "tasks", func(context.Context) error {
+		calls = append(calls, "quiesce-tasks")
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	finalizeAttempts := 0
+	if err := stack.Own(cleanupResourceFinalize, "runtime", func(context.Context) error {
+		finalizeAttempts++
+		calls = append(calls, fmt.Sprintf("finalize-runtime-%d", finalizeAttempts))
+		if finalizeAttempts == 1 {
+			return errors.Join(residualErr, context.DeadlineExceeded)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	first := stack.Close(context.Background())
+	var residual *runtime.TaskResidualError
+	if !errors.As(first, &residual) || !errors.Is(first, context.DeadlineExceeded) {
+		t.Fatalf("first Close error = %v, want task residual and deadline", first)
+	}
+	if slices.Contains(calls, "release-registration") {
+		t.Fatalf("release crossed incomplete finalization: %v", calls)
+	}
+	if err := stack.Close(context.Background()); err != nil {
+		t.Fatalf("retry Close error = %v", err)
+	}
+	want := []string{
+		"quiesce-tasks",
+		"finalize-runtime-1",
+		"finalize-already-done",
+		"finalize-runtime-2",
+		"release-registration",
+	}
+	if !slices.Equal(calls, want) {
+		t.Fatalf("calls = %v, want %v", calls, want)
+	}
+}
+
+func TestCleanupStackResourceFinalizationTerminalErrorIsRecordedOnceAndAllowsRelease(t *testing.T) {
+	terminalFinalizeErr := errors.New("terminal finalizer")
+	releaseErr := errors.New("release")
+	var stack cleanupStack
+	var finalizerCalls atomic.Int32
+	var releaseCalls atomic.Int32
+	if err := stack.Own(cleanupRelease, "registration", func(context.Context) error {
+		releaseCalls.Add(1)
+		return releaseErr
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := stack.Own(cleanupResourceFinalize, "successful", func(context.Context) error {
+		finalizerCalls.Add(1)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := stack.Own(cleanupResourceFinalize, "terminal", func(context.Context) error {
+		finalizerCalls.Add(1)
+		return terminalFinalizeErr
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	closeErr := stack.Close(context.Background())
+	if !errors.Is(closeErr, terminalFinalizeErr) || !errors.Is(closeErr, releaseErr) {
+		t.Fatalf("Close error = %v, want finalizer and release errors", closeErr)
+	}
+	if replay := stack.Close(context.Background()); replay != closeErr ||
+		finalizerCalls.Load() != 2 || releaseCalls.Load() != 1 {
+		t.Fatalf(
+			"terminal replay = %v, finalizers = %d, releases = %d",
+			replay,
+			finalizerCalls.Load(),
+			releaseCalls.Load(),
+		)
+	}
+}
+
+func TestCleanupStackResourceFinalizationIncompleteClassifiers(t *testing.T) {
+	releaseResidual, residualErr := runtimeResidualFixture(t)
+	defer releaseResidual()
+
+	for _, test := range []struct {
+		name       string
+		err        error
+		incomplete bool
+	}{
+		{name: "task residual", err: residualErr, incomplete: true},
+		{name: "canceled", err: context.Canceled, incomplete: true},
+		{name: "deadline exceeded", err: context.DeadlineExceeded, incomplete: true},
+		{name: "cleanup incomplete", err: ErrPreparedGenerationCleanupIncomplete, incomplete: true},
+		{name: "ordinary terminal error", err: errors.New("terminal")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var stack cleanupStack
+			var finalizerCalls atomic.Int32
+			var releaseCalls atomic.Int32
+			if err := stack.Own(cleanupRelease, "release", func(context.Context) error {
+				releaseCalls.Add(1)
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := stack.Own(cleanupResourceFinalize, "finalizer", func(context.Context) error {
+				finalizerCalls.Add(1)
+				return test.err
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			first := stack.Close(context.Background())
+			if !errors.Is(first, test.err) {
+				t.Fatalf("first Close error = %v, want %v", first, test.err)
+			}
+			second := stack.Close(context.Background())
+			if !errors.Is(second, test.err) {
+				t.Fatalf("second Close error = %v, want %v", second, test.err)
+			}
+			if test.incomplete {
+				if finalizerCalls.Load() != 2 || releaseCalls.Load() != 0 || stack.terminallyClosed() {
+					t.Fatalf(
+						"incomplete calls = finalizer:%d release:%d terminal:%v",
+						finalizerCalls.Load(),
+						releaseCalls.Load(),
+						stack.terminallyClosed(),
+					)
+				}
+				return
+			}
+			if second != first || finalizerCalls.Load() != 1 || releaseCalls.Load() != 1 ||
+				!stack.terminallyClosed() {
+				t.Fatalf(
+					"terminal replay = %v, finalizer:%d release:%d terminal:%v",
+					second,
+					finalizerCalls.Load(),
+					releaseCalls.Load(),
+					stack.terminallyClosed(),
+				)
+			}
+		})
+	}
+}
+
+func runtimeResidualFixture(t *testing.T) (func(), error) {
+	t.Helper()
+	registry := runtime.NewTaskRegistry(context.Background(), nil)
+	started := make(chan struct{})
+	allowExit := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() {
+		releaseOnce.Do(func() {
+			close(allowExit)
+		})
+	}
+	t.Cleanup(release)
+	if err := registry.Go(runtime.TaskSpec{
+		Owner:       "compiler/cleanup/residual",
+		Criticality: runtime.TaskCore,
+	}, func(context.Context) error {
+		close(started)
+		<-allowExit
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	stopCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	residuals, stopErr := registry.Stop(stopCtx)
+	if len(residuals) != 1 || stopErr == nil {
+		t.Fatalf("TaskRegistry.Stop() = (%v, %v), want one residual", residuals, stopErr)
+	}
+	return release, stopErr
 }
 
 func TestCleanupStackRollbackRejectsForeignOrSealedCheckpoint(t *testing.T) {

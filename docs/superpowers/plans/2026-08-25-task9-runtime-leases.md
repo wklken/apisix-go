@@ -28,7 +28,7 @@
 | Lane | Exclusive files | Responsibility | Must not edit |
 | --- | --- | --- | --- |
 | Contract/owner | Create `pkg/server/generation_owner.go`, `pkg/server/generation_owner_test.go` | Composite bundle, per-domain active-slot state, lease retention/release, drain eligibility | `generation_engine.go`, providers, bootstrap |
-| Route helper prerequisite | Modify `pkg/route/plugin_compile.go`, `prepared_handler.go`, `upstream_compile.go`, `upstream_options.go`, `compiler.go`, `router.go` and directly corresponding tests | Move live pure Builder helpers without wrappers or behavior change | server activation, Builder deletion |
+| Route helper prerequisite | Modify `pkg/route/builder.go`, `plugin_compile.go`, `prepared_handler.go`, `upstream_compile.go`, `upstream_options.go`, `compiler.go`, `router.go` and directly corresponding tests | Move live pure Builder helpers without wrappers or behavior change; edit `builder.go` only to remove moved declarations and newly unused imports | server activation, Builder type/construction/lifecycle/deletion |
 | HTTP/TLS | Modify `pkg/server/route_handler.go`, `route_handler_test.go`, `tls.go`, `tls_test.go`; create `pkg/server/generation_conn.go`, `generation_conn_test.go` | Request/batch/hijack/TLS lease consumption and terminal hijack registry | engine transaction, bootstrap, Store deletion |
 | Stream | Modify `pkg/stream/runtime.go`, `runtime_test.go`, `router.go`, `router_test.go` | Listener-only runtime, `RouterSource`, per-connection leases, immutable router | server/bootstrap, compiler |
 | Observers | Create `pkg/compiler/runtime_observers.go`, `runtime_observers_test.go`; modify `worker_factory.go`, `worker_factory_test.go`, `worker_factory_recovery_test.go`, `prepared_generation.go`, `http_cluster.go`, `http_cluster_test.go`, `stream_compile.go`, `stream_compile_test.go` | Required observer injection, same-name overlap safety, stream result attachment | server metrics implementation, proxy registry deletion |
@@ -116,7 +116,7 @@ All fixture names used below are test-only helpers created in the named test fil
 - Modify: `pkg/route/compiler.go`
 - Modify: `pkg/route/router.go`
 - Modify: directly corresponding `pkg/route/*_test.go` files
-- Read-only until legacy cutover: `pkg/route/builder.go`
+- Modify surgically: `pkg/route/builder.go` only to remove each moved declaration and imports made unused by that removal. Preserve the Builder type, constructors, Build/Stop lifecycle, and every legacy production behavior until the joint cutover.
 
 **Interfaces:**
 - Consumes: current pure helper implementations and tests in `builder.go`.

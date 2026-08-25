@@ -75,12 +75,13 @@ func TestBuildReverseHandlerValidatesUpstreamNodeWeights(t *testing.T) {
 				t.Fatalf("json.Unmarshal() error = %v", err)
 			}
 
-			builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
-			t.Cleanup(builder.Stop)
-			_, err := builder.buildReverseHandler(resource.Route{Upstream: upstream}, resource.Service{})
+			_, err := PlanRouteUpstream(
+				resource.Route{ID: "weight-test", Upstream: upstream},
+				resource.Service{}, nil, nil, &testEffectiveConfig().Config,
+			)
 			if test.wantNoErr {
 				if err != nil {
-					t.Fatalf("buildReverseHandler() error = %v", err)
+					t.Fatalf("PlanRouteUpstream() error = %v", err)
 				}
 				return
 			}
@@ -88,7 +89,7 @@ func TestBuildReverseHandlerValidatesUpstreamNodeWeights(t *testing.T) {
 				t.Fatal("buildReverseHandler() error = nil")
 			}
 			if !strings.Contains(err.Error(), test.wantErr) {
-				t.Fatalf("buildReverseHandler() error = %q, want substring %q", err, test.wantErr)
+				t.Fatalf("PlanRouteUpstream() error = %q, want substring %q", err, test.wantErr)
 			}
 		})
 	}
@@ -113,13 +114,11 @@ func TestBuildReverseHandlerAppliesSchemeAwareDefaultNodePorts(t *testing.T) {
 				t.Fatalf("decoded port = %d, want zero for builder-owned default", upstream.Nodes[0].Port)
 			}
 
-			builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
-			t.Cleanup(builder.Stop)
-			if _, err := builder.buildReverseHandler(
-				resource.Route{Upstream: upstream},
-				resource.Service{},
+			if _, err := PlanRouteUpstream(
+				resource.Route{ID: "default-port-test", Upstream: upstream},
+				resource.Service{}, nil, nil, &testEffectiveConfig().Config,
 			); err != nil {
-				t.Fatalf("buildReverseHandler() error = %v", err)
+				t.Fatalf("PlanRouteUpstream() error = %v", err)
 			}
 		})
 	}

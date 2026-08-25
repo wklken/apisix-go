@@ -1,11 +1,12 @@
 package route
 
 import (
-	"fmt"
+	"context"
 	"strings"
 	"testing"
 
 	appconfig "github.com/wklken/apisix-go/pkg/config"
+	"github.com/wklken/apisix-go/pkg/plugin"
 	"github.com/wklken/apisix-go/pkg/resource"
 )
 
@@ -231,31 +232,30 @@ func TestProductionPolicyUpstreamSecurityAxis(t *testing.T) {
 	}
 }
 
-func TestProductionPolicyBuildStrictEnforcesSecurityAxis(t *testing.T) {
-	ensureRouteStore(t)
-
+func TestProductionPolicyPlanningEnforcesSecurityAxis(t *testing.T) {
 	t.Run("unsafe service jwt is rejected", func(t *testing.T) {
 		effective := productionPolicyConfig(strictPolicySelection, "jwt-auth")
 		const serviceID = "production-policy-unsafe-service"
 		const routeID = "production-policy-service-route"
-		putHTTPAllowlistResource(t, "services", serviceID, fmt.Appendf(nil,
-			`{"id":%q,"plugins":{"jwt-auth":{"hide_credentials":true,"claims_to_verify":["nbf"]}}}`,
-			serviceID,
-		))
-		putRouteResource(t, routeID, fmt.Appendf(nil,
-			`{"id":%q,"uri":"/production-policy-service","service_id":%q,"upstream":{"nodes":{"127.0.0.1:1":1}}}`,
-			routeID, serviceID,
-		))
+		routeResource := resource.Route{ID: routeID, Uri: "/production-policy-service", ServiceID: serviceID}
+		service := resource.Service{
+			ID: serviceID,
+			Plugins: map[string]resource.PluginConfig{
+				"jwt-auth": map[string]any{"hide_credentials": true, "claims_to_verify": []any{"nbf"}},
+			},
+		}
 
-		builder := NewBuilder(nil, effective, testDataEncryptionResolver())
-		t.Cleanup(builder.Stop)
-		handler, err := builder.BuildStrict()
-		if err == nil || handler != nil {
-			t.Fatalf("BuildStrict() = (%T, %v), want service policy rejection", handler, err)
+		_, err := planRoutePlugins(routeResource, PlanningInput{
+			Services:       map[string]resource.Service{serviceID: service},
+			EnabledPlugins: effective.Config.Plugins,
+			Profiles:       effective.Profiles,
+		}, plugin.NewEnabledSet(effective.Config.Plugins))
+		if err == nil {
+			t.Fatal("planRoutePlugins() error = nil, want service policy rejection")
 		}
 		for _, field := range []string{routeID, serviceID, "jwt-auth", "claims_to_verify", "exp"} {
 			if !strings.Contains(err.Error(), field) {
-				t.Fatalf("BuildStrict() error = %q, want %q", err, field)
+				t.Fatalf("planRoutePlugins() error = %q, want %q", err, field)
 			}
 		}
 	})
@@ -264,22 +264,33 @@ func TestProductionPolicyBuildStrictEnforcesSecurityAxis(t *testing.T) {
 		effective := productionPolicyConfig(strictPolicySelection, "jwt-auth")
 		const serviceID = "production-policy-override-service"
 		const routeID = "production-policy-override-route"
-		putHTTPAllowlistResource(t, "services", serviceID, fmt.Appendf(nil,
-			`{"id":%q,"plugins":{"jwt-auth":{"hide_credentials":true,"claims_to_verify":["nbf"]}}}`,
-			serviceID,
-		))
-		putRouteResource(t, routeID, fmt.Appendf(
-			nil,
-			`{"id":%q,"uri":"/production-policy-override","service_id":%q,"plugins":{"jwt-auth":{"hide_credentials":true,"claims_to_verify":["exp"]}},"upstream":{"nodes":{"127.0.0.1:1":1}}}`,
-			routeID,
-			serviceID,
-		))
+		routeResource := resource.Route{
+			ID: routeID, Uri: "/production-policy-override", ServiceID: serviceID,
+			Plugins: map[string]resource.PluginConfig{
+				"jwt-auth": map[string]any{"hide_credentials": true, "claims_to_verify": []any{"exp"}},
+			},
+		}
+		service := resource.Service{
+			ID: serviceID,
+			Plugins: map[string]resource.PluginConfig{
+				"jwt-auth": map[string]any{"hide_credentials": true, "claims_to_verify": []any{"nbf"}},
+			},
+		}
 
-		builder := NewBuilder(nil, effective, testDataEncryptionResolver())
-		t.Cleanup(builder.Stop)
-		handler, err := builder.BuildStrict()
-		if err != nil || handler == nil {
-			t.Fatalf("BuildStrict() = (%T, %v), want safe route winner", handler, err)
+		planned, err := planRoutePlugins(routeResource, PlanningInput{
+			Services:       map[string]resource.Service{serviceID: service},
+			EnabledPlugins: effective.Config.Plugins,
+			Profiles:       effective.Profiles,
+		}, plugin.NewEnabledSet(effective.Config.Plugins))
+		if err != nil {
+			t.Fatalf("planRoutePlugins() error = %v, want safe route winner", err)
+		}
+		if len(planned.Local) != 1 || len(planned.ServicePlans) != 0 {
+			t.Fatalf(
+				"planRoutePlugins() plans = (local %d, service %d), want route override only",
+				len(planned.Local),
+				len(planned.ServicePlans),
+			)
 		}
 	})
 
@@ -287,24 +298,23 @@ func TestProductionPolicyBuildStrictEnforcesSecurityAxis(t *testing.T) {
 		effective := productionPolicyConfig(strictPolicySelection, "jwt-auth")
 		const ruleID = "production-policy-unsafe-global"
 		const routeID = "production-policy-global-route"
-		putHTTPAllowlistResource(t, "global_rules", ruleID, fmt.Appendf(nil,
-			`{"id":%q,"plugins":{"jwt-auth":{"hide_credentials":true,"claims_to_verify":["nbf"]}}}`,
-			ruleID,
-		))
-		putRouteResource(t, routeID, fmt.Appendf(nil,
-			`{"id":%q,"uri":"/production-policy-global","upstream":{"nodes":{"127.0.0.1:1":1}}}`,
-			routeID,
-		))
-
-		builder := NewBuilder(nil, effective, testDataEncryptionResolver())
-		t.Cleanup(builder.Stop)
-		handler, err := builder.BuildStrict()
-		if err == nil || handler != nil {
-			t.Fatalf("BuildStrict() = (%T, %v), want global policy rejection", handler, err)
+		_, err := PlanHTTPPlugins(context.Background(), PlanningInput{
+			Routes: []resource.Route{{ID: routeID, Uri: "/production-policy-global"}},
+			GlobalRules: []resource.GlobalRule{{
+				ID: ruleID,
+				Plugins: map[string]resource.PluginConfig{
+					"jwt-auth": map[string]any{"hide_credentials": true, "claims_to_verify": []any{"nbf"}},
+				},
+			}},
+			EnabledPlugins: effective.Config.Plugins,
+			Profiles:       effective.Profiles,
+		})
+		if err == nil {
+			t.Fatal("PlanHTTPPlugins() error = nil, want global policy rejection")
 		}
-		for _, field := range []string{routeID, ruleID, "jwt-auth", "claims_to_verify", "exp"} {
+		for _, field := range []string{ruleID, "jwt-auth", "claims_to_verify", "exp"} {
 			if !strings.Contains(err.Error(), field) {
-				t.Fatalf("BuildStrict() error = %q, want %q", err, field)
+				t.Fatalf("PlanHTTPPlugins() error = %q, want %q", err, field)
 			}
 		}
 	})
@@ -313,23 +323,22 @@ func TestProductionPolicyBuildStrictEnforcesSecurityAxis(t *testing.T) {
 		effective := productionPolicyConfig(strictPolicySelection)
 		const upstreamID = "production-policy-unsafe-upstream"
 		const routeID = "production-policy-upstream-route"
-		putHTTPAllowlistResource(t, "upstreams", upstreamID, fmt.Appendf(nil,
-			`{"id":%q,"scheme":"https","nodes":{"127.0.0.1:443":1}}`, upstreamID,
-		))
-		putRouteResource(t, routeID, fmt.Appendf(nil,
-			`{"id":%q,"uri":"/production-policy-upstream","upstream_id":%q}`,
-			routeID, upstreamID,
-		))
-
-		builder := NewBuilder(nil, effective, testDataEncryptionResolver())
-		t.Cleanup(builder.Stop)
-		handler, err := builder.BuildStrict()
-		if err == nil || handler != nil {
-			t.Fatalf("BuildStrict() = (%T, %v), want upstream policy rejection", handler, err)
+		_, err := PlanRouteUpstream(
+			resource.Route{ID: routeID, Uri: "/production-policy-upstream", UpstreamID: upstreamID},
+			resource.Service{},
+			map[string]resource.Upstream{upstreamID: {
+				Scheme: "https",
+				Nodes:  []resource.Node{{Host: "127.0.0.1", Port: 443, Weight: 1}},
+			}},
+			nil,
+			&effective.Config,
+		)
+		if err == nil {
+			t.Fatal("PlanRouteUpstream() error = nil, want upstream policy rejection")
 		}
 		for _, field := range []string{routeID, upstreamID, "https", "tls.verify"} {
 			if !strings.Contains(err.Error(), field) {
-				t.Fatalf("BuildStrict() error = %q, want %q", err, field)
+				t.Fatalf("PlanRouteUpstream() error = %q, want %q", err, field)
 			}
 		}
 	})
@@ -338,19 +347,29 @@ func TestProductionPolicyBuildStrictEnforcesSecurityAxis(t *testing.T) {
 		effective := productionPolicyConfig(qualificationPolicySelection, "jwt-auth")
 		const upstreamID = "production-policy-compat-upstream"
 		const routeID = "production-policy-compat-route"
-		putHTTPAllowlistResource(t, "upstreams", upstreamID, fmt.Appendf(nil,
-			`{"id":%q,"scheme":"https","nodes":{"127.0.0.1:443":1}}`, upstreamID,
-		))
-		putRouteResource(t, routeID, fmt.Appendf(nil,
-			`{"id":%q,"uri":"/production-policy-compat","plugins":{"jwt-auth":{}},"upstream_id":%q}`,
-			routeID, upstreamID,
-		))
-
-		builder := NewBuilder(nil, effective, testDataEncryptionResolver())
-		t.Cleanup(builder.Stop)
-		handler, err := builder.BuildStrict()
-		if err != nil || handler == nil {
-			t.Fatalf("BuildStrict() = (%T, %v), want compatibility defaults preserved", handler, err)
+		routeResource := resource.Route{
+			ID: routeID, Uri: "/production-policy-compat", UpstreamID: upstreamID,
+			Plugins: map[string]resource.PluginConfig{"jwt-auth": map[string]any{}},
+		}
+		planned, err := planRoutePlugins(routeResource, PlanningInput{
+			EnabledPlugins: effective.Config.Plugins,
+			Profiles:       effective.Profiles,
+		}, plugin.NewEnabledSet(effective.Config.Plugins))
+		if err != nil || len(planned.Local) != 1 {
+			t.Fatalf("planRoutePlugins() = (%d local, %v), want compatibility auth default", len(planned.Local), err)
+		}
+		_, err = PlanRouteUpstream(
+			routeResource,
+			resource.Service{},
+			map[string]resource.Upstream{upstreamID: {
+				Scheme: "https",
+				Nodes:  []resource.Node{{Host: "127.0.0.1", Port: 443, Weight: 1}},
+			}},
+			nil,
+			&effective.Config,
+		)
+		if err != nil {
+			t.Fatalf("PlanRouteUpstream() error = %v, want compatibility upstream default", err)
 		}
 	})
 }

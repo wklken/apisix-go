@@ -265,10 +265,9 @@ func TestRequestPhaseMetadataContract(t *testing.T) {
 }
 
 func TestGlobalNotFoundHandlerRecordsEarlyStopSource(t *testing.T) {
-	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
-	handler, err := builder.buildGlobalNotFoundHandler(nil)
+	handler, err := BuildPreparedNotFoundHandler(nil)
 	if err != nil {
-		t.Fatalf("buildGlobalNotFoundHandler() error = %v", err)
+		t.Fatalf("BuildPreparedNotFoundHandler() error = %v", err)
 	}
 	request, lifecycle := apisixctx.EnsureRequestLifecycle(
 		httptest.NewRequest(http.MethodGet, "/missing", nil),

@@ -8,6 +8,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 	"github.com/wklken/apisix-go/pkg/observability/metrics"
+	"github.com/wklken/apisix-go/pkg/plugin"
 	"github.com/wklken/apisix-go/pkg/plugin/http_logger"
 	"github.com/wklken/apisix-go/pkg/resource"
 )
@@ -56,25 +57,20 @@ func TestInitPluginsPassesRouteIDToLoggerBatchMetrics(t *testing.T) {
 		metrics.BatchProcessEntries = oldBatchProcessEntries
 	})
 
-	builder := NewBuilderWithServerAddr(nil, "127.0.0.1:9080", testEffectiveConfig(), testDataEncryptionResolver())
-	plugins := builder.initPlugins(
-		map[string]resource.PluginConfig{
-			"http-logger": map[string]any{
-				"uri":              loggerEndpoint,
-				"batch_max_size":   10,
-				"buffer_duration":  60,
-				"inactive_timeout": 60,
-			},
+	binding := testPluginBinding(
+		t,
+		"http-logger",
+		map[string]any{
+			"uri":              loggerEndpoint,
+			"batch_max_size":   10,
+			"buffer_duration":  60,
+			"inactive_timeout": 60,
 		},
-		builder.pluginRouteContext(resource.Route{ID: "route-a"}),
+		resource.Route{ID: "route-a"},
 	)
-	if len(plugins) != 1 {
-		t.Fatalf("plugins len = %d, want 1", len(plugins))
-	}
-
-	httpLogger, ok := plugins[0].(*http_logger.Plugin)
+	httpLogger, ok := binding.Plugin.(*http_logger.Plugin)
 	if !ok {
-		t.Fatalf("plugin type = %T, want *http_logger.Plugin", plugins[0])
+		t.Fatalf("plugin type = %T, want *http_logger.Plugin", binding.Plugin)
 	}
 	t.Cleanup(httpLogger.BatchProcessor.Stop)
 
@@ -102,25 +98,20 @@ func TestInitPluginsPassesServerAddrToLoggerBatchMetrics(t *testing.T) {
 		metrics.BatchProcessEntries = oldBatchProcessEntries
 	})
 
-	builder := NewBuilderWithServerAddr(nil, "127.0.0.1:9080", testEffectiveConfig(), testDataEncryptionResolver())
-	plugins := builder.initPlugins(
-		map[string]resource.PluginConfig{
-			"http-logger": map[string]any{
-				"uri":              loggerEndpoint,
-				"batch_max_size":   10,
-				"buffer_duration":  60,
-				"inactive_timeout": 60,
-			},
+	binding := testPluginBinding(
+		t,
+		"http-logger",
+		map[string]any{
+			"uri":              loggerEndpoint,
+			"batch_max_size":   10,
+			"buffer_duration":  60,
+			"inactive_timeout": 60,
 		},
-		builder.pluginRouteContext(resource.Route{ID: "route-a"}),
+		resource.Route{ID: "route-a"},
 	)
-	if len(plugins) != 1 {
-		t.Fatalf("plugins len = %d, want 1", len(plugins))
-	}
-
-	httpLogger, ok := plugins[0].(*http_logger.Plugin)
+	httpLogger, ok := binding.Plugin.(*http_logger.Plugin)
 	if !ok {
-		t.Fatalf("plugin type = %T, want *http_logger.Plugin", plugins[0])
+		t.Fatalf("plugin type = %T, want *http_logger.Plugin", binding.Plugin)
 	}
 	t.Cleanup(httpLogger.BatchProcessor.Stop)
 
@@ -136,12 +127,9 @@ func TestInitPluginsPassesServerAddrToLoggerBatchMetrics(t *testing.T) {
 	}
 }
 
-func TestNewBuilderWithServerAddrNormalizesPortOnlyAddr(t *testing.T) {
-	builder := NewBuilderWithServerAddr(nil, ":8080", testEffectiveConfig(), testDataEncryptionResolver())
-
-	ctx := builder.pluginRouteContext(resource.Route{ID: "route-a"})
-	if ctx.serverAddr != "0.0.0.0:8080" {
-		t.Fatalf("serverAddr = %q, want 0.0.0.0:8080", ctx.serverAddr)
+func TestNormalizeServerAddrNormalizesPortOnlyAddr(t *testing.T) {
+	if got := normalizeServerAddr(":8080"); got != "0.0.0.0:8080" {
+		t.Fatalf("normalizeServerAddr() = %q, want 0.0.0.0:8080", got)
 	}
 }
 
@@ -157,33 +145,24 @@ func TestInitGlobalPluginsPassesRouteContextToLoggerBatchMetrics(t *testing.T) {
 		metrics.BatchProcessEntries = oldBatchProcessEntries
 	})
 
-	builder := NewBuilderWithServerAddr(nil, "127.0.0.1:9080", testEffectiveConfig(), testDataEncryptionResolver())
-	plugins, err := builder.initGlobalPluginsStrict(
-		[]resource.GlobalRule{
-			{
-				ID: "global-logger-metrics",
-				Plugins: map[string]resource.PluginConfig{
-					"http-logger": map[string]any{
-						"uri":              loggerEndpoint,
-						"batch_max_size":   10,
-						"buffer_duration":  60,
-						"inactive_timeout": 60,
-					},
-				},
-			},
+	binding := testPluginBindingForSource(
+		t,
+		"http-logger",
+		map[string]any{
+			"uri":              loggerEndpoint,
+			"batch_max_size":   10,
+			"buffer_duration":  60,
+			"inactive_timeout": 60,
 		},
-		builder.pluginRouteContext(resource.Route{ID: "route-a"}),
+		plugin.ScopeGlobal,
+		plugin.ResourceProvenance{Kind: plugin.ResourceGlobalRule, ID: "global-logger-metrics"},
+		resource.Route{ID: "route-a"},
+		resource.Service{},
+		"127.0.0.1:9080",
 	)
-	if err != nil {
-		t.Fatalf("initGlobalPluginsStrict() error = %v", err)
-	}
-	if len(plugins) != 1 {
-		t.Fatalf("plugins len = %d, want 1", len(plugins))
-	}
-
-	httpLogger, ok := plugins[0].(*http_logger.Plugin)
+	httpLogger, ok := binding.Plugin.(*http_logger.Plugin)
 	if !ok {
-		t.Fatalf("plugin type = %T, want *http_logger.Plugin", plugins[0])
+		t.Fatalf("plugin type = %T, want *http_logger.Plugin", binding.Plugin)
 	}
 	t.Cleanup(httpLogger.BatchProcessor.Stop)
 

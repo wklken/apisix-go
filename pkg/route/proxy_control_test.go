@@ -84,18 +84,16 @@ func TestBufferRequestBodyIfNeededRejectsBodyAboveReplayLimit(t *testing.T) {
 }
 
 func TestProxyHandlerRejectsOversizedBufferedRequestWith413(t *testing.T) {
-	handler, err := (NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())).buildReverseHandler(
+	handler := testPreparedProxyHandler(t,
 		resource.Route{
+			ID: "oversized-buffered-request",
 			Upstream: resource.Upstream{
 				Scheme: "http",
 				Nodes:  []resource.Node{{Host: "127.0.0.1", Port: 1, Weight: 1}},
 			},
 		},
-		resource.Service{},
+		resource.Service{}, testEffectiveConfig(),
 	)
-	if err != nil {
-		t.Fatalf("buildReverseHandler() error = %v", err)
-	}
 
 	body := bytes.Repeat([]byte("x"), int(proxy_control.DefaultRequestBufferingLimit+1))
 	request := httptest.NewRequest(http.MethodPost, "http://gateway.test/upload", bytes.NewReader(body))

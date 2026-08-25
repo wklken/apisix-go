@@ -7,12 +7,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wklken/apisix-go/pkg/plugin"
 	"github.com/wklken/apisix-go/pkg/plugin/http_logger"
 	"github.com/wklken/apisix-go/pkg/resource"
 )
 
 func TestInitPluginsPassesRouteLabelsToHTTPLoggerVariable(t *testing.T) {
-	ensureRouteStore(t)
 	received := make(chan map[string]any, 1)
 	logServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
@@ -26,26 +26,22 @@ func TestInitPluginsPassesRouteLabelsToHTTPLoggerVariable(t *testing.T) {
 	}))
 	t.Cleanup(logServer.Close)
 
-	builder := NewBuilderWithServerAddr(nil, "127.0.0.1:9080", testEffectiveConfig(), testDataEncryptionResolver())
-	plugins := builder.initPlugins(
-		map[string]resource.PluginConfig{
-			"http-logger": map[string]any{
-				"uri":            logServer.URL,
-				"batch_max_size": 1,
-				"log_format": map[string]any{
-					"labels": "$a6_route_labels",
-				},
+	bindings := []plugin.Binding{testPluginBinding(
+		t,
+		"http-logger",
+		map[string]any{
+			"uri":            logServer.URL,
+			"batch_max_size": 1,
+			"log_format": map[string]any{
+				"labels": "$a6_route_labels",
 			},
 		},
-		builder.pluginRouteContext(resource.Route{
+		resource.Route{
 			ID:     "labeled-route",
 			Labels: map[string]any{"key": "testvalue"},
-		}),
-	)
-	if len(plugins) != 1 {
-		t.Fatalf("plugins len = %d, want 1", len(plugins))
-	}
-	httpLogger := plugins[0].(*http_logger.Plugin)
+		},
+	)}
+	httpLogger := bindings[0].Plugin.(*http_logger.Plugin)
 	t.Cleanup(httpLogger.BatchProcessor.Stop)
 
 	httpLogger.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

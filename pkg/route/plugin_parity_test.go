@@ -8,7 +8,6 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -16,11 +15,12 @@ import (
 	apisixjson "github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/observability/metrics"
 	pluginpkg "github.com/wklken/apisix-go/pkg/plugin"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/proxy_buffering"
 	"github.com/wklken/apisix-go/pkg/plugin/proxy_control"
 	"github.com/wklken/apisix-go/pkg/plugin/traffic_split"
 	"github.com/wklken/apisix-go/pkg/resource"
-	"github.com/wklken/apisix-go/pkg/store"
+	"github.com/wklken/apisix-go/pkg/runtime"
 )
 
 func TestWorkflowRouteChainAllowsNonMatchingRequest(t *testing.T) {
@@ -42,10 +42,9 @@ func TestBuildHandlerStrictRunsConsumerRestrictionFromAuthenticatedConsumer(t *t
 	if err := metrics.Init(nil); err != nil {
 		t.Fatalf("metrics.Init() error = %v", err)
 	}
-	ensureRouteStore(t)
-	consumer := map[string]any{
-		"username": "restricted-basic-user",
-		"plugins": map[string]any{
+	consumer := resource.Consumer{
+		Username: "restricted-basic-user",
+		Plugins: map[string]resource.PluginConfig{
 			"basic-auth": map[string]any{
 				"username": "restricted-basic-user",
 				"password": "secret",
@@ -56,26 +55,6 @@ func TestBuildHandlerStrictRunsConsumerRestrictionFromAuthenticatedConsumer(t *t
 				"rejected_code": http.StatusUnauthorized,
 			},
 		},
-	}
-	body, err := apisixjson.Marshal(consumer)
-	if err != nil {
-		t.Fatalf("marshal consumer: %v", err)
-	}
-	event := store.NewEvent()
-	event.Type = store.EventTypePut
-	event.Key = []byte("/apisix/consumers/restricted-basic-user")
-	event.Value = body
-	routeStoreEvents <- event
-
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		if _, err := store.GetConsumerByPluginKey("basic-auth", "restricted-basic-user"); err == nil {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if _, err := store.GetConsumerByPluginKey("basic-auth", "restricted-basic-user"); err != nil {
-		t.Fatalf("store consumer basic-auth index: %v", err)
 	}
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -91,9 +70,7 @@ func TestBuildHandlerStrictRunsConsumerRestrictionFromAuthenticatedConsumer(t *t
 		t.Fatalf("parse upstream port: %v", err)
 	}
 
-	builder := NewBuilderWithServerAddr(nil, "127.0.0.1:9080", testEffectiveConfig(), testDataEncryptionResolver())
-	t.Cleanup(builder.Stop)
-	handler, err := builder.buildHandlerStrict(resource.Route{
+	route := resource.Route{
 		ID:  "consumer-plugin-route",
 		Uri: "/restricted",
 		Plugins: map[string]resource.PluginConfig{
@@ -109,12 +86,40 @@ func TestBuildHandlerStrictRunsConsumerRestrictionFromAuthenticatedConsumer(t *t
 			Scheme: upstreamURL.Scheme,
 			Nodes:  []resource.Node{{Host: upstreamURL.Hostname(), Port: port, Weight: 1}},
 		},
-	})
-	if err != nil {
-		t.Fatalf("buildHandlerStrict() error = %v", err)
 	}
+	lookup := &testConsumerLookup{byKey: map[string]resource.Consumer{
+		"restricted-basic-user": consumer,
+	}}
+	authBinding := testPluginBindingWithDependencies(
+		t,
+		"basic-auth",
+		map[string]any{},
+		route,
+		base.Dependencies{
+			Consumers: lookup,
+		},
+	)
+	routeRestriction := testPluginBinding(
+		t,
+		"consumer-restriction",
+		route.Plugins["consumer-restriction"],
+		route,
+	)
+	consumerRestriction := testPluginBindingWithDependenciesScope(
+		t,
+		"consumer-restriction",
+		consumer.Plugins["consumer-restriction"],
+		route,
+		base.Dependencies{Consumers: lookup},
+		pluginpkg.ScopeConsumer,
+		pluginpkg.ResourceProvenance{Kind: pluginpkg.ResourceConsumer, ID: consumer.Username},
+	)
+	handler := testPreparedConsumerHandler(t, route, map[string]PreparedConsumerRecord{
+		consumer.Username: {Consumer: consumer, Bindings: []pluginpkg.Binding{consumerRestriction}},
+	}, []pluginpkg.Binding{authBinding, routeRestriction}, upstream.URL)
 
 	req := httptest.NewRequest(http.MethodGet, "http://route.example.com/restricted", nil)
+	req = apisixctx.WithApisixVars(req, map[string]string{"$route_id": "consumer-plugin-route"})
 	req.Header.Set("Authorization", "Basic cmVzdHJpY3RlZC1iYXNpYy11c2VyOnNlY3JldA==")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, req)
@@ -236,7 +241,11 @@ func TestBodyTransformerRouteChainTransformsValidRequest(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 
-	req := httptest.NewRequest(http.MethodPost, "http://route.example.com/pets", strings.NewReader(`{"name":"dog"}`))
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"http://route.example.com/pets",
+		strings.NewReader(`{"name":"dog"}`),
+	)
 	req.Header.Set("Content-Type", "application/json")
 	res := httptest.NewRecorder()
 	handler.ServeHTTP(res, req)
@@ -254,7 +263,11 @@ func TestBodyTransformerRouteChainRejectsMalformedRequest(t *testing.T) {
 		},
 	})
 
-	req := httptest.NewRequest(http.MethodPost, "http://route.example.com/pets", strings.NewReader(`{"name":`))
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"http://route.example.com/pets",
+		strings.NewReader(`{"name":`),
+	)
 	req.Header.Set("Content-Type", "application/json")
 	res := httptest.NewRecorder()
 	handler.ServeHTTP(res, req)
@@ -315,7 +328,11 @@ func TestDataMaskRouteChainPreservesMalformedJSON(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 
-	req := httptest.NewRequest(http.MethodPost, "http://route.example.com/pets", strings.NewReader(`{"token":`))
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"http://route.example.com/pets",
+		strings.NewReader(`{"token":`),
+	)
 	req.Header.Set("Content-Type", "application/json")
 	res := httptest.NewRecorder()
 	handler.ServeHTTP(res, req)
@@ -511,7 +528,10 @@ func TestGRPCWebRouteChainTransformsValidRequest(t *testing.T) {
 		nil,
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.Header.Get("Content-Type") != "application/grpc" {
-				t.Fatalf("upstream content type = %q, want application/grpc", r.Header.Get("Content-Type"))
+				t.Fatalf(
+					"upstream content type = %q, want application/grpc",
+					r.Header.Get("Content-Type"),
+				)
 			}
 			w.Header().Set("Content-Type", "application/grpc")
 			_, _ = w.Write([]byte{0, 0, 0, 0, 0})
@@ -724,15 +744,27 @@ func TestForwardAuthRouteChainRejectsDeniedRequest(t *testing.T) {
 }
 
 func TestJWTAuthRouteChainUsesAnonymousConsumer(t *testing.T) {
-	ensureRouteJWTAnonymousConsumer(t)
-	handler := buildRoutePluginChainWithFallback(t, "jwt-auth", map[string]any{
+	consumer := resource.Consumer{Username: "route-jwt-anonymous"}
+	routeResource := resource.Route{
+		ID: "jwt-auth-anonymous-route", Uri: "/",
+		Plugins: map[string]resource.PluginConfig{"jwt-auth": map[string]any{
+			"anonymous_consumer": consumer.Username,
+		}},
+	}
+	binding := testPluginBindingWithDependencies(t, "jwt-auth", map[string]any{
 		"anonymous_consumer": "route-jwt-anonymous",
-	}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got := apisixctx.GetApisixVar(r, "$consumer_name"); got != "route-jwt-anonymous" {
-			t.Fatalf("consumer name = %v, want route-jwt-anonymous", got)
-		}
-		w.WriteHeader(http.StatusNoContent)
-	}))
+	}, routeResource, base.Dependencies{Consumers: &testConsumerLookup{
+		byKey: map[string]resource.Consumer{consumer.Username: consumer},
+	}})
+	handler := withRequestPipeline(
+		pluginpkg.BuildPluginChain(binding.Plugin),
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if got := apisixctx.GetApisixVar(r, "$consumer_name"); got != "route-jwt-anonymous" {
+				t.Fatalf("consumer name = %v, want route-jwt-anonymous", got)
+			}
+			w.WriteHeader(http.StatusNoContent)
+		}),
+	)
 
 	req := httptest.NewRequest(http.MethodGet, "http://route.example.com/pets", nil)
 	req = apisixctx.WithApisixVars(req, map[string]string{})
@@ -761,99 +793,6 @@ func TestJWTAuthRouteChainRejectsMissingToken(t *testing.T) {
 
 	if res.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want %d", res.Code, http.StatusUnauthorized)
-	}
-}
-
-func TestGRPCTranscodeRouteChainTranscodesUnaryRequest(t *testing.T) {
-	ensureRouteGRPCProto(t)
-	handler := buildRoutePluginChainWithFallback(
-		t,
-		"grpc-transcode",
-		map[string]any{
-			"proto_id": "route-grpc",
-			"service":  "route.test.Echo",
-			"method":   "Say",
-		},
-		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.Method != http.MethodPost || r.URL.Path != "/route.test.Echo/Say" {
-				t.Fatalf("transformed request = %s %s, want POST /route.test.Echo/Say", r.Method, r.URL.Path)
-			}
-			frame, err := io.ReadAll(r.Body)
-			if err != nil {
-				t.Fatalf("read transformed gRPC frame: %v", err)
-			}
-			w.Header().Set("Content-Type", "application/grpc")
-			w.Header().Set("Grpc-Status", "0")
-			_, _ = w.Write(frame)
-		}),
-	)
-
-	req := httptest.NewRequest(http.MethodGet, "http://route.example.com/echo?name=alice", nil)
-	res := httptest.NewRecorder()
-	handler.ServeHTTP(res, req)
-
-	if res.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d; body=%q", res.Code, http.StatusOK, res.Body.String())
-	}
-	if res.Body.String() != `{"greeting":"alice"}` {
-		t.Fatalf("body = %q, want %q", res.Body.String(), `{"greeting":"alice"}`)
-	}
-}
-
-func TestGRPCTranscodeRouteChainRejectsMissingProto(t *testing.T) {
-	builder := NewBuilderWithServerAddr(nil, "127.0.0.1:9080", testEffectiveConfig(), testDataEncryptionResolver())
-	t.Cleanup(builder.Stop)
-	_, err := builder.initPluginsStrict(
-		map[string]resource.PluginConfig{"grpc-transcode": map[string]any{
-			"proto_id": "missing-route-grpc",
-			"service":  "route.test.Echo",
-			"method":   "Say",
-		}},
-		builder.pluginRouteContext(resource.Route{ID: "grpc-transcode-missing-route-test", Uri: "/"}),
-	)
-	if err == nil || !strings.Contains(err.Error(), "not found") {
-		t.Fatalf("initPluginsStrict() error = %v, want missing proto rejection", err)
-	}
-}
-
-func TestGRPCTranscodeRouteCompileRejectsStreamingDescriptor(t *testing.T) {
-	ensureRouteStore(t)
-	const streamingProto = `syntax = "proto3";
-package route.test;
-service StreamService {
-  rpc Watch (StreamRequest) returns (stream StreamReply);
-}
-message StreamRequest { string name = 1; }
-message StreamReply { string value = 1; }`
-	body, err := apisixjson.Marshal(resource.Proto{ID: "route-grpc-streaming", Content: streamingProto})
-	if err != nil {
-		t.Fatalf("marshal streaming proto: %v", err)
-	}
-	event := store.NewEvent()
-	event.Type = store.EventTypePut
-	event.Key = []byte("/apisix/protos/route-grpc-streaming")
-	event.Value = body
-	routeStoreEvents <- event
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		if _, getErr := store.GetProto("route-grpc-streaming"); getErr == nil {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	builder := NewBuilderWithServerAddr(nil, "127.0.0.1:9080", testEffectiveConfig(), testDataEncryptionResolver())
-	t.Cleanup(builder.Stop)
-	_, err = builder.initPluginsStrict(
-		map[string]resource.PluginConfig{"grpc-transcode": map[string]any{
-			"proto_id": "route-grpc-streaming",
-			"service":  "route.test.StreamService",
-			"method":   "Watch",
-		}},
-		builder.pluginRouteContext(resource.Route{ID: "grpc-transcode-streaming-route-test", Uri: "/"}),
-	)
-	if err == nil || !strings.Contains(err.Error(), "streaming methods are unsupported") {
-		t.Fatalf("initPluginsStrict() error = %v, want streaming rejection", err)
 	}
 }
 
@@ -910,11 +849,28 @@ func TestChaitinWAFRouteChainAllowsAndBlocks(t *testing.T) {
 }
 
 func TestErrorPageRouteChainRewritesConfiguredMetadata(t *testing.T) {
-	ensureRouteErrorPageMetadata(t)
-	handler := buildRoutePluginChainWithFallback(
+	metadata, err := runtime.NewMetadataView(map[string][]byte{
+		"error-page": []byte(
+			`{"enable":true,"error_404":{"body":"route 404","content_type":"text/plain"}}`,
+		),
+	})
+	if err != nil {
+		t.Fatalf("NewMetadataView() error = %v", err)
+	}
+	routeResource := resource.Route{ID: "error-page-route-test", Uri: "/"}
+	binding := testPluginBindingForSourceWithDependencies(
 		t,
 		"error-page",
 		nil,
+		pluginpkg.ScopeRoute,
+		pluginpkg.ResourceProvenance{Kind: pluginpkg.ResourceRoute, ID: routeResource.ID},
+		routeResource,
+		resource.Service{},
+		"127.0.0.1:9080",
+		base.Dependencies{Config: testEffectiveConfig(), Metadata: metadata},
+	)
+	handler := withRequestPipeline(
+		pluginpkg.BuildPluginChain(binding.Plugin),
 		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusNotFound)
 			_, _ = w.Write([]byte("original"))
@@ -984,7 +940,11 @@ func TestProxyMirrorRouteChainPreservesMainRequestAndMirrors(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 
-	req := httptest.NewRequest(http.MethodPost, "http://route.example.com/original?x=1", strings.NewReader("payload"))
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"http://route.example.com/original?x=1",
+		strings.NewReader("payload"),
+	)
 	res := httptest.NewRecorder()
 	handler.ServeHTTP(res, req)
 
@@ -996,131 +956,6 @@ func TestProxyMirrorRouteChainPreservesMainRequestAndMirrors(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for proxy-mirror request")
 	}
-}
-
-var (
-	routeStoreOnce   sync.Once
-	routeStoreEvents chan *store.Event
-	routeStore       *store.Store
-)
-
-func ensureRouteJWTAnonymousConsumer(t *testing.T) {
-	t.Helper()
-	ensureRouteStore(t)
-
-	consumer := map[string]any{
-		"username": "route-jwt-anonymous",
-		"plugins":  map[string]any{},
-	}
-	body, err := apisixjson.Marshal(consumer)
-	if err != nil {
-		t.Fatalf("marshal route JWT consumer: %v", err)
-	}
-	event := store.NewEvent()
-	event.Type = store.EventTypePut
-	event.Key = []byte("/apisix/consumers/route-jwt-anonymous")
-	event.Value = body
-	routeStoreEvents <- event
-
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		if _, err := store.GetConsumer("route-jwt-anonymous"); err == nil {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatal("route JWT anonymous consumer was not stored")
-}
-
-func ensureRouteGRPCProto(t *testing.T) {
-	t.Helper()
-	ensureRouteStore(t)
-
-	body, err := apisixjson.Marshal(resource.Proto{ID: "route-grpc", Content: routeGRPCProto})
-	if err != nil {
-		t.Fatalf("marshal route gRPC proto: %v", err)
-	}
-	event := store.NewEvent()
-	event.Type = store.EventTypePut
-	event.Key = []byte("/apisix/protos/route-grpc")
-	event.Value = body
-	routeStoreEvents <- event
-
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		if proto, err := store.GetProto("route-grpc"); err == nil && proto.Content == routeGRPCProto {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatal("route gRPC proto was not stored")
-}
-
-func ensureRouteErrorPageMetadata(t *testing.T) {
-	t.Helper()
-	ensureRouteStore(t)
-
-	metadata := map[string]any{
-		"enable": true,
-		"error_404": map[string]any{
-			"body":         "route 404",
-			"content_type": "text/plain",
-		},
-	}
-	body, err := apisixjson.Marshal(metadata)
-	if err != nil {
-		t.Fatalf("marshal route error-page metadata: %v", err)
-	}
-	event := store.NewEvent()
-	event.Type = store.EventTypePut
-	event.Key = []byte("/apisix/plugin_metadata/error-page")
-	event.Value = body
-	routeStoreEvents <- event
-
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		var stored map[string]any
-		if err := store.GetPluginMetadata("error-page", &stored); err == nil && stored["enable"] == true {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatal("route error-page metadata was not stored")
-}
-
-func ensureRouteStore(t *testing.T) {
-	t.Helper()
-
-	routeStoreOnce.Do(func() {
-		routeStoreEvents = make(chan *store.Event, 16)
-		var err error
-		routeStore, err = store.GetStore(t.TempDir()+"/route-test.db", routeStoreEvents, testDataEncryptionService())
-		if err != nil {
-			t.Fatalf("open route store: %v", err)
-		}
-		routeStore.Start()
-	})
-}
-
-func putRouteResource(t *testing.T, id string, value []byte) {
-	t.Helper()
-	event := store.NewEvent()
-	event.Type = store.EventTypePut
-	event.Key = []byte("/apisix/routes/" + id)
-	event.Value = value
-	routeStoreEvents <- event
-	if err := routeStore.Sync(); err != nil {
-		t.Fatalf("Sync() error = %v", err)
-	}
-	t.Cleanup(func() {
-		remove := store.NewEvent()
-		remove.Type = store.EventTypeDelete
-		remove.Key = []byte("/apisix/routes/" + id)
-		routeStoreEvents <- remove
-		if err := routeStore.Sync(); err != nil {
-			t.Errorf("cleanup Sync() error = %v", err)
-		}
-	})
 }
 
 func buildRoutePluginChain(t *testing.T, name string, config map[string]any) http.Handler {
@@ -1143,37 +978,12 @@ func buildRoutePluginChainWithFallback(
 	fallback http.Handler,
 ) http.Handler {
 	t.Helper()
-
-	builder := NewBuilderWithServerAddr(nil, "127.0.0.1:9080", testEffectiveConfig(), testDataEncryptionResolver())
-	t.Cleanup(builder.Stop)
-
-	plugins, err := builder.initPluginsStrict(
-		map[string]resource.PluginConfig{name: config},
-		builder.pluginRouteContext(resource.Route{ID: name + "-route-test", Uri: "/"}),
-	)
-	if err != nil {
-		t.Fatalf("initPluginsStrict() error = %v", err)
+	routeResource := resource.Route{
+		ID: name + "-route-test", Uri: "/",
+		Plugins: map[string]resource.PluginConfig{name: config},
 	}
-	if len(plugins) != 1 {
-		t.Fatalf("initialized plugins = %d, want 1", len(plugins))
-	}
-
-	return withRequestPipeline(pluginpkg.BuildPluginChain(plugins...), fallback)
+	binding := testScopedSecretPluginBinding(t, name, config, routeResource)
+	return withRequestPipeline(pluginpkg.BuildPluginChain(binding.Plugin), fallback)
 }
 
 const routeOASSpec = `{"openapi":"3.0.0","info":{"title":"route-test","version":"1.0.0"},"paths":{"/pets":{"get":{"parameters":[{"name":"id","in":"query","required":true,"schema":{"type":"integer"}}],"responses":{"204":{"description":"ok"}}}}}}`
-
-const routeGRPCProto = `syntax = "proto3";
-package route.test;
-
-service Echo {
-  rpc Say (Request) returns (Reply);
-}
-
-message Request {
-  string name = 1;
-}
-
-message Reply {
-  string greeting = 1;
-}`

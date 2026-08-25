@@ -1,8 +1,7 @@
 package route
 
 import (
-	"net/http"
-	"net/http/httptest"
+	"context"
 	"os"
 	"strings"
 	"testing"
@@ -11,83 +10,33 @@ import (
 	"github.com/wklken/apisix-go/pkg/resource"
 )
 
-func TestBuildStrictRejectsUnsupportedRouteSemantics(t *testing.T) {
-	ensureRouteStore(t)
-	effective := httpPluginAllowlist()
-
-	tests := []struct {
+func TestCompileHTTPRejectsUnsupportedRouteSemantics(t *testing.T) {
+	for _, test := range []struct {
 		name    string
 		field   string
 		value   string
-		wantErr string
 		routeID string
 	}{
-		{
-			name:    "script",
-			field:   "script",
-			value:   `"return true"`,
-			wantErr: "script",
-			routeID: "unsupported-script-route",
-		},
-		{
-			name:    "filter_func",
-			field:   "filter_func",
-			value:   `"return true"`,
-			wantErr: "filter_func",
-			routeID: "unsupported-filter-route",
-		},
-		{
-			name:    "vars",
-			field:   "vars",
-			value:   `[["http_user","==","ios"]]`,
-			wantErr: "vars",
-			routeID: "unsupported-vars-route",
-		},
-		{
-			name:    "remote_addrs",
-			field:   "remote_addrs",
-			value:   `["10.0.0.1"]`,
-			wantErr: "remote_addrs",
-			routeID: "unsupported-remote-addrs-route",
-		},
-		{
-			name:    "remote_addr",
-			field:   "remote_addr",
-			value:   `"10.0.0.1"`,
-			wantErr: "remote_addr",
-			routeID: "unsupported-remote-addr-route",
-		},
-		{
-			name:    "script_id",
-			field:   "script_id",
-			value:   `"script-1"`,
-			wantErr: "script_id",
-			routeID: "unsupported-script-id-route",
-		},
-	}
-
-	for _, test := range tests {
+		{name: "script", field: "script", value: `"return true"`, routeID: "unsupported-script-route"},
+		{name: "filter_func", field: "filter_func", value: `"return true"`, routeID: "unsupported-filter-route"},
+		{name: "vars", field: "vars", value: `[["http_user","==","ios"]]`, routeID: "unsupported-vars-route"},
+		{name: "remote_addrs", field: "remote_addrs", value: `["10.0.0.1"]`, routeID: "unsupported-remote-addrs-route"},
+		{name: "remote_addr", field: "remote_addr", value: `"10.0.0.1"`, routeID: "unsupported-remote-addr-route"},
+		{name: "script_id", field: "script_id", value: `"script-1"`, routeID: "unsupported-script-id-route"},
+	} {
 		t.Run(test.name, func(t *testing.T) {
-			payload := []byte(
-				`{"id":"` + test.routeID + `","uri":"/` + test.routeID + `","` +
-					test.field + `":` + test.value + `}`,
+			routeResource := testRouteFromJSON(t,
+				`{"id":"`+test.routeID+`","uri":"/`+test.routeID+`","`+test.field+`":`+test.value+`}`,
 			)
-			putRouteResource(t, test.routeID, payload)
-
-			builder := NewBuilder(nil, effective, testDataEncryptionResolver())
-			t.Cleanup(builder.Stop)
-			handler, err := builder.BuildStrict()
-			if err == nil || handler != nil {
-				t.Fatalf(
-					"BuildStrict() = (%T, %v), want nil handler and unsupported %s error",
-					handler,
-					err,
-					test.field,
-				)
+			snapshot, err := CompileHTTP(context.Background(), CompileInput{
+				Revision: 1,
+				Routes:   testPreparedRoutes(routeResource),
+			})
+			if err == nil || snapshot != nil {
+				t.Fatalf("CompileHTTP() = (%T, %v), want unsupported %s rejection", snapshot, err, test.field)
 			}
-			if !strings.Contains(err.Error(), test.routeID) ||
-				!strings.Contains(err.Error(), test.wantErr) {
-				t.Fatalf("BuildStrict() error = %q, want route ID %q and field %q", err, test.routeID, test.wantErr)
+			if !strings.Contains(err.Error(), test.routeID) || !strings.Contains(err.Error(), test.field) {
+				t.Fatalf("CompileHTTP() error = %q, want route ID %q and field %q", err, test.routeID, test.field)
 			}
 		})
 	}
@@ -118,151 +67,99 @@ func TestProgrammaticSingularFieldsUseValuePresence(t *testing.T) {
 	}
 }
 
-func TestBuildStrictAllowsBlankFilterFunc(t *testing.T) {
-	ensureRouteStore(t)
-	effective := httpPluginAllowlist()
-	const routeID = "blank-filter-route"
-	putRouteResource(t, routeID, []byte(`{"id":"blank-filter-route","uri":"/blank-filter-route","filter_func":" \t "}`))
-
-	builder := NewBuilder(nil, effective, testDataEncryptionResolver())
-	t.Cleanup(builder.Stop)
-	handler, err := builder.BuildStrict()
-	if err != nil || handler == nil {
-		t.Fatalf("BuildStrict() = (%T, %v), want blank filter_func accepted", handler, err)
+func TestCompileHTTPAllowsBlankFilterFunc(t *testing.T) {
+	snapshot, err := CompileHTTP(context.Background(), CompileInput{
+		Revision: 1,
+		Routes: testPreparedRoutes(testRouteFromJSON(t,
+			`{"id":"blank-filter-route","uri":"/blank-filter-route","filter_func":" \t "}`,
+		)),
+	})
+	if err != nil || snapshot == nil {
+		t.Fatalf("CompileHTTP() = (%T, %v), want blank filter_func accepted", snapshot, err)
 	}
 }
 
-func TestBuildStrictRejectsNestedNumericVars(t *testing.T) {
-	ensureRouteStore(t)
-	effective := httpPluginAllowlist()
-	const routeID = "nested-numeric-vars"
-	putRouteResource(
-		t,
-		routeID,
-		[]byte(`{"id":"nested-numeric-vars","uri":"/nested-numeric-vars","vars":[["arg_age","==",18]]}`),
-	)
-
-	builder := NewBuilder(nil, effective, testDataEncryptionResolver())
-	t.Cleanup(builder.Stop)
-	handler, err := builder.BuildStrict()
-	if err == nil || handler != nil {
-		t.Fatalf("BuildStrict() = (%T, %v), want vars rejection", handler, err)
+func TestCompileHTTPRejectsNestedNumericVars(t *testing.T) {
+	snapshot, err := CompileHTTP(context.Background(), CompileInput{
+		Revision: 1,
+		Routes: testPreparedRoutes(testRouteFromJSON(t,
+			`{"id":"nested-numeric-vars","uri":"/nested-numeric-vars","vars":[["arg_age","==",18]]}`,
+		)),
+	})
+	if err == nil || snapshot != nil {
+		t.Fatalf("CompileHTTP() = (%T, %v), want vars rejection", snapshot, err)
 	}
-	if !strings.Contains(err.Error(), routeID) || !strings.Contains(err.Error(), "vars") {
-		t.Fatalf("BuildStrict() error = %q, want route ID and vars", err)
+	if !strings.Contains(err.Error(), "nested-numeric-vars") || !strings.Contains(err.Error(), "vars") {
+		t.Fatalf("CompileHTTP() error = %q, want route ID and vars", err)
 	}
 }
 
-func TestBuildStrictAllowsEmptyVarsAndRemoteAddrs(t *testing.T) {
-	ensureRouteStore(t)
-	effective := httpPluginAllowlist()
+func TestCompileHTTPAllowsEmptyVarsAndRemoteAddrs(t *testing.T) {
 	for _, test := range []struct {
-		routeID string
-		payload string
+		name string
+		raw  string
 	}{
-		{routeID: "empty-vars", payload: `{"id":"empty-vars","uri":"/empty-vars","vars":[]}`},
-		{routeID: "null-vars", payload: `{"id":"null-vars","uri":"/null-vars","vars":null}`},
-		{routeID: "empty-remote", payload: `{"id":"empty-remote","uri":"/empty-remote","remote_addrs":[]}`},
+		{name: "empty-vars", raw: `{"id":"empty-vars","uri":"/empty-vars","vars":[]}`},
+		{name: "null-vars", raw: `{"id":"null-vars","uri":"/null-vars","vars":null}`},
+		{name: "empty-remote", raw: `{"id":"empty-remote","uri":"/empty-remote","remote_addrs":[]}`},
 	} {
-		t.Run(test.routeID, func(t *testing.T) {
-			putRouteResource(t, test.routeID, []byte(test.payload))
-			builder := NewBuilder(nil, effective, testDataEncryptionResolver())
-			t.Cleanup(builder.Stop)
-			handler, err := builder.BuildStrict()
-			if err != nil || handler == nil {
-				t.Fatalf("BuildStrict() = (%T, %v), want empty %s accepted", handler, err, test.routeID)
+		t.Run(test.name, func(t *testing.T) {
+			snapshot, err := CompileHTTP(context.Background(), CompileInput{
+				Revision: 1,
+				Routes:   testPreparedRoutes(testRouteFromJSON(t, test.raw)),
+			})
+			if err != nil || snapshot == nil {
+				t.Fatalf("CompileHTTP() = (%T, %v), want empty field accepted", snapshot, err)
 			}
 		})
 	}
 }
 
-func TestBuildStrictRejectsVarsAndKeepsLastGoodHandler(t *testing.T) {
-	ensureRouteStore(t)
-	effective := httpPluginAllowlist()
-	const routeID = "vars-last-good"
-	putRouteResource(t, routeID, []byte(`{"id":"vars-last-good","uri":"/vars-last-good"}`))
-
-	validBuilder := NewBuilder(nil, effective, testDataEncryptionResolver())
-	t.Cleanup(validBuilder.Stop)
-	lastGood, err := validBuilder.BuildStrict()
-	if err != nil || lastGood == nil {
-		t.Fatalf("valid BuildStrict() = (%T, %v)", lastGood, err)
-	}
-
-	putRouteResource(
-		t,
-		routeID,
-		[]byte(`{"id":"vars-last-good","uri":"/vars-last-good","vars":[["http_user","==","ios"]]}`),
-	)
-	invalidBuilder := NewBuilder(nil, effective, testDataEncryptionResolver())
-	t.Cleanup(invalidBuilder.Stop)
-	handler, err := invalidBuilder.BuildStrict()
-	if err == nil || handler != nil {
-		t.Fatalf("invalid BuildStrict() = (%T, %v), want vars rejection", handler, err)
-	}
-
-	response := httptest.NewRecorder()
-	lastGood.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/vars-last-good", nil))
-	if response.Code == http.StatusNotFound {
-		t.Fatalf("last-good handler status = %d, want the previously compiled route", response.Code)
-	}
-}
-
-func TestBuildReverseHandlerValidatesHTTPUpstreamTypes(t *testing.T) {
+func TestPlanRouteUpstreamValidatesHTTPUpstreamTypes(t *testing.T) {
 	for _, test := range []struct {
 		name   string
 		scheme string
 		type_  string
 		wantOK bool
 	}{
-		{name: "default scheme empty type", type_: "", wantOK: true},
+		{name: "default scheme empty type", wantOK: true},
 		{name: "http roundrobin", scheme: "http", type_: "roundrobin", wantOK: true},
-		{name: "https empty type", scheme: "https", type_: "", wantOK: true},
+		{name: "https empty type", scheme: "https", wantOK: true},
 		{name: "grpc roundrobin", scheme: "grpc", type_: "roundrobin", wantOK: true},
-		{name: "grpcs empty type", scheme: "grpcs", type_: "", wantOK: true},
+		{name: "grpcs empty type", scheme: "grpcs", wantOK: true},
 		{name: "http chash", scheme: "http", type_: "chash"},
 		{name: "http random", scheme: "http", type_: "random"},
 		{name: "kafka owner", scheme: "kafka", type_: "chash", wantOK: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
-			t.Cleanup(builder.Stop)
-			_, err := builder.buildReverseHandler(resource.Route{Upstream: resource.Upstream{
-				Scheme: test.scheme,
-				Type:   test.type_,
-			}}, resource.Service{})
+			_, err := PlanRouteUpstream(
+				resource.Route{ID: "upstream-type", Upstream: resource.Upstream{Scheme: test.scheme, Type: test.type_}},
+				resource.Service{}, nil, nil, &testEffectiveConfig().Config,
+			)
 			if test.wantOK {
 				if err != nil {
-					t.Fatalf("buildReverseHandler() error = %v, want accepted upstream type", err)
+					t.Fatalf("PlanRouteUpstream() error = %v, want accepted upstream type", err)
 				}
 				return
 			}
 			if err == nil || !strings.Contains(err.Error(), "unsupported upstream type") {
-				t.Fatalf("buildReverseHandler() error = %v, want unsupported upstream type", err)
+				t.Fatalf("PlanRouteUpstream() error = %v, want unsupported upstream type", err)
 			}
 		})
 	}
 }
 
-func TestUnsupportedUpstreamSchemeAcceptsKafkaAcrossProfileAxes(t *testing.T) {
-	effective := testEffectiveConfig()
-	effective.Config.CompatibilityTarget = appconfig.CompatibilityAPISIX317
-	effective.Config.SecurityProfile = appconfig.SecurityStrict
-	effective.Config.QualificationProfile = appconfig.QualificationHTTPDataPlaneV1
-	effective.Profiles = appconfig.ProfileSelection{
-		Compatibility: appconfig.CompatibilityAPISIX317,
-		Security:      appconfig.SecurityStrict,
-		Qualification: appconfig.QualificationHTTPDataPlaneV1,
-	}
-
-	builder := NewBuilder(nil, effective, testDataEncryptionResolver())
-	t.Cleanup(builder.Stop)
-	_, err := builder.buildReverseHandler(resource.Route{
-		ID:       "profile-kafka-route",
-		Upstream: resource.Upstream{Scheme: "kafka", Type: "chash"},
-	}, resource.Service{})
+func TestPlanRouteUpstreamAcceptsKafkaAcrossProfileAxes(t *testing.T) {
+	static := testEffectiveConfig().Config
+	static.CompatibilityTarget = appconfig.CompatibilityAPISIX317
+	static.SecurityProfile = appconfig.SecurityStrict
+	static.QualificationProfile = appconfig.QualificationHTTPDataPlaneV1
+	_, err := PlanRouteUpstream(
+		resource.Route{ID: "profile-kafka-route", Upstream: resource.Upstream{Scheme: "kafka", Type: "chash"}},
+		resource.Service{}, nil, nil, &static,
+	)
 	if err != nil {
-		t.Fatalf("buildReverseHandler() error = %v, want Kafka compatibility owner available across axes", err)
+		t.Fatalf("PlanRouteUpstream() error = %v, want Kafka owner available across axes", err)
 	}
 }
 

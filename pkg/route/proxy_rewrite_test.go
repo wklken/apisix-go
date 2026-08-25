@@ -30,7 +30,7 @@ func TestBuildReverseHandlerRewritesHostWithoutChangingTarget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse upstream port: %v", err)
 	}
-	handler, err := (NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())).buildReverseHandler(
+	handler := testPreparedProxyHandler(t,
 		resource.Route{
 			Upstream: resource.Upstream{
 				Type:   "roundrobin",
@@ -40,11 +40,8 @@ func TestBuildReverseHandlerRewritesHostWithoutChangingTarget(t *testing.T) {
 				}},
 			},
 		},
-		resource.Service{},
+		resource.Service{}, testEffectiveConfig(),
 	)
-	if err != nil {
-		t.Fatalf("buildReverseHandler() error = %v", err)
-	}
 
 	req := httptest.NewRequest(http.MethodGet, "http://gateway.example.com/hello", nil)
 	req = apisixctx.WithApisixVars(req, nil)
@@ -89,7 +86,7 @@ func TestBuildReverseHandlerFinalizesProxyRewriteBeforeUpstream(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse upstream port: %v", err)
 	}
-	handler, err := (NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())).buildReverseHandler(
+	handler := testPreparedProxyHandler(t,
 		resource.Route{
 			Upstream: resource.Upstream{
 				Type:   "roundrobin",
@@ -97,11 +94,8 @@ func TestBuildReverseHandlerFinalizesProxyRewriteBeforeUpstream(t *testing.T) {
 				Nodes:  []resource.Node{{Host: target.Hostname(), Port: port, Weight: 1}},
 			},
 		},
-		resource.Service{},
+		resource.Service{}, testEffectiveConfig(),
 	)
-	if err != nil {
-		t.Fatalf("buildReverseHandler() error = %v", err)
-	}
 
 	req := httptest.NewRequest(http.MethodGet, "http://gateway.example.com/original?incoming=1", nil)
 	req = apisixctx.WithApisixVars(req, nil)
@@ -184,7 +178,7 @@ func TestBuildReverseHandlerAppliesUpstreamPassHost(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			handler, err := (NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())).buildReverseHandler(
+			handler := testPreparedProxyHandler(t,
 				resource.Route{
 					Upstream: resource.Upstream{
 						Type:         "roundrobin",
@@ -196,11 +190,8 @@ func TestBuildReverseHandlerAppliesUpstreamPassHost(t *testing.T) {
 						}},
 					},
 				},
-				resource.Service{},
+				resource.Service{}, testEffectiveConfig(),
 			)
-			if err != nil {
-				t.Fatalf("buildReverseHandler() error = %v", err)
-			}
 
 			req := httptest.NewRequest(http.MethodGet, "http://gateway.example.com/hello", nil)
 			req.Host = test.requestHost
@@ -245,7 +236,8 @@ func TestBuildReverseHandlerRejectsInvalidUpstreamHostMode(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			_, err := (NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())).buildReverseHandler(
+			effective := testEffectiveConfig()
+			_, err := PlanRouteUpstream(
 				resource.Route{
 					Upstream: resource.Upstream{
 						Type:         "roundrobin",
@@ -255,7 +247,7 @@ func TestBuildReverseHandlerRejectsInvalidUpstreamHostMode(t *testing.T) {
 						Nodes:        []resource.Node{{Host: "127.0.0.1", Port: 80, Weight: 1}},
 					},
 				},
-				resource.Service{},
+				resource.Service{}, nil, nil, &effective.Config,
 			)
 			if err == nil {
 				t.Fatal("buildReverseHandler() error = nil, want invalid pass_host rejection")
@@ -317,7 +309,7 @@ func TestBuildReverseHandlerKeepsTrafficSplitTargetWithRewrittenHost(t *testing.
 		t.Fatalf("parse upstream URL: %v", err)
 	}
 
-	handler, err := (NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())).buildReverseHandler(
+	handler := testPreparedProxyHandler(t,
 		resource.Route{
 			Upstream: resource.Upstream{
 				Type:   "roundrobin",
@@ -325,11 +317,8 @@ func TestBuildReverseHandlerKeepsTrafficSplitTargetWithRewrittenHost(t *testing.
 				Nodes:  []resource.Node{{Host: "127.0.0.1", Port: 1, Weight: 1}},
 			},
 		},
-		resource.Service{},
+		resource.Service{}, testEffectiveConfig(),
 	)
-	if err != nil {
-		t.Fatalf("buildReverseHandler() error = %v", err)
-	}
 
 	req := httptest.NewRequest(http.MethodGet, "http://gateway.example.com/hello", nil)
 	req = apisixctx.WithApisixVars(req, nil)

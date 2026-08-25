@@ -1,6 +1,7 @@
 package route
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -16,6 +17,8 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	pluginexpr "github.com/wklken/apisix-go/pkg/plugin/expr"
 	"github.com/wklken/apisix-go/pkg/resource"
+	apisixruntime "github.com/wklken/apisix-go/pkg/runtime"
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 type scopedRewriteTestPlugin struct {
@@ -188,53 +191,92 @@ func TestScopedRewritePreservesServiceAndPluginConfigProvenance(t *testing.T) {
 }
 
 func TestScopedRewriteMaterializesRoutePluginConfigAndServiceWinners(t *testing.T) {
-	ensureRouteStore(t)
-	effective := httpPluginAllowlist("request-id")
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	t.Cleanup(upstream.Close)
-	node := routePriorityNode(t, upstream.URL)
-	putHTTPAllowlistResource(
-		t,
-		"plugin_configs",
-		"scoped-source-pc",
-		[]byte(`{"id":"scoped-source-pc","plugins":{"request-id":{"header_name":"X-Plugin-Config"}}}`),
-	)
-	putHTTPAllowlistResource(
-		t,
-		"services",
-		"scoped-source-service",
-		[]byte(`{"id":"scoped-source-service","plugins":{"request-id":{"header_name":"X-Service"}}}`),
-	)
-	putRouteResource(
-		t,
-		"scoped-source-service-route",
-		[]byte(
-			`{"id":"scoped-source-service-route","uri":"/scoped-source-service","service_id":"scoped-source-service","upstream":{"type":"roundrobin","nodes":{"`+node+`":1}}}`,
-		),
-	)
-	putRouteResource(
-		t,
-		"scoped-source-pc-route",
-		[]byte(
-			`{"id":"scoped-source-pc-route","uri":"/scoped-source-pc","plugin_config_id":"scoped-source-pc","service_id":"scoped-source-service","upstream":{"type":"roundrobin","nodes":{"`+node+`":1}}}`,
-		),
-	)
-	putRouteResource(
-		t,
-		"scoped-source-route-route",
-		[]byte(
-			`{"id":"scoped-source-route-route","uri":"/scoped-source-route","plugin_config_id":"scoped-source-pc","service_id":"scoped-source-service","plugins":{"request-id":{"header_name":"X-Route"}},"upstream":{"type":"roundrobin","nodes":{"`+node+`":1}}}`,
-		),
-	)
-
-	builder := NewBuilder(nil, effective, testDataEncryptionResolver())
-	t.Cleanup(builder.Stop)
-	handler, err := builder.BuildStrict()
-	if err != nil {
-		t.Fatalf("BuildStrict() error = %v", err)
+	node := upstreamNode(t, upstream.URL)
+	routes := []resource.Route{
+		{
+			ID: "scoped-source-service-route", Uri: "/scoped-source-service",
+			ServiceID: "scoped-source-service",
+			Upstream: resource.Upstream{
+				Type:   "roundrobin",
+				Scheme: "http",
+				Nodes:  []resource.Node{node},
+			},
+		},
+		{
+			ID: "scoped-source-pc-route", Uri: "/scoped-source-pc",
+			PluginConfigID: "scoped-source-pc", ServiceID: "scoped-source-service",
+			Upstream: resource.Upstream{
+				Type:   "roundrobin",
+				Scheme: "http",
+				Nodes:  []resource.Node{node},
+			},
+		},
+		{
+			ID: "scoped-source-route-route", Uri: "/scoped-source-route",
+			PluginConfigID: "scoped-source-pc", ServiceID: "scoped-source-service",
+			Plugins: map[string]resource.PluginConfig{
+				"request-id": map[string]any{"header_name": "X-Route"},
+			},
+			Upstream: resource.Upstream{
+				Type:   "roundrobin",
+				Scheme: "http",
+				Nodes:  []resource.Node{node},
+			},
+		},
 	}
+	services := map[string]resource.Service{"scoped-source-service": {
+		ID: "scoped-source-service",
+		Plugins: map[string]resource.PluginConfig{
+			"request-id": map[string]any{"header_name": "X-Service"},
+		},
+	}}
+	pluginConfigs := map[string]resource.PluginConfigRule{"scoped-source-pc": {
+		Plugins: map[string]resource.PluginConfig{
+			"request-id": map[string]any{"header_name": "X-Plugin-Config"},
+		},
+	}}
+	effective := httpPluginAllowlist("request-id")
+	plan, err := PlanHTTPPlugins(context.Background(), PlanningInput{
+		Routes: routes, Services: services, PluginConfigs: pluginConfigs,
+		EnabledPlugins: []string{"request-id"}, Profiles: effective.Profiles,
+	})
+	if err != nil {
+		t.Fatalf("PlanHTTPPlugins() error = %v", err)
+	}
+	prepared := make([]PreparedRoute, 0, len(plan.Routes))
+	for _, planned := range plan.Routes {
+		plans := append(append([]PluginPlan(nil), planned.ServicePlans...), planned.Local...)
+		bindings := make([]plugin.Binding, 0, len(plans))
+		for _, pluginPlan := range plans {
+			binding := testPluginBindingForSource(
+				t, pluginPlan.Factory, pluginPlan.Config, pluginPlan.Scope, pluginPlan.Provenance,
+				planned.Route, planned.Service, "127.0.0.1:9080",
+			)
+			binding, err = pluginPlan.Apply(binding)
+			if err != nil {
+				t.Fatalf("PluginPlan.Apply(%s) error = %v", pluginPlan.Factory, err)
+			}
+			bindings = append(bindings, binding)
+		}
+		handler := testPreparedProxyHandler(
+			t,
+			planned.Route,
+			planned.Service,
+			effective,
+			bindings...)
+		prepared = append(prepared, PreparedRoute{
+			Route: planned.Route, Hosts: planned.Route.EffectiveHosts(), Handler: handler,
+		})
+	}
+	snapshot, err := CompileHTTP(context.Background(), CompileInput{Revision: 1, Routes: prepared})
+	if err != nil {
+		t.Fatalf("CompileHTTP() error = %v", err)
+	}
+	handler := snapshot.Handler()
 	for _, test := range []struct {
 		path string
 		want string
@@ -253,7 +295,11 @@ func TestScopedRewriteMaterializesRoutePluginConfigAndServiceWinners(t *testing.
 			}
 			for _, other := range []string{"X-Service", "X-Plugin-Config", "X-Route"} {
 				if other != test.want && response.Header().Get(other) != "" {
-					t.Fatalf("overridden header %s = %q, want empty", other, response.Header().Get(other))
+					t.Fatalf(
+						"overridden header %s = %q, want empty",
+						other,
+						response.Header().Get(other),
+					)
 				}
 			}
 		})
@@ -376,12 +422,33 @@ func TestGlobalNotFoundInjectsOnlyRequestContextSystemPlugin(t *testing.T) {
 	effective := testEffectiveConfig()
 	effective.Config.Plugins = nil
 	effective.Config.NginxConfig.HTTP.ClientMaxBodySize = 1
-	builder := NewBuilder(nil, effective, testDataEncryptionResolver())
-	set := plugin.NewEnabledSet(nil)
-	builder.enabledPlugins = &set
-	handler, err := builder.buildGlobalNotFoundHandler(nil)
+	plan, err := PlanHTTPPlugins(context.Background(), PlanningInput{Profiles: effective.Profiles})
 	if err != nil {
-		t.Fatalf("buildGlobalNotFoundHandler() error = %v, want request-context-only system setup", err)
+		t.Fatalf("PlanHTTPPlugins() error = %v", err)
+	}
+	if len(plan.System) != 1 || plan.System[0].Factory != "request-context" {
+		t.Fatalf("system plans = %#v, want request-context only", plan.System)
+	}
+	system := testPluginBindingForSource(
+		t,
+		plan.System[0].Factory,
+		plan.System[0].Config,
+		plan.System[0].Scope,
+		plan.System[0].Provenance,
+		resource.Route{},
+		resource.Service{},
+		"127.0.0.1:9080",
+	)
+	system, err = plan.System[0].Apply(system)
+	if err != nil {
+		t.Fatalf("PluginPlan.Apply() error = %v", err)
+	}
+	handler, err := BuildPreparedNotFoundHandler([]plugin.Binding{system})
+	if err != nil {
+		t.Fatalf(
+			"BuildPreparedNotFoundHandler() error = %v, want request-context-only system setup",
+			err,
+		)
 	}
 	request, lifecycle := apisixctx.EnsureRequestLifecycle(
 		httptest.NewRequest(http.MethodGet, "/missing", nil),
@@ -404,12 +471,6 @@ func TestGlobalNotFoundInjectsOnlyRequestContextSystemPlugin(t *testing.T) {
 }
 
 func TestPlan14V2JWTAuthPayloadFeedsEffectiveProxyRewrite(t *testing.T) {
-	ensureRouteStore(t)
-	putHTTPAllowlistResource(t, "consumers", "scoped-jwt-auth-only", []byte(`{
-		"username":"scoped-jwt-auth-only",
-		"plugins":{"jwt-auth":{"key":"user-key","secret":"my-secret-key","algorithm":"HS256"}}
-	}`))
-
 	seen := make(chan string, 1)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		seen <- r.Header.Get("X-JWT-Payload")
@@ -425,9 +486,7 @@ func TestPlan14V2JWTAuthPayloadFeedsEffectiveProxyRewrite(t *testing.T) {
 		t.Fatalf("parse upstream port: %v", err)
 	}
 
-	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
-	t.Cleanup(builder.Stop)
-	handler, err := builder.buildHandlerStrict(resource.Route{
+	routeResource := resource.Route{
 		ID: "scoped-jwt-auth-route",
 		Plugins: map[string]resource.PluginConfig{
 			"jwt-auth": map[string]any{"store_in_ctx": true},
@@ -442,10 +501,41 @@ func TestPlan14V2JWTAuthPayloadFeedsEffectiveProxyRewrite(t *testing.T) {
 			Scheme: upstreamURL.Scheme,
 			Nodes:  []resource.Node{{Host: upstreamURL.Hostname(), Port: port, Weight: 1}},
 		},
-	})
-	if err != nil {
-		t.Fatalf("buildHandlerStrict() error = %v", err)
 	}
+	consumer := resource.Consumer{
+		Username: "scoped-jwt-auth-only",
+		Plugins: map[string]resource.PluginConfig{"jwt-auth": map[string]any{
+			"key": "user-key", "secret": "my-secret-key", "algorithm": "HS256",
+		}},
+	}
+	consumerIndex, err := apisixruntime.NewConsumerBindings(
+		[]apisixruntime.ConsumerRecord{{ID: consumer.Username, Consumer: consumer}},
+		nil,
+		[]apisixruntime.ConsumerCredentialBinding{
+			{Plugin: "jwt-auth", Key: "user-key", ConsumerID: consumer.Username},
+		},
+	)
+	if err != nil {
+		t.Fatalf("NewConsumerBindings() error = %v", err)
+	}
+	t.Cleanup(consumerIndex.Close)
+	auth := testPluginBindingForSourceWithDependencies(
+		t, "jwt-auth", routeResource.Plugins["jwt-auth"], plugin.ScopeRoute,
+		plugin.ResourceProvenance{Kind: plugin.ResourceRoute, ID: routeResource.ID},
+		routeResource, resource.Service{}, "127.0.0.1:9080",
+		base.Dependencies{Config: testEffectiveConfig(), Consumers: consumerIndex},
+	)
+	rewrite := testPluginBinding(
+		t,
+		"proxy-rewrite",
+		routeResource.Plugins["proxy-rewrite"],
+		routeResource,
+	)
+	handler := testPreparedProxyHandlerWithConsumers(
+		t, routeResource, resource.Service{}, testEffectiveConfig(),
+		map[string]PreparedConsumerRecord{consumer.Username: {Consumer: consumer}},
+		auth, rewrite,
+	)
 
 	request := httptest.NewRequest(http.MethodGet, "http://gateway.test/scoped-jwt-auth", nil)
 	request.Header.Set("Authorization", "Bearer "+signedScopedJWT(t, "user-key", "my-secret-key"))
@@ -465,15 +555,6 @@ func TestPlan14V2JWTAuthPayloadFeedsEffectiveProxyRewrite(t *testing.T) {
 }
 
 func TestPlan14V2ConsumerProxyRewriteOverridesRouteBeforeEitherExecutes(t *testing.T) {
-	ensureRouteStore(t)
-	putHTTPAllowlistResource(t, "consumers", "scoped-jwt-proxy-consumer", []byte(`{
-		"username":"scoped-jwt-proxy-consumer",
-		"plugins":{
-			"jwt-auth":{"key":"consumer-key","secret":"consumer-secret","algorithm":"HS256"},
-			"proxy-rewrite":{"headers":{"add":{"X-Consumer-Proxy":"consumer"}}}
-		}
-	}`))
-
 	seen := make(chan []string, 1)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		seen <- r.Header.Values("X-Consumer-Proxy")
@@ -489,9 +570,7 @@ func TestPlan14V2ConsumerProxyRewriteOverridesRouteBeforeEitherExecutes(t *testi
 		t.Fatalf("parse upstream port: %v", err)
 	}
 
-	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
-	t.Cleanup(builder.Stop)
-	handler, err := builder.buildHandlerStrict(resource.Route{
+	routeResource := resource.Route{
 		ID: "scoped-jwt-proxy-route",
 		Plugins: map[string]resource.PluginConfig{
 			"jwt-auth": map[string]any{},
@@ -506,13 +585,63 @@ func TestPlan14V2ConsumerProxyRewriteOverridesRouteBeforeEitherExecutes(t *testi
 			Scheme: upstreamURL.Scheme,
 			Nodes:  []resource.Node{{Host: upstreamURL.Hostname(), Port: port, Weight: 1}},
 		},
-	})
-	if err != nil {
-		t.Fatalf("buildHandlerStrict() error = %v", err)
 	}
+	consumer := resource.Consumer{
+		Username: "scoped-jwt-proxy-consumer",
+		Plugins: map[string]resource.PluginConfig{
+			"jwt-auth": map[string]any{
+				"key": "consumer-key", "secret": "consumer-secret", "algorithm": "HS256",
+			},
+			"proxy-rewrite": map[string]any{
+				"headers": map[string]any{"add": map[string]any{"X-Consumer-Proxy": "consumer"}},
+			},
+		},
+	}
+	consumerIndex, err := apisixruntime.NewConsumerBindings(
+		[]apisixruntime.ConsumerRecord{{ID: consumer.Username, Consumer: consumer}},
+		nil,
+		[]apisixruntime.ConsumerCredentialBinding{
+			{Plugin: "jwt-auth", Key: "consumer-key", ConsumerID: consumer.Username},
+		},
+	)
+	if err != nil {
+		t.Fatalf("NewConsumerBindings() error = %v", err)
+	}
+	t.Cleanup(consumerIndex.Close)
+	auth := testPluginBindingForSourceWithDependencies(
+		t, "jwt-auth", routeResource.Plugins["jwt-auth"], plugin.ScopeRoute,
+		plugin.ResourceProvenance{Kind: plugin.ResourceRoute, ID: routeResource.ID},
+		routeResource, resource.Service{}, "127.0.0.1:9080",
+		base.Dependencies{Config: testEffectiveConfig(), Consumers: consumerIndex},
+	)
+	routeRewrite := testPluginBinding(
+		t,
+		"proxy-rewrite",
+		routeResource.Plugins["proxy-rewrite"],
+		routeResource,
+	)
+	consumerRewrite := testPluginBindingForSource(
+		t, "proxy-rewrite", consumer.Plugins["proxy-rewrite"], plugin.ScopeConsumer,
+		plugin.ResourceProvenance{Kind: plugin.ResourceConsumer, ID: consumer.Username},
+		routeResource, resource.Service{}, "127.0.0.1:9080",
+	)
+	handler := testPreparedProxyHandlerWithConsumers(
+		t,
+		routeResource,
+		resource.Service{},
+		testEffectiveConfig(),
+		map[string]PreparedConsumerRecord{
+			consumer.Username: {Consumer: consumer, Bindings: []plugin.Binding{consumerRewrite}},
+		},
+		auth,
+		routeRewrite,
+	)
 
 	request := httptest.NewRequest(http.MethodGet, "http://gateway.test/scoped-jwt-proxy", nil)
-	request.Header.Set("Authorization", "Bearer "+signedScopedJWT(t, "consumer-key", "consumer-secret"))
+	request.Header.Set(
+		"Authorization",
+		"Bearer "+signedScopedJWT(t, "consumer-key", "consumer-secret"),
+	)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusNoContent {
@@ -539,44 +668,58 @@ func signedScopedJWT(t *testing.T, key, secret string) string {
 }
 
 func TestServiceProvenanceUsesAuthoritativeRouteServiceID(t *testing.T) {
-	ensureRouteStore(t)
-	putHTTPAllowlistResource(t, "services", "scoped-service-key", []byte(`{
-		"plugins":{"proxy-rewrite":{"method":"INVALID"}}
-	}`))
-
-	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
-	t.Cleanup(builder.Stop)
-	_, err := builder.buildHandlerStrict(resource.Route{
-		ID:        "scoped-service-route",
-		ServiceID: "scoped-service-key",
+	plan, err := PlanHTTPPlugins(context.Background(), PlanningInput{
+		Routes: []resource.Route{{ID: "scoped-service-route", ServiceID: "scoped-service-key"}},
+		Services: map[string]resource.Service{"scoped-service-key": {
+			Plugins: map[string]resource.PluginConfig{
+				"proxy-rewrite": map[string]any{"method": "INVALID"},
+			},
+		}},
+		EnabledPlugins: []string{"proxy-rewrite"},
+		Profiles:       testEffectiveConfig().Profiles,
 	})
-	if err == nil {
-		t.Fatal("buildHandlerStrict() error = nil, want invalid service plugin config")
+	if err != nil {
+		t.Fatalf("PlanHTTPPlugins() error = %v", err)
 	}
-	if !strings.Contains(err.Error(), `service "scoped-service-key"`) {
-		t.Fatalf("buildHandlerStrict() error = %q, want authoritative service ID", err)
+	if len(plan.Routes) != 1 || len(plan.Routes[0].Local) != 1 {
+		t.Fatalf("service plans = %#v, want one proxy-rewrite plan", plan.Routes)
+	}
+	servicePlan := plan.Routes[0].Local[0]
+	if servicePlan.Provenance != (plugin.ResourceProvenance{Kind: plugin.ResourceService, ID: "scoped-service-key"}) {
+		t.Fatalf(
+			"service provenance = %#v, want authoritative route service ID",
+			servicePlan.Provenance,
+		)
+	}
+	instance := plugin.New(servicePlan.Factory, base.Dependencies{Config: testEffectiveConfig()})
+	if instance == nil {
+		t.Fatal("proxy-rewrite plugin is unavailable")
+	}
+	if err := instance.Init(); err != nil {
+		t.Fatalf("proxy-rewrite Init() error = %v", err)
+	}
+	if err := util.Parse(servicePlan.Config, instance.Config()); err != nil {
+		t.Fatalf("proxy-rewrite config parse error = %v", err)
+	}
+	if err := instance.PostInit(); err == nil {
+		t.Fatal("proxy-rewrite PostInit() error = nil, want invalid service plugin config")
 	}
 }
 
 func TestBuildRejectsGlobalRuleWithoutEmbeddedID(t *testing.T) {
-	ensureRouteStore(t)
-	putHTTPAllowlistResource(t, "global_rules", "scoped-global-missing-id", []byte(`{
-		"plugins":{"request-id":{}}
-	}`))
-	putRouteResource(t, "scoped-global-missing-id-route", []byte(`{
-		"id":"scoped-global-missing-id-route",
-		"uri":"/scoped-global-missing-id",
-		"upstream":{"type":"roundrobin","nodes":{"127.0.0.1:1":1}}
-	}`))
-
-	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
-	t.Cleanup(builder.Stop)
-	handler, err := builder.BuildStrict()
-	if err == nil || handler != nil {
-		t.Fatalf("BuildStrict() = (%T, %v), want fail-closed missing global-rule ID", handler, err)
+	_, err := PlanHTTPPlugins(context.Background(), PlanningInput{
+		GlobalRules: []resource.GlobalRule{{
+			Plugins: map[string]resource.PluginConfig{"request-id": map[string]any{}},
+		}},
+		EnabledPlugins: []string{"request-id"},
+		Profiles:       testEffectiveConfig().Profiles,
+	})
+	if err == nil {
+		t.Fatal("PlanHTTPPlugins() error = nil, want fail-closed missing global-rule ID")
 	}
-	if !strings.Contains(err.Error(), "global rule ID") {
-		t.Fatalf("BuildStrict() error = %q, want global rule ID diagnostic", err)
+	if !strings.Contains(err.Error(), "global rule") ||
+		!strings.Contains(err.Error(), "id is required") {
+		t.Fatalf("PlanHTTPPlugins() error = %q, want missing global-rule ID diagnostic", err)
 	}
 }
 

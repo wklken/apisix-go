@@ -104,13 +104,7 @@ func buildFaultHandlerWithConfig(
 		Retries: retries,
 		Timeout: resource.Timeout{Read: readTimeout},
 	}
-	builder := NewBuilder(nil, effective, testDataEncryptionResolver())
-	handler, err := builder.buildReverseHandler(resource.Route{Upstream: upstream}, resource.Service{})
-	if err != nil {
-		t.Fatalf("buildReverseHandler() error = %v", err)
-	}
-	t.Cleanup(builder.Stop)
-	return handler
+	return testPreparedProxyHandler(t, resource.Route{Upstream: upstream}, resource.Service{}, effective)
 }
 
 func TestProxyFaultHandling(t *testing.T) {
@@ -341,12 +335,12 @@ func TestProxyFaultActiveHealthRecovers(t *testing.T) {
 			},
 		},
 	}
-	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
-	handler, err := builder.buildReverseHandler(resource.Route{Upstream: upstream}, resource.Service{})
-	if err != nil {
-		t.Fatalf("buildReverseHandler() error = %v", err)
-	}
-	t.Cleanup(builder.Stop)
+	handler := testPreparedProxyHandler(
+		t,
+		resource.Route{ID: "active-health-recovery", Upstream: upstream},
+		resource.Service{},
+		testEffectiveConfig(),
+	)
 
 	gateway := httptest.NewServer(handler)
 	defer gateway.Close()

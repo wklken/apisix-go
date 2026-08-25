@@ -15,9 +15,71 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wklken/apisix-go/pkg/plugin"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/traffic_split"
+	pxy "github.com/wklken/apisix-go/pkg/proxy"
 	"github.com/wklken/apisix-go/pkg/resource"
+	"github.com/wklken/apisix-go/pkg/util"
 )
+
+type preparedTrafficSplitAcquirer struct {
+	t     testing.TB
+	route resource.Route
+	ssls  map[string]resource.SSL
+}
+
+func (a preparedTrafficSplitAcquirer) Acquire(
+	upstream *traffic_split.Upstream,
+	targets map[string]int,
+	priorities map[string]int,
+) (*traffic_split.Runtime, error) {
+	config, err := PlanTrafficSplitCluster(
+		a.route, upstream, targets, priorities, a.ssls, &testEffectiveConfig().Config,
+	)
+	if err != nil {
+		return nil, err
+	}
+	cluster, err := pxy.NewCluster(config, pxy.NopClusterObserver{})
+	if err != nil {
+		return nil, err
+	}
+	a.t.Cleanup(cluster.Close)
+	return &traffic_split.Runtime{
+		LoadBalancer: cluster.LoadBalancer(), RoundTripper: cluster.RoundTripper(),
+	}, nil
+}
+
+func testTrafficSplitBinding(t testing.TB, routeResource resource.Route) plugin.Binding {
+	t.Helper()
+	instance := plugin.New("traffic-split", base.Dependencies{})
+	if instance == nil {
+		t.Fatal("traffic-split plugin is unavailable")
+	}
+	if err := instance.Init(); err != nil {
+		t.Fatalf("traffic-split Init() error = %v", err)
+	}
+	if err := util.Parse(routeResource.Plugins["traffic-split"], instance.Config()); err != nil {
+		t.Fatalf("traffic-split config error = %v", err)
+	}
+	instance.(*traffic_split.Plugin).SetRuntimeAcquirer(preparedTrafficSplitAcquirer{t: t, route: routeResource})
+	if err := instance.PostInit(); err != nil {
+		t.Fatalf("traffic-split PostInit() error = %v", err)
+	}
+	if stopper, ok := instance.(interface{ Stop() }); ok {
+		t.Cleanup(stopper.Stop)
+	}
+	binding, err := plugin.BindPluginChecked(
+		"traffic-split",
+		instance,
+		plugin.ScopeRoute,
+		plugin.ResourceProvenance{Kind: plugin.ResourceRoute, ID: routeResource.ID},
+	)
+	if err != nil {
+		t.Fatalf("BindPluginChecked(traffic-split) error = %v", err)
+	}
+	return binding
+}
 
 func TestApplyTrafficSplitOverrideUpdatesProxyTarget(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "http://route.example.com/get", nil)
@@ -40,7 +102,6 @@ func TestApplyTrafficSplitOverrideUpdatesProxyTarget(t *testing.T) {
 }
 
 func TestTrafficSplitRouteUsesSelectedUpstreamMTLS(t *testing.T) {
-	ensureRouteStore(t)
 	serverCertificate, clientCertificate, clientKey, clientCAs := routeMTLSCertificates(t)
 	upstream := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
@@ -94,12 +155,9 @@ func TestTrafficSplitRouteUsesSelectedUpstreamMTLS(t *testing.T) {
 		},
 	}
 
-	builder := NewBuilderWithServerAddr(nil, "127.0.0.1:9080", testEffectiveConfig(), testDataEncryptionResolver())
-	t.Cleanup(builder.Stop)
-	handler, err := builder.buildHandlerStrict(route)
-	if err != nil {
-		t.Fatalf("buildHandlerStrict() error = %v", err)
-	}
+	handler := testPreparedProxyHandler(
+		t, route, resource.Service{}, testEffectiveConfig(), testTrafficSplitBinding(t, route),
+	)
 
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://gateway.test/split", nil))
@@ -114,7 +172,6 @@ func TestTrafficSplitRouteUsesSelectedUpstreamMTLS(t *testing.T) {
 }
 
 func TestTrafficSplitRouteStartsHTTPSActiveProbeForHTTPTarget(t *testing.T) {
-	ensureRouteStore(t)
 	requestSeen := make(chan struct{}, 1)
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.TLS != nil && r.URL.Path == "/healthz" {
@@ -163,11 +220,7 @@ func TestTrafficSplitRouteStartsHTTPSActiveProbeForHTTPTarget(t *testing.T) {
 		},
 	}
 
-	builder := NewBuilderWithServerAddr(nil, "127.0.0.1:9080", testEffectiveConfig(), testDataEncryptionResolver())
-	t.Cleanup(builder.Stop)
-	if _, err := builder.buildHandlerStrict(route); err != nil {
-		t.Fatalf("buildHandlerStrict() error = %v", err)
-	}
+	_ = testTrafficSplitBinding(t, route)
 
 	select {
 	case <-requestSeen:
@@ -177,7 +230,6 @@ func TestTrafficSplitRouteStartsHTTPSActiveProbeForHTTPTarget(t *testing.T) {
 }
 
 func TestTrafficSplitRouteRetriesFromHigherToLowerPriorityNode(t *testing.T) {
-	ensureRouteStore(t)
 	var highCalls atomic.Int32
 	high := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		highCalls.Add(1)
@@ -242,12 +294,9 @@ func TestTrafficSplitRouteRetriesFromHigherToLowerPriorityNode(t *testing.T) {
 		},
 	}
 
-	builder := NewBuilderWithServerAddr(nil, "127.0.0.1:9080", testEffectiveConfig(), testDataEncryptionResolver())
-	t.Cleanup(builder.Stop)
-	handler, err := builder.buildHandlerStrict(route)
-	if err != nil {
-		t.Fatalf("buildHandlerStrict() error = %v", err)
-	}
+	handler := testPreparedProxyHandler(
+		t, route, resource.Service{}, testEffectiveConfig(), testTrafficSplitBinding(t, route),
+	)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://gateway.test/split", nil))
 	if response.Code != http.StatusNoContent {
@@ -315,10 +364,16 @@ func TestApplyTrafficSplitOverrideRetainsRewrittenHost(t *testing.T) {
 }
 
 func TestEmptyUpstreamRouteReturnsClassifiedError(t *testing.T) {
-	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
-	handler, err := builder.buildReverseHandler(resource.Route{}, resource.Service{})
+	handler, _, err := buildPreparedReverseHandler(
+		resource.Route{ID: "empty-upstream"},
+		resource.Upstream{},
+		nil,
+		PreparedUpstreamRuntime{RoundTripper: http.DefaultTransport},
+		&testEffectiveConfig().Config,
+		nil,
+	)
 	if err != nil {
-		t.Fatalf("buildReverseHandler() error = %v, want plugin-only route support", err)
+		t.Fatalf("buildPreparedReverseHandler() error = %v, want plugin-only route support", err)
 	}
 
 	response := httptest.NewRecorder()

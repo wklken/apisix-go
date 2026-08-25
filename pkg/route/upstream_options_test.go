@@ -5,7 +5,6 @@ import (
 	"time"
 
 	appconfig "github.com/wklken/apisix-go/pkg/config"
-	"github.com/wklken/apisix-go/pkg/proxy"
 	"github.com/wklken/apisix-go/pkg/resource"
 )
 
@@ -98,19 +97,16 @@ func TestBuildClusterConfigSelectsCleartextHTTP2OnlyForGRPC(t *testing.T) {
 	}
 }
 
-func TestBuildReverseHandlerUsesClusterForDynamicGRPCSTarget(t *testing.T) {
-	registry := proxy.NewClusterRegistry(proxy.NopClusterObserver{})
-	t.Cleanup(registry.Close)
-	builder := NewBuilderWithClusterRegistry(nil, "", registry, testEffectiveConfig(), testDataEncryptionResolver())
-	t.Cleanup(builder.Stop)
-
-	if _, err := builder.buildReverseHandler(resource.Route{
-		Upstream: resource.Upstream{Scheme: "grpcs"},
-	}, resource.Service{}); err != nil {
-		t.Fatalf("buildReverseHandler() error = %v", err)
+func TestPlanRouteUpstreamPreparesClusterForDynamicGRPCSTarget(t *testing.T) {
+	plan, err := PlanRouteUpstream(
+		resource.Route{ID: "dynamic-grpcs", Upstream: resource.Upstream{Scheme: "grpcs"}},
+		resource.Service{}, nil, nil, &testEffectiveConfig().Config,
+	)
+	if err != nil {
+		t.Fatalf("PlanRouteUpstream() error = %v", err)
 	}
-	if got := registry.Len(); got != 1 {
-		t.Fatalf("cluster registry size = %d, want 1 for dynamic grpcs target", got)
+	if plan.ClusterConfig == nil {
+		t.Fatal("PlanRouteUpstream() returned nil cluster config for dynamic grpcs target")
 	}
 }
 

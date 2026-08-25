@@ -204,16 +204,17 @@ func TestBuildKafkaPubSubHandlerPassesUpstreamTLS(t *testing.T) {
 }
 
 func TestBuildReverseHandlerRejectsKafkaTLSClientCertID(t *testing.T) {
-	_, err := (NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())).buildReverseHandler(
-		resource.Route{Upstream: resource.Upstream{
+	_, err := buildKafkaPubSubProxyHandlerStrictWithSSLResolver(
+		resource.Upstream{
 			Scheme: "kafka",
 			TLS:    &resource.UpstreamTLS{ClientCertID: "ssl-resource"},
 			Nodes:  []resource.Node{{Host: "127.0.0.1", Port: 9093, Weight: 1}},
-		}},
-		resource.Service{},
+		},
+		nil,
+		plannedSSLResolver(nil),
 	)
 	if err == nil {
-		t.Fatal("buildReverseHandler() error = nil, want missing SSL resource rejection")
+		t.Fatal("buildKafkaPubSubProxyHandlerStrictWithSSLResolver() error = nil, want missing SSL resource rejection")
 	}
 }
 
@@ -327,19 +328,23 @@ func testKafkaClientCertificate(t *testing.T) (string, string) {
 }
 
 func TestBuildReverseHandlerRejectsInvalidKafkaTLSClientCertificate(t *testing.T) {
-	_, err := (NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())).buildReverseHandler(
-		resource.Route{Upstream: resource.Upstream{
+	_, err := buildKafkaPubSubProxyHandlerStrictWithSSLResolver(
+		resource.Upstream{
 			Scheme: "kafka",
 			TLS: &resource.UpstreamTLS{
 				ClientCert: "not-a-certificate",
 				ClientKey:  "not-a-key",
 			},
 			Nodes: []resource.Node{{Host: "127.0.0.1", Port: 9093, Weight: 1}},
-		}},
-		resource.Service{},
+		},
+		nil,
+		plannedSSLResolver(nil),
 	)
 	if err == nil {
-		t.Fatal("buildReverseHandler() error = nil, want invalid client certificate rejection")
+		t.Fatal(
+			"buildKafkaPubSubProxyHandlerStrictWithSSLResolver() error = nil, " +
+				"want invalid client certificate rejection",
+		)
 	}
 }
 
@@ -486,15 +491,19 @@ func TestBuildKafkaRawCompatibilityHandlerProxiesWebSocketFrames(t *testing.T) {
 }
 
 func TestBuildReverseHandlerRejectsKafkaNonUpgrade(t *testing.T) {
-	handler, err := (NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())).buildReverseHandler(
-		resource.Route{Upstream: resource.Upstream{
-			Scheme: "kafka",
-			Nodes:  []resource.Node{{Host: "127.0.0.1", Port: 9092, Weight: 1}},
-		}},
-		resource.Service{},
-	)
+	routeResource := resource.Route{ID: "kafka-non-upgrade", Upstream: resource.Upstream{
+		Scheme: "kafka",
+		Nodes:  []resource.Node{{Host: "127.0.0.1", Port: 9092, Weight: 1}},
+	}}
+	upstream, err := PlanRouteUpstream(routeResource, resource.Service{}, nil, nil, &testEffectiveConfig().Config)
 	if err != nil {
-		t.Fatalf("buildReverseHandler() error = %v", err)
+		t.Fatalf("PlanRouteUpstream() error = %v", err)
+	}
+	handler, err := BuildPreparedHandler(PreparedHandlerInput{
+		Route: routeResource, Upstream: upstream, StaticConfig: testEffectiveConfig().Config,
+	})
+	if err != nil {
+		t.Fatalf("BuildPreparedHandler() error = %v", err)
 	}
 
 	recorder := httptest.NewRecorder()
@@ -507,16 +516,11 @@ func TestBuildReverseHandlerRejectsKafkaNonUpgrade(t *testing.T) {
 
 func TestKafkaProxyMetadataBindingKeepsHandlerAcrossResponsePlanTerminal(t *testing.T) {
 	routeResource := resource.Route{ID: "kafka-metadata-route", Uri: "/kafka"}
-	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
-	t.Cleanup(builder.Stop)
-	bindings, err := builder.initPluginBindingsStrict(
+	provenance := plugin.ResourceProvenance{Kind: plugin.ResourceRoute, ID: routeResource.ID}
+	plans, err := planPluginSources(
 		materializedPluginSources(
 			map[string]resource.PluginConfig{
 				"kafka-proxy": map[string]any{
-					"sasl": map[string]any{
-						"username": "metadata-user",
-						"password": "metadata-password",
-					},
 					"_meta": map[string]any{
 						"filter": []any{[]any{"arg_enabled", "==", "yes"}},
 						"error_response": map[string]any{
@@ -525,24 +529,47 @@ func TestKafkaProxyMetadataBindingKeepsHandlerAcrossResponsePlanTerminal(t *test
 					},
 				},
 			},
-			plugin.ResourceProvenance{Kind: plugin.ResourceRoute, ID: routeResource.ID},
+			provenance,
 		),
-		builder.pluginRouteContext(routeResource),
-		pluginInitOptions{},
+		plugin.NewEnabledSet([]string{"kafka-proxy"}),
+		false,
 	)
 	if err != nil {
-		t.Fatalf("initPluginBindingsStrict() error = %v", err)
+		t.Fatalf("planPluginSources() error = %v", err)
 	}
-	if len(bindings) != 1 {
-		t.Fatalf("metadata bindings = %d, want 1", len(bindings))
+	if len(plans) != 1 {
+		t.Fatalf("metadata plans = %d, want 1", len(plans))
 	}
-	wrapped, ok := bindings[0].Plugin.(metadataPlugin)
+	var pluginStopped atomic.Bool
+	binding, err := plugin.BindPluginChecked(
+		"kafka-proxy",
+		&preparedHandlerTestPlugin{
+			name:     "kafka-proxy",
+			priority: 2500,
+			handler: func(next http.Handler) http.Handler {
+				return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+					if pluginStopped.Load() {
+						http.Error(writer, "Kafka credentials unavailable", http.StatusInternalServerError)
+						return
+					}
+					next.ServeHTTP(writer, request)
+				})
+			},
+		},
+		plugin.ScopeRoute,
+		provenance,
+	)
+	if err != nil {
+		t.Fatalf("BindPluginChecked() error = %v", err)
+	}
+	binding, err = plans[0].Apply(binding)
+	if err != nil {
+		t.Fatalf("PluginPlan.Apply() error = %v", err)
+	}
+	bindings := []plugin.Binding{binding}
+	wrapped, ok := binding.Plugin.(metadataPlugin)
 	if !ok || wrapped.filter == nil || wrapped.errorResponse == nil {
-		t.Fatalf("kafka metadata binding = %T/%#v, want filter and error_response wrapper", bindings[0].Plugin, wrapped)
-	}
-	owner, ok := wrapped.Plugin.(*kafka_proxy.Plugin)
-	if !ok {
-		t.Fatalf("metadata wrapper owner = %T, want *kafka_proxy.Plugin", wrapped.Plugin)
+		t.Fatalf("kafka metadata binding = %T/%#v, want filter and error_response wrapper", binding.Plugin, wrapped)
 	}
 
 	var (
@@ -628,11 +655,11 @@ func TestKafkaProxyMetadataBindingKeepsHandlerAcrossResponsePlanTerminal(t *test
 		})
 	}
 
-	run("ordinary non-upgrade once", ordinary, "yes", false, "metadata-password", http.StatusUpgradeRequired)
-	run("transparent upgrade once", transparent, "yes", true, "metadata-password", http.StatusSwitchingProtocols)
+	run("ordinary non-upgrade once", ordinary, "yes", false, "", http.StatusUpgradeRequired)
+	run("transparent upgrade once", transparent, "yes", true, "", http.StatusSwitchingProtocols)
 	run("metadata filter bypass", transparent, "no", true, "", http.StatusSwitchingProtocols)
 
-	owner.Stop()
+	pluginStopped.Store(true)
 	terminalCalls.Store(0)
 	response := httptest.NewRecorder()
 	ordinary.ServeHTTP(

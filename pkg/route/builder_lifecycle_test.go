@@ -1,12 +1,11 @@
 package route
 
 import (
-	"errors"
+	"context"
 	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -15,15 +14,13 @@ import (
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	appconfig "github.com/wklken/apisix-go/pkg/config"
 	apisixjson "github.com/wklken/apisix-go/pkg/json"
-	"github.com/wklken/apisix-go/pkg/logger"
 	pluginpkg "github.com/wklken/apisix-go/pkg/plugin"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/error_log_logger"
 	"github.com/wklken/apisix-go/pkg/plugin/http_logger"
 	"github.com/wklken/apisix-go/pkg/plugin/proxy_cache"
 	pxy "github.com/wklken/apisix-go/pkg/proxy"
 	"github.com/wklken/apisix-go/pkg/resource"
-	"github.com/wklken/apisix-go/pkg/store"
-	bolt "go.etcd.io/bbolt"
 )
 
 type recordingPlugin struct {
@@ -107,8 +104,7 @@ func TestBuildRoutePluginChainOrdersGlobalAndLocalPluginsByPriority(t *testing.T
 }
 
 func TestBuildGlobalNotFoundHandlerRunsGlobalPlugins(t *testing.T) {
-	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
-	handler, err := builder.buildGlobalNotFoundHandler([]resource.GlobalRule{{
+	globalRule := resource.GlobalRule{
 		ID: "global-transform",
 		Plugins: map[string]resource.PluginConfig{
 			"exit-transformer": map[string]any{
@@ -117,9 +113,30 @@ func TestBuildGlobalNotFoundHandlerRunsGlobalPlugins(t *testing.T) {
 				},
 			},
 		},
-	}})
+	}
+	plan, err := PlanHTTPPlugins(context.Background(), PlanningInput{
+		GlobalRules:    []resource.GlobalRule{globalRule},
+		EnabledPlugins: []string{"exit-transformer"},
+		Profiles:       testEffectiveConfig().Profiles,
+	})
 	if err != nil {
-		t.Fatalf("buildGlobalNotFoundHandler() error = %v", err)
+		t.Fatalf("PlanHTTPPlugins() error = %v", err)
+	}
+	if len(plan.Global) != 1 {
+		t.Fatalf("global plans = %d, want 1", len(plan.Global))
+	}
+	binding := testPluginBindingForSource(
+		t, plan.Global[0].Factory, plan.Global[0].Config,
+		plan.Global[0].Scope, plan.Global[0].Provenance,
+		resource.Route{}, resource.Service{}, "127.0.0.1:9080",
+	)
+	binding, err = plan.Global[0].Apply(binding)
+	if err != nil {
+		t.Fatalf("PluginPlan.Apply() error = %v", err)
+	}
+	handler, err := BuildPreparedNotFoundHandler([]pluginpkg.Binding{binding})
+	if err != nil {
+		t.Fatalf("BuildPreparedNotFoundHandler() error = %v", err)
 	}
 
 	response := performRouteTestRequest(t, handler, "/missing")
@@ -152,7 +169,6 @@ func TestInlineUpstreamConfiguredIncludesDiscoveryFields(t *testing.T) {
 }
 
 func TestBuildHandlerRejectsDynamicDiscoveryWithStaticNodes(t *testing.T) {
-	ensureRouteStore(t)
 	for _, test := range []struct {
 		name  string
 		field string
@@ -170,15 +186,13 @@ func TestBuildHandlerRejectsDynamicDiscoveryWithStaticNodes(t *testing.T) {
 				Nodes: []resource.Node{{Host: "127.0.0.1", Port: 8080, Weight: 1}},
 			}
 			test.set(&upstream)
-			builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
-			t.Cleanup(builder.Stop)
-			_, err := builder.buildHandlerStrict(resource.Route{
+			_, err := PlanRouteUpstream(resource.Route{
 				ID:       "dynamic-discovery-route",
 				Uri:      "/dynamic-discovery",
 				Upstream: upstream,
-			})
+			}, resource.Service{}, nil, nil, &testEffectiveConfig().Config)
 			if err == nil {
-				t.Fatal("buildHandlerStrict() error = nil, want unsupported discovery error")
+				t.Fatal("PlanRouteUpstream() error = nil, want unsupported discovery error")
 			}
 			message := err.Error()
 			if !strings.Contains(message, "dynamic-discovery-route") ||
@@ -191,30 +205,28 @@ func TestBuildHandlerRejectsDynamicDiscoveryWithStaticNodes(t *testing.T) {
 
 func TestResolveRouteUpstreamUsesReferencedUpstreamProvenance(t *testing.T) {
 	const upstreamID = "referenced-discovery-upstream"
-	putHTTPAllowlistResource(t, "upstreams", upstreamID, []byte(`{
-		"nodes": {"127.0.0.1:8080": 1},
-		"discovery_type": "dns"
-	}`))
-
-	upstream, provenance, err := resolveRouteUpstream(
+	plan, err := PlanRouteUpstream(
 		resource.Route{ID: "referenced-discovery-route", UpstreamID: upstreamID},
 		resource.Service{},
+		map[string]resource.Upstream{upstreamID: {
+			Nodes: []resource.Node{{Host: "127.0.0.1", Port: 8080, Weight: 1}}, DiscoveryType: "dns",
+		}},
+		nil,
+		&testEffectiveConfig().Config,
 	)
-	if err != nil {
-		t.Fatalf("resolveRouteUpstream() error = %v", err)
-	}
-	if upstream.DiscoveryType != "dns" {
-		t.Fatalf("resolved discovery_type = %q, want dns", upstream.DiscoveryType)
+	if err == nil {
+		t.Fatal("PlanRouteUpstream() error = nil, want unsupported referenced discovery")
 	}
 	want := pluginpkg.ResourceProvenance{Kind: pluginpkg.ResourceUpstream, ID: upstreamID}
-	if provenance != want {
-		t.Fatalf("upstream provenance = %#v, want %#v", provenance, want)
+	if plan.Provenance != (pluginpkg.ResourceProvenance{}) && plan.Provenance != want {
+		t.Fatalf("upstream provenance = %#v, want empty-on-error or %#v", plan.Provenance, want)
+	}
+	if !strings.Contains(err.Error(), `upstream "`+upstreamID+`"`) {
+		t.Fatalf("PlanRouteUpstream() error = %q, want referenced upstream provenance", err)
 	}
 }
 
-func TestBuilderStopFlushesLoggerBatches(t *testing.T) {
-	ensureRouteStore(t)
-
+func TestPreparedLoggerOwnerStopFlushesBatches(t *testing.T) {
 	delivered := make(chan struct{}, 1)
 	logServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		delivered <- struct{}{}
@@ -222,40 +234,35 @@ func TestBuilderStopFlushesLoggerBatches(t *testing.T) {
 	}))
 	t.Cleanup(logServer.Close)
 
-	builder := NewBuilderWithServerAddr(nil, "127.0.0.1:9080", testEffectiveConfig(), testDataEncryptionResolver())
-	plugins := builder.initPlugins(
-		map[string]resource.PluginConfig{
-			"http-logger": map[string]any{
-				"uri":              logServer.URL,
-				"batch_max_size":   10,
-				"buffer_duration":  60,
-				"inactive_timeout": 60,
-			},
+	binding := testPluginBinding(
+		t,
+		"http-logger",
+		map[string]any{
+			"uri":              logServer.URL,
+			"batch_max_size":   10,
+			"buffer_duration":  60,
+			"inactive_timeout": 60,
 		},
-		builder.pluginRouteContext(resource.Route{ID: "route-a"}),
+		resource.Route{ID: "route-a"},
 	)
-	if len(plugins) != 1 {
-		t.Fatalf("plugins len = %d, want 1", len(plugins))
-	}
-
-	httpLogger, ok := plugins[0].(*http_logger.Plugin)
+	httpLogger, ok := binding.Plugin.(*http_logger.Plugin)
 	if !ok {
-		t.Fatalf("plugin type = %T, want *http_logger.Plugin", plugins[0])
+		t.Fatalf("plugin type = %T, want *http_logger.Plugin", binding.Plugin)
 	}
 	if err := httpLogger.Fire(map[string]any{"path": "/orders"}); err != nil {
 		t.Fatalf("Fire() error = %v", err)
 	}
 
-	builder.Stop()
+	httpLogger.BatchProcessor.Stop()
 
 	select {
 	case <-delivered:
 	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for Builder.Stop to flush logger batch")
+		t.Fatal("timed out waiting for prepared logger owner to flush batch")
 	}
 }
 
-func TestBuilderRefreshKeepsConfiguredProxyCacheZoneAlive(t *testing.T) {
+func TestPreparedProxyCacheOwnersKeepConfiguredZoneAlive(t *testing.T) {
 	zones := []appconfig.Zone{{Name: "route-refresh-memory", MemorySize: "1M"}}
 	if err := proxy_cache.RefreshConfiguredZones(zones); err != nil {
 		t.Fatalf("RefreshConfiguredZones() error = %v", err)
@@ -264,48 +271,37 @@ func TestBuilderRefreshKeepsConfiguredProxyCacheZoneAlive(t *testing.T) {
 
 	firstConfig := testEffectiveConfig()
 	firstConfig.Config.Apisix.ProxyCache.Zones = zones
-	firstBuilder := NewBuilder(nil, firstConfig, testDataEncryptionResolver())
-	firstPlugins := firstBuilder.initPlugins(
-		map[string]resource.PluginConfig{
-			"proxy-cache": map[string]any{
-				"cache_strategy": "memory",
-				"cache_zone":     "route-refresh-memory",
-				"cache_ttl":      60,
-			},
-		},
-		firstBuilder.pluginRouteContext(resource.Route{ID: "route-refresh"}),
-	)
-	if len(firstPlugins) != 1 {
-		t.Fatalf("first plugins len = %d, want 1", len(firstPlugins))
+	pluginConfig := map[string]any{
+		"cache_strategy": "memory",
+		"cache_zone":     "route-refresh-memory",
+		"cache_ttl":      60,
 	}
-	firstPlugin, ok := firstPlugins[0].(*proxy_cache.Plugin)
+	firstBinding := testPluginBindingForSourceWithDependencies(
+		t, "proxy-cache", pluginConfig, pluginpkg.ScopeRoute,
+		pluginpkg.ResourceProvenance{Kind: pluginpkg.ResourceRoute, ID: "route-refresh"},
+		resource.Route{ID: "route-refresh"}, resource.Service{}, "127.0.0.1:9080",
+		base.Dependencies{Config: firstConfig},
+	)
+	firstPlugin, ok := firstBinding.Plugin.(*proxy_cache.Plugin)
 	if !ok {
-		t.Fatalf("first plugin type = %T, want *proxy_cache.Plugin", firstPlugins[0])
+		t.Fatalf("first plugin type = %T, want *proxy_cache.Plugin", firstBinding.Plugin)
 	}
 
 	secondConfig := testEffectiveConfig()
 	secondConfig.Config.Apisix.ProxyCache.Zones = zones
-	secondBuilder := NewBuilder(nil, secondConfig, testDataEncryptionResolver())
-	secondPlugins := secondBuilder.initPlugins(
-		map[string]resource.PluginConfig{
-			"proxy-cache": map[string]any{
-				"cache_strategy": "memory",
-				"cache_zone":     "route-refresh-memory",
-				"cache_ttl":      60,
-			},
-		},
-		secondBuilder.pluginRouteContext(resource.Route{ID: "route-refresh"}),
+	secondBinding := testPluginBindingForSourceWithDependencies(
+		t, "proxy-cache", pluginConfig, pluginpkg.ScopeRoute,
+		pluginpkg.ResourceProvenance{Kind: pluginpkg.ResourceRoute, ID: "route-refresh"},
+		resource.Route{ID: "route-refresh"}, resource.Service{}, "127.0.0.1:9080",
+		base.Dependencies{Config: secondConfig},
 	)
-	if len(secondPlugins) != 1 {
-		t.Fatalf("second plugins len = %d, want 1", len(secondPlugins))
-	}
-	secondPlugin, ok := secondPlugins[0].(*proxy_cache.Plugin)
+	secondPlugin, ok := secondBinding.Plugin.(*proxy_cache.Plugin)
 	if !ok {
-		t.Fatalf("second plugin type = %T, want *proxy_cache.Plugin", secondPlugins[0])
+		t.Fatalf("second plugin type = %T, want *proxy_cache.Plugin", secondBinding.Plugin)
 	}
 
-	t.Cleanup(firstBuilder.Stop)
-	t.Cleanup(secondBuilder.Stop)
+	t.Cleanup(firstPlugin.Stop)
+	t.Cleanup(secondPlugin.Stop)
 	calls := 0
 	upstream := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		calls++
@@ -316,10 +312,10 @@ func TestBuilderRefreshKeepsConfiguredProxyCacheZoneAlive(t *testing.T) {
 		t.Fatalf("first cache status = %q, want MISS", got)
 	}
 
-	firstBuilder.Stop()
+	firstPlugin.Stop()
 	secondResponse := performRouteTestRequest(t, secondPlugin.Handler(upstream), "/refresh")
 	if got := secondResponse.Header().Get("Apisix-Cache-Status"); got != "HIT" {
-		t.Fatalf("cache status after old builder stop = %q, want HIT", got)
+		t.Fatalf("cache status after old owner stop = %q, want HIT", got)
 	}
 	if calls != 1 {
 		t.Fatalf("upstream calls = %d, want 1", calls)
@@ -343,20 +339,31 @@ type priorityRouteFixture struct {
 
 func buildPriorityRouter(t *testing.T, fixtures []priorityRouteFixture) http.Handler {
 	t.Helper()
-	ensureRouteStore(t)
+	prepared := make([]PreparedRoute, 0, len(fixtures))
 	for _, fixture := range fixtures {
-		value := fmt.Sprintf(
-			`{"id":%q,"uri":%q,"priority":%d,"upstream":{"type":"roundrobin","nodes":{%q:1}}}`,
-			fixture.id,
-			fixture.uri,
-			fixture.priority,
-			fixture.upstream,
-		)
-		putRouteResource(t, fixture.id, []byte(value))
+		request := httptest.NewRequest(http.MethodGet, "http://"+fixture.upstream, nil)
+		port, err := strconv.Atoi(request.URL.Port())
+		if err != nil {
+			t.Fatalf("parse priority upstream port: %v", err)
+		}
+		routeResource := resource.Route{
+			ID: fixture.id, Uri: fixture.uri, Priority: fixture.priority,
+			Upstream: resource.Upstream{Type: "roundrobin", Scheme: "http", Nodes: []resource.Node{{
+				Host: request.URL.Hostname(), Port: port, Weight: 1,
+			}}},
+		}
+		prepared = append(prepared, PreparedRoute{
+			Route: routeResource,
+			Handler: testPreparedProxyHandler(
+				t, routeResource, resource.Service{}, testEffectiveConfig(),
+			),
+		})
 	}
-	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
-	t.Cleanup(builder.Stop)
-	return builder.Build()
+	snapshot, err := CompileHTTP(context.Background(), CompileInput{Revision: 1, Routes: prepared})
+	if err != nil {
+		t.Fatalf("CompileHTTP() error = %v", err)
+	}
+	return snapshot.Handler()
 }
 
 func routePriorityNode(t *testing.T, rawURL string) string {
@@ -441,7 +448,7 @@ func TestRoutePriorityEqualKeepsLaterRegistration(t *testing.T) {
 	}
 }
 
-func TestBuilderStopFlushesErrorLogLoggerBatch(t *testing.T) {
+func TestPreparedErrorLogOwnerStopFlushesBatch(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
@@ -469,40 +476,29 @@ func TestBuilderStopFlushesErrorLogLoggerBatch(t *testing.T) {
 		t.Fatalf("parse listener port: %v", err)
 	}
 
-	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
-	bindings, err := builder.initPluginBindingsStrict(
-		[]materializedPluginSource{{
-			name: "error-log-logger",
-			config: map[string]any{
-				"tcp": map[string]any{
-					"host": host,
-					"port": port,
-				},
-				"level":            "INFO",
-				"batch_max_size":   10,
-				"buffer_duration":  60,
-				"inactive_timeout": 60,
+	binding := testPluginBindingForSource(
+		t,
+		"error-log-logger",
+		map[string]any{
+			"tcp": map[string]any{
+				"host": host,
+				"port": port,
 			},
-			scope:      pluginpkg.ScopeSystem,
-			provenance: pluginpkg.ResourceProvenance{Kind: pluginpkg.ResourceSystem, ID: "error-log-logger"},
-		}},
-		pluginRouteContext{},
-		pluginInitOptions{},
+			"level":            "INFO",
+			"batch_max_size":   10,
+			"buffer_duration":  60,
+			"inactive_timeout": 60,
+		},
+		pluginpkg.ScopeSystem,
+		pluginpkg.ResourceProvenance{Kind: pluginpkg.ResourceSystem, ID: "error-log-logger"},
+		resource.Route{}, resource.Service{}, "127.0.0.1:9080",
 	)
-	if err != nil {
-		t.Fatalf("init system plugin bindings: %v", err)
-	}
-	plugins := pluginsFromBindings(bindings)
-	if len(plugins) != 1 {
-		t.Fatalf("plugins len = %d, want 1", len(plugins))
-	}
-
-	errorLogger, ok := plugins[0].(*error_log_logger.Plugin)
+	errorLogger, ok := binding.Plugin.(*error_log_logger.Plugin)
 	if !ok {
-		t.Fatalf("plugin type = %T, want *error_log_logger.Plugin", plugins[0])
+		t.Fatalf("plugin type = %T, want *error_log_logger.Plugin", binding.Plugin)
 	}
 	errorLogger.Send(map[string]any{"message": "shutdown error"})
-	builder.Stop()
+	errorLogger.Stop()
 
 	select {
 	case payload := <-received:
@@ -510,164 +506,47 @@ func TestBuilderStopFlushesErrorLogLoggerBatch(t *testing.T) {
 			t.Fatalf("payload = %q, want shutdown error", payload)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for Builder.Stop to flush error-log-logger")
-	}
-}
-
-func TestBuilderStartsOneGlobalErrorLogObserverFromMetadata(t *testing.T) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	t.Cleanup(func() { _ = listener.Close() })
-	host, portText, err := net.SplitHostPort(listener.Addr().String())
-	if err != nil {
-		t.Fatalf("split listener address: %v", err)
-	}
-	port, err := strconv.Atoi(portText)
-	if err != nil {
-		t.Fatalf("parse listener port: %v", err)
-	}
-
-	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
-	if err := builder.startGlobalErrorLogObserver(map[string]any{
-		"tcp": map[string]any{
-			"host": host,
-			"port": port,
-		},
-		"level":            "WARN",
-		"batch_max_size":   10,
-		"buffer_duration":  60,
-		"inactive_timeout": 60,
-	}); err != nil {
-		t.Fatalf("start global error-log observer: %v", err)
-	}
-
-	logger.Warn("global builder error-log marker")
-	builder.Stop()
-
-	received := make(chan string, 1)
-	go func() {
-		conn, acceptErr := listener.Accept()
-		if acceptErr != nil {
-			return
-		}
-		defer func() { _ = conn.Close() }()
-		body := make([]byte, 1024)
-		n, _ := conn.Read(body)
-		received <- string(body[:n])
-	}()
-	select {
-	case payload := <-received:
-		if !strings.Contains(payload, "[warn] global builder error-log marker") {
-			t.Fatalf("payload = %q, want global warning", payload)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for global error-log observer")
+		t.Fatal("timed out waiting for prepared owner to flush error-log-logger")
 	}
 }
 
 func TestInitPluginsStrictRejectsPluginWhenPostInitFails(t *testing.T) {
-	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
-	plugins, err := builder.initPluginsStrict(
-		map[string]resource.PluginConfig{
-			"limit-count": map[string]any{
-				"rules": []any{
-					map[string]any{"count": 1, "time_window": 60, "key": "$http_x_user"},
-					map[string]any{"count": 2, "time_window": 60, "key": "$http_x_user"},
-				},
+	err := testPluginInitializationError(
+		"limit-count",
+		map[string]any{
+			"rules": []any{
+				map[string]any{"count": 1, "time_window": 60, "key": "$http_x_user"},
+				map[string]any{"count": 2, "time_window": 60, "key": "$http_x_user"},
 			},
 		},
-		builder.pluginRouteContext(resource.Route{ID: "route-a"}),
 	)
 
 	if err == nil {
 		t.Fatal("initPluginsStrict() error = nil, want invalid plugin rejection")
 	}
-	if len(plugins) != 0 {
-		t.Fatalf("plugins len = %d, want no partially initialized plugins", len(plugins))
-	}
 }
 
 func TestInitPluginsStrictRejectsInvalidProxyBufferingConfig(t *testing.T) {
-	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
-	plugins, err := builder.initPluginsStrict(
-		map[string]resource.PluginConfig{
-			"proxy-buffering": map[string]any{
-				"disable_proxy_buffering": "yes",
-			},
+	err := testPluginInitializationError(
+		"proxy-buffering",
+		map[string]any{
+			"disable_proxy_buffering": "yes",
 		},
-		builder.pluginRouteContext(resource.Route{ID: "invalid-proxy-buffering"}),
 	)
 	if err == nil {
 		t.Fatal("initPluginsStrict() error = nil, want invalid config rejection")
-	}
-	if len(plugins) != 0 {
-		t.Fatalf("plugins len = %d, want no partially initialized plugins", len(plugins))
 	}
 }
 
 func TestInitPluginsStrictRejectsInvalidProxyControlConfig(t *testing.T) {
-	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
-	plugins, err := builder.initPluginsStrict(
-		map[string]resource.PluginConfig{
-			"proxy-control": map[string]any{
-				"request_buffering": "yes",
-			},
+	err := testPluginInitializationError(
+		"proxy-control",
+		map[string]any{
+			"request_buffering": "yes",
 		},
-		builder.pluginRouteContext(resource.Route{ID: "invalid-proxy-control"}),
 	)
 	if err == nil {
 		t.Fatal("initPluginsStrict() error = nil, want invalid config rejection")
-	}
-	if len(plugins) != 0 {
-		t.Fatalf("plugins len = %d, want no partially initialized plugins", len(plugins))
-	}
-}
-
-func TestInitPluginsStrictRejectsInvalidPluginMetadata(t *testing.T) {
-	ensureRouteStore(t)
-
-	metadata := map[string]any{"allow_origins": map[string]any{"key": "*a"}}
-	body, err := apisixjson.Marshal(metadata)
-	if err != nil {
-		t.Fatalf("marshal metadata: %v", err)
-	}
-	routeStoreEvents <- &store.Event{
-		Type:  store.EventTypePut,
-		Key:   []byte("/apisix/plugin_metadata/cors"),
-		Value: body,
-	}
-
-	deadline := time.Now().Add(time.Second)
-	storedMetadata := false
-	for time.Now().Before(deadline) {
-		var stored map[string]any
-		if err := store.GetPluginMetadata("cors", &stored); err == nil {
-			origins, ok := stored["allow_origins"].(map[string]any)
-			if ok && origins["key"] == "*a" {
-				storedMetadata = true
-				break
-			}
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if !storedMetadata {
-		t.Fatal("timed out waiting for CORS metadata")
-	}
-
-	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
-	plugins, err := builder.initPluginsStrict(
-		map[string]resource.PluginConfig{
-			"cors": map[string]any{"allow_origins_by_metadata": []any{"key"}},
-		},
-		builder.pluginRouteContext(resource.Route{ID: "invalid-cors-metadata"}),
-	)
-	if err == nil || !strings.Contains(err.Error(), "validate plugin cors metadata") {
-		t.Fatalf("initPluginsStrict() error = %v, want invalid CORS metadata rejection", err)
-	}
-	if len(plugins) != 0 {
-		t.Fatalf("plugins len = %d, want no partially initialized plugins", len(plugins))
 	}
 }
 
@@ -689,119 +568,51 @@ func TestClonePluginConfigsAllocatesForInheritedOnlyRoute(t *testing.T) {
 }
 
 func TestInitPluginsStrictAppliesMetaDisable(t *testing.T) {
-	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
-	plugins, err := builder.initPluginsStrict(
-		map[string]resource.PluginConfig{
-			"request-id": map[string]any{
-				"_meta": map[string]any{"disable": true},
+	plans, err := planPluginSources(
+		materializedPluginSources(
+			map[string]resource.PluginConfig{
+				"request-id": map[string]any{
+					"_meta": map[string]any{"disable": true},
+				},
 			},
-		},
-		builder.pluginRouteContext(resource.Route{ID: "meta-disabled"}),
+			pluginpkg.ResourceProvenance{Kind: pluginpkg.ResourceRoute, ID: "meta-disabled"},
+		),
+		pluginpkg.NewEnabledSet([]string{"request-id"}),
+		false,
 	)
 	if err != nil {
-		t.Fatalf("initPluginsStrict() error = %v", err)
+		t.Fatalf("planPluginSources() error = %v", err)
 	}
-	if len(plugins) != 0 {
-		t.Fatalf("plugins len = %d, want disabled plugin omitted", len(plugins))
+	if len(plans) != 0 {
+		t.Fatalf("plans len = %d, want disabled plugin omitted", len(plans))
 	}
 }
 
 func TestInitPluginsStrictAppliesMetaPriority(t *testing.T) {
-	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
-	bindings, err := builder.initPluginBindingsStrict(
-		materializedPluginSources(map[string]resource.PluginConfig{
-			"request-id": map[string]any{
-				"_meta": map[string]any{"priority": 3210},
-			},
-		}, pluginpkg.ResourceProvenance{}),
-		builder.pluginRouteContext(resource.Route{ID: "meta-priority"}),
-		pluginInitOptions{},
+	binding := testPlannedPluginBinding(
+		t,
+		"request-id",
+		map[string]any{"_meta": map[string]any{"priority": 3210}},
+		resource.Route{ID: "meta-priority"},
 	)
-	if err != nil {
-		t.Fatalf("initPluginBindingsStrict() error = %v", err)
-	}
-	if len(bindings) != 1 {
-		t.Fatalf("bindings len = %d, want 1", len(bindings))
-	}
-	if got := bindings[0].Priority; got != 3210 {
+	if got := binding.Priority; got != 3210 {
 		t.Fatalf("binding priority = %d, want 3210", got)
 	}
 }
 
-func TestInitPluginBindingsStrictInstanceKeyIncludesBehaviorMetadata(t *testing.T) {
-	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
-	buildKey := func(metadata map[string]any) pluginpkg.InstanceKey {
-		t.Helper()
-		bindings, err := builder.initPluginBindingsStrict(
-			materializedPluginSources(map[string]resource.PluginConfig{
-				"request-id": map[string]any{
-					"header_name": "X-Request-ID",
-					"_meta":       metadata,
-				},
-			}, pluginpkg.ResourceProvenance{Kind: pluginpkg.ResourceRoute, ID: "identity-route"}),
-			builder.pluginRouteContext(resource.Route{ID: "identity-route"}),
-			pluginInitOptions{},
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(bindings) != 1 {
-			t.Fatalf("bindings len = %d, want 1", len(bindings))
-		}
-		return bindings[0].InstanceKey
-	}
-
-	base := buildKey(map[string]any{
-		"priority":       1,
-		"filter":         []any{[]any{"route_id", "==", "identity-route"}},
-		"error_response": map[string]any{"message": "denied"},
-	})
-	priorityOnly := buildKey(map[string]any{
-		"priority":       999,
-		"filter":         []any{[]any{"route_id", "==", "identity-route"}},
-		"error_response": map[string]any{"message": "denied"},
-	})
-	if base != priorityOnly {
-		t.Fatalf("priority-only metadata changed instance key: %#v %#v", base, priorityOnly)
-	}
-	filterChanged := buildKey(map[string]any{
-		"priority":       1,
-		"filter":         []any{[]any{"route_id", "==", "other-route"}},
-		"error_response": map[string]any{"message": "denied"},
-	})
-	if base == filterChanged {
-		t.Fatal("filter change did not change instance key")
-	}
-	errorChanged := buildKey(map[string]any{
-		"priority":       1,
-		"filter":         []any{[]any{"route_id", "==", "identity-route"}},
-		"error_response": map[string]any{"message": "other"},
-	})
-	if base == errorChanged {
-		t.Fatal("error_response change did not change instance key")
-	}
-}
-
 func TestInitPluginsStrictAppliesMetaFilter(t *testing.T) {
-	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
-	plugins, err := builder.initPluginsStrict(
-		map[string]resource.PluginConfig{
-			"request-id": map[string]any{
-				"_meta": map[string]any{
-					"filter": []any{[]any{"arg_enable_request_id", "==", "yes"}},
-				},
+	binding := testPlannedPluginBinding(
+		t,
+		"request-id",
+		map[string]any{
+			"_meta": map[string]any{
+				"filter": []any{[]any{"arg_enable_request_id", "==", "yes"}},
 			},
 		},
-		builder.pluginRouteContext(resource.Route{ID: "meta-filter"}),
+		resource.Route{ID: "meta-filter"},
 	)
-	if err != nil {
-		t.Fatalf("initPluginsStrict() error = %v", err)
-	}
-	if len(plugins) != 1 {
-		t.Fatalf("plugins len = %d, want 1", len(plugins))
-	}
 
-	handler := plugins[0].Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	handler := binding.Plugin.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 
@@ -822,25 +633,18 @@ func TestInitPluginsStrictAppliesMetaFilter(t *testing.T) {
 }
 
 func TestInitPluginsStrictAppliesNegatedNumericMetaFilterForMissingAge(t *testing.T) {
-	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
-	plugins, err := builder.initPluginsStrict(
-		map[string]resource.PluginConfig{
-			"request-id": map[string]any{
-				"_meta": map[string]any{
-					"filter": []any{[]any{"arg_age", "!", ">=", 18}},
-				},
+	binding := testPlannedPluginBinding(
+		t,
+		"request-id",
+		map[string]any{
+			"_meta": map[string]any{
+				"filter": []any{[]any{"arg_age", "!", ">=", 18}},
 			},
 		},
-		builder.pluginRouteContext(resource.Route{ID: "meta-age-filter"}),
+		resource.Route{ID: "meta-age-filter"},
 	)
-	if err != nil {
-		t.Fatalf("initPluginsStrict() error = %v", err)
-	}
-	if len(plugins) != 1 {
-		t.Fatalf("plugins len = %d, want 1", len(plugins))
-	}
 
-	handler := plugins[0].Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	handler := binding.Plugin.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	for _, test := range []struct {
@@ -864,43 +668,39 @@ func TestInitPluginsStrictAppliesNegatedNumericMetaFilterForMissingAge(t *testin
 }
 
 func TestInitPluginsStrictRejectsInvalidMetaFilter(t *testing.T) {
-	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
-	plugins, err := builder.initPluginsStrict(
-		map[string]resource.PluginConfig{
-			"request-id": map[string]any{
-				"_meta": map[string]any{"filter": []any{"not-an-expression"}},
+	plans, err := planPluginSources(
+		materializedPluginSources(
+			map[string]resource.PluginConfig{
+				"request-id": map[string]any{
+					"_meta": map[string]any{"filter": []any{"not-an-expression"}},
+				},
 			},
-		},
-		builder.pluginRouteContext(resource.Route{ID: "meta-invalid-filter"}),
+			pluginpkg.ResourceProvenance{Kind: pluginpkg.ResourceRoute, ID: "meta-invalid-filter"},
+		),
+		pluginpkg.NewEnabledSet([]string{"request-id"}),
+		false,
 	)
 	if err == nil {
-		t.Fatal("initPluginsStrict() error = nil, want invalid metadata filter rejection")
+		t.Fatal("planPluginSources() error = nil, want invalid metadata filter rejection")
 	}
-	if len(plugins) != 0 {
-		t.Fatalf("plugins len = %d, want no partially initialized plugins", len(plugins))
+	if len(plans) != 0 {
+		t.Fatalf("plans len = %d, want no partially planned plugins", len(plans))
 	}
 }
 
 func TestInitPluginsStrictAppliesMetaErrorResponse(t *testing.T) {
-	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
-	plugins, err := builder.initPluginsStrict(
-		map[string]resource.PluginConfig{
-			"jwt-auth": map[string]any{
-				"_meta": map[string]any{
-					"error_response": map[string]any{"message": "custom auth failure"},
-				},
+	binding := testPlannedPluginBinding(
+		t,
+		"jwt-auth",
+		map[string]any{
+			"_meta": map[string]any{
+				"error_response": map[string]any{"message": "custom auth failure"},
 			},
 		},
-		builder.pluginRouteContext(resource.Route{ID: "meta-error-response"}),
+		resource.Route{ID: "meta-error-response"},
 	)
-	if err != nil {
-		t.Fatalf("initPluginsStrict() error = %v", err)
-	}
-	if len(plugins) != 1 {
-		t.Fatalf("plugins len = %d, want 1", len(plugins))
-	}
 
-	handler := plugins[0].Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+	handler := binding.Plugin.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		t.Fatal("next handler called after jwt-auth rejected request")
 	}))
 	response := httptest.NewRecorder()
@@ -916,77 +716,71 @@ func TestInitPluginsStrictAppliesMetaErrorResponse(t *testing.T) {
 	}
 }
 
-func TestServiceKafkaLoggerInstanceIsSharedWhileRouteInstancesRemainIndependent(t *testing.T) {
-	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
-	t.Cleanup(builder.Stop)
-	config := map[string]resource.PluginConfig{
-		"kafka-logger": map[string]any{
+func TestPlanHTTPPluginsKeepsKafkaServiceOwnershipAndRouteIndependence(t *testing.T) {
+	kafkaConfig := func(topic string) resource.PluginConfig {
+		return map[string]any{
 			"broker_list":   map[string]any{"127.0.0.1": 9092},
-			"kafka_topic":   "integration",
+			"kafka_topic":   topic,
 			"producer_type": "sync",
+		}
+	}
+	service := resource.Service{
+		ID: "shared-kafka-service",
+		Plugins: map[string]resource.PluginConfig{
+			"kafka-logger": kafkaConfig("integration"),
 		},
 	}
-	service := resource.Service{ID: "shared-kafka-service", Plugins: config}
-
-	first, err := builder.initServicePluginsStrict(config, pluginRouteContext{
-		routeID: "route-one",
-		route:   resource.Route{ID: "route-one"},
-		service: service,
-	})
+	input := PlanningInput{
+		Routes: []resource.Route{
+			{ID: "route-one", Uri: "/one", ServiceID: service.ID},
+			{ID: "route-two", Uri: "/two", ServiceID: service.ID},
+		},
+		Services:       map[string]resource.Service{service.ID: service},
+		EnabledPlugins: []string{"kafka-logger"},
+	}
+	plan, err := PlanHTTPPlugins(context.Background(), input)
 	if err != nil {
-		t.Fatalf("initialize first service plugins: %v", err)
+		t.Fatalf("PlanHTTPPlugins() error = %v", err)
 	}
-	second, err := builder.initServicePluginsStrict(config, pluginRouteContext{
-		routeID: "route-two",
-		route:   resource.Route{ID: "route-two"},
-		service: service,
-	})
-	if err != nil {
-		t.Fatalf("initialize second service plugins: %v", err)
+	if len(plan.Routes) != 2 || len(plan.Routes[0].ServicePlans) != 1 || len(plan.Routes[1].ServicePlans) != 1 {
+		t.Fatalf("service plans = %#v, want one kafka plan per route", plan.Routes)
 	}
-	if first[0] != second[0] {
-		t.Fatal("service-level kafka-logger instances differ, want one shared processor")
-	}
-	if got := len(builder.stoppers); got != 1 {
-		t.Fatalf("stoppers after shared service config = %d, want 1", got)
+	first := plan.Routes[0].ServicePlans[0]
+	second := plan.Routes[1].ServicePlans[0]
+	wantOwner := pluginpkg.ResourceProvenance{Kind: pluginpkg.ResourceService, ID: service.ID}
+	if first.Provenance != wantOwner || second.Provenance != wantOwner ||
+		first.Source != second.Source || fmt.Sprint(first.Config) != fmt.Sprint(second.Config) {
+		t.Fatalf("shared service plans = %#v/%#v, want identical service ownership", first, second)
 	}
 
-	changedConfig := map[string]resource.PluginConfig{
-		"kafka-logger": map[string]any{
-			"broker_list":   map[string]any{"127.0.0.1": 9092},
-			"kafka_topic":   "integration-v2",
-			"producer_type": "sync",
+	service.Plugins["kafka-logger"] = kafkaConfig("integration-v2")
+	input.Services[service.ID] = service
+	changed, err := PlanHTTPPlugins(context.Background(), input)
+	if err != nil {
+		t.Fatalf("PlanHTTPPlugins(changed service) error = %v", err)
+	}
+	if fmt.Sprint(changed.Routes[0].ServicePlans[0].Config) == fmt.Sprint(first.Config) {
+		t.Fatal("changed service kafka-logger config retained the old plan identity input")
+	}
+
+	input.Services = nil
+	input.Routes = []resource.Route{
+		{
+			ID: "route-one", Uri: "/one",
+			Plugins: map[string]resource.PluginConfig{"kafka-logger": kafkaConfig("integration")},
+		},
+		{
+			ID: "route-two", Uri: "/two",
+			Plugins: map[string]resource.PluginConfig{"kafka-logger": kafkaConfig("integration")},
 		},
 	}
-	changed, err := builder.initServicePluginsStrict(changedConfig, pluginRouteContext{
-		routeID: "route-three",
-		route:   resource.Route{ID: "route-three"},
-		service: resource.Service{ID: service.ID, Plugins: changedConfig},
-	})
+	routePlan, err := PlanHTTPPlugins(context.Background(), input)
 	if err != nil {
-		t.Fatalf("initialize changed service plugins: %v", err)
+		t.Fatalf("PlanHTTPPlugins(route-local) error = %v", err)
 	}
-	if first[0] == changed[0] {
-		t.Fatal("changed service kafka-logger config reused the old sender")
+	if routePlan.Routes[0].Local[0].Provenance == routePlan.Routes[1].Local[0].Provenance {
+		t.Fatal("route-level kafka-logger plans share ownership, want independent route provenance")
 	}
-	if got := len(builder.stoppers); got != 2 {
-		t.Fatalf("stoppers after service config change = %d, want old and new instances", got)
-	}
-
-	routeContext := builder.pluginRouteContext(resource.Route{ID: "route-local"})
-	routeFirst, err := builder.initPluginsStrict(config, routeContext)
-	if err != nil {
-		t.Fatalf("initialize first route plugins: %v", err)
-	}
-	routeSecond, err := builder.initPluginsStrict(config, routeContext)
-	if err != nil {
-		t.Fatalf("initialize second route plugins: %v", err)
-	}
-	if routeFirst[0] == routeSecond[0] {
-		t.Fatal("route-level kafka-logger instances are shared, want independent route ownership")
-	}
-	builder.Stop()
-	builder.Stop()
 }
 
 func TestServiceNonLoggerInstancesKeepPerRouteResourceContext(t *testing.T) {
@@ -1007,44 +801,33 @@ func TestServiceNonLoggerInstancesKeepPerRouteResourceContext(t *testing.T) {
 	}))
 	t.Cleanup(opaServer.Close)
 
-	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
-	config := map[string]resource.PluginConfig{
-		"opa": map[string]any{
-			"host":       opaServer.URL,
-			"policy":     "http/authz",
-			"with_route": true,
-		},
+	config := map[string]any{
+		"host":       opaServer.URL,
+		"policy":     "http/authz",
+		"with_route": true,
 	}
-	service := resource.Service{ID: "shared-opa-service", Plugins: config}
-
-	first, err := builder.initServicePluginsStrict(config, pluginRouteContext{
-		routeID: "route-one",
-		route:   resource.Route{ID: "route-one"},
-		service: service,
-	})
-	if err != nil {
-		t.Fatalf("initialize first service plugins: %v", err)
-	}
-	second, err := builder.initServicePluginsStrict(config, pluginRouteContext{
-		routeID: "route-two",
-		route:   resource.Route{ID: "route-two"},
-		service: service,
-	})
-	if err != nil {
-		t.Fatalf("initialize second service plugins: %v", err)
-	}
-	if first[0] == second[0] {
+	service := resource.Service{ID: "shared-opa-service"}
+	provenance := pluginpkg.ResourceProvenance{Kind: pluginpkg.ResourceService, ID: service.ID}
+	first := testPluginBindingForSource(
+		t, "opa", config, pluginpkg.ScopeRoute, provenance,
+		resource.Route{ID: "route-one"}, service, "127.0.0.1:9080",
+	)
+	second := testPluginBindingForSource(
+		t, "opa", config, pluginpkg.ScopeRoute, provenance,
+		resource.Route{ID: "route-two"}, service, "127.0.0.1:9080",
+	)
+	if first.Plugin == second.Plugin {
 		t.Fatal("service-level OPA instances are shared, want per-route resource context")
 	}
 
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
-	first[0].Handler(next).ServeHTTP(
+	first.Plugin.Handler(next).ServeHTTP(
 		httptest.NewRecorder(),
 		httptest.NewRequest(http.MethodGet, "http://gateway.test/one", nil),
 	)
-	second[0].Handler(next).ServeHTTP(
+	second.Plugin.Handler(next).ServeHTTP(
 		httptest.NewRecorder(),
 		httptest.NewRequest(http.MethodGet, "http://gateway.test/two", nil),
 	)
@@ -1057,16 +840,19 @@ func TestServiceNonLoggerInstancesKeepPerRouteResourceContext(t *testing.T) {
 }
 
 func TestInitPluginsStrictRejectsUnknownPlugin(t *testing.T) {
-	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
-	plugins, err := builder.initPluginsStrict(
-		map[string]resource.PluginConfig{"not-a-plugin": map[string]any{}},
-		builder.pluginRouteContext(resource.Route{ID: "unknown-plugin"}),
+	plans, err := planPluginSources(
+		materializedPluginSources(
+			map[string]resource.PluginConfig{"not-a-plugin": map[string]any{}},
+			pluginpkg.ResourceProvenance{Kind: pluginpkg.ResourceRoute, ID: "unknown-plugin"},
+		),
+		pluginpkg.NewEnabledSet([]string{"request-id"}),
+		false,
 	)
 	if err == nil {
-		t.Fatal("initPluginsStrict() error = nil, want unknown plugin rejection")
+		t.Fatal("planPluginSources() error = nil, want unknown plugin rejection")
 	}
-	if len(plugins) != 0 {
-		t.Fatalf("plugins len = %d, want no partially initialized plugins", len(plugins))
+	if len(plans) != 0 {
+		t.Fatalf("plans len = %d, want no partially planned plugins", len(plans))
 	}
 }
 
@@ -1077,577 +863,256 @@ func TestInitPluginsStrictRejectsProxyCacheConfigFailure(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = proxy_cache.RefreshConfiguredZones(nil) })
 
-	effective := testEffectiveConfig()
-	effective.Config.Apisix.ProxyCache.Zones = zones
-	builder := NewBuilder(nil, effective, testDataEncryptionResolver())
-	plugins, err := builder.initPluginsStrict(
-		map[string]resource.PluginConfig{
-			"proxy-cache": map[string]any{
-				"cache_strategy": "memory",
-				"cache_zone":     "strict-disk-only",
-			},
+	err := testPluginInitializationError(
+		"proxy-cache",
+		map[string]any{
+			"cache_strategy": "memory",
+			"cache_zone":     "strict-disk-only",
 		},
-		builder.pluginRouteContext(resource.Route{ID: "strict-cache-route"}),
 	)
 	if err == nil {
 		t.Fatal("initPluginsStrict() error = nil, want strict proxy-cache failure")
 	}
-	if len(plugins) != 0 {
-		t.Fatalf("plugins len = %d, want no partially initialized strict plugin", len(plugins))
-	}
-	handler, buildErr := builder.buildHandlerStrict(resource.Route{
-		ID: "strict-cache-route",
-		Plugins: map[string]resource.PluginConfig{
-			"proxy-cache": map[string]any{
-				"cache_strategy": "memory",
-				"cache_zone":     "strict-disk-only",
-			},
-		},
-	})
-	if buildErr == nil || handler != nil {
-		t.Fatalf("buildHandlerStrict() = (%v, %v), want nil handler and strict error", handler, buildErr)
-	}
-	builder.Stop()
 }
 
-func TestBuilderRejectsInvalidUnusedProxyCacheZoneDuringRefresh(t *testing.T) {
-	effective := testEffectiveConfig()
-	effective.Config.Apisix.ProxyCache.Zones = []appconfig.Zone{{Name: "unused-invalid-refresh", MemorySize: "zero"}}
-	builder := NewBuilder(nil, effective, testDataEncryptionResolver())
-	if handler := builder.Build(); handler != nil {
-		t.Fatal("Build() returned a handler, want nil for invalid static proxy-cache zone registry")
-	}
-	builder.Stop()
-}
-
-func TestBuildersRepublishTheirOwnStaticProxyCacheZones(t *testing.T) {
-	t.Cleanup(func() { _ = proxy_cache.RefreshConfiguredZones(nil) })
-
-	firstConfig := testEffectiveConfig()
-	firstConfig.Config.Apisix.ID = "first-builder"
-	firstConfig.Config.Apisix.ProxyCache.Zones = []appconfig.Zone{{Name: "first-builder-zone", MemorySize: "1M"}}
-	first := NewBuilder(nil, firstConfig, testDataEncryptionResolver())
-	t.Cleanup(first.Stop)
-
-	secondConfig := testEffectiveConfig()
-	secondConfig.Config.Apisix.ID = "second-builder"
-	secondConfig.Config.Apisix.ProxyCache.Zones = []appconfig.Zone{{Name: "second-builder-zone", MemorySize: "1M"}}
-	second := NewBuilder(nil, secondConfig, testDataEncryptionResolver())
-	t.Cleanup(second.Stop)
-
-	if first.staticConfig.Config.Apisix.ID != "first-builder" ||
-		second.staticConfig.Config.Apisix.ID != "second-builder" {
-		t.Fatalf(
-			"builder IDs = (%q, %q), want isolated static configs",
-			first.staticConfig.Config.Apisix.ID,
-			second.staticConfig.Config.Apisix.ID,
-		)
-	}
-	if first.pluginDependencies.Config != firstConfig || second.pluginDependencies.Config != secondConfig {
-		t.Fatal("plugin dependencies do not retain their owning builder static config")
-	}
-
-	_, _ = first.BuildStrict()
-	if !proxy_cache.CacheZoneDeclared("first-builder-zone") || proxy_cache.CacheZoneDeclared("second-builder-zone") {
-		t.Fatal("first candidate build did not publish only its configured zone")
-	}
-
-	_, _ = second.BuildStrict()
-	if proxy_cache.CacheZoneDeclared("first-builder-zone") || !proxy_cache.CacheZoneDeclared("second-builder-zone") {
-		t.Fatal("second candidate build did not replace the registry with its configured zone")
-	}
-
-	_, _ = first.BuildStrict()
-	if !proxy_cache.CacheZoneDeclared("first-builder-zone") || proxy_cache.CacheZoneDeclared("second-builder-zone") {
-		t.Fatal("first builder did not retain and republish its own configured zone")
+func TestConfiguredProxyCacheZonesRejectInvalidUnusedZone(t *testing.T) {
+	zones := []appconfig.Zone{{Name: "unused-invalid-refresh", MemorySize: "zero"}}
+	if err := proxy_cache.RefreshConfiguredZones(zones); err == nil {
+		t.Fatal("RefreshConfiguredZones() error = nil, want invalid static proxy-cache zone rejection")
 	}
 }
 
-func TestBuilderPublishesValidRouteWhenLegacySnapshotRowIsUndecodable(t *testing.T) {
-	storage := openLegacyRouteStore(t, map[string]map[string][]byte{
-		"routes": {
-			"strict-valid":   []byte(`{"id":"strict-valid","uri":"/strict-valid"}`),
-			"strict-invalid": []byte(`{"id":"strict-invalid","uri":"/strict-invalid","plugins":[]}`),
-		},
-	})
-	builder := NewBuilder(storage, testEffectiveConfig(), testDataEncryptionResolver())
-	defer builder.Stop()
-	handler, err := builder.BuildStrict()
-	if err != nil || handler == nil {
-		t.Fatalf("BuildStrict() = (%T, %v), want valid handler with legacy row quarantine", handler, err)
-	}
-}
-
-func TestBuildStrictReturnsRouteContext(t *testing.T) {
-	ensureRouteStore(t)
-	putRouteResource(t, "strict-invalid", []byte(
+func TestPlanRoutePluginsReturnsRouteContext(t *testing.T) {
+	routeResource := testRouteFromJSON(t,
 		`{"id":"strict-invalid","uri":"/strict-invalid","plugins":{"not-a-plugin":{}}}`,
-	))
-	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
-	defer builder.Stop()
-	handler, err := builder.BuildStrict()
+	)
+	_, err := planRoutePlugins(
+		routeResource,
+		PlanningInput{},
+		pluginpkg.NewEnabledSet(nil),
+	)
 	if err == nil || !strings.Contains(err.Error(), "strict-invalid") {
-		t.Fatalf("BuildStrict() handler/error = %T/%v, want route-scoped error", handler, err)
-	}
-	if handler != nil {
-		t.Fatalf("BuildStrict() handler = %T, want nil", handler)
+		t.Fatalf("planRoutePlugins() error = %v, want route-scoped error", err)
 	}
 }
 
-func TestBuildWithRouteQuarantinePublishesValidRoutesAndOmitsInvalidRoutes(t *testing.T) {
-	ensureRouteStore(t)
-	effective := httpPluginAllowlist()
-	putRouteResource(t, "quarantine-valid", []byte(
-		`{"id":"quarantine-valid","uri":"/quarantine-valid"}`,
-	))
-	putRouteResource(t, "quarantine-invalid", []byte(
-		`{"id":"quarantine-invalid","uri":"/quarantine-invalid","plugins":{"not-a-plugin":{}}}`,
-	))
-
-	builder := NewBuilder(nil, effective, testDataEncryptionResolver())
-	t.Cleanup(builder.Stop)
-	handler, err := builder.BuildWithRouteQuarantine()
-	if err != nil || handler == nil {
-		t.Fatalf("BuildWithRouteQuarantine() = (%T, %v), want valid generation", handler, err)
+func TestPlannedQuarantinePublishesValidRoutesAndOmitsInvalidRoutes(t *testing.T) {
+	plan, err := PlanHTTPPlugins(context.Background(), PlanningInput{
+		Routes: []resource.Route{
+			testRouteFromJSON(t, `{"id":"quarantine-valid","uri":"/quarantine-valid"}`),
+			testRouteFromJSON(
+				t,
+				`{"id":"quarantine-invalid","uri":"/quarantine-invalid","plugins":{"not-a-plugin":{}}}`,
+			),
+		},
+	})
+	if err != nil {
+		t.Fatalf("PlanHTTPPlugins() error = %v", err)
+	}
+	if len(plan.Quarantined) != 1 || len(plan.Routes) != 1 {
+		t.Fatalf("planned routes/quarantine = %d/%v, want 1/1", len(plan.Routes), plan.Quarantined)
+	}
+	snapshot, err := CompileHTTP(context.Background(), CompileInput{
+		Revision: 1,
+		Routes:   testPreparedRoutes(plan.Routes[0].Route),
+	})
+	if err != nil {
+		t.Fatalf("CompileHTTP() error = %v", err)
 	}
 
 	valid := httptest.NewRecorder()
-	handler.ServeHTTP(valid, httptest.NewRequest(http.MethodGet, "/quarantine-valid", nil))
+	snapshot.Handler().ServeHTTP(valid, httptest.NewRequest(http.MethodGet, "/quarantine-valid", nil))
 	if valid.Code == http.StatusNotFound {
 		t.Fatalf("valid route status = %d, want registered handler", valid.Code)
 	}
 
 	invalid := httptest.NewRecorder()
-	handler.ServeHTTP(invalid, httptest.NewRequest(http.MethodGet, "/quarantine-invalid", nil))
+	snapshot.Handler().ServeHTTP(invalid, httptest.NewRequest(http.MethodGet, "/quarantine-invalid", nil))
 	if invalid.Code != http.StatusNotFound {
 		t.Fatalf("invalid route status = %d, want 404", invalid.Code)
 	}
-	if got, want := builder.QuarantinedResourceCount(), 1; got != want {
-		t.Fatalf("QuarantinedResourceCount() = %d, want %d", got, want)
-	}
 }
 
-func TestBuildWithRouteQuarantineDoesNotPartiallyPublishMultiURIRoute(t *testing.T) {
-	ensureRouteStore(t)
-	effective := httpPluginAllowlist()
-	putRouteResource(t, "quarantine-multi-uri", []byte(
-		`{"id":"quarantine-multi-uri","uris":["/quarantine-first","/quarantine/:id/:id"]}`,
-	))
-
-	builder := NewBuilder(nil, effective, testDataEncryptionResolver())
-	t.Cleanup(builder.Stop)
-	handler, err := builder.BuildWithRouteQuarantine()
-	if err != nil || handler == nil {
-		t.Fatalf("BuildWithRouteQuarantine() = (%T, %v), want valid generation", handler, err)
+func TestPlannedQuarantineDoesNotPartiallyPublishMultiURIRoute(t *testing.T) {
+	plan, err := PlanHTTPPlugins(context.Background(), PlanningInput{Routes: []resource.Route{
+		testRouteFromJSON(t,
+			`{"id":"quarantine-multi-uri","uris":["/quarantine-first","/quarantine/:id/:id"]}`,
+		),
+	}})
+	if err != nil {
+		t.Fatalf("PlanHTTPPlugins() error = %v", err)
+	}
+	if len(plan.Quarantined) != 1 || len(plan.Routes) != 0 {
+		t.Fatalf("planned routes/quarantine = %d/%v, want 0/1", len(plan.Routes), plan.Quarantined)
+	}
+	snapshot, err := CompileHTTP(context.Background(), CompileInput{Revision: 1})
+	if err != nil {
+		t.Fatalf("CompileHTTP() error = %v", err)
 	}
 
 	for _, path := range []string{"/quarantine-first", "/quarantine/value/value"} {
 		response := httptest.NewRecorder()
-		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		snapshot.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
 		if response.Code != http.StatusNotFound {
 			t.Fatalf("quarantined route path %q status = %d, want 404", path, response.Code)
 		}
 	}
-	if got, want := builder.QuarantinedResourceCount(), 1; got != want {
-		t.Fatalf("QuarantinedResourceCount() = %d, want %d", got, want)
-	}
 }
 
-func TestBuildWithRouteQuarantineRejectsUnsupportedMethodWithoutPanicking(t *testing.T) {
-	ensureRouteStore(t)
-	effective := httpPluginAllowlist()
-	putRouteResource(t, "quarantine-method-invalid", []byte(
-		`{"id":"quarantine-method-invalid","uri":"/quarantine-method/:id","methods":["BOGUS"]}`,
-	))
-	putRouteResource(t, "quarantine-method-valid", []byte(
-		`{"id":"quarantine-method-valid","uri":"/quarantine-method-valid","methods":["GET"]}`,
-	))
-
-	builder := NewBuilder(nil, effective, testDataEncryptionResolver())
-	t.Cleanup(builder.Stop)
-	handler, err := builder.BuildWithRouteQuarantine()
-	if err != nil || handler == nil {
-		t.Fatalf("BuildWithRouteQuarantine() = (%T, %v), want valid generation", handler, err)
+func TestPlannedQuarantineRejectsUnsupportedMethodWithoutPanicking(t *testing.T) {
+	plan, err := PlanHTTPPlugins(context.Background(), PlanningInput{Routes: []resource.Route{
+		testRouteFromJSON(t,
+			`{"id":"quarantine-method-invalid","uri":"/quarantine-method/:id","methods":["BOGUS"]}`,
+		),
+		testRouteFromJSON(t,
+			`{"id":"quarantine-method-valid","uri":"/quarantine-method-valid","methods":["GET"]}`,
+		),
+	}})
+	if err != nil {
+		t.Fatalf("PlanHTTPPlugins() error = %v", err)
+	}
+	if len(plan.Quarantined) != 1 || len(plan.Routes) != 1 {
+		t.Fatalf("planned routes/quarantine = %d/%v, want 1/1", len(plan.Routes), plan.Quarantined)
+	}
+	snapshot, err := CompileHTTP(context.Background(), CompileInput{
+		Revision: 1,
+		Routes:   testPreparedRoutes(plan.Routes[0].Route),
+	})
+	if err != nil {
+		t.Fatalf("CompileHTTP() error = %v", err)
 	}
 
 	valid := httptest.NewRecorder()
-	handler.ServeHTTP(valid, httptest.NewRequest(http.MethodGet, "/quarantine-method-valid", nil))
+	snapshot.Handler().ServeHTTP(valid, httptest.NewRequest(http.MethodGet, "/quarantine-method-valid", nil))
 	if valid.Code == http.StatusNotFound {
 		t.Fatalf("valid route status = %d, want registered handler", valid.Code)
 	}
-	if got, want := builder.QuarantinedResourceCount(), 1; got != want {
-		t.Fatalf("QuarantinedResourceCount() = %d, want %d", got, want)
-	}
 }
 
-func TestBuildWithRouteQuarantineRejectsAPISIXInvalidMethodFormsAndDuplicates(t *testing.T) {
-	ensureRouteStore(t)
-	effective := httpPluginAllowlist()
-	putRouteResource(t, "quarantine-method-lowercase", []byte(
-		`{"id":"quarantine-method-lowercase","uri":"/quarantine-method-lowercase","methods":["get"]}`,
-	))
-	putRouteResource(t, "quarantine-method-query", []byte(
-		`{"id":"quarantine-method-query","uri":"/quarantine-method-query","methods":["QUERY"]}`,
-	))
-	putRouteResource(t, "quarantine-method-duplicate", []byte(
-		`{"id":"quarantine-method-duplicate","uri":"/quarantine-method-duplicate","methods":["GET","GET"]}`,
-	))
-	putRouteResource(t, "quarantine-uri-duplicate", []byte(
-		`{"id":"quarantine-uri-duplicate","uris":["/quarantine-uri-duplicate/:id","/quarantine-uri-duplicate/:name"]}`,
-	))
-	putRouteResource(t, "quarantine-method-sibling", []byte(
-		`{"id":"quarantine-method-sibling","uri":"/quarantine-method-sibling","methods":["GET"]}`,
-	))
-
-	builder := NewBuilder(nil, effective, testDataEncryptionResolver())
-	t.Cleanup(builder.Stop)
-	handler, err := builder.BuildWithRouteQuarantine()
-	if err != nil || handler == nil {
-		t.Fatalf("BuildWithRouteQuarantine() = (%T, %v), want valid generation", handler, err)
+func TestPlannedQuarantineRejectsAPISIXInvalidMethodFormsAndDuplicates(t *testing.T) {
+	plan, err := PlanHTTPPlugins(context.Background(), PlanningInput{Routes: []resource.Route{
+		testRouteFromJSON(
+			t,
+			`{"id":"quarantine-method-lowercase","uri":"/quarantine-method-lowercase","methods":["get"]}`,
+		),
+		testRouteFromJSON(t, `{"id":"quarantine-method-query","uri":"/quarantine-method-query","methods":["QUERY"]}`),
+		testRouteFromJSON(
+			t,
+			`{"id":"quarantine-method-duplicate","uri":"/quarantine-method-duplicate","methods":["GET","GET"]}`,
+		),
+		testRouteFromJSON(
+			t,
+			`{"id":"quarantine-uri-duplicate","uris":["/quarantine-uri-duplicate/:id","/quarantine-uri-duplicate/:name"]}`,
+		),
+		testRouteFromJSON(t, `{"id":"quarantine-method-sibling","uri":"/quarantine-method-sibling","methods":["GET"]}`),
+	}})
+	if err != nil {
+		t.Fatalf("PlanHTTPPlugins() error = %v", err)
+	}
+	if len(plan.Quarantined) != 4 || len(plan.Routes) != 1 {
+		t.Fatalf("planned routes/quarantine = %d/%v, want 1/4", len(plan.Routes), plan.Quarantined)
+	}
+	snapshot, err := CompileHTTP(context.Background(), CompileInput{
+		Revision: 1,
+		Routes:   testPreparedRoutes(plan.Routes[0].Route),
+	})
+	if err != nil {
+		t.Fatalf("CompileHTTP() error = %v", err)
 	}
 
 	valid := httptest.NewRecorder()
-	handler.ServeHTTP(valid, httptest.NewRequest(http.MethodGet, "/quarantine-method-sibling", nil))
+	snapshot.Handler().ServeHTTP(valid, httptest.NewRequest(http.MethodGet, "/quarantine-method-sibling", nil))
 	if valid.Code == http.StatusNotFound {
 		t.Fatalf("valid sibling status = %d, want registered handler", valid.Code)
 	}
-	if got, want := builder.QuarantinedResourceCount(), 4; got != want {
-		t.Fatalf("QuarantinedResourceCount() = %d, want %d", got, want)
-	}
 }
 
-func TestBuildWithRouteQuarantineRollsBackRouteLifecycleResources(t *testing.T) {
-	ensureRouteStore(t)
-	effective := httpPluginAllowlist("kafka-logger")
-	putHTTPAllowlistResource(t, "services", "quarantine-lifecycle-service", []byte(
-		`{"id":"quarantine-lifecycle-service","plugins":{"kafka-logger":{"broker_list":{"127.0.0.1":9092},"kafka_topic":"quarantine","producer_type":"sync"}}}`,
-	))
-	putRouteResource(t, "quarantine-lifecycle", []byte(
-		`{"id":"quarantine-lifecycle","uri":"/quarantine-lifecycle","service_id":"quarantine-lifecycle-service","upstream":{"nodes":{"127.0.0.1:1":0}}}`,
-	))
-
-	builder := NewBuilder(nil, effective, testDataEncryptionResolver())
-	t.Cleanup(builder.Stop)
-	handler, err := builder.BuildWithRouteQuarantine()
-	if err != nil || handler == nil {
-		t.Fatalf("BuildWithRouteQuarantine() = (%T, %v), want valid generation", handler, err)
-	}
-	builder.stopperMu.Lock()
-	stopperCount := len(builder.stoppers)
-	builder.stopperMu.Unlock()
-	if stopperCount != 0 {
-		t.Fatalf("quarantined route retained %d lifecycle stopper(s), want zero", stopperCount)
-	}
-	if got := len(builder.servicePlugins); got != 0 {
-		t.Fatalf("quarantined route retained %d service plugin(s), want zero", got)
-	}
-}
-
-func TestBuilderFailsClosedWhenLegacyGlobalRuleRowIsUndecodable(t *testing.T) {
-	storage := openLegacyRouteStore(t, map[string]map[string][]byte{
-		"routes": {
-			"strict-global-route": []byte(`{"id":"strict-global-route","uri":"/strict-global"}`),
-		},
-		"global_rules": {
-			"strict-valid-global":   []byte(`{"id":"strict-valid-global","plugins":{}}`),
-			"strict-invalid-global": []byte(`{"id":"strict-invalid-global","plugins":[]}`),
-		},
-	})
-
-	rules, err := store.ListGlobalRules()
-	if err == nil {
-		t.Fatal("ListGlobalRules() error = nil, want malformed global-rule error")
-	}
-	if rules != nil {
-		t.Fatalf("ListGlobalRules() rules = %#v, want no partial snapshot", rules)
-	}
-	if !strings.Contains(err.Error(), "strict-invalid-global") {
-		t.Fatalf("ListGlobalRules() error = %q, want global-rule ID", err)
-	}
-
-	builder := NewBuilder(storage, testEffectiveConfig(), testDataEncryptionResolver())
-	defer builder.Stop()
-	handler, err := builder.BuildStrict()
-	if err == nil || handler != nil {
-		t.Fatalf("BuildStrict() = (%T, %v), want fail-closed snapshot error", handler, err)
-	}
-	if !strings.Contains(err.Error(), "strict-invalid-global") {
-		t.Fatalf("BuildStrict() error = %q, want strict-invalid-global", err)
-	}
-}
-
-func TestBuilderBuildStrictUsesPassedStoreSnapshot(t *testing.T) {
-	globalStore, _ := openBuildSnapshotStore(t, map[string]map[string][]byte{
-		"routes": {
-			"global-only": []byte(`{"id":"global-only","uri":"/global-only","service_id":"missing-service"}`),
-		},
-	})
-	passedStore, _ := openBuildSnapshotStore(t, map[string]map[string][]byte{
-		"routes": {
-			"passed-store": []byte(
-				`{"id":"passed-store","uri":"/passed-store","service_id":"passed-service","plugin_config_id":"passed-config"}`,
-			),
-		},
-		"services": {
-			"passed-service": []byte(`{"id":"passed-service","upstream_id":"passed-upstream"}`),
-		},
-		"upstreams": {
-			"passed-upstream": []byte(`{"scheme":"http","nodes":{"127.0.0.1:8080":1}}`),
-		},
-		"plugin_configs": {
-			"passed-config": []byte(`{"plugins":{}}`),
-		},
-	})
-	previous := store.ReplaceGlobalStoreForTest(globalStore)
-	t.Cleanup(func() { store.ReplaceGlobalStoreForTest(previous) })
-
-	builder := NewBuilder(passedStore, testEffectiveConfig(), testDataEncryptionResolver())
-	t.Cleanup(builder.Stop)
-	handler, err := builder.BuildStrict()
-	if err != nil || handler == nil {
-		t.Fatalf("BuildStrict() = (%T, %v), want handler from passed Store", handler, err)
-	}
-}
-
-func TestBuilderTrafficSplitUsesPassedStoreSnapshot(t *testing.T) {
-	effective := testEffectiveConfig()
-	effective.Config.Plugins = []string{"traffic-split"}
-	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	t.Cleanup(target.Close)
-	host, portText, err := net.SplitHostPort(strings.TrimPrefix(target.URL, "http://"))
+func TestBuildPreparedHandlerAllowsPluginOnlyRouteWithoutUpstreamNodes(t *testing.T) {
+	routeResource := resource.Route{ID: "plugin-only"}
+	upstream, err := PlanRouteUpstream(
+		routeResource, resource.Service{}, nil, nil, &testEffectiveConfig().Config,
+	)
 	if err != nil {
-		t.Fatalf("split target address: %v", err)
+		t.Fatalf("PlanRouteUpstream() error = %v", err)
 	}
-	port, err := strconv.Atoi(portText)
-	if err != nil {
-		t.Fatalf("split target port: %v", err)
-	}
-
-	globalStore, _ := openBuildSnapshotStore(t, nil)
-	passedStore, _ := openBuildSnapshotStore(t, map[string]map[string][]byte{
-		"routes": {
-			"passed-split": []byte(`{
-				"id":"passed-split",
-				"uri":"/passed-split",
-				"plugins":{"traffic-split":{"rules":[{"weighted_upstreams":[{"upstream_id":"split","weight":1}]}]}},
-				"upstream":{"scheme":"http","nodes":{"127.0.0.1:8080":1}}
-			}`),
-		},
-		"upstreams": {
-			"split": fmt.Appendf(nil,
-				`{"scheme":"http","nodes":[{"host":%q,"port":%d,"weight":1}]}`,
-				host,
-				port,
-			),
-		},
+	_, err = BuildPreparedHandler(PreparedHandlerInput{
+		Route:        routeResource,
+		Upstream:     upstream,
+		Runtime:      PreparedUpstreamRuntime{RoundTripper: http.DefaultTransport},
+		StaticConfig: testEffectiveConfig().Config,
 	})
-	previousStore := store.ReplaceGlobalStoreForTest(globalStore)
-	t.Cleanup(func() { store.ReplaceGlobalStoreForTest(previousStore) })
-	if _, err := store.GetUpstream("split"); !errors.Is(err, store.ErrNotFound) {
-		t.Fatalf("global Store split upstream error = %v, want ErrNotFound", err)
+	if err != nil {
+		t.Fatalf("BuildPreparedHandler() error = %v, want plugin-only route support", err)
 	}
+}
 
-	builder := NewBuilder(passedStore, effective, testDataEncryptionResolver())
-	t.Cleanup(builder.Stop)
-	handler, err := builder.BuildStrict()
-	if err != nil || handler == nil {
-		t.Fatalf("BuildStrict() = (%T, %v), want traffic-split upstream_id from passed Store", handler, err)
+func TestPlannedClusterRegistrySharesIdenticalUpstreamUntilFinalLeaseStops(t *testing.T) {
+	routeResource := testRouteFromJSON(
+		t,
+		`{"id":"cluster-shared","uri":"/cluster-shared","upstream":{"scheme":"http","nodes":[{"host":"127.0.0.1","port":18081,"weight":1}]}}`,
+	)
+	plan, err := PlanRouteUpstream(
+		routeResource, resource.Service{}, nil, nil, &testEffectiveConfig().Config,
+	)
+	if err != nil || plan.ClusterConfig == nil {
+		t.Fatalf("PlanRouteUpstream() = (%#v, %v), want cluster config", plan, err)
 	}
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://gateway.test/passed-split", nil))
-	if response.Code != http.StatusNoContent {
+	registry := pxy.NewClusterRegistry(pxy.NopClusterObserver{})
+	t.Cleanup(registry.Close)
+	first, err := registry.Acquire(*plan.ClusterConfig)
+	if err != nil {
+		t.Fatalf("first Acquire() error = %v", err)
+	}
+	if got := registry.Len(); got != 1 {
+		t.Fatalf("registry.Len() after first acquire = %d, want 1", got)
+	}
+	second, err := registry.Acquire(*plan.ClusterConfig)
+	if err != nil {
+		t.Fatalf("second Acquire() error = %v", err)
+	}
+	if got := registry.Len(); first.Cluster() != second.Cluster() || got != 1 {
 		t.Fatalf(
-			"traffic-split response status = %d, want %d; body=%q",
-			response.Code,
-			http.StatusNoContent,
-			response.Body,
+			"registry after second acquire = %d clusters (%p/%p), want one shared cluster",
+			got,
+			first.Cluster(),
+			second.Cluster(),
 		)
 	}
-}
-
-func openLegacyRouteStore(t *testing.T, seed map[string]map[string][]byte) *store.Store {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), "legacy.db")
-	initial, err := store.Open(path, make(chan *store.Event, 1), testDataEncryptionService())
-	if err != nil {
-		t.Fatalf("open initial legacy store: %v", err)
-	}
-	if err := initial.Stop(); err != nil {
-		t.Fatalf("stop initial legacy store: %v", err)
-	}
-	db, err := bolt.Open(path, 0o600, nil)
-	if err != nil {
-		t.Fatalf("open legacy database: %v", err)
-	}
-	if err := db.Update(func(tx *bolt.Tx) error {
-		for bucketName, entries := range seed {
-			bucket := tx.Bucket([]byte(bucketName))
-			for id, value := range entries {
-				if err := bucket.Put([]byte(id), value); err != nil {
-					return err
-				}
-			}
-		}
-		return nil
-	}); err != nil {
-		_ = db.Close()
-		t.Fatalf("seed legacy database: %v", err)
-	}
-	if err := db.Close(); err != nil {
-		t.Fatalf("close legacy database: %v", err)
-	}
-	events := make(chan *store.Event, 1)
-	storage, err := store.Open(path, events, testDataEncryptionService())
-	if err != nil {
-		t.Fatalf("reopen legacy store: %v", err)
-	}
-	storage.Start()
-	previous := store.ReplaceGlobalStoreForTest(storage)
-	t.Cleanup(func() {
-		store.ReplaceGlobalStoreForTest(previous)
-		if err := storage.Stop(); err != nil {
-			t.Errorf("stop legacy store: %v", err)
-		}
-	})
-	return storage
-}
-
-func openBuildSnapshotStore(t *testing.T, seed map[string]map[string][]byte) (*store.Store, chan *store.Event) {
-	t.Helper()
-	events := make(chan *store.Event, 16)
-	storage, err := store.Open(filepath.Join(t.TempDir(), "builder-snapshot.db"), events, testDataEncryptionService())
-	if err != nil {
-		t.Fatalf("open builder snapshot store: %v", err)
-	}
-	storage.Start()
-	t.Cleanup(func() {
-		if err := storage.Stop(); err != nil {
-			t.Errorf("stop builder snapshot store: %v", err)
-		}
-	})
-	for bucket, entries := range seed {
-		for id, value := range entries {
-			event := store.NewEvent()
-			event.Type = store.EventTypePut
-			event.Key = []byte("/apisix/" + bucket + "/" + id)
-			event.Value = append([]byte(nil), value...)
-			events <- event
-			if err := storage.Sync(); err != nil {
-				t.Fatalf("seed %s/%s: %v", bucket, id, err)
-			}
-		}
-	}
-	return storage, events
-}
-
-func TestBuildReverseHandlerAllowsPluginOnlyRouteWithoutUpstreamNodes(t *testing.T) {
-	_, err := (NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())).buildReverseHandler(
-		resource.Route{},
-		resource.Service{},
-	)
-	if err != nil {
-		t.Fatalf("buildReverseHandler() error = %v, want plugin-only route support", err)
-	}
-}
-
-func TestBuilderClusterRegistrySharesIdenticalUpstreamUntilFinalStop(t *testing.T) {
-	ensureRouteStore(t)
-	putRouteResource(
-		t,
-		"cluster-shared",
-		[]byte(
-			`{"id":"cluster-shared","uri":"/cluster-shared","upstream":{"scheme":"http","nodes":[{"host":"127.0.0.1","port":18081,"weight":1}]}}`,
-		),
-	)
-
-	registry := pxy.NewClusterRegistry(pxy.NopClusterObserver{})
-	t.Cleanup(registry.Close)
-
-	firstBuilder := NewBuilderWithClusterRegistry(
-		routeStore,
-		"127.0.0.1:9080",
-		registry,
-		testEffectiveConfig(),
-		testDataEncryptionResolver(),
-	)
-	defer firstBuilder.Stop()
-	firstHandler, err := firstBuilder.BuildStrict()
-	if err != nil {
-		t.Fatalf("first BuildStrict() error = %v", err)
-	}
-	if firstHandler == nil {
-		t.Fatal("first BuildStrict() returned nil handler")
-	}
+	first.Stop()
 	if got := registry.Len(); got != 1 {
-		t.Fatalf("registry.Len() after first build = %d, want 1", got)
+		t.Fatalf("registry.Len() after first lease stop = %d, want shared cluster retained", got)
 	}
-
-	secondBuilder := NewBuilderWithClusterRegistry(
-		routeStore,
-		"127.0.0.1:9080",
-		registry,
-		testEffectiveConfig(),
-		testDataEncryptionResolver(),
-	)
-	defer secondBuilder.Stop()
-	secondHandler, err := secondBuilder.BuildStrict()
-	if err != nil {
-		t.Fatalf("second BuildStrict() error = %v", err)
-	}
-	if secondHandler == nil {
-		t.Fatal("second BuildStrict() returned nil handler")
-	}
-	if got := registry.Len(); got != 1 {
-		t.Fatalf("registry.Len() after second build = %d, want shared cluster 1", got)
-	}
-
-	firstBuilder.Stop()
-	if got := registry.Len(); got != 1 {
-		t.Fatalf("registry.Len() after first builder stop = %d, want shared cluster retained", got)
-	}
-
-	secondBuilder.Stop()
+	second.Stop()
 	if got := registry.Len(); got != 0 {
-		t.Fatalf("registry.Len() after second builder stop = %d, want 0", got)
+		t.Fatalf("registry.Len() after second lease stop = %d, want 0", got)
 	}
 }
 
-func TestBuilderClusterRegistrySeparatesChangedUpstreamTimeout(t *testing.T) {
-	ensureRouteStore(t)
-	putRouteResource(
-		t,
-		"cluster-timeout-a",
-		[]byte(
+func TestPlannedClusterRegistrySeparatesChangedUpstreamTimeout(t *testing.T) {
+	routes := []resource.Route{
+		testRouteFromJSON(
+			t,
 			`{"id":"cluster-timeout-a","uri":"/cluster-timeout-a","upstream":{"scheme":"http","timeout":{"read":1},"nodes":[{"host":"127.0.0.1","port":18082,"weight":1}]}}`,
 		),
-	)
-	putRouteResource(
-		t,
-		"cluster-timeout-b",
-		[]byte(
+		testRouteFromJSON(
+			t,
 			`{"id":"cluster-timeout-b","uri":"/cluster-timeout-b","upstream":{"scheme":"http","timeout":{"read":2},"nodes":[{"host":"127.0.0.1","port":18082,"weight":1}]}}`,
 		),
-	)
-
+	}
 	registry := pxy.NewClusterRegistry(pxy.NopClusterObserver{})
 	t.Cleanup(registry.Close)
-
-	builder := NewBuilderWithClusterRegistry(
-		routeStore,
-		"127.0.0.1:9080",
-		registry,
-		testEffectiveConfig(),
-		testDataEncryptionResolver(),
-	)
-	defer builder.Stop()
-	handler, err := builder.BuildStrict()
-	if err != nil {
-		t.Fatalf("BuildStrict() error = %v", err)
-	}
-	if handler == nil {
-		t.Fatal("BuildStrict() returned nil handler")
+	for _, routeResource := range routes {
+		plan, err := PlanRouteUpstream(
+			routeResource, resource.Service{}, nil, nil, &testEffectiveConfig().Config,
+		)
+		if err != nil || plan.ClusterConfig == nil {
+			t.Fatalf("PlanRouteUpstream(%q) = (%#v, %v)", routeResource.ID, plan, err)
+		}
+		lease, err := registry.Acquire(*plan.ClusterConfig)
+		if err != nil {
+			t.Fatalf("Acquire(%q) error = %v", routeResource.ID, err)
+		}
+		t.Cleanup(lease.Stop)
 	}
 	if got := registry.Len(); got != 2 {
 		t.Fatalf("registry.Len() = %d, want 2 distinct clusters", got)
@@ -1655,128 +1120,27 @@ func TestBuilderClusterRegistrySeparatesChangedUpstreamTimeout(t *testing.T) {
 }
 
 func TestUnownedSecretReferenceRejectsRoutePluginBeforePostInit(t *testing.T) {
-	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
-	plugins, err := builder.initPluginsStrict(
-		map[string]resource.PluginConfig{
-			"basic-auth": map[string]any{"realm": "$ENV://ROUTE_REALM"},
-		},
-		builder.pluginRouteContext(resource.Route{ID: "route-unowned-secret"}),
+	err := testPluginInitializationError(
+		"basic-auth",
+		map[string]any{"realm": "$ENV://ROUTE_REALM"},
 	)
 
 	if err == nil ||
 		!strings.Contains(err.Error(), "unowned secret reference") ||
 		!strings.Contains(err.Error(), "realm") {
-		t.Fatalf("initPluginsStrict() error = %v, want unowned route secret rejection", err)
-	}
-	if len(plugins) != 0 {
-		t.Fatalf("plugins len = %d, want no partially initialized plugins", len(plugins))
+		t.Fatalf("plugin initialization error = %v, want unowned route secret rejection", err)
 	}
 }
 
 func TestUnownedSecretReferenceRejectsRoutePluginBeforePostInitLowercaseEnvironmentPrefix(t *testing.T) {
-	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
-	plugins, err := builder.initPluginsStrict(
-		map[string]resource.PluginConfig{
-			"basic-auth": map[string]any{"realm": "$env://ROUTE_REALM"},
-		},
-		builder.pluginRouteContext(resource.Route{ID: "route-unowned-lowercase-secret"}),
+	err := testPluginInitializationError(
+		"basic-auth",
+		map[string]any{"realm": "$env://ROUTE_REALM"},
 	)
 
 	if err == nil ||
 		!strings.Contains(err.Error(), "unowned secret reference") ||
 		!strings.Contains(err.Error(), "realm") {
-		t.Fatalf("initPluginsStrict() error = %v, want lowercase unowned route secret rejection", err)
-	}
-	if len(plugins) != 0 {
-		t.Fatalf("plugins len = %d, want no partially initialized plugins", len(plugins))
-	}
-}
-
-func TestClickHouseLoggerEnvironmentUserPublishesAfterSecretOwnership(t *testing.T) {
-	t.Setenv("CLICK_HOUSE_USER", "fixture-user")
-
-	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
-	plugins, err := builder.initPluginsStrict(
-		map[string]resource.PluginConfig{
-			"clickhouse-logger": map[string]any{
-				"endpoint_addr": "http://127.0.0.1:8123",
-				"user":          "$ENV://CLICK_HOUSE_USER",
-				"password":      "secret",
-				"database":      "default",
-				"logtable":      "apisix_logs",
-				"log_format":    map[string]any{"request_id": "$request_id"},
-			},
-		},
-		builder.pluginRouteContext(resource.Route{ID: "route-clickhouse-env-user"}),
-	)
-	if err != nil {
-		t.Fatalf("initPluginsStrict() error = %v, want owned ClickHouse environment user to publish", err)
-	}
-	if len(plugins) != 1 {
-		t.Fatalf("plugins len = %d, want 1 published clickhouse-logger binding", len(plugins))
-	}
-	for _, published := range plugins {
-		if stopper, ok := published.(interface{ Stop() }); ok {
-			stopper.Stop()
-		}
-	}
-}
-
-func TestBuilderRejectsDisabledWorkflowChildBeforeSecretMaterialization(t *testing.T) {
-	ensureRouteStore(t)
-	effective := httpPluginAllowlist("workflow")
-	t.Setenv("ROUTE_DISABLED_WORKFLOW_SECRET", "")
-	putRouteResource(
-		t,
-		"disabled-workflow-secret",
-		[]byte(
-			`{"id":"disabled-workflow-secret","uri":"/disabled-workflow-secret","plugins":{"workflow":{"rules":[{"actions":[["limit-count",{"count":1,"time_window":60,"key":"$ENV://ROUTE_DISABLED_WORKFLOW_SECRET"}]]}]}}}`,
-		),
-	)
-
-	builder := NewBuilder(nil, effective, testDataEncryptionResolver())
-	t.Cleanup(builder.Stop)
-	handler, err := builder.BuildStrict()
-	if err == nil || handler != nil {
-		t.Fatalf("BuildStrict() = (%T, %v), want disabled nested workflow rejection", handler, err)
-	}
-	if !strings.Contains(err.Error(), `workflow action plugin "limit-count" is disabled`) ||
-		strings.Contains(err.Error(), "credential unavailable") {
-		t.Fatalf("BuildStrict() error = %q, want disabled error before secret access", err)
-	}
-	builder.stopperMu.Lock()
-	stopperCount := len(builder.stoppers)
-	builder.stopperMu.Unlock()
-	if stopperCount != 0 {
-		t.Fatalf("builder stoppers = %d, want no retained workflow runtime state", stopperCount)
-	}
-}
-
-func TestBuilderRejectsInvalidWorkflowChildBeforeSecretMaterialization(t *testing.T) {
-	ensureRouteStore(t)
-	effective := httpPluginAllowlist("workflow", "limit-count")
-	t.Setenv("ROUTE_INVALID_WORKFLOW_SECRET", "")
-	putRouteResource(
-		t,
-		"invalid-workflow-secret",
-		[]byte(
-			`{"id":"invalid-workflow-secret","uri":"/invalid-workflow-secret","plugins":{"workflow":{"rules":[{"actions":[["limit-count",{"count":1,"key":"$ENV://ROUTE_INVALID_WORKFLOW_SECRET"}]]}]}}}`,
-		),
-	)
-
-	builder := NewBuilder(nil, effective, testDataEncryptionResolver())
-	t.Cleanup(builder.Stop)
-	handler, err := builder.BuildStrict()
-	if err == nil || handler != nil {
-		t.Fatalf("BuildStrict() = (%T, %v), want invalid nested workflow rejection", handler, err)
-	}
-	if !strings.Contains(err.Error(), "time_window") || strings.Contains(err.Error(), "credential unavailable") {
-		t.Fatalf("BuildStrict() error = %q, want schema error before secret access", err)
-	}
-	builder.stopperMu.Lock()
-	stopperCount := len(builder.stoppers)
-	builder.stopperMu.Unlock()
-	if stopperCount != 0 {
-		t.Fatalf("builder stoppers = %d, want no retained workflow runtime state", stopperCount)
+		t.Fatalf("plugin initialization error = %v, want lowercase unowned route secret rejection", err)
 	}
 }

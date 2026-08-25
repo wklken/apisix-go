@@ -49,18 +49,16 @@ func TestErrorAndRequestBodyHandlersSetAPISIXBeforeJSON(t *testing.T) {
 		)
 	}
 
-	handler, err := (NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())).buildReverseHandler(
+	handler := testPreparedProxyHandler(t,
 		resource.Route{
+			ID: "oversized-request-source",
 			Upstream: resource.Upstream{
 				Scheme: "http",
 				Nodes:  []resource.Node{{Host: "127.0.0.1", Port: 1, Weight: 1}},
 			},
 		},
-		resource.Service{},
+		resource.Service{}, testEffectiveConfig(),
 	)
-	if err != nil {
-		t.Fatalf("buildReverseHandler() error = %v", err)
-	}
 	bodyRequest, bodyLifecycle := apisixctx.EnsureRequestLifecycle(
 		httptest.NewRequest(http.MethodPost, "http://gateway.test/upload", bytes.NewReader(
 			bytes.Repeat([]byte("x"), int(proxy_control.DefaultRequestBufferingLimit+1)),
@@ -104,10 +102,9 @@ func (w *sourceObservingWriter) Write(body []byte) (int, error) {
 }
 
 func TestGlobalNotFoundSetsEarlyStopBeforeWrite(t *testing.T) {
-	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
-	handler, err := builder.buildGlobalNotFoundHandler(nil)
+	handler, err := BuildPreparedNotFoundHandler(nil)
 	if err != nil {
-		t.Fatalf("buildGlobalNotFoundHandler() error = %v", err)
+		t.Fatalf("BuildPreparedNotFoundHandler() error = %v", err)
 	}
 	request, lifecycle := apisixctx.EnsureRequestLifecycle(
 		httptest.NewRequest(http.MethodGet, "http://gateway.test/missing", nil),

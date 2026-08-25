@@ -1,6 +1,7 @@
 package route
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -8,8 +9,7 @@ import (
 	"testing"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/wklken/apisix-go/pkg/logger"
-	"github.com/wklken/apisix-go/pkg/store"
+	"github.com/wklken/apisix-go/pkg/resource"
 )
 
 // Benchmark corpus for APISIX URI conversion, route registration, and
@@ -197,108 +197,32 @@ func benchmarkRouteDispatch(b *testing.B, kind, result string, routeCount int) {
 	}
 }
 
-// BenchmarkRouteBuildIndexes measures route-build store lookups: the
-// route-bucket read, the per-route global-rule lookup, and per-route plugin
-// metadata lookup. The shared store is reseeded per row through the event
-// channel; the corpus uses only stable APIs.
-func BenchmarkRouteBuildIndexes(b *testing.B) {
-	if err := logger.ConfigureLevel("error"); err != nil {
-		b.Fatal(err)
-	}
-	b.Cleanup(func() { _ = logger.ConfigureLevel("info") })
-
-	events := make(chan *store.Event, 64)
-	storage, err := store.GetStore(b.TempDir()+"/route-build-index.db", events, testDataEncryptionService())
-	if err != nil {
-		b.Fatalf("get store: %v", err)
-	}
-	storage.Start()
-	b.Cleanup(func() { _ = storage.Stop() })
-
-	put := func(bucket, id string, value []byte) {
-		event := store.NewEvent()
-		event.Type = store.EventTypePut
-		event.Key = []byte("/apisix/" + bucket + "/" + id)
-		event.Value = value
-		events <- event
-	}
-	del := func(bucket, id string) {
-		event := store.NewEvent()
-		event.Type = store.EventTypeDelete
-		event.Key = []byte("/apisix/" + bucket + "/" + id)
-		events <- event
-	}
-	clear := func(bucket string, ids []string) {
-		for _, id := range ids {
-			del(bucket, id)
-		}
-		if err := storage.Sync(); err != nil {
-			b.Fatalf("Sync() error = %v", err)
-		}
-	}
-	seedRoutes := func(count int, withCors bool) []string {
-		ids := make([]string, count)
-		for i := range count {
-			id := fmt.Sprintf("bench-route-%d", i)
-			ids[i] = id
-			plugins := `{}`
-			if withCors {
-				plugins = `{"cors":{}}`
+// BenchmarkCompileHTTPRouteIndexes measures detached router assembly from
+// already-prepared immutable route handlers. Store/plugin materialization is
+// intentionally outside this authority-free benchmark boundary.
+func BenchmarkCompileHTTPRouteIndexes(b *testing.B) {
+	for _, routeCount := range []int{100, 1000} {
+		b.Run(fmt.Sprintf("routes=%d", routeCount), func(b *testing.B) {
+			routes := make([]PreparedRoute, routeCount)
+			for index := range routeCount {
+				id := fmt.Sprintf("bench-route-%d", index)
+				routes[index] = PreparedRoute{
+					Route: resource.Route{ID: id, Uri: "/bench/" + id},
+					Handler: http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+						writer.WriteHeader(http.StatusNoContent)
+					}),
+				}
 			}
-			put("routes", id, []byte(`{"id":"`+id+`","uri":"/bench/`+id+`","plugins":`+plugins+`}`))
-		}
-		if err := storage.Sync(); err != nil {
-			b.Fatalf("Sync() error = %v", err)
-		}
-		return ids
-	}
-	seedRules := func(count int) []string {
-		ids := make([]string, count)
-		for i := range count {
-			id := fmt.Sprintf("bench-rule-%d", i)
-			ids[i] = id
-			put("global_rules", id, []byte(`{"id":"`+id+`","plugins":{}}`))
-		}
-		if err := storage.Sync(); err != nil {
-			b.Fatalf("Sync() error = %v", err)
-		}
-		return ids
-	}
-	seedMetadata := func() {
-		put("plugin_metadata", "cors", []byte(`{"id":"cors","allow_origins":{"key":"https://a.example.com"}}`))
-		if err := storage.Sync(); err != nil {
-			b.Fatalf("Sync() error = %v", err)
-		}
-	}
-
-	build := func(b *testing.B) {
-		builder := NewBuilderWithServerAddr(nil, "127.0.0.1:9080", testEffectiveConfig(), testDataEncryptionResolver())
-		for b.Loop() {
-			mux := builder.Build()
-			if mux == nil {
-				b.Fatal("Build() returned nil")
+			b.ReportAllocs()
+			for b.Loop() {
+				snapshot, err := CompileHTTP(context.Background(), CompileInput{
+					Revision: 1,
+					Routes:   routes,
+				})
+				if err != nil || snapshot.Handler() == nil {
+					b.Fatalf("CompileHTTP() = (%T, %v)", snapshot, err)
+				}
 			}
-		}
+		})
 	}
-
-	var routes, rules []string
-
-	routes = seedRoutes(100, false)
-	b.Run("routes=100/global-rules=0", build)
-	clear("routes", routes)
-
-	routes = seedRoutes(100, false)
-	rules = seedRules(100)
-	b.Run("routes=100/global-rules=100", build)
-	clear("routes", routes)
-	clear("global_rules", rules)
-
-	routes = seedRoutes(100, true)
-	seedMetadata()
-	b.Run("routes=100/metadata", build)
-	clear("routes", routes)
-
-	routes = seedRoutes(1000, true)
-	b.Run("routes=1000/metadata", build)
-	clear("routes", routes)
 }

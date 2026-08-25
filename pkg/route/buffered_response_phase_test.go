@@ -279,22 +279,24 @@ func TestMetadataResponseFilterPriorityAndErrorResponseRemainExact(t *testing.T)
 }
 
 func TestStrictRouteMaterializationUsesBindPluginCheckedForStaticAndConsumer(t *testing.T) {
-	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
-	routeContext := builder.pluginRouteContext(resource.Route{ID: "strict-binding-route"})
+	routeResource := resource.Route{ID: "strict-binding-route"}
 	source := materializedPluginSource{
 		name:       "body-transformer",
 		config:     map[string]any{"request": map[string]any{"template": "ok"}},
 		scope:      plugin.ScopeRoute,
-		provenance: plugin.ResourceProvenance{Kind: plugin.ResourceRoute, ID: routeContext.routeID},
+		provenance: plugin.ResourceProvenance{Kind: plugin.ResourceRoute, ID: routeResource.ID},
 	}
-	bindings, err := builder.initPluginBindingsStrict(
-		[]materializedPluginSource{source},
-		routeContext,
-		pluginInitOptions{},
+	binding := testPluginBindingForSource(
+		t,
+		source.name,
+		source.config,
+		source.scope,
+		source.provenance,
+		routeResource,
+		resource.Service{},
+		"127.0.0.1:9080",
 	)
-	if err != nil {
-		t.Fatalf("static binding initialization error = %v", err)
-	}
+	bindings := []plugin.Binding{binding}
 	if len(bindings) != 1 || bindings[0].Descriptor.RequestStage() != plugin.RequestStageRewrite {
 		t.Fatalf("static binding = %#v, want one rewrite-stage checked binding", bindings)
 	}
@@ -304,14 +306,17 @@ func TestStrictRouteMaterializationUsesBindPluginCheckedForStaticAndConsumer(t *
 			"body-transformer": source.config,
 		}},
 	)
-	consumerBindings, err := builder.initPluginBindingsStrict(
-		consumerSources,
-		routeContext,
-		pluginInitOptions{},
+	consumerBinding := testPluginBindingForSource(
+		t,
+		consumerSources[0].name,
+		consumerSources[0].config,
+		consumerSources[0].scope,
+		consumerSources[0].provenance,
+		routeResource,
+		resource.Service{},
+		"127.0.0.1:9080",
 	)
-	if err != nil {
-		t.Fatalf("consumer binding initialization error = %v", err)
-	}
+	consumerBindings := []plugin.Binding{consumerBinding}
 	if len(consumerBindings) != 1 || consumerBindings[0].Descriptor.RequestStage() != plugin.RequestStageRewrite {
 		t.Fatalf("consumer binding = %#v, want one rewrite-stage checked binding", consumerBindings)
 	}

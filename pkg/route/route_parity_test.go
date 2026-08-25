@@ -11,114 +11,34 @@ import (
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	appconfig "github.com/wklken/apisix-go/pkg/config"
-	apisixjson "github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/plugin"
 	"github.com/wklken/apisix-go/pkg/proxy"
 	"github.com/wklken/apisix-go/pkg/resource"
-	"github.com/wklken/apisix-go/pkg/store"
 )
 
-func TestBuildUsesDynamicHTTPPluginAllowlistAndFallsBackAfterDelete(t *testing.T) {
-	ensureRouteStore(t)
-	effective := httpPluginAllowlist("request-id")
-	putDynamicHTTPPluginList(t, `[ {"name":"gzip"}, {"name":"mqtt-proxy","stream":true} ]`)
-
-	const routeID = "dynamic-http-plugin-route"
-	route := `{"id":"dynamic-http-plugin-route","uri":"/dynamic-http-plugin","plugins":{"request-id":{}}}`
-	putRouteResource(t, routeID, []byte(route))
-
-	builder := NewBuilder(nil, effective, testDataEncryptionResolver())
-	t.Cleanup(builder.Stop)
-	handler, err := builder.BuildStrict()
-	if err == nil || handler != nil ||
-		!strings.Contains(err.Error(), `plugin "request-id" is disabled`) {
-		t.Fatalf("dynamic allowlist BuildStrict() = (%T, %v), want request-id rejection", handler, err)
+func TestPlanRoutePluginsUsesDynamicHTTPAllowlistAndFallsBackWhenAbsent(t *testing.T) {
+	routeResource := resource.Route{
+		ID: "dynamic-http-plugin-route", Uri: "/dynamic-http-plugin",
+		Plugins: map[string]resource.PluginConfig{"request-id": map[string]any{}},
 	}
-
-	deleteDynamicHTTPPluginList(t)
-	if handler, err = builder.BuildStrict(); err != nil || handler == nil {
-		t.Fatalf("startup allowlist fallback BuildStrict() = (%T, %v), want success", handler, err)
+	input := PlanningInput{EnabledPlugins: []string{"request-id"}}
+	_, err := planRoutePlugins(routeResource, input, plugin.NewEnabledSet([]string{"gzip"}))
+	if err == nil ||
+		!strings.Contains(err.Error(), `plugin "request-id"`) ||
+		!strings.Contains(err.Error(), "is disabled") {
+		t.Fatalf("dynamic allowlist plan error = %v, want request-id rejection", err)
 	}
-}
-
-func TestBuildInheritsServiceHosts(t *testing.T) {
-	ensureRouteStore(t)
-	effective := httpPluginAllowlist()
-	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	t.Cleanup(backend.Close)
-
-	const serviceID = "route-service-hosts"
-	serviceJSON := []byte(`{"id":"route-service-hosts","hosts":["service.example.com"]}`)
-	putHTTPAllowlistResource(t, "services", serviceID, serviceJSON)
-	const routeTemplate = `{"id":"service-host-route","uri":"/service-host",` +
-		`"service_id":%q,"upstream":{"type":"roundrobin","nodes":{%q:1}}}`
-	routeBody := fmt.Appendf(
-		nil,
-		routeTemplate,
-		serviceID,
-		routePriorityNode(t, backend.URL),
+	planned, err := planRoutePlugins(
+		routeResource,
+		input,
+		plugin.NewEnabledSet(input.EnabledPlugins),
 	)
-	putRouteResource(t, "service-host-route", routeBody)
-
-	builder := NewBuilder(nil, effective, testDataEncryptionResolver())
-	t.Cleanup(builder.Stop)
-	handler, err := builder.BuildStrict()
-	if err != nil {
-		t.Fatalf("BuildStrict() error = %v", err)
-	}
-
-	for _, test := range []struct {
-		name string
-		host string
-		want int
-	}{
-		{name: "service host", host: "service.example.com", want: http.StatusNoContent},
-		{name: "other host", host: "other.example.com", want: http.StatusNotFound},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			request := httptest.NewRequest(http.MethodGet, "http://"+test.host+"/service-host", nil)
-			response := httptest.NewRecorder()
-			handler.ServeHTTP(response, request)
-			if response.Code != test.want {
-				t.Fatalf("host %q status = %d, want %d", test.host, response.Code, test.want)
-			}
-		})
-	}
-}
-
-func TestMaterializeRouteUsesOneServiceVersionForHostsAndHandler(t *testing.T) {
-	ensureRouteStore(t)
-	effective := httpPluginAllowlist()
-	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusAccepted)
-	}))
-	t.Cleanup(backend.Close)
-
-	const serviceID = "materialized-service-version"
-	serviceBody := fmt.Appendf(nil,
-		`{"id":%q,"hosts":["v1.example.com"],"upstream":{"type":"roundrobin","nodes":{%q:1}}}`,
-		serviceID,
-		routePriorityNode(t, backend.URL),
-	)
-	putHTTPAllowlistResource(t, "services", serviceID, serviceBody)
-
-	builder := NewBuilder(nil, effective, testDataEncryptionResolver())
-	t.Cleanup(builder.Stop)
-	handler, hosts, err := builder.materializeRouteStrict(resource.Route{
-		ID:        "materialized-route-version",
-		ServiceID: serviceID,
-	})
-	if err != nil {
-		t.Fatalf("materializeRouteStrict() error = %v", err)
-	}
-	if len(hosts) != 1 || hosts[0] != "v1.example.com" {
-		t.Fatalf("materialized hosts = %v, want service v1 hosts", hosts)
-	}
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://v1.example.com/", nil))
-	if response.Code != http.StatusAccepted {
-		t.Fatalf("materialized handler status = %d, want service v1 upstream status", response.Code)
+	if err != nil || len(planned.Local) != 1 {
+		t.Fatalf(
+			"startup allowlist fallback plan = (%d local, %v), want success",
+			len(planned.Local),
+			err,
+		)
 	}
 }
 
@@ -146,7 +66,7 @@ func TestBuildMapsUpstreamNodePriorities(t *testing.T) {
 	}
 }
 
-func TestBuildReverseHandlerSelectsHigherPriorityNode(t *testing.T) {
+func TestPreparedHandlerSelectsHigherPriorityNode(t *testing.T) {
 	low := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusCreated)
 	}))
@@ -156,11 +76,10 @@ func TestBuildReverseHandlerSelectsHigherPriorityNode(t *testing.T) {
 	}))
 	t.Cleanup(high.Close)
 
-	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
-	t.Cleanup(builder.Stop)
 	lowNode := websocketNode(t, low)
 	highNode := websocketNode(t, high)
-	handler, err := builder.buildReverseHandler(resource.Route{
+	handler := testPreparedProxyHandler(t, resource.Route{
+		ID: "priority-route",
 		Upstream: resource.Upstream{
 			Scheme: "http",
 			Nodes: []resource.Node{
@@ -168,10 +87,7 @@ func TestBuildReverseHandlerSelectsHigherPriorityNode(t *testing.T) {
 				{Host: highNode.Host, Port: highNode.Port, Weight: 1, Priority: 10},
 			},
 		},
-	}, resource.Service{})
-	if err != nil {
-		t.Fatalf("buildReverseHandler() error = %v", err)
-	}
+	}, resource.Service{}, testEffectiveConfig())
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://gateway.test/", nil))
 	if response.Code != http.StatusAccepted {
@@ -204,43 +120,6 @@ func TestDuplicateGlobalRulePluginsAreRemovedAcrossRules(t *testing.T) {
 	}
 	if _, ok := rules[1].Plugins["cors"]; !ok {
 		t.Fatal("unique cors was removed from second global rule")
-	}
-}
-
-func TestExplicitFalseRouteWebsocketOverridesService(t *testing.T) {
-	ensureRouteStore(t)
-	backend := newWebsocketBackend(t)
-	const serviceID = "route-websocket-inherit-service"
-	serviceBody, err := apisixjson.Marshal(resource.Service{
-		ID:              serviceID,
-		EnableWebsocket: true,
-		Upstream:        backend.upstream(t),
-	})
-	if err != nil {
-		t.Fatalf("marshal websocket service: %v", err)
-	}
-	putHTTPAllowlistResource(t, "services", serviceID, serviceBody)
-
-	var route resource.Route
-	if err := apisixjson.Unmarshal(fmt.Appendf(nil,
-		`{"id":"route-websocket-explicit-false","service_id":%q,"enable_websocket":false}`,
-		serviceID,
-	), &route); err != nil {
-		t.Fatalf("unmarshal explicit false route: %v", err)
-	}
-	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
-	t.Cleanup(builder.Stop)
-	handler, err := builder.buildHandlerStrict(route)
-	if err != nil {
-		t.Fatalf("buildHandlerStrict() error = %v", err)
-	}
-	request := httptest.NewRequest(http.MethodGet, "http://gateway.test/", nil)
-	request.Header.Set("Connection", "Upgrade")
-	request.Header.Set("Upgrade", "websocket")
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusBadRequest {
-		t.Fatalf("explicit false websocket status = %d, want %d", response.Code, http.StatusBadRequest)
 	}
 }
 
@@ -278,9 +157,11 @@ func TestUpstreamStatusResponseHeaderFollowsConfiguration(t *testing.T) {
 }
 
 func TestUpstreamTransportFailuresExposeRetryStatusChain(t *testing.T) {
-	transport := proxy.NewRetryTransport(routeRoundTripperFunc(func(*http.Request) (*http.Response, error) {
-		return nil, &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connection refused")}
-	}))
+	transport := proxy.NewRetryTransport(
+		routeRoundTripperFunc(func(*http.Request) (*http.Response, error) {
+			return nil, &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connection refused")}
+		}),
+	)
 	request := httptest.NewRequest(http.MethodGet, "http://upstream.test/", nil)
 	request = apisixctx.WithRequestVars(request)
 	request = proxy.WithRetries(request, 2, func(*http.Request) bool { return true })
@@ -312,7 +193,13 @@ func TestDirectorFailureDoesNotExposeSyntheticUpstreamStatus(t *testing.T) {
 
 			response := httptest.NewRecorder()
 			response.Header().Set("X-APISIX-Upstream-Status", "spoofed-by-upstream")
-			newErrorHandler(staticConfig)(response, request, errors.New("unsupported protocol scheme"))
+			newErrorHandler(
+				staticConfig,
+			)(
+				response,
+				request,
+				errors.New("unsupported protocol scheme"),
+			)
 			if got := response.Header().Get("X-APISIX-Upstream-Status"); got != "" {
 				t.Fatalf("upstream status header = %q, want absent for local director failure", got)
 			}
@@ -340,34 +227,6 @@ func TestWebsocketUpgradeStripsUpstreamServerHeader(t *testing.T) {
 	t.Cleanup(func() { _ = connection.Close() })
 	if got := response.Header.Values("Server"); len(got) != 0 {
 		t.Fatalf("websocket Server headers = %q, want upstream token stripped", got)
-	}
-}
-
-func putDynamicHTTPPluginList(t *testing.T, value string) {
-	t.Helper()
-	ensureRouteStore(t)
-	event := store.NewEvent()
-	event.Type = store.EventTypePut
-	event.Key = []byte("/apisix/plugins")
-	event.Value = []byte(value)
-	routeStoreEvents <- event
-	if err := routeStore.Sync(); err != nil {
-		t.Fatalf("put dynamic plugin list: %v", err)
-	}
-	t.Cleanup(func() { deleteDynamicHTTPPluginList(t) })
-}
-
-func deleteDynamicHTTPPluginList(t *testing.T) {
-	t.Helper()
-	if routeStore == nil {
-		return
-	}
-	event := store.NewEvent()
-	event.Type = store.EventTypeDelete
-	event.Key = []byte("/apisix/plugins")
-	routeStoreEvents <- event
-	if err := routeStore.Sync(); err != nil {
-		t.Errorf("delete dynamic plugin list: %v", err)
 	}
 }
 

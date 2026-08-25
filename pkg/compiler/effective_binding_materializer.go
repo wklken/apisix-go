@@ -14,6 +14,8 @@ import (
 	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/plugin"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/plugin/public_api"
+	"github.com/wklken/apisix-go/pkg/plugin/traffic_split"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/runtime"
 	"github.com/wklken/apisix-go/pkg/util"
@@ -53,6 +55,19 @@ type effectiveBindingResourceContext struct {
 	streamRoute resource.StreamRoute
 }
 
+// effectiveBindingRuntimeContext carries generation-local collaborators that
+// affect initialization but not plugin instance identity. Callers must still
+// supply all behavioral values through effectiveBindingResourceContext and
+// the binding identity fields above.
+type effectiveBindingRuntimeContext struct {
+	configured        bool
+	enabledFactories  []string
+	publicAPIRegistry *public_api.Registry
+	serverAddr        string
+	runtimeAcquirer   traffic_split.RuntimeAcquirer
+	upstreamResolver  traffic_split.ResourceUpstreamResolver
+}
+
 type effectiveBindingSpec struct {
 	domain          generation.Domain
 	executionOwner  generation.ResourceKey
@@ -62,20 +77,25 @@ type effectiveBindingSpec struct {
 	scope           plugin.Scope
 	provenance      plugin.ResourceProvenance
 	resourceContext effectiveBindingResourceContext
+	runtimeContext  effectiveBindingRuntimeContext
 	filterIdentity  any
 	errorIdentity   any
 }
 
 type effectiveBindingOps struct {
-	newFactoryInstance func(string, base.Dependencies) (plugin.FactoryInstance, error)
-	initPlugin         func(plugin.Plugin) error
-	validateConfig     func(plugin.Plugin, resource.PluginConfig) error
-	decodeConfig       func(resource.PluginConfig, any) error
-	applyContext       func(plugin.Plugin, effectiveBindingResourceContext)
-	postInit           func(plugin.Plugin) error
-	startObserver      func(plugin.Plugin, *runtime.TaskRegistry) error
-	resolveDescriptor  func(plugin.Descriptor, plugin.Plugin) (plugin.Descriptor, error)
-	bind               func(
+	newFactoryInstance  func(string, base.Dependencies) (plugin.FactoryInstance, error)
+	initPlugin          func(plugin.Plugin) error
+	validateConfig      func(plugin.Plugin, resource.PluginConfig) error
+	decodeConfig        func(resource.PluginConfig, any) error
+	applyBootstrap      func(plugin.Plugin, effectiveBindingRuntimeContext)
+	preMaterialize      func(plugin.Plugin) error
+	applyRouteContext   func(plugin.Plugin, effectiveBindingRuntimeContext, effectiveBindingResourceContext)
+	applyContext        func(plugin.Plugin, effectiveBindingResourceContext)
+	applyTrafficRuntime func(plugin.Plugin, effectiveBindingRuntimeContext)
+	postInit            func(plugin.Plugin) error
+	startObserver       func(plugin.Plugin, *runtime.TaskRegistry) error
+	resolveDescriptor   func(plugin.Descriptor, plugin.Plugin) (plugin.Descriptor, error)
+	bind                func(
 		plugin.Descriptor,
 		plugin.Plugin,
 		plugin.Scope,
@@ -253,11 +273,16 @@ func (prepared *PreparedGeneration) validateEffectiveBindingSpec(
 	if err != nil {
 		return validatedEffectiveBindingSpec{}, err
 	}
+	ownedRuntime, err := cloneEffectiveBindingRuntimeContext(supplied.domain, ownedContext, supplied.runtimeContext)
+	if err != nil {
+		return validatedEffectiveBindingSpec{}, err
+	}
 	ownedSpec := supplied
 	ownedSpec.config = ownedConfig
 	ownedSpec.filterIdentity = ownedFilter
 	ownedSpec.errorIdentity = ownedError
 	ownedSpec.resourceContext = ownedContext
+	ownedSpec.runtimeContext = ownedRuntime
 	identity := plugin.InstanceIdentityInput{
 		PluginConfig: effectiveBindingIdentityConfig{
 			PluginConfig: ownedConfig,
@@ -387,6 +412,10 @@ func (prepared *PreparedGeneration) acquireEffectiveBinding(
 		if err := operations.decodeConfig(selected.spec.config, configuration); err != nil {
 			return plugin.Binding{}, nil, err
 		}
+		operations.applyBootstrap(instance, selected.spec.runtimeContext)
+		if err := operations.preMaterialize(instance); err != nil {
+			return plugin.Binding{}, nil, err
+		}
 		if selected.spec.source.kind == effectiveBindingPluginConfig {
 			if err := prepared.attempt.PrepareScopedPluginSecrets(
 				ctx, selected.spec.source.occurrence, factoryInstance,
@@ -394,7 +423,9 @@ func (prepared *PreparedGeneration) acquireEffectiveBinding(
 				return plugin.Binding{}, nil, err
 			}
 		}
+		operations.applyRouteContext(instance, selected.spec.runtimeContext, selected.spec.resourceContext)
 		operations.applyContext(instance, selected.spec.resourceContext)
+		operations.applyTrafficRuntime(instance, selected.spec.runtimeContext)
 		if err := operations.postInit(instance); err != nil {
 			return plugin.Binding{}, nil, err
 		}
@@ -532,6 +563,62 @@ func (operations effectiveBindingOps) withDefaults(attempt [32]byte) effectiveBi
 	if operations.decodeConfig == nil {
 		operations.decodeConfig = func(source resource.PluginConfig, destination any) error {
 			return util.Parse(source, destination)
+		}
+	}
+	if operations.applyBootstrap == nil {
+		operations.applyBootstrap = func(instance plugin.Plugin, value effectiveBindingRuntimeContext) {
+			if !value.configured {
+				return
+			}
+			if setter, ok := instance.(interface{ SetPluginEnabledChecker(func(string) bool) }); ok {
+				enabled := slices.Clone(value.enabledFactories)
+				setter.SetPluginEnabledChecker(func(factory string) bool {
+					_, found := slices.BinarySearch(enabled, factory)
+					return found
+				})
+			}
+			if setter, ok := instance.(interface{ SetPublicAPIRegistry(*public_api.Registry) }); ok {
+				setter.SetPublicAPIRegistry(value.publicAPIRegistry)
+			}
+		}
+	}
+	if operations.preMaterialize == nil {
+		operations.preMaterialize = func(instance plugin.Plugin) error {
+			if validator, ok := instance.(interface{ ValidatePreMaterialization() error }); ok {
+				return validator.ValidatePreMaterialization()
+			}
+			return nil
+		}
+	}
+	if operations.applyRouteContext == nil {
+		operations.applyRouteContext = func(
+			instance plugin.Plugin,
+			value effectiveBindingRuntimeContext,
+			resourceContext effectiveBindingResourceContext,
+		) {
+			if !value.configured || resourceContext.kind != effectiveBindingContextHTTP {
+				return
+			}
+			if setter, ok := instance.(interface{ SetRouteContext(string, string) }); ok {
+				setter.SetRouteContext(resourceContext.route.ID, value.serverAddr)
+			}
+		}
+	}
+	if operations.applyTrafficRuntime == nil {
+		operations.applyTrafficRuntime = func(instance plugin.Plugin, value effectiveBindingRuntimeContext) {
+			if !value.configured {
+				return
+			}
+			if setter, ok := instance.(interface {
+				SetRuntimeAcquirer(traffic_split.RuntimeAcquirer)
+			}); ok {
+				setter.SetRuntimeAcquirer(value.runtimeAcquirer)
+			}
+			if setter, ok := instance.(interface {
+				SetUpstreamResolver(traffic_split.ResourceUpstreamResolver)
+			}); ok {
+				setter.SetUpstreamResolver(value.upstreamResolver)
+			}
 		}
 	}
 	if operations.applyContext == nil {
@@ -726,6 +813,40 @@ func cloneEffectiveBindingContext(
 		return effectiveBindingResourceContext{}, fmt.Errorf("%w: resource context kind is invalid", ErrInvalidInput)
 	}
 	return cloned, nil
+}
+
+func cloneEffectiveBindingRuntimeContext(
+	domain generation.Domain,
+	resourceContext effectiveBindingResourceContext,
+	value effectiveBindingRuntimeContext,
+) (effectiveBindingRuntimeContext, error) {
+	if !value.configured {
+		return effectiveBindingRuntimeContext{}, nil
+	}
+	if domain != generation.DomainHTTP || resourceContext.kind != effectiveBindingContextHTTP ||
+		value.publicAPIRegistry == nil || value.runtimeAcquirer == nil || value.upstreamResolver == nil {
+		return effectiveBindingRuntimeContext{}, fmt.Errorf(
+			"%w: HTTP runtime context is incomplete",
+			ErrInvalidInput,
+		)
+	}
+	enabled := slices.Clone(value.enabledFactories)
+	slices.Sort(enabled)
+	if slices.Contains(enabled, "") {
+		return effectiveBindingRuntimeContext{}, fmt.Errorf(
+			"%w: enabled plugin factory is invalid",
+			ErrInvalidInput,
+		)
+	}
+	enabled = slices.Compact(enabled)
+	return effectiveBindingRuntimeContext{
+		configured:        true,
+		enabledFactories:  enabled,
+		publicAPIRegistry: value.publicAPIRegistry,
+		serverAddr:        value.serverAddr,
+		runtimeAcquirer:   value.runtimeAcquirer,
+		upstreamResolver:  value.upstreamResolver,
+	}, nil
 }
 
 func cloneEffectiveRoute(source resource.Route) (resource.Route, error) {

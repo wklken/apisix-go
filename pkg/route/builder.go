@@ -2853,78 +2853,14 @@ func (b *Builder) buildReverseHandlerWithTerminals(
 	if err := validateHTTPUpstreamType(upstream); err != nil {
 		return nil, routeProtocolTerminals{}, err
 	}
-	switch upstream.PassHost {
-	case "", "pass", "node":
-	case "rewrite":
-		if upstream.UpstreamHost == "" {
-			return nil, routeProtocolTerminals{}, fmt.Errorf(
-				"`upstream_host` can't be empty when `pass_host` is `rewrite`",
-			)
-		}
-	default:
-		return nil, routeProtocolTerminals{}, fmt.Errorf("pass_host must be one of pass, node, or rewrite")
+	if err := validatePlannedPassHost(upstream); err != nil {
+		return nil, routeProtocolTerminals{}, err
 	}
-
-	servers := make(map[string]int, len(upstream.Nodes))
-	priorities := make(map[string]int, len(upstream.Nodes))
+	servers, priorities, err := planUpstreamNodes(upstream)
+	if err != nil {
+		return nil, routeProtocolTerminals{}, err
+	}
 	scheme := upstream.Scheme
-	targetScheme := scheme
-	if strings.EqualFold(targetScheme, "grpc") {
-		targetScheme = "http"
-	} else if strings.EqualFold(targetScheme, "grpcs") {
-		targetScheme = "https"
-	}
-	for _, node := range upstream.Nodes {
-		host := node.Host
-		port := node.Port
-		weight := node.Weight
-
-		if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
-			host = strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
-		}
-		if port == 0 {
-			switch strings.ToLower(targetScheme) {
-			case "https":
-				port = 443
-			case "http":
-				port = 80
-			}
-		}
-		if host == "" || port < 1 || port > 65535 {
-			return nil, routeProtocolTerminals{}, fmt.Errorf("invalid upstream node %q:%d", host, port)
-		}
-		if !node.WeightConfigured() {
-			return nil, routeProtocolTerminals{}, fmt.Errorf(
-				"invalid upstream node %q:%d: weight is required",
-				host,
-				port,
-			)
-		}
-		if weight < 0 {
-			return nil, routeProtocolTerminals{}, fmt.Errorf(
-				"invalid upstream node %q:%d: weight must be non-negative",
-				host,
-				port,
-			)
-		}
-		uri := fmt.Sprintf("%s://%s", targetScheme, net.JoinHostPort(host, strconv.Itoa(port)))
-		servers[uri] = weight
-		priorities[uri] = node.Priority
-	}
-	if len(servers) > 0 {
-		hasPositiveWeight := false
-		for _, weight := range servers {
-			if weight > 0 {
-				hasPositiveWeight = true
-				break
-			}
-		}
-		if !hasPositiveWeight {
-			return nil, routeProtocolTerminals{}, fmt.Errorf(
-				"invalid upstream node weights: at least one upstream node must have a positive weight",
-			)
-		}
-	}
 	compiledTargets, err := compileUpstreamTargets(servers)
 	if err != nil {
 		return nil, routeProtocolTerminals{}, err
@@ -3043,23 +2979,23 @@ func (b *Builder) buildReverseHandlerWithTerminals(
 		-1*time.Second,
 	)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			r = pxy.WithHealthReporter(r, healthReporter(lb))
-			if err := bufferRequestBodyIfNeeded(w, r); err != nil {
-				ctx.SetRequestResponseSource(r, ctx.ResponseSourceAPISIX)
-				var maxBytesErr *http.MaxBytesError
-				if errors.As(err, &maxBytesErr) {
-					_ = util.WriteJSON(w, http.StatusRequestEntityTooLarge, err.Error())
-				} else {
-					_ = util.WriteJSON(w, http.StatusBadRequest, err.Error())
-				}
-				return
+		r = pxy.WithHealthReporter(r, healthReporter(lb))
+		if err := bufferRequestBodyIfNeeded(w, r); err != nil {
+			ctx.SetRequestResponseSource(r, ctx.ResponseSourceAPISIX)
+			var maxBytesErr *http.MaxBytesError
+			if errors.As(err, &maxBytesErr) {
+				_ = util.WriteJSON(w, http.StatusRequestEntityTooLarge, err.Error())
+			} else {
+				_ = util.WriteJSON(w, http.StatusBadRequest, err.Error())
 			}
-			r = attachHTTPRetriesCompiled(r, upstream, lb, compiledTargets)
-			selectProxyHandler(r, proxyHandler, streamingProxyHandler).ServeHTTP(w, r)
-		}), routeProtocolTerminals{
-			dubbo:     routeDubboTerminal{lb: lb, targets: compiledTargets, retries: httpRetryCount(upstream)},
-			httpDubbo: routeHTTPDubboTerminal{lb: lb, targets: compiledTargets, retries: httpRetryCount(upstream)},
-		}, nil
+			return
+		}
+		r = attachHTTPRetriesCompiled(r, upstream, lb, compiledTargets)
+		selectProxyHandler(r, proxyHandler, streamingProxyHandler).ServeHTTP(w, r)
+	}), routeProtocolTerminals{
+		dubbo:     routeDubboTerminal{lb: lb, targets: compiledTargets, retries: httpRetryCount(upstream)},
+		httpDubbo: routeHTTPDubboTerminal{lb: lb, targets: compiledTargets, retries: httpRetryCount(upstream)},
+	}, nil
 }
 
 func validateHTTPUpstreamType(upstream resource.Upstream) error {

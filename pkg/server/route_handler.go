@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"runtime/debug"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/felixge/httpsnoop"
@@ -24,41 +23,18 @@ import (
 
 var errHTTPGenerationHijackUnavailable = errors.New("HTTP generation hijack lease unavailable")
 
-const routeSetRetired = uint64(1) << 63
-
-type routeSet struct {
-	handler     http.Handler
-	stop        func()
-	state       atomic.Uint64 // high bit is retired; remaining bits are requests and batch leases
-	drained     chan struct{}
-	drainedOnce sync.Once
-	hijackMu    sync.Mutex
-	hijacked    map[net.Conn]struct{}
-	hijackOnce  sync.Once
-}
-
 type routeHandler struct {
 	mu                  sync.Mutex
-	current             atomic.Pointer[routeSet]
-	generation          bool
 	generationSource    httpLeaseSource
 	hijacked            map[*generationConn]struct{}
 	generationActive    int
 	generationDrained   chan struct{}
 	generationDrainOnce sync.Once
-	legacyDraining      *routeSet
 	closed              bool
-}
-
-func newRouteHandler(handler http.Handler, stop func()) *routeHandler {
-	routes := &routeHandler{}
-	routes.current.Store(newRouteSet(handler, stop))
-	return routes
 }
 
 func newGenerationRouteHandler(source httpLeaseSource) *routeHandler {
 	return &routeHandler{
-		generation:        true,
 		generationSource:  source,
 		hijacked:          make(map[*generationConn]struct{}),
 		generationDrained: make(chan struct{}),
@@ -66,24 +42,7 @@ func newGenerationRouteHandler(source httpLeaseSource) *routeHandler {
 }
 
 func (h *routeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if h.generation {
-		h.serveGeneration(w, r)
-		return
-	}
-	var current *routeSet
-	for {
-		current = h.current.Load()
-		if current == nil || current.handler == nil {
-			http.Error(w, http.StatusText(http.StatusServiceUnavailable), http.StatusServiceUnavailable)
-			return
-		}
-		if current.acquireRequest() {
-			break
-		}
-	}
-
-	defer h.finishRequest(current)
-	serveRouteRequestForGeneration(w, r, current.handler, current)
+	h.serveGeneration(w, r)
 }
 
 func (h *routeHandler) serveGeneration(w http.ResponseWriter, r *http.Request) {
@@ -108,34 +67,10 @@ func (h *routeHandler) serveGeneration(w http.ResponseWriter, r *http.Request) {
 	serveRouteRequestForHTTPGeneration(w, r, lease.Snapshot.Handler(), &lease, h)
 }
 
-func serveRouteRequest(w http.ResponseWriter, r *http.Request, handler http.Handler) {
-	serveRouteRequestForGeneration(w, r, handler, nil)
-}
-
-func serveRouteRequestForGeneration(
-	w http.ResponseWriter,
-	r *http.Request,
-	handler http.Handler,
-	generation *routeSet,
-) {
-	serveRouteRequestForOwnedGeneration(w, r, handler, generation, nil, nil)
-}
-
 func serveRouteRequestForHTTPGeneration(
 	w http.ResponseWriter,
 	r *http.Request,
 	handler http.Handler,
-	lease *httpGenerationLease,
-	terminal *routeHandler,
-) {
-	serveRouteRequestForOwnedGeneration(w, r, handler, nil, lease, terminal)
-}
-
-func serveRouteRequestForOwnedGeneration(
-	w http.ResponseWriter,
-	r *http.Request,
-	handler http.Handler,
-	legacy *routeSet,
 	lease *httpGenerationLease,
 	terminal *routeHandler,
 ) {
@@ -150,28 +85,23 @@ func serveRouteRequestForOwnedGeneration(
 	if bodyLimitState != nil {
 		wrapped = bodyLimitState.wrapResponseWriter(wrapped)
 	}
-	var unregisterHijacks []func()
 	var generationHijacks []*generationConn
-	if legacy != nil || lease != nil {
+	if lease != nil {
 		wrapped = httpsnoop.Wrap(wrapped, httpsnoop.Hooks{
 			Hijack: func(hijack httpsnoop.HijackFunc) httpsnoop.HijackFunc {
 				return func() (net.Conn, *bufio.ReadWriter, error) {
 					connection, readWriter, err := hijack()
 					if err == nil && connection != nil {
-						if legacy != nil {
-							unregisterHijacks = append(unregisterHijacks, legacy.registerHijacked(connection))
-						} else {
-							wrappedConnection, wrapErr := terminal.registerGenerationHijack(connection, lease)
-							if wrapErr != nil {
-								return nil, nil, wrapErr
-							}
-							generationHijacks = append(generationHijacks, wrappedConnection)
-							connection = wrappedConnection
-							readWriter, wrapErr = rebuildGenerationReadWriter(readWriter, wrappedConnection)
-							if wrapErr != nil {
-								_ = wrappedConnection.Close()
-								return nil, nil, wrapErr
-							}
+						wrappedConnection, wrapErr := terminal.registerGenerationHijack(connection, lease)
+						if wrapErr != nil {
+							return nil, nil, wrapErr
+						}
+						generationHijacks = append(generationHijacks, wrappedConnection)
+						connection = wrappedConnection
+						readWriter, wrapErr = rebuildGenerationReadWriter(readWriter, wrappedConnection)
+						if wrapErr != nil {
+							_ = wrappedConnection.Close()
+							return nil, nil, wrapErr
 						}
 					}
 					return connection, readWriter, err
@@ -179,28 +109,8 @@ func serveRouteRequestForOwnedGeneration(
 			},
 		})
 	}
-	defer func() {
-		for _, unregister := range unregisterHijacks {
-			unregister()
-		}
-	}()
 	request = base.WithResponseCapture(request, capture)
-	if legacy != nil {
-		request = batch_requests.WithDispatchLeaseFactory(request, func() (batch_requests.DispatchLease, bool) {
-			if !legacy.acquireDispatchLease() {
-				return batch_requests.DispatchLease{}, false
-			}
-			var releaseOnce sync.Once
-			return batch_requests.DispatchLease{
-				Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					serveRouteRequestForGeneration(w, r, legacy.handler, legacy)
-				}),
-				Release: func() {
-					releaseOnce.Do(legacy.releaseRequest)
-				},
-			}, true
-		})
-	} else if lease != nil && lease.retain != nil {
+	if lease != nil && lease.retain != nil {
 		request = batch_requests.WithDispatchLeaseFactory(request, func() (batch_requests.DispatchLease, bool) {
 			var child httpGenerationLease
 			var ok bool
@@ -365,22 +275,6 @@ func logFinalizerFailure(failure apisixctx.FinalizerFailure) {
 	}
 }
 
-func (h *routeHandler) Replace(handler http.Handler, stop func()) {
-	next := newRouteSet(handler, stop)
-	h.mu.Lock()
-	if h.closed {
-		retireRouteSet(next)
-		h.mu.Unlock()
-		stopRouteSet(next)
-		return
-	}
-	previous := h.current.Swap(next)
-	retireRouteSet(previous)
-	h.mu.Unlock()
-
-	retireAndStopRouteSet(previous)
-}
-
 func (h *routeHandler) Close() {
 	h.RejectNew()
 	_ = h.Drain(context.Background())
@@ -393,24 +287,17 @@ func (h *routeHandler) RejectNew() {
 		return
 	}
 	h.closed = true
-	if h.generation {
-		h.generationSource = nil
-		connections := make([]*generationConn, 0, len(h.hijacked))
-		for connection := range h.hijacked {
-			connections = append(connections, connection)
-		}
-		clear(h.hijacked)
-		h.signalGenerationDrainedLocked()
-		h.mu.Unlock()
-		for _, connection := range connections {
-			_ = connection.Close()
-		}
-		return
+	h.generationSource = nil
+	connections := make([]*generationConn, 0, len(h.hijacked))
+	for connection := range h.hijacked {
+		connections = append(connections, connection)
 	}
-	previous := h.current.Swap(nil)
-	retireRouteSet(previous)
-	h.legacyDraining = previous
+	clear(h.hijacked)
+	h.signalGenerationDrainedLocked()
 	h.mu.Unlock()
+	for _, connection := range connections {
+		_ = connection.Close()
+	}
 }
 
 func (h *routeHandler) Drain(ctx context.Context) error {
@@ -422,27 +309,6 @@ func (h *routeHandler) Drain(ctx context.Context) error {
 	}
 	h.RejectNew()
 	h.mu.Lock()
-	if !h.generation {
-		current := h.legacyDraining
-		h.mu.Unlock()
-		if current == nil {
-			return nil
-		}
-		select {
-		case <-current.drained:
-			if current.stop != nil {
-				current.stop()
-			}
-			h.mu.Lock()
-			if h.legacyDraining == current {
-				h.legacyDraining = nil
-			}
-			h.mu.Unlock()
-			return nil
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-	}
 	drained := h.generationDrained
 	h.mu.Unlock()
 	if drained == nil {
@@ -493,7 +359,7 @@ func (h *routeHandler) finishGenerationLease(release func()) {
 }
 
 func (h *routeHandler) signalGenerationDrainedLocked() {
-	if !h.generation || !h.closed || h.generationActive != 0 || h.generationDrained == nil {
+	if !h.closed || h.generationActive != 0 || h.generationDrained == nil {
 		return
 	}
 	h.generationDrainOnce.Do(func() { close(h.generationDrained) })
@@ -529,129 +395,4 @@ func (h *routeHandler) registerGenerationHijack(
 	h.hijacked[wrapped] = struct{}{}
 	h.mu.Unlock()
 	return wrapped, nil
-}
-
-func newRouteSet(handler http.Handler, stop func()) *routeSet {
-	return &routeSet{handler: handler, stop: stop, drained: make(chan struct{})}
-}
-
-func (r *routeSet) acquireRequest() bool {
-	for {
-		state := r.state.Load()
-		if state&routeSetRetired != 0 {
-			return false
-		}
-		if r.state.CompareAndSwap(state, state+1) {
-			return true
-		}
-	}
-}
-
-func (r *routeSet) acquireDispatchLease() bool {
-	for {
-		state := r.state.Load()
-		if state&routeSetRetired != 0 {
-			return false
-		}
-		if r.state.CompareAndSwap(state, state+1) {
-			return true
-		}
-	}
-}
-
-func (r *routeSet) releaseRequest() {
-	state := r.state.Add(^uint64(0))
-	if state == routeSetRetired {
-		r.closeDrained()
-	}
-}
-
-func (h *routeHandler) finishRequest(current *routeSet) {
-	current.releaseRequest()
-}
-
-func retireRouteSet(current *routeSet) {
-	if current == nil {
-		return
-	}
-	for {
-		state := current.state.Load()
-		if state&routeSetRetired != 0 {
-			return
-		}
-		retired := state | routeSetRetired
-		if current.state.CompareAndSwap(state, retired) {
-			current.closeHijacked()
-			if retired == routeSetRetired {
-				current.closeDrained()
-			}
-			return
-		}
-	}
-}
-
-func (r *routeSet) registerHijacked(connection net.Conn) func() {
-	if connection == nil {
-		return func() {}
-	}
-	r.hijackMu.Lock()
-	if r.state.Load()&routeSetRetired != 0 {
-		r.hijackMu.Unlock()
-		_ = connection.Close()
-		return func() {}
-	}
-	if r.hijacked == nil {
-		r.hijacked = make(map[net.Conn]struct{})
-	}
-	r.hijacked[connection] = struct{}{}
-	r.hijackMu.Unlock()
-
-	var once sync.Once
-	return func() {
-		once.Do(func() {
-			r.hijackMu.Lock()
-			delete(r.hijacked, connection)
-			r.hijackMu.Unlock()
-		})
-	}
-}
-
-func (r *routeSet) closeHijacked() {
-	r.hijackOnce.Do(func() {
-		r.hijackMu.Lock()
-		connections := make([]net.Conn, 0, len(r.hijacked))
-		for connection := range r.hijacked {
-			connections = append(connections, connection)
-		}
-		clear(r.hijacked)
-		r.hijackMu.Unlock()
-		for _, connection := range connections {
-			_ = connection.Close()
-		}
-	})
-}
-
-func (r *routeSet) closeDrained() {
-	r.drainedOnce.Do(func() { close(r.drained) })
-}
-
-func stopRouteSet(current *routeSet) {
-	if current == nil {
-		return
-	}
-	<-current.drained
-	if current.stop != nil {
-		current.stop()
-	}
-}
-
-// retireAndStopRouteSet retires and stops a replaced route generation
-// asynchronously so replacement publication does not block on long-lived
-// requests. routeHandler.Close uses stopRouteSet directly and remains
-// synchronous.
-func retireAndStopRouteSet(current *routeSet) {
-	if current == nil {
-		return
-	}
-	go stopRouteSet(current)
 }

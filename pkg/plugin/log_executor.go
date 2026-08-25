@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"reflect"
+	"runtime/debug"
 	"slices"
 	"sync"
 	"time"
@@ -445,7 +446,8 @@ func (e LogExecutor) runComposite(
 			})
 			hasPreSanitizedSnapshot = true
 		}
-		selected, err := guardValue(binding.Factory, PhaseLog, func() (bool, error) {
+		selected, err := guardValue(binding.Factory, PhaseLog, func() (selected bool, err error) {
+			defer recoverLogCallbackAbort(binding.Factory, PhaseLog, &err)
 			return selector.ShouldSanitizeLogSnapshot(preSanitizedSnapshot), nil
 		})
 		if err != nil {
@@ -458,7 +460,8 @@ func (e LogExecutor) runComposite(
 			continue
 		}
 		callback := binding.Plugin.(base.LogSnapshotSanitizerPlugin)
-		if err := guardCall(binding.Factory, PhaseLog, func() error {
+		if err := guardCall(binding.Factory, PhaseLog, func() (err error) {
+			defer recoverLogCallbackAbort(binding.Factory, PhaseLog, &err)
 			return callback.SanitizeLogSnapshot(&snapshot)
 		}); err != nil {
 			return logCallbackFailure("log sanitizer", binding.Factory, err)
@@ -473,7 +476,8 @@ func (e LogExecutor) runComposite(
 			continue
 		}
 		callbackSnapshot := base.CloneLogSnapshotForPolicy(snapshot, binding.Policy)
-		if err := guardCall(binding.Factory, PhaseLog, func() error {
+		if err := guardCall(binding.Factory, PhaseLog, func() (err error) {
+			defer recoverLogCallbackAbort(binding.Factory, PhaseLog, &err)
 			return callback.RunLogPhase(callbackSnapshot)
 		}); err != nil && firstErr == nil {
 			firstErr = logCallbackFailure("log callback", binding.Factory, err)
@@ -488,13 +492,30 @@ func (e LogExecutor) runComposite(
 			continue
 		}
 		callbackSnapshot := base.CloneLogSnapshotForPolicy(snapshot, binding.Policy)
-		if err := guardCall(binding.Factory, PhaseFinalizer, func() error {
+		if err := guardCall(binding.Factory, PhaseFinalizer, func() (err error) {
+			defer recoverLogCallbackAbort(binding.Factory, PhaseFinalizer, &err)
 			return callback.RunSnapshotFinalizer(callbackSnapshot)
 		}); err != nil && firstErr == nil {
 			firstErr = logCallbackFailure("snapshot finalizer", binding.Factory, err)
 		}
 	}
 	return firstErr
+}
+
+func recoverLogCallbackAbort(factory string, phase Phase, err *error) {
+	recovered := recover()
+	if recovered == nil {
+		return
+	}
+	if recovered != http.ErrAbortHandler {
+		panic(recovered)
+	}
+	*err = &PanicError{
+		Factory: factory,
+		Phase:   phase,
+		Value:   recovered,
+		Stack:   debug.Stack(),
+	}
 }
 
 func logCallbackFailure(callback, factory string, err error) error {

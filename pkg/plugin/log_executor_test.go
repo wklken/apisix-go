@@ -397,6 +397,100 @@ func TestSnapshotFinalizerPanicUsesCanonicalFactoryAndContinues(t *testing.T) {
 	}
 }
 
+func TestLogExactAbortUsesCanonicalPluginFailurePolicy(t *testing.T) {
+	tests := []struct {
+		name      string
+		factory   string
+		phase     Phase
+		build     func(*[]string) (LogExecutor, error)
+		wantOrder []string
+	}{
+		{
+			name:    "sanitizer selector fails closed",
+			factory: "key-auth",
+			phase:   PhaseLog,
+			build: func(order *[]string) (LogExecutor, error) {
+				sanitizer := &logSanitizerSelectorTestPlugin{
+					logSanitizerTestPlugin: logSanitizerTestPlugin{order: order},
+					selectorPanic:          http.ErrAbortHandler,
+				}
+				sanitizer.Name = "mutable-sanitizer-name"
+				later := newLogExecutorTestPlugin("later", 10, order)
+				return NewLogExecutor([]LogBinding{
+					{Factory: "key-auth", Plugin: sanitizer, Scope: ScopeRoute},
+					{Factory: "http-logger", Plugin: later, Scope: ScopeRoute},
+				})
+			},
+			wantOrder: []string{},
+		},
+		{
+			name:    "sanitizer fails closed",
+			factory: "key-auth",
+			phase:   PhaseLog,
+			build: func(order *[]string) (LogExecutor, error) {
+				sanitizer := &logSanitizerTestPlugin{order: order, panicValue: http.ErrAbortHandler}
+				sanitizer.Name = "mutable-sanitizer-name"
+				later := newLogExecutorTestPlugin("later", 10, order)
+				return NewLogExecutor([]LogBinding{
+					{Factory: "key-auth", Plugin: sanitizer, Scope: ScopeRoute},
+					{Factory: "http-logger", Plugin: later, Scope: ScopeRoute},
+				})
+			},
+			wantOrder: []string{},
+		},
+		{
+			name:    "log callback continues",
+			factory: "http-logger",
+			phase:   PhaseLog,
+			build: func(order *[]string) (LogExecutor, error) {
+				first := newLogExecutorTestPlugin("first", 20, order)
+				first.panicLogValue = http.ErrAbortHandler
+				later := newLogExecutorTestPlugin("later", 10, order)
+				later.finalizer = true
+				return NewLogExecutor([]LogBinding{
+					{Factory: "http-logger", Plugin: first, Scope: ScopeRoute},
+					{Factory: "file-logger", Plugin: later, Scope: ScopeRoute},
+				})
+			},
+			wantOrder: []string{"first:log", "later:log", "first:finalizer", "later:finalizer"},
+		},
+		{
+			name:    "snapshot finalizer continues",
+			factory: "http-logger",
+			phase:   PhaseFinalizer,
+			build: func(order *[]string) (LogExecutor, error) {
+				first := newLogExecutorTestPlugin("first", 20, order)
+				first.panicFinalizer = http.ErrAbortHandler
+				later := newLogExecutorTestPlugin("later", 10, order)
+				later.finalizer = true
+				return NewLogExecutor([]LogBinding{
+					{Factory: "http-logger", Plugin: first, Scope: ScopeRoute},
+					{Factory: "file-logger", Plugin: later, Scope: ScopeRoute},
+				})
+			},
+			wantOrder: []string{"first:log", "later:log", "first:finalizer", "later:finalizer"},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			order := []string{}
+			executor, err := test.build(&order)
+			if err != nil {
+				t.Fatalf("NewLogExecutor() error = %v", err)
+			}
+			result := finalizeLogExecutorForTest(t, executor)
+			requireLogPanicError(t, result, test.factory, test.phase, http.ErrAbortHandler)
+			if result.Failures[0].PanicValue != nil || result.FatalPanic != nil {
+				t.Fatalf("exact abort finalization = %#v, want bounded plugin failure", result)
+			}
+			if !reflect.DeepEqual(order, test.wantOrder) {
+				t.Fatalf("callback order = %v, want %v", order, test.wantOrder)
+			}
+		})
+	}
+}
+
 func TestLogCompositeDistinguishesCorePanicFromGuardedCallbackFailure(t *testing.T) {
 	t.Run("guarded callback remains bounded", func(t *testing.T) {
 		want := errors.New("bounded callback panic")

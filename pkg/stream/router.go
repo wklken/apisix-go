@@ -31,6 +31,8 @@ const (
 
 var ErrNoStreamRoute = errors.New("no matching stream route")
 
+var ErrFrozenRouter = errors.New("stream router is frozen")
+
 type Result struct {
 	RouteID  string
 	Listener string
@@ -45,6 +47,8 @@ type Router struct {
 	routes         []routeEntry
 	enabledPlugins map[string]struct{}
 	onResult       func(Result)
+	revision       uint64
+	frozen         bool
 }
 
 type routeEntry struct {
@@ -85,6 +89,13 @@ func NewRouter(
 }
 
 func (r *Router) Reload(routes []resource.StreamRoute) error {
+	r.mu.RLock()
+	frozen := r.frozen
+	revision := r.revision
+	r.mu.RUnlock()
+	if frozen {
+		return fmt.Errorf("%w at revision %d", ErrFrozenRouter, revision)
+	}
 	if err := rejectConflictingStreamListens(routes); err != nil {
 		return err
 	}
@@ -211,6 +222,52 @@ func (r *Router) emit(result Result) {
 }
 
 func buildRouteEntry(route resource.StreamRoute, enabledPlugins map[string]struct{}) (routeEntry, error) {
+	entry, err := buildRouteEntryBase(route)
+	if err != nil {
+		return routeEntry{}, err
+	}
+	if len(route.Plugins) == 0 {
+		entry.serve = entry.rawServe
+		return entry, nil
+	}
+	if len(route.Plugins) != 1 {
+		return routeEntry{}, fmt.Errorf("stream route %q must configure exactly one supported stream plugin", route.ID)
+	}
+	for name, config := range route.Plugins {
+		if len(enabledPlugins) > 0 {
+			if _, ok := enabledPlugins[name]; !ok {
+				return routeEntry{}, fmt.Errorf("stream plugin %q is not enabled", name)
+			}
+		}
+		if name != "mqtt-proxy" {
+			return routeEntry{}, fmt.Errorf("stream plugin %q is not supported by the Go stream owner", name)
+		}
+		p := &mqtt_proxy.Plugin{}
+		if err := p.Init(); err != nil {
+			return routeEntry{}, fmt.Errorf("initialize stream plugin %s: %w", name, err)
+		}
+		compiledSchema, err := util.CompileSchema(p.GetSchema())
+		if err != nil {
+			return routeEntry{}, fmt.Errorf("validate stream plugin %s: %w", name, err)
+		}
+		if err := compiledSchema.Validate(config); err != nil {
+			return routeEntry{}, fmt.Errorf("validate stream plugin %s: %w", name, err)
+		}
+		if err := util.Parse(config, p.Config()); err != nil {
+			return routeEntry{}, fmt.Errorf("parse stream plugin %s: %w", name, err)
+		}
+		if err := base.MaterializePluginSecrets(p); err != nil {
+			return routeEntry{}, fmt.Errorf("materialize stream plugin %s secrets: %w", name, err)
+		}
+		if err := p.PostInit(); err != nil {
+			return routeEntry{}, fmt.Errorf("initialize stream plugin %s: %w", name, err)
+		}
+		bindMQTTProtocol(&entry, p)
+	}
+	return entry, nil
+}
+
+func buildRouteEntryBase(route resource.StreamRoute) (routeEntry, error) {
 	if err := validateUnsupportedDiscovery(route); err != nil {
 		return routeEntry{}, err
 	}
@@ -295,49 +352,14 @@ func buildRouteEntry(route resource.StreamRoute, enabledPlugins map[string]struc
 		chash:     strings.EqualFold(route.Upstream.Type, "chash"),
 		hashNodes: hashNodes,
 	}
-
-	if len(route.Plugins) == 0 {
-		entry.serve = entry.rawServe
-		return entry, nil
-	}
-	if len(route.Plugins) != 1 {
-		return routeEntry{}, fmt.Errorf("stream route %q must configure exactly one supported stream plugin", route.ID)
-	}
-	for name, config := range route.Plugins {
-		if len(enabledPlugins) > 0 {
-			if _, ok := enabledPlugins[name]; !ok {
-				return routeEntry{}, fmt.Errorf("stream plugin %q is not enabled", name)
-			}
-		}
-		if name != "mqtt-proxy" {
-			return routeEntry{}, fmt.Errorf("stream plugin %q is not supported by the Go stream owner", name)
-		}
-		p := &mqtt_proxy.Plugin{}
-		if err := p.Init(); err != nil {
-			return routeEntry{}, fmt.Errorf("initialize stream plugin %s: %w", name, err)
-		}
-		compiledSchema, err := util.CompileSchema(p.GetSchema())
-		if err != nil {
-			return routeEntry{}, fmt.Errorf("validate stream plugin %s: %w", name, err)
-		}
-		if err := compiledSchema.Validate(config); err != nil {
-			return routeEntry{}, fmt.Errorf("validate stream plugin %s: %w", name, err)
-		}
-		if err := util.Parse(config, p.Config()); err != nil {
-			return routeEntry{}, fmt.Errorf("parse stream plugin %s: %w", name, err)
-		}
-		if err := base.MaterializePluginSecrets(p); err != nil {
-			return routeEntry{}, fmt.Errorf("materialize stream plugin %s secrets: %w", name, err)
-		}
-		if err := p.PostInit(); err != nil {
-			return routeEntry{}, fmt.Errorf("initialize stream plugin %s: %w", name, err)
-		}
-		entry.serve = func(ctx context.Context, client net.Conn, peer string) (string, string, error) {
-			info, err := p.ServeStreamWithIdle(ctx, client, peer, entry.dial, entry.streamIdleTimeout())
-			return info.ClientID, "mqtt", err
-		}
-	}
 	return entry, nil
+}
+
+func bindMQTTProtocol(entry *routeEntry, p *mqtt_proxy.Plugin) {
+	entry.serve = func(ctx context.Context, client net.Conn, peer string) (string, string, error) {
+		info, err := p.ServeStreamWithIdle(ctx, client, peer, entry.dial, entry.streamIdleTimeout())
+		return info.ClientID, "mqtt", err
+	}
 }
 
 func validateUnsupportedDiscovery(route resource.StreamRoute) error {

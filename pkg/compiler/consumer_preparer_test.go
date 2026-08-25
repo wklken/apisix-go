@@ -328,6 +328,108 @@ func TestConsumerBindingPreparerRejectsDuplicateResolvedLookupWithoutCredentialL
 	}
 }
 
+func TestConsumerBindingPreparerFailedCandidatePreservesLastGoodGeneration(t *testing.T) {
+	const (
+		oldUserRef       = "$ENV://LAST_GOOD_USER"
+		oldPasswordRef   = "$ENV://LAST_GOOD_PASSWORD"
+		newUserRef       = "$ENV://NEXT_USER"
+		newPasswordRef   = "$ENV://NEXT_PASSWORD"
+		oldResolvedUser  = "last-good-user"
+		newResolvedUser  = "next-user"
+		consumerResource = "rotating-consumer"
+	)
+	broker := &consumerPreparationBroker{resolved: map[string]string{
+		oldUserRef:     oldResolvedUser,
+		oldPasswordRef: "last-good-password",
+	}}
+	factory, _ := newConsumerAttemptFactory(t, broker)
+	consumerSnapshot := func(revision uint64, usernameRef, passwordRef string) generation.Snapshot {
+		t.Helper()
+		return mustGenerationSnapshot(t, revision, []generation.Resource{
+			resourceValue(
+				"consumers",
+				consumerResource,
+				fmt.Sprintf(
+					`{"username":%q,"plugins":{"basic-auth":{"username":%q,"password":%q}}}`,
+					consumerResource,
+					usernameRef,
+					passwordRef,
+				),
+			),
+		}, nil)
+	}
+
+	lastGoodSnapshot := consumerSnapshot(61, oldUserRef, oldPasswordRef)
+	lastGood, err := factory.prepareCandidateAttempt(
+		context.Background(),
+		ticketForSnapshot(lastGoodSnapshot, generation.DomainHTTP),
+		lastGoodSnapshot,
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertLastGood := func() {
+		t.Helper()
+		consumer, ok := lastGood.consumers.ConsumerByPluginKey("basic-auth", oldResolvedUser)
+		if !ok || consumer.Username != consumerResource {
+			t.Fatalf("last-good lookup = %#v/%v", consumer, ok)
+		}
+	}
+	assertLastGood()
+
+	failedSnapshot := consumerSnapshot(62, newUserRef, newPasswordRef)
+	previous := map[generation.Domain]generation.PublishedGeneration{
+		generation.DomainHTTP: publishedForDomain(generation.DomainHTTP, lastGoodSnapshot),
+	}
+	if failed, prepareErr := factory.prepareCandidateAttempt(
+		context.Background(),
+		ticketForSnapshot(failedSnapshot, generation.DomainHTTP),
+		failedSnapshot,
+		previous,
+	); prepareErr == nil {
+		if failed != nil {
+			_ = failed.Close(context.Background())
+		}
+		t.Fatal("candidate with unavailable consumer credentials unexpectedly prepared")
+	}
+	assertLastGood()
+	if _, ok := lastGood.consumers.ConsumerByPluginKey("basic-auth", newResolvedUser); ok {
+		t.Fatal("failed candidate credential leaked into last-good generation")
+	}
+
+	broker.resolved[newUserRef] = newResolvedUser
+	broker.resolved[newPasswordRef] = "next-password"
+	recoveredSnapshot := consumerSnapshot(63, newUserRef, newPasswordRef)
+	recovered, err := factory.prepareCandidateAttempt(
+		context.Background(),
+		ticketForSnapshot(recoveredSnapshot, generation.DomainHTTP),
+		recoveredSnapshot,
+		previous,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recoveredConsumer, ok := recovered.consumers.ConsumerByPluginKey("basic-auth", newResolvedUser)
+	if !ok || recoveredConsumer.Username != consumerResource {
+		t.Fatalf("recovered lookup = %#v/%v", recoveredConsumer, ok)
+	}
+	assertLastGood()
+	if _, ok := recovered.consumers.ConsumerByPluginKey("basic-auth", oldResolvedUser); ok {
+		t.Fatal("recovered generation retained last-good credential")
+	}
+
+	if err := lastGood.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := recovered.consumers.ConsumerByPluginKey("basic-auth", newResolvedUser); !ok {
+		t.Fatal("closing last-good generation invalidated recovered generation")
+	}
+	if err := recovered.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestConsumerBindingPreparerKeepsOverlappingGenerationsIndependent(t *testing.T) {
 	broker := &consumerPreparationBroker{resolved: map[string]string{
 		"$ENV://USER_N":        "resolved-user-n",

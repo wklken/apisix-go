@@ -9,14 +9,11 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/resource"
-	"github.com/wklken/apisix-go/pkg/store"
-	"github.com/wklken/apisix-go/pkg/testutil"
 )
 
 type jweConsumerLookup struct {
@@ -74,79 +71,55 @@ func newLookupTestPlugin(t *testing.T, cfg Config, lookup base.ConsumerLookup) *
 	return p
 }
 
-var (
-	testStoreOnce sync.Once
-	testEvents    chan *store.Event
-)
-
-type storeBackedJWELookup struct{}
-
-func (storeBackedJWELookup) ConsumerByPluginKey(plugin, key string) (resource.Consumer, bool) {
-	consumer, err := store.GetConsumerByPluginKey(plugin, key)
-	return consumer, err == nil
+type jweTestFixture struct {
+	sync.Mutex
+	consumers []resource.Consumer
 }
 
-func (storeBackedJWELookup) ConsumerByID(string) (resource.Consumer, bool) {
-	return resource.Consumer{}, false
-}
+var jweTestFixtures sync.Map
 
-func (storeBackedJWELookup) ConsumerGroupByID(string) (resource.ConsumerGroup, bool) {
-	return resource.ConsumerGroup{}, false
-}
-
-func setupStore(t *testing.T) {
+func jweFixtureFor(t *testing.T) *jweTestFixture {
 	t.Helper()
-
-	testStoreOnce.Do(func() {
-		testEvents = make(chan *store.Event, 16)
-		s, err := store.GetStore(t.TempDir()+"/jwe-decrypt.db", testEvents, testutil.DataEncryptionService(false, nil))
-		if err != nil {
-			t.Fatalf("open store: %v", err)
-		}
-		s.Start()
-	})
+	fixture := &jweTestFixture{}
+	actual, loaded := jweTestFixtures.LoadOrStore(t, fixture)
+	if !loaded {
+		t.Cleanup(func() { jweTestFixtures.Delete(t) })
+	}
+	return actual.(*jweTestFixture)
 }
 
 func addJWEConsumer(t *testing.T, username, key, secret string, base64Encoded bool) {
 	t.Helper()
-	setupStore(t)
-
-	consumer := map[string]any{
-		"username": username,
-		"plugins": map[string]any{
-			"jwe-decrypt": map[string]any{
-				"key":               key,
-				"secret":            secret,
-				"is_base64_encoded": base64Encoded,
-			},
-		},
-	}
-	body, err := json.Marshal(consumer)
-	if err != nil {
-		t.Fatalf("marshal consumer: %v", err)
-	}
-
-	event := store.NewEvent()
-	event.Type = store.EventTypePut
-	event.Key = []byte("/apisix/consumers/" + username)
-	event.Value = body
-	testEvents <- event
-
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, err := store.GetConsumerByPluginKey("jwe-decrypt", key); err == nil {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("consumer %q was not indexed for jwe-decrypt key %q", username, key)
+	fixture := jweFixtureFor(t)
+	fixture.Lock()
+	defer fixture.Unlock()
+	fixture.consumers = append(
+		fixture.consumers,
+		jweBoundConsumer(username, key, secret, base64Encoded),
+	)
 }
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
 
+	fixture := jweFixtureFor(t)
+	fixture.Lock()
+	consumers := append([]resource.Consumer(nil), fixture.consumers...)
+	fixture.Unlock()
+	lookup := &jweConsumerLookup{byKey: make(map[string]resource.Consumer, len(consumers))}
+	for _, consumer := range consumers {
+		config, ok := consumer.Plugins[name].(map[string]any)
+		if !ok {
+			continue
+		}
+		key, ok := config["key"].(string)
+		if ok {
+			lookup.byKey[key] = consumer
+		}
+	}
+
 	p := &Plugin{config: cfg}
-	p.SetDependencies(base.Dependencies{Consumers: storeBackedJWELookup{}})
+	p.SetDependencies(base.Dependencies{Consumers: lookup})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -181,11 +154,10 @@ func TestHandlerDecryptsBearerJWEAndForwardsPlaintext(t *testing.T) {
 
 func TestHandlerUsesInjectedJWEConsumerLookupAuthoritatively(t *testing.T) {
 	const (
-		kid          = "lookup-kid"
-		storeSecret  = "12345678901234567890123456789012"
-		lookupSecret = "abcdefghijklmnopqrstuvwxyz123456"
+		kid           = "lookup-kid"
+		unknownSecret = "12345678901234567890123456789012"
+		lookupSecret  = "abcdefghijklmnopqrstuvwxyz123456"
 	)
-	addJWEConsumer(t, "store-poison-jwe-user", kid, storeSecret, false)
 	lookup := &jweConsumerLookup{byKey: map[string]resource.Consumer{
 		kid: jweBoundConsumer("lookup-jwe-user", kid, lookupSecret, false),
 	}}
@@ -214,12 +186,12 @@ func TestHandlerUsesInjectedJWEConsumerLookupAuthoritatively(t *testing.T) {
 	lookup.mu.RUnlock()
 
 	miss := newLookupTestPlugin(t, Config{}, &jweConsumerLookup{})
-	storeToken := makeCompactJWE(t, kid, []byte(storeSecret), "store-poison-plaintext")
+	unknownToken := makeCompactJWE(t, kid, []byte(unknownSecret), "unknown-plaintext")
 	missRequest := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
-	missRequest.Header.Set("Authorization", storeToken)
+	missRequest.Header.Set("Authorization", unknownToken)
 	missResponse := httptest.NewRecorder()
 	miss.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-		t.Fatal("non-nil JWE lookup miss reached Store poison consumer")
+		t.Fatal("JWE lookup miss reached downstream")
 	})).ServeHTTP(missResponse, missRequest)
 	if missResponse.Code != http.StatusBadRequest ||
 		!strings.Contains(missResponse.Body.String(), "invalid kid in JWE token") {

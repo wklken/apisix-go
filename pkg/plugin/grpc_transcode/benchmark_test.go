@@ -4,38 +4,25 @@ import (
 	"encoding/base64"
 	"testing"
 
-	"github.com/wklken/apisix-go/pkg/store"
-	"github.com/wklken/apisix-go/pkg/testutil"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/descriptorpb"
 )
 
 // BenchmarkVerifiedHotPath measures the per-request descriptor binding lookup
-// against the real store: proto content fetch plus cached-binding validation.
+// after generation-local proto resolution and binding precompilation.
 func BenchmarkVerifiedHotPath(b *testing.B) {
-	events := make(chan *store.Event, 4)
-	storage, err := store.GetStore(b.TempDir()+"/grpc-bench.db", events, testutil.DataEncryptionService(false, nil))
-	if err != nil {
-		b.Fatalf("get store: %v", err)
-	}
-	storage.Start()
-	b.Cleanup(func() { _ = storage.Stop() })
-
 	content := benchmarkDescriptorContent(b)
-	event := store.NewEvent()
-	event.Type = store.EventTypePut
-	event.Key = []byte("/apisix/protos/bench-proto")
-	event.Value = []byte(`{"id":"bench-proto","content":"` + content + `"}`)
-	events <- event
-	if err := storage.Sync(); err != nil {
-		b.Fatalf("Sync() error = %v", err)
-	}
-
 	p := &Plugin{config: Config{
 		ProtoID: "bench-proto",
 		Service: "echo.EchoService",
 		Method:  "Echo",
 	}}
+	p.SetProtoResolver(func(id string) (string, error) {
+		if id != "bench-proto" {
+			return "", errProtoNotFound
+		}
+		return content, nil
+	})
 	if err := p.Init(); err != nil {
 		b.Fatal(err)
 	}

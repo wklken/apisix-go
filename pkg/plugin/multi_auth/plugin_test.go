@@ -15,41 +15,41 @@ import (
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
-	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/hmac_auth"
 	"github.com/wklken/apisix-go/pkg/plugin/key_auth"
 	"github.com/wklken/apisix-go/pkg/resource"
-	"github.com/wklken/apisix-go/pkg/store"
-	"github.com/wklken/apisix-go/pkg/testutil"
+	"github.com/wklken/apisix-go/pkg/runtime"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
-var (
-	testStoreOnce sync.Once
-	testEvents    chan *store.Event
-)
-
-type storeBackedMultiAuthLookup struct{}
-
-func (storeBackedMultiAuthLookup) ConsumerByPluginKey(plugin, key string) (resource.Consumer, bool) {
-	consumer, err := store.GetConsumerByPluginKey(plugin, key)
-	return consumer, err == nil
+type multiAuthTestFixture struct {
+	sync.Mutex
+	consumers   map[string]resource.Consumer
+	credentials map[string]string
 }
 
-func (storeBackedMultiAuthLookup) ConsumerByID(id string) (resource.Consumer, bool) {
-	consumer, err := store.GetConsumer(id)
-	return consumer, err == nil
+var multiAuthTestFixtures sync.Map
+
+func multiAuthFixtureFor(t *testing.T) *multiAuthTestFixture {
+	t.Helper()
+	fixture := &multiAuthTestFixture{
+		consumers:   map[string]resource.Consumer{},
+		credentials: map[string]string{},
+	}
+	actual, loaded := multiAuthTestFixtures.LoadOrStore(t, fixture)
+	if !loaded {
+		t.Cleanup(func() { multiAuthTestFixtures.Delete(t) })
+	}
+	return actual.(*multiAuthTestFixture)
 }
 
-func (storeBackedMultiAuthLookup) ConsumerGroupByID(string) (resource.ConsumerGroup, bool) {
-	return resource.ConsumerGroup{}, false
+type immutableMultiAuthChildPreparer struct {
+	lookup base.ConsumerLookup
 }
 
-type storeBackedMultiAuthChildPreparer struct{}
-
-func (storeBackedMultiAuthChildPreparer) Prepare(
+func (preparer immutableMultiAuthChildPreparer) Prepare(
 	ctx context.Context,
 	_ base.ScopedSecretAccess,
 	spec base.CompositeChildSpec,
@@ -76,7 +76,7 @@ func (storeBackedMultiAuthChildPreparer) Prepare(
 	if !ok {
 		return fail(errAuthChildPreparation)
 	}
-	setter.SetDependencies(base.Dependencies{Consumers: storeBackedMultiAuthLookup{}})
+	setter.SetDependencies(base.Dependencies{Consumers: preparer.lookup})
 	if err := util.Parse(spec.Config, child.Config()); err != nil {
 		return fail(err)
 	}
@@ -89,57 +89,72 @@ func (storeBackedMultiAuthChildPreparer) Prepare(
 	return owner, nil
 }
 
-func setupStore(t *testing.T) {
-	t.Helper()
-
-	testStoreOnce.Do(func() {
-		testEvents = make(chan *store.Event, 16)
-		s, err := store.GetStore(t.TempDir()+"/multi-auth.db", testEvents, testutil.DataEncryptionService(false, nil))
-		if err != nil {
-			t.Fatalf("open store: %v", err)
-		}
-		s.Start()
-	})
-}
-
 func addAuthConsumer(t *testing.T, username string, plugins map[string]any) {
 	t.Helper()
-	setupStore(t)
-
-	consumer := map[string]any{
-		"username": username,
-		"plugins":  plugins,
+	pluginConfigs := make(map[string]resource.PluginConfig, len(plugins))
+	fixture := multiAuthFixtureFor(t)
+	fixture.Lock()
+	defer fixture.Unlock()
+	for pluginName, rawConfig := range plugins {
+		pluginConfigs[pluginName] = rawConfig
+		config, ok := rawConfig.(map[string]any)
+		if !ok {
+			continue
+		}
+		credentialField := map[string]string{
+			"basic-auth":  "username",
+			"hmac-auth":   "key_id",
+			"jwe-decrypt": "key",
+			"jwt-auth":    "key",
+			"key-auth":    "key",
+			"ldap-auth":   "user_dn",
+			"wolf-rbac":   "appid",
+		}[pluginName]
+		if key, ok := config[credentialField].(string); ok {
+			fixture.credentials[pluginName+"\x00"+key] = username
+		}
 	}
-	body, err := json.Marshal(consumer)
-	if err != nil {
-		t.Fatalf("marshal consumer: %v", err)
+	fixture.consumers[username] = resource.Consumer{
+		Username: username, Plugins: pluginConfigs,
 	}
-
-	event := store.NewEvent()
-	event.Type = store.EventTypePut
-	event.Key = []byte("/apisix/consumers/" + username)
-	event.Value = body
-	testEvents <- event
 }
 
 func waitForConsumerKey(t *testing.T, pluginName string, key string) {
 	t.Helper()
 
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, err := store.GetConsumerByPluginKey(pluginName, key); err == nil {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
+	fixture := multiAuthFixtureFor(t)
+	fixture.Lock()
+	defer fixture.Unlock()
+	if _, ok := fixture.credentials[pluginName+"\x00"+key]; !ok {
+		t.Fatalf("consumer key %s:%s was not indexed", pluginName, key)
 	}
-	t.Fatalf("consumer key %s:%s was not indexed", pluginName, key)
 }
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
 
+	fixture := multiAuthFixtureFor(t)
+	fixture.Lock()
+	consumers := make([]runtime.ConsumerRecord, 0, len(fixture.consumers))
+	for id, consumer := range fixture.consumers {
+		consumers = append(consumers, runtime.ConsumerRecord{ID: id, Consumer: consumer})
+	}
+	credentials := make([]runtime.ConsumerCredentialBinding, 0, len(fixture.credentials))
+	for pluginKey, consumerID := range fixture.credentials {
+		pluginName, key, _ := strings.Cut(pluginKey, "\x00")
+		credentials = append(credentials, runtime.ConsumerCredentialBinding{
+			Plugin: pluginName, Key: key, ConsumerID: consumerID,
+		})
+	}
+	fixture.Unlock()
+	lookup, err := runtime.NewConsumerBindings(consumers, nil, credentials)
+	if err != nil {
+		t.Fatalf("NewConsumerBindings() error = %v", err)
+	}
+	t.Cleanup(lookup.Close)
+
 	p := &Plugin{config: cfg}
-	p.SetDependencies(base.Dependencies{CompositeChildren: storeBackedMultiAuthChildPreparer{}})
+	p.SetDependencies(base.Dependencies{CompositeChildren: immutableMultiAuthChildPreparer{lookup: lookup}})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}

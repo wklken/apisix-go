@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -13,12 +14,9 @@ import (
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
-	projectjson "github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/public_api"
 	"github.com/wklken/apisix-go/pkg/resource"
-	"github.com/wklken/apisix-go/pkg/store"
-	"github.com/wklken/apisix-go/pkg/testutil"
 )
 
 type wolfConsumerLookup struct {
@@ -77,80 +75,46 @@ func newLookupTestPlugin(t *testing.T, cfg Config, lookup base.ConsumerLookup) *
 	return p
 }
 
-var (
-	testStoreOnce sync.Once
-	testEvents    chan *store.Event
-)
-
-type storeBackedWolfLookup struct{}
-
-func (storeBackedWolfLookup) ConsumerByPluginKey(plugin, key string) (resource.Consumer, bool) {
-	consumer, err := store.GetConsumerByPluginKey(plugin, key)
-	return consumer, err == nil
+type wolfTestFixture struct {
+	sync.Mutex
+	byKey map[string]resource.Consumer
 }
 
-func (storeBackedWolfLookup) ConsumerByID(string) (resource.Consumer, bool) {
-	return resource.Consumer{}, false
-}
+var wolfTestFixtures sync.Map
 
-func (storeBackedWolfLookup) ConsumerGroupByID(string) (resource.ConsumerGroup, bool) {
-	return resource.ConsumerGroup{}, false
-}
-
-func setupStore(t *testing.T) {
+func wolfFixtureFor(t *testing.T) *wolfTestFixture {
 	t.Helper()
-
-	testStoreOnce.Do(func() {
-		testEvents = make(chan *store.Event, 16)
-		s, err := store.GetStore(t.TempDir()+"/wolf-rbac.db", testEvents, testutil.DataEncryptionService(false, nil))
-		if err != nil {
-			t.Fatalf("open store: %v", err)
-		}
-		s.Start()
-	})
+	fixture := &wolfTestFixture{byKey: map[string]resource.Consumer{}}
+	actual, loaded := wolfTestFixtures.LoadOrStore(t, fixture)
+	if !loaded {
+		t.Cleanup(func() { wolfTestFixtures.Delete(t) })
+	}
+	return actual.(*wolfTestFixture)
 }
 
 func addWolfConsumer(t *testing.T, username, appid, server string) {
 	t.Helper()
-	setupStore(t)
-
-	consumer := map[string]any{
-		"username": username,
-		"plugins": map[string]any{
-			"wolf-rbac": map[string]any{
-				"appid":         appid,
-				"server":        server,
-				"header_prefix": "X-",
-				"ssl_verify":    false,
-			},
-		},
+	fixture := wolfFixtureFor(t)
+	fixture.Lock()
+	defer fixture.Unlock()
+	fixture.byKey[appid] = resource.Consumer{
+		Username: username,
+		Plugins: map[string]resource.PluginConfig{name: map[string]any{
+			"appid": appid, "server": server, "header_prefix": "X-", "ssl_verify": false,
+		}},
 	}
-	body, err := projectjson.Marshal(consumer)
-	if err != nil {
-		t.Fatalf("marshal consumer: %v", err)
-	}
-
-	event := store.NewEvent()
-	event.Type = store.EventTypePut
-	event.Key = []byte("/apisix/consumers/" + username)
-	event.Value = body
-	testEvents <- event
-
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, err := store.GetConsumerByPluginKey("wolf-rbac", appid); err == nil {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("consumer %q was not indexed for wolf-rbac appid %q", username, appid)
 }
 
 func newTestPlugin(t *testing.T, cfg Config, registries ...*public_api.Registry) *Plugin {
 	t.Helper()
 
 	p := &Plugin{config: cfg}
-	p.SetDependencies(base.Dependencies{Consumers: storeBackedWolfLookup{}})
+	fixture := wolfFixtureFor(t)
+	fixture.Lock()
+	byKey := make(map[string]resource.Consumer, len(fixture.byKey))
+	maps.Copy(byKey, fixture.byKey)
+	fixture.Unlock()
+	p.SetDependencies(base.Dependencies{Consumers: &wolfConsumerLookup{byKey: byKey}})
 	registry := public_api.NewRegistry()
 	if len(registries) > 0 && registries[0] != nil {
 		registry = registries[0]
@@ -349,13 +313,12 @@ func TestHandlerChecksWolfPermissionAndAttachesConsumer(t *testing.T) {
 }
 
 func TestHandlerUsesInjectedWolfConsumerLookupAuthoritatively(t *testing.T) {
-	storeWolf := newWolfLookupServer(t, "store-poison-wolf")
+	competingWolf := newWolfLookupServer(t, "competing-route-wolf")
 	lookupWolf := newWolfLookupServer(t, "lookup-wolf")
-	addWolfConsumer(t, "store-poison-wolf-consumer", "lookup-app", storeWolf.URL)
 	lookup := &wolfConsumerLookup{byKey: map[string]resource.Consumer{
 		"lookup-app": wolfBoundConsumer("lookup-wolf-consumer", "lookup-app", lookupWolf.URL, true),
 	}}
-	p := newLookupTestPlugin(t, Config{Server: storeWolf.URL}, lookup)
+	p := newLookupTestPlugin(t, Config{Server: competingWolf.URL}, lookup)
 	request := httptest.NewRequest(http.MethodGet, "http://example.com/orders/1", nil)
 	request = ctx.WithApisixVars(request, map[string]string{})
 	request.Header.Set("Authorization", "V1#lookup-app#wolf-token")

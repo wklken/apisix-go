@@ -15,115 +15,71 @@ import (
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
-	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/resource"
-	"github.com/wklken/apisix-go/pkg/store"
-	"github.com/wklken/apisix-go/pkg/testutil"
+	"github.com/wklken/apisix-go/pkg/runtime"
 )
 
-var (
-	testStoreOnce sync.Once
-	testEvents    chan *store.Event
-)
-
-type storeBackedHMACLookup struct{}
-
-func (storeBackedHMACLookup) ConsumerByPluginKey(plugin, key string) (resource.Consumer, bool) {
-	consumer, err := store.GetConsumerByPluginKey(plugin, key)
-	return consumer, err == nil
+type hmacTestFixture struct {
+	sync.Mutex
+	consumers   []runtime.ConsumerRecord
+	credentials []runtime.ConsumerCredentialBinding
 }
 
-func (storeBackedHMACLookup) ConsumerByID(id string) (resource.Consumer, bool) {
-	consumer, err := store.GetConsumer(id)
-	return consumer, err == nil
-}
+var hmacTestFixtures sync.Map
 
-func (storeBackedHMACLookup) ConsumerGroupByID(string) (resource.ConsumerGroup, bool) {
-	return resource.ConsumerGroup{}, false
-}
-
-func setupStore(t *testing.T) {
+func hmacFixtureFor(t *testing.T) *hmacTestFixture {
 	t.Helper()
-
-	testStoreOnce.Do(func() {
-		testEvents = make(chan *store.Event, 16)
-		s, err := store.GetStore(t.TempDir()+"/hmac-auth.db", testEvents, testutil.DataEncryptionService(false, nil))
-		if err != nil {
-			t.Fatalf("open store: %v", err)
-		}
-		s.Start()
-	})
+	fixture := &hmacTestFixture{}
+	actual, loaded := hmacTestFixtures.LoadOrStore(t, fixture)
+	if !loaded {
+		t.Cleanup(func() { hmacTestFixtures.Delete(t) })
+	}
+	return actual.(*hmacTestFixture)
 }
 
 func addHMACConsumer(t *testing.T, username, keyID, secretKey string) {
 	t.Helper()
-	setupStore(t)
-
-	consumer := map[string]any{
-		"username": username,
-		"plugins": map[string]any{
-			"hmac-auth": map[string]any{
-				"key_id":     keyID,
-				"secret_key": secretKey,
-			},
-		},
-	}
-	body, err := json.Marshal(consumer)
-	if err != nil {
-		t.Fatalf("marshal consumer: %v", err)
-	}
-
-	event := store.NewEvent()
-	event.Type = store.EventTypePut
-	event.Key = []byte("/apisix/consumers/" + username)
-	event.Value = body
-	testEvents <- event
-
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, err := store.GetConsumerByPluginKey("hmac-auth", keyID); err == nil {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("consumer %q was not indexed for hmac-auth key %q", username, keyID)
+	fixture := hmacFixtureFor(t)
+	fixture.Lock()
+	defer fixture.Unlock()
+	fixture.consumers = append(fixture.consumers, runtime.ConsumerRecord{
+		ID: username,
+		Consumer: resource.Consumer{Username: username, Plugins: map[string]resource.PluginConfig{
+			name: map[string]any{"key_id": keyID, "secret_key": secretKey},
+		}},
+	})
+	fixture.credentials = append(fixture.credentials, runtime.ConsumerCredentialBinding{
+		Plugin: name, Key: keyID, ConsumerID: username,
+	})
 }
 
 func addConsumer(t *testing.T, username string) {
 	t.Helper()
-	setupStore(t)
-
-	consumer := map[string]any{
-		"username": username,
-		"plugins":  map[string]any{},
-	}
-	body, err := json.Marshal(consumer)
-	if err != nil {
-		t.Fatalf("marshal consumer: %v", err)
-	}
-
-	event := store.NewEvent()
-	event.Type = store.EventTypePut
-	event.Key = []byte("/apisix/consumers/" + username)
-	event.Value = body
-	testEvents <- event
-
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, err := store.GetConsumer(username); err == nil {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("consumer %q was not stored", username)
+	fixture := hmacFixtureFor(t)
+	fixture.Lock()
+	defer fixture.Unlock()
+	fixture.consumers = append(fixture.consumers, runtime.ConsumerRecord{
+		ID: username, Consumer: resource.Consumer{Username: username, Plugins: map[string]resource.PluginConfig{}},
+	})
 }
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
 
+	fixture := hmacFixtureFor(t)
+	fixture.Lock()
+	consumers := append([]runtime.ConsumerRecord(nil), fixture.consumers...)
+	credentials := append([]runtime.ConsumerCredentialBinding(nil), fixture.credentials...)
+	fixture.Unlock()
+	lookup, err := runtime.NewConsumerBindings(consumers, nil, credentials)
+	if err != nil {
+		t.Fatalf("NewConsumerBindings() error = %v", err)
+	}
+	t.Cleanup(lookup.Close)
+
 	p := &Plugin{config: cfg}
-	p.SetDependencies(base.Dependencies{Consumers: storeBackedHMACLookup{}})
+	p.SetDependencies(base.Dependencies{Consumers: lookup})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -161,7 +117,6 @@ func TestHandlerAcceptsSignedDateAndAttachesConsumer(t *testing.T) {
 }
 
 func TestHandlerRecordsProbeAndMissingAnonymousDiagnostics(t *testing.T) {
-	setupStore(t)
 	p := newTestPlugin(t, Config{AnonymousConsumer: "missing-probe-anonymous"})
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
 	var diagnostics []string
@@ -260,7 +215,6 @@ func TestHandlerWritesExactMissingAuthorizationResponse(t *testing.T) {
 }
 
 func TestHandlerWritesExactMissingAnonymousConsumerResponse(t *testing.T) {
-	setupStore(t)
 	p := newTestPlugin(t, Config{AnonymousConsumer: "missing-consumer"})
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
 	req = ctx.WithApisixVars(req, map[string]string{})

@@ -8,14 +8,11 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
-	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/resource"
-	"github.com/wklken/apisix-go/pkg/store"
-	"github.com/wklken/apisix-go/pkg/testutil"
+	"github.com/wklken/apisix-go/pkg/runtime"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -75,107 +72,73 @@ func newLookupTestPlugin(t *testing.T, cfg Config, lookup base.ConsumerLookup) *
 	return p
 }
 
-var (
-	testStoreOnce sync.Once
-	testEvents    chan *store.Event
-)
-
-type storeBackedKeyAuthLookup struct{}
-
-func (storeBackedKeyAuthLookup) ConsumerByPluginKey(plugin, key string) (resource.Consumer, bool) {
-	consumer, err := store.GetConsumerByPluginKey(plugin, key)
-	return consumer, err == nil
+type keyAuthTestFixture struct {
+	sync.Mutex
+	consumers   map[string]resource.Consumer
+	credentials map[string]string
 }
 
-func (storeBackedKeyAuthLookup) ConsumerByID(id string) (resource.Consumer, bool) {
-	consumer, err := store.GetConsumer(id)
-	return consumer, err == nil
-}
+var keyAuthTestFixtures sync.Map
 
-func (storeBackedKeyAuthLookup) ConsumerGroupByID(string) (resource.ConsumerGroup, bool) {
-	return resource.ConsumerGroup{}, false
-}
-
-func setupStore(t *testing.T) {
+func keyAuthFixtureFor(t *testing.T) *keyAuthTestFixture {
 	t.Helper()
-
-	testStoreOnce.Do(func() {
-		testEvents = make(chan *store.Event, 16)
-		s, err := store.GetStore(t.TempDir()+"/key-auth.db", testEvents, testutil.DataEncryptionService(false, nil))
-		if err != nil {
-			t.Fatalf("open store: %v", err)
-		}
-		s.Start()
-	})
+	fixture := &keyAuthTestFixture{
+		consumers:   map[string]resource.Consumer{},
+		credentials: map[string]string{},
+	}
+	actual, loaded := keyAuthTestFixtures.LoadOrStore(t, fixture)
+	if !loaded {
+		t.Cleanup(func() { keyAuthTestFixtures.Delete(t) })
+	}
+	return actual.(*keyAuthTestFixture)
 }
 
 func addKeyAuthConsumer(t *testing.T, username, key string) {
 	t.Helper()
-	setupStore(t)
-
-	consumer := map[string]any{
-		"username": username,
-		"plugins": map[string]any{
-			"key-auth": map[string]any{
-				"key": key,
-			},
-		},
+	fixture := keyAuthFixtureFor(t)
+	fixture.Lock()
+	defer fixture.Unlock()
+	fixture.consumers[username] = resource.Consumer{
+		Username: username,
+		Plugins:  map[string]resource.PluginConfig{name: map[string]any{"key": key}},
 	}
-	body, err := json.Marshal(consumer)
-	if err != nil {
-		t.Fatalf("marshal consumer: %v", err)
-	}
-
-	event := store.NewEvent()
-	event.Type = store.EventTypePut
-	event.Key = []byte("/apisix/consumers/" + username)
-	event.Value = body
-	testEvents <- event
-
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, err := store.GetConsumerByPluginKey(name, key); err == nil {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("consumer %q was not indexed for key-auth key %q", username, key)
+	fixture.credentials[key] = username
 }
 
 func addConsumer(t *testing.T, username string) {
 	t.Helper()
-	setupStore(t)
-
-	consumer := map[string]any{
-		"username": username,
-		"plugins":  map[string]any{},
+	fixture := keyAuthFixtureFor(t)
+	fixture.Lock()
+	defer fixture.Unlock()
+	fixture.consumers[username] = resource.Consumer{
+		Username: username, Plugins: map[string]resource.PluginConfig{},
 	}
-	body, err := json.Marshal(consumer)
-	if err != nil {
-		t.Fatalf("marshal consumer: %v", err)
-	}
-
-	event := store.NewEvent()
-	event.Type = store.EventTypePut
-	event.Key = []byte("/apisix/consumers/" + username)
-	event.Value = body
-	testEvents <- event
-
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, err := store.GetConsumer(username); err == nil {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("consumer %q was not stored", username)
 }
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
 
+	fixture := keyAuthFixtureFor(t)
+	fixture.Lock()
+	consumers := make([]runtime.ConsumerRecord, 0, len(fixture.consumers))
+	for id, consumer := range fixture.consumers {
+		consumers = append(consumers, runtime.ConsumerRecord{ID: id, Consumer: consumer})
+	}
+	credentials := make([]runtime.ConsumerCredentialBinding, 0, len(fixture.credentials))
+	for key, consumerID := range fixture.credentials {
+		credentials = append(credentials, runtime.ConsumerCredentialBinding{
+			Plugin: name, Key: key, ConsumerID: consumerID,
+		})
+	}
+	fixture.Unlock()
+	lookup, err := runtime.NewConsumerBindings(consumers, nil, credentials)
+	if err != nil {
+		t.Fatalf("NewConsumerBindings() error = %v", err)
+	}
+	t.Cleanup(lookup.Close)
+
 	p := &Plugin{config: cfg}
-	p.SetDependencies(base.Dependencies{Consumers: storeBackedKeyAuthLookup{}})
+	p.SetDependencies(base.Dependencies{Consumers: lookup})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -208,7 +171,6 @@ func TestHandlerAcceptsHeaderKeyAndAttachesConsumer(t *testing.T) {
 }
 
 func TestHandlerUsesInjectedConsumerLookupAuthoritatively(t *testing.T) {
-	addKeyAuthConsumer(t, "store-key-user", "overlap-key")
 	lookup := &keyAuthConsumerLookup{byKey: map[string]resource.Consumer{
 		"overlap-key": {Username: "lookup-key-user", Plugins: map[string]resource.PluginConfig{}},
 	}}
@@ -239,13 +201,13 @@ func TestHandlerUsesInjectedConsumerLookupAuthoritatively(t *testing.T) {
 		}
 	})
 
-	t.Run("lookup miss never falls through to Store", func(t *testing.T) {
+	t.Run("lookup miss fails closed", func(t *testing.T) {
 		miss := newLookupTestPlugin(t, Config{}, &keyAuthConsumerLookup{})
 		request := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
 		request.Header.Set("apikey", "overlap-key")
 		response := httptest.NewRecorder()
 		miss.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-			t.Fatal("non-nil lookup miss reached Store poison consumer")
+			t.Fatal("lookup miss reached downstream")
 		})).ServeHTTP(response, request)
 		if response.Code != http.StatusUnauthorized {
 			t.Fatalf("response code = %d, want 401", response.Code)
@@ -260,7 +222,6 @@ func TestHandlerUsesInjectedConsumerLookupAuthoritatively(t *testing.T) {
 }
 
 func TestHandlerUsesInjectedAnonymousConsumerByID(t *testing.T) {
-	addConsumer(t, "key-lookup-anonymous")
 	lookup := &keyAuthConsumerLookup{byID: map[string]resource.Consumer{
 		"key-lookup-anonymous": {Username: "lookup-key-anonymous", Plugins: map[string]resource.PluginConfig{}},
 	}}
@@ -288,7 +249,7 @@ func TestHandlerUsesInjectedAnonymousConsumerByID(t *testing.T) {
 	)
 	missResponse := httptest.NewRecorder()
 	miss.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-		t.Fatal("non-nil anonymous lookup miss reached Store poison consumer")
+		t.Fatal("anonymous lookup miss reached downstream")
 	})).ServeHTTP(missResponse, httptest.NewRequest(http.MethodGet, "http://example.com/get", nil))
 	if missResponse.Code != http.StatusUnauthorized {
 		t.Fatalf("anonymous miss response code = %d, want 401", missResponse.Code)
@@ -405,53 +366,11 @@ func captureStdout(t *testing.T, fn func()) string {
 	return string(output)
 }
 
-func TestHandlerRejectsConsumerLookupError(t *testing.T) {
-	setupStore(t)
-
-	consumer := map[string]any{
-		"username": "broken-ref-user",
-		"plugins": map[string]any{
-			"key-auth": map[string]any{
-				"key": "$secret://vault/broken",
-			},
-		},
-	}
-	body, err := json.Marshal(consumer)
-	if err != nil {
-		t.Fatalf("marshal consumer: %v", err)
-	}
-	event := store.NewEvent()
-	event.Type = store.EventTypePut
-	event.Key = []byte("/apisix/consumers/broken-ref-user")
-	event.Value = body
-	testEvents <- event
-	t.Cleanup(func() {
-		deleteEvent := store.NewEvent()
-		deleteEvent.Type = store.EventTypeDelete
-		deleteEvent.Key = []byte("/apisix/consumers/broken-ref-user")
-		testEvents <- deleteEvent
-		deadline := time.Now().Add(2 * time.Second)
-		for time.Now().Before(deadline) {
-			if _, err := store.GetConsumer("broken-ref-user"); err != nil {
-				return
-			}
-			time.Sleep(10 * time.Millisecond)
-		}
-		t.Error("broken-ref-user consumer was not removed")
-	})
-
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, err := store.GetConsumer("broken-ref-user"); err == nil {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	p := newTestPlugin(t, Config{})
+func TestHandlerRejectsConsumerLookupMiss(t *testing.T) {
+	p := newLookupTestPlugin(t, Config{}, &keyAuthConsumerLookup{})
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
 	req = ctx.WithApisixVars(req, map[string]string{})
-	req.Header.Set("apikey", "$secret://vault/broken")
+	req.Header.Set("apikey", "unbound-key")
 	rr := httptest.NewRecorder()
 
 	nextCalled := false
@@ -461,7 +380,7 @@ func TestHandlerRejectsConsumerLookupError(t *testing.T) {
 	})).ServeHTTP(rr, req)
 
 	if nextCalled {
-		t.Fatal("next handler was invoked on consumer lookup error")
+		t.Fatal("next handler was invoked on consumer lookup miss")
 	}
 	if rr.Code != http.StatusUnauthorized {
 		t.Fatalf("response code = %d, want %d; body=%s", rr.Code, http.StatusUnauthorized, rr.Body.String())
@@ -543,7 +462,6 @@ func TestHandlerUsesAnonymousConsumerWhenKeyIsMissing(t *testing.T) {
 }
 
 func TestHandlerRecordsMissingAnonymousConsumerProbeDiagnostic(t *testing.T) {
-	setupStore(t)
 	p := newTestPlugin(t, Config{AnonymousConsumer: "missing-key-anonymous"})
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
 	var diagnostics []string
@@ -592,7 +510,6 @@ func TestHandlerRejectsInvalidKey(t *testing.T) {
 }
 
 func TestHandlerRecordsInvalidKeyProbeDiagnostic(t *testing.T) {
-	setupStore(t)
 	p := newTestPlugin(t, Config{})
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
 	var diagnostics []string

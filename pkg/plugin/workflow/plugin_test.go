@@ -9,7 +9,6 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -17,12 +16,10 @@ import (
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/capability"
-	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/secret"
-	"github.com/wklken/apisix-go/pkg/store"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -1790,39 +1787,7 @@ func TestConsumerWorkflowLimitCountOverridesRouteLimitCount(t *testing.T) {
 	}
 }
 
-func TestScopedWorkflowConsumerGroupLookupNeverFallsBackToStore(t *testing.T) {
-	manifest, err := capability.Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	catalog, err := capability.NewSecretDeclarationCatalog(manifest)
-	if err != nil {
-		t.Fatal(err)
-	}
-	storage, err := store.Open(
-		filepath.Join(t.TempDir(), "workflow-consumer.db"),
-		make(chan *store.Event),
-		data_encryption.NewService(false, nil, catalog),
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if closeErr := storage.Close(); closeErr != nil {
-			t.Fatalf("close store: %v", closeErr)
-		}
-	})
-	if err := store.WriteBucketValueForTest(
-		storage,
-		"consumer_groups",
-		"group-stale",
-		[]byte(`{"id":"group-stale","plugins":{"stale-store-plugin":{}}}`),
-	); err != nil {
-		t.Fatal(err)
-	}
-	previous := store.ReplaceGlobalStoreForTest(storage)
-	t.Cleanup(func() { store.ReplaceGlobalStoreForTest(previous) })
-
+func TestScopedWorkflowConsumerGroupLookupMissPreservesImmutableOverrides(t *testing.T) {
 	lookup := &workflowConsumerLookup{groups: map[string]resource.ConsumerGroup{}}
 	p := &Plugin{}
 	p.SetDependencies(base.Dependencies{Consumers: lookup})
@@ -1840,9 +1805,6 @@ func TestScopedWorkflowConsumerGroupLookupNeverFallsBackToStore(t *testing.T) {
 	got := p.withConsumerActionOverride(req, "limit-count")
 	if lookup.calls != 1 {
 		t.Fatalf("immutable group lookup calls = %d, want 1", lookup.calls)
-	}
-	if apisixctx.ConsumerPluginOverrides(got, "stale-store-plugin") {
-		t.Fatal("immutable lookup miss fell back to stale process-global Store")
 	}
 	if !apisixctx.ConsumerPluginOverrides(got, "consumer-plugin") ||
 		!apisixctx.ConsumerPluginOverrides(got, "limit-count") {

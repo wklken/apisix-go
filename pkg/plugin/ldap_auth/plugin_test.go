@@ -4,19 +4,17 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/resource"
-	"github.com/wklken/apisix-go/pkg/store"
-	"github.com/wklken/apisix-go/pkg/testutil"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -73,70 +71,32 @@ func newLookupTestPlugin(t *testing.T, lookup base.ConsumerLookup, authenticate 
 	return p
 }
 
-var (
-	testStoreOnce sync.Once
-	testEvents    chan *store.Event
-)
-
-type storeBackedLDAPLookup struct{}
-
-func (storeBackedLDAPLookup) ConsumerByPluginKey(plugin, key string) (resource.Consumer, bool) {
-	consumer, err := store.GetConsumerByPluginKey(plugin, key)
-	return consumer, err == nil
+type ldapTestFixture struct {
+	sync.Mutex
+	byKey map[string]resource.Consumer
 }
 
-func (storeBackedLDAPLookup) ConsumerByID(string) (resource.Consumer, bool) {
-	return resource.Consumer{}, false
-}
+var ldapTestFixtures sync.Map
 
-func (storeBackedLDAPLookup) ConsumerGroupByID(string) (resource.ConsumerGroup, bool) {
-	return resource.ConsumerGroup{}, false
-}
-
-func setupStore(t *testing.T) {
+func ldapFixtureFor(t *testing.T) *ldapTestFixture {
 	t.Helper()
-
-	testStoreOnce.Do(func() {
-		testEvents = make(chan *store.Event, 16)
-		s, err := store.GetStore(t.TempDir()+"/ldap-auth.db", testEvents, testutil.DataEncryptionService(false, nil))
-		if err != nil {
-			t.Fatalf("open store: %v", err)
-		}
-		s.Start()
-	})
+	fixture := &ldapTestFixture{byKey: map[string]resource.Consumer{}}
+	actual, loaded := ldapTestFixtures.LoadOrStore(t, fixture)
+	if !loaded {
+		t.Cleanup(func() { ldapTestFixtures.Delete(t) })
+	}
+	return actual.(*ldapTestFixture)
 }
 
 func addLDAPConsumer(t *testing.T, username, userDN string) {
 	t.Helper()
-	setupStore(t)
-
-	consumer := map[string]any{
-		"username": username,
-		"plugins": map[string]any{
-			"ldap-auth": map[string]any{
-				"user_dn": userDN,
-			},
-		},
+	fixture := ldapFixtureFor(t)
+	fixture.Lock()
+	defer fixture.Unlock()
+	fixture.byKey[userDN] = resource.Consumer{
+		Username: username,
+		Plugins:  map[string]resource.PluginConfig{name: map[string]any{"user_dn": userDN}},
 	}
-	body, err := json.Marshal(consumer)
-	if err != nil {
-		t.Fatalf("marshal consumer: %v", err)
-	}
-
-	event := store.NewEvent()
-	event.Type = store.EventTypePut
-	event.Key = []byte("/apisix/consumers/" + username)
-	event.Value = body
-	testEvents <- event
-
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, err := store.GetConsumerByPluginKey("ldap-auth", userDN); err == nil {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("consumer %q was not indexed for ldap-auth user_dn %q", username, userDN)
 }
 
 func newTestPlugin(t *testing.T, authenticate ldapAuthenticator) *Plugin {
@@ -160,7 +120,12 @@ func newTestPluginWithConfig(t *testing.T, overrides map[string]any, authenticat
 		config:       config,
 		authenticate: authenticate,
 	}
-	p.SetDependencies(base.Dependencies{Consumers: storeBackedLDAPLookup{}})
+	fixture := ldapFixtureFor(t)
+	fixture.Lock()
+	byKey := make(map[string]resource.Consumer, len(fixture.byKey))
+	maps.Copy(byKey, fixture.byKey)
+	fixture.Unlock()
+	p.SetDependencies(base.Dependencies{Consumers: &ldapConsumerLookup{byKey: byKey}})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -255,7 +220,6 @@ func TestHandlerAuthenticatesLDAPUserAndAttachesConsumer(t *testing.T) {
 
 func TestHandlerUsesInjectedConsumerLookupAfterLDAPBind(t *testing.T) {
 	const userDN = "cn=lookup-user,dc=example,dc=org"
-	addLDAPConsumer(t, "store-poison-user", userDN)
 	var orderMu sync.Mutex
 	var order []string
 	lookup := &ldapConsumerLookup{
@@ -300,9 +264,7 @@ func TestHandlerUsesInjectedConsumerLookupAfterLDAPBind(t *testing.T) {
 	lookup.mu.RUnlock()
 }
 
-func TestInjectedLDAPLookupMissDoesNotFallBackToStore(t *testing.T) {
-	const userDN = "cn=ldap-poison-miss,dc=example,dc=org"
-	addLDAPConsumer(t, "ldap-poison-miss-store-user", userDN)
+func TestInjectedLDAPLookupMissFailsClosed(t *testing.T) {
 	bindCalls := 0
 	p := newLookupTestPlugin(t, &ldapConsumerLookup{}, func(username, password string, _ Config) error {
 		bindCalls++
@@ -310,8 +272,8 @@ func TestInjectedLDAPLookupMissDoesNotFallBackToStore(t *testing.T) {
 	})
 	response := httptest.NewRecorder()
 	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-		t.Fatal("non-nil LDAP lookup miss reached Store poison consumer")
-	})).ServeHTTP(response, ldapRequest("ldap-poison-miss", "secret"))
+		t.Fatal("LDAP lookup miss reached downstream")
+	})).ServeHTTP(response, ldapRequest("ldap-miss", "secret"))
 	if bindCalls != 1 {
 		t.Fatalf("LDAP bind calls = %d, want one before lookup", bindCalls)
 	}
@@ -635,7 +597,6 @@ func TestHandlerRejectsMissingRelatedConsumer(t *testing.T) {
 }
 
 func TestHandlerRecordsMissingConsumerDiagnostic(t *testing.T) {
-	setupStore(t)
 	p := newTestPlugin(t, func(username, password string, cfg Config) error {
 		return nil
 	})

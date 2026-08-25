@@ -4,18 +4,13 @@ import (
 	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
-	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/resource"
-	"github.com/wklken/apisix-go/pkg/store"
-	"github.com/wklken/apisix-go/pkg/testutil"
 )
 
 type basicAuthConsumerLookup struct {
@@ -84,116 +79,63 @@ func newLookupTestPlugin(t *testing.T, cfg Config, lookup base.ConsumerLookup) *
 	return p
 }
 
-var (
-	testStoreOnce sync.Once
-	testStore     *store.Store
-	testEvents    chan *store.Event
-)
-
-type storeBackedBasicAuthLookup struct{}
-
-func (storeBackedBasicAuthLookup) ConsumerByPluginKey(plugin, key string) (resource.Consumer, bool) {
-	consumer, err := store.GetConsumerByPluginKey(plugin, key)
-	return consumer, err == nil
-}
-
-func (storeBackedBasicAuthLookup) ConsumerByID(id string) (resource.Consumer, bool) {
-	consumer, err := store.GetConsumer(id)
-	return consumer, err == nil
-}
-
-func (storeBackedBasicAuthLookup) ConsumerGroupByID(string) (resource.ConsumerGroup, bool) {
-	return resource.ConsumerGroup{}, false
-}
-
-func setupStore(t *testing.T) {
-	t.Helper()
-
-	testStoreOnce.Do(func() {
-		testEvents = make(chan *store.Event, 16)
-		var err error
-		testStore, err = store.GetStore(
-			t.TempDir()+"/basic-auth.db",
-			testEvents,
-			testutil.DataEncryptionService(false, nil),
-		)
-		if err != nil {
-			t.Fatalf("open store: %v", err)
+func basicAuthLookup(consumers ...resource.Consumer) *basicAuthConsumerLookup {
+	lookup := &basicAuthConsumerLookup{
+		byKey: make(map[string]resource.Consumer, len(consumers)),
+		byID:  make(map[string]resource.Consumer, len(consumers)),
+	}
+	for _, consumer := range consumers {
+		lookup.byID[consumer.Username] = consumer
+		config, ok := consumer.Plugins[name].(map[string]any)
+		if !ok {
+			continue
 		}
-		testStore.Start()
-	})
+		username, ok := config["username"].(string)
+		if ok {
+			lookup.byKey[username] = consumer
+		}
+	}
+	return lookup
+}
+
+type basicAuthTestFixture struct {
+	sync.Mutex
+	consumers []resource.Consumer
+}
+
+var basicAuthTestFixtures sync.Map
+
+func basicAuthFixtureFor(t *testing.T) *basicAuthTestFixture {
+	t.Helper()
+	fixture := &basicAuthTestFixture{}
+	actual, loaded := basicAuthTestFixtures.LoadOrStore(t, fixture)
+	if !loaded {
+		t.Cleanup(func() { basicAuthTestFixtures.Delete(t) })
+	}
+	return actual.(*basicAuthTestFixture)
 }
 
 func addBasicAuthConsumer(t *testing.T, username, password string) {
 	t.Helper()
-	setupStore(t)
-
-	consumer := map[string]any{
-		"username": username,
-		"plugins": map[string]any{
-			"basic-auth": map[string]any{
-				"username": username,
-				"password": password,
-			},
-		},
-	}
-	body, err := json.Marshal(consumer)
-	if err != nil {
-		t.Fatalf("marshal consumer: %v", err)
-	}
-
-	event := store.NewEvent()
-	event.Type = store.EventTypePut
-	event.Key = []byte("/apisix/consumers/" + username)
-	event.Value = body
-	testEvents <- event
-
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, err := store.GetConsumerByPluginKey(name, username); err == nil {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("consumer %q was not indexed for basic-auth", username)
+	fixture := basicAuthFixtureFor(t)
+	fixture.Lock()
+	defer fixture.Unlock()
+	fixture.consumers = append(
+		fixture.consumers,
+		basicAuthBoundConsumer(username, username, password),
+	)
 }
 
-func addBasicAuthConsumerWithoutResolving(t *testing.T, username, password string) {
+func newTestPlugin(t *testing.T, cfg Config, consumers ...resource.Consumer) *Plugin {
 	t.Helper()
-	setupStore(t)
 
-	consumer := map[string]any{
-		"username": username,
-		"plugins": map[string]any{
-			"basic-auth": map[string]any{
-				"username": username,
-				"password": password,
-			},
-		},
-	}
-	body, err := json.Marshal(consumer)
-	if err != nil {
-		t.Fatalf("marshal consumer: %v", err)
-	}
-
-	event := store.NewEvent()
-	event.Type = store.EventTypePut
-	event.Key = []byte("/apisix/consumers/" + username)
-	event.Value = body
-	testEvents <- event
-	if err := testStore.Sync(); err != nil {
-		t.Fatalf("Sync() error = %v", err)
-	}
-	if _, err := testStore.GetConsumerNameByPluginKey(name, username); err != nil {
-		t.Fatalf("consumer %q was not indexed for basic-auth: %v", username, err)
-	}
-}
-
-func newTestPlugin(t *testing.T, cfg Config) *Plugin {
-	t.Helper()
+	fixture := basicAuthFixtureFor(t)
+	fixture.Lock()
+	consumers = append(append([]resource.Consumer(nil), fixture.consumers...), consumers...)
+	fixture.Unlock()
 
 	p := &Plugin{config: cfg}
-	p.SetDependencies(base.Dependencies{Consumers: storeBackedBasicAuthLookup{}})
+	p.SetDependencies(base.Dependencies{Consumers: basicAuthLookup(consumers...)})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -205,8 +147,7 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 }
 
 func TestHandlerAcceptsBasicAuthAndAttachesConsumer(t *testing.T) {
-	addBasicAuthConsumer(t, "basic-user", "secret")
-	p := newTestPlugin(t, Config{})
+	p := newTestPlugin(t, Config{}, basicAuthBoundConsumer("basic-user", "basic-user", "secret"))
 
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
 	req = ctx.WithApisixVars(req, map[string]string{})
@@ -226,13 +167,12 @@ func TestHandlerAcceptsBasicAuthAndAttachesConsumer(t *testing.T) {
 }
 
 func TestHandlerUsesInjectedConsumerLookupAuthoritatively(t *testing.T) {
-	addBasicAuthConsumer(t, "basic-lookup-key", "store-password")
 	lookup := &basicAuthConsumerLookup{byKey: map[string]resource.Consumer{
 		"basic-lookup-key": basicAuthBoundConsumer("basic-lookup-key", "lookup-basic-user", "lookup-password"),
 	}}
 	p := newLookupTestPlugin(t, Config{}, lookup)
 
-	t.Run("resolved lookup consumer wins over Store poison", func(t *testing.T) {
+	t.Run("resolved lookup consumer is authoritative", func(t *testing.T) {
 		request := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
 		request = ctx.WithApisixVars(request, map[string]string{})
 		request.Header.Set("Authorization", basicHeader("basic-lookup-key", "lookup-password"))
@@ -248,13 +188,13 @@ func TestHandlerUsesInjectedConsumerLookupAuthoritatively(t *testing.T) {
 		}
 	})
 
-	t.Run("lookup miss never falls through to Store", func(t *testing.T) {
+	t.Run("lookup miss fails closed", func(t *testing.T) {
 		miss := newLookupTestPlugin(t, Config{}, &basicAuthConsumerLookup{})
 		request := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
-		request.Header.Set("Authorization", basicHeader("basic-lookup-key", "store-password"))
+		request.Header.Set("Authorization", basicHeader("basic-lookup-key", "lookup-password"))
 		response := httptest.NewRecorder()
 		miss.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-			t.Fatal("non-nil lookup miss reached Store poison consumer")
+			t.Fatal("lookup miss reached downstream")
 		})).ServeHTTP(response, request)
 		if response.Code != http.StatusUnauthorized {
 			t.Fatalf("response code = %d, want 401", response.Code)
@@ -269,7 +209,6 @@ func TestHandlerUsesInjectedConsumerLookupAuthoritatively(t *testing.T) {
 }
 
 func TestHandlerUsesInjectedAnonymousConsumerByID(t *testing.T) {
-	addBasicAuthConsumer(t, "basic-lookup-anonymous", "store-password")
 	lookup := &basicAuthConsumerLookup{byID: map[string]resource.Consumer{
 		"basic-lookup-anonymous": {Username: "lookup-basic-anonymous", Plugins: map[string]resource.PluginConfig{}},
 	}}
@@ -297,7 +236,7 @@ func TestHandlerUsesInjectedAnonymousConsumerByID(t *testing.T) {
 	)
 	missResponse := httptest.NewRecorder()
 	miss.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-		t.Fatal("non-nil anonymous lookup miss reached Store poison consumer")
+		t.Fatal("anonymous lookup miss reached downstream")
 	})).ServeHTTP(missResponse, httptest.NewRequest(http.MethodGet, "http://example.com/get", nil))
 	if missResponse.Code != http.StatusUnauthorized {
 		t.Fatalf("anonymous miss response code = %d, want 401", missResponse.Code)
@@ -380,7 +319,6 @@ func TestHandlerRecordsProbeDiagnosticInsteadOfDiscardingDetail(t *testing.T) {
 }
 
 func TestHandlerRecordsMissingConsumerProbeDiagnostic(t *testing.T) {
-	setupStore(t)
 	p := newTestPlugin(t, Config{})
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
 	var diagnostics []string
@@ -402,84 +340,11 @@ func TestHandlerRecordsMissingConsumerProbeDiagnostic(t *testing.T) {
 	}
 }
 
-func TestHandlerFailsClosedThenRetriesLateEnvironmentPassword(t *testing.T) {
-	const environmentName = "BASIC_AUTH_PLUGIN_LATE_PASSWORD"
-	previous, existed := os.LookupEnv(environmentName)
-	if err := os.Unsetenv(environmentName); err != nil {
-		t.Fatalf("Unsetenv() error = %v", err)
-	}
-	t.Cleanup(func() {
-		if existed {
-			_ = os.Setenv(environmentName, previous)
-		} else {
-			_ = os.Unsetenv(environmentName)
-		}
-	})
-
-	setupStore(t)
-	consumer := map[string]any{
-		"username": "basic-late-env-user",
-		"plugins": map[string]any{
-			"basic-auth": map[string]any{
-				"username": "basic-late-env-user",
-				"password": "$ENV://" + environmentName,
-			},
-		},
-	}
-	body, err := json.Marshal(consumer)
-	if err != nil {
-		t.Fatalf("marshal consumer: %v", err)
-	}
-	event := store.NewEvent()
-	event.Type = store.EventTypePut
-	event.Key = []byte("/apisix/consumers/basic-late-env-user")
-	event.Value = body
-	testEvents <- event
-	if err := testStore.Sync(); err != nil {
-		t.Fatalf("Sync() error = %v", err)
-	}
-	if _, err := testStore.GetConsumerNameByPluginKey(name, "basic-late-env-user"); err != nil {
-		t.Fatalf("raw consumer index was not installed: %v", err)
-	}
-
-	p := newTestPlugin(t, Config{})
-	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	}))
-
-	request := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
-	request = ctx.WithApisixVars(request, map[string]string{})
-	request.Header.Set("Authorization", basicHeader("basic-late-env-user", "bar"))
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusUnauthorized {
-		t.Fatalf("response before provisioning = %d, want 401", response.Code)
-	}
-
-	if err := os.Setenv(environmentName, "bar"); err != nil {
-		t.Fatalf("Setenv() error = %v", err)
-	}
-	resolved, err := store.GetConsumerByPluginKey(name, "basic-late-env-user")
-	if err != nil {
-		t.Fatalf("lookup after provisioning error = %v", err)
-	}
-	config := resolved.Plugins[name].(map[string]any)
-	if got := config["password"]; got != "bar" {
-		t.Fatalf("resolved password = %#v, want bar", got)
-	}
-	request = httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
-	request = ctx.WithApisixVars(request, map[string]string{})
-	request.Header.Set("Authorization", basicHeader("basic-late-env-user", "bar"))
-	response = httptest.NewRecorder()
-	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusNoContent {
-		t.Fatalf("response after provisioning = %d, want 204; body=%s", response.Code, response.Body.String())
-	}
-}
-
 func TestHandlerNormalizesWhitespaceInCredentials(t *testing.T) {
-	addBasicAuthConsumer(t, "username", "secret")
-	addBasicAuthConsumer(t, "empty-password-user", "")
+	consumers := []resource.Consumer{
+		basicAuthBoundConsumer("username", "username", "secret"),
+		basicAuthBoundConsumer("empty-password-user", "empty-password-user", ""),
+	}
 
 	tests := []struct {
 		name         string
@@ -565,7 +430,7 @@ func TestHandlerNormalizesWhitespaceInCredentials(t *testing.T) {
 			response := httptest.NewRecorder()
 			nextCalled := false
 
-			p := newTestPlugin(t, Config{})
+			p := newTestPlugin(t, Config{}, consumers...)
 			p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				nextCalled = true
 				if test.wantConsumer == "" {
@@ -624,8 +489,11 @@ func TestHandlerFormatsMissingAuthorizationLikeAPISIX(t *testing.T) {
 }
 
 func TestHandlerUsesAnonymousConsumerOnMissingAuthorization(t *testing.T) {
-	addBasicAuthConsumer(t, "anonymous-basic-user", "unused")
-	p := newTestPlugin(t, Config{AnonymousConsumer: "anonymous-basic-user"})
+	p := newTestPlugin(
+		t,
+		Config{AnonymousConsumer: "anonymous-basic-user"},
+		basicAuthBoundConsumer("anonymous-basic-user", "anonymous-basic-user", "unused"),
+	)
 
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
 	req = ctx.WithApisixVars(req, map[string]string{})
@@ -681,9 +549,12 @@ func TestHandlerRejectsMalformedAuthorization(t *testing.T) {
 }
 
 func TestHandlerHideCredentialsRemovesAuthorizationHeader(t *testing.T) {
-	addBasicAuthConsumer(t, "hide-basic-user", "secret")
 	hideCredentials := true
-	p := newTestPlugin(t, Config{HideCredentials: &hideCredentials})
+	p := newTestPlugin(
+		t,
+		Config{HideCredentials: &hideCredentials},
+		basicAuthBoundConsumer("hide-basic-user", "hide-basic-user", "secret"),
+	)
 
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
 	req = ctx.WithApisixVars(req, map[string]string{})
@@ -703,12 +574,11 @@ func TestHandlerHideCredentialsRemovesAuthorizationHeader(t *testing.T) {
 }
 
 func TestHandlerHideCredentialsRemovesDuplicateAuthorizationHeaders(t *testing.T) {
-	addBasicAuthConsumer(t, "hide-duplicate-anonymous", "unused")
 	hideCredentials := true
 	p := newTestPlugin(t, Config{
 		HideCredentials:   &hideCredentials,
 		AnonymousConsumer: "hide-duplicate-anonymous",
-	})
+	}, basicAuthBoundConsumer("hide-duplicate-anonymous", "hide-duplicate-anonymous", "unused"))
 
 	request := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
 	request = ctx.WithApisixVars(request, map[string]string{})
@@ -735,22 +605,20 @@ func TestHandlerHideCredentialsRemovesDuplicateAuthorizationHeaders(t *testing.T
 }
 
 func TestHandlerHideCredentialsOnAnonymousFallback(t *testing.T) {
-	const unresolvedPasswordEnv = "BASIC_AUTH_HIDDEN_CREDENTIALS_TEST_PASSWORD"
-	previous, existed := os.LookupEnv(unresolvedPasswordEnv)
-	if err := os.Unsetenv(unresolvedPasswordEnv); err != nil {
-		t.Fatalf("Unsetenv() error = %v", err)
+	invalidConfig := basicAuthBoundConsumer(
+		"hide-fallback-invalid-config",
+		"hide-fallback-invalid-config",
+		"unused",
+	)
+	invalidConfig.Plugins[name] = map[string]any{
+		"username": "hide-fallback-invalid-config",
+		"password": []string{"invalid"},
 	}
-	t.Cleanup(func() {
-		if existed {
-			_ = os.Setenv(unresolvedPasswordEnv, previous)
-		} else {
-			_ = os.Unsetenv(unresolvedPasswordEnv)
-		}
-	})
-
-	addBasicAuthConsumer(t, "hide-fallback-wrong-password", "secret")
-	addBasicAuthConsumerWithoutResolving(t, "hide-fallback-invalid-config", "$ENV://"+unresolvedPasswordEnv)
-	addBasicAuthConsumer(t, "hide-fallback-anonymous", "unused")
+	consumers := []resource.Consumer{
+		basicAuthBoundConsumer("hide-fallback-wrong-password", "hide-fallback-wrong-password", "secret"),
+		invalidConfig,
+		basicAuthBoundConsumer("hide-fallback-anonymous", "hide-fallback-anonymous", "unused"),
+	}
 	hideCredentials := true
 
 	tests := []struct {
@@ -779,7 +647,7 @@ func TestHandlerHideCredentialsOnAnonymousFallback(t *testing.T) {
 			wantConsumer:      "hide-fallback-anonymous",
 		},
 		{
-			name:              "consumer config resolution failure",
+			name:              "invalid consumer config",
 			username:          "hide-fallback-invalid-config",
 			password:          "secret",
 			anonymousConsumer: "hide-fallback-anonymous",
@@ -824,7 +692,7 @@ func TestHandlerHideCredentialsOnAnonymousFallback(t *testing.T) {
 			p := newTestPlugin(t, Config{
 				HideCredentials:   &hideCredentials,
 				AnonymousConsumer: test.anonymousConsumer,
-			})
+			}, consumers...)
 			p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				nextCalled = true
 				if got := r.Header.Get("Authorization"); got != "" {

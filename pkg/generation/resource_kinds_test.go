@@ -55,7 +55,7 @@ func TestDomainsForResourceKindExactMappingAndDefensiveCopy(t *testing.T) {
 		switch kind {
 		case "stream_routes":
 			want = wantStream
-		case "services", "upstreams", "secrets":
+		case "plugins", "services", "upstreams", "secrets":
 			want = wantBoth
 		}
 		if got := DomainsForResourceKind(kind); !slices.Equal(got, want) {

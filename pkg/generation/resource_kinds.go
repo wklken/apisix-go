@@ -11,7 +11,7 @@ var managedResources = []struct {
 	{kind: "global_rules", domains: []Domain{DomainHTTP}},
 	{kind: "plugin_configs", domains: []Domain{DomainHTTP}},
 	{kind: "plugin_metadata", domains: []Domain{DomainHTTP}},
-	{kind: "plugins", domains: []Domain{DomainHTTP}},
+	{kind: "plugins", domains: []Domain{DomainHTTP, DomainStream}},
 	{kind: "protos", domains: []Domain{DomainHTTP}},
 	{kind: "routes", domains: []Domain{DomainHTTP}},
 	{kind: "secrets", domains: []Domain{DomainHTTP, DomainStream}},

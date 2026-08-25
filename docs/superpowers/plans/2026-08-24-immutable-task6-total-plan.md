@@ -455,6 +455,10 @@ Review declaration completeness, raw-before-decode order, final-attempt identity
 
 ### Task 11: Merge Locally and Hand Off to Immutable Task 7
 
+**Status:** complete. Accepted Task 6 commit `990deb01` was fast-forwarded to
+local `master`; Immutable Task 7 started from that exact baseline in
+`codex/apisix-go-immutable-task7`.
+
 **Files:**
 - Git history only; no product edit
 - Next plan: `docs/superpowers/plans/2026-08-23-immutable-compiler-plugin-runtime.md`, Task 7
@@ -605,8 +609,8 @@ Refresh this snapshot whenever integration HEAD changes.
 | X1 | **accepted** | product checkpoint `b31d2a6d` |
 | CP5 | **accepted** | final acceptance `8cae3365` |
 | CP6/C6.6 | **accepted** | integration/caller/boundary audit accepted from CP5 `8cae3365` |
-| local `master` merge | **ready after CP6 commit** | fast-forward only after the accepted staged diff is committed and rechecked |
-| Immutable Task 7 worktrees | **blocked** | branch only from post-Task-6 local master |
+| local `master` merge | **accepted** | fast-forwarded to Task 6 acceptance `990deb01` |
+| Immutable Task 7 worktrees | **in progress** | branched from post-Task-6 local master `990deb01` |
 
 ---
 

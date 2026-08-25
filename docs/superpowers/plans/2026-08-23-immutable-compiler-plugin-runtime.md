@@ -1459,6 +1459,14 @@ git commit -m "refactor(plugin): own scoped materialization and instances"
 
 ### Task 7: Compile an Immutable HTTP Snapshot
 
+> **Execution amendment:** Execute this task through
+> [`2026-08-25-immutable-task7-http-snapshot.md`](2026-08-25-immutable-task7-http-snapshot.md).
+> The original `CompileInput.Dependencies` sketch is superseded: runtime,
+> secret, resource-registry, lease and cleanup authority remain compiler-owned.
+> `pkg/route` receives only cloned values, materialized bindings and prepared
+> cluster handles. Task 7 is detached preparation only; Builder deletion,
+> server activation, rollback, acknowledgement and drain remain joint Task 9.
+
 **Files:**
 
 - Create: `pkg/route/compiler.go`

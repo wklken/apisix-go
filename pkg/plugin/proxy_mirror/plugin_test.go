@@ -353,6 +353,35 @@ func TestHandlerRegistersBeforeProxyHookWithoutExecutingIt(t *testing.T) {
 	}
 }
 
+func TestProxyMirrorHookRegistrationCarriesOwnerAndPhase(t *testing.T) {
+	p := newTestPlugin(t, Config{Host: "http://mirror.example.com"})
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	var forwarded *http.Request
+	p.Handler(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		forwarded = r
+	})).ServeHTTP(httptest.NewRecorder(), request)
+	if forwarded == nil {
+		t.Fatal("next handler did not receive registered request")
+	}
+	calls := 0
+	err := apisixctx.RunBeforeProxyHookRegistrations(
+		forwarded,
+		func(registration apisixctx.BeforeProxyHookRegistration) error {
+			calls++
+			if registration.Owner != "proxy-mirror" || registration.Phase != "before_proxy" {
+				t.Fatalf("registration = %#v", registration)
+			}
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("registration calls = %d, want 1", calls)
+	}
+}
+
 func TestMirrorAdmissionBoundsInFlightAndStopCancels(t *testing.T) {
 	started := make(chan struct{}, maxInFlightMirrors+1)
 	release := make(chan struct{})

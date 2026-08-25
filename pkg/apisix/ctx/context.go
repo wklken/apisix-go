@@ -19,10 +19,18 @@ import (
 
 type BeforeProxyHook func(*http.Request) error
 
+type BeforeProxyHookRegistration struct {
+	Owner string
+	Phase string
+	Hook  BeforeProxyHook
+}
+
 type beforeProxyHooks struct {
-	once  sync.Once
-	hooks []BeforeProxyHook
-	err   error
+	once          sync.Once
+	registrations []BeforeProxyHookRegistration
+	err           error
+	panicValue    any
+	panicked      bool
 }
 
 // inspired by gin/context.go, but we use context.Context instead of gin.Context
@@ -253,28 +261,57 @@ func IsTrustedProxy(r *http.Request) bool {
 }
 
 func WithBeforeProxyHook(r *http.Request, hook BeforeProxyHook) *http.Request {
+	return WithBeforeProxyHookRegistration(r, BeforeProxyHookRegistration{Hook: hook})
+}
+
+func WithBeforeProxyHookRegistration(
+	r *http.Request,
+	registration BeforeProxyHookRegistration,
+) *http.Request {
 	registered, _ := r.Context().Value(beforeProxyHooksKey).(*beforeProxyHooks)
-	hooks := make([]BeforeProxyHook, 0, 1)
+	registrations := make([]BeforeProxyHookRegistration, 0, 1)
 	if registered != nil {
-		hooks = append(hooks, registered.hooks...)
+		registrations = append(registrations, registered.registrations...)
 	}
-	hooks = append(hooks, hook)
-	return r.WithContext(context.WithValue(r.Context(), beforeProxyHooksKey, &beforeProxyHooks{hooks: hooks}))
+	registrations = append(registrations, registration)
+	return r.WithContext(context.WithValue(
+		r.Context(),
+		beforeProxyHooksKey,
+		&beforeProxyHooks{registrations: registrations},
+	))
 }
 
 func RunBeforeProxyHooks(r *http.Request) error {
+	return RunBeforeProxyHookRegistrations(r, func(registration BeforeProxyHookRegistration) error {
+		return registration.Hook(r)
+	})
+}
+
+func RunBeforeProxyHookRegistrations(
+	r *http.Request,
+	invoke func(BeforeProxyHookRegistration) error,
+) error {
 	registered, _ := r.Context().Value(beforeProxyHooksKey).(*beforeProxyHooks)
 	if registered == nil {
 		return nil
 	}
 	registered.once.Do(func() {
-		for _, hook := range registered.hooks {
-			if err := hook(r); err != nil {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				registered.panicValue = recovered
+				registered.panicked = true
+			}
+		}()
+		for _, registration := range registered.registrations {
+			if err := invoke(registration); err != nil {
 				registered.err = err
 				return
 			}
 		}
 	})
+	if registered.panicked {
+		panic(registered.panicValue)
+	}
 	return registered.err
 }
 

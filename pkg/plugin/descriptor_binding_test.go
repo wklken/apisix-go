@@ -9,6 +9,17 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
 
+type bindingLogPolicyPlugin struct {
+	*responseTestPlugin
+	policy base.LogCapturePolicy
+	calls  int
+}
+
+func (p *bindingLogPolicyPlugin) LogCapturePolicy() base.LogCapturePolicy {
+	p.calls++
+	return p.policy
+}
+
 func TestDescriptorBindingResolvesConfigAwareStageOnce(t *testing.T) {
 	config := &countingResponseTestConfig{descriptor: base.BindingPhaseDescriptor{Header: true}}
 	p := newResponseTestPlugin("echo", 1, config)
@@ -183,5 +194,62 @@ func TestDescriptorStageRunsHandlerAndPropagatesReplacementRequest(t *testing.T)
 	if terminalRequest == nil ||
 		terminalRequest.Context().Value(descriptorBindingTraceKey{}) != "replacement" {
 		t.Fatalf("terminal request = %#v", terminalRequest)
+	}
+}
+
+func TestBindResolvedPluginFreezesLogCapturePolicyOnce(t *testing.T) {
+	plugin := &bindingLogPolicyPlugin{
+		responseTestPlugin: newResponseTestPlugin("request-id", 1, nil),
+		policy:             base.LogCapturePolicy{RequestBodyBytes: 17, ResponseBodyBytes: 23},
+	}
+	binding, err := BindPluginChecked(
+		"request-id",
+		plugin,
+		ScopeRoute,
+		ResourceProvenance{Kind: ResourceRoute, ID: "r1"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plugin.policy.RequestBodyBytes = 99
+	if plugin.calls != 1 {
+		t.Fatalf("LogCapturePolicy() calls = %d, want 1", plugin.calls)
+	}
+	if !binding.logPolicySet || binding.logPolicy.RequestBodyBytes != 17 ||
+		binding.logPolicy.ResponseBodyBytes != 23 {
+		t.Fatalf("frozen log policy = %#v set=%t", binding.logPolicy, binding.logPolicySet)
+	}
+}
+
+func TestBindResolvedPluginMarksZeroLogCapturePolicySet(t *testing.T) {
+	binding, err := BindPluginChecked(
+		"request-id",
+		newResponseTestPlugin("request-id", 1, nil),
+		ScopeRoute,
+		ResourceProvenance{Kind: ResourceRoute, ID: "r1"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !binding.logPolicySet || binding.logPolicy != (base.LogCapturePolicy{}) {
+		t.Fatalf("zero log policy = %#v set=%t", binding.logPolicy, binding.logPolicySet)
+	}
+}
+
+func TestBindResolvedPluginRejectsInvalidLogCapturePolicy(t *testing.T) {
+	plugin := &bindingLogPolicyPlugin{
+		responseTestPlugin: newResponseTestPlugin("request-id", 1, nil),
+		policy:             base.LogCapturePolicy{RequestBodyBytes: base.MAX_REQ_BODY + 1},
+	}
+	if _, err := BindPluginChecked(
+		"request-id",
+		plugin,
+		ScopeRoute,
+		ResourceProvenance{Kind: ResourceRoute, ID: "r1"},
+	); err == nil {
+		t.Fatal("BindPluginChecked() error = nil, want invalid log capture policy")
+	}
+	if plugin.calls != 1 {
+		t.Fatalf("LogCapturePolicy() calls = %d, want 1", plugin.calls)
 	}
 }

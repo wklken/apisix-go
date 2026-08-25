@@ -145,7 +145,11 @@ func (p *Plugin) Config() any {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
-		r = apisixctx.WithBeforeProxyHook(r, p.mirrorFinalizedRequest)
+		r = apisixctx.WithBeforeProxyHookRegistration(r, apisixctx.BeforeProxyHookRegistration{
+			Owner: name,
+			Phase: "before_proxy",
+			Hook:  p.mirrorFinalizedRequest,
+		})
 		next.ServeHTTP(w, r)
 	}
 	return http.HandlerFunc(fn)

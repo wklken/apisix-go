@@ -2,10 +2,12 @@ package plugin
 
 import (
 	"cmp"
+	"context"
 	"fmt"
 	"io"
 	"net/http"
 	"slices"
+	"strings"
 
 	"github.com/felixge/httpsnoop"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
@@ -58,12 +60,14 @@ type ResourceProvenance struct {
 
 // Binding is the immutable executor input for one materialized plugin.
 type Binding struct {
-	Plugin      Plugin
-	Descriptor  Descriptor
-	Priority    int
-	Scope       Scope
-	Provenance  ResourceProvenance
-	InstanceKey InstanceKey
+	Plugin       Plugin
+	Descriptor   Descriptor
+	Priority     int
+	Scope        Scope
+	Provenance   ResourceProvenance
+	InstanceKey  InstanceKey
+	logPolicy    base.LogCapturePolicy
+	logPolicySet bool
 }
 
 type ConsumerIdentity struct {
@@ -130,6 +134,34 @@ type RequestPipeline struct {
 type preparedStaticPipeline struct {
 	effective EffectiveBindingSet
 	handler   http.Handler
+}
+
+type staticCORSAuthenticationState struct {
+	destination          http.ResponseWriter
+	beforeAuthentication http.Header
+}
+
+type staticCORSAuthenticationStateKey struct{}
+
+type requestPhaseWithExecutorState struct {
+	base.RequestPhasePlugin
+}
+
+func (p requestPhaseWithExecutorState) RunRequestPhase(
+	w http.ResponseWriter,
+	r *http.Request,
+) base.RequestPhaseResult {
+	result := p.RequestPhasePlugin.RunRequestPhase(w, r)
+	state := r.Context().Value(staticCORSAuthenticationStateKey{})
+	if state != nil && result.Request != nil &&
+		result.Request.Context().Value(staticCORSAuthenticationStateKey{}) == nil {
+		*result.Request = *result.Request.WithContext(context.WithValue(
+			result.Request.Context(),
+			staticCORSAuthenticationStateKey{},
+			state,
+		))
+	}
+	return result
 }
 
 func NewRequestPipeline(bindings []Binding, resolve ConsumerBindingResolver) RequestPipeline {
@@ -294,26 +326,40 @@ func wrapAuthenticationWithStaticCORS(
 	}
 	ordered := append([]Binding(nil), corsBindings...)
 	slices.SortStableFunc(ordered, compareBindings)
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var beforeAuthentication http.Header
-		afterAuthentication := http.HandlerFunc(func(provisional http.ResponseWriter, r *http.Request) {
-			// Authentication succeeded. Preserve only the header changes made
-			// by authentication; provisional static CORS headers are discarded
-			// so the post-resolution winner owns the response.
-			applyHeaderDelta(w.Header(), beforeAuthentication, provisional.Header())
-			next.ServeHTTP(w, r)
-		})
-		authentication := wrapRequestStageBindings(afterAuthentication, authBindings)
-		handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			beforeAuthentication = w.Header().Clone()
-			authentication.ServeHTTP(w, r)
-		}))
-		for _, binding := range ordered {
-			if binding.Plugin != nil {
-				handler = binding.Plugin.Handler(handler)
-			}
+	afterAuthentication := http.HandlerFunc(func(provisional http.ResponseWriter, r *http.Request) {
+		state, ok := r.Context().Value(staticCORSAuthenticationStateKey{}).(*staticCORSAuthenticationState)
+		if !ok || state == nil {
+			panic("static CORS authentication state is missing")
 		}
-		handler.ServeHTTP(provisionalResponseWriter(w), r)
+		// Authentication succeeded. Preserve only the header changes made
+		// by authentication; provisional static CORS headers are discarded
+		// so the post-resolution winner owns the response.
+		applyHeaderDelta(
+			state.destination.Header(),
+			state.beforeAuthentication,
+			provisional.Header(),
+		)
+		*r = *r.WithContext(context.WithValue(r.Context(), staticCORSAuthenticationStateKey{}, nil))
+		next.ServeHTTP(state.destination, r)
+	})
+	authentication := wrapRequestStageBindings(afterAuthentication, authBindings)
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		state, ok := r.Context().Value(staticCORSAuthenticationStateKey{}).(*staticCORSAuthenticationState)
+		if !ok || state == nil {
+			panic("static CORS authentication state is missing")
+		}
+		state.beforeAuthentication = w.Header().Clone()
+		authentication.ServeHTTP(w, r)
+	}))
+	for _, binding := range slices.Backward(ordered) {
+		if binding.Plugin != nil {
+			handler = pluginMiddlewareHandler(binding, handler)
+		}
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		state := &staticCORSAuthenticationState{destination: w}
+		request := r.WithContext(context.WithValue(r.Context(), staticCORSAuthenticationStateKey{}, state))
+		handler.ServeHTTP(provisionalResponseWriter(w), request)
 	})
 }
 
@@ -548,7 +594,12 @@ func (p RequestPipeline) buildPostResolutionHandler(
 			}
 		}
 		apisixctx.FinalizeProxyRewrite(r)
-		if err := apisixctx.RunBeforeProxyHooks(r); err != nil {
+		if err := apisixctx.RunBeforeProxyHookRegistrations(
+			r,
+			func(registration apisixctx.BeforeProxyHookRegistration) error {
+				return invokeBeforeProxyHook(r, registration)
+			},
+		); err != nil {
 			status := http.StatusInternalServerError
 			message := "Internal Server Error"
 			if base.IsBodyTooLarge(err) {
@@ -683,16 +734,87 @@ func wrapScopedRequestStage(next http.Handler, bindings []Binding, stage Request
 }
 
 func requestStageHandler(binding Binding, next http.Handler) http.Handler {
-	if phase, ok := binding.Plugin.(base.RequestPhasePlugin); ok {
-		return base.AdaptRequestPhase(phase, next)
+	phase := phaseForRequestStage(binding.Descriptor.requestStage)
+	if requestPhase, ok := binding.Plugin.(base.RequestPhasePlugin); ok {
+		handler := guardMiddleware(bindingFactory(binding), phase, func(guardedNext http.Handler) http.Handler {
+			return base.AdaptRequestPhase(
+				requestPhaseWithExecutorState{RequestPhasePlugin: requestPhase},
+				guardedNext,
+			)
+		}, next)
+		if handler != nil {
+			return handler
+		}
+		return internalServerErrorHandler()
 	}
-	handler := binding.Plugin.Handler(next)
+	return pluginMiddlewareHandler(binding, next)
+}
+
+func pluginMiddlewareHandler(binding Binding, next http.Handler) http.Handler {
+	handler := guardMiddleware(
+		bindingFactory(binding),
+		phaseForRequestStage(binding.Descriptor.requestStage),
+		binding.Plugin.Handler,
+		next,
+	)
 	if handler != nil {
 		return handler
 	}
+	return internalServerErrorHandler()
+}
+
+func bindingFactory(binding Binding) string {
+	if binding.Descriptor.Factory != "" {
+		return binding.Descriptor.Factory
+	}
+	if binding.Plugin != nil {
+		return binding.Plugin.GetName()
+	}
+	return ""
+}
+
+func internalServerErrorHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 	})
+}
+
+func invokeBeforeProxyHook(
+	r *http.Request,
+	registration apisixctx.BeforeProxyHookRegistration,
+) error {
+	if registration.Owner == "" {
+		return registration.Hook(r)
+	}
+	if strings.TrimSpace(registration.Owner) != registration.Owner {
+		return fmt.Errorf("before-proxy hook has invalid owner %q", registration.Owner)
+	}
+	if _, ok := pluginRegistry[registration.Owner]; !ok {
+		return fmt.Errorf("before-proxy hook has unknown owner %q", registration.Owner)
+	}
+	phase := Phase(registration.Phase)
+	if !isRuntimePluginPhase(phase) {
+		return fmt.Errorf(
+			"before-proxy hook owner %q has invalid phase %q",
+			registration.Owner,
+			registration.Phase,
+		)
+	}
+	err := guardCall(registration.Owner, phase, func() error { return registration.Hook(r) })
+	if panicErr, ok := err.(*PanicError); ok {
+		panic(panicErr)
+	}
+	return err
+}
+
+func isRuntimePluginPhase(phase Phase) bool {
+	switch phase {
+	case PhaseRewrite, PhaseConsumerRewrite, PhaseAccess, PhaseBeforeProxy,
+		PhaseHeaderFilter, PhaseBodyFilter, PhaseLog, PhaseFinalizer, PhaseProtocol:
+		return true
+	default:
+		return false
+	}
 }
 
 func legacyRemainderBindings(bindings []Binding) []Binding {
@@ -925,17 +1047,30 @@ func bindResolvedPlugin(
 	descriptor.Phases = append([]Phase(nil), descriptor.Phases...)
 	descriptor.Scopes = append([]Scope(nil), descriptor.Scopes...)
 	descriptor.response.Owners = append([]ResponseOwnerKind(nil), descriptor.response.Owners...)
+	logPolicy := base.LogCapturePolicy{}
+	if provider, ok := p.(base.LogCapturePolicyPlugin); ok {
+		logPolicy = provider.LogCapturePolicy()
+	}
+	if err := base.ValidateLogCapturePolicy(logPolicy); err != nil {
+		return Binding{}, fmt.Errorf(
+			"resolved plugin binding %q has invalid log capture policy: %w",
+			descriptor.Factory,
+			err,
+		)
+	}
 	key, err := newInstanceKey(attempt, descriptor, scope, provenance, identity)
 	if err != nil {
 		return Binding{}, err
 	}
 	return Binding{
-		Plugin:      p,
-		Descriptor:  descriptor,
-		Priority:    descriptor.Priority,
-		Scope:       scope,
-		Provenance:  provenance,
-		InstanceKey: key,
+		Plugin:       p,
+		Descriptor:   descriptor,
+		Priority:     descriptor.Priority,
+		Scope:        scope,
+		Provenance:   provenance,
+		InstanceKey:  key,
+		logPolicy:    logPolicy,
+		logPolicySet: true,
 	}, nil
 }
 
@@ -961,7 +1096,7 @@ func NewExecutor(plugins ...Plugin) Executor {
 	}
 	bindings := make([]Binding, len(sorted))
 	for i, plugin := range sorted {
-		bindings[i] = Binding{Plugin: plugin}
+		bindings[i] = Binding{Plugin: plugin, Descriptor: Descriptor{Factory: plugin.GetName()}}
 	}
 	return Executor{bindings: bindings, transformCount: transformCount}
 }
@@ -1000,11 +1135,7 @@ func (e Executor) thenLegacy(handler http.Handler, bindings []Binding) http.Hand
 		if current.Plugin == nil {
 			continue
 		}
-		if phase, ok := current.Plugin.(base.RequestPhasePlugin); ok {
-			handler = base.AdaptRequestPhase(phase, handler)
-			continue
-		}
-		handler = current.Plugin.Handler(handler)
+		handler = requestStageHandler(current, handler)
 	}
 	return handler
 }

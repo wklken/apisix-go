@@ -8,6 +8,55 @@ import (
 	"time"
 )
 
+type requestTaskWaitResult struct {
+	err        error
+	panicValue any
+}
+
+func waitRequestTaskGroup(group *RequestTaskGroup) (result requestTaskWaitResult) {
+	defer func() { result.panicValue = recover() }()
+	result.err = group.Wait()
+	return result
+}
+
+func waitForRequestTaskGroupWaiting(t *testing.T, group *RequestTaskGroup) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for {
+		group.mu.Lock()
+		waiting := group.waiting
+		group.mu.Unlock()
+		if waiting {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("RequestTaskGroup.Wait did not close admission")
+		}
+		goruntime.Gosched()
+	}
+}
+
+func waitForRequestTaskGroupPanic(t *testing.T, group *RequestTaskGroup, want any) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for {
+		group.mu.Lock()
+		panicked := group.panicked
+		panicValue := group.panicValue
+		group.mu.Unlock()
+		if panicked {
+			if panicValue != want {
+				t.Fatalf("recorded panic = %#v, want exact %#v", panicValue, want)
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("RequestTaskGroup did not record panic")
+		}
+		goruntime.Gosched()
+	}
+}
+
 func TestRequestTaskGroupJoinsAcceptedTaskErrors(t *testing.T) {
 	wantA := errors.New("first failed")
 	wantB := errors.New("second failed")
@@ -28,9 +77,12 @@ func TestRequestTaskGroupJoinsAcceptedTaskErrors(t *testing.T) {
 }
 
 func TestRequestTaskGroupWaitJoinsSiblingsBeforeRepanickingExactValue(t *testing.T) {
+	previousProcs := goruntime.GOMAXPROCS(1)
+	t.Cleanup(func() { goruntime.GOMAXPROCS(previousProcs) })
+
 	group := NewRequestTaskGroup(context.Background(), "request/batch-requests")
 	wantPanic := &struct{ marker string }{marker: "core-invariant"}
-	releaseSibling := make(chan struct{}, 1)
+	releaseSibling := make(chan struct{})
 	siblingDone := make(chan struct{})
 	if err := group.Go(func(context.Context) error { panic(wantPanic) }); err != nil {
 		t.Fatal(err)
@@ -42,43 +94,90 @@ func TestRequestTaskGroupWaitJoinsSiblingsBeforeRepanickingExactValue(t *testing
 	}); err != nil {
 		t.Fatal(err)
 	}
+	waitForRequestTaskGroupPanic(t, group, wantPanic)
 
-	recovered := make(chan any, 1)
+	type panicResult struct {
+		value         any
+		siblingJoined bool
+	}
+	recovered := make(chan panicResult, 1)
 	go func() {
-		defer func() { recovered <- recover() }()
+		defer func() {
+			result := panicResult{value: recover()}
+			select {
+			case <-siblingDone:
+				result.siblingJoined = true
+			default:
+			}
+			recovered <- result
+		}()
 		_ = group.Wait()
 	}()
-	select {
-	case value := <-recovered:
-		t.Fatalf("Wait() repanicked before sibling join: %#v", value)
-	default:
-	}
-	releaseSibling <- struct{}{}
-	<-siblingDone
-	if got := <-recovered; got != wantPanic {
-		t.Fatalf("recovered panic = %#v, want exact %#v", got, wantPanic)
+	waitForRequestTaskGroupWaiting(t, group)
+	close(releaseSibling)
+	result := <-recovered
+	if !result.siblingJoined || result.value != wantPanic {
+		t.Fatalf("recovered panic = %#v, sibling joined = %t, want exact %#v after join",
+			result.value, result.siblingJoined, wantPanic)
 	}
 }
 
 func TestRequestTaskGroupRepeatedAndConcurrentWaitReplaySamePanic(t *testing.T) {
 	group := NewRequestTaskGroup(context.Background(), "connection/stream-bridge")
-	wantPanic := &struct{ marker string }{marker: "bridge-invariant"}
+	firstPanic := &struct{ marker string }{marker: "first-invariant"}
+	secondPanic := &struct{ marker string }{marker: "second-invariant"}
+	triggerFirst := make(chan struct{})
+	triggerSecond := make(chan struct{})
+	if err := group.Go(func(context.Context) error {
+		<-triggerFirst
+		panic(firstPanic)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := group.Go(func(context.Context) error {
+		<-triggerSecond
+		panic(secondPanic)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	close(triggerFirst)
+	waitForRequestTaskGroupPanic(t, group, firstPanic)
+	close(triggerSecond)
+
+	const waiters = 4
+	results := make(chan requestTaskWaitResult, waiters)
+	for range waiters {
+		go func() { results <- waitRequestTaskGroup(group) }()
+	}
+	for range waiters {
+		result := <-results
+		if result.err != nil || result.panicValue != firstPanic {
+			t.Fatalf("concurrent Wait() = (%v, %#v), want exact panic %#v", result.err, result.panicValue, firstPanic)
+		}
+	}
+	for range 2 {
+		result := waitRequestTaskGroup(group)
+		if result.err != nil || result.panicValue != firstPanic {
+			t.Fatalf("repeated Wait() = (%v, %#v), want exact panic %#v", result.err, result.panicValue, firstPanic)
+		}
+	}
+}
+
+func TestRequestTaskGroupPanicTakesPriorityOverJoinedErrors(t *testing.T) {
+	wantErr := errors.New("ordinary task failed")
+	wantPanic := &struct{ marker string }{marker: "panic-wins"}
+	group := NewRequestTaskGroup(context.Background(), "request/mixed-results")
+	if err := group.Go(func(context.Context) error { return wantErr }); err != nil {
+		t.Fatal(err)
+	}
 	if err := group.Go(func(context.Context) error { panic(wantPanic) }); err != nil {
 		t.Fatal(err)
 	}
 
-	const waiters = 4
-	results := make(chan any, waiters)
-	for range waiters {
-		go func() {
-			defer func() { results <- recover() }()
-			_ = group.Wait()
-		}()
-	}
-	for range waiters {
-		if got := <-results; got != wantPanic {
-			t.Fatalf("concurrent Wait recovered %#v, want exact %#v", got, wantPanic)
-		}
+	result := waitRequestTaskGroup(group)
+	if result.err != nil || result.panicValue != wantPanic {
+		t.Fatalf("Wait() = (%v, %#v), want exact panic %#v instead of joined error %v",
+			result.err, result.panicValue, wantPanic, wantErr)
 	}
 }
 

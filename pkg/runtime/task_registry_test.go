@@ -48,6 +48,58 @@ func TestTaskOwnerUsesExactPrefixComponentAndPluginFailureIsolation(t *testing.T
 	}
 }
 
+func TestTaskOwnerDelegatesTaskCoreWithoutPoisoningComponent(t *testing.T) {
+	failures := make(chan TaskFailure, 1)
+	registry := NewTaskRegistry(context.Background(), func(f TaskFailure) { failures <- f })
+	owner, err := NewTaskOwner(registry, "core/runtime/key", TaskCore)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wantErr := errors.New("core task failed")
+	if err := owner.Go("health-refresh", func(context.Context) error { return wantErr }); err != nil {
+		t.Fatal(err)
+	}
+	failure := <-failures
+	if failure.Owner != "core/runtime/key/health-refresh" || !errors.Is(failure.Err, wantErr) {
+		t.Fatalf("failure = %#v", failure)
+	}
+	done := make(chan struct{})
+	if err := owner.Go("health-refresh", func(context.Context) error {
+		close(done)
+		return nil
+	}); err != nil {
+		t.Fatalf("second core component admission = %v", err)
+	}
+	<-done
+	if residuals, err := registry.Stop(context.Background()); err != nil || len(residuals) != 0 {
+		t.Fatalf("Stop() = (%v, %v)", residuals, err)
+	}
+}
+
+func TestTaskOwnerAcceptsComponentBoundaries(t *testing.T) {
+	registry := NewTaskRegistry(context.Background(), nil)
+	owner, err := NewTaskOwner(registry, "plugin/test/key", TaskPlugin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan string, 2)
+	for _, component := range []string{"a0", strings.Repeat("a", 64)} {
+		if err := owner.Go(component, func(context.Context) error {
+			done <- component
+			return nil
+		}); err != nil {
+			t.Fatalf("Go(%q) error = %v", component, err)
+		}
+	}
+	for range 2 {
+		<-done
+	}
+	if residuals, err := registry.Stop(context.Background()); err != nil || len(residuals) != 0 {
+		t.Fatalf("Stop() = (%v, %v)", residuals, err)
+	}
+}
+
 func TestTaskOwnerStopReportsExactDeduplicatedResidual(t *testing.T) {
 	registry := NewTaskRegistry(context.Background(), nil)
 	owner, err := NewTaskOwner(registry, "plugin/logger/key", TaskPlugin)

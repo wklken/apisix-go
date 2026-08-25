@@ -1,16 +1,21 @@
 package route
 
 import (
+	"bytes"
 	"crypto/tls"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"math"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
 	appconfig "github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/plugin/proxy_control"
+	"github.com/wklken/apisix-go/pkg/plugin/traffic_split"
 	"github.com/wklken/apisix-go/pkg/proxy"
 	"github.com/wklken/apisix-go/pkg/resource"
 )
@@ -313,4 +318,84 @@ func withoutActiveChecks(checks map[string]any) map[string]any {
 		result[key] = value
 	}
 	return result
+}
+
+type trafficSplitRoundTripper struct {
+	fallback http.RoundTripper
+}
+
+func (t *trafficSplitRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
+	if override := traffic_split.GetOverride(request); override != nil && override.RoundTripper != nil {
+		return override.RoundTripper.RoundTrip(request)
+	}
+	return t.fallback.RoundTrip(request)
+}
+
+func applyTrafficSplitOverride(req *http.Request) bool {
+	override := traffic_split.GetOverride(req)
+	return applyTrafficSplitTarget(req, override, req.Host)
+}
+
+func httpRetryCount(upstream resource.Upstream) int {
+	if upstream.RetriesConfigured() {
+		return max(upstream.Retries, 0)
+	}
+	return max(len(upstream.Nodes)-1, 0)
+}
+
+func attachHTTPRetriesCompiled(
+	request *http.Request,
+	upstream resource.Upstream,
+	loadBalancer proxy.LoadBalancer,
+	targets map[string]compiledUpstreamTarget,
+) *http.Request {
+	originalHost := request.Host
+	if override := traffic_split.GetOverride(request); override != nil {
+		return proxy.WithRetries(request, override.Retries, func(retry *http.Request) bool {
+			if override.NextRetry == nil {
+				proxy.SetSelectedTarget(retry, "")
+				return false
+			}
+			next := override.NextRetry(retry)
+			if !applyTrafficSplitTarget(retry, next, originalHost) {
+				proxy.SetSelectedTarget(retry, "")
+				return false
+			}
+			applyFinalProxyRewrite(retry)
+			return true
+		})
+	}
+	return proxy.WithRetries(request, httpRetryCount(upstream), func(retry *http.Request) bool {
+		if err := applyUpstreamTargetCompiled(retry, loadBalancer, upstream, originalHost, targets); err != nil {
+			return false
+		}
+		// A later transport failure must not report a stale director error
+		// from an earlier attempt.
+		*retry = *withDirectorError(retry, nil)
+		applyFinalProxyRewrite(retry)
+		return true
+	})
+}
+
+func bufferRequestBodyIfNeeded(w http.ResponseWriter, r *http.Request) error {
+	if !proxy_control.GetRequestBuffering(r) || r.Body == nil || r.Body == http.NoBody {
+		return nil
+	}
+	limit := proxy_control.GetRequestBufferingLimit(r)
+	r.Body = http.MaxBytesReader(w, r.Body, limit)
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		return err
+	}
+	if err := r.Body.Close(); err != nil {
+		return err
+	}
+
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	r.GetBody = func() (io.ReadCloser, error) {
+		return io.NopCloser(bytes.NewReader(body)), nil
+	}
+	r.ContentLength = int64(len(body))
+	return nil
 }

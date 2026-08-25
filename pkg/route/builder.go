@@ -1,14 +1,10 @@
 package route
 
 import (
-	"bufio"
 	"bytes"
-	"context"
 	"crypto/sha256"
-	"crypto/tls"
 	"errors"
 	"fmt"
-	"io"
 	"maps"
 	"math"
 	"net"
@@ -34,9 +30,7 @@ import (
 	pluginexpr "github.com/wklken/apisix-go/pkg/plugin/expr"
 	"github.com/wklken/apisix-go/pkg/plugin/http_dubbo"
 	"github.com/wklken/apisix-go/pkg/plugin/kafka_proxy"
-	"github.com/wklken/apisix-go/pkg/plugin/proxy_buffering"
 	"github.com/wklken/apisix-go/pkg/plugin/proxy_cache"
-	"github.com/wklken/apisix-go/pkg/plugin/proxy_control"
 	"github.com/wklken/apisix-go/pkg/plugin/public_api"
 	"github.com/wklken/apisix-go/pkg/plugin/traffic_split"
 	pxy "github.com/wklken/apisix-go/pkg/proxy"
@@ -692,35 +686,6 @@ func (b *Builder) buildHandlerWithServiceStrict(
 	})), nil
 }
 
-func buildTransparentUpgradeHandler(
-	pipeline plugin.RequestPipeline,
-	plan plugin.ResponsePlan,
-	terminal http.Handler,
-	enabled bool,
-) (http.Handler, error) {
-	terminals := plan.RouteTerminals()
-	if len(terminals) == 0 {
-		return pipeline.Then(requireWebsocketEnablement(terminal, enabled)), nil
-	}
-	streaming, err := plugin.NewStreamingResponseExecutor(nil)
-	if err != nil {
-		return nil, err
-	}
-	streaming, err = streaming.WithRouteTerminals(terminals)
-	if err != nil {
-		return nil, err
-	}
-	terminalOnly := streaming.Then(terminal)
-	return pipeline.Then(requireWebsocketEnablement(terminalOnly, enabled)), nil
-}
-
-// validateRouteCompatibility is the single pre-materialization entrypoint for
-// the documented Go data-plane route subset. It does not import the full
-// APISIX 3.17 schema.
-func validateRouteCompatibility(routeResource resource.Route) error {
-	return validateRouteSemantics(routeResource)
-}
-
 func validateRouteSemantics(routeResource resource.Route) error {
 	seenMethods := make(map[string]struct{}, len(routeResource.Methods))
 	for _, method := range routeResource.Methods {
@@ -781,51 +746,7 @@ func validateRouteSemantics(routeResource resource.Route) error {
 	return nil
 }
 
-func newRequestPipelineWithLog(
-	bindings []plugin.Binding,
-	resolve plugin.ConsumerBindingResolver,
-) (plugin.RequestPipeline, error) {
-	logExecutor, err := plugin.NewLogExecutorFromBindings(bindings)
-	if err != nil {
-		return plugin.RequestPipeline{}, err
-	}
-	pipeline := plugin.NewRequestPipeline(bindings, resolve)
-	return pipeline.WithLogExecutor(&logExecutor), nil
-}
-
-func ensureRouteLifecycle(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		request, _ := ctx.EnsureRequestLifecycle(r, time.Now())
-		next.ServeHTTP(w, request)
-	})
-}
-
 const websocketDisabledMessage = "websocket upgrade is disabled"
-
-func requireWebsocketEnablement(next http.Handler, enabled bool) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !enabled && isWebsocketUpgradeRequest(r) {
-			ctx.SetRequestResponseSource(r, ctx.ResponseSourceAPISIX)
-			_ = util.WriteJSONMessage(w, http.StatusBadRequest, websocketDisabledMessage)
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
-}
-
-func isWebsocketUpgradeRequest(r *http.Request) bool {
-	if r == nil {
-		return false
-	}
-	for _, value := range r.Header.Values("Connection") {
-		for token := range strings.SplitSeq(value, ",") {
-			if strings.EqualFold(strings.TrimSpace(token), "upgrade") {
-				return strings.EqualFold(strings.TrimSpace(r.Header.Get("Upgrade")), "websocket")
-			}
-		}
-	}
-	return false
-}
 
 func (b *Builder) resolveConsumerBindings(
 	routeContext pluginRouteContext,
@@ -969,39 +890,6 @@ func consumerConfigDigest(configs map[string]resource.PluginConfig, configured [
 	return sha256.Sum256(encoded), nil
 }
 
-func consumerPluginSources(group resource.ConsumerGroup, consumer resource.Consumer) []materializedPluginSource {
-	sourcesByName := make(map[string]materializedPluginSource, len(group.Plugins)+len(consumer.Plugins))
-	for _, name := range slices.Sorted(maps.Keys(group.Plugins)) {
-		if isConsumerCredentialOnly(name) {
-			continue
-		}
-		sourcesByName[name] = materializedPluginSource{
-			name:       name,
-			config:     group.Plugins[name],
-			scope:      plugin.ScopeConsumer,
-			provenance: plugin.ResourceProvenance{Kind: plugin.ResourceConsumerGroup, ID: consumer.GroupID},
-		}
-	}
-	for _, name := range slices.Sorted(maps.Keys(consumer.Plugins)) {
-		if isConsumerCredentialOnly(name) {
-			continue
-		}
-		sourcesByName[name] = materializedPluginSource{
-			name:       name,
-			config:     consumer.Plugins[name],
-			scope:      plugin.ScopeConsumer,
-			provenance: plugin.ResourceProvenance{Kind: plugin.ResourceConsumer, ID: consumer.Username},
-		}
-	}
-
-	names := slices.Sorted(maps.Keys(sourcesByName))
-	sources := make([]materializedPluginSource, 0, len(names))
-	for _, name := range names {
-		sources = append(sources, sourcesByName[name])
-	}
-	return sources
-}
-
 func isConsumerCredentialOnly(name string) bool {
 	switch name {
 	case "basic-auth", "hmac-auth", "jwe-decrypt", "jwt-auth", "key-auth", "ldap-auth", "multi-auth", "wolf-rbac":
@@ -1009,85 +897,6 @@ func isConsumerCredentialOnly(name string) bool {
 	default:
 		return false
 	}
-}
-
-type materializedPluginSource struct {
-	name       string
-	config     resource.PluginConfig
-	scope      plugin.Scope
-	provenance plugin.ResourceProvenance
-}
-
-func selectMaterializedPluginSources(
-	routePlugins map[string]resource.PluginConfig,
-	routeID string,
-	pluginConfigPlugins map[string]resource.PluginConfig,
-	pluginConfigID string,
-	servicePlugins map[string]resource.PluginConfig,
-	serviceID string,
-) (localSources, serviceSources []materializedPluginSource, effective map[string]resource.PluginConfig) {
-	effective = clonePluginConfigs(routePlugins)
-	localSources = materializedPluginSources(
-		routePlugins,
-		plugin.ResourceProvenance{Kind: plugin.ResourceRoute, ID: routeID},
-	)
-	for _, name := range slices.Sorted(maps.Keys(pluginConfigPlugins)) {
-		if _, exists := effective[name]; exists {
-			continue
-		}
-		config := pluginConfigPlugins[name]
-		effective[name] = config
-		localSources = append(localSources, materializedPluginSource{
-			name:       name,
-			config:     config,
-			provenance: plugin.ResourceProvenance{Kind: plugin.ResourcePluginConfig, ID: pluginConfigID},
-			scope:      plugin.ScopeRoute,
-		})
-	}
-
-	servicePluginConfigs := make(map[string]resource.PluginConfig)
-	for _, name := range slices.Sorted(maps.Keys(servicePlugins)) {
-		if _, exists := effective[name]; exists {
-			continue
-		}
-		config := servicePlugins[name]
-		if name == "kafka-logger" && serviceID != "" {
-			servicePluginConfigs[name] = config
-			serviceSources = append(serviceSources, materializedPluginSource{
-				name:       name,
-				config:     config,
-				provenance: plugin.ResourceProvenance{Kind: plugin.ResourceService, ID: serviceID},
-				scope:      plugin.ScopeRoute,
-			})
-			continue
-		}
-		effective[name] = config
-		localSources = append(localSources, materializedPluginSource{
-			name:       name,
-			config:     config,
-			provenance: plugin.ResourceProvenance{Kind: plugin.ResourceService, ID: serviceID},
-			scope:      plugin.ScopeRoute,
-		})
-	}
-	maps.Copy(effective, servicePluginConfigs)
-	return localSources, serviceSources, effective
-}
-
-func materializedPluginSources(
-	pluginConfigs map[string]resource.PluginConfig,
-	provenance plugin.ResourceProvenance,
-) []materializedPluginSource {
-	names := slices.Sorted(maps.Keys(pluginConfigs))
-	sources := make([]materializedPluginSource, 0, len(names))
-	for _, name := range names {
-		sources = append(sources, materializedPluginSource{
-			name:       name,
-			config:     pluginConfigs[name],
-			scope:      plugin.ScopeRoute,
-			provenance: provenance,
-		})
-	}
-	return sources
 }
 
 func pluginsFromBindings(bindings []plugin.Binding) []plugin.Plugin {
@@ -1098,15 +907,6 @@ func pluginsFromBindings(bindings []plugin.Binding) []plugin.Plugin {
 		}
 	}
 	return plugins
-}
-
-func buildSystemPluginConfigs(
-	r resource.Route,
-	service resource.Service,
-) map[string]resource.PluginConfig {
-	return map[string]resource.PluginConfig{
-		"request-context": buildRequestContextConfig(r, service),
-	}
 }
 
 func buildRequestContextConfig(
@@ -1129,13 +929,6 @@ func matchedURI(r resource.Route) string {
 	}
 	if len(r.Uris) > 0 {
 		return r.Uris[0]
-	}
-	return ""
-}
-
-func matchedHost(r resource.Route) string {
-	if len(r.Hosts) > 0 {
-		return r.Hosts[0]
 	}
 	return ""
 }
@@ -1768,76 +1561,6 @@ func writeMetadataErrorResponse(w http.ResponseWriter, status int, value any) {
 	_, _ = w.Write(body)
 }
 
-type pluginMetadata struct {
-	disabled       bool
-	priority       *int
-	filter         *pluginexpr.Expression
-	identityFilter any
-	errorResponse  any
-}
-
-func (m pluginMetadata) instanceIdentity(config any) plugin.InstanceIdentityInput {
-	return plugin.InstanceIdentityInput{
-		PluginConfig:  config,
-		Filter:        m.identityFilter,
-		ErrorResponse: m.errorResponse,
-	}
-}
-
-func parsePluginMetadata(config resource.PluginConfig) (resource.PluginConfig, pluginMetadata, error) {
-	values, ok := config.(map[string]any)
-	if !ok {
-		return config, pluginMetadata{}, nil
-	}
-	rawMetadata, ok := values["_meta"]
-	if !ok {
-		return config, pluginMetadata{}, nil
-	}
-	metadataValues, ok := rawMetadata.(map[string]any)
-	if !ok {
-		return nil, pluginMetadata{}, fmt.Errorf("_meta must be an object")
-	}
-
-	pluginConfig := make(map[string]any, len(values)-1)
-	for name, value := range values {
-		if name != "_meta" {
-			pluginConfig[name] = value
-		}
-	}
-	metadata := pluginMetadata{}
-	if value, ok := metadataValues["disable"]; ok {
-		disabled, ok := value.(bool)
-		if !ok {
-			return nil, pluginMetadata{}, fmt.Errorf("_meta.disable must be a boolean")
-		}
-		metadata.disabled = disabled
-	}
-	if value, ok := metadataValues["priority"]; ok {
-		priority, err := parsePluginPriority(value)
-		if err != nil {
-			return nil, pluginMetadata{}, err
-		}
-		metadata.priority = &priority
-	}
-	if value, ok := metadataValues["filter"]; ok {
-		filter, err := pluginexpr.Compile(value)
-		if err != nil {
-			return nil, pluginMetadata{}, fmt.Errorf("_meta.filter: %w", err)
-		}
-		metadata.filter = filter
-		metadata.identityFilter = value
-	}
-	if value, ok := metadataValues["error_response"]; ok {
-		switch value.(type) {
-		case string, map[string]any:
-			metadata.errorResponse = value
-		default:
-			return nil, pluginMetadata{}, fmt.Errorf("_meta.error_response must be a string or object")
-		}
-	}
-	return pluginConfig, metadata, nil
-}
-
 func parsePluginPriority(value any) (int, error) {
 	switch number := value.(type) {
 	case int:
@@ -2283,60 +2006,6 @@ func (b *Builder) initPluginBindingsStrict(
 	return bindings, nil
 }
 
-func newMetadataPluginWithDescriptor(
-	factoryName string,
-	p plugin.Plugin,
-	metadata pluginMetadata,
-	descriptor plugin.Descriptor,
-) (plugin.Plugin, error) {
-	wrapped, err := newMetadataRequestAndBufferedPluginWithDescriptor(factoryName, p, metadata, descriptor)
-	if err != nil || wrapped == p {
-		return wrapped, err
-	}
-	{
-		_, sanitizerCallback := p.(base.LogSnapshotSanitizerPlugin)
-		ownsSanitizer := descriptor.HasPhase(plugin.PhaseLog) && sanitizerCallback
-		ownsLog := descriptor.HasPhase(plugin.PhaseLog)
-		ownsSnapshot := descriptor.OwnsSnapshotFinalizer()
-		switch {
-		case ownsSanitizer:
-			return metadataSnapshotSanitizerPlugin{
-				Plugin: wrapped,
-				target: p,
-				filter: metadata.filter,
-			}, nil
-		case ownsLog:
-			return metadataLogPlugin{Plugin: wrapped, target: p, filter: metadata.filter}, nil
-		case ownsSnapshot:
-			request, ok := wrapped.(base.RequestPhasePlugin)
-			if !ok {
-				return nil, fmt.Errorf("factory %q declares snapshot finalizer without request callback", factoryName)
-			}
-			return metadataRequestSnapshotPlugin{
-				Plugin:  wrapped,
-				request: request,
-				target:  p,
-				filter:  metadata.filter,
-			}, nil
-		}
-	}
-	capability := descriptor.ResponseCapability()
-	if !descriptor.HasPhase(plugin.PhaseHeaderFilter) &&
-		!descriptor.HasPhase(plugin.PhaseBodyFilter) &&
-		!descriptor.HasPhase(plugin.PhaseProtocol) {
-		return wrapped, nil
-	}
-	streaming := metadataStreamingPlugin{Plugin: wrapped, target: p, filter: metadata.filter}
-	switch factoryName {
-	case "ai-proxy", "ai-proxy-multi", "grpc-web":
-		return metadataProtocolPlugin{metadataStreamingPlugin: streaming}, nil
-	}
-	if capability.HeaderFilter || capability.StreamingBodyFilter || capability.CompressionOffer {
-		return streaming, nil
-	}
-	return wrapped, nil
-}
-
 func newMetadataRequestAndBufferedPluginWithDescriptor(
 	factoryName string,
 	p plugin.Plugin,
@@ -2468,37 +2137,6 @@ func (b *Builder) initGlobalPluginBindingsStrict(
 	return bindings, nil
 }
 
-func deduplicateGlobalRules(globalRules []resource.GlobalRule) []resource.GlobalRule {
-	seen := make(map[string]struct{})
-	duplicates := make(map[string]struct{})
-	for _, rule := range globalRules {
-		for name := range rule.Plugins {
-			if _, ok := seen[name]; ok {
-				duplicates[name] = struct{}{}
-				continue
-			}
-			seen[name] = struct{}{}
-		}
-	}
-
-	result := make([]resource.GlobalRule, len(globalRules))
-	for index, rule := range globalRules {
-		result[index] = rule
-		if rule.Plugins == nil {
-			continue
-		}
-		plugins := make(map[string]resource.PluginConfig, len(rule.Plugins))
-		for name, config := range rule.Plugins {
-			if _, duplicate := duplicates[name]; duplicate {
-				continue
-			}
-			plugins[name] = config
-		}
-		result[index].Plugins = plugins
-	}
-	return result
-}
-
 func resolveRouteUpstream(
 	r resource.Route,
 	service resource.Service,
@@ -2513,45 +2151,6 @@ func (b *Builder) resolveRouteUpstream(
 	return resolveRouteUpstreamWithGetter(r, service, b.getUpstream)
 }
 
-func resolveRouteUpstreamWithGetter(
-	r resource.Route,
-	service resource.Service,
-	getUpstream func(string) (resource.Upstream, error),
-) (resource.Upstream, plugin.ResourceProvenance, error) {
-	// Keep this priority identical to buildReverseHandler: inline route,
-	// route upstream_id, inline service, then service upstream_id.
-	if inlineUpstreamConfigured(r.Upstream) {
-		return r.Upstream, plugin.ResourceProvenance{Kind: plugin.ResourceRoute, ID: r.ID}, nil
-	}
-	if r.UpstreamID != "" {
-		upstream, err := getUpstream(r.UpstreamID)
-		if err != nil {
-			return resource.Upstream{}, plugin.ResourceProvenance{Kind: plugin.ResourceUpstream, ID: r.UpstreamID},
-				fmt.Errorf("get upstream %q fail: %w", r.UpstreamID, err)
-		}
-		return upstream, plugin.ResourceProvenance{Kind: plugin.ResourceUpstream, ID: r.UpstreamID}, nil
-	}
-	if inlineUpstreamConfigured(service.Upstream) {
-		return service.Upstream, plugin.ResourceProvenance{Kind: plugin.ResourceService, ID: service.ID}, nil
-	}
-	if service.UpstreamID != "" {
-		upstream, err := getUpstream(service.UpstreamID)
-		if err != nil {
-			return resource.Upstream{}, plugin.ResourceProvenance{
-					Kind: plugin.ResourceUpstream,
-					ID:   service.UpstreamID,
-				},
-				fmt.Errorf(
-					"get upstream %q fail: %w",
-					service.UpstreamID,
-					err,
-				)
-		}
-		return upstream, plugin.ResourceProvenance{Kind: plugin.ResourceUpstream, ID: service.UpstreamID}, nil
-	}
-	return resource.Upstream{}, plugin.ResourceProvenance{Kind: plugin.ResourceRoute, ID: r.ID}, nil
-}
-
 func inlineUpstreamConfigured(upstream resource.Upstream) bool {
 	return upstream.Nodes != nil || upstream.Scheme != "" || upstream.TLS != nil ||
 		upstream.Type != "" || upstream.Checks != nil || upstream.HashOn != "" ||
@@ -2559,107 +2158,6 @@ func inlineUpstreamConfigured(upstream resource.Upstream) bool {
 		upstream.Name != "" || upstream.Desc != "" || upstream.RetriesConfigured() ||
 		upstream.Timeout != (resource.Timeout{}) || upstream.DiscoveryType != "" ||
 		upstream.ServiceName != ""
-}
-
-func validateUnsupportedUpstreamDiscovery(
-	upstream resource.Upstream,
-	provenance plugin.ResourceProvenance,
-) error {
-	for _, field := range []struct {
-		name  string
-		value string
-	}{
-		{name: "discovery_type", value: upstream.DiscoveryType},
-		{name: "service_name", value: upstream.ServiceName},
-	} {
-		if field.value == "" {
-			continue
-		}
-		return fmt.Errorf(
-			"unsupported upstream field %q from %s %q: dynamic discovery is not supported",
-			field.name,
-			provenance.Kind,
-			provenance.ID,
-		)
-	}
-	return nil
-}
-
-type routeProtocolTerminals struct {
-	kafka     base.ExclusiveProtocolTerminal
-	dubbo     base.ExclusiveProtocolTerminal
-	httpDubbo base.ExclusiveProtocolTerminal
-}
-
-type routeKafkaTerminal struct{ handler http.Handler }
-
-func (t routeKafkaTerminal) RunExclusiveProtocol(
-	w http.ResponseWriter,
-	r *http.Request,
-	_ http.Handler,
-) (base.ProtocolDisposition, *http.Request, ctx.ResponseSource, error) {
-	ctx.SetRequestResponseSource(r, ctx.ResponseSourceUpstream)
-	hijacked := false
-	tracked := httpsnoop.Wrap(w, httpsnoop.Hooks{
-		Hijack: func(hijack httpsnoop.HijackFunc) httpsnoop.HijackFunc {
-			return func() (net.Conn, *bufio.ReadWriter, error) {
-				connection, readWriter, err := hijack()
-				if err == nil {
-					hijacked = true
-				}
-				return connection, readWriter, err
-			}
-		},
-	})
-	if t.handler != nil {
-		t.handler.ServeHTTP(tracked, r)
-	}
-	if hijacked {
-		return base.ProtocolHijacked, r, ctx.ResponseSourceUpstream, nil
-	}
-	return base.ProtocolResponded, r, ctx.ResponseSourceUpstream, nil
-}
-
-type routeDubboTerminal struct {
-	lb      pxy.LoadBalancer
-	targets map[string]compiledUpstreamTarget
-	retries int
-}
-
-func (t routeDubboTerminal) RunExclusiveProtocol(
-	w http.ResponseWriter,
-	r *http.Request,
-	next http.Handler,
-) (base.ProtocolDisposition, *http.Request, ctx.ResponseSource, error) {
-	ctx.SetRequestResponseSource(r, ctx.ResponseSourceUpstream)
-	if (t.lb == nil && traffic_split.GetOverride(r) == nil) ||
-		!serveDubboIfConfiguredCompiled(w, r, t.lb, t.targets, t.retries) {
-		if next != nil {
-			next.ServeHTTP(w, r)
-		}
-	}
-	return base.ProtocolResponded, r, ctx.ResponseSourceUpstream, nil
-}
-
-type routeHTTPDubboTerminal struct {
-	lb      pxy.LoadBalancer
-	targets map[string]compiledUpstreamTarget
-	retries int
-}
-
-func (t routeHTTPDubboTerminal) RunExclusiveProtocol(
-	w http.ResponseWriter,
-	r *http.Request,
-	next http.Handler,
-) (base.ProtocolDisposition, *http.Request, ctx.ResponseSource, error) {
-	ctx.SetRequestResponseSource(r, ctx.ResponseSourceUpstream)
-	if (t.lb == nil && traffic_split.GetOverride(r) == nil) ||
-		!serveHTTPDubboIfConfiguredCompiled(w, r, t.lb, t.targets, t.retries) {
-		if next != nil {
-			next.ServeHTTP(w, r)
-		}
-	}
-	return base.ProtocolResponded, r, ctx.ResponseSourceUpstream, nil
 }
 
 func routeTerminalCandidates(
@@ -2929,20 +2427,6 @@ func (b *Builder) buildReverseHandlerWithTerminals(
 		}, nil
 }
 
-func validateHTTPUpstreamType(upstream resource.Upstream) error {
-	switch strings.ToLower(upstream.Scheme) {
-	case "", "http", "https", "grpc", "grpcs":
-		if upstream.Type != "" && upstream.Type != "roundrobin" {
-			return fmt.Errorf(
-				"unsupported upstream type %q for %q scheme: only roundrobin is supported",
-				upstream.Type,
-				upstream.Scheme,
-			)
-		}
-	}
-	return nil
-}
-
 func upstreamNodeHost(scheme, host, port string) string {
 	if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
 		host = strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
@@ -2978,83 +2462,6 @@ func buildKafkaPubSubProxyHandlerStrict(
 	factory kafka_proxy.KafkaConsumerFactory,
 ) (http.Handler, error) {
 	return buildKafkaPubSubProxyHandlerStrictWithSSLResolver(upstream, factory, store.GetSSL)
-}
-
-func buildKafkaPubSubProxyHandlerStrictWithSSLResolver(
-	upstream resource.Upstream,
-	factory kafka_proxy.KafkaConsumerFactory,
-	resolveSSL sslResolver,
-) (http.Handler, error) {
-	options := kafka_proxy.TransportOptions{}
-	if upstream.Timeout.Connect > 0 {
-		options.ConnectTimeout = time.Duration(upstream.Timeout.Connect) * time.Second
-	}
-	if upstream.Timeout.Send > 0 {
-		options.WriteTimeout = time.Duration(upstream.Timeout.Send) * time.Second
-	}
-	if upstream.Timeout.Read > 0 {
-		options.ReadTimeout = time.Duration(upstream.Timeout.Read) * time.Second
-	}
-	if upstream.TLS != nil {
-		clientCert := upstream.TLS.ClientCert
-		clientKey := upstream.TLS.ClientKey
-		if upstream.TLS.ClientCertID != nil {
-			if clientCert != "" || clientKey != "" {
-				return nil, fmt.Errorf(
-					"kafka upstream client_cert_id cannot be combined with client_cert or client_key",
-				)
-			}
-			id, err := normalizeSSLID(upstream.TLS.ClientCertID)
-			if err != nil {
-				return nil, fmt.Errorf("invalid Kafka upstream client_cert_id: %w", err)
-			}
-			if resolveSSL == nil {
-				return nil, fmt.Errorf("kafka upstream client_cert_id %q cannot be resolved", id)
-			}
-			ssl, err := resolveSSL(id)
-			if err != nil {
-				return nil, fmt.Errorf("resolve Kafka upstream client_cert_id %q: %w", id, err)
-			}
-			clientCert = ssl.Cert
-			clientKey = ssl.Key
-		}
-		if (clientCert == "") != (clientKey == "") {
-			return nil, fmt.Errorf("kafka upstream client_cert and client_key must be configured together")
-		}
-		tlsConfig := &tls.Config{InsecureSkipVerify: !upstream.TLS.Verify} //nolint:gosec
-		if clientCert != "" {
-			certificate, err := tls.X509KeyPair(
-				[]byte(clientCert),
-				[]byte(clientKey),
-			)
-			if err != nil {
-				return nil, fmt.Errorf("parse Kafka upstream client certificate: %w", err)
-			}
-			tlsConfig.Certificates = []tls.Certificate{certificate}
-		}
-		options.TLSConfig = tlsConfig
-	}
-	brokers := make([]string, 0, len(upstream.Nodes))
-	for _, node := range upstream.Nodes {
-		brokerHost := upstreamNodeHost("kafka", node.Host, strconv.Itoa(node.Port))
-		brokers = append(brokers, "kafka://"+brokerHost)
-	}
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !kafka_proxy.IsWebSocketUpgrade(r) {
-			http.Error(w, kafka_proxy.ErrWebSocketUpgradeRequired.Error(), http.StatusUpgradeRequired)
-			return
-		}
-		if len(brokers) == 0 {
-			http.Error(w, "Kafka upstream has no configured nodes", http.StatusBadGateway)
-			return
-		}
-		if err := kafka_proxy.ServePubSubWebSocket(w, r, brokers, options, factory); err != nil {
-			if kafka_proxy.WebSocketWasHijacked(err) {
-				return
-			}
-			http.Error(w, "Kafka upstream proxy failed", http.StatusBadGateway)
-		}
-	}), nil
 }
 
 // buildKafkaRawProxyHandler is retained for compatibility clients that speak
@@ -3134,18 +2541,6 @@ type compiledUpstreamTarget struct {
 	scheme   string
 	host     string
 	nodeHost string
-}
-
-func compileUpstreamTargets(servers map[string]int) (map[string]compiledUpstreamTarget, error) {
-	targets := make(map[string]compiledUpstreamTarget, len(servers))
-	for target := range servers {
-		compiled, err := parseCompiledUpstreamTarget(target)
-		if err != nil {
-			return nil, err
-		}
-		targets[target] = compiled
-	}
-	return targets, nil
 }
 
 func resolveCompiledUpstreamTarget(
@@ -3249,102 +2644,7 @@ func nextDubboTarget(
 	}
 }
 
-func selectProxyHandler(r *http.Request, defaultHandler http.Handler, streamingHandler http.Handler) http.Handler {
-	if proxy_buffering.GetDisableProxyBuffering(r) {
-		return streamingHandler
-	}
-	return defaultHandler
-}
-
-func healthReporter(lb pxy.LoadBalancer) pxy.HealthReporter {
-	reporter, _ := lb.(pxy.HealthReporter)
-	return reporter
-}
-
-type trafficSplitRoundTripper struct {
-	fallback http.RoundTripper
-}
-
-func (t *trafficSplitRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
-	if override := traffic_split.GetOverride(request); override != nil && override.RoundTripper != nil {
-		return override.RoundTripper.RoundTrip(request)
-	}
-	return t.fallback.RoundTrip(request)
-}
-
-func bufferRequestBodyIfNeeded(w http.ResponseWriter, r *http.Request) error {
-	if !proxy_control.GetRequestBuffering(r) || r.Body == nil || r.Body == http.NoBody {
-		return nil
-	}
-	limit := proxy_control.GetRequestBufferingLimit(r)
-	r.Body = http.MaxBytesReader(w, r.Body, limit)
-
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		return err
-	}
-	if err := r.Body.Close(); err != nil {
-		return err
-	}
-
-	r.Body = io.NopCloser(bytes.NewReader(body))
-	r.GetBody = func() (io.ReadCloser, error) {
-		return io.NopCloser(bytes.NewReader(body)), nil
-	}
-	r.ContentLength = int64(len(body))
-	return nil
-}
-
-func httpRetryCount(upstream resource.Upstream) int {
-	if upstream.RetriesConfigured() {
-		return max(upstream.Retries, 0)
-	}
-	return max(len(upstream.Nodes)-1, 0)
-}
-
-func attachHTTPRetriesCompiled(
-	request *http.Request,
-	upstream resource.Upstream,
-	loadBalancer pxy.LoadBalancer,
-	targets map[string]compiledUpstreamTarget,
-) *http.Request {
-	originalHost := request.Host
-	if override := traffic_split.GetOverride(request); override != nil {
-		return pxy.WithRetries(request, override.Retries, func(retry *http.Request) bool {
-			if override.NextRetry == nil {
-				pxy.SetSelectedTarget(retry, "")
-				return false
-			}
-			next := override.NextRetry(retry)
-			if !applyTrafficSplitTarget(retry, next, originalHost) {
-				pxy.SetSelectedTarget(retry, "")
-				return false
-			}
-			applyFinalProxyRewrite(retry)
-			return true
-		})
-	}
-	return pxy.WithRetries(request, httpRetryCount(upstream), func(retry *http.Request) bool {
-		if err := applyUpstreamTargetCompiled(retry, loadBalancer, upstream, originalHost, targets); err != nil {
-			return false
-		}
-		// A later transport failure must not report a stale director error
-		// from an earlier attempt.
-		*retry = *withDirectorError(retry, nil)
-		applyFinalProxyRewrite(retry)
-		return true
-	})
-}
-
 type directorErrorContextKey struct{}
-
-// errEmptyUpstream is reported by the director when a route has no upstream
-// nodes and no traffic-split override selected a target.
-var errEmptyUpstream = errors.New("upstream has no configured nodes")
-
-func withDirectorError(request *http.Request, err error) *http.Request {
-	return request.WithContext(context.WithValue(request.Context(), directorErrorContextKey{}, err))
-}
 
 func requestDirectorError(request *http.Request) error {
 	if request == nil {
@@ -3352,55 +2652,6 @@ func requestDirectorError(request *http.Request) error {
 	}
 	err, _ := request.Context().Value(directorErrorContextKey{}).(error)
 	return err
-}
-
-func applyUpstreamTargetCompiled(
-	request *http.Request,
-	loadBalancer pxy.LoadBalancer,
-	upstream resource.Upstream,
-	originalHost string,
-	targets map[string]compiledUpstreamTarget,
-) error {
-	target := pxy.NextTarget(loadBalancer, request)
-	pxy.SetSelectedTarget(request, target)
-	compiled, err := resolveCompiledUpstreamTarget(target, targets)
-	if err != nil {
-		return err
-	}
-	request.URL.Scheme = compiled.scheme
-	request.URL.Host = compiled.host
-	nodeHost := compiled.nodeHost
-	switch upstream.PassHost {
-	case "", "pass":
-		request.Host = originalHost
-		if request.Host == "" {
-			request.Host = nodeHost
-		}
-	case "rewrite":
-		request.Host = upstream.UpstreamHost
-	case "node":
-		request.Host = nodeHost
-	}
-	return nil
-}
-
-func applyFinalProxyRewrite(request *http.Request) {
-	if ctx.GetApisixVars(request) != nil {
-		ctx.RegisterApisixVar(request, "$balancer_ip", request.URL.Hostname())
-		ctx.RegisterApisixVar(request, "$balancer_port", request.URL.Port())
-	}
-	rewrite := ctx.FinalizeProxyRewrite(request)
-	if rewrite.Host != "" {
-		request.Host = rewrite.Host
-	}
-	if rewrite.Scheme != "" {
-		request.URL.Scheme = rewrite.Scheme
-	}
-}
-
-func applyTrafficSplitOverride(req *http.Request) bool {
-	override := traffic_split.GetOverride(req)
-	return applyTrafficSplitTarget(req, override, req.Host)
 }
 
 func applyTrafficSplitTarget(req *http.Request, override *traffic_split.Override, originalHost string) bool {
@@ -3435,97 +2686,6 @@ func applyTrafficSplitTarget(req *http.Request, override *traffic_split.Override
 	return true
 }
 
-func newModifyResponse(staticConfig *appconfig.Config) pxy.ModifyResponse {
-	return func(resp *http.Response) error {
-		// set the status into request ctx
-		// ctx := resp.Request.Context()
-		// ctx = context.WithValue(ctx, "status", status)
-
-		// resp.Request = resp.Request.WithContext(ctx)
-
-		status := resp.StatusCode
-		pxy.RecordUpstreamStatus(resp.Request, status)
-		upstreamStatus := pxy.UpstreamStatusChain(resp.Request)
-		if resp.Header == nil {
-			resp.Header = make(http.Header)
-		}
-		resp.Header.Del("Server")
-		resp.Header.Del("X-APISIX-Upstream-Status")
-		if showUpstreamStatusInResponseHeader(staticConfig) ||
-			(status >= http.StatusInternalServerError && status <= 599) {
-			resp.Header.Set("X-APISIX-Upstream-Status", upstreamStatus)
-		}
-		ctx.SetRequestResponseSource(resp.Request, ctx.ResponseSourceUpstream)
-		pxy.ReportHTTPOutcome(resp.Request, status)
-		if ctx.GetRequestVars(resp.Request) != nil {
-			ctx.RegisterRequestVar(resp.Request, "$status", status)
-			if upstreamStatus == strconv.Itoa(status) {
-				ctx.RegisterRequestVar(resp.Request, "$upstream_status", status)
-			} else {
-				ctx.RegisterRequestVar(resp.Request, "$upstream_status", upstreamStatus)
-			}
-		}
-		recordUpstreamLatency(resp.Request)
-
-		// FIXME: the status here is upstream status, not the http status finally
-
-		// FIXME: metric.HttpLatency type=upstream
-
-		// status := resp.StatusCode
-
-		// req := resp.Request
-		// ctx := req.Context()
-
-		// request := resp.Request
-
-		// // read response body and truncated
-		// var body string
-		// hasBody := request.Method != "HEAD" && resp.ContentLength != 0
-		// if hasBody {
-		// 	responseBody, err := util.ReadResponseBody(resp)
-		// 	if err != nil {
-		// 		body = ""
-		// 	} else {
-		// 		body = util.TruncateBytesToString(responseBody, 1024)
-		// 	}
-		// }
-
-		// // backendPath := util.URLSingleJoiningSlash(fmt.Sprintf("%s://%s", request.URL.Scheme, request.URL.Host),
-		// // 	request.URL.Path)
-		// fields := log.Fields{
-		// 	"backend_scheme": request.URL.Scheme,
-		// 	"backend_method": request.Method,
-		// 	"backend_host":   request.URL.Host,
-		// 	"backend_path":   request.URL.Path,
-		// 	"response_body":  body,
-		// }
-
-		// // calculate the time cost for the proxy
-		// begin := request.Header.Get(middleware.TSHeader)
-		// if begin != "" {
-		// 	ts, err := strconv.ParseInt(begin, 10, 64)
-		// 	if err == nil {
-		// 		tsNow := time.Now().UnixNano() / int64(time.Millisecond)
-
-		// 		timeCost := tsNow - ts
-		// 		resp.Header.Set(timeCostRequestHeader, strconv.FormatInt(timeCost, 10))
-		// 		fields["proxy_time"] = timeCost
-		// 	}
-		// }
-
-		// reqctx.LogEntrySetFields(request, fields)
-
-		return nil
-	}
-}
-
-func markUpstreamStart(req *http.Request) {
-	if ctx.GetRequestVars(req) == nil {
-		return
-	}
-	ctx.RegisterRequestVar(req, upstreamStartTimeVar, time.Now())
-}
-
 func recordUpstreamLatency(req *http.Request) {
 	start, ok := ctx.GetRequestVar(req, upstreamStartTimeVar).(time.Time)
 	if !ok {
@@ -3536,88 +2696,6 @@ func recordUpstreamLatency(req *http.Request) {
 		latency = 1
 	}
 	ctx.RegisterRequestVar(req, upstreamLatencyVar, latency)
-}
-
-func newErrorHandler(staticConfig *appconfig.Config) pxy.ErrorHandler {
-	return func(w http.ResponseWriter, r *http.Request, err error) {
-		// 1. make log fields
-		// fields := log.Fields{
-		// 	"method":     r.Method,
-		// 	"uri":        r.RequestURI,
-		// 	"request_id": reqctx.GetRequestID(r),
-		// }
-		// log.WithFields(fields).WithError(err).Error("http: proxy error")
-
-		// // 3. set error into logging middleware
-		// reqctx.LogEntrySetFields(r, log.Fields{
-		// 	"error":       util.TruncateString(err.Error(), 200),
-		// 	"proxy_error": "1",
-		// })
-
-		var maxBytesErr *http.MaxBytesError
-		if errors.As(err, &maxBytesErr) {
-			ctx.SetRequestResponseSource(r, ctx.ResponseSourceAPISIX)
-			_ = util.WriteJSONMessage(w, http.StatusRequestEntityTooLarge, "request body too large")
-			return
-		}
-
-		// 4. check the error https://github.com/vulcand/oxy/blob/master/utils/handler.go
-		status := http.StatusInternalServerError
-		overloaded := errors.Is(err, pxy.ErrClusterOverloaded)
-		directorFailed := false
-		if overloaded {
-			// The cluster is saturated. This is a capacity decision, not a
-			// target failure, so it never reports a TCP health failure.
-			status = http.StatusServiceUnavailable
-		} else if directorErr := requestDirectorError(r); directorErr != nil {
-			// The director failed target selection before RoundTrip; classify
-			// it as an upstream failure instead of a client cancellation.
-			err = directorErr
-			status = http.StatusBadGateway
-			directorFailed = true
-		} else if !errors.Is(err, context.Canceled) {
-			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-				pxy.ReportTCPFailureOutcome(r, true)
-			} else {
-				pxy.ReportTCPFailureOutcome(r, false)
-			}
-		}
-		ctx.SetRequestResponseSource(r, ctx.ResponseSourceAPISIX)
-
-		if !overloaded {
-			if e, ok := err.(net.Error); ok {
-				if e.Timeout() {
-					status = http.StatusGatewayTimeout
-				} else {
-					status = http.StatusBadGateway
-				}
-			} else {
-				switch {
-				case errors.Is(err, io.EOF):
-					status = http.StatusBadGateway
-				case errors.Is(err, context.Canceled), errors.Is(err, io.ErrUnexpectedEOF):
-					status = StatusClientClosedRequest
-				}
-			}
-		}
-
-		w.Header().Del("X-APISIX-Upstream-Status")
-		if upstreamStatus := pxy.UpstreamStatusChain(r); !directorFailed && upstreamStatus != "" {
-			if showUpstreamStatusInResponseHeader(staticConfig) ||
-				(status >= http.StatusInternalServerError && status <= 599) {
-				w.Header().Set("X-APISIX-Upstream-Status", upstreamStatus)
-			}
-			if ctx.GetRequestVars(r) != nil {
-				ctx.RegisterRequestVar(r, "$upstream_status", upstreamStatus)
-			}
-		}
-
-		// ! do not the raw response?
-		// w.WriteHeader(statusCode)
-		// ! here, not clean the body first, what will happen?
-		logger.Errorf("proxy request %s %s failed: %v", r.Method, proxyFailureLogPath(r), err)
-		_ = util.WriteJSON(w, status, "upstream request failed")
-	}
 }
 
 func showUpstreamStatusInResponseHeader(staticConfig *appconfig.Config) bool {
@@ -3633,16 +2711,4 @@ func proxyFailureLogPath(r *http.Request) string {
 		return "/"
 	}
 	return path
-}
-
-func pinDecodedRoutePath(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// APISIX matches the decoded $uri; chi prefers the encoded RawPath.
-		if r.URL.RawPath != "" {
-			if rctx := chi.RouteContext(r.Context()); rctx != nil {
-				rctx.RoutePath = r.URL.Path
-			}
-		}
-		next.ServeHTTP(w, r)
-	})
 }

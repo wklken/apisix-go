@@ -651,3 +651,15 @@ func normalizeRouteOrder(routes []resource.Route) []resource.Route {
 	})
 	return normalized
 }
+
+func pinDecodedRoutePath(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// APISIX matches the decoded $uri; chi prefers the encoded RawPath.
+		if r.URL.RawPath != "" {
+			if rctx := chi.RouteContext(r.Context()); rctx != nil {
+				rctx.RoutePath = r.URL.Path
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}

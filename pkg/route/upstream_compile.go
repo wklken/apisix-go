@@ -1,16 +1,22 @@
 package route
 
 import (
+	"context"
+	"crypto/tls"
+	"errors"
 	"fmt"
 	"maps"
 	"net"
+	"net/http"
 	"net/url"
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	appconfig "github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/plugin"
+	"github.com/wklken/apisix-go/pkg/plugin/kafka_proxy"
 	"github.com/wklken/apisix-go/pkg/plugin/traffic_split"
 	"github.com/wklken/apisix-go/pkg/proxy"
 	"github.com/wklken/apisix-go/pkg/resource"
@@ -316,4 +322,208 @@ func clonePlannedSSL(source resource.SSL) resource.SSL {
 		cloned.Client = &client
 	}
 	return cloned
+}
+
+func resolveRouteUpstreamWithGetter(
+	r resource.Route,
+	service resource.Service,
+	getUpstream func(string) (resource.Upstream, error),
+) (resource.Upstream, plugin.ResourceProvenance, error) {
+	// Keep this priority identical to buildReverseHandler: inline route,
+	// route upstream_id, inline service, then service upstream_id.
+	if inlineUpstreamConfigured(r.Upstream) {
+		return r.Upstream, plugin.ResourceProvenance{Kind: plugin.ResourceRoute, ID: r.ID}, nil
+	}
+	if r.UpstreamID != "" {
+		upstream, err := getUpstream(r.UpstreamID)
+		if err != nil {
+			return resource.Upstream{}, plugin.ResourceProvenance{Kind: plugin.ResourceUpstream, ID: r.UpstreamID},
+				fmt.Errorf("get upstream %q fail: %w", r.UpstreamID, err)
+		}
+		return upstream, plugin.ResourceProvenance{Kind: plugin.ResourceUpstream, ID: r.UpstreamID}, nil
+	}
+	if inlineUpstreamConfigured(service.Upstream) {
+		return service.Upstream, plugin.ResourceProvenance{Kind: plugin.ResourceService, ID: service.ID}, nil
+	}
+	if service.UpstreamID != "" {
+		upstream, err := getUpstream(service.UpstreamID)
+		if err != nil {
+			return resource.Upstream{}, plugin.ResourceProvenance{
+					Kind: plugin.ResourceUpstream,
+					ID:   service.UpstreamID,
+				},
+				fmt.Errorf(
+					"get upstream %q fail: %w",
+					service.UpstreamID,
+					err,
+				)
+		}
+		return upstream, plugin.ResourceProvenance{Kind: plugin.ResourceUpstream, ID: service.UpstreamID}, nil
+	}
+	return resource.Upstream{}, plugin.ResourceProvenance{Kind: plugin.ResourceRoute, ID: r.ID}, nil
+}
+
+func validateUnsupportedUpstreamDiscovery(
+	upstream resource.Upstream,
+	provenance plugin.ResourceProvenance,
+) error {
+	for _, field := range []struct {
+		name  string
+		value string
+	}{
+		{name: "discovery_type", value: upstream.DiscoveryType},
+		{name: "service_name", value: upstream.ServiceName},
+	} {
+		if field.value == "" {
+			continue
+		}
+		return fmt.Errorf(
+			"unsupported upstream field %q from %s %q: dynamic discovery is not supported",
+			field.name,
+			provenance.Kind,
+			provenance.ID,
+		)
+	}
+	return nil
+}
+
+func validateHTTPUpstreamType(upstream resource.Upstream) error {
+	switch strings.ToLower(upstream.Scheme) {
+	case "", "http", "https", "grpc", "grpcs":
+		if upstream.Type != "" && upstream.Type != "roundrobin" {
+			return fmt.Errorf(
+				"unsupported upstream type %q for %q scheme: only roundrobin is supported",
+				upstream.Type,
+				upstream.Scheme,
+			)
+		}
+	}
+	return nil
+}
+
+func buildKafkaPubSubProxyHandlerStrictWithSSLResolver(
+	upstream resource.Upstream,
+	factory kafka_proxy.KafkaConsumerFactory,
+	resolveSSL sslResolver,
+) (http.Handler, error) {
+	options := kafka_proxy.TransportOptions{}
+	if upstream.Timeout.Connect > 0 {
+		options.ConnectTimeout = time.Duration(upstream.Timeout.Connect) * time.Second
+	}
+	if upstream.Timeout.Send > 0 {
+		options.WriteTimeout = time.Duration(upstream.Timeout.Send) * time.Second
+	}
+	if upstream.Timeout.Read > 0 {
+		options.ReadTimeout = time.Duration(upstream.Timeout.Read) * time.Second
+	}
+	if upstream.TLS != nil {
+		clientCert := upstream.TLS.ClientCert
+		clientKey := upstream.TLS.ClientKey
+		if upstream.TLS.ClientCertID != nil {
+			if clientCert != "" || clientKey != "" {
+				return nil, fmt.Errorf(
+					"kafka upstream client_cert_id cannot be combined with client_cert or client_key",
+				)
+			}
+			id, err := normalizeSSLID(upstream.TLS.ClientCertID)
+			if err != nil {
+				return nil, fmt.Errorf("invalid Kafka upstream client_cert_id: %w", err)
+			}
+			if resolveSSL == nil {
+				return nil, fmt.Errorf("kafka upstream client_cert_id %q cannot be resolved", id)
+			}
+			ssl, err := resolveSSL(id)
+			if err != nil {
+				return nil, fmt.Errorf("resolve Kafka upstream client_cert_id %q: %w", id, err)
+			}
+			clientCert = ssl.Cert
+			clientKey = ssl.Key
+		}
+		if (clientCert == "") != (clientKey == "") {
+			return nil, fmt.Errorf("kafka upstream client_cert and client_key must be configured together")
+		}
+		tlsConfig := &tls.Config{InsecureSkipVerify: !upstream.TLS.Verify} //nolint:gosec
+		if clientCert != "" {
+			certificate, err := tls.X509KeyPair(
+				[]byte(clientCert),
+				[]byte(clientKey),
+			)
+			if err != nil {
+				return nil, fmt.Errorf("parse Kafka upstream client certificate: %w", err)
+			}
+			tlsConfig.Certificates = []tls.Certificate{certificate}
+		}
+		options.TLSConfig = tlsConfig
+	}
+	brokers := make([]string, 0, len(upstream.Nodes))
+	for _, node := range upstream.Nodes {
+		brokerHost := upstreamNodeHost("kafka", node.Host, strconv.Itoa(node.Port))
+		brokers = append(brokers, "kafka://"+brokerHost)
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !kafka_proxy.IsWebSocketUpgrade(r) {
+			http.Error(w, kafka_proxy.ErrWebSocketUpgradeRequired.Error(), http.StatusUpgradeRequired)
+			return
+		}
+		if len(brokers) == 0 {
+			http.Error(w, "Kafka upstream has no configured nodes", http.StatusBadGateway)
+			return
+		}
+		if err := kafka_proxy.ServePubSubWebSocket(w, r, brokers, options, factory); err != nil {
+			if kafka_proxy.WebSocketWasHijacked(err) {
+				return
+			}
+			http.Error(w, "Kafka upstream proxy failed", http.StatusBadGateway)
+		}
+	}), nil
+}
+
+func compileUpstreamTargets(servers map[string]int) (map[string]compiledUpstreamTarget, error) {
+	targets := make(map[string]compiledUpstreamTarget, len(servers))
+	for target := range servers {
+		compiled, err := parseCompiledUpstreamTarget(target)
+		if err != nil {
+			return nil, err
+		}
+		targets[target] = compiled
+	}
+	return targets, nil
+}
+
+// errEmptyUpstream is reported by the director when a route has no upstream
+// nodes and no traffic-split override selected a target.
+var errEmptyUpstream = errors.New("upstream has no configured nodes")
+
+func withDirectorError(request *http.Request, err error) *http.Request {
+	return request.WithContext(context.WithValue(request.Context(), directorErrorContextKey{}, err))
+}
+
+func applyUpstreamTargetCompiled(
+	request *http.Request,
+	loadBalancer proxy.LoadBalancer,
+	upstream resource.Upstream,
+	originalHost string,
+	targets map[string]compiledUpstreamTarget,
+) error {
+	target := proxy.NextTarget(loadBalancer, request)
+	proxy.SetSelectedTarget(request, target)
+	compiled, err := resolveCompiledUpstreamTarget(target, targets)
+	if err != nil {
+		return err
+	}
+	request.URL.Scheme = compiled.scheme
+	request.URL.Host = compiled.host
+	nodeHost := compiled.nodeHost
+	switch upstream.PassHost {
+	case "", "pass":
+		request.Host = originalHost
+		if request.Host == "" {
+			request.Host = nodeHost
+		}
+	case "rewrite":
+		request.Host = upstream.UpstreamHost
+	case "node":
+		request.Host = nodeHost
+	}
+	return nil
 }

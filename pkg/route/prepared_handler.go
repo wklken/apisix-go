@@ -1,18 +1,24 @@
 package route
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
+	"net"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	appconfig "github.com/wklken/apisix-go/pkg/config"
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/plugin/proxy_buffering"
 	pxy "github.com/wklken/apisix-go/pkg/proxy"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/util"
@@ -379,4 +385,269 @@ func preparedRouteTerminalCandidates(
 		})
 	}
 	return candidates
+}
+
+func buildTransparentUpgradeHandler(
+	pipeline plugin.RequestPipeline,
+	plan plugin.ResponsePlan,
+	terminal http.Handler,
+	enabled bool,
+) (http.Handler, error) {
+	terminals := plan.RouteTerminals()
+	if len(terminals) == 0 {
+		return pipeline.Then(requireWebsocketEnablement(terminal, enabled)), nil
+	}
+	streaming, err := plugin.NewStreamingResponseExecutor(nil)
+	if err != nil {
+		return nil, err
+	}
+	streaming, err = streaming.WithRouteTerminals(terminals)
+	if err != nil {
+		return nil, err
+	}
+	terminalOnly := streaming.Then(terminal)
+	return pipeline.Then(requireWebsocketEnablement(terminalOnly, enabled)), nil
+}
+
+func newRequestPipelineWithLog(
+	bindings []plugin.Binding,
+	resolve plugin.ConsumerBindingResolver,
+) (plugin.RequestPipeline, error) {
+	logExecutor, err := plugin.NewLogExecutorFromBindings(bindings)
+	if err != nil {
+		return plugin.RequestPipeline{}, err
+	}
+	pipeline := plugin.NewRequestPipeline(bindings, resolve)
+	return pipeline.WithLogExecutor(&logExecutor), nil
+}
+
+func ensureRouteLifecycle(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		request, _ := apisixctx.EnsureRequestLifecycle(r, time.Now())
+		next.ServeHTTP(w, request)
+	})
+}
+
+func requireWebsocketEnablement(next http.Handler, enabled bool) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !enabled && isWebsocketUpgradeRequest(r) {
+			apisixctx.SetRequestResponseSource(r, apisixctx.ResponseSourceAPISIX)
+			_ = util.WriteJSONMessage(w, http.StatusBadRequest, websocketDisabledMessage)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func isWebsocketUpgradeRequest(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	for _, value := range r.Header.Values("Connection") {
+		for token := range strings.SplitSeq(value, ",") {
+			if strings.EqualFold(strings.TrimSpace(token), "upgrade") {
+				return strings.EqualFold(strings.TrimSpace(r.Header.Get("Upgrade")), "websocket")
+			}
+		}
+	}
+	return false
+}
+
+func selectProxyHandler(r *http.Request, defaultHandler http.Handler, streamingHandler http.Handler) http.Handler {
+	if proxy_buffering.GetDisableProxyBuffering(r) {
+		return streamingHandler
+	}
+	return defaultHandler
+}
+
+func healthReporter(lb pxy.LoadBalancer) pxy.HealthReporter {
+	reporter, _ := lb.(pxy.HealthReporter)
+	return reporter
+}
+
+func applyFinalProxyRewrite(request *http.Request) {
+	if apisixctx.GetApisixVars(request) != nil {
+		apisixctx.RegisterApisixVar(request, "$balancer_ip", request.URL.Hostname())
+		apisixctx.RegisterApisixVar(request, "$balancer_port", request.URL.Port())
+	}
+	rewrite := apisixctx.FinalizeProxyRewrite(request)
+	if rewrite.Host != "" {
+		request.Host = rewrite.Host
+	}
+	if rewrite.Scheme != "" {
+		request.URL.Scheme = rewrite.Scheme
+	}
+}
+
+func newModifyResponse(staticConfig *appconfig.Config) pxy.ModifyResponse {
+	return func(resp *http.Response) error {
+		// set the status into request ctx
+		// ctx := resp.Request.Context()
+		// ctx = context.WithValue(ctx, "status", status)
+
+		// resp.Request = resp.Request.WithContext(ctx)
+
+		status := resp.StatusCode
+		pxy.RecordUpstreamStatus(resp.Request, status)
+		upstreamStatus := pxy.UpstreamStatusChain(resp.Request)
+		if resp.Header == nil {
+			resp.Header = make(http.Header)
+		}
+		resp.Header.Del("Server")
+		resp.Header.Del("X-APISIX-Upstream-Status")
+		if showUpstreamStatusInResponseHeader(staticConfig) ||
+			(status >= http.StatusInternalServerError && status <= 599) {
+			resp.Header.Set("X-APISIX-Upstream-Status", upstreamStatus)
+		}
+		apisixctx.SetRequestResponseSource(resp.Request, apisixctx.ResponseSourceUpstream)
+		pxy.ReportHTTPOutcome(resp.Request, status)
+		if apisixctx.GetRequestVars(resp.Request) != nil {
+			apisixctx.RegisterRequestVar(resp.Request, "$status", status)
+			if upstreamStatus == strconv.Itoa(status) {
+				apisixctx.RegisterRequestVar(resp.Request, "$upstream_status", status)
+			} else {
+				apisixctx.RegisterRequestVar(resp.Request, "$upstream_status", upstreamStatus)
+			}
+		}
+		recordUpstreamLatency(resp.Request)
+
+		// FIXME: the status here is upstream status, not the http status finally
+
+		// FIXME: metric.HttpLatency type=upstream
+
+		// status := resp.StatusCode
+
+		// req := resp.Request
+		// ctx := req.Context()
+
+		// request := resp.Request
+
+		// // read response body and truncated
+		// var body string
+		// hasBody := request.Method != "HEAD" && resp.ContentLength != 0
+		// if hasBody {
+		// 	responseBody, err := util.ReadResponseBody(resp)
+		// 	if err != nil {
+		// 		body = ""
+		// 	} else {
+		// 		body = util.TruncateBytesToString(responseBody, 1024)
+		// 	}
+		// }
+
+		// // backendPath := util.URLSingleJoiningSlash(fmt.Sprintf("%s://%s", request.URL.Scheme, request.URL.Host),
+		// // 	request.URL.Path)
+		// fields := log.Fields{
+		// 	"backend_scheme": request.URL.Scheme,
+		// 	"backend_method": request.Method,
+		// 	"backend_host":   request.URL.Host,
+		// 	"backend_path":   request.URL.Path,
+		// 	"response_body":  body,
+		// }
+
+		// // calculate the time cost for the proxy
+		// begin := request.Header.Get(middleware.TSHeader)
+		// if begin != "" {
+		// 	ts, err := strconv.ParseInt(begin, 10, 64)
+		// 	if err == nil {
+		// 		tsNow := time.Now().UnixNano() / int64(time.Millisecond)
+
+		// 		timeCost := tsNow - ts
+		// 		resp.Header.Set(timeCostRequestHeader, strconv.FormatInt(timeCost, 10))
+		// 		fields["proxy_time"] = timeCost
+		// 	}
+		// }
+
+		// reqctx.LogEntrySetFields(request, fields)
+
+		return nil
+	}
+}
+
+func markUpstreamStart(req *http.Request) {
+	if apisixctx.GetRequestVars(req) == nil {
+		return
+	}
+	apisixctx.RegisterRequestVar(req, upstreamStartTimeVar, time.Now())
+}
+
+func newErrorHandler(staticConfig *appconfig.Config) pxy.ErrorHandler {
+	return func(w http.ResponseWriter, r *http.Request, err error) {
+		// 1. make log fields
+		// fields := log.Fields{
+		// 	"method":     r.Method,
+		// 	"uri":        r.RequestURI,
+		// 	"request_id": reqctx.GetRequestID(r),
+		// }
+		// log.WithFields(fields).WithError(err).Error("http: proxy error")
+
+		// // 3. set error into logging middleware
+		// reqctx.LogEntrySetFields(r, log.Fields{
+		// 	"error":       util.TruncateString(err.Error(), 200),
+		// 	"proxy_error": "1",
+		// })
+
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			apisixctx.SetRequestResponseSource(r, apisixctx.ResponseSourceAPISIX)
+			_ = util.WriteJSONMessage(w, http.StatusRequestEntityTooLarge, "request body too large")
+			return
+		}
+
+		// 4. check the error https://github.com/vulcand/oxy/blob/master/utils/handler.go
+		status := http.StatusInternalServerError
+		overloaded := errors.Is(err, pxy.ErrClusterOverloaded)
+		directorFailed := false
+		if overloaded {
+			// The cluster is saturated. This is a capacity decision, not a
+			// target failure, so it never reports a TCP health failure.
+			status = http.StatusServiceUnavailable
+		} else if directorErr := requestDirectorError(r); directorErr != nil {
+			// The director failed target selection before RoundTrip; classify
+			// it as an upstream failure instead of a client cancellation.
+			err = directorErr
+			status = http.StatusBadGateway
+			directorFailed = true
+		} else if !errors.Is(err, context.Canceled) {
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				pxy.ReportTCPFailureOutcome(r, true)
+			} else {
+				pxy.ReportTCPFailureOutcome(r, false)
+			}
+		}
+		apisixctx.SetRequestResponseSource(r, apisixctx.ResponseSourceAPISIX)
+
+		if !overloaded {
+			if e, ok := err.(net.Error); ok {
+				if e.Timeout() {
+					status = http.StatusGatewayTimeout
+				} else {
+					status = http.StatusBadGateway
+				}
+			} else {
+				switch {
+				case errors.Is(err, io.EOF):
+					status = http.StatusBadGateway
+				case errors.Is(err, context.Canceled), errors.Is(err, io.ErrUnexpectedEOF):
+					status = StatusClientClosedRequest
+				}
+			}
+		}
+
+		w.Header().Del("X-APISIX-Upstream-Status")
+		if upstreamStatus := pxy.UpstreamStatusChain(r); !directorFailed && upstreamStatus != "" {
+			if showUpstreamStatusInResponseHeader(staticConfig) ||
+				(status >= http.StatusInternalServerError && status <= 599) {
+				w.Header().Set("X-APISIX-Upstream-Status", upstreamStatus)
+			}
+			if apisixctx.GetRequestVars(r) != nil {
+				apisixctx.RegisterRequestVar(r, "$upstream_status", upstreamStatus)
+			}
+		}
+
+		// ! do not the raw response?
+		// w.WriteHeader(statusCode)
+		// ! here, not clean the body first, what will happen?
+		logger.Errorf("proxy request %s %s failed: %v", r.Method, proxyFailureLogPath(r), err)
+		_ = util.WriteJSON(w, status, "upstream request failed")
+	}
 }

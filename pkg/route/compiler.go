@@ -211,3 +211,10 @@ func cloneCompileValue(value any) any {
 		return value
 	}
 }
+
+// validateRouteCompatibility is the single pre-materialization entrypoint for
+// the documented Go data-plane route subset. It does not import the full
+// APISIX 3.17 schema.
+func validateRouteCompatibility(routeResource resource.Route) error {
+	return validateRouteSemantics(routeResource)
+}

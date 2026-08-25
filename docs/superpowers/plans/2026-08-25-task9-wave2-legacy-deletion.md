@@ -27,6 +27,7 @@ accepted plugin + route migrations
   -> generation-only routeHandler + server legacy-HTTP reload deletion
   -> remaining server legacy/TLS deletion
   -> Builder + ClusterRegistry deletion
+  -> external legacy Store test-fixture migration
   -> journal-only Store reduction
   -> C6 + Task9 absence guards
   -> combined verification and review
@@ -192,9 +193,26 @@ Before deletion, require zero production and test call sites for `Builder`, `New
 
 **Files:**
 
+- `pkg/plugin/basic_auth/plugin_test.go`
+- `pkg/plugin/hmac_auth/plugin_test.go`
+- `pkg/plugin/jwe_decrypt/plugin_test.go`
+- `pkg/plugin/jwt_auth/plugin_test.go`
+- `pkg/plugin/key_auth/plugin_test.go`
+- `pkg/plugin/ldap_auth/plugin_test.go`
+- `pkg/plugin/multi_auth/plugin_test.go`
+- `pkg/plugin/wolf_rbac/plugin_test.go`
+- `pkg/plugin/workflow/plugin_test.go`
+- `pkg/plugin/grpc_transcode/benchmark_test.go`
 - add `pkg/store/journal_store.go`
 - `pkg/store/journal_schema.go`
 - delete legacy Store/Event/getter/consumer/secret/published-view files and tests
+
+Before deleting Store files, migrate every real external test import of the
+legacy Store/Event/getter surface. Auth tests use immutable map-backed
+`base.ConsumerLookup`; gRPC benchmarks use a generation-local `ProtoResolver`;
+tests whose only assertion is the now-forbidden global fallback are deleted or
+moved to compiler preparation coverage. Do not treat Store package names inside
+guard string fixtures as real imports.
 
 Move only the bbolt handle, open timeout, close-once state, and idempotent `Close` needed by journal files into `journal_store.go`. Keep journal schema/apply/publish/recovery and raw legacy-bucket import support.
 

@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/felixge/httpsnoop"
-	"github.com/go-chi/chi/v5"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/compiler"
@@ -304,13 +303,6 @@ type Server struct {
 	clusters        *pxy.ClusterRegistry
 	streamRuntime   streamRuntimeOwner
 	streamRuntimeMu sync.Mutex
-	reloadEventChan chan struct{}
-
-	reloadMu                  sync.Mutex
-	httpPublicationMu         sync.Mutex
-	httpPublicationAttempted  bool
-	httpPublicationGeneration uint64
-	httpPublicationErr        error
 
 	storage  *store.Store
 	producer configProducer
@@ -318,7 +310,6 @@ type Server struct {
 	lifecycleMu         sync.Mutex
 	lifecycleCancel     context.CancelFunc
 	startupDone         chan struct{}
-	schedulerDone       chan struct{}
 	startupInProgress   bool
 	shutdownRequested   bool
 	listenersRejected   bool
@@ -412,7 +403,6 @@ func newServerWithFactories(
 		runtimeFactories: defaultServerRuntimeFactories(),
 		addr:             addrs[0],
 		addrs:            addrs,
-		reloadEventChan:  make(chan struct{}, 1),
 	}
 
 	otelShutdown, err := factories.initObservability("apisix-go")
@@ -879,27 +869,6 @@ func (s *Server) retainProducer(producer configProducer) error {
 	return nil
 }
 
-func (s *Server) startReloadScheduler(ctx context.Context) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	s.lifecycleMu.Lock()
-	if s.shutdownRequested || s.schedulerDone != nil {
-		s.lifecycleMu.Unlock()
-		return
-	}
-	schedulerDone := make(chan struct{})
-	s.schedulerDone = schedulerDone
-	if s.lifecycleCancel == nil {
-		ctx, s.lifecycleCancel = context.WithCancel(ctx)
-	}
-	s.lifecycleMu.Unlock()
-	go func() {
-		defer close(schedulerDone)
-		s.listenReloadEvent(ctx)
-	}()
-}
-
 func (s *Server) cleanupAfterStart() error {
 	ctx, cancel := context.WithTimeout(context.Background(), startupCleanupTimeout)
 	err := s.shutdown(ctx)
@@ -1055,32 +1024,6 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	return s.shutdown(ctx)
 }
 
-type runtimeRouteBuilder interface {
-	BuildWithRouteQuarantine() (*chi.Mux, error)
-	Stop()
-}
-
-func buildAndInstallInitialRoutes(routes *routeHandler, builder runtimeRouteBuilder) error {
-	handler, err := builder.BuildWithRouteQuarantine()
-	if err != nil {
-		builder.Stop()
-		return fmt.Errorf("build initial routes: %w", err)
-	}
-	routes.Replace(handler, builder.Stop)
-	recordRouteBuildQuarantine(builder)
-	return nil
-}
-
-type quarantineAwareRouteBuilder interface {
-	QuarantinedResourceCount() int
-}
-
-func recordRouteBuildQuarantine(builder any) {
-	if quarantineAware, ok := builder.(quarantineAwareRouteBuilder); ok {
-		metrics.RecordConfigApplyStoreQuarantine(quarantineAware.QuarantinedResourceCount())
-	}
-}
-
 func (s *Server) shutdown(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -1159,10 +1102,7 @@ func (s *Server) shutdownAttempt(ctx context.Context) (error, bool) {
 	}
 	if s.shutdownPhase < shutdownPhaseEngineClosed {
 		if s.engine == nil && !s.compatibilityClosed {
-			compatibilityErr, complete := s.closeCompatibilityOwners(ctx)
-			if !complete {
-				return errors.Join(errors.Join(s.shutdownErrors...), compatibilityErr), false
-			}
+			compatibilityErr := s.closeCompatibilityOwners()
 			s.appendShutdownError(compatibilityErr)
 			s.compatibilityClosed = true
 		}
@@ -1223,14 +1163,8 @@ func (s *Server) requestShutdown() (context.CancelFunc, chan struct{}) {
 	return cancel, startupDone
 }
 
-func (s *Server) closeCompatibilityOwners(ctx context.Context) (error, bool) {
+func (s *Server) closeCompatibilityOwners() error {
 	var errs []error
-	s.lifecycleMu.Lock()
-	schedulerDone := s.schedulerDone
-	s.lifecycleMu.Unlock()
-	if err := waitForLifecycle(ctx, schedulerDone); err != nil {
-		return fmt.Errorf("wait for legacy reload scheduler: %w", err), false
-	}
 	if s.clusters != nil {
 		s.clusters.Close()
 		s.clusters = nil
@@ -1241,7 +1175,7 @@ func (s *Server) closeCompatibilityOwners(ctx context.Context) (error, bool) {
 		}
 		s.storage = nil
 	}
-	return errors.Join(errs...), true
+	return errors.Join(errs...)
 }
 
 func (s *Server) appendShutdownError(err error) {
@@ -1627,63 +1561,6 @@ func streamProxyModeEnabled(cfg *config.Config) bool {
 	return slices.Contains(strings.Split(mode, "&"), "stream")
 }
 
-func isHTTPRouteEvent(event *store.Event) bool {
-	bucket, ok := routeEventBucket(event)
-	return ok && store.IsHTTPRouteReloadBucket(bucket)
-}
-
-func handleStoreEventUpdate(event *store.Event, reloadHTTP func()) {
-	if isHTTPRouteEvent(event) && reloadHTTP != nil {
-		reloadHTTP()
-	}
-}
-
-func (s *Server) registerAcknowledgedStoreUpdateHook(ctx context.Context) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	s.storage.AddAcknowledgedEventUpdateHook(func(event *store.Event) error {
-		if !isHTTPRouteEvent(event) {
-			return nil
-		}
-		return s.publishAcknowledgedHTTPGeneration(
-			s.storage.HTTPConfigGeneration(),
-			func() error { return s.reloadAcknowledgedHTTP(ctx) },
-		)
-	})
-}
-
-func (s *Server) publishAcknowledgedHTTPGeneration(generation uint64, reload func() error) error {
-	s.httpPublicationMu.Lock()
-	defer s.httpPublicationMu.Unlock()
-	if s.httpPublicationAttempted && s.httpPublicationGeneration == generation {
-		return s.httpPublicationErr
-	}
-	err := reload()
-	s.httpPublicationAttempted = true
-	s.httpPublicationGeneration = generation
-	s.httpPublicationErr = err
-	return err
-}
-
-func (s *Server) reloadAcknowledgedHTTP(ctx context.Context) error {
-	if ctx != nil {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-	}
-	if err := s.reload(ctx); err != nil {
-		metrics.RecordConfigApplyStageFailure(metrics.ConfigApplyStageHTTPRoutes)
-		return err
-	}
-	metrics.RecordConfigApplyStageSuccess(metrics.ConfigApplyStageHTTPRoutes)
-	return nil
-}
-
-func routeEventBucket(event *store.Event) (string, bool) {
-	return store.EventBucket(event)
-}
-
 func logStreamResult(result streamruntime.Result) {
 	metrics.RecordStreamConnection(result.RouteID)
 	if result.Err != nil {
@@ -1806,32 +1683,6 @@ func etcdClientOptions(etcdConfig config.Etcd, tlsConfig *tls.Config) etcd.Clien
 		ResyncDelay:         time.Duration(etcdConfig.ResyncDelay) * time.Second,
 		TLS:                 tlsConfig,
 	}
-}
-
-func fetchAndSyncInitialEtcdConfig(fetch func() error, syncStore func() error) error {
-	return fetchAndSyncInitialEtcdConfigContext(
-		context.Background(),
-		func(context.Context) error { return fetch() },
-		syncStore,
-	)
-}
-
-func fetchAndSyncInitialEtcdConfigContext(
-	ctx context.Context,
-	fetch func(context.Context) error,
-	syncStore func() error,
-) error {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if err := fetch(ctx); err != nil {
-		return err
-	}
-	if err := syncStore(); err != nil {
-		metrics.RecordConfigApplyStageFailure(metrics.ConfigApplyStageProvider)
-		return err
-	}
-	return nil
 }
 
 func etcdTLSRequired(endpoints []string, tlsConfig config.EtcdTLS) bool {

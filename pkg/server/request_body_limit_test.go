@@ -381,13 +381,17 @@ func TestConfiguredHTTPHandlerClosesHTTP1ConnectionAfterLongTailOverflow(t *test
 }
 
 func TestConfiguredHTTPHandlerReturnsCanonicalOverflowBeforePanic(t *testing.T) {
+	generation := newRouteRequestGenerationFixture(t, 339)
 	cfg := &config.Config{NginxConfig: config.NginxConfig{
 		HTTP: config.NginxHTTP{ClientMaxBodySize: 3},
 	}}
-	routes := newRouteHandler(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+	route := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		_, _ = io.ReadAll(r.Body)
 		panic("after request body overflow")
-	}), nil)
+	})
+	routes := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		generation.Serve(t, w, r, route)
+	})
 	server := httptest.NewServer(newConfiguredHTTPHandler(routes, cfg))
 	t.Cleanup(server.Close)
 

@@ -10,7 +10,6 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -18,14 +17,12 @@ import (
 	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/observability/metrics"
 	pluginpkg "github.com/wklken/apisix-go/pkg/plugin"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/batch_requests"
-	"github.com/wklken/apisix-go/pkg/plugin/limit_conn"
-	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
-	"github.com/wklken/apisix-go/pkg/store"
-	"github.com/wklken/apisix-go/pkg/testutil"
+	"github.com/wklken/apisix-go/pkg/resource"
 )
 
 type panicSnapshotLogPlugin struct {
@@ -71,6 +68,7 @@ func TestServeRouteRequestOwnsConsumerIdentityAtIngress(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			generation := newRouteRequestGenerationFixture(t, 320)
 			loggerPlugin := &panicSnapshotLogPlugin{}
 			loggerPlugin.Name = "test-ingress-logger"
 			bindings := []pluginpkg.Binding{
@@ -107,7 +105,7 @@ func TestServeRouteRequestOwnsConsumerIdentityAtIngress(t *testing.T) {
 			request := httptest.NewRequest(http.MethodGet, "http://gateway.test/identity", nil)
 			request.Header.Set("X-Consumer-Username", "attacker")
 			response := httptest.NewRecorder()
-			serveRouteRequest(response, request, handler)
+			generation.Serve(t, response, request, handler)
 
 			if response.Code != test.wantStatus {
 				t.Fatalf("status = %d, want %d", response.Code, test.wantStatus)
@@ -253,6 +251,37 @@ func (fixture *countedHTTPLeaseFixture) count(lease httpGenerationLease) httpGen
 
 type switchableHTTPLeaseSource struct {
 	current atomic.Pointer[countedHTTPLeaseFixture]
+}
+
+type routeRequestGenerationFixture struct {
+	routes *routeHandler
+	leases *countedHTTPLeaseFixture
+}
+
+func newRouteRequestGenerationFixture(t *testing.T, revision uint64) *routeRequestGenerationFixture {
+	t.Helper()
+	leases := newCountedHTTPLeaseFixture(t, revision)
+	fixture := &routeRequestGenerationFixture{
+		routes: newGenerationRouteHandler(leases.Acquire),
+		leases: leases,
+	}
+	t.Cleanup(fixture.routes.Close)
+	return fixture
+}
+
+func (fixture *routeRequestGenerationFixture) Serve(
+	t *testing.T,
+	w http.ResponseWriter,
+	r *http.Request,
+	handler http.Handler,
+) {
+	t.Helper()
+	lease, ok := fixture.leases.Acquire()
+	if !ok {
+		t.Fatal("HTTP generation lease unavailable")
+	}
+	defer lease.Release()
+	serveRouteRequestForHTTPGeneration(w, r, handler, &lease, fixture.routes)
 }
 
 func newSwitchableHTTPLeaseSource(current *countedHTTPLeaseFixture) *switchableHTTPLeaseSource {
@@ -433,6 +462,51 @@ func TestRouteHandlerDrainWaitsForRetainedBatchChild(t *testing.T) {
 	}
 	if got := fixture.releases.Load(); got != 2 {
 		t.Fatalf("release count = %d, want parent plus child", got)
+	}
+}
+
+func TestRouteHandlerCapturedDispatchFactoryRejectsAfterRejectNew(t *testing.T) {
+	leasing := newCountedHTTPLeaseFixture(t, 340)
+	routes := newGenerationRouteHandler(leasing.Acquire)
+	t.Cleanup(routes.Close)
+	parent, ok := leasing.Acquire()
+	if !ok {
+		t.Fatal("parent lease unavailable")
+	}
+	var factory batch_requests.DispatchLeaseFactory
+	handler := http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		factory = batch_requests.DispatchLeaseFactoryFromRequest(request)
+		w.WriteHeader(http.StatusNoContent)
+	})
+	serveRouteRequestForHTTPGeneration(
+		httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/capture", nil), handler, &parent, routes,
+	)
+	if factory == nil {
+		t.Fatal("generation request did not expose the production dispatch factory")
+	}
+
+	routes.RejectNew()
+	beforeAcquires := leasing.acquires.Load()
+	routes.mu.Lock()
+	beforeActive := routes.generationActive
+	routes.mu.Unlock()
+	child, retained := factory()
+	if retained || child.Handler != nil || child.Release != nil {
+		t.Fatalf("factory after RejectNew = %#v/%t, want rejected empty lease", child, retained)
+	}
+	if got := leasing.acquires.Load(); got != beforeAcquires {
+		t.Fatalf("acquire count after rejected factory = %d, want %d", got, beforeAcquires)
+	}
+	routes.mu.Lock()
+	afterActive := routes.generationActive
+	routes.mu.Unlock()
+	if afterActive != beforeActive {
+		t.Fatalf("active generation count after rejected factory = %d, want %d", afterActive, beforeActive)
+	}
+
+	parent.Release()
+	if err := routes.Drain(context.Background()); err != nil {
+		t.Fatalf("Drain() error = %v", err)
 	}
 }
 
@@ -819,6 +893,7 @@ func mustAbortHandlerPanic(t *testing.T, fn func()) {
 }
 
 func TestRouteHandlerPanicBeforeCommitReturnsStableJSON(t *testing.T) {
+	generation := newRouteRequestGenerationFixture(t, 321)
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, "/panic", nil)
 	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -826,7 +901,7 @@ func TestRouteHandlerPanicBeforeCommitReturnsStableJSON(t *testing.T) {
 		panic("application panic")
 	})
 
-	serveRouteRequest(recorder, request, handler)
+	generation.Serve(t, recorder, request, handler)
 
 	if recorder.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want 500", recorder.Code)
@@ -843,6 +918,7 @@ func TestRouteHandlerPanicBeforeCommitReturnsStableJSON(t *testing.T) {
 }
 
 func TestPluginPhaseClosurePreTerminalPanicLogsAndRecycles(t *testing.T) {
+	generation := newRouteRequestGenerationFixture(t, 322)
 	loggerPlugin := &panicSnapshotLogPlugin{}
 	loggerPlugin.Name = "test-logger"
 	loggerBinding := pluginpkg.BindPlugin(
@@ -867,7 +943,7 @@ func TestPluginPhaseClosurePreTerminalPanicLogsAndRecycles(t *testing.T) {
 	}))
 	recorder := httptest.NewRecorder()
 
-	serveRouteRequest(recorder, httptest.NewRequest(http.MethodGet, "/panic-log", nil), handler)
+	generation.Serve(t, recorder, httptest.NewRequest(http.MethodGet, "/panic-log", nil), handler)
 
 	if recorder.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want 500", recorder.Code)
@@ -890,6 +966,7 @@ func TestPluginPhaseClosurePreTerminalPanicLogsAndRecycles(t *testing.T) {
 }
 
 func TestPluginPhaseClosureLoggerPanicStillFinalizesAndRecycles(t *testing.T) {
+	generation := newRouteRequestGenerationFixture(t, 323)
 	loggerPlugin := &panicSnapshotLogPlugin{panicLog: true}
 	loggerPlugin.Name = "test-logger"
 	loggerBinding := pluginpkg.BindPlugin(
@@ -913,7 +990,7 @@ func TestPluginPhaseClosureLoggerPanicStillFinalizesAndRecycles(t *testing.T) {
 		}))
 	recorder := httptest.NewRecorder()
 
-	serveRouteRequest(recorder, httptest.NewRequest(http.MethodGet, "/logger-panic", nil), handler)
+	generation.Serve(t, recorder, httptest.NewRequest(http.MethodGet, "/logger-panic", nil), handler)
 
 	if recorder.Code != http.StatusNoContent {
 		t.Fatalf("status = %d, want 204", recorder.Code)
@@ -930,6 +1007,7 @@ func TestPluginPhaseClosureLoggerPanicStillFinalizesAndRecycles(t *testing.T) {
 }
 
 func TestRouteHandlerCompletesLifecycleAndAttachesCaptureBeforeFinalizers(t *testing.T) {
+	generation := newRouteRequestGenerationFixture(t, 324)
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, "/complete", nil)
 	var finishedAt time.Time
@@ -958,7 +1036,7 @@ func TestRouteHandlerCompletesLifecycleAndAttachesCaptureBeforeFinalizers(t *tes
 		_, _ = w.Write([]byte("complete"))
 	})
 
-	serveRouteRequest(recorder, request, handler)
+	generation.Serve(t, recorder, request, handler)
 	if finishedAt.IsZero() {
 		t.Fatal("FinishedAt() is zero during finalization")
 	}
@@ -975,6 +1053,7 @@ func TestRouteHandlerCompletesLifecycleAndAttachesCaptureBeforeFinalizers(t *tes
 }
 
 func TestRouteHandlerBodyLimitFinalizesCanonicalOutcome(t *testing.T) {
+	generation := newRouteRequestGenerationFixture(t, 325)
 	var finalOutcome apisixctx.ResponseOutcome
 	var finalSource apisixctx.ResponseSource
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -991,8 +1070,9 @@ func TestRouteHandlerBodyLimitFinalizesCanonicalOutcome(t *testing.T) {
 		w.WriteHeader(http.StatusBadGateway)
 		_, _ = w.Write([]byte("upstream failure"))
 	})
-	routes := newRouteHandler(handler, nil)
-	limitedRoutes := limitRequestBody(routes, 3)
+	limitedRoutes := limitRequestBody(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		generation.Serve(t, w, r, handler)
+	}), 3)
 	request := httptest.NewRequest(http.MethodPost, "/upload", strings.NewReader("abcd"))
 	request.ContentLength = -1
 	response := httptest.NewRecorder()
@@ -1018,9 +1098,10 @@ func TestRouteHandlerBodyLimitFinalizesCanonicalOutcome(t *testing.T) {
 }
 
 func TestRouteHandlerBodyLimitFinalizesCanonicalOutcomeBeforePanicRecovery(t *testing.T) {
+	generation := newRouteRequestGenerationFixture(t, 326)
 	var finalOutcome apisixctx.ResponseOutcome
 	var finalSource apisixctx.ResponseSource
-	routes := newRouteHandler(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+	route := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		lifecycle := apisixctx.GetRequestLifecycle(r)
 		if lifecycle == nil || !lifecycle.AddFinalizer("observe-body-limit-panic", func() error {
 			finalOutcome = lifecycle.Outcome()
@@ -1031,8 +1112,10 @@ func TestRouteHandlerBodyLimitFinalizesCanonicalOutcomeBeforePanicRecovery(t *te
 		}
 		_, _ = io.ReadAll(r.Body)
 		panic("after request body overflow")
-	}), nil)
-	handler := limitRequestBody(routes, 3)
+	})
+	handler := limitRequestBody(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		generation.Serve(t, w, r, route)
+	}), 3)
 	request := httptest.NewRequest(http.MethodPost, "/upload", strings.NewReader("abcd"))
 	request.ContentLength = -1
 	response := httptest.NewRecorder()
@@ -1074,6 +1157,7 @@ func TestRouteHandlerPanicResponseWriteFailureStillFinalizesAndAborts(t *testing
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			generation := newRouteRequestGenerationFixture(t, 327)
 			request := httptest.NewRequest(http.MethodGet, "/panic", nil)
 			var derived *http.Request
 			var finalOutcome apisixctx.ResponseOutcome
@@ -1097,7 +1181,7 @@ func TestRouteHandlerPanicResponseWriteFailureStillFinalizesAndAborts(t *testing
 				panic("application panic")
 			})
 
-			mustAbortHandlerPanic(t, func() { serveRouteRequest(test.writer, request, handler) })
+			mustAbortHandlerPanic(t, func() { generation.Serve(t, test.writer, request, handler) })
 			if got, want := strings.Join(calls, ","), "observe,first"; got != want {
 				t.Fatalf("finalizer calls = %q, want %q", got, want)
 			}
@@ -1120,6 +1204,7 @@ func TestRouteHandlerPanicResponseWriteFailureStillFinalizesAndAborts(t *testing
 }
 
 func TestRouteHandlerPanicAfterWriteAbortsWithoutSecondResponse(t *testing.T) {
+	generation := newRouteRequestGenerationFixture(t, 328)
 	recorder := httptest.NewRecorder()
 	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("first"))
@@ -1127,7 +1212,7 @@ func TestRouteHandlerPanicAfterWriteAbortsWithoutSecondResponse(t *testing.T) {
 	})
 
 	mustAbortHandlerPanic(t, func() {
-		serveRouteRequest(recorder, httptest.NewRequest(http.MethodGet, "/panic", nil), handler)
+		generation.Serve(t, recorder, httptest.NewRequest(http.MethodGet, "/panic", nil), handler)
 	})
 	if got := recorder.Body.String(); got != "first" {
 		t.Fatalf("body = %q, want first response only", got)
@@ -1135,6 +1220,7 @@ func TestRouteHandlerPanicAfterWriteAbortsWithoutSecondResponse(t *testing.T) {
 }
 
 func TestRouteHandlerPanicAfterFlushAbortsWithoutSecondResponse(t *testing.T) {
+	generation := newRouteRequestGenerationFixture(t, 329)
 	writer := &flushingRouteResponseWriter{header: make(http.Header)}
 	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.(http.Flusher).Flush()
@@ -1142,7 +1228,7 @@ func TestRouteHandlerPanicAfterFlushAbortsWithoutSecondResponse(t *testing.T) {
 	})
 
 	mustAbortHandlerPanic(t, func() {
-		serveRouteRequest(writer, httptest.NewRequest(http.MethodGet, "/panic", nil), handler)
+		generation.Serve(t, writer, httptest.NewRequest(http.MethodGet, "/panic", nil), handler)
 	})
 	if writer.flushes != 1 {
 		t.Fatalf("flushes = %d, want 1", writer.flushes)
@@ -1150,6 +1236,7 @@ func TestRouteHandlerPanicAfterFlushAbortsWithoutSecondResponse(t *testing.T) {
 }
 
 func TestRouteHandlerPanicAfterHijackAbortsWithoutSecondResponse(t *testing.T) {
+	generation := newRouteRequestGenerationFixture(t, 330)
 	left, right := net.Pipe()
 	t.Cleanup(func() { _ = right.Close() })
 	closed := &atomic.Int32{}
@@ -1165,7 +1252,7 @@ func TestRouteHandlerPanicAfterHijackAbortsWithoutSecondResponse(t *testing.T) {
 	})
 
 	mustAbortHandlerPanic(t, func() {
-		serveRouteRequest(writer, httptest.NewRequest(http.MethodGet, "/panic", nil), handler)
+		generation.Serve(t, writer, httptest.NewRequest(http.MethodGet, "/panic", nil), handler)
 	})
 	if got := closed.Load(); got != 1 {
 		t.Fatalf("hijacked close count = %d, want 1", got)
@@ -1173,6 +1260,7 @@ func TestRouteHandlerPanicAfterHijackAbortsWithoutSecondResponse(t *testing.T) {
 }
 
 func TestRouteHandlerSuccessfulHijackRetainsConnection(t *testing.T) {
+	generation := newRouteRequestGenerationFixture(t, 331)
 	left, right := net.Pipe()
 	counting := &countingCloseConn{Conn: left, closed: &atomic.Int32{}}
 	t.Cleanup(func() {
@@ -1186,7 +1274,7 @@ func TestRouteHandlerSuccessfulHijackRetainsConnection(t *testing.T) {
 		}
 	})
 
-	serveRouteRequest(writer, httptest.NewRequest(http.MethodGet, "/hijack", nil), handler)
+	generation.Serve(t, writer, httptest.NewRequest(http.MethodGet, "/hijack", nil), handler)
 	if got := counting.closed.Load(); got != 0 {
 		t.Fatalf("normal hijack close count = %d, want 0", got)
 	}
@@ -1208,71 +1296,6 @@ func TestRouteHandlerSuccessfulHijackRetainsConnection(t *testing.T) {
 	}
 }
 
-func TestRouteHandlerRetiresHijackedConnectionBeforeGenerationDrain(t *testing.T) {
-	tests := []struct {
-		name  string
-		close func(*routeHandler)
-	}{
-		{name: "replace", close: func(routes *routeHandler) {
-			routes.Replace(http.NotFoundHandler(), nil)
-		}},
-		{name: "close", close: func(routes *routeHandler) { routes.Close() }},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			left, right := net.Pipe()
-			t.Cleanup(func() {
-				_ = left.Close()
-				_ = right.Close()
-			})
-			closed := &atomic.Int32{}
-			connection := &countingCloseConn{Conn: left, closed: closed}
-			started := make(chan struct{})
-			requestDone := make(chan struct{})
-			stopped := make(chan struct{})
-			routes := newRouteHandler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				if _, _, err := w.(http.Hijacker).Hijack(); err != nil {
-					t.Errorf("Hijack() error = %v", err)
-					return
-				}
-				close(started)
-				_, _ = connection.Read(make([]byte, 1))
-				close(requestDone)
-			}), func() { close(stopped) })
-
-			go func() {
-				routes.ServeHTTP(&hijackingRouteResponseWriter{header: make(http.Header), conn: connection},
-					httptest.NewRequest(http.MethodGet, "/socket", nil))
-			}()
-			<-started
-
-			closeDone := make(chan struct{})
-			go func() {
-				test.close(routes)
-				close(closeDone)
-			}()
-			select {
-			case <-closeDone:
-			case <-time.After(time.Second):
-				t.Fatal("generation retirement blocked behind a hijacked request")
-			}
-			select {
-			case <-requestDone:
-			case <-time.After(time.Second):
-				t.Fatal("closing a retired hijacked connection did not drain the request")
-			}
-			if got := closed.Load(); got == 0 {
-				t.Fatal("retired generation did not close the hijacked connection")
-			}
-			select {
-			case <-stopped:
-			case <-time.After(time.Second):
-				t.Fatal("retired generation stopper did not run")
-			}
-		})
-	}
-}
-
 type countingCloseConn struct {
 	net.Conn
 	closed *atomic.Int32
@@ -1284,6 +1307,7 @@ func (c *countingCloseConn) Close() error {
 }
 
 func TestRouteHandlerAbortHandlerRunsFinalizersWithoutNewMetric(t *testing.T) {
+	generation := newRouteRequestGenerationFixture(t, 332)
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, "/abort", nil)
 	var outcome apisixctx.ResponseOutcome
@@ -1298,13 +1322,14 @@ func TestRouteHandlerAbortHandlerRunsFinalizersWithoutNewMetric(t *testing.T) {
 		panic(http.ErrAbortHandler)
 	})
 
-	mustAbortHandlerPanic(t, func() { serveRouteRequest(recorder, request, handler) })
+	mustAbortHandlerPanic(t, func() { generation.Serve(t, recorder, request, handler) })
 	if outcome.Kind != apisixctx.RequestOutcomeHandlerAbort {
 		t.Fatalf("finalizer outcome = %#v, want handler_abort", outcome)
 	}
 }
 
 func TestRouteHandlerAbortPreservesPostCommitFailureReason(t *testing.T) {
+	generation := newRouteRequestGenerationFixture(t, 333)
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, "/abort", nil)
 	var outcome apisixctx.ResponseOutcome
@@ -1325,7 +1350,7 @@ func TestRouteHandlerAbortPreservesPostCommitFailureReason(t *testing.T) {
 		panic(http.ErrAbortHandler)
 	})
 
-	mustAbortHandlerPanic(t, func() { serveRouteRequest(recorder, request, handler) })
+	mustAbortHandlerPanic(t, func() { generation.Serve(t, recorder, request, handler) })
 	if outcome.Kind != apisixctx.RequestOutcomeHandlerAbort ||
 		outcome.FailureReason != apisixctx.ResponseFailureUpstreamIdleTimeout ||
 		!outcome.Committed {
@@ -1334,6 +1359,7 @@ func TestRouteHandlerAbortPreservesPostCommitFailureReason(t *testing.T) {
 }
 
 func TestRouteHandlerFinalizerPanicDoesNotSkipOtherFinalizers(t *testing.T) {
+	generation := newRouteRequestGenerationFixture(t, 334)
 	request := httptest.NewRequest(http.MethodGet, "/panic", nil)
 	var calls []string
 	handler := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
@@ -1353,7 +1379,7 @@ func TestRouteHandlerFinalizerPanicDoesNotSkipOtherFinalizers(t *testing.T) {
 		panic("application panic")
 	})
 
-	serveRouteRequest(httptest.NewRecorder(), request, handler)
+	generation.Serve(t, httptest.NewRecorder(), request, handler)
 	if got, want := strings.Join(calls, ","), "last,panic,first"; got != want {
 		t.Fatalf("finalizer calls = %q, want %q", got, want)
 	}
@@ -1391,32 +1417,39 @@ func TestRequestPanicStageUsesOnlyBoundedValues(t *testing.T) {
 }
 
 func TestRouteHandlerPanicStillReleasesRouteGeneration(t *testing.T) {
-	stopped := make(chan struct{})
-	routes := newRouteHandler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-		panic("generation panic")
-	}), func() { close(stopped) })
-	requestDone := make(chan struct{})
-	go func() {
-		defer close(requestDone)
-		defer func() { _ = recover() }()
-		routes.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/panic", nil))
-	}()
-	select {
-	case <-requestDone:
-	case <-time.After(time.Second):
-		t.Fatal("panic request did not return")
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("prepared response"))
+	}))
+	t.Cleanup(backend.Close)
+	generation := newCompiledHTTPGenerationFixture(t, 335, nil, []generation.Resource{
+		compiledHTTPRouteResource(t, "panic", "/panic", backend, nil),
+	})
+	writer := &failingRouteResponseWriter{header: make(http.Header), panicWrite: true}
+
+	mustAbortHandlerPanic(t, func() {
+		generation.routes.ServeHTTP(
+			writer,
+			httptest.NewRequest(http.MethodGet, "http://gateway.test/panic", nil),
+		)
+	})
+	if got := generation.acquires.Load(); got != 1 {
+		t.Fatalf("acquire count after prepared-handler panic = %d, want 1", got)
 	}
-	routes.Replace(http.NotFoundHandler(), nil)
-	select {
-	case <-stopped:
-	case <-time.After(time.Second):
-		t.Fatal("retired generation was not released after panic")
+	if got := generation.releases.Load(); got != 1 {
+		t.Fatalf("release count after recovered panic = %d, want 1", got)
+	}
+	if err := generation.routes.Drain(context.Background()); err != nil {
+		t.Fatalf("Drain() after prepared-handler panic error = %v", err)
+	}
+	if got := generation.releases.Load(); got != 1 {
+		t.Fatalf("release count after Drain = %d, want exactly once", got)
 	}
 }
 
 func TestRouteHandlerPanicAfterWriteAbortsConnection(t *testing.T) {
+	generation := newRouteRequestGenerationFixture(t, 336)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		serveRouteRequest(w, r, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		generation.Serve(t, w, r, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			_, _ = w.Write([]byte("partial"))
 			panic("abort connection")
 		}))
@@ -1441,100 +1474,94 @@ func TestRouteHandlerPanicAfterWriteAbortsConnection(t *testing.T) {
 }
 
 func TestRouteHandlerBatchTimeoutKeepsRetiredGenerationUntilWorkerExit(t *testing.T) {
-	workerStarted := make(chan struct{})
-	workerRelease := make(chan struct{})
-	worker := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-		close(workerStarted)
-		<-workerRelease
-	})
-	mux := http.NewServeMux()
-	mux.Handle("/slow", worker)
-	mux.Handle("/apisix/batch-requests", batch_requests.NewHandlerWithLimits(mux, batch_requests.Limits{}))
-
-	stopped := make(chan struct{})
-	routes := newRouteHandler(mux, func() { close(stopped) })
-	request := httptest.NewRequest(http.MethodPost, batch_requests.DefaultURI, strings.NewReader(`{
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(backend.Close)
+	generation := newCompiledHTTPGenerationFixture(
+		t,
+		337,
+		[]string{"batch-requests", "fault-injection"},
+		[]generation.Resource{compiledHTTPRouteResource(
+			t,
+			"slow",
+			"/slow",
+			backend,
+			map[string]resource.PluginConfig{
+				"fault-injection": map[string]any{"delay": map[string]any{"duration": 0.2}},
+			},
+		)},
+	)
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"http://gateway.test"+batch_requests.DefaultURI,
+		strings.NewReader(`{
 		"timeout": 10,
 		"pipeline": [{"path":"/slow"}]
-	}`))
+	}`),
+	)
 	response := httptest.NewRecorder()
-	served := make(chan struct{})
-	go func() {
-		routes.ServeHTTP(response, request)
-		close(served)
-	}()
 
-	select {
-	case <-workerStarted:
-	case <-time.After(time.Second):
-		t.Fatal("batch worker did not start")
+	generation.routes.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("batch response code = %d, want 200; body=%q", response.Code, response.Body.String())
 	}
-	select {
-	case <-served:
-	case <-time.After(time.Second):
-		t.Fatal("batch request did not return after timeout")
+	if got := generation.acquires.Load(); got != 2 {
+		t.Fatalf("acquire count after timed-out child = %d, want parent plus child", got)
+	}
+	if got := generation.releases.Load(); got != 1 {
+		t.Fatalf("release count before delayed child exits = %d, want parent only", got)
 	}
 
-	routes.Replace(http.NotFoundHandler(), nil)
-	select {
-	case <-stopped:
-		t.Fatal("retired generation stopped while cancellation-ignoring worker was active")
-	case <-time.After(100 * time.Millisecond):
+	generation.routes.RejectNew()
+	drainCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := generation.routes.Drain(drainCtx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Drain(active batch worker) error = %v, want %v", err, context.Canceled)
 	}
-	close(workerRelease)
-	select {
-	case <-stopped:
-	case <-time.After(time.Second):
-		t.Fatal("retired generation did not stop after batch worker exited")
+	if err := generation.routes.Drain(context.Background()); err != nil {
+		t.Fatalf("Drain() after batch worker exit error = %v", err)
 	}
-}
-
-func TestRetiredRouteSetRefusesNestedDispatchLease(t *testing.T) {
-	generation := newRouteSet(http.NotFoundHandler(), nil)
-	if !generation.acquireRequest() {
-		t.Fatal("active generation refused request")
+	if got := generation.releases.Load(); got != 2 {
+		t.Fatalf("release count after batch worker exit = %d, want parent plus child", got)
 	}
-	retireRouteSet(generation)
-	if generation.acquireDispatchLease() {
-		t.Fatal("retired generation accepted a nested dispatch lease")
+	if got := generation.acquires.Load(); got != generation.releases.Load() {
+		t.Fatalf("generation lease counts = %d/%d, want balanced", got, generation.releases.Load())
 	}
-	generation.releaseRequest()
 }
 
 func TestRouteHandlerBatchRunsLimitConnFinalizer(t *testing.T) {
-	plugin := &limit_conn.Plugin{}
-	if err := plugin.Init(); err != nil {
-		t.Fatalf("limit-conn Init() error = %v", err)
-	}
-	config := plugin.Config().(*limit_conn.Config)
-	*config = limit_conn.Config{
-		Conn:             1,
-		Burst:            0,
-		DefaultConnDelay: 0.001,
-		Key:              "remote_addr",
-	}
-	if err := plugin.PostInit(); err != nil {
-		t.Fatalf("limit-conn PostInit() error = %v", err)
-	}
-
-	target := plugin.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if apisixctx.GetRequestLifecycle(r) == nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
-	mux := http.NewServeMux()
-	mux.Handle("/limited", target)
-	mux.Handle("/apisix/batch-requests", batch_requests.NewHandlerWithLimits(mux, batch_requests.Limits{}))
-	routes := newRouteHandler(mux, nil)
-	request := httptest.NewRequest(http.MethodPost, batch_requests.DefaultURI, strings.NewReader(`{
+	t.Cleanup(backend.Close)
+	generation := newCompiledHTTPGenerationFixture(
+		t,
+		338,
+		[]string{"batch-requests", "limit-conn"},
+		[]generation.Resource{compiledHTTPRouteResource(
+			t,
+			"limited",
+			"/limited",
+			backend,
+			map[string]resource.PluginConfig{
+				"limit-conn": map[string]any{
+					"conn": 1, "burst": 0, "default_conn_delay": 0.001, "key": "remote_addr",
+				},
+			},
+		)},
+	)
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"http://gateway.test"+batch_requests.DefaultURI,
+		strings.NewReader(`{
 		"pipeline": [{"path":"/limited"}, {"path":"/limited"}]
-	}`))
+	}`),
+	)
 	request.RemoteAddr = "192.0.2.100:1234"
 	response := httptest.NewRecorder()
 
-	routes.ServeHTTP(response, request)
+	generation.routes.ServeHTTP(response, request)
 
 	if response.Code != http.StatusOK {
 		t.Fatalf("batch response code = %d, want 200; body=%q", response.Code, response.Body.String())
@@ -1549,326 +1576,10 @@ func TestRouteHandlerBatchRunsLimitConnFinalizer(t *testing.T) {
 		responses[1].Status != http.StatusNoContent {
 		t.Fatalf("pipeline statuses = %#v, want two 204 responses", responses)
 	}
-}
-
-func TestRouteHandlerReplacementDoesNotBlockBehindOlderGeneration(t *testing.T) {
-	requestStarted := make(chan struct{})
-	releaseRequest := make(chan struct{})
-	var releaseOnce sync.Once
-	release := func() {
-		releaseOnce.Do(func() { close(releaseRequest) })
+	if got := generation.acquires.Load(); got != 3 {
+		t.Fatalf("acquire count = %d, want parent plus two batch children", got)
 	}
-	t.Cleanup(release)
-
-	firstStopped := make(chan struct{})
-	first := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		close(requestStarted)
-		<-releaseRequest
-		w.WriteHeader(http.StatusOK)
-	})
-	routes := newRouteHandler(first, func() { close(firstStopped) })
-
-	firstResponse := make(chan int, 1)
-	go func() {
-		recorder := httptest.NewRecorder()
-		routes.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
-		firstResponse <- recorder.Code
-	}()
-	<-requestStarted
-
-	// Replace twice while generation 1 still has an in-flight request. Neither
-	// replacement may wait for that long-lived request to drain.
-	routes.Replace(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	}), nil)
-	routes.Replace(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	}), nil)
-
-	thirdResponse := make(chan int, 1)
-	go func() {
-		recorder := httptest.NewRecorder()
-		routes.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
-		thirdResponse <- recorder.Code
-	}()
-	select {
-	case status := <-thirdResponse:
-		if status != http.StatusNoContent {
-			t.Fatalf("third status = %d", status)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("second replacement blocked behind a retired generation")
-	}
-
-	select {
-	case <-firstStopped:
-		t.Fatal("first generation stopped before its in-flight request exited")
-	default:
-	}
-	release()
-	select {
-	case status := <-firstResponse:
-		if status != http.StatusOK {
-			t.Fatalf("first status = %d", status)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("first generation request never completed")
-	}
-	select {
-	case <-firstStopped:
-	case <-time.After(time.Second):
-		t.Fatal("first generation was not stopped after its request drained")
-	}
-}
-
-func TestRouteHandlerReplaceWaitsForActiveRequestBeforeStopping(t *testing.T) {
-	delivered := make(chan struct{}, 1)
-	processor := logger_batch.New(logger_batch.Config{
-		Name:            "test logger",
-		BatchMaxSize:    10,
-		InactiveTimeout: time.Hour,
-		BufferDuration:  time.Hour,
-	}, func(_ []map[string]any, _ int) (int, error) {
-		delivered <- struct{}{}
-		return 0, nil
-	})
-
-	requestStarted := make(chan struct{})
-	releaseRequest := make(chan struct{})
-	var requestCount atomic.Int32
-	oldHandlerCalled := make(chan struct{}, 1)
-	oldHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		if requestCount.Add(1) == 1 {
-			close(requestStarted)
-			<-releaseRequest
-			processor.Push(map[string]any{"path": "/old"})
-		} else {
-			oldHandlerCalled <- struct{}{}
-		}
-		w.WriteHeader(http.StatusNoContent)
-	})
-	newHandlerCalled := make(chan struct{}, 1)
-	newHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		newHandlerCalled <- struct{}{}
-		w.WriteHeader(http.StatusNoContent)
-	})
-	routes := newRouteHandler(oldHandler, processor.Stop)
-
-	requestDone := make(chan struct{})
-	go func() {
-		routes.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
-		close(requestDone)
-	}()
-	<-requestStarted
-
-	// Replace returns immediately; the retired generation is stopped
-	// asynchronously only after its active request drains.
-	replaceDone := make(chan struct{})
-	go func() {
-		routes.Replace(newHandler, nil)
-		close(replaceDone)
-	}()
-
-	select {
-	case <-replaceDone:
-	case <-time.After(200 * time.Millisecond):
-		t.Fatal("Replace blocked behind the active request")
-	}
-
-	replacementRequestDone := make(chan struct{})
-	go func() {
-		routes.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
-		close(replacementRequestDone)
-	}()
-	select {
-	case <-newHandlerCalled:
-	case <-oldHandlerCalled:
-		t.Fatal("new request reached the retired handler")
-	case <-time.After(200 * time.Millisecond):
-		t.Fatal("new request blocked while the retired request was still active")
-	}
-	<-replacementRequestDone
-
-	select {
-	case <-delivered:
-		t.Fatal("retired route logger flushed before the active request exited")
-	default:
-	}
-
-	close(releaseRequest)
-	<-requestDone
-
-	select {
-	case <-delivered:
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for retired route logger flush")
-	}
-}
-
-func TestRouteHandlerCloseStopsCurrentRoute(t *testing.T) {
-	delivered := make(chan struct{}, 1)
-	processor := logger_batch.New(logger_batch.Config{
-		Name:            "test logger",
-		BatchMaxSize:    10,
-		InactiveTimeout: time.Hour,
-		BufferDuration:  time.Hour,
-	}, func(_ []map[string]any, _ int) (int, error) {
-		delivered <- struct{}{}
-		return 0, nil
-	})
-	if !processor.Push(map[string]any{"path": "/shutdown"}) {
-		t.Fatal("push was rejected")
-	}
-
-	routes := newRouteHandler(http.NotFoundHandler(), processor.Stop)
-	routes.Close()
-
-	select {
-	case <-delivered:
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for current route logger flush")
-	}
-}
-
-func TestServerShutdownStopsCurrentRoute(t *testing.T) {
-	delivered := make(chan struct{}, 1)
-	processor := logger_batch.New(logger_batch.Config{
-		Name:            "test logger",
-		BatchMaxSize:    10,
-		InactiveTimeout: time.Hour,
-		BufferDuration:  time.Hour,
-	}, func(_ []map[string]any, _ int) (int, error) {
-		delivered <- struct{}{}
-		return 0, nil
-	})
-	if !processor.Push(map[string]any{"path": "/shutdown"}) {
-		t.Fatal("push was rejected")
-	}
-
-	routes := newRouteHandler(http.NotFoundHandler(), processor.Stop)
-	s := &Server{server: &http.Server{}, routes: routes}
-	if err := s.shutdown(context.Background()); err != nil {
-		t.Fatalf("shutdown() error = %v", err)
-	}
-
-	select {
-	case <-delivered:
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for server shutdown logger flush")
-	}
-}
-
-func TestRouteHandlerStopsReplacementAfterClose(t *testing.T) {
-	routes := newRouteHandler(http.NotFoundHandler(), nil)
-	routes.Close()
-
-	replacementStopped := make(chan struct{})
-	replacementCalled := make(chan struct{}, 1)
-	routes.Replace(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		replacementCalled <- struct{}{}
-		w.WriteHeader(http.StatusNoContent)
-	}), func() {
-		close(replacementStopped)
-	})
-
-	select {
-	case <-replacementStopped:
-	case <-time.After(2 * time.Second):
-		t.Fatal("replacement route was not stopped after close")
-	}
-
-	response := httptest.NewRecorder()
-	routes.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/", nil))
-	if response.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d, want %d", response.Code, http.StatusServiceUnavailable)
-	}
-	select {
-	case <-replacementCalled:
-		t.Fatal("replacement handler was installed after close")
-	default:
-	}
-}
-
-func TestServerShutdownReturnsWhenHTTPQuiescenceTimesOut(t *testing.T) {
-	requestStarted := make(chan struct{})
-	allowLookup := make(chan struct{})
-	releaseRequest := make(chan struct{})
-	var releaseOnce sync.Once
-	release := func() {
-		releaseOnce.Do(func() { close(releaseRequest) })
-	}
-	t.Cleanup(release)
-
-	events := make(chan *store.Event)
-	storage, err := store.Open(
-		filepath.Join(t.TempDir(), "timeout.db"),
-		events,
-		testutil.DataEncryptionService(false, nil),
-	)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	storage.Start()
-	previousStore := store.ReplaceGlobalStoreForTest(storage)
-	t.Cleanup(func() { store.ReplaceGlobalStoreForTest(previousStore) })
-	t.Cleanup(func() { _ = storage.Stop() })
-	lookupDone := make(chan error, 1)
-	routes := newRouteHandler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		close(requestStarted)
-		<-allowLookup
-		_, lookupErr := store.GetConfigSnapshot()
-		lookupDone <- lookupErr
-		<-releaseRequest
-		w.WriteHeader(http.StatusNoContent)
-	}), nil)
-	httpServer := &http.Server{Handler: routes}
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	t.Cleanup(func() { _ = listener.Close() })
-	go func() { _ = httpServer.Serve(listener) }()
-
-	requestDone := make(chan struct{})
-	go func() {
-		response, requestErr := http.Get("http://" + listener.Addr().String())
-		if requestErr == nil {
-			_ = response.Body.Close()
-		}
-		close(requestDone)
-	}()
-	<-requestStarted
-
-	s := &Server{server: httpServer, routes: routes, storage: storage}
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
-	defer cancel()
-	shutdownDone := make(chan error, 1)
-	go func() { shutdownDone <- s.shutdown(shutdownCtx) }()
-
-	select {
-	case err := <-shutdownDone:
-		if !errors.Is(err, context.DeadlineExceeded) {
-			t.Fatalf("shutdown() error = %v, want context deadline exceeded", err)
-		}
-	case <-time.After(250 * time.Millisecond):
-		t.Fatal("shutdown did not return after its context deadline")
-	}
-	close(allowLookup)
-	select {
-	case lookupErr := <-lookupDone:
-		if lookupErr != nil {
-			t.Fatalf("active handler Store lookup after timeout = %v", lookupErr)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("active handler did not complete Store lookup after timeout")
-	}
-
-	release()
-	<-requestDone
-	if err := s.shutdown(context.Background()); err != nil {
-		t.Fatalf("second shutdown() error = %v", err)
-	}
-	if _, err := storage.SnapshotBuckets([]string{"routes"}); err == nil {
-		t.Fatal("Store remained open after completed second shutdown")
+	if got := generation.releases.Load(); got != 3 {
+		t.Fatalf("release count = %d, want parent plus two batch children", got)
 	}
 }

@@ -2,6 +2,10 @@ package server
 
 import (
 	"bufio"
+	"bytes"
+	"errors"
+	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"runtime/debug"
@@ -17,6 +21,8 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/batch_requests"
 )
 
+var errHTTPGenerationHijackUnavailable = errors.New("HTTP generation hijack lease unavailable")
+
 const routeSetRetired = uint64(1) << 63
 
 type routeSet struct {
@@ -31,9 +37,12 @@ type routeSet struct {
 }
 
 type routeHandler struct {
-	mu      sync.Mutex
-	current atomic.Pointer[routeSet]
-	closed  bool
+	mu               sync.Mutex
+	current          atomic.Pointer[routeSet]
+	generation       bool
+	generationSource httpLeaseSource
+	hijacked         map[*generationConn]struct{}
+	closed           bool
 }
 
 func newRouteHandler(handler http.Handler, stop func()) *routeHandler {
@@ -42,7 +51,19 @@ func newRouteHandler(handler http.Handler, stop func()) *routeHandler {
 	return routes
 }
 
+func newGenerationRouteHandler(source httpLeaseSource) *routeHandler {
+	return &routeHandler{
+		generation:       true,
+		generationSource: source,
+		hijacked:         make(map[*generationConn]struct{}),
+	}
+}
+
 func (h *routeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if h.generation {
+		h.serveGeneration(w, r)
+		return
+	}
 	var current *routeSet
 	for {
 		current = h.current.Load()
@@ -59,6 +80,26 @@ func (h *routeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	serveRouteRequestForGeneration(w, r, current.handler, current)
 }
 
+func (h *routeHandler) serveGeneration(w http.ResponseWriter, r *http.Request) {
+	h.mu.Lock()
+	if h.closed || h.generationSource == nil {
+		h.mu.Unlock()
+		http.Error(w, http.StatusText(http.StatusServiceUnavailable), http.StatusServiceUnavailable)
+		return
+	}
+	lease, ok := h.generationSource()
+	h.mu.Unlock()
+	if !ok || lease.Snapshot == nil || lease.Snapshot.Handler() == nil || lease.Release == nil {
+		if ok && lease.Release != nil {
+			lease.Release()
+		}
+		http.Error(w, http.StatusText(http.StatusServiceUnavailable), http.StatusServiceUnavailable)
+		return
+	}
+	defer lease.Release()
+	serveRouteRequestForHTTPGeneration(w, r, lease.Snapshot.Handler(), &lease, h)
+}
+
 func serveRouteRequest(w http.ResponseWriter, r *http.Request, handler http.Handler) {
 	serveRouteRequestForGeneration(w, r, handler, nil)
 }
@@ -68,6 +109,27 @@ func serveRouteRequestForGeneration(
 	r *http.Request,
 	handler http.Handler,
 	generation *routeSet,
+) {
+	serveRouteRequestForOwnedGeneration(w, r, handler, generation, nil, nil)
+}
+
+func serveRouteRequestForHTTPGeneration(
+	w http.ResponseWriter,
+	r *http.Request,
+	handler http.Handler,
+	lease *httpGenerationLease,
+	terminal *routeHandler,
+) {
+	serveRouteRequestForOwnedGeneration(w, r, handler, nil, lease, terminal)
+}
+
+func serveRouteRequestForOwnedGeneration(
+	w http.ResponseWriter,
+	r *http.Request,
+	handler http.Handler,
+	legacy *routeSet,
+	lease *httpGenerationLease,
+	terminal *routeHandler,
 ) {
 	r.Header.Del("X-Consumer-Username")
 	request, lifecycle := apisixctx.EnsureRequestLifecycle(r, time.Now())
@@ -81,13 +143,28 @@ func serveRouteRequestForGeneration(
 		wrapped = bodyLimitState.wrapResponseWriter(wrapped)
 	}
 	var unregisterHijacks []func()
-	if generation != nil {
+	var generationHijacks []*generationConn
+	if legacy != nil || lease != nil {
 		wrapped = httpsnoop.Wrap(wrapped, httpsnoop.Hooks{
 			Hijack: func(hijack httpsnoop.HijackFunc) httpsnoop.HijackFunc {
 				return func() (net.Conn, *bufio.ReadWriter, error) {
 					connection, readWriter, err := hijack()
 					if err == nil && connection != nil {
-						unregisterHijacks = append(unregisterHijacks, generation.registerHijacked(connection))
+						if legacy != nil {
+							unregisterHijacks = append(unregisterHijacks, legacy.registerHijacked(connection))
+						} else {
+							wrappedConnection, wrapErr := terminal.registerGenerationHijack(connection, lease)
+							if wrapErr != nil {
+								return nil, nil, wrapErr
+							}
+							generationHijacks = append(generationHijacks, wrappedConnection)
+							connection = wrappedConnection
+							readWriter, wrapErr = rebuildGenerationReadWriter(readWriter, wrappedConnection)
+							if wrapErr != nil {
+								_ = wrappedConnection.Close()
+								return nil, nil, wrapErr
+							}
+						}
 					}
 					return connection, readWriter, err
 				}
@@ -100,19 +177,35 @@ func serveRouteRequestForGeneration(
 		}
 	}()
 	request = base.WithResponseCapture(request, capture)
-	if generation != nil {
+	if legacy != nil {
 		request = batch_requests.WithDispatchLeaseFactory(request, func() (batch_requests.DispatchLease, bool) {
-			if !generation.acquireDispatchLease() {
+			if !legacy.acquireDispatchLease() {
 				return batch_requests.DispatchLease{}, false
 			}
 			var releaseOnce sync.Once
 			return batch_requests.DispatchLease{
 				Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					serveRouteRequestForGeneration(w, r, generation.handler, generation)
+					serveRouteRequestForGeneration(w, r, legacy.handler, legacy)
 				}),
 				Release: func() {
-					releaseOnce.Do(generation.releaseRequest)
+					releaseOnce.Do(legacy.releaseRequest)
 				},
+			}, true
+		})
+	} else if lease != nil && lease.retain != nil {
+		request = batch_requests.WithDispatchLeaseFactory(request, func() (batch_requests.DispatchLease, bool) {
+			child, ok := lease.retain()
+			if !ok || child.Snapshot == nil || child.Snapshot.Handler() == nil {
+				if ok && child.Release != nil {
+					child.Release()
+				}
+				return batch_requests.DispatchLease{}, false
+			}
+			return batch_requests.DispatchLease{
+				Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					serveRouteRequestForHTTPGeneration(w, r, child.Snapshot.Handler(), &child, terminal)
+				}),
+				Release: child.Release,
 			}, true
 		})
 	}
@@ -169,7 +262,13 @@ func serveRouteRequestForGeneration(
 		apisixctx.RecycleVars(request)
 
 		if outcome.Hijacked && (isHandlerAbort || aborted) {
-			if err := capture.CloseHijacked(); err != nil {
+			if len(generationHijacks) != 0 {
+				for _, connection := range generationHijacks {
+					if err := connection.Close(); err != nil {
+						logger.Errorf("close hijacked request connection: %s", err)
+					}
+				}
+			} else if err := capture.CloseHijacked(); err != nil {
 				logger.Errorf("close hijacked request connection: %s", err)
 			}
 		}
@@ -182,6 +281,37 @@ func serveRouteRequestForGeneration(
 	}()
 
 	handler.ServeHTTP(wrapped, request)
+}
+
+func rebuildGenerationReadWriter(
+	readWriter *bufio.ReadWriter,
+	connection *generationConn,
+) (*bufio.ReadWriter, error) {
+	if connection == nil {
+		return nil, errHTTPGenerationHijackUnavailable
+	}
+	var buffered []byte
+	if readWriter != nil {
+		writer := readWriter.Writer
+		if writer != nil {
+			if err := writer.Flush(); err != nil {
+				return nil, fmt.Errorf("flush hijacked response before generation wrap: %w", err)
+			}
+		}
+		reader := readWriter.Reader
+		if reader != nil && reader.Buffered() != 0 {
+			peeked, err := reader.Peek(reader.Buffered())
+			if err != nil {
+				return nil, fmt.Errorf("preserve hijacked buffered input: %w", err)
+			}
+			buffered = bytes.Clone(peeked)
+		}
+	}
+	reader := io.Reader(connection)
+	if len(buffered) != 0 {
+		reader = io.MultiReader(bytes.NewReader(buffered), connection)
+	}
+	return bufio.NewReadWriter(bufio.NewReader(reader), bufio.NewWriter(connection)), nil
 }
 
 func requestPanicStage(outcome apisixctx.ResponseOutcome) metrics.RequestPanicStage {
@@ -244,11 +374,56 @@ func (h *routeHandler) Close() {
 		return
 	}
 	h.closed = true
+	if h.generationSource != nil {
+		h.generationSource = nil
+		connections := make([]*generationConn, 0, len(h.hijacked))
+		for connection := range h.hijacked {
+			connections = append(connections, connection)
+		}
+		clear(h.hijacked)
+		h.mu.Unlock()
+		for _, connection := range connections {
+			_ = connection.Close()
+		}
+		return
+	}
 	previous := h.current.Swap(nil)
 	retireRouteSet(previous)
 	h.mu.Unlock()
 
 	stopRouteSet(previous)
+}
+
+func (h *routeHandler) registerGenerationHijack(
+	connection net.Conn,
+	lease *httpGenerationLease,
+) (*generationConn, error) {
+	if h == nil || connection == nil || lease == nil || lease.retain == nil {
+		if connection != nil {
+			_ = connection.Close()
+		}
+		return nil, errHTTPGenerationHijackUnavailable
+	}
+	hijackLease, ok := lease.retain()
+	if !ok {
+		_ = connection.Close()
+		return nil, errHTTPGenerationHijackUnavailable
+	}
+	wrapped := newGenerationConn(connection, hijackLease.Release, nil)
+	h.mu.Lock()
+	if h.closed {
+		h.mu.Unlock()
+		_ = wrapped.Close()
+		return nil, errHTTPGenerationHijackUnavailable
+	}
+	wrapped.unregister = func() {
+		h.mu.Lock()
+		delete(h.hijacked, wrapped)
+		h.mu.Unlock()
+	}
+	h.hijacked[wrapped] = struct{}{}
+	h.mu.Unlock()
+	return wrapped, nil
 }
 
 func newRouteSet(handler http.Handler, stop func()) *routeSet {

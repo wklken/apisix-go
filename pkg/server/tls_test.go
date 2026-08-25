@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"crypto"
 	"crypto/rand"
@@ -21,14 +22,264 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wklken/apisix-go/pkg/capability"
+	"github.com/wklken/apisix-go/pkg/compiler"
 	"github.com/wklken/apisix-go/pkg/config"
+	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/proxy"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/store"
 	"github.com/wklken/apisix-go/pkg/testutil"
 )
 
 const frontendTLS12Cipher = "ECDHE-RSA-AES128-GCM-SHA256"
+
+func TestFrontendTLSConfigUsesGenerationSelector(t *testing.T) {
+	fixture := newTLSHTTPLeaseFixture(t, 400, "generation.example", nil)
+	cfg := &config.Config{Apisix: config.Apisix{Ssl: config.Ssl{
+		Enable: true, Listen: []config.Listen{{Port: 9443}},
+		SslProtocols: "TLSv1.2", SslCiphers: frontendTLS12Cipher,
+	}}}
+	outer, err := buildGenerationFrontendTLSConfig(cfg, fixture.Acquire)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outer.GetCertificate != nil || outer.GetConfigForClient == nil {
+		t.Fatalf("generation outer selectors present GetCertificate/GetConfigForClient = %t/%t",
+			outer.GetCertificate != nil, outer.GetConfigForClient != nil)
+	}
+	selected, err := outer.GetConfigForClient(&tls.ClientHelloInfo{ServerName: "generation.example"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertTLSConfigCertificateName(t, selected, "generation.example")
+	if fixture.acquires.Load() != 1 || fixture.releases.Load() != 1 {
+		t.Fatalf("generation outer lease counts = %d/%d, want 1/1",
+			fixture.acquires.Load(), fixture.releases.Load())
+	}
+}
+
+func TestFrontendTLSSelectorUsesOneHTTPGenerationLease(t *testing.T) {
+	old := newTLSHTTPLeaseFixture(t, 401, "old.example", nil)
+	next := newTLSHTTPLeaseFixture(t, 402, "new.example", nil)
+	source := newSwitchableHTTPLeaseSource(old)
+	selector := generationFrontendTLSConfigSelector(source.Acquire)
+
+	oldConfig, err := selector(&tls.ClientHelloInfo{ServerName: "old.example"})
+	if err != nil {
+		t.Fatalf("select old TLS config: %v", err)
+	}
+	assertTLSConfigCertificateName(t, oldConfig, "old.example")
+	source.Store(next)
+	nextConfig, err := selector(&tls.ClientHelloInfo{ServerName: "new.example"})
+	if err != nil {
+		t.Fatalf("select next TLS config: %v", err)
+	}
+	assertTLSConfigCertificateName(t, nextConfig, "new.example")
+	if old.acquires.Load() != 1 || old.releases.Load() != 1 ||
+		next.acquires.Load() != 1 || next.releases.Load() != 1 {
+		t.Fatalf("TLS lease counts old=%d/%d next=%d/%d, want 1/1 each",
+			old.acquires.Load(), old.releases.Load(), next.acquires.Load(), next.releases.Load())
+	}
+}
+
+func TestFrontendTLSSelectorRollbackRestoresExactPredecessor(t *testing.T) {
+	old := newTLSHTTPLeaseFixture(t, 403, "rollback-old.example", nil)
+	next := newTLSHTTPLeaseFixture(t, 404, "rollback-next.example", nil)
+	source := newSwitchableHTTPLeaseSource(old)
+	selector := generationFrontendTLSConfigSelector(source.Acquire)
+	source.Store(next)
+	selected, err := selector(&tls.ClientHelloInfo{ServerName: "rollback-next.example"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertTLSConfigCertificateName(t, selected, "rollback-next.example")
+	source.Store(old)
+	selected, err = selector(&tls.ClientHelloInfo{ServerName: "rollback-old.example"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertTLSConfigCertificateName(t, selected, "rollback-old.example")
+}
+
+func TestFrontendTLSSelectorFailsClosedWithoutHTTPDomain(t *testing.T) {
+	selector := generationFrontendTLSConfigSelector(func() (httpGenerationLease, bool) {
+		return httpGenerationLease{}, false
+	})
+	if _, err := selector(
+		&tls.ClientHelloInfo{ServerName: "missing.example"},
+	); !errors.Is(
+		err,
+		errHTTPGenerationUnavailable,
+	) {
+		t.Fatalf("selector error = %v, want %v", err, errHTTPGenerationUnavailable)
+	}
+}
+
+func TestFrontendTLSSelectorReleasesUnavailableSnapshotLease(t *testing.T) {
+	fixture := newCountedHTTPLeaseFixture(t, 407)
+	selector := generationFrontendTLSConfigSelector(fixture.Acquire)
+	if _, err := selector(
+		&tls.ClientHelloInfo{ServerName: "disabled.example"},
+	); !errors.Is(
+		err,
+		errHTTPGenerationUnavailable,
+	) {
+		t.Fatalf("selector error = %v, want %v", err, errHTTPGenerationUnavailable)
+	}
+	if got := fixture.releases.Load(); got != 1 {
+		t.Fatalf("release count for snapshot without TLS = %d, want 1", got)
+	}
+}
+
+func TestFrontendTLSSelectorNilReleaseFailsClosedWithoutPanic(t *testing.T) {
+	fixture := newTLSHTTPLeaseFixture(t, 408, "nil-release.example", nil)
+	lease, ok := fixture.Acquire()
+	if !ok {
+		t.Fatal("fixture lease unavailable")
+	}
+	release := lease.Release
+	lease.Release = nil
+	t.Cleanup(release)
+	selector := generationFrontendTLSConfigSelector(func() (httpGenerationLease, bool) { return lease, true })
+	if _, err := selector(
+		&tls.ClientHelloInfo{ServerName: "nil-release.example"},
+	); !errors.Is(
+		err,
+		errHTTPGenerationUnavailable,
+	) {
+		t.Fatalf("selector error = %v, want %v", err, errHTTPGenerationUnavailable)
+	}
+}
+
+func TestFrontendTLSSelectorUsesSnapshotClientCAAndDepth(t *testing.T) {
+	clientCA := newFrontendTestCA(t)
+	fixture := newTLSHTTPLeaseFixture(t, 405, "mtls.example", &resource.SSLClient{
+		CA: string(clientCA.certPEM), Depth: 1,
+	})
+	selector := generationFrontendTLSConfigSelector(fixture.Acquire)
+	selected, err := selector(&tls.ClientHelloInfo{ServerName: "mtls.example"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selected.ClientAuth != tls.RequireAndVerifyClientCert || selected.ClientCAs == nil {
+		t.Fatalf("selected client auth/CAs = %v/%v", selected.ClientAuth, selected.ClientCAs)
+	}
+	if selected.VerifyConnection == nil {
+		t.Fatal("selected generation TLS config omitted client certificate depth enforcement")
+	}
+}
+
+func TestFrontendTLSSelectorReleasesLeaseOnSelectionError(t *testing.T) {
+	fixture := newTLSHTTPLeaseFixture(t, 406, "known.example", nil)
+	selector := generationFrontendTLSConfigSelector(fixture.Acquire)
+	if _, err := selector(&tls.ClientHelloInfo{ServerName: "unknown.example"}); err == nil {
+		t.Fatal("unknown SNI selection error = nil")
+	}
+	if got := fixture.releases.Load(); got != 1 {
+		t.Fatalf("release count after selection error = %d, want 1", got)
+	}
+}
+
+func newTLSHTTPLeaseFixture(
+	t *testing.T,
+	revision uint64,
+	serverName string,
+	client *resource.SSLClient,
+) *countedHTTPLeaseFixture {
+	t.Helper()
+	manifest, err := capability.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := capability.NewSecretDeclarationCatalog(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profiles := config.ProfileSelection{
+		Compatibility: config.CompatibilityTarget(manifest.Target.Name),
+		Security:      config.SecurityCompat,
+	}
+	effective := &config.EffectiveConfig{
+		Config: config.Config{
+			CompatibilityTarget:  profiles.Compatibility,
+			SecurityProfile:      profiles.Security,
+			QualificationProfile: profiles.Qualification,
+			Apisix: config.Apisix{Ssl: config.Ssl{
+				Enable: true, Listen: []config.Listen{{Port: 9443}},
+				SslProtocols: "TLSv1.2", SslCiphers: frontendTLS12Cipher,
+			}},
+		},
+		Profiles: profiles,
+	}
+	materializer := &ownerTestMaterializer{digest: catalog.Digest()}
+	factory, err := compiler.NewWorkerCompilerFactory(
+		manifest,
+		effective,
+		materializer,
+		compiler.WorkerRuntimeObservers{Cluster: proxy.NopClusterObserver{}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := factory.Close(context.Background()); err != nil {
+			t.Errorf("WorkerCompilerFactory.Close() error = %v", err)
+		}
+	})
+	certificate := frontendHandshakeCertificate(
+		t, serverName, nil, []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	)
+	certificatePEM := make([]byte, 0)
+	for _, der := range certificate.Certificate {
+		certificatePEM = append(certificatePEM, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})...)
+	}
+	privateKey, ok := certificate.PrivateKey.(*rsa.PrivateKey)
+	if !ok {
+		t.Fatalf("private key type = %T, want *rsa.PrivateKey", certificate.PrivateKey)
+	}
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(privateKey)})
+	sslValue, err := json.Marshal(resource.SSL{
+		ID: serverName, Sni: serverName, Cert: string(certificatePEM), Key: string(keyPEM), Client: client, Status: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	desired, err := generation.NewSnapshot(revision, []generation.Resource{{
+		Key: generation.ResourceKey{Kind: "ssls", ID: serverName}, Value: bytes.Clone(sslValue),
+	}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ticket := generation.ApplyTicket{
+		DesiredRevision: desired.Revision(),
+		DesiredDigest:   desired.Digest(),
+		Cursor:          generation.ProviderCursor{Provider: "generation-tls-test", Revision: "1"},
+		RequiredDomains: []generation.Domain{generation.DomainHTTP},
+	}
+	prepared, err := factory.PrepareGeneration(context.Background(), ticket, desired, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := newGenerationOwner(prepared)
+	owner.activateDomains(ownerDomainHTTP)
+	return &countedHTTPLeaseFixture{owner: owner}
+}
+
+func assertTLSConfigCertificateName(t *testing.T, selected *tls.Config, want string) {
+	t.Helper()
+	if selected == nil || len(selected.Certificates) != 1 || len(selected.Certificates[0].Certificate) == 0 {
+		t.Fatalf("selected TLS config certificate = %#v", selected)
+	}
+	certificate, err := x509.ParseCertificate(selected.Certificates[0].Certificate[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if certificate.Subject.CommonName != want {
+		t.Fatalf("selected certificate common name = %q, want %q", certificate.Subject.CommonName, want)
+	}
+}
 
 func mustFrontendTLSConfig(t testing.TB, cfg *config.Config) *tls.Config {
 	t.Helper()

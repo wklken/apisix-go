@@ -164,6 +164,40 @@ type hijackingRouteResponseWriter struct {
 	conn        net.Conn
 }
 
+type failingHijackRouteResponseWriter struct {
+	header http.Header
+	err    error
+}
+
+func (w *failingHijackRouteResponseWriter) Header() http.Header { return w.header }
+
+func (w *failingHijackRouteResponseWriter) WriteHeader(int) {}
+
+func (w *failingHijackRouteResponseWriter) Write(body []byte) (int, error) { return len(body), nil }
+
+func (w *failingHijackRouteResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	return nil, nil, w.err
+}
+
+type blockingHeaderRouteResponseWriter struct {
+	header  http.Header
+	started chan struct{}
+	unblock chan struct{}
+	once    sync.Once
+}
+
+func (w *blockingHeaderRouteResponseWriter) Header() http.Header { return w.header }
+
+func (w *blockingHeaderRouteResponseWriter) WriteHeader(int) {
+	w.once.Do(func() { close(w.started) })
+	<-w.unblock
+}
+
+func (w *blockingHeaderRouteResponseWriter) Write(body []byte) (int, error) {
+	w.WriteHeader(http.StatusOK)
+	return len(body), nil
+}
+
 func (w *hijackingRouteResponseWriter) Header() http.Header { return w.header }
 
 func (w *hijackingRouteResponseWriter) WriteHeader(status int) { w.writeStatus = status }
@@ -172,6 +206,478 @@ func (w *hijackingRouteResponseWriter) Write(body []byte) (int, error) { return 
 
 func (w *hijackingRouteResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	return w.conn, bufio.NewReadWriter(bufio.NewReader(w.conn), bufio.NewWriter(w.conn)), nil
+}
+
+type countedHTTPLeaseFixture struct {
+	owner    *generationOwner
+	acquires atomic.Int64
+	releases atomic.Int64
+}
+
+func newCountedHTTPLeaseFixture(t *testing.T, revision uint64) *countedHTTPLeaseFixture {
+	t.Helper()
+	fixture := newTestGenerationOwner(t, revision, true, false)
+	fixture.owner.activateDomains(ownerDomainHTTP)
+	return &countedHTTPLeaseFixture{owner: fixture.owner}
+}
+
+func (fixture *countedHTTPLeaseFixture) Acquire() (httpGenerationLease, bool) {
+	lease, ok := fixture.owner.acquireHTTP()
+	if !ok {
+		return httpGenerationLease{}, false
+	}
+	fixture.acquires.Add(1)
+	return fixture.count(lease), true
+}
+
+func (fixture *countedHTTPLeaseFixture) count(lease httpGenerationLease) httpGenerationLease {
+	baseRelease := lease.Release
+	baseRetain := lease.retain
+	var releaseOnce sync.Once
+	lease.Release = func() {
+		releaseOnce.Do(func() {
+			fixture.releases.Add(1)
+			baseRelease()
+		})
+	}
+	lease.retain = func() (httpGenerationLease, bool) {
+		child, ok := baseRetain()
+		if !ok {
+			return httpGenerationLease{}, false
+		}
+		fixture.acquires.Add(1)
+		return fixture.count(child), true
+	}
+	return lease
+}
+
+type switchableHTTPLeaseSource struct {
+	current atomic.Pointer[countedHTTPLeaseFixture]
+}
+
+func newSwitchableHTTPLeaseSource(current *countedHTTPLeaseFixture) *switchableHTTPLeaseSource {
+	source := &switchableHTTPLeaseSource{}
+	source.Store(current)
+	return source
+}
+
+func (source *switchableHTTPLeaseSource) Store(current *countedHTTPLeaseFixture) {
+	source.current.Store(current)
+}
+
+func (source *switchableHTTPLeaseSource) Acquire() (httpGenerationLease, bool) {
+	current := source.current.Load()
+	if current == nil {
+		return httpGenerationLease{}, false
+	}
+	return current.Acquire()
+}
+
+func TestRouteHandlerRequestRetainsLoadedGenerationAcrossSwap(t *testing.T) {
+	old := newCountedHTTPLeaseFixture(t, 301)
+	next := newCountedHTTPLeaseFixture(t, 302)
+	source := newSwitchableHTTPLeaseSource(old)
+	routes := newGenerationRouteHandler(source.Acquire)
+	started := make(chan struct{})
+	unblock := make(chan struct{})
+	writer := &blockingHeaderRouteResponseWriter{
+		header: make(http.Header), started: started, unblock: unblock,
+	}
+	done := make(chan struct{})
+	go func() {
+		routes.ServeHTTP(writer, httptest.NewRequest(http.MethodGet, "/old", nil))
+		close(done)
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("old request did not reach its loaded generation")
+	}
+
+	source.Store(next)
+	response := httptest.NewRecorder()
+	routes.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/next", nil))
+	if got := old.releases.Load(); got != 0 {
+		t.Fatalf("old release count = %d before request exit, want 0", got)
+	}
+	if got := next.releases.Load(); got != 1 {
+		t.Fatalf("next release count = %d, want 1", got)
+	}
+	close(unblock)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("old request did not finish")
+	}
+	if got := old.releases.Load(); got != 1 {
+		t.Fatalf("old release count = %d, want 1", got)
+	}
+}
+
+func TestRouteHandlerUnavailableHTTPDomainReturns503(t *testing.T) {
+	routes := newGenerationRouteHandler(func() (httpGenerationLease, bool) {
+		return httpGenerationLease{}, false
+	})
+	response := httptest.NewRecorder()
+	routes.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/", nil))
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusServiceUnavailable)
+	}
+}
+
+func TestRouteHandlerNilGenerationSourceAndReleaseFailClosed(t *testing.T) {
+	t.Run("nil source", func(t *testing.T) {
+		routes := newGenerationRouteHandler(nil)
+		response := httptest.NewRecorder()
+		routes.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/", nil))
+		routes.Close()
+		routes.Close()
+		if response.Code != http.StatusServiceUnavailable {
+			t.Fatalf("status = %d, want %d", response.Code, http.StatusServiceUnavailable)
+		}
+	})
+
+	t.Run("nil release", func(t *testing.T) {
+		fixture := newCountedHTTPLeaseFixture(t, 311)
+		lease, ok := fixture.Acquire()
+		if !ok {
+			t.Fatal("fixture lease unavailable")
+		}
+		release := lease.Release
+		lease.Release = nil
+		t.Cleanup(release)
+		routes := newGenerationRouteHandler(func() (httpGenerationLease, bool) { return lease, true })
+		response := httptest.NewRecorder()
+		routes.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/", nil))
+		if response.Code != http.StatusServiceUnavailable {
+			t.Fatalf("status = %d, want %d", response.Code, http.StatusServiceUnavailable)
+		}
+	})
+}
+
+func TestRouteHandlerBatchDispatchRetainsParentGenerationAfterSwap(t *testing.T) {
+	old := newCountedHTTPLeaseFixture(t, 303)
+	next := newCountedHTTPLeaseFixture(t, 304)
+	source := newSwitchableHTTPLeaseSource(old)
+	parent, ok := source.Acquire()
+	if !ok {
+		t.Fatal("parent lease unavailable")
+	}
+	source.Store(next)
+	dispatched := false
+	handler := http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		factory := batch_requests.DispatchLeaseFactoryFromRequest(request)
+		if factory == nil {
+			t.Fatal("dispatch lease factory is nil")
+		}
+		child, acquired := factory()
+		if !acquired {
+			t.Fatal("dispatch lease was not retained")
+		}
+		child.Handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/child", nil))
+		child.Release()
+		child.Release()
+		dispatched = true
+		w.WriteHeader(http.StatusNoContent)
+	})
+	serveRouteRequestForHTTPGeneration(
+		httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/batch", nil), handler, &parent, nil,
+	)
+	parent.Release()
+	if !dispatched {
+		t.Fatal("child dispatch did not run")
+	}
+	if got := old.acquires.Load(); got != 2 {
+		t.Fatalf("old acquire count = %d, want parent plus child", got)
+	}
+	if got := old.releases.Load(); got != 2 {
+		t.Fatalf("old release count = %d, want parent plus child", got)
+	}
+	if got := next.acquires.Load(); got != 0 {
+		t.Fatalf("next acquire count = %d, child reacquired current generation", got)
+	}
+}
+
+func TestGenerationHijackNaturalCloseReleasesLease(t *testing.T) {
+	fixture := newCountedHTTPLeaseFixture(t, 305)
+	routes := newGenerationRouteHandler(fixture.Acquire)
+	parent, ok := fixture.Acquire()
+	if !ok {
+		t.Fatal("parent lease unavailable")
+	}
+	left, right := net.Pipe()
+	closed := &atomic.Int32{}
+	raw := &countingCloseConn{Conn: left, closed: closed}
+	t.Cleanup(func() {
+		_ = right.Close()
+		_ = raw.Close()
+	})
+	var connection net.Conn
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		var err error
+		connection, _, err = w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Fatalf("Hijack() error = %v", err)
+		}
+	})
+	serveRouteRequestForHTTPGeneration(
+		&hijackingRouteResponseWriter{header: make(http.Header), conn: raw},
+		httptest.NewRequest(http.MethodGet, "/hijack", nil), handler, &parent, routes,
+	)
+	parent.Release()
+	if got := fixture.releases.Load(); got != 1 {
+		t.Fatalf("release count after request = %d, want 1", got)
+	}
+	fixture.owner.deactivateDomains(ownerDomainHTTP)
+	if got := closed.Load(); got != 0 {
+		t.Fatalf("ordinary retirement closed hijack %d times", got)
+	}
+	if err := connection.Close(); err != nil {
+		t.Fatalf("generation connection Close() error = %v", err)
+	}
+	if got := fixture.releases.Load(); got != 2 {
+		t.Fatalf("release count after natural close = %d, want 2", got)
+	}
+}
+
+func TestRouteHandlerTerminalCloseForcesHijackAndReleasesLease(t *testing.T) {
+	fixture := newCountedHTTPLeaseFixture(t, 306)
+	routes := newGenerationRouteHandler(fixture.Acquire)
+	parent, ok := fixture.Acquire()
+	if !ok {
+		t.Fatal("parent lease unavailable")
+	}
+	left, right := net.Pipe()
+	closed := &atomic.Int32{}
+	raw := &countingCloseConn{Conn: left, closed: closed}
+	t.Cleanup(func() { _ = right.Close() })
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if _, _, err := w.(http.Hijacker).Hijack(); err != nil {
+			t.Fatalf("Hijack() error = %v", err)
+		}
+	})
+	serveRouteRequestForHTTPGeneration(
+		&hijackingRouteResponseWriter{header: make(http.Header), conn: raw},
+		httptest.NewRequest(http.MethodGet, "/hijack", nil), handler, &parent, routes,
+	)
+	parent.Release()
+	routes.Close()
+	if got := closed.Load(); got != 1 {
+		t.Fatalf("terminal close count = %d, want 1", got)
+	}
+	if got := fixture.releases.Load(); got != 2 {
+		t.Fatalf("release count after terminal close = %d, want 2", got)
+	}
+}
+
+func TestRouteHandlerTerminalCloseAndNaturalHijackCloseAreExactlyOnce(t *testing.T) {
+	fixture := newCountedHTTPLeaseFixture(t, 312)
+	routes := newGenerationRouteHandler(fixture.Acquire)
+	parent, ok := fixture.Acquire()
+	if !ok {
+		t.Fatal("parent lease unavailable")
+	}
+	left, right := net.Pipe()
+	closed := &atomic.Int32{}
+	raw := &countingCloseConn{Conn: left, closed: closed}
+	t.Cleanup(func() { _ = right.Close() })
+	var connection net.Conn
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		var err error
+		connection, _, err = w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Fatal(err)
+		}
+	})
+	serveRouteRequestForHTTPGeneration(
+		&hijackingRouteResponseWriter{header: make(http.Header), conn: raw},
+		httptest.NewRequest(http.MethodGet, "/hijack", nil), handler, &parent, routes,
+	)
+	parent.Release()
+	start := make(chan struct{})
+	var wait sync.WaitGroup
+	wait.Add(2)
+	go func() {
+		defer wait.Done()
+		<-start
+		routes.Close()
+	}()
+	go func() {
+		defer wait.Done()
+		<-start
+		_ = connection.Close()
+	}()
+	close(start)
+	wait.Wait()
+	if got := closed.Load(); got != 1 {
+		t.Fatalf("underlying close count = %d, want 1", got)
+	}
+	if got := fixture.releases.Load(); got != 2 {
+		t.Fatalf("release count = %d, want request plus hijack", got)
+	}
+}
+
+func TestGenerationHijackFailureDoesNotRetainLease(t *testing.T) {
+	fixture := newCountedHTTPLeaseFixture(t, 307)
+	routes := newGenerationRouteHandler(fixture.Acquire)
+	parent, ok := fixture.Acquire()
+	if !ok {
+		t.Fatal("parent lease unavailable")
+	}
+	wantErr := errors.New("hijack failed")
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if _, _, err := w.(http.Hijacker).Hijack(); !errors.Is(err, wantErr) {
+			t.Fatalf("Hijack() error = %v, want %v", err, wantErr)
+		}
+	})
+	serveRouteRequestForHTTPGeneration(
+		&failingHijackRouteResponseWriter{header: make(http.Header), err: wantErr},
+		httptest.NewRequest(http.MethodGet, "/hijack", nil), handler, &parent, routes,
+	)
+	parent.Release()
+	if got := fixture.acquires.Load(); got != 1 {
+		t.Fatalf("acquire count = %d after failed hijack, want 1", got)
+	}
+	if got := fixture.releases.Load(); got != 1 {
+		t.Fatalf("release count = %d after failed hijack, want 1", got)
+	}
+}
+
+func TestGenerationHijackRetainFailureClosesRawAndReturnsError(t *testing.T) {
+	fixture := newCountedHTTPLeaseFixture(t, 309)
+	routes := newGenerationRouteHandler(fixture.Acquire)
+	parent, ok := fixture.Acquire()
+	if !ok {
+		t.Fatal("parent lease unavailable")
+	}
+	parent.Release()
+	left, right := net.Pipe()
+	closed := &atomic.Int32{}
+	raw := &countingCloseConn{Conn: left, closed: closed}
+	t.Cleanup(func() { _ = right.Close() })
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		connection, readWriter, err := w.(http.Hijacker).Hijack()
+		if !errors.Is(err, errHTTPGenerationHijackUnavailable) {
+			t.Fatalf("Hijack() error = %v, want %v", err, errHTTPGenerationHijackUnavailable)
+		}
+		if connection != nil || readWriter != nil {
+			t.Fatalf("failed hijack returned connection/read-writer = %v/%v", connection, readWriter)
+		}
+	})
+	serveRouteRequestForHTTPGeneration(
+		&hijackingRouteResponseWriter{header: make(http.Header), conn: raw},
+		httptest.NewRequest(http.MethodGet, "/hijack", nil), handler, &parent, routes,
+	)
+	if got := closed.Load(); got != 1 {
+		t.Fatalf("raw close count = %d, want 1", got)
+	}
+	if got := fixture.acquires.Load(); got != 1 {
+		t.Fatalf("acquire count = %d, retain failure created a child", got)
+	}
+}
+
+func TestGenerationHijackRebuildsReadWriterAroundWrappedConnection(t *testing.T) {
+	fixture := newCountedHTTPLeaseFixture(t, 310)
+	routes := newGenerationRouteHandler(fixture.Acquire)
+	parent, ok := fixture.Acquire()
+	if !ok {
+		t.Fatal("parent lease unavailable")
+	}
+	left, right := net.Pipe()
+	t.Cleanup(func() { _ = right.Close() })
+	original := bufio.NewReadWriter(bufio.NewReader(left), bufio.NewWriter(left))
+	writeDone := make(chan error, 1)
+	go func() {
+		_, err := right.Write([]byte("prefetched"))
+		writeDone <- err
+	}()
+	originalReader := original.Reader
+	if _, err := originalReader.Peek(len("prefetched")); err != nil {
+		t.Fatalf("prefill raw hijack reader: %v", err)
+	}
+	if err := <-writeDone; err != nil {
+		t.Fatalf("prefill raw hijack writer: %v", err)
+	}
+	writer := &fixedReadWriterHijackResponseWriter{
+		header: make(http.Header), conn: left, readWriter: original,
+	}
+	var returned net.Conn
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		var readWriter *bufio.ReadWriter
+		var err error
+		returned, readWriter, err = w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := returned.(*generationConn); !ok {
+			t.Fatalf("returned connection type = %T, want *generationConn", returned)
+		}
+		if readWriter == original {
+			t.Fatal("hijack returned raw connection read-writer")
+		}
+		buffer := make([]byte, len("prefetched"))
+		if _, err := io.ReadFull(readWriter, buffer); err != nil {
+			t.Fatalf("read preserved hijack buffer: %v", err)
+		}
+		if string(buffer) != "prefetched" {
+			t.Fatalf("preserved hijack bytes = %q, want prefetched", buffer)
+		}
+	})
+	serveRouteRequestForHTTPGeneration(
+		writer, httptest.NewRequest(http.MethodGet, "/hijack", nil), handler, &parent, routes,
+	)
+	parent.Release()
+	if err := returned.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+type fixedReadWriterHijackResponseWriter struct {
+	header     http.Header
+	conn       net.Conn
+	readWriter *bufio.ReadWriter
+}
+
+func (w *fixedReadWriterHijackResponseWriter) Header() http.Header { return w.header }
+
+func (w *fixedReadWriterHijackResponseWriter) WriteHeader(int) {}
+
+func (w *fixedReadWriterHijackResponseWriter) Write(body []byte) (int, error) { return len(body), nil }
+
+func (w *fixedReadWriterHijackResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	return w.conn, w.readWriter, nil
+}
+
+func TestGenerationHijackPanicClosesConnectionAndReleasesLease(t *testing.T) {
+	fixture := newCountedHTTPLeaseFixture(t, 308)
+	routes := newGenerationRouteHandler(fixture.Acquire)
+	parent, ok := fixture.Acquire()
+	if !ok {
+		t.Fatal("parent lease unavailable")
+	}
+	left, right := net.Pipe()
+	closed := &atomic.Int32{}
+	raw := &countingCloseConn{Conn: left, closed: closed}
+	t.Cleanup(func() { _ = right.Close() })
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if _, _, err := w.(http.Hijacker).Hijack(); err != nil {
+			t.Fatalf("Hijack() error = %v", err)
+		}
+		panic("after generation hijack")
+	})
+	mustAbortHandlerPanic(t, func() {
+		serveRouteRequestForHTTPGeneration(
+			&hijackingRouteResponseWriter{header: make(http.Header), conn: raw},
+			httptest.NewRequest(http.MethodGet, "/hijack", nil), handler, &parent, routes,
+		)
+	})
+	parent.Release()
+	if got := closed.Load(); got != 1 {
+		t.Fatalf("panic close count = %d, want 1", got)
+	}
+	if got := fixture.releases.Load(); got != 2 {
+		t.Fatalf("panic release count = %d, want 2", got)
+	}
 }
 
 func mustAbortHandlerPanic(t *testing.T, fn func()) {

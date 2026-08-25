@@ -24,6 +24,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/observability/metrics"
 	"github.com/wklken/apisix-go/pkg/proxy"
+	"github.com/wklken/apisix-go/pkg/runtime"
 	"github.com/wklken/apisix-go/pkg/secret"
 	streamruntime "github.com/wklken/apisix-go/pkg/stream"
 )
@@ -315,62 +316,176 @@ func TestGenerationEngineDiscardRequiresExactIdentityAndClosesOnce(t *testing.T)
 }
 
 func TestGenerationEngineDiscardConcurrentWaitersReplayThenForget(t *testing.T) {
-	manifest, err := capability.Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	catalog, err := capability.NewSecretDeclarationCatalog(manifest)
-	if err != nil {
-		t.Fatal(err)
-	}
-	started := make(chan struct{})
-	proceed := make(chan struct{})
-	materializer := &engineErrorMaterializer{
-		digest: catalog.Digest(), closeErr: errors.New("discard close failed"),
-		closeStarted: started, closeProceed: proceed,
-	}
-	engine, _ := newGenerationEngineWithMaterializer(t, materializer)
+	fixture := newGenerationEngineFixture(t)
+	engine := fixture.engine
 	set := prepareEngineGeneration(t, engine, 13, generation.DomainHTTP)
+	record := engine.pending[mustEnginePreparedKey(t, set)]
+	release := startGenerationEngineBlockingTask(t, record.owner, "discard-concurrent")
+	defer release()
+	firstCtx, cancelFirst := context.WithCancel(context.Background())
+	defer cancelFirst()
 	first := make(chan error, 1)
 	second := make(chan error, 1)
-	go func() { first <- engine.DiscardPrepared(context.Background(), set) }()
-	select {
-	case <-started:
-	case <-time.After(time.Second):
-		t.Fatal("first discard did not enter prepared cleanup")
-	}
+	leaderStarted := make(chan struct{})
 	waiterRegistered := make(chan struct{})
+	var leaderOnce, registeredOnce sync.Once
 	engine.mu.Lock()
 	engine.checkpoint = func(stage string) error {
-		if stage == "discard-waiter-registered" {
-			close(waiterRegistered)
+		switch stage {
+		case "discard-attempt-started":
+			leaderOnce.Do(func() { close(leaderStarted) })
+		case "discard-waiter-registered":
+			registeredOnce.Do(func() { close(waiterRegistered) })
 		}
 		return nil
 	}
 	engine.mu.Unlock()
+	go func() { first <- engine.DiscardPrepared(firstCtx, set) }()
+	select {
+	case <-leaderStarted:
+	case <-time.After(time.Second):
+		t.Fatal("first discard did not become attempt leader")
+	}
 	go func() { second <- engine.DiscardPrepared(context.Background(), set) }()
 	select {
 	case <-waiterRegistered:
 	case <-time.After(time.Second):
 		t.Fatal("second discard did not register as a concurrent waiter")
 	}
-	engine.mu.Lock()
-	record := engine.pending[mustEnginePreparedKey(t, set)]
-	waiters := record.discardWaiters
-	engine.mu.Unlock()
-	if waiters != 2 {
-		t.Fatalf("concurrent discard waiters = %d, want 2", waiters)
-	}
-	close(proceed)
+	cancelFirst()
 	firstErr, secondErr := <-first, <-second
-	if firstErr != secondErr || firstErr == nil {
+	var firstResidual, secondResidual *runtime.TaskResidualError
+	if !errors.As(firstErr, &firstResidual) || !errors.As(secondErr, &secondResidual) ||
+		!reflect.DeepEqual(firstResidual.Residuals(), secondResidual.Residuals()) {
 		t.Fatalf("concurrent discard results = %v / %v", firstErr, secondErr)
 	}
-	if err := engine.DiscardPrepared(context.Background(), set); !errors.Is(err, compiler.ErrPreparedSetMismatch) {
-		t.Fatalf("later DiscardPrepared() error = %v, want forgotten record mismatch", err)
+	engine.mu.Lock()
+	retained := engine.pending[mustEnginePreparedKey(t, set)]
+	engine.mu.Unlock()
+	if retained != record || record.discard == nil || record.discard.terminal {
+		t.Fatal("residual discard did not retain its exact pending record and incomplete attempt")
 	}
-	if materializer.last.closeCalls.Load() != 1 {
-		t.Fatalf("prepared close calls = %d, want 1", materializer.last.closeCalls.Load())
+	release()
+	if err := engine.DiscardPrepared(context.Background(), set); err != nil {
+		t.Fatalf("retry DiscardPrepared() error = %v", err)
+	}
+	if engine.pending[mustEnginePreparedKey(t, set)] != nil {
+		t.Fatal("terminal discard retained pending record")
+	}
+}
+
+func TestGenerationEngineDiscardResidualRetainsExactSetForRetry(t *testing.T) {
+	fixture := newGenerationEngineFixture(t)
+	set := prepareEngineGeneration(t, fixture.engine, 14, generation.DomainHTTP)
+	key := mustEnginePreparedKey(t, set)
+	record := fixture.engine.pending[key]
+	release := startGenerationEngineBlockingTask(t, record.owner, "discard-retry")
+	defer release()
+
+	short, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	first := fixture.engine.DiscardPrepared(short, set)
+	var residual *runtime.TaskResidualError
+	if !errors.As(first, &residual) || !errors.Is(first, context.DeadlineExceeded) {
+		t.Fatalf("first DiscardPrepared() error = %v, residual = %#v", first, residual)
+	}
+	fixture.engine.mu.Lock()
+	retained := fixture.engine.pending[key]
+	attempt := record.discard
+	fixture.engine.mu.Unlock()
+	if retained != record || attempt == nil || attempt.terminal {
+		t.Fatal("residual discard dropped the pending record or marked its attempt terminal")
+	}
+	activationErr := fixture.engine.Activate(context.Background(), "closing", set)
+	if !errors.Is(activationErr, compiler.ErrPreparedSetMismatch) {
+		t.Fatalf("Activate() during retained discard = %v", activationErr)
+	}
+	wrong := cloneEnginePublicationSet(set)
+	wrongCandidate := wrong.Domains[generation.DomainHTTP]
+	wrongCandidate.Artifact.Snapshot += "-wrong"
+	wrong.Domains[generation.DomainHTTP] = wrongCandidate
+	mismatchErr := fixture.engine.DiscardPrepared(context.Background(), wrong)
+	if !errors.Is(mismatchErr, compiler.ErrPreparedSetMismatch) {
+		t.Fatalf("mismatched DiscardPrepared() error = %v", mismatchErr)
+	}
+	if record.discard != attempt {
+		t.Fatal("mismatched discard advanced the retained cleanup attempt")
+	}
+
+	release()
+	if err := fixture.engine.DiscardPrepared(context.Background(), set); err != nil {
+		t.Fatalf("retry DiscardPrepared() error = %v", err)
+	}
+	if fixture.engine.pending[key] != nil {
+		t.Fatal("terminal retry retained pending record")
+	}
+}
+
+func TestGenerationEngineDiscardOldWaiterReadsFirstAttemptWhenSecondFinishesFirst(t *testing.T) {
+	fixture := newGenerationEngineFixture(t)
+	set := prepareEngineGeneration(t, fixture.engine, 15, generation.DomainHTTP)
+	record := fixture.engine.pending[mustEnginePreparedKey(t, set)]
+	release := startGenerationEngineBlockingTask(t, record.owner, "discard-old-waiter")
+	defer release()
+
+	leaderStarted := make(chan struct{})
+	waiterRegistered := make(chan struct{})
+	waiterObserved := make(chan struct{})
+	allowWaiterReturn := make(chan struct{})
+	var leaderOnce, registeredOnce, observedOnce sync.Once
+	fixture.engine.mu.Lock()
+	fixture.engine.checkpoint = func(stage string) error {
+		switch stage {
+		case "discard-attempt-started":
+			leaderOnce.Do(func() { close(leaderStarted) })
+		case "discard-waiter-registered":
+			registeredOnce.Do(func() { close(waiterRegistered) })
+		case "discard-waiter-observed":
+			observedOnce.Do(func() {
+				close(waiterObserved)
+				<-allowWaiterReturn
+			})
+		}
+		return nil
+	}
+	fixture.engine.mu.Unlock()
+	firstCtx, cancelFirst := context.WithCancel(context.Background())
+	defer cancelFirst()
+	leader := make(chan error, 1)
+	oldWaiter := make(chan error, 1)
+	go func() { leader <- fixture.engine.DiscardPrepared(firstCtx, set) }()
+	select {
+	case <-leaderStarted:
+	case <-time.After(time.Second):
+		t.Fatal("attempt A leader did not start")
+	}
+	go func() { oldWaiter <- fixture.engine.DiscardPrepared(context.Background(), set) }()
+	select {
+	case <-waiterRegistered:
+	case <-time.After(time.Second):
+		t.Fatal("old waiter did not capture attempt A")
+	}
+	cancelFirst()
+	firstErr := <-leader
+	var firstResidual *runtime.TaskResidualError
+	if !errors.As(firstErr, &firstResidual) {
+		t.Fatalf("attempt A error = %v", firstErr)
+	}
+	select {
+	case <-waiterObserved:
+	case <-time.After(time.Second):
+		t.Fatal("old waiter did not observe attempt A completion")
+	}
+
+	release()
+	if err := fixture.engine.DiscardPrepared(context.Background(), set); err != nil {
+		t.Fatalf("attempt B error = %v", err)
+	}
+	close(allowWaiterReturn)
+	oldErr := <-oldWaiter
+	var oldResidual *runtime.TaskResidualError
+	if !errors.As(oldErr, &oldResidual) || !reflect.DeepEqual(oldResidual.Residuals(), firstResidual.Residuals()) {
+		t.Fatalf("old waiter error = %v, want attempt A residual %v", oldErr, firstResidual.Residuals())
 	}
 }
 
@@ -1392,6 +1507,267 @@ func TestGenerationEngineCloseReplaysJoinedOwnerAndFactoryErrors(t *testing.T) {
 		!strings.Contains(first.Error(), "worker compiler factory cleanup failed") {
 		t.Fatalf("Close() error = %v, want joined owner and factory cleanup errors", first)
 	}
+}
+
+func TestGenerationEngineRetirementResidualRetainsOwnerAndStreamMetrics(t *testing.T) {
+	installGenerationStreamMetrics(t)
+	fixture := newGenerationEngineFixture(t)
+	setA := prepareEngineStreamGeneration(t, fixture.engine, 86, "retained")
+	finalizeEngineGeneration(t, fixture.engine, "retained-a", setA)
+	owner := fixture.engine.active.Load().stream
+	release := startGenerationEngineBlockingTask(t, owner, "retirement-retained")
+	defer release()
+
+	retirementStarted := make(chan struct{})
+	var startedOnce sync.Once
+	fixture.engine.mu.Lock()
+	fixture.engine.checkpoint = func(stage string) error {
+		if stage == "before-owner-retirement" {
+			startedOnce.Do(func() { close(retirementStarted) })
+		}
+		return nil
+	}
+	fixture.engine.mu.Unlock()
+	setB := prepareEngineStreamGeneration(t, fixture.engine, 87, "replacement")
+	finalizeEngineGeneration(t, fixture.engine, "retained-b", setB)
+	select {
+	case <-retirementStarted:
+	case <-time.After(time.Second):
+		t.Fatal("retirement did not start")
+	}
+	fixture.engine.retireMu.Lock()
+	attempt := fixture.engine.retireActive[owner]
+	fixture.engine.retireMu.Unlock()
+	if attempt == nil {
+		t.Fatal("retirement attempt is not active")
+	}
+	attempt.cancel()
+	select {
+	case <-attempt.done:
+	case <-time.After(time.Second):
+		t.Fatal("canceled retirement did not publish its residual")
+	}
+	var residual *runtime.TaskResidualError
+	if !errors.As(attempt.err, &residual) {
+		t.Fatalf("retirement attempt error = %v", attempt.err)
+	}
+	fixture.engine.retireMu.Lock()
+	_, retained := fixture.engine.retireKnown[owner]
+	_, active := fixture.engine.retireActive[owner]
+	fixture.engine.retireMu.Unlock()
+	fixture.engine.streamMetricsMu.Lock()
+	_, metricsRetained := fixture.engine.streamMetricOwners[owner]
+	fixture.engine.streamMetricsMu.Unlock()
+	if !retained || active || !metricsRetained {
+		t.Fatalf("retirement state retained=%t active=%t metrics=%t", retained, active, metricsRetained)
+	}
+
+	release()
+	if err := fixture.engine.Close(context.Background()); err != nil {
+		t.Fatalf("Close() retry error = %v", err)
+	}
+	fixture.engine.retireMu.Lock()
+	_, retained = fixture.engine.retireKnown[owner]
+	fixture.engine.retireMu.Unlock()
+	fixture.engine.streamMetricsMu.Lock()
+	_, metricsRetained = fixture.engine.streamMetricOwners[owner]
+	fixture.engine.streamMetricsMu.Unlock()
+	if retained || metricsRetained {
+		t.Fatal("terminal retirement retained owner or stream metrics")
+	}
+}
+
+func TestGenerationEngineCloseCancelsActiveRetirementAttemptBeforeRetry(t *testing.T) {
+	installGenerationStreamMetrics(t)
+	fixture := newGenerationEngineFixture(t)
+	setA := prepareEngineStreamGeneration(t, fixture.engine, 88, "cancel-active")
+	finalizeEngineGeneration(t, fixture.engine, "cancel-a", setA)
+	owner := fixture.engine.active.Load().stream
+	release := startGenerationEngineBlockingTask(t, owner, "retirement-cancel")
+	defer release()
+	retirementStarted := make(chan struct{})
+	var startedOnce sync.Once
+	fixture.engine.mu.Lock()
+	fixture.engine.checkpoint = func(stage string) error {
+		if stage == "before-owner-retirement" {
+			startedOnce.Do(func() { close(retirementStarted) })
+		}
+		return nil
+	}
+	fixture.engine.mu.Unlock()
+	setB := prepareEngineStreamGeneration(t, fixture.engine, 89, "replacement")
+	finalizeEngineGeneration(t, fixture.engine, "cancel-b", setB)
+	select {
+	case <-retirementStarted:
+	case <-time.After(time.Second):
+		t.Fatal("retirement did not start")
+	}
+
+	short, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	first := fixture.engine.Close(short)
+	var residual *runtime.TaskResidualError
+	if !errors.As(first, &residual) {
+		t.Fatalf("first Close() error = %v", first)
+	}
+	fixture.engine.retireMu.Lock()
+	_, retained := fixture.engine.retireKnown[owner]
+	_, active := fixture.engine.retireActive[owner]
+	fixture.engine.retireMu.Unlock()
+	if !retained || active || owner.prepared == nil {
+		t.Fatal("Close did not join the canceled attempt before retaining its owner")
+	}
+
+	release()
+	if err := fixture.engine.Close(context.Background()); err != nil {
+		t.Fatalf("retry Close() error = %v", err)
+	}
+}
+
+func TestGenerationEngineCloseDeadlineReturnsWithoutWaitingForever(t *testing.T) {
+	fixture := newGenerationEngineFixture(t)
+	set := prepareEngineGeneration(t, fixture.engine, 90, generation.DomainHTTP)
+	finalizeEngineGeneration(t, fixture.engine, "deadline", set)
+	owner := fixture.engine.active.Load().http
+	lease, ok := fixture.engine.acquireHTTP()
+	if !ok {
+		t.Fatal("HTTP lease unavailable")
+	}
+	defer lease.Release()
+
+	short, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	first := fixture.engine.Close(short)
+	if first == nil || (!errors.Is(first, context.Canceled) && !errors.Is(first, context.DeadlineExceeded)) {
+		t.Fatalf("Close() error = %v, want bounded context error", first)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("Close() exceeded bounded wait: %s", elapsed)
+	}
+	if !fixture.engine.closed || owner.prepared == nil || fixture.engine.closePhase == engineCloseFactoryDone {
+		t.Fatal("bounded Close released retained ownership or failed to seal the engine")
+	}
+	ticket, desired := generationEngineInput(t, 91, generation.DomainHTTP)
+	_, prepareErr := fixture.engine.Prepare(context.Background(), ticket, desired, nil)
+	if !errors.Is(prepareErr, errGenerationEngineClosed) {
+		t.Fatalf("Prepare() after bounded Close error = %v", prepareErr)
+	}
+
+	lease.Release()
+	if err := fixture.engine.Close(context.Background()); err != nil {
+		t.Fatalf("retry Close() error = %v", err)
+	}
+}
+
+func TestGenerationEngineCloseRetryClosesPendingRetirementsThenFactory(t *testing.T) {
+	installGenerationStreamMetrics(t)
+	fixture := newGenerationEngineFixture(t)
+	set := prepareEngineStreamGeneration(t, fixture.engine, 92, "ordered")
+	finalizeEngineGeneration(t, fixture.engine, "ordered", set)
+	owner := fixture.engine.active.Load().stream
+	release := startGenerationEngineBlockingTask(t, owner, "close-order")
+	defer release()
+
+	short, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	first := fixture.engine.Close(short)
+	cancel()
+	var residual *runtime.TaskResidualError
+	if !errors.As(first, &residual) {
+		t.Fatalf("first Close() error = %v", first)
+	}
+	release()
+	var traceMu sync.Mutex
+	var trace []string
+	fixture.engine.mu.Lock()
+	fixture.engine.checkpoint = func(stage string) error {
+		switch stage {
+		case "owner-terminal", "metrics-unregister", "factory-close":
+			traceMu.Lock()
+			trace = append(trace, stage)
+			traceMu.Unlock()
+		}
+		return nil
+	}
+	fixture.engine.mu.Unlock()
+	if err := fixture.engine.Close(context.Background()); err != nil {
+		t.Fatalf("retry Close() error = %v", err)
+	}
+	traceMu.Lock()
+	got := slices.Clone(trace)
+	traceMu.Unlock()
+	want := []string{"owner-terminal", "metrics-unregister", "factory-close"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("close trace = %v, want %v", got, want)
+	}
+}
+
+func TestGenerationEngineClosePreservesIndependentCleanupErrorsAcrossRetry(t *testing.T) {
+	manifest, err := capability.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := capability.NewSecretDeclarationCatalog(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	materializer := &engineErrorMaterializer{
+		digest: catalog.Digest(), closeErr: errors.New("terminal cleanup fixture"),
+	}
+	engine, _ := newGenerationEngineWithMaterializer(t, materializer)
+	terminalSet := prepareEngineGeneration(t, engine, 93, generation.DomainHTTP)
+	terminalRecord := engine.pending[mustEnginePreparedKey(t, terminalSet)]
+	terminalErr := terminalRecord.owner.prepared.Close(context.Background())
+	if terminalErr == nil {
+		t.Fatal("terminal fixture cleanup did not fail")
+	}
+	retrySet := prepareEngineGeneration(t, engine, 94, generation.DomainHTTP)
+	retryRecord := engine.pending[mustEnginePreparedKey(t, retrySet)]
+	release := startGenerationEngineBlockingTask(t, retryRecord.owner, "independent-error")
+	defer release()
+
+	short, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	first := engine.Close(short)
+	cancel()
+	var residual *runtime.TaskResidualError
+	if !errors.As(first, &residual) || !errors.Is(first, terminalErr) {
+		t.Fatalf("first Close() error = %v, want residual plus %v", first, terminalErr)
+	}
+	release()
+	finalErr := engine.Close(context.Background())
+	if !errors.Is(finalErr, terminalErr) {
+		t.Fatalf("terminal Close() error = %v, want retained %v", finalErr, terminalErr)
+	}
+}
+
+func startGenerationEngineBlockingTask(
+	t *testing.T,
+	owner *generationOwner,
+	name string,
+) func() {
+	t.Helper()
+	if owner == nil || owner.prepared == nil {
+		t.Fatal("blocking task requires a live generation owner")
+	}
+	tasks := generationOwnerTaskRegistry(t, owner.prepared)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	if err := tasks.Go(runtime.TaskSpec{
+		Owner: "plugin/test/" + name, Criticality: runtime.TaskPlugin,
+	}, func(context.Context) error {
+		close(started)
+		<-release
+		return nil
+	}); err != nil {
+		t.Fatalf("TaskRegistry.Go() error = %v", err)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("blocking generation task did not start")
+	}
+	return func() { releaseOnce.Do(func() { close(release) }) }
 }
 
 type engineErrorMaterializer struct {

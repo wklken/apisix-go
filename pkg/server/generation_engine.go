@@ -29,15 +29,19 @@ type preparedKey struct {
 	Stream  [32]byte
 }
 
+type discardAttempt struct {
+	done     chan struct{}
+	err      error
+	waiters  int
+	terminal bool
+}
+
 type pendingRecord struct {
-	key            preparedKey
-	set            generation.PublicationSet
-	owner          *generationOwner
-	synthetic      bool
-	discarding     bool
-	discardDone    chan struct{}
-	discardErr     error
-	discardWaiters int
+	key       preparedKey
+	set       generation.PublicationSet
+	owner     *generationOwner
+	synthetic bool
+	discard   *discardAttempt
 }
 
 type activationRecord struct {
@@ -51,8 +55,26 @@ type activationRecord struct {
 }
 
 type retirementRecord struct {
-	owner *generationOwner
-	ctx   context.Context
+	owner  *generationOwner
+	ctx    context.Context
+	cancel context.CancelFunc
+	done   chan struct{}
+	err    error
+}
+
+type generationEngineClosePhase uint8
+
+const (
+	engineCloseInitial generationEngineClosePhase = iota
+	engineCloseOwnersCaptured
+	engineClosePendingDone
+	engineCloseRetirementDone
+	engineCloseFactoryDone
+)
+
+type generationEngineCloseAttempt struct {
+	done chan struct{}
+	err  error
 }
 
 // GenerationEngine owns immutable prepared generations from compilation
@@ -71,14 +93,16 @@ type GenerationEngine struct {
 	active            atomic.Pointer[activeBundle]
 
 	retireMu      sync.Mutex
-	retireQueue   []retirementRecord
+	retireQueue   []*retirementRecord
 	retireKnown   map[*generationOwner]struct{}
-	retireActive  map[*generationOwner]struct{}
+	retireActive  map[*generationOwner]*retirementRecord
+	retireLatest  map[*generationOwner]error
 	retireErrors  []error
-	retireWG      sync.WaitGroup
 	retireClosing bool
+	retireChanged chan struct{}
 	retireWake    chan struct{}
 	retireStop    chan struct{}
+	retireStopped bool
 	retireDone    chan struct{}
 
 	// A stream route remains recordable while any active or draining owner can
@@ -89,8 +113,12 @@ type GenerationEngine struct {
 
 	checkpoint func(string) error
 
-	closeOnce sync.Once
-	closeErr  error
+	closeMu      sync.Mutex
+	closeAttempt *generationEngineCloseAttempt
+	closePhase   generationEngineClosePhase
+	closePending map[preparedKey]*pendingRecord
+	closeErrors  []error
+	closeErr     error
 }
 
 func NewGenerationEngine(
@@ -107,7 +135,9 @@ func NewGenerationEngine(
 		activations:        make(map[generation.PublicationToken]*activationRecord),
 		fences:             make(map[generation.Domain]generation.PublicationCandidate),
 		retireKnown:        make(map[*generationOwner]struct{}),
-		retireActive:       make(map[*generationOwner]struct{}),
+		retireActive:       make(map[*generationOwner]*retirementRecord),
+		retireLatest:       make(map[*generationOwner]error),
+		retireChanged:      make(chan struct{}),
 		retireWake:         make(chan struct{}, 1),
 		retireStop:         make(chan struct{}),
 		retireDone:         make(chan struct{}),
@@ -159,7 +189,7 @@ func (engine *GenerationEngine) Prepare(
 			return generation.PublicationSet{}, compiler.ErrPreparedSetMismatch
 		}
 		engine.pending[key] = &pendingRecord{
-			key: key, set: cloneEnginePublicationSetValue(set), synthetic: true, discardDone: make(chan struct{}),
+			key: key, set: cloneEnginePublicationSetValue(set), synthetic: true,
 		}
 		return cloneEnginePublicationSetValue(set), nil
 	}
@@ -198,7 +228,7 @@ func (engine *GenerationEngine) Prepare(
 		return cleanup(compiler.ErrPreparedSetMismatch)
 	}
 	engine.pending[key] = &pendingRecord{
-		key: key, set: cloneEnginePublicationSetValue(set), owner: owner, discardDone: make(chan struct{}),
+		key: key, set: cloneEnginePublicationSetValue(set), owner: owner,
 	}
 	engine.mu.Unlock()
 	return cloneEnginePublicationSetValue(set), nil
@@ -221,47 +251,94 @@ func (engine *GenerationEngine) DiscardPrepared(
 		engine.mu.Unlock()
 		return compiler.ErrPreparedSetMismatch
 	}
-	if record.discarding {
-		record.discardWaiters++
-		done := record.discardDone
-		if engine.checkpoint != nil {
-			_ = engine.checkpoint("discard-waiter-registered")
+	if err := ctx.Err(); err != nil {
+		engine.mu.Unlock()
+		return err
+	}
+	if attempt := record.discard; attempt != nil {
+		select {
+		case <-attempt.done:
+			if attempt.terminal {
+				attempt.waiters++
+				engine.mu.Unlock()
+				return engine.waitDiscardAttempt(ctx, record, attempt, true)
+			}
+		default:
+			attempt.waiters++
+			engine.mu.Unlock()
+			engine.runCheckpoint("discard-waiter-registered")
+			return engine.waitDiscardAttempt(ctx, record, attempt, true)
+		}
+	}
+	attempt := &discardAttempt{done: make(chan struct{}), waiters: 1}
+	record.discard = attempt
+	engine.mu.Unlock()
+	engine.runCheckpoint("discard-attempt-started")
+
+	var discardErr error
+	if record.owner != nil {
+		discardErr = record.owner.prepared.DiscardPrepared(ctx, record.set)
+	}
+	engine.mu.Lock()
+	attempt.err = discardErr
+	attempt.terminal = !generationEngineCleanupIncomplete(discardErr)
+	close(attempt.done)
+	engine.mu.Unlock()
+	return engine.consumeDiscardAttempt(record, attempt)
+}
+
+func (engine *GenerationEngine) waitDiscardAttempt(
+	ctx context.Context,
+	record *pendingRecord,
+	attempt *discardAttempt,
+	joined bool,
+) error {
+	select {
+	case <-attempt.done:
+		if joined {
+			engine.runCheckpoint("discard-waiter-observed")
+		}
+		return engine.consumeDiscardAttempt(record, attempt)
+	case <-ctx.Done():
+		select {
+		case <-attempt.done:
+			if joined {
+				engine.runCheckpoint("discard-waiter-observed")
+			}
+			return engine.consumeDiscardAttempt(record, attempt)
+		default:
+		}
+		engine.mu.Lock()
+		attempt.waiters--
+		if attempt.waiters == 0 && attempt.terminal && record.discard == attempt {
+			delete(engine.pending, record.key)
 		}
 		engine.mu.Unlock()
-		select {
-		case <-done:
-			engine.mu.Lock()
-			record.discardWaiters--
-			err := record.discardErr
-			if record.discardWaiters == 0 {
-				delete(engine.pending, key)
-			}
-			engine.mu.Unlock()
-			return err
-		case <-ctx.Done():
-			engine.mu.Lock()
-			record.discardWaiters--
-			engine.mu.Unlock()
-			return ctx.Err()
-		}
+		return ctx.Err()
 	}
-	record.discarding = true
-	record.discardWaiters = 1
-	engine.mu.Unlock()
+}
 
-	cleanupCtx := context.WithoutCancel(ctx)
-	if record.owner != nil {
-		record.discardErr = record.owner.prepared.DiscardPrepared(cleanupCtx, record.set)
-	}
-	close(record.discardDone)
+func (engine *GenerationEngine) consumeDiscardAttempt(
+	record *pendingRecord,
+	attempt *discardAttempt,
+) error {
 	engine.mu.Lock()
-	record.discardWaiters--
-	if record.discardWaiters == 0 {
-		delete(engine.pending, key)
+	attempt.waiters--
+	if attempt.waiters == 0 && attempt.terminal && record.discard == attempt {
+		delete(engine.pending, record.key)
 	}
-	err = record.discardErr
+	err := attempt.err
 	engine.mu.Unlock()
 	return err
+}
+
+func (engine *GenerationEngine) runCheckpoint(stage string) {
+	engine.mu.Lock()
+	checkpoint := engine.checkpoint
+	engine.mu.Unlock()
+	if checkpoint != nil {
+		_ = checkpoint(stage)
+	}
 }
 
 func (engine *GenerationEngine) Activate(
@@ -288,7 +365,7 @@ func (engine *GenerationEngine) Activate(
 		return compiler.ErrPreparedSetMismatch
 	}
 	record := engine.pending[key]
-	if record == nil || record.discarding || !reflect.DeepEqual(record.set, set) {
+	if record == nil || record.discard != nil || !reflect.DeepEqual(record.set, set) {
 		return compiler.ErrPreparedSetMismatch
 	}
 	previous := engine.active.Load()
@@ -733,82 +810,235 @@ func (engine *GenerationEngine) close(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	cleanupCtx := context.WithoutCancel(ctx)
-	engine.closeOnce.Do(func() {
-		engine.mu.Lock()
-		engine.closed = true
-		bundle := engine.active.Load()
-		engine.active.Store(&activeBundle{})
-		pending := make([]*pendingRecord, 0, len(engine.pending))
-		for _, record := range engine.pending {
-			pending = append(pending, record)
-		}
-		engine.pending = make(map[preparedKey]*pendingRecord)
+	engine.closeMu.Lock()
+	if engine.closePhase == engineCloseFactoryDone {
+		closeErr := engine.closeErr
+		engine.closeMu.Unlock()
+		return closeErr
+	}
+	if engine.closeAttempt != nil {
+		attempt := engine.closeAttempt
+		engine.closeMu.Unlock()
+		return waitGenerationEngineCloseAttempt(ctx, attempt)
+	}
+	attempt := &generationEngineCloseAttempt{done: make(chan struct{})}
+	engine.closeAttempt = attempt
+	engine.closeMu.Unlock()
 
-		owners := make(map[*generationOwner]struct{})
-		for _, record := range engine.activations {
-			if record.owner != nil {
-				owners[record.owner] = struct{}{}
-			}
-			if record.previous != nil {
-				if record.previous.http != nil {
-					owners[record.previous.http] = struct{}{}
-				}
-				if record.previous.stream != nil {
-					owners[record.previous.stream] = struct{}{}
-				}
-			}
-		}
-		if bundle != nil && bundle.http != nil {
-			owners[bundle.http] = struct{}{}
-		}
-		if bundle != nil && bundle.stream != nil {
-			owners[bundle.stream] = struct{}{}
-		}
-		engine.activations = make(map[generation.PublicationToken]*activationRecord)
-		for owner := range owners {
-			owner.mu.Lock()
-			domains := owner.activeDomains
-			owner.mu.Unlock()
-			if domains != 0 {
-				owner.deactivateDomains(domains)
-			}
-			engine.enqueueRetirementLocked(owner, cleanupCtx)
-		}
-		engine.mu.Unlock()
+	attemptErr := engine.runCloseAttempt(ctx)
+	engine.closeMu.Lock()
+	attempt.err = attemptErr
+	if engine.closePhase == engineCloseFactoryDone {
+		engine.closeErr = attemptErr
+	}
+	if engine.closeAttempt == attempt {
+		engine.closeAttempt = nil
+	}
+	close(attempt.done)
+	engine.closeMu.Unlock()
+	return attemptErr
+}
 
-		var cleanupErrors []error
-		for _, record := range pending {
-			if record.discarding {
-				<-record.discardDone
-				cleanupErrors = append(cleanupErrors, record.discardErr)
-				continue
+func (engine *GenerationEngine) runCloseAttempt(ctx context.Context) error {
+	if engine.closePhaseValue() == engineCloseInitial {
+		engine.captureCloseOwners(ctx)
+	}
+	if engine.closePhaseValue() == engineCloseOwnersCaptured {
+		if err := engine.closePendingOwners(ctx); err != nil {
+			return engine.closeAttemptResult(err)
+		}
+		engine.setClosePhase(engineClosePendingDone)
+	}
+	if engine.closePhaseValue() == engineClosePendingDone {
+		if err := engine.closeRetirementOwners(ctx); err != nil {
+			return engine.closeAttemptResult(err)
+		}
+		engine.setClosePhase(engineCloseRetirementDone)
+	}
+	if engine.closePhaseValue() == engineCloseRetirementDone {
+		engine.runCheckpoint("factory-close")
+		factoryErr := engine.factory.Close(ctx)
+		if generationEngineCleanupIncomplete(factoryErr) {
+			return engine.closeAttemptResult(factoryErr)
+		}
+		engine.appendCloseError(factoryErr)
+		engine.setClosePhase(engineCloseFactoryDone)
+	}
+	return engine.closeAttemptResult(nil)
+}
+
+func (engine *GenerationEngine) captureCloseOwners(ctx context.Context) {
+	engine.mu.Lock()
+	engine.closed = true
+	bundle := engine.active.Load()
+	engine.active.Store(&activeBundle{})
+	pending := engine.pending
+	engine.pending = make(map[preparedKey]*pendingRecord)
+	owners := make(map[*generationOwner]struct{})
+	for _, record := range engine.activations {
+		if record.owner != nil {
+			owners[record.owner] = struct{}{}
+		}
+		if record.previous != nil {
+			if record.previous.http != nil {
+				owners[record.previous.http] = struct{}{}
 			}
-			if record.owner != nil {
-				cleanupErrors = append(cleanupErrors,
-					record.owner.prepared.DiscardPrepared(cleanupCtx, record.set))
+			if record.previous.stream != nil {
+				owners[record.previous.stream] = struct{}{}
 			}
 		}
-		engine.wakeRetirement()
-		engine.retireMu.Lock()
-		engine.retireClosing = true
-		engine.retireMu.Unlock()
-		close(engine.retireStop)
-		<-engine.retireDone
-		engine.retireWG.Wait()
-		engine.clearStreamMetrics()
-		engine.retireMu.Lock()
-		cleanupErrors = append(cleanupErrors, engine.retireErrors...)
-		engine.retireMu.Unlock()
-		cleanupErrors = append(cleanupErrors, engine.factory.Close(cleanupCtx))
-		engine.closeErr = errors.Join(cleanupErrors...)
+	}
+	if bundle != nil && bundle.http != nil {
+		owners[bundle.http] = struct{}{}
+	}
+	if bundle != nil && bundle.stream != nil {
+		owners[bundle.stream] = struct{}{}
+	}
+	engine.activations = make(map[generation.PublicationToken]*activationRecord)
+	for owner := range owners {
+		owner.mu.Lock()
+		domains := owner.activeDomains
+		owner.mu.Unlock()
+		if domains != 0 {
+			owner.deactivateDomains(domains)
+		}
+		engine.enqueueRetirementLocked(owner, ctx)
+	}
+	engine.mu.Unlock()
+	engine.closeMu.Lock()
+	engine.closePending = pending
+	engine.closePhase = engineCloseOwnersCaptured
+	engine.closeMu.Unlock()
+	engine.wakeRetirement()
+}
+
+func (engine *GenerationEngine) closePendingOwners(ctx context.Context) error {
+	engine.closeMu.Lock()
+	records := make([]*pendingRecord, 0, len(engine.closePending))
+	for _, record := range engine.closePending {
+		records = append(records, record)
+	}
+	engine.closeMu.Unlock()
+	slices.SortFunc(records, func(left, right *pendingRecord) int {
+		if left.key.Desired < right.key.Desired {
+			return -1
+		}
+		if left.key.Desired > right.key.Desired {
+			return 1
+		}
+		if compared := slices.Compare(left.key.HTTP[:], right.key.HTTP[:]); compared != 0 {
+			return compared
+		}
+		return slices.Compare(left.key.Stream[:], right.key.Stream[:])
 	})
-	return engine.closeErr
+	var incomplete []error
+	for _, record := range records {
+		err := engine.closePendingRecord(ctx, record)
+		if generationEngineCleanupIncomplete(err) {
+			incomplete = append(incomplete, err)
+			continue
+		}
+		engine.appendCloseError(err)
+		engine.closeMu.Lock()
+		if engine.closePending[record.key] == record {
+			delete(engine.closePending, record.key)
+		}
+		engine.closeMu.Unlock()
+	}
+	return errors.Join(incomplete...)
+}
+
+func (engine *GenerationEngine) closePendingRecord(ctx context.Context, record *pendingRecord) error {
+	engine.mu.Lock()
+	if attempt := record.discard; attempt != nil {
+		select {
+		case <-attempt.done:
+			if !attempt.terminal {
+				break
+			}
+			attempt.waiters++
+			engine.mu.Unlock()
+			return engine.waitDiscardAttempt(ctx, record, attempt, false)
+		default:
+			attempt.waiters++
+			engine.mu.Unlock()
+			return engine.waitDiscardAttempt(ctx, record, attempt, false)
+		}
+	}
+	attempt := &discardAttempt{done: make(chan struct{}), waiters: 1}
+	record.discard = attempt
+	engine.mu.Unlock()
+	var discardErr error
+	if record.owner != nil {
+		discardErr = record.owner.prepared.DiscardPrepared(ctx, record.set)
+	}
+	engine.mu.Lock()
+	attempt.err = discardErr
+	attempt.terminal = !generationEngineCleanupIncomplete(discardErr)
+	close(attempt.done)
+	engine.mu.Unlock()
+	return engine.consumeDiscardAttempt(record, attempt)
+}
+
+func waitGenerationEngineCloseAttempt(
+	ctx context.Context,
+	attempt *generationEngineCloseAttempt,
+) error {
+	select {
+	case <-attempt.done:
+		return attempt.err
+	default:
+	}
+	select {
+	case <-attempt.done:
+		return attempt.err
+	case <-ctx.Done():
+		select {
+		case <-attempt.done:
+			return attempt.err
+		default:
+			return ctx.Err()
+		}
+	}
+}
+
+func (engine *GenerationEngine) closePhaseValue() generationEngineClosePhase {
+	engine.closeMu.Lock()
+	defer engine.closeMu.Unlock()
+	return engine.closePhase
+}
+
+func (engine *GenerationEngine) setClosePhase(phase generationEngineClosePhase) {
+	engine.closeMu.Lock()
+	engine.closePhase = phase
+	engine.closeMu.Unlock()
+}
+
+func (engine *GenerationEngine) appendCloseError(err error) {
+	if err == nil {
+		return
+	}
+	engine.closeMu.Lock()
+	defer engine.closeMu.Unlock()
+	engine.closeErrors = append(engine.closeErrors, err)
+}
+
+func (engine *GenerationEngine) closeAttemptResult(transient error) error {
+	engine.closeMu.Lock()
+	errs := slices.Clone(engine.closeErrors)
+	engine.closeMu.Unlock()
+	if transient != nil {
+		errs = append(errs, transient)
+	}
+	return errors.Join(errs...)
 }
 
 func (engine *GenerationEngine) enqueueRetirementLocked(owner *generationOwner, ctx context.Context) {
 	if owner == nil {
 		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 	engine.retireMu.Lock()
 	if engine.retireClosing {
@@ -825,8 +1055,13 @@ func (engine *GenerationEngine) enqueueRetirementLocked(owner *generationOwner, 
 		return
 	default:
 	}
+	attemptCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	record := &retirementRecord{
+		owner: owner, ctx: attemptCtx, cancel: cancel, done: make(chan struct{}),
+	}
 	engine.retireKnown[owner] = struct{}{}
-	engine.retireQueue = append(engine.retireQueue, retirementRecord{owner: owner, ctx: ctx})
+	engine.retireQueue = append(engine.retireQueue, record)
+	engine.signalRetirementChangedLocked()
 	engine.retireMu.Unlock()
 }
 
@@ -845,8 +1080,8 @@ func (engine *GenerationEngine) retirementLoop() {
 		if len(engine.retireQueue) != 0 {
 			record := engine.retireQueue[0]
 			engine.retireQueue = engine.retireQueue[1:]
-			engine.retireActive[record.owner] = struct{}{}
-			engine.retireWG.Add(1)
+			engine.retireActive[record.owner] = record
+			engine.signalRetirementChangedLocked()
 			engine.retireMu.Unlock()
 			go engine.retireOwner(record)
 			continue
@@ -863,23 +1098,175 @@ func (engine *GenerationEngine) retirementLoop() {
 	}
 }
 
-func (engine *GenerationEngine) retireOwner(record retirementRecord) {
-	defer engine.retireWG.Done()
-	engine.mu.Lock()
-	checkpoint := engine.checkpoint
-	engine.mu.Unlock()
-	if checkpoint != nil {
-		_ = checkpoint("before-owner-retirement")
-	}
+func (engine *GenerationEngine) retireOwner(record *retirementRecord) {
+	defer record.cancel()
+	engine.runCheckpoint("before-owner-retirement")
 	err := record.owner.closePrepared(record.ctx)
-	engine.unregisterStreamMetricOwner(record.owner)
+	record.err = err
+	terminal := !generationEngineCleanupIncomplete(err)
+	if terminal {
+		engine.runCheckpoint("owner-terminal")
+		engine.unregisterStreamMetricOwner(record.owner)
+		engine.runCheckpoint("metrics-unregister")
+	}
 	engine.retireMu.Lock()
-	delete(engine.retireActive, record.owner)
-	delete(engine.retireKnown, record.owner)
-	if err != nil {
+	if engine.retireActive[record.owner] == record {
+		delete(engine.retireActive, record.owner)
+	}
+	if terminal {
+		delete(engine.retireKnown, record.owner)
+		delete(engine.retireLatest, record.owner)
+	} else {
+		engine.retireLatest[record.owner] = err
+	}
+	if terminal && err != nil {
 		engine.retireErrors = append(engine.retireErrors, err)
 	}
+	close(record.done)
+	engine.signalRetirementChangedLocked()
 	engine.retireMu.Unlock()
+}
+
+func (engine *GenerationEngine) signalRetirementChangedLocked() {
+	close(engine.retireChanged)
+	engine.retireChanged = make(chan struct{})
+}
+
+func (engine *GenerationEngine) closeRetirementOwners(ctx context.Context) error {
+	joinedErr, err := engine.cancelAndJoinActiveRetirements(ctx)
+	if err != nil {
+		return errors.Join(joinedErr, err)
+	}
+	if generationEngineResidualIncomplete(joinedErr) {
+		return joinedErr
+	}
+
+	engine.retireMu.Lock()
+	owners := make([]*generationOwner, 0, len(engine.retireKnown))
+	for owner := range engine.retireKnown {
+		owners = append(owners, owner)
+	}
+	engine.retireMu.Unlock()
+	var incomplete []error
+	for _, owner := range owners {
+		ownerErr := owner.closePrepared(ctx)
+		if generationEngineCleanupIncomplete(ownerErr) {
+			incomplete = append(incomplete, ownerErr)
+			continue
+		}
+		engine.runCheckpoint("owner-terminal")
+		engine.unregisterStreamMetricOwner(owner)
+		engine.runCheckpoint("metrics-unregister")
+		engine.retireMu.Lock()
+		delete(engine.retireKnown, owner)
+		delete(engine.retireLatest, owner)
+		if ownerErr != nil {
+			engine.retireErrors = append(engine.retireErrors, ownerErr)
+		}
+		engine.signalRetirementChangedLocked()
+		engine.retireMu.Unlock()
+	}
+	if len(incomplete) != 0 {
+		return errors.Join(incomplete...)
+	}
+
+	engine.retireMu.Lock()
+	if len(engine.retireKnown) != 0 {
+		engine.retireMu.Unlock()
+		return compiler.ErrPreparedGenerationCleanupIncomplete
+	}
+	if !engine.retireStopped {
+		engine.retireStopped = true
+		close(engine.retireStop)
+	}
+	retireDone := engine.retireDone
+	engine.retireMu.Unlock()
+	select {
+	case <-retireDone:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	engine.clearStreamMetrics()
+	engine.retireMu.Lock()
+	terminalErrors := slices.Clone(engine.retireErrors)
+	engine.retireErrors = nil
+	engine.retireMu.Unlock()
+	for _, terminalErr := range terminalErrors {
+		engine.appendCloseError(terminalErr)
+	}
+	return nil
+}
+
+func (engine *GenerationEngine) cancelAndJoinActiveRetirements(
+	ctx context.Context,
+) (error, error) {
+	engine.retireMu.Lock()
+	engine.retireClosing = true
+	hadAttempts := len(engine.retireQueue) != 0 || len(engine.retireActive) != 0
+	joinedOwners := make(map[*generationOwner]struct{}, len(engine.retireQueue)+len(engine.retireActive))
+	for _, attempt := range engine.retireQueue {
+		joinedOwners[attempt.owner] = struct{}{}
+	}
+	for _, attempt := range engine.retireActive {
+		joinedOwners[attempt.owner] = struct{}{}
+		attempt.cancel()
+	}
+	engine.retireMu.Unlock()
+	engine.wakeRetirement()
+
+	for {
+		engine.retireMu.Lock()
+		for _, attempt := range engine.retireActive {
+			joinedOwners[attempt.owner] = struct{}{}
+			attempt.cancel()
+		}
+		if len(engine.retireQueue) == 0 && len(engine.retireActive) == 0 {
+			var attemptErrors []error
+			if hadAttempts {
+				for owner := range joinedOwners {
+					if attemptErr := engine.retireLatest[owner]; attemptErr != nil {
+						attemptErrors = append(attemptErrors, attemptErr)
+						delete(engine.retireLatest, owner)
+					}
+				}
+			}
+			engine.retireMu.Unlock()
+			return errors.Join(attemptErrors...), nil
+		}
+		changed := engine.retireChanged
+		var attemptErrors []error
+		for owner := range joinedOwners {
+			if attemptErr := engine.retireLatest[owner]; attemptErr != nil {
+				attemptErrors = append(attemptErrors, attemptErr)
+			}
+		}
+		engine.retireMu.Unlock()
+		engine.wakeRetirement()
+		select {
+		case <-changed:
+		case <-ctx.Done():
+			return errors.Join(attemptErrors...), ctx.Err()
+		}
+	}
+}
+
+func generationEngineCleanupIncomplete(err error) bool {
+	if err == nil {
+		return false
+	}
+	var residual *runtime.TaskResidualError
+	return errors.As(err, &residual) ||
+		errors.Is(err, compiler.ErrPreparedGenerationCleanupIncomplete) ||
+		errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+}
+
+func generationEngineResidualIncomplete(err error) bool {
+	if err == nil {
+		return false
+	}
+	var residual *runtime.TaskResidualError
+	return errors.As(err, &residual) ||
+		errors.Is(err, compiler.ErrPreparedGenerationCleanupIncomplete)
 }
 
 func (engine *GenerationEngine) registerStreamMetricOwner(owner *generationOwner) {

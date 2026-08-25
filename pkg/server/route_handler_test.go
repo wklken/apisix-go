@@ -189,6 +189,12 @@ type blockingHeaderRouteResponseWriter struct {
 	once    sync.Once
 }
 
+type routeCommitSignalWriter struct {
+	*httptest.ResponseRecorder
+	committed chan struct{}
+	once      sync.Once
+}
+
 type sequencedHeaderPanicWriter struct {
 	header      http.Header
 	panics      []any
@@ -221,6 +227,12 @@ func (w *blockingHeaderRouteResponseWriter) WriteHeader(int) {
 func (w *blockingHeaderRouteResponseWriter) Write(body []byte) (int, error) {
 	w.WriteHeader(http.StatusOK)
 	return len(body), nil
+}
+
+func (w *routeCommitSignalWriter) Write(body []byte) (int, error) {
+	n, err := w.ResponseRecorder.Write(body)
+	w.once.Do(func() { close(w.committed) })
+	return n, err
 }
 
 func (w *hijackingRouteResponseWriter) Header() http.Header { return w.header }
@@ -2191,24 +2203,36 @@ func TestRouteHandlerPanicAfterWriteAbortsConnection(t *testing.T) {
 }
 
 func TestRouteHandlerBatchTimeoutKeepsRetiredGenerationUntilWorkerExit(t *testing.T) {
-	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	fixture := newCountedHTTPLeaseFixture(t, 337)
+	routes := newGenerationRouteHandler(fixture.Acquire)
+	t.Cleanup(routes.Close)
+	workerStarted := make(chan struct{})
+	workerRelease := make(chan struct{})
+	var workerStartOnce sync.Once
+	var workerReleaseOnce sync.Once
+	releaseWorker := func() { workerReleaseOnce.Do(func() { close(workerRelease) }) }
+	t.Cleanup(releaseWorker)
+	worker := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		workerStartOnce.Do(func() { close(workerStarted) })
+		<-workerRelease
 		w.WriteHeader(http.StatusNoContent)
-	}))
-	t.Cleanup(backend.Close)
-	generation := newCompiledHTTPGenerationFixture(
-		t,
-		337,
-		[]string{"batch-requests", "fault-injection"},
-		[]generation.Resource{compiledHTTPRouteResource(
-			t,
-			"slow",
-			"/slow",
-			backend,
-			map[string]resource.PluginConfig{
-				"fault-injection": map[string]any{"delay": map[string]any{"duration": 0.2}},
-			},
-		)},
-	)
+	})
+	batch := batch_requests.NewHandlerWithLimits(http.NotFoundHandler(), batch_requests.Limits{})
+	outer := http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		factory := batch_requests.DispatchLeaseFactoryFromRequest(request)
+		if factory == nil {
+			t.Fatal("dispatch lease factory is nil")
+		}
+		override := func() (batch_requests.DispatchLease, bool) {
+			child, ok := factory()
+			if !ok {
+				return batch_requests.DispatchLease{}, false
+			}
+			child.Handler = worker
+			return child, true
+		}
+		batch.ServeHTTP(w, batch_requests.WithDispatchLeaseFactory(request, override))
+	})
 	request := httptest.NewRequest(
 		http.MethodPost,
 		"http://gateway.test"+batch_requests.DefaultURI,
@@ -2217,33 +2241,88 @@ func TestRouteHandlerBatchTimeoutKeepsRetiredGenerationUntilWorkerExit(t *testin
 		"pipeline": [{"path":"/slow"}]
 	}`),
 	)
-	response := httptest.NewRecorder()
-
-	generation.routes.ServeHTTP(response, request)
+	response := &routeCommitSignalWriter{
+		ResponseRecorder: httptest.NewRecorder(),
+		committed:        make(chan struct{}),
+	}
+	served := make(chan struct{})
+	go func() {
+		lease, ok := fixture.Acquire()
+		if !ok {
+			t.Error("HTTP generation lease unavailable")
+			close(served)
+			return
+		}
+		routes.mu.Lock()
+		routes.generationActive++
+		routes.mu.Unlock()
+		defer routes.finishGenerationLease(lease.Release)
+		serveRouteRequestForHTTPGeneration(response, request, outer, &lease, routes)
+		close(served)
+	}()
+	select {
+	case <-workerStarted:
+	case <-time.After(time.Second):
+		t.Fatal("batch worker never started")
+	}
+	select {
+	case <-response.committed:
+	case <-time.After(time.Second):
+		t.Fatal("batch timeout response was not committed")
+	}
 	if response.Code != http.StatusOK {
 		t.Fatalf("batch response code = %d, want 200; body=%q", response.Code, response.Body.String())
 	}
-	if got := generation.acquires.Load(); got != 2 {
+	if got := fixture.acquires.Load(); got != 2 {
 		t.Fatalf("acquire count after timed-out child = %d, want parent plus child", got)
 	}
-	if got := generation.releases.Load(); got != 1 {
-		t.Fatalf("release count before delayed child exits = %d, want parent only", got)
+	if got := fixture.releases.Load(); got != 0 {
+		t.Fatalf("release count before worker exits = %d, want none", got)
 	}
-
-	generation.routes.RejectNew()
-	drainCtx, cancel := context.WithCancel(context.Background())
-	cancel()
-	if err := generation.routes.Drain(drainCtx); !errors.Is(err, context.Canceled) {
-		t.Fatalf("Drain(active batch worker) error = %v, want %v", err, context.Canceled)
+	select {
+	case <-served:
+		t.Fatal("route handler returned before the timed-out child exited")
+	default:
 	}
-	if err := generation.routes.Drain(context.Background()); err != nil {
-		t.Fatalf("Drain() after batch worker exit error = %v", err)
+	routes.RejectNew()
+	drainDone := make(chan error, 1)
+	go func() { drainDone <- routes.Drain(context.Background()) }()
+	select {
+	case err := <-drainDone:
+		t.Fatalf("Drain returned before child exit: %v", err)
+	case <-time.After(25 * time.Millisecond):
 	}
-	if got := generation.releases.Load(); got != 2 {
-		t.Fatalf("release count after batch worker exit = %d, want parent plus child", got)
+	routes.mu.Lock()
+	active := routes.generationActive
+	routes.mu.Unlock()
+	if active != 2 {
+		t.Fatalf("active generations after retirement = %d, want parent plus child", active)
 	}
-	if got := generation.acquires.Load(); got != generation.releases.Load() {
-		t.Fatalf("generation lease counts = %d/%d, want balanced", got, generation.releases.Load())
+	releaseWorker()
+	select {
+	case <-served:
+	case <-time.After(time.Second):
+		t.Fatal("route handler did not return after releasing the child")
+	}
+	select {
+	case err := <-drainDone:
+		if err != nil {
+			t.Fatalf("Drain() after child exit error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Drain did not complete after child exit")
+	}
+	if got := fixture.releases.Load(); got != 2 {
+		t.Fatalf("release count after worker exit = %d, want parent plus child", got)
+	}
+	routes.mu.Lock()
+	active = routes.generationActive
+	routes.mu.Unlock()
+	if active != 0 {
+		t.Fatalf("active generations after worker exit = %d, want 0", active)
+	}
+	if got := fixture.acquires.Load(); got != fixture.releases.Load() {
+		t.Fatalf("generation lease counts = %d/%d, want balanced", got, fixture.releases.Load())
 	}
 }
 

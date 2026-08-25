@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"reflect"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -22,10 +23,12 @@ import (
 )
 
 const (
-	batchCorePanicHelperEnv      = "APISIX_BATCH_CORE_PANIC_HELPER"
-	batchCorePanicStartedMarker  = "core-panic-started"
-	batchCorePanicReturnedMarker = "core-panic-returned"
+	batchCorePanicHelperEnv = "APISIX_GO_BATCH_OWNER_HELPER"
+	batchOwnerRecovered     = "batch-owner-recovered"
+	batchWorkerReleased     = "batch-worker-released"
 )
+
+var batchCorePanicSentinel = &struct{ message string }{message: "raw core panic"}
 
 func TestMetadataSchemaRejectsNonpositiveLimits(t *testing.T) {
 	p := &Plugin{}
@@ -291,9 +294,23 @@ func TestHandlerBoundsCancellationIgnoringWorkers(t *testing.T) {
 		"timeout": 20,
 		"pipeline": [{"path":"/1"},{"path":"/2"},{"path":"/3"},{"path":"/4"}]
 	}`))
-	res := httptest.NewRecorder()
-	handler.ServeHTTP(res, req)
+	res := &batchCommitSignalWriter{ResponseRecorder: httptest.NewRecorder(), committed: make(chan struct{})}
+	served := make(chan struct{})
+	go func() {
+		handler.ServeHTTP(res, req)
+		close(served)
+	}()
+	select {
+	case <-res.committed:
+	case <-time.After(time.Second):
+		t.Fatal("batch response was not committed")
+	}
 	close(release)
+	select {
+	case <-served:
+	case <-time.After(time.Second):
+		t.Fatal("batch handler did not return after releasing workers")
+	}
 
 	responses := decodeAllPipelineResponses(t, res.Body.String())
 	if len(responses) != 4 {
@@ -352,35 +369,53 @@ func TestHandlerConvertsAbortHandlerToBadGateway(t *testing.T) {
 	}
 }
 
-func TestBatchSubrequestCorePanicTerminatesSubprocess(t *testing.T) {
-	command := exec.Command(os.Args[0], "-test.run=^TestBatchSubrequestCorePanicHelper$")
+func TestBatchCorePanicReturnsToRequestOwnerInSubprocess(t *testing.T) {
+	command := exec.Command(os.Args[0], "-test.run=^TestBatchCorePanicOwnerHelper$")
 	command.Env = append(os.Environ(), batchCorePanicHelperEnv+"=1")
 	output, err := command.CombinedOutput()
-	if err == nil {
-		t.Fatalf("core worker panic returned as an ordinary batch response; output:\n%s", output)
+	if err != nil {
+		t.Fatalf("detached worker escaped request owner: %v\n%s", err, output)
 	}
-	if !bytes.Contains(output, []byte(batchCorePanicStartedMarker)) {
-		t.Fatalf("core worker panic subprocess did not reach panic marker: %v\n%s", err, output)
+	for _, marker := range [][]byte{[]byte(batchOwnerRecovered), []byte(batchWorkerReleased)} {
+		if !bytes.Contains(output, marker) {
+			t.Fatalf("missing %q in %s", marker, output)
+		}
 	}
-	if bytes.Contains(output, []byte(batchCorePanicReturnedMarker)) {
-		t.Fatalf("core worker panic returned from the batch handler: %v\n%s", err, output)
+	if bytes.Contains(output, []byte("batch-normal-response")) {
+		t.Fatalf("normal batch response was written after core panic: %s", output)
 	}
 }
 
-func TestBatchSubrequestCorePanicHelper(t *testing.T) {
+func TestBatchCorePanicOwnerHelper(t *testing.T) {
 	if os.Getenv(batchCorePanicHelperEnv) != "1" {
 		return
 	}
-	want := &struct{ message string }{message: "raw core panic"}
-	handler := NewHandlerWithLimits(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-		_, _ = fmt.Fprintln(os.Stderr, batchCorePanicStartedMarker)
-		panic(want)
-	}), Limits{})
+	handler := NewHandlerWithLimits(http.NotFoundHandler(), Limits{})
 	request := httptest.NewRequest(http.MethodPost, DefaultURI, strings.NewReader(`{
 		"pipeline": [{"path":"/panic"}]
 	}`))
-	handler.ServeHTTP(httptest.NewRecorder(), request)
-	_, _ = fmt.Fprintln(os.Stderr, batchCorePanicReturnedMarker)
+	request = WithDispatchLeaseFactory(request, func() (DispatchLease, bool) {
+		return DispatchLease{
+			Handler: http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				panic(batchCorePanicSentinel)
+			}),
+			Release: func() { _, _ = fmt.Fprintln(os.Stderr, batchWorkerReleased) },
+		}, true
+	})
+	response := httptest.NewRecorder()
+	var recovered any
+	func() {
+		defer func() { recovered = recover() }()
+		handler.ServeHTTP(response, request)
+	}()
+	if recovered != batchCorePanicSentinel {
+		t.Fatalf("request owner recovered %#v, want exact sentinel %#v", recovered, batchCorePanicSentinel)
+	}
+	if response.Body.Len() != 0 {
+		_, _ = fmt.Fprintln(os.Stderr, "batch-normal-response")
+		t.Fatalf("response body = %q, want no normal batch response", response.Body.String())
+	}
+	_, _ = fmt.Fprintln(os.Stderr, batchOwnerRecovered)
 }
 
 func TestHandlerPreservesRepeatedResponseHeaders(t *testing.T) {
@@ -703,11 +738,11 @@ func TestNewHandlerFromMetadataBindsMaxConcurrency(t *testing.T) {
 	outerCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 	req := httptest.NewRequest(http.MethodPost, DefaultURI, bytes.NewReader(body)).WithContext(outerCtx)
-	result := make(chan *httptest.ResponseRecorder, 1)
+	res := &batchCommitSignalWriter{ResponseRecorder: httptest.NewRecorder(), committed: make(chan struct{})}
+	served := make(chan struct{})
 	go func() {
-		res := httptest.NewRecorder()
 		handler.ServeHTTP(res, req)
-		result <- res
+		close(served)
 	}()
 	select {
 	case <-firstEntered:
@@ -715,11 +750,10 @@ func TestNewHandlerFromMetadataBindsMaxConcurrency(t *testing.T) {
 		t.Fatal("first dispatcher call did not enter")
 	}
 
-	var res *httptest.ResponseRecorder
 	select {
-	case res = <-result:
+	case <-res.committed:
 	case <-time.After(time.Second):
-		t.Fatal("batch handler did not return after the outer request deadline")
+		t.Fatal("batch timeout response was not committed")
 	}
 	if res.Code != http.StatusOK {
 		t.Fatalf("batch response code = %d, want 200; body=%q", res.Code, res.Body.String())
@@ -732,12 +766,22 @@ func TestNewHandlerFromMetadataBindsMaxConcurrency(t *testing.T) {
 	if got := calls.Load(); got != 1 {
 		t.Fatalf("dispatcher calls = %d, want one worker while the concurrency slot is occupied", got)
 	}
+	select {
+	case <-served:
+		t.Fatal("batch handler returned before the accepted worker exited")
+	default:
+	}
 
 	release()
 	select {
 	case <-firstExited:
 	case <-time.After(time.Second):
 		t.Fatal("first dispatcher worker did not exit after release")
+	}
+	select {
+	case <-served:
+	case <-time.After(time.Second):
+		t.Fatal("batch handler did not return after releasing the worker")
 	}
 }
 
@@ -1130,29 +1174,91 @@ func TestHandlerTimeoutJoinsCancellationAwareDispatcher(t *testing.T) {
 	}
 }
 
-func TestHandlerTimeoutReturnsWithoutWaitingForStuckWorker(t *testing.T) {
+func TestBatchTimeoutWritesBeforeJoiningWorker(t *testing.T) {
+	entered := make(chan struct{})
 	released := make(chan struct{})
-	dispatcher := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	var releaseOnce sync.Once
+	releaseWorker := func() { releaseOnce.Do(func() { close(released) }) }
+	t.Cleanup(releaseWorker)
+	dispatcher := newBatchDispatcher(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		close(entered)
 		<-released
+	}), 1)
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		serveBatchRequest(dispatcher, applyLimitDefaults(Limits{}), w, r)
 	})
-	handler := NewHandlerWithLimits(dispatcher, Limits{})
 	req := httptest.NewRequest(http.MethodPost, DefaultURI, strings.NewReader(`{
 		"timeout": 10,
 		"pipeline": [{"path": "/slow"}]
 	}`))
-	res := httptest.NewRecorder()
-
-	start := time.Now()
-	handler.ServeHTTP(res, req)
-	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
-		t.Fatalf("handler elapsed = %s, want bounded timeout even when worker ignores cancellation", elapsed)
+	var childReleased atomic.Int32
+	req = WithDispatchLeaseFactory(req, func() (DispatchLease, bool) {
+		return DispatchLease{
+			Handler: dispatcher.handler,
+			Release: func() { childReleased.Add(1) },
+		}, true
+	})
+	res := &batchCommitSignalWriter{ResponseRecorder: httptest.NewRecorder(), committed: make(chan struct{})}
+	served := make(chan struct{})
+	go func() {
+		handler.ServeHTTP(res, req)
+		close(served)
+	}()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("stuck worker never started")
 	}
-	close(released)
-
+	select {
+	case <-res.committed:
+	case <-time.After(time.Second):
+		t.Fatal("timeout response was not written")
+	}
 	responses := decodePipelineResponses(t, res.Body.String())
 	if responses[0].Status != http.StatusGatewayTimeout {
 		t.Fatalf("pipeline status = %d, want 504", responses[0].Status)
 	}
+	select {
+	case <-served:
+		t.Fatal("batch handler returned before the timed-out worker exited")
+	default:
+	}
+	dispatcher.mu.Lock()
+	active := dispatcher.active
+	dispatcher.mu.Unlock()
+	if active != 1 {
+		t.Fatalf("dispatcher active = %d after timeout response, want 1", active)
+	}
+	if got := childReleased.Load(); got != 0 {
+		t.Fatalf("child releases after timeout response = %d, want 0", got)
+	}
+	releaseWorker()
+	select {
+	case <-served:
+	case <-time.After(time.Second):
+		t.Fatal("batch handler did not return after releasing the worker")
+	}
+	dispatcher.mu.Lock()
+	active = dispatcher.active
+	dispatcher.mu.Unlock()
+	if active != 0 {
+		t.Fatalf("dispatcher active after worker release = %d, want 0", active)
+	}
+	if got := childReleased.Load(); got != 1 {
+		t.Fatalf("child releases after worker release = %d, want 1", got)
+	}
+}
+
+type batchCommitSignalWriter struct {
+	*httptest.ResponseRecorder
+	committed chan struct{}
+	once      sync.Once
+}
+
+func (w *batchCommitSignalWriter) Write(body []byte) (int, error) {
+	n, err := w.ResponseRecorder.Write(body)
+	w.once.Do(func() { close(w.committed) })
+	return n, err
 }
 
 func TestHandlerParentCancellationCancelsSubrequestsAndJoinsWorkers(t *testing.T) {
@@ -1232,24 +1338,30 @@ func TestDispatchPipelineRequestInvalidTargetReturnsBadRequest(t *testing.T) {
 	item := PipelineRequest{Path: "/%zz"}
 
 	limits := applyLimitDefaults(Limits{})
-	response, timedOut := newBatchDispatcher(dispatcher, limits.MaxConcurrency).dispatch(
-		outer, Request{}, item, time.Second, limits.MaxResponseBodySize,
+	tasks := runtime.NewRequestTaskGroup(outer.Context(), "request/batch-requests/test")
+	result, timedOut, err := newBatchDispatcher(dispatcher, limits.MaxConcurrency).dispatch(
+		outer, Request{}, item, time.Second, limits.MaxResponseBodySize, tasks,
 	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if waitErr := tasks.Wait(); waitErr != nil {
+		t.Fatal(waitErr)
+	}
 
 	if timedOut {
 		t.Fatal("invalid target reported a timeout")
 	}
-	if response.Status != http.StatusBadRequest {
-		t.Fatalf("status = %d, want %d", response.Status, http.StatusBadRequest)
+	if result.response.Status != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", result.response.Status, http.StatusBadRequest)
 	}
-	if response.Reason != http.StatusText(http.StatusBadRequest) {
-		t.Fatalf("reason = %q, want %q", response.Reason, http.StatusText(http.StatusBadRequest))
+	if result.response.Reason != http.StatusText(http.StatusBadRequest) {
+		t.Fatalf("reason = %q, want %q", result.response.Reason, http.StatusText(http.StatusBadRequest))
 	}
 }
 
 func TestDispatchPipelineRequestTimeoutWhenHandlerIgnoringCancellation(t *testing.T) {
 	release := make(chan struct{})
-	t.Cleanup(func() { close(release) })
 	dispatcher := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		<-release
 		w.WriteHeader(http.StatusOK)
@@ -1259,19 +1371,27 @@ func TestDispatchPipelineRequestTimeoutWhenHandlerIgnoringCancellation(t *testin
 
 	start := time.Now()
 	limits := applyLimitDefaults(Limits{})
-	response, timedOut := newBatchDispatcher(dispatcher, limits.MaxConcurrency).dispatch(
-		outer, Request{}, item, 20*time.Millisecond, limits.MaxResponseBodySize,
+	tasks := runtime.NewRequestTaskGroup(outer.Context(), "request/batch-requests/test")
+	result, timedOut, err := newBatchDispatcher(dispatcher, limits.MaxConcurrency).dispatch(
+		outer, Request{}, item, 20*time.Millisecond, limits.MaxResponseBodySize, tasks,
 	)
 	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	if !timedOut {
 		t.Fatal("timedOut = false, want true")
 	}
-	if response.Status != http.StatusGatewayTimeout {
-		t.Fatalf("status = %d, want %d", response.Status, http.StatusGatewayTimeout)
+	if result.response.Status != http.StatusGatewayTimeout {
+		t.Fatalf("status = %d, want %d", result.response.Status, http.StatusGatewayTimeout)
 	}
 	if elapsed >= 200*time.Millisecond {
 		t.Fatalf("dispatch took %s, want return before 200ms", elapsed)
+	}
+	close(release)
+	if waitErr := tasks.Wait(); waitErr != nil {
+		t.Fatal(waitErr)
 	}
 }
 

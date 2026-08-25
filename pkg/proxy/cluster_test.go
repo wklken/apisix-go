@@ -27,31 +27,6 @@ func testClusterConfig() ClusterConfig {
 	}
 }
 
-func TestClusterRegistryReusesIdenticalConfigUntilFinalRelease(t *testing.T) {
-	registry := NewClusterRegistry(NopClusterObserver{})
-	t.Cleanup(registry.Close)
-	config := testClusterConfig()
-	first, err := registry.Acquire(config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	second, err := registry.Acquire(config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if first.Cluster() != second.Cluster() {
-		t.Fatal("identical configs created different clusters")
-	}
-	first.Stop()
-	if second.Cluster().Closed() {
-		t.Fatal("first release closed a referenced cluster")
-	}
-	second.Stop()
-	if !second.Cluster().Closed() {
-		t.Fatal("final release did not close the cluster")
-	}
-}
-
 func TestClusterConfigKeyChangesWhenTransportChanges(t *testing.T) {
 	base := testClusterConfig()
 	changed := testClusterConfig()
@@ -89,25 +64,6 @@ func TestClusterConfigKeyIncludesNameForObserverIdentity(t *testing.T) {
 	if firstKey == secondKey {
 		t.Fatal("cluster names with different observer labels produced the same key")
 	}
-
-	registry := NewClusterRegistry(NopClusterObserver{})
-	t.Cleanup(registry.Close)
-	firstLease, err := registry.Acquire(first)
-	if err != nil {
-		t.Fatal(err)
-	}
-	secondLease, err := registry.Acquire(second)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if firstLease.Cluster() == secondLease.Cluster() {
-		t.Fatal("cluster names with different observer labels reused one cluster")
-	}
-	if got, want := registry.Len(), 2; got != want {
-		t.Fatalf("registry.Len() = %d, want %d", got, want)
-	}
-	firstLease.Stop()
-	secondLease.Stop()
 }
 
 func TestClusterConfigKeyIncludesCleartextHTTP2Mode(t *testing.T) {

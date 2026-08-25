@@ -2,8 +2,9 @@ package proxy
 
 // ClusterObserver receives narrow runtime signals about an upstream cluster.
 // Every method is synchronous and must not block the request path. The
-// observer is owned by the cluster registry and shared by every cluster it
-// creates; the proxy package never depends on a concrete metrics library.
+// observer is supplied by the compiler worker runtime and may be shared by
+// clusters across generation leases; the proxy package never depends on a
+// concrete metrics library.
 type ClusterObserver interface {
 	SetInFlight(cluster string, delta int)
 	ObserveRetry(cluster, result string)

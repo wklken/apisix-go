@@ -269,7 +269,7 @@ type indexedMetadataSecret struct {
 var (
 	errMetadataConfigInvalid          = errors.New("error-log-logger metadata configuration is invalid")
 	errMetadataSecretInstallationFail = errors.New("error-log-logger metadata secret installation failed")
-	errObserverTaskRegistryRequired   = errors.New("error-log-logger observer task registry is required")
+	errObserverTaskOwnerRequired      = errors.New("error-log-logger observer task owner is required")
 	errObserverTaskRegistration       = errors.New("error-log-logger observer task registration failed")
 	errObserverLifecycleStopped       = errors.New("error-log-logger observer lifecycle is stopped")
 )
@@ -569,9 +569,9 @@ func (p *Plugin) StartObserving() {
 	p.observerStop = p.installObserver()
 }
 
-func (p *Plugin) StartObservingWithTasks(tasks *runtime.TaskRegistry) error {
+func (p *Plugin) StartObservingWithTasks(tasks *runtime.TaskOwner) error {
 	if tasks == nil {
-		return errObserverTaskRegistryRequired
+		return errObserverTaskOwnerRequired
 	}
 	p.observerLifecycleMu.Lock()
 	defer p.observerLifecycleMu.Unlock()
@@ -581,7 +581,7 @@ func (p *Plugin) StartObservingWithTasks(tasks *runtime.TaskRegistry) error {
 
 	ready := make(chan struct{})
 	if err := tasks.Go(
-		runtime.TaskSpec{Owner: "plugin/error-log-logger/observer", Criticality: runtime.TaskPlugin},
+		"observer",
 		func(ctx context.Context) error {
 			select {
 			case <-ready:

@@ -102,6 +102,14 @@ func TestBasePluginScopedDependenciesRemainInstanceScoped(t *testing.T) {
 	}
 	leftTasks := runtime.NewTaskRegistry(context.Background(), nil)
 	rightTasks := runtime.NewTaskRegistry(context.Background(), nil)
+	leftOwner, err := runtime.NewTaskOwner(leftTasks, "plugin/test/left", runtime.TaskPlugin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rightOwner, err := runtime.NewTaskOwner(rightTasks, "plugin/test/right", runtime.TaskPlugin)
+	if err != nil {
+		t.Fatal(err)
+	}
 	leftSecrets := testBaseGenerationCapability(t, 1)
 	rightSecrets := testBaseGenerationCapability(t, 2)
 
@@ -110,14 +118,14 @@ func TestBasePluginScopedDependenciesRemainInstanceScoped(t *testing.T) {
 		Secrets:   leftSecrets,
 		Metadata:  leftMetadata,
 		Consumers: leftConsumers,
-		Tasks:     leftTasks,
+		Tasks:     leftOwner,
 	})
 	right := &BasePlugin{}
 	right.SetDependencies(Dependencies{
 		Secrets:   rightSecrets,
 		Metadata:  rightMetadata,
 		Consumers: rightConsumers,
-		Tasks:     rightTasks,
+		Tasks:     rightOwner,
 	})
 
 	if left.ScopedSecrets().AttemptID() == right.ScopedSecrets().AttemptID() {
@@ -133,8 +141,8 @@ func TestBasePluginScopedDependenciesRemainInstanceScoped(t *testing.T) {
 	if ok, err := left.MetadataView().Decode("left", &decoded); err != nil || !ok || decoded["owner"] != "left" {
 		t.Fatalf("left MetadataView().Decode() = (%v, %v, %#v)", ok, err, decoded)
 	}
-	if left.TaskRegistry() != leftTasks || right.TaskRegistry() != rightTasks {
-		t.Fatal("task registries were not retained by plugin instance")
+	if left.TaskOwner() != leftOwner || right.TaskOwner() != rightOwner {
+		t.Fatal("exact task owners were not retained by plugin instance")
 	}
 }
 

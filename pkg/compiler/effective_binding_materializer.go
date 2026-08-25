@@ -97,7 +97,7 @@ type effectiveBindingOps struct {
 	applyContext        func(plugin.Plugin, effectiveBindingResourceContext)
 	applyTrafficRuntime func(plugin.Plugin, effectiveBindingRuntimeContext)
 	postInit            func(plugin.Plugin) error
-	startObserver       func(plugin.Plugin, *runtime.TaskRegistry) error
+	startObserver       func(plugin.Plugin, *runtime.TaskOwner) error
 	resolveDescriptor   func(plugin.Descriptor, plugin.Plugin) (plugin.Descriptor, error)
 	bind                func(
 		plugin.Descriptor,
@@ -477,9 +477,17 @@ func (prepared *PreparedGeneration) acquireEffectiveBinding(
 	return operations.acquire(context.WithoutCancel(ctx), prepared.registry, selected.resource, func(
 		context.Context,
 	) (binding plugin.Binding, closeBinding func(context.Context) error, resultErr error) {
+		taskOwnerPrefix, err := pluginTaskOwnerPrefix(selected.instance)
+		if err != nil {
+			return plugin.Binding{}, nil, err
+		}
+		taskOwner, err := runtime.NewTaskOwner(prepared.tasks, taskOwnerPrefix, runtime.TaskPlugin)
+		if err != nil {
+			return plugin.Binding{}, nil, err
+		}
 		dependencies := base.Dependencies{
 			Config: prepared.effective, Secrets: prepared.attempt.capability,
-			Metadata: prepared.metadata, Consumers: prepared.lookup, Tasks: prepared.tasks,
+			Metadata: prepared.metadata, Consumers: prepared.lookup, Tasks: taskOwner,
 		}
 		children, err := plugin.NewCompositeChildPreparer(
 			dependencies,
@@ -528,7 +536,7 @@ func (prepared *PreparedGeneration) acquireEffectiveBinding(
 		if err := operations.postInit(instance); err != nil {
 			return plugin.Binding{}, nil, err
 		}
-		if err := operations.startObserver(instance, prepared.tasks); err != nil {
+		if err := operations.startObserver(instance, taskOwner); err != nil {
 			return plugin.Binding{}, nil, err
 		}
 		resolved, err := operations.resolveDescriptor(selected.descriptor, instance)
@@ -744,9 +752,9 @@ func (operations effectiveBindingOps) withDefaults(attempt [32]byte) effectiveBi
 		operations.postInit = func(instance plugin.Plugin) error { return instance.PostInit() }
 	}
 	if operations.startObserver == nil {
-		operations.startObserver = func(instance plugin.Plugin, tasks *runtime.TaskRegistry) error {
+		operations.startObserver = func(instance plugin.Plugin, tasks *runtime.TaskOwner) error {
 			observer, ok := instance.(interface {
-				StartObservingWithTasks(*runtime.TaskRegistry) error
+				StartObservingWithTasks(*runtime.TaskOwner) error
 			})
 			if !ok {
 				return nil

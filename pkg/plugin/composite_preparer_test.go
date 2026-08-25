@@ -342,6 +342,10 @@ func TestCompositeChildPreparerPreservesOuterAuthorityAndDependencies(t *testing
 	dataEncryption := data_encryption.NewResolver(false, nil)
 	lookup := compositeConsumerLookup{}
 	tasks := runtime.NewTaskRegistry(context.Background(), nil)
+	taskOwner, err := runtime.NewTaskOwner(tasks, "plugin/test/composite", runtime.TaskPlugin)
+	if err != nil {
+		t.Fatal(err)
+	}
 	outerChildren := compositeNeverPreparer{}
 	deps := base.Dependencies{
 		Config:            staticConfig,
@@ -349,7 +353,7 @@ func TestCompositeChildPreparerPreservesOuterAuthorityAndDependencies(t *testing
 		Secrets:           harness.capability,
 		Metadata:          metadata,
 		Consumers:         lookup,
-		Tasks:             tasks,
+		Tasks:             taskOwner,
 		CompositeChildren: outerChildren,
 	}
 	effectiveOwner := ResourceProvenance{Kind: ResourceService, ID: "service-effective"}
@@ -377,7 +381,7 @@ func TestCompositeChildPreparerPreservesOuterAuthorityAndDependencies(t *testing
 		t.Fatalf("binding identity = %+v, want effective route/service and outer attempt", binding)
 	}
 	if child.StaticConfig() != staticConfig || !child.DataEncryption().Configured() ||
-		child.TaskRegistry() != tasks || child.ConsumerLookup() != lookup {
+		child.TaskOwner() != taskOwner || child.ConsumerLookup() != lookup {
 		t.Fatal("child did not receive the immutable outer dependency bundle")
 	}
 	if child.CompositeChildPreparer() != nil {

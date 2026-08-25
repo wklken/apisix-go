@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -209,21 +210,36 @@ func TestPreparedErrorLogMetadataSecretsArePrivateAndRedacted(t *testing.T) {
 	}
 }
 
-func TestStartObservingWithTasksRejectsMissingOrStoppedRegistry(t *testing.T) {
+func TestStartObservingWithTasksUsesExactOwnerPrefix(t *testing.T) {
 	p := newObserverTestPlugin(t, &fakeKafkaSender{})
-	if err := p.StartObservingWithTasks(nil); err == nil {
-		t.Fatal("StartObservingWithTasks(nil) error = nil, want admission rejection")
+	registry := runtime.NewTaskRegistry(context.Background(), nil)
+	owner := newObserverTaskOwner(t, registry)
+	if err := p.StartObservingWithTasks(owner); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"plugin/error-log-logger/" + strings.Repeat("a", 64) + "/observer"}
+	if got := registry.Active(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("active observers = %v, want %v", got, want)
+	}
+	stopTaskRegistry(t, registry)
+}
+
+func TestStartObservingWithTasksRejectsMissingOrStoppedOwner(t *testing.T) {
+	p := newObserverTestPlugin(t, &fakeKafkaSender{})
+	if err := p.StartObservingWithTasks(nil); !errors.Is(err, errObserverTaskOwnerRequired) {
+		t.Fatalf("StartObservingWithTasks(nil) error = %v, want %v", err, errObserverTaskOwnerRequired)
 	}
 	if p.observerStop != nil {
-		t.Fatal("nil registry installed an observer")
+		t.Fatal("nil owner installed an observer")
 	}
 
 	registry := runtime.NewTaskRegistry(context.Background(), nil)
+	owner := newObserverTaskOwner(t, registry)
 	if _, err := registry.Stop(context.Background()); err != nil {
 		t.Fatalf("registry.Stop() error = %v", err)
 	}
-	if err := p.StartObservingWithTasks(registry); err == nil {
-		t.Fatal("StartObservingWithTasks(stopped) error = nil, want admission rejection")
+	if err := p.StartObservingWithTasks(owner); !errors.Is(err, errObserverTaskRegistration) {
+		t.Fatalf("StartObservingWithTasks(stopped) error = %v, want %v", err, errObserverTaskRegistration)
 	}
 	if p.observerStop != nil {
 		t.Fatal("stopped registry installed an observer")
@@ -234,14 +250,16 @@ func TestRejectedObserverAdmissionPreservesCurrentGeneration(t *testing.T) {
 	currentSender := &fakeKafkaSender{}
 	current := newObserverTestPlugin(t, currentSender)
 	currentTasks := runtime.NewTaskRegistry(context.Background(), nil)
-	if err := current.StartObservingWithTasks(currentTasks); err != nil {
+	currentOwner := newObserverTaskOwner(t, currentTasks)
+	if err := current.StartObservingWithTasks(currentOwner); err != nil {
 		t.Fatalf("start current observer: %v", err)
 	}
 
 	stoppedTasks := runtime.NewTaskRegistry(context.Background(), nil)
+	stoppedOwner := newObserverTaskOwner(t, stoppedTasks)
 	stopTaskRegistry(t, stoppedTasks)
 	rejected := newObserverTestPlugin(t, &fakeKafkaSender{})
-	if err := rejected.StartObservingWithTasks(stoppedTasks); err == nil {
+	if err := rejected.StartObservingWithTasks(stoppedOwner); err == nil {
 		t.Fatal("rejected observer admission error = nil")
 	}
 
@@ -255,15 +273,17 @@ func TestObserverAdmissionStopRaceHasNoLeakOrCurrentLoss(t *testing.T) {
 		currentSender := &fakeKafkaSender{delivered: make(chan struct{}, 1)}
 		current := newObserverTestPlugin(t, currentSender)
 		currentTasks := runtime.NewTaskRegistry(context.Background(), nil)
-		if err := current.StartObservingWithTasks(currentTasks); err != nil {
+		currentOwner := newObserverTaskOwner(t, currentTasks)
+		if err := current.StartObservingWithTasks(currentOwner); err != nil {
 			t.Fatalf("iteration %d: start current observer: %v", iteration, err)
 		}
 
 		candidate := newObserverTestPlugin(t, &fakeKafkaSender{})
 		candidateTasks := runtime.NewTaskRegistry(context.Background(), nil)
+		candidateOwner := newObserverTaskOwner(t, candidateTasks)
 		startResult := make(chan error, 1)
 		go func() {
-			startResult <- candidate.StartObservingWithTasks(candidateTasks)
+			startResult <- candidate.StartObservingWithTasks(candidateOwner)
 		}()
 		stopResult := make(chan error, 1)
 		go func() {
@@ -299,7 +319,8 @@ func TestStartObservingWithTasksRejectsStoppedPlugin(t *testing.T) {
 	p.Stop()
 
 	registry := runtime.NewTaskRegistry(context.Background(), nil)
-	if err := p.StartObservingWithTasks(registry); !errors.Is(err, errObserverLifecycleStopped) {
+	owner := newObserverTaskOwner(t, registry)
+	if err := p.StartObservingWithTasks(owner); !errors.Is(err, errObserverLifecycleStopped) {
 		t.Fatalf("StartObservingWithTasks() error = %v, want stopped lifecycle", err)
 	}
 	p.observerLifecycleMu.Lock()
@@ -316,9 +337,10 @@ func TestExternalStopRacesObserverAdmissionWithoutLeak(t *testing.T) {
 	for iteration := range 64 {
 		p := newObserverTestPlugin(t, &fakeKafkaSender{})
 		registry := runtime.NewTaskRegistry(context.Background(), nil)
+		owner := newObserverTaskOwner(t, registry)
 		startResult := make(chan error, 1)
 		stopDone := make(chan struct{})
-		go func() { startResult <- p.StartObservingWithTasks(registry) }()
+		go func() { startResult <- p.StartObservingWithTasks(owner) }()
 		go func() {
 			p.Stop()
 			close(stopDone)
@@ -349,14 +371,16 @@ func TestPreparedGenerationsReplaceErrorLogObserverSafely(t *testing.T) {
 	firstSender := &fakeKafkaSender{}
 	first := newObserverTestPlugin(t, firstSender)
 	firstTasks := runtime.NewTaskRegistry(context.Background(), nil)
-	if err := first.StartObservingWithTasks(firstTasks); err != nil {
+	firstOwner := newObserverTaskOwner(t, firstTasks)
+	if err := first.StartObservingWithTasks(firstOwner); err != nil {
 		t.Fatalf("start first observer: %v", err)
 	}
 
 	secondSender := &fakeKafkaSender{}
 	second := newObserverTestPlugin(t, secondSender)
 	secondTasks := runtime.NewTaskRegistry(context.Background(), nil)
-	if err := second.StartObservingWithTasks(secondTasks); err != nil {
+	secondOwner := newObserverTaskOwner(t, secondTasks)
+	if err := second.StartObservingWithTasks(secondOwner); err != nil {
 		t.Fatalf("start second observer: %v", err)
 	}
 
@@ -375,7 +399,8 @@ func TestTaskStopUnregistersObserverAndClosesResourcesOnce(t *testing.T) {
 	sender := &fakeKafkaSender{}
 	p := newObserverTestPlugin(t, sender)
 	registry := runtime.NewTaskRegistry(context.Background(), nil)
-	if err := p.StartObservingWithTasks(registry); err != nil {
+	owner := newObserverTaskOwner(t, registry)
+	if err := p.StartObservingWithTasks(owner); err != nil {
 		t.Fatalf("StartObservingWithTasks() error = %v", err)
 	}
 
@@ -401,7 +426,8 @@ func TestPreparationFailureClosesErrorLogResourcesInReverseOrder(t *testing.T) {
 	sender := &fakeKafkaSender{blockSend: make(chan struct{})}
 	p := newObserverTestPlugin(t, sender)
 	registry := runtime.NewTaskRegistry(context.Background(), nil)
-	if err := p.StartObservingWithTasks(registry); err != nil {
+	owner := newObserverTaskOwner(t, registry)
+	if err := p.StartObservingWithTasks(owner); err != nil {
 		t.Fatalf("StartObservingWithTasks() error = %v", err)
 	}
 
@@ -481,6 +507,19 @@ func stopTaskRegistry(t *testing.T, registry *runtime.TaskRegistry) {
 	if residuals, err := registry.Stop(ctx); err != nil {
 		t.Fatalf("TaskRegistry.Stop() residuals=%v error=%v", residuals, err)
 	}
+}
+
+func newObserverTaskOwner(t *testing.T, registry *runtime.TaskRegistry) *runtime.TaskOwner {
+	t.Helper()
+	owner, err := runtime.NewTaskOwner(
+		registry,
+		"plugin/error-log-logger/"+strings.Repeat("a", 64),
+		runtime.TaskPlugin,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return owner
 }
 
 func mustJSONBytes(t *testing.T, value any) []byte {

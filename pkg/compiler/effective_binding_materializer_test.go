@@ -319,7 +319,7 @@ func TestEffectiveBindingMaterializerInjectsExactDependenciesBeforeOuterConstruc
 			!dependencies.Secrets.SameAuthority(prepared.attempt.capability) ||
 			!reflect.DeepEqual(dependencies.Metadata, prepared.metadata) ||
 			dependencies.Consumers == nil ||
-			dependencies.Tasks != prepared.tasks ||
+			dependencies.Tasks == nil ||
 			dependencies.CompositeChildren == nil ||
 			dependencies.DataEncryption.Configured() {
 			t.Fatalf("outer dependencies are incomplete or expose legacy decryption: %#v", dependencies)
@@ -330,6 +330,45 @@ func TestEffectiveBindingMaterializerInjectsExactDependenciesBeforeOuterConstruc
 	bindings, err := prepared.materializeEffectiveBindings(context.Background(), []effectiveBindingSpec{spec})
 	if err != nil || len(bindings) != 1 {
 		t.Fatalf("materialize exact dependencies = (%#v, %v)", bindings, err)
+	}
+}
+
+func TestEffectiveBindingMaterializerInjectsExactPluginTaskOwner(t *testing.T) {
+	prepared, fixture := newEffectiveBindingMaterializerFixture(t, []string{"request-id"}, nil)
+	spec := fixture.pluginSpec("request-id", "route-1")
+	defaultNew := prepared.bindingOps.newFactoryInstance
+	var captured *runtime.TaskOwner
+	prepared.bindingOps.newFactoryInstance = func(
+		factory string,
+		dependencies base.Dependencies,
+	) (plugin.FactoryInstance, error) {
+		captured = dependencies.Tasks
+		return defaultNew(factory, dependencies)
+	}
+
+	bindings, err := prepared.materializeEffectiveBindings(context.Background(), []effectiveBindingSpec{spec})
+	if err != nil || len(bindings) != 1 || captured == nil {
+		t.Fatalf("materialize owner = (%#v, %v, %v)", bindings, captured, err)
+	}
+	started := make(chan struct{})
+	if err := captured.Go("health-refresh", func(ctx context.Context) error {
+		close(started)
+		<-ctx.Done()
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	prefix, err := pluginTaskOwnerPrefix(bindings[0].InstanceKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{prefix + "/health-refresh"}
+	if got := prepared.tasks.Active(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("active owners = %v, want %v", got, want)
+	}
+	if err := prepared.Close(context.Background()); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -446,7 +485,7 @@ func TestEffectiveBindingMaterializerLifecycleOrderAndExactSecretScope(t *testin
 		return defaultPostInit(instance)
 	}
 	defaultObserver := operations.startObserver
-	operations.startObserver = func(instance plugin.Plugin, tasks *runtime.TaskRegistry) error {
+	operations.startObserver = func(instance plugin.Plugin, tasks *runtime.TaskOwner) error {
 		trace.record("observer")
 		return defaultObserver(instance, tasks)
 	}
@@ -859,9 +898,9 @@ func TestEffectiveBindingMaterializerObserverStartFailureIsTerminal(t *testing.T
 		}
 		defaultStop(instance)
 	}
-	prepared.bindingOps.startObserver = func(_ plugin.Plugin, tasks *runtime.TaskRegistry) error {
+	prepared.bindingOps.startObserver = func(_ plugin.Plugin, tasks *runtime.TaskOwner) error {
 		if err := tasks.Go(
-			runtime.TaskSpec{Owner: "effective-binding/observer-failure", Criticality: runtime.TaskPlugin},
+			"observer",
 			func(ctx context.Context) error {
 				<-ctx.Done()
 				close(taskExited)
@@ -961,9 +1000,9 @@ func TestEffectiveBindingMaterializerCancellationAfterFactoryUsesGenerationClean
 		}
 		defaultStop(instance)
 	}
-	prepared.bindingOps.startObserver = func(_ plugin.Plugin, tasks *runtime.TaskRegistry) error {
+	prepared.bindingOps.startObserver = func(_ plugin.Plugin, tasks *runtime.TaskOwner) error {
 		return tasks.Go(
-			runtime.TaskSpec{Owner: "effective-binding/cancel-after-factory", Criticality: runtime.TaskPlugin},
+			"observer",
 			func(taskCtx context.Context) error {
 				<-taskCtx.Done()
 				close(taskExited)

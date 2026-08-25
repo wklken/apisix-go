@@ -269,7 +269,7 @@ func TestCompileAndAttachStreamValidatesEveryOccurrenceBeforeMaterialization(t *
 			}
 			var observers atomic.Int64
 			defaultStartObserver := prepared.bindingOps.startObserver
-			prepared.bindingOps.startObserver = func(instance plugin.Plugin, tasks *runtime.TaskRegistry) error {
+			prepared.bindingOps.startObserver = func(instance plugin.Plugin, tasks *runtime.TaskOwner) error {
 				observers.Add(1)
 				return defaultStartObserver(instance, tasks)
 			}

@@ -36,7 +36,7 @@ type Dependencies struct {
 	Secrets           secret.GenerationCapability
 	Metadata          runtime.MetadataView
 	Consumers         ConsumerLookup
-	Tasks             *runtime.TaskRegistry
+	Tasks             *runtime.TaskOwner
 	CompositeChildren CompositeChildPreparer
 }
 
@@ -72,7 +72,7 @@ func (p *BasePlugin) ConsumerLookup() ConsumerLookup {
 	return p.dependencies.Consumers
 }
 
-func (p *BasePlugin) TaskRegistry() *runtime.TaskRegistry {
+func (p *BasePlugin) TaskOwner() *runtime.TaskOwner {
 	return p.dependencies.Tasks
 }
 

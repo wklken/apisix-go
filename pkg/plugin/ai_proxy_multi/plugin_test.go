@@ -2220,3 +2220,117 @@ func TestInstanceIndexDuplicateNamesKeepFirstOccurrence(t *testing.T) {
 		t.Fatalf("instanceIndex(dup) = (%d, %v), want first occurrence (0, true)", index, ok)
 	}
 }
+
+type multiCancelAwareStreamBody struct {
+	ctx     context.Context
+	content *strings.Reader
+	waiting chan struct{}
+	once    sync.Once
+}
+
+func (b *multiCancelAwareStreamBody) Read(body []byte) (int, error) {
+	if b.content.Len() > 0 {
+		return b.content.Read(body)
+	}
+	b.once.Do(func() { close(b.waiting) })
+	<-b.ctx.Done()
+	return 0, b.ctx.Err()
+}
+
+func (*multiCancelAwareStreamBody) Close() error { return nil }
+
+type multiBlockingHandlerFlushWriter struct {
+	*httptest.ResponseRecorder
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (w *multiBlockingHandlerFlushWriter) Flush() {
+	w.once.Do(func() { close(w.started) })
+	<-w.release
+	w.ResponseRecorder.Flush()
+}
+
+type multiStreamRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (fn multiStreamRoundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return fn(r)
+}
+
+func TestHandlerStreamingCancellationPublishesOutcomeBeforeFlushJoin(t *testing.T) {
+	flushInterval := 1
+	p := newTestPlugin(t, Config{
+		StreamingFlushIntervalMS: &flushInterval,
+		Instances: []Instance{{
+			Name: "streaming", Provider: "openai-compatible", Weight: 1,
+			Override: Override{Endpoint: "http://provider.test/v1/chat/completions"},
+		}},
+	})
+	outcomeRecorded := make(chan struct{})
+	p.streamOutcomeRecorded = func() { close(outcomeRecorded) }
+	body := &multiCancelAwareStreamBody{
+		content: strings.NewReader(
+			"data: {\"choices\":[{\"delta\":{\"content\":\"first\"}}]}\n\n",
+		),
+		waiting: make(chan struct{}),
+	}
+	p.client.Transport = multiStreamRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		body.ctx = r.Context()
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       body,
+		}, nil
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/v1/chat/completions",
+		strings.NewReader(`{"messages":[{"role":"user","content":"hello"}],"stream":true}`),
+	).WithContext(ctx)
+	req = apisixctx.WithRequestVars(req)
+	req.Header.Set("Content-Type", "application/json")
+	writer := &multiBlockingHandlerFlushWriter{
+		ResponseRecorder: httptest.NewRecorder(),
+		started:          make(chan struct{}),
+		release:          make(chan struct{}),
+	}
+	handlerDone := make(chan struct{})
+	go func() {
+		p.Handler(http.NotFoundHandler()).ServeHTTP(writer, req)
+		close(handlerDone)
+	}()
+
+	select {
+	case <-body.waiting:
+	case <-time.After(time.Second):
+		t.Fatal("stream body did not block awaiting request cancellation")
+	}
+	select {
+	case <-writer.started:
+	case <-time.After(time.Second):
+		t.Fatal("periodic response flush did not start")
+	}
+	cancel()
+	select {
+	case <-outcomeRecorded:
+	case <-time.After(time.Second):
+		t.Fatal("streaming outcome was not published before flush join")
+	}
+	if got := apisixctx.GetRequestVar(req, "$ai_stream_outcome"); got != string(ai_stream.StreamOutcomeCanceled) {
+		t.Fatalf("$ai_stream_outcome before flush join = %#v, want canceled", got)
+	}
+	select {
+	case <-handlerDone:
+		t.Fatal("streaming handler returned while periodic Flush was blocked")
+	case <-time.After(25 * time.Millisecond):
+	}
+	close(writer.release)
+	select {
+	case <-handlerDone:
+	case <-time.After(time.Second):
+		t.Fatal("streaming handler did not return after periodic Flush completed")
+	}
+}

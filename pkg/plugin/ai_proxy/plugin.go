@@ -31,6 +31,8 @@ type Plugin struct {
 	client    *http.Client
 	now       func() time.Time
 	gcpTokens gcpTokenApplier
+
+	streamOutcomeRecorded func()
 }
 
 type gcpTokenApplier interface {
@@ -887,9 +889,10 @@ func (p *Plugin) writeProviderResponse(
 			}
 		}
 		flushInterval := time.Duration(*p.config.StreamingFlushIntervalMS) * time.Millisecond
-		streamWriter := ai_stream.NewFlushWriter(w, flushInterval, func() {
+		streamWriter := ai_stream.NewFlushWriter(r.Context(), w, flushInterval, func() {
 			ai_runtime.MarkFirstToken(r, started)
 		})
+		defer ai_stream.ClosePreservingPanic(streamWriter)
 		streamWriter.WriteHeader(resp.StatusCode)
 		var usage ai_stream.Usage
 		var err error
@@ -913,10 +916,12 @@ func (p *Plugin) writeProviderResponse(
 			)
 		}
 		outcome := ai_stream.RecordStreamOutcome(r, transport, err)
+		if p.streamOutcomeRecorded != nil {
+			p.streamOutcomeRecorded()
+		}
 		if err != nil {
 			wrote := streamWriter.Wrote()
 			if outcome == ai_stream.StreamOutcomeCanceled {
-				streamWriter.Close()
 				if errors.Is(err, context.DeadlineExceeded) ||
 					strings.Contains(err.Error(), "context deadline exceeded") {
 					logger.Errorf("aborting AI stream: max_stream_duration_ms exceeded")
@@ -926,7 +931,6 @@ func (p *Plugin) writeProviderResponse(
 				return
 			}
 			if !wrote {
-				streamWriter.Close()
 				logger.Errorf("%v", err)
 				clear(w.Header())
 				message := "failed to forward streaming response"
@@ -939,11 +943,9 @@ func (p *Plugin) writeProviderResponse(
 			if terminalErr := ai_stream.WriteTerminalError(streamWriter, transport); terminalErr != nil {
 				logger.Warnf("failed to write AI stream terminal event: %v", terminalErr)
 			}
-			streamWriter.Close()
 			logger.Errorf("failed to forward streaming response: %v", err)
 			return
 		}
-		streamWriter.Close()
 		if !streamWriter.Wrote() {
 			w.WriteHeader(resp.StatusCode)
 		}

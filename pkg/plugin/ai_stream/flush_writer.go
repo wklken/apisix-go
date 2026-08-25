@@ -1,9 +1,12 @@
 package ai_stream
 
 import (
+	"context"
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/wklken/apisix-go/pkg/runtime"
 )
 
 type FlushWriter struct {
@@ -16,18 +19,31 @@ type FlushWriter struct {
 	wrote     bool
 	status    int
 	stop      chan struct{}
-	done      chan struct{}
+	tasks     *runtime.RequestTaskGroup
 	closeOnce sync.Once
+	closeMu   sync.Mutex
+	panicked  bool
+	panic     any
 }
 
-func NewFlushWriter(writer http.ResponseWriter, interval time.Duration, onFirst func()) *FlushWriter {
+func NewFlushWriter(
+	ctx context.Context,
+	writer http.ResponseWriter,
+	interval time.Duration,
+	onFirst func(),
+) *FlushWriter {
 	flushWriter := &FlushWriter{
 		writer: writer, interval: interval, onFirst: onFirst,
 	}
 	if interval > 0 {
 		flushWriter.stop = make(chan struct{})
-		flushWriter.done = make(chan struct{})
-		go flushWriter.flushLoop()
+		flushWriter.tasks = runtime.NewRequestTaskGroup(ctx, "request/ai-stream")
+		if err := flushWriter.tasks.Go(func(taskCtx context.Context) error {
+			flushWriter.flushLoop(taskCtx)
+			return nil
+		}); err != nil {
+			panic(err)
+		}
 	}
 	return flushWriter
 }
@@ -57,15 +73,18 @@ func (w *FlushWriter) Wrote() bool {
 }
 
 func (w *FlushWriter) Write(body []byte) (int, error) {
-	w.mu.Lock()
-	first := !w.wrote
-	w.wrote = true
-	w.pending = true
-	if first && w.status != 0 {
-		w.writer.WriteHeader(w.status)
-	}
-	written, err := w.writer.Write(body)
-	w.mu.Unlock()
+	first := false
+	written, err := func() (int, error) {
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		first = !w.wrote
+		w.wrote = true
+		w.pending = true
+		if first && w.status != 0 {
+			w.writer.WriteHeader(w.status)
+		}
+		return w.writer.Write(body)
+	}()
 	if first && w.onFirst != nil {
 		w.onFirst()
 	}
@@ -74,44 +93,94 @@ func (w *FlushWriter) Write(body []byte) (int, error) {
 
 func (w *FlushWriter) Flush() {
 	w.mu.Lock()
+	defer w.mu.Unlock()
 	if w.interval <= 0 {
 		w.flushLocked()
 	} else {
 		w.pending = true
 	}
-	w.mu.Unlock()
 }
 
 func (w *FlushWriter) Close() {
 	w.closeOnce.Do(func() {
-		if w.stop != nil {
-			close(w.stop)
-			<-w.done
-			return
-		}
-		w.mu.Lock()
-		w.flushLocked()
-		w.mu.Unlock()
+		panicked, panicValue := func() (panicked bool, panicValue any) {
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					panicked = true
+					panicValue = recovered
+				}
+			}()
+			if w.stop != nil {
+				close(w.stop)
+				_ = w.tasks.Wait()
+				// The context-owned loop may have exited before the request
+				// finished its last write. Flush once more after the join; the
+				// pending bit keeps the normal stop/cancel path idempotent.
+				w.flush()
+				return false, nil
+			}
+			w.Flush()
+			return false, nil
+		}()
+		w.closeMu.Lock()
+		w.panicked = panicked
+		w.panic = panicValue
+		w.closeMu.Unlock()
 	})
+	w.closeMu.Lock()
+	panicked := w.panicked
+	panicValue := w.panic
+	w.closeMu.Unlock()
+	if panicked {
+		panic(panicValue)
+	}
 }
 
-func (w *FlushWriter) flushLoop() {
+// ClosePreservingPanic must be called directly from defer. It always joins the
+// writer, but an existing request-stack panic takes precedence over a cleanup
+// panic raised by Close.
+func ClosePreservingPanic(w *FlushWriter) {
+	primary := recover()
+	closePanicked := false
+	var closePanic any
+	func() {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				closePanicked = true
+				closePanic = recovered
+			}
+		}()
+		w.Close()
+	}()
+	if primary != nil {
+		panic(primary)
+	}
+	if closePanicked {
+		panic(closePanic)
+	}
+}
+
+func (w *FlushWriter) flushLoop(ctx context.Context) {
 	ticker := time.NewTicker(w.interval)
 	defer ticker.Stop()
-	defer close(w.done)
 	for {
 		select {
 		case <-ticker.C:
-			w.mu.Lock()
-			w.flushLocked()
-			w.mu.Unlock()
+			w.flush()
+		case <-ctx.Done():
+			w.flush()
+			return
 		case <-w.stop:
-			w.mu.Lock()
-			w.flushLocked()
-			w.mu.Unlock()
+			w.flush()
 			return
 		}
 	}
+}
+
+func (w *FlushWriter) flush() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.flushLocked()
 }
 
 func (w *FlushWriter) flushLocked() {

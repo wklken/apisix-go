@@ -11,6 +11,7 @@ import (
 
 	"github.com/wklken/apisix-go/pkg/compiler"
 	"github.com/wklken/apisix-go/pkg/generation"
+	"github.com/wklken/apisix-go/pkg/observability/metrics"
 	"github.com/wklken/apisix-go/pkg/runtime"
 )
 
@@ -80,6 +81,12 @@ type GenerationEngine struct {
 	retireStop    chan struct{}
 	retireDone    chan struct{}
 
+	// A stream route remains recordable while any active or draining owner can
+	// still emit its terminal connection result.
+	streamMetricsMu    sync.Mutex
+	streamMetricOwners map[*generationOwner][]string
+	streamMetricRefs   map[string]uint64
+
 	checkpoint func(string) error
 
 	closeOnce sync.Once
@@ -94,16 +101,18 @@ func NewGenerationEngine(
 		return nil, fmt.Errorf("%w: generation engine dependencies are required", compiler.ErrInvalidInput)
 	}
 	engine := &GenerationEngine{
-		server:       server,
-		factory:      factory,
-		pending:      make(map[preparedKey]*pendingRecord),
-		activations:  make(map[generation.PublicationToken]*activationRecord),
-		fences:       make(map[generation.Domain]generation.PublicationCandidate),
-		retireKnown:  make(map[*generationOwner]struct{}),
-		retireActive: make(map[*generationOwner]struct{}),
-		retireWake:   make(chan struct{}, 1),
-		retireStop:   make(chan struct{}),
-		retireDone:   make(chan struct{}),
+		server:             server,
+		factory:            factory,
+		pending:            make(map[preparedKey]*pendingRecord),
+		activations:        make(map[generation.PublicationToken]*activationRecord),
+		fences:             make(map[generation.Domain]generation.PublicationCandidate),
+		retireKnown:        make(map[*generationOwner]struct{}),
+		retireActive:       make(map[*generationOwner]struct{}),
+		retireWake:         make(chan struct{}, 1),
+		retireStop:         make(chan struct{}),
+		retireDone:         make(chan struct{}),
+		streamMetricOwners: make(map[*generationOwner][]string),
+		streamMetricRefs:   make(map[string]uint64),
 	}
 	engine.active.Store(&activeBundle{})
 	if err := bindGenerationEngine(server, engine); err != nil {
@@ -299,6 +308,9 @@ func (engine *GenerationEngine) Activate(
 			return generation.ErrIntegrity
 		}
 		record.owner.activateDomains(domains)
+		if domains&ownerDomainStream != 0 {
+			engine.registerStreamMetricOwner(record.owner)
+		}
 		next := candidate.withDomains(record.owner, domains)
 		candidate = &next
 	}
@@ -411,6 +423,15 @@ func (engine *GenerationEngine) acquireStream() (streamGenerationLease, bool) {
 			return streamGenerationLease{}, false
 		}
 	}
+}
+
+func (engine *GenerationEngine) refreshStreamMetrics() {
+	if engine == nil {
+		return
+	}
+	engine.streamMetricsMu.Lock()
+	defer engine.streamMetricsMu.Unlock()
+	engine.publishStreamMetricsLocked()
 }
 
 func preparedKeyFromSet(set generation.PublicationSet) (preparedKey, error) {
@@ -694,6 +715,9 @@ func (engine *GenerationEngine) installRecovery(
 		closeErr := owner.closePrepared(context.WithoutCancel(ctx))
 		return errors.Join(errGenerationRecoveryAlreadyInstalled, closeErr)
 	}
+	if domains&ownerDomainStream != 0 {
+		engine.registerStreamMetricOwner(owner)
+	}
 	engine.active.Store(bundle)
 	engine.fences = fences
 	engine.recoveryInstalled = true
@@ -772,6 +796,7 @@ func (engine *GenerationEngine) close(ctx context.Context) error {
 		close(engine.retireStop)
 		<-engine.retireDone
 		engine.retireWG.Wait()
+		engine.clearStreamMetrics()
 		engine.retireMu.Lock()
 		cleanupErrors = append(cleanupErrors, engine.retireErrors...)
 		engine.retireMu.Unlock()
@@ -847,6 +872,7 @@ func (engine *GenerationEngine) retireOwner(record retirementRecord) {
 		_ = checkpoint("before-owner-retirement")
 	}
 	err := record.owner.closePrepared(record.ctx)
+	engine.unregisterStreamMetricOwner(record.owner)
 	engine.retireMu.Lock()
 	delete(engine.retireActive, record.owner)
 	delete(engine.retireKnown, record.owner)
@@ -854,6 +880,80 @@ func (engine *GenerationEngine) retireOwner(record retirementRecord) {
 		engine.retireErrors = append(engine.retireErrors, err)
 	}
 	engine.retireMu.Unlock()
+}
+
+func (engine *GenerationEngine) registerStreamMetricOwner(owner *generationOwner) {
+	if owner == nil || owner.prepared == nil {
+		return
+	}
+	snapshot := owner.prepared.Stream()
+	if snapshot == nil || snapshot.Router() == nil {
+		return
+	}
+	routeIDs := snapshot.Router().RouteIDs()
+	unique := make(map[string]struct{}, len(routeIDs))
+	registered := make([]string, 0, len(routeIDs))
+	for _, routeID := range routeIDs {
+		if routeID == "" {
+			continue
+		}
+		if _, exists := unique[routeID]; exists {
+			continue
+		}
+		unique[routeID] = struct{}{}
+		registered = append(registered, routeID)
+	}
+	engine.streamMetricsMu.Lock()
+	defer engine.streamMetricsMu.Unlock()
+	if _, exists := engine.streamMetricOwners[owner]; exists {
+		panic("register stream metric owner twice")
+	}
+	engine.streamMetricOwners[owner] = registered
+	for _, routeID := range registered {
+		engine.streamMetricRefs[routeID]++
+	}
+	engine.publishStreamMetricsLocked()
+}
+
+func (engine *GenerationEngine) unregisterStreamMetricOwner(owner *generationOwner) {
+	if owner == nil {
+		return
+	}
+	engine.streamMetricsMu.Lock()
+	defer engine.streamMetricsMu.Unlock()
+	routeIDs, exists := engine.streamMetricOwners[owner]
+	if !exists {
+		return
+	}
+	delete(engine.streamMetricOwners, owner)
+	for _, routeID := range routeIDs {
+		refs := engine.streamMetricRefs[routeID]
+		if refs == 0 {
+			panic("unregister stream metric route without owner reference")
+		}
+		if refs == 1 {
+			delete(engine.streamMetricRefs, routeID)
+			continue
+		}
+		engine.streamMetricRefs[routeID] = refs - 1
+	}
+	engine.publishStreamMetricsLocked()
+}
+
+func (engine *GenerationEngine) publishStreamMetricsLocked() {
+	routeIDs := make([]string, 0, len(engine.streamMetricRefs))
+	for routeID := range engine.streamMetricRefs {
+		routeIDs = append(routeIDs, routeID)
+	}
+	metrics.SetStreamRoutes(routeIDs)
+}
+
+func (engine *GenerationEngine) clearStreamMetrics() {
+	engine.streamMetricsMu.Lock()
+	defer engine.streamMetricsMu.Unlock()
+	clear(engine.streamMetricOwners)
+	clear(engine.streamMetricRefs)
+	metrics.SetStreamRoutes(nil)
 }
 
 func exactEmptyRecoveryState(state generation.RecoveryState) bool {

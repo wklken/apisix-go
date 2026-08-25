@@ -67,6 +67,49 @@ func TestPrometheusInitErrorsPropagateToServerCallers(t *testing.T) {
 	}
 }
 
+func TestPrometheusInitRepublishesRecoveredStreamRouteMetrics(t *testing.T) {
+	const childEnv = "APISIX_GO_SERVER_RECOVERY_METRICS_CHILD"
+	if os.Getenv(childEnv) == "1" {
+		if metrics.StreamConnections != nil {
+			t.Fatal("stream metrics initialized before recovery ordering test")
+		}
+		source := newGenerationEngineFixture(t)
+		publishedSet := prepareEngineStreamGeneration(t, source.engine, 86, "recovered-before-metrics")
+		target := newUnrecoveredGenerationEngineFixture(t)
+		if err := target.engine.InstallRecovery(context.Background(), generation.RecoveryState{
+			Revisions: generation.RevisionSet{Desired: 86, Stream: 86},
+			Desired:   publishedSet.Domains[generation.DomainStream].Snapshot,
+			Published: publishedFromEngineSet(publishedSet),
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if metrics.StreamConnections != nil {
+			t.Fatal("recovery unexpectedly initialized stream metrics")
+		}
+
+		server := &Server{
+			staticConfig: &config.EffectiveConfig{Config: config.Config{
+				Plugins: []string{"prometheus"},
+				PluginAttr: map[string]map[string]any{
+					"prometheus": {"enable_export_server": false},
+				},
+			}},
+			engine: target.engine,
+		}
+		if err := server.startPrometheusExportServer(); err != nil {
+			t.Fatal(err)
+		}
+		assertGenerationStreamMetricDelta(t, "recovered-before-metrics", 1)
+		return
+	}
+	command := exec.Command(os.Args[0], "-test.run", "^TestPrometheusInitRepublishesRecoveredStreamRouteMetrics$")
+	command.Env = append(os.Environ(), childEnv+"=1")
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("recovery metrics child failed: %v\n%s", err, output)
+	}
+}
+
 func TestNewServerRejectsNilEffectiveConfigBeforeCreatingRuntimeFiles(t *testing.T) {
 	previousDir, err := os.Getwd()
 	if err != nil {
@@ -1242,6 +1285,8 @@ func (*newServerTestEngine) acquireHTTP() (httpGenerationLease, bool) {
 func (*newServerTestEngine) acquireStream() (streamGenerationLease, bool) {
 	return streamGenerationLease{}, false
 }
+
+func (*newServerTestEngine) refreshStreamMetrics() {}
 
 type newServerTestJournal struct {
 	generation.Journal

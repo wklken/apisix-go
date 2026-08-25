@@ -15,11 +15,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
 	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/compiler"
 	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/generation"
+	"github.com/wklken/apisix-go/pkg/observability/metrics"
 	"github.com/wklken/apisix-go/pkg/proxy"
 	"github.com/wklken/apisix-go/pkg/secret"
 	streamruntime "github.com/wklken/apisix-go/pkg/stream"
@@ -150,6 +153,71 @@ func prepareEngineGeneration(
 		t.Fatalf("Prepare() error = %v", err)
 	}
 	return set
+}
+
+func prepareEngineStreamGeneration(
+	t *testing.T,
+	engine *GenerationEngine,
+	revision uint64,
+	routeIDs ...string,
+) generation.PublicationSet {
+	t.Helper()
+	resources := make([]generation.Resource, 0, len(routeIDs))
+	for _, routeID := range routeIDs {
+		resources = append(resources, generation.Resource{
+			Key:   generation.ResourceKey{Kind: "stream_routes", ID: routeID},
+			Value: []byte(`{"id":"` + routeID + `","upstream":{"scheme":"tcp","nodes":{"127.0.0.1:1883":1}}}`),
+		})
+	}
+	desired, err := generation.NewSnapshot(revision, resources, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ticket := generation.ApplyTicket{
+		DesiredRevision: revision,
+		DesiredDigest:   desired.Digest(),
+		Cursor: generation.ProviderCursor{
+			Provider: "generation-engine-stream-metrics-test",
+			Revision: string(rune('a' + revision%26)),
+		},
+		RequiredDomains: []generation.Domain{generation.DomainStream},
+	}
+	set, err := engine.Prepare(context.Background(), ticket, desired, nil)
+	if err != nil {
+		t.Fatalf("Prepare() error = %v", err)
+	}
+	return set
+}
+
+func installGenerationStreamMetrics(t *testing.T) {
+	t.Helper()
+	old := metrics.StreamConnections
+	metrics.SetStreamRoutes(nil)
+	metrics.StreamConnections = prometheus.NewCounterVec(
+		prometheus.CounterOpts{Name: "test_generation_stream_connections"},
+		[]string{"route"},
+	)
+	t.Cleanup(func() {
+		metrics.SetStreamRoutes(nil)
+		metrics.StreamConnections = old
+	})
+}
+
+func assertGenerationStreamMetricDelta(t *testing.T, routeID string, want float64) {
+	t.Helper()
+	counter := metrics.StreamConnections.WithLabelValues(routeID)
+	before := &dto.Metric{}
+	if err := counter.Write(before); err != nil {
+		t.Fatal(err)
+	}
+	metrics.RecordStreamConnection(routeID)
+	after := &dto.Metric{}
+	if err := counter.Write(after); err != nil {
+		t.Fatal(err)
+	}
+	if got := after.GetCounter().GetValue() - before.GetCounter().GetValue(); got != want {
+		t.Fatalf("stream metric delta for route %q = %v, want %v", routeID, got, want)
+	}
 }
 
 func activateEngineGeneration(
@@ -491,6 +559,89 @@ func TestGenerationEngineRollbackRestoresCompletePredecessorBundle(t *testing.T)
 	default:
 		t.Fatal("rollback returned before rejected owner closed")
 	}
+}
+
+func TestGenerationEngineStreamMetricsRetainActiveAndDrainingRouteUnion(t *testing.T) {
+	installGenerationStreamMetrics(t)
+	fixture := newGenerationEngineFixture(t)
+	setA := prepareEngineStreamGeneration(t, fixture.engine, 80, "shared", "only-a")
+	finalizeEngineGeneration(t, fixture.engine, "stream-a", setA)
+	ownerA := fixture.engine.active.Load().stream
+	leaseA, ok := fixture.engine.acquireStream()
+	if !ok {
+		t.Fatal("generation A stream lease unavailable")
+	}
+	t.Cleanup(leaseA.Release)
+
+	setB := prepareEngineStreamGeneration(t, fixture.engine, 81, "shared", "only-b")
+	finalizeEngineGeneration(t, fixture.engine, "stream-b", setB)
+	assertGenerationStreamMetricDelta(t, "only-a", 1)
+	assertGenerationStreamMetricDelta(t, "shared", 1)
+	assertGenerationStreamMetricDelta(t, "only-b", 1)
+
+	leaseA.Release()
+	select {
+	case <-ownerA.closeDone:
+	case <-time.After(time.Second):
+		t.Fatal("generation A did not retire after its stream lease drained")
+	}
+	assertGenerationStreamMetricDelta(t, "only-a", 0)
+	assertGenerationStreamMetricDelta(t, "shared", 1)
+	assertGenerationStreamMetricDelta(t, "only-b", 1)
+}
+
+func TestGenerationEngineStreamMetricsKeepRolledBackCandidateUntilLeaseDrains(t *testing.T) {
+	installGenerationStreamMetrics(t)
+	fixture := newGenerationEngineFixture(t)
+	setA := prepareEngineStreamGeneration(t, fixture.engine, 82, "active")
+	finalizeEngineGeneration(t, fixture.engine, "stream-a", setA)
+	setB := prepareEngineStreamGeneration(t, fixture.engine, 83, "rolled-back")
+	activateEngineGeneration(t, fixture.engine, "stream-b", setB)
+	leaseB, ok := fixture.engine.acquireStream()
+	if !ok {
+		t.Fatal("generation B stream lease unavailable")
+	}
+	t.Cleanup(leaseB.Release)
+
+	retirementEntered := make(chan struct{})
+	allowRetirement := make(chan struct{})
+	fixture.engine.mu.Lock()
+	fixture.engine.checkpoint = func(stage string) error {
+		if stage == "before-owner-retirement" {
+			close(retirementEntered)
+			<-allowRetirement
+		}
+		return nil
+	}
+	fixture.engine.mu.Unlock()
+	done := make(chan error, 1)
+	go func() {
+		done <- fixture.engine.RollbackActivation(context.Background(), "stream-b", setB)
+	}()
+	select {
+	case <-retirementEntered:
+	case <-time.After(time.Second):
+		leaseB.Release()
+		t.Fatal("rolled-back generation did not enter retirement")
+	}
+	assertGenerationStreamMetricDelta(t, "active", 1)
+	assertGenerationStreamMetricDelta(t, "rolled-back", 1)
+
+	leaseB.Release()
+	close(allowRetirement)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("rollback did not finish after generation B drained")
+	}
+	fixture.engine.mu.Lock()
+	fixture.engine.checkpoint = nil
+	fixture.engine.mu.Unlock()
+	assertGenerationStreamMetricDelta(t, "active", 1)
+	assertGenerationStreamMetricDelta(t, "rolled-back", 0)
 }
 
 func TestGenerationEngineRollbackWaitsForTentativeLeaseButNotPredecessor(t *testing.T) {
@@ -981,6 +1132,65 @@ func TestGenerationEngineInstallRecoveryUsesPublishedNotDesired(t *testing.T) {
 		target.engine.fences[generation.DomainStream].Artifact != publishedSet.Domains[generation.DomainStream].Artifact {
 		t.Fatal("recovery fences were not cloned from Published")
 	}
+}
+
+func TestGenerationEngineStreamMetricsPublishRecoveredRoutes(t *testing.T) {
+	installGenerationStreamMetrics(t)
+	source := newGenerationEngineFixture(t)
+	publishedSet := prepareEngineStreamGeneration(t, source.engine, 84, "recovered")
+	target := newUnrecoveredGenerationEngineFixture(t)
+	if err := target.engine.InstallRecovery(context.Background(), generation.RecoveryState{
+		Revisions: generation.RevisionSet{Desired: 84, Stream: 84},
+		Desired:   publishedSet.Domains[generation.DomainStream].Snapshot,
+		Published: publishedFromEngineSet(publishedSet),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	assertGenerationStreamMetricDelta(t, "recovered", 1)
+}
+
+func TestGenerationEngineStreamMetricsClearOnlyAfterTerminalDrain(t *testing.T) {
+	installGenerationStreamMetrics(t)
+	fixture := newGenerationEngineFixture(t)
+	set := prepareEngineStreamGeneration(t, fixture.engine, 85, "closing")
+	finalizeEngineGeneration(t, fixture.engine, "stream", set)
+	lease, ok := fixture.engine.acquireStream()
+	if !ok {
+		t.Fatal("active stream lease unavailable")
+	}
+	t.Cleanup(lease.Release)
+
+	retirementEntered := make(chan struct{})
+	allowRetirement := make(chan struct{})
+	fixture.engine.mu.Lock()
+	fixture.engine.checkpoint = func(stage string) error {
+		if stage == "before-owner-retirement" {
+			close(retirementEntered)
+			<-allowRetirement
+		}
+		return nil
+	}
+	fixture.engine.mu.Unlock()
+	done := make(chan error, 1)
+	go func() { done <- fixture.engine.Close(context.Background()) }()
+	select {
+	case <-retirementEntered:
+	case <-time.After(time.Second):
+		lease.Release()
+		t.Fatal("terminal close did not enter stream owner retirement")
+	}
+	assertGenerationStreamMetricDelta(t, "closing", 1)
+	lease.Release()
+	close(allowRetirement)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("terminal close did not finish after stream lease drained")
+	}
+	assertGenerationStreamMetricDelta(t, "closing", 0)
 }
 
 func TestGenerationEngineInstallRecoveryPreservesIndependentDomainRevisions(t *testing.T) {

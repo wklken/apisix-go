@@ -184,6 +184,7 @@ type generationEngineOwner interface {
 	Close(context.Context) error
 	acquireHTTP() (httpGenerationLease, bool)
 	acquireStream() (streamGenerationLease, bool)
+	refreshStreamMetrics()
 }
 
 type newServerFactories struct {
@@ -978,6 +979,7 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 		if err := metrics.Init(cfg.PluginAttr["prometheus"]); err != nil {
 			return fmt.Errorf("initialize prometheus metrics: %w", err)
 		}
+		s.refreshGenerationStreamMetrics()
 		if err := s.startPrometheusExpiration(ctx); err != nil {
 			return err
 		}
@@ -1646,6 +1648,7 @@ func (s *Server) startPrometheusExportServer() error {
 	if err := metrics.Init(attr); err != nil {
 		return fmt.Errorf("initialize prometheus metrics: %w", err)
 	}
+	s.refreshGenerationStreamMetrics()
 	exportConfig, err := metrics.ConfiguredExportServer(attr)
 	if err != nil {
 		return fmt.Errorf("configure prometheus export server: %w", err)
@@ -1665,6 +1668,12 @@ func (s *Server) startPrometheusExportServer() error {
 	s.prometheusServer = exporter
 	s.lifecycleMu.Unlock()
 	return nil
+}
+
+func (s *Server) refreshGenerationStreamMetrics() {
+	if s != nil && s.engine != nil {
+		s.engine.refreshStreamMetrics()
+	}
 }
 
 func prometheusEnabled(cfg *config.Config) bool {

@@ -548,6 +548,128 @@ func TestCleanupStackRollbackSerializesWithConcurrentCleanup(t *testing.T) {
 	}
 }
 
+func TestCleanupStackConcurrentRollbackReplaysIncompleteAttempt(t *testing.T) {
+	var stack cleanupStack
+	var quiesceCalls atomic.Int32
+	var releaseCalls atomic.Int32
+	transient := errors.New("rollback remains incomplete")
+	if err := stack.Own(cleanupRelease, "base", func(context.Context) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	checkpoint, err := stack.Checkpoint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	entered := make(chan struct{})
+	allowReturn := make(chan struct{})
+	if err := stack.Own(cleanupQuiesce, "suffix-quiesce", func(context.Context) error {
+		if quiesceCalls.Add(1) == 1 {
+			close(entered)
+			<-allowReturn
+			return transient
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := stack.Own(cleanupRelease, "suffix-release", func(context.Context) error {
+		releaseCalls.Add(1)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	firstDone := make(chan error, 1)
+	go func() { firstDone <- stack.Rollback(context.Background(), checkpoint) }()
+	<-entered
+	waiting := make(chan struct{}, 1)
+	secondDone := make(chan error, 1)
+	go func() {
+		secondDone <- stack.Rollback(&cleanupWaiterContext{
+			Context: context.Background(),
+			waiting: waiting,
+		}, checkpoint)
+	}()
+	<-waiting
+	close(allowReturn)
+
+	firstErr := <-firstDone
+	secondErr := <-secondDone
+	if !errors.Is(firstErr, transient) || secondErr != firstErr {
+		t.Fatalf("rollback results = (%v, %v), want one immutable transient attempt", firstErr, secondErr)
+	}
+	if quiesceCalls.Load() != 1 || releaseCalls.Load() != 0 {
+		t.Fatalf("attempt calls = quiesce:%d release:%d, want 1/0", quiesceCalls.Load(), releaseCalls.Load())
+	}
+}
+
+type cleanupCancelAfterAttemptContext struct {
+	context.Context
+	done        <-chan struct{}
+	allowReturn chan<- struct{}
+	attemptDone <-chan struct{}
+	releaseOnce sync.Once
+}
+
+func (ctx *cleanupCancelAfterAttemptContext) Done() <-chan struct{} {
+	return ctx.done
+}
+
+func (ctx *cleanupCancelAfterAttemptContext) Err() error {
+	ctx.releaseOnce.Do(func() { close(ctx.allowReturn) })
+	<-ctx.attemptDone
+	return context.Canceled
+}
+
+func TestCleanupStackCloseDoesNotIgnoreContextThatWinsRollbackWait(t *testing.T) {
+	var stack cleanupStack
+	var baseCalls atomic.Int32
+	if err := stack.Own(cleanupRelease, "base", func(context.Context) error {
+		baseCalls.Add(1)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	checkpoint, err := stack.Checkpoint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	entered := make(chan struct{})
+	allowReturn := make(chan struct{})
+	if err := stack.Own(cleanupRelease, "suffix", func(context.Context) error {
+		close(entered)
+		<-allowReturn
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	rollbackErr := make(chan error, 1)
+	rollbackDone := make(chan struct{})
+	go func() {
+		rollbackErr <- stack.Rollback(context.Background(), checkpoint)
+		close(rollbackDone)
+	}()
+	<-entered
+	canceled := make(chan struct{})
+	close(canceled)
+	closeErr := stack.Close(&cleanupCancelAfterAttemptContext{
+		Context:     context.Background(),
+		done:        canceled,
+		allowReturn: allowReturn,
+		attemptDone: rollbackDone,
+	})
+	if !errors.Is(closeErr, context.Canceled) {
+		t.Fatalf("Close error = %v, want context.Canceled", closeErr)
+	}
+	if err := <-rollbackErr; err != nil {
+		t.Fatalf("Rollback error = %v", err)
+	}
+	if baseCalls.Load() != 0 {
+		t.Fatalf("base release calls = %d, want 0", baseCalls.Load())
+	}
+}
+
 func TestCleanupStackResourceFinalizationResidualDefersReleaseAndRetries(t *testing.T) {
 	releaseResidual, residualErr := runtimeResidualFixture(t)
 	defer releaseResidual()

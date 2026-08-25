@@ -23,9 +23,9 @@ accepted plugin + route migrations
   -> contract RED checkpoint
   -> Builder live-symbol extraction
   -> stream metrics generation ownership
-  -> immutable-only stream Router/Runtime
-  -> generation-only routeHandler
-  -> server legacy reload/TLS/stream deletion
+  -> immutable-only stream Router/Runtime + server legacy-stream deletion
+  -> generation-only routeHandler + server legacy-HTTP reload deletion
+  -> remaining server legacy/TLS deletion
   -> Builder + ClusterRegistry deletion
   -> journal-only Store reduction
   -> C6 + Task9 absence guards
@@ -98,7 +98,7 @@ Write failing tests first for:
 
 Implement a private generation-owner route-ID registration lifecycle. The published metric index is the union of stream owners that are active or still have stream leases. Update `metrics.SetStreamRoutes` only from that lifecycle. Do not publish only the current bundle's IDs because draining predecessor results would be lost.
 
-## Step 4: Make stream Router and Runtime immutable-only
+## Step 4: Make stream Router and Runtime immutable-only with the server legacy-stream slice
 
 **Files:**
 
@@ -106,12 +106,21 @@ Implement a private generation-owner route-ID registration lifecycle. The publis
 - `pkg/stream/router_test.go`
 - `pkg/stream/runtime.go`
 - `pkg/stream/runtime_test.go`
+- `pkg/server/server.go`
+- relevant server stream tests and fakes
 
 Delete:
 
 - `Router.Reload`, `Runtime.Reload`, `NewRouter`, `newLegacyRuntime`;
 - mutable router fields and `ErrFrozenRouter`;
-- raw-config runtime construction and reload validation.
+- raw-config runtime construction and reload validation;
+- server `startStreamProxy`, raw Store stream loading/reload/last-good helpers,
+  `streamRoutes` cache, acknowledged-event stream reload branch, and
+  `streamRuntimeOwner.Reload`.
+
+Shrink `streamRuntimeOwner` to `Close(context.Context) error`. Keep the
+`streamRuntime` pointer under one lifecycle lock, and never hold that lock
+across `Runtime.Close`.
 
 Retain and test:
 
@@ -124,38 +133,46 @@ Retain and test:
 
 Run focused normal and race tests for `pkg/stream` before continuing.
 
-## Step 5: Make routeHandler generation-only
+This is one compilation boundary: deleting `Runtime.Reload` separately would
+leave the server interface and reload callers uncompilable, while a temporary
+shim would violate the production-boundary contract.
+
+## Step 5: Make routeHandler generation-only with the server legacy-HTTP slice
 
 **Files:**
 
 - `pkg/server/route_handler.go`
 - `pkg/server/route_handler_test.go`
+- delete `pkg/server/reload.go`
+- delete or migrate `pkg/server/reload_test.go`
+- `pkg/server/server.go`
+- affected server lifecycle and cluster-integration tests
 
 Delete `routeSet`, legacy atomics/draining, `newRouteHandler`, `Replace`, and the legacy `ServeHTTP` branch. Preserve the generation lease source and all request/hijack/drain behavior.
+
+In the same compilation boundary, delete the reload scheduler/hooks,
+`buildAndInstallInitialRoutes`, Builder startup/install, and their Store-era
+tests/callers, fields, and caches. Deleting `routeHandler.Replace` alone would
+leave those callers uncompilable, and the boundary guard intentionally forbids
+a compatibility facade.
 
 Migrate generic panic/finalizer/body-limit tests to a generation lease fixture before deleting their legacy setup. Delete tests that only assert `Replace` or route-set stopper behavior.
 
 Run exact route-handler tests and focused race tests.
 
-## Step 6: Delete server legacy serving owners
+## Step 6: Delete remaining server legacy serving owners
 
 **Files:**
 
-- delete `pkg/server/reload.go`
-- delete or migrate `pkg/server/reload_test.go`
 - `pkg/server/server.go`
 - `pkg/server/tls.go`
 - relevant server tests and benchmarks
 
 Delete:
 
-- reload scheduler/hooks, Store event classification and publication caches;
-- Builder startup/install helpers and engine-nil compatibility shutdown;
-- legacy stream load/resolve/reload/last-good functions;
+- remaining Store event classification/publication caches and engine-nil compatibility shutdown;
 - Store-backed TLS selectors and duplicate depth validation;
-- legacy fields: clusters, storage, reload channels/mutexes, HTTP publication state, stream route cache, compatibility close state, scheduler state.
-
-Shrink `streamRuntimeOwner` to `Close(context.Context) error`. Keep `streamRuntime` pointer synchronization, but move it under a single lifecycle lock and never hold that lock across `Runtime.Close`.
+- remaining legacy fields: clusters, storage, HTTP publication state, and compatibility close state.
 
 Retain immutable listener startup, provider shutdown ordering, generation TLS selection, `logStreamResult`, and terminal stream close.
 

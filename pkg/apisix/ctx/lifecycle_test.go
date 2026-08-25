@@ -173,15 +173,19 @@ func TestRequestLifecycleFinalizeMethodsShareDetachedExactlyOnceResult(t *testin
 	})
 
 	const callers = 16
-	results := make(chan FinalizationResult, callers)
+	type callResult struct {
+		fullResult bool
+		result     FinalizationResult
+	}
+	results := make(chan callResult, callers)
 	var wg sync.WaitGroup
 	for i := range callers {
 		wg.Go(func() {
 			if i%2 == 0 {
-				results <- lifecycle.FinalizeResult()
+				results <- callResult{fullResult: true, result: lifecycle.FinalizeResult()}
 				return
 			}
-			results <- FinalizationResult{Failures: lifecycle.Finalize()}
+			results <- callResult{result: FinalizationResult{Failures: lifecycle.Finalize()}}
 		})
 	}
 	wg.Wait()
@@ -190,7 +194,10 @@ func TestRequestLifecycleFinalizeMethodsShareDetachedExactlyOnceResult(t *testin
 	if calls.Load() != 2 {
 		t.Fatalf("finalizer calls = %d, want 2", calls.Load())
 	}
-	for result := range results {
+	stackPointers := make(map[*byte]struct{})
+	fullResultCount := 0
+	for call := range results {
+		result := call.result
 		if len(result.Failures) != 2 {
 			t.Fatalf("failures = %#v", result.Failures)
 		}
@@ -200,9 +207,30 @@ func TestRequestLifecycleFinalizeMethodsShareDetachedExactlyOnceResult(t *testin
 		if result.Failures[1].Owner != "plugin" || result.Failures[1].Err != wantErr {
 			t.Fatalf("plugin failure = %#v", result.Failures[1])
 		}
-		if result.FatalPanic != nil && result.FatalPanic.PanicValue != wantPanic {
-			t.Fatalf("fatal panic = %#v", result.FatalPanic)
+		if !call.fullResult {
+			if result.FatalPanic != nil {
+				t.Fatalf("Finalize compatibility result has fatal panic: %#v", result.FatalPanic)
+			}
+			continue
 		}
+		fullResultCount++
+		if result.FatalPanic == nil || result.FatalPanic.PanicValue != wantPanic ||
+			!reflect.DeepEqual(*result.FatalPanic, result.Failures[0]) {
+			t.Fatalf("FinalizeResult fatal panic = %#v, failure = %#v", result.FatalPanic, result.Failures[0])
+		}
+		for _, stack := range [][]byte{result.Failures[0].Stack, result.FatalPanic.Stack} {
+			if len(stack) == 0 {
+				t.Fatal("FinalizeResult returned an empty panic stack")
+			}
+			pointer := &stack[0]
+			if _, exists := stackPointers[pointer]; exists {
+				t.Fatal("concurrent FinalizeResult calls share panic stack backing")
+			}
+			stackPointers[pointer] = struct{}{}
+		}
+	}
+	if fullResultCount != callers/2 {
+		t.Fatalf("FinalizeResult calls = %d, want %d", fullResultCount, callers/2)
 	}
 
 	first := lifecycle.FinalizeResult()
@@ -255,17 +283,17 @@ func TestRequestLifecycleCoreFinalizerRegistrationTrustBoundary(t *testing.T) {
 	fixture := map[string][]byte{
 		"pkg/plugin/rogue.go": []byte(`package plugin
 func Rogue(l lifecycle) {
-	callback := func() { l.AddCoreInvariantFinalizer("rogue", nil) }
-	callback()
+	registerCore := l.AddCoreInvariantFinalizer
+	registerCore("rogue", nil)
 }`),
 	}
 	wantFixtureSites := []callSite{{File: "pkg/plugin/rogue.go", Function: "Rogue"}}
-	if got := findSelectorCalls(t, fixture, "AddCoreInvariantFinalizer"); !reflect.DeepEqual(got, wantFixtureSites) {
+	if got := findSelectorUses(t, fixture, "AddCoreInvariantFinalizer"); !reflect.DeepEqual(got, wantFixtureSites) {
 		t.Fatalf("selector call sites = %#v", got)
 	}
 
 	pluginSources := pluginProductionSources(t)
-	sites := findSelectorCalls(t, pluginSources, "AddCoreInvariantFinalizer")
+	sites := findSelectorUses(t, pluginSources, "AddCoreInvariantFinalizer")
 	allowed := callSite{File: "pkg/plugin/log_executor.go", Function: "RegisterComposite"}
 	for _, site := range sites {
 		if site != allowed {
@@ -312,7 +340,7 @@ func pluginProductionSources(t *testing.T) map[string][]byte {
 	return sources
 }
 
-func findSelectorCalls(t *testing.T, sources map[string][]byte, selectorName string) []callSite {
+func findSelectorUses(t *testing.T, sources map[string][]byte, selectorName string) []callSite {
 	t.Helper()
 	fset := token.NewFileSet()
 	var sites []callSite
@@ -327,11 +355,7 @@ func findSelectorCalls(t *testing.T, sources map[string][]byte, selectorName str
 				continue
 			}
 			ast.Inspect(function.Body, func(node ast.Node) bool {
-				call, ok := node.(*ast.CallExpr)
-				if !ok {
-					return true
-				}
-				selector, ok := call.Fun.(*ast.SelectorExpr)
+				selector, ok := node.(*ast.SelectorExpr)
 				if ok && selector.Sel.Name == selectorName {
 					sites = append(sites, callSite{File: relative, Function: function.Name.Name})
 				}

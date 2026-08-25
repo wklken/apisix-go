@@ -19,6 +19,29 @@ import (
 	streambridge "github.com/wklken/apisix-go/pkg/stream/bridge"
 )
 
+func TestRouterLeasePinsImmutableCompiledRouter(t *testing.T) {
+	routes := []PreparedRoute{{Route: resource.StreamRoute{
+		ID: "generation-81",
+		Upstream: resource.Upstream{
+			Scheme: "tcp",
+			Nodes:  []resource.Node{{Host: "127.0.0.1", Port: 1, Weight: 1}},
+		},
+	}}}
+	router, err := CompileRouter(context.Background(), CompileInput{
+		Revision: 81,
+		Routes:   routes,
+	})
+	if err != nil {
+		t.Fatalf("CompileRouter() error = %v", err)
+	}
+	routes[0].Route.ID = "mutated"
+
+	lease := RouterLease{Router: router, Release: func() {}}
+	if got := lease.Router.RouteIDs(); len(got) != 1 || got[0] != "generation-81" {
+		t.Fatalf("leased route IDs = %v, want [generation-81]", got)
+	}
+}
+
 func TestStreamBridgeIdleDeadlineExits(t *testing.T) {
 	client, clientPeer := net.Pipe()
 	defer func() { _ = client.Close() }()

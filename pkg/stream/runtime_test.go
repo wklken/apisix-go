@@ -78,9 +78,12 @@ func newTestRuntime(t *testing.T, listeners ...net.Listener) *Runtime {
 		t.Fatalf("NewRouter() error = %v", err)
 	}
 	runtime := &Runtime{
-		ctx:       ctx,
-		cancel:    cancel,
-		router:    router,
+		ctx:    ctx,
+		cancel: cancel,
+		router: router,
+		source: func() (RouterLease, bool) {
+			return RouterLease{Router: router, Release: func() {}}, true
+		},
 		listeners: listeners,
 		closeDone: make(chan struct{}),
 	}
@@ -88,6 +91,307 @@ func newTestRuntime(t *testing.T, listeners ...net.Listener) *Runtime {
 		_ = runtime.Close(context.Background())
 	})
 	return runtime
+}
+
+type routerLeaseFixture struct {
+	router *Router
+
+	mu       sync.Mutex
+	acquired int
+	released int
+	started  chan struct{}
+	release  chan struct{}
+}
+
+func newRouterLeaseFixture(revision byte, block bool, serveErr error) *routerLeaseFixture {
+	fixture := &routerLeaseFixture{
+		started: make(chan struct{}, 8),
+		release: make(chan struct{}, 8),
+	}
+	fixture.router = &Router{
+		routes: []routeEntry{{
+			serve: func(ctx context.Context, conn net.Conn, _ string) (string, string, error) {
+				fixture.started <- struct{}{}
+				if _, err := conn.Write([]byte{revision}); err != nil {
+					return "", "tcp", err
+				}
+				if serveErr != nil {
+					return "", "tcp", serveErr
+				}
+				if block {
+					var buffer [1]byte
+					readDone := make(chan error, 1)
+					go func() {
+						_, err := conn.Read(buffer[:])
+						readDone <- err
+					}()
+					select {
+					case err := <-readDone:
+						return "", "tcp", err
+					case <-ctx.Done():
+						return "", "tcp", ctx.Err()
+					}
+				}
+				return "", "tcp", nil
+			},
+		}},
+		revision: uint64(revision),
+		frozen:   true,
+	}
+	return fixture
+}
+
+func (f *routerLeaseFixture) Acquire() (RouterLease, bool) {
+	f.mu.Lock()
+	f.acquired++
+	f.mu.Unlock()
+	var once sync.Once
+	return RouterLease{
+		Router: f.router,
+		Release: func() {
+			once.Do(func() {
+				f.mu.Lock()
+				f.released++
+				f.mu.Unlock()
+				f.release <- struct{}{}
+			})
+		},
+	}, true
+}
+
+func (f *routerLeaseFixture) releaseCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.released
+}
+
+type switchableRouterSource struct {
+	mu      sync.RWMutex
+	current *routerLeaseFixture
+}
+
+func newSwitchableRouterSource(current *routerLeaseFixture) *switchableRouterSource {
+	return &switchableRouterSource{current: current}
+}
+
+func (s *switchableRouterSource) Acquire() (RouterLease, bool) {
+	s.mu.RLock()
+	current := s.current
+	s.mu.RUnlock()
+	if current == nil {
+		return RouterLease{}, false
+	}
+	return current.Acquire()
+}
+
+func (s *switchableRouterSource) Store(current *routerLeaseFixture) {
+	s.mu.Lock()
+	s.current = current
+	s.mu.Unlock()
+}
+
+func dialRuntimeRevision(t *testing.T, runtime *Runtime) (net.Conn, byte) {
+	t.Helper()
+	conn, err := net.Dial("tcp", runtime.Addresses()[0])
+	if err != nil {
+		t.Fatalf("dial runtime: %v", err)
+	}
+	_ = conn.SetDeadline(time.Now().Add(time.Second))
+	var revision [1]byte
+	if _, err := io.ReadFull(conn, revision[:]); err != nil {
+		_ = conn.Close()
+		t.Fatalf("read router revision: %v", err)
+	}
+	return conn, revision[0]
+}
+
+func waitLeaseSignal(t *testing.T, signal <-chan struct{}, message string) {
+	t.Helper()
+	select {
+	case <-signal:
+	case <-time.After(time.Second):
+		t.Fatal(message)
+	}
+}
+
+func TestRuntimePinsRouterLeaseForConnectionLifetime(t *testing.T) {
+	old := newRouterLeaseFixture(71, true, nil)
+	next := newRouterLeaseFixture(72, false, nil)
+	source := newSwitchableRouterSource(old)
+	runtime, err := newGenerationRuntime(
+		context.Background(),
+		[]config.TcpListen{{Addr: "127.0.0.1:0"}},
+		source.Acquire,
+	)
+	if err != nil {
+		t.Fatalf("newGenerationRuntime() error = %v", err)
+	}
+	t.Cleanup(func() { _ = runtime.Close(context.Background()) })
+
+	oldConn, revision := dialRuntimeRevision(t, runtime)
+	if revision != 71 {
+		t.Fatalf("old connection revision = %d, want 71", revision)
+	}
+	waitLeaseSignal(t, old.started, "old router did not start")
+	source.Store(next)
+
+	nextConn, revision := dialRuntimeRevision(t, runtime)
+	if revision != 72 {
+		t.Fatalf("new connection revision = %d, want 72", revision)
+	}
+	_ = nextConn.Close()
+	waitLeaseSignal(t, next.release, "new router lease was not released")
+	if got := old.releaseCount(); got != 0 {
+		t.Fatalf("old release count before connection close = %d, want 0", got)
+	}
+
+	_ = oldConn.Close()
+	waitLeaseSignal(t, old.release, "old router lease was not released")
+}
+
+func TestRuntimeRejectsConnectionWhenRouterUnavailable(t *testing.T) {
+	runtime, err := newGenerationRuntime(
+		context.Background(),
+		[]config.TcpListen{{Addr: "127.0.0.1:0"}},
+		func() (RouterLease, bool) { return RouterLease{}, false },
+	)
+	if err != nil {
+		t.Fatalf("newGenerationRuntime() error = %v", err)
+	}
+	t.Cleanup(func() { _ = runtime.Close(context.Background()) })
+
+	conn, err := net.Dial("tcp", runtime.Addresses()[0])
+	if err != nil {
+		t.Fatalf("dial runtime: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	_ = conn.SetReadDeadline(time.Now().Add(time.Second))
+	if _, err := conn.Read(make([]byte, 1)); err == nil {
+		t.Fatal("unavailable router source left connection open")
+	}
+}
+
+func TestRuntimeReleasesLeaseWhenServeReturnsError(t *testing.T) {
+	fixture := newRouterLeaseFixture(73, false, errors.New("serve failure"))
+	runtime, err := newGenerationRuntime(
+		context.Background(),
+		[]config.TcpListen{{Addr: "127.0.0.1:0"}},
+		fixture.Acquire,
+	)
+	if err != nil {
+		t.Fatalf("newGenerationRuntime() error = %v", err)
+	}
+	t.Cleanup(func() { _ = runtime.Close(context.Background()) })
+
+	conn, revision := dialRuntimeRevision(t, runtime)
+	if revision != 73 {
+		t.Fatalf("connection revision = %d, want 73", revision)
+	}
+	_ = conn.Close()
+	waitLeaseSignal(t, fixture.release, "failed serve did not release router lease")
+}
+
+func TestRuntimeTerminalCloseCancelsConnectionsAndReleasesLeases(t *testing.T) {
+	fixture := newRouterLeaseFixture(74, true, nil)
+	runtime, err := newGenerationRuntime(
+		context.Background(),
+		[]config.TcpListen{{Addr: "127.0.0.1:0"}},
+		fixture.Acquire,
+	)
+	if err != nil {
+		t.Fatalf("newGenerationRuntime() error = %v", err)
+	}
+	conn, revision := dialRuntimeRevision(t, runtime)
+	if revision != 74 {
+		t.Fatalf("connection revision = %d, want 74", revision)
+	}
+	waitLeaseSignal(t, fixture.started, "router did not start")
+
+	closeCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := runtime.Close(closeCtx); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	waitLeaseSignal(t, fixture.release, "terminal close did not release router lease")
+	_ = conn.SetReadDeadline(time.Now().Add(time.Second))
+	if _, err := conn.Read(make([]byte, 1)); err == nil {
+		t.Fatal("client connection remained open after terminal close")
+	}
+	_ = conn.Close()
+}
+
+func TestRuntimeAcceptFailureDoesNotAcquireLease(t *testing.T) {
+	fixture := newRouterLeaseFixture(75, false, nil)
+	listener := newScriptedListener(
+		"127.0.0.1:21004",
+		scriptedAccept{err: errors.New("terminal accept failure")},
+	)
+	ctx, cancel := context.WithCancel(context.Background())
+	runtime := &Runtime{
+		ctx:       ctx,
+		cancel:    cancel,
+		source:    fixture.Acquire,
+		listeners: []net.Listener{listener},
+		closeDone: make(chan struct{}),
+	}
+	startRuntimeListeners(runtime, listener)
+	waitForAccept(t, listener)
+	if err := runtime.Close(context.Background()); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	fixture.mu.Lock()
+	acquired := fixture.acquired
+	fixture.mu.Unlock()
+	if acquired != 0 {
+		t.Fatalf("lease acquisitions after accept failure = %d, want 0", acquired)
+	}
+}
+
+func TestNewGenerationRuntimeRequiresRouterSource(t *testing.T) {
+	_, err := newGenerationRuntime(
+		context.Background(),
+		[]config.TcpListen{{Addr: "127.0.0.1:0"}},
+		nil,
+	)
+	if err == nil {
+		t.Fatal("newGenerationRuntime() accepted a nil router source")
+	}
+}
+
+func TestRuntimeSourceRollbackAffectsOnlyNewConnections(t *testing.T) {
+	old := newRouterLeaseFixture(76, true, nil)
+	next := newRouterLeaseFixture(77, false, nil)
+	source := newSwitchableRouterSource(old)
+	runtime, err := newGenerationRuntime(
+		context.Background(),
+		[]config.TcpListen{{Addr: "127.0.0.1:0"}},
+		source.Acquire,
+	)
+	if err != nil {
+		t.Fatalf("newGenerationRuntime() error = %v", err)
+	}
+	t.Cleanup(func() { _ = runtime.Close(context.Background()) })
+
+	oldConn, revision := dialRuntimeRevision(t, runtime)
+	if revision != 76 {
+		t.Fatalf("old connection revision = %d, want 76", revision)
+	}
+	waitLeaseSignal(t, old.started, "old router did not start")
+	source.Store(next)
+	nextConn, revision := dialRuntimeRevision(t, runtime)
+	if revision != 77 {
+		t.Fatalf("next connection revision = %d, want 77", revision)
+	}
+	_ = nextConn.Close()
+	source.Store(old)
+	rolledBackConn, revision := dialRuntimeRevision(t, runtime)
+	if revision != 76 {
+		t.Fatalf("rolled-back connection revision = %d, want 76", revision)
+	}
+	_ = rolledBackConn.Close()
+	waitLeaseSignal(t, old.release, "rolled-back connection lease was not released")
+	_ = oldConn.Close()
+	waitLeaseSignal(t, old.release, "original pinned lease was not released")
 }
 
 func startRuntimeListeners(runtime *Runtime, listeners ...net.Listener) {

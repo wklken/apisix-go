@@ -42,6 +42,15 @@ type Result struct {
 	Err      error
 }
 
+// RouterLease pins one immutable router for a stream connection's lifetime.
+type RouterLease struct {
+	Router  *Router
+	Release func()
+}
+
+// RouterSource acquires the router generation used by one new connection.
+type RouterSource func() (RouterLease, bool)
+
 type Router struct {
 	mu             sync.RWMutex
 	routes         []routeEntry

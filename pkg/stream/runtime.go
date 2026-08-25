@@ -24,8 +24,11 @@ const (
 type Runtime struct {
 	ctx       context.Context
 	cancel    context.CancelFunc
+	source    RouterSource
 	router    *Router
 	listeners []net.Listener
+	connMu    sync.Mutex
+	conns     map[net.Conn]struct{}
 	wg        sync.WaitGroup
 	closeOnce sync.Once
 	closeDone chan struct{}
@@ -41,19 +44,8 @@ func NewRuntime(
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if len(specs) == 0 {
-		return nil, fmt.Errorf("stream runtime requires at least one TCP listener")
-	}
-	for _, spec := range specs {
-		if spec.Tls {
-			return nil, fmt.Errorf("TLS stream listeners are not supported")
-		}
-		if spec.ProxyProtocol {
-			return nil, fmt.Errorf("stream listener PROXY protocol is not supported")
-		}
-		if spec.ProxyProtocolToUpstream {
-			return nil, fmt.Errorf("upstream PROXY protocol is not supported")
-		}
+	if err := validateListenerSpecs(specs); err != nil {
+		return nil, err
 	}
 	if err := validateStreamRoutes(routes); err != nil {
 		return nil, err
@@ -62,11 +54,41 @@ func NewRuntime(
 	if err != nil {
 		return nil, err
 	}
+	return newRuntime(ctx, specs, func() (RouterLease, bool) {
+		return RouterLease{Router: router, Release: func() {}}, true
+	}, router)
+}
+
+func newGenerationRuntime(
+	ctx context.Context,
+	specs []config.TcpListen,
+	source RouterSource,
+) (*Runtime, error) {
+	if err := validateListenerSpecs(specs); err != nil {
+		return nil, err
+	}
+	return newRuntime(ctx, specs, source, nil)
+}
+
+func newRuntime(
+	ctx context.Context,
+	specs []config.TcpListen,
+	source RouterSource,
+	legacyRouter *Router,
+) (*Runtime, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if source == nil {
+		return nil, fmt.Errorf("stream runtime requires a router source")
+	}
 	runtimeCtx, cancel := context.WithCancel(ctx)
 	runtime := &Runtime{
 		ctx:       runtimeCtx,
 		cancel:    cancel,
-		router:    router,
+		source:    source,
+		router:    legacyRouter,
+		conns:     make(map[net.Conn]struct{}),
 		closeDone: make(chan struct{}),
 	}
 
@@ -91,6 +113,24 @@ func NewRuntime(
 	return runtime, nil
 }
 
+func validateListenerSpecs(specs []config.TcpListen) error {
+	if len(specs) == 0 {
+		return fmt.Errorf("stream runtime requires at least one TCP listener")
+	}
+	for _, spec := range specs {
+		if spec.Tls {
+			return fmt.Errorf("TLS stream listeners are not supported")
+		}
+		if spec.ProxyProtocol {
+			return fmt.Errorf("stream listener PROXY protocol is not supported")
+		}
+		if spec.ProxyProtocolToUpstream {
+			return fmt.Errorf("upstream PROXY protocol is not supported")
+		}
+	}
+	return nil
+}
+
 func (r *Runtime) Addresses() []string {
 	addresses := make([]string, 0, len(r.listeners))
 	for _, listener := range r.listeners {
@@ -104,6 +144,9 @@ func (r *Runtime) Addresses() []string {
 func (r *Runtime) Reload(routes []resource.StreamRoute) error {
 	if err := validateStreamRoutes(routes); err != nil {
 		return err
+	}
+	if r.router == nil {
+		return fmt.Errorf("stream runtime generation routers cannot be reloaded")
 	}
 	return r.router.Reload(routes)
 }
@@ -145,6 +188,15 @@ func (r *Runtime) close() {
 	for _, listener := range r.listeners {
 		_ = listener.Close()
 	}
+	r.connMu.Lock()
+	connections := make([]net.Conn, 0, len(r.conns))
+	for conn := range r.conns {
+		connections = append(connections, conn)
+	}
+	r.connMu.Unlock()
+	for _, conn := range connections {
+		_ = conn.Close()
+	}
 }
 
 func (r *Runtime) serveListener(listener net.Listener) {
@@ -182,10 +234,45 @@ func (r *Runtime) serveListener(listener net.Listener) {
 		}
 		retryDelay = acceptRetryInitial
 
+		if !r.trackConnection(conn) {
+			_ = conn.Close()
+			return
+		}
+		lease, ok := r.source()
+		if !ok || lease.Router == nil || lease.Release == nil {
+			_ = conn.Close()
+			r.untrackConnection(conn)
+			if ok && lease.Release != nil {
+				lease.Release()
+			}
+			continue
+		}
 		r.wg.Go(func() {
-			_ = r.router.Serve(r.ctx, listener, conn)
+			defer lease.Release()
+			defer r.untrackConnection(conn)
+			defer func() { _ = conn.Close() }()
+			_ = lease.Router.Serve(r.ctx, listener, conn)
 		})
 	}
+}
+
+func (r *Runtime) trackConnection(conn net.Conn) bool {
+	r.connMu.Lock()
+	defer r.connMu.Unlock()
+	if r.ctx.Err() != nil {
+		return false
+	}
+	if r.conns == nil {
+		r.conns = make(map[net.Conn]struct{})
+	}
+	r.conns[conn] = struct{}{}
+	return true
+}
+
+func (r *Runtime) untrackConnection(conn net.Conn) {
+	r.connMu.Lock()
+	delete(r.conns, conn)
+	r.connMu.Unlock()
 }
 
 func shouldRetryAccept(err error) bool {

@@ -337,21 +337,30 @@ func TestEffectiveBindingMaterializerInjectsExactPluginTaskOwner(t *testing.T) {
 	prepared, fixture := newEffectiveBindingMaterializerFixture(t, []string{"request-id"}, nil)
 	spec := fixture.pluginSpec("request-id", "route-1")
 	defaultNew := prepared.bindingOps.newFactoryInstance
-	var captured *runtime.TaskOwner
+	defaultStartObserver := prepared.bindingOps.startObserver
+	var constructionOwner *runtime.TaskOwner
+	var observerOwner *runtime.TaskOwner
 	prepared.bindingOps.newFactoryInstance = func(
 		factory string,
 		dependencies base.Dependencies,
 	) (plugin.FactoryInstance, error) {
-		captured = dependencies.Tasks
+		constructionOwner = dependencies.Tasks
 		return defaultNew(factory, dependencies)
+	}
+	prepared.bindingOps.startObserver = func(instance plugin.Plugin, tasks *runtime.TaskOwner) error {
+		observerOwner = tasks
+		return defaultStartObserver(instance, tasks)
 	}
 
 	bindings, err := prepared.materializeEffectiveBindings(context.Background(), []effectiveBindingSpec{spec})
-	if err != nil || len(bindings) != 1 || captured == nil {
-		t.Fatalf("materialize owner = (%#v, %v, %v)", bindings, captured, err)
+	if err != nil || len(bindings) != 1 || constructionOwner == nil || observerOwner == nil {
+		t.Fatalf("materialize owner = (%#v, %v, %v, %v)", bindings, constructionOwner, observerOwner, err)
+	}
+	if observerOwner != constructionOwner {
+		t.Fatalf("observer owner = %p, want construction owner %p", observerOwner, constructionOwner)
 	}
 	started := make(chan struct{})
-	if err := captured.Go("health-refresh", func(ctx context.Context) error {
+	if err := constructionOwner.Go("health-refresh", func(ctx context.Context) error {
 		close(started)
 		<-ctx.Done()
 		return nil

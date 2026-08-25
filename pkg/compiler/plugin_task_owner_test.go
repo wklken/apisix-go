@@ -64,6 +64,42 @@ func TestPluginTaskOwnerPrefixDoesNotExposeOrExpandResourceIdentity(t *testing.T
 	}
 }
 
+func TestSanitizePluginTaskOwnerFactoryUsesFrozenASCIIRules(t *testing.T) {
+	tests := []struct {
+		name    string
+		factory string
+		want    string
+	}{
+		{
+			name:    "collapse consecutive disallowed bytes",
+			factory: "HTTP/// \tLogger",
+			want:    "http-logger",
+		},
+		{
+			name:    "trim leading and trailing separators",
+			factory: "--/HTTP Logger/_--",
+			want:    "http-logger",
+		},
+		{
+			name:    "trim separator at 48 byte truncation boundary",
+			factory: "abcdefghijklmnopqrstuvwxyz0123456789abcdefghijk-tail",
+			want:    "abcdefghijklmnopqrstuvwxyz0123456789abcdefghijk",
+		},
+		{
+			name:    "fallback when every byte is disallowed",
+			factory: "///\n__",
+			want:    "unknown",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := sanitizePluginTaskOwnerFactory(test.factory); got != test.want {
+				t.Fatalf("sanitizePluginTaskOwnerFactory(%q) = %q, want %q", test.factory, got, test.want)
+			}
+		})
+	}
+}
+
 func TestPluginTaskOwnerPrefixIncludesEveryInstanceKeyField(t *testing.T) {
 	golden := pluginTaskOwnerGoldenInstance()
 	want, err := pluginTaskOwnerPrefix(golden)

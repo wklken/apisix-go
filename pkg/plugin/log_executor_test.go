@@ -20,11 +20,13 @@ import (
 
 type logExecutorTestPlugin struct {
 	base.BasePlugin
-	mu        sync.Mutex
-	order     *[]string
-	panicLog  bool
-	finalizer bool
-	seen      []base.LogSnapshot
+	mu             sync.Mutex
+	order          *[]string
+	panicLog       bool
+	panicLogValue  any
+	panicFinalizer any
+	finalizer      bool
+	seen           []base.LogSnapshot
 }
 
 type countingLogBody struct {
@@ -43,15 +45,40 @@ type logExecutorNoCallbackPlugin struct {
 
 type logSanitizerTestPlugin struct {
 	base.BasePlugin
-	order *[]string
-	err   error
+	order      *[]string
+	err        error
+	panicValue any
 }
 
 type logSanitizerSelectorTestPlugin struct {
 	logSanitizerTestPlugin
 	selectSnapshot func(base.LogSnapshot) bool
 	selectorSeen   *[]string
+	selectorPanic  any
 }
+
+type logIdentityPolicyPlugin struct {
+	base.BasePlugin
+	name        string
+	policy      base.LogCapturePolicy
+	nameCalls   int
+	policyCalls int
+}
+
+func (*logIdentityPolicyPlugin) Init() error                            { return nil }
+func (*logIdentityPolicyPlugin) PostInit() error                        { return nil }
+func (*logIdentityPolicyPlugin) Config() any                            { return nil }
+func (*logIdentityPolicyPlugin) Handler(next http.Handler) http.Handler { return next }
+func (p *logIdentityPolicyPlugin) GetName() string {
+	p.nameCalls++
+	return p.name
+}
+
+func (p *logIdentityPolicyPlugin) LogCapturePolicy() base.LogCapturePolicy {
+	p.policyCalls++
+	return p.policy
+}
+func (*logIdentityPolicyPlugin) RunLogPhase(base.LogSnapshot) error { return nil }
 
 func (p *logSanitizerTestPlugin) Init() error                            { return nil }
 func (p *logSanitizerTestPlugin) PostInit() error                        { return nil }
@@ -62,6 +89,9 @@ func (p *logSanitizerTestPlugin) LogCapturePolicy() base.LogCapturePolicy {
 }
 
 func (p *logSanitizerTestPlugin) SanitizeLogSnapshot(snapshot *base.LogSnapshot) error {
+	if p.panicValue != nil {
+		panic(p.panicValue)
+	}
 	*p.order = append(*p.order, p.GetName()+":sanitize")
 	snapshot.Request.Header.Set("Authorization", "[REDACTED]")
 	snapshot.Request.Body = []byte("masked")
@@ -69,6 +99,9 @@ func (p *logSanitizerTestPlugin) SanitizeLogSnapshot(snapshot *base.LogSnapshot)
 }
 
 func (p *logSanitizerSelectorTestPlugin) ShouldSanitizeLogSnapshot(snapshot base.LogSnapshot) bool {
+	if p.selectorPanic != nil {
+		panic(p.selectorPanic)
+	}
 	if p.selectorSeen != nil {
 		*p.selectorSeen = append(*p.selectorSeen, string(snapshot.Request.Body))
 	}
@@ -126,6 +159,9 @@ func (p *logExecutorTestPlugin) RunLogPhase(snapshot base.LogSnapshot) error {
 	if p.panicLog {
 		panic("log callback")
 	}
+	if p.panicLogValue != nil {
+		panic(p.panicLogValue)
+	}
 	return nil
 }
 
@@ -135,6 +171,9 @@ func (p *logExecutorTestPlugin) RunSnapshotFinalizer(base.LogSnapshot) error {
 		*p.order = append(*p.order, p.GetName()+":finalizer")
 	}
 	p.mu.Unlock()
+	if p.panicFinalizer != nil {
+		panic(p.panicFinalizer)
+	}
 	if p.finalizer {
 		return errors.New("finalizer callback")
 	}
@@ -146,6 +185,265 @@ func newLogExecutorTestPlugin(name string, priority int, order *[]string) *logEx
 	plugin.Name = name
 	plugin.SetPriority(priority)
 	return plugin
+}
+
+func TestLogExecutorFreezesLegacyIdentityAndPolicyAtConstruction(t *testing.T) {
+	plugin := &logIdentityPolicyPlugin{
+		name:   "legacy-logger",
+		policy: base.LogCapturePolicy{RequestBodyBytes: 17, ResponseBodyBytes: 23},
+	}
+	executor, err := NewLogExecutor([]LogBinding{{Plugin: plugin}})
+	if err != nil {
+		t.Fatalf("NewLogExecutor() error = %v", err)
+	}
+	bindings := executor.Bindings()
+	if len(bindings) != 1 || bindings[0].Factory != "legacy-logger" ||
+		bindings[0].Policy != plugin.policy {
+		t.Fatalf("frozen legacy binding = %#v", bindings)
+	}
+	if plugin.nameCalls != 1 || plugin.policyCalls != 1 {
+		t.Fatalf("constructor name/policy calls = %d/%d, want 1/1", plugin.nameCalls, plugin.policyCalls)
+	}
+	if result := finalizeLogExecutorForTest(t, executor); len(result.Failures) != 0 {
+		t.Fatalf("legacy finalization failures = %#v", result.Failures)
+	}
+	if plugin.nameCalls != 1 || plugin.policyCalls != 1 {
+		t.Fatalf("request-time name/policy calls = %d/%d, want 1/1", plugin.nameCalls, plugin.policyCalls)
+	}
+}
+
+func TestLogExecutorFromBindingsConsumesFrozenFactoryAndPolicy(t *testing.T) {
+	plugin := &logIdentityPolicyPlugin{
+		name:   "mutable-runtime-name",
+		policy: base.LogCapturePolicy{RequestBodyBytes: 17, ResponseBodyBytes: 23},
+	}
+	binding, err := BindPluginChecked(
+		"http-logger",
+		plugin,
+		ScopeRoute,
+		ResourceProvenance{Kind: ResourceRoute, ID: "route-1"},
+	)
+	if err != nil {
+		t.Fatalf("BindPluginChecked() error = %v", err)
+	}
+	nameCalls, policyCalls := plugin.nameCalls, plugin.policyCalls
+	plugin.name = "changed-after-binding"
+	plugin.policy = base.LogCapturePolicy{RequestBodyBytes: 99, ResponseBodyBytes: 101}
+	executor, err := NewLogExecutorFromBindings([]Binding{binding})
+	if err != nil {
+		t.Fatalf("NewLogExecutorFromBindings() error = %v", err)
+	}
+	bindings := executor.Bindings()
+	if len(bindings) != 1 || bindings[0].Factory != "http-logger" ||
+		bindings[0].Policy != (base.LogCapturePolicy{RequestBodyBytes: 17, ResponseBodyBytes: 23}) {
+		t.Fatalf("materialized log binding = %#v", bindings)
+	}
+	if plugin.nameCalls != nameCalls || plugin.policyCalls != policyCalls {
+		t.Fatalf(
+			"log construction re-read name/policy: before=%d/%d after=%d/%d",
+			nameCalls,
+			policyCalls,
+			plugin.nameCalls,
+			plugin.policyCalls,
+		)
+	}
+	if result := finalizeLogExecutorForTest(t, executor); len(result.Failures) != 0 {
+		t.Fatalf("materialized finalization failures = %#v", result.Failures)
+	}
+	if plugin.nameCalls != nameCalls || plugin.policyCalls != policyCalls {
+		t.Fatalf(
+			"request-time name/policy calls changed: before=%d/%d after=%d/%d",
+			nameCalls,
+			policyCalls,
+			plugin.nameCalls,
+			plugin.policyCalls,
+		)
+	}
+}
+
+func finalizeLogExecutorForTest(t *testing.T, executor LogExecutor) ctx.FinalizationResult {
+	t.Helper()
+	request, lifecycle := ctx.EnsureRequestLifecycle(
+		httptest.NewRequest(http.MethodGet, "http://gateway.test/", nil),
+		time.Unix(1, 0),
+	)
+	request, err := executor.Prepare(request)
+	if err != nil {
+		t.Fatalf("Prepare() error = %v", err)
+	}
+	if !executor.RegisterComposite(request) {
+		t.Fatal("RegisterComposite() = false")
+	}
+	lifecycle.Complete(
+		ctx.ResponseOutcome{Kind: ctx.RequestOutcomeCompleted, Status: http.StatusOK},
+		time.Unix(2, 0),
+	)
+	return lifecycle.FinalizeResult()
+}
+
+func requireLogPanicError(
+	t *testing.T,
+	result ctx.FinalizationResult,
+	factory string,
+	phase Phase,
+	want any,
+) {
+	t.Helper()
+	if len(result.Failures) != 1 {
+		t.Fatalf("finalization failures = %#v, want one", result.Failures)
+	}
+	panicErr, ok := result.Failures[0].Err.(*PanicError)
+	if !ok || panicErr.Factory != factory || panicErr.Phase != phase ||
+		panicErr.Value != want || len(panicErr.Stack) == 0 {
+		t.Fatalf("finalization failure = %#v, want attributed panic", result.Failures[0])
+	}
+}
+
+func TestLogCallbackPanicUsesCanonicalFactoryAndContinues(t *testing.T) {
+	want := errors.New("sensitive log panic")
+	order := []string{}
+	panicking := newLogExecutorTestPlugin("mutable-runtime-name", 20, &order)
+	panicking.panicLogValue = want
+	later := newLogExecutorTestPlugin("later", 10, &order)
+	executor, err := NewLogExecutor([]LogBinding{
+		{Factory: "http-logger", Plugin: panicking, Scope: ScopeRoute},
+		{Factory: "file-logger", Plugin: later, Scope: ScopeRoute},
+	})
+	if err != nil {
+		t.Fatalf("NewLogExecutor() error = %v", err)
+	}
+	result := finalizeLogExecutorForTest(t, executor)
+	requireLogPanicError(t, result, "http-logger", PhaseLog, want)
+	if len(later.seen) != 1 || !reflect.DeepEqual(order, []string{
+		"mutable-runtime-name:log",
+		"later:log",
+		"mutable-runtime-name:finalizer",
+		"later:finalizer",
+	}) {
+		t.Fatalf("continued log order/seen = %v/%d", order, len(later.seen))
+	}
+}
+
+func TestSanitizerSelectorPanicFailsClosed(t *testing.T) {
+	want := errors.New("sensitive selector panic")
+	order := []string{}
+	sanitizer := &logSanitizerSelectorTestPlugin{
+		logSanitizerTestPlugin: logSanitizerTestPlugin{order: &order},
+		selectorPanic:          want,
+	}
+	sanitizer.Name = "mutable-sanitizer-name"
+	later := newLogExecutorTestPlugin("later", 10, &order)
+	executor, err := NewLogExecutor([]LogBinding{
+		{Factory: "key-auth", Plugin: sanitizer, Scope: ScopeRoute},
+		{Factory: "http-logger", Plugin: later, Scope: ScopeRoute},
+	})
+	if err != nil {
+		t.Fatalf("NewLogExecutor() error = %v", err)
+	}
+	result := finalizeLogExecutorForTest(t, executor)
+	requireLogPanicError(t, result, "key-auth", PhaseLog, want)
+	if len(later.seen) != 0 || len(order) != 0 {
+		t.Fatalf("selector panic exposed snapshot to callbacks: order=%v seen=%d", order, len(later.seen))
+	}
+}
+
+func TestSanitizerPanicFailsClosed(t *testing.T) {
+	want := errors.New("sensitive sanitizer panic")
+	order := []string{}
+	sanitizer := &logSanitizerTestPlugin{order: &order, panicValue: want}
+	sanitizer.Name = "mutable-sanitizer-name"
+	later := newLogExecutorTestPlugin("later", 10, &order)
+	executor, err := NewLogExecutor([]LogBinding{
+		{Factory: "key-auth", Plugin: sanitizer, Scope: ScopeRoute},
+		{Factory: "http-logger", Plugin: later, Scope: ScopeRoute},
+	})
+	if err != nil {
+		t.Fatalf("NewLogExecutor() error = %v", err)
+	}
+	result := finalizeLogExecutorForTest(t, executor)
+	requireLogPanicError(t, result, "key-auth", PhaseLog, want)
+	if len(later.seen) != 0 || len(order) != 0 {
+		t.Fatalf("sanitizer panic exposed snapshot to callbacks: order=%v seen=%d", order, len(later.seen))
+	}
+}
+
+func TestSnapshotFinalizerPanicUsesCanonicalFactoryAndContinues(t *testing.T) {
+	want := errors.New("sensitive snapshot finalizer panic")
+	order := []string{}
+	panicking := newLogExecutorTestPlugin("mutable-runtime-name", 20, &order)
+	panicking.panicFinalizer = want
+	later := newLogExecutorTestPlugin("later", 10, &order)
+	executor, err := NewLogExecutor([]LogBinding{
+		{Factory: "http-logger", Plugin: panicking, Scope: ScopeRoute},
+		{Factory: "file-logger", Plugin: later, Scope: ScopeRoute},
+	})
+	if err != nil {
+		t.Fatalf("NewLogExecutor() error = %v", err)
+	}
+	result := finalizeLogExecutorForTest(t, executor)
+	requireLogPanicError(t, result, "http-logger", PhaseFinalizer, want)
+	if !reflect.DeepEqual(order, []string{
+		"mutable-runtime-name:log",
+		"later:log",
+		"mutable-runtime-name:finalizer",
+		"later:finalizer",
+	}) {
+		t.Fatalf("snapshot finalizer order = %v, want continuation", order)
+	}
+}
+
+func TestLogCompositeDistinguishesCorePanicFromGuardedCallbackFailure(t *testing.T) {
+	t.Run("guarded callback remains bounded", func(t *testing.T) {
+		want := errors.New("bounded callback panic")
+		plugin := newLogExecutorTestPlugin("mutable-runtime-name", 10, nil)
+		plugin.panicLogValue = want
+		executor, err := NewLogExecutor([]LogBinding{{
+			Factory: "http-logger",
+			Plugin:  plugin,
+			Scope:   ScopeRoute,
+		}})
+		if err != nil {
+			t.Fatalf("NewLogExecutor() error = %v", err)
+		}
+		result := finalizeLogExecutorForTest(t, executor)
+		requireLogPanicError(t, result, "http-logger", PhaseLog, want)
+		if result.Failures[0].Kind != ctx.FinalizerOwnerCoreInvariant || result.FatalPanic != nil {
+			t.Fatalf("guarded callback finalization = %#v, want bounded core-owned error", result)
+		}
+	})
+
+	t.Run("raw orchestration panic is fatal", func(t *testing.T) {
+		plugin := newLogExecutorTestPlugin("logger", 10, nil)
+		executor, err := NewLogExecutor([]LogBinding{{
+			Factory: "http-logger",
+			Plugin:  plugin,
+			Scope:   ScopeRoute,
+		}})
+		if err != nil {
+			t.Fatalf("NewLogExecutor() error = %v", err)
+		}
+		request, lifecycle := ctx.EnsureRequestLifecycle(
+			httptest.NewRequest(http.MethodGet, "http://gateway.test/", nil),
+			time.Unix(1, 0),
+		)
+		request, err = executor.Prepare(request)
+		if err != nil {
+			t.Fatalf("Prepare() error = %v", err)
+		}
+		if !executor.RegisterComposite(request) {
+			t.Fatal("RegisterComposite() = false")
+		}
+		request.URL = nil
+		lifecycle.Complete(
+			ctx.ResponseOutcome{Kind: ctx.RequestOutcomeCompleted, Status: http.StatusOK},
+			time.Unix(2, 0),
+		)
+		result := lifecycle.FinalizeResult()
+		if len(result.Failures) != 1 || result.Failures[0].Kind != ctx.FinalizerOwnerCoreInvariant ||
+			result.Failures[0].PanicValue == nil || result.FatalPanic == nil {
+			t.Fatalf("raw orchestration finalization = %#v, want fatal core panic", result)
+		}
+	})
 }
 
 func TestLogSnapshotSanitizerRunsBeforeLoggerAndFinalizer(t *testing.T) {
@@ -1156,7 +1454,7 @@ func TestLogExecutorRejectsInvalidMaterializationAndLifecycleInputs(t *testing.T
 	writeStableLogPreparationError(nil, errors.New("ignored"))
 }
 
-func TestLogExecutorReadCloserAndCallbackSafetyBoundaries(t *testing.T) {
+func TestLogExecutorReadCloserSafetyBoundaries(t *testing.T) {
 	if !sameReadCloser(nil, nil) || sameReadCloser(nil, http.NoBody) {
 		t.Fatal("sameReadCloser() nil semantics changed")
 	}
@@ -1167,12 +1465,5 @@ func TestLogExecutorReadCloserAndCallbackSafetyBoundaries(t *testing.T) {
 	}
 	if sameReadCloser(http.NoBody, left) {
 		t.Fatal("sameReadCloser() accepted different reader types")
-	}
-	wantErr := errors.New("callback failed")
-	if err := runLogCallback(func() error { return wantErr }); !errors.Is(err, wantErr) {
-		t.Fatalf("runLogCallback() error = %v", err)
-	}
-	if err := runLogCallback(func() error { panic("callback panic") }); err == nil {
-		t.Fatal("runLogCallback() did not convert panic")
 	}
 }

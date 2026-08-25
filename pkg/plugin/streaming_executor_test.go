@@ -53,6 +53,42 @@ type task10StreamingFinalizer struct {
 	calls   *atomic.Int32
 }
 
+type task10RetainedDownstreamCall struct {
+	name  string
+	order *[]string
+	calls *atomic.Int32
+}
+
+func (c task10RetainedDownstreamCall) run(w http.ResponseWriter) {
+	if c.calls != nil {
+		c.calls.Add(1)
+	}
+	if c.order != nil {
+		*c.order = append(*c.order, c.name)
+	}
+	_, _ = w.Write(nil)
+}
+
+type task10RetainedDownstreamCloser struct {
+	http.ResponseWriter
+	call task10RetainedDownstreamCall
+}
+
+func (w task10RetainedDownstreamCloser) Close() error {
+	w.call.run(w.ResponseWriter)
+	return nil
+}
+
+type task10RetainedDownstreamFinalizer struct {
+	http.ResponseWriter
+	call task10RetainedDownstreamCall
+}
+
+func (w task10RetainedDownstreamFinalizer) FinishStreamingResponse(error) error {
+	w.call.run(w.ResponseWriter)
+	return nil
+}
+
 func (f task10StreamingFinalizer) FinishStreamingResponse(cause error) error {
 	if f.calls != nil {
 		f.calls.Add(1)
@@ -327,6 +363,89 @@ func TestStreamingFinishAbortSentinelIsCompleteAndCachedForConcurrentCallers(t *
 	}
 }
 
+func TestStreamingFinishCachesRetainedDownstreamPanicAndCompletesCleanup(t *testing.T) {
+	want := &struct{ label string }{label: "retained downstream"}
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	order := make([]string, 0, 3)
+	var retainedCalls atomic.Int32
+	protected := protectStreamingDownstreamWriter(&task10MinimalWriter{writePanic: want})
+	finish := &streamingFinish{finalizers: []streamingFinalizerEntry{
+		{
+			factory: "first", phase: PhaseBodyFilter,
+			finalizer: task10StreamingFinalizer{name: "first", order: &order},
+		},
+		{
+			factory: "outer", phase: PhaseBodyFilter,
+			finalizer: task10RetainedDownstreamFinalizer{
+				ResponseWriter: protected,
+				call: task10RetainedDownstreamCall{
+					name: "retained", order: &order, calls: &retainedCalls,
+				},
+			},
+		},
+		{
+			factory: "last", phase: PhaseBodyFilter,
+			finalizer: task10StreamingFinalizer{
+				name: "last", order: &order, started: started, release: release,
+			},
+		},
+	}}
+
+	const callers = 8
+	results := make(chan streamingFinishResult, callers)
+	var ready sync.WaitGroup
+	ready.Add(callers)
+	for range callers {
+		go func() {
+			ready.Done()
+			results <- finish.finish(nil)
+		}()
+	}
+	ready.Wait()
+	<-started
+	select {
+	case result := <-results:
+		t.Fatalf("concurrent finish returned before retained cleanup completed: %#v", result)
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(release)
+
+	for range callers {
+		result := <-results
+		if result.Err != nil || len(result.Panics) != 0 {
+			t.Fatalf("finish result = %#v, want only retained downstream panic", result)
+		}
+		recovered := captureTask10Panic(func() { panicFirstStreamingFinish(result) })
+		if recovered != want {
+			t.Fatalf("cached downstream panic = %#v, want original %#v", recovered, want)
+		}
+	}
+	if retainedCalls.Load() != 1 {
+		t.Fatalf("retained downstream calls = %d, want 1", retainedCalls.Load())
+	}
+	if !reflect.DeepEqual(order, []string{"last", "retained", "first"}) {
+		t.Fatalf("finish order = %v, want complete reverse order", order)
+	}
+}
+
+func TestStreamingFinishPreservesDirectExistingPanicAttribution(t *testing.T) {
+	want := &PanicError{Factory: "inner", Phase: PhaseProtocol, Value: errors.New("inner panic")}
+	result := (&streamingFinish{finalizers: []streamingFinalizerEntry{
+		{
+			factory: "outer", phase: PhaseBodyFilter,
+			finalizer: task10StreamingFinalizer{panic: want},
+		},
+	}}).finish(nil)
+	if len(result.Panics) != 1 {
+		t.Fatalf("finish result = %#v, want one existing panic", result)
+	}
+	got := result.Panics[0]
+	if got == want || got.Factory != want.Factory || got.Phase != want.Phase || got.Value != want.Value {
+		t.Fatalf("existing panic = %#v, want detached canonical %#v", got, want)
+	}
+}
+
 var (
 	_ io.Closer                       = task10StreamingCloser{}
 	_ base.StreamingResponseFinalizer = task10StreamingFinalizer{}
@@ -493,6 +612,7 @@ type plan16CompressionPlugin struct {
 	registerPanic any
 	wrapPanic     any
 	finalizer     base.StreamingResponseFinalizer
+	finishCall    *task10RetainedDownstreamCall
 }
 
 type plan16BarePlugin struct{ base.BasePlugin }
@@ -536,6 +656,9 @@ func (p *plan16CompressionPlugin) WrapCompression(
 	if p.finalizer != nil {
 		return &task10FinalizingWriter{ResponseWriter: w, finalizer: p.finalizer}, nil
 	}
+	if p.finishCall != nil {
+		return task10RetainedDownstreamFinalizer{ResponseWriter: w, call: *p.finishCall}, nil
+	}
 	return w, nil
 }
 
@@ -575,6 +698,29 @@ func (w *task10FinalizingWriter) FinishStreamingResponse(cause error) error {
 type task10FinalizerBodyPlugin struct {
 	base.BasePlugin
 	finalizer base.StreamingResponseFinalizer
+}
+
+type task10RetainedDownstreamCloserPlugin struct {
+	base.BasePlugin
+	call task10RetainedDownstreamCall
+}
+
+func (*task10RetainedDownstreamCloserPlugin) Init() error     { return nil }
+func (*task10RetainedDownstreamCloserPlugin) PostInit() error { return nil }
+func (*task10RetainedDownstreamCloserPlugin) Config() any     { return nil }
+func (*task10RetainedDownstreamCloserPlugin) Handler(next http.Handler) http.Handler {
+	return next
+}
+
+func (p *task10RetainedDownstreamCloserPlugin) WrapStreamingResponse(
+	w http.ResponseWriter,
+	_ *http.Request,
+) (http.ResponseWriter, error) {
+	return task10RetainedDownstreamCloser{ResponseWriter: w, call: p.call}, nil
+}
+
+func (*task10RetainedDownstreamCloserPlugin) ResponseCapability() ResponseCapability {
+	return ResponseCapability{StreamingBodyFilter: true}
 }
 
 func (*task10FinalizerBodyPlugin) Init() error                            { return nil }
@@ -927,6 +1073,121 @@ func TestStreamingWriterGuardPreservesRawDownstreamPanicIdentity(t *testing.T) {
 	if recovered != want {
 		t.Fatalf("downstream panic = %#v, want original %#v", recovered, want)
 	}
+}
+
+func TestStreamingFinishPreservesRetainedDownstreamPanicIdentity(t *testing.T) {
+	panicValues := []struct {
+		name  string
+		value any
+	}{
+		{name: "raw pointer", value: &struct{ label string }{label: "raw downstream"}},
+		{name: "abort sentinel", value: http.ErrAbortHandler},
+		{name: "existing panic error", value: &PanicError{
+			Factory: "downstream", Phase: PhaseProtocol, Value: errors.New("existing downstream panic"),
+		}},
+	}
+	layers := []struct {
+		name  string
+		build func(*testing.T, *task10RetainedDownstreamCall) *StreamingResponseExecutor
+		next  http.Handler
+	}{
+		{
+			name: "body closer",
+			build: func(t *testing.T, call *task10RetainedDownstreamCall) *StreamingResponseExecutor {
+				plugin := &task10RetainedDownstreamCloserPlugin{call: *call}
+				plugin.Name = "proxy-buffering"
+				executor, err := NewStreamingResponseExecutor([]Binding{
+					resolvedPlan16Binding(t, "proxy-buffering", plugin, "retained-body"),
+				})
+				if err != nil {
+					t.Fatalf("NewStreamingResponseExecutor() error = %v", err)
+				}
+				return executor
+			},
+			next: http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}),
+		},
+		{
+			name: "compression finalizer",
+			build: func(t *testing.T, call *task10RetainedDownstreamCall) *StreamingResponseExecutor {
+				plugin := &plan16CompressionPlugin{coding: compression.Gzip, rank: 1, finishCall: call}
+				plugin.Name = "gzip"
+				executor, err := NewStreamingResponseExecutor([]Binding{
+					resolvedPlan16Binding(t, "gzip", plugin, "retained-compression"),
+				})
+				if err != nil {
+					t.Fatalf("NewStreamingResponseExecutor() error = %v", err)
+				}
+				return executor
+			},
+			next: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusOK)
+			}),
+		},
+	}
+	for _, layer := range layers {
+		for _, panicValue := range panicValues {
+			t.Run(layer.name+"/"+panicValue.name, func(t *testing.T) {
+				var calls atomic.Int32
+				call := &task10RetainedDownstreamCall{calls: &calls}
+				executor := layer.build(t, call)
+				request := httptest.NewRequest(http.MethodGet, "/", nil)
+				request.Header.Set("Accept-Encoding", "gzip")
+				recovered := captureTask10Panic(func() {
+					executor.Then(layer.next).ServeHTTP(
+						&task10MinimalWriter{writePanic: panicValue.value},
+						request,
+					)
+				})
+				if recovered != panicValue.value {
+					t.Fatalf("finish panic = %T(%v), want exact retained downstream %T(%v)",
+						recovered, recovered, panicValue.value, panicValue.value)
+				}
+				if calls.Load() != 1 {
+					t.Fatalf("retained downstream calls = %d, want 1", calls.Load())
+				}
+			})
+		}
+	}
+}
+
+func TestStreamingTerminalAndCommitPanicPrecedeRetainedDownstreamFinishPanic(t *testing.T) {
+	finishValue := &struct{ label string }{label: "finish downstream"}
+	primary := &struct{ label string }{label: "primary"}
+	plugin := &task10RetainedDownstreamCloserPlugin{}
+	plugin.Name = "proxy-buffering"
+	executor, err := NewStreamingResponseExecutor([]Binding{
+		resolvedPlan16Binding(t, "proxy-buffering", plugin, "finish-primary"),
+	})
+	if err != nil {
+		t.Fatalf("NewStreamingResponseExecutor() error = %v", err)
+	}
+	t.Run("terminal", func(t *testing.T) {
+		recovered := captureTask10Panic(func() {
+			executor.Then(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				panic(primary)
+			})).ServeHTTP(
+				&task10MinimalWriter{writePanic: finishValue},
+				httptest.NewRequest(http.MethodGet, "/", nil),
+			)
+		})
+		if recovered != primary {
+			t.Fatalf("terminal panic = %#v, want primary %#v", recovered, primary)
+		}
+	})
+	t.Run("commit", func(t *testing.T) {
+		state := &base.ResponseState{Status: http.StatusOK, Header: make(http.Header)}
+		recovered := captureTask10Panic(func() {
+			_ = executor.CommitResponse(
+				&task10MinimalWriter{writePanic: finishValue},
+				httptest.NewRequest(http.MethodGet, "/", nil),
+				state,
+				func(http.ResponseWriter, *base.ResponseState) { panic(primary) },
+			)
+		})
+		if recovered != primary {
+			t.Fatalf("commit panic = %#v, want primary %#v", recovered, primary)
+		}
+	})
 }
 
 func task10ProtocolExecutor(t *testing.T, terminal base.ExclusiveProtocolTerminal) *StreamingResponseExecutor {

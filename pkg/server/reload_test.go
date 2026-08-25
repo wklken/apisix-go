@@ -183,7 +183,6 @@ func TestBuilderResourceEtcdEventsScheduleHTTPReload(t *testing.T) {
 		handleStoreEventUpdate(
 			&store.Event{Key: []byte(key)},
 			func() { events <- struct{}{} },
-			func() { t.Fatalf("HTTP builder resource %q scheduled a stream reload", key) },
 		)
 		waitForReload(t, reloads)
 	}

@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"maps"
 	"net"
 	"net/http"
 	"path"
@@ -33,7 +32,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/node_status"
 	"github.com/wklken/apisix-go/pkg/plugin/server_info"
 	pxy "github.com/wklken/apisix-go/pkg/proxy"
-	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/secret"
 	"github.com/wklken/apisix-go/pkg/store"
 	streamruntime "github.com/wklken/apisix-go/pkg/stream"
@@ -42,15 +40,12 @@ import (
 	"golang.org/x/net/http2"
 )
 
-var ErrMissingStreamUpstream = errors.New("missing stream upstream")
-
 type configProducer interface {
 	Start(context.Context) error
 	Stop() error
 }
 
 type streamRuntimeOwner interface {
-	Reload([]resource.StreamRoute) error
 	Close(context.Context) error
 }
 
@@ -308,8 +303,7 @@ type Server struct {
 	routes          *routeHandler
 	clusters        *pxy.ClusterRegistry
 	streamRuntime   streamRuntimeOwner
-	streamReloadMu  sync.Mutex
-	streamRoutes    []resource.StreamRoute
+	streamRuntimeMu sync.Mutex
 	reloadEventChan chan struct{}
 
 	reloadMu                  sync.Mutex
@@ -1043,8 +1037,8 @@ func (s *Server) startServing(
 	startHTTP func(context.Context) error,
 ) error {
 	var startedStreamRuntime streamRuntimeOwner
-	if s.streamRuntime != previousStreamRuntime {
-		startedStreamRuntime = s.streamRuntime
+	if current := s.currentStreamRuntime(); current != previousStreamRuntime {
+		startedStreamRuntime = current
 	}
 	if err := startPrometheus(); err != nil {
 		return errors.Join(err, s.closeStartedStreamRuntime(startedStreamRuntime))
@@ -1288,9 +1282,9 @@ func (s *Server) initiateStreamRuntimeClose() {
 	if s.streamDrained {
 		return
 	}
-	s.streamReloadMu.Lock()
+	s.streamRuntimeMu.Lock()
 	streamRuntime := s.streamRuntime
-	s.streamReloadMu.Unlock()
+	s.streamRuntimeMu.Unlock()
 	if streamRuntime == nil {
 		s.streamDrained = true
 		return
@@ -1352,9 +1346,9 @@ func (s *Server) drainRuntimeOwners(ctx context.Context) (error, bool) {
 		}
 	}
 	if !s.streamDrained {
-		s.streamReloadMu.Lock()
+		s.streamRuntimeMu.Lock()
 		streamRuntime := s.streamRuntime
-		s.streamReloadMu.Unlock()
+		s.streamRuntimeMu.Unlock()
 		if streamRuntime == nil {
 			s.streamDrained = true
 		} else if err := streamRuntime.Close(ctx); err != nil {
@@ -1382,13 +1376,17 @@ func (s *Server) drainRuntimeOwners(ctx context.Context) (error, bool) {
 }
 
 func (s *Server) clearStreamRuntime(streamRuntime streamRuntimeOwner) {
-	s.streamReloadMu.Lock()
+	s.streamRuntimeMu.Lock()
 	if s.streamRuntime == streamRuntime {
 		s.streamRuntime = nil
-		s.streamRoutes = nil
 	}
-	s.streamReloadMu.Unlock()
-	metrics.SetStreamRoutes(nil)
+	s.streamRuntimeMu.Unlock()
+}
+
+func (s *Server) currentStreamRuntime() streamRuntimeOwner {
+	s.streamRuntimeMu.Lock()
+	defer s.streamRuntimeMu.Unlock()
+	return s.streamRuntime
 }
 
 func contextError(err error) bool {
@@ -1498,64 +1496,6 @@ func waitForLifecycle(ctx context.Context, done chan struct{}) error {
 	}
 }
 
-func (s *Server) startStreamProxy(ctx context.Context) error {
-	cfg := &s.staticConfig.Config
-	if !streamProxyModeEnabled(cfg) {
-		return nil
-	}
-	fail := func(err error) error {
-		metrics.RecordConfigApplyStageFailure(metrics.ConfigApplyStageStreams)
-		return err
-	}
-	streamConfig := cfg.Apisix.StreamProxy
-	if len(streamConfig.Tcp) == 0 {
-		return fail(fmt.Errorf("stream mode requires at least one TCP listener"))
-	}
-	if len(streamConfig.Udp) > 0 {
-		return fail(fmt.Errorf("UDP stream listeners are not supported"))
-	}
-	proxyProtocol := cfg.Apisix.ProxyProtocol
-	if proxyProtocol.EnableTCPPP {
-		return fail(fmt.Errorf("stream PROXY protocol is not supported"))
-	}
-	if proxyProtocol.EnableTCPPPToUpstream {
-		return fail(fmt.Errorf("upstream PROXY protocol is not supported"))
-	}
-
-	// Compatibility path for Store-era tests. Production Start uses
-	// startImmutableStreamRuntime and never selects this helper.
-	s.streamReloadMu.Lock()
-	defer s.streamReloadMu.Unlock()
-	routes, candidate, err := s.loadStreamRoutes()
-	if err != nil {
-		return fail(fmt.Errorf("load stream routes: %w", err))
-	}
-	router, err := streamruntime.NewRouter(routes, cfg.StreamPlugins, logStreamResult)
-	if err != nil {
-		return fail(fmt.Errorf("start stream proxy: %w", err))
-	}
-	runtime, err := streamruntime.NewRuntime(ctx, streamConfig.Tcp, func() (streamruntime.RouterLease, bool) {
-		return streamruntime.RouterLease{Router: router, Release: func() {}}, true
-	})
-	if err != nil {
-		return fail(fmt.Errorf("start stream proxy: %w", err))
-	}
-	s.lifecycleMu.Lock()
-	if s.shutdownRequested {
-		s.lifecycleMu.Unlock()
-		_ = runtime.Close(context.Background())
-		return fail(context.Canceled)
-	}
-	s.streamRuntime = runtime
-	s.lifecycleMu.Unlock()
-	s.streamRoutes = routes
-	store.CommitStreamRouteLastGood(candidate)
-	metrics.SetStreamRoutes(streamRouteIDs(routes))
-	metrics.RecordConfigApplyStageSuccess(metrics.ConfigApplyStageStreams)
-	logger.Infof("stream proxy listening on %v", runtime.Addresses())
-	return nil
-}
-
 func (s *Server) startImmutableStreamRuntime(
 	ctx context.Context,
 	newRuntime func(
@@ -1587,8 +1527,6 @@ func (s *Server) startImmutableStreamRuntime(
 		return fail(fmt.Errorf("upstream PROXY protocol is not supported"))
 	}
 
-	s.streamReloadMu.Lock()
-	defer s.streamReloadMu.Unlock()
 	if s.engine == nil {
 		return fail(errors.New("generation engine is required for stream runtime"))
 	}
@@ -1612,7 +1550,9 @@ func (s *Server) startImmutableStreamRuntime(
 		_ = runtime.Close(context.Background())
 		return fail(context.Canceled)
 	}
+	s.streamRuntimeMu.Lock()
 	s.streamRuntime = runtime
+	s.streamRuntimeMu.Unlock()
 	s.lifecycleMu.Unlock()
 	metrics.RecordConfigApplyStageSuccess(metrics.ConfigApplyStageStreams)
 	if addressOwner, ok := runtime.(interface{ Addresses() []string }); ok {
@@ -1622,15 +1562,14 @@ func (s *Server) startImmutableStreamRuntime(
 }
 
 func (s *Server) closeStartedStreamRuntime(runtime streamRuntimeOwner) error {
-	s.streamReloadMu.Lock()
-	defer s.streamReloadMu.Unlock()
+	s.streamRuntimeMu.Lock()
 	if runtime == nil || s.streamRuntime != runtime {
+		s.streamRuntimeMu.Unlock()
 		return nil
 	}
-	err := runtime.Close(context.Background())
 	s.streamRuntime = nil
-	s.streamRoutes = nil
-	metrics.SetStreamRoutes(nil)
+	s.streamRuntimeMu.Unlock()
+	err := runtime.Close(context.Background())
 	if err != nil {
 		return fmt.Errorf("stop stream runtime after startup failure: %w", err)
 	}
@@ -1680,122 +1619,6 @@ func prometheusEnabled(cfg *config.Config) bool {
 	return cfg != nil && slices.Contains(cfg.Plugins, "prometheus")
 }
 
-func (s *Server) loadStreamRoutes() ([]resource.StreamRoute, map[string]resource.StreamRoute, error) {
-	routes, candidate, err := store.PrepareStreamRoutes()
-	if err != nil {
-		return nil, nil, err
-	}
-	resolved, err := resolveStreamRoutesWithServices(routes, store.GetUpstream, store.GetService)
-	if err != nil {
-		return nil, nil, err
-	}
-	return resolved, candidate, nil
-}
-
-func (s *Server) reloadStreamRoutes() error {
-	_, err := s.reloadStreamRoutesIfStarted()
-	return err
-}
-
-func (s *Server) reloadStreamRoutesIfStarted() (bool, error) {
-	s.streamReloadMu.Lock()
-	defer s.streamReloadMu.Unlock()
-	if s.streamRuntime == nil {
-		return false, nil
-	}
-	routes, candidate, err := s.loadStreamRoutes()
-	if err != nil {
-		return true, err
-	}
-	if reflect.DeepEqual(routes, s.streamRoutes) {
-		store.CommitStreamRouteLastGood(candidate)
-		return true, nil
-	}
-	if err := s.streamRuntime.Reload(routes); err != nil {
-		return true, err
-	}
-	s.streamRoutes = routes
-	store.CommitStreamRouteLastGood(candidate)
-	metrics.SetStreamRoutes(streamRouteIDs(routes))
-	return true, nil
-}
-
-func streamRouteIDs(routes []resource.StreamRoute) []string {
-	ids := make([]string, 0, len(routes))
-	for _, route := range routes {
-		if route.ID != "" {
-			ids = append(ids, route.ID)
-		}
-	}
-	return ids
-}
-
-func resolveStreamRoutes(
-	routes []resource.StreamRoute,
-	lookup func(string) (resource.Upstream, error),
-) ([]resource.StreamRoute, error) {
-	return resolveStreamRoutesWithServices(routes, lookup, nil)
-}
-
-func resolveStreamRoutesWithServices(
-	routes []resource.StreamRoute,
-	lookupUpstream func(string) (resource.Upstream, error),
-	lookupService func(string) (resource.Service, error),
-) ([]resource.StreamRoute, error) {
-	resolved := make([]resource.StreamRoute, len(routes))
-	copy(resolved, routes)
-	for index := range resolved {
-		route := &resolved[index]
-		if route.ServiceID != "" && route.UpstreamID == "" {
-			if lookupService == nil {
-				return nil, fmt.Errorf(
-					"stream route %q references service %q: service lookup is unavailable",
-					route.ID,
-					route.ServiceID,
-				)
-			}
-			service, err := lookupService(route.ServiceID)
-			if err != nil {
-				return nil, fmt.Errorf("stream route %q references service %q: %w", route.ID, route.ServiceID, err)
-			}
-			mergeStreamService(route, service)
-		}
-		if route.UpstreamID == "" || len(route.Upstream.Nodes) > 0 {
-			continue
-		}
-		if lookupUpstream == nil {
-			return nil, fmt.Errorf(
-				"stream route %q references upstream %q: %w",
-				route.ID,
-				route.UpstreamID,
-				ErrMissingStreamUpstream,
-			)
-		}
-		upstream, err := lookupUpstream(route.UpstreamID)
-		if err != nil {
-			return nil, fmt.Errorf("stream route %q references upstream %q: %w", route.ID, route.UpstreamID, err)
-		}
-		route.Upstream = upstream
-	}
-	return resolved, nil
-}
-
-func mergeStreamService(route *resource.StreamRoute, service resource.Service) {
-	if route == nil {
-		return
-	}
-	if len(service.Plugins) > 0 {
-		plugins := make(map[string]resource.PluginConfig, len(service.Plugins)+len(route.Plugins))
-		maps.Copy(plugins, service.Plugins)
-		maps.Copy(plugins, route.Plugins)
-		route.Plugins = plugins
-	}
-	if route.UpstreamID == "" && len(route.Upstream.Nodes) == 0 {
-		route.Upstream = service.Upstream
-		route.UpstreamID = service.UpstreamID
-	}
-}
-
 func streamProxyModeEnabled(cfg *config.Config) bool {
 	if cfg == nil {
 		return false
@@ -1804,22 +1627,14 @@ func streamProxyModeEnabled(cfg *config.Config) bool {
 	return slices.Contains(strings.Split(mode, "&"), "stream")
 }
 
-func isStreamRouteEvent(event *store.Event) bool {
-	bucket, ok := routeEventBucket(event)
-	return ok && store.IsStreamReloadBucket(bucket)
-}
-
 func isHTTPRouteEvent(event *store.Event) bool {
 	bucket, ok := routeEventBucket(event)
 	return ok && store.IsHTTPRouteReloadBucket(bucket)
 }
 
-func handleStoreEventUpdate(event *store.Event, reloadHTTP func(), reloadStream func()) {
+func handleStoreEventUpdate(event *store.Event, reloadHTTP func()) {
 	if isHTTPRouteEvent(event) && reloadHTTP != nil {
 		reloadHTTP()
-	}
-	if isStreamRouteEvent(event) && reloadStream != nil {
-		reloadStream()
 	}
 }
 
@@ -1828,12 +1643,13 @@ func (s *Server) registerAcknowledgedStoreUpdateHook(ctx context.Context) {
 		ctx = context.Background()
 	}
 	s.storage.AddAcknowledgedEventUpdateHook(func(event *store.Event) error {
-		return s.handleAcknowledgedStoreEvent(event, func() error {
-			return s.publishAcknowledgedHTTPGeneration(
-				s.storage.HTTPConfigGeneration(),
-				func() error { return s.reloadAcknowledgedHTTP(ctx) },
-			)
-		})
+		if !isHTTPRouteEvent(event) {
+			return nil
+		}
+		return s.publishAcknowledgedHTTPGeneration(
+			s.storage.HTTPConfigGeneration(),
+			func() error { return s.reloadAcknowledgedHTTP(ctx) },
+		)
 	})
 }
 
@@ -1848,28 +1664,6 @@ func (s *Server) publishAcknowledgedHTTPGeneration(generation uint64, reload fun
 	s.httpPublicationGeneration = generation
 	s.httpPublicationErr = err
 	return err
-}
-
-func (s *Server) handleAcknowledgedStoreEvent(event *store.Event, reloadHTTP func() error) error {
-	if isHTTPRouteEvent(event) && reloadHTTP != nil {
-		if err := reloadHTTP(); err != nil {
-			return err
-		}
-	}
-	if !isStreamRouteEvent(event) {
-		return nil
-	}
-	started, err := s.reloadStreamRoutesIfStarted()
-	if err != nil {
-		metrics.RecordConfigApplyStageFailure(metrics.ConfigApplyStageStreams)
-		logger.Errorf("reload stream routes fail: %s", err)
-		return err
-	}
-	if !started {
-		return nil
-	}
-	metrics.RecordConfigApplyStageSuccess(metrics.ConfigApplyStageStreams)
-	return nil
 }
 
 func (s *Server) reloadAcknowledgedHTTP(ctx context.Context) error {

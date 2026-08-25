@@ -27,7 +27,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/observability/metrics"
 	"github.com/wklken/apisix-go/pkg/proxy"
-	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/secret"
 	"github.com/wklken/apisix-go/pkg/store"
 	streamruntime "github.com/wklken/apisix-go/pkg/stream"
@@ -351,7 +350,7 @@ func TestServerShutdownStopsProducerBeforeStoreAndJoinsErrors(t *testing.T) {
 			t.Errorf("Store was closed before producer Stop(): %v", err)
 		}
 	}
-	stream := &streamRuntimeCloseError{err: streamErr}
+	stream := &fakeStreamRuntime{closeErr: streamErr}
 	server := &Server{
 		server:         &http.Server{},
 		routes:         newRouteHandler(http.NotFoundHandler(), nil),
@@ -1511,8 +1510,7 @@ type lifecycleTestStream struct {
 	close func(context.Context) error
 }
 
-func (*lifecycleTestStream) Reload([]resource.StreamRoute) error { return nil }
-func (r *lifecycleTestStream) Close(ctx context.Context) error   { return r.close(ctx) }
+func (r *lifecycleTestStream) Close(ctx context.Context) error { return r.close(ctx) }
 
 type lifecycleTestListener struct {
 	closeOnce sync.Once
@@ -2329,19 +2327,19 @@ func TestRouteEventBucket(t *testing.T) {
 	}
 }
 
-func TestHandleStoreEventUpdateDispatchesByBucket(t *testing.T) {
-	var httpCalls, streamCalls int
+func TestHandleStoreEventUpdateDispatchesHTTPBuckets(t *testing.T) {
+	var httpCalls int
 	httpEvent := &store.Event{Key: []byte("/apisix/routes/route-1")}
 	streamEvent := &store.Event{Key: []byte("/apisix/stream_routes/stream-1")}
 	serviceEvent := &store.Event{Key: []byte("/apisix/services/service-1")}
 
-	handleStoreEventUpdate(httpEvent, func() { httpCalls++ }, func() { streamCalls++ })
-	handleStoreEventUpdate(streamEvent, func() { httpCalls++ }, func() { streamCalls++ })
-	handleStoreEventUpdate(serviceEvent, func() { httpCalls++ }, func() { streamCalls++ })
-	handleStoreEventUpdate(nil, func() { httpCalls++ }, func() { streamCalls++ })
+	handleStoreEventUpdate(httpEvent, func() { httpCalls++ })
+	handleStoreEventUpdate(streamEvent, func() { httpCalls++ })
+	handleStoreEventUpdate(serviceEvent, func() { httpCalls++ })
+	handleStoreEventUpdate(nil, func() { httpCalls++ })
 
-	if httpCalls != 2 || streamCalls != 2 {
-		t.Fatalf("http/stream calls = %d/%d, want 2/2", httpCalls, streamCalls)
+	if httpCalls != 2 {
+		t.Fatalf("HTTP calls = %d, want 2", httpCalls)
 	}
 }
 

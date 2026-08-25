@@ -406,7 +406,10 @@ func (prepared *PreparedGeneration) validateEffectiveBindingSource(
 		if !exists {
 			found = false
 		}
-		if !found || !reflectEffectiveBindingConfigEqual(preparedConfig, spec.config) {
+		if !found || !reflectEffectiveBindingConfigEqual(
+			effectivePreparedConsumerConfig(preparedConfig),
+			spec.config,
+		) {
 			return fmt.Errorf("%w: prepared-consumer config is not authoritative", ErrInvalidInput)
 		}
 	case effectiveBindingSystem:
@@ -424,6 +427,23 @@ func (prepared *PreparedGeneration) validateEffectiveBindingSource(
 		return fmt.Errorf("%w: effective binding source is invalid", ErrInvalidInput)
 	}
 	return nil
+}
+
+func effectivePreparedConsumerConfig(config resource.PluginConfig) resource.PluginConfig {
+	values, ok := config.(map[string]any)
+	if !ok {
+		return config
+	}
+	if _, hasMetadata := values["_meta"]; !hasMetadata {
+		return config
+	}
+	withoutMetadata := make(map[string]any, len(values)-1)
+	for name, value := range values {
+		if name != "_meta" {
+			withoutMetadata[name] = value
+		}
+	}
+	return withoutMetadata
 }
 
 func (prepared *PreparedGeneration) acquireEffectiveBinding(

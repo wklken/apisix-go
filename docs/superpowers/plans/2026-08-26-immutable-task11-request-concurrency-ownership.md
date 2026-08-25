@@ -87,10 +87,10 @@ Contract C additionally proves concurrent and repeated callers observe the same 
 | 4. Proxy mirror request lifetime | `pkg/plugin/proxy_mirror/plugin.go` | `pkg/plugin/proxy_mirror/plugin_test.go` | Contract C Task 1 and Task 10 request lifecycle |
 | 5. MQTT connection paths | `pkg/plugin/mqtt_proxy/stream.go` | `pkg/plugin/mqtt_proxy/stream_test.go` | Task 1 and Contract C Task 1 |
 | 6. MCP session lifetime | `pkg/plugin/mcp_bridge/plugin.go` | `pkg/plugin/mcp_bridge/plugin_test.go` | Contract C Task 1 |
-| 7. AI streaming flush lifetime | `pkg/plugin/ai_stream/flush_writer.go`; constructor call sites in `pkg/plugin/ai_proxy/plugin.go`, `pkg/plugin/ai_proxy_multi/plugin.go` | `flush_writer_test.go`; focused existing streaming tests in both caller packages | Contract C Task 1 |
+| 7. AI streaming flush lifetime | `pkg/plugin/ai_stream/flush_writer.go`; constructor call sites in `pkg/plugin/ai_proxy/plugin.go`, `pkg/plugin/ai_proxy_multi/plugin.go` | `flush_writer_test.go`; focused existing streaming tests in both caller packages | Contract C Task 1 and the reviewed generation-plan AI-health Task 5 head |
 | 8. Integration verification | no production files | package-specific inventory and combined gates only; no duplicate AST gate | Tasks 1-7 and Contract C final gate |
 
-After Contract C Task 1, Tasks 1, 2, 3, 4, 6, and 7 have independent write sets and may form a frozen-base wave. Task 5 starts from Task 1's reviewed head because MQTT consumes bridge behavior. Integrate in the deterministic order: Contract C Task 1, Task 1, Task 2, Task 3, Task 4, Task 5, Task 6, Task 7, Task 8. Rebase or regenerate each later verification result after integration; do not reuse race evidence from an obsolete base.
+After Contract C Task 1, Tasks 1, 2, 3, 4, and 6 have independent write sets and may form a frozen-base wave. Task 5 starts from Task 1's reviewed head because MQTT consumes bridge behavior. Task 7 must start from the reviewed generation-plan AI-health Task 5 head because both tasks modify `pkg/plugin/ai_proxy_multi/plugin.go` and `plugin_test.go`; they are sequential owners of that shared call site, never parallel frozen-base writers. Integrate in the deterministic order: Contract C Task 1, Task 1, Task 2, Task 3, Task 4, Task 5, Task 6, generation AI-health Task 5, Task 7, Task 8. Rebase or regenerate each later verification result after integration; do not reuse race evidence from an obsolete base.
 
 ---
 
@@ -545,7 +545,7 @@ git commit -m "refactor(mcp): own session process tasks"
 - Modify constructor call site: `pkg/plugin/ai_proxy_multi/plugin.go`
 - Modify focused caller tests: `pkg/plugin/ai_proxy_multi/plugin_test.go`
 
-**Consumes:** Contract C Task 1; current synchronous/periodic flush behavior, `onFirst` callback, response status buffering, and AI stream outcome/error handling.
+**Consumes:** Contract C Task 1; the reviewed generation-plan AI-health Task 5 head; current synchronous/periodic flush behavior, `onFirst` callback, response status buffering, and AI stream outcome/error handling.
 
 **Produces:** One joined `request/ai-stream` periodic loop for each HTTP streaming response, exact timer/writer panic replay from `Close`, and one guaranteed close/join defer at both production call sites.
 
@@ -698,5 +698,6 @@ Any confirmed defect returns to its owning task and repeats that task's smallest
 - [ ] Proxy mirror requires and registers its request lifecycle finalizer before task admission and removes plugin-global request ownership.
 - [ ] MCP preserves stdout/stderr drain before `cmd.Wait`, closes channels from one coordinator, and joins outside the session-map lock.
 - [ ] AI streaming passes the exact request context at both constructor call sites, guarantees one deferred close/join, releases its mutex under writer panic, and preserves first-token/outcome/final-flush behavior.
+- [ ] AI streaming starts from the reviewed generation AI-health head; no two worktrees write `ai_proxy_multi/plugin.go` or its tests from the same base.
 - [ ] Contract C alone owns the repository AST gate; this plan contains no duplicate gate file or production runtime edit.
 - [ ] Each implementation task has an exact RED command, minimal implementation steps, focused normal/race gates, scoped lint/build/diff, review boundary, and commit command.

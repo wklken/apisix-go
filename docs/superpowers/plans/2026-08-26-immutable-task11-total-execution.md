@@ -13,8 +13,9 @@
 ## Child Plans
 
 1. [Contract C: runtime task contract and final integration](2026-08-26-immutable-task11-runtime-task-contract-integration.md)
-2. [Generation, shared-resource, logger, and stream-runtime ownership](2026-08-26-immutable-task11-generation-background-ownership.md)
-3. [Request and connection concurrency ownership](2026-08-26-immutable-task11-request-concurrency-ownership.md)
+2. [Retryable teardown, residual propagation, and shared-resource final close](2026-08-26-immutable-task11-retryable-teardown-residuals.md)
+3. [Generation, shared-resource, logger, and stream-runtime ownership](2026-08-26-immutable-task11-generation-background-ownership.md)
+4. [Request and connection concurrency ownership](2026-08-26-immutable-task11-request-concurrency-ownership.md)
 
 The child plans contain the exact RED tests, production edits, commands, commit subjects, and review questions. This document owns only sequencing, worktree boundaries, integration dependencies, and total completion criteria. When a child-plan detail conflicts with this document, stop and repair the plans before implementation; do not average the contracts.
 
@@ -35,7 +36,7 @@ func (owner *TaskOwner) Go(
 ) error
 ```
 
-- Compiler-owned plugin prefix: `plugin/<selected.instance.String()>`, `TaskPlugin`.
+- Compiler-owned plugin prefix: a bounded canonical encoding of the validated `selected.instance`, `TaskPlugin`; Contract C freezes the exact format and collision/isolation tests.
 - Plugins provide only a fixed component; they do not construct `TaskSpec`, prefixes, or criticality.
 - Shared clusters use `core/proxy-cluster/<digest>/active-health`, `TaskCore`, and a resource-local registry.
 - The process-global file-writer epoch uses `core/file-writer-registry/signal-watch`, `TaskCore`, and an epoch-local registry.
@@ -67,6 +68,7 @@ Coverage is exclusive:
 | Owner plan | Scope |
 | --- | --- |
 | Contract C | `runtime.TaskOwner`, `RequestTaskGroup` join-before-repanic, compiler/base injection, error-log observer seam, final AST gate, total integration |
+| Teardown plan | retryable generation/factory/server teardown, structured residual propagation, quiesce-before-release, and retryable shared-resource final close |
 | Generation plan | active health, cache cleanup, delayed sync, AI health, OAS refresh, log rotation, logger batch/file/RocketMQ shutdown, seven logger cancellation helpers, persistent stream runtime |
 | Request plan | stream bridge, batch requests, Kafka, proxy mirror, MQTT, MCP, and request-scoped AI periodic flush |
 
@@ -76,20 +78,23 @@ No bootstrap/server sibling plan exists or is required for this Task 11 gate. `p
 
 ```text
 Contract C Task 1: TaskOwner + RequestTaskGroup semantics
-├── Contract C Task 2: compiler/base/error-log owner injection
-│   ├── Generation tasks 1-7 and 11 (independent wave)
-│   ├── Generation tasks 8 -> 9 -> 10 (logger sequence)
-│   └── Request AI flush after generation AI-health call-site edit
+├── Contract C Task 2: bounded compiler/base/error-log owner injection
+├── Teardown Task 1 from C Task 1 head -> teardown Tasks 2-8
+│   └── Generation tasks require both C Task 2 and teardown
 └── Request tasks 1,2,3,4,6 (independent wave)
     ├── Request task 5 MQTT after request task 1 bridge
-    └── Request AI flush task, serialized with generation AI-health
+    └── Request AI flush after generation AI-health shared call-site edit
+
+Generation after C Task 2 + teardown
+├── Generation tasks 1-7 and 11 (independent wave)
+└── Generation tasks 8 -> 9 -> 10 (logger sequence)
 
 All generation + request outputs
 └── Contract C Task 5 AST gate
     └── Contract C Task 6 integrated verification and review
 ```
 
-Contract C Task 2 must precede all generation tasks because they consume `BasePlugin.TaskOwner()`. Request tasks need only Contract C Task 1, but use the reviewed Task 2 head as their common frozen base to simplify deterministic integration. The AI periodic-flush task and generation AI-health task both touch `pkg/plugin/ai_proxy_multi/plugin.go`; they must not run from the same base in parallel. Integrate AI-health first, then start or replay AI flush from that reviewed head.
+Contract C Task 2 and the teardown plan must both precede all generation tasks: generation tasks consume `BasePlugin.TaskOwner()` and require retryable quiesce-before-release before cancellation-ignoring work can be admitted safely. Request tasks need only Contract C Task 1, but use the reviewed Task 2 head as their common frozen base when practical. The AI periodic-flush task and generation AI-health task both touch `pkg/plugin/ai_proxy_multi/plugin.go`; they must not run from the same base in parallel. Integrate AI-health first, then start or replay AI flush from that reviewed head.
 
 ## Worktree and Integration Protocol
 
@@ -112,7 +117,7 @@ At most three workers run concurrently because the parent occupies one of four s
 
 ### Wave 0: Freeze the runtime contract
 
-Implement Contract C Task 1, review it, and integrate it. Then implement Contract C Task 2 from that head, review it, and integrate it. Do not start generation work before Task 2 is accepted.
+Implement Contract C Task 1, review it, and integrate it first. Task11-0 Task 1 then starts from that exact head because both modify `task_registry.go` and its tests. Contract C Task 2 may proceed in parallel with later Task11-0 units only after proving disjoint files; integrate and review both complete prerequisite lines before generation work. Request-only work may start after Contract C Task 1 when its write set does not overlap either prerequisite.
 
 Success criteria:
 
@@ -120,7 +125,9 @@ Success criteria:
 - `RequestTaskGroup` method set is unchanged.
 - raw panic identity is replayed only after all accepted children join.
 - compiler owner derives from `selected.instance`, not mutable plugin state.
+- compiler owner is bounded, unambiguous, and does not embed raw resource IDs.
 - `BasePlugin.TaskRegistry()` is deleted rather than retained as a forwarding compatibility method.
+- a deadline residual leaves generation/shared resources owned and permits a later close attempt to finish release exactly once.
 
 ### Wave 1: Independent ownership migrations
 
@@ -153,7 +160,7 @@ No two worktrees in this wave may modify the same production file from the same 
 
 ### Wave 3: Governance and final integration
 
-After every production migration is integrated:
+After the teardown substrate and every production migration are integrated:
 
 1. implement Contract C Task 5's AST test;
 2. demonstrate the frozen-base RED inventory and integrated-head PASS;
@@ -181,7 +188,9 @@ Task 11 is complete only when all are true:
 
 - the authoritative AST gate finds no raw `go` or syntactic `sync.WaitGroup.Go` under `pkg/plugin`, `pkg/proxy`, `pkg/route`, or `pkg/stream`;
 - every plugin owner is attempt-qualified through compiler `selected.instance`;
+- every plugin owner is bounded and collision-resistant without embedding raw untrusted resource IDs;
 - no shared cluster, file-writer epoch, or persistent stream runtime borrows a generation registry;
+- a failed quiesce never releases generation/shared resources, and later teardown can retry to terminal completion;
 - request timeout paths retain their lifecycle/generation leases until accepted children finish;
 - unknown child panic joins siblings and re-panics the same raw value; exact `http.ErrAbortHandler` behavior from Task 10 is unchanged;
 - cancellation-ignoring work remains observable under its bounded owner and resources are not released before it exits;

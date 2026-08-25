@@ -8,7 +8,7 @@
 
 **Tech Stack:** Go 1.26, `runtime.TaskRegistry`, compiler `PreparedGeneration`, plugin `base.Dependencies`, `runtime.ResourceRegistry`, `sync`, `context`, Go AST tests, existing package-focused Go tests and race detector.
 
-**Spec:** `docs/superpowers/plans/2026-08-23-immutable-compiler-plugin-runtime.md`, Task 11; `docs/superpowers/plans/2026-08-23-runtime-safety-observability.md`, Task 5.
+**Spec:** `docs/superpowers/plans/2026-08-23-immutable-compiler-plugin-runtime.md`, Task 11; `docs/superpowers/plans/2026-08-23-runtime-safety-observability.md`, Task 5; `docs/superpowers/plans/2026-08-26-immutable-task11-retryable-teardown-residuals.md`, stable dependency label `Task11-0 / retryable teardown and residual propagation`.
 
 ## Global Constraints
 
@@ -16,15 +16,15 @@
 - Preserve APISIX behavior, current bounded queues, retries, coalescing, final flushes, last-good OAS validator publication, active/passive health transitions, and file reopen semantics.
 - Do not add an AST allowlist inside Contract C's scan roots: `pkg/plugin`, `pkg/proxy`, `pkg/route`, and `pkg/stream`. After this plan and the request plan integrate, those roots contain no production raw `go` statement or `sync.WaitGroup.Go`. The canonical runtime primitives live under `pkg/runtime`, outside the gate's scan roots; that directory boundary is not an allowlist entry.
 - Do not bind a shared resource to `PreparedGeneration.tasks`. A task registry must live at least as long as the state it mutates.
-- Every `runtime.TaskSpec.Owner` is stable and bounded. Do not include request data, URLs, target addresses, log paths, or secret/config plaintext. Use `InstanceKey.String()` or a canonical digest.
+- Every `runtime.TaskSpec.Owner` is stable and bounded. Do not include request data, URLs, target addresses, log paths, raw resource IDs, or secret/config plaintext. Plugin owners consume Contract C's canonical bounded hashed prefix; shared-resource owners use the exact bounded digests frozen below. Never use raw `InstanceKey.String()`.
 - Plugins never construct `runtime.TaskSpec`, concatenate a prefix, or select criticality. They call the injected `TaskOwner.Go` with a fixed validated component. Shared cluster/file-writer resources create their own `TaskCore` owners as frozen by Contract C.
 - A task function returns `nil` after expected cancellation. It returns an error only when the owner should be reported failed. Never format panic values or secrets into an owner or log.
 - No dependency changes. No broad `go test ./...`, `go test ./pkg/...`, or `make test`.
 - Each behavior implementation task is one independently reviewable commit. Before every behavior commit, run its focused normal/race tests, scoped lint for touched packages, `make build`, and `git diff --check`.
 
-## Required Runtime-Contract Dependency
+## Required Contract Dependencies
 
-This plan starts only from the reviewed Contract C Task 2 integrated head. Contract C owns `runtime.TaskOwner`, `base.Dependencies`, compiler injection, the error-log observer seam, and the final AST gate. This plan must not reimplement or edit those contracts. The current compiler has no `materialize.go`; its real injection point is `pkg/compiler/effective_binding_materializer.go`, where `selected.instance` is already validated.
+Every implementation task in this plan starts only after both the reviewed Contract C Task 2 head and `Task11-0 / retryable teardown and residual propagation` are integrated. Contract C owns `runtime.TaskOwner`, `base.Dependencies`, compiler injection, the error-log observer seam, and the final AST gate. Task11-0 owns retryable `ResourceRegistry` final-close state and residual propagation. This plan consumes both contracts and must not reimplement them. The current compiler has no `materialize.go`; its real injection point is `pkg/compiler/effective_binding_materializer.go`, where `selected.instance` is already validated.
 
 ```go
 // Supplied by Contract C Task 2; consumed unchanged here.
@@ -36,11 +36,11 @@ type Dependencies struct {
 func (p *BasePlugin) TaskOwner() *runtime.TaskOwner
 ```
 
-Contract C constructs that owner with `runtime.NewTaskOwner(prepared.tasks, "plugin/"+selected.instance.String(), runtime.TaskPlugin)`, rejects invalid input before factory construction, and proves attempt-qualified owners differ. Direct package tests create a registry, then a `TaskOwner` with a constant `plugin/test/<case>` prefix. This plan must not invent `TaskRegistry()`, `InstanceKey()`, prefix accessors, child owners, or stop methods on `TaskOwner`.
+Contract C computes `pluginTaskOwnerPrefix(selected.instance)` as `plugin/<1-48-byte-sanitized-factory>/<64-lowercase-hex-sha256>`, constructs the `TaskOwner` before factory construction, and proves every canonical identity field participates without exposing raw provenance. Direct package tests create a registry, then a `TaskOwner` with a constant bounded `plugin/test/<case>` prefix. This plan must not invent `TaskRegistry()`, `InstanceKey()`, prefix accessors, child owners, or stop methods on `TaskOwner`.
 
 Digest-reused resources require a second, separate rule, not another field on `base.Dependencies`:
 
-- `proxy.Cluster` is acquired from the factory-wide `runtime.ResourceRegistry`. Its factory calls `proxy.NewOwnedCluster(config, observer, onFailure)`, which computes `ClusterKey`, creates a resource-local `TaskRegistry`, then `runtime.NewTaskOwner(registry, "core/proxy-cluster/"+hexKey, runtime.TaskCore)`. Component is exactly `active-health`. `(*Cluster).CloseContext(ctx) error` stops that registry before closing transports and returns a cleanup error when `Stop` reports an error or residual; the existing `Close()` remains a compatibility wrapper. Generation N retirement must not cancel a cluster still leased by N+1.
+- `proxy.Cluster` is acquired from the factory-wide `runtime.ResourceRegistry`. Its factory calls `proxy.NewOwnedCluster(config, observer, onFailure)`, which computes `ClusterKey`, creates a resource-local `TaskRegistry`, then `runtime.NewTaskOwner(registry, "core/proxy-cluster/"+hexKey, runtime.TaskCore)`. Every target task uses the same component `active-health`, so residuals contain exactly one deduplicated full owner. `(*Cluster).CloseContext(ctx) error` stops that registry before closing transports. Under Task11-0, a deadline/residual keeps the resource entry in closing state and makes the same final lease retryable; cluster, observer lease, and transports remain owned until a later successful retry. Generation N retirement must not cancel a cluster still leased by N+1.
 - `sharedFileWriters` is process-global. Each non-empty watcher epoch creates a registry-local `TaskRegistry`, then `runtime.NewTaskOwner(registry, "core/file-writer-registry", runtime.TaskCore)`, and uses component `signal-watch`; the last lease stops and joins that epoch before closing the last writer. It never receives the plugin generation owner.
 
 If the runtime-contract subplan does not expose the generation preparation `TaskFailure` sink to `PreparedGeneration.acquireHTTPCluster`, add exactly one stored package-private callback on `PreparedGeneration`, populated by `transferRegisteredGeneration`; do not add a second public task API.
@@ -70,20 +70,20 @@ The implementer must rerun the command immediately before Task 12. Any new produ
 
 | Task | Exclusive production responsibility | Consumes | Produces | Depends on |
 | --- | --- | --- | --- | --- |
-| 1 | `pkg/proxy/active_health.go`, `cluster.go`; `pkg/compiler/http_cluster.go` | resource registry, ClusterKey, failure sink | cross-generation resource-owned health | Contract C Task 2 |
-| 2 | `pkg/plugin/proxy_cache/disk.go`, `plugin.go` | plugin task owner | owned disk sweep | Contract C Task 2 |
-| 3 | `pkg/plugin/graphql_proxy_cache/plugin.go` | plugin task owner | owned GraphQL disk sweep | Contract C Task 2 |
-| 4 | `pkg/plugin/limit_count/delayed_sync.go`, `plugin.go` | plugin task owner | owned delayed sync and final flush | Contract C Task 2 |
-| 5 | `pkg/plugin/ai_proxy_multi/health.go`, `plugin.go` | plugin task owner | owned health coordinator and probes | Contract C Task 2 |
-| 6 | `pkg/plugin/oas_validator/plugin.go` | plugin task owner | owned lazy refresh loop | Contract C Task 2 |
-| 7 | `pkg/plugin/log_rotate/plugin.go` | plugin task owner | owned coalescing rotation worker | Contract C Task 2 |
-| 8 | `pkg/plugin/logger_batch`, all production logger constructors | plugin task owner | generation-owned delivery/scheduler/shutdown | Contract C Task 2 |
-| 9 | `pkg/plugin/file_logger` | plugin owner plus registry-local owner | owned processor and SIGUSR1 watcher | 8 |
-| 10 | seven logger cancellation helpers and `rocketmq_logger` | owned logger delivery lifecycle | joined cancellation and sender shutdown | 8; C owns error-log observer seam first |
-| 11 | `pkg/stream/runtime.go` | runtime-local core task owner | owned listener/connection lifetime across router generations | Contract C Task 2 |
-| 12 | no new behavior | all earlier tasks, request plan, and Contract C Task 5 | final inventory/gates | 1-11, request plan, Contract C Task 5 |
+| 1 | `pkg/proxy/active_health.go`, `cluster.go`; `pkg/compiler/http_cluster.go` | resource registry, ClusterKey, failure sink | cross-generation resource-owned health | Contract C Task 2 + Task11-0 teardown |
+| 2 | `pkg/plugin/proxy_cache/disk.go`, `plugin.go` | plugin task owner | owned disk sweep | Contract C Task 2 + Task11-0 teardown |
+| 3 | `pkg/plugin/graphql_proxy_cache/plugin.go` | plugin task owner | owned GraphQL disk sweep | Contract C Task 2 + Task11-0 teardown |
+| 4 | `pkg/plugin/limit_count/delayed_sync.go`, `plugin.go` | plugin task owner | owned delayed sync and final flush | Contract C Task 2 + Task11-0 teardown |
+| 5 | `pkg/plugin/ai_proxy_multi/health.go`, `plugin.go`, `plugin_test.go` | plugin task owner | owned health coordinator and probes | Contract C Task 2 + Task11-0 teardown |
+| 6 | `pkg/plugin/oas_validator/plugin.go` | plugin task owner | owned lazy refresh loop | Contract C Task 2 + Task11-0 teardown |
+| 7 | `pkg/plugin/log_rotate/plugin.go` | plugin task owner | owned coalescing rotation worker | Contract C Task 2 + Task11-0 teardown |
+| 8 | `pkg/plugin/logger_batch`, all production logger constructors | plugin task owner | generation-owned delivery/scheduler/shutdown | Contract C Task 2 + Task11-0 teardown |
+| 9 | `pkg/plugin/file_logger` | plugin owner plus registry-local owner | owned processor and SIGUSR1 watcher | Contract C Task 2 + Task11-0 teardown + 8 |
+| 10 | seven logger cancellation helpers and `rocketmq_logger` | owned logger delivery lifecycle | joined cancellation and sender shutdown | Contract C Task 2 + Task11-0 teardown + 8; C owns error-log observer seam first |
+| 11 | `pkg/stream/runtime.go` | runtime-local core task owner | owned listener/connection lifetime across router generations | Contract C Task 2 + Task11-0 teardown |
+| 12 | no new behavior | all earlier tasks, request plan, and Contract C Task 5 | final inventory/gates | Contract C Task 2 + Task11-0 teardown + 1-11 + request plan + Contract C Task 5 |
 
-Tasks 1-7 and 11 can be developed as a frozen-base parallel wave from the reviewed Contract C Task 2 head. Tasks 8-10 are sequential because the concrete logger processor lifecycle is their shared interface. Task 12 runs only after this plan, the request plan, and Contract C Task 5 are integrated.
+Tasks 1-7 and 11 can be developed as a frozen-base parallel wave only after the reviewed Contract C Task 2 and Task11-0 teardown heads are integrated. Tasks 8-10 are sequential because the concrete logger processor lifecycle is their shared interface. Generation Task 5 owns `pkg/plugin/ai_proxy_multi/plugin.go` and `plugin_test.go`; request-plan AI flush Task 7 must start from Generation Task 5's reviewed integrated head, never in parallel. Task 12 runs only after this plan, the request plan, and Contract C Task 5 are integrated.
 
 ---
 
@@ -99,7 +99,7 @@ Tasks 1-7 and 11 can be developed as a frozen-base parallel wave from the review
 - Modify: `pkg/compiler/http_cluster_test.go`
 - Modify only if required by the dependency above: `pkg/compiler/prepared_generation.go`, `worker_factory.go`, focused tests
 
-**Consumes:** Factory-wide cluster `ResourceRegistry`, canonical `ClusterKey`, task failure sink.
+**Consumes:** Factory-wide cluster `ResourceRegistry`, canonical `ClusterKey`, task failure sink, and Task11-0's retryable final-release/closing-entry contract.
 
 **Produces:** `core/proxy-cluster/<hex-digest>/active-health` `TaskCore` workers stopped only by the last resource lease. Multiple target workers intentionally share this exact full owner and are deduplicated in residuals.
 
@@ -119,12 +119,38 @@ func TestHTTPClusterHealthOutlivesCreatingGenerationWhileReused(t *testing.T) {
 }
 ```
 
-Also add `TestHTTPClusterFinalReleaseReportsHealthResidual` using a probe transport that ignores cancellation until the test releases it. Assert the final resource close returns the cleanup error, the owner contains only the cluster digest and target index, and generation N close alone does not report a residual while N+1 retains the lease.
+Also add this retry regression. Task11-0's own runtime test proves the registry retains the closing entry; this compiler/proxy test proves the cluster-specific resources remain attached to that entry.
+
+```go
+func TestHTTPClusterFinalReleaseRetriesAfterHealthResidual(t *testing.T) {
+	lease, cluster, releaseProbe, observerReleases, transportCloses, wantOwner :=
+		newBlockingOwnedClusterLease(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	err := lease.Release(ctx)
+	assertTaskResidualError(t, err, []runtime.TaskResidual{{Owner: wantOwner}})
+	if wantOwner != "core/proxy-cluster/"+clusterKeyHex(t, cluster)+"/active-health" {
+		t.Fatalf("owner = %q", wantOwner)
+	}
+	if observerReleases.Load() != 0 || transportCloses.Load() != 0 {
+		t.Fatalf("deadline teardown released observer=%d transport=%d",
+			observerReleases.Load(), transportCloses.Load())
+	}
+	close(releaseProbe)
+	if err := lease.Release(context.Background()); err != nil { t.Fatal(err) }
+	if observerReleases.Load() != 1 || transportCloses.Load() != 1 {
+		t.Fatalf("successful retry releases = observer:%d transport:%d",
+			observerReleases.Load(), transportCloses.Load())
+	}
+}
+```
+
+Generation N close alone must not report a cluster residual while N+1 retains the lease. On the final release, every target shares the exact `wantOwner`; even several blocked probes produce one deduplicated residual entry independent of target identity.
 
 - [ ] **Step 2: Capture RED**
 
 ```bash
-bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test ./pkg/compiler ./pkg/proxy -run "^(TestHTTPClusterHealthOutlivesCreatingGenerationWhileReused|TestHTTPClusterFinalReleaseReportsHealthResidual)$" -count=1'
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test ./pkg/compiler ./pkg/proxy -run "^(TestHTTPClusterHealthOutlivesCreatingGenerationWhileReused|TestHTTPClusterFinalReleaseRetriesAfterHealthResidual)$" -count=1'
 ```
 
 Expected: FAIL because `activeHealthChecker.Start` creates raw goroutines and its lifetime is hidden inside `Cluster.Close`.
@@ -137,7 +163,19 @@ Change the internal cluster constructor to require an owned task registry and di
 cluster, err := proxy.NewOwnedCluster(owned, observerLease.Observer(), prepared.taskFailure)
 ```
 
-`NewOwnedCluster` computes the prefix `"core/proxy-cluster/" + hex.EncodeToString(digest[:])`, constructs a `TaskCore` owner, and calls `owner.Go("active-health", ...)` for every target. The resource finalizer calls `cluster.CloseContext(ctx)`, then releases the observer lease even when cluster close fails. Preserve the first cleanup error while attempting both actions. `Cluster.CloseContext` remains idempotent, stops its resource-local registry before transports, and no longer owns an unobservable background `WaitGroup`.
+`NewOwnedCluster` computes the prefix `"core/proxy-cluster/" + hex.EncodeToString(digest[:])`, constructs a `TaskCore` owner, and calls `owner.Go("active-health", ...)` for every target. All targets therefore share the exact full owner and residuals deduplicate to one entry.
+
+The resource finalizer enforces this order:
+
+```go
+if err := cluster.CloseContext(ctx); err != nil {
+	return err // Task11-0 retains the closing entry and retries this same finalizer.
+}
+observerLease.Release()
+return nil
+```
+
+`Cluster.CloseContext` first retries its resource-local registry `Stop(ctx)`. If Stop returns an error or residual, it returns immediately without closing the active-health transports or changing the transport/observer release state. Only a successful Stop closes transports through their own exactly-once guard. A later final-lease `Release` retry re-enters this finalizer; after probes exit it closes transports once, releases the observer once, and lets Task11-0 delete the closing entry. Do not cache the first deadline as a terminal cluster/resource close result.
 
 - [ ] **Step 4: GREEN and race**
 
@@ -306,11 +344,13 @@ git diff --check
 
 **Files:** `pkg/plugin/ai_proxy_multi/health.go`, `plugin.go`, `plugin_test.go`
 
+**Cross-plan file fence:** This task exclusively owns `pkg/plugin/ai_proxy_multi/plugin.go` and `plugin_test.go` first. Request-plan AI flush Task 7 also needs those two files, so it must create/rebase its worktree from this task's reviewed integrated head. The two tasks must not run in parallel or merge sibling-base edits.
+
 **Consumes:** plugin task owner, current immutable health snapshot and per-instance clients.
 
 **Produces:** one `<instance-owner>/health-refresh` coordinator plus bounded tasks sharing `<instance-owner>/health-probe`, all under the already-frozen `TaskPlugin` owner.
 
-- [ ] Add `TestAIHealthUsesAttemptQualifiedTaskOwners`, `TestAIHealthGenerationStopJoinsOwnedInFlightProbes`, and `TestAIHealthProbePanicReportsExactOwner`. Do not put provider name or endpoint in expected owners. Preserve coalesced wakes and one refresh pass.
+- [ ] Add `TestAIHealthUsesAttemptQualifiedTaskOwners`, `TestAIHealthGenerationStopJoinsOwnedInFlightProbes`, and `TestAIHealthProbePanicCompletesPassWithoutPartialPublication`. Do not put provider name or endpoint in expected owners. Preserve coalesced wakes and one refresh pass.
 
 ```go
 func TestAIHealthGenerationStopJoinsOwnedInFlightProbes(t *testing.T) {
@@ -324,14 +364,60 @@ func TestAIHealthGenerationStopJoinsOwnedInFlightProbes(t *testing.T) {
 	close(release)
 	awaitClosed(t, stopped)
 }
+
+func TestAIHealthProbePanicCompletesPassWithoutPartialPublication(t *testing.T) {
+	tasks, failures := newAIHealthTestTasks(t)
+	wantPanic := &struct{ marker string }{marker: "probe-panic"}
+	p := newTwoProbeHealthPlugin(t, tasks, "plugin/test/ai-multi/attempt-1")
+	before := p.snapshot.Load()
+	p.probeForTest = func(_ context.Context, index int) healthProbeResult {
+		if index == 0 { panic(wantPanic) }
+		return healthyProbeResult(index)
+	}
+	p.wakeHealthRefresh()
+	failure := awaitTaskFailure(t, failures)
+	if failure.Owner != "plugin/test/ai-multi/attempt-1/health-probe" || failure.PanicValue != wantPanic {
+		t.Fatalf("failure = %#v", failure)
+	}
+	awaitOwnerExit(t, tasks, "plugin/test/ai-multi/attempt-1/health-refresh")
+	if residuals, err := tasks.Stop(context.Background()); err != nil || len(residuals) != 0 {
+		t.Fatalf("Stop = (%v, %v)", residuals, err)
+	}
+	if got := p.snapshot.Load(); got != before { t.Fatal("incomplete pass published a partial snapshot") }
+}
 ```
 - [ ] RED:
 
 ```bash
-bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test ./pkg/plugin/ai_proxy_multi -run "^(TestAIHealthUsesAttemptQualifiedTaskOwners|TestAIHealthGenerationStopJoinsOwnedInFlightProbes|TestAIHealthProbePanicReportsExactOwner)$" -count=1'
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test ./pkg/plugin/ai_proxy_multi -run "^(TestAIHealthUsesAttemptQualifiedTaskOwners|TestAIHealthGenerationStopJoinsOwnedInFlightProbes|TestAIHealthProbePanicCompletesPassWithoutPartialPublication)$" -count=1'
 ```
 
-- [ ] `startHealthLoop() error` calls `p.TaskOwner().Go("health-refresh", p.healthLoop)` before PostInit publishes success. `refreshHealthPass` calls the same owner with component `health-probe` for each due probe, then waits on explicit result channels for every admitted probe before publishing one snapshot. If admission fails because shutdown began, cancel the pass and do not publish a partial snapshot. Each probe derives cancellation from both the registry callback context and the refresh-pass context. Delete the independent health stop/cancel/done lifecycle; after generation quiescence, `Stop` only closes idle clients and clears state.
+- [ ] `startHealthLoop() error` calls `p.TaskOwner().Go("health-refresh", p.healthLoop)` before PostInit publishes success. For every successfully admitted `health-probe`, allocate a distinct capacity-one `chan healthProbeCompletion`. Also allocate one pass-local `ready` channel with capacity `len(due)` so completion can be observed in actual finish order without another goroutine. The callback installs its completion defer before any probe code:
+
+```go
+type healthProbeCompletion struct {
+	index     int
+	result    healthProbeResult
+	completed bool
+}
+
+completion := make(chan healthProbeCompletion, 1)
+err := p.TaskOwner().Go("health-probe", func(context.Context) error {
+	marker := healthProbeCompletion{index: index, completed: false}
+	defer func() {
+		completion <- marker
+		ready <- completion
+	}()
+	marker.result = p.probeInstance(passCtx, index)
+	if passCtx.Err() != nil { return nil }
+	marker.completed = true
+	return nil
+})
+```
+
+Both buffered sends are mandatory and unconditional for every admitted callback: normal completion sends `completed=true`; cancellation, early return, or panic unwinding sends `completed=false` before TaskRegistry handles the panic. `ready` is sized for every due probe, so the defer cannot block while the coordinator is between admission and receive. Admission failure creates no awaited completion, immediately cancels the pass, and marks it incomplete.
+
+- [ ] The coordinator receives exactly the admitted count from `ready`, reads each corresponding capacity-one completion, cancels the pass on the first `completed=false`, and continues draining all admitted completions before returning. It publishes a new immutable snapshot only when admission succeeded for every due probe and all completions are true. Any incomplete marker makes `refreshHealthPass` return `false`; `healthLoop` then exits cleanly without a second task failure. Thus a probe panic reports only `<instance-owner>/health-probe`, the `<instance-owner>/health-refresh` task exits, registry Stop completes, and no partial health result is published. Delete the independent health stop/cancel/done lifecycle; after generation quiescence, `Stop` only closes idle clients and clears state.
 - [ ] GREEN/race/gates:
 
 ```bash
@@ -342,6 +428,8 @@ git diff --check
 ```
 
 - [ ] Commit: `git commit -m "refactor(ai-proxy-multi): own health tasks"`.
+
+After review/integration, publish this commit SHA as the mandatory base for request-plan AI flush Task 7 before that task begins.
 
 ---
 
@@ -676,7 +764,7 @@ git diff --check
 
 **Files:** Verify all files above. Contract C Task 5 exclusively owns creation and edits of `pkg/runtime/goroutine_contract_test.go`; this task must not modify it.
 
-**Consumes:** This plan, the request Task 11 plan, and Contract C Task 5's AST gate.
+**Consumes:** Contract C Task 2, Task11-0 retryable teardown, this plan, the request Task 11 plan, and Contract C Task 5's AST gate.
 
 **Produces:** zero unowned production `go`/`WaitGroup.Go` in the four AST scan roots, owner/residual evidence, and an impact-scoped buildable tree.
 
@@ -728,11 +816,13 @@ After each task, the reviewer must inspect:
 6. Panic policy: plugin/resource task panic reports that owner; it is not mislabeled core and does not crash unrelated owners.
 7. Concurrency: repeated/concurrent Stop, generation overlap, task admission versus rollback, and last-lease release are race-tested.
 8. Scope: request and persistent server runtime work has not been moved into a generation registry.
+9. Retryable teardown: a failed final close retains the closing entry and every subordinate resource; only a successful retry releases transports/observers and deletes the entry, each exactly once.
 
 ## Plan Self-Review
 
-- **Coverage:** Every original generation/background file is assigned. `rocketmq_logger/plugin.go:242` and all seven `WaitGroup.Go` cancellation helpers are explicit. Current extra raw-go sites are classified into sibling plans rather than silently ignored.
-- **Dependency consistency:** The plan starts from Contract C Task 2, consumes the exact compiler-injected `*runtime.TaskOwner`, and does not reference nonexistent `materialize.go`. Shared cluster and writer resources construct lifecycle-local `TaskCore` owners rather than borrowing a generation owner.
+- **Coverage:** Every original generation/background file is assigned. `rocketmq_logger/plugin.go:242` and all seven `WaitGroup.Go` cancellation helpers are explicit. Current extra raw-go sites are classified into the request plan rather than silently ignored. AI probe panic completion and retryable cluster final close have dedicated regressions.
+- **Dependency consistency:** Every implementation task starts from Contract C Task 2 plus `Task11-0 / retryable teardown and residual propagation`, consumes the exact compiler-injected `*runtime.TaskOwner`, and does not reference nonexistent `materialize.go`. Shared cluster and writer resources construct lifecycle-local `TaskCore` owners rather than borrowing a generation owner.
 - **Testability:** Every behavior task starts with a focused RED test, names the expected failure cause, and has normal/race/lint/build commands. Cross-generation cluster and writer reuse receive explicit executable tests.
 - **No placeholders:** Owner strings, criticality, constructor changes, stop order, focused commands, and commit subjects are specified. Test helpers shown in skeletons are test-local helpers to implement in the named test file, not production APIs.
+- **File fence:** Generation Task 5 integrates `ai_proxy_multi/plugin.go` and `plugin_test.go` first; request AI flush Task 7 starts from that reviewed head and is never dispatched in parallel.
 - **Known risk:** Logger shutdown is the highest-risk sequence because the generation registry currently stops before plugin `Stop`. Task 8 therefore makes owner cancellation itself seal/drain the processor, and Task 10 runs RocketMQ shutdown inside a pre-admitted owned task. Do not retain the old cleanup goroutine as a fallback.

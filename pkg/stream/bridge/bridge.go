@@ -95,13 +95,16 @@ func Pump(ctx context.Context, left, right net.Conn, leftReader io.Reader, idle 
 		cleanupDone = true
 		cleanupPanic = recoverPanic(func() { closeBoth(left, right) })
 	}
-	finish := func(result error) error {
+	finishWithPanic := func(result error, ownerPanic any) error {
 		cancel()
 		cleanup()
 		close(stopContextClose)
 		waitPanic, waitErr := waitTaskGroup(tasks)
 		if waitPanic != nil {
 			panic(waitPanic)
+		}
+		if ownerPanic != nil {
+			panic(ownerPanic)
 		}
 		if cleanupPanic != nil {
 			panic(cleanupPanic)
@@ -111,16 +114,33 @@ func Pump(ctx context.Context, left, right net.Conn, leftReader io.Reader, idle 
 		}
 		return waitErr
 	}
+	finish := func(result error) error {
+		return finishWithPanic(result, nil)
+	}
 
 	first := <-results
+	if !first.completed {
+		cleanup()
+		second := <-results
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return finish(ctxErr)
+		}
+		if second.completed && !second.eof {
+			return finish(normalizeCopyError(second.err))
+		}
+		return finish(nil)
+	}
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return finish(ctxErr)
 	}
-	if !first.completed {
-		return finish(nil)
-	}
 	if first.eof {
-		if err := halfCloseWrite(first.destination); err != nil {
+		panicValue, err := halfCloseWriteResult(first.destination)
+		if panicValue != nil {
+			cleanup()
+			<-results
+			return finishWithPanic(nil, panicValue)
+		}
+		if err != nil {
 			cleanup()
 			<-results
 			return finish(err)
@@ -133,7 +153,11 @@ func Pump(ctx context.Context, left, right net.Conn, leftReader io.Reader, idle 
 			return finish(nil)
 		}
 		if second.eof {
-			if err := halfCloseWrite(second.destination); err != nil {
+			panicValue, err := halfCloseWriteResult(second.destination)
+			if panicValue != nil {
+				return finishWithPanic(nil, panicValue)
+			}
+			if err != nil {
 				return finish(err)
 			}
 			return finish(nil)
@@ -202,6 +226,12 @@ func halfCloseWrite(conn net.Conn) error {
 		return writer.CloseWrite()
 	}
 	return nil
+}
+
+func halfCloseWriteResult(conn net.Conn) (panicValue any, err error) {
+	defer func() { panicValue = recover() }()
+	err = halfCloseWrite(conn)
+	return nil, err
 }
 
 func closeBoth(left, right net.Conn) {

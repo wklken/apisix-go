@@ -65,8 +65,6 @@ func CompileRouter(ctx context.Context, input CompileInput) (*Router, error) {
 	return &Router{
 		routes:   entries,
 		onResult: input.OnResult,
-		revision: input.Revision,
-		frozen:   true,
 	}, nil
 }
 
@@ -75,8 +73,6 @@ func (r *Router) RouteIDs() []string {
 	if r == nil {
 		return nil
 	}
-	r.mu.RLock()
-	defer r.mu.RUnlock()
 	ids := make([]string, len(r.routes))
 	for index := range r.routes {
 		ids[index] = r.routes[index].route.ID

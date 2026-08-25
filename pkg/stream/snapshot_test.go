@@ -221,25 +221,6 @@ func TestCompileRouterAcceptsOnlyCompleteEffectiveProtocolBinding(t *testing.T) 
 	}
 }
 
-func TestCompileRouterReturnsFrozenRouterWithoutMutatingLastGoodRoutes(t *testing.T) {
-	first := detachedRawRoute("first", 1883)
-	router, err := CompileRouter(context.Background(), CompileInput{
-		Revision: 45,
-		Routes:   []PreparedRoute{{Route: first}},
-	})
-	if err != nil {
-		t.Fatalf("CompileRouter() error = %v", err)
-	}
-
-	err = router.Reload([]resource.StreamRoute{detachedRawRoute("replacement", 1884)})
-	if !errors.Is(err, ErrFrozenRouter) {
-		t.Fatalf("Reload() error = %v, want %v", err, ErrFrozenRouter)
-	}
-	if got, want := router.RouteIDs(), []string{"first"}; !slices.Equal(got, want) {
-		t.Fatalf("RouteIDs() after rejected reload = %v, want %v", got, want)
-	}
-}
-
 func TestCompileRouterRejectsZeroRevision(t *testing.T) {
 	_, err := CompileRouter(context.Background(), CompileInput{
 		Routes: []PreparedRoute{{Route: detachedRawRoute("missing-revision", 1883)}},
@@ -249,7 +230,7 @@ func TestCompileRouterRejectsZeroRevision(t *testing.T) {
 	}
 }
 
-func TestFrozenRouterConcurrentReloadRouteIDsAndServe(t *testing.T) {
+func TestCompiledRouterConcurrentRouteIDsAndServe(t *testing.T) {
 	router, err := CompileRouter(context.Background(), CompileInput{
 		Revision: 46,
 		Routes:   []PreparedRoute{{Route: detachedRawRoute("frozen", 1883)}},
@@ -259,19 +240,12 @@ func TestFrozenRouterConcurrentReloadRouteIDsAndServe(t *testing.T) {
 	}
 
 	const attempts = 32
-	errs := make(chan error, attempts*3)
+	errs := make(chan error, attempts*2)
 	var workers sync.WaitGroup
 	for range attempts {
 		workers.Go(func() {
-			if reloadErr := router.Reload([]resource.StreamRoute{
-				detachedRawRoute("replacement", 1884),
-			}); !errors.Is(reloadErr, ErrFrozenRouter) {
-				errs <- reloadErr
-			}
-		})
-		workers.Go(func() {
 			if got, want := router.RouteIDs(), []string{"frozen"}; !slices.Equal(got, want) {
-				errs <- errors.New("concurrent RouteIDs changed the frozen route")
+				errs <- errors.New("concurrent RouteIDs changed the compiled route")
 			}
 		})
 		workers.Go(func() {
@@ -286,22 +260,9 @@ func TestFrozenRouterConcurrentReloadRouteIDsAndServe(t *testing.T) {
 	close(errs)
 	for err := range errs {
 		if err == nil {
-			t.Fatal("concurrent frozen-router operation returned nil error")
+			t.Fatal("concurrent compiled-router operation returned nil error")
 		}
 		t.Fatal(err)
-	}
-}
-
-func TestLegacyRouterRemainsReloadable(t *testing.T) {
-	router, err := NewRouter([]resource.StreamRoute{detachedRawRoute("legacy-first", 1883)}, nil, nil)
-	if err != nil {
-		t.Fatalf("NewRouter() error = %v", err)
-	}
-	if err := router.Reload([]resource.StreamRoute{detachedRawRoute("legacy-second", 1884)}); err != nil {
-		t.Fatalf("legacy Reload() error = %v", err)
-	}
-	if got, want := router.RouteIDs(), []string{"legacy-second"}; !slices.Equal(got, want) {
-		t.Fatalf("legacy RouteIDs() = %v, want %v", got, want)
 	}
 }
 

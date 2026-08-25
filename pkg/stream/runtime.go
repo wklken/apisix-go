@@ -13,7 +13,6 @@ import (
 
 	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/logger"
-	"github.com/wklken/apisix-go/pkg/resource"
 )
 
 const (
@@ -25,38 +24,12 @@ type Runtime struct {
 	ctx       context.Context
 	cancel    context.CancelFunc
 	source    RouterSource
-	router    *Router
 	listeners []net.Listener
 	connMu    sync.Mutex
 	conns     map[net.Conn]struct{}
 	wg        sync.WaitGroup
 	closeOnce sync.Once
 	closeDone chan struct{}
-}
-
-func newLegacyRuntime(
-	ctx context.Context,
-	specs []config.TcpListen,
-	routes []resource.StreamRoute,
-	enabledPlugins []string,
-	onResult func(Result),
-) (*Runtime, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if err := validateListenerSpecs(specs); err != nil {
-		return nil, err
-	}
-	if err := validateStreamRoutes(routes); err != nil {
-		return nil, err
-	}
-	router, err := NewRouter(routes, enabledPlugins, onResult)
-	if err != nil {
-		return nil, err
-	}
-	return newRuntime(ctx, specs, func() (RouterLease, bool) {
-		return RouterLease{Router: router, Release: func() {}}, true
-	}, router)
 }
 
 func NewRuntime(
@@ -67,14 +40,13 @@ func NewRuntime(
 	if err := validateListenerSpecs(specs); err != nil {
 		return nil, err
 	}
-	return newRuntime(ctx, specs, source, nil)
+	return newRuntime(ctx, specs, source)
 }
 
 func newRuntime(
 	ctx context.Context,
 	specs []config.TcpListen,
 	source RouterSource,
-	legacyRouter *Router,
 ) (*Runtime, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -87,7 +59,6 @@ func newRuntime(
 		ctx:       runtimeCtx,
 		cancel:    cancel,
 		source:    source,
-		router:    legacyRouter,
 		conns:     make(map[net.Conn]struct{}),
 		closeDone: make(chan struct{}),
 	}
@@ -139,25 +110,6 @@ func (r *Runtime) Addresses() []string {
 		}
 	}
 	return addresses
-}
-
-func (r *Runtime) Reload(routes []resource.StreamRoute) error {
-	if err := validateStreamRoutes(routes); err != nil {
-		return err
-	}
-	if r.router == nil {
-		return fmt.Errorf("stream runtime generation routers cannot be reloaded")
-	}
-	return r.router.Reload(routes)
-}
-
-func validateStreamRoutes(routes []resource.StreamRoute) error {
-	for _, route := range routes {
-		if route.Upstream.TLS != nil {
-			return fmt.Errorf("TLS stream upstreams are not supported")
-		}
-	}
-	return nil
 }
 
 func (r *Runtime) Close(ctx context.Context) error {

@@ -34,9 +34,23 @@ type cleanupCheckpoint struct {
 	releases   int
 }
 
+type cleanupAttemptKind uint8
+
+const (
+	cleanupAttemptClose cleanupAttemptKind = iota
+	cleanupAttemptRollback
+)
+
 type cleanupAttempt struct {
+	kind cleanupAttemptKind
 	done chan struct{}
 	err  error
+}
+
+type cleanupBoundary struct {
+	quiescers  int
+	finalizers int
+	releases   int
 }
 
 type cleanupStack struct {
@@ -75,36 +89,74 @@ func (s *cleanupStack) Rollback(ctx context.Context, checkpoint cleanupCheckpoin
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	s.mu.Lock()
-	if s.sealed || checkpoint.owner != s || checkpoint.quiescers < 0 || checkpoint.finalizers < 0 ||
-		checkpoint.releases < 0 || checkpoint.quiescers > len(s.quiescers) ||
-		checkpoint.finalizers > len(s.finalizers) || checkpoint.releases > len(s.releases) {
-		s.mu.Unlock()
-		return fmt.Errorf("%w: cleanup checkpoint is invalid", ErrInvalidInput)
-	}
-	quiescers := s.quiescers[checkpoint.quiescers:]
-	finalizers := s.finalizers[checkpoint.finalizers:]
-	releases := s.releases[checkpoint.releases:]
-	s.mu.Unlock()
+	for {
+		s.mu.Lock()
+		if !s.validCheckpointLocked(checkpoint) {
+			s.mu.Unlock()
+			return fmt.Errorf("%w: cleanup checkpoint is invalid", ErrInvalidInput)
+		}
+		if s.active != nil {
+			attempt := s.active
+			s.mu.Unlock()
+			waitErr := waitCleanupAttempt(ctx, attempt)
+			if !cleanupAttemptFinished(attempt) {
+				return waitErr
+			}
+			continue
+		}
 
-	var terminalErrors []error
-	rollbackErr, complete := executeCleanupAttempt(
-		ctx,
-		quiescers,
-		finalizers,
-		releases,
-		&terminalErrors,
-	)
-	if !complete {
+		attempt := &cleanupAttempt{kind: cleanupAttemptRollback, done: make(chan struct{})}
+		s.active = attempt
+		boundary := cleanupBoundary{
+			quiescers:  len(s.quiescers),
+			finalizers: len(s.finalizers),
+			releases:   len(s.releases),
+		}
+		quiescers := slices.Clone(s.quiescers[checkpoint.quiescers:boundary.quiescers])
+		finalizers := slices.Clone(s.finalizers[checkpoint.finalizers:boundary.finalizers])
+		releases := slices.Clone(s.releases[checkpoint.releases:boundary.releases])
+		s.mu.Unlock()
+
+		var terminalErrors []error
+		rollbackErr, complete := executeCleanupAttempt(
+			ctx,
+			quiescers,
+			finalizers,
+			releases,
+			&terminalErrors,
+		)
+
+		s.mu.Lock()
+		if complete {
+			s.quiescers = slices.Delete(s.quiescers, checkpoint.quiescers, boundary.quiescers)
+			s.finalizers = slices.Delete(s.finalizers, checkpoint.finalizers, boundary.finalizers)
+			s.releases = slices.Delete(s.releases, checkpoint.releases, boundary.releases)
+		} else {
+			persistCleanupDone(s.quiescers[checkpoint.quiescers:boundary.quiescers], quiescers)
+			persistCleanupDone(s.finalizers[checkpoint.finalizers:boundary.finalizers], finalizers)
+			persistCleanupDone(s.releases[checkpoint.releases:boundary.releases], releases)
+		}
+		attempt.err = rollbackErr
+		if s.active == attempt {
+			s.active = nil
+		}
+		close(attempt.done)
+		s.mu.Unlock()
 		return rollbackErr
 	}
+}
 
-	s.mu.Lock()
-	s.quiescers = s.quiescers[:checkpoint.quiescers]
-	s.finalizers = s.finalizers[:checkpoint.finalizers]
-	s.releases = s.releases[:checkpoint.releases]
-	s.mu.Unlock()
-	return rollbackErr
+func (s *cleanupStack) validCheckpointLocked(checkpoint cleanupCheckpoint) bool {
+	return !s.sealed && checkpoint.owner == s && checkpoint.quiescers >= 0 &&
+		checkpoint.finalizers >= 0 && checkpoint.releases >= 0 &&
+		checkpoint.quiescers <= len(s.quiescers) && checkpoint.finalizers <= len(s.finalizers) &&
+		checkpoint.releases <= len(s.releases)
+}
+
+func persistCleanupDone(destination, source []cleanupStep) {
+	for index := range source {
+		destination[index].done = source[index].done
+	}
 }
 
 func (s *cleanupStack) Own(
@@ -143,47 +195,53 @@ func (s *cleanupStack) Close(ctx context.Context) error {
 		ctx = context.Background()
 	}
 
-	s.mu.Lock()
-	s.sealed = true
-	if s.terminal {
-		closeErr := s.closeErr
+	for {
+		s.mu.Lock()
+		s.sealed = true
+		if s.terminal {
+			closeErr := s.closeErr
+			s.mu.Unlock()
+			return closeErr
+		}
+		if s.active != nil {
+			attempt := s.active
+			s.mu.Unlock()
+			waitErr := waitCleanupAttempt(ctx, attempt)
+			if attempt.kind == cleanupAttemptClose || !cleanupAttemptFinished(attempt) {
+				return waitErr
+			}
+			continue
+		}
+		attempt := &cleanupAttempt{kind: cleanupAttemptClose, done: make(chan struct{})}
+		s.active = attempt
+		quiescers := s.quiescers
+		finalizers := s.finalizers
+		releases := s.releases
 		s.mu.Unlock()
-		return closeErr
-	}
-	if s.active != nil {
-		attempt := s.active
+
+		attemptErr, complete := executeCleanupAttempt(
+			ctx,
+			quiescers,
+			finalizers,
+			releases,
+			&s.terminalErrors,
+		)
+
+		s.mu.Lock()
+		if complete {
+			s.terminal = true
+			s.closeErr = errors.Join(s.terminalErrors...)
+			attempt.err = s.closeErr
+		} else {
+			attempt.err = attemptErr
+		}
+		if s.active == attempt {
+			s.active = nil
+		}
+		close(attempt.done)
 		s.mu.Unlock()
-		return waitCleanupAttempt(ctx, attempt)
+		return attempt.err
 	}
-	attempt := &cleanupAttempt{done: make(chan struct{})}
-	s.active = attempt
-	quiescers := s.quiescers
-	finalizers := s.finalizers
-	releases := s.releases
-	s.mu.Unlock()
-
-	attemptErr, complete := executeCleanupAttempt(
-		ctx,
-		quiescers,
-		finalizers,
-		releases,
-		&s.terminalErrors,
-	)
-
-	s.mu.Lock()
-	if complete {
-		s.terminal = true
-		s.closeErr = errors.Join(s.terminalErrors...)
-		attempt.err = s.closeErr
-	} else {
-		attempt.err = attemptErr
-	}
-	if s.active == attempt {
-		s.active = nil
-	}
-	close(attempt.done)
-	s.mu.Unlock()
-	return attempt.err
 }
 
 func (s *cleanupStack) terminallyClosed() bool {
@@ -211,6 +269,15 @@ func waitCleanupAttempt(ctx context.Context, attempt *cleanupAttempt) error {
 		default:
 			return ctx.Err()
 		}
+	}
+}
+
+func cleanupAttemptFinished(attempt *cleanupAttempt) bool {
+	select {
+	case <-attempt.done:
+		return true
+	default:
+		return false
 	}
 }
 

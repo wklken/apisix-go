@@ -409,6 +409,145 @@ func TestCleanupStackRollbackRetainsSuffixWhenQuiesceFails(t *testing.T) {
 	}
 }
 
+func TestCleanupStackRollbackPreservesOwnershipAddedBySuffixCallback(t *testing.T) {
+	var stack cleanupStack
+	var calls []string
+	if err := stack.Own(cleanupRelease, "base", func(context.Context) error {
+		calls = append(calls, "base")
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	checkpoint, err := stack.Checkpoint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := stack.Own(cleanupRelease, "suffix", func(context.Context) error {
+		calls = append(calls, "suffix")
+		return stack.Own(cleanupRelease, "late", func(context.Context) error {
+			calls = append(calls, "late")
+			return nil
+		})
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := stack.Rollback(context.Background(), checkpoint); err != nil {
+		t.Fatalf("Rollback error = %v", err)
+	}
+	if err := stack.Close(context.Background()); err != nil {
+		t.Fatalf("Close error = %v", err)
+	}
+	want := []string{"suffix", "late", "base"}
+	if !slices.Equal(calls, want) {
+		t.Fatalf("calls = %v, want %v", calls, want)
+	}
+}
+
+func TestCleanupStackRollbackSerializesWithConcurrentCleanup(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		start func(*cleanupStack, context.Context, cleanupCheckpoint) error
+	}{
+		{
+			name: "second rollback",
+			start: func(stack *cleanupStack, ctx context.Context, checkpoint cleanupCheckpoint) error {
+				return stack.Rollback(ctx, checkpoint)
+			},
+		},
+		{
+			name: "close",
+			start: func(stack *cleanupStack, ctx context.Context, _ cleanupCheckpoint) error {
+				return stack.Close(ctx)
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var stack cleanupStack
+			var suffixCalls atomic.Int32
+			var baseCalls atomic.Int32
+			if err := stack.Own(cleanupRelease, "base", func(context.Context) error {
+				baseCalls.Add(1)
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			checkpoint, err := stack.Checkpoint()
+			if err != nil {
+				t.Fatal(err)
+			}
+			entered := make(chan struct{})
+			secondEntered := make(chan struct{})
+			allowReturn := make(chan struct{})
+			if err := stack.Own(cleanupRelease, "suffix", func(context.Context) error {
+				attempt := suffixCalls.Add(1)
+				if attempt == 1 {
+					close(entered)
+				}
+				if attempt == 2 {
+					close(secondEntered)
+				}
+				<-allowReturn
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			firstDone := make(chan error, 1)
+			go func() {
+				firstDone <- stack.Rollback(context.Background(), checkpoint)
+			}()
+			select {
+			case <-entered:
+			case <-time.After(5 * time.Second):
+				t.Fatal("timed out waiting for first rollback callback")
+			}
+
+			waiting := make(chan struct{}, 1)
+			concurrentDone := make(chan error, 1)
+			go func() {
+				concurrentDone <- test.start(&stack, &cleanupWaiterContext{
+					Context: context.Background(),
+					waiting: waiting,
+				}, checkpoint)
+			}()
+			select {
+			case <-waiting:
+			case <-secondEntered:
+			case <-time.After(5 * time.Second):
+				t.Fatal("concurrent cleanup neither waited nor entered callback")
+			}
+			close(allowReturn)
+
+			for name, result := range map[string]<-chan error{
+				"first rollback":     firstDone,
+				"concurrent cleanup": concurrentDone,
+			} {
+				select {
+				case err := <-result:
+					if err != nil {
+						t.Fatalf("%s error = %v", name, err)
+					}
+				case <-time.After(5 * time.Second):
+					t.Fatalf("timed out waiting for %s", name)
+				}
+			}
+			if test.name == "second rollback" {
+				if err := stack.Close(context.Background()); err != nil {
+					t.Fatalf("Close error = %v", err)
+				}
+			}
+			if suffixCalls.Load() != 1 || baseCalls.Load() != 1 {
+				t.Fatalf(
+					"cleanup calls = suffix:%d base:%d, want 1/1",
+					suffixCalls.Load(),
+					baseCalls.Load(),
+				)
+			}
+		})
+	}
+}
+
 func TestCleanupStackResourceFinalizationResidualDefersReleaseAndRetries(t *testing.T) {
 	releaseResidual, residualErr := runtimeResidualFixture(t)
 	defer releaseResidual()

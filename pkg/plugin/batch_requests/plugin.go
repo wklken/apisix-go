@@ -8,7 +8,6 @@ import (
 	"math"
 	"net/http"
 	"net/url"
-	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -550,8 +549,11 @@ func dispatchPipelineRequestBounded(
 		func() {
 			defer func() {
 				if recovered := recover(); recovered != nil {
-					logger.Errorf("batch-requests subrequest panic: %v\n%s", recovered, debug.Stack())
-					resp = abortResponse()
+					if recovered == http.ErrAbortHandler {
+						resp = abortResponse()
+						return
+					}
+					panic(recovered)
 				}
 			}()
 			handler.ServeHTTP(recorder, req)

@@ -17,9 +17,14 @@ import (
 	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
-	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/runtime"
 	"github.com/wklken/apisix-go/pkg/util"
+)
+
+const (
+	batchCorePanicHelperEnv      = "APISIX_BATCH_CORE_PANIC_HELPER"
+	batchCorePanicStartedMarker  = "core-panic-started"
+	batchCorePanicReturnedMarker = "core-panic-returned"
 )
 
 func TestMetadataSchemaRejectsNonpositiveLimits(t *testing.T) {
@@ -347,42 +352,35 @@ func TestHandlerConvertsAbortHandlerToBadGateway(t *testing.T) {
 	}
 }
 
-func TestHandlerContainsNormalPanicInSubprocess(t *testing.T) {
-	const childEnv = "APISIX_GO_BATCH_PANIC_SUBPROCESS"
-	if os.Getenv(childEnv) == "1" {
-		var logMessage string
-		stop := logger.ReplaceObserver("batch-requests-panic-test", func(entry logger.Entry) {
-			logMessage = entry.Message
-		})
-		defer stop()
+func TestBatchSubrequestCorePanicTerminatesSubprocess(t *testing.T) {
+	command := exec.Command(os.Args[0], "-test.run=^TestBatchSubrequestCorePanicHelper$")
+	command.Env = append(os.Environ(), batchCorePanicHelperEnv+"=1")
+	output, err := command.CombinedOutput()
+	if err == nil {
+		t.Fatalf("core worker panic returned as an ordinary batch response; output:\n%s", output)
+	}
+	if !bytes.Contains(output, []byte(batchCorePanicStartedMarker)) {
+		t.Fatalf("core worker panic subprocess did not reach panic marker: %v\n%s", err, output)
+	}
+	if bytes.Contains(output, []byte(batchCorePanicReturnedMarker)) {
+		t.Fatalf("core worker panic returned from the batch handler: %v\n%s", err, output)
+	}
+}
 
-		handler := NewHandlerWithLimits(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-			panic("normal batch worker panic")
-		}), Limits{})
-		request := httptest.NewRequest(http.MethodPost, DefaultURI, strings.NewReader(`{
-			"pipeline": [{"path":"/panic"}]
-		}`))
-		response := httptest.NewRecorder()
-		handler.ServeHTTP(response, request)
-
-		responses := decodePipelineResponses(t, response.Body.String())
-		if responses[0].Status != http.StatusBadGateway ||
-			responses[0].Reason != http.StatusText(http.StatusBadGateway) {
-			t.Fatalf("pipeline response = %#v, want bounded 502", responses[0])
-		}
-		if !strings.Contains(logMessage, "batch-requests subrequest panic") ||
-			!strings.Contains(logMessage, "goroutine") {
-			t.Fatalf("panic log = %q, want panic marker and stack", logMessage)
-		}
+func TestBatchSubrequestCorePanicHelper(t *testing.T) {
+	if os.Getenv(batchCorePanicHelperEnv) != "1" {
 		return
 	}
-
-	command := exec.Command(os.Args[0], "-test.run", "^TestHandlerContainsNormalPanicInSubprocess$")
-	command.Env = append(os.Environ(), childEnv+"=1")
-	output, err := command.CombinedOutput()
-	if err != nil {
-		t.Fatalf("normal worker panic terminated subprocess: %v\n%s", err, output)
-	}
+	want := &struct{ message string }{message: "raw core panic"}
+	handler := NewHandlerWithLimits(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		_, _ = fmt.Fprintln(os.Stderr, batchCorePanicStartedMarker)
+		panic(want)
+	}), Limits{})
+	request := httptest.NewRequest(http.MethodPost, DefaultURI, strings.NewReader(`{
+		"pipeline": [{"path":"/panic"}]
+	}`))
+	handler.ServeHTTP(httptest.NewRecorder(), request)
+	_, _ = fmt.Fprintln(os.Stderr, batchCorePanicReturnedMarker)
 }
 
 func TestHandlerPreservesRepeatedResponseHeaders(t *testing.T) {

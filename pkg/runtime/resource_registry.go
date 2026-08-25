@@ -32,6 +32,21 @@ type ResourceKey struct {
 // function. A failed factory is not retained by the registry.
 type ResourceFactory[T any] func(context.Context) (T, func(context.Context) error, error)
 
+type resourceCloseAttempt struct {
+	done       chan struct{}
+	err        error
+	panicValue any
+	panicked   bool
+	terminal   bool
+}
+
+type resourceCloseResult struct {
+	err        error
+	panicValue any
+	panicked   bool
+	terminal   bool
+}
+
 type resourceEntry struct {
 	ready           chan struct{}
 	value           any
@@ -39,50 +54,211 @@ type resourceEntry struct {
 	createErr       error
 	creatorCanceled bool
 	references      int
-	closeOnce       sync.Once
-	closeErr        error
+
+	closeMu               sync.Mutex
+	closeAttempt          *resourceCloseAttempt
+	terminal              bool
+	terminalErr           error
+	terminalPanic         any
+	terminalPanicked      bool
+	terminalDone          chan struct{}
+	terminalDonePublished bool
 }
 
-func (e *resourceEntry) close(ctx context.Context) error {
-	<-e.ready
-	if e.createErr != nil {
-		return nil
+func (e *resourceEntry) close(ctx context.Context) resourceCloseResult {
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	e.closeOnce.Do(func() {
-		if e.closeResource != nil {
-			e.closeErr = e.closeResource(ctx)
+
+	e.closeMu.Lock()
+	if e.terminal {
+		err := e.terminalErr
+		panicValue := e.terminalPanic
+		panicked := e.terminalPanicked
+		e.closeMu.Unlock()
+		return resourceCloseResult{
+			err:        err,
+			panicValue: panicValue,
+			panicked:   panicked,
+			terminal:   true,
 		}
-	})
-	return e.closeErr
+	}
+	if attempt := e.closeAttempt; attempt != nil {
+		e.closeMu.Unlock()
+		return waitResourceCloseAttempt(ctx, attempt)
+	}
+	attempt := &resourceCloseAttempt{done: make(chan struct{})}
+	e.closeAttempt = attempt
+	e.closeMu.Unlock()
+
+	ready := false
+	select {
+	case <-e.ready:
+		ready = true
+	default:
+	}
+	var err error
+	var panicValue any
+	var panicked bool
+	func() {
+		completed := false
+		defer func() {
+			if !completed {
+				panicValue = recover()
+				panicked = true
+			}
+		}()
+		if ready {
+			if e.createErr == nil && e.closeResource != nil {
+				err = e.closeResource(ctx)
+			}
+		} else {
+			select {
+			case <-e.ready:
+				if e.createErr == nil && e.closeResource != nil {
+					err = e.closeResource(ctx)
+				}
+			case <-ctx.Done():
+				err = ctx.Err()
+			}
+		}
+		completed = true
+	}()
+
+	e.closeMu.Lock()
+	attempt.err = err
+	attempt.panicValue = panicValue
+	attempt.panicked = panicked
+	if !panicked && incompleteResourceClose(err) {
+		if e.closeAttempt == attempt {
+			e.closeAttempt = nil
+		}
+		close(attempt.done)
+		e.closeMu.Unlock()
+		return resourceCloseResult{err: err}
+	}
+	e.terminal = true
+	e.terminalErr = err
+	e.terminalPanic = panicValue
+	e.terminalPanicked = panicked
+	e.closeAttempt = nil
+	attempt.terminal = true
+	close(attempt.done)
+	e.closeMu.Unlock()
+	return resourceCloseResult{
+		err:        err,
+		panicValue: panicValue,
+		panicked:   panicked,
+		terminal:   true,
+	}
+}
+
+func waitResourceCloseAttempt(ctx context.Context, attempt *resourceCloseAttempt) resourceCloseResult {
+	select {
+	case <-attempt.done:
+		return replayResourceCloseAttempt(attempt)
+	default:
+	}
+	select {
+	case <-attempt.done:
+		return replayResourceCloseAttempt(attempt)
+	case <-ctx.Done():
+		select {
+		case <-attempt.done:
+			return replayResourceCloseAttempt(attempt)
+		default:
+			return resourceCloseResult{err: ctx.Err()}
+		}
+	}
+}
+
+func replayResourceCloseAttempt(attempt *resourceCloseAttempt) resourceCloseResult {
+	return resourceCloseResult{
+		err:        attempt.err,
+		panicValue: attempt.panicValue,
+		panicked:   attempt.panicked,
+		terminal:   attempt.terminal,
+	}
+}
+
+func incompleteResourceClose(err error) bool {
+	if isContextCancellation(err) {
+		return true
+	}
+	var residual *TaskResidualError
+	return errors.As(err, &residual)
+}
+
+func (e *resourceEntry) terminalResult() (bool, error) {
+	e.closeMu.Lock()
+	defer e.closeMu.Unlock()
+	return e.terminal, e.terminalErr
+}
+
+func (e *resourceEntry) publishTerminalDone() {
+	e.closeMu.Lock()
+	if !e.terminalDonePublished {
+		e.terminalDonePublished = true
+		close(e.terminalDone)
+	}
+	e.closeMu.Unlock()
+}
+
+type resourceRegistryCloseAttempt struct {
+	done       chan struct{}
+	err        error
+	panicValue any
+	panicked   bool
 }
 
 // ResourceRegistry interns resources by identity and owns their terminal
 // shutdown. A resource remains alive until its final lease is released or the
 // registry is closed.
 type ResourceRegistry struct {
-	mu        sync.Mutex
-	entries   map[ResourceKey]*resourceEntry
-	closing   map[*resourceEntry]struct{}
-	closed    bool
-	closeOnce sync.Once
-	closeErr  error
+	mu      sync.Mutex
+	entries map[ResourceKey]*resourceEntry
+	closing map[ResourceKey]*resourceEntry
+	closed  bool
+
+	closedDone    chan struct{}
+	closeAttempt  *resourceRegistryCloseAttempt
+	closeRecorded map[*resourceEntry]struct{}
+	closeErrors   []error
+	closeTerminal bool
+	closeErr      error
+	closePanic    any
+	closePanicked bool
+
+	beforeCloseCommitHook func()
 }
 
 // NewResourceRegistry creates an empty resource registry.
 func NewResourceRegistry() *ResourceRegistry {
 	return &ResourceRegistry{
-		entries: make(map[ResourceKey]*resourceEntry),
-		closing: make(map[*resourceEntry]struct{}),
+		entries:       make(map[ResourceKey]*resourceEntry),
+		closing:       make(map[ResourceKey]*resourceEntry),
+		closedDone:    make(chan struct{}),
+		closeRecorded: make(map[*resourceEntry]struct{}),
 	}
 }
 
 // ResourceLease is a typed reference to one shared resource. Release is
-// idempotent and replays the result of its first call.
+// idempotent. A final lease retains authority to retry an incomplete close.
 type ResourceLease[T any] struct {
-	value       T
-	release     func(context.Context) error
-	releaseOnce sync.Once
-	releaseErr  error
+	value    T
+	registry *ResourceRegistry
+	key      ResourceKey
+	entry    *resourceEntry
+
+	afterCloseHook func()
+
+	mu                sync.Mutex
+	referenceReleased bool
+	finalReference    bool
+	terminal          bool
+	terminalErr       error
+	terminalPanic     any
+	terminalPanicked  bool
 }
 
 // Value returns the leased resource.
@@ -92,10 +268,49 @@ func (l *ResourceLease[T]) Value() T {
 
 // Release gives up this lease. The final release closes the resource.
 func (l *ResourceLease[T]) Release(ctx context.Context) error {
-	l.releaseOnce.Do(func() {
-		l.releaseErr = l.release(ctx)
-	})
-	return l.releaseErr
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	l.mu.Lock()
+	if l.terminal {
+		err := l.terminalErr
+		panicValue := l.terminalPanic
+		panicked := l.terminalPanicked
+		l.mu.Unlock()
+		if panicked {
+			panic(panicValue)
+		}
+		return err
+	}
+	if !l.referenceReleased {
+		l.referenceReleased = true
+		l.finalReference = l.registry.releaseReference(l.key, l.entry)
+		if !l.finalReference {
+			l.terminal = true
+			l.mu.Unlock()
+			return nil
+		}
+	}
+	l.mu.Unlock()
+
+	result := l.entry.close(ctx)
+	if l.afterCloseHook != nil {
+		l.afterCloseHook()
+	}
+	if result.terminal {
+		l.registry.completeEntryResult(l.key, l.entry, result)
+		l.mu.Lock()
+		l.terminal = true
+		l.terminalErr = result.err
+		l.terminalPanic = result.panicValue
+		l.terminalPanicked = result.panicked
+		l.mu.Unlock()
+		if result.panicked {
+			panic(result.panicValue)
+		}
+		return result.err
+	}
+	return result.err
 }
 
 // Acquire returns a typed lease for key. Concurrent acquisitions of the same
@@ -110,15 +325,25 @@ func Acquire[T any](
 		return nil, ErrInvalidResourceIdentity
 	}
 	for {
-		entry, creator, err := registry.reserve(ctx, key)
+		entry, closing, creator, err := registry.reserve(ctx, key)
 		if err != nil {
 			return nil, err
+		}
+		if closing != nil {
+			select {
+			case <-closing.terminalDone:
+				continue
+			case <-registry.closedDone:
+				return nil, ErrResourceRegistryClosed
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
 		}
 		if creator {
 			value, closeResource, createErr := factory(ctx)
 			registry.complete(key, entry, value, closeResource, createErr, ctx.Err())
 		}
-		value, release, retryableCreatorCancellation, err := registry.await(ctx, key, entry)
+		value, retryableCreatorCancellation, err := registry.await(ctx, key, entry)
 		if err != nil {
 			if !creator && ctx.Err() == nil && retryableCreatorCancellation {
 				continue
@@ -127,32 +352,40 @@ func Acquire[T any](
 		}
 		typed, ok := value.(T)
 		if !ok {
-			releaseErr := release(context.Background())
+			mismatched := &ResourceLease[any]{
+				value: value, registry: registry, key: key, entry: entry,
+			}
+			releaseErr := mismatched.Release(context.Background())
 			return nil, joinReleaseError(ErrResourceTypeMismatch, releaseErr)
 		}
-		return &ResourceLease[T]{value: typed, release: release}, nil
+		return &ResourceLease[T]{value: typed, registry: registry, key: key, entry: entry}, nil
 	}
 }
 
 func (r *ResourceRegistry) reserve(
 	ctx context.Context,
 	key ResourceKey,
-) (*resourceEntry, bool, error) {
+) (*resourceEntry, *resourceEntry, bool, error) {
 	if err := ctx.Err(); err != nil {
-		return nil, false, err
+		return nil, nil, false, err
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.closed {
-		return nil, false, ErrResourceRegistryClosed
+		return nil, nil, false, ErrResourceRegistryClosed
+	}
+	if entry, ok := r.closing[key]; ok {
+		return nil, entry, false, nil
 	}
 	if entry, ok := r.entries[key]; ok {
 		entry.references++
-		return entry, false, nil
+		return entry, nil, false, nil
 	}
-	entry := &resourceEntry{ready: make(chan struct{}), references: 1}
+	entry := &resourceEntry{
+		ready: make(chan struct{}), references: 1, terminalDone: make(chan struct{}),
+	}
 	r.entries[key] = entry
-	return entry, true, nil
+	return entry, nil, true, nil
 }
 
 func (r *ResourceRegistry) complete(
@@ -179,25 +412,28 @@ func (r *ResourceRegistry) await(
 	ctx context.Context,
 	key ResourceKey,
 	entry *resourceEntry,
-) (any, func(context.Context) error, bool, error) {
+) (any, bool, error) {
 	if err := ctx.Err(); err != nil {
-		releaseErr := r.release(key, entry, context.Background())
-		return nil, nil, false, joinReleaseError(err, releaseErr)
+		lease := &ResourceLease[any]{registry: r, key: key, entry: entry}
+		releaseErr := lease.Release(context.Background())
+		return nil, false, joinReleaseError(err, releaseErr)
 	}
 	select {
 	case <-entry.ready:
 	case <-ctx.Done():
 		primaryErr := ctx.Err()
-		releaseErr := r.release(key, entry, context.Background())
-		return nil, nil, false, joinReleaseError(primaryErr, releaseErr)
+		lease := &ResourceLease[any]{registry: r, key: key, entry: entry}
+		releaseErr := lease.Release(context.Background())
+		return nil, false, joinReleaseError(primaryErr, releaseErr)
 	}
 	if entry.createErr != nil {
 		retryable := entry.creatorCanceled && isContextCancellation(entry.createErr)
-		return nil, nil, retryable, entry.createErr
+		return nil, retryable, entry.createErr
 	}
 	if err := ctx.Err(); err != nil {
-		releaseErr := r.release(key, entry, context.Background())
-		return nil, nil, false, joinReleaseError(err, releaseErr)
+		lease := &ResourceLease[any]{registry: r, key: key, entry: entry}
+		releaseErr := lease.Release(context.Background())
+		return nil, false, joinReleaseError(err, releaseErr)
 	}
 	r.mu.Lock()
 	if r.closed {
@@ -205,12 +441,10 @@ func (r *ResourceRegistry) await(
 			entry.references--
 		}
 		r.mu.Unlock()
-		return nil, nil, false, ErrResourceRegistryClosed
+		return nil, false, ErrResourceRegistryClosed
 	}
 	r.mu.Unlock()
-	return entry.value, func(releaseCtx context.Context) error {
-		return r.release(key, entry, releaseCtx)
-	}, false, nil
+	return entry.value, false, nil
 }
 
 func isContextCancellation(err error) bool {
@@ -224,29 +458,57 @@ func joinReleaseError(primaryErr, releaseErr error) error {
 	return errors.Join(primaryErr, releaseErr)
 }
 
-func (r *ResourceRegistry) release(key ResourceKey, entry *resourceEntry, ctx context.Context) error {
+func (r *ResourceRegistry) releaseReference(key ResourceKey, entry *resourceEntry) bool {
 	r.mu.Lock()
+	defer r.mu.Unlock()
 	if entry.references > 0 {
 		entry.references--
 	}
-	current := r.entries[key] == entry
-	closeResource := false
-	if current && entry.references == 0 {
+	if r.entries[key] == entry && entry.references == 0 {
 		delete(r.entries, key)
-		r.closing[entry] = struct{}{}
-		closeResource = true
-	} else if !current && r.closed {
-		closeResource = true
+		r.closing[key] = entry
+		return true
 	}
-	r.mu.Unlock()
-	if !closeResource {
-		return nil
+	if r.closing[key] == entry {
+		return true
 	}
-	err := entry.close(ctx)
+	terminal, _ := entry.terminalResult()
+	return terminal
+}
+
+func (r *ResourceRegistry) completeEntryResult(
+	key ResourceKey,
+	entry *resourceEntry,
+	terminalResult resourceCloseResult,
+) {
+	if !terminalResult.terminal {
+		return
+	}
 	r.mu.Lock()
-	delete(r.closing, entry)
+	detached := false
+	if r.closing[key] == entry {
+		delete(r.closing, key)
+		detached = true
+	}
+	if detached && r.closed {
+		r.recordTerminalEntryLocked(entry, terminalResult)
+	}
 	r.mu.Unlock()
-	return err
+	entry.publishTerminalDone()
+}
+
+func (r *ResourceRegistry) recordTerminalEntryLocked(entry *resourceEntry, result resourceCloseResult) {
+	if _, recorded := r.closeRecorded[entry]; recorded {
+		return
+	}
+	r.closeRecorded[entry] = struct{}{}
+	if result.err != nil {
+		r.closeErrors = append(r.closeErrors, result.err)
+	}
+	if result.panicked && !r.closePanicked {
+		r.closePanicked = true
+		r.closePanic = result.panicValue
+	}
 }
 
 // Len returns the number of distinct resources accepting leases. Resources
@@ -257,29 +519,132 @@ func (r *ResourceRegistry) Len() int {
 	return len(r.entries)
 }
 
-// Close prevents new acquisitions, waits for in-progress factories, and
-// closes every remaining resource. Repeated calls replay the first result.
+// Close prevents new acquisitions and advances all resources toward terminal
+// close. A later call retries entries whose previous close was incomplete.
 func (r *ResourceRegistry) Close(ctx context.Context) error {
-	r.closeOnce.Do(func() {
-		r.mu.Lock()
-		r.closed = true
-		entries := make([]*resourceEntry, 0, len(r.entries)+len(r.closing))
-		for _, entry := range r.entries {
-			entries = append(entries, entry)
-		}
-		for entry := range r.closing {
-			entries = append(entries, entry)
-		}
-		r.entries = make(map[ResourceKey]*resourceEntry)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	r.mu.Lock()
+	if r.closeTerminal {
+		err := r.closeErr
+		panicValue := r.closePanic
+		panicked := r.closePanicked
 		r.mu.Unlock()
+		if panicked {
+			panic(panicValue)
+		}
+		return err
+	}
+	if attempt := r.closeAttempt; attempt != nil {
+		r.mu.Unlock()
+		return waitResourceRegistryCloseAttempt(ctx, attempt)
+	}
+	if !r.closed {
+		r.closed = true
+		close(r.closedDone)
+	}
+	for key, entry := range r.entries {
+		r.closing[key] = entry
+		delete(r.entries, key)
+	}
+	type keyedEntry struct {
+		key   ResourceKey
+		entry *resourceEntry
+	}
+	entries := make([]keyedEntry, 0, len(r.closing))
+	for key, entry := range r.closing {
+		entries = append(entries, keyedEntry{key: key, entry: entry})
+	}
+	attempt := &resourceRegistryCloseAttempt{done: make(chan struct{})}
+	r.closeAttempt = attempt
+	attempt.panicked = r.closePanicked
+	attempt.panicValue = r.closePanic
+	attemptErrors := append([]error(nil), r.closeErrors...)
+	r.mu.Unlock()
 
-		errs := make([]error, 0, len(entries))
-		for _, entry := range entries {
-			if err := entry.close(ctx); err != nil {
-				errs = append(errs, err)
+	attemptIncomplete := false
+	for _, item := range entries {
+		result := item.entry.close(ctx)
+		if result.terminal {
+			r.completeEntryResult(item.key, item.entry, result)
+			if result.panicked && !attempt.panicked {
+				attempt.panicked = true
+				attempt.panicValue = result.panicValue
 			}
 		}
-		r.closeErr = errors.Join(errs...)
-	})
-	return r.closeErr
+		if result.err != nil {
+			attemptErrors = append(attemptErrors, result.err)
+		}
+		if !result.terminal {
+			attemptIncomplete = true
+		}
+	}
+
+	if r.beforeCloseCommitHook != nil {
+		r.beforeCloseCommitHook()
+	}
+	r.mu.Lock()
+	if attempt.panicked && !r.closePanicked {
+		r.closePanicked = true
+		r.closePanic = attempt.panicValue
+	}
+	attempt.err = joinErrors(attemptErrors)
+	if len(r.closing) == 0 {
+		r.closeTerminal = true
+		if attemptIncomplete {
+			r.closeErr = joinErrors(append([]error(nil), r.closeErrors...))
+		} else {
+			r.closeErr = attempt.err
+		}
+	}
+	if r.closeAttempt == attempt {
+		r.closeAttempt = nil
+	}
+	close(attempt.done)
+	err := attempt.err
+	panicValue := attempt.panicValue
+	panicked := attempt.panicked
+	r.mu.Unlock()
+	if panicked {
+		panic(panicValue)
+	}
+	return err
+}
+
+func joinErrors(errs []error) error {
+	switch len(errs) {
+	case 0:
+		return nil
+	case 1:
+		return errs[0]
+	default:
+		return errors.Join(errs...)
+	}
+}
+
+func waitResourceRegistryCloseAttempt(ctx context.Context, attempt *resourceRegistryCloseAttempt) error {
+	select {
+	case <-attempt.done:
+		return replayResourceRegistryCloseAttempt(attempt)
+	default:
+	}
+	select {
+	case <-attempt.done:
+		return replayResourceRegistryCloseAttempt(attempt)
+	case <-ctx.Done():
+		select {
+		case <-attempt.done:
+			return replayResourceRegistryCloseAttempt(attempt)
+		default:
+			return ctx.Err()
+		}
+	}
+}
+
+func replayResourceRegistryCloseAttempt(attempt *resourceRegistryCloseAttempt) error {
+	if attempt.panicked {
+		panic(attempt.panicValue)
+	}
+	return attempt.err
 }

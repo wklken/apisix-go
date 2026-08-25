@@ -43,8 +43,15 @@ type PreparedGeneration struct {
 	bindingOpsMu     sync.Mutex
 	closeStartedOnce sync.Once
 	terminal         bool
-	closeOnce        sync.Once
+	closeMu          sync.Mutex
+	closeAttempt     *preparedCloseAttempt
+	cleanupTerminal  bool
 	closeErr         error
+}
+
+type preparedCloseAttempt struct {
+	done chan struct{}
+	err  error
 }
 
 // PublicationSet returns a defensive copy of this generation's publication
@@ -171,7 +178,7 @@ func (prepared *PreparedGeneration) Close(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	cleanupCtx := context.WithoutCancel(ctx)
+
 	prepared.bindingOpsMu.Lock()
 	closeStarted := prepared.bindingOps.closeStarted
 	prepared.bindingOpsMu.Unlock()
@@ -185,48 +192,129 @@ func (prepared *PreparedGeneration) Close(ctx context.Context) error {
 	prepared.terminal = true
 	prepared.materializeMu.Unlock()
 
-	prepared.closeOnce.Do(func() {
-		prepared.materializeMu.Lock()
-		cleanup := prepared.cleanup
-		prepared.materializeMu.Unlock()
-		if cleanup != nil {
-			if cleanup.Close(cleanupCtx) != nil {
-				prepared.closeErr = errPreparedGenerationCleanupFailed
-			}
-		}
+	prepared.closeMu.Lock()
+	if prepared.cleanupTerminal {
+		closeErr := prepared.closeErr
+		prepared.closeMu.Unlock()
+		return closeErr
+	}
+	if prepared.closeAttempt != nil {
+		attempt := prepared.closeAttempt
+		prepared.closeMu.Unlock()
+		return waitPreparedCloseAttempt(ctx, attempt)
+	}
+	attempt := &preparedCloseAttempt{done: make(chan struct{})}
+	prepared.closeAttempt = attempt
+	prepared.materializeMu.Lock()
+	cleanup := prepared.cleanup
+	prepared.materializeMu.Unlock()
+	prepared.closeMu.Unlock()
 
-		prepared.materializeMu.Lock()
-		if prepared.httpSnapshot != nil {
-			prepared.httpSnapshot.revoke()
+	var cleanupErr error
+	if cleanup != nil {
+		cleanupErr = cleanup.Close(ctx)
+	}
+	terminalCleanup := cleanup == nil || cleanup.terminallyClosed()
+	attemptErr := preparedCleanupResult(cleanupErr, terminalCleanup)
+	var detach func()
+	if terminalCleanup {
+		detach = prepared.clearTerminalAuthorities()
+	}
+	if detach != nil {
+		detach()
+	}
+
+	prepared.closeMu.Lock()
+	if terminalCleanup {
+		prepared.cleanupTerminal = true
+		prepared.closeErr = attemptErr
+	}
+	attempt.err = attemptErr
+	if prepared.closeAttempt == attempt {
+		prepared.closeAttempt = nil
+	}
+	close(attempt.done)
+	prepared.closeMu.Unlock()
+	return attemptErr
+}
+
+func waitPreparedCloseAttempt(ctx context.Context, attempt *preparedCloseAttempt) error {
+	select {
+	case <-attempt.done:
+		return attempt.err
+	default:
+	}
+	select {
+	case <-attempt.done:
+		return attempt.err
+	case <-ctx.Done():
+		select {
+		case <-attempt.done:
+			return attempt.err
+		default:
+			return ctx.Err()
 		}
-		prepared.httpSnapshot = nil
-		if prepared.streamSnapshot != nil {
-			prepared.streamSnapshot.revoke()
+	}
+}
+
+func (prepared *PreparedGeneration) clearTerminalAuthorities() func() {
+	prepared.materializeMu.Lock()
+	if prepared.httpSnapshot != nil {
+		prepared.httpSnapshot.revoke()
+	}
+	prepared.httpSnapshot = nil
+	if prepared.streamSnapshot != nil {
+		prepared.streamSnapshot.revoke()
+	}
+	prepared.streamSnapshot = nil
+	prepared.attempt = PreparationAttempt{}
+	prepared.metadata = runtime.MetadataView{}
+	prepared.consumers = nil
+	prepared.lookup = consumerLookupView{}
+	prepared.tasks = nil
+	prepared.effective = nil
+	prepared.manifest = nil
+	prepared.registry = nil
+	prepared.observers = WorkerRuntimeObservers{}
+	prepared.clusterObservers = nil
+	prepared.materializer = nil
+	prepared.trustedClientCAPEM = nil
+	prepared.cleanup = nil
+	prepared.bindingOpsMu.Lock()
+	prepared.bindingOps = effectiveBindingOps{}
+	prepared.bindingOpsMu.Unlock()
+	detach := prepared.detach
+	prepared.detach = nil
+	prepared.materializeMu.Unlock()
+	return detach
+}
+
+func preparedCleanupResult(cleanupErr error, terminal bool) error {
+	if cleanupErr == nil {
+		return nil
+	}
+	if terminal {
+		return errPreparedGenerationCleanupFailed
+	}
+	causes := []error{
+		errPreparedGenerationCleanupFailed,
+		ErrPreparedGenerationCleanupIncomplete,
+	}
+	var residual *runtime.TaskResidualError
+	if errors.As(cleanupErr, &residual) {
+		causes = append(causes, residual)
+	}
+	for _, marker := range []error{
+		context.Canceled,
+		context.DeadlineExceeded,
+		errWorkerGenerationCleanupFailed,
+		errWorkerRegistrationCleanupFailed,
+	} {
+		if errors.Is(cleanupErr, marker) {
+			causes = append(causes, marker)
 		}
-		prepared.streamSnapshot = nil
-		prepared.attempt = PreparationAttempt{}
-		prepared.metadata = runtime.MetadataView{}
-		prepared.consumers = nil
-		prepared.lookup = consumerLookupView{}
-		prepared.tasks = nil
-		prepared.effective = nil
-		prepared.manifest = nil
-		prepared.registry = nil
-		prepared.observers = WorkerRuntimeObservers{}
-		prepared.clusterObservers = nil
-		prepared.materializer = nil
-		prepared.cleanup = nil
-		prepared.bindingOpsMu.Lock()
-		prepared.bindingOps = effectiveBindingOps{}
-		prepared.bindingOpsMu.Unlock()
-		detach := prepared.detach
-		prepared.detach = nil
-		prepared.materializeMu.Unlock()
-		if detach != nil {
-			detach()
-		}
-	})
-	return prepared.closeErr
+	}
+	return errors.Join(causes...)
 }
 
 type consumerLookupView struct {

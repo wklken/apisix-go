@@ -128,6 +128,69 @@ func TestPreparedGenerationExactDiscardClosesOnce(t *testing.T) {
 	}
 }
 
+func TestPreparedGenerationCloseResidualRetainsOwnersUntilRetry(t *testing.T) {
+	prepared, cleanupCalls, detachCalls := preparedGenerationFixture(t)
+	tasks := runtime.NewTaskRegistry(context.Background(), nil)
+	prepared.tasks = tasks
+	if err := prepared.cleanup.Own(cleanupQuiesce, "generation-tasks", func(ctx context.Context) error {
+		residuals, stopErr := tasks.Stop(ctx)
+		if stopErr != nil || len(residuals) != 0 {
+			return errors.Join(errWorkerGenerationCleanupFailed, stopErr)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	set := prepared.PublicationSet()
+	release := make(chan struct{})
+	started := make(chan struct{})
+	if err := tasks.Go(runtime.TaskSpec{
+		Owner: "plugin/test/attempt/blocking", Criticality: runtime.TaskPlugin,
+	}, func(context.Context) error {
+		close(started)
+		<-release
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	<-started
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	firstDone := make(chan error, 1)
+	go func() { firstDone <- prepared.DiscardPrepared(ctx, set) }()
+	var first error
+	select {
+	case first = <-firstDone:
+	case <-time.After(time.Second):
+		close(release)
+		first = <-firstDone
+		t.Fatalf("first discard blocked past caller deadline: %v", first)
+	}
+	var residual *runtime.TaskResidualError
+	if !errors.As(first, &residual) || !errors.Is(first, context.DeadlineExceeded) ||
+		!errors.Is(first, ErrPreparedGenerationCleanupIncomplete) ||
+		!errors.Is(first, errPreparedGenerationCleanupFailed) {
+		t.Fatalf("first discard = %v, residual = %#v", first, residual)
+	}
+	if prepared.cleanup == nil || prepared.tasks == nil || prepared.detach == nil ||
+		cleanupCalls.Load() != 0 || detachCalls.Load() != 0 {
+		t.Fatal("incomplete close dropped or released cleanup, task, or detach ownership")
+	}
+	if prepared.PublicationSet().DesiredRevision != 0 {
+		t.Fatal("terminal observation remained visible after close began")
+	}
+
+	close(release)
+	if err := prepared.DiscardPrepared(context.Background(), set); err != nil {
+		t.Fatalf("retry discard = %v", err)
+	}
+	if prepared.cleanup != nil || prepared.tasks != nil || prepared.detach != nil ||
+		cleanupCalls.Load() != 1 || detachCalls.Load() != 1 {
+		t.Fatal("terminal retry retained generation authority")
+	}
+}
+
 func TestPreparedGenerationMismatchedDiscardLeavesOwnersLive(t *testing.T) {
 	original := preparedGenerationPublicationSet(t)
 	prepared, cleanupCalls, _ := preparedGenerationFixture(t)
@@ -254,7 +317,7 @@ func TestPreparedGenerationConcurrentExactDiscardAndCloseRunsCleanupOnce(t *test
 	}
 }
 
-func TestPreparedGenerationCanceledCloseQuiescesTasksBeforeReleaseAndReplaysError(t *testing.T) {
+func TestPreparedGenerationCanceledCloseQuiescesTasksBeforeReleaseAndRetries(t *testing.T) {
 	prepared, _, detachCalls := preparedGenerationFixture(t)
 	set := prepared.PublicationSet()
 	tasks := runtime.NewTaskRegistry(context.Background(), nil)
@@ -276,16 +339,14 @@ func TestPreparedGenerationCanceledCloseQuiescesTasksBeforeReleaseAndReplaysErro
 		t.Fatalf("TaskRegistry.Go() error = %v", err)
 	}
 
-	quiesceContext := make(chan context.Context, 1)
-	continueQuiesce := make(chan struct{})
+	quiesceContexts := make(chan context.Context, 2)
 	if err := prepared.cleanup.Own(cleanupQuiesce, "tasks", func(ctx context.Context) error {
-		quiesceContext <- ctx
-		<-continueQuiesce
-		residuals, err := tasks.Stop(ctx)
-		if len(residuals) != 0 {
-			return errors.Join(err, errors.New("task registry retained residuals"))
+		quiesceContexts <- ctx
+		residuals, stopErr := tasks.Stop(ctx)
+		if stopErr != nil || len(residuals) != 0 {
+			return errors.Join(stopErr, errors.New("task registry retained residuals"))
 		}
-		return err
+		return nil
 	}); err != nil {
 		t.Fatalf("Own(tasks) error = %v", err)
 	}
@@ -312,64 +373,46 @@ func TestPreparedGenerationCanceledCloseQuiescesTasksBeforeReleaseAndReplaysErro
 		context.WithValue(context.Background(), cleanupContextKey{}, "caller-value"),
 	)
 	cancel()
-	firstDone := make(chan error, 1)
-	go func() {
-		firstDone <- prepared.Close(callerCtx)
-	}()
-
-	cleanupCtx := waitPreparedGenerationSignal(t, quiesceContext, "cleanup context")
-	cancelLeaked := cleanupCtx.Err() != nil || cleanupCtx.Done() != nil
+	firstErr := prepared.Close(callerCtx)
+	cleanupCtx := waitPreparedGenerationSignal(t, quiesceContexts, "first cleanup context")
+	if cleanupCtx.Err() != context.Canceled {
+		t.Fatalf("cleanup context error = %v, want canceled caller context", cleanupCtx.Err())
+	}
 	if value := cleanupCtx.Value(cleanupContextKey{}); value != "caller-value" {
 		t.Errorf("cleanup context value = %v, want caller-value", value)
 	}
-	close(continueQuiesce)
+	var residual *runtime.TaskResidualError
+	if !errors.As(firstErr, &residual) || !errors.Is(firstErr, context.Canceled) ||
+		!errors.Is(firstErr, ErrPreparedGenerationCleanupIncomplete) {
+		t.Fatalf("first Close() = %v, residual = %#v", firstErr, residual)
+	}
+	select {
+	case <-releaseEntered:
+		t.Fatal("release callback ran before task quiescence")
+	default:
+	}
 	waitPreparedGenerationSignal(t, taskCanceled, "task cancellation")
-
-	const concurrentCallers = 8
-	concurrentErrs := make(chan error, concurrentCallers)
-	for range concurrentCallers {
-		go func() {
-			concurrentErrs <- prepared.Close(context.Background())
-		}()
-	}
-
-	if cancelLeaked {
-		waitPreparedGenerationSignal(t, releaseEntered, "premature release")
-	} else {
-		select {
-		case <-releaseEntered:
-			releasedBeforeTaskExit.Store(true)
-		default:
-		}
-	}
 	close(allowTaskExit)
 	waitPreparedGenerationSignal(t, taskExited, "task exit")
-	if !cancelLeaked {
-		waitPreparedGenerationSignal(t, releaseEntered, "release after task exit")
-	}
-	close(allowReleaseReturn)
 
-	firstErr := waitPreparedGenerationSignal(t, firstDone, "first Close result")
-	if cancelLeaked {
-		t.Error("cleanup inherited caller cancellation")
+	retryDone := make(chan error, 1)
+	go func() { retryDone <- prepared.Close(context.Background()) }()
+	waitPreparedGenerationSignal(t, quiesceContexts, "retry cleanup context")
+	waitPreparedGenerationSignal(t, releaseEntered, "release after task exit")
+	close(allowReleaseReturn)
+	retryErr := waitPreparedGenerationSignal(t, retryDone, "retry Close result")
+	if retryErr != errPreparedGenerationCleanupFailed {
+		t.Fatalf("retry Close() error = %v, want safe marker", retryErr)
 	}
 	if releasedBeforeTaskExit.Load() {
 		t.Error("release callback ran before task exit")
 	}
-	if errors.Is(firstErr, context.Canceled) {
-		t.Fatalf("first Close() error = %v, cleanup inherited caller cancellation", firstErr)
+	assertWorkerErrorRedacted(t, retryErr, releaseErr)
+	if err := prepared.Close(context.Background()); err != retryErr {
+		t.Fatalf("repeated Close() error = %v, want replayed %v", err, retryErr)
 	}
-	assertWorkerErrorRedacted(t, firstErr, releaseErr)
-	for range concurrentCallers {
-		if err := <-concurrentErrs; err != firstErr {
-			t.Fatalf("concurrent Close() error = %v, want replayed %v", err, firstErr)
-		}
-	}
-	if err := prepared.Close(context.Background()); err != firstErr {
-		t.Fatalf("repeated Close() error = %v, want replayed %v", err, firstErr)
-	}
-	if err := prepared.DiscardPrepared(context.Background(), set); err != firstErr {
-		t.Fatalf("exact DiscardPrepared() error = %v, want replayed %v", err, firstErr)
+	if err := prepared.DiscardPrepared(context.Background(), set); err != retryErr {
+		t.Fatalf("exact DiscardPrepared() error = %v, want replayed %v", err, retryErr)
 	}
 	if got := detachCalls.Load(); got != 1 {
 		t.Fatalf("detach calls = %d, want 1", got)

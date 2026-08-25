@@ -102,14 +102,22 @@ func TestWorkerCompilerFactoryCloseRejectsCandidateAndRecoveryDuringCleanup(t *t
 		nil,
 	)
 	if got != nil || candidateErr != ErrWorkerCompilerFactoryClosed {
-		t.Fatalf("candidate after closed mark = %#v/%v, want exact closed sentinel", got, candidateErr)
+		t.Fatalf(
+			"candidate after closed mark = %#v/%v, want exact closed sentinel",
+			got,
+			candidateErr,
+		)
 	}
 	expired, cancelDeadline := context.WithDeadline(context.Background(), time.Unix(1, 0))
 	defer cancelDeadline()
 	revisions, committed := workerRecoveryCommitted(t)
 	got, recoveryErr := factory.PrepareRecovery(expired, revisions, committed, nil)
 	if got != nil || recoveryErr != ErrWorkerCompilerFactoryClosed {
-		t.Fatalf("recovery after closed mark = %#v/%v, want exact closed sentinel", got, recoveryErr)
+		t.Fatalf(
+			"recovery after closed mark = %#v/%v, want exact closed sentinel",
+			got,
+			recoveryErr,
+		)
 	}
 	candidateCalls, recoveryCalls := materializer.callCounts()
 	if candidateCalls != 1 || recoveryCalls != 0 || checkpoints.Load() != 0 {
@@ -148,7 +156,11 @@ func TestWorkerCompilerFactoryCloseUsesStableAttemptOrderAndClosesRegistryLast(t
 			)),
 		}, nil)
 		prepared, err := factory.PrepareGeneration(
-			context.Background(), ticketForSnapshot(desired, generation.DomainHTTP), desired, nil, nil,
+			context.Background(),
+			ticketForSnapshot(desired, generation.DomainHTTP),
+			desired,
+			nil,
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -254,6 +266,382 @@ func TestWorkerCompilerFactoryCloseUsesStableAttemptOrderAndClosesRegistryLast(t
 	}
 }
 
+func TestWorkerCompilerFactoryCloseResidualRetainsGenerationAndDefersRegistry(t *testing.T) {
+	factory, _ := newWorkerRecoveryTestFactory(t)
+	blockedDesired := mustGenerationSnapshot(t, 9013, nil, nil)
+	blocked, err := factory.PrepareGeneration(
+		context.Background(),
+		ticketForSnapshot(blockedDesired, generation.DomainHTTP),
+		blockedDesired,
+		nil,
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminalDesired := mustGenerationSnapshot(t, 9014, nil, nil)
+	terminal, err := factory.PrepareGeneration(
+		context.Background(),
+		ticketForSnapshot(terminalDesired, generation.DomainHTTP),
+		terminalDesired,
+		nil,
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if terminal == blocked {
+		t.Fatal("fixture returned the same generation twice")
+	}
+	release := make(chan struct{})
+	started := make(chan struct{})
+	if err := blocked.tasks.Go(runtime.TaskSpec{
+		Owner: "plugin/test/factory-blocking", Criticality: runtime.TaskPlugin,
+	}, func(context.Context) error {
+		close(started)
+		<-release
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	var registryCloses atomic.Int64
+	lease := workerFactoryCloseSentinel(t, factory, "deferred-registry", &registryCloses)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	firstDone := make(chan error, 1)
+	go func() { firstDone <- factory.Close(ctx) }()
+	var first error
+	select {
+	case first = <-firstDone:
+	case <-time.After(time.Second):
+		close(release)
+		first = <-firstDone
+		t.Fatalf("first factory Close blocked past caller deadline: %v", first)
+	}
+	var residual *runtime.TaskResidualError
+	if !errors.As(first, &residual) || !errors.Is(first, context.DeadlineExceeded) ||
+		!errors.Is(first, ErrPreparedGenerationCleanupIncomplete) ||
+		!errors.Is(first, errWorkerCompilerFactoryCleanupFailed) {
+		t.Fatalf("first factory Close = %v, residual = %#v", first, residual)
+	}
+	factory.liveMu.Lock()
+	tracked := factory.live[blocked.attempt.AttemptID()]
+	live := len(factory.live)
+	factory.liveMu.Unlock()
+	if tracked != blocked || live != 1 {
+		t.Fatalf(
+			"incomplete generation ownership = tracked:%p live:%d, want %p/1",
+			tracked,
+			live,
+			blocked,
+		)
+	}
+	if registryCloses.Load() != 0 {
+		t.Fatalf("registry closed across residual: closes:%d", registryCloses.Load())
+	}
+	openLease := workerFactoryCloseSentinel(t, factory, "deferred-registry-open", new(atomic.Int64))
+
+	close(release)
+	if err := factory.Close(context.Background()); err != nil {
+		t.Fatalf("retry factory Close = %v", err)
+	}
+	if factory.registry.Len() != 0 || registryCloses.Load() != 1 {
+		t.Fatalf(
+			"terminal registry cleanup = len:%d closes:%d",
+			factory.registry.Len(),
+			registryCloses.Load(),
+		)
+	}
+	factory.liveMu.Lock()
+	live = len(factory.live)
+	factory.liveMu.Unlock()
+	if live != 0 {
+		t.Fatalf("terminal factory live generations = %d, want 0", live)
+	}
+	if err := lease.Release(context.Background()); err != nil {
+		t.Fatalf("post-registry lease replay = %v", err)
+	}
+	if err := openLease.Release(context.Background()); err != nil {
+		t.Fatalf("post-registry open-check lease replay = %v", err)
+	}
+}
+
+func TestWorkerCompilerFactoryGenerationTaskQuiescerJoinsSafeMarkerAndExactCarrier(t *testing.T) {
+	factory, _ := newWorkerRecoveryTestFactory(t)
+	const owner = "plugin/test/factory-generation-task"
+	started := make(chan struct{})
+	release := make(chan struct{})
+	factory.checkpoint = func(stage string, state workerFactoryCheckpointState) error {
+		if stage != "create-task-registry" {
+			return nil
+		}
+		return state.tasks.Go(
+			runtime.TaskSpec{Owner: owner, Criticality: runtime.TaskPlugin},
+			func(context.Context) error {
+				close(started)
+				<-release
+				return nil
+			},
+		)
+	}
+	desired := mustGenerationSnapshot(t, 9015, nil, nil)
+	if _, err := factory.PrepareGeneration(
+		context.Background(), ticketForSnapshot(desired, generation.DomainHTTP), desired, nil, nil,
+	); err != nil {
+		t.Fatal(err)
+	}
+	<-started
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	firstDone := make(chan error, 1)
+	go func() { firstDone <- factory.Close(ctx) }()
+	var first error
+	select {
+	case first = <-firstDone:
+	case <-time.After(time.Second):
+		close(release)
+		first = <-firstDone
+		t.Fatalf("generation-task Close blocked past caller deadline: %v", first)
+	}
+	var residual *runtime.TaskResidualError
+	if !errors.Is(first, errWorkerGenerationCleanupFailed) || !errors.As(first, &residual) {
+		t.Fatalf("generation-task Close = %v, residual = %#v", first, residual)
+	}
+	if got := residual.Residuals(); !slices.Equal(got, []runtime.TaskResidual{{Owner: owner}}) {
+		t.Fatalf("generation-task residuals = %v, want owner %q", got, owner)
+	}
+
+	close(release)
+	if err := factory.Close(context.Background()); err != nil {
+		t.Fatalf("generation-task retry Close = %v", err)
+	}
+}
+
+func TestWorkerCompilerFactoryCloseRetryPreservesIndependentTerminalErrors(t *testing.T) {
+	factory, materializer := newWorkerRecoveryTestFactory(t)
+	terminalDesired := mustGenerationSnapshot(t, 9016, nil, nil)
+	terminal, err := factory.PrepareGeneration(
+		context.Background(),
+		ticketForSnapshot(terminalDesired, generation.DomainHTTP),
+		terminalDesired,
+		nil,
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blockedDesired := mustGenerationSnapshot(t, 9017, nil, nil)
+	blocked, err := factory.PrepareGeneration(
+		context.Background(),
+		ticketForSnapshot(blockedDesired, generation.DomainHTTP),
+		blockedDesired,
+		nil,
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminalErr := &workerTestSecretError{text: "terminal-generation-error"}
+	registrations := materializer.registrationsSnapshot()
+	if len(registrations) < 2 {
+		t.Fatalf("registrations = %d, want two generations", len(registrations))
+	}
+	registrations[0].closeErr = terminalErr
+	release := make(chan struct{})
+	started := make(chan struct{})
+	if err := blocked.tasks.Go(runtime.TaskSpec{
+		Owner: "plugin/test/independent-terminal", Criticality: runtime.TaskPlugin,
+	}, func(context.Context) error {
+		close(started)
+		<-release
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	<-started
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	firstDone := make(chan error, 1)
+	go func() { firstDone <- factory.Close(ctx) }()
+	var first error
+	select {
+	case first = <-firstDone:
+	case <-time.After(time.Second):
+		close(release)
+		first = <-firstDone
+		t.Fatalf("independent-error Close blocked past caller deadline: %v", first)
+	}
+	if !errors.Is(first, errWorkerCompilerFactoryCleanupFailed) ||
+		!errors.Is(first, ErrPreparedGenerationCleanupIncomplete) {
+		t.Fatalf("first independent-error Close = %v", first)
+	}
+
+	close(release)
+	finalErr := factory.Close(context.Background())
+	if !errors.Is(finalErr, errWorkerCompilerFactoryCleanupFailed) {
+		t.Fatalf("retry independent-error Close = %v, want terminal factory marker", finalErr)
+	}
+	if errors.Is(finalErr, context.DeadlineExceeded) {
+		t.Fatalf("retry retained transient deadline in terminal result: %v", finalErr)
+	}
+	if terminal == blocked {
+		t.Fatal("fixture returned the same generation twice")
+	}
+}
+
+func TestWorkerCompilerFactoryConcurrentRetryHasOneAttemptLeader(t *testing.T) {
+	factory, materializer := newWorkerRecoveryTestFactory(t)
+	desired := mustGenerationSnapshot(t, 9018, nil, nil)
+	prepared, err := factory.PrepareGeneration(
+		context.Background(), ticketForSnapshot(desired, generation.DomainHTTP), desired, nil, nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var attempts atomic.Int64
+	started := make(chan struct{})
+	release := make(chan struct{})
+	if err := prepared.cleanup.Own(cleanupQuiesce, "transient-quiesce", func(context.Context) error {
+		if attempts.Add(1) == 1 {
+			close(started)
+			<-release
+			return errors.New("transient quiesce failure")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var registryCloses atomic.Int64
+	lease := workerFactoryCloseSentinel(t, factory, "concurrent-retry", &registryCloses)
+	firstResult := make(chan error, 1)
+	go func() { firstResult <- factory.Close(context.Background()) }()
+	<-started
+	const callers = 12
+	results := make(chan error, callers)
+	var ready sync.WaitGroup
+	ready.Add(callers)
+	for range callers {
+		go func() {
+			ready.Done()
+			results <- factory.Close(context.Background())
+		}()
+	}
+	ready.Wait()
+	close(release)
+	first := <-firstResult
+	if !errors.Is(first, ErrPreparedGenerationCleanupIncomplete) ||
+		!errors.Is(first, errWorkerCompilerFactoryCleanupFailed) {
+		t.Fatalf("first concurrent retry result = %v", first)
+	}
+	for range callers {
+		if got := <-results; got != first {
+			t.Fatalf("concurrent retry result = %v, want exact attempt result %v", got, first)
+		}
+	}
+	if attempts.Load() != 1 {
+		t.Fatalf("concurrent first attempts = %d, want 1", attempts.Load())
+	}
+	closeDone := factory.Close(context.Background())
+	if closeDone != nil {
+		t.Fatalf("retry after incomplete concurrent attempt = %v", closeDone)
+	}
+	if attempts.Load() != 2 || registryCloses.Load() != 1 {
+		t.Fatalf(
+			"retry attempts/registry closes = %d/%d, want 2/1",
+			attempts.Load(),
+			registryCloses.Load(),
+		)
+	}
+	registrations := materializer.registrationsSnapshot()
+	if len(registrations) != 1 || registrations[0].closed != 1 {
+		t.Fatalf("concurrent generation releases = %#v", registrations)
+	}
+	if err := lease.Release(context.Background()); err != nil {
+		t.Fatalf("concurrent retry lease replay = %v", err)
+	}
+}
+
+func TestWorkerCompilerFactoryCloseRetriesOrdinaryQuiesceFailureWithoutCachingIt(t *testing.T) {
+	factory, _ := newWorkerRecoveryTestFactory(t)
+	desired := mustGenerationSnapshot(t, 9019, nil, nil)
+	prepared, err := factory.PrepareGeneration(
+		context.Background(), ticketForSnapshot(desired, generation.DomainHTTP), desired, nil, nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var attempts atomic.Int64
+	if err := prepared.cleanup.Own(cleanupQuiesce, "ordinary-transient", func(context.Context) error {
+		if attempts.Add(1) == 1 {
+			return errors.New("ordinary transient quiesce failure")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var registryCloses atomic.Int64
+	lease := workerFactoryCloseSentinel(t, factory, "ordinary-quiesce", &registryCloses)
+
+	first := factory.Close(context.Background())
+	if !errors.Is(first, ErrPreparedGenerationCleanupIncomplete) ||
+		!errors.Is(first, errWorkerCompilerFactoryCleanupFailed) {
+		t.Fatalf("ordinary quiesce Close = %v", first)
+	}
+	factory.liveMu.Lock()
+	tracked := factory.live[prepared.attempt.AttemptID()]
+	factory.liveMu.Unlock()
+	if tracked != prepared || registryCloses.Load() != 0 {
+		t.Fatalf("ordinary quiesce retained tracked:%p/closes:%d", tracked, registryCloses.Load())
+	}
+	openLease := workerFactoryCloseSentinel(t, factory, "ordinary-quiesce-open", new(atomic.Int64))
+	if retry := factory.Close(context.Background()); retry != nil {
+		t.Fatalf("ordinary quiesce retry = %v", retry)
+	}
+	if attempts.Load() != 2 || factory.registry.Len() != 0 || registryCloses.Load() != 1 {
+		t.Fatalf(
+			"ordinary quiesce retry state = attempts:%d len:%d closes:%d",
+			attempts.Load(),
+			factory.registry.Len(),
+			registryCloses.Load(),
+		)
+	}
+	if err := lease.Release(context.Background()); err != nil {
+		t.Fatalf("ordinary quiesce lease replay = %v", err)
+	}
+	if err := openLease.Release(context.Background()); err != nil {
+		t.Fatalf("ordinary quiesce open-check lease replay = %v", err)
+	}
+}
+
+func workerFactoryCloseSentinel(
+	t *testing.T,
+	factory *WorkerCompilerFactory,
+	label string,
+	closes *atomic.Int64,
+) *runtime.ResourceLease[string] {
+	t.Helper()
+	key := runtime.ResourceKey{
+		Kind: "factory-close-sentinel", Scope: label, Digest: sha256.Sum256([]byte(label)),
+	}
+	lease, err := runtime.Acquire(
+		context.Background(), factory.registry, key,
+		func(context.Context) (string, func(context.Context) error, error) {
+			return label, func(context.Context) error {
+				closes.Add(1)
+				return nil
+			}, nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("Acquire(%q) error = %v", label, err)
+	}
+	return lease
+}
+
 func TestWorkerCompilerFactoryCloseWaitsForAdmittedPreparation(t *testing.T) {
 	factory, materializer := newWorkerRecoveryTestFactory(t)
 	checkpointEntered := make(chan struct{})
@@ -275,7 +663,11 @@ func TestWorkerCompilerFactoryCloseWaitsForAdmittedPreparation(t *testing.T) {
 	prepareResult := make(chan preparationResult, 1)
 	go func() {
 		prepared, err := factory.PrepareGeneration(
-			context.Background(), ticketForSnapshot(desired, generation.DomainHTTP), desired, nil, nil,
+			context.Background(),
+			ticketForSnapshot(desired, generation.DomainHTTP),
+			desired,
+			nil,
+			nil,
 		)
 		prepareResult <- preparationResult{prepared: prepared, err: err}
 	}()
@@ -317,7 +709,11 @@ func TestWorkerCompilerFactoryCloseWaitsForAdmittedMaterialization(t *testing.T)
 	factory, _ := newWorkerRecoveryTestFactory(t)
 	const routeID = "factory-close-materialization"
 	desired := mustGenerationSnapshot(t, 9031, []generation.Resource{
-		resourceValue("routes", routeID, `{"id":"factory-close-materialization","plugins":{"request-id":{}}}`),
+		resourceValue(
+			"routes",
+			routeID,
+			`{"id":"factory-close-materialization","plugins":{"request-id":{}}}`,
+		),
 	}, nil)
 	prepared, err := factory.PrepareGeneration(
 		context.Background(), ticketForSnapshot(desired, generation.DomainHTTP), desired, nil, nil,
@@ -443,7 +839,11 @@ func TestWorkerCompilerFactoryCloseUsesLiveMapKeyWhileDetachIsBlocked(t *testing
 	for _, revision := range []uint64{9051, 9052} {
 		desired := mustGenerationSnapshot(t, revision, nil, nil)
 		prepared, err := factory.PrepareGeneration(
-			context.Background(), ticketForSnapshot(desired, generation.DomainHTTP), desired, nil, nil,
+			context.Background(),
+			ticketForSnapshot(desired, generation.DomainHTTP),
+			desired,
+			nil,
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -477,6 +877,11 @@ func TestWorkerCompilerFactoryCloseUsesLiveMapKeyWhileDetachIsBlocked(t *testing
 	factoryResult := make(chan error, 1)
 	go func() { factoryResult <- factory.Close(context.Background()) }()
 	workerCloseWait(t, smallerInvoked, "lexicographically smaller live-map owner")
+	select {
+	case err := <-factoryResult:
+		t.Fatalf("factory Close returned before live generation detached: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
 	close(allowDetach)
 	if err := workerCloseWait(t, explicitResult, "explicit Close result"); err != nil {
 		t.Fatal(err)
@@ -520,38 +925,65 @@ func TestWorkerCompilerFactoryConcurrentCloseCachesSafeResultAndContext(t *testi
 	workerCloseWait(t, cleanupEntered, "first factory cleanup")
 
 	const callers = 16
-	results := make(chan error, callers)
+	type closeResult struct {
+		index int
+		err   error
+	}
+	results := make(chan closeResult, callers)
 	var nilContext context.Context
 	for index := range callers {
 		go func() {
 			switch index % 3 {
 			case 0:
-				results <- factory.Close(nilContext)
+				results <- closeResult{index: index, err: factory.Close(nilContext)}
 				return
 			case 1:
 				ctx, cancelCaller := context.WithCancel(context.Background())
 				cancelCaller()
-				results <- factory.Close(ctx)
+				results <- closeResult{index: index, err: factory.Close(ctx)}
 				return
 			default:
 				ctx, cancelCaller := context.WithDeadline(context.Background(), time.Unix(1, 0))
 				defer cancelCaller()
-				results <- factory.Close(ctx)
+				results <- closeResult{index: index, err: factory.Close(ctx)}
 			}
 		}()
 	}
 	close(allowCleanup)
 	firstErr := workerCloseWait(t, firstResult, "first factory Close result")
-	if firstErr != errWorkerCompilerFactoryCleanupFailed {
-		t.Fatalf("first factory Close error = %v, want safe cached marker", firstErr)
+	if !errors.Is(firstErr, errWorkerCompilerFactoryCleanupFailed) ||
+		!errors.Is(firstErr, errPreparedGenerationCleanupFailed) {
+		t.Fatalf("first factory Close error = %v, want safe retryable markers", firstErr)
 	}
 	assertWorkerErrorRedacted(t, firstErr, providerErr)
 	for range callers {
-		if got := workerCloseWait(t, results, "concurrent factory Close result"); got != firstErr {
-			t.Fatalf("concurrent factory Close error = %v, want exact replay %v", got, firstErr)
+		result := workerCloseWait(t, results, "concurrent factory Close result")
+		if result.index%3 == 0 && result.err != firstErr {
+			t.Fatalf(
+				"background concurrent factory Close error = %v, want exact replay %v",
+				result.err,
+				firstErr,
+			)
+		}
+		if result.index%3 == 1 && result.err != firstErr &&
+			!errors.Is(result.err, context.Canceled) {
+			t.Fatalf(
+				"canceled concurrent factory Close error = %v, want caller cancellation or replay %v",
+				result.err,
+				firstErr,
+			)
+		}
+		if result.index%3 == 2 && result.err != firstErr &&
+			!errors.Is(result.err, context.DeadlineExceeded) {
+			t.Fatalf(
+				"expired concurrent factory Close error = %v, want caller deadline or replay %v",
+				result.err,
+				firstErr,
+			)
 		}
 	}
-	if registration.closed != 1 || registration.closeCtxErr != nil || registration.closeValue != "retained" {
+	if registration.closed != 1 || registration.closeCtxErr != nil ||
+		registration.closeValue != "retained" {
 		t.Fatalf("factory cleanup registration/context = %#v", registration)
 	}
 	if err := (*WorkerCompilerFactory)(nil).Close(context.Background()); err != nil {
@@ -601,10 +1033,18 @@ func TestWorkerCompilerFactoryCloseRedactsPreparedAndFactoryCleanupErrors(t *tes
 		materializer.closeErr = registrationErr
 		const routeID = "prepared-redaction"
 		desired := mustGenerationSnapshot(t, 9081, []generation.Resource{
-			resourceValue("routes", routeID, `{"id":"prepared-redaction","plugins":{"request-id":{}}}`),
+			resourceValue(
+				"routes",
+				routeID,
+				`{"id":"prepared-redaction","plugins":{"request-id":{}}}`,
+			),
 		}, nil)
 		prepared, err := factory.PrepareGeneration(
-			context.Background(), ticketForSnapshot(desired, generation.DomainHTTP), desired, nil, nil,
+			context.Background(),
+			ticketForSnapshot(desired, generation.DomainHTTP),
+			desired,
+			nil,
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -641,10 +1081,18 @@ func TestWorkerCompilerFactoryCloseRedactsPreparedAndFactoryCleanupErrors(t *tes
 		materializer.closeErr = registrationErr
 		const routeID = "factory-redaction"
 		desired := mustGenerationSnapshot(t, 9082, []generation.Resource{
-			resourceValue("routes", routeID, `{"id":"factory-redaction","plugins":{"request-id":{}}}`),
+			resourceValue(
+				"routes",
+				routeID,
+				`{"id":"factory-redaction","plugins":{"request-id":{}}}`,
+			),
 		}, nil)
 		prepared, err := factory.PrepareGeneration(
-			context.Background(), ticketForSnapshot(desired, generation.DomainHTTP), desired, nil, nil,
+			context.Background(),
+			ticketForSnapshot(desired, generation.DomainHTTP),
+			desired,
+			nil,
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -672,14 +1120,68 @@ func TestWorkerCompilerFactoryCloseRedactsPreparedAndFactoryCleanupErrors(t *tes
 			t.Fatal(err)
 		}
 		closeErr := factory.Close(context.Background())
-		if closeErr != errWorkerCompilerFactoryCleanupFailed {
-			t.Fatalf("WorkerCompilerFactory.Close error = %v, want safe marker", closeErr)
+		if !errors.Is(closeErr, errWorkerCompilerFactoryCleanupFailed) ||
+			!errors.Is(closeErr, errPreparedGenerationCleanupFailed) {
+			t.Fatalf("WorkerCompilerFactory.Close error = %v, want safe markers", closeErr)
 		}
 		assertWorkerErrorRedacted(t, closeErr, registrationErr, resourceErr, registryErr)
 		if replayed := factory.Close(context.Background()); replayed != closeErr {
 			t.Fatalf("factory Close replay = %v, want %v", replayed, closeErr)
 		}
 	})
+}
+
+func TestWorkerCompilerFactoryCloseRedactsMixedRegistryResidual(t *testing.T) {
+	factory, _ := newWorkerRecoveryTestFactory(t)
+	secretErr := &workerTestSecretError{text: "mixed-registry-secret"}
+	tasks := runtime.NewTaskRegistry(context.Background(), nil)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	if err := tasks.Go(runtime.TaskSpec{
+		Owner: "plugin/test/mixed-registry-residual", Criticality: runtime.TaskPlugin,
+	}, func(context.Context) error {
+		close(started)
+		<-release
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	<-started
+
+	acquire := func(label string, closeResource func(context.Context) error) {
+		t.Helper()
+		key := runtime.ResourceKey{
+			Kind: "mixed-registry-residual", Scope: label, Digest: sha256.Sum256([]byte(label)),
+		}
+		if _, err := runtime.Acquire(
+			context.Background(), factory.registry, key,
+			func(context.Context) (string, func(context.Context) error, error) {
+				return label, closeResource, nil
+			},
+		); err != nil {
+			t.Fatalf("Acquire(%q) error = %v", label, err)
+		}
+	}
+	acquire("terminal-secret", func(context.Context) error { return secretErr })
+	acquire("task-residual", func(ctx context.Context) error {
+		_, stopErr := tasks.Stop(ctx)
+		return stopErr
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	closeErr := factory.Close(ctx)
+	var residual *runtime.TaskResidualError
+	if !errors.Is(closeErr, errWorkerCompilerFactoryCleanupFailed) ||
+		!errors.Is(closeErr, context.DeadlineExceeded) || !errors.As(closeErr, &residual) {
+		t.Fatalf("mixed registry Close = %v, residual = %#v", closeErr, residual)
+	}
+	assertWorkerErrorRedacted(t, closeErr, secretErr)
+
+	close(release)
+	if _, stopErr := tasks.Stop(context.Background()); stopErr != nil {
+		t.Fatalf("TaskRegistry.Stop retry error = %v", stopErr)
+	}
 }
 
 func workerCloseRequestIDSpec(

@@ -52,10 +52,18 @@ type WorkerCompilerFactory struct {
 	liveMu sync.Mutex
 	live   map[secret.AttemptID]*PreparedGeneration
 
-	closeOnce sync.Once
-	closeErr  error
+	closeMu       sync.Mutex
+	closeAttempt  *workerFactoryCloseAttempt
+	closeTerminal bool
+	closeErrors   []error
+	closeErr      error
 
 	checkpoint func(string, workerFactoryCheckpointState) error
+}
+
+type workerFactoryCloseAttempt struct {
+	done chan struct{}
+	err  error
 }
 
 // NewWorkerCompilerFactory constructs the candidate-generation compiler and
@@ -187,7 +195,7 @@ func (factory *WorkerCompilerFactory) PrepareRecovery(
 }
 
 // Close terminally stops every live generation before closing the shared
-// resource registry. Repeated calls replay the first safe cleanup result.
+// resource registry. Incomplete attempts retain ownership for a later retry.
 func (factory *WorkerCompilerFactory) Close(ctx context.Context) error {
 	if factory == nil {
 		return nil
@@ -195,39 +203,163 @@ func (factory *WorkerCompilerFactory) Close(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	cleanupCtx := context.WithoutCancel(ctx)
-	factory.closeOnce.Do(func() {
-		factory.gate.Lock()
-		factory.closed = true
-		factory.liveMu.Lock()
-		type liveGeneration struct {
-			attemptID secret.AttemptID
-			prepared  *PreparedGeneration
-		}
-		live := make([]liveGeneration, 0, len(factory.live))
-		for attemptID, prepared := range factory.live {
-			live = append(live, liveGeneration{attemptID: attemptID, prepared: prepared})
-		}
-		factory.liveMu.Unlock()
-		factory.gate.Unlock()
+	factory.gate.Lock()
+	factory.closed = true
+	factory.gate.Unlock()
 
-		slices.SortFunc(live, func(left, right liveGeneration) int {
-			return bytes.Compare(left.attemptID[:], right.attemptID[:])
-		})
-		cleanupFailed := false
-		for _, generationOwner := range live {
-			if generationOwner.prepared.Close(cleanupCtx) != nil {
-				cleanupFailed = true
+	factory.closeMu.Lock()
+	if factory.closeTerminal {
+		closeErr := factory.closeErr
+		factory.closeMu.Unlock()
+		return closeErr
+	}
+	if factory.closeAttempt != nil {
+		attempt := factory.closeAttempt
+		factory.closeMu.Unlock()
+		return waitWorkerFactoryCloseAttempt(ctx, attempt)
+	}
+	attempt := &workerFactoryCloseAttempt{done: make(chan struct{})}
+	factory.closeAttempt = attempt
+	factory.closeMu.Unlock()
+
+	live := factory.liveGenerations()
+	var attemptErrors []error
+	for _, generationOwner := range live {
+		generationErr := generationOwner.prepared.Close(ctx)
+		if generationErr == nil {
+			continue
+		}
+		if workerCleanupIncomplete(generationErr) {
+			attemptErrors = append(attemptErrors, generationErr)
+			continue
+		}
+		factory.appendCloseError(generationErr)
+	}
+
+	incomplete := len(attemptErrors) != 0 || factory.liveCount() != 0
+	if !incomplete && factory.registry != nil {
+		registryErr := factory.registry.Close(ctx)
+		if registryErr != nil {
+			if workerCleanupIncomplete(registryErr) {
+				attemptErrors = append(attemptErrors, workerRetryableCleanupResult(registryErr))
+				incomplete = true
+			} else {
+				factory.appendCloseError(errWorkerCompilerFactoryCleanupFailed)
 			}
 		}
-		if factory.registry != nil && factory.registry.Close(cleanupCtx) != nil {
-			cleanupFailed = true
-		}
-		if cleanupFailed {
-			factory.closeErr = errWorkerCompilerFactoryCleanupFailed
-		}
+	}
+
+	factory.closeMu.Lock()
+	if incomplete {
+		attempt.err = factory.joinCloseErrors(attemptErrors)
+	} else {
+		factory.closeTerminal = true
+		attempt.err = factory.joinCloseErrors(nil)
+		factory.closeErr = attempt.err
+	}
+	if factory.closeAttempt == attempt {
+		factory.closeAttempt = nil
+	}
+	close(attempt.done)
+	factory.closeMu.Unlock()
+	return attempt.err
+}
+
+func (factory *WorkerCompilerFactory) liveGenerations() []struct {
+	attemptID secret.AttemptID
+	prepared  *PreparedGeneration
+} {
+	factory.liveMu.Lock()
+	live := make([]struct {
+		attemptID secret.AttemptID
+		prepared  *PreparedGeneration
+	}, 0, len(factory.live))
+	for attemptID, prepared := range factory.live {
+		live = append(live, struct {
+			attemptID secret.AttemptID
+			prepared  *PreparedGeneration
+		}{attemptID: attemptID, prepared: prepared})
+	}
+	factory.liveMu.Unlock()
+	slices.SortFunc(live, func(left, right struct {
+		attemptID secret.AttemptID
+		prepared  *PreparedGeneration
+	},
+	) int {
+		return bytes.Compare(left.attemptID[:], right.attemptID[:])
 	})
-	return factory.closeErr
+	return live
+}
+
+func (factory *WorkerCompilerFactory) liveCount() int {
+	factory.liveMu.Lock()
+	defer factory.liveMu.Unlock()
+	return len(factory.live)
+}
+
+func (factory *WorkerCompilerFactory) appendCloseError(err error) {
+	if err == nil {
+		return
+	}
+	factory.closeMu.Lock()
+	defer factory.closeMu.Unlock()
+	if slices.Contains(factory.closeErrors, err) {
+		return
+	}
+	factory.closeErrors = append(factory.closeErrors, err)
+}
+
+func (factory *WorkerCompilerFactory) joinCloseErrors(attemptErrors []error) error {
+	joined := make([]error, 0, len(factory.closeErrors)+len(attemptErrors)+1)
+	joined = append(joined, factory.closeErrors...)
+	joined = append(joined, attemptErrors...)
+	if len(joined) == 0 {
+		return nil
+	}
+	return errors.Join(append([]error{errWorkerCompilerFactoryCleanupFailed}, joined...)...)
+}
+
+func waitWorkerFactoryCloseAttempt(ctx context.Context, attempt *workerFactoryCloseAttempt) error {
+	select {
+	case <-attempt.done:
+		return attempt.err
+	default:
+	}
+	select {
+	case <-attempt.done:
+		return attempt.err
+	case <-ctx.Done():
+		select {
+		case <-attempt.done:
+			return attempt.err
+		default:
+			return ctx.Err()
+		}
+	}
+}
+
+func workerCleanupIncomplete(err error) bool {
+	var residual *runtime.TaskResidualError
+	return errors.As(err, &residual) || errors.Is(err, ErrPreparedGenerationCleanupIncomplete) ||
+		errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+}
+
+func workerRetryableCleanupResult(err error) error {
+	var causes []error
+	var residual *runtime.TaskResidualError
+	if errors.As(err, &residual) {
+		causes = append(causes, residual)
+	}
+	for _, marker := range []error{
+		ErrPreparedGenerationCleanupIncomplete,
+		context.Canceled,
+		context.DeadlineExceeded,
+	} {
+		if errors.Is(err, marker) {
+			causes = append(causes, marker)
+		}
+	}
+	return errors.Join(causes...)
 }
 
 // transferRegisteredGeneration is the single candidate/recovery ownership
@@ -272,7 +404,7 @@ func (factory *WorkerCompilerFactory) transferRegisteredGeneration(
 	if err := cleanup.Own(cleanupQuiesce, "generation-tasks", func(stopCtx context.Context) error {
 		residuals, stopErr := tasks.Stop(stopCtx)
 		if stopErr != nil || len(residuals) != 0 {
-			return errWorkerGenerationCleanupFailed
+			return errors.Join(errWorkerGenerationCleanupFailed, stopErr)
 		}
 		return nil
 	}); err != nil {

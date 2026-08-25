@@ -320,8 +320,8 @@ T9-0 frozen contracts and RED fixtures
 3. `Activate` probes the prepared generation, constructs the candidate composite bundle by replacing only required domains, swaps it atomically, and records predecessor/candidate ownership under the token.
 4. A partial activation failure restores the predecessor bundle before returning.
 5. `RollbackActivation` restores predecessor, removes activation, rejects candidate owner, and waits only for candidate leases; it never closes predecessor.
-6. `FinalizeActivation` verifies token/set identity, publishes exact domain fences, removes activation, drops replaced domain-slot references, and enqueues now-retirable owners without blocking.
-7. A dedicated engine/server retirement loop closes queued generations outside the activation mutex.
+6. `FinalizeActivation` verifies token/set identity, publishes exact domain fences, removes activation, drops replaced domain-slot references, and enqueues every predecessor that now owns no active domain, even if leases still drain, without blocking.
+7. A dedicated engine/server retirement loop waits for each queued owner's one-way drain signal and closes it outside the activation mutex.
 8. `ConfirmActive` checks only requested domain fences, permits other active domains, honors context cancellation, and performs no compilation or mutation.
 9. `InstallRecovery` compiles one owner from verified Published artifacts, installs independently revised domain fences, and sets initialized state. Damaged/missing domains remain unavailable.
 10. `Close` rejects new work, stops retirement intake, closes pending/activation/retiring/active owners exactly once, then closes the factory.

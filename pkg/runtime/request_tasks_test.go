@@ -27,6 +27,61 @@ func TestRequestTaskGroupJoinsAcceptedTaskErrors(t *testing.T) {
 	}
 }
 
+func TestRequestTaskGroupWaitJoinsSiblingsBeforeRepanickingExactValue(t *testing.T) {
+	group := NewRequestTaskGroup(context.Background(), "request/batch-requests")
+	wantPanic := &struct{ marker string }{marker: "core-invariant"}
+	releaseSibling := make(chan struct{}, 1)
+	siblingDone := make(chan struct{})
+	if err := group.Go(func(context.Context) error { panic(wantPanic) }); err != nil {
+		t.Fatal(err)
+	}
+	if err := group.Go(func(context.Context) error {
+		<-releaseSibling
+		close(siblingDone)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	recovered := make(chan any, 1)
+	go func() {
+		defer func() { recovered <- recover() }()
+		_ = group.Wait()
+	}()
+	select {
+	case value := <-recovered:
+		t.Fatalf("Wait() repanicked before sibling join: %#v", value)
+	default:
+	}
+	releaseSibling <- struct{}{}
+	<-siblingDone
+	if got := <-recovered; got != wantPanic {
+		t.Fatalf("recovered panic = %#v, want exact %#v", got, wantPanic)
+	}
+}
+
+func TestRequestTaskGroupRepeatedAndConcurrentWaitReplaySamePanic(t *testing.T) {
+	group := NewRequestTaskGroup(context.Background(), "connection/stream-bridge")
+	wantPanic := &struct{ marker string }{marker: "bridge-invariant"}
+	if err := group.Go(func(context.Context) error { panic(wantPanic) }); err != nil {
+		t.Fatal(err)
+	}
+
+	const waiters = 4
+	results := make(chan any, waiters)
+	for range waiters {
+		go func() {
+			defer func() { results <- recover() }()
+			_ = group.Wait()
+		}()
+	}
+	for range waiters {
+		if got := <-results; got != wantPanic {
+			t.Fatalf("concurrent Wait recovered %#v, want exact %#v", got, wantPanic)
+		}
+	}
+}
+
 func TestRequestTaskGroupWaitDoesNotDetachCompletion(t *testing.T) {
 	parent, cancel := context.WithCancel(context.Background())
 	group := NewRequestTaskGroup(parent, "request/mirror/r1")

@@ -17,10 +17,12 @@ type RequestTaskGroup struct {
 	ctx   context.Context
 	owner string
 
-	mu      sync.Mutex
-	waiting bool
-	errs    []error
-	wg      sync.WaitGroup
+	mu         sync.Mutex
+	waiting    bool
+	panicked   bool
+	panicValue any
+	errs       []error
+	wg         sync.WaitGroup
 
 	validationErr error
 }
@@ -57,6 +59,11 @@ func (g *RequestTaskGroup) Go(run func(context.Context) error) error {
 
 	go func() {
 		defer g.wg.Done()
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				g.recordPanic(recovered)
+			}
+		}()
 		g.record(run(g.ctx))
 	}()
 	return nil
@@ -69,9 +76,23 @@ func (g *RequestTaskGroup) Wait() error {
 	g.wg.Wait()
 
 	g.mu.Lock()
+	panicked := g.panicked
+	panicValue := g.panicValue
 	errs := append([]error(nil), g.errs...)
 	g.mu.Unlock()
+	if panicked {
+		panic(panicValue)
+	}
 	return errors.Join(errs...)
+}
+
+func (g *RequestTaskGroup) recordPanic(value any) {
+	g.mu.Lock()
+	if !g.panicked {
+		g.panicked = true
+		g.panicValue = value
+	}
+	g.mu.Unlock()
 }
 
 func (g *RequestTaskGroup) record(err error) {

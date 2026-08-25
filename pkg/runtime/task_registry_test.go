@@ -12,6 +12,220 @@ import (
 	"time"
 )
 
+func TestTaskOwnerUsesExactPrefixComponentAndPluginFailureIsolation(t *testing.T) {
+	failures := make(chan TaskFailure, 1)
+	registry := NewTaskRegistry(context.Background(), func(f TaskFailure) { failures <- f })
+	owner, err := NewTaskOwner(registry, "plugin/request-id/attempt/scope/route/digest", TaskPlugin)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wantErr := errors.New("health failed")
+	if err := owner.Go("health-refresh", func(context.Context) error { return wantErr }); err != nil {
+		t.Fatal(err)
+	}
+	failure := <-failures
+	if failure.Owner != "plugin/request-id/attempt/scope/route/digest/health-refresh" ||
+		!errors.Is(failure.Err, wantErr) {
+		t.Fatalf("failure = %#v", failure)
+	}
+	if err := owner.Go(
+		"health-refresh",
+		func(context.Context) error { return nil },
+	); !errors.Is(
+		err,
+		ErrTaskOwnerFailed,
+	) {
+		t.Fatalf("failed component admission = %v", err)
+	}
+	done := make(chan struct{})
+	if err := owner.Go("disk-cleanup", func(context.Context) error { close(done); return nil }); err != nil {
+		t.Fatalf("sibling component admission = %v", err)
+	}
+	<-done
+	if residuals, err := registry.Stop(context.Background()); err != nil || len(residuals) != 0 {
+		t.Fatalf("Stop() = (%v, %v)", residuals, err)
+	}
+}
+
+func TestTaskOwnerStopReportsExactDeduplicatedResidual(t *testing.T) {
+	registry := NewTaskRegistry(context.Background(), nil)
+	owner, err := NewTaskOwner(registry, "plugin/logger/key", TaskPlugin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release := make(chan struct{})
+	started := make(chan struct{}, 2)
+	for range 2 {
+		if err := owner.Go("batch-worker", func(context.Context) error {
+			started <- struct{}{}
+			<-release
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	<-started
+	<-started
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	residuals, stopErr := registry.Stop(ctx)
+	if !errors.Is(stopErr, context.DeadlineExceeded) || !reflect.DeepEqual(
+		residuals, []TaskResidual{{Owner: "plugin/logger/key/batch-worker"}},
+	) {
+		t.Fatalf("Stop() = (%v, %v)", residuals, stopErr)
+	}
+	close(release)
+	if residuals, err := registry.Stop(context.Background()); err != nil || len(residuals) != 0 {
+		t.Fatalf("retry Stop() = (%v, %v)", residuals, err)
+	}
+}
+
+func TestTaskOwnerValidatesBeforeAdmission(t *testing.T) {
+	registry := NewTaskRegistry(context.Background(), nil)
+	constructorTests := []struct {
+		name        string
+		registry    *TaskRegistry
+		prefix      string
+		criticality TaskCriticality
+		want        error
+	}{
+		{
+			name:        "nil registry",
+			prefix:      "plugin/test/key",
+			criticality: TaskPlugin,
+			want:        ErrTaskRegistryRequired,
+		},
+		{
+			name:        "blank prefix",
+			registry:    registry,
+			prefix:      " \t",
+			criticality: TaskPlugin,
+			want:        ErrTaskOwnerRequired,
+		},
+		{
+			name:        "padded prefix",
+			registry:    registry,
+			prefix:      " plugin/test/key ",
+			criticality: TaskPlugin,
+			want:        ErrTaskOwnerRequired,
+		},
+		{
+			name:        "empty prefix",
+			registry:    registry,
+			criticality: TaskPlugin,
+			want:        ErrTaskOwnerRequired,
+		},
+		{
+			name:        "invalid criticality",
+			registry:    registry,
+			prefix:      "plugin/test/key",
+			criticality: "unknown",
+			want:        ErrTaskCriticalityInvalid,
+		},
+	}
+	for _, tt := range constructorTests {
+		t.Run(tt.name, func(t *testing.T) {
+			owner, err := NewTaskOwner(tt.registry, tt.prefix, tt.criticality)
+			if owner != nil || !errors.Is(err, tt.want) {
+				t.Fatalf("NewTaskOwner() = (%#v, %v), want (nil, %v)", owner, err, tt.want)
+			}
+			if got := registry.Active(); len(got) != 0 {
+				t.Fatalf("Active() = %v", got)
+			}
+		})
+	}
+
+	owner, err := NewTaskOwner(registry, "plugin/test/key", TaskPlugin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	componentTests := []struct {
+		name      string
+		component string
+		run       func(context.Context) error
+		want      error
+	}{
+		{name: "empty component", run: func(context.Context) error { return nil }, want: ErrTaskComponentInvalid},
+		{
+			name:      "uppercase component",
+			component: "Health",
+			run:       func(context.Context) error { return nil },
+			want:      ErrTaskComponentInvalid,
+		},
+		{
+			name:      "slashed component",
+			component: "health/refresh",
+			run:       func(context.Context) error { return nil },
+			want:      ErrTaskComponentInvalid,
+		},
+		{
+			name:      "whitespace component",
+			component: "health refresh",
+			run:       func(context.Context) error { return nil },
+			want:      ErrTaskComponentInvalid,
+		},
+		{
+			name:      "leading hyphen",
+			component: "-health",
+			run:       func(context.Context) error { return nil },
+			want:      ErrTaskComponentInvalid,
+		},
+		{
+			name:      "trailing hyphen",
+			component: "health-",
+			run:       func(context.Context) error { return nil },
+			want:      ErrTaskComponentInvalid,
+		},
+		{
+			name:      "65-byte component",
+			component: strings.Repeat("a", 65),
+			run:       func(context.Context) error { return nil },
+			want:      ErrTaskComponentInvalid,
+		},
+		{name: "nil callback", component: "health-refresh", want: ErrTaskCallbackRequired},
+	}
+	for _, tt := range componentTests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := owner.Go(tt.component, tt.run); !errors.Is(err, tt.want) {
+				t.Fatalf("Go() error = %v, want %v", err, tt.want)
+			}
+			if got := registry.Active(); len(got) != 0 {
+				t.Fatalf("Active() = %v", got)
+			}
+		})
+	}
+	if residuals, err := registry.Stop(context.Background()); err != nil || len(residuals) != 0 {
+		t.Fatalf("Stop() = (%v, %v)", residuals, err)
+	}
+}
+
+func TestNewTaskOwnerTreatsPrefixAsOpaqueProducerIdentity(t *testing.T) {
+	registry := NewTaskRegistry(context.Background(), nil)
+	prefix := "Custom Owner/" + strings.Repeat("segment/", 512) + "tail"
+	owner, err := NewTaskOwner(registry, prefix, TaskPlugin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{})
+	release := make(chan struct{})
+	if err := owner.Go("health-refresh", func(context.Context) error {
+		close(started)
+		<-release
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	if got, want := registry.Active(), []string{prefix + "/health-refresh"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("Active() = %v, want %v", got, want)
+	}
+	close(release)
+	if residuals, err := registry.Stop(context.Background()); err != nil || len(residuals) != 0 {
+		t.Fatalf("Stop() = (%v, %v)", residuals, err)
+	}
+}
+
 func TestTaskRegistryReportsPluginPanicAndJoinsOwner(t *testing.T) {
 	failures := make(chan TaskFailure, 1)
 	registry := NewTaskRegistry(context.Background(), func(f TaskFailure) { failures <- f })

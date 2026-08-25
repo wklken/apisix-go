@@ -11,8 +11,10 @@ import (
 
 var (
 	ErrTaskRegistryStopped    = errors.New("task registry is stopped")
+	ErrTaskRegistryRequired   = errors.New("task registry is required")
 	ErrTaskOwnerFailed        = errors.New("task owner has failed")
 	ErrTaskOwnerRequired      = errors.New("task owner is required")
+	ErrTaskComponentInvalid   = errors.New("task component is invalid")
 	ErrTaskCriticalityInvalid = errors.New("task criticality is invalid")
 	ErrTaskCallbackRequired   = errors.New("task callback is required")
 )
@@ -27,6 +29,56 @@ const (
 type TaskSpec struct {
 	Owner       string
 	Criticality TaskCriticality
+}
+
+type TaskOwner struct {
+	registry    *TaskRegistry
+	prefix      string
+	criticality TaskCriticality
+}
+
+func NewTaskOwner(registry *TaskRegistry, prefix string, criticality TaskCriticality) (*TaskOwner, error) {
+	if registry == nil {
+		return nil, ErrTaskRegistryRequired
+	}
+	if strings.TrimSpace(prefix) == "" || strings.TrimSpace(prefix) != prefix {
+		return nil, ErrTaskOwnerRequired
+	}
+	if criticality != TaskPlugin && criticality != TaskCore {
+		return nil, ErrTaskCriticalityInvalid
+	}
+	return &TaskOwner{
+		registry:    registry,
+		prefix:      prefix,
+		criticality: criticality,
+	}, nil
+}
+
+func (owner *TaskOwner) Go(component string, run func(context.Context) error) error {
+	if !validTaskComponent(component) {
+		return ErrTaskComponentInvalid
+	}
+	return owner.registry.Go(TaskSpec{
+		Owner:       owner.prefix + "/" + component,
+		Criticality: owner.criticality,
+	}, run)
+}
+
+func validTaskComponent(component string) bool {
+	if len(component) == 0 || len(component) > 64 {
+		return false
+	}
+	for index := range len(component) {
+		value := component[index]
+		alphanumeric := value >= 'a' && value <= 'z' || value >= '0' && value <= '9'
+		if alphanumeric {
+			continue
+		}
+		if value != '-' || index == 0 || index == len(component)-1 {
+			return false
+		}
+	}
+	return true
 }
 
 type TaskFailure struct {

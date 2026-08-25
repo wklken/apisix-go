@@ -2,6 +2,9 @@ BINARY_NAME ?= apisix
 BINARY_PATH ?= ./$(BINARY_NAME)
 CACHE_BIN ?= $(if $(GOBIN),$(GOBIN),.cache/bin)
 GOLANGCI_LINT_VERSION ?= v2.12.2
+GO_CACHE_RUNNER ?= bash scripts/go_cache.sh run --
+AIR_VERSION ?= v1.51.0
+AIR ?= $(abspath $(CACHE_BIN))/air
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
@@ -38,22 +41,22 @@ export BENCH_DIR BENCH_PACKAGES BENCH_CORPUS_FILES BENCH_REGEX BENCH_TIME BENCH_
 
 .PHONY: init
 init:
-	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${GOLANGCI_LINT_VERSION}
+	$(GO_CACHE_RUNNER) go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${GOLANGCI_LINT_VERSION}
 
 
 .PHONY: dep
 dep:
-	go mod tidy
-	go mod vendor
+	$(GO_CACHE_RUNNER) go mod tidy
+	$(GO_CACHE_RUNNER) go mod vendor
 
 .PHONY: lint
 lint:
-	golangci-lint run
+	$(GO_CACHE_RUNNER) golangci-lint run
 
 .PHONY: build
 build:
 	mkdir -p $(dir $(BINARY_PATH))
-	go build -trimpath -ldflags "-s -w -X github.com/wklken/apisix-go/pkg/version.Version=$(VERSION) -X github.com/wklken/apisix-go/pkg/version.Commit=$(COMMIT) -X github.com/wklken/apisix-go/pkg/version.BuildTime=$(BUILD_TIME) -X 'github.com/wklken/apisix-go/pkg/version.GoVersion=$(GO_VERSION)'" -o $(BINARY_PATH)
+	$(GO_CACHE_RUNNER) go build -trimpath -ldflags "-s -w -X github.com/wklken/apisix-go/pkg/version.Version=$(VERSION) -X github.com/wklken/apisix-go/pkg/version.Commit=$(COMMIT) -X github.com/wklken/apisix-go/pkg/version.BuildTime=$(BUILD_TIME) -X 'github.com/wklken/apisix-go/pkg/version.GoVersion=$(GO_VERSION)'" -o $(BINARY_PATH)
 
 .PHONY: docker-build
 docker-build:
@@ -66,23 +69,23 @@ release-etcd-recovery:
 
 .PHONY: test
 test:
-	go test ./cmd/... ./pkg/... -count=1
+	$(GO_CACHE_RUNNER) go test ./cmd/... ./pkg/... -count=1
 
 COVERAGE_MIN ?= 82.0
 COVERAGE_FILE ?= coverage.out
 
 .PHONY: test-cover
 test-cover:
-	bash scripts/check-unit-coverage_test.sh
-	COVERAGE_MIN=$(COVERAGE_MIN) ./scripts/check-unit-coverage.sh $(COVERAGE_FILE)
+	$(GO_CACHE_RUNNER) bash scripts/check-unit-coverage_test.sh
+	COVERAGE_MIN=$(COVERAGE_MIN) $(GO_CACHE_RUNNER) ./scripts/check-unit-coverage.sh $(COVERAGE_FILE)
 
 .PHONY: test-integration
 test-integration:
-	go test ./t/plugin -count=1 -v
+	$(GO_CACHE_RUNNER) go test ./t/plugin -count=1 -v
 
 .PHONY: test-plugin-harness
 test-plugin-harness:
-	APISIX_GO_SKIP_PLUGIN_INTEGRATION=1 go test ./t/plugin -count=1
+	APISIX_GO_SKIP_PLUGIN_INTEGRATION=1 $(GO_CACHE_RUNNER) go test ./t/plugin -count=1
 
 PLUGIN_STATUS_TEST ?= TestSupportedPluginManifestSelection
 
@@ -90,17 +93,17 @@ PLUGIN_STATUS_TEST ?= TestSupportedPluginManifestSelection
 test-plugin-status:
 	@set -eu; \
 		test_name='$(PLUGIN_STATUS_TEST)'; \
-		listed=$$(APISIX_GO_SKIP_PLUGIN_INTEGRATION=1 go test ./t/plugin -list "^$${test_name}$$"); \
+		listed=$$(APISIX_GO_SKIP_PLUGIN_INTEGRATION=1 $(GO_CACHE_RUNNER) go test ./t/plugin -list "^$${test_name}$$"); \
 		printf '%s\n' "$$listed" | grep -Fxq "$$test_name" || \
 			(printf 'plugin status test %s was not found\n' "$$test_name" >&2; exit 1)
-	APISIX_GO_SKIP_PLUGIN_INTEGRATION=1 go test ./t/plugin -run '^$(PLUGIN_STATUS_TEST)$$' -count=1
+	APISIX_GO_SKIP_PLUGIN_INTEGRATION=1 $(GO_CACHE_RUNNER) go test ./t/plugin -run '^$(PLUGIN_STATUS_TEST)$$' -count=1
 
 PLUGIN_SMOKE_CASE ?=
 
 .PHONY: test-plugin-smoke
 test-plugin-smoke:
 	@test -n "$(strip $(PLUGIN_SMOKE_CASE))" || (printf 'PLUGIN_SMOKE_CASE is required\n' >&2; exit 1)
-	APISIX_GO_PLUGIN_SMOKE_CASE="$(PLUGIN_SMOKE_CASE)" go test ./t/plugin -run '^TestPluginIntegration$$' -count=1 -v
+	APISIX_GO_PLUGIN_SMOKE_CASE="$(PLUGIN_SMOKE_CASE)" $(GO_CACHE_RUNNER) go test ./t/plugin -run '^TestPluginIntegration$$' -count=1 -v
 
 .PHONY: serve
 serve: build
@@ -108,7 +111,9 @@ serve: build
 
 .PHONY: live
 live:
-	go run github.com/cosmtrek/air@v1.51.0 \
+	mkdir -p $(dir $(AIR))
+	$(GO_CACHE_RUNNER) env GOBIN="$(abspath $(CACHE_BIN))" go install github.com/cosmtrek/air@$(AIR_VERSION)
+	$(AIR) \
 		--build.cmd "make build" --build.bin "$(BINARY_PATH)" --build.delay "100" \
 		--build.exclude_dir "" \
 		--build.include_ext "go, tpl, tmpl, html, css, scss, js, ts, sql, jpeg, jpg, gif, png, bmp, svg, webp, ico" \
@@ -117,6 +122,10 @@ live:
 .PHONY: cache-layout-test
 cache-layout-test:
 	bash scripts/cache_layout_test.sh
+
+.PHONY: cache-gc-test
+cache-gc-test:
+	bash scripts/go_cache_test.sh
 
 .PHONY: cache-status
 cache-status:
@@ -128,6 +137,15 @@ cache-status:
 	@printf 'GOCACHE:      %s\n' "$(GOCACHE)"
 	@printf 'GOBIN:        %s\n' "$(GOBIN)"
 	@du -sh "$(APISIX_GO_SHARED_CACHE)" .cache 2>/dev/null || true
+	@bash scripts/go_cache.sh status
+
+.PHONY: cache-gc
+cache-gc:
+	bash scripts/go_cache.sh gc
+
+.PHONY: cache-clean-shared
+cache-clean-shared:
+	bash scripts/go_cache.sh clean
 
 .PHONY: clean
 clean:
@@ -148,8 +166,8 @@ cache-clean-local: clean
 
 .PHONY: init-bench
 init-bench:
-	GOBIN="$(CACHE_BIN)" go install golang.org/x/perf/cmd/benchstat@$(BENCHSTAT_VERSION)
-	go version -m "$(BENCHSTAT)"
+	GOBIN="$(CACHE_BIN)" $(GO_CACHE_RUNNER) go install golang.org/x/perf/cmd/benchstat@$(BENCHSTAT_VERSION)
+	$(GO_CACHE_RUNNER) go version -m "$(BENCHSTAT)"
 
 .PHONY: benchmark-runner-test
 benchmark-runner-test:
@@ -157,15 +175,15 @@ benchmark-runner-test:
 
 .PHONY: benchmark-smoke
 benchmark-smoke:
-	BENCH_TIME=100ms BENCH_COUNT=1 BENCH_CPU=1 bash scripts/benchmark.sh run smoke
+	BENCH_TIME=100ms BENCH_COUNT=1 BENCH_CPU=1 $(GO_CACHE_RUNNER) bash scripts/benchmark.sh run smoke
 
 .PHONY: benchmark-baseline
 benchmark-baseline:
-	bash scripts/benchmark.sh run baseline
+	$(GO_CACHE_RUNNER) bash scripts/benchmark.sh run baseline
 
 .PHONY: benchmark-current
 benchmark-current:
-	bash scripts/benchmark.sh run current
+	$(GO_CACHE_RUNNER) bash scripts/benchmark.sh run current
 
 .PHONY: benchmark
 benchmark: benchmark-current
@@ -176,8 +194,8 @@ benchmark-compare:
 
 .PHONY: benchmark-profile-cpu
 benchmark-profile-cpu:
-	bash scripts/benchmark.sh profile-cpu $(PROFILE_PACKAGE) $(PROFILE_BENCH)
+	$(GO_CACHE_RUNNER) bash scripts/benchmark.sh profile-cpu $(PROFILE_PACKAGE) $(PROFILE_BENCH)
 
 .PHONY: benchmark-profile-mem
 benchmark-profile-mem:
-	bash scripts/benchmark.sh profile-mem $(PROFILE_PACKAGE) $(PROFILE_BENCH)
+	$(GO_CACHE_RUNNER) bash scripts/benchmark.sh profile-mem $(PROFILE_PACKAGE) $(PROFILE_BENCH)

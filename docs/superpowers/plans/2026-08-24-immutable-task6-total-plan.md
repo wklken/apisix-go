@@ -610,7 +610,7 @@ Refresh this snapshot whenever integration HEAD changes.
 | CP5 | **accepted** | final acceptance `8cae3365` |
 | CP6/C6.6 | **accepted** | integration/caller/boundary audit accepted from CP5 `8cae3365` |
 | local `master` merge | **accepted** | fast-forwarded to Task 6 acceptance `990deb01` |
-| Immutable Task 7 worktrees | **in progress** | branched from post-Task-6 local master `990deb01` |
+| Immutable Task 7 worktrees | **accepted** | independently reviewed implementation `1054da15`; closeout fast-forwards with the Task 7 branch |
 
 ---
 

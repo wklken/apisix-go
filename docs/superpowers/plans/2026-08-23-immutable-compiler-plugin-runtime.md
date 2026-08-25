@@ -1486,7 +1486,7 @@ git commit -m "refactor(plugin): own scoped materialization and instances"
   normalized upstream closure and `RuntimeDependencies.Resources`.
 - Produces: `route.CompileHTTP(context.Context, CompileInput) (*Snapshot, error)` and immutable `compiler.HTTPSnapshot`.
 
-- [ ] **Step 1: Write a failing immutable input/equivalence test**
+- [x] **Step 1: Write a failing immutable input/equivalence test**
 
 ```go
 func TestCompileHTTPDoesNotObserveInputMutation(t *testing.T) {
@@ -1506,13 +1506,13 @@ func TestHTTPSnapshotTLSConfigReturnsClone(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run HTTP compiler tests and confirm RED**
+- [x] **Step 2: Run HTTP compiler tests and confirm RED**
 
 Run: `bash -lc 'source .envrc && go test ./pkg/route -run "^TestCompileHTTP" -count=1'`
 
 Expected: FAIL because `CompileHTTP`, `CompileInput` and `Snapshot` do not exist.
 
-- [ ] **Step 3: Define the focused route compiler contract**
+- [x] **Step 3: Define the focused route compiler contract**
 
 ```go
 type CompileInput struct {
@@ -1543,25 +1543,25 @@ package-private effective-binding materializer. Raw inventory occurrences and
 precedence losers never become bindings, and Task 7 does not construct an outer
 plugin or inject `CompositeChildren` directly.
 
-- [ ] **Step 4: Move router matching without semantic edits**
+- [x] **Step 4: Move router matching without semantic edits**
 
 Move `routeRegistrar`, wildcard dispatcher, URI conversion, host matching and method selection to `router.go`. Preserve existing tests and add a deterministic equal-priority tie test based on the normalized route order.
 
-- [ ] **Step 5: Replace builder store lookups with immutable maps**
+- [x] **Step 5: Replace builder store lookups with immutable maps**
 
 `CompileHTTP` resolves services/upstreams/SSLs only from `CompileInput`. Replace `resolveConsumerBindings` with a lookup over the immutable precompiled binding map. A missing precompiled consumer identity is a request-time authorization/config error, never a lazy initialization path.
 
-- [ ] **Step 6: Acquire every upstream resource during prepare**
+- [x] **Step 6: Acquire every upstream resource during prepare**
 
 Before calling `route.CompileHTTP`, Task 7 derives the canonical `proxy.ClusterConfig` from the normalized effective upstream closure and calls `runtime.Acquire(..., proxy.NewCluster)` through `RuntimeDependencies.Resources`. Append each lease to the candidate `PreparedGeneration` immediately; any later failure releases leases in reverse order. Move reverse-proxy construction to `upstream_compile.go`; it receives only an already-acquired cluster handle and never creates a cluster, owns a lease or starts health tasks itself. Traffic-split uses the same registry identity and immediate ownership rule.
 
 Add `TestPrepareHTTPAcquiresEachCanonicalClusterOnceAndPassesOnlyHandlesToRouteCompile`, including a route upstream and traffic-split upstream that share one canonical config. Add `TestPrepareHTTPOwnsLeaseImmediatelyAndReleasesInReverseOrderAfterLaterCompileFailure`: make the third acquisition succeed and route compilation fail, then assert all three leases release exactly once in reverse acquisition order and no cluster/task survives. Add an AST guard that rejects `proxy.NewCluster`, `runtime.Acquire` and resource-lease ownership from `pkg/route`; those calls belong only to compiler prepare code.
 
-- [ ] **Step 7: Preserve request/response phase equivalence**
+- [x] **Step 7: Preserve request/response phase equivalence**
 
 Run the existing scoped rewrite, auth/CORS, response, logger, transparent upgrade, public API and protocol-terminal tests against `CompileHTTP`. Compile the complete SNI/certificate selector from immutable SSL inputs into one owned `*tls.Config`; never retain mutable input maps or certificate slices. Replace test-only Builder calls with `compileHTTPForTest`; do not keep a Builder constructor for tests.
 
-- [ ] **Step 8: Wrap the route snapshot in `compiler.HTTPSnapshot`**
+- [x] **Step 8: Wrap the route snapshot in `compiler.HTTPSnapshot`**
 
 ```go
 func compileHTTP(ctx context.Context, artifact generation.GenerationArtifact,
@@ -1581,18 +1581,27 @@ func (s *HTTPSnapshot) TLSConfig() *tls.Config {
 }
 ```
 
-- [ ] **Step 9: Run focused HTTP compilation tests**
+- [x] **Step 9: Run focused HTTP compilation tests**
 
 Run: `bash -lc 'source .envrc && go test ./pkg/compiler ./pkg/route ./pkg/plugin -run "^(TestCompileHTTP|TestCompilerHTTP|TestPrepareHTTP|TestRoute|TestScoped|TestConsumer|TestPublicAPI|TestResponsePlan|TestRequestPipeline)" -count=1'`
 
 Expected: PASS; no request handler uses a mutable compiler or store getter.
 
-- [ ] **Step 10: Commit immutable HTTP compilation**
+- [x] **Step 10: Commit immutable HTTP compilation**
 
 ```bash
 git add pkg/compiler pkg/route pkg/plugin
 git commit -m "refactor(route): compile immutable HTTP snapshots"
 ```
+
+**Acceptance record (2026-08-25):** Task 7 was independently reviewed at
+`1054da15` after closing the empty dynamic-plugin-list and inactive frontend
+TLS findings. Detached HTTP/TLS preparation remains unactivated in production;
+Task 9 owns the atomic installation and legacy-owner retirement. Impact-scoped
+tests, focused race tests, lint, capability generation, build, and diff checks
+passed. The route batch-logger timeout, route error-page rewrite, and plugin
+request-context/CORS failures were reproduced unchanged on the Task 6 master
+baseline and are not reported as Task 7 passes.
 
 ---
 

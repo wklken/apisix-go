@@ -223,6 +223,7 @@ func TestCompilerCoversEveryManagedKindInCanonicalDomainCandidates(t *testing.T)
 		{Kind: "upstreams", ID: "u"},
 	})
 	assertCandidateKeys(t, set.Domains[generation.DomainStream], []generation.ResourceKey{
+		{Kind: "plugins", ID: "plugins"},
 		{Kind: "secrets", ID: "vault/team"},
 		{Kind: "services", ID: "svc"},
 		{Kind: "stream_routes", ID: "stream"},

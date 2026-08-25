@@ -70,6 +70,7 @@ func TestWorkerCompilerFactoryPrepareGenerationTransfersBaseOwners(t *testing.T)
 		"prepare-metadata",
 		"bind-private-materializer-authority",
 		"compile-http-snapshot",
+		"compile-stream-snapshot",
 		"transfer-prepared-generation",
 	}
 	if !slices.Equal(trace, wantTrace) {
@@ -133,6 +134,62 @@ func TestWorkerCompilerFactoryPrepareGenerationCompilesSystemOnlyHTTPSnapshot(t 
 	}
 	if err := prepared.Close(context.Background()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestWorkerCompilerFactoryPrepareGenerationCompilesStreamOnlySnapshot(t *testing.T) {
+	factory, _ := newWorkerTestFactory(t)
+	desired := mustGenerationSnapshot(t, 803, []generation.Resource{
+		resourceValue("stream_routes", "tcp", `{
+			"id":"tcp",
+			"upstream":{"scheme":"tcp","nodes":{"127.0.0.1:1883":1}}
+		}`),
+	}, nil)
+	prepared, err := factory.PrepareGeneration(
+		context.Background(), ticketForSnapshot(desired, generation.DomainStream), desired, nil, nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prepared.HTTP() != nil || prepared.Stream() == nil ||
+		prepared.Stream().Revision() != desired.Revision() ||
+		!slices.Equal(prepared.Stream().Router().RouteIDs(), []string{"tcp"}) {
+		t.Fatal("stream-only input did not preserve a usable detached stream owner")
+	}
+	if err := prepared.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestWorkerCompilerFactoryPrepareGenerationStreamFailureCleansAttachedHTTP(t *testing.T) {
+	factory, materializer := newWorkerTestFactory(t)
+	desired := mustGenerationSnapshot(t, 804, []generation.Resource{
+		resourceValue("routes", "http", `{"id":"http"}`),
+		resourceValue("stream_routes", "broken", `{"id":"broken"}`),
+	}, nil)
+	prepared, err := factory.PrepareGeneration(
+		context.Background(),
+		ticketForSnapshot(desired, generation.DomainHTTP, generation.DomainStream),
+		desired,
+		nil,
+		nil,
+	)
+	if prepared != nil || err == nil {
+		t.Fatalf("stream compile failure = %#v/%v, want nil/error", prepared, err)
+	}
+	if materializer.registration == nil || materializer.registration.closed != 1 ||
+		factory.registry.Len() != 0 {
+		t.Fatalf(
+			"stream failure cleanup registration/resources = %#v/%d",
+			materializer.registration,
+			factory.registry.Len(),
+		)
+	}
+	factory.liveMu.Lock()
+	live := len(factory.live)
+	factory.liveMu.Unlock()
+	if live != 0 {
+		t.Fatalf("stream failure inserted %d live generations", live)
 	}
 }
 
@@ -234,6 +291,8 @@ func TestWorkerCompilerFactoryPrepareGenerationCancellationWindows(t *testing.T)
 		"prepare-consumers",
 		"prepare-metadata",
 		"bind-private-materializer-authority",
+		"compile-http-snapshot",
+		"compile-stream-snapshot",
 	}
 	for index, stage := range stages {
 		t.Run(stage, func(t *testing.T) {

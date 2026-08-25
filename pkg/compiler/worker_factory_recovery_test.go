@@ -84,6 +84,7 @@ func TestWorkerCompilerFactoryPrepareRecoveryTransfersBaseOwners(t *testing.T) {
 		"prepare-metadata",
 		"bind-private-materializer-authority",
 		"compile-http-snapshot",
+		"compile-stream-snapshot",
 		"transfer-prepared-generation",
 	}
 	if !slices.Equal(trace, wantTrace) {
@@ -98,6 +99,11 @@ func TestWorkerCompilerFactoryPrepareRecoveryTransfersBaseOwners(t *testing.T) {
 		prepared.materializer != materializer || prepared.registry != factory.registry ||
 		prepared.cleanup == nil || prepared.manifest != factory.compiler.manifest {
 		t.Fatalf("prepared recovery did not receive exact base owners: %#v", prepared)
+	}
+	if prepared.HTTP() == nil || prepared.Stream() == nil ||
+		prepared.Stream().Revision() != revisions.Stream ||
+		!slices.Equal(prepared.Stream().Router().RouteIDs(), []string{"stream-live"}) {
+		t.Fatal("recovery did not compile both committed protocol snapshots")
 	}
 	factory.liveMu.Lock()
 	tracked := factory.live[wantID]
@@ -470,7 +476,10 @@ func workerRecoveryCommitted(
 		Key: generation.ResourceKey{Kind: "routes", ID: "http-deleted"}, Revision: 4,
 	}})
 	streamSnapshot := mustGenerationSnapshot(t, 6, []generation.Resource{
-		resourceValue("stream_routes", "stream-live", `{"id":"stream-live"}`),
+		resourceValue("stream_routes", "stream-live", `{
+			"id":"stream-live",
+			"upstream":{"scheme":"tcp","nodes":{"127.0.0.1:1883":1}}
+		}`),
 	}, []generation.Tombstone{{
 		Key: generation.ResourceKey{Kind: "stream_routes", ID: "stream-deleted"}, Revision: 5,
 	}})

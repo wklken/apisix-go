@@ -13,9 +13,17 @@ import (
 
 func TestPlanStreamPreparationPreservesLegacyMergeAndExactProvenance(t *testing.T) {
 	snapshot := mustGenerationSnapshot(t, 84, []generation.Resource{
-		resourceValue("stream_routes", "z", `{"id":"z","service_id":"s1","plugins":{"mqtt-proxy":{"protocol_name":"route","protocol_level":4}},"upstream":{"scheme":"tcp","nodes":{"127.0.0.1:1884":1}}}`),
+		resourceValue(
+			"stream_routes",
+			"z",
+			`{"id":"z","service_id":"s1","plugins":{"mqtt-proxy":{"protocol_name":"route","protocol_level":4}},"upstream":{"scheme":"tcp","nodes":{"127.0.0.1:1884":1}}}`,
+		),
 		resourceValue("stream_routes", "a", `{"id":"a","service_id":"s1"}`),
-		resourceValue("services", "s1", `{"id":"s1","plugins":{"mqtt-proxy":{"protocol_name":"service","protocol_level":4}},"upstream_id":"u1"}`),
+		resourceValue(
+			"services",
+			"s1",
+			`{"id":"s1","plugins":{"mqtt-proxy":{"protocol_name":"service","protocol_level":4}},"upstream_id":"u1"}`,
+		),
 		resourceValue("upstreams", "u1", `{"scheme":"tcp","nodes":{"127.0.0.1:1883":1}}`),
 	}, nil)
 	candidate := compileDomain(t, generation.DomainStream, snapshot, generation.PublishedGeneration{}, false)
@@ -63,7 +71,12 @@ func TestPlanStreamPreparationRouteDisableSuppressesInheritedPlugin(t *testing.T
 		Upstream: testStreamUpstream(1883),
 	}
 
-	plan, err := buildStreamPreparationPlan(context.Background(), resources, []string{"mqtt-proxy"}, newTestCompiler(t).manifest)
+	plan, err := buildStreamPreparationPlan(
+		context.Background(),
+		resources,
+		[]string{"mqtt-proxy"},
+		newTestCompiler(t).manifest,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +91,12 @@ func TestPlanStreamPreparationRouteUpstreamIDSuppressesServiceLookup(t *testing.
 		Plugins: map[string]resource.PluginConfig{"mqtt-proxy": map[string]any{}},
 	})
 	resources.upstreams["u1"] = testStreamUpstream(1883)
-	plan, err := buildStreamPreparationPlan(context.Background(), resources, []string{"mqtt-proxy"}, newTestCompiler(t).manifest)
+	plan, err := buildStreamPreparationPlan(
+		context.Background(),
+		resources,
+		[]string{"mqtt-proxy"},
+		newTestCompiler(t).manifest,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,12 +118,36 @@ func TestPlanStreamPreparationDynamicPluginContract(t *testing.T) {
 	}
 	base.dynamicPlugins = true
 	base.enabledPlugins = make([]string, 0)
-	if _, err := buildStreamPreparationPlan(context.Background(), base, []string{"mqtt-proxy"}, compiler.manifest); err == nil || !strings.Contains(err.Error(), "not enabled") {
+	if _, err := buildStreamPreparationPlan(
+		context.Background(),
+		base,
+		[]string{"mqtt-proxy"},
+		compiler.manifest,
+	); err == nil ||
+		!strings.Contains(err.Error(), "not enabled") {
 		t.Fatalf("present empty dynamic set error = %v", err)
 	}
 	base.enabledPlugins = []string{"request-id"}
-	if _, err := buildStreamPreparationPlan(context.Background(), base, []string{"mqtt-proxy"}, compiler.manifest); err == nil || !strings.Contains(err.Error(), "not enabled") {
+	if _, err := buildStreamPreparationPlan(
+		context.Background(),
+		base,
+		[]string{"mqtt-proxy"},
+		compiler.manifest,
+	); err == nil ||
+		!strings.Contains(err.Error(), "not enabled") {
 		t.Fatalf("HTTP-only dynamic entry leaked into stream: %v", err)
+	}
+
+	base.routes[0].Plugins = nil
+	base.enabledPlugins = make([]string, 0)
+	raw, err := buildStreamPreparationPlan(
+		context.Background(),
+		base,
+		[]string{"mqtt-proxy"},
+		compiler.manifest,
+	)
+	if err != nil || len(raw.routes) != 1 || raw.routes[0].binding != nil {
+		t.Fatalf("present empty dynamic set rejected raw TCP route: %#v / %v", raw, err)
 	}
 }
 
@@ -174,14 +216,90 @@ func TestPlanStreamPreparationRejectsBeforeMaterialization(t *testing.T) {
 		resources streamResourceSet
 		want      string
 	}{
-		{name: "missing-service", resources: streamPlannerResources(resource.StreamRoute{ID: "r1", ServiceID: "missing", Upstream: testStreamUpstream(1883)}), want: "service"},
-		{name: "missing-upstream", resources: streamPlannerResources(resource.StreamRoute{ID: "r1", UpstreamID: "missing"}), want: "upstream"},
-		{name: "discovery", resources: streamPlannerResources(resource.StreamRoute{ID: "r1", Upstream: resource.Upstream{Scheme: "tcp", DiscoveryType: "dns", ServiceName: "mqtt"}}), want: "discovery"},
-		{name: "scheme", resources: streamPlannerResources(resource.StreamRoute{ID: "r1", Upstream: resource.Upstream{Scheme: "tls", Nodes: testStreamUpstream(1883).Nodes}}), want: "scheme"},
-		{name: "tls", resources: streamPlannerResources(resource.StreamRoute{ID: "r1", Upstream: resource.Upstream{Scheme: "tcp", TLS: &resource.UpstreamTLS{}, Nodes: testStreamUpstream(1883).Nodes}}), want: "TLS"},
-		{name: "negative-weight", resources: streamPlannerResources(resource.StreamRoute{ID: "r1", Upstream: resource.Upstream{Scheme: "tcp", Nodes: []resource.Node{{Host: "127.0.0.1", Port: 1883, Weight: -1}}}}), want: "weight"},
-		{name: "unsupported-plugin", resources: streamPlannerResources(resource.StreamRoute{ID: "r1", Upstream: testStreamUpstream(1883), Plugins: map[string]resource.PluginConfig{"request-id": map[string]any{}}}), want: "stream factory"},
-		{name: "multiple-plugins", resources: streamPlannerResources(resource.StreamRoute{ID: "r1", Upstream: testStreamUpstream(1883), Plugins: map[string]resource.PluginConfig{"mqtt-proxy": map[string]any{}, "request-id": map[string]any{}}}), want: "more than one"},
+		{
+			name: "missing-service",
+			resources: streamPlannerResources(
+				resource.StreamRoute{ID: "r1", ServiceID: "missing", Upstream: testStreamUpstream(1883)},
+			),
+			want: "service",
+		},
+		{
+			name:      "missing-upstream",
+			resources: streamPlannerResources(resource.StreamRoute{ID: "r1", UpstreamID: "missing"}),
+			want:      "upstream",
+		},
+		{
+			name: "discovery",
+			resources: streamPlannerResources(
+				resource.StreamRoute{
+					ID:       "r1",
+					Upstream: resource.Upstream{Scheme: "tcp", DiscoveryType: "dns", ServiceName: "mqtt"},
+				},
+			),
+			want: "discovery",
+		},
+		{
+			name: "scheme",
+			resources: streamPlannerResources(
+				resource.StreamRoute{
+					ID:       "r1",
+					Upstream: resource.Upstream{Scheme: "tls", Nodes: testStreamUpstream(1883).Nodes},
+				},
+			),
+			want: "scheme",
+		},
+		{
+			name: "tls",
+			resources: streamPlannerResources(
+				resource.StreamRoute{
+					ID: "r1",
+					Upstream: resource.Upstream{
+						Scheme: "tcp",
+						TLS:    &resource.UpstreamTLS{},
+						Nodes:  testStreamUpstream(1883).Nodes,
+					},
+				},
+			),
+			want: "TLS",
+		},
+		{
+			name: "negative-weight",
+			resources: streamPlannerResources(
+				resource.StreamRoute{
+					ID: "r1",
+					Upstream: resource.Upstream{
+						Scheme: "tcp",
+						Nodes:  []resource.Node{{Host: "127.0.0.1", Port: 1883, Weight: -1}},
+					},
+				},
+			),
+			want: "weight",
+		},
+		{
+			name: "unsupported-plugin",
+			resources: streamPlannerResources(
+				resource.StreamRoute{
+					ID:       "r1",
+					Upstream: testStreamUpstream(1883),
+					Plugins:  map[string]resource.PluginConfig{"request-id": map[string]any{}},
+				},
+			),
+			want: "stream factory",
+		},
+		{
+			name: "multiple-plugins",
+			resources: streamPlannerResources(
+				resource.StreamRoute{
+					ID:       "r1",
+					Upstream: testStreamUpstream(1883),
+					Plugins: map[string]resource.PluginConfig{
+						"mqtt-proxy": map[string]any{},
+						"request-id": map[string]any{},
+					},
+				},
+			),
+			want: "more than one",
+		},
 	}
 	conflict := streamPlannerResources(
 		resource.StreamRoute{ID: "r1", ServerAddr: "0.0.0.0", ServerPort: 9000, Upstream: testStreamUpstream(1883)},

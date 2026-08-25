@@ -335,6 +335,15 @@ func (factory *WorkerCompilerFactory) transferRegisteredGeneration(
 	if err := ctx.Err(); err != nil {
 		return fail(err)
 	}
+	if err := prepared.compileAndAttachStream(ctx); err != nil {
+		return fail(err)
+	}
+	if err := factory.runCheckpoint("compile-stream-snapshot", state); err != nil {
+		return fail(err)
+	}
+	if err := ctx.Err(); err != nil {
+		return fail(err)
+	}
 
 	prepared.detach = func() {
 		factory.liveMu.Lock()

@@ -121,13 +121,6 @@ func resolveUpstreamClientCertificate(
 	return certificate, nil
 }
 
-func (b *Builder) buildTransportOption(
-	routeResource resource.Route,
-	upstream resource.Upstream,
-) (proxy.TransportOption, error) {
-	return buildTransportOptionWithSSLResolver(routeResource, upstream, b.getSSL, &b.staticConfig.Config)
-}
-
 func buildTransportOptionWithSSLResolver(
 	routeResource resource.Route,
 	upstream resource.Upstream,
@@ -375,6 +368,38 @@ func attachHTTPRetriesCompiled(
 		applyFinalProxyRewrite(retry)
 		return true
 	})
+}
+
+func applyTrafficSplitTarget(req *http.Request, override *traffic_split.Override, originalHost string) bool {
+	if override == nil {
+		return false
+	}
+	if override.HealthReporter != nil {
+		enriched := proxy.WithHealthReporter(req, override.HealthReporter)
+		if enriched != req {
+			*req = *enriched
+		}
+		proxy.SetSelectedTarget(req, override.HealthTarget)
+	}
+	req.URL.Scheme = override.Scheme
+	req.URL.Host = override.Host
+	switch override.PassHost {
+	case "pass":
+		if originalHost != "" {
+			req.Host = originalHost
+		} else {
+			req.Host = req.URL.Host
+		}
+	case "rewrite":
+		if override.UpstreamHost != "" {
+			req.Host = override.UpstreamHost
+		} else {
+			req.Host = override.Host
+		}
+	default:
+		req.Host = override.Host
+	}
+	return true
 }
 
 func bufferRequestBodyIfNeeded(w http.ResponseWriter, r *http.Request) error {

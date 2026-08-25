@@ -1,12 +1,14 @@
 package route
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"fmt"
 	"maps"
 	"net/http"
 	"slices"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	appconfig "github.com/wklken/apisix-go/pkg/config"
@@ -217,4 +219,64 @@ func cloneCompileValue(value any) any {
 // APISIX 3.17 schema.
 func validateRouteCompatibility(routeResource resource.Route) error {
 	return validateRouteSemantics(routeResource)
+}
+
+func validateRouteSemantics(routeResource resource.Route) error {
+	seenMethods := make(map[string]struct{}, len(routeResource.Methods))
+	for _, method := range routeResource.Methods {
+		if _, supported := supportedRouteMethods[method]; !supported {
+			return fmt.Errorf("route %q method %q is unsupported by the Go data plane", routeResource.ID, method)
+		}
+		if _, duplicate := seenMethods[method]; duplicate {
+			return fmt.Errorf("route %q method %q is duplicated", routeResource.ID, method)
+		}
+		seenMethods[method] = struct{}{}
+	}
+	if routeResource.HostConfigured() && routeResource.HostsConfigured() {
+		return fmt.Errorf("route %q host and hosts cannot both be configured", routeResource.ID)
+	}
+	if routeResource.HostConfigured() && strings.TrimSpace(routeResource.Host) == "" {
+		return fmt.Errorf("route %q host must not be empty", routeResource.ID)
+	}
+	if routeResource.HostsConfigured() && len(routeResource.EffectiveHosts()) == 0 {
+		return fmt.Errorf("route %q hosts must not be empty", routeResource.ID)
+	}
+	for _, host := range routeResource.EffectiveHosts() {
+		if err := validateRouteHost(host); err != nil {
+			return fmt.Errorf("route %q host %q is invalid: %w", routeResource.ID, host, err)
+		}
+	}
+	if routeResource.RemoteAddrConfigured() {
+		return fmt.Errorf("route %q remote_addr is unsupported by the Go data plane", routeResource.ID)
+	}
+	if scriptID := bytes.TrimSpace(
+		routeResource.ScriptID,
+	); len(scriptID) > 0 &&
+		!bytes.Equal(scriptID, []byte("null")) {
+		return fmt.Errorf("route %q script_id is unsupported by the Go data plane", routeResource.ID)
+	}
+	if script := bytes.TrimSpace(routeResource.Script); len(script) > 0 && !bytes.Equal(script, []byte("null")) {
+		return fmt.Errorf("route %q script is unsupported by the Go data plane", routeResource.ID)
+	}
+	if strings.TrimSpace(routeResource.FilterFunc) != "" {
+		return fmt.Errorf("route %q filter_func is unsupported by the Go data plane", routeResource.ID)
+	}
+	if vars := bytes.TrimSpace(routeResource.Vars); len(vars) > 0 &&
+		!bytes.Equal(vars, []byte("null")) &&
+		!bytes.Equal(vars, []byte("[]")) {
+		return fmt.Errorf("route %q vars is unsupported by the Go data plane", routeResource.ID)
+	}
+	for _, addr := range routeResource.RemoteAddrs {
+		if strings.TrimSpace(addr) != "" {
+			return fmt.Errorf("route %q remote_addrs is unsupported by the Go data plane", routeResource.ID)
+		}
+	}
+	if routeResource.StatusConfigured() && routeResource.Status != 0 && routeResource.Status != 1 {
+		return fmt.Errorf(
+			"route %q status %d is unsupported by the Go data plane",
+			routeResource.ID,
+			routeResource.Status,
+		)
+	}
+	return nil
 }

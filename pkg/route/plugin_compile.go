@@ -5,17 +5,24 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"math"
 	"net"
 	"net/http"
 	"slices"
+	"strconv"
 
 	"github.com/felixge/httpsnoop"
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
 	appconfig "github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/generation"
+	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/plugin/compression"
+	"github.com/wklken/apisix-go/pkg/plugin/dubbo_proxy"
 	pluginexpr "github.com/wklken/apisix-go/pkg/plugin/expr"
+	"github.com/wklken/apisix-go/pkg/plugin/http_dubbo"
 	"github.com/wklken/apisix-go/pkg/plugin/traffic_split"
 	pxy "github.com/wklken/apisix-go/pkg/proxy"
 	"github.com/wklken/apisix-go/pkg/resource"
@@ -411,6 +418,15 @@ func consumerPluginSources(group resource.ConsumerGroup, consumer resource.Consu
 	return sources
 }
 
+func isConsumerCredentialOnly(name string) bool {
+	switch name {
+	case "basic-auth", "hmac-auth", "jwe-decrypt", "jwt-auth", "key-auth", "ldap-auth", "multi-auth", "wolf-rbac":
+		return true
+	default:
+		return false
+	}
+}
+
 type materializedPluginSource struct {
 	name       string
 	config     resource.PluginConfig
@@ -473,6 +489,12 @@ func selectMaterializedPluginSources(
 	return localSources, serviceSources, effective
 }
 
+func clonePluginConfigs(source map[string]resource.PluginConfig) map[string]resource.PluginConfig {
+	cloned := make(map[string]resource.PluginConfig, len(source))
+	maps.Copy(cloned, source)
+	return cloned
+}
+
 func materializedPluginSources(
 	pluginConfigs map[string]resource.PluginConfig,
 	provenance plugin.ResourceProvenance,
@@ -497,6 +519,30 @@ func buildSystemPluginConfigs(
 	return map[string]resource.PluginConfig{
 		"request-context": buildRequestContextConfig(r, service),
 	}
+}
+
+func buildRequestContextConfig(
+	r resource.Route,
+	service resource.Service,
+) map[string]any {
+	return map[string]any{
+		"$route_id":     r.ID,
+		"$route_name":   r.Name,
+		"$matched_uri":  matchedURI(r),
+		"$matched_host": matchedHost(r),
+		"$service_id":   r.ServiceID,
+		"$service_name": service.Name,
+	}
+}
+
+func matchedURI(r resource.Route) string {
+	if r.Uri != "" {
+		return r.Uri
+	}
+	if len(r.Uris) > 0 {
+		return r.Uris[0]
+	}
+	return ""
 }
 
 func matchedHost(r resource.Route) string {
@@ -736,4 +782,754 @@ type routeHTTPDubboTerminal struct {
 	lb      pxy.LoadBalancer
 	targets map[string]compiledUpstreamTarget
 	retries int
+}
+
+type metadataPlugin struct {
+	plugin.Plugin
+	filter        *pluginexpr.Expression
+	errorResponse any
+}
+
+func (p metadataPlugin) Handler(next http.Handler) http.Handler {
+	var handler http.Handler
+	if p.errorResponse != nil {
+		handler = p.errorResponseHandler(next)
+	} else {
+		handler = p.Plugin.Handler(next)
+	}
+	if p.filter == nil {
+		return handler
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !p.filter.Eval(func(name string) any {
+			return pluginexpr.RequestValue(r, name)
+		}) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		handler.ServeHTTP(w, r)
+	})
+}
+
+func (p metadataPlugin) errorResponseHandler(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		nextCalled := false
+		errorResponseWritten := false
+		responseHeaderWritten := false
+		wrappedNext := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			nextCalled = true
+			next.ServeHTTP(w, r)
+		})
+		wrappedWriter := httpsnoop.Wrap(w, httpsnoop.Hooks{
+			WriteHeader: func(writeHeader httpsnoop.WriteHeaderFunc) httpsnoop.WriteHeaderFunc {
+				return func(status int) {
+					if errorResponseWritten {
+						return
+					}
+					responseHeaderWritten = true
+					if !nextCalled && status >= http.StatusBadRequest {
+						errorResponseWritten = true
+						writeMetadataErrorResponse(w, status, p.errorResponse)
+						return
+					}
+					writeHeader(status)
+				}
+			},
+			Write: func(write httpsnoop.WriteFunc) httpsnoop.WriteFunc {
+				return func(body []byte) (int, error) {
+					if errorResponseWritten {
+						return len(body), nil
+					}
+					if !responseHeaderWritten {
+						responseHeaderWritten = true
+					}
+					return write(body)
+				}
+			},
+		})
+		p.Plugin.Handler(wrappedNext).ServeHTTP(wrappedWriter, r)
+	})
+}
+
+type metadataRequestPlugin struct {
+	plugin.Plugin
+	phase         base.RequestPhasePlugin
+	filter        *pluginexpr.Expression
+	errorResponse any
+}
+
+func (p metadataRequestPlugin) Handler(next http.Handler) http.Handler {
+	// Keep direct callers on the wrapped plugin's original Handler path. Some
+	// request-phase plugins own package-local lifecycle/release fallbacks there.
+	return (metadataPlugin{
+		Plugin:        p.Plugin,
+		filter:        p.filter,
+		errorResponse: p.errorResponse,
+	}).Handler(next)
+}
+
+func (p metadataRequestPlugin) RunRequestPhase(
+	w http.ResponseWriter,
+	r *http.Request,
+) base.RequestPhaseResult {
+	if p.filter != nil && !p.filter.Eval(func(name string) any {
+		return pluginexpr.RequestValue(r, name)
+	}) {
+		return base.ContinueRequest(r)
+	}
+	if p.errorResponse == nil {
+		return p.phase.RunRequestPhase(w, r)
+	}
+	return p.phase.RunRequestPhase(metadataErrorResponseWriter(w, p.errorResponse), r)
+}
+
+type metadataResponseHeaderPlugin struct {
+	metadataPlugin
+	header base.HeaderFilterPlugin
+}
+
+func (p metadataResponseHeaderPlugin) RunHeaderFilter(
+	r *http.Request,
+	state *base.ResponseState,
+) error {
+	if !metadataFilterMatches(p.filter, r) {
+		return nil
+	}
+	return p.header.RunHeaderFilter(r, state)
+}
+
+func (p metadataResponseHeaderPlugin) AppliesToResponseSource(
+	source ctx.ResponseSource,
+) bool {
+	return metadataResponseEligible(p.Plugin, source)
+}
+
+type metadataResponseBodyPlugin struct {
+	metadataPlugin
+	body base.BufferedBodyFilterPlugin
+}
+
+func (p metadataResponseBodyPlugin) RunBufferedBodyFilter(
+	r *http.Request,
+	state *base.ResponseState,
+) error {
+	if !metadataFilterMatches(p.filter, r) {
+		return nil
+	}
+	return p.body.RunBufferedBodyFilter(r, state)
+}
+
+func (p metadataResponseBodyPlugin) AppliesToResponseSource(
+	source ctx.ResponseSource,
+) bool {
+	return metadataResponseEligible(p.Plugin, source)
+}
+
+type metadataResponseHeaderBodyPlugin struct {
+	metadataPlugin
+	header base.HeaderFilterPlugin
+	body   base.BufferedBodyFilterPlugin
+}
+
+func (p metadataResponseHeaderBodyPlugin) RunHeaderFilter(
+	r *http.Request,
+	state *base.ResponseState,
+) error {
+	if !metadataFilterMatches(p.filter, r) {
+		return nil
+	}
+	return p.header.RunHeaderFilter(r, state)
+}
+
+func (p metadataResponseHeaderBodyPlugin) RunBufferedBodyFilter(
+	r *http.Request,
+	state *base.ResponseState,
+) error {
+	if !metadataFilterMatches(p.filter, r) {
+		return nil
+	}
+	return p.body.RunBufferedBodyFilter(r, state)
+}
+
+func (p metadataResponseHeaderBodyPlugin) AppliesToResponseSource(
+	source ctx.ResponseSource,
+) bool {
+	return metadataResponseEligible(p.Plugin, source)
+}
+
+type metadataResponseStorePlugin struct {
+	metadataPlugin
+	store base.FinalResponseStorePlugin
+}
+
+func (p metadataResponseStorePlugin) RunFinalResponseStore(
+	r *http.Request,
+	state base.ResponseState,
+) error {
+	if !metadataFilterMatches(p.filter, r) {
+		return nil
+	}
+	return p.store.RunFinalResponseStore(r, state)
+}
+
+func (p metadataResponseStorePlugin) AppliesToResponseSource(
+	source ctx.ResponseSource,
+) bool {
+	return metadataResponseEligible(p.Plugin, source)
+}
+
+type metadataRequestBodyPlugin struct {
+	metadataRequestPlugin
+	body base.BufferedBodyFilterPlugin
+}
+
+func (p metadataRequestBodyPlugin) RunBufferedBodyFilter(
+	r *http.Request,
+	state *base.ResponseState,
+) error {
+	if !metadataFilterMatches(p.filter, r) {
+		return nil
+	}
+	return p.body.RunBufferedBodyFilter(r, state)
+}
+
+func (p metadataRequestBodyPlugin) AppliesToResponseSource(
+	source ctx.ResponseSource,
+) bool {
+	return metadataResponseEligible(p.Plugin, source)
+}
+
+type metadataRequestStorePlugin struct {
+	metadataRequestPlugin
+	store base.FinalResponseStorePlugin
+}
+
+type metadataLogPlugin struct {
+	plugin.Plugin
+	target plugin.Plugin
+	filter *pluginexpr.Expression
+}
+
+type metadataSnapshotSanitizerPlugin struct {
+	plugin.Plugin
+	target plugin.Plugin
+	filter *pluginexpr.Expression
+}
+
+func (p metadataSnapshotSanitizerPlugin) LogCapturePolicy() base.LogCapturePolicy {
+	provider, ok := p.target.(base.LogCapturePolicyPlugin)
+	if !ok {
+		return base.LogCapturePolicy{}
+	}
+	return provider.LogCapturePolicy()
+}
+
+func (p metadataSnapshotSanitizerPlugin) ShouldSanitizeLogSnapshot(snapshot base.LogSnapshot) bool {
+	return metadataSnapshotFilterMatches(p.filter, snapshot)
+}
+
+func (p metadataSnapshotSanitizerPlugin) SanitizeLogSnapshot(snapshot *base.LogSnapshot) error {
+	sanitizer, ok := p.target.(base.LogSnapshotSanitizerPlugin)
+	if !ok {
+		return fmt.Errorf("plugin %q has no log sanitizer callback", p.target.GetName())
+	}
+	return sanitizer.SanitizeLogSnapshot(snapshot)
+}
+
+func (p metadataLogPlugin) LogCapturePolicy() base.LogCapturePolicy {
+	provider, ok := p.target.(base.LogCapturePolicyPlugin)
+	if !ok {
+		return base.LogCapturePolicy{}
+	}
+	return provider.LogCapturePolicy()
+}
+
+func (p metadataLogPlugin) RunLogPhase(snapshot base.LogSnapshot) error {
+	if !metadataSnapshotFilterMatches(p.filter, snapshot) {
+		return nil
+	}
+	phase, ok := p.target.(base.LogPhasePlugin)
+	if !ok {
+		return fmt.Errorf("plugin %q has no log callback", p.target.GetName())
+	}
+	return phase.RunLogPhase(snapshot)
+}
+
+type metadataRequestSnapshotPlugin struct {
+	plugin.Plugin
+	request base.RequestPhasePlugin
+	target  plugin.Plugin
+	filter  *pluginexpr.Expression
+}
+
+func (p metadataRequestSnapshotPlugin) RunRequestPhase(
+	w http.ResponseWriter,
+	r *http.Request,
+) base.RequestPhaseResult {
+	return p.request.RunRequestPhase(w, r)
+}
+
+func (p metadataRequestSnapshotPlugin) LogCapturePolicy() base.LogCapturePolicy {
+	provider, ok := p.target.(base.LogCapturePolicyPlugin)
+	if !ok {
+		return base.LogCapturePolicy{}
+	}
+	return provider.LogCapturePolicy()
+}
+
+func (p metadataRequestSnapshotPlugin) RunSnapshotFinalizer(snapshot base.LogSnapshot) error {
+	if !metadataSnapshotFilterMatches(p.filter, snapshot) {
+		return nil
+	}
+	finalizer, ok := p.target.(base.SnapshotFinalizerPlugin)
+	if !ok {
+		return fmt.Errorf("plugin %q has no snapshot finalizer callback", p.target.GetName())
+	}
+	return finalizer.RunSnapshotFinalizer(snapshot)
+}
+
+type metadataStreamingPlugin struct {
+	plugin.Plugin
+	target plugin.Plugin
+	filter *pluginexpr.Expression
+}
+
+func (p metadataStreamingPlugin) RunStreamingHeaderFilter(
+	r *http.Request,
+	state *base.StreamingResponseState,
+) error {
+	if !metadataFilterMatches(p.filter, r) {
+		return nil
+	}
+	header, ok := p.target.(base.StreamingHeaderFilterPlugin)
+	if !ok {
+		return fmt.Errorf("plugin %q has no streaming header callback", p.target.GetName())
+	}
+	return header.RunStreamingHeaderFilter(r, state)
+}
+
+func (p metadataStreamingPlugin) WrapStreamingResponse(
+	w http.ResponseWriter,
+	r *http.Request,
+) (http.ResponseWriter, error) {
+	if !metadataFilterMatches(p.filter, r) {
+		return w, nil
+	}
+	body, ok := p.target.(base.StreamingBodyFilterPlugin)
+	if !ok {
+		return nil, fmt.Errorf("plugin %q has no streaming body callback", p.target.GetName())
+	}
+	return body.WrapStreamingResponse(w, r)
+}
+
+func (p metadataStreamingPlugin) RegisterCompressionOffers(
+	r *http.Request,
+	state *compression.State,
+) []compression.Offer {
+	if !metadataFilterMatches(p.filter, r) {
+		return nil
+	}
+	offer, ok := p.target.(plugin.CompressionOfferPlugin)
+	if !ok {
+		return nil
+	}
+	return offer.RegisterCompressionOffers(r, state)
+}
+
+func (p metadataStreamingPlugin) WrapCompression(
+	w http.ResponseWriter,
+	r *http.Request,
+	state *compression.State,
+	decision compression.Decision,
+) (http.ResponseWriter, error) {
+	if !metadataFilterMatches(p.filter, r) {
+		return w, nil
+	}
+	offer, ok := p.target.(plugin.CompressionOfferPlugin)
+	if !ok {
+		return nil, fmt.Errorf("plugin %q has no compression callback", p.target.GetName())
+	}
+	return offer.WrapCompression(w, r, state, decision)
+}
+
+type metadataProtocolPlugin struct{ metadataStreamingPlugin }
+
+func (p metadataProtocolPlugin) RunExclusiveProtocol(
+	w http.ResponseWriter,
+	r *http.Request,
+	next http.Handler,
+) (base.ProtocolDisposition, *http.Request, ctx.ResponseSource, error) {
+	if !metadataFilterMatches(p.filter, r) {
+		if next != nil {
+			next.ServeHTTP(w, r)
+		}
+		return base.ProtocolResponded, r, ctx.ResponseSourceUnknown, nil
+	}
+	terminal, ok := p.target.(base.ExclusiveProtocolTerminal)
+	if !ok {
+		return 0, r, ctx.ResponseSourceUnknown, fmt.Errorf(
+			"plugin %q has no exclusive protocol callback",
+			p.target.GetName(),
+		)
+	}
+	return terminal.RunExclusiveProtocol(w, r, next)
+}
+
+func (p metadataRequestStorePlugin) RunFinalResponseStore(
+	r *http.Request,
+	state base.ResponseState,
+) error {
+	if !metadataFilterMatches(p.filter, r) {
+		return nil
+	}
+	return p.store.RunFinalResponseStore(r, state)
+}
+
+func (p metadataRequestStorePlugin) AppliesToResponseSource(
+	source ctx.ResponseSource,
+) bool {
+	return metadataResponseEligible(p.Plugin, source)
+}
+
+func metadataFilterMatches(filter *pluginexpr.Expression, r *http.Request) bool {
+	return filter == nil || filter.Eval(func(name string) any {
+		return pluginexpr.RequestValue(r, name)
+	})
+}
+
+func metadataSnapshotFilterMatches(filter *pluginexpr.Expression, snapshot base.LogSnapshot) bool {
+	return filter == nil || filter.Eval(func(name string) any {
+		return pluginexpr.SnapshotValue(snapshot, name)
+	})
+}
+
+func metadataResponseEligible(p plugin.Plugin, source ctx.ResponseSource) bool {
+	if checker, ok := p.(base.ResponseEligibility); ok {
+		return checker.AppliesToResponseSource(source)
+	}
+	return source == ctx.ResponseSourceUpstream
+}
+
+const (
+	metadataResponseHeader = 1 << iota
+	metadataResponseBody
+	metadataResponseStore
+)
+
+func metadataResponseMask(factoryName string, descriptor plugin.Descriptor) int {
+	switch factoryName {
+	case "body-transformer":
+		if descriptor.HasResponseOwner(plugin.ResponseOwnerBufferedBodyFilter) {
+			return metadataResponseBody
+		}
+	case "echo":
+		mask := 0
+		if descriptor.HasResponseOwner(plugin.ResponseOwnerHeaderFilter) {
+			mask |= metadataResponseHeader
+		}
+		if descriptor.HasResponseOwner(plugin.ResponseOwnerBufferedBodyFilter) {
+			mask |= metadataResponseBody
+		}
+		return mask
+	case "error-page", "exit-transformer", "response-rewrite":
+		return metadataResponseBody
+	case "proxy-cache", "graphql-proxy-cache":
+		return metadataResponseStore
+	case "serverless-pre-function", "serverless-post-function":
+		mask := 0
+		if descriptor.HasResponseOwner(plugin.ResponseOwnerHeaderFilter) {
+			mask |= metadataResponseHeader
+		}
+		if descriptor.HasResponseOwner(plugin.ResponseOwnerBufferedBodyFilter) {
+			mask |= metadataResponseBody
+		}
+		return mask
+	default:
+		return 0
+	}
+	return 0
+}
+
+func metadataErrorResponseWriter(w http.ResponseWriter, value any) http.ResponseWriter {
+	replaced := false
+	responseHeaderWritten := false
+	return httpsnoop.Wrap(w, httpsnoop.Hooks{
+		WriteHeader: func(writeHeader httpsnoop.WriteHeaderFunc) httpsnoop.WriteHeaderFunc {
+			return func(status int) {
+				if replaced {
+					return
+				}
+				responseHeaderWritten = true
+				if status >= http.StatusBadRequest {
+					replaced = true
+					writeMetadataErrorResponse(w, status, value)
+					return
+				}
+				writeHeader(status)
+			}
+		},
+		Write: func(write httpsnoop.WriteFunc) httpsnoop.WriteFunc {
+			return func(body []byte) (int, error) {
+				if replaced {
+					return len(body), nil
+				}
+				if !responseHeaderWritten {
+					responseHeaderWritten = true
+				}
+				return write(body)
+			}
+		},
+	})
+}
+
+func writeMetadataErrorResponse(w http.ResponseWriter, status int, value any) {
+	var body []byte
+	contentType := "text/plain; charset=utf-8"
+	if object, ok := value.(map[string]any); ok {
+		if encoded, err := json.Marshal(object); err == nil {
+			body = encoded
+			contentType = "application/json"
+		}
+	} else if text, ok := value.(string); ok {
+		body = []byte(text)
+	} else if encoded, err := json.Marshal(value); err == nil {
+		body = encoded
+		contentType = "application/json"
+	}
+	if body == nil {
+		logger.Errorf("marshal metadata error response fail, falling back to text: %v", value)
+		body = []byte(fmt.Sprintf("%v", value))
+	}
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+	w.WriteHeader(status)
+	_, _ = w.Write(body)
+}
+
+func parsePluginPriority(value any) (int, error) {
+	switch number := value.(type) {
+	case int:
+		return number, nil
+	case int8:
+		return int(number), nil
+	case int16:
+		return int(number), nil
+	case int32:
+		return int(number), nil
+	case int64:
+		priority := int(number)
+		if int64(priority) == number {
+			return priority, nil
+		}
+	case uint:
+		if uint64(number) <= uint64(^uint(0)>>1) {
+			return int(number), nil
+		}
+	case uint8:
+		return int(number), nil
+	case uint16:
+		return int(number), nil
+	case uint32:
+		if uint64(number) <= uint64(^uint(0)>>1) {
+			return int(number), nil
+		}
+	case uint64:
+		if number <= uint64(^uint(0)>>1) {
+			return int(number), nil
+		}
+	case float64:
+		if math.Trunc(number) == number {
+			priority := int(number)
+			if float64(priority) == number {
+				return priority, nil
+			}
+		}
+	case json.Number:
+		priority, err := strconv.ParseInt(string(number), 10, 64)
+		if err == nil {
+			return parsePluginPriority(priority)
+		}
+	}
+	return 0, fmt.Errorf("_meta.priority must be an integer")
+}
+
+func newMetadataRequestAndBufferedPluginWithDescriptor(
+	factoryName string,
+	p plugin.Plugin,
+	metadata pluginMetadata,
+	descriptor plugin.Descriptor,
+) (plugin.Plugin, error) {
+	if metadata.filter == nil && metadata.errorResponse == nil {
+		return p, nil
+	}
+	basePlugin := metadataPlugin{
+		Plugin:        p,
+		filter:        metadata.filter,
+		errorResponse: metadata.errorResponse,
+	}
+	responseMask := metadataResponseMask(factoryName, descriptor)
+	requestStage := descriptor.RequestStage()
+	header, hasHeader := p.(base.HeaderFilterPlugin)
+	body, hasBody := p.(base.BufferedBodyFilterPlugin)
+	store, hasStore := p.(base.FinalResponseStorePlugin)
+	if responseMask&metadataResponseHeader != 0 && !hasHeader {
+		return nil, fmt.Errorf("factory %q declares header filter without callback", factoryName)
+	}
+	if responseMask&metadataResponseBody != 0 && !hasBody {
+		return nil, fmt.Errorf("factory %q declares buffered body filter without callback", factoryName)
+	}
+	if responseMask&metadataResponseStore != 0 && !hasStore {
+		return nil, fmt.Errorf("factory %q declares final response store without callback", factoryName)
+	}
+	if phase, ok := p.(base.RequestPhasePlugin); ok &&
+		requestStage != plugin.RequestStageNone && requestStage != plugin.RequestStageLegacy {
+		requestPlugin := metadataRequestPlugin{
+			Plugin:        basePlugin.Plugin,
+			phase:         phase,
+			filter:        metadata.filter,
+			errorResponse: metadata.errorResponse,
+		}
+		if responseMask&metadataResponseBody != 0 {
+			return metadataRequestBodyPlugin{
+				metadataRequestPlugin: requestPlugin,
+				body:                  body,
+			}, nil
+		}
+		if responseMask&metadataResponseStore != 0 {
+			return metadataRequestStorePlugin{
+				metadataRequestPlugin: requestPlugin,
+				store:                 store,
+			}, nil
+		}
+		return requestPlugin, nil
+	}
+	if responseMask&metadataResponseHeader != 0 && responseMask&metadataResponseBody != 0 {
+		return metadataResponseHeaderBodyPlugin{
+			metadataPlugin: basePlugin,
+			header:         header,
+			body:           body,
+		}, nil
+	}
+	if responseMask&metadataResponseHeader != 0 {
+		return metadataResponseHeaderPlugin{
+			metadataPlugin: basePlugin,
+			header:         header,
+		}, nil
+	}
+	if responseMask&metadataResponseBody != 0 {
+		return metadataResponseBodyPlugin{
+			metadataPlugin: basePlugin,
+			body:           body,
+		}, nil
+	}
+	if responseMask&metadataResponseStore != 0 {
+		return metadataResponseStorePlugin{
+			metadataPlugin: basePlugin,
+			store:          store,
+		}, nil
+	}
+	return basePlugin, nil
+}
+
+func serveDubboIfConfiguredCompiled(
+	w http.ResponseWriter,
+	r *http.Request,
+	lb pxy.LoadBalancer,
+	targets map[string]compiledUpstreamTarget,
+	retries ...int,
+) bool {
+	cfg, ok := dubbo_proxy.GetConfig(r)
+	if !ok {
+		return false
+	}
+
+	retryCount := dubboRetryCount(r, retries...)
+	nextTarget := nextDubboTarget(r, lb, targets)
+	dubbo_proxy.ServeDubboWithRetries(w, r, nextTarget, cfg, retryCount)
+	return true
+}
+
+func serveHTTPDubboIfConfiguredCompiled(
+	w http.ResponseWriter,
+	r *http.Request,
+	lb pxy.LoadBalancer,
+	targets map[string]compiledUpstreamTarget,
+	retries ...int,
+) bool {
+	cfg, ok := http_dubbo.GetConfig(r)
+	if !ok {
+		return false
+	}
+
+	retryCount := dubboRetryCount(r, retries...)
+	nextTarget := nextDubboTarget(r, lb, targets)
+	http_dubbo.ServeDubboWithRetries(w, r, nextTarget, cfg, retryCount)
+	return true
+}
+
+func selectHTTPDubboTarget(
+	r *http.Request,
+	lb pxy.LoadBalancer,
+	targets map[string]compiledUpstreamTarget,
+) (string, error) {
+	if override := traffic_split.GetOverride(r); override != nil {
+		if override.HealthReporter != nil {
+			enriched := pxy.WithHealthReporter(r, override.HealthReporter)
+			if enriched != r {
+				*r = *enriched
+			}
+		}
+		pxy.SetSelectedTarget(r, override.HealthTarget)
+		return override.Host, nil
+	}
+	if reporter := healthReporter(lb); reporter != nil {
+		enriched := pxy.WithHealthReporter(r, reporter)
+		if enriched != r {
+			*r = *enriched
+		}
+	}
+	target := pxy.NextTarget(lb, r)
+	pxy.SetSelectedTarget(r, target)
+	compiled, err := resolveCompiledUpstreamTarget(target, targets)
+	if err != nil {
+		return "", err
+	}
+	return compiled.host, nil
+}
+
+func dubboRetryCount(r *http.Request, retries ...int) int {
+	if override := traffic_split.GetOverride(r); override != nil {
+		return override.Retries
+	}
+	if len(retries) > 0 {
+		return retries[0]
+	}
+	return 0
+}
+
+func nextDubboTarget(
+	r *http.Request,
+	lb pxy.LoadBalancer,
+	targets map[string]compiledUpstreamTarget,
+) func() (string, error) {
+	trafficOverride := traffic_split.GetOverride(r)
+	first := true
+	return func() (string, error) {
+		if trafficOverride != nil {
+			if !first {
+				if trafficOverride.NextRetry == nil {
+					pxy.SetSelectedTarget(r, "")
+					return "", fmt.Errorf("traffic-split upstream has no retry target")
+				}
+				trafficOverride = trafficOverride.NextRetry(r)
+				if trafficOverride == nil {
+					pxy.SetSelectedTarget(r, "")
+					return "", fmt.Errorf("traffic-split upstream has no retry target")
+				}
+				*r = *traffic_split.WithOverride(r, trafficOverride)
+			}
+			first = false
+		}
+		return selectHTTPDubboTarget(r, lb, targets)
+	}
 }

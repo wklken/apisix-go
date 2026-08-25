@@ -24,6 +24,14 @@ import (
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
+const (
+	StatusClientClosedRequest = 499
+	defaultUserAgent          = "apisix-go"
+	upstreamStartTimeVar      = "$upstream_start_time"
+	upstreamLatencyVar        = "$upstream_latency"
+	websocketDisabledMessage  = "websocket upgrade is disabled"
+)
+
 // PreparedUpstreamRuntime is the authority-free view of an already prepared
 // upstream. It intentionally exposes neither the cluster nor its Close method.
 type PreparedUpstreamRuntime struct {
@@ -650,4 +658,31 @@ func newErrorHandler(staticConfig *appconfig.Config) pxy.ErrorHandler {
 		logger.Errorf("proxy request %s %s failed: %v", r.Method, proxyFailureLogPath(r), err)
 		_ = util.WriteJSON(w, status, "upstream request failed")
 	}
+}
+
+func recordUpstreamLatency(req *http.Request) {
+	start, ok := apisixctx.GetRequestVar(req, upstreamStartTimeVar).(time.Time)
+	if !ok {
+		return
+	}
+	latency := time.Since(start).Milliseconds()
+	if latency <= 0 {
+		latency = 1
+	}
+	apisixctx.RegisterRequestVar(req, upstreamLatencyVar, latency)
+}
+
+func showUpstreamStatusInResponseHeader(staticConfig *appconfig.Config) bool {
+	return staticConfig != nil && staticConfig.Apisix.ShowUpstreamStatusInResponseHeader
+}
+
+func proxyFailureLogPath(r *http.Request) string {
+	if r == nil || r.URL == nil {
+		return "/"
+	}
+	path := r.URL.EscapedPath()
+	if path == "" {
+		return "/"
+	}
+	return path
 }

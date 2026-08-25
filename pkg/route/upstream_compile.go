@@ -527,3 +527,82 @@ func applyUpstreamTargetCompiled(
 	}
 	return nil
 }
+
+func inlineUpstreamConfigured(upstream resource.Upstream) bool {
+	return upstream.Nodes != nil || upstream.Scheme != "" || upstream.TLS != nil ||
+		upstream.Type != "" || upstream.Checks != nil || upstream.HashOn != "" ||
+		upstream.Key != "" || upstream.PassHost != "" || upstream.UpstreamHost != "" ||
+		upstream.Name != "" || upstream.Desc != "" || upstream.RetriesConfigured() ||
+		upstream.Timeout != (resource.Timeout{}) || upstream.DiscoveryType != "" ||
+		upstream.ServiceName != ""
+}
+
+func upstreamNodeHost(scheme, host, port string) string {
+	if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
+		host = strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
+	}
+	standardPort := false
+	switch strings.ToLower(scheme) {
+	case "http", "grpc":
+		standardPort = port == "80"
+	case "https", "grpcs":
+		standardPort = port == "443"
+	}
+	if standardPort {
+		if strings.Contains(host, ":") {
+			return "[" + host + "]"
+		}
+		return host
+	}
+	return net.JoinHostPort(host, port)
+}
+
+type compiledUpstreamTarget struct {
+	scheme   string
+	host     string
+	nodeHost string
+}
+
+func resolveCompiledUpstreamTarget(
+	target string,
+	targets map[string]compiledUpstreamTarget,
+) (compiledUpstreamTarget, error) {
+	if compiled, ok := targets[target]; ok {
+		return compiled, nil
+	}
+	// Compatibility fallback for direct helper callers. Built route handlers
+	// always provide the immutable precompiled target table.
+	return parseCompiledUpstreamTarget(target)
+}
+
+func parseCompiledUpstreamTarget(target string) (compiledUpstreamTarget, error) {
+	parsed, err := url.Parse(target)
+	if err != nil {
+		return compiledUpstreamTarget{}, fmt.Errorf("parse upstream target %q: %w", target, err)
+	}
+	if parsed.Host == "" || parsed.Hostname() == "" {
+		return compiledUpstreamTarget{}, fmt.Errorf("upstream target %q has no host", target)
+	}
+	port := parsed.Port()
+	if port != "" {
+		numericPort, err := strconv.Atoi(port)
+		if err != nil || numericPort < 1 || numericPort > 65535 {
+			return compiledUpstreamTarget{}, fmt.Errorf("upstream target %q has invalid port", target)
+		}
+	}
+	return compiledUpstreamTarget{
+		scheme:   parsed.Scheme,
+		host:     parsed.Host,
+		nodeHost: upstreamNodeHost(parsed.Scheme, parsed.Hostname(), port),
+	}, nil
+}
+
+type directorErrorContextKey struct{}
+
+func requestDirectorError(request *http.Request) error {
+	if request == nil {
+		return nil
+	}
+	err, _ := request.Context().Value(directorErrorContextKey{}).(error)
+	return err
+}

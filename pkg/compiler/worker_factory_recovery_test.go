@@ -131,8 +131,11 @@ func TestWorkerCompilerFactoryPrepareRecoveryCompilesSystemRouteHTTPSnapshot(t *
 	}
 	if factory.registry.Len() != 3 || prepared.ConsumerLookup() == nil ||
 		prepared.PublicationSet().DesiredRevision != revisions.Desired || prepared.HTTP() == nil ||
-		prepared.HTTP().Revision() != revisions.HTTP || prepared.HTTP().TLSConfig() == nil {
+		prepared.HTTP().Revision() != revisions.HTTP {
 		t.Fatalf("system-route recovery returned unusable owner/resource count %d", factory.registry.Len())
+	}
+	if prepared.HTTP().TLSConfig() != nil {
+		t.Fatal("system-route recovery exposed TLS config while frontend TLS is disabled")
 	}
 	if err := prepared.Close(context.Background()); err != nil {
 		t.Fatal(err)

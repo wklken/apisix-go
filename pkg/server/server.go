@@ -34,6 +34,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/route"
 	"github.com/wklken/apisix-go/pkg/store"
 	streamruntime "github.com/wklken/apisix-go/pkg/stream"
+	"github.com/wklken/apisix-go/pkg/tlsconfig"
 	"github.com/wklken/apisix-go/pkg/version"
 	"golang.org/x/net/http2"
 )
@@ -441,7 +442,7 @@ func configuredListenAddresses(cfg *config.Config) []string {
 }
 
 func configuredTLSListenAddresses(cfg *config.Config) []string {
-	if cfg == nil || !cfg.Apisix.Ssl.Enable {
+	if !tlsconfig.FrontendEnabled(cfg) {
 		return nil
 	}
 	listeners := cfg.Apisix.Ssl.Listen

@@ -16,6 +16,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/runtime"
 	"github.com/wklken/apisix-go/pkg/secret"
+	"github.com/wklken/apisix-go/pkg/tlsconfig"
 )
 
 var (
@@ -105,7 +106,7 @@ func NewWorkerCompilerFactory(
 }
 
 func readWorkerTrustedClientCA(cfg *config.Config) ([]byte, error) {
-	if cfg == nil {
+	if !tlsconfig.FrontendEnabled(cfg) {
 		return nil, nil
 	}
 	path := strings.TrimSpace(cfg.Apisix.Ssl.SslTrustedCertificate)

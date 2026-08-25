@@ -19,6 +19,33 @@ import (
 
 const testTLS12Cipher = "ECDHE-ECDSA-AES128-GCM-SHA256"
 
+func TestFrontendEnabledRequiresEnabledValidListener(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  *config.Config
+		want bool
+	}{
+		{name: "nil"},
+		{name: "disabled", cfg: &config.Config{Apisix: config.Apisix{Ssl: config.Ssl{
+			Listen: []config.Listen{{Port: 9443}},
+		}}}},
+		{name: "missing listener", cfg: &config.Config{Apisix: config.Apisix{Ssl: config.Ssl{Enable: true}}}},
+		{name: "invalid listener", cfg: &config.Config{Apisix: config.Apisix{Ssl: config.Ssl{
+			Enable: true, Listen: []config.Listen{{Port: 0}, {Port: 65536}},
+		}}}},
+		{name: "valid listener", cfg: &config.Config{Apisix: config.Apisix{Ssl: config.Ssl{
+			Enable: true, Listen: []config.Listen{{Port: 9443}},
+		}}}, want: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := FrontendEnabled(test.cfg); got != test.want {
+				t.Fatalf("FrontendEnabled() = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
 func TestCompileBaseLeavesCertificateSelectionToTheCaller(t *testing.T) {
 	cfg := testFrontendConfig()
 	cfg.Apisix.Ssl.FallbackSNI = "fallback.example.test"

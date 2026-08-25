@@ -125,9 +125,11 @@ func TestWorkerCompilerFactoryPrepareGenerationCompilesSystemOnlyHTTPSnapshot(t 
 		t.Fatalf("resource leases after preparation = %d, want one system binding", got)
 	}
 	if prepared.ConsumerLookup() == nil || prepared.PublicationSet().DesiredRevision != desired.Revision() ||
-		prepared.HTTP() == nil || prepared.HTTP().Revision() != desired.Revision() ||
-		prepared.HTTP().TLSConfig() == nil {
+		prepared.HTTP() == nil || prepared.HTTP().Revision() != desired.Revision() {
 		t.Fatal("system-only HTTP input did not preserve a usable compiled generation owner")
+	}
+	if prepared.HTTP().TLSConfig() != nil {
+		t.Fatal("system-only HTTP input exposed TLS config while frontend TLS is disabled")
 	}
 	if err := prepared.Close(context.Background()); err != nil {
 		t.Fatal(err)
@@ -567,7 +569,7 @@ func TestWorkerCompilerFactoryPrepareGenerationConstructorValidation(t *testing.
 	}
 }
 
-func TestNewWorkerCompilerFactoryFailsClosedOnUnreadableTrustedClientCA(t *testing.T) {
+func TestNewWorkerCompilerFactoryIgnoresUnreadableTrustedClientCAWhenTLSDisabled(t *testing.T) {
 	manifest := mustManifest(t)
 	compiler, err := New(manifest)
 	if err != nil {
@@ -580,8 +582,32 @@ func TestNewWorkerCompilerFactoryFailsClosedOnUnreadableTrustedClientCA(t *testi
 		effective,
 		&workerTestMaterializer{digest: compiler.schemas.catalog.Digest()},
 	)
+	if err != nil || factory == nil {
+		t.Fatalf("disabled TLS constructor = %#v/%v, want success", factory, err)
+	}
+	if err := factory.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestNewWorkerCompilerFactoryFailsClosedOnUnreadableEnabledTLSClientCA(t *testing.T) {
+	manifest := mustManifest(t)
+	compiler, err := New(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	effective := workerTestEffective(manifest)
+	effective.Config.Apisix.Ssl = config.Ssl{
+		Enable: true, Listen: []config.Listen{{Port: 9443}},
+		SslTrustedCertificate: t.TempDir() + "/missing-ca.pem",
+	}
+	factory, err := NewWorkerCompilerFactory(
+		manifest,
+		effective,
+		&workerTestMaterializer{digest: compiler.schemas.catalog.Digest()},
+	)
 	if factory != nil || err == nil || !strings.Contains(err.Error(), "read trusted client CA") {
-		t.Fatalf("constructor = %#v/%v, want unreadable trusted CA failure", factory, err)
+		t.Fatalf("enabled TLS constructor = %#v/%v, want unreadable trusted CA failure", factory, err)
 	}
 }
 

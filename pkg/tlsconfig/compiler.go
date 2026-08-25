@@ -55,6 +55,21 @@ type Snapshot struct {
 	tlsConfig *tls.Config
 }
 
+// FrontendEnabled reports whether the static configuration owns at least one
+// usable frontend TLS listener. TLS-only files and resource material are not
+// authoritative when this returns false.
+func FrontendEnabled(cfg *config.Config) bool {
+	if cfg == nil || !cfg.Apisix.Ssl.Enable {
+		return false
+	}
+	for _, listener := range cfg.Apisix.Ssl.Listen {
+		if listener.Port >= 1 && listener.Port <= 65535 {
+			return true
+		}
+	}
+	return false
+}
+
 // Compile validates and compiles frontend TLS settings and active server SSL
 // resources into an immutable snapshot.
 func Compile(input Input) (*Snapshot, error) {

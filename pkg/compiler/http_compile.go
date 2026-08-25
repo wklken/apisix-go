@@ -43,12 +43,15 @@ func (prepared *PreparedGeneration) compileAndAttachHTTP(ctx context.Context) er
 	if err != nil {
 		return err
 	}
-	tlsSnapshot, err := tlsconfig.Compile(tlsconfig.Input{
-		Config: &prepared.effective.Config, SSLs: plan.resources.ssls,
-		TrustedClientCAPEM: prepared.trustedClientCAPEM,
-	})
-	if err != nil {
-		return err
+	var tlsSnapshot *tlsconfig.Snapshot
+	if tlsconfig.FrontendEnabled(&prepared.effective.Config) {
+		tlsSnapshot, err = tlsconfig.Compile(tlsconfig.Input{
+			Config: &prepared.effective.Config, SSLs: plan.resources.ssls,
+			TrustedClientCAPEM: prepared.trustedClientCAPEM,
+		})
+		if err != nil {
+			return err
+		}
 	}
 	return prepared.attachHTTP(&HTTPSnapshot{
 		artifact:    candidate.Artifact,

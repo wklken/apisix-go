@@ -9,6 +9,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/tlsconfig"
 )
@@ -99,8 +100,10 @@ func TestCompileAndAttachHTTPSkipsStreamOnlyGeneration(t *testing.T) {
 	}
 }
 
-func TestCompileAndAttachHTTPIncludesGenerationTLSConfig(t *testing.T) {
-	snapshot := mustGenerationSnapshot(t, 19, nil, nil)
+func TestCompileAndAttachHTTPOmitsTLSConfigWhenFrontendTLSIsDisabled(t *testing.T) {
+	snapshot := mustGenerationSnapshot(t, 19, []generation.Resource{
+		resourceValue("ssls", "stale", `{"id":"stale","sni":"api.example.test","cert":"bad","key":"bad"}`),
+	}, nil)
 	candidate := compileDomain(t, generation.DomainHTTP, snapshot, generation.PublishedGeneration{}, false)
 	prepared, _ := newEffectiveBindingMaterializerFixture(
 		t,
@@ -112,13 +115,35 @@ func TestCompileAndAttachHTTPIncludesGenerationTLSConfig(t *testing.T) {
 	if err := prepared.compileAndAttachHTTP(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+	if got := prepared.HTTP().TLSConfig(); got != nil {
+		t.Fatalf("disabled frontend TLS config = %#v, want nil", got)
+	}
+}
+
+func TestCompileAndAttachHTTPIncludesGenerationTLSConfigWhenEnabled(t *testing.T) {
+	snapshot := mustGenerationSnapshot(t, 20, nil, nil)
+	candidate := compileDomain(t, generation.DomainHTTP, snapshot, generation.PublishedGeneration{}, false)
+	prepared, _ := newEffectiveBindingMaterializerFixture(
+		t,
+		nil,
+		map[generation.Domain]generation.PublicationCandidate{generation.DomainHTTP: candidate},
+	)
+	prepared.effective.Config.Apisix.Ssl = config.Ssl{
+		Enable: true, Listen: []config.Listen{{Port: 9443}},
+		SslProtocols: "TLSv1.2", SslCiphers: "ECDHE-ECDSA-AES128-GCM-SHA256",
+	}
+	t.Cleanup(func() { _ = prepared.Close(context.Background()) })
+
+	if err := prepared.compileAndAttachHTTP(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	if got := prepared.HTTP().TLSConfig(); got == nil || got.MinVersion != tls.VersionTLS12 {
-		t.Fatalf("prepared HTTP TLS config = %#v, want owned TLS 1.2+ config", got)
+		t.Fatalf("prepared HTTP TLS config = %#v, want owned TLS 1.2 config", got)
 	}
 }
 
 func TestCompileAndAttachHTTPRejectsInvalidGenerationSSL(t *testing.T) {
-	snapshot := mustGenerationSnapshot(t, 20, []generation.Resource{
+	snapshot := mustGenerationSnapshot(t, 21, []generation.Resource{
 		resourceValue("ssls", "broken", `{"id":"broken","sni":"api.example.test","cert":"bad","key":"bad"}`),
 	}, nil)
 	candidate := compileDomain(t, generation.DomainHTTP, snapshot, generation.PublishedGeneration{}, false)
@@ -127,6 +152,10 @@ func TestCompileAndAttachHTTPRejectsInvalidGenerationSSL(t *testing.T) {
 		nil,
 		map[generation.Domain]generation.PublicationCandidate{generation.DomainHTTP: candidate},
 	)
+	prepared.effective.Config.Apisix.Ssl = config.Ssl{
+		Enable: true, Listen: []config.Listen{{Port: 9443}},
+		SslProtocols: "TLSv1.2", SslCiphers: "ECDHE-ECDSA-AES128-GCM-SHA256",
+	}
 	t.Cleanup(func() { _ = prepared.Close(context.Background()) })
 
 	err := prepared.compileAndAttachHTTP(context.Background())

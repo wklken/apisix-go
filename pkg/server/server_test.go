@@ -26,6 +26,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/observability/metrics"
+	"github.com/wklken/apisix-go/pkg/runtime"
 	"github.com/wklken/apisix-go/pkg/secret"
 	streamruntime "github.com/wklken/apisix-go/pkg/stream"
 	"github.com/wklken/apisix-go/pkg/testutil"
@@ -1964,6 +1965,206 @@ func TestServerShutdownTimeoutDoesNotReleaseEngineResolverOrJournal(t *testing.T
 			engineCloses, resolverCloses, journalCloses,
 		)
 	}
+}
+
+func TestServerShutdownEngineResidualRetriesBeforeLaterOwners(t *testing.T) {
+	residualErr := newServerShutdownResidualError(t)
+	var calls []string
+	engineCloses := 0
+	server := newShutdownLifecycleServer(t, func(context.Context) error {
+		engineCloses++
+		calls = append(calls, "engine")
+		if engineCloses == 1 {
+			return residualErr
+		}
+		return nil
+	})
+	server.closeResolver = func(*secret.GenerationSecretResolver, context.Context) error {
+		calls = append(calls, "resolver")
+		return nil
+	}
+	server.journal = &newServerTestJournal{close: func() error {
+		calls = append(calls, "journal")
+		return nil
+	}}
+	server.otelShutdown = func(context.Context) error {
+		calls = append(calls, "observability")
+		return nil
+	}
+
+	first := server.Shutdown(context.Background())
+	var residual *runtime.TaskResidualError
+	if !errors.Is(first, context.DeadlineExceeded) || !errors.As(first, &residual) {
+		t.Fatalf("first Shutdown() error = %v, want structured deadline residual", first)
+	}
+	if server.shutdownPhase != shutdownPhaseDrained || server.engineClosed {
+		t.Fatalf("first Shutdown() phase = %d, engineClosed = %t, want drained and retained engine",
+			server.shutdownPhase, server.engineClosed)
+	}
+	if !slices.Equal(calls, []string{"engine"}) {
+		t.Fatalf("first Shutdown() calls = %v, want engine only", calls)
+	}
+
+	if err := server.Shutdown(context.Background()); err != nil {
+		t.Fatalf("retry Shutdown() error = %v", err)
+	}
+	want := []string{"engine", "engine", "resolver", "journal", "observability"}
+	if !slices.Equal(calls, want) {
+		t.Fatalf("retry Shutdown() calls = %v, want %v", calls, want)
+	}
+	if errors.Is(server.shutdownErr, context.DeadlineExceeded) {
+		t.Fatalf("terminal Shutdown() replay retained transient deadline: %v", server.shutdownErr)
+	}
+}
+
+func TestServerShutdownEngineResidualPreservesEarlierTerminalDrainError(t *testing.T) {
+	terminalDrainErr := errors.New("terminal HTTP drain failure")
+	residualErr := newServerShutdownResidualError(t)
+	routeDrains := 0
+	engineCloses := 0
+	server := newShutdownLifecycleServer(t, func(context.Context) error {
+		engineCloses++
+		if engineCloses == 1 {
+			return residualErr
+		}
+		return nil
+	})
+	server.shutdownHTTP = func(context.Context) error { return terminalDrainErr }
+	server.drainRoutes = func(context.Context) error {
+		routeDrains++
+		if routeDrains == 1 {
+			return context.DeadlineExceeded
+		}
+		return nil
+	}
+
+	first := server.Shutdown(context.Background())
+	if !errors.Is(first, terminalDrainErr) || !errors.Is(first, context.DeadlineExceeded) {
+		t.Fatalf("first Shutdown() error = %v, want terminal drain and deadline errors", first)
+	}
+	if engineCloses != 0 {
+		t.Fatalf("first Shutdown() engine closes = %d, want 0 before route drain", engineCloses)
+	}
+
+	second := server.Shutdown(context.Background())
+	var residual *runtime.TaskResidualError
+	if !errors.Is(second, terminalDrainErr) || !errors.As(second, &residual) {
+		t.Fatalf("second Shutdown() error = %v, want terminal drain and engine residual", second)
+	}
+
+	final := server.Shutdown(context.Background())
+	if !errors.Is(final, terminalDrainErr) {
+		t.Fatalf("final Shutdown() error = %v, want retained %v", final, terminalDrainErr)
+	}
+	if errors.Is(final, context.DeadlineExceeded) {
+		t.Fatalf("final Shutdown() error retained transient deadline: %v", final)
+	}
+	if engineCloses != 2 {
+		t.Fatalf("engine close calls = %d, want residual attempt plus retry", engineCloses)
+	}
+}
+
+func TestServerShutdownWaiterReplaysIncompleteAttempt(t *testing.T) {
+	residualErr := newServerShutdownResidualError(t)
+	engineStarted := make(chan struct{})
+	releaseEngine := make(chan struct{})
+	engineCloses := 0
+	server := newShutdownLifecycleServer(t, func(context.Context) error {
+		engineCloses++
+		if engineCloses == 1 {
+			close(engineStarted)
+			<-releaseEngine
+			return residualErr
+		}
+		return nil
+	})
+
+	firstDone := make(chan error, 1)
+	go func() { firstDone <- server.Shutdown(context.Background()) }()
+	<-engineStarted
+
+	waiterEntered := make(chan struct{})
+	waiterCtx := &shutdownWaiterContext{
+		Context: context.Background(),
+		entered: waiterEntered,
+		done:    make(chan struct{}),
+	}
+	waiterDone := make(chan error, 1)
+	go func() { waiterDone <- server.Shutdown(waiterCtx) }()
+	<-waiterEntered
+
+	close(releaseEngine)
+	first := <-firstDone
+	waiter := <-waiterDone
+	if first == nil || !errors.Is(first, context.DeadlineExceeded) {
+		t.Fatalf("first Shutdown() error = %v, want residual error", first)
+	}
+	if waiter != first {
+		t.Fatalf("waiter Shutdown() error = %v, want immutable first-attempt result %v", waiter, first)
+	}
+	if engineCloses != 1 {
+		t.Fatalf("engine close calls after joined attempt = %d, want 1", engineCloses)
+	}
+
+	if err := server.Shutdown(context.Background()); err != nil {
+		t.Fatalf("post-attempt Shutdown() retry error = %v", err)
+	}
+	if engineCloses != 2 {
+		t.Fatalf("engine close calls after public retry = %d, want 2", engineCloses)
+	}
+}
+
+func TestWaitShutdownAttemptPrefersPublishedResult(t *testing.T) {
+	want := errors.New("published shutdown result")
+	attempt := &shutdownAttemptResult{done: make(chan struct{}), err: want}
+	close(attempt.done)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if got := waitShutdownAttempt(ctx, attempt); got != want {
+		t.Fatalf("waitShutdownAttempt() error = %v, want published result %v", got, want)
+	}
+}
+
+type shutdownWaiterContext struct {
+	context.Context
+	entered chan struct{}
+	done    chan struct{}
+	once    sync.Once
+}
+
+func (c *shutdownWaiterContext) Done() <-chan struct{} {
+	c.once.Do(func() { close(c.entered) })
+	return c.done
+}
+
+func newServerShutdownResidualError(t *testing.T) error {
+	t.Helper()
+	tasks := runtime.NewTaskRegistry(context.Background(), nil)
+	release := make(chan struct{})
+	started := make(chan struct{})
+	if err := tasks.Go(runtime.TaskSpec{
+		Owner: "plugin/test/server-shutdown", Criticality: runtime.TaskPlugin,
+	}, func(context.Context) error {
+		close(started)
+		<-release
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	short, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	_, residualErr := tasks.Stop(short)
+	var residual *runtime.TaskResidualError
+	if !errors.As(residualErr, &residual) {
+		t.Fatalf("fixture Stop error = %v, want structured residual", residualErr)
+	}
+	close(release)
+	if _, err := tasks.Stop(context.Background()); err != nil {
+		t.Fatalf("fixture Stop retry error = %v", err)
+	}
+	return residualErr
 }
 
 func TestServerShutdownClosesEngineResolverJournalObservabilityInOrder(t *testing.T) {

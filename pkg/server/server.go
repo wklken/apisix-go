@@ -31,6 +31,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/node_status"
 	"github.com/wklken/apisix-go/pkg/plugin/server_info"
 	pxy "github.com/wklken/apisix-go/pkg/proxy"
+	"github.com/wklken/apisix-go/pkg/runtime"
 	"github.com/wklken/apisix-go/pkg/secret"
 	streamruntime "github.com/wklken/apisix-go/pkg/stream"
 	"github.com/wklken/apisix-go/pkg/tlsconfig"
@@ -310,22 +311,21 @@ type Server struct {
 	listenersRejected   bool
 	lateProducerStopErr error
 
-	shutdownMu         sync.Mutex
-	shutdownDone       chan struct{}
-	shutdownInProgress bool
-	shutdownComplete   bool
-	shutdownErr        error
-	shutdownErrors     []error
-	shutdownPhase      uint8
-	httpDrained        bool
-	routesDrained      bool
-	streamDrained      bool
-	engineClosed       bool
-	resolverClosed     bool
-	journalClosed      bool
-	expirationStopped  bool
-	exporterStopped    bool
-	tracingStopped     bool
+	shutdownMu        sync.Mutex
+	activeAttempt     *shutdownAttemptResult
+	shutdownComplete  bool
+	shutdownErr       error
+	shutdownErrors    []error
+	shutdownPhase     uint8
+	httpDrained       bool
+	routesDrained     bool
+	streamDrained     bool
+	engineClosed      bool
+	resolverClosed    bool
+	journalClosed     bool
+	expirationStopped bool
+	exporterStopped   bool
+	tracingStopped    bool
 
 	producerStopOnce sync.Once
 	producerStopDone chan struct{}
@@ -337,6 +337,11 @@ type Server struct {
 	prometheusServer         *http.Server
 	stopPrometheusExpiration func(context.Context) error
 	otelShutdown             func(context.Context) error
+}
+
+type shutdownAttemptResult struct {
+	done chan struct{}
+	err  error
 }
 
 const startupCleanupTimeout = time.Second
@@ -1020,37 +1025,48 @@ func (s *Server) shutdown(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	for {
-		s.shutdownMu.Lock()
-		if s.shutdownComplete {
-			err := s.shutdownErr
-			s.shutdownMu.Unlock()
-			return err
-		}
-		if s.shutdownInProgress {
-			done := s.shutdownDone
-			s.shutdownMu.Unlock()
-			select {
-			case <-done:
-				continue
-			case <-ctx.Done():
-				return ctx.Err()
-			}
-		}
-		s.shutdownInProgress = true
-		s.shutdownDone = make(chan struct{})
-		done := s.shutdownDone
-		s.shutdownMu.Unlock()
-
-		err, complete := s.shutdownAttempt(ctx)
-
-		s.shutdownMu.Lock()
-		s.shutdownErr = err
-		s.shutdownComplete = complete
-		s.shutdownInProgress = false
-		close(done)
+	s.shutdownMu.Lock()
+	if s.shutdownComplete {
+		err := s.shutdownErr
 		s.shutdownMu.Unlock()
 		return err
+	}
+	if attempt := s.activeAttempt; attempt != nil {
+		s.shutdownMu.Unlock()
+		return waitShutdownAttempt(ctx, attempt)
+	}
+	attempt := &shutdownAttemptResult{done: make(chan struct{})}
+	s.activeAttempt = attempt
+	s.shutdownMu.Unlock()
+
+	err, complete := s.shutdownAttempt(ctx)
+
+	s.shutdownMu.Lock()
+	attempt.err = err
+	s.shutdownErr = err
+	s.shutdownComplete = complete
+	s.activeAttempt = nil
+	close(attempt.done)
+	s.shutdownMu.Unlock()
+	return err
+}
+
+func waitShutdownAttempt(ctx context.Context, attempt *shutdownAttemptResult) error {
+	select {
+	case <-attempt.done:
+		return attempt.err
+	default:
+	}
+	select {
+	case <-attempt.done:
+		return attempt.err
+	case <-ctx.Done():
+		select {
+		case <-attempt.done:
+			return attempt.err
+		default:
+			return ctx.Err()
+		}
 	}
 }
 
@@ -1094,7 +1110,14 @@ func (s *Server) shutdownAttempt(ctx context.Context) (error, bool) {
 	}
 	if s.shutdownPhase < shutdownPhaseEngineClosed {
 		if s.engine != nil && !s.engineClosed {
-			s.appendShutdownError(wrapCleanupError("close generation engine", s.engine.Close(ctx)))
+			engineErr := wrapCleanupError("close generation engine", s.engine.Close(ctx))
+			var residual *runtime.TaskResidualError
+			if errors.As(engineErr, &residual) ||
+				errors.Is(engineErr, compiler.ErrPreparedGenerationCleanupIncomplete) ||
+				contextError(engineErr) {
+				return errors.Join(errors.Join(s.shutdownErrors...), engineErr), false
+			}
+			s.appendShutdownError(engineErr)
 			s.engineClosed = true
 		}
 		s.shutdownPhase = shutdownPhaseEngineClosed

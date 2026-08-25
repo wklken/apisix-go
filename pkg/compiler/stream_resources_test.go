@@ -50,7 +50,11 @@ func TestDecodeStreamResourceSetPreservesDynamicPluginsAbsentVersusPresentEmpty(
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			resources := []generation.Resource{
-				resourceValue("stream_routes", "r1", `{"id":"r1","upstream":{"scheme":"tcp","nodes":{"127.0.0.1:1883":1}}}`),
+				resourceValue(
+					"stream_routes",
+					"r1",
+					`{"id":"r1","upstream":{"scheme":"tcp","nodes":{"127.0.0.1:1883":1}}}`,
+				),
 			}
 			if test.plugins != nil {
 				resources = append(resources, *test.plugins)

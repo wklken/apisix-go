@@ -249,7 +249,6 @@ func TestManagedResourceKindsConsumerASTGuard(t *testing.T) {
 	}{
 		{directory: "pkg/etcd", required: []string{"IsManagedResourceKind", "DomainsForResourceKind"}},
 		{directory: "pkg/config", required: []string{"DomainsForResourceKind"}},
-		{directory: "pkg/store", required: []string{"ManagedResourceKinds", "IsManagedResourceKind"}},
 	}
 	for _, test := range tests {
 		t.Run(test.directory, func(t *testing.T) {

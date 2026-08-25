@@ -67,7 +67,7 @@ func OpenJournal(path string, options JournalOptions) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open generation journal %q: %w", path, err)
 	}
-	storage := &Store{db: db, stopProducers: make(chan struct{})}
+	storage := &Store{db: db}
 	if err := storage.initializeJournal(options.LegacyResourceBuckets); err != nil {
 		return nil, errors.Join(err, db.Close())
 	}

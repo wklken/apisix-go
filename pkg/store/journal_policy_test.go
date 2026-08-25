@@ -11,7 +11,10 @@ import (
 	bolt "go.etcd.io/bbolt"
 )
 
-var policyTestKey = generation.ResourceKey{Kind: "routes", ID: "policy"}
+var (
+	policyTestKey       = generation.ResourceKey{Kind: "routes", ID: "policy"}
+	sharedPolicyTestKey = generation.ResourceKey{Kind: "upstreams", ID: "policy"}
+)
 
 func TestJournalPolicyLastGoodRequiresSameDomainPredecessor(t *testing.T) {
 	t.Run("first generation", func(t *testing.T) {
@@ -396,16 +399,18 @@ func TestJournalPolicyRejectsUnknownMixedAndCrossDomainStateAtomically(t *testin
 
 	t.Run("cross-domain predecessor cannot be borrowed", func(t *testing.T) {
 		journal := openTestJournal(t)
-		first := applyPolicyDesired(t, journal, "1", []byte("old"), generation.DomainHTTP)
-		publishPolicyCandidate(t, journal, first, policyCandidate(
-			t, first, generation.DomainHTTP, []byte("old"), generation.DispositionPublished,
+		first := applyPolicyDesiredForKey(
+			t, journal, "1", sharedPolicyTestKey, []byte("old"), generation.DomainHTTP,
+		)
+		publishPolicyCandidate(t, journal, first, policyCandidateForKey(
+			t, first, generation.DomainHTTP, sharedPolicyTestKey, []byte("old"),
+			generation.DispositionPublished,
 		))
-		second := applyPolicyDesired(t, journal, "2", []byte("new"), generation.DomainStream)
-		candidate := policyCandidate(
-			t,
-			second,
-			generation.DomainStream,
-			[]byte("old"),
+		second := applyPolicyDesiredForKey(
+			t, journal, "2", sharedPolicyTestKey, []byte("new"), generation.DomainStream,
+		)
+		candidate := policyCandidateForKey(
+			t, second, generation.DomainStream, sharedPolicyTestKey, []byte("old"),
 			generation.DispositionLastGood,
 		)
 		_, err := journal.Stage(context.Background(), second, policySet(second, candidate))
@@ -492,11 +497,22 @@ func applyPolicyDesired(
 	value []byte,
 	domains ...generation.Domain,
 ) generation.ApplyTicket {
+	return applyPolicyDesiredForKey(t, journal, revision, policyTestKey, value, domains...)
+}
+
+func applyPolicyDesiredForKey(
+	t *testing.T,
+	journal *Store,
+	revision string,
+	key generation.ResourceKey,
+	value []byte,
+	domains ...generation.Domain,
+) generation.ApplyTicket {
 	t.Helper()
 	ticket, err := journal.ApplyDesired(context.Background(), generation.DesiredBatch{
 		Cursor: generation.ProviderCursor{Provider: "etcd", Revision: revision},
 		Mutations: []generation.Mutation{
-			{Type: generation.MutationPut, Key: policyTestKey, Value: value},
+			{Type: generation.MutationPut, Key: key, Value: value},
 		},
 		RequiredDomains: domains,
 	})
@@ -570,18 +586,29 @@ func policyCandidate(
 	value []byte,
 	disposition generation.ResourceDisposition,
 ) generation.PublicationCandidate {
+	return policyCandidateForKey(t, ticket, domain, policyTestKey, value, disposition)
+}
+
+func policyCandidateForKey(
+	t *testing.T,
+	ticket generation.ApplyTicket,
+	domain generation.Domain,
+	key generation.ResourceKey,
+	value []byte,
+	disposition generation.ResourceDisposition,
+) generation.PublicationCandidate {
 	t.Helper()
 	snapshot := mustSnapshot(
 		t,
 		ticket.DesiredRevision,
-		[]generation.Resource{{Key: policyTestKey, Value: value}},
+		[]generation.Resource{{Key: key, Value: value}},
 		nil,
 	)
 	return generation.PublicationCandidate{
 		Artifact: policyArtifact(domain, snapshot), Snapshot: snapshot,
-		Closure: []generation.ResourceKey{policyTestKey},
+		Closure: []generation.ResourceKey{key},
 		Decisions: []generation.ResourceDecision{
-			{Key: policyTestKey, Disposition: disposition, Code: "policy-valid"},
+			{Key: key, Disposition: disposition, Code: "policy-valid"},
 		},
 	}
 }

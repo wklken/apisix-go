@@ -11,11 +11,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/generation"
 	bolt "go.etcd.io/bbolt"
+	berrors "go.etcd.io/bbolt/errors"
 )
 
 func TestOpenJournalInitializesEmptyAtRevisionZero(t *testing.T) {
@@ -61,6 +63,67 @@ func TestOpenJournalInitializesEmptyAtRevisionZero(t *testing.T) {
 	}
 	if info.Mode().Perm() != 0o600 {
 		t.Fatalf("journal mode = %o, want 600", info.Mode().Perm())
+	}
+}
+
+func TestJournalCloseIsConcurrentAndIdempotent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "journal.db")
+	journal, err := OpenJournal(path, JournalOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const callers = 32
+	errors := make(chan error, callers)
+	var group sync.WaitGroup
+	group.Add(callers)
+	for range callers {
+		go func() {
+			defer group.Done()
+			errors <- journal.Close()
+		}()
+	}
+	group.Wait()
+	close(errors)
+	for err := range errors {
+		if err != nil {
+			t.Fatalf("concurrent Close() error = %v", err)
+		}
+	}
+	assertDatabaseLockReleased(t, path)
+}
+
+func TestOpenJournalSamePathLockCompetitionTimesOutAndRecovers(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "journal.db")
+	owner, err := OpenJournal(path, JournalOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = owner.Close() })
+
+	started := time.Now()
+	contender, err := OpenJournal(path, JournalOptions{})
+	elapsed := time.Since(started)
+	if contender != nil {
+		_ = contender.Close()
+		t.Fatal("competing OpenJournal() returned a non-nil Store")
+	}
+	if !errors.Is(err, berrors.ErrTimeout) {
+		t.Fatalf("competing OpenJournal() error = %v, want bbolt timeout", err)
+	}
+	if elapsed > 5*storeOpenTimeout {
+		t.Fatalf("competing OpenJournal() elapsed = %s, want bounded timeout", elapsed)
+	}
+
+	if err := owner.Close(); err != nil {
+		t.Fatalf("owner Close() error = %v", err)
+	}
+	reopened, err := OpenJournal(path, JournalOptions{})
+	if err != nil {
+		t.Fatalf("OpenJournal() after lock release error = %v", err)
+	}
+	if err := reopened.Close(); err != nil {
+		t.Fatalf("reopened Close() error = %v", err)
 	}
 }
 

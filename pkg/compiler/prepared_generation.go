@@ -29,6 +29,8 @@ type PreparedGeneration struct {
 	effective          *config.EffectiveConfig
 	manifest           *capability.Manifest
 	registry           *runtime.ResourceRegistry
+	observers          WorkerRuntimeObservers
+	clusterObservers   *clusterObserverRegistry
 	materializer       secret.Materializer
 	cleanup            *cleanupStack
 	detach             func()
@@ -210,6 +212,8 @@ func (prepared *PreparedGeneration) Close(ctx context.Context) error {
 		prepared.effective = nil
 		prepared.manifest = nil
 		prepared.registry = nil
+		prepared.observers = WorkerRuntimeObservers{}
+		prepared.clusterObservers = nil
 		prepared.materializer = nil
 		prepared.cleanup = nil
 		prepared.bindingOpsMu.Lock()

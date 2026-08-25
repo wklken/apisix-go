@@ -41,6 +41,8 @@ type WorkerCompilerFactory struct {
 	consumers          ConsumerPreparer
 	metadata           MetadataPreparer
 	registry           *runtime.ResourceRegistry
+	observers          WorkerRuntimeObservers
+	clusterObservers   *clusterObserverRegistry
 	bindingOps         effectiveBindingOps
 	trustedClientCAPEM []byte
 
@@ -62,9 +64,17 @@ func NewWorkerCompilerFactory(
 	manifest *capability.Manifest,
 	effective *config.EffectiveConfig,
 	materializer secret.Materializer,
+	observers WorkerRuntimeObservers,
 ) (*WorkerCompilerFactory, error) {
 	if manifest == nil || effective == nil || isNilInterface(materializer) {
 		return nil, fmt.Errorf("%w: worker compiler dependencies are required", ErrInvalidInput)
+	}
+	if err := validateWorkerRuntimeObservers(effective, observers); err != nil {
+		return nil, err
+	}
+	clusterObservers, err := newClusterObserverRegistry(observers.Cluster)
+	if err != nil {
+		return nil, err
 	}
 	compiler, err := New(manifest)
 	if err != nil {
@@ -99,7 +109,8 @@ func NewWorkerCompilerFactory(
 	return &WorkerCompilerFactory{
 		compiler: compiler, effective: ownedEffective, materializer: materializer,
 		attempts: attempts, consumers: consumers, metadata: metadata,
-		registry: runtime.NewResourceRegistry(), bindingOps: defaultEffectiveBindingOps(),
+		registry: runtime.NewResourceRegistry(), observers: observers,
+		clusterObservers: clusterObservers, bindingOps: defaultEffectiveBindingOps(),
 		trustedClientCAPEM: trustedClientCAPEM,
 		live:               make(map[secret.AttemptID]*PreparedGeneration),
 	}, nil
@@ -317,6 +328,8 @@ func (factory *WorkerCompilerFactory) transferRegisteredGeneration(
 		lookup: consumerLookupView{bindings: bindings}, tasks: tasks,
 		effective: factory.effective, manifest: factory.compiler.manifest,
 		registry: factory.registry, materializer: factory.materializer, cleanup: cleanup,
+		observers:          factory.observers,
+		clusterObservers:   factory.clusterObservers,
 		bindingOps:         factory.bindingOps.withDefaults(attemptID),
 		trustedClientCAPEM: bytes.Clone(factory.trustedClientCAPEM),
 	}

@@ -419,6 +419,7 @@ func TestWorkerCompilerFactoryPrepareGenerationCycleSubprocess(t *testing.T) {
 	}
 	factory, err := NewWorkerCompilerFactory(
 		manifest, effective, &workerTestMaterializer{digest: compiler.schemas.catalog.Digest()},
+		workerTestRuntimeObservers(),
 	)
 	if factory != nil || !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("cycle constructor = %#v/%v, want nil/ErrInvalidInput", factory, err)
@@ -548,6 +549,7 @@ func TestWorkerCompilerFactoryPrepareGenerationOwnsEffectiveConfig(t *testing.T)
 	}
 	factory, err := NewWorkerCompilerFactory(
 		manifest, effective, &workerTestMaterializer{digest: compiler.schemas.catalog.Digest()},
+		workerTestRuntimeObservers(),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -572,6 +574,7 @@ func TestWorkerCompilerFactoryPrepareGenerationOwnsEffectiveConfig(t *testing.T)
 	mismatch.Profiles.Security = config.SecurityStrict
 	if got, err := NewWorkerCompilerFactory(
 		manifest, mismatch, &workerTestMaterializer{digest: compiler.schemas.catalog.Digest()},
+		workerTestRuntimeObservers(),
 	); got != nil || !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("profile mismatch = %#v/%v", got, err)
 	}
@@ -580,6 +583,7 @@ func TestWorkerCompilerFactoryPrepareGenerationOwnsEffectiveConfig(t *testing.T)
 	invalid.Profiles = invalid.Config.Profiles()
 	if got, err := NewWorkerCompilerFactory(
 		manifest, invalid, &workerTestMaterializer{digest: compiler.schemas.catalog.Digest()},
+		workerTestRuntimeObservers(),
 	); got != nil || !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("invalid profile = %#v/%v", got, err)
 	}
@@ -587,6 +591,7 @@ func TestWorkerCompilerFactoryPrepareGenerationOwnsEffectiveConfig(t *testing.T)
 	opaque.Config.PluginAttr = map[string]map[string]any{"bad": {"callback": func() {}}}
 	if got, err := NewWorkerCompilerFactory(
 		manifest, opaque, &workerTestMaterializer{digest: compiler.schemas.catalog.Digest()},
+		workerTestRuntimeObservers(),
 	); got != nil || !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("opaque mutable effective value = %#v/%v", got, err)
 	}
@@ -620,7 +625,9 @@ func TestWorkerCompilerFactoryPrepareGenerationConstructorValidation(t *testing.
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			factory, err := NewWorkerCompilerFactory(test.manifest, test.effective, test.materializer)
+			factory, err := NewWorkerCompilerFactory(
+				test.manifest, test.effective, test.materializer, workerTestRuntimeObservers(),
+			)
 			if factory != nil || !errors.Is(err, ErrInvalidInput) {
 				t.Fatalf("constructor = %#v/%v, want nil/ErrInvalidInput", factory, err)
 			}
@@ -640,6 +647,7 @@ func TestNewWorkerCompilerFactoryIgnoresUnreadableTrustedClientCAWhenTLSDisabled
 		manifest,
 		effective,
 		&workerTestMaterializer{digest: compiler.schemas.catalog.Digest()},
+		workerTestRuntimeObservers(),
 	)
 	if err != nil || factory == nil {
 		t.Fatalf("disabled TLS constructor = %#v/%v, want success", factory, err)
@@ -664,6 +672,7 @@ func TestNewWorkerCompilerFactoryFailsClosedOnUnreadableEnabledTLSClientCA(t *te
 		manifest,
 		effective,
 		&workerTestMaterializer{digest: compiler.schemas.catalog.Digest()},
+		workerTestRuntimeObservers(),
 	)
 	if factory != nil || err == nil || !strings.Contains(err.Error(), "read trusted client CA") {
 		t.Fatalf("enabled TLS constructor = %#v/%v, want unreadable trusted CA failure", factory, err)
@@ -677,7 +686,9 @@ func TestWorkerCompilerFactoryPrepareGenerationUsesRealAliasAndCatalog(t *testin
 		t.Fatal(err)
 	}
 	materializer := &workerTestMaterializer{digest: compiler.schemas.catalog.Digest()}
-	factory, err := NewWorkerCompilerFactory(manifest, workerTestEffective(manifest), materializer)
+	factory, err := NewWorkerCompilerFactory(
+		manifest, workerTestEffective(manifest), materializer, workerTestRuntimeObservers(),
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -947,7 +958,9 @@ func newWorkerTestFactory(t *testing.T) (*WorkerCompilerFactory, *workerTestMate
 		t.Fatal(err)
 	}
 	materializer := &workerTestMaterializer{digest: compiler.schemas.catalog.Digest()}
-	factory, err := NewWorkerCompilerFactory(manifest, workerTestEffective(manifest), materializer)
+	factory, err := NewWorkerCompilerFactory(
+		manifest, workerTestEffective(manifest), materializer, workerTestRuntimeObservers(),
+	)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -27,6 +27,7 @@ func (prepared *PreparedGeneration) compileAndAttachStream(ctx context.Context) 
 	router, err := streamruntime.CompileRouter(ctx, streamruntime.CompileInput{
 		Revision: candidate.Artifact.Revision,
 		Routes:   routes,
+		OnResult: prepared.observers.Stream,
 	})
 	if err != nil {
 		return err

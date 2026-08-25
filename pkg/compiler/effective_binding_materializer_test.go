@@ -1198,6 +1198,11 @@ func newEffectiveBindingMaterializerFixtureWithConsumers(
 	}
 	tasks := runtime.NewTaskRegistry(context.Background(), nil)
 	registry := runtime.NewResourceRegistry()
+	observers := workerTestRuntimeObservers()
+	clusterObservers, err := newClusterObserverRegistry(observers.Cluster)
+	if err != nil {
+		t.Fatal(err)
+	}
 	cleanup := &cleanupStack{}
 	if err := cleanup.Own(cleanupQuiesce, "tasks", func(ctx context.Context) error {
 		residuals, err := tasks.Stop(ctx)
@@ -1218,16 +1223,18 @@ func newEffectiveBindingMaterializerFixtureWithConsumers(
 		t.Fatal(err)
 	}
 	prepared := &PreparedGeneration{
-		publication: generation.PublicationSet{DesiredRevision: attempt.Generation(), Domains: candidateSet},
-		attempt:     attempt,
-		consumers:   consumers,
-		lookup:      consumerLookupView{bindings: consumers},
-		tasks:       tasks,
-		effective:   &config.EffectiveConfig{},
-		manifest:    compiler.manifest,
-		registry:    registry,
-		cleanup:     cleanup,
-		bindingOps:  defaultEffectiveBindingOps(),
+		publication:      generation.PublicationSet{DesiredRevision: attempt.Generation(), Domains: candidateSet},
+		attempt:          attempt,
+		consumers:        consumers,
+		lookup:           consumerLookupView{bindings: consumers},
+		tasks:            tasks,
+		effective:        &config.EffectiveConfig{},
+		manifest:         compiler.manifest,
+		registry:         registry,
+		observers:        observers,
+		clusterObservers: clusterObservers,
+		cleanup:          cleanup,
+		bindingOps:       defaultEffectiveBindingOps(),
 	}
 	fixture := &effectiveBindingMaterializerFixture{
 		prepared: prepared, registry: registry, registration: registration,

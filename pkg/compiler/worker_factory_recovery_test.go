@@ -459,7 +459,9 @@ func newWorkerRecoveryTestFactory(
 		t.Fatal(err)
 	}
 	materializer := &workerRecoveryTestMaterializer{digest: compiler.schemas.catalog.Digest()}
-	factory, err := NewWorkerCompilerFactory(manifest, workerTestEffective(manifest), materializer)
+	factory, err := NewWorkerCompilerFactory(
+		manifest, workerTestEffective(manifest), materializer, workerTestRuntimeObservers(),
+	)
 	if err != nil {
 		t.Fatal(err)
 	}

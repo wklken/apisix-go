@@ -3,6 +3,7 @@ package compiler
 import (
 	"context"
 	"errors"
+	"net"
 	"slices"
 	"sync/atomic"
 	"testing"
@@ -12,6 +13,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/runtime"
+	streamruntime "github.com/wklken/apisix-go/pkg/stream"
 )
 
 func TestCompileAndAttachStreamSkipsHTTPOnlyGeneration(t *testing.T) {
@@ -27,6 +29,42 @@ func TestCompileAndAttachStreamSkipsHTTPOnlyGeneration(t *testing.T) {
 	}
 	if prepared.Stream() != nil {
 		t.Fatal("HTTP-only generation exposed a stream snapshot")
+	}
+}
+
+func TestCompileAndAttachStreamUsesRuntimeObserver(t *testing.T) {
+	candidate := streamCompilerCandidate(t, 89, []generation.Resource{
+		resourceValue("stream_routes", "raw", `{
+			"id":"raw",
+			"server_addr":"127.0.0.1",
+			"server_port":19999,
+			"upstream":{"scheme":"tcp","nodes":{"127.0.0.1:1883":1}}
+		}`),
+	})
+	prepared, _ := newEffectiveBindingMaterializerFixture(
+		t,
+		nil,
+		map[generation.Domain]generation.PublicationCandidate{generation.DomainStream: candidate},
+	)
+	results := make(chan streamruntime.Result, 1)
+	prepared.observers.Stream = func(result streamruntime.Result) { results <- result }
+	if err := prepared.compileAndAttachStream(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	server, client := net.Pipe()
+	defer func() { _ = client.Close() }()
+	if err := prepared.Stream().Router().Serve(context.Background(), nil, server); !errors.Is(
+		err, streamruntime.ErrNoStreamRoute,
+	) {
+		t.Fatalf("Serve() error = %v, want ErrNoStreamRoute", err)
+	}
+	select {
+	case result := <-results:
+		if !errors.Is(result.Err, streamruntime.ErrNoStreamRoute) {
+			t.Fatalf("stream result = %#v", result)
+		}
+	default:
+		t.Fatal("prepared stream router did not publish through the factory observer")
 	}
 }
 

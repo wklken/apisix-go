@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"slices"
 	"sync"
 
 	"github.com/wklken/apisix-go/pkg/proxy"
@@ -35,7 +36,8 @@ func (prepared *PreparedGeneration) acquireHTTPCluster(
 	ctx context.Context,
 	config proxy.ClusterConfig,
 ) (*proxy.Cluster, error) {
-	if prepared == nil || ctx == nil || prepared.registry == nil || prepared.cleanup == nil {
+	if prepared == nil || ctx == nil || prepared.registry == nil || prepared.cleanup == nil ||
+		prepared.clusterObservers == nil {
 		return nil, fmt.Errorf("%w: HTTP cluster owner is incomplete", ErrInvalidInput)
 	}
 	owned, err := cloneHTTPClusterConfig(config)
@@ -55,12 +57,17 @@ func (prepared *PreparedGeneration) acquireHTTPCluster(
 		prepared.registry,
 		runtime.ResourceKey{Kind: "proxy-cluster", Scope: "http-cluster/v1", Digest: digest},
 		func(context.Context) (*proxy.Cluster, func(context.Context) error, error) {
-			cluster, createErr := proxy.NewCluster(owned, proxy.NopClusterObserver{})
+			targets := slices.Collect(maps.Keys(owned.Targets))
+			observerLease := prepared.clusterObservers.acquire(owned.Name, targets)
+			cluster, createErr := proxy.NewCluster(owned, observerLease.Observer())
 			if createErr != nil {
+				observerLease.Release()
 				return nil, nil, createErr
 			}
+			observerLease.activate()
 			return cluster, func(context.Context) error {
 				cluster.Close()
+				observerLease.Release()
 				return nil
 			}, nil
 		},

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"runtime/debug"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -90,6 +91,29 @@ type TaskFailure struct {
 
 type TaskResidual struct {
 	Owner string
+}
+
+type TaskResidualError struct {
+	residuals []TaskResidual
+	cause     error
+}
+
+func (e *TaskResidualError) Error() string {
+	return "task registry stop has residual tasks"
+}
+
+func (e *TaskResidualError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.cause
+}
+
+func (e *TaskResidualError) Residuals() []TaskResidual {
+	if e == nil {
+		return nil
+	}
+	return slices.Clone(e.residuals)
 }
 
 type TaskRegistry struct {
@@ -203,7 +227,10 @@ func (r *TaskRegistry) Stop(ctx context.Context) ([]TaskResidual, error) {
 		for i, owner := range owners {
 			residuals[i] = TaskResidual{Owner: owner}
 		}
-		return residuals, ctx.Err()
+		return residuals, &TaskResidualError{
+			residuals: slices.Clone(residuals),
+			cause:     ctx.Err(),
+		}
 	}
 }
 

@@ -133,6 +133,59 @@ func TestTaskOwnerStopReportsExactDeduplicatedResidual(t *testing.T) {
 	}
 }
 
+func TestTaskRegistryStopReturnsStructuredResidualError(t *testing.T) {
+	registry := NewTaskRegistry(context.Background(), nil)
+	release := make(chan struct{})
+	started := make(chan struct{}, 2)
+	for _, owner := range []string{"plugin/zeta/r1", "plugin/alpha/r1"} {
+		if err := registry.Go(TaskSpec{Owner: owner, Criticality: TaskPlugin}, func(context.Context) error {
+			started <- struct{}{}
+			<-release
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	<-started
+	<-started
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	residuals, err := registry.Stop(ctx)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Stop error = %v, want deadline cause", err)
+	}
+	var residualErr *TaskResidualError
+	if !errors.As(err, &residualErr) {
+		t.Fatalf("Stop error type = %T, want *TaskResidualError", err)
+	}
+	want := []TaskResidual{{Owner: "plugin/alpha/r1"}, {Owner: "plugin/zeta/r1"}}
+	if !reflect.DeepEqual(residuals, want) || !reflect.DeepEqual(residualErr.Residuals(), want) {
+		t.Fatalf("residuals = %v / %v, want %v", residuals, residualErr.Residuals(), want)
+	}
+	if residualErr.Error() != "task registry stop has residual tasks" ||
+		strings.Contains(residualErr.Error(), "plugin/") {
+		t.Fatalf("unsafe residual error = %q", residualErr.Error())
+	}
+	copy := residualErr.Residuals()
+	copy[0].Owner = "mutated"
+	if !reflect.DeepEqual(residualErr.Residuals(), want) {
+		t.Fatalf("Residuals aliases caller mutation: %v", residualErr.Residuals())
+	}
+
+	close(release)
+	if residuals, err := registry.Stop(context.Background()); err != nil || len(residuals) != 0 {
+		t.Fatalf("retry Stop = (%v, %v)", residuals, err)
+	}
+}
+
+func TestTaskResidualErrorNilMethodsAreSafe(t *testing.T) {
+	var err *TaskResidualError
+	if err.Unwrap() != nil || err.Residuals() != nil {
+		t.Fatalf("nil TaskResidualError = (%v, %v)", err.Unwrap(), err.Residuals())
+	}
+}
+
 func TestTaskOwnerValidatesBeforeAdmission(t *testing.T) {
 	registry := NewTaskRegistry(context.Background(), nil)
 	constructorTests := []struct {
@@ -444,7 +497,7 @@ func TestTaskRegistryStopPrefersCompletedEmptyRegistryOverCanceledContext(t *tes
 	cancel()
 
 	for range 100 {
-		if residuals, err := registry.Stop(canceled); err != nil || len(residuals) != 0 {
+		if residuals, err := registry.Stop(canceled); err != nil || residuals != nil {
 			t.Fatalf("completed Stop() = (%v, %v)", residuals, err)
 		}
 	}
@@ -467,7 +520,7 @@ func TestTaskRegistryStopPrefersCompletedTaskWhenDeadlineIsAlsoReady(t *testing.
 	cancel()
 
 	for range 100 {
-		if residuals, err := registry.Stop(canceled); err != nil || len(residuals) != 0 {
+		if residuals, err := registry.Stop(canceled); err != nil || residuals != nil {
 			t.Fatalf("completed Stop() = (%v, %v)", residuals, err)
 		}
 	}
@@ -494,7 +547,7 @@ func TestTaskRegistryStopRetryWithCanceledContextSucceedsAfterCompletion(t *test
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
 	for range 100 {
-		if residuals, err := registry.Stop(canceled); err != nil || len(residuals) != 0 {
+		if residuals, err := registry.Stop(canceled); err != nil || residuals != nil {
 			t.Fatalf("completed retry Stop() = (%v, %v)", residuals, err)
 		}
 	}

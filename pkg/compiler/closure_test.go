@@ -254,6 +254,55 @@ func TestDispositionPropagatesDeferredStreamInlineClientSSL(t *testing.T) {
 	)
 }
 
+func TestDependencyClosureRouteUpstreamIDSuppressesStreamServiceDependency(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		serviceID  string
+		additional []generation.Resource
+	}{
+		{name: "missing service", serviceID: "missing"},
+		{
+			name:      "invalid service",
+			serviceID: "service",
+			additional: []generation.Resource{
+				resourceValue("services", "service", `{"id":"wrong"}`),
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			resources := []generation.Resource{
+				resourceValue(
+					"stream_routes",
+					"stream",
+					`{"id":"stream","service_id":"`+test.serviceID+`","upstream_id":"route-upstream"}`,
+				),
+				resourceValue(
+					"upstreams",
+					"route-upstream",
+					`{"id":"route-upstream","scheme":"tcp","nodes":{"127.0.0.1:1883":1}}`,
+				),
+			}
+			resources = append(resources, test.additional...)
+			desired := mustGenerationSnapshot(t, 18, resources, nil)
+
+			candidate := compileDomain(
+				t,
+				generation.DomainStream,
+				desired,
+				generation.PublishedGeneration{},
+				false,
+			)
+			assertDecision(
+				t,
+				candidate,
+				generation.ResourceKey{Kind: "stream_routes", ID: "stream"},
+				generation.DispositionPublished,
+				"validated",
+			)
+		})
+	}
+}
+
 func TestDispositionReappliesStreamClientSSLDeferralToLastGoodBytes(t *testing.T) {
 	previousSnapshot := mustGenerationSnapshot(t, 14, []generation.Resource{
 		resourceValue(

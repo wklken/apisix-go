@@ -123,7 +123,10 @@ func addStructuralEdges(graph *dependencyGraph, input normalizedInput, resource 
 
 func addEffectiveUpstreamEdges(graph *dependencyGraph, input normalizedInput, resource normalizedResource) {
 	key := resource.key
-	if resource.view.serviceID != "" {
+	// The legacy stream resolver does not read a service when the route already
+	// names its own upstream. Keep the candidate closure on that same boundary.
+	if resource.view.serviceID != "" &&
+		(key.Kind != "stream_routes" || resource.view.upstreamID == "") {
 		graph.add(key, generation.ResourceKey{Kind: "services", ID: resource.view.serviceID})
 	}
 	if resource.view.hasInlineUpstream {

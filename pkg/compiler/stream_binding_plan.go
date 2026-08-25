@@ -6,35 +6,67 @@ import (
 
 	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/generation"
+	"github.com/wklken/apisix-go/pkg/plugin"
 	streamruntime "github.com/wklken/apisix-go/pkg/stream"
 )
 
-func (prepared *PreparedGeneration) materializePlannedStreamRoute(
+func (prepared *PreparedGeneration) materializePlannedStreamRoutes(
 	ctx context.Context,
-	planned plannedStreamRoute,
-) (streamruntime.PreparedRoute, error) {
-	result := streamruntime.PreparedRoute{Route: planned.route}
-	if planned.binding == nil {
-		return result, nil
+	planned []plannedStreamRoute,
+) ([]streamruntime.PreparedRoute, error) {
+	routes := make([]streamruntime.PreparedRoute, len(planned))
+	specs := make([]effectiveBindingSpec, 0, len(planned))
+	bindingRoutes := make([]int, 0, len(planned))
+	for index := range planned {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		routes[index].Route = planned[index].route
+		if planned[index].binding == nil {
+			continue
+		}
+		spec, err := prepared.effectiveStreamBindingSpec(planned[index])
+		if err != nil {
+			return nil, err
+		}
+		specs = append(specs, spec)
+		bindingRoutes = append(bindingRoutes, index)
 	}
-	spec, err := prepared.effectiveStreamBindingSpec(planned)
+	if len(specs) == 0 {
+		return routes, nil
+	}
+	bindings, err := prepared.materializeEffectiveBindingsWithPolicy(
+		ctx,
+		specs,
+		false,
+		func(bindings []plugin.Binding) ([]plugin.Binding, error) {
+			if len(bindings) != len(bindingRoutes) {
+				return nil, fmt.Errorf(
+					"%w: stream binding result count does not match its final plan",
+					ErrInvalidInput,
+				)
+			}
+			for index, binding := range bindings {
+				request := planned[bindingRoutes[index]].binding
+				if binding.Descriptor.Factory != request.factory ||
+					binding.Scope != request.scope ||
+					binding.Provenance != request.provenance {
+					return nil, fmt.Errorf(
+						"%w: stream binding result does not match its final plan",
+						ErrInvalidInput,
+					)
+				}
+			}
+			return bindings, nil
+		},
+	)
 	if err != nil {
-		return streamruntime.PreparedRoute{}, err
+		return nil, err
 	}
-	bindings, err := prepared.materializeEffectiveBindings(ctx, []effectiveBindingSpec{spec})
-	if err != nil {
-		return streamruntime.PreparedRoute{}, err
+	for index, binding := range bindings {
+		routes[bindingRoutes[index]].Protocol = binding
 	}
-	if len(bindings) != 1 || bindings[0].Descriptor.Factory != planned.binding.factory ||
-		bindings[0].Scope != planned.binding.scope ||
-		bindings[0].Provenance != planned.binding.provenance {
-		return streamruntime.PreparedRoute{}, fmt.Errorf(
-			"%w: stream binding result does not match its final plan",
-			ErrInvalidInput,
-		)
-	}
-	result.Protocol = bindings[0]
-	return result, nil
+	return routes, nil
 }
 
 func (prepared *PreparedGeneration) effectiveStreamBindingSpec(

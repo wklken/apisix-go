@@ -11,6 +11,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/plugin"
 	"github.com/wklken/apisix-go/pkg/resource"
+	"github.com/wklken/apisix-go/pkg/runtime"
 )
 
 func TestCompileAndAttachStreamSkipsHTTPOnlyGeneration(t *testing.T) {
@@ -26,6 +27,34 @@ func TestCompileAndAttachStreamSkipsHTTPOnlyGeneration(t *testing.T) {
 	}
 	if prepared.Stream() != nil {
 		t.Fatal("HTTP-only generation exposed a stream snapshot")
+	}
+}
+
+func TestCompileAndAttachStreamRouteUpstreamIDSuppressesServiceDependency(t *testing.T) {
+	candidate := streamCompilerCandidate(t, 90, []generation.Resource{
+		resourceValue(
+			"stream_routes",
+			"stream",
+			`{"id":"stream","service_id":"missing","upstream_id":"route-upstream"}`,
+		),
+		resourceValue(
+			"upstreams",
+			"route-upstream",
+			`{"id":"route-upstream","scheme":"tcp","nodes":{"127.0.0.1:1883":1}}`,
+		),
+	})
+	prepared, _ := newEffectiveBindingMaterializerFixture(
+		t,
+		nil,
+		map[generation.Domain]generation.PublicationCandidate{generation.DomainStream: candidate},
+	)
+
+	if err := prepared.compileAndAttachStream(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if snapshot := prepared.Stream(); snapshot == nil || snapshot.Router() == nil ||
+		!slices.Equal(snapshot.Router().RouteIDs(), []string{"stream"}) {
+		t.Fatalf("stream snapshot = %#v", snapshot)
 	}
 }
 
@@ -152,6 +181,73 @@ func TestCompileAndAttachStreamRejectsMissingOrCrossDomainOccurrenceBeforeConstr
 					"invalid occurrence published/constructed/leased = %v/%d/%d",
 					prepared.Stream() != nil,
 					fixture.constructed.Load(),
+					fixture.registry.Len(),
+				)
+			}
+		})
+	}
+}
+
+func TestCompileAndAttachStreamValidatesEveryOccurrenceBeforeMaterialization(t *testing.T) {
+	candidate := streamCompilerCandidate(t, 94, []generation.Resource{
+		resourceValue("stream_routes", "a", `{
+			"id":"a",
+			"plugins":{"mqtt-proxy":{"protocol_level":4}},
+			"upstream":{"scheme":"tcp","nodes":{"127.0.0.1:1883":1}}
+		}`),
+		resourceValue("stream_routes", "b", `{
+			"id":"b",
+			"plugins":{"mqtt-proxy":{"protocol_level":4}},
+			"upstream":{"scheme":"tcp","nodes":{"127.0.0.1:1884":1}}
+		}`),
+	})
+	for _, test := range []struct {
+		name              string
+		secondOccurrences int
+	}{
+		{name: "missing second occurrence"},
+		{name: "duplicate second occurrence", secondOccurrences: 2},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			prepared, fixture := newEffectiveBindingMaterializerFixture(
+				t,
+				nil,
+				map[generation.Domain]generation.PublicationCandidate{generation.DomainStream: candidate},
+			)
+			prepared.effective.Config.StreamPlugins = []string{"mqtt-proxy"}
+			installStreamOccurrence(
+				prepared,
+				generation.ResourceKey{Kind: "stream_routes", ID: "a"},
+				"mqtt-proxy",
+				generation.DomainStream,
+			)
+			for range test.secondOccurrences {
+				installStreamOccurrence(
+					prepared,
+					generation.ResourceKey{Kind: "stream_routes", ID: "b"},
+					"mqtt-proxy",
+					generation.DomainStream,
+				)
+			}
+			var observers atomic.Int64
+			defaultStartObserver := prepared.bindingOps.startObserver
+			prepared.bindingOps.startObserver = func(instance plugin.Plugin, tasks *runtime.TaskRegistry) error {
+				observers.Add(1)
+				return defaultStartObserver(instance, tasks)
+			}
+
+			if err := prepared.compileAndAttachStream(context.Background()); err == nil {
+				t.Fatal("compileAndAttachStream() error = nil")
+			}
+			if prepared.Stream() != nil || fixture.constructed.Load() != 0 ||
+				fixture.registration.materializeCalls.Load() != 0 || observers.Load() != 0 ||
+				fixture.registry.Len() != 0 {
+				t.Fatalf(
+					"invalid occurrences published/constructed/materialized/observed/leased = %v/%d/%d/%d/%d",
+					prepared.Stream() != nil,
+					fixture.constructed.Load(),
+					fixture.registration.materializeCalls.Load(),
+					observers.Load(),
 					fixture.registry.Len(),
 				)
 			}

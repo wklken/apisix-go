@@ -20,16 +20,9 @@ func (prepared *PreparedGeneration) compileAndAttachStream(ctx context.Context) 
 	if err != nil {
 		return err
 	}
-	routes := make([]streamruntime.PreparedRoute, 0, len(plan.routes))
-	for _, planned := range plan.routes {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		preparedRoute, err := prepared.materializePlannedStreamRoute(ctx, planned)
-		if err != nil {
-			return err
-		}
-		routes = append(routes, preparedRoute)
+	routes, err := prepared.materializePlannedStreamRoutes(ctx, plan.routes)
+	if err != nil {
+		return err
 	}
 	router, err := streamruntime.CompileRouter(ctx, streamruntime.CompileInput{
 		Revision: candidate.Artifact.Revision,

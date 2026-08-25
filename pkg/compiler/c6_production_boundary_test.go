@@ -104,6 +104,23 @@ func forgeFromZeroHolder() gen.ApplyTicket {
 	return holder.Ticket
 }
 `,
+		"pkg/route/ticket_map_extraction.go": `package route
+import gen "github.com/wklken/apisix-go/pkg/generation"
+type mappedTicketHolder struct { Ticket gen.ApplyTicket }
+func (holder mappedTicketHolder) ticket() gen.ApplyTicket { return holder.Ticket }
+func forgeDirectFromMap(tickets map[string]gen.ApplyTicket) gen.ApplyTicket { return tickets["missing"] }
+func forgeHolderFieldFromMap(holders map[string]mappedTicketHolder) gen.ApplyTicket { return holders["missing"].Ticket }
+func forgeHolderMethodFromMap(holders map[string]mappedTicketHolder) gen.ApplyTicket { return holders["missing"].ticket() }
+func forgeGenericFromMap[M ~map[string]mappedTicketHolder](holders M) gen.ApplyTicket { return holders["missing"].ticket() }
+`,
+		"pkg/route/ticket_channel_receive.go": `package route
+import gen "github.com/wklken/apisix-go/pkg/generation"
+type receivedTicketHolder struct { Ticket gen.ApplyTicket }
+func (holder receivedTicketHolder) ticket() gen.ApplyTicket { return holder.Ticket }
+func forgeFromClosedChannel(tickets <-chan gen.ApplyTicket) gen.ApplyTicket { return <-tickets }
+func forgeHolderFromClosedChannel(tickets <-chan receivedTicketHolder) gen.ApplyTicket { return (<-tickets).ticket() }
+func forgeGenericFromClosedChannel[C ~<-chan receivedTicketHolder](tickets C) gen.ApplyTicket { return (<-tickets).ticket() }
+`,
 		"pkg/route/ticket_generic.go": `package route
 import gen "github.com/wklken/apisix-go/pkg/generation"
 func zero[T any]() (value T) { return }
@@ -220,6 +237,10 @@ func unrelated(factory localFactory) { factory.PrepareGeneration() }
 		"pkg/route/ticket_elided_aggregate.go",
 		"pkg/route/ticket_zero_aggregate.go", "aggregate zero-value declaration",
 		"pkg/route/ticket_zero_holder.go",
+		"pkg/route/ticket_map_extraction.go", "map zero-capable extraction",
+		"forgeDirectFromMap", "forgeHolderFieldFromMap", "forgeHolderMethodFromMap", "forgeGenericFromMap",
+		"pkg/route/ticket_channel_receive.go", "channel zero-capable receive",
+		"forgeFromClosedChannel", "forgeHolderFromClosedChannel", "forgeGenericFromClosedChannel",
 		"pkg/route/ticket_generic.go", "ApplyTicket authority type use",
 		"pkg/route/ticket_inferred_generic.go", "generic type argument",
 		"pkg/route/ticket_inferred_generic_pointer.go",
@@ -569,9 +590,21 @@ func c6AuditConstructionExpressions(
 				c6RecordTicketConstruction(fset, filePath, function, form, expression.Pos(), audit)
 			}
 		case *ast.IndexExpr:
+			if c6MapIndexElementContainsTicketValue(info, expression) {
+				c6RecordTicketConstruction(
+					fset, filePath, function, "map zero-capable extraction", expression.Pos(), audit,
+				)
+			}
 			c6AuditAggregateTicketExtraction(fset, info, filePath, function, expression, audit)
 		case *ast.SelectorExpr:
 			c6AuditAggregateTicketExtraction(fset, info, filePath, function, expression, audit)
+		case *ast.UnaryExpr:
+			if expression.Op == token.ARROW &&
+				c6ChannelElementContainsTicketValue(info.TypeOf(expression.X)) {
+				c6RecordTicketConstruction(
+					fset, filePath, function, "channel zero-capable receive", expression.Pos(), audit,
+				)
+			}
 		case *ast.DeclStmt:
 			if declaration, ok := expression.Decl.(*ast.GenDecl); ok {
 				c6AuditZeroValueDeclarations(fset, info, filePath, function, declaration, audit)
@@ -590,13 +623,72 @@ func c6AuditAggregateTicketExtraction(
 	audit *c6BoundaryAudit,
 ) {
 	typeAndValue, ok := info.Types[expression]
-	if !ok || !typeAndValue.IsValue() || !isC6ApplyTicketValueType(typeAndValue.Type) ||
-		!c6ContainsZeroTicketAggregate(info, expression) {
+	if !ok || !typeAndValue.IsValue() || !isC6ApplyTicketValueType(typeAndValue.Type) {
+		return
+	}
+	if !c6ContainsZeroTicketAggregate(info, expression) {
 		return
 	}
 	c6RecordTicketConstruction(
 		fset, filePath, function, "aggregate extraction", expression.Pos(), audit,
 	)
+}
+
+func c6MapIndexElementContainsTicketValue(info *types.Info, expression *ast.IndexExpr) bool {
+	containerType := info.TypeOf(expression.X)
+	return c6CoreTypeMatches(containerType, func(core types.Type) bool {
+		mapType, ok := types.Unalias(core).Underlying().(*types.Map)
+		return ok && c6TypeContainsApplyTicketValue(mapType.Elem())
+	})
+}
+
+func c6ChannelElementContainsTicketValue(value types.Type) bool {
+	return c6CoreTypeMatches(value, func(core types.Type) bool {
+		channel, ok := types.Unalias(core).Underlying().(*types.Chan)
+		return ok && c6TypeContainsApplyTicketValue(channel.Elem())
+	})
+}
+
+func c6CoreTypeMatches(value types.Type, match func(types.Type) bool) bool {
+	return c6VisitCoreTypes(value, make(map[types.Type]struct{}), match)
+}
+
+func c6VisitCoreTypes(
+	value types.Type,
+	seen map[types.Type]struct{},
+	visit func(types.Type) bool,
+) bool {
+	if value == nil {
+		return false
+	}
+	value = types.Unalias(value)
+	if _, visited := seen[value]; visited {
+		return false
+	}
+	seen[value] = struct{}{}
+
+	switch value := value.(type) {
+	case *types.TypeParam:
+		return c6VisitCoreTypes(value.Constraint(), seen, visit)
+	case *types.Interface:
+		for embedded := range value.EmbeddedTypes() {
+			if c6VisitCoreTypes(embedded, seen, visit) {
+				return true
+			}
+		}
+		return false
+	case *types.Union:
+		for term := range value.Terms() {
+			if c6VisitCoreTypes(term.Type(), seen, visit) {
+				return true
+			}
+		}
+		return false
+	case *types.Named:
+		return c6VisitCoreTypes(value.Underlying(), seen, visit)
+	default:
+		return visit(value)
+	}
 }
 
 func c6ContainsZeroTicketAggregate(info *types.Info, root ast.Node) bool {

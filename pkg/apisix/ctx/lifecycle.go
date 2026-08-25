@@ -65,14 +65,28 @@ const (
 
 type RequestFinalizer func() error
 
+type FinalizerOwnerKind uint8
+
+const (
+	FinalizerOwnerPlugin FinalizerOwnerKind = iota + 1
+	FinalizerOwnerCoreInvariant
+)
+
 type FinalizerFailure struct {
+	Kind       FinalizerOwnerKind
 	Owner      string
 	Err        error
 	PanicValue any
 	Stack      []byte
 }
 
+type FinalizationResult struct {
+	Failures   []FinalizerFailure
+	FatalPanic *FinalizerFailure
+}
+
 type registeredFinalizer struct {
+	kind  FinalizerOwnerKind
 	owner string
 	fn    RequestFinalizer
 }
@@ -85,7 +99,7 @@ type RequestLifecycle struct {
 	finalizing     bool
 	finalizers     []registeredFinalizer
 	outcome        ResponseOutcome
-	failures       []FinalizerFailure
+	finalization   FinalizationResult
 	finalRequest   *http.Request
 	responseSource ResponseSource
 }
@@ -203,6 +217,14 @@ func (l *RequestLifecycle) ResponseSource() ResponseSource {
 }
 
 func (l *RequestLifecycle) AddFinalizer(owner string, finalizer RequestFinalizer) bool {
+	return l.addFinalizer(FinalizerOwnerPlugin, owner, finalizer)
+}
+
+func (l *RequestLifecycle) AddCoreInvariantFinalizer(owner string, finalizer RequestFinalizer) bool {
+	return l.addFinalizer(FinalizerOwnerCoreInvariant, owner, finalizer)
+}
+
+func (l *RequestLifecycle) addFinalizer(kind FinalizerOwnerKind, owner string, finalizer RequestFinalizer) bool {
 	if l == nil || finalizer == nil {
 		return false
 	}
@@ -211,7 +233,7 @@ func (l *RequestLifecycle) AddFinalizer(owner string, finalizer RequestFinalizer
 	if l.finalizing {
 		return false
 	}
-	l.finalizers = append(l.finalizers, registeredFinalizer{owner: owner, fn: finalizer})
+	l.finalizers = append(l.finalizers, registeredFinalizer{kind: kind, owner: owner, fn: finalizer})
 	return true
 }
 
@@ -268,8 +290,12 @@ func (l *RequestLifecycle) FinishedAt() time.Time {
 }
 
 func (l *RequestLifecycle) Finalize() []FinalizerFailure {
+	return l.FinalizeResult().Failures
+}
+
+func (l *RequestLifecycle) FinalizeResult() FinalizationResult {
 	if l == nil {
-		return nil
+		return FinalizationResult{}
 	}
 	l.once.Do(func() {
 		l.mu.Lock()
@@ -277,35 +303,41 @@ func (l *RequestLifecycle) Finalize() []FinalizerFailure {
 		finalizers := append([]registeredFinalizer(nil), l.finalizers...)
 		l.mu.Unlock()
 
-		failures := make([]FinalizerFailure, 0)
+		result := FinalizationResult{Failures: make([]FinalizerFailure, 0)}
 		for _, finalizer := range slices.Backward(finalizers) {
-			if failure, failed := runFinalizer(finalizer); failed {
-				failures = append(failures, failure)
+			if failure, failed, panicked := runFinalizer(finalizer); failed {
+				result.Failures = append(result.Failures, failure)
+				if panicked && failure.Kind == FinalizerOwnerCoreInvariant && result.FatalPanic == nil {
+					fatalPanic := failure
+					result.FatalPanic = &fatalPanic
+				}
 			}
 		}
 		l.mu.Lock()
-		l.failures = failures
+		l.finalization = result
 		l.mu.Unlock()
 	})
 	l.mu.RLock()
 	defer l.mu.RUnlock()
-	return cloneFinalizerFailures(l.failures)
+	return cloneFinalizationResult(l.finalization)
 }
 
-func runFinalizer(finalizer registeredFinalizer) (failure FinalizerFailure, failed bool) {
+func runFinalizer(finalizer registeredFinalizer) (failure FinalizerFailure, failed, panicked bool) {
+	failure.Kind = finalizer.kind
 	failure.Owner = finalizer.owner
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			failure.PanicValue = recovered
 			failure.Stack = debug.Stack()
 			failed = true
+			panicked = true
 		}
 	}()
 	if err := finalizer.fn(); err != nil {
 		failure.Err = err
-		return failure, true
+		return failure, true, false
 	}
-	return FinalizerFailure{}, false
+	return FinalizerFailure{}, false, false
 }
 
 func cloneFinalizerFailures(failures []FinalizerFailure) []FinalizerFailure {
@@ -313,6 +345,16 @@ func cloneFinalizerFailures(failures []FinalizerFailure) []FinalizerFailure {
 	copy(cloned, failures)
 	for i := range cloned {
 		cloned[i].Stack = append([]byte(nil), cloned[i].Stack...)
+	}
+	return cloned
+}
+
+func cloneFinalizationResult(result FinalizationResult) FinalizationResult {
+	cloned := FinalizationResult{Failures: cloneFinalizerFailures(result.Failures)}
+	if result.FatalPanic != nil {
+		fatalPanic := *result.FatalPanic
+		fatalPanic.Stack = append([]byte(nil), fatalPanic.Stack...)
+		cloned.FatalPanic = &fatalPanic
 	}
 	return cloned
 }

@@ -52,7 +52,8 @@ func (prepared *PreparedGeneration) planHTTPPreparation(
 	}
 	var dynamicPlugins []string
 	if resources.dynamicPlugins {
-		dynamicPlugins = slices.Clone(resources.enabledPlugins)
+		dynamicPlugins = make([]string, len(resources.enabledPlugins))
+		copy(dynamicPlugins, resources.enabledPlugins)
 	}
 	plannedPlugins, err := routepkg.PlanHTTPPlugins(ctx, routepkg.PlanningInput{
 		Routes: resources.routes, Services: resources.services,
@@ -66,7 +67,8 @@ func (prepared *PreparedGeneration) planHTTPPreparation(
 	}
 	enabledFactories := slices.Clone(prepared.effective.Config.Plugins)
 	if resources.dynamicPlugins {
-		enabledFactories = slices.Clone(resources.enabledPlugins)
+		enabledFactories = make([]string, len(resources.enabledPlugins))
+		copy(enabledFactories, resources.enabledPlugins)
 	}
 	registry := public_api.NewRegistry()
 	if err := routepkg.SeedPublicAPIRegistry(registry, &prepared.effective.Config); err != nil {

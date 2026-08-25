@@ -106,3 +106,26 @@ func TestPlanHTTPPreparationRejectsCandidateOutsideAttempt(t *testing.T) {
 		t.Fatal("foreign HTTP candidate error = nil")
 	}
 }
+
+func TestPlanHTTPPreparationPreservesConfiguredEmptyDynamicPluginList(t *testing.T) {
+	snapshot := mustGenerationSnapshot(t, 34, []generation.Resource{
+		resourceValue("routes", "r1", `{"id":"r1","uri":"/","plugins":{"request-id":{}}}`),
+		resourceValue("plugins", "plugins", `[]`),
+	}, nil)
+	candidate := compileDomain(t, generation.DomainHTTP, snapshot, generation.PublishedGeneration{}, false)
+	prepared, _ := newEffectiveBindingMaterializerFixture(
+		t,
+		[]string{"request-id"},
+		map[generation.Domain]generation.PublicationCandidate{generation.DomainHTTP: candidate},
+	)
+	prepared.effective.Config.Plugins = []string{"request-id"}
+
+	plan, err := prepared.planHTTPPreparation(context.Background(), candidate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.plugins.Routes) != 0 || len(plan.plugins.Quarantined) != 1 ||
+		plan.plugins.Quarantined[0] != (generation.ResourceKey{Kind: "routes", ID: "r1"}) {
+		t.Fatalf("empty dynamic plugin list fell back to static plugins: %#v", plan.plugins)
+	}
+}

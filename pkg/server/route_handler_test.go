@@ -189,6 +189,28 @@ type blockingHeaderRouteResponseWriter struct {
 	once    sync.Once
 }
 
+type sequencedHeaderPanicWriter struct {
+	header      http.Header
+	panics      []any
+	headerCalls atomic.Int32
+	writeCalls  atomic.Int32
+}
+
+func (w *sequencedHeaderPanicWriter) Header() http.Header {
+	call := int(w.headerCalls.Add(1))
+	if call <= len(w.panics) {
+		panic(w.panics[call-1])
+	}
+	return w.header
+}
+
+func (*sequencedHeaderPanicWriter) WriteHeader(int) {}
+
+func (w *sequencedHeaderPanicWriter) Write(body []byte) (int, error) {
+	w.writeCalls.Add(1)
+	return len(body), nil
+}
+
 func (w *blockingHeaderRouteResponseWriter) Header() http.Header { return w.header }
 
 func (w *blockingHeaderRouteResponseWriter) WriteHeader(int) {
@@ -855,6 +877,107 @@ func (w *fixedReadWriterHijackResponseWriter) Hijack() (net.Conn, *bufio.ReadWri
 	return w.conn, w.readWriter, nil
 }
 
+type alwaysErrorWriter struct{ err error }
+
+func (w alwaysErrorWriter) Write([]byte) (int, error) { return 0, w.err }
+
+func TestGenerationHijackRebuildClosePanicReleasesAndUnregisters(t *testing.T) {
+	routes := newGenerationRouteHandler(nil)
+	var parentReleases atomic.Int32
+	var childReleases atomic.Int32
+	parent := httpGenerationLease{
+		Release: func() { parentReleases.Add(1) },
+		retain: func() (httpGenerationLease, bool) {
+			return httpGenerationLease{Release: func() { childReleases.Add(1) }}, true
+		},
+	}
+	left, right := net.Pipe()
+	t.Cleanup(func() {
+		_ = left.Close()
+		_ = right.Close()
+	})
+	want := &struct{ message string }{message: "rebuild close panic"}
+	raw := &panicCloseConn{Conn: left, panicValue: want}
+	bufferedWriter := bufio.NewWriter(alwaysErrorWriter{err: errors.New("flush failed")})
+	if _, err := bufferedWriter.WriteString("pending"); err != nil {
+		t.Fatalf("buffer failed-hijack writer: %v", err)
+	}
+	readWriter := bufio.NewReadWriter(bufio.NewReader(strings.NewReader("")), bufferedWriter)
+	writer := &fixedReadWriterHijackResponseWriter{
+		header: make(http.Header), conn: raw, readWriter: readWriter,
+	}
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _, _ = w.(http.Hijacker).Hijack()
+	})
+
+	if got := recoverPanic(func() {
+		serveRouteRequestForHTTPGeneration(
+			writer, httptest.NewRequest(http.MethodGet, "/hijack", nil), handler, &parent, routes,
+		)
+	}); got != want {
+		t.Fatalf("panic = %#v, want original close panic %#v", got, want)
+	}
+	parent.Release()
+	if got := parentReleases.Load(); got != 1 {
+		t.Fatalf("parent releases = %d, want 1", got)
+	}
+	if got := childReleases.Load(); got != 1 {
+		t.Fatalf("child releases = %d, want 1", got)
+	}
+	routes.mu.Lock()
+	hijacked, active := len(routes.hijacked), routes.generationActive
+	routes.mu.Unlock()
+	if hijacked != 0 || active != 0 {
+		t.Fatalf("retained hijack state = map:%d active:%d, want zero", hijacked, active)
+	}
+	routes.RejectNew()
+	if err := routes.Drain(context.Background()); err != nil {
+		t.Fatalf("Drain() error = %v", err)
+	}
+}
+
+func TestRegisterGenerationHijackClosedAfterRetainClosePanicReleasesLease(t *testing.T) {
+	routes := newGenerationRouteHandler(nil)
+	var parentReleases atomic.Int32
+	var childReleases atomic.Int32
+	parent := httpGenerationLease{
+		Release: func() { parentReleases.Add(1) },
+		retain: func() (httpGenerationLease, bool) {
+			// retainGenerationLease owns routes.mu while invoking retain. This
+			// models closure winning immediately after the child retain.
+			routes.closed = true
+			return httpGenerationLease{Release: func() { childReleases.Add(1) }}, true
+		},
+	}
+	left, right := net.Pipe()
+	t.Cleanup(func() {
+		_ = left.Close()
+		_ = right.Close()
+	})
+	want := &struct{ message string }{message: "post-retain close panic"}
+	raw := &panicCloseConn{Conn: left, panicValue: want}
+
+	if got := recoverPanic(func() { _, _ = routes.registerGenerationHijack(raw, &parent) }); got != want {
+		t.Fatalf("panic = %#v, want original close panic %#v", got, want)
+	}
+	parent.Release()
+	if got := parentReleases.Load(); got != 1 {
+		t.Fatalf("parent releases = %d, want 1", got)
+	}
+	if got := childReleases.Load(); got != 1 {
+		t.Fatalf("child releases = %d, want 1", got)
+	}
+	routes.mu.Lock()
+	hijacked, active := len(routes.hijacked), routes.generationActive
+	routes.mu.Unlock()
+	if hijacked != 0 || active != 0 {
+		t.Fatalf("retained hijack state = map:%d active:%d, want zero", hijacked, active)
+	}
+	if err := routes.Drain(context.Background()); err != nil {
+		t.Fatalf("Drain() error = %v", err)
+	}
+}
+
 func TestGenerationHijackPanicClosesConnectionAndReleasesLease(t *testing.T) {
 	fixture := newCountedHTTPLeaseFixture(t, 308)
 	routes := newGenerationRouteHandler(fixture.Acquire)
@@ -1427,6 +1550,53 @@ func TestRequestBodyLimitCanonicalWriterPanicEscapesAfterCleanup(t *testing.T) {
 		t.Fatalf("finalizers = %d, want 1", finalized.Load())
 	}
 	if got := apisixctx.GetApisixVar(derived, "$body_limit_marker"); got != "" {
+		t.Fatalf("request state after recycle = %#v, want empty", got)
+	}
+	if got := generation.leases.releases.Load(); got != 1 {
+		t.Fatalf("generation releases = %d, want 1", got)
+	}
+}
+
+func TestRequestBodyLimitRouteHeaderPanicIsOneTerminalCanonicalAttempt(t *testing.T) {
+	generation := newRouteRequestGenerationFixture(t, 351)
+	first := &struct{ message string }{message: "first Header panic"}
+	second := &struct{ message string }{message: "second Header panic"}
+	writer := &sequencedHeaderPanicWriter{
+		header: make(http.Header),
+		panics: []any{first, second},
+	}
+	var finalized atomic.Int32
+	var derived *http.Request
+	route := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		derived = r
+		apisixctx.RegisterApisixVar(r, "$header_panic_marker", "live")
+		if !apisixctx.GetRequestLifecycle(r).AddFinalizer("observe", func() error {
+			finalized.Add(1)
+			return nil
+		}) {
+			t.Fatal("failed to register header-panic observer")
+		}
+		_, _ = io.ReadAll(r.Body)
+	})
+	handler := limitRequestBody(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		generation.Serve(t, w, r, route)
+	}), 3)
+	request := httptest.NewRequest(http.MethodPost, "/upload", strings.NewReader("abcd"))
+	request.ContentLength = -1
+
+	if got := recoverPanic(func() { handler.ServeHTTP(writer, request) }); got != first {
+		t.Fatalf("panic = %#v, want first Header panic %#v", got, first)
+	}
+	if got := writer.headerCalls.Load(); got != 1 {
+		t.Fatalf("Header calls = %d, want one terminal canonical attempt", got)
+	}
+	if got := writer.writeCalls.Load(); got != 0 {
+		t.Fatalf("Write calls = %d, want no response write after Header panic", got)
+	}
+	if finalized.Load() != 1 {
+		t.Fatalf("finalizers = %d, want 1", finalized.Load())
+	}
+	if got := apisixctx.GetApisixVar(derived, "$header_panic_marker"); got != "" {
 		t.Fatalf("request state after recycle = %#v, want empty", got)
 	}
 	if got := generation.leases.releases.Load(); got != 1 {

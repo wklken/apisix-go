@@ -101,7 +101,10 @@ func serveRouteRequestForHTTPGeneration(
 						connection = wrappedConnection
 						readWriter, wrapErr = rebuildGenerationReadWriter(readWriter, wrappedConnection)
 						if wrapErr != nil {
-							_ = wrappedConnection.Close()
+							closePanic, _ := closeRetainedGenerationConn(wrappedConnection)
+							if closePanic != nil {
+								panic(closePanic)
+							}
 							return nil, nil, wrapErr
 						}
 					}
@@ -152,6 +155,7 @@ func serveRouteRequestForHTTPGeneration(
 			if recovered := captureCleanupPanic(func() {
 				bodyLimitState.writeCanonicalResponse(wrapped, request)
 			}); recovered != nil {
+				bodyLimitState.disableCanonicalResponse()
 				firstCoreCleanupPanic = recovered
 			}
 		}
@@ -218,17 +222,12 @@ func serveRouteRequestForHTTPGeneration(
 		if outcome.Hijacked && mustAbort {
 			if len(generationHijacks) != 0 {
 				for _, connection := range generationHijacks {
-					closePanic := captureCleanupPanic(func() {
-						if err := connection.Close(); err != nil {
-							logger.Errorf("close hijacked request connection: %s", err)
-						}
-					})
+					closePanic, closeErr := closeRetainedGenerationConn(connection)
+					if closeErr != nil {
+						logger.Errorf("close hijacked request connection: %s", closeErr)
+					}
 					if closePanic != nil {
 						metrics.RecordRequestPanic(metrics.RequestPanicCore, metrics.RequestPanicPostHijack)
-						// generationConn.Close releases only after the raw connection
-						// closes. Preserve the lease invariant when that close panics.
-						_ = captureCleanupPanic(connection.unregister)
-						_ = captureCleanupPanic(connection.release)
 						if firstCoreCleanupPanic == nil {
 							firstCoreCleanupPanic = closePanic
 						}
@@ -319,6 +318,23 @@ func captureCleanupPanic(call func()) (panicValue any) {
 	return nil
 }
 
+func closeRetainedGenerationConn(connection *generationConn) (panicValue any, closeErr error) {
+	if connection == nil {
+		return nil, nil
+	}
+	panicValue = captureCleanupPanic(func() { closeErr = connection.Close() })
+	if panicValue == nil {
+		return nil, closeErr
+	}
+	// generationConn.Close performs unregister/release after the raw close.
+	// sync.Once is consumed even when any of those steps panics, so finish both
+	// callbacks independently here. Their lease/unregister implementations are
+	// idempotent; the original Close panic retains precedence.
+	_ = captureCleanupPanic(connection.unregister)
+	_ = captureCleanupPanic(connection.release)
+	return panicValue, closeErr
+}
+
 func writeStableInternalError(w http.ResponseWriter) (ok bool, panicValue any) {
 	panicValue = captureCleanupPanic(func() {
 		for key := range w.Header() {
@@ -377,8 +393,15 @@ func (h *routeHandler) RejectNew() {
 	clear(h.hijacked)
 	h.signalGenerationDrainedLocked()
 	h.mu.Unlock()
+	var firstClosePanic any
 	for _, connection := range connections {
-		_ = connection.Close()
+		closePanic, _ := closeRetainedGenerationConn(connection)
+		if firstClosePanic == nil {
+			firstClosePanic = closePanic
+		}
+	}
+	if firstClosePanic != nil {
+		panic(firstClosePanic)
 	}
 }
 
@@ -466,7 +489,10 @@ func (h *routeHandler) registerGenerationHijack(
 	h.mu.Lock()
 	if h.closed {
 		h.mu.Unlock()
-		_ = wrapped.Close()
+		closePanic, _ := closeRetainedGenerationConn(wrapped)
+		if closePanic != nil {
+			panic(closePanic)
+		}
 		return nil, errHTTPGenerationHijackUnavailable
 	}
 	wrapped.unregister = func() {

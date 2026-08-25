@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -119,6 +120,55 @@ func TestGuardCallAndValueAttributeAbortLookalikes(t *testing.T) {
 					len(got.Stack) == 0 {
 					t.Fatalf("panic metadata = %#v", got)
 				}
+			})
+		}
+	}
+}
+
+func TestGuardCallAndValueAttributeUncomparablePanicValues(t *testing.T) {
+	helpers := []struct {
+		name   string
+		invoke func(any) error
+	}{
+		{
+			name: "call",
+			invoke: func(value any) error {
+				return guardCall("request-id", PhaseRewrite, func() error { panic(value) })
+			},
+		},
+		{
+			name: "value",
+			invoke: func(value any) error {
+				_, err := guardValue("request-id", PhaseRewrite, func() (string, error) { panic(value) })
+				return err
+			},
+		},
+	}
+	values := []struct {
+		name  string
+		build func() any
+	}{
+		{name: "slice", build: func() any { return []string{"slice panic"} }},
+		{name: "map", build: func() any { return map[string]string{"message": "map panic"} }},
+		{name: "func", build: func() any { return func() {} }},
+		{name: "slice error", build: func() any { return uncomparablePanicError{"slice error panic"} }},
+	}
+	for _, helper := range helpers {
+		for _, value := range values {
+			t.Run(helper.name+"/"+value.name, func(t *testing.T) {
+				want := value.build()
+				var err error
+				if recovered := captureCallbackPanic(func() { err = helper.invoke(want) }); recovered != nil {
+					t.Fatalf("guard panicked with %#v, want attributed error", recovered)
+				}
+				got, ok := err.(*PanicError)
+				if !ok {
+					t.Fatalf("error = %T, want *PanicError", err)
+				}
+				if got.Factory != "request-id" || got.Phase != PhaseRewrite || len(got.Stack) == 0 {
+					t.Fatalf("panic metadata = %#v", got)
+				}
+				assertRawPanicIdentity(t, want, got.Value)
 			})
 		}
 	}
@@ -338,6 +388,69 @@ func TestGuardMiddlewareAttributesAbortLookalike(t *testing.T) {
 	}
 }
 
+func TestGuardMiddlewarePreservesUncomparablePanicValues(t *testing.T) {
+	tests := []struct {
+		name       string
+		value      any
+		build      func(any) func(http.Handler) http.Handler
+		downstream bool
+	}{
+		{
+			name:  "entry slice",
+			value: []string{"entry panic"},
+			build: func(value any) func(http.Handler) http.Handler {
+				return func(http.Handler) http.Handler {
+					return http.HandlerFunc(func(http.ResponseWriter, *http.Request) { panic(value) })
+				}
+			},
+		},
+		{
+			name:  "unwind map",
+			value: map[string]string{"message": "unwind panic"},
+			build: func(value any) func(http.Handler) http.Handler {
+				return func(next http.Handler) http.Handler {
+					return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						next.ServeHTTP(w, r)
+						panic(value)
+					})
+				}
+			},
+		},
+		{
+			name:       "downstream func",
+			value:      func() {},
+			downstream: true,
+			build: func(any) func(http.Handler) http.Handler {
+				return func(next http.Handler) http.Handler {
+					return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { next.ServeHTTP(w, r) })
+				}
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			next := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})
+			if test.downstream {
+				next = func(http.ResponseWriter, *http.Request) { panic(test.value) }
+			}
+			handler := guardMiddleware("outer", PhaseRewrite, test.build(test.value), next)
+			recovered := recoverHandlerPanic(t, handler)
+			if test.downstream {
+				assertRawPanicIdentity(t, test.value, recovered)
+				return
+			}
+			panicErr, ok := recovered.(*PanicError)
+			if !ok {
+				t.Fatalf("panic = %T, want *PanicError", recovered)
+			}
+			if panicErr.Factory != "outer" || panicErr.Phase != PhaseRewrite || len(panicErr.Stack) == 0 {
+				t.Fatalf("panic metadata = %#v", panicErr)
+			}
+			assertRawPanicIdentity(t, test.value, panicErr.Value)
+		})
+	}
+}
+
 func TestGuardMiddlewarePreservesNilConstructionValidation(t *testing.T) {
 	validBuild := func(next http.Handler) http.Handler { return next }
 	tests := []struct {
@@ -398,4 +511,56 @@ func recoverCallbackPanic(t *testing.T, call func()) (recovered any) {
 	call()
 	t.Fatal("callback did not panic")
 	return nil
+}
+
+func captureCallbackPanic(call func()) (recovered any) {
+	defer func() { recovered = recover() }()
+	call()
+	return nil
+}
+
+func assertRawPanicIdentity(t *testing.T, want, got any) {
+	t.Helper()
+	switch want := want.(type) {
+	case []string:
+		got, ok := got.([]string)
+		if !ok || len(got) != len(want) {
+			t.Fatalf("panic value = %#v, want original slice %#v", got, want)
+		}
+		got[0] = "identity mutation"
+		if want[0] != "identity mutation" {
+			t.Fatal("panic value does not retain the original slice")
+		}
+	case map[string]string:
+		got, ok := got.(map[string]string)
+		if !ok {
+			t.Fatalf("panic value = %#v, want original map %#v", got, want)
+		}
+		got["identity"] = "retained"
+		if want["identity"] != "retained" {
+			t.Fatal("panic value does not retain the original map")
+		}
+	case func():
+		got, ok := got.(func())
+		if !ok || reflect.ValueOf(got).Pointer() != reflect.ValueOf(want).Pointer() {
+			t.Fatalf("panic value type = %T, want original function", got)
+		}
+	case uncomparablePanicError:
+		got, ok := got.(uncomparablePanicError)
+		if !ok || len(got) != len(want) {
+			t.Fatalf("panic value = %#v, want original slice error %#v", got, want)
+		}
+		got[0] = "identity mutation"
+		if want[0] != "identity mutation" {
+			t.Fatal("panic value does not retain the original slice error")
+		}
+	default:
+		t.Fatalf("unsupported test panic type %T", want)
+	}
+}
+
+type uncomparablePanicError []string
+
+func (e uncomparablePanicError) Error() string {
+	return strings.Join(e, ", ")
 }

@@ -1,0 +1,738 @@
+# Immutable Task 11 Generation Background Ownership Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:executing-plans` to implement this plan task-by-task. Use `superpowers:test-driven-development` for every behavior change and `superpowers:verification-before-completion` before each commit.
+
+**Goal:** Assign every generation/plugin background loop and logger shutdown helper an explicit lifecycle owner, preserve existing drain and cleanup semantics, and make cancellation-ignoring work visible without binding cross-generation resources to the wrong generation.
+
+**Architecture:** Ordinary plugin-instance loops use the compiler-injected concrete `*runtime.TaskOwner`; plugins supply only a fixed component to `owner.Go`. Resources reused across generations do not use the creating generation owner: HTTP clusters and the process-global file-writer registry create lifecycle-local registries plus their own `TaskCore` owners. The persistent stream runtime similarly owns one runtime-local core registry across RouterSource generation changes. Logger delivery workers are generation tasks; generation cancellation seals and drains their queue, and a stuck callback remains an observable task residual. Request-owned concurrency is deliberately excluded and handed to its own Task 11 subplan.
+
+**Tech Stack:** Go 1.26, `runtime.TaskRegistry`, compiler `PreparedGeneration`, plugin `base.Dependencies`, `runtime.ResourceRegistry`, `sync`, `context`, Go AST tests, existing package-focused Go tests and race detector.
+
+**Spec:** `docs/superpowers/plans/2026-08-23-immutable-compiler-plugin-runtime.md`, Task 11; `docs/superpowers/plans/2026-08-23-runtime-safety-observability.md`, Task 5.
+
+## Global Constraints
+
+- Run every Go command as `bash -lc 'source .envrc && ...'` from the worktree root.
+- Preserve APISIX behavior, current bounded queues, retries, coalescing, final flushes, last-good OAS validator publication, active/passive health transitions, and file reopen semantics.
+- Do not add an AST allowlist inside Contract C's scan roots: `pkg/plugin`, `pkg/proxy`, `pkg/route`, and `pkg/stream`. After this plan and the request plan integrate, those roots contain no production raw `go` statement or `sync.WaitGroup.Go`. The canonical runtime primitives live under `pkg/runtime`, outside the gate's scan roots; that directory boundary is not an allowlist entry.
+- Do not bind a shared resource to `PreparedGeneration.tasks`. A task registry must live at least as long as the state it mutates.
+- Every `runtime.TaskSpec.Owner` is stable and bounded. Do not include request data, URLs, target addresses, log paths, or secret/config plaintext. Use `InstanceKey.String()` or a canonical digest.
+- Plugins never construct `runtime.TaskSpec`, concatenate a prefix, or select criticality. They call the injected `TaskOwner.Go` with a fixed validated component. Shared cluster/file-writer resources create their own `TaskCore` owners as frozen by Contract C.
+- A task function returns `nil` after expected cancellation. It returns an error only when the owner should be reported failed. Never format panic values or secrets into an owner or log.
+- No dependency changes. No broad `go test ./...`, `go test ./pkg/...`, or `make test`.
+- Each behavior implementation task is one independently reviewable commit. Before every behavior commit, run its focused normal/race tests, scoped lint for touched packages, `make build`, and `git diff --check`.
+
+## Required Runtime-Contract Dependency
+
+This plan starts only from the reviewed Contract C Task 2 integrated head. Contract C owns `runtime.TaskOwner`, `base.Dependencies`, compiler injection, the error-log observer seam, and the final AST gate. This plan must not reimplement or edit those contracts. The current compiler has no `materialize.go`; its real injection point is `pkg/compiler/effective_binding_materializer.go`, where `selected.instance` is already validated.
+
+```go
+// Supplied by Contract C Task 2; consumed unchanged here.
+type Dependencies struct {
+	// existing fields unchanged
+	Tasks *runtime.TaskOwner
+}
+
+func (p *BasePlugin) TaskOwner() *runtime.TaskOwner
+```
+
+Contract C constructs that owner with `runtime.NewTaskOwner(prepared.tasks, "plugin/"+selected.instance.String(), runtime.TaskPlugin)`, rejects invalid input before factory construction, and proves attempt-qualified owners differ. Direct package tests create a registry, then a `TaskOwner` with a constant `plugin/test/<case>` prefix. This plan must not invent `TaskRegistry()`, `InstanceKey()`, prefix accessors, child owners, or stop methods on `TaskOwner`.
+
+Digest-reused resources require a second, separate rule, not another field on `base.Dependencies`:
+
+- `proxy.Cluster` is acquired from the factory-wide `runtime.ResourceRegistry`. Its factory calls `proxy.NewOwnedCluster(config, observer, onFailure)`, which computes `ClusterKey`, creates a resource-local `TaskRegistry`, then `runtime.NewTaskOwner(registry, "core/proxy-cluster/"+hexKey, runtime.TaskCore)`. Component is exactly `active-health`. `(*Cluster).CloseContext(ctx) error` stops that registry before closing transports and returns a cleanup error when `Stop` reports an error or residual; the existing `Close()` remains a compatibility wrapper. Generation N retirement must not cancel a cluster still leased by N+1.
+- `sharedFileWriters` is process-global. Each non-empty watcher epoch creates a registry-local `TaskRegistry`, then `runtime.NewTaskOwner(registry, "core/file-writer-registry", runtime.TaskCore)`, and uses component `signal-watch`; the last lease stops and joins that epoch before closing the last writer. It never receives the plugin generation owner.
+
+If the runtime-contract subplan does not expose the generation preparation `TaskFailure` sink to `PreparedGeneration.acquireHTTPCluster`, add exactly one stored package-private callback on `PreparedGeneration`, populated by `transferRegisteredGeneration`; do not add a second public task API.
+
+## Current Production Inventory and Routing
+
+The inventory command is:
+
+```bash
+rg -n '\bgo[[:space:]]+|\.Go\(' pkg/plugin pkg/proxy pkg/route pkg/stream --glob '*.go' --glob '!*_test.go'
+```
+
+| Current production owner | Current sites | Classification and destination |
+| --- | --- | --- |
+| Plugin/generation background | `proxy_cache/disk.go`, `limit_count/delayed_sync.go`, `ai_proxy_multi/health.go`, `oas_validator/plugin.go`, `graphql_proxy_cache/plugin.go`, `log_rotate/plugin.go`, `logger_batch/processor.go`, `file_logger/processor.go`, `rocketmq_logger/plugin.go` | In this plan; compiler-injected `TaskPlugin` owner and fixed components |
+| Cross-generation resource | `proxy/active_health.go` through `compiler/http_cluster.go` | In this plan; resource-local `TaskCore` owner, never generation owner |
+| Process-global registry | `file_logger/writer_registry.go` | In this plan; registry-local `TaskCore` watcher epoch |
+| Logger cancellation helper | `error_log_logger`, `tcp_logger`, `syslog`, `udp_logger`, `datadog`, `sls_logger`, `loggly` | In this plan; replace local `WaitGroup.Go` with joined `context.AfterFunc` cancellation callback |
+| Request-owned periodic flush | `ai_stream/flush_writer.go` | Not modified here; the request Task 11 plan explicitly owns its flush loop and Close/join behavior |
+| Other request/connection owned | `batch_requests`, `kafka_proxy`, `proxy_mirror`, `mqtt_proxy`, `mcp_bridge`, `stream/bridge` | Not modified here; the request Task 11 plan owns them |
+| Persistent server runtime | `stream/runtime.go` | In this plan; runtime-local `TaskCore` owner because `stream.Runtime` persists while RouterSource generations change |
+| Canonical ownership primitive | `runtime/task_registry.go`, `runtime/request_tasks.go` | Outside the four AST scan roots; not an allowlist entry and not modified here |
+
+The implementer must rerun the command immediately before Task 12. Any new production result must be assigned to this plan or the request plan before Contract C's AST gate can pass.
+
+## File Responsibility and Dependency Order
+
+| Task | Exclusive production responsibility | Consumes | Produces | Depends on |
+| --- | --- | --- | --- | --- |
+| 1 | `pkg/proxy/active_health.go`, `cluster.go`; `pkg/compiler/http_cluster.go` | resource registry, ClusterKey, failure sink | cross-generation resource-owned health | Contract C Task 2 |
+| 2 | `pkg/plugin/proxy_cache/disk.go`, `plugin.go` | plugin task owner | owned disk sweep | Contract C Task 2 |
+| 3 | `pkg/plugin/graphql_proxy_cache/plugin.go` | plugin task owner | owned GraphQL disk sweep | Contract C Task 2 |
+| 4 | `pkg/plugin/limit_count/delayed_sync.go`, `plugin.go` | plugin task owner | owned delayed sync and final flush | Contract C Task 2 |
+| 5 | `pkg/plugin/ai_proxy_multi/health.go`, `plugin.go` | plugin task owner | owned health coordinator and probes | Contract C Task 2 |
+| 6 | `pkg/plugin/oas_validator/plugin.go` | plugin task owner | owned lazy refresh loop | Contract C Task 2 |
+| 7 | `pkg/plugin/log_rotate/plugin.go` | plugin task owner | owned coalescing rotation worker | Contract C Task 2 |
+| 8 | `pkg/plugin/logger_batch`, all production logger constructors | plugin task owner | generation-owned delivery/scheduler/shutdown | Contract C Task 2 |
+| 9 | `pkg/plugin/file_logger` | plugin owner plus registry-local owner | owned processor and SIGUSR1 watcher | 8 |
+| 10 | seven logger cancellation helpers and `rocketmq_logger` | owned logger delivery lifecycle | joined cancellation and sender shutdown | 8; C owns error-log observer seam first |
+| 11 | `pkg/stream/runtime.go` | runtime-local core task owner | owned listener/connection lifetime across router generations | Contract C Task 2 |
+| 12 | no new behavior | all earlier tasks, request plan, and Contract C Task 5 | final inventory/gates | 1-11, request plan, Contract C Task 5 |
+
+Tasks 1-7 and 11 can be developed as a frozen-base parallel wave from the reviewed Contract C Task 2 head. Tasks 8-10 are sequential because the concrete logger processor lifecycle is their shared interface. Task 12 runs only after this plan, the request plan, and Contract C Task 5 are integrated.
+
+---
+
+### Task 1: Give Active Health the Digest-Keyed Cluster Resource Lifetime
+
+**Files:**
+
+- Modify: `pkg/proxy/active_health.go`
+- Modify: `pkg/proxy/active_health_test.go`
+- Modify: `pkg/proxy/cluster.go`
+- Modify: `pkg/proxy/cluster_test.go`
+- Modify: `pkg/compiler/http_cluster.go`
+- Modify: `pkg/compiler/http_cluster_test.go`
+- Modify only if required by the dependency above: `pkg/compiler/prepared_generation.go`, `worker_factory.go`, focused tests
+
+**Consumes:** Factory-wide cluster `ResourceRegistry`, canonical `ClusterKey`, task failure sink.
+
+**Produces:** `core/proxy-cluster/<hex-digest>/active-health` `TaskCore` workers stopped only by the last resource lease. Multiple target workers intentionally share this exact full owner and are deduplicated in residuals.
+
+- [ ] **Step 1: Write cross-generation RED tests**
+
+```go
+func TestHTTPClusterHealthOutlivesCreatingGenerationWhileReused(t *testing.T) {
+	old, next, resourceTasks, wantOwner := prepareTwoGenerationsWithSameActiveHealthCluster(t)
+	oldCluster := acquireFixtureCluster(t, old)
+	nextCluster := acquireFixtureCluster(t, next)
+	if oldCluster != nextCluster { t.Fatal("equal cluster config was not reused") }
+	closePreparedGeneration(t, old)
+	awaitProbe(t, nextCluster)
+	if got := resourceTasks.Active(); !reflect.DeepEqual(got, []string{wantOwner}) { t.Fatalf("owners = %v", got) }
+	closePreparedGeneration(t, next)
+	assertClusterHealthStopped(t, nextCluster)
+}
+```
+
+Also add `TestHTTPClusterFinalReleaseReportsHealthResidual` using a probe transport that ignores cancellation until the test releases it. Assert the final resource close returns the cleanup error, the owner contains only the cluster digest and target index, and generation N close alone does not report a residual while N+1 retains the lease.
+
+- [ ] **Step 2: Capture RED**
+
+```bash
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test ./pkg/compiler ./pkg/proxy -run "^(TestHTTPClusterHealthOutlivesCreatingGenerationWhileReused|TestHTTPClusterFinalReleaseReportsHealthResidual)$" -count=1'
+```
+
+Expected: FAIL because `activeHealthChecker.Start` creates raw goroutines and its lifetime is hidden inside `Cluster.Close`.
+
+- [ ] **Step 3: Implement a resource-local registry**
+
+Change the internal cluster constructor to require an owned task registry and digest owner. `Start` registers one task per target; `probeTarget(ctx, index, target)` selects on the supplied context. Do not put target text in the owner.
+
+```go
+cluster, err := proxy.NewOwnedCluster(owned, observerLease.Observer(), prepared.taskFailure)
+```
+
+`NewOwnedCluster` computes the prefix `"core/proxy-cluster/" + hex.EncodeToString(digest[:])`, constructs a `TaskCore` owner, and calls `owner.Go("active-health", ...)` for every target. The resource finalizer calls `cluster.CloseContext(ctx)`, then releases the observer lease even when cluster close fails. Preserve the first cleanup error while attempting both actions. `Cluster.CloseContext` remains idempotent, stops its resource-local registry before transports, and no longer owns an unobservable background `WaitGroup`.
+
+- [ ] **Step 4: GREEN and race**
+
+```bash
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test ./pkg/compiler ./pkg/proxy -run "^(TestHTTPCluster|TestCluster|TestActiveHealth)" -count=1'
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test -race ./pkg/compiler ./pkg/proxy -run "^(TestHTTPCluster|TestCluster|TestActiveHealth)" -count=1'
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && golangci-lint run ./pkg/compiler/... ./pkg/proxy/... && make build'
+git diff --check
+```
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add pkg/proxy/active_health.go pkg/proxy/active_health_test.go pkg/proxy/cluster.go pkg/proxy/cluster_test.go pkg/compiler/http_cluster.go pkg/compiler/http_cluster_test.go pkg/compiler/prepared_generation.go pkg/compiler/worker_factory.go
+git commit -m "refactor(proxy): own active health by cluster resource"
+```
+
+---
+
+### Task 2: Own Proxy Cache Disk Cleanup by Plugin Instance
+
+**Files:** `pkg/plugin/proxy_cache/disk.go`, `plugin.go`, `plugin_test.go`
+
+**Consumes:** Contract C's `BasePlugin.TaskOwner() *runtime.TaskOwner`.
+
+**Produces:** `<instance-owner>/disk-cleanup` `TaskPlugin` loop; generation quiescence joins it before `Stop` releases memory-zone resources.
+
+- [ ] Add `TestDiskBackgroundExpirySweepUsesGenerationTaskOwner` and `TestDiskCleanupPanicFailsOnlyProxyCacheOwner`. Use a test registry failure channel, deterministic cleanup interval, and a cleanup seam that panics. Assert exact owner and that a second plugin owner remains admissible.
+
+```go
+func TestDiskBackgroundExpirySweepUsesGenerationTaskOwner(t *testing.T) {
+	tasks, failures := newProxyCacheTestTasks(t)
+	p := newDiskPluginFixture(t, time.Millisecond)
+	owner := newPluginTaskOwnerForTest(t, tasks, "plugin/test/proxy-cache/attempt-1")
+	p.SetDependencies(base.Dependencies{Tasks: owner})
+	if err := p.PostInit(); err != nil { t.Fatal(err) }
+	awaitDiskSweep(t, p)
+	if got := tasks.Active(); !slices.Contains(got, "plugin/test/proxy-cache/attempt-1/disk-cleanup") {
+		t.Fatalf("active owners = %v", got)
+	}
+	stopTestRegistry(t, tasks)
+	p.Stop()
+	assertNoTaskFailure(t, failures)
+}
+```
+- [ ] Run RED:
+
+```bash
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test ./pkg/plugin/proxy_cache -run "^(TestDiskBackgroundExpirySweepUsesGenerationTaskOwner|TestDiskCleanupPanicFailsOnlyProxyCacheOwner)$" -count=1'
+```
+
+Expected: FAIL because `startDiskCleanup` does not consult dependencies.
+
+- [ ] Replace `cleanupStop/cleanupDone` goroutine ownership with:
+
+```go
+err := p.TaskOwner().Go("disk-cleanup", func(ctx context.Context) error {
+	return p.diskCleanupLoop(ctx)
+})
+```
+
+`PostInit` returns the admission error. `diskCleanupLoop` owns its ticker and exits only from the callback context. Delete `cleanupStop/cleanupDone`; production `Stop` runs after `PreparedGeneration.tasks.Stop` and only releases the memory-zone lease. Update direct package tests to stop their test registry before calling plugin `Stop`; plugin code must not wait a second time for registry-owned work.
+
+- [ ] GREEN/race/gates:
+
+```bash
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test ./pkg/plugin/proxy_cache -run "^(TestDisk|TestPostInit|TestMemoryZone)" -count=1'
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test -race ./pkg/plugin/proxy_cache -run "^(TestDisk|TestPostInit|TestMemoryZone)" -count=1'
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && golangci-lint run ./pkg/plugin/proxy_cache/... && make build'
+git diff --check
+```
+
+- [ ] Commit: `git commit -m "refactor(proxy-cache): own disk cleanup task"`.
+
+---
+
+### Task 3: Own GraphQL Cache Cleanup by Plugin Instance
+
+**Files:** `pkg/plugin/graphql_proxy_cache/plugin.go`, `plugin_test.go`
+
+**Consumes:** plugin task owner and existing disk-store cleanup interval.
+
+**Produces:** `<instance-owner>/disk-cleanup` `TaskPlugin` loop that is joined before memory store and route-cache publication are released.
+
+- [ ] Add `TestGraphQLDiskCleanupUsesGenerationTaskOwner` and `TestGraphQLStopDoesNotRemoveReplacementRouteCache`. The first captures task admission/exit; the second overlaps old/new route instances, retires old, and proves the new `routeCaches.plugins[routeID]` remains published.
+
+```go
+func TestGraphQLStopDoesNotRemoveReplacementRouteCache(t *testing.T) {
+	old := newOwnedGraphQLCacheFixture(t, "plugin/test/graphql/old", "r1")
+	next := newOwnedGraphQLCacheFixture(t, "plugin/test/graphql/new", "r1")
+	publishRouteCacheForTest(t, old)
+	publishRouteCacheForTest(t, next)
+	stopPluginRegistryForTest(t, old)
+	old.Stop()
+	if got := routeCachePluginForTest("r1"); got != next { t.Fatalf("published plugin = %p, want %p", got, next) }
+	stopPluginRegistryForTest(t, next)
+	next.Stop()
+}
+```
+- [ ] RED:
+
+```bash
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test ./pkg/plugin/graphql_proxy_cache -run "^(TestGraphQLDiskCleanupUsesGenerationTaskOwner|TestGraphQLStopDoesNotRemoveReplacementRouteCache)$" -count=1'
+```
+
+- [ ] Make `startDiskCleanup() error`, call `p.TaskOwner().Go("disk-cleanup", loop)`, and delete the local stop/done pair. Preserve the guarded `routeCaches.plugins[p.routeID] == p` deletion after generation task quiescence. `PostInit` rolls back acquired memory/disk state if task admission fails; direct tests stop their registry before plugin `Stop`.
+- [ ] GREEN/race/gates:
+
+```bash
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test ./pkg/plugin/graphql_proxy_cache -run "^(TestGraphQL|TestPostInit|TestHandlerRefreshesExpired)" -count=1'
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test -race ./pkg/plugin/graphql_proxy_cache -run "^(TestGraphQL|TestPostInit|TestHandlerRefreshesExpired)" -count=1'
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && golangci-lint run ./pkg/plugin/graphql_proxy_cache/... && make build'
+git diff --check
+```
+
+- [ ] Commit: `git commit -m "refactor(graphql-cache): own disk cleanup task"`.
+
+---
+
+### Task 4: Own Delayed Limit Synchronization and Preserve Final Flush
+
+**Files:** `pkg/plugin/limit_count/delayed_sync.go`, `delayed_sync_test.go`, `plugin.go`, `plugin_test.go`
+
+**Consumes:** plugin task owner; existing delayed-sync backend and retry state.
+
+**Produces:** one or more tasks sharing the exact full owner `<instance-owner>/delayed-sync`; the registry count tracks concurrent cached syncers and residual output deduplicates the name. Cancellation performs the same complete dirty-state flush as `Stop`.
+
+- [ ] Add tests using the existing fake backend:
+
+```go
+func TestDelayedSyncerCancellationFlushesAllDirtyStatesUnderOwnedTask(t *testing.T) {
+	registry, failures := testTaskRegistry(t)
+	owner := newPluginTaskOwnerForTest(t, registry, "plugin/test/limit-count/attempt-1")
+	syncer, err := newDelayedSyncer(owner, backend, 7, 10*time.Second, time.Hour, 2)
+	if err != nil { t.Fatal(err) }
+	dirtyThreeKeys(t, syncer)
+	stopRegistry(t, registry)
+	assertAllDeltasFlushedOnce(t, backend)
+	assertNoFailure(t, failures)
+}
+```
+
+Add a cancellation-ignoring backend case that makes `TaskRegistry.Stop(shortCtx)` return the exact owner residual, then releases and proves the next Stop is clean. Preserve `TestDelayedSyncStopFlushesAllDirtyStatesIncludingDroppedQueueEntries`.
+
+- [ ] RED:
+
+```bash
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test ./pkg/plugin/limit_count -run "^(TestDelayedSyncerCancellationFlushesAllDirtyStatesUnderOwnedTask|TestDelayedSyncerBlockingFinalFlushIsVisibleResidual)$" -count=1'
+```
+
+- [ ] Change `newDelayedSyncer` to return `(*delayedSyncer, error)` and accept `*runtime.TaskOwner`. Call `owner.Go("delayed-sync", s.run)` before publishing it in `delayedByKey`. `run(ctx)` treats owner cancellation as a request to drain its queue and flush every dirty/retry state once. Delete the syncer's independent stop/join goroutine lifecycle; plugin `Stop` clears backend/state only after generation task quiescence. Roll back backend/secret acquisition if task admission fails.
+- [ ] GREEN/race/gates:
+
+```bash
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test ./pkg/plugin/limit_count -run "^(TestDelayedSync|TestLimitCountStop|TestScopedSecretsLimitCountStop)" -count=1'
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test -race ./pkg/plugin/limit_count -run "^(TestDelayedSync|TestLimitCountStop|TestScopedSecretsLimitCountStop)" -count=1'
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && golangci-lint run ./pkg/plugin/limit_count/... && make build'
+git diff --check
+```
+
+- [ ] Commit: `git commit -m "refactor(limit-count): own delayed synchronization"`.
+
+---
+
+### Task 5: Own AI Multi Health Coordination and Probe Fan-Out
+
+**Files:** `pkg/plugin/ai_proxy_multi/health.go`, `plugin.go`, `plugin_test.go`
+
+**Consumes:** plugin task owner, current immutable health snapshot and per-instance clients.
+
+**Produces:** one `<instance-owner>/health-refresh` coordinator plus bounded tasks sharing `<instance-owner>/health-probe`, all under the already-frozen `TaskPlugin` owner.
+
+- [ ] Add `TestAIHealthUsesAttemptQualifiedTaskOwners`, `TestAIHealthGenerationStopJoinsOwnedInFlightProbes`, and `TestAIHealthProbePanicReportsExactOwner`. Do not put provider name or endpoint in expected owners. Preserve coalesced wakes and one refresh pass.
+
+```go
+func TestAIHealthGenerationStopJoinsOwnedInFlightProbes(t *testing.T) {
+	tasks, _ := newAIHealthTestTasks(t)
+	p, probeStarted, release := newBlockingHealthPlugin(t, tasks, "plugin/test/ai-multi/attempt-1")
+	p.wakeHealthRefresh()
+	<-probeStarted
+	stopped := make(chan struct{})
+	go func() { stopTestRegistry(t, tasks); p.Stop(); close(stopped) }() // test orchestration only
+	assertNotClosed(t, stopped)
+	close(release)
+	awaitClosed(t, stopped)
+}
+```
+- [ ] RED:
+
+```bash
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test ./pkg/plugin/ai_proxy_multi -run "^(TestAIHealthUsesAttemptQualifiedTaskOwners|TestAIHealthGenerationStopJoinsOwnedInFlightProbes|TestAIHealthProbePanicReportsExactOwner)$" -count=1'
+```
+
+- [ ] `startHealthLoop() error` calls `p.TaskOwner().Go("health-refresh", p.healthLoop)` before PostInit publishes success. `refreshHealthPass` calls the same owner with component `health-probe` for each due probe, then waits on explicit result channels for every admitted probe before publishing one snapshot. If admission fails because shutdown began, cancel the pass and do not publish a partial snapshot. Each probe derives cancellation from both the registry callback context and the refresh-pass context. Delete the independent health stop/cancel/done lifecycle; after generation quiescence, `Stop` only closes idle clients and clears state.
+- [ ] GREEN/race/gates:
+
+```bash
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test ./pkg/plugin/ai_proxy_multi -run "^(TestHealth|TestPostInitOwnsHealth|TestStopHealth)" -count=1'
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test -race ./pkg/plugin/ai_proxy_multi -run "^(TestHealth|TestPostInitOwnsHealth|TestStopHealth)" -count=1'
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && golangci-lint run ./pkg/plugin/ai_proxy_multi/... && make build'
+git diff --check
+```
+
+- [ ] Commit: `git commit -m "refactor(ai-proxy-multi): own health tasks"`.
+
+---
+
+### Task 6: Own Lazy OAS Refresh Without Losing Last-Good State
+
+**Files:** `pkg/plugin/oas_validator/plugin.go`, `plugin_test.go`, `scoped_secrets_test.go`
+
+**Consumes:** plugin task owner, scoped-secret work retirement, atomic compiled validator.
+
+**Produces:** one lazily admitted `<instance-owner>/spec-refresh` task.
+
+- [ ] Add `TestOASSpecRefreshUsesGenerationTaskOwner`, `TestOASRefreshAdmissionFailureLeavesCurrentValidator`, and `TestOASStopCancelsOwnedFetchBeforeDroppingSecrets`. The last test blocks header-secret use and remote fetch independently and asserts ordering: cancel fetch, join refresh, join secret/work leases, clear secrets/compiled.
+
+```go
+func TestOASRefreshAdmissionFailureLeavesCurrentValidator(t *testing.T) {
+	registry := runtime.NewTaskRegistry(context.Background(), nil)
+	owner := newPluginTaskOwnerForTest(t, registry, "plugin/test/oas/attempt-1")
+	stopTestRegistry(t, registry)
+	p := newOASFixtureWithCompiledValidator(t, owner)
+	want := p.compiled.Load()
+	p.wakeSpecRefresh()
+	if got := p.compiled.Load(); got != want { t.Fatal("task admission replaced last-good validator") }
+}
+```
+- [ ] RED:
+
+```bash
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test ./pkg/plugin/oas_validator -run "^(TestOASSpecRefreshUsesGenerationTaskOwner|TestOASRefreshAdmissionFailureLeavesCurrentValidator|TestOASStopCancelsOwnedFetchBeforeDroppingSecrets)$" -count=1'
+```
+
+- [ ] In `wakeSpecRefresh`, use `sync.Once` only to call `p.TaskOwner().Go("spec-refresh", p.specRefreshLoop)`. Store the admission error so requests can retain the current validator and avoid repeated admission. `specRefreshLoop(ctx)` uses only its owner callback context; failed refresh preserves last-good. Delete the independent refresh cancel/done lifecycle. Generation quiescence cancels/joins the remote fetch before plugin `Stop` retires secret/work leases and clears private state; direct tests stop their registry first.
+- [ ] GREEN/race/gates:
+
+```bash
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test ./pkg/plugin/oas_validator -run "^(TestHandlerSpecRefresh|TestHandlerFailedSpecRefresh|TestOASStop|TestScopedSecretsOASStop)" -count=1'
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test -race ./pkg/plugin/oas_validator -run "^(TestHandlerSpecRefresh|TestHandlerFailedSpecRefresh|TestOASStop|TestScopedSecretsOASStop)" -count=1'
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && golangci-lint run ./pkg/plugin/oas_validator/... && make build'
+git diff --check
+```
+
+- [ ] Commit: `git commit -m "refactor(oas-validator): own spec refresh task"`.
+
+---
+
+### Task 7: Own Log Rotation and Keep Requests Non-Blocking
+
+**Files:** `pkg/plugin/log_rotate/plugin.go`, `plugin_test.go`
+
+**Consumes:** plugin task owner, bounded trigger channel, file-logger reopen callback.
+
+**Produces:** `<instance-owner>/rotation` worker under the compiler-frozen `TaskPlugin` owner.
+
+- [ ] Add `TestRotationWorkerUsesGenerationTaskOwner`, `TestRotationTaskCancellationWaitsForInFlightRotate`, and `TestRotationPanicReportsPluginOwner`. Assert request phase still only coalesces a trigger and returns before a blocked rotate finishes.
+
+```go
+func TestRotationTaskCancellationWaitsForInFlightRotate(t *testing.T) {
+	p, registry, started, release := newBlockingRotationPlugin(t, "plugin/test/log-rotate/attempt-1")
+	p.requestRotation()
+	<-started
+	stopped := make(chan struct{})
+	go func() { stopTestRegistry(t, registry); p.Stop(); close(stopped) }() // test orchestration only
+	assertNotClosed(t, stopped)
+	close(release)
+	awaitClosed(t, stopped)
+}
+```
+- [ ] RED:
+
+```bash
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test ./pkg/plugin/log_rotate -run "^(TestRotationWorkerUsesGenerationTaskOwner|TestRotationTaskCancellationWaitsForInFlightRotate|TestRotationPanicReportsPluginOwner)$" -count=1'
+```
+
+- [ ] Make PostInit call `p.TaskOwner().Go("rotation", p.rotationWorker)` and return admission failure. `rotationWorker(ctx)` selects on the callback context and trigger; a normal rotate error remains a sanitized plugin log and does not terminate the worker. A panic is left for TaskRegistry recovery. Delete the independent stop/done lifecycle; direct tests stop their registry before plugin `Stop`.
+- [ ] GREEN/race/gates:
+
+```bash
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test ./pkg/plugin/log_rotate -run "^(TestRotate|TestRotation|TestPostInit)" -count=1'
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test -race ./pkg/plugin/log_rotate -run "^(TestRotate|TestRotation|TestPostInit)" -count=1'
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && golangci-lint run ./pkg/plugin/log_rotate/... && make build'
+git diff --check
+```
+
+- [ ] Commit: `git commit -m "refactor(log-rotate): own rotation worker"`.
+
+---
+
+### Task 8: Make Logger Batch Workers Generation-Owned
+
+**Files:**
+
+- Modify: `pkg/plugin/logger_batch/processor.go`, `processor_test.go`
+- Modify: `pkg/plugin/base/types.go`, `types_test.go`
+- Modify every production result of:
+
+```bash
+rg -l 'base\.NewBatchProcessor|logger_batch\.New(WithContext)?' pkg/plugin --glob '*.go' --glob '!*_test.go' | sort
+```
+
+At the frozen base this is `clickhouse_logger`, `datadog`, `elasticsearch_logger`, `error_log_logger`, `google_cloud_logging`, `http_logger`, `kafka_logger`, `lago`, `loggly`, `loki_logger`, `rocketmq_logger`, `skywalking_logger`, `sls_logger`, `splunk_hec_logging`, `syslog`, `tcp_logger`, `tencent_cloud_cls`, `udp_logger`, `zipkin`, plus `base/types.go`.
+
+**Consumes:** plugin task registry/owner and current bounded delivery/shutdown settings.
+
+**Produces:** `<owner>/batch-scheduler`, `<owner>/batch-worker`, and `<owner>/batch-shutdown` tasks under the compiler-frozen `TaskPlugin` owner; multiple workers share/deduplicate `batch-worker`. There is no `context.Background` delivery root or detached cleanup waiter.
+
+- [ ] Add RED tests:
+
+```go
+func TestProcessorRegistersOwnedWorkersAndDrainsOnRegistryStop(t *testing.T) {
+	registry, failures := testTaskRegistry(t)
+	owner := newLoggerTaskOwnerForTest(t, registry, "plugin/test/http")
+	p, err := NewWithContext(Config{Tasks: owner, BatchMaxSize: 2}, deliver)
+	if err != nil { t.Fatal(err) }
+	p.Push(entry1); p.Push(entry2)
+	stopRegistry(t, registry)
+	assertDelivered(t, entry1, entry2)
+	assertOwnersExited(t, registry)
+	assertNoFailure(t, failures)
+}
+```
+
+Add `TestProcessorBlockingDeliveryRemainsNamedResidual`, `TestProcessorLastWorkerRunsCleanupExactlyOnce`, `TestProcessorTaskAdmissionRollbackOwnsNoObserverOrEntries`, and `TestProcessorDirectShutdownAndRegistryStopRace`. Retain the existing timeout accounting, retry cancellation, partial suffix accounting, timer generation, and deferred cleanup tests.
+
+- [ ] RED:
+
+```bash
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test ./pkg/plugin/logger_batch ./pkg/plugin/base -run "^(TestProcessorRegistersOwnedWorkersAndDrainsOnRegistryStop|TestProcessorBlockingDeliveryRemainsNamedResidual|TestProcessorLastWorkerRunsCleanupExactlyOnce|TestProcessorTaskAdmissionRollbackOwnsNoObserverOrEntries|TestProcessorDirectShutdownAndRegistryStopRace)$" -count=1'
+```
+
+- [ ] Extend the exact constructor contract:
+
+```go
+type Config struct {
+	// existing fields
+	Tasks *runtime.TaskOwner
+}
+
+func NewWithContext(Config, ContextDeliveryFunc) (*Processor, error)
+```
+
+Production constructors require the owner field. `base.NewBatchProcessor` also returns `(*logger_batch.Processor, error)` and receives `tasks *runtime.TaskOwner`; every plugin PostInit passes `p.TaskOwner()` and propagates the error before publishing the processor. Direct unit tests create a local registry and `TaskPlugin` owner.
+
+- [ ] Replace timer callback and raw workers with `Tasks.Go("batch-scheduler", ...)`, repeated `Tasks.Go("batch-worker", ...)`, and `Tasks.Go("batch-shutdown", ...)`. The scheduler owns timer reset/coalescing. Workers do not exit merely because their individual task context is canceled: registry cancellation first seals admission and queues a terminal drain, then workers finish admitted batches using bounded delivery contexts. The last worker closes `workersDone`, runs cleanup once, and closes shutdown state; no waiter goroutine is required. A callback that ignores cancellation remains active under the deduplicated `/batch-worker` residual.
+- [ ] Preserve direct `Shutdown(ctx)`: seal once, wait for the same owned workers, return the caller deadline, but never release sink resources before callbacks exit. Repeated calls return the cached result. `StopWithCleanup` registers cleanup before initiating shutdown so last-worker completion cannot race past it.
+- [ ] GREEN/race for primitive and all constructor callers:
+
+```bash
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test ./pkg/plugin/logger_batch ./pkg/plugin/base -run "^(TestProcessor|TestBaseLogger|TestNewBatchProcessor)" -count=1'
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test -race ./pkg/plugin/logger_batch ./pkg/plugin/base -run "^(TestProcessor|TestBaseLogger|TestNewBatchProcessor)" -count=1'
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test ./pkg/plugin/clickhouse_logger ./pkg/plugin/datadog ./pkg/plugin/elasticsearch_logger ./pkg/plugin/error_log_logger ./pkg/plugin/google_cloud_logging ./pkg/plugin/http_logger ./pkg/plugin/kafka_logger ./pkg/plugin/lago ./pkg/plugin/loggly ./pkg/plugin/loki_logger ./pkg/plugin/rocketmq_logger ./pkg/plugin/skywalking_logger ./pkg/plugin/sls_logger ./pkg/plugin/splunk_hec_logging ./pkg/plugin/syslog ./pkg/plugin/tcp_logger ./pkg/plugin/tencent_cloud_cls ./pkg/plugin/udp_logger ./pkg/plugin/zipkin -run "^(TestPostInit|TestStop|TestBatch|TestProcessor|TestMaterialize)" -count=1'
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && golangci-lint run ./pkg/plugin/logger_batch/... ./pkg/plugin/base/... ./pkg/plugin/clickhouse_logger/... ./pkg/plugin/datadog/... ./pkg/plugin/elasticsearch_logger/... ./pkg/plugin/error_log_logger/... ./pkg/plugin/google_cloud_logging/... ./pkg/plugin/http_logger/... ./pkg/plugin/kafka_logger/... ./pkg/plugin/lago/... ./pkg/plugin/loggly/... ./pkg/plugin/loki_logger/... ./pkg/plugin/rocketmq_logger/... ./pkg/plugin/skywalking_logger/... ./pkg/plugin/sls_logger/... ./pkg/plugin/splunk_hec_logging/... ./pkg/plugin/syslog/... ./pkg/plugin/tcp_logger/... ./pkg/plugin/tencent_cloud_cls/... ./pkg/plugin/udp_logger/... ./pkg/plugin/zipkin/... && make build'
+git diff --check
+```
+
+- [ ] Commit:
+
+```bash
+git add pkg/plugin/logger_batch pkg/plugin/base pkg/plugin/*_logger pkg/plugin/datadog pkg/plugin/error_log_logger pkg/plugin/google_cloud_logging pkg/plugin/lago pkg/plugin/loggly pkg/plugin/skywalking_logger pkg/plugin/sls_logger pkg/plugin/splunk_hec_logging pkg/plugin/syslog pkg/plugin/zipkin
+git commit -m "refactor(logger): own batch delivery tasks"
+```
+
+Inspect `git diff --cached --name-only` before committing; the glob must not stage unrelated plugin files.
+
+---
+
+### Task 9: Own File Logger Processor and Shared Reopen Watcher
+
+**Files:** `pkg/plugin/file_logger/processor.go`, `processor_test.go`, `writer_registry.go`, `plugin.go`, `plugin_test.go`
+
+**Consumes:** plugin owner for processor; registry-local owner for process-global writers.
+
+**Produces:** `<instance-owner>/file-log-writer` under the injected `TaskPlugin` owner and `core/file-writer-registry/signal-watch` under a registry-local `TaskCore` owner.
+
+- [ ] Add `TestFileLoggerProcessorUsesPluginTaskOwner`, `TestFileLoggerBlockingWriteIsNamedResidualAndDefersLeaseRelease`, `TestSharedWriterWatcherSurvivesOldGenerationRelease`, and `TestSharedWriterWatcherStopsAndRestartsByRegistryEpoch`. The overlap test acquires the same canonical path from old/new plugin instances, releases old, sends SIGUSR1 through the injected channel seam, and proves the new lease reopens.
+
+```go
+func TestSharedWriterWatcherSurvivesOldGenerationRelease(t *testing.T) {
+	registry := newFileWriterRegistryForTest(t)
+	old := acquireWriterLeaseForTest(t, registry, testLogPath(t))
+	next := acquireWriterLeaseForTest(t, registry, old.path)
+	old.release()
+	registry.signalForTest(syscall.SIGUSR1)
+	awaitReopen(t, next.writer)
+	if !slices.Contains(registry.activeTaskOwnersForTest(), "core/file-writer-registry/signal-watch") {
+		t.Fatal("shared watcher stopped while a lease remained")
+	}
+	next.release()
+}
+```
+- [ ] RED:
+
+```bash
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test ./pkg/plugin/file_logger -run "^(TestFileLoggerProcessorUsesPluginTaskOwner|TestFileLoggerBlockingWriteIsNamedResidualAndDefersLeaseRelease|TestSharedWriterWatcherSurvivesOldGenerationRelease|TestSharedWriterWatcherStopsAndRestartsByRegistryEpoch)$" -count=1'
+```
+
+- [ ] Make `newFileLoggerProcessor(owner *runtime.TaskOwner, sink fileLoggerSink) (*fileLoggerProcessor, error)` and call `owner.Go("file-log-writer", processor.run)` before publishing. Registry cancellation seals admission and drains records/barriers; last completion closes observer and releases the writer lease. Remove the late-cleanup goroutine from `stopWithCleanup`.
+- [ ] `fileWriterRegistry.startSignalWatcherLocked` creates its own epoch registry and `runtime.NewTaskOwner(registry, "core/file-writer-registry", runtime.TaskCore)`, then calls `owner.Go("signal-watch", watcher)`. The last registry lease stops that epoch and joins it before stopping the buffered writer. It does not receive a generation owner. Preserve canonical-path deduplication, exact last-lease writer Stop, buffered flush, missing-path reopen, and the `sync.Once` lease release.
+- [ ] GREEN/race/gates:
+
+```bash
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test ./pkg/plugin/file_logger -run "^(TestFileLogger|TestFlushAndReopen|TestHandlerWritesToCurrentPath|TestHandlerKeepsUnlinked)" -count=1'
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test -race ./pkg/plugin/file_logger -run "^(TestFileLogger|TestFlushAndReopen|TestHandlerWritesToCurrentPath|TestHandlerKeepsUnlinked)" -count=1'
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && golangci-lint run ./pkg/plugin/file_logger/... && make build'
+git diff --check
+```
+
+- [ ] Commit: `git commit -m "refactor(file-logger): own processor and reopen watcher"`.
+
+---
+
+### Task 10: Remove Logger Cancellation and RocketMQ Shutdown Detachment
+
+**Files:**
+
+- Modify: `pkg/plugin/error_log_logger/plugin.go`, tests
+- Modify: `pkg/plugin/tcp_logger/plugin.go`, tests
+- Modify: `pkg/plugin/syslog/transport.go`, tests
+- Modify: `pkg/plugin/udp_logger/plugin.go`, tests
+- Modify: `pkg/plugin/datadog/plugin.go`, tests
+- Modify: `pkg/plugin/sls_logger/plugin.go`, tests
+- Modify: `pkg/plugin/loggly/plugin.go`, tests
+- Modify: `pkg/plugin/rocketmq_logger/plugin.go`, `plugin_test.go`
+
+**Consumes:** logger batch owned workers and bounded delivery contexts.
+
+**Produces:** joined context cancellation callbacks and `<instance-owner>/rocketmq-sender-shutdown` ownership; no helper goroutine hides a blocking Close/Shutdown.
+
+- [ ] For each connection helper add/retain a table-driven test proving: context cancellation closes the connection; normal completion prevents a later cancellation from closing a reused connection; cleanup waits if the cancellation callback is already inside Close. Replace `WaitGroup.Go` with this exact joined context-owned callback shape:
+
+```go
+func watchConnectionCancellation(ctx context.Context, conn net.Conn) func() {
+	done := make(chan struct{})
+	stop := context.AfterFunc(ctx, func() { defer close(done); _ = conn.Close() })
+	return func() {
+		if stop() { close(done) }
+		<-done
+	}
+}
+```
+
+Keep the existing nil-context no-op. This has one owner (the delivery context), and cleanup joins a callback that already started.
+
+- [ ] Add RocketMQ RED tests `TestRocketMQSenderShutdownIsOwnedAndResidualVisible` and `TestRocketMQGenerationCancellationFlushesBeforeSenderShutdown`. Use a sender whose `Shutdown` blocks. Assert pending delivery completes before Shutdown starts, short generation stop reports `<owner>/rocketmq-sender-shutdown`, release lets stop complete, and Shutdown is called once.
+- [ ] RED:
+
+```bash
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test ./pkg/plugin/error_log_logger ./pkg/plugin/tcp_logger ./pkg/plugin/syslog ./pkg/plugin/udp_logger ./pkg/plugin/datadog ./pkg/plugin/sls_logger ./pkg/plugin/loggly ./pkg/plugin/rocketmq_logger -run "^(TestWatchConnectionCancellation|TestRocketMQSenderShutdownIsOwnedAndResidualVisible|TestRocketMQGenerationCancellationFlushesBeforeSenderShutdown)$" -count=1'
+```
+
+- [ ] Delete `shutdownRocketMQSender`'s raw goroutine and timeout. After sender construction but before publication, call `p.TaskOwner().Go("rocketmq-sender-shutdown", shutdownRun)`. The pre-admitted task waits for its callback cancellation, seals/drains the batch processor, waits for delivery workers, then calls `sender.Shutdown()` synchronously. Plugin `Stop` only clears already-quiesced non-task state; it never signals, waits again, or calls `TaskOwner.Go` after registry stop begins. If admission fails, synchronously destroy the unpublished sender and return the admission error; never publish a sender without a shutdown owner.
+- [ ] GREEN/race/gates:
+
+```bash
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test ./pkg/plugin/error_log_logger ./pkg/plugin/tcp_logger ./pkg/plugin/syslog ./pkg/plugin/udp_logger ./pkg/plugin/datadog ./pkg/plugin/sls_logger ./pkg/plugin/loggly ./pkg/plugin/rocketmq_logger -run "^(Test.*Cancel|Test.*Stop|Test.*Shutdown|Test.*Batch|TestRocketMQ)" -count=1'
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test -race ./pkg/plugin/error_log_logger ./pkg/plugin/tcp_logger ./pkg/plugin/syslog ./pkg/plugin/udp_logger ./pkg/plugin/datadog ./pkg/plugin/sls_logger ./pkg/plugin/loggly ./pkg/plugin/rocketmq_logger -run "^(Test.*Cancel|Test.*Stop|Test.*Shutdown|Test.*Batch|TestRocketMQ)" -count=1'
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && golangci-lint run ./pkg/plugin/error_log_logger/... ./pkg/plugin/tcp_logger/... ./pkg/plugin/syslog/... ./pkg/plugin/udp_logger/... ./pkg/plugin/datadog/... ./pkg/plugin/sls_logger/... ./pkg/plugin/loggly/... ./pkg/plugin/rocketmq_logger/... && make build'
+git diff --check
+```
+
+- [ ] Commit: `git commit -m "refactor(logger): join cancellation and sender shutdown"`.
+
+---
+
+### Task 11: Own the Persistent Stream Runtime Across Router Generations
+
+**Files:**
+
+- Modify: `pkg/stream/runtime.go`
+- Modify: `pkg/stream/runtime_test.go`
+
+**Consumes:** Contract C `TaskOwner`, existing `RouterSource` leases, listener and connection close semantics.
+
+**Produces:** one runtime-local `TaskRegistry`, a `TaskCore` owner with prefix `core/stream-runtime`, and deduplicated components `listener` and `connection`. RouterSource changes never replace this owner.
+
+- [ ] Add focused RED tests:
+
+```go
+func TestRuntimeCoreOwnerSurvivesRouterSourceGenerationChange(t *testing.T) {
+	source, publish := newSwitchableRouterSource(t)
+	runtime := newRuntimeWithInjectedListeners(t, source)
+	first := publish(routerLeaseFixture(t, "generation-1"))
+	serveOneConnection(t, runtime)
+	second := publish(routerLeaseFixture(t, "generation-2"))
+	serveOneConnection(t, runtime)
+	if got := runtime.tasks.Active(); !slices.Contains(got, "core/stream-runtime/listener") {
+		t.Fatalf("active owners = %v", got)
+	}
+	if first.Owner == second.Owner { t.Fatal("router fixture did not change generation") }
+	closeRuntime(t, runtime)
+}
+
+func TestRuntimeCloseReportsBlockingConnectionResidualAndLaterJoins(t *testing.T) {
+	runtime, release, leaseReleased := newBlockingConnectionRuntime(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	err := runtime.Close(ctx)
+	var closeErr *runtimeCloseError
+	if !errors.As(err, &closeErr) || !errors.Is(err, context.DeadlineExceeded) { t.Fatalf("Close = %v", err) }
+	if got := closeErr.residuals; !reflect.DeepEqual(got,
+		[]runtime.TaskResidual{{Owner: "core/stream-runtime/connection"}}) { t.Fatalf("residuals = %v", got) }
+	close(release)
+	if err := runtime.Close(context.Background()); err != nil { t.Fatal(err) }
+	awaitClosed(t, leaseReleased)
+}
+```
+
+Add a subprocess `TestRuntimeConnectionTaskPanicUsesCoreFatalPolicy` whose router panics with a unique marker. Assert non-zero exit and marker in output. This proves the local owner is `TaskCore`, not a recoverable plugin owner.
+
+- [ ] Capture RED:
+
+```bash
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test ./pkg/stream -run "^(TestRuntimeCoreOwnerSurvivesRouterSourceGenerationChange|TestRuntimeCloseReportsBlockingConnectionResidualAndLaterJoins|TestRuntimeConnectionTaskPanicUsesCoreFatalPolicy)$" -count=1'
+```
+
+Expected: FAIL because `Runtime` uses raw listener goroutines, `WaitGroup.Go` connections, and a detached close waiter with no named owner/residual.
+
+- [ ] In `newRuntime`, create `runtimeCtx`, one local `TaskRegistry`, then `runtime.NewTaskOwner(tasks, "core/stream-runtime", runtime.TaskCore)`. Admit every listener with `owner.Go("listener", ...)`; after a lease is acquired and the connection is tracked, admit it with `owner.Go("connection", ...)`. Admission failure must release the router lease, untrack/close the connection, and initiate runtime close.
+- [ ] Remove `wg`, `closeDone`, and the raw close waiter. `initiateClose` only cancels runtime context and synchronously closes listeners/current connections once. Every `Close(ctx)` then calls the local registry's `Stop(ctx)`. Add package-private `runtimeCloseError{residuals []runtime.TaskResidual, err error}` with a stable constant `Error()` string and `Unwrap() error`; use it only when Stop returns an error or residual, so the bounded owner evidence is retained without changing the public method signature. A later Close can finish. A terminal Accept error initiates close and returns from its own listener task; it must not call `Stop` from inside that task. Preserve listener retry backoff, lease pinning, rollback visibility for new connections only, and exactly-once lease release.
+- [ ] GREEN/race/gates:
+
+```bash
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test ./pkg/stream -run "^(TestRuntime|TestNewRuntime|TestServeListener|TestNewGenerationRuntime)" -count=1'
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test -race ./pkg/stream -run "^(TestRuntime|TestNewRuntime|TestServeListener|TestNewGenerationRuntime)" -count=1'
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && golangci-lint run ./pkg/stream/... && make build'
+git diff --check
+```
+
+- [ ] Commit: `git commit -m "refactor(stream): own runtime listener tasks"`.
+
+---
+
+### Task 12: Reconcile the Global Inventory and Run Completion Gates
+
+**Files:** Verify all files above. Contract C Task 5 exclusively owns creation and edits of `pkg/runtime/goroutine_contract_test.go`; this task must not modify it.
+
+**Consumes:** This plan, the request Task 11 plan, and Contract C Task 5's AST gate.
+
+**Produces:** zero unowned production `go`/`WaitGroup.Go` in the four AST scan roots, owner/residual evidence, and an impact-scoped buildable tree.
+
+- [ ] Run the raw inventory and compare every result to the routing table:
+
+```bash
+rg -n '\bgo[[:space:]]+|\.Go\(' pkg/plugin pkg/proxy pkg/route pkg/stream --glob '*.go' --glob '!*_test.go'
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test ./pkg/runtime -run "^TestProductionGoroutinesUseOwnedRuntime$" -count=1'
+```
+
+Expected after this plan plus the request plan and Contract C Task 5: PASS; the four scanned roots contain no production raw `go` or `sync.WaitGroup.Go`. Canonical runtime primitives are outside those roots.
+
+- [ ] Run generation-background focused normal and race gates:
+
+```bash
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test ./pkg/runtime ./pkg/compiler ./pkg/proxy ./pkg/plugin/proxy_cache ./pkg/plugin/graphql_proxy_cache ./pkg/plugin/limit_count ./pkg/plugin/ai_proxy_multi ./pkg/plugin/oas_validator ./pkg/plugin/log_rotate ./pkg/plugin/logger_batch ./pkg/plugin/file_logger ./pkg/plugin/rocketmq_logger -run "(Task|Owner|Residual|Stop|Shutdown|Cleanup|Health|Refresh|Rotation|Processor|DelayedSync|Cluster)" -count=1'
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test -race ./pkg/runtime ./pkg/compiler ./pkg/proxy ./pkg/plugin/proxy_cache ./pkg/plugin/graphql_proxy_cache ./pkg/plugin/limit_count ./pkg/plugin/ai_proxy_multi ./pkg/plugin/oas_validator ./pkg/plugin/log_rotate ./pkg/plugin/logger_batch ./pkg/plugin/file_logger ./pkg/plugin/rocketmq_logger -run "(Task|Owner|Residual|Stop|Shutdown|Cleanup|Health|Refresh|Rotation|Processor|DelayedSync|Cluster)" -count=1'
+```
+
+- [ ] Run scoped logger cancellation packages normal/race, then lint/build:
+
+```bash
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test -race ./pkg/plugin/error_log_logger ./pkg/plugin/tcp_logger ./pkg/plugin/syslog ./pkg/plugin/udp_logger ./pkg/plugin/datadog ./pkg/plugin/sls_logger ./pkg/plugin/loggly -run "(Cancel|Stop|Shutdown|Delivery)" -count=1'
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && golangci-lint run ./pkg/runtime/... ./pkg/compiler/... ./pkg/proxy/... ./pkg/plugin/proxy_cache/... ./pkg/plugin/graphql_proxy_cache/... ./pkg/plugin/limit_count/... ./pkg/plugin/ai_proxy_multi/... ./pkg/plugin/oas_validator/... ./pkg/plugin/log_rotate/... ./pkg/plugin/logger_batch/... ./pkg/plugin/file_logger/... ./pkg/plugin/rocketmq_logger/... ./pkg/plugin/error_log_logger/... ./pkg/plugin/tcp_logger/... ./pkg/plugin/syslog/... ./pkg/plugin/udp_logger/... ./pkg/plugin/datadog/... ./pkg/plugin/sls_logger/... ./pkg/plugin/loggly/...'
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && make build'
+git diff --check
+```
+
+- [ ] Run moved/deleted helper scans:
+
+```bash
+rg -n 'cleanupStop|cleanupDone|healthCancel|healthDone|refreshCancel|refreshDone|shutdownRocketMQSender|watchConnectionCancellation|startSignalWatcherLocked|newDelayedSyncer|newFileLoggerProcessor|NewBatchProcessor' pkg --glob '*.go'
+rg -n 'context\.Background\(\)' pkg/plugin/logger_batch pkg/plugin/file_logger pkg/plugin/proxy_cache pkg/plugin/graphql_proxy_cache pkg/plugin/limit_count pkg/plugin/ai_proxy_multi pkg/plugin/oas_validator pkg/plugin/log_rotate pkg/plugin/rocketmq_logger pkg/proxy/active_health.go --glob '*.go' --glob '!*_test.go'
+```
+
+Expected: each remaining symbol is a documented compatibility/lifecycle boundary with a production caller; no proxy-only helper or detached background root remains.
+
+- [ ] Do not create an integration commit unless this plan's owned files required a real reviewed correction. Never stage or edit Contract C's AST test from this task.
+
+## Review Checkpoints
+
+After each task, the reviewer must inspect:
+
+1. Owner stability: exact InstanceKey/digest suffix, no unbounded or sensitive value.
+2. Lifetime: task registry outlives every state/resource the task touches.
+3. Admission: task is registered before its plugin/resource is published; failure rolls back all acquired state.
+4. Stop order: reject new work, cancel/wake, drain/join, then close transports/secrets/writers and remove publications.
+5. Residual visibility: an injected cancellation-ignoring callback appears under the expected owner.
+6. Panic policy: plugin/resource task panic reports that owner; it is not mislabeled core and does not crash unrelated owners.
+7. Concurrency: repeated/concurrent Stop, generation overlap, task admission versus rollback, and last-lease release are race-tested.
+8. Scope: request and persistent server runtime work has not been moved into a generation registry.
+
+## Plan Self-Review
+
+- **Coverage:** Every original generation/background file is assigned. `rocketmq_logger/plugin.go:242` and all seven `WaitGroup.Go` cancellation helpers are explicit. Current extra raw-go sites are classified into sibling plans rather than silently ignored.
+- **Dependency consistency:** The plan starts from Contract C Task 2, consumes the exact compiler-injected `*runtime.TaskOwner`, and does not reference nonexistent `materialize.go`. Shared cluster and writer resources construct lifecycle-local `TaskCore` owners rather than borrowing a generation owner.
+- **Testability:** Every behavior task starts with a focused RED test, names the expected failure cause, and has normal/race/lint/build commands. Cross-generation cluster and writer reuse receive explicit executable tests.
+- **No placeholders:** Owner strings, criticality, constructor changes, stop order, focused commands, and commit subjects are specified. Test helpers shown in skeletons are test-local helpers to implement in the named test file, not production APIs.
+- **Known risk:** Logger shutdown is the highest-risk sequence because the generation registry currently stops before plugin `Stop`. Task 8 therefore makes owner cancellation itself seal/drain the processor, and Task 10 runs RocketMQ shutdown inside a pre-admitted owned task. Do not retain the old cleanup goroutine as a fallback.

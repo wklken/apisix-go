@@ -15,6 +15,7 @@ import (
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/runtime"
 	"github.com/wklken/apisix-go/pkg/shared"
 )
 
@@ -29,8 +30,9 @@ type Plugin struct {
 	sampleRandom func() (float64, error)
 
 	reportMu    sync.Mutex
-	reportTimer *time.Timer
-	reportWG    sync.WaitGroup
+	reportWake  chan struct{}
+	reportFlush chan chan struct{}
+	reportDone  chan struct{}
 	segments    []skywalkingSegment
 	dropped     int
 	stopped     bool
@@ -152,6 +154,10 @@ func (p *Plugin) PostInit() error {
 	if p.sampleRandom == nil {
 		p.sampleRandom = func() (float64, error) { return randomUnit(rand.Reader) }
 	}
+	owner := p.TaskOwner()
+	if owner == nil {
+		return runtime.ErrTaskOwnerRequired
+	}
 
 	configUID := shared.NewConfigUID()
 	configUID.Add(p.config.EndpointAddr)
@@ -167,6 +173,18 @@ func (p *Plugin) PostInit() error {
 	}
 	p.client = value.(*resty.Client)
 	p.clientRelease = release
+	p.reportWake = make(chan struct{}, 1)
+	p.reportFlush = make(chan chan struct{})
+	p.reportDone = make(chan struct{})
+	if err := owner.Go("segment-reporter", p.reporterLoop); err != nil {
+		release()
+		p.client = nil
+		p.clientRelease = nil
+		p.reportWake = nil
+		p.reportFlush = nil
+		p.reportDone = nil
+		return err
+	}
 
 	return nil
 }
@@ -468,53 +486,132 @@ func (p *Plugin) buildSegmentWithSource(
 
 func (p *Plugin) reportSegment(segment skywalkingSegment) {
 	p.reportMu.Lock()
-	defer p.reportMu.Unlock()
 	if p.stopped {
+		p.reportMu.Unlock()
 		return
 	}
 	if len(p.segments) >= maxPendingSkyWalkingSegments {
 		p.dropped++
+		p.reportMu.Unlock()
 		return
 	}
 	p.segments = append(p.segments, segment)
-	if p.reportTimer == nil {
-		p.reportTimer = time.AfterFunc(time.Duration(p.config.ReportInterval)*time.Second, p.flushSegments)
-	}
+	p.reportMu.Unlock()
+	p.wakeReporter()
 }
 
 func (p *Plugin) Flush() {
-	p.flushSegments()
-	p.reportWG.Wait()
+	if p.reportFlush == nil || p.reportDone == nil {
+		return
+	}
+	ack := make(chan struct{})
+	select {
+	case p.reportFlush <- ack:
+		select {
+		case <-ack:
+		case <-p.reportDone:
+		}
+	case <-p.reportDone:
+	}
 }
 
-func (p *Plugin) Stop() {
+// QuiesceGenerationTasks rejects new segments before the generation task
+// registry cancels the reporter. The registry then owns task cancellation and
+// joining; Stop only releases the shared client after that lifecycle step.
+func (p *Plugin) QuiesceGenerationTasks() {
 	p.reportMu.Lock()
 	p.stopped = true
 	p.reportMu.Unlock()
-	p.Flush()
-	if p.clientRelease != nil {
-		p.clientRelease()
-		p.clientRelease = nil
+}
+
+func (p *Plugin) Stop() {
+	release := p.clientRelease
+	p.clientRelease = nil
+	p.client = nil
+	if release != nil {
+		release()
 	}
 }
 
-func (p *Plugin) flushSegments() {
-	p.reportMu.Lock()
-	if p.reportTimer != nil {
-		p.reportTimer.Stop()
-		p.reportTimer = nil
+func (p *Plugin) reporterLoop(ctx context.Context) error {
+	defer close(p.reportDone)
+
+	var timer *time.Timer
+	var timerC <-chan time.Time
+	stopTimer := func() {
+		if timer == nil {
+			return
+		}
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+		timer = nil
+		timerC = nil
 	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			stopTimer()
+			p.reportMu.Lock()
+			p.stopped = true
+			p.reportMu.Unlock()
+			p.flushSegments(context.WithoutCancel(ctx))
+			return nil
+		case <-p.reportWake:
+			if timer == nil {
+				timer = time.NewTimer(time.Duration(p.config.ReportInterval) * time.Second)
+				timerC = timer.C
+			}
+		case ack := <-p.reportFlush:
+			stopTimer()
+			flushContext := ctx
+			if ctx.Err() != nil {
+				p.reportMu.Lock()
+				p.stopped = true
+				p.reportMu.Unlock()
+				flushContext = context.WithoutCancel(ctx)
+			}
+			p.flushSegments(flushContext)
+			close(ack)
+		case <-timerC:
+			timer = nil
+			timerC = nil
+			p.flushSegments(ctx)
+		}
+	}
+}
+
+func (p *Plugin) wakeReporter() {
+	if p.reportWake == nil {
+		return
+	}
+	select {
+	case p.reportWake <- struct{}{}:
+	default:
+	}
+}
+
+func (p *Plugin) flushSegments(ctx context.Context) {
+	p.reportMu.Lock()
 	if len(p.segments) == 0 {
 		p.reportMu.Unlock()
 		return
 	}
 	segments := append([]skywalkingSegment(nil), p.segments...)
 	p.segments = p.segments[:0]
-	p.reportWG.Add(1)
+	client := p.client
 	p.reportMu.Unlock()
-	defer p.reportWG.Done()
 
-	resp, err := p.client.R().
+	if client == nil {
+		p.requeueSegments(segments)
+		return
+	}
+	resp, err := client.R().
+		SetContext(ctx).
 		SetHeader("Content-Type", "application/json").
 		SetBody(segments).
 		Post(p.endpointURL())
@@ -529,13 +626,13 @@ func (p *Plugin) flushSegments() {
 	}
 }
 
-// requeueSegments returns failed segments to the bounded window and
-// reschedules the report timer; segments that no longer fit are dropped.
+// requeueSegments returns failed segments to the bounded window and wakes the
+// reporter for a future retry; segments that no longer fit are dropped.
 func (p *Plugin) requeueSegments(segments []skywalkingSegment) {
 	p.reportMu.Lock()
-	defer p.reportMu.Unlock()
 	if p.stopped {
 		p.dropped += len(segments)
+		p.reportMu.Unlock()
 		return
 	}
 	space := maxPendingSkyWalkingSegments - len(p.segments)
@@ -546,8 +643,10 @@ func (p *Plugin) requeueSegments(segments []skywalkingSegment) {
 	if dropped := len(segments) - kept; dropped > 0 {
 		p.dropped += dropped
 	}
-	if p.reportTimer == nil && len(p.segments) > 0 {
-		p.reportTimer = time.AfterFunc(time.Duration(p.config.ReportInterval)*time.Second, p.flushSegments)
+	shouldWake := len(p.segments) > 0
+	p.reportMu.Unlock()
+	if shouldWake {
+		p.wakeReporter()
 	}
 }
 

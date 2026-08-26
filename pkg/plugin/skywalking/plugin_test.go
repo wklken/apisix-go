@@ -1,6 +1,7 @@
 package skywalking
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -14,6 +15,7 @@ import (
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/runtime"
 )
 
 type failingReader struct{}
@@ -56,19 +58,40 @@ func TestHandlerFailsClosedWhenSampleRandomUnavailable(t *testing.T) {
 }
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
+	p, _ := newTestPluginWithTasks(t, cfg)
+	return p
+}
+
+func newTestPluginWithTasks(t *testing.T, cfg Config) (*Plugin, *runtime.TaskRegistry) {
 	t.Helper()
 
+	tasks := runtime.NewTaskRegistry(context.Background(), nil)
+	owner, err := runtime.NewTaskOwner(tasks, "plugin/test/skywalking/attempt-1", runtime.TaskPlugin)
+	if err != nil {
+		t.Fatalf("NewTaskOwner() error = %v", err)
+	}
 	p := &Plugin{config: cfg}
-	p.SetDependencies(base.Dependencies{Config: &config.EffectiveConfig{}})
+	p.SetDependencies(base.Dependencies{
+		Config: &config.EffectiveConfig{},
+		Tasks:  owner,
+	})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
-	t.Cleanup(p.Stop)
+	t.Cleanup(func() {
+		p.QuiesceGenerationTasks()
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if residuals, stopErr := tasks.Stop(ctx); stopErr != nil {
+			t.Errorf("TaskRegistry.Stop() residuals=%v error=%v", residuals, stopErr)
+		}
+		p.Stop()
+	})
 
-	return p
+	return p, tasks
 }
 
 func TestPostInitRequiresEffectiveConfig(t *testing.T) {
@@ -78,6 +101,127 @@ func TestPostInitRequiresEffectiveConfig(t *testing.T) {
 	}
 	if err := p.PostInit(); err == nil || err.Error() != "effective config is required" {
 		t.Fatalf("PostInit() error = %v, want stable missing-config error", err)
+	}
+}
+
+func TestPostInitRequiresTaskOwner(t *testing.T) {
+	p := &Plugin{config: Config{EndpointAddr: "http://127.0.0.1:12800"}}
+	p.SetDependencies(base.Dependencies{Config: &config.EffectiveConfig{}})
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err != runtime.ErrTaskOwnerRequired {
+		if err == nil {
+			p.Stop()
+		}
+		t.Fatalf("PostInit() error = %v, want %v", err, runtime.ErrTaskOwnerRequired)
+	}
+}
+
+func TestPostInitRollsBackClientWhenTaskAdmissionFails(t *testing.T) {
+	tasks := runtime.NewTaskRegistry(context.Background(), nil)
+	owner, err := runtime.NewTaskOwner(tasks, "plugin/test/skywalking/admission-rollback", runtime.TaskPlugin)
+	if err != nil {
+		t.Fatalf("NewTaskOwner() error = %v", err)
+	}
+	if residuals, stopErr := tasks.Stop(context.Background()); stopErr != nil || len(residuals) != 0 {
+		t.Fatalf("TaskRegistry.Stop() = (%v, %v)", residuals, stopErr)
+	}
+
+	p := &Plugin{config: Config{EndpointAddr: "http://127.0.0.1:12899"}}
+	p.SetDependencies(base.Dependencies{
+		Config: &config.EffectiveConfig{},
+		Tasks:  owner,
+	})
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); !errors.Is(err, runtime.ErrTaskRegistryStopped) {
+		t.Fatalf("PostInit() error = %v, want %v", err, runtime.ErrTaskRegistryStopped)
+	}
+	if p.client != nil || p.clientRelease != nil {
+		t.Fatalf("failed admission leaked client state: client=%p release=%v", p.client, p.clientRelease != nil)
+	}
+	p.Stop()
+}
+
+func TestSkyWalkingReporterUsesGenerationTaskOwner(t *testing.T) {
+	_, tasks := newTestPluginWithTasks(t, Config{ReportInterval: 60})
+
+	owners := tasks.Active()
+	if len(owners) != 1 || owners[0] != "plugin/test/skywalking/attempt-1/segment-reporter" {
+		t.Fatalf("active task owners = %v, want exact segment-reporter owner", owners)
+	}
+}
+
+func TestSkyWalkingCancellationLeavesExactResidualUntilEndpointUnblocks(t *testing.T) {
+	var requests atomic.Int64
+	firstEntered := make(chan struct{})
+	finalEntered := make(chan struct{})
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch requests.Add(1) {
+		case 1:
+			close(firstEntered)
+			w.WriteHeader(http.StatusInternalServerError)
+		default:
+			close(finalEntered)
+			<-release
+			w.WriteHeader(http.StatusAccepted)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	p, tasks := newTestPluginWithTasks(t, Config{EndpointAddr: server.URL, ReportInterval: 60})
+	p.reportSegment(skywalkingSegment{TraceID: "trace-a"})
+	p.Flush()
+	select {
+	case <-firstEntered:
+	default:
+		t.Fatal("Flush() returned before the first report request started")
+	}
+
+	p.QuiesceGenerationTasks()
+	stopResult := make(chan struct {
+		residuals []runtime.TaskResidual
+		err       error
+	}, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		defer cancel()
+		residuals, err := tasks.Stop(ctx)
+		stopResult <- struct {
+			residuals []runtime.TaskResidual
+			err       error
+		}{residuals: residuals, err: err}
+	}()
+
+	select {
+	case <-finalEntered:
+	case <-time.After(2 * time.Second):
+		close(release)
+		t.Fatal("timed out waiting for cancellation final flush")
+	}
+	select {
+	case result := <-stopResult:
+		if result.err == nil || len(result.residuals) != 1 ||
+			result.residuals[0].Owner != "plugin/test/skywalking/attempt-1/segment-reporter" {
+			t.Fatalf(
+				"TaskRegistry.Stop() = (%v, %v), want exact segment-reporter residual",
+				result.residuals,
+				result.err,
+			)
+		}
+	case <-time.After(2 * time.Second):
+		close(release)
+		t.Fatal("timed out waiting for residual stop result")
+	}
+
+	close(release)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if residuals, err := tasks.Stop(ctx); err != nil || len(residuals) != 0 {
+		t.Fatalf("retry TaskRegistry.Stop() = (%v, %v), want joined reporter", residuals, err)
 	}
 }
 

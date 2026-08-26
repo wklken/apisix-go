@@ -1,6 +1,7 @@
 package file_logger
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/logger"
+	"github.com/wklken/apisix-go/pkg/runtime"
 	"go.uber.org/zap/zapcore"
 )
 
@@ -27,11 +29,15 @@ type registeredFileWriter struct {
 }
 
 type fileWriterRegistry struct {
-	mu      sync.Mutex
-	writers map[string]*registeredFileWriter
-	signals chan os.Signal
-	stop    chan struct{}
-	done    chan struct{}
+	mu            sync.Mutex
+	writers       map[string]*registeredFileWriter
+	signals       chan os.Signal
+	watcherEpoch  *runtime.TaskRegistry
+	epochStopping chan struct{}
+
+	notifySignal func(chan<- os.Signal, ...os.Signal)
+	stopSignal   func(chan<- os.Signal)
+	reopenAll    func() error
 }
 
 type fileWriterLease struct {
@@ -151,47 +157,91 @@ func (r *fileWriterRegistry) acquire(path string) (*fileWriterLease, error) {
 		return nil, err
 	}
 
-	r.mu.Lock()
-	entry := r.writers[key]
-	if entry == nil {
-		entry = &registeredFileWriter{writer: newBufferedFileWriteSyncer(key)}
-		r.writers[key] = entry
-	}
-	entry.leases++
-	r.startSignalWatcherLocked()
-	r.mu.Unlock()
+	for {
+		r.mu.Lock()
+		if stopping := r.epochStopping; stopping != nil {
+			r.mu.Unlock()
+			<-stopping
+			continue
+		}
+		entry := r.writers[key]
+		if entry == nil {
+			entry = &registeredFileWriter{writer: newBufferedFileWriteSyncer(key)}
+			r.writers[key] = entry
+		}
+		entry.leases++
+		if err := r.startSignalWatcherLocked(); err != nil {
+			entry.leases--
+			stopWriter := entry.leases == 0
+			if stopWriter {
+				delete(r.writers, key)
+			}
+			r.mu.Unlock()
+			if stopWriter {
+				_ = entry.writer.Stop()
+			}
+			return nil, err
+		}
+		r.mu.Unlock()
 
-	return &fileWriterLease{
-		registry: r,
-		path:     key,
-		writer:   entry.writer,
-	}, nil
+		return &fileWriterLease{
+			registry: r,
+			path:     key,
+			writer:   entry.writer,
+		}, nil
+	}
 }
 
-func (r *fileWriterRegistry) startSignalWatcherLocked() {
-	if r.signals != nil {
-		return
+func (r *fileWriterRegistry) startSignalWatcherLocked() error {
+	if r.watcherEpoch != nil {
+		return nil
 	}
 	signals := make(chan os.Signal, 1)
-	stop := make(chan struct{})
-	done := make(chan struct{})
+	tasks := runtime.NewTaskRegistry(context.Background(), nil)
+	owner, err := runtime.NewTaskOwner(tasks, "core/file-writer-registry", runtime.TaskCore)
+	if err != nil {
+		return err
+	}
+	notifySignal := r.notifySignal
+	if notifySignal == nil {
+		notifySignal = signal.Notify
+	}
+	stopSignal := r.stopSignal
+	if stopSignal == nil {
+		stopSignal = signal.Stop
+	}
+	notifySignal(signals, syscall.SIGUSR1)
 	r.signals = signals
-	r.stop = stop
-	r.done = done
-	signal.Notify(signals, syscall.SIGUSR1)
-	go func() {
-		defer close(done)
-		for {
-			select {
-			case <-signals:
-				if err := r.flushAndReopenAll(); err != nil {
-					logger.Error(fmt.Sprintf("reopen cached log files: %s", err))
-				}
-			case <-stop:
-				return
+	r.watcherEpoch = tasks
+	if err := owner.Go("signal-watch", func(ctx context.Context) error {
+		return r.watchSignals(ctx, signals)
+	}); err != nil {
+		stopSignal(signals)
+		r.signals = nil
+		r.watcherEpoch = nil
+		_, _ = tasks.Stop(context.Background())
+		return err
+	}
+	return nil
+}
+
+func (r *fileWriterRegistry) watchSignals(ctx context.Context, signals <-chan os.Signal) error {
+	for {
+		select {
+		case <-signals:
+			r.mu.Lock()
+			reopenAll := r.reopenAll
+			r.mu.Unlock()
+			if reopenAll == nil {
+				reopenAll = r.flushAndReopenAll
 			}
+			if err := reopenAll(); err != nil {
+				logger.Error(fmt.Sprintf("reopen cached log files: %s", err))
+			}
+		case <-ctx.Done():
+			return nil
 		}
-	}()
+	}
 }
 
 func (l *fileWriterLease) release() {
@@ -200,7 +250,8 @@ func (l *fileWriterLease) release() {
 	}
 	l.once.Do(func() {
 		var closeWriter *bufferedFileWriteSyncer
-		var watcherDone chan struct{}
+		var watcherEpoch *runtime.TaskRegistry
+		var epochStopped chan struct{}
 		l.registry.mu.Lock()
 		entry := l.registry.writers[l.path]
 		if entry != nil {
@@ -211,23 +262,33 @@ func (l *fileWriterLease) release() {
 			}
 		}
 		if len(l.registry.writers) == 0 {
-			if l.registry.signals != nil {
-				signal.Stop(l.registry.signals)
+			if l.registry.watcherEpoch != nil {
+				stopSignal := l.registry.stopSignal
+				if stopSignal == nil {
+					stopSignal = signal.Stop
+				}
+				stopSignal(l.registry.signals)
+				watcherEpoch = l.registry.watcherEpoch
+				epochStopped = make(chan struct{})
+				l.registry.epochStopping = epochStopped
 			}
-			if l.registry.stop != nil {
-				close(l.registry.stop)
-			}
-			watcherDone = l.registry.done
 			l.registry.signals = nil
-			l.registry.stop = nil
-			l.registry.done = nil
+			l.registry.watcherEpoch = nil
 		}
 		l.registry.mu.Unlock()
-		if watcherDone != nil {
-			<-watcherDone
+		if watcherEpoch != nil {
+			_, _ = watcherEpoch.Stop(context.Background())
 		}
 		if closeWriter != nil {
 			_ = closeWriter.Stop()
+		}
+		if epochStopped != nil {
+			l.registry.mu.Lock()
+			if l.registry.epochStopping == epochStopped {
+				l.registry.epochStopping = nil
+				close(epochStopped)
+			}
+			l.registry.mu.Unlock()
 		}
 	})
 }
@@ -283,5 +344,5 @@ func (r *fileWriterRegistry) has(path string) bool {
 func (r *fileWriterRegistry) signalWatcherRunning() bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.signals != nil
+	return r.watcherEpoch != nil
 }

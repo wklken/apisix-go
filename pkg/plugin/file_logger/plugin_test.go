@@ -6,13 +6,18 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -24,10 +29,13 @@ import (
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
+var _ interface{ QuiesceGenerationTasks() } = (*Plugin)(nil)
+
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
 
 	p := &Plugin{config: cfg}
+	p.SetDependencies(base.Dependencies{Tasks: newFileLoggerTestTaskOwner(t)})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -41,7 +49,10 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 func newTestPluginWithMetadata(t *testing.T, cfg Config, metadata map[string]any) *Plugin {
 	t.Helper()
 	p := &Plugin{config: cfg}
-	p.SetDependencies(base.Dependencies{Metadata: mustMetadataView(t, metadata)})
+	p.SetDependencies(base.Dependencies{
+		Tasks:    newFileLoggerTestTaskOwner(t),
+		Metadata: mustMetadataView(t, metadata),
+	})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -50,6 +61,14 @@ func newTestPluginWithMetadata(t *testing.T, cfg Config, metadata map[string]any
 	}
 	t.Cleanup(p.Stop)
 	return p
+}
+
+func newFileLoggerTestTaskOwner(t *testing.T) *runtime.TaskOwner {
+	t.Helper()
+	tasks := runtime.NewTaskRegistry(context.Background(), nil)
+	owner := newFileLoggerTaskOwnerForTest(t, tasks, "plugin/test/file-logger")
+	t.Cleanup(func() { stopFileLoggerTaskRegistryForTest(t, tasks) })
+	return owner
 }
 
 func mustMetadataView(t *testing.T, metadata map[string]any) runtime.MetadataView {
@@ -606,6 +625,238 @@ func TestPluginsWithSamePathShareWriterLease(t *testing.T) {
 	}
 }
 
+func TestSharedWriterWatcherSurvivesOldGenerationRelease(t *testing.T) {
+	registry := newFileWriterRegistryForTest(t)
+	reopened := make(chan error, 1)
+	registry.reopenAll = func() error {
+		err := registry.flushAndReopenAll()
+		reopened <- err
+		return err
+	}
+	directory := t.TempDir()
+	path := filepath.Join(directory, "access.log")
+	rotated := filepath.Join(directory, "access.log.old")
+	old := acquireWriterLeaseForTest(t, registry, path)
+	next := acquireWriterLeaseForTest(t, registry, filepath.Join(directory, ".", "access.log"))
+	if old.writer != next.writer {
+		t.Fatal("canonical path leases did not share a writer")
+	}
+	if _, err := old.writer.Write([]byte("before\n")); err != nil {
+		t.Fatalf("Write(before) error = %v", err)
+	}
+	if err := old.writer.Sync(); err != nil {
+		t.Fatalf("Sync(before) error = %v", err)
+	}
+	if err := os.Rename(path, rotated); err != nil {
+		t.Fatalf("rename current log: %v", err)
+	}
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatalf("recreate current log: %v", err)
+	}
+
+	old.release()
+	registry.signalForTest(syscall.SIGUSR1)
+	select {
+	case err := <-reopened:
+		if err != nil {
+			t.Fatalf("signal reopen error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("shared writer watcher did not process SIGUSR1")
+	}
+	if _, err := next.writer.Write([]byte("after\n")); err != nil {
+		t.Fatalf("Write(after) error = %v", err)
+	}
+	if err := next.writer.Sync(); err != nil {
+		t.Fatalf("Sync(after) error = %v", err)
+	}
+	if content := readLogFile(t, path); content != "after\n" {
+		t.Fatalf("current log content = %q, want post-reopen entry", content)
+	}
+	active := registry.activeTaskOwnersForTest()
+	if !slices.Contains(active, "core/file-writer-registry/signal-watch") {
+		t.Fatalf("active task owners = %v, want shared signal watcher", active)
+	}
+	next.release()
+}
+
+func TestSharedWriterWatcherStopsAndRestartsByRegistryEpoch(t *testing.T) {
+	registry := newFileWriterRegistryForTest(t)
+	first := acquireWriterLeaseForTest(t, registry, filepath.Join(t.TempDir(), "first.log"))
+	firstEpoch := registry.watcherEpochForTest()
+	if firstEpoch == nil {
+		t.Fatal("first writer lease did not start a watcher epoch")
+	}
+	if active := firstEpoch.Active(); !slices.Equal(active, []string{"core/file-writer-registry/signal-watch"}) {
+		t.Fatalf("first epoch active task owners = %v", active)
+	}
+	first.release()
+	if active := firstEpoch.Active(); len(active) != 0 {
+		t.Fatalf("first epoch active task owners after release = %v, want none", active)
+	}
+	if registry.watcherEpochForTest() != nil {
+		t.Fatal("first watcher epoch remains published after last release")
+	}
+
+	second := acquireWriterLeaseForTest(t, registry, filepath.Join(t.TempDir(), "second.log"))
+	secondEpoch := registry.watcherEpochForTest()
+	if secondEpoch == nil || secondEpoch == firstEpoch {
+		t.Fatalf("second watcher epoch = %p, want new registry distinct from %p", secondEpoch, firstEpoch)
+	}
+	if active := secondEpoch.Active(); !slices.Equal(active, []string{"core/file-writer-registry/signal-watch"}) {
+		t.Fatalf("second epoch active task owners = %v", active)
+	}
+	second.release()
+}
+
+func TestFileLoggerSharedWriterAcquireWaitsForStoppingRegistryEpoch(t *testing.T) {
+	registry := newFileWriterRegistryForTest(t)
+	watcherEntered := make(chan struct{})
+	releaseWatcher := make(chan struct{})
+	registry.reopenAll = func() error {
+		close(watcherEntered)
+		<-releaseWatcher
+		return nil
+	}
+	stopCalled := make(chan struct{})
+	var stopOnce sync.Once
+	registry.stopSignal = func(chan<- os.Signal) {
+		stopOnce.Do(func() { close(stopCalled) })
+	}
+	old := acquireWriterLeaseForTest(t, registry, filepath.Join(t.TempDir(), "old.log"))
+	oldEpoch := registry.watcherEpochForTest()
+	registry.signalForTest(syscall.SIGUSR1)
+	select {
+	case <-watcherEntered:
+	case <-time.After(time.Second):
+		t.Fatal("old watcher did not enter the blocked reopen callback")
+	}
+
+	released := make(chan struct{})
+	go func() {
+		old.release()
+		close(released)
+	}()
+	select {
+	case <-stopCalled:
+	case <-time.After(time.Second):
+		t.Fatal("last lease did not stop old signal notification")
+	}
+	type acquireResult struct {
+		lease *fileWriterLease
+		err   error
+	}
+	nextPath := filepath.Join(t.TempDir(), "next.log")
+	acquired := make(chan acquireResult, 1)
+	go func() {
+		lease, err := registry.acquire(nextPath)
+		acquired <- acquireResult{lease: lease, err: err}
+	}()
+	select {
+	case result := <-acquired:
+		if result.lease != nil {
+			result.lease.release()
+		}
+		t.Fatalf("acquire completed before old watcher joined: error = %v", result.err)
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	close(releaseWatcher)
+	select {
+	case <-released:
+	case <-time.After(time.Second):
+		t.Fatal("old lease release did not finish after watcher callback returned")
+	}
+	var next *fileWriterLease
+	select {
+	case result := <-acquired:
+		if result.err != nil {
+			t.Fatalf("acquire after old watcher join error = %v", result.err)
+		}
+		next = result.lease
+	case <-time.After(time.Second):
+		t.Fatal("acquire did not resume after old watcher joined")
+	}
+	if nextEpoch := registry.watcherEpochForTest(); nextEpoch == nil || nextEpoch == oldEpoch {
+		t.Fatalf("next watcher epoch = %p, want distinct from old epoch %p", nextEpoch, oldEpoch)
+	}
+	next.release()
+}
+
+func TestFileWriterSignalTaskPanicUsesCoreFatalPolicy(t *testing.T) {
+	if os.Getenv("APISIX_GO_TEST_FILE_WRITER_CORE_PANIC") == "1" {
+		runFileWriterSignalCorePanicFixture(t, "file-writer-core-fatal")
+		fmt.Fprintln(os.Stderr, "file-writer-returned-after-core-panic")
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestFileWriterSignalTaskPanicUsesCoreFatalPolicy$")
+	cmd.Env = append(os.Environ(), "APISIX_GO_TEST_FILE_WRITER_CORE_PANIC=1")
+	output, err := cmd.CombinedOutput()
+	if ctx.Err() != nil || err == nil || !bytes.Contains(output, []byte("file-writer-core-fatal")) ||
+		bytes.Contains(output, []byte("file-writer-returned-after-core-panic")) {
+		t.Fatalf("core panic subprocess context = %v, error = %v, output = %s", ctx.Err(), err, output)
+	}
+}
+
+func newFileWriterRegistryForTest(t *testing.T) *fileWriterRegistry {
+	t.Helper()
+	return &fileWriterRegistry{
+		writers:      make(map[string]*registeredFileWriter),
+		notifySignal: func(chan<- os.Signal, ...os.Signal) {},
+		stopSignal:   func(chan<- os.Signal) {},
+	}
+}
+
+func acquireWriterLeaseForTest(t *testing.T, registry *fileWriterRegistry, path string) *fileWriterLease {
+	t.Helper()
+	lease, err := registry.acquire(path)
+	if err != nil {
+		t.Fatalf("acquire(%q) error = %v", path, err)
+	}
+	return lease
+}
+
+func (r *fileWriterRegistry) signalForTest(value os.Signal) {
+	r.mu.Lock()
+	signals := r.signals
+	r.mu.Unlock()
+	if signals == nil {
+		panic("file writer signal watcher is not running")
+	}
+	signals <- value
+}
+
+func (r *fileWriterRegistry) activeTaskOwnersForTest() []string {
+	epoch := r.watcherEpochForTest()
+	if epoch == nil {
+		return nil
+	}
+	return epoch.Active()
+}
+
+func (r *fileWriterRegistry) watcherEpochForTest() *runtime.TaskRegistry {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.watcherEpoch
+}
+
+func runFileWriterSignalCorePanicFixture(t *testing.T, marker string) {
+	t.Helper()
+	registry := newFileWriterRegistryForTest(t)
+	registry.reopenAll = func() error {
+		panic(marker)
+	}
+	acquireWriterLeaseForTest(t, registry, filepath.Join(t.TempDir(), "panic.log"))
+	active := registry.activeTaskOwnersForTest()
+	if !slices.Equal(active, []string{"core/file-writer-registry/signal-watch"}) {
+		t.Fatalf("active task owners = %v, want core signal watcher", active)
+	}
+	registry.signalForTest(syscall.SIGUSR1)
+	select {}
+}
+
 func TestFlushAndReopenMovesWritesToCurrentPath(t *testing.T) {
 	dir := t.TempDir()
 	path := dir + "/access.log"
@@ -718,6 +969,65 @@ func TestFinalLeaseReleaseRemovesRegisteredWriter(t *testing.T) {
 	if sharedFileWriters.signalWatcherRunning() {
 		t.Fatal("SIGUSR1 watcher remains after final lease release")
 	}
+}
+
+func TestFileLoggerRegistryCancellationBeforePluginStopRunsLateCleanupOnce(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "late-cleanup.log")
+	key, err := canonicalWriterPath(path)
+	if err != nil {
+		t.Fatalf("canonicalWriterPath() error = %v", err)
+	}
+	tasks := runtime.NewTaskRegistry(context.Background(), nil)
+	owner := newFileLoggerTaskOwnerForTest(t, tasks, "plugin/test/file-logger/late-cleanup")
+	p := &Plugin{config: Config{Path: path}}
+	p.SetDependencies(base.Dependencies{Tasks: owner})
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+	writer := p.writer
+
+	stopFileLoggerTaskRegistryForTest(t, tasks)
+	if !sharedFileWriters.has(key) {
+		t.Fatal("registry cancellation released the writer before Plugin.Stop registered cleanup")
+	}
+	p.Stop()
+	p.Stop()
+	if sharedFileWriters.has(key) {
+		t.Fatal("late Plugin.Stop did not release the writer lease")
+	}
+	if _, err := writer.Write([]byte("late")); !errors.Is(err, errFileLoggerWriterStopped) {
+		t.Fatalf("Write() after repeated Plugin.Stop error = %v, want writer stopped", err)
+	}
+}
+
+func TestFileLoggerQuiesceReleasesWriterBeforeRegistryStop(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "quiesce.log")
+	key, err := canonicalWriterPath(path)
+	if err != nil {
+		t.Fatalf("canonicalWriterPath() error = %v", err)
+	}
+	tasks := runtime.NewTaskRegistry(context.Background(), nil)
+	owner := newFileLoggerTaskOwnerForTest(t, tasks, "plugin/test/file-logger/quiesce")
+	p := &Plugin{config: Config{Path: path}}
+	p.SetDependencies(base.Dependencies{Tasks: owner})
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+	if !sharedFileWriters.has(key) {
+		t.Fatal("PostInit did not register the writer lease")
+	}
+
+	p.QuiesceGenerationTasks()
+	if sharedFileWriters.has(key) {
+		t.Fatal("QuiesceGenerationTasks did not release the writer before registry Stop")
+	}
+	stopFileLoggerTaskRegistryForTest(t, tasks)
 }
 
 func TestFinalLeaseReleaseFlushesBufferedBytes(t *testing.T) {
@@ -1097,6 +1407,38 @@ func TestMetadataDecodeFailsBeforeFileWriterAcquisition(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/file-metadata-decode-failure-7b9a", nil)
 	if base.ExprMatched(request, match, 0) {
 		t.Fatal("metadata decode failure retained a prepared expression regexp")
+	}
+}
+
+func TestPostInitRollsBackWriterLeaseWhenTaskAdmissionFails(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "stopped-task-owner.log")
+	key, err := canonicalWriterPath(path)
+	if err != nil {
+		t.Fatalf("canonicalWriterPath() error = %v", err)
+	}
+	tasks := runtime.NewTaskRegistry(context.Background(), nil)
+	owner := newFileLoggerTaskOwnerForTest(t, tasks, "plugin/test/file-logger/stopped")
+	stopFileLoggerTaskRegistryForTest(t, tasks)
+	p := &Plugin{config: Config{Path: path}}
+	p.SetDependencies(base.Dependencies{Tasks: owner})
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	err = p.PostInit()
+	if !errors.Is(err, runtime.ErrTaskRegistryStopped) {
+		t.Fatalf("PostInit() error = %v, want ErrTaskRegistryStopped", err)
+	}
+	if p.lease != nil || p.writer != nil || p.logger != nil || p.processor != nil {
+		t.Fatalf(
+			"failed task admission published resources: lease=%v writer=%v logger=%v processor=%v",
+			p.lease,
+			p.writer,
+			p.logger,
+			p.processor,
+		)
+	}
+	if sharedFileWriters.has(key) {
+		t.Fatal("failed task admission retained the acquired writer lease")
 	}
 }
 

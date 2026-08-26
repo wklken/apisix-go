@@ -174,7 +174,8 @@ func (p *Plugin) PostInit() error {
 	p.client = value.(*resty.Client)
 	p.clientRelease = release
 
-	p.processor = logger_batch.NewWithContext(logger_batch.Config{
+	processor, err := logger_batch.NewWithContext(logger_batch.Config{
+		Tasks:             p.TaskOwner(),
 		Name:              "zipkin span reporter",
 		PluginID:          name,
 		BatchMaxSize:      1,
@@ -184,9 +185,18 @@ func (p *Plugin) PostInit() error {
 		InactiveTimeout:   logger_batch.DefaultInactiveTimeout,
 		MaxPendingEntries: p.maxPendingEntries,
 	}, p.deliverSpans)
+	if err != nil {
+		p.clientRelease()
+		p.clientRelease = nil
+		p.client = nil
+		return err
+	}
+	p.processor = processor
 
 	return nil
 }
+
+func (p *Plugin) QuiesceGenerationTasks() { p.Stop() }
 
 func (p *Plugin) Stop() {
 	cleanup := func() {

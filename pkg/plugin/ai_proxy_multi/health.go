@@ -10,8 +10,9 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
+
+	"github.com/wklken/apisix-go/pkg/runtime"
 )
 
 type HealthChecks struct {
@@ -64,6 +65,12 @@ type healthProbeResult struct {
 	status  int
 	err     error
 	timeout bool
+}
+
+type healthProbeCompletion struct {
+	index     int
+	result    healthProbeResult
+	completed bool
 }
 
 func (p *Plugin) initHealthStates() {
@@ -119,16 +126,8 @@ func (p *Plugin) healthClient(index int) *http.Client {
 }
 
 func (p *Plugin) Stop() {
-	p.healthStopOnce.Do(func() {
+	p.healthCloseOnce.Do(func() {
 		p.stoppedHealth.Store(true)
-		if p.stopHealth != nil {
-			close(p.stopHealth)
-			<-p.healthDone
-		}
-		if p.healthCancel != nil {
-			p.healthCancel()
-		}
-
 		p.healthMu.Lock()
 		clients := make([]*http.Client, 0, len(p.healthClients))
 		for _, client := range p.healthClients {
@@ -196,13 +195,18 @@ func (p *Plugin) refreshHealth(_ context.Context) {
 
 // startHealthLoop publishes the plugin-owned refresher lifecycle before any
 // request can arrive. It runs once from PostInit when at least one instance
-// has active checks, so Stop always observes initialized channels.
-func (p *Plugin) startHealthLoop() {
-	p.healthCtx, p.healthCancel = context.WithCancel(context.Background())
+// has active checks, so the generation task owner controls its lifetime.
+func (p *Plugin) startHealthLoop() error {
+	owner := p.TaskOwner()
+	if owner == nil {
+		return runtime.ErrTaskOwnerRequired
+	}
 	p.wakeHealth = make(chan struct{}, 1)
-	p.stopHealth = make(chan struct{})
-	p.healthDone = make(chan struct{})
-	go p.healthLoop()
+	if err := owner.Go("health-refresh", p.healthLoop); err != nil {
+		p.wakeHealth = nil
+		return err
+	}
+	return nil
 }
 
 // wakeHealthRefresh wakes the plugin-owned refresher for one refresh pass.
@@ -217,21 +221,25 @@ func (p *Plugin) wakeHealthRefresh() {
 	}
 }
 
-func (p *Plugin) healthLoop() {
-	defer close(p.healthDone)
+func (p *Plugin) healthLoop(ctx context.Context) error {
 	for {
 		select {
-		case <-p.stopHealth:
-			return
+		case <-ctx.Done():
+			return nil
 		case <-p.wakeHealth:
 		}
-		p.refreshHealthPass(p.healthCtx)
+		if ctx.Err() != nil {
+			return nil
+		}
+		if !p.refreshHealthPass(ctx) {
+			return nil
+		}
 	}
 }
 
 // refreshHealthPass probes every instance whose next check is due, records
 // the results, and publishes one immutable snapshot.
-func (p *Plugin) refreshHealthPass(ctx context.Context) {
+func (p *Plugin) refreshHealthPass(ctx context.Context) bool {
 	now := p.healthNow()
 	due := make([]int, 0)
 	for index, state := range p.health {
@@ -239,18 +247,63 @@ func (p *Plugin) refreshHealthPass(ctx context.Context) {
 			due = append(due, index)
 		}
 	}
-
-	var wait sync.WaitGroup
-	for _, index := range due {
-		wait.Add(1)
-		go func(index int) {
-			defer wait.Done()
-			result := p.probeInstance(ctx, index)
-			p.recordProbeResult(index, result, p.healthNow())
-		}(index)
+	if ctx.Err() != nil {
+		return false
 	}
-	wait.Wait()
+
+	passCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	ready := make(chan chan healthProbeCompletion, len(due))
+	completed := make([]healthProbeCompletion, 0, len(due))
+	admitted := 0
+	completePass := true
+	owner := p.TaskOwner()
+	if owner == nil {
+		return false
+	}
+	for _, index := range due {
+		completion := make(chan healthProbeCompletion, 1)
+		err := owner.Go("health-probe", func(context.Context) error {
+			marker := healthProbeCompletion{index: index}
+			defer func() {
+				completion <- marker
+				ready <- completion
+			}()
+			if p.probeForTest != nil {
+				marker.result = p.probeForTest(passCtx, index)
+			} else {
+				marker.result = p.probeInstance(passCtx, index)
+			}
+			if passCtx.Err() != nil {
+				return nil
+			}
+			marker.completed = true
+			return nil
+		})
+		if err != nil {
+			completePass = false
+			cancel()
+			break
+		}
+		admitted++
+	}
+	for range admitted {
+		completion := <-ready
+		marker := <-completion
+		if !marker.completed {
+			completePass = false
+			cancel()
+		}
+		completed = append(completed, marker)
+	}
+	if !completePass || admitted != len(due) || ctx.Err() != nil {
+		return false
+	}
+	for _, marker := range completed {
+		p.recordProbeResult(marker.index, marker.result, p.healthNow())
+	}
 	p.publishHealthSnapshot()
+	return true
 }
 
 func (p *Plugin) probeInstance(ctx context.Context, index int) healthProbeResult {

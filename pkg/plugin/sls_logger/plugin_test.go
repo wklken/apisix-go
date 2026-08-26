@@ -7,42 +7,498 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
+	"fmt"
 	"io"
 	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
-	"github.com/wklken/apisix-go/pkg/data_encryption"
+	"github.com/wklken/apisix-go/pkg/capability"
+	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/runtime"
+	"github.com/wklken/apisix-go/pkg/secret"
+	"github.com/wklken/apisix-go/pkg/testutil"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
+type cancellationWatchConn struct {
+	net.Conn
+	closeCalls   atomic.Int32
+	closeStarted chan struct{}
+	releaseClose <-chan struct{}
+}
+
+func (c *cancellationWatchConn) Close() error {
+	c.closeCalls.Add(1)
+	select {
+	case c.closeStarted <- struct{}{}:
+	default:
+	}
+	if c.releaseClose != nil {
+		<-c.releaseClose
+	}
+	return nil
+}
+
+func TestWatchConnectionCancellation(t *testing.T) {
+	for _, scenario := range []string{
+		"cancellation closes connection",
+		"normal completion preserves reused connection",
+		"cleanup joins close already running",
+		"nil context is no-op",
+	} {
+		t.Run(scenario, func(t *testing.T) {
+			var ctx context.Context
+			var cancel context.CancelFunc
+			if scenario != "nil context is no-op" {
+				ctx, cancel = context.WithCancel(context.Background())
+				defer cancel()
+			}
+			var releaseClose chan struct{}
+			if scenario == "cleanup joins close already running" {
+				releaseClose = make(chan struct{})
+			}
+			conn := &cancellationWatchConn{
+				closeStarted: make(chan struct{}, 1),
+				releaseClose: releaseClose,
+			}
+			cleanup := watchConnectionCancellation(ctx, conn)
+
+			switch scenario {
+			case "cancellation closes connection":
+				cancel()
+				cleanup()
+			case "normal completion preserves reused connection":
+				cleanup()
+				cancel()
+			case "cleanup joins close already running":
+				cancel()
+				select {
+				case <-conn.closeStarted:
+				case <-time.After(time.Second):
+					t.Fatal("cancellation callback did not enter Close")
+				}
+				cleanupDone := make(chan struct{})
+				go func() {
+					cleanup()
+					close(cleanupDone)
+				}()
+				select {
+				case <-cleanupDone:
+					t.Fatal("cleanup returned while Close was blocked")
+				case <-time.After(20 * time.Millisecond):
+				}
+				close(releaseClose)
+				select {
+				case <-cleanupDone:
+				case <-time.After(time.Second):
+					t.Fatal("cleanup did not return after Close completed")
+				}
+			case "nil context is no-op":
+				cleanup()
+			}
+
+			wantCloseCalls := int32(0)
+			if scenario == "cancellation closes connection" ||
+				scenario == "cleanup joins close already running" {
+				wantCloseCalls = 1
+			}
+			if got := conn.closeCalls.Load(); got != wantCloseCalls {
+				t.Fatalf("Close calls = %d, want %d", got, wantCloseCalls)
+			}
+		})
+	}
+}
+
+type slsScopedSecretCall struct {
+	Scope secret.Scope
+	Raw   string
+}
+
+type slsScopedSecretBroker struct {
+	mu     sync.Mutex
+	values map[string]string
+	fail   map[string]error
+	calls  []slsScopedSecretCall
+}
+
+func (*slsScopedSecretBroker) AuthorizeCandidate(
+	context.Context, secret.AttemptID, generation.ApplyTicket, generation.PublicationSet,
+) error {
+	return nil
+}
+
+func (*slsScopedSecretBroker) AuthorizeRecovery(
+	context.Context, secret.AttemptID, generation.RevisionSet,
+	map[generation.Domain]generation.PublishedGeneration,
+) error {
+	return errors.New("recovery is not used by this SLS fixture")
+}
+
+func (broker *slsScopedSecretBroker) ResolveScoped(
+	ctx context.Context, scope secret.Scope, raw string,
+) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	broker.mu.Lock()
+	defer broker.mu.Unlock()
+	broker.calls = append(broker.calls, slsScopedSecretCall{Scope: scope, Raw: raw})
+	if err := broker.fail[raw]; err != nil {
+		return "", err
+	}
+	value, ok := broker.values[raw]
+	if !ok {
+		return "", errors.New("missing private SLS secret test value")
+	}
+	return value, nil
+}
+
+func (*slsScopedSecretBroker) RevokeAttempt(context.Context, secret.AttemptID) error {
+	return nil
+}
+
+func (broker *slsScopedSecretBroker) callsSnapshot() []slsScopedSecretCall {
+	broker.mu.Lock()
+	defer broker.mu.Unlock()
+	return append([]slsScopedSecretCall(nil), broker.calls...)
+}
+
+func newSLSScopedSecretHarness(
+	t *testing.T,
+	revision uint64,
+	resourceID string,
+	config Config,
+	values map[string]string,
+) (secret.GenerationCapability, secret.Scope, *slsScopedSecretBroker, func()) {
+	t.Helper()
+	key := generation.ResourceKey{Kind: "routes", ID: resourceID}
+	document, err := json.Marshal(map[string]any{
+		"id": resourceID, "plugins": map[string]any{name: config},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := generation.NewSnapshot(revision, []generation.Resource{{
+		Key: key, Value: document,
+	}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := generation.PublicationCandidate{
+		Artifact: generation.GenerationArtifact{
+			Domain: generation.DomainHTTP, Revision: revision,
+			Digest: snapshot.Digest(), Snapshot: snapshot.SnapshotID(),
+		},
+		Snapshot: snapshot,
+		Closure:  []generation.ResourceKey{key},
+		Decisions: []generation.ResourceDecision{{
+			Key: key, Disposition: generation.DispositionPublished, Code: "sls-test",
+		}},
+	}
+	ticket := generation.ApplyTicket{
+		DesiredRevision: revision,
+		DesiredDigest:   snapshot.Digest(),
+		RequiredDomains: []generation.Domain{generation.DomainHTTP},
+	}
+	publication := generation.PublicationSet{
+		DesiredRevision: revision,
+		Domains: map[generation.Domain]generation.PublicationCandidate{
+			generation.DomainHTTP: candidate,
+		},
+	}
+	manifest, err := capability.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := capability.NewSecretDeclarationCatalog(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	broker := &slsScopedSecretBroker{values: values, fail: make(map[string]error)}
+	registration, err := secret.NewScopedMaterializer(broker, catalog).RegisterCandidate(
+		context.Background(), ticket, publication,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capabilityValue, err := secret.NewGenerationCapability(registration, revision)
+	if err != nil {
+		_ = registration.Close(context.Background())
+		t.Fatal(err)
+	}
+	scope := secret.Scope{
+		Generation: revision,
+		Attempt:    registration.AttemptID(),
+		Domain:     generation.DomainHTTP,
+		Plugin:     name,
+		Resource:   key,
+		Source:     capability.SecretPluginConfig,
+	}
+	return capabilityValue, scope, broker, func() {
+		if err := registration.Close(context.Background()); err != nil {
+			t.Errorf("close SLS scoped attempt: %v", err)
+		}
+	}
+}
+
+func slsSecretDescriptor(plaintext string) string {
+	digest := sha256.Sum256([]byte(plaintext))
+	return fmt.Sprintf("plugin_config#sha256:%s", hex.EncodeToString(digest[:]))
+}
+
+func TestMaterializeScopedSecretsValidatesAndDropsSLSSecret(t *testing.T) {
+	ciphertext := encryptSLSLoggerTestValue(t, "qeddd145sfvddff3", "cipher-private")
+	for index, tt := range []struct {
+		name     string
+		raw      string
+		resolved string
+	}{
+		{name: "ciphertext", raw: ciphertext, resolved: "cipher-private"},
+		{name: "environment", raw: "$ENV://SLS_ACCESS_KEY_SECRET", resolved: "env-private"},
+		{name: "managed", raw: "$secret://vault/sls/access-key-secret", resolved: "managed-private"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			config := Config{
+				Host: "127.0.0.1", Port: 10009, Project: "project-a", Logstore: "store-a",
+				AccessKeyID: "id", AccessKeySecret: tt.raw,
+			}
+			capabilityValue, scope, broker, closeAttempt := newSLSScopedSecretHarness(
+				t, uint64(index+1), "sls-"+tt.name, config,
+				map[string]string{tt.raw: tt.resolved},
+			)
+			defer closeAttempt()
+			p := &Plugin{config: config}
+			if err := p.Init(); err != nil {
+				t.Fatal(err)
+			}
+			if err := base.MaterializeScopedPluginSecrets(
+				context.Background(), scope, capabilityValue, p,
+			); err != nil {
+				t.Fatal(err)
+			}
+			calls := broker.callsSnapshot()
+			wantScope := scope
+			wantScope.Field = "access_key_secret"
+			if len(calls) != 1 || calls[0].Scope != wantScope || calls[0].Raw != tt.raw {
+				t.Fatalf("secret calls = %#v, want scope %#v raw %q", calls, wantScope, tt.raw)
+			}
+			if p.config.AccessKeySecret != slsSecretDescriptor(tt.resolved) {
+				t.Fatalf("public access_key_secret = %q, want resolved descriptor", p.config.AccessKeySecret)
+			}
+			if pluginStructContainsString(reflect.ValueOf(p).Elem(), tt.raw) ||
+				pluginStructContainsString(reflect.ValueOf(p).Elem(), tt.resolved) {
+				t.Fatal("plugin retained raw or resolved access_key_secret after validation")
+			}
+			if p.BatchProcessor != nil {
+				t.Fatal("materialization caused batch side effects")
+			}
+			if p.TaskOwner() == nil {
+				p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
+			}
+			if err := p.PostInit(); err != nil {
+				t.Fatalf("PostInit() without resolver error = %v", err)
+			}
+			processor := p.BatchProcessor
+			conn := &captureWriteConn{}
+			p.dialTLS = func(*net.Dialer, string, string, *tls.Config) (net.Conn, error) {
+				return conn, nil
+			}
+			if _, err := p.SendBatch(
+				context.Background(), []map[string]any{{"path": "/orders"}}, 1,
+			); err != nil {
+				t.Fatalf("SendBatch() error = %v", err)
+			}
+			message := conn.message()
+			if strings.Contains(message, tt.raw) || strings.Contains(message, tt.resolved) {
+				t.Fatalf("delivery retained private access key material: %q", message)
+			}
+			if calls := broker.callsSnapshot(); len(calls) != 1 {
+				t.Fatalf("PostInit/delivery resolver calls = %#v, want admission-only call", calls)
+			}
+			p.Stop()
+			if err := processor.Shutdown(context.Background()); err != nil {
+				t.Fatalf("batch Shutdown() error = %v", err)
+			}
+			if p.BatchProcessor != nil || p.secretsPrepared || p.ready {
+				t.Fatal("Stop retained SLS generation lifecycle state")
+			}
+		})
+	}
+
+	const failedRaw = "$secret://vault/sls/failure-private"
+	config := Config{AccessKeySecret: failedRaw}
+	capabilityValue, scope, broker, closeAttempt := newSLSScopedSecretHarness(
+		t, 10, "sls-retry", config, map[string]string{failedRaw: "recovered-private"},
+	)
+	defer closeAttempt()
+	broker.fail[failedRaw] = errors.New("resolver leaked " + failedRaw)
+	p := &Plugin{config: config}
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p)
+	if !errors.Is(err, secret.ErrCredentialUnavailable) || strings.Contains(err.Error(), failedRaw) {
+		t.Fatalf("first materialization error = %v, want redacted unavailable", err)
+	}
+	if p.config.AccessKeySecret != failedRaw || p.BatchProcessor != nil {
+		t.Fatal("failed materialization installed partial state")
+	}
+	broker.mu.Lock()
+	delete(broker.fail, failedRaw)
+	broker.mu.Unlock()
+	if err := base.MaterializeScopedPluginSecrets(
+		context.Background(), scope, capabilityValue, p,
+	); err != nil {
+		t.Fatalf("same-instance retry error = %v", err)
+	}
+	if p.config.AccessKeySecret != slsSecretDescriptor("recovered-private") {
+		t.Fatalf("retry descriptor = %q, want resolved digest", p.config.AccessKeySecret)
+	}
+}
+
+func TestSLSScopedMaterializationIsSingleFlightAndRejectsBlankResolvedSecret(t *testing.T) {
+	const raw = "$ENV://SLS_SINGLEFLIGHT_ACCESS_KEY_SECRET"
+	config := Config{AccessKeySecret: raw}
+	capabilityValue, scope, broker, closeAttempt := newSLSScopedSecretHarness(
+		t, 20, "sls-singleflight", config, map[string]string{raw: " \t\n "},
+	)
+	defer closeAttempt()
+	p := &Plugin{config: config}
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p)
+	if !errors.Is(err, secret.ErrCredentialUnavailable) {
+		t.Fatalf("blank materialization error = %v, want unavailable", err)
+	}
+	if p.config.AccessKeySecret != raw || p.secretsPrepared {
+		t.Fatal("blank materialization installed partial state")
+	}
+	broker.mu.Lock()
+	broker.values[raw] = "singleflight-private"
+	broker.calls = nil
+	broker.mu.Unlock()
+
+	start := make(chan struct{})
+	errs := make(chan error, 16)
+	var group sync.WaitGroup
+	for range 16 {
+		group.Go(func() {
+			<-start
+			errs <- base.MaterializeScopedPluginSecrets(
+				context.Background(), scope, capabilityValue, p,
+			)
+		})
+	}
+	close(start)
+	group.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if calls := broker.callsSnapshot(); len(calls) != 1 {
+		t.Fatalf("singleflight resolver calls = %#v, want one", calls)
+	}
+	if p.config.AccessKeySecret != slsSecretDescriptor("singleflight-private") {
+		t.Fatalf("singleflight descriptor = %q", p.config.AccessKeySecret)
+	}
+}
+
+func pluginStructContainsString(value reflect.Value, target string) bool {
+	switch value.Kind() {
+	case reflect.String:
+		return value.String() == target
+	case reflect.Struct:
+		for field := range value.Fields() {
+			if pluginStructContainsString(value.FieldByIndex(field.Index), target) {
+				return true
+			}
+		}
+	case reflect.Array:
+		for index := range value.Len() {
+			if pluginStructContainsString(value.Index(index), target) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
+	t.Helper()
+	return newTestPluginWithMetadata(t, cfg, nil)
+}
+
+func newTestPluginWithMetadata(t *testing.T, cfg Config, metadata map[string]any) *Plugin {
 	t.Helper()
 
 	p := &Plugin{config: cfg}
+	p.SetDependencies(base.Dependencies{
+		Tasks:          newLoggerTestTaskOwner(t),
+		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+		Metadata:       mustMetadataView(t, metadata),
+	})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.MaterializeSecrets(); err != nil {
+		t.Fatalf("MaterializeSecrets() error = %v", err)
+	}
+	if p.TaskOwner() == nil {
+		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
+	t.Cleanup(p.Stop)
 
 	return p
+}
+
+func mustMetadataView(t *testing.T, metadata map[string]any) runtime.MetadataView {
+	t.Helper()
+	if len(metadata) == 0 {
+		return runtime.MetadataView{}
+	}
+	document, err := json.Marshal(metadata)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	view, err := runtime.NewMetadataView(map[string][]byte{name: document})
+	if err != nil {
+		t.Fatalf("NewMetadataView() error = %v", err)
+	}
+	return view
+}
+
+func TestPostInitRejectsMissingDataEncryptionResolver(t *testing.T) {
+	p := &Plugin{}
+	if err := p.MaterializeSecrets(); err == nil || err.Error() != "data-encryption resolver is required" {
+		t.Fatalf("MaterializeSecrets() error = %v, want missing resolver error", err)
+	}
 }
 
 func TestDefaultAccessLogFieldsRedactSensitiveHeaders(t *testing.T) {
@@ -131,9 +587,6 @@ func TestPostInitSetsSLSDefaults(t *testing.T) {
 }
 
 func TestPostInitRejectsInvalidEncryptedAccessKeySecret(t *testing.T) {
-	data_encryption.Configure(true, []string{"qeddd145sfvddff3"})
-	t.Cleanup(func() { data_encryption.Configure(false, nil) })
-
 	p := &Plugin{config: Config{
 		Host:            "127.0.0.1",
 		Port:            10009,
@@ -142,20 +595,21 @@ func TestPostInitRejectsInvalidEncryptedAccessKeySecret(t *testing.T) {
 		AccessKeyID:     "id",
 		AccessKeySecret: "not-a-ciphertext",
 	}}
+	p.SetDependencies(base.Dependencies{
+		Tasks:          newLoggerTestTaskOwner(t),
+		DataEncryption: testutil.DataEncryptionService(true, []string{"qeddd145sfvddff3"}).Resolver(),
+	})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := p.PostInit(); err == nil {
-		t.Fatal("PostInit() error = nil, want strict encrypted access_key_secret rejection")
+	if err := p.MaterializeSecrets(); err == nil {
+		t.Fatal("MaterializeSecrets() error = nil, want strict encrypted access_key_secret rejection")
 	}
 }
 
-func TestPostInitValidatesAndClearsRotatedEncryptedAccessKeySecret(t *testing.T) {
+func TestMaterializeSecretsValidatesRotatedEncryptedAccessKeySecret(t *testing.T) {
 	oldKey := "old-keyring-item"
 	newKey := "qeddd145sfvddff3"
-	data_encryption.Configure(true, []string{newKey, oldKey})
-	t.Cleanup(func() { data_encryption.Configure(false, nil) })
-
 	p := &Plugin{config: Config{
 		Host:            "127.0.0.1",
 		Port:            10009,
@@ -164,15 +618,25 @@ func TestPostInitValidatesAndClearsRotatedEncryptedAccessKeySecret(t *testing.T)
 		AccessKeyID:     "id",
 		AccessKeySecret: encryptSLSLoggerTestValue(t, oldKey, "sls-secret"),
 	}}
+	p.SetDependencies(base.Dependencies{
+		Tasks:          newLoggerTestTaskOwner(t),
+		DataEncryption: testutil.DataEncryptionService(true, []string{newKey, oldKey}).Resolver(),
+	})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.MaterializeSecrets(); err != nil {
+		t.Fatalf("MaterializeSecrets() error = %v", err)
+	}
+	if p.TaskOwner() == nil {
+		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
-	t.Cleanup(func() { p.BatchProcessor.Stop() })
-	if p.config.AccessKeySecret != "" {
-		t.Fatalf("access_key_secret = %q, want cleared after validation", p.config.AccessKeySecret)
+	t.Cleanup(p.Stop)
+	if p.config.AccessKeySecret != slsSecretDescriptor("sls-secret") {
+		t.Fatalf("access_key_secret = %q, want resolved descriptor", p.config.AccessKeySecret)
 	}
 }
 
@@ -223,6 +687,103 @@ func TestBatchProcessorDefaultsMaxPendingEntries(t *testing.T) {
 	}
 	if dropped != 2 {
 		t.Fatalf("dropped = %d, want exactly 2 beyond the default 10000 pending cap", dropped)
+	}
+}
+
+func TestStopDrainsPendingSLSBatchAndPreventsResurrection(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Host: "127.0.0.1", Port: 10009, Project: "project-a", Logstore: "store-a",
+		AccessKeyID: "id", AccessKeySecret: "secret", Timeout: 1000,
+		BatchMaxSize: 10, BufferDuration: 3600, InactiveTimeout: 3600,
+	})
+	conn := &captureWriteConn{}
+	p.dialTLS = func(*net.Dialer, string, string, *tls.Config) (net.Conn, error) {
+		return conn, nil
+	}
+	if err := p.RunLogPhase(base.LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{Method: http.MethodGet, URI: "/pending"},
+		Outcome: apisixctx.ResponseOutcome{Status: http.StatusOK},
+	}); err != nil {
+		t.Fatalf("RunLogPhase() error = %v", err)
+	}
+
+	processor := p.BatchProcessor
+	p.Stop()
+	if err := processor.Shutdown(context.Background()); err != nil {
+		t.Fatalf("batch Shutdown() error = %v", err)
+	}
+	if message := conn.message(); !strings.Contains(message, `"uri":"/pending"`) {
+		t.Fatalf("Stop did not drain pending batch: %q", message)
+	}
+	if p.BatchProcessor != nil || p.ready || p.secretsPrepared {
+		t.Fatal("Stop retained SLS lifecycle state")
+	}
+	beforeFire := len(p.FireChan)
+	if err := p.RunLogPhase(base.LogSnapshot{}); !errors.Is(err, base.ErrLogQueueUnavailable) {
+		t.Fatalf("post-Stop RunLogPhase() error = %v", err)
+	}
+	if _, err := p.SendBatch(
+		context.Background(), []map[string]any{{"post_stop": true}}, 1,
+	); !errors.Is(err, secret.ErrCredentialUnavailable) {
+		t.Fatalf("post-Stop SendBatch() error = %v", err)
+	}
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})).ServeHTTP(
+		httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://example.com/stopped", nil),
+	)
+	if got := len(p.FireChan); got != beforeFire {
+		t.Fatalf("post-Stop Handler FireChan length = %d, want unchanged %d", got, beforeFire)
+	}
+	if err := p.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) {
+		t.Fatalf("post-Stop MaterializeSecrets() error = %v", err)
+	}
+	if p.TaskOwner() == nil {
+		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
+	}
+	if err := p.PostInit(); !errors.Is(err, secret.ErrCredentialUnavailable) {
+		t.Fatalf("post-Stop PostInit() error = %v", err)
+	}
+	p.Stop()
+}
+
+func TestStopSealsBeforeActiveSLSSendCompletes(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Host: "127.0.0.1", Port: 10009, Project: "project-a", Logstore: "store-a",
+		AccessKeyID: "id", AccessKeySecret: "secret", Timeout: 5000, BatchMaxSize: 1,
+	})
+	conn := newGatedWriteConn()
+	p.dialTLS = func(*net.Dialer, string, string, *tls.Config) (net.Conn, error) {
+		return conn, nil
+	}
+	sendDone := make(chan error, 1)
+	go func() {
+		_, err := p.SendBatch(context.Background(), []map[string]any{{"active": true}}, 1)
+		sendDone <- err
+	}()
+	select {
+	case <-conn.started:
+	case <-time.After(time.Second):
+		t.Fatal("active send did not reach socket write")
+	}
+	processor := p.BatchProcessor
+	stopDone := make(chan struct{})
+	go func() {
+		p.Stop()
+		close(stopDone)
+	}()
+	select {
+	case <-stopDone:
+	case <-time.After(time.Second):
+		t.Fatal("Stop waited for active SLS send instead of sealing scheduler admission")
+	}
+	close(conn.release)
+	if err := <-sendDone; err != nil {
+		t.Fatalf("active SendBatch() error = %v", err)
+	}
+	if err := processor.Shutdown(context.Background()); err != nil {
+		t.Fatalf("batch Shutdown() error = %v", err)
+	}
+	if p.BatchProcessor != nil || p.ready || p.secretsPrepared {
+		t.Fatal("Stop retained state after active send")
 	}
 }
 
@@ -688,6 +1249,80 @@ func TestMetadataSchemaRejectsNonObjectLogFormat(t *testing.T) {
 	}
 }
 
+func TestPreparedGenerationsRetainMetadataFormat(t *testing.T) {
+	config := Config{
+		Host:            "127.0.0.1",
+		Port:            10009,
+		Project:         "project-a",
+		Logstore:        "store-a",
+		AccessKeyID:     "id",
+		AccessKeySecret: "secret",
+	}
+	first := newTestPluginWithMetadata(t, config, map[string]any{
+		"log_format": map[string]any{"generation": "n"},
+	})
+	second := newTestPluginWithMetadata(t, config, map[string]any{
+		"log_format": map[string]any{"generation": "n-plus-one"},
+	})
+	routeConfig := config
+	routeConfig.LogFormat = map[string]string{"generation": "route"}
+	route := newTestPluginWithMetadata(t, routeConfig, map[string]any{
+		"log_format": map[string]any{"generation": "metadata"},
+	})
+
+	if first.LogFormat["generation"] != "n" {
+		t.Fatalf("generation N format = %#v", first.LogFormat)
+	}
+	if second.LogFormat["generation"] != "n-plus-one" {
+		t.Fatalf("generation N+1 format = %#v", second.LogFormat)
+	}
+	if route.LogFormat["generation"] != "route" {
+		t.Fatalf("route format = %#v, want route precedence", route.LogFormat)
+	}
+}
+
+func TestMetadataDecodeFailsBeforeSLSProcessorAcquisition(t *testing.T) {
+	const pattern = "^/sls-metadata-decode-failure-3d8f$"
+	expressions := [][]any{{"$uri", "~", pattern}}
+	p := &Plugin{config: Config{
+		Host:               "127.0.0.1",
+		Port:               10009,
+		Project:            "project-a",
+		Logstore:           "store-a",
+		AccessKeyID:        "id",
+		AccessKeySecret:    "secret",
+		IncludeReqBodyExpr: expressions,
+	}}
+	p.SetDependencies(base.Dependencies{
+		Tasks:          newLoggerTestTaskOwner(t),
+		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+		Metadata: mustMetadataView(t, map[string]any{
+			"log_format": map[string]any{"generation": 1},
+		}),
+	})
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.MaterializeSecrets(); err != nil {
+		t.Fatalf("MaterializeSecrets() error = %v", err)
+	}
+	if p.TaskOwner() == nil {
+		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
+	}
+	err := p.PostInit()
+	defer p.Stop()
+	if err == nil {
+		t.Fatal("PostInit() error = nil for invalid metadata")
+	}
+	if p.BatchProcessor != nil {
+		t.Fatalf("decode failure acquired processor: %v", p.BatchProcessor)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/sls-metadata-decode-failure-3d8f", nil)
+	if base.ExprMatched(request, expressions, 0) {
+		t.Fatal("metadata decode failure retained a prepared expression regexp")
+	}
+}
+
 func encryptSLSLoggerTestValue(t *testing.T, key string, value string) string {
 	t.Helper()
 	padding := aes.BlockSize - len(value)%aes.BlockSize
@@ -809,6 +1444,64 @@ type blockingWriteConn struct {
 	deadline time.Time
 	closed   bool
 }
+
+type captureWriteConn struct {
+	mu      sync.Mutex
+	written []byte
+	closed  bool
+}
+
+func (c *captureWriteConn) Write(payload []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.written = append(c.written, payload...)
+	return len(payload), nil
+}
+
+func (c *captureWriteConn) message() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return string(c.written)
+}
+
+func (*captureWriteConn) Read([]byte) (int, error) { return 0, io.EOF }
+
+func (c *captureWriteConn) Close() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.closed = true
+	return nil
+}
+
+func (*captureWriteConn) LocalAddr() net.Addr              { return slsTestAddr("local") }
+func (*captureWriteConn) RemoteAddr() net.Addr             { return slsTestAddr("remote") }
+func (*captureWriteConn) SetDeadline(time.Time) error      { return nil }
+func (*captureWriteConn) SetReadDeadline(time.Time) error  { return nil }
+func (*captureWriteConn) SetWriteDeadline(time.Time) error { return nil }
+
+type gatedWriteConn struct {
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func newGatedWriteConn() *gatedWriteConn {
+	return &gatedWriteConn{started: make(chan struct{}), release: make(chan struct{})}
+}
+
+func (c *gatedWriteConn) Write(payload []byte) (int, error) {
+	c.once.Do(func() { close(c.started) })
+	<-c.release
+	return len(payload), nil
+}
+
+func (*gatedWriteConn) Read([]byte) (int, error)         { return 0, io.EOF }
+func (*gatedWriteConn) Close() error                     { return nil }
+func (*gatedWriteConn) LocalAddr() net.Addr              { return slsTestAddr("local") }
+func (*gatedWriteConn) RemoteAddr() net.Addr             { return slsTestAddr("remote") }
+func (*gatedWriteConn) SetDeadline(time.Time) error      { return nil }
+func (*gatedWriteConn) SetReadDeadline(time.Time) error  { return nil }
+func (*gatedWriteConn) SetWriteDeadline(time.Time) error { return nil }
 
 func (c *blockingWriteConn) Write([]byte) (int, error) {
 	c.mu.Lock()

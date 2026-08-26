@@ -14,7 +14,6 @@ import (
 	"github.com/gorilla/websocket"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	appconfig "github.com/wklken/apisix-go/pkg/config"
-	apisixjson "github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/resource"
@@ -121,15 +120,31 @@ func websocketNode(t *testing.T, server *httptest.Server) resource.Node {
 }
 
 func buildWebsocketHandler(t *testing.T, route resource.Route) http.Handler {
+	return buildWebsocketHandlerWithConfig(t, route, testEffectiveConfig())
+}
+
+func buildWebsocketHandlerWithConfig(
+	t *testing.T,
+	route resource.Route,
+	effective *appconfig.EffectiveConfig,
+) http.Handler {
 	t.Helper()
-	ensureRouteStore(t)
-	builder := NewBuilder(nil)
-	t.Cleanup(builder.Stop)
-	handler, err := builder.buildHandlerStrict(route)
-	if err != nil {
-		t.Fatalf("buildHandlerStrict() error = %v", err)
+	if strings.EqualFold(route.Upstream.Scheme, "kafka") {
+		plan, err := PlanRouteUpstream(
+			route, resource.Service{}, nil, nil, &effective.Config,
+		)
+		if err != nil {
+			t.Fatalf("PlanRouteUpstream() error = %v", err)
+		}
+		handler, err := BuildPreparedHandler(PreparedHandlerInput{
+			Route: route, Upstream: plan, StaticConfig: effective.Config,
+		})
+		if err != nil {
+			t.Fatalf("BuildPreparedHandler() error = %v", err)
+		}
+		return handler
 	}
-	return handler
+	return testPreparedProxyHandler(t, route, resource.Service{}, effective)
 }
 
 func dialWebsocket(t *testing.T, serverURL string) (*websocket.Conn, *http.Response, error) {
@@ -322,19 +337,15 @@ func TestTransparentUpgradeSkipsDynamicConsumerHeaderHook(t *testing.T) {
 func TestServiceEnabledWebsocketUpgradeUsesReverseProxyHijack(t *testing.T) {
 	backend := newWebsocketBackend(t)
 	const serviceID = "websocket-service-enabled"
-	serviceBody, err := apisixjson.Marshal(resource.Service{
+	service := resource.Service{
 		ID:              serviceID,
 		EnableWebsocket: true,
 		Upstream:        backend.upstream(t),
-	})
-	if err != nil {
-		t.Fatalf("marshal websocket service: %v", err)
 	}
-	putHTTPAllowlistResource(t, "services", serviceID, serviceBody)
-	handler := buildWebsocketHandler(t, resource.Route{
+	handler := testPreparedProxyHandler(t, resource.Route{
 		ID:        "websocket-service-route",
 		ServiceID: serviceID,
-	})
+	}, service, testEffectiveConfig())
 	gateway := httptest.NewServer(handler)
 	t.Cleanup(gateway.Close)
 
@@ -421,21 +432,40 @@ func TestWebsocketUpgradeRunsRouteCorsHeaderPath(t *testing.T) {
 func TestWebsocketUpgradeIgnoresDynamicConsumerResponseBinding(t *testing.T) {
 	backend := newWebsocketBackend(t)
 	const consumerID = "websocket-dynamic-response-consumer"
-	putHTTPAllowlistResource(t, "consumers", consumerID, []byte(`{
-		"username": "websocket-dynamic-response-consumer",
-		"plugins": {
-			"key-auth": {"key": "websocket-dynamic-key"},
-			"echo": {"body": "consumer-response-binding"}
-		}
-	}`))
-	handler := buildWebsocketHandler(t, resource.Route{
+	consumer := resource.Consumer{
+		Username: consumerID,
+		Plugins: map[string]resource.PluginConfig{
+			"key-auth": map[string]any{"key": "websocket-dynamic-key"},
+			"echo":     map[string]any{"body": "consumer-response-binding"},
+		},
+	}
+	routeResource := resource.Route{
 		ID:              "websocket-dynamic-response-route",
 		EnableWebsocket: true,
 		Plugins: map[string]resource.PluginConfig{
 			"key-auth": map[string]any{},
 		},
 		Upstream: backend.upstream(t),
-	})
+	}
+	lookup := &testConsumerLookup{byKey: map[string]resource.Consumer{
+		"websocket-dynamic-key": consumer,
+	}}
+	authBinding := testPluginBindingWithDependencies(
+		t, "key-auth", routeResource.Plugins["key-auth"], routeResource,
+		base.Dependencies{Consumers: lookup},
+	)
+	consumerBinding := testPluginBindingWithDependenciesScope(
+		t, "echo", consumer.Plugins["echo"], routeResource,
+		base.Dependencies{Consumers: lookup}, plugin.ScopeConsumer,
+		plugin.ResourceProvenance{Kind: plugin.ResourceConsumer, ID: consumerID},
+	)
+	handler := testPreparedProxyHandlerWithConsumers(
+		t, routeResource, resource.Service{}, testEffectiveConfig(),
+		map[string]PreparedConsumerRecord{
+			consumerID: {Consumer: consumer, Bindings: []plugin.Binding{consumerBinding}},
+		},
+		authBinding,
+	)
 	gateway := httptest.NewServer(handler)
 	t.Cleanup(gateway.Close)
 
@@ -461,9 +491,8 @@ func TestWebsocketUpgradeIgnoresDynamicConsumerResponseBinding(t *testing.T) {
 }
 
 func TestWebsocketUpgradeAdmissionRejectsSecondTunnelAcrossNodes(t *testing.T) {
-	previous := appconfig.GlobalConfig
-	appconfig.GlobalConfig = &appconfig.Config{Proxy: appconfig.Proxy{MaxInFlight: 1}}
-	t.Cleanup(func() { appconfig.GlobalConfig = previous })
+	effective := testEffectiveConfig()
+	effective.Config.Proxy.MaxInFlight = 1
 
 	release := make(chan struct{})
 	connected := make(chan struct{})
@@ -492,14 +521,14 @@ func TestWebsocketUpgradeAdmissionRejectsSecondTunnelAcrossNodes(t *testing.T) {
 		backendOne.Close()
 		backendTwo.Close()
 	})
-	handler := buildWebsocketHandler(t, resource.Route{
+	handler := buildWebsocketHandlerWithConfig(t, resource.Route{
 		ID:              "websocket-admission-route",
 		EnableWebsocket: true,
 		Upstream: resource.Upstream{
 			Scheme: "http",
 			Nodes:  []resource.Node{websocketNode(t, backendOne), websocketNode(t, backendTwo)},
 		},
-	})
+	}, effective)
 	gateway := httptest.NewServer(handler)
 	t.Cleanup(gateway.Close)
 

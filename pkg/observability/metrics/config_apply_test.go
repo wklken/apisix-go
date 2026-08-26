@@ -65,6 +65,70 @@ func TestRecordConfigApplyUpdatesFailureAndReady(t *testing.T) {
 	}
 }
 
+func TestRecordConfigApplyAttemptFailureIncrementsOnlyCounter(t *testing.T) {
+	oldFailures, oldReady := ConfigApplyFailures, ConfigApplyReady
+	ConfigApplyFailures = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "test_config_apply_attempt_failures_total",
+	})
+	ConfigApplyReady = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "test_config_apply_attempt_ready",
+	})
+	t.Cleanup(func() { ConfigApplyFailures, ConfigApplyReady = oldFailures, oldReady })
+
+	RecordConfigApplyStageSuccess(ConfigApplyStageProvider)
+	RecordConfigApplyStageSuccess(ConfigApplyStageHTTPRoutes)
+	if !GetReadiness().ConfigApplyReady {
+		t.Fatal("readiness = false before failed retry")
+	}
+
+	RecordConfigApplyAttemptFailure("standalone", "apply")
+	if got := counterValue(t, ConfigApplyFailures); got != 1 {
+		t.Fatalf("failure count = %v, want 1", got)
+	}
+	if !GetReadiness().ConfigApplyReady {
+		t.Fatal("failed retry overwrote last acknowledged readiness")
+	}
+}
+
+func TestRecordConfigApplyAcknowledgementInstallsStagesAndQuarantineTogether(t *testing.T) {
+	oldFailures, oldReady, oldQuarantine := ConfigApplyFailures, ConfigApplyReady, ConfigApplyQuarantined
+	ConfigApplyFailures = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "test_config_apply_ack_failures_total",
+	})
+	ConfigApplyReady = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "test_config_apply_ack_ready",
+	})
+	ConfigApplyQuarantined = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "test_config_apply_ack_quarantine",
+	})
+	t.Cleanup(func() {
+		SetConfigApplyStreamRequired(false)
+		ConfigApplyFailures, ConfigApplyReady, ConfigApplyQuarantined = oldFailures, oldReady, oldQuarantine
+	})
+
+	SetConfigApplyStreamRequired(true)
+	RecordConfigApplyAcknowledgement(true, true, 0)
+	if !GetReadiness().ConfigApplyReady {
+		t.Fatal("acknowledged provider/http/stream publication is not ready")
+	}
+
+	RecordConfigApplyAcknowledgement(true, true, 2)
+	if GetReadiness().ConfigApplyReady {
+		t.Fatal("acknowledged quarantine remained ready")
+	}
+	if got := gaugeValue(t, ConfigApplyQuarantined); got != 2 {
+		t.Fatalf("quarantine count = %v, want 2", got)
+	}
+
+	RecordConfigApplyAcknowledgement(true, true, 0)
+	if !GetReadiness().ConfigApplyReady {
+		t.Fatal("cleared acknowledged quarantine did not restore readiness")
+	}
+	if got := counterValue(t, ConfigApplyFailures); got != 0 {
+		t.Fatalf("acknowledgements changed failure count to %v", got)
+	}
+}
+
 func TestConfigApplyStreamReadinessIsOptional(t *testing.T) {
 	oldFailures, oldReady, oldQuarantine := ConfigApplyFailures, ConfigApplyReady, ConfigApplyQuarantined
 	ConfigApplyFailures = prometheus.NewCounter(prometheus.CounterOpts{Name: "test_stream_optional_failures_total"})

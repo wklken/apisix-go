@@ -15,15 +15,30 @@ var (
 // Resolver decrypts APISIX data-encryption values without exposing key material.
 // The keyring is ordered from newest to oldest so rotated values remain readable.
 type Resolver struct {
-	enabled bool
-	keyring []string
+	configured bool
+	enabled    bool
+	keyring    []string
 }
 
 func NewResolver(enabled bool, keyring []string) Resolver {
+	return newResolverWithKeyring(enabled, append([]string(nil), keyring...))
+}
+
+// newResolverWithKeyring is used only with key material already owned by a
+// Service. Resolver methods never mutate the slice, and the slice is not
+// exposed outside this package.
+func newResolverWithKeyring(enabled bool, keyring []string) Resolver {
 	return Resolver{
-		enabled: enabled,
-		keyring: append([]string(nil), keyring...),
+		configured: true,
+		enabled:    enabled,
+		keyring:    keyring,
 	}
+}
+
+// Configured distinguishes an explicitly disabled resolver from a missing
+// dependency represented by the zero value. It does not expose key material.
+func (r Resolver) Configured() bool {
+	return r.configured
 }
 
 // Resolve strictly resolves a value that is expected to be encrypted when
@@ -41,6 +56,9 @@ func (r Resolver) ResolveForContext(value string, context string) (string, error
 }
 
 func (r Resolver) resolve(value string, context string) (string, error) {
+	if !r.configured {
+		panic(ErrDeclarationCatalogUnavailable)
+	}
 	if value == "" || !r.enabled {
 		return value, nil
 	}
@@ -58,6 +76,9 @@ func (r Resolver) resolve(value string, context string) (string, error) {
 // ResolveOptional decrypts a value when possible and preserves legacy
 // plaintext values when encryption is disabled or the value is not encrypted.
 func (r Resolver) ResolveOptional(value string) string {
+	if !r.configured {
+		panic(ErrDeclarationCatalogUnavailable)
+	}
 	plaintext, err := r.Resolve(value)
 	if err != nil {
 		return value
@@ -68,6 +89,9 @@ func (r Resolver) ResolveOptional(value string) string {
 // ResolveOptionalForContext is the legacy-plaintext-compatible counterpart to
 // ResolveForContext. It is used only for non-strict registered fields.
 func (r Resolver) ResolveOptionalForContext(value string, context string) string {
+	if !r.configured {
+		panic(ErrDeclarationCatalogUnavailable)
+	}
 	plaintext, err := r.ResolveForContext(value, context)
 	if err != nil {
 		return value

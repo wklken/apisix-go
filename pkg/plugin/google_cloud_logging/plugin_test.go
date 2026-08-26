@@ -13,26 +13,316 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
-	"github.com/wklken/apisix-go/pkg/data_encryption"
+	"github.com/wklken/apisix-go/pkg/capability"
+	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
+	"github.com/wklken/apisix-go/pkg/runtime"
+	"github.com/wklken/apisix-go/pkg/secret"
+	"github.com/wklken/apisix-go/pkg/testutil"
 	"github.com/wklken/apisix-go/pkg/util"
 )
+
+type googleScopedSecretCall struct {
+	Scope secret.Scope
+	Raw   string
+}
+
+type googleScopedSecretBroker struct {
+	mu     sync.Mutex
+	values map[string]string
+	fail   map[string]error
+	calls  []googleScopedSecretCall
+}
+
+func (*googleScopedSecretBroker) AuthorizeCandidate(
+	context.Context, secret.AttemptID, generation.ApplyTicket, generation.PublicationSet,
+) error {
+	return nil
+}
+
+func (*googleScopedSecretBroker) AuthorizeRecovery(
+	context.Context, secret.AttemptID, generation.RevisionSet,
+	map[generation.Domain]generation.PublishedGeneration,
+) error {
+	return errors.New("recovery is not used by this leaf fixture")
+}
+
+func (broker *googleScopedSecretBroker) ResolveScoped(
+	ctx context.Context, scope secret.Scope, raw string,
+) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	broker.mu.Lock()
+	defer broker.mu.Unlock()
+	broker.calls = append(broker.calls, googleScopedSecretCall{Scope: scope, Raw: raw})
+	if err := broker.fail[raw]; err != nil {
+		return "", err
+	}
+	value, ok := broker.values[raw]
+	if !ok {
+		return "", errors.New("missing private Google test value")
+	}
+	return value, nil
+}
+
+func (*googleScopedSecretBroker) RevokeAttempt(context.Context, secret.AttemptID) error {
+	return nil
+}
+
+func (broker *googleScopedSecretBroker) scopedCalls() []googleScopedSecretCall {
+	broker.mu.Lock()
+	defer broker.mu.Unlock()
+	return append([]googleScopedSecretCall(nil), broker.calls...)
+}
+
+func newGoogleScopedSecretHarness(
+	t *testing.T,
+	revision uint64,
+	resourceID string,
+	rawConfig map[string]any,
+	values map[string]string,
+) (secret.GenerationCapability, secret.Scope, *googleScopedSecretBroker, func()) {
+	t.Helper()
+	key := generation.ResourceKey{Kind: "routes", ID: resourceID}
+	resourceJSON, err := json.Marshal(map[string]any{
+		"id": resourceID, "plugins": map[string]any{name: rawConfig},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := generation.NewSnapshot(revision, []generation.Resource{{
+		Key: key, Value: resourceJSON,
+	}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := generation.PublicationCandidate{
+		Artifact: generation.GenerationArtifact{
+			Domain: generation.DomainHTTP, Revision: revision,
+			Digest: snapshot.Digest(), Snapshot: snapshot.SnapshotID(),
+		},
+		Snapshot: snapshot,
+		Closure:  []generation.ResourceKey{key},
+		Decisions: []generation.ResourceDecision{{
+			Key: key, Disposition: generation.DispositionPublished, Code: "google-test",
+		}},
+	}
+	ticket := generation.ApplyTicket{
+		DesiredRevision: revision,
+		DesiredDigest:   snapshot.Digest(),
+		RequiredDomains: []generation.Domain{generation.DomainHTTP},
+	}
+	publication := generation.PublicationSet{
+		DesiredRevision: revision,
+		Domains: map[generation.Domain]generation.PublicationCandidate{
+			generation.DomainHTTP: candidate,
+		},
+	}
+	manifest, err := capability.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := capability.NewSecretDeclarationCatalog(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	broker := &googleScopedSecretBroker{
+		values: values,
+		fail:   make(map[string]error),
+	}
+	registration, err := secret.NewScopedMaterializer(broker, catalog).RegisterCandidate(
+		context.Background(), ticket, publication,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capabilityValue, err := secret.NewGenerationCapability(registration, revision)
+	if err != nil {
+		_ = registration.Close(context.Background())
+		t.Fatal(err)
+	}
+	scope := secret.Scope{
+		Generation: revision,
+		Attempt:    registration.AttemptID(),
+		Domain:     generation.DomainHTTP,
+		Plugin:     name,
+		Resource:   key,
+		Source:     capability.SecretPluginConfig,
+	}
+	return capabilityValue, scope, broker, func() {
+		if err := registration.Close(context.Background()); err != nil {
+			t.Errorf("close Google scoped secret registration: %v", err)
+		}
+	}
+}
+
+func googlePrivateKeyDescriptor(plaintext string) string {
+	digest := sha256.Sum256([]byte(plaintext))
+	return fmt.Sprintf("plugin_config#sha256:%x", digest)
+}
+
+func googleInlineRawConfig(privateKey string) map[string]any {
+	return map[string]any{
+		"auth_config": map[string]any{
+			"client_email": "svc@example.iam.gserviceaccount.com",
+			"private_key":  privateKey,
+			"project_id":   "project-a",
+			"token_uri":    "https://oauth2.example.test/token",
+		},
+	}
+}
+
+func newRawGooglePlugin(t *testing.T, rawConfig map[string]any) *Plugin {
+	t.Helper()
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	if err := util.Parse(rawConfig, p.Config()); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func TestMaterializeScopedSecretsOwnsGooglePrivateKey(t *testing.T) {
+	pemKey, _ := testPrivateKey(t)
+	rotated := encryptGooglePrivateKeyTestValue(t, "old-keyring-item", pemKey)
+	tests := []struct {
+		name string
+		raw  string
+	}{
+		{name: "rotated ciphertext", raw: rotated},
+		{name: "environment reference", raw: "$ENV://GOOGLE_PRIVATE_KEY"},
+		{name: "managed reference", raw: "$secret://vault/google/private-key"},
+	}
+	for index, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rawConfig := googleInlineRawConfig(tt.raw)
+			capabilityValue, scope, broker, closeAttempt := newGoogleScopedSecretHarness(
+				t, uint64(index+1), "google-inline", rawConfig,
+				map[string]string{tt.raw: pemKey},
+			)
+			defer closeAttempt()
+			p := newRawGooglePlugin(t, rawConfig)
+			if err := base.MaterializeScopedPluginSecrets(
+				context.Background(), scope, capabilityValue, p,
+			); err != nil {
+				t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
+			}
+			calls := broker.scopedCalls()
+			if len(calls) != 1 {
+				t.Fatalf("scoped calls = %#v, want one private key", calls)
+			}
+			wantScope := scope
+			wantScope.Field = "auth_config.private_key"
+			if calls[0].Scope != wantScope || calls[0].Raw != tt.raw {
+				t.Fatalf("scoped call = %#v, want %#v raw %q", calls[0], wantScope, tt.raw)
+			}
+			if got, want := p.config.AuthConfig.PrivateKey, googlePrivateKeyDescriptor(pemKey); got != want {
+				t.Fatalf("public private_key = %q, want descriptor %q", got, want)
+			}
+			if p.resolvedAuth == nil || p.resolvedAuth.PrivateKey != pemKey {
+				t.Fatal("materialization did not install private resolved auth")
+			}
+			if p.client != nil || p.BatchProcessor != nil {
+				t.Fatal("materialization caused PostInit side effects")
+			}
+		})
+	}
+
+	authFileConfig := map[string]any{"auth_file": "/private/google-auth.json"}
+	capabilityValue, scope, broker, closeAttempt := newGoogleScopedSecretHarness(
+		t, 10, "google-auth-file", authFileConfig, nil,
+	)
+	defer closeAttempt()
+	authFilePlugin := newRawGooglePlugin(t, authFileConfig)
+	if err := base.MaterializeScopedPluginSecrets(
+		context.Background(), scope, capabilityValue, authFilePlugin,
+	); err != nil {
+		t.Fatalf("auth_file materialization error = %v", err)
+	}
+	if calls := broker.scopedCalls(); len(calls) != 0 {
+		t.Fatalf("auth_file scoped calls = %#v, want none", calls)
+	}
+	if authFilePlugin.config.AuthFile != "/private/google-auth.json" ||
+		authFilePlugin.config.AuthConfig != nil || authFilePlugin.resolvedAuth != nil {
+		t.Fatal("auth_file materialization changed file-backed configuration")
+	}
+
+	for _, failure := range []struct {
+		name        string
+		raw         string
+		resolved    string
+		resolverErr error
+	}{
+		{
+			name: "invalid resolved private key", raw: "$ENV://GOOGLE_INVALID_KEY",
+			resolved: "not-a-private-key",
+		},
+		{
+			name: "resolver failure", raw: "$secret://vault/google/failure",
+			resolverErr: errors.New("resolver leaked $secret://vault/google/failure"),
+		},
+	} {
+		t.Run(failure.name, func(t *testing.T) {
+			rawConfig := googleInlineRawConfig(failure.raw)
+			capabilityValue, scope, broker, closeAttempt := newGoogleScopedSecretHarness(
+				t, 20, "google-retry", rawConfig,
+				map[string]string{failure.raw: failure.resolved},
+			)
+			defer closeAttempt()
+			if failure.resolverErr != nil {
+				broker.fail[failure.raw] = failure.resolverErr
+			}
+			p := newRawGooglePlugin(t, rawConfig)
+			err := base.MaterializeScopedPluginSecrets(
+				context.Background(), scope, capabilityValue, p,
+			)
+			if err == nil || !strings.Contains(err.Error(), "credential unavailable") {
+				t.Fatalf("first materialization error = %v, want redacted credential unavailable", err)
+			}
+			if strings.Contains(err.Error(), failure.raw) ||
+				(failure.resolved != "" && strings.Contains(err.Error(), failure.resolved)) {
+				t.Fatalf("materialization error leaked private input: %v", err)
+			}
+			if p.config.AuthConfig.PrivateKey != failure.raw || p.resolvedAuth != nil ||
+				p.client != nil || p.BatchProcessor != nil {
+				t.Fatal("failed materialization installed partial auth or runtime state")
+			}
+			broker.mu.Lock()
+			delete(broker.fail, failure.raw)
+			broker.values[failure.raw] = pemKey
+			broker.mu.Unlock()
+			if err := base.MaterializeScopedPluginSecrets(
+				context.Background(), scope, capabilityValue, p,
+			); err != nil {
+				t.Fatalf("same-instance retry error = %v", err)
+			}
+			if got, want := p.config.AuthConfig.PrivateKey, googlePrivateKeyDescriptor(pemKey); got != want {
+				t.Fatalf("retry private_key = %q, want %q", got, want)
+			}
+		})
+	}
+}
 
 func TestRunLogPhaseBuildsDefaultGoogleEntryFields(t *testing.T) {
 	delivered := make(chan map[string]any, 1)
 	p := &Plugin{}
-	p.BatchProcessor = logger_batch.NewWithContext(logger_batch.Config{
+	p.BatchProcessor = newOwnedBatchProcessorForTest(t, logger_batch.Config{
 		BatchMaxSize: 1, MaxPendingEntries: 1, InactiveTimeout: time.Hour,
 		BufferDuration: time.Hour, ShutdownTimeout: time.Second,
 	}, func(_ context.Context, entries []map[string]any, _ int) (int, error) {
@@ -133,18 +423,436 @@ func TestSendBatchCancelsGoogleEntriesPostWithContext(t *testing.T) {
 	}
 }
 
+func TestStopDrainsActiveGoogleSendAndDropsPrivateState(t *testing.T) {
+	pemKey, _ := testPrivateKey(t)
+	for index, mode := range []string{"inline", "scoped"} {
+		t.Run(mode, func(t *testing.T) {
+			started := make(chan struct{})
+			release := make(chan struct{})
+			var releaseOnce sync.Once
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				close(started)
+				<-release
+				w.WriteHeader(http.StatusOK)
+			}))
+			t.Cleanup(func() {
+				releaseOnce.Do(func() { close(release) })
+				server.Close()
+			})
+
+			rawPrivateKey := pemKey
+			if mode == "scoped" {
+				rawPrivateKey = "$secret://vault/google/stop"
+			}
+			rawConfig := googleInlineRawConfig(rawPrivateKey)
+			rawConfig["auth_config"].(map[string]any)["entries_uri"] = server.URL
+			p := newRawGooglePlugin(t, rawConfig)
+			capabilityValue, scope, _, closeAttempt := newGoogleScopedSecretHarness(
+				t, uint64(40+index), "google-stop", rawConfig,
+				map[string]string{rawPrivateKey: pemKey},
+			)
+			if err := base.MaterializeScopedPluginSecrets(
+				context.Background(), scope, capabilityValue, p,
+			); err != nil {
+				closeAttempt()
+				t.Fatal(err)
+			}
+			defer closeAttempt()
+			if p.TaskOwner() == nil {
+				p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
+			}
+			if err := p.PostInit(); err != nil {
+				t.Fatal(err)
+			}
+			p.tokenMu.Lock()
+			p.accessToken = "private-cached-token"
+			p.tokenType = "Bearer"
+			p.tokenExpires = time.Now().Add(time.Hour)
+			p.tokenMu.Unlock()
+
+			activeResult := make(chan error, 1)
+			go func() {
+				_, err := p.SendBatch(
+					context.Background(), []map[string]any{{"active": true}}, 1,
+				)
+				activeResult <- err
+			}()
+			select {
+			case <-started:
+			case <-time.After(time.Second):
+				t.Fatal("timed out waiting for active Google send")
+			}
+			processor := p.BatchProcessor
+
+			stopDone := make(chan struct{})
+			go func() {
+				p.Stop()
+				close(stopDone)
+			}()
+			select {
+			case <-stopDone:
+			case <-time.After(time.Second):
+				t.Fatal("Stop waited for the active Google send instead of sealing scheduler admission")
+			}
+			if p.client == nil || p.clientRelease == nil || p.BatchProcessor == nil {
+				t.Fatal("Stop released Google runtime before the active send drained")
+			}
+			releaseOnce.Do(func() { close(release) })
+			select {
+			case err := <-activeResult:
+				if err != nil {
+					t.Fatalf("active SendBatch() error = %v", err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("active Google send did not finish")
+			}
+			if err := processor.Shutdown(context.Background()); err != nil {
+				t.Fatalf("batch Shutdown() error = %v", err)
+			}
+
+			p.tokenMu.Lock()
+			retainedToken := p.accessToken
+			p.tokenMu.Unlock()
+			if !p.stopped.Load() || p.resolvedAuth != nil || retainedToken != "" ||
+				p.client != nil || p.clientRelease != nil || p.BatchProcessor != nil {
+				t.Fatal("Stop retained Google private auth, token, client, or processor state")
+			}
+			if _, err := p.SendBatch(
+				context.Background(), []map[string]any{{"late": true}}, 1,
+			); !errors.Is(err, secret.ErrCredentialUnavailable) {
+				t.Fatalf("post-Stop SendBatch() error = %v, want credential unavailable", err)
+			}
+			if err := p.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) {
+				t.Fatalf("post-Stop materialization error = %v, want credential unavailable", err)
+			}
+			p.Stop()
+		})
+	}
+}
+
+func TestGoogleStopRejectsRetainedLogCallbacks(t *testing.T) {
+	p := newTestPlugin(t, Config{})
+	retainedHandler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	p.Stop()
+
+	before := len(p.FireChan)
+	handlerDone := make(chan struct{})
+	go func() {
+		retainedHandler.ServeHTTP(
+			httptest.NewRecorder(),
+			httptest.NewRequest(http.MethodGet, "http://gateway.test/retained", nil),
+		)
+		close(handlerDone)
+	}()
+	select {
+	case <-handlerDone:
+	case <-time.After(time.Second):
+		t.Fatal("retained Handler blocked after Stop returned")
+	}
+
+	runDone := make(chan error, 1)
+	go func() {
+		runDone <- p.RunLogPhase(base.LogSnapshot{})
+	}()
+	select {
+	case err := <-runDone:
+		if !errors.Is(err, base.ErrLogQueueUnavailable) {
+			t.Fatalf("post-Stop RunLogPhase() error = %v, want unavailable queue", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("retained RunLogPhase blocked after Stop returned")
+	}
+	if got := len(p.FireChan); got != before {
+		t.Fatalf("post-Stop retained callbacks changed FireChan length from %d to %d", before, got)
+	}
+}
+
+func TestGoogleStopRejectsRetainedFormattedHandler(t *testing.T) {
+	p := newTestPlugin(t, Config{})
+	p.LogFormat = map[string]string{"method": "$request_method"}
+	retainedHandler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	p.Stop()
+
+	before := len(p.FireChan)
+	retainedHandler.ServeHTTP(
+		httptest.NewRecorder(),
+		httptest.NewRequest(http.MethodGet, "http://gateway.test/formatted", nil),
+	)
+	if got := len(p.FireChan); got != before {
+		t.Fatalf("post-Stop formatted Handler changed FireChan length from %d to %d", before, got)
+	}
+}
+
+func TestGoogleConcurrentLogCallbacksAndStop(t *testing.T) {
+	p := newTestPlugin(t, Config{})
+	releaseHandlers := make(chan struct{})
+	retainedHandler := p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		<-releaseHandlers
+	}))
+
+	var handlers sync.WaitGroup
+	for range 32 {
+		handlers.Go(func() {
+			retainedHandler.ServeHTTP(
+				httptest.NewRecorder(),
+				httptest.NewRequest(http.MethodGet, "http://gateway.test/concurrent", nil),
+			)
+		})
+	}
+
+	stopDone := make(chan struct{})
+	go func() {
+		p.Stop()
+		close(stopDone)
+	}()
+	for !p.stopped.Load() {
+		time.Sleep(time.Millisecond)
+	}
+	close(releaseHandlers)
+
+	var phases sync.WaitGroup
+	for range 32 {
+		phases.Go(func() {
+			for range 32 {
+				_ = p.RunLogPhase(base.LogSnapshot{})
+			}
+		})
+	}
+	handlers.Wait()
+	phases.Wait()
+	select {
+	case <-stopDone:
+	case <-time.After(time.Second):
+		t.Fatal("Stop did not finish with concurrent retained log callbacks")
+	}
+	if got := len(p.FireChan); got != 0 {
+		t.Fatalf("concurrent post-Stop callbacks enqueued %d legacy FireChan entries", got)
+	}
+}
+
+func TestGoogleGenerationsShareOnlyCredentialNeutralClient(t *testing.T) {
+	firstPEM, _ := testPrivateKey(t)
+	secondPEM, _ := testPrivateKey(t)
+	authorizations := make(chan string, 3)
+	entriesServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authorizations <- r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(entriesServer.Close)
+
+	newGeneration := func(
+		revision uint64, rawPrivateKey, resolvedPrivateKey string,
+	) (*Plugin, func()) {
+		rawConfig := googleInlineRawConfig(rawPrivateKey)
+		authConfig := rawConfig["auth_config"].(map[string]any)
+		authConfig["entries_uri"] = entriesServer.URL
+		sslVerify := false
+		rawConfig["ssl_verify"] = sslVerify
+		capabilityValue, scope, _, closeAttempt := newGoogleScopedSecretHarness(
+			t, revision, "same-google-route", rawConfig,
+			map[string]string{rawPrivateKey: resolvedPrivateKey},
+		)
+		p := newRawGooglePlugin(t, rawConfig)
+		if err := base.MaterializeScopedPluginSecrets(
+			context.Background(), scope, capabilityValue, p,
+		); err != nil {
+			closeAttempt()
+			t.Fatal(err)
+		}
+		if p.TaskOwner() == nil {
+			p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
+		}
+		if err := p.PostInit(); err != nil {
+			closeAttempt()
+			t.Fatal(err)
+		}
+		return p, closeAttempt
+	}
+
+	first, closeFirst := newGeneration(60, "$ENV://GOOGLE_KEY_N", firstPEM)
+	defer closeFirst()
+	second, closeSecond := newGeneration(61, "$secret://vault/google/key-n1", secondPEM)
+	defer closeSecond()
+	t.Cleanup(first.Stop)
+	t.Cleanup(second.Stop)
+	if first.client != second.client {
+		t.Fatal("two generations did not reuse the credential-neutral Resty client")
+	}
+	if first.resolvedAuth == nil || second.resolvedAuth == nil ||
+		first.resolvedAuth.PrivateKey == second.resolvedAuth.PrivateKey {
+		t.Fatal("two generations reused private resolved auth")
+	}
+
+	setToken := func(p *Plugin, token string) {
+		p.tokenMu.Lock()
+		p.accessToken = token
+		p.tokenType = "Bearer"
+		p.tokenExpires = time.Now().Add(time.Hour)
+		p.tokenMu.Unlock()
+	}
+	setToken(first, "generation-n-token")
+	setToken(second, "generation-n1-token")
+	if _, err := first.SendBatch(
+		context.Background(), []map[string]any{{"generation": "n"}}, 1,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := second.SendBatch(
+		context.Background(), []map[string]any{{"generation": "n1"}}, 1,
+	); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Bearer generation-n-token", "Bearer generation-n1-token"} {
+		select {
+		case got := <-authorizations:
+			if got != want {
+				t.Fatalf("Authorization = %q, want %q", got, want)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("timed out waiting for %q", want)
+		}
+	}
+
+	first.Stop()
+	if _, err := second.SendBatch(
+		context.Background(), []map[string]any{{"generation": "n1-after-stop"}}, 1,
+	); err != nil {
+		t.Fatalf("N+1 send after N Stop error = %v", err)
+	}
+	select {
+	case got := <-authorizations:
+		if got != "Bearer generation-n1-token" {
+			t.Fatalf("N+1 Authorization after N Stop = %q", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for N+1 send after N Stop")
+	}
+}
+
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
+	return newTestPluginWithMetadata(t, cfg, runtime.MetadataView{})
+}
+
+func newTestPluginWithMetadata(t *testing.T, cfg Config, metadata runtime.MetadataView) *Plugin {
 	t.Helper()
 
 	p := &Plugin{config: cfg}
+	p.SetDependencies(base.Dependencies{
+		Tasks:          newLoggerTestTaskOwner(t),
+		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+		Metadata:       metadata,
+	})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
+	}
+	rawConfig := make(map[string]any)
+	document, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	if err := json.Unmarshal(document, &rawConfig); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	values := make(map[string]string)
+	if cfg.AuthConfig != nil {
+		values[cfg.AuthConfig.PrivateKey] = cfg.AuthConfig.PrivateKey
+	}
+	capabilityValue, scope, _, cleanup := newGoogleScopedSecretHarness(t, 1, "test-route", rawConfig, values)
+	t.Cleanup(cleanup)
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
+	}
+	if p.TaskOwner() == nil {
+		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
+	t.Cleanup(p.Stop)
 
 	return p
+}
+
+func TestPreparedGenerationsRetainMetadataFormat(t *testing.T) {
+	nSource := []byte(`{"log_format":{"generation":"n"},"max_pending_entries":21}`)
+	nView := mustMetadataView(t, map[string][]byte{name: nSource})
+	clear(nSource)
+	n := newTestPluginWithMetadata(t, Config{}, nView)
+
+	n1Source := []byte(`{"log_format":{"generation":"n1"},"max_pending_entries":22}`)
+	n1View := mustMetadataView(t, map[string][]byte{name: n1Source})
+	clear(n1Source)
+	n1 := newTestPluginWithMetadata(t, Config{}, n1View)
+
+	if got := n.LogFormat["generation"]; got != "n" || n.config.MaxPendingEntries != 21 {
+		t.Fatalf("N metadata = format %q pending %d, want n/21", got, n.config.MaxPendingEntries)
+	}
+	if got := n1.LogFormat["generation"]; got != "n1" || n1.config.MaxPendingEntries != 22 {
+		t.Fatalf("N+1 metadata = format %q pending %d, want n1/22", got, n1.config.MaxPendingEntries)
+	}
+
+	route := map[string]string{"route": "$route_id"}
+	routePlugin := newTestPluginWithMetadata(t, Config{LogFormat: route}, n1View)
+	if got := routePlugin.LogFormat["route"]; got != "$route_id" || len(routePlugin.LogFormat) != 1 {
+		t.Fatalf("route format = %#v, want route precedence", routePlugin.LogFormat)
+	}
+}
+
+func TestPostInitRejectsInvalidMetadataBeforeSideEffects(t *testing.T) {
+	p := &Plugin{}
+	p.SetDependencies(base.Dependencies{
+		Tasks:          newLoggerTestTaskOwner(t),
+		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+		Metadata: mustMetadataView(t, map[string][]byte{
+			name: []byte(`{"log_format":"sensitive-invalid-metadata"}`),
+		}),
+	})
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.MaterializeSecrets(); err != nil {
+		t.Fatalf("MaterializeSecrets() error = %v", err)
+	}
+	t.Cleanup(p.Stop)
+	if p.TaskOwner() == nil {
+		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
+	}
+	err := p.PostInit()
+	if err == nil || !strings.Contains(err.Error(), "google-cloud-logging metadata decode failed") {
+		t.Fatalf("PostInit() error = %v, want redacted metadata decode failure", err)
+	}
+	if strings.Contains(err.Error(), "sensitive-invalid-metadata") {
+		t.Fatalf("PostInit() leaked metadata: %v", err)
+	}
+	if p.client != nil || p.clientRelease != nil || p.BatchProcessor != nil || p.config.Resource.Type != "" {
+		t.Fatalf(
+			"PostInit() published side effects after invalid metadata: client=%v release=%t batch=%v resource=%q",
+			p.client,
+			p.clientRelease != nil,
+			p.BatchProcessor,
+			p.config.Resource.Type,
+		)
+	}
+}
+
+func mustMetadataView(t *testing.T, documents map[string][]byte) runtime.MetadataView {
+	t.Helper()
+	view, err := runtime.NewMetadataView(documents)
+	if err != nil {
+		t.Fatalf("NewMetadataView() error = %v", err)
+	}
+	return view
+}
+
+func TestMaterializeSecretsRejectsMissingDataEncryptionResolver(t *testing.T) {
+	p := &Plugin{config: Config{AuthConfig: &AuthConfig{PrivateKey: "private"}}}
+	if err := p.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) {
+		t.Fatalf("MaterializeSecrets() error = %v, want credential unavailable", err)
+	}
 }
 
 func TestPostInitSetsGoogleDefaults(t *testing.T) {
@@ -227,40 +935,55 @@ func TestPostInitLoadsSSLCAFileForVerifiedClient(t *testing.T) {
 	}
 }
 
-func TestPostInitRejectsInvalidEncryptedPrivateKey(t *testing.T) {
-	data_encryption.Configure(true, []string{"qeddd145sfvddff3"})
-	t.Cleanup(func() { data_encryption.Configure(false, nil) })
-
+func TestMaterializeSecretsRejectsInvalidEncryptedPrivateKey(t *testing.T) {
 	p := &Plugin{config: Config{AuthConfig: &AuthConfig{PrivateKey: "not-a-ciphertext"}}}
+	p.SetDependencies(base.Dependencies{
+		Tasks:          newLoggerTestTaskOwner(t),
+		DataEncryption: testutil.DataEncryptionService(true, []string{"qeddd145sfvddff3"}).Resolver(),
+	})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := p.PostInit(); err == nil {
-		t.Fatal("PostInit() error = nil, want strict encrypted private_key rejection")
+	if err := p.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) {
+		t.Fatalf("MaterializeSecrets() error = %v, want credential unavailable", err)
 	}
 }
 
-func TestPostInitResolvesRotatedEncryptedPrivateKey(t *testing.T) {
+func TestMaterializeSecretsResolvesRotatedEncryptedPrivateKey(t *testing.T) {
 	oldKey := "old-keyring-item"
-	newKey := "qeddd145sfvddff3"
-	data_encryption.Configure(true, []string{newKey, oldKey})
-	t.Cleanup(func() { data_encryption.Configure(false, nil) })
-
 	pemKey, _ := testPrivateKey(t)
-	p := &Plugin{config: Config{AuthConfig: &AuthConfig{
+	config := Config{AuthConfig: &AuthConfig{
 		ClientEmail: "svc@example.iam.gserviceaccount.com",
 		PrivateKey:  encryptGooglePrivateKeyTestValue(t, oldKey, pemKey),
 		ProjectID:   "project-a",
-	}}}
+	}}
+	p := &Plugin{config: config}
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
+	}
+	rawConfig := googleInlineRawConfig(config.AuthConfig.PrivateKey)
+	capabilityValue, scope, _, cleanup := newGoogleScopedSecretHarness(
+		t, 1, "google-rotated", rawConfig,
+		map[string]string{config.AuthConfig.PrivateKey: pemKey},
+	)
+	t.Cleanup(cleanup)
+	if err := base.MaterializeScopedPluginSecrets(
+		context.Background(), scope, capabilityValue, p,
+	); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
+	}
+	if p.TaskOwner() == nil {
+		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
-	t.Cleanup(func() { p.BatchProcessor.Stop() })
-	if p.config.AuthConfig.PrivateKey != pemKey {
-		t.Fatalf("private_key = %q, want resolved PEM", p.config.AuthConfig.PrivateKey)
+	t.Cleanup(p.Stop)
+	if got, want := p.config.AuthConfig.PrivateKey, googlePrivateKeyDescriptor(pemKey); got != want {
+		t.Fatalf("private_key = %q, want descriptor %q", got, want)
+	}
+	if p.resolvedAuth == nil || p.resolvedAuth.PrivateKey != pemKey {
+		t.Fatal("materialization did not retain private resolved auth")
 	}
 }
 
@@ -870,12 +1593,35 @@ func TestSendBatchTimesOutTokenEndpoint(t *testing.T) {
 		}},
 		requestTimeout: 300 * time.Millisecond,
 	}
+	p.SetDependencies(
+		base.Dependencies{
+			Tasks:          newLoggerTestTaskOwner(t),
+			DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+		},
+	)
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
+	}
+	rawConfig := googleInlineRawConfig(pemKey)
+	rawAuthConfig := rawConfig["auth_config"].(map[string]any)
+	rawAuthConfig["token_uri"] = tokenServer.URL
+	rawAuthConfig["entries_uri"] = entryServer.URL
+	capabilityValue, scope, _, cleanup := newGoogleScopedSecretHarness(
+		t, 1, "google-timeout-token", rawConfig, map[string]string{pemKey: pemKey},
+	)
+	t.Cleanup(cleanup)
+	if err := base.MaterializeScopedPluginSecrets(
+		context.Background(), scope, capabilityValue, p,
+	); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
+	}
+	if p.TaskOwner() == nil {
+		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
+	t.Cleanup(p.Stop)
 
 	start := time.Now()
 	_, err := p.SendBatch(context.Background(), []map[string]any{{"path": "/a"}}, 1)
@@ -914,12 +1660,35 @@ func TestSendBatchTimesOutWriteEndpoint(t *testing.T) {
 		}},
 		requestTimeout: 300 * time.Millisecond,
 	}
+	p.SetDependencies(
+		base.Dependencies{
+			Tasks:          newLoggerTestTaskOwner(t),
+			DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+		},
+	)
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
+	}
+	rawConfig := googleInlineRawConfig(pemKey)
+	rawAuthConfig := rawConfig["auth_config"].(map[string]any)
+	rawAuthConfig["token_uri"] = tokenServer.URL
+	rawAuthConfig["entries_uri"] = entryServer.URL
+	capabilityValue, scope, _, cleanup := newGoogleScopedSecretHarness(
+		t, 2, "google-timeout-write", rawConfig, map[string]string{pemKey: pemKey},
+	)
+	t.Cleanup(cleanup)
+	if err := base.MaterializeScopedPluginSecrets(
+		context.Background(), scope, capabilityValue, p,
+	); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
+	}
+	if p.TaskOwner() == nil {
+		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
+	t.Cleanup(p.Stop)
 
 	start := time.Now()
 	_, err := p.SendBatch(context.Background(), []map[string]any{{"path": "/a"}}, 1)

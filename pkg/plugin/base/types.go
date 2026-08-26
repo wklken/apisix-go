@@ -15,15 +15,69 @@ import (
 	brotlidec "github.com/andybalholm/brotli"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/apisix/log"
+	"github.com/wklken/apisix-go/pkg/config"
+	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
+	"github.com/wklken/apisix-go/pkg/resource"
+	"github.com/wklken/apisix-go/pkg/runtime"
+	"github.com/wklken/apisix-go/pkg/secret"
 )
+
+type ConsumerLookup interface {
+	ConsumerByPluginKey(plugin, key string) (resource.Consumer, bool)
+	ConsumerByID(id string) (resource.Consumer, bool)
+	ConsumerGroupByID(id string) (resource.ConsumerGroup, bool)
+}
+
+type Dependencies struct {
+	Config            *config.EffectiveConfig
+	DataEncryption    data_encryption.Resolver
+	Secrets           secret.GenerationCapability
+	Metadata          runtime.MetadataView
+	Consumers         ConsumerLookup
+	Tasks             *runtime.TaskOwner
+	CompositeChildren CompositeChildPreparer
+}
 
 type BasePlugin struct {
 	Name           string
 	Priority       int
 	Schema         string
 	MetadataSchema string
+	dependencies   Dependencies
+}
+
+func (p *BasePlugin) SetDependencies(deps Dependencies) {
+	p.dependencies = deps
+}
+
+func (p *BasePlugin) StaticConfig() *config.EffectiveConfig {
+	return p.dependencies.Config
+}
+
+func (p *BasePlugin) DataEncryption() data_encryption.Resolver {
+	return p.dependencies.DataEncryption
+}
+
+func (p *BasePlugin) ScopedSecrets() secret.GenerationCapability {
+	return p.dependencies.Secrets
+}
+
+func (p *BasePlugin) MetadataView() runtime.MetadataView {
+	return p.dependencies.Metadata
+}
+
+func (p *BasePlugin) ConsumerLookup() ConsumerLookup {
+	return p.dependencies.Consumers
+}
+
+func (p *BasePlugin) TaskOwner() *runtime.TaskOwner {
+	return p.dependencies.Tasks
+}
+
+func (p *BasePlugin) CompositeChildPreparer() CompositeChildPreparer {
+	return p.dependencies.CompositeChildren
 }
 
 func (p *BasePlugin) GetName() string {
@@ -415,12 +469,14 @@ func ApplyBatchDefaults(d *BatchDefaults) {
 // batch defaults.
 func NewBatchProcessor(
 	name string,
+	tasks *runtime.TaskOwner,
 	d BatchDefaults,
 	routeID, serverAddr string,
 	deliver logger_batch.ContextDeliveryFunc,
-) *logger_batch.Processor {
+) (*logger_batch.Processor, error) {
 	ApplyBatchDefaults(&d)
 	return logger_batch.NewWithContext(logger_batch.Config{
+		Tasks:                   tasks,
 		Name:                    name,
 		BatchMaxSize:            d.BatchMaxSize,
 		MaxRetryCount:           d.MaxRetryCount,

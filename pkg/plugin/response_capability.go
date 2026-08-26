@@ -24,10 +24,8 @@ const (
 	ProtocolMQTT      ProtocolKind = "mqtt"
 )
 
-// ResponseCapability is the build-time declaration for response ownership.
-// Request-stage ownership remains in RequestStageSpec; keeping these tables
-// separate prevents a Handler type assertion from accidentally becoming a
-// response phase declaration.
+// ResponseCapability is the build-time structural declaration for response
+// callbacks within phases allowed by the capability manifest.
 type ResponseCapability struct {
 	HeaderFilter           bool
 	BufferedBodyFilter     bool
@@ -95,61 +93,60 @@ func responseCapabilityForBinding(binding Binding) (ResponseCapability, error) {
 	if binding.Plugin == nil {
 		return ResponseCapability{}, fmt.Errorf(
 			"response capability binding has nil plugin (factory=%q resource=%s/%s)",
-			binding.factoryName, binding.Provenance.Kind, binding.Provenance.ID,
+			binding.Descriptor.Factory, binding.Provenance.Kind, binding.Provenance.ID,
 		)
 	}
+	if binding.Descriptor.resolved {
+		return binding.Descriptor.responseCapability, nil
+	}
+	return ResponseCapability{}, fmt.Errorf(
+		"response capability binding has no resolved descriptor (factory=%q resource=%s/%s)",
+		binding.Descriptor.Factory, binding.Provenance.Kind, binding.Provenance.ID,
+	)
+}
+
+func resolveResponseCapability(descriptor Descriptor, p Plugin) (ResponseCapability, error) {
 	var capability ResponseCapability
 	var found bool
-	if describer, ok := binding.Plugin.(ResponseCapabilityDescriber); ok {
+	if describer, ok := p.(ResponseCapabilityDescriber); ok {
 		resolved, err := describer.DescribeResponseCapability()
 		if err != nil {
 			return ResponseCapability{}, fmt.Errorf(
-				"factory %q response capability descriptor: %w", binding.factoryName, err,
+				"factory %q response capability descriptor: %w", descriptor.Factory, err,
 			)
 		}
 		capability, found = resolved, true
 	}
 	if !found {
-		if describer, ok := binding.Plugin.(ResponseCapabilityPlugin); ok {
+		if describer, ok := p.(ResponseCapabilityPlugin); ok {
 			capability, found = describer.ResponseCapability(), true
 		}
 	}
 	if !found {
-		capability, found = responseCapabilityRegistry[binding.factoryName]
+		capability, found = responseCapabilityRegistry[descriptor.Factory]
 	}
-	if responseSpec, ok := responseFactoryRegistry[binding.factoryName]; ok && responseSpec.allowStreamingHeader {
-		describer, ok := binding.Plugin.Config().(base.BindingPhaseDescriber)
-		if !ok {
-			return ResponseCapability{}, fmt.Errorf(
-				"factory %q requires a binding phase descriptor (resource=%s/%s)",
-				binding.factoryName, binding.Provenance.Kind, binding.Provenance.ID,
-			)
-		}
-		descriptor, err := describer.DescribeBindingPhases()
-		if err != nil {
-			return ResponseCapability{}, fmt.Errorf(
-				"factory %q binding phase descriptor: %w", binding.factoryName, err,
-			)
-		}
-		if err := validateBindingPhaseDescriptor(binding.factoryName, descriptor); err != nil {
-			return ResponseCapability{}, err
-		}
-		capability.HeaderFilter = descriptor.StreamingHeader
+	if responseSpec, ok := responseFactoryRegistry[descriptor.Factory]; ok &&
+		responseSpec.allowStreamingHeader {
+		capability.HeaderFilter = descriptor.phaseSelection.StreamingHeader
 		found = true
 	}
-	if describer, ok := binding.Plugin.Config().(base.ResponseModeDescriber); ok {
-		descriptor, err := describer.DescribeResponseMode()
+	if describer, ok := p.Config().(base.ResponseModeDescriber); ok {
+		mode, err := describer.DescribeResponseMode()
 		if err != nil {
-			return ResponseCapability{}, fmt.Errorf("factory %q response mode descriptor: %w", binding.factoryName, err)
-		}
-		if descriptor.Modes&^(base.ResponseModeBounded|base.ResponseModeStreaming|base.ResponseModeHijack) != 0 {
 			return ResponseCapability{}, fmt.Errorf(
-				"factory %q response mode descriptor has unsupported modes %d",
-				binding.factoryName, descriptor.Modes,
+				"factory %q response mode descriptor: %w",
+				descriptor.Factory,
+				err,
 			)
 		}
-		if capability.StreamingBodyFilter && descriptor.Modes != base.ResponseModeNone {
-			capability.StreamingBodyFilter = descriptor.Modes&base.ResponseModeStreaming != 0
+		if mode.Modes&^(base.ResponseModeBounded|base.ResponseModeStreaming|base.ResponseModeHijack) != 0 {
+			return ResponseCapability{}, fmt.Errorf(
+				"factory %q response mode descriptor has unsupported modes %d",
+				descriptor.Factory, mode.Modes,
+			)
+		}
+		if capability.StreamingBodyFilter && mode.Modes != base.ResponseModeNone {
+			capability.StreamingBodyFilter = mode.Modes&base.ResponseModeStreaming != 0
 		}
 	}
 	if !found {
@@ -225,12 +222,15 @@ func BuildResponsePlan(input any) (ResponsePlan, error) {
 			"buffered response max bytes must not be negative: %d", spec.BufferedConfig.MaxBytes,
 		)
 	}
-	static := cloneBindings(spec.StaticBindings)
+	static, err := resolveBindingsForPlan(spec.StaticBindings)
+	if err != nil {
+		return ResponsePlan{}, err
+	}
 	for _, binding := range static {
 		if binding.Plugin == nil {
 			return ResponsePlan{}, fmt.Errorf(
 				"response plan binding has nil plugin (factory=%q resource=%s/%s)",
-				binding.factoryName, binding.Provenance.Kind, binding.Provenance.ID,
+				binding.Descriptor.Factory, binding.Provenance.Kind, binding.Provenance.ID,
 			)
 		}
 	}
@@ -252,7 +252,7 @@ func BuildResponsePlan(input any) (ResponsePlan, error) {
 		if capErr != nil {
 			return ResponsePlan{}, capErr
 		}
-		if capability.SeparateSubsystem && binding.factoryName == "mqtt-proxy" {
+		if capability.SeparateSubsystem && binding.Descriptor.Factory == "mqtt-proxy" {
 			// MQTT is classified for completeness, but is never installed in
 			// the HTTP request/response executor.
 			continue
@@ -289,7 +289,7 @@ func BuildResponsePlan(input any) (ResponsePlan, error) {
 
 func hasConditionalTerminalBinding(bindings []Binding) bool {
 	for _, binding := range bindings {
-		if isConditionalTerminalIdentity(binding.factoryName) {
+		if binding.Descriptor.conditionalTerminal {
 			return true
 		}
 	}
@@ -302,25 +302,17 @@ func hasConditionalTerminalEffective(effective EffectiveBindingSet) bool {
 }
 
 func bindingDeclaresStreamingHeader(binding Binding) (bool, error) {
-	responseSpec, ok := responseFactoryRegistry[binding.factoryName]
+	responseSpec, ok := responseFactoryRegistry[binding.Descriptor.Factory]
 	if !ok || !responseSpec.allowStreamingHeader || binding.Plugin == nil {
 		return false, nil
 	}
-	describer, ok := binding.Plugin.Config().(base.BindingPhaseDescriber)
-	if !ok {
+	if !binding.Descriptor.resolved {
 		return false, fmt.Errorf(
-			"factory %q requires a binding phase descriptor (resource=%s/%s)",
-			binding.factoryName, binding.Provenance.Kind, binding.Provenance.ID,
+			"factory %q has no resolved descriptor (resource=%s/%s)",
+			binding.Descriptor.Factory, binding.Provenance.Kind, binding.Provenance.ID,
 		)
 	}
-	descriptor, err := describer.DescribeBindingPhases()
-	if err != nil {
-		return false, fmt.Errorf("factory %q descriptor: %w", binding.factoryName, err)
-	}
-	if err := validateBindingPhaseDescriptor(binding.factoryName, descriptor); err != nil {
-		return false, err
-	}
-	return descriptor.StreamingHeader, nil
+	return binding.Descriptor.phaseSelection.StreamingHeader, nil
 }
 
 func routeTerminalMatches(candidates []RouteTerminalCandidate, want RouteTerminalCandidate) bool {
@@ -355,18 +347,18 @@ func terminalCandidateFromBinding(
 	terminal, ok := binding.Plugin.(base.ExclusiveProtocolTerminal)
 	if !ok {
 		for _, candidate := range provided {
-			if candidate.Identity == binding.factoryName && candidate.Provenance == binding.Provenance &&
+			if candidate.Identity == binding.Descriptor.Factory && candidate.Provenance == binding.Provenance &&
 				candidate.Protocol == capability.ExclusiveProtocol {
 				return candidate, nil
 			}
 		}
 		return RouteTerminalCandidate{}, fmt.Errorf(
 			"exclusive protocol identity=%q resource=%s/%s has no terminal owner",
-			binding.factoryName, binding.Provenance.Kind, binding.Provenance.ID,
+			binding.Descriptor.Factory, binding.Provenance.Kind, binding.Provenance.ID,
 		)
 	}
 	candidate := RouteTerminalCandidate{
-		Identity: binding.factoryName, Scope: binding.Scope, Priority: binding.Plugin.GetPriority(),
+		Identity: binding.Descriptor.Factory, Scope: binding.Scope, Priority: binding.Priority,
 		Provenance: binding.Provenance, Protocol: capability.ExclusiveProtocol, Terminal: terminal,
 	}
 	for _, existing := range provided {
@@ -410,7 +402,7 @@ func validateResponsePlanCompatibility(plan ResponsePlan) error {
 		if capability.StreamingResponseOwner || capability.ExclusiveProtocol != ProtocolNone ||
 			!compatibleBoundedAdapter(binding, capability) {
 			left := plan.bufferedBindings[0]
-			identity, provenance := binding.factoryName, binding.Provenance
+			identity, provenance := binding.Descriptor.Factory, binding.Provenance
 			if len(terminals) > 0 {
 				identity, provenance = terminals[0].Identity, terminals[0].Provenance
 			}
@@ -441,11 +433,9 @@ func responseBindingsAreDualMode(bindings []ResponseBinding) bool {
 		return false
 	}
 	for _, binding := range bindings {
-		capability, err := responseCapabilityForBinding(Binding{
-			Plugin: binding.Plugin, Scope: binding.Scope, Provenance: binding.Provenance,
-			factoryName: binding.factoryKey,
-		})
-		if err != nil || !isDualModeResponseBinding(Binding{Plugin: binding.Plugin}, capability) {
+		capability := binding.Descriptor.responseCapability
+		if !binding.Descriptor.resolved ||
+			!isDualModeResponseBinding(Binding{Plugin: binding.Plugin}, capability) {
 			return false
 		}
 	}
@@ -464,7 +454,7 @@ func compatibleBoundedAdapter(binding Binding, capability ResponseCapability) bo
 	if capability.StreamingResponseOwner || capability.ExclusiveProtocol != ProtocolNone {
 		return false
 	}
-	switch binding.factoryName {
+	switch binding.Descriptor.Factory {
 	case "gzip", "brotli", "cors":
 		return true
 	default:
@@ -535,6 +525,7 @@ const (
 
 type ResponseBinding struct {
 	Plugin     Plugin
+	Descriptor Descriptor
 	Scope      Scope
 	Provenance ResourceProvenance
 	Phases     ResponsePhaseMask
@@ -590,7 +581,10 @@ func responseFactoryAllowsDescriptor(factoryKey string, descriptor base.BindingP
 		return false
 	}
 	if descriptor.RequestStage == "" {
-		stage = requestStageRegistry[factoryKey].Stage
+		stage, err = manifestRequestStage(factoryKey)
+		if err != nil {
+			return false
+		}
 	}
 	switch factoryKey {
 	case "echo":
@@ -620,82 +614,49 @@ func materializeResponseBindings(
 	result := make([]ResponseBinding, 0, len(effective.global)+len(effective.merged))
 	for _, partition := range [][]Binding{effective.global, effective.merged} {
 		ordered := append([]Binding(nil), partition...)
-		slices.SortStableFunc(ordered, func(a, b Binding) int {
-			if a.Plugin == nil || b.Plugin == nil {
-				return 0
-			}
-			if priority := b.Plugin.GetPriority() - a.Plugin.GetPriority(); priority != 0 {
-				return priority
-			}
-			return 0
-		})
+		slices.SortStableFunc(ordered, compareBindings)
 		for _, binding := range ordered {
 			if binding.Plugin == nil {
 				return nil, fmt.Errorf(
 					"response binding has nil plugin (factory=%q resource=%s/%s)",
-					binding.factoryName,
+					binding.Descriptor.Factory,
 					binding.Provenance.Kind,
 					binding.Provenance.ID,
 				)
 			}
-			responseSpec, known := responseFactoryRegistry[binding.factoryName]
+			responseSpec, known := responseFactoryRegistry[binding.Descriptor.Factory]
 			if !known {
 				if hasResponseCallbacks(binding.Plugin) {
 					return nil, fmt.Errorf(
 						"response callback is undeclared (factory=%q resource=%s/%s)",
-						binding.factoryName,
+						binding.Descriptor.Factory,
 						binding.Provenance.Kind,
 						binding.Provenance.ID,
 					)
 				}
 				continue
 			}
+			if !binding.Descriptor.resolved {
+				return nil, fmt.Errorf(
+					"response binding has no resolved descriptor (factory=%q resource=%s/%s)",
+					binding.Descriptor.Factory,
+					binding.Provenance.Kind,
+					binding.Provenance.ID,
+				)
+			}
 			phases := responseSpec.mask
 			if responseSpec.configAware {
-				describer, ok := binding.Plugin.Config().(base.BindingPhaseDescriber)
-				if !ok {
-					return nil, fmt.Errorf(
-						"factory %q requires a binding phase descriptor (resource=%s/%s)",
-						binding.factoryName,
-						binding.Provenance.Kind,
-						binding.Provenance.ID,
-					)
-				}
-				descriptor, err := describer.DescribeBindingPhases()
-				if err != nil {
-					return nil, fmt.Errorf("factory %q descriptor: %w", binding.factoryName, err)
-				}
-				if err := validateBindingPhaseDescriptor(binding.factoryName, descriptor); err != nil {
-					return nil, err
-				}
-				resolved := requestStageRegistry[binding.factoryName]
-				if descriptor.RequestStage != "" {
-					resolved.Stage, err = parseRequestStage(descriptor.RequestStage)
-					if err != nil {
-						return nil, err
-					}
-				}
-				if resolved.Stage != binding.Stage {
-					return nil, fmt.Errorf(
-						"factory %q stage disagreement: binding=%d descriptor=%d (resource=%s/%s)",
-						binding.factoryName,
-						binding.Stage,
-						resolved.Stage,
-						binding.Provenance.Kind,
-						binding.Provenance.ID,
-					)
-				}
-				if descriptor.Header {
+				if binding.Descriptor.HasResponseOwner(ResponseOwnerHeaderFilter) {
 					phases |= ResponsePhaseHeader
 				}
-				if descriptor.BufferedBody {
+				if binding.Descriptor.HasResponseOwner(ResponseOwnerBufferedBodyFilter) {
 					phases |= ResponsePhaseBufferedBody
 				}
-				if descriptor.StreamingHeader && bufferStreamingHeaders {
+				if binding.Descriptor.HasResponseOwner(ResponseOwnerStreamingHeaderFilter) && bufferStreamingHeaders {
 					if !responseSpec.allowBody {
 						return nil, fmt.Errorf(
 							"factory %q has no bounded fallback for an early response (resource=%s/%s)",
-							binding.factoryName, binding.Provenance.Kind, binding.Provenance.ID,
+							binding.Descriptor.Factory, binding.Provenance.Kind, binding.Provenance.ID,
 						)
 					}
 					phases |= ResponsePhaseBufferedBody
@@ -708,8 +669,9 @@ func materializeResponseBindings(
 				continue
 			}
 			result = append(result, ResponseBinding{
-				Plugin: binding.Plugin, Scope: binding.Scope, Provenance: binding.Provenance,
-				Phases: phases, factoryKey: binding.factoryName,
+				Plugin: binding.Plugin, Descriptor: binding.Descriptor,
+				Scope: binding.Scope, Provenance: binding.Provenance,
+				Phases: phases, factoryKey: binding.Descriptor.Factory,
 			})
 		}
 	}
@@ -728,7 +690,7 @@ func validateResponseCallbacks(binding Binding, phases ResponsePhaseMask) error 
 		if _, ok := binding.Plugin.(base.HeaderFilterPlugin); !ok {
 			return fmt.Errorf(
 				"factory %q declares header filter without callback (resource=%s/%s)",
-				binding.factoryName,
+				binding.Descriptor.Factory,
 				binding.Provenance.Kind,
 				binding.Provenance.ID,
 			)
@@ -738,7 +700,7 @@ func validateResponseCallbacks(binding Binding, phases ResponsePhaseMask) error 
 		if _, ok := binding.Plugin.(base.BufferedBodyFilterPlugin); !ok {
 			return fmt.Errorf(
 				"factory %q declares buffered body filter without callback (resource=%s/%s)",
-				binding.factoryName,
+				binding.Descriptor.Factory,
 				binding.Provenance.Kind,
 				binding.Provenance.ID,
 			)
@@ -748,7 +710,7 @@ func validateResponseCallbacks(binding Binding, phases ResponsePhaseMask) error 
 		if _, ok := binding.Plugin.(base.FinalResponseStorePlugin); !ok {
 			return fmt.Errorf(
 				"factory %q declares final response store without callback (resource=%s/%s)",
-				binding.factoryName,
+				binding.Descriptor.Factory,
 				binding.Provenance.Kind,
 				binding.Provenance.ID,
 			)

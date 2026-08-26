@@ -25,7 +25,7 @@ func TestTrackReportsServerWideRequestCounters(t *testing.T) {
 
 	handler := Track(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/apisix/status" {
-			StatusHandler(w, r)
+			StatusHandler("node-test")(w, r)
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
@@ -43,6 +43,9 @@ func TestTrackReportsServerWideRequestCounters(t *testing.T) {
 	var response Response
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 		t.Fatalf("decode status response: %v", err)
+	}
+	if response.ID != "node-test" {
+		t.Fatalf("node id = %q, want node-test", response.ID)
 	}
 	if response.Status["active"] != "1" || response.Status["accepted"] != "2" ||
 		response.Status["handled"] != "1" || response.Status["total"] != "2" {

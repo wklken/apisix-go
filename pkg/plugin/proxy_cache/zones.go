@@ -71,13 +71,6 @@ func ValidateCacheZone(name string) error {
 	return validateCacheZoneRegistry(name)
 }
 
-// ValidateConfiguredZones validates the complete static proxy-cache zone
-// registry before a route replacement starts. An empty registry preserves the
-// compatibility fallback used when no zones are declared.
-func ValidateConfiguredZones() error {
-	return validateCacheZoneRegistry("")
-}
-
 // RefreshConfiguredZones validates and atomically publishes a complete
 // proxy-cache zone snapshot. An invalid snapshot leaves the last valid
 // configuration untouched; existing plugin instances keep their current
@@ -90,13 +83,7 @@ func RefreshConfiguredZones(zones []appconfig.Zone) error {
 
 	configuredZoneRefreshMu.Lock()
 	defer configuredZoneRefreshMu.Unlock()
-
-	var next appconfig.Config
-	if appconfig.GlobalConfig != nil {
-		next = *appconfig.GlobalConfig
-	}
-	next.Apisix.ProxyCache.Zones = cloned
-	appconfig.GlobalConfig = &next
+	configuredZoneSnapshot = cloned
 	return nil
 }
 
@@ -104,7 +91,10 @@ func RefreshConfiguredZones(zones []appconfig.Zone) error {
 // configured zone's storage strategy. A configured disk_path makes a zone
 // disk-backed; a zone without one is memory-backed.
 func ValidateCacheZoneStrategy(name, strategy string) error {
-	zones := configuredZones()
+	return validateCacheZoneStrategy(configuredZones(), name, strategy)
+}
+
+func validateCacheZoneStrategy(zones []appconfig.Zone, name, strategy string) error {
 	seen, err := validateZoneDefinitions(zones)
 	if err != nil {
 		return err
@@ -329,7 +319,10 @@ var memoryZoneRegistry = struct {
 	zones: make(map[string]*memoryZone),
 }
 
-var configuredZoneRefreshMu sync.RWMutex
+var (
+	configuredZoneRefreshMu sync.RWMutex
+	configuredZoneSnapshot  []appconfig.Zone
+)
 
 type varyIndex struct {
 	headers    []string
@@ -462,7 +455,11 @@ func releaseMemoryZoneRef(name string, zone *memoryZone) {
 }
 
 func declaredCacheZone(name string) bool {
-	for _, zone := range configuredZones() {
+	return declaredCacheZoneIn(configuredZones(), name)
+}
+
+func declaredCacheZoneIn(zones []appconfig.Zone, name string) bool {
+	for _, zone := range zones {
 		if zone.Name == name {
 			return true
 		}
@@ -471,16 +468,20 @@ func declaredCacheZone(name string) bool {
 }
 
 func acquireMemoryZone(name string) *memoryZone {
+	return acquireMemoryZoneIn(configuredZones(), name)
+}
+
+func acquireMemoryZoneIn(zones []appconfig.Zone, name string) *memoryZone {
 	memoryZoneRegistry.Lock()
 	defer memoryZoneRegistry.Unlock()
-	fingerprint := cacheZoneFingerprint(name)
+	fingerprint := cacheZoneFingerprintIn(zones, name)
 	zone := memoryZoneRegistry.zones[name]
 	if zone == nil || zone.fingerprint != fingerprint {
 		zone = &memoryZone{
 			entries:     make(map[string]cacheEntry),
 			vary:        make(map[string]varyIndex),
 			loaded:      make(map[string]bool),
-			capacity:    memoryZoneCapacity(name),
+			capacity:    memoryZoneCapacityIn(zones, name),
 			fingerprint: fingerprint,
 		}
 		memoryZoneRegistry.zones[name] = zone
@@ -489,8 +490,8 @@ func acquireMemoryZone(name string) *memoryZone {
 	return zone
 }
 
-func memoryZoneCapacity(name string) int64 {
-	for _, zone := range configuredZones() {
+func memoryZoneCapacityIn(zones []appconfig.Zone, name string) int64 {
+	for _, zone := range zones {
 		if zone.Name != name {
 			continue
 		}
@@ -503,8 +504,8 @@ func memoryZoneCapacity(name string) int64 {
 	return 0
 }
 
-func cacheZoneFingerprint(name string) string {
-	for _, zone := range configuredZones() {
+func cacheZoneFingerprintIn(zones []appconfig.Zone, name string) string {
+	for _, zone := range zones {
 		if zone.Name != name {
 			continue
 		}
@@ -538,10 +539,7 @@ func validateCacheZoneRegistry(cacheZone string) error {
 func configuredZones() []appconfig.Zone {
 	configuredZoneRefreshMu.RLock()
 	defer configuredZoneRefreshMu.RUnlock()
-	if appconfig.GlobalConfig == nil {
-		return nil
-	}
-	return append([]appconfig.Zone(nil), appconfig.GlobalConfig.Apisix.ProxyCache.Zones...)
+	return append([]appconfig.Zone(nil), configuredZoneSnapshot...)
 }
 
 func validateZoneDefinitions(zones []appconfig.Zone) (map[string]struct{}, error) {

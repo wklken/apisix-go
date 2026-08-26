@@ -2,72 +2,78 @@ package server
 
 import (
 	"bufio"
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"runtime/debug"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/felixge/httpsnoop"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/observability/metrics"
+	"github.com/wklken/apisix-go/pkg/plugin"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/batch_requests"
 )
 
-const routeSetRetired = uint64(1) << 63
-
-type routeSet struct {
-	handler     http.Handler
-	stop        func()
-	state       atomic.Uint64 // high bit is retired; remaining bits are requests and batch leases
-	drained     chan struct{}
-	drainedOnce sync.Once
-	hijackMu    sync.Mutex
-	hijacked    map[net.Conn]struct{}
-	hijackOnce  sync.Once
-}
+var errHTTPGenerationHijackUnavailable = errors.New("HTTP generation hijack lease unavailable")
 
 type routeHandler struct {
-	mu      sync.Mutex
-	current atomic.Pointer[routeSet]
-	closed  bool
+	mu                  sync.Mutex
+	generationSource    httpLeaseSource
+	hijacked            map[*generationConn]struct{}
+	generationActive    int
+	generationDrained   chan struct{}
+	generationDrainOnce sync.Once
+	closed              bool
 }
 
-func newRouteHandler(handler http.Handler, stop func()) *routeHandler {
-	routes := &routeHandler{}
-	routes.current.Store(newRouteSet(handler, stop))
-	return routes
+func newGenerationRouteHandler(source httpLeaseSource) *routeHandler {
+	return &routeHandler{
+		generationSource:  source,
+		hijacked:          make(map[*generationConn]struct{}),
+		generationDrained: make(chan struct{}),
+	}
 }
 
 func (h *routeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	var current *routeSet
-	for {
-		current = h.current.Load()
-		if current == nil || current.handler == nil {
-			http.Error(w, http.StatusText(http.StatusServiceUnavailable), http.StatusServiceUnavailable)
-			return
-		}
-		if current.acquireRequest() {
-			break
-		}
+	h.serveGeneration(w, r)
+}
+
+func (h *routeHandler) serveGeneration(w http.ResponseWriter, r *http.Request) {
+	h.mu.Lock()
+	if h.closed || h.generationSource == nil {
+		h.mu.Unlock()
+		http.Error(w, http.StatusText(http.StatusServiceUnavailable), http.StatusServiceUnavailable)
+		return
 	}
-
-	defer h.finishRequest(current)
-	serveRouteRequestForGeneration(w, r, current.handler, current)
+	lease, ok := h.generationSource()
+	if !ok || lease.Snapshot == nil || lease.Snapshot.Handler() == nil || lease.Release == nil {
+		h.mu.Unlock()
+		if ok && lease.Release != nil {
+			lease.Release()
+		}
+		http.Error(w, http.StatusText(http.StatusServiceUnavailable), http.StatusServiceUnavailable)
+		return
+	}
+	h.generationActive++
+	h.mu.Unlock()
+	defer h.finishGenerationLease(lease.Release)
+	serveRouteRequestForHTTPGeneration(w, r, lease.Snapshot.Handler(), &lease, h)
 }
 
-func serveRouteRequest(w http.ResponseWriter, r *http.Request, handler http.Handler) {
-	serveRouteRequestForGeneration(w, r, handler, nil)
-}
-
-func serveRouteRequestForGeneration(
+func serveRouteRequestForHTTPGeneration(
 	w http.ResponseWriter,
 	r *http.Request,
 	handler http.Handler,
-	generation *routeSet,
+	lease *httpGenerationLease,
+	terminal *routeHandler,
 ) {
 	r.Header.Del("X-Consumer-Username")
 	request, lifecycle := apisixctx.EnsureRequestLifecycle(r, time.Now())
@@ -80,108 +86,213 @@ func serveRouteRequestForGeneration(
 	if bodyLimitState != nil {
 		wrapped = bodyLimitState.wrapResponseWriter(wrapped)
 	}
-	var unregisterHijacks []func()
-	if generation != nil {
+	var generationHijacks []*generationConn
+	if lease != nil {
 		wrapped = httpsnoop.Wrap(wrapped, httpsnoop.Hooks{
 			Hijack: func(hijack httpsnoop.HijackFunc) httpsnoop.HijackFunc {
 				return func() (net.Conn, *bufio.ReadWriter, error) {
 					connection, readWriter, err := hijack()
 					if err == nil && connection != nil {
-						unregisterHijacks = append(unregisterHijacks, generation.registerHijacked(connection))
+						wrappedConnection, wrapErr := terminal.registerGenerationHijack(connection, lease)
+						if wrapErr != nil {
+							return nil, nil, wrapErr
+						}
+						generationHijacks = append(generationHijacks, wrappedConnection)
+						connection = wrappedConnection
+						readWriter, wrapErr = rebuildGenerationReadWriter(readWriter, wrappedConnection)
+						if wrapErr != nil {
+							closePanic, _ := closeRetainedGenerationConn(wrappedConnection)
+							if closePanic != nil {
+								panic(closePanic)
+							}
+							return nil, nil, wrapErr
+						}
 					}
 					return connection, readWriter, err
 				}
 			},
 		})
 	}
-	defer func() {
-		for _, unregister := range unregisterHijacks {
-			unregister()
-		}
-	}()
 	request = base.WithResponseCapture(request, capture)
-	if generation != nil {
+	if lease != nil && lease.retain != nil {
 		request = batch_requests.WithDispatchLeaseFactory(request, func() (batch_requests.DispatchLease, bool) {
-			if !generation.acquireDispatchLease() {
+			var child httpGenerationLease
+			var ok bool
+			if terminal == nil {
+				child, ok = lease.retain()
+			} else {
+				child, ok = terminal.retainGenerationLease(lease)
+			}
+			if !ok || child.Snapshot == nil || child.Snapshot.Handler() == nil {
+				if ok && child.Release != nil {
+					child.Release()
+				}
 				return batch_requests.DispatchLease{}, false
 			}
-			var releaseOnce sync.Once
 			return batch_requests.DispatchLease{
 				Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					serveRouteRequestForGeneration(w, r, generation.handler, generation)
+					serveRouteRequestForHTTPGeneration(w, r, child.Snapshot.Handler(), &child, terminal)
 				}),
-				Release: func() {
-					releaseOnce.Do(generation.releaseRequest)
-				},
+				Release: child.Release,
 			}, true
 		})
 	}
 	lifecycle.SetFinalRequest(request)
 
 	defer func() {
-		recovered := recover()
-		bodyLimitFinalized := false
-		if bodyLimitState != nil {
-			bodyLimitFinalized = bodyLimitState.writeCanonicalResponse(wrapped, request)
+		primary := recover()
+		isHandlerAbort := primary == http.ErrAbortHandler
+		pluginPanic, isPluginPanic := primary.(*plugin.PanicError)
+		isUnknownCorePanic := primary != nil && !isHandlerAbort && !isPluginPanic
+		var firstCoreCleanupPanic any
+		outcomeBeforeCleanup := capture.Outcome()
+
+		if bodyLimitState != nil && isUnknownCorePanic {
+			bodyLimitState.disableCanonicalResponse()
+		}
+		bodyLimitRejected := bodyLimitState != nil && bodyLimitState.canonicalResponsePending()
+		if bodyLimitState != nil && !isUnknownCorePanic {
+			if recovered := captureCleanupPanic(func() {
+				bodyLimitState.writeCanonicalResponse(wrapped, request)
+			}); recovered != nil {
+				bodyLimitState.disableCanonicalResponse()
+				firstCoreCleanupPanic = recovered
+			}
 		}
 		outcome := capture.Outcome()
-		aborted := false
-		isHandlerAbort := recovered == http.ErrAbortHandler
+		pluginPostCommitAbort := false
 
 		switch {
-		case recovered == nil:
+		case primary == nil:
 			outcome.Kind = apisixctx.RequestOutcomeCompleted
-		case bodyLimitFinalized:
-			logger.Errorf("recovered request panic after body-limit rejection: %v\n%s", recovered, debug.Stack())
-			metrics.RecordRequestPanic(metrics.RequestPanicPreCommit)
-			outcome.Kind = apisixctx.RequestOutcomeRecoveredPanic
 		case isHandlerAbort:
 			outcome.Kind = apisixctx.RequestOutcomeHandlerAbort
-		default:
-			logger.Errorf("recovered request panic: %v\n%s", recovered, debug.Stack())
+		case isPluginPanic && bodyLimitRejected:
+			logger.Errorf("recovered %s after body-limit rejection\n%s", pluginPanic, pluginPanic.Stack)
+			metrics.RecordRequestPanic(metrics.RequestPanicPlugin, metrics.RequestPanicPreCommit)
+			outcome.Kind = apisixctx.RequestOutcomeRecoveredPanic
+		case isPluginPanic:
+			logger.Errorf("recovered %s\n%s", pluginPanic, pluginPanic.Stack)
 			apisixctx.SetRequestResponseSource(request, apisixctx.ResponseSourceAPISIX)
 			if outcome.Committed || outcome.Flushed || outcome.Hijacked {
-				metrics.RecordRequestPanic(requestPanicStage(outcome))
+				metrics.RecordRequestPanic(metrics.RequestPanicPlugin, requestPanicStage(outcome))
 				outcome.Kind = apisixctx.RequestOutcomeAbortedPanic
-				aborted = true
+				pluginPostCommitAbort = true
 			} else {
-				metrics.RecordRequestPanic(metrics.RequestPanicPreCommit)
-				if !writeStableInternalError(wrapped) {
-					outcome = capture.Outcome()
-					aborted = true
-				} else {
-					outcome = capture.Outcome()
+				metrics.RecordRequestPanic(metrics.RequestPanicPlugin, metrics.RequestPanicPreCommit)
+				ok, writerPanic := writeStableInternalError(wrapped)
+				if writerPanic != nil && firstCoreCleanupPanic == nil {
+					firstCoreCleanupPanic = writerPanic
 				}
+				outcome = capture.Outcome()
 				outcome.Kind = apisixctx.RequestOutcomeRecoveredPanic
-				if aborted {
+				if !ok {
 					outcome.Kind = apisixctx.RequestOutcomeAbortedPanic
+					pluginPostCommitAbort = writerPanic == nil
 				}
 			}
+		case isUnknownCorePanic:
+			logger.Errorf("request core invariant panic: %v\n%s", primary, debug.Stack())
+			metrics.RecordRequestPanic(metrics.RequestPanicCore, requestPanicStageBeforeCommit(outcomeBeforeCleanup))
+			outcome.Kind = apisixctx.RequestOutcomeAbortedPanic
+		}
+		if firstCoreCleanupPanic != nil {
+			metrics.RecordRequestPanic(metrics.RequestPanicCore, requestPanicStageBeforeCommit(outcome))
+			outcome.Kind = apisixctx.RequestOutcomeAbortedPanic
 		}
 
 		lifecycle.Complete(outcome, time.Now())
-		for _, failure := range lifecycle.Finalize() {
+		finalization := lifecycle.FinalizeResult()
+		for _, failure := range finalization.Failures {
 			logFinalizerFailure(failure)
-			if failure.PanicValue != nil {
-				metrics.RecordRequestPanic(metrics.RequestPanicFinalizer)
+			if owner, ok := finalizerPanicOwner(failure); ok {
+				metrics.RecordRequestPanic(owner, metrics.RequestPanicFinalizer)
 			}
 		}
-		apisixctx.RecycleVars(request)
-
-		if outcome.Hijacked && (isHandlerAbort || aborted) {
-			if err := capture.CloseHijacked(); err != nil {
-				logger.Errorf("close hijacked request connection: %s", err)
+		if recovered := captureCleanupPanic(
+			func() { apisixctx.RecycleVars(request) },
+		); recovered != nil {
+			metrics.RecordRequestPanic(metrics.RequestPanicCore, metrics.RequestPanicFinalizer)
+			if firstCoreCleanupPanic == nil {
+				firstCoreCleanupPanic = recovered
 			}
+		}
+
+		mustAbort := primary != nil || firstCoreCleanupPanic != nil || finalization.FatalPanic != nil
+		if outcome.Hijacked && mustAbort {
+			if len(generationHijacks) != 0 {
+				for _, connection := range generationHijacks {
+					closePanic, closeErr := closeRetainedGenerationConn(connection)
+					if closeErr != nil {
+						logger.Errorf("close hijacked request connection: %s", closeErr)
+					}
+					if closePanic != nil {
+						metrics.RecordRequestPanic(metrics.RequestPanicCore, metrics.RequestPanicPostHijack)
+						if firstCoreCleanupPanic == nil {
+							firstCoreCleanupPanic = closePanic
+						}
+					}
+				}
+			} else if closePanic := captureCleanupPanic(func() {
+				if err := capture.CloseHijacked(); err != nil {
+					logger.Errorf("close hijacked request connection: %s", err)
+				}
+			}); closePanic != nil {
+				metrics.RecordRequestPanic(metrics.RequestPanicCore, metrics.RequestPanicPostHijack)
+				if firstCoreCleanupPanic == nil {
+					firstCoreCleanupPanic = closePanic
+				}
+			}
+		}
+		if isUnknownCorePanic {
+			panic(primary)
+		}
+		if firstCoreCleanupPanic != nil {
+			panic(firstCoreCleanupPanic)
+		}
+		if finalization.FatalPanic != nil {
+			panic(finalization.FatalPanic.PanicValue)
+		}
+		if pluginPostCommitAbort {
+			panic(http.ErrAbortHandler)
 		}
 		if isHandlerAbort {
-			panic(recovered)
-		}
-		if aborted {
-			panic(http.ErrAbortHandler)
+			panic(primary)
 		}
 	}()
 
 	handler.ServeHTTP(wrapped, request)
+}
+
+func rebuildGenerationReadWriter(
+	readWriter *bufio.ReadWriter,
+	connection *generationConn,
+) (*bufio.ReadWriter, error) {
+	if connection == nil {
+		return nil, errHTTPGenerationHijackUnavailable
+	}
+	var buffered []byte
+	if readWriter != nil {
+		writer := readWriter.Writer
+		if writer != nil {
+			if err := writer.Flush(); err != nil {
+				return nil, fmt.Errorf("flush hijacked response before generation wrap: %w", err)
+			}
+		}
+		reader := readWriter.Reader
+		if reader != nil && reader.Buffered() != 0 {
+			peeked, err := reader.Peek(reader.Buffered())
+			if err != nil {
+				return nil, fmt.Errorf("preserve hijacked buffered input: %w", err)
+			}
+			buffered = bytes.Clone(peeked)
+		}
+	}
+	reader := io.Reader(connection)
+	if len(buffered) != 0 {
+		reader = io.MultiReader(bytes.NewReader(buffered), connection)
+	}
+	return bufio.NewReadWriter(bufio.NewReader(reader), bufio.NewWriter(connection)), nil
 }
 
 func requestPanicStage(outcome apisixctx.ResponseOutcome) metrics.RequestPanicStage {
@@ -194,21 +305,53 @@ func requestPanicStage(outcome apisixctx.ResponseOutcome) metrics.RequestPanicSt
 	return metrics.RequestPanicPostCommit
 }
 
-func writeStableInternalError(w http.ResponseWriter) (ok bool) {
-	defer func() {
-		if recover() != nil {
-			ok = false
-		}
-	}()
-
-	for key := range w.Header() {
-		w.Header().Del(key)
+func requestPanicStageBeforeCommit(outcome apisixctx.ResponseOutcome) metrics.RequestPanicStage {
+	if !outcome.Committed && !outcome.Flushed && !outcome.Hijacked {
+		return metrics.RequestPanicPreCommit
 	}
-	w.Header().Set("Content-Type", "application/json; charset=UTF-8")
-	w.WriteHeader(http.StatusInternalServerError)
-	const body = `{"message":"Internal Server Error"}`
-	written, err := w.Write([]byte(body))
-	return err == nil && written == len(body)
+	return requestPanicStage(outcome)
+}
+
+func captureCleanupPanic(call func()) (panicValue any) {
+	defer func() { panicValue = recover() }()
+	call()
+	return nil
+}
+
+func closeRetainedGenerationConn(connection *generationConn) (panicValue any, closeErr error) {
+	if connection == nil {
+		return nil, nil
+	}
+	panicValue = captureCleanupPanic(func() { closeErr = connection.Close() })
+	return panicValue, closeErr
+}
+
+func writeStableInternalError(w http.ResponseWriter) (ok bool, panicValue any) {
+	panicValue = captureCleanupPanic(func() {
+		for key := range w.Header() {
+			w.Header().Del(key)
+		}
+		w.Header().Set("Content-Type", "application/json; charset=UTF-8")
+		w.WriteHeader(http.StatusInternalServerError)
+		const body = `{"message":"Internal Server Error"}`
+		written, err := w.Write([]byte(body))
+		ok = err == nil && written == len(body)
+	})
+	return ok, panicValue
+}
+
+func finalizerPanicOwner(failure apisixctx.FinalizerFailure) (metrics.RequestPanicOwner, bool) {
+	var pluginPanic *plugin.PanicError
+	if errors.As(failure.Err, &pluginPanic) {
+		return metrics.RequestPanicPluginFinalizer, true
+	}
+	if failure.PanicValue == nil {
+		return "", false
+	}
+	if failure.Kind == apisixctx.FinalizerOwnerCoreInvariant {
+		return metrics.RequestPanicCoreFinalizer, true
+	}
+	return metrics.RequestPanicPluginFinalizer, true
 }
 
 func logFinalizerFailure(failure apisixctx.FinalizerFailure) {
@@ -221,157 +364,134 @@ func logFinalizerFailure(failure apisixctx.FinalizerFailure) {
 	}
 }
 
-func (h *routeHandler) Replace(handler http.Handler, stop func()) {
-	next := newRouteSet(handler, stop)
-	h.mu.Lock()
-	if h.closed {
-		retireRouteSet(next)
-		h.mu.Unlock()
-		stopRouteSet(next)
-		return
-	}
-	previous := h.current.Swap(next)
-	retireRouteSet(previous)
-	h.mu.Unlock()
-
-	retireAndStopRouteSet(previous)
+func (h *routeHandler) Close() {
+	h.RejectNew()
+	_ = h.Drain(context.Background())
 }
 
-func (h *routeHandler) Close() {
+func (h *routeHandler) RejectNew() {
 	h.mu.Lock()
 	if h.closed {
 		h.mu.Unlock()
 		return
 	}
 	h.closed = true
-	previous := h.current.Swap(nil)
-	retireRouteSet(previous)
+	h.generationSource = nil
+	connections := make([]*generationConn, 0, len(h.hijacked))
+	for connection := range h.hijacked {
+		connections = append(connections, connection)
+	}
+	clear(h.hijacked)
+	h.signalGenerationDrainedLocked()
 	h.mu.Unlock()
-
-	stopRouteSet(previous)
-}
-
-func newRouteSet(handler http.Handler, stop func()) *routeSet {
-	return &routeSet{handler: handler, stop: stop, drained: make(chan struct{})}
-}
-
-func (r *routeSet) acquireRequest() bool {
-	for {
-		state := r.state.Load()
-		if state&routeSetRetired != 0 {
-			return false
+	var firstClosePanic any
+	for _, connection := range connections {
+		closePanic, _ := closeRetainedGenerationConn(connection)
+		if firstClosePanic == nil {
+			firstClosePanic = closePanic
 		}
-		if r.state.CompareAndSwap(state, state+1) {
-			return true
-		}
+	}
+	if firstClosePanic != nil {
+		panic(firstClosePanic)
 	}
 }
 
-func (r *routeSet) acquireDispatchLease() bool {
-	for {
-		state := r.state.Load()
-		if state&routeSetRetired != 0 {
-			return false
-		}
-		if r.state.CompareAndSwap(state, state+1) {
-			return true
-		}
+func (h *routeHandler) Drain(ctx context.Context) error {
+	if h == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	h.RejectNew()
+	h.mu.Lock()
+	drained := h.generationDrained
+	h.mu.Unlock()
+	if drained == nil {
+		return nil
+	}
+	select {
+	case <-drained:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 
-func (r *routeSet) releaseRequest() {
-	state := r.state.Add(^uint64(0))
-	if state == routeSetRetired {
-		r.closeDrained()
+func (h *routeHandler) retainGenerationLease(parent *httpGenerationLease) (httpGenerationLease, bool) {
+	if h == nil || parent == nil || parent.retain == nil {
+		return httpGenerationLease{}, false
 	}
+	h.mu.Lock()
+	if h.closed {
+		h.mu.Unlock()
+		return httpGenerationLease{}, false
+	}
+	child, ok := parent.retain()
+	if !ok || child.Release == nil {
+		h.mu.Unlock()
+		if ok && child.Release != nil {
+			child.Release()
+		}
+		return httpGenerationLease{}, false
+	}
+	h.generationActive++
+	release := child.Release
+	child.Release = func() { h.finishGenerationLease(release) }
+	h.mu.Unlock()
+	return child, true
 }
 
-func (h *routeHandler) finishRequest(current *routeSet) {
-	current.releaseRequest()
+func (h *routeHandler) finishGenerationLease(release func()) {
+	if release != nil {
+		release()
+	}
+	h.mu.Lock()
+	if h.generationActive > 0 {
+		h.generationActive--
+	}
+	h.signalGenerationDrainedLocked()
+	h.mu.Unlock()
 }
 
-func retireRouteSet(current *routeSet) {
-	if current == nil {
+func (h *routeHandler) signalGenerationDrainedLocked() {
+	if !h.closed || h.generationActive != 0 || h.generationDrained == nil {
 		return
 	}
-	for {
-		state := current.state.Load()
-		if state&routeSetRetired != 0 {
-			return
-		}
-		retired := state | routeSetRetired
-		if current.state.CompareAndSwap(state, retired) {
-			current.closeHijacked()
-			if retired == routeSetRetired {
-				current.closeDrained()
-			}
-			return
-		}
-	}
+	h.generationDrainOnce.Do(func() { close(h.generationDrained) })
 }
 
-func (r *routeSet) registerHijacked(connection net.Conn) func() {
-	if connection == nil {
-		return func() {}
-	}
-	r.hijackMu.Lock()
-	if r.state.Load()&routeSetRetired != 0 {
-		r.hijackMu.Unlock()
-		_ = connection.Close()
-		return func() {}
-	}
-	if r.hijacked == nil {
-		r.hijacked = make(map[net.Conn]struct{})
-	}
-	r.hijacked[connection] = struct{}{}
-	r.hijackMu.Unlock()
-
-	var once sync.Once
-	return func() {
-		once.Do(func() {
-			r.hijackMu.Lock()
-			delete(r.hijacked, connection)
-			r.hijackMu.Unlock()
-		})
-	}
-}
-
-func (r *routeSet) closeHijacked() {
-	r.hijackOnce.Do(func() {
-		r.hijackMu.Lock()
-		connections := make([]net.Conn, 0, len(r.hijacked))
-		for connection := range r.hijacked {
-			connections = append(connections, connection)
-		}
-		clear(r.hijacked)
-		r.hijackMu.Unlock()
-		for _, connection := range connections {
+func (h *routeHandler) registerGenerationHijack(
+	connection net.Conn,
+	lease *httpGenerationLease,
+) (*generationConn, error) {
+	if h == nil || connection == nil || lease == nil || lease.retain == nil {
+		if connection != nil {
 			_ = connection.Close()
 		}
-	})
-}
-
-func (r *routeSet) closeDrained() {
-	r.drainedOnce.Do(func() { close(r.drained) })
-}
-
-func stopRouteSet(current *routeSet) {
-	if current == nil {
-		return
+		return nil, errHTTPGenerationHijackUnavailable
 	}
-	<-current.drained
-	if current.stop != nil {
-		current.stop()
+	hijackLease, ok := h.retainGenerationLease(lease)
+	if !ok {
+		_ = connection.Close()
+		return nil, errHTTPGenerationHijackUnavailable
 	}
-}
-
-// retireAndStopRouteSet retires and stops a replaced route generation
-// asynchronously so replacement publication does not block on long-lived
-// requests. routeHandler.Close uses stopRouteSet directly and remains
-// synchronous.
-func retireAndStopRouteSet(current *routeSet) {
-	if current == nil {
-		return
+	wrapped := newGenerationConn(connection, hijackLease.Release, nil)
+	h.mu.Lock()
+	if h.closed {
+		h.mu.Unlock()
+		closePanic, _ := closeRetainedGenerationConn(wrapped)
+		if closePanic != nil {
+			panic(closePanic)
+		}
+		return nil, errHTTPGenerationHijackUnavailable
 	}
-	go stopRouteSet(current)
+	wrapped.unregister = func() {
+		h.mu.Lock()
+		delete(h.hijacked, wrapped)
+		h.mu.Unlock()
+	}
+	h.hijacked[wrapped] = struct{}{}
+	h.mu.Unlock()
+	return wrapped, nil
 }

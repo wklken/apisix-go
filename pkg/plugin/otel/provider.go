@@ -6,11 +6,12 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
-	"github.com/wklken/apisix-go/pkg/config"
-	"github.com/wklken/apisix-go/pkg/store"
+	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/runtime"
 	"github.com/wklken/apisix-go/pkg/util"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
@@ -56,23 +57,48 @@ func buildRootSampler(conf RootSamplerConfig) sdktrace.Sampler {
 	}
 }
 
-func loadMetadata() (metadata Metadata, configured bool) {
-	if config.GlobalConfig != nil {
-		if attr := config.GlobalConfig.PluginAttr[name]; attr != nil {
-			if err := util.Parse(attr, &metadata); err == nil {
-				configured = true
-			}
+func loadMetadata(
+	view runtime.MetadataView,
+	pluginAttr map[string]map[string]any,
+) (metadata Metadata, configured bool, err error) {
+	if found, decodeErr := view.Decode(name, &metadata); found || decodeErr != nil {
+		if decodeErr != nil {
+			return Metadata{}, false, fmt.Errorf("decode OpenTelemetry metadata: %w", decodeErr)
 		}
+		return applyMetadataDefaults(metadata), true, nil
 	}
 
-	var stored Metadata
-	if safeGetPluginMetadata(name, &stored) == nil {
-		metadata = stored
-		configured = true
+	metadata = Metadata{}
+	if found, decodeErr := view.Decode(aliasName, &metadata); found || decodeErr != nil {
+		if decodeErr != nil {
+			return Metadata{}, false, fmt.Errorf("decode OpenTelemetry metadata alias: %w", decodeErr)
+		}
+		return applyMetadataDefaults(metadata), true, nil
 	}
-	if !configured {
-		return Metadata{}, false
+
+	if attr, ok := pluginAttr[name]; ok {
+		if attr == nil {
+			return Metadata{}, false, fmt.Errorf("OpenTelemetry plugin attributes %q must be an object", name)
+		}
+		if parseErr := util.Parse(attr, &metadata); parseErr != nil {
+			return Metadata{}, false, fmt.Errorf("decode OpenTelemetry plugin attributes: %w", parseErr)
+		}
+		return applyMetadataDefaults(metadata), true, nil
 	}
+	if attr, ok := pluginAttr[aliasName]; ok {
+		if attr == nil {
+			return Metadata{}, false, fmt.Errorf("OpenTelemetry plugin attributes %q must be an object", aliasName)
+		}
+		if parseErr := util.Parse(attr, &metadata); parseErr != nil {
+			return Metadata{}, false, fmt.Errorf("decode OpenTelemetry plugin attribute alias: %w", parseErr)
+		}
+		return applyMetadataDefaults(metadata), true, nil
+	}
+
+	return applyMetadataDefaults(metadata), false, nil
+}
+
+func applyMetadataDefaults(metadata Metadata) Metadata {
 	if metadata.TraceIDSource == "" {
 		metadata.TraceIDSource = "random"
 	}
@@ -82,11 +108,7 @@ func loadMetadata() (metadata Metadata, configured bool) {
 	if metadata.Collector.RequestTimeout == 0 {
 		metadata.Collector.RequestTimeout = 3
 	}
-	return metadata, true
-}
-
-func safeGetPluginMetadata(id string, target any) error {
-	return store.GetPluginMetadata(id, target)
+	return metadata
 }
 
 func newTracerProvider(
@@ -180,9 +202,25 @@ func otelResource(configured map[string]any) *sdkresource.Resource {
 			attributes = append(attributes, attribute.Float64(key, typed))
 		case int:
 			attributes = append(attributes, attribute.Int(key, typed))
+		case json.Number:
+			attributes = appendJSONNumberResourceAttribute(attributes, key, typed)
 		}
 	}
 	return sdkresource.NewWithAttributes("", attributes...)
+}
+
+func appendJSONNumberResourceAttribute(
+	attributes []attribute.KeyValue,
+	key string,
+	value json.Number,
+) []attribute.KeyValue {
+	if integer, err := strconv.ParseInt(string(value), 10, 64); err == nil {
+		return append(attributes, attribute.Int64(key, integer))
+	}
+	if fraction, err := strconv.ParseFloat(string(value), 64); err == nil {
+		return append(attributes, attribute.Float64(key, fraction))
+	}
+	return attributes
 }
 
 func flattenResourceAttributes(configured map[string]any) map[string]any {

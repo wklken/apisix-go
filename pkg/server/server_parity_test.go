@@ -14,8 +14,6 @@ import (
 )
 
 func TestDeleteURITailSlashRunsBeforeRouteMatchingAndPreservesRoot(t *testing.T) {
-	previous := config.GlobalConfig
-	t.Cleanup(func() { config.GlobalConfig = previous })
 	cfg := &config.Config{Apisix: config.Apisix{DeleteURITailSlash: true}}
 
 	var gotPaths []string

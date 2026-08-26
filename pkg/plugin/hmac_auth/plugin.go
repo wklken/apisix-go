@@ -17,7 +17,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/resource"
-	"github.com/wklken/apisix-go/pkg/store"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -206,8 +205,8 @@ func (p *Plugin) anonymousConsumerResult(w http.ResponseWriter, r *http.Request)
 		return base.RequestPhaseResult{}, false
 	}
 
-	consumer, err := store.GetConsumer(p.config.AnonymousConsumer)
-	if err != nil {
+	consumer, ok := p.consumerByID(p.config.AnonymousConsumer)
+	if !ok {
 		message := fmt.Sprintf("failed to get anonymous consumer %s", p.config.AnonymousConsumer)
 		if !ctx.RecordAuthProbeDiagnostic(r, message) {
 			logger.Error(message)
@@ -244,8 +243,8 @@ func (p *Plugin) authenticate(r *http.Request) (resource.Consumer, int, error) {
 		return resource.Consumer{}, http.StatusUnauthorized, errors.New("algorithm missing")
 	}
 
-	consumer, err := store.GetConsumerByPluginKey(name, params.KeyID)
-	if err != nil {
+	consumer, ok := p.consumerByPluginKey(params.KeyID)
+	if !ok {
 		return resource.Consumer{}, http.StatusUnauthorized, errInvalidKeyID
 	}
 	if !p.algorithmAllowed(params.Algorithm) {
@@ -281,6 +280,22 @@ func (p *Plugin) authenticate(r *http.Request) (resource.Consumer, int, error) {
 	}
 
 	return consumer, 0, nil
+}
+
+func (p *Plugin) consumerByPluginKey(key string) (resource.Consumer, bool) {
+	lookup := p.ConsumerLookup()
+	if lookup == nil {
+		return resource.Consumer{}, false
+	}
+	return lookup.ConsumerByPluginKey(name, key)
+}
+
+func (p *Plugin) consumerByID(id string) (resource.Consumer, bool) {
+	lookup := p.ConsumerLookup()
+	if lookup == nil {
+		return resource.Consumer{}, false
+	}
+	return lookup.ConsumerByID(id)
 }
 
 func (p *Plugin) algorithmAllowed(algorithm string) bool {

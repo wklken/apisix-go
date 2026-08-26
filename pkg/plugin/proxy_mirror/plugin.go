@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand"
@@ -18,6 +19,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/proxy"
+	"github.com/wklken/apisix-go/pkg/runtime"
 	"golang.org/x/net/http2"
 )
 
@@ -32,11 +34,8 @@ type Plugin struct {
 
 	mirrorMu        sync.Mutex
 	mirrorAdmission chan struct{}
-	mirrorCtx       context.Context
-	mirrorCancel    context.CancelFunc
-	mirrorWG        sync.WaitGroup
-	mirrorStopDone  chan struct{}
 	mirrorStopped   bool
+	mirrorStopOnce  sync.Once
 }
 
 const (
@@ -85,6 +84,8 @@ const schema = `
 }
 `
 
+var errProxyMirrorRequestLifecycle = errors.New("proxy-mirror request lifecycle is required")
+
 type Config struct {
 	Host                 string  `json:"host"`
 	Path                 string  `json:"path,omitempty"`
@@ -129,10 +130,8 @@ func (p *Plugin) PostInit() error {
 		p.baseURL = baseURL
 	}
 	p.mirrorMu.Lock()
-	if p.mirrorCtx == nil && !p.mirrorStopped {
-		p.mirrorCtx, p.mirrorCancel = context.WithCancel(context.Background())
+	if p.mirrorAdmission == nil && !p.mirrorStopped {
 		p.mirrorAdmission = make(chan struct{}, maxInFlightMirrors)
-		p.mirrorStopDone = make(chan struct{})
 	}
 	p.mirrorMu.Unlock()
 
@@ -145,7 +144,11 @@ func (p *Plugin) Config() any {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
-		r = apisixctx.WithBeforeProxyHook(r, p.mirrorFinalizedRequest)
+		r = apisixctx.WithBeforeProxyHookRegistration(r, apisixctx.BeforeProxyHookRegistration{
+			Owner: name,
+			Phase: "before_proxy",
+			Hook:  p.mirrorFinalizedRequest,
+		})
 		next.ServeHTTP(w, r)
 	}
 	return http.HandlerFunc(fn)
@@ -155,8 +158,11 @@ func (p *Plugin) mirrorFinalizedRequest(r *http.Request) error {
 	if !p.shouldMirror() {
 		return nil
 	}
-	ctx, admitted := p.admitMirror()
-	if !admitted {
+	lifecycle := apisixctx.GetRequestLifecycle(r)
+	if lifecycle == nil {
+		return errProxyMirrorRequestLifecycle
+	}
+	if !p.admitMirror() {
 		return nil
 	}
 	body, err := base.ReadRequestBodyLimited(r, p.config.MaxBodySize)
@@ -170,40 +176,35 @@ func (p *Plugin) mirrorFinalizedRequest(r *http.Request) error {
 		logger.Errorf("proxy-mirror build request to %s: %s", p.config.Host, err)
 		return nil
 	}
-	p.startMirror(ctx, mirrorReq)
+	tasks := runtime.NewRequestTaskGroup(r.Context(), "request/proxy-mirror")
+	if !lifecycle.AddFinalizer(name, tasks.Wait) {
+		p.releaseMirrorAdmission()
+		return errProxyMirrorRequestLifecycle
+	}
+	if err := tasks.Go(func(taskCtx context.Context) error {
+		defer p.releaseMirrorAdmission()
+		p.sendMirror(mirrorReq.WithContext(taskCtx))
+		return nil
+	}); err != nil {
+		p.releaseMirrorAdmission()
+		return err
+	}
 	return nil
 }
 
-func (p *Plugin) admitMirror() (context.Context, bool) {
+func (p *Plugin) admitMirror() bool {
 	p.mirrorMu.Lock()
 	defer p.mirrorMu.Unlock()
 
-	if p.mirrorStopped || p.mirrorCtx == nil || p.mirrorAdmission == nil {
-		return nil, false
+	if p.mirrorStopped || p.mirrorAdmission == nil {
+		return false
 	}
 	select {
 	case p.mirrorAdmission <- struct{}{}:
-		return p.mirrorCtx, true
+		return true
 	default:
-		return nil, false
+		return false
 	}
-}
-
-func (p *Plugin) startMirror(ctx context.Context, req *http.Request) {
-	p.mirrorMu.Lock()
-	if p.mirrorStopped {
-		p.mirrorMu.Unlock()
-		p.releaseMirrorAdmission()
-		return
-	}
-	p.mirrorWG.Add(1)
-	req = req.WithContext(ctx)
-	go func() {
-		defer p.mirrorWG.Done()
-		defer p.releaseMirrorAdmission()
-		p.sendMirror(req)
-	}()
-	p.mirrorMu.Unlock()
 }
 
 func (p *Plugin) releaseMirrorAdmission() {
@@ -211,34 +212,19 @@ func (p *Plugin) releaseMirrorAdmission() {
 }
 
 func (p *Plugin) Stop() {
-	p.mirrorMu.Lock()
-	if p.mirrorStopped {
-		done := p.mirrorStopDone
+	p.mirrorStopOnce.Do(func() {
+		p.mirrorMu.Lock()
+		p.mirrorStopped = true
+		client, h2cClient := p.client, p.h2cClient
 		p.mirrorMu.Unlock()
-		if done != nil {
-			<-done
-		}
-		return
-	}
-	p.mirrorStopped = true
-	if p.mirrorStopDone == nil {
-		p.mirrorStopDone = make(chan struct{})
-	}
-	done := p.mirrorStopDone
-	cancel := p.mirrorCancel
-	p.mirrorMu.Unlock()
 
-	if cancel != nil {
-		cancel()
-	}
-	p.mirrorWG.Wait()
-	if p.client != nil {
-		p.client.CloseIdleConnections()
-	}
-	if p.h2cClient != nil && p.h2cClient != p.client {
-		p.h2cClient.CloseIdleConnections()
-	}
-	close(done)
+		if client != nil {
+			client.CloseIdleConnections()
+		}
+		if h2cClient != nil && h2cClient != client {
+			h2cClient.CloseIdleConnections()
+		}
+	})
 }
 
 func (p *Plugin) shouldMirror() bool {

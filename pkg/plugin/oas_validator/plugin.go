@@ -2,7 +2,6 @@ package oas_validator
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -13,28 +12,24 @@ import (
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
-	"github.com/wklken/apisix-go/pkg/store"
+	"github.com/wklken/apisix-go/pkg/runtime"
+	"github.com/wklken/apisix-go/pkg/secret"
 )
 
 type Plugin struct {
 	base.BasePlugin
-	config         Config
-	metadata       Metadata
-	mu             sync.Mutex
-	compiled       atomic.Pointer[compiledSpec]
-	compiledAt     atomic.Int64
-	now            func() time.Time
-	inlineSpec     *store.ResolvedSecret
-	requestHeaders map[string]*store.ResolvedSecret
-
-	refreshStart   sync.Once
-	refreshStop    sync.Once
-	refreshStopped atomic.Bool
-	wakeRefresh    chan struct{}
-	stopRefresh    chan struct{}
-	refreshDone    chan struct{}
-	refreshCtx     context.Context
-	refreshCancel  context.CancelFunc
+	oasSecretState
+	config              Config
+	metadata            Metadata
+	mu                  sync.Mutex
+	compiled            atomic.Pointer[compiledSpec]
+	compiledAt          atomic.Int64
+	now                 func() time.Time
+	refreshStart        sync.Once
+	refreshStop         sync.Once
+	wakeRefresh         chan struct{}
+	refreshAdmissionErr error
+	refreshCompile      func(context.Context) (*compiledSpec, error)
 }
 
 const (
@@ -167,106 +162,92 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
-	if (p.config.Spec != "" && p.inlineSpec == nil) ||
-		(len(p.config.SpecURLRequestHeaders) > 0 && p.requestHeaders == nil) {
-		if err := p.MaterializeSecrets(); err != nil {
-			return errors.New("oas-validator secret materialization failed")
-		}
+	release, err := p.acquireOASWork()
+	if err != nil {
+		return err
 	}
+	defer release()
+	if err := p.requirePreparedOASSecrets(); err != nil {
+		return err
+	}
+	var metadata Metadata
+	if _, err := p.MetadataView().Decode(name, &metadata); err != nil {
+		return fmt.Errorf("oas-validator metadata decode failed: %w", err)
+	}
+	p.metadata = metadata
 	if p.config.Timeout == 0 {
 		p.config.Timeout = 10000
 	}
 	if p.config.RejectionStatusCode == 0 {
 		p.config.RejectionStatusCode = http.StatusBadRequest
 	}
-	p.metadata = base.LoadPluginMetadata[Metadata](name)
-	if p.inlineSpec != nil {
-		spec := p.inlineSpec.Bytes()
-		defer clear(spec)
-		if len(spec) > maxOASTotalBytes {
-			return fmt.Errorf("inline openapi spec exceeds %d bytes", maxOASTotalBytes)
-		}
-		var raw any
-		if err := json.Unmarshal(spec, &raw); err != nil {
-			return fmt.Errorf("failed to parse inline openapi spec: %w", err)
-		}
-	}
-	return nil
-}
-
-func (p *Plugin) MaterializeSecrets() error {
-	if p.inlineSpec != nil || p.requestHeaders != nil {
-		return nil
-	}
-	var inline *store.ResolvedSecret
-	var err error
 	if p.config.Spec != "" {
-		inline, err = store.MaterializeSecret(p.config.Spec)
-		if err != nil {
-			return err
-		}
-	}
-	headers := make(map[string]*store.ResolvedSecret, len(p.config.SpecURLRequestHeaders))
-	for name, value := range p.config.SpecURLRequestHeaders {
-		resolved, resolveErr := store.MaterializeSecret(value)
-		if resolveErr != nil {
-			inline.Destroy()
-			for _, header := range headers {
-				header.Destroy()
+		return p.withInlineSpec(func(plaintext string) error {
+			if len(plaintext) > maxOASTotalBytes {
+				return fmt.Errorf("inline openapi spec exceeds %d bytes", maxOASTotalBytes)
 			}
-			return resolveErr
-		}
-		headers[name] = resolved
-	}
-	p.inlineSpec = inline
-	p.requestHeaders = headers
-	if inline != nil {
-		p.config.Spec = inline.Descriptor()
-	}
-	for name, header := range headers {
-		p.config.SpecURLRequestHeaders[name] = header.Descriptor()
+			spec := []byte(plaintext)
+			defer clear(spec)
+			var raw any
+			if err := json.Unmarshal(spec, &raw); err != nil {
+				return fmt.Errorf("failed to parse inline openapi spec: %w", err)
+			}
+			return nil
+		})
 	}
 	return nil
-}
-
-func (p *Plugin) resolvedRequestHeaders() map[string]string {
-	headers := make(map[string]string, len(p.requestHeaders))
-	for name, secret := range p.requestHeaders {
-		value := secret.Bytes()
-		headers[name] = string(value)
-		clear(value)
-	}
-	return headers
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
-		validator, err := p.validator()
+		release, err := p.acquireOASWork()
 		if err != nil {
 			logger.Error(err.Error())
 			base.WriteJSONMessage(w, http.StatusInternalServerError, "failed to parse openapi spec")
 			return
 		}
-
-		if err := validateRequest(r.Context(), r, validator, p.config); err != nil {
-			logger.Errorf("error occurred while validating request: %s", err)
-			if p.rejectIfNotMatch() {
-				msg := "failed to validate request. "
-				if p.config.VerboseErrors {
-					msg += err.Error()
-				}
-				base.WriteJSONMessage(w, p.config.RejectionStatusCode, msg)
-				return
-			}
+		proceed := func() bool {
+			defer release()
+			return p.validateOASRequest(w, r)
+		}()
+		if proceed {
+			next.ServeHTTP(w, r)
 		}
-
-		next.ServeHTTP(w, r)
 	}
 	return http.HandlerFunc(fn)
 }
 
+func (p *Plugin) validateOASRequest(w http.ResponseWriter, r *http.Request) bool {
+	validator, err := p.validator()
+	if err != nil {
+		logger.Error(err.Error())
+		base.WriteJSONMessage(w, http.StatusInternalServerError, "failed to parse openapi spec")
+		return false
+	}
+	if err := validateRequest(r.Context(), r, validator, p.config); err != nil {
+		logger.Errorf("error occurred while validating request: %s", err)
+		if p.rejectIfNotMatch() {
+			msg := "failed to validate request. "
+			if p.config.VerboseErrors {
+				msg += err.Error()
+			}
+			base.WriteJSONMessage(w, p.config.RejectionStatusCode, msg)
+			return false
+		}
+	}
+	return true
+}
+
 func (p *Plugin) validator() (*compiledSpec, error) {
+	release, err := p.acquireOASWork()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	if compiled := p.compiled.Load(); compiled != nil {
+		if p.retired.Load() {
+			return nil, secret.ErrCredentialUnavailable
+		}
 		if p.config.Spec != "" || p.currentTime().Before(time.Unix(0, p.compiledAt.Load()).Add(p.specURLTTL())) {
 			return compiled, nil
 		}
@@ -280,13 +261,18 @@ func (p *Plugin) validator() (*compiledSpec, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if compiled := p.compiled.Load(); compiled != nil {
+		if p.retired.Load() {
+			return nil, secret.ErrCredentialUnavailable
+		}
 		return compiled, nil
 	}
 	compiled, err := p.compileValidator(context.Background())
 	if err != nil {
 		return nil, err
 	}
-	p.publishValidator(compiled)
+	if !p.publishOASValidator(compiled) {
+		return nil, secret.ErrCredentialUnavailable
+	}
 	return compiled, nil
 }
 
@@ -294,28 +280,32 @@ func (p *Plugin) validator() (*compiledSpec, error) {
 // to re-fetch and recompile a due spec in the background. Requests never wait
 // on the remote fetch; they keep validating with the last published validator.
 func (p *Plugin) wakeSpecRefresh() {
-	if p.refreshStopped.Load() {
+	if p.retired.Load() {
 		return
 	}
 	p.refreshStart.Do(func() {
-		p.refreshCtx, p.refreshCancel = context.WithCancel(context.Background())
 		p.wakeRefresh = make(chan struct{}, 1)
-		p.stopRefresh = make(chan struct{})
-		p.refreshDone = make(chan struct{})
-		go p.specRefreshLoop()
+		owner := p.TaskOwner()
+		if owner == nil {
+			p.refreshAdmissionErr = runtime.ErrTaskOwnerRequired
+			return
+		}
+		p.refreshAdmissionErr = owner.Go("spec-refresh", p.specRefreshLoop)
 	})
+	if p.refreshAdmissionErr != nil {
+		return
+	}
 	select {
 	case p.wakeRefresh <- struct{}{}:
 	default:
 	}
 }
 
-func (p *Plugin) specRefreshLoop() {
-	defer close(p.refreshDone)
+func (p *Plugin) specRefreshLoop(ctx context.Context) error {
 	for {
 		select {
-		case <-p.stopRefresh:
-			return
+		case <-ctx.Done():
+			return nil
 		case <-p.wakeRefresh:
 		}
 		// A wake that arrives while another pass was refreshing must not
@@ -324,18 +314,30 @@ func (p *Plugin) specRefreshLoop() {
 			p.currentTime().Before(time.Unix(0, p.compiledAt.Load()).Add(p.specURLTTL())) {
 			continue
 		}
-		compiled, err := p.compileValidator(p.refreshCtx)
+		compile := p.compileValidator
+		if p.refreshCompile != nil {
+			compile = p.refreshCompile
+		}
+		compiled, err := compile(ctx)
 		if err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
 			logger.Errorf("failed to refresh openapi spec from URL: %s", err)
 			continue
 		}
-		p.publishValidator(compiled)
+		p.publishOASValidator(compiled)
 	}
 }
 
 // compileValidator fetches and compiles the configured spec. It performs
 // network I/O and must never run while the published-validator lock is held.
 func (p *Plugin) compileValidator(ctx context.Context) (*compiledSpec, error) {
+	release, err := p.acquireOASWork()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	var baseURL *url.URL
 	if p.config.SpecURL != "" {
 		var err error
@@ -344,66 +346,60 @@ func (p *Plugin) compileValidator(ctx context.Context) (*compiledSpec, error) {
 			return nil, err
 		}
 	}
-	headers := p.resolvedRequestHeaders()
-	client, err := newDocumentHTTPClient(
-		baseURL,
-		p.config.SpecURLAllowedAddresses,
-		headers,
-		p.config.SSLVerify,
-		p.config.Timeout,
-	)
-	if err != nil {
-		return nil, err
-	}
-	var spec []byte
-	if p.inlineSpec != nil {
-		spec = p.inlineSpec.Bytes()
-		defer clear(spec)
-	} else {
-		fetched, err := fetchDocument(ctx, client, baseURL, headers, baseURL)
+	var compiled *compiledSpec
+	err = p.withRequestHeaders(func(headers map[string]string) error {
+		client, err := newDocumentHTTPClient(
+			baseURL,
+			p.config.SpecURLAllowedAddresses,
+			headers,
+			p.config.SSLVerify,
+			p.config.Timeout,
+		)
 		if err != nil {
-			return nil, err
+			return err
 		}
-		spec = fetched
-	}
-	compiled, err := compileSpec(
-		ctx,
-		spec,
-		baseURL,
-		client,
-		headers,
-	)
-	if err != nil {
-		if p.config.SpecURL != "" {
-			return nil, fmt.Errorf("failed to compile openapi spec fetched from URL: %w", err)
+		compile := func(spec []byte) error {
+			compiled, err = compileSpec(ctx, spec, baseURL, client, headers)
+			if err == nil {
+				return nil
+			}
+			if p.config.SpecURL != "" {
+				return fmt.Errorf("failed to compile openapi spec fetched from URL: %w", err)
+			}
+			return fmt.Errorf("failed to compile inline openapi spec: %w", err)
 		}
-		return nil, fmt.Errorf("failed to compile inline openapi spec: %w", err)
-	}
-	return compiled, nil
+		if p.config.Spec != "" {
+			return p.withInlineSpec(func(plaintext string) error {
+				spec := []byte(plaintext)
+				defer clear(spec)
+				return compile(spec)
+			})
+		}
+		spec, err := fetchDocument(ctx, client, baseURL, headers, baseURL)
+		if err != nil {
+			return err
+		}
+		defer clear(spec)
+		return compile(spec)
+	})
+	return compiled, err
 }
 
-// publishValidator atomically swaps in a fully compiled validator.
-func (p *Plugin) publishValidator(compiled *compiledSpec) {
-	p.compiled.Store(compiled)
-	p.compiledAt.Store(p.currentTime().UnixNano())
-}
-
-// Stop joins the spec refresher and cancels its remote fetches so no refresh
-// worker outlives the plugin.
+// Stop releases private state after the generation task registry has canceled
+// and joined the spec refresher.
 func (p *Plugin) Stop() {
 	p.refreshStop.Do(func() {
-		p.refreshStopped.Store(true)
-		if p.refreshCancel != nil {
-			p.refreshCancel()
+		workWait := p.retireOASWork()
+		wait := p.retireOASSecrets()
+		if wait != nil {
+			<-wait
 		}
-		if p.stopRefresh != nil {
-			close(p.stopRefresh)
-			<-p.refreshDone
+		if workWait != nil {
+			<-workWait
 		}
-		p.inlineSpec.Destroy()
-		for _, header := range p.requestHeaders {
-			header.Destroy()
-		}
+		p.dropOASSecrets()
+		p.compiled.Store(nil)
+		p.compiledAt.Store(0)
 	})
 }
 

@@ -8,30 +8,22 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/json"
 )
 
 func TestReportTTLReadsAndBoundsPluginAttribute(t *testing.T) {
-	previous := config.GlobalConfig
-	t.Cleanup(func() { config.GlobalConfig = previous })
-
-	config.GlobalConfig = &config.Config{
-		PluginAttr: map[string]map[string]any{
-			"server-info": {"report_ttl": 45},
-		},
-	}
-	if got := ReportTTL(); got != 45*time.Second {
+	attr := map[string]any{"report_ttl": 45}
+	if got := ReportTTL(attr); got != 45*time.Second {
 		t.Fatalf("ReportTTL() = %s, want 45s", got)
 	}
 
-	config.GlobalConfig.PluginAttr["server-info"]["report_ttl"] = 1
-	if got := ReportTTL(); got != 3*time.Second {
+	attr["report_ttl"] = 1
+	if got := ReportTTL(attr); got != 3*time.Second {
 		t.Fatalf("ReportTTL() below minimum = %s, want 3s", got)
 	}
 
-	config.GlobalConfig.PluginAttr["server-info"]["report_ttl"] = 90000
-	if got := ReportTTL(); got != 86400*time.Second {
+	attr["report_ttl"] = 90000
+	if got := ReportTTL(attr); got != 86400*time.Second {
 		t.Fatalf("ReportTTL() above maximum = %s, want 86400s", got)
 	}
 }
@@ -76,15 +68,15 @@ func TestPluginHandlerPassesThrough(t *testing.T) {
 }
 
 func TestCurrentInfoReportsRequiredFields(t *testing.T) {
-	info := CurrentInfo()
+	info := CurrentInfo("node-test")
 	if info.EtcdVersion != "unknown" || info.Version != version {
 		t.Fatalf("versions = %q/%q, want unknown/apisix-go", info.EtcdVersion, info.Version)
 	}
 	if info.Hostname == "" {
 		t.Fatal("hostname is empty")
 	}
-	if info.ID == "" {
-		t.Fatal("id is empty")
+	if info.ID != "node-test" {
+		t.Fatalf("id = %q, want node-test", info.ID)
 	}
 	if info.BootTime == 0 {
 		t.Fatal("boot time is zero")
@@ -94,7 +86,7 @@ func TestCurrentInfoReportsRequiredFields(t *testing.T) {
 func TestInfoHandlerWritesJSON(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/server-info", nil)
 	response := httptest.NewRecorder()
-	InfoHandler(response, request)
+	InfoHandler("node-test")(response, request)
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", response.Code)
 	}
@@ -108,7 +100,7 @@ func TestInfoHandlerWritesJSON(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &decoded); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	want := CurrentInfo()
+	want := CurrentInfo("node-test")
 	if decoded != want {
 		t.Fatalf("decoded = %+v, want %+v", decoded, want)
 	}

@@ -1,5 +1,9 @@
 # Production image override. Supply APISIXGO_DEPLOYMENT_ETCD_HOST explicitly.
 
+compatibility_target: apisix-3.17
+security_profile: strict
+qualification_profile: http-data-plane-v1
+
 debug: false
 
 apisix:
@@ -20,12 +24,12 @@ apisix:
     - "::1/128"
 
 plugins:
-  - request-id
-  - cors
-  - key-auth
-  - jwt-auth
   - basic-auth
+  - cors
+  - jwt-auth
+  - key-auth
   - prometheus
+  - request-id
 
 stream_plugins: []
 
@@ -45,7 +49,6 @@ nginx_config:
     access_log_format_escape: ""
 
 deployment:
-  profile: http-data-plane-v1
   role: data_plane
   role_data_plane:
     config_provider: etcd

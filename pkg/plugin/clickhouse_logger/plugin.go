@@ -11,13 +11,12 @@ import (
 
 	"github.com/go-resty/resty/v2"
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
-	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
+	"github.com/wklken/apisix-go/pkg/secret"
 	"github.com/wklken/apisix-go/pkg/shared"
-	"github.com/wklken/apisix-go/pkg/store"
 )
 
 type Plugin struct {
@@ -26,9 +25,11 @@ type Plugin struct {
 
 	client *resty.Client
 
-	clientRelease  func()
-	userSecret     *store.ResolvedSecret
-	passwordSecret *store.ResolvedSecret
+	clientRelease     func()
+	scopedUser        secret.Value
+	scopedPassword    secret.Value
+	scopedUserSet     bool
+	scopedPasswordSet bool
 }
 
 const (
@@ -155,6 +156,24 @@ const schema = `
 }
 `
 
+const metadataSchema = `
+{
+  "type": "object",
+  "properties": {
+    "log_format": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "max_pending_entries": {
+      "type": "integer",
+      "minimum": 1
+    }
+  }
+}
+`
+
 type pluginMetadata struct {
 	LogFormat         map[string]string `json:"log_format"`
 	MaxPendingEntries int               `json:"max_pending_entries,omitempty"`
@@ -195,6 +214,7 @@ func (p *Plugin) Init() error {
 	p.Name = name
 	p.Priority = priority
 	p.Schema = schema
+	p.MetadataSchema = metadataSchema
 
 	p.InitLogger(p.Send)
 
@@ -207,16 +227,9 @@ func (p *Plugin) PostInit() error {
 	); err != nil {
 		return err
 	}
-	if p.passwordSecret == nil {
-		keyring, enabled := data_encryption.Keyring()
-		resolved, err := data_encryption.NewResolver(enabled, keyring).ResolveForContext(
-			p.config.Password,
-			"clickhouse-logger.password",
-		)
-		if err != nil {
-			return fmt.Errorf("clickhouse-logger password: %w", err)
-		}
-		p.config.Password = resolved
+	var metadata pluginMetadata
+	if _, err := p.MetadataView().Decode(name, &metadata); err != nil {
+		return fmt.Errorf("clickhouse-logger metadata decode failed: %w", err)
 	}
 
 	if p.config.Timeout == 0 {
@@ -241,7 +254,6 @@ func (p *Plugin) PostInit() error {
 		p.config.InactiveTimeout = int(logger_batch.DefaultInactiveTimeout / time.Second)
 	}
 
-	metadata := base.LoadPluginMetadata[pluginMetadata](name)
 	logFormat, err := base.RequireStringLogFormat(name, p.config.LogFormat, metadata.LogFormat)
 	if err != nil {
 		return err
@@ -250,8 +262,8 @@ func (p *Plugin) PostInit() error {
 
 	configUID := shared.NewConfigUID()
 	configUID.Add(p.endpointUID())
-	configUID.Add(p.config.User)
-	configUID.Add(p.config.Password)
+	configUID.Add(p.userIdentity())
+	configUID.Add(p.passwordIdentity())
 	configUID.Add(p.config.Database)
 	configUID.Add(p.config.Timeout)
 	configUID.Add(p.sslVerify())
@@ -279,7 +291,7 @@ func (p *Plugin) PostInit() error {
 		p.config.IncludeReqBodyExpr, p.config.IncludeRespBodyExpr,
 	)
 
-	p.BatchProcessor = base.NewBatchProcessor("clickhouse logger", base.BatchDefaults{
+	processor, err := base.NewBatchProcessor("clickhouse logger", p.TaskOwner(), base.BatchDefaults{
 		PluginID:           name,
 		BatchMaxSize:       p.config.BatchMaxSize,
 		MaxRetryCount:      p.config.MaxRetryCount,
@@ -288,56 +300,18 @@ func (p *Plugin) PostInit() error {
 		InactiveTimeoutSec: p.config.InactiveTimeout,
 		MaxPendingEntries:  p.config.MaxPendingEntries,
 	}, p.RouteID, p.ServerAddr, p.SendBatch)
+	if err != nil {
+		p.clientRelease()
+		p.clientRelease = nil
+		p.client = nil
+		return err
+	}
+	p.BatchProcessor = processor
 
 	return nil
 }
 
-func (p *Plugin) MaterializeSecrets() error {
-	userSecret, err := materializeSecretReference(p.config.User)
-	if err != nil {
-		return err
-	}
-	passwordSecret, err := materializeSecretReference(p.config.Password)
-	if err != nil {
-		userSecret.Destroy()
-		return err
-	}
-	p.userSecret = userSecret
-	p.passwordSecret = passwordSecret
-	if userSecret != nil {
-		p.config.User = userSecret.Descriptor()
-	}
-	if passwordSecret != nil {
-		p.config.Password = passwordSecret.Descriptor()
-	}
-	return nil
-}
-
-func materializeSecretReference(value string) (*store.ResolvedSecret, error) {
-	upper := strings.ToUpper(value)
-	if !strings.HasPrefix(upper, "$ENV://") && !strings.HasPrefix(value, "$secret://") {
-		return nil, nil
-	}
-	secret, err := store.MaterializeSecret(value)
-	if err != nil {
-		return nil, err
-	}
-	return secret, nil
-}
-
-func (p *Plugin) resolvedUser() string {
-	if p.userSecret != nil {
-		return string(p.userSecret.Bytes())
-	}
-	return p.config.User
-}
-
-func (p *Plugin) resolvedPassword() string {
-	if p.passwordSecret != nil {
-		return string(p.passwordSecret.Bytes())
-	}
-	return p.config.Password
-}
+func (p *Plugin) QuiesceGenerationTasks() { p.Stop() }
 
 func (p *Plugin) Stop() {
 	p.StopWithCleanup(func() {
@@ -345,10 +319,10 @@ func (p *Plugin) Stop() {
 			p.clientRelease()
 			p.clientRelease = nil
 		}
-		p.userSecret.Destroy()
-		p.userSecret = nil
-		p.passwordSecret.Destroy()
-		p.passwordSecret = nil
+		p.scopedUser = secret.Value{}
+		p.scopedPassword = secret.Value{}
+		p.scopedUserSet = false
+		p.scopedPasswordSet = false
 	})
 }
 
@@ -409,16 +383,23 @@ func (p *Plugin) SendBatch(ctx context.Context, entries []map[string]any, batchM
 		return 0, err
 	}
 
-	resp, err := p.client.R().
-		SetContext(ctx).
-		SetHeaders(map[string]string{
-			"Content-Type":          "application/json",
-			"X-ClickHouse-User":     p.resolvedUser(),
-			"X-ClickHouse-Key":      p.resolvedPassword(),
-			"X-ClickHouse-Database": p.config.Database,
-		}).
-		SetBody(body).
-		Post(endpoint)
+	var resp *resty.Response
+	err = p.resolvedUser(func(user string) error {
+		return p.resolvedPassword(func(password string) error {
+			var requestErr error
+			resp, requestErr = p.client.R().
+				SetContext(ctx).
+				SetHeaders(map[string]string{
+					"Content-Type":          "application/json",
+					"X-ClickHouse-User":     user,
+					"X-ClickHouse-Key":      password,
+					"X-ClickHouse-Database": p.config.Database,
+				}).
+				SetBody(body).
+				Post(endpoint)
+			return requestErr
+		})
+	})
 	if err != nil {
 		return 0, fmt.Errorf("failed to send log to ClickHouse endpoint %s: %w", endpoint, err)
 	}

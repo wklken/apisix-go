@@ -2,9 +2,17 @@ package ctx
 
 import (
 	"errors"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
+	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -77,21 +85,285 @@ func TestRequestLifecycleCollectsErrorsAndPanicsAndContinues(t *testing.T) {
 	if failures[0].Owner != "panic" || failures[0].PanicValue != "boom" || len(failures[0].Stack) == 0 {
 		t.Fatalf("panic failure = %#v", failures[0])
 	}
+	if failures[0].Kind != FinalizerOwnerPlugin {
+		t.Fatalf("panic failure kind = %v, want plugin", failures[0].Kind)
+	}
 	if failures[1].Owner != "error" || !errors.Is(failures[1].Err, wantErr) || failures[1].PanicValue != nil {
 		t.Fatalf("error failure = %#v", failures[1])
 	}
+	if result := lifecycle.FinalizeResult(); result.FatalPanic != nil {
+		t.Fatalf("plugin panic became fatal: %#v", result.FatalPanic)
+	}
 }
 
-func TestRequestLifecycleRejectsLateFinalizer(t *testing.T) {
+func TestRequestLifecycleCoreFinalizerPanicRunsRemainingFinalizers(t *testing.T) {
 	lifecycle := NewRequestLifecycle(time.Now())
-	lifecycle.Finalize()
-	called := false
-	if lifecycle.AddFinalizer("late", func() error { called = true; return nil }) {
+	order := make([]string, 0, 3)
+	lifecycle.AddFinalizer("plugin-last", func() error {
+		order = append(order, "plugin-last")
+		return nil
+	})
+	lifecycle.AddCoreInvariantFinalizer("core", func() error {
+		order = append(order, "core")
+		panic("core-finalizer")
+	})
+	lifecycle.AddFinalizer("plugin-first", func() error {
+		order = append(order, "plugin-first")
+		panic("plugin-finalizer")
+	})
+
+	result := lifecycle.FinalizeResult()
+	if !reflect.DeepEqual(order, []string{"plugin-first", "core", "plugin-last"}) {
+		t.Fatalf("finalizer order = %v", order)
+	}
+	if result.FatalPanic == nil || result.FatalPanic.PanicValue != "core-finalizer" {
+		t.Fatalf("result = %#v", result)
+	}
+	if result.FatalPanic.Kind != FinalizerOwnerCoreInvariant {
+		t.Fatalf("fatal panic kind = %v, want core invariant", result.FatalPanic.Kind)
+	}
+	if len(result.Failures) != 2 {
+		t.Fatalf("failures = %#v", result.Failures)
+	}
+	if result.Failures[0].Owner != "plugin-first" || result.Failures[0].Kind != FinalizerOwnerPlugin {
+		t.Fatalf("plugin failure = %#v", result.Failures[0])
+	}
+	if result.Failures[1].Owner != "core" || result.Failures[1].Kind != FinalizerOwnerCoreInvariant {
+		t.Fatalf("core failure = %#v", result.Failures[1])
+	}
+}
+
+func TestRequestLifecycleFirstCorePanicInExecutionOrderIsFatal(t *testing.T) {
+	lifecycle := NewRequestLifecycle(time.Now())
+	wantErr := errors.New("core error")
+	lifecycle.AddCoreInvariantFinalizer("core-panic-second", func() error { panic("second") })
+	lifecycle.AddCoreInvariantFinalizer("core-error", func() error { return wantErr })
+	lifecycle.AddCoreInvariantFinalizer("core-panic-first", func() error { panic("first") })
+
+	result := lifecycle.FinalizeResult()
+	if result.FatalPanic == nil || result.FatalPanic.Owner != "core-panic-first" ||
+		result.FatalPanic.PanicValue != "first" {
+		t.Fatalf("fatal panic = %#v", result.FatalPanic)
+	}
+	if len(result.Failures) != 3 {
+		t.Fatalf("failures = %#v", result.Failures)
+	}
+	if result.Failures[0].Owner != "core-panic-first" ||
+		result.Failures[1].Owner != "core-error" ||
+		result.Failures[2].Owner != "core-panic-second" {
+		t.Fatalf("failure order = %#v", result.Failures)
+	}
+	if !errors.Is(result.Failures[1].Err, wantErr) {
+		t.Fatalf("core error failure = %#v", result.Failures[1])
+	}
+}
+
+func TestRequestLifecycleFinalizeMethodsShareDetachedExactlyOnceResult(t *testing.T) {
+	lifecycle := NewRequestLifecycle(time.Now())
+	wantErr := errors.New("plugin error")
+	wantPanic := &struct{ label string }{label: "core panic"}
+	var calls atomic.Int32
+	lifecycle.AddFinalizer("plugin", func() error {
+		calls.Add(1)
+		return wantErr
+	})
+	lifecycle.AddCoreInvariantFinalizer("core", func() error {
+		calls.Add(1)
+		panic(wantPanic)
+	})
+
+	const callers = 16
+	type callResult struct {
+		fullResult bool
+		result     FinalizationResult
+	}
+	results := make(chan callResult, callers)
+	var wg sync.WaitGroup
+	for i := range callers {
+		wg.Go(func() {
+			if i%2 == 0 {
+				results <- callResult{fullResult: true, result: lifecycle.FinalizeResult()}
+				return
+			}
+			results <- callResult{result: FinalizationResult{Failures: lifecycle.Finalize()}}
+		})
+	}
+	wg.Wait()
+	close(results)
+
+	if calls.Load() != 2 {
+		t.Fatalf("finalizer calls = %d, want 2", calls.Load())
+	}
+	stackPointers := make(map[*byte]struct{})
+	fullResultCount := 0
+	for call := range results {
+		result := call.result
+		if len(result.Failures) != 2 {
+			t.Fatalf("failures = %#v", result.Failures)
+		}
+		if result.Failures[0].Owner != "core" || result.Failures[0].PanicValue != wantPanic {
+			t.Fatalf("core failure = %#v", result.Failures[0])
+		}
+		if result.Failures[1].Owner != "plugin" || result.Failures[1].Err != wantErr {
+			t.Fatalf("plugin failure = %#v", result.Failures[1])
+		}
+		if !call.fullResult {
+			if result.FatalPanic != nil {
+				t.Fatalf("Finalize compatibility result has fatal panic: %#v", result.FatalPanic)
+			}
+			continue
+		}
+		fullResultCount++
+		if result.FatalPanic == nil || result.FatalPanic.PanicValue != wantPanic ||
+			!reflect.DeepEqual(*result.FatalPanic, result.Failures[0]) {
+			t.Fatalf("FinalizeResult fatal panic = %#v, failure = %#v", result.FatalPanic, result.Failures[0])
+		}
+		for _, stack := range [][]byte{result.Failures[0].Stack, result.FatalPanic.Stack} {
+			if len(stack) == 0 {
+				t.Fatal("FinalizeResult returned an empty panic stack")
+			}
+			pointer := &stack[0]
+			if _, exists := stackPointers[pointer]; exists {
+				t.Fatal("concurrent FinalizeResult calls share panic stack backing")
+			}
+			stackPointers[pointer] = struct{}{}
+		}
+	}
+	if fullResultCount != callers/2 {
+		t.Fatalf("FinalizeResult calls = %d, want %d", fullResultCount, callers/2)
+	}
+
+	first := lifecycle.FinalizeResult()
+	first.Failures[0].Owner = "mutated"
+	first.Failures[0].Stack[0] ^= 0xff
+	first.FatalPanic.Owner = "mutated-fatal"
+	first.FatalPanic.Stack[0] ^= 0xff
+	second := lifecycle.FinalizeResult()
+	if second.Failures[0].Owner != "core" || second.FatalPanic.Owner != "core" {
+		t.Fatalf("cached result was mutated: %#v", second)
+	}
+	if second.Failures[0].Stack[0] == first.Failures[0].Stack[0] ||
+		second.FatalPanic.Stack[0] == first.FatalPanic.Stack[0] {
+		t.Fatalf("returned stacks share backing storage: first=%#v second=%#v", first, second)
+	}
+	if second.Failures[0].PanicValue != wantPanic || second.Failures[1].Err != wantErr {
+		t.Fatalf("arbitrary failure identity changed: %#v", second)
+	}
+	legacy := lifecycle.Finalize()
+	legacy[0].Owner = "mutated-legacy"
+	legacy[0].Stack[0] ^= 0xff
+	legacyAgain := lifecycle.Finalize()
+	if legacyAgain[0].Owner != "core" || legacyAgain[0].Stack[0] == legacy[0].Stack[0] {
+		t.Fatalf("Finalize returned shared failure data: first=%#v second=%#v", legacy, legacyAgain)
+	}
+}
+
+func TestRequestLifecycleAcceptsFinalizersBeforeAndRejectsAfterFinalize(t *testing.T) {
+	lifecycle := NewRequestLifecycle(time.Now())
+	var called atomic.Int32
+	if !lifecycle.AddFinalizer("plugin", func() error { called.Add(1); return nil }) {
+		t.Fatal("AddFinalizer before finalization returned false")
+	}
+	if !lifecycle.AddCoreInvariantFinalizer("core", func() error { called.Add(1); return nil }) {
+		t.Fatal("AddCoreInvariantFinalizer before finalization returned false")
+	}
+	lifecycle.FinalizeResult()
+	if lifecycle.AddFinalizer("late-plugin", func() error { called.Add(1); return nil }) {
 		t.Fatal("late AddFinalizer returned true")
 	}
-	if called {
-		t.Fatal("late finalizer ran inline")
+	if lifecycle.AddCoreInvariantFinalizer("late-core", func() error { called.Add(1); return nil }) {
+		t.Fatal("late AddCoreInvariantFinalizer returned true")
 	}
+	if called.Load() != 2 {
+		t.Fatalf("finalizer calls = %d, want 2", called.Load())
+	}
+}
+
+func TestRequestLifecycleCoreFinalizerRegistrationTrustBoundary(t *testing.T) {
+	fixture := map[string][]byte{
+		"pkg/plugin/rogue.go": []byte(`package plugin
+func Rogue(l lifecycle) {
+	registerCore := l.AddCoreInvariantFinalizer
+	registerCore("rogue", nil)
+}`),
+	}
+	wantFixtureSites := []callSite{{File: "pkg/plugin/rogue.go", Function: "Rogue"}}
+	if got := findSelectorUses(t, fixture, "AddCoreInvariantFinalizer"); !reflect.DeepEqual(got, wantFixtureSites) {
+		t.Fatalf("selector call sites = %#v", got)
+	}
+
+	pluginSources := pluginProductionSources(t)
+	sites := findSelectorUses(t, pluginSources, "AddCoreInvariantFinalizer")
+	allowed := callSite{File: "pkg/plugin/log_executor.go", Function: "RegisterComposite"}
+	for _, site := range sites {
+		if site != allowed {
+			t.Fatalf("unauthorized core finalizer registration: %#v", site)
+		}
+	}
+}
+
+type callSite struct {
+	File     string
+	Function string
+}
+
+func pluginProductionSources(t *testing.T) map[string][]byte {
+	t.Helper()
+	_, currentFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("locate lifecycle test source")
+	}
+	repoRoot := filepath.Clean(filepath.Join(filepath.Dir(currentFile), "../../.."))
+	pluginRoot := filepath.Join(repoRoot, "pkg/plugin")
+	sources := make(map[string][]byte)
+	err := filepath.WalkDir(pluginRoot, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() || filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		relative, err := filepath.Rel(repoRoot, path)
+		if err != nil {
+			return err
+		}
+		source, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		sources[filepath.ToSlash(relative)] = source
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk plugin production sources: %v", err)
+	}
+	return sources
+}
+
+func findSelectorUses(t *testing.T, sources map[string][]byte, selectorName string) []callSite {
+	t.Helper()
+	fset := token.NewFileSet()
+	var sites []callSite
+	for relative, source := range sources {
+		parsed, err := parser.ParseFile(fset, relative, source, parser.SkipObjectResolution)
+		if err != nil {
+			t.Fatalf("parse %s: %v", relative, err)
+		}
+		for _, declaration := range parsed.Decls {
+			function, ok := declaration.(*ast.FuncDecl)
+			if !ok || function.Body == nil {
+				continue
+			}
+			ast.Inspect(function.Body, func(node ast.Node) bool {
+				selector, ok := node.(*ast.SelectorExpr)
+				if ok && selector.Sel.Name == selectorName {
+					sites = append(sites, callSite{File: relative, Function: function.Name.Name})
+				}
+				return true
+			})
+		}
+	}
+	return sites
 }
 
 func TestRequestLifecycleSharesOutcomeAcrossRequestCopies(t *testing.T) {

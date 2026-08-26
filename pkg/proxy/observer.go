@@ -1,24 +1,13 @@
 package proxy
 
-// ClusterObserver receives narrow runtime signals about an upstream cluster.
-// Every method is synchronous and must not block the request path. The
-// observer is owned by the cluster registry and shared by every cluster it
-// creates; the proxy package never depends on a concrete metrics library.
-type ClusterObserver interface {
-	SetInFlight(cluster string, delta int)
-	ObserveRetry(cluster, result string)
-	SetHealth(cluster, target string, healthy bool)
-	ObserveRejected(cluster string)
-	DeleteCluster(cluster string)
-}
+import observercontracts "github.com/wklken/apisix-go/pkg/proxy/observer"
 
-// UpstreamStatusObserver is an optional extension for observers that expose
-// one bounded health value per configured upstream target. Keeping this
-// separate preserves the narrow ClusterObserver contract for existing users.
-type UpstreamStatusObserver interface {
-	SetUpstreamStatus(cluster, target string, healthy bool)
-	DeleteUpstreamStatus(cluster, target string)
-}
+// ClusterObserver keeps the existing proxy API while the shared contract
+// remains dependency-free.
+type ClusterObserver = observercontracts.ClusterObserver
+
+// UpstreamStatusObserver is kept as an alias for the optional health extension.
+type UpstreamStatusObserver = observercontracts.UpstreamStatusObserver
 
 // NopClusterObserver discards every cluster runtime signal. It is the default
 // observer used when no external metrics runtime is configured.

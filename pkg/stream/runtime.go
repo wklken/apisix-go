@@ -13,7 +13,7 @@ import (
 
 	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/logger"
-	"github.com/wklken/apisix-go/pkg/resource"
+	taskruntime "github.com/wklken/apisix-go/pkg/runtime"
 )
 
 const (
@@ -24,71 +24,114 @@ const (
 type Runtime struct {
 	ctx       context.Context
 	cancel    context.CancelFunc
-	router    *Router
+	source    RouterSource
 	listeners []net.Listener
-	wg        sync.WaitGroup
+	connMu    sync.Mutex
+	conns     map[net.Conn]struct{}
+	tasks     *taskruntime.TaskRegistry
+	owner     *taskruntime.TaskOwner
 	closeOnce sync.Once
-	closeDone chan struct{}
+}
+
+type runtimeCloseError struct {
+	residuals []taskruntime.TaskResidual
+	err       error
+}
+
+func (e *runtimeCloseError) Error() string {
+	return "stream runtime close did not complete"
+}
+
+func (e *runtimeCloseError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.err
 }
 
 func NewRuntime(
 	ctx context.Context,
 	specs []config.TcpListen,
-	routes []resource.StreamRoute,
-	enabledPlugins []string,
-	onResult func(Result),
+	source RouterSource,
+) (*Runtime, error) {
+	if err := validateListenerSpecs(specs); err != nil {
+		return nil, err
+	}
+	return newRuntime(ctx, specs, source)
+}
+
+func newRuntime(
+	ctx context.Context,
+	specs []config.TcpListen,
+	source RouterSource,
 ) (*Runtime, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if len(specs) == 0 {
-		return nil, fmt.Errorf("stream runtime requires at least one TCP listener")
-	}
-	for _, spec := range specs {
-		if spec.Tls {
-			return nil, fmt.Errorf("TLS stream listeners are not supported")
-		}
-		if spec.ProxyProtocol {
-			return nil, fmt.Errorf("stream listener PROXY protocol is not supported")
-		}
-		if spec.ProxyProtocolToUpstream {
-			return nil, fmt.Errorf("upstream PROXY protocol is not supported")
-		}
-	}
-	if err := validateStreamRoutes(routes); err != nil {
-		return nil, err
-	}
-	router, err := NewRouter(routes, enabledPlugins, onResult)
-	if err != nil {
-		return nil, err
+	if source == nil {
+		return nil, fmt.Errorf("stream runtime requires a router source")
 	}
 	runtimeCtx, cancel := context.WithCancel(ctx)
+	tasks := taskruntime.NewTaskRegistry(runtimeCtx, nil)
+	owner, err := taskruntime.NewTaskOwner(tasks, "core/stream-runtime", taskruntime.TaskCore)
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("create stream runtime task owner: %w", err)
+	}
 	runtime := &Runtime{
-		ctx:       runtimeCtx,
-		cancel:    cancel,
-		router:    router,
-		closeDone: make(chan struct{}),
+		ctx:    runtimeCtx,
+		cancel: cancel,
+		source: source,
+		conns:  make(map[net.Conn]struct{}),
+		tasks:  tasks,
+		owner:  owner,
 	}
 
 	for _, spec := range specs {
 		address, err := normalizeListenAddr(spec.Addr)
 		if err != nil {
-			runtime.close()
+			runtime.initiateClose()
+			_, _ = tasks.Stop(context.Background())
 			return nil, err
 		}
 		listener, err := net.Listen("tcp", address)
 		if err != nil {
-			runtime.close()
+			runtime.initiateClose()
+			_, _ = tasks.Stop(context.Background())
 			return nil, fmt.Errorf("listen stream address %q: %w", address, err)
 		}
 		runtime.listeners = append(runtime.listeners, listener)
 	}
 
 	for _, listener := range runtime.listeners {
-		runtime.wg.Add(1)
-		go runtime.serveListener(listener)
+		if err := owner.Go("listener", func(taskCtx context.Context) error {
+			runtime.serveListener(taskCtx, listener)
+			return nil
+		}); err != nil {
+			runtime.initiateClose()
+			_, stopErr := tasks.Stop(context.Background())
+			return nil, errors.Join(fmt.Errorf("start stream listener task: %w", err), stopErr)
+		}
 	}
 	return runtime, nil
+}
+
+func validateListenerSpecs(specs []config.TcpListen) error {
+	if len(specs) == 0 {
+		return fmt.Errorf("stream runtime requires at least one TCP listener")
+	}
+	for _, spec := range specs {
+		if spec.Tls {
+			return fmt.Errorf("TLS stream listeners are not supported")
+		}
+		if spec.ProxyProtocol {
+			return fmt.Errorf("stream listener PROXY protocol is not supported")
+		}
+		if spec.ProxyProtocolToUpstream {
+			return fmt.Errorf("upstream PROXY protocol is not supported")
+		}
+	}
+	return nil
 }
 
 func (r *Runtime) Addresses() []string {
@@ -101,42 +144,21 @@ func (r *Runtime) Addresses() []string {
 	return addresses
 }
 
-func (r *Runtime) Reload(routes []resource.StreamRoute) error {
-	if err := validateStreamRoutes(routes); err != nil {
-		return err
-	}
-	return r.router.Reload(routes)
-}
-
-func validateStreamRoutes(routes []resource.StreamRoute) error {
-	for _, route := range routes {
-		if route.Upstream.TLS != nil {
-			return fmt.Errorf("TLS stream upstreams are not supported")
-		}
-	}
-	return nil
-}
-
 func (r *Runtime) Close(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	r.initiateClose()
-	select {
-	case <-r.closeDone:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
+	residuals, err := r.tasks.Stop(ctx)
+	if err != nil || len(residuals) != 0 {
+		return &runtimeCloseError{residuals: residuals, err: err}
 	}
+	return nil
 }
 
 func (r *Runtime) initiateClose() {
 	r.closeOnce.Do(func() {
 		r.close()
-		go func() {
-			r.wg.Wait()
-			close(r.closeDone)
-		}()
 	})
 }
 
@@ -145,10 +167,18 @@ func (r *Runtime) close() {
 	for _, listener := range r.listeners {
 		_ = listener.Close()
 	}
+	r.connMu.Lock()
+	connections := make([]net.Conn, 0, len(r.conns))
+	for conn := range r.conns {
+		connections = append(connections, conn)
+	}
+	r.connMu.Unlock()
+	for _, conn := range connections {
+		_ = conn.Close()
+	}
 }
 
-func (r *Runtime) serveListener(listener net.Listener) {
-	defer r.wg.Done()
+func (r *Runtime) serveListener(ctx context.Context, listener net.Listener) {
 	retryDelay := acceptRetryInitial
 	for {
 		conn, err := listener.Accept()
@@ -163,7 +193,7 @@ func (r *Runtime) serveListener(listener net.Listener) {
 				timer := time.NewTimer(retryDelay)
 				select {
 				case <-timer.C:
-				case <-r.ctx.Done():
+				case <-ctx.Done():
 					timer.Stop()
 					return
 				}
@@ -182,10 +212,52 @@ func (r *Runtime) serveListener(listener net.Listener) {
 		}
 		retryDelay = acceptRetryInitial
 
-		r.wg.Go(func() {
-			_ = r.router.Serve(r.ctx, listener, conn)
-		})
+		if !r.trackConnection(conn) {
+			_ = conn.Close()
+			return
+		}
+		lease, ok := r.source()
+		if !ok || lease.Router == nil || lease.Release == nil {
+			_ = conn.Close()
+			r.untrackConnection(conn)
+			if ok && lease.Release != nil {
+				lease.Release()
+			}
+			continue
+		}
+		if err := r.owner.Go("connection", func(taskCtx context.Context) error {
+			defer lease.Release()
+			defer r.untrackConnection(conn)
+			defer func() { _ = conn.Close() }()
+			_ = lease.Router.Serve(taskCtx, listener, conn)
+			return nil
+		}); err != nil {
+			lease.Release()
+			r.untrackConnection(conn)
+			_ = conn.Close()
+			r.initiateClose()
+			return
+		}
 	}
+}
+
+func (r *Runtime) trackConnection(conn net.Conn) bool {
+	r.connMu.Lock()
+	defer r.connMu.Unlock()
+	if r.ctx.Err() != nil {
+		return false
+	}
+	if r.conns == nil {
+		r.conns = make(map[net.Conn]struct{})
+	}
+	r.conns[conn] = struct{}{}
+	return true
+}
+
+func (r *Runtime) untrackConnection(conn net.Conn) {
+	r.connMu.Lock()
+	delete(r.conns, conn)
+	r.connMu.Unlock()
 }
 
 func shouldRetryAccept(err error) bool {

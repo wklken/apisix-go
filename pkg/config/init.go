@@ -2,386 +2,118 @@ package config
 
 import (
 	"fmt"
-	"net"
-	"net/url"
 	"path/filepath"
-	"reflect"
 	"slices"
-	"strconv"
 	"strings"
-	"time"
-
-	"github.com/spf13/viper"
-	"github.com/wklken/apisix-go/pkg/data_encryption"
 )
 
-var GlobalConfig *Config
-
-const (
-	DefaultConfigFile        = "conf/config-default.yaml"
-	defaultClientMaxBodySize = int64(10 * 1024 * 1024)
-	defaultClientBodyTimeout = 60 * time.Second
-)
-
-func Load(overridePath string) (*Config, error) {
-	return loadConfigFiles(DefaultConfigFile, overridePath)
-}
-
-func loadConfigFiles(defaultPath, overridePath string) (*Config, error) {
-	v := viper.NewWithOptions(viper.ExperimentalBindStruct())
-	v.SetConfigFile(defaultPath)
-	if err := v.ReadInConfig(); err != nil {
-		return nil, fmt.Errorf("load default config %q: %w", defaultPath, err)
+func LoadEffective(req LoadRequest) (*EffectiveConfig, error) {
+	if req.Manifest == nil {
+		return nil, fmt.Errorf("load effective config: capability manifest is required")
+	}
+	if req.DefaultPath == "" || !filepath.IsAbs(req.DefaultPath) {
+		return nil, fmt.Errorf("load effective config: default path must be a non-empty absolute path")
+	}
+	if req.OverridePath != "" && !filepath.IsAbs(req.OverridePath) {
+		return nil, fmt.Errorf("load effective config: override path must be absolute")
 	}
 
-	if overridePath != "" && !sameConfigPath(defaultPath, overridePath) {
-		v.SetConfigFile(overridePath)
-		if err := v.MergeInConfig(); err != nil {
-			return nil, fmt.Errorf("merge config override %q: %w", overridePath, err)
-		}
-	}
-	v.SetEnvPrefix("APISIXGO")
-	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
-	v.AllowEmptyEnv(true)
-	v.AutomaticEnv()
-
-	cfg, err := load(v)
+	defaultPath := filepath.Clean(req.DefaultPath)
+	root := builtinDefaults(req.DefaultPaths)
+	defaultDocument, err := readConfigDocument(defaultPath, FieldSource{
+		Kind: SourceDefaultFile, Origin: defaultPath, Explicit: true,
+	}, req.Environment)
 	if err != nil {
 		return nil, err
 	}
-	if err := validateRuntimeConfig(cfg); err != nil {
+	root = mergeNodes(root, defaultDocument)
+
+	overridePath := ""
+	if req.OverridePath != "" {
+		overridePath = filepath.Clean(req.OverridePath)
+	}
+	if overridePath != "" && !sameConfigPath(defaultPath, overridePath) {
+		override, readErr := readConfigDocument(overridePath, FieldSource{
+			Kind: SourceOverrideFile, Origin: overridePath, Explicit: true,
+		}, req.Environment)
+		if readErr != nil {
+			return nil, readErr
+		}
+		root = mergeNodes(root, override)
+	}
+	if lookupStaticNode(root, "deployment.profile") != nil {
+		return nil, fmt.Errorf("%s", removedDeploymentProfileError)
+	}
+	if err := applyAPISIXGO(root, req.Environment); err != nil {
+		return nil, err
+	}
+	if err := applyCLIOverrides(root, req.CLIOverrides); err != nil {
 		return nil, err
 	}
 
-	GlobalConfig = cfg
-	data_encryption.Configure(cfg.Apisix.DataEncryption.EnableEncryptFields, cfg.Apisix.DataEncryption.Keyring)
-	return cfg, nil
+	cfg, paths, unused, err := decodeConfig(root)
+	if err != nil {
+		return nil, err
+	}
+	profiles := cfg.Profiles()
+	if err := profiles.Validate(req.Manifest); err != nil {
+		return nil, err
+	}
+	paths, err = resolveRuntimePaths(paths, root, req)
+	if err != nil {
+		return nil, err
+	}
+	effective := &EffectiveConfig{
+		Config: *cfg, Provenance: flattenProvenance(root), Profiles: profiles, Paths: paths,
+	}
+	if err := validateEffective(effective, unused, req.Manifest); err != nil {
+		return nil, err
+	}
+	return effective, nil
 }
 
 func sameConfigPath(first, second string) bool {
-	firstPath, firstErr := filepath.Abs(first)
-	secondPath, secondErr := filepath.Abs(second)
-	if firstErr == nil && secondErr == nil {
-		return filepath.Clean(firstPath) == filepath.Clean(secondPath)
-	}
 	return filepath.Clean(first) == filepath.Clean(second)
 }
 
-func load(v *viper.Viper) (*Config, error) {
-	v.SetDefault("nginx_config.http.client_max_body_size", defaultClientMaxBodySize)
-	v.SetDefault("nginx_config.http.client_body_timeout", defaultClientBodyTimeout)
-	rawPlugins := v.Get("plugins")
-
-	var cfg Config
-	err := v.Unmarshal(&cfg, viper.DecodeHook(configDecodeHook))
-	if err != nil {
-		return nil, err
-	}
-	if rawPlugins != nil {
-		if plugins, ok := decodeHTTPPluginAllowlist(rawPlugins); ok {
-			cfg.Plugins = plugins
-		}
-	}
-	if err := validateHTTPPluginAllowlist(cfg.Plugins); err != nil {
-		return nil, err
-	}
-	if sendTimeout := cfg.NginxConfig.HTTP.SendTimeout; sendTimeout != 0 {
-		return nil, fmt.Errorf(
-			"nginx_config.http.send_timeout must be zero because Go cannot implement NGINX write-idle semantics, got %s",
-			sendTimeout,
-		)
-	}
-
-	for _, limit := range []struct {
-		field string
-		value int
+func resolveRuntimePaths(paths RuntimePaths, root *valueNode, req LoadRequest) (RuntimePaths, error) {
+	values := []struct {
+		name  string
+		path  string
+		value *string
 	}{
-		{field: "proxy.max_idle_conns", value: cfg.Proxy.MaxIdleConns},
-		{field: "proxy.max_idle_conns_per_host", value: cfg.Proxy.MaxIdleConnsPerHost},
-		{field: "proxy.max_conns_per_host", value: cfg.Proxy.MaxConnsPerHost},
-		{field: "proxy.max_in_flight", value: cfg.Proxy.MaxInFlight},
-	} {
-		if limit.value < 0 {
-			return nil, fmt.Errorf("%s must be non-negative, got %d", limit.field, limit.value)
-		}
+		{name: "data_dir", path: "apisix_go.runtime_paths.data_dir", value: &paths.DataDir},
+		{name: "runtime_dir", path: "apisix_go.runtime_paths.runtime_dir", value: &paths.RuntimeDir},
+		{name: "log_dir", path: "apisix_go.runtime_paths.log_dir", value: &paths.LogDir},
+		{name: "temp_dir", path: "apisix_go.runtime_paths.temp_dir", value: &paths.TempDir},
 	}
-
-	return &cfg, nil
-}
-
-func validateRuntimeConfig(cfg *Config) error {
-	if len(cfg.Plugins) == 0 {
-		return profileAwareRuntimeError(cfg, fmt.Errorf("plugins must contain at least one HTTP plugin"))
-	}
-	if len(cfg.Apisix.NodeListen) == 0 {
-		return profileAwareRuntimeError(cfg, fmt.Errorf("apisix.node_listen must contain at least one listener"))
-	}
-	for index, listener := range cfg.Apisix.NodeListen {
-		if listener.Port < 1 || listener.Port > 65535 {
-			return profileAwareRuntimeError(
-				cfg,
-				fmt.Errorf("apisix.node_listen[%d].port must be between 1 and 65535, got %d", index, listener.Port),
-			)
-		}
-		if listener.Ip != "" && net.ParseIP(listener.Ip) == nil {
-			return profileAwareRuntimeError(
-				cfg,
-				fmt.Errorf("apisix.node_listen[%d].ip must be a valid IP address, got %q", index, listener.Ip),
-			)
-		}
-	}
-	for _, limit := range []struct {
-		field string
-		value int
-	}{
-		{field: "proxy.max_idle_conns", value: cfg.Proxy.MaxIdleConns},
-		{field: "proxy.max_idle_conns_per_host", value: cfg.Proxy.MaxIdleConnsPerHost},
-		{field: "proxy.max_conns_per_host", value: cfg.Proxy.MaxConnsPerHost},
-		{field: "proxy.max_in_flight", value: cfg.Proxy.MaxInFlight},
-	} {
-		if limit.value <= 0 {
-			return profileAwareRuntimeError(cfg, fmt.Errorf("%s must be positive, got %d", limit.field, limit.value))
-		}
-	}
-	for index, address := range cfg.Apisix.TrustedAddresses {
-		address = strings.TrimSpace(address)
-		if address == "" {
+	for _, item := range values {
+		if *item.value == "" {
 			continue
 		}
-		if net.ParseIP(address) != nil {
+		if filepath.IsAbs(*item.value) {
+			*item.value = filepath.Clean(*item.value)
 			continue
 		}
-		if _, _, parseErr := net.ParseCIDR(address); parseErr != nil {
-			return profileAwareRuntimeError(
-				cfg,
-				fmt.Errorf(
-					"apisix.trusted_addresses[%d] must be a valid CIDR or IP address",
-					index,
-				),
-			)
-		}
-	}
-	if cfg.NginxConfig.HTTP.ClientMaxBodySize <= 0 {
-		return profileAwareRuntimeError(cfg, fmt.Errorf(
-			"nginx_config.http.client_max_body_size must be positive, got %d",
-			cfg.NginxConfig.HTTP.ClientMaxBodySize,
-		))
-	}
-	if cfg.NginxConfig.HTTP.ClientBodyTimeout <= 0 {
-		return profileAwareRuntimeError(cfg, fmt.Errorf(
-			"nginx_config.http.client_body_timeout must be positive, got %s",
-			cfg.NginxConfig.HTTP.ClientBodyTimeout,
-		))
-	}
-	if err := validateProcessAccessLogs(cfg); err != nil {
-		return profileAwareRuntimeError(cfg, err)
-	}
-
-	provider, err := EffectiveConfigProvider(cfg)
-	if err != nil {
-		return profileAwareRuntimeError(cfg, err)
-	}
-	if provider == "etcd" {
-		if len(cfg.Deployment.Etcd.Host) == 0 {
-			return profileAwareRuntimeError(
-				cfg,
-				fmt.Errorf("deployment.etcd.host must contain at least one endpoint for the etcd provider"),
-			)
-		}
-		for index, endpoint := range cfg.Deployment.Etcd.Host {
-			if strings.TrimSpace(endpoint) == "" {
-				return profileAwareRuntimeError(
-					cfg,
-					fmt.Errorf("deployment.etcd.host[%d] must not be empty for the etcd provider", index),
-				)
+		node := lookupStaticNode(root, item.path)
+		base := ""
+		if node != nil {
+			base = node.pathBase
+			if node.source.Kind == SourceCLI || node.source.Kind == SourceAPISIXGOEnv {
+				base = filepath.Dir(req.DefaultPath)
+				if req.OverridePath != "" {
+					base = filepath.Dir(req.OverridePath)
+				}
 			}
 		}
-		if strings.TrimSpace(cfg.Deployment.Etcd.Prefix) == "" {
-			return profileAwareRuntimeError(
-				cfg,
-				fmt.Errorf("deployment.etcd.prefix must not be empty for the etcd provider"),
+		if base == "" || !filepath.IsAbs(base) {
+			return RuntimePaths{}, fmt.Errorf(
+				"resolve runtime path %s: relative value requires an absolute owning file directory", item.name,
 			)
 		}
+		*item.value = filepath.Clean(filepath.Join(base, *item.value))
 	}
-	if err := validateUnsupportedRuntimeConfig(cfg); err != nil {
-		return err
-	}
-
-	switch cfg.Deployment.Profile {
-	case "":
-		return nil
-	case HTTPDataPlaneV1Profile:
-		return validateHTTPDataPlaneV1Profile(cfg)
-	default:
-		return fmt.Errorf("deployment.profile must be empty or %s", HTTPDataPlaneV1Profile)
-	}
-}
-
-func profileAwareRuntimeError(cfg *Config, err error) error {
-	if cfg != nil && cfg.Deployment.Profile == HTTPDataPlaneV1Profile {
-		return fmt.Errorf("%s: %w", HTTPDataPlaneV1Profile, err)
-	}
-	return err
-}
-
-func validateUnsupportedRuntimeConfig(cfg *Config) error {
-	for _, unsupported := range []struct {
-		field    string
-		isActive bool
-	}{
-		{field: "apisix.enable_admin", isActive: cfg.Apisix.EnableAdmin},
-		{field: "discovery", isActive: len(cfg.Discovery) > 0},
-		{field: "ext-plugin.cmd", isActive: len(cfg.ExtPlugin.Cmd) > 0},
-		{field: "wasm.plugins", isActive: len(cfg.Wasm.Plugins) > 0},
-		{field: "xrpc.protocols", isActive: len(cfg.XRPC.Protocols) > 0},
-	} {
-		if unsupported.isActive {
-			return fmt.Errorf(
-				"%s is unsupported; %s does not permit this runtime feature",
-				unsupported.field,
-				HTTPDataPlaneV1Profile,
-			)
-		}
-	}
-	for index, listener := range cfg.Apisix.Ssl.Listen {
-		if listener.EnableQuic {
-			return fmt.Errorf(
-				"apisix.ssl.listen[%d].enable_quic is unsupported; %s does not permit this runtime feature",
-				index,
-				HTTPDataPlaneV1Profile,
-			)
-		}
-		if listener.EnableHttp3 {
-			return fmt.Errorf(
-				"apisix.ssl.listen[%d].enable_http3 is unsupported; %s does not permit this runtime feature",
-				index,
-				HTTPDataPlaneV1Profile,
-			)
-		}
-	}
-	return nil
-}
-
-func validateHTTPDataPlaneV1Profile(cfg *Config) error {
-	const profile = HTTPDataPlaneV1Profile
-	if cfg.Debug {
-		return profileFieldError(profile, "debug", "must be false")
-	}
-	if cfg.Deployment.Role != "data_plane" {
-		return profileFieldError(profile, "deployment.role", "must be data_plane")
-	}
-	provider, err := EffectiveConfigProvider(cfg)
-	if err != nil || provider != "etcd" {
-		return profileFieldError(profile, "deployment.role_data_plane.config_provider", "must resolve to etcd")
-	}
-	for index, endpoint := range cfg.Deployment.Etcd.Host {
-		parsed, parseErr := url.Parse(endpoint)
-		if parseErr != nil || parsed.Scheme != "https" || parsed.Host == "" {
-			return profileFieldError(
-				profile,
-				fmt.Sprintf("deployment.etcd.host[%d]", index),
-				"must use an HTTPS endpoint",
-			)
-		}
-	}
-	if cfg.Deployment.Etcd.TLS.Verify == nil || !*cfg.Deployment.Etcd.TLS.Verify {
-		return profileFieldError(profile, "deployment.etcd.tls.verify", "must be explicitly true")
-	}
-	if cfg.NginxConfig.HTTP.ClientMaxBodySize <= 0 {
-		return profileFieldError(profile, "nginx_config.http.client_max_body_size", "must be positive")
-	}
-	if cfg.NginxConfig.HTTP.ClientBodyTimeout <= 0 {
-		return profileFieldError(profile, "nginx_config.http.client_body_timeout", "must be positive")
-	}
-	if cfg.Apisix.EnableAdmin {
-		return profileFieldError(profile, "apisix.enable_admin", "must be false")
-	}
-	if cfg.Apisix.ProxyMode != "http" {
-		return profileFieldError(profile, "apisix.proxy_mode", "must be http")
-	}
-	if len(cfg.Apisix.StreamProxy.Tcp) > 0 {
-		return profileFieldError(profile, "apisix.stream_proxy.tcp", "must be empty")
-	}
-	if len(cfg.Apisix.StreamProxy.Udp) > 0 {
-		return profileFieldError(profile, "apisix.stream_proxy.udp", "must be empty")
-	}
-	if len(cfg.StreamPlugins) > 0 {
-		return profileFieldError(profile, "stream_plugins", "must be empty")
-	}
-	if len(cfg.Apisix.TrustedAddresses) == 0 {
-		return profileFieldError(profile, "apisix.trusted_addresses", "must contain at least one CIDR")
-	}
-	for index, address := range cfg.Apisix.TrustedAddresses {
-		if _, _, parseErr := net.ParseCIDR(address); parseErr != nil {
-			return profileFieldError(
-				profile,
-				fmt.Sprintf("apisix.trusted_addresses[%d]", index),
-				"must be a valid CIDR",
-			)
-		}
-	}
-	wantPlugins := []string{"request-id", "cors", "key-auth", "jwt-auth", "basic-auth", "prometheus"}
-	if !slices.Equal(cfg.Plugins, wantPlugins) {
-		return profileFieldError(profile, "plugins", "must use the exact HTTP plugin allowlist")
-	}
-	return nil
-}
-
-func validateProcessAccessLogs(cfg *Config) error {
-	http := cfg.NginxConfig.HTTP
-	stream := cfg.NginxConfig.Stream
-	for _, field := range []struct {
-		name   string
-		active bool
-	}{
-		{name: "nginx_config.http.enable_access_log", active: http.EnableAccessLog},
-		{name: "nginx_config.http.access_log", active: http.AccessLog != ""},
-		{name: "nginx_config.http.access_log_buffer", active: http.AccessLogBuffer != 0},
-		{name: "nginx_config.http.access_log_format", active: http.AccessLogFormat != ""},
-		{name: "nginx_config.http.access_log_format_escape", active: http.AccessLogFormatEscape != ""},
-		{name: "nginx_config.stream.enable_access_log", active: stream.EnableAccessLog},
-		{name: "nginx_config.stream.access_log", active: stream.AccessLog != ""},
-		{name: "nginx_config.stream.access_log_format", active: stream.AccessLogFormat != ""},
-		{name: "nginx_config.stream.access_log_format_escape", active: stream.AccessLogFormatEscape != ""},
-	} {
-		if field.active {
-			return fmt.Errorf("%s is unsupported by the Go data plane", field.name)
-		}
-	}
-	return nil
-}
-
-func profileFieldError(profile, field, requirement string) error {
-	return fmt.Errorf("%s: %s %s", profile, field, requirement)
-}
-
-func EffectiveConfigProvider(cfg *Config) (string, error) {
-	if cfg == nil {
-		return "", fmt.Errorf("deployment config must not be nil")
-	}
-	role := strings.ToLower(strings.TrimSpace(cfg.Deployment.Role))
-	var provider string
-	switch role {
-	case "data_plane":
-		provider = cfg.Deployment.RoleDataPlane.ConfigProvider
-	case "control_plane":
-		provider = cfg.Deployment.RoleControlPlane.ConfigProvider
-	case "traditional":
-		provider = cfg.Deployment.RoleTraditional.ConfigProvider
-	default:
-		return "", fmt.Errorf("deployment.role %q is unsupported", cfg.Deployment.Role)
-	}
-	provider = strings.ToLower(strings.TrimSpace(provider))
-	if role == "data_plane" {
-		if slices.Contains([]string{"etcd", "yaml", "json"}, provider) {
-			return provider, nil
-		}
-		return "", fmt.Errorf("deployment.role_data_plane.config_provider %q is unsupported", provider)
-	}
-	if provider != "etcd" {
-		return "", fmt.Errorf("deployment.%s config_provider must be etcd, got %q", role, provider)
-	}
-	return provider, nil
+	return paths, nil
 }
 
 func CapabilitySummary(cfg *Config) map[string]any {
@@ -424,166 +156,4 @@ func boundedSummaryValue(value string, allowed ...string) string {
 		return "unset"
 	}
 	return "unknown"
-}
-
-func decodeHTTPPluginAllowlist(raw any) ([]string, bool) {
-	switch value := raw.(type) {
-	case string:
-		if strings.Contains(value, ",") {
-			return strings.Split(value, ","), true
-		}
-		if value == "" || value != strings.TrimSpace(value) {
-			return []string{value}, true
-		}
-		return strings.Fields(value), true
-	case []string:
-		return append([]string(nil), value...), true
-	case []any:
-		plugins := make([]string, len(value))
-		for index, item := range value {
-			name, ok := item.(string)
-			if !ok {
-				return nil, false
-			}
-			plugins[index] = name
-		}
-		return plugins, true
-	default:
-		return nil, false
-	}
-}
-
-func validateHTTPPluginAllowlist(names []string) error {
-	seen := make(map[string]int, len(names))
-	for index, name := range names {
-		if name == "" {
-			return fmt.Errorf("plugins[%d] %q must not be empty", index, name)
-		}
-		if name != strings.TrimSpace(name) {
-			return fmt.Errorf("plugins[%d] %q must not have leading or trailing whitespace", index, name)
-		}
-		if previous, ok := seen[name]; ok {
-			return fmt.Errorf("plugins[%d] %q duplicates plugins[%d]", index, name, previous)
-		}
-		seen[name] = index
-	}
-	return nil
-}
-
-func configDecodeHook(from reflect.Type, to reflect.Type, data any) (any, error) {
-	if from.Kind() == reflect.String && to == reflect.TypeFor[time.Duration]() {
-		return time.ParseDuration(strings.TrimSpace(data.(string)))
-	}
-
-	switch to {
-	case reflect.TypeFor[NodeListen]():
-		return decodeNodeListen(data)
-	case reflect.TypeFor[TcpListen]():
-		return decodeTCPListen(data)
-	}
-	if to.Kind() == reflect.Slice && to.Elem() == reflect.TypeFor[NodeListen]() {
-		listen, err := decodeNodeListen(data)
-		if err != nil {
-			return nil, err
-		}
-		if value, ok := listen.(NodeListen); ok {
-			return []NodeListen{value}, nil
-		}
-	}
-	if to.Kind() == reflect.Slice && to.Elem() == reflect.TypeFor[TcpListen]() {
-		listen, err := decodeTCPListen(data)
-		if err != nil {
-			return nil, err
-		}
-		if value, ok := listen.(TcpListen); ok {
-			return []TcpListen{value}, nil
-		}
-	}
-
-	if from.Kind() == reflect.String && to.Kind() == reflect.Slice && to.Elem().Kind() == reflect.String {
-		value := strings.TrimSpace(data.(string))
-		if value == "" {
-			return []string{}, nil
-		}
-		if strings.Contains(value, ",") {
-			parts := strings.Split(value, ",")
-			for index := range parts {
-				parts[index] = strings.TrimSpace(parts[index])
-			}
-			return parts, nil
-		}
-		return strings.Fields(value), nil
-	}
-
-	return data, nil
-}
-
-func decodeNodeListen(data any) (any, error) {
-	port, host, ok, err := decodeListenAddress(data)
-	if err != nil {
-		return nil, err
-	}
-	if !ok {
-		return data, nil
-	}
-	return NodeListen{Ip: host, Port: port}, nil
-}
-
-func decodeTCPListen(data any) (any, error) {
-	port, host, ok, err := decodeListenAddress(data)
-	if err != nil {
-		return nil, err
-	}
-	if !ok {
-		if address, isString := data.(string); isString {
-			return TcpListen{Addr: strings.TrimSpace(address)}, nil
-		}
-		return data, nil
-	}
-	return TcpListen{Addr: net.JoinHostPort(host, strconv.Itoa(port))}, nil
-}
-
-func decodeListenAddress(data any) (port int, host string, ok bool, err error) {
-	switch value := data.(type) {
-	case int:
-		return value, "", true, nil
-	case int8:
-		return int(value), "", true, nil
-	case int16:
-		return int(value), "", true, nil
-	case int32:
-		return int(value), "", true, nil
-	case int64:
-		return int(value), "", true, nil
-	case uint:
-		return int(value), "", true, nil
-	case uint8:
-		return int(value), "", true, nil
-	case uint16:
-		return int(value), "", true, nil
-	case uint32:
-		return int(value), "", true, nil
-	case uint64:
-		return int(value), "", true, nil
-	case string:
-		address := strings.TrimSpace(value)
-		if address == "" {
-			return 0, "", true, nil
-		}
-		if port, err := strconv.Atoi(address); err == nil {
-			return port, "", true, nil
-		}
-		if portString, found := strings.CutPrefix(address, ":"); found {
-			port, err := strconv.Atoi(portString)
-			return port, "", true, err
-		}
-		parsedHost, parsedPort, splitErr := net.SplitHostPort(address)
-		if splitErr != nil {
-			return 0, "", false, nil
-		}
-		port, err = strconv.Atoi(parsedPort)
-		return port, parsedHost, true, err
-	default:
-		return 0, "", false, nil
-	}
 }

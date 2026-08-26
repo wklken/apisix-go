@@ -221,6 +221,10 @@ func (p *Plugin) PostInit() error {
 	); err != nil {
 		return err
 	}
+	var metadata pluginMetadata
+	if _, err := p.MetadataView().Decode(name, &metadata); err != nil {
+		return fmt.Errorf("tcp-logger metadata decode failed: %w", err)
+	}
 	if p.config.Timeout == 0 {
 		p.config.Timeout = 1000
 	}
@@ -247,7 +251,6 @@ func (p *Plugin) PostInit() error {
 		p.config.InactiveTimeout = int(logger_batch.DefaultInactiveTimeout / time.Second)
 	}
 
-	metadata := base.LoadPluginMetadata[pluginMetadata](name)
 	if len(p.config.LogFormat) == 0 {
 		p.logFormat = metadata.LogFormat
 	} else {
@@ -272,7 +275,7 @@ func (p *Plugin) PostInit() error {
 
 	p.config.addr = net.JoinHostPort(p.config.Host, strconv.Itoa(p.config.Port))
 
-	p.BatchProcessor = base.NewBatchProcessor("tcp logger", base.BatchDefaults{
+	processor, err := base.NewBatchProcessor("tcp logger", p.TaskOwner(), base.BatchDefaults{
 		BatchMaxSize:       p.config.BatchMaxSize,
 		MaxRetryCount:      p.config.MaxRetryCount,
 		RetryDelaySec:      p.config.RetryDelay,
@@ -282,6 +285,10 @@ func (p *Plugin) PostInit() error {
 		MaxPendingEntries:  p.config.MaxPendingEntries,
 		PluginID:           name,
 	}, p.RouteID, p.ServerAddr, p.SendBatch)
+	if err != nil {
+		return err
+	}
+	p.BatchProcessor = processor
 
 	return nil
 }
@@ -477,6 +484,8 @@ func (p *Plugin) sendBody(ctx context.Context, body []byte) error {
 }
 
 // Stop drains the batch processor first, then closes the shared connection.
+func (p *Plugin) QuiesceGenerationTasks() { p.Stop() }
+
 func (p *Plugin) Stop() {
 	p.StopWithCleanup(func() {
 		p.connMu.Lock()
@@ -535,16 +544,14 @@ func watchConnectionCancellation(ctx context.Context, conn net.Conn) func() {
 		return func() {}
 	}
 	done := make(chan struct{})
-	var wait sync.WaitGroup
-	wait.Go(func() {
-		select {
-		case <-ctx.Done():
-			_ = conn.Close()
-		case <-done:
-		}
+	stop := context.AfterFunc(ctx, func() {
+		defer close(done)
+		_ = conn.Close()
 	})
 	return func() {
-		close(done)
-		wait.Wait()
+		if stop() {
+			close(done)
+		}
+		<-done
 	}
 }

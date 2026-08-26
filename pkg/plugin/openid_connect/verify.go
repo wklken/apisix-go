@@ -256,22 +256,25 @@ func (p *Plugin) verifyBearerJWT(r *http.Request, rawToken string) (map[string]a
 		return nil, fmt.Errorf("JWT token alg mismatch")
 	}
 
-	var verifier *oidc.IDTokenVerifier
+	var idToken *oidc.IDToken
 	if p.config.PublicKey != "" {
-		verifier, err = p.staticKeyVerifier(algorithm)
+		err = p.withOIDCPublicKey(func(publicKey crypto.PublicKey) error {
+			verifier := p.staticKeyVerifier(algorithm, publicKey)
+			idToken, err = verifier.Verify(r.Context(), rawToken)
+			return err
+		})
 		if err != nil {
-			return nil, fmt.Errorf("failed to parse public key")
+			return nil, fmt.Errorf("failed to verify jwt")
 		}
 	} else {
 		client, err := p.providerClient(r)
 		if err != nil {
 			return nil, fmt.Errorf("failed to verify jwt")
 		}
-		verifier = client.verifier
-	}
-	idToken, err := verifier.Verify(r.Context(), rawToken)
-	if err != nil {
-		return nil, fmt.Errorf("failed to verify jwt")
+		idToken, err = client.verifier.Verify(r.Context(), rawToken)
+		if err != nil {
+			return nil, fmt.Errorf("failed to verify jwt")
+		}
 	}
 	claims := map[string]any{}
 	if err := idToken.Claims(&claims); err != nil {
@@ -288,17 +291,14 @@ func (p *Plugin) verifyBearerJWT(r *http.Request, rawToken string) (map[string]a
 // staticKeyVerifier builds a go-oidc verifier over the configured static
 // public key. Issuer validation is deferred to validateIssuer because the
 // plugin accepts an explicit issuer list.
-func (p *Plugin) staticKeyVerifier(algorithm string) (*oidc.IDTokenVerifier, error) {
-	if p.staticPublicKey == nil {
-		return nil, errors.New("static public key is not configured")
-	}
+func (p *Plugin) staticKeyVerifier(algorithm string, publicKey crypto.PublicKey) *oidc.IDTokenVerifier {
 	return oidc.NewVerifier("", &oidc.StaticKeySet{
-		PublicKeys: []crypto.PublicKey{p.staticPublicKey},
+		PublicKeys: []crypto.PublicKey{publicKey},
 	}, &oidc.Config{
 		SkipClientIDCheck:    true,
 		SkipIssuerCheck:      true,
 		SupportedSigningAlgs: []string{algorithm},
-	}), nil
+	})
 }
 
 func parsePublicKey(publicKeyBytes []byte) (any, error) {
@@ -374,30 +374,31 @@ func (p *Plugin) introspect(r *http.Request, token string) (map[string]any, erro
 		return nil, err
 	}
 
-	form := url.Values{}
-	form.Set("token", token)
-	req, err := p.authenticatedFormRequest(r, endpoint, form, p.config.IntrospectionEndpointAuthMethod)
-	if err != nil {
-		return nil, err
-	}
-	for _, name := range p.config.IntrospectionAddonHeaders {
-		if value := r.Header.Get(name); value != "" {
-			req.Header.Set(name, value)
-		}
-	}
-
-	resp, err := p.client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return nil, fmt.Errorf("introspection endpoint returned %d", resp.StatusCode)
-	}
-
 	var claims map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&claims); err != nil {
+	err = p.authenticatedFormRequest(
+		r,
+		endpoint,
+		func(form url.Values) { form.Set("token", token) },
+		p.config.IntrospectionEndpointAuthMethod,
+		func(req *http.Request) error {
+			for _, name := range p.config.IntrospectionAddonHeaders {
+				if value := r.Header.Get(name); value != "" {
+					req.Header.Set(name, value)
+				}
+			}
+			resp, err := p.client.Do(req)
+			if err != nil {
+				return err
+			}
+			defer func() { _ = resp.Body.Close() }()
+			clearOIDCRequestCredentials(resp.Request)
+			if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+				return fmt.Errorf("introspection endpoint returned %d", resp.StatusCode)
+			}
+			return json.NewDecoder(resp.Body).Decode(&claims)
+		},
+	)
+	if err != nil {
 		return nil, err
 	}
 	return claims, nil

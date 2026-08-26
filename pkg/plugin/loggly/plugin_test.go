@@ -5,22 +5,609 @@ import (
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/wklken/apisix-go/pkg/data_encryption"
+	"github.com/wklken/apisix-go/pkg/capability"
+	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/runtime"
+	"github.com/wklken/apisix-go/pkg/secret"
+	"github.com/wklken/apisix-go/pkg/testutil"
 	"github.com/wklken/apisix-go/pkg/util"
 )
+
+type cancellationWatchConn struct {
+	net.Conn
+	closeCalls   atomic.Int32
+	closeStarted chan struct{}
+	releaseClose <-chan struct{}
+}
+
+func (c *cancellationWatchConn) Close() error {
+	c.closeCalls.Add(1)
+	select {
+	case c.closeStarted <- struct{}{}:
+	default:
+	}
+	if c.releaseClose != nil {
+		<-c.releaseClose
+	}
+	return nil
+}
+
+func TestWatchConnectionCancellation(t *testing.T) {
+	for _, scenario := range []string{
+		"cancellation closes connection",
+		"normal completion preserves reused connection",
+		"cleanup joins close already running",
+		"nil context is no-op",
+	} {
+		t.Run(scenario, func(t *testing.T) {
+			var ctx context.Context
+			var cancel context.CancelFunc
+			if scenario != "nil context is no-op" {
+				ctx, cancel = context.WithCancel(context.Background())
+				defer cancel()
+			}
+			var releaseClose chan struct{}
+			if scenario == "cleanup joins close already running" {
+				releaseClose = make(chan struct{})
+			}
+			conn := &cancellationWatchConn{
+				closeStarted: make(chan struct{}, 1),
+				releaseClose: releaseClose,
+			}
+			cleanup := watchConnectionCancellation(ctx, conn)
+
+			switch scenario {
+			case "cancellation closes connection":
+				cancel()
+				cleanup()
+			case "normal completion preserves reused connection":
+				cleanup()
+				cancel()
+			case "cleanup joins close already running":
+				cancel()
+				select {
+				case <-conn.closeStarted:
+				case <-time.After(time.Second):
+					t.Fatal("cancellation callback did not enter Close")
+				}
+				cleanupDone := make(chan struct{})
+				go func() {
+					cleanup()
+					close(cleanupDone)
+				}()
+				select {
+				case <-cleanupDone:
+					t.Fatal("cleanup returned while Close was blocked")
+				case <-time.After(20 * time.Millisecond):
+				}
+				close(releaseClose)
+				select {
+				case <-cleanupDone:
+				case <-time.After(time.Second):
+					t.Fatal("cleanup did not return after Close completed")
+				}
+			case "nil context is no-op":
+				cleanup()
+			}
+
+			wantCloseCalls := int32(0)
+			if scenario == "cancellation closes connection" ||
+				scenario == "cleanup joins close already running" {
+				wantCloseCalls = 1
+			}
+			if got := conn.closeCalls.Load(); got != wantCloseCalls {
+				t.Fatalf("Close calls = %d, want %d", got, wantCloseCalls)
+			}
+		})
+	}
+}
+
+type logglyScopedSecretCall struct {
+	Scope secret.Scope
+	Raw   string
+}
+
+type logglyScopedSecretBroker struct {
+	mu     sync.Mutex
+	values map[string]string
+	fail   map[string]error
+	calls  []logglyScopedSecretCall
+}
+
+func (*logglyScopedSecretBroker) AuthorizeCandidate(
+	context.Context, secret.AttemptID, generation.ApplyTicket, generation.PublicationSet,
+) error {
+	return nil
+}
+
+func (*logglyScopedSecretBroker) AuthorizeRecovery(
+	context.Context, secret.AttemptID, generation.RevisionSet,
+	map[generation.Domain]generation.PublishedGeneration,
+) error {
+	return errors.New("recovery is not used by this Loggly fixture")
+}
+
+func (broker *logglyScopedSecretBroker) ResolveScoped(
+	ctx context.Context, scope secret.Scope, raw string,
+) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	broker.mu.Lock()
+	defer broker.mu.Unlock()
+	broker.calls = append(broker.calls, logglyScopedSecretCall{Scope: scope, Raw: raw})
+	if err := broker.fail[raw]; err != nil {
+		return "", err
+	}
+	value, ok := broker.values[raw]
+	if !ok {
+		return "", errors.New("missing private Loggly token test value")
+	}
+	return value, nil
+}
+
+func (*logglyScopedSecretBroker) RevokeAttempt(context.Context, secret.AttemptID) error {
+	return nil
+}
+
+func (broker *logglyScopedSecretBroker) callsSnapshot() []logglyScopedSecretCall {
+	broker.mu.Lock()
+	defer broker.mu.Unlock()
+	return append([]logglyScopedSecretCall(nil), broker.calls...)
+}
+
+func newLogglyScopedSecretHarness(
+	t *testing.T,
+	revision uint64,
+	resourceID string,
+	config Config,
+	values map[string]string,
+) (secret.GenerationCapability, secret.Scope, *logglyScopedSecretBroker, func()) {
+	t.Helper()
+	key := generation.ResourceKey{Kind: "routes", ID: resourceID}
+	document, err := json.Marshal(map[string]any{
+		"id": resourceID, "plugins": map[string]any{name: config},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := generation.NewSnapshot(revision, []generation.Resource{{
+		Key: key, Value: document,
+	}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := generation.PublicationCandidate{
+		Artifact: generation.GenerationArtifact{
+			Domain: generation.DomainHTTP, Revision: revision,
+			Digest: snapshot.Digest(), Snapshot: snapshot.SnapshotID(),
+		},
+		Snapshot: snapshot,
+		Closure:  []generation.ResourceKey{key},
+		Decisions: []generation.ResourceDecision{{
+			Key: key, Disposition: generation.DispositionPublished, Code: "loggly-test",
+		}},
+	}
+	ticket := generation.ApplyTicket{
+		DesiredRevision: revision,
+		DesiredDigest:   snapshot.Digest(),
+		RequiredDomains: []generation.Domain{generation.DomainHTTP},
+	}
+	publication := generation.PublicationSet{
+		DesiredRevision: revision,
+		Domains: map[generation.Domain]generation.PublicationCandidate{
+			generation.DomainHTTP: candidate,
+		},
+	}
+	manifest, err := capability.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := capability.NewSecretDeclarationCatalog(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	broker := &logglyScopedSecretBroker{values: values, fail: make(map[string]error)}
+	registration, err := secret.NewScopedMaterializer(broker, catalog).RegisterCandidate(
+		context.Background(), ticket, publication,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capabilityValue, err := secret.NewGenerationCapability(registration, revision)
+	if err != nil {
+		_ = registration.Close(context.Background())
+		t.Fatal(err)
+	}
+	scope := secret.Scope{
+		Generation: revision,
+		Attempt:    registration.AttemptID(),
+		Domain:     generation.DomainHTTP,
+		Plugin:     name,
+		Resource:   key,
+		Source:     capability.SecretPluginConfig,
+	}
+	return capabilityValue, scope, broker, func() {
+		if err := registration.Close(context.Background()); err != nil {
+			t.Errorf("close Loggly scoped attempt: %v", err)
+		}
+	}
+}
+
+func logglyTokenDescriptor(plaintext string) string {
+	digest := sha256.Sum256([]byte(plaintext))
+	return fmt.Sprintf("plugin_config#sha256:%s", hex.EncodeToString(digest[:]))
+}
+
+func TestMaterializeScopedSecretsOwnsLogglyToken(t *testing.T) {
+	ciphertext := encryptLogglyTestValue(t, "qeddd145sfvddff3", "cipher-private")
+	for index, tt := range []struct {
+		name     string
+		raw      string
+		resolved string
+	}{
+		{name: "ciphertext", raw: ciphertext, resolved: "cipher-private"},
+		{name: "environment", raw: "$ENV://LOGGLY_TOKEN", resolved: "env-private"},
+		{name: "managed", raw: "$secret://vault/loggly/token", resolved: "managed-private"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			config := Config{CustomerToken: tt.raw, Protocol: "http", Host: "http://127.0.0.1"}
+			capabilityValue, scope, broker, closeAttempt := newLogglyScopedSecretHarness(
+				t, uint64(index+1), "loggly-"+tt.name, config,
+				map[string]string{tt.raw: tt.resolved},
+			)
+			defer closeAttempt()
+			p := &Plugin{config: config}
+			if err := p.Init(); err != nil {
+				t.Fatal(err)
+			}
+			if err := base.MaterializeScopedPluginSecrets(
+				context.Background(), scope, capabilityValue, p,
+			); err != nil {
+				t.Fatal(err)
+			}
+			calls := broker.callsSnapshot()
+			wantScope := scope
+			wantScope.Field = "customer_token"
+			if len(calls) != 1 || calls[0].Scope != wantScope || calls[0].Raw != tt.raw {
+				t.Fatalf("token calls = %#v, want scope %#v raw %q", calls, wantScope, tt.raw)
+			}
+			if p.config.CustomerToken != logglyTokenDescriptor(tt.resolved) {
+				t.Fatalf("public token = %q, want descriptor", p.config.CustomerToken)
+			}
+			if p.httpClient != nil || p.BatchProcessor != nil {
+				t.Fatal("materialization caused client or batch side effects")
+			}
+			if _, err := p.SendBatch(
+				context.Background(), []map[string]any{{"premature": true}}, 1,
+			); !errors.Is(err, secret.ErrCredentialUnavailable) {
+				t.Fatalf("pre-PostInit SendBatch() error = %v", err)
+			}
+			if err := p.RunLogPhase(base.LogSnapshot{}); !errors.Is(err, base.ErrLogQueueUnavailable) {
+				t.Fatalf("pre-PostInit RunLogPhase() error = %v", err)
+			}
+			p.Stop()
+		})
+	}
+
+	const failedRaw = "$secret://vault/loggly/failure"
+	config := Config{CustomerToken: failedRaw}
+	capabilityValue, scope, broker, closeAttempt := newLogglyScopedSecretHarness(
+		t, 10, "loggly-retry", config, map[string]string{failedRaw: "recovered-private"},
+	)
+	defer closeAttempt()
+	broker.fail[failedRaw] = errors.New("resolver leaked " + failedRaw)
+	p := &Plugin{config: config}
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p)
+	if !errors.Is(err, secret.ErrCredentialUnavailable) || strings.Contains(err.Error(), failedRaw) {
+		t.Fatalf("first materialization error = %v, want redacted unavailable", err)
+	}
+	if p.config.CustomerToken != failedRaw || p.secretsPrepared || p.tokenSet {
+		t.Fatal("failed materialization installed partial state")
+	}
+	broker.mu.Lock()
+	delete(broker.fail, failedRaw)
+	broker.mu.Unlock()
+	if err := base.MaterializeScopedPluginSecrets(
+		context.Background(), scope, capabilityValue, p,
+	); err != nil {
+		t.Fatalf("same-instance retry error = %v", err)
+	}
+	if p.config.CustomerToken != logglyTokenDescriptor("recovered-private") {
+		t.Fatalf("retry token = %q, want descriptor", p.config.CustomerToken)
+	}
+	p.Stop()
+}
+
+func TestLogglyScopedMaterializationIsSingleFlight(t *testing.T) {
+	const raw = "$ENV://LOGGLY_SINGLEFLIGHT_TOKEN"
+	config := Config{CustomerToken: raw}
+	capabilityValue, scope, broker, closeAttempt := newLogglyScopedSecretHarness(
+		t, 20, "loggly-singleflight", config, map[string]string{raw: "singleflight-private"},
+	)
+	defer closeAttempt()
+	p := &Plugin{config: config}
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	start := make(chan struct{})
+	errs := make(chan error, 16)
+	var group sync.WaitGroup
+	for range 16 {
+		group.Go(func() {
+			<-start
+			errs <- base.MaterializeScopedPluginSecrets(
+				context.Background(), scope, capabilityValue, p,
+			)
+		})
+	}
+	close(start)
+	group.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if calls := broker.callsSnapshot(); len(calls) != 1 {
+		t.Fatalf("singleflight token calls = %#v, want one", calls)
+	}
+	p.Stop()
+}
+
+func TestLogglyTokensAreAttemptOwnedAcrossHTTPDeliveries(t *testing.T) {
+	paths := make(chan string, 3)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths <- r.URL.Path
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	t.Cleanup(server.Close)
+
+	newScoped := func(revision uint64, resourceID, raw, resolved string) (*Plugin, func()) {
+		config := Config{
+			CustomerToken: raw,
+			Host:          server.URL,
+			Protocol:      "http",
+			Timeout:       1000,
+			BatchMaxSize:  1,
+		}
+		capabilityValue, scope, _, closeAttempt := newLogglyScopedSecretHarness(
+			t, revision, resourceID, config, map[string]string{raw: resolved},
+		)
+		p := &Plugin{config: config}
+		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
+		if err := p.Init(); err != nil {
+			closeAttempt()
+			t.Fatal(err)
+		}
+		if err := base.MaterializeScopedPluginSecrets(
+			context.Background(), scope, capabilityValue, p,
+		); err != nil {
+			closeAttempt()
+			t.Fatal(err)
+		}
+		if err := p.PostInit(); err != nil {
+			closeAttempt()
+			t.Fatal(err)
+		}
+		processor := p.BatchProcessor
+		return p, func() {
+			p.Stop()
+			if err := processor.Shutdown(context.Background()); err != nil {
+				t.Errorf("batch Shutdown() error = %v", err)
+			}
+			closeAttempt()
+		}
+	}
+
+	first, closeFirst := newScoped(31, "loggly-first", "$secret://loggly/first", "first-private")
+	second, closeSecond := newScoped(32, "loggly-second", "$secret://loggly/second", "second-private")
+	defer closeSecond()
+	if first.config.CustomerToken == "first-private" || second.config.CustomerToken == "second-private" {
+		t.Fatal("private token escaped into public config")
+	}
+	if _, err := first.SendBatch(context.Background(), []map[string]any{{"generation": 31}}, 1); err != nil {
+		t.Fatal(err)
+	}
+	if got := <-paths; got != "/bulk/first-private/tag/bulk" {
+		t.Fatalf("first delivery path = %q", got)
+	}
+	if _, err := second.SendBatch(context.Background(), []map[string]any{{"generation": 32}}, 1); err != nil {
+		t.Fatal(err)
+	}
+	if got := <-paths; got != "/bulk/second-private/tag/bulk" {
+		t.Fatalf("second delivery path = %q", got)
+	}
+	closeFirst()
+	if _, err := second.SendBatch(context.Background(), []map[string]any{{"generation": "32-again"}}, 1); err != nil {
+		t.Fatalf("second delivery after first Stop: %v", err)
+	}
+	if got := <-paths; got != "/bulk/second-private/tag/bulk" {
+		t.Fatalf("second delivery after first Stop path = %q", got)
+	}
+}
+
+type retainedLogglyRoundTripper struct {
+	request  *http.Request
+	response *http.Response
+}
+
+func (transport *retainedLogglyRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
+	transport.request = request
+	transport.response = &http.Response{
+		StatusCode: http.StatusAccepted,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader("retained response")),
+		Request:    request,
+	}
+	return transport.response, nil
+}
+
+func TestLogglyHTTPDeliveryScrubsRetainedTokenURLAndBody(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		CustomerToken: "retained-private",
+		Host:          "http://loggly.invalid",
+		Protocol:      "http",
+		Timeout:       1000,
+	})
+	transport := &retainedLogglyRoundTripper{}
+	p.httpClient = &http.Client{Transport: transport}
+	if _, err := p.SendBatch(
+		context.Background(), []map[string]any{{"private": "request"}}, 1,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if transport.request == nil || transport.response == nil {
+		t.Fatal("round tripper did not retain request and response")
+	}
+	if transport.request.URL != nil {
+		t.Fatalf("retained request URL = %#v, want nil", transport.request.URL)
+	}
+	if transport.request.Body != http.NoBody || transport.request.GetBody != nil {
+		t.Fatalf(
+			"retained request Body = %#v GetBody present = %t, want scrubbed",
+			transport.request.Body, transport.request.GetBody != nil,
+		)
+	}
+	if transport.response.Request != nil || transport.response.Body != http.NoBody {
+		t.Fatalf("retained response still references request/body: %#v", transport.response)
+	}
+}
+
+type blockingLogglyRoundTripper struct {
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (transport *blockingLogglyRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
+	transport.once.Do(func() { close(transport.started) })
+	<-transport.release
+	return &http.Response{
+		StatusCode: http.StatusAccepted,
+		Header:     make(http.Header),
+		Body:       http.NoBody,
+		Request:    request,
+	}, nil
+}
+
+func TestLogglyStopDrainsActiveSendAndPreventsResurrection(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		CustomerToken: "active-private",
+		Host:          "http://loggly.invalid",
+		Protocol:      "http",
+		Timeout:       1000,
+	})
+	transport := &blockingLogglyRoundTripper{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	p.httpClient = &http.Client{Transport: transport}
+	processor := p.BatchProcessor
+	sendDone := make(chan error, 1)
+	go func() {
+		_, err := p.SendBatch(context.Background(), []map[string]any{{"active": true}}, 1)
+		sendDone <- err
+	}()
+	select {
+	case <-transport.started:
+	case <-time.After(time.Second):
+		t.Fatal("active Loggly send did not start")
+	}
+	p.Stop()
+	if p.httpClient == nil || p.BatchProcessor == nil || !p.tokenSet || !p.ready {
+		t.Fatal("Stop cleaned active Loggly resources before delivery returned")
+	}
+	if !p.stopped.Load() {
+		t.Fatal("Stop did not seal the Loggly log entrypoint")
+	}
+	close(transport.release)
+	if err := <-sendDone; err != nil {
+		t.Fatalf("active SendBatch() error = %v", err)
+	}
+	if err := processor.Shutdown(context.Background()); err != nil {
+		t.Fatalf("batch Shutdown() error = %v", err)
+	}
+	if p.httpClient != nil || p.BatchProcessor != nil ||
+		p.tokenSet || p.secretsPrepared || p.ready {
+		t.Fatal("Stop retained client, processor, or private token")
+	}
+	before := len(p.FireChan)
+	if err := p.RunLogPhase(base.LogSnapshot{}); !errors.Is(err, base.ErrLogQueueUnavailable) {
+		t.Fatalf("post-Stop RunLogPhase() error = %v", err)
+	}
+	if len(p.FireChan) != before {
+		t.Fatal("post-Stop log phase enqueued work")
+	}
+	if _, err := p.SendBatch(
+		context.Background(), []map[string]any{{"late": true}}, 1,
+	); !errors.Is(err, secret.ErrCredentialUnavailable) {
+		t.Fatalf("post-Stop SendBatch() error = %v", err)
+	}
+	if err := p.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) {
+		t.Fatalf("post-Stop MaterializeSecrets() error = %v", err)
+	}
+	if err := p.PostInit(); !errors.Is(err, secret.ErrCredentialUnavailable) {
+		t.Fatalf("post-Stop PostInit() error = %v", err)
+	}
+}
+
+func TestLogglyStopFlushesPendingBatchBeforeCleanup(t *testing.T) {
+	received := make(chan string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		received <- r.URL.Path
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	t.Cleanup(server.Close)
+	p := newTestPlugin(t, Config{
+		CustomerToken:  "pending-private",
+		Host:           server.URL,
+		Protocol:       "http",
+		Timeout:        1000,
+		BatchMaxSize:   10,
+		BufferDuration: 60,
+	})
+	if err := p.EnqueueLog(map[string]any{"pending": true}); err != nil {
+		t.Fatal(err)
+	}
+	processor := p.BatchProcessor
+	p.Stop()
+	if err := processor.Shutdown(context.Background()); err != nil {
+		t.Fatalf("batch Shutdown() error = %v", err)
+	}
+	select {
+	case path := <-received:
+		if path != "/bulk/pending-private/tag/bulk" {
+			t.Fatalf("pending delivery path = %q", path)
+		}
+	default:
+		t.Fatal("Stop dropped the pending Loggly batch before delivery")
+	}
+	if p.httpClient != nil || p.BatchProcessor != nil ||
+		p.tokenSet || p.secretsPrepared || p.ready {
+		t.Fatal("pending drain completed before runtime cleanup")
+	}
+}
 
 func TestResolveLogglySnapshotFormatUsesRequestStartTime(t *testing.T) {
 	started := time.Date(2026, time.August, 12, 8, 30, 0, 0, time.UTC)
@@ -54,7 +641,6 @@ func TestSendBatchCancelsLogglyHTTPBulkWithContext(t *testing.T) {
 		Protocol:      "http",
 		Timeout:       10000,
 	})
-	t.Cleanup(p.BatchProcessor.Stop)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -91,16 +677,57 @@ func TestSendBatchCancelsLogglyHTTPBulkWithContext(t *testing.T) {
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
+	return newTestPluginWithMetadata(t, cfg, nil)
+}
+
+func newTestPluginWithMetadata(t *testing.T, cfg Config, metadata map[string]any) *Plugin {
+	t.Helper()
 
 	p := &Plugin{config: cfg}
+	p.SetDependencies(base.Dependencies{
+		Tasks:          newLoggerTestTaskOwner(t),
+		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+		Metadata:       mustMetadataView(t, metadata),
+	})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
+	}
+	capabilityValue, scope, _, cleanup := newLogglyScopedSecretHarness(
+		t, 1, "test-route", cfg, map[string]string{cfg.CustomerToken: cfg.CustomerToken},
+	)
+	t.Cleanup(cleanup)
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
+	t.Cleanup(p.Stop)
 
 	return p
+}
+
+func mustMetadataView(t *testing.T, metadata map[string]any) runtime.MetadataView {
+	t.Helper()
+	if len(metadata) == 0 {
+		return runtime.MetadataView{}
+	}
+	document, err := json.Marshal(metadata)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	view, err := runtime.NewMetadataView(map[string][]byte{name: document})
+	if err != nil {
+		t.Fatalf("NewMetadataView() error = %v", err)
+	}
+	return view
+}
+
+func TestPostInitRejectsMissingDataEncryptionResolver(t *testing.T) {
+	p := &Plugin{config: Config{CustomerToken: "private"}}
+	if err := p.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) {
+		t.Fatalf("MaterializeSecrets() error = %v, want credential unavailable", err)
+	}
 }
 
 func TestPostInitSetsDefaults(t *testing.T) {
@@ -133,34 +760,43 @@ func TestPostInitSetsDefaults(t *testing.T) {
 }
 
 func TestPostInitRejectsInvalidEncryptedCustomerToken(t *testing.T) {
-	data_encryption.Configure(true, []string{"qeddd145sfvddff3"})
-	t.Cleanup(func() { data_encryption.Configure(false, nil) })
-
 	p := &Plugin{config: Config{CustomerToken: "not-a-ciphertext"}}
+	p.SetDependencies(base.Dependencies{
+		Tasks:          newLoggerTestTaskOwner(t),
+		DataEncryption: testutil.DataEncryptionService(true, []string{"qeddd145sfvddff3"}).Resolver(),
+	})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := p.PostInit(); err == nil {
-		t.Fatal("PostInit() error = nil, want strict encrypted customer_token rejection")
+	if err := p.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) {
+		t.Fatalf("MaterializeSecrets() error = %v, want credential unavailable", err)
 	}
 }
 
 func TestPostInitResolvesRotatedEncryptedCustomerToken(t *testing.T) {
 	oldKey := "old-keyring-item"
 	newKey := "qeddd145sfvddff3"
-	data_encryption.Configure(true, []string{newKey, oldKey})
-	t.Cleanup(func() { data_encryption.Configure(false, nil) })
-
 	p := &Plugin{config: Config{CustomerToken: encryptLogglyTestValue(t, oldKey, "loggly-token")}}
+	p.SetDependencies(base.Dependencies{
+		Tasks:          newLoggerTestTaskOwner(t),
+		DataEncryption: testutil.DataEncryptionService(true, []string{newKey, oldKey}).Resolver(),
+	})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
+	}
+	capabilityValue, scope, _, cleanup := newLogglyScopedSecretHarness(
+		t, 1, "rotated-token", p.config, map[string]string{p.config.CustomerToken: "loggly-token"},
+	)
+	t.Cleanup(cleanup)
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
-	t.Cleanup(func() { p.BatchProcessor.Stop() })
-	if p.config.CustomerToken != "loggly-token" {
-		t.Fatalf("customer_token = %q, want resolved plaintext", p.config.CustomerToken)
+	t.Cleanup(p.Stop)
+	if p.config.CustomerToken != logglyTokenDescriptor("loggly-token") {
+		t.Fatalf("customer_token = %q, want resolved descriptor", p.config.CustomerToken)
 	}
 }
 
@@ -174,7 +810,7 @@ func TestBuildMessageUsesRFC5424ShapeAndTags(t *testing.T) {
 	message := p.buildMessage(map[string]any{
 		"status": 200,
 		"path":   "/get",
-	})
+	}, "token")
 
 	if !strings.HasPrefix(message, "<14>1 ") {
 		t.Fatalf("message = %q, want INFO priority prefix <14>1", message)
@@ -194,7 +830,7 @@ func TestBuildMessageUsesSeverityMap(t *testing.T) {
 		SeverityMap:   map[string]string{"503": "ERR"},
 	})
 
-	message := p.buildMessage(map[string]any{"status": 503})
+	message := p.buildMessage(map[string]any{"status": 503}, "token")
 	if !strings.HasPrefix(message, "<11>1 ") {
 		t.Fatalf("message = %q, want ERR priority prefix <11>1", message)
 	}
@@ -713,6 +1349,110 @@ func TestSchemaAcceptsBatchAndMaxPendingFields(t *testing.T) {
 	}
 }
 
+func TestMetadataSchemaAcceptsEndpointAndLogFormat(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := util.Validate(map[string]any{
+		"host":       "logs.example.com",
+		"port":       -1,
+		"protocol":   "custom",
+		"timeout":    0,
+		"log_format": map[string]any{"generation": "$route_id"},
+	}, p.GetMetadataSchema()); err != nil {
+		t.Fatalf("valid metadata rejected: %v", err)
+	}
+	for _, metadata := range []map[string]any{
+		{"host": 1},
+		{"port": "514"},
+		{"protocol": 1},
+		{"timeout": "5000"},
+		{"log_format": "$route_id"},
+		{"log_format": map[string]any{"generation": 1}},
+	} {
+		if err := util.Validate(metadata, p.GetMetadataSchema()); err == nil {
+			t.Fatalf("invalid metadata accepted: %#v", metadata)
+		}
+	}
+}
+
+func TestPreparedGenerationsRetainMetadataEndpointAndFormat(t *testing.T) {
+	first := newTestPluginWithMetadata(t, Config{CustomerToken: "token-n"}, map[string]any{
+		"host":       "logs-n.example",
+		"port":       1514,
+		"protocol":   "http",
+		"timeout":    1100,
+		"log_format": map[string]any{"generation": "n"},
+	})
+	second := newTestPluginWithMetadata(t, Config{CustomerToken: "token-n-plus-one"}, map[string]any{
+		"host":       "logs-n-plus-one.example",
+		"port":       2514,
+		"protocol":   "https",
+		"timeout":    2100,
+		"log_format": map[string]any{"generation": "n-plus-one"},
+	})
+	route := newTestPluginWithMetadata(t, Config{
+		CustomerToken: "token-route",
+		Host:          "logs-route.example",
+		Port:          3514,
+		Protocol:      "syslog",
+		Timeout:       3100,
+		LogFormat:     map[string]string{"generation": "route"},
+	}, map[string]any{
+		"host":       "logs-metadata.example",
+		"port":       4514,
+		"protocol":   "https",
+		"timeout":    4100,
+		"log_format": map[string]any{"generation": "metadata"},
+	})
+
+	if first.config.Host != "logs-n.example" || first.config.Port != 1514 ||
+		first.config.Protocol != "http" || first.config.Timeout != 1100 ||
+		first.LogFormat["generation"] != "n" {
+		t.Fatalf("generation N metadata = %#v/%#v", first.config, first.LogFormat)
+	}
+	if second.config.Host != "logs-n-plus-one.example" || second.config.Port != 2514 ||
+		second.config.Protocol != "https" || second.config.Timeout != 2100 ||
+		second.LogFormat["generation"] != "n-plus-one" {
+		t.Fatalf("generation N+1 metadata = %#v/%#v", second.config, second.LogFormat)
+	}
+	if route.config.Host != "logs-route.example" || route.config.Port != 3514 ||
+		route.config.Protocol != "syslog" || route.config.Timeout != 3100 ||
+		route.LogFormat["generation"] != "route" {
+		t.Fatalf("route precedence = %#v/%#v", route.config, route.LogFormat)
+	}
+}
+
+func TestMetadataDecodeFailsBeforeLogglyClientAndProcessorAcquisition(t *testing.T) {
+	p := &Plugin{config: Config{CustomerToken: "token"}}
+	p.SetDependencies(base.Dependencies{
+		Tasks:          newLoggerTestTaskOwner(t),
+		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+		Metadata: mustMetadataView(t, map[string]any{
+			"timeout": "invalid",
+		}),
+	})
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	capabilityValue, scope, _, cleanup := newLogglyScopedSecretHarness(
+		t, 1, "invalid-metadata", p.config, map[string]string{p.config.CustomerToken: p.config.CustomerToken},
+	)
+	t.Cleanup(cleanup)
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
+	}
+	err := p.PostInit()
+	defer p.Stop()
+	if err == nil {
+		t.Fatal("PostInit() error = nil for invalid metadata")
+	}
+	if p.httpClient != nil || p.BatchProcessor != nil {
+		t.Fatalf("decode failure acquired resources: client=%v processor=%v", p.httpClient, p.BatchProcessor)
+	}
+}
+
 func encryptLogglyTestValue(t *testing.T, key string, value string) string {
 	t.Helper()
 	padding := aes.BlockSize - len(value)%aes.BlockSize
@@ -1011,7 +1751,11 @@ func TestStopClosesLogglyUDPSocket(t *testing.T) {
 		t.Fatal("timed out waiting for loggly UDP message")
 	}
 
+	processor := p.BatchProcessor
 	p.Stop()
+	if err := processor.Shutdown(context.Background()); err != nil {
+		t.Fatalf("batch Shutdown() error = %v", err)
+	}
 	p.connMu.Lock()
 	conn := p.conn
 	p.connMu.Unlock()

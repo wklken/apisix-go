@@ -134,6 +134,7 @@ cases:
           upstream: *fixture_route
     input:
       path: /hello
+      generation_timeout: 5s
     upstream:
       expect:
         path:

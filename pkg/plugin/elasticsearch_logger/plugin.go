@@ -3,7 +3,10 @@ package elasticsearch_logger
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
+	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand"
@@ -11,6 +14,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/elastic/go-elasticsearch/v8"
@@ -18,11 +22,12 @@ import (
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/apisix/variable"
-	"github.com/wklken/apisix-go/pkg/data_encryption"
+	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
+	"github.com/wklken/apisix-go/pkg/secret"
 	"github.com/wklken/apisix-go/pkg/shared"
 )
 
@@ -165,6 +170,21 @@ const schema = `
 	]
 }`
 
+const metadataSchema = `
+{
+  "type": "object",
+  "properties": {
+    "log_format": {
+      "type": "object",
+      "additionalProperties": {"type": "string"}
+    },
+    "max_pending_entries": {
+      "type": "integer",
+      "minimum": 1
+    }
+  }
+}`
+
 const elasticsearchIndexField = "__elasticsearch_logger_index"
 
 // NOTE: not support
@@ -184,12 +204,36 @@ type Plugin struct {
 	esVersion string
 
 	clientMu sync.Mutex
-	clients  map[string]*esClientRef
+	clients  map[esClientKey]*esClientRef
+
+	secretMu              sync.RWMutex
+	password              *secret.Value
+	legacyPassword        *string
+	authorization         *secret.Value
+	legacyAuthorization   *string
+	stopped               atomic.Bool
+	stopBeforeLock        func()
+	postInitBeforePublish func(*logger_batch.Processor)
+	cleanupOnce           sync.Once
 }
 
 type esClientRef struct {
-	client  *elasticsearch.BaseClient
-	release func()
+	client      *elasticsearch.BaseClient
+	credentials *elasticsearchCredentialTransport
+	release     func()
+}
+
+type esClientKey struct {
+	endpoint            string
+	passwordDigest      [sha256.Size]byte
+	authorizationDigest [sha256.Size]byte
+}
+
+type elasticsearchCredentialTransport struct {
+	owner       *Plugin
+	transport   http.RoundTripper
+	override    bool
+	afterDerive func([]byte)
 }
 
 var randomEndpointIndex = rand.Intn
@@ -237,30 +281,199 @@ func (p *Plugin) Init() error {
 	p.Name = name
 	p.Priority = priority
 	p.Schema = schema
+	p.MetadataSchema = metadataSchema
 
 	p.InitLogger(p.Send)
 
 	return nil
 }
 
+// MaterializeSecrets is the transitional process-local compatibility path.
+// Scoped generation preparation uses MaterializeScopedSecrets instead.
+func (p *Plugin) MaterializeSecrets() error {
+	p.secretMu.Lock()
+	defer p.secretMu.Unlock()
+	if p.stopped.Load() {
+		return secret.ErrCredentialUnavailable
+	}
+	if p.credentialsInstalled() {
+		return nil
+	}
+	passwordRaw, hasPassword, authorizationRaw, hasAuthorization := p.rawCredentials()
+	if !hasPassword && !hasAuthorization {
+		return nil
+	}
+	resolver := p.DataEncryption()
+	if !resolver.Configured() {
+		return errors.New("data-encryption resolver is required")
+	}
+
+	var resolvedPassword, resolvedAuthorization string
+	var err error
+	if hasPassword {
+		resolvedPassword, err = resolver.ResolveForContext(passwordRaw, name+".auth.password")
+		if err != nil || strings.TrimSpace(resolvedPassword) == "" {
+			return fmt.Errorf("%s auth.password: %w", name, secret.ErrCredentialUnavailable)
+		}
+	}
+	if hasAuthorization {
+		resolvedAuthorization = resolver.ResolveOptionalForContext(
+			authorizationRaw, name+".headers.Authorization",
+		)
+		if strings.TrimSpace(resolvedAuthorization) == "" {
+			return fmt.Errorf("%s headers.Authorization: %w", name, secret.ErrCredentialUnavailable)
+		}
+	}
+
+	passwordDescriptor, err := legacyElasticsearchDescriptor(resolvedPassword, hasPassword)
+	if err != nil {
+		return fmt.Errorf("%s auth.password: %w", name, secret.ErrCredentialUnavailable)
+	}
+	authorizationDescriptor, err := legacyElasticsearchDescriptor(resolvedAuthorization, hasAuthorization)
+	if err != nil {
+		return fmt.Errorf("%s headers.Authorization: %w", name, secret.ErrCredentialUnavailable)
+	}
+	p.installCredentials(
+		resolvedPassword, hasPassword, passwordDescriptor,
+		resolvedAuthorization, hasAuthorization, authorizationDescriptor,
+	)
+	return nil
+}
+
+// MaterializeScopedSecrets admits only the two exact manifest-owned fields.
+// Public config retains content descriptors while plaintext remains private.
+func (p *Plugin) MaterializeScopedSecrets(
+	ctx context.Context, access base.ScopedSecretAccess,
+) error {
+	p.secretMu.Lock()
+	defer p.secretMu.Unlock()
+	if p.stopped.Load() {
+		return secret.ErrCredentialUnavailable
+	}
+	if p.credentialsInstalled() {
+		return nil
+	}
+	passwordRaw, hasPassword, authorizationRaw, hasAuthorization := p.rawCredentials()
+	if !hasPassword && !hasAuthorization {
+		return nil
+	}
+
+	var password, authorization secret.Value
+	var passwordDescriptor, authorizationDescriptor string
+	var err error
+	if hasPassword {
+		password, err = access.Materialize(ctx, "auth.password", passwordRaw)
+		if err != nil || validateElasticsearchSecret(password) != nil {
+			return fmt.Errorf("%s auth.password: %w", name, secret.ErrCredentialUnavailable)
+		}
+		passwordDescriptor, err = scopedElasticsearchDescriptor(password)
+		if err != nil {
+			return fmt.Errorf("%s auth.password: %w", name, secret.ErrCredentialUnavailable)
+		}
+	}
+	if hasAuthorization {
+		authorization, err = access.Materialize(ctx, "headers.Authorization", authorizationRaw)
+		if err != nil || validateElasticsearchSecret(authorization) != nil {
+			password = secret.Value{}
+			return fmt.Errorf("%s headers.Authorization: %w", name, secret.ErrCredentialUnavailable)
+		}
+		authorizationDescriptor, err = scopedElasticsearchDescriptor(authorization)
+		if err != nil {
+			password = secret.Value{}
+			authorization = secret.Value{}
+			return fmt.Errorf("%s headers.Authorization: %w", name, secret.ErrCredentialUnavailable)
+		}
+	}
+
+	if hasPassword {
+		p.config.Auth.Password = passwordDescriptor
+		p.password = &password
+	}
+	if hasAuthorization {
+		p.config.Headers["Authorization"] = authorizationDescriptor
+		p.authorization = &authorization
+	}
+	return nil
+}
+
+func (p *Plugin) rawCredentials() (
+	password string, hasPassword bool, authorization string, hasAuthorization bool,
+) {
+	if p.config.Auth != nil {
+		password, hasPassword = p.config.Auth.Password, true
+	}
+	if p.config.Headers != nil {
+		authorization, hasAuthorization = p.config.Headers["Authorization"]
+	}
+	return
+}
+
+func (p *Plugin) credentialsInstalled() bool {
+	passwordReady := p.config.Auth == nil || p.password != nil || p.legacyPassword != nil
+	_, authorizationConfigured := p.config.Headers["Authorization"]
+	authorizationReady := !authorizationConfigured || p.authorization != nil || p.legacyAuthorization != nil
+	return passwordReady && authorizationReady
+}
+
+func (p *Plugin) installCredentials(
+	password string, hasPassword bool, passwordDescriptor string,
+	authorization string, hasAuthorization bool, authorizationDescriptor string,
+) {
+	if hasPassword {
+		p.config.Auth.Password = passwordDescriptor
+		p.legacyPassword = &password
+	}
+	if hasAuthorization {
+		p.config.Headers["Authorization"] = authorizationDescriptor
+		p.legacyAuthorization = &authorization
+	}
+}
+
+func validateElasticsearchSecret(value secret.Value) error {
+	return value.Use(func(plaintext string) error {
+		if strings.TrimSpace(plaintext) == "" {
+			return secret.ErrCredentialUnavailable
+		}
+		return nil
+	})
+}
+
+func scopedElasticsearchDescriptor(value secret.Value) (string, error) {
+	descriptor, err := value.Descriptor(capability.SecretPluginConfig)
+	if err != nil {
+		return "", err
+	}
+	return descriptor.String(), nil
+}
+
+func legacyElasticsearchDescriptor(value string, present bool) (string, error) {
+	if !present {
+		return "", nil
+	}
+	digest := sha256.Sum256([]byte(value))
+	descriptor, err := secret.NewDescriptor(capability.SecretPluginConfig, digest)
+	if err != nil {
+		return "", err
+	}
+	return descriptor.String(), nil
+}
+
 func (p *Plugin) PostInit() error {
+	p.secretMu.RLock()
+	prepared := !p.stopped.Load() && p.credentialsInstalled()
+	p.secretMu.RUnlock()
+	if !prepared {
+		return secret.ErrCredentialUnavailable
+	}
+	var metadata pluginMetadata
+	if _, err := p.MetadataView().Decode(name, &metadata); err != nil {
+		return fmt.Errorf("%s metadata decode failed: %w", name, err)
+	}
 	if err := base.PrepareExprRegexps(
 		p.config.IncludeReqBodyExpr, p.config.IncludeRespBodyExpr,
 	); err != nil {
 		return err
 	}
-	if p.config.Auth != nil {
-		keyring, enabled := data_encryption.Keyring()
-		resolved, err := data_encryption.NewResolver(enabled, keyring).ResolveForContext(
-			p.config.Auth.Password,
-			"elasticsearch-logger.auth.password",
-		)
-		if err != nil {
-			return fmt.Errorf("elasticsearch-logger auth.password: %w", err)
-		}
-		p.config.Auth.Password = resolved
-	}
-
 	if p.config.Timeout == 0 {
 		p.config.Timeout = 10
 	}
@@ -290,7 +503,6 @@ func (p *Plugin) PostInit() error {
 		p.config.EndpointAddrs = []string{p.config.EndpointAddr}
 	}
 
-	metadata := base.LoadPluginMetadata[pluginMetadata](name)
 	logFormat, err := base.RequireStringLogFormat(name, p.config.LogFormat, metadata.LogFormat)
 	if err != nil {
 		return err
@@ -305,7 +517,7 @@ func (p *Plugin) PostInit() error {
 		p.config.IncludeReqBodyExpr, p.config.IncludeRespBodyExpr,
 	)
 
-	p.BatchProcessor = base.NewBatchProcessor(name, base.BatchDefaults{
+	processor, err := base.NewBatchProcessor(name, p.TaskOwner(), base.BatchDefaults{
 		PluginID:           name,
 		BatchMaxSize:       p.config.BatchMaxSize,
 		MaxRetryCount:      p.config.MaxRetryCount,
@@ -314,15 +526,30 @@ func (p *Plugin) PostInit() error {
 		InactiveTimeoutSec: p.config.InactiveTimeout,
 		MaxPendingEntries:  p.config.MaxPendingEntries,
 	}, p.RouteID, p.ServerAddr, p.SendBatch)
+	if err != nil {
+		return err
+	}
+	if p.postInitBeforePublish != nil {
+		p.postInitBeforePublish(processor)
+	}
+	p.secretMu.Lock()
+	if p.stopped.Load() {
+		p.secretMu.Unlock()
+		processor.Stop()
+		return secret.ErrCredentialUnavailable
+	}
+	p.BatchProcessor = processor
+	p.secretMu.Unlock()
 
 	// Version detection runs once per stable config at initialization, reusing
 	// the pooled client instead of building a transport per attempt.
 	if endpoint := p.endpointAddr(); endpoint != "" {
-		client, err := p.clientForEndpoint(endpoint)
+		err := p.withClient(endpoint, func(client *elasticsearch.BaseClient) error {
+			p.fetchAndUpdateVersion(client)
+			return nil
+		})
 		if err != nil {
 			logger.Errorf("failed to create Elasticsearch client: %s", err)
-		} else {
-			p.fetchAndUpdateVersion(client)
 		}
 	}
 
@@ -460,33 +687,35 @@ func (p *Plugin) SendBatch(ctx context.Context, entries []map[string]any, _ int)
 	if endpoint == "" {
 		return 0, nil
 	}
-	client, err := p.clientForEndpoint(endpoint)
-	if err != nil {
-		return 0, fmt.Errorf("failed to create Elasticsearch client: %w", err)
-	}
-
 	body, err := p.bulkBodyEntries(entries)
 	if err != nil {
 		return 0, fmt.Errorf("failed to marshal Elasticsearch bulk body: %w", err)
 	}
-
-	resp, err := (esapi.BulkRequest{
-		Body:    bytes.NewReader(body),
-		Header:  http.Header{"Content-Type": []string{"application/x-ndjson"}},
-		Timeout: time.Duration(p.config.Timeout) * time.Second,
-	}).Do(ctx, client)
+	firstFail := 0
+	err = p.withClient(endpoint, func(client *elasticsearch.BaseClient) error {
+		resp, sendErr := (esapi.BulkRequest{
+			Body:    bytes.NewReader(body),
+			Header:  http.Header{"Content-Type": []string{"application/x-ndjson"}},
+			Timeout: time.Duration(p.config.Timeout) * time.Second,
+		}).Do(ctx, client)
+		if sendErr != nil {
+			return fmt.Errorf("failed to send log message: %w", sendErr)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if resp.IsError() {
+			return fmt.Errorf("failed to send log message: elasticsearch returned status %s", resp.Status())
+		}
+		var resultErr error
+		firstFail, resultErr = p.bulkResultFailure(resp.Body)
+		if resultErr != nil {
+			return fmt.Errorf("failed to deliver Elasticsearch bulk: %w", resultErr)
+		}
+		return nil
+	})
 	if err != nil {
-		return 0, fmt.Errorf("failed to send log message: %w", err)
+		return firstFail, err
 	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.IsError() {
-		return 0, fmt.Errorf("failed to send log message: elasticsearch returned status %s", resp.Status())
-	}
-	firstFail, err := p.bulkResultFailure(resp.Body)
-	if err != nil {
-		return firstFail, fmt.Errorf("failed to deliver Elasticsearch bulk: %w", err)
-	}
-	return 0, nil
+	return firstFail, nil
 }
 
 // bulkResultFailure inspects a 2xx bulk response and returns the first failing
@@ -535,83 +764,231 @@ func (p *Plugin) endpointAddr() string {
 	return p.config.EndpointAddrs[randomEndpointIndex(len(p.config.EndpointAddrs))]
 }
 
-func (p *Plugin) clientForEndpoint(endpoint string) (*elasticsearch.BaseClient, error) {
+func (p *Plugin) withClient(
+	endpoint string, use func(*elasticsearch.BaseClient) error,
+) error {
+	if use == nil {
+		return secret.ErrCredentialUnavailable
+	}
+	p.secretMu.RLock()
+	defer p.secretMu.RUnlock()
+	if p.stopped.Load() || !p.credentialsInstalled() {
+		return secret.ErrCredentialUnavailable
+	}
+
+	key := esClientKey{endpoint: endpoint}
+	if p.password != nil {
+		key.passwordDigest = p.password.Digest()
+	} else if p.legacyPassword != nil {
+		key.passwordDigest = sha256.Sum256([]byte(*p.legacyPassword))
+	}
+	if p.authorization != nil {
+		key.authorizationDigest = p.authorization.Digest()
+	} else if p.legacyAuthorization != nil {
+		key.authorizationDigest = sha256.Sum256([]byte(*p.legacyAuthorization))
+	}
+
+	client, err := p.clientForEndpoint(key)
+	if err != nil {
+		return err
+	}
+	return use(client)
+}
+
+func (p *Plugin) clientForEndpoint(key esClientKey) (*elasticsearch.BaseClient, error) {
 	p.clientMu.Lock()
 	defer p.clientMu.Unlock()
 	if p.clients == nil {
-		p.clients = make(map[string]*esClientRef)
+		p.clients = make(map[esClientKey]*esClientRef)
 	}
-	if ref := p.clients[endpoint]; ref != nil {
+	if ref := p.clients[key]; ref != nil {
 		return ref.client, nil
 	}
 
-	username := ""
-	password := ""
-	if p.config.Auth != nil {
-		username = p.config.Auth.Username
-		password = p.config.Auth.Password
-	}
-
-	c, err := newElasticsearchClient(
-		endpoint,
-		username,
-		password,
-		p.config.Headers,
-		time.Duration(p.config.Timeout)*time.Second,
-		*p.config.SslVerify,
-	)
+	client, credentials, release, err := p.newPluginOwnedClient(key.endpoint)
 	if err != nil {
 		return nil, err
 	}
-
-	clientUID := shared.NewConfigUID()
-	clientUID.Add(endpoint, username, password, p.config.Headers, p.config.Timeout, *p.config.SslVerify)
-	value, release, err := shared.AcquireClient(
-		shared.ClientKey(name, clientUID),
-		func() (any, error) { return c, nil },
-		func(v any) { _ = v.(*elasticsearch.BaseClient).Close(context.Background()) },
-	)
-	if err != nil {
-		return nil, err
+	p.clients[key] = &esClientRef{
+		client: client, credentials: credentials, release: release,
 	}
-	client := value.(*elasticsearch.BaseClient)
-	p.clients[endpoint] = &esClientRef{client: client, release: release}
 	return client, nil
 }
 
-func newElasticsearchClient(
-	endpoint, username, password string,
-	headers map[string]string,
-	timeout time.Duration,
-	sslVerify bool,
-) (*elasticsearch.BaseClient, error) {
-	return elasticsearch.NewBaseClient(elasticsearch.Config{
-		Addresses: []string{endpoint},
-		Username:  username,
-		Password:  password,
-		Header:    headerFromMap(headers),
-		Transport: &http.Transport{
-			DialContext: (&net.Dialer{
-				Timeout: timeout,
-			}).DialContext,
-			ResponseHeaderTimeout: timeout,
-			TLSClientConfig:       &tls.Config{InsecureSkipVerify: !sslVerify},
-		},
-	})
+func (p *Plugin) useCredentialPlaintext(use func(password, authorization string) error) error {
+	if use == nil {
+		return secret.ErrCredentialUnavailable
+	}
+	useAuthorization := func(password string) error {
+		if p.authorization != nil {
+			return p.authorization.Use(func(authorization string) error {
+				return use(password, authorization)
+			})
+		}
+		if p.legacyAuthorization != nil {
+			return use(password, *p.legacyAuthorization)
+		}
+		return use(password, "")
+	}
+	if p.password != nil {
+		return p.password.Use(useAuthorization)
+	}
+	if p.legacyPassword != nil {
+		return useAuthorization(*p.legacyPassword)
+	}
+	return useAuthorization("")
 }
 
-func (p *Plugin) Stop() {
-	p.StopWithCleanup(func() {
-		p.clientMu.Lock()
-		refs := make([]*esClientRef, 0, len(p.clients))
-		for _, ref := range p.clients {
-			refs = append(refs, ref)
-		}
-		p.clients = nil
-		p.clientMu.Unlock()
+func (p *Plugin) newPluginOwnedClient(
+	endpoint string,
+) (*elasticsearch.BaseClient, *elasticsearchCredentialTransport, func(), error) {
+	clientUID := shared.NewConfigUID()
+	clientUID.Add(p.config.Timeout, *p.config.SslVerify)
+	value, release, err := shared.AcquireClient(
+		shared.ClientKey(name+"-transport", clientUID),
+		func() (any, error) {
+			return newElasticsearchNeutralTransport(
+				time.Duration(p.config.Timeout)*time.Second, *p.config.SslVerify,
+			), nil
+		},
+		func(v any) { v.(*http.Transport).CloseIdleConnections() },
+	)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	_, exactAuthorization := p.config.Headers["Authorization"]
+	transport := &elasticsearchCredentialTransport{
+		owner: p, transport: value.(*http.Transport), override: exactAuthorization,
+	}
+	client, err := elasticsearch.NewBaseClient(elasticsearch.Config{
+		Addresses: []string{endpoint},
+		Header:    headerFromMapWithoutExactAuthorization(p.config.Headers),
+		Transport: transport,
+	})
+	if err != nil {
+		transport.destroy()
+		release()
+		return nil, nil, nil, err
+	}
+	return client, transport, release, nil
+}
 
-		for _, ref := range refs {
-			ref.release()
+func newElasticsearchNeutralTransport(timeout time.Duration, sslVerify bool) *http.Transport {
+	return &http.Transport{
+		DialContext:           (&net.Dialer{Timeout: timeout}).DialContext,
+		ResponseHeaderTimeout: timeout,
+		TLSClientConfig:       &tls.Config{InsecureSkipVerify: !sslVerify},
+	}
+}
+
+func (transport *elasticsearchCredentialTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if transport == nil || transport.owner == nil || transport.transport == nil {
+		return nil, secret.ErrCredentialUnavailable
+	}
+	var response *http.Response
+	err := transport.owner.useCredentialPlaintext(func(password, authorization string) error {
+		var derived []byte
+		if authorization != "" {
+			derived = []byte(authorization)
+		} else if transport.owner.config.Auth != nil {
+			derived = basicAuthorization(transport.owner.config.Auth.Username, password)
+		}
+		defer clearBytes(derived)
+		if transport.afterDerive != nil {
+			transport.afterDerive(derived)
+		}
+
+		request := req.Clone(req.Context())
+		request.Header = req.Header.Clone()
+		if len(derived) > 0 &&
+			(transport.override || request.Header.Get("Authorization") == "") {
+			request.Header.Set("Authorization", string(derived))
+		}
+		var roundTripErr error
+		response, roundTripErr = transport.transport.RoundTrip(request)
+		request.Header.Del("Authorization")
+		if response != nil && response.Request == request {
+			response.Request.Header.Del("Authorization")
+		}
+		return roundTripErr
+	})
+	return response, err
+}
+
+func (transport *elasticsearchCredentialTransport) destroy() {
+	if transport == nil {
+		return
+	}
+	transport.owner = nil
+	transport.transport = nil
+}
+
+func clearBytes(value []byte) {
+	for index := range value {
+		value[index] = 0
+	}
+}
+
+func basicAuthorization(username, password string) []byte {
+	raw := []byte(username + ":" + password)
+	encoded := make([]byte, len("Basic ")+base64.StdEncoding.EncodedLen(len(raw)))
+	copy(encoded, "Basic ")
+	base64.StdEncoding.Encode(encoded[len("Basic "):], raw)
+	clearBytes(raw)
+	return encoded
+}
+
+func (p *Plugin) QuiesceGenerationTasks() { p.Stop() }
+
+func (p *Plugin) Stop() {
+	p.cleanupOnce.Do(func() {
+		if p.stopBeforeLock != nil {
+			p.stopBeforeLock()
+		}
+		p.stopped.Store(true)
+
+		cleanup := func() {
+			p.secretMu.Lock()
+			p.clientMu.Lock()
+			refs := make([]*esClientRef, 0, len(p.clients))
+			for _, ref := range p.clients {
+				refs = append(refs, ref)
+			}
+			p.clients = nil
+			p.clientMu.Unlock()
+
+			for _, ref := range refs {
+				if err := ref.client.Close(context.Background()); err != nil {
+					logger.Errorf("failed to close Elasticsearch client: %s", err)
+				}
+				ref.credentials.destroy()
+				ref.release()
+			}
+			if p.password != nil {
+				*p.password = secret.Value{}
+				p.password = nil
+			}
+			if p.legacyPassword != nil {
+				*p.legacyPassword = ""
+				p.legacyPassword = nil
+			}
+			if p.authorization != nil {
+				*p.authorization = secret.Value{}
+				p.authorization = nil
+			}
+			if p.legacyAuthorization != nil {
+				*p.legacyAuthorization = ""
+				p.legacyAuthorization = nil
+			}
+			p.secretMu.Unlock()
+		}
+		p.secretMu.RLock()
+		processor := p.BatchProcessor
+		p.secretMu.RUnlock()
+		if processor != nil {
+			processor.StopWithCleanup(cleanup)
+		} else {
+			cleanup()
 		}
 	})
 }
@@ -889,12 +1266,15 @@ func stringifyIndexValue(value any) string {
 	return string(bytes)
 }
 
-func headerFromMap(headers map[string]string) http.Header {
+func headerFromMapWithoutExactAuthorization(headers map[string]string) http.Header {
 	if len(headers) == 0 {
 		return nil
 	}
 	out := make(http.Header, len(headers))
 	for key, value := range headers {
+		if key == "Authorization" {
+			continue
+		}
 		out.Set(key, value)
 	}
 	return out

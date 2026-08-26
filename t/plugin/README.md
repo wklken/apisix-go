@@ -6,15 +6,22 @@ CLI in a fresh child process, writes temporary `conf/config.yaml` and
 `conf/apisix.yaml` files, creates its own temporary `apisix-go-store.db`, and
 uses a fresh loopback upstream fixture.
 
-The corpus is pinned to Apache APISIX commit
-`c3d7d5ec69774121f53d2e20d29d09c816795dd7`. The catalog contains 99 manifests:
-the 98 source-backed plugins marked Supported in `docs/plugins.md` plus the
-supplemental `redirect2` source file. Every manifest contains at least one
-standalone scenario that activates its target plugin and assertions produced
-by the real APISIX-Go process. An intentional negative scenario may keep the
-target plugin disabled only when it declares a nonblank
+The standalone corpus remains a historical snapshot of Apache APISIX commit
+`c3d7d5ec69774121f53d2e20d29d09c816795dd7`, while the capability manifest's
+current compatibility target is
+`9ef2ecab67f652d38365049613610ef649bb4ad0`. Consequently, converted-upstream
+claims backed only by this corpus are stale until they are regenerated against
+the target. Integration selection comes from each capability claim's
+`t/plugin/*.yaml` evidence references and factory keys, not from
+`docs/plugins.md`; the checked-in catalog currently has 99 manifests, including
+the explicit supplemental `redirect2.yaml` alias. Every manifest contains at
+least one standalone scenario that activates its target plugin and assertions
+produced by the real APISIX-Go process. An intentional negative scenario may
+keep the target plugin disabled only when it declares a nonblank
 `target_plugin_exempt_reason`; the gate rejects missing, blank, or stale
 exemptions. No generated placeholder manifest is counted as coverage.
+`docs/plugins.md` is a generated status projection, never a fixture-selection
+database.
 
 The schema rejects `skip` fields. A source block counts as covered only when it
 belongs to an executable standalone scenario with a request and an assertion;
@@ -46,10 +53,13 @@ The package has no build tag, so `go test ./... -count=1` also runs it.
 
 ## Manifest contract
 
-Each `<plugin>.yaml` declares the pinned repository, commit, source file, total
-number of upstream `TEST` blocks, and a list of local cases. Every source test
-number from `1..source.tests` must occur exactly once. The validator fails on a
-missing, duplicated, or out-of-range number before starting a child process.
+Each `<plugin>.yaml` declares its source repository, historical corpus commit,
+source file, total number of upstream `TEST` blocks, and a list of local cases.
+The corpus ledger validates that commit as a Git object ID; capability evidence
+separately records whether it matches the current compatibility target. Every
+source test number from `1..source.tests` must occur exactly once. The validator
+fails on a missing, duplicated, or out-of-range number before starting a child
+process.
 
 Setup-only source blocks are grouped with the request block that exercises the
 setup. When upstream setup depends on the Admin API, Lua, or an external

@@ -22,6 +22,44 @@ const (
 
 const schema = `{}`
 
+const metadataSchema = `
+{
+  "type": "object",
+  "properties": {
+    "enable": {
+      "type": "boolean"
+    },
+    "error_404": {
+      "type": "object",
+      "properties": {
+        "body": {"type": "string"},
+        "content_type": {"type": "string"}
+      }
+    },
+    "error_500": {
+      "type": "object",
+      "properties": {
+        "body": {"type": "string"},
+        "content_type": {"type": "string"}
+      }
+    },
+    "error_502": {
+      "type": "object",
+      "properties": {
+        "body": {"type": "string"},
+        "content_type": {"type": "string"}
+      }
+    },
+    "error_503": {
+      "type": "object",
+      "properties": {
+        "body": {"type": "string"},
+        "content_type": {"type": "string"}
+      }
+    }
+  }
+}`
+
 type Config struct{}
 
 type Metadata struct {
@@ -41,14 +79,17 @@ func (p *Plugin) Init() error {
 	p.Name = name
 	p.Priority = priority
 	p.Schema = schema
+	p.MetadataSchema = metadataSchema
 
 	return nil
 }
 
 func (p *Plugin) PostInit() error {
-	if !p.metadata.Enable {
-		p.metadata = p.loadMetadata()
+	metadata, err := p.loadMetadata()
+	if err != nil {
+		return err
 	}
+	p.metadata = metadata
 	applyDefaults(&p.metadata)
 	return nil
 }
@@ -135,8 +176,12 @@ func (p *Plugin) errorPage(statusCode int) (ErrorPage, bool) {
 	}
 }
 
-func (p *Plugin) loadMetadata() Metadata {
-	return base.LoadPluginMetadata[Metadata](name)
+func (p *Plugin) loadMetadata() (Metadata, error) {
+	var metadata Metadata
+	if _, err := p.MetadataView().Decode(name, &metadata); err != nil {
+		return Metadata{}, fmt.Errorf("%s metadata decode failed: %w", name, err)
+	}
+	return metadata, nil
 }
 
 func applyDefaults(metadata *Metadata) {

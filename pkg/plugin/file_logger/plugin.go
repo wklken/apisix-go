@@ -165,12 +165,15 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	var metadata pluginMetadata
+	if _, err := p.MetadataView().Decode(name, &metadata); err != nil {
+		return fmt.Errorf("file-logger metadata decode failed: %w", err)
+	}
 	if err := base.PrepareExprRegexps(
 		p.config.IncludeReqBodyExpr, p.config.IncludeRespBodyExpr, p.config.Match,
 	); err != nil {
 		return err
 	}
-	metadata := base.LoadPluginMetadata[pluginMetadata](name)
 	if p.config.Path == "" {
 		p.config.Path = metadata.Path
 	}
@@ -213,11 +216,19 @@ func (p *Plugin) PostInit() error {
 	if err != nil {
 		return err
 	}
+	writer := lease.writer
+	pluginLogger := zap.New(zapcore.NewCore(encoder, writer, cfg.Level))
+	processor, err := newFileLoggerProcessor(p.TaskOwner(), writer)
+	if err != nil {
+		_ = pluginLogger.Sync()
+		lease.release()
+		return err
+	}
+	processor.snapshotFields = p.buildSnapshotFields
 	p.lease = lease
-	p.writer = lease.writer
-	p.logger = zap.New(zapcore.NewCore(encoder, p.writer, cfg.Level))
-	p.processor = newFileLoggerProcessor(p.writer)
-	p.processor.snapshotFields = p.buildSnapshotFields
+	p.writer = writer
+	p.logger = pluginLogger
+	p.processor = processor
 	return nil
 }
 
@@ -251,6 +262,10 @@ func (p *Plugin) Stop() {
 			cleanup()
 		}
 	})
+}
+
+func (p *Plugin) QuiesceGenerationTasks() {
+	p.Stop()
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {

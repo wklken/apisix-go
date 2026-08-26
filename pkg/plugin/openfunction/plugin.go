@@ -1,20 +1,36 @@
 package openfunction
 
 import (
+	"context"
 	"encoding/base64"
 	"net/http"
+	"sync"
 
+	"github.com/wklken/apisix-go/pkg/capability"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/function_upstream"
+	"github.com/wklken/apisix-go/pkg/secret"
 )
 
 type Plugin struct {
 	function_upstream.Plugin
 	config Config
+
+	serviceTokenMu  sync.RWMutex
+	serviceToken    secret.Value
+	serviceTokenSet bool
+
+	// testLifecycleHook is a package-local synchronization seam for lifecycle
+	// tests; it is nil in production.
+	testLifecycleHook func(string)
 }
 
 const (
 	priority = -1902
 	name     = "openfunction"
+
+	lifecycleBeforeAuthorizationUse = "before-authorization-use"
+	lifecycleAfterUpstreamStop      = "after-upstream-stop"
 )
 
 const schema = `
@@ -99,11 +115,90 @@ func (p *Plugin) Config() any {
 	return &p.config
 }
 
-func (p *Plugin) processRequest(r *http.Request, _ function_upstream.Config) {
+// MaterializeScopedSecrets resolves the optional route token for one immutable
+// generation attempt. The public configuration retains only a redacted
+// descriptor; the resolved value remains private to this plugin instance.
+func (p *Plugin) MaterializeScopedSecrets(
+	ctx context.Context,
+	access base.ScopedSecretAccess,
+) error {
+	p.serviceTokenMu.Lock()
+	defer p.serviceTokenMu.Unlock()
+
 	if p.config.Authorization == nil || p.config.Authorization.ServiceToken == "" {
-		return
+		return nil
+	}
+	if p.serviceTokenSet {
+		return nil
 	}
 
-	token := base64.StdEncoding.EncodeToString([]byte(p.config.Authorization.ServiceToken))
-	r.Header.Set("Authorization", "Basic "+token)
+	value, err := access.Materialize(
+		ctx,
+		"authorization.service_token",
+		p.config.Authorization.ServiceToken,
+	)
+	if err != nil {
+		return errOpenFunctionCredentialUnavailable
+	}
+	descriptor, err := value.Descriptor(capability.SecretPluginConfig)
+	if err != nil {
+		return errOpenFunctionCredentialUnavailable
+	}
+
+	p.serviceToken = value
+	p.serviceTokenSet = true
+	p.config.Authorization.ServiceToken = descriptor.String()
+	return nil
 }
+
+// MaterializeSecrets is the transitional process-local compatibility path.
+// Scoped generation preparation uses MaterializeScopedSecrets instead.
+func (p *Plugin) MaterializeSecrets() error {
+	p.serviceTokenMu.Lock()
+	defer p.serviceTokenMu.Unlock()
+
+	if p.config.Authorization == nil || p.config.Authorization.ServiceToken == "" {
+		return nil
+	}
+	if p.serviceTokenSet {
+		return nil
+	}
+	return errOpenFunctionCredentialUnavailable
+}
+
+func (p *Plugin) processRequest(r *http.Request, _ function_upstream.Config) {
+	p.serviceTokenMu.RLock()
+	defer p.serviceTokenMu.RUnlock()
+
+	if p.serviceTokenSet {
+		if hook := p.testLifecycleHook; hook != nil {
+			hook(lifecycleBeforeAuthorizationUse)
+		}
+		_ = p.serviceToken.Use(func(value string) error {
+			if value != "" {
+				r.Header.Set(
+					"Authorization",
+					"Basic "+base64.StdEncoding.EncodeToString([]byte(value)),
+				)
+			}
+			return nil
+		})
+		return
+	}
+}
+
+func (p *Plugin) Stop() {
+	// Release the shared upstream client before releasing credentials that may
+	// still be needed by in-flight request processors.
+	p.Plugin.Stop()
+	if hook := p.testLifecycleHook; hook != nil {
+		hook(lifecycleAfterUpstreamStop)
+	}
+
+	p.serviceTokenMu.Lock()
+	defer p.serviceTokenMu.Unlock()
+	p.serviceToken = secret.Value{}
+	p.serviceTokenSet = false
+}
+
+var errOpenFunctionCredentialUnavailable = secret.ErrCredentialUnavailable

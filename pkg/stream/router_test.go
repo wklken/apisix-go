@@ -14,10 +14,64 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wklken/apisix-go/pkg/plugin"
 	"github.com/wklken/apisix-go/pkg/plugin/mqtt_proxy"
 	"github.com/wklken/apisix-go/pkg/resource"
 	streambridge "github.com/wklken/apisix-go/pkg/stream/bridge"
 )
+
+func compileTestRouter(
+	t *testing.T,
+	routes []resource.StreamRoute,
+	onResult func(Result),
+) (*Router, error) {
+	t.Helper()
+	prepared := make([]PreparedRoute, len(routes))
+	for index := range routes {
+		prepared[index].Route = routes[index]
+		config, ok := routes[index].Plugins["mqtt-proxy"]
+		if !ok || len(routes[index].Plugins) != 1 {
+			continue
+		}
+		configMap, ok := config.(map[string]any)
+		if !ok {
+			t.Fatalf("mqtt-proxy test config type = %T, want map[string]any", config)
+		}
+		prepared[index].Protocol = preparedStreamMQTTBinding(
+			t,
+			plugin.ResourceProvenance{Kind: plugin.ResourceRoute, ID: routes[index].ID},
+			configMap,
+		)
+	}
+	return CompileRouter(context.Background(), CompileInput{
+		Revision: 1,
+		Routes:   prepared,
+		OnResult: onResult,
+	})
+}
+
+func TestRouterLeasePinsImmutableCompiledRouter(t *testing.T) {
+	routes := []PreparedRoute{{Route: resource.StreamRoute{
+		ID: "generation-81",
+		Upstream: resource.Upstream{
+			Scheme: "tcp",
+			Nodes:  []resource.Node{{Host: "127.0.0.1", Port: 1, Weight: 1}},
+		},
+	}}}
+	router, err := CompileRouter(context.Background(), CompileInput{
+		Revision: 81,
+		Routes:   routes,
+	})
+	if err != nil {
+		t.Fatalf("CompileRouter() error = %v", err)
+	}
+	routes[0].Route.ID = "mutated"
+
+	lease := RouterLease{Router: router, Release: func() {}}
+	if got := lease.Router.RouteIDs(); len(got) != 1 || got[0] != "generation-81" {
+		t.Fatalf("leased route IDs = %v, want [generation-81]", got)
+	}
+}
 
 func TestStreamBridgeIdleDeadlineExits(t *testing.T) {
 	client, clientPeer := net.Pipe()
@@ -99,15 +153,15 @@ func TestStreamBridgePreservesHalfClose(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse upstream port: %v", err)
 	}
-	router, err := NewRouter([]resource.StreamRoute{{
+	router, err := compileTestRouter(t, []resource.StreamRoute{{
 		ID: "half-close-route",
 		Upstream: resource.Upstream{
 			Scheme: "tcp",
 			Nodes:  []resource.Node{{Host: upstreamHost, Port: upstreamPortNumber, Weight: 1}},
 		},
-	}}, nil, nil)
+	}}, nil)
 	if err != nil {
-		t.Fatalf("NewRouter() error = %v", err)
+		t.Fatalf("CompileRouter() error = %v", err)
 	}
 
 	client, err := net.Dial("tcp", listener.Addr().String())
@@ -183,7 +237,7 @@ func TestRouterForwardsMatchingRouteAndPublishesResult(t *testing.T) {
 	}
 
 	results := make(chan Result, 1)
-	router, err := NewRouter([]resource.StreamRoute{{
+	router, err := compileTestRouter(t, []resource.StreamRoute{{
 		ID:         "tcp-route",
 		ServerAddr: "127.0.0.1",
 		ServerPort: routePort,
@@ -192,9 +246,9 @@ func TestRouterForwardsMatchingRouteAndPublishesResult(t *testing.T) {
 			Scheme: "tcp",
 			Nodes:  []resource.Node{{Host: upstreamHost, Port: upstreamPortNumber, Weight: 1}},
 		},
-	}}, nil, func(result Result) { results <- result })
+	}}, func(result Result) { results <- result })
 	if err != nil {
-		t.Fatalf("NewRouter() error = %v", err)
+		t.Fatalf("CompileRouter() error = %v", err)
 	}
 
 	client, err := net.Dial("tcp", listener.Addr().String())
@@ -250,16 +304,16 @@ func TestRouterRejectsNonMatchingRouteWithoutDialing(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = listener.Close() })
 
-	router, err := NewRouter([]resource.StreamRoute{{
+	router, err := compileTestRouter(t, []resource.StreamRoute{{
 		ID:         "other-port",
 		ServerPort: 1,
 		Upstream: resource.Upstream{
 			Scheme: "tcp",
 			Nodes:  []resource.Node{{Host: "127.0.0.1", Port: 1, Weight: 1}},
 		},
-	}}, nil, nil)
+	}}, nil)
 	if err != nil {
-		t.Fatalf("NewRouter() error = %v", err)
+		t.Fatalf("CompileRouter() error = %v", err)
 	}
 
 	client, err := net.Dial("tcp", listener.Addr().String())
@@ -308,7 +362,7 @@ func TestRouterMatchesClientLocalAddrInsteadOfWildcardListener(t *testing.T) {
 		t.Fatalf("parse upstream port: %v", err)
 	}
 
-	router, err := NewRouter([]resource.StreamRoute{{
+	router, err := compileTestRouter(t, []resource.StreamRoute{{
 		ID:         "local-addr-route",
 		ServerAddr: "127.0.0.1",
 		ServerPort: routePort,
@@ -316,9 +370,9 @@ func TestRouterMatchesClientLocalAddrInsteadOfWildcardListener(t *testing.T) {
 			Scheme: "tcp",
 			Nodes:  []resource.Node{{Host: upstreamHost, Port: upstreamPortNumber, Weight: 1}},
 		},
-	}}, nil, nil)
+	}}, nil)
 	if err != nil {
-		t.Fatalf("NewRouter() error = %v", err)
+		t.Fatalf("CompileRouter() error = %v", err)
 	}
 
 	client, err := net.Dial("tcp", net.JoinHostPort("127.0.0.1", portText))
@@ -355,20 +409,21 @@ func TestRouterMatchesClientLocalAddrInsteadOfWildcardListener(t *testing.T) {
 	}
 }
 
-func TestNewRouterRejectsUnsupportedUpstreamScheme(t *testing.T) {
-	_, err := NewRouter([]resource.StreamRoute{{
+func TestCompileRouterRejectsUnsupportedUpstreamScheme(t *testing.T) {
+	_, err := compileTestRouter(t, []resource.StreamRoute{{
 		ID: "tls-route",
 		Upstream: resource.Upstream{
 			Scheme: "tls",
 			Nodes:  []resource.Node{{Host: "127.0.0.1", Port: 443, Weight: 1}},
 		},
-	}}, nil, nil)
+	}}, nil)
+
 	if err == nil || !strings.Contains(err.Error(), "unsupported stream upstream scheme") {
-		t.Fatalf("NewRouter() error = %v, want unsupported scheme error", err)
+		t.Fatalf("CompileRouter() error = %v, want unsupported scheme error", err)
 	}
 }
 
-func TestNewRouterRejectsDynamicDiscoveryWithStaticNodes(t *testing.T) {
+func TestCompileRouterRejectsDynamicDiscoveryWithStaticNodes(t *testing.T) {
 	for _, test := range []struct {
 		name  string
 		field string
@@ -387,23 +442,24 @@ func TestNewRouterRejectsDynamicDiscoveryWithStaticNodes(t *testing.T) {
 				Nodes:  []resource.Node{{Host: "127.0.0.1", Port: 8080, Weight: 1}},
 			}
 			test.set(&upstream)
-			_, err := NewRouter([]resource.StreamRoute{{
+			_, err := compileTestRouter(t, []resource.StreamRoute{{
 				ID:       "dynamic-discovery-stream",
 				Upstream: upstream,
-			}}, nil, nil)
+			}}, nil)
+
 			if err == nil {
-				t.Fatal("NewRouter() error = nil, want unsupported discovery error")
+				t.Fatal("CompileRouter() error = nil, want unsupported discovery error")
 			}
 			message := err.Error()
 			if !strings.Contains(message, "dynamic-discovery-stream") || !strings.Contains(message, test.field) {
-				t.Fatalf("NewRouter() error = %q, want route and field provenance", message)
+				t.Fatalf("CompileRouter() error = %q, want route and field provenance", message)
 			}
 		})
 	}
 }
 
-func TestNewRouterReportsReferencedUpstreamDiscoveryProvenance(t *testing.T) {
-	_, err := NewRouter([]resource.StreamRoute{{
+func TestCompileRouterReportsReferencedUpstreamDiscoveryProvenance(t *testing.T) {
+	_, err := compileTestRouter(t, []resource.StreamRoute{{
 		ID:         "referenced-discovery-stream",
 		UpstreamID: "stream-upstream-42",
 		Upstream: resource.Upstream{
@@ -411,14 +467,15 @@ func TestNewRouterReportsReferencedUpstreamDiscoveryProvenance(t *testing.T) {
 			DiscoveryType: "dns",
 			Nodes:         []resource.Node{{Host: "127.0.0.1", Port: 8080, Weight: 1}},
 		},
-	}}, nil, nil)
+	}}, nil)
+
 	if err == nil {
-		t.Fatal("NewRouter() error = nil, want unsupported discovery error")
+		t.Fatal("CompileRouter() error = nil, want unsupported discovery error")
 	}
 	message := err.Error()
 	if !strings.Contains(message, `upstream "stream-upstream-42"`) ||
 		strings.Contains(message, "referenced-discovery-stream") {
-		t.Fatalf("NewRouter() error = %q, want upstream provenance without route fallback", message)
+		t.Fatalf("CompileRouter() error = %q, want upstream provenance without route fallback", message)
 	}
 }
 
@@ -452,7 +509,7 @@ func TestRouterMQTTForwardsAndPublishesClientID(t *testing.T) {
 	}
 
 	results := make(chan Result, 1)
-	router, err := NewRouter([]resource.StreamRoute{{
+	router, err := compileTestRouter(t, []resource.StreamRoute{{
 		ID:         "mqtt-route",
 		ServerPort: listenerPortNumber,
 		Plugins:    map[string]resource.PluginConfig{"mqtt-proxy": map[string]any{"protocol_level": 4}},
@@ -460,9 +517,9 @@ func TestRouterMQTTForwardsAndPublishesClientID(t *testing.T) {
 			Scheme: "tcp",
 			Nodes:  []resource.Node{{Host: upstreamHost, Port: upstreamPortNumber, Weight: 1}},
 		},
-	}}, []string{"mqtt-proxy"}, func(result Result) { results <- result })
+	}}, func(result Result) { results <- result })
 	if err != nil {
-		t.Fatalf("NewRouter() error = %v", err)
+		t.Fatalf("CompileRouter() error = %v", err)
 	}
 
 	client, err := net.Dial("tcp", listener.Addr().String())
@@ -539,7 +596,7 @@ func TestRouterRejectsMalformedMQTTBeforeDial(t *testing.T) {
 		t.Fatalf("parse listener port: %v", err)
 	}
 
-	router, err := NewRouter([]resource.StreamRoute{{
+	router, err := compileTestRouter(t, []resource.StreamRoute{{
 		ID:         "mqtt-route",
 		ServerPort: listenerPortNumber,
 		Plugins:    map[string]resource.PluginConfig{"mqtt-proxy": map[string]any{"protocol_level": 4}},
@@ -547,9 +604,9 @@ func TestRouterRejectsMalformedMQTTBeforeDial(t *testing.T) {
 			Scheme: "tcp",
 			Nodes:  []resource.Node{{Host: upstreamHost, Port: upstreamPortNumber, Weight: 1}},
 		},
-	}}, []string{"mqtt-proxy"}, nil)
+	}}, nil)
 	if err != nil {
-		t.Fatalf("NewRouter() error = %v", err)
+		t.Fatalf("CompileRouter() error = %v", err)
 	}
 	client, err := net.Dial("tcp", listener.Addr().String())
 	if err != nil {
@@ -573,30 +630,31 @@ func TestRouterRejectsMalformedMQTTBeforeDial(t *testing.T) {
 	}
 }
 
-func TestNewRouterRejectsUnknownStreamPlugin(t *testing.T) {
-	_, err := NewRouter([]resource.StreamRoute{{
+func TestCompileRouterRejectsUnknownStreamPlugin(t *testing.T) {
+	_, err := compileTestRouter(t, []resource.StreamRoute{{
 		ID:      "unknown-plugin",
 		Plugins: map[string]resource.PluginConfig{"limit-conn": map[string]any{}},
 		Upstream: resource.Upstream{
 			Scheme: "tcp",
 			Nodes:  []resource.Node{{Host: "127.0.0.1", Port: 1, Weight: 1}},
 		},
-	}}, []string{"limit-conn"}, nil)
-	if err == nil || !strings.Contains(err.Error(), "not supported by the Go stream owner") {
-		t.Fatalf("NewRouter() error = %v, want unsupported plugin error", err)
+	}}, nil)
+
+	if err == nil || !strings.Contains(err.Error(), "not supported by the detached Go stream owner") {
+		t.Fatalf("CompileRouter() error = %v, want unsupported plugin error", err)
 	}
 }
 
-func TestNewRouterDefaultsOmittedStreamNodeWeightToOne(t *testing.T) {
-	router, err := NewRouter([]resource.StreamRoute{{
+func TestCompileRouterDefaultsOmittedStreamNodeWeightToOne(t *testing.T) {
+	router, err := compileTestRouter(t, []resource.StreamRoute{{
 		ID: "omitted-weight",
 		Upstream: resource.Upstream{
 			Type:  "chash",
 			Nodes: []resource.Node{{Host: "omitted.example", Port: 1883}},
 		},
-	}}, nil, nil)
+	}}, nil)
 	if err != nil {
-		t.Fatalf("NewRouter() error = %v", err)
+		t.Fatalf("CompileRouter() error = %v", err)
 	}
 
 	entry := router.routes[0]
@@ -608,7 +666,7 @@ func TestNewRouterDefaultsOmittedStreamNodeWeightToOne(t *testing.T) {
 	}
 }
 
-func TestNewRouterDisablesExplicitZeroStreamNodeWeightForRRAndChash(t *testing.T) {
+func TestCompileRouterDisablesExplicitZeroStreamNodeWeightForRRAndChash(t *testing.T) {
 	for _, upstreamType := range []string{"roundrobin", "chash"} {
 		t.Run(upstreamType, func(t *testing.T) {
 			var route resource.StreamRoute
@@ -625,9 +683,9 @@ func TestNewRouterDisablesExplicitZeroStreamNodeWeightForRRAndChash(t *testing.T
 			}`, upstreamType, upstreamType), &route); err != nil {
 				t.Fatalf("json.Unmarshal() error = %v", err)
 			}
-			router, err := NewRouter([]resource.StreamRoute{route}, nil, nil)
+			router, err := compileTestRouter(t, []resource.StreamRoute{route}, nil)
 			if err != nil {
-				t.Fatalf("NewRouter() error = %v", err)
+				t.Fatalf("CompileRouter() error = %v", err)
 			}
 
 			entry := router.routes[0]
@@ -645,19 +703,20 @@ func TestNewRouterDisablesExplicitZeroStreamNodeWeightForRRAndChash(t *testing.T
 	}
 }
 
-func TestNewRouterRejectsNegativeStreamNodeWeight(t *testing.T) {
-	_, err := NewRouter([]resource.StreamRoute{{
+func TestCompileRouterRejectsNegativeStreamNodeWeight(t *testing.T) {
+	_, err := compileTestRouter(t, []resource.StreamRoute{{
 		ID: "negative-weight",
 		Upstream: resource.Upstream{
 			Nodes: []resource.Node{{Host: "negative.example", Port: 1883, Weight: -1}},
 		},
-	}}, nil, nil)
+	}}, nil)
+
 	if err == nil || !strings.Contains(err.Error(), "weight must be non-negative") {
-		t.Fatalf("NewRouter() error = %v, want negative-weight rejection", err)
+		t.Fatalf("CompileRouter() error = %v, want negative-weight rejection", err)
 	}
 }
 
-func TestNewRouterRejectsAllZeroStreamUpstreamWeightsForRRAndChash(t *testing.T) {
+func TestCompileRouterRejectsAllZeroStreamUpstreamWeightsForRRAndChash(t *testing.T) {
 	for _, upstreamType := range []string{"roundrobin", "chash"} {
 		t.Run(upstreamType, func(t *testing.T) {
 			var route resource.StreamRoute
@@ -674,16 +733,16 @@ func TestNewRouterRejectsAllZeroStreamUpstreamWeightsForRRAndChash(t *testing.T)
 			}`, upstreamType, upstreamType), &route); err != nil {
 				t.Fatalf("json.Unmarshal() error = %v", err)
 			}
-			if _, err := NewRouter([]resource.StreamRoute{route}, nil, nil); err == nil ||
+			if _, err := compileTestRouter(t, []resource.StreamRoute{route}, nil); err == nil ||
 				!strings.Contains(err.Error(), "at least one upstream node must have a positive weight") {
-				t.Fatalf("NewRouter() error = %v, want all-zero rejection", err)
+				t.Fatalf("CompileRouter() error = %v, want all-zero rejection", err)
 			}
 		})
 	}
 }
 
 func TestRouterSelectsOnlyHighestPriorityStreamGroup(t *testing.T) {
-	router, err := NewRouter([]resource.StreamRoute{{
+	router, err := compileTestRouter(t, []resource.StreamRoute{{
 		ID: "priority-selection",
 		Upstream: resource.Upstream{
 			Type: "roundrobin",
@@ -692,9 +751,9 @@ func TestRouterSelectsOnlyHighestPriorityStreamGroup(t *testing.T) {
 				{Host: "low.example", Port: 1883, Weight: 1, Priority: 0},
 			},
 		},
-	}}, nil, nil)
+	}}, nil)
 	if err != nil {
-		t.Fatalf("NewRouter() error = %v", err)
+		t.Fatalf("CompileRouter() error = %v", err)
 	}
 
 	entry := router.routes[0]
@@ -737,7 +796,7 @@ func TestRouterRetriesFromClosedHighPriorityStreamNode(t *testing.T) {
 		t.Fatalf("parse low-priority target port: %v", err)
 	}
 
-	router, err := NewRouter([]resource.StreamRoute{{
+	router, err := compileTestRouter(t, []resource.StreamRoute{{
 		ID: "priority-retry",
 		Upstream: resource.Upstream{
 			Retries: 1,
@@ -746,9 +805,9 @@ func TestRouterRetriesFromClosedHighPriorityStreamNode(t *testing.T) {
 				{Host: lowHost, Port: lowPort, Weight: 1, Priority: 0},
 			},
 		},
-	}}, nil, nil)
+	}}, nil)
 	if err != nil {
-		t.Fatalf("NewRouter() error = %v", err)
+		t.Fatalf("CompileRouter() error = %v", err)
 	}
 
 	conn, err := router.routes[0].dial(context.Background(), "")
@@ -794,7 +853,7 @@ func TestRouterDoesNotRetryWhenStreamRetriesIsZero(t *testing.T) {
 		t.Fatalf("parse low-priority target port: %v", err)
 	}
 
-	router, err := NewRouter([]resource.StreamRoute{{
+	router, err := compileTestRouter(t, []resource.StreamRoute{{
 		ID: "priority-no-retry",
 		Upstream: resource.Upstream{
 			Retries: 0,
@@ -803,9 +862,9 @@ func TestRouterDoesNotRetryWhenStreamRetriesIsZero(t *testing.T) {
 				{Host: lowHost, Port: lowPort, Weight: 1, Priority: 0},
 			},
 		},
-	}}, nil, nil)
+	}}, nil)
 	if err != nil {
-		t.Fatalf("NewRouter() error = %v", err)
+		t.Fatalf("CompileRouter() error = %v", err)
 	}
 
 	if _, err := router.routes[0].dial(context.Background(), ""); err == nil {
@@ -828,15 +887,15 @@ func TestRouterDoesNotRetryWhenStreamRetriesIsZero(t *testing.T) {
 
 func TestRouterMatchesExactRemoteAddressAndCIDR(t *testing.T) {
 	for _, remote := range []string{"127.0.0.1", "127.0.0.1/32"} {
-		router, err := NewRouter([]resource.StreamRoute{{
+		router, err := compileTestRouter(t, []resource.StreamRoute{{
 			RemoteAddr: remote,
 			Upstream: resource.Upstream{
 				Scheme: "tcp",
 				Nodes:  []resource.Node{{Host: "127.0.0.1", Port: 1, Weight: 1}},
 			},
-		}}, nil, nil)
+		}}, nil)
 		if err != nil {
-			t.Fatalf("NewRouter(%q) error = %v", remote, err)
+			t.Fatalf("CompileRouter(%q) error = %v", remote, err)
 		}
 		if !router.routeMatches(resource.StreamRoute{RemoteAddr: remote}, "127.0.0.1:1234", "127.0.0.1:1883") {
 			t.Fatalf("route with remote_addr %q did not match loopback peer", remote)
@@ -845,7 +904,7 @@ func TestRouterMatchesExactRemoteAddressAndCIDR(t *testing.T) {
 }
 
 func TestRouterUsesFirstMatchingResource(t *testing.T) {
-	router, err := NewRouter([]resource.StreamRoute{
+	router, err := compileTestRouter(t, []resource.StreamRoute{
 		{
 			ID: "wildcard",
 			Upstream: resource.Upstream{
@@ -862,9 +921,9 @@ func TestRouterUsesFirstMatchingResource(t *testing.T) {
 				Nodes:  []resource.Node{{Host: "127.0.0.1", Port: 1, Weight: 1}},
 			},
 		},
-	}, nil, nil)
+	}, nil)
 	if err != nil {
-		t.Fatalf("NewRouter() error = %v", err)
+		t.Fatalf("CompileRouter() error = %v", err)
 	}
 	entry, ok := router.matchEntry("127.0.0.1:1883", "127.0.0.1:1000")
 	if !ok || entry.route.ID != "wildcard" {
@@ -873,7 +932,7 @@ func TestRouterUsesFirstMatchingResource(t *testing.T) {
 }
 
 func TestRouterPreservesResourceOrder(t *testing.T) {
-	router, err := NewRouter([]resource.StreamRoute{
+	router, err := compileTestRouter(t, []resource.StreamRoute{
 		{
 			ID: "first",
 			Upstream: resource.Upstream{
@@ -889,9 +948,9 @@ func TestRouterPreservesResourceOrder(t *testing.T) {
 				Nodes:  []resource.Node{{Host: "127.0.0.1", Port: 1, Weight: 1}},
 			},
 		},
-	}, nil, nil)
+	}, nil)
 	if err != nil {
-		t.Fatalf("NewRouter() error = %v", err)
+		t.Fatalf("CompileRouter() error = %v", err)
 	}
 	entry, ok := router.matchEntry("127.0.0.1:1883", "127.0.0.1:1000")
 	if !ok || entry.route.ID != "first" {
@@ -899,20 +958,8 @@ func TestRouterPreservesResourceOrder(t *testing.T) {
 	}
 }
 
-func TestRouterReloadRejectsConflictingListenAddresses(t *testing.T) {
-	router, err := NewRouter([]resource.StreamRoute{{
-		ID:         "first",
-		ServerAddr: "127.0.0.1",
-		ServerPort: 1883,
-		Upstream: resource.Upstream{
-			Scheme: "tcp",
-			Nodes:  []resource.Node{{Host: "127.0.0.1", Port: 1, Weight: 1}},
-		},
-	}}, nil, nil)
-	if err != nil {
-		t.Fatalf("NewRouter() error = %v", err)
-	}
-	err = router.Reload([]resource.StreamRoute{
+func TestCompileRouterRejectsConflictingListenAddresses(t *testing.T) {
+	_, err := compileTestRouter(t, []resource.StreamRoute{
 		{
 			ID:         "alpha",
 			ServerAddr: "127.0.0.1",
@@ -931,23 +978,20 @@ func TestRouterReloadRejectsConflictingListenAddresses(t *testing.T) {
 				Nodes:  []resource.Node{{Host: "127.0.0.1", Port: 2, Weight: 1}},
 			},
 		},
-	})
+	}, nil)
+
 	if err == nil {
-		t.Fatal("Reload() error = nil, want conflicting listen address")
+		t.Fatal("CompileRouter() error = nil, want conflicting listen address")
 	}
 	if !strings.Contains(err.Error(), "conflicting stream listen address") ||
 		!strings.Contains(err.Error(), "alpha") ||
 		!strings.Contains(err.Error(), "beta") {
-		t.Fatalf("Reload() error = %q, want both route IDs", err)
-	}
-	entry, ok := router.matchEntry("127.0.0.1:1883", "192.0.2.1:1000")
-	if !ok || entry.route.ID != "first" {
-		t.Fatalf("matched route after rejected reload = %#v, want last-good first", entry.route)
+		t.Fatalf("CompileRouter() error = %q, want both route IDs", err)
 	}
 }
 
 func TestRouterUsesDeterministicClientIDHashForChashUpstream(t *testing.T) {
-	router, err := NewRouter([]resource.StreamRoute{{
+	router, err := compileTestRouter(t, []resource.StreamRoute{{
 		ID: "mqtt-hash",
 		Upstream: resource.Upstream{
 			Type:   "chash",
@@ -958,9 +1002,9 @@ func TestRouterUsesDeterministicClientIDHashForChashUpstream(t *testing.T) {
 				{Host: "broker-b", Port: 1883, Weight: 1},
 			},
 		},
-	}}, []string{"mqtt-proxy"}, nil)
+	}}, nil)
 	if err != nil {
-		t.Fatalf("NewRouter() error = %v", err)
+		t.Fatalf("CompileRouter() error = %v", err)
 	}
 	entry, ok := router.matchEntry("127.0.0.1:1883", "127.0.0.1:1000")
 	if !ok {
@@ -976,7 +1020,7 @@ func TestRouterUsesDeterministicClientIDHashForChashUpstream(t *testing.T) {
 }
 
 func TestRouterChashPreservesConfiguredNodeOrderWithinPriority(t *testing.T) {
-	router, err := NewRouter([]resource.StreamRoute{{
+	router, err := compileTestRouter(t, []resource.StreamRoute{{
 		ID: "mqtt-hash-order",
 		Upstream: resource.Upstream{
 			Type:   "chash",
@@ -987,9 +1031,9 @@ func TestRouterChashPreservesConfiguredNodeOrderWithinPriority(t *testing.T) {
 				{Host: "broker-a", Port: 1883, Weight: 1, Priority: 10},
 			},
 		},
-	}}, nil, nil)
+	}}, nil)
 	if err != nil {
-		t.Fatalf("NewRouter() error = %v", err)
+		t.Fatalf("CompileRouter() error = %v", err)
 	}
 	entry := router.routes[0]
 	if got := entry.groups[0].hashNodes[0].target; got != "tcp://broker-z:1883" {
@@ -1053,19 +1097,4 @@ func streamMQTTConnectPacket(clientID string) []byte {
 	body = append(body, length[:]...)
 	body = append(body, clientID...)
 	return append([]byte{0x10, byte(len(body))}, body...)
-}
-
-func TestUnownedSecretReferenceRejectsStreamPlugin(t *testing.T) {
-	_, err := buildRouteEntry(resource.StreamRoute{
-		ID: "stream-unowned-secret",
-		Plugins: map[string]resource.PluginConfig{
-			"mqtt-proxy": map[string]any{"protocol_level": 4, "protocol_name": "$ENV://MQTT_PROTOCOL"},
-		},
-		Upstream: resource.Upstream{Nodes: []resource.Node{{Host: "127.0.0.1", Port: 1883, Weight: 1}}},
-	}, nil)
-	if err == nil ||
-		!strings.Contains(err.Error(), "unowned secret reference") ||
-		!strings.Contains(err.Error(), "protocol_name") {
-		t.Fatalf("buildRouteEntry() error = %v, want stream secret rejection", err)
-	}
 }

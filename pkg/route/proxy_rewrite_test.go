@@ -30,18 +30,18 @@ func TestBuildReverseHandlerRewritesHostWithoutChangingTarget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse upstream port: %v", err)
 	}
-	handler, err := (&Builder{}).buildReverseHandler(resource.Route{
-		Upstream: resource.Upstream{
-			Type:   "roundrobin",
-			Scheme: target.Scheme,
-			Nodes: []resource.Node{{
-				Host: target.Hostname(), Port: port, Weight: 1,
-			}},
+	handler := testPreparedProxyHandler(t,
+		resource.Route{
+			Upstream: resource.Upstream{
+				Type:   "roundrobin",
+				Scheme: target.Scheme,
+				Nodes: []resource.Node{{
+					Host: target.Hostname(), Port: port, Weight: 1,
+				}},
+			},
 		},
-	}, resource.Service{})
-	if err != nil {
-		t.Fatalf("buildReverseHandler() error = %v", err)
-	}
+		resource.Service{}, testEffectiveConfig(),
+	)
 
 	req := httptest.NewRequest(http.MethodGet, "http://gateway.example.com/hello", nil)
 	req = apisixctx.WithApisixVars(req, nil)
@@ -86,16 +86,16 @@ func TestBuildReverseHandlerFinalizesProxyRewriteBeforeUpstream(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse upstream port: %v", err)
 	}
-	handler, err := (&Builder{}).buildReverseHandler(resource.Route{
-		Upstream: resource.Upstream{
-			Type:   "roundrobin",
-			Scheme: target.Scheme,
-			Nodes:  []resource.Node{{Host: target.Hostname(), Port: port, Weight: 1}},
+	handler := testPreparedProxyHandler(t,
+		resource.Route{
+			Upstream: resource.Upstream{
+				Type:   "roundrobin",
+				Scheme: target.Scheme,
+				Nodes:  []resource.Node{{Host: target.Hostname(), Port: port, Weight: 1}},
+			},
 		},
-	}, resource.Service{})
-	if err != nil {
-		t.Fatalf("buildReverseHandler() error = %v", err)
-	}
+		resource.Service{}, testEffectiveConfig(),
+	)
 
 	req := httptest.NewRequest(http.MethodGet, "http://gateway.example.com/original?incoming=1", nil)
 	req = apisixctx.WithApisixVars(req, nil)
@@ -178,20 +178,20 @@ func TestBuildReverseHandlerAppliesUpstreamPassHost(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			handler, err := (&Builder{}).buildReverseHandler(resource.Route{
-				Upstream: resource.Upstream{
-					Type:         "roundrobin",
-					Scheme:       target.Scheme,
-					PassHost:     test.passHost,
-					UpstreamHost: test.upstreamHost,
-					Nodes: []resource.Node{{
-						Host: target.Hostname(), Port: port, Weight: 1,
-					}},
+			handler := testPreparedProxyHandler(t,
+				resource.Route{
+					Upstream: resource.Upstream{
+						Type:         "roundrobin",
+						Scheme:       target.Scheme,
+						PassHost:     test.passHost,
+						UpstreamHost: test.upstreamHost,
+						Nodes: []resource.Node{{
+							Host: target.Hostname(), Port: port, Weight: 1,
+						}},
+					},
 				},
-			}, resource.Service{})
-			if err != nil {
-				t.Fatalf("buildReverseHandler() error = %v", err)
-			}
+				resource.Service{}, testEffectiveConfig(),
+			)
 
 			req := httptest.NewRequest(http.MethodGet, "http://gateway.example.com/hello", nil)
 			req.Host = test.requestHost
@@ -236,15 +236,19 @@ func TestBuildReverseHandlerRejectsInvalidUpstreamHostMode(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			_, err := (&Builder{}).buildReverseHandler(resource.Route{
-				Upstream: resource.Upstream{
-					Type:         "roundrobin",
-					Scheme:       "http",
-					PassHost:     test.passHost,
-					UpstreamHost: test.upstreamHost,
-					Nodes:        []resource.Node{{Host: "127.0.0.1", Port: 80, Weight: 1}},
+			effective := testEffectiveConfig()
+			_, err := PlanRouteUpstream(
+				resource.Route{
+					Upstream: resource.Upstream{
+						Type:         "roundrobin",
+						Scheme:       "http",
+						PassHost:     test.passHost,
+						UpstreamHost: test.upstreamHost,
+						Nodes:        []resource.Node{{Host: "127.0.0.1", Port: 80, Weight: 1}},
+					},
 				},
-			}, resource.Service{})
+				resource.Service{}, nil, nil, &effective.Config,
+			)
 			if err == nil {
 				t.Fatal("buildReverseHandler() error = nil, want invalid pass_host rejection")
 			}
@@ -305,16 +309,16 @@ func TestBuildReverseHandlerKeepsTrafficSplitTargetWithRewrittenHost(t *testing.
 		t.Fatalf("parse upstream URL: %v", err)
 	}
 
-	handler, err := (&Builder{}).buildReverseHandler(resource.Route{
-		Upstream: resource.Upstream{
-			Type:   "roundrobin",
-			Scheme: "http",
-			Nodes:  []resource.Node{{Host: "127.0.0.1", Port: 1, Weight: 1}},
+	handler := testPreparedProxyHandler(t,
+		resource.Route{
+			Upstream: resource.Upstream{
+				Type:   "roundrobin",
+				Scheme: "http",
+				Nodes:  []resource.Node{{Host: "127.0.0.1", Port: 1, Weight: 1}},
+			},
 		},
-	}, resource.Service{})
-	if err != nil {
-		t.Fatalf("buildReverseHandler() error = %v", err)
-	}
+		resource.Service{}, testEffectiveConfig(),
+	)
 
 	req := httptest.NewRequest(http.MethodGet, "http://gateway.example.com/hello", nil)
 	req = apisixctx.WithApisixVars(req, nil)

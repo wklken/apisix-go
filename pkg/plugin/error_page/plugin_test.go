@@ -1,13 +1,41 @@
 package error_page
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/runtime"
+	"github.com/wklken/apisix-go/pkg/util"
 )
+
+func TestMetadataSchemaAcceptsErrorPages(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := util.Validate(map[string]any{
+		"enable": true,
+		"error_404": map[string]any{
+			"body":         "n",
+			"content_type": "text/plain",
+		},
+	}, p.GetMetadataSchema()); err != nil {
+		t.Fatalf("valid metadata rejected: %v", err)
+	}
+	for _, metadata := range []map[string]any{
+		{"enable": "true"},
+		{"error_404": map[string]any{"body": 1}},
+	} {
+		if err := util.Validate(metadata, p.GetMetadataSchema()); err == nil {
+			t.Fatalf("invalid metadata accepted: %#v", metadata)
+		}
+	}
+}
 
 func TestErrorPageRunsOneAtomicBufferedBodyCallback(t *testing.T) {
 	plugin := newTestPlugin(t, Metadata{
@@ -45,7 +73,12 @@ func TestErrorPageRunsOneAtomicBufferedBodyCallback(t *testing.T) {
 func newTestPlugin(t *testing.T, metadata Metadata) *Plugin {
 	t.Helper()
 
-	p := &Plugin{metadata: metadata}
+	document, err := json.Marshal(metadata)
+	if err != nil {
+		t.Fatalf("marshal metadata: %v", err)
+	}
+	p := &Plugin{}
+	p.SetDependencies(base.Dependencies{Metadata: mustMetadataView(t, map[string][]byte{name: document})})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -54,6 +87,71 @@ func newTestPlugin(t *testing.T, metadata Metadata) *Plugin {
 	}
 
 	return p
+}
+
+func newTestPluginWithMetadata(t *testing.T, document []byte) *Plugin {
+	t.Helper()
+
+	p := &Plugin{}
+	p.SetDependencies(base.Dependencies{Metadata: mustMetadataView(t, map[string][]byte{name: document})})
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+	return p
+}
+
+func mustMetadataView(t *testing.T, documents map[string][]byte) runtime.MetadataView {
+	t.Helper()
+	view, err := runtime.NewMetadataView(documents)
+	if err != nil {
+		t.Fatalf("NewMetadataView() error = %v", err)
+	}
+	return view
+}
+
+func TestPreparedGenerationsRetainMetadataPages(t *testing.T) {
+	n := newTestPluginWithMetadata(t, []byte(`{"enable":true,"error_404":{"body":"n","content_type":"text/plain"}}`))
+	n1 := newTestPluginWithMetadata(t, []byte(`{"enable":true,"error_404":{"body":"n1","content_type":"text/plain"}}`))
+
+	assertPage := func(t *testing.T, p *Plugin, wantBody, wantLength string) {
+		t.Helper()
+		res := performRequest(p, func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte("original"))
+		})
+		if got := res.Body.String(); got != wantBody {
+			t.Fatalf("body = %q, want %q", got, wantBody)
+		}
+		if got := res.Header().Get("Content-Length"); got != wantLength {
+			t.Fatalf("Content-Length = %q, want %q", got, wantLength)
+		}
+	}
+
+	assertPage(t, n, "n", "1")
+	assertPage(t, n1, "n1", "2")
+}
+
+func TestPostInitRejectsInvalidMetadataBeforeSideEffects(t *testing.T) {
+	p := &Plugin{}
+	p.SetDependencies(base.Dependencies{Metadata: mustMetadataView(t, map[string][]byte{
+		name: []byte(`{"enable":"sensitive-invalid-value"}`),
+	})})
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	err := p.PostInit()
+	if err == nil || !strings.Contains(err.Error(), "error-page metadata decode failed") {
+		t.Fatalf("PostInit() error = %v, want redacted metadata decode failure", err)
+	}
+	if strings.Contains(err.Error(), "sensitive-invalid-value") {
+		t.Fatalf("PostInit() error leaked metadata: %v", err)
+	}
+	if p.metadata.Error404.Body != "" {
+		t.Fatalf("default error page published after invalid metadata: %q", p.metadata.Error404.Body)
+	}
 }
 
 func TestHandlerRewritesConfiguredErrorPage(t *testing.T) {

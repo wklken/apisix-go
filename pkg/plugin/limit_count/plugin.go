@@ -17,8 +17,9 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/limitbase"
 	"github.com/wklken/apisix-go/pkg/resource"
+	"github.com/wklken/apisix-go/pkg/runtime"
+	"github.com/wklken/apisix-go/pkg/secret"
 	"github.com/wklken/apisix-go/pkg/shared"
-	"github.com/wklken/apisix-go/pkg/store"
 	"github.com/wklken/apisix-go/pkg/util"
 
 	limiter "github.com/ulule/limiter/v3"
@@ -28,6 +29,7 @@ import (
 
 type Plugin struct {
 	base.BasePlugin
+	limitCountSecretState
 	config            Config
 	metadata          Metadata
 	limiter           *limiter.Limiter
@@ -48,10 +50,6 @@ type Plugin struct {
 	backendMu     sync.Mutex
 	backendClient redis.UniversalClient
 	clientRelease func()
-
-	keySecret               *store.ResolvedSecret
-	redisHostSecret         *store.ResolvedSecret
-	redisClusterNodeSecrets []*store.ResolvedSecret
 }
 
 const (
@@ -389,7 +387,24 @@ const schema = `
 		"required": ["redis_cluster_nodes", "redis_cluster_name"]
 	  }
 	}
+}
+`
+
+const metadataSchema = `
+{
+  "type": "object",
+  "properties": {
+    "limit_header": {
+      "type": "string"
+    },
+    "remaining_header": {
+      "type": "string"
+    },
+    "reset_header": {
+      "type": "string"
+    }
   }
+}
 `
 
 type Config struct {
@@ -449,11 +464,26 @@ func (p *Plugin) Init() error {
 	p.Name = name
 	p.Priority = priority
 	p.Schema = schema
+	p.MetadataSchema = metadataSchema
 
 	return nil
 }
 
 func (p *Plugin) PostInit() error {
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+	p.credentialMu.Lock()
+	retired := p.retired
+	p.credentialMu.Unlock()
+	if retired {
+		return secret.ErrCredentialUnavailable
+	}
+	var metadata Metadata
+	if _, err := p.MetadataView().Decode(name, &metadata); err != nil {
+		return fmt.Errorf("limit-count metadata decode failed: %w", err)
+	}
+	p.metadata = metadata
+
 	if p.config.Key == "" {
 		p.config.Key = "remote_addr"
 	}
@@ -562,10 +592,6 @@ func (p *Plugin) PostInit() error {
 		body, _ := json.Marshal(map[string]string{"error_msg": p.config.RejectedMsg})
 		p.config.rejectBody = util.BytesToString(body)
 	}
-	if p.metadata == (Metadata{}) {
-		p.metadata = base.LoadPluginMetadata[Metadata](name)
-	}
-
 	if len(p.config.Rules) > 0 {
 		if err := p.validateRules(); err != nil {
 			return err
@@ -633,73 +659,6 @@ func (p *Plugin) PostInit() error {
 	}
 
 	return nil
-}
-
-func (p *Plugin) MaterializeSecrets() error {
-	p.applyRootRedisConfig()
-	p.applyRootRedisClusterConfig()
-
-	keySecret, err := materializeSecretReference(p.config.Key)
-	if err != nil {
-		return errors.New("resolve limit-count key: credential unavailable")
-	}
-	redisHostSecret, err := materializeSecretReference(p.config.Redis.RedisHost)
-	if err != nil {
-		keySecret.Destroy()
-		return errors.New("resolve limit-count Redis host: credential unavailable")
-	}
-	clusterNodeSecrets := make([]*store.ResolvedSecret, len(p.config.RedisCluster.RedisClusterNodes))
-	for i, node := range p.config.RedisCluster.RedisClusterNodes {
-		clusterNodeSecrets[i], err = materializeSecretReference(node)
-		if err != nil {
-			keySecret.Destroy()
-			redisHostSecret.Destroy()
-			for _, secret := range clusterNodeSecrets {
-				secret.Destroy()
-			}
-			return fmt.Errorf("resolve limit-count Redis cluster node %d: credential unavailable", i)
-		}
-	}
-
-	p.keySecret = keySecret
-	p.redisHostSecret = redisHostSecret
-	p.redisClusterNodeSecrets = clusterNodeSecrets
-	if keySecret != nil {
-		p.config.Key = keySecret.Descriptor()
-	}
-	if redisHostSecret != nil {
-		p.config.Redis.RedisHost = redisHostSecret.Descriptor()
-	}
-	if p.config.RedisHost != "" {
-		p.config.RedisHost = p.config.Redis.RedisHost
-	}
-	for i, secret := range clusterNodeSecrets {
-		if secret != nil {
-			p.config.RedisCluster.RedisClusterNodes[i] = secret.Descriptor()
-		}
-	}
-	if len(p.config.RedisClusterNodes) > 0 {
-		p.config.RedisClusterNodes = append([]string(nil), p.config.RedisCluster.RedisClusterNodes...)
-	}
-	return nil
-}
-
-func materializeSecretReference(value string) (*store.ResolvedSecret, error) {
-	upper := strings.ToUpper(value)
-	if !strings.HasPrefix(upper, "$ENV://") && !strings.HasPrefix(value, "$secret://") {
-		return nil, nil
-	}
-	secret, err := store.MaterializeSecret(value)
-	if err != nil {
-		return nil, err
-	}
-	bytes := secret.Bytes()
-	defer clear(bytes)
-	if len(bytes) == 0 {
-		secret.Destroy()
-		return nil, errors.New("credential unavailable")
-	}
-	return secret, nil
 }
 
 func (p *Plugin) SetResourceContext(route resource.Route, _ resource.Service) {
@@ -898,57 +857,58 @@ func (p *Plugin) redisBackendClientLocked() (redis.UniversalClient, error) {
 		return p.backendClient, nil
 	}
 
-	configUID := shared.NewConfigUID()
-	configUID.Add(p.config.Policy)
-	var create func() (any, error)
+	_, hostDigest, nodeDigests := p.limitCountCredentialDigests()
 	switch p.config.Policy {
 	case "redis":
-		identity := p.config.Redis
-		runtimeConfig := p.redisConnConfig()
-		if p.redisHostSecret != nil {
-			host := p.redisHostSecret.Bytes()
-			if len(host) == 0 {
-				return nil, errors.New("limit-count Redis host credential unavailable")
-			}
-			defer clear(host)
-			runtimeConfig.Host = string(host)
-			identity.RedisHost = p.redisHostSecret.Fingerprint()
-		}
-		configUID.Add(identity.String())
-		options := runtimeConfig.Options()
-		create = func() (any, error) { return redis.NewClient(options), nil }
+		var client redis.UniversalClient
+		err := p.withLimitCountRedisHost(func(host string) error {
+			identity := p.config.Redis
+			identity.RedisHost = fmt.Sprintf("sha256:%x", hostDigest)
+			configUID := shared.NewConfigUID()
+			configUID.Add(p.config.Policy, identity.String())
+			runtimeConfig := p.redisConnConfig()
+			runtimeConfig.Host = host
+			options := runtimeConfig.Options()
+			var err error
+			client, err = p.acquireLimitCountRedisClient(
+				configUID, func() (any, error) { return redis.NewClient(options), nil },
+			)
+			return err
+		})
+		return client, err
 	case "redis-cluster":
-		runtimeConfig := p.redisClusterConnConfig()
-		runtimeConfig.Nodes = append([]string(nil), runtimeConfig.Nodes...)
-		identityNodes := append([]string(nil), p.config.RedisCluster.RedisClusterNodes...)
-		for i, secret := range p.redisClusterNodeSecrets {
-			if secret == nil {
-				continue
+		var client redis.UniversalClient
+		err := p.withLimitCountRedisNodes(func(nodes []string) error {
+			identityNodes := make([]string, len(nodeDigests))
+			for index, digest := range nodeDigests {
+				identityNodes[index] = fmt.Sprintf("sha256:%x", digest)
 			}
-			node := secret.Bytes()
-			if len(node) == 0 {
-				return nil, fmt.Errorf("limit-count Redis cluster node %d credential unavailable", i)
-			}
-			defer clear(node)
-			runtimeConfig.Nodes[i] = string(node)
-			identityNodes[i] = secret.Fingerprint()
-		}
-		configUID.Add(
-			p.config.RedisCluster.RedisClusterName,
-			strings.Join(identityNodes, ","),
-			p.config.RedisCluster.RedisPassword,
-			p.config.RedisCluster.RedisTimeout,
-			*p.config.RedisCluster.RedisClusterSSL,
-			*p.config.RedisCluster.RedisClusterSSLVerify,
-			p.config.RedisCluster.RedisKeepaliveTimeout,
-			p.config.RedisCluster.RedisKeepalivePool,
-		)
-		options := runtimeConfig.ClusterOptions()
-		create = func() (any, error) {
-			return redis.NewClusterClient(options), nil
-		}
+			configUID := shared.NewConfigUID()
+			configUID.Add(
+				p.config.Policy,
+				p.config.RedisCluster.RedisClusterName,
+				strings.Join(identityNodes, ","),
+				p.config.RedisCluster.RedisPassword,
+				p.config.RedisCluster.RedisTimeout,
+				*p.config.RedisCluster.RedisClusterSSL,
+				*p.config.RedisCluster.RedisClusterSSLVerify,
+				p.config.RedisCluster.RedisKeepaliveTimeout,
+				p.config.RedisCluster.RedisKeepalivePool,
+			)
+			runtimeConfig := p.redisClusterConnConfig()
+			runtimeConfig.Nodes = append([]string(nil), nodes...)
+			options := runtimeConfig.ClusterOptions()
+			var err error
+			client, err = p.acquireLimitCountRedisClient(
+				configUID, func() (any, error) { return redis.NewClusterClient(options), nil },
+			)
+			return err
+		})
+		return client, err
 	case "redis-sentinel":
+		configUID := shared.NewConfigUID()
 		configUID.Add(
+			p.config.Policy,
 			p.config.RedisMasterName,
 			p.config.RedisRole,
 			p.config.RedisSentinels,
@@ -959,11 +919,18 @@ func (p *Plugin) redisBackendClientLocked() (redis.UniversalClient, error) {
 			p.config.SentinelUsername,
 			p.config.SentinelPassword,
 		)
-		create = func() (any, error) { return redis.NewFailoverClient(p.redisSentinelOptions()), nil }
+		return p.acquireLimitCountRedisClient(
+			configUID,
+			func() (any, error) { return redis.NewFailoverClient(p.redisSentinelOptions()), nil },
+		)
 	default:
 		return nil, fmt.Errorf("policy %q has no Redis backend", p.config.Policy)
 	}
+}
 
+func (p *Plugin) acquireLimitCountRedisClient(
+	configUID *shared.ConfigUID, create func() (any, error),
+) (redis.UniversalClient, error) {
 	value, release, err := shared.AcquireClient(
 		shared.ClientKey(name, configUID),
 		create,
@@ -1160,95 +1127,108 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			return
 		}
 
-		key := p.consumerScopedKey(r, p.resolveKey(r))
-		count, timeWindow, err := p.resolveLimit(r)
+		proceed := false
+		err := p.withResolvedLimitCountKey(r, func(key string) error {
+			proceed = p.consumeLimitCountKey(w, r, p.consumerScopedKey(r, key))
+			return nil
+		})
 		if err != nil {
-			if *p.config.AllowDegradation {
+			if p.config.AllowDegradation != nil && *p.config.AllowDegradation {
 				next.ServeHTTP(w, r)
 				return
 			}
-			logger.Error(err.Error())
+			logger.Errorf("failed to resolve limit count key: %v", err)
 			http.Error(w, "failed to resolve limit count config", http.StatusInternalServerError)
 			return
 		}
-		if p.delayedSyncEnabledFor(timeWindow) {
-			syncer, err := p.delayedSyncerFor(count, timeWindow)
-			if err != nil {
-				if *p.config.AllowDegradation {
-					next.ServeHTTP(w, r)
-					return
-				}
-				http.Error(w, "failed to limit count", http.StatusInternalServerError)
-				return
-			}
-			if !p.runDelayedLimit(
-				w,
-				r,
-				syncer,
-				count,
-				key,
-				limitbase.DefaultQuotaHeaders(
-					p.metadata.LimitHeader,
-					p.metadata.RemainingHeader,
-					p.metadata.ResetHeader,
-				),
-			) {
-				return
-			}
+		if proceed {
 			next.ServeHTTP(w, r)
-			return
 		}
-		if p.config.WindowType == "sliding" {
-			lim, err := p.slidingLimiterFor(count, timeWindow)
-			if err != nil {
-				if *p.config.AllowDegradation {
-					next.ServeHTTP(w, r)
-					return
-				}
-				http.Error(w, "failed to limit count", http.StatusInternalServerError)
-				return
-			}
-			if !p.runSlidingLimit(
-				w,
-				r,
-				lim,
-				count,
-				key,
-				limitbase.DefaultQuotaHeaders(
-					p.metadata.LimitHeader,
-					p.metadata.RemainingHeader,
-					p.metadata.ResetHeader,
-				),
-				time.Now(),
-			) {
-				return
-			}
-			next.ServeHTTP(w, r)
-			return
+	}
+	return http.HandlerFunc(fn)
+}
+
+func (p *Plugin) consumeLimitCountKey(w http.ResponseWriter, r *http.Request, key string) bool {
+	count, timeWindow, err := p.resolveLimit(r)
+	if err != nil {
+		if *p.config.AllowDegradation {
+			return true
 		}
-		lim, err := p.limiterFor(count, timeWindow)
+		logger.Error(err.Error())
+		http.Error(w, "failed to resolve limit count config", http.StatusInternalServerError)
+		return false
+	}
+	if p.delayedSyncEnabledFor(timeWindow) {
+		syncer, err := p.delayedSyncerFor(count, timeWindow)
 		if err != nil {
 			if *p.config.AllowDegradation {
-				next.ServeHTTP(w, r)
-				return
+				return true
 			}
-			logger.Errorf("failed to limit count: %v", err)
 			http.Error(w, "failed to limit count", http.StatusInternalServerError)
-			return
+			return false
 		}
-		if !p.runLimit(
+		if !p.runDelayedLimit(
+			w,
+			r,
+			syncer,
+			count,
+			key,
+			limitbase.DefaultQuotaHeaders(
+				p.metadata.LimitHeader,
+				p.metadata.RemainingHeader,
+				p.metadata.ResetHeader,
+			),
+		) {
+			return false
+		}
+		return true
+	}
+	if p.config.WindowType == "sliding" {
+		lim, err := p.slidingLimiterFor(count, timeWindow)
+		if err != nil {
+			if *p.config.AllowDegradation {
+				return true
+			}
+			http.Error(w, "failed to limit count", http.StatusInternalServerError)
+			return false
+		}
+		if !p.runSlidingLimit(
 			w,
 			r,
 			lim,
 			count,
 			key,
-			limitbase.DefaultQuotaHeaders(p.metadata.LimitHeader, p.metadata.RemainingHeader, p.metadata.ResetHeader),
+			limitbase.DefaultQuotaHeaders(
+				p.metadata.LimitHeader,
+				p.metadata.RemainingHeader,
+				p.metadata.ResetHeader,
+			),
+			time.Now(),
 		) {
-			return
+			return false
 		}
-		next.ServeHTTP(w, r)
+		return true
 	}
-	return http.HandlerFunc(fn)
+	lim, err := p.limiterFor(count, timeWindow)
+	if err != nil {
+		if *p.config.AllowDegradation {
+			return true
+		}
+		logger.Errorf("failed to limit count: %v", err)
+		http.Error(w, "failed to limit count", http.StatusInternalServerError)
+		return false
+	}
+	if !p.runLimit(
+		w,
+		r,
+		lim,
+		count,
+		key,
+		limitbase.DefaultQuotaHeaders(p.metadata.LimitHeader, p.metadata.RemainingHeader, p.metadata.ResetHeader),
+	) {
+		return false
+	}
+	return true
 }
 
 func (p *Plugin) delayedSyncEnabled() bool {
@@ -1263,6 +1243,10 @@ func (p *Plugin) delayedSyncerFor(count int64, timeWindow int64) (*delayedSyncer
 	if p.delayed != nil {
 		return p.delayed, nil
 	}
+	owner := p.TaskOwner()
+	if owner == nil {
+		return nil, runtime.ErrTaskOwnerRequired
+	}
 
 	key := strconv.FormatInt(count, 10) + ":" + strconv.FormatInt(timeWindow, 10)
 	p.limiterMu.Lock()
@@ -1273,6 +1257,13 @@ func (p *Plugin) delayedSyncerFor(count int64, timeWindow int64) (*delayedSyncer
 	if syncer := p.delayedByKey[key]; syncer != nil {
 		return syncer, nil
 	}
+	p.backendMu.Lock()
+	previousFixedStore := p.fixedStore
+	previousBackendClient := p.backendClient
+	previousClientRelease := p.clientRelease
+	p.backendMu.Unlock()
+	previousSlidingStore := p.slidingStore
+	previousLocalLimiterStore := p.localLimiterStore
 
 	var backend delayedSyncBackend
 	if p.config.WindowType == "sliding" {
@@ -1288,15 +1279,52 @@ func (p *Plugin) delayedSyncerFor(count int64, timeWindow int64) (*delayedSyncer
 		}
 		backend = fixedWindowDelayedBackend{limiter: fixed}
 	}
-	syncer := newDelayedSyncer(
+	syncer, err := newDelayedSyncer(
+		owner,
 		backend,
 		count,
 		time.Duration(timeWindow)*time.Second,
 		time.Duration(p.config.SyncInterval*float64(time.Second)),
 		10000,
 	)
+	if err != nil {
+		p.rollbackDelayedSyncResources(
+			previousFixedStore,
+			previousSlidingStore,
+			previousLocalLimiterStore,
+			previousBackendClient,
+			previousClientRelease,
+		)
+		return nil, err
+	}
 	p.delayedByKey[key] = syncer
 	return syncer, nil
+}
+
+func (p *Plugin) rollbackDelayedSyncResources(
+	previousFixedStore limiter.Store,
+	previousSlidingStore slidingWindowStore,
+	previousLocalLimiterStore limiter.Store,
+	previousBackendClient redis.UniversalClient,
+	previousClientRelease func(),
+) {
+	p.slidingStore = previousSlidingStore
+	p.localLimiterStore = previousLocalLimiterStore
+
+	p.backendMu.Lock()
+	var release func()
+	if p.backendClient != previousBackendClient {
+		release = p.clientRelease
+		p.backendClient = previousBackendClient
+		p.clientRelease = previousClientRelease
+	}
+	p.fixedStore = previousFixedStore
+	p.backendMu.Unlock()
+
+	if release != nil {
+		// The newly acquired client is owned only by this failed admission.
+		release()
+	}
 }
 
 func (p *Plugin) slidingLimiterFor(count int64, timeWindow int64) (*slidingWindowLimiter, error) {
@@ -1578,23 +1606,36 @@ func (p *Plugin) runDelayedLimit(
 }
 
 func (p *Plugin) Stop() {
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+	p.stopOnce.Do(func() {
+		p.stopLimitCount()
+	})
+}
+
+func (p *Plugin) stopLimitCount() {
+	p.credentialMu.Lock()
+	p.retired = true
+	wait := p.usesDone
+	p.credentialMu.Unlock()
+	if wait != nil {
+		<-wait
+	}
+
 	p.releaseGroup()
 
 	p.limiterMu.Lock()
-	syncers := make([]*delayedSyncer, 0, len(p.delayedByKey)+1)
-	if p.delayed != nil {
-		syncers = append(syncers, p.delayed)
-	}
-	for _, syncer := range p.delayedByKey {
-		syncers = append(syncers, syncer)
-	}
 	p.delayed = nil
 	p.delayedByKey = nil
+	p.limiter = nil
+	p.limiters = nil
+	p.sliding = nil
+	p.slidingStore = nil
+	p.slidingByKey = nil
+	p.ruleLimiters = nil
+	p.localLimiterStore = nil
+	p.dynamicLimits = false
 	p.limiterMu.Unlock()
-
-	for _, syncer := range syncers {
-		syncer.Stop()
-	}
 
 	p.backendMu.Lock()
 	release := p.clientRelease
@@ -1605,27 +1646,35 @@ func (p *Plugin) Stop() {
 	if release != nil {
 		release()
 	}
-	p.keySecret.Destroy()
-	p.keySecret = nil
-	p.redisHostSecret.Destroy()
-	p.redisHostSecret = nil
-	for _, secret := range p.redisClusterNodeSecrets {
-		secret.Destroy()
-	}
-	p.redisClusterNodeSecrets = nil
+
+	p.credentialMu.Lock()
+	p.scopedKeySecret = secret.Value{}
+	p.scopedRedisHost = secret.Value{}
+	p.scopedRedisClusterNodes = nil
+	p.keyPresent = false
+	p.redisHostPresent = false
+	p.redisNodesPresent = false
+	p.scopedSet = false
+	p.keyDigest = [32]byte{}
+	p.redisHostDigest = [32]byte{}
+	p.redisNodeDigests = nil
+	p.keyField = ""
+	p.redisHostField = ""
+	p.redisNodesField = ""
+	p.credentialMu.Unlock()
 }
 
-func (p *Plugin) resolveKey(r *http.Request) string {
-	configuredKey := p.config.Key
-	if p.keySecret != nil {
-		key := p.keySecret.Bytes()
-		defer clear(key)
-		if len(key) > 0 {
-			configuredKey = string(key)
-		}
-	}
+func (p *Plugin) withResolvedLimitCountKey(
+	r *http.Request, use func(string) error,
+) error {
+	return p.withLimitCountKey(func(configuredKey string) error {
+		return use(resolveLimitCountKey(r, p.config.KeyType, configuredKey))
+	})
+}
+
+func resolveLimitCountKey(r *http.Request, keyType, configuredKey string) string {
 	var key string
-	switch p.config.KeyType {
+	switch keyType {
 	case "constant":
 		key = configuredKey
 	case "var_combination":

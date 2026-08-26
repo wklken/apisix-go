@@ -2,20 +2,25 @@ package openwhisk
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/secret"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -23,11 +28,22 @@ type Plugin struct {
 	base.BasePlugin
 	config Config
 	client *http.Client
+
+	lifecycleMu     sync.RWMutex
+	serviceToken    secret.Value
+	serviceTokenSet bool
+	retired         bool
+
+	// testLifecycleHook is a package-local synchronization seam for lifecycle
+	// tests; it is nil in production.
+	testLifecycleHook func(string)
 }
 
 const (
 	priority = -1901
 	name     = "openwhisk"
+
+	lifecycleBeforeStopWait = "before-stop-wait"
 )
 
 const schema = `
@@ -117,6 +133,11 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+	if p.retired || !p.serviceTokenSet {
+		return secret.ErrCredentialUnavailable
+	}
 	if p.config.Timeout == 0 {
 		p.config.Timeout = 3000
 	}
@@ -163,6 +184,59 @@ func (p *Plugin) Config() any {
 	return &p.config
 }
 
+// MaterializeScopedSecrets resolves the required service token for one
+// immutable generation. Public configuration retains only the descriptor of
+// the admitted plaintext.
+func (p *Plugin) MaterializeScopedSecrets(
+	ctx context.Context,
+	access base.ScopedSecretAccess,
+) error {
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+	if p.retired {
+		return secret.ErrCredentialUnavailable
+	}
+	if p.serviceTokenSet {
+		return nil
+	}
+
+	value, err := access.Materialize(ctx, "service_token", p.config.ServiceToken)
+	if err != nil {
+		return secret.ErrCredentialUnavailable
+	}
+	if err := value.Use(func(plaintext string) error {
+		if strings.TrimSpace(plaintext) == "" {
+			return secret.ErrCredentialUnavailable
+		}
+		return nil
+	}); err != nil {
+		return secret.ErrCredentialUnavailable
+	}
+	descriptor, err := value.Descriptor(capability.SecretPluginConfig)
+	if err != nil {
+		return secret.ErrCredentialUnavailable
+	}
+
+	p.serviceToken = value
+	p.serviceTokenSet = true
+	p.config.ServiceToken = descriptor.String()
+	return nil
+}
+
+// MaterializeSecrets is the transitional process-local compatibility path.
+// Immutable generation preparation uses MaterializeScopedSecrets instead.
+func (p *Plugin) MaterializeSecrets() error {
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+	if p.retired {
+		return secret.ErrCredentialUnavailable
+	}
+	if p.serviceTokenSet {
+		return nil
+	}
+	return secret.ErrCredentialUnavailable
+}
+
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if apisixctx.GetRequestLifecycle(r) != nil {
@@ -182,33 +256,50 @@ func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.Re
 }
 
 func (p *Plugin) serve(w http.ResponseWriter, r *http.Request) {
-	actionReq, err := p.buildActionRequest(r)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadGateway)
+	err := p.buildActionRequest(r, func(actionReq *http.Request) error {
+		res, err := p.client.Do(actionReq)
+		if err != nil {
+			logger.Errorf("failed to process openwhisk action, err: %s", err)
+			http.Error(w, "failed to process openwhisk action", http.StatusServiceUnavailable)
+			return nil
+		}
+		defer func() { _ = res.Body.Close() }()
+
+		p.writeActionResponse(w, res, r.ProtoMajor >= 2)
+		return nil
+	})
+	if err == nil {
 		return
 	}
-
-	res, err := p.client.Do(actionReq)
-	if err != nil {
-		logger.Errorf("failed to process openwhisk action, err: %s", err)
-		http.Error(w, "failed to process openwhisk action", http.StatusServiceUnavailable)
+	if errors.Is(err, secret.ErrCredentialUnavailable) {
+		http.Error(w, "openwhisk credential unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	defer func() { _ = res.Body.Close() }()
-
-	p.writeActionResponse(w, res, r.ProtoMajor >= 2)
+	http.Error(w, err.Error(), http.StatusBadGateway)
 }
 
-func (p *Plugin) buildActionRequest(r *http.Request) (*http.Request, error) {
+// buildActionRequest keeps request construction, invocation, and cleanup
+// inside the private credential callback. The request can therefore be used
+// by the transport but never leaves this method with Authorization attached.
+func (p *Plugin) buildActionRequest(r *http.Request, use func(*http.Request) error) error {
+	if use == nil {
+		return secret.ErrCredentialUnavailable
+	}
+	p.lifecycleMu.RLock()
+	defer p.lifecycleMu.RUnlock()
+	if p.retired || p.client == nil {
+		return secret.ErrCredentialUnavailable
+	}
+
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		return nil, fmt.Errorf("read request body: %w", err)
+		return fmt.Errorf("read request body: %w", err)
 	}
 	r.Body = io.NopCloser(bytes.NewReader(body))
 
 	endpoint, err := url.Parse(strings.TrimRight(p.config.APIHost, "/") + p.actionPath())
 	if err != nil {
-		return nil, fmt.Errorf("invalid api_host: %w", err)
+		return fmt.Errorf("invalid api_host: %w", err)
 	}
 	query := endpoint.Query()
 	query.Set("blocking", "true")
@@ -218,11 +309,45 @@ func (p *Plugin) buildActionRequest(r *http.Request) (*http.Request, error) {
 
 	actionReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, endpoint.String(), bytes.NewReader(body))
 	if err != nil {
-		return nil, err
+		return err
 	}
-	actionReq.Header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte(p.config.ServiceToken)))
 	actionReq.Header.Set("Content-Type", "application/json")
-	return actionReq, nil
+
+	return p.useServiceTokenLocked(func(plaintext string) error {
+		actionReq.Header.Set(
+			"Authorization",
+			"Basic "+base64.StdEncoding.EncodeToString([]byte(plaintext)),
+		)
+		defer actionReq.Header.Del("Authorization")
+		return use(actionReq)
+	})
+}
+
+func (p *Plugin) useServiceTokenLocked(use func(string) error) error {
+	if p.serviceTokenSet {
+		return p.serviceToken.Use(use)
+	}
+	return secret.ErrCredentialUnavailable
+}
+
+// Stop first waits for every request holding the lifecycle read gate, then
+// retires the neutral client before releasing the private credential owners.
+func (p *Plugin) Stop() {
+	if hook := p.testLifecycleHook; hook != nil {
+		hook(lifecycleBeforeStopWait)
+	}
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+	if p.retired {
+		return
+	}
+	p.retired = true
+	if p.client != nil {
+		p.client.CloseIdleConnections()
+		p.client = nil
+	}
+	p.serviceToken = secret.Value{}
+	p.serviceTokenSet = false
 }
 
 func (p *Plugin) actionPath() string {

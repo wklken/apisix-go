@@ -1,6 +1,7 @@
 package ai_aliyun_content_moderation
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/observability/metrics"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_protocols"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -25,6 +27,11 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	p := &Plugin{config: cfg}
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
+	}
+	capabilityValue, scope, _, cleanup := newScopedSecretHarness(t, name, nil)
+	t.Cleanup(cleanup)
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
@@ -335,7 +342,7 @@ func TestHandlerSkipsWhenCheckRequestDisabled(t *testing.T) {
 	}
 }
 
-func TestMaterializeSecretsResolvesCredentialsAndRedactsConfig(t *testing.T) {
+func TestScopedSecretsResolveCredentialsAndRedactConfig(t *testing.T) {
 	t.Setenv("APISIX_GO_ALIYUN_ACCESS_ID", "resolved-access-id")
 	t.Setenv("APISIX_GO_ALIYUN_ACCESS_SECRET", "resolved-access-secret")
 	p := &Plugin{config: Config{
@@ -347,32 +354,70 @@ func TestMaterializeSecretsResolvesCredentialsAndRedactsConfig(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatal(err)
 	}
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatalf("MaterializeSecrets() error = %v", err)
+	capabilityValue, scope, _, cleanup := newScopedSecretHarness(t, name, map[string]string{
+		"$ENV://APISIX_GO_ALIYUN_ACCESS_ID":     "resolved-access-id",
+		"$ENV://APISIX_GO_ALIYUN_ACCESS_SECRET": "resolved-access-secret",
+	})
+	defer cleanup()
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if strings.Contains(p.config.AccessKeyID, "resolved-access-id") ||
 		strings.Contains(p.config.AccessKeySecret, "resolved-access-secret") {
 		t.Fatalf("materialized config exposed plaintext: %#v", p.config)
 	}
+	for field, value := range map[string]string{
+		"access_key_id":     p.config.AccessKeyID,
+		"access_key_secret": p.config.AccessKeySecret,
+	} {
+		if !strings.HasPrefix(value, "plugin_config#sha256:") || len(value) != len("plugin_config#sha256:")+64 {
+			t.Fatalf("%s config = %q, want content-only descriptor", field, value)
+		}
+		if strings.Contains(value, "APISIX_GO_ALIYUN") {
+			t.Fatalf("%s config retained source reference: %q", field, value)
+		}
+	}
+	var gotForm url.Values
+	moderation := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		formBody, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read moderation request body: %v", err)
+			return
+		}
+		gotForm, err = url.ParseQuery(string(formBody))
+		if err != nil {
+			t.Errorf("parse moderation request form: %v", err)
+			return
+		}
+		_, _ = w.Write([]byte(`{"Data":{"RiskLevel":"low"}}`))
+	}))
+	defer moderation.Close()
+	p.config.Endpoint = moderation.URL
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
 	p.now = func() time.Time { return time.Unix(1, 0) }
 	p.nonce = func() string { return "nonce" }
-	body, err := p.buildFormBody("session", "hello", "llm_query_moderation")
+	statusCode, responseBody, err := p.sendModerationRequest(
+		context.Background(), "session", "hello", "llm_query_moderation",
+	)
 	if err != nil {
-		t.Fatalf("buildFormBody() error = %v", err)
+		t.Fatalf("sendModerationRequest() error = %v", err)
 	}
-	form, err := url.ParseQuery(body)
-	if err != nil {
-		t.Fatal(err)
+	if statusCode != http.StatusOK || string(responseBody) != `{"Data":{"RiskLevel":"low"}}` {
+		t.Fatalf("moderation response = (%d, %q), want 200 and JSON body", statusCode, responseBody)
 	}
-	if got := form.Get("AccessKeyId"); got != "resolved-access-id" {
+	if got := gotForm.Get("AccessKeyId"); got != "resolved-access-id" {
 		t.Fatalf("AccessKeyId = %q, want resolved-access-id", got)
 	}
-	if got := form.Get("Signature"); got == "" {
+	if got := gotForm.Get("Signature"); got == "" {
 		t.Fatal("Signature is empty")
 	}
 	p.Stop()
-	if _, err := p.buildFormBody("session", "hello", "llm_query_moderation"); err == nil {
-		t.Fatal("buildFormBody() after Stop error = nil")
+	if _, _, err := p.sendModerationRequest(
+		context.Background(), "session", "hello", "llm_query_moderation",
+	); err == nil {
+		t.Fatal("sendModerationRequest() after Stop error = nil")
 	}
 }
 
@@ -809,6 +854,11 @@ func TestPostInitRejectsRealtimeResponseFailClosedMode(t *testing.T) {
 	}}
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
+	}
+	capabilityValue, scope, _, cleanup := newScopedSecretHarness(t, name, nil)
+	defer cleanup()
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err == nil {
 		t.Fatal("PostInit() error = nil, want realtime fail-closed configuration error")

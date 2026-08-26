@@ -287,6 +287,59 @@ func TestBeforeProxyHooksStopAtFirstErrorAndRepeatIt(t *testing.T) {
 	}
 }
 
+func TestBeforeProxyHookRegistrationsRunInOrderOnce(t *testing.T) {
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	request = WithBeforeProxyHookRegistration(request, BeforeProxyHookRegistration{
+		Owner: "first", Phase: "rewrite", Hook: func(*http.Request) error { return nil },
+	})
+	request = WithBeforeProxyHookRegistration(request, BeforeProxyHookRegistration{
+		Owner: "second", Phase: "before_proxy", Hook: func(*http.Request) error { return nil },
+	})
+	var got []string
+	invoke := func(registration BeforeProxyHookRegistration) error {
+		got = append(got, registration.Owner+":"+registration.Phase)
+		return registration.Hook(request)
+	}
+	if err := RunBeforeProxyHookRegistrations(request, invoke); err != nil {
+		t.Fatal(err)
+	}
+	if err := RunBeforeProxyHookRegistrations(request, invoke); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"first:rewrite", "second:before_proxy"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("registrations = %v, want %v", got, want)
+	}
+}
+
+func TestBeforeProxyHookRegistrationCachesPanicIdentity(t *testing.T) {
+	want := &struct{ callback string }{callback: "before proxy"}
+	request := WithBeforeProxyHookRegistration(
+		httptest.NewRequest(http.MethodGet, "/", nil),
+		BeforeProxyHookRegistration{
+			Owner: "proxy-mirror", Phase: "before_proxy",
+			Hook: func(*http.Request) error { panic(want) },
+		},
+	)
+	calls := 0
+	invoke := func(registration BeforeProxyHookRegistration) error {
+		calls++
+		return registration.Hook(request)
+	}
+	for range 2 {
+		func() {
+			defer func() {
+				if recovered := recover(); recovered != want {
+					t.Fatalf("panic = %#v, want original %#v", recovered, want)
+				}
+			}()
+			_ = RunBeforeProxyHookRegistrations(request, invoke)
+		}()
+	}
+	if calls != 1 {
+		t.Fatalf("hook calls = %d, want 1", calls)
+	}
+}
+
 func TestFinalizeProxyRewriteUpdatesMethodAndEscapedTarget(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/old?keep=0", nil)
 	req = req.WithContext(context.WithValue(req.Context(), ProxyRewriteKey, map[string]any{

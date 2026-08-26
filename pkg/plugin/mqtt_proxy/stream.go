@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"slices"
 	"sync"
 	"syscall"
 	"time"
 
+	"github.com/wklken/apisix-go/pkg/runtime"
 	streambridge "github.com/wklken/apisix-go/pkg/stream/bridge"
 )
 
@@ -48,34 +50,72 @@ func (p *Plugin) ServeListener(
 		return fmt.Errorf("mqtt stream listener is nil")
 	}
 	stopListener := closeListenerOnContextDone(ctx, listener)
-	defer stopListener()
+	tasks := runtime.NewRequestTaskGroup(ctx, "connection/mqtt-proxy")
+	finish := func(acceptErr error, accepted net.Conn) error {
+		acceptedClose := mqttPanicState{}
+		if accepted != nil {
+			acceptedClose = mqttCapturePanic(func() { _ = accepted.Close() })
+		}
+		listenerStop := mqttCapturePanic(stopListener)
+		var waitErr error
+		waitPanic := mqttCapturePanic(func() { waitErr = tasks.Wait() })
+		if waitPanic.panicked {
+			panic(waitPanic.value)
+		}
+		if acceptedClose.panicked {
+			panic(acceptedClose.value)
+		}
+		if listenerStop.panicked {
+			panic(listenerStop.value)
+		}
+		if waitErr != nil {
+			return waitErr
+		}
+		if acceptErr == nil {
+			return nil
+		}
+		return acceptErr
+	}
 
-	var active sync.WaitGroup
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
 			if ctx.Err() != nil {
-				active.Wait()
-				return nil
+				return finish(nil, nil)
 			}
 			if errors.Is(err, syscall.EINTR) {
 				continue
 			}
-			active.Wait()
-			return err
+			return finish(err, nil)
 		}
 
-		active.Go(func() {
+		accepted := conn
+		if err := tasks.Go(func(taskCtx context.Context) error {
+			defer func() {
+				primary := mqttPanicState{}
+				if recovered := recover(); recovered != nil {
+					primary = mqttPanicState{panicked: true, value: recovered}
+				}
+				acceptedClose := mqttCapturePanic(func() { _ = accepted.Close() })
+				if primary.panicked {
+					panic(primary.value)
+				}
+				if acceptedClose.panicked {
+					panic(acceptedClose.value)
+				}
+			}()
 			peer := ""
-			if conn.RemoteAddr() != nil {
-				peer = conn.RemoteAddr().String()
+			if accepted.RemoteAddr() != nil {
+				peer = accepted.RemoteAddr().String()
 			}
-			info, streamErr := p.ServeStream(ctx, conn, peer, dial)
+			info, streamErr := p.ServeStream(taskCtx, accepted, peer, dial)
 			if onResult != nil {
 				onResult(info, streamErr)
 			}
-			_ = conn.Close()
-		})
+			return nil
+		}); err != nil {
+			return finish(err, accepted)
+		}
 	}
 }
 
@@ -114,7 +154,20 @@ func (p *Plugin) ServeStreamWithIdle(
 	}
 
 	stopClientCancel := closeStreamOnContextDone(ctx, client)
-	defer stopClientCancel()
+	cleanupFns := []func(){stopClientCancel}
+	defer func() {
+		primary := mqttPanicState{}
+		if recovered := recover(); recovered != nil {
+			primary = mqttPanicState{panicked: true, value: recovered}
+		}
+		cleanup := mqttCaptureCleanupPanics(cleanupFns)
+		if primary.panicked {
+			panic(primary.value)
+		}
+		if cleanup.panicked {
+			panic(cleanup.value)
+		}
+	}()
 	preread, connectInfo, err := readConnectFromStream(
 		ctx,
 		client,
@@ -139,9 +192,12 @@ func (p *Plugin) ServeStreamWithIdle(
 		_ = client.Close()
 		return StreamInfo{}, fmt.Errorf("mqtt upstream dial returned nil connection")
 	}
-	defer func() { _ = upstream.Close() }()
+	cleanupFns = append(cleanupFns, func() { _ = upstream.Close() })
+	// Install ownership of the returned upstream before joining the preread
+	// watcher: that join can replay a client-close panic after cancellation.
+	stopClientCancel()
 	stopBothCancel := closeStreamOnContextDone(ctx, client, upstream)
-	defer stopBothCancel()
+	cleanupFns = append(cleanupFns, stopBothCancel)
 
 	if err := writeStreamBytes(ctx, upstream, preread); err != nil {
 		_ = client.Close()
@@ -209,27 +265,95 @@ func writeStreamBytes(ctx context.Context, conn net.Conn, payload []byte) error 
 }
 
 func closeStreamOnContextDone(ctx context.Context, conns ...net.Conn) func() {
-	done := make(chan struct{})
-	go func() {
-		select {
-		case <-ctx.Done():
-			for _, conn := range conns {
-				_ = conn.Close()
-			}
-		case <-done:
-		}
-	}()
-	return func() { close(done) }
+	closeFns := make([]func(), 0, len(conns))
+	for _, conn := range conns {
+		accepted := conn
+		closeFns = append(closeFns, func() { _ = accepted.Close() })
+	}
+	return newMQTTContextStopper(ctx, closeFns...)
 }
 
 func closeListenerOnContextDone(ctx context.Context, listener net.Listener) func() {
-	done := make(chan struct{})
-	go func() {
-		select {
-		case <-ctx.Done():
-			_ = listener.Close()
-		case <-done:
+	return newMQTTContextStopper(ctx, func() { _ = listener.Close() })
+}
+
+type mqttPanicState struct {
+	panicked bool
+	value    any
+}
+
+func newMQTTContextStopper(ctx context.Context, closeFns ...func()) func() {
+	stop := make(chan struct{})
+	tasks := runtime.NewRequestTaskGroup(ctx, "connection/mqtt-proxy")
+	admissionErr := tasks.Go(func(taskCtx context.Context) error {
+		canceled := false
+		if taskCtx.Err() != nil {
+			canceled = true
+		} else {
+			select {
+			case <-taskCtx.Done():
+				canceled = true
+			case <-stop:
+				canceled = taskCtx.Err() != nil
+			}
+		}
+		if canceled {
+			closeMQTTConnections(closeFns...)
+		}
+		return nil
+	})
+
+	var stopOnce sync.Once
+	var result mqttPanicState
+	return func() {
+		stopOnce.Do(func() {
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					result = mqttPanicState{panicked: true, value: recovered}
+				}
+			}()
+			if admissionErr != nil {
+				panic(admissionErr)
+			}
+			close(stop)
+			_ = tasks.Wait()
+		})
+		if result.panicked {
+			panic(result.value)
+		}
+	}
+}
+
+func closeMQTTConnections(closeFns ...func()) {
+	var first mqttPanicState
+	for _, closeFn := range closeFns {
+		state := mqttCapturePanic(closeFn)
+		if state.panicked && !first.panicked {
+			first = state
+		}
+	}
+	if first.panicked {
+		panic(first.value)
+	}
+}
+
+func mqttCapturePanic(fn func()) (state mqttPanicState) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			state = mqttPanicState{panicked: true, value: recovered}
 		}
 	}()
-	return func() { close(done) }
+	fn()
+	return state
+}
+
+func mqttCaptureCleanupPanics(cleanupFns []func()) mqttPanicState {
+	first := mqttPanicState{}
+	for _, cleanupFn := range slices.Backward(cleanupFns) {
+		state := mqttCapturePanic(cleanupFn)
+		if state.panicked && !first.panicked {
+			first = state
+		}
+	}
+	return first
 }

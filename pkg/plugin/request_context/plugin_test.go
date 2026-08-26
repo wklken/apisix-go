@@ -7,8 +7,25 @@ import (
 	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
+
+func TestPostInitRequiresEffectiveConfigAndUsesConfiguredID(t *testing.T) {
+	plugin := &Plugin{}
+	if err := plugin.PostInit(); err == nil || err.Error() != "request-context: effective config is required" {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+	plugin.SetDependencies(base.Dependencies{Config: &config.EffectiveConfig{
+		Config: config.Config{Apisix: config.Apisix{ID: "node-test"}},
+	}})
+	if err := plugin.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+	if plugin.nodeID != "node-test" {
+		t.Fatalf("nodeID = %q, want node-test", plugin.nodeID)
+	}
+}
 
 func TestRequestContextInitializesVariablesWithoutOwningRouteMetrics(t *testing.T) {
 	startedAt := time.Now()

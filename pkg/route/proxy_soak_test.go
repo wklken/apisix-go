@@ -2,21 +2,20 @@ package route
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"os"
 	"runtime"
 	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/wklken/apisix-go/pkg/store"
+	"github.com/wklken/apisix-go/pkg/resource"
 )
 
 // TestProxyRuntimeSoak runs an opt-in bounded-concurrency soak against the
@@ -45,72 +44,44 @@ func TestProxyRuntimeSoak(t *testing.T) {
 
 	payload := bytes.Repeat([]byte("x"), payloadSize)
 	upstreams := make([]*httptest.Server, 0, nodes)
-	nodeSpecs := make([]string, 0, nodes)
+	upstreamNodes := make([]resource.Node, 0, nodes)
 	for range nodes {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Length", strconv.Itoa(payloadSize))
 			_, _ = w.Write(payload)
 		}))
 		upstreams = append(upstreams, server)
-		parsed, err := url.Parse(server.URL)
-		if err != nil {
-			t.Fatalf("parse upstream URL: %v", err)
-		}
-		port, err := strconv.Atoi(parsed.Port())
-		if err != nil {
-			t.Fatalf("parse upstream port: %v", err)
-		}
-		nodeSpecs = append(nodeSpecs, fmt.Sprintf(
-			`{"host":%q,"port":%d,"weight":1}`,
-			parsed.Hostname(),
-			port,
-		))
+		upstreamNodes = append(upstreamNodes, upstreamNode(t, server.URL))
 	}
 	defer func() {
 		for _, upstream := range upstreams {
 			upstream.Close()
 		}
 	}()
-	nodesJSON := "[" + strings.Join(nodeSpecs, ",") + "]"
-
-	soakEvents := make(chan *store.Event, 64)
-	soakStore, err := store.Open(t.TempDir()+"/soak.db", soakEvents)
-	if err != nil {
-		t.Fatalf("store.Open() error = %v", err)
-	}
-	previous := store.ReplaceGlobalStoreForTest(soakStore)
-	t.Cleanup(func() { store.ReplaceGlobalStoreForTest(previous) })
-	soakStore.Start()
-	t.Cleanup(func() { _ = soakStore.Stop() })
-
+	prepared := make([]PreparedRoute, 0, routes)
 	for index := range routes {
 		id := fmt.Sprintf("soak-%d", index)
 		uri := "/soak/target"
 		if index > 0 {
 			uri = fmt.Sprintf("/soak/filler/%06d", index)
 		}
-		route := fmt.Sprintf(
-			`{"id":%q,"uri":%q,"methods":["GET"],"upstream":{"scheme":"http","nodes":%s}}`,
-			id, uri, nodesJSON,
-		)
-		event := store.NewEvent()
-		event.Type = store.EventTypePut
-		event.Key = []byte("/apisix/routes/" + id)
-		event.Value = []byte(route)
-		soakEvents <- event
+		routeResource := resource.Route{
+			ID: id, Uri: uri, Methods: []string{http.MethodGet},
+			Upstream: resource.Upstream{Scheme: "http", Nodes: append([]resource.Node(nil), upstreamNodes...)},
+		}
+		prepared = append(prepared, PreparedRoute{
+			Route: routeResource,
+			Handler: testPreparedProxyHandler(
+				t, routeResource, resource.Service{}, testEffectiveConfig(),
+			),
+		})
 	}
-	if err := soakStore.Sync(); err != nil {
-		t.Fatalf("Sync() error = %v", err)
-	}
-
-	builder := NewBuilder(soakStore)
-	mux, err := builder.BuildStrict()
+	snapshot, err := CompileHTTP(context.Background(), CompileInput{Revision: 1, Routes: prepared})
 	if err != nil {
-		t.Fatalf("BuildStrict() error = %v", err)
+		t.Fatalf("CompileHTTP() error = %v", err)
 	}
-	t.Cleanup(builder.Stop)
 
-	server := httptest.NewServer(mux)
+	server := httptest.NewServer(snapshot.Handler())
 	defer server.Close()
 
 	client := &http.Client{

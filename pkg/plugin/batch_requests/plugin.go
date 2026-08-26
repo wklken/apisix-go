@@ -9,7 +9,6 @@ import (
 	"math"
 	"net/http"
 	"net/url"
-	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -18,7 +17,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
-	"github.com/wklken/apisix-go/pkg/store"
+	"github.com/wklken/apisix-go/pkg/runtime"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -75,16 +74,6 @@ const metadataSchema = `
   }
 }
 `
-
-var compiledBatchLimitsSchema = mustCompileBatchLimitsSchema()
-
-func mustCompileBatchLimitsSchema() *util.CompiledSchema {
-	compiled, err := util.CompileSchema(metadataSchema)
-	if err != nil {
-		panic("compile batch-requests metadata schema: " + err.Error())
-	}
-	return compiled
-}
 
 type Config struct{}
 
@@ -192,7 +181,15 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 }
 
 func NewHandler(dispatcher http.Handler) http.Handler {
-	return newMetadataHandler(dispatcher, loadLimits)
+	return NewHandlerWithLimits(dispatcher, Limits{})
+}
+
+func NewHandlerFromMetadata(dispatcher http.Handler, view runtime.MetadataView) (http.Handler, error) {
+	var limits Limits
+	if _, err := view.Decode(name, &limits); err != nil {
+		return nil, fmt.Errorf("batch-requests metadata decode failed: %w", err)
+	}
+	return NewHandlerWithLimits(dispatcher, limits), nil
 }
 
 func NewHandlerWithLimits(dispatcher http.Handler, limits Limits) http.Handler {
@@ -203,34 +200,14 @@ func NewHandlerWithLimits(dispatcher http.Handler, limits Limits) http.Handler {
 	})
 }
 
-func newMetadataHandler(dispatcher http.Handler, loader func() (Limits, error)) http.Handler {
-	// Seed the Store-owned last-good snapshot before the public endpoint serves
-	// its first request. Later router generations repeat this validation against
-	// the same active Store.
-	initial, err := loader()
-	if err != nil {
-		initial = Limits{}
-	}
-	initial = applyLimitDefaults(initial)
-	batchDispatcher := newBatchDispatcher(dispatcher, initial.MaxConcurrency)
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		limits, err := loader()
-		if err != nil {
-			if writeErr := util.WriteJSON(w, http.StatusBadRequest, ErrorResponse{
-				ErrorMessage: fmt.Sprintf("invalid configuration: %s", err),
-			}); writeErr != nil {
-				logger.Debugf("failed to write batch-requests error response: %s", writeErr)
-			}
-			return
-		}
-		limits = applyLimitDefaults(limits)
-		batchDispatcher.setLimit(limits.MaxConcurrency)
-		serveBatchRequest(batchDispatcher, limits, w, r)
-	})
-}
-
 func serveBatchRequest(dispatcher *batchDispatcher, limits Limits, w http.ResponseWriter, r *http.Request) {
-	responses, errStatus, err := handleBatchRequest(dispatcher, w, r, limits)
+	tasks := runtime.NewRequestTaskGroup(r.Context(), "request/batch-requests")
+	defer func() {
+		if waitErr := tasks.Wait(); waitErr != nil {
+			logger.Debugf("failed to join batch-requests workers: %s", waitErr)
+		}
+	}()
+	responses, errStatus, err := handleBatchRequest(dispatcher, w, r, limits, tasks)
 	if err != nil {
 		if writeErr := util.WriteJSON(w, errStatus, ErrorResponse{ErrorMessage: err.Error()}); writeErr != nil {
 			logger.Debugf("failed to write batch-requests error response: %s", writeErr)
@@ -247,6 +224,7 @@ func handleBatchRequest(
 	w http.ResponseWriter,
 	r *http.Request,
 	limits Limits,
+	tasks *runtime.RequestTaskGroup,
 ) ([]PipelineResponse, int, error) {
 	if isBatchSubrequest(r) {
 		return nil, http.StatusBadRequest, fmt.Errorf("nested batch requests are not allowed")
@@ -291,8 +269,21 @@ func handleBatchRequest(
 
 	responses := make([]PipelineResponse, 0, len(req.Pipeline))
 	for _, item := range req.Pipeline {
-		response, timedOut := dispatcher.dispatch(r, req, item, timeout, limits.MaxResponseBodySize)
-		responses = append(responses, response)
+		result, timedOut, err := dispatcher.dispatch(
+			r, req, item, timeout, limits.MaxResponseBodySize, tasks,
+		)
+		if err != nil {
+			if waitErr := tasks.Wait(); waitErr != nil {
+				return nil, http.StatusInternalServerError, errors.Join(err, waitErr)
+			}
+			return nil, http.StatusInternalServerError, err
+		}
+		if !timedOut && !result.completed {
+			if waitErr := tasks.Wait(); waitErr != nil {
+				return nil, http.StatusInternalServerError, waitErr
+			}
+		}
+		responses = append(responses, result.response)
 		if timedOut && r.Context().Err() != nil {
 			break
 		}
@@ -419,27 +410,6 @@ func applyLimitDefaults(limits Limits) Limits {
 	return limits
 }
 
-func loadLimits() (Limits, error) {
-	var limits Limits
-	usedLastGood, err := store.GetValidatedPluginMetadata(
-		name,
-		func(metadata map[string]any) error {
-			return compiledBatchLimitsSchema.Validate(metadata)
-		},
-		&limits,
-	)
-	if errors.Is(err, store.ErrNotFound) {
-		return applyLimitDefaults(Limits{}), nil
-	}
-	if err != nil {
-		logger.Errorf("validate plugin_metadata %s: %s", name, err)
-		if !usedLastGood {
-			return Limits{}, err
-		}
-	}
-	return applyLimitDefaults(limits), nil
-}
-
 func validMethod(method string) bool {
 	switch method {
 	case http.MethodGet, http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodPatch,
@@ -450,10 +420,11 @@ func validMethod(method string) bool {
 	}
 }
 
-// pipelineResult carries one completed subrequest response out of its worker
-// goroutine.
+// pipelineResult carries one subrequest response and its completion state out
+// of its worker task.
 type pipelineResult struct {
-	response PipelineResponse
+	response  PipelineResponse
+	completed bool
 }
 
 type batchDispatcher struct {
@@ -471,16 +442,6 @@ func newBatchDispatcher(handler http.Handler, limit int) *batchDispatcher {
 		limit:   limit,
 		changed: make(chan struct{}),
 	}
-}
-
-func (d *batchDispatcher) setLimit(limit int) {
-	d.mu.Lock()
-	if d.limit != limit {
-		d.limit = limit
-		close(d.changed)
-		d.changed = make(chan struct{})
-	}
-	d.mu.Unlock()
 }
 
 func (d *batchDispatcher) acquire(ctx context.Context) bool {
@@ -520,8 +481,9 @@ func (d *batchDispatcher) dispatch(
 	item PipelineRequest,
 	timeout time.Duration,
 	maxResponseBodySize int64,
-) (PipelineResponse, bool) {
-	return dispatchPipelineRequestBounded(d, outer, batch, item, timeout, maxResponseBodySize)
+	tasks *runtime.RequestTaskGroup,
+) (pipelineResult, bool, error) {
+	return dispatchPipelineRequestBounded(d, outer, batch, item, timeout, maxResponseBodySize, tasks)
 }
 
 func dispatchPipelineRequestBounded(
@@ -531,7 +493,8 @@ func dispatchPipelineRequestBounded(
 	item PipelineRequest,
 	timeout time.Duration,
 	maxResponseBodySize int64,
-) (PipelineResponse, bool) {
+	tasks *runtime.RequestTaskGroup,
+) (pipelineResult, bool, error) {
 	// The subrequest context derives from the incoming request so canceling
 	// the parent cancels every subrequest.
 	var ctx context.Context = contextWithoutValues{Context: outer.Context()}
@@ -553,10 +516,13 @@ func dispatchPipelineRequestBounded(
 
 	req, err := http.NewRequestWithContext(ctx, method, target, strings.NewReader(item.Body))
 	if err != nil {
-		return PipelineResponse{Status: http.StatusBadRequest, Reason: http.StatusText(http.StatusBadRequest)}, false
+		return pipelineResult{
+			response:  PipelineResponse{Status: http.StatusBadRequest, Reason: http.StatusText(http.StatusBadRequest)},
+			completed: true,
+		}, false, nil
 	}
 	if !dispatcher.acquire(ctx) {
-		return timeoutResponse(), true
+		return pipelineResult{response: timeoutResponse(), completed: true}, true, nil
 	}
 	leaseFactory := DispatchLeaseFactoryFromRequest(outer)
 	handler := dispatcher.handler
@@ -568,7 +534,7 @@ func dispatchPipelineRequestBounded(
 				lease.Release()
 			}
 			dispatcher.release()
-			return unavailableResponse(), false
+			return pipelineResult{response: unavailableResponse(), completed: true}, false, nil
 		}
 		handler = lease.Handler
 		var releaseOnce sync.Once
@@ -601,36 +567,59 @@ func dispatchPipelineRequestBounded(
 
 	recorder := newBoundedResponseRecorder(maxResponseBodySize)
 	done := make(chan pipelineResult, 1)
-	go func() {
+	if err := tasks.Go(func(context.Context) error {
+		result := pipelineResult{}
+		defer func() {
+			done <- result
+		}()
 		if releaseLease != nil {
 			defer releaseLease()
 		}
 		defer dispatcher.release()
-		var resp PipelineResponse
 		func() {
 			defer func() {
 				if recovered := recover(); recovered != nil {
-					logger.Errorf("batch-requests subrequest panic: %v\n%s", recovered, debug.Stack())
-					resp = abortResponse()
+					if recovered == http.ErrAbortHandler {
+						result.response = abortResponse()
+						result.completed = true
+						return
+					}
+					panic(recovered)
 				}
 			}()
 			handler.ServeHTTP(recorder, req)
-			resp = recorder.pipelineResponse()
+			result.response = recorder.pipelineResponse()
+			result.completed = true
 		}()
-		done <- pipelineResult{response: resp}
-	}()
+		return nil
+	}); err != nil {
+		if cancel != nil {
+			cancel()
+		}
+		if releaseLease != nil {
+			releaseLease()
+		}
+		dispatcher.release()
+		if waitErr := tasks.Wait(); waitErr != nil {
+			return pipelineResult{}, false, errors.Join(err, waitErr)
+		}
+		return pipelineResult{}, false, err
+	}
 
 	select {
 	case <-ctx.Done():
 		// Return immediately once the timeout expires; the buffered done
 		// channel lets a late worker publish without blocking even when the
 		// handler ignores the canceled context.
-		return timeoutResponse(), true
+		return pipelineResult{response: timeoutResponse(), completed: true}, true, nil
 	case result := <-done:
-		if ctx.Err() != nil {
-			return timeoutResponse(), true
+		if !result.completed {
+			return result, false, nil
 		}
-		return result.response, false
+		if ctx.Err() != nil {
+			return pipelineResult{response: timeoutResponse(), completed: true}, true, nil
+		}
+		return result, false, nil
 	}
 }
 

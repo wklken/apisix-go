@@ -17,7 +17,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	pluginexpr "github.com/wklken/apisix-go/pkg/plugin/expr"
 	"github.com/wklken/apisix-go/pkg/resource"
-	"github.com/wklken/apisix-go/pkg/store"
 )
 
 type metadataLogContractPlugin struct {
@@ -96,14 +95,6 @@ func TestRoutePipelineInstallsStaticLogExecutorBeforeTerminal(t *testing.T) {
 }
 
 func TestPluginPhaseClosureBuildsAuthCORSResponseRewriteAndLogger(t *testing.T) {
-	ensureRouteStore(t)
-	deleteEvent := store.NewEvent()
-	deleteEvent.Type = store.EventTypeDelete
-	deleteEvent.Key = []byte("/apisix/plugin_metadata/cors")
-	routeStoreEvents <- deleteEvent
-	if err := routeStore.Sync(); err != nil {
-		t.Fatalf("clear CORS metadata: %v", err)
-	}
 	upstreamCalls := 0
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		upstreamCalls++
@@ -135,9 +126,7 @@ func TestPluginPhaseClosureBuildsAuthCORSResponseRewriteAndLogger(t *testing.T) 
 	}))
 	t.Cleanup(logSink.Close)
 
-	builder := NewBuilder(nil)
-	t.Cleanup(builder.Stop)
-	handler, err := builder.buildHandlerStrict(resource.Route{
+	route := resource.Route{
 		ID: "phase-closure",
 		Plugins: map[string]resource.PluginConfig{
 			"request-id": map[string]any{},
@@ -158,10 +147,12 @@ func TestPluginPhaseClosureBuildsAuthCORSResponseRewriteAndLogger(t *testing.T) 
 			Scheme: upstreamURL.Scheme,
 			Nodes:  []resource.Node{{Host: upstreamURL.Hostname(), Port: port, Weight: 1}},
 		},
-	})
-	if err != nil {
-		t.Fatalf("buildHandlerStrict() error = %v", err)
 	}
+	bindings := make([]pluginpkg.Binding, 0, len(route.Plugins))
+	for name, config := range route.Plugins {
+		bindings = append(bindings, testPluginBinding(t, name, config, route))
+	}
+	handler := testPreparedProxyHandler(t, route, resource.Service{}, testEffectiveConfig(), bindings...)
 	response := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, "http://gateway.test/phase", nil)
 	request.Header.Set("Origin", "https://client.test")
@@ -235,7 +226,6 @@ func TestPluginPhaseClosureBuildsAuthCORSResponseRewriteAndLogger(t *testing.T) 
 }
 
 func TestPluginPhaseClosureServerlessLogNowCoexistsWithStreaming(t *testing.T) {
-	ensureRouteStore(t)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
@@ -248,9 +238,7 @@ func TestPluginPhaseClosureServerlessLogNowCoexistsWithStreaming(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse upstream port: %v", err)
 	}
-	builder := NewBuilder(nil)
-	t.Cleanup(builder.Stop)
-	handler, err := builder.buildHandlerStrict(resource.Route{
+	route := resource.Route{
 		ID: "serverless-log-streaming",
 		Plugins: map[string]resource.PluginConfig{
 			"proxy-buffering": map[string]any{"disable_proxy_buffering": true},
@@ -264,10 +252,12 @@ func TestPluginPhaseClosureServerlessLogNowCoexistsWithStreaming(t *testing.T) {
 			Scheme: upstreamURL.Scheme,
 			Nodes:  []resource.Node{{Host: upstreamURL.Hostname(), Port: port, Weight: 1}},
 		},
-	})
-	if err != nil {
-		t.Fatalf("buildHandlerStrict() error = %v", err)
 	}
+	bindings := make([]pluginpkg.Binding, 0, len(route.Plugins))
+	for name, config := range route.Plugins {
+		bindings = append(bindings, testPluginBinding(t, name, config, route))
+	}
+	handler := testPreparedProxyHandler(t, route, resource.Service{}, testEffectiveConfig(), bindings...)
 	request, lifecycle := apisixctx.EnsureRequestLifecycle(
 		httptest.NewRequest(http.MethodGet, "http://gateway.test/stream", nil),
 		time.Now(),
@@ -289,7 +279,6 @@ func TestPluginPhaseClosureServerlessLogNowCoexistsWithStreaming(t *testing.T) {
 }
 
 func TestDataMaskRoutePreservesUpstreamAndSanitizesDetachedLogger(t *testing.T) {
-	ensureRouteStore(t)
 	type upstreamObservation struct {
 		requestURI    string
 		authorization string
@@ -336,9 +325,7 @@ func TestDataMaskRoutePreservesUpstreamAndSanitizesDetachedLogger(t *testing.T) 
 	}))
 	t.Cleanup(logSink.Close)
 
-	builder := NewBuilder(nil)
-	t.Cleanup(builder.Stop)
-	handler, err := builder.buildHandlerStrict(resource.Route{
+	route := resource.Route{
 		ID:  "data-mask-detached-log",
 		Uri: "/mask",
 		Plugins: map[string]resource.PluginConfig{
@@ -366,10 +353,12 @@ func TestDataMaskRoutePreservesUpstreamAndSanitizesDetachedLogger(t *testing.T) 
 			Scheme: upstreamURL.Scheme,
 			Nodes:  []resource.Node{{Host: upstreamURL.Hostname(), Port: port, Weight: 1}},
 		},
-	})
-	if err != nil {
-		t.Fatalf("buildHandlerStrict() error = %v", err)
 	}
+	bindings := make([]pluginpkg.Binding, 0, len(route.Plugins))
+	for name, config := range route.Plugins {
+		bindings = append(bindings, testPluginBinding(t, name, config, route))
+	}
+	handler := testPreparedProxyHandler(t, route, resource.Service{}, testEffectiveConfig(), bindings...)
 	const originalURI = "/mask?token=one&keep=%2f&token=two"
 	const originalBody = " {\n \"token\":\"secret\", \"amount\":1.00\n} "
 	request := httptest.NewRequest(http.MethodPost, "http://gateway.test"+originalURI, strings.NewReader(originalBody))
@@ -450,9 +439,9 @@ func TestMetadataRequestContextOwnsOnlyRequestPhase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compile filter: %v", err)
 	}
-	wrapper, err := newMetadataPlugin("request-context", target, pluginMetadata{filter: filter})
+	wrapper, err := newTestMetadataPlugin("request-context", target, pluginMetadata{filter: filter})
 	if err != nil {
-		t.Fatalf("newMetadataPlugin() error = %v", err)
+		t.Fatalf("newTestMetadataPlugin() error = %v", err)
 	}
 	requestPhase, ok := wrapper.(base.RequestPhasePlugin)
 	if !ok {
@@ -511,9 +500,9 @@ func TestMetadataLogSanitizerPreservesExactOwnerAndDetachedFilter(t *testing.T) 
 	if err != nil {
 		t.Fatalf("compile filter: %v", err)
 	}
-	wrapper, err := newMetadataPlugin("data-mask", target, pluginMetadata{filter: filter})
+	wrapper, err := newTestMetadataPlugin("data-mask", target, pluginMetadata{filter: filter})
 	if err != nil {
-		t.Fatalf("newMetadataPlugin(data-mask) error = %v", err)
+		t.Fatalf("newTestMetadataPlugin(data-mask) error = %v", err)
 	}
 	sanitizer, ok := wrapper.(base.LogSnapshotSanitizerPlugin)
 	if !ok {
@@ -569,9 +558,9 @@ func TestMetadataLogSanitizersEvaluateFiltersAgainstSamePreSanitizedSnapshot(t *
 	if err != nil {
 		t.Fatalf("compile filter: %v", err)
 	}
-	wrappedRoute, err := newMetadataPlugin("data-mask", route, pluginMetadata{filter: filter})
+	wrappedRoute, err := newTestMetadataPlugin("data-mask", route, pluginMetadata{filter: filter})
 	if err != nil {
-		t.Fatalf("newMetadataPlugin(data-mask) error = %v", err)
+		t.Fatalf("newTestMetadataPlugin(data-mask) error = %v", err)
 	}
 	logger := &metadataLogContractPlugin{metadataResponseContractPlugin: metadataResponseContractPlugin{
 		name: "http-logger",
@@ -620,9 +609,9 @@ func TestMetadataLoggerPreservesExactOwnerAndServerlessResponseMethods(t *testin
 	logger := &metadataLogContractPlugin{metadataResponseContractPlugin: metadataResponseContractPlugin{
 		name: "http-logger",
 	}}
-	wrapper, err := newMetadataPlugin("http-logger", logger, pluginMetadata{filter: filter})
+	wrapper, err := newTestMetadataPlugin("http-logger", logger, pluginMetadata{filter: filter})
 	if err != nil {
-		t.Fatalf("newMetadataPlugin(http-logger) error = %v", err)
+		t.Fatalf("newTestMetadataPlugin(http-logger) error = %v", err)
 	}
 	if _, ok := wrapper.(base.LogPhasePlugin); !ok {
 		t.Fatalf("metadata http-logger lost log phase: %T", wrapper)
@@ -643,9 +632,9 @@ func TestMetadataLoggerPreservesExactOwnerAndServerlessResponseMethods(t *testin
 			Header:       true,
 		}},
 	}
-	wrapper, err = newMetadataPlugin("serverless-pre-function", serverless, pluginMetadata{filter: filter})
+	wrapper, err = newTestMetadataPlugin("serverless-pre-function", serverless, pluginMetadata{filter: filter})
 	if err != nil {
-		t.Fatalf("newMetadataPlugin(serverless-pre-function) error = %v", err)
+		t.Fatalf("newTestMetadataPlugin(serverless-pre-function) error = %v", err)
 	}
 	header, ok := wrapper.(base.HeaderFilterPlugin)
 	if !ok {
@@ -667,9 +656,9 @@ func TestMetadataLoggerPreservesExactOwnerAndServerlessResponseMethods(t *testin
 		RequestStage: "none",
 		Log:          true,
 	}}
-	wrapper, err = newMetadataPlugin("serverless-pre-function", serverless, pluginMetadata{filter: filter})
+	wrapper, err = newTestMetadataPlugin("serverless-pre-function", serverless, pluginMetadata{filter: filter})
 	if err != nil {
-		t.Fatalf("newMetadataPlugin(serverless log) error = %v", err)
+		t.Fatalf("newTestMetadataPlugin(serverless log) error = %v", err)
 	}
 	logPhase, ok := wrapper.(base.LogPhasePlugin)
 	if !ok {

@@ -2,6 +2,7 @@ package multi_auth
 
 import (
 	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
@@ -14,71 +15,151 @@ import (
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
-	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/hmac_auth"
 	"github.com/wklken/apisix-go/pkg/plugin/key_auth"
 	"github.com/wklken/apisix-go/pkg/resource"
-	"github.com/wklken/apisix-go/pkg/store"
+	"github.com/wklken/apisix-go/pkg/runtime"
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
-var (
-	testStoreOnce sync.Once
-	testEvents    chan *store.Event
-)
+type multiAuthTestFixture struct {
+	sync.Mutex
+	consumers   map[string]resource.Consumer
+	credentials map[string]string
+}
 
-func setupStore(t *testing.T) {
+var multiAuthTestFixtures sync.Map
+
+func multiAuthFixtureFor(t *testing.T) *multiAuthTestFixture {
 	t.Helper()
+	fixture := &multiAuthTestFixture{
+		consumers:   map[string]resource.Consumer{},
+		credentials: map[string]string{},
+	}
+	actual, loaded := multiAuthTestFixtures.LoadOrStore(t, fixture)
+	if !loaded {
+		t.Cleanup(func() { multiAuthTestFixtures.Delete(t) })
+	}
+	return actual.(*multiAuthTestFixture)
+}
 
-	testStoreOnce.Do(func() {
-		testEvents = make(chan *store.Event, 16)
-		s, err := store.GetStore(t.TempDir()+"/multi-auth.db", testEvents)
-		if err != nil {
-			t.Fatalf("open store: %v", err)
-		}
-		s.Start()
-	})
+type immutableMultiAuthChildPreparer struct {
+	lookup base.ConsumerLookup
+}
+
+func (preparer immutableMultiAuthChildPreparer) Prepare(
+	ctx context.Context,
+	_ base.ScopedSecretAccess,
+	spec base.CompositeChildSpec,
+) (base.PreparedCompositeChild, error) {
+	if ctx == nil {
+		return nil, errAuthChildPreparation
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	child, err := newAuthPlugin(spec.Factory)
+	if err != nil {
+		return nil, err
+	}
+	owner := &legacyPreparedAuthChild{factory: spec.Factory, child: child}
+	fail := func(err error) (base.PreparedCompositeChild, error) {
+		owner.Close()
+		return nil, err
+	}
+	if err := child.Init(); err != nil {
+		return fail(err)
+	}
+	setter, ok := child.(interface{ SetDependencies(base.Dependencies) })
+	if !ok {
+		return fail(errAuthChildPreparation)
+	}
+	setter.SetDependencies(base.Dependencies{Consumers: preparer.lookup})
+	if err := util.Parse(spec.Config, child.Config()); err != nil {
+		return fail(err)
+	}
+	if err := base.MaterializePluginSecrets(child); err != nil {
+		return fail(err)
+	}
+	if err := child.PostInit(); err != nil {
+		return fail(err)
+	}
+	return owner, nil
 }
 
 func addAuthConsumer(t *testing.T, username string, plugins map[string]any) {
 	t.Helper()
-	setupStore(t)
-
-	consumer := map[string]any{
-		"username": username,
-		"plugins":  plugins,
+	pluginConfigs := make(map[string]resource.PluginConfig, len(plugins))
+	fixture := multiAuthFixtureFor(t)
+	fixture.Lock()
+	defer fixture.Unlock()
+	for pluginName, rawConfig := range plugins {
+		pluginConfigs[pluginName] = rawConfig
+		config, ok := rawConfig.(map[string]any)
+		if !ok {
+			continue
+		}
+		credentialField := map[string]string{
+			"basic-auth":  "username",
+			"hmac-auth":   "key_id",
+			"jwe-decrypt": "key",
+			"jwt-auth":    "key",
+			"key-auth":    "key",
+			"ldap-auth":   "user_dn",
+			"wolf-rbac":   "appid",
+		}[pluginName]
+		if key, ok := config[credentialField].(string); ok {
+			fixture.credentials[pluginName+"\x00"+key] = username
+		}
 	}
-	body, err := json.Marshal(consumer)
-	if err != nil {
-		t.Fatalf("marshal consumer: %v", err)
+	fixture.consumers[username] = resource.Consumer{
+		Username: username, Plugins: pluginConfigs,
 	}
-
-	event := store.NewEvent()
-	event.Type = store.EventTypePut
-	event.Key = []byte("/apisix/consumers/" + username)
-	event.Value = body
-	testEvents <- event
 }
 
 func waitForConsumerKey(t *testing.T, pluginName string, key string) {
 	t.Helper()
 
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, err := store.GetConsumerByPluginKey(pluginName, key); err == nil {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
+	fixture := multiAuthFixtureFor(t)
+	fixture.Lock()
+	defer fixture.Unlock()
+	if _, ok := fixture.credentials[pluginName+"\x00"+key]; !ok {
+		t.Fatalf("consumer key %s:%s was not indexed", pluginName, key)
 	}
-	t.Fatalf("consumer key %s:%s was not indexed", pluginName, key)
 }
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
 
+	fixture := multiAuthFixtureFor(t)
+	fixture.Lock()
+	consumers := make([]runtime.ConsumerRecord, 0, len(fixture.consumers))
+	for id, consumer := range fixture.consumers {
+		consumers = append(consumers, runtime.ConsumerRecord{ID: id, Consumer: consumer})
+	}
+	credentials := make([]runtime.ConsumerCredentialBinding, 0, len(fixture.credentials))
+	for pluginKey, consumerID := range fixture.credentials {
+		pluginName, key, _ := strings.Cut(pluginKey, "\x00")
+		credentials = append(credentials, runtime.ConsumerCredentialBinding{
+			Plugin: pluginName, Key: key, ConsumerID: consumerID,
+		})
+	}
+	fixture.Unlock()
+	lookup, err := runtime.NewConsumerBindings(consumers, nil, credentials)
+	if err != nil {
+		t.Fatalf("NewConsumerBindings() error = %v", err)
+	}
+	t.Cleanup(lookup.Close)
+
 	p := &Plugin{config: cfg}
+	p.SetDependencies(base.Dependencies{CompositeChildren: immutableMultiAuthChildPreparer{lookup: lookup}})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.MaterializeScopedSecrets(context.Background(), base.ScopedSecretAccess{}); err != nil {
+		t.Fatalf("MaterializeScopedSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
@@ -129,9 +210,9 @@ func TestMultiAuthRejectsDisabledNestedPluginBeforeConstruction(t *testing.T) {
 	}
 	p.SetPluginEnabledChecker(func(name string) bool { return name != "unknown-auth" })
 
-	err := p.PostInit()
+	err := p.MaterializeSecrets()
 	if err == nil || !strings.Contains(err.Error(), "unknown-auth") || !strings.Contains(err.Error(), "disabled") {
-		t.Fatalf("PostInit() error = %v, want disabled unknown-auth rejection before construction", err)
+		t.Fatalf("MaterializeSecrets() error = %v, want disabled unknown-auth rejection before construction", err)
 	}
 	if len(p.auths) != 0 {
 		t.Fatalf("configured auth plugins after rejection = %d, want no child constructed", len(p.auths))
@@ -145,6 +226,9 @@ func TestMultiAuthRejectsDisabledNestedPluginBeforeConstruction(t *testing.T) {
 		t.Fatalf("enabled Init() error = %v", err)
 	}
 	enabled.SetPluginEnabledChecker(func(string) bool { return true })
+	if err := enabled.MaterializeSecrets(); err != nil {
+		t.Fatalf("enabled MaterializeSecrets() error = %v", err)
+	}
 	if err := enabled.PostInit(); err != nil {
 		t.Fatalf("enabled PostInit() error = %v", err)
 	}
@@ -522,7 +606,9 @@ func TestPostInitAllowsAuthPluginEntryWithMultiplePlugins(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-
+	if err := p.MaterializeSecrets(); err != nil {
+		t.Fatalf("MaterializeSecrets() error = %v", err)
+	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v, want all plugins in an entry to be accepted", err)
 	}
@@ -850,9 +936,9 @@ func TestPostInitRejectsUnsupportedAuthPlugin(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	err := p.PostInit()
+	err := p.MaterializeSecrets()
 	if err == nil || !strings.Contains(err.Error(), "unknown-auth") {
-		t.Fatalf("PostInit() error = %v, want unknown-auth", err)
+		t.Fatalf("MaterializeSecrets() error = %v, want unknown-auth", err)
 	}
 }
 
@@ -872,10 +958,11 @@ func TestUnownedSecretReferenceRejectsNestedAuthPlugin(t *testing.T) {
 		t.Fatalf("Init() error = %v", err)
 	}
 
-	err := p.PostInit()
-	if err == nil ||
-		!strings.Contains(err.Error(), "unowned secret reference") ||
-		!strings.Contains(err.Error(), "realm") {
-		t.Fatalf("PostInit() error = %v, want nested auth secret rejection", err)
+	err := p.MaterializeSecrets()
+	if err == nil || !strings.Contains(err.Error(), "child preparation failed") {
+		t.Fatalf("MaterializeSecrets() error = %v, want redacted nested auth secret rejection", err)
+	}
+	if strings.Contains(err.Error(), "MULTI_AUTH_REALM") {
+		t.Fatalf("MaterializeSecrets() error exposed raw secret reference: %v", err)
 	}
 }

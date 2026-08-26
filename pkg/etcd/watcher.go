@@ -2,19 +2,23 @@ package etcd
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"errors"
 	"fmt"
 	"maps"
 	"math/rand"
+	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/observability/metrics"
-	"github.com/wklken/apisix-go/pkg/store"
+	"go.etcd.io/etcd/api/v3/mvccpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
@@ -36,13 +40,19 @@ func canonicalEtcdPrefix(prefix string) string {
 }
 
 type ConfigClient struct {
-	client *clientv3.Client
-	prefix string
-	// add a channel, receive the etcd change events
-	events chan *store.Event
+	client  *clientv3.Client
+	prefix  string
+	applier generation.DesiredApplier
 
 	closeOnce           sync.Once
 	closeErr            error
+	lifecycleMu         sync.Mutex
+	lifetimeCtx         context.Context
+	cancelLifetime      context.CancelFunc
+	activities          sync.WaitGroup
+	reporterStarts      sync.WaitGroup
+	reporters           map[*ServerInfoReporter]struct{}
+	closed              bool
 	requestTimeout      time.Duration
 	startupRetry        int
 	healthCheck         healthCheckFunc
@@ -52,11 +62,17 @@ type ConfigClient struct {
 
 	openWatch    watchOpenFunc
 	loadSnapshot snapshotFunc
-	knownKeys    map[string]struct{}
+	applyMu      sync.Mutex
+	knownKeys    map[string]int64
+	tombstones   map[string]int64
 	// quarantine keeps the latest rejected ModRevision for each full etcd key.
 	// It is intentionally internal: metrics expose only the bounded count.
 	quarantine   map[string]int64
+	lastCursor   generation.ProviderCursor
 	lastRevision int64
+	revisions    generation.RevisionSet
+	domains      []generation.Domain
+	decisions    map[generation.Domain][]generation.ResourceDecision
 }
 
 type ClientOptions struct {
@@ -75,9 +91,9 @@ func NewConfigClient(
 	username string,
 	password string,
 	prefix string,
-	events chan *store.Event,
+	applier generation.DesiredApplier,
 ) (*ConfigClient, error) {
-	return NewConfigClientWithOptions(endpoints, username, password, prefix, events, ClientOptions{})
+	return NewConfigClientWithOptions(endpoints, username, password, prefix, applier, ClientOptions{})
 }
 
 func NewConfigClientWithOptions(
@@ -85,9 +101,12 @@ func NewConfigClientWithOptions(
 	username string,
 	password string,
 	prefix string,
-	events chan *store.Event,
+	applier generation.DesiredApplier,
 	options ClientOptions,
 ) (*ConfigClient, error) {
+	if nilDesiredApplier(applier) {
+		return nil, errors.New("etcd desired applier is required")
+	}
 	if options.DialTimeout <= 0 {
 		options.DialTimeout = 5 * time.Second
 	}
@@ -114,18 +133,24 @@ func NewConfigClientWithOptions(
 		return nil, err
 	}
 
+	lifetimeCtx, cancelLifetime := context.WithCancel(context.Background())
 	configClient := &ConfigClient{
 		client:              client,
 		prefix:              canonicalPrefix,
-		events:              events,
+		applier:             applier,
+		lifetimeCtx:         lifetimeCtx,
+		cancelLifetime:      cancelLifetime,
+		reporters:           make(map[*ServerInfoReporter]struct{}),
 		requestTimeout:      options.RequestTimeout,
 		startupRetry:        options.StartupRetry,
 		healthCheck:         options.HealthCheck,
 		healthCheckInterval: options.HealthCheckInterval,
 		watchTimeout:        options.WatchTimeout,
 		resyncDelay:         options.ResyncDelay,
-		knownKeys:           make(map[string]struct{}),
+		knownKeys:           make(map[string]int64),
+		tombstones:          make(map[string]int64),
 		quarantine:          make(map[string]int64),
+		decisions:           make(map[generation.Domain][]generation.ResourceDecision),
 	}
 	configClient.openWatch = func(ctx context.Context, revision int64) clientv3.WatchChan {
 		opts := []clientv3.OpOption{clientv3.WithPrefix()}
@@ -145,6 +170,19 @@ func NewConfigClientWithOptions(
 		configClient.healthCheck = newHealthCheck(client.Get, healthPrefix)
 	}
 	return configClient, nil
+}
+
+func nilDesiredApplier(applier generation.DesiredApplier) bool {
+	if applier == nil {
+		return true
+	}
+	value := reflect.ValueOf(applier)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
+	}
 }
 
 func newHealthCheck(get getFunc, prefix string) healthCheckFunc {
@@ -264,36 +302,206 @@ func (c *ConfigClient) managedKey(key []byte) (string, string, bool) {
 	if slices.Contains(parts, "") {
 		return "", "", false
 	}
-	if len(parts) == 1 && parts[0] == "plugins" {
-		return "plugins", "plugins", true
-	}
-	if len(parts) == 2 {
-		if !isManagedEtcdBucket(parts[0]) || parts[0] == "secrets" {
+	var bucket, id string
+	switch {
+	case len(parts) == 1 && parts[0] == "plugins":
+		bucket, id = "plugins", "plugins"
+	case len(parts) == 2:
+		bucket, id = parts[0], parts[1]
+		if bucket == "secrets" {
 			return "", "", false
 		}
-		return parts[0], parts[1], true
-	}
-	if len(parts) == 3 && parts[0] == "secrets" {
-		return "secrets", parts[1] + "/" + parts[2], true
-	}
-	return "", "", false
-}
-
-func isManagedEtcdBucket(bucket string) bool {
-	switch bucket {
-	case "routes", "services", "upstreams", "global_rules", "plugin_configs", "plugin_metadata",
-		"consumers", "consumer_groups", "plugins", "protos", "ssls", "stream_routes", "secrets":
-		return true
+	case len(parts) == 3 && parts[0] == "secrets":
+		bucket, id = "secrets", parts[1]+"/"+parts[2]
 	default:
-		return false
+		return "", "", false
+	}
+	if !generation.IsManagedResourceKind(bucket) {
+		return "", "", false
+	}
+	return bucket, id, true
+}
+
+func etcdProviderID(clusterID uint64, prefix string) string {
+	canonicalPrefix := canonicalEtcdPrefix(prefix)
+	prefixDigest := sha256.Sum256([]byte(canonicalPrefix))
+	return fmt.Sprintf("etcd/v1/%016x/%x", clusterID, prefixDigest)
+}
+
+func normalizeRequiredDomains(domains []generation.Domain) []generation.Domain {
+	hasHTTP := slices.Contains(domains, generation.DomainHTTP)
+	hasStream := slices.Contains(domains, generation.DomainStream)
+	normalized := make([]generation.Domain, 0, 2)
+	if hasHTTP {
+		normalized = append(normalized, generation.DomainHTTP)
+	}
+	if hasStream {
+		normalized = append(normalized, generation.DomainStream)
+	}
+	return normalized
+}
+
+func desiredMutationFromEtcdEvent(
+	prefix string,
+	event *clientv3.Event,
+) (generation.Mutation, []generation.Domain, bool, error) {
+	client := ConfigClient{prefix: canonicalEtcdPrefix(prefix)}
+	bucket, id, managed := client.managedKey(event.Kv.Key)
+	if !managed {
+		return generation.Mutation{}, nil, false, nil
+	}
+
+	mutation := generation.Mutation{Key: generation.ResourceKey{Kind: bucket, ID: id}}
+	switch event.Type {
+	case mvccpb.PUT:
+		mutation.Type = generation.MutationPut
+		mutation.Value = cloneEtcdValue(event.Kv.Value)
+	case mvccpb.DELETE:
+		mutation.Type = generation.MutationDelete
+	default:
+		return generation.Mutation{}, nil, false, fmt.Errorf("unsupported etcd event type %d", event.Type)
+	}
+	return mutation, generation.DomainsForResourceKind(bucket), true, nil
+}
+
+func desiredBatchFromEtcdSnapshot(prefix string, response *clientv3.GetResponse) (generation.DesiredBatch, error) {
+	if response == nil || response.Header == nil {
+		return generation.DesiredBatch{}, errors.New("etcd snapshot is missing a response header")
+	}
+	if response.Header.ClusterId == 0 {
+		return generation.DesiredBatch{}, errors.New("etcd response requires cluster identity")
+	}
+	if response.Header.Revision <= 0 {
+		return generation.DesiredBatch{}, errors.New("etcd snapshot requires a positive revision")
+	}
+
+	client := ConfigClient{prefix: canonicalEtcdPrefix(prefix)}
+	mutations := make([]generation.Mutation, 0, len(response.Kvs))
+	for _, kv := range response.Kvs {
+		if kv == nil {
+			return generation.DesiredBatch{}, errors.New("etcd snapshot contains a nil key-value")
+		}
+		bucket, id, managed := client.managedKey(kv.Key)
+		if !managed {
+			continue
+		}
+		mutations = append(mutations, generation.Mutation{
+			Type:  generation.MutationPut,
+			Key:   generation.ResourceKey{Kind: bucket, ID: id},
+			Value: cloneEtcdValue(kv.Value),
+		})
+	}
+
+	return generation.DesiredBatch{
+		Cursor: generation.ProviderCursor{
+			Provider: etcdProviderID(response.Header.ClusterId, prefix),
+			Revision: strconv.FormatInt(response.Header.Revision, 10),
+		},
+		ReplaceManaged:  true,
+		Mutations:       mutations,
+		RequiredDomains: []generation.Domain{generation.DomainHTTP, generation.DomainStream},
+	}, nil
+}
+
+func desiredBatchFromEtcdWatch(prefix string, response clientv3.WatchResponse) (generation.DesiredBatch, error) {
+	if response.Header.ClusterId == 0 {
+		return generation.DesiredBatch{}, errors.New("etcd response requires cluster identity")
+	}
+	if response.Canceled || response.CompactRevision != 0 || response.Created {
+		return generation.DesiredBatch{}, errors.New("etcd watch response is not an applicable event batch")
+	}
+
+	batch := generation.DesiredBatch{}
+	lastEventRevision := int64(0)
+	for _, event := range response.Events {
+		if event == nil || event.Kv == nil {
+			return generation.DesiredBatch{}, errors.New("etcd watch response contains a nil event")
+		}
+		if event.Kv.ModRevision <= 0 || event.Kv.ModRevision < lastEventRevision {
+			return generation.DesiredBatch{}, errors.New("invalid non-monotonic etcd watch event revision")
+		}
+		lastEventRevision = event.Kv.ModRevision
+		mutation, domains, managed, err := desiredMutationFromEtcdEvent(prefix, event)
+		if err != nil {
+			return generation.DesiredBatch{}, err
+		}
+		if !managed {
+			continue
+		}
+		batch.Mutations = append(batch.Mutations, mutation)
+		batch.RequiredDomains = append(batch.RequiredDomains, domains...)
+	}
+
+	provider := etcdProviderID(response.Header.ClusterId, prefix)
+	if lastEventRevision != 0 {
+		if response.Header.Revision < lastEventRevision {
+			return generation.DesiredBatch{}, errors.New("etcd watch header precedes its events")
+		}
+		batch.Cursor = generation.ProviderCursor{
+			Provider: provider,
+			Revision: strconv.FormatInt(lastEventRevision, 10),
+		}
+	} else {
+		if !response.IsProgressNotify() {
+			return generation.DesiredBatch{}, errors.New("empty etcd watch response is not progress")
+		}
+		batch.Cursor = generation.ProviderCursor{
+			Provider: provider,
+			Revision: strconv.FormatInt(response.Header.Revision, 10),
+		}
+	}
+	batch.RequiredDomains = normalizeRequiredDomains(batch.RequiredDomains)
+	return batch, nil
+}
+
+func cloneEtcdValue(value []byte) []byte {
+	if value == nil {
+		return nil
+	}
+	return append(make([]byte, 0, len(value)), value...)
+}
+
+func (c *ConfigClient) ensureLifetimeLocked() {
+	if c.lifetimeCtx != nil {
+		return
+	}
+	c.lifetimeCtx, c.cancelLifetime = context.WithCancel(context.Background())
+	if c.reporters == nil {
+		c.reporters = make(map[*ServerInfoReporter]struct{})
 	}
 }
 
-func storeMutationKey(key []byte, bucket, id string) []byte {
-	if bucket == "plugins" && id == "plugins" {
-		return []byte("/apisix/plugins")
+func (c *ConfigClient) beginActivity(parent context.Context) (context.Context, func(), error) {
+	if parent == nil {
+		parent = context.Background()
 	}
-	return key
+	c.lifecycleMu.Lock()
+	if c.closed {
+		c.lifecycleMu.Unlock()
+		return nil, nil, errors.New("etcd config client is closed")
+	}
+	c.ensureLifetimeLocked()
+	lifetime := c.lifetimeCtx
+	c.activities.Add(1)
+	c.lifecycleMu.Unlock()
+
+	ctx, cancel := context.WithCancel(parent)
+	stopLifetimeCancel := context.AfterFunc(lifetime, cancel)
+	var once sync.Once
+	done := func() {
+		once.Do(func() {
+			stopLifetimeCancel()
+			cancel()
+			c.activities.Done()
+		})
+	}
+	return ctx, done, nil
+}
+
+func (c *ConfigClient) nextWatchRevision() int64 {
+	c.applyMu.Lock()
+	defer c.applyMu.Unlock()
+	return c.lastRevision + 1
 }
 
 func (c *ConfigClient) recoverSnapshot(ctx context.Context) error {
@@ -348,10 +556,13 @@ func (c *ConfigClient) monitorHealth(ctx context.Context) {
 }
 
 func (c *ConfigClient) Watch(ctx context.Context) {
-	if ctx == nil {
-		ctx = context.Background()
+	watchCtx, activityDone, err := c.beginActivity(ctx)
+	if err != nil {
+		return
 	}
-	monitorCtx, stopMonitor := context.WithCancel(ctx)
+	defer activityDone()
+	ctx = watchCtx
+	monitorCtx, stopMonitor := context.WithCancel(watchCtx)
 	monitorDone := make(chan struct{})
 	go func() {
 		defer close(monitorDone)
@@ -362,7 +573,7 @@ func (c *ConfigClient) Watch(ctx context.Context) {
 		<-monitorDone
 	}()
 
-	revision := c.lastRevision + 1
+	revision := c.nextWatchRevision()
 	retry := 0
 	for ctx.Err() == nil {
 		streamCtx, cancelStream := context.WithCancel(ctx)
@@ -423,7 +634,7 @@ func (c *ConfigClient) Watch(ctx context.Context) {
 			return
 		}
 		if idleTimeout {
-			revision = c.lastRevision + 1
+			revision = c.nextWatchRevision()
 			retry = 0
 			continue
 		}
@@ -432,7 +643,7 @@ func (c *ConfigClient) Watch(ctx context.Context) {
 		}
 		for {
 			if err := c.recoverSnapshot(ctx); err == nil {
-				revision = c.lastRevision + 1
+				revision = c.nextWatchRevision()
 				retry = 0
 				break
 			} else {
@@ -444,25 +655,6 @@ func (c *ConfigClient) Watch(ctx context.Context) {
 			retry++
 		}
 	}
-}
-
-func (c *ConfigClient) sendBatch(ctx context.Context, mutations []store.Mutation, options store.BatchOptions) error {
-	event := store.NewAcknowledgedBatch(mutations, options)
-	select {
-	case c.events <- event:
-		return event.Wait(ctx)
-	case <-ctx.Done():
-		store.PutBack(event)
-		return ctx.Err()
-	}
-}
-
-func (c *ConfigClient) sendEvent(ctx context.Context, eventType store.EventType, key, value []byte) error {
-	return c.sendBatch(ctx, []store.Mutation{{
-		Type:  eventType,
-		Key:   key,
-		Value: value,
-	}}, store.BatchOptions{})
 }
 
 func cloneQuarantine(source map[string]int64) map[string]int64 {
@@ -483,238 +675,436 @@ func clearQuarantine(quarantine map[string]int64, key string, revision int64) {
 	}
 }
 
-func (c *ConfigClient) commitQuarantine(quarantine map[string]int64) {
-	c.quarantine = quarantine
-	metrics.RecordConfigApplyQuarantine(len(quarantine))
-}
-
 type mutationMetadata struct {
-	mutation store.Mutation
+	resource generation.ResourceKey
 	key      string
-	bucket   string
-	id       string
 	revision int64
+	present  bool
 }
 
-type batchApplyResult struct {
-	accepted []mutationMetadata
-	rejected map[int]struct{}
+type etcdProviderCandidate struct {
+	batch      generation.DesiredBatch
+	knownKeys  map[string]int64
+	tombstones map[string]int64
+	authority  map[generation.ResourceKey]mutationMetadata
+	modified   map[string]int64
 }
 
-func (c *ConfigClient) applyMutationBatch(
-	ctx context.Context,
-	candidates []mutationMetadata,
-	options store.BatchOptions,
-) (batchApplyResult, error) {
-	mutations := make([]store.Mutation, len(candidates))
-	for index, candidate := range candidates {
-		mutations[index] = candidate.mutation
+func cloneKnownKeys(source map[string]int64) map[string]int64 {
+	clone := make(map[string]int64, len(source))
+	maps.Copy(clone, source)
+	return clone
+}
+
+func cloneEtcdDecisions(
+	source map[generation.Domain][]generation.ResourceDecision,
+) map[generation.Domain][]generation.ResourceDecision {
+	clone := make(map[generation.Domain][]generation.ResourceDecision, len(source))
+	for domain, decisions := range source {
+		clone[domain] = slices.Clone(decisions)
 	}
-	if err := c.sendBatch(ctx, mutations, options); err == nil {
-		return batchApplyResult{accepted: candidates}, nil
-	} else {
-		var validationErr *store.BatchValidationError
-		if !errors.As(err, &validationErr) {
-			return batchApplyResult{}, err
+	return clone
+}
+
+func (c *ConfigClient) resourceMetadata(key string, revision int64, present bool) (mutationMetadata, bool) {
+	bucket, id, managed := c.managedKey([]byte(key))
+	if !managed {
+		return mutationMetadata{}, false
+	}
+	return mutationMetadata{
+		resource: generation.ResourceKey{Kind: bucket, ID: id},
+		key:      key, revision: revision, present: present,
+	}, true
+}
+
+func (c *ConfigClient) fullKeyForResource(resource generation.ResourceKey) (string, bool) {
+	if !generation.IsManagedResourceKind(resource.Kind) || resource.ID == "" {
+		return "", false
+	}
+	key := c.prefix + resource.Kind + "/" + resource.ID
+	if resource == (generation.ResourceKey{Kind: "plugins", ID: "plugins"}) {
+		key = c.prefix + "plugins"
+	}
+	bucket, id, managed := c.managedKey([]byte(key))
+	return key, managed && bucket == resource.Kind && id == resource.ID
+}
+
+func (c *ConfigClient) addTombstoneAuthority(
+	authority map[generation.ResourceKey]mutationMetadata,
+	tombstones map[string]int64,
+) {
+	for key, revision := range tombstones {
+		metadata, managed := c.resourceMetadata(key, revision, false)
+		if managed {
+			authority[metadata.resource] = metadata
 		}
-		rejected := make(map[int]struct{}, len(validationErr.Rejected))
-		preserve := append([]store.ResourceKey(nil), options.Preserve...)
-		pruned := make([]mutationMetadata, 0, len(candidates)-len(validationErr.Rejected))
-		for _, rejection := range validationErr.Rejected {
-			if rejection.Index < 0 || rejection.Index >= len(candidates) {
-				return batchApplyResult{}, fmt.Errorf(
-					"etcd batch validation returned invalid mutation index %d",
-					rejection.Index,
-				)
-			}
-			if _, exists := rejected[rejection.Index]; exists {
-				return batchApplyResult{}, fmt.Errorf(
-					"etcd batch validation returned duplicate mutation index %d",
-					rejection.Index,
-				)
-			}
-			rejected[rejection.Index] = struct{}{}
-			candidate := candidates[rejection.Index]
-			preserve = append(preserve, store.ResourceKey{Bucket: candidate.bucket, ID: candidate.id})
+	}
+}
+
+func (c *ConfigClient) snapshotCandidate(
+	response *clientv3.GetResponse,
+) (etcdProviderCandidate, error) {
+	batch, err := desiredBatchFromEtcdSnapshot(c.prefix, response)
+	if err != nil {
+		return etcdProviderCandidate{}, err
+	}
+	nextKeys := make(map[string]int64, len(response.Kvs))
+	nextTombstones := cloneKnownKeys(c.tombstones)
+	authority := make(map[generation.ResourceKey]mutationMetadata, len(response.Kvs)+len(c.knownKeys))
+	c.addTombstoneAuthority(authority, nextTombstones)
+	modified := make(map[string]int64, len(response.Kvs)+len(c.knownKeys))
+	for _, kv := range response.Kvs {
+		metadata, managed := c.resourceMetadata(string(kv.Key), kv.ModRevision, true)
+		if !managed {
+			continue
 		}
-		for index, candidate := range candidates {
-			if _, isRejected := rejected[index]; isRejected {
+		if metadata.revision <= 0 {
+			metadata.revision = response.Header.Revision
+		}
+		if previous, exists := authority[metadata.resource]; exists && previous.key != metadata.key {
+			return etcdProviderCandidate{}, errors.New("etcd snapshot contains duplicate managed resource identity")
+		}
+		nextKeys[metadata.key] = metadata.revision
+		delete(nextTombstones, metadata.key)
+		authority[metadata.resource] = metadata
+		modified[metadata.key] = metadata.revision
+	}
+	for key := range c.knownKeys {
+		if _, exists := nextKeys[key]; exists {
+			continue
+		}
+		metadata, managed := c.resourceMetadata(key, response.Header.Revision, false)
+		if !managed {
+			continue
+		}
+		authority[metadata.resource] = metadata
+		nextTombstones[key] = response.Header.Revision
+		modified[key] = response.Header.Revision
+	}
+	return etcdProviderCandidate{
+		batch: batch, knownKeys: nextKeys, tombstones: nextTombstones,
+		authority: authority, modified: modified,
+	}, nil
+}
+
+func (c *ConfigClient) watchCandidate(response clientv3.WatchResponse) (etcdProviderCandidate, error) {
+	batch, err := desiredBatchFromEtcdWatch(c.prefix, response)
+	if err != nil {
+		return etcdProviderCandidate{}, err
+	}
+	nextKeys := cloneKnownKeys(c.knownKeys)
+	nextTombstones := cloneKnownKeys(c.tombstones)
+	authority := make(map[generation.ResourceKey]mutationMetadata, len(c.knownKeys)+len(response.Events))
+	c.addTombstoneAuthority(authority, nextTombstones)
+	for key, revision := range c.knownKeys {
+		if metadata, managed := c.resourceMetadata(key, revision, true); managed {
+			authority[metadata.resource] = metadata
+		}
+	}
+	modified := make(map[string]int64, len(response.Events))
+	for _, watched := range response.Events {
+		metadata, managed := c.resourceMetadata(
+			string(watched.Kv.Key),
+			watched.Kv.ModRevision,
+			watched.Type != mvccpb.DELETE,
+		)
+		if !managed {
+			continue
+		}
+		if previous, exists := authority[metadata.resource]; exists && previous.key != metadata.key {
+			return etcdProviderCandidate{}, errors.New("etcd watch contains duplicate managed resource identity")
+		}
+		authority[metadata.resource] = metadata
+		modified[metadata.key] = metadata.revision
+		if metadata.present {
+			nextKeys[metadata.key] = metadata.revision
+			delete(nextTombstones, metadata.key)
+		} else {
+			delete(nextKeys, metadata.key)
+			nextTombstones[metadata.key] = metadata.revision
+		}
+	}
+	return etcdProviderCandidate{
+		batch: batch, knownKeys: nextKeys, tombstones: nextTombstones,
+		authority: authority, modified: modified,
+	}, nil
+}
+
+func revisionForEtcdDomain(revisions generation.RevisionSet, domain generation.Domain) uint64 {
+	switch domain {
+	case generation.DomainHTTP:
+		return revisions.HTTP
+	case generation.DomainStream:
+		return revisions.Stream
+	default:
+		return 0
+	}
+}
+
+func validEtcdDisposition(disposition generation.ResourceDisposition) bool {
+	switch disposition {
+	case generation.DispositionPublished, generation.DispositionLastGood,
+		generation.DispositionQuarantined, generation.DispositionFailClosed,
+		generation.DispositionDeleted:
+		return true
+	default:
+		return false
+	}
+}
+
+func rejectedEtcdDisposition(disposition generation.ResourceDisposition) bool {
+	return disposition == generation.DispositionLastGood ||
+		disposition == generation.DispositionQuarantined ||
+		disposition == generation.DispositionFailClosed
+}
+
+func parseEtcdCursorRevision(cursor generation.ProviderCursor) (int64, error) {
+	revision, err := strconv.ParseInt(cursor.Revision, 10, 64)
+	if err != nil || revision <= 0 {
+		return 0, errors.New("etcd acknowledgement cursor requires a positive numeric revision")
+	}
+	return revision, nil
+}
+
+func (c *ConfigClient) validateAcknowledgement(
+	candidate etcdProviderCandidate,
+	ack generation.Acknowledgement,
+) (map[string]int64, int64, error) {
+	batch := candidate.batch
+	if ack.Cursor != batch.Cursor {
+		return nil, 0, errors.New("etcd acknowledgement cursor mismatch")
+	}
+	providerRevision, err := parseEtcdCursorRevision(ack.Cursor)
+	if err != nil {
+		return nil, 0, err
+	}
+	if c.lastCursor.Provider != "" {
+		switch {
+		case c.lastCursor.Provider == ack.Cursor.Provider && providerRevision < c.lastRevision:
+			return nil, 0, errors.New("etcd acknowledgement cursor regressed")
+		case c.lastCursor.Provider != ack.Cursor.Provider && !batch.ReplaceManaged:
+			return nil, 0, errors.New("etcd incremental acknowledgement changed provider authority")
+		}
+	}
+	if ack.Revisions.Desired == 0 || ack.Revisions.HTTP > ack.Revisions.Desired ||
+		ack.Revisions.Stream > ack.Revisions.Desired {
+		return nil, 0, errors.New("etcd acknowledgement revisions are invalid or regressed")
+	}
+	sameCursor := c.lastCursor == ack.Cursor && c.revisions.Desired != 0
+	if c.revisions.Desired != 0 && !sameCursor && ack.Revisions.Desired <= c.revisions.Desired {
+		return nil, 0, errors.New("new etcd cursor did not advance desired revision")
+	}
+	if ack.Revisions.HTTP < c.revisions.HTTP || ack.Revisions.Stream < c.revisions.Stream {
+		return nil, 0, errors.New("etcd acknowledgement domain revision regressed")
+	}
+	if sameCursor && ack.Revisions != c.revisions {
+		return nil, 0, errors.New("same etcd cursor returned a different revision set")
+	}
+	if sameCursor && !reflect.DeepEqual(ack.Decisions, c.decisions) {
+		return nil, 0, errors.New("same etcd cursor returned different resource decisions")
+	}
+
+	required := make(map[generation.Domain]struct{}, len(batch.RequiredDomains))
+	for _, domain := range batch.RequiredDomains {
+		if domain != generation.DomainHTTP && domain != generation.DomainStream {
+			return nil, 0, errors.New("etcd desired batch contains an invalid domain")
+		}
+		if _, duplicate := required[domain]; duplicate {
+			return nil, 0, errors.New("etcd desired batch contains a duplicate domain")
+		}
+		required[domain] = struct{}{}
+		if revisionForEtcdDomain(ack.Revisions, domain) != ack.Revisions.Desired {
+			return nil, 0, errors.New("etcd acknowledged domain does not reference desired revision")
+		}
+	}
+	for _, domain := range []generation.Domain{generation.DomainHTTP, generation.DomainStream} {
+		if _, domainRequired := required[domain]; domainRequired {
+			continue
+		}
+		if revisionForEtcdDomain(ack.Revisions, domain) != revisionForEtcdDomain(c.revisions, domain) {
+			return nil, 0, errors.New("etcd acknowledgement advanced an untouched domain")
+		}
+	}
+	if len(ack.Decisions) != len(required) {
+		return nil, 0, errors.New("etcd acknowledgement decision domains mismatch")
+	}
+
+	decisions := make(map[generation.Domain]map[generation.ResourceKey]generation.ResourceDecision, len(required))
+	for domain, domainDecisions := range ack.Decisions {
+		if _, expected := required[domain]; !expected {
+			return nil, 0, errors.New("etcd acknowledgement contains an unexpected decision domain")
+		}
+		indexed := make(map[generation.ResourceKey]generation.ResourceDecision, len(domainDecisions))
+		for _, decision := range domainDecisions {
+			if decision.Code == "" || !validEtcdDisposition(decision.Disposition) {
+				return nil, 0, errors.New("etcd acknowledgement contains an invalid resource decision")
+			}
+			metadata, acknowledged := candidate.authority[decision.Key]
+			if !acknowledged {
+				key, managed := c.fullKeyForResource(decision.Key)
+				if !batch.ReplaceManaged || !managed ||
+					decision.Disposition != generation.DispositionDeleted {
+					return nil, 0, errors.New("etcd acknowledgement decision is outside managed provider state")
+				}
+				metadata = mutationMetadata{
+					resource: decision.Key, key: key, revision: providerRevision, present: false,
+				}
+				candidate.authority[decision.Key] = metadata
+				candidate.tombstones[key] = providerRevision
+			}
+			if !slices.Contains(generation.DomainsForResourceKind(decision.Key.Kind), domain) {
+				return nil, 0, errors.New("etcd acknowledgement decision belongs to the wrong domain")
+			}
+			if _, duplicate := indexed[decision.Key]; duplicate {
+				return nil, 0, errors.New("etcd acknowledgement contains duplicate resource decisions")
+			}
+			if metadata.present && decision.Disposition == generation.DispositionDeleted {
+				return nil, 0, errors.New("etcd acknowledgement deleted a present managed resource")
+			}
+			if !metadata.present && decision.Disposition != generation.DispositionDeleted {
+				return nil, 0, errors.New("etcd acknowledgement retained a historical tombstone")
+			}
+			indexed[decision.Key] = decision
+		}
+		decisions[domain] = indexed
+	}
+	for domain := range required {
+		if _, found := decisions[domain]; !found {
+			return nil, 0, errors.New("etcd acknowledgement omitted a required decision domain")
+		}
+	}
+	for key := range candidate.authority {
+		for _, domain := range generation.DomainsForResourceKind(key.Kind) {
+			if _, domainRequired := required[domain]; !domainRequired {
 				continue
 			}
-			pruned = append(pruned, candidate)
-		}
-		options.Preserve = preserve
-		prunedMutations := make([]store.Mutation, len(pruned))
-		for index, candidate := range pruned {
-			prunedMutations[index] = candidate.mutation
-		}
-		if retryErr := c.sendBatch(ctx, prunedMutations, options); retryErr != nil {
-			var retryValidationErr *store.BatchValidationError
-			if errors.As(retryErr, &retryValidationErr) {
-				return batchApplyResult{}, fmt.Errorf("etcd batch validation retry failed: %w", retryErr)
+			if _, found := decisions[domain][key]; !found {
+				return nil, 0, errors.New("etcd acknowledgement omitted a managed resource decision")
 			}
-			return batchApplyResult{}, retryErr
 		}
-		return batchApplyResult{accepted: pruned, rejected: rejected}, nil
 	}
+
+	nextQuarantine := cloneQuarantine(c.quarantine)
+	if c.lastCursor.Provider != "" && c.lastCursor.Provider != ack.Cursor.Provider && batch.ReplaceManaged {
+		nextQuarantine = make(map[string]int64)
+	}
+	for key, metadata := range candidate.authority {
+		affected := generation.DomainsForResourceKind(key.Kind)
+		allAcknowledged := len(affected) > 0
+		anyRejected := false
+		for _, domain := range affected {
+			decision, found := decisions[domain][key]
+			if !found {
+				allAcknowledged = false
+				continue
+			}
+			if rejectedEtcdDisposition(decision.Disposition) {
+				anyRejected = true
+			}
+		}
+		switch {
+		case anyRejected:
+			recordQuarantine(nextQuarantine, metadata.key, metadata.revision)
+		case allAcknowledged:
+			clearQuarantine(nextQuarantine, metadata.key, metadata.revision)
+		}
+	}
+	return nextQuarantine, providerRevision, nil
+}
+
+func (c *ConfigClient) applyCandidate(ctx context.Context, candidate etcdProviderCandidate) error {
+	if nilDesiredApplier(c.applier) {
+		metrics.RecordConfigApplyAttemptFailure("etcd", "provider")
+		return errors.New("etcd desired applier is required")
+	}
+	ack, err := c.applier.Apply(ctx, candidate.batch)
+	if err != nil {
+		metrics.RecordConfigApplyAttemptFailure("etcd", "provider")
+		return err
+	}
+	nextQuarantine, providerRevision, err := c.validateAcknowledgement(candidate, ack)
+	if err != nil {
+		metrics.RecordConfigApplyAttemptFailure("etcd", "provider")
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		metrics.RecordConfigApplyAttemptFailure("etcd", "provider")
+		return err
+	}
+
+	c.knownKeys = candidate.knownKeys
+	c.tombstones = candidate.tombstones
+	c.quarantine = nextQuarantine
+	c.lastCursor = ack.Cursor
+	c.lastRevision = providerRevision
+	c.revisions = ack.Revisions
+	c.domains = slices.Clone(candidate.batch.RequiredDomains)
+	c.decisions = cloneEtcdDecisions(ack.Decisions)
+	for key, revision := range candidate.modified {
+		metrics.RecordEtcdModifyIndex(key, revision)
+	}
+	metrics.RecordEtcdAppliedRevision(providerRevision)
+	metrics.RecordConfigApplyAcknowledgement(
+		slices.Contains(candidate.batch.RequiredDomains, generation.DomainHTTP),
+		slices.Contains(candidate.batch.RequiredDomains, generation.DomainStream),
+		len(nextQuarantine),
+	)
+	return nil
 }
 
 func (c *ConfigClient) applySnapshot(ctx context.Context, response *clientv3.GetResponse) error {
-	if response == nil || response.Header == nil {
-		err := errors.New("etcd snapshot is missing a response header")
-		metrics.RecordConfigApplyStageFailure(metrics.ConfigApplyStageProvider)
-		return err
-	}
-	nextKeys := make(map[string]struct{}, len(response.Kvs))
-	candidates := make([]mutationMetadata, 0, len(response.Kvs))
-	for _, kv := range response.Kvs {
-		if kv == nil {
-			err := errors.New("etcd snapshot contains a nil key-value")
-			metrics.RecordConfigApplyStageFailure(metrics.ConfigApplyStageProvider)
-			return err
-		}
-		bucket, id, ok := c.managedKey(kv.Key)
-		if !ok {
-			continue
-		}
-		key := string(kv.Key)
-		revision := kv.ModRevision
-		if revision <= 0 {
-			revision = response.Header.Revision
-		}
-		nextKeys[key] = struct{}{}
-		candidates = append(candidates, mutationMetadata{
-			mutation: store.Mutation{
-				Type:  store.EventTypePut,
-				Key:   storeMutationKey(kv.Key, bucket, id),
-				Value: kv.Value,
-			},
-			key:      key,
-			bucket:   bucket,
-			id:       id,
-			revision: revision,
-		})
-	}
-	nextQuarantine := cloneQuarantine(c.quarantine)
-	for key, revision := range nextQuarantine {
-		if _, ok := nextKeys[key]; !ok {
-			clearQuarantine(nextQuarantine, key, response.Header.Revision)
-			if revision > response.Header.Revision {
-				nextQuarantine[key] = revision
-			}
-		}
-	}
-	result, err := c.applyMutationBatch(ctx, candidates, store.BatchOptions{ReplaceManaged: true})
+	c.applyMu.Lock()
+	defer c.applyMu.Unlock()
+	candidate, err := c.snapshotCandidate(response)
 	if err != nil {
-		metrics.RecordConfigApplyStageFailure(metrics.ConfigApplyStageProvider)
+		metrics.RecordConfigApplyAttemptFailure("etcd", "provider")
 		return err
 	}
-	for index, candidate := range candidates {
-		if _, rejected := result.rejected[index]; rejected {
-			recordQuarantine(nextQuarantine, candidate.key, candidate.revision)
-			logger.Errorf("quarantine invalid etcd resource key=%q revision=%d", candidate.key, candidate.revision)
-			continue
-		}
-		clearQuarantine(nextQuarantine, candidate.key, candidate.revision)
-	}
-	for _, candidate := range result.accepted {
-		metrics.RecordEtcdModifyIndex(candidate.key, candidate.revision)
-	}
-	for key := range c.knownKeys {
-		if _, ok := nextKeys[key]; ok {
-			continue
-		}
-		if _, _, managed := c.managedKey([]byte(key)); managed {
-			metrics.RecordEtcdModifyIndex(key, response.Header.Revision)
-		}
-	}
-	nextRevision := response.Header.Revision
-	nextRevision = max(nextRevision, c.lastRevision)
-	c.knownKeys = nextKeys
-	c.lastRevision = nextRevision
-	c.commitQuarantine(nextQuarantine)
-	metrics.RecordEtcdAppliedRevision(c.lastRevision)
-	metrics.RecordConfigApplyStageSuccess(metrics.ConfigApplyStageProvider)
-	return nil
+	return c.applyCandidate(ctx, candidate)
 }
 
 func (c *ConfigClient) applyWatchResponse(ctx context.Context, response clientv3.WatchResponse) error {
-	nextKeys := make(map[string]struct{}, len(c.knownKeys))
-	for key := range c.knownKeys {
-		if _, _, managed := c.managedKey([]byte(key)); managed {
-			nextKeys[key] = struct{}{}
-		}
-	}
-	candidates := make([]mutationMetadata, 0, len(response.Events))
-	for _, watched := range response.Events {
-		if watched == nil || watched.Kv == nil {
-			err := errors.New("etcd watch response contains a nil event")
-			metrics.RecordConfigApplyStageFailure(metrics.ConfigApplyStageProvider)
-			return err
-		}
-		bucket, id, ok := c.managedKey(watched.Kv.Key)
-		if !ok {
-			continue
-		}
-		eventType := store.EventType(watched.Type)
-		revision := watched.Kv.ModRevision
-		if revision <= 0 {
-			revision = response.Header.Revision
-		}
-		key := string(watched.Kv.Key)
-		candidates = append(candidates, mutationMetadata{
-			mutation: store.Mutation{
-				Type:  eventType,
-				Key:   storeMutationKey(watched.Kv.Key, bucket, id),
-				Value: watched.Kv.Value,
-			},
-			key:      key,
-			bucket:   bucket,
-			id:       id,
-			revision: revision,
-		})
-		if eventType == store.EventTypeDelete {
-			delete(nextKeys, key)
-		} else {
-			nextKeys[key] = struct{}{}
-		}
-	}
-	nextQuarantine := cloneQuarantine(c.quarantine)
-	result, err := c.applyMutationBatch(ctx, candidates, store.BatchOptions{})
+	c.applyMu.Lock()
+	defer c.applyMu.Unlock()
+	candidate, err := c.watchCandidate(response)
 	if err != nil {
-		metrics.RecordConfigApplyStageFailure(metrics.ConfigApplyStageProvider)
+		metrics.RecordConfigApplyAttemptFailure("etcd", "provider")
 		return err
 	}
-	for index, candidate := range candidates {
-		if _, rejected := result.rejected[index]; rejected {
-			recordQuarantine(nextQuarantine, candidate.key, candidate.revision)
-			logger.Errorf("quarantine invalid etcd resource key=%q revision=%d", candidate.key, candidate.revision)
-			continue
-		}
-		clearQuarantine(nextQuarantine, candidate.key, candidate.revision)
-		metrics.RecordEtcdModifyIndex(candidate.key, candidate.revision)
-	}
-	nextRevision := c.lastRevision
-	nextRevision = max(nextRevision, response.Header.Revision)
-	for _, candidate := range candidates {
-		if candidate.revision > nextRevision {
-			nextRevision = candidate.revision
-		}
-	}
-	c.knownKeys = nextKeys
-	c.lastRevision = nextRevision
-	c.commitQuarantine(nextQuarantine)
-	metrics.RecordEtcdAppliedRevision(c.lastRevision)
-	metrics.RecordConfigApplyStageSuccess(metrics.ConfigApplyStageProvider)
-	return nil
+	return c.applyCandidate(ctx, candidate)
 }
 
 func (c *ConfigClient) Close() error {
-	if c == nil || c.client == nil {
+	if c == nil {
 		return nil
 	}
 	c.closeOnce.Do(func() {
-		c.closeErr = c.client.Close()
+		c.lifecycleMu.Lock()
+		c.closed = true
+		c.ensureLifetimeLocked()
+		c.cancelLifetime()
+		c.lifecycleMu.Unlock()
+
+		c.reporterStarts.Wait()
+		c.lifecycleMu.Lock()
+		reporters := make([]*ServerInfoReporter, 0, len(c.reporters))
+		for reporter := range c.reporters {
+			reporters = append(reporters, reporter)
+		}
+		c.lifecycleMu.Unlock()
+		var reporterErrors []error
+		for _, reporter := range reporters {
+			if err := reporter.Stop(); err != nil {
+				reporterErrors = append(reporterErrors, err)
+			}
+		}
+		c.activities.Wait()
+		var clientErr error
+		if c.client != nil {
+			clientErr = c.client.Close()
+		}
+		reporterErrors = append(reporterErrors, clientErr)
+		c.closeErr = errors.Join(reporterErrors...)
 	})
 	return c.closeErr
 }
@@ -724,14 +1114,17 @@ func (c *ConfigClient) FetchAll() error {
 }
 
 func (c *ConfigClient) FetchAllContext(ctx context.Context) error {
-	if ctx == nil {
-		ctx = context.Background()
+	fetchCtx, activityDone, err := c.beginActivity(ctx)
+	if err != nil {
+		return err
 	}
+	defer activityDone()
+	ctx = fetchCtx
 	requestTimeout := c.requestTimeout
 	if requestTimeout <= 0 {
 		requestTimeout = 5 * time.Second
 	}
-	var err error
+	err = nil
 	for attempt := 0; attempt <= c.startupRetry; attempt++ {
 		loadCtx, loadCancel := context.WithTimeout(ctx, requestTimeout)
 		var resp *clientv3.GetResponse

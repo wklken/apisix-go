@@ -1,6 +1,7 @@
 package file_logger
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/observability/metrics"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/runtime"
 	"go.uber.org/zap/buffer"
 )
 
@@ -68,6 +70,9 @@ type fileLoggerProcessor struct {
 	stopped     bool
 	stopOnce    sync.Once
 	cleanupOnce sync.Once
+	lifecycleMu sync.Mutex
+	cleanup     func()
+	terminal    bool
 
 	observer metrics.LoggerBatchObserver
 
@@ -90,14 +95,21 @@ type fileLoggerProcessor struct {
 	payloadByteBudget int64
 }
 
-func newFileLoggerProcessor(sink fileLoggerSink) *fileLoggerProcessor {
-	return newFileLoggerProcessorWithTimer(sink, time.NewTimer)
+func newFileLoggerProcessor(
+	owner *runtime.TaskOwner,
+	sink fileLoggerSink,
+) (*fileLoggerProcessor, error) {
+	return newFileLoggerProcessorWithTimer(owner, sink, time.NewTimer)
 }
 
 func newFileLoggerProcessorWithTimer(
+	owner *runtime.TaskOwner,
 	sink fileLoggerSink,
 	newTimer func(time.Duration) *time.Timer,
-) *fileLoggerProcessor {
+) (*fileLoggerProcessor, error) {
+	if owner == nil {
+		return nil, runtime.ErrTaskOwnerRequired
+	}
 	processor := &fileLoggerProcessor{
 		sink:              sink,
 		records:           make(chan fileLogRecord, fileLoggerQueueCapacity),
@@ -109,8 +121,11 @@ func newFileLoggerProcessorWithTimer(
 		stopTimeout:       fileLoggerStopTimeout,
 		payloadByteBudget: fileLoggerPayloadByteBudget,
 	}
-	go processor.run()
-	return processor
+	if err := owner.Go("file-log-writer", processor.run); err != nil {
+		processor.observer.Close()
+		return nil, err
+	}
+	return processor, nil
 }
 
 func (p *fileLoggerProcessor) pushSnapshot(snapshot base.LogSnapshot) error {
@@ -170,8 +185,20 @@ func (p *fileLoggerProcessor) admit(record fileLogRecord) error {
 	}
 }
 
-func (p *fileLoggerProcessor) run() {
-	defer close(p.done)
+func (p *fileLoggerProcessor) run(ctx context.Context) error {
+	cancellationDone := make(chan struct{})
+	stopCancellation := context.AfterFunc(ctx, func() {
+		defer close(cancellationDone)
+		p.sealAdmission()
+	})
+	defer func() {
+		if stopCancellation() {
+			close(cancellationDone)
+		}
+		<-cancellationDone
+		p.sealAdmission()
+		p.finishTerminal()
+	}()
 
 	encoder := newFileLoggerEncoder()
 
@@ -278,16 +305,30 @@ func (p *fileLoggerProcessor) run() {
 		case <-timerC:
 			rememberError(flush())
 		case <-p.stopSignal:
-			for {
-				select {
-				case record := <-p.records:
-					handle(record)
-				default:
-					rememberError(flush())
-					rememberError(sync())
-					return
-				}
-			}
+			p.drain(handle, flush, sync, rememberError)
+			return nil
+		case <-ctx.Done():
+			p.sealAdmission()
+			p.drain(handle, flush, sync, rememberError)
+			return nil
+		}
+	}
+}
+
+func (p *fileLoggerProcessor) drain(
+	handle func(fileLogRecord),
+	flush func() error,
+	syncSink func() error,
+	rememberError func(error),
+) {
+	for {
+		select {
+		case record := <-p.records:
+			handle(record)
+		default:
+			rememberError(flush())
+			rememberError(syncSink())
+			return
 		}
 	}
 }
@@ -613,29 +654,53 @@ func (p *fileLoggerProcessor) stop() {
 }
 
 func (p *fileLoggerProcessor) stopWithCleanup(cleanup func()) {
+	p.registerCleanup(cleanup)
+	p.sealAdmission()
+
+	select {
+	case <-p.done:
+	case <-time.After(p.stopTimeout):
+		p.observer.AddEvent(metrics.LoggerBatchOutcomeShutdownTimeout)
+	}
+}
+
+func (p *fileLoggerProcessor) sealAdmission() {
 	p.stopOnce.Do(func() {
 		p.admission.Lock()
 		p.stopped = true
 		close(p.stopSignal)
 		p.admission.Unlock()
 	})
+}
 
-	finish := func() {
-		p.cleanupOnce.Do(func() {
-			p.observer.Close()
-			if cleanup != nil {
-				cleanup()
-			}
-		})
+func (p *fileLoggerProcessor) registerCleanup(cleanup func()) {
+	if cleanup == nil {
+		return
 	}
-	select {
-	case <-p.done:
-		finish()
-	case <-time.After(p.stopTimeout):
-		p.observer.AddEvent(metrics.LoggerBatchOutcomeShutdownTimeout)
-		go func() {
-			<-p.done
-			finish()
-		}()
+	p.lifecycleMu.Lock()
+	if p.cleanup == nil {
+		p.cleanup = cleanup
+	}
+	registered := p.cleanup
+	terminal := p.terminal
+	p.lifecycleMu.Unlock()
+	if terminal {
+		p.runCleanup(registered)
+	}
+}
+
+func (p *fileLoggerProcessor) finishTerminal() {
+	p.lifecycleMu.Lock()
+	p.terminal = true
+	cleanup := p.cleanup
+	p.lifecycleMu.Unlock()
+	p.observer.Close()
+	p.runCleanup(cleanup)
+	close(p.done)
+}
+
+func (p *fileLoggerProcessor) runCleanup(cleanup func()) {
+	if cleanup != nil {
+		p.cleanupOnce.Do(cleanup)
 	}
 }

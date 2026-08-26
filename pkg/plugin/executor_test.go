@@ -14,6 +14,7 @@ import (
 	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	appconfig "github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	corsplugin "github.com/wklken/apisix-go/pkg/plugin/cors"
 	requestcontext "github.com/wklken/apisix-go/pkg/plugin/request_context"
@@ -638,7 +639,9 @@ func pipelineBinding(name string, p Plugin, scope Scope, priority int) Binding {
 	if setter, ok := p.(interface{ SetPriority(int) }); ok {
 		setter.SetPriority(priority)
 	}
-	return BindPlugin(name, p, scope, ResourceProvenance{Kind: ResourceRoute, ID: name})
+	binding := BindPlugin(name, p, scope, ResourceProvenance{Kind: ResourceRoute, ID: name})
+	binding.Priority = priority
+	return binding
 }
 
 func TestRequestPipelineRunsPlan14V2Order(t *testing.T) {
@@ -1161,6 +1164,275 @@ func TestRequestPipelineRunsBeforeProxyOnce(t *testing.T) {
 	}
 }
 
+func TestRequestPipelineAttributesRequestPhasePanics(t *testing.T) {
+	tests := []struct {
+		name    string
+		factory string
+		phase   Phase
+	}{
+		{name: "rewrite", factory: "request-id", phase: PhaseRewrite},
+		{name: "access", factory: "limit-conn", phase: PhaseAccess},
+		{name: "authentication", factory: "jwt-auth", phase: PhaseAccess},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			want := &struct{ stage string }{stage: test.name}
+			panicking := newExecutorRequestPlugin(test.factory, 1, func(
+				http.ResponseWriter,
+				*http.Request,
+			) base.RequestPhaseResult {
+				panic(want)
+			})
+			handler := NewRequestPipeline([]Binding{
+				pipelineBinding(test.factory, panicking, ScopeRoute, 1),
+			}, nil).Then(http.NotFoundHandler())
+
+			recovered := recoverHandlerPanic(t, handler)
+			panicErr, ok := recovered.(*PanicError)
+			if !ok {
+				t.Fatalf("panic = %T, want *PanicError", recovered)
+			}
+			if panicErr.Factory != test.factory || panicErr.Phase != test.phase ||
+				panicErr.Value != want || len(panicErr.Stack) == 0 {
+				t.Fatalf("panic metadata = %#v", panicErr)
+			}
+		})
+	}
+}
+
+func TestLegacyMiddlewareAttributesEntryAndUnwindPanicsAndBuildsOnce(t *testing.T) {
+	tests := []struct {
+		name    string
+		handler func(http.Handler, any) http.Handler
+	}{
+		{
+			name: "entry",
+			handler: func(_ http.Handler, anyValue any) http.Handler {
+				return http.HandlerFunc(func(http.ResponseWriter, *http.Request) { panic(anyValue) })
+			},
+		},
+		{
+			name: "unwind",
+			handler: func(next http.Handler, anyValue any) http.Handler {
+				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					next.ServeHTTP(w, r)
+					panic(anyValue)
+				})
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			want := &struct{ stage string }{stage: test.name}
+			constructions := 0
+			legacy := newExecutorLegacyPlugin("legacy", 1, func(next http.Handler) http.Handler {
+				constructions++
+				return test.handler(next, want)
+			})
+			handler := NewRequestPipeline([]Binding{
+				pipelineBinding("legacy-boundary", legacy, ScopeRoute, 1),
+			}, nil).Then(http.NotFoundHandler())
+			for range 2 {
+				recovered := recoverHandlerPanic(t, handler)
+				panicErr, ok := recovered.(*PanicError)
+				if !ok {
+					t.Fatalf("panic = %T, want *PanicError", recovered)
+				}
+				if panicErr.Factory != "legacy-boundary" || panicErr.Phase != "" ||
+					panicErr.Value != want || len(panicErr.Stack) == 0 {
+					t.Fatalf("panic metadata = %#v", panicErr)
+				}
+			}
+			if constructions != 1 {
+				t.Fatalf("Handler() constructions = %d, want 1", constructions)
+			}
+		})
+	}
+}
+
+func TestRequestPipelineStaticCORSPanicIsAttributedAndHandlerBuildsOnce(t *testing.T) {
+	want := &struct{ callback string }{callback: "cors filter"}
+	constructions := 0
+	cors := newExecutorLegacyPlugin("cors", 4000, func(http.Handler) http.Handler {
+		constructions++
+		return http.HandlerFunc(func(http.ResponseWriter, *http.Request) { panic(want) })
+	})
+	handler := NewRequestPipeline([]Binding{
+		pipelineBinding("cors", cors, ScopeRoute, 4000),
+	}, nil).Then(http.NotFoundHandler())
+	for range 2 {
+		recovered := recoverHandlerPanic(t, handler)
+		panicErr, ok := recovered.(*PanicError)
+		if !ok {
+			t.Fatalf("panic = %T, want *PanicError", recovered)
+		}
+		if panicErr.Factory != "cors" || panicErr.Phase != PhaseRewrite ||
+			panicErr.Value != want || len(panicErr.Stack) == 0 {
+			t.Fatalf("panic metadata = %#v", panicErr)
+		}
+	}
+	// CORS has one pre-authentication middleware and one post-resolution
+	// rewrite middleware. Both are compiled once and reused by both requests.
+	if constructions != 2 {
+		t.Fatalf("CORS Handler() constructions = %d, want 2 fixed phase handlers", constructions)
+	}
+}
+
+func TestRequestPipelineStaticCORSAllowsAuthenticationReplacementWithoutContext(t *testing.T) {
+	cors := newExecutorCORSPlugin(t, corsplugin.Config{
+		AllowOrigins: "https://client.example",
+	})
+	replacement := httptest.NewRequest(http.MethodGet, "http://example.com/replacement", nil)
+	replacement.Header.Set("Origin", "https://client.example")
+	auth := newExecutorRequestPlugin("jwt-auth", 1, func(
+		http.ResponseWriter,
+		*http.Request,
+	) base.RequestPhaseResult {
+		return base.ContinueRequest(replacement)
+	})
+	var terminalRequest *http.Request
+	handler := NewRequestPipeline([]Binding{
+		pipelineBinding("cors", cors, ScopeRoute, 4000),
+		pipelineBinding("jwt-auth", auth, ScopeRoute, 1),
+	}, nil).Then(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		terminalRequest = r
+	}))
+	request := httptest.NewRequest(http.MethodGet, "http://example.com/original", nil)
+	request.Header.Set("Origin", "https://client.example")
+	handler.ServeHTTP(httptest.NewRecorder(), request)
+	if terminalRequest != replacement {
+		t.Fatalf("terminal request = %p, want auth replacement %p", terminalRequest, replacement)
+	}
+}
+
+func TestRequestMiddlewarePreservesInnerPluginPanicIdentity(t *testing.T) {
+	want := &PanicError{
+		Factory: "inner",
+		Phase:   PhaseAccess,
+		Value:   "inner panic",
+		Stack:   []byte("inner stack"),
+	}
+	plugin := newExecutorRequestPlugin("request-id", 1, func(
+		http.ResponseWriter,
+		*http.Request,
+	) base.RequestPhaseResult {
+		panic(want)
+	})
+	handler := NewRequestPipeline([]Binding{
+		pipelineBinding("request-id", plugin, ScopeRoute, 1),
+	}, nil).Then(http.NotFoundHandler())
+	if got := recoverHandlerPanic(t, handler); got != want {
+		t.Fatalf("panic = %#v, want original %#v", got, want)
+	}
+}
+
+func TestRequestMiddlewareDoesNotRelabelTerminalPanic(t *testing.T) {
+	want := &struct{ owner string }{owner: "core"}
+	plugin := newExecutorRequestPlugin("request-id", 1, func(
+		_ http.ResponseWriter,
+		r *http.Request,
+	) base.RequestPhaseResult {
+		return base.ContinueRequest(r)
+	})
+	handler := NewRequestPipeline([]Binding{
+		pipelineBinding("request-id", plugin, ScopeRoute, 1),
+	}, nil).Then(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { panic(want) }))
+	if got := recoverHandlerPanic(t, handler); got != want {
+		t.Fatalf("panic = %#v, want original %#v", got, want)
+	}
+}
+
+func TestCompositeChildPanicUsesOuterBindingIdentity(t *testing.T) {
+	want := &struct{ child string }{child: "key-auth"}
+	multiAuth := newExecutorRequestPlugin("multi-auth", 1, func(
+		http.ResponseWriter,
+		*http.Request,
+	) base.RequestPhaseResult {
+		func() { panic(want) }()
+		return base.RequestPhaseResult{}
+	})
+	handler := NewRequestPipeline([]Binding{
+		pipelineBinding("multi-auth", multiAuth, ScopeRoute, 1),
+	}, nil).Then(http.NotFoundHandler())
+	recovered := recoverHandlerPanic(t, handler)
+	panicErr, ok := recovered.(*PanicError)
+	if !ok {
+		t.Fatalf("panic = %T, want *PanicError", recovered)
+	}
+	if panicErr.Factory != "multi-auth" || panicErr.Phase != PhaseAccess || panicErr.Value != want {
+		t.Fatalf("panic metadata = %#v", panicErr)
+	}
+}
+
+func TestBeforeProxyPluginPanicUsesRegistrationIdentity(t *testing.T) {
+	want := &struct{ callback string }{callback: "mirror"}
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	request = apisixctx.WithBeforeProxyHookRegistration(request, apisixctx.BeforeProxyHookRegistration{
+		Owner: "proxy-mirror",
+		Phase: string(PhaseBeforeProxy),
+		Hook:  func(*http.Request) error { panic(want) },
+	})
+	handler := NewRequestPipeline(nil, nil).Then(http.NotFoundHandler())
+	recovered := recoverHandlerPanicWithRequest(t, handler, request)
+	panicErr, ok := recovered.(*PanicError)
+	if !ok {
+		t.Fatalf("panic = %T, want *PanicError", recovered)
+	}
+	if panicErr.Factory != "proxy-mirror" || panicErr.Phase != PhaseBeforeProxy ||
+		panicErr.Value != want || len(panicErr.Stack) == 0 {
+		t.Fatalf("panic metadata = %#v", panicErr)
+	}
+}
+
+func TestBeforeProxyInvalidRegistrationReturnsStable500(t *testing.T) {
+	tests := []apisixctx.BeforeProxyHookRegistration{
+		{Owner: "not-registered", Phase: string(PhaseBeforeProxy), Hook: func(*http.Request) error { return nil }},
+		{Owner: "proxy-mirror", Phase: "not-a-phase", Hook: func(*http.Request) error { return nil }},
+	}
+	for _, registration := range tests {
+		t.Run(registration.Owner+":"+registration.Phase, func(t *testing.T) {
+			request := apisixctx.WithBeforeProxyHookRegistration(
+				httptest.NewRequest(http.MethodGet, "/", nil),
+				registration,
+			)
+			response := httptest.NewRecorder()
+			NewRequestPipeline(nil, nil).Then(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				t.Fatal("terminal called for invalid before-proxy registration")
+			})).ServeHTTP(response, request)
+			if response.Code != http.StatusInternalServerError ||
+				response.Body.String() != `{"message":"Internal Server Error"}` {
+				t.Fatalf("response = %d/%q, want stable 500", response.Code, response.Body.String())
+			}
+		})
+	}
+}
+
+func TestBeforeProxyCompatibilityHookPanicRemainsRaw(t *testing.T) {
+	want := &struct{ owner string }{owner: "core"}
+	request := apisixctx.WithBeforeProxyHook(
+		httptest.NewRequest(http.MethodGet, "/", nil),
+		func(*http.Request) error { panic(want) },
+	)
+	handler := NewRequestPipeline(nil, nil).Then(http.NotFoundHandler())
+	for range 2 {
+		if recovered := recoverHandlerPanicWithRequest(t, handler, request); recovered != want {
+			t.Fatalf("panic = %#v, want raw core panic %#v", recovered, want)
+		}
+	}
+}
+
+func recoverHandlerPanicWithRequest(
+	t *testing.T,
+	handler http.Handler,
+	request *http.Request,
+) (recovered any) {
+	t.Helper()
+	defer func() { recovered = recover() }()
+	handler.ServeHTTP(httptest.NewRecorder(), request)
+	t.Fatal("handler did not panic")
+	return nil
+}
+
 func TestRequestPipelineMapsOversizedBeforeProxyBodyTo413(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("123456"))
 	request = apisixctx.WithBeforeProxyHook(request, func(*http.Request) error {
@@ -1231,7 +1503,7 @@ func TestPostResolutionHookRunsAfterWinnerMergeBeforeAnyLaterStage(t *testing.T)
 		http.HandlerFunc(func(http.ResponseWriter, *http.Request) { order = append(order, "terminal") }),
 		func(r *http.Request, effective EffectiveBindingSet) (*http.Request, error) {
 			order = append(order, "hook")
-			if len(effective.merged) != 4 || effective.merged[1].factoryName != "proxy-rewrite" ||
+			if len(effective.merged) != 4 || effective.merged[1].Descriptor.Factory != "proxy-rewrite" ||
 				effective.merged[1].Plugin != consumerRewrite {
 				t.Fatalf("effective winners = %#v", effective.merged)
 			}
@@ -1289,10 +1561,16 @@ func TestEffectiveBindingSetClonePreservesPrivateFactoryStageScopeProvenance(t *
 	merged := pipelineBinding("body-transformer", newExecutorRequestPlugin("merged", 1, nil), ScopeRoute, 1)
 	set := EffectiveBindingSet{global: []Binding{global}, merged: []Binding{merged}}
 	clone := cloneEffectiveBindingSet(set)
-	set.global[0].factoryName = "mutated"
+	set.global[0].Descriptor.Factory = "mutated"
+	set.global[0].Descriptor.Phases[0] = PhaseLog
+	set.global[0].Descriptor.Scopes[0] = ScopeConsumer
 	set.merged[0].Provenance.ID = "mutated"
-	if clone.global[0].factoryName != "proxy-cache" || clone.global[0].Stage != global.Stage ||
-		clone.global[0].Scope != ScopeGlobal || clone.merged[0].Provenance.ID == "mutated" {
+	if clone.global[0].Descriptor.Factory != "proxy-cache" ||
+		clone.global[0].Descriptor.Phases[0] == PhaseLog ||
+		clone.global[0].Descriptor.Scopes[0] == ScopeConsumer ||
+		clone.global[0].Descriptor.RequestStage() != global.Descriptor.RequestStage() ||
+		clone.global[0].Scope != ScopeGlobal ||
+		clone.merged[0].Provenance.ID == "mutated" {
 		t.Fatalf("clone = %#v", clone)
 	}
 }
@@ -1333,6 +1611,7 @@ func (p *executorFilteredCORSPlugin) Handler(next http.Handler) http.Handler {
 func newExecutorRequestContextPlugin(t *testing.T, config requestcontext.Config) *requestcontext.Plugin {
 	t.Helper()
 	plugin := &requestcontext.Plugin{}
+	plugin.SetDependencies(base.Dependencies{Config: &appconfig.EffectiveConfig{}})
 	if err := plugin.Init(); err != nil {
 		t.Fatalf("request-context Init() error = %v", err)
 	}
@@ -1419,6 +1698,45 @@ func TestRequestPipelineCORSAddsHeadersToAuthenticationRejection(t *testing.T) {
 	}
 }
 
+func TestRequestPipelineRouteCORSOwnsAuthenticationRejectionAcrossStaticScopes(t *testing.T) {
+	routeCORS := newExecutorCORSPlugin(t, corsplugin.Config{
+		AllowOrigins: "https://client.example",
+		AllowMethods: http.MethodGet,
+		AllowHeaders: "X-Route",
+	})
+	globalCORS := newExecutorCORSPlugin(t, corsplugin.Config{
+		AllowOrigins: "https://client.example",
+		AllowMethods: http.MethodGet,
+		AllowHeaders: "X-Global",
+	})
+	auth := newExecutorRequestPlugin(
+		"auth",
+		1,
+		func(w http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+			w.WriteHeader(http.StatusUnauthorized)
+			return base.StopRequest(r)
+		},
+	)
+	pipeline := NewRequestPipeline([]Binding{
+		pipelineBinding("cors", routeCORS, ScopeRoute, 4000),
+		pipelineBinding("cors", globalCORS, ScopeGlobal, 4000),
+		pipelineBinding("jwt-auth", auth, ScopeRoute, 1),
+	}, nil)
+	request := httptest.NewRequest(http.MethodGet, "http://example.com/resource", nil)
+	request.Header.Set("Origin", "https://client.example")
+	response := httptest.NewRecorder()
+	pipeline.Then(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("terminal called after authentication rejection")
+	})).ServeHTTP(response, request)
+
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("authentication status = %d, want 401", response.Code)
+	}
+	if got := response.Header().Get("Access-Control-Allow-Headers"); got != "X-Route" {
+		t.Fatalf("authentication CORS allow headers = %q, want route policy X-Route", got)
+	}
+}
+
 func TestRequestPipelineCORSPreflightRunsBeforeAuthentication(t *testing.T) {
 	cors := newExecutorCORSPlugin(t, corsplugin.Config{
 		AllowOrigins: "https://client.example",
@@ -1455,6 +1773,51 @@ func TestRequestPipelineCORSPreflightRunsBeforeAuthentication(t *testing.T) {
 	}
 	if authCalls != 0 || terminalCalls != 0 {
 		t.Fatalf("auth/terminal calls = %d/%d, want 0/0", authCalls, terminalCalls)
+	}
+}
+
+func TestRequestPipelineRouteCORSOwnsPreflightAcrossStaticScopes(t *testing.T) {
+	routeCORS := newExecutorCORSPlugin(t, corsplugin.Config{
+		AllowOrigins: "https://client.example",
+		AllowMethods: http.MethodGet,
+		AllowHeaders: "X-Route",
+	})
+	globalCORS := newExecutorCORSPlugin(t, corsplugin.Config{
+		AllowOrigins: "https://client.example",
+		AllowMethods: http.MethodGet,
+		AllowHeaders: "X-Global",
+	})
+	authCalls := 0
+	auth := newExecutorRequestPlugin(
+		"auth",
+		1,
+		func(w http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+			authCalls++
+			w.WriteHeader(http.StatusUnauthorized)
+			return base.StopRequest(r)
+		},
+	)
+	pipeline := NewRequestPipeline([]Binding{
+		pipelineBinding("cors", routeCORS, ScopeRoute, 4000),
+		pipelineBinding("cors", globalCORS, ScopeGlobal, 4000),
+		pipelineBinding("jwt-auth", auth, ScopeRoute, 1),
+	}, nil)
+	request := httptest.NewRequest(http.MethodOptions, "http://example.com/resource", nil)
+	request.Header.Set("Origin", "https://client.example")
+	request.Header.Set("Access-Control-Request-Method", http.MethodGet)
+	response := httptest.NewRecorder()
+	pipeline.Then(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("terminal called after CORS preflight")
+	})).ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("preflight status = %d, want 200", response.Code)
+	}
+	if got := response.Header().Get("Access-Control-Allow-Headers"); got != "X-Route" {
+		t.Fatalf("preflight CORS allow headers = %q, want route policy X-Route", got)
+	}
+	if authCalls != 0 {
+		t.Fatalf("authentication calls = %d, want 0", authCalls)
 	}
 }
 

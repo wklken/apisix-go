@@ -14,6 +14,7 @@ import (
 	"github.com/felixge/httpsnoop"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
+	"github.com/wklken/apisix-go/pkg/runtime"
 )
 
 func TestReadAndRestoreRequestBodyTruncatesOnlyReturnedValue(t *testing.T) {
@@ -548,16 +549,27 @@ func TestApplyBatchDefaults(t *testing.T) {
 
 func TestNewBatchProcessorDeliversPushedEntry(t *testing.T) {
 	var delivered []map[string]any
-	processor := NewBatchProcessor("test logger", BatchDefaults{}, "route-1", "server-1",
+	tasks := runtime.NewTaskRegistry(context.Background(), nil)
+	owner, err := runtime.NewTaskOwner(tasks, "plugin/test/base-constructor", runtime.TaskPlugin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	processor, err := NewBatchProcessor("test logger", owner, BatchDefaults{}, "route-1", "server-1",
 		func(_ context.Context, entries []map[string]any, _ int) (int, error) {
 			delivered = append(delivered, entries...)
 			return 0, nil
 		})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	if !processor.Push(map[string]any{"message": "hello"}) {
 		t.Fatal("Push() = false, want true")
 	}
 	processor.Stop()
+	if residuals, stopErr := tasks.Stop(context.Background()); stopErr != nil {
+		t.Fatalf("TaskRegistry.Stop() residuals=%v error=%v", residuals, stopErr)
+	}
 
 	if len(delivered) != 1 {
 		t.Fatalf("delivered %d entries, want 1", len(delivered))

@@ -11,11 +11,15 @@ evidence.
 
 ## Selection
 
-Set the profile in the merged runtime configuration:
+Select the compatibility target, security policy, and qualification contract
+independently in the merged runtime configuration:
 
 ```yaml
+compatibility_target: apisix-3.17
+security_profile: strict
+qualification_profile: http-data-plane-v1
+
 deployment:
-  profile: http-data-plane-v1
   role: data_plane
   role_data_plane:
     config_provider: etcd
@@ -27,39 +31,77 @@ deployment:
       verify: true
 ```
 
-The only accepted values are the empty compatibility value and
-`http-data-plane-v1`. An unknown value fails startup. The empty value does not
-claim this candidate contract; explicit activation of unsupported
-runtime features still fails closed in every mode.
+The deployment and etcd example above remains the profile-selection shape. A
+deployment may add the following separate operator-owned runtime-path overlay:
+
+```yaml
+apisix_go:
+  runtime_paths:
+    data_dir: /var/lib/apisix-go
+    runtime_dir: /run/apisix-go
+    log_dir: /var/log/apisix-go
+    temp_dir: /var/tmp/apisix-go
+```
+
+This `/var` layout is not present in `conf/config-production.yaml` and is not an
+image default. The current Dockerfile creates only `/usr/local/apisix/conf`,
+`/usr/local/apisix/logs`, and `/usr/local/apisix/data`; it does not create these
+four paths. Before startup, the operator must create or mount every selected
+directory and set ownership and permissions for the runtime user. See
+[`configuration.md`](configuration.md#runtime-paths) for platform defaults,
+relative-path resolution, and environment aliases.
+
+`compatibility_target` currently accepts only `apisix-3.17`.
+`security_profile` accepts `compat` or `strict`; `strict` enables the transport,
+credential, and trusted-address requirements below without selecting a
+qualification claim. `qualification_profile` accepts the empty value or
+`http-data-plane-v1`; the empty value makes no qualification claim. Unknown
+axis values fail startup, and explicitly activated unsupported runtime features
+still fail closed in every selection.
+
+Strict security is independent of qualification. An empty qualification
+profile makes no qualification claim. Selection of `http-data-plane-v1` fails
+closed when any required manifest evidence is blocked. The capability manifest
+owns the ordered `required_plugins` sequence. The effective HTTP plugin
+sequence must exactly equal the manifest `required_plugins` sequence, including
+order. Qualification derives from that ordered sequence and its required
+evidence. The qualified sequence retains, in manifest order, only entries in
+the APISIX namespace with full behavior, the selected domain, and every
+required evidence claim verified or concretely not applicable. Any sequence
+mismatch fails closed.
 
 ## Exact profile requirements
 
-The merged configuration must satisfy all of the following:
+The checked-in production reference selects both `strict` security and
+`http-data-plane-v1` qualification. Its merged configuration must satisfy all
+of the following:
 
-- `debug: false`.
-- `deployment.role: data_plane` and the effective provider is `etcd`.
+- Under `strict`, `debug: false`.
+- Under `http-data-plane-v1`, `deployment.role: data_plane` and the effective
+  provider is `etcd`.
 - Every `deployment.etcd.host` endpoint uses the `https://` scheme and
-  `deployment.etcd.tls.verify` is explicitly `true`.
-- `apisix.proxy_mode: http`; `apisix.stream_proxy.tcp` and
+  `deployment.etcd.tls.verify` is explicitly `true` under `strict` when etcd is
+  the effective provider.
+- Under `http-data-plane-v1`, `apisix.proxy_mode: http`; `apisix.stream_proxy.tcp` and
   `apisix.stream_proxy.udp` are empty; `stream_plugins` is empty.
 - `apisix.enable_admin: false`.
-- `apisix.trusted_addresses` contains at least one syntactically valid CIDR.
+- Under `strict`, `apisix.trusted_addresses` contains at least one syntactically
+  valid CIDR.
 - `nginx_config.http.client_max_body_size` is positive and
   `nginx_config.http.client_body_timeout` is mandatory and positive. The checked-in
   `conf/config-production.yaml` value for `client_body_timeout` is 60 seconds;
   Go applies it together with the header timeout as `net/http`'s combined
   `ReadTimeout`, because `net/http` has no body-only server deadline.
-- The ordered HTTP plugin list is exactly:
-
-  ```yaml
-  plugins:
-    - request-id
-    - cors
-    - key-auth
-    - jwt-auth
-    - basic-auth
-    - prometheus
-  ```
+- The effective HTTP plugin sequence exactly equals the manifest
+  `required_plugins` sequence, including order. This document does not maintain
+  a second plugin inventory; current membership, qualification result, and
+  blockers are in the [generated plugin capability status](plugins.md).
+- `apisix_go.runtime_paths.data_dir`,
+  `apisix_go.runtime_paths.runtime_dir`,
+  `apisix_go.runtime_paths.log_dir`, and
+  `apisix_go.runtime_paths.temp_dir` are all non-empty absolute paths. Static
+  validation does not create the directories or verify their ownership and
+  permissions. The durable journal is `data_dir/apisix-go-store.db`.
 
 - Process access-log settings remain unset: HTTP and stream access-log enable
   flags are false, paths and formats are empty, and access-log buffering is
@@ -70,8 +112,7 @@ The merged configuration must satisfy all of the following:
   Tencent CLS require a non-empty effective flat-string `log_format` from
   effective resource/plugin configuration or plugin metadata before creating a
   client or batch processor; effective resource/plugin configuration wins over
-  plugin metadata. The exact six-plugin candidate allowlist contains no
-  request logger and makes no request-logging egress claim.
+  plugin metadata. Qualification makes no request-logging egress claim.
 - Prometheus `http_status`, `http_latency`, and `bandwidth` each have an
   independent admitted-tuple budget controlled by
   `plugin_attr.prometheus.max_http_series` (default `10000`, integer range
@@ -82,14 +123,44 @@ The merged configuration must satisfy all of the following:
   `metric_prefix: apisix_`, this is
   `apisix_http_metric_series_overflow_total{metric}`. These series are not
   reset during route reload.
-- Kafka PubSub and upstreams with `scheme: kafka` are excluded from this
-  profile and fail route compilation; Kafka remains available only in the
-  empty compatibility profile.
+- Kafka PubSub and upstreams with `scheme: kafka` carry no
+  `http-data-plane-v1` evidence claim. Qualification selection does not disable
+  the Kafka compatibility owner. `security_profile: strict` permits plaintext
+  Kafka. When Kafka TLS is configured, `security_profile: strict` requires
+  `tls.verify: true`; `security_profile: compat` permits `tls.verify: false`.
 
 The checked-in `conf/config-production.yaml` is the reference shape. It leaves
-the etcd endpoint empty so an operator must supply a real endpoint through an
-override or `APISIXGO_DEPLOYMENT_ETCD_HOST`; it must not be replaced with a
-plaintext endpoint when selecting this profile.
+the etcd endpoint empty and omits the runtime-path overlay, so an operator must
+supply a real endpoint through an override or
+`APISIXGO_DEPLOYMENT_ETCD_HOST`; it must not be replaced with a plaintext
+endpoint when selecting this profile. Providing an endpoint and writable
+directories does not replace the manifest's required qualification evidence.
+The repository snapshot is currently unqualified, and production static
+inspection is expected to fail closed while that evidence remains incomplete.
+
+## Static configuration preflight
+
+Use the compatibility example for a successful static preflight:
+
+```bash
+apisix config test -c conf/config-example.yaml
+apisix config dump --effective --redacted -c conf/config-example.yaml
+```
+
+Running `apisix config test -c conf/config-production.yaml` against the
+repository snapshot is expected to fail closed: the file supplies no etcd
+endpoint and the manifest does not yet contain complete qualification evidence.
+Do not interpret that command as producing a current production JSON dump.
+
+`config test` checks static read, merge, decode, and profile contracts only. It
+does not create directories, verify permissions, open or migrate the journal,
+bind listeners, contact etcd or another provider, configure logging, or prove
+runtime readiness. `config dump` has no unredacted mode and its redacted output
+still contains approved operational metadata; handle it as a sensitive
+diagnostic artifact. The full precedence, environment-namespace, redaction,
+runtime-path, and
+[journal migration](configuration.md#journal-relocation-and-rollback) contract
+is documented in [`configuration.md`](configuration.md).
 
 ## Topology and TLS boundary
 
@@ -108,15 +179,15 @@ network controls remain operator responsibilities.
 
 ## External ingress request-log qualification
 
-The exact six-plugin allowlist contains no in-process request logger. A
-deployment that relies on an external TLS-terminating ingress must therefore
-provide a redacted request-log evidence bundle before this profile can be
-qualified. The bundle must demonstrate a request ID, method, normalized path
-without query-string secrets, status, latency, upstream identity, retention
-owner, and trace correlation for representative successful, rejected, and
-failed requests. These are ingress evidence requirements; the Go runtime does
-not claim to emit those fields, and this document does not mutate or verify the
-external logging system.
+This qualification profile makes no in-process request-logging guarantee. A
+deployment that relies on an external TLS-terminating ingress must provide a
+redacted request-log evidence bundle before it can be qualified. The bundle
+must demonstrate a request ID, method, normalized path without query-string
+secrets, status, latency, upstream identity, retention owner, and trace
+correlation for representative successful, rejected, and failed requests.
+These are ingress evidence requirements; the Go runtime does not claim to emit
+those fields, and this document does not mutate or verify the external logging
+system.
 
 ## State ownership
 
@@ -145,11 +216,14 @@ Explicit activation of these unsupported features fails startup:
 
 Route and upstream discovery fields are retained by the resource decoder for
 compatibility, but HTTP and stream compilation rejects discovery types or
-service references that require an unsupported discovery runtime. The profile
-also excludes general stream-plugin chaining, stream metrics, Lua/OpenResty
-runtime behavior, Kafka PubSub/upstream `scheme: kafka`, external plugin
-runners, and process access-log claims. The Kafka owner remains a supported
-compatibility-mode subsystem outside this candidate profile.
+service references that require an unsupported discovery runtime. The
+qualification contract excludes general stream-plugin chaining, stream
+metrics, Lua/OpenResty runtime behavior, external plugin runners, and process
+access-log claims. It carries no Kafka PubSub or upstream `scheme: kafka`
+evidence claim, but qualification selection does not disable the Kafka
+compatibility owner. Plaintext Kafka remains permitted under strict security;
+strict requires verified TLS only when Kafka TLS is configured, while compat
+permits unverified Kafka TLS.
 
 The bounded observability contract is strict: Zipkin is v2-only. OTel rejects
 `set_ngx_var: true` and any non-zero `inactive_timeout`; collector
@@ -166,8 +240,9 @@ callbacks; request, authentication, access, before-proxy, and log phases still
 run. For this profile, successful HTTP reverse-proxy tunnels remain subject to
 cluster admission and timeout limits; Kafka PubSub compatibility tunnels are
 outside the profile contract.
-When a route generation retires, its WebSocket connections are closed as part
-of generation shutdown.
+In the current pre-convergence implementation, retiring a route generation may
+close its WebSocket connections as part of generation shutdown. This is an
+implementation limitation, not the governing lifecycle target.
 
 ## Readiness and reload behavior
 
@@ -181,13 +256,19 @@ of generation shutdown.
   process entrypoint. An invalid individual HTTP route is quarantined instead:
   valid routes start, the invalid route receives 404, and readiness remains 503
   until the quarantine is cleared.
-- `SIGHUP` performs graceful shutdown and returns an unsupported-reload error.
-  It is not an in-process reload; start a new process with the new merged
-  configuration after the old generation has drained.
+- The current pre-convergence `SIGHUP` path performs graceful shutdown and
+  returns an unsupported-reload error; it does not hand off a live generation.
+
+The governing
+[supervisor-generation target](superpowers/plans/2026-08-23-supervisor-worker-platform.md)
+validates a replacement generation before handoff and preserves ordinary
+hijacked connections. That target belongs to a later child plan and is not yet
+implemented. See the
+[legacy conflict ledger](architecture/legacy-conflicts.md).
 
 ## Candidate authentication and TLS admission
 
-When `deployment.profile` is `http-data-plane-v1`, route compilation
+When `security_profile` is `strict`, route compilation
 quarantines a route with unsafe effective configuration before constructing
 its handler. The policy
 checks route/plugin-config/service winners and global rules; shadowed entries
@@ -203,9 +284,10 @@ generation-wide and fail-closed.
 - After inline, ID, or service upstream resolution, HTTPS and gRPCS upstreams
   must set `tls.verify: true`; omitted or false is rejected in this profile.
 
-The empty compatibility profile retains APISIX-compatible authentication and
+`security_profile: compat` retains APISIX-compatible authentication and
 upstream-TLS defaults, including omitted or false `hide_credentials` and
-`tls.verify`; this candidate policy does not change compatibility mode.
+`tls.verify`; selecting `http-data-plane-v1` alone does not change those
+security defaults.
 
 Route compilation also quarantines an individual route configured with
 `remote_addr`, non-empty
@@ -228,11 +310,20 @@ testing. Until those gates are complete, keep the global not-ready warning and
 do not advertise `http-data-plane-v1` as production qualified. The first
 release also has no previous immutable digest, so rollback qualification cannot
 be claimed until a distinct older published digest exists and is exercised.
-The independent plugin-status workflow must create a check on every pull
-request so it can remain required without path-filtered PRs staying pending.
-Its exact selector pass is not release qualification evidence; `master` push
-triggers remain scoped to the status matrix, manifests, selector test, and
-workflow paths.
+The manifest/ADR/generated-document contract is checked read-only with
+`go run ./cmd/capability-gen -repo-root . -check`; a passing drift check is not
+release qualification evidence.
 The final workflow must retain the protected `production-release` reviewers and
 wait timer; the current environment's protected-branch-only tag policy must be
 updated by an operator to permit the intended `v*` tag before publication.
+
+The static-configuration milestone proves the effective loader, explicit
+dependency injection, and operator contract only. It does not change the
+repository snapshot's unqualified, fail-closed production status.
+
+The current selection result and every blocking evidence claim are derived from
+the manifest and published in the
+[generated plugin capability status](plugins.md). Do not copy its numeric
+summary or per-plugin evidence rows here; selection fails closed until that
+generated projection shows that the effective plugin sequence and qualified
+sequence both exactly equal the manifest `required_plugins` sequence in order.

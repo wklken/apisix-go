@@ -159,6 +159,10 @@ func TestRequestTokensFailsClosedOnInvalidEndpointResponses(t *testing.T) {
 				},
 				discoveryLoaded: true,
 			}
+			if err := plugin.Init(); err != nil {
+				t.Fatal(err)
+			}
+			materializeOIDCTestPlugin(t, plugin)
 			req := httptest.NewRequest(http.MethodPost, "https://example.com/callback", nil)
 			_, err := plugin.requestTokens(req, url.Values{"grant_type": {"authorization_code"}})
 			if err == nil || !strings.Contains(err.Error(), test.wantError) {
@@ -169,13 +173,19 @@ func TestRequestTokensFailsClosedOnInvalidEndpointResponses(t *testing.T) {
 }
 
 func TestReadRedisSessionFailsClosedOnInvalidState(t *testing.T) {
-	newPlugin := func() *Plugin {
-		return &Plugin{config: Config{Session: SessionConfig{
+	newPlugin := func(t *testing.T) *Plugin {
+		t.Helper()
+		plugin := &Plugin{config: Config{Session: SessionConfig{
 			Secret:     "0123456789abcdef",
 			CookieName: "oidc_session",
 			Storage:    "redis",
 			Redis:      &SessionRedisConfig{Prefix: "oidc-sessions"},
 		}}}
+		if err := plugin.Init(); err != nil {
+			t.Fatal(err)
+		}
+		materializeOIDCTestPlugin(t, plugin)
+		return plugin
 	}
 	requestWithCookie := func(t *testing.T, plugin *Plugin, payload []byte) *http.Request {
 		t.Helper()
@@ -189,7 +199,7 @@ func TestReadRedisSessionFailsClosedOnInvalidState(t *testing.T) {
 	}
 
 	t.Run("store not configured", func(t *testing.T) {
-		plugin := newPlugin()
+		plugin := newPlugin(t)
 		_, err := plugin.readSession(requestWithCookie(t, plugin, []byte("session-a")))
 		if err == nil || !strings.Contains(err.Error(), "Redis session store is not configured") {
 			t.Fatalf("readSession() error = %v, want missing store error", err)
@@ -197,7 +207,7 @@ func TestReadRedisSessionFailsClosedOnInvalidState(t *testing.T) {
 	})
 
 	t.Run("empty Redis ID", func(t *testing.T) {
-		plugin := newPlugin()
+		plugin := newPlugin(t)
 		plugin.sessionStore = &fakeSessionStore{values: make(map[string]string)}
 		_, err := plugin.readSession(requestWithCookie(t, plugin, nil))
 		if err != errSessionNotFound {
@@ -206,7 +216,7 @@ func TestReadRedisSessionFailsClosedOnInvalidState(t *testing.T) {
 	})
 
 	t.Run("missing backend record", func(t *testing.T) {
-		plugin := newPlugin()
+		plugin := newPlugin(t)
 		plugin.sessionStore = &fakeSessionStore{values: make(map[string]string)}
 		_, err := plugin.readSession(requestWithCookie(t, plugin, []byte("session-a")))
 		if err != errSessionNotFound {
@@ -215,7 +225,7 @@ func TestReadRedisSessionFailsClosedOnInvalidState(t *testing.T) {
 	})
 
 	t.Run("invalid backend ciphertext", func(t *testing.T) {
-		plugin := newPlugin()
+		plugin := newPlugin(t)
 		plugin.sessionStore = &fakeSessionStore{values: map[string]string{
 			plugin.redisSessionKey("session-a"): "not-ciphertext",
 		}}
@@ -225,7 +235,7 @@ func TestReadRedisSessionFailsClosedOnInvalidState(t *testing.T) {
 	})
 
 	t.Run("invalid backend JSON", func(t *testing.T) {
-		plugin := newPlugin()
+		plugin := newPlugin(t)
 		value, err := plugin.sealSession([]byte("not-json"))
 		if err != nil {
 			t.Fatalf("sealSession() error = %v", err)

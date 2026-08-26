@@ -1,6 +1,8 @@
 package authz_casdoor
 
 import (
+	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -9,13 +11,16 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/secret"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -26,12 +31,25 @@ type Plugin struct {
 	client   *http.Client
 	newState func() (string, error)
 	now      func() time.Time
+
+	lifecycleMu           sync.RWMutex
+	clientSecret          secret.Value
+	clientSecretSet       bool
+	clientSecretFallbacks []secret.Value
+	secretsPrepared       bool
+	retired               bool
+
+	// testLifecycleHook is a package-local synchronization seam for lifecycle
+	// tests; it is nil in production.
+	testLifecycleHook func(string)
 }
 
 const (
 	priority               = 2559
 	name                   = "authz-casdoor"
 	minSessionSecretLength = 32
+
+	lifecycleBeforeStopWait = "before-stop-wait"
 )
 
 const schema = `
@@ -46,12 +64,11 @@ const schema = `
       "type": "string"
     },
     "client_secret": {
-	  "type": "string",
-	  "minLength": 32
+	  "type": "string"
     },
 	"client_secret_fallbacks": {
 	  "type": "array",
-	  "items": {"type": "string", "minLength": 32}
+	  "items": {"type": "string"}
 	},
     "callback_url": {
       "type": "string",
@@ -118,16 +135,10 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
-	if utf8.RuneCountInString(p.config.ClientSecret) < minSessionSecretLength {
-		return fmt.Errorf("client_secret must contain at least %d characters", minSessionSecretLength)
-	}
-	for _, fallback := range p.config.ClientSecretFallbacks {
-		if utf8.RuneCountInString(fallback) < minSessionSecretLength {
-			return fmt.Errorf(
-				"client_secret_fallbacks entries must contain at least %d characters",
-				minSessionSecretLength,
-			)
-		}
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+	if p.retired || !p.secretsPrepared {
+		return secret.ErrCredentialUnavailable
 	}
 	if p.config.CookieSecure == nil {
 		cookieSecure := true
@@ -152,25 +163,136 @@ func (p *Plugin) Config() any {
 	return &p.config
 }
 
+// MaterializeScopedSecrets admits the current Casdoor client/session secret
+// and every configured rotation fallback for one immutable generation. All
+// owners and public descriptors are installed only after the last value has
+// resolved and passed the session-key length contract.
+func (p *Plugin) MaterializeScopedSecrets(
+	ctx context.Context,
+	access base.ScopedSecretAccess,
+) error {
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+	if p.retired {
+		return secret.ErrCredentialUnavailable
+	}
+	if p.secretsPrepared {
+		return nil
+	}
+
+	current, currentDescriptor, err := materializeScopedCasdoorSecret(
+		ctx, access, "client_secret", p.config.ClientSecret,
+	)
+	if err != nil {
+		return secret.ErrCredentialUnavailable
+	}
+	fallbacks := make([]secret.Value, len(p.config.ClientSecretFallbacks))
+	fallbackDescriptors := make([]string, len(p.config.ClientSecretFallbacks))
+	installed := false
+	defer func() {
+		if installed {
+			return
+		}
+		current = secret.Value{}
+		for i := range fallbacks {
+			fallbacks[i] = secret.Value{}
+		}
+	}()
+	for i, raw := range p.config.ClientSecretFallbacks {
+		fallback, descriptor, materializeErr := materializeScopedCasdoorSecret(
+			ctx, access, "client_secret_fallbacks", raw,
+		)
+		if materializeErr != nil {
+			return secret.ErrCredentialUnavailable
+		}
+		fallbacks[i] = fallback
+		fallbackDescriptors[i] = descriptor
+	}
+
+	p.clientSecret = current
+	p.clientSecretSet = true
+	p.clientSecretFallbacks = fallbacks
+	p.config.ClientSecret = currentDescriptor
+	p.config.ClientSecretFallbacks = fallbackDescriptors
+	p.secretsPrepared = true
+	installed = true
+	return nil
+}
+
+func materializeScopedCasdoorSecret(
+	ctx context.Context,
+	access base.ScopedSecretAccess,
+	field string,
+	raw string,
+) (secret.Value, string, error) {
+	value, err := access.Materialize(ctx, field, raw)
+	if err != nil {
+		return secret.Value{}, "", secret.ErrCredentialUnavailable
+	}
+	if err := value.Use(validateCasdoorSessionSecret); err != nil {
+		return secret.Value{}, "", secret.ErrCredentialUnavailable
+	}
+	descriptor, err := value.Descriptor(capability.SecretPluginConfig)
+	if err != nil {
+		return secret.Value{}, "", secret.ErrCredentialUnavailable
+	}
+	return value, descriptor.String(), nil
+}
+
+// MaterializeSecrets is the transitional process-local compatibility path.
+// Immutable generation preparation uses MaterializeScopedSecrets instead.
+func (p *Plugin) MaterializeSecrets() error {
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+	if p.retired {
+		return secret.ErrCredentialUnavailable
+	}
+	if p.secretsPrepared {
+		return nil
+	}
+	return secret.ErrCredentialUnavailable
+}
+
+func validateCasdoorSessionSecret(plaintext string) error {
+	if utf8.RuneCountInString(plaintext) < minSessionSecretLength {
+		return secret.ErrCredentialUnavailable
+	}
+	return nil
+}
+
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p.lifecycleMu.RLock()
 		if r.URL.Path == base.CallbackPath(p.config.CallbackURL) {
-			p.handleCallback(w, r)
+			if p.retired {
+				p.lifecycleMu.RUnlock()
+				http.Error(w, util.BuildMessageResponse("credential unavailable"), http.StatusServiceUnavailable)
+				return
+			}
+			p.handleCallbackLocked(w, r)
+			p.lifecycleMu.RUnlock()
 			return
 		}
 
-		if p.authenticated(r) {
+		if p.retired {
+			p.lifecycleMu.RUnlock()
+			http.Error(w, util.BuildMessageResponse("credential unavailable"), http.StatusServiceUnavailable)
+			return
+		}
+		if p.authenticatedLocked(r) {
+			p.lifecycleMu.RUnlock()
 			next.ServeHTTP(w, r)
 			return
 		}
 
-		p.redirectToAuthorize(w, r)
+		p.redirectToAuthorizeLocked(w, r)
+		p.lifecycleMu.RUnlock()
 	})
 }
 
-func (p *Plugin) handleCallback(w http.ResponseWriter, r *http.Request) {
+func (p *Plugin) handleCallbackLocked(w http.ResponseWriter, r *http.Request) {
 	apisixctx.RegisterSensitiveQueryName(r, "code")
-	session, err := p.openSession(r)
+	session, err := p.openSessionLocked(r)
 	if err != nil {
 		logger.Error("no session found")
 		http.Error(w, util.BuildMessageResponse("no session found"), http.StatusServiceUnavailable)
@@ -193,7 +315,7 @@ func (p *Plugin) handleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	accessToken, lifetime, err := p.fetchAccessToken(r, code)
+	accessToken, lifetime, err := p.fetchAccessTokenLocked(r, code)
 	if err != nil {
 		logger.Error(err.Error())
 		http.Error(w, util.BuildMessageResponse(err.Error()), http.StatusServiceUnavailable)
@@ -206,7 +328,7 @@ func (p *Plugin) handleCallback(w http.ResponseWriter, r *http.Request) {
 
 	session.AccessToken = accessToken
 	session.ClientID = p.config.ClientID
-	if err := p.setSessionCookie(w, session, time.Duration(lifetime)*time.Second); err != nil {
+	if err := p.setSessionCookieLocked(w, session, time.Duration(lifetime)*time.Second); err != nil {
 		logger.Error(err.Error())
 		http.Error(w, util.BuildMessageResponse("failed to store session"), http.StatusInternalServerError)
 		return
@@ -214,7 +336,7 @@ func (p *Plugin) handleCallback(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, session.OriginalURI, http.StatusFound)
 }
 
-func (p *Plugin) redirectToAuthorize(w http.ResponseWriter, r *http.Request) {
+func (p *Plugin) redirectToAuthorizeLocked(w http.ResponseWriter, r *http.Request) {
 	state, err := p.newState()
 	if err != nil {
 		logger.Error(err.Error())
@@ -225,7 +347,7 @@ func (p *Plugin) redirectToAuthorize(w http.ResponseWriter, r *http.Request) {
 		)
 		return
 	}
-	if err := p.setSessionCookie(w, sessionData{
+	if err := p.setSessionCookieLocked(w, sessionData{
 		OriginalURI: r.URL.RequestURI(),
 		State:       state,
 	}, 10*time.Minute); err != nil {
@@ -248,40 +370,55 @@ func (p *Plugin) redirectToAuthorize(w http.ResponseWriter, r *http.Request) {
 	)
 }
 
-func (p *Plugin) authenticated(r *http.Request) bool {
-	session, err := p.openSession(r)
+func (p *Plugin) authenticatedLocked(r *http.Request) bool {
+	session, err := p.openSessionLocked(r)
 	return err == nil &&
 		session.AccessToken != "" &&
 		session.ClientID == p.config.ClientID
 }
 
-func (p *Plugin) fetchAccessToken(r *http.Request, code string) (string, int, error) {
-	values := url.Values{}
-	values.Set("code", code)
-	values.Set("grant_type", "authorization_code")
-	values.Set("client_id", p.config.ClientID)
-	values.Set("client_secret", p.config.ClientSecret)
-
-	req, err := http.NewRequestWithContext(
-		r.Context(),
-		http.MethodPost,
-		strings.TrimRight(p.config.EndpointAddr, "/")+"/api/login/oauth/access_token",
-		strings.NewReader(values.Encode()),
-	)
-	if err != nil {
-		return "", 0, err
+func (p *Plugin) fetchAccessTokenLocked(r *http.Request, code string) (string, int, error) {
+	if p.client == nil {
+		return "", 0, secret.ErrCredentialUnavailable
 	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-	resp, err := p.client.Do(req)
-	if err != nil {
-		return "", 0, err
-	}
-	defer func() { _ = resp.Body.Close() }()
-
 	var token tokenResponse
-	if err := json.NewDecoder(resp.Body).Decode(&token); err != nil {
-		return "", 0, fmt.Errorf("failed to parse casdoor response data: %w", err)
+	err := p.useClientSecretLocked(func(clientSecret string) error {
+		values := url.Values{}
+		values.Set("code", code)
+		values.Set("grant_type", "authorization_code")
+		values.Set("client_id", p.config.ClientID)
+		values.Set("client_secret", clientSecret)
+		body := []byte(values.Encode())
+		defer clear(body)
+
+		req, err := http.NewRequestWithContext(
+			r.Context(),
+			http.MethodPost,
+			strings.TrimRight(p.config.EndpointAddr, "/")+"/api/login/oauth/access_token",
+			bytes.NewReader(body),
+		)
+		if err != nil {
+			return err
+		}
+		defer func() {
+			req.Body = http.NoBody
+			req.GetBody = nil
+		}()
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+		resp, err := p.client.Do(req)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = resp.Body.Close() }()
+
+		if err := json.NewDecoder(resp.Body).Decode(&token); err != nil {
+			return fmt.Errorf("failed to parse casdoor response data: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return "", 0, err
 	}
 	if token.AccessToken == "" {
 		return "", 0, errors.New("failed when accessing token: no access_token contained")
@@ -292,15 +429,20 @@ func (p *Plugin) fetchAccessToken(r *http.Request, code string) (string, int, er
 	return token.AccessToken, token.ExpiresIn, nil
 }
 
-func (p *Plugin) openSession(r *http.Request) (sessionData, error) {
+func (p *Plugin) openSessionLocked(r *http.Request) (sessionData, error) {
 	value := cookieValue(r, p.cookieName())
-	payload, err := base.OpenOAuthSession(
-		value,
-		p.config.ClientSecret,
-		p.config.ClientSecretFallbacks,
-		p.sessionFingerprint(),
-		p.now(),
-	)
+	var payload []byte
+	err := p.useSessionSecretsLocked(func(current string, fallbacks []string) error {
+		var openErr error
+		payload, openErr = base.OpenOAuthSession(
+			value,
+			current,
+			fallbacks,
+			p.sessionFingerprint(),
+			p.now(),
+		)
+		return openErr
+	})
 	if err != nil {
 		return sessionData{}, err
 	}
@@ -311,19 +453,24 @@ func (p *Plugin) openSession(r *http.Request) (sessionData, error) {
 	return session, nil
 }
 
-func (p *Plugin) setSessionCookie(w http.ResponseWriter, session sessionData, lifetime time.Duration) error {
+func (p *Plugin) setSessionCookieLocked(w http.ResponseWriter, session sessionData, lifetime time.Duration) error {
 	payload, err := json.Marshal(session)
 	if err != nil {
 		return err
 	}
 	now := p.now()
-	value, err := base.SealOAuthSession(
-		payload,
-		p.config.ClientSecret,
-		p.sessionFingerprint(),
-		now,
-		now.Add(lifetime),
-	)
+	var value string
+	err = p.useClientSecretLocked(func(current string) error {
+		var sealErr error
+		value, sealErr = base.SealOAuthSession(
+			payload,
+			current,
+			p.sessionFingerprint(),
+			now,
+			now.Add(lifetime),
+		)
+		return sealErr
+	})
 	if err != nil {
 		return err
 	}
@@ -337,6 +484,77 @@ func (p *Plugin) setSessionCookie(w http.ResponseWriter, session sessionData, li
 		MaxAge:   int(lifetime.Seconds()),
 	})
 	return nil
+}
+
+func (p *Plugin) useClientSecretLocked(use func(string) error) error {
+	if use == nil || p.retired || !p.secretsPrepared {
+		return secret.ErrCredentialUnavailable
+	}
+	if p.clientSecretSet {
+		return p.clientSecret.Use(use)
+	}
+	return secret.ErrCredentialUnavailable
+}
+
+func (p *Plugin) useSessionSecretsLocked(use func(string, []string) error) error {
+	if use == nil || p.retired || !p.secretsPrepared {
+		return secret.ErrCredentialUnavailable
+	}
+	if p.clientSecretSet {
+		return p.clientSecret.Use(func(current string) error {
+			fallbacks := make([]string, len(p.clientSecretFallbacks))
+			defer func() {
+				for i := range fallbacks {
+					fallbacks[i] = ""
+				}
+			}()
+			return useScopedCasdoorFallbacks(p.clientSecretFallbacks, fallbacks, 0, func() error {
+				return use(current, fallbacks)
+			})
+		})
+	}
+	return secret.ErrCredentialUnavailable
+}
+
+func useScopedCasdoorFallbacks(
+	values []secret.Value,
+	plaintext []string,
+	index int,
+	use func() error,
+) error {
+	if index == len(values) {
+		return use()
+	}
+	return values[index].Use(func(value string) error {
+		plaintext[index] = value
+		defer func() { plaintext[index] = "" }()
+		return useScopedCasdoorFallbacks(values, plaintext, index+1, use)
+	})
+}
+
+// Stop waits for in-flight authentication/session callbacks, closes the
+// generation-neutral client, then retires legacy and scoped secret owners.
+func (p *Plugin) Stop() {
+	if hook := p.testLifecycleHook; hook != nil {
+		hook(lifecycleBeforeStopWait)
+	}
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+	if p.retired {
+		return
+	}
+	p.retired = true
+	if p.client != nil {
+		p.client.CloseIdleConnections()
+		p.client = nil
+	}
+	p.clientSecret = secret.Value{}
+	p.clientSecretSet = false
+	for i := range p.clientSecretFallbacks {
+		p.clientSecretFallbacks[i] = secret.Value{}
+	}
+	p.clientSecretFallbacks = nil
+	p.secretsPrepared = false
 }
 
 func (p *Plugin) sessionFingerprint() string {

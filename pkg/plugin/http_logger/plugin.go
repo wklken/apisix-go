@@ -8,17 +8,20 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/felixge/httpsnoop"
 	"github.com/go-resty/resty/v2"
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
-	"github.com/wklken/apisix-go/pkg/data_encryption"
+	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
 	"github.com/wklken/apisix-go/pkg/resource"
+	"github.com/wklken/apisix-go/pkg/secret"
 	"github.com/wklken/apisix-go/pkg/shared"
 )
 
@@ -149,6 +152,13 @@ type Plugin struct {
 	routeLabels map[string]any
 
 	clientRelease func()
+
+	lifecycleMu sync.RWMutex
+	stopped     atomic.Bool
+
+	authHeader      secret.Value
+	authHeaderSet   bool
+	secretsPrepared bool
 }
 
 type Config struct {
@@ -218,7 +228,78 @@ func (p *Plugin) Init() error {
 	return nil
 }
 
+func (p *Plugin) MaterializeScopedSecrets(
+	ctx context.Context,
+	access base.ScopedSecretAccess,
+) error {
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+	if p.stopped.Load() {
+		return secret.ErrCredentialUnavailable
+	}
+	if p.secretsPrepared {
+		return nil
+	}
+	if p.config.AuthHeader == nil || *p.config.AuthHeader == "" {
+		p.secretsPrepared = true
+		return nil
+	}
+
+	value, err := access.Materialize(ctx, "auth_header", *p.config.AuthHeader)
+	if err != nil || value.Use(validateHTTPAuthorization) != nil {
+		return httpAuthorizationUnavailable()
+	}
+	descriptor, err := value.Descriptor(capability.SecretPluginConfig)
+	if err != nil {
+		return httpAuthorizationUnavailable()
+	}
+	public := descriptor.String()
+	p.authHeader = value
+	p.authHeaderSet = true
+	p.config.AuthHeader = &public
+	p.secretsPrepared = true
+	return nil
+}
+
+// MaterializeSecrets is the transitional process-local compatibility path.
+// Immutable generation preparation uses MaterializeScopedSecrets instead.
+func (p *Plugin) MaterializeSecrets() error {
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+	if p.stopped.Load() {
+		return secret.ErrCredentialUnavailable
+	}
+	if p.secretsPrepared {
+		return nil
+	}
+	if p.config.AuthHeader == nil || *p.config.AuthHeader == "" {
+		p.secretsPrepared = true
+		return nil
+	}
+	return httpAuthorizationUnavailable()
+}
+
+func validateHTTPAuthorization(value string) error {
+	if strings.TrimSpace(value) == "" {
+		return secret.ErrCredentialUnavailable
+	}
+	return nil
+}
+
+func httpAuthorizationUnavailable() error {
+	return fmt.Errorf("%s auth_header: %w", name, secret.ErrCredentialUnavailable)
+}
+
 func (p *Plugin) PostInit() error {
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+	if p.stopped.Load() || !p.secretsPrepared {
+		return secret.ErrCredentialUnavailable
+	}
+	var metadata pluginMetadata
+	if _, err := p.MetadataView().Decode(name, &metadata); err != nil {
+		return fmt.Errorf("%s metadata decode failed: %w", name, err)
+	}
 	p.config.IncludeReqBodyExpr = normalizeBodyExpression(p.config.IncludeReqBodyExpr)
 	p.config.IncludeRespBodyExpr = normalizeBodyExpression(p.config.IncludeRespBodyExpr)
 	if err := base.PrepareExprRegexps(
@@ -231,17 +312,6 @@ func (p *Plugin) PostInit() error {
 	}
 	if err := validateBodyExpression("include_resp_body_expr", p.config.IncludeRespBodyExpr); err != nil {
 		return err
-	}
-	if p.config.AuthHeader != nil {
-		keyring, enabled := data_encryption.Keyring()
-		resolved, err := data_encryption.NewResolver(enabled, keyring).ResolveForContext(
-			*p.config.AuthHeader,
-			"http-logger.auth_header",
-		)
-		if err != nil {
-			return fmt.Errorf("http-logger auth_header: %w", err)
-		}
-		p.config.AuthHeader = &resolved
 	}
 	if p.config.Timeout == 0 {
 		p.config.Timeout = 3
@@ -285,12 +355,6 @@ func (p *Plugin) PostInit() error {
 	}
 	client.SetHeader("User-Agent", "apisix-go-plugin-http-logger")
 
-	configUID.Add(p.config.AuthHeader)
-	if p.config.AuthHeader != nil {
-		// we can't use  p.client.SetAuthToken here
-		client.SetHeader("Authorization", *p.config.AuthHeader)
-	}
-
 	value, release, err := shared.AcquireClient(
 		shared.ClientKey(name, configUID),
 		func() (any, error) { return client, nil },
@@ -299,10 +363,8 @@ func (p *Plugin) PostInit() error {
 	if err != nil {
 		return err
 	}
-	p.client = value.(*resty.Client)
-	p.clientRelease = release
+	sharedClient := value.(*resty.Client)
 
-	metadata := base.LoadPluginMetadata[pluginMetadata](name)
 	if len(p.config.LogFormat) == 0 {
 		p.logFormat = metadata.LogFormat
 	} else {
@@ -325,7 +387,7 @@ func (p *Plugin) PostInit() error {
 	)
 	p.SetSnapshotLogFormat(p.logFormat, nil)
 
-	p.BatchProcessor = base.NewBatchProcessor("http logger", base.BatchDefaults{
+	processor, err := base.NewBatchProcessor("http logger", p.TaskOwner(), base.BatchDefaults{
 		PluginID:           name,
 		BatchMaxSize:       p.config.BatchMaxSize,
 		MaxRetryCount:      p.config.MaxRetryCount,
@@ -335,17 +397,49 @@ func (p *Plugin) PostInit() error {
 		InactiveTimeoutSec: p.config.InactiveTimeout,
 		MaxPendingEntries:  p.config.MaxPendingEntries,
 	}, p.RouteID, p.ServerAddr, p.SendBatch)
+	if err != nil {
+		release()
+		return err
+	}
+	if p.stopped.Load() {
+		processor.Stop()
+		release()
+		return secret.ErrCredentialUnavailable
+	}
+	p.client = sharedClient
+	p.clientRelease = release
+	p.BatchProcessor = processor
 
 	return nil
 }
 
+func (p *Plugin) QuiesceGenerationTasks() { p.Stop() }
+
 func (p *Plugin) Stop() {
-	p.StopWithCleanup(func() {
+	if p.stopped.Swap(true) {
+		return
+	}
+	p.lifecycleMu.RLock()
+	processor := p.BatchProcessor
+	p.lifecycleMu.RUnlock()
+	cleanup := func() {
+		p.lifecycleMu.Lock()
+		defer p.lifecycleMu.Unlock()
 		if p.clientRelease != nil {
 			p.clientRelease()
 			p.clientRelease = nil
 		}
-	})
+		p.client = nil
+		p.BatchProcessor = nil
+		p.authHeader = secret.Value{}
+		p.authHeaderSet = false
+		p.secretsPrepared = false
+	}
+	if processor != nil {
+		processor.StopWithCleanup(cleanup)
+	} else {
+		cleanup()
+	}
 }
 
 func normalizeBodyExpression(expression []any) []any {
@@ -442,7 +536,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			base.NestedLogMap(logFields, "response")["body"] = responseBody
 		}
 
-		_ = p.Fire(logFields)
+		_ = p.enqueueLogIfRunning(logFields)
 	}
 	return http.HandlerFunc(fn)
 }
@@ -513,6 +607,18 @@ func (p *Plugin) RunLogPhase(snapshot base.LogSnapshot) error {
 		responseBody != "" {
 		base.NestedLogMap(fields, "response")["body"] = responseBody
 	}
+	return p.enqueueLogIfRunning(fields)
+}
+
+func (p *Plugin) enqueueLogIfRunning(fields map[string]any) error {
+	p.lifecycleMu.RLock()
+	defer p.lifecycleMu.RUnlock()
+	if p.stopped.Load() {
+		return base.ErrLogQueueUnavailable
+	}
+	if p.BatchProcessor == nil {
+		return p.Fire(fields)
+	}
 	return p.EnqueueLog(fields)
 }
 
@@ -577,6 +683,7 @@ func (p *Plugin) Send(log map[string]any) {
 		logger.Errorf("failed to marshal log message: %s in http-logger", err)
 		return
 	}
+	defer clear(body)
 
 	if err := p.sendBody(context.Background(), body); err != nil {
 		logger.Errorf("%s", err)
@@ -588,6 +695,7 @@ func (p *Plugin) SendBatch(ctx context.Context, entries []map[string]any, batchM
 	if err != nil {
 		return 0, err
 	}
+	defer clear(body)
 	return 0, p.sendBody(ctx, body)
 }
 
@@ -620,18 +728,71 @@ func (p *Plugin) encodeBatch(entries []map[string]any, batchMaxSize int) ([]byte
 }
 
 func (p *Plugin) sendBody(ctx context.Context, body []byte) error {
-	resp, err := p.client.R().SetContext(ctx).SetBody(body).Post(p.config.URI)
+	p.lifecycleMu.RLock()
+	defer p.lifecycleMu.RUnlock()
+	if p.stopped.Load() || p.client == nil {
+		return secret.ErrCredentialUnavailable
+	}
+	request := p.client.R().SetContext(ctx).SetBody(body)
+	var response *resty.Response
+	defer func() {
+		request.Header.Del("Authorization")
+		request.Body = nil
+		if request.RawRequest != nil {
+			request.RawRequest.Header.Del("Authorization")
+			request.RawRequest.Body = http.NoBody
+			request.RawRequest.GetBody = nil
+		}
+		if response != nil {
+			if responseBody := response.Body(); len(responseBody) > 0 {
+				clear(responseBody)
+				response.SetBody(nil)
+			}
+			if response.RawResponse != nil {
+				response.RawResponse.Header.Del("Authorization")
+				response.RawResponse.Request = nil
+				response.RawResponse.Body = http.NoBody
+			}
+			response.Request = nil
+			response.RawResponse = nil
+		}
+	}()
+
+	send := func() error {
+		var err error
+		response, err = request.Post(p.config.URI)
+		return err
+	}
+	var err error
+	if p.authHeaderSet {
+		err = p.useAuthorizationLocked(func(authorization string) error {
+			request.SetHeader("Authorization", authorization)
+			return send()
+		})
+	} else {
+		err = send()
+	}
 	if err != nil {
 		return fmt.Errorf("error while sending data to [%s]: %w", p.config.URI, err)
 	}
 
-	if resp.StatusCode() >= 400 {
+	if response.StatusCode() >= 400 {
 		return fmt.Errorf(
 			"server returned status code [%d] uri [%s], body [%s]",
-			resp.StatusCode(),
+			response.StatusCode(),
 			p.config.URI,
-			resp.String(),
+			response.String(),
 		)
 	}
 	return nil
+}
+
+func (p *Plugin) useAuthorizationLocked(use func(string) error) error {
+	if use == nil || p.stopped.Load() || !p.secretsPrepared {
+		return secret.ErrCredentialUnavailable
+	}
+	if p.authHeaderSet {
+		return p.authHeader.Use(use)
+	}
+	return secret.ErrCredentialUnavailable
 }

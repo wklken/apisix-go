@@ -1,22 +1,26 @@
 package csrf
 
 import (
+	"context"
 	crand "crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
-	"github.com/wklken/apisix-go/pkg/data_encryption"
+	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/secret"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -24,6 +28,10 @@ type Plugin struct {
 	base.BasePlugin
 	config       Config
 	randomReader io.Reader
+
+	secretMu  sync.RWMutex
+	key       *secret.Value
+	legacyKey *string
 }
 
 const (
@@ -73,18 +81,14 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	p.secretMu.RLock()
+	prepared := p.key != nil || p.legacyKey != nil
+	p.secretMu.RUnlock()
+	if !prepared {
+		return secret.ErrCredentialUnavailable
+	}
 	if p.randomReader == nil {
 		p.randomReader = crand.Reader
-	}
-
-	keyring, enabled := data_encryption.Keyring()
-	resolved, err := data_encryption.NewResolver(enabled, keyring).ResolveForContext(p.config.Key, "csrf.key")
-	if err != nil {
-		return fmt.Errorf("csrf key: %w", err)
-	}
-	p.config.Key = resolved
-	if strings.TrimSpace(p.config.Key) == "" {
-		return fmt.Errorf("csrf key must not be empty")
 	}
 
 	p.config.safeMethods = map[string]struct{}{
@@ -104,60 +108,163 @@ func (p *Plugin) PostInit() error {
 	return nil
 }
 
+// MaterializeSecrets is the transitional process-local compatibility path.
+// Scoped generation preparation uses MaterializeScopedSecrets instead.
+func (p *Plugin) MaterializeSecrets() error {
+	p.secretMu.Lock()
+	defer p.secretMu.Unlock()
+	if p.key != nil || p.legacyKey != nil {
+		return nil
+	}
+
+	resolver := p.DataEncryption()
+	if !resolver.Configured() {
+		return errors.New("data-encryption resolver is required")
+	}
+	resolved, err := resolver.ResolveForContext(p.config.Key, "csrf.key")
+	if err != nil {
+		return fmt.Errorf("csrf key: %w", secret.ErrCredentialUnavailable)
+	}
+	if err := validateCSRFKey(resolved); err != nil {
+		return err
+	}
+	digest := sha256.Sum256([]byte(resolved))
+	descriptor, err := secret.NewDescriptor(capability.SecretPluginConfig, digest)
+	if err != nil {
+		return fmt.Errorf("csrf key: %w", secret.ErrCredentialUnavailable)
+	}
+
+	p.config.Key = descriptor.String()
+	p.legacyKey = &resolved
+	return nil
+}
+
+// MaterializeScopedSecrets admits only the strict plugin-config key for this
+// immutable attempt. The public configuration retains only a descriptor; the
+// admitted value remains private and is used through Value.Use.
+func (p *Plugin) MaterializeScopedSecrets(
+	ctx context.Context, access base.ScopedSecretAccess,
+) error {
+	p.secretMu.Lock()
+	defer p.secretMu.Unlock()
+	if p.key != nil || p.legacyKey != nil {
+		return nil
+	}
+
+	value, err := access.Materialize(ctx, "key", p.config.Key)
+	if err != nil {
+		return fmt.Errorf("csrf key: %w", secret.ErrCredentialUnavailable)
+	}
+	if err := value.Use(func(plaintext string) error {
+		return validateCSRFKey(plaintext)
+	}); err != nil {
+		return fmt.Errorf("csrf key: %w", secret.ErrCredentialUnavailable)
+	}
+	descriptor, err := value.Descriptor(capability.SecretPluginConfig)
+	if err != nil {
+		return fmt.Errorf("csrf key: %w", secret.ErrCredentialUnavailable)
+	}
+
+	p.key = &value
+	p.config.Key = descriptor.String()
+	return nil
+}
+
 func (p *Plugin) Config() any {
 	return &p.config
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
-		if _, ok := p.config.safeMethods[r.Method]; !ok {
-			// check csrf token
-			headerToken := r.Header.Get(p.config.Name)
-			if headerToken == "" {
-				// token not found
-				writeCSRFError(w, "no csrf token in headers")
-				return
+		err := p.useKey(func(key string) error {
+			if _, ok := p.config.safeMethods[r.Method]; !ok {
+				// check csrf token
+				headerToken := r.Header.Get(p.config.Name)
+				if headerToken == "" {
+					// token not found
+					writeCSRFError(w, "no csrf token in headers")
+					return errCSRFResponseWritten
+				}
+				// read token from cookie
+				cookie, err := r.Cookie(p.config.Name)
+				if err != nil {
+					// 如果 Cookie 不存在
+					writeCSRFError(w, "no csrf cookie")
+					return errCSRFResponseWritten
+				}
+				cookieToken := cookie.Value
+
+				if headerToken != cookieToken {
+					// token not match
+					writeCSRFError(w, "csrf token mismatch")
+					return errCSRFResponseWritten
+				}
+
+				// check token expires
+				ok := checkCSRFToken(cookieToken, key, p.expires())
+				if !ok {
+					writeCSRFError(w, "Failed to verify the csrf token signature")
+					return errCSRFResponseWritten
+				}
 			}
-			// read token from cookie
-			cookie, err := r.Cookie(p.config.Name)
+
+			// add csrf token into cookie
+			csrfToken, err := genCSRFToken(key, p.randomReader)
 			if err != nil {
-				// 如果 Cookie 不存在
-				writeCSRFError(w, "no csrf cookie")
-				return
+				writeCSRFErrorStatus(w, http.StatusInternalServerError, "failed to generate csrf token")
+				return errCSRFResponseWritten
 			}
-			cookieToken := cookie.Value
+			http.SetCookie(w, &http.Cookie{
+				Name:     p.config.Name,
+				Value:    csrfToken,
+				Path:     "/",
+				SameSite: http.SameSiteLaxMode,
+				Expires:  time.Now().Add(time.Duration(p.expires()) * time.Second),
+			})
 
-			if headerToken != cookieToken {
-				// token not match
-				writeCSRFError(w, "csrf token mismatch")
-				return
-			}
-
-			// check token expires
-			ok := checkCSRFToken(cookieToken, p.config.Key, p.expires())
-			if !ok {
-				writeCSRFError(w, "Failed to verify the csrf token signature")
-				return
-			}
-		}
-
-		// add csrf token into cookie
-		csrfToken, err := genCSRFToken(p.config.Key, p.randomReader)
-		if err != nil {
-			writeCSRFErrorStatus(w, http.StatusInternalServerError, "failed to generate csrf token")
+			next.ServeHTTP(w, r)
+			return nil
+		})
+		if err == nil || errors.Is(err, errCSRFResponseWritten) {
 			return
 		}
-		http.SetCookie(w, &http.Cookie{
-			Name:     p.config.Name,
-			Value:    csrfToken,
-			Path:     "/",
-			SameSite: http.SameSiteLaxMode,
-			Expires:  time.Now().Add(time.Duration(p.expires()) * time.Second),
-		})
-
-		next.ServeHTTP(w, r)
+		writeCSRFErrorStatus(w, http.StatusInternalServerError, "csrf key unavailable")
 	}
 	return http.HandlerFunc(fn)
+}
+
+var errCSRFResponseWritten = errors.New("csrf response written")
+
+func (p *Plugin) useKey(use func(string) error) error {
+	if use == nil {
+		return secret.ErrCredentialUnavailable
+	}
+	p.secretMu.RLock()
+	defer p.secretMu.RUnlock()
+	if p.key != nil {
+		return p.key.Use(use)
+	}
+	if p.legacyKey != nil {
+		return use(*p.legacyKey)
+	}
+	return secret.ErrCredentialUnavailable
+}
+
+func (p *Plugin) Stop() {
+	p.secretMu.Lock()
+	defer p.secretMu.Unlock()
+	p.key = nil
+	if p.legacyKey != nil {
+		*p.legacyKey = ""
+		p.legacyKey = nil
+	}
+}
+
+func validateCSRFKey(value string) error {
+	if strings.TrimSpace(value) == "" {
+		return errors.New("csrf key must not be empty")
+	}
+	return nil
 }
 
 func (p *Plugin) expires() int64 {

@@ -1,6 +1,8 @@
 package ai_aws_content_moderation
 
 import (
+	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -11,19 +13,24 @@ import (
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_runtime"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
-	"github.com/wklken/apisix-go/pkg/store"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
+	return newTestPluginWithScopedValues(t, cfg, nil)
+}
+
+func newTestPluginWithScopedValues(t *testing.T, cfg Config, values map[string]string) *Plugin {
 	t.Helper()
 
 	p := &Plugin{config: cfg}
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := base.MaterializePluginSecrets(p); err != nil {
-		t.Fatalf("MaterializePluginSecrets() error = %v", err)
+	capabilityValue, scope, _, cleanup := newScopedSecretHarness(t, name, values)
+	t.Cleanup(cleanup)
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
@@ -146,13 +153,24 @@ func TestHandlerSignsSessionToken(t *testing.T) {
 	}))
 	defer moderation.Close()
 
-	p := newTestPlugin(t, Config{Comprehend: Comprehend{
+	p := &Plugin{config: Config{Comprehend: Comprehend{
 		AccessKeyID:     "test-access",
 		SecretAccessKey: "test-secret",
 		SessionToken:    "temporary-token",
 		Region:          "us-east-1",
 		Endpoint:        moderation.URL,
-	}})
+	}}}
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	capabilityValue, scope, _, cleanup := newScopedSecretHarness(t, name, nil)
+	defer cleanup()
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatal(err)
+	}
 	req := selectedAIRequest(
 		http.MethodPost,
 		"/v1/chat/completions",
@@ -343,7 +361,7 @@ func TestHandlerRejectsMissingAIInstanceInErrorMode(t *testing.T) {
 	}
 }
 
-func TestMaterializeSecretsKeepsEnvironmentDescriptorsAndSignsResolvedCredentials(t *testing.T) {
+func TestScopedSecretsUsePluginConfigDescriptorsAndSignResolvedCredentials(t *testing.T) {
 	t.Setenv("AWS_CONTENT_MODERATION_ACCESS_KEY", "environment-access")
 	t.Setenv("AWS_CONTENT_MODERATION_SECRET_KEY", "environment-secret")
 	t.Setenv("AWS_CONTENT_MODERATION_SESSION_TOKEN", "environment-session-token")
@@ -358,28 +376,28 @@ func TestMaterializeSecretsKeepsEnvironmentDescriptorsAndSignsResolvedCredential
 	}))
 	defer moderation.Close()
 
-	p := newTestPlugin(t, Config{Comprehend: Comprehend{
+	p := newTestPluginWithScopedValues(t, Config{Comprehend: Comprehend{
 		AccessKeyID:     "$ENV://AWS_CONTENT_MODERATION_ACCESS_KEY",
 		SecretAccessKey: "$ENV://AWS_CONTENT_MODERATION_SECRET_KEY",
 		SessionToken:    "$ENV://AWS_CONTENT_MODERATION_SESSION_TOKEN",
 		Region:          "us-east-1",
 		Endpoint:        moderation.URL,
-	}})
+	}}, map[string]string{
+		"$ENV://AWS_CONTENT_MODERATION_ACCESS_KEY":    "environment-access",
+		"$ENV://AWS_CONTENT_MODERATION_SECRET_KEY":    "environment-secret",
+		"$ENV://AWS_CONTENT_MODERATION_SESSION_TOKEN": "environment-session-token",
+	})
 	p.now = func() time.Time { return time.Unix(1, 0) }
 
-	if !strings.HasPrefix(p.config.Comprehend.AccessKeyID, "$ENV://AWS_CONTENT_MODERATION_ACCESS_KEY#sha256:") {
-		t.Fatalf("access key id descriptor = %q, want environment descriptor", p.config.Comprehend.AccessKeyID)
+	if want := wantPluginConfigDescriptor("environment-access"); p.config.Comprehend.AccessKeyID != want {
+		t.Fatalf("access key id descriptor = %q, want %q", p.config.Comprehend.AccessKeyID, want)
 	}
-	if !strings.HasPrefix(p.config.Comprehend.SecretAccessKey, "$ENV://AWS_CONTENT_MODERATION_SECRET_KEY#sha256:") {
-		t.Fatalf("secret access key descriptor = %q, want environment descriptor", p.config.Comprehend.SecretAccessKey)
+	if want := wantPluginConfigDescriptor("environment-secret"); p.config.Comprehend.SecretAccessKey != want {
+		t.Fatalf("secret access key descriptor = %q, want %q", p.config.Comprehend.SecretAccessKey, want)
 	}
-	if !strings.HasPrefix(p.config.Comprehend.SessionToken, "$ENV://AWS_CONTENT_MODERATION_SESSION_TOKEN#sha256:") {
-		t.Fatalf("session token descriptor = %q, want environment descriptor", p.config.Comprehend.SessionToken)
+	if want := wantPluginConfigDescriptor("environment-session-token"); p.config.Comprehend.SessionToken != want {
+		t.Fatalf("session token descriptor = %q, want %q", p.config.Comprehend.SessionToken, want)
 	}
-	assertResolvedSecretClone(t, "access key id", p.accessKeyID, "environment-access")
-	assertResolvedSecretClone(t, "secret access key", p.secretAccessKey, "environment-secret")
-	assertResolvedSecretClone(t, "session token", p.sessionToken, "environment-session-token")
-
 	req := selectedAIRequest(
 		http.MethodPost,
 		"/v1/chat/completions",
@@ -394,18 +412,12 @@ func TestMaterializeSecretsKeepsEnvironmentDescriptorsAndSignsResolvedCredential
 	}
 
 	p.Stop()
-	for name, secret := range map[string]*store.ResolvedSecret{
-		"access key id":     p.accessKeyID,
-		"secret access key": p.secretAccessKey,
-		"session token":     p.sessionToken,
-	} {
-		if got := secret.Bytes(); got != nil {
-			t.Fatalf("%s bytes after Stop() = %q, want nil", name, got)
-		}
+	if p.scopedSet || p.scopedSessionTokenSet {
+		t.Fatal("scoped credential state retained after Stop()")
 	}
 }
 
-func TestMaterializeSecretsCleansUpRequiredCredentialsWhenSessionTokenFails(t *testing.T) {
+func TestLegacyMaterializeEntryPointFailsClosedWithoutScopedCredentials(t *testing.T) {
 	t.Setenv("AWS_CONTENT_MODERATION_ACCESS_KEY", "environment-access")
 	t.Setenv("AWS_CONTENT_MODERATION_SECRET_KEY", "environment-secret")
 	p := &Plugin{config: Config{Comprehend: Comprehend{
@@ -418,31 +430,8 @@ func TestMaterializeSecretsCleansUpRequiredCredentialsWhenSessionTokenFails(t *t
 		t.Fatalf("Init() error = %v", err)
 	}
 
-	if err := p.MaterializeSecrets(); err == nil {
-		t.Fatal("MaterializeSecrets() error = nil, want session token materialization failure")
-	}
-	if p.accessKeyID != nil || p.secretAccessKey != nil || p.sessionToken != nil {
-		t.Fatalf(
-			"handles after session token materialization failure = (%#v, %#v, %#v), want all nil",
-			p.accessKeyID,
-			p.secretAccessKey,
-			p.sessionToken,
-		)
-	}
-}
-
-func assertResolvedSecretClone(t *testing.T, name string, secret *store.ResolvedSecret, want string) {
-	t.Helper()
-	if secret == nil {
-		t.Fatalf("%s handle = nil", name)
-	}
-	copy := secret.Bytes()
-	if got := string(copy); got != want {
-		t.Fatalf("%s clone = %q, want %q", name, got, want)
-	}
-	copy[0] = 0
-	if got := string(secret.Bytes()); got != want {
-		t.Fatalf("%s handle retained caller mutation = %q, want %q", name, got, want)
+	if err := p.MaterializeSecrets(); !errors.Is(err, errAWSCredentialsUnavailable) {
+		t.Fatalf("MaterializeSecrets() error = %v, want credential unavailable", err)
 	}
 }
 

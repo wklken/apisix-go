@@ -30,6 +30,7 @@ require_pattern '-X[[:space:]]+[[:punct:]]?github\.com/wklken/apisix-go/pkg/vers
 require_pattern '-X[[:space:]]+[[:punct:]]?github\.com/wklken/apisix-go/pkg/version\.Commit=\$\{COMMIT\}' "$dockerfile"
 require_pattern '-X[[:space:]]+[[:punct:]]?github\.com/wklken/apisix-go/pkg/version\.BuildTime=\$\{BUILD_TIME\}' "$dockerfile"
 require_pattern '-X[[:space:]]+[[:punct:]]?github\.com/wklken/apisix-go/pkg/version\.GoVersion=\$\{GO_VERSION\}' "$dockerfile"
+require_pattern 'apk upgrade --no-cache' "$dockerfile"
 require_pattern 'apk add --no-cache.*ca-certificates' "$dockerfile"
 reject_pattern 'curl' "$dockerfile"
 require_pattern 'addgroup .*10001' "$dockerfile"

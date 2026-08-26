@@ -21,7 +21,8 @@ RUN go build -trimpath -ldflags "-s -w -X github.com/wklken/apisix-go/pkg/versio
 # deploy
 FROM alpine:3.24.1
 
-RUN apk add --no-cache ca-certificates \
+RUN apk upgrade --no-cache \
+    && apk add --no-cache ca-certificates \
     && addgroup -S -g 10001 apisix \
     && adduser -S -D -H -u 10001 -G apisix apisix \
     && mkdir -p /usr/local/apisix/conf /usr/local/apisix/logs /usr/local/apisix/data \

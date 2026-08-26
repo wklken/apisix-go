@@ -77,10 +77,12 @@ func TestBuildReverseHandlerQuarantinesPassiveHTTPFailure(t *testing.T) {
 		},
 	}
 
-	handler, err := (&Builder{}).buildReverseHandler(resource.Route{Upstream: upstream}, resource.Service{})
-	if err != nil {
-		t.Fatalf("buildReverseHandler() error = %v", err)
-	}
+	handler := testPreparedProxyHandler(
+		t,
+		resource.Route{ID: "passive-health", Upstream: upstream},
+		resource.Service{},
+		testEffectiveConfig(),
+	)
 
 	badResponses := 0
 	for range 8 {

@@ -15,7 +15,6 @@ import (
 
 	"github.com/apache/dubbo-go-hessian2"
 	"github.com/spf13/cast"
-	appconfig "github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/dubbo"
 )
@@ -38,11 +37,7 @@ const (
 
 var nextDubboRequestID atomic.Uint64
 
-func loadMultiplexCount() (int, error) {
-	if appconfig.GlobalConfig == nil || appconfig.GlobalConfig.PluginAttr == nil {
-		return defaultMultiplexCount, nil
-	}
-	attr := appconfig.GlobalConfig.PluginAttr[name]
+func loadMultiplexCount(attr map[string]any) (int, error) {
 	if attr == nil {
 		return defaultMultiplexCount, nil
 	}

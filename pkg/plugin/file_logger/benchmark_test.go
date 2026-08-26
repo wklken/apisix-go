@@ -4,6 +4,10 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/runtime"
 )
 
 func BenchmarkFileLoggerPayloadEstimator(b *testing.B) {
@@ -27,7 +31,20 @@ func BenchmarkFileLoggerPayloadEstimator(b *testing.B) {
 }
 
 func BenchmarkFileLoggerWrite(b *testing.B) {
+	tasks := runtime.NewTaskRegistry(context.Background(), nil)
+	owner, err := runtime.NewTaskOwner(tasks, "plugin/benchmark/file-logger", runtime.TaskPlugin)
+	if err != nil {
+		b.Fatalf("NewTaskOwner() error = %v", err)
+	}
+	b.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if residuals, stopErr := tasks.Stop(ctx); stopErr != nil {
+			b.Errorf("TaskRegistry.Stop() residuals = %v, error = %v", residuals, stopErr)
+		}
+	})
 	p := &Plugin{config: Config{Path: b.TempDir() + "/access.log"}}
+	p.SetDependencies(base.Dependencies{Tasks: owner})
 	if err := p.Init(); err != nil {
 		b.Fatalf("Init() error = %v", err)
 	}

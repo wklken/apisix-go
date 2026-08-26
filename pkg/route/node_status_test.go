@@ -11,17 +11,13 @@ import (
 )
 
 func TestRegisterExtraRoutesAddsNodeStatusWhenEnabled(t *testing.T) {
-	oldConfig := config.GlobalConfig
-	t.Cleanup(func() {
-		config.GlobalConfig = oldConfig
-	})
-	config.GlobalConfig = &config.Config{
+	staticConfig := &config.Config{
 		Apisix:  config.Apisix{ID: "node-status-id"},
 		Plugins: []string{"node-status"},
 	}
 
 	mux := chi.NewRouter()
-	registerExtraRoutes(mux)
+	registerExtraRoutes(mux, staticConfig)
 
 	req := httptest.NewRequest(http.MethodGet, "/apisix/status", nil)
 	rr := httptest.NewRecorder()
@@ -55,14 +51,8 @@ func TestRegisterExtraRoutesAddsNodeStatusWhenEnabled(t *testing.T) {
 }
 
 func TestRegisterExtraRoutesReturnsNotFoundForUnsupportedNodeStatusMethod(t *testing.T) {
-	oldConfig := config.GlobalConfig
-	t.Cleanup(func() {
-		config.GlobalConfig = oldConfig
-	})
-	config.GlobalConfig = &config.Config{Plugins: []string{"node-status"}}
-
 	mux := chi.NewRouter()
-	registerExtraRoutes(mux)
+	registerExtraRoutes(mux, &config.Config{Plugins: []string{"node-status"}})
 
 	req := httptest.NewRequest(http.MethodPatch, "/apisix/status", nil)
 	rr := httptest.NewRecorder()
@@ -74,14 +64,8 @@ func TestRegisterExtraRoutesReturnsNotFoundForUnsupportedNodeStatusMethod(t *tes
 }
 
 func TestRegisterExtraRoutesSkipsNodeStatusWhenDisabled(t *testing.T) {
-	oldConfig := config.GlobalConfig
-	t.Cleanup(func() {
-		config.GlobalConfig = oldConfig
-	})
-	config.GlobalConfig = &config.Config{Plugins: []string{}}
-
 	mux := chi.NewRouter()
-	registerExtraRoutes(mux)
+	registerExtraRoutes(mux, &config.Config{})
 
 	req := httptest.NewRequest(http.MethodGet, "/apisix/status", nil)
 	rr := httptest.NewRecorder()
@@ -93,17 +77,13 @@ func TestRegisterExtraRoutesSkipsNodeStatusWhenDisabled(t *testing.T) {
 }
 
 func TestRegisterExtraRoutesAddsServerInfoWhenEnabled(t *testing.T) {
-	oldConfig := config.GlobalConfig
-	t.Cleanup(func() {
-		config.GlobalConfig = oldConfig
-	})
-	config.GlobalConfig = &config.Config{
+	staticConfig := &config.Config{
 		Apisix:  config.Apisix{ID: "server-info-id"},
 		Plugins: []string{"server-info"},
 	}
 
 	mux := chi.NewRouter()
-	registerExtraRoutes(mux)
+	registerExtraRoutes(mux, staticConfig)
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/server_info", nil)
 	rr := httptest.NewRecorder()
@@ -131,14 +111,8 @@ func TestRegisterExtraRoutesAddsServerInfoWhenEnabled(t *testing.T) {
 }
 
 func TestRegisterExtraRoutesSkipsServerInfoWhenDisabled(t *testing.T) {
-	oldConfig := config.GlobalConfig
-	t.Cleanup(func() {
-		config.GlobalConfig = oldConfig
-	})
-	config.GlobalConfig = &config.Config{Plugins: []string{}}
-
 	mux := chi.NewRouter()
-	registerExtraRoutes(mux)
+	registerExtraRoutes(mux, &config.Config{})
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/server_info", nil)
 	rr := httptest.NewRecorder()

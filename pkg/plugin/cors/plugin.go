@@ -168,6 +168,12 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	var metadata Metadata
+	if _, err := p.MetadataView().Decode(name, &metadata); err != nil {
+		return fmt.Errorf("%s metadata decode failed: %w", name, err)
+	}
+	p.metadata = metadata
+
 	if p.config.AllowCredential && wildcardCredentialOption(p.config) {
 		return fmt.Errorf("you can not set '*' for other CORS options when allow_credential is true")
 	}
@@ -192,10 +198,6 @@ func (p *Plugin) PostInit() error {
 	if p.config.MaxAge == 0 {
 		p.config.MaxAge = 5
 	}
-	if len(p.config.AllowOriginsByMetadata) > 0 && len(p.metadata.AllowOrigins) == 0 {
-		p.metadata = base.LoadPluginMetadata[Metadata](name)
-	}
-
 	for _, rule := range p.config.AllowOriginsByRegex {
 		compiled, err := regexp.Compile(rule)
 		if err != nil {

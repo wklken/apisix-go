@@ -25,7 +25,9 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/limitbase"
 	"github.com/wklken/apisix-go/pkg/plugin/real_ip"
 	"github.com/wklken/apisix-go/pkg/resource"
-	"github.com/wklken/apisix-go/pkg/store"
+	"github.com/wklken/apisix-go/pkg/runtime"
+	"github.com/wklken/apisix-go/pkg/secret"
+	"github.com/wklken/apisix-go/pkg/shared"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -106,17 +108,85 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
 
 	p := &Plugin{config: cfg}
+	tasks := runtime.NewTaskRegistry(context.Background(), nil)
+	owner := newPluginTaskOwnerForTest(t, tasks, "plugin/test/limit-count/attempt-1")
+	p.SetDependencies(base.Dependencies{Tasks: owner})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := base.MaterializePluginSecrets(p); err != nil {
-		t.Fatalf("MaterializePluginSecrets() error = %v", err)
+	capabilityValue, scope, _, cleanup := newScopedSecretHarness(t, 1, "test-route", nil)
+	t.Cleanup(cleanup)
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
+	t.Cleanup(func() {
+		residuals, stopErr := tasks.Stop(context.Background())
+		if stopErr != nil || len(residuals) != 0 {
+			t.Errorf("TaskRegistry.Stop() = (%v, %v)", residuals, stopErr)
+		}
+		p.Stop()
+	})
 
 	return p
+}
+
+func newTestPluginWithMetadata(t *testing.T, cfg Config, metadata map[string]any) *Plugin {
+	t.Helper()
+
+	p := &Plugin{config: cfg}
+	tasks := runtime.NewTaskRegistry(context.Background(), nil)
+	owner := newPluginTaskOwnerForTest(t, tasks, "plugin/test/limit-count/attempt-1")
+	p.SetDependencies(base.Dependencies{
+		Metadata: mustMetadataView(t, metadata),
+		Tasks:    owner,
+	})
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	capabilityValue, scope, _, cleanup := newScopedSecretHarness(t, 1, "test-route", nil)
+	t.Cleanup(cleanup)
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+	t.Cleanup(func() {
+		residuals, stopErr := tasks.Stop(context.Background())
+		if stopErr != nil || len(residuals) != 0 {
+			t.Errorf("TaskRegistry.Stop() = (%v, %v)", residuals, stopErr)
+		}
+		p.Stop()
+	})
+	return p
+}
+
+func mustMetadataView(t *testing.T, metadata map[string]any) runtime.MetadataView {
+	t.Helper()
+	document, err := json.Marshal(metadata)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	view, err := runtime.NewMetadataView(map[string][]byte{name: document})
+	if err != nil {
+		t.Fatalf("NewMetadataView() error = %v", err)
+	}
+	return view
+}
+
+func resolvedLimitCountKeyForTest(t *testing.T, p *Plugin, request *http.Request) string {
+	t.Helper()
+	var resolved string
+	if err := p.withResolvedLimitCountKey(request, func(key string) error {
+		resolved = key
+		return nil
+	}); err != nil {
+		t.Fatalf("withResolvedLimitCountKey() error = %v", err)
+	}
+	return resolved
 }
 
 func TestPostInitAcceptsRootRedisPolicyFields(t *testing.T) {
@@ -134,8 +204,16 @@ func TestPostInitAcceptsRootRedisPolicyFields(t *testing.T) {
 		RedisKeepalivePool:    80,
 	})
 
-	if p.config.Redis.RedisHost != "127.0.0.1" {
-		t.Fatalf("Redis.RedisHost = %q, want 127.0.0.1", p.config.Redis.RedisHost)
+	if p.config.Redis.RedisHost != limitCountDescriptor("127.0.0.1") {
+		t.Fatalf("Redis.RedisHost = %q, want content descriptor", p.config.Redis.RedisHost)
+	}
+	if err := p.withLimitCountRedisHost(func(host string) error {
+		if host != "127.0.0.1" {
+			t.Fatalf("private Redis host = %q, want 127.0.0.1", host)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
 	if p.config.Redis.RedisPort != 6380 {
 		t.Fatalf("Redis.RedisPort = %d, want 6380", p.config.Redis.RedisPort)
@@ -181,6 +259,99 @@ func TestSchemaAcceptsRootRedisPolicyFields(t *testing.T) {
 	}
 	if err := util.Validate(config, p.GetSchema()); err != nil {
 		t.Fatalf("schema rejected root redis policy fields: %v", err)
+	}
+}
+
+func TestMetadataSchemaAcceptsQuotaHeaderNames(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := util.Validate(map[string]any{
+		"limit_header":     "X-Limit-N",
+		"remaining_header": "X-Remaining-N",
+		"reset_header":     "X-Reset-N",
+	}, p.GetMetadataSchema()); err != nil {
+		t.Fatalf("valid metadata rejected: %v", err)
+	}
+	for _, field := range []string{"limit_header", "remaining_header", "reset_header"} {
+		if err := util.Validate(map[string]any{field: 1}, p.GetMetadataSchema()); err == nil {
+			t.Fatalf("non-string %s accepted", field)
+		}
+	}
+}
+
+func TestPreparedGenerationsRetainMetadataHeaders(t *testing.T) {
+	first := newTestPluginWithMetadata(t, Config{Count: 2, TimeWindow: 60}, map[string]any{
+		"limit_header":     "X-Limit-N",
+		"remaining_header": "X-Remaining-N",
+		"reset_header":     "X-Reset-N",
+	})
+	second := newTestPluginWithMetadata(t, Config{Count: 2, TimeWindow: 60}, map[string]any{
+		"limit_header":     "X-Limit-N-Plus-One",
+		"remaining_header": "X-Remaining-N-Plus-One",
+		"reset_header":     "X-Reset-N-Plus-One",
+	})
+
+	serve := func(p *Plugin) *httptest.ResponseRecorder {
+		t.Helper()
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodGet, "/", nil)
+		request.RemoteAddr = "192.0.2.10:1234"
+		p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		})).ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusNoContent {
+			t.Fatalf("response status = %d, want %d", recorder.Code, http.StatusNoContent)
+		}
+		return recorder
+	}
+
+	firstResponse := serve(first)
+	for _, header := range []string{"X-Limit-N", "X-Remaining-N", "X-Reset-N"} {
+		if firstResponse.Header().Get(header) == "" {
+			t.Fatalf("generation N response missing %s", header)
+		}
+	}
+	if got := firstResponse.Header().Get("X-Limit-N-Plus-One"); got != "" {
+		t.Fatalf("generation N response leaked N+1 header = %q", got)
+	}
+
+	secondResponse := serve(second)
+	for _, header := range []string{"X-Limit-N-Plus-One", "X-Remaining-N-Plus-One", "X-Reset-N-Plus-One"} {
+		if secondResponse.Header().Get(header) == "" {
+			t.Fatalf("generation N+1 response missing %s", header)
+		}
+	}
+	if got := secondResponse.Header().Get("X-Limit-N"); got != "" {
+		t.Fatalf("generation N+1 response leaked N header = %q", got)
+	}
+}
+
+func TestMetadataDecodeFailsBeforeLimitCountGroupRegistration(t *testing.T) {
+	p := &Plugin{config: Config{
+		Count:      1,
+		TimeWindow: 60,
+		Group:      t.Name(),
+	}}
+	p.SetDependencies(base.Dependencies{Metadata: mustMetadataView(t, map[string]any{
+		"remaining_header": 1,
+	})})
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	capabilityValue, scope, _, cleanup := newScopedSecretHarness(t, 3, "metadata-invalid", nil)
+	t.Cleanup(cleanup)
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
+	}
+	err := p.PostInit()
+	defer p.Stop()
+	if err == nil {
+		t.Fatal("PostInit() error = nil for invalid metadata")
+	}
+	if p.groupRegistered || p.limiter != nil {
+		t.Fatalf("decode failure registered resources: group=%v limiter=%v", p.groupRegistered, p.limiter)
 	}
 }
 
@@ -332,7 +503,15 @@ func TestPostInitBuildsRedisClusterOptionsFromRootFields(t *testing.T) {
 		RedisKeepalivePool:    80,
 	})
 
-	options := p.redisClusterConnConfig().ClusterOptions()
+	var options *redis.ClusterOptions
+	if err := p.withLimitCountRedisNodes(func(nodes []string) error {
+		runtimeConfig := p.redisClusterConnConfig()
+		runtimeConfig.Nodes = slices.Clone(nodes)
+		options = runtimeConfig.ClusterOptions()
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if len(options.Addrs) != 2 || options.Addrs[0] != "127.0.0.1:5000" {
 		t.Fatalf("cluster addresses = %#v", options.Addrs)
 	}
@@ -488,48 +667,41 @@ func TestHandlerRouteQuotaRemainsSharedAcrossAuthenticatedConsumers(t *testing.T
 	}
 }
 
-func TestMaterializeSecretsRedactsEnvironmentKeyAndStopsOwner(t *testing.T) {
+func TestScopedSecretsRedactEnvironmentKeyAndStopCleanly(t *testing.T) {
 	t.Setenv("LIMIT_COUNT_KEY", "remote_addr")
-
-	p := newTestPlugin(t, Config{
+	const raw = "$ENV://LIMIT_COUNT_KEY"
+	p, cleanup := prepareScopedLimitCountPlugin(t, 50, "plugin-key", Config{
 		Count:      2,
 		TimeWindow: 60,
-		Key:        "$ENV://LIMIT_COUNT_KEY",
-	})
-	if !strings.Contains(p.config.Key, "$ENV://LIMIT_COUNT_KEY#sha256:") ||
-		strings.Contains(p.config.Key, "remote_addr") {
-		t.Fatalf("key = %q, want safe environment descriptor", p.config.Key)
+		Key:        raw,
+	}, map[string]string{raw: "remote_addr"})
+	defer cleanup()
+	if p.config.Key != limitCountDescriptor("remote_addr") {
+		t.Fatalf("key = %q, want resolved content descriptor", p.config.Key)
 	}
 	request := httptest.NewRequest(http.MethodGet, "/", nil)
 	request.RemoteAddr = "192.0.2.10:1234"
-	if got := p.resolveKey(request); got != "192.0.2.10" {
+	if got := resolvedLimitCountKeyForTest(t, p, request); got != "192.0.2.10" {
 		t.Fatalf("resolveKey() = %q, want materialized remote_addr behavior", got)
 	}
-	owner := p.keySecret
-	if owner == nil {
-		t.Fatal("referenced key owner is not retained by the plugin generation")
-	}
 	p.Stop()
-	if p.keySecret != nil {
-		t.Fatal("Stop() retained the referenced key owner")
-	}
-	if got := owner.Bytes(); got != nil {
-		t.Fatalf("Stop() left referenced key bytes = %q, want destroyed handle", got)
+	if p.scopedSet || p.scopedKeySecret != (secret.Value{}) {
+		t.Fatal("Stop() retained scoped key state")
 	}
 }
 
-func TestMaterializeSecretsRedactsRedisHostAndBuildsResolvedClient(t *testing.T) {
+func TestScopedSecretsRedactRedisHostAndBuildResolvedClient(t *testing.T) {
 	t.Setenv("LIMIT_COUNT_REDIS_HOST", "127.0.0.2")
-
-	p := newTestPlugin(t, Config{
+	const raw = "$ENV://LIMIT_COUNT_REDIS_HOST"
+	p, cleanup := prepareScopedLimitCountPlugin(t, 51, "plugin-host", Config{
 		Count:      2,
 		TimeWindow: 60,
 		Policy:     "redis",
-		RedisHost:  "$ENV://LIMIT_COUNT_REDIS_HOST",
-	})
-	if !strings.Contains(p.config.Redis.RedisHost, "$ENV://LIMIT_COUNT_REDIS_HOST#sha256:") ||
-		strings.Contains(p.config.Redis.RedisHost, "127.0.0.2") {
-		t.Fatalf("Redis host = %q, want safe environment descriptor", p.config.Redis.RedisHost)
+		RedisHost:  raw,
+	}, map[string]string{raw: "127.0.0.2"})
+	defer cleanup()
+	if p.config.Redis.RedisHost != limitCountDescriptor("127.0.0.2") {
+		t.Fatalf("Redis host = %q, want resolved content descriptor", p.config.Redis.RedisHost)
 	}
 	if p.config.RedisHost != p.config.Redis.RedisHost {
 		t.Fatalf("root Redis host = %q, want canonical descriptor %q", p.config.RedisHost, p.config.Redis.RedisHost)
@@ -541,34 +713,32 @@ func TestMaterializeSecretsRedactsRedisHostAndBuildsResolvedClient(t *testing.T)
 	if options := client.(*redis.Client).Options(); options.Addr != "127.0.0.2:6379" {
 		t.Fatalf("Redis address = %q, want 127.0.0.2:6379", options.Addr)
 	}
-	owner := p.redisHostSecret
-	if owner == nil {
-		t.Fatal("Redis host owner is not retained by the plugin generation")
-	}
 	p.Stop()
-	if p.redisHostSecret != nil {
-		t.Fatal("Stop() retained the Redis host owner")
-	}
-	if got := owner.Bytes(); got != nil {
-		t.Fatalf("Stop() left Redis host bytes = %q, want destroyed handle", got)
+	if p.scopedSet || p.scopedRedisHost != (secret.Value{}) {
+		t.Fatal("Stop() retained scoped Redis host state")
 	}
 }
 
-func TestMaterializeSecretsRedactsRedisClusterNodesAndBuildsResolvedClient(t *testing.T) {
+func TestScopedSecretsRedactRedisClusterNodesAndBuildResolvedClient(t *testing.T) {
 	t.Setenv("LIMIT_COUNT_REDIS_NODE_0", "127.0.0.1:5000")
 	t.Setenv("LIMIT_COUNT_REDIS_NODE_1", "127.0.0.1:5001")
 
-	p := newTestPlugin(t, Config{
+	raws := []string{"$ENV://LIMIT_COUNT_REDIS_NODE_0", "$ENV://LIMIT_COUNT_REDIS_NODE_1"}
+	p, cleanup := prepareScopedLimitCountPlugin(t, 52, "plugin-cluster", Config{
 		Count:             2,
 		TimeWindow:        60,
 		Policy:            "redis-cluster",
-		RedisClusterNodes: []string{"$ENV://LIMIT_COUNT_REDIS_NODE_0", "$ENV://LIMIT_COUNT_REDIS_NODE_1"},
+		RedisClusterNodes: raws,
 		RedisClusterName:  "redis-cluster-1",
-	})
-	for i, reference := range []string{"$ENV://LIMIT_COUNT_REDIS_NODE_0", "$ENV://LIMIT_COUNT_REDIS_NODE_1"} {
-		if !strings.Contains(p.config.RedisCluster.RedisClusterNodes[i], reference+"#sha256:") ||
-			strings.Contains(p.config.RedisCluster.RedisClusterNodes[i], "127.0.0.1") {
-			t.Fatalf("Redis cluster node %d = %q, want safe descriptor", i, p.config.RedisCluster.RedisClusterNodes[i])
+	}, map[string]string{raws[0]: "127.0.0.1:5000", raws[1]: "127.0.0.1:5001"})
+	defer cleanup()
+	for i, resolved := range []string{"127.0.0.1:5000", "127.0.0.1:5001"} {
+		if p.config.RedisCluster.RedisClusterNodes[i] != limitCountDescriptor(resolved) {
+			t.Fatalf(
+				"Redis cluster node %d = %q, want resolved content descriptor",
+				i,
+				p.config.RedisCluster.RedisClusterNodes[i],
+			)
 		}
 	}
 	if !slices.Equal(p.config.RedisClusterNodes, p.config.RedisCluster.RedisClusterNodes) {
@@ -586,18 +756,9 @@ func TestMaterializeSecretsRedactsRedisClusterNodesAndBuildsResolvedClient(t *te
 	if options := client.(*redis.ClusterClient).Options(); !slices.Equal(options.Addrs, want) {
 		t.Fatalf("Redis cluster addresses = %#v, want %#v", options.Addrs, want)
 	}
-	owners := append([]*store.ResolvedSecret(nil), p.redisClusterNodeSecrets...)
-	if len(owners) != 2 {
-		t.Fatal("Redis cluster node owners are not retained by the plugin generation")
-	}
 	p.Stop()
-	if p.redisClusterNodeSecrets != nil {
-		t.Fatal("Stop() retained Redis cluster node owners")
-	}
-	for i, owner := range owners {
-		if got := owner.Bytes(); got != nil {
-			t.Fatalf("Stop() left Redis cluster node %d bytes = %q, want destroyed handle", i, got)
-		}
+	if p.scopedSet || len(p.scopedRedisClusterNodes) != 0 {
+		t.Fatal("Stop() retained scoped Redis cluster node state")
 	}
 }
 
@@ -1126,8 +1287,7 @@ func TestMemorySlidingWindowStoreEvictsExpiredCountersGlobally(t *testing.T) {
 
 func TestDelayedSyncRemainingDecreasesLocallyBeforeRemoteFlush(t *testing.T) {
 	backend := &recordingDelayedSyncBackend{limit: 7, reset: 10 * time.Second}
-	syncer := newDelayedSyncer(backend, 7, 10*time.Second, time.Hour, 10000)
-	t.Cleanup(syncer.Stop)
+	syncer := newOwnedDelayedSyncerForTest(t, backend, 7, 10*time.Second, time.Hour, 10000)
 	now := time.Unix(100, 0)
 
 	for request, expected := range []int64{6, 5, 4, 3} {
@@ -1152,8 +1312,7 @@ func TestDelayedSyncRemainingDecreasesLocallyBeforeRemoteFlush(t *testing.T) {
 
 func TestDelayedSyncRejectsAfterLocallyReservedQuotaIsExhausted(t *testing.T) {
 	backend := &recordingDelayedSyncBackend{limit: 7, reset: 10 * time.Second}
-	syncer := newDelayedSyncer(backend, 7, 10*time.Second, time.Hour, 10000)
-	t.Cleanup(syncer.Stop)
+	syncer := newOwnedDelayedSyncerForTest(t, backend, 7, 10*time.Second, time.Hour, 10000)
 	now := time.Unix(100, 0)
 
 	for request := range 7 {
@@ -1180,8 +1339,7 @@ func TestDelayedSyncRejectsAfterLocallyReservedQuotaIsExhausted(t *testing.T) {
 
 func TestDelayedSyncQueueRemainsBufferedUntilFlush(t *testing.T) {
 	backend := &recordingDelayedSyncBackend{limit: 7, reset: 10 * time.Second}
-	syncer := newDelayedSyncer(backend, 7, 10*time.Second, time.Hour, 10000)
-	t.Cleanup(syncer.Stop)
+	syncer := newOwnedDelayedSyncerForTest(t, backend, 7, 10*time.Second, time.Hour, 10000)
 
 	if !syncer.enqueue("buffered-key") {
 		t.Fatal("enqueue() = false, want key buffered")
@@ -1225,8 +1383,7 @@ func TestDelayedSyncQueueOverflowDoesNotFailAlreadyAllowedRequestAndWarnsOnce(t 
 
 func TestDelayedSyncFlushRetriesDroppedStateWithoutAnotherRequest(t *testing.T) {
 	backend := &recordingDelayedSyncBackend{limit: 10, reset: 10 * time.Second}
-	syncer := newDelayedSyncer(backend, 10, 10*time.Second, time.Hour, 2)
-	t.Cleanup(syncer.Stop)
+	syncer := newOwnedDelayedSyncerForTest(t, backend, 10, 10*time.Second, time.Hour, 2)
 	now := time.Unix(100, 0)
 
 	for _, key := range []string{"queued-1", "queued-2", "overflow"} {
@@ -1264,8 +1421,7 @@ func TestDelayedSyncFlushRetriesDroppedStateWithoutAnotherRequest(t *testing.T) 
 
 func TestDelayedSyncFlushRequeuesBackendErrorsWithoutLosingDelta(t *testing.T) {
 	backend := &recordingDelayedSyncBackend{limit: 7, reset: 10 * time.Second}
-	syncer := newDelayedSyncer(backend, 7, 10*time.Second, time.Hour, 2)
-	t.Cleanup(syncer.Stop)
+	syncer := newOwnedDelayedSyncerForTest(t, backend, 7, 10*time.Second, time.Hour, 2)
 	now := time.Unix(100, 0)
 
 	if _, _, err := syncer.incoming(context.Background(), "retry-key", 1, now); err != nil {
@@ -1297,7 +1453,12 @@ func TestDelayedSyncFlushRequeuesBackendErrorsWithoutLosingDelta(t *testing.T) {
 
 func TestDelayedSyncStopFlushesAllDirtyStatesIncludingDroppedQueueEntries(t *testing.T) {
 	backend := &recordingDelayedSyncBackend{limit: 7, reset: 10 * time.Second}
-	syncer := newDelayedSyncer(backend, 7, 10*time.Second, time.Hour, 1)
+	registry, _ := testTaskRegistry(t)
+	owner := newPluginTaskOwnerForTest(t, registry, "plugin/test/limit-count/attempt-1")
+	syncer, err := newDelayedSyncer(owner, backend, 7, 10*time.Second, time.Hour, 1)
+	if err != nil {
+		t.Fatalf("newDelayedSyncer() error = %v", err)
+	}
 	now := time.Unix(100, 0)
 
 	for _, key := range []string{"queued", "overflow"} {
@@ -1306,7 +1467,7 @@ func TestDelayedSyncStopFlushesAllDirtyStatesIncludingDroppedQueueEntries(t *tes
 		}
 	}
 	backend.resetCalls()
-	syncer.Stop()
+	stopTaskRegistry(t, registry)
 
 	got := backend.keyDeltas()
 	slices.SortFunc(got, func(left, right delayedSyncCall) int {
@@ -1319,13 +1480,18 @@ func TestDelayedSyncStopFlushesAllDirtyStatesIncludingDroppedQueueEntries(t *tes
 
 func TestDelayedSyncStopFlushesPendingDelta(t *testing.T) {
 	backend := &recordingDelayedSyncBackend{limit: 7, reset: 10 * time.Second}
-	syncer := newDelayedSyncer(backend, 7, 10*time.Second, time.Hour, 10000)
+	registry, _ := testTaskRegistry(t)
+	owner := newPluginTaskOwnerForTest(t, registry, "plugin/test/limit-count/attempt-1")
+	syncer, err := newDelayedSyncer(owner, backend, 7, 10*time.Second, time.Hour, 10000)
+	if err != nil {
+		t.Fatalf("newDelayedSyncer() error = %v", err)
+	}
 	now := time.Unix(100, 0)
 
 	if _, _, err := syncer.incoming(context.Background(), "shutdown-key", 1, now); err != nil {
 		t.Fatalf("incoming() error = %v", err)
 	}
-	syncer.Stop()
+	stopTaskRegistry(t, registry)
 
 	if got := backend.deltas(); len(got) != 2 || got[1] != 1 {
 		t.Fatalf("remote deltas after Stop = %v, want pending delta 1 flushed", got)
@@ -1334,8 +1500,7 @@ func TestDelayedSyncStopFlushesPendingDelta(t *testing.T) {
 
 func TestDelayedSlidingFlushKeepsTheReservationWindowAcrossRollover(t *testing.T) {
 	backend := &recordingDelayedSyncBackend{limit: 2, reset: 5 * time.Second}
-	syncer := newDelayedSyncer(backend, 2, 5*time.Second, time.Hour, 10000)
-	t.Cleanup(syncer.Stop)
+	syncer := newOwnedDelayedSyncerForTest(t, backend, 2, 5*time.Second, time.Hour, 10000)
 	reservedAt := time.Unix(104, 900_000_000)
 	flushedAt := time.Unix(105, 100_000_000)
 
@@ -1358,14 +1523,13 @@ func TestDelayedSlidingFlushKeepsTheReservationWindowAcrossRollover(t *testing.T
 func TestDelayedSlidingFlushStoresTheReservedDeltaUnderTheRuntimeWindowKey(t *testing.T) {
 	store := newMemorySlidingWindowStore()
 	limiter := newSlidingWindowLimiter(store, "plugin-limit-count", 2, 60)
-	syncer := newDelayedSyncer(
+	syncer := newOwnedDelayedSyncerForTest(t,
 		slidingWindowDelayedBackend{limiter: limiter},
 		2,
 		60*time.Second,
 		time.Hour,
 		10000,
 	)
-	t.Cleanup(syncer.Stop)
 	reservedAt := time.Unix(1_750_000_001, 0)
 	key := "route:delayed-sliding:redis-user"
 
@@ -1596,6 +1760,11 @@ func TestHandlerResolvesStringCountAndTimeWindow(t *testing.T) {
 	}
 	if err := util.Parse(config, p.Config()); err != nil {
 		t.Fatalf("Parse() error = %v", err)
+	}
+	capabilityValue, scope, _, cleanup := newScopedSecretHarness(t, 60, "string-count", nil)
+	t.Cleanup(cleanup)
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
@@ -1878,14 +2047,13 @@ func TestDelayedSyncPublishesRateLimitingInfoForAccessLogs(t *testing.T) {
 	request := apisixctx.WithRequestVars(httptest.NewRequest(http.MethodGet, "/", nil))
 	request.RemoteAddr = "192.0.2.1:1234"
 	response := httptest.NewRecorder()
-	syncer := newDelayedSyncer(
+	syncer := newOwnedDelayedSyncerForTest(t,
 		&recordingDelayedSyncBackend{limit: 2, reset: 10 * time.Second},
 		2,
 		10*time.Second,
 		time.Hour,
 		10,
 	)
-	t.Cleanup(syncer.Stop)
 
 	if allowed := p.runDelayedLimit(
 		response,
@@ -1914,12 +2082,18 @@ func TestResolveKeySupportsAPISIXArgumentAndHTTPHostVariables(t *testing.T) {
 	request.Host = "example-1.com"
 
 	argumentPlugin := &Plugin{config: Config{KeyType: "var", Key: "arg_key"}}
-	if got := argumentPlugin.resolveKey(request); got != "redis-user" {
+	argumentCapability, argumentScope, _, argumentCleanup := newScopedSecretHarness(t, 61, "argument-key", nil)
+	t.Cleanup(argumentCleanup)
+	materializeScopedLimitCount(t, argumentPlugin, argumentCapability, argumentScope)
+	if got := resolvedLimitCountKeyForTest(t, argumentPlugin, request); got != "redis-user" {
 		t.Fatalf("arg_key = %q, want redis-user", got)
 	}
 
 	hostPlugin := &Plugin{config: Config{KeyType: "var", Key: "http_host"}}
-	if got := hostPlugin.resolveKey(request); got != "example-1.com" {
+	hostCapability, hostScope, _, hostCleanup := newScopedSecretHarness(t, 62, "host-key", nil)
+	t.Cleanup(hostCleanup)
+	materializeScopedLimitCount(t, hostPlugin, hostCapability, hostScope)
+	if got := resolvedLimitCountKeyForTest(t, hostPlugin, request); got != "example-1.com" {
 		t.Fatalf("http_host = %q, want example-1.com", got)
 	}
 }
@@ -1945,6 +2119,11 @@ func TestHandlerResolvesStringRuleCountAndTimeWindow(t *testing.T) {
 	}
 	if err := util.Parse(config, p.Config()); err != nil {
 		t.Fatalf("Parse() error = %v", err)
+	}
+	capabilityValue, scope, _, cleanup := newScopedSecretHarness(t, 64, "string-rule", nil)
+	t.Cleanup(cleanup)
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
@@ -2484,6 +2663,9 @@ func TestSlidingStoreConstructorsCoverConfiguredPolicies(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			plugin := &Plugin{config: test.config}
+			capabilityValue, scope, _, cleanup := newScopedSecretHarness(t, 63, "sliding-"+test.name, nil)
+			t.Cleanup(cleanup)
+			materializeScopedLimitCount(t, plugin, capabilityValue, scope)
 			if _, err := plugin.newSlidingStore(); err != nil {
 				t.Fatalf("newSlidingStore() error = %v", err)
 			}
@@ -2497,7 +2679,16 @@ func TestSlidingStoreConstructorsCoverConfiguredPolicies(t *testing.T) {
 }
 
 func TestDelayedSyncerFactoryReusesLimitConfigurationAndStopClearsState(t *testing.T) {
+	tasks := runtime.NewTaskRegistry(context.Background(), nil)
+	owner := newPluginTaskOwnerForTest(t, tasks, "plugin/test/limit-count/attempt-1")
 	plugin := &Plugin{config: Config{Policy: "local", SyncInterval: 0.1}}
+	plugin.SetDependencies(base.Dependencies{Tasks: owner})
+	t.Cleanup(func() {
+		residuals, err := tasks.Stop(context.Background())
+		if err != nil || len(residuals) != 0 {
+			t.Errorf("TaskRegistry.Stop() = (%v, %v)", residuals, err)
+		}
+	})
 	first, err := plugin.delayedSyncerFor(10, 60)
 	if err != nil {
 		t.Fatalf("delayedSyncerFor(first) error = %v", err)
@@ -2513,10 +2704,198 @@ func TestDelayedSyncerFactoryReusesLimitConfigurationAndStopClearsState(t *testi
 	if first != second || first == other {
 		t.Fatalf("delayed syncer identities = %p, %p, %p", first, second, other)
 	}
+	stopTaskRegistry(t, tasks)
 	plugin.Stop()
 	if plugin.delayedByKey != nil || plugin.delayed != nil {
 		t.Fatalf("Stop() retained delayed state: %#v, %#v", plugin.delayedByKey, plugin.delayed)
 	}
+}
+
+func TestDelayedSyncerFactoryRollsBackStateOnTaskAdmissionFailure(t *testing.T) {
+	failures := make(chan runtime.TaskFailure, 1)
+	tasks := runtime.NewTaskRegistry(context.Background(), func(failure runtime.TaskFailure) {
+		failures <- failure
+	})
+	owner := newPluginTaskOwnerForTest(t, tasks, "plugin/test/limit-count/attempt-1")
+	if err := tasks.Go(runtime.TaskSpec{
+		Owner:       "plugin/test/limit-count/attempt-1/delayed-sync",
+		Criticality: runtime.TaskPlugin,
+	}, func(context.Context) error {
+		panic("mark delayed-sync owner failed")
+	}); err != nil {
+		t.Fatalf("seed owner failure task: %v", err)
+	}
+	select {
+	case failure := <-failures:
+		if failure.Owner != "plugin/test/limit-count/attempt-1/delayed-sync" {
+			t.Fatalf("failure owner = %q, want delayed-sync owner", failure.Owner)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for delayed-sync owner failure")
+	}
+
+	plugin := &Plugin{config: Config{Policy: "local", SyncInterval: 0.1}}
+	plugin.SetDependencies(base.Dependencies{Tasks: owner})
+	syncer, err := plugin.delayedSyncerFor(10, 60)
+	if !errors.Is(err, runtime.ErrTaskOwnerFailed) {
+		t.Fatalf("delayedSyncerFor() error = %v, want %v", err, runtime.ErrTaskOwnerFailed)
+	}
+	if syncer != nil || plugin.localLimiterStore != nil || len(plugin.delayedByKey) != 0 {
+		t.Fatalf(
+			"admission failure retained state: syncer=%p local=%v delayed=%#v",
+			syncer, plugin.localLimiterStore, plugin.delayedByKey,
+		)
+	}
+	stopTaskRegistry(t, tasks)
+}
+
+func TestDelayedSyncerFactoryRollsBackFixedRedisOnTaskAdmissionFailure(t *testing.T) {
+	testDelayedSyncerRedisAdmissionRollback(t, "fixed", 16379)
+}
+
+func TestDelayedSyncerFactoryRollsBackSlidingRedisOnTaskAdmissionFailure(t *testing.T) {
+	testDelayedSyncerRedisAdmissionRollback(t, "sliding", 16380)
+}
+
+type testDelayedSyncRedisClient struct {
+	*redis.Client
+}
+
+func (c *testDelayedSyncRedisClient) ScriptLoad(
+	ctx context.Context,
+	_ string,
+) *redis.StringCmd {
+	cmd := redis.NewStringCmd(ctx)
+	cmd.SetVal("test-script-sha")
+	return cmd
+}
+
+func testDelayedSyncerRedisAdmissionRollback(t *testing.T, windowType string, port int) {
+	t.Helper()
+	failures := make(chan runtime.TaskFailure, 1)
+	tasks := runtime.NewTaskRegistry(context.Background(), func(failure runtime.TaskFailure) {
+		failures <- failure
+	})
+	owner := newPluginTaskOwnerForTest(t, tasks, "plugin/test/limit-count/redis-rollback")
+
+	plugin := &Plugin{config: Config{
+		Policy:       "redis",
+		WindowType:   windowType,
+		SyncInterval: 0.1,
+		RedisHost:    "127.0.0.1",
+		RedisPort:    port,
+		RedisTimeout: 1,
+	}}
+	plugin.config.Redis.RedisHost = plugin.config.RedisHost
+	plugin.config.Redis.RedisPort = plugin.config.RedisPort
+	plugin.config.Redis.RedisTimeout = plugin.config.RedisTimeout
+	plugin.credentialMu.Lock()
+	plugin.scopedSet = true
+	plugin.credentialMu.Unlock()
+	plugin.SetDependencies(base.Dependencies{Tasks: owner})
+
+	clientKey := limitCountRedisClientKeyForTest(plugin)
+	client := &testDelayedSyncRedisClient{
+		Client: redis.NewClient(&redis.Options{Addr: fmt.Sprintf("127.0.0.1:%d", port)}),
+	}
+	var closes atomic.Int32
+	_, releaseBaseline, err := shared.AcquireClient(
+		clientKey,
+		func() (any, error) { return client, nil },
+		func(value any) {
+			closes.Add(1)
+			_ = value.(*testDelayedSyncRedisClient).Close()
+		},
+	)
+	if err != nil {
+		t.Fatalf("seed shared Redis client: %v", err)
+	}
+	t.Cleanup(func() {
+		plugin.Stop()
+		releaseBaseline()
+	})
+
+	if err := tasks.Go(runtime.TaskSpec{
+		Owner:       "plugin/test/limit-count/redis-rollback/delayed-sync",
+		Criticality: runtime.TaskPlugin,
+	}, func(context.Context) error {
+		panic("mark delayed-sync owner failed")
+	}); err != nil {
+		t.Fatalf("seed owner failure task: %v", err)
+	}
+	select {
+	case failure := <-failures:
+		if failure.Owner != "plugin/test/limit-count/redis-rollback/delayed-sync" {
+			t.Fatalf("failure owner = %q, want delayed-sync owner", failure.Owner)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for delayed-sync owner failure")
+	}
+
+	syncer, err := plugin.delayedSyncerFor(10, 60)
+	if !errors.Is(err, runtime.ErrTaskOwnerFailed) {
+		t.Fatalf("delayedSyncerFor(%s) error = %v, want %v", windowType, err, runtime.ErrTaskOwnerFailed)
+	}
+	if syncer != nil || len(plugin.delayedByKey) != 0 {
+		t.Fatalf("admission failure retained delayed state: syncer=%p delayed=%#v", syncer, plugin.delayedByKey)
+	}
+	plugin.backendMu.Lock()
+	fixedStore, backendClient, clientRelease := plugin.fixedStore, plugin.backendClient, plugin.clientRelease
+	plugin.backendMu.Unlock()
+	plugin.limiterMu.Lock()
+	slidingStore, localStore := plugin.slidingStore, plugin.localLimiterStore
+	plugin.limiterMu.Unlock()
+	if fixedStore != nil || slidingStore != nil || localStore != nil || backendClient != nil || clientRelease != nil {
+		t.Fatalf(
+			"%s admission failure retained resources: fixed=%v sliding=%v local=%v client=%v release=%v",
+			windowType, fixedStore, slidingStore, localStore, backendClient, clientRelease != nil,
+		)
+	}
+	plugin.credentialMu.Lock()
+	activeUses := plugin.activeUses
+	plugin.credentialMu.Unlock()
+	if activeUses != 0 {
+		t.Fatalf("%s admission failure retained secret use count = %d, want 0", windowType, activeUses)
+	}
+	if got := closes.Load(); got != 0 {
+		t.Fatalf("shared Redis closes before baseline release = %d, want 0", got)
+	}
+
+	var created atomic.Int32
+	_, releaseSecond, err := shared.AcquireClient(
+		clientKey,
+		func() (any, error) {
+			created.Add(1)
+			return &testDelayedSyncRedisClient{
+				Client: redis.NewClient(&redis.Options{Addr: fmt.Sprintf("127.0.0.1:%d", port)}),
+			}, nil
+		},
+		func(value any) {
+			closes.Add(1)
+			_ = value.(*testDelayedSyncRedisClient).Close()
+		},
+	)
+	if err != nil {
+		t.Fatalf("reacquire shared Redis client: %v", err)
+	}
+	releaseSecond()
+	releaseBaseline()
+	if got := created.Load(); got != 0 {
+		t.Fatalf("shared Redis creates after rollback = %d, want baseline reuse", got)
+	}
+	if got := closes.Load(); got != 1 {
+		t.Fatalf("shared Redis closes after releases = %d, want exact final close once", got)
+	}
+	stopTaskRegistry(t, tasks)
+}
+
+func limitCountRedisClientKeyForTest(plugin *Plugin) string {
+	_, hostDigest, _ := plugin.limitCountCredentialDigests()
+	identity := plugin.config.Redis
+	identity.RedisHost = fmt.Sprintf("sha256:%x", hostDigest)
+	configUID := shared.NewConfigUID()
+	configUID.Add(plugin.config.Policy, identity.String())
+	return shared.ClientKey(name, configUID)
 }
 
 func TestLimitCountLocalStoreEvictsOldestAndExpired(t *testing.T) {
@@ -2630,8 +3009,7 @@ func (b *blockingDelayedSyncBackend) sync(
 
 func TestDelayedSyncBlockedRedisDoesNotBlockUnrelatedKeyMutation(t *testing.T) {
 	backend := &blockingDelayedSyncBackend{}
-	syncer := newDelayedSyncer(backend, 100, time.Minute, time.Hour, 100)
-	defer syncer.Stop()
+	syncer := newOwnedDelayedSyncerForTest(t, backend, 100, time.Minute, time.Hour, 100)
 
 	base := time.Date(2026, 7, 6, 1, 2, 3, 0, time.UTC)
 	if _, _, err := syncer.incoming(context.Background(), "slow-key", 1, base); err != nil {
@@ -2674,8 +3052,7 @@ func TestDelayedSyncBlockedRedisDoesNotBlockUnrelatedKeyMutation(t *testing.T) {
 
 func TestDelayedSyncConcurrentMutationDuringFlushIsNotLost(t *testing.T) {
 	backend := &blockingDelayedSyncBackend{}
-	syncer := newDelayedSyncer(backend, 100, time.Minute, time.Hour, 100)
-	defer syncer.Stop()
+	syncer := newOwnedDelayedSyncerForTest(t, backend, 100, time.Minute, time.Hour, 100)
 
 	base := time.Date(2026, 7, 6, 1, 2, 3, 0, time.UTC)
 	if _, _, err := syncer.incoming(context.Background(), "contended", 1, base); err != nil {

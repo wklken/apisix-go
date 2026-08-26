@@ -1,6 +1,7 @@
 package ai_rag
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -9,19 +10,30 @@ import (
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
+	return newTestPluginWithScopedValues(t, cfg, nil)
+}
+
+func newTestPluginWithScopedValues(t *testing.T, cfg Config, values map[string]string) *Plugin {
 	t.Helper()
 
 	p := &Plugin{config: cfg}
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
+	capabilityValue, scope, _, cleanup := newScopedSecretHarness(t, name, values)
+	t.Cleanup(cleanup)
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
+	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
 
+	t.Cleanup(p.Stop)
 	return p
 }
 
@@ -126,13 +138,16 @@ func TestMaterializedAPIKeysRemainPrivateAndReachProviders(t *testing.T) {
 		_, _ = w.Write([]byte(`{"value":[]}`))
 	}))
 	defer search.Close()
-	p := newTestPlugin(t, Config{
+	p := newTestPluginWithScopedValues(t, Config{
 		EmbeddingsProvider: EmbeddingsProvider{AzureOpenAI: AzureProvider{
 			Endpoint: embeddings.URL, APIKey: "$ENV://APISIX_GO_RAG_EMBEDDING_KEY",
 		}},
 		VectorSearchProvider: VectorSearchProvider{AzureAISearch: AzureProvider{
 			Endpoint: search.URL, APIKey: "$ENV://APISIX_GO_RAG_SEARCH_KEY",
 		}},
+	}, map[string]string{
+		"$ENV://APISIX_GO_RAG_EMBEDDING_KEY": "resolved-embedding-key",
+		"$ENV://APISIX_GO_RAG_SEARCH_KEY":    "resolved-search-key",
 	})
 	if strings.Contains(p.config.EmbeddingsProvider.AzureOpenAI.APIKey, "resolved-embedding-key") ||
 		strings.Contains(p.config.VectorSearchProvider.AzureAISearch.APIKey, "resolved-search-key") {
@@ -412,18 +427,12 @@ func readBodyForTest(t *testing.T, r *http.Request) []byte {
 }
 
 func TestPostInitDefaultsTimeoutTo30000(t *testing.T) {
-	p := &Plugin{config: Config{
+	p := newTestPlugin(t, Config{
 		EmbeddingsProvider: EmbeddingsProvider{AzureOpenAI: AzureProvider{Endpoint: "http://e", APIKey: "k"}},
 		VectorSearchProvider: VectorSearchProvider{
 			AzureAISearch: AzureProvider{Endpoint: "http://s", APIKey: "k"},
 		},
-	}}
-	if err := p.Init(); err != nil {
-		t.Fatalf("Init() error = %v", err)
-	}
-	if err := p.PostInit(); err != nil {
-		t.Fatalf("PostInit() error = %v", err)
-	}
+	})
 	if got := p.config.Timeout; got != 30000 {
 		t.Fatalf("config.Timeout = %d, want default 30000", got)
 	}

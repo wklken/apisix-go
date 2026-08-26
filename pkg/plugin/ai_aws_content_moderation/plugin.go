@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"strings"
 	"time"
@@ -15,17 +16,14 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/ai_protocols"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_runtime"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
-	"github.com/wklken/apisix-go/pkg/store"
 )
 
 type Plugin struct {
 	base.BasePlugin
-	config          Config
-	client          *http.Client
-	now             func() time.Time
-	accessKeyID     *store.ResolvedSecret
-	secretAccessKey *store.ResolvedSecret
-	sessionToken    *store.ResolvedSecret
+	config Config
+	client *http.Client
+	now    func() time.Time
+	awsCredentialState
 }
 
 const (
@@ -176,48 +174,6 @@ func (p *Plugin) PostInit() error {
 	return nil
 }
 
-func (p *Plugin) MaterializeSecrets() error {
-	if p.accessKeyID != nil && p.secretAccessKey != nil &&
-		(p.config.Comprehend.SessionToken == "" || p.sessionToken != nil) {
-		return nil
-	}
-
-	accessKeyID, err := store.MaterializeSecret(p.config.Comprehend.AccessKeyID)
-	if err != nil {
-		return err
-	}
-	secretAccessKey, err := store.MaterializeSecret(p.config.Comprehend.SecretAccessKey)
-	if err != nil {
-		accessKeyID.Destroy()
-		return err
-	}
-	var sessionToken *store.ResolvedSecret
-	if p.config.Comprehend.SessionToken != "" {
-		sessionToken, err = store.MaterializeSecret(p.config.Comprehend.SessionToken)
-		if err != nil {
-			accessKeyID.Destroy()
-			secretAccessKey.Destroy()
-			return err
-		}
-	}
-
-	p.accessKeyID = accessKeyID
-	p.secretAccessKey = secretAccessKey
-	p.sessionToken = sessionToken
-	p.config.Comprehend.AccessKeyID = accessKeyID.Descriptor()
-	p.config.Comprehend.SecretAccessKey = secretAccessKey.Descriptor()
-	if sessionToken != nil {
-		p.config.Comprehend.SessionToken = sessionToken.Descriptor()
-	}
-	return nil
-}
-
-func (p *Plugin) Stop() {
-	p.accessKeyID.Destroy()
-	p.secretAccessKey.Destroy()
-	p.sessionToken.Destroy()
-}
-
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
 		if _, ok := ai_runtime.SelectedInstanceName(r); !ok {
@@ -351,56 +307,78 @@ func (p *Plugin) detectToxicContent(r *http.Request, body string) (comprehendRes
 	}
 
 	endpoint := p.endpoint()
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, endpoint, bytes.NewReader(payload))
-	if err != nil {
-		return result, fmt.Errorf("failed to create moderation request: %w", err)
+	type moderationResponse struct {
+		statusCode int
+		body       []byte
 	}
-	req.Header.Set("Content-Type", "application/x-amz-json-1.1")
-	req.Header.Set("X-Amz-Target", "Comprehend_20171127.DetectToxicContent")
-	accessKeyID := p.accessKeyID.Bytes()
-	secretAccessKey := p.secretAccessKey.Bytes()
-	sessionToken := p.sessionToken.Bytes()
-	defer clear(accessKeyID)
-	defer clear(secretAccessKey)
-	defer clear(sessionToken)
-	if err := ai_auth.SignAWSRequestWithOptions(req, payload, ai_auth.AWSConfig{
-		AccessKeyID:     string(accessKeyID),
-		SecretAccessKey: string(secretAccessKey),
-		SessionToken:    string(sessionToken),
-	}, ai_auth.SignAWSRequestOptions{
-		Region:                 p.config.Comprehend.Region,
-		Service:                "comprehend",
-		SetSecurityToken:       true,
-		DisableURIPathEscaping: true,
-		CanonicalHeaders:       []string{"content-type", "host", "x-amz-date", "x-amz-target"},
-		HeaderValue:            strings.TrimSpace,
-		CanonicalURI:           ai_auth.CanonicalURIPlain,
-		CanonicalQuery:         ai_auth.CanonicalQueryRaw,
-	}, p.now()); err != nil {
-		return result, fmt.Errorf("failed to sign moderation request: %w", err)
-	}
+	var response moderationResponse
+	err = p.useAWSCredentials(func(accessKeyID, secretAccessKey, sessionToken string) error {
+		req, requestErr := http.NewRequestWithContext(
+			r.Context(), http.MethodPost, endpoint, bytes.NewReader(payload),
+		)
+		if requestErr != nil {
+			return fmt.Errorf("failed to create moderation request: %w", requestErr)
+		}
+		req.Header.Set("Content-Type", "application/x-amz-json-1.1")
+		req.Header.Set("X-Amz-Target", "Comprehend_20171127.DetectToxicContent")
+		businessHeaders := req.Header.Clone()
+		defer restoreAWSRequestHeaders(req, businessHeaders)
+		if signErr := ai_auth.SignAWSRequestWithOptions(req, payload, ai_auth.AWSConfig{
+			AccessKeyID:     accessKeyID,
+			SecretAccessKey: secretAccessKey,
+			SessionToken:    sessionToken,
+		}, ai_auth.SignAWSRequestOptions{
+			Region:                 p.config.Comprehend.Region,
+			Service:                "comprehend",
+			SetSecurityToken:       true,
+			DisableURIPathEscaping: true,
+			CanonicalHeaders:       []string{"content-type", "host", "x-amz-date", "x-amz-target"},
+			HeaderValue:            strings.TrimSpace,
+			CanonicalURI:           ai_auth.CanonicalURIPlain,
+			CanonicalQuery:         ai_auth.CanonicalQueryRaw,
+		}, p.now()); signErr != nil {
+			return fmt.Errorf("failed to sign moderation request: %w", signErr)
+		}
 
-	resp, err := p.client.Do(req)
+		resp, requestErr := p.client.Do(req)
+		if requestErr != nil {
+			return fmt.Errorf("failed to send request to %s: %w", endpoint, requestErr)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		response.statusCode = resp.StatusCode
+		response.body, requestErr = io.ReadAll(resp.Body)
+		if requestErr != nil {
+			return fmt.Errorf("failed to read moderation response body: %w", requestErr)
+		}
+		return nil
+	})
 	if err != nil {
-		return result, fmt.Errorf("failed to send request to %s: %w", endpoint, err)
+		return result, err
 	}
-	defer func() { _ = resp.Body.Close() }()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return result, fmt.Errorf("failed to read moderation response body: %w", err)
-	}
-	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+	if response.statusCode < http.StatusOK || response.statusCode >= http.StatusMultipleChoices {
 		return result, fmt.Errorf(
 			"failed to request aws comprehend service, status: %d, body: %s",
-			resp.StatusCode,
-			respBody,
+			response.statusCode,
+			response.body,
 		)
 	}
-	if err := json.Unmarshal(respBody, &result); err != nil {
+	if err := json.Unmarshal(response.body, &result); err != nil {
 		return result, fmt.Errorf("failed to decode moderation response: %w", err)
 	}
 	return result, nil
+}
+
+func restoreAWSRequestHeaders(req *http.Request, headers http.Header) {
+	for name, values := range req.Header {
+		if _, preserve := headers[name]; preserve {
+			continue
+		}
+		for index := range values {
+			values[index] = ""
+		}
+		delete(req.Header, name)
+	}
+	maps.Copy(req.Header, headers)
 }
 
 func (p *Plugin) endpoint() string {

@@ -2,7 +2,6 @@ package ai_rag
 
 import (
 	"bytes"
-	"errors"
 	"io"
 	"net/http"
 	"time"
@@ -12,15 +11,13 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/ai_common"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_protocols"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
-	"github.com/wklken/apisix-go/pkg/store"
 )
 
 type Plugin struct {
 	base.BasePlugin
-	config          Config
-	client          *http.Client
-	embeddingAPIKey *store.ResolvedSecret
-	searchAPIKey    *store.ResolvedSecret
+	config Config
+	client *http.Client
+	ragCredentialState
 }
 
 const (
@@ -119,11 +116,6 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
-	if p.embeddingAPIKey == nil || p.searchAPIKey == nil {
-		if err := p.MaterializeSecrets(); err != nil {
-			return errors.New("ai-rag provider credentials are unavailable")
-		}
-	}
 	if p.config.Timeout == 0 {
 		p.config.Timeout = 30000
 	}
@@ -131,45 +123,11 @@ func (p *Plugin) PostInit() error {
 		sslVerify := true
 		p.config.SSLVerify = &sslVerify
 	}
-	p.client = &http.Client{
+	client := &http.Client{
 		Transport: p.transport(),
 		Timeout:   time.Duration(p.config.Timeout) * time.Millisecond,
 	}
-	return nil
-}
-
-func (p *Plugin) MaterializeSecrets() error {
-	if p.embeddingAPIKey != nil && p.searchAPIKey != nil {
-		return nil
-	}
-	embedding, err := store.MaterializeSecret(p.config.EmbeddingsProvider.AzureOpenAI.APIKey)
-	if err != nil {
-		return err
-	}
-	search, err := store.MaterializeSecret(p.config.VectorSearchProvider.AzureAISearch.APIKey)
-	if err != nil {
-		embedding.Destroy()
-		return err
-	}
-	p.embeddingAPIKey = embedding
-	p.searchAPIKey = search
-	p.config.EmbeddingsProvider.AzureOpenAI.APIKey = embedding.Descriptor()
-	p.config.VectorSearchProvider.AzureAISearch.APIKey = search.Descriptor()
-	return nil
-}
-
-func (p *Plugin) Stop() {
-	p.embeddingAPIKey.Destroy()
-	p.searchAPIKey.Destroy()
-}
-
-func resolvedSecretString(secret *store.ResolvedSecret) (string, error) {
-	value := secret.Bytes()
-	defer clear(value)
-	if len(value) == 0 {
-		return "", errors.New("provider credential is unavailable")
-	}
-	return string(value), nil
+	return p.installRAGClient(client)
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
@@ -264,11 +222,20 @@ func (p *Plugin) requestEmbeddings(r *http.Request, embeddingsReq map[string]any
 	}
 
 	provider := p.config.EmbeddingsProvider.AzureOpenAI
-	apiKey, err := resolvedSecretString(p.embeddingAPIKey)
+	var (
+		respBody []byte
+		status   int
+		message  string
+	)
+	err = p.withEmbeddingKey(func(apiKey string) error {
+		respBody, status, message = p.postAzureJSON(
+			r, provider.Endpoint, apiKey, rawBody, "embeddings",
+		)
+		return nil
+	})
 	if err != nil {
-		return nil, http.StatusInternalServerError, err.Error()
+		return nil, http.StatusInternalServerError, errRAGCredentialsUnavailable.Error()
 	}
-	respBody, status, message := p.postAzureJSON(r, provider.Endpoint, apiKey, rawBody, "embeddings")
 	if status != http.StatusOK {
 		return nil, status, message
 	}
@@ -303,11 +270,20 @@ func (p *Plugin) requestVectorSearch(r *http.Request, fields string, embedding a
 	}
 
 	provider := p.config.VectorSearchProvider.AzureAISearch
-	apiKey, err := resolvedSecretString(p.searchAPIKey)
+	var (
+		respBody []byte
+		status   int
+		message  string
+	)
+	err = p.withSearchKey(func(apiKey string) error {
+		respBody, status, message = p.postAzureJSON(
+			r, provider.Endpoint, apiKey, rawBody, "vector search",
+		)
+		return nil
+	})
 	if err != nil {
-		return "", http.StatusInternalServerError, err.Error()
+		return "", http.StatusInternalServerError, errRAGCredentialsUnavailable.Error()
 	}
-	respBody, status, message := p.postAzureJSON(r, provider.Endpoint, apiKey, rawBody, "vector search")
 	if status != http.StatusOK {
 		return "", status, message
 	}
@@ -327,6 +303,13 @@ func (p *Plugin) postAzureJSON(
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("api-key", apiKey)
+	apiKeyHeader := req.Header[http.CanonicalHeaderKey("api-key")]
+	defer func() {
+		for index := range apiKeyHeader {
+			apiKeyHeader[index] = ""
+		}
+		req.Header.Del("api-key")
+	}()
 
 	client := p.client
 	if client == nil {

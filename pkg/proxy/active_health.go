@@ -224,7 +224,7 @@ type healthChecker interface {
 	Close()
 }
 
-// activeHealthChecker schedules one goroutine per target and bounds concurrent
+// activeHealthChecker schedules one owned task per target and bounds concurrent
 // network probes with a semaphore. Probes use their own request context and
 // the cluster's verified base transport, never the retry wrapper, so a failing
 // probe cannot trigger retries or consume in-flight tokens.
@@ -236,10 +236,7 @@ type activeHealthChecker struct {
 	name           string
 	transport      http.RoundTripper
 	semaphore      chan struct{}
-	ctx            context.Context
-	cancel         context.CancelFunc
 	closeOnce      sync.Once
-	wg             sync.WaitGroup
 	httpClient     *http.Client
 	closeProbeIdle func()
 }
@@ -255,7 +252,6 @@ func newActiveHealthChecker(
 	if config.Concurrency <= 0 {
 		config.Concurrency = 10
 	}
-	ctx, cancel := context.WithCancel(context.Background())
 	targetList := make([]string, 0, len(targets))
 	for target := range targets {
 		targetList = append(targetList, target)
@@ -269,8 +265,6 @@ func newActiveHealthChecker(
 		observer:       observer,
 		transport:      base,
 		semaphore:      make(chan struct{}, config.Concurrency),
-		ctx:            ctx,
-		cancel:         cancel,
 		closeProbeIdle: closeProbeIdle,
 		httpClient: &http.Client{
 			Transport: probeTransport,
@@ -298,28 +292,30 @@ func activeHealthProbeTransport(base http.RoundTripper, config ActiveHealthConfi
 	return transport, transport.CloseIdleConnections
 }
 
-// Start launches one probe goroutine per target.
-func (c *activeHealthChecker) Start() {
+// Start registers one probe task per target with the cluster resource owner.
+func (c *activeHealthChecker) Start(owner ClusterTaskOwner) error {
 	for _, target := range c.targets {
-		c.wg.Add(1)
-		go c.probeTarget(target)
+		if err := owner.Go("active-health", func(ctx context.Context) error {
+			c.probeTarget(ctx, target)
+			return nil
+		}); err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
-// Close cancels the root context, waits for every probe goroutine to exit,
-// then closes idle connections on a cloned HTTPS probe transport only.
+// Close closes idle connections on a cloned HTTPS probe transport only. The
+// owning cluster stops and joins every registered probe before calling it.
 func (c *activeHealthChecker) Close() {
 	c.closeOnce.Do(func() {
-		c.cancel()
-		c.wg.Wait()
 		if c.closeProbeIdle != nil {
 			c.closeProbeIdle()
 		}
 	})
 }
 
-func (c *activeHealthChecker) probeTarget(target string) {
-	defer c.wg.Done()
+func (c *activeHealthChecker) probeTarget(ctx context.Context, target string) {
 	var counters activeProbeCounters
 	for {
 		healthy := c.lb.IsHealthy(target)
@@ -328,17 +324,17 @@ func (c *activeHealthChecker) probeTarget(target string) {
 			interval = c.config.HealthyInterval
 		}
 		select {
-		case <-c.ctx.Done():
+		case <-ctx.Done():
 			return
 		case <-time.After(interval):
 		}
-		if !c.acquireSemaphore() {
+		if !c.acquireSemaphore(ctx) {
 			return
 		}
 		_, probeGeneration := c.lb.healthStatus(target)
-		result := c.probeResult(target)
+		result := c.probeResult(ctx, target)
 		c.releaseSemaphore()
-		if result == activeProbeCanceled || c.ctx.Err() != nil {
+		if result == activeProbeCanceled || ctx.Err() != nil {
 			return
 		}
 		c.applyProbeResultAtGeneration(target, probeGeneration, result, &counters)
@@ -419,11 +415,11 @@ func (c *activeHealthChecker) resetProbeCounters(target string, counters *active
 	*counters = activeProbeCounters{generation: generation}
 }
 
-func (c *activeHealthChecker) acquireSemaphore() bool {
+func (c *activeHealthChecker) acquireSemaphore(ctx context.Context) bool {
 	select {
 	case c.semaphore <- struct{}{}:
 		return true
-	case <-c.ctx.Done():
+	case <-ctx.Done():
 		return false
 	}
 }
@@ -432,18 +428,14 @@ func (c *activeHealthChecker) releaseSemaphore() {
 	<-c.semaphore
 }
 
-func (c *activeHealthChecker) probeOnce(target string) bool {
-	return c.probeResult(target) == activeProbeSuccess
-}
-
-func (c *activeHealthChecker) probeResult(target string) activeProbeResult {
-	if c.ctx.Err() != nil {
+func (c *activeHealthChecker) probeResult(ctx context.Context, target string) activeProbeResult {
+	if ctx.Err() != nil {
 		return activeProbeCanceled
 	}
-	return c.probeHTTP(target)
+	return c.probeHTTP(ctx, target)
 }
 
-func (c *activeHealthChecker) probeHTTP(target string) activeProbeResult {
+func (c *activeHealthChecker) probeHTTP(ctx context.Context, target string) activeProbeResult {
 	targetURL, err := url.Parse(target)
 	if err != nil {
 		return activeProbeTCPFailure
@@ -461,20 +453,20 @@ func (c *activeHealthChecker) probeHTTP(target string) activeProbeResult {
 	}
 	targetURL.Fragment = ""
 
-	request, err := http.NewRequestWithContext(c.ctx, http.MethodGet, targetURL.String(), nil)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL.String(), nil)
 	if err != nil {
 		return activeProbeTCPFailure
 	}
 	if c.config.Host != "" {
 		request.Host = c.config.Host
 	}
-	probeCtx, cancel := context.WithTimeout(c.ctx, c.config.Timeout)
+	probeCtx, cancel := context.WithTimeout(ctx, c.config.Timeout)
 	defer cancel()
 	request = request.WithContext(probeCtx)
 
 	response, err := c.httpClient.Do(request)
 	if err != nil {
-		if c.ctx.Err() != nil {
+		if ctx.Err() != nil {
 			return activeProbeCanceled
 		}
 		if errors.Is(probeCtx.Err(), context.DeadlineExceeded) {

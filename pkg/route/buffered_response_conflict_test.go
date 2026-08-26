@@ -3,6 +3,7 @@ package route
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"io"
 	"net"
 	"net/http"
@@ -73,7 +74,6 @@ func (*routeOptionalError) Error() string { return "optional operation unsupport
 
 func TestNoBoundedPlanPreservesFlushHijackPushReaderFromAndAIAssembly(t *testing.T) {
 	t.Run("production route assembly", func(t *testing.T) {
-		ensureRouteStore(t)
 		const terminalHeader = "reached-next"
 		receivedTerminalHeader := make(chan string, 1)
 		provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -82,9 +82,7 @@ func TestNoBoundedPlanPreservesFlushHijackPushReaderFromAndAIAssembly(t *testing
 			_, _ = w.Write([]byte(`{"choices":[]}`))
 		}))
 		t.Cleanup(provider.Close)
-		builder := NewBuilder(nil)
-		t.Cleanup(builder.Stop)
-		handler, err := builder.buildHandlerStrict(resource.Route{
+		routeResource := resource.Route{
 			ID: "no-bounded-ai-route",
 			Plugins: map[string]resource.PluginConfig{
 				"ai-proxy": map[string]any{
@@ -98,10 +96,13 @@ func TestNoBoundedPlanPreservesFlushHijackPushReaderFromAndAIAssembly(t *testing
 					},
 				},
 			},
-		})
-		if err != nil {
-			t.Fatalf("buildHandlerStrict() error = %v", err)
 		}
+		handler := testPreparedPluginHandler(
+			t,
+			routeResource,
+			testPluginBinding(t, "ai-proxy", routeResource.Plugins["ai-proxy"], routeResource),
+			testPluginBinding(t, "proxy-rewrite", routeResource.Plugins["proxy-rewrite"], routeResource),
+		)
 		request := httptest.NewRequest(
 			http.MethodPost,
 			"http://gateway.test/ai",
@@ -153,7 +154,6 @@ func TestNoBoundedPlanPreservesFlushHijackPushReaderFromAndAIAssembly(t *testing
 }
 
 func TestAIRateLimitingSelectsBoundedOrStreamingResponsePlanPerRequest(t *testing.T) {
-	ensureRouteStore(t)
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		if bytes.Contains(body, []byte(`"stream":true`)) {
@@ -166,9 +166,7 @@ func TestAIRateLimitingSelectsBoundedOrStreamingResponsePlanPerRequest(t *testin
 		_, _ = w.Write([]byte(`{"choices":[],"usage":{"total_tokens":1}}`))
 	}))
 	t.Cleanup(provider.Close)
-	builder := NewBuilder(nil)
-	t.Cleanup(builder.Stop)
-	handler, err := builder.buildHandlerStrict(resource.Route{
+	routeResource := resource.Route{
 		ID: "dual-mode-ai-rate-route",
 		Plugins: map[string]resource.PluginConfig{
 			"ai-proxy": map[string]any{
@@ -178,10 +176,13 @@ func TestAIRateLimitingSelectsBoundedOrStreamingResponsePlanPerRequest(t *testin
 			},
 			"ai-rate-limiting": map[string]any{"limit": 100, "time_window": 60},
 		},
-	})
-	if err != nil {
-		t.Fatalf("buildHandlerStrict() error = %v", err)
 	}
+	handler := testPreparedPluginHandler(
+		t,
+		routeResource,
+		testPluginBinding(t, "ai-proxy", routeResource.Plugins["ai-proxy"], routeResource),
+		testPluginBinding(t, "ai-rate-limiting", routeResource.Plugins["ai-rate-limiting"], routeResource),
+	)
 	for _, tc := range []struct {
 		name      string
 		body      string
@@ -215,7 +216,6 @@ func TestAIRateLimitingSelectsBoundedOrStreamingResponsePlanPerRequest(t *testin
 }
 
 func TestAIContentModerationSelectsBoundedOrStreamingResponsePlanPerRequest(t *testing.T) {
-	ensureRouteStore(t)
 	moderation := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"Data":{"RiskLevel":"low"}}`))
@@ -243,27 +243,22 @@ func TestAIContentModerationSelectsBoundedOrStreamingResponsePlanPerRequest(t *t
 		{name: "streaming", streamCheckMode: "realtime", requestBody: `{"model":"test","messages":[],"stream":true}`, wantFlush: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			builder := NewBuilder(nil)
-			t.Cleanup(builder.Stop)
-			handler, err := builder.buildHandlerStrict(resource.Route{
-				ID: "dual-mode-ai-moderation-" + tc.name,
-				Plugins: map[string]resource.PluginConfig{
-					"ai-proxy": map[string]any{
-						"provider": "openai-compatible",
-						"auth":     map[string]any{},
-						"override": map[string]any{"endpoint": provider.URL},
-					},
-					"ai-aliyun-content-moderation": map[string]any{
-						"endpoint": moderation.URL, "region_id": "cn-shanghai",
-						"access_key_id": "key", "access_key_secret": "secret",
-						"check_request": false, "check_response": true,
-						"stream_check_mode": tc.streamCheckMode, "fail_mode": "warn",
-					},
-				},
-			})
-			if err != nil {
-				t.Fatalf("buildHandlerStrict() error = %v", err)
-			}
+			routeResource := resource.Route{ID: "dual-mode-ai-moderation-" + tc.name}
+			handler := testPreparedPluginHandler(
+				t,
+				routeResource,
+				testPluginBinding(t, "ai-proxy", map[string]any{
+					"provider": "openai-compatible",
+					"auth":     map[string]any{},
+					"override": map[string]any{"endpoint": provider.URL},
+				}, routeResource),
+				testScopedSecretPluginBinding(t, "ai-aliyun-content-moderation", map[string]any{
+					"endpoint": moderation.URL, "region_id": "cn-shanghai",
+					"access_key_id": "key", "access_key_secret": "secret",
+					"check_request": false, "check_response": true,
+					"stream_check_mode": tc.streamCheckMode, "fail_mode": "warn",
+				}, routeResource),
+			)
 			request := httptest.NewRequest(
 				http.MethodPost,
 				"http://gateway.test/v1/chat/completions",
@@ -287,7 +282,6 @@ func TestAIContentModerationSelectsBoundedOrStreamingResponsePlanPerRequest(t *t
 }
 
 func TestResponsePlanRejectsMultipleEffectiveProtocolOwners(t *testing.T) {
-	ensureRouteStore(t)
 	route := resource.Route{
 		ID: "multiple-terminal-no-bounded-route",
 		Plugins: map[string]resource.PluginConfig{
@@ -302,9 +296,15 @@ func TestResponsePlanRejectsMultipleEffectiveProtocolOwners(t *testing.T) {
 			},
 		},
 	}
-	builder := NewBuilder(nil)
-	t.Cleanup(builder.Stop)
-	_, err := builder.buildHandlerStrict(route)
+	bindings := []plugin.Binding{
+		testPluginBinding(t, "ai-proxy", route.Plugins["ai-proxy"], route),
+		testPluginBinding(t, "dubbo-proxy", route.Plugins["dubbo-proxy"], route),
+	}
+	_, err := BuildPreparedHandler(PreparedHandlerInput{
+		Route: route, StaticBindings: bindings,
+		Runtime:      PreparedUpstreamRuntime{RoundTripper: http.DefaultTransport},
+		StaticConfig: testEffectiveConfig().Config,
+	})
 	if err == nil || !strings.Contains(err.Error(), "ai-proxy") ||
 		!strings.Contains(err.Error(), "dubbo-proxy") || !strings.Contains(err.Error(), route.ID) {
 		t.Fatalf("multiple protocol owner error = %v, want both identities and route provenance", err)
@@ -314,7 +314,6 @@ func TestResponsePlanRejectsMultipleEffectiveProtocolOwners(t *testing.T) {
 func TestTerminalOwnerIgnoresDisabledBoundedTerminalPlugins(t *testing.T) {
 	for _, name := range []string{"ai-proxy", "ai-proxy-multi", "dubbo-proxy", "http-dubbo"} {
 		t.Run(name, func(t *testing.T) {
-			ensureRouteStore(t)
 			route := resource.Route{
 				ID: "disabled-" + name,
 				Plugins: map[string]resource.PluginConfig{
@@ -324,10 +323,16 @@ func TestTerminalOwnerIgnoresDisabledBoundedTerminalPlugins(t *testing.T) {
 					name: map[string]any{"_meta": map[string]any{"disable": true}},
 				},
 			}
-			builder := NewBuilder(nil)
-			t.Cleanup(builder.Stop)
-			if _, err := builder.buildHandlerStrict(route); err != nil {
-				t.Fatalf("disabled %s bounded route build error = %v", name, err)
+			plan, err := PlanHTTPPlugins(context.Background(), PlanningInput{
+				Routes: []resource.Route{route}, EnabledPlugins: []string{"body-transformer", name},
+				Profiles: testEffectiveConfig().Profiles,
+			})
+			if err != nil {
+				t.Fatalf("PlanHTTPPlugins() error = %v", err)
+			}
+			if len(plan.Routes) != 1 || len(plan.Routes[0].Local) != 1 ||
+				plan.Routes[0].Local[0].Factory != "body-transformer" {
+				t.Fatalf("disabled %s plan = %#v, want only body-transformer", name, plan.Routes)
 			}
 		})
 	}
@@ -353,15 +358,19 @@ func TestTerminalOwnerUsesPluginConfigWinnerProvenance(t *testing.T) {
 		service.ID,
 	)
 	sources := append(localSources, serviceSources...)
-	candidates, err := routeTerminalCandidates(
-		sources,
-		resource.Upstream{},
+	bindings := make([]plugin.Binding, 0, len(sources))
+	for _, source := range sources {
+		bindings = append(bindings, plugin.Binding{
+			Descriptor: plugin.Descriptor{Factory: source.name},
+			Scope:      source.scope, Provenance: source.provenance,
+		})
+	}
+	candidates := preparedRouteTerminalCandidates(
+		bindings,
 		plugin.ResourceProvenance{Kind: plugin.ResourceRoute, ID: route.ID},
+		resource.Upstream{},
 		routeProtocolTerminals{dubbo: routeDubboTerminal{}},
 	)
-	if err != nil {
-		t.Fatalf("routeTerminalCandidates() error = %v", err)
-	}
 	if len(candidates) != 1 || candidates[0].Identity != "dubbo-proxy" ||
 		candidates[0].Provenance != (plugin.ResourceProvenance{
 			Kind: plugin.ResourcePluginConfig,
@@ -373,15 +382,12 @@ func TestTerminalOwnerUsesPluginConfigWinnerProvenance(t *testing.T) {
 
 func TestRouteTerminalCandidatesUseResolvedKafkaUpstreamProvenance(t *testing.T) {
 	provenance := plugin.ResourceProvenance{Kind: plugin.ResourceUpstream, ID: "kafka-upstream"}
-	candidates, err := routeTerminalCandidates(
+	candidates := preparedRouteTerminalCandidates(
 		nil,
-		resource.Upstream{Scheme: "kafka"},
 		provenance,
+		resource.Upstream{Scheme: "kafka"},
 		routeProtocolTerminals{kafka: routeKafkaTerminal{handler: http.NotFoundHandler()}},
 	)
-	if err != nil {
-		t.Fatalf("routeTerminalCandidates() error = %v", err)
-	}
 	if len(candidates) != 1 || candidates[0].Identity != "kafka-proxy" ||
 		candidates[0].Protocol != plugin.ProtocolKafka || candidates[0].Provenance != provenance {
 		t.Fatalf("Kafka candidates = %#v, want resolved upstream provenance", candidates)

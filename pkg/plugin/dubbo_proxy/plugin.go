@@ -2,6 +2,7 @@ package dubbo_proxy
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -77,7 +78,11 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
-	multiplexCount, err := loadMultiplexCount()
+	effective := p.StaticConfig()
+	if effective == nil {
+		return fmt.Errorf("effective config is required")
+	}
+	multiplexCount, err := loadMultiplexCount(effective.Config.PluginAttr[name])
 	if err != nil {
 		return err
 	}

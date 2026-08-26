@@ -15,11 +15,7 @@ import (
 )
 
 func TestRegisterExtraRoutesAddsBatchRequestsWhenEnabled(t *testing.T) {
-	oldConfig := config.GlobalConfig
-	t.Cleanup(func() {
-		config.GlobalConfig = oldConfig
-	})
-	config.GlobalConfig = &config.Config{Plugins: []string{"batch-requests"}}
+	staticConfig := &config.Config{Plugins: []string{"batch-requests"}}
 
 	mux := chi.NewRouter()
 	mux.Get("/hello", func(w http.ResponseWriter, r *http.Request) {
@@ -31,7 +27,7 @@ func TestRegisterExtraRoutesAddsBatchRequestsWhenEnabled(t *testing.T) {
 		w.WriteHeader(http.StatusCreated)
 		_, _ = w.Write([]byte("created"))
 	})
-	registerExtraRoutes(mux)
+	registerExtraRoutes(mux, staticConfig)
 
 	req := httptest.NewRequest(http.MethodPost, "/apisix/batch-requests", strings.NewReader(`{
 		"query": {"token": "global"},
@@ -81,14 +77,8 @@ func TestRegisterExtraRoutesAddsBatchRequestsWhenEnabled(t *testing.T) {
 }
 
 func TestRegisterExtraRoutesSkipsBatchRequestsWhenDisabled(t *testing.T) {
-	oldConfig := config.GlobalConfig
-	t.Cleanup(func() {
-		config.GlobalConfig = oldConfig
-	})
-	config.GlobalConfig = &config.Config{Plugins: []string{}}
-
 	mux := chi.NewRouter()
-	registerExtraRoutes(mux)
+	registerExtraRoutes(mux, &config.Config{})
 
 	req := httptest.NewRequest(http.MethodPost, "/apisix/batch-requests", strings.NewReader(`{"pipeline":[]}`))
 	res := httptest.NewRecorder()
@@ -100,14 +90,8 @@ func TestRegisterExtraRoutesSkipsBatchRequestsWhenDisabled(t *testing.T) {
 }
 
 func TestBatchRequestsRejectsInvalidBody(t *testing.T) {
-	oldConfig := config.GlobalConfig
-	t.Cleanup(func() {
-		config.GlobalConfig = oldConfig
-	})
-	config.GlobalConfig = &config.Config{Plugins: []string{"batch-requests"}}
-
 	mux := chi.NewRouter()
-	registerExtraRoutes(mux)
+	registerExtraRoutes(mux, &config.Config{Plugins: []string{"batch-requests"}})
 
 	req := httptest.NewRequest(http.MethodPost, "/apisix/batch-requests", strings.NewReader(`{"pipeline":[]}`))
 	res := httptest.NewRecorder()
@@ -126,19 +110,13 @@ func TestBatchRequestsRejectsInvalidBody(t *testing.T) {
 }
 
 func TestBatchRequestsParentCancellationStopsPipeline(t *testing.T) {
-	oldConfig := config.GlobalConfig
-	t.Cleanup(func() {
-		config.GlobalConfig = oldConfig
-	})
-	config.GlobalConfig = &config.Config{Plugins: []string{"batch-requests"}}
-
 	var started atomic.Int32
 	mux := chi.NewRouter()
 	mux.Get("/slow", func(w http.ResponseWriter, r *http.Request) {
 		started.Add(1)
 		<-r.Context().Done()
 	})
-	registerExtraRoutes(mux)
+	registerExtraRoutes(mux, &config.Config{Plugins: []string{"batch-requests"}})
 
 	req := httptest.NewRequest(http.MethodPost, "/apisix/batch-requests", strings.NewReader(`{
 		"pipeline": [

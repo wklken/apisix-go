@@ -2264,3 +2264,109 @@ func TestHandlerStalledStreamTimesOutConfiguredInactivity(t *testing.T) {
 		t.Fatalf("stalled stream = %q, want abort before the late chunk", rr.Body.String())
 	}
 }
+
+type cancelAwareStreamBody struct {
+	ctx     context.Context
+	content *strings.Reader
+	waiting chan struct{}
+	once    sync.Once
+}
+
+func (b *cancelAwareStreamBody) Read(body []byte) (int, error) {
+	if b.content.Len() > 0 {
+		return b.content.Read(body)
+	}
+	b.once.Do(func() { close(b.waiting) })
+	<-b.ctx.Done()
+	return 0, b.ctx.Err()
+}
+
+func (*cancelAwareStreamBody) Close() error { return nil }
+
+type blockingHandlerFlushWriter struct {
+	*httptest.ResponseRecorder
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (w *blockingHandlerFlushWriter) Flush() {
+	w.once.Do(func() { close(w.started) })
+	<-w.release
+	w.ResponseRecorder.Flush()
+}
+
+func TestHandlerStreamingCancellationPublishesOutcomeBeforeFlushJoin(t *testing.T) {
+	flushInterval := 1
+	p := newTestPlugin(t, Config{
+		Provider:                 "openai-compatible",
+		Override:                 Override{Endpoint: "http://provider.test/v1/chat/completions"},
+		StreamingFlushIntervalMS: &flushInterval,
+	})
+	outcomeRecorded := make(chan struct{})
+	p.streamOutcomeRecorded = func() { close(outcomeRecorded) }
+	body := &cancelAwareStreamBody{
+		content: strings.NewReader(
+			"data: {\"choices\":[{\"delta\":{\"content\":\"first\"}}]}\n\n",
+		),
+		waiting: make(chan struct{}),
+	}
+	p.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		body.ctx = r.Context()
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       body,
+		}, nil
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/v1/chat/completions",
+		strings.NewReader(`{"messages":[{"role":"user","content":"hello"}],"stream":true}`),
+	).WithContext(ctx)
+	req = apisixctx.WithRequestVars(req)
+	req.Header.Set("Content-Type", "application/json")
+	writer := &blockingHandlerFlushWriter{
+		ResponseRecorder: httptest.NewRecorder(),
+		started:          make(chan struct{}),
+		release:          make(chan struct{}),
+	}
+	handlerDone := make(chan struct{})
+	go func() {
+		p.Handler(http.NotFoundHandler()).ServeHTTP(writer, req)
+		close(handlerDone)
+	}()
+
+	select {
+	case <-body.waiting:
+	case <-time.After(time.Second):
+		t.Fatal("stream body did not block awaiting request cancellation")
+	}
+	select {
+	case <-writer.started:
+	case <-time.After(time.Second):
+		t.Fatal("periodic response flush did not start")
+	}
+	cancel()
+	select {
+	case <-outcomeRecorded:
+	case <-time.After(time.Second):
+		t.Fatal("streaming outcome was not published before flush join")
+	}
+	if got := apisixctx.GetRequestVar(req, "$ai_stream_outcome"); got != string(ai_stream.StreamOutcomeCanceled) {
+		t.Fatalf("$ai_stream_outcome before flush join = %#v, want canceled", got)
+	}
+	select {
+	case <-handlerDone:
+		t.Fatal("streaming handler returned while periodic Flush was blocked")
+	case <-time.After(25 * time.Millisecond):
+	}
+	close(writer.release)
+	select {
+	case <-handlerDone:
+	case <-time.After(time.Second):
+		t.Fatal("streaming handler did not return after periodic Flush completed")
+	}
+}

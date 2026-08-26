@@ -3,27 +3,37 @@ package response_rewrite
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 
 	brotlidec "github.com/andybalholm/brotli"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
-	"github.com/wklken/apisix-go/pkg/data_encryption"
+	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	pluginexpr "github.com/wklken/apisix-go/pkg/plugin/expr"
+	"github.com/wklken/apisix-go/pkg/secret"
 )
 
 type Plugin struct {
 	base.BasePlugin
 	config Config
 	expr   *pluginexpr.Expression
+
+	secretMu   sync.RWMutex
+	body       *secret.Value
+	legacyBody *string
+	stopped    bool
 }
 
 const (
@@ -257,36 +267,13 @@ func (p *Plugin) PostInit() error {
 		b := false
 		p.config.BodyBase64 = &b
 	}
-	if p.config.Body != nil && p.config.BodySecret != nil {
-		return fmt.Errorf("response-rewrite body and body_secret cannot be configured together")
+	if err := p.ValidatePreMaterialization(); err != nil {
+		return err
 	}
-	if p.config.BodySecret != nil && len(p.config.Filters) > 0 {
-		return fmt.Errorf("response-rewrite body_secret and filters cannot be configured together")
-	}
-	if p.config.Body != nil && len(p.config.Filters) > 0 {
-		return fmt.Errorf("response-rewrite body and filters cannot be configured together")
-	}
-	if p.config.BodySecret != nil {
-		if *p.config.BodySecret == "" {
-			return fmt.Errorf("response-rewrite body_secret must not be empty")
-		}
-		keyring, enabled := data_encryption.Keyring()
-		resolved, err := data_encryption.NewResolver(enabled, keyring).ResolveForContext(
-			*p.config.BodySecret,
-			"response-rewrite.body_secret",
-		)
-		if err != nil {
-			return fmt.Errorf("response-rewrite body_secret: %w", err)
-		}
-		p.config.Body = &resolved
-	}
-	if *p.config.BodyBase64 {
-		if p.config.Body == nil || *p.config.Body == "" {
-			return fmt.Errorf("response-rewrite body_base64 requires a non-empty body")
-		}
-		if _, err := base64.StdEncoding.DecodeString(*p.config.Body); err != nil {
-			return fmt.Errorf("response-rewrite body is not valid base64: %w", err)
-		}
+	if _, err := p.useBody(func(body string) error {
+		return p.validateEffectiveBody(body)
+	}); err != nil {
+		return err
 	}
 	if len(p.config.Vars) > 0 {
 		expr, err := pluginexpr.Compile(p.config.Vars)
@@ -313,6 +300,181 @@ func (p *Plugin) PostInit() error {
 	}
 
 	return nil
+}
+
+func (p *Plugin) ValidatePreMaterialization() error {
+	if p.config.Body != nil && p.config.BodySecret != nil {
+		return fmt.Errorf("response-rewrite body and body_secret cannot be configured together")
+	}
+	if p.config.BodySecret != nil && len(p.config.Filters) > 0 {
+		return fmt.Errorf("response-rewrite body_secret and filters cannot be configured together")
+	}
+	if p.config.Body != nil && len(p.config.Filters) > 0 {
+		return fmt.Errorf("response-rewrite body and filters cannot be configured together")
+	}
+	return nil
+}
+
+// MaterializeSecrets is the transitional process-local compatibility path.
+// Scoped generation preparation uses MaterializeScopedSecrets instead.
+func (p *Plugin) MaterializeSecrets() error {
+	p.secretMu.Lock()
+	defer p.secretMu.Unlock()
+	if p.stopped {
+		return secret.ErrCredentialUnavailable
+	}
+	if p.body != nil || p.legacyBody != nil {
+		return nil
+	}
+	field, raw, present, err := p.selectedBody()
+	if err != nil {
+		return err
+	}
+	if !present || (field == "body" && raw == "") {
+		return p.validateEffectiveBody(raw)
+	}
+	resolver := p.DataEncryption()
+	if !resolver.Configured() {
+		return errors.New("data-encryption resolver is required")
+	}
+	var resolved string
+	if field == "body_secret" {
+		resolved, err = resolver.ResolveForContext(raw, name+"."+field)
+	} else {
+		resolved = resolver.ResolveOptionalForContext(raw, name+"."+field)
+	}
+	if err != nil {
+		return fmt.Errorf("%s %s: %w", name, field, secret.ErrCredentialUnavailable)
+	}
+	if err := p.validateEffectiveBody(resolved); err != nil {
+		return err
+	}
+	digest := sha256.Sum256([]byte(resolved))
+	descriptor, err := secret.NewDescriptor(capability.SecretPluginConfig, digest)
+	if err != nil {
+		return fmt.Errorf("%s %s: %w", name, field, secret.ErrCredentialUnavailable)
+	}
+	owned := resolved
+	p.installBody(field, descriptor.String())
+	p.legacyBody = &owned
+	return nil
+}
+
+// MaterializeScopedSecrets admits the selected manifest-owned response body
+// for this immutable attempt. Config retains only its content descriptor.
+func (p *Plugin) MaterializeScopedSecrets(
+	ctx context.Context, access base.ScopedSecretAccess,
+) error {
+	p.secretMu.Lock()
+	defer p.secretMu.Unlock()
+	if p.stopped {
+		return secret.ErrCredentialUnavailable
+	}
+	if p.body != nil || p.legacyBody != nil {
+		return nil
+	}
+	field, raw, present, err := p.selectedBody()
+	if err != nil {
+		return err
+	}
+	if !present || (field == "body" && raw == "") {
+		return p.validateEffectiveBody(raw)
+	}
+	value, err := access.Materialize(ctx, field, raw)
+	if err != nil {
+		return fmt.Errorf("%s %s: %w", name, field, secret.ErrCredentialUnavailable)
+	}
+	if err := value.Use(func(plaintext string) error {
+		return p.validateEffectiveBody(plaintext)
+	}); err != nil {
+		return fmt.Errorf("%s %s: %w", name, field, secret.ErrCredentialUnavailable)
+	}
+	descriptor, err := value.Descriptor(capability.SecretPluginConfig)
+	if err != nil {
+		return fmt.Errorf("%s %s: %w", name, field, secret.ErrCredentialUnavailable)
+	}
+	p.installBody(field, descriptor.String())
+	p.body = &value
+	return nil
+}
+
+func (p *Plugin) selectedBody() (field, raw string, present bool, err error) {
+	if err := p.ValidatePreMaterialization(); err != nil {
+		return "", "", false, err
+	}
+	if p.config.BodySecret != nil {
+		if *p.config.BodySecret == "" {
+			return "", "", false, fmt.Errorf("response-rewrite body_secret must not be empty")
+		}
+		return "body_secret", *p.config.BodySecret, true, nil
+	}
+	if p.config.Body != nil {
+		return "body", *p.config.Body, true, nil
+	}
+	return "", "", false, nil
+}
+
+func (p *Plugin) installBody(field, descriptor string) {
+	if field == "body_secret" {
+		p.config.BodySecret = &descriptor
+		return
+	}
+	p.config.Body = &descriptor
+}
+
+func (p *Plugin) validateEffectiveBody(body string) error {
+	if p.config.BodyBase64 == nil || !*p.config.BodyBase64 {
+		return nil
+	}
+	if body == "" {
+		return fmt.Errorf("response-rewrite body_base64 requires a non-empty body")
+	}
+	if _, err := base64.StdEncoding.DecodeString(body); err != nil {
+		return fmt.Errorf("response-rewrite body is not valid base64: %w", err)
+	}
+	return nil
+}
+
+func (p *Plugin) useBody(use func(string) error) (bool, error) {
+	if use == nil {
+		return false, secret.ErrCredentialUnavailable
+	}
+	p.secretMu.RLock()
+	defer p.secretMu.RUnlock()
+	field, raw, present, err := p.selectedBody()
+	if err != nil || !present {
+		return present, err
+	}
+	if p.stopped {
+		return true, secret.ErrCredentialUnavailable
+	}
+	if p.body != nil {
+		return true, p.body.Use(use)
+	}
+	if p.legacyBody != nil {
+		return true, use(*p.legacyBody)
+	}
+	if field == "body" && raw == "" {
+		return true, use("")
+	}
+	return true, secret.ErrCredentialUnavailable
+}
+
+func (p *Plugin) Stop() {
+	p.secretMu.Lock()
+	defer p.secretMu.Unlock()
+	if p.stopped {
+		return
+	}
+	p.stopped = true
+	if p.body != nil {
+		*p.body = secret.Value{}
+		p.body = nil
+	}
+	if p.legacyBody != nil {
+		*p.legacyBody = ""
+		p.legacyBody = nil
+	}
 }
 
 func (p *Plugin) Config() any {
@@ -344,7 +506,9 @@ func (p *Plugin) RunBufferedBodyFilter(r *http.Request, state *base.ResponseStat
 	}
 	recorder := responseRecorder(r, state)
 	if p.varsMatched(r, recorder) {
-		p.rewrite(r, recorder)
+		if err := p.rewrite(r, recorder); err != nil {
+			return err
+		}
 	}
 	state.Status = recorder.StatusCode()
 	state.Header = recorder.Header().Clone()
@@ -407,31 +571,38 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		next.ServeHTTP(recorder, r)
 
 		if p.varsMatched(r, recorder) {
-			p.rewrite(r, recorder)
+			if err := p.rewrite(r, recorder); err != nil {
+				http.Error(w, "response-rewrite body unavailable", http.StatusInternalServerError)
+				return
+			}
 		}
 		writeRewrittenResponse(w, recorder)
 	}
 	return http.HandlerFunc(fn)
 }
 
-func (p *Plugin) rewrite(r *http.Request, resp *base.BufferedResponseWriter) {
+func (p *Plugin) rewrite(r *http.Request, resp *base.BufferedResponseWriter) error {
 	if p.config.StatusCode != 0 {
 		resp.SetStatusCode(p.config.StatusCode)
 	}
 
-	if p.config.Body != nil {
+	_, err := p.useBody(func(effectiveBody string) error {
 		var body []byte
 		if p.config.BodyBase64 != nil && *p.config.BodyBase64 {
-			decoded, err := base64.StdEncoding.DecodeString(*p.config.Body)
+			decoded, err := base64.StdEncoding.DecodeString(effectiveBody)
 			if err == nil {
 				body = decoded
 			}
 		} else {
-			body = []byte(*p.config.Body)
+			body = []byte(effectiveBody)
 		}
 		if body != nil && !bytes.Equal(body, resp.Body()) {
 			resp.ReplaceBody(body)
 		}
+		return nil
+	})
+	if err != nil {
+		return err
 	}
 
 	if len(p.config.Filters) > 0 {
@@ -466,6 +637,7 @@ func (p *Plugin) rewrite(r *http.Request, resp *base.BufferedResponseWriter) {
 	}
 
 	p.config.Headers.apply(r, resp)
+	return nil
 }
 
 func (p *Plugin) varsMatched(r *http.Request, resp *base.BufferedResponseWriter) bool {

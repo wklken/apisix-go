@@ -50,6 +50,11 @@ func TestExchangeCodeDoesNotMutateCachedRedirectURL(t *testing.T) {
 		ClientSecret: "secret-a",
 		Endpoint:     oauth2.Endpoint{TokenURL: tokenEndpoint.URL},
 	}}
+	p.mu.Lock()
+	p.discovery = discoveryData{TokenEndpoint: tokenEndpoint.URL}
+	p.discoveryLoaded = true
+	p.mu.Unlock()
+	p.client = tokenEndpoint.Client()
 
 	if _, err := p.exchangeCode(
 		httptest.NewRequest(http.MethodGet, "https://gateway.example/orders", nil),

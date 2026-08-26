@@ -1,9 +1,12 @@
 package file_logger
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
+	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -11,6 +14,7 @@ import (
 
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/runtime"
 	"go.uber.org/zap/buffer"
 )
 
@@ -23,6 +27,181 @@ type recordingFileLoggerSink struct {
 	short      bool
 	entered    chan struct{}
 	release    chan struct{}
+}
+
+func TestFileLoggerProcessorUsesPluginTaskOwner(t *testing.T) {
+	registry := runtime.NewTaskRegistry(context.Background(), nil)
+	owner := newFileLoggerTaskOwnerForTest(t, registry, "plugin/test/file-logger/route-1")
+	processor, err := newFileLoggerProcessor(owner, &recordingFileLoggerSink{})
+	if err != nil {
+		t.Fatalf("newFileLoggerProcessor() error = %v", err)
+	}
+
+	wantOwner := "plugin/test/file-logger/route-1/file-log-writer"
+	if active := registry.Active(); !slices.Equal(active, []string{wantOwner}) {
+		t.Fatalf("active task owners = %v, want [%s]", active, wantOwner)
+	}
+
+	processor.stop()
+	stopFileLoggerTaskRegistryForTest(t, registry)
+	if active := registry.Active(); len(active) != 0 {
+		t.Fatalf("active task owners after stop = %v, want none", active)
+	}
+}
+
+func TestFileLoggerProcessorPanicSealsAdmission(t *testing.T) {
+	failures := make(chan runtime.TaskFailure, 1)
+	registry := runtime.NewTaskRegistry(context.Background(), func(failure runtime.TaskFailure) {
+		failures <- failure
+	})
+	owner := newFileLoggerTaskOwnerForTest(t, registry, "plugin/test/file-logger/panic")
+	processor, err := newFileLoggerProcessor(owner, &recordingFileLoggerSink{})
+	if err != nil {
+		t.Fatalf("newFileLoggerProcessor() error = %v", err)
+	}
+	processor.beforeEncode = func() { panic("file-writer-plugin-panic") }
+	if err := processor.pushSnapshot(base.LogSnapshot{}); err != nil {
+		t.Fatalf("pushSnapshot() error = %v", err)
+	}
+	select {
+	case failure := <-failures:
+		if failure.Owner != "plugin/test/file-logger/panic/file-log-writer" ||
+			failure.PanicValue != "file-writer-plugin-panic" {
+			t.Fatalf("task failure = %+v, want named file writer panic", failure)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("file writer task panic was not reported")
+	}
+	if err := processor.pushFields(map[string]any{"late": true}); !errors.Is(err, base.ErrLogQueueUnavailable) {
+		t.Fatalf("pushFields() after task panic error = %v, want ErrLogQueueUnavailable", err)
+	}
+	stopFileLoggerTaskRegistryForTest(t, registry)
+}
+
+func TestFileLoggerBlockingWriteIsNamedResidualAndDefersLeaseRelease(t *testing.T) {
+	tasks := runtime.NewTaskRegistry(context.Background(), nil)
+	ownerPrefix := "plugin/test/file-logger/blocked"
+	owner := newFileLoggerTaskOwnerForTest(t, tasks, ownerPrefix)
+	writers := newFileWriterRegistryForTest(t)
+	lease := acquireWriterLeaseForTest(t, writers, filepath.Join(t.TempDir(), "blocked.log"))
+	sink := &blockingFileLoggerSink{
+		fileLoggerSink: lease.writer,
+		entered:        make(chan struct{}),
+		release:        make(chan struct{}),
+	}
+	processor, err := newFileLoggerProcessor(owner, sink)
+	if err != nil {
+		lease.release()
+		t.Fatalf("newFileLoggerProcessor() error = %v", err)
+	}
+	if err := processor.pushFields(map[string]any{"id": 1}); err != nil {
+		t.Fatalf("pushFields() error = %v", err)
+	}
+	ack, err := processor.pushBarrier()
+	if err != nil {
+		t.Fatalf("pushBarrier() error = %v", err)
+	}
+	select {
+	case <-sink.entered:
+	case <-time.After(time.Second):
+		t.Fatal("file log writer did not enter blocked Write")
+	}
+
+	processor.registerCleanup(lease.release)
+	key := lease.path
+	if !writers.has(key) {
+		t.Fatal("writer lease was released while the owned writer task was blocked")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	residuals, stopErr := tasks.Stop(ctx)
+	cancel()
+	if !errors.Is(stopErr, context.DeadlineExceeded) {
+		t.Fatalf("TaskRegistry.Stop() error = %v, want context deadline exceeded", stopErr)
+	}
+	wantOwner := ownerPrefix + "/file-log-writer"
+	wantResiduals := []runtime.TaskResidual{{Owner: wantOwner}}
+	if !slices.Equal(residuals, wantResiduals) {
+		t.Fatalf("TaskRegistry.Stop() residuals = %v, want [%s]", residuals, wantOwner)
+	}
+	var residualErr *runtime.TaskResidualError
+	if !errors.As(stopErr, &residualErr) {
+		t.Fatalf("TaskRegistry.Stop() error type = %T, want *runtime.TaskResidualError", stopErr)
+	}
+	if got := residualErr.Residuals(); !slices.Equal(got, wantResiduals) {
+		t.Fatalf("TaskResidualError.Residuals() = %v, want %v", got, wantResiduals)
+	}
+	if err := processor.pushFields(map[string]any{"late": true}); !errors.Is(err, base.ErrLogQueueUnavailable) {
+		t.Fatalf("pushFields() after registry cancellation error = %v, want ErrLogQueueUnavailable", err)
+	}
+	if !writers.has(key) {
+		t.Fatal("writer lease was released before the residual task completed")
+	}
+
+	close(sink.release)
+	if err := <-ack; err != nil {
+		t.Fatalf("barrier error = %v", err)
+	}
+	stopFileLoggerTaskRegistryForTest(t, tasks)
+	if writers.has(key) {
+		t.Fatal("writer lease remains after the owned writer task completed")
+	}
+}
+
+type blockingFileLoggerSink struct {
+	fileLoggerSink
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (s *blockingFileLoggerSink) Write(data []byte) (int, error) {
+	s.once.Do(func() { close(s.entered) })
+	<-s.release
+	return s.fileLoggerSink.Write(data)
+}
+
+func newFileLoggerTaskOwnerForTest(
+	t *testing.T,
+	registry *runtime.TaskRegistry,
+	prefix string,
+) *runtime.TaskOwner {
+	t.Helper()
+	owner, err := runtime.NewTaskOwner(registry, prefix, runtime.TaskPlugin)
+	if err != nil {
+		t.Fatalf("NewTaskOwner() error = %v", err)
+	}
+	return owner
+}
+
+func stopFileLoggerTaskRegistryForTest(t *testing.T, registry *runtime.TaskRegistry) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if residuals, err := registry.Stop(ctx); err != nil {
+		t.Fatalf("TaskRegistry.Stop() residuals = %v, error = %v", residuals, err)
+	}
+}
+
+func newOwnedFileLoggerProcessorForTest(t *testing.T, sink fileLoggerSink) *fileLoggerProcessor {
+	t.Helper()
+	processor, err := newFileLoggerProcessor(newFileLoggerTestTaskOwner(t), sink)
+	if err != nil {
+		t.Fatalf("newFileLoggerProcessor() error = %v", err)
+	}
+	return processor
+}
+
+func newOwnedFileLoggerProcessorWithTimerForTest(
+	t *testing.T,
+	sink fileLoggerSink,
+	newTimer func(time.Duration) *time.Timer,
+) *fileLoggerProcessor {
+	t.Helper()
+	processor, err := newFileLoggerProcessorWithTimer(newFileLoggerTestTaskOwner(t), sink, newTimer)
+	if err != nil {
+		t.Fatalf("newFileLoggerProcessorWithTimer() error = %v", err)
+	}
+	return processor
 }
 
 func (s *recordingFileLoggerSink) Write(data []byte) (int, error) {
@@ -122,7 +301,7 @@ func TestFileLoggerProcessorAutomaticFlushErrorsReachNextBarrier(t *testing.T) {
 			sink := &recordingFileLoggerSink{
 				writeErr: writeErr, failWrites: 1, entered: make(chan struct{}, 1),
 			}
-			p := newFileLoggerProcessor(sink)
+			p := newOwnedFileLoggerProcessorForTest(t, sink)
 			test.enqueue(t, p)
 			select {
 			case <-sink.entered:
@@ -170,7 +349,7 @@ func (s *recordingFileLoggerSink) snapshotWrites() [][]byte {
 
 func TestFileLoggerProcessorFlushesMultipleEntriesInOneWrite(t *testing.T) {
 	sink := &recordingFileLoggerSink{}
-	p := newFileLoggerProcessor(sink)
+	p := newOwnedFileLoggerProcessorForTest(t, sink)
 	if err := p.pushFields(map[string]any{"id": 1}); err != nil {
 		t.Fatalf("pushFields(1) error = %v", err)
 	}
@@ -211,7 +390,7 @@ func TestFileLoggerProcessorFlushesMultipleEntriesInOneWrite(t *testing.T) {
 
 func TestFileLoggerProcessorFlushesByCount(t *testing.T) {
 	sink := &recordingFileLoggerSink{}
-	p := newFileLoggerProcessor(sink)
+	p := newOwnedFileLoggerProcessorForTest(t, sink)
 	p.beforeEncode = func() {}
 	for i := range fileLoggerBatchMaxEntries {
 		if err := p.pushFields(map[string]any{"id": i}); err != nil {
@@ -233,7 +412,7 @@ func TestFileLoggerProcessorFlushesByCount(t *testing.T) {
 
 func TestFileLoggerProcessorFlushesByBytesAndOversizedLineAlone(t *testing.T) {
 	sink := &recordingFileLoggerSink{}
-	p := newFileLoggerProcessor(sink)
+	p := newOwnedFileLoggerProcessorForTest(t, sink)
 	if err := p.pushFields(map[string]any{"payload": "small"}); err != nil {
 		t.Fatalf("pushFields(small) error = %v", err)
 	}
@@ -254,7 +433,7 @@ func TestFileLoggerProcessorFlushesByBytesAndOversizedLineAlone(t *testing.T) {
 
 func TestFileLoggerProcessorFlushesByTimer(t *testing.T) {
 	sink := &recordingFileLoggerSink{}
-	p := newFileLoggerProcessor(sink)
+	p := newOwnedFileLoggerProcessorForTest(t, sink)
 	started := time.Now()
 	if err := p.pushFields(map[string]any{"id": 1}); err != nil {
 		t.Fatalf("pushFields() error = %v", err)
@@ -274,10 +453,14 @@ func TestFileLoggerProcessorFlushesByTimer(t *testing.T) {
 
 func TestFileLoggerProcessorArmsTimerOnlyForNonEmptyBatch(t *testing.T) {
 	var timerCreations int
-	p := newFileLoggerProcessorWithTimer(&recordingFileLoggerSink{}, func(delay time.Duration) *time.Timer {
-		timerCreations++
-		return time.NewTimer(delay)
-	})
+	p := newOwnedFileLoggerProcessorWithTimerForTest(
+		t,
+		&recordingFileLoggerSink{},
+		func(delay time.Duration) *time.Timer {
+			timerCreations++
+			return time.NewTimer(delay)
+		},
+	)
 	time.Sleep(3 * fileLoggerBatchMaxDelay)
 	if timerCreations != 0 {
 		t.Fatalf("idle timer creations = %d, want zero", timerCreations)
@@ -303,7 +486,7 @@ func TestFileLoggerProcessorPendingWaitsForWriteCompletion(t *testing.T) {
 		entered: make(chan struct{}, 1),
 		release: make(chan struct{}),
 	}
-	p := newFileLoggerProcessor(sink)
+	p := newOwnedFileLoggerProcessorForTest(t, sink)
 	if err := p.pushFields(map[string]any{"id": 1}); err != nil {
 		t.Fatalf("pushFields() error = %v", err)
 	}
@@ -333,7 +516,7 @@ func TestFileLoggerProcessorPendingWaitsForWriteCompletion(t *testing.T) {
 }
 
 func TestFileLoggerProcessorPendingClearsAfterWriteFailure(t *testing.T) {
-	p := newFileLoggerProcessor(&recordingFileLoggerSink{writeErr: errors.New("write failed")})
+	p := newOwnedFileLoggerProcessorForTest(t, &recordingFileLoggerSink{writeErr: errors.New("write failed")})
 	if err := p.pushFields(map[string]any{"id": 1}); err != nil {
 		t.Fatalf("pushFields() error = %v", err)
 	}
@@ -354,7 +537,7 @@ func TestFileLoggerProcessorPendingClearsAfterWriteFailure(t *testing.T) {
 }
 
 func TestFileLoggerProcessorRejectsPayloadWhenByteBudgetExceeded(t *testing.T) {
-	p := newFileLoggerProcessor(&recordingFileLoggerSink{})
+	p := newOwnedFileLoggerProcessorForTest(t, &recordingFileLoggerSink{})
 	p.payloadByteBudget = 64
 	if err := p.pushFields(map[string]any{"payload": strings.Repeat("x", 65)}); !errors.Is(err, base.ErrLogQueueFull) {
 		t.Fatalf("oversized payload error = %v, want ErrLogQueueFull", err)
@@ -367,7 +550,7 @@ func TestFileLoggerProcessorRejectsPayloadWhenByteBudgetExceeded(t *testing.T) {
 }
 
 func TestFileLoggerProcessorCountsSnapshotBodiesAgainstByteBudget(t *testing.T) {
-	p := newFileLoggerProcessor(&recordingFileLoggerSink{})
+	p := newOwnedFileLoggerProcessorForTest(t, &recordingFileLoggerSink{})
 	p.payloadByteBudget = 64
 	snapshot := base.LogSnapshot{
 		Request: apisixlog.RequestLogSnapshot{Body: []byte(strings.Repeat("x", 65))},
@@ -384,7 +567,7 @@ func TestFileLoggerProcessorCountsSnapshotBodiesAgainstByteBudget(t *testing.T) 
 func TestFileLoggerProcessorCountsNamedStringsAgainstByteBudget(t *testing.T) {
 	type largeString string
 
-	p := newFileLoggerProcessor(&recordingFileLoggerSink{})
+	p := newOwnedFileLoggerProcessorForTest(t, &recordingFileLoggerSink{})
 	p.payloadByteBudget = 1024
 	fields := map[string]any{"payload": largeString(strings.Repeat("x", 2048))}
 	if err := p.pushFields(fields); !errors.Is(err, base.ErrLogQueueFull) {
@@ -398,7 +581,7 @@ func TestFileLoggerProcessorCountsNamedStringsAgainstByteBudget(t *testing.T) {
 
 func TestFileLoggerProcessorReleasesPayloadBytesAndReadmits(t *testing.T) {
 	sink := &recordingFileLoggerSink{entered: make(chan struct{}, 1), release: make(chan struct{})}
-	p := newFileLoggerProcessor(sink)
+	p := newOwnedFileLoggerProcessorForTest(t, sink)
 	fields := map[string]any{"payload": strings.Repeat("x", 128)}
 	recordBytes := fileLogRecordPayloadBytes(fileLogRecord{kind: fileLogFieldsRecord, fields: fields})
 	p.payloadByteBudget = recordBytes
@@ -445,7 +628,7 @@ func TestFileLoggerProcessorReleasesPayloadBytesAndReadmits(t *testing.T) {
 }
 
 func TestFileLoggerProcessorEncodeFailureReleasesPayloadBytes(t *testing.T) {
-	p := newFileLoggerProcessor(&recordingFileLoggerSink{})
+	p := newOwnedFileLoggerProcessorForTest(t, &recordingFileLoggerSink{})
 	p.encodeFields = func(map[string]any) (*buffer.Buffer, error) {
 		return nil, errors.New("file logger test encode failure")
 	}
@@ -467,7 +650,7 @@ func TestFileLoggerProcessorEncodeFailureReleasesPayloadBytes(t *testing.T) {
 
 func TestFileLoggerProcessorRejectsFullQueueAndStoppedAdmission(t *testing.T) {
 	sink := &recordingFileLoggerSink{}
-	p := newFileLoggerProcessor(sink)
+	p := newOwnedFileLoggerProcessorForTest(t, sink)
 	entered := make(chan struct{})
 	release := make(chan struct{})
 	p.beforeEncode = func() {
@@ -516,7 +699,7 @@ func TestFileLoggerProcessorRejectsFullQueueAndStoppedAdmission(t *testing.T) {
 
 func TestFileLoggerProcessorAdmitsLegacyFieldsAndBarrierAtomically(t *testing.T) {
 	sink := &recordingFileLoggerSink{}
-	p := newFileLoggerProcessor(sink)
+	p := newOwnedFileLoggerProcessorForTest(t, sink)
 	entered := make(chan struct{})
 	release := make(chan struct{})
 	p.beforeEncode = func() {
@@ -564,7 +747,7 @@ func TestFileLoggerProcessorAdmitsLegacyFieldsAndBarrierAtomically(t *testing.T)
 
 func TestFileLoggerRunLogPhaseQueuesSnapshotBeforeFieldConstruction(t *testing.T) {
 	sink := &recordingFileLoggerSink{}
-	processor := newFileLoggerProcessor(sink)
+	processor := newOwnedFileLoggerProcessorForTest(t, sink)
 	plugin := &Plugin{
 		config: Config{
 			LogFormat: map[string]any{"uri": "$uri"},
@@ -626,7 +809,7 @@ func TestFileLoggerRunLogPhaseQueuesSnapshotBeforeFieldConstruction(t *testing.T
 }
 
 func TestFileLoggerProcessorConcurrentPushStop(t *testing.T) {
-	p := newFileLoggerProcessor(&recordingFileLoggerSink{})
+	p := newOwnedFileLoggerProcessorForTest(t, &recordingFileLoggerSink{})
 	var wg sync.WaitGroup
 	for i := range 8 {
 		wg.Go(func() {
@@ -644,7 +827,7 @@ func TestFileLoggerProcessorConcurrentPushStop(t *testing.T) {
 
 func TestFileLoggerProcessorBarrierFlushesAndSyncs(t *testing.T) {
 	sink := &recordingFileLoggerSink{}
-	p := newFileLoggerProcessor(sink)
+	p := newOwnedFileLoggerProcessorForTest(t, sink)
 	if err := p.pushFields(map[string]any{"id": 1}); err != nil {
 		t.Fatalf("pushFields() error = %v", err)
 	}
@@ -676,7 +859,7 @@ func TestFileLoggerProcessorReportsWriteAndShortWriteErrors(t *testing.T) {
 		"short write": {short: true},
 	} {
 		t.Run(name, func(t *testing.T) {
-			p := newFileLoggerProcessor(sink)
+			p := newOwnedFileLoggerProcessorForTest(t, sink)
 			if _, err := p.writeBatch([]byte("line\n")); !errors.Is(err, writeErr) && name == "write error" {
 				t.Fatalf("writeBatch() error = %v, want %v", err, writeErr)
 			}
@@ -692,7 +875,7 @@ func TestFileLoggerProcessorReportsWriteAndShortWriteErrors(t *testing.T) {
 
 func TestFileLoggerProcessorStopIsIdempotentAndDrains(t *testing.T) {
 	sink := &recordingFileLoggerSink{}
-	p := newFileLoggerProcessor(sink)
+	p := newOwnedFileLoggerProcessorForTest(t, sink)
 	for i := range 3 {
 		if err := p.pushFields(map[string]any{"id": i}); err != nil {
 			t.Fatalf("pushFields(%d) error = %v", i, err)
@@ -707,7 +890,7 @@ func TestFileLoggerProcessorStopIsIdempotentAndDrains(t *testing.T) {
 
 func TestFileLoggerProcessorTimeoutRetainsCleanupUntilWorkerFinishes(t *testing.T) {
 	sink := &recordingFileLoggerSink{entered: make(chan struct{}, 1), release: make(chan struct{})}
-	p := newFileLoggerProcessor(sink)
+	p := newOwnedFileLoggerProcessorForTest(t, sink)
 	p.stopTimeout = 10 * time.Millisecond
 	if err := p.pushFields(map[string]any{"id": 1}); err != nil {
 		t.Fatalf("pushFields() error = %v", err)

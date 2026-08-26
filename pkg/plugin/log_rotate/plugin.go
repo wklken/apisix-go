@@ -3,6 +3,7 @@ package log_rotate
 import (
 	"archive/tar"
 	"compress/gzip"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -15,11 +16,11 @@ import (
 	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
-	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/file_logger"
+	"github.com/wklken/apisix-go/pkg/runtime"
 )
 
 type Plugin struct {
@@ -32,10 +33,7 @@ type Plugin struct {
 	// rotate is the rotation seam run by the background worker.
 	rotate func(time.Time) error
 
-	trigger  chan struct{}
-	stop     chan struct{}
-	done     chan struct{}
-	stopOnce sync.Once
+	trigger chan struct{}
 }
 
 const (
@@ -105,7 +103,9 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
-	p.loadPluginAttr()
+	if err := p.loadPluginAttr(); err != nil {
+		return err
+	}
 	p.applyDefaults()
 	if p.now == nil {
 		p.now = time.Now
@@ -113,10 +113,15 @@ func (p *Plugin) PostInit() error {
 	if p.rotate == nil {
 		p.rotate = p.Rotate
 	}
+	owner := p.TaskOwner()
+	if owner == nil {
+		return runtime.ErrTaskOwnerRequired
+	}
 	p.trigger = make(chan struct{}, 1)
-	p.stop = make(chan struct{})
-	p.done = make(chan struct{})
-	go p.rotationWorker()
+	if err := owner.Go("rotation", p.rotationWorker); err != nil {
+		p.trigger = nil
+		return err
+	}
 
 	return nil
 }
@@ -128,13 +133,15 @@ func (p *Plugin) Config() any {
 // rotationWorker owns log rotation: one bounded trigger channel coalesces
 // requests while the worker runs the (potentially slow) rename, compression,
 // and history pruning off the request path.
-func (p *Plugin) rotationWorker() {
-	defer close(p.done)
+func (p *Plugin) rotationWorker(ctx context.Context) error {
 	for {
 		select {
-		case <-p.stop:
-			return
+		case <-ctx.Done():
+			return nil
 		case <-p.trigger:
+			if ctx.Err() != nil {
+				return nil
+			}
 			if err := p.rotate(p.now()); err != nil {
 				logger.Errorf("log-rotate failed: %s", err)
 			}
@@ -142,17 +149,9 @@ func (p *Plugin) rotationWorker() {
 	}
 }
 
-// Stop is idempotent and waits for the rotation worker to finish.
-func (p *Plugin) Stop() {
-	p.stopOnce.Do(func() {
-		if p.stop != nil {
-			close(p.stop)
-		}
-		if p.done != nil {
-			<-p.done
-		}
-	})
-}
+// Stop is kept for the plugin lifecycle; the generation task registry owns
+// worker cancellation and joining before this method is called.
+func (p *Plugin) Stop() {}
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
@@ -227,14 +226,12 @@ func (p *Plugin) reopenLogFiles() error {
 	return errors.Join(errs...)
 }
 
-func (p *Plugin) loadPluginAttr() {
-	if config.GlobalConfig == nil || config.GlobalConfig.PluginAttr == nil {
-		return
+func (p *Plugin) loadPluginAttr() error {
+	effective := p.StaticConfig()
+	if effective == nil {
+		return fmt.Errorf("effective config is required")
 	}
-	attr, ok := config.GlobalConfig.PluginAttr[name]
-	if !ok {
-		return
-	}
+	attr := effective.Config.PluginAttr[name]
 	if p.config.Interval == 0 {
 		p.config.Interval = intFromAttr(attr, "interval")
 	}
@@ -251,6 +248,7 @@ func (p *Plugin) loadPluginAttr() {
 	if value, ok := attr["enable_compression"].(bool); ok {
 		p.config.EnableCompression = value
 	}
+	return nil
 }
 
 func (p *Plugin) applyDefaults() {

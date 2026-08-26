@@ -4,24 +4,299 @@
 >
 > The design baseline is APISIX `release/3.17`; these notes describe intentional Go-native boundaries and separate-subsystem decisions.
 
+## Current architecture and Task 1-11 implementation status
+
+This section is the current cross-package design record. Source and focused
+tests are the final authority for implementation detail. Files under
+`docs/superpowers/plans/` record intent and execution history; they do not prove
+that a planned package or feature exists.
+
+### Compatibility and capability source of truth
+
+Observable APISIX `3.17.0` compatibility is the default product direction.
+Go-native extensions may intentionally diverge when they are declared and
+evidenced; inventory parity by itself is not qualification or production
+readiness.
+
+`pkg/capability/manifest.yaml` is the only editable source for the pinned APISIX
+source/image, capability factories and aliases, phases and priorities, behavior
+status, evidence, qualification profiles, platform gaps, accepted divergences,
+and secret declarations. It is parsed with strict YAML fields and generates:
+
+```text
+pkg/capability/manifest.yaml
+  -> pkg/plugin/registry_gen.go
+  -> docs/plugins.md
+  -> README.md / README.zh-CN.md generated summaries
+```
+
+The generated registry and documentation projections must not be hand-edited.
+Behavior support and qualification evidence are independent dimensions: a
+registered or implemented factory is not automatically qualified.
+
+### Bootstrap and immutable configuration
+
+The production bootstrap order is:
+
+```text
+cmd/root.go
+  -> capability.Load
+  -> config.LoadEffective
+  -> capability.NewSecretDeclarationCatalog
+  -> data_encryption.NewService
+  -> secret.NewGenerationSecretResolver
+  -> store.OpenJournal
+  -> Journal.Recover
+  -> server.NewServer
+  -> compiler.NewWorkerCompilerFactory
+  -> server.NewGenerationEngine
+  -> generation.NewCoordinator
+  -> GenerationEngine.InstallRecovery
+  -> listeners
+  -> etcd or standalone provider
+```
+
+Journal recovery completes before listeners and providers start. Providers do
+not mutate handlers, routes, plugins, or runtime resources; they submit
+`generation.DesiredBatch` values through `generation.DesiredApplier`.
+`generation.Coordinator` is the single in-process desired-to-published writer.
+
+Static configuration uses one presence-aware precedence chain:
+`builtin defaults -> default file -> optional override -> recognized
+APISIXGO_* -> repeatable --set`. Maps merge recursively, sequences replace,
+and absent, null, false, zero, and empty string remain distinct. Each effective
+field retains provenance. Compatibility, security, and qualification are
+orthogonal selection axes; the removed combined profile selector must not be
+restored under another name. `EffectiveConfig` is defensively owned by the
+compiler factory and is never published as mutable global state.
+
+### Durable desired-to-published transaction
+
+`pkg/generation` owns immutable values, validation, journal interfaces, and the
+coordinator. `pkg/store` is the bbolt implementation of the durable generation
+journal; it is not a mutable runtime resource store. The journal resides at
+`<EffectiveConfig.Paths.DataDir>/apisix-go-store.db` and records desired
+revisions, content-addressed artifacts, staged transactions, independent HTTP
+and stream published heads, provider cursor/authority, acknowledgements, and
+per-resource decisions with integrity metadata.
+
+The only production publication order is:
+
+```text
+ApplyDesired
+  -> LoadDesired and predecessor publications
+  -> Engine.Prepare
+  -> Journal.Stage
+  -> Engine.Activate
+  -> Journal.Commit (persist acknowledgement)
+  -> Engine.FinalizeActivation
+  -> return acknowledgement to provider
+```
+
+`Activate` may expose the candidate in memory before durable commit, so an
+activation or commit failure must restore the exact predecessor bundle and then
+abort the stage. Predecessor retirement begins only after commit. Finalization
+transfers ownership and queues retirement without synchronously waiting for
+drain. A committed cursor replay does not apply or compile again; it confirms
+the exact active fence. Recovery compiles only committed published state, never
+the desired head. An empty journal opens the recovery barrier without inventing
+a serving generation.
+
+`last-good` may copy only the exact bytes for the same key and domain from a
+valid published predecessor. With no predecessor, invalid first-generation
+input fails closed. Explicit tombstones remain deletion and never fall back.
+Quarantined or fail-closed resources cannot enter a candidate publication.
+HTTP and stream may have independent revisions, while the required domains of a
+single commit are updated atomically.
+
+### Pure planning, materialization, and prepared-generation ownership
+
+`compiler.Compiler.PreparePublication` normalizes and validates resources,
+builds dependencies and domain closure, refines disposition, and validates the
+final publication set before any registration, client, resource, task, or
+secret side effect. HTTP and stream planning chooses exact winning occurrences
+before materialization; disabled and losing occurrences acquire nothing.
+
+`WorkerCompilerFactory` defensively owns the manifest, effective config, and
+trusted CA material and shares one `runtime.ResourceRegistry`. Candidate and
+recovery compilation use the same ownership-transfer path. A
+`PreparedGeneration` owns the entire attempt: publication, immutable metadata
+and consumers, exact secret authority, generation task registry, resource
+leases, HTTP/TLS snapshot, stream snapshot, and cleanup ledger. Its exported
+views are defensive and carry no registration, task, resource, secret, or
+cleanup authority.
+
+Cleanup has three ordered phases, each executed in reverse registration order:
+
+```text
+quiesce tasks and plugin admission
+  -> finalize runtime resources
+  -> release consumer, secret, and registration authorities
+```
+
+A deadline, cancellation, task residual, or incomplete resource finalization
+retains ownership and retry authority. It must not detach the generation or
+advance to a later phase. Terminal cleanup revokes snapshots and detaches the
+generation exactly once.
+
+### Atomic serving bundle and leases
+
+`server.GenerationEngine` publishes one atomic bundle with independent HTTP and
+stream domain slots. Updating one slot must preserve the other slot's revision
+and owner. A prepared generation retires only after it owns no active domain and
+all generation leases have drained.
+
+Every HTTP request pins the exact HTTP generation. Batch/subrequest work may
+retain from a live parent lease; a successful hijack transfers a retained lease
+to a wrapped connection and releases it on `Close`. TLS selection temporarily
+pins the same HTTP generation. Every accepted stream connection pins its exact
+router generation for the complete connection. Rollback and later activation
+therefore affect new acquisition, not already-owned work.
+
+`pkg/route` and `pkg/stream` compile detached immutable snapshots. They do not
+read the journal, instantiate plugins, acquire shared resources, start tasks, or
+activate listeners. `pkg/compiler` owns those effects; `pkg/server` owns atomic
+activation; the persistent stream runtime owns listeners and per-connection
+router acquisition.
+
+### Panic, task, and resource ownership
+
+Generation/shared background work uses `runtime.TaskOwner`; request and
+connection child work uses `runtime.RequestTaskGroup`. Plugins receive a
+compiler-created owner and provide only a fixed component. The canonical plugin
+owner prefix is `plugin/<sanitized-factory>/<sha256(instance-key)>`; raw route
+or resource identifiers do not enter task residuals. Shared resources use
+resource-local core owners instead of borrowing a generation registry.
+
+`TaskPlugin` error or panic fails and closes admission only for the exact plugin
+owner and reports a bounded failure. `TaskCore` errors are reported without
+poisoning the owner; `TaskCore` panic is not recovered by the task runtime.
+`RequestTaskGroup.Wait` joins every accepted child before re-panicking the first
+panic with the same identity; ordinary errors are joined. A response timeout
+does not permit the handler or connection owner to return and release its
+generation lease while accepted children still run.
+
+`TaskRegistry.Stop` rejects admission, cancels, and joins accepted work. A
+deadline returns a sorted, deduplicated `TaskResidualError`; it is incomplete
+cleanup and a later `Stop` may finish. `runtime.ResourceRegistry` shares only an
+exact `ResourceKey{Kind, Scope, Digest}` with the same Go type. Final-reference
+close is retryable; while incomplete, the identity and resource remain owned
+and cannot be replaced.
+
+The production goroutine gate rejects raw `go` and type-resolved
+`sync.WaitGroup.Go` only under `pkg/plugin`, `pkg/proxy`, `pkg/route`, and
+`pkg/stream`. It is not a repository-wide claim; process owners outside those
+roots must still have explicit lifecycle and joins.
+
+### Shutdown phase fence
+
+Server shutdown is an ordered, retryable state machine:
+
+```text
+stop and join the config producer
+  -> reject listeners and new route leases; initiate stream close
+  -> drain HTTP, generation leases, and the stream runtime
+  -> close the generation engine
+  -> close the generation secret resolver
+  -> close the journal
+  -> close metrics expiration/export, then tracing
+```
+
+An incomplete phase that still owns runtime authority, including a task
+residual or deadline, must not advance to a later phase. Terminal errors are
+recorded once according to the owning phase; a later `Shutdown` continues from
+the first incomplete phase instead of repeating completed releases.
+
+### Readiness and bounded observability
+
+Readiness is internal bounded state, not a Prometheus scrape read-back.
+`config_apply_ready` requires an observed, healthy provider and a successful
+HTTP stage; it requires a successful stream stage only when stream is
+configured. Any quarantine blocks readiness. `/livez` is independent;
+`/readyz` additionally requires provider reachability in etcd mode, so a
+recovered generation may keep serving while readiness is false.
+
+Untrusted provider, stage, resource, route, backend, owner, or panic values do
+not become metric labels. Dynamic HTTP/LLM/upstream series use hard-cap trackers
+and the canonical `__overflow__` label. In-flight series are not evicted before
+release, and stream route metric references remain until the last overlapping
+generation that can emit a terminal observation retires.
+
+Plugin callback panics are classified as bounded `plugin.PanicError` values;
+the public error omits the raw panic value. Exact `http.ErrAbortHandler` retains
+its sentinel semantics, downstream/core panic is not attributed to a plugin,
+and all lifecycle finalizers run before the selected response or re-panic.
+Unknown core panic currently escapes the route handler after cleanup but is
+still recovered by the standard `net/http.Server` connection boundary.
+
+### Secret authority
+
+Secret declarations in the capability manifest are runtime authority, not
+documentation metadata. The catalog digest binds encryption, materialization,
+and compiler construction. Each candidate or recovery attempt receives a
+distinct identity and scopes access by generation, attempt, domain, factory,
+resource kind/id, declaration source, and canonical field.
+
+The resolver can read only defensive bytes in the exact publication closure;
+it has no journal or global Store lookup. Cross-generation, cross-attempt,
+cross-domain, cross-resource, and undeclared access fails before contacting a
+backend. Decryption precedes `$ENV://` or `$secret://vault/...` resolution, and
+Vault configuration must come from the same domain closure. Plaintext is
+temporarily exposed only through `secret.Value.Use`; persistent observation is
+limited to redacted digest/descriptor identity. Cache eviction, expiry, and
+close zero retained bytes. An incomplete close preserves attempt identity and
+authority for retry.
+
+### Implemented versus planned-only boundary
+
+The immutable generation compiler, in-process `Server + GenerationEngine`,
+lease-aware retirement, and retryable task/resource cleanup are implemented.
+The external supervisor/exec-worker architecture, IPC activation protocol,
+listener inheritance, worker probation/restart policy, and cross-platform
+lifecycle packages described by the supervisor child plan are not implemented.
+There are currently no `pkg/supervisor`, `pkg/worker`, `pkg/lifecycle`, or
+`pkg/platform` packages.
+
+The repository has existing security/release workflows and amd64 image, SBOM,
+Trivy, signing, attestation, and operational evidence gates. The proposed
+next-generation qualification subsystem, APISIX-oracle evidence bundle,
+multi-architecture OCI promotion contract, and native macOS/Windows artifacts
+remain planned-only; there is currently no `pkg/qualification`,
+`qualification/policy.json`, or `.github/workflows/qualification.yml`.
+
 ## Configuration, container, and release gates
 
-Runtime configuration has one deterministic precedence chain:
-`default -> selected override -> APISIXGO_*`. The base file is always
-`conf/config-default.yaml`; `-c/--config` selects an optional override, and
-environment variables are applied last. Nested maps merge and lists replace.
-The process validates the fully merged result before publishing global state:
-the HTTP plugin allowlist and listener set must be non-empty, listeners must be
-valid, proxy connection limits must be positive, and the effective `etcd`
-provider must have endpoints and a prefix.
+Runtime configuration has one presence-aware precedence chain:
+`builtin defaults -> default file -> override file -> APISIXGO_* -> repeatable --set path=value`.
+The base file is always `conf/config-default.yaml`; `-c/--config` selects an
+optional override. APISIX `${{NAME}}` and `${{NAME:=fallback}}` templates expand
+inside each parsed file layer before that layer enters the merge. Maps merge
+recursively, lists/sequences replace, and an explicit `null` replaces the lower
+layer; absent, `null`, `false`, zero, and empty string remain distinct presence
+states. Only recognized `APISIXGO_*` aliases are applied as static overlays, and
+repeatable `--set path=value` flags are applied last.
+
+`config.LoadEffective` validates the result and returns one immutable
+`config.EffectiveConfig`; bootstrap performs explicit dependency injection along
+`EffectiveConfig -> data_encryption.Service -> explicit resolver dependency`
+before constructing the server and plugins. Configuration is not published as
+process-global state. The HTTP plugin allowlist and listener set must be
+non-empty, listeners must be valid, proxy connection limits must be positive,
+and the effective `etcd` provider must have endpoints and a prefix. The startup
+plugin list comes from this validated effective configuration rather than
+mutable package-global state. See the
+[static-configuration program specification](superpowers/plans/2026-08-23-apisix-go-convergence-program-spec.md)
+and the [central capability manifest](../pkg/capability/manifest.yaml).
 
 Startup logs only the bounded `config.CapabilitySummary`: debug mode, bounded
 role/provider values, listener and plugin counts, protocol-mode booleans, the
 etcd endpoint count, and whether proxy limits are configured. It excludes
 addresses, credentials, keys, certificates, tokens, and secret references.
 
-The runtime image is pinned to Alpine 3.24.1, contains the CA bundle without a
-`curl` dependency or built-in Docker healthcheck, and runs as UID/GID 10001.
+The runtime image is pinned to Alpine 3.24.1, applies the current v3.24
+repository security upgrades during the image build, contains the CA bundle
+without a `curl` dependency or built-in Docker healthcheck, and runs as UID/GID
+10001.
 Its default command uses `/usr/local/apisix/conf/config-production.yaml`, which
 intentionally fails closed until an operator supplies a real etcd endpoint. The executable
 `scripts/container_smoke.sh` mounts a generated standalone
@@ -73,6 +348,8 @@ bash scripts/release_gate_test.sh
 
 ### Candidate HTTP data-plane profile and lifecycle
 
+#### Historical behavior before convergence: candidate profile
+
 `deployment.profile` accepts either the empty compatibility value or the
 strict `http-data-plane-v1` candidate. The strict profile is an ordered,
 HTTP-only contract: it uses the six-plugin allowlist
@@ -88,6 +365,13 @@ post-merge RC/final release and operations evidence and does not change the
 repository-wide not-ready status. The first release has no previous immutable
 digest, so rollback qualification remains open until a distinct older
 published digest is exercised.
+
+> **Superseded 2026-08-23:** the governing design has three independent
+> selection axes and manifest-derived qualification. See the
+> [program specification](superpowers/plans/2026-08-23-apisix-go-convergence-program-spec.md),
+> [compatibility contract](architecture/compatibility-contract.md), and
+> [legacy conflict ledger](architecture/legacy-conflicts.md). The text above is
+> retained only as historical evidence of the pre-convergence candidate.
 
 NGINX HTTP and stream process access-log settings are unsupported in both the
 compatibility and candidate profiles: any explicitly non-zero boolean or
@@ -121,6 +405,30 @@ of the implemented TLS boundary; direct Internet exposure still requires that
 frontend TLS boundary or a trusted TLS-terminating ingress whose source CIDRs
 are configured.
 
+#### Current lifecycle and publication
+
+WebSocket upgrades are admitted only when the effective route or service sets
+`enable_websocket: true`. They skip response callbacks while the request,
+authentication, access, before-proxy, and log phases run. A successful hijack
+retains the exact HTTP generation through the wrapped connection, so replacing
+or rolling back a serving bundle affects only new acquisitions. Cluster
+admission and timeout limits continue to apply. `SIGHUP` remains unsupported as
+a process-reload mechanism; normal provider changes use the in-process durable
+generation transaction described above.
+
+Publication no longer mutates runtime rows and invokes a route builder. The
+provider submits raw desired resources, the journal persists the desired
+revision, and the compiler determines a complete candidate with exact
+per-resource decisions. Malformed route-scoped resources may be quarantined
+according to policy; resources that fail closed never enter the candidate.
+Stream candidate errors and conflicting listen addresses fail preparation for
+that domain. A failed prepare, stage, activation, or commit retains or restores
+the prior active bundle. Explicit deletion is a tombstone and cannot reuse
+last-good. URI registration and plugin materialization are attempt-owned and
+roll back with the prepared generation.
+
+#### Historical behavior before convergence: lifecycle
+
 WebSocket upgrades are admitted only when the effective route or service sets
 `enable_websocket: true`. Every WebSocket upgrade attempt skips response
 callbacks while request, authentication, access, before-proxy, and log phases
@@ -133,28 +441,15 @@ process rather than an in-process reload. Zipkin is v2-only, and OTel rejects
 `set_ngx_var` and non-zero `inactive_timeout` while retaining collector
 `request_timeout`.
 
-Configuration publication separates deterministic per-resource validation
-from route-scoped and generation-wide semantic validation. New route,
-global-rule, stream-route, plugin-list, and SSL PUTs must decode as valid
-resources before bbolt mutation; invalid updates return a typed resource
-error, retain the last-good row, and do not schedule a reload. During
-snapshot rebuild, a malformed SSL, global-rule, or dynamic plugin-list row
-keeps the previously published version of that ID when one exists and
-publishes the rest of the generation. Stream routes use the same
-last-good-or-fail-closed contract on list and reload; an explicit delete
-drops last-good for that ID, and conflicting listen addresses remain
-generation-fatal. If there is no last-good version (including first
-startup), the generation fails closed and the previously installed handler
-remains. SSL identities, global rules, stream routes, and the dynamic
-plugin list are never omitted to keep the process up, and a failed plugin
-list never falls back to `config.GlobalConfig.Plugins`. Routes, services,
-upstreams, plugin_configs, and plugin_metadata may still quarantine-and-omit
-malformed legacy rows. Runtime startup and reload also quarantine a complete
-individual route when its plugin materialization, reference resolution, or
-URI registration fails; URI validation is atomic for multi-URI routes and
-failed plugin initialization rolls back generation public API registrations.
-`BuildStrict` remains available for strict validation tests, while runtime
-publication uses the route-quarantining build entry point.
+> **Superseded 2026-08-23:** route retirement and `SIGHUP` above describe the
+> pre-convergence implementation limitation, not the governing target. The
+> later [supervisor-generation child plan](superpowers/plans/2026-08-23-supervisor-worker-platform.md)
+> targets generation handoff that preserves ordinary hijacked connections.
+> See the [program specification](superpowers/plans/2026-08-23-apisix-go-convergence-program-spec.md),
+> [compatibility contract](architecture/compatibility-contract.md), and
+> [legacy conflict ledger](architecture/legacy-conflicts.md).
+
+#### Historical behavior before convergence: route schema
 
 Route publication uses one pre-materialization entrypoint,
 `validateRouteCompatibility`, for the Go data-plane compatibility subset.
@@ -167,22 +462,33 @@ invalid wildcard host patterns are rejected before publication. Plugin
 materialization, secret ownership, and upstream resolution stay on the
 existing post-entrypoint path.
 
+> **Superseded 2026-08-23:** the governing route target is the pinned observable
+> APISIX contract with explicit gap accounting, not preservation of this subset
+> as the final compatibility boundary. See the
+> [program specification](superpowers/plans/2026-08-23-apisix-go-convergence-program-spec.md),
+> [compatibility contract](architecture/compatibility-contract.md), and
+> [legacy conflict ledger](architecture/legacy-conflicts.md). The text above is
+> retained as historical implementation evidence until the later HTTP
+> compatibility child plan converges it.
+
 ## APISIX 3.17 Protocol Bridge Design
 
 > Status: design baseline plus bounded Dubbo/Kafka slices and a TCP/MQTT stream owner, 2026-07-12
 > This document is the contract for implementing the protocol plugins in
 > [`plugins.md`](plugins.md).
 
-The current Go runtime has an HTTP `http.Handler` pipeline and now also owns a
+The current Go runtime has an HTTP `http.Handler` pipeline and also owns a
 bounded raw-TCP stream listener/route snapshot with cancellation and result/log
 callbacks. Stream startup is fail-closed: stream mode requires at least one
 TCP listener, and unsupported UDP, TLS, PROXY protocol, unresolved upstream,
 and unsupported plugin configuration is rejected before the server begins
 serving. HTTP route-scoped failures follow the quarantine contract above;
-invalid stream generation reloads are rejected without replacing the last-good
-stream runtime. It does not yet expose a general stream-variable/plugin-chain
-API, active health probes, TLS/UDP stream owner, or Kafka-specific stream
-binding. The runtime exposes `/livez` and `/readyz`; startup failures are
+invalid stream generation preparation or activation is rejected without
+replacing the last-good stream runtime. It does not yet expose a general
+stream-variable/plugin-chain API, stream-specific active health/discovery,
+TLS/UDP stream owner, or Kafka-specific stream binding. HTTP cluster active
+health is implemented separately under a resource-local task owner. The runtime
+exposes `/livez` and `/readyz`; startup failures are
 returned to the process entrypoint, and readiness remains unavailable until
 configuration and the configured provider are ready. Protocol-owned bounded
 transport and stream boundaries therefore have different integration states:
@@ -388,7 +694,8 @@ deterministic `chash` upstream owner, cancellation, and result/log callback.
 For `key=mqtt_client_id`, the parsed client ID is the hash input and the peer
 address is the fallback. General stream variables and
 other stream-plugin chaining remain separate contracts. The HTTP route builder
-remains unchanged.
+is not involved; the detached stream snapshot is planned and materialized
+through the compiler and activated independently by the generation engine.
 
 The future general stream-plugin interfaces are:
 
@@ -448,8 +755,9 @@ an upstream reference cannot be resolved, a route uses an unsupported stream
 plugin, or a listener cannot bind. Runtime construction is transactional across
 listeners, and a later Prometheus or HTTP startup error closes and clears the
 stream runtime created by that startup attempt. General stream plugin chaining,
-stream TLS/mTLS, UDP forwarding, PROXY protocol, stream metrics, and dynamic
-readiness publication remain outside this bounded contract.
+stream TLS/mTLS, UDP forwarding, and PROXY protocol remain outside this bounded
+contract. Stream-stage readiness and generation-aware stream route/connection
+metrics are implemented.
 
 #### Acceptance tests
 
@@ -512,7 +820,7 @@ variables only after every finalizer returns.
 
 ## APISIX 3.17 `proxy-cache`：磁盘 Zone 与 Stale 行为设计
 
-> 状态：设计完成；P2 磁盘读写首片、PURGE、跨实例加载、访问时过期清理、按 `disk_size` 的写入后配额驱逐、每分钟一次的流量触发过期扫描、生命周期绑定的后台过期清理、配置 memory zone 的跨实例共享、route-builder refresh 生命周期、变更定义后的 memory-zone 代际隔离、`graphql-proxy-cache` 的共享 memory/disk zone 存储、zone registry 基础校验与 route replacement 前的完整静态 registry 预检、进程内动态 zone registry 原子刷新、identity-aware `cache_control`/strategy-specific `cache_set_cookie` 规则和跨插件 stale 策略审计已实现（2026-07-12）
+> 状态：版本化磁盘存储、PURGE、跨实例加载、过期/配额清理、memory-zone 共享与代际隔离、`graphql-proxy-cache` 共享 zone、严格 zone 校验，以及 identity-aware `cache_control`/`cache_set_cookie` 已实现。生产配置由 immutable generation materialization 持有；`RefreshConfiguredZones` 仅是 direct-package/test compatibility seam，不是生产 reload owner。（2026-08-26）
 >
 > 相关实现：[`pkg/plugin/proxy_cache/plugin.go`](../pkg/plugin/proxy_cache/plugin.go)
 >
@@ -521,12 +829,12 @@ variables only after every finalizer returns.
 ### 1. 当前事实与边界
 
 - 插件已经支持 `cache_key`、方法/状态过滤、绕过与 no-cache、memory zone 的 `Cache-Control` TTL/请求 freshness（含 identity-bearing `cache_key` 时按 APISIX 规则关闭该行为）、disk zone 对 `cache_control` 的忽略、memory-only `cache_set_cookie`、`Vary`、`PURGE`、消费者隔离和 `Apisix-Cache-Status`。
-- `pkg/config/types.go` 能读取 `apisix.proxy_cache.cache_ttl` 和 `zones`；插件初始化时会对已配置 registry 做基础校验（重复/空名称、size/path、cache_levels、未知引用和 cache strategy/zone 存储类型匹配），并把声明的 memory zone 接入共享存储。严格 cache 初始化错误会阻止 replacement route handler 安装，避免刷新后静默丢失缓存插件。
+- `pkg/config/types.go` 能读取 `apisix.proxy_cache.cache_ttl` 和 `zones`；compiler materialization 会对 generation-owned 配置做基础校验（重复/空名称、size/path、cache_levels、未知引用和 cache strategy/zone 存储类型匹配），并把声明的 memory zone 接入共享存储。严格 cache 初始化错误会使 owning route 按 publication policy quarantine/fail closed，不能静默丢失缓存插件。
 - 配置了绝对 `disk_path` 的 `cache_strategy = "disk"` 会使用版本化磁盘 envelope，并在插件实例间按摘要路径重新加载；未配置 zone 时仍保留进程内 memory fallback。
 - 访问发现条目已过期时，会同时删除对应的内存副本和磁盘文件；写入磁盘条目后会按 zone 的 `disk_size` 删除过期文件和最旧文件；磁盘 lookup 最多每分钟触发一次受界扫描，配置的 disk zone 另有绑定插件生命周期、可停止的后台过期清理线程。
 - 现有 `lookup` 保留过期条目并返回 `EXPIRED`；请求侧 `max-age`、`max-stale`、`min-fresh` 不满足时返回 `STALE`，随后重新请求上游。当前没有 stale-if-error 或过期内容兜底响应。
 - `graphql-proxy-cache` 复用相同的 zone 存储 envelope 和过期生命周期；磁盘策略按上游 `Cache-Control: s-maxage/max-age` 或 `Expires` 计算 TTL、无响应头时回退到插件 `cache_ttl`，并与 memory 策略一样始终拒绝 `private`/`no-store`/`no-cache` 响应，而其公开 purge 路径、缓存键格式和 GraphQL mutation bypass 必须保持兼容。
-- `RefreshConfiguredZones` 是进程内配置刷新边界：它先校验完整 zone snapshot，再原子替换配置指针；无效 snapshot 不会覆盖最后一个有效配置，已有插件实例继续持有旧代际并通过引用计数独立排空。读取 zone registry 的内部路径会复制当前 snapshot，未声明 zone 仍保持兼容性的进程内 memory fallback。
+- 生产 runtime context 从 immutable generation 的 `EffectiveConfig` 取得完整 zone snapshot；已有插件实例持有自己的代际并通过引用计数独立排空。`RefreshConfiguredZones` 保留为 direct-package/test compatibility seam：它能校验并原子替换测试用 snapshot，但没有 production 调用点，不能作为动态 reload 契约。未声明 zone 仍保持兼容性的进程内 memory fallback。
 
 本设计只覆盖 Go HTTP proxy 能够稳定表达的共享缓存行为，不复刻 OpenResty shared-dict、NGINX cache manager 或跨 worker 的内部生命周期。
 
@@ -548,7 +856,7 @@ apisix:
         memory_size: 50m
 ```
 
-启动或配置刷新时必须完成以下校验：
+启动或 generation preparation 时必须完成以下校验：
 
 1. zone 名称非空、唯一，并且只允许插件 `cache_zone` 引用已声明的 zone。
 2. `memory_size`、`disk_size` 使用明确的字节单位；溢出、零值和负值拒绝启动。
@@ -556,7 +864,7 @@ apisix:
 4. `cache_levels` 只允许正整数层级（例如 `1:2`），并限制总层数和单层宽度。
 5. 目录创建、权限和磁盘可写性在首次使用前检查；失败时返回明确错误，不静默切换到磁盘之外的路径。
 
-已声明的 `memory` zone 按 zone 名称和配置代际共享 entries/vary index，并通过引用计数在最后一个插件实例停止时释放；未声明 zone 仍使用兼容性的进程内 fallback。配置重载时定义发生变化会创建新代际，旧代际不能在仍被请求引用时提前释放。
+已声明的 `memory` zone 按 zone 名称和配置代际共享 entries/vary index，并通过引用计数在最后一个插件实例停止时释放；未声明 zone 仍使用兼容性的进程内 fallback。后续 generation 的定义发生变化会创建新代际，旧代际不能在仍被请求引用时提前释放。
 
 ### 3. 存储抽象与磁盘格式
 
@@ -603,14 +911,14 @@ Close()
 #### P1：zone 注册与 memory 共享
 
 - [x] 为已声明 `memory` zone 提供线程安全的共享 registry、entries/vary index 和引用计数生命周期；配置定义变化时按代际隔离 entries，旧代际独立排空。
-- [x] 将 `apisix.proxy_cache.zones` 做成基础严格校验的配置 registry，覆盖重复/空名称、size/path/cache_levels 格式和未知 zone 引用；route replacement 会先预检完整静态 registry，`RefreshConfiguredZones` 负责动态刷新时的完整 snapshot 校验与原子替换。
+- [x] 将 `apisix.proxy_cache.zones` 做成基础严格校验的配置 registry，覆盖重复/空名称、size/path/cache_levels 格式和未知 zone 引用；generation preparation 会预检完整 snapshot，`RefreshConfiguredZones` 仅保留 direct-package/test compatibility。
 - [x] 拒绝 plugin `cache_strategy` 与 zone `disk_path` 不匹配的配置，并拒绝 `$request_method` cache key；`graphql-proxy-cache` 复用相同的 strategy/zone 校验。
-- [x] route builder 对 proxy-cache/graphql-proxy-cache 的严格初始化错误停止 replacement handler 构建；普通插件的历史 skip-on-error 行为保持不变。
+- [x] compiler materialization 对 proxy-cache/graphql-proxy-cache 的严格初始化错误停止 candidate snapshot 构建；route-scoped disposition 由 generation publication policy 决定。
 - 保持当前 route/plugin 行为和 `PURGE` 结果不变。
 
 #### P2：disk 读写
 
-- 已实现版本化 envelope、摘要路径、原子写入、跨实例加载、PURGE、访问时过期清理、写入后的 `disk_size` 超限驱逐、流量触发扫描和生命周期绑定的后台过期清理；声明的 memory zone 也有共享生命周期和引用计数。配置刷新边界、跨插件一致性和超限验收均已有对应实现或测试。
+- 已实现版本化 envelope、摘要路径、原子写入、跨实例加载、PURGE、访问时过期清理、写入后的 `disk_size` 超限驱逐、流量触发扫描和生命周期绑定的后台过期清理；声明的 memory zone 也有共享生命周期和引用计数。generation snapshot、跨插件一致性和超限验收均已有对应实现或测试。
 - 覆盖重启后命中、损坏文件按 MISS、并发写入、目录不可写、超限驱逐和 `PURGE`。
 - 通过临时目录测试；测试结束清理文件，不依赖 `/tmp` 中的固定目录或用户 home。
 
@@ -620,124 +928,46 @@ Close()
 - [x] 覆盖 `Vary` 变体、过期 index、配置 TTL、`only-if-cached`、上游错误不返回 stale body 的回归测试；官方 `graphql-proxy-cache` 不暴露 `cache_control`，不增加跨插件隐式 stale-if-error。
 - 对 route/service/consumer 缓存键做跨插件隔离测试。
 
-`RefreshConfiguredZones` 只承诺进程内、已校验 snapshot 的配置替换；不能据此声称完整 NGINX cache-manager 或跨 worker runtime parity。跨插件 stale-if-error 仍不会被隐式开启。
+`RefreshConfiguredZones` 只承诺 direct-package/test compatibility 下的已校验 snapshot 替换；它不是 production reload owner，也不能据此声称完整 NGINX cache-manager 或跨 worker runtime parity。跨插件 stale-if-error 仍不会被隐式开启。
 
 ---
 
 ## APISIX 3.17 Secret Resolution Design
 
-> Status: versioned AEAD writes and contextual resolver API implemented; migrated logger credentials and the explicit `response-rewrite.body_secret` extension use strict plugin-boundary resolution, while ordinary `response-rewrite.body` remains compatibility-oriented, 2026-08-18
+The current authority model is manifest-declared and generation-attempt scoped.
+The former shared `pluginFields` registry and Store-wide optional resolver are
+not production authority boundaries.
 
-### Existing contract
+New writes use an explicit `$encrypted://v2:` AES-GCM envelope and authenticate
+the canonical declared field context. Legacy APISIX AES-128-CBC remains
+decrypt-only for migration. The keyring is newest-first; new writes never emit
+the legacy format.
 
-New APISIX-Go data-encryption writes use an explicit `$encrypted://v2:` envelope containing
-base64-encoded `nonce || ciphertext || tag`. AES-GCM authenticates both the
-value and its canonical `plugin-name.field-path`; wildcard registrations keep
-the registered `*` path rather than using a runtime array index. A random
-12-byte nonce makes repeated encryption of the same plaintext nondeterministic.
-The explicit wrapper keeps bare plaintext beginning with `v2:` unambiguous.
+The capability manifest declares the factory, source (`plugin config`, `plugin
+metadata`, or `consumer config`), canonical field, strictness, and target. Its
+catalog digest must match the encryption service, generation materializer, and
+compiler. The attempt-scoped resolver reads only the exact HTTP or stream
+publication closure and rejects scope mismatch before decrypting or contacting
+a backend. Secret materialization and dependency injection occur before plugin
+`PostInit`; failure rolls back the complete prepared generation.
 
-Unversioned APISIX AES-128-CBC ciphertext remains a decrypt-only migration
-format. The configured `apisix.data_encryption.keyring` is ordered
-newest-first, so legacy and v2 values can be read during rotation. A legacy
-value explicitly presented to the write path is decrypted and re-sealed as v2;
-new writes never create or preserve an unversioned CBC envelope.
+After decryption, supported environment or Vault references resolve within the
+same attempt and domain. Attempt caching is bounded and time-limited; eviction,
+expiry, and close zero retained bytes. Close waits for in-flight use, and an
+incomplete close keeps the attempt identity reserved for retry.
 
-### Resolver API
-
-`pkg/data_encryption` now exposes:
-
-```go
-resolver := data_encryption.NewResolver(enabled, keyring)
-plain, err := resolver.ResolveForContext(ciphertext, "plugin.field")
-plain := resolver.ResolveOptionalForContext(value, "plugin.field")
-redacted := data_encryption.Redact(value) // fixed "[REDACTED]" marker
-```
-
-Strict contextual resolution has explicit failure classes:
-
-| Condition | Result |
-|---|---|
-| Encryption disabled | Return the configured value unchanged. |
-| Encryption enabled with no keyring | `ErrKeyUnavailable`; do not attempt a network call. |
-| No key decrypts the value | `ErrInvalidCiphertext`; the error contains no value or key. |
-| Any key in the ordered ring decrypts the value and authenticates the exact v2 context | Return plaintext. |
-| A v2 value is tampered with or moved to another registered field | `ErrInvalidCiphertext`; fail closed. |
-| Empty value | Return empty value without error. |
-
-`ResolveOptionalForContext` is retained only for registered fields that still
-allow legacy plaintext. It preserves the input when strict resolution fails.
-Credential-bearing fields use `ResolveForContext` at the plugin boundary, where
-tampering, wrong context, missing keys, and invalid ciphertext return a
-configuration error before an outbound client is created.
-
-### Key source and rotation
-
-- Source: `apisix.data_encryption.keyring` loaded by `pkg/config.Load`.
-- Read path: all configured keys are tried newest-first.
-- Rotation: add the new key at index 0 and retain old keys until all stored
-  values have been rewritten; no old-key deletion is performed automatically.
-- Write path: standalone registered fields are sealed with the newest key as
-  contextual v2 AES-GCM. Existing valid explicit v2 values are preserved; an explicit
-  legacy CBC envelope is re-sealed with the newest key and canonical context.
-- Startup/runtime failure: a strict resolver error is returned to the owning
-  config/route boundary; it must not be downgraded to a network request with an
-  empty credential.
-
-### Redaction rules
-
-- Never include plaintext or ciphertext in an error, log line, metric label,
-  serialized status response, or `Config.String` implementation.
-- Use the fixed `[REDACTED]` value for non-empty secret display fields.
-- Keep secret values in local variables only for the duration of the outbound
-  request/codec operation.
-- Tests must assert both successful use and that diagnostic output does not
-  contain the secret.
-
-### Field registry and migration order
-
-The shared `pluginFields` registry now includes the remaining normal-parity
-logger and response fields. Store parsing uses the same resolver's optional
-compatibility path for fields not yet migrated to a plugin boundary:
-
-1. Kafka logger, RocketMQ/ClickHouse/SLS logger credentials;
-2. Google Cloud, Splunk HEC, Elasticsearch, Loggly, Tencent CLS, and Lago
-   credentials;
-3. `error-log-logger` nested ClickHouse/Kafka credentials;
-4. `csrf.key` and `response-rewrite.body` compatibility values plus the strict
-   `body_secret` opt-in extension.
-
-`csrf.key`, `http-logger.auth_header`, `kafka-logger.brokers[*].sasl_config.password`,
-`clickhouse-logger.password`, `sls-logger.access_key_secret`, and
-`rocketmq-logger.secret_key`, `elasticsearch-logger.auth.password`,
-`loggly.customer_token`, `tencent-cloud-cls.secret_key`, `lago.token`,
-`splunk-hec-logging.endpoint.token`, and
-`google-cloud-logging.auth_config.private_key` and `response-rewrite.body_secret`
-now stay encrypted through store parsing and are resolved in `PostInit`;
-`error-log-logger` applies the same strict resolution to its nested
-ClickHouse/Kafka credentials, and `kafka-proxy.sasl.password` is resolved at
-its plugin boundary before request-context propagation. Invalid ciphertext or
-a missing key prevents the owning client/writer/sender/producer or batch
-processor from being created. The migration gate is complete for all
-integrated credential-bearing boundaries. Ordinary `response-rewrite.body`
-remains the one explicitly compatibility-oriented field because it is a
-general-purpose response body rather than an unambiguous credential; callers
-that need strict handling must use the `body_secret` extension. Each future
-secret-bearing field must add valid-ciphertext, invalid-ciphertext,
-missing-key, key-rotation, and redaction tests before changing the
-README/plugin-matrix coverage percentage.
-
-`response-rewrite.body` remains a compatibility field because it is a
-general-purpose response body, not an unambiguous credential. The Go extension
-`response-rewrite.body_secret` is the explicit opt-in contract: store parsing
-leaves it encrypted, `PostInit` calls strict `Resolver.ResolveForContext`, and invalid or
-missing-key ciphertext fails before response handling. `body_secret` cannot be
-combined with ordinary `body` or `filters`.
+Plaintext is available only inside `secret.Value.Use`. Errors, logs, metric
+labels, status, cleanup ledgers, and persistent descriptors may expose only a
+stable redacted category or digest. They must never contain plaintext,
+ciphertext, a backend reference, or key material. Adding a secret-bearing field
+therefore requires a manifest declaration plus scope-rejection, valid/invalid
+ciphertext, missing-key, rotation, zeroization, and redaction coverage.
 
 ## Logger Batch Resource Ownership
 
-All sinks that use the shared batch processor, including `file-logger`, inherit
-a central resource contract. An unset `max_pending_entries` is bounded at
+Network/broker sinks that use the shared batch processor inherit a central
+resource contract. `file-logger` uses a separate byte-aware processor described
+below. An unset `max_pending_entries` is bounded at
 10,000, and a new entry is rejected when the number of buffered, queued, active,
 and retrying entries is already at that limit. The detached production
 `RunLogPhase` path never waits for a delivery worker; rejection is the overload
@@ -752,14 +982,13 @@ HTTP, broker, dial, and socket operations. The internal worker limit can be
 overridden only by trusted constructors and is capped at eight; it is not a new
 route-schema field.
 
-The existing plugin `Stop()` lifecycle remains compatible with route builders.
-It refuses later pushes, seals the current buffer, and allows at most 15 seconds
-for workers to drain before canceling delivery and recording a shutdown
-timeout. `Processor.Shutdown(ctx)` is the error-aware form for tests and owners
-that already have a context. Caller-facing timeout completion and sink resource
-ownership are separate: shared clients, senders, and retained connections are
-released only after the worker barrier confirms every delivery callback has
-returned, asynchronously when an uncooperative callback outlives `Stop()`.
+The processor owns fixed `batch-scheduler`, `batch-worker`, and
+`batch-shutdown` task components. Shutdown refuses later pushes, seals the
+current buffer, and allows at most 15 seconds for workers to drain before
+canceling delivery. A timeout returns an exact residual and retains sink/client
+authority. Shared clients, senders, and retained connections are released only
+after every admitted callback has actually returned; a later cleanup retry
+finishes the close.
 
 `batch_process_entries` retains its APISIX-compatible buffered-entry meaning.
 `logger_batch_pending_entries` reports all accepted nonterminal entries, while
@@ -768,11 +997,10 @@ and shutdown outcomes. Dynamic gauges are refcounted across overlapping route
 generations and are deleted only after the final processor owner closes; event
 counters use the stable plugin identifier and a bounded outcome label.
 
-`file-logger` has a second, byte-oriented buffer after the entry queue: zap
-encodes delivered entries into one 64 KiB `BufferedWriteSyncer` shared by every
-plugin lease for the same canonical path. It flushes at least once per second;
-explicit sync, signal-driven reopen, and orderly final lease release also flush
-the buffer. Reopen serializes the flush-to-old-descriptor boundary before later
-writes use the current path. A process crash can lose bytes still in this
-one-second application buffer. Byte-based queue admission and durable write
-retry/error propagation remain separate work.
+`file-logger` owns one `file-log-writer` task and enforces both entry and payload
+byte bounds. Generations sharing a canonical path lease one 64 KiB buffered
+writer. The process-local writer epoch owns
+`core/file-writer-registry/signal-watch`; final lease release stops and joins
+that watcher before flushing and closing the writer. `SIGUSR1` reopen is
+serialized as flush old descriptor, reopen, then allow later writes. A process
+crash can still lose bytes in the one-second application buffer.

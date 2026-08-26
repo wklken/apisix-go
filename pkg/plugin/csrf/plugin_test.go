@@ -2,18 +2,28 @@ package csrf
 
 import (
 	"bytes"
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
-	"github.com/wklken/apisix-go/pkg/data_encryption"
+	"github.com/wklken/apisix-go/pkg/capability"
+	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/secret"
+	"github.com/wklken/apisix-go/pkg/testutil"
 )
 
 func TestCSRFPluginSourceGuardRejectsDirectComparison(t *testing.T) {
@@ -30,14 +40,479 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
 
 	p := &Plugin{config: cfg}
+	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.MaterializeSecrets(); err != nil {
+		t.Fatalf("MaterializeSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
 
 	return p
+}
+
+type csrfScopedSecretCall struct {
+	Scope secret.Scope
+	Raw   string
+}
+
+type csrfScopedSecretBroker struct {
+	mu     sync.Mutex
+	values map[string]string
+	fail   map[string]error
+	calls  []csrfScopedSecretCall
+}
+
+func (*csrfScopedSecretBroker) AuthorizeCandidate(
+	context.Context, secret.AttemptID, generation.ApplyTicket, generation.PublicationSet,
+) error {
+	return nil
+}
+
+func (*csrfScopedSecretBroker) AuthorizeRecovery(
+	context.Context, secret.AttemptID, generation.RevisionSet,
+	map[generation.Domain]generation.PublishedGeneration,
+) error {
+	return errors.New("recovery is not used by this leaf fixture")
+}
+
+func (broker *csrfScopedSecretBroker) ResolveScoped(
+	ctx context.Context, scope secret.Scope, raw string,
+) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	broker.mu.Lock()
+	defer broker.mu.Unlock()
+	broker.calls = append(broker.calls, csrfScopedSecretCall{Scope: scope, Raw: raw})
+	if err := broker.fail[raw]; err != nil {
+		return "", err
+	}
+	if value, ok := broker.values[raw]; ok {
+		return value, nil
+	}
+	return raw, nil
+}
+
+func (*csrfScopedSecretBroker) RevokeAttempt(context.Context, secret.AttemptID) error { return nil }
+
+func newCSRFScopedSecretHarness(
+	t *testing.T, revision uint64, resourceID string, raw string, resolved string,
+) (secret.GenerationCapability, secret.Scope, *csrfScopedSecretBroker, func()) {
+	t.Helper()
+	key := generation.ResourceKey{Kind: "routes", ID: resourceID}
+	snapshot, err := generation.NewSnapshot(revision, []generation.Resource{{
+		Key: key, Value: []byte(`{"plugins":{"csrf":{}}}`),
+	}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := generation.PublicationCandidate{
+		Artifact: generation.GenerationArtifact{
+			Domain: generation.DomainHTTP, Revision: revision,
+			Digest: snapshot.Digest(), Snapshot: snapshot.SnapshotID(),
+		},
+		Snapshot: snapshot,
+		Closure:  []generation.ResourceKey{key},
+		Decisions: []generation.ResourceDecision{{
+			Key: key, Disposition: generation.DispositionPublished, Code: "csrf-test",
+		}},
+	}
+	ticket := generation.ApplyTicket{
+		DesiredRevision: revision, RequiredDomains: []generation.Domain{generation.DomainHTTP},
+	}
+	set := generation.PublicationSet{
+		DesiredRevision: revision,
+		Domains: map[generation.Domain]generation.PublicationCandidate{
+			generation.DomainHTTP: candidate,
+		},
+	}
+	manifest, err := capability.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := capability.NewSecretDeclarationCatalog(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	broker := &csrfScopedSecretBroker{
+		values: map[string]string{raw: resolved},
+		fail:   make(map[string]error),
+	}
+	registration, err := secret.NewScopedMaterializer(broker, catalog).
+		RegisterCandidate(context.Background(), ticket, set)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capabilityValue, err := secret.NewGenerationCapability(registration, revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := secret.Scope{
+		Generation: revision,
+		Attempt:    registration.AttemptID(),
+		Domain:     generation.DomainHTTP,
+		Plugin:     name,
+		Resource:   key,
+		Source:     capability.SecretPluginConfig,
+	}
+	return capabilityValue, scope, broker, func() {
+		if err := registration.Close(context.Background()); err != nil {
+			t.Fatalf("close scoped secret registration: %v", err)
+		}
+	}
+}
+
+func assertCSRFSecretDescriptor(t *testing.T, value string) {
+	t.Helper()
+	const prefix = "plugin_config#sha256:"
+	if !strings.HasPrefix(value, prefix) || len(value) != len(prefix)+64 {
+		t.Fatalf("csrf key = %q, want descriptor", value)
+	}
+}
+
+func assertCSRFSecretDescriptorFor(t *testing.T, value, plaintext string) {
+	t.Helper()
+	assertCSRFSecretDescriptor(t, value)
+	digest := sha256.Sum256([]byte(plaintext))
+	want := "plugin_config#sha256:" + hex.EncodeToString(digest[:])
+	if value != want {
+		t.Fatalf("csrf descriptor = %q, want exact admitted-plaintext digest %q", value, want)
+	}
+}
+
+func materializeCSRFScopedPlugin(
+	t *testing.T, revision uint64, resourceID, raw, resolved string,
+) (*Plugin, *csrfScopedSecretBroker, func()) {
+	t.Helper()
+	capabilityValue, scope, broker, closeAttempt := newCSRFScopedSecretHarness(
+		t, revision, resourceID, raw, resolved,
+	)
+	p := &Plugin{config: Config{Key: raw, Name: "csrf-token"}}
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatal(err)
+	}
+	return p, broker, closeAttempt
+}
+
+func TestMaterializeScopedSecretsOwnsCSRFKey(t *testing.T) {
+	contextual, err := testutil.DataEncryptionService(true, []string{"0123456789abcdef"}).
+		EncryptForContext("contextual-key", "csrf.key")
+	if err != nil {
+		t.Fatalf("EncryptForContext() error = %v", err)
+	}
+	tests := []struct {
+		name     string
+		raw      string
+		resolved string
+	}{
+		{name: "contextual ciphertext", raw: contextual, resolved: "contextual-key"},
+		{name: "environment", raw: "$ENV://CSRF_KEY", resolved: "environment-key"},
+		{name: "managed", raw: "$secret://vault/csrf-key", resolved: "managed-key"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p, broker, closeAttempt := materializeCSRFScopedPlugin(
+				t, 7, "csrf-route", tt.raw, tt.resolved,
+			)
+			defer closeAttempt()
+			if len(broker.calls) != 1 {
+				t.Fatalf("scoped calls = %#v, want one exact key call", broker.calls)
+			}
+			call := broker.calls[0]
+			if call.Raw != tt.raw || call.Scope.Field != "key" ||
+				call.Scope.Plugin != name || call.Scope.Source != capability.SecretPluginConfig ||
+				call.Scope.Resource.ID != "csrf-route" {
+				t.Fatalf("scoped call = %#v, want exact csrf.key authority", call)
+			}
+			assertCSRFSecretDescriptorFor(t, p.config.Key, tt.resolved)
+			if strings.Contains(p.config.Key, tt.raw) || strings.Contains(p.config.Key, tt.resolved) {
+				t.Fatalf("public config retained secret material: %q", p.config.Key)
+			}
+			response := httptest.NewRecorder()
+			p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusNoContent)
+			})).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/safe", nil))
+			if response.Code != http.StatusNoContent || len(response.Result().Cookies()) != 1 {
+				t.Fatalf(
+					"safe request status/cookies = %d/%d, want 204/1",
+					response.Code,
+					len(response.Result().Cookies()),
+				)
+			}
+			token, err := genCSRFToken(tt.resolved, bytes.NewReader(make([]byte, 8)))
+			if err != nil {
+				t.Fatalf("genCSRFToken() error = %v", err)
+			}
+			request := httptest.NewRequest(http.MethodPost, "/protected", nil)
+			request.Header.Set("csrf-token", token)
+			request.AddCookie(&http.Cookie{Name: "csrf-token", Value: token})
+			protected := httptest.NewRecorder()
+			p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusNoContent)
+			})).ServeHTTP(protected, request)
+			if protected.Code != http.StatusNoContent {
+				t.Fatalf("protected request status = %d, want 204", protected.Code)
+			}
+		})
+	}
+}
+
+func TestPostInitWithoutMaterializationCannotUseKey(t *testing.T) {
+	p := &Plugin{config: Config{Key: "$ENV://CSRF_UNPREPARED"}}
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.PostInit(); err == nil || !errors.Is(err, secret.ErrCredentialUnavailable) {
+		t.Fatalf("PostInit() error = %v, want unavailable credential", err)
+	}
+	if p.config.Key != "$ENV://CSRF_UNPREPARED" {
+		t.Fatalf("unprepared PostInit changed public key = %q", p.config.Key)
+	}
+}
+
+func TestMaterializeScopedSecretsFailureIsAtomicAndRedacted(t *testing.T) {
+	const raw = "$secret://vault/csrf-failure"
+	capabilityValue, scope, broker, closeAttempt := newCSRFScopedSecretHarness(
+		t, 7, "csrf-failure", raw, "private-key",
+	)
+	defer closeAttempt()
+	broker.fail[raw] = errors.New("private resolver failure")
+	p := &Plugin{config: Config{Key: raw}}
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p)
+	if err == nil {
+		t.Fatal("MaterializeScopedPluginSecrets() error = nil")
+	}
+	if strings.Contains(err.Error(), raw) || strings.Contains(err.Error(), "private-key") ||
+		strings.Contains(err.Error(), "private resolver") {
+		t.Fatalf("materialization error leaked secret details: %v", err)
+	}
+	if p.config.Key != raw || p.key != nil {
+		t.Fatalf("failed materialization retained state: config=%q key=%#v", p.config.Key, p.key)
+	}
+}
+
+func TestMaterializeScopedSecretsRejectsEmptyAdmittedKeyAndRetriesAtomically(t *testing.T) {
+	const raw = "$ENV://CSRF_EMPTY"
+	for _, resolved := range []string{"", "   "} {
+		t.Run(fmt.Sprintf("resolved-%q", resolved), func(t *testing.T) {
+			capabilityValue, scope, broker, closeAttempt := newCSRFScopedSecretHarness(
+				t, 9, "csrf-empty", raw, resolved,
+			)
+			defer closeAttempt()
+			p := &Plugin{config: Config{Key: raw}}
+			if err := p.Init(); err != nil {
+				t.Fatal(err)
+			}
+			err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p)
+			if err == nil {
+				t.Fatal("empty admitted key materialized successfully")
+			}
+			if strings.Contains(err.Error(), raw) ||
+				(resolved != "" && strings.Contains(err.Error(), resolved)) {
+				t.Fatalf("empty-key error leaked secret details: %v", err)
+			}
+			if p.config.Key != raw || p.key != nil || p.legacyKey != nil {
+				t.Fatalf(
+					"failed empty-key materialization retained state: config=%q key=%#v legacy=%p",
+					p.config.Key,
+					p.key,
+					p.legacyKey,
+				)
+			}
+
+			broker.mu.Lock()
+			broker.values[raw] = "retry-key"
+			broker.mu.Unlock()
+			if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+				t.Fatalf("retry materialization error = %v", err)
+			}
+			assertCSRFSecretDescriptorFor(t, p.config.Key, "retry-key")
+			if err := p.PostInit(); err != nil {
+				t.Fatalf("PostInit() after retry error = %v", err)
+			}
+			var got string
+			if err := p.useKey(func(value string) error {
+				got = value
+				return nil
+			}); err != nil || got != "retry-key" {
+				t.Fatalf("retried private key = %q, err = %v, want retry-key", got, err)
+			}
+		})
+	}
+}
+
+func TestMaterializeScopedSecretsIsIdempotent(t *testing.T) {
+	const raw = "$ENV://CSRF_IDEMPOTENT"
+	capabilityValue, scope, broker, closeAttempt := newCSRFScopedSecretHarness(
+		t, 8, "csrf-idempotent", raw, "idempotent-key",
+	)
+	defer closeAttempt()
+	p := &Plugin{config: Config{Key: raw}}
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatal(err)
+	}
+	descriptor := p.config.Key
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatal(err)
+	}
+	if len(broker.calls) != 1 || p.config.Key != descriptor {
+		t.Fatalf(
+			"idempotent materialization calls/config = %d/%q, want 1/%q",
+			len(broker.calls),
+			p.config.Key,
+			descriptor,
+		)
+	}
+}
+
+func TestCSRFKeyRotationDoesNotCrossGenerationsAndStopIsIdempotent(t *testing.T) {
+	pN, _, closeN := materializeCSRFScopedPlugin(t, 11, "csrf-n", "$ENV://CSRF_N", "key-n")
+	defer closeN()
+	pN1, _, closeN1 := materializeCSRFScopedPlugin(t, 12, "csrf-n1", "$ENV://CSRF_N1", "key-n1")
+	defer closeN1()
+
+	request := func(p *Plugin) string {
+		response := httptest.NewRecorder()
+		p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		})).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/safe", nil))
+		if response.Code != http.StatusNoContent {
+			t.Fatalf("safe request status = %d, want 204", response.Code)
+		}
+		cookies := response.Result().Cookies()
+		if len(cookies) != 1 {
+			t.Fatalf("safe request cookies = %#v, want one", cookies)
+		}
+		return cookies[0].Value
+	}
+	tokenN := request(pN)
+	tokenN1 := request(pN1)
+	if !checkCSRFToken(tokenN, "key-n", pN.expires()) ||
+		!checkCSRFToken(tokenN1, "key-n1", pN1.expires()) {
+		t.Fatal("generation tokens did not verify with their own private keys")
+	}
+	if checkCSRFToken(tokenN, "key-n1", pN1.expires()) || checkCSRFToken(tokenN1, "key-n", pN.expires()) {
+		t.Fatal("generation tokens crossed private key boundaries")
+	}
+
+	pN.Stop()
+	pN.Stop()
+	if pN.key != nil || pN.legacyKey != nil {
+		t.Fatalf("generation N secret state after Stop = key:%#v legacy:%p", pN.key, pN.legacyKey)
+	}
+	if got := request(pN1); got == "" {
+		t.Fatal("generation N+1 stopped producing csrf tokens after generation N retirement")
+	}
+}
+
+func TestCSRFHandlerAndStopAreSafeConcurrently(t *testing.T) {
+	p, _, closeAttempt := materializeCSRFScopedPlugin(
+		t, 13, "csrf-concurrent", "$ENV://CSRF_CONCURRENT", "concurrent-key",
+	)
+	defer closeAttempt()
+
+	var group sync.WaitGroup
+	for range 32 {
+		group.Go(func() {
+			response := httptest.NewRecorder()
+			p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusNoContent)
+			})).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/safe", nil))
+		})
+	}
+	group.Go(p.Stop)
+	group.Go(p.Stop)
+	group.Wait()
+}
+
+func TestCSRFRequestHoldsValueUseWhileStopWaits(t *testing.T) {
+	p, _, closeAttempt := materializeCSRFScopedPlugin(
+		t, 14, "csrf-barrier", "$ENV://CSRF_BARRIER", "barrier-key",
+	)
+	defer closeAttempt()
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	requestDone := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseRequest := func() {
+		releaseOnce.Do(func() { close(release) })
+	}
+	defer releaseRequest()
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		close(entered)
+		<-release
+		w.WriteHeader(http.StatusNoContent)
+	})
+	go func() {
+		response := httptest.NewRecorder()
+		p.Handler(next).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/barrier", nil))
+		if response.Code != http.StatusNoContent {
+			t.Errorf("barrier request status = %d, want 204", response.Code)
+		}
+		close(requestDone)
+	}()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for request to enter complete verify-or-generate callback")
+	}
+
+	stopDone := make(chan struct{})
+	go func() {
+		p.Stop()
+		close(stopDone)
+	}()
+	select {
+	case <-stopDone:
+		t.Fatal("Stop returned while request still held Value.Use read lock")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	releaseRequest()
+	select {
+	case <-requestDone:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for barrier request after release")
+	}
+	select {
+	case <-stopDone:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for Stop after request release")
+	}
+
+	retired := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("retired csrf plugin called next handler")
+	})).ServeHTTP(retired, httptest.NewRequest(http.MethodGet, "/retired", nil))
+	if retired.Code != http.StatusInternalServerError ||
+		strings.TrimSpace(retired.Body.String()) != `{"error_msg":"csrf key unavailable"}` {
+		t.Fatalf("retired request = %d/%q, want 500/key unavailable", retired.Code, retired.Body.String())
+	}
+	p.Stop()
+}
+
+func TestMaterializeSecretsRejectsMissingDataEncryptionResolver(t *testing.T) {
+	p := &Plugin{}
+	if err := p.MaterializeSecrets(); err == nil || err.Error() != "data-encryption resolver is required" {
+		t.Fatalf("MaterializeSecrets() error = %v, want missing resolver error", err)
+	}
 }
 
 func TestHandlerRejectsMissingHeaderWithJSONError(t *testing.T) {
@@ -61,75 +536,90 @@ func TestHandlerRejectsMissingHeaderWithJSONError(t *testing.T) {
 }
 
 func TestPostInitRejectsInvalidEncryptedKey(t *testing.T) {
-	data_encryption.Configure(true, []string{"qeddd145sfvddff3"})
-	t.Cleanup(func() { data_encryption.Configure(false, nil) })
-
 	p := &Plugin{config: Config{Key: "plain"}}
+	p.SetDependencies(base.Dependencies{
+		DataEncryption: testutil.DataEncryptionService(true, []string{"qeddd145sfvddff3"}).Resolver(),
+	})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := p.PostInit(); err == nil {
-		t.Fatal("PostInit() error = nil, want strict encrypted csrf key rejection")
+	if err := p.MaterializeSecrets(); err == nil {
+		t.Fatal("MaterializeSecrets() error = nil, want strict encrypted csrf key rejection")
 	}
 }
 
 func TestPostInitRejectsEmptyKey(t *testing.T) {
 	for _, key := range []string{"", "   "} {
 		p := &Plugin{config: Config{Key: key}}
+		p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
 		if err := p.Init(); err != nil {
 			t.Fatalf("Init() error = %v", err)
 		}
-		if err := p.PostInit(); err == nil {
-			t.Fatalf("PostInit() error = nil for key %q, want empty key rejection", key)
+		if err := p.MaterializeSecrets(); err == nil {
+			t.Fatalf("MaterializeSecrets() error = nil for key %q, want empty key rejection", key)
 		}
 	}
 }
 
 func TestPostInitResolvesEncryptedKey(t *testing.T) {
 	key := "qeddd145sfvddff3"
-	data_encryption.Configure(true, []string{key})
-	t.Cleanup(func() { data_encryption.Configure(false, nil) })
 
 	p := &Plugin{config: Config{Key: encryptCSRFTestValue(t, key, "secret")}}
+	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(true, []string{key}).Resolver()})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
+	if err := p.MaterializeSecrets(); err != nil {
+		t.Fatalf("MaterializeSecrets() error = %v", err)
+	}
+	assertCSRFSecretDescriptorFor(t, p.config.Key, "secret")
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
-	if p.config.Key != "secret" {
-		t.Fatalf("csrf key = %q, want decrypted value", p.config.Key)
+	var got string
+	if err := p.useKey(func(value string) error {
+		got = value
+		return nil
+	}); err != nil || got != "secret" {
+		t.Fatalf("private csrf key = %q, err = %v, want decrypted value", got, err)
 	}
 }
 
 func TestPostInitResolvesKeyFromRotatedKeyring(t *testing.T) {
 	oldKey := "qeddd145sfvddff3"
 	newKey := "1234567890abcdef"
-	data_encryption.Configure(true, []string{newKey, oldKey})
-	t.Cleanup(func() { data_encryption.Configure(false, nil) })
 
 	p := &Plugin{config: Config{Key: encryptCSRFTestValue(t, oldKey, "rotated-secret")}}
+	p.SetDependencies(base.Dependencies{
+		DataEncryption: testutil.DataEncryptionService(true, []string{newKey, oldKey}).Resolver(),
+	})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
+	if err := p.MaterializeSecrets(); err != nil {
+		t.Fatalf("MaterializeSecrets() error = %v", err)
+	}
+	assertCSRFSecretDescriptorFor(t, p.config.Key, "rotated-secret")
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
-	if p.config.Key != "rotated-secret" {
-		t.Fatalf("csrf key = %q, want rotated plaintext", p.config.Key)
+	var got string
+	if err := p.useKey(func(value string) error {
+		got = value
+		return nil
+	}); err != nil || got != "rotated-secret" {
+		t.Fatalf("private csrf key = %q, err = %v, want rotated plaintext", got, err)
 	}
 }
 
 func TestPostInitRejectsMissingKeyring(t *testing.T) {
-	data_encryption.Configure(true, nil)
-	t.Cleanup(func() { data_encryption.Configure(false, nil) })
-
 	p := &Plugin{config: Config{Key: "ciphertext"}}
+	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(true, nil).Resolver()})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := p.PostInit(); err == nil {
-		t.Fatal("PostInit() error = nil, want missing keyring rejection")
+	if err := p.MaterializeSecrets(); err == nil {
+		t.Fatal("MaterializeSecrets() error = nil, want missing keyring rejection")
 	}
 }
 

@@ -1,17 +1,79 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
 	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/wklken/apisix-go/pkg/runtime"
 )
+
+func TestActiveHealthTaskPanicUsesCoreFatalPolicy(t *testing.T) {
+	if os.Getenv("APISIX_GO_TEST_ACTIVE_HEALTH_CORE_PANIC") == "1" {
+		runActiveHealthCorePanicFixture(t, "active-health-core-fatal")
+		fmt.Fprintln(os.Stderr, "active-health-returned-after-core-panic")
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestActiveHealthTaskPanicUsesCoreFatalPolicy$")
+	cmd.Env = append(os.Environ(), "APISIX_GO_TEST_ACTIVE_HEALTH_CORE_PANIC=1")
+	output, err := cmd.CombinedOutput()
+	if err == nil || !bytes.Contains(output, []byte("active-health-core-fatal")) ||
+		bytes.Contains(output, []byte("active-health-returned-after-core-panic")) {
+		t.Fatalf("core panic subprocess = %v, output = %s", err, output)
+	}
+}
+
+type panickingActiveHealthObserver struct {
+	NopClusterObserver
+	marker string
+}
+
+func (observer panickingActiveHealthObserver) SetHealth(string, string, bool) {
+	panic(observer.marker)
+}
+
+func runActiveHealthCorePanicFixture(t *testing.T, marker string) {
+	t.Helper()
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer upstream.Close()
+	tasks, owner := newTestClusterTaskOwner(t, "core/proxy-cluster/test/core-panic")
+	stopTasks := func(ctx context.Context) error {
+		_, stopErr := tasks.Stop(ctx)
+		return stopErr
+	}
+	cluster, err := NewOwnedCluster(ClusterConfig{
+		Name:    "core-panic",
+		Targets: map[string]int{upstream.URL: 1},
+		Checks: map[string]any{"active": map[string]any{
+			"type": "http", "http_path": "/", "timeout": 1,
+			"healthy": map[string]any{"interval": 1, "successes": 1},
+			"unhealthy": map[string]any{
+				"interval": 1, "http_failures": 1, "tcp_failures": 1, "timeouts": 1,
+				"http_statuses": []any{http.StatusInternalServerError},
+			},
+		}},
+		MaxInFlight: DefaultMaxInFlight,
+	}, panickingActiveHealthObserver{marker: marker}, owner, stopTasks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cluster.Close()
+	<-time.After(3 * time.Second)
+	t.Fatal("active health task did not reach the panicking observer")
+}
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
@@ -27,6 +89,27 @@ func applyCurrentProbeResult(
 ) {
 	_, generation := checker.lb.healthStatus(target)
 	checker.applyProbeResultAtGeneration(target, generation, result, counters)
+}
+
+func startActiveHealthCheckerForTest(t *testing.T, checker *activeHealthChecker) *runtime.TaskRegistry {
+	t.Helper()
+	tasks, owner := newTestClusterTaskOwner(t, "core/proxy-cluster/test/active-health")
+	if err := checker.Start(owner); err != nil {
+		t.Fatal(err)
+	}
+	return tasks
+}
+
+func stopActiveHealthCheckerForTest(
+	t *testing.T,
+	checker *activeHealthChecker,
+	tasks *runtime.TaskRegistry,
+) {
+	t.Helper()
+	if _, err := tasks.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	checker.Close()
 }
 
 type blockingActiveProbeTransport struct {
@@ -243,8 +326,8 @@ func TestActiveHealthCheckerDiscardsStaleProbeFailureAfterPassiveRecovery(t *tes
 		observer,
 		transport,
 	)
-	checker.Start()
-	t.Cleanup(checker.Close)
+	tasks := startActiveHealthCheckerForTest(t, checker)
+	t.Cleanup(func() { stopActiveHealthCheckerForTest(t, checker, tasks) })
 
 	select {
 	case <-transport.started:
@@ -479,7 +562,7 @@ func TestActiveHealthHTTPSProbeHonorsCertificateVerification(t *testing.T) {
 		nil,
 		NewTransport((&TransportOptionBuilder{}).WithInsecureSkipVerify(true).Build()),
 	)
-	if got := verified.probeResult(upstream.URL); got != activeProbeTCPFailure {
+	if got := verified.probeResult(context.Background(), upstream.URL); got != activeProbeTCPFailure {
 		t.Fatalf("verified HTTPS probe = %v, want TLS failure against untrusted cert", got)
 	}
 
@@ -498,7 +581,7 @@ func TestActiveHealthHTTPSProbeHonorsCertificateVerification(t *testing.T) {
 		nil,
 		NewTransport((&TransportOptionBuilder{}).WithInsecureSkipVerify(false).Build()),
 	)
-	if got := skipped.probeResult(upstream.URL); got != activeProbeSuccess {
+	if got := skipped.probeResult(context.Background(), upstream.URL); got != activeProbeSuccess {
 		t.Fatalf("explicit skip HTTPS probe = %v, want success", got)
 	}
 }
@@ -522,27 +605,29 @@ func TestActiveHealthProbeClassifiesHTTPTransportAndTimeoutFailures(t *testing.T
 					http.StatusInternalServerError: {},
 				},
 			},
-			ctx:        context.Background(),
 			httpClient: &http.Client{Transport: transport},
 		}
 	}
 
 	statusChecker := newChecker(http.DefaultTransport)
-	if got := statusChecker.probeResult(statusServer.URL); got != activeProbeHTTPFailure {
+	if got := statusChecker.probeResult(context.Background(), statusServer.URL); got != activeProbeHTTPFailure {
 		t.Fatalf("HTTP failure classification = %v, want HTTP failure", got)
 	}
 
 	transportChecker := newChecker(roundTripFunc(func(*http.Request) (*http.Response, error) {
 		return nil, errors.New("connection reset by peer")
 	}))
-	if got := transportChecker.probeResult("http://upstream.example/"); got != activeProbeTCPFailure {
+	if got := transportChecker.probeResult(
+		context.Background(),
+		"http://upstream.example/",
+	); got != activeProbeTCPFailure {
 		t.Fatalf("transport failure classification = %v, want TCP failure", got)
 	}
 
 	timeoutChecker := newChecker(roundTripFunc(func(*http.Request) (*http.Response, error) {
 		return nil, context.DeadlineExceeded
 	}))
-	if got := timeoutChecker.probeResult("http://upstream.example/"); got != activeProbeTimeout {
+	if got := timeoutChecker.probeResult(context.Background(), "http://upstream.example/"); got != activeProbeTimeout {
 		t.Fatalf("timeout classification = %v, want timeout", got)
 	}
 
@@ -552,7 +637,7 @@ func TestActiveHealthProbeClassifiesHTTPTransportAndTimeoutFailures(t *testing.T
 			Body:       http.NoBody,
 		}, nil
 	}))
-	if got := neutralChecker.probeResult("http://upstream.example/"); got != activeProbeNeutral {
+	if got := neutralChecker.probeResult(context.Background(), "http://upstream.example/"); got != activeProbeNeutral {
 		t.Fatalf("neutral status classification = %v, want neutral", got)
 	}
 
@@ -563,7 +648,10 @@ func TestActiveHealthProbeClassifiesHTTPTransportAndTimeoutFailures(t *testing.T
 		}, nil
 	}))
 	overlappingChecker.config.UnhealthyStatuses[http.StatusOK] = struct{}{}
-	if got := overlappingChecker.probeResult("http://upstream.example/"); got != activeProbeSuccess {
+	if got := overlappingChecker.probeResult(
+		context.Background(),
+		"http://upstream.example/",
+	); got != activeProbeSuccess {
 		t.Fatalf("overlapping status classification = %v, want success", got)
 	}
 }
@@ -607,8 +695,8 @@ func TestActiveHealthCheckerNeutralProbeDoesNotIncrementFailureCounter(t *testin
 		NopClusterObserver{},
 		transport,
 	)
-	checker.Start()
-	t.Cleanup(checker.Close)
+	tasks := startActiveHealthCheckerForTest(t, checker)
+	t.Cleanup(func() { stopActiveHealthCheckerForTest(t, checker, tasks) })
 
 	deadline := time.Now().Add(time.Second)
 	for calls.Load() < 2 && time.Now().Before(deadline) {
@@ -757,8 +845,8 @@ func TestActiveHealthCheckerUsesTCPThresholdForHTTPTransportFailures(t *testing.
 		NopClusterObserver{},
 		http.DefaultTransport,
 	)
-	checker.Start()
-	t.Cleanup(checker.Close)
+	tasks := startActiveHealthCheckerForTest(t, checker)
+	t.Cleanup(func() { stopActiveHealthCheckerForTest(t, checker, tasks) })
 
 	deadline := time.Now().Add(time.Second)
 	for lb.IsHealthy(target) && time.Now().Before(deadline) {
@@ -799,8 +887,8 @@ func TestActiveHealthCheckerUsesTimeoutThresholdForHTTPProbeTimeouts(t *testing.
 		NopClusterObserver{},
 		transport,
 	)
-	checker.Start()
-	t.Cleanup(checker.Close)
+	tasks := startActiveHealthCheckerForTest(t, checker)
+	t.Cleanup(func() { stopActiveHealthCheckerForTest(t, checker, tasks) })
 
 	deadline := time.Now().Add(time.Second)
 	for lb.IsHealthy(target) && time.Now().Before(deadline) {
@@ -917,8 +1005,8 @@ func TestActiveHealthCheckerRecoversAfterConsecutiveSuccesses(t *testing.T) {
 		NopClusterObserver{},
 		http.DefaultTransport,
 	)
-	checker.Start()
-	t.Cleanup(checker.Close)
+	tasks := startActiveHealthCheckerForTest(t, checker)
+	t.Cleanup(func() { stopActiveHealthCheckerForTest(t, checker, tasks) })
 
 	deadline := time.Now().Add(10 * time.Second)
 	for {
@@ -974,8 +1062,8 @@ func TestActiveHealthCheckerQuarantinesConfiguredHTTPFailure(t *testing.T) {
 		NopClusterObserver{},
 		http.DefaultTransport,
 	)
-	checker.Start()
-	t.Cleanup(checker.Close)
+	tasks := startActiveHealthCheckerForTest(t, checker)
+	t.Cleanup(func() { stopActiveHealthCheckerForTest(t, checker, tasks) })
 
 	deadline := time.Now().Add(10 * time.Second)
 	for {
@@ -1019,8 +1107,8 @@ func TestActiveHealthCheckerCloseStopsProbeGoroutines(t *testing.T) {
 		NopClusterObserver{},
 		http.DefaultTransport,
 	)
-	checker.Start()
-	checker.Close()
+	tasks := startActiveHealthCheckerForTest(t, checker)
+	stopActiveHealthCheckerForTest(t, checker, tasks)
 }
 
 func TestActiveHealthCheckerClosesHTTPSProbeIdleConnectionsOnceAfterProbesStop(t *testing.T) {
@@ -1049,18 +1137,15 @@ func TestActiveHealthCheckerClosesHTTPSProbeIdleConnectionsOnceAfterProbesStop(t
 		http.DefaultTransport,
 	)
 	var (
-		mu    sync.Mutex
-		calls int
+		mu           sync.Mutex
+		calls        int
+		tasksStopped atomic.Bool
 	)
+	tasks := startActiveHealthCheckerForTest(t, checker)
 	original := checker.closeProbeIdle
 	checker.closeProbeIdle = func() {
-		if checker.ctx.Err() == nil {
+		if !tasksStopped.Load() {
 			t.Error("HTTPS probe cleanup ran before the checker context was canceled")
-		}
-		select {
-		case <-checker.ctx.Done():
-		default:
-			t.Error("HTTPS probe cleanup ran before probe goroutines were signaled to stop")
 		}
 		mu.Lock()
 		calls++
@@ -1069,7 +1154,10 @@ func TestActiveHealthCheckerClosesHTTPSProbeIdleConnectionsOnceAfterProbesStop(t
 			original()
 		}
 	}
-	checker.Start()
+	if _, err := tasks.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	tasksStopped.Store(true)
 	checker.Close()
 	checker.Close()
 	mu.Lock()
@@ -1104,8 +1192,8 @@ func TestActiveHealthCheckerDoesNotCloseSharedHTTPTransport(t *testing.T) {
 	if checker.closeProbeIdle != nil {
 		t.Fatal("HTTP probe registered idle cleanup; shared upstream transport must stay open")
 	}
-	checker.Start()
-	checker.Close()
+	tasks := startActiveHealthCheckerForTest(t, checker)
+	stopActiveHealthCheckerForTest(t, checker, tasks)
 	if checker.httpClient.Transport != base {
 		t.Fatal("HTTP probe Close() replaced the shared upstream transport")
 	}
@@ -1160,7 +1248,7 @@ func TestActiveHealthCheckerUsesConfiguredHTTPSProbeScheme(t *testing.T) {
 		NopClusterObserver{},
 		upstream.Client().Transport,
 	)
-	if !checker.probeOnce(target) {
+	if checker.probeResult(t.Context(), target) != activeProbeSuccess {
 		t.Fatal("HTTPS active probe failed against an http target identity")
 	}
 

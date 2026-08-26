@@ -13,7 +13,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
-	"github.com/wklken/apisix-go/pkg/store"
+	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -144,8 +144,8 @@ func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.Re
 		return base.StopRequest(r)
 	}
 
-	consumer, err := store.GetConsumerByPluginKey(name, p.userDN(user.username))
-	if err != nil {
+	consumer, ok := p.consumerByUserDN(p.userDN(user.username))
+	if !ok {
 		p.recordAuthDiagnostic(r, "failed to find user: invalid user")
 		p.writeAuthError(w, http.StatusUnauthorized, "Invalid user authorization")
 		return base.StopRequest(r)
@@ -153,6 +153,14 @@ func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.Re
 	logger.Info("find consumer " + consumer.Username)
 
 	return base.ContinueRequest(ctx.WithAuthenticationState(r, ctx.NewAuthenticationState(name, consumer)))
+}
+
+func (p *Plugin) consumerByUserDN(userDN string) (resource.Consumer, bool) {
+	lookup := p.ConsumerLookup()
+	if lookup == nil {
+		return resource.Consumer{}, false
+	}
+	return lookup.ConsumerByPluginKey(name, userDN)
 }
 
 type basicUser struct {

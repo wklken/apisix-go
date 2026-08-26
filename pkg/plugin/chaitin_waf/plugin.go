@@ -12,28 +12,19 @@ import (
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
-	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	pluginexpr "github.com/wklken/apisix-go/pkg/plugin/expr"
-	"github.com/wklken/apisix-go/pkg/store"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
 type Plugin struct {
 	base.BasePlugin
-	config Config
+	config    Config
+	effective effectiveConfig
 
 	client *http.Client
 	picker nodePicker
 	match  []*pluginexpr.Expression
-
-	// metaMu guards the instance-owned plugin_metadata cache; the effective
-	// configuration is rebuilt only when the metadata bytes change.
-	metaMu     sync.Mutex
-	metaRaw    []byte
-	metaCfg    effectiveConfig
-	metaValid  bool
-	metaBuilds int
 }
 
 const (
@@ -114,16 +105,6 @@ const metadataSchema = `
 }
 `
 
-var compiledMetadataSchema = mustCompileMetadataSchema()
-
-func mustCompileMetadataSchema() *util.CompiledSchema {
-	compiled, err := util.CompileSchema(metadataSchema)
-	if err != nil {
-		panic("compile chaitin-waf metadata schema: " + err.Error())
-	}
-	return compiled
-}
-
 type Config struct {
 	Mode                 string      `json:"mode,omitempty"`
 	Match                []MatchRule `json:"match,omitempty"`
@@ -190,7 +171,27 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	routeConfig := p.config
 	p.applyDefaults()
+	var metadata Metadata
+	if _, err := p.MetadataView().Decode(name, &metadata); err != nil {
+		return fmt.Errorf("chaitin-waf metadata decode failed: %w", err)
+	}
+	p.effective = effectiveConfig{
+		Mode:   "monitor",
+		Nodes:  append([]Node(nil), metadata.Nodes...),
+		Config: applyWAFConfigDefaults(metadata.Config),
+	}
+	if metadata.Mode != "" {
+		p.effective.Mode = metadata.Mode
+	}
+	if routeConfig.Mode != "" {
+		p.effective.Mode = routeConfig.Mode
+	}
+	if len(routeConfig.Nodes) > 0 {
+		p.effective.Nodes = append([]Node(nil), routeConfig.Nodes...)
+	}
+	p.effective.Config = mergeWAFConfig(p.effective.Config, routeConfig.Config)
 	p.match = p.match[:0]
 	for index, rule := range p.config.Match {
 		expression, err := pluginexpr.Compile(normalizeMatchVars(rule.Vars))
@@ -199,7 +200,7 @@ func (p *Plugin) PostInit() error {
 		}
 		p.match = append(p.match, expression)
 	}
-	p.client = &http.Client{Timeout: time.Duration(p.config.Config.ReadTimeout) * time.Millisecond}
+	p.client = &http.Client{Timeout: time.Duration(p.effective.Config.ReadTimeout) * time.Millisecond}
 
 	return nil
 }
@@ -275,7 +276,7 @@ func applyWAFConfigDefaults(cfg WAFConfig) WAFConfig {
 
 func (p *Plugin) doAccess(r *http.Request) (int, string, map[string]string) {
 	headers := map[string]string{}
-	effective := p.effectiveConfig()
+	effective := p.effective
 	if len(effective.Nodes) == 0 {
 		headers[HeaderChaitinWAF] = "err"
 		headers[HeaderChaitinWAFError] = "missing metadata"
@@ -341,75 +342,6 @@ func (p *Plugin) doAccess(r *http.Request) (int, string, map[string]string) {
 	}
 
 	return 0, "", headers
-}
-
-func (p *Plugin) effectiveConfig() effectiveConfig {
-	raw, err := store.GetPluginMetadataRaw(name)
-	if err != nil {
-		raw = nil
-	}
-
-	p.metaMu.Lock()
-	if p.metaValid && bytes.Equal(p.metaRaw, raw) {
-		cfg := p.metaCfg
-		p.metaMu.Unlock()
-		return cfg
-	}
-	p.metaMu.Unlock()
-
-	cfg := p.buildEffectiveConfig()
-
-	p.metaMu.Lock()
-	if p.metaValid && bytes.Equal(p.metaRaw, raw) {
-		cfg = p.metaCfg
-	} else {
-		p.metaRaw = append([]byte(nil), raw...)
-		p.metaCfg = cfg
-		p.metaValid = true
-		p.metaBuilds++
-	}
-	p.metaMu.Unlock()
-	return cfg
-}
-
-func (p *Plugin) buildEffectiveConfig() effectiveConfig {
-	metadata := p.loadMetadata()
-	cfg := effectiveConfig{
-		Mode:   "monitor",
-		Nodes:  metadata.Nodes,
-		Config: applyWAFConfigDefaults(metadata.Config),
-	}
-	if metadata.Mode != "" {
-		cfg.Mode = metadata.Mode
-	}
-	if p.config.Mode != "" {
-		cfg.Mode = p.config.Mode
-	}
-	if len(p.config.Nodes) > 0 {
-		cfg.Nodes = p.config.Nodes
-	}
-	cfg.Config = mergeWAFConfig(cfg.Config, p.config.Config)
-	return cfg
-}
-
-func (p *Plugin) loadMetadata() (metadata Metadata) {
-	var raw map[string]any
-	if err := store.GetPluginMetadata(name, &raw); err != nil {
-		return Metadata{}
-	}
-	if err := validateMetadata(raw); err != nil {
-		logger.Errorf("validate plugin_metadata %s: %s", name, err)
-		return Metadata{}
-	}
-	if err := util.Parse(raw, &metadata); err != nil {
-		logger.Errorf("parse plugin_metadata %s: %s", name, err)
-		return Metadata{}
-	}
-	return metadata
-}
-
-func validateMetadata(metadata map[string]any) error {
-	return compiledMetadataSchema.Validate(metadata)
 }
 
 func mergeWAFConfig(baseConfig, override WAFConfig) WAFConfig {

@@ -10,12 +10,8 @@ import (
 )
 
 func TestRegisterExtraRoutesExposesGraphQLProxyCachePurge(t *testing.T) {
-	oldConfig := config.GlobalConfig
-	config.GlobalConfig = &config.Config{Plugins: []string{"graphql-proxy-cache"}}
-	t.Cleanup(func() { config.GlobalConfig = oldConfig })
-
 	mux := chi.NewRouter()
-	registerExtraRoutes(mux)
+	registerExtraRoutes(mux, &config.Config{Plugins: []string{"graphql-proxy-cache"}})
 	req := httptest.NewRequest(
 		"PURGE",
 		"/apisix/plugin/graphql-proxy-cache/invalid/route-1/cache-key",

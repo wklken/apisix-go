@@ -6,7 +6,6 @@ import (
 	"net"
 	"net/http"
 	"strconv"
-	"sync"
 	"time"
 
 	"github.com/felixge/httpsnoop"
@@ -173,6 +172,10 @@ func (p *Plugin) Config() any {
 	return &p.config
 }
 
+func (p *Plugin) QuiesceGenerationTasks() { p.Stop() }
+
+func (p *Plugin) Stop() { p.StopWithCleanup(nil) }
+
 // Init registers the plugin schema and initializes the buffered send path.
 func (p *Plugin) Init() error {
 	p.Name = name
@@ -192,6 +195,10 @@ func (p *Plugin) PostInit() error {
 		p.config.IncludeReqBodyExpr, p.config.IncludeRespBodyExpr,
 	); err != nil {
 		return err
+	}
+	var metadata pluginMetadata
+	if _, err := p.MetadataView().Decode(name, &metadata); err != nil {
+		return fmt.Errorf("udp-logger metadata decode failed: %w", err)
 	}
 	if p.config.Timeout == 0 {
 		p.config.Timeout = 3
@@ -215,7 +222,6 @@ func (p *Plugin) PostInit() error {
 		p.config.InactiveTimeout = int(logger_batch.DefaultInactiveTimeout / time.Second)
 	}
 
-	metadata := base.LoadPluginMetadata[pluginMetadata](name)
 	if len(p.config.LogFormat) == 0 {
 		p.LogFormat = metadata.LogFormat
 	} else {
@@ -232,7 +238,7 @@ func (p *Plugin) PostInit() error {
 
 	p.config.addr = net.JoinHostPort(p.config.Host, strconv.Itoa(p.config.Port))
 
-	p.BatchProcessor = base.NewBatchProcessor("udp logger", base.BatchDefaults{
+	processor, err := base.NewBatchProcessor("udp logger", p.TaskOwner(), base.BatchDefaults{
 		BatchMaxSize:       p.config.BatchMaxSize,
 		MaxRetryCount:      p.config.MaxRetryCount,
 		RetryDelaySec:      p.config.RetryDelay,
@@ -241,6 +247,10 @@ func (p *Plugin) PostInit() error {
 		MaxPendingEntries:  p.config.MaxPendingEntries,
 		PluginID:           name,
 	}, p.RouteID, p.ServerAddr, p.SendBatch)
+	if err != nil {
+		return err
+	}
+	p.BatchProcessor = processor
 
 	return nil
 }
@@ -443,16 +453,14 @@ func watchConnectionCancellation(ctx context.Context, conn net.Conn) func() {
 		return func() {}
 	}
 	done := make(chan struct{})
-	var wait sync.WaitGroup
-	wait.Go(func() {
-		select {
-		case <-ctx.Done():
-			_ = conn.Close()
-		case <-done:
-		}
+	stop := context.AfterFunc(ctx, func() {
+		defer close(done)
+		_ = conn.Close()
 	})
 	return func() {
-		close(done)
-		wait.Wait()
+		if stop() {
+			close(done)
+		}
+		<-done
 	}
 }

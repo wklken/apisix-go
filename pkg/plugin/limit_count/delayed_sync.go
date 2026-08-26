@@ -9,6 +9,7 @@ import (
 	"github.com/samber/lo"
 	limiter "github.com/ulule/limiter/v3"
 	"github.com/wklken/apisix-go/pkg/logger"
+	"github.com/wklken/apisix-go/pkg/runtime"
 )
 
 const maxDelayedSyncStates = 10_000
@@ -47,21 +48,22 @@ type delayedSyncer struct {
 	retry     map[string]struct{}
 	retryNext map[string]struct{}
 	maxStates int
-	stop      chan struct{}
-	done      chan struct{}
-	stopOnce  sync.Once
 
 	warnMu            sync.Mutex
 	lastQueueFullWarn time.Time
 }
 
 func newDelayedSyncer(
+	owner *runtime.TaskOwner,
 	backend delayedSyncBackend,
 	limit int64,
 	window time.Duration,
 	syncInterval time.Duration,
 	queueSize int,
-) *delayedSyncer {
+) (*delayedSyncer, error) {
+	if owner == nil {
+		return nil, runtime.ErrTaskOwnerRequired
+	}
 	s := &delayedSyncer{
 		backend:      backend,
 		limit:        limit,
@@ -72,14 +74,14 @@ func newDelayedSyncer(
 		retry:        make(map[string]struct{}),
 		retryNext:    make(map[string]struct{}),
 		maxStates:    maxDelayedSyncStates,
-		stop:         make(chan struct{}),
-		done:         make(chan struct{}),
 	}
 	s.warnQueueFull = func() {
 		logger.Warn("delayed-sync queue saturated, skipping enqueue")
 	}
-	go s.run()
-	return s
+	if err := owner.Go("delayed-sync", s.run); err != nil {
+		return nil, err
+	}
+	return s, nil
 }
 
 func (s *delayedSyncer) incoming(
@@ -178,25 +180,23 @@ func (s *delayedSyncer) enqueue(key string) bool {
 	}
 }
 
-func (s *delayedSyncer) run() {
+func (s *delayedSyncer) run(ctx context.Context) error {
 	ticker := time.NewTicker(s.syncInterval)
-	defer func() {
-		ticker.Stop()
-		close(s.done)
-	}()
+	defer ticker.Stop()
 	for {
 		select {
 		case now := <-ticker.C:
-			if err := s.flushNow(context.Background(), now); err != nil {
+			if err := s.flushNow(ctx, now); err != nil {
 				logger.Errorf("delayed-sync flush failed: %v", err)
 			}
-		case <-s.stop:
-			// Shutdown is the only path that deliberately bypasses the bounded
-			// queue so accepted local deltas are not lost when the process exits.
-			if err := s.flushAllDirty(context.Background()); err != nil {
+		case <-ctx.Done():
+			// Cancellation is the shutdown signal. Use a detached context for the
+			// final backend calls so accepted local deltas are not lost merely
+			// because the owner context has already been cancelled.
+			if err := s.flushAllDirty(context.WithoutCancel(ctx)); err != nil {
 				logger.Errorf("delayed-sync shutdown flush failed: %v", err)
 			}
-			return
+			return nil
 		}
 	}
 }
@@ -247,15 +247,23 @@ func (s *delayedSyncer) cleanupExpiredLocked(now time.Time) {
 }
 
 func (s *delayedSyncer) flushAllDirty(ctx context.Context) error {
+	keys := s.drainQueue()
 	s.mu.Lock()
-	keys := make([]string, 0, len(s.states))
+	for key := range s.retry {
+		keys = append(keys, key)
+	}
+	clear(s.retry)
+	for key := range s.retryNext {
+		keys = append(keys, key)
+	}
+	clear(s.retryNext)
 	for key, state := range s.states {
 		if state.localDelta > 0 {
 			keys = append(keys, key)
 		}
 	}
 	s.mu.Unlock()
-	return s.flushKeys(ctx, keys, false)
+	return s.flushKeys(ctx, lo.Uniq(keys), false)
 }
 
 func (s *delayedSyncer) flushKeys(ctx context.Context, keys []string, retryFailures bool) error {
@@ -330,16 +338,6 @@ func (s *delayedSyncer) drainQueue() []string {
 			return lo.Uniq(keys)
 		}
 	}
-}
-
-func (s *delayedSyncer) Stop() {
-	if s == nil || s.stop == nil {
-		return
-	}
-	s.stopOnce.Do(func() {
-		close(s.stop)
-		<-s.done
-	})
 }
 
 type fixedWindowDelayedBackend struct {

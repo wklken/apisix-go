@@ -1,9 +1,11 @@
 package plugin
 
 import (
+	"context"
 	"net/http"
 
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/secret"
 )
 
 type Plugin interface {
@@ -22,8 +24,21 @@ type Plugin interface {
 // descriptors in their public config.
 type SecretMaterializer = base.SecretMaterializer
 
+type ScopedSecretAccess = base.ScopedSecretAccess
+
+type ScopedSecretMaterializer = base.ScopedSecretMaterializer
+
 // MaterializePluginSecrets rejects unresolved references from plugins that do
 // not declare SecretMaterializer ownership before PostInit.
 func MaterializePluginSecrets(p Plugin) error {
 	return base.MaterializePluginSecrets(p)
+}
+
+func MaterializeScopedPluginSecrets(
+	ctx context.Context,
+	baseScope secret.Scope,
+	capability secret.GenerationCapability,
+	p Plugin,
+) error {
+	return base.MaterializeScopedPluginSecrets(ctx, baseScope, capability, p)
 }

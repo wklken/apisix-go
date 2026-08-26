@@ -2,6 +2,7 @@ package route
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -9,69 +10,34 @@ import (
 	"net/url"
 	"runtime"
 	"strconv"
-	"strings"
 	"sync"
 	"testing"
 
-	"github.com/wklken/apisix-go/pkg/store"
+	"github.com/wklken/apisix-go/pkg/plugin"
+	"github.com/wklken/apisix-go/pkg/resource"
 )
 
-// Benchmark corpus for the full proxy control path: route matching, plugin
-// middleware, upstream selection, retry/timeout transport wrappers,
-// ReverseProxy, and response copying, through a loopback upstream. The
-// payload stays at 1 KiB so the row isolates control-path cost; payload
-// scaling is covered by BenchmarkReverseProxyServeHTTP.
-
-// The route store is a process-wide singleton, so sub-benchmarks share one
-// store bound to a single events channel and reseed it with their own route
-// set per row; Close() removes the published routes instead of stopping the
-// store.
+// Benchmark corpus for the immutable route dispatch and full proxy control
+// path through a loopback upstream. Payload scaling remains owned by the
+// proxy package benchmark corpus.
 
 var (
-	proxyLoopbackStoreOnce sync.Once
-	proxyLoopbackStore     *store.Store
-	proxyLoopbackEvents    chan *store.Event
-	proxyLoopbackEnvMu     sync.Mutex
-	proxyLoopbackEnvCache  = map[string]*proxyBenchmarkEnvironment{}
+	proxyLoopbackEnvMu    sync.Mutex
+	proxyLoopbackEnvCache = map[string]*proxyBenchmarkEnvironment{}
 )
-
-func proxyLoopbackRouteStore(b *testing.B) *store.Store {
-	proxyLoopbackStoreOnce.Do(func() {
-		proxyLoopbackEvents = make(chan *store.Event, 64)
-		var err error
-		proxyLoopbackStore, err = store.GetStore(b.TempDir()+"/proxy-loopback.db", proxyLoopbackEvents)
-		if err != nil {
-			b.Fatal(err)
-		}
-		proxyLoopbackStore.Start()
-	})
-	return proxyLoopbackStore
-}
 
 type proxyBenchmarkEnvironment struct {
 	client     *http.Client
 	server     *httptest.Server
 	upstreams  []*httptest.Server
-	storage    *store.Store
-	builder    *Builder
-	routeIDs   []string
 	targetPath string
 }
 
 func (environment *proxyBenchmarkEnvironment) Close() {
 	environment.server.Close()
-	environment.builder.Stop()
 	for _, upstream := range environment.upstreams {
 		upstream.Close()
 	}
-	events := proxyLoopbackEvents
-	for _, id := range environment.routeIDs {
-		remove := store.NewEvent()
-		remove.Type = store.EventTypeDelete
-		remove.Key = []byte("/apisix/routes/" + id)
-		events <- remove
-	}
-	_ = environment.storage.Sync()
 }
 
 func newProxyBenchmarkEnvironment(
@@ -84,7 +50,7 @@ func newProxyBenchmarkEnvironment(
 	pathPrefix := fmt.Sprintf("/bench/%d-%s-%d", routes, plugins, nodes)
 	environment.targetPath = pathPrefix + "/target"
 
-	nodeSpecs := make([]string, 0, nodes)
+	upstreamNodes := make([]resource.Node, 0, nodes)
 	for range nodes {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Length", strconv.Itoa(payloadSize))
@@ -99,66 +65,52 @@ func newProxyBenchmarkEnvironment(
 		if err != nil {
 			b.Fatal(err)
 		}
-		nodeSpecs = append(nodeSpecs, fmt.Sprintf(
-			`{"host":%q,"port":%d,"weight":1}`,
-			parsed.Hostname(),
-			port,
+		upstreamNodes = append(upstreamNodes, resource.Node{
+			Host: parsed.Hostname(), Port: port, Weight: 1,
+		})
+	}
+
+	proxyRoute := resource.Route{
+		ID:       "proxy-benchmark-runtime",
+		Upstream: resource.Upstream{Scheme: "http", Nodes: upstreamNodes},
+	}
+	var bindings []plugin.Binding
+	if plugins == "request-id" {
+		bindings = append(bindings, testPluginBinding(
+			b,
+			"request-id",
+			map[string]any{},
+			proxyRoute,
 		))
 	}
-	nodesJSON := "[" + strings.Join(nodeSpecs, ",") + "]"
-
-	storage := proxyLoopbackRouteStore(b)
-	environment.storage = storage
-	events := proxyLoopbackEvents
-
-	pluginConfig := ""
-	if plugins == "request-id" {
-		pluginConfig = `{"request-id":{}}`
-	}
+	proxyHandler := testPreparedProxyHandler(
+		b,
+		proxyRoute,
+		resource.Service{},
+		testEffectiveConfig(),
+		bindings...,
+	)
+	preparedRoutes := make([]PreparedRoute, 0, routes)
 	for index := range routes {
-		id := fmt.Sprintf("bench-%d-%s-%d", routes, plugins, index)
 		uri := environment.targetPath
 		if index > 0 {
 			uri = fmt.Sprintf("%s/filler/%06d", pathPrefix, index)
 		}
-		route := fmt.Sprintf(
-			`{"id":%q,"uri":%q,"methods":["GET"],"upstream":{"scheme":"http","nodes":%s}}`,
-			id, uri, nodesJSON,
-		)
-		if pluginConfig != "" {
-			route = fmt.Sprintf(
-				`{"id":%q,"uri":%q,"methods":["GET"],"plugins":%s,"upstream":{"scheme":"http","nodes":%s}}`,
-				id, uri, pluginConfig, nodesJSON,
-			)
-		}
-		event := store.NewEvent()
-		event.Type = store.EventTypePut
-		event.Key = []byte("/apisix/routes/" + id)
-		event.Value = []byte(route)
-		events <- event
-		environment.routeIDs = append(environment.routeIDs, id)
+		preparedRoutes = append(preparedRoutes, PreparedRoute{
+			Route:   resource.Route{ID: fmt.Sprintf("bench-%d-%s-%d", routes, plugins, index), Uri: uri},
+			Handler: proxyHandler,
+		})
 	}
-	if err := storage.Sync(); err != nil {
-		b.Fatalf("Sync() error = %v", err)
-	}
-
-	builder := NewBuilder(storage)
-	mux, err := builder.BuildStrict()
+	snapshot, err := CompileHTTP(context.Background(), CompileInput{Revision: 1, Routes: preparedRoutes})
 	if err != nil {
 		b.Fatal(err)
 	}
-	environment.builder = builder
-
-	environment.server = httptest.NewServer(mux)
+	environment.server = httptest.NewServer(snapshot.Handler())
 
 	concurrency := runtime.GOMAXPROCS(0) * 4
-	environment.client = &http.Client{
-		Transport: &http.Transport{
-			MaxIdleConns:        concurrency,
-			MaxIdleConnsPerHost: concurrency,
-			MaxConnsPerHost:     concurrency,
-		},
-	}
+	environment.client = &http.Client{Transport: &http.Transport{
+		MaxIdleConns: concurrency, MaxIdleConnsPerHost: concurrency, MaxConnsPerHost: concurrency,
+	}}
 	return environment
 }
 
@@ -175,6 +127,7 @@ func proxyLoopbackBenchmarkEnvironment(
 	}
 	environment := newProxyBenchmarkEnvironment(b, routes, nodes, payloadSize, plugins)
 	proxyLoopbackEnvCache[key] = environment
+	b.Cleanup(environment.Close)
 	return environment
 }
 

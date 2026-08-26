@@ -20,7 +20,7 @@ func TestModifyResponseSetsUpstreamBeforeBoundedCapture(t *testing.T) {
 	)
 	response := &http.Response{StatusCode: http.StatusOK, Request: request}
 
-	if err := newModifyResponse()(response); err != nil {
+	if err := newModifyResponse(&testEffectiveConfig().Config)(response); err != nil {
 		t.Fatalf("newModifyResponse() error = %v", err)
 	}
 	if got := lifecycle.ResponseSource(); got != apisixctx.ResponseSourceUpstream {
@@ -39,7 +39,7 @@ func TestErrorAndRequestBodyHandlersSetAPISIXBeforeJSON(t *testing.T) {
 	)
 	response := &sourceObservingWriter{lifecycle: lifecycle, header: make(http.Header)}
 
-	newErrorHandler()(response, request, errors.New("upstream failed"))
+	newErrorHandler(&testEffectiveConfig().Config)(response, request, errors.New("upstream failed"))
 	if lifecycle.ResponseSource() != apisixctx.ResponseSourceAPISIX ||
 		response.firstSource != apisixctx.ResponseSourceAPISIX {
 		t.Fatalf(
@@ -49,15 +49,16 @@ func TestErrorAndRequestBodyHandlersSetAPISIXBeforeJSON(t *testing.T) {
 		)
 	}
 
-	handler, err := (&Builder{}).buildReverseHandler(resource.Route{
-		Upstream: resource.Upstream{
-			Scheme: "http",
-			Nodes:  []resource.Node{{Host: "127.0.0.1", Port: 1, Weight: 1}},
+	handler := testPreparedProxyHandler(t,
+		resource.Route{
+			ID: "oversized-request-source",
+			Upstream: resource.Upstream{
+				Scheme: "http",
+				Nodes:  []resource.Node{{Host: "127.0.0.1", Port: 1, Weight: 1}},
+			},
 		},
-	}, resource.Service{})
-	if err != nil {
-		t.Fatalf("buildReverseHandler() error = %v", err)
-	}
+		resource.Service{}, testEffectiveConfig(),
+	)
 	bodyRequest, bodyLifecycle := apisixctx.EnsureRequestLifecycle(
 		httptest.NewRequest(http.MethodPost, "http://gateway.test/upload", bytes.NewReader(
 			bytes.Repeat([]byte("x"), int(proxy_control.DefaultRequestBufferingLimit+1)),
@@ -101,10 +102,9 @@ func (w *sourceObservingWriter) Write(body []byte) (int, error) {
 }
 
 func TestGlobalNotFoundSetsEarlyStopBeforeWrite(t *testing.T) {
-	builder := NewBuilder(nil)
-	handler, err := builder.buildGlobalNotFoundHandler(nil)
+	handler, err := BuildPreparedNotFoundHandler(nil)
 	if err != nil {
-		t.Fatalf("buildGlobalNotFoundHandler() error = %v", err)
+		t.Fatalf("BuildPreparedNotFoundHandler() error = %v", err)
 	}
 	request, lifecycle := apisixctx.EnsureRequestLifecycle(
 		httptest.NewRequest(http.MethodGet, "http://gateway.test/missing", nil),

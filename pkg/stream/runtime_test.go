@@ -1,10 +1,16 @@
 package stream
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
+	"os"
+	"os/exec"
+	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -14,6 +20,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/resource"
+	taskruntime "github.com/wklken/apisix-go/pkg/runtime"
 )
 
 type temporaryAcceptError struct{}
@@ -73,16 +80,24 @@ func (a scriptedAddr) String() string  { return string(a) }
 func newTestRuntime(t *testing.T, listeners ...net.Listener) *Runtime {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
-	router, err := NewRouter(nil, nil, nil)
+	router, err := CompileRouter(context.Background(), CompileInput{Revision: 1})
 	if err != nil {
-		t.Fatalf("NewRouter() error = %v", err)
+		t.Fatalf("CompileRouter() error = %v", err)
+	}
+	tasks := taskruntime.NewTaskRegistry(ctx, nil)
+	owner, err := taskruntime.NewTaskOwner(tasks, "core/stream-runtime", taskruntime.TaskCore)
+	if err != nil {
+		t.Fatalf("NewTaskOwner() error = %v", err)
 	}
 	runtime := &Runtime{
-		ctx:       ctx,
-		cancel:    cancel,
-		router:    router,
+		ctx:    ctx,
+		cancel: cancel,
+		source: func() (RouterLease, bool) {
+			return RouterLease{Router: router, Release: func() {}}, true
+		},
 		listeners: listeners,
-		closeDone: make(chan struct{}),
+		tasks:     tasks,
+		owner:     owner,
 	}
 	t.Cleanup(func() {
 		_ = runtime.Close(context.Background())
@@ -90,10 +105,538 @@ func newTestRuntime(t *testing.T, listeners ...net.Listener) *Runtime {
 	return runtime
 }
 
-func startRuntimeListeners(runtime *Runtime, listeners ...net.Listener) {
-	runtime.wg.Add(len(listeners))
+type routerLeaseFixture struct {
+	router *Router
+
+	mu       sync.Mutex
+	acquired int
+	released int
+	started  chan struct{}
+	release  chan struct{}
+}
+
+func newRouterLeaseFixture(revision byte, block bool, serveErr error) *routerLeaseFixture {
+	fixture := &routerLeaseFixture{
+		started: make(chan struct{}, 8),
+		release: make(chan struct{}, 8),
+	}
+	fixture.router = &Router{
+		routes: []routeEntry{{
+			serve: func(ctx context.Context, conn net.Conn, _ string) (string, string, error) {
+				fixture.started <- struct{}{}
+				if _, err := conn.Write([]byte{revision}); err != nil {
+					return "", "tcp", err
+				}
+				if serveErr != nil {
+					return "", "tcp", serveErr
+				}
+				if block {
+					var buffer [1]byte
+					readDone := make(chan error, 1)
+					go func() {
+						_, err := conn.Read(buffer[:])
+						readDone <- err
+					}()
+					select {
+					case err := <-readDone:
+						return "", "tcp", err
+					case <-ctx.Done():
+						return "", "tcp", ctx.Err()
+					}
+				}
+				return "", "tcp", nil
+			},
+		}},
+	}
+	return fixture
+}
+
+func newRuntimeForRoutes(
+	t *testing.T,
+	ctx context.Context,
+	specs []config.TcpListen,
+	routes []resource.StreamRoute,
+	onResult func(Result),
+) (*Runtime, error) {
+	t.Helper()
+	router, err := compileTestRouter(t, routes, onResult)
+	if err != nil {
+		return nil, err
+	}
+	return NewRuntime(ctx, specs, func() (RouterLease, bool) {
+		return RouterLease{Router: router, Release: func() {}}, true
+	})
+}
+
+func (f *routerLeaseFixture) Acquire() (RouterLease, bool) {
+	f.mu.Lock()
+	f.acquired++
+	f.mu.Unlock()
+	var once sync.Once
+	return RouterLease{
+		Router: f.router,
+		Release: func() {
+			once.Do(func() {
+				f.mu.Lock()
+				f.released++
+				f.mu.Unlock()
+				f.release <- struct{}{}
+			})
+		},
+	}, true
+}
+
+func (f *routerLeaseFixture) releaseCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.released
+}
+
+type switchableRouterSource struct {
+	mu      sync.RWMutex
+	current *routerLeaseFixture
+}
+
+func newSwitchableRouterSource(current *routerLeaseFixture) *switchableRouterSource {
+	return &switchableRouterSource{current: current}
+}
+
+func (s *switchableRouterSource) Acquire() (RouterLease, bool) {
+	s.mu.RLock()
+	current := s.current
+	s.mu.RUnlock()
+	if current == nil {
+		return RouterLease{}, false
+	}
+	return current.Acquire()
+}
+
+func (s *switchableRouterSource) Store(current *routerLeaseFixture) {
+	s.mu.Lock()
+	s.current = current
+	s.mu.Unlock()
+}
+
+func dialRuntimeRevision(t *testing.T, runtime *Runtime) (net.Conn, byte) {
+	t.Helper()
+	conn, err := net.Dial("tcp", runtime.Addresses()[0])
+	if err != nil {
+		t.Fatalf("dial runtime: %v", err)
+	}
+	_ = conn.SetDeadline(time.Now().Add(time.Second))
+	var revision [1]byte
+	if _, err := io.ReadFull(conn, revision[:]); err != nil {
+		_ = conn.Close()
+		t.Fatalf("read router revision: %v", err)
+	}
+	return conn, revision[0]
+}
+
+func waitLeaseSignal(t *testing.T, signal <-chan struct{}, message string) {
+	t.Helper()
+	select {
+	case <-signal:
+	case <-time.After(time.Second):
+		t.Fatal(message)
+	}
+}
+
+func TestRuntimePinsRouterLeaseForConnectionLifetime(t *testing.T) {
+	old := newRouterLeaseFixture(71, true, nil)
+	next := newRouterLeaseFixture(72, false, nil)
+	source := newSwitchableRouterSource(old)
+	runtime, err := NewRuntime(
+		context.Background(),
+		[]config.TcpListen{{Addr: "127.0.0.1:0"}},
+		source.Acquire,
+	)
+	if err != nil {
+		t.Fatalf("NewRuntime() error = %v", err)
+	}
+	t.Cleanup(func() { _ = runtime.Close(context.Background()) })
+
+	oldConn, revision := dialRuntimeRevision(t, runtime)
+	if revision != 71 {
+		t.Fatalf("old connection revision = %d, want 71", revision)
+	}
+	waitLeaseSignal(t, old.started, "old router did not start")
+	source.Store(next)
+
+	nextConn, revision := dialRuntimeRevision(t, runtime)
+	if revision != 72 {
+		t.Fatalf("new connection revision = %d, want 72", revision)
+	}
+	_ = nextConn.Close()
+	waitLeaseSignal(t, next.release, "new router lease was not released")
+	if got := old.releaseCount(); got != 0 {
+		t.Fatalf("old release count before connection close = %d, want 0", got)
+	}
+
+	_ = oldConn.Close()
+	waitLeaseSignal(t, old.release, "old router lease was not released")
+}
+
+func TestRuntimeCoreOwnerSurvivesRouterSourceGenerationChange(t *testing.T) {
+	first := newRouterLeaseFixture(81, false, nil)
+	second := newRouterLeaseFixture(82, false, nil)
+	source := newSwitchableRouterSource(first)
+	runtime, err := NewRuntime(
+		context.Background(),
+		[]config.TcpListen{{Addr: "127.0.0.1:0"}},
+		source.Acquire,
+	)
+	if err != nil {
+		t.Fatalf("NewRuntime() error = %v", err)
+	}
+	t.Cleanup(func() { _ = runtime.Close(context.Background()) })
+
+	tasks := runtime.tasks
+	firstConn, revision := dialRuntimeRevision(t, runtime)
+	if revision != 81 {
+		t.Fatalf("first connection revision = %d, want 81", revision)
+	}
+	_ = firstConn.Close()
+	waitLeaseSignal(t, first.release, "first router lease was not released")
+
+	source.Store(second)
+	secondConn, revision := dialRuntimeRevision(t, runtime)
+	if revision != 82 {
+		t.Fatalf("second connection revision = %d, want 82", revision)
+	}
+	_ = secondConn.Close()
+	waitLeaseSignal(t, second.release, "second router lease was not released")
+
+	if runtime.tasks != tasks {
+		t.Fatal("router source generation change replaced the runtime task registry")
+	}
+	if got := runtime.tasks.Active(); !slices.Contains(got, "core/stream-runtime/listener") {
+		t.Fatalf("active owners = %v, want core/stream-runtime/listener", got)
+	}
+	if first.router == second.router {
+		t.Fatal("router fixture did not change generation")
+	}
+}
+
+func TestRuntimeCloseReportsBlockingConnectionResidualAndLaterJoins(t *testing.T) {
+	runtime, release, leaseReleased := newBlockingConnectionRuntime(t)
+	closeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	err := runtime.Close(closeCtx)
+	var closeErr *runtimeCloseError
+	if !errors.As(err, &closeErr) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Close() error = %v, want runtime close deadline error", err)
+	}
+	if got := closeErr.residuals; !reflect.DeepEqual(got, []taskruntime.TaskResidual{{
+		Owner: "core/stream-runtime/connection",
+	}}) {
+		t.Fatalf("residuals = %v, want one connection owner", got)
+	}
+
+	release()
+	if err := runtime.Close(context.Background()); err != nil {
+		t.Fatalf("Close() retry error = %v", err)
+	}
+	waitLeaseSignal(t, leaseReleased, "blocking connection lease was not released")
+}
+
+func newBlockingConnectionRuntime(t *testing.T) (*Runtime, func(), <-chan struct{}) {
+	t.Helper()
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	leaseReleased := make(chan struct{})
+	var releaseTaskOnce sync.Once
+	var releaseLeaseOnce sync.Once
+	router := &Router{routes: []routeEntry{{
+		serve: func(context.Context, net.Conn, string) (string, string, error) {
+			close(entered)
+			<-release
+			return "", "tcp", nil
+		},
+	}}}
+	runtime, err := NewRuntime(
+		context.Background(),
+		[]config.TcpListen{{Addr: "127.0.0.1:0"}},
+		func() (RouterLease, bool) {
+			return RouterLease{
+				Router: router,
+				Release: func() {
+					releaseLeaseOnce.Do(func() { close(leaseReleased) })
+				},
+			}, true
+		},
+	)
+	if err != nil {
+		t.Fatalf("NewRuntime() error = %v", err)
+	}
+	releaseTask := func() { releaseTaskOnce.Do(func() { close(release) }) }
+	t.Cleanup(func() {
+		releaseTask()
+		_ = runtime.Close(context.Background())
+	})
+	conn, err := net.Dial("tcp", runtime.Addresses()[0])
+	if err != nil {
+		t.Fatalf("dial runtime: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("blocking connection task did not start")
+	}
+	return runtime, releaseTask, leaseReleased
+}
+
+func TestRuntimeConnectionTaskPanicUsesCoreFatalPolicy(t *testing.T) {
+	if os.Getenv("APISIX_GO_TEST_STREAM_CORE_PANIC") == "1" {
+		runStreamConnectionCorePanicFixture(t, "stream-core-fatal")
+		fmt.Fprintln(os.Stderr, "stream-returned-after-core-panic")
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestRuntimeConnectionTaskPanicUsesCoreFatalPolicy$")
+	cmd.Env = append(os.Environ(), "APISIX_GO_TEST_STREAM_CORE_PANIC=1")
+	output, err := cmd.CombinedOutput()
+	if err == nil || !bytes.Contains(output, []byte("stream-core-fatal")) ||
+		bytes.Contains(output, []byte("stream-returned-after-core-panic")) {
+		t.Fatalf("core panic subprocess = %v, output = %s", err, output)
+	}
+}
+
+func runStreamConnectionCorePanicFixture(t *testing.T, marker string) {
+	t.Helper()
+	entered := make(chan struct{})
+	router := &Router{routes: []routeEntry{{
+		serve: func(context.Context, net.Conn, string) (string, string, error) {
+			close(entered)
+			panic(marker)
+		},
+	}}}
+	runtime, err := NewRuntime(
+		context.Background(),
+		[]config.TcpListen{{Addr: "127.0.0.1:0"}},
+		func() (RouterLease, bool) {
+			return RouterLease{Router: router, Release: func() {}}, true
+		},
+	)
+	if err != nil {
+		t.Fatalf("NewRuntime() error = %v", err)
+	}
+	conn, err := net.Dial("tcp", runtime.Addresses()[0])
+	if err != nil {
+		t.Fatalf("dial runtime: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("connection panic task did not start")
+	}
+	time.Sleep(100 * time.Millisecond)
+}
+
+func TestRuntimeRejectsConnectionWhenRouterUnavailable(t *testing.T) {
+	runtime, err := NewRuntime(
+		context.Background(),
+		[]config.TcpListen{{Addr: "127.0.0.1:0"}},
+		func() (RouterLease, bool) { return RouterLease{}, false },
+	)
+	if err != nil {
+		t.Fatalf("NewRuntime() error = %v", err)
+	}
+	t.Cleanup(func() { _ = runtime.Close(context.Background()) })
+
+	conn, err := net.Dial("tcp", runtime.Addresses()[0])
+	if err != nil {
+		t.Fatalf("dial runtime: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	_ = conn.SetReadDeadline(time.Now().Add(time.Second))
+	if _, err := conn.Read(make([]byte, 1)); err == nil {
+		t.Fatal("unavailable router source left connection open")
+	}
+}
+
+func TestRuntimeReleasesLeaseWhenServeReturnsError(t *testing.T) {
+	fixture := newRouterLeaseFixture(73, false, errors.New("serve failure"))
+	runtime, err := NewRuntime(
+		context.Background(),
+		[]config.TcpListen{{Addr: "127.0.0.1:0"}},
+		fixture.Acquire,
+	)
+	if err != nil {
+		t.Fatalf("NewRuntime() error = %v", err)
+	}
+	t.Cleanup(func() { _ = runtime.Close(context.Background()) })
+
+	conn, revision := dialRuntimeRevision(t, runtime)
+	if revision != 73 {
+		t.Fatalf("connection revision = %d, want 73", revision)
+	}
+	_ = conn.Close()
+	waitLeaseSignal(t, fixture.release, "failed serve did not release router lease")
+}
+
+func TestRuntimeTerminalCloseCancelsConnectionsAndReleasesLeases(t *testing.T) {
+	fixture := newRouterLeaseFixture(74, true, nil)
+	runtime, err := NewRuntime(
+		context.Background(),
+		[]config.TcpListen{{Addr: "127.0.0.1:0"}},
+		fixture.Acquire,
+	)
+	if err != nil {
+		t.Fatalf("NewRuntime() error = %v", err)
+	}
+	conn, revision := dialRuntimeRevision(t, runtime)
+	if revision != 74 {
+		t.Fatalf("connection revision = %d, want 74", revision)
+	}
+	waitLeaseSignal(t, fixture.started, "router did not start")
+
+	closeCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := runtime.Close(closeCtx); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	waitLeaseSignal(t, fixture.release, "terminal close did not release router lease")
+	_ = conn.SetReadDeadline(time.Now().Add(time.Second))
+	if _, err := conn.Read(make([]byte, 1)); err == nil {
+		t.Fatal("client connection remained open after terminal close")
+	}
+	_ = conn.Close()
+}
+
+func TestRuntimeAcceptFailureDoesNotAcquireLease(t *testing.T) {
+	fixture := newRouterLeaseFixture(75, false, nil)
+	listener := newScriptedListener(
+		"127.0.0.1:21004",
+		scriptedAccept{err: errors.New("terminal accept failure")},
+	)
+	runtime := newTestRuntime(t, listener)
+	runtime.source = fixture.Acquire
+	startRuntimeListeners(t, runtime, listener)
+	waitForAccept(t, listener)
+	if err := runtime.Close(context.Background()); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	fixture.mu.Lock()
+	acquired := fixture.acquired
+	fixture.mu.Unlock()
+	if acquired != 0 {
+		t.Fatalf("lease acquisitions after accept failure = %d, want 0", acquired)
+	}
+}
+
+func TestServeListenerConnectionTaskAdmissionFailureRollsBack(t *testing.T) {
+	client, peer := net.Pipe()
+	t.Cleanup(func() { _ = peer.Close() })
+	listener := newScriptedListener(
+		"127.0.0.1:21005",
+		scriptedAccept{conn: client},
+	)
+	ctx, cancel := context.WithCancel(context.Background())
+	tasks := taskruntime.NewTaskRegistry(context.Background(), nil)
+	owner, err := taskruntime.NewTaskOwner(tasks, "core/stream-runtime", taskruntime.TaskCore)
+	if err != nil {
+		t.Fatalf("NewTaskOwner() error = %v", err)
+	}
+	if _, err := tasks.Stop(context.Background()); err != nil {
+		t.Fatalf("stop task registry: %v", err)
+	}
+	leaseReleased := make(chan struct{})
+	runtime := &Runtime{
+		ctx:       ctx,
+		cancel:    cancel,
+		listeners: []net.Listener{listener},
+		conns:     make(map[net.Conn]struct{}),
+		tasks:     tasks,
+		owner:     owner,
+		source: func() (RouterLease, bool) {
+			return RouterLease{
+				Router: &Router{},
+				Release: func() {
+					close(leaseReleased)
+				},
+			}, true
+		},
+	}
+	t.Cleanup(func() { _ = runtime.Close(context.Background()) })
+
+	runtime.serveListener(ctx, listener)
+	select {
+	case <-leaseReleased:
+	default:
+		t.Fatal("connection task admission failure did not release the router lease")
+	}
+	if runtime.ctx.Err() == nil {
+		t.Fatal("connection task admission failure did not initiate runtime close")
+	}
+	runtime.connMu.Lock()
+	tracked := len(runtime.conns)
+	runtime.connMu.Unlock()
+	if tracked != 0 {
+		t.Fatalf("tracked connections after admission failure = %d, want 0", tracked)
+	}
+	_ = peer.SetReadDeadline(time.Now().Add(time.Second))
+	if _, err := peer.Read(make([]byte, 1)); err == nil {
+		t.Fatal("connection task admission failure left the connection open")
+	}
+}
+
+func TestNewGenerationRuntimeRequiresRouterSource(t *testing.T) {
+	_, err := NewRuntime(
+		context.Background(),
+		[]config.TcpListen{{Addr: "127.0.0.1:0"}},
+		nil,
+	)
+	if err == nil {
+		t.Fatal("NewRuntime() accepted a nil router source")
+	}
+}
+
+func TestRuntimeSourceRollbackAffectsOnlyNewConnections(t *testing.T) {
+	old := newRouterLeaseFixture(76, true, nil)
+	next := newRouterLeaseFixture(77, false, nil)
+	source := newSwitchableRouterSource(old)
+	runtime, err := NewRuntime(
+		context.Background(),
+		[]config.TcpListen{{Addr: "127.0.0.1:0"}},
+		source.Acquire,
+	)
+	if err != nil {
+		t.Fatalf("NewRuntime() error = %v", err)
+	}
+	t.Cleanup(func() { _ = runtime.Close(context.Background()) })
+
+	oldConn, revision := dialRuntimeRevision(t, runtime)
+	if revision != 76 {
+		t.Fatalf("old connection revision = %d, want 76", revision)
+	}
+	waitLeaseSignal(t, old.started, "old router did not start")
+	source.Store(next)
+	nextConn, revision := dialRuntimeRevision(t, runtime)
+	if revision != 77 {
+		t.Fatalf("next connection revision = %d, want 77", revision)
+	}
+	_ = nextConn.Close()
+	source.Store(old)
+	rolledBackConn, revision := dialRuntimeRevision(t, runtime)
+	if revision != 76 {
+		t.Fatalf("rolled-back connection revision = %d, want 76", revision)
+	}
+	_ = rolledBackConn.Close()
+	waitLeaseSignal(t, old.release, "rolled-back connection lease was not released")
+	_ = oldConn.Close()
+	waitLeaseSignal(t, old.release, "original pinned lease was not released")
+}
+
+func startRuntimeListeners(t *testing.T, runtime *Runtime, listeners ...net.Listener) {
+	t.Helper()
 	for _, listener := range listeners {
-		go runtime.serveListener(listener)
+		if err := runtime.owner.Go("listener", func(taskCtx context.Context) error {
+			runtime.serveListener(taskCtx, listener)
+			return nil
+		}); err != nil {
+			t.Fatalf("start listener task: %v", err)
+		}
 	}
 }
 
@@ -103,6 +646,41 @@ func waitForAccept(t *testing.T, listener *scriptedListener) {
 	case <-listener.accepted:
 	case <-time.After(time.Second):
 		t.Fatal("listener did not call Accept")
+	}
+}
+
+func TestRuntimeCanceledCloseRejectsSynchronouslyAndLaterCloseJoins(t *testing.T) {
+	listener := newScriptedListener("127.0.0.1:21000")
+	runtime := newTestRuntime(t, listener)
+	release := make(chan struct{})
+	if err := runtime.owner.Go("connection", func(context.Context) error {
+		<-release
+		return nil
+	}); err != nil {
+		t.Fatalf("start blocked connection task: %v", err)
+	}
+
+	closeCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := runtime.Close(closeCtx)
+	var closeErr *runtimeCloseError
+	if !errors.As(err, &closeErr) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("Close(canceled context) error = %v, want %v", err, context.Canceled)
+	}
+	select {
+	case <-listener.closed:
+	default:
+		t.Fatal("Close(canceled context) returned before rejecting the listener")
+	}
+	if got := closeErr.residuals; !reflect.DeepEqual(got, []taskruntime.TaskResidual{{
+		Owner: "core/stream-runtime/connection",
+	}}) {
+		t.Fatalf("Close(canceled context) residuals = %v, want connection owner", got)
+	}
+
+	close(release)
+	if err := runtime.Close(context.Background()); err != nil {
+		t.Fatalf("Close() retry error = %v", err)
 	}
 }
 
@@ -116,7 +694,7 @@ func TestServeListenerRetriesTemporaryAcceptErrors(t *testing.T) {
 		scriptedAccept{conn: client},
 	)
 	runtime := newTestRuntime(t, listener)
-	startRuntimeListeners(runtime, listener)
+	startRuntimeListeners(t, runtime, listener)
 
 	waitForAccept(t, listener)
 	select {
@@ -140,7 +718,7 @@ func TestServeListenerTerminalErrorClosesRuntimeAndSiblingListeners(t *testing.T
 		entries <- entry
 	})
 	t.Cleanup(stopObserver)
-	startRuntimeListeners(runtime, failing, sibling)
+	startRuntimeListeners(t, runtime, failing, sibling)
 
 	select {
 	case <-runtime.ctx.Done():
@@ -171,21 +749,18 @@ func TestServeListenerTerminalErrorClosesRuntimeAndSiblingListeners(t *testing.T
 	}
 }
 
-func TestRuntimeServesConfiguredListenerAndReloadsRoutes(t *testing.T) {
+func TestRuntimeServesConfiguredListenerAndPublishesResult(t *testing.T) {
 	firstUpstream, firstAddr := startStreamUpstream(t, []byte("first-response"))
 	defer func() { _ = firstUpstream.Close() }()
-	secondUpstream, secondAddr := startStreamUpstream(t, []byte("second-response"))
-	defer func() { _ = secondUpstream.Close() }()
 
 	ctx := t.Context()
-	results := make(chan Result, 2)
-	runtime, err := NewRuntime(
+	results := make(chan Result, 1)
+	runtime, err := newRuntimeForRoutes(t,
 		ctx,
 		[]config.TcpListen{{Addr: "127.0.0.1:0"}},
 		[]resource.StreamRoute{runtimeTestRoute(t, "first", firstAddr)},
-		nil,
-		func(result Result) { results <- result },
-	)
+
+		func(result Result) { results <- result })
 	if err != nil {
 		t.Fatalf("NewRuntime() error = %v", err)
 	}
@@ -195,23 +770,13 @@ func TestRuntimeServesConfiguredListenerAndReloadsRoutes(t *testing.T) {
 	if string(firstResponse) != "first-response" {
 		t.Fatalf("first response = %q, want first-response", firstResponse)
 	}
-	if err := runtime.Reload([]resource.StreamRoute{runtimeTestRoute(t, "second", secondAddr)}); err != nil {
-		t.Fatalf("Reload() error = %v", err)
-	}
-	secondResponse := runtimeRoundTrip(t, runtime.Addresses()[0], []byte("stream-request"), len("second-response"))
-	if string(secondResponse) != "second-response" {
-		t.Fatalf("second response = %q, want second-response", secondResponse)
-	}
-
-	for range 2 {
-		select {
-		case result := <-results:
-			if result.Err != nil {
-				t.Fatalf("stream result error = %v", result.Err)
-			}
-		case <-time.After(time.Second):
-			t.Fatal("missing runtime stream result")
+	select {
+	case result := <-results:
+		if result.Err != nil {
+			t.Fatalf("stream result error = %v", result.Err)
 		}
+	case <-time.After(time.Second):
+		t.Fatal("missing runtime stream result")
 	}
 }
 
@@ -219,13 +784,12 @@ func TestRuntimeCloseCancelsActiveStream(t *testing.T) {
 	upstream, upstreamAddr := startBlockingStreamUpstream(t)
 	defer func() { _ = upstream.Close() }()
 
-	runtime, err := NewRuntime(
+	runtime, err := newRuntimeForRoutes(t,
 		context.Background(),
 		[]config.TcpListen{{Addr: "127.0.0.1:0"}},
 		[]resource.StreamRoute{runtimeTestRoute(t, "blocking", upstreamAddr)},
-		nil,
-		nil,
-	)
+
+		nil)
 	if err != nil {
 		t.Fatalf("NewRuntime() error = %v", err)
 	}
@@ -256,13 +820,12 @@ func TestRuntimeCancellationBoundsBackpressure(t *testing.T) {
 	defer release()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	runtime, err := NewRuntime(
+	runtime, err := newRuntimeForRoutes(t,
 		ctx,
 		[]config.TcpListen{{Addr: "127.0.0.1:0"}},
 		[]resource.StreamRoute{runtimeTestRoute(t, "backpressure", upstreamAddr)},
-		nil,
-		nil,
-	)
+
+		nil)
 	if err != nil {
 		t.Fatalf("NewRuntime() error = %v", err)
 	}
@@ -309,22 +872,20 @@ func TestRuntimeCancellationBoundsBackpressure(t *testing.T) {
 }
 
 func TestNewRuntimeRejectsTLSAndInvalidAddress(t *testing.T) {
-	if _, err := NewRuntime(
+	if _, err := newRuntimeForRoutes(t,
 		context.Background(),
 		[]config.TcpListen{{Addr: "127.0.0.1:0", Tls: true}},
 		nil,
-		nil,
-		nil,
-	); err == nil {
+
+		nil); err == nil {
 		t.Fatal("NewRuntime() accepted unsupported TLS listener")
 	}
-	if _, err := NewRuntime(
+	if _, err := newRuntimeForRoutes(t,
 		context.Background(),
 		[]config.TcpListen{{Addr: "not-an-address"}},
 		nil,
-		nil,
-		nil,
-	); err == nil {
+
+		nil); err == nil {
 		t.Fatal("NewRuntime() accepted invalid listener address")
 	}
 }
@@ -338,23 +899,23 @@ func TestNewRuntimeRejectsEmptyListenersAndUnsupportedFlags(t *testing.T) {
 		{name: "proxy protocol", spec: config.TcpListen{Addr: "127.0.0.1:0", ProxyProtocol: true}},
 		{name: "proxy protocol upstream", spec: config.TcpListen{Addr: "127.0.0.1:0", ProxyProtocolToUpstream: true}},
 	}
-	if _, err := NewRuntime(context.Background(), nil, nil, nil, nil); err == nil {
+	if _, err := newRuntimeForRoutes(t, context.Background(), nil, nil, nil); err == nil {
 		t.Fatal("NewRuntime() accepted an empty listener set")
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			if _, err := NewRuntime(context.Background(), []config.TcpListen{test.spec}, nil, nil, nil); err == nil {
+			listeners := []config.TcpListen{test.spec}
+			if _, err := newRuntimeForRoutes(t, context.Background(), listeners, nil, nil); err == nil {
 				t.Fatalf("NewRuntime() accepted unsupported %s", test.name)
 			}
 		})
 	}
 }
 
-func TestNewRuntimeRejectsUnsupportedAndUnresolvedRoutes(t *testing.T) {
+func TestCompileRouterRejectsUnsupportedAndUnresolvedRoutes(t *testing.T) {
 	for _, test := range []struct {
 		name  string
 		route resource.StreamRoute
-		flags []string
 	}{
 		{
 			name: "unresolved upstream",
@@ -389,14 +950,11 @@ func TestNewRuntimeRejectsUnsupportedAndUnresolvedRoutes(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if _, err := NewRuntime(
-				context.Background(),
-				[]config.TcpListen{{Addr: "127.0.0.1:0"}},
+			if _, err := compileTestRouter(t,
 				[]resource.StreamRoute{test.route},
-				test.flags,
-				nil,
-			); err == nil {
-				t.Fatalf("NewRuntime() accepted %s", test.name)
+
+				nil); err == nil {
+				t.Fatalf("CompileRouter() accepted %s", test.name)
 			}
 		})
 	}
@@ -416,16 +974,15 @@ func TestNewRuntimeRollsBackEarlierListenerOnBindFailure(t *testing.T) {
 	}
 	defer func() { _ = occupied.Close() }()
 
-	if _, err := NewRuntime(
+	if _, err := newRuntimeForRoutes(t,
 		context.Background(),
 		[]config.TcpListen{
 			{Addr: firstAddress},
 			{Addr: occupied.Addr().String()},
 		},
 		nil,
-		nil,
-		nil,
-	); err == nil {
+
+		nil); err == nil {
 		t.Fatal("NewRuntime() accepted a partially occupied listener set")
 	}
 	probe, err := net.Listen("tcp", firstAddress)
@@ -433,45 +990,6 @@ func TestNewRuntimeRollsBackEarlierListenerOnBindFailure(t *testing.T) {
 		t.Fatalf("first listener remained bound after rollback: %v", err)
 	}
 	_ = probe.Close()
-}
-
-func TestRuntimeReloadRejectsInvalidRoutesAndKeepsLastGood(t *testing.T) {
-	upstream, upstreamAddr := startStreamUpstream(t, []byte("last-good"))
-	defer func() { _ = upstream.Close() }()
-	runtime, err := NewRuntime(
-		context.Background(),
-		[]config.TcpListen{{Addr: "127.0.0.1:0"}},
-		[]resource.StreamRoute{runtimeTestRoute(t, "last-good", upstreamAddr)},
-		nil,
-		nil,
-	)
-	if err != nil {
-		t.Fatalf("NewRuntime() error = %v", err)
-	}
-	t.Cleanup(func() { _ = runtime.Close(context.Background()) })
-
-	if err := runtime.Reload([]resource.StreamRoute{{ID: "invalid", UpstreamID: "missing"}}); err == nil {
-		t.Fatal("Reload() accepted an unresolved route")
-	}
-	if err := runtime.Reload([]resource.StreamRoute{{
-		ID: "invalid-tls",
-		Upstream: resource.Upstream{
-			Scheme: "tcp",
-			TLS:    &resource.UpstreamTLS{},
-			Nodes:  []resource.Node{{Host: "127.0.0.1", Port: 1, Weight: 1}},
-		},
-	}}); err == nil {
-		t.Fatal("Reload() accepted a TLS stream upstream")
-	}
-	got := runtimeRoundTrip(
-		t,
-		runtime.Addresses()[0],
-		[]byte("stream-request"),
-		len("last-good"),
-	)
-	if string(got) != "last-good" {
-		t.Fatalf("last-good response = %q, want last-good", got)
-	}
 }
 
 func runtimeTestRoute(t *testing.T, id, upstreamAddr string) resource.StreamRoute {

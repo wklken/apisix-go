@@ -80,17 +80,14 @@ func TestNormalizeSSLNumber(t *testing.T) {
 }
 
 func TestBatchRequestsURIResolvesConfiguredValue(t *testing.T) {
-	previous := config.GlobalConfig
-	t.Cleanup(func() { config.GlobalConfig = previous })
-	config.GlobalConfig = nil
-	if got := batchRequestsURI(); got != "/apisix/batch-requests" {
+	if got := batchRequestsURI(&config.Config{}); got != "/apisix/batch-requests" {
 		t.Fatalf("batchRequestsURI() = %q, want default URI", got)
 	}
 
-	config.GlobalConfig = &config.Config{
+	staticConfig := &config.Config{
 		PluginAttr: map[string]map[string]any{"batch-requests": {"uri": "/internal/batch"}},
 	}
-	if got := batchRequestsURI(); got != "/internal/batch" {
+	if got := batchRequestsURI(staticConfig); got != "/internal/batch" {
 		t.Fatalf("batchRequestsURI() = %q, want configured URI", got)
 	}
 }
@@ -103,7 +100,13 @@ func TestErrorHandlerHidesUpstreamDetails(t *testing.T) {
 	pxy.SetSelectedTarget(request, "http://upstream.test:80")
 	response := httptest.NewRecorder()
 
-	newErrorHandler()(response, request, errors.New("dial tcp 10.0.0.7:9443: connection refused"))
+	newErrorHandler(
+		&testEffectiveConfig().Config,
+	)(
+		response,
+		request,
+		errors.New("dial tcp 10.0.0.7:9443: connection refused"),
+	)
 
 	if response.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want 500", response.Code)
@@ -133,7 +136,7 @@ func TestProxyErrorHandlerRedactsQueryFromLog(t *testing.T) {
 	request = apisixctx.WithRequestVars(request)
 	response := httptest.NewRecorder()
 
-	newErrorHandler()(response, request, errors.New("upstream connection refused"))
+	newErrorHandler(&testEffectiveConfig().Config)(response, request, errors.New("upstream connection refused"))
 
 	if len(entries) != 1 {
 		t.Fatalf("proxy error log entries = %d, want 1", len(entries))
@@ -239,7 +242,7 @@ func TestProxyErrorHandlerMapsFailuresAndRecordsResponseSource(t *testing.T) {
 			pxy.SetSelectedTarget(request, "http://upstream.test:80")
 			response := httptest.NewRecorder()
 
-			newErrorHandler()(response, request, test.err)
+			newErrorHandler(&testEffectiveConfig().Config)(response, request, test.err)
 
 			if response.Code != test.wantStatus {
 				t.Fatalf("status = %d, want %d", response.Code, test.wantStatus)
@@ -271,7 +274,7 @@ func TestProxyErrorHandlerMapsMaxBytesErrorAsClientError(t *testing.T) {
 	pxy.SetSelectedTarget(request, "http://upstream.test:80")
 	response := httptest.NewRecorder()
 
-	newErrorHandler()(response, request, &http.MaxBytesError{Limit: 3})
+	newErrorHandler(&testEffectiveConfig().Config)(response, request, &http.MaxBytesError{Limit: 3})
 
 	if response.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("status = %d, want 413", response.Code)

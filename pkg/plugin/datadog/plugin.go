@@ -240,6 +240,12 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	metadata, err := p.loadMetadata()
+	if err != nil {
+		return err
+	}
+	p.metadata = metadata
+
 	if !p.config.preferNameSet {
 		p.config.PreferName = true
 	}
@@ -258,14 +264,13 @@ func (p *Plugin) PostInit() error {
 	if p.config.InactiveTimeout == 0 {
 		p.config.InactiveTimeout = int(logger_batch.DefaultInactiveTimeout / time.Second)
 	}
-	p.metadata = loadMetadata()
 	if p.config.Host != "" {
 		p.metadata.Host = p.config.Host
 	}
 	if p.config.Port != 0 {
 		p.metadata.Port = p.config.Port
 	}
-	p.BatchProcessor = base.NewBatchProcessor(p.config.BatchName, base.BatchDefaults{
+	processor, err := base.NewBatchProcessor(p.config.BatchName, p.TaskOwner(), base.BatchDefaults{
 		BatchMaxSize:       p.config.BatchMaxSize,
 		MaxRetryCount:      p.config.MaxRetryCount,
 		RetryDelaySec:      p.config.RetryDelay,
@@ -274,6 +279,10 @@ func (p *Plugin) PostInit() error {
 		InactiveTimeoutSec: p.config.InactiveTimeout,
 		PluginID:           name,
 	}, p.RouteID, p.ServerAddr, p.deliver)
+	if err != nil {
+		return err
+	}
+	p.BatchProcessor = processor
 	return nil
 }
 
@@ -341,6 +350,8 @@ func snapshotPath(snapshot base.LogSnapshot) string {
 	}
 	return snapshot.Request.URI
 }
+
+func (p *Plugin) QuiesceGenerationTasks() { p.Stop() }
 
 func (p *Plugin) Stop() {
 	cleanup := func() {
@@ -475,17 +486,15 @@ func watchConnectionCancellation(ctx context.Context, conn net.Conn) func() {
 		return func() {}
 	}
 	done := make(chan struct{})
-	var wait sync.WaitGroup
-	wait.Go(func() {
-		select {
-		case <-ctx.Done():
-			_ = conn.Close()
-		case <-done:
-		}
+	stop := context.AfterFunc(ctx, func() {
+		defer close(done)
+		_ = conn.Close()
 	})
 	return func() {
-		close(done)
-		wait.Wait()
+		if stop() {
+			close(done)
+		}
+		<-done
 	}
 }
 
@@ -623,8 +632,12 @@ func requestScheme(r *http.Request) string {
 	return "http"
 }
 
-func loadMetadata() Metadata {
-	return metadataWithDefaults(base.LoadPluginMetadata[Metadata](name))
+func (p *Plugin) loadMetadata() (Metadata, error) {
+	var configured Metadata
+	if _, err := p.MetadataView().Decode(name, &configured); err != nil {
+		return Metadata{}, fmt.Errorf("%s metadata decode failed: %w", name, err)
+	}
+	return metadataWithDefaults(configured), nil
 }
 
 func metadataWithDefaults(configured Metadata) Metadata {

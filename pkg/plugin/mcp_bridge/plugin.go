@@ -17,6 +17,7 @@ import (
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/runtime"
 )
 
 type Plugin struct {
@@ -73,11 +74,17 @@ type Config struct {
 
 type session struct {
 	id     string
-	ctx    context.Context
 	stdin  io.WriteCloser
 	cancel context.CancelFunc
 	events chan sseEvent
 	done   chan struct{}
+	tasks  *runtime.RequestTaskGroup
+
+	closeOnce     sync.Once
+	closeDone     chan struct{}
+	closeMu       sync.Mutex
+	closePanicked bool
+	closePanic    any
 }
 
 type sseEvent struct {
@@ -159,17 +166,18 @@ func (p *Plugin) serve(w http.ResponseWriter, r *http.Request) {
 
 func (p *Plugin) handleSSE(w http.ResponseWriter, r *http.Request) {
 	// The session is owned by this handler and is explicitly closed on
-	// return; the session context is deliberately not derived from the
-	// request context so a request-context cancellation cannot cancel the
-	// child or drop events it already produced. The stream ends when the
-	// child's events are exhausted, a write fails (client disconnect), or
-	// the request context cancels after draining any buffered events.
-	sess, err := p.startSession(context.Background())
+	// return; WithoutCancel preserves request-scoped values while allowing
+	// the handler to drain buffered events before its explicit close joins
+	// the child tasks. The stream ends when the child's events are exhausted,
+	// a write fails (client disconnect), or the request context cancels after
+	// draining any buffered events.
+	sessionParent := context.WithoutCancel(r.Context())
+	sess, err := p.startSession(sessionParent)
 	if err != nil {
 		http.Error(w, "", http.StatusInternalServerError)
 		return
 	}
-	defer p.closeSession(sess.id)
+	defer p.closeSession(sess)
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -271,42 +279,62 @@ func (p *Plugin) startSession(parent context.Context) (*session, error) {
 
 	id, err := newSessionID(crand.Reader)
 	if err != nil {
+		_ = stdin.Close()
 		cancel()
+		_ = cmd.Wait()
 		return nil, err
 	}
+	tasks := runtime.NewRequestTaskGroup(ctx, "connection/mcp-bridge")
 	sess := &session{
-		id:     id,
-		ctx:    ctx,
-		stdin:  stdin,
-		cancel: cancel,
-		events: make(chan sseEvent, 16),
-		done:   make(chan struct{}),
+		id:        id,
+		stdin:     stdin,
+		cancel:    cancel,
+		events:    make(chan sseEvent, 16),
+		done:      make(chan struct{}),
+		tasks:     tasks,
+		closeDone: make(chan struct{}),
+	}
+
+	stdoutDone := make(chan struct{}, 1)
+	stderrDone := make(chan struct{}, 1)
+	registered := make(chan struct{})
+	accepted := 0
+	if err := admitSessionTask(tasks, func(ctx context.Context) error {
+		defer func() { stdoutDone <- struct{}{} }()
+		scanPipeForSession(ctx, stdout, "message", sess.events)
+		return nil
+	}); err != nil {
+		return nil, p.failStartSession(sess, cmd, stdin, accepted, err)
+	}
+	accepted++
+	if err := admitSessionTask(tasks, func(ctx context.Context) error {
+		defer func() { stderrDone <- struct{}{} }()
+		scanStderrForSession(ctx, stderr, sess.events)
+		return nil
+	}); err != nil {
+		return nil, p.failStartSession(sess, cmd, stdin, accepted, err)
+	}
+	accepted++
+	if err := admitSessionTask(tasks, func(context.Context) error {
+		// Wait for the scanners to consume the pipes to EOF before reaping
+		// the command: Cmd.Wait closes the stdout/stderr pipes, which would
+		// otherwise discard any buffered output the child produced.
+		<-stdoutDone
+		<-stderrDone
+		_ = cmd.Wait()
+		<-registered
+		p.removeSession(sess)
+		close(sess.events)
+		close(sess.done)
+		return nil
+	}); err != nil {
+		return nil, p.failStartSession(sess, cmd, stdin, accepted, err)
 	}
 
 	p.mu.Lock()
 	p.sessions[id] = sess
 	p.mu.Unlock()
-
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		scanPipe(sess.ctx, stdout, "message", sess.events)
-	}()
-	go func() {
-		defer wg.Done()
-		scanStderr(sess.ctx, stderr, sess.events)
-	}()
-	go func() {
-		// Wait for the scanners to consume the pipes to EOF before reaping
-		// the command: Cmd.Wait closes the stdout/stderr pipes, which would
-		// otherwise discard any buffered output the child produced.
-		wg.Wait()
-		_ = cmd.Wait()
-		p.removeSession(id)
-		close(sess.events)
-		close(sess.done)
-	}()
+	close(registered)
 
 	return sess, nil
 }
@@ -321,21 +349,25 @@ func (p *Plugin) lookupSession(id string) *session {
 	return p.sessions[id]
 }
 
-func (p *Plugin) closeSession(id string) {
+func (p *Plugin) closeSession(sess *session) {
+	if sess == nil {
+		return
+	}
+
 	p.mu.Lock()
-	sess := p.sessions[id]
-	delete(p.sessions, id)
+	if current := p.sessions[sess.id]; current == sess {
+		delete(p.sessions, sess.id)
+	}
 	p.mu.Unlock()
 
-	if sess != nil {
-		_ = sess.stdin.Close()
-		sess.cancel()
-	}
+	sess.close()
 }
 
-func (p *Plugin) removeSession(id string) {
+func (p *Plugin) removeSession(sess *session) {
 	p.mu.Lock()
-	delete(p.sessions, id)
+	if current := p.sessions[sess.id]; current == sess {
+		delete(p.sessions, sess.id)
+	}
 	p.mu.Unlock()
 }
 
@@ -348,9 +380,96 @@ func (p *Plugin) closeAll() {
 	p.sessions = map[string]*session{}
 	p.mu.Unlock()
 
+	var firstPanic any
+	panicked := false
 	for _, sess := range sessions {
-		_ = sess.stdin.Close()
-		sess.cancel()
+		func() {
+			defer func() {
+				if recovered := recover(); recovered != nil && !panicked {
+					panicked = true
+					firstPanic = recovered
+				}
+			}()
+			sess.close()
+		}()
+	}
+	if panicked {
+		panic(firstPanic)
+	}
+}
+
+func (p *Plugin) failStartSession(
+	sess *session,
+	cmd *exec.Cmd,
+	stdin io.WriteCloser,
+	accepted int,
+	setupErr error,
+) error {
+	p.removeSession(sess)
+	_ = stdin.Close()
+	sess.cancel()
+	var firstPanic any
+	panicked := false
+	func() {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				panicked = true
+				firstPanic = recovered
+			}
+		}()
+		_ = sess.tasks.Wait()
+	}()
+	if accepted < 3 {
+		_ = cmd.Wait()
+		close(sess.events)
+		close(sess.done)
+	}
+	close(sess.closeDone)
+	if panicked {
+		panic(firstPanic)
+	}
+	return setupErr
+}
+
+func (sess *session) close() {
+	sess.closeOnce.Do(func() {
+		defer close(sess.closeDone)
+		recoverCleanup := func(cleanup func()) (panicked bool, panicValue any) {
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					panicked = true
+					panicValue = recovered
+				}
+			}()
+			cleanup()
+			return false, nil
+		}
+		cleanupPanicked, cleanupPanic := recoverCleanup(func() { _ = sess.stdin.Close() })
+		if panicked, panicValue := recoverCleanup(sess.cancel); panicked && !cleanupPanicked {
+			cleanupPanicked = true
+			cleanupPanic = panicValue
+		}
+		taskPanicked, taskPanic := recoverCleanup(func() { _ = sess.tasks.Wait() })
+		if taskPanicked {
+			sess.closeMu.Lock()
+			sess.closePanicked = true
+			sess.closePanic = taskPanic
+			sess.closeMu.Unlock()
+		} else if cleanupPanicked {
+			sess.closeMu.Lock()
+			sess.closePanicked = true
+			sess.closePanic = cleanupPanic
+			sess.closeMu.Unlock()
+		}
+	})
+
+	<-sess.closeDone
+	sess.closeMu.Lock()
+	panicked := sess.closePanicked
+	panicValue := sess.closePanic
+	sess.closeMu.Unlock()
+	if panicked {
+		panic(panicValue)
 	}
 }
 
@@ -372,6 +491,14 @@ func (p *Plugin) action(path string) (string, bool) {
 	}
 	return strings.TrimPrefix(path, prefix), true
 }
+
+var (
+	scanPipeForSession   = scanPipe
+	scanStderrForSession = scanStderr
+	admitSessionTask     = func(tasks *runtime.RequestTaskGroup, run func(context.Context) error) error {
+		return tasks.Go(run)
+	}
+)
 
 func scanPipe(ctx context.Context, pipe io.Reader, event string, events chan<- sseEvent) {
 	scanner := bufio.NewScanner(pipe)

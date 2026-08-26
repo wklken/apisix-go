@@ -1,31 +1,186 @@
 # Configuration compatibility
 
-`apisix-go` accepts the YAML shape of the official Apache APISIX
-[`conf/config.yaml.example`](https://github.com/apache/apisix/blob/master/conf/config.yaml.example),
-including its scalar and mapping forms for listeners. The Go loader keeps
-configuration that has no direct Go equivalent in the typed configuration
-object so an official file can be loaded without being rewritten. Recognition
-is a compatibility boundary, not an activation guarantee: compatibility-only
-fields may be retained, while the explicitly unsupported runtime activations
-listed below fail closed when configured.
+`apisix-go` accepts the documented scalar and mapping listener forms and a
+bounded subset of the YAML shape in the official Apache APISIX
+[`conf/config.yaml.example`](https://github.com/apache/apisix/blob/master/conf/config.yaml.example).
+Recognition is a compatibility boundary, not an activation guarantee. In
+compatibility mode, unknown static fields remain only as provenance and are
+reported by opaque handles in the redacted effective-config output; they are
+not decoded into the typed `Config`. Strict security rejects unknown static
+fields. YAML anchors, aliases, and merge keys fail closed, and LuaJIT hex-float
+template retyping is not qualified. Explicitly unsupported runtime activations
+listed below also fail closed when configured.
+
+## Effective static configuration
+
+### Precedence, presence, and provenance
+
+The precedence order is built-in defaults, the default file, the selected
+override file, `APISIXGO_*`, and repeatable CLI `--set` overrides. The default
+file is `conf/config-default.yaml`; `-c`/`--config` selects the override file.
+APISIX template expansion happens inside each parsed file layer. It is not a
+separate overlay after the files.
+
+Within a merge, mappings merge recursively and a sequence replaces the lower
+sequence. A field absent from an upper layer inherits the lower value. An
+explicit `null` replaces the lower value and remains present in provenance;
+explicit `false`, zero, an empty string, an empty mapping, and an empty sequence
+are likewise distinct from absence. Configuration integers are retained
+exactly rather than being decoded through `float64`.
+
+Every winning field records one of the provenance source kinds `builtin`,
+`default_file`, `override_file`, `apisix_env`, `apisixgo_env`, or `cli`, plus an
+approved origin and whether the source was explicit. Under
+`security_profile: strict`, any unknown static field fails configuration load.
+Under `security_profile: compat`, unknown fields remain available only for
+provenance and ignored-field diagnostics; their raw keys and values are not
+rendered.
+
+### APISIX templates and APISIXGO overrides
+
+APISIX-compatible file templates use `${{NAME}}` or
+`${{NAME:=fallback}}`, including substitutions in YAML keys. A missing variable
+without a fallback is an error. The variable is expanded while its owning file
+is parsed and is recorded as the winning `apisix_env` source.
+
+`APISIXGO_*` is a separate, Go-specific namespace for typed static overrides.
+It is applied after both files, accepts only schema-derived aliases, and rejects
+unknown aliases. For example, `APISIXGO_DEPLOYMENT_ETCD_HOST` supplies the etcd
+endpoint list and accepts comma-separated endpoints. A repeatable CLI override
+uses the complete typed path, for example:
+
+```bash
+apisix -c conf/config-example.yaml \
+  --set proxy.max_in_flight=2048 \
+  --set apisix_go.runtime_paths.log_dir=relative-logs
+```
+
+The former `deployment.profile` field has been removed from files, environment
+overrides, and CLI overrides. Use `compatibility_target`, `security_profile`,
+and `qualification_profile` independently. `APISIXGO_DEPLOYMENT_PROFILE` is
+rejected by the same migration boundary.
+
+### Runtime paths
+
+The four Go-owned runtime paths are:
+
+| Typed path | Environment alias |
+| --- | --- |
+| `apisix_go.runtime_paths.data_dir` | `APISIXGO_RUNTIME_PATHS_DATA_DIR` |
+| `apisix_go.runtime_paths.runtime_dir` | `APISIXGO_RUNTIME_PATHS_RUNTIME_DIR` |
+| `apisix_go.runtime_paths.log_dir` | `APISIXGO_RUNTIME_PATHS_LOG_DIR` |
+| `apisix_go.runtime_paths.temp_dir` | `APISIXGO_RUNTIME_PATHS_TEMP_DIR` |
+
+The short aliases intentionally omit the repeated `APISIX_GO` segment; aliases
+such as `APISIXGO_APISIX_GO_RUNTIME_PATHS_DATA_DIR` do not exist. Bootstrap
+derives platform defaults from Go's user configuration, user cache, and
+temporary-directory APIs and injects them as built-in defaults. Those defaults
+are not a fixed Linux `/var` layout.
+
+`data_dir` must always resolve to a non-empty absolute path. Selecting a
+qualification profile requires all four paths to resolve to non-empty absolute
+paths. A relative value in a file resolves against that file's directory. A
+relative `APISIXGO_*` or CLI value resolves against the selected override file's
+directory, or the default file's directory when there is no override. The
+durable journal is always `data_dir/apisix-go-store.db`.
+
+### Static inspection commands
+
+Use the compatibility example for successful inspection:
+
+```bash
+apisix config test -c conf/config-example.yaml
+apisix config dump --effective --redacted -c conf/config-example.yaml
+apisix config test -c conf/config-example.yaml --set proxy.max_in_flight=2048
+apisix config dump --effective --redacted -c conf/config-example.yaml --set apisix_go.runtime_paths.log_dir=relative-logs
+```
+
+`apisix config test` validates only static read/merge/decode/profile contracts.
+On success it prints exactly `configuration is valid`. It does not create/check
+directory permissions, open/migrate the journal, bind ports, contact
+etcd/providers, configure logging, or prove runtime readiness. It also does not
+start a provider, server, or background goroutine.
+
+`apisix config dump` requires both `--effective` and `--redacted`; there is no
+unredacted mode. The registered secret contract covers the encryption keyring,
+admin keys, the etcd password, sanitized etcd URL userinfo, all plugin-attribute
+values, and discovery-provider configuration values. Unknown paths omit their
+original keys and values; one opaque correlation handle links provenance to the
+ignored-field list. Known `apisix_env` provenance paths use opaque handles but
+are not treated as ignored fields. When such a path contains a dynamic mapping
+key, the same handle can correlate its safe config key with provenance. Known
+non-secret configuration values remain visible in the typed config output.
+`AdminSSLCertKey` and `EtcdTLS.Key` remain visible as file paths, not as inline
+private-key contents.
+
+The dump also retains approved operational metadata such as profiles, file
+paths, provider and plugin names, environment variable names, and sanitized
+hosts. Treat it as a sensitive diagnostic artifact even though secret values
+are redacted.
+
+### Journal relocation and rollback
+
+When upgrading from the cwd-relative journal, stop the old process, back up the
+cwd `apisix-go-store.db`, create and permission the selected `data_dir`, and
+copy/verify the database as `data_dir/apisix-go-store.db`, then start exactly one
+instance and validate the published resource generation before increasing the
+replica count, and retain the backup for rollback. Starting without moving the
+old journal presents an empty local state until providers repopulate it.
 
 ## Production container configuration
 
-The image starts with `conf/config-production.yaml` layered over
-`conf/config-default.yaml`. This production override intentionally contains no
-etcd endpoint, so the image fails configuration validation until an operator
-provides `APISIXGO_DEPLOYMENT_ETCD_HOST` (comma-separated for multiple
-endpoints), or mounts an operator-managed configuration override. The endpoint
-must be supplied explicitly; the image does not fall back to a local etcd
-address.
+The image loads `/usr/local/apisix/conf/config-default.yaml` and layers
+`/usr/local/apisix/conf/config-production.yaml` over it. The production override
+has an empty `deployment.etcd.host` and no `apisix_go.runtime_paths` overlay.
+The repository snapshot is currently unqualified and its production
+configuration is expected to fail closed until an operator supplies a real
+etcd endpoint and the central manifest records complete qualification evidence.
+The endpoint can be supplied through `APISIXGO_DEPLOYMENT_ETCD_HOST`
+(comma-separated for multiple endpoints) or an operator-managed override; the
+image does not fall back to a local etcd address.
 
-The production HTTP allowlist is deliberately limited to `request-id`, `cors`,
-`key-auth`, `jwt-auth`, `basic-auth`, and `prometheus`. Stream proxy mode and
-stream plugins are disabled, the deployment uses the data-plane etcd provider,
-etcd TLS verification is enabled, and no admin or data-encryption key material
-is embedded in the image defaults. The selected `deployment.profile:
-http-data-plane-v1` is a conservative candidate profile; it still awaits the
-release and operations qualification described in
+The following is an operator-owned overlay example, not the checked-in
+production file or the image's filesystem contract:
+
+```yaml
+compatibility_target: apisix-3.17
+security_profile: strict
+qualification_profile: http-data-plane-v1
+
+apisix_go:
+  runtime_paths:
+    data_dir: /var/lib/apisix-go
+    runtime_dir: /run/apisix-go
+    log_dir: /var/log/apisix-go
+    temp_dir: /var/tmp/apisix-go
+```
+
+The operator must create or mount all four directories and set their ownership
+and permissions before startup. The current Dockerfile creates only
+`/usr/local/apisix/conf`, `/usr/local/apisix/logs`, and
+`/usr/local/apisix/data`; it does not create the `/var` paths above. The
+checked-in `conf/config-production.yaml` intentionally omits this runtime-path
+overlay, and this documentation does not change either file.
+
+The checked-in production override selects three independent axes:
+
+```yaml
+compatibility_target: apisix-3.17
+security_profile: strict
+qualification_profile: http-data-plane-v1
+```
+
+`compatibility_target` selects the pinned observable APISIX contract.
+`security_profile` selects compatibility-preserving or versioned strict
+security controls. `qualification_profile` selects an evidence-backed
+operating contract. Strict security is independent of qualification. An empty
+qualification profile makes no qualification claim. Selecting
+`http-data-plane-v1` fails closed when any required manifest evidence is
+blocked; current required plugins and blocking evidence are shown only in the
+[generated plugin capability status](plugins.md).
+
+The production override is a conservative candidate configuration; it still
+awaits the release and operations qualification described in
 [`production-profile.md`](production-profile.md) and the
 [`production release runbook`](runbooks/production-release.md). The release
 workflow and metadata checks define a qualification path; they do not by
@@ -38,24 +193,29 @@ TCP/UDP stream listeners and `stream_plugins`, at least one valid
 no process access-log settings. The checked-in production override uses a
 60-second `client_body_timeout`.
 Every etcd endpoint must use `https://` and `deployment.etcd.tls.verify` must
-be explicitly `true`. The HTTP plugin list must be exactly this ordered list:
-`request-id`, `cors`, `key-auth`, `jwt-auth`, `basic-auth`, `prometheus`.
-In this candidate profile, enabled effective `key-auth`, `basic-auth`, and
-`jwt-auth` configurations must set `hide_credentials: true`; `jwt-auth` must
-also include literal `exp` in `claims_to_verify`. Effective HTTPS and gRPCS
-upstreams must set `tls.verify: true` after inline, ID, or service resolution.
-Disabled auth configurations remain inert. The empty compatibility profile
-retains the APISIX-compatible defaults for these dynamic fields.
-The profile also excludes Kafka PubSub and upstreams with `scheme: kafka`;
-those remain available only in the empty compatibility profile.
+be explicitly `true` under strict security. The effective HTTP plugin sequence
+must exactly equal the manifest `required_plugins` sequence, including order.
+Qualification derives from that ordered sequence and its required evidence.
+Under strict security,
+enabled effective `key-auth`, `basic-auth`, and `jwt-auth` configurations must
+set `hide_credentials: true`; `jwt-auth` must also include literal `exp` in
+`claims_to_verify`. Effective HTTPS and gRPCS upstreams must set
+`tls.verify: true` after inline, ID, or service resolution. Disabled auth
+configurations remain inert. `security_profile: compat` retains the
+APISIX-compatible defaults for these dynamic fields. Qualification selection
+does not disable the Kafka compatibility owner. `security_profile: strict`
+permits plaintext Kafka. When Kafka TLS is configured,
+`security_profile: strict` requires `tls.verify: true`;
+`security_profile: compat` permits `tls.verify: false`. Kafka remains outside
+the HTTP qualification evidence claim.
 
 NGINX HTTP and stream process access-log settings are unsupported in every
 profile, not only in `http-data-plane-v1`: any explicitly non-zero boolean or
 numeric value, or non-empty string value, fails configuration load. Route/plugin
 loggers are the supported compatibility/general-plugin request-logging
-mechanism, whose output is owned by the Go request pipeline. The exact
-six-plugin `http-data-plane-v1` allowlist contains no request logger and makes
-no request-logging egress claim.
+mechanism, whose output is owned by the Go request pipeline. Qualification
+selection makes no request-logging egress claim; consult the generated status
+for the current `required_plugins` sequence.
 
 `/livez` returns HTTP 200 while the process is alive. `/readyz` returns HTTP
 503 until configuration has been applied and the configured etcd provider is
@@ -82,20 +242,27 @@ Global-rule and shared generation setup failures remain fail-closed.
 Provider-side and build-snapshot quarantine counts are aggregated
 independently, so clearing one source cannot hide the other.
 
-Plugin support status is verified by a separate read-only `Plugin Status
-Contract` workflow. It creates the same check on every pull request so it can
-be required without path-filtered PRs remaining pending, and runs the exact
-`TestSupportedPluginManifestSelection` gate. Pushes to `master` are limited to
-changes in `docs/plugins.md`, plugin manifests, the selector test, or the
-workflow itself. This keeps the status matrix independent from the broad CI
-path, which intentionally ignores Markdown-only changes.
+`pkg/capability/manifest.yaml` is the only editable plugin, behavior, evidence,
+qualification, platform, gap, and divergence ledger. `docs/plugins.md` is its
+generated projection and must not be edited as an independent matrix. Verify
+the manifest/ADR/generated-document contract without writing files:
+
+```bash
+go run ./cmd/capability-gen -repo-root . -check
+```
+
+Selection derives the ordered `required_plugins` sequence and evidence result
+from the manifest and fails closed on any sequence mismatch or blocked
+requirement.
 
 ## Applied by the Go runtime
 
 | Configuration | Go behavior |
 | --- | --- |
 | `apisix.node_listen` | Opens every configured TCP HTTP listener. Both `9080` and `{port: 9080, ip: ...}` forms are accepted. |
-| `deployment.profile` | Empty selects compatibility mode; `http-data-plane-v1` enables the strict candidate HTTP data-plane contract documented in [`production-profile.md`](production-profile.md). Other values are rejected. |
+| `compatibility_target` | Selects the pinned observable compatibility contract. The current accepted value is `apisix-3.17`; other values fail startup. |
+| `security_profile` | Selects `compat` or `strict` security behavior independently from compatibility and qualification. |
+| `qualification_profile` | Empty makes no qualification claim. `http-data-plane-v1` is selectable only when its manifest `required_plugins` sequence exactly matches the effective plugins, including order, and every entry has complete required evidence; otherwise startup fails closed. |
 | `apisix.proxy_mode` and `apisix.stream_proxy.tcp` | `http` leaves stream settings unused. When `proxy_mode` contains `stream`, the bounded raw-TCP/MQTT stream runtime requires at least one TCP listener and starts only after routes, upstream references, listener binds, and supported flags validate successfully. |
 | `plugins`, `stream_plugins`, and `plugin_attr` | Control plugin registration, stream plugin selection, and plugin-specific settings. The Prometheus lifetime and cardinality contract is documented below. |
 | `graphql.max_size` | Applies to the GraphQL limit and GraphQL proxy-cache plugins. |
@@ -261,10 +428,11 @@ do not include request/response start lines and headers as NGINX's
   inactivity limits which reset when body I/O makes progress. `read` also
   limits the wait for response headers. Long-idle WebSocket or gRPC streams
   must set an explicit `timeout` larger than 60s, same as APISIX.
-- `tls.verify: true` validates an HTTPS upstream certificate. In the empty
-  compatibility profile, omitted or false preserves APISIX-compatible insecure
-  verification behavior; `http-data-plane-v1` rejects an effective HTTPS or
-  gRPCS upstream unless `tls.verify: true`.
+- `tls.verify: true` validates an HTTPS upstream certificate. Under
+  `security_profile: compat`, omitted or false preserves APISIX-compatible
+  insecure verification behavior; `security_profile: strict` rejects an
+  effective HTTPS or gRPCS upstream unless `tls.verify: true`, independently
+  of qualification selection.
 - Automatic retries require a replayable body. POST and PATCH additionally require `Idempotency-Key` or `X-Idempotency-Key`.
 - `proxy-control` buffers at most 8 MiB in memory. A larger buffered request is rejected with HTTP 413.
 - An invalid individual route is quarantined as a unit at initial build and
@@ -285,13 +453,26 @@ do not include request/response start lines and headers as NGINX's
   compilation. This is independent of SSL `status`, which already skips
   `status == 0`.
 - HTTP-family upstreams accept only the implemented `roundrobin` type. `chash` and other unsupported types are rejected during route compilation instead of silently falling back to weighted round robin.
-- `http-data-plane-v1` rejects `scheme: kafka` upstreams because Kafka PubSub is a separate compatibility subsystem; the empty compatibility profile retains the Kafka owner.
+- `qualification_profile: http-data-plane-v1` makes no Kafka evidence claim,
+  but does not disable upstreams with `scheme: kafka` or the Kafka PubSub
+  compatibility owner. Security is orthogonal: strict permits plaintext Kafka
+  and requires `tls.verify: true` only when Kafka TLS is configured; compat
+  permits `tls.verify: false`.
 - Without explicit HTTP timeout settings, request headers are limited to 10 seconds and idle keep-alive connections to 90 seconds. Total read/write timeouts remain disabled for streaming compatibility.
 - Each upstream is served by a reusable cluster that owns one connection pool, one retry/progress wrapper chain, and one load balancer. Clusters are interned by their complete effective configuration, so unchanged upstreams keep their connection pools across unrelated route reloads, while changed upstreams receive new clusters. Route generations hold reference-counted leases and release them only after in-flight requests drain.
 - When a cluster reaches its in-flight limit, the next request is rejected with HTTP 503. Overload is fail-fast and never queued.
 - The supported `checks.active` HTTP/HTTPS probe subset (`type`, `http_path`, `host`, `timeout`, `concurrency`, `healthy.interval`/`successes`/`http_statuses`, and `unhealthy.interval`/`http_failures`/`tcp_failures`/`timeouts`/`http_statuses`) recovers and quarantines targets. Active defaults are healthy statuses `{200,302}` and HTTP/TCP/timeout failure thresholds `5/2/3`; the passive status defaults remain separate. When every target is unhealthy the pool fails open and keeps forwarding, with the state exposed through metrics and logs.
 - `apisix.disable_upstream_healthcheck: true` omits active probes from cluster configuration while retaining ordinary weighted selection.
 - Route generations are retired asynchronously: publishing a new handler never blocks behind a long-lived request on the previous generation.
+
+The last statement describes the current pre-convergence implementation. Its
+retirement path may close hijacked connections, and `SIGHUP` currently drains
+and exits with an unsupported-reload error. It is not the governing lifecycle
+target. The later
+[supervisor-generation plan](superpowers/plans/2026-08-23-supervisor-worker-platform.md)
+targets generation handoff that preserves ordinary hijacked connections; that
+replacement is not implemented yet. See the
+[legacy conflict ledger](architecture/legacy-conflicts.md).
 
 ## Standalone file-driven mode
 
@@ -354,20 +535,25 @@ runtime features called out below is rejected rather than silently ignored:
   discovery providers (`dns`, Eureka, Nacos, Consul, and Kubernetes). Top-level
   discovery activation fails startup; route/upstream discovery compatibility
   fields are preserved and rejected at route compilation.
-- Exact APISIX/OpenResty etcd watch resync and lifecycle semantics. The
-  production profile uses its bounded reachability probe for readiness and
+- Exact APISIX/OpenResty etcd watch resync semantics. The production
+  qualification profile uses its bounded reachability probe for readiness and
   does not claim OpenResty timing parity.
 - WebSocket upgrades require effective route or service
   `enable_websocket: true`. Every WebSocket upgrade attempt skips response
   callbacks; request, authentication, access, before-proxy, and log phases
-  still run. For `http-data-plane-v1`, the admission and timeout guarantee
-  applies only to profile-allowed HTTP reverse-proxy tunnels; retired route
-  generations close them during generation shutdown. Kafka PubSub compatibility
-  routes are outside this profile contract.
+  still run. For `qualification_profile: http-data-plane-v1`, the admission and
+  timeout guarantee applies only to qualification-allowed HTTP reverse-proxy
+  tunnels. In the current pre-convergence implementation, retired generations
+  may close those tunnels during shutdown. Kafka PubSub compatibility routes
+  are outside this qualification contract.
 - Zipkin is v2-only. OTel rejects `set_ngx_var: true` and any non-zero
   `inactive_timeout`; collector `request_timeout` remains supported.
-- `SIGHUP` performs graceful shutdown and returns an unsupported-reload error;
-  it is not an in-process configuration reload.
+- The current pre-convergence `SIGHUP` implementation performs graceful
+  shutdown and returns an unsupported-reload error; it is not an in-process
+  configuration reload. The governing supervisor-generation target hands a
+  validated generation to a replacement process while preserving ordinary
+  hijacked connections. That target belongs to a later child plan and is not
+  yet delivered.
 
 No placeholder implementation is added for these native or separate-runtime
 features. They should be treated as unsupported when deploying an official

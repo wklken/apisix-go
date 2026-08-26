@@ -2,14 +2,22 @@ package multi_auth
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
 	"math"
 	"net/http"
+	"slices"
+	"sort"
+	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/basic_auth"
@@ -24,9 +32,24 @@ import (
 
 type Plugin struct {
 	base.BasePlugin
-	config         Config
-	auths          []configuredAuth
-	enabledChecker func(string) bool
+	config          Config
+	auths           []configuredAuth
+	enabledChecker  func(string) bool
+	stateMu         sync.Mutex
+	stateEpoch      uint64
+	current         *authGeneration
+	children        []base.PreparedCompositeChild
+	sourceConfig    Config
+	sourceConfigSet bool
+	publicConfig    atomic.Pointer[Config]
+}
+
+type authGeneration struct {
+	auths    []configuredAuth
+	children []base.PreparedCompositeChild
+	active   int
+	retired  bool
+	closed   bool
 }
 
 const (
@@ -34,6 +57,8 @@ const (
 	name                      = "multi-auth"
 	maxFailureDiagnosticBytes = 4 * 1024
 )
+
+var errAuthChildPreparation = errors.New("multi-auth child preparation failed")
 
 const schema = `
 {
@@ -110,49 +135,391 @@ func (p *Plugin) SetPluginEnabledChecker(checker func(string) bool) {
 }
 
 func (p *Plugin) PostInit() error {
-	if len(p.config.AuthPlugins) < 2 {
-		return fmt.Errorf("auth_plugins must contain at least two auth plugins")
-	}
-
-	p.auths = make([]configuredAuth, 0, len(p.config.AuthPlugins))
-	for _, authPlugin := range p.config.AuthPlugins {
-		for authName, authConfig := range authPlugin {
-			if p.enabledChecker != nil && !p.enabledChecker(authName) {
-				return fmt.Errorf("multi-auth child plugin %q is disabled", authName)
-			}
-			auth, err := newAuthPlugin(authName)
-			if err != nil {
-				return err
-			}
-			if err := auth.Init(); err != nil {
-				return err
-			}
-			compiledSchema, err := util.CompileSchema(auth.GetSchema())
-			if err != nil {
-				return fmt.Errorf("plugin %s check schema failed: %w", authName, err)
-			}
-			if err := compiledSchema.Validate(authConfig); err != nil {
-				return fmt.Errorf("plugin %s check schema failed: %w", authName, err)
-			}
-			if err := util.Parse(authConfig, auth.Config()); err != nil {
-				return fmt.Errorf("plugin %s parse config failed: %w", authName, err)
-			}
-			if err := base.MaterializePluginSecrets(auth); err != nil {
-				return fmt.Errorf("plugin %s materialize secrets failed: %w", authName, err)
-			}
-			if err := auth.PostInit(); err != nil {
-				return err
-			}
-			p.auths = append(p.auths, configuredAuth{name: authName, plugin: auth})
-		}
-	}
-	if len(p.auths) < 2 {
-		return fmt.Errorf("auth_plugins must contain at least two auth plugins")
+	p.stateMu.Lock()
+	current := p.current
+	p.stateMu.Unlock()
+	if current == nil || len(current.auths) < 2 {
+		return errors.New("auth_plugins must be prepared before PostInit")
 	}
 	return nil
 }
 
+type authChildSpec struct {
+	entry    int
+	factory  string
+	config   map[string]any
+	position string
+}
+
+func authChildPosition(entry int, factory string) string {
+	return "multi-auth/entry/" + strconv.Itoa(entry) + "/factory/" + factory
+}
+
+func (p *Plugin) ValidatePreMaterialization() error {
+	_, err := p.validatedAuthChildSpecs(p.rawSourceConfig())
+	return err
+}
+
+func (p *Plugin) validatedAuthChildSpecs(source Config) ([]authChildSpec, error) {
+	specs := make([]authChildSpec, 0, len(source.AuthPlugins))
+	for entry, configured := range source.AuthPlugins {
+		factories := make([]string, 0, len(configured))
+		for factory := range configured {
+			factories = append(factories, factory)
+		}
+		sort.Strings(factories)
+		for _, factory := range factories {
+			if p.enabledChecker != nil && !p.enabledChecker(factory) {
+				return nil, fmt.Errorf("multi-auth child plugin %q is disabled", factory)
+			}
+			config := configured[factory]
+			if config == nil {
+				return nil, fmt.Errorf("multi-auth child plugin %q has invalid config", factory)
+			}
+			if err := validateRawAuthChild(factory, config); err != nil {
+				return nil, err
+			}
+			specs = append(specs, authChildSpec{
+				entry: entry, factory: factory, config: config,
+				position: authChildPosition(entry, factory),
+			})
+		}
+	}
+	if len(specs) < 2 {
+		return nil, errors.New("auth_plugins must contain at least two auth plugins")
+	}
+	return specs, nil
+}
+
+func validateRawAuthChild(factory string, config map[string]any) error {
+	child, err := newAuthPlugin(factory)
+	if err != nil {
+		return fmt.Errorf("multi-auth child plugin %q is not supported", factory)
+	}
+	defer stopAuthChild(child)
+	if err := child.Init(); err != nil {
+		return fmt.Errorf("multi-auth child plugin %q validation failed", factory)
+	}
+	compiledSchema, err := util.CompileSchema(child.GetSchema())
+	if err != nil {
+		return fmt.Errorf("multi-auth child plugin %q validation failed", factory)
+	}
+	if err := compiledSchema.Validate(config); err != nil {
+		return fmt.Errorf("multi-auth child plugin %q has invalid config", factory)
+	}
+	return nil
+}
+
+func (p *Plugin) MaterializeScopedSecrets(
+	ctx context.Context,
+	access base.ScopedSecretAccess,
+) error {
+	if ctx == nil {
+		return errAuthChildPreparation
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	source, epoch := p.beginPreparation()
+	specs, err := p.validatedAuthChildSpecs(source)
+	if err != nil {
+		return err
+	}
+	preparer := p.CompositeChildPreparer()
+	if preparer == nil {
+		return errAuthChildPreparation
+	}
+	generation, publicConfig, err := p.prepareAuthChildren(ctx, access, epoch, source, specs, func(
+		ctx context.Context,
+		access base.ScopedSecretAccess,
+		spec authChildSpec,
+	) (base.PreparedCompositeChild, error) {
+		return preparer.Prepare(ctx, access, base.CompositeChildSpec{
+			Factory: spec.factory, Config: spec.config, Position: spec.position,
+		})
+	})
+	if err != nil {
+		return err
+	}
+	return p.publishPreparedGeneration(ctx, epoch, generation, publicConfig)
+}
+
+func (p *Plugin) MaterializeSecrets() error {
+	source, epoch := p.beginPreparation()
+	specs, err := p.validatedAuthChildSpecs(source)
+	if err != nil {
+		return err
+	}
+	generation, publicConfig, err := p.prepareAuthChildren(
+		context.Background(),
+		base.ScopedSecretAccess{},
+		epoch,
+		source,
+		specs,
+		func(_ context.Context, _ base.ScopedSecretAccess, spec authChildSpec) (base.PreparedCompositeChild, error) {
+			return legacyPrepareAuthChild(spec)
+		},
+	)
+	if err != nil {
+		return err
+	}
+	return p.publishPreparedGeneration(context.Background(), epoch, generation, publicConfig)
+}
+
+type authChildPrepareFunc func(
+	context.Context,
+	base.ScopedSecretAccess,
+	authChildSpec,
+) (base.PreparedCompositeChild, error)
+
+func (p *Plugin) prepareAuthChildren(
+	ctx context.Context,
+	access base.ScopedSecretAccess,
+	epoch uint64,
+	source Config,
+	specs []authChildSpec,
+	prepare authChildPrepareFunc,
+) (*authGeneration, Config, error) {
+	stagedConfig := cloneAuthPluginConfigs(source.AuthPlugins)
+	stagedAuths := make([]configuredAuth, 0, len(specs))
+	stagedOwners := make([]base.PreparedCompositeChild, 0, len(specs))
+	fail := func(failing base.PreparedCompositeChild, err error) (*authGeneration, Config, error) {
+		if failing != nil {
+			failing.Close()
+		}
+		closePreparedAuthChildren(stagedOwners)
+		if contextErr := ctx.Err(); contextErr != nil {
+			return nil, Config{}, contextErr
+		}
+		if errors.Is(err, context.Canceled) {
+			return nil, Config{}, context.Canceled
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			return nil, Config{}, context.DeadlineExceeded
+		}
+		return nil, Config{}, errAuthChildPreparation
+	}
+
+	for _, spec := range specs {
+		owner, err := prepare(ctx, access, spec)
+		if err != nil {
+			return fail(owner, err)
+		}
+		if !p.preparationCurrent(epoch) {
+			return fail(owner, errAuthChildPreparation)
+		}
+		if owner == nil || owner.Factory() != spec.factory {
+			return fail(owner, errAuthChildPreparation)
+		}
+		child, ok := owner.Instance().(authPlugin)
+		if !ok || child == nil {
+			return fail(owner, errAuthChildPreparation)
+		}
+		publicConfig, err := authChildPublicConfig(child.Config())
+		if err != nil {
+			return fail(owner, err)
+		}
+		stagedOwners = append(stagedOwners, owner)
+		stagedAuths = append(stagedAuths, configuredAuth{name: spec.factory, plugin: child})
+		stagedConfig[spec.entry][spec.factory] = publicConfig
+	}
+
+	return &authGeneration{auths: stagedAuths, children: stagedOwners}, Config{
+		AuthPlugins: stagedConfig,
+	}, nil
+}
+
+func legacyPrepareAuthChild(spec authChildSpec) (base.PreparedCompositeChild, error) {
+	child, err := newAuthPlugin(spec.factory)
+	if err != nil {
+		return nil, errAuthChildPreparation
+	}
+	owner := &legacyPreparedAuthChild{factory: spec.factory, child: child}
+	fail := func() (base.PreparedCompositeChild, error) {
+		owner.Close()
+		return nil, errAuthChildPreparation
+	}
+	if err := child.Init(); err != nil {
+		return fail()
+	}
+	if err := util.Parse(spec.config, child.Config()); err != nil {
+		return fail()
+	}
+	if err := base.MaterializePluginSecrets(child); err != nil {
+		return fail()
+	}
+	if err := child.PostInit(); err != nil {
+		return fail()
+	}
+	return owner, nil
+}
+
+type legacyPreparedAuthChild struct {
+	factory string
+	child   authPlugin
+	close   sync.Once
+}
+
+func (c *legacyPreparedAuthChild) Factory() string { return c.factory }
+func (c *legacyPreparedAuthChild) Instance() any   { return c.child }
+func (c *legacyPreparedAuthChild) Close() {
+	c.close.Do(func() { stopAuthChild(c.child) })
+}
+
+func stopAuthChild(child authPlugin) {
+	if stopper, ok := child.(interface{ Stop() }); ok {
+		stopper.Stop()
+	}
+}
+
+func authChildPublicConfig(config any) (map[string]any, error) {
+	body, err := json.Marshal(config)
+	if err != nil {
+		return nil, errAuthChildPreparation
+	}
+	var public map[string]any
+	if err := json.Unmarshal(body, &public); err != nil || public == nil {
+		return nil, errAuthChildPreparation
+	}
+	return public, nil
+}
+
+func cloneAuthPluginConfigs(configs []AuthPluginConfig) []AuthPluginConfig {
+	cloned := make([]AuthPluginConfig, len(configs))
+	for entry, configured := range configs {
+		cloned[entry] = make(AuthPluginConfig, len(configured))
+		for factory, config := range configured {
+			cloned[entry][factory] = cloneAuthPluginConfig(config)
+		}
+	}
+	return cloned
+}
+
+func cloneAuthPluginConfig(config map[string]any) map[string]any {
+	if config == nil {
+		return nil
+	}
+	cloned := make(map[string]any, len(config))
+	for key, value := range config {
+		cloned[key] = cloneAuthPluginConfigValue(value)
+	}
+	return cloned
+}
+
+func cloneAuthPluginConfigValue(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		return cloneAuthPluginConfig(typed)
+	case []any:
+		cloned := make([]any, len(typed))
+		for index, item := range typed {
+			cloned[index] = cloneAuthPluginConfigValue(item)
+		}
+		return cloned
+	default:
+		return value
+	}
+}
+
+func cloneMultiAuthConfig(config Config) Config {
+	return Config{AuthPlugins: cloneAuthPluginConfigs(config.AuthPlugins)}
+}
+
+func (p *Plugin) rawSourceConfig() Config {
+	p.stateMu.Lock()
+	defer p.stateMu.Unlock()
+	if p.sourceConfigSet {
+		return cloneMultiAuthConfig(p.sourceConfig)
+	}
+	return cloneMultiAuthConfig(p.config)
+}
+
+func (p *Plugin) beginPreparation() (Config, uint64) {
+	p.stateMu.Lock()
+	defer p.stateMu.Unlock()
+	if !p.sourceConfigSet {
+		p.sourceConfig = cloneMultiAuthConfig(p.config)
+		p.sourceConfigSet = true
+	}
+	p.stateEpoch++
+	return cloneMultiAuthConfig(p.sourceConfig), p.stateEpoch
+}
+
+func (p *Plugin) preparationCurrent(epoch uint64) bool {
+	p.stateMu.Lock()
+	defer p.stateMu.Unlock()
+	return p.stateEpoch == epoch
+}
+
+func (p *Plugin) publishPreparedGeneration(
+	ctx context.Context,
+	epoch uint64,
+	generation *authGeneration,
+	publicConfig Config,
+) error {
+	p.stateMu.Lock()
+	if err := ctx.Err(); err != nil {
+		p.stateMu.Unlock()
+		closePreparedAuthChildren(generation.children)
+		return err
+	}
+	if p.stateEpoch != epoch {
+		p.stateMu.Unlock()
+		closePreparedAuthChildren(generation.children)
+		return errAuthChildPreparation
+	}
+	previous := p.current
+	p.current = generation
+	p.auths = generation.auths
+	p.children = generation.children
+	public := cloneMultiAuthConfig(publicConfig)
+	p.publicConfig.Store(&public)
+	retired := retireAuthGenerationLocked(previous)
+	p.stateMu.Unlock()
+	closePreparedAuthChildren(retired)
+	return nil
+}
+
+func retireAuthGenerationLocked(generation *authGeneration) []base.PreparedCompositeChild {
+	if generation == nil {
+		return nil
+	}
+	generation.retired = true
+	return closableAuthGenerationLocked(generation)
+}
+
+func closableAuthGenerationLocked(generation *authGeneration) []base.PreparedCompositeChild {
+	if generation == nil || !generation.retired || generation.active != 0 || generation.closed {
+		return nil
+	}
+	generation.closed = true
+	children := generation.children
+	generation.children = nil
+	return children
+}
+
+func closePreparedAuthChildren(children []base.PreparedCompositeChild) {
+	for _, child := range slices.Backward(children) {
+		child.Close()
+	}
+}
+
+func (p *Plugin) Stop() {
+	p.stateMu.Lock()
+	p.stateEpoch++
+	current := p.current
+	p.current = nil
+	p.children = nil
+	p.auths = nil
+	retired := retireAuthGenerationLocked(current)
+	p.stateMu.Unlock()
+	closePreparedAuthChildren(retired)
+}
+
 func (p *Plugin) Config() any {
+	if public := p.publicConfig.Load(); public != nil {
+		return public
+	}
 	return &p.config
 }
 
@@ -164,8 +531,16 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 }
 
 func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
-	failures := make([]authFailure, 0, len(p.auths))
-	for _, auth := range p.auths {
+	generation := p.acquireAuthGeneration()
+	if generation != nil {
+		defer p.releaseAuthGeneration(generation)
+	}
+	auths := []configuredAuth(nil)
+	if generation != nil {
+		auths = generation.auths
+	}
+	failures := make([]authFailure, 0, len(auths))
+	for _, auth := range auths {
 		authenticatedRequest, failure := auth.succeeds(r)
 		if authenticatedRequest != nil {
 			return base.ContinueRequest(authenticatedRequest)
@@ -179,6 +554,26 @@ func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.Re
 	w.WriteHeader(http.StatusUnauthorized)
 	_, _ = w.Write([]byte(`{"message":"Authorization Failed"}`))
 	return base.StopRequest(r)
+}
+
+func (p *Plugin) acquireAuthGeneration() *authGeneration {
+	p.stateMu.Lock()
+	defer p.stateMu.Unlock()
+	generation := p.current
+	if generation != nil {
+		generation.active++
+	}
+	return generation
+}
+
+func (p *Plugin) releaseAuthGeneration(generation *authGeneration) {
+	p.stateMu.Lock()
+	if generation.active > 0 {
+		generation.active--
+	}
+	retired := closableAuthGenerationLocked(generation)
+	p.stateMu.Unlock()
+	closePreparedAuthChildren(retired)
 }
 
 func (a configuredAuth) succeeds(r *http.Request) (*http.Request, authFailure) {

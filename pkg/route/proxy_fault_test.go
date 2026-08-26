@@ -88,6 +88,15 @@ func (fault *faultUpstream) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // handler. readTimeout seconds bounds both the response-header wait and body
 // inactivity; retries applies to transport failures.
 func buildFaultHandler(t *testing.T, targetURL string, readTimeout, retries int) http.Handler {
+	return buildFaultHandlerWithConfig(t, targetURL, readTimeout, retries, testEffectiveConfig())
+}
+
+func buildFaultHandlerWithConfig(
+	t *testing.T,
+	targetURL string,
+	readTimeout, retries int,
+	effective *config.EffectiveConfig,
+) http.Handler {
 	t.Helper()
 	upstream := resource.Upstream{
 		Scheme:  "http",
@@ -95,13 +104,7 @@ func buildFaultHandler(t *testing.T, targetURL string, readTimeout, retries int)
 		Retries: retries,
 		Timeout: resource.Timeout{Read: readTimeout},
 	}
-	builder := &Builder{}
-	handler, err := builder.buildReverseHandler(resource.Route{Upstream: upstream}, resource.Service{})
-	if err != nil {
-		t.Fatalf("buildReverseHandler() error = %v", err)
-	}
-	t.Cleanup(builder.Stop)
-	return handler
+	return testPreparedProxyHandler(t, resource.Route{Upstream: upstream}, resource.Service{}, effective)
 }
 
 func TestProxyFaultHandling(t *testing.T) {
@@ -220,9 +223,8 @@ func TestProxyFaultHandling(t *testing.T) {
 }
 
 func TestProxyFaultOverloadRecovers(t *testing.T) {
-	previous := config.GlobalConfig
-	config.GlobalConfig = &config.Config{Proxy: config.Proxy{MaxInFlight: 1}}
-	t.Cleanup(func() { config.GlobalConfig = previous })
+	effective := testEffectiveConfig()
+	effective.Config.Proxy.MaxInFlight = 1
 
 	release := make(chan struct{})
 	var firstHeldOnce sync.Once
@@ -239,7 +241,7 @@ func TestProxyFaultOverloadRecovers(t *testing.T) {
 	}))
 	defer upstreamServer.Close()
 
-	handler := buildFaultHandler(t, upstreamServer.URL, 0, 0)
+	handler := buildFaultHandlerWithConfig(t, upstreamServer.URL, 0, 0, effective)
 
 	// First request: the upstream commits 200 and stalls its body, so the
 	// response copy holds the single admission token open. The fixture closes
@@ -333,12 +335,12 @@ func TestProxyFaultActiveHealthRecovers(t *testing.T) {
 			},
 		},
 	}
-	builder := &Builder{}
-	handler, err := builder.buildReverseHandler(resource.Route{Upstream: upstream}, resource.Service{})
-	if err != nil {
-		t.Fatalf("buildReverseHandler() error = %v", err)
-	}
-	t.Cleanup(builder.Stop)
+	handler := testPreparedProxyHandler(
+		t,
+		resource.Route{ID: "active-health-recovery", Upstream: upstream},
+		resource.Service{},
+		testEffectiveConfig(),
+	)
 
 	gateway := httptest.NewServer(handler)
 	defer gateway.Close()

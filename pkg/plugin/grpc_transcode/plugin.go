@@ -20,7 +20,6 @@ import (
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
-	"github.com/wklken/apisix-go/pkg/store"
 	statuspb "google.golang.org/genproto/googleapis/rpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
@@ -35,12 +34,11 @@ type Plugin struct {
 	base.BasePlugin
 	config Config
 
-	bindingMu      sync.Mutex
-	bindingContent string
-	bindingGen     int64
-	binding        *methodBinding
-	bindingErr     error
-	bindingLoaded  bool
+	bindingMu     sync.Mutex
+	protoResolver ProtoResolver
+	binding       *methodBinding
+	bindingErr    error
+	bindingLoaded bool
 }
 
 type requestBindingKey struct{}
@@ -107,16 +105,13 @@ const schema = `
 }
 `
 
-var (
-	errProtoNotFound  = errors.New("proto not found")
-	fetchProtoContent = func(id string) (string, error) {
-		protoResource, err := store.GetProto(id)
-		if err != nil {
-			return "", err
-		}
-		return protoResource.Content, nil
-	}
-)
+var errProtoNotFound = errors.New("proto not found")
+
+var errProtoResolverRequired = errors.New("grpc-transcode proto resolver is required")
+
+// ProtoResolver returns proto content from the immutable generation being
+// compiled. It must resolve both the configured proto_id and its imports.
+type ProtoResolver func(id string) (string, error)
 
 type Config struct {
 	ProtoID          string   `json:"proto_id"`
@@ -172,6 +167,11 @@ func normalizeProtoID(value any) (string, error) {
 	default:
 		return "", fmt.Errorf("proto_id must be string or integer")
 	}
+}
+
+// SetProtoResolver supplies generation-owned proto content before PostInit.
+func (p *Plugin) SetProtoResolver(resolver ProtoResolver) {
+	p.protoResolver = resolver
 }
 
 type methodBinding struct {
@@ -338,30 +338,40 @@ func (p *Plugin) RunBufferedBodyFilter(r *http.Request, state *base.ResponseStat
 func (p *Plugin) loadBinding() (*methodBinding, error) {
 	p.bindingMu.Lock()
 	defer p.bindingMu.Unlock()
-	generation := store.ProtoGeneration()
-	if p.bindingLoaded && p.bindingGen == generation {
+	if p.bindingLoaded {
 		return p.binding, p.bindingErr
 	}
-	p.bindingGen = generation
-	content, err := fetchProtoContent(p.config.ProtoID)
+	if p.protoResolver == nil {
+		p.bindingErr = errProtoResolverRequired
+		p.bindingLoaded = true
+		return nil, p.bindingErr
+	}
+	resolver := p.protoResolver
+	defer func() {
+		p.protoResolver = nil
+	}()
+	content, err := resolver(p.config.ProtoID)
 	if err != nil {
 		p.bindingErr = err
+		p.bindingLoaded = true
 		return nil, err
 	}
-	if p.bindingLoaded && p.bindingContent == content {
-		return p.binding, p.bindingErr
-	}
 
-	binding, err := loadBinding(content, p.config.ProtoID, p.config.Service, p.config.Method)
-	p.bindingContent = content
+	binding, err := loadBinding(content, p.config.ProtoID, p.config.Service, p.config.Method, resolver)
 	p.binding = binding
 	p.bindingErr = err
 	p.bindingLoaded = true
 	return binding, err
 }
 
-func loadBinding(content string, rootName string, serviceName string, methodName string) (*methodBinding, error) {
-	descriptorSet, err := decodeDescriptorSet(content, rootName)
+func loadBinding(
+	content string,
+	rootName string,
+	serviceName string,
+	methodName string,
+	resolver ProtoResolver,
+) (*methodBinding, error) {
+	descriptorSet, err := decodeDescriptorSet(content, rootName, resolver)
 	if err != nil {
 		return nil, err
 	}
@@ -391,7 +401,11 @@ func loadBinding(content string, rootName string, serviceName string, methodName
 	return &methodBinding{method: method, files: files}, nil
 }
 
-func decodeDescriptorSet(content string, rootName string) (*descriptorpb.FileDescriptorSet, error) {
+func decodeDescriptorSet(
+	content string,
+	rootName string,
+	resolver ProtoResolver,
+) (*descriptorpb.FileDescriptorSet, error) {
 	content = strings.TrimSpace(content)
 	raw, err := base64.StdEncoding.DecodeString(content)
 	if err == nil {
@@ -405,7 +419,7 @@ func decodeDescriptorSet(content string, rootName string) (*descriptorpb.FileDes
 		}
 	}
 
-	compiled, sourceErr := compileProtoSource(content, rootName)
+	compiled, sourceErr := compileProtoSource(content, rootName, resolver)
 	if sourceErr == nil {
 		return compiled, nil
 	}
@@ -416,7 +430,11 @@ func decodeDescriptorSet(content string, rootName string) (*descriptorpb.FileDes
 	)
 }
 
-func compileProtoSource(content string, rootName string) (*descriptorpb.FileDescriptorSet, error) {
+func compileProtoSource(
+	content string,
+	rootName string,
+	contentResolver ProtoResolver,
+) (*descriptorpb.FileDescriptorSet, error) {
 	if strings.TrimSpace(rootName) == "" {
 		rootName = "root.proto"
 	}
@@ -425,7 +443,10 @@ func compileProtoSource(content string, rootName string) (*descriptorpb.FileDesc
 			if path == rootName {
 				return io.NopCloser(strings.NewReader(content)), nil
 			}
-			imported, err := fetchProtoContent(path)
+			if contentResolver == nil {
+				return nil, errProtoNotFound
+			}
+			imported, err := contentResolver(path)
 			if err != nil {
 				return nil, fmt.Errorf("resolve imported proto %q: %w", path, err)
 			}

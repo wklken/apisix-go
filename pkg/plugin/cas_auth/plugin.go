@@ -2,6 +2,7 @@ package cas_auth
 
 import (
 	"bytes"
+	"context"
 	"encoding/xml"
 	"fmt"
 	"io"
@@ -11,12 +12,15 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/hashicorp/golang-lru/v2/expirable"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/cache/memory"
+	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/secret"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -27,6 +31,12 @@ type Plugin struct {
 	client            *http.Client
 	opts              sessionOptions
 	logoutTrustedNets []*net.IPNet
+
+	lifecycleMu     sync.RWMutex
+	cookieSecret    secret.Value
+	cookieSecretSet bool
+	secretsPrepared bool
+	retired         bool
 }
 
 const (
@@ -38,6 +48,7 @@ const (
 	sessionLifetime    = time.Hour
 	sessionCapacity    = 10_000
 	maxLogoutBodyBytes = 64 * 1024
+	minCookieSecretLen = 32
 )
 
 const schema = `
@@ -64,8 +75,7 @@ const schema = `
       "type": "object",
       "properties": {
         "secret": {
-          "type": "string",
-          "minLength": 32
+          "type": "string"
         },
         "secure": {
           "type": "boolean",
@@ -170,6 +180,11 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+	if p.retired || !p.secretsPrepared {
+		return secret.ErrCredentialUnavailable
+	}
 	p.logoutTrustedNets = nil
 	for _, address := range p.config.LogoutTrustedAddresses {
 		_, network, err := net.ParseCIDR(address)
@@ -208,21 +223,85 @@ func (p *Plugin) Config() any {
 	return &p.config
 }
 
+// MaterializeScopedSecrets admits the manifest-owned cookie secret for one
+// immutable generation and exposes only its resolved-value descriptor.
+func (p *Plugin) MaterializeScopedSecrets(
+	ctx context.Context,
+	access base.ScopedSecretAccess,
+) error {
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+	if p.retired {
+		return secret.ErrCredentialUnavailable
+	}
+	if p.secretsPrepared {
+		return nil
+	}
+
+	value, err := access.Materialize(ctx, "cookie.secret", p.config.Cookie.Secret)
+	if err != nil {
+		return secret.ErrCredentialUnavailable
+	}
+	if err := value.Use(validateCookieSecret); err != nil {
+		return secret.ErrCredentialUnavailable
+	}
+	descriptor, err := value.Descriptor(capability.SecretPluginConfig)
+	if err != nil {
+		return secret.ErrCredentialUnavailable
+	}
+
+	p.cookieSecret = value
+	p.cookieSecretSet = true
+	p.config.Cookie.Secret = descriptor.String()
+	p.secretsPrepared = true
+	return nil
+}
+
+// MaterializeSecrets is the transitional process-local compatibility path.
+// Immutable generation preparation uses MaterializeScopedSecrets instead.
+func (p *Plugin) MaterializeSecrets() error {
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+	if p.retired {
+		return secret.ErrCredentialUnavailable
+	}
+	if p.secretsPrepared {
+		return nil
+	}
+	return secret.ErrCredentialUnavailable
+}
+
+func validateCookieSecret(plaintext string) error {
+	if utf8.RuneCountInString(plaintext) < minCookieSecretLen {
+		return secret.ErrCredentialUnavailable
+	}
+	return nil
+}
+
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p.lifecycleMu.RLock()
+		if p.retired || !p.secretsPrepared {
+			p.lifecycleMu.RUnlock()
+			http.Error(w, util.BuildMessageResponse("credential unavailable"), http.StatusServiceUnavailable)
+			return
+		}
 		if r.Method == http.MethodGet && r.URL.Path == p.config.LogoutURI {
 			p.logout(w, r)
+			p.lifecycleMu.RUnlock()
 			return
 		}
 
 		opts := p.sessionOptions()
 		if sessionID := cookieValue(r, opts.cookieName); sessionID != "" {
 			if p.refreshSession(sessionID) {
+				p.lifecycleMu.RUnlock()
 				next.ServeHTTP(w, r)
 				return
 			}
 			p.deleteCookie(w, opts.cookieName)
 			p.firstAccess(w, r)
+			p.lifecycleMu.RUnlock()
 			return
 		}
 
@@ -230,6 +309,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			apisixctx.RegisterSensitiveQueryName(r, "ticket")
 			if ticket := r.URL.Query().Get("ticket"); ticket != "" {
 				p.validateWithCAS(w, r, ticket)
+				p.lifecycleMu.RUnlock()
 				return
 			}
 		}
@@ -237,10 +317,12 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		if r.Method == http.MethodPost && r.URL.Path == base.CallbackPath(p.config.CASCallbackURI) {
 			if !p.trustedLogoutPeer(r) {
 				http.Error(w, util.BuildMessageResponse("untrusted logout request from IdP"), http.StatusForbidden)
+				p.lifecycleMu.RUnlock()
 				return
 			}
 			if p.handleIDPLogout(r) {
 				w.WriteHeader(http.StatusOK)
+				p.lifecycleMu.RUnlock()
 				return
 			}
 			http.Error(
@@ -248,10 +330,12 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 				util.BuildMessageResponse("invalid logout request from IdP, no ticket"),
 				http.StatusBadRequest,
 			)
+			p.lifecycleMu.RUnlock()
 			return
 		}
 
 		p.firstAccess(w, r)
+		p.lifecycleMu.RUnlock()
 	})
 }
 
@@ -376,7 +460,12 @@ func (p *Plugin) trustedLogoutPeer(r *http.Request) bool {
 
 func (p *Plugin) firstAccess(w http.ResponseWriter, r *http.Request) {
 	originalURI := r.URL.RequestURI()
-	p.setCookie(w, requestURICookie, base.SignRawSessionValue([]byte(originalURI), p.config.Cookie.Secret))
+	signed, err := p.signRequestURILocked(originalURI)
+	if err != nil {
+		http.Error(w, util.BuildMessageResponse("credential unavailable"), http.StatusServiceUnavailable)
+		return
+	}
+	p.setCookie(w, requestURICookie, signed)
 
 	values := url.Values{}
 	values.Set("service", p.serviceURL(r))
@@ -384,10 +473,7 @@ func (p *Plugin) firstAccess(w http.ResponseWriter, r *http.Request) {
 }
 
 func (p *Plugin) validateWithCAS(w http.ResponseWriter, r *http.Request, ticket string) {
-	requestURI := ""
-	if decoded, ok := base.VerifyRawSessionValue(cookieValue(r, requestURICookie), p.config.Cookie.Secret, nil); ok {
-		requestURI = string(decoded)
-	}
+	requestURI, _ := p.verifyRequestURILocked(cookieValue(r, requestURICookie))
 	if !safeRedirect(requestURI) {
 		http.Error(w, util.BuildMessageResponse("invalid callback state"), http.StatusUnauthorized)
 		return
@@ -403,6 +489,46 @@ func (p *Plugin) validateWithCAS(w http.ResponseWriter, r *http.Request, ticket 
 	p.setCookie(w, p.sessionOptions().cookieName, ticket)
 	p.deleteCookie(w, requestURICookie)
 	http.Redirect(w, r, requestURI, http.StatusFound)
+}
+
+func (p *Plugin) signRequestURILocked(originalURI string) (string, error) {
+	var signed string
+	err := p.useCookieSecretLocked(func(cookieSecret string) error {
+		payload := []byte(originalURI)
+		defer clear(payload)
+		signed = base.SignRawSessionValue(payload, cookieSecret)
+		return nil
+	})
+	return signed, err
+}
+
+func (p *Plugin) verifyRequestURILocked(signed string) (string, bool) {
+	var decoded []byte
+	err := p.useCookieSecretLocked(func(cookieSecret string) error {
+		var ok bool
+		decoded, ok = base.VerifyRawSessionValue(signed, cookieSecret, nil)
+		if !ok {
+			return secret.ErrCredentialUnavailable
+		}
+		return nil
+	})
+	if err != nil {
+		clear(decoded)
+		return "", false
+	}
+	requestURI := string(decoded)
+	clear(decoded)
+	return requestURI, true
+}
+
+func (p *Plugin) useCookieSecretLocked(use func(string) error) error {
+	if use == nil || p.retired || !p.secretsPrepared {
+		return secret.ErrCredentialUnavailable
+	}
+	if p.cookieSecretSet {
+		return p.cookieSecret.Use(use)
+	}
+	return secret.ErrCredentialUnavailable
 }
 
 func (p *Plugin) logout(w http.ResponseWriter, r *http.Request) {
@@ -530,6 +656,26 @@ func (p *Plugin) deleteCookie(w http.ResponseWriter, name string) {
 		SameSite: sameSiteMode(p.config.Cookie.SameSite),
 		MaxAge:   -1,
 	})
+}
+
+// Stop waits for in-flight CAS/session operations, closes the generation's
+// idle client connections, and then retires its private secret owners. The
+// process-wide CAS session cache is intentionally generation-neutral and is
+// not cleared here.
+func (p *Plugin) Stop() {
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+	if p.retired {
+		return
+	}
+	p.retired = true
+	if p.client != nil {
+		p.client.CloseIdleConnections()
+		p.client = nil
+	}
+	p.cookieSecret = secret.Value{}
+	p.cookieSecretSet = false
+	p.secretsPrepared = false
 }
 
 func parseCASUser(body []byte) string {

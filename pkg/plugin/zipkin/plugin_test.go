@@ -154,6 +154,7 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
 
 	p := &Plugin{config: cfg}
+	p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -433,6 +434,7 @@ func newReporterTestPlugin(t *testing.T, cfg Config) *Plugin {
 		reportTimeout:     300 * time.Millisecond,
 		maxPendingEntries: 2,
 	}
+	p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -507,6 +509,7 @@ func TestReporterStopDrainsOrTimesOutDeterministically(t *testing.T) {
 	})
 
 	p.processor.Push(map[string]any{"name": "apisix.request"})
+	processor := p.processor
 
 	start := time.Now()
 	p.Stop()
@@ -515,7 +518,10 @@ func TestReporterStopDrainsOrTimesOutDeterministically(t *testing.T) {
 	if elapsed >= 2*time.Second {
 		t.Fatalf("Stop took %v, want bounded by the report timeout", elapsed)
 	}
-	stats := p.processor.Stats()
+	if err := processor.Shutdown(context.Background()); err != nil {
+		t.Fatalf("batch Shutdown() error = %v", err)
+	}
+	stats := processor.Stats()
 	if stats.FailedDrops != 1 {
 		t.Fatalf("stats = %+v, want the timed-out delivery counted as a failed drop", stats)
 	}

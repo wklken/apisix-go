@@ -85,8 +85,6 @@ func TestServeDubboIfConfiguredUsesSafeUpstreamRetries(t *testing.T) {
 }
 
 func TestServeDubboAndHTTPDubboUseDefaultRetryCountForRouteTerminals(t *testing.T) {
-	builder := &Builder{}
-	t.Cleanup(builder.Stop)
 	upstream := resource.Upstream{
 		Scheme: "dubbo",
 		Nodes: []resource.Node{
@@ -94,9 +92,23 @@ func TestServeDubboAndHTTPDubboUseDefaultRetryCountForRouteTerminals(t *testing.
 			{Host: "second.example", Port: 20880, Weight: 1},
 		},
 	}
-	_, terminals, err := builder.buildReverseHandlerWithTerminals(resource.Route{}, resource.Service{}, upstream)
+	targets, _, err := planUpstreamNodes(upstream)
 	if err != nil {
-		t.Fatalf("buildReverseHandlerWithTerminals() error = %v", err)
+		t.Fatalf("planUpstreamNodes() error = %v", err)
+	}
+	_, terminals, err := buildPreparedReverseHandler(
+		resource.Route{ID: "dubbo-default-retries"},
+		upstream,
+		targets,
+		PreparedUpstreamRuntime{
+			LoadBalancer: pxy.NewWeightedRRLoadBalance(targets),
+			RoundTripper: http.DefaultTransport,
+		},
+		&testEffectiveConfig().Config,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("buildPreparedReverseHandler() error = %v", err)
 	}
 	dubboTerminal, ok := terminals.dubbo.(routeDubboTerminal)
 	if !ok {

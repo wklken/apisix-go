@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"reflect"
+	"runtime/debug"
 	"slices"
 	"sync"
 	"time"
@@ -17,10 +18,14 @@ import (
 )
 
 type LogBinding struct {
-	Plugin     Plugin
-	Scope      Scope
-	Provenance ResourceProvenance
-	Policy     base.LogCapturePolicy
+	Factory     string
+	Plugin      Plugin
+	Priority    int
+	Scope       Scope
+	Provenance  ResourceProvenance
+	Policy      base.LogCapturePolicy
+	prioritySet bool
+	policySet   bool
 }
 
 type LogExecutor struct {
@@ -55,8 +60,23 @@ func NewLogExecutor(bindings []LogBinding) (LogExecutor, error) {
 		if cloned[i].Plugin == nil {
 			return LogExecutor{}, fmt.Errorf("log binding %d has nil plugin", i)
 		}
+		if cloned[i].Factory == "" {
+			cloned[i].Factory = cloned[i].Plugin.GetName()
+			if cloned[i].Factory == "" {
+				return LogExecutor{}, fmt.Errorf("log binding %d has empty factory", i)
+			}
+		}
+		if !cloned[i].policySet {
+			if provider, ok := cloned[i].Plugin.(base.LogCapturePolicyPlugin); ok {
+				cloned[i].Policy = provider.LogCapturePolicy()
+			}
+			cloned[i].policySet = true
+		}
 		if err := base.ValidateLogCapturePolicy(cloned[i].Policy); err != nil {
-			return LogExecutor{}, fmt.Errorf("log binding %q: %w", cloned[i].Plugin.GetName(), err)
+			return LogExecutor{}, fmt.Errorf("log binding %q: %w", cloned[i].Factory, err)
+		}
+		if !cloned[i].prioritySet {
+			cloned[i].Priority = cloned[i].Plugin.GetPriority()
 		}
 		requestBodyMax = max(requestBodyMax, cloned[i].Policy.RequestBodyBytes)
 		responseBodyMax = max(responseBodyMax, cloned[i].Policy.ResponseBodyBytes)
@@ -76,10 +96,15 @@ func (e LogExecutor) enabled() bool {
 // finalizer owners from one materialized binding set. Dynamic finalizers
 // register their own lifecycle callbacks and never enter this executor.
 func NewLogExecutorFromBindings(bindings []Binding) (LogExecutor, error) {
+	resolved, err := resolveBindingsForPlan(bindings)
+	if err != nil {
+		return LogExecutor{}, err
+	}
+	bindings = resolved
 	logBindings := make([]LogBinding, 0)
 	routePrometheus := false
 	for _, binding := range bindings {
-		if binding.factoryName == "prometheus" &&
+		if binding.Descriptor.Factory == "prometheus" &&
 			binding.Scope != ScopeSystem && binding.Scope != ScopeGlobal {
 			routePrometheus = true
 			break
@@ -87,19 +112,27 @@ func NewLogExecutorFromBindings(bindings []Binding) (LogExecutor, error) {
 	}
 	globalPrometheusAdded := false
 	for _, binding := range bindings {
-		if binding.Plugin == nil {
+		if !binding.logPolicySet {
 			return LogExecutor{}, fmt.Errorf(
-				"log materialization has nil plugin (factory=%q resource=%s/%s)",
-				binding.factoryName,
+				"log materialization has no frozen capture policy (factory=%q resource=%s/%s)",
+				binding.Descriptor.Factory,
 				binding.Provenance.Kind,
 				binding.Provenance.ID,
 			)
 		}
-		spec, ok := CapabilitySpecForFactory(binding.factoryName)
-		if !ok {
-			return LogExecutor{}, fmt.Errorf("log materialization has unknown factory %q", binding.factoryName)
+		if binding.Plugin == nil {
+			return LogExecutor{}, fmt.Errorf(
+				"log materialization has nil plugin (factory=%q resource=%s/%s)",
+				binding.Descriptor.Factory,
+				binding.Provenance.Kind,
+				binding.Provenance.ID,
+			)
 		}
-		if binding.factoryName == "prometheus" {
+		descriptor := binding.Descriptor
+		if descriptor.Factory == "" {
+			return LogExecutor{}, fmt.Errorf("log materialization has unknown factory %q", binding.Descriptor.Factory)
+		}
+		if descriptor.Factory == "prometheus" {
 			if binding.Scope == ScopeGlobal || binding.Scope == ScopeSystem {
 				if routePrometheus || globalPrometheusAdded {
 					continue
@@ -107,16 +140,19 @@ func NewLogExecutorFromBindings(bindings []Binding) (LogExecutor, error) {
 				globalPrometheusAdded = true
 			}
 		}
-		ownsLog := spec.Capabilities&CapabilityLog != 0
-		ownsSanitizer := spec.Capabilities&CapabilityLogSanitizer != 0
-		if ownsLog && isServerlessIdentity(binding.factoryName) {
-			phase, err := configuredPhase(binding.Plugin.Config())
-			if err != nil {
-				return LogExecutor{}, fmt.Errorf("factory %q log phase: %w", binding.factoryName, err)
-			}
-			ownsLog = phase == "log"
+		_, ownsLog := binding.Plugin.(base.LogPhasePlugin)
+		ownsLog = ownsLog && descriptor.HasPhase(PhaseLog)
+		_, ownsSanitizer := binding.Plugin.(base.LogSnapshotSanitizerPlugin)
+		ownsSanitizer = ownsSanitizer && descriptor.HasPhase(PhaseLog)
+		ownsSnapshotFinalizer := descriptor.finalizer == FinalizerSnapshot
+		if descriptor.HasPhase(PhaseLog) && !ownsLog && !ownsSanitizer && !ownsSnapshotFinalizer {
+			return LogExecutor{}, fmt.Errorf(
+				"factory %q declares log ownership without callback (resource=%s/%s)",
+				descriptor.Factory,
+				binding.Provenance.Kind,
+				binding.Provenance.ID,
+			)
 		}
-		ownsSnapshotFinalizer := spec.Finalizer == FinalizerSnapshot
 		if !ownsSanitizer && !ownsLog && !ownsSnapshotFinalizer {
 			continue
 		}
@@ -124,7 +160,7 @@ func NewLogExecutorFromBindings(bindings []Binding) (LogExecutor, error) {
 			if _, ok := binding.Plugin.(base.LogSnapshotSanitizerPlugin); !ok {
 				return LogExecutor{}, fmt.Errorf(
 					"factory %q declares log sanitizer ownership without callback (resource=%s/%s)",
-					binding.factoryName,
+					binding.Descriptor.Factory,
 					binding.Provenance.Kind,
 					binding.Provenance.ID,
 				)
@@ -134,7 +170,7 @@ func NewLogExecutorFromBindings(bindings []Binding) (LogExecutor, error) {
 			if _, ok := binding.Plugin.(base.LogPhasePlugin); !ok {
 				return LogExecutor{}, fmt.Errorf(
 					"factory %q declares log ownership without callback (resource=%s/%s)",
-					binding.factoryName,
+					binding.Descriptor.Factory,
 					binding.Provenance.Kind,
 					binding.Provenance.ID,
 				)
@@ -144,21 +180,21 @@ func NewLogExecutorFromBindings(bindings []Binding) (LogExecutor, error) {
 			if _, ok := binding.Plugin.(base.SnapshotFinalizerPlugin); !ok {
 				return LogExecutor{}, fmt.Errorf(
 					"factory %q declares snapshot finalizer without callback (resource=%s/%s)",
-					binding.factoryName,
+					binding.Descriptor.Factory,
 					binding.Provenance.Kind,
 					binding.Provenance.ID,
 				)
 			}
 		}
-		policy := base.LogCapturePolicy{}
-		if provider, ok := binding.Plugin.(base.LogCapturePolicyPlugin); ok {
-			policy = provider.LogCapturePolicy()
-		}
 		logBindings = append(logBindings, LogBinding{
-			Plugin:     binding.Plugin,
-			Scope:      binding.Scope,
-			Provenance: binding.Provenance,
-			Policy:     policy,
+			Factory:     binding.Descriptor.Factory,
+			Plugin:      binding.Plugin,
+			Priority:    binding.Priority,
+			Scope:       binding.Scope,
+			Provenance:  binding.Provenance,
+			Policy:      binding.logPolicy,
+			prioritySet: true,
+			policySet:   true,
 		})
 	}
 	return NewLogExecutor(logBindings)
@@ -325,7 +361,7 @@ func (e LogExecutor) RegisterComposite(r *http.Request) bool {
 	}
 	registered := false
 	state.registerOnce.Do(func() {
-		registered = lifecycle.AddFinalizer("log-executor", func() error {
+		registered = lifecycle.AddCoreInvariantFinalizer("log-executor", func() error {
 			return e.runComposite(lifecycle, r, state)
 		})
 	})
@@ -385,7 +421,7 @@ func (e LogExecutor) runComposite(
 		if a.Plugin == nil || b.Plugin == nil {
 			return 0
 		}
-		return b.Plugin.GetPriority() - a.Plugin.GetPriority()
+		return b.Priority - a.Priority
 	})
 	selectedSanitizers := make([]bool, len(bindings))
 	var preSanitizedSnapshot base.LogSnapshot
@@ -410,22 +446,25 @@ func (e LogExecutor) runComposite(
 			})
 			hasPreSanitizedSnapshot = true
 		}
-		if err := runLogCallback(func() error {
-			selectedSanitizers[index] = selector.ShouldSanitizeLogSnapshot(preSanitizedSnapshot)
-			return nil
-		}); err != nil {
-			return fmt.Errorf("log sanitizer selector %q: %w", binding.Plugin.GetName(), err)
+		selected, err := guardValue(binding.Factory, PhaseLog, func() (selected bool, err error) {
+			defer recoverLogCallbackAbort(binding.Factory, PhaseLog, &err)
+			return selector.ShouldSanitizeLogSnapshot(preSanitizedSnapshot), nil
+		})
+		if err != nil {
+			return logCallbackFailure("log sanitizer selector", binding.Factory, err)
 		}
+		selectedSanitizers[index] = selected
 	}
 	for index, binding := range bindings {
 		if !selectedSanitizers[index] {
 			continue
 		}
 		callback := binding.Plugin.(base.LogSnapshotSanitizerPlugin)
-		if err := runLogCallback(func() error {
+		if err := guardCall(binding.Factory, PhaseLog, func() (err error) {
+			defer recoverLogCallbackAbort(binding.Factory, PhaseLog, &err)
 			return callback.SanitizeLogSnapshot(&snapshot)
 		}); err != nil {
-			return fmt.Errorf("log sanitizer %q: %w", binding.Plugin.GetName(), err)
+			return logCallbackFailure("log sanitizer", binding.Factory, err)
 		}
 	}
 	for _, binding := range bindings {
@@ -436,10 +475,12 @@ func (e LogExecutor) runComposite(
 		if !ok {
 			continue
 		}
-		if err := runLogCallback(func() error {
-			return callback.RunLogPhase(base.CloneLogSnapshotForPolicy(snapshot, binding.Policy))
+		callbackSnapshot := base.CloneLogSnapshotForPolicy(snapshot, binding.Policy)
+		if err := guardCall(binding.Factory, PhaseLog, func() (err error) {
+			defer recoverLogCallbackAbort(binding.Factory, PhaseLog, &err)
+			return callback.RunLogPhase(callbackSnapshot)
 		}); err != nil && firstErr == nil {
-			firstErr = fmt.Errorf("log callback %q: %w", binding.Plugin.GetName(), err)
+			firstErr = logCallbackFailure("log callback", binding.Factory, err)
 		}
 	}
 	for _, binding := range bindings {
@@ -450,22 +491,38 @@ func (e LogExecutor) runComposite(
 		if !ok {
 			continue
 		}
-		if err := runLogCallback(func() error {
-			return callback.RunSnapshotFinalizer(base.CloneLogSnapshotForPolicy(snapshot, binding.Policy))
+		callbackSnapshot := base.CloneLogSnapshotForPolicy(snapshot, binding.Policy)
+		if err := guardCall(binding.Factory, PhaseFinalizer, func() (err error) {
+			defer recoverLogCallbackAbort(binding.Factory, PhaseFinalizer, &err)
+			return callback.RunSnapshotFinalizer(callbackSnapshot)
 		}); err != nil && firstErr == nil {
-			firstErr = fmt.Errorf("snapshot finalizer %q: %w", binding.Plugin.GetName(), err)
+			firstErr = logCallbackFailure("snapshot finalizer", binding.Factory, err)
 		}
 	}
 	return firstErr
 }
 
-func runLogCallback(callback func() error) (err error) {
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			err = fmt.Errorf("callback panic: %v", recovered)
-		}
-	}()
-	return callback()
+func recoverLogCallbackAbort(factory string, phase Phase, err *error) {
+	recovered := recover()
+	if recovered == nil {
+		return
+	}
+	if recovered != http.ErrAbortHandler {
+		panic(recovered)
+	}
+	*err = &PanicError{
+		Factory: factory,
+		Phase:   phase,
+		Value:   recovered,
+		Stack:   debug.Stack(),
+	}
+}
+
+func logCallbackFailure(callback, factory string, err error) error {
+	if _, ok := err.(*PanicError); ok {
+		return err
+	}
+	return fmt.Errorf("%s %q: %w", callback, factory, err)
 }
 
 func scopeRank(scope Scope) int {

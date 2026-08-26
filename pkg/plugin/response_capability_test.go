@@ -12,6 +12,7 @@ import (
 	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
 
@@ -36,6 +37,7 @@ type responseOwnerTestPlugin struct {
 type dualModeResponseTestPlugin struct {
 	base.BasePlugin
 	mode          base.RequestResponseMode
+	selectMode    func(*http.Request) base.RequestResponseMode
 	bufferedCalls atomic.Int32
 	streamCalls   atomic.Int32
 }
@@ -53,7 +55,10 @@ func (*dualModeResponseTestPlugin) Config() any {
 	return responseModeTestConfig{modes: base.ResponseModeBounded | base.ResponseModeStreaming}
 }
 func (*dualModeResponseTestPlugin) Handler(next http.Handler) http.Handler { return next }
-func (p *dualModeResponseTestPlugin) SelectResponseMode(*http.Request) base.RequestResponseMode {
+func (p *dualModeResponseTestPlugin) SelectResponseMode(r *http.Request) base.RequestResponseMode {
+	if p.selectMode != nil {
+		return p.selectMode(r)
+	}
 	return p.mode
 }
 
@@ -208,10 +213,7 @@ func TestResponseModeDescriptorCannotInventUndeclaredCallbacksOrRemoveProtocolOw
 		modes: base.ResponseModeBounded | base.ResponseModeStreaming,
 	}}
 	owner.Name = "response-owner"
-	binding := Binding{
-		Plugin: owner, Scope: ScopeRoute, Stage: RequestStageAccess,
-		Provenance: ResourceProvenance{Kind: ResourceRoute, ID: "route"}, factoryName: "ai-proxy",
-	}
+	binding := checkedResponseBinding(t, "ai-proxy", owner, ScopeRoute, "route")
 	capability, err := responseCapabilityForBinding(binding)
 	if err != nil {
 		t.Fatalf("responseCapabilityForBinding() error = %v", err)
@@ -283,8 +285,59 @@ func TestMaterializeResponseBindingsUsesPrivateFactoryIdentity(t *testing.T) {
 	if len(plan) != 1 || plan[0].factoryKey != "echo" || plan[0].Plugin.GetName() != "not-echo" {
 		t.Fatalf("plan = %#v", plan)
 	}
-	if calls := config.calls.Load(); calls != 1 {
-		t.Fatalf("DescribeBindingPhases calls = %d, want 1 per materialization", calls)
+	if calls := config.calls.Load(); calls != 0 {
+		t.Fatalf("DescribeBindingPhases calls = %d, want immutable descriptor reuse", calls)
+	}
+}
+
+func TestResponsePlanRequestLocalBindingsNeverResolveDescriptors(t *testing.T) {
+	plan, err := BuildResponsePlan(ResponsePlanInput{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resolvedConfig := &countingResponseTestConfig{descriptor: base.BindingPhaseDescriptor{
+		RequestStage: "none",
+		Header:       true,
+	}}
+	resolvedPlugin := newResponseTestPlugin("echo", 1, resolvedConfig)
+	resolved := checkedResponseBinding(t, "echo", resolvedPlugin, ScopeConsumer, "resolved-consumer")
+	resolved.Provenance.Kind = ResourceConsumer
+	if calls := resolvedConfig.calls.Load(); calls != 1 {
+		t.Fatalf("resolved DescribeBindingPhases calls = %d, want 1 at construction", calls)
+	}
+	for range 2 {
+		if _, err := plan.PostResolutionHook(
+			httptest.NewRequest(http.MethodGet, "/", nil),
+			EffectiveBindingSet{merged: []Binding{resolved}},
+		); err != nil {
+			t.Fatalf("resolved PostResolutionHook() error = %v", err)
+		}
+	}
+	if calls := resolvedConfig.calls.Load(); calls != 1 {
+		t.Fatalf("resolved DescribeBindingPhases calls = %d, want immutable 1", calls)
+	}
+
+	unresolvedConfig := &countingResponseTestConfig{descriptor: base.BindingPhaseDescriptor{
+		RequestStage: "none",
+		Header:       true,
+	}}
+	unresolved := Binding{
+		Plugin:     newResponseTestPlugin("echo", 1, unresolvedConfig),
+		Descriptor: Descriptor{Factory: "echo"},
+		Scope:      ScopeConsumer,
+		Provenance: ResourceProvenance{Kind: ResourceConsumer, ID: "unresolved-consumer"},
+	}
+	for range 2 {
+		if _, err := plan.PostResolutionHook(
+			httptest.NewRequest(http.MethodGet, "/", nil),
+			EffectiveBindingSet{merged: []Binding{unresolved}},
+		); err == nil {
+			t.Fatal("unresolved PostResolutionHook() error = nil, want fail closed")
+		}
+	}
+	if calls := unresolvedConfig.calls.Load(); calls != 0 {
+		t.Fatalf("unresolved DescribeBindingPhases calls = %d, want 0", calls)
 	}
 }
 
@@ -347,10 +400,7 @@ func TestResponseRewriteSelectsExactlyOneConfiguredResponseOwner(t *testing.T) {
 			if got := len(plan.StreamingBindings()); got != test.wantStreaming {
 				t.Fatalf("streaming bindings = %d, want %d", got, test.wantStreaming)
 			}
-			phases, err := ResolveResponsePhases("response-rewrite", test.config)
-			if err != nil {
-				t.Fatalf("ResolveResponsePhases() error = %v", err)
-			}
+			phases := binding.Descriptor.response
 			if !slices.Equal(phases.Owners, []ResponseOwnerKind{test.wantMetadataOwner}) {
 				t.Fatalf("metadata owners = %v, want [%v]", phases.Owners, test.wantMetadataOwner)
 			}
@@ -427,10 +477,14 @@ func TestResponseRegistryHasExactDeclaredIdentities(t *testing.T) {
 	registryWant = append(registryWant, "grpc-transcode")
 	slices.Sort(registryWant)
 	got := make([]string, 0, len(responseFactoryRegistry))
+	manifest, err := capability.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
 	for identity := range responseFactoryRegistry {
 		got = append(got, identity)
-		if _, ok := requestStageRegistry[identity]; !ok {
-			t.Fatalf("request-stage registry missing %q", identity)
+		if _, err := DescriptorForFactory(manifest, identity); err != nil {
+			t.Fatalf("manifest descriptor missing %q: %v", identity, err)
 		}
 	}
 	slices.Sort(got)
@@ -442,8 +496,8 @@ func TestResponseRegistryHasExactDeclaredIdentities(t *testing.T) {
 func TestMaterializeResponseBindingsRejectsUndeclaredCallback(t *testing.T) {
 	plugin := newResponseTestPlugin("unknown", 1, nil)
 	_, err := MaterializeResponseBindings(EffectiveBindingSet{merged: []Binding{{
-		Plugin: plugin, Scope: ScopeRoute, Stage: RequestStageLegacy,
-		Provenance: ResourceProvenance{Kind: ResourceRoute, ID: "r1"}, factoryName: "unknown",
+		Plugin: plugin, Scope: ScopeRoute,
+		Provenance: ResourceProvenance{Kind: ResourceRoute, ID: "r1"}, Descriptor: Descriptor{Factory: "unknown"},
 	}}})
 	if err == nil || !strings.Contains(err.Error(), "undeclared") {
 		t.Fatalf("MaterializeResponseBindings() error = %v, want undeclared callback", err)

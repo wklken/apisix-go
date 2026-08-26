@@ -13,12 +13,168 @@ import (
 	"github.com/andybalholm/brotli"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
+	"github.com/wklken/apisix-go/pkg/config"
+	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
+	"github.com/wklken/apisix-go/pkg/resource"
+	"github.com/wklken/apisix-go/pkg/runtime"
+	"github.com/wklken/apisix-go/pkg/secret"
 )
+
+type testBaseAttemptRegistration struct {
+	id secret.AttemptID
+}
+
+func (registration testBaseAttemptRegistration) AttemptID() secret.AttemptID {
+	return registration.id
+}
+
+func (testBaseAttemptRegistration) Materialize(context.Context, secret.Scope, string) (secret.Value, error) {
+	panic("base dependency accessor materialized a secret")
+}
+
+func (testBaseAttemptRegistration) Close(context.Context) error {
+	return nil
+}
+
+func testBaseGenerationCapability(t *testing.T, generation uint64) secret.GenerationCapability {
+	t.Helper()
+	capability, err := secret.NewGenerationCapability(
+		testBaseAttemptRegistration{id: secret.AttemptID{byte(generation)}},
+		generation,
+	)
+	if err != nil {
+		t.Fatalf("NewGenerationCapability() error = %v", err)
+	}
+	return capability
+}
+
+func newBaseBatchProcessorForTest(
+	t *testing.T,
+	config logger_batch.Config,
+	deliver logger_batch.ContextDeliveryFunc,
+) *logger_batch.Processor {
+	t.Helper()
+	tasks := runtime.NewTaskRegistry(context.Background(), nil)
+	owner, err := runtime.NewTaskOwner(tasks, "plugin/test/base-logger", runtime.TaskPlugin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.Tasks = owner
+	processor, err := logger_batch.NewWithContext(config, deliver)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if residuals, stopErr := tasks.Stop(ctx); stopErr != nil {
+			t.Errorf("TaskRegistry.Stop() residuals=%v error=%v", residuals, stopErr)
+		}
+	})
+	return processor
+}
+
+func TestBasePluginDependenciesRemainInstanceScoped(t *testing.T) {
+	leftConfig := &config.EffectiveConfig{}
+	rightConfig := &config.EffectiveConfig{}
+	leftResolver := data_encryption.NewResolver(true, []string{"qeddd145sfvddff3"})
+	rightResolver := data_encryption.NewResolver(true, []string{"1234567890abcdef"})
+
+	left := &BasePlugin{}
+	left.SetDependencies(Dependencies{Config: leftConfig, DataEncryption: leftResolver})
+	right := &BasePlugin{}
+	right.SetDependencies(Dependencies{Config: rightConfig, DataEncryption: rightResolver})
+
+	if left.StaticConfig() != leftConfig || right.StaticConfig() != rightConfig {
+		t.Fatal("static configuration dependency was not retained by plugin instance")
+	}
+	ciphertext, err := data_encryption.Encrypt("secret", "qeddd145sfvddff3")
+	if err != nil {
+		t.Fatalf("Encrypt() error = %v", err)
+	}
+	if plaintext, err := left.DataEncryption().Resolve(ciphertext); err != nil || plaintext != "secret" {
+		t.Fatalf("left resolver Resolve() = (%q, %v), want secret", plaintext, err)
+	}
+	if _, err := right.DataEncryption().Resolve(ciphertext); err == nil {
+		t.Fatal("right resolver decrypted ciphertext owned by the left plugin instance")
+	}
+}
+
+func TestBasePluginScopedDependenciesRemainInstanceScoped(t *testing.T) {
+	leftConsumers, err := runtime.NewConsumerBindings(
+		[]runtime.ConsumerRecord{{ID: "left", Consumer: resource.Consumer{Username: "left"}}},
+		nil,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("NewConsumerBindings(left) error = %v", err)
+	}
+	rightConsumers, err := runtime.NewConsumerBindings(
+		[]runtime.ConsumerRecord{{ID: "right", Consumer: resource.Consumer{Username: "right"}}},
+		nil,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("NewConsumerBindings(right) error = %v", err)
+	}
+	leftMetadata, err := runtime.NewMetadataView(map[string][]byte{"left": []byte(`{"owner":"left"}`)})
+	if err != nil {
+		t.Fatalf("NewMetadataView(left) error = %v", err)
+	}
+	rightMetadata, err := runtime.NewMetadataView(map[string][]byte{"right": []byte(`{"owner":"right"}`)})
+	if err != nil {
+		t.Fatalf("NewMetadataView(right) error = %v", err)
+	}
+	leftTasks := runtime.NewTaskRegistry(context.Background(), nil)
+	rightTasks := runtime.NewTaskRegistry(context.Background(), nil)
+	leftOwner, err := runtime.NewTaskOwner(leftTasks, "plugin/test/left", runtime.TaskPlugin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rightOwner, err := runtime.NewTaskOwner(rightTasks, "plugin/test/right", runtime.TaskPlugin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leftSecrets := testBaseGenerationCapability(t, 1)
+	rightSecrets := testBaseGenerationCapability(t, 2)
+
+	left := &BasePlugin{}
+	left.SetDependencies(Dependencies{
+		Secrets:   leftSecrets,
+		Metadata:  leftMetadata,
+		Consumers: leftConsumers,
+		Tasks:     leftOwner,
+	})
+	right := &BasePlugin{}
+	right.SetDependencies(Dependencies{
+		Secrets:   rightSecrets,
+		Metadata:  rightMetadata,
+		Consumers: rightConsumers,
+		Tasks:     rightOwner,
+	})
+
+	if left.ScopedSecrets().AttemptID() == right.ScopedSecrets().AttemptID() {
+		t.Fatal("secret capabilities were not isolated")
+	}
+	if consumer, ok := left.ConsumerLookup().ConsumerByID("left"); !ok || consumer.Username != "left" {
+		t.Fatalf("left ConsumerLookup() = (%+v, %v)", consumer, ok)
+	}
+	if _, ok := left.ConsumerLookup().ConsumerByID("right"); ok {
+		t.Fatal("left ConsumerLookup() exposed right consumer")
+	}
+	var decoded map[string]string
+	if ok, err := left.MetadataView().Decode("left", &decoded); err != nil || !ok || decoded["owner"] != "left" {
+		t.Fatalf("left MetadataView().Decode() = (%v, %v, %#v)", ok, err, decoded)
+	}
+	if left.TaskOwner() != leftOwner || right.TaskOwner() != rightOwner {
+		t.Fatal("exact task owners were not retained by plugin instance")
+	}
+}
 
 func TestBaseLoggerRunLogPhaseUsesBoundedBatchQueue(t *testing.T) {
 	started := make(chan struct{})
-	processor := logger_batch.NewWithContext(logger_batch.Config{
+	processor := newBaseBatchProcessorForTest(t, logger_batch.Config{
 		Name:              "test",
 		BatchMaxSize:      100,
 		MaxPendingEntries: 1,
@@ -166,7 +322,7 @@ func TestBasePluginExposesStablePluginContract(t *testing.T) {
 
 func TestBaseLoggerRunLogPhaseBuildsDetachedNestedPayload(t *testing.T) {
 	delivered := make(chan map[string]any, 1)
-	processor := logger_batch.NewWithContext(logger_batch.Config{
+	processor := newBaseBatchProcessorForTest(t, logger_batch.Config{
 		Name:              "detached-payload",
 		BatchMaxSize:      1,
 		MaxPendingEntries: 4,

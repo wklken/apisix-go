@@ -246,6 +246,10 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	var metadata pluginMetadata
+	if _, err := p.MetadataView().Decode(name, &metadata); err != nil {
+		return fmt.Errorf("loki-logger metadata decode failed: %w", err)
+	}
 	if err := base.PrepareExprRegexps(
 		p.config.IncludeReqBodyExpr, p.config.IncludeRespBodyExpr,
 	); err != nil {
@@ -311,7 +315,6 @@ func (p *Plugin) PostInit() error {
 	p.client = value.(*resty.Client)
 	p.clientRelease = release
 
-	metadata := base.LoadPluginMetadata[pluginMetadata](name)
 	if len(p.config.LogFormat) > 0 {
 		p.LogFormat = p.config.LogFormat
 	} else {
@@ -327,7 +330,7 @@ func (p *Plugin) PostInit() error {
 		p.config.IncludeReqBodyExpr, p.config.IncludeRespBodyExpr,
 	)
 
-	p.BatchProcessor = base.NewBatchProcessor("loki logger", base.BatchDefaults{
+	processor, err := base.NewBatchProcessor("loki logger", p.TaskOwner(), base.BatchDefaults{
 		PluginID:           name,
 		BatchMaxSize:       p.config.BatchMaxSize,
 		MaxRetryCount:      p.config.MaxRetryCount,
@@ -336,9 +339,15 @@ func (p *Plugin) PostInit() error {
 		InactiveTimeoutSec: p.config.InactiveTimeout,
 		MaxPendingEntries:  p.config.MaxPendingEntries,
 	}, p.RouteID, p.ServerAddr, p.SendBatch)
+	if err != nil {
+		return err
+	}
+	p.BatchProcessor = processor
 
 	return nil
 }
+
+func (p *Plugin) QuiesceGenerationTasks() { p.Stop() }
 
 func (p *Plugin) Stop() {
 	p.StopWithCleanup(func() {

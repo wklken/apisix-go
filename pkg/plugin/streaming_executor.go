@@ -2,16 +2,22 @@ package plugin
 
 import (
 	"bufio"
+	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"runtime/debug"
 	"slices"
+	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/felixge/httpsnoop"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/compression"
 )
@@ -26,15 +32,45 @@ type StreamingResponseExecutor struct {
 }
 
 type streamingFinish struct {
-	once        atomic.Bool
-	closers     []io.Closer
-	finalizers  []base.StreamingResponseFinalizer
+	once        sync.Once
+	result      streamingFinishResult
+	closers     []streamingCloserEntry
+	finalizers  []streamingFinalizerEntry
 	compression *streamingCompression
 }
 
+type streamingCloserEntry struct {
+	factory string
+	phase   Phase
+	closer  io.Closer
+}
+
+type streamingFinalizerEntry struct {
+	factory   string
+	phase     Phase
+	finalizer base.StreamingResponseFinalizer
+}
+
+type streamingFinishResult struct {
+	Err                error
+	Panics             []*PanicError
+	downstreamPanic    any
+	hasDownstreamPanic bool
+}
+
+type streamingFinishCallResult struct {
+	err                error
+	downstreamPanic    any
+	hasDownstreamPanic bool
+}
+
+var errStreamingPanic = errors.New("streaming pipeline panicked")
+
 type compressionOfferEntry struct {
-	plugin CompressionOfferPlugin
-	offer  compression.Offer
+	factory string
+	phase   Phase
+	plugin  CompressionOfferPlugin
+	offer   compression.Offer
 }
 
 type streamingCompression struct {
@@ -61,39 +97,321 @@ func dynamicStreamingBindings(r *http.Request) []Binding {
 	return cloneBindings(bindings)
 }
 
-func (f *streamingFinish) finish(cause error) error {
-	if f == nil || !f.once.CompareAndSwap(false, true) {
+type streamingWriteResult struct {
+	n   int
+	err error
+}
+
+type streamingReadFromResult struct {
+	n   int64
+	err error
+}
+
+type streamingHijackResult struct {
+	conn net.Conn
+	rw   *bufio.ReadWriter
+	err  error
+}
+
+type streamingProtocolResult struct {
+	disposition base.ProtocolDisposition
+	request     *http.Request
+	source      apisixctx.ResponseSource
+}
+
+type streamingWriterOwner struct {
+	factory string
+	phase   Phase
+}
+
+func streamingWriterValue[T any](owner *streamingWriterOwner, call func() T) (value T) {
+	defer func() {
+		recovered := recover()
+		if recovered == nil {
+			return
+		}
+		if owner == nil {
+			panic(downstreamPanic{value: recovered})
+		}
+		if downstream, ok := recovered.(downstreamPanic); ok {
+			panic(downstream.value)
+		}
+		if recovered == http.ErrAbortHandler {
+			panic(recovered)
+		}
+		if panicErr, ok := recovered.(*PanicError); ok {
+			panic(panicErr)
+		}
+		panic(&PanicError{
+			Factory: owner.factory,
+			Phase:   owner.phase,
+			Value:   recovered,
+			Stack:   debug.Stack(),
+		})
+	}()
+	return call()
+}
+
+func guardStreamingValue[T any](
+	factory string,
+	phase Phase,
+	call func() (T, error),
+) (value T, err error) {
+	defer func() {
+		recovered := recover()
+		if recovered == nil {
+			return
+		}
+		if downstream, ok := recovered.(downstreamPanic); ok {
+			panic(downstream.value)
+		}
+		if recovered == http.ErrAbortHandler {
+			panic(recovered)
+		}
+		if panicErr, ok := recovered.(*PanicError); ok {
+			err = panicErr
+			return
+		}
+		err = &PanicError{
+			Factory: factory,
+			Phase:   phase,
+			Value:   recovered,
+			Stack:   debug.Stack(),
+		}
+	}()
+	return call()
+}
+
+func streamingWriterHooks(owner *streamingWriterOwner) httpsnoop.Hooks {
+	return httpsnoop.Hooks{
+		Header: func(header httpsnoop.HeaderFunc) httpsnoop.HeaderFunc {
+			return func() http.Header { return streamingWriterValue(owner, header) }
+		},
+		WriteHeader: func(writeHeader httpsnoop.WriteHeaderFunc) httpsnoop.WriteHeaderFunc {
+			return func(status int) {
+				streamingWriterValue(owner, func() struct{} { writeHeader(status); return struct{}{} })
+			}
+		},
+		Write: func(write httpsnoop.WriteFunc) httpsnoop.WriteFunc {
+			return func(body []byte) (int, error) {
+				result := streamingWriterValue(owner, func() streamingWriteResult {
+					n, err := write(body)
+					return streamingWriteResult{n: n, err: err}
+				})
+				return result.n, result.err
+			}
+		},
+		WriteString: func(writeString httpsnoop.WriteStringFunc) httpsnoop.WriteStringFunc {
+			return func(value string) (int, error) {
+				result := streamingWriterValue(owner, func() streamingWriteResult {
+					n, err := writeString(value)
+					return streamingWriteResult{n: n, err: err}
+				})
+				return result.n, result.err
+			}
+		},
+		ReadFrom: func(readFrom httpsnoop.ReadFromFunc) httpsnoop.ReadFromFunc {
+			return func(reader io.Reader) (int64, error) {
+				result := streamingWriterValue(owner, func() streamingReadFromResult {
+					n, err := readFrom(reader)
+					return streamingReadFromResult{n: n, err: err}
+				})
+				return result.n, result.err
+			}
+		},
+		Flush: func(flush httpsnoop.FlushFunc) httpsnoop.FlushFunc {
+			return func() {
+				streamingWriterValue(owner, func() struct{} { flush(); return struct{}{} })
+			}
+		},
+		FlushError: func(flush httpsnoop.FlushErrorFunc) httpsnoop.FlushErrorFunc {
+			return func() error { return streamingWriterValue(owner, flush) }
+		},
+		CloseNotify: func(closeNotify httpsnoop.CloseNotifyFunc) httpsnoop.CloseNotifyFunc {
+			return func() <-chan bool { return streamingWriterValue(owner, closeNotify) }
+		},
+		Hijack: func(hijack httpsnoop.HijackFunc) httpsnoop.HijackFunc {
+			return func() (net.Conn, *bufio.ReadWriter, error) {
+				result := streamingWriterValue(owner, func() streamingHijackResult {
+					conn, rw, err := hijack()
+					return streamingHijackResult{conn: conn, rw: rw, err: err}
+				})
+				return result.conn, result.rw, result.err
+			}
+		},
+		Push: func(push httpsnoop.PushFunc) httpsnoop.PushFunc {
+			return func(target string, options *http.PushOptions) error {
+				return streamingWriterValue(owner, func() error { return push(target, options) })
+			}
+		},
+		SetReadDeadline: func(set httpsnoop.SetReadDeadlineFunc) httpsnoop.SetReadDeadlineFunc {
+			return func(deadline time.Time) error {
+				return streamingWriterValue(owner, func() error { return set(deadline) })
+			}
+		},
+		SetWriteDeadline: func(set httpsnoop.SetWriteDeadlineFunc) httpsnoop.SetWriteDeadlineFunc {
+			return func(deadline time.Time) error {
+				return streamingWriterValue(owner, func() error { return set(deadline) })
+			}
+		},
+		EnableFullDuplex: func(enable httpsnoop.EnableFullDuplexFunc) httpsnoop.EnableFullDuplexFunc {
+			return func() error { return streamingWriterValue(owner, enable) }
+		},
+	}
+}
+
+func protectStreamingDownstreamWriter(w http.ResponseWriter) http.ResponseWriter {
+	return httpsnoop.Wrap(w, streamingWriterHooks(nil))
+}
+
+func guardStreamingOwnerWriter(factory string, phase Phase, w http.ResponseWriter) http.ResponseWriter {
+	return httpsnoop.Wrap(w, streamingWriterHooks(&streamingWriterOwner{factory: factory, phase: phase}))
+}
+
+func guardStreamingFinishCall(
+	factory string,
+	phase Phase,
+	call func() error,
+) (result streamingFinishCallResult) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			if downstream, ok := recovered.(downstreamPanic); ok {
+				result.downstreamPanic = downstream.value
+				result.hasDownstreamPanic = true
+				return
+			}
+			if panicErr, ok := recovered.(*PanicError); ok {
+				result.err = panicErr
+				return
+			}
+			result.err = &PanicError{
+				Factory: factory,
+				Phase:   phase,
+				Value:   recovered,
+				Stack:   debug.Stack(),
+			}
+		}
+	}()
+	result.err = call()
+	return result
+}
+
+func (f *streamingFinish) finish(cause error) streamingFinishResult {
+	if f == nil {
+		return streamingFinishResult{}
+	}
+	f.once.Do(func() {
+		for _, entry := range slices.Backward(f.closers) {
+			f.recordFinishResult(guardStreamingFinishCall(entry.factory, entry.phase, entry.closer.Close))
+		}
+		for _, entry := range slices.Backward(f.finalizers) {
+			f.recordFinishResult(guardStreamingFinishCall(entry.factory, entry.phase, func() error {
+				return entry.finalizer.FinishStreamingResponse(cause)
+			}))
+		}
+	})
+	return cloneStreamingFinishResult(f.result)
+}
+
+func (f *streamingFinish) recordFinishResult(result streamingFinishCallResult) {
+	if result.hasDownstreamPanic && !f.result.hasDownstreamPanic {
+		f.result.downstreamPanic = result.downstreamPanic
+		f.result.hasDownstreamPanic = true
+	}
+	f.recordFinishError(result.err)
+}
+
+func (f *streamingFinish) recordFinishError(err error) {
+	if err == nil {
+		return
+	}
+	if panicErr, ok := err.(*PanicError); ok {
+		f.result.Panics = append(f.result.Panics, cloneStreamingPanicError(panicErr))
+		return
+	}
+	if f.result.Err == nil {
+		f.result.Err = err
+	}
+}
+
+func cloneStreamingFinishResult(result streamingFinishResult) streamingFinishResult {
+	clone := streamingFinishResult{
+		Err:                result.Err,
+		downstreamPanic:    result.downstreamPanic,
+		hasDownstreamPanic: result.hasDownstreamPanic,
+	}
+	if len(result.Panics) == 0 {
+		return clone
+	}
+	clone.Panics = make([]*PanicError, len(result.Panics))
+	for index, panicErr := range result.Panics {
+		clone.Panics[index] = cloneStreamingPanicError(panicErr)
+	}
+	return clone
+}
+
+func cloneStreamingPanicError(panicErr *PanicError) *PanicError {
+	if panicErr == nil {
 		return nil
 	}
-	var first error
-	for _, closer := range slices.Backward(f.closers) {
-		if err := closer.Close(); err != nil && first == nil {
-			first = err
-		}
+	clone := *panicErr
+	clone.Stack = append([]byte(nil), panicErr.Stack...)
+	return &clone
+}
+
+func streamingPanicError(err error) *PanicError {
+	var panicErr *PanicError
+	if errors.As(err, &panicErr) {
+		return panicErr
 	}
-	for _, finalizer := range slices.Backward(f.finalizers) {
-		if err := finalizer.FinishStreamingResponse(cause); err != nil && first == nil {
-			first = err
+	return nil
+}
+
+func logStreamingFinishPanics(panics []*PanicError) {
+	for _, panicErr := range panics {
+		if panicErr == nil {
+			continue
 		}
+		logger.Errorf(
+			"additional streaming finish panic factory=%q phase=%q",
+			sanitizeDiagnostic(panicErr.Factory),
+			panicErr.Phase,
+		)
 	}
-	return first
+}
+
+func panicFirstStreamingFinish(result streamingFinishResult) {
+	panicStreamingFinishDownstream(result)
+	if len(result.Panics) == 0 {
+		return
+	}
+	logStreamingFinishPanics(result.Panics[1:])
+	panic(result.Panics[0])
+}
+
+func panicStreamingFinishDownstream(result streamingFinishResult) {
+	if result.hasDownstreamPanic {
+		logStreamingFinishPanics(result.Panics)
+		panic(result.downstreamPanic)
+	}
 }
 
 func NewStreamingResponseExecutor(bindings []Binding) (*StreamingResponseExecutor, error) {
-	cloned := cloneBindings(bindings)
+	cloned, err := resolveBindingsForPlan(bindings)
+	if err != nil {
+		return nil, err
+	}
 	executor := &StreamingResponseExecutor{bindings: cloned}
-	for _, binding := range cloned {
+	for index := range executor.bindings {
+		binding := &executor.bindings[index]
 		if binding.Plugin == nil {
 			return nil, fmt.Errorf(
 				"streaming binding has nil plugin (factory=%q resource=%s/%s)",
-				binding.factoryName, binding.Provenance.Kind, binding.Provenance.ID,
+				binding.Descriptor.Factory, binding.Provenance.Kind, binding.Provenance.ID,
 			)
 		}
-		capability, err := responseCapabilityForBinding(binding)
-		if err != nil {
-			return nil, err
-		}
-		if capability.HeaderFilter && (!capability.SeparateSubsystem || binding.factoryName != "mqtt-proxy") {
+		capability := binding.Descriptor.responseCapability
+		if capability.HeaderFilter && (!capability.SeparateSubsystem || binding.Descriptor.Factory != "mqtt-proxy") {
 			executor.hasStaticHeaderFilter = true
 		}
 		if capability.ExclusiveProtocol != ProtocolNone {
@@ -102,7 +420,7 @@ func NewStreamingResponseExecutor(bindings []Binding) (*StreamingResponseExecuto
 				continue // route-owned protocol terminals are supplied separately
 			}
 			executor.terminals = append(executor.terminals, RouteTerminalCandidate{
-				Identity: binding.factoryName, Scope: binding.Scope, Priority: binding.Plugin.GetPriority(),
+				Identity: binding.Descriptor.Factory, Scope: binding.Scope, Priority: binding.Priority,
 				Provenance: binding.Provenance, Protocol: capability.ExclusiveProtocol, Terminal: terminal,
 			})
 		}
@@ -233,7 +551,7 @@ func (e *StreamingResponseExecutor) PostResolutionHook(
 			(len(buffered) > 0 && !bufferStreamingHeader) {
 			return r, fmt.Errorf(
 				"dynamic response identity=%q resource=%s/%s is not supported",
-				binding.factoryName,
+				binding.Descriptor.Factory,
 				binding.Provenance.Kind,
 				binding.Provenance.ID,
 			)
@@ -296,11 +614,13 @@ func (e *StreamingResponseExecutor) runHeaderFilters(r *http.Request, state *bas
 		if !ok {
 			return fmt.Errorf(
 				"factory %q declares streaming header filter without callback (resource=%s/%s)",
-				binding.factoryName, binding.Provenance.Kind, binding.Provenance.ID,
+				binding.Descriptor.Factory, binding.Provenance.Kind, binding.Provenance.ID,
 			)
 		}
-		if err := plugin.RunStreamingHeaderFilter(r, state); err != nil {
-			return fmt.Errorf("factory %q streaming header filter: %w", binding.factoryName, err)
+		if err := guardCall(binding.Descriptor.Factory, PhaseHeaderFilter, func() error {
+			return plugin.RunStreamingHeaderFilter(r, state)
+		}); err != nil {
+			return fmt.Errorf("factory %q streaming header filter: %w", binding.Descriptor.Factory, err)
 		}
 	}
 	return nil
@@ -400,34 +720,54 @@ func (e *StreamingResponseExecutor) wrapBody(
 				continue
 			}
 		}
-		if isDualModeResponseBinding(binding, capability) &&
-			binding.Plugin.(base.RequestResponseModeSelector).SelectResponseMode(r) !=
-				base.RequestResponseModeStreaming {
-			continue
+		if isDualModeResponseBinding(binding, capability) {
+			mode, modeErr := guardValue(
+				binding.Descriptor.Factory,
+				PhaseBodyFilter,
+				func() (base.RequestResponseMode, error) {
+					return binding.Plugin.(base.RequestResponseModeSelector).SelectResponseMode(r), nil
+				},
+			)
+			if modeErr != nil {
+				return nil, modeErr
+			}
+			if mode != base.RequestResponseModeStreaming {
+				continue
+			}
 		}
 		plugin, ok := binding.Plugin.(base.StreamingBodyFilterPlugin)
 		if !ok {
 			return nil, fmt.Errorf(
 				"factory %q declares streaming body filter without callback (resource=%s/%s)",
-				binding.factoryName, binding.Provenance.Kind, binding.Provenance.ID,
+				binding.Descriptor.Factory, binding.Provenance.Kind, binding.Provenance.ID,
 			)
 		}
-		wrapped, err := plugin.WrapStreamingResponse(current, r)
+		wrapped, err := guardStreamingValue(
+			binding.Descriptor.Factory,
+			PhaseBodyFilter,
+			func() (http.ResponseWriter, error) {
+				return plugin.WrapStreamingResponse(protectStreamingDownstreamWriter(current), r)
+			},
+		)
 		if err != nil {
 			_ = finish.finish(err)
-			return nil, fmt.Errorf("factory %q streaming body wrapper: %w", binding.factoryName, err)
+			return nil, fmt.Errorf("factory %q streaming body wrapper: %w", binding.Descriptor.Factory, err)
 		}
 		if wrapped == nil {
 			_ = finish.finish(nil)
-			return nil, fmt.Errorf("factory %q streaming body wrapper returned nil", binding.factoryName)
+			return nil, fmt.Errorf("factory %q streaming body wrapper returned nil", binding.Descriptor.Factory)
 		}
 		if closer, ok := wrapped.(io.Closer); ok {
-			finish.closers = append(finish.closers, closer)
+			finish.closers = append(finish.closers, streamingCloserEntry{
+				factory: binding.Descriptor.Factory, phase: PhaseBodyFilter, closer: closer,
+			})
 		}
 		if finalizer, ok := wrapped.(base.StreamingResponseFinalizer); ok {
-			finish.finalizers = append(finish.finalizers, finalizer)
+			finish.finalizers = append(finish.finalizers, streamingFinalizerEntry{
+				factory: binding.Descriptor.Factory, phase: PhaseBodyFilter, finalizer: finalizer,
+			})
 		}
-		current = httpsnoop.Wrap(wrapped, httpsnoop.Hooks{})
+		current = guardStreamingOwnerWriter(binding.Descriptor.Factory, PhaseBodyFilter, wrapped)
 	}
 	return current, nil
 }
@@ -505,16 +845,30 @@ func (e *StreamingResponseExecutor) registerCompressionOffers(
 		if !ok {
 			return r, nil, fmt.Errorf(
 				"factory %q declares compression offer without structural callback (resource=%s/%s)",
-				binding.factoryName, binding.Provenance.Kind, binding.Provenance.ID,
+				binding.Descriptor.Factory, binding.Provenance.Kind, binding.Provenance.ID,
 			)
 		}
-		offers := plugin.RegisterCompressionOffers(request, state)
+		offers, offerErr := guardValue(
+			binding.Descriptor.Factory,
+			PhaseBodyFilter,
+			func() ([]compression.Offer, error) {
+				return plugin.RegisterCompressionOffers(request, state), nil
+			},
+		)
+		if offerErr != nil {
+			return r, nil, offerErr
+		}
 		for _, offer := range offers {
 			if offer.Coding == compression.Identity {
 				continue
 			}
 			allOffers = append(allOffers, offer)
-			negotiation.offers = append(negotiation.offers, compressionOfferEntry{plugin: plugin, offer: offer})
+			negotiation.offers = append(negotiation.offers, compressionOfferEntry{
+				factory: binding.Descriptor.Factory,
+				phase:   PhaseBodyFilter,
+				plugin:  plugin,
+				offer:   offer,
+			})
 		}
 	}
 	if len(allOffers) == 0 {
@@ -550,7 +904,14 @@ func (f *streamingFinish) applyCompression(
 		if entry.offer.Coding != decision.Coding {
 			continue
 		}
-		wrapped, err := entry.plugin.WrapCompression(w, r, f.compression.state, decision)
+		wrapped, err := guardStreamingValue(entry.factory, entry.phase, func() (http.ResponseWriter, error) {
+			return entry.plugin.WrapCompression(
+				protectStreamingDownstreamWriter(w),
+				r,
+				f.compression.state,
+				decision,
+			)
+		})
 		if err != nil {
 			return nil, err
 		}
@@ -558,12 +919,16 @@ func (f *streamingFinish) applyCompression(
 			return nil, fmt.Errorf("compression factory returned nil writer")
 		}
 		if closer, ok := wrapped.(io.Closer); ok {
-			f.closers = append(f.closers, closer)
+			f.closers = append(f.closers, streamingCloserEntry{
+				factory: entry.factory, phase: entry.phase, closer: closer,
+			})
 		}
 		if finalizer, ok := wrapped.(base.StreamingResponseFinalizer); ok {
-			f.finalizers = append(f.finalizers, finalizer)
+			f.finalizers = append(f.finalizers, streamingFinalizerEntry{
+				factory: entry.factory, phase: entry.phase, finalizer: finalizer,
+			})
 		}
-		return wrapped, nil
+		return guardStreamingOwnerWriter(entry.factory, entry.phase, wrapped), nil
 	}
 	return w, nil
 }
@@ -641,12 +1006,24 @@ func (e *StreamingResponseExecutor) CommitResponse(
 	finish := &streamingFinish{compression: negotiation}
 	inner, err := finish.applyCompression(w, request, state.Status)
 	if err != nil {
-		_ = finish.finish(err)
+		result := finish.finish(err)
+		if panicErr := streamingPanicError(err); panicErr != nil {
+			panicStreamingFinishDownstream(result)
+			logStreamingFinishPanics(result.Panics)
+			panic(panicErr)
+		}
+		panicFirstStreamingFinish(result)
 		return err
 	}
 	wrapped, err := e.wrapBody(inner, request, finish)
 	if err != nil {
-		_ = finish.finish(err)
+		result := finish.finish(err)
+		if panicErr := streamingPanicError(err); panicErr != nil {
+			panicStreamingFinishDownstream(result)
+			logStreamingFinishPanics(result.Panics)
+			panic(panicErr)
+		}
+		panicFirstStreamingFinish(result)
 		return err
 	}
 	var panicValue any
@@ -655,10 +1032,13 @@ func (e *StreamingResponseExecutor) CommitResponse(
 		commit(wrapped, state)
 	}()
 	if panicValue != nil {
-		_ = finish.finish(fmt.Errorf("streaming commit panic: %v", panicValue))
+		result := finish.finish(errStreamingPanic)
+		logStreamingFinishPanics(result.Panics)
 		panic(panicValue)
 	}
-	if err := finish.finish(nil); err != nil {
+	result := finish.finish(nil)
+	panicFirstStreamingFinish(result)
+	if result.Err != nil {
 		panic(http.ErrAbortHandler)
 	}
 	return nil
@@ -675,7 +1055,8 @@ func (e *StreamingResponseExecutor) phaseBindingsFor(
 	selected := make([]Binding, 0, len(bindings))
 	for _, binding := range bindings {
 		capability, err := responseCapabilityForBinding(binding)
-		if err != nil || !want(capability) || capability.SeparateSubsystem && binding.factoryName == "mqtt-proxy" {
+		if err != nil || !want(capability) ||
+			capability.SeparateSubsystem && binding.Descriptor.Factory == "mqtt-proxy" {
 			continue
 		}
 		selected = append(selected, binding)
@@ -688,18 +1069,18 @@ func mergeStreamingBindings(static, dynamic []Binding) []Binding {
 	merged := cloneBindings(static)
 	indexes := make(map[string]int, len(merged))
 	for index, binding := range merged {
-		if binding.Scope == ScopeSystem || binding.Scope == ScopeGlobal || binding.factoryName == "" {
+		if binding.Scope == ScopeSystem || binding.Scope == ScopeGlobal || binding.Descriptor.Factory == "" {
 			continue
 		}
-		indexes[binding.factoryName] = index
+		indexes[binding.Descriptor.Factory] = index
 	}
 	for _, binding := range dynamic {
-		if index, ok := indexes[binding.factoryName]; ok {
+		if index, ok := indexes[binding.Descriptor.Factory]; ok {
 			merged[index] = binding
 			continue
 		}
-		if binding.factoryName != "" {
-			indexes[binding.factoryName] = len(merged)
+		if binding.Descriptor.Factory != "" {
+			indexes[binding.Descriptor.Factory] = len(merged)
 		}
 		merged = append(merged, binding)
 	}
@@ -708,27 +1089,25 @@ func mergeStreamingBindings(static, dynamic []Binding) []Binding {
 
 func compareBindings(a, b Binding) int {
 	if a.Scope != b.Scope {
-		if a.Scope < b.Scope {
-			return -1
-		}
-		return 1
+		return cmp.Compare(a.Scope, b.Scope)
 	}
-	if a.Stage != b.Stage {
-		if a.Stage < b.Stage {
-			return -1
-		}
-		return 1
+	if phase := compareDescriptorPhase(a.Descriptor, b.Descriptor); phase != 0 {
+		return phase
 	}
-	if a.Plugin == nil || b.Plugin == nil {
-		return 0
+	if priority := cmp.Compare(b.Priority, a.Priority); priority != 0 {
+		return priority
 	}
-	if a.Plugin.GetPriority() > b.Plugin.GetPriority() {
-		return -1
+	if factory := cmp.Compare(a.Descriptor.Factory, b.Descriptor.Factory); factory != 0 {
+		return factory
 	}
-	if a.Plugin.GetPriority() < b.Plugin.GetPriority() {
-		return 1
+	if kind := cmp.Compare(a.Provenance.Kind, b.Provenance.Kind); kind != 0 {
+		return kind
 	}
-	return 0
+	return cmp.Compare(a.Provenance.ID, b.Provenance.ID)
+}
+
+func compareDescriptorPhase(a, b Descriptor) int {
+	return cmp.Compare(a.requestStage, b.requestStage)
 }
 
 func (e *StreamingResponseExecutor) RunExclusiveProtocol(
@@ -754,7 +1133,19 @@ func (e *StreamingResponseExecutor) RunExclusiveProtocol(
 		return request, 0, nil
 	}
 	for _, candidate := range e.terminals {
-		disposition, replacement, source, err := candidate.Terminal.RunExclusiveProtocol(w, request, next)
+		result, err := guardStreamingValue(candidate.Identity, PhaseProtocol, func() (streamingProtocolResult, error) {
+			disposition, replacement, source, runErr := candidate.Terminal.RunExclusiveProtocol(
+				protectStreamingDownstreamWriter(w),
+				request,
+				guardContinuation(next),
+			)
+			return streamingProtocolResult{
+				disposition: disposition,
+				request:     replacement,
+				source:      source,
+			}, runErr
+		})
+		disposition, replacement, source := result.disposition, result.request, result.source
 		if replacement == nil {
 			replacement = request
 		}
@@ -814,10 +1205,18 @@ func (e *StreamingResponseExecutor) Then(next http.Handler) http.Handler {
 		})
 		wrapped, request, finish, err := e.wrapStreamingResponse(tracked, r)
 		if err != nil {
+			result := finish.finish(err)
+			if panicErr := streamingPanicError(err); panicErr != nil {
+				panicStreamingFinishDownstream(result)
+				logStreamingFinishPanics(result.Panics)
+				panic(panicErr)
+			}
+			panicFirstStreamingFinish(result)
 			if !committed.Load() {
 				writeStableResponseError(w, http.StatusInternalServerError, "Internal Server Error")
+				return
 			}
-			return
+			panic(http.ErrAbortHandler)
 		}
 		var panicValue any
 		var runErr error
@@ -838,15 +1237,34 @@ func (e *StreamingResponseExecutor) Then(next http.Handler) http.Handler {
 			)
 		}()
 		if panicValue != nil {
-			_ = finish.finish(fmt.Errorf("streaming terminal panic: %v", panicValue))
-			if _, ok := panicValue.(streamingSetupError); ok && !committed.Load() {
+			result := finish.finish(errStreamingPanic)
+			if setupErr, ok := panicValue.(streamingSetupError); ok && !committed.Load() {
+				if panicErr := streamingPanicError(setupErr.err); panicErr != nil {
+					panicStreamingFinishDownstream(result)
+					logStreamingFinishPanics(result.Panics)
+					panic(panicErr)
+				}
+				panicFirstStreamingFinish(result)
 				writeStableResponseError(w, http.StatusInternalServerError, "Internal Server Error")
 				return
 			}
+			logStreamingFinishPanics(result.Panics)
 			panic(panicValue)
 		}
-		if finishErr := finish.finish(runErr); runErr == nil {
-			runErr = finishErr
+		panicErr := streamingPanicError(runErr)
+		finishCause := runErr
+		if panicErr != nil {
+			finishCause = errStreamingPanic
+		}
+		finishResult := finish.finish(finishCause)
+		if panicErr != nil {
+			panicStreamingFinishDownstream(finishResult)
+			logStreamingFinishPanics(finishResult.Panics)
+			panic(panicErr)
+		}
+		panicFirstStreamingFinish(finishResult)
+		if runErr == nil {
+			runErr = finishResult.Err
 		}
 		if runErr != nil {
 			if committed.Load() {

@@ -17,13 +17,14 @@ import (
 
 	"github.com/casbin/govaluate"
 	"github.com/redis/go-redis/v9"
-	"github.com/wklken/apisix-go/pkg/data_encryption"
+	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_protocols"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_runtime"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/cacheutil"
 	"github.com/wklken/apisix-go/pkg/resource"
+	"github.com/wklken/apisix-go/pkg/secret"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	v "github.com/wklken/apisix-go/pkg/apisix/variable"
@@ -37,6 +38,14 @@ type Plugin struct {
 	now      func() time.Time
 	costExpr *govaluate.EvaluableExpression
 	redis    redisClient
+
+	redisPassword          *secret.Value
+	sentinelPassword       *secret.Value
+	redisPasswordLegacy    *string
+	sentinelPasswordLegacy *string
+	secretsMaterialized    bool
+	secretMu               sync.Mutex
+	stopOnce               sync.Once
 
 	resourceScope  string
 	configIdentity string
@@ -53,6 +62,15 @@ type redisClient interface {
 const (
 	priority = 1030
 	name     = "ai-rate-limiting"
+)
+
+var (
+	newRedisClient = func(options *redis.Options) redisClient {
+		return redis.NewClient(options)
+	}
+	newRedisFailoverClient = func(options *redis.FailoverOptions) redisClient {
+		return redis.NewFailoverClient(options)
+	}
 )
 
 var (
@@ -352,6 +370,7 @@ func (p *Plugin) PostInit() error {
 	if p.config.RedisTimeout == 0 {
 		p.config.RedisTimeout = 1000
 	}
+	var redisAddresses []string
 	if p.config.Policy == "redis" {
 		if p.config.RedisHost == "" {
 			return errors.New("redis_host is required when policy is redis")
@@ -359,19 +378,7 @@ func (p *Plugin) PostInit() error {
 		if p.config.RedisPort == 0 {
 			p.config.RedisPort = 6379
 		}
-		password, err := p.resolveSecret("redis_password", p.config.RedisPassword)
-		if err != nil {
-			return err
-		}
-		p.redis = redis.NewClient(&redis.Options{
-			Addr:         net.JoinHostPort(p.config.RedisHost, strconv.Itoa(p.config.RedisPort)),
-			Username:     p.config.RedisUsername,
-			Password:     password,
-			DB:           p.config.RedisDatabase,
-			DialTimeout:  time.Duration(p.config.RedisTimeout) * time.Millisecond,
-			ReadTimeout:  time.Duration(p.config.RedisTimeout) * time.Millisecond,
-			WriteTimeout: time.Duration(p.config.RedisTimeout) * time.Millisecond,
-		})
+		redisAddresses = []string{net.JoinHostPort(p.config.RedisHost, strconv.Itoa(p.config.RedisPort))}
 	}
 	if p.config.Policy == "redis-sentinel" {
 		if len(p.config.RedisSentinels) == 0 || p.config.RedisMasterName == "" {
@@ -381,26 +388,7 @@ func (p *Plugin) PostInit() error {
 		for _, sentinel := range p.config.RedisSentinels {
 			addresses = append(addresses, net.JoinHostPort(sentinel.Host, strconv.Itoa(sentinel.Port)))
 		}
-		password, err := p.resolveSecret("redis_password", p.config.RedisPassword)
-		if err != nil {
-			return err
-		}
-		sentinelPassword, err := p.resolveSecret("sentinel_password", p.config.SentinelPassword)
-		if err != nil {
-			return err
-		}
-		p.redis = redis.NewFailoverClient(&redis.FailoverOptions{
-			MasterName:       p.config.RedisMasterName,
-			SentinelAddrs:    addresses,
-			Username:         p.config.RedisUsername,
-			Password:         password,
-			SentinelUsername: p.config.SentinelUsername,
-			SentinelPassword: sentinelPassword,
-			DB:               p.config.RedisDatabase,
-			DialTimeout:      time.Duration(p.config.RedisTimeout) * time.Millisecond,
-			ReadTimeout:      time.Duration(p.config.RedisTimeout) * time.Millisecond,
-			WriteTimeout:     time.Duration(p.config.RedisTimeout) * time.Millisecond,
-		})
+		redisAddresses = addresses
 	}
 	if p.config.LimitStrategy == "expression" {
 		if p.config.CostExpr == "" {
@@ -452,6 +440,46 @@ func (p *Plugin) PostInit() error {
 		}
 	}
 
+	if p.config.Policy == "redis" {
+		err := p.useRedisPassword(func(password string) error {
+			p.redis = newRedisClient(&redis.Options{
+				Addr:         redisAddresses[0],
+				Username:     p.config.RedisUsername,
+				Password:     password,
+				DB:           p.config.RedisDatabase,
+				DialTimeout:  time.Duration(p.config.RedisTimeout) * time.Millisecond,
+				ReadTimeout:  time.Duration(p.config.RedisTimeout) * time.Millisecond,
+				WriteTimeout: time.Duration(p.config.RedisTimeout) * time.Millisecond,
+			})
+			return nil
+		})
+		if err != nil {
+			return fmt.Errorf("%s redis_password: %w", name, secret.ErrCredentialUnavailable)
+		}
+	}
+	if p.config.Policy == "redis-sentinel" {
+		err := p.useRedisPassword(func(password string) error {
+			return p.useSentinelPassword(func(sentinelPassword string) error {
+				p.redis = newRedisFailoverClient(&redis.FailoverOptions{
+					MasterName:       p.config.RedisMasterName,
+					SentinelAddrs:    redisAddresses,
+					Username:         p.config.RedisUsername,
+					Password:         password,
+					SentinelUsername: p.config.SentinelUsername,
+					SentinelPassword: sentinelPassword,
+					DB:               p.config.RedisDatabase,
+					DialTimeout:      time.Duration(p.config.RedisTimeout) * time.Millisecond,
+					ReadTimeout:      time.Duration(p.config.RedisTimeout) * time.Millisecond,
+					WriteTimeout:     time.Duration(p.config.RedisTimeout) * time.Millisecond,
+				})
+				return nil
+			})
+		})
+		if err != nil {
+			return fmt.Errorf("%s redis credentials: %w", name, secret.ErrCredentialUnavailable)
+		}
+	}
+
 	if p.now == nil {
 		p.now = time.Now
 	}
@@ -462,13 +490,189 @@ func (p *Plugin) PostInit() error {
 	return nil
 }
 
-func (p *Plugin) resolveSecret(field, value string) (string, error) {
-	keyring, enabled := data_encryption.Keyring()
-	resolved, err := data_encryption.NewResolver(enabled, keyring).ResolveForContext(value, "ai-rate-limiting."+field)
-	if err != nil {
-		return "", fmt.Errorf("ai-rate-limiting %s: %w", field, err)
+// MaterializeSecrets is the transitional Builder path. It uses the
+// process-local resolver only before the immutable generation path replaces
+// it; the resolved strings never remain in Config.
+func (p *Plugin) MaterializeSecrets() error {
+	p.secretMu.Lock()
+	defer p.secretMu.Unlock()
+	if p.secretsMaterialized {
+		return nil
 	}
-	return resolved, nil
+	needRedis, needSentinel := p.secretFieldsForPolicy()
+	if !needRedis && !needSentinel {
+		p.config.RedisPassword = ""
+		p.config.SentinelPassword = ""
+		p.secretsMaterialized = true
+		return nil
+	}
+	resolver := p.DataEncryption()
+	if !resolver.Configured() {
+		return errors.New("data-encryption resolver is required")
+	}
+
+	var (
+		redisPassword      *string
+		sentinelPassword   *string
+		redisDescriptor    string
+		sentinelDescriptor string
+	)
+	if needRedis && p.config.RedisPassword != "" {
+		resolved, err := p.resolveLegacySecret(resolver, "redis_password", p.config.RedisPassword)
+		if err != nil {
+			return err
+		}
+		redisPassword = &resolved.value
+		redisDescriptor = resolved.descriptor
+	}
+	if needSentinel && p.config.SentinelPassword != "" {
+		resolved, err := p.resolveLegacySecret(resolver, "sentinel_password", p.config.SentinelPassword)
+		if err != nil {
+			return err
+		}
+		sentinelPassword = &resolved.value
+		sentinelDescriptor = resolved.descriptor
+	}
+
+	if !needRedis {
+		p.config.RedisPassword = ""
+	} else if redisPassword != nil {
+		p.config.RedisPassword = redisDescriptor
+	}
+	if !needSentinel {
+		p.config.SentinelPassword = ""
+	} else if sentinelPassword != nil {
+		p.config.SentinelPassword = sentinelDescriptor
+	}
+	p.redisPasswordLegacy = redisPassword
+	p.sentinelPasswordLegacy = sentinelPassword
+	p.secretsMaterialized = true
+	return nil
+}
+
+// MaterializeScopedSecrets admits only fields declared for this plugin's
+// immutable attempt. It retains opaque values privately and publishes only
+// redacted descriptors in Config.
+func (p *Plugin) MaterializeScopedSecrets(
+	ctx context.Context, access base.ScopedSecretAccess,
+) error {
+	p.secretMu.Lock()
+	defer p.secretMu.Unlock()
+	if p.secretsMaterialized {
+		return nil
+	}
+	needRedis, needSentinel := p.secretFieldsForPolicy()
+	if !needRedis && !needSentinel {
+		p.config.RedisPassword = ""
+		p.config.SentinelPassword = ""
+		p.secretsMaterialized = true
+		return nil
+	}
+
+	var (
+		redisPassword      *secret.Value
+		sentinelPassword   *secret.Value
+		redisDescriptor    string
+		sentinelDescriptor string
+	)
+	if needRedis && p.config.RedisPassword != "" {
+		value, err := access.Materialize(ctx, "redis_password", p.config.RedisPassword)
+		if err != nil {
+			return fmt.Errorf("%s redis_password: %w", name, secret.ErrCredentialUnavailable)
+		}
+		descriptor, err := value.Descriptor(capability.SecretPluginConfig)
+		if err != nil {
+			return fmt.Errorf("%s redis_password: %w", name, secret.ErrCredentialUnavailable)
+		}
+		redisPassword = &value
+		redisDescriptor = descriptor.String()
+	}
+	if needSentinel && p.config.SentinelPassword != "" {
+		value, err := access.Materialize(ctx, "sentinel_password", p.config.SentinelPassword)
+		if err != nil {
+			return fmt.Errorf("%s sentinel_password: %w", name, secret.ErrCredentialUnavailable)
+		}
+		descriptor, err := value.Descriptor(capability.SecretPluginConfig)
+		if err != nil {
+			return fmt.Errorf("%s sentinel_password: %w", name, secret.ErrCredentialUnavailable)
+		}
+		sentinelPassword = &value
+		sentinelDescriptor = descriptor.String()
+	}
+
+	if !needRedis {
+		p.config.RedisPassword = ""
+	} else if redisPassword != nil {
+		p.config.RedisPassword = redisDescriptor
+	}
+	if !needSentinel {
+		p.config.SentinelPassword = ""
+	} else if sentinelPassword != nil {
+		p.config.SentinelPassword = sentinelDescriptor
+	}
+	p.redisPassword = redisPassword
+	p.sentinelPassword = sentinelPassword
+	p.secretsMaterialized = true
+	return nil
+}
+
+type legacySecret struct {
+	value      string
+	descriptor string
+}
+
+func (p *Plugin) resolveLegacySecret(
+	resolver interface {
+		ResolveForContext(string, string) (string, error)
+	}, field, raw string,
+) (legacySecret, error) {
+	value, err := resolver.ResolveForContext(raw, name+"."+field)
+	if err != nil {
+		return legacySecret{}, fmt.Errorf("%s %s: %w", name, field, secret.ErrCredentialUnavailable)
+	}
+	digest := sha256.Sum256([]byte(value))
+	descriptor, err := secret.NewDescriptor(capability.SecretPluginConfig, digest)
+	if err != nil {
+		return legacySecret{}, fmt.Errorf("%s %s: %w", name, field, secret.ErrCredentialUnavailable)
+	}
+	return legacySecret{value: value, descriptor: descriptor.String()}, nil
+}
+
+func (p *Plugin) secretFieldsForPolicy() (bool, bool) {
+	switch p.config.Policy {
+	case "redis":
+		return true, false
+	case "redis-sentinel":
+		return true, true
+	default:
+		return false, false
+	}
+}
+
+func (p *Plugin) useRedisPassword(use func(string) error) error {
+	if p.redisPassword != nil {
+		return p.redisPassword.Use(use)
+	}
+	if p.redisPasswordLegacy != nil {
+		return use(*p.redisPasswordLegacy)
+	}
+	if p.config.RedisPassword == "" {
+		return use("")
+	}
+	return secret.ErrCredentialUnavailable
+}
+
+func (p *Plugin) useSentinelPassword(use func(string) error) error {
+	if p.sentinelPassword != nil {
+		return p.sentinelPassword.Use(use)
+	}
+	if p.sentinelPasswordLegacy != nil {
+		return use(*p.sentinelPasswordLegacy)
+	}
+	if p.config.SentinelPassword == "" {
+		return use("")
+	}
+	return secret.ErrCredentialUnavailable
 }
 
 func (p *Plugin) SetResourceContext(route resource.Route, service resource.Service) {
@@ -509,9 +713,17 @@ func (p *Plugin) refreshConfigIdentity() {
 }
 
 func (p *Plugin) Stop() {
-	if p.redis != nil {
-		_ = p.redis.Close()
-	}
+	p.stopOnce.Do(func() {
+		if p.redis != nil {
+			_ = p.redis.Close()
+		}
+		p.secretMu.Lock()
+		p.redisPassword = nil
+		p.sentinelPassword = nil
+		p.redisPasswordLegacy = nil
+		p.sentinelPasswordLegacy = nil
+		p.secretMu.Unlock()
+	})
 }
 
 // RunRequestPhase performs the admission check once after authentication and

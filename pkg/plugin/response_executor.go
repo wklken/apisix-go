@@ -71,7 +71,10 @@ func NewBufferedResponseExecutor(
 	if config.MaxBytes <= 0 {
 		return nil, fmt.Errorf("buffered response max bytes must be positive: %d", config.MaxBytes)
 	}
-	cloned := cloneBindings(static)
+	cloned, err := resolveBindingsForPlan(static)
+	if err != nil {
+		return nil, err
+	}
 	set := bindingsToEffectiveSet(cloned)
 	plan, err := materializeResponseBindings(set, hasConditionalTerminalBinding(cloned))
 	if err != nil {
@@ -167,18 +170,23 @@ func (s *responseExecution) selectRequestResponseMode(r *http.Request) error {
 	selected := base.RequestResponseMode(0)
 	dualCount := 0
 	for _, binding := range s.plan {
-		capability, err := responseCapabilityForBinding(Binding{
-			Plugin: binding.Plugin, Scope: binding.Scope, Provenance: binding.Provenance,
-			factoryName: binding.factoryKey,
-		})
-		if err != nil {
-			return err
+		if !binding.Descriptor.resolved {
+			return fmt.Errorf("factory %q has no resolved descriptor", binding.factoryKey)
 		}
+		capability := binding.Descriptor.responseCapability
 		if !isDualModeResponseBinding(Binding{Plugin: binding.Plugin}, capability) {
 			continue
 		}
 		selector := binding.Plugin.(base.RequestResponseModeSelector)
-		mode := selector.SelectResponseMode(r)
+		mode, err := guardValue(binding.factoryKey, PhaseBodyFilter, func() (base.RequestResponseMode, error) {
+			return selector.SelectResponseMode(r), nil
+		})
+		if panicErr, ok := err.(*PanicError); ok {
+			panic(panicErr)
+		}
+		if err != nil {
+			return err
+		}
 		if mode != base.RequestResponseModeBounded && mode != base.RequestResponseModeStreaming {
 			return fmt.Errorf("factory %q selected unsupported request response mode %d", binding.factoryKey, mode)
 		}
@@ -579,19 +587,37 @@ func (s *responseExecution) runTransforms(
 ) error {
 	for _, phase := range []ResponsePhaseMask{ResponsePhaseHeader, ResponsePhaseBufferedBody} {
 		for _, binding := range s.plan {
-			if binding.Phases&phase == 0 || !eligible(binding.Plugin, source) {
+			if binding.Phases&phase == 0 {
 				continue
 			}
 			switch phase {
 			case ResponsePhaseHeader:
-				if err := binding.Plugin.(base.HeaderFilterPlugin).RunHeaderFilter(s.request, state); err != nil {
+				if !eligible(binding, source, PhaseHeaderFilter) {
+					continue
+				}
+				err := guardCall(binding.factoryKey, PhaseHeaderFilter, func() error {
+					return binding.Plugin.(base.HeaderFilterPlugin).RunHeaderFilter(s.request, state)
+				})
+				if panicErr, ok := err.(*PanicError); ok {
+					panic(panicErr)
+				}
+				if err != nil {
 					return err
 				}
 			case ResponsePhaseBufferedBody:
-				if err := binding.Plugin.(base.BufferedBodyFilterPlugin).RunBufferedBodyFilter(
-					s.request,
-					state,
-				); err != nil {
+				if !eligible(binding, source, PhaseBodyFilter) {
+					continue
+				}
+				err := guardCall(binding.factoryKey, PhaseBodyFilter, func() error {
+					return binding.Plugin.(base.BufferedBodyFilterPlugin).RunBufferedBodyFilter(
+						s.request,
+						state,
+					)
+				})
+				if panicErr, ok := err.(*PanicError); ok {
+					panic(panicErr)
+				}
+				if err != nil {
 					return err
 				}
 			}
@@ -605,13 +631,19 @@ func (s *responseExecution) runStores(
 	source apisixctx.ResponseSource,
 ) {
 	for _, binding := range s.plan {
-		if binding.Phases&ResponsePhaseFinalStore == 0 || !eligible(binding.Plugin, source) {
+		if binding.Phases&ResponsePhaseFinalStore == 0 || !eligible(binding, source, PhaseBodyFilter) {
 			continue
 		}
-		if err := binding.Plugin.(base.FinalResponseStorePlugin).RunFinalResponseStore(
-			s.request,
-			base.CloneResponseState(state),
-		); err != nil {
+		err := guardCall(binding.factoryKey, PhaseBodyFilter, func() error {
+			return binding.Plugin.(base.FinalResponseStorePlugin).RunFinalResponseStore(
+				s.request,
+				base.CloneResponseState(state),
+			)
+		})
+		if panicErr, ok := err.(*PanicError); ok {
+			panic(panicErr)
+		}
+		if err != nil {
 			logger.Errorf(
 				"final response store failed factory=%q resource=%s/%q: %v",
 				sanitizeDiagnostic(binding.factoryKey),
@@ -623,12 +655,18 @@ func (s *responseExecution) runStores(
 	}
 }
 
-func eligible(plugin Plugin, source apisixctx.ResponseSource) bool {
+func eligible(binding ResponseBinding, source apisixctx.ResponseSource, phase Phase) bool {
 	if source == apisixctx.ResponseSourceCacheHit {
 		return false
 	}
-	if checker, ok := plugin.(base.ResponseEligibility); ok {
-		return checker.AppliesToResponseSource(source)
+	if checker, ok := binding.Plugin.(base.ResponseEligibility); ok {
+		eligible, err := guardValue(binding.factoryKey, phase, func() (bool, error) {
+			return checker.AppliesToResponseSource(source), nil
+		})
+		if panicErr, ok := err.(*PanicError); ok {
+			panic(panicErr)
+		}
+		return eligible
 	}
 	return source == apisixctx.ResponseSourceUpstream
 }
@@ -772,19 +810,19 @@ func validateBoundedConflicts(
 				plan[0].factoryKey,
 				plan[0].Provenance.Kind,
 				plan[0].Provenance.ID,
-				binding.factoryName,
+				binding.Descriptor.Factory,
 				binding.Provenance.Kind,
 				binding.Provenance.ID,
 			)
 		}
-		if (binding.factoryName == "serverless-pre-function" || binding.factoryName == "serverless-post-function") &&
-			binding.Stage == RequestStageLegacy {
+		if (binding.Descriptor.Factory == "serverless-pre-function" || binding.Descriptor.Factory == "serverless-post-function") &&
+			binding.Descriptor.requestStage == RequestStageLegacy {
 			return fmt.Errorf(
 				"bounded response identity=%q resource=%s/%s conflicts with %q log phase resource=%s/%s",
 				plan[0].factoryKey,
 				plan[0].Provenance.Kind,
 				plan[0].Provenance.ID,
-				binding.factoryName,
+				binding.Descriptor.Factory,
 				binding.Provenance.Kind,
 				binding.Provenance.ID,
 			)

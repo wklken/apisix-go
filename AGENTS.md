@@ -2,20 +2,48 @@
 
 ## Project Overview
 
-`apisix-go` is a Go implementation of the Apache APISIX data plane. It remains under development and is not production ready, but the current branch has a verified Go-native APISIX 3.17 parity baseline: 100 of 104 default plugins are registered, with the remaining four requiring external or native runtimes.
+`apisix-go` is a Go implementation of the Apache APISIX data plane. It remains under development and is not production ready. Observable APISIX 3.17 compatibility is the default direction; declared, evidenced Go-native extensions may intentionally diverge. Inventory counts do not prove qualification or production readiness.
 
 This is a single Go module: `github.com/wklken/apisix-go`.
 
 Key runtime pieces:
 
 - `main.go` enters the Cobra CLI in `cmd/root.go`.
-- Configuration is loaded with Viper from `conf/config-default.yaml` by default, or from `-c/--config`.
-- The HTTP server is built in `pkg/server` and currently listens on `:8080`.
-- Route building lives in `pkg/route` and uses `go-chi/chi`.
-- Runtime resources are stored through `pkg/store` in bbolt and are fed by the etcd watcher in `pkg/etcd`.
-- APISIX plugins live under `pkg/plugin/<plugin_name>` and are registered in `pkg/plugin/init.go`.
+- Static configuration is loaded by the presence/provenance-aware `pkg/config` loader from builtins, `conf/config-default.yaml`, an optional `-c/--config` override, recognized `APISIXGO_*` overlays, and repeatable `--set` flags.
+- `pkg/capability/manifest.yaml` is the editable source for plugin factories, aliases, behavior/evidence status, qualification, gaps/divergences, and secret declarations. It generates the plugin registry and plugin-status documentation.
+- Providers submit desired snapshots to the single-writer `pkg/generation` coordinator. `pkg/store` is the bbolt durable generation journal, not a mutable runtime resource store.
+- `pkg/compiler` plans and materializes immutable HTTP/TLS and stream snapshots. `pkg/route` and `pkg/stream` contain detached snapshot compilers; `pkg/server` atomically activates them and owns generation leases.
+- HTTP and TLS listeners come from effective configuration; the default HTTP listener is `0.0.0.0:9080`.
+- APISIX plugins live under `pkg/plugin/<plugin_name>` and are instantiated through the manifest-generated registry consumed by `pkg/plugin/init.go`.
 - Proxying, load balancing, and transport behavior live under `pkg/proxy`.
-- Kafka PubSub, Dubbo/http-Dubbo, and MQTT stream handling have explicit protocol owners under `pkg/plugin` and `pkg/stream`; general stream-plugin chaining and stream mTLS remain deferred.
+- Kafka PubSub, Dubbo/http-Dubbo, and MQTT stream handling have explicit protocol owners under `pkg/plugin` and `pkg/stream`. Stream currently supports raw TCP and at most one `mqtt-proxy` protocol binding; general stream-plugin chaining, UDP, PROXY protocol, discovery, and stream TLS remain deferred.
+
+## Architecture Sources of Truth
+
+- [`docs/design.md`](docs/design.md) is the canonical human architecture record. Files under `docs/superpowers/plans/` are intent and execution history, not proof that planned code exists.
+- `pkg/capability/manifest.yaml` is the machine-readable capability truth. Do not hand-edit `pkg/plugin/registry_gen.go`, `docs/plugins.md`, or the generated README summaries.
+- Current source and focused tests override stale prose. If a plan, design paragraph, generated projection, and code disagree, verify the current call chain and then update the owning source rather than averaging them.
+- The current runtime is a single process with an in-process `Server + GenerationEngine`. External supervisor/worker, IPC activation, listener inheritance, worker probation/restart, and the proposed next-generation qualification packages remain planned-only.
+
+Directory-scoped instructions inherit this file. Read the closest `AGENTS.md` before changing a core module:
+
+| Area | Local instructions |
+|---|---|
+| Capability/configuration | `pkg/capability/AGENTS.md`, `pkg/config/AGENTS.md` |
+| Desired/published state | `pkg/generation/AGENTS.md`, `pkg/store/AGENTS.md` |
+| Compiler/runtime/secrets | `pkg/compiler/AGENTS.md`, `pkg/runtime/AGENTS.md`, `pkg/secret/AGENTS.md` |
+| Serving/protocol | `pkg/server/AGENTS.md`, `pkg/route/AGENTS.md`, `pkg/stream/AGENTS.md` |
+| Proxy/plugins/metrics | `pkg/proxy/AGENTS.md`, `pkg/plugin/AGENTS.md`, `pkg/plugin/logger_batch/AGENTS.md`, `pkg/observability/metrics/AGENTS.md` |
+
+## Cross-package Runtime Invariants
+
+- The only production publication path is provider -> `generation.Coordinator` -> durable journal -> compiler -> `GenerationEngine`. Do not restore direct Store getters, mutable route builders, or provider-owned activation.
+- Publication order is `ApplyDesired -> Prepare -> Stage -> Activate -> Commit (persist acknowledgement) -> FinalizeActivation -> return acknowledgement to provider`. Activation/commit failure restores the exact predecessor before abort; recovery serves only committed published state.
+- First-generation invalid state fails closed. `last-good` requires an exact same-domain published predecessor; a tombstone is deletion and never falls back.
+- A prepared generation owns its secret attempt, task registry, resource leases, and HTTP/stream snapshots. Cleanup is retryable and ordered `quiesce -> resource finalize -> authority release`; a residual or deadline retains ownership.
+- HTTP requests, hijacked connections, TLS callbacks, and stream connections pin the exact generation they use. A generation retires only after it owns no active domain and all leases drain.
+- Background work in `pkg/plugin`, `pkg/proxy`, `pkg/route`, and `pkg/stream` must use the owned runtime task APIs; the AST/type gate for raw goroutines covers exactly those roots, not the whole repository.
+- Secret materialization is allowed only through manifest-declared, exact generation/attempt/domain/resource authority. Never expose plaintext, ciphertext, or backend references in diagnostics.
 
 ## Setup Commands
 
@@ -65,7 +93,7 @@ Do not remove the main checkout's entire `.cache/`: it contains the shared modul
 - Run a specific config manually: `scripts/go_cache.sh run -- go run . -c conf/config.yaml`.
 - The default config path is `conf/config-default.yaml`; `conf/config.yaml` contains local overrides and an example admin key.
 - `conf/config-default.yaml` says not to modify default configurations there. Prefer custom settings in `conf/config.yaml`.
-- Running the server is not dependency-free: the current server starts an etcd watcher from `deployment.etcd` config and creates `apisix-go-store.db` in the working directory.
+- Running the server is not dependency-free in etcd mode. Etcd and standalone providers both submit desired batches only after startup journal recovery. The bbolt journal is created under the absolute `EffectiveConfig.Paths.DataDir` as `apisix-go-store.db`.
 
 ## Testing Instructions
 
@@ -109,32 +137,31 @@ Correctness:
 ## Code Style
 
 - Match existing Go style and package organization. Keep changes surgical.
-- Format touched Go files with `golangci-lint fmt`.
+- Format touched Go files with `scripts/go_cache.sh run -- golangci-lint fmt`.
 - `golangci-lint fmt` rewrites the tree. If you use it, inspect the diff and keep only changes related to the task.
 - Prefer existing project dependencies and patterns before adding new packages.
 - Plugin package directories use snake_case, while APISIX plugin names in config use hyphenated names such as `key-auth`.
 - Plugin implementations usually embed `base.BasePlugin`, define `priority`, `name`, and `schema`, expose a config struct through `Config()`, and fill defaults in `PostInit()`.
-- When adding or renaming a plugin, update `pkg/plugin/init.go` so `plugin.New()` can instantiate it.
-- If feature support changes, update the relevant plugin row in [`docs/plugins.md`](docs/plugins.md).
+- When adding or renaming a plugin, update `pkg/capability/manifest.yaml` and regenerate/check its projections. `pkg/plugin/init.go` consumes the generated registry; it is not the registration source of truth.
+- When feature support, evidence, a gap, divergence, or secret declaration changes, edit the manifest (and any required ADR) rather than `docs/plugins.md` or generated README blocks.
 
 ## APISIX Plugin Parity Scope
 
-- The current parity snapshot is 100/104 registered default plugins, 89 plugin entries at the documented Go-native monitoring level, and 9 explicit native/runtime or separate-subsystem deferrals. The four missing registrations are `ext-plugin-pre-req`, `ext-plugin-post-req`, `ext-plugin-post-resp`, and `inspect`.
-- The authoritative status artifact is [`docs/plugins.md`](docs/plugins.md), with [`README.md`](README.md) as the project entry point and [`docs/design.md`](docs/design.md) as the consolidated design record. Keep both documents aligned when parity behavior changes.
+- The authoritative editable status source is `pkg/capability/manifest.yaml`; [`docs/plugins.md`](docs/plugins.md) and README summaries are generated projections. Use `scripts/go_cache.sh run -- go run ./cmd/capability-gen -repo-root . -check` to detect drift.
+- Keep behavior support, qualification evidence, and production readiness separate. Do not infer one from registration or inventory counts.
 - OpenResty-native, NGINX-native, and Lua-runtime-native parity is not required unless the user explicitly asks for a Go-native approximation.
-- Treat missing/deferred official defaults as native/runtime features that are not required for normal parity work. Current out-of-scope defaults are `ext-plugin-pre-req`, `ext-plugin-post-req`, `ext-plugin-post-resp`, and `inspect`; do not add placeholder Go implementations for them.
+- Treat manifest-declared missing/deferred official defaults as native/runtime features that are not required for normal parity work; do not add placeholder Go implementations merely to increase inventory.
 - `serverless-pre-function` and `serverless-post-function` have bounded compatibility implementations, but full Lua/OpenResty parity is intentionally out of scope. Do not expand them into a general Lua runtime or claim full phase/streaming fidelity.
-- For native-only features, document the unsupported status in README and [`docs/plugins.md`](docs/plugins.md) instead of adding placeholder Go implementations.
+- For native-only features, record the unsupported status and evidence in the manifest so generated documentation stays aligned.
 - Examples of out-of-scope native behavior include OpenResty phase timing, `ngx_lua` APIs, Lua code execution, NGINX buffering internals, shared-dict/lrucache exactness, OCSP/TLS stapling internals, and external plugin runner protocol compatibility unless separately requested.
-- The canonical remaining-plugin backlog is [`docs/plugins.md`](docs/plugins.md), grouped into Logger, Auth, AI, Observability, and Others.
 
 ## Configuration Notes
 
-- Cobra defines `--config` / `-c`; Viper also reads environment variables with prefix `APISIXGO` and maps dots to underscores.
+- Cobra defines `--config` / `-c` and repeatable `--set`; the custom loader accepts only recognized `APISIXGO_*` overlays and preserves field presence and provenance.
 - `deployment.role_traditional.config_provider` is currently `etcd` in `conf/config.yaml`.
 - When `server-info` is enabled with traditional etcd configuration, the server reports under `<deployment.etcd.prefix>/data_plane/server_info/<apisix-id>` using `plugin_attr.server-info.report_ttl` and renews the lease until shutdown. Data-plane mode intentionally does not write this registration record.
-- TCP stream routing is enabled through `apisix.proxy_mode` plus `apisix.stream_proxy.tcp`; stream routes are loaded from the `stream_routes` store bucket. The current main-server stream owner is `mqtt-proxy`.
-- The local bbolt store file `apisix-go-store.db` is generated at runtime and ignored by git.
+- TCP stream routing is enabled through `apisix.proxy_mode` plus `apisix.stream_proxy.tcp`. Provider desired state is journaled and compiled into an immutable stream router; each accepted connection leases that exact generation.
+- The local bbolt generation journal `<EffectiveConfig.Paths.DataDir>/apisix-go-store.db` is generated at runtime and ignored by git.
 - Do not treat the example admin key in `conf/config.yaml` as a production secret.
 
 ## Build and Deployment

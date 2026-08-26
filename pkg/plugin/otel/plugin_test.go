@@ -3,17 +3,21 @@ package otel
 import (
 	"bytes"
 	"context"
+	stdjson "encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	otelapi "go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -23,6 +27,8 @@ import (
 	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/resource"
+	"github.com/wklken/apisix-go/pkg/runtime"
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 type failingReader struct{}
@@ -33,6 +39,16 @@ type otelMinimalWriter struct {
 	header http.Header
 	body   bytes.Buffer
 	status int
+}
+
+func TestPostInitRequiresEffectiveConfig(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err == nil || err.Error() != "effective config is required" {
+		t.Fatalf("PostInit() error = %v, want stable missing-config error", err)
+	}
 }
 
 func (w *otelMinimalWriter) Header() http.Header {
@@ -49,6 +65,7 @@ func (w *otelMinimalWriter) WriteHeader(status int) {
 
 func TestPostInitSetsSamplerDefaults(t *testing.T) {
 	p := &Plugin{}
+	p.SetDependencies(base.Dependencies{Config: &config.EffectiveConfig{}})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -380,24 +397,13 @@ func TestRequestIDGeneratorUsesXRequestIDAsTraceID(t *testing.T) {
 }
 
 func TestLoadMetadataUsesOfficialPluginAttributes(t *testing.T) {
-	oldConfig := config.GlobalConfig
-	t.Cleanup(func() { config.GlobalConfig = oldConfig })
-	config.GlobalConfig = &config.Config{
-		PluginAttr: map[string]map[string]any{
-			name: {
-				"trace_id_source": "x-request-id",
-				"resource": map[string]any{
-					"service.name": "gateway",
-				},
-				"collector": map[string]any{
-					"address":         "collector.example.com:4318",
-					"request_timeout": 7,
-				},
-			},
-		},
+	view := mustOpenTelemetryMetadataView(t, map[string]string{
+		name: `{"trace_id_source":"x-request-id","resource":{"service.name":"gateway"},"collector":{"address":"collector.example.com:4318","request_timeout":7}}`,
+	})
+	metadata, configured, err := loadMetadata(view, nil)
+	if err != nil {
+		t.Fatalf("loadMetadata() error = %v", err)
 	}
-
-	metadata, configured := loadMetadata()
 	if !configured {
 		t.Fatal("metadata configured = false, want true")
 	}
@@ -405,6 +411,433 @@ func TestLoadMetadataUsesOfficialPluginAttributes(t *testing.T) {
 		metadata.Collector.RequestTimeout != 7 || metadata.Resource["service.name"] != "gateway" {
 		t.Fatalf("metadata = %#v, want configured trace source, collector, and resource", metadata)
 	}
+}
+
+func TestMetadataSchemaAcceptsOpenTelemetryDocument(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	metadata := map[string]any{
+		"trace_id_source": "x-request-id",
+		"resource": map[string]any{
+			"service.name": "gateway",
+			"enabled":      true,
+			"sample_rate":  0.5,
+		},
+		"collector": map[string]any{
+			"address":         "collector.example.com:4318",
+			"request_timeout": -7,
+			"request_headers": map[string]any{
+				"Authorization": "token",
+				"X-Retry":       3,
+				"X-Enabled":     false,
+			},
+		},
+		"batch_span_processor": map[string]any{
+			"drop_on_queue_full":    true,
+			"max_queue_size":        1024,
+			"batch_timeout":         2.5,
+			"inactive_timeout":      1.0,
+			"max_export_batch_size": 16,
+		},
+		"set_ngx_var": true,
+	}
+	if err := util.Validate(metadata, p.GetMetadataSchema()); err != nil {
+		t.Fatalf("metadata schema rejected supported document: %v", err)
+	}
+
+	for _, tt := range []struct {
+		name     string
+		metadata map[string]any
+	}{
+		{
+			name:     "invalid trace id source",
+			metadata: map[string]any{"trace_id_source": "request-id"},
+		},
+		{
+			name: "resource nested value",
+			metadata: map[string]any{
+				"resource": map[string]any{"nested": map[string]any{"value": "invalid"}},
+			},
+		},
+		{
+			name: "request header array value",
+			metadata: map[string]any{
+				"collector": map[string]any{
+					"request_headers": map[string]any{"X-Values": []any{"invalid"}},
+				},
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := util.Validate(tt.metadata, p.GetMetadataSchema()); err == nil {
+				t.Fatal("metadata schema error = nil, want rejection")
+			}
+		})
+	}
+}
+
+func TestLoadMetadataRetainsRuntimeJSONNumbersInResourceAttributes(t *testing.T) {
+	view := mustOpenTelemetryMetadataView(t, map[string]string{
+		name: `{"resource":{"positive_int":7,"negative_int":-3,"fraction":1.25,"negative_fraction":-0.5}}`,
+	})
+	metadata, configured, err := loadMetadata(view, nil)
+	if err != nil {
+		t.Fatalf("loadMetadata() error = %v", err)
+	}
+	if !configured {
+		t.Fatal("metadata configured = false, want true")
+	}
+
+	values := make(map[string]attribute.Value)
+	for _, item := range otelResource(metadata.Resource).Attributes() {
+		values[string(item.Key)] = item.Value
+	}
+	for key, want := range map[string]struct {
+		typeName attribute.Type
+		intValue int64
+		float    float64
+	}{
+		"positive_int":      {typeName: attribute.INT64, intValue: 7},
+		"negative_int":      {typeName: attribute.INT64, intValue: -3},
+		"fraction":          {typeName: attribute.FLOAT64, float: 1.25},
+		"negative_fraction": {typeName: attribute.FLOAT64, float: -0.5},
+	} {
+		value, ok := values[key]
+		if !ok {
+			t.Fatalf("resource attribute %q missing; got %#v", key, values)
+		}
+		if value.Type() != want.typeName {
+			t.Fatalf("resource attribute %q type = %v, want %v", key, value.Type(), want.typeName)
+		}
+		if want.typeName == attribute.INT64 && value.AsInt64() != want.intValue {
+			t.Fatalf("resource attribute %q = %d, want %d", key, value.AsInt64(), want.intValue)
+		}
+		if want.typeName == attribute.FLOAT64 && value.AsFloat64() != want.float {
+			t.Fatalf("resource attribute %q = %v, want %v", key, value.AsFloat64(), want.float)
+		}
+	}
+
+	standardNumberValues := make(map[string]attribute.Value)
+	for _, item := range otelResource(map[string]any{
+		"standard_int":      stdjson.Number("11"),
+		"standard_fraction": stdjson.Number("-2.75"),
+	}).Attributes() {
+		standardNumberValues[string(item.Key)] = item.Value
+	}
+	if got := standardNumberValues["standard_int"]; got.Type() != attribute.INT64 || got.AsInt64() != 11 {
+		t.Fatalf("standard encoding/json integer = %#v, want int64 11", got)
+	}
+	if got := standardNumberValues["standard_fraction"]; got.Type() != attribute.FLOAT64 || got.AsFloat64() != -2.75 {
+		t.Fatalf("standard encoding/json fraction = %#v, want float64 -2.75", got)
+	}
+}
+
+func TestLoadMetadataPrecedenceAndAliases(t *testing.T) {
+	attr := func(traceSource, address string) map[string]any {
+		return map[string]any{
+			"trace_id_source": traceSource,
+			"resource":        map[string]any{"service.name": traceSource},
+			"collector": map[string]any{
+				"address":         address,
+				"request_timeout": 7,
+				"request_headers": map[string]any{"Authorization": traceSource},
+			},
+		}
+	}
+	metadataDocument := func(traceSource, address string) string {
+		return fmt.Sprintf(
+			`{"trace_id_source":%q,"resource":{"service.name":%q},"collector":{"address":%q,"request_timeout":9,"request_headers":{"Authorization":%q}}}`,
+			traceSource,
+			traceSource,
+			address,
+			traceSource,
+		)
+	}
+	tests := []struct {
+		name           string
+		view           map[string]string
+		pluginAttr     map[string]map[string]any
+		wantSource     string
+		wantAddress    string
+		wantTimeout    int
+		wantConfigured bool
+		wantResource   string
+		wantHeader     string
+	}{
+		{
+			name:           "defaults",
+			wantSource:     "random",
+			wantAddress:    "127.0.0.1:4318",
+			wantTimeout:    3,
+			wantConfigured: false,
+		},
+		{
+			name:           "canonical attr",
+			pluginAttr:     map[string]map[string]any{name: attr("attr-canonical", "attr-canonical:4318")},
+			wantSource:     "attr-canonical",
+			wantAddress:    "attr-canonical:4318",
+			wantTimeout:    7,
+			wantConfigured: true,
+			wantResource:   "attr-canonical",
+			wantHeader:     "attr-canonical",
+		},
+		{
+			name:           "alias attr",
+			pluginAttr:     map[string]map[string]any{"otel": attr("attr-alias", "attr-alias:4318")},
+			wantSource:     "attr-alias",
+			wantAddress:    "attr-alias:4318",
+			wantTimeout:    7,
+			wantConfigured: true,
+			wantResource:   "attr-alias",
+			wantHeader:     "attr-alias",
+		},
+		{
+			name: "canonical attr wins over alias attr",
+			pluginAttr: map[string]map[string]any{
+				name:   attr("attr-canonical", "attr-canonical:4318"),
+				"otel": attr("attr-alias", "attr-alias:4318"),
+			},
+			wantSource:     "attr-canonical",
+			wantAddress:    "attr-canonical:4318",
+			wantTimeout:    7,
+			wantConfigured: true,
+			wantResource:   "attr-canonical",
+			wantHeader:     "attr-canonical",
+		},
+		{
+			name:           "alias metadata wins over canonical attr",
+			view:           map[string]string{"otel": metadataDocument("metadata-alias", "metadata-alias:4318")},
+			pluginAttr:     map[string]map[string]any{name: attr("attr-canonical", "attr-canonical:4318")},
+			wantSource:     "metadata-alias",
+			wantAddress:    "metadata-alias:4318",
+			wantTimeout:    9,
+			wantConfigured: true,
+			wantResource:   "metadata-alias",
+			wantHeader:     "metadata-alias",
+		},
+		{
+			name: "canonical metadata wins over alias metadata",
+			view: map[string]string{
+				"otel": metadataDocument("metadata-alias", "metadata-alias:4318"),
+				name:   metadataDocument("metadata-canonical", "metadata-canonical:4318"),
+			},
+			pluginAttr: map[string]map[string]any{
+				name:   attr("attr-canonical", "attr-canonical:4318"),
+				"otel": attr("attr-alias", "attr-alias:4318"),
+			},
+			wantSource:     "metadata-canonical",
+			wantAddress:    "metadata-canonical:4318",
+			wantTimeout:    9,
+			wantConfigured: true,
+			wantResource:   "metadata-canonical",
+			wantHeader:     "metadata-canonical",
+		},
+		{
+			name: "metadata replaces rather than merges attrs",
+			view: map[string]string{
+				"otel": `{"trace_id_source":"metadata-only"}`,
+			},
+			pluginAttr:     map[string]map[string]any{name: attr("attr-canonical", "attr-canonical:4318")},
+			wantSource:     "metadata-only",
+			wantAddress:    "127.0.0.1:4318",
+			wantTimeout:    3,
+			wantConfigured: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			view := mustOpenTelemetryMetadataView(t, tt.view)
+			metadata, configured, err := loadMetadata(view, tt.pluginAttr)
+			if err != nil {
+				t.Fatalf("loadMetadata() error = %v", err)
+			}
+			if configured != tt.wantConfigured {
+				t.Fatalf("configured = %v, want %v", configured, tt.wantConfigured)
+			}
+			if metadata.TraceIDSource != tt.wantSource || metadata.Collector.Address != tt.wantAddress ||
+				metadata.Collector.RequestTimeout != tt.wantTimeout {
+				t.Fatalf(
+					"metadata source/address/timeout = %q/%q/%d, want %q/%q/%d",
+					metadata.TraceIDSource,
+					metadata.Collector.Address,
+					metadata.Collector.RequestTimeout,
+					tt.wantSource,
+					tt.wantAddress,
+					tt.wantTimeout,
+				)
+			}
+			if tt.wantResource != "" && metadata.Resource["service.name"] != tt.wantResource {
+				t.Fatalf("resource service.name = %q, want %q", metadata.Resource["service.name"], tt.wantResource)
+			}
+			if tt.wantHeader != "" && metadata.Collector.RequestHeaders["Authorization"] != tt.wantHeader {
+				t.Fatalf(
+					"authorization header = %v, want %q",
+					metadata.Collector.RequestHeaders["Authorization"],
+					tt.wantHeader,
+				)
+			}
+		})
+	}
+
+	canonicalInvalid := mustOpenTelemetryMetadataView(
+		t,
+		map[string]string{name: `{"collector":{"request_timeout":"invalid"}}`},
+	)
+	if _, _, err := loadMetadata(
+		canonicalInvalid,
+		map[string]map[string]any{"otel": attr("alias", "alias:4318")},
+	); err == nil {
+		t.Fatal("loadMetadata() error = nil for invalid canonical metadata")
+	}
+
+	for _, tt := range []struct {
+		name       string
+		pluginAttr map[string]map[string]any
+	}{
+		{
+			name: "canonical nil blocks alias",
+			pluginAttr: map[string]map[string]any{
+				name:   nil,
+				"otel": attr("alias", "alias:4318"),
+			},
+		},
+		{
+			name:       "alias nil blocks defaults",
+			pluginAttr: map[string]map[string]any{"otel": nil},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			metadata, configured, err := loadMetadata(runtime.MetadataView{}, tt.pluginAttr)
+			if err == nil {
+				t.Fatal("loadMetadata() error = nil for nil plugin attribute")
+			}
+			if configured || metadata.TraceIDSource != "" || metadata.Resource != nil ||
+				metadata.Collector.Address != "" || metadata.Collector.RequestTimeout != 0 ||
+				metadata.Collector.RequestHeaders != nil || metadata.SetNgxVar ||
+				metadata.BatchSpanProcessor != (BatchSpanProcessorConfig{}) {
+				t.Fatalf("loadMetadata() = (%#v, %v, %v), want fail-closed zero metadata", metadata, configured, err)
+			}
+		})
+	}
+}
+
+func TestPreparedGenerationsRetainOpenTelemetryMetadata(t *testing.T) {
+	nSource := []byte(
+		`{"trace_id_source":"x-request-id","resource":{"service.name":"generation-n"},"collector":{"address":"127.0.0.1:4318","request_headers":{"Authorization":"generation-n"}}}`,
+	)
+	nView, err := runtime.NewMetadataView(map[string][]byte{name: nSource})
+	if err != nil {
+		t.Fatalf("NewMetadataView(N) error = %v", err)
+	}
+	nSource[0] = 'x'
+
+	pN := &Plugin{}
+	pN.SetDependencies(base.Dependencies{Config: &config.EffectiveConfig{}, Metadata: nView})
+	if err := pN.Init(); err != nil {
+		t.Fatalf("N Init() error = %v", err)
+	}
+	if err := pN.PostInit(); err != nil {
+		t.Fatalf("N PostInit() error = %v", err)
+	}
+	t.Cleanup(pN.Stop)
+	nProvider := pN.tracerProvider
+
+	nPlusOneView := mustOpenTelemetryMetadataView(t, map[string]string{
+		name: `{"trace_id_source":"random","resource":{"service.name":"generation-n-plus-one"},"collector":{"address":"127.0.0.1:4319","request_headers":{"Authorization":"generation-n-plus-one"}}}`,
+	})
+	pNPlusOne := &Plugin{}
+	pNPlusOne.SetDependencies(base.Dependencies{Config: &config.EffectiveConfig{}, Metadata: nPlusOneView})
+	if err := pNPlusOne.Init(); err != nil {
+		t.Fatalf("N+1 Init() error = %v", err)
+	}
+	if err := pNPlusOne.PostInit(); err != nil {
+		t.Fatalf("N+1 PostInit() error = %v", err)
+	}
+	t.Cleanup(pNPlusOne.Stop)
+
+	if pN.metadata.TraceIDSource != "x-request-id" || pN.metadata.Resource["service.name"] != "generation-n" ||
+		pN.metadata.Collector.RequestHeaders["Authorization"] != "generation-n" {
+		t.Fatalf("N metadata changed after N+1 construction: %#v", pN.metadata)
+	}
+	if pN.tracerProvider != nProvider || pNPlusOne.tracerProvider == nProvider {
+		t.Fatal("generations did not retain independent tracer providers")
+	}
+	if pNPlusOne.metadata.TraceIDSource != "random" ||
+		pNPlusOne.metadata.Resource["service.name"] != "generation-n-plus-one" ||
+		pNPlusOne.metadata.Collector.Address != "127.0.0.1:4319" {
+		t.Fatalf("N+1 metadata = %#v, want N+1 values", pNPlusOne.metadata)
+	}
+}
+
+type countingSpanExporter struct {
+	shutdown atomic.Int32
+	exports  atomic.Int32
+}
+
+func (e *countingSpanExporter) ExportSpans(context.Context, []sdktrace.ReadOnlySpan) error {
+	e.exports.Add(1)
+	return nil
+}
+
+func (e *countingSpanExporter) Shutdown(context.Context) error {
+	e.shutdown.Add(1)
+	return nil
+}
+
+func TestStopShutsDownOnlyItsOpenTelemetryProvider(t *testing.T) {
+	exporterN := &countingSpanExporter{}
+	providerN := sdktrace.NewTracerProvider(
+		sdktrace.WithSampler(sdktrace.AlwaysSample()),
+		sdktrace.WithBatcher(exporterN, sdktrace.WithBatchTimeout(time.Millisecond)),
+	)
+	exporterNPlusOne := &countingSpanExporter{}
+	providerNPlusOne := sdktrace.NewTracerProvider(
+		sdktrace.WithSampler(sdktrace.AlwaysSample()),
+		sdktrace.WithBatcher(exporterNPlusOne, sdktrace.WithBatchTimeout(time.Millisecond)),
+	)
+	pN := &Plugin{tracerProvider: providerN}
+	pNPlusOne := &Plugin{tracerProvider: providerNPlusOne}
+
+	var wait sync.WaitGroup
+	for range 16 {
+		wait.Go(func() {
+			pN.Stop()
+		})
+	}
+	wait.Wait()
+	if got := exporterN.shutdown.Load(); got != 1 {
+		t.Fatalf("N exporter shutdown count = %d, want 1", got)
+	}
+
+	tracer := pNPlusOne.tracer()
+	_, span := tracer.Start(context.Background(), "generation-n-plus-one")
+	span.End()
+	if err := providerNPlusOne.ForceFlush(context.Background()); err != nil {
+		t.Fatalf("N+1 ForceFlush() error = %v", err)
+	}
+	if got := exporterNPlusOne.shutdown.Load(); got != 0 {
+		t.Fatalf("N+1 exporter shutdown count after N Stop() = %d, want 0", got)
+	}
+	pNPlusOne.Stop()
+	if got := exporterNPlusOne.shutdown.Load(); got != 1 {
+		t.Fatalf("N+1 exporter shutdown count = %d, want 1", got)
+	}
+}
+
+func mustOpenTelemetryMetadataView(t *testing.T, documents map[string]string) runtime.MetadataView {
+	t.Helper()
+	encoded := make(map[string][]byte, len(documents))
+	for factory, document := range documents {
+		encoded[factory] = []byte(document)
+	}
+	view, err := runtime.NewMetadataView(encoded)
+	if err != nil {
+		t.Fatalf("NewMetadataView() error = %v", err)
+	}
+	return view
 }
 
 func TestNewTracerProviderRejectsSetNgxVarBeforeAllocation(t *testing.T) {
@@ -530,25 +963,17 @@ func TestTracerProviderExportsOTLPHTTPWithConfiguredHeaders(t *testing.T) {
 	}
 }
 
-func TestSafeGetPluginMetadataReturnsStoreError(t *testing.T) {
-	var stored Metadata
-	if err := safeGetPluginMetadata(name, &stored); err == nil {
-		t.Fatal("safeGetPluginMetadata() error = nil without a store")
-	}
-}
-
 func TestPostInitKeepsFallbackProviderWhenCollectorIsInvalid(t *testing.T) {
-	oldConfig := config.GlobalConfig
-	t.Cleanup(func() { config.GlobalConfig = oldConfig })
-	config.GlobalConfig = &config.Config{
+	effective := &config.EffectiveConfig{Config: config.Config{
 		PluginAttr: map[string]map[string]any{
 			name: {
 				"collector": map[string]any{"address": "://invalid"},
 			},
 		},
-	}
+	}}
 
 	p := &Plugin{}
+	p.SetDependencies(base.Dependencies{Config: effective})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -562,8 +987,6 @@ func TestPostInitKeepsFallbackProviderWhenCollectorIsInvalid(t *testing.T) {
 }
 
 func TestPostInitRejectsUnsupportedMetadataBeforeFallbackProviderAllocation(t *testing.T) {
-	oldConfig := config.GlobalConfig
-	t.Cleanup(func() { config.GlobalConfig = oldConfig })
 	for _, tt := range []struct {
 		name     string
 		metadata map[string]any
@@ -587,11 +1010,12 @@ func TestPostInitRejectsUnsupportedMetadataBeforeFallbackProviderAllocation(t *t
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			config.GlobalConfig = &config.Config{
+			effective := &config.EffectiveConfig{Config: config.Config{
 				PluginAttr: map[string]map[string]any{name: tt.metadata},
-			}
+			}}
 
 			p := &Plugin{}
+			p.SetDependencies(base.Dependencies{Config: effective})
 			if err := p.Init(); err != nil {
 				t.Fatalf("Init() error = %v", err)
 			}

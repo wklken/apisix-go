@@ -21,6 +21,10 @@
 # this file is copied from https://github.com/apache/apisix/blob/master/conf/config-default.yaml
 # we try to compatible with the original file as much as possible
 
+compatibility_target: apisix-3.17
+security_profile: compat
+qualification_profile: ""
+
 debug: true
 
 apisix:

@@ -1,34 +1,36 @@
 package route
 
 import (
+	"context"
 	"runtime"
 	"testing"
 
-	"github.com/wklken/apisix-go/pkg/plugin"
+	"github.com/wklken/apisix-go/pkg/resource"
 )
 
-func BenchmarkConsumerBindingsForKeyWarmHit(b *testing.B) {
-	builder := NewBuilder(nil)
-	key := plugin.ConsumerCacheKey{
-		ConsumerID: "benchmark-consumer",
-		RouteID:    "benchmark-route",
+func BenchmarkPlanHTTPPluginsConsumer(b *testing.B) {
+	input := PlanningInput{
+		EnabledPlugins: []string{"limit-count"},
+		Consumers: map[string]resource.Consumer{
+			"benchmark-consumer": {
+				Username: "benchmark-consumer",
+				Plugins: map[string]resource.PluginConfig{
+					"limit-count": map[string]any{
+						"count": 1, "time_window": 60, "key": "remote_addr",
+					},
+				},
+			},
+		},
 	}
-	ready := make(chan struct{})
-	close(ready)
-	builder.consumerResolution.entries.Store(key, &consumerResolutionTemplate{ready: ready})
-
 	b.ReportAllocs()
 	b.ResetTimer()
-	var sink []plugin.Binding
+	var sink *HTTPPluginPlan
 	for b.Loop() {
-		bindings, err := builder.consumerBindingsForKey(key, func() ([]plugin.Binding, error) {
-			b.Fatal("warm cache unexpectedly initialized")
-			return nil, nil
-		})
+		plan, err := PlanHTTPPlugins(context.Background(), input)
 		if err != nil {
 			b.Fatal(err)
 		}
-		sink = bindings
+		sink = plan
 	}
 	b.StopTimer()
 	runtime.KeepAlive(sink)

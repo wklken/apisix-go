@@ -1,16 +1,21 @@
 package route
 
 import (
+	"bytes"
 	"crypto/tls"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"math"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
 	appconfig "github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/plugin/proxy_control"
+	"github.com/wklken/apisix-go/pkg/plugin/traffic_split"
 	"github.com/wklken/apisix-go/pkg/proxy"
 	"github.com/wklken/apisix-go/pkg/resource"
 )
@@ -116,17 +121,11 @@ func resolveUpstreamClientCertificate(
 	return certificate, nil
 }
 
-func (b *Builder) buildTransportOption(
-	routeResource resource.Route,
-	upstream resource.Upstream,
-) (proxy.TransportOption, error) {
-	return buildTransportOptionWithSSLResolver(routeResource, upstream, b.getSSL)
-}
-
 func buildTransportOptionWithSSLResolver(
 	routeResource resource.Route,
 	upstream resource.Upstream,
 	resolveSSL sslResolver,
+	staticConfig *appconfig.Config,
 ) (proxy.TransportOption, error) {
 	if upstreamHasClientCertificate(upstream) && !upstreamUsesTLS(upstream) {
 		return proxy.TransportOption{}, fmt.Errorf(
@@ -151,8 +150,8 @@ func buildTransportOptionWithSSLResolver(
 		}
 	}
 
-	if appconfig.GlobalConfig != nil {
-		proxyConfig := appconfig.GlobalConfig.Proxy
+	if staticConfig != nil {
+		proxyConfig := staticConfig.Proxy
 		optionBuilder = optionBuilder.
 			WithMaxIdleConnections(proxyConfig.MaxIdleConns).
 			WithMaxIdleConnectionsPerHost(proxyConfig.MaxIdleConnsPerHost).
@@ -170,13 +169,14 @@ func buildClusterConfigWithSSLResolver(
 	upstream resource.Upstream,
 	servers map[string]int,
 	resolveSSL sslResolver,
+	staticConfig *appconfig.Config,
 	priorities ...map[string]int,
 ) (proxy.ClusterConfig, error) {
-	transport, err := buildTransportOptionWithSSLResolver(routeResource, upstream, resolveSSL)
+	transport, err := buildTransportOptionWithSSLResolver(routeResource, upstream, resolveSSL, staticConfig)
 	if err != nil {
 		return proxy.ClusterConfig{}, err
 	}
-	return buildClusterConfigWithTransport(routeResource, upstream, servers, transport, priorities...)
+	return buildClusterConfigWithTransport(routeResource, upstream, servers, transport, staticConfig, priorities...)
 }
 
 func buildClusterConfigWithTransport(
@@ -184,20 +184,21 @@ func buildClusterConfigWithTransport(
 	upstream resource.Upstream,
 	servers map[string]int,
 	transport proxy.TransportOption,
+	staticConfig *appconfig.Config,
 	priorities ...map[string]int,
 ) (proxy.ClusterConfig, error) {
 	timeouts := resolveUpstreamTimeouts(routeResource.Timeout, upstream.Timeout)
 
 	maxInFlight := proxy.DefaultMaxInFlight
-	if appconfig.GlobalConfig != nil {
-		proxyConfig := appconfig.GlobalConfig.Proxy
+	if staticConfig != nil {
+		proxyConfig := staticConfig.Proxy
 		if proxyConfig.MaxInFlight > 0 {
 			maxInFlight = proxyConfig.MaxInFlight
 		}
 	}
 
 	checks := upstream.Checks
-	if appconfig.GlobalConfig != nil && appconfig.GlobalConfig.Apisix.DisableUpstreamHealthcheck {
+	if staticConfig != nil && staticConfig.Apisix.DisableUpstreamHealthcheck {
 		checks = withoutActiveChecks(checks)
 	}
 
@@ -310,4 +311,116 @@ func withoutActiveChecks(checks map[string]any) map[string]any {
 		result[key] = value
 	}
 	return result
+}
+
+type trafficSplitRoundTripper struct {
+	fallback http.RoundTripper
+}
+
+func (t *trafficSplitRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
+	if override := traffic_split.GetOverride(request); override != nil && override.RoundTripper != nil {
+		return override.RoundTripper.RoundTrip(request)
+	}
+	return t.fallback.RoundTrip(request)
+}
+
+func applyTrafficSplitOverride(req *http.Request) bool {
+	override := traffic_split.GetOverride(req)
+	return applyTrafficSplitTarget(req, override, req.Host)
+}
+
+func httpRetryCount(upstream resource.Upstream) int {
+	if upstream.RetriesConfigured() {
+		return max(upstream.Retries, 0)
+	}
+	return max(len(upstream.Nodes)-1, 0)
+}
+
+func attachHTTPRetriesCompiled(
+	request *http.Request,
+	upstream resource.Upstream,
+	loadBalancer proxy.LoadBalancer,
+	targets map[string]compiledUpstreamTarget,
+) *http.Request {
+	originalHost := request.Host
+	if override := traffic_split.GetOverride(request); override != nil {
+		return proxy.WithRetries(request, override.Retries, func(retry *http.Request) bool {
+			if override.NextRetry == nil {
+				proxy.SetSelectedTarget(retry, "")
+				return false
+			}
+			next := override.NextRetry(retry)
+			if !applyTrafficSplitTarget(retry, next, originalHost) {
+				proxy.SetSelectedTarget(retry, "")
+				return false
+			}
+			applyFinalProxyRewrite(retry)
+			return true
+		})
+	}
+	return proxy.WithRetries(request, httpRetryCount(upstream), func(retry *http.Request) bool {
+		if err := applyUpstreamTargetCompiled(retry, loadBalancer, upstream, originalHost, targets); err != nil {
+			return false
+		}
+		// A later transport failure must not report a stale director error
+		// from an earlier attempt.
+		*retry = *withDirectorError(retry, nil)
+		applyFinalProxyRewrite(retry)
+		return true
+	})
+}
+
+func applyTrafficSplitTarget(req *http.Request, override *traffic_split.Override, originalHost string) bool {
+	if override == nil {
+		return false
+	}
+	if override.HealthReporter != nil {
+		enriched := proxy.WithHealthReporter(req, override.HealthReporter)
+		if enriched != req {
+			*req = *enriched
+		}
+		proxy.SetSelectedTarget(req, override.HealthTarget)
+	}
+	req.URL.Scheme = override.Scheme
+	req.URL.Host = override.Host
+	switch override.PassHost {
+	case "pass":
+		if originalHost != "" {
+			req.Host = originalHost
+		} else {
+			req.Host = req.URL.Host
+		}
+	case "rewrite":
+		if override.UpstreamHost != "" {
+			req.Host = override.UpstreamHost
+		} else {
+			req.Host = override.Host
+		}
+	default:
+		req.Host = override.Host
+	}
+	return true
+}
+
+func bufferRequestBodyIfNeeded(w http.ResponseWriter, r *http.Request) error {
+	if !proxy_control.GetRequestBuffering(r) || r.Body == nil || r.Body == http.NoBody {
+		return nil
+	}
+	limit := proxy_control.GetRequestBufferingLimit(r)
+	r.Body = http.MaxBytesReader(w, r.Body, limit)
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		return err
+	}
+	if err := r.Body.Close(); err != nil {
+		return err
+	}
+
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	r.GetBody = func() (io.ReadCloser, error) {
+		return io.NopCloser(bytes.NewReader(body)), nil
+	}
+	r.ContentLength = int64(len(body))
+	return nil
 }

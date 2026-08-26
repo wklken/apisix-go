@@ -122,6 +122,54 @@ func RecordConfigApplyFailure() {
 	RecordConfigApplyStageFailure(ConfigApplyStageProvider)
 }
 
+// RecordConfigApplyAttemptFailure records a failed provider attempt without
+// replacing the readiness state established by the last acknowledged apply.
+// Provider and stage are intentionally bounded call-site metadata rather than
+// metric labels; the exported counter keeps fixed cardinality.
+func RecordConfigApplyAttemptFailure(provider, stage string) {
+	_, _ = provider, stage
+	configApplyState.Lock()
+	defer configApplyState.Unlock()
+
+	failures, _ := syncConfigApplyMetricsLocked()
+	if failures != nil {
+		failures.Inc()
+	}
+}
+
+// RecordConfigApplyAcknowledgement installs provider, publication-stage, and
+// quarantine readiness from one durable acknowledgement while holding the
+// readiness state lock once. Domains not represented by the acknowledgement
+// retain their prior state.
+func RecordConfigApplyAcknowledgement(httpApplied, streamApplied bool, quarantine int) {
+	if quarantine < 0 {
+		quarantine = 0
+	}
+	configApplyState.Lock()
+	defer configApplyState.Unlock()
+
+	_, ready := syncConfigApplyMetricsLocked()
+	configApplyState.providerBlocked = false
+	configApplyState.providerObserved = true
+	configApplyState.providerHealthy = true
+	if httpApplied {
+		configApplyState.httpRoutesBlocked = false
+		configApplyState.httpRoutesObserved = true
+		configApplyState.httpRoutesHealthy = true
+	}
+	if streamApplied {
+		configApplyState.streamBlocked = false
+		configApplyState.streamObserved = true
+		configApplyState.streamHealthy = true
+	}
+	configApplyState.providerQuarantine = quarantine
+	configApplyState.quarantineCount = configApplyState.providerQuarantine + configApplyState.storeQuarantine
+	if configApplyState.quarantined != nil {
+		configApplyState.quarantined.Set(float64(configApplyState.quarantineCount))
+	}
+	setConfigApplyReadyLocked(ready)
+}
+
 // RecordConfigApplyStageSuccess clears only the supplied stage's blocker and
 // marks readiness healthy when every required stage is also healthy. It is
 // safe before metrics.Init().

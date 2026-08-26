@@ -1,0 +1,368 @@
+package limit_count
+
+import (
+	"context"
+	"crypto/sha256"
+	"errors"
+	"fmt"
+	"strings"
+	"sync"
+
+	"github.com/wklken/apisix-go/pkg/capability"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/secret"
+)
+
+var errLimitCountCredentialsUnavailable = secret.ErrCredentialUnavailable
+
+type secretFieldSelection struct {
+	field string
+	raw   string
+}
+
+type limitCountSecretState struct {
+	lifecycleMu sync.Mutex
+
+	preparationMu      sync.Mutex
+	preparationCond    *sync.Cond
+	preparationActive  bool
+	preparationWaiters int
+
+	credentialMu sync.Mutex
+	stopOnce     sync.Once
+
+	scopedKeySecret         secret.Value
+	scopedRedisHost         secret.Value
+	scopedRedisClusterNodes []secret.Value
+
+	keyPresent        bool
+	redisHostPresent  bool
+	redisNodesPresent bool
+	scopedSet         bool
+
+	keyDigest        [sha256.Size]byte
+	redisHostDigest  [sha256.Size]byte
+	redisNodeDigests [][sha256.Size]byte
+
+	keyField        string
+	redisHostField  string
+	redisNodesField string
+
+	activeUses int
+	usesDone   chan struct{}
+	retired    bool
+}
+
+type limitCountSecretSnapshot struct {
+	scopedKey               secret.Value
+	scopedRedisHost         secret.Value
+	scopedRedisClusterNodes []secret.Value
+
+	keyPresent        bool
+	redisHostPresent  bool
+	redisNodesPresent bool
+}
+
+type stagedLimitCountSecrets struct {
+	keySelection   secretFieldSelection
+	hostSelection  secretFieldSelection
+	nodesSelection secretFieldSelection
+
+	scopedKey   secret.Value
+	scopedHost  secret.Value
+	scopedNodes []secret.Value
+
+	keyDescriptor   string
+	hostDescriptor  string
+	nodeDescriptors []string
+
+	keyDigest   [sha256.Size]byte
+	hostDigest  [sha256.Size]byte
+	nodeDigests [][sha256.Size]byte
+}
+
+func selectLimitCountSecretFields(config Config) (
+	secretFieldSelection, secretFieldSelection, secretFieldSelection,
+) {
+	key := secretFieldSelection{}
+	if config.Key != "" {
+		key = secretFieldSelection{field: "key", raw: config.Key}
+	}
+	host := secretFieldSelection{}
+	if config.Redis.RedisHost != "" {
+		host = secretFieldSelection{field: "redis_config.redis_host", raw: config.Redis.RedisHost}
+	} else if config.RedisHost != "" {
+		host = secretFieldSelection{field: "redis_host", raw: config.RedisHost}
+	}
+	nodes := secretFieldSelection{}
+	if len(config.RedisCluster.RedisClusterNodes) > 0 {
+		nodes = secretFieldSelection{
+			field: "redis_cluster_config.redis_cluster_nodes",
+			raw:   strings.Join(config.RedisCluster.RedisClusterNodes, "\x00"),
+		}
+	} else if len(config.RedisClusterNodes) > 0 {
+		nodes = secretFieldSelection{
+			field: "redis_cluster_nodes",
+			raw:   strings.Join(config.RedisClusterNodes, "\x00"),
+		}
+	}
+	return key, host, nodes
+}
+
+func selectedLimitCountNodes(config Config, selection secretFieldSelection) []string {
+	switch selection.field {
+	case "redis_cluster_config.redis_cluster_nodes":
+		return append([]string(nil), config.RedisCluster.RedisClusterNodes...)
+	case "redis_cluster_nodes":
+		return append([]string(nil), config.RedisClusterNodes...)
+	default:
+		return nil
+	}
+}
+
+// MaterializeSecrets is the transitional Store-backed preparation path.
+func (p *Plugin) MaterializeSecrets() error {
+	p.beginLimitCountPreparation()
+	defer p.endLimitCountPreparation()
+	if prepared, err := p.limitCountPreparationState(); err != nil || prepared {
+		return err
+	}
+	return errLimitCountCredentialsUnavailable
+}
+
+// MaterializeScopedSecrets resolves the selected aliases using their exact
+// admitted manifest declarations before any root-to-nested normalization.
+func (p *Plugin) MaterializeScopedSecrets(
+	ctx context.Context, access base.ScopedSecretAccess,
+) error {
+	p.beginLimitCountPreparation()
+	defer p.endLimitCountPreparation()
+	if prepared, err := p.limitCountPreparationState(); err != nil || prepared {
+		return err
+	}
+	keySelection, hostSelection, nodesSelection := selectLimitCountSecretFields(p.config)
+	nodes := selectedLimitCountNodes(p.config, nodesSelection)
+	staged := stagedLimitCountSecrets{
+		keySelection: keySelection, hostSelection: hostSelection, nodesSelection: nodesSelection,
+	}
+	var err error
+	if keySelection.raw != "" {
+		staged.scopedKey, err = access.Materialize(ctx, keySelection.field, keySelection.raw)
+		if err != nil || !validLimitCountScopedValue(staged.scopedKey) {
+			return errors.New("resolve limit-count key: credential unavailable")
+		}
+		staged.keyDigest, staged.keyDescriptor, err = scopedLimitCountDescriptor(staged.scopedKey)
+		if err != nil {
+			return errLimitCountCredentialsUnavailable
+		}
+	}
+	if hostSelection.raw != "" {
+		staged.scopedHost, err = access.Materialize(ctx, hostSelection.field, hostSelection.raw)
+		if err != nil || !validLimitCountScopedValue(staged.scopedHost) {
+			return errors.New("resolve limit-count Redis host: credential unavailable")
+		}
+		staged.hostDigest, staged.hostDescriptor, err = scopedLimitCountDescriptor(staged.scopedHost)
+		if err != nil {
+			return errLimitCountCredentialsUnavailable
+		}
+	}
+	staged.scopedNodes = make([]secret.Value, len(nodes))
+	staged.nodeDescriptors = make([]string, len(nodes))
+	staged.nodeDigests = make([][sha256.Size]byte, len(nodes))
+	for index, raw := range nodes {
+		staged.scopedNodes[index], err = access.Materialize(ctx, nodesSelection.field, raw)
+		if err != nil || !validLimitCountScopedValue(staged.scopedNodes[index]) {
+			return fmt.Errorf("resolve limit-count Redis cluster node %d: credential unavailable", index)
+		}
+		staged.nodeDigests[index], staged.nodeDescriptors[index], err = scopedLimitCountDescriptor(
+			staged.scopedNodes[index],
+		)
+		if err != nil {
+			return fmt.Errorf("resolve limit-count Redis cluster node %d: credential unavailable", index)
+		}
+	}
+	return p.installLimitCountSecrets(staged)
+}
+
+func (p *Plugin) beginLimitCountPreparation() {
+	p.preparationMu.Lock()
+	if p.preparationCond == nil {
+		p.preparationCond = sync.NewCond(&p.preparationMu)
+	}
+	if p.preparationActive {
+		p.preparationWaiters++
+		for p.preparationActive {
+			p.preparationCond.Wait()
+		}
+		p.preparationWaiters--
+	}
+	p.preparationActive = true
+	p.preparationMu.Unlock()
+}
+
+func (p *Plugin) endLimitCountPreparation() {
+	p.preparationMu.Lock()
+	p.preparationActive = false
+	p.preparationCond.Broadcast()
+	p.preparationMu.Unlock()
+}
+
+func (p *Plugin) limitCountPreparationState() (bool, error) {
+	p.credentialMu.Lock()
+	defer p.credentialMu.Unlock()
+	if p.retired {
+		return false, errLimitCountCredentialsUnavailable
+	}
+	return p.scopedSet, nil
+}
+
+func (p *Plugin) installLimitCountSecrets(staged stagedLimitCountSecrets) error {
+	p.credentialMu.Lock()
+	defer p.credentialMu.Unlock()
+	if p.retired {
+		return errLimitCountCredentialsUnavailable
+	}
+	p.scopedKeySecret = staged.scopedKey
+	p.scopedRedisHost = staged.scopedHost
+	p.scopedRedisClusterNodes = staged.scopedNodes
+	p.keyPresent = staged.keySelection.raw != ""
+	p.redisHostPresent = staged.hostSelection.raw != ""
+	p.redisNodesPresent = staged.nodesSelection.field != ""
+	p.scopedSet = true
+	p.keyDigest = staged.keyDigest
+	p.redisHostDigest = staged.hostDigest
+	p.redisNodeDigests = staged.nodeDigests
+	p.keyField = staged.keySelection.field
+	p.redisHostField = staged.hostSelection.field
+	p.redisNodesField = staged.nodesSelection.field
+
+	if staged.keyDescriptor != "" {
+		p.config.Key = staged.keyDescriptor
+	}
+	if staged.hostDescriptor != "" {
+		if staged.hostSelection.field == "redis_host" {
+			p.config.RedisHost = staged.hostDescriptor
+			p.applyRootRedisConfig()
+		} else {
+			p.config.Redis.RedisHost = staged.hostDescriptor
+			if p.config.RedisHost != "" {
+				p.config.RedisHost = staged.hostDescriptor
+			}
+		}
+	}
+	if len(staged.nodeDescriptors) > 0 {
+		if staged.nodesSelection.field == "redis_cluster_nodes" {
+			p.config.RedisClusterNodes = append([]string(nil), staged.nodeDescriptors...)
+			p.applyRootRedisClusterConfig()
+		} else {
+			p.config.RedisCluster.RedisClusterNodes = append([]string(nil), staged.nodeDescriptors...)
+			if len(p.config.RedisClusterNodes) > 0 {
+				p.config.RedisClusterNodes = append([]string(nil), staged.nodeDescriptors...)
+			}
+		}
+	}
+	return nil
+}
+
+func validLimitCountScopedValue(value secret.Value) bool {
+	valid := false
+	_ = value.Use(func(plaintext string) error {
+		valid = strings.TrimSpace(plaintext) != ""
+		return nil
+	})
+	return valid
+}
+
+func scopedLimitCountDescriptor(
+	value secret.Value,
+) ([sha256.Size]byte, string, error) {
+	descriptor, err := value.Descriptor(capability.SecretPluginConfig)
+	if err != nil {
+		return [sha256.Size]byte{}, "", err
+	}
+	return descriptor.Digest(), descriptor.String(), nil
+}
+
+func (p *Plugin) acquireLimitCountSecrets() (limitCountSecretSnapshot, func(), error) {
+	p.credentialMu.Lock()
+	defer p.credentialMu.Unlock()
+	if p.retired || !p.scopedSet {
+		return limitCountSecretSnapshot{}, nil, errLimitCountCredentialsUnavailable
+	}
+	if p.activeUses == 0 {
+		p.usesDone = make(chan struct{})
+	}
+	p.activeUses++
+	return limitCountSecretSnapshot{
+		scopedKey: p.scopedKeySecret, scopedRedisHost: p.scopedRedisHost,
+		scopedRedisClusterNodes: append([]secret.Value(nil), p.scopedRedisClusterNodes...),
+		keyPresent:              p.keyPresent, redisHostPresent: p.redisHostPresent,
+		redisNodesPresent: p.redisNodesPresent,
+	}, p.releaseLimitCountSecretUse, nil
+}
+
+func (p *Plugin) releaseLimitCountSecretUse() {
+	p.credentialMu.Lock()
+	defer p.credentialMu.Unlock()
+	p.activeUses--
+	if p.activeUses == 0 {
+		close(p.usesDone)
+		p.usesDone = nil
+	}
+}
+
+func (p *Plugin) withLimitCountKey(use func(string) error) error {
+	snapshot, release, err := p.acquireLimitCountSecrets()
+	if err != nil {
+		return err
+	}
+	defer release()
+	if !snapshot.keyPresent {
+		return use(p.config.Key)
+	}
+	return snapshot.scopedKey.Use(use)
+}
+
+func (p *Plugin) withLimitCountRedisHost(use func(string) error) error {
+	snapshot, release, err := p.acquireLimitCountSecrets()
+	if err != nil {
+		return err
+	}
+	defer release()
+	if !snapshot.redisHostPresent {
+		return use(p.config.Redis.RedisHost)
+	}
+	return snapshot.scopedRedisHost.Use(use)
+}
+
+func (p *Plugin) withLimitCountRedisNodes(use func([]string) error) error {
+	snapshot, release, err := p.acquireLimitCountSecrets()
+	if err != nil {
+		return err
+	}
+	defer release()
+	if !snapshot.redisNodesPresent {
+		return use(append([]string(nil), p.config.RedisCluster.RedisClusterNodes...))
+	}
+	nodes := make([]string, len(snapshot.scopedRedisClusterNodes))
+	var useNode func(int) error
+	useNode = func(index int) error {
+		if index == len(snapshot.scopedRedisClusterNodes) {
+			return use(nodes)
+		}
+		return snapshot.scopedRedisClusterNodes[index].Use(func(plaintext string) error {
+			nodes[index] = plaintext
+			defer func() { nodes[index] = "" }()
+			return useNode(index + 1)
+		})
+	}
+	return useNode(0)
+}
+
+func (p *Plugin) limitCountCredentialDigests() (
+	[sha256.Size]byte, [sha256.Size]byte, [][sha256.Size]byte,
+) {
+	p.credentialMu.Lock()
+	defer p.credentialMu.Unlock()
+	return p.keyDigest, p.redisHostDigest, append([][sha256.Size]byte(nil), p.redisNodeDigests...)
+}

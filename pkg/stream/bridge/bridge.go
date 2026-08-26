@@ -9,14 +9,18 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/wklken/apisix-go/pkg/runtime"
 )
 
 const defaultIdleTimeout = 60 * time.Second
 
 type directionResult struct {
+	direction   string
 	err         error
 	eof         bool
 	destination net.Conn
+	completed   bool
 }
 
 // Pump forwards bytes in both directions until both directions finish. A
@@ -42,61 +46,164 @@ func Pump(ctx context.Context, left, right net.Conn, leftReader io.Reader, idle 
 		idle = defaultIdleTimeout
 	}
 
+	pumpCtx, cancel := context.WithCancel(ctx)
+	tasks := runtime.NewRequestTaskGroup(pumpCtx, "connection/stream-bridge")
 	stopContextClose := make(chan struct{})
-	go func() {
+	results := make(chan directionResult, 2)
+	admissionFailure := func(admissionErr error) error {
+		cancel()
+		cleanupPanic := recoverPanic(func() { closeBoth(left, right) })
+		close(stopContextClose)
+		waitPanic, _ := waitTaskGroup(tasks)
+		if waitPanic != nil {
+			panic(waitPanic)
+		}
+		if cleanupPanic != nil {
+			panic(cleanupPanic)
+		}
+		return admissionErr
+	}
+	if err := tasks.Go(func(context.Context) error {
 		select {
 		case <-ctx.Done():
-			_ = left.Close()
-			_ = right.Close()
+			closeBoth(left, right)
 		case <-stopContextClose:
 		}
-	}()
-	defer close(stopContextClose)
-	defer func() { _ = left.Close() }()
-	defer func() { _ = right.Close() }()
+		return nil
+	}); err != nil {
+		return admissionFailure(err)
+	}
+	if err := tasks.Go(func(context.Context) error {
+		copyDirection(left, right, leftReader, idle, "left-to-right", results)
+		return nil
+	}); err != nil {
+		return admissionFailure(err)
+	}
+	if err := tasks.Go(func(context.Context) error {
+		copyDirection(right, left, nil, idle, "right-to-left", results)
+		return nil
+	}); err != nil {
+		return admissionFailure(err)
+	}
 
-	results := make(chan directionResult, 2)
-	go copyDirection(left, right, leftReader, idle, results)
-	go copyDirection(right, left, nil, idle, results)
+	var cleanupPanic any
+	cleanupDone := false
+	cleanup := func() {
+		if cleanupDone {
+			return
+		}
+		cleanupDone = true
+		cleanupPanic = recoverPanic(func() { closeBoth(left, right) })
+	}
+	finishWithPanic := func(result error, ownerPanic any) error {
+		cancel()
+		cleanup()
+		close(stopContextClose)
+		waitPanic, waitErr := waitTaskGroup(tasks)
+		if waitPanic != nil {
+			panic(waitPanic)
+		}
+		if ownerPanic != nil {
+			panic(ownerPanic)
+		}
+		if cleanupPanic != nil {
+			panic(cleanupPanic)
+		}
+		if result != nil {
+			return result
+		}
+		return waitErr
+	}
+	finish := func(result error) error {
+		return finishWithPanic(result, nil)
+	}
 
 	first := <-results
+	if !first.completed {
+		cleanup()
+		second := <-results
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return finish(ctxErr)
+		}
+		if second.completed && !second.eof {
+			panicValue, normalized := normalizeCopyErrorResult(second.err)
+			if panicValue != nil {
+				return finishWithPanic(nil, panicValue)
+			}
+			return finish(normalized)
+		}
+		return finish(nil)
+	}
 	if ctxErr := ctx.Err(); ctxErr != nil {
-		closeBoth(left, right)
-		<-results
-		return ctxErr
+		return finish(ctxErr)
 	}
 	if first.eof {
-		if err := halfCloseWrite(first.destination); err != nil {
-			closeBoth(left, right)
+		panicValue, err := halfCloseWriteResult(first.destination)
+		if panicValue != nil {
+			cleanup()
 			<-results
-			return err
+			return finishWithPanic(nil, panicValue)
+		}
+		if err != nil {
+			cleanup()
+			<-results
+			return finish(err)
 		}
 		second := <-results
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return ctxErr
+			return finish(ctxErr)
+		}
+		if !second.completed {
+			return finish(nil)
 		}
 		if second.eof {
-			if err := halfCloseWrite(second.destination); err != nil {
-				return err
+			panicValue, err := halfCloseWriteResult(second.destination)
+			if panicValue != nil {
+				return finishWithPanic(nil, panicValue)
 			}
-			return nil
+			if err != nil {
+				return finish(err)
+			}
+			return finish(nil)
 		}
-		return normalizeCopyError(second.err)
+		panicValue, normalized := normalizeCopyErrorResult(second.err)
+		if panicValue != nil {
+			return finishWithPanic(nil, panicValue)
+		}
+		return finish(normalized)
 	}
 
-	closeBoth(left, right)
+	cleanup()
 	second := <-results
 	if ctxErr := ctx.Err(); ctxErr != nil {
-		return ctxErr
+		return finish(ctxErr)
 	}
-	if err := normalizeCopyError(first.err); err != nil {
-		return err
+	panicValue, normalized := normalizeCopyErrorResult(first.err)
+	if panicValue != nil {
+		return finishWithPanic(nil, panicValue)
 	}
-	return normalizeCopyError(second.err)
+	if normalized != nil {
+		return finish(normalized)
+	}
+	panicValue, normalized = normalizeCopyErrorResult(second.err)
+	if panicValue != nil {
+		return finishWithPanic(nil, panicValue)
+	}
+	return finish(normalized)
 }
 
-func copyDirection(src, dst net.Conn, reader io.Reader, idle time.Duration, results chan<- directionResult) {
-	results <- copyWithIdleDeadline(src, dst, reader, idle)
+func copyDirection(
+	src, dst net.Conn,
+	reader io.Reader,
+	idle time.Duration,
+	direction string,
+	results chan<- directionResult,
+) {
+	result := directionResult{direction: direction}
+	defer func() { results <- result }()
+	result = copyWithIdleDeadline(src, dst, reader, idle)
+	result.direction = direction
+	result.completed = true
 }
 
 func copyWithIdleDeadline(src, dst net.Conn, reader io.Reader, idle time.Duration) directionResult {
@@ -137,9 +244,38 @@ func halfCloseWrite(conn net.Conn) error {
 	return nil
 }
 
+func halfCloseWriteResult(conn net.Conn) (panicValue any, err error) {
+	defer func() { panicValue = recover() }()
+	err = halfCloseWrite(conn)
+	return nil, err
+}
+
 func closeBoth(left, right net.Conn) {
-	_ = left.Close()
-	_ = right.Close()
+	var firstPanic any
+	closeOne := func(conn net.Conn) {
+		defer func() {
+			if recovered := recover(); recovered != nil && firstPanic == nil {
+				firstPanic = recovered
+			}
+		}()
+		_ = conn.Close()
+	}
+	closeOne(left)
+	closeOne(right)
+	if firstPanic != nil {
+		panic(firstPanic)
+	}
+}
+
+func recoverPanic(run func()) (value any) {
+	defer func() { value = recover() }()
+	run()
+	return nil
+}
+
+func waitTaskGroup(tasks *runtime.RequestTaskGroup) (panicValue any, err error) {
+	defer func() { panicValue = recover() }()
+	return nil, tasks.Wait()
 }
 
 func normalizeCopyError(err error) error {
@@ -155,4 +291,10 @@ func normalizeCopyError(err error) error {
 		return nil
 	}
 	return err
+}
+
+func normalizeCopyErrorResult(err error) (panicValue any, normalized error) {
+	defer func() { panicValue = recover() }()
+	normalized = normalizeCopyError(err)
+	return nil, normalized
 }

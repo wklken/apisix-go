@@ -2,25 +2,335 @@ package tencent_cloud_cls
 
 import (
 	"bytes"
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/hmac"
+	"crypto/sha1"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
-	"github.com/wklken/apisix-go/pkg/data_encryption"
+	"github.com/go-resty/resty/v2"
+	"github.com/wklken/apisix-go/pkg/capability"
+	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
-	"github.com/wklken/apisix-go/pkg/store"
+	"github.com/wklken/apisix-go/pkg/runtime"
+	"github.com/wklken/apisix-go/pkg/secret"
+	"github.com/wklken/apisix-go/pkg/testutil"
 	"github.com/wklken/apisix-go/pkg/util"
 	"google.golang.org/protobuf/encoding/protowire"
 )
+
+type clsScopedSecretCall struct {
+	Scope secret.Scope
+	Raw   string
+}
+
+type clsScopedSecretBroker struct {
+	mu     sync.Mutex
+	values map[string]string
+	fail   map[string]error
+	calls  []clsScopedSecretCall
+}
+
+func (*clsScopedSecretBroker) AuthorizeCandidate(
+	context.Context, secret.AttemptID, generation.ApplyTicket, generation.PublicationSet,
+) error {
+	return nil
+}
+
+func (*clsScopedSecretBroker) AuthorizeRecovery(
+	context.Context, secret.AttemptID, generation.RevisionSet,
+	map[generation.Domain]generation.PublishedGeneration,
+) error {
+	return errors.New("recovery is not used by this CLS fixture")
+}
+
+func (broker *clsScopedSecretBroker) ResolveScoped(
+	ctx context.Context, scope secret.Scope, raw string,
+) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	broker.mu.Lock()
+	defer broker.mu.Unlock()
+	broker.calls = append(broker.calls, clsScopedSecretCall{Scope: scope, Raw: raw})
+	if err := broker.fail[raw]; err != nil {
+		return "", err
+	}
+	value, ok := broker.values[raw]
+	if !ok {
+		return "", errors.New("missing private CLS test value")
+	}
+	return value, nil
+}
+
+func (*clsScopedSecretBroker) RevokeAttempt(context.Context, secret.AttemptID) error { return nil }
+
+func (broker *clsScopedSecretBroker) scopedCalls() []clsScopedSecretCall {
+	broker.mu.Lock()
+	defer broker.mu.Unlock()
+	return append([]clsScopedSecretCall(nil), broker.calls...)
+}
+
+func newCLSScopedSecretHarness(
+	t *testing.T,
+	revision uint64,
+	resourceID string,
+	config Config,
+	values map[string]string,
+) (secret.GenerationCapability, secret.Scope, *clsScopedSecretBroker, func()) {
+	t.Helper()
+	key := generation.ResourceKey{Kind: "routes", ID: resourceID}
+	document, err := json.Marshal(map[string]any{
+		"id": resourceID, "plugins": map[string]any{name: config},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := generation.NewSnapshot(
+		revision, []generation.Resource{{Key: key, Value: document}}, nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := generation.PublicationCandidate{
+		Artifact: generation.GenerationArtifact{
+			Domain: generation.DomainHTTP, Revision: revision,
+			Digest: snapshot.Digest(), Snapshot: snapshot.SnapshotID(),
+		},
+		Snapshot: snapshot,
+		Closure:  []generation.ResourceKey{key},
+		Decisions: []generation.ResourceDecision{{
+			Key: key, Disposition: generation.DispositionPublished, Code: "cls-test",
+		}},
+	}
+	ticket := generation.ApplyTicket{
+		DesiredRevision: revision, DesiredDigest: snapshot.Digest(),
+		RequiredDomains: []generation.Domain{generation.DomainHTTP},
+	}
+	publication := generation.PublicationSet{
+		DesiredRevision: revision,
+		Domains: map[generation.Domain]generation.PublicationCandidate{
+			generation.DomainHTTP: candidate,
+		},
+	}
+	manifest, err := capability.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := capability.NewSecretDeclarationCatalog(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	broker := &clsScopedSecretBroker{values: values, fail: make(map[string]error)}
+	registration, err := secret.NewScopedMaterializer(broker, catalog).RegisterCandidate(
+		context.Background(), ticket, publication,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capabilityValue, err := secret.NewGenerationCapability(registration, revision)
+	if err != nil {
+		_ = registration.Close(context.Background())
+		t.Fatal(err)
+	}
+	scope := secret.Scope{
+		Generation: revision, Attempt: registration.AttemptID(), Domain: generation.DomainHTTP,
+		Plugin: name, Resource: key, Source: capability.SecretPluginConfig,
+	}
+	return capabilityValue, scope, broker, func() {
+		if err := registration.Close(context.Background()); err != nil {
+			t.Errorf("close CLS scoped attempt: %v", err)
+		}
+	}
+}
+
+func clsSecretDescriptor(plaintext string) string {
+	digest := sha256.Sum256([]byte(plaintext))
+	return fmt.Sprintf("plugin_config#sha256:%s", hex.EncodeToString(digest[:]))
+}
+
+func TestMaterializeScopedSecretsOwnsTencentCLSSecretKey(t *testing.T) {
+	const raw = "$ENV://CLS_SECRET_KEY"
+	const plaintext = "resolved-cls-secret-key"
+	config := Config{
+		CLSHost: "cls.example.com", CLSTopic: "topic-a",
+		SecretID: "ordinary-secret-id", SecretKey: raw,
+	}
+	capabilityValue, scope, broker, closeAttempt := newCLSScopedSecretHarness(
+		t, 101, "route-cls", config, map[string]string{raw: plaintext},
+	)
+	defer closeAttempt()
+	p := &Plugin{config: config}
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	if err := base.MaterializeScopedPluginSecrets(
+		context.Background(), scope, capabilityValue, p,
+	); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
+	}
+	calls := broker.scopedCalls()
+	if len(calls) != 1 || calls[0].Raw != raw || calls[0].Scope.Field != "secret_key" {
+		t.Fatalf("scoped calls = %#v, want exact secret_key authority", calls)
+	}
+	if p.config.SecretID != config.SecretID {
+		t.Fatalf("secret_id = %q, want ordinary value preserved", p.config.SecretID)
+	}
+	if p.config.SecretKey != clsSecretDescriptor(plaintext) {
+		t.Fatalf("public secret_key = %q, want resolved descriptor", p.config.SecretKey)
+	}
+}
+
+func TestMaterializeScopedSecretsSupportsCLSReferences(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+	}{
+		{name: "ciphertext", raw: "opaque-ciphertext"},
+		{name: "environment", raw: "$ENV://CLS_SECRET_KEY"},
+		{name: "managed", raw: "$secret://vault/cls/key"},
+	}
+	for index, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			plaintext := "resolved-" + test.name
+			config := Config{SecretID: "opaque-secret-id", SecretKey: test.raw}
+			capabilityValue, scope, broker, closeAttempt := newCLSScopedSecretHarness(
+				t, uint64(110+index), "route-"+test.name, config,
+				map[string]string{test.raw: plaintext},
+			)
+			defer closeAttempt()
+			p := &Plugin{config: config}
+			if err := p.Init(); err != nil {
+				t.Fatal(err)
+			}
+			if err := base.MaterializeScopedPluginSecrets(
+				context.Background(), scope, capabilityValue, p,
+			); err != nil {
+				t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
+			}
+			calls := broker.scopedCalls()
+			if len(calls) != 1 || calls[0].Raw != test.raw || calls[0].Scope.Field != "secret_key" {
+				t.Fatalf("scoped calls = %#v, want only exact secret_key", calls)
+			}
+			if p.config.SecretID != config.SecretID || p.config.SecretKey != clsSecretDescriptor(plaintext) {
+				t.Fatalf("public config = %#v, want ordinary ID and descriptor-only key", p.config)
+			}
+		})
+	}
+}
+
+func TestMaterializeScopedSecretsRejectsSecretIDReferenceWithoutBrokerCall(t *testing.T) {
+	const rawKey = "$ENV://CLS_SECRET_KEY"
+	config := Config{SecretID: "$secret://must/not/resolve", SecretKey: rawKey}
+	capabilityValue, scope, broker, closeAttempt := newCLSScopedSecretHarness(
+		t, 120, "route-secret-id", config, map[string]string{rawKey: "private-key"},
+	)
+	defer closeAttempt()
+	p := &Plugin{config: config}
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p)
+	if err == nil || strings.Contains(err.Error(), config.SecretID) ||
+		strings.Contains(err.Error(), rawKey) {
+		t.Fatalf("materialization error = %v, want redacted fail-closed rejection", err)
+	}
+	if calls := broker.scopedCalls(); len(calls) != 0 {
+		t.Fatalf("broker calls = %#v, want zero when secret_id resembles a reference", calls)
+	}
+	if p.config.SecretID != config.SecretID || p.config.SecretKey != config.SecretKey ||
+		p.secretKeySet || p.secretsPrepared {
+		t.Fatalf(
+			"failed state = %#v set=%t prepared=%t, want atomic original state",
+			p.config, p.secretKeySet, p.secretsPrepared,
+		)
+	}
+}
+
+func TestMaterializeScopedSecretsFailureIsAtomicAndRetryable(t *testing.T) {
+	const raw = "$secret://vault/cls/key"
+	const plaintext = "resolved-private-cls-key"
+	config := Config{SecretID: "secret-id", SecretKey: raw}
+	capabilityValue, scope, broker, closeAttempt := newCLSScopedSecretHarness(
+		t, 121, "route-retry", config, map[string]string{raw: plaintext},
+	)
+	defer closeAttempt()
+	broker.fail[raw] = errors.New("resolver leaked " + raw + " " + plaintext)
+	p := &Plugin{config: config}
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p)
+	if err == nil || strings.Contains(err.Error(), raw) || strings.Contains(err.Error(), plaintext) {
+		t.Fatalf("first materialization error = %v, want redacted error", err)
+	}
+	if p.config.SecretID != config.SecretID || p.config.SecretKey != config.SecretKey ||
+		p.secretKeySet || p.secretsPrepared {
+		t.Fatalf(
+			"failed state = %#v set=%t prepared=%t, want no partial install",
+			p.config, p.secretKeySet, p.secretsPrepared,
+		)
+	}
+	broker.mu.Lock()
+	delete(broker.fail, raw)
+	broker.mu.Unlock()
+	if err := base.MaterializeScopedPluginSecrets(
+		context.Background(), scope, capabilityValue, p,
+	); err != nil {
+		t.Fatalf("retry MaterializeScopedPluginSecrets() error = %v", err)
+	}
+	if p.config.SecretKey != clsSecretDescriptor(plaintext) || !p.secretKeySet || !p.secretsPrepared {
+		t.Fatalf(
+			"retry state = %#v set=%t prepared=%t, want atomic install",
+			p.config, p.secretKeySet, p.secretsPrepared,
+		)
+	}
+}
+
+func TestMaterializeScopedSecretsSingleflight(t *testing.T) {
+	const raw = "$ENV://CLS_SECRET_KEY"
+	config := Config{SecretID: "secret-id", SecretKey: raw}
+	capabilityValue, scope, broker, closeAttempt := newCLSScopedSecretHarness(
+		t, 122, "route-singleflight", config, map[string]string{raw: "resolved-key"},
+	)
+	defer closeAttempt()
+	p := &Plugin{config: config}
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	errs := make(chan error, 16)
+	for range 16 {
+		wg.Go(func() {
+			errs <- base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p)
+		})
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent materialization error = %v", err)
+		}
+	}
+	if calls := broker.scopedCalls(); len(calls) != 1 {
+		t.Fatalf("broker calls = %d, want one", len(calls))
+	}
+}
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
@@ -29,22 +339,42 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	}
 
 	p := &Plugin{config: cfg}
+	p.SetDependencies(
+		base.Dependencies{
+			Tasks:          newLoggerTestTaskOwner(t),
+			DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+		},
+	)
 	p.now = func() time.Time { return time.Unix(1710000000, 0) }
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
 	p.now = func() time.Time { return time.Unix(1710000000, 0) }
+	capabilityValue, scope, _, cleanup := newCLSScopedSecretHarness(
+		t, 1, "test-route", cfg, map[string]string{cfg.SecretKey: cfg.SecretKey},
+	)
+	t.Cleanup(cleanup)
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
+	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
+	t.Cleanup(p.Stop)
 
 	return p
+}
+
+func TestPostInitRejectsMissingDataEncryptionResolver(t *testing.T) {
+	p := &Plugin{}
+	if err := p.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) {
+		t.Fatalf("MaterializeSecrets() error = %v, want credential unavailable", err)
+	}
 }
 
 func TestEffectiveLogFormatRouteWins(t *testing.T) {
 	route := map[string]string{"route": "$request_id"}
 	metadata := map[string]string{"metadata": "$route_id"}
-	putPluginMetadata(t, metadata)
 
 	p := newRawTestPlugin(t, Config{
 		CLSHost:   "cls.example.com",
@@ -52,7 +382,7 @@ func TestEffectiveLogFormatRouteWins(t *testing.T) {
 		SecretID:  "id",
 		SecretKey: "key",
 		LogFormat: route,
-	})
+	}, mustMetadataView(t, map[string]any{"log_format": metadata}))
 	if len(p.LogFormat) != 1 || p.LogFormat["route"] != route["route"] {
 		t.Fatalf("effective format = %#v, want route format over metadata %#v", p.LogFormat, metadata)
 	}
@@ -64,14 +394,13 @@ func TestEffectiveLogFormatRouteWins(t *testing.T) {
 
 func TestEffectiveLogFormatUsesMetadataFallback(t *testing.T) {
 	metadata := map[string]string{"route": "$route_id"}
-	putPluginMetadata(t, metadata)
 
 	p := newRawTestPlugin(t, Config{
 		CLSHost:   "cls.example.com",
 		CLSTopic:  "topic-a",
 		SecretID:  "id",
 		SecretKey: "key",
-	})
+	}, mustMetadataView(t, map[string]any{"log_format": metadata}))
 	if len(p.LogFormat) != 1 || p.LogFormat["route"] != metadata["route"] {
 		t.Fatalf("effective format = %#v, want metadata format %#v", p.LogFormat, metadata)
 	}
@@ -88,10 +417,24 @@ func TestEffectiveLogFormatRejectsEmptyBeforeSideEffects(t *testing.T) {
 		SecretID:  "id",
 		SecretKey: "key",
 	}}
+	p.SetDependencies(
+		base.Dependencies{
+			Tasks:          newLoggerTestTaskOwner(t),
+			DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+		},
+	)
 	p.now = func() time.Time { return time.Unix(1710000000, 0) }
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
+	capabilityValue, scope, _, cleanup := newCLSScopedSecretHarness(
+		t, 1, "empty-log-format", p.config, map[string]string{p.config.SecretKey: p.config.SecretKey},
+	)
+	t.Cleanup(cleanup)
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
+	}
+	t.Cleanup(p.Stop)
 	err := p.PostInit()
 	if err == nil || !strings.Contains(err.Error(), name) || !strings.Contains(err.Error(), "log_format") {
 		t.Fatalf("PostInit() error = %v, want %s log_format rejection", err, name)
@@ -106,13 +449,25 @@ func TestEffectiveLogFormatRejectsEmptyBeforeSideEffects(t *testing.T) {
 	}
 }
 
-func newRawTestPlugin(t *testing.T, cfg Config) *Plugin {
+func newRawTestPlugin(t *testing.T, cfg Config, metadata runtime.MetadataView) *Plugin {
 	t.Helper()
 
 	p := &Plugin{config: cfg}
+	p.SetDependencies(base.Dependencies{
+		Tasks:          newLoggerTestTaskOwner(t),
+		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+		Metadata:       metadata,
+	})
 	p.now = func() time.Time { return time.Unix(1710000000, 0) }
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
+	}
+	capabilityValue, scope, _, cleanup := newCLSScopedSecretHarness(
+		t, 1, "raw-metadata", p.config, map[string]string{p.config.SecretKey: p.config.SecretKey},
+	)
+	t.Cleanup(cleanup)
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
@@ -121,42 +476,17 @@ func newRawTestPlugin(t *testing.T, cfg Config) *Plugin {
 	return p
 }
 
-func putPluginMetadata(t *testing.T, logFormat map[string]string) {
+func mustMetadataView(t *testing.T, metadata map[string]any) runtime.MetadataView {
 	t.Helper()
-
-	events := make(chan *store.Event, 1)
-	storage, err := store.Open(t.TempDir()+"/store.db", events)
-	if err != nil {
-		t.Fatalf("store.Open() error = %v", err)
-	}
-	previous := store.ReplaceGlobalStoreForTest(storage)
-	storage.Start()
-	t.Cleanup(func() {
-		store.ReplaceGlobalStoreForTest(previous)
-		if err := storage.Stop(); err != nil {
-			t.Errorf("Store.Stop() error = %v", err)
-		}
-	})
-
-	value, err := json.Marshal(map[string]any{"log_format": logFormat})
+	document, err := json.Marshal(metadata)
 	if err != nil {
 		t.Fatalf("json.Marshal() error = %v", err)
 	}
-	events <- &store.Event{
-		Type:  store.EventTypePut,
-		Key:   []byte("/apisix/plugin_metadata/" + name),
-		Value: value,
+	view, err := runtime.NewMetadataView(map[string][]byte{name: document})
+	if err != nil {
+		t.Fatalf("NewMetadataView() error = %v", err)
 	}
-	if err := storage.Sync(); err != nil {
-		t.Fatalf("Store.Sync() error = %v", err)
-	}
-	var metadata pluginMetadata
-	if err := store.GetPluginMetadata(name, &metadata); err != nil {
-		t.Fatalf("GetPluginMetadata() error = %v", err)
-	}
-	if len(metadata.LogFormat) != len(logFormat) {
-		t.Fatalf("stored log format = %#v, want %#v", metadata.LogFormat, logFormat)
-	}
+	return view
 }
 
 func TestPostInitAppliesCLSDefaults(t *testing.T) {
@@ -208,30 +538,28 @@ func TestRunLogPhasePreservesSampleRatio(t *testing.T) {
 }
 
 func TestPostInitRejectsInvalidEncryptedSecretKey(t *testing.T) {
-	data_encryption.Configure(true, []string{"qeddd145sfvddff3"})
-	t.Cleanup(func() { data_encryption.Configure(false, nil) })
-
 	p := &Plugin{config: Config{
 		CLSHost:   "cls.example.com",
 		CLSTopic:  "topic-a",
 		SecretID:  "id",
 		SecretKey: "not-a-ciphertext",
 	}}
+	p.SetDependencies(base.Dependencies{
+		Tasks:          newLoggerTestTaskOwner(t),
+		DataEncryption: testutil.DataEncryptionService(true, []string{"qeddd145sfvddff3"}).Resolver(),
+	})
 	p.now = func() time.Time { return time.Unix(1710000000, 0) }
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := p.PostInit(); err == nil {
-		t.Fatal("PostInit() error = nil, want strict encrypted secret_key rejection")
+	if err := p.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) {
+		t.Fatalf("MaterializeSecrets() error = %v, want credential unavailable", err)
 	}
 }
 
 func TestPostInitResolvesRotatedEncryptedSecretKey(t *testing.T) {
 	oldKey := "old-keyring-item"
 	newKey := "qeddd145sfvddff3"
-	data_encryption.Configure(true, []string{newKey, oldKey})
-	t.Cleanup(func() { data_encryption.Configure(false, nil) })
-
 	p := &Plugin{config: Config{
 		CLSHost:   "cls.example.com",
 		CLSTopic:  "topic-a",
@@ -239,16 +567,27 @@ func TestPostInitResolvesRotatedEncryptedSecretKey(t *testing.T) {
 		SecretKey: encryptTencentCLSTestValue(t, oldKey, "cls-secret"),
 		LogFormat: map[string]string{"request_id": "$request_id"},
 	}}
+	p.SetDependencies(base.Dependencies{
+		Tasks:          newLoggerTestTaskOwner(t),
+		DataEncryption: testutil.DataEncryptionService(true, []string{newKey, oldKey}).Resolver(),
+	})
 	p.now = func() time.Time { return time.Unix(1710000000, 0) }
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
+	capabilityValue, scope, _, cleanup := newCLSScopedSecretHarness(
+		t, 1, "rotated-secret", p.config, map[string]string{p.config.SecretKey: "cls-secret"},
+	)
+	t.Cleanup(cleanup)
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
+	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
-	t.Cleanup(func() { p.BatchProcessor.Stop() })
-	if p.config.SecretKey != "cls-secret" {
-		t.Fatalf("secret_key = %q, want resolved plaintext", p.config.SecretKey)
+	t.Cleanup(p.Stop)
+	if p.config.SecretKey != clsSecretDescriptor("cls-secret") {
+		t.Fatalf("secret_key = %q, want resolved descriptor", p.config.SecretKey)
 	}
 }
 
@@ -316,6 +655,423 @@ func TestSendPostsCLSProtobufPayload(t *testing.T) {
 	}
 	if logs[0]["env"] != "test" {
 		t.Fatalf("env = %q, want global tag", logs[0]["env"])
+	}
+}
+
+func newScopedReadyCLSPlugin(
+	t *testing.T,
+	revision uint64,
+	resourceID string,
+	config Config,
+	resolved string,
+) *Plugin {
+	t.Helper()
+	if len(config.LogFormat) == 0 {
+		config.LogFormat = map[string]string{"request_id": "$request_id"}
+	}
+	capabilityValue, scope, _, closeAttempt := newCLSScopedSecretHarness(
+		t, revision, resourceID, config, map[string]string{config.SecretKey: resolved},
+	)
+	t.Cleanup(closeAttempt)
+	p := &Plugin{config: config}
+	p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
+	p.now = func() time.Time { return time.Unix(1710000000, 0) }
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	if err := base.MaterializeScopedPluginSecrets(
+		context.Background(), scope, capabilityValue, p,
+	); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+	t.Cleanup(p.Stop)
+	return p
+}
+
+func TestCLSGenerationsShareOnlyNeutralClientAndKeepSignaturesIsolated(t *testing.T) {
+	fixedNow := time.Unix(1710000000, 0)
+	authorizations := make(chan string, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authorizations <- r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+	host := strings.TrimPrefix(server.URL, "http://")
+	p1 := newScopedReadyCLSPlugin(t, 130, "route-n", Config{
+		Scheme: "http", CLSHost: host, CLSTopic: "topic-a", SecretID: "same-id",
+		SecretKey: "$secret://cls/generation-n", Timeout: 1731,
+	}, "generation-n-private-key")
+	p2 := newScopedReadyCLSPlugin(t, 131, "route-n-plus-one", Config{
+		Scheme: "http", CLSHost: host, CLSTopic: "topic-b", SecretID: "same-id",
+		SecretKey: "$secret://cls/generation-n-plus-one", Timeout: 1731,
+	}, "generation-n-plus-one-private-key")
+	if p1.client != p2.client {
+		t.Fatal("equal TLS/timeout generations did not share credential-neutral Resty client")
+	}
+	if _, err := p1.SendBatch(
+		context.Background(), []map[string]any{{"generation": "n"}}, 1,
+	); err != nil {
+		t.Fatalf("generation N SendBatch() error = %v", err)
+	}
+	if _, err := p2.SendBatch(
+		context.Background(), []map[string]any{{"generation": "n+1"}}, 1,
+	); err != nil {
+		t.Fatalf("generation N+1 SendBatch() error = %v", err)
+	}
+	authN := <-authorizations
+	authNext := <-authorizations
+	wantN := referenceCLSAuthorization("same-id", "generation-n-private-key", fixedNow)
+	wantNext := referenceCLSAuthorization("same-id", "generation-n-plus-one-private-key", fixedNow)
+	if authN != wantN || authNext != wantNext {
+		t.Fatalf(
+			"generation signatures = %q / %q, want independent references %q / %q",
+			authN, authNext, wantN, wantNext,
+		)
+	}
+	for label, mutant := range map[string]string{
+		"raw reference N": referenceCLSAuthorization(
+			"same-id", "$secret://cls/generation-n", fixedNow,
+		),
+		"descriptor N": referenceCLSAuthorization("same-id", p1.config.SecretKey, fixedNow),
+		"raw reference N+1": referenceCLSAuthorization(
+			"same-id", "$secret://cls/generation-n-plus-one", fixedNow,
+		),
+		"descriptor N+1": referenceCLSAuthorization("same-id", p2.config.SecretKey, fixedNow),
+	} {
+		if authN == mutant || authNext == mutant {
+			t.Fatalf("generation Authorization matched %s mutant: %q", label, mutant)
+		}
+	}
+	if strings.Contains(authN, "generation-n-private-key") ||
+		strings.Contains(authNext, "generation-n-plus-one-private-key") {
+		t.Fatal("raw secret key escaped into Authorization")
+	}
+}
+
+func TestCLSSigningCallbackOwnsRequestResponseLifecycle(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Authorization", "private-response-authorization")
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte("private-response-body"))
+	}))
+	t.Cleanup(server.Close)
+	p := newScopedReadyCLSPlugin(t, 132, "route-callback-lifecycle", Config{
+		Scheme: "http", CLSHost: strings.TrimPrefix(server.URL, "http://"), CLSTopic: "topic-a",
+		SecretID: "secret-id", SecretKey: "$ENV://CLS_CALLBACK_KEY", Timeout: 1732,
+	}, "callback-private-key")
+
+	var retainedRequest *resty.Request
+	var retainedResponse *resty.Response
+	var retainedRawResponse *http.Response
+	p.client.OnAfterResponse(func(_ *resty.Client, response *resty.Response) error {
+		retainedRequest = response.Request
+		retainedResponse = response
+		retainedRawResponse = response.RawResponse
+		return nil
+	})
+	callbackReturned := make(chan struct{})
+	releaseCallback := make(chan struct{})
+	p.testLifecycleHook = func(event string) {
+		if event != lifecycleSigningCallbackReturned {
+			return
+		}
+		close(callbackReturned)
+		<-releaseCallback
+	}
+	sendDone := make(chan error, 1)
+	go func() {
+		_, err := p.SendBatch(
+			context.Background(), []map[string]any{{"message": "private-body"}}, 1,
+		)
+		sendDone <- err
+	}()
+	select {
+	case <-callbackReturned:
+	case <-time.After(2 * time.Second):
+		close(releaseCallback)
+		t.Fatal("timed out waiting for signing callback return barrier")
+	}
+
+	problems := retainedCLSGraphProblems(retainedRequest, retainedResponse, retainedRawResponse)
+	select {
+	case err := <-sendDone:
+		problems = append(problems, fmt.Sprintf("SendBatch returned before callback release: %v", err))
+	default:
+	}
+	close(releaseCallback)
+	var sendErr error
+	select {
+	case sendErr = <-sendDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("SendBatch did not return after signing callback release")
+	}
+	if len(problems) > 0 {
+		t.Fatalf("request/response graph escaped signing callback: %s", strings.Join(problems, "; "))
+	}
+	if sendErr == nil || !strings.Contains(sendErr.Error(), "status code [502]") ||
+		!strings.Contains(sendErr.Error(), "private-response-body") {
+		t.Fatalf("SendBatch() error = %v, want callback-owned status/body result", sendErr)
+	}
+}
+
+func TestCLSSendScrubsRetainedRequestAndResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Authorization", "private-response-authorization")
+		_, _ = w.Write([]byte("private-response-body"))
+	}))
+	t.Cleanup(server.Close)
+	p := newScopedReadyCLSPlugin(t, 132, "route-retained", Config{
+		Scheme: "http", CLSHost: strings.TrimPrefix(server.URL, "http://"), CLSTopic: "topic-a",
+		SecretID: "secret-id", SecretKey: "$ENV://CLS_RETAINED_KEY", Timeout: 1732,
+	}, "retained-private-key")
+	var retainedRequest *resty.Request
+	var retainedResponse *resty.Response
+	var retainedRawResponse *http.Response
+	p.client.OnAfterResponse(func(_ *resty.Client, response *resty.Response) error {
+		retainedRequest = response.Request
+		retainedResponse = response
+		retainedRawResponse = response.RawResponse
+		return nil
+	})
+	if _, err := p.SendBatch(
+		context.Background(), []map[string]any{{"message": "private-body"}}, 1,
+	); err != nil {
+		t.Fatalf("SendBatch() error = %v", err)
+	}
+	if retainedRequest == nil || retainedResponse == nil || retainedRawResponse == nil {
+		t.Fatal("Resty hook did not retain request/response/raw response")
+	}
+	if retainedRequest.Header.Get("Authorization") != "" || retainedRequest.Body != nil {
+		t.Fatalf("retained request still holds Authorization/body: %#v", retainedRequest)
+	}
+	if retainedRequest.RawRequest == nil ||
+		retainedRequest.RawRequest.Header.Get("Authorization") != "" ||
+		retainedRequest.RawRequest.Body != http.NoBody || retainedRequest.RawRequest.GetBody != nil {
+		t.Fatalf("retained raw request was not scrubbed: %#v", retainedRequest.RawRequest)
+	}
+	if retainedResponse.Request != nil || retainedResponse.RawResponse != nil ||
+		len(retainedResponse.Body()) != 0 {
+		t.Fatalf("retained response still links private request/body: %#v", retainedResponse)
+	}
+	if got := retainedRawResponse.Header.Get("Authorization"); got != "" {
+		t.Fatalf("retained raw response Authorization = %q", got)
+	}
+	if retainedRawResponse.Body != http.NoBody || retainedRawResponse.Request != nil {
+		t.Fatalf("retained raw response still owns request/body: %#v", retainedRawResponse)
+	}
+}
+
+func retainedCLSGraphProblems(
+	request *resty.Request,
+	response *resty.Response,
+	rawResponse *http.Response,
+) []string {
+	problems := make([]string, 0, 8)
+	if request == nil || response == nil || rawResponse == nil {
+		return append(problems, "Resty hook did not retain the complete graph")
+	}
+	if request.Header.Get("Authorization") != "" {
+		problems = append(problems, "request Authorization retained")
+	}
+	if request.Body != nil {
+		problems = append(problems, "request body retained")
+	}
+	if request.RawRequest == nil {
+		problems = append(problems, "raw request missing")
+	} else {
+		if request.RawRequest.Header.Get("Authorization") != "" {
+			problems = append(problems, "raw request Authorization retained")
+		}
+		if request.RawRequest.Body != http.NoBody || request.RawRequest.GetBody != nil {
+			problems = append(problems, "raw request body retained")
+		}
+	}
+	if response.Request != nil || response.RawResponse != nil || len(response.Body()) != 0 {
+		problems = append(problems, "Resty response graph retained")
+	}
+	if rawResponse.Header.Get("Authorization") != "" {
+		problems = append(problems, "raw response Authorization retained")
+	}
+	if rawResponse.Body != http.NoBody || rawResponse.Request != nil {
+		problems = append(problems, "raw response request/body retained")
+	}
+	return problems
+}
+
+func referenceCLSAuthorization(secretID, secretKey string, now time.Time) string {
+	signTime := fmt.Sprintf("%d;%d", now.Unix(), now.Unix()+authExpireSeconds)
+	httpRequestInfo := fmt.Sprintf("%s\n%s\n%s\n%s\n", "post", clsAPIPath, "", "")
+	httpRequestDigest := sha1.Sum([]byte(httpRequestInfo))
+	stringToSign := fmt.Sprintf(
+		"%s\n%s\n%s\n", "sha1", signTime, hex.EncodeToString(httpRequestDigest[:]),
+	)
+	hmacHex := func(key, value []byte) string {
+		mac := hmac.New(sha1.New, key)
+		_, _ = mac.Write(value)
+		return hex.EncodeToString(mac.Sum(nil))
+	}
+	signKey := hmacHex([]byte(secretKey), []byte(signTime))
+	signature := hmacHex([]byte(signKey), []byte(stringToSign))
+	return "q-sign-algorithm=sha1" +
+		"&q-ak=" + secretID +
+		"&q-sign-time=" + signTime +
+		"&q-key-time=" + signTime +
+		"&q-header-list=" +
+		"&q-url-param-list=" +
+		"&q-signature=" + signature
+}
+
+func TestCLSStopDrainsActiveSendAndPreventsResurrection(t *testing.T) {
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		entered <- struct{}{}
+		<-release
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+	p := newScopedReadyCLSPlugin(t, 133, "route-stop", Config{
+		Scheme: "http", CLSHost: strings.TrimPrefix(server.URL, "http://"), CLSTopic: "topic-a",
+		SecretID: "secret-id", SecretKey: "$ENV://CLS_STOP_KEY", Timeout: 1733,
+	}, "stop-private-key")
+	processor := p.BatchProcessor
+	sendDone := make(chan error, 1)
+	go func() {
+		_, err := p.SendBatch(context.Background(), []map[string]any{{"message": "blocked"}}, 1)
+		sendDone <- err
+	}()
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for active CLS send")
+	}
+	stopDone := make(chan struct{})
+	go func() {
+		p.Stop()
+		close(stopDone)
+	}()
+	secondStopDone := make(chan struct{})
+	go func() {
+		p.Stop()
+		close(secondStopDone)
+	}()
+	select {
+	case <-stopDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop() did not seal admission while active send remained blocked")
+	}
+	select {
+	case <-secondStopDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("concurrent Stop() did not observe sealed admission")
+	}
+	if p.client == nil || p.BatchProcessor == nil || !p.secretKeySet || !p.ready {
+		t.Fatal("Stop() cleaned active CLS resources before delivery returned")
+	}
+	if !p.stopped.Load() {
+		t.Fatal("Stop() did not seal the CLS log entrypoint")
+	}
+	close(release)
+	if err := <-sendDone; err != nil {
+		t.Fatalf("active SendBatch() error = %v", err)
+	}
+	if err := processor.Shutdown(context.Background()); err != nil {
+		t.Fatalf("batch Shutdown() error = %v", err)
+	}
+	if p.client != nil || p.BatchProcessor != nil || p.secretKeySet || p.secretsPrepared || p.ready {
+		t.Fatalf("retired state retained resources: client=%v batch=%v key=%t prepared=%t ready=%t",
+			p.client != nil, p.BatchProcessor != nil, p.secretKeySet, p.secretsPrepared, p.ready)
+	}
+	before := len(p.FireChan)
+	if err := p.RunLogPhase(base.LogSnapshot{}); !errors.Is(err, base.ErrLogQueueUnavailable) {
+		t.Fatalf("post-Stop RunLogPhase() error = %v", err)
+	}
+	if len(p.FireChan) != before {
+		t.Fatal("post-Stop log phase enqueued work")
+	}
+	if _, err := p.SendBatch(context.Background(), []map[string]any{{"late": true}}, 1); err == nil {
+		t.Fatal("SendBatch() after Stop error = nil, want fail closed")
+	}
+	if err := p.PostInit(); err == nil {
+		t.Fatal("PostInit() after Stop error = nil, want no resurrection")
+	}
+	p.Stop()
+}
+
+func TestCLSStopFlushesPendingBatchBeforeCleanup(t *testing.T) {
+	received := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		received <- struct{}{}
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+	p := newScopedReadyCLSPlugin(t, 134, "route-pending", Config{
+		Scheme: "http", CLSHost: strings.TrimPrefix(server.URL, "http://"), CLSTopic: "topic-a",
+		SecretID: "secret-id", SecretKey: "$secret://cls/pending", Timeout: 1734,
+		BatchMaxSize: 100, BufferDuration: 60, InactiveTimeout: 60,
+	}, "pending-private-key")
+	p.BatchProcessor.Push(map[string]any{"message": "pending"})
+	processor := p.BatchProcessor
+	p.Stop()
+	if err := processor.Shutdown(context.Background()); err != nil {
+		t.Fatalf("batch Shutdown() error = %v", err)
+	}
+	select {
+	case <-received:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop() did not flush pending CLS batch")
+	}
+	if p.client != nil || p.BatchProcessor != nil || p.secretKeySet || p.ready {
+		t.Fatal("Stop() cleanup retained CLS resources after pending flush")
+	}
+}
+
+func TestCLSStopBeforePostInitPreventsPublication(t *testing.T) {
+	config := Config{
+		CLSHost: "cls.example.com", CLSTopic: "topic-a", SecretID: "secret-id",
+		SecretKey: "$ENV://CLS_PREPARED_KEY", LogFormat: map[string]string{"id": "$request_id"},
+	}
+	capabilityValue, scope, _, closeAttempt := newCLSScopedSecretHarness(
+		t, 135, "route-prepared", config,
+		map[string]string{config.SecretKey: "prepared-private-key"},
+	)
+	defer closeAttempt()
+	p := &Plugin{config: config}
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	if err := base.MaterializeScopedPluginSecrets(
+		context.Background(), scope, capabilityValue, p,
+	); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
+	}
+	p.Stop()
+	if err := p.PostInit(); err == nil {
+		t.Fatal("PostInit() after prepared Stop error = nil, want fail closed")
+	}
+	if p.client != nil || p.BatchProcessor != nil || p.secretKeySet || p.secretsPrepared || p.ready {
+		t.Fatal("Stop-before-PostInit published or retained CLS state")
+	}
+}
+
+func TestCLSMaterializeSecretsFailsClosed(t *testing.T) {
+	p := &Plugin{config: Config{
+		CLSHost: "cls.example.com", CLSTopic: "topic-a", SecretID: "secret-id",
+		SecretKey: "legacy-private-key", LogFormat: map[string]string{"id": "$request_id"},
+		Timeout: 1735,
+	}}
+	p.SetDependencies(base.Dependencies{
+		Tasks:          newLoggerTestTaskOwner(t),
+		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+	})
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) {
+		t.Fatalf("MaterializeSecrets() error = %v, want credential unavailable", err)
 	}
 }
 
@@ -582,6 +1338,93 @@ func TestSchemaAcceptsBatchAndMaxPendingFields(t *testing.T) {
 	}
 	if err := util.Validate(config, p.GetSchema()); err != nil {
 		t.Fatalf("schema rejected batch and max pending fields: %v", err)
+	}
+}
+
+func TestMetadataSchemaAcceptsLogFormatAndPendingLimit(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := util.Validate(map[string]any{
+		"log_format":          map[string]any{"generation": "$route_id"},
+		"max_pending_entries": 1,
+	}, p.GetMetadataSchema()); err != nil {
+		t.Fatalf("valid metadata rejected: %v", err)
+	}
+	for _, metadata := range []map[string]any{
+		{"log_format": "$route_id"},
+		{"log_format": map[string]any{"generation": 1}},
+		{"max_pending_entries": 0},
+	} {
+		if err := util.Validate(metadata, p.GetMetadataSchema()); err == nil {
+			t.Fatalf("invalid metadata accepted: %#v", metadata)
+		}
+	}
+}
+
+func TestPreparedGenerationsRetainMetadataFormat(t *testing.T) {
+	config := Config{
+		CLSHost:   "cls.example.com",
+		CLSTopic:  "topic-a",
+		SecretID:  "id",
+		SecretKey: "key",
+	}
+	first := newRawTestPlugin(t, config, mustMetadataView(t, map[string]any{
+		"log_format":          map[string]any{"generation": "n"},
+		"max_pending_entries": 11,
+	}))
+	second := newRawTestPlugin(t, config, mustMetadataView(t, map[string]any{
+		"log_format":          map[string]any{"generation": "n-plus-one"},
+		"max_pending_entries": 12,
+	}))
+
+	if first.LogFormat["generation"] != "n" || first.config.MaxPendingEntries != 11 {
+		t.Fatalf("generation N metadata = %#v/%d", first.LogFormat, first.config.MaxPendingEntries)
+	}
+	if second.LogFormat["generation"] != "n-plus-one" || second.config.MaxPendingEntries != 12 {
+		t.Fatalf("generation N+1 metadata = %#v/%d", second.LogFormat, second.config.MaxPendingEntries)
+	}
+}
+
+func TestMetadataDecodeFailsBeforeCLSClientAndProcessorAcquisition(t *testing.T) {
+	p := &Plugin{config: Config{
+		CLSHost:   "cls.example.com",
+		CLSTopic:  "topic-a",
+		SecretID:  "id",
+		SecretKey: "key",
+		LogFormat: map[string]string{"generation": "route"},
+	}}
+	p.SetDependencies(base.Dependencies{
+		Tasks:          newLoggerTestTaskOwner(t),
+		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+		Metadata: mustMetadataView(t, map[string]any{
+			"max_pending_entries": "invalid",
+		}),
+	})
+	p.now = func() time.Time { return time.Unix(1710000000, 0) }
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	capabilityValue, scope, _, cleanup := newCLSScopedSecretHarness(
+		t, 1, "invalid-metadata", p.config, map[string]string{p.config.SecretKey: p.config.SecretKey},
+	)
+	t.Cleanup(cleanup)
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
+	}
+	err := p.PostInit()
+	defer p.Stop()
+	if err == nil {
+		t.Fatal("PostInit() error = nil for invalid metadata")
+	}
+	if p.client != nil || p.clientRelease != nil || p.BatchProcessor != nil {
+		t.Fatalf(
+			"decode failure acquired resources: client=%v release=%v processor=%v",
+			p.client,
+			p.clientRelease != nil,
+			p.BatchProcessor,
+		)
 	}
 }
 
@@ -897,7 +1740,7 @@ func TestAuthorizationSignTimeUsesSingleTimestamp(t *testing.T) {
 		return time.Unix(1710000000, 0)
 	}
 
-	auth := p.authorization()
+	auth := authorization(&p.config, p.now())
 
 	start, end, ok := signTimeWindow(auth)
 	if !ok {

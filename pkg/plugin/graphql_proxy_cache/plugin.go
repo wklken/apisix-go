@@ -2,6 +2,7 @@ package graphql_proxy_cache
 
 import (
 	"bytes"
+	"context"
 	"crypto/md5"
 	"encoding/hex"
 	"errors"
@@ -14,13 +15,13 @@ import (
 	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
-	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/cacheutil"
 	"github.com/wklken/apisix-go/pkg/plugin/graphql"
 	proxy_cache "github.com/wklken/apisix-go/pkg/plugin/proxy_cache"
 	"github.com/wklken/apisix-go/pkg/resource"
+	"github.com/wklken/apisix-go/pkg/runtime"
 
 	"github.com/vektah/gqlparser/v2/ast"
 )
@@ -38,9 +39,6 @@ type Plugin struct {
 	diskStore   *proxy_cache.DiskZoneStore
 
 	cleanupInterval time.Duration
-	cleanupMu       sync.Mutex
-	cleanupStop     chan struct{}
-	cleanupDone     chan struct{}
 
 	maxSize   int
 	routeID   string
@@ -135,6 +133,10 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	effective := p.StaticConfig()
+	if effective == nil {
+		return fmt.Errorf("effective config is required")
+	}
 	p.Stop()
 	if p.config.CacheZone == "" {
 		p.config.CacheZone = "disk_cache_one"
@@ -159,8 +161,8 @@ func (p *Plugin) PostInit() error {
 		p.now = time.Now
 	}
 	p.maxSize = defaultMaxSize
-	if config.GlobalConfig != nil && config.GlobalConfig.GraphQL.MaxSize > 0 {
-		p.maxSize = config.GlobalConfig.GraphQL.MaxSize
+	if effective.Config.GraphQL.MaxSize > 0 {
+		p.maxSize = effective.Config.GraphQL.MaxSize
 	}
 	if p.config.CacheStrategy == "memory" && proxy_cache.CacheZoneDeclared(p.config.CacheZone) {
 		p.memoryStore = proxy_cache.AcquireMemoryZoneStore(p.config.CacheZone)
@@ -172,7 +174,10 @@ func (p *Plugin) PostInit() error {
 		}
 		if configured {
 			p.diskStore = store
-			p.startDiskCleanup()
+			if err := p.startDiskCleanup(); err != nil {
+				p.releaseStores()
+				return err
+			}
 		}
 	}
 	if p.routeID != "" {
@@ -192,12 +197,7 @@ func (p *Plugin) SetResourceContext(route resource.Route, service resource.Servi
 }
 
 func (p *Plugin) Stop() {
-	p.stopDiskCleanup()
-	if p.memoryStore != nil {
-		p.memoryStore.Close()
-		p.memoryStore = nil
-	}
-	p.diskStore = nil
+	p.releaseStores()
 	if p.routeID == "" {
 		return
 	}
@@ -208,49 +208,37 @@ func (p *Plugin) Stop() {
 	routeCaches.Unlock()
 }
 
-func (p *Plugin) startDiskCleanup() {
-	if p.diskStore == nil {
-		return
+func (p *Plugin) releaseStores() {
+	if p.memoryStore != nil {
+		p.memoryStore.Close()
+		p.memoryStore = nil
 	}
-	p.cleanupMu.Lock()
-	if p.cleanupStop != nil {
-		p.cleanupMu.Unlock()
-		return
-	}
-	stop := make(chan struct{})
-	done := make(chan struct{})
-	p.cleanupStop = stop
-	p.cleanupDone = done
-	interval := p.cleanupPeriod()
-	p.cleanupMu.Unlock()
-
-	go func() {
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-		defer close(done)
-		for {
-			select {
-			case now := <-ticker.C:
-				p.diskStore.Cleanup(now)
-			case <-stop:
-				return
-			}
-		}
-	}()
+	p.diskStore = nil
 }
 
-func (p *Plugin) stopDiskCleanup() {
-	p.cleanupMu.Lock()
-	stop := p.cleanupStop
-	done := p.cleanupDone
-	p.cleanupStop = nil
-	p.cleanupDone = nil
-	p.cleanupMu.Unlock()
-	if stop == nil {
-		return
+func (p *Plugin) startDiskCleanup() error {
+	if p.diskStore == nil {
+		return nil
 	}
-	close(stop)
-	<-done
+	owner := p.TaskOwner()
+	if owner == nil {
+		return runtime.ErrTaskOwnerRequired
+	}
+	return owner.Go("disk-cleanup", p.diskCleanupLoop)
+}
+
+func (p *Plugin) diskCleanupLoop(ctx context.Context) error {
+	interval := p.cleanupPeriod()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case now := <-ticker.C:
+			p.diskStore.Cleanup(now)
+		case <-ctx.Done():
+			return nil
+		}
+	}
 }
 
 func (p *Plugin) cleanupPeriod() time.Duration {

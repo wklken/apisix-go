@@ -2,11 +2,13 @@ package proxy_cache
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -20,6 +22,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/cacheutil"
 	"github.com/wklken/apisix-go/pkg/resource"
+	"github.com/wklken/apisix-go/pkg/runtime"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -37,6 +40,23 @@ func TestRequestVarUsesEffectiveRemoteIP(t *testing.T) {
 
 	if got := requestVar(r, "remote_addr"); got != "198.51.100.2" {
 		t.Fatalf("requestVar(remote_addr) = %q, want effective remote address", got)
+	}
+}
+
+func TestPostInitUsesGenerationLocalConfiguredZones(t *testing.T) {
+	if err := RefreshConfiguredZones([]appconfig.Zone{{Name: "legacy-zone", MemorySize: "1M"}}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = RefreshConfiguredZones(nil) })
+
+	instance := &Plugin{config: Config{CacheZone: "candidate-zone", CacheStrategy: "memory"}}
+	instance.SetConfiguredZones([]appconfig.Zone{{Name: "candidate-zone", MemorySize: "2M"}})
+	if err := instance.PostInit(); err != nil {
+		t.Fatalf("PostInit() observed legacy zone snapshot: %v", err)
+	}
+	t.Cleanup(instance.Stop)
+	if instance.memoryZone == nil || instance.memoryZone.capacity != 2<<20 {
+		t.Fatalf("candidate memory zone = %#v, want generation-local 2M zone", instance.memoryZone)
 	}
 }
 
@@ -58,16 +78,67 @@ func (w *cacheHitCountingWriter) Write(body []byte) (int, error) {
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
 
+	tasks, failures := newProxyCacheTestTasks(t)
 	p := &Plugin{config: cfg}
+	p.SetDependencies(base.Dependencies{
+		Tasks: newPluginTaskOwnerForTest(t, tasks, "plugin/test/proxy-cache/helper"),
+	})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
-	t.Cleanup(p.Stop)
+	t.Cleanup(func() {
+		stopProxyCacheTestRegistry(t, tasks)
+		p.Stop()
+		assertNoProxyCacheTaskFailure(t, failures)
+	})
 
 	return p
+}
+
+func newProxyCacheTestTasks(t *testing.T) (*runtime.TaskRegistry, <-chan runtime.TaskFailure) {
+	t.Helper()
+	failures := make(chan runtime.TaskFailure, 4)
+	return runtime.NewTaskRegistry(context.Background(), func(failure runtime.TaskFailure) {
+		failures <- failure
+	}), failures
+}
+
+func newPluginTaskOwnerForTest(t *testing.T, tasks *runtime.TaskRegistry, prefix string) *runtime.TaskOwner {
+	t.Helper()
+	owner, err := runtime.NewTaskOwner(tasks, prefix, runtime.TaskPlugin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return owner
+}
+
+func stopProxyCacheTestRegistry(t *testing.T, tasks *runtime.TaskRegistry) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if residuals, err := tasks.Stop(ctx); err != nil || len(residuals) != 0 {
+		t.Fatalf("TaskRegistry.Stop() = (%v, %v)", residuals, err)
+	}
+}
+
+func assertNoProxyCacheTaskFailure(t *testing.T, failures <-chan runtime.TaskFailure) {
+	t.Helper()
+	select {
+	case failure := <-failures:
+		t.Fatalf("unexpected task failure = %#v", failure)
+	default:
+	}
+}
+
+func setConfiguredZones(t *testing.T, zones []appconfig.Zone) {
+	t.Helper()
+	if err := RefreshConfiguredZones(zones); err != nil {
+		t.Fatalf("RefreshConfiguredZones() error = %v", err)
+	}
+	t.Cleanup(func() { _ = RefreshConfiguredZones(nil) })
 }
 
 func TestProxyCacheHitPublishesWithoutWriterAndReturnsCacheHitStop(t *testing.T) {
@@ -342,11 +413,7 @@ func TestHandlerCachesSuccessfulGETResponses(t *testing.T) {
 }
 
 func TestHandlerMemoryZoneRejectsOversizedResponseWithoutEvictingSmallEntry(t *testing.T) {
-	oldConfig := appconfig.GlobalConfig
-	appconfig.GlobalConfig = &appconfig.Config{Apisix: appconfig.Apisix{ProxyCache: appconfig.ProxyCache{
-		Zones: []appconfig.Zone{{Name: "bounded-handler", MemorySize: "320B"}},
-	}}}
-	t.Cleanup(func() { appconfig.GlobalConfig = oldConfig })
+	setConfiguredZones(t, []appconfig.Zone{{Name: "bounded-handler", MemorySize: "320B"}})
 
 	p := newTestPlugin(t, Config{CacheStrategy: "memory", CacheZone: "bounded-handler", CacheTTL: 60})
 	calls := 0
@@ -391,11 +458,7 @@ func TestHandlerMemoryZoneRejectsOversizedResponseWithoutEvictingSmallEntry(t *t
 }
 
 func TestStoreStateWithHeaderRejectsOversizedVaryOverwriteWithoutMutatingExistingEntry(t *testing.T) {
-	oldConfig := appconfig.GlobalConfig
-	appconfig.GlobalConfig = &appconfig.Config{Apisix: appconfig.Apisix{ProxyCache: appconfig.ProxyCache{
-		Zones: []appconfig.Zone{{Name: "bounded-store-state", MemorySize: "320B"}},
-	}}}
-	t.Cleanup(func() { appconfig.GlobalConfig = oldConfig })
+	setConfiguredZones(t, []appconfig.Zone{{Name: "bounded-store-state", MemorySize: "320B"}})
 
 	p := newTestPlugin(t, Config{CacheStrategy: "memory", CacheZone: "bounded-store-state", CacheTTL: 60})
 	requestHeader := http.Header{"X-Variant": {"one"}}
@@ -511,11 +574,7 @@ func TestHandlerSetsAgeOnCacheHit(t *testing.T) {
 
 func TestDiskStrategyPersistsAcrossPluginInstances(t *testing.T) {
 	root := t.TempDir()
-	oldConfig := appconfig.GlobalConfig
-	appconfig.GlobalConfig = &appconfig.Config{Apisix: appconfig.Apisix{ProxyCache: appconfig.ProxyCache{
-		Zones: []appconfig.Zone{{Name: "disk-test", DiskPath: root}},
-	}}}
-	t.Cleanup(func() { appconfig.GlobalConfig = oldConfig })
+	setConfiguredZones(t, []appconfig.Zone{{Name: "disk-test", DiskPath: root}})
 
 	calls := 0
 	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -555,11 +614,7 @@ func TestDiskStrategyPersistsAcrossPluginInstances(t *testing.T) {
 
 func TestDiskStrategyPurgesPersistedEntry(t *testing.T) {
 	root := t.TempDir()
-	oldConfig := appconfig.GlobalConfig
-	appconfig.GlobalConfig = &appconfig.Config{Apisix: appconfig.Apisix{ProxyCache: appconfig.ProxyCache{
-		Zones: []appconfig.Zone{{Name: "disk-purge", DiskPath: root}},
-	}}}
-	t.Cleanup(func() { appconfig.GlobalConfig = oldConfig })
+	setConfiguredZones(t, []appconfig.Zone{{Name: "disk-purge", DiskPath: root}})
 
 	p := newTestPlugin(t, Config{CacheStrategy: "disk", CacheZone: "disk-purge", CacheTTL: 60})
 	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -587,11 +642,7 @@ func TestDiskStrategyPurgesPersistedEntry(t *testing.T) {
 
 func TestDiskLookupRemovesExpiredEntry(t *testing.T) {
 	root := t.TempDir()
-	oldConfig := appconfig.GlobalConfig
-	appconfig.GlobalConfig = &appconfig.Config{Apisix: appconfig.Apisix{ProxyCache: appconfig.ProxyCache{
-		Zones: []appconfig.Zone{{Name: "disk-expired", DiskPath: root}},
-	}}}
-	t.Cleanup(func() { appconfig.GlobalConfig = oldConfig })
+	setConfiguredZones(t, []appconfig.Zone{{Name: "disk-expired", DiskPath: root}})
 
 	p := newTestPlugin(t, Config{CacheStrategy: "disk", CacheZone: "disk-expired", CacheTTL: 60})
 	req := httptest.NewRequest(http.MethodGet, "/expired", nil)
@@ -650,11 +701,7 @@ func TestForgetDiskEntryTracksReplacedEntry(t *testing.T) {
 
 func TestDiskPurgeClearsDiskEntryIndex(t *testing.T) {
 	root := t.TempDir()
-	oldConfig := appconfig.GlobalConfig
-	appconfig.GlobalConfig = &appconfig.Config{Apisix: appconfig.Apisix{ProxyCache: appconfig.ProxyCache{
-		Zones: []appconfig.Zone{{Name: "disk-purge-idx", DiskPath: root}},
-	}}}
-	t.Cleanup(func() { appconfig.GlobalConfig = oldConfig })
+	setConfiguredZones(t, []appconfig.Zone{{Name: "disk-purge-idx", DiskPath: root}})
 
 	p := newTestPlugin(t, Config{CacheStrategy: "disk", CacheZone: "disk-purge-idx", CacheTTL: 60})
 	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -675,11 +722,7 @@ func TestDiskPurgeClearsDiskEntryIndex(t *testing.T) {
 
 func TestDiskLookupExpiredClearsDiskEntryIndex(t *testing.T) {
 	root := t.TempDir()
-	oldConfig := appconfig.GlobalConfig
-	appconfig.GlobalConfig = &appconfig.Config{Apisix: appconfig.Apisix{ProxyCache: appconfig.ProxyCache{
-		Zones: []appconfig.Zone{{Name: "disk-expired-idx", DiskPath: root}},
-	}}}
-	t.Cleanup(func() { appconfig.GlobalConfig = oldConfig })
+	setConfiguredZones(t, []appconfig.Zone{{Name: "disk-expired-idx", DiskPath: root}})
 
 	p := newTestPlugin(t, Config{CacheStrategy: "disk", CacheZone: "disk-expired-idx", CacheTTL: 60})
 	req := httptest.NewRequest(http.MethodGet, "/expired-idx", nil)
@@ -708,11 +751,7 @@ func TestDiskLookupExpiredClearsDiskEntryIndex(t *testing.T) {
 
 func TestConcurrentDiskForgetKeepsIndexConsistent(t *testing.T) {
 	root := t.TempDir()
-	oldConfig := appconfig.GlobalConfig
-	appconfig.GlobalConfig = &appconfig.Config{Apisix: appconfig.Apisix{ProxyCache: appconfig.ProxyCache{
-		Zones: []appconfig.Zone{{Name: "disk-race", DiskPath: root, DiskSize: "2K"}},
-	}}}
-	t.Cleanup(func() { appconfig.GlobalConfig = oldConfig })
+	setConfiguredZones(t, []appconfig.Zone{{Name: "disk-race", DiskPath: root, DiskSize: "2K"}})
 
 	p := newTestPlugin(t, Config{CacheStrategy: "disk", CacheZone: "disk-race", CacheTTL: 60})
 	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -746,11 +785,7 @@ func TestConcurrentDiskForgetKeepsIndexConsistent(t *testing.T) {
 
 func TestDiskLookupRunsPeriodicExpirySweep(t *testing.T) {
 	root := t.TempDir()
-	oldConfig := appconfig.GlobalConfig
-	appconfig.GlobalConfig = &appconfig.Config{Apisix: appconfig.Apisix{ProxyCache: appconfig.ProxyCache{
-		Zones: []appconfig.Zone{{Name: "disk-periodic", DiskPath: root}},
-	}}}
-	t.Cleanup(func() { appconfig.GlobalConfig = oldConfig })
+	setConfiguredZones(t, []appconfig.Zone{{Name: "disk-periodic", DiskPath: root}})
 
 	p := newTestPlugin(t, Config{CacheStrategy: "disk", CacheZone: "disk-periodic", CacheTTL: 60})
 	now := time.Now()
@@ -789,25 +824,29 @@ func TestDiskLookupRunsPeriodicExpirySweep(t *testing.T) {
 	}
 }
 
-func TestDiskBackgroundExpirySweepStopsWithPlugin(t *testing.T) {
+func TestDiskBackgroundExpirySweepStopsWithRegistry(t *testing.T) {
 	root := t.TempDir()
-	oldConfig := appconfig.GlobalConfig
-	appconfig.GlobalConfig = &appconfig.Config{Apisix: appconfig.Apisix{ProxyCache: appconfig.ProxyCache{
-		Zones: []appconfig.Zone{{Name: "disk-background", DiskPath: root}},
-	}}}
-	t.Cleanup(func() { appconfig.GlobalConfig = oldConfig })
+	setConfiguredZones(t, []appconfig.Zone{{Name: "disk-background", DiskPath: root}})
 
 	p := &Plugin{
 		config:          Config{CacheStrategy: "disk", CacheZone: "disk-background", CacheTTL: 60},
 		cleanupInterval: 10 * time.Millisecond,
 	}
+	tasks, failures := newProxyCacheTestTasks(t)
+	p.SetDependencies(base.Dependencies{
+		Tasks: newPluginTaskOwnerForTest(t, tasks, "plugin/test/proxy-cache/background"),
+	})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
-	t.Cleanup(p.Stop)
+	t.Cleanup(func() {
+		stopProxyCacheTestRegistry(t, tasks)
+		p.Stop()
+		assertNoProxyCacheTaskFailure(t, failures)
+	})
 
 	now := time.Now()
 	expiredReq := httptest.NewRequest(http.MethodGet, "/background-expired", nil)
@@ -834,12 +873,156 @@ func TestDiskBackgroundExpirySweepStopsWithPlugin(t *testing.T) {
 	t.Fatalf("background cleanup did not remove %s", expiredPath)
 }
 
+func TestDiskBackgroundExpirySweepUsesGenerationTaskOwner(t *testing.T) {
+	root := t.TempDir()
+	tasks, failures := newProxyCacheTestTasks(t)
+	sweepEntered := make(chan struct{}, 1)
+	sweepPermit := make(chan struct{})
+	sweepDone := make(chan struct{}, 1)
+	p := &Plugin{
+		config:          Config{CacheStrategy: "disk", CacheZone: "disk-owned", CacheTTL: 60},
+		cleanupInterval: time.Millisecond,
+	}
+	p.cleanupSweep = func(now time.Time) {
+		select {
+		case sweepEntered <- struct{}{}:
+		default:
+		}
+		<-sweepPermit
+		p.lock.Lock()
+		p.cleanupDiskLocked(now)
+		p.lock.Unlock()
+		select {
+		case sweepDone <- struct{}{}:
+		default:
+		}
+	}
+	p.SetConfiguredZones([]appconfig.Zone{{Name: "disk-owned", DiskPath: root}})
+	p.SetDependencies(base.Dependencies{
+		Tasks: newPluginTaskOwnerForTest(t, tasks, "plugin/test/proxy-cache/attempt-1"),
+	})
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+	var cleanupOnce sync.Once
+	var permitOnce sync.Once
+	cleanup := func() {
+		cleanupOnce.Do(func() {
+			permitOnce.Do(func() { close(sweepPermit) })
+			stopProxyCacheTestRegistry(t, tasks)
+			p.Stop()
+			assertNoProxyCacheTaskFailure(t, failures)
+		})
+	}
+	t.Cleanup(cleanup)
+
+	select {
+	case <-sweepEntered:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for disk cleanup loop")
+	}
+	if got := tasks.Active(); !slices.Contains(got, "plugin/test/proxy-cache/attempt-1/disk-cleanup") {
+		t.Fatalf("active owners = %v", got)
+	}
+
+	now := time.Now()
+	request := httptest.NewRequest(http.MethodGet, "/owned-expired", nil)
+	key := p.cacheKey(request)
+	path := p.entryPath(key)
+	if err := p.persistEntry(key, cacheEntry{
+		header:    make(http.Header),
+		body:      []byte("expired"),
+		status:    http.StatusOK,
+		storedAt:  now.Add(-2 * time.Minute),
+		ttl:       time.Minute,
+		expiresAt: now.Add(-time.Minute),
+	}); err != nil {
+		t.Fatalf("persist expired entry: %v", err)
+	}
+	permitOnce.Do(func() { close(sweepPermit) })
+	select {
+	case <-sweepDone:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for disk cleanup sweep")
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("background cleanup stat error = %v, want file removed", err)
+	}
+	cleanup()
+}
+
+func TestDiskCleanupPanicFailsOnlyProxyCacheOwner(t *testing.T) {
+	tasks, failures := newProxyCacheTestTasks(t)
+	firstOwner := newPluginTaskOwnerForTest(t, tasks, "plugin/test/proxy-cache/panicking")
+	first := &Plugin{
+		config:          Config{CacheStrategy: "disk", CacheZone: "disk-panicking", CacheTTL: 60},
+		cleanupInterval: time.Millisecond,
+		cleanupSweep: func(time.Time) {
+			panic("proxy-cache-cleanup-panic")
+		},
+	}
+	first.SetConfiguredZones([]appconfig.Zone{{Name: "disk-panicking", DiskPath: t.TempDir()}})
+	first.SetDependencies(base.Dependencies{Tasks: firstOwner})
+	if err := first.Init(); err != nil {
+		t.Fatalf("first Init() error = %v", err)
+	}
+	if err := first.PostInit(); err != nil {
+		t.Fatalf("first PostInit() error = %v", err)
+	}
+	var second *Plugin
+	var cleanupOnce sync.Once
+	cleanup := func() {
+		cleanupOnce.Do(func() {
+			stopProxyCacheTestRegistry(t, tasks)
+			first.Stop()
+			if second != nil {
+				second.Stop()
+			}
+			assertNoProxyCacheTaskFailure(t, failures)
+		})
+	}
+	t.Cleanup(cleanup)
+
+	var failure runtime.TaskFailure
+	select {
+	case failure = <-failures:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for disk cleanup panic")
+	}
+	if failure.Owner != "plugin/test/proxy-cache/panicking/disk-cleanup" ||
+		failure.PanicValue != "proxy-cache-cleanup-panic" || len(failure.Stack) == 0 {
+		t.Fatalf("task failure = %#v", failure)
+	}
+	admissionErr := firstOwner.Go("disk-cleanup", func(context.Context) error { return nil })
+	if !errors.Is(admissionErr, runtime.ErrTaskOwnerFailed) {
+		t.Fatalf("panicking owner admission error = %v, want %v", admissionErr, runtime.ErrTaskOwnerFailed)
+	}
+
+	secondOwner := newPluginTaskOwnerForTest(t, tasks, "plugin/test/proxy-cache/healthy")
+	second = &Plugin{
+		config:          Config{CacheStrategy: "disk", CacheZone: "disk-healthy", CacheTTL: 60},
+		cleanupInterval: time.Hour,
+	}
+	second.SetConfiguredZones([]appconfig.Zone{{Name: "disk-healthy", DiskPath: t.TempDir()}})
+	second.SetDependencies(base.Dependencies{Tasks: secondOwner})
+	if err := second.Init(); err != nil {
+		t.Fatalf("second Init() error = %v", err)
+	}
+	if err := second.PostInit(); err != nil {
+		t.Fatalf("second PostInit() error = %v", err)
+	}
+	if got := tasks.Active(); !slices.Contains(got, "plugin/test/proxy-cache/healthy/disk-cleanup") {
+		t.Fatalf("active owners after first owner panic = %v", got)
+	}
+
+	cleanup()
+}
+
 func TestMemoryZoneSharesEntriesAcrossPluginInstances(t *testing.T) {
-	oldConfig := appconfig.GlobalConfig
-	appconfig.GlobalConfig = &appconfig.Config{Apisix: appconfig.Apisix{ProxyCache: appconfig.ProxyCache{
-		Zones: []appconfig.Zone{{Name: "memory-shared", MemorySize: "1M"}},
-	}}}
-	t.Cleanup(func() { appconfig.GlobalConfig = oldConfig })
+	setConfiguredZones(t, []appconfig.Zone{{Name: "memory-shared", MemorySize: "1M"}})
 
 	firstPlugin := newTestPlugin(t, Config{CacheStrategy: "memory", CacheZone: "memory-shared", CacheTTL: 60})
 	secondPlugin := newTestPlugin(t, Config{CacheStrategy: "memory", CacheZone: "memory-shared", CacheTTL: 60})
@@ -874,11 +1057,7 @@ func TestMemoryZoneSharesEntriesAcrossPluginInstances(t *testing.T) {
 }
 
 func TestConfiguredMemoryZoneBoundsVaryEntriesAndIndex(t *testing.T) {
-	oldConfig := appconfig.GlobalConfig
-	appconfig.GlobalConfig = &appconfig.Config{Apisix: appconfig.Apisix{ProxyCache: appconfig.ProxyCache{
-		Zones: []appconfig.Zone{{Name: "memory-vary-bounded", MemorySize: "520B"}},
-	}}}
-	t.Cleanup(func() { appconfig.GlobalConfig = oldConfig })
+	setConfiguredZones(t, []appconfig.Zone{{Name: "memory-vary-bounded", MemorySize: "520B"}})
 
 	p := newTestPlugin(t, Config{CacheStrategy: "memory", CacheZone: "memory-vary-bounded", CacheTTL: 60})
 	calls := 0
@@ -906,11 +1085,7 @@ func TestConfiguredMemoryZoneBoundsVaryEntriesAndIndex(t *testing.T) {
 }
 
 func TestMemoryZoneRefreshWithChangedDefinitionStartsNewGeneration(t *testing.T) {
-	oldConfig := appconfig.GlobalConfig
-	appconfig.GlobalConfig = &appconfig.Config{Apisix: appconfig.Apisix{ProxyCache: appconfig.ProxyCache{
-		Zones: []appconfig.Zone{{Name: "memory-refresh-generation", MemorySize: "1M"}},
-	}}}
-	t.Cleanup(func() { appconfig.GlobalConfig = oldConfig })
+	setConfiguredZones(t, []appconfig.Zone{{Name: "memory-refresh-generation", MemorySize: "1M"}})
 
 	firstPlugin := newTestPlugin(t, Config{
 		CacheStrategy: "memory",
@@ -960,11 +1135,7 @@ func TestMemoryZoneRefreshWithChangedDefinitionStartsNewGeneration(t *testing.T)
 }
 
 func TestRefreshConfiguredZonesRejectsInvalidSnapshotWithoutReplacingCurrent(t *testing.T) {
-	oldConfig := appconfig.GlobalConfig
-	appconfig.GlobalConfig = &appconfig.Config{Apisix: appconfig.Apisix{ProxyCache: appconfig.ProxyCache{
-		Zones: []appconfig.Zone{{Name: "refresh-valid", MemorySize: "1M"}},
-	}}}
-	t.Cleanup(func() { appconfig.GlobalConfig = oldConfig })
+	setConfiguredZones(t, []appconfig.Zone{{Name: "refresh-valid", MemorySize: "1M"}})
 
 	if err := RefreshConfiguredZones([]appconfig.Zone{{Name: "refresh-next", MemorySize: "2M"}}); err != nil {
 		t.Fatalf("RefreshConfiguredZones(valid) error = %v", err)
@@ -982,11 +1153,7 @@ func TestRefreshConfiguredZonesRejectsInvalidSnapshotWithoutReplacingCurrent(t *
 }
 
 func TestPostInitRejectsUnknownConfiguredZone(t *testing.T) {
-	oldConfig := appconfig.GlobalConfig
-	appconfig.GlobalConfig = &appconfig.Config{Apisix: appconfig.Apisix{ProxyCache: appconfig.ProxyCache{
-		Zones: []appconfig.Zone{{Name: "known-zone", MemorySize: "1M"}},
-	}}}
-	t.Cleanup(func() { appconfig.GlobalConfig = oldConfig })
+	setConfiguredZones(t, []appconfig.Zone{{Name: "known-zone", MemorySize: "1M"}})
 
 	p := &Plugin{config: Config{CacheStrategy: "memory", CacheZone: "unknown-zone"}}
 	if err := p.Init(); err != nil {
@@ -999,11 +1166,7 @@ func TestPostInitRejectsUnknownConfiguredZone(t *testing.T) {
 
 func TestPostInitRejectsCacheStrategyZoneMismatch(t *testing.T) {
 	root := t.TempDir()
-	oldConfig := appconfig.GlobalConfig
-	appconfig.GlobalConfig = &appconfig.Config{Apisix: appconfig.Apisix{ProxyCache: appconfig.ProxyCache{
-		Zones: []appconfig.Zone{{Name: "disk-only", DiskPath: root}},
-	}}}
-	t.Cleanup(func() { appconfig.GlobalConfig = oldConfig })
+	setConfiguredZones(t, []appconfig.Zone{{Name: "disk-only", DiskPath: root}})
 
 	p := &Plugin{config: Config{CacheStrategy: "memory", CacheZone: "disk-only"}}
 	if err := p.Init(); err != nil {
@@ -1087,42 +1250,23 @@ func TestPostInitRejectsInvalidZoneRegistry(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			oldConfig := appconfig.GlobalConfig
-			appconfig.GlobalConfig = &appconfig.Config{Apisix: appconfig.Apisix{ProxyCache: appconfig.ProxyCache{
-				Zones: test.zones,
-			}}}
-			t.Cleanup(func() { appconfig.GlobalConfig = oldConfig })
-
-			p := &Plugin{config: Config{CacheStrategy: "memory", CacheZone: test.cache}}
-			if err := p.Init(); err != nil {
-				t.Fatalf("Init() error = %v", err)
+			if err := RefreshConfiguredZones(test.zones); err == nil {
+				t.Fatal("RefreshConfiguredZones() error = nil, want invalid zone registry rejection")
 			}
-			if err := p.PostInit(); err == nil {
-				t.Fatal("PostInit() error = nil, want zone registry rejection")
-			}
+			t.Cleanup(func() { _ = RefreshConfiguredZones(nil) })
 		})
 	}
 }
 
-func TestValidateConfiguredZonesRejectsUnusedInvalidZone(t *testing.T) {
-	oldConfig := appconfig.GlobalConfig
-	appconfig.GlobalConfig = &appconfig.Config{Apisix: appconfig.Apisix{ProxyCache: appconfig.ProxyCache{
-		Zones: []appconfig.Zone{{Name: "unused-invalid", MemorySize: "zero"}},
-	}}}
-	t.Cleanup(func() { appconfig.GlobalConfig = oldConfig })
-
-	if err := ValidateConfiguredZones(); err == nil {
-		t.Fatal("ValidateConfiguredZones() error = nil, want invalid unused zone rejection")
+func TestRefreshConfiguredZonesRejectsUnusedInvalidZone(t *testing.T) {
+	if err := RefreshConfiguredZones([]appconfig.Zone{{Name: "unused-invalid", MemorySize: "zero"}}); err == nil {
+		t.Fatal("RefreshConfiguredZones() error = nil, want invalid unused zone rejection")
 	}
 }
 
 func TestPostInitReadsDiskSize(t *testing.T) {
 	root := t.TempDir()
-	oldConfig := appconfig.GlobalConfig
-	appconfig.GlobalConfig = &appconfig.Config{Apisix: appconfig.Apisix{ProxyCache: appconfig.ProxyCache{
-		Zones: []appconfig.Zone{{Name: "disk-size", DiskPath: root, DiskSize: "2K"}},
-	}}}
-	t.Cleanup(func() { appconfig.GlobalConfig = oldConfig })
+	setConfiguredZones(t, []appconfig.Zone{{Name: "disk-size", DiskPath: root, DiskSize: "2K"}})
 
 	p := newTestPlugin(t, Config{CacheStrategy: "disk", CacheZone: "disk-size"})
 	if p.diskSize != 2*1024 {
@@ -1132,11 +1276,7 @@ func TestPostInitReadsDiskSize(t *testing.T) {
 
 func TestDiskStrategyEvictsOldestEntryWhenDiskSizeExceeded(t *testing.T) {
 	root := t.TempDir()
-	oldConfig := appconfig.GlobalConfig
-	appconfig.GlobalConfig = &appconfig.Config{Apisix: appconfig.Apisix{ProxyCache: appconfig.ProxyCache{
-		Zones: []appconfig.Zone{{Name: "disk-evict", DiskPath: root, DiskSize: "12K"}},
-	}}}
-	t.Cleanup(func() { appconfig.GlobalConfig = oldConfig })
+	setConfiguredZones(t, []appconfig.Zone{{Name: "disk-evict", DiskPath: root, DiskSize: "12K"}})
 
 	p := newTestPlugin(t, Config{CacheStrategy: "disk", CacheZone: "disk-evict", CacheTTL: 60})
 	calls := 0
@@ -1173,11 +1313,7 @@ func TestDiskStrategyEvictsOldestEntryWhenDiskSizeExceeded(t *testing.T) {
 
 func TestDiskStrategyPersistsVaryVariantsAcrossPluginInstances(t *testing.T) {
 	root := t.TempDir()
-	oldConfig := appconfig.GlobalConfig
-	appconfig.GlobalConfig = &appconfig.Config{Apisix: appconfig.Apisix{ProxyCache: appconfig.ProxyCache{
-		Zones: []appconfig.Zone{{Name: "disk-vary", DiskPath: root}},
-	}}}
-	t.Cleanup(func() { appconfig.GlobalConfig = oldConfig })
+	setConfiguredZones(t, []appconfig.Zone{{Name: "disk-vary", DiskPath: root}})
 
 	calls := 0
 	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1316,11 +1452,7 @@ func TestHandlerHonorsNoCacheAndCacheBypass(t *testing.T) {
 
 func TestDiskCacheControlRequestDirectivesAreIgnored(t *testing.T) {
 	root := t.TempDir()
-	oldConfig := appconfig.GlobalConfig
-	appconfig.GlobalConfig = &appconfig.Config{Apisix: appconfig.Apisix{ProxyCache: appconfig.ProxyCache{
-		Zones: []appconfig.Zone{{Name: "disk-cache-control", DiskPath: root}},
-	}}}
-	t.Cleanup(func() { appconfig.GlobalConfig = oldConfig })
+	setConfiguredZones(t, []appconfig.Zone{{Name: "disk-cache-control", DiskPath: root}})
 
 	p := newTestPlugin(t, Config{
 		CacheStrategy: "disk",
@@ -1350,11 +1482,7 @@ func TestDiskCacheControlRequestDirectivesAreIgnored(t *testing.T) {
 
 func TestDiskCacheSetCookieIsNeverStored(t *testing.T) {
 	root := t.TempDir()
-	oldConfig := appconfig.GlobalConfig
-	appconfig.GlobalConfig = &appconfig.Config{Apisix: appconfig.Apisix{ProxyCache: appconfig.ProxyCache{
-		Zones: []appconfig.Zone{{Name: "disk-cache-cookie", DiskPath: root}},
-	}}}
-	t.Cleanup(func() { appconfig.GlobalConfig = oldConfig })
+	setConfiguredZones(t, []appconfig.Zone{{Name: "disk-cache-cookie", DiskPath: root}})
 
 	p := newTestPlugin(t, Config{
 		CacheStrategy:  "disk",
@@ -2010,11 +2138,7 @@ func TestMemoryZoneStoreSharesClonedEntriesAndReleasesLastReference(t *testing.T
 }
 
 func TestMemoryZoneStoreEnforcesConfiguredCapacity(t *testing.T) {
-	oldConfig := appconfig.GlobalConfig
-	appconfig.GlobalConfig = &appconfig.Config{Apisix: appconfig.Apisix{ProxyCache: appconfig.ProxyCache{
-		Zones: []appconfig.Zone{{Name: "bounded-memory-store", MemorySize: "320B"}},
-	}}}
-	t.Cleanup(func() { appconfig.GlobalConfig = oldConfig })
+	setConfiguredZones(t, []appconfig.Zone{{Name: "bounded-memory-store", MemorySize: "320B"}})
 
 	store := AcquireMemoryZoneStore("bounded-memory-store")
 	t.Cleanup(store.Close)
@@ -2062,11 +2186,7 @@ func TestMemoryZoneStoreEnforcesConfiguredCapacity(t *testing.T) {
 }
 
 func TestMemoryZoneStoreRejectsOversizedOverwriteWithoutMutatingExistingEntry(t *testing.T) {
-	oldConfig := appconfig.GlobalConfig
-	appconfig.GlobalConfig = &appconfig.Config{Apisix: appconfig.Apisix{ProxyCache: appconfig.ProxyCache{
-		Zones: []appconfig.Zone{{Name: "bounded-memory-overwrite", MemorySize: "320B"}},
-	}}}
-	t.Cleanup(func() { appconfig.GlobalConfig = oldConfig })
+	setConfiguredZones(t, []appconfig.Zone{{Name: "bounded-memory-overwrite", MemorySize: "320B"}})
 
 	store := AcquireMemoryZoneStore("bounded-memory-overwrite")
 	t.Cleanup(store.Close)
@@ -2094,11 +2214,7 @@ func TestMemoryZoneStoreRejectsOversizedOverwriteWithoutMutatingExistingEntry(t 
 
 func TestDiskZoneStoreLifecycleRejectsCorruptAndExpiredEntries(t *testing.T) {
 	root := t.TempDir()
-	oldConfig := appconfig.GlobalConfig
-	appconfig.GlobalConfig = &appconfig.Config{Apisix: appconfig.Apisix{ProxyCache: appconfig.ProxyCache{
-		Zones: []appconfig.Zone{{Name: "shared-disk-contract", DiskPath: root, DiskSize: "1m"}},
-	}}}
-	t.Cleanup(func() { appconfig.GlobalConfig = oldConfig })
+	setConfiguredZones(t, []appconfig.Zone{{Name: "shared-disk-contract", DiskPath: root, DiskSize: "1m"}})
 
 	store, configured, err := NewDiskZoneStore("shared-disk-contract")
 	if err != nil || !configured {
@@ -2182,9 +2298,7 @@ func TestDiskZoneStoreLifecycleRejectsCorruptAndExpiredEntries(t *testing.T) {
 }
 
 func TestNewDiskZoneStorePreservesUnconfiguredFallback(t *testing.T) {
-	oldConfig := appconfig.GlobalConfig
-	appconfig.GlobalConfig = &appconfig.Config{}
-	t.Cleanup(func() { appconfig.GlobalConfig = oldConfig })
+	setConfiguredZones(t, nil)
 
 	store, configured, err := NewDiskZoneStore("undeclared")
 	if err != nil || configured || store != nil {

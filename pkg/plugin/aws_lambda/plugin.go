@@ -2,18 +2,31 @@ package aws_lambda
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_auth"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/function_upstream"
+	"github.com/wklken/apisix-go/pkg/secret"
 )
 
 type Plugin struct {
 	function_upstream.Plugin
 	config Config
+
+	credentialsMu sync.RWMutex
+	apiKey        secret.Value
+	apiKeySet     bool
+	iamAccessKey  secret.Value
+	iamSecretKey  secret.Value
+	iamSet        bool
+	retired       bool
 }
 
 const (
@@ -119,6 +132,11 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	p.credentialsMu.RLock()
+	defer p.credentialsMu.RUnlock()
+	if p.retired || !p.credentialsPreparedLocked() {
+		return secret.ErrCredentialUnavailable
+	}
 	if p.config.Authorization != nil && p.config.Authorization.IAM != nil {
 		if p.config.Authorization.IAM.AWSRegion == "" {
 			p.config.Authorization.IAM.AWSRegion = "us-east-1"
@@ -143,13 +161,144 @@ func (p *Plugin) Config() any {
 	return &p.config
 }
 
+// MaterializeScopedSecrets resolves every configured Lambda credential for one
+// immutable generation before installing any private or public state.
+func (p *Plugin) MaterializeScopedSecrets(
+	ctx context.Context,
+	access base.ScopedSecretAccess,
+) error {
+	p.credentialsMu.Lock()
+	defer p.credentialsMu.Unlock()
+	if p.retired {
+		return secret.ErrCredentialUnavailable
+	}
+	if p.credentialsInstalledLocked() || p.config.Authorization == nil {
+		return nil
+	}
+
+	auth := p.config.Authorization
+	if auth.IAM != nil && (auth.IAM.AccessKey == "" || auth.IAM.SecretKey == "") {
+		return secret.ErrCredentialUnavailable
+	}
+
+	var apiKey, accessKey, secretKey secret.Value
+	var apiDescriptor, accessDescriptor, secretDescriptor string
+	var err error
+	if auth.APIKey != "" {
+		apiKey, apiDescriptor, err = materializeScopedAWSLambdaCredential(
+			ctx, access, "authorization.apikey", auth.APIKey,
+		)
+		if err != nil {
+			return secret.ErrCredentialUnavailable
+		}
+	}
+	if auth.IAM != nil {
+		accessKey, accessDescriptor, err = materializeScopedAWSLambdaCredential(
+			ctx, access, "authorization.iam.accesskey", auth.IAM.AccessKey,
+		)
+		if err != nil {
+			return secret.ErrCredentialUnavailable
+		}
+		secretKey, secretDescriptor, err = materializeScopedAWSLambdaCredential(
+			ctx, access, "authorization.iam.secretkey", auth.IAM.SecretKey,
+		)
+		if err != nil {
+			return secret.ErrCredentialUnavailable
+		}
+	}
+
+	if auth.APIKey != "" {
+		p.apiKey = apiKey
+		p.apiKeySet = true
+		auth.APIKey = apiDescriptor
+	}
+	if auth.IAM != nil {
+		p.iamAccessKey = accessKey
+		p.iamSecretKey = secretKey
+		p.iamSet = true
+		auth.IAM.AccessKey = accessDescriptor
+		auth.IAM.SecretKey = secretDescriptor
+	}
+	return nil
+}
+
+func materializeScopedAWSLambdaCredential(
+	ctx context.Context,
+	access base.ScopedSecretAccess,
+	field string,
+	raw string,
+) (secret.Value, string, error) {
+	value, err := access.Materialize(ctx, field, raw)
+	if err != nil {
+		return secret.Value{}, "", secret.ErrCredentialUnavailable
+	}
+	if err := value.Use(func(plaintext string) error {
+		if strings.TrimSpace(plaintext) == "" {
+			return secret.ErrCredentialUnavailable
+		}
+		return nil
+	}); err != nil {
+		return secret.Value{}, "", secret.ErrCredentialUnavailable
+	}
+	descriptor, err := value.Descriptor(capability.SecretPluginConfig)
+	if err != nil {
+		return secret.Value{}, "", secret.ErrCredentialUnavailable
+	}
+	return value, descriptor.String(), nil
+}
+
+// MaterializeSecrets is the transitional process-local compatibility path.
+func (p *Plugin) MaterializeSecrets() error {
+	p.credentialsMu.Lock()
+	defer p.credentialsMu.Unlock()
+	if p.retired {
+		return secret.ErrCredentialUnavailable
+	}
+	if p.credentialsInstalledLocked() || p.config.Authorization == nil {
+		return nil
+	}
+
+	auth := p.config.Authorization
+	if auth.IAM != nil && (auth.IAM.AccessKey == "" || auth.IAM.SecretKey == "") {
+		return secret.ErrCredentialUnavailable
+	}
+	return secret.ErrCredentialUnavailable
+}
+
+func (p *Plugin) credentialsInstalledLocked() bool {
+	return p.apiKeySet || p.iamSet
+}
+
+func (p *Plugin) credentialsPreparedLocked() bool {
+	if p.config.Authorization == nil {
+		return true
+	}
+	if p.config.Authorization.APIKey != "" && !p.apiKeySet {
+		return false
+	}
+	if p.config.Authorization.IAM != nil && !p.iamSet {
+		return false
+	}
+	return true
+}
+
 func (p *Plugin) processRequest(r *http.Request, _ function_upstream.Config) {
+	p.credentialsMu.RLock()
+	defer p.credentialsMu.RUnlock()
+	if p.retired {
+		deleteHeader(r.Header, "X-Api-Key")
+		removeClientIAMHeaders(r.Header)
+		return
+	}
 	if p.config.Authorization == nil {
 		return
 	}
 	if p.config.Authorization.APIKey != "" {
 		deleteHeader(r.Header, "X-Api-Key")
-		r.Header.Set("X-Api-Key", p.config.Authorization.APIKey)
+		_ = p.useAPIKeyLocked(func(apiKey string) error {
+			r.Header.Set("X-Api-Key", apiKey)
+			return nil
+		})
 		return
 	}
 	if p.config.Authorization.IAM == nil {
@@ -157,7 +306,28 @@ func (p *Plugin) processRequest(r *http.Request, _ function_upstream.Config) {
 	}
 
 	removeClientIAMHeaders(r.Header)
-	p.signIAMRequest(r, p.config.Authorization.IAM)
+	_ = p.useIAMLocked(func(accessKey, secretKey string) error {
+		_ = p.signIAMRequest(r, p.config.Authorization.IAM, accessKey, secretKey)
+		return nil
+	})
+}
+
+func (p *Plugin) useAPIKeyLocked(use func(string) error) error {
+	if p.apiKeySet {
+		return p.apiKey.Use(use)
+	}
+	return secret.ErrCredentialUnavailable
+}
+
+func (p *Plugin) useIAMLocked(use func(string, string) error) error {
+	if p.iamSet {
+		return p.iamAccessKey.Use(func(accessKey string) error {
+			return p.iamSecretKey.Use(func(secretKey string) error {
+				return use(accessKey, secretKey)
+			})
+		})
+	}
+	return secret.ErrCredentialUnavailable
 }
 
 func removeClientIAMHeaders(headers http.Header) {
@@ -186,12 +356,15 @@ func deleteHeader(headers http.Header, name string) {
 	}
 }
 
-func (p *Plugin) signIAMRequest(r *http.Request, iam *IAM) {
-	body, _ := io.ReadAll(r.Body)
+func (p *Plugin) signIAMRequest(r *http.Request, iam *IAM, accessKey, secretKey string) error {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		return secret.ErrCredentialUnavailable
+	}
 	r.Body = io.NopCloser(bytes.NewReader(body))
-	_ = ai_auth.SignAWSRequestWithOptions(r, body, ai_auth.AWSConfig{
-		AccessKeyID:     iam.AccessKey,
-		SecretAccessKey: iam.SecretKey,
+	return ai_auth.SignAWSRequestWithOptions(r, body, ai_auth.AWSConfig{
+		AccessKeyID:     accessKey,
+		SecretAccessKey: secretKey,
 	}, ai_auth.SignAWSRequestOptions{
 		Region:                   iam.AWSRegion,
 		Service:                  iam.Service,
@@ -200,4 +373,21 @@ func (p *Plugin) signIAMRequest(r *http.Request, iam *IAM) {
 		CanonicalQuery:           ai_auth.CanonicalQuerySortedParts,
 		RewriteQuery:             true,
 	}, now())
+}
+
+// Stop releases the embedded neutral upstream before destroying transitional
+// owners and dropping immutable-generation values.
+func (p *Plugin) Stop() {
+	p.Plugin.Stop()
+	p.credentialsMu.Lock()
+	defer p.credentialsMu.Unlock()
+	if p.retired {
+		return
+	}
+	p.retired = true
+	p.apiKey = secret.Value{}
+	p.apiKeySet = false
+	p.iamAccessKey = secret.Value{}
+	p.iamSecretKey = secret.Value{}
+	p.iamSet = false
 }

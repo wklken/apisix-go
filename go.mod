@@ -29,6 +29,7 @@ require (
 	github.com/go-chi/chi/v5 v5.3.1
 	github.com/go-ldap/ldap/v3 v3.4.14
 	github.com/go-resty/resty/v2 v2.17.2
+	github.com/go-viper/mapstructure/v2 v2.5.0
 	github.com/goccy/go-json v0.10.6
 	github.com/gofrs/uuid v4.4.0+incompatible
 	github.com/golang-jwt/jwt/v5 v5.3.1
@@ -49,7 +50,6 @@ require (
 	github.com/smallnest/weighted v0.0.0-20230419055410-36b780e40a7a
 	github.com/spf13/cast v1.10.0
 	github.com/spf13/cobra v1.10.2
-	github.com/spf13/viper v1.21.0
 	github.com/ulule/limiter/v3 v3.11.2
 	github.com/vektah/gqlparser/v2 v2.5.36
 	github.com/xdg-go/scram v1.1.2
@@ -92,7 +92,6 @@ require (
 	github.com/go-logr/logr v1.4.4 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/go-openapi/jsonpointer v1.0.0 // indirect
-	github.com/go-viper/mapstructure/v2 v2.5.0 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/golang/mock v1.6.0 // indirect
 	github.com/golang/protobuf v1.5.4 // indirect

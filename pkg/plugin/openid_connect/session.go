@@ -5,7 +5,6 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/base64"
 	"errors"
 	"net/http"
@@ -280,20 +279,25 @@ func (p *Plugin) setSessionHeaders(r *http.Request, session sessionData) {
 }
 
 func (p *Plugin) sealSession(payload []byte) (string, error) {
-	block, err := aes.NewCipher(p.sessionKey())
-	if err != nil {
-		return "", err
-	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return "", err
-	}
-	nonce := make([]byte, gcm.NonceSize())
-	if _, err := rand.Read(nonce); err != nil {
-		return "", err
-	}
-	sealed := gcm.Seal(nonce, nonce, payload, nil)
-	return base64.RawURLEncoding.EncodeToString(sealed), nil
+	var encoded string
+	err := p.withOIDCSessionKey(func(sessionKey []byte) error {
+		block, err := aes.NewCipher(sessionKey)
+		if err != nil {
+			return err
+		}
+		gcm, err := cipher.NewGCM(block)
+		if err != nil {
+			return err
+		}
+		nonce := make([]byte, gcm.NonceSize())
+		if _, err := rand.Read(nonce); err != nil {
+			return err
+		}
+		sealed := gcm.Seal(nonce, nonce, payload, nil)
+		encoded = base64.RawURLEncoding.EncodeToString(sealed)
+		return nil
+	})
+	return encoded, err
 }
 
 func (p *Plugin) openSession(encoded string) ([]byte, error) {
@@ -301,23 +305,28 @@ func (p *Plugin) openSession(encoded string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	block, err := aes.NewCipher(p.sessionKey())
-	if err != nil {
-		return nil, err
-	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, err
-	}
-	if len(sealed) < gcm.NonceSize() {
-		return nil, errors.New("invalid session cookie")
-	}
-	return gcm.Open(nil, sealed[:gcm.NonceSize()], sealed[gcm.NonceSize():], nil)
+	var payload []byte
+	err = p.withOIDCSessionKey(func(sessionKey []byte) error {
+		block, err := aes.NewCipher(sessionKey)
+		if err != nil {
+			return err
+		}
+		gcm, err := cipher.NewGCM(block)
+		if err != nil {
+			return err
+		}
+		if len(sealed) < gcm.NonceSize() {
+			return errors.New("invalid session cookie")
+		}
+		payload, err = gcm.Open(nil, sealed[:gcm.NonceSize()], sealed[gcm.NonceSize():], nil)
+		return err
+	})
+	return payload, err
 }
 
 func (p *Plugin) sessionKey() []byte {
-	sum := sha256.Sum256([]byte(p.config.Session.Secret))
-	return sum[:]
+	key, _ := p.derivedSessionKey()
+	return key
 }
 
 func randomURLValue(length int) (string, error) {

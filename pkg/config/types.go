@@ -8,28 +8,36 @@ import (
 )
 
 type Config struct {
-	Debug       bool        `mapstructure:"debug"`
-	Apisix      Apisix      `mapstructure:"apisix"`
-	NginxConfig NginxConfig `mapstructure:"nginx_config"`
+	CompatibilityTarget  CompatibilityTarget  `mapstructure:"compatibility_target"`
+	SecurityProfile      SecurityProfile      `mapstructure:"security_profile"`
+	QualificationProfile QualificationProfile `mapstructure:"qualification_profile"`
+	Debug                bool                 `mapstructure:"debug"`
+	Apisix               Apisix               `mapstructure:"apisix"`
+	NginxConfig          NginxConfig          `mapstructure:"nginx_config"`
 
 	// NGINX-only directives are retained for config compatibility; the Go server
 	// applies the HTTP timeout settings that have direct net/http equivalents.
 	Proxy Proxy `mapstructure:"proxy"`
 
-	Discovery     Discovery `mapstructure:"discovery"`
+	Discovery     Discovery `mapstructure:"discovery" secret:"container"`
 	GraphQL       GraphQL   `mapstructure:"graphql"`
 	ExtPlugin     ExtPlugin `mapstructure:"ext-plugin"`
 	Wasm          Wasm      `mapstructure:"wasm"`
 	XRPC          XRPC      `mapstructure:"xrpc"`
-	Events        Events    `mapstructure:"events"`
 	Plugins       []string  `mapstructure:"plugins"`
 	StreamPlugins []string  `mapstructure:"stream_plugins"`
 	// PluginAttr    PluginAttr `mapstructure:"plugin_attr"`
-	PluginAttr map[string]map[string]any `mapstructure:"plugin_attr"`
+	PluginAttr map[string]map[string]any `mapstructure:"plugin_attr" secret:"container"`
 	Deployment Deployment                `mapstructure:"deployment"`
 }
 
-const HTTPDataPlaneV1Profile = "http-data-plane-v1"
+func (c *Config) Profiles() ProfileSelection {
+	return ProfileSelection{
+		Compatibility: c.CompatibilityTarget,
+		Security:      c.SecurityProfile,
+		Qualification: c.QualificationProfile,
+	}
+}
 
 // section: apisix
 
@@ -66,6 +74,7 @@ type Apisix struct {
 	DisableSyncConfigurationDuringStart bool           `mapstructure:"disable_sync_configuration_during_start"`
 	WorkerStartupTimeThreshold          int            `mapstructure:"worker_startup_time_threshold"`
 	DataEncryption                      DataEncryption `mapstructure:"data_encryption"`
+	Events                              Events         `mapstructure:"events"`
 	LRU                                 LRU            `mapstructure:"lru"`
 	Tracing                             bool           `mapstructure:"tracing"`
 	Status                              Status         `mapstructure:"status"`
@@ -143,7 +152,7 @@ type Control struct {
 
 type DataEncryption struct {
 	EnableEncryptFields bool     `mapstructure:"enable_encrypt_fields"`
-	Keyring             []string `mapstructure:"keyring"`
+	Keyring             []string `mapstructure:"keyring" secret:"true"`
 }
 
 type LRU struct {
@@ -296,7 +305,6 @@ type PluginAttr map[string]any
 
 type Deployment struct {
 	// TODO: add validation here
-	Profile          string                `mapstructure:"profile"`
 	Role             string                `mapstructure:"role"`
 	RoleTraditional  RoleTraditionalConfig `mapstructure:"role_traditional"`
 	RoleDataPlane    RoleConfig            `mapstructure:"role_data_plane"`
@@ -339,7 +347,7 @@ type Admin struct {
 
 type AdminKey struct {
 	Name string `mapstructure:"name"`
-	Key  string `mapstructure:"key"`
+	Key  string `mapstructure:"key" secret:"true"`
 	Role string `mapstructure:"role"`
 }
 
@@ -357,7 +365,7 @@ type AdminAPIMTLS struct {
 // section: deployment.etcd
 
 type Etcd struct {
-	Host   []string `mapstructure:"host"`
+	Host   []string `mapstructure:"host" secret:"url-userinfo"`
 	Prefix string   `mapstructure:"prefix"`
 
 	// TODO: not support yet
@@ -368,7 +376,7 @@ type Etcd struct {
 	StartupRetry       int `mapstructure:"startup_retry"`
 
 	User     string `mapstructure:"user"`
-	Password string `mapstructure:"password"`
+	Password string `mapstructure:"password" secret:"true"`
 
 	// TODO: not support yet
 	TLS EtcdTLS `mapstructure:"tls"`

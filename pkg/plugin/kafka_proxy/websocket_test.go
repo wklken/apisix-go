@@ -5,16 +5,75 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/gorilla/websocket"
 )
+
+var (
+	websocketRawPanic   = &struct{ marker string }{marker: "kafka-websocket-raw-panic"}
+	websocketClosePanic = &struct{ marker string }{marker: "kafka-websocket-close-panic"}
+)
+
+type websocketPanicConn struct {
+	net.Conn
+	panicEnabled atomic.Bool
+	closePanic   any
+	peerExited   chan struct{}
+	peerExitOnce sync.Once
+}
+
+func (c *websocketPanicConn) Read(p []byte) (int, error) {
+	n, err := c.Conn.Read(p)
+	if err != nil {
+		c.peerExitOnce.Do(func() { close(c.peerExited) })
+	}
+	return n, err
+}
+
+func (c *websocketPanicConn) Write(p []byte) (int, error) {
+	if c.panicEnabled.Load() {
+		panic(websocketRawPanic)
+	}
+	return c.Conn.Write(p)
+}
+
+func (c *websocketPanicConn) Close() error {
+	err := c.Conn.Close()
+	if c.closePanic != nil {
+		panic(c.closePanic)
+	}
+	return err
+}
+
+type websocketPanicListener struct {
+	net.Listener
+	accepted chan<- *websocketPanicConn
+}
+
+func (l *websocketPanicListener) Accept() (net.Conn, error) {
+	conn, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	wrapped := &websocketPanicConn{
+		Conn:       conn,
+		peerExited: make(chan struct{}),
+	}
+	l.accepted <- wrapped
+	return wrapped, nil
+}
 
 func validWebSocketUpgradeRequest() *http.Request {
 	request := httptest.NewRequest(http.MethodGet, "http://example.test/kafka", nil)
@@ -357,5 +416,109 @@ func TestServeWebSocketBridgesRawFrames(t *testing.T) {
 	_ = conn.Close()
 	if err := <-served; err != nil {
 		t.Fatalf("ServeWebSocket() error = %v", err)
+	}
+}
+
+func TestServeWebSocketRawDirectionPanicReturnsAfterPeerCleanup(t *testing.T) {
+	runServeWebSocketPanicHelper(t, false)
+}
+
+func TestServeWebSocketDirectionPanicPrecedesWatcherClosePanic(t *testing.T) {
+	runServeWebSocketPanicHelper(t, true)
+}
+
+func runServeWebSocketPanicHelper(t *testing.T, closePanic bool) {
+	t.Helper()
+	helperCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	command := exec.CommandContext(helperCtx, os.Args[0], "-test.run=^TestServeWebSocketRawDirectionPanicHelper$")
+	command.Env = append(os.Environ(), "APISIX_GO_KAFKA_WEBSOCKET_PANIC_HELPER=1")
+	if closePanic {
+		command.Env = append(command.Env, "APISIX_GO_KAFKA_WEBSOCKET_CLOSE_PANIC=1")
+	}
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("helper exited before WebSocket owner recovery (ctx err %v): %v\n%s", helperCtx.Err(), err, output)
+	}
+	peerIndex := bytes.Index(output, []byte("kafka-websocket-peer-exited"))
+	ownerIndex := bytes.Index(output, []byte("kafka-websocket-owner-recovered"))
+	if peerIndex < 0 || ownerIndex < 0 {
+		t.Fatalf("missing WebSocket ownership markers: %s", output)
+	}
+	if peerIndex > ownerIndex {
+		t.Fatalf("WebSocket owner recovered before peer cleanup: %s", output)
+	}
+}
+
+func TestServeWebSocketRawDirectionPanicHelper(t *testing.T) {
+	if os.Getenv("APISIX_GO_KAFKA_WEBSOCKET_PANIC_HELPER") != "1" {
+		return
+	}
+
+	backendListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("backend listen: %v", err)
+	}
+	defer func() { _ = backendListener.Close() }()
+	sendFrame := make(chan struct{})
+	go func() {
+		conn, acceptErr := backendListener.Accept()
+		if acceptErr != nil {
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		<-sendFrame
+		_, _ = conn.Write(kafkaTestFrame([]byte("panic-direction")))
+		_, _ = io.Copy(io.Discard, conn)
+	}()
+
+	serverListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("HTTP listen: %v", err)
+	}
+	accepted := make(chan *websocketPanicConn, 1)
+	wrappedListener := &websocketPanicListener{Listener: serverListener, accepted: accepted}
+	ownerRecovered := make(chan struct{})
+	var websocketConn *websocketPanicConn
+	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			recovered := recover()
+			if recovered != websocketRawPanic {
+				fmt.Fprintf(os.Stderr, "recovered panic = %#v, want %#v\n", recovered, websocketRawPanic)
+				os.Exit(1)
+			}
+			select {
+			case <-websocketConn.peerExited:
+				fmt.Println("kafka-websocket-peer-exited")
+			default:
+				fmt.Fprintln(os.Stderr, "kafka-websocket-owner-recovered-before-peer-exit")
+				os.Exit(1)
+			}
+			fmt.Println("kafka-websocket-owner-recovered")
+			close(ownerRecovered)
+		}()
+		if err := ServeWebSocket(w, r, "kafka://"+backendListener.Addr().String(), TransportOptions{}); err != nil {
+			fmt.Fprintf(os.Stderr, "ServeWebSocket() error = %v\n", err)
+			os.Exit(1)
+		}
+	})}
+	go func() { _ = server.Serve(wrappedListener) }()
+	defer func() { _ = server.Close() }()
+
+	conn, _, err := websocket.DefaultDialer.Dial("ws://"+serverListener.Addr().String()+"/kafka", nil)
+	if err != nil {
+		t.Fatalf("WebSocket dial: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	websocketConn = <-accepted
+	if os.Getenv("APISIX_GO_KAFKA_WEBSOCKET_CLOSE_PANIC") == "1" {
+		websocketConn.closePanic = websocketClosePanic
+	}
+	websocketConn.panicEnabled.Store(true)
+	close(sendFrame)
+	select {
+	case <-ownerRecovered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for WebSocket owner recovery")
 	}
 }

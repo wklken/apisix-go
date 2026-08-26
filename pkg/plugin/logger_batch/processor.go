@@ -9,6 +9,7 @@ import (
 
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/observability/metrics"
+	"github.com/wklken/apisix-go/pkg/runtime"
 )
 
 const (
@@ -32,6 +33,7 @@ type DeliveryFunc func(entries []map[string]any, batchMaxSize int) (firstFail in
 type ContextDeliveryFunc func(ctx context.Context, entries []map[string]any, batchMaxSize int) (firstFail int, err error)
 
 type Config struct {
+	Tasks             *runtime.TaskOwner
 	Name              string
 	PluginID          string
 	BatchMaxSize      int
@@ -65,22 +67,31 @@ type Processor struct {
 
 	mu          sync.Mutex
 	cond        *sync.Cond
-	wg          sync.WaitGroup
-	timer       *time.Timer
 	timerGen    uint64
 	workerCount int
+	workersLeft int
 	ready       []*workBatch
 	active      map[*workBatch]struct{}
 
-	stopped          bool
-	shutdownOnce     sync.Once
-	waitOnce         sync.Once
-	shutdownDone     chan struct{}
-	workersDone      chan struct{}
-	cleanupOnce      sync.Once
-	shutdownFinished bool
-	shutdownAborted  bool
-	shutdownErr      error
+	stopped         bool
+	stopRequested   bool
+	flushRequested  bool
+	admissionFailed bool
+	terminal        bool
+	shutdownErr     error
+	cleanup         func()
+
+	wakeScheduler  chan struct{}
+	admissionDone  chan struct{}
+	schedulerReady chan struct{}
+	schedulerDone  chan struct{}
+	workersDone    chan struct{}
+	shutdownDone   chan struct{}
+	admissionOnce  sync.Once
+	schedulerOnce  sync.Once
+	workersOnce    sync.Once
+	shutdownOnce   sync.Once
+	cleanupOnce    sync.Once
 
 	buffer      []map[string]any
 	firstEntry  time.Time
@@ -92,7 +103,7 @@ type Processor struct {
 	failedDrops int
 }
 
-func New(config Config, deliver DeliveryFunc) *Processor {
+func New(config Config, deliver DeliveryFunc) (*Processor, error) {
 	return NewWithContext(config, func(ctx context.Context, entries []map[string]any, batchMaxSize int) (int, error) {
 		if deliver == nil {
 			return 0, errors.New("logger batch delivery function is nil")
@@ -101,41 +112,61 @@ func New(config Config, deliver DeliveryFunc) *Processor {
 	})
 }
 
-func NewWithContext(config Config, deliver ContextDeliveryFunc) *Processor {
+func NewWithContext(config Config, deliver ContextDeliveryFunc) (*Processor, error) {
 	config.applyDefaults()
-	deliveryCtx, cancel := context.WithCancel(context.Background())
+	if config.Tasks == nil {
+		return nil, runtime.ErrTaskOwnerRequired
+	}
 	p := &Processor{
-		config:      config,
-		deliver:     deliver,
-		deliveryCtx: deliveryCtx,
-		cancel:      cancel,
+		config:  config,
+		deliver: deliver,
 		observer: metrics.AcquireLoggerBatchObserver(
 			config.PluginID,
 			config.Name,
 			config.RouteID,
 			config.ServerAddr,
 		),
-		workerCount:  config.MaxConcurrentDeliveries,
-		active:       make(map[*workBatch]struct{}),
-		buffer:       make([]map[string]any, 0, minInt(config.BatchMaxSize, DefaultBatchMaxSize)),
-		shutdownDone: make(chan struct{}),
-		workersDone:  make(chan struct{}),
+		workerCount:    config.MaxConcurrentDeliveries,
+		active:         make(map[*workBatch]struct{}),
+		buffer:         make([]map[string]any, 0, minInt(config.BatchMaxSize, DefaultBatchMaxSize)),
+		wakeScheduler:  make(chan struct{}, 1),
+		admissionDone:  make(chan struct{}),
+		schedulerReady: make(chan struct{}),
+		schedulerDone:  make(chan struct{}),
+		shutdownDone:   make(chan struct{}),
+		workersDone:    make(chan struct{}),
 	}
 	p.cond = sync.NewCond(&p.mu)
-	p.wg.Add(p.workerCount)
-	for i := 0; i < p.workerCount; i++ {
-		go p.worker()
+
+	if err := config.Tasks.Go("batch-scheduler", p.schedulerTask); err != nil {
+		p.rollbackUnadmitted()
+		return nil, err
 	}
-	return p
+	<-p.schedulerReady
+	for i := 0; i < p.workerCount; i++ {
+		if err := config.Tasks.Go("batch-worker", p.workerTask); err != nil {
+			p.rollbackAdmission()
+			return nil, err
+		}
+		p.mu.Lock()
+		p.workersLeft++
+		p.mu.Unlock()
+	}
+	if err := config.Tasks.Go("batch-shutdown", p.shutdownTask); err != nil {
+		p.rollbackAdmission()
+		return nil, err
+	}
+	p.admissionOnce.Do(func() { close(p.admissionDone) })
+	return p, nil
 }
 
 func (p *Processor) Push(entry map[string]any) bool {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 
 	if p.stopped {
 		p.dropped++
 		p.observer.AddEvent(metrics.LoggerBatchOutcomeStoppedDropped)
+		p.mu.Unlock()
 		return false
 	}
 	if p.pending >= p.config.MaxPendingEntries {
@@ -147,6 +178,7 @@ func (p *Processor) Push(entry map[string]any) bool {
 			p.pending,
 			p.config.MaxPendingEntries,
 		)
+		p.mu.Unlock()
 		return false
 	}
 
@@ -161,46 +193,55 @@ func (p *Processor) Push(entry map[string]any) bool {
 	p.setBufferedMetricLocked()
 
 	if len(p.buffer) >= p.config.BatchMaxSize {
-		p.flushLocked()
-	} else {
-		p.scheduleTimerLocked()
+		p.flushRequested = true
 	}
+	p.scheduleTimerLocked()
+	p.mu.Unlock()
 	return true
 }
 
 func (p *Processor) Flush() {
 	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.flushLocked()
+	if !p.stopped {
+		p.flushRequested = true
+	}
+	p.mu.Unlock()
+	p.wakeSchedulerTask()
 }
 
 func (p *Processor) Stop() {
-	ctx, cancel := context.WithTimeout(context.Background(), p.config.ShutdownTimeout)
-	defer cancel()
-	if err := p.Shutdown(ctx); err != nil {
-		logger.Errorf("logger batch processor [%s] shutdown: %s", p.config.Name, err)
-	}
+	p.StopWithCleanup(nil)
 }
 
-// StopWithCleanup keeps delivery-owned resources alive until every callback
-// has returned. Stop remains bounded; if a callback ignores cancellation, the
-// cleanup runs asynchronously after that callback eventually exits.
+// StopWithCleanup seals scheduler admission before returning. Delivery-owned
+// resources remain registered with the generation task owner until every
+// already-admitted callback has exited.
 func (p *Processor) StopWithCleanup(cleanup func()) {
-	p.Stop()
+	p.registerCleanup(cleanup)
+	p.initiateShutdown()
+	<-p.schedulerDone
+}
+
+func (p *Processor) registerCleanup(cleanup func()) {
 	if cleanup == nil {
 		return
 	}
-	p.cleanupOnce.Do(func() {
-		select {
-		case <-p.workersDone:
-			cleanup()
-		default:
-			go func() {
-				<-p.workersDone
-				cleanup()
-			}()
-		}
-	})
+	p.mu.Lock()
+	if p.cleanup == nil {
+		p.cleanup = cleanup
+	}
+	registered := p.cleanup
+	terminal := p.terminal
+	p.mu.Unlock()
+	if terminal {
+		p.runCleanup(registered)
+	}
+}
+
+func (p *Processor) runCleanup(cleanup func()) {
+	if cleanup != nil {
+		p.cleanupOnce.Do(cleanup)
+	}
 }
 
 func (p *Processor) Shutdown(ctx context.Context) error {
@@ -218,52 +259,42 @@ func (p *Processor) Shutdown(ctx context.Context) error {
 		return err
 	case <-ctx.Done():
 		p.abort(ctx.Err())
-		err, _ := p.shutdownResult()
-		return err
+		return ctx.Err()
 	}
 }
 
 func (p *Processor) shutdownResult() (error, bool) {
+	p.mu.Lock()
+	storedErr := p.shutdownErr
+	p.mu.Unlock()
+	if storedErr != nil {
+		return storedErr, true
+	}
 	select {
 	case <-p.shutdownDone:
-		p.mu.Lock()
-		err := p.shutdownErr
-		p.mu.Unlock()
-		return err, true
+		return nil, true
 	default:
 		return nil, false
 	}
 }
 
 func (p *Processor) startShutdown() {
-	p.shutdownOnce.Do(func() {
-		p.mu.Lock()
-		p.stopped = true
-		p.flushLocked()
-		p.stopTimerLocked()
-		p.cond.Broadcast()
-		p.mu.Unlock()
-
-		p.waitOnce.Do(func() {
-			go func() {
-				p.wg.Wait()
-				close(p.workersDone)
-				p.finishShutdown(nil)
-			}()
-		})
-	})
+	p.initiateShutdown()
 }
 
 func (p *Processor) abort(reason error) {
 	p.mu.Lock()
-	if p.shutdownFinished {
+	select {
+	case <-p.shutdownDone:
 		p.mu.Unlock()
 		return
+	default:
 	}
-	if !p.shutdownAborted {
-		p.shutdownAborted = true
+	if p.shutdownErr == nil {
 		p.shutdownErr = reason
-		p.cancel()
+		if p.cancel != nil {
+			p.cancel()
+		}
 		dropped := p.dropUndispatchedLocked()
 		p.cond.Broadcast()
 		if dropped > 0 {
@@ -272,34 +303,194 @@ func (p *Processor) abort(reason error) {
 		p.observer.AddEvent(metrics.LoggerBatchOutcomeShutdownTimeout)
 	}
 	p.mu.Unlock()
-	// An uncooperative legacy callback cannot be interrupted. Close the
-	// caller-visible lifecycle after accounting so Stop remains bounded. Sink
-	// resources stay owned by workersDone until the callback eventually returns.
-	p.finishShutdown(reason)
 }
 
-func (p *Processor) finishShutdown(err error) {
+func (p *Processor) initiateShutdown() {
 	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.shutdownFinished {
-		return
-	}
-	p.shutdownFinished = true
-	if p.shutdownErr == nil {
-		p.shutdownErr = err
-	}
-	p.observer.Close()
-	close(p.shutdownDone)
+	p.stopRequested = true
+	p.mu.Unlock()
+	p.wakeSchedulerTask()
 }
 
-func (p *Processor) worker() {
-	defer p.wg.Done()
+func (p *Processor) workerTask(_ context.Context) error {
+	<-p.admissionDone
+	defer p.workerExited()
+	p.mu.Lock()
+	failed := p.admissionFailed
+	p.mu.Unlock()
+	if failed {
+		return nil
+	}
 	for {
 		batch := p.nextBatch()
 		if batch == nil {
-			return
+			return nil
 		}
 		p.process(batch)
+	}
+}
+
+func (p *Processor) workerExited() {
+	p.mu.Lock()
+	p.workersLeft--
+	last := p.workersLeft == 0
+	p.mu.Unlock()
+	if last {
+		p.workersOnce.Do(func() { close(p.workersDone) })
+	}
+}
+
+func (p *Processor) schedulerTask(ctx context.Context) error {
+	p.mu.Lock()
+	p.deliveryCtx, p.cancel = context.WithCancel(context.WithoutCancel(ctx))
+	p.mu.Unlock()
+	close(p.schedulerReady)
+	<-p.admissionDone
+	defer p.schedulerOnce.Do(func() { close(p.schedulerDone) })
+
+	p.mu.Lock()
+	failed := p.admissionFailed
+	p.mu.Unlock()
+	if failed {
+		return nil
+	}
+
+	var timer *time.Timer
+	for {
+		p.mu.Lock()
+		if p.stopRequested || ctx.Err() != nil {
+			p.stopped = true
+			p.flushRequested = false
+			p.flushLocked()
+			p.cond.Broadcast()
+			p.mu.Unlock()
+			stopSchedulerTimer(timer)
+			return nil
+		}
+		if p.flushRequested || len(p.buffer) >= p.config.BatchMaxSize {
+			p.flushRequested = false
+			p.flushLocked()
+			p.mu.Unlock()
+			stopSchedulerTimer(timer)
+			timer = nil
+			continue
+		}
+		deadline, scheduled := p.nextDeadlineLocked()
+		generation := p.timerGen
+		p.mu.Unlock()
+
+		if !scheduled {
+			stopSchedulerTimer(timer)
+			timer = nil
+			select {
+			case <-p.wakeScheduler:
+			case <-ctx.Done():
+			}
+			continue
+		}
+
+		delay := max(time.Until(deadline), 0)
+		if timer == nil {
+			timer = time.NewTimer(delay)
+		} else {
+			stopSchedulerTimer(timer)
+			timer.Reset(delay)
+		}
+		select {
+		case <-p.wakeScheduler:
+		case <-timer.C:
+			p.onTimer(generation)
+		case <-ctx.Done():
+		}
+	}
+}
+
+func (p *Processor) shutdownTask(_ context.Context) error {
+	<-p.admissionDone
+	<-p.schedulerDone
+	timer := time.NewTimer(p.config.ShutdownTimeout)
+	select {
+	case <-p.workersDone:
+		if !timer.Stop() {
+			<-timer.C
+		}
+	case <-timer.C:
+		p.abort(context.DeadlineExceeded)
+		<-p.workersDone
+	}
+	p.finishTerminal()
+	return nil
+}
+
+func (p *Processor) finishTerminal() {
+	p.shutdownOnce.Do(func() {
+		p.mu.Lock()
+		p.terminal = true
+		cleanup := p.cleanup
+		cancel := p.cancel
+		p.mu.Unlock()
+		p.runCleanup(cleanup)
+		if cancel != nil {
+			cancel()
+		}
+		p.observer.Close()
+		close(p.shutdownDone)
+	})
+}
+
+func (p *Processor) rollbackUnadmitted() {
+	p.admissionFailed = true
+	p.stopped = true
+	p.admissionOnce.Do(func() { close(p.admissionDone) })
+	p.schedulerOnce.Do(func() { close(p.schedulerDone) })
+	p.workersOnce.Do(func() { close(p.workersDone) })
+	p.finishTerminal()
+}
+
+func (p *Processor) rollbackAdmission() {
+	p.mu.Lock()
+	p.admissionFailed = true
+	p.stopped = true
+	p.stopRequested = true
+	workers := p.workersLeft
+	p.cond.Broadcast()
+	p.mu.Unlock()
+	p.admissionOnce.Do(func() { close(p.admissionDone) })
+	p.wakeSchedulerTask()
+	if workers == 0 {
+		p.workersOnce.Do(func() { close(p.workersDone) })
+	}
+	<-p.schedulerDone
+	<-p.workersDone
+	p.finishTerminal()
+}
+
+func (p *Processor) wakeSchedulerTask() {
+	select {
+	case p.wakeScheduler <- struct{}{}:
+	default:
+	}
+}
+
+func (p *Processor) nextDeadlineLocked() (time.Time, bool) {
+	if len(p.buffer) == 0 {
+		return time.Time{}, false
+	}
+	deadline := p.firstEntry.Add(p.config.BufferDuration)
+	inactiveDeadline := p.lastEntry.Add(p.config.InactiveTimeout)
+	if inactiveDeadline.Before(deadline) {
+		deadline = inactiveDeadline
+	}
+	return deadline, true
+}
+
+func stopSchedulerTimer(timer *time.Timer) {
+	if timer == nil || timer.Stop() {
+		return
+	}
+	select {
+	case <-timer.C:
+	default:
 	}
 }
 
@@ -492,55 +683,46 @@ func (p *Processor) scheduleTimerLocked() {
 	if p.stopped || len(p.buffer) == 0 {
 		return
 	}
-	if p.timer != nil {
-		p.timer.Stop()
-	}
 	p.timerGen++
-	generation := p.timerGen
-	deadline := p.firstEntry.Add(p.config.BufferDuration)
-	inactiveDeadline := p.lastEntry.Add(p.config.InactiveTimeout)
-	if inactiveDeadline.Before(deadline) {
-		deadline = inactiveDeadline
-	}
-	delay := time.Until(deadline)
-	delay = max(delay, 0)
-	p.timer = time.AfterFunc(delay, func() { p.onTimer(generation) })
+	p.wakeSchedulerTask()
 }
 
 func (p *Processor) onTimer(generation uint64) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
-	if generation != p.timerGen || p.timer == nil {
+	if generation != p.timerGen {
+		p.mu.Unlock()
 		return
 	}
-	p.timer = nil
 	if p.stopped || len(p.buffer) == 0 {
+		p.mu.Unlock()
 		return
 	}
-	deadline := p.firstEntry.Add(p.config.BufferDuration)
-	inactiveDeadline := p.lastEntry.Add(p.config.InactiveTimeout)
-	if inactiveDeadline.Before(deadline) {
-		deadline = inactiveDeadline
-	}
+	deadline, _ := p.nextDeadlineLocked()
 	if time.Now().Before(deadline) {
-		p.scheduleTimerLocked()
+		p.mu.Unlock()
+		p.wakeSchedulerTask()
 		return
 	}
 	p.flushLocked()
+	p.mu.Unlock()
 }
 
 func (p *Processor) flushLocked() {
 	if len(p.buffer) == 0 {
 		return
 	}
-	batch := &workBatch{entries: append([]map[string]any(nil), p.buffer...)}
+	for len(p.buffer) > 0 {
+		count := minInt(len(p.buffer), p.config.BatchMaxSize)
+		batch := &workBatch{entries: append([]map[string]any(nil), p.buffer[:count]...)}
+		p.buffer = p.buffer[count:]
+		p.processing += len(batch.entries)
+		p.ready = append(p.ready, batch)
+	}
 	p.buffer = p.buffer[:0]
 	p.firstEntry = time.Time{}
 	p.lastEntry = time.Time{}
 	p.setBufferedMetricLocked()
 	p.stopTimerLocked()
-	p.processing += len(batch.entries)
-	p.ready = append(p.ready, batch)
 	p.cond.Broadcast()
 }
 
@@ -552,10 +734,6 @@ func (p *Processor) setBufferedMetricLocked() {
 }
 
 func (p *Processor) stopTimerLocked() {
-	if p.timer != nil {
-		p.timer.Stop()
-		p.timer = nil
-	}
 	p.timerGen++
 }
 

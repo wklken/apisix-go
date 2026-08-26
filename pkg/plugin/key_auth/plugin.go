@@ -10,7 +10,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
-	"github.com/wklken/apisix-go/pkg/store"
+	"github.com/wklken/apisix-go/pkg/resource"
 )
 
 type Plugin struct {
@@ -23,6 +23,8 @@ const (
 	priority = 2500
 	name     = "key-auth"
 )
+
+var errKeyAuthConsumerNotFound = errors.New("key-auth consumer not found")
 
 const schema = `
 {
@@ -193,8 +195,8 @@ func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.Re
 	}
 
 	// note: here it's  unique key => consumer, it's different from basic-auth
-	consumer, err := store.GetConsumerByPluginKey(name, key)
-	if errors.Is(err, store.ErrNotFound) {
+	consumer, err := p.consumerByKey(key)
+	if errors.Is(err, errKeyAuthConsumerNotFound) {
 		if p.config.AnonymousConsumer != "" {
 			p.hideAllCredentials(r)
 			if result, ok := p.anonymousConsumerResult(w, r); ok {
@@ -235,8 +237,8 @@ func (p *Plugin) anonymousConsumerResult(w http.ResponseWriter, r *http.Request)
 		return base.RequestPhaseResult{}, false
 	}
 
-	consumer, err := store.GetConsumer(p.config.AnonymousConsumer)
-	if err != nil {
+	consumer, ok := p.consumerByID(p.config.AnonymousConsumer)
+	if !ok {
 		message := fmt.Sprintf("failed to get anonymous consumer %s", p.config.AnonymousConsumer)
 		if !ctx.RecordAuthProbeDiagnostic(r, message) {
 			logger.Error(message)
@@ -246,6 +248,26 @@ func (p *Plugin) anonymousConsumerResult(w http.ResponseWriter, r *http.Request)
 	}
 
 	return base.ContinueRequest(ctx.WithAuthenticationState(r, ctx.NewAuthenticationState(name, consumer))), true
+}
+
+func (p *Plugin) consumerByKey(key string) (resource.Consumer, error) {
+	lookup := p.ConsumerLookup()
+	if lookup == nil {
+		return resource.Consumer{}, errKeyAuthConsumerNotFound
+	}
+	consumer, ok := lookup.ConsumerByPluginKey(name, key)
+	if !ok {
+		return resource.Consumer{}, errKeyAuthConsumerNotFound
+	}
+	return consumer, nil
+}
+
+func (p *Plugin) consumerByID(id string) (resource.Consumer, bool) {
+	lookup := p.ConsumerLookup()
+	if lookup == nil {
+		return resource.Consumer{}, false
+	}
+	return lookup.ConsumerByID(id)
 }
 
 func (p *Plugin) writeAuthError(w http.ResponseWriter, status int, body string) {

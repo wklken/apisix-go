@@ -2,9 +2,11 @@ package google_cloud_logging
 
 import (
 	"context"
+	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"net"
@@ -13,16 +15,18 @@ import (
 	"os"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-resty/resty/v2"
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
-	"github.com/wklken/apisix-go/pkg/data_encryption"
+	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_auth"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
+	"github.com/wklken/apisix-go/pkg/secret"
 	"github.com/wklken/apisix-go/pkg/shared"
 	"github.com/wklken/apisix-go/pkg/util"
 	"golang.org/x/oauth2"
@@ -34,9 +38,11 @@ type Plugin struct {
 
 	client *resty.Client
 
-	// resolvedAuth is built once in PostInit so auth file parsing never runs on
-	// the delivery path. Token sources are bound to each delivery context.
-	resolvedAuth   *AuthConfig
+	lifecycleMu     sync.RWMutex
+	resolvedAuth    *AuthConfig
+	secretsPrepared bool
+	stopped         atomic.Bool
+
 	requestTimeout time.Duration
 
 	tokenMu      sync.Mutex
@@ -308,9 +314,111 @@ func (p *Plugin) Init() error {
 	return nil
 }
 
+// MaterializeScopedSecrets admits only the manifest-owned inline private key.
+// File-backed service-account contents remain owned by auth_file handling.
+func (p *Plugin) MaterializeScopedSecrets(
+	ctx context.Context,
+	access base.ScopedSecretAccess,
+) error {
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+	if p.stopped.Load() {
+		return secret.ErrCredentialUnavailable
+	}
+	if p.secretsPrepared {
+		return nil
+	}
+	if p.config.AuthConfig == nil {
+		p.secretsPrepared = true
+		return nil
+	}
+
+	value, err := access.Materialize(
+		ctx, "auth_config.private_key", p.config.AuthConfig.PrivateKey,
+	)
+	if err != nil {
+		return googlePrivateKeyUnavailable()
+	}
+	var resolvedAuth *AuthConfig
+	if err := value.Use(func(privateKey string) error {
+		var buildErr error
+		resolvedAuth, buildErr = p.buildResolvedInlineAuth(privateKey)
+		return buildErr
+	}); err != nil {
+		return googlePrivateKeyUnavailable()
+	}
+	descriptor, err := value.Descriptor(capability.SecretPluginConfig)
+	if err != nil {
+		return googlePrivateKeyUnavailable()
+	}
+
+	p.resolvedAuth = resolvedAuth
+	p.config.AuthConfig.PrivateKey = descriptor.String()
+	p.secretsPrepared = true
+	return nil
+}
+
+// MaterializeSecrets is the transitional process-local compatibility path.
+// Immutable generation preparation uses MaterializeScopedSecrets instead.
+func (p *Plugin) MaterializeSecrets() error {
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+	if p.stopped.Load() {
+		return secret.ErrCredentialUnavailable
+	}
+	if p.secretsPrepared {
+		return nil
+	}
+	if p.config.AuthConfig == nil {
+		p.secretsPrepared = true
+		return nil
+	}
+	return googlePrivateKeyUnavailable()
+}
+
+func (p *Plugin) buildResolvedInlineAuth(privateKey string) (*AuthConfig, error) {
+	if err := validateGooglePrivateKey(privateKey); err != nil {
+		return nil, err
+	}
+	auth := *p.config.AuthConfig
+	auth.PrivateKey = privateKey
+	auth.Scope = append([]string(nil), p.config.AuthConfig.Scope...)
+	auth.Scopes = append([]string(nil), p.config.AuthConfig.Scopes...)
+	p.applyAuthDefaults(&auth)
+	return &auth, nil
+}
+
+func validateGooglePrivateKey(privateKey string) error {
+	encoded := []byte(privateKey)
+	defer clear(encoded)
+	keyBytes := encoded
+	if block, _ := pem.Decode(encoded); block != nil {
+		keyBytes = block.Bytes
+		defer clear(keyBytes)
+	}
+	parsed, err := x509.ParsePKCS8PrivateKey(keyBytes)
+	if err != nil {
+		parsed, err = x509.ParsePKCS1PrivateKey(keyBytes)
+		if err != nil {
+			return secret.ErrCredentialUnavailable
+		}
+	}
+	if _, ok := parsed.(*rsa.PrivateKey); !ok {
+		return secret.ErrCredentialUnavailable
+	}
+	return nil
+}
+
+func googlePrivateKeyUnavailable() error {
+	return fmt.Errorf("%s auth_config.private_key: %w", name, secret.ErrCredentialUnavailable)
+}
+
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	if len(p.LogFormat) > 0 {
-		return p.BaseLoggerPlugin.Handler(next)
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			next.ServeHTTP(w, r)
+			_ = p.enqueueLogIfRunning(apisixlog.GetFields(r, p.LogFormat))
+		})
 	}
 
 	fn := func(w http.ResponseWriter, r *http.Request) {
@@ -321,7 +429,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			recorder.status = http.StatusOK
 		}
 
-		_ = p.Fire(p.defaultLogFields(r, recorder, time.Since(start)))
+		_ = p.enqueueLogIfRunning(p.defaultLogFields(r, recorder, time.Since(start)))
 	}
 	return http.HandlerFunc(fn)
 }
@@ -332,6 +440,18 @@ func (p *Plugin) RunLogPhase(snapshot base.LogSnapshot) error {
 		fields = base.GetFieldsFromSnapshot(snapshot, p.LogFormat)
 	} else {
 		fields = googleSnapshotDefaultLogFields(snapshot)
+	}
+	return p.enqueueLogIfRunning(fields)
+}
+
+func (p *Plugin) enqueueLogIfRunning(fields map[string]any) error {
+	p.lifecycleMu.RLock()
+	defer p.lifecycleMu.RUnlock()
+	if p.stopped.Load() {
+		return base.ErrLogQueueUnavailable
+	}
+	if p.BatchProcessor == nil {
+		return p.Fire(fields)
 	}
 	return p.EnqueueLog(fields)
 }
@@ -385,16 +505,14 @@ func latencyString(latency time.Duration) string {
 }
 
 func (p *Plugin) PostInit() error {
-	if p.config.AuthConfig != nil {
-		keyring, enabled := data_encryption.Keyring()
-		resolved, err := data_encryption.NewResolver(enabled, keyring).ResolveForContext(
-			p.config.AuthConfig.PrivateKey,
-			"google-cloud-logging.auth_config.private_key",
-		)
-		if err != nil {
-			return fmt.Errorf("google-cloud-logging auth_config.private_key: %w", err)
-		}
-		p.config.AuthConfig.PrivateKey = resolved
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+	if p.stopped.Load() || !p.secretsPrepared {
+		return secret.ErrCredentialUnavailable
+	}
+	var metadata pluginMetadata
+	if _, err := p.MetadataView().Decode(name, &metadata); err != nil {
+		return fmt.Errorf("%s metadata decode failed: %w", name, err)
 	}
 
 	if p.config.Resource.Type == "" {
@@ -416,6 +534,9 @@ func (p *Plugin) PostInit() error {
 		p.config.InactiveTimeout = int(logger_batch.DefaultInactiveTimeout / time.Second)
 	}
 	p.applyAuthDefaults(p.config.AuthConfig)
+	if p.resolvedAuth != nil {
+		p.applyAuthDefaults(p.resolvedAuth)
+	}
 
 	configUID := shared.NewConfigUID()
 	if p.config.AuthConfig != nil {
@@ -446,16 +567,16 @@ func (p *Plugin) PostInit() error {
 	if err != nil {
 		return err
 	}
-	p.client = value.(*resty.Client)
-	p.clientRelease = release
+	sharedClient := value.(*resty.Client)
 
-	// Parse the immutable auth config once so the delivery path never reads
-	// the auth file.
-	if auth, err := p.resolveAuthConfig(); err == nil {
-		p.resolvedAuth = auth
+	// Parse the immutable file-backed auth once so the delivery path does not
+	// read the auth file. Inline auth was already derived during materialization.
+	if p.config.AuthConfig == nil {
+		if auth, err := p.resolveAuthConfig(); err == nil {
+			p.resolvedAuth = auth
+		}
 	}
 
-	metadata := base.LoadPluginMetadata[pluginMetadata](name)
 	if len(p.config.LogFormat) > 0 {
 		p.LogFormat = p.config.LogFormat
 	} else {
@@ -465,7 +586,7 @@ func (p *Plugin) PostInit() error {
 		p.config.MaxPendingEntries = metadata.MaxPendingEntries
 	}
 
-	p.BatchProcessor = base.NewBatchProcessor(name, base.BatchDefaults{
+	processor, err := base.NewBatchProcessor(name, p.TaskOwner(), base.BatchDefaults{
 		PluginID:           name,
 		BatchMaxSize:       p.config.BatchMaxSize,
 		MaxRetryCount:      p.config.MaxRetryCount,
@@ -474,16 +595,55 @@ func (p *Plugin) PostInit() error {
 		InactiveTimeoutSec: p.config.InactiveTimeout,
 		MaxPendingEntries:  p.config.MaxPendingEntries,
 	}, p.RouteID, p.ServerAddr, p.SendBatch)
+	if err != nil {
+		release()
+		return err
+	}
+	if p.stopped.Load() {
+		processor.Stop()
+		release()
+		return secret.ErrCredentialUnavailable
+	}
+	p.client = sharedClient
+	p.clientRelease = release
+	p.BatchProcessor = processor
 	return nil
 }
 
+func (p *Plugin) QuiesceGenerationTasks() { p.Stop() }
+
 func (p *Plugin) Stop() {
-	p.StopWithCleanup(func() {
+	if p.stopped.Swap(true) {
+		return
+	}
+	p.lifecycleMu.RLock()
+	processor := p.BatchProcessor
+	p.lifecycleMu.RUnlock()
+	cleanup := func() {
+		p.lifecycleMu.Lock()
+		defer p.lifecycleMu.Unlock()
 		if p.clientRelease != nil {
 			p.clientRelease()
 			p.clientRelease = nil
 		}
-	})
+		p.client = nil
+		p.BatchProcessor = nil
+		if p.resolvedAuth != nil {
+			p.resolvedAuth.PrivateKey = ""
+			p.resolvedAuth = nil
+		}
+		p.tokenMu.Lock()
+		p.accessToken = ""
+		p.tokenType = ""
+		p.tokenExpires = time.Time{}
+		p.tokenMu.Unlock()
+		p.secretsPrepared = false
+	}
+	if processor != nil {
+		processor.StopWithCleanup(cleanup)
+	} else {
+		cleanup()
+	}
 }
 
 func googleCloudTLSConfig(verify bool) (*tls.Config, string, error) {
@@ -516,7 +676,12 @@ func (p *Plugin) Send(log map[string]any) {
 }
 
 func (p *Plugin) SendBatch(ctx context.Context, entries []map[string]any, _ int) (int, error) {
-	auth, err := p.authConfig()
+	p.lifecycleMu.RLock()
+	defer p.lifecycleMu.RUnlock()
+	if p.stopped.Load() || p.client == nil {
+		return 0, secret.ErrCredentialUnavailable
+	}
+	auth, err := p.authConfigLocked()
 	if err != nil {
 		return 0, fmt.Errorf("failed to load google-cloud-logging auth config: %w", err)
 	}
@@ -531,7 +696,7 @@ func (p *Plugin) SendBatch(ctx context.Context, entries []map[string]any, _ int)
 
 	googleEntries := make([]googleLogEntry, 0, len(entries))
 	for _, entry := range entries {
-		googleEntries = append(googleEntries, p.buildEntry(entry))
+		googleEntries = append(googleEntries, p.buildEntryForProject(entry, auth.ProjectID))
 	}
 	body := map[string]any{
 		"entries":        googleEntries,
@@ -557,11 +722,29 @@ func (p *Plugin) SendBatch(ctx context.Context, entries []map[string]any, _ int)
 }
 
 func (p *Plugin) authConfig() (*AuthConfig, error) {
+	p.lifecycleMu.RLock()
+	defer p.lifecycleMu.RUnlock()
+	return p.authConfigLocked()
+}
+
+func (p *Plugin) authConfigLocked() (*AuthConfig, error) {
+	if p.stopped.Load() {
+		return nil, secret.ErrCredentialUnavailable
+	}
 	if p.resolvedAuth != nil {
-		auth := *p.resolvedAuth
-		return &auth, nil
+		return cloneGoogleAuth(p.resolvedAuth), nil
 	}
 	return p.resolveAuthConfig()
+}
+
+func cloneGoogleAuth(source *AuthConfig) *AuthConfig {
+	if source == nil {
+		return nil
+	}
+	auth := *source
+	auth.Scope = append([]string(nil), source.Scope...)
+	auth.Scopes = append([]string(nil), source.Scopes...)
+	return &auth
 }
 
 // resolveAuthConfig builds the effective auth config from auth_config or the
@@ -581,6 +764,7 @@ func (p *Plugin) resolveAuthConfig() (*AuthConfig, error) {
 	if err != nil {
 		return nil, err
 	}
+	defer clear(data)
 	var auth AuthConfig
 	if err := json.Unmarshal(data, &auth); err != nil {
 		return nil, err
@@ -670,6 +854,7 @@ func googleTokenSource(ctx context.Context, auth *AuthConfig, client *http.Clien
 	if err != nil {
 		return nil
 	}
+	defer clear(rawJSON)
 	source, err := ai_auth.NewGoogleTokenSource(ctx, rawJSON, auth.scopes(), client)
 	if err != nil {
 		return nil
@@ -678,12 +863,18 @@ func googleTokenSource(ctx context.Context, auth *AuthConfig, client *http.Clien
 }
 
 func (p *Plugin) buildEntry(log map[string]any) googleLogEntry {
-	auth, err := p.authConfig()
+	p.lifecycleMu.RLock()
+	defer p.lifecycleMu.RUnlock()
 	projectID := ""
-	if err == nil {
-		projectID = auth.ProjectID
+	if p.resolvedAuth != nil {
+		projectID = p.resolvedAuth.ProjectID
+	} else if p.config.AuthConfig != nil {
+		projectID = p.config.AuthConfig.ProjectID
 	}
+	return p.buildEntryForProject(log, projectID)
+}
 
+func (p *Plugin) buildEntryForProject(log map[string]any, projectID string) googleLogEntry {
 	entry := googleLogEntry{
 		JSONPayload: log,
 		Labels: map[string]string{

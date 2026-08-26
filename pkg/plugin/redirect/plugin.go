@@ -93,6 +93,10 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	effective := p.StaticConfig()
+	if effective == nil {
+		return fmt.Errorf("effective config is required")
+	}
 	configuredTargets := 0
 	if p.config.Uri != "" {
 		configuredTargets++
@@ -137,7 +141,7 @@ func (p *Plugin) PostInit() error {
 		p.config.regexURI = pattern
 	}
 
-	p.config.httpsPort = configuredHTTPSPort()
+	p.config.httpsPort = configuredHTTPSPort(effective)
 	return nil
 }
 
@@ -283,11 +287,8 @@ func isRedirectVariableCharacter(value byte) bool {
 		value >= '0' && value <= '9' || value == '_'
 }
 
-func configuredHTTPSPort() *int {
-	if config.GlobalConfig == nil {
-		return nil
-	}
-	if pluginAttr := config.GlobalConfig.PluginAttr[name]; pluginAttr != nil {
+func configuredHTTPSPort(effective *config.EffectiveConfig) *int {
+	if pluginAttr := effective.Config.PluginAttr[name]; pluginAttr != nil {
 		if rawPort, ok := pluginAttr["https_port"]; ok {
 			if port, err := cast.ToIntE(rawPort); err == nil {
 				return &port
@@ -295,7 +296,7 @@ func configuredHTTPSPort() *int {
 		}
 	}
 
-	ssl := config.GlobalConfig.Apisix.Ssl
+	ssl := effective.Config.Apisix.Ssl
 	if !ssl.Enable || len(ssl.Listen) == 0 {
 		return nil
 	}

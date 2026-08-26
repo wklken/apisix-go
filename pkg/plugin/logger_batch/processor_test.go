@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -12,11 +14,305 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 	"github.com/wklken/apisix-go/pkg/observability/metrics"
+	"github.com/wklken/apisix-go/pkg/runtime"
 )
+
+func TestProcessorRegistersOwnedWorkersAndDrainsOnRegistryStop(t *testing.T) {
+	registry, failures := testTaskRegistry(t)
+	owner := newLoggerTaskOwnerForTest(t, registry, "plugin/test/http")
+	delivered := make(chan []map[string]any, 1)
+	p, err := NewWithContext(Config{Tasks: owner, BatchMaxSize: 2}, func(
+		_ context.Context,
+		entries []map[string]any,
+		_ int,
+	) (int, error) {
+		delivered <- entries
+		return 0, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !p.Push(map[string]any{"id": 1}) || !p.Push(map[string]any{"id": 2}) {
+		t.Fatal("entries were rejected")
+	}
+	stopTaskRegistryForProcessor(t, registry)
+	if got := waitBatch(t, delivered); len(got) != 2 {
+		t.Fatalf("delivered batch length = %d, want 2", len(got))
+	}
+	if got := registry.Active(); len(got) != 0 {
+		t.Fatalf("active owners = %v, want none", got)
+	}
+	select {
+	case failure := <-failures:
+		t.Fatalf("unexpected task failure: %+v", failure)
+	default:
+	}
+}
+
+func TestProcessorBatchShutdownRunsCleanupExactlyOnceAfterLastWorker(t *testing.T) {
+	registry, _ := testTaskRegistry(t)
+	owner := newLoggerTaskOwnerForTest(t, registry, "plugin/test/cleanup")
+	release := make(chan struct{})
+	started := make(chan struct{})
+	p, err := NewWithContext(Config{Tasks: owner, BatchMaxSize: 1}, func(
+		_ context.Context,
+		_ []map[string]any,
+		_ int,
+	) (int, error) {
+		close(started)
+		<-release
+		return 0, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !p.Push(map[string]any{"id": 1}) {
+		t.Fatal("entry was rejected")
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("delivery did not start")
+	}
+	var cleanups atomic.Int32
+	p.StopWithCleanup(func() { cleanups.Add(1) })
+	if got := cleanups.Load(); got != 0 {
+		t.Fatalf("cleanup count before worker exit = %d, want 0", got)
+	}
+	close(release)
+	stopTaskRegistryForProcessor(t, registry)
+	p.StopWithCleanup(func() { cleanups.Add(1) })
+	if got := cleanups.Load(); got != 1 {
+		t.Fatalf("cleanup count = %d, want 1", got)
+	}
+}
+
+func TestProcessorLateCleanupAfterRegistryStopRunsExactlyOnce(t *testing.T) {
+	registry, _ := testTaskRegistry(t)
+	owner := newLoggerTaskOwnerForTest(t, registry, "plugin/test/late-cleanup")
+	p, err := NewWithContext(Config{Tasks: owner}, func(
+		context.Context,
+		[]map[string]any,
+		int,
+	) (int, error) {
+		return 0, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stopTaskRegistryForProcessor(t, registry)
+
+	var cleanups atomic.Int32
+	p.StopWithCleanup(func() { cleanups.Add(1) })
+	p.StopWithCleanup(func() { cleanups.Add(1) })
+	if got := cleanups.Load(); got != 1 {
+		t.Fatalf("late cleanup count = %d, want 1", got)
+	}
+}
+
+func TestProcessorCleanupRegistrationAndRegistryStopRace(t *testing.T) {
+	for iteration := range 100 {
+		registry, _ := testTaskRegistry(t)
+		owner := newLoggerTaskOwnerForTest(
+			t,
+			registry,
+			fmt.Sprintf("plugin/test/cleanup-race-%d", iteration),
+		)
+		p, err := NewWithContext(Config{Tasks: owner}, func(
+			context.Context,
+			[]map[string]any,
+			int,
+		) (int, error) {
+			return 0, nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		var cleanups atomic.Int32
+		registryDone := make(chan error, 1)
+		cleanupDone := make(chan struct{})
+		go func() {
+			_, stopErr := registry.Stop(context.Background())
+			registryDone <- stopErr
+		}()
+		go func() {
+			p.StopWithCleanup(func() { cleanups.Add(1) })
+			close(cleanupDone)
+		}()
+		if stopErr := <-registryDone; stopErr != nil {
+			t.Fatalf("iteration %d: TaskRegistry.Stop() error = %v", iteration, stopErr)
+		}
+		<-cleanupDone
+		p.StopWithCleanup(func() { cleanups.Add(1) })
+		if got := cleanups.Load(); got != 1 {
+			t.Fatalf("iteration %d: cleanup count = %d, want 1", iteration, got)
+		}
+	}
+}
+
+func TestProcessorTaskAdmissionRollbackOwnsNoObserverOrEntries(t *testing.T) {
+	registry, _ := testTaskRegistry(t)
+	stopTaskRegistryForProcessor(t, registry)
+	owner := newLoggerTaskOwnerForTest(t, registry, "plugin/test/rejected")
+	p, err := NewWithContext(Config{Tasks: owner}, func(context.Context, []map[string]any, int) (int, error) {
+		return 0, nil
+	})
+	if !errors.Is(err, runtime.ErrTaskRegistryStopped) {
+		t.Fatalf("NewWithContext() error = %v, want %v", err, runtime.ErrTaskRegistryStopped)
+	}
+	if p != nil {
+		t.Fatal("NewWithContext() processor is non-nil after rejected admission")
+	}
+	if got := registry.Active(); len(got) != 0 {
+		t.Fatalf("active owners = %v, want none", got)
+	}
+}
+
+func TestProcessorDirectShutdownAndRegistryStopRace(t *testing.T) {
+	for iteration := range 50 {
+		registry, _ := testTaskRegistry(t)
+		owner := newLoggerTaskOwnerForTest(t, registry, fmt.Sprintf("plugin/test/race-%d", iteration))
+		p, err := NewWithContext(Config{Tasks: owner}, func(context.Context, []map[string]any, int) (int, error) {
+			return 0, nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		shutdownDone := make(chan error, 1)
+		go func() { shutdownDone <- p.Shutdown(context.Background()) }()
+		stopTaskRegistryForProcessor(t, registry)
+		if err := <-shutdownDone; err != nil {
+			t.Fatalf("iteration %d: Shutdown() error = %v", iteration, err)
+		}
+		if got := registry.Active(); len(got) != 0 {
+			t.Fatalf("iteration %d: active owners = %v, want none", iteration, got)
+		}
+	}
+}
+
+func TestProcessorBlockingDeliveryResidualSetIsWorkerAndShutdown(t *testing.T) {
+	registry, _ := testTaskRegistry(t)
+	ownerPrefix := "plugin/error-log-logger/" + strings.Repeat("a", 64)
+	owner := newLoggerTaskOwnerForTest(t, registry, ownerPrefix)
+	deliveryStarted := make(chan struct{})
+	releaseDelivery := make(chan struct{})
+	p, err := NewWithContext(Config{
+		Tasks:                   owner,
+		BatchMaxSize:            1,
+		MaxConcurrentDeliveries: 1,
+	}, func(context.Context, []map[string]any, int) (int, error) {
+		close(deliveryStarted)
+		<-releaseDelivery
+		return 0, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !p.Push(map[string]any{"id": 1}) {
+		t.Fatal("entry was rejected")
+	}
+	select {
+	case <-deliveryStarted:
+	case <-time.After(time.Second):
+		t.Fatal("delivery did not start")
+	}
+	var cleanups atomic.Int32
+	p.StopWithCleanup(func() { cleanups.Add(1) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	residuals, err := registry.Stop(ctx)
+	var residualErr *runtime.TaskResidualError
+	if !errors.As(err, &residualErr) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("TaskRegistry.Stop() residuals=%v error=%v, want deadline residual", residuals, err)
+	}
+	want := []runtime.TaskResidual{
+		{Owner: ownerPrefix + "/batch-shutdown"},
+		{Owner: ownerPrefix + "/batch-worker"},
+	}
+	if !slices.Equal(residuals, want) || !slices.Equal(residualErr.Residuals(), want) {
+		t.Fatalf("residuals returned=%v resident=%v, want %v", residuals, residualErr.Residuals(), want)
+	}
+	for _, forbidden := range []string{ownerPrefix + "/batch-scheduler", ownerPrefix + "/observer"} {
+		if slices.ContainsFunc(residuals, func(item runtime.TaskResidual) bool { return item.Owner == forbidden }) {
+			t.Fatalf("forbidden residual %q present in %v", forbidden, residuals)
+		}
+	}
+	if got := cleanups.Load(); got != 0 {
+		t.Fatalf("cleanup count while delivery blocked = %d, want 0", got)
+	}
+	close(releaseDelivery)
+	stopTaskRegistryForProcessor(t, registry)
+	if got := cleanups.Load(); got != 1 {
+		t.Fatalf("cleanup count = %d, want 1", got)
+	}
+}
+
+func testTaskRegistry(t *testing.T) (*runtime.TaskRegistry, <-chan runtime.TaskFailure) {
+	t.Helper()
+	failures := make(chan runtime.TaskFailure, 8)
+	return runtime.NewTaskRegistry(context.Background(), func(failure runtime.TaskFailure) {
+		failures <- failure
+	}), failures
+}
+
+func newLoggerTaskOwnerForTest(t *testing.T, registry *runtime.TaskRegistry, prefix string) *runtime.TaskOwner {
+	t.Helper()
+	owner, err := runtime.NewTaskOwner(registry, prefix, runtime.TaskPlugin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return owner
+}
+
+func stopTaskRegistryForProcessor(t *testing.T, registry *runtime.TaskRegistry) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if residuals, err := registry.Stop(ctx); err != nil {
+		t.Fatalf("TaskRegistry.Stop() residuals=%v error=%v", residuals, err)
+	}
+}
+
+var processorTestOwnerSequence atomic.Uint64
+
+func mustNew(t *testing.T, config Config, deliver DeliveryFunc) *Processor {
+	t.Helper()
+	return mustNewWithContext(
+		t,
+		config,
+		func(_ context.Context, entries []map[string]any, batchMaxSize int) (int, error) {
+			return deliver(entries, batchMaxSize)
+		},
+	)
+}
+
+func mustNewWithContext(t *testing.T, config Config, deliver ContextDeliveryFunc) *Processor {
+	t.Helper()
+	registry := runtime.NewTaskRegistry(context.Background(), func(failure runtime.TaskFailure) {
+		t.Errorf("unexpected task failure: %+v", failure)
+	})
+	owner, err := runtime.NewTaskOwner(
+		registry,
+		fmt.Sprintf("plugin/test/logger-batch/%d", processorTestOwnerSequence.Add(1)),
+		runtime.TaskPlugin,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.Tasks = owner
+	p, err := NewWithContext(config, deliver)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { stopTaskRegistryForProcessor(t, registry) })
+	return p
+}
 
 func TestProcessorFlushesWhenBatchMaxSizeIsReached(t *testing.T) {
 	delivered := make(chan []map[string]any, 1)
-	p := New(Config{
+	p := mustNew(t, Config{
 		Name:            "test logger",
 		BatchMaxSize:    2,
 		InactiveTimeout: time.Hour,
@@ -45,7 +341,7 @@ func TestProcessorFlushesWhenBatchMaxSizeIsReached(t *testing.T) {
 
 func TestProcessorFlushesAfterInactiveTimeout(t *testing.T) {
 	delivered := make(chan []map[string]any, 1)
-	p := New(Config{
+	p := mustNew(t, Config{
 		Name:            "test logger",
 		BatchMaxSize:    10,
 		InactiveTimeout: 20 * time.Millisecond,
@@ -68,7 +364,7 @@ func TestProcessorFlushesAfterInactiveTimeout(t *testing.T) {
 
 func TestProcessorStopFlushesBufferedEntries(t *testing.T) {
 	delivered := make(chan []map[string]any, 1)
-	p := New(Config{
+	p := mustNew(t, Config{
 		Name:            "test logger",
 		BatchMaxSize:    10,
 		InactiveTimeout: time.Hour,
@@ -91,7 +387,7 @@ func TestProcessorStopFlushesBufferedEntries(t *testing.T) {
 
 func TestProcessorDropsEntriesPastMaxPendingEntries(t *testing.T) {
 	block := make(chan struct{})
-	p := New(Config{
+	p := mustNew(t, Config{
 		Name:              "test logger",
 		BatchMaxSize:      1,
 		MaxPendingEntries: 1,
@@ -129,7 +425,7 @@ func TestProcessorUpdatesBatchProcessEntriesMetric(t *testing.T) {
 	})
 
 	delivered := make(chan []map[string]any, 1)
-	p := New(Config{
+	p := mustNew(t, Config{
 		Name:            "http logger",
 		RouteID:         "route-a",
 		ServerAddr:      "127.0.0.1:9080",
@@ -174,7 +470,7 @@ func TestProcessorSkipsBatchProcessEntriesMetricWithoutRouteContext(t *testing.T
 		metrics.BatchProcessEntries = oldBatchProcessEntries
 	})
 
-	p := New(Config{
+	p := mustNew(t, Config{
 		Name:            "error log logger",
 		BatchMaxSize:    10,
 		InactiveTimeout: time.Hour,
@@ -205,7 +501,7 @@ func gaugeValue(t *testing.T, gauge *prometheus.GaugeVec, labels ...string) floa
 func TestProcessorRetriesFailedBatches(t *testing.T) {
 	delivered := make(chan []map[string]any, 1)
 	attempts := 0
-	p := New(Config{
+	p := mustNew(t, Config{
 		Name:            "test logger",
 		BatchMaxSize:    1,
 		MaxRetryCount:   1,
@@ -237,7 +533,7 @@ func TestProcessorRetriesFailedBatches(t *testing.T) {
 
 func TestProcessorPreservesExplicitZeroRetryDelay(t *testing.T) {
 	attempts := make(chan time.Time, 3)
-	p := New(Config{
+	p := mustNew(t, Config{
 		Name:            "test logger",
 		BatchMaxSize:    1,
 		MaxRetryCount:   2,
@@ -273,7 +569,7 @@ func TestProcessorPreservesExplicitZeroRetryDelay(t *testing.T) {
 
 func TestProcessorPushDoesNotWaitForDelivery(t *testing.T) {
 	block := make(chan struct{})
-	p := New(Config{
+	p := mustNew(t, Config{
 		Name:            "test logger",
 		BatchMaxSize:    1,
 		InactiveTimeout: time.Hour,
@@ -305,7 +601,7 @@ func TestProcessorPushDoesNotWaitForDelivery(t *testing.T) {
 func TestProcessorPushDoesNotWaitBehindActiveAndQueuedDeliveries(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
-	p := NewWithContext(Config{
+	p := mustNewWithContext(t, Config{
 		BatchMaxSize:      1,
 		MaxPendingEntries: 4,
 		InactiveTimeout:   time.Hour,
@@ -351,7 +647,7 @@ func TestProcessorPushDoesNotWaitBehindActiveAndQueuedDeliveries(t *testing.T) {
 }
 
 func TestProcessorDefaultsResourceBounds(t *testing.T) {
-	p := NewWithContext(Config{}, func(context.Context, []map[string]any, int) (int, error) {
+	p := mustNewWithContext(t, Config{}, func(context.Context, []map[string]any, int) (int, error) {
 		return 0, nil
 	})
 	t.Cleanup(p.Stop)
@@ -388,7 +684,7 @@ func TestProcessorBoundsInitialBufferCapacityWithoutChangingBatchSize(t *testing
 				t.Fatalf("NewWithContext panicked for a large configured batch size: %v", recovered)
 			}
 		}()
-		p = NewWithContext(Config{
+		p = mustNewWithContext(t, Config{
 			BatchMaxSize:    configuredBatchMaxSize,
 			InactiveTimeout: time.Hour,
 			BufferDuration:  time.Hour,
@@ -426,7 +722,7 @@ func TestProcessorBoundsInitialBufferCapacityWithoutChangingBatchSize(t *testing
 func TestProcessorRejectsAtExactPendingBoundary(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
-	p := NewWithContext(Config{
+	p := mustNewWithContext(t, Config{
 		BatchMaxSize:      1,
 		MaxPendingEntries: 1,
 		InactiveTimeout:   time.Hour,
@@ -462,7 +758,7 @@ func TestProcessorBoundsConcurrentDeliveries(t *testing.T) {
 	var maxActive atomic.Int32
 	started := make(chan struct{}, 3)
 	release := make(chan struct{})
-	p := NewWithContext(Config{
+	p := mustNewWithContext(t, Config{
 		BatchMaxSize:            1,
 		MaxPendingEntries:       3,
 		MaxConcurrentDeliveries: 2,
@@ -514,7 +810,7 @@ func TestProcessorBoundsConcurrentDeliveries(t *testing.T) {
 func TestProcessorDefaultConcurrencyIsOne(t *testing.T) {
 	started := make(chan struct{}, 2)
 	release := make(chan struct{})
-	p := NewWithContext(Config{
+	p := mustNewWithContext(t, Config{
 		BatchMaxSize:      1,
 		MaxPendingEntries: 2,
 		InactiveTimeout:   time.Hour,
@@ -546,7 +842,7 @@ func TestProcessorDefaultConcurrencyIsOne(t *testing.T) {
 
 func TestProcessorDeliveryTimeoutAndShutdownAccounting(t *testing.T) {
 	t.Run("delivery timeout", func(t *testing.T) {
-		p := NewWithContext(Config{
+		p := mustNewWithContext(t, Config{
 			BatchMaxSize:    1,
 			DeliveryTimeout: 20 * time.Millisecond,
 			InactiveTimeout: time.Hour,
@@ -571,7 +867,7 @@ func TestProcessorDeliveryTimeoutAndShutdownAccounting(t *testing.T) {
 
 	t.Run("shutdown deadline terminalizes active and queued entries once", func(t *testing.T) {
 		started := make(chan struct{})
-		p := NewWithContext(Config{
+		p := mustNewWithContext(t, Config{
 			BatchMaxSize:      1,
 			MaxPendingEntries: 3,
 			InactiveTimeout:   time.Hour,
@@ -634,7 +930,7 @@ func TestProcessorDefersResourceCleanupUntilCallbackExits(t *testing.T) {
 	started := make(chan struct{})
 	releaseCallback := make(chan struct{})
 	cleanupDone := make(chan struct{})
-	p := NewWithContext(Config{
+	p := mustNewWithContext(t, Config{
 		BatchMaxSize:    1,
 		ShutdownTimeout: 20 * time.Millisecond,
 		InactiveTimeout: time.Hour,
@@ -678,7 +974,7 @@ func TestProcessorDefersResourceCleanupUntilCallbackExits(t *testing.T) {
 }
 
 func TestProcessorRepeatedSuccessfulShutdownIgnoresNewCanceledContext(t *testing.T) {
-	p := NewWithContext(Config{}, func(context.Context, []map[string]any, int) (int, error) {
+	p := mustNewWithContext(t, Config{}, func(context.Context, []map[string]any, int) (int, error) {
 		return 0, nil
 	})
 	if err := p.Shutdown(context.Background()); err != nil {
@@ -695,7 +991,7 @@ func TestProcessorRepeatedSuccessfulShutdownIgnoresNewCanceledContext(t *testing
 
 func TestProcessorCancelsRetryDelayDuringShutdown(t *testing.T) {
 	attempted := make(chan struct{}, 1)
-	p := NewWithContext(Config{
+	p := mustNewWithContext(t, Config{
 		BatchMaxSize:    1,
 		MaxRetryCount:   2,
 		RetryDelay:      time.Hour,
@@ -738,7 +1034,7 @@ func TestProcessorClassifiesOwnedDeadlineAsDeliveryTimeout(t *testing.T) {
 	metrics.LoggerBatchEvents = events
 	t.Cleanup(func() { metrics.LoggerBatchEvents = oldEvents })
 
-	p := NewWithContext(Config{
+	p := mustNewWithContext(t, Config{
 		Name:            "tcp logger",
 		PluginID:        "tcp-logger",
 		BatchMaxSize:    1,
@@ -768,7 +1064,7 @@ func TestProcessorClassifiesOwnedDeadlineAsDeliveryTimeout(t *testing.T) {
 }
 
 func TestProcessorPreservesPartialSuccessSuffixAccounting(t *testing.T) {
-	p := NewWithContext(Config{
+	p := mustNewWithContext(t, Config{
 		BatchMaxSize:    2,
 		InactiveTimeout: time.Hour,
 		BufferDuration:  time.Hour,
@@ -795,7 +1091,7 @@ func TestProcessorPreservesPartialSuccessSuffixAccounting(t *testing.T) {
 func TestProcessorReschedulesInactivityAndHonorsBufferCeiling(t *testing.T) {
 	t.Run("inactivity reschedules from latest push", func(t *testing.T) {
 		delivered := make(chan struct{}, 1)
-		p := NewWithContext(Config{
+		p := mustNewWithContext(t, Config{
 			BatchMaxSize:    10,
 			InactiveTimeout: 60 * time.Millisecond,
 			BufferDuration:  time.Second,
@@ -825,7 +1121,7 @@ func TestProcessorReschedulesInactivityAndHonorsBufferCeiling(t *testing.T) {
 
 	t.Run("buffer duration is a hard ceiling", func(t *testing.T) {
 		delivered := make(chan struct{}, 1)
-		p := NewWithContext(Config{
+		p := mustNewWithContext(t, Config{
 			BatchMaxSize:    10,
 			InactiveTimeout: 200 * time.Millisecond,
 			BufferDuration:  50 * time.Millisecond,
@@ -847,7 +1143,7 @@ func TestProcessorReschedulesInactivityAndHonorsBufferCeiling(t *testing.T) {
 
 func TestProcessorIgnoresObsoleteTimerGenerationAfterReschedule(t *testing.T) {
 	delivered := make(chan struct{}, 1)
-	p := NewWithContext(Config{
+	p := mustNewWithContext(t, Config{
 		BatchMaxSize:    10,
 		InactiveTimeout: time.Hour,
 		BufferDuration:  time.Hour,

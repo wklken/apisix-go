@@ -1,6 +1,7 @@
 package route
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -61,21 +62,21 @@ func TestConvertURIRejectsUnsupportedPatterns(t *testing.T) {
 	}
 }
 
-func TestBuildStrictRejectsDuplicateURIParametersWithoutPanic(t *testing.T) {
-	ensureRouteStore(t)
-	putRouteResource(t, "duplicate-param", []byte(`{"id":"duplicate-param","uri":"/user/:id/:id"}`))
-
-	builder := NewBuilder(nil)
-	defer builder.Stop()
-	handler, err := builder.BuildStrict()
+func TestCompileHTTPRejectsDuplicateURIParametersWithoutPanic(t *testing.T) {
+	snapshot, err := CompileHTTP(context.Background(), CompileInput{
+		Revision: 1,
+		Routes: testPreparedRoutes(resource.Route{
+			ID: "duplicate-param", Uri: "/user/:id/:id",
+		}),
+	})
 	if err == nil {
-		t.Fatalf("BuildStrict() error = nil, want duplicate-parameter rejection")
+		t.Fatal("CompileHTTP() error = nil, want duplicate-parameter rejection")
 	}
-	if handler != nil {
-		t.Fatalf("BuildStrict() handler = %T, want nil", handler)
+	if snapshot != nil {
+		t.Fatalf("CompileHTTP() snapshot = %T, want nil", snapshot)
 	}
 	if !strings.Contains(err.Error(), "duplicate-param") || !strings.Contains(err.Error(), "/user/:id/:id") {
-		t.Fatalf("BuildStrict() error = %q, want route ID and URI", err)
+		t.Fatalf("CompileHTTP() error = %q, want route ID and URI", err)
 	}
 }
 

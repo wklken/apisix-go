@@ -6,6 +6,15 @@ import (
 	"testing"
 )
 
+func TestResolverDistinguishesMissingFromExplicitDisabledConfiguration(t *testing.T) {
+	if (Resolver{}).Configured() {
+		t.Fatal("zero Resolver reported configured")
+	}
+	if !NewResolver(false, nil).Configured() {
+		t.Fatal("explicit disabled Resolver reported missing")
+	}
+}
+
 func TestResolverDecryptsWithRotatedKeyring(t *testing.T) {
 	oldKey := "old-keyring-item"
 	resolver := NewResolver(true, []string{"new-keyring-item", oldKey})

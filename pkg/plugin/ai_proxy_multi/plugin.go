@@ -49,14 +49,13 @@ type Plugin struct {
 
 	healthClients map[int]*http.Client
 
-	healthStopOnce sync.Once
-	stoppedHealth  atomic.Bool
-	wakeHealth     chan struct{}
-	stopHealth     chan struct{}
-	healthDone     chan struct{}
-	healthCtx      context.Context
-	healthCancel   context.CancelFunc
-	snapshot       atomic.Pointer[healthSnapshot]
+	healthCloseOnce sync.Once
+	stoppedHealth   atomic.Bool
+	wakeHealth      chan struct{}
+	snapshot        atomic.Pointer[healthSnapshot]
+	probeForTest    func(context.Context, int) healthProbeResult
+
+	streamOutcomeRecorded func()
 }
 
 type gcpTokenApplier interface {
@@ -665,7 +664,9 @@ func (p *Plugin) PostInit() error {
 	}
 	p.initHealthStates()
 	if len(p.health) > 0 {
-		p.startHealthLoop()
+		if err := p.startHealthLoop(); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -1359,9 +1360,10 @@ func (p *Plugin) writeProviderResponse(
 			}
 		}
 		flushInterval := time.Duration(*p.config.StreamingFlushIntervalMS) * time.Millisecond
-		streamWriter := ai_stream.NewFlushWriter(w, flushInterval, func() {
+		streamWriter := ai_stream.NewFlushWriter(r.Context(), w, flushInterval, func() {
 			ai_runtime.MarkFirstToken(r, started)
 		})
+		defer ai_stream.ClosePreservingPanic(streamWriter)
 		streamWriter.WriteHeader(resp.StatusCode)
 		var usage ai_stream.Usage
 		var err error
@@ -1385,10 +1387,12 @@ func (p *Plugin) writeProviderResponse(
 			)
 		}
 		outcome := ai_stream.RecordStreamOutcome(r, transport, err)
+		if p.streamOutcomeRecorded != nil {
+			p.streamOutcomeRecorded()
+		}
 		if err != nil {
 			wrote := streamWriter.Wrote()
 			if outcome == ai_stream.StreamOutcomeCanceled {
-				streamWriter.Close()
 				if errors.Is(err, context.DeadlineExceeded) ||
 					strings.Contains(err.Error(), "context deadline exceeded") {
 					logger.Errorf("aborting AI multi stream: max_stream_duration_ms exceeded")
@@ -1398,7 +1402,6 @@ func (p *Plugin) writeProviderResponse(
 				return
 			}
 			if !wrote {
-				streamWriter.Close()
 				logger.Errorf("failed to forward AI multi streaming response: %v", err)
 				clear(w.Header())
 				base.WriteJSONMessage(w, http.StatusBadGateway, "failed to forward streaming response")
@@ -1407,11 +1410,9 @@ func (p *Plugin) writeProviderResponse(
 			if terminalErr := ai_stream.WriteTerminalError(streamWriter, transport); terminalErr != nil {
 				logger.Warnf("failed to write AI multi stream terminal event: %v", terminalErr)
 			}
-			streamWriter.Close()
 			logger.Errorf("failed to forward AI multi streaming response: %v", err)
 			return
 		}
-		streamWriter.Close()
 		registerStreamingLLMRequestVars(r, prepared.clientDocument, usage)
 		return
 	}

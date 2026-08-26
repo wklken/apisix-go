@@ -1,16 +1,25 @@
 package azure_functions
 
 import (
+	"context"
+	"fmt"
 	"net/http"
+	"sync"
 
+	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/function_upstream"
+	"github.com/wklken/apisix-go/pkg/secret"
 )
 
 type Plugin struct {
 	function_upstream.Plugin
 	config   Config
 	metadata Metadata
+
+	routeSecretsMu sync.RWMutex
+	routeAPIKey    secret.Value
+	routeAPIKeySet bool
 }
 
 const (
@@ -64,6 +73,16 @@ const schema = `
 }
 `
 
+const metadataSchema = `
+{
+  "type": "object",
+  "properties": {
+    "master_apikey": {"type": "string"},
+    "master_clientid": {"type": "string"}
+  }
+}
+`
+
 type Config struct {
 	FunctionURI      string         `json:"function_uri"`
 	Authorization    *Authorization `json:"authorization,omitempty"`
@@ -88,13 +107,16 @@ func (p *Plugin) Init() error {
 	p.Name = name
 	p.Priority = priority
 	p.Schema = schema
+	p.MetadataSchema = metadataSchema
 	p.Processor = p.processRequest
 
 	return nil
 }
 
 func (p *Plugin) PostInit() error {
-	p.loadMetadata()
+	if err := p.loadMetadata(); err != nil {
+		return err
+	}
 	p.Plugin.Config = function_upstream.Config{
 		FunctionURI:      p.config.FunctionURI,
 		Timeout:          p.config.Timeout,
@@ -110,10 +132,66 @@ func (p *Plugin) Config() any {
 	return &p.config
 }
 
+// MaterializeScopedSecrets resolves the route API key for one immutable
+// generation attempt. The public config is replaced with a descriptor only
+// after both resolution and descriptor construction succeed.
+func (p *Plugin) MaterializeScopedSecrets(
+	ctx context.Context,
+	access base.ScopedSecretAccess,
+) error {
+	p.routeSecretsMu.Lock()
+	defer p.routeSecretsMu.Unlock()
+	if p.config.Authorization == nil || p.config.Authorization.APIKey == "" {
+		return nil
+	}
+	installed := p.routeAPIKeySet
+	raw := p.config.Authorization.APIKey
+	if installed {
+		return nil
+	}
+
+	value, err := access.Materialize(ctx, "authorization.apikey", raw)
+	if err != nil {
+		return err
+	}
+	descriptor, err := value.Descriptor(capability.SecretPluginConfig)
+	if err != nil {
+		return err
+	}
+
+	if p.routeAPIKeySet {
+		return nil
+	}
+	p.routeAPIKey = value
+	p.routeAPIKeySet = true
+	p.config.Authorization.APIKey = descriptor.String()
+	return nil
+}
+
+// MaterializeSecrets is the transitional process-local compatibility path.
+// New generation preparation uses MaterializeScopedSecrets instead.
+func (p *Plugin) MaterializeSecrets() error {
+	p.routeSecretsMu.Lock()
+	defer p.routeSecretsMu.Unlock()
+	if p.config.Authorization == nil || p.config.Authorization.APIKey == "" {
+		return nil
+	}
+	if p.routeAPIKeySet {
+		return nil
+	}
+	return secret.ErrCredentialUnavailable
+}
+
 func (p *Plugin) processRequest(r *http.Request, _ function_upstream.Config) {
-	if r.Header.Get("X-Functions-Key") != "" || r.Header.Get("X-Functions-Clientid") != "" {
+	if _, ok := r.Header["X-Functions-Key"]; ok {
 		return
 	}
+	if _, ok := r.Header["X-Functions-Clientid"]; ok {
+		return
+	}
+
+	p.routeSecretsMu.RLock()
+	defer p.routeSecretsMu.RUnlock()
 	if p.config.Authorization == nil {
 		if p.metadata.MasterAPIKey != "" {
 			r.Header.Set("X-Functions-Key", p.metadata.MasterAPIKey)
@@ -124,14 +202,33 @@ func (p *Plugin) processRequest(r *http.Request, _ function_upstream.Config) {
 		return
 	}
 
-	if p.config.Authorization.APIKey != "" {
-		r.Header.Set("X-Functions-Key", p.config.Authorization.APIKey)
+	if p.routeAPIKeySet {
+		_ = p.routeAPIKey.Use(func(value string) error {
+			if value != "" {
+				r.Header.Set("X-Functions-Key", value)
+			}
+			return nil
+		})
 	}
 	if p.config.Authorization.ClientID != "" {
 		r.Header.Set("X-Functions-Clientid", p.config.Authorization.ClientID)
 	}
 }
 
-func (p *Plugin) loadMetadata() {
-	p.metadata = base.LoadPluginMetadata[Metadata](name)
+func (p *Plugin) Stop() {
+	p.Plugin.Stop()
+
+	p.routeSecretsMu.Lock()
+	defer p.routeSecretsMu.Unlock()
+	p.routeAPIKey = secret.Value{}
+	p.routeAPIKeySet = false
+}
+
+func (p *Plugin) loadMetadata() error {
+	var metadata Metadata
+	if _, err := p.MetadataView().Decode(name, &metadata); err != nil {
+		return fmt.Errorf("%s metadata decode failed: %w", name, err)
+	}
+	p.metadata = metadata
+	return nil
 }

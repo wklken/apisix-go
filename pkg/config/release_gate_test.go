@@ -5,9 +5,12 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
-	"time"
+
+	"github.com/wklken/apisix-go/pkg/capability"
+	"go.yaml.in/yaml/v3"
 )
 
 const validRuntimeConfig = `
@@ -32,10 +35,7 @@ deployment:
     prefix: /apisix
 `
 
-func TestLoadConfigFilesMergesNestedOverrideAndReplacesLists(t *testing.T) {
-	previous := GlobalConfig
-	t.Cleanup(func() { GlobalConfig = previous })
-
+func TestLoadEffectiveMergesNestedOverrideAndReplacesLists(t *testing.T) {
 	base := writeConfigFile(t, "base.yaml", validRuntimeConfig)
 	override := writeConfigFile(t, "override.yaml", `
 apisix:
@@ -51,9 +51,9 @@ deployment:
     prefix: /custom
 `)
 
-	cfg, err := loadConfigFiles(base, override)
+	cfg, err := loadEffectiveTestFiles(t, base, override)
 	if err != nil {
-		t.Fatalf("loadConfigFiles() error = %v", err)
+		t.Fatalf("LoadEffective() error = %v", err)
 	}
 	if got, want := cfg.Plugins, []string{"gzip"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("plugins = %#v, want replacement %#v", got, want)
@@ -70,36 +70,38 @@ deployment:
 	if cfg.Deployment.Etcd.Prefix != "/custom" || len(cfg.Deployment.Etcd.Host) != 1 {
 		t.Fatalf("etcd merge = %#v, want retained host and overridden prefix", cfg.Deployment.Etcd)
 	}
+	if got, want := cfg.Profiles(), (ProfileSelection{
+		Compatibility: CompatibilityAPISIX317,
+		Security:      SecurityCompat,
+	}); got != want {
+		t.Fatalf("default profiles = %#v, want %#v", got, want)
+	}
 }
 
-func TestLoadConfigFilesEnvironmentOverridesMergedFiles(t *testing.T) {
-	previous := GlobalConfig
-	t.Cleanup(func() { GlobalConfig = previous })
-	t.Setenv("APISIXGO_PROXY_MAX_IN_FLIGHT", "77")
-
+func TestLoadEffectiveEnvironmentOverridesMergedFiles(t *testing.T) {
 	base := writeConfigFile(t, "base.yaml", validRuntimeConfig)
 	override := writeConfigFile(t, "override.yaml", "proxy:\n  max_in_flight: 60\n")
-	cfg, err := loadConfigFiles(base, override)
+	cfg, err := loadEffectiveTestFiles(t, base, override, map[string]string{
+		"APISIXGO_PROXY_MAX_IN_FLIGHT": "77",
+	})
 	if err != nil {
-		t.Fatalf("loadConfigFiles() error = %v", err)
+		t.Fatalf("LoadEffective() error = %v", err)
 	}
 	if cfg.Proxy.MaxInFlight != 77 {
 		t.Fatalf("proxy.max_in_flight = %d, want environment override 77", cfg.Proxy.MaxInFlight)
 	}
 }
 
-func TestLoadConfigFilesEnvironmentOverridesFieldsAbsentFromFiles(t *testing.T) {
-	previous := GlobalConfig
-	t.Cleanup(func() { GlobalConfig = previous })
-	t.Setenv("APISIXGO_DEPLOYMENT_ROLE", "data_plane")
-	t.Setenv("APISIXGO_DEPLOYMENT_ROLE_DATA_PLANE_CONFIG_PROVIDER", "yaml")
-	t.Setenv("APISIXGO_APISIX_SSL_FALLBACK_SNI", "fallback.example")
-
+func TestLoadEffectiveEnvironmentOverridesFieldsAbsentFromFiles(t *testing.T) {
 	base := writeConfigFile(t, "base.yaml", validRuntimeConfig)
 	override := writeConfigFile(t, "override.yaml", "deployment:\n  etcd:\n    host: []\n    prefix: ''\n")
-	cfg, err := loadConfigFiles(base, override)
+	cfg, err := loadEffectiveTestFiles(t, base, override, map[string]string{
+		"APISIXGO_DEPLOYMENT_ROLE":                            "data_plane",
+		"APISIXGO_DEPLOYMENT_ROLE_DATA_PLANE_CONFIG_PROVIDER": "yaml",
+		"APISIXGO_APISIX_SSL_FALLBACK_SNI":                    "fallback.example",
+	})
 	if err != nil {
-		t.Fatalf("loadConfigFiles() error = %v, want absent struct fields bound from environment", err)
+		t.Fatalf("LoadEffective() error = %v, want absent struct fields bound from environment", err)
 	}
 	if got := cfg.Deployment.RoleDataPlane.ConfigProvider; got != "yaml" {
 		t.Fatalf("role_data_plane.config_provider = %q, want yaml", got)
@@ -109,23 +111,48 @@ func TestLoadConfigFilesEnvironmentOverridesFieldsAbsentFromFiles(t *testing.T) 
 	}
 }
 
-func TestLoadConfigFilesEmptyEnvironmentReplacementFailsClosed(t *testing.T) {
-	previous := GlobalConfig
-	GlobalConfig = previous
-	t.Cleanup(func() { GlobalConfig = previous })
-	t.Setenv("APISIXGO_PLUGINS", "")
-
-	base := writeConfigFile(t, "base.yaml", validRuntimeConfig)
-	_, err := loadConfigFiles(base, "")
-	if err == nil || !strings.Contains(err.Error(), "plugins") {
-		t.Fatalf("loadConfigFiles() error = %v, want empty environment plugin replacement rejected", err)
+func TestLoadEffectiveRejectsRemovedDeploymentProfileAcrossLayers(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		override    string
+		environment map[string]string
+	}{
+		{name: "file", override: "deployment:\n  profile: http-data-plane-v1\n"},
+		{name: "null file", override: "deployment:\n  profile: null\n"},
+		{name: "environment", environment: map[string]string{
+			"APISIXGO_DEPLOYMENT_PROFILE": "http-data-plane-v1",
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			base := writeConfigFile(t, "base.yaml", validRuntimeConfig)
+			override := ""
+			if test.override != "" {
+				override = writeConfigFile(t, "override.yaml", test.override)
+			}
+			_, err := loadEffectiveTestFiles(t, base, override, test.environment)
+			if err == nil {
+				t.Fatal("LoadEffective() error = nil, want removed deployment.profile rejection")
+			}
+			for _, field := range []string{
+				"deployment.profile", "removed", "compatibility_target", "security_profile", "qualification_profile",
+			} {
+				if !strings.Contains(err.Error(), field) {
+					t.Fatalf("LoadEffective() error = %q, want %q", err, field)
+				}
+			}
+		})
 	}
 }
 
-func TestLoadConfigFilesSelectsProviderForEffectiveRole(t *testing.T) {
-	previous := GlobalConfig
-	t.Cleanup(func() { GlobalConfig = previous })
+func TestLoadEffectiveEmptyEnvironmentReplacementFailsClosed(t *testing.T) {
+	base := writeConfigFile(t, "base.yaml", validRuntimeConfig)
+	_, err := loadEffectiveTestFiles(t, base, "", map[string]string{"APISIXGO_PLUGINS": ""})
+	if err == nil || !strings.Contains(err.Error(), "plugins") {
+		t.Fatalf("LoadEffective() error = %v, want empty environment plugin replacement rejected", err)
+	}
+}
 
+func TestLoadEffectiveSelectsProviderForEffectiveRole(t *testing.T) {
 	base := writeConfigFile(t, "base.yaml", validRuntimeConfig)
 	override := writeConfigFile(t, "override.yaml", `
 deployment:
@@ -136,9 +163,9 @@ deployment:
     host: []
     prefix: ""
 `)
-	cfg, err := loadConfigFiles(base, override)
+	cfg, err := loadEffectiveTestFiles(t, base, override)
 	if err != nil {
-		t.Fatalf("loadConfigFiles() error = %v, want standalone data-plane config without etcd", err)
+		t.Fatalf("LoadEffective() error = %v, want standalone data-plane config without etcd", err)
 	}
 	got, err := EffectiveConfigProvider(cfg)
 	if err != nil {
@@ -179,11 +206,7 @@ func TestEffectiveConfigProviderRejectsUnsupportedRolePairs(t *testing.T) {
 	}
 }
 
-func TestLoadConfigFilesRejectsIncompleteRuntimeBeforePublication(t *testing.T) {
-	previous := &Config{Debug: true}
-	GlobalConfig = previous
-	t.Cleanup(func() { GlobalConfig = previous })
-
+func TestLoadEffectiveRejectsIncompleteRuntimeBeforePublication(t *testing.T) {
 	tests := []struct {
 		name     string
 		override string
@@ -216,15 +239,11 @@ func TestLoadConfigFilesRejectsIncompleteRuntimeBeforePublication(t *testing.T) 
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			GlobalConfig = previous
 			base := writeConfigFile(t, "base.yaml", validRuntimeConfig)
 			override := writeConfigFile(t, "override.yaml", test.override)
-			_, err := loadConfigFiles(base, override)
+			_, err := loadEffectiveTestFiles(t, base, override)
 			if err == nil || !strings.Contains(err.Error(), test.want) {
-				t.Fatalf("loadConfigFiles() error = %v, want field %q", err, test.want)
-			}
-			if GlobalConfig != previous {
-				t.Fatal("GlobalConfig changed before runtime validation completed")
+				t.Fatalf("LoadEffective() error = %v, want field %q", err, test.want)
 			}
 		})
 	}
@@ -286,111 +305,73 @@ func TestCapabilitySummaryContainsOnlyBoundedSafeFacts(t *testing.T) {
 }
 
 func TestProductionConfigRequiresExplicitEtcdEndpoint(t *testing.T) {
-	previous := GlobalConfig
-	t.Cleanup(func() { GlobalConfig = previous })
-	t.Setenv("APISIXGO_DEPLOYMENT_ETCD_HOST", "")
-
 	defaultPath, productionPath := repositoryConfigPaths(t)
-	_, err := loadConfigFiles(defaultPath, productionPath)
+	_, err := loadEffectiveTestFiles(t, defaultPath, productionPath, map[string]string{
+		"APISIXGO_DEPLOYMENT_ETCD_HOST":  "",
+		"APISIXGO_QUALIFICATION_PROFILE": "",
+	})
 	if err == nil || !strings.Contains(err.Error(), "deployment.etcd.host") {
-		t.Fatalf("loadConfigFiles() error = %v, want missing production etcd endpoint rejection", err)
+		t.Fatalf("LoadEffective() error = %v, want missing production etcd endpoint rejection", err)
 	}
 }
 
-func TestProductionConfigFilePassesReleaseGate(t *testing.T) {
-	previous := GlobalConfig
-	t.Cleanup(func() { GlobalConfig = previous })
-	t.Setenv("APISIXGO_DEPLOYMENT_ETCD_HOST", "https://etcd.example:2379")
-
+func TestHTTPDataPlaneProductionConfigFailsClosedUntilQualified(t *testing.T) {
 	defaultPath, productionPath := repositoryConfigPaths(t)
-	cfg, err := loadConfigFiles(defaultPath, productionPath)
+	_, err := loadEffectiveTestFiles(t, defaultPath, productionPath, map[string]string{
+		"APISIXGO_DEPLOYMENT_ETCD_HOST": "https://etcd.example:2379",
+	})
+	if err == nil || !strings.Contains(err.Error(), "http-data-plane-v1") ||
+		!strings.Contains(err.Error(), "unqualified required plugins") {
+		t.Fatalf("LoadEffective() error = %v, want incomplete qualification evidence rejection", err)
+	}
+}
+
+func TestHTTPDataPlanePluginOrderMatchesManifestAndConfig(t *testing.T) {
+	manifest, err := capability.Load()
 	if err != nil {
-		t.Fatalf("loadConfigFiles() error = %v", err)
+		t.Fatal(err)
+	}
+	qualification, ok := manifest.Qualification(string(QualificationHTTPDataPlaneV1))
+	if !ok {
+		t.Fatal("HTTP data-plane qualification is missing")
 	}
 
-	if cfg.Debug {
-		t.Fatal("production config debug = true, want false")
+	production := readPluginListYAML(t, repositoryPath(t, "conf", "config-production.yaml"))
+	if !reflect.DeepEqual(production, qualification.RequiredPlugins) {
+		t.Errorf("conf/config-production.yaml plugins = %#v, want manifest order %#v",
+			production, qualification.RequiredPlugins)
 	}
-	if got, want := cfg.Apisix.ProxyMode, "http"; got != want {
-		t.Fatalf("production proxy mode = %q, want %q", got, want)
+}
+
+func readPluginListYAML(t *testing.T, path string) []string {
+	t.Helper()
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
 	}
-	if len(cfg.Apisix.StreamProxy.Tcp) != 0 || len(cfg.Apisix.StreamProxy.Udp) != 0 {
-		t.Fatalf(
-			"production stream listeners = tcp:%#v udp:%#v, want none",
-			cfg.Apisix.StreamProxy.Tcp,
-			cfg.Apisix.StreamProxy.Udp,
-		)
+	var document struct {
+		Plugins []string `yaml:"plugins"`
 	}
-	wantPlugins := []string{"request-id", "cors", "key-auth", "jwt-auth", "basic-auth", "prometheus"}
-	if got, want := cfg.Plugins, wantPlugins; !reflect.DeepEqual(got, want) {
-		t.Fatalf("production HTTP plugins = %#v, want %#v", got, want)
+	if err := yaml.Unmarshal(contents, &document); err != nil {
+		t.Fatalf("parse %s: %v", path, err)
 	}
-	if len(cfg.StreamPlugins) != 0 {
-		t.Fatalf("production stream plugins = %#v, want none", cfg.StreamPlugins)
-	}
-	if got, want := cfg.Deployment.Role, "data_plane"; got != want {
-		t.Fatalf("production deployment role = %q, want %q", got, want)
-	}
-	if got, want := cfg.Deployment.RoleDataPlane.ConfigProvider, "etcd"; got != want {
-		t.Fatalf("production data-plane provider = %q, want %q", got, want)
-	}
-	if got, want := cfg.Deployment.Etcd.Host, []string{"https://etcd.example:2379"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("production etcd hosts = %#v, want %#v", got, want)
-	}
-	if got, want := cfg.Deployment.Etcd.Prefix, "/apisix"; got != want {
-		t.Fatalf("production etcd prefix = %q, want %q", got, want)
-	}
-	if cfg.Deployment.Etcd.TLS.Verify == nil || !*cfg.Deployment.Etcd.TLS.Verify {
-		t.Fatal("production etcd TLS verification is not explicitly enabled")
-	}
-	if got, want := cfg.Apisix.TrustedAddresses, []string{"127.0.0.1/32", "::1/128"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("production trusted addresses = %#v, want %#v", got, want)
-	}
-	if len(cfg.Deployment.Admin.AdminKey) != 0 {
-		t.Fatalf("production admin keys = %#v, want none", cfg.Deployment.Admin.AdminKey)
-	}
-	if cfg.Apisix.DataEncryption.EnableEncryptFields || len(cfg.Apisix.DataEncryption.Keyring) != 0 {
-		t.Fatalf("production data encryption = %#v, want disabled with empty keyring", cfg.Apisix.DataEncryption)
-	}
-	if got, want := cfg.Deployment.Profile, HTTPDataPlaneV1Profile; got != want {
-		t.Fatalf("production deployment profile = %q, want %q", got, want)
-	}
-	if cfg.Apisix.EnableAdmin {
-		t.Fatal("production admin API is enabled, want explicit disablement")
-	}
-	if !cfg.Apisix.Ssl.Enable || len(cfg.Apisix.Ssl.Listen) != 1 {
-		t.Fatalf("production SSL state = %#v, want one enabled HTTP-only listener", cfg.Apisix.Ssl)
-	}
-	for index, listener := range cfg.Apisix.Ssl.Listen {
-		if listener.EnableQuic || listener.EnableHttp3 {
-			t.Fatalf("production SSL listener %d enables QUIC/HTTP3: %#v", index, listener)
-		}
-	}
-	if got, want := cfg.NginxConfig.HTTP.ClientMaxBodySize, int64(10*1024*1024); got != want {
-		t.Fatalf("production client max body size = %d, want %d", got, want)
-	}
-	if got, want := cfg.NginxConfig.HTTP.ClientBodyTimeout, 60*time.Second; got != want {
-		t.Fatalf("production client body timeout = %s, want %s", got, want)
-	}
+	return document.Plugins
 }
 
 func TestDefaultConfigDisablesAdmin(t *testing.T) {
-	previous := GlobalConfig
-	t.Cleanup(func() { GlobalConfig = previous })
-
 	defaultPath := repositoryPath(t, "conf", "config-default.yaml")
-	cfg, err := loadConfigFiles(defaultPath, "")
+	cfg, err := loadEffectiveTestFiles(t, defaultPath, "")
 	if err != nil {
-		t.Fatalf("loadConfigFiles() error = %v", err)
+		t.Fatalf("LoadEffective() error = %v", err)
 	}
 	if cfg.Apisix.EnableAdmin {
 		t.Fatal("default config admin API is enabled, want startup-safe disabled default")
 	}
 }
 
-func TestProductionProfileAcceptsValidConfig(t *testing.T) {
-	if err := validateRuntimeConfig(validHTTPDataPlaneV1Config()); err != nil {
-		t.Fatalf("validateRuntimeConfig() error = %v, want valid %s profile", err, HTTPDataPlaneV1Profile)
+func TestHTTPDataPlaneQualificationAcceptsValidConfig(t *testing.T) {
+	if err := validateRuntimeConfig(validProfileSelectionConfig(), qualifiedProfileTestManifest(t)); err != nil {
+		t.Fatalf("validateRuntimeConfig() error = %v, want valid HTTP qualification", err)
 	}
 }
 
@@ -451,28 +432,43 @@ func TestUnsupportedRuntimeConfigRejectsEveryMode(t *testing.T) {
 		},
 	}
 
-	for _, profile := range []struct {
+	for _, selection := range []struct {
 		name  string
-		value string
+		value ProfileSelection
 	}{
-		{name: "compatibility", value: ""},
-		{name: "http-data-plane-v1", value: HTTPDataPlaneV1Profile},
+		{
+			name: "compatibility",
+			value: ProfileSelection{
+				Compatibility: CompatibilityAPISIX317,
+				Security:      SecurityCompat,
+			},
+		},
+		{
+			name: "strict HTTP qualification",
+			value: ProfileSelection{
+				Compatibility: CompatibilityAPISIX317,
+				Security:      SecurityStrict,
+				Qualification: QualificationHTTPDataPlaneV1,
+			},
+		},
 	} {
 		for _, test := range tests {
-			t.Run(profile.name+"/"+test.name, func(t *testing.T) {
-				cfg := validHTTPDataPlaneV1Config()
-				cfg.Deployment.Profile = profile.value
+			t.Run(selection.name+"/"+test.name, func(t *testing.T) {
+				cfg := validProfileSelectionConfig()
+				cfg.CompatibilityTarget = selection.value.Compatibility
+				cfg.SecurityProfile = selection.value.Security
+				cfg.QualificationProfile = selection.value.Qualification
 				test.mutate(cfg)
 
-				err := validateRuntimeConfig(cfg)
+				err := validateRuntimeConfig(cfg, qualifiedProfileTestManifest(t))
 				if err == nil {
 					t.Fatalf("validateRuntimeConfig() error = nil, want %s rejection", test.field)
 				}
 				if !strings.Contains(err.Error(), test.field) {
 					t.Fatalf("validateRuntimeConfig() error = %q, want field %q", err, test.field)
 				}
-				if !strings.Contains(err.Error(), HTTPDataPlaneV1Profile) {
-					t.Fatalf("validateRuntimeConfig() error = %q, want profile name %q", err, HTTPDataPlaneV1Profile)
+				if !strings.Contains(err.Error(), "Go data plane") {
+					t.Fatalf("validateRuntimeConfig() error = %q, want global unsupported-runtime policy", err)
 				}
 				if strings.Contains(err.Error(), "logger.wasm") ||
 					strings.Contains(err.Error(), "/usr/local/bin/plugin") {
@@ -483,19 +479,12 @@ func TestUnsupportedRuntimeConfigRejectsEveryMode(t *testing.T) {
 	}
 }
 
-func TestProductionProfileRejectsOneMutatedFieldPerRow(t *testing.T) {
+func TestProductionPolicyRejectsOneMutatedFieldPerRow(t *testing.T) {
 	tests := []struct {
 		name   string
 		field  string
 		mutate func(*Config)
 	}{
-		{
-			name:  "unknown profile",
-			field: "deployment.profile",
-			mutate: func(cfg *Config) {
-				cfg.Deployment.Profile = "future-profile"
-			},
-		},
 		{
 			name:  "debug",
 			field: "debug",
@@ -508,6 +497,7 @@ func TestProductionProfileRejectsOneMutatedFieldPerRow(t *testing.T) {
 			field: "deployment.role",
 			mutate: func(cfg *Config) {
 				cfg.Deployment.Role = "control_plane"
+				cfg.Deployment.RoleControlPlane.ConfigProvider = "etcd"
 			},
 		},
 		{
@@ -596,13 +586,6 @@ func TestProductionProfileRejectsOneMutatedFieldPerRow(t *testing.T) {
 			},
 		},
 		{
-			name:  "plugin order",
-			field: "plugins",
-			mutate: func(cfg *Config) {
-				cfg.Plugins[0], cfg.Plugins[1] = cfg.Plugins[1], cfg.Plugins[0]
-			},
-		},
-		{
 			name:  "plugin local state",
 			field: "plugins",
 			mutate: func(cfg *Config) {
@@ -683,56 +666,24 @@ func TestProductionProfileRejectsOneMutatedFieldPerRow(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			cfg := validHTTPDataPlaneV1Config()
+			cfg := validProfileSelectionConfig()
 			test.mutate(cfg)
 
-			err := validateRuntimeConfig(cfg)
+			err := validateRuntimeConfig(cfg, qualifiedProfileTestManifest(t))
 			if err == nil {
 				t.Fatalf("validateRuntimeConfig() error = nil, want %s rejection", test.field)
 			}
 			if !strings.Contains(err.Error(), test.field) {
 				t.Fatalf("validateRuntimeConfig() error = %q, want field %q", err, test.field)
 			}
-			if !strings.Contains(err.Error(), HTTPDataPlaneV1Profile) {
-				t.Fatalf("validateRuntimeConfig() error = %q, want profile name %q", err, HTTPDataPlaneV1Profile)
+			if !strings.Contains(err.Error(), string(SecurityStrict)) &&
+				!strings.Contains(err.Error(), string(QualificationHTTPDataPlaneV1)) {
+				t.Fatalf("validateRuntimeConfig() error = %q, want responsible security or qualification axis", err)
 			}
 			if strings.Contains(err.Error(), "/var/log/apisix") || strings.Contains(err.Error(), "$request") {
 				t.Fatalf("validateRuntimeConfig() error leaked config value: %q", err)
 			}
 		})
-	}
-}
-
-func validHTTPDataPlaneV1Config() *Config {
-	verify := true
-	return &Config{
-		Apisix: Apisix{
-			NodeListen:  []NodeListen{{Ip: "0.0.0.0", Port: 9080}},
-			ProxyMode:   "http",
-			EnableAdmin: false,
-			Ssl: Ssl{
-				Enable: true,
-				Listen: []Listen{{Ip: "0.0.0.0", Port: 9443, EnableHttp2: true}},
-			},
-			TrustedAddresses: []string{"10.0.0.0/8"},
-		},
-		NginxConfig: NginxConfig{HTTP: NginxHTTP{
-			ClientBodyTimeout: 60 * time.Second,
-			ClientMaxBodySize: 10 * 1024 * 1024,
-		}},
-		Plugins: []string{"request-id", "cors", "key-auth", "jwt-auth", "basic-auth", "prometheus"},
-		Proxy:   Proxy{MaxIdleConns: 1024, MaxIdleConnsPerHost: 256, MaxConnsPerHost: 512, MaxInFlight: 1024},
-		Deployment: Deployment{
-			Profile:          HTTPDataPlaneV1Profile,
-			Role:             "data_plane",
-			RoleDataPlane:    RoleConfig{ConfigProvider: "etcd"},
-			RoleControlPlane: RoleConfig{ConfigProvider: "etcd"},
-			Etcd: Etcd{
-				Host:   []string{"https://etcd.example:2379"},
-				Prefix: "/apisix",
-				TLS:    EtcdTLS{Verify: &verify},
-			},
-		},
 	}
 }
 
@@ -767,7 +718,11 @@ func repositoryConfigPaths(t *testing.T) (string, string) {
 
 func repositoryPath(t *testing.T, parts ...string) string {
 	t.Helper()
-	root := filepath.Join("..", "..")
+	_, filename, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("resolve repository path")
+	}
+	root := filepath.Join(filepath.Dir(filename), "..", "..")
 	return filepath.Join(append([]string{root}, parts...)...)
 }
 
@@ -778,4 +733,34 @@ func writeConfigFile(t *testing.T, name, contents string) string {
 		t.Fatalf("write %s: %v", name, err)
 	}
 	return path
+}
+
+func loadEffectiveTestFiles(
+	t *testing.T,
+	defaultPath string,
+	overridePath string,
+	environments ...map[string]string,
+) (*Config, error) {
+	t.Helper()
+	manifest, err := capability.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	environment := map[string]string{}
+	if len(environments) != 0 && environments[0] != nil {
+		environment = environments[0]
+	}
+	pathRoot := t.TempDir()
+	effective, err := LoadEffective(LoadRequest{
+		DefaultPath: defaultPath, OverridePath: overridePath,
+		DefaultPaths: RuntimePaths{
+			DataDir: filepath.Join(pathRoot, "data"), RuntimeDir: filepath.Join(pathRoot, "run"),
+			LogDir: filepath.Join(pathRoot, "log"), TempDir: filepath.Join(pathRoot, "tmp"),
+		},
+		Environment: environment, CLIOverrides: map[string]any{}, Manifest: manifest,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &effective.Config, nil
 }

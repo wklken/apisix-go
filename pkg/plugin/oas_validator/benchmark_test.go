@@ -8,6 +8,9 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/runtime"
 )
 
 // BenchmarkValidatorRefresh measures validation latency with a fresh spec and
@@ -23,16 +26,53 @@ func BenchmarkValidatorRefresh(b *testing.B) {
 	} {
 		b.Run(scenario.name, func(b *testing.B) {
 			var fetches atomic.Int64
+			refreshFetched := make(chan struct{}, 1)
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				fetches.Add(1)
+				if fetches.Add(1) == 2 {
+					refreshFetched <- struct{}{}
+				}
 				w.Header().Set("Content-Type", "application/json")
 				_, _ = w.Write([]byte(testSpec()))
 			}))
 			b.Cleanup(server.Close)
 
-			p := &Plugin{config: Config{SpecURL: server.URL}}
+			p := &Plugin{config: Config{
+				SpecURL:                 server.URL,
+				SpecURLAllowedAddresses: []string{"127.0.0.1"},
+			}}
+			b.Cleanup(func() {
+				if scenario.due && fetches.Load() < 2 {
+					b.Fatalf("due refresh fetches = %d, want at least 2", fetches.Load())
+				}
+			})
+			failures := make(chan runtime.TaskFailure, 4)
+			tasks := runtime.NewTaskRegistry(context.Background(), func(failure runtime.TaskFailure) {
+				failures <- failure
+			})
+			owner, err := runtime.NewTaskOwner(tasks, "plugin/test/oas/benchmark", runtime.TaskPlugin)
+			if err != nil {
+				b.Fatal(err)
+			}
+			p.SetDependencies(base.Dependencies{Tasks: owner})
+			b.Cleanup(func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+				defer cancel()
+				residuals, stopErr := tasks.Stop(ctx)
+				if stopErr != nil || len(residuals) != 0 {
+					b.Errorf("TaskRegistry.Stop() = (%v, %v)", residuals, stopErr)
+				}
+				p.Stop()
+				select {
+				case failure := <-failures:
+					b.Errorf("unexpected task failure = %#v", failure)
+				default:
+				}
+			})
 			if err := p.Init(); err != nil {
 				b.Fatalf("Init() error = %v", err)
+			}
+			if err := base.MaterializePluginSecrets(p); err != nil {
+				b.Fatalf("MaterializePluginSecrets() error = %v", err)
 			}
 			if err := p.PostInit(); err != nil {
 				b.Fatalf("PostInit() error = %v", err)
@@ -41,9 +81,6 @@ func BenchmarkValidatorRefresh(b *testing.B) {
 			clock.Store(time.Unix(100, 0).UnixNano())
 			p.now = func() time.Time { return time.Unix(0, clock.Load()) }
 			p.metadata.SpecURLTTL = 10
-			if stopper, ok := any(p).(interface{ Stop() }); ok {
-				b.Cleanup(stopper.Stop)
-			}
 
 			if _, err := p.validator(); err != nil {
 				b.Fatalf("prime validator: %v", err)
@@ -67,6 +104,14 @@ func BenchmarkValidatorRefresh(b *testing.B) {
 				}
 				if err := validateRequest(context.Background(), req, current, p.config); err != nil {
 					b.Fatalf("validateRequest() error = %v", err)
+				}
+			}
+			b.StopTimer()
+			if scenario.due {
+				select {
+				case <-refreshFetched:
+				case <-time.After(2 * time.Second):
+					b.Fatalf("due refresh fetches = %d, want at least 2", fetches.Load())
 				}
 			}
 		})

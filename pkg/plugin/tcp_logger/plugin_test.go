@@ -18,6 +18,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -26,15 +27,105 @@ import (
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
+	"github.com/wklken/apisix-go/pkg/runtime"
 	"github.com/wklken/apisix-go/pkg/util"
 )
+
+type cancellationWatchConn struct {
+	net.Conn
+	closeCalls   atomic.Int32
+	closeStarted chan struct{}
+	releaseClose <-chan struct{}
+}
+
+func (c *cancellationWatchConn) Close() error {
+	c.closeCalls.Add(1)
+	select {
+	case c.closeStarted <- struct{}{}:
+	default:
+	}
+	if c.releaseClose != nil {
+		<-c.releaseClose
+	}
+	return nil
+}
+
+func TestWatchConnectionCancellation(t *testing.T) {
+	for _, scenario := range []string{
+		"cancellation closes connection",
+		"normal completion preserves reused connection",
+		"cleanup joins close already running",
+		"nil context is no-op",
+	} {
+		t.Run(scenario, func(t *testing.T) {
+			var ctx context.Context
+			var cancel context.CancelFunc
+			if scenario != "nil context is no-op" {
+				ctx, cancel = context.WithCancel(context.Background())
+				defer cancel()
+			}
+			var releaseClose chan struct{}
+			if scenario == "cleanup joins close already running" {
+				releaseClose = make(chan struct{})
+			}
+			conn := &cancellationWatchConn{
+				closeStarted: make(chan struct{}, 1),
+				releaseClose: releaseClose,
+			}
+			cleanup := watchConnectionCancellation(ctx, conn)
+
+			switch scenario {
+			case "cancellation closes connection":
+				cancel()
+				cleanup()
+			case "normal completion preserves reused connection":
+				cleanup()
+				cancel()
+			case "cleanup joins close already running":
+				cancel()
+				select {
+				case <-conn.closeStarted:
+				case <-time.After(time.Second):
+					t.Fatal("cancellation callback did not enter Close")
+				}
+				cleanupDone := make(chan struct{})
+				go func() {
+					cleanup()
+					close(cleanupDone)
+				}()
+				select {
+				case <-cleanupDone:
+					t.Fatal("cleanup returned while Close was blocked")
+				case <-time.After(20 * time.Millisecond):
+				}
+				close(releaseClose)
+				select {
+				case <-cleanupDone:
+				case <-time.After(time.Second):
+					t.Fatal("cleanup did not return after Close completed")
+				}
+			case "nil context is no-op":
+				cleanup()
+			}
+
+			wantCloseCalls := int32(0)
+			if scenario == "cancellation closes connection" ||
+				scenario == "cleanup joins close already running" {
+				wantCloseCalls = 1
+			}
+			if got := conn.closeCalls.Load(); got != wantCloseCalls {
+				t.Fatalf("Close calls = %d, want %d", got, wantCloseCalls)
+			}
+		})
+	}
+}
 
 func TestRunLogPhasePreservesDefaultAndCustomAccessFields(t *testing.T) {
 	delivered := make(chan map[string]any, 1)
 	p := &Plugin{config: Config{}, BaseLoggerPlugin: base.BaseLoggerPlugin{RouteID: "route-1"}}
 	p.logFormat = map[string]any{"host": "$host", "remote": "$remote_addr", "started": "$time_iso8601"}
 	p.SetSnapshotLogFormat(p.logFormat, nil)
-	p.BatchProcessor = logger_batch.NewWithContext(logger_batch.Config{
+	p.BatchProcessor = newOwnedBatchProcessorForTest(t, logger_batch.Config{
 		BatchMaxSize: 1, MaxPendingEntries: 1, InactiveTimeout: time.Hour,
 		BufferDuration: time.Hour, ShutdownTimeout: time.Second,
 	}, func(_ context.Context, entries []map[string]any, _ int) (int, error) {
@@ -254,6 +345,9 @@ func TestPostInitPreservesExplicitZeroRetryDelay(t *testing.T) {
 		"retry_delay": 0,
 	}, p.Config()); err != nil {
 		t.Fatalf("Parse() error = %v", err)
+	}
+	if p.TaskOwner() == nil {
+		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
@@ -819,12 +913,93 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
+	if p.TaskOwner() == nil {
+		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
+	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
 	t.Cleanup(p.Stop)
 
 	return p
+}
+
+func newTestPluginWithMetadata(t *testing.T, cfg Config, metadata map[string]any) *Plugin {
+	t.Helper()
+	p := &Plugin{config: cfg}
+	p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t), Metadata: mustMetadataView(t, metadata)})
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if p.TaskOwner() == nil {
+		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+	t.Cleanup(p.Stop)
+	return p
+}
+
+func mustMetadataView(t *testing.T, metadata map[string]any) runtime.MetadataView {
+	t.Helper()
+	document, err := json.Marshal(metadata)
+	if err != nil {
+		t.Fatalf("marshal metadata: %v", err)
+	}
+	view, err := runtime.NewMetadataView(map[string][]byte{name: document})
+	if err != nil {
+		t.Fatalf("NewMetadataView() error = %v", err)
+	}
+	return view
+}
+
+func TestPreparedGenerationsRetainMetadataFormat(t *testing.T) {
+	config := Config{Host: "127.0.0.1", Port: 9000}
+	first := newTestPluginWithMetadata(t, config, map[string]any{
+		"log_format": map[string]any{
+			"nested": map[string]any{"generation": "n"},
+		},
+		"max_pending_entries": 11,
+	})
+	second := newTestPluginWithMetadata(t, config, map[string]any{
+		"log_format": map[string]any{
+			"nested": map[string]any{"generation": "n-plus-one"},
+		},
+		"max_pending_entries": 12,
+	})
+	firstNested, firstOK := first.logFormat["nested"].(map[string]any)
+	secondNested, secondOK := second.logFormat["nested"].(map[string]any)
+	if !firstOK || !secondOK {
+		t.Fatalf("generation metadata = %#v/%#v", first.logFormat, second.logFormat)
+	}
+	if firstNested["generation"] != "n" || first.config.MaxPendingEntries != 11 {
+		t.Fatalf("generation N metadata = %#v/%d", firstNested, first.config.MaxPendingEntries)
+	}
+	if secondNested["generation"] != "n-plus-one" || second.config.MaxPendingEntries != 12 {
+		t.Fatalf("generation N+1 metadata = %#v/%d", secondNested, second.config.MaxPendingEntries)
+	}
+}
+
+func TestMetadataDecodeFailsBeforeTCPProcessorAcquisition(t *testing.T) {
+	p := &Plugin{config: Config{Host: "127.0.0.1", Port: 9000}}
+	p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t), Metadata: mustMetadataView(t, map[string]any{
+		"max_pending_entries": "invalid",
+	})})
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if p.TaskOwner() == nil {
+		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
+	}
+	err := p.PostInit()
+	defer p.Stop()
+	if err == nil {
+		t.Fatal("PostInit() error = nil for invalid metadata")
+	}
+	if p.BatchProcessor != nil || p.conn != nil {
+		t.Fatalf("decode failure acquired TCP resources: processor=%v conn=%v", p.BatchProcessor, p.conn)
+	}
 }
 
 // countingTCPListener accepts connections indefinitely, records every byte
@@ -1057,7 +1232,11 @@ func TestStopClosesActiveConnection(t *testing.T) {
 		t.Fatalf("SendBatch() error = %v", err)
 	}
 
+	processor := p.BatchProcessor
 	p.Stop()
+	if err := processor.Shutdown(context.Background()); err != nil {
+		t.Fatalf("batch Shutdown() error = %v", err)
+	}
 	p.connMu.Lock()
 	conn := p.conn
 	p.connMu.Unlock()

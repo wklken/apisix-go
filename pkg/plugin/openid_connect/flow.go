@@ -215,71 +215,38 @@ func safeOriginalURI(originalURI string) string {
 }
 
 func (p *Plugin) exchangeCode(r *http.Request, code, redirectURI, verifier string) (tokenResponse, error) {
-	if standardClientAuth(p.config.TokenEndpointAuthMethod) {
-		client, err := p.providerClient(r)
-		if err != nil {
-			return tokenResponse{}, err
-		}
-		oauth2Config := client.oauth2Config
-		oauth2Config.RedirectURL = redirectURI
-		options := []oauth2.AuthCodeOption{}
-		if p.config.UsePKCE {
-			if verifier == "" {
-				return tokenResponse{}, errors.New("missing PKCE verifier")
-			}
-			options = append(options, oauth2.VerifierOption(verifier))
-		}
-		token, err := oauth2Config.Exchange(r.Context(), code, options...)
-		if err != nil {
-			return tokenResponse{}, err
-		}
-		return p.tokenResponseFromOAuth2(token), nil
-	}
-
-	form := url.Values{}
-	form.Set("grant_type", "authorization_code")
-	form.Set("code", code)
-	form.Set("redirect_uri", redirectURI)
 	if p.config.UsePKCE {
 		if verifier == "" {
 			return tokenResponse{}, errors.New("missing PKCE verifier")
 		}
-		form.Set("code_verifier", verifier)
 	}
-	return p.requestTokens(r, form)
+	return p.requestTokenGrant(r, func(form url.Values) {
+		form.Set("grant_type", "authorization_code")
+		form.Set("code", code)
+		form.Set("redirect_uri", redirectURI)
+		if p.config.UsePKCE {
+			form.Set("code_verifier", verifier)
+		}
+	})
 }
 
 func (p *Plugin) refreshAccessToken(r *http.Request, refreshToken string) (tokenResponse, error) {
-	if standardClientAuth(p.config.TokenEndpointAuthMethod) {
-		client, err := p.providerClient(r)
-		if err != nil {
-			return tokenResponse{}, err
-		}
-		token, err := client.oauth2Config.TokenSource(
-			r.Context(),
-			&oauth2.Token{RefreshToken: refreshToken},
-		).Token()
-		if err != nil {
-			return tokenResponse{}, err
-		}
-		return p.tokenResponseFromOAuth2(token), nil
-	}
-
-	form := url.Values{}
-	form.Set("grant_type", "refresh_token")
-	form.Set("refresh_token", refreshToken)
-	form.Set("scope", p.config.Scope)
-	return p.requestTokens(r, form)
+	return p.requestTokenGrant(r, func(form url.Values) {
+		form.Set("grant_type", "refresh_token")
+		form.Set("refresh_token", refreshToken)
+		form.Set("scope", p.config.Scope)
+	})
 }
 
-// standardClientAuth reports whether x/oauth2 can express the configured
-// token-endpoint authentication; JWT assertion methods stay on the custom
-// request builder.
-func standardClientAuth(method string) bool {
-	return method == "" || method == "client_secret_basic" || method == "client_secret_post"
-}
+type oidcFormBuilder func(url.Values)
 
 func (p *Plugin) requestTokens(r *http.Request, form url.Values) (tokenResponse, error) {
+	return p.requestTokenGrant(r, func(requestForm url.Values) {
+		copyOIDCForm(requestForm, form)
+	})
+}
+
+func (p *Plugin) requestTokenGrant(r *http.Request, buildForm oidcFormBuilder) (tokenResponse, error) {
 	discovery, err := p.discoveryDoc()
 	if err != nil {
 		return tokenResponse{}, err
@@ -287,7 +254,7 @@ func (p *Plugin) requestTokens(r *http.Request, form url.Values) (tokenResponse,
 	if discovery.TokenEndpoint == "" {
 		return tokenResponse{}, errors.New("openid discovery document has no token_endpoint")
 	}
-	resp, err := p.postTokenForm(r, discovery.TokenEndpoint, form)
+	resp, err := p.postTokenFormBuilder(r, discovery.TokenEndpoint, buildForm)
 	if err != nil {
 		return tokenResponse{}, err
 	}
@@ -307,44 +274,104 @@ func (p *Plugin) requestTokens(r *http.Request, form url.Values) (tokenResponse,
 }
 
 func (p *Plugin) postTokenForm(r *http.Request, endpoint string, form url.Values) (*http.Response, error) {
-	req, err := p.authenticatedFormRequest(r, endpoint, form, p.config.TokenEndpointAuthMethod)
-	if err != nil {
-		return nil, err
-	}
-	return p.client.Do(req)
+	return p.postTokenFormBuilder(r, endpoint, func(requestForm url.Values) {
+		copyOIDCForm(requestForm, form)
+	})
+}
+
+func (p *Plugin) postTokenFormBuilder(
+	r *http.Request,
+	endpoint string,
+	buildForm oidcFormBuilder,
+) (*http.Response, error) {
+	var response *http.Response
+	err := p.authenticatedFormRequest(
+		r,
+		endpoint,
+		buildForm,
+		p.config.TokenEndpointAuthMethod,
+		func(req *http.Request) error {
+			var err error
+			response, err = p.client.Do(req)
+			if response != nil {
+				clearOIDCRequestCredentials(response.Request)
+			}
+			return err
+		},
+	)
+	return response, err
 }
 
 func (p *Plugin) authenticatedFormRequest(
 	r *http.Request,
 	endpoint string,
-	form url.Values,
+	buildForm oidcFormBuilder,
 	authMethod string,
-) (*http.Request, error) {
-	switch authMethod {
-	case "client_secret_post":
-		form.Set("client_id", p.config.ClientID)
-		form.Set("client_secret", p.config.ClientSecret)
-	case "private_key_jwt", "client_secret_jwt":
-		assertion, err := p.clientAssertion(endpoint, authMethod)
-		if err != nil {
-			return nil, err
+	use func(*http.Request) error,
+) error {
+	return p.withClientSecret(func(clientSecret string) error {
+		requestForm := make(url.Values)
+		defer clearOIDCForm(requestForm)
+		if buildForm != nil {
+			buildForm(requestForm)
 		}
-		form.Set("client_id", p.config.ClientID)
-		form.Set("client_assertion_type", "urn:ietf:params:oauth:client-assertion-type:jwt-bearer")
-		form.Set("client_assertion", assertion)
-	}
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, endpoint, strings.NewReader(form.Encode()))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	if authMethod == "client_secret_basic" {
-		req.SetBasicAuth(p.config.ClientID, p.config.ClientSecret)
-	}
-	return req, nil
+		switch authMethod {
+		case "client_secret_post":
+			requestForm.Set("client_id", p.config.ClientID)
+			requestForm.Set("client_secret", clientSecret)
+		case "private_key_jwt", "client_secret_jwt":
+			assertion, err := p.clientAssertion(endpoint, authMethod, clientSecret)
+			if err != nil {
+				return err
+			}
+			requestForm.Set("client_id", p.config.ClientID)
+			requestForm.Set("client_assertion_type", "urn:ietf:params:oauth:client-assertion-type:jwt-bearer")
+			requestForm.Set("client_assertion", assertion)
+		}
+		req, err := http.NewRequestWithContext(
+			r.Context(), http.MethodPost, endpoint, strings.NewReader(requestForm.Encode()),
+		)
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		if authMethod == "client_secret_basic" {
+			req.SetBasicAuth(p.config.ClientID, clientSecret)
+		}
+		defer clearOIDCRequestCredentials(req)
+		return use(req)
+	})
 }
 
-func (p *Plugin) clientAssertion(audience, authMethod string) (string, error) {
+func copyOIDCForm(target, source url.Values) {
+	for key, values := range source {
+		target[key] = append([]string(nil), values...)
+	}
+}
+
+func clearOIDCForm(form url.Values) {
+	for key, values := range form {
+		for index := range values {
+			values[index] = ""
+		}
+		delete(form, key)
+	}
+}
+
+func clearOIDCRequestCredentials(req *http.Request) {
+	if req == nil {
+		return
+	}
+	req.Header.Del("Authorization")
+	if req.Body != nil {
+		_ = req.Body.Close()
+		req.Body = http.NoBody
+	}
+	req.GetBody = nil
+	req.ContentLength = 0
+}
+
+func (p *Plugin) clientAssertion(audience, authMethod, clientSecret string) (string, error) {
 	jti, err := randomURLValue(16)
 	if err != nil {
 		return "", err
@@ -380,16 +407,16 @@ func (p *Plugin) clientAssertion(audience, authMethod string) (string, error) {
 
 	var signature []byte
 	if authMethod == "private_key_jwt" {
-		if p.clientRSAPrivateKey == nil {
-			return "", errors.New("client_rsa_private_key is required for private_key_jwt")
-		}
 		digest := sha256.Sum256([]byte(unsigned))
-		signature, err = rsa.SignPKCS1v15(rand.Reader, p.clientRSAPrivateKey, crypto.SHA256, digest[:])
+		err = p.withOIDCPrivateKey(func(privateKey *rsa.PrivateKey) error {
+			signature, err = rsa.SignPKCS1v15(rand.Reader, privateKey, crypto.SHA256, digest[:])
+			return err
+		})
 		if err != nil {
 			return "", err
 		}
 	} else {
-		mac := hmac.New(sha256.New, []byte(p.config.ClientSecret))
+		mac := hmac.New(sha256.New, []byte(clientSecret))
 		_, _ = mac.Write([]byte(unsigned))
 		signature = mac.Sum(nil)
 	}
@@ -504,10 +531,10 @@ func (p *Plugin) revokeTokens(r *http.Request, session sessionData) {
 }
 
 func (p *Plugin) revokeToken(r *http.Request, endpoint, tokenTypeHint, token string) error {
-	form := url.Values{}
-	form.Set("token", token)
-	form.Set("token_type_hint", tokenTypeHint)
-	resp, err := p.postTokenForm(r, endpoint, form)
+	resp, err := p.postTokenFormBuilder(r, endpoint, func(form url.Values) {
+		form.Set("token", token)
+		form.Set("token_type_hint", tokenTypeHint)
+	})
 	if err != nil {
 		return err
 	}

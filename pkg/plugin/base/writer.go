@@ -40,6 +40,11 @@ func WithTransformPipeline(count int) func(http.Handler) http.Handler {
 			}
 			pipeline := &pipelineBuffer{count: count}
 			*r = *r.WithContext(context.WithValue(r.Context(), transformPipelineContextKey{}, pipeline))
+			defer func() {
+				pipeline.buf.Reset()
+				backing := pipeline.buf.Bytes()
+				clear(backing[:cap(backing)])
+			}()
 			next.ServeHTTP(w, r)
 		})
 	}

@@ -6,7 +6,6 @@ import (
 	"time"
 
 	apisixid "github.com/wklken/apisix-go/pkg/apisix/id"
-	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/util"
@@ -63,23 +62,19 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 	})
 }
 
-func CurrentInfo() Response {
+func CurrentInfo(configuredID string) Response {
 	hostname := hostname()
 	return Response{
 		EtcdVersion: "unknown",
 		Hostname:    hostname,
-		ID:          apisixid.Get(),
+		ID:          apisixid.Get(configuredID),
 		Version:     version,
 		BootTime:    bootTime,
 	}
 }
 
-func ReportTTL() time.Duration {
+func ReportTTL(attr map[string]any) time.Duration {
 	ttl := defaultReportTTL
-	if config.GlobalConfig == nil || config.GlobalConfig.PluginAttr == nil {
-		return ttl
-	}
-	attr := config.GlobalConfig.PluginAttr[name]
 	if attr == nil {
 		return ttl
 	}
@@ -134,10 +129,12 @@ func reportTTLValue(value any) (int64, bool) {
 	}
 }
 
-func InfoHandler(w http.ResponseWriter, r *http.Request) {
-	resp := CurrentInfo()
+func InfoHandler(configuredID string) http.HandlerFunc {
+	return func(w http.ResponseWriter, _ *http.Request) {
+		resp := CurrentInfo(configuredID)
 
-	_ = util.WriteJSON(w, http.StatusOK, resp)
+		_ = util.WriteJSON(w, http.StatusOK, resp)
+	}
 }
 
 func hostname() string {

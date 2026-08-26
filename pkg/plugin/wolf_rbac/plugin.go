@@ -2,6 +2,7 @@ package wolf_rbac
 
 import (
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -14,7 +15,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/public_api"
 	"github.com/wklken/apisix-go/pkg/resource"
-	"github.com/wklken/apisix-go/pkg/store"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -38,6 +38,8 @@ const (
 	WolfChangePasswordURI = "/apisix/plugin/wolf-rbac/change_pwd"
 	WolfUserInfoURI       = "/apisix/plugin/wolf-rbac/user_info"
 )
+
+var errWolfConsumerNotFound = errors.New("wolf-rbac consumer not found")
 
 const schema = `
 {
@@ -237,14 +239,14 @@ func parseRBACToken(raw string) (rbacToken, error) {
 }
 
 func (p *Plugin) consumerByAppID(appID string) (resource.Consumer, consumerConfig, error) {
-	consumer, err := store.GetConsumerByPluginKey(name, appID)
-	if err != nil {
-		return resource.Consumer{}, consumerConfig{}, err
+	consumer, ok := p.consumerRecordByAppID(appID)
+	if !ok {
+		return resource.Consumer{}, consumerConfig{}, errWolfConsumerNotFound
 	}
 
 	raw, ok := consumer.Plugins[name]
 	if !ok {
-		return resource.Consumer{}, consumerConfig{}, store.ErrNotFound
+		return resource.Consumer{}, consumerConfig{}, errWolfConsumerNotFound
 	}
 	var cfg consumerConfig
 	if err := util.Parse(raw, &cfg); err != nil {
@@ -252,6 +254,14 @@ func (p *Plugin) consumerByAppID(appID string) (resource.Consumer, consumerConfi
 	}
 	cfg.applyDefaults(p.config)
 	return consumer, cfg, nil
+}
+
+func (p *Plugin) consumerRecordByAppID(appID string) (resource.Consumer, bool) {
+	lookup := p.ConsumerLookup()
+	if lookup == nil {
+		return resource.Consumer{}, false
+	}
+	return lookup.ConsumerByPluginKey(name, appID)
 }
 
 func (p *Plugin) checkPermission(

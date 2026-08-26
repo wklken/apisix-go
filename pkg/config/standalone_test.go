@@ -2,425 +2,1086 @@ package config
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"reflect"
-	"runtime"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/data_encryption"
+	"github.com/wklken/apisix-go/pkg/generation"
+	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/observability/metrics"
 	"github.com/wklken/apisix-go/pkg/store"
+	"github.com/wklken/apisix-go/pkg/testutil"
 )
 
-func TestStandaloneReloadCancellationUnblocksBlockedSend(t *testing.T) {
-	path := writeStandaloneTestConfig(t, "routes:\n  - id: route-1\n    uri: /orders\n#END\n")
-	events := make(chan *store.Event)
-	watcher := NewStandaloneFileWatcher(path, "yaml", events)
-	if err := watcher.Start(); err != nil {
-		t.Fatalf("Start() error = %v", err)
+func testStandaloneDataEncryption(
+	t *testing.T,
+	enabled bool,
+	keyring []string,
+) data_encryption.Service {
+	t.Helper()
+	manifest, err := capability.Load()
+	if err != nil {
+		t.Fatal(err)
 	}
+	catalog, err := capability.NewSecretDeclarationCatalog(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data_encryption.NewService(enabled, keyring, catalog)
+}
 
-	reloadDone := make(chan error, 1)
-	go func() { reloadDone <- watcher.Reload() }()
-	waitForStandaloneReloadBlocked(t, watcher)
-	if err := watcher.Stop(); err != nil {
-		t.Fatalf("Stop() error = %v", err)
+type standaloneApplierFunc func(
+	context.Context,
+	generation.DesiredBatch,
+) (generation.Acknowledgement, error)
+
+func (f standaloneApplierFunc) Apply(
+	ctx context.Context,
+	batch generation.DesiredBatch,
+) (generation.Acknowledgement, error) {
+	return f(ctx, batch)
+}
+
+type recordingStandaloneApplier struct {
+	mu      sync.Mutex
+	batches []generation.DesiredBatch
+	apply   standaloneApplierFunc
+}
+
+func (a *recordingStandaloneApplier) Apply(
+	ctx context.Context,
+	batch generation.DesiredBatch,
+) (generation.Acknowledgement, error) {
+	a.mu.Lock()
+	a.batches = append(a.batches, cloneStandaloneTestBatch(batch))
+	call := len(a.batches)
+	apply := a.apply
+	a.mu.Unlock()
+	if apply != nil {
+		return apply(ctx, batch)
 	}
-	select {
-	case err := <-reloadDone:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("Reload() error = %v, want context.Canceled", err)
+	return standaloneAcknowledgement(batch, uint64(call), nil), nil
+}
+
+func (a *recordingStandaloneApplier) snapshot() []generation.DesiredBatch {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	result := make([]generation.DesiredBatch, len(a.batches))
+	for index, batch := range a.batches {
+		result[index] = cloneStandaloneTestBatch(batch)
+	}
+	return result
+}
+
+func cloneStandaloneTestBatch(batch generation.DesiredBatch) generation.DesiredBatch {
+	clone := batch
+	clone.RequiredDomains = slices.Clone(batch.RequiredDomains)
+	clone.Mutations = make([]generation.Mutation, len(batch.Mutations))
+	for index, mutation := range batch.Mutations {
+		clone.Mutations[index] = mutation
+		clone.Mutations[index].Value = slices.Clone(mutation.Value)
+	}
+	return clone
+}
+
+func standaloneAcknowledgement(
+	batch generation.DesiredBatch,
+	desired uint64,
+	dispositions map[generation.ResourceKey]generation.ResourceDisposition,
+) generation.Acknowledgement {
+	ack := generation.Acknowledgement{
+		Cursor: batch.Cursor,
+		Revisions: generation.RevisionSet{
+			Desired: desired,
+		},
+		Decisions: make(map[generation.Domain][]generation.ResourceDecision),
+	}
+	for _, domain := range batch.RequiredDomains {
+		switch domain {
+		case generation.DomainHTTP:
+			ack.Revisions.HTTP = desired
+		case generation.DomainStream:
+			ack.Revisions.Stream = desired
 		}
-	case <-time.After(time.Second):
-		t.Fatal("Reload() remained blocked after watcher cancellation")
+		ack.Decisions[domain] = nil
+	}
+	for _, mutation := range batch.Mutations {
+		for _, domain := range generation.DomainsForResourceKind(mutation.Key.Kind) {
+			if !slices.Contains(batch.RequiredDomains, domain) {
+				continue
+			}
+			disposition := generation.DispositionPublished
+			if configured, ok := dispositions[mutation.Key]; ok {
+				disposition = configured
+			}
+			ack.Decisions[domain] = append(ack.Decisions[domain], generation.ResourceDecision{
+				Key:         mutation.Key,
+				Disposition: disposition,
+				Code:        "standalone-test-" + string(disposition),
+			})
+		}
+	}
+	return ack
+}
+
+func TestStandaloneEncryptionServiceIsRequiredAtEntryPoints(t *testing.T) {
+	assertStandaloneCatalogPanic(t, func() {
+		_ = NewStandaloneFileWatcher(
+			"",
+			standaloneProviderYAML,
+			standaloneApplierFunc(nil),
+			testutil.UnconfiguredDataEncryptionService(),
+		)
+	})
+	if _, err := readStandaloneSnapshot(
+		"",
+		standaloneProviderYAML,
+		testutil.UnconfiguredDataEncryptionService(),
+	); !errors.Is(err, data_encryption.ErrDeclarationCatalogUnavailable) {
+		t.Fatalf("readStandaloneSnapshot() error = %v, want catalog error", err)
+	}
+	if _, _, err := normalizeStandaloneResource(
+		"routes",
+		json.RawMessage(`{"id":"r1"}`),
+		testutil.UnconfiguredDataEncryptionService(),
+	); !errors.Is(err, data_encryption.ErrDeclarationCatalogUnavailable) {
+		t.Fatalf("normalizeStandaloneResource() error = %v, want catalog error", err)
 	}
 }
 
-func TestStandaloneReloadCancellationUnblocksAcknowledgedWait(t *testing.T) {
-	path := writeStandaloneTestConfig(t, "routes:\n  - id: route-1\n    uri: /orders\n#END\n")
-	events := make(chan *store.Event, 1)
-	watcher := NewStandaloneFileWatcher(path, "yaml", events)
-	if err := watcher.Start(); err != nil {
-		t.Fatalf("Start() error = %v", err)
-	}
-
-	reloadDone := make(chan error, 1)
-	go func() { reloadDone <- watcher.Reload() }()
-	var queued *store.Event
-	select {
-	case queued = <-events:
-	case <-time.After(time.Second):
-		t.Fatal("Reload() did not enqueue an acknowledged event")
-	}
-	if err := watcher.Stop(); err != nil {
-		t.Fatalf("Stop() error = %v", err)
-	}
-	select {
-	case err := <-reloadDone:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("Reload() error = %v, want context.Canceled", err)
+func assertStandaloneCatalogPanic(t *testing.T, call func()) {
+	t.Helper()
+	defer func() {
+		if recovered := recover(); recovered != data_encryption.ErrDeclarationCatalogUnavailable {
+			t.Fatalf("panic = %v, want %v", recovered, data_encryption.ErrDeclarationCatalogUnavailable)
 		}
-	case <-time.After(time.Second):
-		t.Fatal("Reload() remained blocked in Event.Wait after cancellation")
-	}
-	store.PutBack(queued)
-}
-
-func TestStandaloneReloadDoesNotHoldStateMutexWhileSendBlocked(t *testing.T) {
-	path := writeStandaloneTestConfig(t, "routes:\n  - id: route-1\n    uri: /orders\n#END\n")
-	events := make(chan *store.Event)
-	watcher := NewStandaloneFileWatcher(path, "yaml", events)
-	if err := watcher.Start(); err != nil {
-		t.Fatalf("Start() error = %v", err)
-	}
-
-	reloadDone := make(chan error, 1)
-	go func() { reloadDone <- watcher.Reload() }()
-	mutexAvailable := make(chan struct{})
-	go func() {
-		watcher.mu.Lock()
-		close(mutexAvailable)
-		watcher.mu.Unlock()
 	}()
-	select {
-	case <-mutexAvailable:
-	case <-time.After(time.Second):
-		t.Fatal("state mutex remained locked while event send was blocked")
+	call()
+}
+
+func TestStandaloneBucketsExcludeSingletonPlugins(t *testing.T) {
+	buckets := StandaloneBuckets()
+	if len(buckets) != 12 {
+		t.Fatalf("len(StandaloneBuckets()) = %d, want 12", len(buckets))
 	}
-	if err := watcher.Stop(); err != nil {
-		t.Fatalf("Stop() error = %v", err)
+	if slices.Contains(buckets, "plugins") {
+		t.Fatalf("StandaloneBuckets() = %v, want singleton plugins excluded", buckets)
 	}
-	select {
-	case <-reloadDone:
-	case <-time.After(time.Second):
-		t.Fatal("Reload() remained blocked after watcher cancellation")
+	for _, bucket := range buckets {
+		if !generation.IsManagedResourceKind(bucket) {
+			t.Errorf("standalone bucket %q is not managed", bucket)
+		}
 	}
 }
 
-func TestStandaloneInvalidSSLDoesNotBlockValidSiblingOrReplay(t *testing.T) {
-	path := writeStandaloneTestConfig(t, `routes:
-  - id: route-1
-    uri: /orders
-ssls:
-  - id: ssl-1
-    status: 1
-    cert: invalid
-    key: invalid
+func TestDesiredBatchFromStandaloneUsesContentDigestCursor(t *testing.T) {
+	batch := desiredBatchFromStandalone(standaloneSnapshot{
+		"routes": {"r1": []byte(`{"id":"r1","uri":"/"}`)},
+	})
+	if !batch.ReplaceManaged || batch.Cursor.Provider != "standalone/v1" ||
+		batch.Cursor.Revision != "sha256:12bf10e04f88b65767a860dc08d95d6295c4b578d98fb1930564ec4c040b0c6b" {
+		t.Fatalf("batch cursor = %+v, replace = %t", batch.Cursor, batch.ReplaceManaged)
+	}
+	if len(batch.Mutations) != 1 || batch.Mutations[0].Type != generation.MutationPut ||
+		batch.Mutations[0].Key != (generation.ResourceKey{Kind: "routes", ID: "r1"}) {
+		t.Fatalf("batch mutations = %+v", batch.Mutations)
+	}
+}
+
+func TestDesiredBatchFromStandaloneSortsMutationsAndConservativelyRequiresDomains(t *testing.T) {
+	snapshot := standaloneSnapshot{
+		"stream_routes": {"z": []byte(`{"id":"z"}`)},
+		"services": {
+			"s2": []byte(`{"id":"s2"}`),
+			"s1": []byte(`{"id":"s1"}`),
+		},
+		"routes": {
+			"r2": []byte(`{"id":"r2"}`),
+			"r1": []byte(`{"id":"r1"}`),
+		},
+	}
+	batch := desiredBatchFromStandalone(snapshot)
+	wantKeys := []generation.ResourceKey{
+		{Kind: "routes", ID: "r1"},
+		{Kind: "routes", ID: "r2"},
+		{Kind: "services", ID: "s1"},
+		{Kind: "services", ID: "s2"},
+		{Kind: "stream_routes", ID: "z"},
+	}
+	gotKeys := make([]generation.ResourceKey, 0, len(batch.Mutations))
+	for _, mutation := range batch.Mutations {
+		gotKeys = append(gotKeys, mutation.Key)
+	}
+	if !reflect.DeepEqual(gotKeys, wantKeys) {
+		t.Fatalf("mutation keys = %+v, want %+v", gotKeys, wantKeys)
+	}
+	if !reflect.DeepEqual(batch.RequiredDomains, []generation.Domain{
+		generation.DomainHTTP,
+		generation.DomainStream,
+	}) {
+		t.Fatalf("required domains = %v, want http and stream", batch.RequiredDomains)
+	}
+}
+
+func TestDesiredBatchFromStandaloneEncryptedRetryBindsCursorToTranslatedState(t *testing.T) {
+	const key = "qeddd145sfvddff3"
+	raw := json.RawMessage(`{
+		"id":"r1",
+		"uri":"/",
+		"plugins":{"key-auth":{"key":"plaintext-secret"}}
+	}`)
+	encryption := testStandaloneDataEncryption(t, true, []string{key})
+	firstID, firstValue, err := normalizeStandaloneResource("routes", raw, encryption)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondID, secondValue, err := normalizeStandaloneResource("routes", raw, encryption)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstID != secondID || string(firstValue) == string(secondValue) {
+		t.Fatalf("encrypted normalizations unexpectedly equal: %q and %q", firstValue, secondValue)
+	}
+	first := desiredBatchFromStandalone(standaloneSnapshot{"routes": {firstID: firstValue}})
+	second := desiredBatchFromStandalone(standaloneSnapshot{"routes": {secondID: secondValue}})
+	if first.Cursor == second.Cursor {
+		t.Fatalf("distinct translated states share cursor %q", first.Cursor.Revision)
+	}
+}
+
+func TestStandaloneWatcherAppliesCanonicalFullSnapshotThroughDesiredApplier(t *testing.T) {
+	path := writeStandaloneTestConfig(t, `services:
+  - id: s2
+    upstream_id: u1
+routes:
+  - id: r2
+    uri: /two
+  - id: r1
+    uri: /one
+stream_routes:
+  - id: tcp-1
+    server_addr: 127.0.0.1
+    server_port: 9000
 #END
 `)
-	events := make(chan *store.Event, 4)
-	storage, err := store.Open(filepath.Join(t.TempDir(), "store.db"), events)
-	if err != nil {
-		t.Fatalf("Open() error = %v", err)
+	applier := &recordingStandaloneApplier{}
+	watcher := NewStandaloneFileWatcher(
+		path,
+		standaloneProviderYAML,
+		applier,
+		testStandaloneDataEncryption(t, false, nil),
+	)
+	if err := watcher.Reload(); err != nil {
+		t.Fatalf("Reload() error = %v", err)
 	}
-	storage.Start()
-	t.Cleanup(func() { _ = storage.Stop() })
-	watcher := NewStandaloneFileWatcher(path, "yaml", events)
-	result, err := watcher.ReloadSnapshot()
-	if err != nil {
-		t.Fatalf("ReloadSnapshot() error = %v, want invalid SSL quarantined", err)
+	batches := applier.snapshot()
+	if len(batches) != 1 {
+		t.Fatalf("Apply calls = %d, want 1", len(batches))
 	}
-	if result.QuarantinedResourceCount() != 1 {
-		t.Fatalf("initial quarantine count = %d, want 1", result.QuarantinedResourceCount())
+	batch := batches[0]
+	if !batch.ReplaceManaged || !slices.Equal(batch.RequiredDomains, []generation.Domain{
+		generation.DomainHTTP,
+		generation.DomainStream,
+	}) {
+		t.Fatalf("batch = %+v", batch)
 	}
-	if route, err := storage.GetFromBucket("routes", []byte("route-1")); err != nil || len(route) == 0 {
-		t.Fatalf("valid route after invalid SSL = %q, %v; want applied", route, err)
+	wantKeys := []generation.ResourceKey{
+		{Kind: "routes", ID: "r1"},
+		{Kind: "routes", ID: "r2"},
+		{Kind: "services", ID: "s2"},
+		{Kind: "stream_routes", ID: "tcp-1"},
 	}
-	if ssl, err := storage.GetFromBucket("ssls", []byte("ssl-1")); err != nil || ssl != nil {
-		t.Fatalf("invalid SSL after first load = %q, %v; want absent", ssl, err)
+	gotKeys := make([]generation.ResourceKey, 0, len(batch.Mutations))
+	for _, mutation := range batch.Mutations {
+		gotKeys = append(gotKeys, mutation.Key)
 	}
-
-	if err := os.WriteFile(path, []byte(`routes:
-  - id: route-1
-    uri: /orders
-ssls:
-  - id: ssl-1
-    status: 1
-    cert: invalid
-    key: invalid
-#END
-`), 0o600); err != nil {
-		t.Fatalf("rewrite standalone config: %v", err)
+	if !slices.Equal(gotKeys, wantKeys) {
+		t.Fatalf("mutation keys = %+v, want %+v", gotKeys, wantKeys)
 	}
-	result, err = watcher.ReloadSnapshot()
-	if err != nil {
-		t.Fatalf("second ReloadSnapshot() error = %v, want invalid SSL quarantined", err)
-	}
-	if result.QuarantinedResourceCount() != 1 {
-		t.Fatalf("replay quarantine count = %d, want 1", result.QuarantinedResourceCount())
-	}
-	if route, err := storage.GetFromBucket("routes", []byte("route-1")); err != nil || len(route) == 0 {
-		t.Fatalf("valid route after replay = %q, %v; want retained", route, err)
+	if watcher.acknowledgedCursor != batch.Cursor || watcher.acknowledgedRevisions.Desired != 1 {
+		t.Fatalf("acknowledged state = %+v/%+v", watcher.acknowledgedCursor, watcher.acknowledgedRevisions)
 	}
 }
 
-func TestStandaloneStopBeforeStartAndRepeatedStop(t *testing.T) {
-	watcher := NewStandaloneFileWatcher(filepath.Join(t.TempDir(), "apisix.yaml"), "yaml", make(chan *store.Event))
-	if err := watcher.Stop(); err != nil {
-		t.Fatalf("Stop() before Start error = %v", err)
+func TestStandaloneWatcherFailedApplyRetainsAcknowledgedCursorAndDecisions(t *testing.T) {
+	path := writeStandaloneTestConfig(t, "routes:\n  - id: r1\n    uri: /one\n#END\n")
+	wantErr := errors.New("publication failed")
+	calls := 0
+	applier := &recordingStandaloneApplier{apply: func(
+		_ context.Context,
+		batch generation.DesiredBatch,
+	) (generation.Acknowledgement, error) {
+		calls++
+		if calls == 2 {
+			return generation.Acknowledgement{}, wantErr
+		}
+		return standaloneAcknowledgement(batch, 7, nil), nil
+	}}
+	watcher := NewStandaloneFileWatcher(
+		path,
+		standaloneProviderYAML,
+		applier,
+		testStandaloneDataEncryption(t, false, nil),
+	)
+	if err := watcher.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	before := snapshotStandaloneAcknowledgedState(watcher)
+	writeStandaloneConfig(t, path, "routes:\n  - id: r1\n    uri: /two\n#END\n")
+	if err := watcher.Reload(); !errors.Is(err, wantErr) {
+		t.Fatalf("Reload() error = %v, want %v", err, wantErr)
+	}
+	after := snapshotStandaloneAcknowledgedState(watcher)
+	if !reflect.DeepEqual(after, before) {
+		t.Fatalf("acknowledged state changed after failure:\n before=%+v\n after=%+v", before, after)
+	}
+}
+
+func TestStandaloneWatcherAcknowledgementAtomicallyAdvancesRequiredReadiness(t *testing.T) {
+	resetStandaloneConfigApplyMetrics(t, true)
+	path := writeStandaloneTestConfig(t, "routes:\n  - id: r1\n    uri: /one\n#END\n")
+	watcher := NewStandaloneFileWatcher(
+		path,
+		standaloneProviderYAML,
+		&recordingStandaloneApplier{},
+		testStandaloneDataEncryption(t, false, nil),
+	)
+	if err := watcher.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	if !metrics.GetReadiness().ConfigApplyReady {
+		t.Fatal("provider/http/stream acknowledgement did not establish readiness")
+	}
+}
+
+func TestStandaloneWatcherInvalidAcknowledgementPreservesLastReadyState(t *testing.T) {
+	resetStandaloneConfigApplyMetrics(t, true)
+	path := writeStandaloneTestConfig(t, "routes:\n  - id: r1\n    uri: /one\n#END\n")
+	calls := 0
+	applier := standaloneApplierFunc(func(
+		_ context.Context,
+		batch generation.DesiredBatch,
+	) (generation.Acknowledgement, error) {
+		calls++
+		ack := standaloneAcknowledgement(batch, uint64(calls), nil)
+		if calls == 2 {
+			ack.Cursor.Revision = "sha256:invalid"
+		}
+		return ack, nil
+	})
+	watcher := NewStandaloneFileWatcher(
+		path,
+		standaloneProviderYAML,
+		applier,
+		testStandaloneDataEncryption(t, false, nil),
+	)
+	if err := watcher.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	if !metrics.GetReadiness().ConfigApplyReady {
+		t.Fatal("initial acknowledgement did not establish readiness")
+	}
+	writeStandaloneConfig(t, path, "routes:\n  - id: r1\n    uri: /two\n#END\n")
+	if err := watcher.Reload(); !errors.Is(err, generation.ErrIntegrity) {
+		t.Fatalf("Reload() error = %v, want ErrIntegrity", err)
+	}
+	if !metrics.GetReadiness().ConfigApplyReady {
+		t.Fatal("invalid acknowledgement overwrote the last ready state")
+	}
+}
+
+func TestStandaloneWatcherSameContentReplaysCommittedCursor(t *testing.T) {
+	path := writeStandaloneTestConfig(t, "routes:\n  - id: r1\n    uri: /one\n#END\n")
+	var committed generation.Acknowledgement
+	applier := &recordingStandaloneApplier{apply: func(
+		_ context.Context,
+		batch generation.DesiredBatch,
+	) (generation.Acknowledgement, error) {
+		if committed.Revisions.Desired == 0 {
+			committed = standaloneAcknowledgement(batch, 11, nil)
+		}
+		return committed, nil
+	}}
+	watcher := NewStandaloneFileWatcher(
+		path,
+		standaloneProviderYAML,
+		applier,
+		testStandaloneDataEncryption(t, false, nil),
+	)
+	if err := watcher.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	if err := watcher.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	batches := applier.snapshot()
+	if len(batches) != 2 || batches[0].Cursor != batches[1].Cursor {
+		t.Fatalf("replayed cursors = %+v", batches)
+	}
+}
+
+func TestStandaloneWatcherSameCursorReplaysLastGoodImplicitDeleteDecisions(t *testing.T) {
+	path := writeStandaloneTestConfig(t, "routes:\n  - id: r1\n    uri: /one\n#END\n")
+	calls := 0
+	var deletedAck generation.Acknowledgement
+	applier := standaloneApplierFunc(func(
+		_ context.Context,
+		batch generation.DesiredBatch,
+	) (generation.Acknowledgement, error) {
+		calls++
+		if calls == 1 {
+			return standaloneAcknowledgement(batch, 1, nil), nil
+		}
+		if deletedAck.Revisions.Desired == 0 {
+			deletedAck = standaloneAcknowledgement(batch, 2, nil)
+			deletedAck.Decisions[generation.DomainHTTP] = []generation.ResourceDecision{{
+				Key:         generation.ResourceKey{Kind: "routes", ID: "r1"},
+				Disposition: generation.DispositionLastGood,
+				Code:        "standalone-test-last-good",
+			}}
+		}
+		return deletedAck, nil
+	})
+	watcher := NewStandaloneFileWatcher(
+		path,
+		standaloneProviderYAML,
+		applier,
+		testStandaloneDataEncryption(t, false, nil),
+	)
+	if err := watcher.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	writeStandaloneConfig(t, path, "{}\n#END\n")
+	if err := watcher.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	if err := watcher.Reload(); err != nil {
+		t.Fatalf("same-cursor Replay() error = %v", err)
+	}
+}
+
+func TestStandaloneWatcherDoesNotCommitAcknowledgementAfterCancellation(t *testing.T) {
+	path := writeStandaloneTestConfig(t, "routes:\n  - id: r1\n    uri: /one\n#END\n")
+	var watcher *StandaloneFileWatcher
+	applier := standaloneApplierFunc(func(
+		_ context.Context,
+		batch generation.DesiredBatch,
+	) (generation.Acknowledgement, error) {
+		watcher.cancel()
+		return standaloneAcknowledgement(batch, 1, nil), nil
+	})
+	watcher = NewStandaloneFileWatcher(
+		path,
+		standaloneProviderYAML,
+		applier,
+		testStandaloneDataEncryption(t, false, nil),
+	)
+	if err := watcher.Reload(); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Reload() error = %v, want context.Canceled", err)
+	}
+	if watcher.acknowledgedRevisions != (generation.RevisionSet{}) {
+		t.Fatalf("acknowledged revisions = %+v, want zero", watcher.acknowledgedRevisions)
+	}
+}
+
+func TestStandaloneWatcherParseFailureDoesNotCallApplier(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+	}{
+		{name: "missing end marker", content: "routes:\n  - id: r1\n"},
+		{name: "missing id", content: "routes:\n  - uri: /one\n#END\n"},
+		{name: "unknown section", content: "routes:\n  - id: r1\nunknown:\n  - id: x\n#END\n"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			path := writeStandaloneTestConfig(t, test.content)
+			applier := &recordingStandaloneApplier{}
+			watcher := NewStandaloneFileWatcher(
+				path,
+				standaloneProviderYAML,
+				applier,
+				testStandaloneDataEncryption(t, false, nil),
+			)
+			if err := watcher.Reload(); err == nil {
+				t.Fatal("Reload() error = nil, want parse/normalization failure")
+			}
+			if calls := len(applier.snapshot()); calls != 0 {
+				t.Fatalf("Apply calls = %d, want 0", calls)
+			}
+		})
+	}
+}
+
+func TestStandaloneWatcherDoesNotRetainInMemoryLastGoodSnapshot(t *testing.T) {
+	path := writeStandaloneTestConfig(t, "routes:\n  - id: a\n    uri: /a\n#END\n")
+	applier := &recordingStandaloneApplier{}
+	watcher := NewStandaloneFileWatcher(
+		path,
+		standaloneProviderYAML,
+		applier,
+		testStandaloneDataEncryption(t, false, nil),
+	)
+	if err := watcher.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	writeStandaloneConfig(t, path, `routes:
+  - uri: /invalid-a
+  - id: b
+    uri: /b
+#END
+`)
+	if err := watcher.Reload(); err == nil {
+		t.Fatal("Reload() error = nil, want whole-file normalization failure")
+	}
+	batches := applier.snapshot()
+	if len(batches) != 1 {
+		t.Fatalf("Apply calls = %d, want only acknowledged A", len(batches))
+	}
+	if got := string(batches[0].Mutations[0].Value); !strings.Contains(got, `"id":"a"`) {
+		t.Fatalf("first batch = %s, want A", got)
+	}
+}
+
+func TestStandaloneWatcherStructDoesNotCacheRawSnapshots(t *testing.T) {
+	file, err := parser.ParseFile(token.NewFileSet(), "standalone.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var watcherStruct *ast.StructType
+	methods := make(map[string]struct{})
+	for _, declaration := range file.Decls {
+		switch declaration := declaration.(type) {
+		case *ast.GenDecl:
+			for _, specification := range declaration.Specs {
+				typeSpec, ok := specification.(*ast.TypeSpec)
+				if ok && typeSpec.Name.Name == "StandaloneFileWatcher" {
+					watcherStruct, _ = typeSpec.Type.(*ast.StructType)
+				}
+			}
+		case *ast.FuncDecl:
+			if declaration.Recv != nil {
+				methods[declaration.Name.Name] = struct{}{}
+			}
+		}
+	}
+	if watcherStruct == nil {
+		t.Fatal("StandaloneFileWatcher struct not found")
+	}
+	for _, field := range watcherStruct.Fields.List {
+		if containsStandaloneRawBytes(field.Type) {
+			t.Fatalf("StandaloneFileWatcher retains raw snapshot field %s", astTypeString(field.Type))
+		}
+	}
+	for _, removed := range []string{
+		"SeedCurrentSnapshot",
+		"ReloadSnapshot",
+		"SetReloadCallback",
+		"SetAcknowledgedReloadCallback",
+	} {
+		if _, exists := methods[removed]; exists {
+			t.Errorf("removed provider-local publication method %s still exists", removed)
+		}
+	}
+}
+
+func containsStandaloneRawBytes(expression ast.Expr) bool {
+	switch expression := expression.(type) {
+	case *ast.Ident:
+		return expression.Name == "standaloneSnapshot"
+	case *ast.ArrayType:
+		identifier, ok := expression.Elt.(*ast.Ident)
+		return ok && identifier.Name == "byte"
+	case *ast.MapType:
+		return containsStandaloneRawBytes(expression.Value)
+	case *ast.StarExpr:
+		return containsStandaloneRawBytes(expression.X)
+	}
+	return false
+}
+
+func astTypeString(expression ast.Expr) string {
+	switch expression := expression.(type) {
+	case *ast.Ident:
+		return expression.Name
+	case *ast.ArrayType:
+		return "[]" + astTypeString(expression.Elt)
+	case *ast.MapType:
+		return "map[" + astTypeString(expression.Key) + "]" + astTypeString(expression.Value)
+	case *ast.StarExpr:
+		return "*" + astTypeString(expression.X)
+	case *ast.SelectorExpr:
+		return astTypeString(expression.X) + "." + expression.Sel.Name
+	default:
+		return reflect.TypeOf(expression).String()
+	}
+}
+
+func TestStandaloneWatcherStopWaitsForApplyAndDoesNotAdvanceAfterCancellation(t *testing.T) {
+	path := writeStandaloneTestConfig(t, "routes:\n  - id: r1\n    uri: /one\n#END\n")
+	applyStarted := make(chan struct{})
+	applyCanceled := make(chan struct{})
+	releaseApply := make(chan struct{})
+	applier := standaloneApplierFunc(func(
+		ctx context.Context,
+		_ generation.DesiredBatch,
+	) (generation.Acknowledgement, error) {
+		close(applyStarted)
+		<-ctx.Done()
+		close(applyCanceled)
+		<-releaseApply
+		return generation.Acknowledgement{}, ctx.Err()
+	})
+	watcher := NewStandaloneFileWatcher(
+		path,
+		standaloneProviderYAML,
+		applier,
+		testStandaloneDataEncryption(t, false, nil),
+	)
+	reloadDone := make(chan error, 1)
+	go func() { reloadDone <- watcher.Reload() }()
+	<-applyStarted
+	stopDone := make(chan error, 1)
+	go func() { stopDone <- watcher.Stop() }()
+	<-applyCanceled
+	select {
+	case err := <-stopDone:
+		t.Fatalf("Stop() returned before Apply exited: %v", err)
+	default:
+	}
+	close(releaseApply)
+	if err := <-stopDone; err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+	if err := <-reloadDone; !errors.Is(err, context.Canceled) {
+		t.Fatalf("Reload() error = %v, want context.Canceled", err)
+	}
+	if watcher.acknowledgedRevisions != (generation.RevisionSet{}) {
+		t.Fatalf("acknowledged revisions = %+v, want zero", watcher.acknowledgedRevisions)
 	}
 	if err := watcher.Stop(); err != nil {
 		t.Fatalf("repeated Stop() error = %v", err)
 	}
-	if err := watcher.Start(); err != nil {
-		t.Fatalf("Start() after Stop() error = %v", err)
-	}
 }
 
-func TestStandaloneStopWaitsForWatchExit(t *testing.T) {
-	path := writeStandaloneTestConfig(t, "routes:\n  - id: route-1\n    uri: /orders\n#END\n")
-	snapshot, _, err := readStandaloneSnapshot(path, "yaml")
-	if err != nil {
-		t.Fatalf("readStandaloneSnapshot() error = %v", err)
+func TestStandaloneWatcherRejectsIncompleteAcknowledgementsAtomically(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*generation.Acknowledgement)
+	}{
+		{name: "cursor mismatch", mutate: func(ack *generation.Acknowledgement) {
+			ack.Cursor.Revision = "sha256:mismatch"
+		}},
+		{name: "zero desired revision", mutate: func(ack *generation.Acknowledgement) {
+			ack.Revisions = generation.RevisionSet{}
+		}},
+		{name: "missing stream revision", mutate: func(ack *generation.Acknowledgement) {
+			ack.Revisions.Stream = 0
+		}},
+		{name: "missing http decisions", mutate: func(ack *generation.Acknowledgement) {
+			delete(ack.Decisions, generation.DomainHTTP)
+		}},
+		{name: "unknown decision key", mutate: func(ack *generation.Acknowledgement) {
+			ack.Decisions[generation.DomainHTTP][0].Key.ID = "unknown"
+		}},
+		{name: "non-managed external delete", mutate: func(ack *generation.Acknowledgement) {
+			ack.Decisions[generation.DomainHTTP] = append(
+				ack.Decisions[generation.DomainHTTP],
+				generation.ResourceDecision{
+					Key:         generation.ResourceKey{Kind: "unknown", ID: "gone"},
+					Disposition: generation.DispositionDeleted,
+					Code:        "standalone-test-deleted",
+				},
+			)
+		}},
+		{name: "wrong-domain external delete", mutate: func(ack *generation.Acknowledgement) {
+			ack.Decisions[generation.DomainStream] = append(
+				ack.Decisions[generation.DomainStream],
+				generation.ResourceDecision{
+					Key:         generation.ResourceKey{Kind: "routes", ID: "gone"},
+					Disposition: generation.DispositionDeleted,
+					Code:        "standalone-test-deleted",
+				},
+			)
+		}},
+		{name: "partial cross-domain external delete", mutate: func(ack *generation.Acknowledgement) {
+			ack.Decisions[generation.DomainHTTP] = append(
+				ack.Decisions[generation.DomainHTTP],
+				generation.ResourceDecision{
+					Key:         generation.ResourceKey{Kind: "services", ID: "gone"},
+					Disposition: generation.DispositionDeleted,
+					Code:        "standalone-test-deleted",
+				},
+			)
+		}},
+		{name: "duplicate decision", mutate: func(ack *generation.Acknowledgement) {
+			ack.Decisions[generation.DomainHTTP] = append(
+				ack.Decisions[generation.DomainHTTP],
+				ack.Decisions[generation.DomainHTTP][0],
+			)
+		}},
 	}
-	events := make(chan *store.Event)
-	newStandaloneTestStore(t, events)
-	watcher := NewStandaloneFileWatcher(path, "yaml", events)
-	watcher.SeedCurrentSnapshot(snapshot)
-	callbackEntered := make(chan struct{})
-	releaseCallback := make(chan struct{})
-	watcher.SetReloadCallback(func(StandaloneReloadResult, error) {
-		close(callbackEntered)
-		<-releaseCallback
-	})
-	if err := watcher.Start(); err != nil {
-		t.Fatalf("Start() error = %v", err)
-	}
-	if err := os.WriteFile(path, []byte("routes:\n  - id: route-1\n    uri: /orders\n#END\n"), 0o600); err != nil {
-		t.Fatalf("rewrite standalone config: %v", err)
-	}
-	select {
-	case <-callbackEntered:
-	case <-time.After(time.Second):
-		t.Fatal("watch callback did not start")
-	}
-	stopDone := make(chan error, 1)
-	go func() { stopDone <- watcher.Stop() }()
-	select {
-	case err := <-stopDone:
-		t.Fatalf("Stop() returned before watch callback exited: %v", err)
-	case <-time.After(50 * time.Millisecond):
-	}
-	close(releaseCallback)
-	select {
-	case err := <-stopDone:
-		if err != nil {
-			t.Fatalf("Stop() error = %v", err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("Stop() did not wait for watch goroutine exit")
-	}
-}
-
-func writeStandaloneTestConfig(t *testing.T, content string) string {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), "apisix.yaml")
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
-		t.Fatalf("write standalone config: %v", err)
-	}
-	return path
-}
-
-func waitForStandaloneReloadBlocked(t *testing.T, watcher *StandaloneFileWatcher) {
-	t.Helper()
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		if !watcher.reloadMu.TryLock() {
-			if watcher.mu.TryLock() {
-				watcher.mu.Unlock()
-				return
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			path := writeStandaloneTestConfig(t, "routes:\n  - id: r1\n    uri: /one\n#END\n")
+			applier := standaloneApplierFunc(func(
+				_ context.Context,
+				batch generation.DesiredBatch,
+			) (generation.Acknowledgement, error) {
+				ack := standaloneAcknowledgement(batch, 3, nil)
+				test.mutate(&ack)
+				return ack, nil
+			})
+			watcher := NewStandaloneFileWatcher(
+				path,
+				standaloneProviderYAML,
+				applier,
+				testStandaloneDataEncryption(t, false, nil),
+			)
+			if err := watcher.Reload(); !errors.Is(err, generation.ErrIntegrity) {
+				t.Fatalf("Reload() error = %v, want ErrIntegrity", err)
 			}
-		} else {
-			watcher.reloadMu.Unlock()
-		}
-		runtime.Gosched()
+			if watcher.acknowledgedRevisions != (generation.RevisionSet{}) || len(watcher.knownKeys) != 0 {
+				t.Fatalf(
+					"invalid acknowledgement advanced state: %+v %v",
+					watcher.acknowledgedRevisions,
+					watcher.knownKeys,
+				)
+			}
+		})
 	}
-	t.Fatal("standalone reload did not reach its blocked send")
 }
 
-func newStandaloneTestStore(t *testing.T, events chan *store.Event) *store.Store {
-	t.Helper()
-	storage, err := store.Open(filepath.Join(t.TempDir(), "store.db"), events)
-	if err != nil {
-		t.Fatalf("store.Open() error = %v", err)
-	}
-	storage.Start()
-	t.Cleanup(func() {
-		if err := storage.Stop(); err != nil {
-			t.Errorf("Store.Stop() error = %v", err)
-		}
+func TestStandaloneWatcherDerivesQuarantineFromEveryAffectedDomain(t *testing.T) {
+	path := writeStandaloneTestConfig(t, "services:\n  - id: s1\n    upstream_id: u1\n#END\n")
+	key := generation.ResourceKey{Kind: "services", ID: "s1"}
+	applier := standaloneApplierFunc(func(
+		_ context.Context,
+		batch generation.DesiredBatch,
+	) (generation.Acknowledgement, error) {
+		ack := standaloneAcknowledgement(batch, 4, nil)
+		ack.Decisions[generation.DomainStream][0].Disposition = generation.DispositionLastGood
+		ack.Decisions[generation.DomainStream][0].Code = "standalone-test-last-good"
+		return ack, nil
 	})
-	return storage
-}
-
-func TestStandaloneReloadFailureRetainsPreviousSnapshotForReplay(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "apisix.yaml")
-	content := "routes:\n  - id: route-1\n    uri: /orders\n#END\n"
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
-		t.Fatalf("write standalone config: %v", err)
-	}
-
-	events := make(chan *store.Event, 2)
-	storage := newStandaloneTestStore(t, events)
-	watcher := NewStandaloneFileWatcher(path, "yaml", events)
-	var attempts []StandaloneReloadResult
-	watcher.SetAcknowledgedReloadCallback(func(result StandaloneReloadResult, err error) error {
-		if err != nil {
-			return err
-		}
-		attempts = append(attempts, result)
-		if len(attempts) == 1 {
-			return errors.New("store apply failed")
-		}
-		return nil
-	})
-
-	watcher.reloadAndNotify()
-	watcher.reloadAndNotify()
-	if err := storage.Sync(); err != nil {
-		t.Fatalf("Store.Sync() error = %v", err)
-	}
-	if len(attempts) != 2 {
-		t.Fatalf("reload attempts = %d, want 2", len(attempts))
-	}
-	for index, attempt := range attempts {
-		if !attempt.AffectsHTTPRoutes() {
-			t.Fatalf("reload attempt %d did not replay the route change", index+1)
-		}
-	}
-}
-
-func TestStandaloneRejectsUnknownRootSectionWithoutDeletingLastGood(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "apisix.yaml")
-	initial := `routes:
-  - id: route-1
-    uri: /one
-#END
-`
-	if err := os.WriteFile(path, []byte(initial), 0o600); err != nil {
-		t.Fatalf("write initial standalone config: %v", err)
-	}
-
-	events := make(chan *store.Event, 8)
-	storage := newStandaloneTestStore(t, events)
-	watcher := NewStandaloneFileWatcher(path, "yaml", events)
+	watcher := NewStandaloneFileWatcher(
+		path,
+		standaloneProviderYAML,
+		applier,
+		testStandaloneDataEncryption(t, false, nil),
+	)
 	if err := watcher.Reload(); err != nil {
-		t.Fatalf("initial Reload() error = %v", err)
+		t.Fatal(err)
 	}
-	if err := storage.Sync(); err != nil {
-		t.Fatalf("initial Store.Sync() error = %v", err)
-	}
-
-	unknown := `routs:
-  - id: route-1
-    uri: /wrong
-#END
-`
-	if err := os.WriteFile(path, []byte(unknown), 0o600); err != nil {
-		t.Fatalf("write unknown standalone config: %v", err)
-	}
-	if err := watcher.Reload(); err == nil || !strings.Contains(err.Error(), `unknown root section "routs"`) {
-		t.Fatalf("unknown root Reload() error = %v, want deterministic unknown-section error", err)
-	}
-
-	value, err := storage.GetFromBucket("routes", []byte("route-1"))
-	if err != nil {
-		t.Fatalf("read last-good route: %v", err)
-	}
-	if len(value) == 0 {
-		t.Fatal("last-good route was deleted after unknown root section")
+	if _, exists := watcher.quarantine[key]; !exists || len(watcher.quarantine) != 1 {
+		t.Fatalf("quarantine = %v, want services/s1", watcher.quarantine)
 	}
 }
 
-func TestStandaloneReloadAuthoritativeSnapshotConvergesAfterPublicationFailure(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "apisix.yaml")
-	initial := `routes:
-  - id: route-1
-    uri: /one
-#END
-`
-	if err := os.WriteFile(path, []byte(initial), 0o600); err != nil {
-		t.Fatalf("write initial standalone config: %v", err)
-	}
-
-	events := make(chan *store.Event, 8)
-	storage := newStandaloneTestStore(t, events)
-	watcher := NewStandaloneFileWatcher(path, "yaml", events)
-	if err := watcher.Reload(); err != nil {
-		t.Fatalf("initial Reload() error = %v", err)
-	}
-	if err := storage.Sync(); err != nil {
-		t.Fatalf("initial Store.Sync() error = %v", err)
-	}
-
-	var attempts int
-	watcher.SetAcknowledgedReloadCallback(func(StandaloneReloadResult, error) error {
-		attempts++
-		if attempts == 1 {
-			return errors.New("runtime publication failed")
+func TestStandaloneWatcherAcceptsImplicitDeleteDecisionFromAcknowledgedState(t *testing.T) {
+	path := writeStandaloneTestConfig(t, "routes:\n  - id: r1\n    uri: /one\n#END\n")
+	calls := 0
+	applier := standaloneApplierFunc(func(
+		_ context.Context,
+		batch generation.DesiredBatch,
+	) (generation.Acknowledgement, error) {
+		calls++
+		if calls == 1 {
+			return standaloneAcknowledgement(batch, 1, nil), nil
 		}
-		return nil
+		ack := standaloneAcknowledgement(batch, 2, nil)
+		ack.Decisions[generation.DomainHTTP] = []generation.ResourceDecision{{
+			Key:         generation.ResourceKey{Kind: "routes", ID: "r1"},
+			Disposition: generation.DispositionDeleted,
+			Code:        "standalone-test-deleted",
+		}}
+		return ack, nil
 	})
-	failing := `routes:
-  - id: route-1
-    uri: /one
-  - id: route-x
-    uri: /x
-#END
-`
-	if err := os.WriteFile(path, []byte(failing), 0o600); err != nil {
-		t.Fatalf("write failing standalone config: %v", err)
+	watcher := NewStandaloneFileWatcher(
+		path,
+		standaloneProviderYAML,
+		applier,
+		testStandaloneDataEncryption(t, false, nil),
+	)
+	if err := watcher.Reload(); err != nil {
+		t.Fatal(err)
 	}
-	watcher.reloadAndNotify()
-	if attempts != 1 {
-		t.Fatalf("publication attempts after failing snapshot = %d, want 1", attempts)
+	writeStandaloneConfig(t, path, "{}\n#END\n")
+	if err := watcher.Reload(); err != nil {
+		t.Fatalf("delete Reload() error = %v", err)
 	}
-	if value, err := storage.GetFromBucket("routes", []byte("route-x")); err != nil || len(value) == 0 {
-		t.Fatalf("route-x after failed publication = %q, %v; want durable candidate snapshot", value, err)
-	}
-
-	complete := initial
-	if err := os.WriteFile(path, []byte(complete), 0o600); err != nil {
-		t.Fatalf("write converging standalone config: %v", err)
-	}
-	watcher.reloadAndNotify()
-	if attempts != 2 {
-		t.Fatalf("publication attempts after converging snapshot = %d, want 2", attempts)
-	}
-	if value, err := storage.GetFromBucket("routes", []byte("route-x")); err != nil {
-		t.Fatalf("read route-x after converging snapshot: %v", err)
-	} else if value != nil {
-		t.Fatalf("route-x after converging snapshot = %q, want deleted", value)
+	if len(watcher.knownKeys) != 0 || len(watcher.quarantine) != 0 {
+		t.Fatalf("post-delete state = keys:%v quarantine:%v", watcher.knownKeys, watcher.quarantine)
 	}
 }
 
-func TestStandaloneLegacyReloadCallbackCanReenterReload(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "apisix.yaml")
-	content := "routes:\n  - id: route-1\n    uri: /orders\n#END\n"
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
-		t.Fatalf("write standalone config: %v", err)
+func TestStandaloneWatcherReplaysDurableImplicitDeleteAfterRestart(t *testing.T) {
+	journal, err := store.OpenJournal(
+		filepath.Join(t.TempDir(), "journal.db"),
+		store.JournalOptions{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = journal.Close() })
+	coordinator := generation.NewCoordinator(journal, standaloneDurableReplayEngine{})
+
+	first := desiredBatchFromStandalone(standaloneSnapshot{"services": {
+		"a": []byte(`{"id":"a","upstream_id":"u1"}`),
+		"b": []byte(`{"id":"b","upstream_id":"u1"}`),
+	}})
+	if _, err := coordinator.Apply(context.Background(), first); err != nil {
+		t.Fatalf("Apply(A+B) error = %v", err)
+	}
+	current := desiredBatchFromStandalone(standaloneSnapshot{"services": {
+		"b": []byte(`{"id":"b","upstream_id":"u1"}`),
+	}})
+	committed, err := coordinator.Apply(context.Background(), current)
+	if err != nil {
+		t.Fatalf("Apply(B) error = %v", err)
+	}
+	deleted := generation.ResourceKey{Kind: "services", ID: "a"}
+	for _, domain := range current.RequiredDomains {
+		if !slices.Contains(committed.Decisions[domain], generation.ResourceDecision{
+			Key:         deleted,
+			Disposition: generation.DispositionDeleted,
+			Code:        "standalone-durable-deleted",
+		}) {
+			t.Fatalf("committed %s decisions = %+v, want Deleted(services/a)", domain, committed.Decisions[domain])
+		}
 	}
 
-	events := make(chan *store.Event, 1)
-	newStandaloneTestStore(t, events)
-	watcher := NewStandaloneFileWatcher(path, "yaml", events)
-	done := make(chan error, 1)
-	watcher.SetReloadCallback(func(StandaloneReloadResult, error) {
-		_, err := watcher.ReloadSnapshot()
-		done <- err
+	path := writeStandaloneTestConfig(t, "services:\n  - id: b\n    upstream_id: u1\n#END\n")
+	restarted := NewStandaloneFileWatcher(
+		path,
+		standaloneProviderYAML,
+		coordinator,
+		testStandaloneDataEncryption(t, false, nil),
+	)
+	if err := restarted.Reload(); err != nil {
+		t.Fatalf("restarted durable replay error = %v", err)
+	}
+	if restarted.acknowledgedCursor != current.Cursor || restarted.acknowledgedRevisions != committed.Revisions {
+		t.Fatalf(
+			"restarted acknowledgement = %+v/%+v, want %+v/%+v",
+			restarted.acknowledgedCursor,
+			restarted.acknowledgedRevisions,
+			current.Cursor,
+			committed.Revisions,
+		)
+	}
+}
+
+type standaloneDurableReplayEngine struct{}
+
+func (standaloneDurableReplayEngine) Prepare(
+	_ context.Context,
+	ticket generation.ApplyTicket,
+	desired generation.Snapshot,
+	_ map[generation.Domain]generation.PublishedGeneration,
+) (generation.PublicationSet, error) {
+	closure := make([]generation.ResourceKey, 0, len(desired.Resources())+len(desired.Tombstones()))
+	decisions := make([]generation.ResourceDecision, 0, cap(closure))
+	for _, resource := range desired.Resources() {
+		closure = append(closure, resource.Key)
+		decisions = append(decisions, generation.ResourceDecision{
+			Key: resource.Key, Disposition: generation.DispositionPublished, Code: "standalone-durable-published",
+		})
+	}
+	for _, tombstone := range desired.Tombstones() {
+		closure = append(closure, tombstone.Key)
+		decisions = append(decisions, generation.ResourceDecision{
+			Key: tombstone.Key, Disposition: generation.DispositionDeleted, Code: "standalone-durable-deleted",
+		})
+	}
+	set := generation.PublicationSet{
+		DesiredRevision: ticket.DesiredRevision,
+		Domains:         make(map[generation.Domain]generation.PublicationCandidate, len(ticket.RequiredDomains)),
+	}
+	for _, domain := range ticket.RequiredDomains {
+		set.Domains[domain] = generation.PublicationCandidate{
+			Artifact: generation.GenerationArtifact{
+				Domain: domain, Revision: ticket.DesiredRevision,
+				Digest: desired.Digest(), Snapshot: desired.SnapshotID(),
+			},
+			Snapshot:  desired.Clone(),
+			Closure:   slices.Clone(closure),
+			Decisions: slices.Clone(decisions),
+		}
+	}
+	return set, nil
+}
+
+func (standaloneDurableReplayEngine) DiscardPrepared(context.Context, generation.PublicationSet) error {
+	return nil
+}
+
+func (standaloneDurableReplayEngine) Activate(
+	context.Context,
+	generation.PublicationToken,
+	generation.PublicationSet,
+) error {
+	return nil
+}
+
+func (standaloneDurableReplayEngine) RollbackActivation(
+	context.Context,
+	generation.PublicationToken,
+	generation.PublicationSet,
+) error {
+	return nil
+}
+
+func (standaloneDurableReplayEngine) FinalizeActivation(
+	context.Context,
+	generation.PublicationToken,
+	generation.PublicationSet,
+) {
+}
+
+func (standaloneDurableReplayEngine) ConfirmActive(
+	context.Context,
+	generation.PublicationSet,
+) error {
+	return nil
+}
+
+func TestStandaloneWatcherRejectsRevisionRegression(t *testing.T) {
+	path := writeStandaloneTestConfig(t, "routes:\n  - id: r1\n    uri: /one\n#END\n")
+	calls := 0
+	applier := standaloneApplierFunc(func(
+		_ context.Context,
+		batch generation.DesiredBatch,
+	) (generation.Acknowledgement, error) {
+		calls++
+		return standaloneAcknowledgement(batch, uint64(3-calls), nil), nil
 	})
-	go watcher.reloadAndNotify()
+	watcher := NewStandaloneFileWatcher(
+		path,
+		standaloneProviderYAML,
+		applier,
+		testStandaloneDataEncryption(t, false, nil),
+	)
+	if err := watcher.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	writeStandaloneConfig(t, path, "routes:\n  - id: r1\n    uri: /two\n#END\n")
+	if err := watcher.Reload(); !errors.Is(err, generation.ErrIntegrity) {
+		t.Fatalf("Reload() error = %v, want ErrIntegrity", err)
+	}
+	if watcher.acknowledgedRevisions.Desired != 2 {
+		t.Fatalf("acknowledged desired = %d, want 2", watcher.acknowledgedRevisions.Desired)
+	}
+}
+
+func TestStandaloneStartAndReconcileClosesRegistrationGap(t *testing.T) {
+	path := writeStandaloneTestConfig(t, "routes:\n  - id: r1\n    uri: /one\n#END\n")
+	applied := make(chan generation.DesiredBatch, 4)
+	calls := uint64(0)
+	applier := standaloneApplierFunc(func(
+		_ context.Context,
+		batch generation.DesiredBatch,
+	) (generation.Acknowledgement, error) {
+		calls++
+		applied <- cloneStandaloneTestBatch(batch)
+		return standaloneAcknowledgement(batch, calls, nil), nil
+	})
+	watcher := NewStandaloneFileWatcher(
+		path,
+		standaloneProviderYAML,
+		applier,
+		testStandaloneDataEncryption(t, false, nil),
+	)
+	t.Cleanup(func() { _ = watcher.Stop() })
+	if err := watcher.StartAndReconcile(); err != nil {
+		t.Fatalf("StartAndReconcile() error = %v", err)
+	}
 	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("reentrant ReloadSnapshot() error = %v", err)
-		}
+	case <-applied:
 	case <-time.After(time.Second):
-		t.Fatal("legacy reload callback deadlocked while reentering ReloadSnapshot")
+		t.Fatal("initial full snapshot was not applied")
+	}
+	writeStandaloneConfig(t, path, "routes:\n  - id: r1\n    uri: /two\n#END\n")
+	select {
+	case <-applied:
+	case <-time.After(3 * time.Second):
+		t.Fatal("post-registration file event was not applied")
+	}
+}
+
+func TestStandaloneStartAndReconcileKeepsWatchingAfterTransientParseFailure(t *testing.T) {
+	path := writeStandaloneTestConfig(t, "routes:\n  - id: r1\n")
+	applied := make(chan struct{}, 1)
+	applier := standaloneApplierFunc(func(
+		_ context.Context,
+		batch generation.DesiredBatch,
+	) (generation.Acknowledgement, error) {
+		applied <- struct{}{}
+		return standaloneAcknowledgement(batch, 1, nil), nil
+	})
+	watcher := NewStandaloneFileWatcher(
+		path,
+		standaloneProviderYAML,
+		applier,
+		testStandaloneDataEncryption(t, false, nil),
+	)
+	t.Cleanup(func() { _ = watcher.Stop() })
+	if err := watcher.StartAndReconcile(); err != nil {
+		t.Fatalf("StartAndReconcile() error = %v", err)
+	}
+	select {
+	case <-applied:
+		t.Fatal("invalid initial file reached applier")
+	default:
+	}
+	writeStandaloneConfig(t, path, "routes:\n  - id: r1\n    uri: /one\n#END\n")
+	select {
+	case <-applied:
+	case <-time.After(3 * time.Second):
+		t.Fatal("watcher did not recover after transient parse failure")
+	}
+}
+
+func TestStandaloneSnapshotDecodeFailures(t *testing.T) {
+	tests := []struct {
+		name     string
+		provider string
+		content  string
+		want     string
+	}{
+		{name: "unsupported provider", provider: "toml", content: "", want: "unsupported"},
+		{name: "invalid yaml", provider: "yaml", content: "routes: [\n#END\n", want: "parse"},
+		{name: "invalid json", provider: "json", content: "{", want: "parse"},
+		{name: "null document", provider: "json", content: "null", want: "expected object"},
+		{name: "unknown section", provider: "json", content: `{"unknown":[]}`, want: "unknown root section"},
+		{name: "null bucket", provider: "json", content: `{"routes":null}`, want: "expected array"},
+		{name: "object bucket", provider: "json", content: `{"routes":{}}`, want: "decode standalone routes"},
+		{name: "missing id", provider: "json", content: `{"routes":[{"uri":"/"}]}`, want: "missing id"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			path := writeStandaloneTestConfig(t, test.content)
+			_, err := readStandaloneSnapshot(
+				path,
+				test.provider,
+				testStandaloneDataEncryption(t, false, nil),
+			)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("readStandaloneSnapshot() error = %v, want containing %q", err, test.want)
+			}
+		})
 	}
 }
 
@@ -428,987 +1089,172 @@ func TestStandaloneFileWatcherLoadsYAMLAndJSON(t *testing.T) {
 	tests := []struct {
 		name     string
 		provider string
-		ext      string
 		content  string
 	}{
-		{
-			name:     "yaml",
-			provider: "yaml",
-			ext:      ".yaml",
-			content: `routes:
-  - id: 1
-    uri: /hello
-    upstream:
-      nodes:
-        "127.0.0.1:1980": 1
-      type: roundrobin
-upstreams:
-  - id: 2
-    nodes:
-      "127.0.0.1:1981": 1
-    type: roundrobin
-#END
-`,
-		},
-		{
-			name:     "json",
-			provider: "json",
-			ext:      ".json",
-			content: `{
-  "routes": [{
-    "id": 1,
-    "uri": "/hello",
-    "upstream": {
-      "nodes": {"127.0.0.1:1980": 1},
-      "type": "roundrobin"
-    }
-  }],
-  "upstreams": [{
-    "id": 2,
-    "nodes": {"127.0.0.1:1981": 1},
-    "type": "roundrobin"
-  }]
-}`,
-		},
+		{name: "yaml", provider: "yaml", content: "routes:\n  - id: r1\n    uri: /one\n#END\n"},
+		{name: "json", provider: "json", content: `{"routes":[{"id":"r1","uri":"/one"}]}`},
 	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "apisix"+tt.ext)
-			if err := os.WriteFile(path, []byte(tt.content), 0o600); err != nil {
-				t.Fatalf("write standalone config: %v", err)
-			}
-
-			events := make(chan *store.Event, 8)
-			storage := newStandaloneTestStore(t, events)
-			watcher := NewStandaloneFileWatcher(path, tt.provider, events)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			path := writeStandaloneTestConfig(t, test.content)
+			applier := &recordingStandaloneApplier{}
+			watcher := NewStandaloneFileWatcher(
+				path,
+				test.provider,
+				applier,
+				testStandaloneDataEncryption(t, false, nil),
+			)
 			if err := watcher.Reload(); err != nil {
-				t.Fatalf("Reload() error = %v", err)
+				t.Fatal(err)
 			}
-
-			if err := storage.Sync(); err != nil {
-				t.Fatalf("Store.Sync() error = %v", err)
-			}
-			raw, err := storage.GetFromBucket("routes", []byte("1"))
-			if err != nil {
-				t.Fatalf("GetFromBucket(routes) error = %v", err)
-			}
-			var route map[string]any
-			if err := json.Unmarshal(raw, &route); err != nil {
-				t.Fatalf("decode loaded route: %v", err)
-			}
-			if got, want := route["id"], "1"; got != want {
-				t.Fatalf("normalized route id = %#v, want %q", got, want)
+			batch := applier.snapshot()[0]
+			if len(batch.Mutations) != 1 || batch.Mutations[0].Key != (generation.ResourceKey{
+				Kind: "routes", ID: "r1",
+			}) {
+				t.Fatalf("batch mutations = %+v", batch.Mutations)
 			}
 		})
 	}
 }
 
-func TestStandaloneYAMLRequiresEndMarker(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "apisix.yaml")
-	if err := os.WriteFile(path, []byte("routes:\n  - id: route-1\n    uri: /hello\n"), 0o600); err != nil {
-		t.Fatalf("write standalone config: %v", err)
-	}
-
-	watcher := NewStandaloneFileWatcher(path, "yaml", make(chan *store.Event, 1))
-	if err := watcher.Reload(); err == nil {
-		t.Fatal("Reload() error = nil, want missing #END error")
-	}
-}
-
-func TestStandaloneFileWatcherLoadsSecretResources(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "apisix.yaml")
-	content := `secrets:
-  - id: vault/test1
-    uri: http://127.0.0.1:8200
-    prefix: kv/apisix
-    token: root
-#END
-`
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
-		t.Fatalf("write standalone config: %v", err)
-	}
-
-	events := make(chan *store.Event, 2)
-	storage := newStandaloneTestStore(t, events)
-	if err := NewStandaloneFileWatcher(path, "yaml", events).Reload(); err != nil {
-		t.Fatalf("Reload() error = %v", err)
-	}
-	if err := storage.Sync(); err != nil {
-		t.Fatalf("Store.Sync() error = %v", err)
-	}
-	if got, err := storage.GetFromBucket("secrets", []byte("vault/test1")); err != nil || len(got) == 0 {
-		t.Fatalf("stored secret = %q, %v; want Vault secret resource", got, err)
-	}
-}
-
-func TestStandaloneFileWatcherEncryptsAIRateLimitingPasswordsBeforeStoreEvents(t *testing.T) {
-	const key = "qeddd145sfvddff3"
-	data_encryption.Configure(true, []string{key})
-	t.Cleanup(func() { data_encryption.Configure(false, nil) })
-	path := filepath.Join(t.TempDir(), "apisix.yaml")
-	content := `routes:
-  - id: route-1
-    uri: /ai
-    plugins:
-      ai-rate-limiting:
-        limit: 30
-        time_window: 60
-        redis_password: redis-plaintext
-        sentinel_password: sentinel-plaintext
-      loggly:
-        customer_token: loggly-plaintext
-#END
-`
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
-		t.Fatalf("write standalone config: %v", err)
-	}
-
-	events := make(chan *store.Event, 2)
-	storage := newStandaloneTestStore(t, events)
-	if err := NewStandaloneFileWatcher(path, "yaml", events).Reload(); err != nil {
-		t.Fatalf("Reload() error = %v", err)
-	}
-	if err := storage.Sync(); err != nil {
-		t.Fatalf("Store.Sync() error = %v", err)
-	}
-	raw, err := storage.GetFromBucket("routes", []byte("route-1"))
-	if err != nil {
-		t.Fatalf("GetFromBucket(routes) error = %v", err)
-	}
-	if strings.Contains(string(raw), "redis-plaintext") ||
-		strings.Contains(string(raw), "sentinel-plaintext") ||
-		strings.Contains(string(raw), "loggly-plaintext") {
-		t.Fatalf("stored route contains plaintext secret: %s", raw)
-	}
-	var route struct {
-		Plugins map[string]map[string]any `json:"plugins"`
-	}
-	if err := json.Unmarshal(raw, &route); err != nil {
-		t.Fatalf("decode stored route: %v", err)
-	}
-	resolver := data_encryption.NewResolver(true, []string{key})
-	for field, plaintext := range map[string]string{
-		"redis_password":    "redis-plaintext",
-		"sentinel_password": "sentinel-plaintext",
-	} {
-		ciphertext, ok := route.Plugins["ai-rate-limiting"][field].(string)
-		if !ok {
-			t.Fatalf("%s = %T, want ciphertext string", field, route.Plugins["ai-rate-limiting"][field])
-		}
-		decrypted, err := resolver.ResolveForContext(ciphertext, "ai-rate-limiting."+field)
-		if err != nil || decrypted != plaintext {
-			t.Fatalf("Decrypt(%s) = (%q, %v), want %q", field, decrypted, err, plaintext)
-		}
-	}
-	logglyCiphertext, ok := route.Plugins["loggly"]["customer_token"].(string)
-	if !ok {
-		t.Fatalf("loggly.customer_token = %T, want ciphertext string", route.Plugins["loggly"]["customer_token"])
-	}
-	if decrypted, err := resolver.ResolveForContext(logglyCiphertext, "loggly.customer_token"); err != nil ||
-		decrypted != "loggly-plaintext" {
-		t.Fatalf("Decrypt(loggly.customer_token) = (%q, %v), want loggly-plaintext", decrypted, err)
-	}
-}
-
-func TestStandaloneFileWatcherEncryptsPluginMetadataBeforeRuntimeDecryption(t *testing.T) {
-	const (
-		key                       = "edd1c9f0985e76a2"
-		ciphertextShapedPlaintext = "OqkDYcQx4FvgBsxFCybRzg=="
-	)
-	data_encryption.Configure(true, []string{key})
-	t.Cleanup(func() { data_encryption.Configure(false, nil) })
-
-	path := filepath.Join(t.TempDir(), "apisix.yaml")
-	content := `plugin_metadata:
-  - id: azure-functions
-    master_apikey: ` + ciphertextShapedPlaintext + `
-    master_clientid: master-client
-#END
-`
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
-		t.Fatalf("write standalone config: %v", err)
-	}
-
-	events := make(chan *store.Event, 4)
-	storage, err := store.GetStore(filepath.Join(t.TempDir(), "store.db"), events)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	storage.Start()
-	t.Cleanup(func() { _ = storage.Stop() })
-	if err := NewStandaloneFileWatcher(path, "yaml", events).Reload(); err != nil {
-		t.Fatalf("Reload() error = %v", err)
-	}
-	if err := storage.Sync(); err != nil {
-		t.Fatalf("Sync() error = %v", err)
-	}
-
-	raw, err := storage.GetFromBucket("plugin_metadata", []byte("azure-functions"))
-	if err != nil {
-		t.Fatalf("GetFromBucket() error = %v", err)
-	}
-	if strings.Contains(string(raw), ciphertextShapedPlaintext) {
-		t.Fatalf("stored plugin metadata contains plaintext secret: %s", raw)
-	}
-	var stored map[string]any
-	if err := json.Unmarshal(raw, &stored); err != nil {
-		t.Fatalf("decode stored plugin metadata: %v", err)
-	}
-	ciphertext, ok := stored["master_apikey"].(string)
-	if !ok {
-		t.Fatalf("stored master_apikey = %T, want ciphertext string", stored["master_apikey"])
-	}
-	if decrypted, err := data_encryption.NewResolver(true, []string{key}).ResolveForContext(
-		ciphertext,
-		"azure-functions.master_apikey",
-	); err != nil ||
-		decrypted != ciphertextShapedPlaintext {
-		t.Fatalf("Decrypt(master_apikey) = (%q, %v), want %q", decrypted, err, ciphertextShapedPlaintext)
-	}
-
-	var runtimeMetadata struct {
-		MasterAPIKey   string `json:"master_apikey"`
-		MasterClientID string `json:"master_clientid"`
-	}
-	if err := store.GetPluginMetadata("azure-functions", &runtimeMetadata); err != nil {
-		t.Fatalf("GetPluginMetadata() error = %v", err)
-	}
-	if runtimeMetadata.MasterAPIKey != ciphertextShapedPlaintext ||
-		runtimeMetadata.MasterClientID != "master-client" {
-		t.Fatalf("runtime plugin metadata = %#v, want decrypted secret", runtimeMetadata)
-	}
-}
-
-func TestStandaloneFileWatcherDeletesRemovedResources(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "apisix.yaml")
-	initial := `routes:
-  - id: route-1
-    uri: /one
-upstreams:
-  - id: upstream-1
-    nodes:
-      "127.0.0.1:1980": 1
-#END
-`
-	if err := os.WriteFile(path, []byte(initial), 0o600); err != nil {
-		t.Fatalf("write initial standalone config: %v", err)
-	}
-
-	events := make(chan *store.Event, 8)
-	storage := newStandaloneTestStore(t, events)
-	watcher := NewStandaloneFileWatcher(path, "yaml", events)
-	if err := watcher.Reload(); err != nil {
-		t.Fatalf("initial Reload() error = %v", err)
-	}
-	if err := storage.Sync(); err != nil {
-		t.Fatalf("initial Store.Sync() error = %v", err)
-	}
-
-	updated := `routes:
-  - id: route-2
-    uri: /two
-#END
-`
-	if err := os.WriteFile(path, []byte(updated), 0o600); err != nil {
-		t.Fatalf("write updated standalone config: %v", err)
-	}
-	if err := watcher.Reload(); err != nil {
-		t.Fatalf("updated Reload() error = %v", err)
-	}
-	if err := storage.Sync(); err != nil {
-		t.Fatalf("updated Store.Sync() error = %v", err)
-	}
-	for bucket, id := range map[string]string{
-		"routes":    "route-1",
-		"upstreams": "upstream-1",
-	} {
-		value, err := storage.GetFromBucket(bucket, []byte(id))
-		if err != nil {
-			t.Fatalf("GetFromBucket(%s/%s) error = %v", bucket, id, err)
-		}
-		if value != nil {
-			t.Fatalf("removed %s/%s = %q, want deleted", bucket, id, value)
-		}
-	}
-	if value, err := storage.GetFromBucket("routes", []byte("route-2")); err != nil || len(value) == 0 {
-		t.Fatalf("new route = %q, %v; want persisted route", value, err)
-	}
-}
-
-func TestStandaloneReloadSnapshotReportsChangedRouteBucketsAfterFullDiff(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "apisix.yaml")
-	initial := `routes:
-  - id: route-1
-    uri: /one
-upstreams:
-  - id: upstream-1
-    nodes:
-      "127.0.0.1:1980": 1
-plugin_metadata:
-  - id: metadata-1
-    value: one
-#END
-`
-	if err := os.WriteFile(path, []byte(initial), 0o600); err != nil {
-		t.Fatalf("write initial standalone config: %v", err)
-	}
-
-	events := make(chan *store.Event, 8)
-	storage := newStandaloneTestStore(t, events)
-	watcher := NewStandaloneFileWatcher(path, "yaml", events)
-	result, err := watcher.ReloadSnapshot()
-	if err != nil {
-		t.Fatalf("ReloadSnapshot() error = %v", err)
-	}
-	if got, want := result.ChangedHTTPRouteBuckets,
-		[]string{"routes", "upstreams", "plugin_metadata"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("changed HTTP route buckets = %v, want %v", got, want)
-	}
-	if got, want := result.ChangedStreamBuckets, []string{"upstreams"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("changed stream buckets = %v, want %v", got, want)
-	}
-	if err := storage.Sync(); err != nil {
-		t.Fatalf("initial Store.Sync() error = %v", err)
-	}
-	updated := `routes:
-  - id: route-1
-    uri: /two
-upstreams:
-  - id: upstream-1
-    nodes:
-      "127.0.0.1:1980": 1
-plugin_metadata:
-  - id: metadata-1
-    value: two
-#END
-`
-	if err := os.WriteFile(path, []byte(updated), 0o600); err != nil {
-		t.Fatalf("write updated standalone config: %v", err)
-	}
-	result, err = watcher.ReloadSnapshot()
-	if err != nil {
-		t.Fatalf("updated ReloadSnapshot() error = %v", err)
-	}
-	if got, want := result.ChangedHTTPRouteBuckets,
-		[]string{"routes", "plugin_metadata"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("updated changed HTTP route buckets = %v, want %v", got, want)
-	}
-	if len(result.ChangedStreamBuckets) != 0 {
-		t.Fatalf("updated changed stream buckets = %v, want none", result.ChangedStreamBuckets)
-	}
-	if err := storage.Sync(); err != nil {
-		t.Fatalf("updated Store.Sync() error = %v", err)
-	}
-}
-
-func TestStandaloneReloadSnapshotReportsMetadataOnlyChangeAsRouteChange(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "apisix.yaml")
-	initial := `plugin_metadata:
-  - id: metadata-1
-    value: one
-#END
-`
-	if err := os.WriteFile(path, []byte(initial), 0o600); err != nil {
-		t.Fatalf("write initial standalone config: %v", err)
-	}
-
-	events := make(chan *store.Event, 4)
-	storage := newStandaloneTestStore(t, events)
-	watcher := NewStandaloneFileWatcher(path, "yaml", events)
-	if _, err := watcher.ReloadSnapshot(); err != nil {
-		t.Fatalf("initial ReloadSnapshot() error = %v", err)
-	}
-	if err := storage.Sync(); err != nil {
-		t.Fatalf("initial Store.Sync() error = %v", err)
-	}
-
-	updated := `plugin_metadata:
-  - id: metadata-1
-    value: two
-#END
-`
-	if err := os.WriteFile(path, []byte(updated), 0o600); err != nil {
-		t.Fatalf("write updated standalone config: %v", err)
-	}
-	result, err := watcher.ReloadSnapshot()
-	if err != nil {
-		t.Fatalf("updated ReloadSnapshot() error = %v", err)
-	}
-	if got, want := result.ChangedHTTPRouteBuckets, []string{"plugin_metadata"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf(
-			"metadata-only changed HTTP buckets = %v, want %v",
-			got,
-			want,
-		)
-	}
-	if len(result.ChangedStreamBuckets) != 0 {
-		t.Fatalf("metadata-only changed stream buckets = %v, want none", result.ChangedStreamBuckets)
-	}
-	if err := storage.Sync(); err != nil {
-		t.Fatalf("updated Store.Sync() error = %v", err)
-	}
-}
-
-func TestStandaloneReloadSnapshotReportsStreamRoutesWithoutHTTPRoutes(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "apisix.yaml")
-	content := `stream_routes:
-  - id: stream-1
-    server_addr: 127.0.0.1
-    server_port: 9100
-    upstream:
-      scheme: tcp
-      nodes:
-        "127.0.0.1:1883": 1
-#END
-`
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
-		t.Fatalf("write standalone config: %v", err)
-	}
-
-	events := make(chan *store.Event, 2)
-	newStandaloneTestStore(t, events)
-	result, err := NewStandaloneFileWatcher(path, "yaml", events).ReloadSnapshot()
-	if err != nil {
-		t.Fatalf("ReloadSnapshot() error = %v", err)
-	}
-	if len(result.ChangedHTTPRouteBuckets) != 0 {
-		t.Fatalf("stream-only changed HTTP route buckets = %v, want none", result.ChangedHTTPRouteBuckets)
-	}
-	if got, want := result.ChangedStreamBuckets, []string{"stream_routes"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("changed stream buckets = %v, want %v", got, want)
-	}
-}
-
-func TestStandaloneReloadSnapshotReportsBuilderResourceBucketsAsHTTPChanges(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "apisix.yaml")
-	content := `global_rules:
-  - id: global-1
-    plugins: {}
-plugin_configs:
-  - id: config-1
-    plugins: {}
-#END
-`
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
-		t.Fatalf("write standalone config: %v", err)
-	}
-
-	events := make(chan *store.Event, 4)
-	newStandaloneTestStore(t, events)
-	result, err := NewStandaloneFileWatcher(path, "yaml", events).ReloadSnapshot()
-	if err != nil {
-		t.Fatalf("ReloadSnapshot() error = %v", err)
-	}
-	want := []string{"global_rules", "plugin_configs"}
-	if !reflect.DeepEqual(result.ChangedHTTPRouteBuckets, want) {
-		t.Fatalf("changed HTTP route buckets = %v, want %v", result.ChangedHTTPRouteBuckets, want)
-	}
-	if len(result.ChangedStreamBuckets) != 0 {
-		t.Fatalf("changed stream buckets = %v, want none", result.ChangedStreamBuckets)
-	}
-}
-
-func TestStandaloneReloadSnapshotQuarantinesMalformedResourceAndAppliesValidSibling(t *testing.T) {
+func TestStandaloneFileWatcherEncryptsDeclaredPluginFieldsBeforeApply(t *testing.T) {
+	const plaintext = "plaintext-secret"
 	path := writeStandaloneTestConfig(t, `routes:
-  - id: invalid-route
-    uri: /invalid
-    plugins: invalid
-  - uri: /missing-id
-  - id: valid-route
-    uri: /valid
-#END
-`)
-	events := make(chan *store.Event, 4)
-	storage := newStandaloneTestStore(t, events)
-
-	result, err := NewStandaloneFileWatcher(path, "yaml", events).ReloadSnapshot()
-	if err != nil {
-		t.Fatalf("ReloadSnapshot() error = %v, want malformed sibling quarantined", err)
-	}
-	if result.QuarantinedResourceCount() != 2 {
-		t.Fatalf("quarantined resources = %d, want 2", result.QuarantinedResourceCount())
-	}
-	if value, err := storage.GetFromBucket("routes", []byte("valid-route")); err != nil || len(value) == 0 {
-		t.Fatalf("valid sibling = %q, %v; want applied", value, err)
-	}
-	if value, err := storage.GetFromBucket("routes", []byte("invalid-route")); err != nil || value != nil {
-		t.Fatalf("invalid route = %q, %v; want absent", value, err)
-	}
-}
-
-func TestStandaloneReloadSnapshotPreservesLastGoodMalformedResource(t *testing.T) {
-	path := writeStandaloneTestConfig(t, `services:
-  - id: service-1
-    name: last-good
-routes:
-  - id: stale-route
-    uri: /stale
-#END
-`)
-	events := make(chan *store.Event, 8)
-	storage := newStandaloneTestStore(t, events)
-	watcher := NewStandaloneFileWatcher(path, "yaml", events)
-	if _, err := watcher.ReloadSnapshot(); err != nil {
-		t.Fatalf("initial ReloadSnapshot() error = %v", err)
-	}
-
-	if err := os.WriteFile(path, []byte(`services:
-  - id: service-1
-    name: rejected
-    plugins: invalid
-routes:
-  - id: valid-route
-    uri: /valid
-#END
-`), 0o600); err != nil {
-		t.Fatalf("write replacement standalone config: %v", err)
-	}
-	result, err := watcher.ReloadSnapshot()
-	if err != nil {
-		t.Fatalf("replacement ReloadSnapshot() error = %v, want resource isolation", err)
-	}
-	if result.QuarantinedResourceCount() != 1 {
-		t.Fatalf("quarantined resources = %d, want 1", result.QuarantinedResourceCount())
-	}
-	serviceValue, err := storage.GetFromBucket("services", []byte("service-1"))
-	if err != nil {
-		t.Fatalf("read retained service: %v", err)
-	}
-	var service map[string]any
-	if err := json.Unmarshal(serviceValue, &service); err != nil {
-		t.Fatalf("decode retained service: %v", err)
-	}
-	if got := service["name"]; got != "last-good" {
-		t.Fatalf("retained service name = %#v, want last-good", got)
-	}
-	if value, err := storage.GetFromBucket("routes", []byte("stale-route")); err != nil || value != nil {
-		t.Fatalf("removed sibling = %q, %v; want deleted", value, err)
-	}
-	if value, err := storage.GetFromBucket("routes", []byte("valid-route")); err != nil || len(value) == 0 {
-		t.Fatalf("valid replacement sibling = %q, %v; want applied", value, err)
-	}
-
-	if err := os.WriteFile(path, []byte(`services:
-  - id: service-1
-    name: recovered
-routes:
-  - id: valid-route
-    uri: /valid
-#END
-`), 0o600); err != nil {
-		t.Fatalf("write recovered standalone config: %v", err)
-	}
-	recovered, err := watcher.ReloadSnapshot()
-	if err != nil {
-		t.Fatalf("recovered ReloadSnapshot() error = %v", err)
-	}
-	if recovered.QuarantinedResourceCount() != 0 {
-		t.Fatalf("recovered quarantine count = %d, want 0", recovered.QuarantinedResourceCount())
-	}
-	serviceValue, err = storage.GetFromBucket("services", []byte("service-1"))
-	if err != nil {
-		t.Fatalf("read recovered service: %v", err)
-	}
-	if err := json.Unmarshal(serviceValue, &service); err != nil {
-		t.Fatalf("decode recovered service: %v", err)
-	}
-	if got := service["name"]; got != "recovered" {
-		t.Fatalf("recovered service name = %#v, want recovered", got)
-	}
-}
-
-func TestStandaloneStartAndReconcileClosesRegistrationGap(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "apisix.yaml")
-	initial := "routes:\n  - id: route-1\n    uri: /one\n#END\n"
-	if err := os.WriteFile(path, []byte(initial), 0o600); err != nil {
-		t.Fatalf("write initial standalone config: %v", err)
-	}
-
-	events := make(chan *store.Event, 4)
-	storage := newStandaloneTestStore(t, events)
-	watcher := NewStandaloneFileWatcher(path, "yaml", events)
-	t.Cleanup(func() { _ = watcher.Stop() })
-	if err := watcher.Reload(); err != nil {
-		t.Fatalf("initial Reload() error = %v", err)
-	}
-	if err := storage.Sync(); err != nil {
-		t.Fatalf("initial Store.Sync() error = %v", err)
-	}
-
-	updated := "routes:\n  - id: route-1\n    uri: /two\n#END\n"
-	if err := os.WriteFile(path, []byte(updated), 0o600); err != nil {
-		t.Fatalf("write update before StartAndReconcile: %v", err)
-	}
-	type reloadAttempt struct {
-		result StandaloneReloadResult
-		err    error
-	}
-	attempts := make(chan reloadAttempt, 2)
-	watcher.SetReloadCallback(func(result StandaloneReloadResult, err error) {
-		attempts <- reloadAttempt{result: result, err: err}
-	})
-	if err := watcher.StartAndReconcile(); err != nil {
-		t.Fatalf("StartAndReconcile() error = %v", err)
-	}
-
-	select {
-	case attempt := <-attempts:
-		if attempt.err != nil {
-			t.Fatalf("StartAndReconcile reconciliation error = %v", attempt.err)
-		}
-		if got, want := attempt.result.ChangedHTTPRouteBuckets, []string{"routes"}; !reflect.DeepEqual(got, want) {
-			t.Fatalf("reconciled HTTP route buckets = %v, want %v", got, want)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("StartAndReconcile did not reconcile the update written before registration")
-	}
-
-	if err := storage.Sync(); err != nil {
-		t.Fatalf("reconciled Store.Sync() error = %v", err)
-	}
-	raw, err := storage.GetFromBucket("routes", []byte("route-1"))
-	if err != nil {
-		t.Fatalf("GetFromBucket(routes) error = %v", err)
-	}
-	var route map[string]any
-	if err := json.Unmarshal(raw, &route); err != nil {
-		t.Fatalf("decode reconciled route: %v", err)
-	}
-	if got, want := route["uri"], "/two"; got != want {
-		t.Fatalf("reconciled route URI = %#v, want %q", got, want)
-	}
-}
-
-func TestStandaloneStartAndReconcileKeepsLastGoodOnReadFailure(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "apisix.yaml")
-	initial := "routes:\n  - id: route-1\n    uri: /one\n#END\n"
-	if err := os.WriteFile(path, []byte(initial), 0o600); err != nil {
-		t.Fatalf("write initial standalone config: %v", err)
-	}
-
-	events := make(chan *store.Event, 4)
-	storage := newStandaloneTestStore(t, events)
-	watcher := NewStandaloneFileWatcher(path, "yaml", events)
-	if err := watcher.Reload(); err != nil {
-		t.Fatalf("initial Reload() error = %v", err)
-	}
-	if err := storage.Sync(); err != nil {
-		t.Fatalf("initial Store.Sync() error = %v", err)
-	}
-
-	if err := os.WriteFile(path, []byte("routes:\n  - id: route-1\n    uri: /bad\n"), 0o600); err != nil {
-		t.Fatalf("write invalid window config: %v", err)
-	}
-	callbackDone := make(chan error, 1)
-	watcher.SetReloadCallback(func(_ StandaloneReloadResult, err error) {
-		callbackDone <- err
-	})
-
-	if err := watcher.StartAndReconcile(); err != nil {
-		t.Fatalf("StartAndReconcile() error = %v, want nil after registered read failure", err)
-	}
-	select {
-	case err := <-callbackDone:
-		if err == nil || !strings.Contains(err.Error(), "must end with #END") {
-			t.Fatalf("callback error = %v, want invalid YAML error", err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("StartAndReconcile() did not invoke callback for invalid window config")
-	}
-
-	raw, err := storage.GetFromBucket("routes", []byte("route-1"))
-	if err != nil {
-		t.Fatalf("read last-good route: %v", err)
-	}
-	var route map[string]any
-	if err := json.Unmarshal(raw, &route); err != nil {
-		t.Fatalf("decode last-good route: %v", err)
-	}
-	if got, want := route["uri"], "/one"; got != want {
-		t.Fatalf("last-good route URI = %#v, want %q", got, want)
-	}
-}
-
-func TestStandaloneFileWatcherRecoversAfterAtomicInvalidReplacement(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "apisix.yaml")
-	initial := `routes:
-  - id: route-1
+  - id: r1
     uri: /one
-#END
-`
-	if err := os.WriteFile(path, []byte(initial), 0o600); err != nil {
-		t.Fatalf("write initial standalone config: %v", err)
-	}
-
-	events := make(chan *store.Event, 8)
-	storage := newStandaloneTestStore(t, events)
-	watcher := NewStandaloneFileWatcher(path, "yaml", events)
-	t.Cleanup(func() { _ = watcher.Stop() })
-	type reloadAttempt struct {
-		result StandaloneReloadResult
-		err    error
-	}
-	reloadAttempts := make(chan reloadAttempt, 8)
-	watcher.SetReloadCallback(func(result StandaloneReloadResult, err error) {
-		reloadAttempts <- reloadAttempt{result: result, err: err}
-	})
-	if err := watcher.Reload(); err != nil {
-		t.Fatalf("initial Reload() error = %v", err)
-	}
-	if err := storage.Sync(); err != nil {
-		t.Fatalf("initial Store.Sync() error = %v", err)
-	}
-	watcher.Watch()
-
-	invalid := []byte("routes:\n  - id: route-1\n    uri: /partial\n")
-	if err := atomicReplaceStandaloneTestFile(path, invalid); err != nil {
-		t.Fatalf("replace with incomplete standalone config: %v", err)
-	}
-	for {
-		select {
-		case attempt := <-reloadAttempts:
-			if attempt.err != nil && strings.Contains(attempt.err.Error(), "must end with #END") {
-				if len(attempt.result.ChangedHTTPRouteBuckets) != 0 || len(attempt.result.ChangedStreamBuckets) != 0 {
-					t.Fatalf(
-						"failed snapshot changed buckets = HTTP %v stream %v, want none",
-						attempt.result.ChangedHTTPRouteBuckets,
-						attempt.result.ChangedStreamBuckets,
-					)
-				}
-				goto invalidObserved
-			}
-		case <-time.After(time.Second):
-			t.Fatal("watcher did not report the invalid standalone snapshot")
-		}
-	}
-
-invalidObserved:
-	if value, err := storage.GetFromBucket("routes", []byte("route-1")); err != nil || string(value) == "" {
-		t.Fatalf("route after invalid replacement = %q, %v; want previous durable value", value, err)
-	}
-
-	updated := []byte(`routes:
-  - id: route-1
-    uri: /two
+    plugins:
+      key-auth:
+        key: plaintext-secret
 #END
 `)
-	if err := atomicReplaceStandaloneTestFile(path, updated); err != nil {
-		t.Fatalf("replace with complete standalone config: %v", err)
+	applier := &recordingStandaloneApplier{}
+	watcher := NewStandaloneFileWatcher(
+		path,
+		standaloneProviderYAML,
+		applier,
+		testStandaloneDataEncryption(t, true, []string{"qeddd145sfvddff3"}),
+	)
+	if err := watcher.Reload(); err != nil {
+		t.Fatal(err)
 	}
-	for {
-		select {
-		case attempt := <-reloadAttempts:
-			if attempt.err == nil {
-				got := attempt.result.ChangedHTTPRouteBuckets
-				want := []string{"routes"}
-				if !reflect.DeepEqual(got, want) {
-					t.Fatalf("valid snapshot changed HTTP route buckets = %v, want %v", got, want)
-				}
-				goto validObserved
-			}
-		case <-time.After(time.Second):
-			t.Fatal("watcher did not acknowledge the complete standalone snapshot")
-		}
+	value := applier.snapshot()[0].Mutations[0].Value
+	if strings.Contains(string(value), plaintext) || !strings.Contains(string(value), "$encrypted://") {
+		t.Fatalf("translated value = %s, want encrypted secret", value)
 	}
+}
 
-validObserved:
-	if err := storage.Sync(); err != nil {
-		t.Fatalf("updated Store.Sync() error = %v", err)
+func TestStandaloneStopBeforeStartAndRepeatedStop(t *testing.T) {
+	watcher := NewStandaloneFileWatcher(
+		filepath.Join(t.TempDir(), "apisix.yaml"),
+		standaloneProviderYAML,
+		&recordingStandaloneApplier{},
+		testStandaloneDataEncryption(t, false, nil),
+	)
+	if err := watcher.Stop(); err != nil {
+		t.Fatalf("Stop() before Start error = %v", err)
 	}
-	value, err := storage.GetFromBucket("routes", []byte("route-1"))
-	if err != nil {
-		t.Fatalf("GetFromBucket(routes) error = %v", err)
+	if err := watcher.Stop(); err != nil {
+		t.Fatalf("repeated Stop() error = %v", err)
 	}
-	var route map[string]any
-	if err := json.Unmarshal(value, &route); err != nil {
-		t.Fatalf("decode updated route: %v", err)
-	}
-	if got, want := route["uri"], "/two"; got != want {
-		t.Fatalf("updated route URI = %#v, want %q", got, want)
+	if err := watcher.Reload(); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Reload() after Stop error = %v, want context.Canceled", err)
 	}
 }
 
 func TestStandaloneConfigFile(t *testing.T) {
-	if got, want := StandaloneConfigFile("yaml"), "conf/apisix.yaml"; got != want {
-		t.Fatalf("StandaloneConfigFile(yaml) = %q, want %q", got, want)
-	}
-	if got, want := StandaloneConfigFile("json"), "conf/apisix.json"; got != want {
-		t.Fatalf("StandaloneConfigFile(json) = %q, want %q", got, want)
-	}
-	if got := StandaloneConfigFile("unsupported"); got != "" {
-		t.Fatalf("StandaloneConfigFile(unsupported) = %q, want empty", got)
-	}
-}
-
-func TestStandaloneReloadResultReportsAffectedSubsystems(t *testing.T) {
-	if (StandaloneReloadResult{}).AffectsHTTPRoutes() || (StandaloneReloadResult{}).AffectsStreams() {
-		t.Fatal("empty reload result reported affected resources")
-	}
-	if !(StandaloneReloadResult{ChangedHTTPRouteBuckets: []string{"routes"}}).AffectsHTTPRoutes() {
-		t.Fatal("HTTP bucket change was not reported")
-	}
-	if !(StandaloneReloadResult{ChangedStreamBuckets: []string{"stream_routes"}}).AffectsStreams() {
-		t.Fatal("stream bucket change was not reported")
-	}
-}
-
-func TestStandaloneSnapshotDecodeFailures(t *testing.T) {
-	tests := []struct {
-		name      string
-		provider  string
-		content   string
-		wantError string
-	}{
-		{
-			name:      "unsupported provider",
-			provider:  "toml",
-			content:   "",
-			wantError: "unsupported standalone config provider",
-		},
-		{name: "invalid JSON", provider: "json", content: `{`, wantError: "parse standalone JSON config"},
-		{name: "null JSON root", provider: "json", content: `null`, wantError: "expected object"},
-		{
-			name:      "unknown JSON root section",
-			provider:  "json",
-			content:   `{"zeta":[],"routs":[]}`,
-			wantError: `unknown root section "routs"`,
-		},
-		{
-			name:      "section is not array",
-			provider:  "json",
-			content:   `{"routes":{}}`,
-			wantError: "decode standalone routes",
-		},
-		{name: "null JSON section", provider: "json", content: `{"routes":null}`, wantError: "expected array"},
-		{name: "invalid YAML", provider: "yaml", content: "routes: [\n#END", wantError: "parse standalone YAML config"},
-		{name: "null YAML root", provider: "yaml", content: "null\n#END", wantError: "expected object"},
-		{
-			name:      "unknown YAML root section",
-			provider:  "yaml",
-			content:   "zeta: []\nrouts: []\n#END",
-			wantError: `unknown root section "routs"`,
-		},
-		{name: "null YAML section", provider: "yaml", content: "routes:\n#END", wantError: "expected array"},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "apisix."+test.provider)
-			if err := os.WriteFile(path, []byte(test.content), 0o600); err != nil {
-				t.Fatalf("write standalone fixture: %v", err)
-			}
-			_, _, err := readStandaloneSnapshot(path, test.provider)
-			if err == nil || !strings.Contains(err.Error(), test.wantError) {
-				t.Fatalf("readStandaloneSnapshot() error = %v, want containing %q", err, test.wantError)
-			}
-		})
-	}
-
-	_, _, err := readStandaloneSnapshot(filepath.Join(t.TempDir(), "missing.json"), standaloneProviderJSON)
-	if err == nil || !strings.Contains(err.Error(), "read standalone config") {
-		t.Fatalf("readStandaloneSnapshot(missing) error = %v", err)
-	}
-
 	for _, test := range []struct {
-		name     string
 		provider string
-		content  string
+		want     string
 	}{
-		{name: "empty JSON object", provider: "json", content: `{}`},
-		{name: "empty YAML object", provider: "yaml", content: "{}\n#END"},
+		{provider: "yaml", want: "conf/apisix.yaml"},
+		{provider: " YAML ", want: "conf/apisix.yaml"},
+		{provider: "json", want: "conf/apisix.json"},
+		{provider: "toml", want: ""},
 	} {
-		t.Run(test.name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "apisix."+test.provider)
-			if err := os.WriteFile(path, []byte(test.content), 0o600); err != nil {
-				t.Fatalf("write empty standalone fixture: %v", err)
-			}
-			snapshot, quarantined, err := readStandaloneSnapshot(path, test.provider)
-			if err != nil {
-				t.Fatalf("readStandaloneSnapshot() error = %v, want valid empty snapshot", err)
-			}
-			if len(snapshot) != 0 || len(quarantined) != 0 {
-				t.Fatalf("empty snapshot = %#v quarantined = %#v, want both empty", snapshot, quarantined)
-			}
-		})
-	}
-}
-
-func TestNormalizeStandaloneResourceValidatesIDsAndPlugins(t *testing.T) {
-	tests := []struct {
-		name      string
-		bucket    string
-		raw       string
-		wantError string
-	}{
-		{name: "malformed resource", bucket: "routes", raw: `{`, wantError: "invalid character"},
-		{name: "empty ID", bucket: "routes", raw: `{"id":""}`, wantError: "id is empty"},
-		{name: "object ID", bucket: "routes", raw: `{"id":{}}`, wantError: "id must be a string or number"},
-		{
-			name:      "invalid plugins",
-			bucket:    "routes",
-			raw:       `{"id":"route-a","plugins":"invalid"}`,
-			wantError: "decode plugins",
-		},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			_, _, err := normalizeStandaloneResource(test.bucket, json.RawMessage(test.raw))
-			if err == nil || !strings.Contains(err.Error(), test.wantError) {
-				t.Fatalf("normalizeStandaloneResource() error = %v, want containing %q", err, test.wantError)
-			}
-		})
-	}
-
-	id, encoded, err := normalizeStandaloneResource("routes", json.RawMessage(`{"id":42,"uri":"/number"}`))
-	if err != nil {
-		t.Fatalf("normalizeStandaloneResource(number ID) error = %v", err)
-	}
-	if id != "42" || !strings.Contains(string(encoded), `"id":"42"`) {
-		t.Fatalf("normalized number ID = %q, %s", id, encoded)
-	}
-
-	id, encoded, err = normalizeStandaloneResource("consumers", json.RawMessage(`{"username":"alice","id":"ignored"}`))
-	if err != nil {
-		t.Fatalf("normalizeStandaloneResource(consumer) error = %v", err)
-	}
-	if id != "alice" || !strings.Contains(string(encoded), `"username":"alice"`) {
-		t.Fatalf("normalized consumer = %q, %s", id, encoded)
-	}
-}
-
-func TestStandaloneProviderFromPath(t *testing.T) {
-	for path, want := range map[string]string{
-		"conf/apisix.yaml": "yaml",
-		"conf/apisix.JSON": "json",
-		"conf/apisix":      "",
-	} {
-		if got := standaloneProviderFromPath(path); got != want {
-			t.Fatalf("standaloneProviderFromPath(%q) = %q, want %q", path, got, want)
+		if got := StandaloneConfigFile(test.provider); got != test.want {
+			t.Errorf("StandaloneConfigFile(%q) = %q, want %q", test.provider, got, test.want)
 		}
 	}
 }
 
-func atomicReplaceStandaloneTestFile(path string, data []byte) error {
-	temp, err := os.CreateTemp(filepath.Dir(path), ".standalone-test-*")
-	if err != nil {
-		return err
+func TestStandaloneProviderFromPath(t *testing.T) {
+	for _, test := range []struct {
+		path string
+		want string
+	}{
+		{path: "conf/apisix.yaml", want: "yaml"},
+		{path: "conf/apisix.JSON", want: "json"},
+		{path: "conf/apisix", want: ""},
+	} {
+		if got := standaloneProviderFromPath(test.path); got != test.want {
+			t.Errorf("standaloneProviderFromPath(%q) = %q, want %q", test.path, got, test.want)
+		}
 	}
-	tempPath := temp.Name()
-	defer func() {
-		_ = os.Remove(tempPath)
-	}()
-	if _, err := temp.Write(data); err != nil {
-		_ = temp.Close()
-		return err
+}
+
+func writeStandaloneTestConfig(t *testing.T, content string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "apisix.yaml")
+	writeStandaloneConfig(t, path, content)
+	return path
+}
+
+func writeStandaloneConfig(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	if err := temp.Sync(); err != nil {
-		_ = temp.Close()
-		return err
+}
+
+func resetStandaloneConfigApplyMetrics(t *testing.T, streamRequired bool) {
+	t.Helper()
+	oldFailures := metrics.ConfigApplyFailures
+	oldReady := metrics.ConfigApplyReady
+	oldQuarantine := metrics.ConfigApplyQuarantined
+	metrics.ConfigApplyFailures = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "test_standalone_config_apply_failures_total",
+	})
+	metrics.ConfigApplyReady = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "test_standalone_config_apply_ready",
+	})
+	metrics.ConfigApplyQuarantined = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "test_standalone_config_apply_quarantine",
+	})
+	metrics.SetConfigApplyStreamRequired(streamRequired)
+	t.Cleanup(func() {
+		metrics.SetConfigApplyStreamRequired(false)
+		metrics.ConfigApplyFailures = oldFailures
+		metrics.ConfigApplyReady = oldReady
+		metrics.ConfigApplyQuarantined = oldQuarantine
+	})
+}
+
+type standaloneAcknowledgedState struct {
+	cursor     generation.ProviderCursor
+	revisions  generation.RevisionSet
+	decisions  map[generation.Domain][]generation.ResourceDecision
+	knownKeys  map[generation.ResourceKey]struct{}
+	quarantine map[generation.ResourceKey]struct{}
+}
+
+func snapshotStandaloneAcknowledgedState(watcher *StandaloneFileWatcher) standaloneAcknowledgedState {
+	watcher.mu.Lock()
+	defer watcher.mu.Unlock()
+	state := standaloneAcknowledgedState{
+		cursor:     watcher.acknowledgedCursor,
+		revisions:  watcher.acknowledgedRevisions,
+		decisions:  make(map[generation.Domain][]generation.ResourceDecision, len(watcher.acknowledgedDecisions)),
+		knownKeys:  make(map[generation.ResourceKey]struct{}, len(watcher.knownKeys)),
+		quarantine: make(map[generation.ResourceKey]struct{}, len(watcher.quarantine)),
 	}
-	if err := temp.Close(); err != nil {
-		return err
+	for domain, decisions := range watcher.acknowledgedDecisions {
+		state.decisions[domain] = slices.Clone(decisions)
 	}
-	return os.Rename(tempPath, path)
+	for key := range watcher.knownKeys {
+		state.knownKeys[key] = struct{}{}
+	}
+	for key := range watcher.quarantine {
+		state.quarantine[key] = struct{}{}
+	}
+	return state
 }

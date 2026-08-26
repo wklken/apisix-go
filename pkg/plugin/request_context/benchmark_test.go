@@ -9,7 +9,7 @@ import (
 // BenchmarkVerifiedSmallPath measures the per-request request-total increment
 // on the metrics endpoint data path.
 func BenchmarkVerifiedSmallPath(b *testing.B) {
-	if err := metrics.Init(); err != nil {
+	if err := metrics.Init(nil); err != nil {
 		b.Fatal(err)
 	}
 

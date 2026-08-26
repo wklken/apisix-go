@@ -9,69 +9,117 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
+	"github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
-	"github.com/wklken/apisix-go/pkg/store"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/resource"
 )
 
-var (
-	testStoreOnce sync.Once
-	testEvents    chan *store.Event
-)
+type jweConsumerLookup struct {
+	mu     sync.RWMutex
+	byKey  map[string]resource.Consumer
+	calls  []string
+	closed bool
+}
 
-func setupStore(t *testing.T) {
+func (lookup *jweConsumerLookup) ConsumerByPluginKey(plugin, key string) (resource.Consumer, bool) {
+	lookup.mu.Lock()
+	defer lookup.mu.Unlock()
+	lookup.calls = append(lookup.calls, plugin+"\x00"+key)
+	if lookup.closed {
+		return resource.Consumer{}, false
+	}
+	consumer, ok := lookup.byKey[key]
+	return consumer, ok
+}
+
+func (*jweConsumerLookup) ConsumerByID(string) (resource.Consumer, bool) {
+	return resource.Consumer{}, false
+}
+
+func (*jweConsumerLookup) ConsumerGroupByID(string) (resource.ConsumerGroup, bool) {
+	return resource.ConsumerGroup{}, false
+}
+
+func (lookup *jweConsumerLookup) close() {
+	lookup.mu.Lock()
+	defer lookup.mu.Unlock()
+	lookup.closed = true
+	lookup.byKey = nil
+}
+
+func jweBoundConsumer(username, key, secret string, encoded bool) resource.Consumer {
+	return resource.Consumer{
+		Username: username,
+		Plugins: map[string]resource.PluginConfig{name: map[string]any{
+			"key": key, "secret": secret, "is_base64_encoded": encoded,
+		}},
+	}
+}
+
+func newLookupTestPlugin(t *testing.T, cfg Config, lookup base.ConsumerLookup) *Plugin {
 	t.Helper()
+	p := &Plugin{config: cfg}
+	p.SetDependencies(base.Dependencies{Consumers: lookup})
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
 
-	testStoreOnce.Do(func() {
-		testEvents = make(chan *store.Event, 16)
-		s, err := store.GetStore(t.TempDir()+"/jwe-decrypt.db", testEvents)
-		if err != nil {
-			t.Fatalf("open store: %v", err)
-		}
-		s.Start()
-	})
+type jweTestFixture struct {
+	sync.Mutex
+	consumers []resource.Consumer
+}
+
+var jweTestFixtures sync.Map
+
+func jweFixtureFor(t *testing.T) *jweTestFixture {
+	t.Helper()
+	fixture := &jweTestFixture{}
+	actual, loaded := jweTestFixtures.LoadOrStore(t, fixture)
+	if !loaded {
+		t.Cleanup(func() { jweTestFixtures.Delete(t) })
+	}
+	return actual.(*jweTestFixture)
 }
 
 func addJWEConsumer(t *testing.T, username, key, secret string, base64Encoded bool) {
 	t.Helper()
-	setupStore(t)
-
-	consumer := map[string]any{
-		"username": username,
-		"plugins": map[string]any{
-			"jwe-decrypt": map[string]any{
-				"key":               key,
-				"secret":            secret,
-				"is_base64_encoded": base64Encoded,
-			},
-		},
-	}
-	body, err := json.Marshal(consumer)
-	if err != nil {
-		t.Fatalf("marshal consumer: %v", err)
-	}
-
-	event := store.NewEvent()
-	event.Type = store.EventTypePut
-	event.Key = []byte("/apisix/consumers/" + username)
-	event.Value = body
-	testEvents <- event
-
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, err := store.GetConsumerByPluginKey("jwe-decrypt", key); err == nil {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("consumer %q was not indexed for jwe-decrypt key %q", username, key)
+	fixture := jweFixtureFor(t)
+	fixture.Lock()
+	defer fixture.Unlock()
+	fixture.consumers = append(
+		fixture.consumers,
+		jweBoundConsumer(username, key, secret, base64Encoded),
+	)
 }
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
 
+	fixture := jweFixtureFor(t)
+	fixture.Lock()
+	consumers := append([]resource.Consumer(nil), fixture.consumers...)
+	fixture.Unlock()
+	lookup := &jweConsumerLookup{byKey: make(map[string]resource.Consumer, len(consumers))}
+	for _, consumer := range consumers {
+		config, ok := consumer.Plugins[name].(map[string]any)
+		if !ok {
+			continue
+		}
+		key, ok := config["key"].(string)
+		if ok {
+			lookup.byKey[key] = consumer
+		}
+	}
+
 	p := &Plugin{config: cfg}
+	p.SetDependencies(base.Dependencies{Consumers: lookup})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -102,6 +150,99 @@ func TestHandlerDecryptsBearerJWEAndForwardsPlaintext(t *testing.T) {
 	if rr.Code != http.StatusNoContent {
 		t.Fatalf("status = %d, want 204; body=%s", rr.Code, rr.Body.String())
 	}
+}
+
+func TestHandlerUsesInjectedJWEConsumerLookupAuthoritatively(t *testing.T) {
+	const (
+		kid           = "lookup-kid"
+		unknownSecret = "12345678901234567890123456789012"
+		lookupSecret  = "abcdefghijklmnopqrstuvwxyz123456"
+	)
+	lookup := &jweConsumerLookup{byKey: map[string]resource.Consumer{
+		kid: jweBoundConsumer("lookup-jwe-user", kid, lookupSecret, false),
+	}}
+	p := newLookupTestPlugin(t, Config{ForwardHeader: "X-Decrypted"}, lookup)
+	token := makeCompactJWE(t, kid, []byte(lookupSecret), "Bearer lookup-plaintext")
+	request := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	request.Header.Set("Authorization", token)
+	response := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("X-Decrypted"); got != "Bearer lookup-plaintext" {
+			t.Fatalf("forwarded plaintext = %q", got)
+		}
+		state, ok := ctx.AuthenticationStateFrom(r)
+		if !ok || state.Consumer().Username != "lookup-jwe-user" {
+			t.Fatalf("authentication state = %#v/%v", state, ok)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204; body=%s", response.Code, response.Body.String())
+	}
+	lookup.mu.RLock()
+	if len(lookup.calls) != 1 || lookup.calls[0] != name+"\x00"+kid {
+		t.Fatalf("lookup calls = %#v, want exact factory/kid", lookup.calls)
+	}
+	lookup.mu.RUnlock()
+
+	miss := newLookupTestPlugin(t, Config{}, &jweConsumerLookup{})
+	unknownToken := makeCompactJWE(t, kid, []byte(unknownSecret), "unknown-plaintext")
+	missRequest := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	missRequest.Header.Set("Authorization", unknownToken)
+	missResponse := httptest.NewRecorder()
+	miss.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("JWE lookup miss reached downstream")
+	})).ServeHTTP(missResponse, missRequest)
+	if missResponse.Code != http.StatusBadRequest ||
+		!strings.Contains(missResponse.Body.String(), "invalid kid in JWE token") {
+		t.Fatalf(
+			"lookup miss response = %d/%q, want exact invalid-kid 400",
+			missResponse.Code,
+			missResponse.Body.String(),
+		)
+	}
+}
+
+func TestJWEConsumerLookupsAreGenerationIsolated(t *testing.T) {
+	const (
+		kid          = "overlap-kid"
+		firstSecret  = "12345678901234567890123456789012"
+		secondSecret = "abcdefghijklmnopqrstuvwxyz123456"
+	)
+	firstLookup := &jweConsumerLookup{byKey: map[string]resource.Consumer{
+		kid: jweBoundConsumer("jwe-generation-n", kid, firstSecret, false),
+	}}
+	secondLookup := &jweConsumerLookup{byKey: map[string]resource.Consumer{
+		kid: jweBoundConsumer("jwe-generation-n-plus-one", kid, secondSecret, false),
+	}}
+	first := newLookupTestPlugin(t, Config{ForwardHeader: "X-Decrypted"}, firstLookup)
+	second := newLookupTestPlugin(t, Config{ForwardHeader: "X-Decrypted"}, secondLookup)
+	assertConsumer := func(p *Plugin, secret, plaintext, want string) {
+		t.Helper()
+		request := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+		request.Header.Set("Authorization", makeCompactJWE(t, kid, []byte(secret), plaintext))
+		response := httptest.NewRecorder()
+		p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			state, ok := ctx.AuthenticationStateFrom(r)
+			if !ok || state.Consumer().Username != want || r.Header.Get("X-Decrypted") != plaintext {
+				t.Errorf("generation result = %#v/%v/%q", state, ok, r.Header.Get("X-Decrypted"))
+			}
+			w.WriteHeader(http.StatusNoContent)
+		})).ServeHTTP(response, request)
+		if response.Code != http.StatusNoContent {
+			t.Errorf("status = %d, want 204", response.Code)
+		}
+	}
+	var group sync.WaitGroup
+	for range 16 {
+		group.Go(func() { assertConsumer(first, firstSecret, "first", "jwe-generation-n") })
+		group.Go(func() {
+			assertConsumer(second, secondSecret, "second", "jwe-generation-n-plus-one")
+		})
+	}
+	group.Wait()
+	firstLookup.close()
+	assertConsumer(second, secondSecret, "second-after-close", "jwe-generation-n-plus-one")
 }
 
 func TestHandlerDecryptsBase64EncodedConsumerSecret(t *testing.T) {

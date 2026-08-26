@@ -1,96 +1,114 @@
 package route
 
 import (
-	"fmt"
+	"context"
 	"strings"
 	"testing"
 
 	appconfig "github.com/wklken/apisix-go/pkg/config"
+	"github.com/wklken/apisix-go/pkg/plugin"
 	"github.com/wklken/apisix-go/pkg/resource"
 )
 
-func TestHTTPDataPlaneV1PluginPolicy(t *testing.T) {
+var (
+	compatPolicySelection = appconfig.ProfileSelection{
+		Compatibility: appconfig.CompatibilityAPISIX317,
+		Security:      appconfig.SecurityCompat,
+	}
+	strictPolicySelection = appconfig.ProfileSelection{
+		Compatibility: appconfig.CompatibilityAPISIX317,
+		Security:      appconfig.SecurityStrict,
+	}
+	qualificationPolicySelection = appconfig.ProfileSelection{
+		Compatibility: appconfig.CompatibilityAPISIX317,
+		Security:      appconfig.SecurityCompat,
+		Qualification: appconfig.QualificationHTTPDataPlaneV1,
+	}
+)
+
+func TestProductionPolicyPluginSecurityAxis(t *testing.T) {
 	tests := []struct {
 		name       string
-		profile    string
+		selection  appconfig.ProfileSelection
 		plugins    map[string]resource.PluginConfig
 		wantErr    bool
 		wantFields []string
 	}{
 		{
-			name:    "empty compatibility profile preserves defaults",
-			plugins: map[string]resource.PluginConfig{"key-auth": map[string]any{}},
+			name:      "HTTP qualification preserves compatibility security defaults",
+			selection: qualificationPolicySelection,
+			plugins:   map[string]resource.PluginConfig{"key-auth": map[string]any{}},
 		},
 		{
-			name:    "key-auth must hide credentials",
-			profile: appconfig.HTTPDataPlaneV1Profile,
-			plugins: map[string]resource.PluginConfig{"key-auth": map[string]any{}},
-			wantErr: true, wantFields: []string{"key-auth", "hide_credentials"},
+			name:      "key-auth must hide credentials",
+			selection: strictPolicySelection,
+			plugins:   map[string]resource.PluginConfig{"key-auth": map[string]any{}},
+			wantErr:   true, wantFields: []string{"key-auth", "hide_credentials"},
 		},
 		{
-			name:    "key-auth false must hide credentials",
-			profile: appconfig.HTTPDataPlaneV1Profile,
-			plugins: map[string]resource.PluginConfig{"key-auth": map[string]any{"hide_credentials": false}},
-			wantErr: true, wantFields: []string{"key-auth", "hide_credentials"},
+			name:      "key-auth false must hide credentials",
+			selection: strictPolicySelection,
+			plugins:   map[string]resource.PluginConfig{"key-auth": map[string]any{"hide_credentials": false}},
+			wantErr:   true, wantFields: []string{"key-auth", "hide_credentials"},
 		},
 		{
-			name:    "basic-auth must hide credentials",
-			profile: appconfig.HTTPDataPlaneV1Profile,
-			plugins: map[string]resource.PluginConfig{"basic-auth": map[string]any{}},
-			wantErr: true, wantFields: []string{"basic-auth", "hide_credentials"},
+			name:      "basic-auth must hide credentials",
+			selection: strictPolicySelection,
+			plugins:   map[string]resource.PluginConfig{"basic-auth": map[string]any{}},
+			wantErr:   true, wantFields: []string{"basic-auth", "hide_credentials"},
 		},
 		{
-			name:    "basic-auth false must hide credentials",
-			profile: appconfig.HTTPDataPlaneV1Profile,
-			plugins: map[string]resource.PluginConfig{"basic-auth": map[string]any{"hide_credentials": false}},
-			wantErr: true, wantFields: []string{"basic-auth", "hide_credentials"},
+			name:      "basic-auth false must hide credentials",
+			selection: strictPolicySelection,
+			plugins:   map[string]resource.PluginConfig{"basic-auth": map[string]any{"hide_credentials": false}},
+			wantErr:   true, wantFields: []string{"basic-auth", "hide_credentials"},
 		},
 		{
-			name:    "jwt-auth must hide credentials",
-			profile: appconfig.HTTPDataPlaneV1Profile,
-			plugins: map[string]resource.PluginConfig{"jwt-auth": map[string]any{"claims_to_verify": []any{"exp"}}},
-			wantErr: true, wantFields: []string{"jwt-auth", "hide_credentials"},
+			name:      "jwt-auth must hide credentials",
+			selection: strictPolicySelection,
+			plugins:   map[string]resource.PluginConfig{"jwt-auth": map[string]any{"claims_to_verify": []any{"exp"}}},
+			wantErr:   true, wantFields: []string{"jwt-auth", "hide_credentials"},
 		},
 		{
-			name:    "jwt-auth requires exp",
-			profile: appconfig.HTTPDataPlaneV1Profile,
-			plugins: map[string]resource.PluginConfig{"jwt-auth": map[string]any{"hide_credentials": true}},
-			wantErr: true, wantFields: []string{"jwt-auth", "claims_to_verify", "exp"},
+			name:      "jwt-auth requires exp",
+			selection: strictPolicySelection,
+			plugins:   map[string]resource.PluginConfig{"jwt-auth": map[string]any{"hide_credentials": true}},
+			wantErr:   true, wantFields: []string{"jwt-auth", "claims_to_verify", "exp"},
 		},
 		{
-			name:    "jwt-auth false must hide credentials",
-			profile: appconfig.HTTPDataPlaneV1Profile,
+			name:      "jwt-auth false must hide credentials",
+			selection: strictPolicySelection,
 			plugins: map[string]resource.PluginConfig{
 				"jwt-auth": map[string]any{"hide_credentials": false, "claims_to_verify": []any{"exp"}},
 			},
 			wantErr: true, wantFields: []string{"jwt-auth", "hide_credentials"},
 		},
 		{
-			name:    "jwt-auth nbf alone is not enough",
-			profile: appconfig.HTTPDataPlaneV1Profile,
+			name:      "jwt-auth nbf alone is not enough",
+			selection: strictPolicySelection,
 			plugins: map[string]resource.PluginConfig{
 				"jwt-auth": map[string]any{"hide_credentials": true, "claims_to_verify": []any{"nbf"}},
 			},
 			wantErr: true, wantFields: []string{"jwt-auth", "claims_to_verify", "exp"},
 		},
 		{
-			name:    "jwt-auth rejects non-array claims",
-			profile: appconfig.HTTPDataPlaneV1Profile,
+			name:      "jwt-auth rejects non-array claims",
+			selection: strictPolicySelection,
 			plugins: map[string]resource.PluginConfig{
 				"jwt-auth": map[string]any{"hide_credentials": true, "claims_to_verify": "exp"},
 			},
 			wantErr: true, wantFields: []string{"jwt-auth", "claims_to_verify", "exp"},
 		},
 		{
-			name:    "jwt-auth accepts exp",
-			profile: appconfig.HTTPDataPlaneV1Profile,
+			name:      "jwt-auth accepts exp",
+			selection: strictPolicySelection,
 			plugins: map[string]resource.PluginConfig{
 				"jwt-auth": map[string]any{"hide_credentials": true, "claims_to_verify": []any{"exp"}},
 			},
 		},
 		{
-			name:    "disabled auth config is inert",
-			profile: appconfig.HTTPDataPlaneV1Profile,
+			name:      "disabled auth config is inert",
+			selection: strictPolicySelection,
 			plugins: map[string]resource.PluginConfig{
 				"key-auth": map[string]any{"_meta": map[string]any{"disable": true}},
 			},
@@ -99,11 +117,10 @@ func TestHTTPDataPlaneV1PluginPolicy(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			setHTTPDataPlanePolicyProfile(t, test.profile)
-			err := validateHTTPDataPlanePluginPolicy(test.plugins, "route policy test")
+			err := validateSecurityPluginPolicy(test.selection, test.plugins, "route policy test")
 			if test.wantErr {
 				if err == nil {
-					t.Fatal("validateHTTPDataPlanePluginPolicy() error = nil, want rejection")
+					t.Fatal("validateSecurityPluginPolicy() error = nil, want rejection")
 				}
 				for _, field := range test.wantFields {
 					if !strings.Contains(err.Error(), field) {
@@ -113,71 +130,93 @@ func TestHTTPDataPlaneV1PluginPolicy(t *testing.T) {
 				return
 			}
 			if err != nil {
-				t.Fatalf("validateHTTPDataPlanePluginPolicy() error = %v, want nil", err)
+				t.Fatalf("validateSecurityPluginPolicy() error = %v, want nil", err)
 			}
 		})
 	}
 }
 
-func TestHTTPDataPlaneV1UpstreamPolicy(t *testing.T) {
+func TestProductionPolicyUpstreamSecurityAxis(t *testing.T) {
 	tests := []struct {
 		name       string
-		profile    string
+		selection  appconfig.ProfileSelection
 		upstream   resource.Upstream
 		wantErr    bool
 		wantFields []string
 	}{
 		{
-			name:     "empty compatibility profile preserves insecure https default",
-			upstream: resource.Upstream{Scheme: "https"},
+			name:      "HTTP qualification preserves compatibility TLS defaults",
+			selection: qualificationPolicySelection,
+			upstream:  resource.Upstream{Scheme: "https"},
 		},
 		{
-			name:     "http upstream is allowed",
-			profile:  appconfig.HTTPDataPlaneV1Profile,
-			upstream: resource.Upstream{Scheme: "http"},
+			name:      "http upstream is allowed",
+			selection: strictPolicySelection,
+			upstream:  resource.Upstream{Scheme: "http"},
 		},
 		{
 			name:       "https requires tls verify",
-			profile:    appconfig.HTTPDataPlaneV1Profile,
+			selection:  strictPolicySelection,
 			upstream:   resource.Upstream{Scheme: "https"},
 			wantErr:    true,
 			wantFields: []string{"https", "tls.verify"},
 		},
 		{
 			name:       "https false verify is rejected",
-			profile:    appconfig.HTTPDataPlaneV1Profile,
+			selection:  strictPolicySelection,
 			upstream:   resource.Upstream{Scheme: "https", TLS: &resource.UpstreamTLS{Verify: false}},
 			wantErr:    true,
 			wantFields: []string{"https", "tls.verify"},
 		},
 		{
-			name:     "https true verify is allowed",
-			profile:  appconfig.HTTPDataPlaneV1Profile,
-			upstream: resource.Upstream{Scheme: "https", TLS: &resource.UpstreamTLS{Verify: true}},
+			name:      "https true verify is allowed",
+			selection: strictPolicySelection,
+			upstream:  resource.Upstream{Scheme: "https", TLS: &resource.UpstreamTLS{Verify: true}},
 		},
 		{
 			name:       "grpcs requires tls verify",
-			profile:    appconfig.HTTPDataPlaneV1Profile,
+			selection:  strictPolicySelection,
 			upstream:   resource.Upstream{Scheme: "grpcs", TLS: &resource.UpstreamTLS{Verify: false}},
 			wantErr:    true,
 			wantFields: []string{"grpcs", "tls.verify"},
 		},
 		{
 			name:       "grpcs without tls is rejected",
-			profile:    appconfig.HTTPDataPlaneV1Profile,
+			selection:  strictPolicySelection,
 			upstream:   resource.Upstream{Scheme: "grpcs"},
 			wantErr:    true,
 			wantFields: []string{"grpcs", "tls.verify"},
+		},
+		{
+			name:       "strict Kafka TLS false verify is rejected",
+			selection:  strictPolicySelection,
+			upstream:   resource.Upstream{Scheme: "kafka", TLS: &resource.UpstreamTLS{Verify: false}},
+			wantErr:    true,
+			wantFields: []string{"kafka", "tls.verify"},
+		},
+		{
+			name:      "strict Kafka without TLS is allowed",
+			selection: strictPolicySelection,
+			upstream:  resource.Upstream{Scheme: "kafka"},
+		},
+		{
+			name:      "strict Kafka TLS true verify is allowed",
+			selection: strictPolicySelection,
+			upstream:  resource.Upstream{Scheme: "kafka", TLS: &resource.UpstreamTLS{Verify: true}},
+		},
+		{
+			name:      "compatibility Kafka TLS false verify is allowed",
+			selection: compatPolicySelection,
+			upstream:  resource.Upstream{Scheme: "kafka", TLS: &resource.UpstreamTLS{Verify: false}},
 		},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			setHTTPDataPlanePolicyProfile(t, test.profile)
-			err := validateHTTPDataPlaneUpstreamPolicy(test.upstream, "upstream policy test")
+			err := validateSecurityUpstreamPolicy(test.selection, test.upstream, "upstream policy test")
 			if test.wantErr {
 				if err == nil {
-					t.Fatal("validateHTTPDataPlaneUpstreamPolicy() error = nil, want rejection")
+					t.Fatal("validateSecurityUpstreamPolicy() error = nil, want rejection")
 				}
 				for _, field := range test.wantFields {
 					if !strings.Contains(err.Error(), field) {
@@ -187,144 +226,163 @@ func TestHTTPDataPlaneV1UpstreamPolicy(t *testing.T) {
 				return
 			}
 			if err != nil {
-				t.Fatalf("validateHTTPDataPlaneUpstreamPolicy() error = %v, want nil", err)
+				t.Fatalf("validateSecurityUpstreamPolicy() error = %v, want nil", err)
 			}
 		})
 	}
 }
 
-func TestBuildStrictEnforcesHTTPDataPlaneV1Safety(t *testing.T) {
-	ensureRouteStore(t)
-
+func TestProductionPolicyPlanningEnforcesSecurityAxis(t *testing.T) {
 	t.Run("unsafe service jwt is rejected", func(t *testing.T) {
-		setHTTPDataPlanePolicyProfile(t, appconfig.HTTPDataPlaneV1Profile, "jwt-auth")
+		effective := productionPolicyConfig(strictPolicySelection, "jwt-auth")
 		const serviceID = "production-policy-unsafe-service"
 		const routeID = "production-policy-service-route"
-		putHTTPAllowlistResource(t, "services", serviceID, fmt.Appendf(nil,
-			`{"id":%q,"plugins":{"jwt-auth":{"hide_credentials":true,"claims_to_verify":["nbf"]}}}`,
-			serviceID,
-		))
-		putRouteResource(t, routeID, fmt.Appendf(nil,
-			`{"id":%q,"uri":"/production-policy-service","service_id":%q,"upstream":{"nodes":{"127.0.0.1:1":1}}}`,
-			routeID, serviceID,
-		))
+		routeResource := resource.Route{ID: routeID, Uri: "/production-policy-service", ServiceID: serviceID}
+		service := resource.Service{
+			ID: serviceID,
+			Plugins: map[string]resource.PluginConfig{
+				"jwt-auth": map[string]any{"hide_credentials": true, "claims_to_verify": []any{"nbf"}},
+			},
+		}
 
-		builder := NewBuilder(nil)
-		t.Cleanup(builder.Stop)
-		handler, err := builder.BuildStrict()
-		if err == nil || handler != nil {
-			t.Fatalf("BuildStrict() = (%T, %v), want service policy rejection", handler, err)
+		_, err := planRoutePlugins(routeResource, PlanningInput{
+			Services:       map[string]resource.Service{serviceID: service},
+			EnabledPlugins: effective.Config.Plugins,
+			Profiles:       effective.Profiles,
+		}, plugin.NewEnabledSet(effective.Config.Plugins))
+		if err == nil {
+			t.Fatal("planRoutePlugins() error = nil, want service policy rejection")
 		}
 		for _, field := range []string{routeID, serviceID, "jwt-auth", "claims_to_verify", "exp"} {
 			if !strings.Contains(err.Error(), field) {
-				t.Fatalf("BuildStrict() error = %q, want %q", err, field)
+				t.Fatalf("planRoutePlugins() error = %q, want %q", err, field)
 			}
 		}
 	})
 
 	t.Run("safe route jwt overrides unsafe service jwt", func(t *testing.T) {
-		setHTTPDataPlanePolicyProfile(t, appconfig.HTTPDataPlaneV1Profile, "jwt-auth")
+		effective := productionPolicyConfig(strictPolicySelection, "jwt-auth")
 		const serviceID = "production-policy-override-service"
 		const routeID = "production-policy-override-route"
-		putHTTPAllowlistResource(t, "services", serviceID, fmt.Appendf(nil,
-			`{"id":%q,"plugins":{"jwt-auth":{"hide_credentials":true,"claims_to_verify":["nbf"]}}}`,
-			serviceID,
-		))
-		putRouteResource(t, routeID, fmt.Appendf(
-			nil,
-			`{"id":%q,"uri":"/production-policy-override","service_id":%q,"plugins":{"jwt-auth":{"hide_credentials":true,"claims_to_verify":["exp"]}},"upstream":{"nodes":{"127.0.0.1:1":1}}}`,
-			routeID,
-			serviceID,
-		))
+		routeResource := resource.Route{
+			ID: routeID, Uri: "/production-policy-override", ServiceID: serviceID,
+			Plugins: map[string]resource.PluginConfig{
+				"jwt-auth": map[string]any{"hide_credentials": true, "claims_to_verify": []any{"exp"}},
+			},
+		}
+		service := resource.Service{
+			ID: serviceID,
+			Plugins: map[string]resource.PluginConfig{
+				"jwt-auth": map[string]any{"hide_credentials": true, "claims_to_verify": []any{"nbf"}},
+			},
+		}
 
-		builder := NewBuilder(nil)
-		t.Cleanup(builder.Stop)
-		handler, err := builder.BuildStrict()
-		if err != nil || handler == nil {
-			t.Fatalf("BuildStrict() = (%T, %v), want safe route winner", handler, err)
+		planned, err := planRoutePlugins(routeResource, PlanningInput{
+			Services:       map[string]resource.Service{serviceID: service},
+			EnabledPlugins: effective.Config.Plugins,
+			Profiles:       effective.Profiles,
+		}, plugin.NewEnabledSet(effective.Config.Plugins))
+		if err != nil {
+			t.Fatalf("planRoutePlugins() error = %v, want safe route winner", err)
+		}
+		if len(planned.Local) != 1 || len(planned.ServicePlans) != 0 {
+			t.Fatalf(
+				"planRoutePlugins() plans = (local %d, service %d), want route override only",
+				len(planned.Local),
+				len(planned.ServicePlans),
+			)
 		}
 	})
 
 	t.Run("unsafe global rule is rejected", func(t *testing.T) {
-		setHTTPDataPlanePolicyProfile(t, appconfig.HTTPDataPlaneV1Profile, "jwt-auth")
+		effective := productionPolicyConfig(strictPolicySelection, "jwt-auth")
 		const ruleID = "production-policy-unsafe-global"
 		const routeID = "production-policy-global-route"
-		putHTTPAllowlistResource(t, "global_rules", ruleID, fmt.Appendf(nil,
-			`{"id":%q,"plugins":{"jwt-auth":{"hide_credentials":true,"claims_to_verify":["nbf"]}}}`,
-			ruleID,
-		))
-		putRouteResource(t, routeID, fmt.Appendf(nil,
-			`{"id":%q,"uri":"/production-policy-global","upstream":{"nodes":{"127.0.0.1:1":1}}}`,
-			routeID,
-		))
-
-		builder := NewBuilder(nil)
-		t.Cleanup(builder.Stop)
-		handler, err := builder.BuildStrict()
-		if err == nil || handler != nil {
-			t.Fatalf("BuildStrict() = (%T, %v), want global policy rejection", handler, err)
+		_, err := PlanHTTPPlugins(context.Background(), PlanningInput{
+			Routes: []resource.Route{{ID: routeID, Uri: "/production-policy-global"}},
+			GlobalRules: []resource.GlobalRule{{
+				ID: ruleID,
+				Plugins: map[string]resource.PluginConfig{
+					"jwt-auth": map[string]any{"hide_credentials": true, "claims_to_verify": []any{"nbf"}},
+				},
+			}},
+			EnabledPlugins: effective.Config.Plugins,
+			Profiles:       effective.Profiles,
+		})
+		if err == nil {
+			t.Fatal("PlanHTTPPlugins() error = nil, want global policy rejection")
 		}
-		for _, field := range []string{routeID, ruleID, "jwt-auth", "claims_to_verify", "exp"} {
+		for _, field := range []string{ruleID, "jwt-auth", "claims_to_verify", "exp"} {
 			if !strings.Contains(err.Error(), field) {
-				t.Fatalf("BuildStrict() error = %q, want %q", err, field)
+				t.Fatalf("PlanHTTPPlugins() error = %q, want %q", err, field)
 			}
 		}
 	})
 
 	t.Run("unsafe https upstream is rejected after upstream resolution", func(t *testing.T) {
-		setHTTPDataPlanePolicyProfile(t, appconfig.HTTPDataPlaneV1Profile)
+		effective := productionPolicyConfig(strictPolicySelection)
 		const upstreamID = "production-policy-unsafe-upstream"
 		const routeID = "production-policy-upstream-route"
-		putHTTPAllowlistResource(t, "upstreams", upstreamID, fmt.Appendf(nil,
-			`{"id":%q,"scheme":"https","nodes":{"127.0.0.1:443":1}}`, upstreamID,
-		))
-		putRouteResource(t, routeID, fmt.Appendf(nil,
-			`{"id":%q,"uri":"/production-policy-upstream","upstream_id":%q}`,
-			routeID, upstreamID,
-		))
-
-		builder := NewBuilder(nil)
-		t.Cleanup(builder.Stop)
-		handler, err := builder.BuildStrict()
-		if err == nil || handler != nil {
-			t.Fatalf("BuildStrict() = (%T, %v), want upstream policy rejection", handler, err)
+		_, err := PlanRouteUpstream(
+			resource.Route{ID: routeID, Uri: "/production-policy-upstream", UpstreamID: upstreamID},
+			resource.Service{},
+			map[string]resource.Upstream{upstreamID: {
+				Scheme: "https",
+				Nodes:  []resource.Node{{Host: "127.0.0.1", Port: 443, Weight: 1}},
+			}},
+			nil,
+			&effective.Config,
+		)
+		if err == nil {
+			t.Fatal("PlanRouteUpstream() error = nil, want upstream policy rejection")
 		}
 		for _, field := range []string{routeID, upstreamID, "https", "tls.verify"} {
 			if !strings.Contains(err.Error(), field) {
-				t.Fatalf("BuildStrict() error = %q, want %q", err, field)
+				t.Fatalf("PlanRouteUpstream() error = %q, want %q", err, field)
 			}
 		}
 	})
 
 	t.Run("compatibility profile retains auth and upstream defaults", func(t *testing.T) {
-		setHTTPDataPlanePolicyProfile(t, "", "jwt-auth")
+		effective := productionPolicyConfig(qualificationPolicySelection, "jwt-auth")
 		const upstreamID = "production-policy-compat-upstream"
 		const routeID = "production-policy-compat-route"
-		putHTTPAllowlistResource(t, "upstreams", upstreamID, fmt.Appendf(nil,
-			`{"id":%q,"scheme":"https","nodes":{"127.0.0.1:443":1}}`, upstreamID,
-		))
-		putRouteResource(t, routeID, fmt.Appendf(nil,
-			`{"id":%q,"uri":"/production-policy-compat","plugins":{"jwt-auth":{}},"upstream_id":%q}`,
-			routeID, upstreamID,
-		))
-
-		builder := NewBuilder(nil)
-		t.Cleanup(builder.Stop)
-		handler, err := builder.BuildStrict()
-		if err != nil || handler == nil {
-			t.Fatalf("BuildStrict() = (%T, %v), want compatibility defaults preserved", handler, err)
+		routeResource := resource.Route{
+			ID: routeID, Uri: "/production-policy-compat", UpstreamID: upstreamID,
+			Plugins: map[string]resource.PluginConfig{"jwt-auth": map[string]any{}},
+		}
+		planned, err := planRoutePlugins(routeResource, PlanningInput{
+			EnabledPlugins: effective.Config.Plugins,
+			Profiles:       effective.Profiles,
+		}, plugin.NewEnabledSet(effective.Config.Plugins))
+		if err != nil || len(planned.Local) != 1 {
+			t.Fatalf("planRoutePlugins() = (%d local, %v), want compatibility auth default", len(planned.Local), err)
+		}
+		_, err = PlanRouteUpstream(
+			routeResource,
+			resource.Service{},
+			map[string]resource.Upstream{upstreamID: {
+				Scheme: "https",
+				Nodes:  []resource.Node{{Host: "127.0.0.1", Port: 443, Weight: 1}},
+			}},
+			nil,
+			&effective.Config,
+		)
+		if err != nil {
+			t.Fatalf("PlanRouteUpstream() error = %v, want compatibility upstream default", err)
 		}
 	})
 }
 
-func setHTTPDataPlanePolicyProfile(t *testing.T, profile string, plugins ...string) {
-	t.Helper()
-	previous := appconfig.GlobalConfig
-	appconfig.GlobalConfig = &appconfig.Config{
-		Plugins: plugins,
-		Deployment: appconfig.Deployment{
-			Profile: profile,
-		},
-	}
-	t.Cleanup(func() { appconfig.GlobalConfig = previous })
+func productionPolicyConfig(
+	selection appconfig.ProfileSelection,
+	plugins ...string,
+) *appconfig.EffectiveConfig {
+	effective := testEffectiveConfig()
+	effective.Config.CompatibilityTarget = selection.Compatibility
+	effective.Config.SecurityProfile = selection.Security
+	effective.Config.QualificationProfile = selection.Qualification
+	effective.Config.Plugins = plugins
+	effective.Profiles = selection
+	return effective
 }

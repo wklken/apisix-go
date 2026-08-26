@@ -34,7 +34,7 @@ func BenchmarkVerifiedHotPath(b *testing.B) {
 // the callback must only read detached data and must not rebuild a live request
 // or mutate the snapshot between iterations.
 func BenchmarkSnapshotMetricsFinalizer(b *testing.B) {
-	if err := metrics.Init(); err != nil {
+	if err := metrics.Init(nil); err != nil {
 		b.Fatal(err)
 	}
 	p := &Plugin{}

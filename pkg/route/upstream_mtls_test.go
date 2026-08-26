@@ -20,9 +20,7 @@ import (
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/json"
-	pxy "github.com/wklken/apisix-go/pkg/proxy"
 	"github.com/wklken/apisix-go/pkg/resource"
-	"github.com/wklken/apisix-go/pkg/store"
 )
 
 func TestNormalizeSSLID(t *testing.T) {
@@ -56,13 +54,17 @@ func TestNormalizeSSLID(t *testing.T) {
 func TestBuildReverseHandlerRejectsInvalidUpstreamMTLSMaterialWithoutTargets(t *testing.T) {
 	for _, scheme := range []string{"https", "grpcs"} {
 		t.Run(scheme, func(t *testing.T) {
-			_, err := (&Builder{}).buildReverseHandler(resource.Route{Upstream: resource.Upstream{
-				Scheme: scheme,
-				TLS: &resource.UpstreamTLS{
-					ClientCert: "not-a-certificate",
-					ClientKey:  "not-a-key",
-				},
-			}}, resource.Service{})
+			effective := testEffectiveConfig()
+			_, err := PlanRouteUpstream(
+				resource.Route{Upstream: resource.Upstream{
+					Scheme: scheme,
+					TLS: &resource.UpstreamTLS{
+						ClientCert: "not-a-certificate",
+						ClientKey:  "not-a-key",
+					},
+				}},
+				resource.Service{}, nil, nil, &effective.Config,
+			)
 			if err == nil {
 				t.Fatalf("buildReverseHandler() error = nil, want invalid %s client certificate rejection", scheme)
 			}
@@ -73,13 +75,17 @@ func TestBuildReverseHandlerRejectsInvalidUpstreamMTLSMaterialWithoutTargets(t *
 func TestBuildReverseHandlerRejectsPlaintextUpstreamClientCertificate(t *testing.T) {
 	for _, scheme := range []string{"http", "grpc"} {
 		t.Run(scheme, func(t *testing.T) {
-			_, err := (&Builder{}).buildReverseHandler(resource.Route{Upstream: resource.Upstream{
-				Scheme: scheme,
-				TLS: &resource.UpstreamTLS{
-					ClientCert: "configured",
-					ClientKey:  "configured",
-				},
-			}}, resource.Service{})
+			effective := testEffectiveConfig()
+			_, err := PlanRouteUpstream(
+				resource.Route{Upstream: resource.Upstream{
+					Scheme: scheme,
+					TLS: &resource.UpstreamTLS{
+						ClientCert: "configured",
+						ClientKey:  "configured",
+					},
+				}},
+				resource.Service{}, nil, nil, &effective.Config,
+			)
 			if err == nil {
 				t.Fatalf("buildReverseHandler() error = nil, want plaintext %s client certificate rejection", scheme)
 			}
@@ -121,9 +127,7 @@ func testReverseHandlerUpstreamMTLSHandshake(t *testing.T, scheme string, wantHT
 	if err != nil {
 		t.Fatalf("parse upstream port: %v", err)
 	}
-	builder := &Builder{}
-	t.Cleanup(builder.Stop)
-	handler, err := builder.buildReverseHandler(resource.Route{Upstream: resource.Upstream{
+	handler := testPreparedProxyHandler(t, resource.Route{Upstream: resource.Upstream{
 		Scheme: scheme,
 		Nodes:  []resource.Node{{Host: parsed.Hostname(), Port: port, Weight: 1}},
 		TLS: &resource.UpstreamTLS{
@@ -131,10 +135,7 @@ func testReverseHandlerUpstreamMTLSHandshake(t *testing.T, scheme string, wantHT
 			ClientKey:  clientKey,
 			Verify:     false,
 		},
-	}}, resource.Service{})
-	if err != nil {
-		t.Fatalf("buildReverseHandler() error = %v", err)
-	}
+	}}, resource.Service{}, testEffectiveConfig())
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, "http://route.test/mtls", nil)
 	handler.ServeHTTP(recorder, request)
@@ -170,7 +171,12 @@ func TestBuildTransportOptionWithSSLResolverSupportsIDAndRejectsControls(t *test
 	base := resource.Upstream{Scheme: "https", TLS: &resource.UpstreamTLS{
 		ClientCertID: "ssl-1", Verify: true,
 	}}
-	if _, err := buildTransportOptionWithSSLResolver(resource.Route{}, base, resolver); err != nil {
+	if _, err := buildTransportOptionWithSSLResolver(
+		resource.Route{},
+		base,
+		resolver,
+		&testEffectiveConfig().Config,
+	); err != nil {
 		t.Fatalf("ID-based client certificate: %v", err)
 	}
 
@@ -221,7 +227,12 @@ func TestBuildTransportOptionWithSSLResolverSupportsIDAndRejectsControls(t *test
 					return resource.SSL{Status: 1}, nil
 				}
 			}
-			_, err := buildTransportOptionWithSSLResolver(resource.Route{}, test.upstream, resolve)
+			_, err := buildTransportOptionWithSSLResolver(
+				resource.Route{},
+				test.upstream,
+				resolve,
+				&testEffectiveConfig().Config,
+			)
 			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
 				t.Fatalf("buildTransportOptionWithSSLResolver() error = %v, want substring %q", err, test.wantErr)
 			}
@@ -244,6 +255,7 @@ func TestBuildClusterConfigWithSSLResolverChangesOnRotation(t *testing.T) {
 		base,
 		map[string]int{"https://127.0.0.1:1": 1},
 		resolver,
+		&testEffectiveConfig().Config,
 	)
 	if err != nil {
 		t.Fatalf("first cluster config: %v", err)
@@ -255,6 +267,7 @@ func TestBuildClusterConfigWithSSLResolverChangesOnRotation(t *testing.T) {
 		secondUpstream,
 		map[string]int{"https://127.0.0.1:1": 1},
 		resolver,
+		&testEffectiveConfig().Config,
 	)
 	if err != nil {
 		t.Fatalf("rotated cluster config: %v", err)
@@ -272,189 +285,58 @@ func TestBuildClusterConfigWithSSLResolverChangesOnRotation(t *testing.T) {
 	}
 }
 
-func TestUpstreamMTLSSameIDRotationRebuildsClusterUntilFinalLease(t *testing.T) {
-	for _, test := range []struct {
-		scheme    string
-		wantProto string
-	}{
-		{scheme: "https", wantProto: "HTTP/1.1"},
-		{scheme: "grpcs", wantProto: "HTTP/2.0"},
-	} {
-		t.Run(test.scheme, func(t *testing.T) {
-			caCertificate, caKey, clientCAs := newRouteMTLSCertificateAuthority(t)
-			serverCertificate := routeSignedCertificate(
-				t,
-				caCertificate,
-				caKey,
-				2,
-				x509.ExtKeyUsageServerAuth,
-				[]string{"localhost"},
-			)
-			clientACert, clientAKey := routeSignedCertificatePEM(
-				t,
-				caCertificate,
-				caKey,
-				3,
-				x509.ExtKeyUsageClientAuth,
-				nil,
-			)
-			clientBCert, clientBKey := routeSignedCertificatePEM(
-				t,
-				caCertificate,
-				caKey,
-				4,
-				x509.ExtKeyUsageClientAuth,
-				nil,
-			)
-			observed := make(chan struct {
-				serial int64
-				proto  string
-			}, 3)
-			upstream := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				observed <- struct {
-					serial int64
-					proto  string
-				}{serial: r.TLS.PeerCertificates[0].SerialNumber.Int64(), proto: r.Proto}
-				w.WriteHeader(http.StatusNoContent)
-			}))
-			upstream.EnableHTTP2 = test.scheme == "grpcs"
-			upstream.TLS = &tls.Config{
-				Certificates: []tls.Certificate{serverCertificate},
-				ClientCAs:    clientCAs,
-				ClientAuth:   tls.RequireAndVerifyClientCert,
-				MinVersion:   tls.VersionTLS12,
+func TestUpstreamMTLSSameIDRotationChangesPreparedClusterIdentity(t *testing.T) {
+	caCertificate, caKey, _ := newRouteMTLSCertificateAuthority(t)
+	clientACert, clientAKey := routeSignedCertificatePEM(
+		t, caCertificate, caKey, 3, x509.ExtKeyUsageClientAuth, nil,
+	)
+	clientBCert, clientBKey := routeSignedCertificatePEM(
+		t, caCertificate, caKey, 4, x509.ExtKeyUsageClientAuth, nil,
+	)
+	for _, scheme := range []string{"https", "grpcs"} {
+		t.Run(scheme, func(t *testing.T) {
+			routeResource := resource.Route{
+				ID: "mtls-rotation",
+				Upstream: resource.Upstream{
+					Scheme: scheme,
+					Nodes:  []resource.Node{{Host: "127.0.0.1", Port: 1, Weight: 1}},
+					TLS:    &resource.UpstreamTLS{ClientCertID: "shared-client", Verify: false},
+				},
 			}
-			upstream.StartTLS()
-			t.Cleanup(upstream.Close)
-			parsed, err := url.Parse(upstream.URL)
-			if err != nil {
-				t.Fatalf("parse upstream URL: %v", err)
-			}
-			port, err := strconv.Atoi(parsed.Port())
-			if err != nil {
-				t.Fatalf("parse upstream port: %v", err)
-			}
-
-			events := make(chan *store.Event)
-			storage, err := store.Open(t.TempDir()+"/rotation.db", events)
-			if err != nil {
-				t.Fatalf("open store: %v", err)
-			}
-			storage.Start()
-			previousStore := store.ReplaceGlobalStoreForTest(storage)
-			t.Cleanup(func() {
-				store.ReplaceGlobalStoreForTest(previousStore)
-				_ = storage.Stop()
-			})
-			reloadEvents := make(chan struct{}, 2)
-			storage.AddEventUpdateHook(func(event *store.Event) {
-				if strings.Contains(string(event.Key), "/ssls/") && store.IsHTTPRouteReloadBucket("ssls") {
-					reloadEvents <- struct{}{}
-				}
-			})
-			put := func(bucket, id string, value []byte) {
-				event := store.NewEvent()
-				event.Type = store.EventTypePut
-				event.Key = []byte("/apisix/" + bucket + "/" + id)
-				event.Value = value
-				events <- event
-			}
-			putClientCertificate := func(cert, key string) {
-				value, marshalErr := json.Marshal(resource.SSL{
-					ID: "shared-client", Cert: cert, Key: key, Status: 1,
-				})
-				if marshalErr != nil {
-					t.Fatalf("marshal SSL resource: %v", marshalErr)
-				}
-				put("ssls", "shared-client", value)
-				if syncErr := storage.Sync(); syncErr != nil {
-					t.Fatalf("sync SSL resource: %v", syncErr)
-				}
-				select {
-				case <-reloadEvents:
-				case <-time.After(time.Second):
-					t.Fatal("SSL update did not schedule HTTP route reload")
-				}
-			}
-			putClientCertificate(clientACert, clientAKey)
-			put(
-				"routes",
-				"mtls-rotation",
-				fmt.Appendf(
+			plan := func(cert, key string) UpstreamPlan {
+				t.Helper()
+				planned, err := PlanRouteUpstream(
+					routeResource,
+					resource.Service{},
 					nil,
-					`{"id":"mtls-rotation","uri":"/rotate","upstream":{"scheme":"%s","nodes":[{"host":"%s","port":%d,"weight":1}],"tls":{"client_cert_id":"shared-client","verify":false}}}`,
-					test.scheme,
-					parsed.Hostname(),
-					port,
-				),
-			)
-			if err := storage.Sync(); err != nil {
-				t.Fatalf("sync route: %v", err)
-			}
-
-			registry := pxy.NewClusterRegistry(pxy.NopClusterObserver{})
-			t.Cleanup(registry.Close)
-			buildAndRequest := func(wantSerial int64) *Builder {
-				builder := NewBuilderWithClusterRegistry(storage, "127.0.0.1:9080", registry)
-				handler, buildErr := builder.BuildStrict()
-				if buildErr != nil {
-					t.Fatalf("BuildStrict() error = %v", buildErr)
+					map[string]resource.SSL{"shared-client": {ID: "shared-client", Cert: cert, Key: key, Status: 1}},
+					&testEffectiveConfig().Config,
+				)
+				if err != nil {
+					t.Fatalf("PlanRouteUpstream() error = %v", err)
 				}
-				recorder := httptest.NewRecorder()
-				handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "http://route.test/rotate", nil))
-				if recorder.Code != http.StatusNoContent {
-					t.Fatalf(
-						"route status = %d, want %d; body=%q",
-						recorder.Code,
-						http.StatusNoContent,
-						recorder.Body.String(),
-					)
-				}
-				select {
-				case got := <-observed:
-					if got.serial != wantSerial || got.proto != test.wantProto {
-						t.Fatalf(
-							"upstream client = serial %d/proto %q, want %d/%q",
-							got.serial,
-							got.proto,
-							wantSerial,
-							test.wantProto,
-						)
-					}
-				case <-time.After(time.Second):
-					t.Fatal("upstream did not receive rotated mTLS request")
-				}
-				return builder
+				return planned
 			}
-
-			first := buildAndRequest(3)
-			t.Cleanup(first.Stop)
-			if got := registry.Len(); got != 1 {
-				t.Fatalf("registry.Len() after certificate A = %d, want 1", got)
+			first := plan(clientACert, clientAKey)
+			second := plan(clientBCert, clientBKey)
+			third := plan(clientBCert, clientBKey)
+			firstKey, err := first.ClusterConfig.Key()
+			if err != nil {
+				t.Fatal(err)
 			}
-			putClientCertificate(clientBCert, clientBKey)
-			second := buildAndRequest(4)
-			t.Cleanup(second.Stop)
-			if got := registry.Len(); got != 2 {
-				t.Fatalf("registry.Len() after same-ID rotation = %d, want 2", got)
+			secondKey, err := second.ClusterConfig.Key()
+			if err != nil {
+				t.Fatal(err)
 			}
-			third := buildAndRequest(4)
-			t.Cleanup(third.Stop)
-			if got := registry.Len(); got != 2 {
-				t.Fatalf("registry.Len() after identical rebuild = %d, want shared 2", got)
+			thirdKey, err := third.ClusterConfig.Key()
+			if err != nil {
+				t.Fatal(err)
 			}
-
-			second.Stop()
-			if got := registry.Len(); got != 2 {
-				t.Fatalf("registry.Len() after one rotated lease stopped = %d, want 2", got)
+			if firstKey == secondKey {
+				t.Fatal("same-ID certificate rotation reused the previous prepared cluster identity")
 			}
-			first.Stop()
-			if got := registry.Len(); got != 1 {
-				t.Fatalf("registry.Len() after old generation stopped = %d, want 1", got)
-			}
-			third.Stop()
-			if got := registry.Len(); got != 0 {
-				t.Fatalf("registry.Len() after final lease stopped = %d, want 0", got)
+			if secondKey != thirdKey {
+				t.Fatal("identical rotated certificate did not reuse the prepared cluster identity")
 			}
 		})
 	}

@@ -264,6 +264,10 @@ func (p *Plugin) PostInit() error {
 	); err != nil {
 		return err
 	}
+	var metadata pluginMetadata
+	if _, err := p.MetadataView().Decode(name, &metadata); err != nil {
+		return fmt.Errorf("syslog metadata decode failed: %w", err)
+	}
 	if p.config.Timeout == 0 {
 		p.config.Timeout = 3000
 	}
@@ -299,7 +303,6 @@ func (p *Plugin) PostInit() error {
 		p.config.InactiveTimeout = int(logger_batch.DefaultInactiveTimeout / time.Second)
 	}
 
-	metadata := base.LoadPluginMetadata[pluginMetadata](name)
 	p.logFormat, p.logFormatExtra = selectLogFormats(p.config, metadata)
 	p.customLogFormat = p.config.logFormatSet || len(p.config.LogFormat) > 0 ||
 		len(metadata.LogFormat) > 0
@@ -331,7 +334,7 @@ func (p *Plugin) PostInit() error {
 	}
 	p.transport = transport
 
-	p.BatchProcessor = base.NewBatchProcessor("sys logger", base.BatchDefaults{
+	processor, err := base.NewBatchProcessor("sys logger", p.TaskOwner(), base.BatchDefaults{
 		BatchMaxSize:       p.config.BatchMaxSize,
 		MaxRetryCount:      p.config.MaxRetryCount,
 		RetryDelaySec:      p.config.RetryDelay,
@@ -341,9 +344,17 @@ func (p *Plugin) PostInit() error {
 		MaxPendingEntries:  p.config.MaxPendingEntries,
 		PluginID:           name,
 	}, p.RouteID, p.ServerAddr, p.SendBatch)
+	if err != nil {
+		p.transport.Close()
+		p.transport = nil
+		return err
+	}
+	p.BatchProcessor = processor
 
 	return nil
 }
+
+func (p *Plugin) QuiesceGenerationTasks() { p.Stop() }
 
 func (p *Plugin) Stop() {
 	p.StopWithCleanup(func() {

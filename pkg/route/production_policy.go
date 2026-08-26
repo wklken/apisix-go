@@ -11,11 +11,12 @@ import (
 
 var productionPolicyAuthPlugins = [...]string{"key-auth", "jwt-auth", "basic-auth"}
 
-func validateHTTPDataPlanePluginPolicy(
+func validateSecurityPluginPolicy(
+	selection appconfig.ProfileSelection,
 	pluginConfigs map[string]resource.PluginConfig,
 	source string,
 ) error {
-	if !httpDataPlaneV1ProfileActive() {
+	if selection.Security != appconfig.SecurityStrict {
 		return nil
 	}
 
@@ -95,8 +96,12 @@ func validateJWTClaimsToVerify(claims any) error {
 	return nil
 }
 
-func validateHTTPDataPlaneUpstreamPolicy(upstream resource.Upstream, source string) error {
-	if !httpDataPlaneV1ProfileActive() || !upstreamUsesTLS(upstream) {
+func validateSecurityUpstreamPolicy(
+	selection appconfig.ProfileSelection,
+	upstream resource.Upstream,
+	source string,
+) error {
+	if selection.Security != appconfig.SecurityStrict || !securityPolicyUpstreamUsesTLS(upstream) {
 		return nil
 	}
 	if upstream.TLS == nil || !upstream.TLS.Verify {
@@ -109,13 +114,20 @@ func validateHTTPDataPlaneUpstreamPolicy(upstream resource.Upstream, source stri
 	return nil
 }
 
-func validateHTTPDataPlaneMaterializedPluginSources(
+func securityPolicyUpstreamUsesTLS(upstream resource.Upstream) bool {
+	return upstreamUsesTLS(upstream) ||
+		(strings.EqualFold(upstream.Scheme, "kafka") && upstream.TLS != nil)
+}
+
+func validateSecurityMaterializedPluginSources(
+	selection appconfig.ProfileSelection,
 	sources []materializedPluginSource,
 	routeID string,
 ) error {
 	for _, source := range sources {
 		provenance := fmt.Sprintf("%s %q for route %q", source.provenance.Kind, source.provenance.ID, routeID)
-		if err := validateHTTPDataPlanePluginPolicy(
+		if err := validateSecurityPluginPolicy(
+			selection,
 			map[string]resource.PluginConfig{source.name: source.config},
 			provenance,
 		); err != nil {
@@ -125,13 +137,17 @@ func validateHTTPDataPlaneMaterializedPluginSources(
 	return nil
 }
 
-func validateHTTPDataPlaneGlobalRulePolicy(globalRules []resource.GlobalRule, routeID string) error {
+func validateSecurityGlobalRulePolicy(
+	selection appconfig.ProfileSelection,
+	globalRules []resource.GlobalRule,
+	routeID string,
+) error {
 	for _, rule := range globalRules {
 		source := fmt.Sprintf("global_rule %q", rule.ID)
 		if routeID != "" {
 			source = fmt.Sprintf("%s for route %q", source, routeID)
 		}
-		if err := validateHTTPDataPlanePluginPolicy(rule.Plugins, source); err != nil {
+		if err := validateSecurityPluginPolicy(selection, rule.Plugins, source); err != nil {
 			if routeID == "" {
 				return err
 			}
@@ -139,11 +155,6 @@ func validateHTTPDataPlaneGlobalRulePolicy(globalRules []resource.GlobalRule, ro
 		}
 	}
 	return nil
-}
-
-func httpDataPlaneV1ProfileActive() bool {
-	return appconfig.GlobalConfig != nil &&
-		appconfig.GlobalConfig.Deployment.Profile == appconfig.HTTPDataPlaneV1Profile
 }
 
 func policySource(source string) string {

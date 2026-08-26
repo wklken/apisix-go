@@ -9,7 +9,10 @@ import (
 	"net"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
+
+	"github.com/wklken/apisix-go/pkg/runtime"
 )
 
 const (
@@ -207,13 +210,56 @@ func setDeadline(
 }
 
 func closeOnContextDone(ctx context.Context, conn net.Conn) func() {
-	done := make(chan struct{})
-	go func() {
+	return newConnectionCancellationWatcher(ctx, conn)
+}
+
+func newConnectionCancellationWatcher(ctx context.Context, connections ...net.Conn) func() {
+	tasks := runtime.NewRequestTaskGroup(ctx, "connection/kafka-proxy")
+	stop := make(chan struct{})
+	if err := tasks.Go(func(context.Context) error {
 		select {
 		case <-ctx.Done():
-			_ = conn.Close()
-		case <-done:
+			closeConnectionsSafely(connections...)
+		case <-stop:
 		}
-	}()
-	return func() { close(done) }
+		return nil
+	}); err != nil {
+		panic(err)
+	}
+
+	var stopOnce sync.Once
+	var stopPanicked bool
+	var stopPanic any
+	return func() {
+		stopOnce.Do(func() {
+			close(stop)
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					stopPanicked = true
+					stopPanic = recovered
+				}
+			}()
+			_ = tasks.Wait()
+		})
+		if stopPanicked {
+			panic(stopPanic)
+		}
+	}
+}
+
+func closeConnectionsSafely(connections ...net.Conn) {
+	var firstPanic any
+	for _, conn := range connections {
+		var closePanic any
+		func() {
+			defer func() { closePanic = recover() }()
+			_ = conn.Close()
+		}()
+		if firstPanic == nil && closePanic != nil {
+			firstPanic = closePanic
+		}
+	}
+	if firstPanic != nil {
+		panic(firstPanic)
+	}
 }

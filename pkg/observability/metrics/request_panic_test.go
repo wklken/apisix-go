@@ -12,19 +12,19 @@ func TestRecordRequestPanicIsNilSafeBeforeInit(t *testing.T) {
 	requestPanics = nil
 	t.Cleanup(func() { requestPanics = previous })
 
-	for _, stage := range []RequestPanicStage{
-		RequestPanicPreCommit,
-		RequestPanicPostCommit,
-		RequestPanicPostFlush,
-		RequestPanicPostHijack,
-		RequestPanicFinalizer,
+	for _, owner := range []RequestPanicOwner{
+		RequestPanicPlugin,
+		RequestPanicCore,
+		RequestPanicPluginFinalizer,
+		RequestPanicCoreFinalizer,
 	} {
-		RecordRequestPanic(stage)
+		RecordRequestPanic(owner, RequestPanicPreCommit)
 	}
-	RecordRequestPanic(RequestPanicStage("unbounded-value"))
+	RecordRequestPanic(RequestPanicOwner("unbounded-owner"), RequestPanicPreCommit)
+	RecordRequestPanic(RequestPanicPlugin, RequestPanicStage("unbounded-stage"))
 }
 
-func TestRequestPanicMetricUsesOnlyBoundedStages(t *testing.T) {
+func TestRequestPanicMetricUsesOnlyBoundedOwnersAndStages(t *testing.T) {
 	registry := prometheus.NewRegistry()
 	metric := newRequestPanicMetrics(registry, "apisix_")
 	previous := requestPanics
@@ -38,10 +38,19 @@ func TestRequestPanicMetricUsesOnlyBoundedStages(t *testing.T) {
 		RequestPanicPostHijack,
 		RequestPanicFinalizer,
 	}
-	for _, stage := range stages {
-		RecordRequestPanic(stage)
+	owners := []RequestPanicOwner{
+		RequestPanicPlugin,
+		RequestPanicCore,
+		RequestPanicPluginFinalizer,
+		RequestPanicCoreFinalizer,
 	}
-	RecordRequestPanic(RequestPanicStage("panic-value"))
+	for _, owner := range owners {
+		for _, stage := range stages {
+			RecordRequestPanic(owner, stage)
+		}
+	}
+	RecordRequestPanic(RequestPanicOwner("factory-name"), RequestPanicPreCommit)
+	RecordRequestPanic(RequestPanicPlugin, RequestPanicStage("raw panic text"))
 
 	families, err := registry.Gather()
 	if err != nil {
@@ -50,16 +59,20 @@ func TestRequestPanicMetricUsesOnlyBoundedStages(t *testing.T) {
 	if len(families) != 1 || families[0].GetName() != "apisix_http_request_panics_total" {
 		t.Fatalf("metric families = %#v", families)
 	}
-	if got := len(families[0].GetMetric()); got != len(stages) {
-		t.Fatalf("stage series = %d, want %d", got, len(stages))
+	if got, want := len(families[0].GetMetric()), len(owners)*len(stages); got != want {
+		t.Fatalf("owner/stage series = %d, want %d", got, want)
 	}
 	for _, sample := range families[0].GetMetric() {
 		labels := sample.GetLabel()
-		if len(labels) != 1 || labels[0].GetName() != "stage" {
-			t.Fatalf("labels = %v, want only stage", labels)
+		if len(labels) != 2 || labels[0].GetName() != "owner" || labels[1].GetName() != "stage" {
+			t.Fatalf("labels = %v, want owner and stage", labels)
 		}
 		if sample.GetCounter().GetValue() != 1 {
-			t.Fatalf("stage %q count = %v, want 1", labels[0].GetValue(), sample.GetCounter().GetValue())
+			t.Fatalf("owner/stage %q/%q count = %v, want 1",
+				labels[0].GetValue(), labels[1].GetValue(), sample.GetCounter().GetValue())
+		}
+		if labels[0].GetValue() == "factory-name" || labels[1].GetValue() == "raw panic text" {
+			t.Fatalf("unbounded label escaped validation: %v", labels)
 		}
 	}
 }
@@ -71,7 +84,7 @@ func TestRequestPanicMetricRegistrationAndFacade(t *testing.T) {
 	requestPanics = metric
 	t.Cleanup(func() { requestPanics = previous })
 
-	RecordRequestPanic(RequestPanicPreCommit)
+	RecordRequestPanic(RequestPanicPlugin, RequestPanicPreCommit)
 	collected, err := registry.Gather()
 	if err != nil {
 		t.Fatalf("Gather() error = %v", err)
@@ -80,7 +93,8 @@ func TestRequestPanicMetricRegistrationAndFacade(t *testing.T) {
 		t.Fatalf("collected = %#v", collected)
 	}
 	value := &dto.Metric{}
-	if err := metric.WithLabelValues(string(RequestPanicPreCommit)).Write(value); err != nil {
+	if err := metric.WithLabelValues(string(RequestPanicPlugin), string(RequestPanicPreCommit)).
+		Write(value); err != nil {
 		t.Fatalf("Write() error = %v", err)
 	}
 	if got := value.GetCounter().GetValue(); got != 1 {

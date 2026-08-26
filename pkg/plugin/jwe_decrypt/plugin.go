@@ -12,7 +12,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
-	"github.com/wklken/apisix-go/pkg/store"
+	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -120,8 +120,8 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			return
 		}
 
-		consumer, err := store.GetConsumerByPluginKey(name, token.header.Kid)
-		if err != nil {
+		consumer, ok := p.consumerByKey(token.header.Kid)
+		if !ok {
 			http.Error(w, util.BuildMessageResponse("invalid kid in JWE token"), http.StatusBadRequest)
 			return
 		}
@@ -136,6 +136,14 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		next.ServeHTTP(w, ctx.WithAuthenticationState(r, ctx.NewAuthenticationState(name, consumer)))
 	}
 	return http.HandlerFunc(fn)
+}
+
+func (p *Plugin) consumerByKey(key string) (resource.Consumer, bool) {
+	lookup := p.ConsumerLookup()
+	if lookup == nil {
+		return resource.Consumer{}, false
+	}
+	return lookup.ConsumerByPluginKey(name, key)
 }
 
 func (p *Plugin) fetchToken(r *http.Request) string {

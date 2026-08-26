@@ -2,18 +2,25 @@ package mcp_bridge
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
+	"github.com/wklken/apisix-go/pkg/runtime"
 )
 
 type failingReader struct{}
@@ -352,5 +359,464 @@ func TestSSEFastChildEventsAreNeverDropped(t *testing.T) {
 			t.Fatalf("iteration %d: process data = %q", iteration, data)
 		}
 		_ = resp.Body.Close()
+	}
+}
+
+const (
+	mcpBridgeChildEnv      = "APISIX_GO_MCP_BRIDGE_CHILD"
+	mcpBridgeGateEnv       = "APISIX_GO_MCP_BRIDGE_GATE"
+	mcpBridgeChildModeEnv  = "APISIX_GO_MCP_BRIDGE_CHILD_MODE"
+	mcpBridgePanicEnv      = "APISIX_GO_MCP_BRIDGE_PANIC_HELPER"
+	mcpBridgeGrandchildEnv = "APISIX_GO_MCP_BRIDGE_GRANDCHILD"
+)
+
+var mcpBridgeScannerPanic = &struct{ marker string }{marker: "mcp-scanner-panic"}
+
+type gatedSSEWriter struct {
+	header       http.Header
+	writeStarted chan struct{}
+	release      chan struct{}
+	startedOnce  sync.Once
+}
+
+func newGatedSSEWriter() *gatedSSEWriter {
+	return &gatedSSEWriter{
+		header:       make(http.Header),
+		writeStarted: make(chan struct{}),
+		release:      make(chan struct{}),
+	}
+}
+
+func (w *gatedSSEWriter) Header() http.Header { return w.header }
+
+func (w *gatedSSEWriter) WriteHeader(int) {}
+
+func (w *gatedSSEWriter) Write([]byte) (int, error) {
+	w.startedOnce.Do(func() { close(w.writeStarted) })
+	<-w.release
+	return 0, errors.New("test SSE writer failure")
+}
+
+type stagedSSEWriter struct {
+	header      http.Header
+	mu          sync.Mutex
+	buf         bytes.Buffer
+	writeCount  int
+	blocked     chan struct{}
+	release     chan struct{}
+	blockedOnce sync.Once
+}
+
+func newStagedSSEWriter() *stagedSSEWriter {
+	return &stagedSSEWriter{
+		header:  make(http.Header),
+		blocked: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+}
+
+func (w *stagedSSEWriter) Header() http.Header { return w.header }
+
+func (w *stagedSSEWriter) WriteHeader(int) {}
+
+func (w *stagedSSEWriter) Write(data []byte) (int, error) {
+	w.mu.Lock()
+	w.writeCount++
+	writeCount := w.writeCount
+	w.mu.Unlock()
+	if writeCount == 3 {
+		w.blockedOnce.Do(func() { close(w.blocked) })
+		<-w.release
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.Write(data)
+}
+
+func (w *stagedSSEWriter) Flush() {}
+
+func (w *stagedSSEWriter) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.String()
+}
+
+func TestSSEWriterFailureJoinsSession(t *testing.T) {
+	gate := newMCPBridgeGate(t)
+	p := newTestPlugin(t, mcpBridgeChildConfig(t, "hold"))
+	t.Cleanup(func() { releaseMCPBridgeGate(t, gate) })
+	writer := newGatedSSEWriter()
+	request := httptest.NewRequest(http.MethodGet, "/sse", nil)
+	handlerDone := make(chan struct{})
+	go func() {
+		defer close(handlerDone)
+		p.handleSSE(writer, request)
+	}()
+
+	<-writer.writeStarted
+	sess := waitForMCPBridgeSession(t, p)
+	waitForMCPBridgeChildrenReady(t, gate, 1)
+	close(writer.release)
+	waitForMCPBridgeMapEmpty(t, p)
+	assertMCPBridgeNotClosed(t, handlerDone, "SSE handler returned before session join")
+	assertMCPBridgeNotClosed(t, sess.done, "session done closed before session join")
+
+	releaseMCPBridgeGate(t, gate)
+	waitForMCPBridgeClosed(t, sess.done, "session did not finish after writer failure cleanup")
+	waitForMCPBridgeClosed(t, handlerDone, "SSE handler did not return after session cleanup")
+}
+
+func TestSSERequestCancelDrainsThenJoins(t *testing.T) {
+	gate := newMCPBridgeGate(t)
+	p := newTestPlugin(t, mcpBridgeChildConfig(t, "events"))
+	t.Cleanup(func() { releaseMCPBridgeGate(t, gate) })
+	writer := newStagedSSEWriter()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	request := httptest.NewRequest(http.MethodGet, "/sse", nil).WithContext(ctx)
+	handlerDone := make(chan struct{})
+	go func() {
+		defer close(handlerDone)
+		p.handleSSE(writer, request)
+	}()
+
+	sess := waitForMCPBridgeSession(t, p)
+	<-writer.blocked
+	waitForMCPBridgeChildrenReady(t, gate, 1)
+	bufferDeadline := time.Now().Add(time.Second)
+	for len(sess.events) < 2 {
+		if time.Now().After(bufferDeadline) {
+			t.Fatalf("buffered event count = %d, want 2", len(sess.events))
+		}
+		time.Sleep(time.Millisecond)
+	}
+	cancel()
+	close(writer.release)
+	waitForMCPBridgeMapEmpty(t, p)
+	assertMCPBridgeNotClosed(t, handlerDone, "SSE handler returned before canceled session join")
+	assertMCPBridgeNotClosed(t, sess.done, "session done closed before canceled session join")
+
+	releaseMCPBridgeGate(t, gate)
+	waitForMCPBridgeClosed(t, sess.done, "canceled session did not finish after gate release")
+	waitForMCPBridgeClosed(t, handlerDone, "SSE handler did not return after canceled session cleanup")
+
+	output := writer.String()
+	previous := -1
+	for _, event := range []string{"one", "two", "three"} {
+		index := strings.Index(output, "data: "+event+"\n")
+		if index < 0 {
+			t.Fatalf("output = %q, missing buffered event %q", output, event)
+		}
+		if index <= previous {
+			t.Fatalf("output = %q, event %q was not ordered after previous event", output, event)
+		}
+		previous = index
+	}
+}
+
+func TestCloseSessionWaitsForScanners(t *testing.T) {
+	gate := newMCPBridgeGate(t)
+	p := newTestPlugin(t, mcpBridgeChildConfig(t, "hold"))
+	t.Cleanup(func() { releaseMCPBridgeGate(t, gate) })
+	sess, err := p.startSession(context.Background())
+	if err != nil {
+		t.Fatalf("startSession() error = %v", err)
+	}
+	waitForMCPBridgeChildrenReady(t, gate, 1)
+
+	const closers = 2
+	closeDone := make(chan struct{}, closers)
+	for range closers {
+		go func() {
+			closeMCPSessionForTest(p, sess)
+			closeDone <- struct{}{}
+		}()
+	}
+	waitForMCPBridgeMapEmpty(t, p)
+	for range closers {
+		assertMCPBridgeNotClosed(t, closeDone, "duplicate close returned before scanner join")
+	}
+	assertMCPBridgeNotClosed(t, sess.done, "direct close returned before session join")
+
+	releaseMCPBridgeGate(t, gate)
+	for range closers {
+		waitForMCPBridgeClosed(t, closeDone, "duplicate close did not return after session cleanup")
+	}
+	waitForMCPBridgeClosed(t, sess.done, "direct close did not finish session cleanup")
+}
+
+func TestCloseAllJoinsOutsideLock(t *testing.T) {
+	gate := newMCPBridgeGate(t)
+	p := newTestPlugin(t, mcpBridgeChildConfig(t, "hold"))
+	t.Cleanup(func() { releaseMCPBridgeGate(t, gate) })
+	var sessions []*session
+	for range 2 {
+		sess, err := p.startSession(context.Background())
+		if err != nil {
+			t.Fatalf("startSession() error = %v", err)
+		}
+		sessions = append(sessions, sess)
+	}
+	waitForMCPBridgeChildrenReady(t, gate, len(sessions))
+	waitForMCPBridgeSessionCount(t, p, len(sessions))
+
+	closeAllDone := make(chan struct{})
+	go func() {
+		p.closeAll()
+		close(closeAllDone)
+	}()
+	waitForMCPBridgeMapEmpty(t, p)
+	lookupDone := make(chan struct{})
+	go func() {
+		_ = p.lookupSession("missing")
+		close(lookupDone)
+	}()
+	waitForMCPBridgeClosed(t, lookupDone, "session map mutex remained held while closeAll joined")
+	assertMCPBridgeNotClosed(t, closeAllDone, "closeAll returned before joining sessions")
+	for _, sess := range sessions {
+		assertMCPBridgeNotClosed(t, sess.done, "closeAll returned before a session joined")
+	}
+
+	releaseMCPBridgeGate(t, gate)
+	waitForMCPBridgeClosed(t, closeAllDone, "closeAll did not return after joining sessions")
+	for _, sess := range sessions {
+		waitForMCPBridgeClosed(t, sess.done, "closeAll did not finish session cleanup")
+	}
+}
+
+func TestStartSessionDoesNotPublishBeforeTaskAdmission(t *testing.T) {
+	p := newTestPlugin(t, Config{Command: "cat"})
+	previousAdmission := admitSessionTask
+	admissionStarted := make(chan struct{})
+	releaseAdmission := make(chan struct{})
+	var first sync.Once
+	admitSessionTask = func(tasks *runtime.RequestTaskGroup, run func(context.Context) error) error {
+		first.Do(func() {
+			close(admissionStarted)
+			<-releaseAdmission
+		})
+		return previousAdmission(tasks, run)
+	}
+	defer func() { admitSessionTask = previousAdmission }()
+
+	type startResult struct {
+		sess *session
+		err  error
+	}
+	result := make(chan startResult, 1)
+	go func() {
+		sess, err := p.startSession(context.Background())
+		result <- startResult{sess: sess, err: err}
+	}()
+	<-admissionStarted
+	p.mu.Lock()
+	visible := len(p.sessions)
+	p.mu.Unlock()
+	close(releaseAdmission)
+
+	started := <-result
+	if started.err != nil {
+		t.Fatalf("startSession() error = %v", started.err)
+	}
+	p.closeSession(started.sess)
+	if visible != 0 {
+		t.Fatalf("session map exposed %d session before task admission completed", visible)
+	}
+}
+
+func TestScannerPanicReturnsFromSessionOwner(t *testing.T) {
+	command := exec.Command(os.Args[0], "-test.run=^TestScannerPanicReturnsFromSessionOwnerHelper$")
+	command.Env = append(os.Environ(), mcpBridgePanicEnv+"=1")
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("scanner panic escaped owner (err %v): %s", err, output)
+	}
+	markers := []string{
+		"mcp-session-map-removed",
+		"mcp-session-channels-closed",
+		"mcp-session-owner-recovered",
+	}
+	previous := -1
+	for _, marker := range markers {
+		index := bytes.Index(output, []byte(marker))
+		if index < 0 {
+			t.Fatalf("helper output = %s, missing marker %q", output, marker)
+		}
+		if index <= previous {
+			t.Fatalf("helper output = %s, marker %q was emitted before cleanup predecessor", output, marker)
+		}
+		previous = index
+	}
+}
+
+func TestScannerPanicReturnsFromSessionOwnerHelper(t *testing.T) {
+	if os.Getenv(mcpBridgePanicEnv) != "1" {
+		return
+	}
+
+	p := newTestPlugin(t, Config{Command: "cat"})
+	previousScanner := scanPipeForSession
+	scanPipeForSession = func(context.Context, io.Reader, string, chan<- sseEvent) {
+		panic(mcpBridgeScannerPanic)
+	}
+	defer func() { scanPipeForSession = previousScanner }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	request := httptest.NewRequest(http.MethodGet, "/sse", nil).WithContext(ctx)
+	handlerResult := make(chan any, 1)
+	go func() {
+		defer func() { handlerResult <- recover() }()
+		p.handleSSE(httptest.NewRecorder(), request)
+	}()
+	sess := waitForMCPBridgeSession(t, p)
+	cancel()
+	recovered := <-handlerResult
+	if recovered != mcpBridgeScannerPanic {
+		t.Fatalf("recovered panic = %#v, want exact %#v", recovered, mcpBridgeScannerPanic)
+	}
+	waitForMCPBridgeMapEmpty(t, p)
+	fmt.Println("mcp-session-map-removed")
+	waitForMCPBridgeClosed(t, sess.done, "scanner panic owner returned before session done")
+	fmt.Println("mcp-session-channels-closed")
+	if _, ok := <-sess.events; ok {
+		t.Fatal("session events channel remained open after scanner panic")
+	}
+	fmt.Println("mcp-session-owner-recovered")
+}
+
+func TestMCPBridgeChild(t *testing.T) {
+	if os.Getenv(mcpBridgeChildEnv) != "1" {
+		return
+	}
+
+	grandchild := exec.Command(os.Args[0], "-test.run=^TestMCPBridgeGrandchild$")
+	grandchild.Env = append(os.Environ(), mcpBridgeGrandchildEnv+"=1")
+	grandchild.Stdout = os.Stdout
+	grandchild.Stderr = os.Stderr
+	if err := grandchild.Start(); err != nil {
+		os.Exit(2)
+	}
+	if gate := os.Getenv(mcpBridgeGateEnv); gate != "" {
+		pid := fmt.Sprint(os.Getpid())
+		_ = os.WriteFile(gate+".ready."+pid, []byte("ready"), 0o600)
+	}
+	mode := os.Getenv(mcpBridgeChildModeEnv)
+	switch mode {
+	case "events":
+		for _, event := range []string{"one", "two", "three"} {
+			_, _ = fmt.Fprintln(os.Stdout, event)
+		}
+	}
+	_, _ = io.ReadAll(os.Stdin)
+	waitForMCPBridgeChildGate()
+}
+
+func TestMCPBridgeGrandchild(t *testing.T) {
+	if os.Getenv(mcpBridgeGrandchildEnv) != "1" {
+		return
+	}
+	waitForMCPBridgeChildGate()
+}
+
+func mcpBridgeChildConfig(t *testing.T, mode string) Config {
+	t.Helper()
+	t.Setenv(mcpBridgeChildEnv, "1")
+	t.Setenv(mcpBridgeChildModeEnv, mode)
+	return Config{Command: os.Args[0], Args: []string{"-test.run=^TestMCPBridgeChild$"}}
+}
+
+func newMCPBridgeGate(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "release")
+	t.Setenv(mcpBridgeGateEnv, path)
+	return path
+}
+
+func waitForMCPBridgeChildrenReady(t *testing.T, gate string, count int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		ready, err := filepath.Glob(gate + ".ready.*")
+		if err == nil && len(ready) >= count {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("ready child count = %d, want %d", len(ready), count)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func releaseMCPBridgeGate(t *testing.T, path string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte("release"), 0o600); err != nil {
+		t.Fatalf("release MCP bridge gate: %v", err)
+	}
+}
+
+func waitForMCPBridgeChildGate() {
+	path := os.Getenv(mcpBridgeGateEnv)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			os.Exit(2)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func waitForMCPBridgeSession(t *testing.T, p *Plugin) *session {
+	t.Helper()
+	sessions := waitForMCPBridgeSessionCount(t, p, 1)
+	return sessions[0]
+}
+
+func waitForMCPBridgeSessionCount(t *testing.T, p *Plugin, count int) []*session {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		p.mu.Lock()
+		sessions := make([]*session, 0, len(p.sessions))
+		for _, sess := range p.sessions {
+			sessions = append(sessions, sess)
+		}
+		p.mu.Unlock()
+		if len(sessions) == count {
+			return sessions
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("session count = %d, want %d", len(sessions), count)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func waitForMCPBridgeMapEmpty(t *testing.T, p *Plugin) {
+	t.Helper()
+	_ = waitForMCPBridgeSessionCount(t, p, 0)
+}
+
+func closeMCPSessionForTest(p *Plugin, sess *session) {
+	p.closeSession(sess)
+}
+
+func assertMCPBridgeNotClosed(t *testing.T, done <-chan struct{}, message string) {
+	t.Helper()
+	select {
+	case <-done:
+		t.Fatal(message)
+	default:
+	}
+}
+
+func waitForMCPBridgeClosed(t *testing.T, done <-chan struct{}, message string) {
+	t.Helper()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal(message)
 	}
 }

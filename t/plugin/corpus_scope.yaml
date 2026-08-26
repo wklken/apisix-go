@@ -1,3 +1,4 @@
+# Historical source snapshot; capability evidence freshness is evaluated against the current compatibility target.
 commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
 sources:
   - file: t/plugin/acl.t

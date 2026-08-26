@@ -3,20 +3,698 @@ package response_rewrite
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	brotlienc "github.com/andybalholm/brotli"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/data_encryption"
+	"github.com/wklken/apisix-go/pkg/generation"
+	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/plugin/body_transformer"
+	"github.com/wklken/apisix-go/pkg/secret"
+	"github.com/wklken/apisix-go/pkg/testutil"
 	"github.com/wklken/apisix-go/pkg/util"
 )
+
+type responseRewriteScopedSecretCall struct {
+	Scope secret.Scope
+	Raw   string
+}
+
+type responseRewriteScopedSecretBroker struct {
+	mu     sync.Mutex
+	values map[string]string
+	fail   map[string]error
+	calls  []responseRewriteScopedSecretCall
+}
+
+func (*responseRewriteScopedSecretBroker) AuthorizeCandidate(
+	context.Context, secret.AttemptID, generation.ApplyTicket, generation.PublicationSet,
+) error {
+	return nil
+}
+
+func (*responseRewriteScopedSecretBroker) AuthorizeRecovery(
+	context.Context, secret.AttemptID, generation.RevisionSet,
+	map[generation.Domain]generation.PublishedGeneration,
+) error {
+	return errors.New("recovery is not used by this leaf fixture")
+}
+
+func (broker *responseRewriteScopedSecretBroker) ResolveScoped(
+	ctx context.Context, scope secret.Scope, raw string,
+) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	broker.mu.Lock()
+	defer broker.mu.Unlock()
+	broker.calls = append(broker.calls, responseRewriteScopedSecretCall{Scope: scope, Raw: raw})
+	if err := broker.fail[raw]; err != nil {
+		return "", err
+	}
+	if value, ok := broker.values[raw]; ok {
+		return value, nil
+	}
+	return raw, nil
+}
+
+func (*responseRewriteScopedSecretBroker) RevokeAttempt(context.Context, secret.AttemptID) error {
+	return nil
+}
+
+func newResponseRewriteScopedSecretHarness(
+	t *testing.T, revision uint64, resourceID string, rawConfig map[string]any, values map[string]string,
+) (secret.GenerationCapability, secret.Scope, *responseRewriteScopedSecretBroker, func()) {
+	t.Helper()
+	key := generation.ResourceKey{Kind: "routes", ID: resourceID}
+	resourceJSON, err := json.Marshal(map[string]any{
+		"plugins": map[string]any{name: rawConfig},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := generation.NewSnapshot(revision, []generation.Resource{{
+		Key: key, Value: resourceJSON,
+	}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := generation.PublicationCandidate{
+		Artifact: generation.GenerationArtifact{
+			Domain: generation.DomainHTTP, Revision: revision,
+			Digest: snapshot.Digest(), Snapshot: snapshot.SnapshotID(),
+		},
+		Snapshot: snapshot,
+		Closure:  []generation.ResourceKey{key},
+		Decisions: []generation.ResourceDecision{{
+			Key: key, Disposition: generation.DispositionPublished, Code: "response-rewrite-test",
+		}},
+	}
+	ticket := generation.ApplyTicket{
+		DesiredRevision: revision, RequiredDomains: []generation.Domain{generation.DomainHTTP},
+	}
+	set := generation.PublicationSet{
+		DesiredRevision: revision,
+		Domains: map[generation.Domain]generation.PublicationCandidate{
+			generation.DomainHTTP: candidate,
+		},
+	}
+	manifest, err := capability.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := capability.NewSecretDeclarationCatalog(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	broker := &responseRewriteScopedSecretBroker{
+		values: values,
+		fail:   make(map[string]error),
+	}
+	registration, err := secret.NewScopedMaterializer(broker, catalog).
+		RegisterCandidate(context.Background(), ticket, set)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capabilityValue, err := secret.NewGenerationCapability(registration, revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := secret.Scope{
+		Generation: revision,
+		Attempt:    registration.AttemptID(),
+		Domain:     generation.DomainHTTP,
+		Plugin:     name,
+		Resource:   key,
+		Source:     capability.SecretPluginConfig,
+	}
+	return capabilityValue, scope, broker, func() {
+		if err := registration.Close(context.Background()); err != nil {
+			t.Fatalf("close scoped secret registration: %v", err)
+		}
+	}
+}
+
+func assertResponseRewriteDescriptorFor(t *testing.T, value, plaintext string) {
+	t.Helper()
+	digest := sha256.Sum256([]byte(plaintext))
+	want := "plugin_config#sha256:" + hex.EncodeToString(digest[:])
+	if value != want {
+		t.Fatalf("response-rewrite descriptor = %q, want admitted-plaintext descriptor %q", value, want)
+	}
+}
+
+func TestMaterializeScopedSecretsOwnsResponseBodies(t *testing.T) {
+	contextualBody, err := data_encryption.EncryptForContext(
+		"contextual-body", "0123456789abcdef", "response-rewrite.body",
+	)
+	if err != nil {
+		t.Fatalf("EncryptForContext(body) error = %v", err)
+	}
+	contextualSecret, err := data_encryption.EncryptForContext(
+		"strict-secret-body", "0123456789abcdef", "response-rewrite.body_secret",
+	)
+	if err != nil {
+		t.Fatalf("EncryptForContext(body_secret) error = %v", err)
+	}
+	tests := []struct {
+		name       string
+		field      string
+		raw        string
+		resolved   string
+		bodySecret bool
+	}{
+		{name: "literal body", field: "body", raw: "literal-body", resolved: "literal-body"},
+		{name: "environment body", field: "body", raw: "$ENV://RESPONSE_BODY", resolved: "environment-body"},
+		{name: "resolved empty body", field: "body", raw: "$ENV://EMPTY_RESPONSE_BODY", resolved: ""},
+		{name: "managed body", field: "body", raw: "$secret://vault/response-body", resolved: "managed-body"},
+		{name: "contextual body", field: "body", raw: contextualBody, resolved: "contextual-body"},
+		{
+			name: "strict contextual body_secret", field: "body_secret",
+			raw: contextualSecret, resolved: "strict-secret-body", bodySecret: true,
+		},
+	}
+	for index, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rawConfig := map[string]any{tt.field: tt.raw}
+			capabilityValue, scope, broker, closeAttempt := newResponseRewriteScopedSecretHarness(
+				t, uint64(index+1), fmt.Sprintf("response-route-%d", index), rawConfig,
+				map[string]string{tt.raw: tt.resolved},
+			)
+			defer closeAttempt()
+
+			p := &Plugin{}
+			if err := p.Init(); err != nil {
+				t.Fatal(err)
+			}
+			if err := util.Parse(rawConfig, p.Config()); err != nil {
+				t.Fatal(err)
+			}
+			if err := base.MaterializeScopedPluginSecrets(
+				context.Background(), scope, capabilityValue, p,
+			); err != nil {
+				t.Fatal(err)
+			}
+			if err := p.PostInit(); err != nil {
+				t.Fatal(err)
+			}
+
+			if len(broker.calls) != 1 {
+				t.Fatalf("scoped calls = %#v, want one exact %s call", broker.calls, tt.field)
+			}
+			wantScope := scope
+			wantScope.Field = tt.field
+			if call := broker.calls[0]; call.Raw != tt.raw || call.Scope != wantScope {
+				t.Fatalf("scoped call = %#v, want raw %q and scope %#v", call, tt.raw, wantScope)
+			}
+			cfg := p.Config().(*Config)
+			if tt.bodySecret {
+				if cfg.Body != nil {
+					t.Fatalf("public body = %q, want nil instead of resolved body_secret", *cfg.Body)
+				}
+				if cfg.BodySecret == nil {
+					t.Fatal("public body_secret = nil, want descriptor")
+				}
+				assertResponseRewriteDescriptorFor(t, *cfg.BodySecret, tt.resolved)
+			} else {
+				if cfg.Body == nil {
+					t.Fatal("public body = nil, want descriptor")
+				}
+				assertResponseRewriteDescriptorFor(t, *cfg.Body, tt.resolved)
+				if cfg.BodySecret != nil {
+					t.Fatalf("public body_secret = %q, want nil", *cfg.BodySecret)
+				}
+			}
+
+			req := httptest.NewRequest(http.MethodGet, "/rewrite", nil)
+			response := httptest.NewRecorder()
+			chain := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte("upstream"))
+			}))
+			var (
+				retained  *base.BufferedResponseWriter
+				bodyAlias []byte
+			)
+			capture := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				chain.ServeHTTP(w, r)
+				retained = base.GetOrCreateTransformResponseWriter(r)
+				bodyAlias = retained.Body()
+				if got := string(bodyAlias); got != tt.resolved {
+					t.Fatalf("shared pipeline body before owner return = %q, want %q", got, tt.resolved)
+				}
+			})
+			base.WithTransformPipeline(2)(capture).ServeHTTP(response, req)
+			if got := response.Body.String(); got != tt.resolved {
+				t.Fatalf("response body = %q, want admitted body %q", got, tt.resolved)
+			}
+			if retained == nil {
+				t.Fatal("retained buffered response writer = nil")
+			}
+			if len(retained.Body()) != 0 {
+				t.Fatalf("retained buffered response body = %q, want empty", retained.Body())
+			}
+			for index, value := range bodyAlias {
+				if value != 0 {
+					t.Fatalf("retained backing byte %d = %d, want zero", index, value)
+				}
+			}
+		})
+	}
+
+	t.Run("empty optional body", func(t *testing.T) {
+		rawConfig := map[string]any{"body": ""}
+		capabilityValue, scope, broker, closeAttempt := newResponseRewriteScopedSecretHarness(
+			t, 20, "response-empty", rawConfig, nil,
+		)
+		defer closeAttempt()
+		p := &Plugin{}
+		if err := p.Init(); err != nil {
+			t.Fatal(err)
+		}
+		if err := util.Parse(rawConfig, p.Config()); err != nil {
+			t.Fatal(err)
+		}
+		if err := base.MaterializeScopedPluginSecrets(
+			context.Background(), scope, capabilityValue, p,
+		); err != nil {
+			t.Fatal(err)
+		}
+		if err := p.PostInit(); err != nil {
+			t.Fatal(err)
+		}
+		if len(broker.calls) != 0 {
+			t.Fatalf("empty optional body materialization calls = %#v, want none", broker.calls)
+		}
+		response := performRequest(p, func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte("upstream"))
+		})
+		if response.Body.Len() != 0 {
+			t.Fatalf("empty body response = %q, want empty replacement", response.Body.String())
+		}
+	})
+
+	t.Run("body and body_secret conflict before resolver", func(t *testing.T) {
+		rawConfig := map[string]any{"body": "plain", "body_secret": contextualSecret}
+		capabilityValue, scope, broker, closeAttempt := newResponseRewriteScopedSecretHarness(
+			t, 21, "response-conflict", rawConfig,
+			map[string]string{"plain": "plain", contextualSecret: "strict-secret-body"},
+		)
+		defer closeAttempt()
+		p := &Plugin{}
+		if err := p.Init(); err != nil {
+			t.Fatal(err)
+		}
+		if err := util.Parse(rawConfig, p.Config()); err != nil {
+			t.Fatal(err)
+		}
+		validator, ok := any(p).(interface{ ValidatePreMaterialization() error })
+		if !ok {
+			t.Fatal("response-rewrite does not implement pre-materialization validation")
+		}
+		if err := validator.ValidatePreMaterialization(); err == nil ||
+			err.Error() != "response-rewrite body and body_secret cannot be configured together" {
+			t.Fatalf("ValidatePreMaterialization() error = %v, want body/body_secret conflict", err)
+		}
+		if err := base.MaterializeScopedPluginSecrets(
+			context.Background(), scope, capabilityValue, p,
+		); err == nil {
+			t.Fatal("MaterializeScopedPluginSecrets() error = nil, want conflict rejection")
+		}
+		if len(broker.calls) != 0 {
+			t.Fatalf("conflict resolver calls = %#v, want zero", broker.calls)
+		}
+	})
+}
+
+func TestResponseRewritePreservesInnerBodyAcrossTransformPipeline(t *testing.T) {
+	inner := newTestPlugin(t, Config{Body: new("inner-body")})
+	outer := newTestPlugin(t, Config{
+		StatusCode: http.StatusAccepted,
+		Headers:    Headers{Set: map[string]string{"X-Outer": "yes"}},
+	})
+	handler := base.WithTransformPipeline(2)(outer.Handler(inner.Handler(http.HandlerFunc(
+		func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte("upstream"))
+		},
+	))))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/pipeline", nil))
+	if response.Code != http.StatusAccepted || response.Body.String() != "inner-body" {
+		t.Fatalf("pipeline response = %d/%q, want 202/inner-body", response.Code, response.Body.String())
+	}
+	if got := response.Header().Get("X-Outer"); got != "yes" {
+		t.Fatalf("pipeline X-Outer = %q, want yes", got)
+	}
+}
+
+func TestTransformPipelineClearsLongAdmittedBodyAfterShorterOuterTransform(t *testing.T) {
+	const (
+		raw      = "$ENV://PRIVATE_RESPONSE_BODY"
+		resolved = "admitted-private-response-with-a-long-tail"
+		final    = "short"
+	)
+	rawConfig := map[string]any{
+		"body":        raw,
+		"status_code": http.StatusAccepted,
+		"headers": map[string]any{
+			"set": map[string]any{"X-Rewritten": "yes"},
+		},
+	}
+	capabilityValue, scope, _, closeAttempt := newResponseRewriteScopedSecretHarness(
+		t, 60, "response-identity-pipeline", rawConfig, map[string]string{raw: resolved},
+	)
+	defer closeAttempt()
+	rewrite := &Plugin{}
+	if err := rewrite.Init(); err != nil {
+		t.Fatal(err)
+	}
+	if err := util.Parse(rawConfig, rewrite.Config()); err != nil {
+		t.Fatal(err)
+	}
+	if err := base.MaterializeScopedPluginSecrets(
+		context.Background(), scope, capabilityValue, rewrite,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := rewrite.PostInit(); err != nil {
+		t.Fatal(err)
+	}
+
+	outer := &body_transformer.Plugin{}
+	if err := outer.Init(); err != nil {
+		t.Fatal(err)
+	}
+	if err := util.Parse(map[string]any{
+		"response": map[string]any{
+			"input_format": "plain",
+			"template":     final,
+		},
+	}, outer.Config()); err != nil {
+		t.Fatal(err)
+	}
+	if err := outer.PostInit(); err != nil {
+		t.Fatal(err)
+	}
+
+	terminal := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Length", "8")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte("upstream"))
+	})
+	var (
+		shared    *base.BufferedResponseWriter
+		bodyAlias []byte
+	)
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rewrite.Handler(terminal).ServeHTTP(w, r)
+		shared = base.GetOrCreateTransformResponseWriter(r)
+		bodyAlias = shared.Body()
+		if got := string(bodyAlias); got != resolved {
+			t.Fatalf("shared pipeline body before outer transform = %q, want %q", got, resolved)
+		}
+	})
+	chain := outer.Handler(inner)
+	capture := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		chain.ServeHTTP(w, r)
+		if got := string(shared.Body()); got != final {
+			t.Fatalf("shared pipeline body before owner return = %q, want %q", got, final)
+		}
+	})
+	handler := base.WithTransformPipeline(2)(capture)
+	request := httptest.NewRequest(http.MethodGet, "/shorter-outer-transform", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusAccepted || response.Body.String() != final {
+		t.Fatalf("final response = %d/%q, want 202/%q", response.Code, response.Body.String(), final)
+	}
+	if got := response.Header().Get("X-Rewritten"); got != "yes" {
+		t.Fatalf("X-Rewritten = %q, want yes", got)
+	}
+	if got := response.Header().Get("Content-Length"); got != "" {
+		t.Fatalf("Content-Length = %q, want invalidated", got)
+	}
+	if shared == nil {
+		t.Fatal("shared pipeline writer = nil")
+	}
+	if len(shared.Body()) != 0 {
+		t.Fatalf("shared pipeline after ServeHTTP = %#v/%q, want empty", shared, shared.Body())
+	}
+	for index, value := range bodyAlias {
+		if value != 0 {
+			t.Fatalf("shared pipeline backing byte %d = %d, want zero", index, value)
+		}
+	}
+}
+
+func materializeResponseRewriteScopedPlugin(
+	t *testing.T, revision uint64, resourceID, raw, resolved string,
+) (*Plugin, *responseRewriteScopedSecretBroker, func()) {
+	t.Helper()
+	rawConfig := map[string]any{"body": raw}
+	capabilityValue, scope, broker, closeAttempt := newResponseRewriteScopedSecretHarness(
+		t, revision, resourceID, rawConfig, map[string]string{raw: resolved},
+	)
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	if err := util.Parse(rawConfig, p.Config()); err != nil {
+		t.Fatal(err)
+	}
+	if err := base.MaterializeScopedPluginSecrets(
+		context.Background(), scope, capabilityValue, p,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatal(err)
+	}
+	return p, broker, closeAttempt
+}
+
+func TestMaterializeScopedSecretsFailureIsAtomicAndRetryable(t *testing.T) {
+	const raw = "$secret://vault/response-failure"
+	rawConfig := map[string]any{"body": raw}
+	capabilityValue, scope, broker, closeAttempt := newResponseRewriteScopedSecretHarness(
+		t, 30, "response-failure", rawConfig, map[string]string{raw: "private-response"},
+	)
+	defer closeAttempt()
+	broker.fail[raw] = errors.New("private resolver failure")
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	if err := util.Parse(rawConfig, p.Config()); err != nil {
+		t.Fatal(err)
+	}
+	err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p)
+	if err == nil {
+		t.Fatal("MaterializeScopedPluginSecrets() error = nil")
+	}
+	if strings.Contains(err.Error(), raw) || strings.Contains(err.Error(), "private-response") ||
+		strings.Contains(err.Error(), "private resolver") {
+		t.Fatalf("materialization error leaked body details: %v", err)
+	}
+	if p.config.Body == nil || *p.config.Body != raw || p.body != nil || p.legacyBody != nil {
+		t.Fatalf(
+			"failed materialization retained state: config=%#v scoped=%#v legacy=%p",
+			p.config.Body, p.body, p.legacyBody,
+		)
+	}
+
+	broker.mu.Lock()
+	delete(broker.fail, raw)
+	broker.mu.Unlock()
+	if err := base.MaterializeScopedPluginSecrets(
+		context.Background(), scope, capabilityValue, p,
+	); err != nil {
+		t.Fatalf("retry materialization error = %v", err)
+	}
+	assertResponseRewriteDescriptorFor(t, *p.config.Body, "private-response")
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() after retry error = %v", err)
+	}
+}
+
+func TestMaterializeScopedSecretsBase64FailureIsAtomicAndRetryable(t *testing.T) {
+	const raw = "$ENV://RESPONSE_BASE64"
+	rawConfig := map[string]any{"body": raw, "body_base64": true}
+	capabilityValue, scope, broker, closeAttempt := newResponseRewriteScopedSecretHarness(
+		t, 31, "response-base64", rawConfig, map[string]string{raw: "not-base64"},
+	)
+	defer closeAttempt()
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	if err := util.Parse(rawConfig, p.Config()); err != nil {
+		t.Fatal(err)
+	}
+	if err := base.MaterializeScopedPluginSecrets(
+		context.Background(), scope, capabilityValue, p,
+	); err == nil {
+		t.Fatal("invalid admitted base64 materialized successfully")
+	}
+	if p.config.Body == nil || *p.config.Body != raw || p.body != nil || p.legacyBody != nil {
+		t.Fatalf("failed base64 materialization retained state: config=%#v scoped=%#v", p.config.Body, p.body)
+	}
+
+	broker.mu.Lock()
+	broker.values[raw] = base64.StdEncoding.EncodeToString([]byte("retried-body"))
+	broker.mu.Unlock()
+	if err := base.MaterializeScopedPluginSecrets(
+		context.Background(), scope, capabilityValue, p,
+	); err != nil {
+		t.Fatalf("base64 retry materialization error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() after base64 retry error = %v", err)
+	}
+	response := performRequest(p, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("upstream"))
+	})
+	if got := response.Body.String(); got != "retried-body" {
+		t.Fatalf("retried response body = %q, want retried-body", got)
+	}
+}
+
+func TestResponseBodyRotationDoesNotCrossGenerationsAndStopIsRepeatable(t *testing.T) {
+	pN, _, closeN := materializeResponseRewriteScopedPlugin(
+		t, 40, "response-n", "$ENV://RESPONSE_N", "body-n",
+	)
+	defer closeN()
+	pNPlusOne, _, closeNPlusOne := materializeResponseRewriteScopedPlugin(
+		t, 41, "response-n-plus-one", "$ENV://RESPONSE_N_PLUS_ONE", "body-n-plus-one",
+	)
+	defer closeNPlusOne()
+
+	rewrite := func(p *Plugin) *httptest.ResponseRecorder {
+		t.Helper()
+		return performRequest(p, func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte("upstream"))
+		})
+	}
+	if got := rewrite(pN).Body.String(); got != "body-n" {
+		t.Fatalf("generation N body = %q", got)
+	}
+	if got := rewrite(pNPlusOne).Body.String(); got != "body-n-plus-one" {
+		t.Fatalf("generation N+1 body = %q", got)
+	}
+
+	owned := pN.body
+	pN.Stop()
+	pN.Stop()
+	if pN.body != nil || pN.legacyBody != nil || !pN.stopped {
+		t.Fatalf(
+			"generation N retained body state: scoped=%#v legacy=%p stopped=%v",
+			pN.body,
+			pN.legacyBody,
+			pN.stopped,
+		)
+	}
+	if owned == nil || *owned != (secret.Value{}) {
+		t.Fatalf("generation N scoped owner after Stop = %#v, want zero", owned)
+	}
+	retired := rewrite(pN)
+	if retired.Code != http.StatusInternalServerError || strings.Contains(retired.Body.String(), "body-n") {
+		t.Fatalf("retired generation response = %d/%q, want redacted 500", retired.Code, retired.Body.String())
+	}
+	if got := rewrite(pNPlusOne).Body.String(); got != "body-n-plus-one" {
+		t.Fatalf("generation N+1 body after N retirement = %q", got)
+	}
+}
+
+func TestResponseBodyUseBlocksStopUntilResponseWriteFinishes(t *testing.T) {
+	p, _, closeAttempt := materializeResponseRewriteScopedPlugin(
+		t, 50, "response-stop-barrier", "$ENV://RESPONSE_BARRIER", "barrier-body",
+	)
+	defer closeAttempt()
+	owned := p.body
+	response := base.NewBufferedResponseWriter()
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	writeDone := make(chan struct{})
+	go func() {
+		_, err := p.useBody(func(body string) error {
+			response.ReplaceBody([]byte(body))
+			close(entered)
+			<-release
+			response.SetBody(nil)
+			return nil
+		})
+		if err != nil {
+			t.Errorf("useBody() error = %v", err)
+		}
+		close(writeDone)
+	}()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for response body write")
+	}
+
+	stopStarted := make(chan struct{})
+	stopDone := make(chan struct{})
+	go func() {
+		close(stopStarted)
+		p.Stop()
+		close(stopDone)
+	}()
+	<-stopStarted
+	select {
+	case <-stopDone:
+		t.Fatal("Stop returned while response write held the body read lock")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case <-writeDone:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for response write release")
+	}
+	select {
+	case <-stopDone:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for Stop after response write")
+	}
+	if len(response.Body()) != 0 {
+		t.Fatalf("retained buffered response body = %q, want cleared", response.Body())
+	}
+	if p.body != nil || p.legacyBody != nil || owned == nil || *owned != (secret.Value{}) {
+		t.Fatalf("stopped body ownership = current:%#v legacy:%p saved:%#v", p.body, p.legacyBody, owned)
+	}
+	p.Stop()
+}
+
+func TestLegacyResponseBodyIsDestroyedOnRepeatStop(t *testing.T) {
+	p := newTestPlugin(t, Config{Body: new("legacy-body")})
+	owned := p.legacyBody
+	if owned == nil || *owned != "legacy-body" {
+		t.Fatalf("legacy owner = %#v, want legacy-body", owned)
+	}
+	p.Stop()
+	p.Stop()
+	if p.legacyBody != nil || p.body != nil || owned == nil || *owned != "" {
+		t.Fatalf("legacy body after Stop = current:%p scoped:%#v saved:%q", p.legacyBody, p.body, *owned)
+	}
+}
 
 func TestResponseRewriteRunsOneAtomicBufferedBodyCallback(t *testing.T) {
 	plugin := newTestPlugin(t, Config{
@@ -53,14 +731,25 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
 
 	p := &Plugin{config: cfg}
+	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.MaterializeSecrets(); err != nil {
+		t.Fatalf("MaterializeSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
 
 	return p
+}
+
+func TestMaterializeSecretsRejectsMissingDataEncryptionResolver(t *testing.T) {
+	p := &Plugin{config: Config{Body: new("body")}}
+	if err := p.MaterializeSecrets(); err == nil || err.Error() != "data-encryption resolver is required" {
+		t.Fatalf("MaterializeSecrets() error = %v, want missing resolver error", err)
+	}
 }
 
 func TestResponseRewriteDescribesAndRunsPureHeaderStreamingConfig(t *testing.T) {
@@ -149,8 +838,14 @@ func TestResponseRewriteExclusionsRemainBuffered(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			plugin := &Plugin{config: test.cfg}
+			plugin.SetDependencies(base.Dependencies{
+				DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+			})
 			if err := plugin.Init(); err != nil {
 				t.Fatalf("Init() error = %v", err)
+			}
+			if err := plugin.MaterializeSecrets(); err != nil {
+				t.Fatalf("MaterializeSecrets() error = %v", err)
 			}
 			if test.name == "body_secret" {
 				// PostInit validates and resolves body_secret; the descriptor only
@@ -233,10 +928,17 @@ func TestHandlerDecodesBase64Body(t *testing.T) {
 
 func TestHandlerResolvesOptInBodySecret(t *testing.T) {
 	key := "qeddd145sfvddff3"
-	data_encryption.Configure(true, []string{key})
-	t.Cleanup(func() { data_encryption.Configure(false, nil) })
-
-	p := newTestPlugin(t, Config{BodySecret: new(encryptResponseBodyForTest(t, key, "secret-body"))})
+	p := &Plugin{config: Config{BodySecret: new(encryptResponseBodyForTest(t, key, "secret-body"))}}
+	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(true, []string{key}).Resolver()})
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.MaterializeSecrets(); err != nil {
+		t.Fatalf("MaterializeSecrets() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
 	res := performRequest(p, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("upstream"))
@@ -248,16 +950,16 @@ func TestHandlerResolvesOptInBodySecret(t *testing.T) {
 }
 
 func TestPostInitRejectsInvalidOptInBodySecret(t *testing.T) {
-	data_encryption.Configure(true, []string{"qeddd145sfvddff3"})
-	t.Cleanup(func() { data_encryption.Configure(false, nil) })
-
 	p := &Plugin{config: Config{BodySecret: new("not-a-ciphertext")}}
+	p.SetDependencies(base.Dependencies{
+		DataEncryption: testutil.DataEncryptionService(true, []string{"qeddd145sfvddff3"}).Resolver(),
+	})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	err := p.PostInit()
+	err := p.MaterializeSecrets()
 	if err == nil {
-		t.Fatal("PostInit() error = nil, want invalid body_secret rejection")
+		t.Fatal("MaterializeSecrets() error = nil, want invalid body_secret rejection")
 	}
 	if strings.Contains(err.Error(), "not-a-ciphertext") {
 		t.Fatalf("PostInit() error leaks body_secret: %v", err)
@@ -265,7 +967,6 @@ func TestPostInitRejectsInvalidOptInBodySecret(t *testing.T) {
 }
 
 func TestPostInitRejectsMixedBodySecretConfiguration(t *testing.T) {
-	data_encryption.Configure(false, nil)
 	tests := []struct {
 		name string
 		cfg  Config
@@ -288,21 +989,31 @@ func TestPostInitRejectsMixedBodySecretConfiguration(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			p := &Plugin{config: test.cfg}
+			p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
 			if err := p.Init(); err != nil {
 				t.Fatalf("Init() error = %v", err)
 			}
-			if err := p.PostInit(); err == nil {
-				t.Fatal("PostInit() error = nil, want mixed body_secret rejection")
+			if err := p.ValidatePreMaterialization(); err == nil {
+				t.Fatal("ValidatePreMaterialization() error = nil, want mixed body_secret rejection")
 			}
 		})
 	}
 }
 
 func TestPlainBodyRemainsCompatibleWhenEncryptionEnabled(t *testing.T) {
-	data_encryption.Configure(true, []string{"qeddd145sfvddff3"})
-	t.Cleanup(func() { data_encryption.Configure(false, nil) })
-
-	p := newTestPlugin(t, Config{Body: new("plain-body")})
+	p := &Plugin{config: Config{Body: new("plain-body")}}
+	p.SetDependencies(base.Dependencies{
+		DataEncryption: testutil.DataEncryptionService(true, []string{"qeddd145sfvddff3"}).Resolver(),
+	})
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.MaterializeSecrets(); err != nil {
+		t.Fatalf("MaterializeSecrets() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
 	res := performRequest(p, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("upstream"))
@@ -688,6 +1399,7 @@ func TestPostInitRejectsInvalidVarsExpression(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			p := &Plugin{config: Config{Vars: tt.vars}}
+			p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
 			if err := p.Init(); err != nil {
 				t.Fatalf("Init() error = %v", err)
 			}
@@ -700,6 +1412,7 @@ func TestPostInitRejectsInvalidVarsExpression(t *testing.T) {
 
 func TestConfigAcceptsNumericHeaderValues(t *testing.T) {
 	p := &Plugin{}
+	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -754,11 +1467,12 @@ func TestSchemaValidatesOfficialHeaderForms(t *testing.T) {
 
 func TestPostInitRejectsInvalidBase64Body(t *testing.T) {
 	p := &Plugin{config: Config{Body: new("not-base64"), BodyBase64: new(true)}}
+	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := p.PostInit(); err == nil {
-		t.Fatal("PostInit() error = nil, want invalid base64 rejected")
+	if err := p.MaterializeSecrets(); err == nil {
+		t.Fatal("MaterializeSecrets() error = nil, want invalid base64 rejected")
 	}
 }
 
@@ -769,11 +1483,12 @@ func TestPostInitRejectsBodyAndFiltersTogether(t *testing.T) {
 			Filters: []Filter{{Regex: "old", Replace: "new"}},
 		},
 	}
+	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := p.PostInit(); err == nil {
-		t.Fatal("PostInit() error = nil, want body and filters conflict")
+	if err := p.ValidatePreMaterialization(); err == nil {
+		t.Fatal("ValidatePreMaterialization() error = nil, want body and filters conflict")
 	}
 }
 
@@ -855,6 +1570,7 @@ func TestPostInitRejectsUnknownFilterOptionsFlag(t *testing.T) {
 			Filters: []Filter{{Regex: "hello", Replace: "HELLO", Options: "h"}},
 		},
 	}
+	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -877,6 +1593,7 @@ func TestHandlerRemoveWinsOverAddForSameHeader(t *testing.T) {
 			},
 		},
 	}
+	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}

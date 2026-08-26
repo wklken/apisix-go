@@ -657,17 +657,19 @@ Add `TestErrorLogObserverDelegatesBlockingBatchShutdownWithoutRemainingResidual`
 
 The test must prove `/observer` is absent because `Plugin.Stop` has completed observer delegation, and `/batch-scheduler` is absent because `StopWithCleanup` waited for `schedulerDone`. Release delivery, retry registry Stop, and assert no residual and cleanup exactly once. Do not add an observer hook, exported task-state accessor, sleep, or an expected set learned from the observed residual.
 
-- [ ] **Step 4: Add the real compiler-to-server chain RED**
+- [ ] **Step 4: Add the real compiler-to-server batch chain RED**
 
 Create `pkg/server/task_residual_chain_test.go` with `TestServerShutdownPreservesExactGenerationOwnersThroughRealChain`:
 
-1. Construct a real `WorkerCompilerFactory`, real `GenerationEngine`, and `Server`. Prepare and activate a snapshot with one `error-log-logger` binding. `StartObservingWithTasks(*runtime.TaskOwner)` and the Task 8 batch constructor must receive the same compiler-derived owner. The test must not call `TaskRegistry.Go`, `PreparedGeneration.Close`, `factory.Close`, or a fake engine.
+1. Construct a real `WorkerCompilerFactory`, real `GenerationEngine`, and `Server`. Prepare and activate a snapshot with one route-scoped `clickhouse-logger` binding. The Task 8 batch constructor must receive the compiler-derived owner. The test must not call `TaskRegistry.Go`, `PreparedGeneration.Close`, `factory.Close`, or a fake engine. The lower `error-log-logger` test from Step 3 separately proves that one supplied owner governs both observer delegation and batch tasks.
 2. Use an inline blocking ClickHouse `httptest.Server`, batch size one, one worker, and a delivery timeout longer than the bounded shutdown attempt. Its handler closes `deliveryStarted` and waits on `releaseDelivery` even after request-context cancellation. Emit one application log and wait for handler entry before shutdown.
-3. Independently construct `ownerPrefix` from the known activated `plugin.InstanceKey`, using Contract C's frozen canonical field order and SHA-256. Include the returned attempt, system scope/provenance, and canonical config digest; do not call the compiler's private owner helper and do not read the expected prefix from actual residuals. The exact sorted expectation is `/batch-shutdown` followed by `/batch-worker`; `/observer` and `/batch-scheduler` are forbidden.
+3. Independently construct `ownerPrefix` from the known activated `clickhouse-logger` `plugin.InstanceKey`, using Contract C's frozen canonical field order and SHA-256. Include the returned attempt, route scope/provenance, and canonical config digest; do not call the compiler's private owner helper and do not read the expected prefix from actual residuals. The exact sorted expectation is `/batch-shutdown` followed by `/batch-worker`; `/batch-scheduler` is forbidden. Step 3 remains the authority that `/observer` has exited before the error-log residual snapshot.
 4. Call `server.Shutdown(shortCtx)`. Require `errors.As(err, *runtime.TaskResidualError)`, exact equality with the independently constructed two-element set, `errors.Is(err, context.DeadlineExceeded)`, and `errors.Is(err, compiler.ErrPreparedGenerationCleanupIncomplete)`. Assert the prepared/factory/engine owner and the later resolver, journal, and observability owners remain retained.
 5. Close `releaseDelivery`, call `server.Shutdown(context.Background())`, and assert terminal completion, no residual, and exactly-once plugin/resource/processor cleanup.
 
-The server test is the compatibility authority. The lower processor and error-log tests make its component set deterministic; the server test proves the exact set survives transfer into `PreparedGeneration`, factory close, engine close, and server phase retry without redaction, suffix inference, or accidental observer/scheduler residuals.
+The server test is the batch residual-propagation authority. The lower processor and error-log tests make the batch component set and observer delegation deterministic; the server test proves the exact batch set survives transfer into `PreparedGeneration`, factory close, engine close, and server phase retry without redaction, suffix inference, or an accidental scheduler residual.
+
+The split is intentional. At the frozen implementation, `PlanHTTPPlugins` derives only `request-context` as a system binding, while the effective-binding materializer rejects secret-declaring factories without an authoritative ordinary source. Therefore no real production path can materialize `error-log-logger` as the Step 4 system binding. Repairing system/plugin-metadata materialization is a separate correctness task shared with `log-rotate`, not an implicit Task 8 expansion. This plan must not claim that one end-to-end test proves the compiler-derived owner reaches both the error-log observer and its batch constructor; the Step 3 plus Step 4 combination is the explicit evidence boundary.
 
 - [ ] **Step 5: Capture both RED layers**
 
@@ -710,7 +712,7 @@ bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test ./pkg/plugin/
 bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test -race ./pkg/plugin/logger_batch ./pkg/plugin/error_log_logger ./pkg/server -run "^(TestProcessorBlockingDeliveryResidualSetIsWorkerAndShutdown|TestErrorLogObserverDelegatesBlockingBatchShutdownWithoutRemainingResidual|TestServerShutdownPreservesExactGenerationOwnersThroughRealChain)$" -count=1'
 ```
 
-Expected: PASS. Both lower-level tests and the real compiler -> `PreparedGeneration` -> factory -> engine -> server chain return exactly the independently derived sorted worker/shutdown set; the retry releases each owner and cleanup once.
+Expected: PASS. Both lower-level tests and the real `clickhouse-logger` compiler -> `PreparedGeneration` -> factory -> engine -> server chain return exactly the independently derived sorted worker/shutdown set; the retry releases each owner and cleanup once. The lower error-log test separately proves observer delegation has exited before its batch residual snapshot.
 
 - [ ] **Step 9: Run primitive, constructor-caller, lint, and build gates**
 
@@ -724,7 +726,7 @@ git diff --check
 
 - [ ] **Step 10: Review and commit**
 
-Review `error_log_logger.StartObservingWithTasks`, `Plugin.Stop`, `logger_batch.Processor.StopWithCleanup`, scheduler/worker/shutdown callbacks, and the server shutdown phase together. Confirm observer and scheduler termination precede the residual snapshot, worker and shutdown remain for the same blocked delivery, both use the exact compiler prefix, no cleanup runs before worker exit, and Task11-0 retains the incomplete generation/server phase. If the reviewed state machine legitimately changes the complete component set, update Task11-0's frozen mapping and all three exact-equality tests in the same reviewed correction; never weaken to suffix matching or copy observed residuals into `want`.
+Review `error_log_logger.StartObservingWithTasks`, `Plugin.Stop`, `logger_batch.Processor.StopWithCleanup`, scheduler/worker/shutdown callbacks, and the server shutdown phase together. Confirm the lower error-log test proves observer and scheduler termination precede its residual snapshot; confirm the real `clickhouse-logger` server chain leaves worker and shutdown for the same blocked delivery under the exact compiler prefix; confirm no cleanup runs before worker exit and Task11-0 retains the incomplete generation/server phase. If the reviewed state machine legitimately changes the complete component set, update Task11-0's frozen mapping and all three exact-equality tests in the same reviewed correction; never weaken to suffix matching or copy observed residuals into `want`.
 
 ```bash
 git add pkg/plugin/logger_batch/processor.go pkg/plugin/logger_batch/processor_test.go \

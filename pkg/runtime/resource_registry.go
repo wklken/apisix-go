@@ -54,9 +54,14 @@ type resourceEntry struct {
 	createErr       error
 	creatorCanceled bool
 	references      int
+	// retryOnAcquire is guarded by ResourceRegistry.mu and is set only when
+	// the final reference belonged to an internal lease that cannot be retried.
+	retryOnAcquire bool
 
 	closeMu               sync.Mutex
 	closeAttempt          *resourceCloseAttempt
+	incompleteAttempt     *resourceCloseAttempt
+	closeAttemptNotify    chan struct{}
 	terminal              bool
 	terminalErr           error
 	terminalPanic         any
@@ -89,6 +94,12 @@ func (e *resourceEntry) close(ctx context.Context) resourceCloseResult {
 	}
 	attempt := &resourceCloseAttempt{done: make(chan struct{})}
 	e.closeAttempt = attempt
+	if e.closeAttemptNotify == nil {
+		e.closeAttemptNotify = make(chan struct{})
+	}
+	closeAttemptNotify := e.closeAttemptNotify
+	e.closeAttemptNotify = make(chan struct{})
+	close(closeAttemptNotify)
 	e.closeMu.Unlock()
 
 	ready := false
@@ -133,6 +144,7 @@ func (e *resourceEntry) close(ctx context.Context) resourceCloseResult {
 		if e.closeAttempt == attempt {
 			e.closeAttempt = nil
 		}
+		e.incompleteAttempt = attempt
 		close(attempt.done)
 		e.closeMu.Unlock()
 		return resourceCloseResult{err: err}
@@ -142,6 +154,7 @@ func (e *resourceEntry) close(ctx context.Context) resourceCloseResult {
 	e.terminalPanic = panicValue
 	e.terminalPanicked = panicked
 	e.closeAttempt = nil
+	e.incompleteAttempt = nil
 	attempt.terminal = true
 	close(attempt.done)
 	e.closeMu.Unlock()
@@ -193,6 +206,40 @@ func (e *resourceEntry) terminalResult() (bool, error) {
 	e.closeMu.Lock()
 	defer e.closeMu.Unlock()
 	return e.terminal, e.terminalErr
+}
+
+func (e *resourceEntry) waitForCloseAttempt(ctx context.Context) resourceCloseResult {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	for {
+		e.closeMu.Lock()
+		if e.terminal {
+			result := resourceCloseResult{
+				err:        e.terminalErr,
+				panicValue: e.terminalPanic,
+				panicked:   e.terminalPanicked,
+				terminal:   true,
+			}
+			e.closeMu.Unlock()
+			return result
+		}
+		attempt := e.incompleteAttempt
+		if attempt == nil {
+			attempt = e.closeAttempt
+		}
+		attemptNotify := e.closeAttemptNotify
+		e.closeMu.Unlock()
+		if attempt != nil {
+			return waitResourceCloseAttempt(ctx, attempt)
+		}
+		select {
+		case <-attemptNotify:
+		case <-e.terminalDone:
+		case <-ctx.Done():
+			return resourceCloseResult{err: ctx.Err()}
+		}
+	}
 }
 
 func (e *resourceEntry) publishTerminalDone() {
@@ -255,10 +302,12 @@ type ResourceLease[T any] struct {
 	mu                sync.Mutex
 	referenceReleased bool
 	finalReference    bool
-	terminal          bool
-	terminalErr       error
-	terminalPanic     any
-	terminalPanicked  bool
+	// retryOnAcquire is true only for temporary leases never returned to callers.
+	retryOnAcquire   bool
+	terminal         bool
+	terminalErr      error
+	terminalPanic    any
+	terminalPanicked bool
 }
 
 // Value returns the leased resource.
@@ -284,7 +333,7 @@ func (l *ResourceLease[T]) Release(ctx context.Context) error {
 	}
 	if !l.referenceReleased {
 		l.referenceReleased = true
-		l.finalReference = l.registry.releaseReference(l.key, l.entry)
+		l.finalReference = l.registry.releaseReference(l.key, l.entry, l.retryOnAcquire)
 		if !l.finalReference {
 			l.terminal = true
 			l.mu.Unlock()
@@ -324,12 +373,39 @@ func Acquire[T any](
 	if registry == nil || key.Kind == "" || key.Scope == "" || key.Digest == ([32]byte{}) {
 		return nil, ErrInvalidResourceIdentity
 	}
+	orphanRetryUsed := false
 	for {
-		entry, closing, creator, err := registry.reserve(ctx, key)
+		entry, closing, retryOnAcquire, creator, err := registry.reserve(ctx, key)
 		if err != nil {
 			return nil, err
 		}
 		if closing != nil {
+			if retryOnAcquire {
+				if orphanRetryUsed {
+					result := closing.waitForCloseAttempt(ctx)
+					if result.terminal {
+						registry.completeEntryResult(key, closing, result)
+						if result.panicked {
+							panic(result.panicValue)
+						}
+						continue
+					}
+					return nil, result.err
+				}
+				orphanRetryUsed = true
+				result := closing.close(ctx)
+				if result.terminal {
+					registry.completeEntryResult(key, closing, result)
+					if result.panicked {
+						panic(result.panicValue)
+					}
+					// This entry is terminal and detached. A following loop
+					// iteration may observe a distinct replacement lifecycle.
+					continue
+				}
+				// Never retry the same incomplete entry from one Acquire call.
+				return nil, result.err
+			}
 			select {
 			case <-closing.terminalDone:
 				continue
@@ -354,6 +430,7 @@ func Acquire[T any](
 		if !ok {
 			mismatched := &ResourceLease[any]{
 				value: value, registry: registry, key: key, entry: entry,
+				retryOnAcquire: true,
 			}
 			releaseErr := mismatched.Release(context.Background())
 			return nil, joinReleaseError(ErrResourceTypeMismatch, releaseErr)
@@ -365,27 +442,28 @@ func Acquire[T any](
 func (r *ResourceRegistry) reserve(
 	ctx context.Context,
 	key ResourceKey,
-) (*resourceEntry, *resourceEntry, bool, error) {
+) (*resourceEntry, *resourceEntry, bool, bool, error) {
 	if err := ctx.Err(); err != nil {
-		return nil, nil, false, err
+		return nil, nil, false, false, err
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.closed {
-		return nil, nil, false, ErrResourceRegistryClosed
+		return nil, nil, false, false, ErrResourceRegistryClosed
 	}
 	if entry, ok := r.closing[key]; ok {
-		return nil, entry, false, nil
+		return nil, entry, entry.retryOnAcquire, false, nil
 	}
 	if entry, ok := r.entries[key]; ok {
 		entry.references++
-		return entry, nil, false, nil
+		return entry, nil, false, false, nil
 	}
 	entry := &resourceEntry{
 		ready: make(chan struct{}), references: 1, terminalDone: make(chan struct{}),
+		closeAttemptNotify: make(chan struct{}),
 	}
 	r.entries[key] = entry
-	return entry, nil, true, nil
+	return entry, nil, false, true, nil
 }
 
 func (r *ResourceRegistry) complete(
@@ -414,7 +492,9 @@ func (r *ResourceRegistry) await(
 	entry *resourceEntry,
 ) (any, bool, error) {
 	if err := ctx.Err(); err != nil {
-		lease := &ResourceLease[any]{registry: r, key: key, entry: entry}
+		lease := &ResourceLease[any]{
+			registry: r, key: key, entry: entry, retryOnAcquire: true,
+		}
 		releaseErr := lease.Release(context.Background())
 		return nil, false, joinReleaseError(err, releaseErr)
 	}
@@ -422,7 +502,9 @@ func (r *ResourceRegistry) await(
 	case <-entry.ready:
 	case <-ctx.Done():
 		primaryErr := ctx.Err()
-		lease := &ResourceLease[any]{registry: r, key: key, entry: entry}
+		lease := &ResourceLease[any]{
+			registry: r, key: key, entry: entry, retryOnAcquire: true,
+		}
 		releaseErr := lease.Release(context.Background())
 		return nil, false, joinReleaseError(primaryErr, releaseErr)
 	}
@@ -431,7 +513,9 @@ func (r *ResourceRegistry) await(
 		return nil, retryable, entry.createErr
 	}
 	if err := ctx.Err(); err != nil {
-		lease := &ResourceLease[any]{registry: r, key: key, entry: entry}
+		lease := &ResourceLease[any]{
+			registry: r, key: key, entry: entry, retryOnAcquire: true,
+		}
 		releaseErr := lease.Release(context.Background())
 		return nil, false, joinReleaseError(err, releaseErr)
 	}
@@ -458,7 +542,11 @@ func joinReleaseError(primaryErr, releaseErr error) error {
 	return errors.Join(primaryErr, releaseErr)
 }
 
-func (r *ResourceRegistry) releaseReference(key ResourceKey, entry *resourceEntry) bool {
+func (r *ResourceRegistry) releaseReference(
+	key ResourceKey,
+	entry *resourceEntry,
+	retryOnAcquire bool,
+) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if entry.references > 0 {
@@ -467,6 +555,7 @@ func (r *ResourceRegistry) releaseReference(key ResourceKey, entry *resourceEntr
 	if r.entries[key] == entry && entry.references == 0 {
 		delete(r.entries, key)
 		r.closing[key] = entry
+		entry.retryOnAcquire = retryOnAcquire
 		return true
 	}
 	if r.closing[key] == entry {
@@ -488,6 +577,7 @@ func (r *ResourceRegistry) completeEntryResult(
 	detached := false
 	if r.closing[key] == entry {
 		delete(r.closing, key)
+		entry.retryOnAcquire = false
 		detached = true
 	}
 	if detached && r.closed {

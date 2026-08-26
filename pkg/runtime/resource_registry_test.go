@@ -37,6 +37,17 @@ func (c *observedDoneContext) Done() <-chan struct{} {
 	return c.Context.Done()
 }
 
+type observedStagedCancelContext struct {
+	*stagedCancelContext
+	once     sync.Once
+	observed chan struct{}
+}
+
+func (c *observedStagedCancelContext) Done() <-chan struct{} {
+	c.once.Do(func() { close(c.observed) })
+	return c.stagedCancelContext.Done()
+}
+
 type triggeredDeadlineContext struct {
 	context.Context
 	once     sync.Once
@@ -577,6 +588,402 @@ func TestResourceRegistryTypeMismatchJoinsFinalCloseError(t *testing.T) {
 	}
 	if got := closes.Load(); got != 1 {
 		t.Fatalf("close calls = %d, want 1", got)
+	}
+}
+
+func TestResourceRegistryCanceledAcquireTempLeaseAuthorizesAcquireRetry(t *testing.T) {
+	registry := NewResourceRegistry()
+	key := testResourceKey()
+	firstResidual := &TaskResidualError{cause: context.DeadlineExceeded}
+	factoryStarted := make(chan struct{})
+	allowFactoryReturn := make(chan struct{})
+	secondCloseStarted := make(chan struct{})
+	allowSecondClose := make(chan struct{})
+	secondCloseReturned := make(chan struct{})
+	replacementFactoryCalled := make(chan struct{})
+	var creates atomic.Int32
+	var closes atomic.Int32
+	factory := func(ctx context.Context) (*testResource, func(context.Context) error, error) {
+		switch creates.Add(1) {
+		case 1:
+			close(factoryStarted)
+			<-allowFactoryReturn
+			return &testResource{id: 1}, func(context.Context) error {
+				switch closes.Add(1) {
+				case 1:
+					return firstResidual
+				case 2:
+					close(secondCloseStarted)
+					<-allowSecondClose
+					close(secondCloseReturned)
+					return firstResidual
+				default:
+					return nil
+				}
+			}, nil
+		default:
+			close(replacementFactoryCalled)
+			return &testResource{id: 2}, func(context.Context) error { return nil }, nil
+		}
+	}
+
+	creatorCtx, cancelCreator := context.WithCancel(context.Background())
+	creatorResult := make(chan error, 1)
+	go func() {
+		_, err := Acquire(creatorCtx, registry, key, factory)
+		creatorResult <- err
+	}()
+	<-factoryStarted
+	cancelCreator()
+	close(allowFactoryReturn)
+	if err := <-creatorResult; !errors.Is(err, context.Canceled) || !errors.Is(err, firstResidual) {
+		t.Fatalf("canceled creator error = %v, want cancellation plus residual", err)
+	}
+	if got := closes.Load(); got != 1 {
+		t.Fatalf("initial close calls = %d, want 1", got)
+	}
+
+	retryBase, cancelRetry := context.WithCancel(context.Background())
+	defer cancelRetry()
+	retryCtx := &observedDoneContext{Context: retryBase, observed: make(chan struct{})}
+	type acquireOutcome struct {
+		lease *ResourceLease[*testResource]
+		err   error
+	}
+	retryResult := make(chan acquireOutcome, 1)
+	go func() {
+		lease, err := Acquire(retryCtx, registry, key, factory)
+		retryResult <- acquireOutcome{lease: lease, err: err}
+	}()
+	select {
+	case <-secondCloseStarted:
+	case <-retryCtx.observed:
+		cancelRetry()
+		outcome := <-retryResult
+		t.Fatalf("Acquire() waited for terminal close without retrying: %v", outcome.err)
+	}
+	select {
+	case <-replacementFactoryCalled:
+		t.Fatal("replacement factory ran before retry finalizer returned")
+	default:
+	}
+	close(allowSecondClose)
+	<-secondCloseReturned
+	outcome := <-retryResult
+	if outcome.lease != nil || !errors.Is(outcome.err, firstResidual) {
+		t.Fatalf("first retry Acquire() = (%#v, %v), want residual without replacement", outcome.lease, outcome.err)
+	}
+	select {
+	case <-replacementFactoryCalled:
+		t.Fatal("replacement factory ran after incomplete retry")
+	default:
+	}
+
+	replacement, err := Acquire(context.Background(), registry, key, factory)
+	if err != nil {
+		t.Fatalf("terminal retry Acquire() error = %v", err)
+	}
+	if replacement == nil || replacement.Value().id != 2 {
+		t.Fatalf("replacement lease = %#v, want resource id 2", replacement)
+	}
+	if err := replacement.Release(context.Background()); err != nil {
+		t.Fatalf("replacement Release() error = %v", err)
+	}
+	if got := creates.Load(); got != 2 {
+		t.Fatalf("factory calls = %d, want 2", got)
+	}
+	if got := closes.Load(); got != 3 {
+		t.Fatalf("finalizer calls = %d, want 3", got)
+	}
+}
+
+func TestResourceRegistryTypeMismatchTempLeaseAuthorizesAcquireRetry(t *testing.T) {
+	registry := NewResourceRegistry()
+	key := testResourceKey()
+	firstResidual := &TaskResidualError{cause: context.DeadlineExceeded}
+	secondCloseStarted := make(chan struct{})
+	allowSecondClose := make(chan struct{})
+	secondCloseReturned := make(chan struct{})
+	replacementFactoryCalled := make(chan struct{})
+	var closes atomic.Int32
+	first, err := Acquire(context.Background(), registry, key, func(context.Context) (
+		*testResource, func(context.Context) error, error,
+	) {
+		return &testResource{id: 1}, func(context.Context) error {
+			switch closes.Add(1) {
+			case 1:
+				return firstResidual
+			default:
+				close(secondCloseStarted)
+				<-allowSecondClose
+				close(secondCloseReturned)
+				return nil
+			}
+		}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mismatchCtx := &stagedCancelContext{
+		Context: context.Background(),
+		blockAt: 3,
+		blocked: make(chan struct{}),
+		proceed: make(chan struct{}),
+		done:    make(chan struct{}),
+	}
+	mismatchResult := make(chan error, 1)
+	go func() {
+		_, mismatchErr := Acquire(mismatchCtx, registry, key, func(context.Context) (
+			string, func(context.Context) error, error,
+		) {
+			t.Error("type-mismatched acquisition called the factory")
+			return "wrong", nil, nil
+		})
+		mismatchResult <- mismatchErr
+	}()
+	<-mismatchCtx.blocked
+	if err := first.Release(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	close(mismatchCtx.proceed)
+	if err := <-mismatchResult; !errors.Is(err, ErrResourceTypeMismatch) || !errors.Is(err, firstResidual) {
+		t.Fatalf("type mismatch error = %v, want mismatch plus residual", err)
+	}
+	if got := closes.Load(); got != 1 {
+		t.Fatalf("initial close calls = %d, want 1", got)
+	}
+
+	retryBase, cancelRetry := context.WithCancel(context.Background())
+	defer cancelRetry()
+	retryCtx := &observedDoneContext{Context: retryBase, observed: make(chan struct{})}
+	type acquireOutcome struct {
+		lease *ResourceLease[*testResource]
+		err   error
+	}
+	retryResult := make(chan acquireOutcome, 1)
+	go func() {
+		lease, acquireErr := Acquire(retryCtx, registry, key, func(context.Context) (
+			*testResource, func(context.Context) error, error,
+		) {
+			close(replacementFactoryCalled)
+			return &testResource{id: 2}, func(context.Context) error { return nil }, nil
+		})
+		retryResult <- acquireOutcome{lease: lease, err: acquireErr}
+	}()
+	select {
+	case <-secondCloseStarted:
+	case <-retryCtx.observed:
+		cancelRetry()
+		outcome := <-retryResult
+		t.Fatalf("Acquire() waited for terminal close without retrying: %v", outcome.err)
+	}
+	select {
+	case <-replacementFactoryCalled:
+		t.Fatal("replacement factory ran before retry finalizer returned")
+	default:
+	}
+	close(allowSecondClose)
+	<-secondCloseReturned
+	outcome := <-retryResult
+	if outcome.err != nil {
+		t.Fatalf("replacement Acquire() error = %v", outcome.err)
+	}
+	if outcome.lease == nil || outcome.lease.Value().id != 2 {
+		t.Fatalf("replacement lease = %#v, want resource id 2", outcome.lease)
+	}
+	if err := outcome.lease.Release(context.Background()); err != nil {
+		t.Fatalf("replacement Release() error = %v", err)
+	}
+	if got := closes.Load(); got != 2 {
+		t.Fatalf("original finalizer calls = %d, want 2", got)
+	}
+}
+
+func TestResourceRegistryAcquireCapsOrphanRetryAcrossReplacementInterleave(t *testing.T) {
+	registry := NewResourceRegistry()
+	key := testResourceKey()
+	aResidual := &TaskResidualError{cause: context.DeadlineExceeded}
+	bResidual := &TaskResidualError{cause: context.DeadlineExceeded}
+	aFactoryStarted := make(chan struct{})
+	allowAFactoryReturn := make(chan struct{})
+	var aCreates atomic.Int32
+	var aCloses atomic.Int32
+	aFactory := func(context.Context) (*testResource, func(context.Context) error, error) {
+		if aCreates.Add(1) == 1 {
+			close(aFactoryStarted)
+			<-allowAFactoryReturn
+		}
+		return &testResource{id: aCreates.Load()}, func(context.Context) error {
+			switch aCloses.Add(1) {
+			case 1:
+				return aResidual
+			default:
+				return nil
+			}
+		}, nil
+	}
+
+	creatorCtx, cancelCreator := context.WithCancel(context.Background())
+	creatorResult := make(chan error, 1)
+	go func() {
+		_, err := Acquire(creatorCtx, registry, key, aFactory)
+		creatorResult <- err
+	}()
+	<-aFactoryStarted
+	cancelCreator()
+	close(allowAFactoryReturn)
+	if err := <-creatorResult; !errors.Is(err, context.Canceled) || !errors.Is(err, aResidual) {
+		t.Fatalf("orphan A creation error = %v, want cancellation plus residual", err)
+	}
+	if got := aCloses.Load(); got != 1 {
+		t.Fatalf("orphan A finalizer calls = %d, want 1", got)
+	}
+
+	aCtx := &observedStagedCancelContext{
+		stagedCancelContext: &stagedCancelContext{
+			Context: context.Background(),
+			blockAt: 2,
+			blocked: make(chan struct{}),
+			proceed: make(chan struct{}),
+			done:    make(chan struct{}),
+		},
+		observed: make(chan struct{}),
+	}
+	type acquireOutcome struct {
+		lease *ResourceLease[*testResource]
+		err   error
+	}
+	aResult := make(chan acquireOutcome, 1)
+	go func() {
+		lease, err := Acquire(aCtx, registry, key, aFactory)
+		aResult <- acquireOutcome{lease: lease, err: err}
+	}()
+	<-aCtx.blocked
+	if got := aCloses.Load(); got != 2 {
+		t.Fatalf("orphan A finalizer calls before interleave = %d, want 2", got)
+	}
+	if got := aCreates.Load(); got != 1 {
+		t.Fatalf("orphan A factory calls before interleave = %d, want 1", got)
+	}
+
+	bFactoryStarted := make(chan struct{})
+	allowBFactoryReturn := make(chan struct{})
+	allowBThirdClose := make(chan struct{})
+	bThirdCloseStarted := make(chan struct{})
+	allowBThirdCloseReturn := make(chan struct{})
+	bFourthCloseStarted := make(chan struct{})
+	bReplacementFactoryCalled := make(chan struct{})
+	var bCreates atomic.Int32
+	var bCloses atomic.Int32
+	bFactory := func(context.Context) (*testResource, func(context.Context) error, error) {
+		createNumber := bCreates.Add(1)
+		switch createNumber {
+		case 1:
+			close(bFactoryStarted)
+			<-allowBFactoryReturn
+		default:
+			close(bReplacementFactoryCalled)
+			return &testResource{id: createNumber}, func(context.Context) error { return nil }, nil
+		}
+		return &testResource{id: createNumber}, func(context.Context) error {
+			switch bCloses.Add(1) {
+			case 1, 2:
+				return bResidual
+			case 3:
+				close(bThirdCloseStarted)
+				<-allowBThirdClose
+				return bResidual
+			default:
+				close(bFourthCloseStarted)
+				<-allowBThirdCloseReturn
+				return nil
+			}
+		}, nil
+	}
+
+	bCreatorCtx, cancelBCreator := context.WithCancel(context.Background())
+	bCreatorResult := make(chan error, 1)
+	go func() {
+		_, err := Acquire(bCreatorCtx, registry, key, bFactory)
+		bCreatorResult <- err
+	}()
+	<-bFactoryStarted
+	cancelBCreator()
+	close(allowBFactoryReturn)
+	if err := <-bCreatorResult; !errors.Is(err, context.Canceled) || !errors.Is(err, bResidual) {
+		t.Fatalf("orphan B creation error = %v, want cancellation plus residual", err)
+	}
+	if got := bCloses.Load(); got != 1 {
+		t.Fatalf("orphan B finalizer calls = %d, want 1", got)
+	}
+
+	bRetryResult := make(chan error, 1)
+	go func() {
+		_, err := Acquire(context.Background(), registry, key, bFactory)
+		bRetryResult <- err
+	}()
+	if err := <-bRetryResult; err != bResidual {
+		t.Fatalf("B retry Acquire() error = %v, want exact residual", err)
+	}
+	if got := bCloses.Load(); got != 2 {
+		t.Fatalf("B retry finalizer calls = %d, want 2", got)
+	}
+
+	bConcurrentRetryResult := make(chan error, 1)
+	go func() {
+		_, err := Acquire(context.Background(), registry, key, bFactory)
+		bConcurrentRetryResult <- err
+	}()
+	<-bThirdCloseStarted
+
+	close(aCtx.proceed)
+	select {
+	case <-aCtx.observed:
+		close(allowBThirdClose)
+		outcome := <-aResult
+		t.Fatalf(
+			"A joined B's newer close attempt instead of replaying its orphan residual: lease=%#v err=%v",
+			outcome.lease,
+			outcome.err,
+		)
+	case outcome := <-aResult:
+		if outcome.lease != nil || outcome.err != bResidual {
+			t.Fatalf("A interleave outcome = (%#v, %v), want exact B residual", outcome.lease, outcome.err)
+		}
+	}
+	if got := bCloses.Load(); got != 3 {
+		t.Fatalf("B finalizer calls after capped A = %d, want 3", got)
+	}
+	close(allowBThirdClose)
+	if err := <-bConcurrentRetryResult; err != bResidual {
+		t.Fatalf("B concurrent retry error = %v, want exact residual", err)
+	}
+
+	futureResult := make(chan acquireOutcome, 1)
+	go func() {
+		lease, err := Acquire(context.Background(), registry, key, bFactory)
+		futureResult <- acquireOutcome{lease: lease, err: err}
+	}()
+	<-bFourthCloseStarted
+	select {
+	case <-bReplacementFactoryCalled:
+		t.Fatal("replacement B factory ran before B finalizer returned")
+	default:
+	}
+	close(allowBThirdCloseReturn)
+	future := <-futureResult
+	if future.err != nil {
+		t.Fatalf("future B Acquire() error = %v", future.err)
+	}
+	if future.lease == nil || future.lease.Value().id != 2 {
+		t.Fatalf("future B replacement = %#v, want resource id 2", future.lease)
+	}
+	if err := future.lease.Release(context.Background()); err != nil {
+		t.Fatalf("future B replacement Release() error = %v", err)
+	}
+	if got := bCloses.Load(); got != 4 {
+		t.Fatalf("B finalizer calls after future retry = %d, want 4", got)
 	}
 }
 
@@ -1312,7 +1719,7 @@ func TestResourceRegistryTerminalBarrierPublishesAfterClosingMappingDetach(t *te
 		t.Fatal(err)
 	}
 	entry := lease.entry
-	if !registry.releaseReference(key, entry) {
+	if !registry.releaseReference(key, entry, false) {
 		t.Fatal("final reference did not enter closing state")
 	}
 

@@ -1,11 +1,14 @@
 package log_rotate
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -13,22 +16,226 @@ import (
 	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/file_logger"
+	"github.com/wklken/apisix-go/pkg/runtime"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
+	p, _ := newTestPluginWithTasks(t, cfg)
+	return p
+}
 
+func newTestPluginWithTasks(t *testing.T, cfg Config) (*Plugin, *runtime.TaskRegistry) {
+	t.Helper()
+
+	tasks := runtime.NewTaskRegistry(context.Background(), nil)
+	owner, err := runtime.NewTaskOwner(tasks, "plugin/test/log-rotate/attempt-1", runtime.TaskPlugin)
+	if err != nil {
+		t.Fatalf("NewTaskOwner() error = %v", err)
+	}
 	p := &Plugin{config: cfg}
-	p.SetDependencies(base.Dependencies{Config: &config.EffectiveConfig{}})
+	p.SetDependencies(base.Dependencies{
+		Config: &config.EffectiveConfig{},
+		Tasks:  owner,
+	})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
+	t.Cleanup(func() {
+		stopTestRegistry(t, tasks)
+		p.Stop()
+	})
 
+	return p, tasks
+}
+
+func newRotationPlugin(
+	t *testing.T,
+	tasks *runtime.TaskRegistry,
+	owner *runtime.TaskOwner,
+	cfg Config,
+) *Plugin {
+	t.Helper()
+	p := &Plugin{config: cfg}
+	p.SetDependencies(base.Dependencies{
+		Config: &config.EffectiveConfig{},
+		Tasks:  owner,
+	})
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+	t.Cleanup(func() {
+		stopTestRegistry(t, tasks)
+		p.Stop()
+	})
 	return p
+}
+
+func newRotationTasks(
+	t *testing.T,
+	prefix string,
+	onFailure func(runtime.TaskFailure),
+) (*runtime.TaskRegistry, *runtime.TaskOwner) {
+	t.Helper()
+	tasks := runtime.NewTaskRegistry(context.Background(), onFailure)
+	owner, err := runtime.NewTaskOwner(tasks, prefix, runtime.TaskPlugin)
+	if err != nil {
+		t.Fatalf("NewTaskOwner() error = %v", err)
+	}
+	return tasks, owner
+}
+
+func stopTestRegistry(t *testing.T, tasks *runtime.TaskRegistry) {
+	t.Helper()
+	residuals, err := tasks.Stop(context.Background())
+	if err != nil || len(residuals) != 0 {
+		t.Errorf("TaskRegistry.Stop() = (%v, %v)", residuals, err)
+	}
+}
+
+func awaitClosed(t *testing.T, done <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for completion")
+	}
+}
+
+func assertNotClosed(t *testing.T, done <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-done:
+		t.Fatal("operation completed before the admitted rotation was released")
+	default:
+	}
+}
+
+func awaitTaskFailure(t *testing.T, failures <-chan runtime.TaskFailure) runtime.TaskFailure {
+	t.Helper()
+	select {
+	case failure := <-failures:
+		return failure
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for task failure")
+		return runtime.TaskFailure{}
+	}
+}
+
+func awaitOwnerExit(t *testing.T, tasks *runtime.TaskRegistry, owner string) {
+	t.Helper()
+	deadline := time.NewTimer(2 * time.Second)
+	ticker := time.NewTicker(time.Millisecond)
+	defer deadline.Stop()
+	defer ticker.Stop()
+	for {
+		active := tasks.Active()
+		if !slices.Contains(active, owner) {
+			return
+		}
+		select {
+		case <-deadline.C:
+			t.Fatalf("owner %q did not exit; active = %v", owner, active)
+		case <-ticker.C:
+		}
+	}
+}
+
+func newBlockingRotationPlugin(
+	t *testing.T,
+	prefix string,
+) (*Plugin, *runtime.TaskRegistry, <-chan struct{}, <-chan struct{}, func(), func()) {
+	t.Helper()
+	generationCtx, cancelGeneration := context.WithCancel(context.Background())
+	failures := make(chan runtime.TaskFailure, 4)
+	tasks := runtime.NewTaskRegistry(generationCtx, func(failure runtime.TaskFailure) {
+		failures <- failure
+	})
+	owner, err := runtime.NewTaskOwner(tasks, prefix, runtime.TaskPlugin)
+	if err != nil {
+		t.Fatalf("NewTaskOwner() error = %v", err)
+	}
+	p := newRotationPlugin(t, tasks, owner, Config{})
+	started := make(chan struct{})
+	canceled := make(chan struct{})
+	release := make(chan struct{})
+	var startOnce, cancelOnce, releaseOnce sync.Once
+	releaseRotation := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(releaseRotation)
+	p.rotate = func(time.Time) error {
+		startOnce.Do(func() { close(started) })
+		select {
+		case <-generationCtx.Done():
+			cancelOnce.Do(func() { close(canceled) })
+			<-release
+		case <-release:
+		}
+		return nil
+	}
+	return p, tasks, started, canceled, releaseRotation, cancelGeneration
+}
+
+func TestRotationWorkerUsesGenerationTaskOwner(t *testing.T) {
+	p, tasks, started, _, release, _ := newBlockingRotationPlugin(t, "plugin/test/log-rotate/attempt-1")
+	p.requestRotation()
+	awaitClosed(t, started)
+	active := tasks.Active()
+	if len(active) != 1 || active[0] != "plugin/test/log-rotate/attempt-1/rotation" {
+		t.Fatalf("active task owners = %v, want generation-qualified rotation owner", active)
+	}
+	release()
+	stopTestRegistry(t, tasks)
+	p.Stop()
+}
+
+func TestRotationTaskCancellationWaitsForInFlightRotate(t *testing.T) {
+	p, tasks, started, canceled, release, cancelGeneration := newBlockingRotationPlugin(
+		t,
+		"plugin/test/log-rotate/attempt-1",
+	)
+	p.requestRotation()
+	awaitClosed(t, started)
+	stopped := make(chan struct{})
+	go func() {
+		// The generation context represents the compiler-owned cancellation;
+		// registry.Stop then joins the admitted worker before Plugin.Stop.
+		cancelGeneration()
+		stopTestRegistry(t, tasks)
+		p.Stop()
+		close(stopped)
+	}()
+	select {
+	case <-canceled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("rotation did not observe generation cancellation")
+	}
+	assertNotClosed(t, stopped)
+	release()
+	awaitClosed(t, stopped)
+}
+
+func TestRotationPanicReportsPluginOwner(t *testing.T) {
+	failures := make(chan runtime.TaskFailure, 4)
+	tasks, owner := newRotationTasks(t, "plugin/test/log-rotate/attempt-1", func(failure runtime.TaskFailure) {
+		failures <- failure
+	})
+	p := newRotationPlugin(t, tasks, owner, Config{})
+	wantPanic := &struct{ marker string }{marker: "rotation-panic"}
+	p.rotate = func(time.Time) error { panic(wantPanic) }
+	p.requestRotation()
+	failure := awaitTaskFailure(t, failures)
+	if failure.Owner != "plugin/test/log-rotate/attempt-1/rotation" || failure.PanicValue != wantPanic {
+		t.Fatalf("failure = %#v", failure)
+	}
+	awaitOwnerExit(t, tasks, "plugin/test/log-rotate/attempt-1/rotation")
+	stopTestRegistry(t, tasks)
 }
 
 func TestPostInitRequiresEffectiveConfig(t *testing.T) {
@@ -43,12 +250,15 @@ func TestPostInitRequiresEffectiveConfig(t *testing.T) {
 
 func TestLogRotateDoesNotBlockRequest(t *testing.T) {
 	p := &Plugin{}
-	p.SetDependencies(base.Dependencies{Config: &config.EffectiveConfig{}})
+	tasks, owner := newRotationTasks(t, "plugin/test/log-rotate/attempt-1", nil)
+	p.SetDependencies(base.Dependencies{Config: &config.EffectiveConfig{}, Tasks: owner})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
 	rotateStarted := make(chan struct{})
 	releaseRotation := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseRotation) }) }
 	p.now = func() time.Time { return time.Now() }
 	p.rotate = func(time.Time) error {
 		close(rotateStarted)
@@ -58,7 +268,11 @@ func TestLogRotateDoesNotBlockRequest(t *testing.T) {
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
-	t.Cleanup(p.Stop)
+	t.Cleanup(func() {
+		stopTestRegistry(t, tasks)
+		p.Stop()
+	})
+	t.Cleanup(release)
 
 	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
@@ -85,12 +299,13 @@ func TestLogRotateDoesNotBlockRequest(t *testing.T) {
 	case <-time.After(100 * time.Millisecond):
 		t.Fatal("request blocked on log rotation")
 	}
-	close(releaseRotation)
+	release()
 }
 
 func TestLogRotateUsesInheritedRequestAccess(t *testing.T) {
 	p := &Plugin{}
-	p.SetDependencies(base.Dependencies{Config: &config.EffectiveConfig{}})
+	tasks, owner := newRotationTasks(t, "plugin/test/log-rotate/attempt-1", nil)
+	p.SetDependencies(base.Dependencies{Config: &config.EffectiveConfig{}, Tasks: owner})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -102,7 +317,10 @@ func TestLogRotateUsesInheritedRequestAccess(t *testing.T) {
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
-	t.Cleanup(p.Stop)
+	t.Cleanup(func() {
+		stopTestRegistry(t, tasks)
+		p.Stop()
+	})
 	request, _ := apisixctx.EnsureRequestLifecycle(
 		httptest.NewRequest(http.MethodGet, "http://example.test/", nil), time.Now(),
 	)
@@ -281,7 +499,8 @@ func TestExplicitZeroMaxKeptPrunesAllHistory(t *testing.T) {
 	}
 
 	p := &Plugin{}
-	p.SetDependencies(base.Dependencies{Config: &config.EffectiveConfig{}})
+	tasks, owner := newRotationTasks(t, "plugin/test/log-rotate/attempt-1", nil)
+	p.SetDependencies(base.Dependencies{Config: &config.EffectiveConfig{}, Tasks: owner})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -295,6 +514,10 @@ func TestExplicitZeroMaxKeptPrunesAllHistory(t *testing.T) {
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
+	t.Cleanup(func() {
+		stopTestRegistry(t, tasks)
+		p.Stop()
+	})
 
 	now := time.Date(2026, 7, 6, 13, 14, 15, 0, time.UTC)
 	if err := p.Rotate(now); err != nil {

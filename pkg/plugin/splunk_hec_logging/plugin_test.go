@@ -303,6 +303,7 @@ func TestSplunkGenerationsShareNeutralClientWithoutAuthorizationLeak(t *testing.
 			t, revision, resourceID, pluginConfig, map[string]string{raw: resolved},
 		)
 		p := &Plugin{config: pluginConfig}
+		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
 		if err := p.Init(); err != nil {
 			closeAttempt()
 			t.Fatal(err)
@@ -317,8 +318,12 @@ func TestSplunkGenerationsShareNeutralClientWithoutAuthorizationLeak(t *testing.
 			closeAttempt()
 			t.Fatal(err)
 		}
+		processor := p.BatchProcessor
 		return p, func() {
 			p.Stop()
+			if err := processor.Shutdown(context.Background()); err != nil {
+				t.Errorf("batch Shutdown() error = %v", err)
+			}
 			closeAttempt()
 		}
 	}
@@ -412,6 +417,7 @@ func TestSplunkSendBatchScrubsRetainedRequestState(t *testing.T) {
 func TestSplunkRejectsPrePostInitLogEnqueue(t *testing.T) {
 	p := &Plugin{config: Config{Endpoint: Endpoint{URI: "http://127.0.0.1:8088", Token: "unready"}}}
 	p.SetDependencies(base.Dependencies{
+		Tasks:          newLoggerTestTaskOwner(t),
 		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
 	})
 	if err := p.Init(); err != nil {
@@ -449,7 +455,11 @@ func TestSplunkStopFlushesPendingBatchBeforeCleanup(t *testing.T) {
 	if err := p.EnqueueLog(map[string]any{"pending": true}); err != nil {
 		t.Fatal(err)
 	}
+	processor := p.BatchProcessor
 	p.Stop()
+	if err := processor.Shutdown(context.Background()); err != nil {
+		t.Fatalf("batch Shutdown() error = %v", err)
+	}
 	select {
 	case authorization := <-received:
 		if authorization != "Splunk pending-private" {
@@ -481,6 +491,7 @@ func TestSplunkStopDrainsActiveSendAndPreventsResurrection(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 	p := newTestPlugin(t, Config{Endpoint: Endpoint{URI: server.URL, Token: "active-private"}})
+	processor := p.BatchProcessor
 	sendDone := make(chan error, 1)
 	go func() {
 		_, err := p.SendBatch(context.Background(), []map[string]any{{"active": true}}, 1)
@@ -491,33 +502,23 @@ func TestSplunkStopDrainsActiveSendAndPreventsResurrection(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("active Splunk send did not start")
 	}
-	stopDone := make(chan struct{})
-	go func() {
-		p.Stop()
-		close(stopDone)
-	}()
-	select {
-	case <-stopDone:
-		t.Fatal("Stop returned before active Splunk send drained")
-	case <-time.After(25 * time.Millisecond):
+	p.Stop()
+	if p.client == nil || p.clientRelease == nil || p.BatchProcessor == nil || !p.tokenSet || !p.ready {
+		t.Fatal("Stop cleaned active Splunk resources before delivery returned")
+	}
+	if !p.stopped.Load() {
+		t.Fatal("Stop did not seal the Splunk log entrypoint")
 	}
 	close(release)
 	if err := <-sendDone; err != nil {
 		t.Fatalf("active SendBatch() error = %v", err)
 	}
-	select {
-	case <-stopDone:
-	case <-time.After(time.Second):
-		t.Fatal("Stop did not finish after active send drained")
+	if err := processor.Shutdown(context.Background()); err != nil {
+		t.Fatalf("batch Shutdown() error = %v", err)
 	}
 	if p.client != nil || p.clientRelease != nil || p.BatchProcessor != nil ||
 		p.tokenSet || p.secretsPrepared || p.ready {
 		t.Fatalf("private/runtime state survived Stop: %#v", p)
-	}
-	if _, err := p.SendBatch(
-		context.Background(), []map[string]any{{"late": true}}, 1,
-	); !errors.Is(err, secret.ErrCredentialUnavailable) {
-		t.Fatalf("post-Stop SendBatch() error = %v", err)
 	}
 	before := len(p.FireChan)
 	if err := p.RunLogPhase(base.LogSnapshot{}); !errors.Is(err, base.ErrLogQueueUnavailable) {
@@ -526,12 +527,17 @@ func TestSplunkStopDrainsActiveSendAndPreventsResurrection(t *testing.T) {
 	if len(p.FireChan) != before {
 		t.Fatal("post-Stop log phase enqueued work")
 	}
+	if _, err := p.SendBatch(
+		context.Background(), []map[string]any{{"late": true}}, 1,
+	); !errors.Is(err, secret.ErrCredentialUnavailable) {
+		t.Fatalf("post-Stop SendBatch() error = %v", err)
+	}
 }
 
 func TestRunLogPhasePreservesSplunkDefaultEventFields(t *testing.T) {
 	delivered := make(chan map[string]any, 1)
 	p := &Plugin{}
-	p.BatchProcessor = logger_batch.NewWithContext(logger_batch.Config{
+	p.BatchProcessor = newOwnedBatchProcessorForTest(t, logger_batch.Config{
 		BatchMaxSize: 1, MaxPendingEntries: 1, InactiveTimeout: time.Hour,
 		BufferDuration: time.Hour, ShutdownTimeout: time.Second,
 	}, func(_ context.Context, entries []map[string]any, _ int) (int, error) {
@@ -667,6 +673,7 @@ func newTestPluginWithMetadata(t *testing.T, cfg Config, metadata map[string]any
 
 	p := &Plugin{config: cfg}
 	p.SetDependencies(base.Dependencies{
+		Tasks:          newLoggerTestTaskOwner(t),
 		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
 		Metadata:       mustMetadataView(t, metadata),
 	})
@@ -736,6 +743,7 @@ func TestPostInitSetsSplunkDefaults(t *testing.T) {
 func TestPostInitRejectsInvalidEncryptedToken(t *testing.T) {
 	p := &Plugin{config: Config{Endpoint: Endpoint{Token: "not-a-ciphertext"}}}
 	p.SetDependencies(base.Dependencies{
+		Tasks:          newLoggerTestTaskOwner(t),
 		DataEncryption: testutil.DataEncryptionService(true, []string{"qeddd145sfvddff3"}).Resolver(),
 	})
 	if err := p.Init(); err != nil {
@@ -751,6 +759,7 @@ func TestPostInitResolvesRotatedEncryptedToken(t *testing.T) {
 	newKey := "qeddd145sfvddff3"
 	p := &Plugin{config: Config{Endpoint: Endpoint{Token: encryptSplunkTestValue(t, oldKey, "splunk-token")}}}
 	p.SetDependencies(base.Dependencies{
+		Tasks:          newLoggerTestTaskOwner(t),
 		DataEncryption: testutil.DataEncryptionService(true, []string{newKey, oldKey}).Resolver(),
 	})
 	if err := p.Init(); err != nil {
@@ -872,6 +881,7 @@ func TestMetadataDecodeFailsBeforeSplunkClientAndProcessorAcquisition(t *testing
 		Token: "token",
 	}}}
 	p.SetDependencies(base.Dependencies{
+		Tasks:          newLoggerTestTaskOwner(t),
 		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
 		Metadata: mustMetadataView(t, map[string]any{
 			"max_pending_entries": "invalid",

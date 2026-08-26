@@ -223,9 +223,13 @@ func TestMaterializeScopedSecretsValidatesAndDropsSLSSecret(t *testing.T) {
 			if p.BatchProcessor != nil {
 				t.Fatal("materialization caused batch side effects")
 			}
+			if p.TaskOwner() == nil {
+				p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
+			}
 			if err := p.PostInit(); err != nil {
 				t.Fatalf("PostInit() without resolver error = %v", err)
 			}
+			processor := p.BatchProcessor
 			conn := &captureWriteConn{}
 			p.dialTLS = func(*net.Dialer, string, string, *tls.Config) (net.Conn, error) {
 				return conn, nil
@@ -243,6 +247,9 @@ func TestMaterializeScopedSecretsValidatesAndDropsSLSSecret(t *testing.T) {
 				t.Fatalf("PostInit/delivery resolver calls = %#v, want admission-only call", calls)
 			}
 			p.Stop()
+			if err := processor.Shutdown(context.Background()); err != nil {
+				t.Fatalf("batch Shutdown() error = %v", err)
+			}
 			if p.BatchProcessor != nil || p.secretsPrepared || p.ready {
 				t.Fatal("Stop retained SLS generation lifecycle state")
 			}
@@ -360,6 +367,7 @@ func newTestPluginWithMetadata(t *testing.T, cfg Config, metadata map[string]any
 
 	p := &Plugin{config: cfg}
 	p.SetDependencies(base.Dependencies{
+		Tasks:          newLoggerTestTaskOwner(t),
 		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
 		Metadata:       mustMetadataView(t, metadata),
 	})
@@ -368,6 +376,9 @@ func newTestPluginWithMetadata(t *testing.T, cfg Config, metadata map[string]any
 	}
 	if err := p.MaterializeSecrets(); err != nil {
 		t.Fatalf("MaterializeSecrets() error = %v", err)
+	}
+	if p.TaskOwner() == nil {
+		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
@@ -495,6 +506,7 @@ func TestPostInitRejectsInvalidEncryptedAccessKeySecret(t *testing.T) {
 		AccessKeySecret: "not-a-ciphertext",
 	}}
 	p.SetDependencies(base.Dependencies{
+		Tasks:          newLoggerTestTaskOwner(t),
 		DataEncryption: testutil.DataEncryptionService(true, []string{"qeddd145sfvddff3"}).Resolver(),
 	})
 	if err := p.Init(); err != nil {
@@ -517,6 +529,7 @@ func TestMaterializeSecretsValidatesRotatedEncryptedAccessKeySecret(t *testing.T
 		AccessKeySecret: encryptSLSLoggerTestValue(t, oldKey, "sls-secret"),
 	}}
 	p.SetDependencies(base.Dependencies{
+		Tasks:          newLoggerTestTaskOwner(t),
 		DataEncryption: testutil.DataEncryptionService(true, []string{newKey, oldKey}).Resolver(),
 	})
 	if err := p.Init(); err != nil {
@@ -524,6 +537,9 @@ func TestMaterializeSecretsValidatesRotatedEncryptedAccessKeySecret(t *testing.T
 	}
 	if err := p.MaterializeSecrets(); err != nil {
 		t.Fatalf("MaterializeSecrets() error = %v", err)
+	}
+	if p.TaskOwner() == nil {
+		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
@@ -601,7 +617,11 @@ func TestStopDrainsPendingSLSBatchAndPreventsResurrection(t *testing.T) {
 		t.Fatalf("RunLogPhase() error = %v", err)
 	}
 
+	processor := p.BatchProcessor
 	p.Stop()
+	if err := processor.Shutdown(context.Background()); err != nil {
+		t.Fatalf("batch Shutdown() error = %v", err)
+	}
 	if message := conn.message(); !strings.Contains(message, `"uri":"/pending"`) {
 		t.Fatalf("Stop did not drain pending batch: %q", message)
 	}
@@ -626,13 +646,16 @@ func TestStopDrainsPendingSLSBatchAndPreventsResurrection(t *testing.T) {
 	if err := p.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) {
 		t.Fatalf("post-Stop MaterializeSecrets() error = %v", err)
 	}
+	if p.TaskOwner() == nil {
+		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
+	}
 	if err := p.PostInit(); !errors.Is(err, secret.ErrCredentialUnavailable) {
 		t.Fatalf("post-Stop PostInit() error = %v", err)
 	}
 	p.Stop()
 }
 
-func TestStopWaitsForActiveSLSSend(t *testing.T) {
+func TestStopSealsBeforeActiveSLSSendCompletes(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		Host: "127.0.0.1", Port: 10009, Project: "project-a", Logstore: "store-a",
 		AccessKeyID: "id", AccessKeySecret: "secret", Timeout: 5000, BatchMaxSize: 1,
@@ -651,6 +674,7 @@ func TestStopWaitsForActiveSLSSend(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("active send did not reach socket write")
 	}
+	processor := p.BatchProcessor
 	stopDone := make(chan struct{})
 	go func() {
 		p.Stop()
@@ -658,17 +682,15 @@ func TestStopWaitsForActiveSLSSend(t *testing.T) {
 	}()
 	select {
 	case <-stopDone:
-		t.Fatal("Stop returned before active SLS send drained")
-	case <-time.After(50 * time.Millisecond):
+	case <-time.After(time.Second):
+		t.Fatal("Stop waited for active SLS send instead of sealing scheduler admission")
 	}
 	close(conn.release)
 	if err := <-sendDone; err != nil {
 		t.Fatalf("active SendBatch() error = %v", err)
 	}
-	select {
-	case <-stopDone:
-	case <-time.After(time.Second):
-		t.Fatal("Stop did not return after active SLS send completed")
+	if err := processor.Shutdown(context.Background()); err != nil {
+		t.Fatalf("batch Shutdown() error = %v", err)
 	}
 	if p.BatchProcessor != nil || p.ready || p.secretsPrepared {
 		t.Fatal("Stop retained state after active send")
@@ -1182,6 +1204,7 @@ func TestMetadataDecodeFailsBeforeSLSProcessorAcquisition(t *testing.T) {
 		IncludeReqBodyExpr: expressions,
 	}}
 	p.SetDependencies(base.Dependencies{
+		Tasks:          newLoggerTestTaskOwner(t),
 		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
 		Metadata: mustMetadataView(t, map[string]any{
 			"log_format": map[string]any{"generation": 1},
@@ -1192,6 +1215,9 @@ func TestMetadataDecodeFailsBeforeSLSProcessorAcquisition(t *testing.T) {
 	}
 	if err := p.MaterializeSecrets(); err != nil {
 		t.Fatalf("MaterializeSecrets() error = %v", err)
+	}
+	if p.TaskOwner() == nil {
+		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
 	}
 	err := p.PostInit()
 	defer p.Stop()

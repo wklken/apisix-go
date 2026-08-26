@@ -204,6 +204,9 @@ func TestMaterializeScopedSecretsOwnsHTTPAuthorization(t *testing.T) {
 			if calls := broker.scopedCalls(); len(calls) != 0 {
 				t.Fatalf("optional auth_header calls = %#v, want none", calls)
 			}
+			if p.TaskOwner() == nil {
+				p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
+			}
 			if err := p.PostInit(); err != nil {
 				t.Fatalf("PostInit() without authorization error = %v", err)
 			}
@@ -253,6 +256,9 @@ func TestMaterializeScopedSecretsOwnsHTTPAuthorization(t *testing.T) {
 			}
 			if p.client != nil || p.BatchProcessor != nil {
 				t.Fatal("materialization caused client or batch side effects")
+			}
+			if p.TaskOwner() == nil {
+				p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
 			}
 			if err := p.PostInit(); err != nil {
 				t.Fatal(err)
@@ -411,6 +417,9 @@ func TestHTTPLoggerInstancesShareNeutralClientWithoutAuthorizationBleed(t *testi
 		); err != nil {
 			t.Fatal(err)
 		}
+		if p.TaskOwner() == nil {
+			p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
+		}
 		if err := p.PostInit(); err != nil {
 			t.Fatal(err)
 		}
@@ -470,7 +479,12 @@ func TestSendBatchScrubsRetainedAuthorizationAndBodyState(t *testing.T) {
 	})
 	authorization := "Bearer retained-private"
 	p := &Plugin{config: Config{URI: server.URL, AuthHeader: &authorization, ConcatMethod: "json"}}
-	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
+	p.SetDependencies(
+		base.Dependencies{
+			Tasks:          newLoggerTestTaskOwner(t),
+			DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+		},
+	)
 	if err := p.Init(); err != nil {
 		t.Fatal(err)
 	}
@@ -547,6 +561,9 @@ func TestStopDrainsActiveSendAndDropsPrivateAuthorization(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
+	if p.TaskOwner() == nil {
+		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
+	}
 	if err := p.PostInit(); err != nil {
 		t.Fatal(err)
 	}
@@ -561,6 +578,7 @@ func TestStopDrainsActiveSendAndDropsPrivateAuthorization(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("active send did not reach backend")
 	}
+	processor := p.BatchProcessor
 	stopDone := make(chan struct{})
 	go func() {
 		p.Stop()
@@ -568,17 +586,18 @@ func TestStopDrainsActiveSendAndDropsPrivateAuthorization(t *testing.T) {
 	}()
 	select {
 	case <-stopDone:
-		t.Fatal("Stop returned before active send drained")
-	case <-time.After(30 * time.Millisecond):
+	case <-time.After(time.Second):
+		t.Fatal("Stop waited for active send instead of sealing scheduler admission")
+	}
+	if p.client == nil || p.clientRelease == nil || p.BatchProcessor == nil {
+		t.Fatal("Stop released HTTP logger runtime before active send drained")
 	}
 	close(releaseRequest)
 	if err := <-sendDone; err != nil {
 		t.Fatalf("active SendBatch() error = %v", err)
 	}
-	select {
-	case <-stopDone:
-	case <-time.After(time.Second):
-		t.Fatal("Stop did not return after active send drained")
+	if err := processor.Shutdown(context.Background()); err != nil {
+		t.Fatalf("batch Shutdown() error = %v", err)
 	}
 	if p.client != nil || p.clientRelease != nil || p.BatchProcessor != nil ||
 		p.authHeaderSet || p.secretsPrepared {
@@ -611,7 +630,7 @@ func TestRunLogPhasePreservesDefaultFieldsAndRouteLabels(t *testing.T) {
 	p := &Plugin{routeLabels: map[string]any{"team": "edge"}}
 	p.logFormat = map[string]any{"labels": "$a6_route_labels", "remote": "$remote_addr"}
 	p.SetSnapshotLogFormat(p.logFormat, nil)
-	p.BatchProcessor = logger_batch.NewWithContext(logger_batch.Config{
+	p.BatchProcessor = newOwnedBatchProcessorForTest(t, logger_batch.Config{
 		BatchMaxSize: 1, MaxPendingEntries: 1, InactiveTimeout: time.Hour,
 		BufferDuration: time.Hour, ShutdownTimeout: time.Second,
 	}, func(_ context.Context, entries []map[string]any, _ int) (int, error) {
@@ -658,7 +677,7 @@ func TestRunLogPhaseDoesNotExposeBodyWhenExpressionDoesNotMatch(t *testing.T) {
 	}}
 	p.logFormat = map[string]any{"request": "$request_body", "response": "$response_body"}
 	p.SetSnapshotLogFormat(p.logFormat, nil)
-	p.BatchProcessor = logger_batch.NewWithContext(logger_batch.Config{
+	p.BatchProcessor = newOwnedBatchProcessorForTest(t, logger_batch.Config{
 		BatchMaxSize: 1, MaxPendingEntries: 1, InactiveTimeout: time.Hour,
 		BufferDuration: time.Hour, ShutdownTimeout: time.Second,
 	}, func(_ context.Context, entries []map[string]any, _ int) (int, error) {
@@ -689,7 +708,7 @@ func TestStopDefersHTTPClientReleaseUntilDeliveryCallbackReturns(t *testing.T) {
 	releaseCallback := make(chan struct{})
 	clientReleased := make(chan struct{})
 	p := &Plugin{}
-	p.BatchProcessor = logger_batch.NewWithContext(logger_batch.Config{
+	p.BatchProcessor = newOwnedBatchProcessorForTest(t, logger_batch.Config{
 		BatchMaxSize:    1,
 		ShutdownTimeout: 20 * time.Millisecond,
 		InactiveTimeout: time.Hour,
@@ -793,6 +812,7 @@ func newTestPluginWithMetadata(t *testing.T, cfg Config, metadata runtime.Metada
 
 	p := &Plugin{config: cfg}
 	p.SetDependencies(base.Dependencies{
+		Tasks:          newLoggerTestTaskOwner(t),
 		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
 		Metadata:       metadata,
 	})
@@ -807,6 +827,9 @@ func newTestPluginWithMetadata(t *testing.T, cfg Config, metadata runtime.Metada
 	t.Cleanup(cleanup)
 	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
+	}
+	if p.TaskOwner() == nil {
+		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
@@ -845,6 +868,7 @@ func TestPreparedGenerationsRetainMetadataFormat(t *testing.T) {
 func TestPostInitRejectsInvalidMetadataBeforeSideEffects(t *testing.T) {
 	p := &Plugin{config: Config{URI: "http://127.0.0.1/logs"}}
 	p.SetDependencies(base.Dependencies{
+		Tasks:          newLoggerTestTaskOwner(t),
 		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
 		Metadata: mustMetadataView(t, map[string][]byte{
 			name: []byte(`{"log_format":"sensitive-invalid-metadata"}`),
@@ -857,6 +881,9 @@ func TestPostInitRejectsInvalidMetadataBeforeSideEffects(t *testing.T) {
 		t.Fatalf("MaterializeSecrets() error = %v", err)
 	}
 	t.Cleanup(p.Stop)
+	if p.TaskOwner() == nil {
+		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
+	}
 	err := p.PostInit()
 	if err == nil || !strings.Contains(err.Error(), "http-logger metadata decode failed") {
 		t.Fatalf("PostInit() error = %v, want redacted metadata decode failure", err)
@@ -959,6 +986,7 @@ func TestMaterializeSecretsRejectsInvalidEncryptedAuthHeader(t *testing.T) {
 	authHeader := "not-a-ciphertext"
 	p := &Plugin{config: Config{URI: "http://127.0.0.1/logs", AuthHeader: &authHeader}}
 	p.SetDependencies(base.Dependencies{
+		Tasks:          newLoggerTestTaskOwner(t),
 		DataEncryption: testutil.DataEncryptionService(true, []string{"qeddd145sfvddff3"}).Resolver(),
 	})
 	if err := p.Init(); err != nil {
@@ -973,7 +1001,12 @@ func TestMaterializeSecretsFailsClosedForEncryptedAuthHeader(t *testing.T) {
 	key := "qeddd145sfvddff3"
 	authHeader := encryptHTTPLoggerTestValue(t, key, "Bearer secret")
 	p := &Plugin{config: Config{URI: "http://127.0.0.1/logs", AuthHeader: &authHeader}}
-	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(true, []string{key}).Resolver()})
+	p.SetDependencies(
+		base.Dependencies{
+			Tasks:          newLoggerTestTaskOwner(t),
+			DataEncryption: testutil.DataEncryptionService(true, []string{key}).Resolver(),
+		},
+	)
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}

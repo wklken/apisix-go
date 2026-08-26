@@ -332,7 +332,7 @@ func (p *Plugin) PostInit() error {
 		p.config.IncludeReqBodyExpr, p.config.IncludeRespBodyExpr,
 	)
 
-	processor := base.NewBatchProcessor("sls logger", base.BatchDefaults{
+	processor, err := base.NewBatchProcessor("sls logger", p.TaskOwner(), base.BatchDefaults{
 		BatchMaxSize:       p.config.BatchMaxSize,
 		MaxRetryCount:      p.config.MaxRetryCount,
 		RetryDelaySec:      p.config.RetryDelay,
@@ -341,6 +341,9 @@ func (p *Plugin) PostInit() error {
 		MaxPendingEntries:  p.config.MaxPendingEntries,
 		PluginID:           name,
 	}, p.RouteID, p.ServerAddr, p.sendBatchFromProcessor)
+	if err != nil {
+		return err
+	}
 	if p.stopped.Load() {
 		processor.Stop()
 		return secret.ErrCredentialUnavailable
@@ -525,12 +528,14 @@ func (p *Plugin) sendBatch(
 // Stop prevents new work, drains pending batch entries, then drops all
 // generation readiness state. The access key secret is not retained here: it
 // was used only during materialization and replaced by its public descriptor.
+func (p *Plugin) QuiesceGenerationTasks() { p.Stop() }
+
 func (p *Plugin) Stop() {
 	p.stopOnce.Do(func() {
 		p.stopped.Store(true)
-		p.lifecycleMu.Lock()
+		p.lifecycleMu.RLock()
 		processor := p.BatchProcessor
-		p.lifecycleMu.Unlock()
+		p.lifecycleMu.RUnlock()
 		cleanup := func() {
 			p.lifecycleMu.Lock()
 			defer p.lifecycleMu.Unlock()

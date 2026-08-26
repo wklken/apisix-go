@@ -306,6 +306,7 @@ func TestSendBatchUsesPrivateTokenAndScrubsRetainedRequestState(t *testing.T) {
 	config := lagoTestConfig(server.URL, "retained-private")
 	p := &Plugin{config: config}
 	p.SetDependencies(base.Dependencies{
+		Tasks:          newLoggerTestTaskOwner(t),
 		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
 	})
 	if err := p.Init(); err != nil {
@@ -429,6 +430,7 @@ func TestLagoStopDrainsActiveSendAndPreventsResurrection(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("active Lago request did not start")
 	}
+	processor := p.BatchProcessor
 	stopDone := make(chan struct{})
 	go func() {
 		p.Stop()
@@ -436,17 +438,18 @@ func TestLagoStopDrainsActiveSendAndPreventsResurrection(t *testing.T) {
 	}()
 	select {
 	case <-stopDone:
-		t.Fatal("Stop returned before active Lago request drained")
-	case <-time.After(30 * time.Millisecond):
+	case <-time.After(time.Second):
+		t.Fatal("Stop waited for active Lago request instead of sealing scheduler admission")
+	}
+	if p.client == nil || p.clientRelease == nil || p.BatchProcessor == nil {
+		t.Fatal("Stop released Lago runtime before the active request drained")
 	}
 	close(releaseRequest)
 	if err := <-sendDone; err != nil {
 		t.Fatalf("active SendBatch() error = %v", err)
 	}
-	select {
-	case <-stopDone:
-	case <-time.After(time.Second):
-		t.Fatal("Stop did not return after active Lago request drained")
+	if err := processor.Shutdown(context.Background()); err != nil {
+		t.Fatalf("batch Shutdown() error = %v", err)
 	}
 	if p.client != nil || p.clientRelease != nil || p.BatchProcessor != nil ||
 		p.tokenSet || p.secretsPrepared || p.ready {
@@ -477,6 +480,9 @@ func TestLagoStopDrainsActiveSendAndPreventsResurrection(t *testing.T) {
 	}
 	if err := p.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) {
 		t.Fatalf("post-Stop MaterializeSecrets() error = %v", err)
+	}
+	if p.TaskOwner() == nil {
+		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
 	}
 	if err := p.PostInit(); !errors.Is(err, secret.ErrCredentialUnavailable) {
 		t.Fatalf("post-Stop PostInit() error = %v", err)
@@ -520,14 +526,18 @@ func TestLagoStopFlushesPendingBatchBeforeCleanup(t *testing.T) {
 	if err := p.EnqueueLog(map[string]any{"pending": true}); err != nil {
 		t.Fatal(err)
 	}
+	processor := p.BatchProcessor
 	p.Stop()
 	select {
 	case authorization := <-received:
 		if authorization != "Bearer pending-private" {
 			t.Fatalf("pending Authorization = %q", authorization)
 		}
-	default:
-		t.Fatal("Stop dropped the pending Lago batch before delivery")
+	case <-time.After(time.Second):
+		t.Fatal("pending Lago batch was not delivered after Stop sealed admission")
+	}
+	if err := processor.Shutdown(context.Background()); err != nil {
+		t.Fatalf("batch Shutdown() error = %v", err)
 	}
 	if p.client != nil || p.clientRelease != nil || p.BatchProcessor != nil ||
 		p.tokenSet || p.secretsPrepared || p.ready {
@@ -617,7 +627,7 @@ func TestRunLogPhasePreservesLagoTemplateFieldsAndBodies(t *testing.T) {
 		IncludeReqBody: true, IncludeRespBody: true, MaxReqBodyBytes: 64, MaxRespBodyBytes: 64,
 		EventTransactionID: "${request_method}-${status}", EventProperties: map[string]string{"route": "${route_id}"},
 	}}
-	p.BatchProcessor = logger_batch.NewWithContext(logger_batch.Config{
+	p.BatchProcessor = newOwnedBatchProcessorForTest(t, logger_batch.Config{
 		BatchMaxSize: 1, MaxPendingEntries: 1, InactiveTimeout: time.Hour,
 		BufferDuration: time.Hour, ShutdownTimeout: time.Second,
 	}, func(_ context.Context, entries []map[string]any, _ int) (int, error) {
@@ -697,7 +707,12 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
 
 	p := &Plugin{config: cfg}
-	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
+	p.SetDependencies(
+		base.Dependencies{
+			Tasks:          newLoggerTestTaskOwner(t),
+			DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+		},
+	)
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -707,6 +722,9 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Cleanup(cleanup)
 	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
+	}
+	if p.TaskOwner() == nil {
+		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
@@ -758,6 +776,7 @@ func TestPostInitSetsLagoDefaults(t *testing.T) {
 func TestPostInitRejectsInvalidEncryptedToken(t *testing.T) {
 	p := &Plugin{config: Config{Token: "not-a-ciphertext"}}
 	p.SetDependencies(base.Dependencies{
+		Tasks:          newLoggerTestTaskOwner(t),
 		DataEncryption: testutil.DataEncryptionService(true, []string{"qeddd145sfvddff3"}).Resolver(),
 	})
 	if err := p.Init(); err != nil {
@@ -783,6 +802,9 @@ func TestPostInitResolvesRotatedEncryptedToken(t *testing.T) {
 		context.Background(), scope, capabilityValue, p,
 	); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
+	}
+	if p.TaskOwner() == nil {
+		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)

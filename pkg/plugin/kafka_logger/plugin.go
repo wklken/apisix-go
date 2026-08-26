@@ -438,7 +438,7 @@ func (p *Plugin) PostInit() error {
 		}
 	}
 
-	processor := base.NewBatchProcessor("kafka logger", base.BatchDefaults{
+	processor, err := base.NewBatchProcessor("kafka logger", p.TaskOwner(), base.BatchDefaults{
 		BatchMaxSize:       p.config.BatchMaxSize,
 		MaxRetryCount:      p.config.MaxRetryCount,
 		RetryDelaySec:      p.config.RetryDelay,
@@ -447,6 +447,13 @@ func (p *Plugin) PostInit() error {
 		MaxPendingEntries:  p.config.MaxPendingEntries,
 		PluginID:           name,
 	}, p.RouteID, p.ServerAddr, p.SendBatch)
+	if err != nil {
+		if closer, ok := p.sender.(interface{ Close() error }); ok {
+			_ = closer.Close()
+		}
+		p.sender = nil
+		return err
+	}
 	if p.stopped.Load() {
 		processor.Stop()
 		if closer, ok := p.sender.(interface{ Close() error }); ok {
@@ -477,13 +484,15 @@ func validateBodyExpression(field string, expression [][]any) error {
 	return nil
 }
 
+func (p *Plugin) QuiesceGenerationTasks() { p.Stop() }
+
 func (p *Plugin) Stop() {
 	if p.stopped.Swap(true) {
 		return
 	}
-	p.lifecycleMu.Lock()
+	p.lifecycleMu.RLock()
 	processor := p.BatchProcessor
-	p.lifecycleMu.Unlock()
+	p.lifecycleMu.RUnlock()
 	cleanup := func() {
 		p.lifecycleMu.Lock()
 		defer p.lifecycleMu.Unlock()

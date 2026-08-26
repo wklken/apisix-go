@@ -10,6 +10,7 @@ import (
 	"go/parser"
 	"go/token"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"reflect"
@@ -1053,6 +1054,94 @@ func TestEffectiveBindingMaterializerCancellationAfterFactoryUsesGenerationClean
 	}
 }
 
+func TestEffectiveBindingCreatorQuiescesGenerationTasksBeforeRegistryRelease(t *testing.T) {
+	trace := &materializerTrace{}
+	instance := &materializerGenerationTaskQuiescer{trace: trace}
+	cleanup := &cleanupStack{}
+	if err := cleanup.Own(cleanupQuiesce, "generation-tasks", func(context.Context) error {
+		trace.record("tasks-stop")
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	slot := &effectiveBindingAcquisitionSlot{
+		factory:  "test-logger",
+		instance: instance,
+		lease:    new(runtime.ResourceLease[plugin.Binding]),
+	}
+	slot.operations.releaseLease = func(_ *runtime.ResourceLease[plugin.Binding], ctx context.Context) error {
+		trace.record("lease-release")
+		return slot.registryRelease(ctx)
+	}
+	slot.operations.stopPlugin = func(plugin.Plugin) { trace.record("generic-stop") }
+	if err := cleanup.Own(cleanupRelease, "plugin-binding/test-logger", slot.cleanup); err != nil {
+		t.Fatal(err)
+	}
+	if err := ownEffectiveBindingGenerationTaskQuiescer(cleanup, slot); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := cleanup.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"plugin-quiesce", "tasks-stop", "lease-release", "generic-stop"}
+	if got := trace.snapshot(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("creator cleanup order = %v, want %v", got, want)
+	}
+}
+
+func TestEffectiveBindingGenerationTaskQuiescerIsCreatorOnlyAndRollbackIsolated(t *testing.T) {
+	trace := &materializerTrace{}
+	cleanup := &cleanupStack{}
+	if err := cleanup.Own(cleanupQuiesce, "generation-tasks", func(context.Context) error {
+		trace.record("tasks-stop")
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	creator := &effectiveBindingAcquisitionSlot{
+		factory:  "shared-logger",
+		instance: &materializerGenerationTaskQuiescer{trace: trace},
+	}
+	if err := ownEffectiveBindingGenerationTaskQuiescer(cleanup, creator); err != nil {
+		t.Fatal(err)
+	}
+	if err := ownEffectiveBindingGenerationTaskQuiescer(cleanup, creator); err != nil {
+		t.Fatal(err)
+	}
+	checkpoint, err := cleanup.Checkpoint()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A shared-resource follower never constructs or adopts the creator's
+	// instance. Its rollback must not quiesce the earlier shared owner.
+	follower := &effectiveBindingAcquisitionSlot{factory: "shared-logger"}
+	if err := ownEffectiveBindingGenerationTaskQuiescer(cleanup, follower); err != nil {
+		t.Fatal(err)
+	}
+	if err := cleanup.Own(cleanupRelease, "shared-follower", func(context.Context) error {
+		trace.record("follower-release")
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cleanup.Rollback(context.Background(), checkpoint); err != nil {
+		t.Fatal(err)
+	}
+	if got := trace.snapshot(); !reflect.DeepEqual(got, []string{"follower-release"}) {
+		t.Fatalf("follower rollback crossed creator ownership = %v", got)
+	}
+
+	if err := cleanup.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"follower-release", "plugin-quiesce", "tasks-stop"}
+	if got := trace.snapshot(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("final creator cleanup = %v, want %v", got, want)
+	}
+}
+
 func errorTreeContainsForMaterializerTest(err error, secretText string) bool {
 	if err == nil {
 		return false
@@ -1166,6 +1255,22 @@ type materializerTestRegistration struct {
 	id               secret.AttemptID
 	materializeCalls atomic.Int64
 	closed           atomic.Int64
+}
+
+type materializerGenerationTaskQuiescer struct {
+	trace *materializerTrace
+}
+
+func (*materializerGenerationTaskQuiescer) Init() error                            { return nil }
+func (*materializerGenerationTaskQuiescer) PostInit() error                        { return nil }
+func (*materializerGenerationTaskQuiescer) Handler(next http.Handler) http.Handler { return next }
+func (*materializerGenerationTaskQuiescer) Config() any                            { return &struct{}{} }
+func (*materializerGenerationTaskQuiescer) GetSchema() string                      { return `{}` }
+func (*materializerGenerationTaskQuiescer) GetMetadataSchema() string              { return `{}` }
+func (*materializerGenerationTaskQuiescer) GetPriority() int                       { return 0 }
+func (*materializerGenerationTaskQuiescer) GetName() string                        { return "test-logger" }
+func (plugin *materializerGenerationTaskQuiescer) QuiesceGenerationTasks() {
+	plugin.trace.record("plugin-quiesce")
 }
 
 func (registration *materializerTestRegistration) AttemptID() secret.AttemptID {

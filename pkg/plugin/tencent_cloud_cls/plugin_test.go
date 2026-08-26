@@ -339,7 +339,12 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	}
 
 	p := &Plugin{config: cfg}
-	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
+	p.SetDependencies(
+		base.Dependencies{
+			Tasks:          newLoggerTestTaskOwner(t),
+			DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+		},
+	)
 	p.now = func() time.Time { return time.Unix(1710000000, 0) }
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
@@ -412,7 +417,12 @@ func TestEffectiveLogFormatRejectsEmptyBeforeSideEffects(t *testing.T) {
 		SecretID:  "id",
 		SecretKey: "key",
 	}}
-	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
+	p.SetDependencies(
+		base.Dependencies{
+			Tasks:          newLoggerTestTaskOwner(t),
+			DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+		},
+	)
 	p.now = func() time.Time { return time.Unix(1710000000, 0) }
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
@@ -444,6 +454,7 @@ func newRawTestPlugin(t *testing.T, cfg Config, metadata runtime.MetadataView) *
 
 	p := &Plugin{config: cfg}
 	p.SetDependencies(base.Dependencies{
+		Tasks:          newLoggerTestTaskOwner(t),
 		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
 		Metadata:       metadata,
 	})
@@ -534,6 +545,7 @@ func TestPostInitRejectsInvalidEncryptedSecretKey(t *testing.T) {
 		SecretKey: "not-a-ciphertext",
 	}}
 	p.SetDependencies(base.Dependencies{
+		Tasks:          newLoggerTestTaskOwner(t),
 		DataEncryption: testutil.DataEncryptionService(true, []string{"qeddd145sfvddff3"}).Resolver(),
 	})
 	p.now = func() time.Time { return time.Unix(1710000000, 0) }
@@ -556,6 +568,7 @@ func TestPostInitResolvesRotatedEncryptedSecretKey(t *testing.T) {
 		LogFormat: map[string]string{"request_id": "$request_id"},
 	}}
 	p.SetDependencies(base.Dependencies{
+		Tasks:          newLoggerTestTaskOwner(t),
 		DataEncryption: testutil.DataEncryptionService(true, []string{newKey, oldKey}).Resolver(),
 	})
 	p.now = func() time.Time { return time.Unix(1710000000, 0) }
@@ -661,6 +674,7 @@ func newScopedReadyCLSPlugin(
 	)
 	t.Cleanup(closeAttempt)
 	p := &Plugin{config: config}
+	p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
 	p.now = func() time.Time { return time.Unix(1710000000, 0) }
 	if err := p.Init(); err != nil {
 		t.Fatal(err)
@@ -923,6 +937,7 @@ func TestCLSStopDrainsActiveSendAndPreventsResurrection(t *testing.T) {
 		Scheme: "http", CLSHost: strings.TrimPrefix(server.URL, "http://"), CLSTopic: "topic-a",
 		SecretID: "secret-id", SecretKey: "$ENV://CLS_STOP_KEY", Timeout: 1733,
 	}, "stop-private-key")
+	processor := p.BatchProcessor
 	sendDone := make(chan error, 1)
 	go func() {
 		_, err := p.SendBatch(context.Background(), []map[string]any{{"message": "blocked"}}, 1)
@@ -945,28 +960,37 @@ func TestCLSStopDrainsActiveSendAndPreventsResurrection(t *testing.T) {
 	}()
 	select {
 	case <-stopDone:
-		t.Fatal("Stop() returned before active send drained")
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop() did not seal admission while active send remained blocked")
+	}
+	select {
 	case <-secondStopDone:
-		t.Fatal("concurrent Stop() returned before the first Stop completed")
-	case <-time.After(50 * time.Millisecond):
+	case <-time.After(2 * time.Second):
+		t.Fatal("concurrent Stop() did not observe sealed admission")
+	}
+	if p.client == nil || p.BatchProcessor == nil || !p.secretKeySet || !p.ready {
+		t.Fatal("Stop() cleaned active CLS resources before delivery returned")
+	}
+	if !p.stopped.Load() {
+		t.Fatal("Stop() did not seal the CLS log entrypoint")
 	}
 	close(release)
 	if err := <-sendDone; err != nil {
 		t.Fatalf("active SendBatch() error = %v", err)
 	}
-	select {
-	case <-stopDone:
-	case <-time.After(2 * time.Second):
-		t.Fatal("Stop() did not return after active send completed")
-	}
-	select {
-	case <-secondStopDone:
-	case <-time.After(2 * time.Second):
-		t.Fatal("concurrent Stop() did not observe completed cleanup")
+	if err := processor.Shutdown(context.Background()); err != nil {
+		t.Fatalf("batch Shutdown() error = %v", err)
 	}
 	if p.client != nil || p.BatchProcessor != nil || p.secretKeySet || p.secretsPrepared || p.ready {
 		t.Fatalf("retired state retained resources: client=%v batch=%v key=%t prepared=%t ready=%t",
 			p.client != nil, p.BatchProcessor != nil, p.secretKeySet, p.secretsPrepared, p.ready)
+	}
+	before := len(p.FireChan)
+	if err := p.RunLogPhase(base.LogSnapshot{}); !errors.Is(err, base.ErrLogQueueUnavailable) {
+		t.Fatalf("post-Stop RunLogPhase() error = %v", err)
+	}
+	if len(p.FireChan) != before {
+		t.Fatal("post-Stop log phase enqueued work")
 	}
 	if _, err := p.SendBatch(context.Background(), []map[string]any{{"late": true}}, 1); err == nil {
 		t.Fatal("SendBatch() after Stop error = nil, want fail closed")
@@ -990,7 +1014,11 @@ func TestCLSStopFlushesPendingBatchBeforeCleanup(t *testing.T) {
 		BatchMaxSize: 100, BufferDuration: 60, InactiveTimeout: 60,
 	}, "pending-private-key")
 	p.BatchProcessor.Push(map[string]any{"message": "pending"})
+	processor := p.BatchProcessor
 	p.Stop()
+	if err := processor.Shutdown(context.Background()); err != nil {
+		t.Fatalf("batch Shutdown() error = %v", err)
+	}
 	select {
 	case <-received:
 	case <-time.After(2 * time.Second):
@@ -1036,6 +1064,7 @@ func TestCLSMaterializeSecretsFailsClosed(t *testing.T) {
 		Timeout: 1735,
 	}}
 	p.SetDependencies(base.Dependencies{
+		Tasks:          newLoggerTestTaskOwner(t),
 		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
 	})
 	if err := p.Init(); err != nil {
@@ -1367,6 +1396,7 @@ func TestMetadataDecodeFailsBeforeCLSClientAndProcessorAcquisition(t *testing.T)
 		LogFormat: map[string]string{"generation": "route"},
 	}}
 	p.SetDependencies(base.Dependencies{
+		Tasks:          newLoggerTestTaskOwner(t),
 		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
 		Metadata: mustMetadataView(t, map[string]any{
 			"max_pending_entries": "invalid",

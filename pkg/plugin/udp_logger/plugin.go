@@ -173,6 +173,10 @@ func (p *Plugin) Config() any {
 	return &p.config
 }
 
+func (p *Plugin) QuiesceGenerationTasks() { p.Stop() }
+
+func (p *Plugin) Stop() { p.StopWithCleanup(nil) }
+
 // Init registers the plugin schema and initializes the buffered send path.
 func (p *Plugin) Init() error {
 	p.Name = name
@@ -235,7 +239,7 @@ func (p *Plugin) PostInit() error {
 
 	p.config.addr = net.JoinHostPort(p.config.Host, strconv.Itoa(p.config.Port))
 
-	p.BatchProcessor = base.NewBatchProcessor("udp logger", base.BatchDefaults{
+	processor, err := base.NewBatchProcessor("udp logger", p.TaskOwner(), base.BatchDefaults{
 		BatchMaxSize:       p.config.BatchMaxSize,
 		MaxRetryCount:      p.config.MaxRetryCount,
 		RetryDelaySec:      p.config.RetryDelay,
@@ -244,6 +248,10 @@ func (p *Plugin) PostInit() error {
 		MaxPendingEntries:  p.config.MaxPendingEntries,
 		PluginID:           name,
 	}, p.RouteID, p.ServerAddr, p.SendBatch)
+	if err != nil {
+		return err
+	}
+	p.BatchProcessor = processor
 
 	return nil
 }

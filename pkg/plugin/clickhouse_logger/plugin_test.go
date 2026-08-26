@@ -29,7 +29,12 @@ func newTestPluginWithSecrets(t *testing.T, cfg Config, values map[string]string
 	}
 
 	p := &Plugin{config: cfg}
-	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
+	p.SetDependencies(
+		base.Dependencies{
+			Tasks:          newLoggerTestTaskOwner(t),
+			DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+		},
+	)
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -93,7 +98,12 @@ func TestEffectiveLogFormatRejectsEmptyBeforeSideEffects(t *testing.T) {
 		Database:      "default",
 		LogTable:      "apisix_logs",
 	}}
-	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
+	p.SetDependencies(
+		base.Dependencies{
+			Tasks:          newLoggerTestTaskOwner(t),
+			DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+		},
+	)
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -116,6 +126,7 @@ func newRawTestPlugin(t *testing.T, cfg Config, metadata runtime.MetadataView) *
 
 	p := &Plugin{config: cfg}
 	p.SetDependencies(base.Dependencies{
+		Tasks:          newLoggerTestTaskOwner(t),
 		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
 		Metadata:       metadata,
 	})
@@ -209,6 +220,7 @@ func TestMetadataDecodeFailsBeforeClickHouseClientAndProcessorAcquisition(t *tes
 		LogFormat:     map[string]string{"request_id": "$request_id"},
 	}}
 	p.SetDependencies(base.Dependencies{
+		Tasks:          newLoggerTestTaskOwner(t),
 		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
 		Metadata: mustMetadataView(t, map[string]any{
 			"max_pending_entries": "invalid",

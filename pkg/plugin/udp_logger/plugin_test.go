@@ -99,6 +99,9 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
+	if p.TaskOwner() == nil {
+		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
+	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
@@ -108,9 +111,12 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 func newTestPluginWithMetadata(t *testing.T, cfg Config, metadata map[string]any) *Plugin {
 	t.Helper()
 	p := &Plugin{config: cfg}
-	p.SetDependencies(base.Dependencies{Metadata: mustMetadataView(t, metadata)})
+	p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t), Metadata: mustMetadataView(t, metadata)})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
+	}
+	if p.TaskOwner() == nil {
+		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
@@ -153,11 +159,14 @@ func TestPreparedGenerationsRetainMetadataFormat(t *testing.T) {
 
 func TestMetadataDecodeFailsBeforeUDPProcessorAcquisition(t *testing.T) {
 	p := &Plugin{config: Config{Host: "127.0.0.1", Port: 9000}}
-	p.SetDependencies(base.Dependencies{Metadata: mustMetadataView(t, map[string]any{
+	p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t), Metadata: mustMetadataView(t, map[string]any{
 		"max_pending_entries": "invalid",
 	})})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
+	}
+	if p.TaskOwner() == nil {
+		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
 	}
 	err := p.PostInit()
 	defer p.Stop()

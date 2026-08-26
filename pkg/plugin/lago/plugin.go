@@ -372,7 +372,7 @@ func (p *Plugin) PostInit() error {
 		return err
 	}
 	sharedClient := value.(*resty.Client)
-	processor := base.NewBatchProcessor("lago logger", base.BatchDefaults{
+	processor, err := base.NewBatchProcessor("lago logger", p.TaskOwner(), base.BatchDefaults{
 		PluginID:           name,
 		BatchMaxSize:       p.config.BatchMaxSize,
 		MaxRetryCount:      p.config.MaxRetryCount,
@@ -380,6 +380,10 @@ func (p *Plugin) PostInit() error {
 		BufferDurationSec:  p.config.BufferDuration,
 		InactiveTimeoutSec: p.config.InactiveTimeout,
 	}, p.RouteID, p.ServerAddr, p.sendBatchFromProcessor)
+	if err != nil {
+		release()
+		return err
+	}
 	if p.stopped.Load() {
 		processor.Stop()
 		release()
@@ -392,13 +396,15 @@ func (p *Plugin) PostInit() error {
 	return nil
 }
 
+func (p *Plugin) QuiesceGenerationTasks() { p.Stop() }
+
 func (p *Plugin) Stop() {
 	if p.stopped.Swap(true) {
 		return
 	}
-	p.lifecycleMu.Lock()
+	p.lifecycleMu.RLock()
 	processor := p.BatchProcessor
-	p.lifecycleMu.Unlock()
+	p.lifecycleMu.RUnlock()
 	cleanup := func() {
 		p.lifecycleMu.Lock()
 		defer p.lifecycleMu.Unlock()

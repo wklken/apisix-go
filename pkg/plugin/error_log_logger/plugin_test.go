@@ -27,6 +27,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
 	"github.com/wklken/apisix-go/pkg/runtime"
 	"github.com/wklken/apisix-go/pkg/secret"
 	"github.com/wklken/apisix-go/pkg/testutil"
@@ -37,12 +38,20 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
 
 	p := &Plugin{config: cfg}
-	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
+	p.SetDependencies(
+		base.Dependencies{
+			Tasks:          newLoggerTestTaskOwner(t),
+			DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+		},
+	)
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
 	if err := base.MaterializePluginSecrets(p); err != nil {
 		t.Fatalf("MaterializePluginSecrets() error = %v", err)
+	}
+	if p.TaskOwner() == nil {
+		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
@@ -204,7 +213,11 @@ func TestPreparedErrorLogMetadataSecretsArePrivateAndRedacted(t *testing.T) {
 	if p.metadataSelected && p.secretsMaterialized {
 		t.Fatal("metadata-selected instance invoked plugin-config secret materialization")
 	}
+	processor := p.BatchProcessor
 	p.Stop()
+	if err := processor.Shutdown(context.Background()); err != nil {
+		t.Fatalf("batch Shutdown() error = %v", err)
+	}
 	if p.metadataClickhousePassword != nil || len(p.metadataKafkaPasswords) != 0 {
 		t.Fatal("Stop() retained metadata private secret references")
 	}
@@ -222,6 +235,78 @@ func TestStartObservingWithTasksUsesExactOwnerPrefix(t *testing.T) {
 		t.Fatalf("active observers = %v, want %v", got, want)
 	}
 	stopTaskRegistry(t, registry)
+}
+
+func TestErrorLogObserverDelegatesBlockingBatchShutdownWithoutRemainingResidual(t *testing.T) {
+	registry := runtime.NewTaskRegistry(context.Background(), nil)
+	ownerPrefix := "plugin/error-log-logger/" + strings.Repeat("a", 64)
+	owner, err := runtime.NewTaskOwner(registry, ownerPrefix, runtime.TaskPlugin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deliveryStarted := make(chan struct{})
+	releaseDelivery := make(chan struct{})
+	processor, err := logger_batch.NewWithContext(logger_batch.Config{
+		Tasks:                   owner,
+		BatchMaxSize:            1,
+		MaxConcurrentDeliveries: 1,
+	}, func(context.Context, []map[string]any, int) (int, error) {
+		close(deliveryStarted)
+		<-releaseDelivery
+		return 0, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sender := &fakeKafkaSender{}
+	p := &Plugin{
+		config:         Config{Name: "error log logger", Level: "WARN"},
+		BatchProcessor: processor,
+		kafkaSender:    sender,
+	}
+	if err := p.StartObservingWithTasks(owner); err != nil {
+		t.Fatal(err)
+	}
+	logger.Warn("owned error-log blocking batch marker")
+	select {
+	case <-deliveryStarted:
+	case <-time.After(time.Second):
+		t.Fatal("delivery did not start")
+	}
+
+	stopDone := make(chan struct{})
+	go func() {
+		p.Stop()
+		close(stopDone)
+	}()
+	select {
+	case <-stopDone:
+	case <-time.After(time.Second):
+		t.Fatal("Plugin.Stop() waited for blocked batch delivery")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	residuals, err := registry.Stop(ctx)
+	var residualErr *runtime.TaskResidualError
+	if !errors.As(err, &residualErr) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("TaskRegistry.Stop() residuals=%v error=%v, want deadline residual", residuals, err)
+	}
+	want := []runtime.TaskResidual{
+		{Owner: ownerPrefix + "/batch-shutdown"},
+		{Owner: ownerPrefix + "/batch-worker"},
+	}
+	if !reflect.DeepEqual(residuals, want) || !reflect.DeepEqual(residualErr.Residuals(), want) {
+		t.Fatalf("residuals returned=%v resident=%v, want %v", residuals, residualErr.Residuals(), want)
+	}
+	if got := sender.closeCallsCount(); got != 0 {
+		t.Fatalf("cleanup count while delivery blocked = %d, want 0", got)
+	}
+	close(releaseDelivery)
+	stopTaskRegistry(t, registry)
+	if got := sender.closeCallsCount(); got != 1 {
+		t.Fatalf("cleanup count = %d, want 1", got)
+	}
 }
 
 func TestStartObservingWithTasksRejectsMissingOrStoppedOwner(t *testing.T) {
@@ -406,7 +491,11 @@ func TestTaskStopUnregistersObserverAndClosesResourcesOnce(t *testing.T) {
 
 	logger.Warn("error-log task stop marker")
 	waitFor(t, func() bool { return sender.messagesCount() == 1 }, "task observer delivery")
+	processor := p.BatchProcessor
 	stopTaskRegistry(t, registry)
+	if err := processor.Shutdown(context.Background()); err != nil {
+		t.Fatalf("batch Shutdown() error = %v", err)
+	}
 	if got := sender.closeCallsCount(); got != 1 {
 		t.Fatalf("Kafka close calls = %d, want one after task stop", got)
 	}
@@ -433,6 +522,7 @@ func TestPreparationFailureClosesErrorLogResourcesInReverseOrder(t *testing.T) {
 
 	logger.Warn("error-log in-flight marker")
 	waitFor(t, func() bool { return sender.messagesCount() == 1 }, "in-flight send")
+	processor := p.BatchProcessor
 
 	stopped := make(chan struct{})
 	go func() {
@@ -450,6 +540,9 @@ func TestPreparationFailureClosesErrorLogResourcesInReverseOrder(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for reverse cleanup")
 	}
+	if err := processor.Shutdown(context.Background()); err != nil {
+		t.Fatalf("batch Shutdown() error = %v", err)
+	}
 	if got := sender.closeCallsCount(); got != 1 {
 		t.Fatalf("Kafka close calls = %d, want one after in-flight completion", got)
 	}
@@ -465,9 +558,12 @@ func newPreparedMetadataPlugin(t *testing.T, config Config, metadata map[string]
 		t.Fatalf("NewMetadataView() error = %v", err)
 	}
 	p := &Plugin{config: config}
-	p.SetDependencies(base.Dependencies{Metadata: view})
+	p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t), Metadata: view})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
+	}
+	if p.TaskOwner() == nil {
+		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
@@ -489,9 +585,17 @@ func newObserverTestPlugin(t *testing.T, sender kafkaSender) *Plugin {
 		},
 		kafkaSender: sender,
 	}
-	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
+	p.SetDependencies(
+		base.Dependencies{
+			Tasks:          newLoggerTestTaskOwner(t),
+			DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+		},
+	)
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
+	}
+	if p.TaskOwner() == nil {
+		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
@@ -534,6 +638,7 @@ func mustJSONBytes(t *testing.T, value any) []byte {
 func TestMaterializeSecretsRejectsInvalidEncryptedClickHousePassword(t *testing.T) {
 	p := &Plugin{config: Config{Clickhouse: &ClickHouseConfig{Password: "not-a-ciphertext"}}}
 	p.SetDependencies(base.Dependencies{
+		Tasks:          newLoggerTestTaskOwner(t),
 		DataEncryption: testutil.DataEncryptionService(true, []string{"qeddd145sfvddff3"}).Resolver(),
 	})
 	if err := p.Init(); err != nil {
@@ -562,6 +667,7 @@ func TestPostInitResolvesRotatedEncryptedKafkaPassword(t *testing.T) {
 		kafkaSender: &fakeKafkaSender{},
 	}
 	p.SetDependencies(base.Dependencies{
+		Tasks:          newLoggerTestTaskOwner(t),
 		DataEncryption: testutil.DataEncryptionService(true, []string{newKey, oldKey}).Resolver(),
 	})
 	if err := p.Init(); err != nil {
@@ -569,6 +675,9 @@ func TestPostInitResolvesRotatedEncryptedKafkaPassword(t *testing.T) {
 	}
 	if err := base.MaterializePluginSecrets(p); err != nil {
 		t.Fatalf("MaterializePluginSecrets() error = %v", err)
+	}
+	if p.TaskOwner() == nil {
+		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
@@ -782,6 +891,9 @@ func TestStopDropsScopedKafkaWriterAndPrivateSecrets(t *testing.T) {
 	); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
+	if p.TaskOwner() == nil {
+		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
+	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
@@ -789,7 +901,11 @@ func TestStopDropsScopedKafkaWriterAndPrivateSecrets(t *testing.T) {
 		t.Fatal("PostInit() did not create a Kafka sender")
 	}
 
+	processor := p.BatchProcessor
 	p.Stop()
+	if err := processor.Shutdown(context.Background()); err != nil {
+		t.Fatalf("batch Shutdown() error = %v", err)
+	}
 	if p.kafkaSender != nil {
 		t.Fatal("Stop() retained Kafka sender and its credential-bearing writer")
 	}
@@ -1624,7 +1740,11 @@ func TestStopUnregistersObserverAndClosesKafkaWriterOnce(t *testing.T) {
 	logger.Warn("delivered before stop")
 	waitFor(t, func() bool { return sender.messagesCount() == 1 }, "first delivery")
 
+	processor := p.BatchProcessor
 	p.Stop()
+	if err := processor.Shutdown(context.Background()); err != nil {
+		t.Fatalf("batch Shutdown() error = %v", err)
+	}
 	if got := sender.closeCallsCount(); got != 1 {
 		t.Fatalf("kafka writer close calls = %d, want 1", got)
 	}
@@ -1656,7 +1776,7 @@ closeErrorLogged:
 	}
 }
 
-func TestStopWaitsForInflightKafkaSendBeforeClosing(t *testing.T) {
+func TestStopReturnsBeforeInflightKafkaSendAndDefersClosing(t *testing.T) {
 	sender := &fakeKafkaSender{blockSend: make(chan struct{})}
 	p := newTestPlugin(t, Config{
 		Kafka: &KafkaConfig{
@@ -1673,6 +1793,7 @@ func TestStopWaitsForInflightKafkaSendBeforeClosing(t *testing.T) {
 	p.StartObserving()
 	logger.Warn("in-flight send")
 	waitFor(t, func() bool { return sender.messagesCount() == 1 }, "send in flight")
+	processor := p.BatchProcessor
 
 	stopped := make(chan struct{})
 	go func() {
@@ -1680,16 +1801,18 @@ func TestStopWaitsForInflightKafkaSendBeforeClosing(t *testing.T) {
 		close(stopped)
 	}()
 
-	time.Sleep(100 * time.Millisecond)
+	select {
+	case <-stopped:
+	case <-time.After(time.Second):
+		t.Fatal("Stop blocked on the in-flight send")
+	}
 	if got := sender.closeCallsCount(); got != 0 {
 		t.Fatalf("kafka writer closed while a send was in flight, close calls = %d", got)
 	}
 
 	close(sender.blockSend)
-	select {
-	case <-stopped:
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for Stop after the in-flight send completed")
+	if err := processor.Shutdown(context.Background()); err != nil {
+		t.Fatalf("batch Shutdown() error = %v", err)
 	}
 	if got := sender.closeCallsCount(); got != 1 {
 		t.Fatalf("kafka writer close calls = %d, want 1 after join", got)

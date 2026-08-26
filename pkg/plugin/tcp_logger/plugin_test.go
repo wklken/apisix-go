@@ -35,7 +35,7 @@ func TestRunLogPhasePreservesDefaultAndCustomAccessFields(t *testing.T) {
 	p := &Plugin{config: Config{}, BaseLoggerPlugin: base.BaseLoggerPlugin{RouteID: "route-1"}}
 	p.logFormat = map[string]any{"host": "$host", "remote": "$remote_addr", "started": "$time_iso8601"}
 	p.SetSnapshotLogFormat(p.logFormat, nil)
-	p.BatchProcessor = logger_batch.NewWithContext(logger_batch.Config{
+	p.BatchProcessor = newOwnedBatchProcessorForTest(t, logger_batch.Config{
 		BatchMaxSize: 1, MaxPendingEntries: 1, InactiveTimeout: time.Hour,
 		BufferDuration: time.Hour, ShutdownTimeout: time.Second,
 	}, func(_ context.Context, entries []map[string]any, _ int) (int, error) {
@@ -255,6 +255,9 @@ func TestPostInitPreservesExplicitZeroRetryDelay(t *testing.T) {
 		"retry_delay": 0,
 	}, p.Config()); err != nil {
 		t.Fatalf("Parse() error = %v", err)
+	}
+	if p.TaskOwner() == nil {
+		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
@@ -820,6 +823,9 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
+	if p.TaskOwner() == nil {
+		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
+	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
@@ -831,9 +837,12 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 func newTestPluginWithMetadata(t *testing.T, cfg Config, metadata map[string]any) *Plugin {
 	t.Helper()
 	p := &Plugin{config: cfg}
-	p.SetDependencies(base.Dependencies{Metadata: mustMetadataView(t, metadata)})
+	p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t), Metadata: mustMetadataView(t, metadata)})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
+	}
+	if p.TaskOwner() == nil {
+		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
@@ -884,11 +893,14 @@ func TestPreparedGenerationsRetainMetadataFormat(t *testing.T) {
 
 func TestMetadataDecodeFailsBeforeTCPProcessorAcquisition(t *testing.T) {
 	p := &Plugin{config: Config{Host: "127.0.0.1", Port: 9000}}
-	p.SetDependencies(base.Dependencies{Metadata: mustMetadataView(t, map[string]any{
+	p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t), Metadata: mustMetadataView(t, map[string]any{
 		"max_pending_entries": "invalid",
 	})})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
+	}
+	if p.TaskOwner() == nil {
+		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
 	}
 	err := p.PostInit()
 	defer p.Stop()
@@ -1130,7 +1142,11 @@ func TestStopClosesActiveConnection(t *testing.T) {
 		t.Fatalf("SendBatch() error = %v", err)
 	}
 
+	processor := p.BatchProcessor
 	p.Stop()
+	if err := processor.Shutdown(context.Background()); err != nil {
+		t.Fatalf("batch Shutdown() error = %v", err)
+	}
 	p.connMu.Lock()
 	conn := p.conn
 	p.connMu.Unlock()

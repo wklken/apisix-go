@@ -212,6 +212,9 @@ func TestMaterializeScopedSecretsOwnsEveryKafkaBrokerPassword(t *testing.T) {
 	if p.config.Brokers[1].SASLConfig != nil {
 		t.Fatal("broker without SASL gained a private configuration")
 	}
+	if p.TaskOwner() == nil {
+		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
+	}
 	if err := p.PostInit(); err == nil || !strings.Contains(err.Error(), "share one SASL identity") {
 		t.Fatalf("PostInit() error = %v, want mixed non-secret SASL identity rejection", err)
 	}
@@ -248,6 +251,9 @@ func TestKafkaRejectsSharedSASLIdentityWithDifferentResolvedPasswords(t *testing
 		context.Background(), scope, capabilityValue, p,
 	); err != nil {
 		t.Fatal(err)
+	}
+	if p.TaskOwner() == nil {
+		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
 	}
 	if err := p.PostInit(); err == nil || !strings.Contains(err.Error(), "share one SASL identity") {
 		t.Fatalf("PostInit() error = %v, want resolved password identity rejection", err)
@@ -290,6 +296,9 @@ func TestKafkaAcceptsDifferentReferencesWithSameResolvedSASLPassword(t *testing.
 	}
 	if p.config.Brokers[0].SASLConfig.Password != p.config.Brokers[1].SASLConfig.Password {
 		t.Fatalf("equal resolved passwords produced different descriptors: %#v", p.config.Brokers)
+	}
+	if p.TaskOwner() == nil {
+		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v, want equal resolved password identity", err)
@@ -409,6 +418,9 @@ func TestKafkaWritersAndPasswordsAreAttemptOwned(t *testing.T) {
 			closeAttempt()
 			t.Fatal(err)
 		}
+		if p.TaskOwner() == nil {
+			p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
+		}
 		if err := p.PostInit(); err != nil {
 			closeAttempt()
 			t.Fatal(err)
@@ -511,13 +523,21 @@ func TestKafkaStopDrainsActiveSendAndPreventsResurrection(t *testing.T) {
 		},
 		sender: sender,
 	}
-	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
+	p.SetDependencies(
+		base.Dependencies{
+			Tasks:          newLoggerTestTaskOwner(t),
+			DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+		},
+	)
 	if err := p.Init(); err != nil {
 		t.Fatal(err)
 	}
 	p.sender = sender
 	if err := p.MaterializeSecrets(); err != nil {
 		t.Fatal(err)
+	}
+	if p.TaskOwner() == nil {
+		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatal(err)
@@ -533,6 +553,7 @@ func TestKafkaStopDrainsActiveSendAndPreventsResurrection(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("active Kafka send did not start")
 	}
+	processor := p.BatchProcessor
 	stopDone := make(chan struct{})
 	go func() {
 		p.Stop()
@@ -540,17 +561,18 @@ func TestKafkaStopDrainsActiveSendAndPreventsResurrection(t *testing.T) {
 	}()
 	select {
 	case <-stopDone:
-		t.Fatal("Stop returned before the active Kafka send drained")
-	case <-time.After(25 * time.Millisecond):
+	case <-time.After(time.Second):
+		t.Fatal("Stop waited for active Kafka send instead of sealing scheduler admission")
+	}
+	if sender.closeCount() != 0 {
+		t.Fatal("Kafka sender closed before the active send completed")
 	}
 	close(sender.release)
 	if err := <-sendDone; err != nil {
 		t.Fatalf("active SendBatch() error = %v", err)
 	}
-	select {
-	case <-stopDone:
-	case <-time.After(time.Second):
-		t.Fatal("Stop did not finish after the active Kafka send drained")
+	if err := processor.Shutdown(context.Background()); err != nil {
+		t.Fatalf("batch Shutdown() error = %v", err)
 	}
 	if sender.closeCount() != 1 {
 		t.Fatalf("Kafka sender close count = %d, want 1", sender.closeCount())
@@ -579,6 +601,9 @@ func TestKafkaStopDrainsActiveSendAndPreventsResurrection(t *testing.T) {
 	if err := p.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) {
 		t.Fatalf("post-Stop MaterializeSecrets() error = %v", err)
 	}
+	if p.TaskOwner() == nil {
+		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
+	}
 	if err := p.PostInit(); !errors.Is(err, secret.ErrCredentialUnavailable) {
 		t.Fatalf("post-Stop PostInit() error = %v", err)
 	}
@@ -591,7 +616,7 @@ func TestKafkaStopDrainsActiveSendAndPreventsResurrection(t *testing.T) {
 func TestRunLogPhaseOriginPreservesHTTPFraming(t *testing.T) {
 	delivered := make(chan map[string]any, 1)
 	p := &Plugin{config: Config{MetaFormat: "origin", IncludeReqBody: true, MaxReqBodyBytes: 64}}
-	p.BatchProcessor = logger_batch.NewWithContext(logger_batch.Config{
+	p.BatchProcessor = newOwnedBatchProcessorForTest(t, logger_batch.Config{
 		BatchMaxSize: 1, MaxPendingEntries: 1, InactiveTimeout: time.Hour,
 		BufferDuration: time.Hour, ShutdownTimeout: time.Second,
 	}, func(_ context.Context, entries []map[string]any, _ int) (int, error) {
@@ -727,6 +752,7 @@ func newTestPluginWithMetadata(
 
 	p := &Plugin{config: cfg, sender: sender}
 	p.SetDependencies(base.Dependencies{
+		Tasks:          newLoggerTestTaskOwner(t),
 		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
 		Metadata:       metadata,
 	})
@@ -744,6 +770,9 @@ func newTestPluginWithMetadata(
 	t.Cleanup(cleanup)
 	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
+	}
+	if p.TaskOwner() == nil {
+		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
@@ -791,6 +820,7 @@ func TestPostInitRejectsInvalidMetadataBeforeSideEffects(t *testing.T) {
 		KafkaTopic: "invalid-metadata",
 	}}
 	p.SetDependencies(base.Dependencies{
+		Tasks:          newLoggerTestTaskOwner(t),
 		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
 		Metadata: mustMetadataView(t, map[string][]byte{
 			name: []byte(`{"log_format":"sensitive-invalid-metadata"}`),
@@ -803,6 +833,9 @@ func TestPostInitRejectsInvalidMetadataBeforeSideEffects(t *testing.T) {
 		t.Fatalf("MaterializeSecrets() error = %v", err)
 	}
 	t.Cleanup(p.Stop)
+	if p.TaskOwner() == nil {
+		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
+	}
 	err := p.PostInit()
 	if err == nil || !strings.Contains(err.Error(), "kafka-logger metadata decode failed") {
 		t.Fatalf("PostInit() error = %v, want redacted metadata decode failure", err)
@@ -918,8 +951,12 @@ func TestStopClosesKafkaSenderAfterFlushingBatchProcessor(t *testing.T) {
 		KafkaTopic: "apisix-logs",
 	}, sender)
 
+	processor := p.BatchProcessor
 	p.Stop()
 	p.Stop()
+	if err := processor.Shutdown(context.Background()); err != nil {
+		t.Fatalf("batch Shutdown() error = %v", err)
+	}
 
 	if sender.closeCount != 1 {
 		t.Fatalf("Kafka sender close count = %d, want 1", sender.closeCount)
@@ -964,6 +1001,7 @@ func TestPostInitRejectsInvalidEncryptedSASLPassword(t *testing.T) {
 		sender: &captureSender{},
 	}
 	p.SetDependencies(base.Dependencies{
+		Tasks:          newLoggerTestTaskOwner(t),
 		DataEncryption: testutil.DataEncryptionService(true, []string{"qeddd145sfvddff3"}).Resolver(),
 	})
 	if err := p.Init(); err != nil {
@@ -1000,6 +1038,9 @@ func TestPostInitResolvesRotatedEncryptedSASLPassword(t *testing.T) {
 		context.Background(), scope, capabilityValue, p,
 	); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
+	}
+	if p.TaskOwner() == nil {
+		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
@@ -1041,6 +1082,9 @@ func TestPostInitRejectsMixedBrokerSASLIdentities(t *testing.T) {
 		context.Background(), scope, capabilityValue, p,
 	); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
+	}
+	if p.TaskOwner() == nil {
+		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
 	}
 	if err := p.PostInit(); err == nil {
 		t.Fatal("PostInit() error = nil, want mixed SASL identity rejection")

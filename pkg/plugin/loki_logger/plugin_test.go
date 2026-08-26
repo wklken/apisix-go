@@ -23,7 +23,7 @@ import (
 func TestRunLogPhasePreservesLokiEnvelopeLabelsAndTimestamp(t *testing.T) {
 	delivered := make(chan map[string]any, 1)
 	p := &Plugin{config: Config{LogLabels: map[string]string{"job": "apisix", "route": "$route_id"}}}
-	p.BatchProcessor = logger_batch.NewWithContext(logger_batch.Config{
+	p.BatchProcessor = newOwnedBatchProcessorForTest(t, logger_batch.Config{
 		BatchMaxSize: 1, MaxPendingEntries: 1, InactiveTimeout: time.Hour,
 		BufferDuration: time.Hour, ShutdownTimeout: time.Second,
 	}, func(_ context.Context, entries []map[string]any, _ int) (int, error) {
@@ -135,6 +135,9 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
+	if p.TaskOwner() == nil {
+		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
+	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
@@ -145,9 +148,12 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 func newTestPluginWithMetadata(t *testing.T, cfg Config, metadata map[string]any) *Plugin {
 	t.Helper()
 	p := &Plugin{config: cfg}
-	p.SetDependencies(base.Dependencies{Metadata: mustMetadataView(t, metadata)})
+	p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t), Metadata: mustMetadataView(t, metadata)})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
+	}
+	if p.TaskOwner() == nil {
+		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
@@ -604,11 +610,14 @@ func TestMetadataDecodeFailsBeforeLokiClientAndProcessorAcquisition(t *testing.T
 		EndpointAddrs:      []string{"http://127.0.0.1:3100"},
 		IncludeReqBodyExpr: expressions,
 	}}
-	p.SetDependencies(base.Dependencies{Metadata: mustMetadataView(t, map[string]any{
+	p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t), Metadata: mustMetadataView(t, map[string]any{
 		"max_pending_entries": "invalid",
 	})})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
+	}
+	if p.TaskOwner() == nil {
+		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
 	}
 	err := p.PostInit()
 	defer p.Stop()

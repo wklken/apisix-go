@@ -361,6 +361,7 @@ func TestRocketMQSendersAndPrivateConfigClonesAreAttemptOwned(t *testing.T) {
 			map[string]string{raw: private},
 		)
 		p := newRawRocketMQPlugin(t, rawConfig)
+		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
 		var retained *Config
 		var sender *attemptOwnedRocketMQSender
 		p.senderFactory = func(config *Config) (rocketmqSender, error) {
@@ -400,7 +401,11 @@ func TestRocketMQSendersAndPrivateConfigClonesAreAttemptOwned(t *testing.T) {
 	if first.senderFactory != nil || second.senderFactory != nil {
 		t.Fatal("sender factory callback survived sender construction")
 	}
+	firstProcessor := first.BatchProcessor
 	first.Stop()
+	if err := firstProcessor.Shutdown(context.Background()); err != nil {
+		t.Fatalf("first batch Shutdown() error = %v", err)
+	}
 	if firstSender.shutdownCount() != 1 || secondSender.shutdownCount() != 0 {
 		t.Fatalf(
 			"sender shutdown counts after first Stop = %d/%d, want 1/0",
@@ -410,7 +415,11 @@ func TestRocketMQSendersAndPrivateConfigClonesAreAttemptOwned(t *testing.T) {
 	if second.sender != secondSender || second.stopped.Load() {
 		t.Fatal("stopping first generation changed the second sender")
 	}
+	secondProcessor := second.BatchProcessor
 	second.Stop()
+	if err := secondProcessor.Shutdown(context.Background()); err != nil {
+		t.Fatalf("second batch Shutdown() error = %v", err)
+	}
 }
 
 type blockingRocketMQSender struct {
@@ -444,6 +453,7 @@ func newBlockingRocketMQPlugin(t *testing.T, sender rocketmqSender) *Plugin {
 	t.Helper()
 	p := newRawRocketMQPlugin(t, rocketMQRawConfig("active-private", false))
 	p.SetDependencies(base.Dependencies{
+		Tasks:          newLoggerTestTaskOwner(t),
 		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
 	})
 	p.sender = sender
@@ -469,6 +479,7 @@ func TestRocketMQStopDrainsActiveSendAndPreventsResurrection(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("active RocketMQ send did not start")
 	}
+	processor := p.BatchProcessor
 	stopDone := make(chan struct{})
 	go func() {
 		p.Stop()
@@ -476,17 +487,18 @@ func TestRocketMQStopDrainsActiveSendAndPreventsResurrection(t *testing.T) {
 	}()
 	select {
 	case <-stopDone:
-		t.Fatal("Stop returned before active RocketMQ send drained")
-	case <-time.After(30 * time.Millisecond):
+	case <-time.After(time.Second):
+		t.Fatal("Stop did not seal admission while active RocketMQ send remained blocked")
+	}
+	if sender.shutdownCount() != 0 {
+		t.Fatal("sender shut down before the active send completed")
 	}
 	close(sender.release)
 	if err := <-sendDone; err != nil {
 		t.Fatalf("active SendBatch() error = %v", err)
 	}
-	select {
-	case <-stopDone:
-	case <-time.After(time.Second):
-		t.Fatal("Stop did not return after active RocketMQ send drained")
+	if err := processor.Shutdown(context.Background()); err != nil {
+		t.Fatalf("batch Shutdown() error = %v", err)
 	}
 	if sender.shutdownCount() != 1 {
 		t.Fatalf("sender shutdown count = %d, want 1", sender.shutdownCount())
@@ -525,6 +537,7 @@ func TestRocketMQStopFlushesPendingBatchBeforeSenderShutdown(t *testing.T) {
 	if err := p.RunLogPhase(base.LogSnapshot{}); err != nil {
 		t.Fatal(err)
 	}
+	processor := p.BatchProcessor
 	stopDone := make(chan struct{})
 	go func() {
 		p.Stop()
@@ -540,14 +553,12 @@ func TestRocketMQStopFlushesPendingBatchBeforeSenderShutdown(t *testing.T) {
 	}
 	select {
 	case <-stopDone:
-		t.Fatal("Stop returned before pending RocketMQ batch drained")
-	case <-time.After(30 * time.Millisecond):
+	case <-time.After(time.Second):
+		t.Fatal("Stop blocked on the pending RocketMQ batch")
 	}
 	close(sender.release)
-	select {
-	case <-stopDone:
-	case <-time.After(time.Second):
-		t.Fatal("Stop did not return after pending RocketMQ batch drained")
+	if err := processor.Shutdown(context.Background()); err != nil {
+		t.Fatalf("batch Shutdown() error = %v", err)
 	}
 	if sender.shutdownCount() != 1 {
 		t.Fatalf("sender shutdown count = %d, want 1 after pending flush", sender.shutdownCount())
@@ -557,6 +568,7 @@ func TestRocketMQStopFlushesPendingBatchBeforeSenderShutdown(t *testing.T) {
 func TestRocketMQRejectsLogEnqueueBeforePostInit(t *testing.T) {
 	p := newRawRocketMQPlugin(t, rocketMQRawConfig("pre-init-private", false))
 	p.SetDependencies(base.Dependencies{
+		Tasks:          newLoggerTestTaskOwner(t),
 		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
 	})
 	queued := len(p.FireChan)
@@ -589,6 +601,9 @@ func TestRocketMQPostInitIsIdempotent(t *testing.T) {
 		t.Fatal("second PostInit replaced the active batch processor")
 	}
 	p.Stop()
+	if err := firstProcessor.Shutdown(context.Background()); err != nil {
+		t.Fatalf("batch Shutdown() error = %v", err)
+	}
 	if sender.shutdownCount() != 1 {
 		t.Fatalf("sender shutdown count = %d, want 1", sender.shutdownCount())
 	}
@@ -597,6 +612,7 @@ func TestRocketMQPostInitIsIdempotent(t *testing.T) {
 func TestRocketMQConcurrentPostInitAndStopCannotPublishSender(t *testing.T) {
 	p := newRawRocketMQPlugin(t, rocketMQRawConfig("post-init-private", false))
 	p.SetDependencies(base.Dependencies{
+		Tasks:          newLoggerTestTaskOwner(t),
 		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
 	})
 	if err := materializeRocketMQForTest(t, p, 1, "concurrent-post-init", p.config.SecretKey); err != nil {
@@ -655,7 +671,7 @@ func TestRocketMQConcurrentPostInitAndStopCannotPublishSender(t *testing.T) {
 func TestRunLogPhaseOriginPreservesHTTPFraming(t *testing.T) {
 	delivered := make(chan map[string]any, 1)
 	p := &Plugin{config: Config{MetaFormat: "origin", IncludeReqBody: true, MaxReqBodyBytes: 64}, ready: true}
-	p.BatchProcessor = logger_batch.NewWithContext(logger_batch.Config{
+	p.BatchProcessor = newOwnedBatchProcessorForTest(t, logger_batch.Config{
 		BatchMaxSize: 1, MaxPendingEntries: 1, InactiveTimeout: time.Hour,
 		BufferDuration: time.Hour, ShutdownTimeout: time.Second,
 	}, func(_ context.Context, entries []map[string]any, _ int) (int, error) {
@@ -792,6 +808,7 @@ func newTestPluginWithMetadata(
 
 	p := &Plugin{config: cfg, sender: sender}
 	p.SetDependencies(base.Dependencies{
+		Tasks:          newLoggerTestTaskOwner(t),
 		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
 		Metadata:       mustMetadataView(t, metadata),
 	})
@@ -909,7 +926,11 @@ func TestSendEncodesLogAndPublishesToConfiguredTopic(t *testing.T) {
 func TestStopShutsDownRocketMQSender(t *testing.T) {
 	sender := &shutdownSender{}
 	p := newTestPlugin(t, Config{}, sender)
+	processor := p.BatchProcessor
 	p.Stop()
+	if err := processor.Shutdown(context.Background()); err != nil {
+		t.Fatalf("batch Shutdown() error = %v", err)
+	}
 	if !sender.shutdown {
 		t.Fatal("Stop() did not shut down the sender")
 	}
@@ -948,7 +969,12 @@ func TestPostInitRejectsUnsupportedTLS(t *testing.T) {
 		},
 		sender: &captureSender{},
 	}
-	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
+	p.SetDependencies(
+		base.Dependencies{
+			Tasks:          newLoggerTestTaskOwner(t),
+			DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+		},
+	)
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -973,6 +999,7 @@ func TestPostInitRejectsInvalidEncryptedSecretKey(t *testing.T) {
 		sender: &captureSender{},
 	}
 	p.SetDependencies(base.Dependencies{
+		Tasks:          newLoggerTestTaskOwner(t),
 		DataEncryption: testutil.DataEncryptionService(true, []string{"qeddd145sfvddff3"}).Resolver(),
 	})
 	if err := p.Init(); err != nil {
@@ -1011,7 +1038,12 @@ func TestPostInitRejectsInvalidBodyExpressions(t *testing.T) {
 			test.config.NameServerList = []string{"127.0.0.1:9876"}
 			test.config.Topic = "apisix-logs"
 			p := &Plugin{config: test.config, sender: &captureSender{}}
-			p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
+			p.SetDependencies(
+				base.Dependencies{
+					Tasks:          newLoggerTestTaskOwner(t),
+					DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+				},
+			)
 			if err := p.Init(); err != nil {
 				t.Fatalf("Init() error = %v", err)
 			}
@@ -1047,7 +1079,12 @@ func TestPostInitAcceptsOfficialNestedBodyExpressions(t *testing.T) {
 		},
 		sender: &captureSender{},
 	}
-	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
+	p.SetDependencies(
+		base.Dependencies{
+			Tasks:          newLoggerTestTaskOwner(t),
+			DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+		},
+	)
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -1073,6 +1110,7 @@ func TestPostInitResolvesRotatedEncryptedSecretKey(t *testing.T) {
 		sender: &captureSender{},
 	}
 	p.SetDependencies(base.Dependencies{
+		Tasks:          newLoggerTestTaskOwner(t),
 		DataEncryption: testutil.DataEncryptionService(true, []string{newKey, oldKey}).Resolver(),
 	})
 	if err := p.Init(); err != nil {
@@ -1226,6 +1264,7 @@ func TestMetadataDecodeFailsBeforeRocketMQSenderAndProcessorAcquisition(t *testi
 		return &captureSender{}, nil
 	}
 	p.SetDependencies(base.Dependencies{
+		Tasks:          newLoggerTestTaskOwner(t),
 		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
 		Metadata: mustMetadataView(t, map[string]any{
 			"max_pending_entries": "invalid",

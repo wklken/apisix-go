@@ -306,6 +306,7 @@ func TestLogglyTokensAreAttemptOwnedAcrossHTTPDeliveries(t *testing.T) {
 			t, revision, resourceID, config, map[string]string{raw: resolved},
 		)
 		p := &Plugin{config: config}
+		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
 		if err := p.Init(); err != nil {
 			closeAttempt()
 			t.Fatal(err)
@@ -320,8 +321,12 @@ func TestLogglyTokensAreAttemptOwnedAcrossHTTPDeliveries(t *testing.T) {
 			closeAttempt()
 			t.Fatal(err)
 		}
+		processor := p.BatchProcessor
 		return p, func() {
 			p.Stop()
+			if err := processor.Shutdown(context.Background()); err != nil {
+				t.Errorf("batch Shutdown() error = %v", err)
+			}
 			closeAttempt()
 		}
 	}
@@ -429,6 +434,7 @@ func TestLogglyStopDrainsActiveSendAndPreventsResurrection(t *testing.T) {
 		release: make(chan struct{}),
 	}
 	p.httpClient = &http.Client{Transport: transport}
+	processor := p.BatchProcessor
 	sendDone := make(chan error, 1)
 	go func() {
 		_, err := p.SendBatch(context.Background(), []map[string]any{{"active": true}}, 1)
@@ -439,24 +445,19 @@ func TestLogglyStopDrainsActiveSendAndPreventsResurrection(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("active Loggly send did not start")
 	}
-	stopDone := make(chan struct{})
-	go func() {
-		p.Stop()
-		close(stopDone)
-	}()
-	select {
-	case <-stopDone:
-		t.Fatal("Stop returned before active send drained")
-	case <-time.After(25 * time.Millisecond):
+	p.Stop()
+	if p.httpClient == nil || p.BatchProcessor == nil || !p.tokenSet || !p.ready {
+		t.Fatal("Stop cleaned active Loggly resources before delivery returned")
+	}
+	if !p.stopped.Load() {
+		t.Fatal("Stop did not seal the Loggly log entrypoint")
 	}
 	close(transport.release)
 	if err := <-sendDone; err != nil {
 		t.Fatalf("active SendBatch() error = %v", err)
 	}
-	select {
-	case <-stopDone:
-	case <-time.After(time.Second):
-		t.Fatal("Stop did not finish after active send drained")
+	if err := processor.Shutdown(context.Background()); err != nil {
+		t.Fatalf("batch Shutdown() error = %v", err)
 	}
 	if p.httpClient != nil || p.BatchProcessor != nil ||
 		p.tokenSet || p.secretsPrepared || p.ready {
@@ -500,7 +501,11 @@ func TestLogglyStopFlushesPendingBatchBeforeCleanup(t *testing.T) {
 	if err := p.EnqueueLog(map[string]any{"pending": true}); err != nil {
 		t.Fatal(err)
 	}
+	processor := p.BatchProcessor
 	p.Stop()
+	if err := processor.Shutdown(context.Background()); err != nil {
+		t.Fatalf("batch Shutdown() error = %v", err)
+	}
 	select {
 	case path := <-received:
 		if path != "/bulk/pending-private/tag/bulk" {
@@ -591,6 +596,7 @@ func newTestPluginWithMetadata(t *testing.T, cfg Config, metadata map[string]any
 
 	p := &Plugin{config: cfg}
 	p.SetDependencies(base.Dependencies{
+		Tasks:          newLoggerTestTaskOwner(t),
 		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
 		Metadata:       mustMetadataView(t, metadata),
 	})
@@ -667,6 +673,7 @@ func TestPostInitSetsDefaults(t *testing.T) {
 func TestPostInitRejectsInvalidEncryptedCustomerToken(t *testing.T) {
 	p := &Plugin{config: Config{CustomerToken: "not-a-ciphertext"}}
 	p.SetDependencies(base.Dependencies{
+		Tasks:          newLoggerTestTaskOwner(t),
 		DataEncryption: testutil.DataEncryptionService(true, []string{"qeddd145sfvddff3"}).Resolver(),
 	})
 	if err := p.Init(); err != nil {
@@ -682,6 +689,7 @@ func TestPostInitResolvesRotatedEncryptedCustomerToken(t *testing.T) {
 	newKey := "qeddd145sfvddff3"
 	p := &Plugin{config: Config{CustomerToken: encryptLogglyTestValue(t, oldKey, "loggly-token")}}
 	p.SetDependencies(base.Dependencies{
+		Tasks:          newLoggerTestTaskOwner(t),
 		DataEncryption: testutil.DataEncryptionService(true, []string{newKey, oldKey}).Resolver(),
 	})
 	if err := p.Init(); err != nil {
@@ -1330,6 +1338,7 @@ func TestPreparedGenerationsRetainMetadataEndpointAndFormat(t *testing.T) {
 func TestMetadataDecodeFailsBeforeLogglyClientAndProcessorAcquisition(t *testing.T) {
 	p := &Plugin{config: Config{CustomerToken: "token"}}
 	p.SetDependencies(base.Dependencies{
+		Tasks:          newLoggerTestTaskOwner(t),
 		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
 		Metadata: mustMetadataView(t, map[string]any{
 			"timeout": "invalid",
@@ -1653,7 +1662,11 @@ func TestStopClosesLogglyUDPSocket(t *testing.T) {
 		t.Fatal("timed out waiting for loggly UDP message")
 	}
 
+	processor := p.BatchProcessor
 	p.Stop()
+	if err := processor.Shutdown(context.Background()); err != nil {
+		t.Fatalf("batch Shutdown() error = %v", err)
+	}
 	p.connMu.Lock()
 	conn := p.conn
 	p.connMu.Unlock()

@@ -353,7 +353,7 @@ func (p *Plugin) PostInit() error {
 		p.config.IncludeReqBodyExpr, p.config.IncludeRespBodyExpr,
 	)
 
-	processor := base.NewBatchProcessor("tencent-cloud-cls", base.BatchDefaults{
+	processor, err := base.NewBatchProcessor("tencent-cloud-cls", p.TaskOwner(), base.BatchDefaults{
 		PluginID:           name,
 		BatchMaxSize:       p.config.BatchMaxSize,
 		MaxRetryCount:      p.config.MaxRetryCount,
@@ -362,6 +362,10 @@ func (p *Plugin) PostInit() error {
 		InactiveTimeoutSec: p.config.InactiveTimeout,
 		MaxPendingEntries:  p.config.MaxPendingEntries,
 	}, p.RouteID, p.ServerAddr, p.sendPendingBatch)
+	if err != nil {
+		release()
+		return err
+	}
 	if p.stopped.Load() {
 		processor.Stop()
 		release()
@@ -374,6 +378,8 @@ func (p *Plugin) PostInit() error {
 
 	return nil
 }
+
+func (p *Plugin) QuiesceGenerationTasks() { p.Stop() }
 
 func (p *Plugin) Stop() {
 	p.stopMu.Lock()
@@ -388,9 +394,9 @@ func (p *Plugin) Stop() {
 	p.stopped.Store(true)
 	p.stopMu.Unlock()
 	defer close(done)
-	p.lifecycleMu.Lock()
+	p.lifecycleMu.RLock()
 	processor := p.BatchProcessor
-	p.lifecycleMu.Unlock()
+	p.lifecycleMu.RUnlock()
 	cleanup := func() {
 		p.lifecycleMu.Lock()
 		defer p.lifecycleMu.Unlock()

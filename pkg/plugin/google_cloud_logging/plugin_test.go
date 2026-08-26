@@ -322,7 +322,7 @@ func TestMaterializeScopedSecretsOwnsGooglePrivateKey(t *testing.T) {
 func TestRunLogPhaseBuildsDefaultGoogleEntryFields(t *testing.T) {
 	delivered := make(chan map[string]any, 1)
 	p := &Plugin{}
-	p.BatchProcessor = logger_batch.NewWithContext(logger_batch.Config{
+	p.BatchProcessor = newOwnedBatchProcessorForTest(t, logger_batch.Config{
 		BatchMaxSize: 1, MaxPendingEntries: 1, InactiveTimeout: time.Hour,
 		BufferDuration: time.Hour, ShutdownTimeout: time.Second,
 	}, func(_ context.Context, entries []map[string]any, _ int) (int, error) {
@@ -458,6 +458,9 @@ func TestStopDrainsActiveGoogleSendAndDropsPrivateState(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer closeAttempt()
+			if p.TaskOwner() == nil {
+				p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
+			}
 			if err := p.PostInit(); err != nil {
 				t.Fatal(err)
 			}
@@ -479,6 +482,7 @@ func TestStopDrainsActiveGoogleSendAndDropsPrivateState(t *testing.T) {
 			case <-time.After(time.Second):
 				t.Fatal("timed out waiting for active Google send")
 			}
+			processor := p.BatchProcessor
 
 			stopDone := make(chan struct{})
 			go func() {
@@ -487,9 +491,11 @@ func TestStopDrainsActiveGoogleSendAndDropsPrivateState(t *testing.T) {
 			}()
 			select {
 			case <-stopDone:
-				releaseOnce.Do(func() { close(release) })
-				t.Fatal("Stop returned before the active Google send drained")
-			case <-time.After(100 * time.Millisecond):
+			case <-time.After(time.Second):
+				t.Fatal("Stop waited for the active Google send instead of sealing scheduler admission")
+			}
+			if p.client == nil || p.clientRelease == nil || p.BatchProcessor == nil {
+				t.Fatal("Stop released Google runtime before the active send drained")
 			}
 			releaseOnce.Do(func() { close(release) })
 			select {
@@ -500,10 +506,8 @@ func TestStopDrainsActiveGoogleSendAndDropsPrivateState(t *testing.T) {
 			case <-time.After(time.Second):
 				t.Fatal("active Google send did not finish")
 			}
-			select {
-			case <-stopDone:
-			case <-time.After(time.Second):
-				t.Fatal("Stop did not finish after active Google send drained")
+			if err := processor.Shutdown(context.Background()); err != nil {
+				t.Fatalf("batch Shutdown() error = %v", err)
 			}
 
 			p.tokenMu.Lock()
@@ -659,6 +663,9 @@ func TestGoogleGenerationsShareOnlyCredentialNeutralClient(t *testing.T) {
 			closeAttempt()
 			t.Fatal(err)
 		}
+		if p.TaskOwner() == nil {
+			p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
+		}
 		if err := p.PostInit(); err != nil {
 			closeAttempt()
 			t.Fatal(err)
@@ -735,6 +742,7 @@ func newTestPluginWithMetadata(t *testing.T, cfg Config, metadata runtime.Metada
 
 	p := &Plugin{config: cfg}
 	p.SetDependencies(base.Dependencies{
+		Tasks:          newLoggerTestTaskOwner(t),
 		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
 		Metadata:       metadata,
 	})
@@ -757,6 +765,9 @@ func newTestPluginWithMetadata(t *testing.T, cfg Config, metadata runtime.Metada
 	t.Cleanup(cleanup)
 	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
+	}
+	if p.TaskOwner() == nil {
+		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
@@ -794,6 +805,7 @@ func TestPreparedGenerationsRetainMetadataFormat(t *testing.T) {
 func TestPostInitRejectsInvalidMetadataBeforeSideEffects(t *testing.T) {
 	p := &Plugin{}
 	p.SetDependencies(base.Dependencies{
+		Tasks:          newLoggerTestTaskOwner(t),
 		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
 		Metadata: mustMetadataView(t, map[string][]byte{
 			name: []byte(`{"log_format":"sensitive-invalid-metadata"}`),
@@ -806,6 +818,9 @@ func TestPostInitRejectsInvalidMetadataBeforeSideEffects(t *testing.T) {
 		t.Fatalf("MaterializeSecrets() error = %v", err)
 	}
 	t.Cleanup(p.Stop)
+	if p.TaskOwner() == nil {
+		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
+	}
 	err := p.PostInit()
 	if err == nil || !strings.Contains(err.Error(), "google-cloud-logging metadata decode failed") {
 		t.Fatalf("PostInit() error = %v, want redacted metadata decode failure", err)
@@ -923,6 +938,7 @@ func TestPostInitLoadsSSLCAFileForVerifiedClient(t *testing.T) {
 func TestMaterializeSecretsRejectsInvalidEncryptedPrivateKey(t *testing.T) {
 	p := &Plugin{config: Config{AuthConfig: &AuthConfig{PrivateKey: "not-a-ciphertext"}}}
 	p.SetDependencies(base.Dependencies{
+		Tasks:          newLoggerTestTaskOwner(t),
 		DataEncryption: testutil.DataEncryptionService(true, []string{"qeddd145sfvddff3"}).Resolver(),
 	})
 	if err := p.Init(); err != nil {
@@ -955,6 +971,9 @@ func TestMaterializeSecretsResolvesRotatedEncryptedPrivateKey(t *testing.T) {
 		context.Background(), scope, capabilityValue, p,
 	); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
+	}
+	if p.TaskOwner() == nil {
+		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
@@ -1574,7 +1593,12 @@ func TestSendBatchTimesOutTokenEndpoint(t *testing.T) {
 		}},
 		requestTimeout: 300 * time.Millisecond,
 	}
-	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
+	p.SetDependencies(
+		base.Dependencies{
+			Tasks:          newLoggerTestTaskOwner(t),
+			DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+		},
+	)
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -1590,6 +1614,9 @@ func TestSendBatchTimesOutTokenEndpoint(t *testing.T) {
 		context.Background(), scope, capabilityValue, p,
 	); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
+	}
+	if p.TaskOwner() == nil {
+		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
@@ -1633,7 +1660,12 @@ func TestSendBatchTimesOutWriteEndpoint(t *testing.T) {
 		}},
 		requestTimeout: 300 * time.Millisecond,
 	}
-	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
+	p.SetDependencies(
+		base.Dependencies{
+			Tasks:          newLoggerTestTaskOwner(t),
+			DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+		},
+	)
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -1649,6 +1681,9 @@ func TestSendBatchTimesOutWriteEndpoint(t *testing.T) {
 		context.Background(), scope, capabilityValue, p,
 	); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
+	}
+	if p.TaskOwner() == nil {
+		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)

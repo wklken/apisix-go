@@ -49,6 +49,32 @@ func testBaseGenerationCapability(t *testing.T, generation uint64) secret.Genera
 	return capability
 }
 
+func newBaseBatchProcessorForTest(
+	t *testing.T,
+	config logger_batch.Config,
+	deliver logger_batch.ContextDeliveryFunc,
+) *logger_batch.Processor {
+	t.Helper()
+	tasks := runtime.NewTaskRegistry(context.Background(), nil)
+	owner, err := runtime.NewTaskOwner(tasks, "plugin/test/base-logger", runtime.TaskPlugin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.Tasks = owner
+	processor, err := logger_batch.NewWithContext(config, deliver)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if residuals, stopErr := tasks.Stop(ctx); stopErr != nil {
+			t.Errorf("TaskRegistry.Stop() residuals=%v error=%v", residuals, stopErr)
+		}
+	})
+	return processor
+}
+
 func TestBasePluginDependenciesRemainInstanceScoped(t *testing.T) {
 	leftConfig := &config.EffectiveConfig{}
 	rightConfig := &config.EffectiveConfig{}
@@ -148,7 +174,7 @@ func TestBasePluginScopedDependenciesRemainInstanceScoped(t *testing.T) {
 
 func TestBaseLoggerRunLogPhaseUsesBoundedBatchQueue(t *testing.T) {
 	started := make(chan struct{})
-	processor := logger_batch.NewWithContext(logger_batch.Config{
+	processor := newBaseBatchProcessorForTest(t, logger_batch.Config{
 		Name:              "test",
 		BatchMaxSize:      100,
 		MaxPendingEntries: 1,
@@ -296,7 +322,7 @@ func TestBasePluginExposesStablePluginContract(t *testing.T) {
 
 func TestBaseLoggerRunLogPhaseBuildsDetachedNestedPayload(t *testing.T) {
 	delivered := make(chan map[string]any, 1)
-	processor := logger_batch.NewWithContext(logger_batch.Config{
+	processor := newBaseBatchProcessorForTest(t, logger_batch.Config{
 		Name:              "detached-payload",
 		BatchMaxSize:      1,
 		MaxPendingEntries: 4,

@@ -119,16 +119,23 @@ type effectiveBindingOps struct {
 }
 
 type effectiveBindingAcquisitionSlot struct {
-	mu               sync.Mutex
-	operations       effectiveBindingOps
-	factory          string
-	instance         plugin.Plugin
-	lease            *runtime.ResourceLease[plugin.Binding]
-	registryReleased bool
-	cleanupStarted   bool
-	stopped          bool
-	cleanupOnce      sync.Once
-	cleanupErr       error
+	mu                    sync.Mutex
+	operations            effectiveBindingOps
+	factory               string
+	instance              plugin.Plugin
+	lease                 *runtime.ResourceLease[plugin.Binding]
+	registryReleased      bool
+	cleanupStarted        bool
+	stopped               bool
+	quiesceOwnershipOnce  sync.Once
+	quiesceOwnershipErr   error
+	quiesceGenerationOnce sync.Once
+	cleanupOnce           sync.Once
+	cleanupErr            error
+}
+
+type generationTaskQuiescer interface {
+	QuiesceGenerationTasks()
 }
 
 type validatedEffectiveBindingSpec struct {
@@ -505,6 +512,9 @@ func (prepared *PreparedGeneration) acquireEffectiveBinding(
 		}
 		instance := factoryInstance.Plugin()
 		slot.adoptPlugin(instance)
+		if err := ownEffectiveBindingGenerationTaskQuiescer(prepared.cleanup, slot); err != nil {
+			return plugin.Binding{}, nil, err
+		}
 
 		if err := operations.initPlugin(instance); err != nil {
 			return plugin.Binding{}, nil, err
@@ -563,6 +573,33 @@ func (slot *effectiveBindingAcquisitionSlot) adoptLease(lease *runtime.ResourceL
 	slot.mu.Lock()
 	slot.lease = lease
 	slot.mu.Unlock()
+}
+
+func ownEffectiveBindingGenerationTaskQuiescer(
+	cleanup *cleanupStack,
+	slot *effectiveBindingAcquisitionSlot,
+) error {
+	if cleanup == nil || slot == nil {
+		return fmt.Errorf("%w: generation task quiesce owner is incomplete", ErrInvalidInput)
+	}
+	slot.mu.Lock()
+	instance := slot.instance
+	slot.mu.Unlock()
+	quiescer, ok := instance.(generationTaskQuiescer)
+	if !ok {
+		return nil
+	}
+	slot.quiesceOwnershipOnce.Do(func() {
+		slot.quiesceOwnershipErr = cleanup.Own(
+			cleanupQuiesce,
+			"plugin-generation-tasks/"+slot.factory,
+			func(context.Context) error {
+				slot.quiesceGenerationOnce.Do(quiescer.QuiesceGenerationTasks)
+				return nil
+			},
+		)
+	})
+	return slot.quiesceOwnershipErr
 }
 
 func (slot *effectiveBindingAcquisitionSlot) registryRelease(context.Context) error {

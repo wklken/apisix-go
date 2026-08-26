@@ -1855,6 +1855,16 @@ func TestGenerationEngineCloseCancelsActiveRetirementAttemptBeforeRetry(t *testi
 	if !errors.As(first, &residual) {
 		t.Fatalf("first Close() error = %v", first)
 	}
+	if !errors.Is(first, context.Canceled) {
+		t.Fatalf("first Close() error = %v, want joined background cancellation", first)
+	}
+	if !errors.Is(first, context.DeadlineExceeded) {
+		t.Fatalf("first Close() error = %v, want caller deadline after synchronous retry", first)
+	}
+	wantResiduals := []runtime.TaskResidual{{Owner: "plugin/test/retirement-cancel"}}
+	if got := residual.Residuals(); !reflect.DeepEqual(got, wantResiduals) {
+		t.Fatalf("first Close() residuals = %v, want latest retry residuals %v", got, wantResiduals)
+	}
 	fixture.engine.retireMu.Lock()
 	_, retained := fixture.engine.retireKnown[owner]
 	_, active := fixture.engine.retireActive[owner]

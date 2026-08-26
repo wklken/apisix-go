@@ -1137,8 +1137,12 @@ func (engine *GenerationEngine) closeRetirementOwners(ctx context.Context) error
 	if err != nil {
 		return errors.Join(joinedErr, err)
 	}
-	if generationEngineResidualIncomplete(joinedErr) {
-		return joinedErr
+	var joinedContextErrors []error
+	if errors.Is(joinedErr, context.Canceled) {
+		joinedContextErrors = append(joinedContextErrors, context.Canceled)
+	}
+	if errors.Is(joinedErr, context.DeadlineExceeded) {
+		joinedContextErrors = append(joinedContextErrors, context.DeadlineExceeded)
 	}
 
 	engine.retireMu.Lock()
@@ -1167,7 +1171,7 @@ func (engine *GenerationEngine) closeRetirementOwners(ctx context.Context) error
 		engine.retireMu.Unlock()
 	}
 	if len(incomplete) != 0 {
-		return errors.Join(incomplete...)
+		return errors.Join(errors.Join(joinedContextErrors...), errors.Join(incomplete...))
 	}
 
 	engine.retireMu.Lock()
@@ -1258,15 +1262,6 @@ func generationEngineCleanupIncomplete(err error) bool {
 	return errors.As(err, &residual) ||
 		errors.Is(err, compiler.ErrPreparedGenerationCleanupIncomplete) ||
 		errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
-}
-
-func generationEngineResidualIncomplete(err error) bool {
-	if err == nil {
-		return false
-	}
-	var residual *runtime.TaskResidualError
-	return errors.As(err, &residual) ||
-		errors.Is(err, compiler.ErrPreparedGenerationCleanupIncomplete)
 }
 
 func (engine *GenerationEngine) registerStreamMetricOwner(owner *generationOwner) {

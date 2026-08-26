@@ -694,12 +694,19 @@ func TestStopDrainsActiveElasticsearchSendAndPreventsResurrection(t *testing.T) 
 	select {
 	case <-stopAttempted:
 	case <-time.After(time.Second):
-		t.Fatal("Stop did not reach the credential drain barrier")
+		t.Fatal("Stop did not reach the scheduler seal barrier")
 	}
 	select {
 	case <-stopDone:
-		t.Fatal("Stop returned before active credential use drained")
-	default:
+	case <-time.After(time.Second):
+		t.Fatal("Stop blocked on active credential use before sealing the scheduler")
+	}
+	processor := p.BatchProcessor
+	p.clientMu.Lock()
+	clientsRetained := len(p.clients) > 0
+	p.clientMu.Unlock()
+	if !clientsRetained {
+		t.Fatal("Stop released the active client before credential use drained")
 	}
 
 	releaseOnce.Do(func() { close(release) })
@@ -711,10 +718,8 @@ func TestStopDrainsActiveElasticsearchSendAndPreventsResurrection(t *testing.T) 
 	case <-time.After(time.Second):
 		t.Fatal("active send did not finish")
 	}
-	select {
-	case <-stopDone:
-	case <-time.After(time.Second):
-		t.Fatal("Stop did not finish after active send drained")
+	if err := processor.Shutdown(context.Background()); err != nil {
+		t.Fatalf("batch Shutdown() error = %v", err)
 	}
 	if len(p.clients) != 0 || p.password != nil || p.legacyPassword != nil ||
 		p.authorization != nil || p.legacyAuthorization != nil {
@@ -778,6 +783,9 @@ func TestStopDrainsActiveScopedElasticsearchSend(t *testing.T) {
 	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
 		t.Fatal(err)
 	}
+	if p.TaskOwner() == nil {
+		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
+	}
 	if err := p.PostInit(); err != nil {
 		t.Fatal(err)
 	}
@@ -801,12 +809,19 @@ func TestStopDrainsActiveScopedElasticsearchSend(t *testing.T) {
 	select {
 	case <-stopAttempted:
 	case <-time.After(time.Second):
-		t.Fatal("scoped Stop did not reach drain barrier")
+		t.Fatal("scoped Stop did not reach scheduler seal barrier")
 	}
 	select {
 	case <-stopDone:
-		t.Fatal("scoped Stop returned before active use drained")
-	default:
+	case <-time.After(time.Second):
+		t.Fatal("scoped Stop blocked on active credential use before sealing the scheduler")
+	}
+	processor := p.BatchProcessor
+	p.clientMu.Lock()
+	clientsRetained := len(p.clients) > 0
+	p.clientMu.Unlock()
+	if !clientsRetained {
+		t.Fatal("scoped Stop released the active client before credential use drained")
 	}
 	releaseOnce.Do(func() { close(release) })
 	select {
@@ -817,10 +832,8 @@ func TestStopDrainsActiveScopedElasticsearchSend(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("active scoped send did not finish")
 	}
-	select {
-	case <-stopDone:
-	case <-time.After(time.Second):
-		t.Fatal("scoped Stop did not finish")
+	if err := processor.Shutdown(context.Background()); err != nil {
+		t.Fatalf("batch Shutdown() error = %v", err)
 	}
 	if p.password != nil || p.authorization != nil || len(p.clients) != 0 {
 		t.Fatal("scoped Stop retained credentials or clients")
@@ -837,6 +850,7 @@ func TestPostInitCannotPublishBatchProcessorAfterStop(t *testing.T) {
 			prepare: func(t *testing.T, p *Plugin) func() {
 				t.Helper()
 				p.SetDependencies(base.Dependencies{
+					Tasks:          newLoggerTestTaskOwner(t),
 					DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
 				})
 				if err := p.MaterializeSecrets(); err != nil {
@@ -889,6 +903,7 @@ func TestPostInitCannotPublishBatchProcessorAfterStop(t *testing.T) {
 			if err := p.Init(); err != nil {
 				t.Fatal(err)
 			}
+			p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
 			closeAttempt := tt.prepare(t, p)
 			defer closeAttempt()
 
@@ -934,7 +949,7 @@ func TestPostInitCannotPublishBatchProcessorAfterStop(t *testing.T) {
 				t.Fatal("PostInit left the unpublished batch processor alive after Stop")
 			}
 			p.Stop()
-			if !p.stopped || p.BatchProcessor != nil || len(p.clients) != 0 ||
+			if !p.stopped.Load() || p.BatchProcessor != nil || len(p.clients) != 0 ||
 				p.password != nil || p.legacyPassword != nil ||
 				p.authorization != nil || p.legacyAuthorization != nil {
 				t.Fatal("repeated Stop left Elasticsearch generation state")
@@ -1023,7 +1038,7 @@ func TestRunLogPhasePreservesIndexAndDetachedHostFields(t *testing.T) {
 			"host": "$host", "remote": "$remote_addr",
 		}},
 	}
-	p.BatchProcessor = logger_batch.NewWithContext(logger_batch.Config{
+	p.BatchProcessor = newOwnedBatchProcessorForTest(t, logger_batch.Config{
 		BatchMaxSize: 1, MaxPendingEntries: 1, InactiveTimeout: time.Hour,
 		BufferDuration: time.Hour, ShutdownTimeout: time.Second,
 	}, func(_ context.Context, entries []map[string]any, _ int) (int, error) {
@@ -1119,12 +1134,20 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	}
 
 	p := &Plugin{config: cfg}
-	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
+	p.SetDependencies(
+		base.Dependencies{
+			Tasks:          newLoggerTestTaskOwner(t),
+			DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+		},
+	)
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
 	if err := p.MaterializeSecrets(); err != nil {
 		t.Fatalf("MaterializeSecrets() error = %v", err)
+	}
+	if p.TaskOwner() == nil {
+		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
@@ -1176,9 +1199,17 @@ func TestEffectiveLogFormatRejectsEmptyBeforeSideEffects(t *testing.T) {
 		EndpointAddrs: []string{"http://127.0.0.1:9200"},
 		Field:         FieldConfig{Index: "apisix"},
 	}}
-	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
+	p.SetDependencies(
+		base.Dependencies{
+			Tasks:          newLoggerTestTaskOwner(t),
+			DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+		},
+	)
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
+	}
+	if p.TaskOwner() == nil {
+		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
 	}
 	err := p.PostInit()
 	if err == nil || !strings.Contains(err.Error(), name) || !strings.Contains(err.Error(), "log_format") {
@@ -1214,6 +1245,7 @@ func TestPostInitRejectsInvalidMetadataBeforeSideEffects(t *testing.T) {
 		LogFormat: map[string]string{"route": "$route_id"},
 	}}
 	p.SetDependencies(base.Dependencies{
+		Tasks:          newLoggerTestTaskOwner(t),
 		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
 		Metadata: mustMetadataView(t, map[string][]byte{
 			name: []byte(`{"log_format":"sensitive-invalid-metadata"}`),
@@ -1223,6 +1255,9 @@ func TestPostInitRejectsInvalidMetadataBeforeSideEffects(t *testing.T) {
 		t.Fatalf("Init() error = %v", err)
 	}
 	t.Cleanup(p.Stop)
+	if p.TaskOwner() == nil {
+		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
+	}
 	err := p.PostInit()
 	if err == nil || !strings.Contains(err.Error(), "elasticsearch-logger metadata decode failed") {
 		t.Fatalf("PostInit() error = %v, want redacted metadata decode failure", err)
@@ -1240,11 +1275,15 @@ func newRawTestPlugin(t *testing.T, cfg Config, metadata runtime.MetadataView) *
 
 	p := &Plugin{config: cfg}
 	p.SetDependencies(base.Dependencies{
+		Tasks:          newLoggerTestTaskOwner(t),
 		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
 		Metadata:       metadata,
 	})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
+	}
+	if p.TaskOwner() == nil {
+		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
@@ -1301,6 +1340,7 @@ func TestPostInitRejectsInvalidEncryptedAuthPassword(t *testing.T) {
 		Auth:          &AuthConfig{Username: "elastic", Password: "not-a-ciphertext"},
 	}}
 	p.SetDependencies(base.Dependencies{
+		Tasks:          newLoggerTestTaskOwner(t),
 		DataEncryption: testutil.DataEncryptionService(true, []string{"qeddd145sfvddff3"}).Resolver(),
 	})
 	if err := p.Init(); err != nil {
@@ -1324,6 +1364,7 @@ func TestPostInitResolvesRotatedEncryptedAuthPassword(t *testing.T) {
 		},
 	}}
 	p.SetDependencies(base.Dependencies{
+		Tasks:          newLoggerTestTaskOwner(t),
 		DataEncryption: testutil.DataEncryptionService(true, []string{newKey, oldKey}).Resolver(),
 	})
 	if err := p.Init(); err != nil {
@@ -1331,6 +1372,9 @@ func TestPostInitResolvesRotatedEncryptedAuthPassword(t *testing.T) {
 	}
 	if err := p.MaterializeSecrets(); err != nil {
 		t.Fatalf("MaterializeSecrets() error = %v", err)
+	}
+	if p.TaskOwner() == nil {
+		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)

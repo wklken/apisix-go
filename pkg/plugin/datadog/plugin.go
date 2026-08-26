@@ -270,7 +270,7 @@ func (p *Plugin) PostInit() error {
 	if p.config.Port != 0 {
 		p.metadata.Port = p.config.Port
 	}
-	p.BatchProcessor = base.NewBatchProcessor(p.config.BatchName, base.BatchDefaults{
+	processor, err := base.NewBatchProcessor(p.config.BatchName, p.TaskOwner(), base.BatchDefaults{
 		BatchMaxSize:       p.config.BatchMaxSize,
 		MaxRetryCount:      p.config.MaxRetryCount,
 		RetryDelaySec:      p.config.RetryDelay,
@@ -279,6 +279,10 @@ func (p *Plugin) PostInit() error {
 		InactiveTimeoutSec: p.config.InactiveTimeout,
 		PluginID:           name,
 	}, p.RouteID, p.ServerAddr, p.deliver)
+	if err != nil {
+		return err
+	}
+	p.BatchProcessor = processor
 	return nil
 }
 
@@ -346,6 +350,8 @@ func snapshotPath(snapshot base.LogSnapshot) string {
 	}
 	return snapshot.Request.URI
 }
+
+func (p *Plugin) QuiesceGenerationTasks() { p.Stop() }
 
 func (p *Plugin) Stop() {
 	cleanup := func() {

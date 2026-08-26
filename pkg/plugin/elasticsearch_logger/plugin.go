@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/elastic/go-elasticsearch/v8"
@@ -210,7 +211,7 @@ type Plugin struct {
 	legacyPassword        *string
 	authorization         *secret.Value
 	legacyAuthorization   *string
-	stopped               bool
+	stopped               atomic.Bool
 	stopBeforeLock        func()
 	postInitBeforePublish func(*logger_batch.Processor)
 	cleanupOnce           sync.Once
@@ -292,7 +293,7 @@ func (p *Plugin) Init() error {
 func (p *Plugin) MaterializeSecrets() error {
 	p.secretMu.Lock()
 	defer p.secretMu.Unlock()
-	if p.stopped {
+	if p.stopped.Load() {
 		return secret.ErrCredentialUnavailable
 	}
 	if p.credentialsInstalled() {
@@ -346,7 +347,7 @@ func (p *Plugin) MaterializeScopedSecrets(
 ) error {
 	p.secretMu.Lock()
 	defer p.secretMu.Unlock()
-	if p.stopped {
+	if p.stopped.Load() {
 		return secret.ErrCredentialUnavailable
 	}
 	if p.credentialsInstalled() {
@@ -459,7 +460,7 @@ func legacyElasticsearchDescriptor(value string, present bool) (string, error) {
 
 func (p *Plugin) PostInit() error {
 	p.secretMu.RLock()
-	prepared := !p.stopped && p.credentialsInstalled()
+	prepared := !p.stopped.Load() && p.credentialsInstalled()
 	p.secretMu.RUnlock()
 	if !prepared {
 		return secret.ErrCredentialUnavailable
@@ -516,7 +517,7 @@ func (p *Plugin) PostInit() error {
 		p.config.IncludeReqBodyExpr, p.config.IncludeRespBodyExpr,
 	)
 
-	processor := base.NewBatchProcessor(name, base.BatchDefaults{
+	processor, err := base.NewBatchProcessor(name, p.TaskOwner(), base.BatchDefaults{
 		PluginID:           name,
 		BatchMaxSize:       p.config.BatchMaxSize,
 		MaxRetryCount:      p.config.MaxRetryCount,
@@ -525,11 +526,14 @@ func (p *Plugin) PostInit() error {
 		InactiveTimeoutSec: p.config.InactiveTimeout,
 		MaxPendingEntries:  p.config.MaxPendingEntries,
 	}, p.RouteID, p.ServerAddr, p.SendBatch)
+	if err != nil {
+		return err
+	}
 	if p.postInitBeforePublish != nil {
 		p.postInitBeforePublish(processor)
 	}
 	p.secretMu.Lock()
-	if p.stopped {
+	if p.stopped.Load() {
 		p.secretMu.Unlock()
 		processor.Stop()
 		return secret.ErrCredentialUnavailable
@@ -768,7 +772,7 @@ func (p *Plugin) withClient(
 	}
 	p.secretMu.RLock()
 	defer p.secretMu.RUnlock()
-	if p.stopped || !p.credentialsInstalled() {
+	if p.stopped.Load() || !p.credentialsInstalled() {
 		return secret.ErrCredentialUnavailable
 	}
 
@@ -934,14 +938,14 @@ func basicAuthorization(username, password string) []byte {
 	return encoded
 }
 
+func (p *Plugin) QuiesceGenerationTasks() { p.Stop() }
+
 func (p *Plugin) Stop() {
 	p.cleanupOnce.Do(func() {
 		if p.stopBeforeLock != nil {
 			p.stopBeforeLock()
 		}
-		p.secretMu.Lock()
-		p.stopped = true
-		p.secretMu.Unlock()
+		p.stopped.Store(true)
 
 		cleanup := func() {
 			p.secretMu.Lock()
@@ -978,8 +982,11 @@ func (p *Plugin) Stop() {
 			}
 			p.secretMu.Unlock()
 		}
-		if p.BatchProcessor != nil {
-			p.BatchProcessor.StopWithCleanup(cleanup)
+		p.secretMu.RLock()
+		processor := p.BatchProcessor
+		p.secretMu.RUnlock()
+		if processor != nil {
+			processor.StopWithCleanup(cleanup)
 		} else {
 			cleanup()
 		}

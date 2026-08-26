@@ -312,14 +312,16 @@ func (p *Plugin) PostInit() error {
 	}
 	p.applyDefaults()
 	p.client = &http.Client{Timeout: time.Duration(p.config.Timeout) * time.Second}
+	createdKafkaSender := false
 	if p.config.Kafka != nil && p.kafkaSender == nil {
 		writer, err := p.newKafkaWriter()
 		if err != nil {
 			return err
 		}
 		p.kafkaSender = &kafkaGoSender{writer: writer}
+		createdKafkaSender = true
 	}
-	p.BatchProcessor = base.NewBatchProcessor(p.config.Name, base.BatchDefaults{
+	processor, err := base.NewBatchProcessor(p.config.Name, p.TaskOwner(), base.BatchDefaults{
 		BatchMaxSize:       p.config.BatchMaxSize,
 		MaxRetryCount:      p.config.MaxRetryCount,
 		RetryDelaySec:      p.config.RetryDelay,
@@ -328,6 +330,14 @@ func (p *Plugin) PostInit() error {
 		MaxPendingEntries:  p.config.MaxPendingEntries,
 		PluginID:           name,
 	}, "", "", p.SendBatch)
+	if err != nil {
+		if createdKafkaSender {
+			_ = p.kafkaSender.Close()
+			p.kafkaSender = nil
+		}
+		return err
+	}
+	p.BatchProcessor = processor
 
 	return nil
 }
@@ -620,6 +630,8 @@ func (p *Plugin) installObserver() func() {
 		}
 	})
 }
+
+func (p *Plugin) QuiesceGenerationTasks() { p.Stop() }
 
 func (p *Plugin) Stop() {
 	p.stopOnce.Do(func() {

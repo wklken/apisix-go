@@ -469,12 +469,14 @@ func ApplyBatchDefaults(d *BatchDefaults) {
 // batch defaults.
 func NewBatchProcessor(
 	name string,
+	tasks *runtime.TaskOwner,
 	d BatchDefaults,
 	routeID, serverAddr string,
 	deliver logger_batch.ContextDeliveryFunc,
-) *logger_batch.Processor {
+) (*logger_batch.Processor, error) {
 	ApplyBatchDefaults(&d)
 	return logger_batch.NewWithContext(logger_batch.Config{
+		Tasks:                   tasks,
 		Name:                    name,
 		BatchMaxSize:            d.BatchMaxSize,
 		MaxRetryCount:           d.MaxRetryCount,

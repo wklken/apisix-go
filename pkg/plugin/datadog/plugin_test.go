@@ -29,6 +29,9 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
+	if p.TaskOwner() == nil {
+		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
+	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
@@ -41,9 +44,12 @@ func newTestPluginWithMetadata(t *testing.T, cfg Config, documents map[string][]
 	t.Helper()
 
 	p := &Plugin{config: cfg}
-	p.SetDependencies(base.Dependencies{Metadata: mustMetadataView(t, documents)})
+	p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t), Metadata: mustMetadataView(t, documents)})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
+	}
+	if p.TaskOwner() == nil {
+		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
@@ -79,11 +85,16 @@ func TestPreparedGenerationsRetainMetadataNamespace(t *testing.T) {
 
 func TestPostInitRejectsInvalidMetadataBeforeSideEffects(t *testing.T) {
 	p := &Plugin{}
-	p.SetDependencies(base.Dependencies{Metadata: mustMetadataView(t, map[string][]byte{
-		name: []byte(`{"namespace":true}`),
-	})})
+	p.SetDependencies(
+		base.Dependencies{Tasks: newLoggerTestTaskOwner(t), Metadata: mustMetadataView(t, map[string][]byte{
+			name: []byte(`{"namespace":true}`),
+		})},
+	)
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
+	}
+	if p.TaskOwner() == nil {
+		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
 	}
 	err := p.PostInit()
 	if err == nil || !strings.Contains(err.Error(), "datadog metadata decode failed") {
@@ -142,6 +153,9 @@ func TestPostInitPreservesExplicitPreferNameFalse(t *testing.T) {
 	}
 	if err := util.Parse(map[string]any{"prefer_name": false}, p.Config()); err != nil {
 		t.Fatalf("parse config: %v", err)
+	}
+	if p.TaskOwner() == nil {
+		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
@@ -248,6 +262,9 @@ func TestGenerateTagsPreferNameFalseUsesIDs(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
+	if p.TaskOwner() == nil {
+		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
+	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
@@ -298,7 +315,7 @@ func TestMetricLinesUseDogStatsDFormat(t *testing.T) {
 func TestRunLogPhaseClampsUnknownRequestSizeLikeLegacyHandler(t *testing.T) {
 	delivered := make(chan metricEntry, 1)
 	p := &Plugin{}
-	p.BatchProcessor = logger_batch.NewWithContext(logger_batch.Config{
+	p.BatchProcessor = newOwnedBatchProcessorForTest(t, logger_batch.Config{
 		BatchMaxSize:      1,
 		InactiveTimeout:   time.Hour,
 		BufferDuration:    time.Hour,
@@ -361,6 +378,9 @@ func TestPostInitPreservesExplicitRetryDelayZero(t *testing.T) {
 	}
 	if err := util.Parse(map[string]any{"retry_delay": 0}, p.Config()); err != nil {
 		t.Fatalf("parse config: %v", err)
+	}
+	if p.TaskOwner() == nil {
+		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
@@ -1080,7 +1100,11 @@ func TestStopClosesDogStatsDSocket(t *testing.T) {
 	}
 	waitDatadogMessages(t, received, 1)
 
+	processor := p.BatchProcessor
 	p.Stop()
+	if err := processor.Shutdown(context.Background()); err != nil {
+		t.Fatalf("batch Shutdown() error = %v", err)
+	}
 	p.connMu.Lock()
 	conn := p.conn
 	p.connMu.Unlock()

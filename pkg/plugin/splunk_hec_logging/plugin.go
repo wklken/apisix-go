@@ -323,7 +323,7 @@ func (p *Plugin) PostInit() error {
 		p.config.MaxPendingEntries = metadata.MaxPendingEntries
 	}
 
-	processor := base.NewBatchProcessor(name, base.BatchDefaults{
+	processor, err := base.NewBatchProcessor(name, p.TaskOwner(), base.BatchDefaults{
 		PluginID:           name,
 		BatchMaxSize:       p.config.BatchMaxSize,
 		MaxRetryCount:      p.config.MaxRetryCount,
@@ -332,6 +332,10 @@ func (p *Plugin) PostInit() error {
 		InactiveTimeoutSec: p.config.InactiveTimeout,
 		MaxPendingEntries:  p.config.MaxPendingEntries,
 	}, p.RouteID, p.ServerAddr, p.sendBatchFromProcessor)
+	if err != nil {
+		release()
+		return err
+	}
 	if p.stopped.Load() {
 		processor.Stop()
 		release()
@@ -344,13 +348,15 @@ func (p *Plugin) PostInit() error {
 	return nil
 }
 
+func (p *Plugin) QuiesceGenerationTasks() { p.Stop() }
+
 func (p *Plugin) Stop() {
 	if p.stopped.Swap(true) {
 		return
 	}
-	p.lifecycleMu.Lock()
+	p.lifecycleMu.RLock()
 	processor := p.BatchProcessor
-	p.lifecycleMu.Unlock()
+	p.lifecycleMu.RUnlock()
 	cleanup := func() {
 		p.lifecycleMu.Lock()
 		defer p.lifecycleMu.Unlock()

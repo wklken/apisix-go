@@ -207,13 +207,15 @@ type pluginMetadata struct {
 	MaxPendingEntries int               `json:"max_pending_entries,omitempty"`
 }
 
+func (p *Plugin) QuiesceGenerationTasks() { p.Stop() }
+
 func (p *Plugin) Stop() {
 	if p.stopped.Swap(true) {
 		return
 	}
-	p.lifecycleMu.Lock()
+	p.lifecycleMu.RLock()
 	processor := p.BatchProcessor
-	p.lifecycleMu.Unlock()
+	p.lifecycleMu.RUnlock()
 	cleanup := func() {
 		p.lifecycleMu.Lock()
 		defer p.lifecycleMu.Unlock()
@@ -238,15 +240,7 @@ func shutdownRocketMQSender(value rocketmqSender) {
 	if !ok {
 		return
 	}
-	done := make(chan struct{})
-	go func() {
-		_ = sender.Shutdown()
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-	}
+	_ = sender.Shutdown()
 }
 
 func (s *rocketmqClientSender) Shutdown() error {
@@ -403,7 +397,7 @@ func (p *Plugin) PostInit() error {
 		createdSender = true
 	}
 
-	processor := base.NewBatchProcessor("rocketmq logger", base.BatchDefaults{
+	processor, err := base.NewBatchProcessor("rocketmq logger", p.TaskOwner(), base.BatchDefaults{
 		BatchMaxSize:       p.config.BatchMaxSize,
 		MaxRetryCount:      p.config.MaxRetryCount,
 		RetryDelaySec:      p.config.RetryDelay,
@@ -412,6 +406,12 @@ func (p *Plugin) PostInit() error {
 		MaxPendingEntries:  p.config.MaxPendingEntries,
 		PluginID:           name,
 	}, p.RouteID, p.ServerAddr, p.sendBatchFromProcessor)
+	if err != nil {
+		if createdSender {
+			shutdownRocketMQSender(sender)
+		}
+		return err
+	}
 	if p.stopped.Load() {
 		processor.Stop()
 		if createdSender {

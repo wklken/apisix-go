@@ -223,7 +223,12 @@ func TestScopedSecretsResolveManagedClickHouseUser(t *testing.T) {
 	); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
-	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
+	p.SetDependencies(
+		base.Dependencies{
+			Tasks:          newLoggerTestTaskOwner(t),
+			DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+		},
+	)
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
@@ -299,7 +304,12 @@ func TestScopedSecretsClickHousePasswordFailureIsAtomic(t *testing.T) {
 
 func TestPostInitNeverCallsClickHouseDataEncryption(t *testing.T) {
 	p := &Plugin{config: clickHouseScopedConfig("default", "secret")}
-	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
+	p.SetDependencies(
+		base.Dependencies{
+			Tasks:          newLoggerTestTaskOwner(t),
+			DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+		},
+	)
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -308,7 +318,7 @@ func TestPostInitNeverCallsClickHouseDataEncryption(t *testing.T) {
 	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
-	p.SetDependencies(base.Dependencies{})
+	p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v, want no data-encryption lookup", err)
 	}
@@ -368,7 +378,12 @@ func newScopedClickHousePlugin(
 	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
-	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
+	p.SetDependencies(
+		base.Dependencies{
+			Tasks:          newLoggerTestTaskOwner(t),
+			DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+		},
+	)
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
@@ -442,7 +457,7 @@ func TestScopedClickHouseInstancesDoNotCrossUseCredentials(t *testing.T) {
 	p2.Stop()
 }
 
-func TestStopWaitsForClickHouseDeliveryAndClearsSecrets(t *testing.T) {
+func TestStopReturnsBeforeClickHouseDeliveryAndDefersSecretCleanup(t *testing.T) {
 	tests := []struct {
 		name       string
 		prepare    func(*testing.T, string) (*Plugin, func())
@@ -499,6 +514,7 @@ func TestStopWaitsForClickHouseDeliveryAndClearsSecrets(t *testing.T) {
 			if !p.BatchProcessor.Push(map[string]any{"path": "/blocked"}) {
 				t.Fatal("batch push was rejected")
 			}
+			processor := p.BatchProcessor
 			select {
 			case <-started:
 			case <-time.After(time.Second):
@@ -521,8 +537,8 @@ func TestStopWaitsForClickHouseDeliveryAndClearsSecrets(t *testing.T) {
 			}
 			select {
 			case <-stopDone:
-				t.Fatal("Stop returned before blocked delivery drained")
-			default:
+			case <-time.After(time.Second):
+				t.Fatal("Stop blocked on the active batch delivery")
 			}
 			if got := releaseCalls.Load(); got != 0 {
 				t.Fatalf("client release calls before delivery exit = %d, want zero", got)
@@ -532,10 +548,8 @@ func TestStopWaitsForClickHouseDeliveryAndClearsSecrets(t *testing.T) {
 			}
 
 			releaseDeliveryNow()
-			select {
-			case <-stopDone:
-			case <-time.After(time.Second):
-				t.Fatal("Stop did not finish after delivery exited")
+			if err := processor.Shutdown(context.Background()); err != nil {
+				t.Fatalf("batch Shutdown() error = %v", err)
 			}
 			if got := releaseCalls.Load(); got != 1 {
 				t.Fatalf("client release calls = %d, want exactly one", got)

@@ -17,6 +17,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/limitbase"
 	"github.com/wklken/apisix-go/pkg/resource"
+	"github.com/wklken/apisix-go/pkg/runtime"
 	"github.com/wklken/apisix-go/pkg/secret"
 	"github.com/wklken/apisix-go/pkg/shared"
 	"github.com/wklken/apisix-go/pkg/util"
@@ -1242,6 +1243,10 @@ func (p *Plugin) delayedSyncerFor(count int64, timeWindow int64) (*delayedSyncer
 	if p.delayed != nil {
 		return p.delayed, nil
 	}
+	owner := p.TaskOwner()
+	if owner == nil {
+		return nil, runtime.ErrTaskOwnerRequired
+	}
 
 	key := strconv.FormatInt(count, 10) + ":" + strconv.FormatInt(timeWindow, 10)
 	p.limiterMu.Lock()
@@ -1252,6 +1257,13 @@ func (p *Plugin) delayedSyncerFor(count int64, timeWindow int64) (*delayedSyncer
 	if syncer := p.delayedByKey[key]; syncer != nil {
 		return syncer, nil
 	}
+	p.backendMu.Lock()
+	previousFixedStore := p.fixedStore
+	previousBackendClient := p.backendClient
+	previousClientRelease := p.clientRelease
+	p.backendMu.Unlock()
+	previousSlidingStore := p.slidingStore
+	previousLocalLimiterStore := p.localLimiterStore
 
 	var backend delayedSyncBackend
 	if p.config.WindowType == "sliding" {
@@ -1267,15 +1279,52 @@ func (p *Plugin) delayedSyncerFor(count int64, timeWindow int64) (*delayedSyncer
 		}
 		backend = fixedWindowDelayedBackend{limiter: fixed}
 	}
-	syncer := newDelayedSyncer(
+	syncer, err := newDelayedSyncer(
+		owner,
 		backend,
 		count,
 		time.Duration(timeWindow)*time.Second,
 		time.Duration(p.config.SyncInterval*float64(time.Second)),
 		10000,
 	)
+	if err != nil {
+		p.rollbackDelayedSyncResources(
+			previousFixedStore,
+			previousSlidingStore,
+			previousLocalLimiterStore,
+			previousBackendClient,
+			previousClientRelease,
+		)
+		return nil, err
+	}
 	p.delayedByKey[key] = syncer
 	return syncer, nil
+}
+
+func (p *Plugin) rollbackDelayedSyncResources(
+	previousFixedStore limiter.Store,
+	previousSlidingStore slidingWindowStore,
+	previousLocalLimiterStore limiter.Store,
+	previousBackendClient redis.UniversalClient,
+	previousClientRelease func(),
+) {
+	p.slidingStore = previousSlidingStore
+	p.localLimiterStore = previousLocalLimiterStore
+
+	p.backendMu.Lock()
+	var release func()
+	if p.backendClient != previousBackendClient {
+		release = p.clientRelease
+		p.backendClient = previousBackendClient
+		p.clientRelease = previousClientRelease
+	}
+	p.fixedStore = previousFixedStore
+	p.backendMu.Unlock()
+
+	if release != nil {
+		// The newly acquired client is owned only by this failed admission.
+		release()
+	}
 }
 
 func (p *Plugin) slidingLimiterFor(count int64, timeWindow int64) (*slidingWindowLimiter, error) {
@@ -1576,13 +1625,6 @@ func (p *Plugin) stopLimitCount() {
 	p.releaseGroup()
 
 	p.limiterMu.Lock()
-	syncers := make([]*delayedSyncer, 0, len(p.delayedByKey)+1)
-	if p.delayed != nil {
-		syncers = append(syncers, p.delayed)
-	}
-	for _, syncer := range p.delayedByKey {
-		syncers = append(syncers, syncer)
-	}
 	p.delayed = nil
 	p.delayedByKey = nil
 	p.limiter = nil
@@ -1594,10 +1636,6 @@ func (p *Plugin) stopLimitCount() {
 	p.localLimiterStore = nil
 	p.dynamicLimits = false
 	p.limiterMu.Unlock()
-
-	for _, syncer := range syncers {
-		syncer.Stop()
-	}
 
 	p.backendMu.Lock()
 	release := p.clientRelease

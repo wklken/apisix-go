@@ -2,11 +2,13 @@ package proxy_cache
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -20,6 +22,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/cacheutil"
 	"github.com/wklken/apisix-go/pkg/resource"
+	"github.com/wklken/apisix-go/pkg/runtime"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -75,16 +78,59 @@ func (w *cacheHitCountingWriter) Write(body []byte) (int, error) {
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
 
+	tasks, failures := newProxyCacheTestTasks(t)
 	p := &Plugin{config: cfg}
+	p.SetDependencies(base.Dependencies{
+		Tasks: newPluginTaskOwnerForTest(t, tasks, "plugin/test/proxy-cache/helper"),
+	})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
-	t.Cleanup(p.Stop)
+	t.Cleanup(func() {
+		stopProxyCacheTestRegistry(t, tasks)
+		p.Stop()
+		assertNoProxyCacheTaskFailure(t, failures)
+	})
 
 	return p
+}
+
+func newProxyCacheTestTasks(t *testing.T) (*runtime.TaskRegistry, <-chan runtime.TaskFailure) {
+	t.Helper()
+	failures := make(chan runtime.TaskFailure, 4)
+	return runtime.NewTaskRegistry(context.Background(), func(failure runtime.TaskFailure) {
+		failures <- failure
+	}), failures
+}
+
+func newPluginTaskOwnerForTest(t *testing.T, tasks *runtime.TaskRegistry, prefix string) *runtime.TaskOwner {
+	t.Helper()
+	owner, err := runtime.NewTaskOwner(tasks, prefix, runtime.TaskPlugin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return owner
+}
+
+func stopProxyCacheTestRegistry(t *testing.T, tasks *runtime.TaskRegistry) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if residuals, err := tasks.Stop(ctx); err != nil || len(residuals) != 0 {
+		t.Fatalf("TaskRegistry.Stop() = (%v, %v)", residuals, err)
+	}
+}
+
+func assertNoProxyCacheTaskFailure(t *testing.T, failures <-chan runtime.TaskFailure) {
+	t.Helper()
+	select {
+	case failure := <-failures:
+		t.Fatalf("unexpected task failure = %#v", failure)
+	default:
+	}
 }
 
 func setConfiguredZones(t *testing.T, zones []appconfig.Zone) {
@@ -778,7 +824,7 @@ func TestDiskLookupRunsPeriodicExpirySweep(t *testing.T) {
 	}
 }
 
-func TestDiskBackgroundExpirySweepStopsWithPlugin(t *testing.T) {
+func TestDiskBackgroundExpirySweepStopsWithRegistry(t *testing.T) {
 	root := t.TempDir()
 	setConfiguredZones(t, []appconfig.Zone{{Name: "disk-background", DiskPath: root}})
 
@@ -786,13 +832,21 @@ func TestDiskBackgroundExpirySweepStopsWithPlugin(t *testing.T) {
 		config:          Config{CacheStrategy: "disk", CacheZone: "disk-background", CacheTTL: 60},
 		cleanupInterval: 10 * time.Millisecond,
 	}
+	tasks, failures := newProxyCacheTestTasks(t)
+	p.SetDependencies(base.Dependencies{
+		Tasks: newPluginTaskOwnerForTest(t, tasks, "plugin/test/proxy-cache/background"),
+	})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
-	t.Cleanup(p.Stop)
+	t.Cleanup(func() {
+		stopProxyCacheTestRegistry(t, tasks)
+		p.Stop()
+		assertNoProxyCacheTaskFailure(t, failures)
+	})
 
 	now := time.Now()
 	expiredReq := httptest.NewRequest(http.MethodGet, "/background-expired", nil)
@@ -817,6 +871,154 @@ func TestDiskBackgroundExpirySweepStopsWithPlugin(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 	t.Fatalf("background cleanup did not remove %s", expiredPath)
+}
+
+func TestDiskBackgroundExpirySweepUsesGenerationTaskOwner(t *testing.T) {
+	root := t.TempDir()
+	tasks, failures := newProxyCacheTestTasks(t)
+	sweepEntered := make(chan struct{}, 1)
+	sweepPermit := make(chan struct{})
+	sweepDone := make(chan struct{}, 1)
+	p := &Plugin{
+		config:          Config{CacheStrategy: "disk", CacheZone: "disk-owned", CacheTTL: 60},
+		cleanupInterval: time.Millisecond,
+	}
+	p.cleanupSweep = func(now time.Time) {
+		select {
+		case sweepEntered <- struct{}{}:
+		default:
+		}
+		<-sweepPermit
+		p.lock.Lock()
+		p.cleanupDiskLocked(now)
+		p.lock.Unlock()
+		select {
+		case sweepDone <- struct{}{}:
+		default:
+		}
+	}
+	p.SetConfiguredZones([]appconfig.Zone{{Name: "disk-owned", DiskPath: root}})
+	p.SetDependencies(base.Dependencies{
+		Tasks: newPluginTaskOwnerForTest(t, tasks, "plugin/test/proxy-cache/attempt-1"),
+	})
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+	var cleanupOnce sync.Once
+	var permitOnce sync.Once
+	cleanup := func() {
+		cleanupOnce.Do(func() {
+			permitOnce.Do(func() { close(sweepPermit) })
+			stopProxyCacheTestRegistry(t, tasks)
+			p.Stop()
+			assertNoProxyCacheTaskFailure(t, failures)
+		})
+	}
+	t.Cleanup(cleanup)
+
+	select {
+	case <-sweepEntered:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for disk cleanup loop")
+	}
+	if got := tasks.Active(); !slices.Contains(got, "plugin/test/proxy-cache/attempt-1/disk-cleanup") {
+		t.Fatalf("active owners = %v", got)
+	}
+
+	now := time.Now()
+	request := httptest.NewRequest(http.MethodGet, "/owned-expired", nil)
+	key := p.cacheKey(request)
+	path := p.entryPath(key)
+	if err := p.persistEntry(key, cacheEntry{
+		header:    make(http.Header),
+		body:      []byte("expired"),
+		status:    http.StatusOK,
+		storedAt:  now.Add(-2 * time.Minute),
+		ttl:       time.Minute,
+		expiresAt: now.Add(-time.Minute),
+	}); err != nil {
+		t.Fatalf("persist expired entry: %v", err)
+	}
+	permitOnce.Do(func() { close(sweepPermit) })
+	select {
+	case <-sweepDone:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for disk cleanup sweep")
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("background cleanup stat error = %v, want file removed", err)
+	}
+	cleanup()
+}
+
+func TestDiskCleanupPanicFailsOnlyProxyCacheOwner(t *testing.T) {
+	tasks, failures := newProxyCacheTestTasks(t)
+	firstOwner := newPluginTaskOwnerForTest(t, tasks, "plugin/test/proxy-cache/panicking")
+	first := &Plugin{
+		config:          Config{CacheStrategy: "disk", CacheZone: "disk-panicking", CacheTTL: 60},
+		cleanupInterval: time.Millisecond,
+		cleanupSweep: func(time.Time) {
+			panic("proxy-cache-cleanup-panic")
+		},
+	}
+	first.SetConfiguredZones([]appconfig.Zone{{Name: "disk-panicking", DiskPath: t.TempDir()}})
+	first.SetDependencies(base.Dependencies{Tasks: firstOwner})
+	if err := first.Init(); err != nil {
+		t.Fatalf("first Init() error = %v", err)
+	}
+	if err := first.PostInit(); err != nil {
+		t.Fatalf("first PostInit() error = %v", err)
+	}
+	var second *Plugin
+	var cleanupOnce sync.Once
+	cleanup := func() {
+		cleanupOnce.Do(func() {
+			stopProxyCacheTestRegistry(t, tasks)
+			first.Stop()
+			if second != nil {
+				second.Stop()
+			}
+			assertNoProxyCacheTaskFailure(t, failures)
+		})
+	}
+	t.Cleanup(cleanup)
+
+	var failure runtime.TaskFailure
+	select {
+	case failure = <-failures:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for disk cleanup panic")
+	}
+	if failure.Owner != "plugin/test/proxy-cache/panicking/disk-cleanup" ||
+		failure.PanicValue != "proxy-cache-cleanup-panic" || len(failure.Stack) == 0 {
+		t.Fatalf("task failure = %#v", failure)
+	}
+	admissionErr := firstOwner.Go("disk-cleanup", func(context.Context) error { return nil })
+	if !errors.Is(admissionErr, runtime.ErrTaskOwnerFailed) {
+		t.Fatalf("panicking owner admission error = %v, want %v", admissionErr, runtime.ErrTaskOwnerFailed)
+	}
+
+	secondOwner := newPluginTaskOwnerForTest(t, tasks, "plugin/test/proxy-cache/healthy")
+	second = &Plugin{
+		config:          Config{CacheStrategy: "disk", CacheZone: "disk-healthy", CacheTTL: 60},
+		cleanupInterval: time.Hour,
+	}
+	second.SetConfiguredZones([]appconfig.Zone{{Name: "disk-healthy", DiskPath: t.TempDir()}})
+	second.SetDependencies(base.Dependencies{Tasks: secondOwner})
+	if err := second.Init(); err != nil {
+		t.Fatalf("second Init() error = %v", err)
+	}
+	if err := second.PostInit(); err != nil {
+		t.Fatalf("second PostInit() error = %v", err)
+	}
+	if got := tasks.Active(); !slices.Contains(got, "plugin/test/proxy-cache/healthy/disk-cleanup") {
+		t.Fatalf("active owners after first owner panic = %v", got)
+	}
+
+	cleanup()
 }
 
 func TestMemoryZoneSharesEntriesAcrossPluginInstances(t *testing.T) {

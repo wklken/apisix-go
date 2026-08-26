@@ -1,6 +1,7 @@
 package proxy_cache
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -14,39 +15,38 @@ import (
 	appconfig "github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/cacheutil"
+	"github.com/wklken/apisix-go/pkg/runtime"
 )
 
-func (p *Plugin) startDiskCleanup() {
+func (p *Plugin) startDiskCleanup() error {
 	if !p.diskEnabled {
-		return
+		return nil
 	}
-	p.cleanupMu.Lock()
-	if p.cleanupStop != nil {
-		p.cleanupMu.Unlock()
-		return
+	owner := p.TaskOwner()
+	if owner == nil {
+		return runtime.ErrTaskOwnerRequired
 	}
-	stop := make(chan struct{})
-	done := make(chan struct{})
-	p.cleanupStop = stop
-	p.cleanupDone = done
-	interval := p.cleanupPeriod()
-	p.cleanupMu.Unlock()
+	return owner.Go("disk-cleanup", p.diskCleanupLoop)
+}
 
-	go func() {
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-		defer close(done)
-		for {
-			select {
-			case now := <-ticker.C:
+func (p *Plugin) diskCleanupLoop(ctx context.Context) error {
+	interval := p.cleanupPeriod()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case now := <-ticker.C:
+			if p.cleanupSweep != nil {
+				p.cleanupSweep(now)
+			} else {
 				p.lock.Lock()
 				p.cleanupDiskLocked(now)
 				p.lock.Unlock()
-			case <-stop:
-				return
 			}
+		case <-ctx.Done():
+			return nil
 		}
-	}()
+	}
 }
 
 func (p *Plugin) cleanupPeriod() time.Duration {

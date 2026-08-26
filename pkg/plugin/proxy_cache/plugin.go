@@ -41,9 +41,7 @@ type Plugin struct {
 	lastCleanup time.Time
 
 	cleanupInterval time.Duration
-	cleanupMu       sync.Mutex
-	cleanupStop     chan struct{}
-	cleanupDone     chan struct{}
+	cleanupSweep    func(time.Time)
 
 	configuredZones []appconfig.Zone
 	zonesSet        bool
@@ -307,26 +305,15 @@ func (p *Plugin) PostInit() error {
 			p.diskRoot = root
 			p.diskEnabled = true
 			p.diskSize = diskSize
-			p.startDiskCleanup()
+			if err := p.startDiskCleanup(); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
 }
 
 func (p *Plugin) Stop() {
-	p.cleanupMu.Lock()
-	stop := p.cleanupStop
-	done := p.cleanupDone
-	p.cleanupStop = nil
-	p.cleanupDone = nil
-	p.cleanupMu.Unlock()
-
-	if stop == nil {
-		p.releaseMemoryZone()
-		return
-	}
-	close(stop)
-	<-done
 	p.releaseMemoryZone()
 }
 

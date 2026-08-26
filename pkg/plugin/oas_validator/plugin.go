@@ -12,27 +12,24 @@ import (
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/runtime"
 	"github.com/wklken/apisix-go/pkg/secret"
 )
 
 type Plugin struct {
 	base.BasePlugin
 	oasSecretState
-	config         Config
-	metadata       Metadata
-	mu             sync.Mutex
-	compiled       atomic.Pointer[compiledSpec]
-	compiledAt     atomic.Int64
-	now            func() time.Time
-	refreshStart   sync.Once
-	refreshStop    sync.Once
-	refreshMu      sync.Mutex
-	refreshStopped atomic.Bool
-	wakeRefresh    chan struct{}
-	stopRefresh    chan struct{}
-	refreshDone    chan struct{}
-	refreshCtx     context.Context
-	refreshCancel  context.CancelFunc
+	config              Config
+	metadata            Metadata
+	mu                  sync.Mutex
+	compiled            atomic.Pointer[compiledSpec]
+	compiledAt          atomic.Int64
+	now                 func() time.Time
+	refreshStart        sync.Once
+	refreshStop         sync.Once
+	wakeRefresh         chan struct{}
+	refreshAdmissionErr error
+	refreshCompile      func(context.Context) (*compiledSpec, error)
 }
 
 const (
@@ -283,30 +280,32 @@ func (p *Plugin) validator() (*compiledSpec, error) {
 // to re-fetch and recompile a due spec in the background. Requests never wait
 // on the remote fetch; they keep validating with the last published validator.
 func (p *Plugin) wakeSpecRefresh() {
-	p.refreshMu.Lock()
-	defer p.refreshMu.Unlock()
-	if p.refreshStopped.Load() {
+	if p.retired.Load() {
 		return
 	}
 	p.refreshStart.Do(func() {
-		p.refreshCtx, p.refreshCancel = context.WithCancel(context.Background())
 		p.wakeRefresh = make(chan struct{}, 1)
-		p.stopRefresh = make(chan struct{})
-		p.refreshDone = make(chan struct{})
-		go p.specRefreshLoop()
+		owner := p.TaskOwner()
+		if owner == nil {
+			p.refreshAdmissionErr = runtime.ErrTaskOwnerRequired
+			return
+		}
+		p.refreshAdmissionErr = owner.Go("spec-refresh", p.specRefreshLoop)
 	})
+	if p.refreshAdmissionErr != nil {
+		return
+	}
 	select {
 	case p.wakeRefresh <- struct{}{}:
 	default:
 	}
 }
 
-func (p *Plugin) specRefreshLoop() {
-	defer close(p.refreshDone)
+func (p *Plugin) specRefreshLoop(ctx context.Context) error {
 	for {
 		select {
-		case <-p.stopRefresh:
-			return
+		case <-ctx.Done():
+			return nil
 		case <-p.wakeRefresh:
 		}
 		// A wake that arrives while another pass was refreshing must not
@@ -315,8 +314,15 @@ func (p *Plugin) specRefreshLoop() {
 			p.currentTime().Before(time.Unix(0, p.compiledAt.Load()).Add(p.specURLTTL())) {
 			continue
 		}
-		compiled, err := p.compileValidator(p.refreshCtx)
+		compile := p.compileValidator
+		if p.refreshCompile != nil {
+			compile = p.refreshCompile
+		}
+		compiled, err := compile(ctx)
 		if err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
 			logger.Errorf("failed to refresh openapi spec from URL: %s", err)
 			continue
 		}
@@ -379,27 +385,12 @@ func (p *Plugin) compileValidator(ctx context.Context) (*compiledSpec, error) {
 	return compiled, err
 }
 
-// Stop joins the spec refresher and cancels its remote fetches so no refresh
-// worker outlives the plugin.
+// Stop releases private state after the generation task registry has canceled
+// and joined the spec refresher.
 func (p *Plugin) Stop() {
 	p.refreshStop.Do(func() {
-		p.refreshStopped.Store(true)
 		workWait := p.retireOASWork()
 		wait := p.retireOASSecrets()
-		p.refreshMu.Lock()
-		cancel := p.refreshCancel
-		stopRefresh := p.stopRefresh
-		refreshDone := p.refreshDone
-		if cancel != nil {
-			cancel()
-		}
-		if stopRefresh != nil {
-			close(stopRefresh)
-		}
-		p.refreshMu.Unlock()
-		if refreshDone != nil {
-			<-refreshDone
-		}
 		if wait != nil {
 			<-wait
 		}

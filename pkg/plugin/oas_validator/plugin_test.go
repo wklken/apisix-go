@@ -3,12 +3,14 @@ package oas_validator
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -28,6 +30,19 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 
 func newTestPluginWithMetadata(t *testing.T, cfg Config, metadata map[string]any) *Plugin {
 	t.Helper()
+	return newTestPluginWithOwner(t, cfg, metadata, "plugin/test/oas/helper")
+}
+
+type oasTestTaskState struct {
+	tasks    *runtime.TaskRegistry
+	failures <-chan runtime.TaskFailure
+	stopOnce sync.Once
+}
+
+var oasTestTaskStates sync.Map
+
+func newTestPluginWithOwner(t *testing.T, cfg Config, metadata map[string]any, prefix string) *Plugin {
+	t.Helper()
 	if cfg.SpecURL != "" && len(cfg.SpecURLAllowedAddresses) == 0 {
 		parsed, err := url.Parse(cfg.SpecURL)
 		if err != nil {
@@ -36,8 +51,16 @@ func newTestPluginWithMetadata(t *testing.T, cfg Config, metadata map[string]any
 		cfg.SpecURLAllowedAddresses = []string{parsed.Hostname()}
 	}
 
+	failures := make(chan runtime.TaskFailure, 4)
+	tasks := runtime.NewTaskRegistry(context.Background(), func(failure runtime.TaskFailure) {
+		failures <- failure
+	})
+	owner, err := runtime.NewTaskOwner(tasks, prefix, runtime.TaskPlugin)
+	if err != nil {
+		t.Fatal(err)
+	}
 	p := &Plugin{config: cfg}
-	p.SetDependencies(base.Dependencies{Metadata: mustMetadataView(t, metadata)})
+	p.SetDependencies(base.Dependencies{Metadata: mustMetadataView(t, metadata), Tasks: owner})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -49,8 +72,53 @@ func newTestPluginWithMetadata(t *testing.T, cfg Config, metadata map[string]any
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
+	registerOASTestTaskState(t, p, tasks, failures)
 
 	return p
+}
+
+func registerOASTestTaskState(
+	t *testing.T,
+	p *Plugin,
+	tasks *runtime.TaskRegistry,
+	failures <-chan runtime.TaskFailure,
+) {
+	t.Helper()
+	state := &oasTestTaskState{tasks: tasks, failures: failures}
+	oasTestTaskStates.Store(p, state)
+	t.Cleanup(func() { stopOASTestPlugin(t, p) })
+}
+
+func stopOASTestPlugin(t *testing.T, p *Plugin) {
+	t.Helper()
+	value, ok := oasTestTaskStates.Load(p)
+	if !ok {
+		p.Stop()
+		return
+	}
+	state := value.(*oasTestTaskState)
+	state.stopOnce.Do(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if residuals, err := state.tasks.Stop(ctx); err != nil || len(residuals) != 0 {
+			t.Fatalf("TaskRegistry.Stop() = (%v, %v)", residuals, err)
+		}
+		p.Stop()
+		select {
+		case failure := <-state.failures:
+			t.Fatalf("unexpected task failure = %#v", failure)
+		default:
+		}
+	})
+}
+
+func oasTestTasks(t *testing.T, p *Plugin) *runtime.TaskRegistry {
+	t.Helper()
+	value, ok := oasTestTaskStates.Load(p)
+	if !ok {
+		t.Fatal("plugin has no test task registry")
+	}
+	return value.(*oasTestTaskState).tasks
 }
 
 func mustMetadataView(t *testing.T, metadata map[string]any) runtime.MetadataView {
@@ -67,6 +135,104 @@ func mustMetadataView(t *testing.T, metadata map[string]any) runtime.MetadataVie
 		t.Fatalf("NewMetadataView() error = %v", err)
 	}
 	return view
+}
+
+func TestOASSpecRefreshUsesGenerationTaskOwner(t *testing.T) {
+	refreshEntered := make(chan struct{})
+	refreshCanceled := make(chan struct{})
+	var fetches atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if fetches.Add(1) == 2 {
+			close(refreshEntered)
+			<-r.Context().Done()
+			close(refreshCanceled)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(testSpec()))
+	}))
+	t.Cleanup(server.Close)
+
+	p := newTestPluginWithOwner(
+		t,
+		Config{SpecURL: server.URL},
+		map[string]any{"spec_url_ttl": 1},
+		"plugin/test/oas/attempt-1",
+	)
+	now := time.Unix(100, 0)
+	p.now = func() time.Time { return now }
+	if _, err := p.validator(); err != nil {
+		t.Fatalf("initial validator() error = %v", err)
+	}
+	now = now.Add(2 * time.Second)
+	if _, err := p.validator(); err != nil {
+		t.Fatalf("due validator() error = %v", err)
+	}
+	<-refreshEntered
+
+	want := []string{"plugin/test/oas/attempt-1/spec-refresh"}
+	if got := oasTestTasks(t, p).Active(); !slices.Equal(got, want) {
+		t.Fatalf("active owners = %v, want %v", got, want)
+	}
+	stopOASTestPlugin(t, p)
+	<-refreshCanceled
+	if got := oasTestTasks(t, p).Active(); len(got) != 0 {
+		t.Fatalf("active owners after stop = %v, want none", got)
+	}
+}
+
+func TestOASRefreshAdmissionFailureLeavesCurrentValidator(t *testing.T) {
+	var fetches atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fetches.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(testSpec()))
+	}))
+	t.Cleanup(server.Close)
+
+	tasks := runtime.NewTaskRegistry(context.Background(), nil)
+	if residuals, err := tasks.Stop(context.Background()); err != nil || len(residuals) != 0 {
+		t.Fatalf("TaskRegistry.Stop() = (%v, %v)", residuals, err)
+	}
+	owner, err := runtime.NewTaskOwner(tasks, "plugin/test/oas/rejected", runtime.TaskPlugin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := &Plugin{config: Config{
+		SpecURL: server.URL, SpecURLAllowedAddresses: []string{"127.0.0.1"},
+	}}
+	p.SetDependencies(base.Dependencies{Metadata: runtime.MetadataView{}, Tasks: owner})
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	capabilityValue, scope, _, closeAttempt := newOASScopedSecretHarness(t, nil)
+	t.Cleanup(closeAttempt)
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+	t.Cleanup(p.Stop)
+
+	now := time.Unix(100, 0)
+	p.now = func() time.Time { return now }
+	want, err := p.validator()
+	if err != nil {
+		t.Fatalf("initial validator() error = %v", err)
+	}
+	now = now.Add(p.specURLTTL() + time.Second)
+	p.wakeSpecRefresh()
+	p.wakeSpecRefresh()
+	if got := p.compiled.Load(); got != want {
+		t.Fatal("task admission failure replaced last-good validator")
+	}
+	if !errors.Is(p.refreshAdmissionErr, runtime.ErrTaskRegistryStopped) {
+		t.Fatalf("refresh admission error = %v, want %v", p.refreshAdmissionErr, runtime.ErrTaskRegistryStopped)
+	}
+	if got := fetches.Load(); got != 1 {
+		t.Fatalf("fetches after rejected refresh admission = %d, want initial fetch only", got)
+	}
 }
 
 func TestHandlerValidatesInlineOpenAPISpec(t *testing.T) {
@@ -202,8 +368,6 @@ func TestPreparedGenerationsRetainMetadataTTL(t *testing.T) {
 
 	first := newTestPluginWithMetadata(t, Config{SpecURL: firstServer.URL}, map[string]any{"spec_url_ttl": 10})
 	second := newTestPluginWithMetadata(t, Config{SpecURL: secondServer.URL}, map[string]any{"spec_url_ttl": 20})
-	defer first.Stop()
-	defer second.Stop()
 	var nowSeconds atomic.Int64
 	nowSeconds.Store(100)
 	currentTime := func() time.Time { return time.Unix(nowSeconds.Load(), 0) }
@@ -234,7 +398,7 @@ func TestPreparedGenerationsRetainMetadataTTL(t *testing.T) {
 	if got := secondFetches.Load(); got != 1 {
 		t.Fatalf("generation N+1 fetches = %d, want cached at 15s with 20s TTL", got)
 	}
-	if second.refreshDone != nil {
+	if got := oasTestTasks(t, second).Active(); len(got) != 0 {
 		t.Fatal("generation N+1 unexpectedly started a refresh worker")
 	}
 }
@@ -304,7 +468,7 @@ func TestMaterializedInlineSpecCompilesWithoutExposingPlaintext(t *testing.T) {
 	if _, err := p.validator(); err != nil {
 		t.Fatalf("validator() error = %v", err)
 	}
-	p.Stop()
+	stopOASTestPlugin(t, p)
 }
 
 func TestHandlerValidatesRequestBodyWithLocalSchemaRef(t *testing.T) {
@@ -1251,7 +1415,7 @@ func TestHandlerRefreshesSpecURLAfterMetadataTTL(t *testing.T) {
 	if got := fetches.Load(); got != 2 {
 		t.Fatalf("fetches after TTL expiry = %d, want 2", got)
 	}
-	p.Stop()
+	stopOASTestPlugin(t, p)
 }
 
 func TestHandlerResolvesExternalSchemaRef(t *testing.T) {
@@ -2377,7 +2541,7 @@ func TestHandlerValidatesConcurrentlyDuringBlockingSpecRefresh(t *testing.T) {
 		}
 	}
 	close(release)
-	p.Stop()
+	stopOASTestPlugin(t, p)
 	if got := fetches.Load(); got != 2 {
 		t.Fatalf("fetches = %d, want exactly one refresh", got)
 	}
@@ -2423,7 +2587,7 @@ func TestHandlerFailedSpecRefreshPreservesPriorValidator(t *testing.T) {
 	if code := serve(); code != http.StatusCreated {
 		t.Fatalf("response code after failed refresh = %d, want prior validator serving 201", code)
 	}
-	p.Stop()
+	stopOASTestPlugin(t, p)
 }
 
 func TestHandlerSpecRefreshIsBoundToPluginLifecycle(t *testing.T) {
@@ -2463,7 +2627,7 @@ func TestHandlerSpecRefreshIsBoundToPluginLifecycle(t *testing.T) {
 	// A due request triggers the refresh and completes with the stale
 	// validator; the request's own context is cancelled right after, which
 	// must not cancel the shared refresh (it is bound to the plugin
-	// lifecycle, so Stop is what joins it).
+	// lifecycle, so generation task quiescence is what joins it).
 	now = now.Add(11 * time.Second)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan int, 1)
@@ -2485,7 +2649,7 @@ func TestHandlerSpecRefreshIsBoundToPluginLifecycle(t *testing.T) {
 
 	stopped := make(chan struct{})
 	go func() {
-		p.Stop()
+		stopOASTestPlugin(t, p)
 		close(stopped)
 	}()
 	select {

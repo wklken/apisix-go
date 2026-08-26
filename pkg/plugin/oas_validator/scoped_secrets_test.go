@@ -18,6 +18,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/runtime"
 	"github.com/wklken/apisix-go/pkg/secret"
 )
 
@@ -455,6 +456,123 @@ func TestOASStopWaitsForScopedHeaderFetch(t *testing.T) {
 	}
 }
 
+func TestOASStopCancelsOwnedFetchBeforeDroppingSecrets(t *testing.T) {
+	const raw = "$ENV://OAS_OWNED_REFRESH_HEADER"
+	headerObserved := make(chan string, 1)
+	allowHeaderUse := make(chan struct{})
+	fetchEntered := make(chan struct{})
+	fetchCanceled := make(chan struct{})
+	allowFetchReturn := make(chan struct{})
+	var releaseHeader sync.Once
+	var releaseFetch sync.Once
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(testSpec()))
+	}))
+	t.Cleanup(server.Close)
+
+	failures := make(chan runtime.TaskFailure, 1)
+	tasks := runtime.NewTaskRegistry(context.Background(), func(failure runtime.TaskFailure) {
+		failures <- failure
+	})
+	owner, err := runtime.NewTaskOwner(tasks, "plugin/test/oas/ordered-stop", runtime.TaskPlugin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := &Plugin{config: Config{
+		SpecURL:                   server.URL,
+		SpecURLAllowedAddresses:   []string{"127.0.0.1"},
+		SpecURLRequestHeaders:     map[string]string{"Authorization": raw},
+		SkipRequestBodyValidation: true,
+	}}
+	p.SetDependencies(base.Dependencies{Tasks: owner})
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	capabilityValue, scope, _, closeAttempt := newOASScopedSecretHarness(
+		t, map[string]string{raw: "Bearer generation-owned"},
+	)
+	t.Cleanup(closeAttempt)
+	materializeScopedOASSecrets(t, p, capabilityValue, scope)
+	if err := p.PostInit(); err != nil {
+		t.Fatal(err)
+	}
+	registerOASTestTaskState(t, p, tasks, failures)
+	t.Cleanup(func() {
+		releaseHeader.Do(func() { close(allowHeaderUse) })
+		releaseFetch.Do(func() { close(allowFetchReturn) })
+	})
+
+	now := time.Unix(100, 0)
+	p.now = func() time.Time { return now }
+	want, err := p.validator()
+	if err != nil {
+		t.Fatalf("initial validator() error = %v", err)
+	}
+	p.refreshCompile = func(ctx context.Context) (*compiledSpec, error) {
+		releaseWork, err := p.acquireOASWork()
+		if err != nil {
+			return nil, err
+		}
+		defer releaseWork()
+		err = p.withRequestHeaders(func(headers map[string]string) error {
+			headerObserved <- headers["Authorization"]
+			<-allowHeaderUse
+			close(fetchEntered)
+			<-ctx.Done()
+			close(fetchCanceled)
+			<-allowFetchReturn
+			return ctx.Err()
+		})
+		return nil, err
+	}
+	now = now.Add(p.specURLTTL() + time.Second)
+	if got, err := p.validator(); err != nil || got != want {
+		t.Fatalf("due validator() = (%p, %v), want last-good %p", got, err, want)
+	}
+	if header := <-headerObserved; header != "Bearer generation-owned" {
+		t.Fatalf("refresh Authorization = %q", header)
+	}
+	releaseHeader.Do(func() { close(allowHeaderUse) })
+	<-fetchEntered
+
+	stopped := make(chan struct{})
+	go func() {
+		stopOASTestPlugin(t, p)
+		close(stopped)
+	}()
+	<-fetchCanceled
+	select {
+	case <-stopped:
+		t.Fatal("plugin stopped before the canceled fetch released its secret use")
+	default:
+	}
+	if !p.scopedSet || len(p.scopedHeaders) != 1 || p.compiled.Load() != want {
+		t.Fatalf(
+			"state before refresh join = scoped:%v headers:%d compiled:%p, want retained compiled:%p",
+			p.scopedSet,
+			len(p.scopedHeaders),
+			p.compiled.Load(),
+			want,
+		)
+	}
+
+	releaseFetch.Do(func() { close(allowFetchReturn) })
+	select {
+	case <-stopped:
+	case <-time.After(2 * time.Second):
+		t.Fatal("generation registry did not join the canceled OAS refresh")
+	}
+	if p.scopedSet || p.scopedHeaders != nil || p.compiled.Load() != nil {
+		t.Fatalf(
+			"state after ordered stop = scoped:%v headers:%d compiled:%p",
+			p.scopedSet,
+			len(p.scopedHeaders),
+			p.compiled.Load(),
+		)
+	}
+}
+
 func TestScopedSecretsOASStopDuringMaterializeCannotRevive(t *testing.T) {
 	const raw = "$ENV://OAS_STOP_DURING_MATERIALIZE"
 	capabilityValue, scope, broker, closeAttempt := newOASScopedSecretHarness(
@@ -546,7 +664,7 @@ func TestOASPostInitAfterStopWithoutSecretsPublishesNothing(t *testing.T) {
 		t.Fatalf("PostInit() error = %v, want ErrCredentialUnavailable", err)
 	}
 	if p.config.Timeout != 0 || p.config.RejectionStatusCode != 0 || p.metadata != (Metadata{}) ||
-		p.compiled.Load() != nil || p.refreshCancel != nil || p.refreshDone != nil {
+		p.compiled.Load() != nil || p.refreshAdmissionErr != nil {
 		t.Fatalf("post-Stop PostInit published state: config=%#v metadata=%#v", p.config, p.metadata)
 	}
 }

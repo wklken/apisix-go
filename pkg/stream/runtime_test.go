@@ -1,10 +1,16 @@
 package stream
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
+	"os"
+	"os/exec"
+	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -14,6 +20,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/resource"
+	taskruntime "github.com/wklken/apisix-go/pkg/runtime"
 )
 
 type temporaryAcceptError struct{}
@@ -77,6 +84,11 @@ func newTestRuntime(t *testing.T, listeners ...net.Listener) *Runtime {
 	if err != nil {
 		t.Fatalf("CompileRouter() error = %v", err)
 	}
+	tasks := taskruntime.NewTaskRegistry(ctx, nil)
+	owner, err := taskruntime.NewTaskOwner(tasks, "core/stream-runtime", taskruntime.TaskCore)
+	if err != nil {
+		t.Fatalf("NewTaskOwner() error = %v", err)
+	}
 	runtime := &Runtime{
 		ctx:    ctx,
 		cancel: cancel,
@@ -84,7 +96,8 @@ func newTestRuntime(t *testing.T, listeners ...net.Listener) *Runtime {
 			return RouterLease{Router: router, Release: func() {}}, true
 		},
 		listeners: listeners,
-		closeDone: make(chan struct{}),
+		tasks:     tasks,
+		owner:     owner,
 	}
 	t.Cleanup(func() {
 		_ = runtime.Close(context.Background())
@@ -263,6 +276,163 @@ func TestRuntimePinsRouterLeaseForConnectionLifetime(t *testing.T) {
 	waitLeaseSignal(t, old.release, "old router lease was not released")
 }
 
+func TestRuntimeCoreOwnerSurvivesRouterSourceGenerationChange(t *testing.T) {
+	first := newRouterLeaseFixture(81, false, nil)
+	second := newRouterLeaseFixture(82, false, nil)
+	source := newSwitchableRouterSource(first)
+	runtime, err := NewRuntime(
+		context.Background(),
+		[]config.TcpListen{{Addr: "127.0.0.1:0"}},
+		source.Acquire,
+	)
+	if err != nil {
+		t.Fatalf("NewRuntime() error = %v", err)
+	}
+	t.Cleanup(func() { _ = runtime.Close(context.Background()) })
+
+	tasks := runtime.tasks
+	firstConn, revision := dialRuntimeRevision(t, runtime)
+	if revision != 81 {
+		t.Fatalf("first connection revision = %d, want 81", revision)
+	}
+	_ = firstConn.Close()
+	waitLeaseSignal(t, first.release, "first router lease was not released")
+
+	source.Store(second)
+	secondConn, revision := dialRuntimeRevision(t, runtime)
+	if revision != 82 {
+		t.Fatalf("second connection revision = %d, want 82", revision)
+	}
+	_ = secondConn.Close()
+	waitLeaseSignal(t, second.release, "second router lease was not released")
+
+	if runtime.tasks != tasks {
+		t.Fatal("router source generation change replaced the runtime task registry")
+	}
+	if got := runtime.tasks.Active(); !slices.Contains(got, "core/stream-runtime/listener") {
+		t.Fatalf("active owners = %v, want core/stream-runtime/listener", got)
+	}
+	if first.router == second.router {
+		t.Fatal("router fixture did not change generation")
+	}
+}
+
+func TestRuntimeCloseReportsBlockingConnectionResidualAndLaterJoins(t *testing.T) {
+	runtime, release, leaseReleased := newBlockingConnectionRuntime(t)
+	closeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	err := runtime.Close(closeCtx)
+	var closeErr *runtimeCloseError
+	if !errors.As(err, &closeErr) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Close() error = %v, want runtime close deadline error", err)
+	}
+	if got := closeErr.residuals; !reflect.DeepEqual(got, []taskruntime.TaskResidual{{
+		Owner: "core/stream-runtime/connection",
+	}}) {
+		t.Fatalf("residuals = %v, want one connection owner", got)
+	}
+
+	release()
+	if err := runtime.Close(context.Background()); err != nil {
+		t.Fatalf("Close() retry error = %v", err)
+	}
+	waitLeaseSignal(t, leaseReleased, "blocking connection lease was not released")
+}
+
+func newBlockingConnectionRuntime(t *testing.T) (*Runtime, func(), <-chan struct{}) {
+	t.Helper()
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	leaseReleased := make(chan struct{})
+	var releaseTaskOnce sync.Once
+	var releaseLeaseOnce sync.Once
+	router := &Router{routes: []routeEntry{{
+		serve: func(context.Context, net.Conn, string) (string, string, error) {
+			close(entered)
+			<-release
+			return "", "tcp", nil
+		},
+	}}}
+	runtime, err := NewRuntime(
+		context.Background(),
+		[]config.TcpListen{{Addr: "127.0.0.1:0"}},
+		func() (RouterLease, bool) {
+			return RouterLease{
+				Router: router,
+				Release: func() {
+					releaseLeaseOnce.Do(func() { close(leaseReleased) })
+				},
+			}, true
+		},
+	)
+	if err != nil {
+		t.Fatalf("NewRuntime() error = %v", err)
+	}
+	releaseTask := func() { releaseTaskOnce.Do(func() { close(release) }) }
+	t.Cleanup(func() {
+		releaseTask()
+		_ = runtime.Close(context.Background())
+	})
+	conn, err := net.Dial("tcp", runtime.Addresses()[0])
+	if err != nil {
+		t.Fatalf("dial runtime: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("blocking connection task did not start")
+	}
+	return runtime, releaseTask, leaseReleased
+}
+
+func TestRuntimeConnectionTaskPanicUsesCoreFatalPolicy(t *testing.T) {
+	if os.Getenv("APISIX_GO_TEST_STREAM_CORE_PANIC") == "1" {
+		runStreamConnectionCorePanicFixture(t, "stream-core-fatal")
+		fmt.Fprintln(os.Stderr, "stream-returned-after-core-panic")
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestRuntimeConnectionTaskPanicUsesCoreFatalPolicy$")
+	cmd.Env = append(os.Environ(), "APISIX_GO_TEST_STREAM_CORE_PANIC=1")
+	output, err := cmd.CombinedOutput()
+	if err == nil || !bytes.Contains(output, []byte("stream-core-fatal")) ||
+		bytes.Contains(output, []byte("stream-returned-after-core-panic")) {
+		t.Fatalf("core panic subprocess = %v, output = %s", err, output)
+	}
+}
+
+func runStreamConnectionCorePanicFixture(t *testing.T, marker string) {
+	t.Helper()
+	entered := make(chan struct{})
+	router := &Router{routes: []routeEntry{{
+		serve: func(context.Context, net.Conn, string) (string, string, error) {
+			close(entered)
+			panic(marker)
+		},
+	}}}
+	runtime, err := NewRuntime(
+		context.Background(),
+		[]config.TcpListen{{Addr: "127.0.0.1:0"}},
+		func() (RouterLease, bool) {
+			return RouterLease{Router: router, Release: func() {}}, true
+		},
+	)
+	if err != nil {
+		t.Fatalf("NewRuntime() error = %v", err)
+	}
+	conn, err := net.Dial("tcp", runtime.Addresses()[0])
+	if err != nil {
+		t.Fatalf("dial runtime: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("connection panic task did not start")
+	}
+	time.Sleep(100 * time.Millisecond)
+}
+
 func TestRuntimeRejectsConnectionWhenRouterUnavailable(t *testing.T) {
 	runtime, err := NewRuntime(
 		context.Background(),
@@ -340,15 +510,9 @@ func TestRuntimeAcceptFailureDoesNotAcquireLease(t *testing.T) {
 		"127.0.0.1:21004",
 		scriptedAccept{err: errors.New("terminal accept failure")},
 	)
-	ctx, cancel := context.WithCancel(context.Background())
-	runtime := &Runtime{
-		ctx:       ctx,
-		cancel:    cancel,
-		source:    fixture.Acquire,
-		listeners: []net.Listener{listener},
-		closeDone: make(chan struct{}),
-	}
-	startRuntimeListeners(runtime, listener)
+	runtime := newTestRuntime(t, listener)
+	runtime.source = fixture.Acquire
+	startRuntimeListeners(t, runtime, listener)
 	waitForAccept(t, listener)
 	if err := runtime.Close(context.Background()); err != nil {
 		t.Fatalf("Close() error = %v", err)
@@ -358,6 +522,62 @@ func TestRuntimeAcceptFailureDoesNotAcquireLease(t *testing.T) {
 	fixture.mu.Unlock()
 	if acquired != 0 {
 		t.Fatalf("lease acquisitions after accept failure = %d, want 0", acquired)
+	}
+}
+
+func TestServeListenerConnectionTaskAdmissionFailureRollsBack(t *testing.T) {
+	client, peer := net.Pipe()
+	t.Cleanup(func() { _ = peer.Close() })
+	listener := newScriptedListener(
+		"127.0.0.1:21005",
+		scriptedAccept{conn: client},
+	)
+	ctx, cancel := context.WithCancel(context.Background())
+	tasks := taskruntime.NewTaskRegistry(context.Background(), nil)
+	owner, err := taskruntime.NewTaskOwner(tasks, "core/stream-runtime", taskruntime.TaskCore)
+	if err != nil {
+		t.Fatalf("NewTaskOwner() error = %v", err)
+	}
+	if _, err := tasks.Stop(context.Background()); err != nil {
+		t.Fatalf("stop task registry: %v", err)
+	}
+	leaseReleased := make(chan struct{})
+	runtime := &Runtime{
+		ctx:       ctx,
+		cancel:    cancel,
+		listeners: []net.Listener{listener},
+		conns:     make(map[net.Conn]struct{}),
+		tasks:     tasks,
+		owner:     owner,
+		source: func() (RouterLease, bool) {
+			return RouterLease{
+				Router: &Router{},
+				Release: func() {
+					close(leaseReleased)
+				},
+			}, true
+		},
+	}
+	t.Cleanup(func() { _ = runtime.Close(context.Background()) })
+
+	runtime.serveListener(ctx, listener)
+	select {
+	case <-leaseReleased:
+	default:
+		t.Fatal("connection task admission failure did not release the router lease")
+	}
+	if runtime.ctx.Err() == nil {
+		t.Fatal("connection task admission failure did not initiate runtime close")
+	}
+	runtime.connMu.Lock()
+	tracked := len(runtime.conns)
+	runtime.connMu.Unlock()
+	if tracked != 0 {
+		t.Fatalf("tracked connections after admission failure = %d, want 0", tracked)
+	}
+	_ = peer.SetReadDeadline(time.Now().Add(time.Second))
+	if _, err := peer.Read(make([]byte, 1)); err == nil {
+		t.Fatal("connection task admission failure left the connection open")
 	}
 }
 
@@ -408,10 +628,15 @@ func TestRuntimeSourceRollbackAffectsOnlyNewConnections(t *testing.T) {
 	waitLeaseSignal(t, old.release, "original pinned lease was not released")
 }
 
-func startRuntimeListeners(runtime *Runtime, listeners ...net.Listener) {
-	runtime.wg.Add(len(listeners))
+func startRuntimeListeners(t *testing.T, runtime *Runtime, listeners ...net.Listener) {
+	t.Helper()
 	for _, listener := range listeners {
-		go runtime.serveListener(listener)
+		if err := runtime.owner.Go("listener", func(taskCtx context.Context) error {
+			runtime.serveListener(taskCtx, listener)
+			return nil
+		}); err != nil {
+			t.Fatalf("start listener task: %v", err)
+		}
 	}
 }
 
@@ -428,13 +653,18 @@ func TestRuntimeCanceledCloseRejectsSynchronouslyAndLaterCloseJoins(t *testing.T
 	listener := newScriptedListener("127.0.0.1:21000")
 	runtime := newTestRuntime(t, listener)
 	release := make(chan struct{})
-	runtime.wg.Go(func() {
+	if err := runtime.owner.Go("connection", func(context.Context) error {
 		<-release
-	})
+		return nil
+	}); err != nil {
+		t.Fatalf("start blocked connection task: %v", err)
+	}
 
 	closeCtx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := runtime.Close(closeCtx); !errors.Is(err, context.Canceled) {
+	err := runtime.Close(closeCtx)
+	var closeErr *runtimeCloseError
+	if !errors.As(err, &closeErr) || !errors.Is(err, context.Canceled) {
 		t.Fatalf("Close(canceled context) error = %v, want %v", err, context.Canceled)
 	}
 	select {
@@ -442,10 +672,10 @@ func TestRuntimeCanceledCloseRejectsSynchronouslyAndLaterCloseJoins(t *testing.T
 	default:
 		t.Fatal("Close(canceled context) returned before rejecting the listener")
 	}
-	select {
-	case <-runtime.closeDone:
-		t.Fatal("Close(canceled context) joined the blocked runtime")
-	default:
+	if got := closeErr.residuals; !reflect.DeepEqual(got, []taskruntime.TaskResidual{{
+		Owner: "core/stream-runtime/connection",
+	}}) {
+		t.Fatalf("Close(canceled context) residuals = %v, want connection owner", got)
 	}
 
 	close(release)
@@ -464,7 +694,7 @@ func TestServeListenerRetriesTemporaryAcceptErrors(t *testing.T) {
 		scriptedAccept{conn: client},
 	)
 	runtime := newTestRuntime(t, listener)
-	startRuntimeListeners(runtime, listener)
+	startRuntimeListeners(t, runtime, listener)
 
 	waitForAccept(t, listener)
 	select {
@@ -488,7 +718,7 @@ func TestServeListenerTerminalErrorClosesRuntimeAndSiblingListeners(t *testing.T
 		entries <- entry
 	})
 	t.Cleanup(stopObserver)
-	startRuntimeListeners(runtime, failing, sibling)
+	startRuntimeListeners(t, runtime, failing, sibling)
 
 	select {
 	case <-runtime.ctx.Done():

@@ -13,6 +13,7 @@ import (
 
 	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/logger"
+	taskruntime "github.com/wklken/apisix-go/pkg/runtime"
 )
 
 const (
@@ -27,9 +28,25 @@ type Runtime struct {
 	listeners []net.Listener
 	connMu    sync.Mutex
 	conns     map[net.Conn]struct{}
-	wg        sync.WaitGroup
+	tasks     *taskruntime.TaskRegistry
+	owner     *taskruntime.TaskOwner
 	closeOnce sync.Once
-	closeDone chan struct{}
+}
+
+type runtimeCloseError struct {
+	residuals []taskruntime.TaskResidual
+	err       error
+}
+
+func (e *runtimeCloseError) Error() string {
+	return "stream runtime close did not complete"
+}
+
+func (e *runtimeCloseError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.err
 }
 
 func NewRuntime(
@@ -55,31 +72,46 @@ func newRuntime(
 		return nil, fmt.Errorf("stream runtime requires a router source")
 	}
 	runtimeCtx, cancel := context.WithCancel(ctx)
+	tasks := taskruntime.NewTaskRegistry(runtimeCtx, nil)
+	owner, err := taskruntime.NewTaskOwner(tasks, "core/stream-runtime", taskruntime.TaskCore)
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("create stream runtime task owner: %w", err)
+	}
 	runtime := &Runtime{
-		ctx:       runtimeCtx,
-		cancel:    cancel,
-		source:    source,
-		conns:     make(map[net.Conn]struct{}),
-		closeDone: make(chan struct{}),
+		ctx:    runtimeCtx,
+		cancel: cancel,
+		source: source,
+		conns:  make(map[net.Conn]struct{}),
+		tasks:  tasks,
+		owner:  owner,
 	}
 
 	for _, spec := range specs {
 		address, err := normalizeListenAddr(spec.Addr)
 		if err != nil {
-			runtime.close()
+			runtime.initiateClose()
+			_, _ = tasks.Stop(context.Background())
 			return nil, err
 		}
 		listener, err := net.Listen("tcp", address)
 		if err != nil {
-			runtime.close()
+			runtime.initiateClose()
+			_, _ = tasks.Stop(context.Background())
 			return nil, fmt.Errorf("listen stream address %q: %w", address, err)
 		}
 		runtime.listeners = append(runtime.listeners, listener)
 	}
 
 	for _, listener := range runtime.listeners {
-		runtime.wg.Add(1)
-		go runtime.serveListener(listener)
+		if err := owner.Go("listener", func(taskCtx context.Context) error {
+			runtime.serveListener(taskCtx, listener)
+			return nil
+		}); err != nil {
+			runtime.initiateClose()
+			_, stopErr := tasks.Stop(context.Background())
+			return nil, errors.Join(fmt.Errorf("start stream listener task: %w", err), stopErr)
+		}
 	}
 	return runtime, nil
 }
@@ -117,21 +149,16 @@ func (r *Runtime) Close(ctx context.Context) error {
 		ctx = context.Background()
 	}
 	r.initiateClose()
-	select {
-	case <-r.closeDone:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
+	residuals, err := r.tasks.Stop(ctx)
+	if err != nil || len(residuals) != 0 {
+		return &runtimeCloseError{residuals: residuals, err: err}
 	}
+	return nil
 }
 
 func (r *Runtime) initiateClose() {
 	r.closeOnce.Do(func() {
 		r.close()
-		go func() {
-			r.wg.Wait()
-			close(r.closeDone)
-		}()
 	})
 }
 
@@ -151,8 +178,7 @@ func (r *Runtime) close() {
 	}
 }
 
-func (r *Runtime) serveListener(listener net.Listener) {
-	defer r.wg.Done()
+func (r *Runtime) serveListener(ctx context.Context, listener net.Listener) {
 	retryDelay := acceptRetryInitial
 	for {
 		conn, err := listener.Accept()
@@ -167,7 +193,7 @@ func (r *Runtime) serveListener(listener net.Listener) {
 				timer := time.NewTimer(retryDelay)
 				select {
 				case <-timer.C:
-				case <-r.ctx.Done():
+				case <-ctx.Done():
 					timer.Stop()
 					return
 				}
@@ -199,12 +225,19 @@ func (r *Runtime) serveListener(listener net.Listener) {
 			}
 			continue
 		}
-		r.wg.Go(func() {
+		if err := r.owner.Go("connection", func(taskCtx context.Context) error {
 			defer lease.Release()
 			defer r.untrackConnection(conn)
 			defer func() { _ = conn.Close() }()
-			_ = lease.Router.Serve(r.ctx, listener, conn)
-		})
+			_ = lease.Router.Serve(taskCtx, listener, conn)
+			return nil
+		}); err != nil {
+			lease.Release()
+			r.untrackConnection(conn)
+			_ = conn.Close()
+			r.initiateClose()
+			return
+		}
 	}
 }
 

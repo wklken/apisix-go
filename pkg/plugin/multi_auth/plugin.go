@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"maps"
-	"math"
 	"net/http"
 	"slices"
 	"sort"
@@ -96,6 +95,10 @@ type requestBodyIsolation interface {
 	BodyIsolation() (enabled bool, max int64)
 }
 
+type requestBodyIsolationTempDir interface {
+	BodyIsolationTempDir() string
+}
+
 type configuredAuth struct {
 	name   string
 	plugin authPlugin
@@ -114,13 +117,7 @@ type authFailure struct {
 }
 
 type probeBodyState struct {
-	source   io.ReadCloser
-	captured bytes.Buffer
-}
-
-type replayReadCloser struct {
-	io.Reader
-	closer io.Closer
+	snapshot *base.RequestBodySnapshot
 }
 
 func (p *Plugin) Init() error {
@@ -699,11 +696,24 @@ func (a configuredAuth) isolateRequestBody(original *http.Request, probe *http.R
 	if !enabled || original.Body == nil {
 		return nil
 	}
-	if limit < math.MaxInt64 {
-		limit++
+	tempDir := ""
+	if configured, ok := a.plugin.Config().(requestBodyIsolationTempDir); ok {
+		tempDir = configured.BodyIsolationTempDir()
 	}
-	state := &probeBodyState{source: original.Body}
-	probe.Body = io.NopCloser(io.TeeReader(io.LimitReader(state.source, limit), &state.captured))
+	snapshot, err := base.EnsureRequestBodySnapshot(
+		original,
+		limit,
+		base.DefaultRequestBodySnapshotMemoryLimit,
+		tempDir,
+	)
+	state := &probeBodyState{snapshot: snapshot}
+	if err != nil {
+		probe.Body = &snapshotErrorBody{err: err}
+		return state
+	}
+	if err := base.AttachRequestBodySnapshot(probe, snapshot, false); err != nil {
+		probe.Body = &snapshotErrorBody{err: err}
+	}
 	return state
 }
 
@@ -716,22 +726,23 @@ func (f authFailure) log() {
 }
 
 func (s *probeBodyState) restore(request *http.Request) {
-	request.Body = &replayReadCloser{
-		Reader: io.MultiReader(bytes.NewReader(s.captured.Bytes()), s.source),
-		closer: s.source,
+	if s.snapshot != nil {
+		_ = base.AttachRequestBodySnapshot(request, s.snapshot, ctx.GetRequestLifecycle(request) == nil)
 	}
 }
 
 func (s *probeBodyState) attachWinnerBody(request *http.Request) {
-	request.Body = &replayReadCloser{
-		Reader: io.MultiReader(bytes.NewReader(s.captured.Bytes()), s.source),
-		closer: s.source,
+	if s.snapshot != nil {
+		_ = base.AttachRequestBodySnapshot(request, s.snapshot, ctx.GetRequestLifecycle(request) == nil)
 	}
 }
 
-func (r *replayReadCloser) Close() error {
-	return r.closer.Close()
+type snapshotErrorBody struct {
+	err error
 }
+
+func (body *snapshotErrorBody) Read([]byte) (int, error) { return 0, body.err }
+func (body *snapshotErrorBody) Close() error             { return nil }
 
 func hasAuthenticationState(request *http.Request) bool {
 	_, ok := ctx.AuthenticationStateFrom(request)

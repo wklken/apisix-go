@@ -3326,7 +3326,12 @@ func runCaseInternal(t *testing.T, spec Case, waitForGeneration bool) {
 	if err != nil {
 		t.Fatalf("reserve APISIX port: %v", err)
 	}
+	statusPort, err := reservePort()
+	if err != nil {
+		t.Fatalf("reserve APISIX status port: %v", err)
+	}
 	apisixAddress := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
+	statusAddress := net.JoinHostPort("127.0.0.1", strconv.Itoa(statusPort))
 	replacements["{{APISIX_URL}}"] = "http://" + apisixAddress
 	if err := writeScenarioFiles(workDir, spec.Files, replacements); err != nil {
 		t.Fatalf("write scenario files: %v", err)
@@ -3361,6 +3366,9 @@ func runCaseInternal(t *testing.T, spec Case, waitForGeneration bool) {
 	runtimeOverrides, err = isolatedRuntimeOverrides(runtimeOverrides, workDir)
 	if err != nil {
 		t.Fatalf("isolate runtime paths: %v", err)
+	}
+	ensureMap(runtimeOverrides, "apisix")["status"] = map[string]any{
+		"ip": "127.0.0.1", "port": statusPort,
 	}
 	confDir := filepath.Join(workDir, "conf")
 	if err := os.MkdirAll(confDir, 0o755); err != nil {
@@ -3436,7 +3444,7 @@ func runCaseInternal(t *testing.T, spec Case, waitForGeneration bool) {
 		}
 	}
 	if waitForGeneration {
-		if err := waitForGenerationReady(address, 5*time.Second); err != nil {
+		if err := waitForGenerationReady(statusAddress, 5*time.Second); err != nil {
 			_ = process.stop()
 			stopped = true
 			logs, _ := process.logs()
@@ -3693,7 +3701,7 @@ func runCaseInternal(t *testing.T, spec Case, waitForGeneration bool) {
 func waitForGenerationReady(address string, timeout time.Duration) error {
 	client := &http.Client{Timeout: 200 * time.Millisecond}
 	return waitForAppliedState(timeout, 20*time.Millisecond, func() error {
-		response, err := client.Get("http://" + address + "/readyz")
+		response, err := client.Get("http://" + address + "/status/ready")
 		if err != nil {
 			return err
 		}

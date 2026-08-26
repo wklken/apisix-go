@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"net"
+	"net/netip"
 	"net/url"
 	"sort"
 	"strconv"
@@ -93,6 +94,118 @@ func rejectConflictingStreamListens(routes []resource.StreamRoute) error {
 
 func streamListenKey(route resource.StreamRoute) string {
 	return route.ServerAddr + "\x00" + strconv.Itoa(route.ServerPort) + "\x00" + route.RemoteAddr
+}
+
+func orderStreamRoutes(entries []routeEntry) error {
+	for left := range len(entries) {
+		for right := left + 1; right < len(entries); right++ {
+			leftRoute := entries[left].route
+			rightRoute := entries[right].route
+			if !streamPredicatesOverlap(leftRoute, rightRoute) {
+				continue
+			}
+			leftNarrower := streamPredicateSubset(leftRoute, rightRoute)
+			rightNarrower := streamPredicateSubset(rightRoute, leftRoute)
+			if leftNarrower != rightNarrower {
+				continue
+			}
+			return fmt.Errorf(
+				"overlapping stream route predicates between %q and %q are not uniquely ordered",
+				leftRoute.ID,
+				rightRoute.ID,
+			)
+		}
+	}
+
+	sort.SliceStable(entries, func(left, right int) bool {
+		return streamPredicateSpecificity(entries[left].route) > streamPredicateSpecificity(entries[right].route)
+	})
+	return nil
+}
+
+func streamPredicateSpecificity(route resource.StreamRoute) int {
+	specificity := 0
+	if normalizeStreamServerAddr(route.ServerAddr) != "" {
+		specificity++
+	}
+	if route.ServerPort != 0 {
+		specificity++
+	}
+	if prefix, ok := streamRemotePrefix(route.RemoteAddr); ok {
+		specificity += prefix.Bits() + 1
+	}
+	return specificity
+}
+
+func streamPredicatesOverlap(left, right resource.StreamRoute) bool {
+	return streamScalarOverlap(
+		normalizeStreamServerAddr(left.ServerAddr),
+		normalizeStreamServerAddr(right.ServerAddr),
+	) &&
+		(left.ServerPort == 0 || right.ServerPort == 0 || left.ServerPort == right.ServerPort) &&
+		streamRemoteOverlap(left.RemoteAddr, right.RemoteAddr)
+}
+
+func streamPredicateSubset(left, right resource.StreamRoute) bool {
+	return streamScalarSubset(
+		normalizeStreamServerAddr(left.ServerAddr),
+		normalizeStreamServerAddr(right.ServerAddr),
+	) &&
+		(left.ServerPort == right.ServerPort || right.ServerPort == 0) &&
+		streamRemoteSubset(left.RemoteAddr, right.RemoteAddr)
+}
+
+func normalizeStreamServerAddr(value string) string {
+	if value == "0.0.0.0" || value == "::" {
+		return ""
+	}
+	return value
+}
+
+func streamScalarOverlap(left, right string) bool {
+	return left == "" || right == "" || left == right
+}
+
+func streamScalarSubset(left, right string) bool {
+	return left == right || right == ""
+}
+
+func streamRemoteOverlap(left, right string) bool {
+	if left == "" || right == "" {
+		return true
+	}
+	leftPrefix, leftOK := streamRemotePrefix(left)
+	rightPrefix, rightOK := streamRemotePrefix(right)
+	if !leftOK || !rightOK || leftPrefix.Addr().BitLen() != rightPrefix.Addr().BitLen() {
+		return false
+	}
+	return leftPrefix.Contains(rightPrefix.Addr()) || rightPrefix.Contains(leftPrefix.Addr())
+}
+
+func streamRemoteSubset(left, right string) bool {
+	if right == "" {
+		return true
+	}
+	if left == "" {
+		return false
+	}
+	leftPrefix, leftOK := streamRemotePrefix(left)
+	rightPrefix, rightOK := streamRemotePrefix(right)
+	if !leftOK || !rightOK || leftPrefix.Addr().BitLen() != rightPrefix.Addr().BitLen() {
+		return false
+	}
+	return leftPrefix.Bits() >= rightPrefix.Bits() && rightPrefix.Contains(leftPrefix.Addr())
+}
+
+func streamRemotePrefix(value string) (netip.Prefix, bool) {
+	if prefix, err := netip.ParsePrefix(value); err == nil {
+		return prefix.Masked(), true
+	}
+	address, err := netip.ParseAddr(value)
+	if err != nil {
+		return netip.Prefix{}, false
+	}
+	return netip.PrefixFrom(address, address.BitLen()), true
 }
 
 func (r *Router) Serve(ctx context.Context, listener net.Listener, client net.Conn) error {

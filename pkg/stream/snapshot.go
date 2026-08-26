@@ -62,6 +62,9 @@ func CompileRouter(ctx context.Context, input CompileInput) (*Router, error) {
 		}
 		entries = append(entries, entry)
 	}
+	if err := orderStreamRoutes(entries); err != nil {
+		return nil, err
+	}
 	return &Router{
 		routes:   entries,
 		onResult: input.OnResult,

@@ -69,6 +69,9 @@ deployment: {role: data_plane, role_data_plane: {config_provider: yaml}}
 	if got := effective.Config.NginxConfig.HTTP.ClientBodyTimeout; got != 60*time.Second {
 		t.Fatalf("client_body_timeout = %s", got)
 	}
+	if got := effective.Config.Apisix.Status; got != (Status{IP: "127.0.0.1", Port: 7085}) {
+		t.Fatalf("apisix.status = %#v, want loopback status listener", got)
+	}
 }
 
 func TestLoadEffectiveRejectsInvalidRuntimeValues(t *testing.T) {
@@ -85,6 +88,12 @@ func TestLoadEffectiveRejectsInvalidRuntimeValues(t *testing.T) {
 			want:     "client_body_timeout",
 		},
 		{name: "negative proxy", override: "proxy: {max_in_flight: -1}", want: "proxy.max_in_flight"},
+		{name: "status port", override: "apisix: {status: {ip: 127.0.0.1, port: 0}}", want: "apisix.status.port"},
+		{
+			name:     "status IP",
+			override: "apisix: {status: {ip: public.example.com, port: 7085}}",
+			want:     "apisix.status.ip",
+		},
 		{name: "empty plugin", override: "plugins: ['']", want: "plugins[0] must not be empty"},
 		{name: "duplicate plugin", override: "plugins: [request-id, request-id]", want: "duplicates"},
 		{name: "access log", override: "nginx_config: {http: {enable_access_log: true}}", want: "enable_access_log"},

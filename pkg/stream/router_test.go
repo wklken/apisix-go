@@ -903,7 +903,7 @@ func TestRouterMatchesExactRemoteAddressAndCIDR(t *testing.T) {
 	}
 }
 
-func TestRouterUsesFirstMatchingResource(t *testing.T) {
+func TestRouterUsesMostSpecificMatchingResource(t *testing.T) {
 	router, err := compileTestRouter(t, []resource.StreamRoute{
 		{
 			ID: "wildcard",
@@ -926,23 +926,32 @@ func TestRouterUsesFirstMatchingResource(t *testing.T) {
 		t.Fatalf("CompileRouter() error = %v", err)
 	}
 	entry, ok := router.matchEntry("127.0.0.1:1883", "127.0.0.1:1000")
-	if !ok || entry.route.ID != "wildcard" {
-		t.Fatalf("matched route = %#v, want wildcard first resource", entry.route)
+	if !ok || entry.route.ID != "specific" {
+		t.Fatalf("matched route = %#v, want specific resource", entry.route)
 	}
 }
 
-func TestRouterPreservesResourceOrder(t *testing.T) {
+func TestRouterUsesLongestRemotePrefixIndependentOfResourceOrder(t *testing.T) {
 	router, err := compileTestRouter(t, []resource.StreamRoute{
 		{
-			ID: "first",
+			ID:         "broad",
+			RemoteAddr: "10.0.0.0/8",
 			Upstream: resource.Upstream{
 				Scheme: "tcp",
 				Nodes:  []resource.Node{{Host: "127.0.0.1", Port: 1, Weight: 1}},
 			},
 		},
 		{
-			ID:         "second",
-			ServerPort: 1883,
+			ID:         "disjoint",
+			RemoteAddr: "192.0.2.1",
+			Upstream: resource.Upstream{
+				Scheme: "tcp",
+				Nodes:  []resource.Node{{Host: "127.0.0.1", Port: 1, Weight: 1}},
+			},
+		},
+		{
+			ID:         "narrow",
+			RemoteAddr: "10.20.0.0/16",
 			Upstream: resource.Upstream{
 				Scheme: "tcp",
 				Nodes:  []resource.Node{{Host: "127.0.0.1", Port: 1, Weight: 1}},
@@ -952,9 +961,69 @@ func TestRouterPreservesResourceOrder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CompileRouter() error = %v", err)
 	}
-	entry, ok := router.matchEntry("127.0.0.1:1883", "127.0.0.1:1000")
-	if !ok || entry.route.ID != "first" {
-		t.Fatalf("matched route = %#v, want first resource", entry.route)
+	entry, ok := router.matchEntry("127.0.0.1:1883", "10.20.30.40:1000")
+	if !ok || entry.route.ID != "narrow" {
+		t.Fatalf("matched route = %#v, want narrow resource", entry.route)
+	}
+}
+
+func TestRouterUsesExactRemoteAddressBeforeCIDR(t *testing.T) {
+	router, err := compileTestRouter(t, []resource.StreamRoute{
+		{
+			ID:         "cidr",
+			RemoteAddr: "192.0.2.0/24",
+			Upstream: resource.Upstream{
+				Scheme: "tcp",
+				Nodes:  []resource.Node{{Host: "127.0.0.1", Port: 1, Weight: 1}},
+			},
+		},
+		{
+			ID:         "exact",
+			RemoteAddr: "192.0.2.10",
+			Upstream: resource.Upstream{
+				Scheme: "tcp",
+				Nodes:  []resource.Node{{Host: "127.0.0.1", Port: 2, Weight: 1}},
+			},
+		},
+	}, nil)
+	if err != nil {
+		t.Fatalf("CompileRouter() error = %v", err)
+	}
+	entry, ok := router.matchEntry("127.0.0.1:1883", "192.0.2.10:1000")
+	if !ok || entry.route.ID != "exact" {
+		t.Fatalf("matched route = %#v, want exact resource", entry.route)
+	}
+}
+
+func TestCompileRouterRejectsOverlappingIncomparablePredicates(t *testing.T) {
+	_, err := compileTestRouter(t, []resource.StreamRoute{
+		{
+			ID:         "listener-specific",
+			ServerAddr: "127.0.0.1",
+			RemoteAddr: "10.0.0.0/8",
+			Upstream: resource.Upstream{
+				Scheme: "tcp",
+				Nodes:  []resource.Node{{Host: "127.0.0.1", Port: 1, Weight: 1}},
+			},
+		},
+		{
+			ID:         "remote-specific",
+			ServerPort: 1883,
+			RemoteAddr: "10.20.0.0/16",
+			Upstream: resource.Upstream{
+				Scheme: "tcp",
+				Nodes:  []resource.Node{{Host: "127.0.0.1", Port: 2, Weight: 1}},
+			},
+		},
+	}, nil)
+
+	if err == nil {
+		t.Fatal("CompileRouter() error = nil, want ambiguous overlap")
+	}
+	if !strings.Contains(err.Error(), "overlapping stream route predicates") ||
+		!strings.Contains(err.Error(), "listener-specific") ||
+		!strings.Contains(err.Error(), "remote-specific") {
+		t.Fatalf("CompileRouter() error = %q, want ambiguity and both route IDs", err)
 	}
 }
 

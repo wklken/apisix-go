@@ -318,7 +318,7 @@ func TestEffectiveBindingMaterializerInjectsExactDependenciesBeforeOuterConstruc
 	prepared.bindingOps.newFactoryInstance = func(factory string, dependencies base.Dependencies) (plugin.FactoryInstance, error) {
 		if dependencies.Config != prepared.effective ||
 			!dependencies.Secrets.SameAuthority(prepared.attempt.capability) ||
-			!reflect.DeepEqual(dependencies.Metadata, prepared.metadata) ||
+			!reflect.DeepEqual(dependencies.Metadata, prepared.metadata.ForFactory(factory)) ||
 			dependencies.Consumers == nil ||
 			dependencies.Tasks == nil ||
 			dependencies.CompositeChildren == nil ||

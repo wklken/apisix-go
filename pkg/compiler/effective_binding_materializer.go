@@ -496,7 +496,8 @@ func (prepared *PreparedGeneration) acquireEffectiveBinding(
 		}
 		dependencies := base.Dependencies{
 			Config: prepared.effective, Secrets: prepared.attempt.capability,
-			Metadata: prepared.metadata, Consumers: prepared.lookup, Tasks: taskOwner,
+			Metadata:  prepared.metadata.ForFactory(selected.spec.factory),
+			Consumers: prepared.lookup, Tasks: taskOwner,
 		}
 		children, err := plugin.NewCompositeChildPreparer(
 			dependencies,

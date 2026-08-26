@@ -1,6 +1,7 @@
 package serverless
 
 import (
+	"context"
 	"encoding/json"
 	"math"
 	"net/http"
@@ -11,9 +12,95 @@ import (
 	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	lua "github.com/yuin/gopher-lua"
 )
+
+func TestPostInitInterruptsInfiniteTopLevelChunk(t *testing.T) {
+	p := NewPreFunction()
+	p.config = Config{Functions: []string{`while true do end`}}
+	p.SetDependencies(base.Dependencies{Config: serverlessStaticConfig(20)})
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- p.PostInit() }()
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "deadline exceeded") {
+			t.Fatalf("PostInit() error = %v, want deadline interruption", err)
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("PostInit() did not interrupt infinite top-level chunk")
+	}
+}
+
+func TestRequestInterruptsInfiniteServerlessFunction(t *testing.T) {
+	p := newTestPluginWithStaticConfig(t, NewPreFunction(), Config{
+		Functions: []string{`return function() while true do end end`},
+	}, serverlessStaticConfig(20))
+	response := make(chan *httptest.ResponseRecorder, 1)
+	go func() { response <- performRequest(p, http.NotFound) }()
+	select {
+	case result := <-response:
+		if result.Code != http.StatusInternalServerError ||
+			!strings.Contains(result.Body.String(), "deadline exceeded") {
+			t.Fatalf("response = %d %q, want deadline error", result.Code, result.Body.String())
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("request did not interrupt infinite serverless function")
+	}
+}
+
+func TestRequestCancellationPreemptsServerlessHardDeadline(t *testing.T) {
+	p := newTestPluginWithStaticConfig(t, NewPreFunction(), Config{
+		Functions: []string{`return function() while true do end end`},
+	}, serverlessStaticConfig(1000))
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	request := httptest.NewRequest(http.MethodGet, "http://example.com/anything", nil).WithContext(ctx)
+	response := httptest.NewRecorder()
+	p.Handler(http.NotFoundHandler()).ServeHTTP(response, request)
+	if response.Code != http.StatusInternalServerError ||
+		!strings.Contains(response.Body.String(), "context canceled") {
+		t.Fatalf("response = %d %q, want caller cancellation", response.Code, response.Body.String())
+	}
+}
+
+func TestServerlessDoesNotExposeProcessOrFilesystemLibraries(t *testing.T) {
+	p := newTestPlugin(t, NewPreFunction(), Config{Functions: []string{
+		`return function()
+			if os ~= nil or io ~= nil or dofile ~= nil or loadfile ~= nil or package.loaders[2] ~= nil then
+				error("unsafe library exposed")
+			end
+		end`,
+	}})
+	result := performRequest(p, func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
+	if result.Code != http.StatusNoContent {
+		t.Fatalf("response = %d %q, want safe library set", result.Code, result.Body.String())
+	}
+}
+
+func TestPostInitRejectsInvalidOperatorExecutionTimeout(t *testing.T) {
+	for _, timeout := range []any{0, 10001, int64(math.MaxInt64)} {
+		p := NewPreFunction()
+		p.config = Config{Functions: []string{`return function() end`}}
+		p.SetDependencies(base.Dependencies{Config: serverlessStaticConfig(timeout)})
+		if err := p.Init(); err != nil {
+			t.Fatal(err)
+		}
+		if err := p.PostInit(); err == nil || !strings.Contains(err.Error(), "execution_timeout_ms") {
+			t.Fatalf("PostInit(timeout=%v) error = %v, want operator timeout rejection", timeout, err)
+		}
+	}
+}
+
+func serverlessStaticConfig(timeoutMS any) *config.EffectiveConfig {
+	return &config.EffectiveConfig{Config: config.Config{PluginAttr: map[string]map[string]any{
+		preFunctionName: {"execution_timeout_ms": timeoutMS},
+	}}}
+}
 
 func TestServerlessDescriptorSelectsOneConfiguredStageOrPhase(t *testing.T) {
 	tests := []struct {
@@ -239,9 +326,21 @@ func TestServerlessLuaValueToStatusAcceptsOnlyHTTPIntegers(t *testing.T) {
 }
 
 func newTestPlugin(t *testing.T, p *Plugin, cfg Config) *Plugin {
+	return newTestPluginWithStaticConfig(t, p, cfg, nil)
+}
+
+func newTestPluginWithStaticConfig(
+	t *testing.T,
+	p *Plugin,
+	cfg Config,
+	effective *config.EffectiveConfig,
+) *Plugin {
 	t.Helper()
 
 	p.config = cfg
+	if effective != nil {
+		p.SetDependencies(base.Dependencies{Config: effective})
+	}
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}

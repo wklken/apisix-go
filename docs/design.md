@@ -210,11 +210,13 @@ the first incomplete phase instead of repeating completed releases.
 ### Readiness and bounded observability
 
 Readiness is internal bounded state, not a Prometheus scrape read-back.
-`config_apply_ready` requires an observed, healthy provider and a successful
-HTTP stage; it requires a successful stream stage only when stream is
-configured. Any quarantine blocks readiness. `/livez` is independent;
-`/readyz` additionally requires provider reachability in etcd mode, so a
-recovered generation may keep serving while readiness is false.
+`config_apply_ready` requires a committed, serviceable HTTP stage and a
+successful stream stage when stream is configured. Any quarantine blocks
+readiness. The separate status listener defaults to `127.0.0.1:7085`:
+`/status` reports liveness and `/status/ready` reports `config_apply_ready`.
+Provider reachability remains an alerting metric; etcd loss does not withdraw
+readiness while a committed last-good generation remains serviceable.
+`/livez` and `/readyz` are ordinary data-plane route paths.
 
 Untrusted provider, stage, resource, route, backend, owner, or panic values do
 not become metric labels. Dynamic HTTP/LLM/upstream series use hard-cap trackers
@@ -488,9 +490,9 @@ replacing the last-good stream runtime. It does not yet expose a general
 stream-variable/plugin-chain API, stream-specific active health/discovery,
 TLS/UDP stream owner, or Kafka-specific stream binding. HTTP cluster active
 health is implemented separately under a resource-local task owner. The runtime
-exposes `/livez` and `/readyz`; startup failures are
-returned to the process entrypoint, and readiness remains unavailable until
-configuration and the configured provider are ready. Protocol-owned bounded
+exposes `/status` and `/status/ready` on the separate status listener; startup
+failures are returned to the process entrypoint, and readiness remains
+unavailable until a committed serviceable configuration exists. Protocol-owned bounded
 transport and stream boundaries therefore have different integration states:
 
 | Plugin | Current local behavior | Design consequence |

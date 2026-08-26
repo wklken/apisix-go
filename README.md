@@ -69,8 +69,8 @@ Explicit manifest gaps:
 - `request-validation` (`apisix`): Secret references used as `header_schema` or `body_schema` are not materialized before validation.
 - `response-rewrite` (`apisix`): Configured PCRE-only patterns, named captures, backtracking, or Lua `gsub` flag semantics can differ under Go RE2.
 - `rocketmq-logger` (`apisix`): `use_tls = true` is rejected because the pinned Go client exposes no TLS transport hook.
-- `serverless-post-function` (`apisix`): User Lua that depends on streaming body chunks, custom variables, or unavailable `ngx_lua` APIs behaves differently after the buffered response.
-- `serverless-pre-function` (`apisix`): User Lua that depends on `ngx.ctx`, functional `ngx.log`, custom variables, or other unavailable `ngx_lua` APIs behaves differently.
+- `serverless-post-function` (`apisix`): User Lua that depends on streaming body chunks, OS/IO/debug/channel libraries, filesystem module loading, custom variables, or unavailable `ngx_lua` APIs behaves differently after the buffered response.
+- `serverless-pre-function` (`apisix`): User Lua that depends on `ngx.ctx`, functional `ngx.log`, OS/IO/debug/channel libraries, filesystem module loading, custom variables, or other unavailable `ngx_lua` APIs behaves differently.
 - `traffic-label` (`apisix`): Multi-action selection uses a sequential cursor instead of APISIX cached random round-robin, which changes selection order.
 - `traffic-split` (`apisix`): `match.vars` expressions that require unsupported NGINX variables or PCRE-only semantics can differ.
 - `ua-restriction` (`apisix`): Configured PCRE-only allowlist or denylist rules such as lookarounds or backreferences cannot be represented by Go RE2.

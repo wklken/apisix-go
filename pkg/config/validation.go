@@ -88,6 +88,19 @@ func validateRuntimeConfig(cfg *Config, manifest *capability.Manifest) error {
 			)
 		}
 	}
+	if (cfg.Apisix.Status.IP != "" || cfg.Apisix.Status.Port != 0) &&
+		(cfg.Apisix.Status.Port < 1 || cfg.Apisix.Status.Port > 65535) {
+		return profileAwareRuntimeError(
+			selection,
+			fmt.Errorf("apisix.status.port must be between 1 and 65535"),
+		)
+	}
+	if (cfg.Apisix.Status.IP != "" || cfg.Apisix.Status.Port != 0) && net.ParseIP(cfg.Apisix.Status.IP) == nil {
+		return profileAwareRuntimeError(
+			selection,
+			fmt.Errorf("apisix.status.ip must be a valid IP address"),
+		)
+	}
 	for _, limit := range []struct {
 		field string
 		value int

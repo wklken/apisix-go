@@ -24,11 +24,13 @@ import (
 
 type Plugin struct {
 	base.BaseLoggerPlugin
-	config        Config
-	sender        rocketmqSender
-	senderFactory func(*Config) (rocketmqSender, error)
+	config                   Config
+	sender                   rocketmqSender
+	senderFactory            func(*Config) (rocketmqSender, error)
+	beforeRuntimePublication func()
 
 	lifecycleMu sync.RWMutex
+	senderUse   sync.RWMutex
 	stopped     atomic.Bool
 
 	secretKey       secret.Value
@@ -207,32 +209,27 @@ type pluginMetadata struct {
 	MaxPendingEntries int               `json:"max_pending_entries,omitempty"`
 }
 
-func (p *Plugin) QuiesceGenerationTasks() { p.Stop() }
-
-func (p *Plugin) Stop() {
-	if p.stopped.Swap(true) {
-		return
-	}
+func (p *Plugin) QuiesceGenerationTasks() {
+	p.stopped.Store(true)
 	p.lifecycleMu.RLock()
 	processor := p.BatchProcessor
 	p.lifecycleMu.RUnlock()
-	cleanup := func() {
-		p.lifecycleMu.Lock()
-		defer p.lifecycleMu.Unlock()
-		shutdownRocketMQSender(p.sender)
-		p.sender = nil
-		p.senderFactory = nil
-		p.BatchProcessor = nil
-		p.secretKey = secret.Value{}
-		p.secretKeySet = false
-		p.secretsPrepared = false
-		p.ready = false
-	}
 	if processor != nil {
-		processor.StopWithCleanup(cleanup)
-	} else {
-		cleanup()
+		processor.Stop()
 	}
+}
+
+func (p *Plugin) Stop() {
+	p.stopped.Store(true)
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+	p.sender = nil
+	p.senderFactory = nil
+	p.BatchProcessor = nil
+	p.secretKey = secret.Value{}
+	p.secretKeySet = false
+	p.secretsPrepared = false
+	p.ready = false
 }
 
 func shutdownRocketMQSender(value rocketmqSender) {
@@ -380,7 +377,6 @@ func (p *Plugin) PostInit() error {
 	)
 
 	sender := p.sender
-	createdSender := false
 	if sender == nil {
 		if err := p.withPrivateConfigLocked(func(config *Config) error {
 			factory := p.senderFactory
@@ -394,7 +390,10 @@ func (p *Plugin) PostInit() error {
 			return err
 		}
 		p.senderFactory = nil
-		createdSender = true
+	}
+	if p.stopped.Load() {
+		shutdownRocketMQSender(sender)
+		return secret.ErrCredentialUnavailable
 	}
 
 	processor, err := base.NewBatchProcessor("rocketmq logger", p.TaskOwner(), base.BatchDefaults{
@@ -407,22 +406,87 @@ func (p *Plugin) PostInit() error {
 		PluginID:           name,
 	}, p.RouteID, p.ServerAddr, p.sendBatchFromProcessor)
 	if err != nil {
-		if createdSender {
-			shutdownRocketMQSender(sender)
-		}
+		shutdownRocketMQSender(sender)
 		return err
 	}
 	if p.stopped.Load() {
-		processor.Stop()
-		if createdSender {
-			shutdownRocketMQSender(sender)
-		}
+		p.shutdownRocketMQPipeline(context.TODO(), processor, sender)
 		return secret.ErrCredentialUnavailable
 	}
-	p.sender = sender
-	p.BatchProcessor = processor
-	p.ready = true
+	rollback := make(chan struct{})
+	shutdownRequested := make(chan struct{})
+	shutdownTaskReady := make(chan struct{})
+	publicationDecided := make(chan struct{})
+	shutdownDone := make(chan struct{})
+	var publicationMu sync.Mutex
+	if err := p.TaskOwner().Go("rocketmq-sender-shutdown", func(ctx context.Context) error {
+		defer close(shutdownDone)
+		triggered := ctx.Err() != nil
+		if triggered {
+			publicationMu.Lock()
+			p.stopped.Store(true)
+			close(shutdownRequested)
+			publicationMu.Unlock()
+		}
+		close(shutdownTaskReady)
+		if !triggered {
+			select {
+			case <-ctx.Done():
+			case <-rollback:
+			}
+			publicationMu.Lock()
+			p.stopped.Store(true)
+			close(shutdownRequested)
+			publicationMu.Unlock()
+		}
+		<-publicationDecided
+		p.shutdownRocketMQPipeline(context.WithoutCancel(ctx), processor, sender)
+		return nil
+	}); err != nil {
+		p.shutdownRocketMQPipeline(context.TODO(), processor, sender)
+		return err
+	}
+	if p.beforeRuntimePublication != nil {
+		p.beforeRuntimePublication()
+	}
+	<-shutdownTaskReady
+	publicationMu.Lock()
+	rollbackShutdown := p.stopped.Load()
+	if !rollbackShutdown {
+		select {
+		case <-shutdownRequested:
+			rollbackShutdown = true
+		default:
+		}
+	}
+	if !rollbackShutdown {
+		p.sender = sender
+		p.BatchProcessor = processor
+		p.ready = true
+		close(publicationDecided)
+	}
+	publicationMu.Unlock()
+	if rollbackShutdown {
+		close(rollback)
+		close(publicationDecided)
+		<-shutdownDone
+		return secret.ErrCredentialUnavailable
+	}
 	return nil
+}
+
+func (p *Plugin) shutdownRocketMQPipeline(
+	ctx context.Context,
+	processor *logger_batch.Processor,
+	sender rocketmqSender,
+) {
+	if processor != nil {
+		processor.Stop()
+		_ = processor.Shutdown(ctx)
+	}
+	p.senderUse.Lock()
+	defer p.senderUse.Unlock()
+	shutdownRocketMQSender(sender)
 }
 
 func (p *Plugin) withPrivateConfigLocked(use func(*Config) error) error {
@@ -666,6 +730,11 @@ func (p *Plugin) sendBatch(
 	p.lifecycleMu.RLock()
 	defer p.lifecycleMu.RUnlock()
 	if p.sender == nil || (p.stopped.Load() && !allowRetired) {
+		return 0, secret.ErrCredentialUnavailable
+	}
+	p.senderUse.RLock()
+	defer p.senderUse.RUnlock()
+	if p.stopped.Load() && !allowRetired {
 		return 0, secret.ErrCredentialUnavailable
 	}
 

@@ -30,6 +30,95 @@ import (
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
+type cancellationWatchConn struct {
+	net.Conn
+	closeCalls   atomic.Int32
+	closeStarted chan struct{}
+	releaseClose <-chan struct{}
+}
+
+func (c *cancellationWatchConn) Close() error {
+	c.closeCalls.Add(1)
+	select {
+	case c.closeStarted <- struct{}{}:
+	default:
+	}
+	if c.releaseClose != nil {
+		<-c.releaseClose
+	}
+	return nil
+}
+
+func TestWatchConnectionCancellation(t *testing.T) {
+	for _, scenario := range []string{
+		"cancellation closes connection",
+		"normal completion preserves reused connection",
+		"cleanup joins close already running",
+		"nil context is no-op",
+	} {
+		t.Run(scenario, func(t *testing.T) {
+			var ctx context.Context
+			var cancel context.CancelFunc
+			if scenario != "nil context is no-op" {
+				ctx, cancel = context.WithCancel(context.Background())
+				defer cancel()
+			}
+			var releaseClose chan struct{}
+			if scenario == "cleanup joins close already running" {
+				releaseClose = make(chan struct{})
+			}
+			conn := &cancellationWatchConn{
+				closeStarted: make(chan struct{}, 1),
+				releaseClose: releaseClose,
+			}
+			cleanup := watchConnectionCancellation(ctx, conn)
+
+			switch scenario {
+			case "cancellation closes connection":
+				cancel()
+				cleanup()
+			case "normal completion preserves reused connection":
+				cleanup()
+				cancel()
+			case "cleanup joins close already running":
+				cancel()
+				select {
+				case <-conn.closeStarted:
+				case <-time.After(time.Second):
+					t.Fatal("cancellation callback did not enter Close")
+				}
+				cleanupDone := make(chan struct{})
+				go func() {
+					cleanup()
+					close(cleanupDone)
+				}()
+				select {
+				case <-cleanupDone:
+					t.Fatal("cleanup returned while Close was blocked")
+				case <-time.After(20 * time.Millisecond):
+				}
+				close(releaseClose)
+				select {
+				case <-cleanupDone:
+				case <-time.After(time.Second):
+					t.Fatal("cleanup did not return after Close completed")
+				}
+			case "nil context is no-op":
+				cleanup()
+			}
+
+			wantCloseCalls := int32(0)
+			if scenario == "cancellation closes connection" ||
+				scenario == "cleanup joins close already running" {
+				wantCloseCalls = 1
+			}
+			if got := conn.closeCalls.Load(); got != wantCloseCalls {
+				t.Fatalf("Close calls = %d, want %d", got, wantCloseCalls)
+			}
+		})
+	}
+}
+
 type logglyScopedSecretCall struct {
 	Scope secret.Scope
 	Raw   string

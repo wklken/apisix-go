@@ -687,18 +687,19 @@ func (p *Plugin) Stop() {
 }
 
 func watchConnectionCancellation(ctx context.Context, conn net.Conn) func() {
+	if ctx == nil {
+		return func() {}
+	}
 	done := make(chan struct{})
-	var wait sync.WaitGroup
-	wait.Go(func() {
-		select {
-		case <-ctx.Done():
-			_ = conn.Close()
-		case <-done:
-		}
+	stop := context.AfterFunc(ctx, func() {
+		defer close(done)
+		_ = conn.Close()
 	})
 	return func() {
-		close(done)
-		wait.Wait()
+		if stop() {
+			close(done)
+		}
+		<-done
 	}
 }
 

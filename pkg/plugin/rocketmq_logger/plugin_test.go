@@ -354,14 +354,20 @@ func (sender *attemptOwnedRocketMQSender) shutdownCount() int {
 
 func TestRocketMQSendersAndPrivateConfigClonesAreAttemptOwned(t *testing.T) {
 	const raw = "$secret://vault/rocketmq/generation-secret"
-	newGeneration := func(revision uint64, private string) (*Plugin, *attemptOwnedRocketMQSender, *Config) {
+	newGeneration := func(
+		revision uint64,
+		private string,
+	) (*Plugin, *attemptOwnedRocketMQSender, *Config, *apisixruntime.TaskRegistry) {
 		rawConfig := rocketMQRawConfig(raw, false)
 		capabilityValue, scope, _ := newRocketMQScopedSecretHarness(
 			t, revision, fmt.Sprintf("rocketmq-generation-%d", revision), rawConfig,
 			map[string]string{raw: private},
 		)
 		p := newRawRocketMQPlugin(t, rawConfig)
-		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
+		tasks, owner := newRocketMQTaskRegistryForTest(
+			t, fmt.Sprintf("plugin/test/rocketmq_logger/generation-%d", revision),
+		)
+		p.SetDependencies(base.Dependencies{Tasks: owner})
 		var retained *Config
 		var sender *attemptOwnedRocketMQSender
 		p.senderFactory = func(config *Config) (rocketmqSender, error) {
@@ -380,11 +386,11 @@ func TestRocketMQSendersAndPrivateConfigClonesAreAttemptOwned(t *testing.T) {
 		if err := p.PostInit(); err != nil {
 			t.Fatal(err)
 		}
-		return p, sender, retained
+		return p, sender, retained, tasks
 	}
 
-	first, firstSender, firstClone := newGeneration(130, "generation-first")
-	second, secondSender, secondClone := newGeneration(131, "generation-second")
+	first, firstSender, firstClone, firstTasks := newGeneration(130, "generation-first")
+	second, secondSender, secondClone, secondTasks := newGeneration(131, "generation-second")
 	if firstSender == secondSender {
 		t.Fatal("two attempts shared a credential-bearing RocketMQ sender")
 	}
@@ -402,6 +408,8 @@ func TestRocketMQSendersAndPrivateConfigClonesAreAttemptOwned(t *testing.T) {
 		t.Fatal("sender factory callback survived sender construction")
 	}
 	firstProcessor := first.BatchProcessor
+	first.QuiesceGenerationTasks()
+	stopRocketMQTaskRegistryForTest(t, firstTasks)
 	first.Stop()
 	if err := firstProcessor.Shutdown(context.Background()); err != nil {
 		t.Fatalf("first batch Shutdown() error = %v", err)
@@ -416,6 +424,8 @@ func TestRocketMQSendersAndPrivateConfigClonesAreAttemptOwned(t *testing.T) {
 		t.Fatal("stopping first generation changed the second sender")
 	}
 	secondProcessor := second.BatchProcessor
+	second.QuiesceGenerationTasks()
+	stopRocketMQTaskRegistryForTest(t, secondTasks)
 	second.Stop()
 	if err := secondProcessor.Shutdown(context.Background()); err != nil {
 		t.Fatalf("second batch Shutdown() error = %v", err)
@@ -428,6 +438,465 @@ type blockingRocketMQSender struct {
 	enterOnce     sync.Once
 	mu            sync.Mutex
 	shutdownCalls int
+}
+
+type ownedShutdownRocketMQSender struct {
+	sendEntered     chan struct{}
+	sendRelease     chan struct{}
+	shutdownEntered chan struct{}
+	shutdownRelease chan struct{}
+
+	sendOnce     sync.Once
+	shutdownOnce sync.Once
+	mu           sync.Mutex
+	shutdowns    int
+}
+
+func (sender *ownedShutdownRocketMQSender) Send(ctx context.Context, _ rocketmqMessage) error {
+	if sender.sendEntered != nil {
+		sender.sendOnce.Do(func() { close(sender.sendEntered) })
+	}
+	if sender.sendRelease == nil {
+		return nil
+	}
+	select {
+	case <-sender.sendRelease:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (sender *ownedShutdownRocketMQSender) Shutdown() error {
+	sender.mu.Lock()
+	sender.shutdowns++
+	sender.mu.Unlock()
+	if sender.shutdownEntered != nil {
+		sender.shutdownOnce.Do(func() { close(sender.shutdownEntered) })
+	}
+	if sender.shutdownRelease != nil {
+		<-sender.shutdownRelease
+	}
+	return nil
+}
+
+func (sender *ownedShutdownRocketMQSender) shutdownCount() int {
+	sender.mu.Lock()
+	defer sender.mu.Unlock()
+	return sender.shutdowns
+}
+
+func newOwnedShutdownRocketMQPluginForTest(
+	t *testing.T,
+	owner *apisixruntime.TaskOwner,
+	sender rocketmqSender,
+) *Plugin {
+	t.Helper()
+	p := newRawRocketMQPlugin(t, rocketMQRawConfig("owned-shutdown-private", false))
+	p.SetDependencies(base.Dependencies{
+		Tasks:          owner,
+		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+	})
+	p.sender = sender
+	if err := materializeRocketMQForTest(t, p, 1, "owned-shutdown", p.config.SecretKey); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func TestRocketMQSenderShutdownIsOwnedAndResidualVisible(t *testing.T) {
+	const ownerPrefix = "plugin/test/rocketmq_logger/owned-shutdown"
+	tasks := apisixruntime.NewTaskRegistry(context.Background(), nil)
+	owner, err := apisixruntime.NewTaskOwner(tasks, ownerPrefix, apisixruntime.TaskPlugin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shutdownEntered := make(chan struct{})
+	shutdownRelease := make(chan struct{})
+	var releaseOnce sync.Once
+	var p *Plugin
+	t.Cleanup(func() {
+		releaseOnce.Do(func() { close(shutdownRelease) })
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if residuals, stopErr := tasks.Stop(ctx); stopErr != nil {
+			t.Errorf("TaskRegistry.Stop() residuals=%v error=%v", residuals, stopErr)
+		}
+		if p != nil {
+			p.Stop()
+		}
+	})
+	sender := &ownedShutdownRocketMQSender{
+		shutdownEntered: shutdownEntered,
+		shutdownRelease: shutdownRelease,
+	}
+	p = newOwnedShutdownRocketMQPluginForTest(t, owner, sender)
+
+	type stopResult struct {
+		residuals []apisixruntime.TaskResidual
+		err       error
+	}
+	stopDone := make(chan stopResult, 1)
+	go func() {
+		residuals, stopErr := tasks.Stop(context.Background())
+		stopDone <- stopResult{residuals: residuals, err: stopErr}
+	}()
+	select {
+	case <-shutdownEntered:
+	case <-time.After(time.Second):
+		t.Fatal("generation cancellation did not enter owned RocketMQ sender Shutdown")
+	}
+	lateSend := make(chan error, 1)
+	go func() {
+		_, sendErr := p.SendBatch(context.Background(), []map[string]any{{"late": true}}, 1)
+		lateSend <- sendErr
+	}()
+	select {
+	case sendErr := <-lateSend:
+		if !errors.Is(sendErr, secret.ErrCredentialUnavailable) {
+			t.Fatalf("SendBatch() after shutdown began error = %v, want credential unavailable", sendErr)
+		}
+	case <-time.After(20 * time.Millisecond):
+		t.Fatal("SendBatch() after shutdown began blocked behind sender Shutdown")
+	}
+	wantOwner := ownerPrefix + "/rocketmq-sender-shutdown"
+	deadline := time.Now().Add(time.Second)
+	for active := tasks.Active(); len(active) != 1 || active[0] != wantOwner; active = tasks.Active() {
+		if time.Now().After(deadline) {
+			t.Fatalf("active task owners = %v, want [%s]", active, wantOwner)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	short, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	residuals, stopErr := tasks.Stop(short)
+	cancel()
+	var residualErr *apisixruntime.TaskResidualError
+	if !errors.As(stopErr, &residualErr) || !errors.Is(stopErr, context.DeadlineExceeded) {
+		t.Fatalf("TaskRegistry.Stop() residuals=%v error=%v, want deadline residual", residuals, stopErr)
+	}
+	wantResiduals := []apisixruntime.TaskResidual{{Owner: wantOwner}}
+	if len(residuals) != 1 || residuals[0] != wantResiduals[0] ||
+		len(residualErr.Residuals()) != 1 || residualErr.Residuals()[0] != wantResiduals[0] {
+		t.Fatalf(
+			"TaskRegistry.Stop() residuals=%v stored=%v, want %v",
+			residuals,
+			residualErr.Residuals(),
+			wantResiduals,
+		)
+	}
+	if sender.shutdownCount() != 1 {
+		t.Fatalf("sender shutdown count while blocked = %d, want 1", sender.shutdownCount())
+	}
+
+	releaseOnce.Do(func() { close(shutdownRelease) })
+	select {
+	case result := <-stopDone:
+		if result.err != nil || len(result.residuals) != 0 {
+			t.Fatalf("TaskRegistry.Stop() after release residuals=%v error=%v", result.residuals, result.err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("owned RocketMQ sender shutdown task did not join after release")
+	}
+	if sender.shutdownCount() != 1 {
+		t.Fatalf("sender shutdown count after join = %d, want 1", sender.shutdownCount())
+	}
+}
+
+func TestRocketMQGenerationCancellationFlushesBeforeSenderShutdown(t *testing.T) {
+	const ownerPrefix = "plugin/test/rocketmq_logger/cancel-flush"
+	tasks := apisixruntime.NewTaskRegistry(context.Background(), nil)
+	owner, err := apisixruntime.NewTaskOwner(tasks, ownerPrefix, apisixruntime.TaskPlugin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sendEntered := make(chan struct{})
+	sendRelease := make(chan struct{})
+	shutdownEntered := make(chan struct{})
+	shutdownRelease := make(chan struct{})
+	var sendReleaseOnce sync.Once
+	var shutdownReleaseOnce sync.Once
+	var p *Plugin
+	t.Cleanup(func() {
+		sendReleaseOnce.Do(func() { close(sendRelease) })
+		shutdownReleaseOnce.Do(func() { close(shutdownRelease) })
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if residuals, stopErr := tasks.Stop(ctx); stopErr != nil {
+			t.Errorf("TaskRegistry.Stop() residuals=%v error=%v", residuals, stopErr)
+		}
+		if p != nil {
+			p.Stop()
+		}
+	})
+	sender := &ownedShutdownRocketMQSender{
+		sendEntered:     sendEntered,
+		sendRelease:     sendRelease,
+		shutdownEntered: shutdownEntered,
+		shutdownRelease: shutdownRelease,
+	}
+	p = newOwnedShutdownRocketMQPluginForTest(t, owner, sender)
+	if err := p.RunLogPhase(base.LogSnapshot{}); err != nil {
+		t.Fatal(err)
+	}
+
+	stopDone := make(chan error, 1)
+	go func() {
+		_, stopErr := tasks.Stop(context.Background())
+		stopDone <- stopErr
+	}()
+	select {
+	case <-sendEntered:
+	case <-time.After(time.Second):
+		t.Fatal("generation cancellation did not flush the pending RocketMQ batch")
+	}
+	select {
+	case <-shutdownEntered:
+		t.Fatal("RocketMQ sender Shutdown started before pending delivery completed")
+	default:
+	}
+	sendReleaseOnce.Do(func() { close(sendRelease) })
+	select {
+	case <-shutdownEntered:
+	case <-time.After(time.Second):
+		t.Fatal("RocketMQ sender Shutdown did not start after pending delivery completed")
+	}
+	select {
+	case err := <-stopDone:
+		t.Fatalf("TaskRegistry.Stop() returned before sender Shutdown completed: %v", err)
+	default:
+	}
+	shutdownReleaseOnce.Do(func() { close(shutdownRelease) })
+	select {
+	case err := <-stopDone:
+		if err != nil {
+			t.Fatalf("TaskRegistry.Stop() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("generation cancellation did not join RocketMQ sender Shutdown")
+	}
+	if sender.shutdownCount() != 1 {
+		t.Fatalf("sender shutdown count = %d, want 1", sender.shutdownCount())
+	}
+}
+
+func TestRocketMQRegistryStopWaitsForDirectSendBeforeSenderShutdown(t *testing.T) {
+	const ownerPrefix = "plugin/test/rocketmq_logger/direct-send-shutdown"
+	tasks := apisixruntime.NewTaskRegistry(context.Background(), nil)
+	owner, err := apisixruntime.NewTaskOwner(tasks, ownerPrefix, apisixruntime.TaskPlugin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sendEntered := make(chan struct{})
+	sendRelease := make(chan struct{})
+	shutdownEntered := make(chan struct{})
+	shutdownRelease := make(chan struct{})
+	var sendReleaseOnce sync.Once
+	var shutdownReleaseOnce sync.Once
+	var p *Plugin
+	t.Cleanup(func() {
+		sendReleaseOnce.Do(func() { close(sendRelease) })
+		shutdownReleaseOnce.Do(func() { close(shutdownRelease) })
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if residuals, stopErr := tasks.Stop(ctx); stopErr != nil {
+			t.Errorf("TaskRegistry.Stop() residuals=%v error=%v", residuals, stopErr)
+		}
+		if p != nil {
+			p.Stop()
+		}
+	})
+	sender := &ownedShutdownRocketMQSender{
+		sendEntered:     sendEntered,
+		sendRelease:     sendRelease,
+		shutdownEntered: shutdownEntered,
+		shutdownRelease: shutdownRelease,
+	}
+	p = newOwnedShutdownRocketMQPluginForTest(t, owner, sender)
+
+	sendDone := make(chan error, 1)
+	go func() {
+		_, sendErr := p.SendBatch(context.Background(), []map[string]any{{"active": true}}, 1)
+		sendDone <- sendErr
+	}()
+	select {
+	case <-sendEntered:
+	case <-time.After(time.Second):
+		t.Fatal("direct SendBatch did not enter sender")
+	}
+
+	short, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	residuals, stopErr := tasks.Stop(short)
+	cancel()
+	wantOwner := ownerPrefix + "/rocketmq-sender-shutdown"
+	var residualErr *apisixruntime.TaskResidualError
+	if !errors.As(stopErr, &residualErr) || !errors.Is(stopErr, context.DeadlineExceeded) {
+		t.Fatalf("TaskRegistry.Stop() residuals=%v error=%v, want deadline residual", residuals, stopErr)
+	}
+	wantResidual := apisixruntime.TaskResidual{Owner: wantOwner}
+	if len(residuals) != 1 || residuals[0] != wantResidual ||
+		len(residualErr.Residuals()) != 1 || residualErr.Residuals()[0] != wantResidual {
+		t.Fatalf(
+			"TaskRegistry.Stop() residuals=%v stored=%v, want [%v]",
+			residuals,
+			residualErr.Residuals(),
+			wantResidual,
+		)
+	}
+	select {
+	case <-shutdownEntered:
+		t.Fatal("sender Shutdown entered while direct SendBatch remained blocked")
+	default:
+	}
+	if sender.shutdownCount() != 0 {
+		t.Fatalf("sender shutdown count while direct send blocked = %d, want 0", sender.shutdownCount())
+	}
+
+	sendReleaseOnce.Do(func() { close(sendRelease) })
+	select {
+	case sendErr := <-sendDone:
+		if sendErr != nil {
+			t.Fatalf("direct SendBatch() error = %v", sendErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("direct SendBatch did not finish after release")
+	}
+	select {
+	case <-shutdownEntered:
+	case <-time.After(time.Second):
+		t.Fatal("sender Shutdown did not start after direct SendBatch completed")
+	}
+	if sender.shutdownCount() != 1 {
+		t.Fatalf("sender shutdown count after direct send = %d, want 1", sender.shutdownCount())
+	}
+
+	joinDone := make(chan error, 1)
+	go func() {
+		_, joinErr := tasks.Stop(context.Background())
+		joinDone <- joinErr
+	}()
+	select {
+	case joinErr := <-joinDone:
+		t.Fatalf("TaskRegistry.Stop() returned before sender Shutdown completed: %v", joinErr)
+	default:
+	}
+	shutdownReleaseOnce.Do(func() { close(shutdownRelease) })
+	select {
+	case joinErr := <-joinDone:
+		if joinErr != nil {
+			t.Fatalf("TaskRegistry.Stop() join error = %v", joinErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("TaskRegistry.Stop() did not join sender Shutdown after release")
+	}
+	if sender.shutdownCount() != 1 {
+		t.Fatalf("sender shutdown count after registry join = %d, want 1", sender.shutdownCount())
+	}
+}
+
+func TestRocketMQRegistryCancellationBeforePublicationRollsBackRuntime(t *testing.T) {
+	const ownerPrefix = "plugin/test/rocketmq_logger/pre-publication-cancel"
+	tasks := apisixruntime.NewTaskRegistry(context.Background(), nil)
+	owner, err := apisixruntime.NewTaskOwner(tasks, ownerPrefix, apisixruntime.TaskPlugin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpointEntered := make(chan struct{})
+	checkpointRelease := make(chan struct{})
+	shutdownEntered := make(chan struct{})
+	shutdownRelease := make(chan struct{})
+	var checkpointReleaseOnce sync.Once
+	var shutdownReleaseOnce sync.Once
+	t.Cleanup(func() {
+		checkpointReleaseOnce.Do(func() { close(checkpointRelease) })
+		shutdownReleaseOnce.Do(func() { close(shutdownRelease) })
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if residuals, stopErr := tasks.Stop(ctx); stopErr != nil {
+			t.Errorf("TaskRegistry.Stop() residuals=%v error=%v", residuals, stopErr)
+		}
+	})
+	sender := &ownedShutdownRocketMQSender{
+		shutdownEntered: shutdownEntered,
+		shutdownRelease: shutdownRelease,
+	}
+	p := newRawRocketMQPlugin(t, rocketMQRawConfig("pre-publication-private", false))
+	p.SetDependencies(base.Dependencies{
+		Tasks:          owner,
+		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+	})
+	if err := materializeRocketMQForTest(t, p, 1, "pre-publication-cancel", p.config.SecretKey); err != nil {
+		t.Fatal(err)
+	}
+	p.senderFactory = func(config *Config) (rocketmqSender, error) {
+		if config.SecretKey != "pre-publication-private" {
+			t.Fatalf("private sender config secret_key = %q", config.SecretKey)
+		}
+		return sender, nil
+	}
+	p.beforeRuntimePublication = func() {
+		close(checkpointEntered)
+		<-checkpointRelease
+	}
+	postInitDone := make(chan error, 1)
+	go func() { postInitDone <- p.PostInit() }()
+	select {
+	case <-checkpointEntered:
+	case <-time.After(time.Second):
+		t.Fatal("PostInit did not reach the pre-publication checkpoint")
+	}
+	if p.sender != nil || p.BatchProcessor != nil || p.ready {
+		t.Fatalf("runtime fields published before checkpoint release: %#v", p)
+	}
+
+	short, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	residuals, stopErr := tasks.Stop(short)
+	cancel()
+	var residualErr *apisixruntime.TaskResidualError
+	if !errors.As(stopErr, &residualErr) || !errors.Is(stopErr, context.DeadlineExceeded) {
+		t.Fatalf("TaskRegistry.Stop() residuals=%v error=%v, want deadline residual", residuals, stopErr)
+	}
+	checkpointReleaseOnce.Do(func() { close(checkpointRelease) })
+	select {
+	case <-shutdownEntered:
+	case <-time.After(time.Second):
+		t.Fatal("staged sender Shutdown did not start after publication rollback")
+	}
+	if p.sender != nil || p.BatchProcessor != nil || p.ready {
+		t.Fatalf("canceled PostInit published runtime fields: %#v", p)
+	}
+	if sender.shutdownCount() != 1 {
+		t.Fatalf("staged sender shutdown count = %d, want 1", sender.shutdownCount())
+	}
+	select {
+	case postInitErr := <-postInitDone:
+		t.Fatalf("PostInit returned before sender Shutdown completed: %v", postInitErr)
+	default:
+	}
+
+	shutdownReleaseOnce.Do(func() { close(shutdownRelease) })
+	select {
+	case postInitErr := <-postInitDone:
+		if !errors.Is(postInitErr, secret.ErrCredentialUnavailable) {
+			t.Fatalf("PostInit() error = %v, want credential unavailable", postInitErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("PostInit did not finish after staged sender shutdown")
+	}
+	ctx, joinCancel := context.WithTimeout(context.Background(), time.Second)
+	joinedResiduals, joinErr := tasks.Stop(ctx)
+	joinCancel()
+	if joinErr != nil || len(joinedResiduals) != 0 {
+		t.Fatalf("TaskRegistry.Stop() after release residuals=%v error=%v", joinedResiduals, joinErr)
+	}
+	if p.sender != nil || p.BatchProcessor != nil || p.ready {
+		t.Fatalf("failed PostInit retained runtime fields: %#v", p)
+	}
+	if sender.shutdownCount() != 1 {
+		t.Fatalf("staged sender shutdown count after join = %d, want 1", sender.shutdownCount())
+	}
 }
 
 func (sender *blockingRocketMQSender) Send(context.Context, rocketmqMessage) error {
@@ -449,11 +918,38 @@ func (sender *blockingRocketMQSender) shutdownCount() int {
 	return sender.shutdownCalls
 }
 
-func newBlockingRocketMQPlugin(t *testing.T, sender rocketmqSender) *Plugin {
+func newRocketMQTaskRegistryForTest(
+	t *testing.T,
+	ownerPrefix string,
+) (*apisixruntime.TaskRegistry, *apisixruntime.TaskOwner) {
 	t.Helper()
+	tasks := apisixruntime.NewTaskRegistry(context.Background(), nil)
+	owner, err := apisixruntime.NewTaskOwner(tasks, ownerPrefix, apisixruntime.TaskPlugin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { stopRocketMQTaskRegistryForTest(t, tasks) })
+	return tasks, owner
+}
+
+func stopRocketMQTaskRegistryForTest(t *testing.T, tasks *apisixruntime.TaskRegistry) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if residuals, err := tasks.Stop(ctx); err != nil {
+		t.Fatalf("TaskRegistry.Stop() residuals=%v error=%v", residuals, err)
+	}
+}
+
+func newBlockingRocketMQPlugin(
+	t *testing.T,
+	sender rocketmqSender,
+) (*Plugin, *apisixruntime.TaskRegistry) {
+	t.Helper()
+	tasks, owner := newRocketMQTaskRegistryForTest(t, "plugin/test/rocketmq_logger/blocking")
 	p := newRawRocketMQPlugin(t, rocketMQRawConfig("active-private", false))
 	p.SetDependencies(base.Dependencies{
-		Tasks:          newLoggerTestTaskOwner(t),
+		Tasks:          owner,
 		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
 	})
 	p.sender = sender
@@ -463,12 +959,12 @@ func newBlockingRocketMQPlugin(t *testing.T, sender rocketmqSender) *Plugin {
 	if err := p.PostInit(); err != nil {
 		t.Fatal(err)
 	}
-	return p
+	return p, tasks
 }
 
-func TestRocketMQStopDrainsActiveSendAndPreventsResurrection(t *testing.T) {
+func TestRocketMQQuiesceDrainsActiveSendAndPreventsResurrection(t *testing.T) {
 	sender := &blockingRocketMQSender{entered: make(chan struct{}), release: make(chan struct{})}
-	p := newBlockingRocketMQPlugin(t, sender)
+	p, tasks := newBlockingRocketMQPlugin(t, sender)
 	sendDone := make(chan error, 1)
 	go func() {
 		_, err := p.SendBatch(context.Background(), []map[string]any{{"active": true}}, 1)
@@ -480,15 +976,15 @@ func TestRocketMQStopDrainsActiveSendAndPreventsResurrection(t *testing.T) {
 		t.Fatal("active RocketMQ send did not start")
 	}
 	processor := p.BatchProcessor
-	stopDone := make(chan struct{})
+	quiesceDone := make(chan struct{})
 	go func() {
-		p.Stop()
-		close(stopDone)
+		p.QuiesceGenerationTasks()
+		close(quiesceDone)
 	}()
 	select {
-	case <-stopDone:
+	case <-quiesceDone:
 	case <-time.After(time.Second):
-		t.Fatal("Stop did not seal admission while active RocketMQ send remained blocked")
+		t.Fatal("quiesce did not seal admission while active RocketMQ send remained blocked")
 	}
 	if sender.shutdownCount() != 0 {
 		t.Fatal("sender shut down before the active send completed")
@@ -500,6 +996,8 @@ func TestRocketMQStopDrainsActiveSendAndPreventsResurrection(t *testing.T) {
 	if err := processor.Shutdown(context.Background()); err != nil {
 		t.Fatalf("batch Shutdown() error = %v", err)
 	}
+	stopRocketMQTaskRegistryForTest(t, tasks)
+	p.Stop()
 	if sender.shutdownCount() != 1 {
 		t.Fatalf("sender shutdown count = %d, want 1", sender.shutdownCount())
 	}
@@ -531,35 +1029,37 @@ func TestRocketMQStopDrainsActiveSendAndPreventsResurrection(t *testing.T) {
 	}
 }
 
-func TestRocketMQStopFlushesPendingBatchBeforeSenderShutdown(t *testing.T) {
+func TestRocketMQQuiesceFlushesPendingBatchBeforeSenderShutdown(t *testing.T) {
 	sender := &blockingRocketMQSender{entered: make(chan struct{}), release: make(chan struct{})}
-	p := newBlockingRocketMQPlugin(t, sender)
+	p, tasks := newBlockingRocketMQPlugin(t, sender)
 	if err := p.RunLogPhase(base.LogSnapshot{}); err != nil {
 		t.Fatal(err)
 	}
 	processor := p.BatchProcessor
-	stopDone := make(chan struct{})
+	quiesceDone := make(chan struct{})
 	go func() {
-		p.Stop()
-		close(stopDone)
+		p.QuiesceGenerationTasks()
+		close(quiesceDone)
 	}()
 	select {
 	case <-sender.entered:
 	case <-time.After(time.Second):
-		t.Fatal("pending RocketMQ batch was not flushed during Stop")
+		t.Fatal("pending RocketMQ batch was not flushed during quiesce")
 	}
 	if sender.shutdownCount() != 0 {
 		t.Fatal("sender shut down before pending batch completed")
 	}
 	select {
-	case <-stopDone:
+	case <-quiesceDone:
 	case <-time.After(time.Second):
-		t.Fatal("Stop blocked on the pending RocketMQ batch")
+		t.Fatal("quiesce blocked on the pending RocketMQ batch")
 	}
 	close(sender.release)
 	if err := processor.Shutdown(context.Background()); err != nil {
 		t.Fatalf("batch Shutdown() error = %v", err)
 	}
+	stopRocketMQTaskRegistryForTest(t, tasks)
+	p.Stop()
 	if sender.shutdownCount() != 1 {
 		t.Fatalf("sender shutdown count = %d, want 1 after pending flush", sender.shutdownCount())
 	}
@@ -592,7 +1092,7 @@ func TestRocketMQRejectsLogEnqueueBeforePostInit(t *testing.T) {
 
 func TestRocketMQPostInitIsIdempotent(t *testing.T) {
 	sender := &blockingRocketMQSender{entered: make(chan struct{}), release: make(chan struct{})}
-	p := newBlockingRocketMQPlugin(t, sender)
+	p, tasks := newBlockingRocketMQPlugin(t, sender)
 	firstProcessor := p.BatchProcessor
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("second PostInit() error = %v", err)
@@ -600,6 +1100,8 @@ func TestRocketMQPostInitIsIdempotent(t *testing.T) {
 	if p.BatchProcessor != firstProcessor {
 		t.Fatal("second PostInit replaced the active batch processor")
 	}
+	p.QuiesceGenerationTasks()
+	stopRocketMQTaskRegistryForTest(t, tasks)
 	p.Stop()
 	if err := firstProcessor.Shutdown(context.Background()); err != nil {
 		t.Fatalf("batch Shutdown() error = %v", err)
@@ -923,16 +1425,19 @@ func TestSendEncodesLogAndPublishesToConfiguredTopic(t *testing.T) {
 	}
 }
 
-func TestStopShutsDownRocketMQSender(t *testing.T) {
+func TestGenerationCancellationShutsDownRocketMQSender(t *testing.T) {
 	sender := &shutdownSender{}
-	p := newTestPlugin(t, Config{}, sender)
+	tasks, owner := newRocketMQTaskRegistryForTest(t, "plugin/test/rocketmq_logger/shutdown")
+	p := newOwnedShutdownRocketMQPluginForTest(t, owner, sender)
 	processor := p.BatchProcessor
+	p.QuiesceGenerationTasks()
+	stopRocketMQTaskRegistryForTest(t, tasks)
 	p.Stop()
 	if err := processor.Shutdown(context.Background()); err != nil {
 		t.Fatalf("batch Shutdown() error = %v", err)
 	}
 	if !sender.shutdown {
-		t.Fatal("Stop() did not shut down the sender")
+		t.Fatal("generation cancellation did not shut down the sender")
 	}
 }
 

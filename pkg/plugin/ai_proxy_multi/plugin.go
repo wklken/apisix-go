@@ -49,14 +49,11 @@ type Plugin struct {
 
 	healthClients map[int]*http.Client
 
-	healthStopOnce sync.Once
-	stoppedHealth  atomic.Bool
-	wakeHealth     chan struct{}
-	stopHealth     chan struct{}
-	healthDone     chan struct{}
-	healthCtx      context.Context
-	healthCancel   context.CancelFunc
-	snapshot       atomic.Pointer[healthSnapshot]
+	healthCloseOnce sync.Once
+	stoppedHealth   atomic.Bool
+	wakeHealth      chan struct{}
+	snapshot        atomic.Pointer[healthSnapshot]
+	probeForTest    func(context.Context, int) healthProbeResult
 
 	streamOutcomeRecorded func()
 }
@@ -667,7 +664,9 @@ func (p *Plugin) PostInit() error {
 	}
 	p.initHealthStates()
 	if len(p.health) > 0 {
-		p.startHealthLoop()
+		if err := p.startHealthLoop(); err != nil {
+			return err
+		}
 	}
 	return nil
 }

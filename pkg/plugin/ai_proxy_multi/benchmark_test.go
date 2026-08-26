@@ -9,6 +9,9 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/runtime"
 )
 
 // BenchmarkHealthSelection measures the per-request selection cost with health
@@ -132,14 +135,26 @@ func benchmarkHealthConfig(endpoint string) Config {
 
 func newBenchmarkPlugin(b testing.TB, cfg Config) *Plugin {
 	b.Helper()
+	tasks := runtime.NewTaskRegistry(context.Background(), nil)
+	owner, err := runtime.NewTaskOwner(tasks, "benchmark/ai-proxy-multi/attempt-1", runtime.TaskPlugin)
+	if err != nil {
+		b.Fatalf("NewTaskOwner() error = %v", err)
+	}
 	p := &Plugin{config: cfg}
 	if err := p.Init(); err != nil {
 		b.Fatalf("Init() error = %v", err)
 	}
+	p.SetDependencies(base.Dependencies{Tasks: owner})
 	if err := p.PostInit(); err != nil {
 		b.Fatalf("PostInit() error = %v", err)
 	}
-	b.Cleanup(p.Stop)
+	b.Cleanup(func() {
+		residuals, err := tasks.Stop(context.Background())
+		if err != nil || len(residuals) != 0 {
+			b.Errorf("TaskRegistry.Stop() = (%v, %v)", residuals, err)
+		}
+		p.Stop()
+	})
 	return p
 }
 

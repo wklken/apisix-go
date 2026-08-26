@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -23,21 +24,39 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/ai_auth"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_protocols"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_stream"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/runtime"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
+	p, _ := newTestPluginWithTasks(t, cfg)
+	return p
+}
 
+func newTestPluginWithTasks(t *testing.T, cfg Config) (*Plugin, *runtime.TaskRegistry) {
+	t.Helper()
+
+	tasks := runtime.NewTaskRegistry(context.Background(), nil)
+	owner, err := runtime.NewTaskOwner(tasks, "plugin/test/ai-multi/attempt-1", runtime.TaskPlugin)
+	if err != nil {
+		t.Fatalf("NewTaskOwner() error = %v", err)
+	}
 	p := &Plugin{config: cfg}
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
+	p.SetDependencies(base.Dependencies{Tasks: owner})
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
+	t.Cleanup(func() {
+		stopTestRegistry(t, tasks)
+		p.Stop()
+	})
 
-	return p
+	return p, tasks
 }
 
 func TestHashVariableUsesEffectiveRemoteIP(t *testing.T) {
@@ -1685,6 +1704,233 @@ func healthProbeConfig(endpoint string) Config {
 	}}
 }
 
+func newAIHealthTestTasks(t *testing.T) (*runtime.TaskRegistry, *runtime.TaskOwner, <-chan runtime.TaskFailure) {
+	t.Helper()
+	failures := make(chan runtime.TaskFailure, 8)
+	tasks := runtime.NewTaskRegistry(context.Background(), func(failure runtime.TaskFailure) {
+		failures <- failure
+	})
+	owner, err := runtime.NewTaskOwner(tasks, "plugin/test/ai-multi/attempt-1", runtime.TaskPlugin)
+	if err != nil {
+		t.Fatalf("NewTaskOwner() error = %v", err)
+	}
+	return tasks, owner, failures
+}
+
+func newAIHealthPlugin(t *testing.T, tasks *runtime.TaskRegistry, owner *runtime.TaskOwner, cfg Config) *Plugin {
+	t.Helper()
+	p := &Plugin{config: cfg}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	p.SetDependencies(base.Dependencies{Tasks: owner})
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+	t.Cleanup(func() {
+		stopTestRegistry(t, tasks)
+		p.Stop()
+	})
+	return p
+}
+
+func newBlockingHealthPlugin(
+	t *testing.T,
+	tasks *runtime.TaskRegistry,
+	owner *runtime.TaskOwner,
+) (*Plugin, <-chan struct{}, <-chan struct{}, func()) {
+	t.Helper()
+	p := newAIHealthPlugin(t, tasks, owner, healthProbeConfig("http://health.test"))
+	p.health[0].nextCheck = time.Now().Add(-time.Second)
+	probeStarted := make(chan struct{})
+	probeCanceled := make(chan struct{})
+	release := make(chan struct{})
+	var startOnce, cancelOnce, releaseOnce sync.Once
+	releaseProbe := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(releaseProbe)
+	p.probeForTest = func(ctx context.Context, index int) healthProbeResult {
+		if index != 0 {
+			return healthyProbeResult(index)
+		}
+		startOnce.Do(func() { close(probeStarted) })
+		select {
+		case <-ctx.Done():
+			cancelOnce.Do(func() { close(probeCanceled) })
+			<-release
+		case <-release:
+		}
+		return healthyProbeResult(index)
+	}
+	return p, probeStarted, probeCanceled, releaseProbe
+}
+
+func newTwoProbeHealthPlugin(t *testing.T, tasks *runtime.TaskRegistry, owner *runtime.TaskOwner) *Plugin {
+	t.Helper()
+	cfg := healthProbeConfig("http://health.test")
+	second := cfg.Instances[0]
+	second.Name = "probe-2"
+	cfg.Instances = append(cfg.Instances, second)
+	p := newAIHealthPlugin(t, tasks, owner, cfg)
+	for _, state := range p.health {
+		state.nextCheck = time.Now().Add(-time.Second)
+	}
+	return p
+}
+
+func healthyProbeResult(_ int) healthProbeResult {
+	return healthProbeResult{status: http.StatusOK}
+}
+
+func stopTestRegistry(t *testing.T, tasks *runtime.TaskRegistry) {
+	t.Helper()
+	residuals, err := tasks.Stop(context.Background())
+	if err != nil || len(residuals) != 0 {
+		t.Errorf("TaskRegistry.Stop() = (%v, %v)", residuals, err)
+	}
+}
+
+func awaitTaskFailure(t *testing.T, failures <-chan runtime.TaskFailure) runtime.TaskFailure {
+	t.Helper()
+	select {
+	case failure := <-failures:
+		return failure
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for task failure")
+		return runtime.TaskFailure{}
+	}
+}
+
+func awaitClosed(t *testing.T, done <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for completion")
+	}
+}
+
+func assertNotClosed(t *testing.T, done <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-done:
+		t.Fatal("operation completed before the admitted probe was released")
+	default:
+	}
+}
+
+func awaitOwnerExit(t *testing.T, tasks *runtime.TaskRegistry, owner string) {
+	t.Helper()
+	deadline := time.NewTimer(2 * time.Second)
+	ticker := time.NewTicker(time.Millisecond)
+	defer deadline.Stop()
+	defer ticker.Stop()
+	for {
+		active := tasks.Active()
+		if !slices.Contains(active, owner) {
+			return
+		}
+		select {
+		case <-deadline.C:
+			t.Fatalf("owner %q did not exit; active = %v", owner, active)
+		case <-ticker.C:
+		}
+	}
+}
+
+func TestAIHealthUsesAttemptQualifiedTaskOwners(t *testing.T) {
+	tasks, owner, _ := newAIHealthTestTasks(t)
+	p, probeStarted, _, release := newBlockingHealthPlugin(t, tasks, owner)
+	p.wakeHealthRefresh()
+	select {
+	case <-probeStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("health probe did not start")
+	}
+
+	got := tasks.Active()
+	want := []string{
+		"plugin/test/ai-multi/attempt-1/health-probe",
+		"plugin/test/ai-multi/attempt-1/health-refresh",
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("active task owners = %v, want %v", got, want)
+	}
+	release()
+	stopTestRegistry(t, tasks)
+	p.Stop()
+}
+
+func TestAIHealthGenerationStopJoinsOwnedInFlightProbes(t *testing.T) {
+	tasks, owner, _ := newAIHealthTestTasks(t)
+	p, probeStarted, probeCanceled, release := newBlockingHealthPlugin(t, tasks, owner)
+	p.wakeHealthRefresh()
+	select {
+	case <-probeStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("health probe did not start")
+	}
+	stopped := make(chan struct{})
+	go func() {
+		stopTestRegistry(t, tasks)
+		p.Stop()
+		close(stopped)
+	}()
+	select {
+	case <-probeCanceled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("health probe did not observe generation cancellation")
+	}
+	assertNotClosed(t, stopped)
+	release()
+	awaitClosed(t, stopped)
+}
+
+func TestAIHealthProbePanicCompletesPassWithoutPartialPublication(t *testing.T) {
+	tasks, owner, failures := newAIHealthTestTasks(t)
+	p := newTwoProbeHealthPlugin(t, tasks, owner)
+	before := p.snapshot.Load()
+	wantPanic := &struct{ marker string }{marker: "probe-panic"}
+	firstEntered := make(chan struct{})
+	secondStarted := make(chan struct{})
+	panicNow := make(chan struct{})
+	var firstOnce, secondOnce sync.Once
+	p.probeForTest = func(_ context.Context, index int) healthProbeResult {
+		if index == 0 {
+			firstOnce.Do(func() { close(firstEntered) })
+			<-panicNow
+			panic(wantPanic)
+		}
+		secondOnce.Do(func() { close(secondStarted) })
+		return healthyProbeResult(index)
+	}
+	p.wakeHealthRefresh()
+	select {
+	case <-firstEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first health probe did not start")
+	}
+	select {
+	case <-secondStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("second health probe was not admitted")
+	}
+	close(panicNow)
+	failure := awaitTaskFailure(t, failures)
+	if failure.Owner != "plugin/test/ai-multi/attempt-1/health-probe" || failure.PanicValue != wantPanic {
+		t.Fatalf("failure = %#v", failure)
+	}
+	awaitOwnerExit(t, tasks, "plugin/test/ai-multi/attempt-1/health-refresh")
+	stopTestRegistry(t, tasks)
+	select {
+	case extra := <-failures:
+		t.Fatalf("unexpected additional task failure = %#v", extra)
+	default:
+	}
+	if got := p.snapshot.Load(); got != before {
+		t.Fatal("incomplete pass published a partial snapshot")
+	}
+}
+
 func TestHealthProbeReusesClientForRepeatedProbes(t *testing.T) {
 	var probeCalls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1756,14 +2002,8 @@ func TestPostInitOwnsHealthLoopLifecycle(t *testing.T) {
 	if p.wakeHealth == nil {
 		t.Fatal("wakeHealth not initialized after PostInit")
 	}
-	if p.stopHealth == nil {
-		t.Fatal("stopHealth not initialized after PostInit")
-	}
-	if p.healthDone == nil {
-		t.Fatal("healthDone not initialized after PostInit")
-	}
-	if p.healthCancel == nil {
-		t.Fatal("healthCancel not initialized after PostInit")
+	if p.TaskOwner() == nil {
+		t.Fatal("health task owner not initialized before PostInit")
 	}
 }
 
@@ -1773,19 +2013,17 @@ func TestStopHealthConcurrentWithWakes(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	p := newTestPlugin(t, healthProbeConfig(server.URL))
+	p, tasks := newTestPluginWithTasks(t, healthProbeConfig(server.URL))
 
 	var wg sync.WaitGroup
 	for range 100 {
 		wg.Go(p.wakeHealthRefresh)
 	}
+	stopTestRegistry(t, tasks)
 	p.Stop()
 	wg.Wait()
-
-	select {
-	case <-p.healthDone:
-	case <-time.After(time.Second):
-		t.Fatal("healthDone did not close after concurrent Stop")
+	if active := tasks.Active(); len(active) != 0 {
+		t.Fatalf("active task owners after Stop = %v", active)
 	}
 }
 
@@ -1795,14 +2033,12 @@ func TestStopHealthImmediatelyAfterPostInit(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	p := newTestPlugin(t, healthProbeConfig(server.URL))
+	p, tasks := newTestPluginWithTasks(t, healthProbeConfig(server.URL))
+	stopTestRegistry(t, tasks)
 	p.Stop()
 	p.Stop()
-
-	select {
-	case <-p.healthDone:
-	case <-time.After(time.Second):
-		t.Fatal("healthDone did not close after immediate Stop")
+	if active := tasks.Active(); len(active) != 0 {
+		t.Fatalf("active task owners after immediate Stop = %v", active)
 	}
 }
 
@@ -1862,7 +2098,7 @@ func TestHealthDueCheckDoesNotDelaySelection(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	p := newTestPlugin(t, healthProbeConfig(server.URL))
+	p, tasks := newTestPluginWithTasks(t, healthProbeConfig(server.URL))
 	blocked := time.Now().Add(time.Hour)
 	p.health[0].nextCheck = blocked.Add(-time.Hour)
 
@@ -1884,6 +2120,7 @@ func TestHealthDueCheckDoesNotDelaySelection(t *testing.T) {
 	}
 
 	close(releaseProbe)
+	stopTestRegistry(t, tasks)
 	p.Stop()
 	deadline := time.Now().Add(2 * time.Second)
 	for probeCalls.Load() == 0 && time.Now().Before(deadline) {
@@ -1902,7 +2139,7 @@ func TestHealthConcurrentWakesRunOnlyOneRefreshPass(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	p := newTestPlugin(t, healthProbeConfig(server.URL))
+	p, tasks := newTestPluginWithTasks(t, healthProbeConfig(server.URL))
 	p.health[0].nextCheck = time.Now().Add(-time.Second)
 
 	var wg sync.WaitGroup
@@ -1920,48 +2157,33 @@ func TestHealthConcurrentWakesRunOnlyOneRefreshPass(t *testing.T) {
 	if got := probeCalls.Load(); got != 1 {
 		t.Fatalf("probe calls after 16 concurrent wakes = %d, want exactly 1", got)
 	}
+	stopTestRegistry(t, tasks)
 	p.Stop()
 }
 
 func TestHealthStopJoinsInFlightRefresh(t *testing.T) {
-	probeStarted := make(chan struct{})
-	releaseProbe := make(chan struct{})
-	var probeCalls atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		probeCalls.Add(1)
-		close(probeStarted)
-		<-releaseProbe
-		w.WriteHeader(http.StatusOK)
-	}))
-	t.Cleanup(server.Close)
-
-	p := newTestPlugin(t, healthProbeConfig(server.URL))
-	p.health[0].nextCheck = time.Now().Add(-time.Second)
-	p.refreshHealth(context.Background())
+	tasks, owner, _ := newAIHealthTestTasks(t)
+	p, probeStarted, probeCanceled, release := newBlockingHealthPlugin(t, tasks, owner)
+	p.wakeHealthRefresh()
 	<-probeStarted
 
-	// Stop must join the refresher: it cannot return while the in-flight
-	// probe is still blocked, and no probe can start afterwards.
+	// Generation teardown must join the owned refresher and probe before the
+	// plugin closes its probe clients.
 	stopped := make(chan struct{})
 	go func() {
+		stopTestRegistry(t, tasks)
 		p.Stop()
 		close(stopped)
 	}()
-	select {
-	case <-stopped:
-		t.Fatal("Stop returned while the probe was still in flight")
-	case <-time.After(100 * time.Millisecond):
-	}
-	close(releaseProbe)
+	<-probeCanceled
+	assertNotClosed(t, stopped)
+	release()
 	select {
 	case <-stopped:
 	case <-time.After(2 * time.Second):
-		t.Fatal("Stop did not join the refresher after the probe completed")
+		t.Fatal("generation Stop did not join the refresher after the probe completed")
 	}
 	p.Stop()
-	if got := probeCalls.Load(); got != 1 {
-		t.Fatalf("probe calls after Stop = %d, want exactly 1", got)
-	}
 }
 
 func TestReadJSONDocumentClassifiesOversizedBodyByTypeNotText(t *testing.T) {

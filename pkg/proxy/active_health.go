@@ -428,10 +428,6 @@ func (c *activeHealthChecker) releaseSemaphore() {
 	<-c.semaphore
 }
 
-func (c *activeHealthChecker) probeOnce(target string) bool {
-	return c.probeResult(context.Background(), target) == activeProbeSuccess
-}
-
 func (c *activeHealthChecker) probeResult(ctx context.Context, target string) activeProbeResult {
 	if ctx.Err() != nil {
 		return activeProbeCanceled

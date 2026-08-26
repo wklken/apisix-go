@@ -1245,7 +1245,7 @@ func TestActiveHealthCheckerUsesConfiguredHTTPSProbeScheme(t *testing.T) {
 		NopClusterObserver{},
 		upstream.Client().Transport,
 	)
-	if !checker.probeOnce(target) {
+	if checker.probeResult(t.Context(), target) != activeProbeSuccess {
 		t.Fatal("HTTPS active probe failed against an http target identity")
 	}
 

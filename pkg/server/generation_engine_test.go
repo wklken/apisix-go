@@ -1760,7 +1760,28 @@ func TestGenerationEngineRetirementResidualRetainsOwnerAndStreamMetrics(t *testi
 	setA := prepareEngineStreamGeneration(t, fixture.engine, 86, "retained")
 	finalizeEngineGeneration(t, fixture.engine, "retained-a", setA)
 	owner := fixture.engine.active.Load().stream
-	release := startGenerationEngineBlockingTask(t, owner, "retirement-retained")
+	tasks := generationOwnerTaskRegistry(t, owner.prepared)
+	taskStarted := make(chan struct{})
+	taskCanceled := make(chan struct{})
+	taskRelease := make(chan struct{})
+	var releaseOnce sync.Once
+	if err := tasks.Go(runtime.TaskSpec{
+		Owner: "plugin/test/retirement-retained", Criticality: runtime.TaskPlugin,
+	}, func(ctx context.Context) error {
+		close(taskStarted)
+		<-ctx.Done()
+		close(taskCanceled)
+		<-taskRelease
+		return nil
+	}); err != nil {
+		t.Fatalf("TaskRegistry.Go() error = %v", err)
+	}
+	select {
+	case <-taskStarted:
+	case <-time.After(time.Second):
+		t.Fatal("blocking generation task did not start")
+	}
+	release := func() { releaseOnce.Do(func() { close(taskRelease) }) }
 	defer release()
 
 	retirementStarted := make(chan struct{})
@@ -1785,6 +1806,11 @@ func TestGenerationEngineRetirementResidualRetainsOwnerAndStreamMetrics(t *testi
 	fixture.engine.retireMu.Unlock()
 	if attempt == nil {
 		t.Fatal("retirement attempt is not active")
+	}
+	select {
+	case <-taskCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("retirement did not stop generation tasks")
 	}
 	attempt.cancel()
 	select {

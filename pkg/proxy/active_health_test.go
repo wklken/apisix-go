@@ -15,6 +15,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/wklken/apisix-go/pkg/runtime"
 )
 
 func TestActiveHealthTaskPanicUsesCoreFatalPolicy(t *testing.T) {
@@ -47,7 +49,11 @@ func runActiveHealthCorePanicFixture(t *testing.T, marker string) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer upstream.Close()
-	tasks := newStandaloneClusterTasks()
+	tasks, owner := newTestClusterTaskOwner(t, "core/proxy-cluster/test/core-panic")
+	stopTasks := func(ctx context.Context) error {
+		_, stopErr := tasks.Stop(ctx)
+		return stopErr
+	}
 	cluster, err := NewOwnedCluster(ClusterConfig{
 		Name:    "core-panic",
 		Targets: map[string]int{upstream.URL: 1},
@@ -60,7 +66,7 @@ func runActiveHealthCorePanicFixture(t *testing.T, marker string) {
 			},
 		}},
 		MaxInFlight: DefaultMaxInFlight,
-	}, panickingActiveHealthObserver{marker: marker}, tasks, tasks.Stop)
+	}, panickingActiveHealthObserver{marker: marker}, owner, stopTasks)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,10 +91,10 @@ func applyCurrentProbeResult(
 	checker.applyProbeResultAtGeneration(target, generation, result, counters)
 }
 
-func startActiveHealthCheckerForTest(t *testing.T, checker *activeHealthChecker) *standaloneClusterTasks {
+func startActiveHealthCheckerForTest(t *testing.T, checker *activeHealthChecker) *runtime.TaskRegistry {
 	t.Helper()
-	tasks := newStandaloneClusterTasks()
-	if err := checker.Start(tasks); err != nil {
+	tasks, owner := newTestClusterTaskOwner(t, "core/proxy-cluster/test/active-health")
+	if err := checker.Start(owner); err != nil {
 		t.Fatal(err)
 	}
 	return tasks
@@ -97,10 +103,10 @@ func startActiveHealthCheckerForTest(t *testing.T, checker *activeHealthChecker)
 func stopActiveHealthCheckerForTest(
 	t *testing.T,
 	checker *activeHealthChecker,
-	tasks *standaloneClusterTasks,
+	tasks *runtime.TaskRegistry,
 ) {
 	t.Helper()
-	if err := tasks.Stop(context.Background()); err != nil {
+	if _, err := tasks.Stop(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	checker.Close()
@@ -1131,19 +1137,15 @@ func TestActiveHealthCheckerClosesHTTPSProbeIdleConnectionsOnceAfterProbesStop(t
 		http.DefaultTransport,
 	)
 	var (
-		mu    sync.Mutex
-		calls int
+		mu           sync.Mutex
+		calls        int
+		tasksStopped atomic.Bool
 	)
 	tasks := startActiveHealthCheckerForTest(t, checker)
 	original := checker.closeProbeIdle
 	checker.closeProbeIdle = func() {
-		if tasks.ctx.Err() == nil {
+		if !tasksStopped.Load() {
 			t.Error("HTTPS probe cleanup ran before the checker context was canceled")
-		}
-		select {
-		case <-tasks.ctx.Done():
-		default:
-			t.Error("HTTPS probe cleanup ran before probe goroutines were signaled to stop")
 		}
 		mu.Lock()
 		calls++
@@ -1152,9 +1154,10 @@ func TestActiveHealthCheckerClosesHTTPSProbeIdleConnectionsOnceAfterProbesStop(t
 			original()
 		}
 	}
-	if err := tasks.Stop(context.Background()); err != nil {
+	if _, err := tasks.Stop(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+	tasksStopped.Store(true)
 	checker.Close()
 	checker.Close()
 	mu.Lock()

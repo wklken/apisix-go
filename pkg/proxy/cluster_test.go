@@ -3,6 +3,7 @@ package proxy
 import (
 	"context"
 	"crypto/tls"
+	"encoding/hex"
 	"errors"
 	"io"
 	"net"
@@ -14,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wklken/apisix-go/pkg/runtime"
 	"golang.org/x/net/http2"
 )
 
@@ -25,7 +27,7 @@ type blockingHealthObserver struct {
 }
 
 type failSecondClusterTaskOwner struct {
-	tasks *standaloneClusterTasks
+	tasks *runtime.TaskOwner
 	calls int
 	err   error
 }
@@ -41,6 +43,46 @@ func (owner *failSecondClusterTaskOwner) Go(
 	return owner.tasks.Go(component, run)
 }
 
+func newTestClusterTaskOwner(t *testing.T, prefix string) (*runtime.TaskRegistry, *runtime.TaskOwner) {
+	t.Helper()
+	tasks := runtime.NewTaskRegistry(context.Background(), nil)
+	owner, err := runtime.NewTaskOwner(tasks, prefix, runtime.TaskCore)
+	if err != nil {
+		t.Fatalf("NewTaskOwner() error = %v", err)
+	}
+	return tasks, owner
+}
+
+func newTestClusterWithTransport(
+	config ClusterConfig,
+	observer ClusterObserver,
+	base http.RoundTripper,
+	closeIdle func(),
+) (*Cluster, error) {
+	key, err := config.Key()
+	if err != nil {
+		return nil, err
+	}
+	tasks := runtime.NewTaskRegistry(context.Background(), nil)
+	owner, err := runtime.NewTaskOwner(
+		tasks,
+		"core/proxy-cluster/"+hex.EncodeToString(key[:]),
+		runtime.TaskCore,
+	)
+	if err != nil {
+		return nil, err
+	}
+	stopTasks := func(ctx context.Context) error {
+		_, stopErr := tasks.Stop(ctx)
+		return stopErr
+	}
+	cluster, err := newOwnedClusterWithTransport(config, observer, owner, stopTasks, base, closeIdle)
+	if err != nil {
+		_ = stopTasks(context.Background())
+	}
+	return cluster, err
+}
+
 func TestOwnedClusterAdmissionFailureRollsBackTasksAndTransport(t *testing.T) {
 	config := testClusterConfig()
 	config.Targets = map[string]int{
@@ -54,15 +96,18 @@ func TestOwnedClusterAdmissionFailureRollsBackTasksAndTransport(t *testing.T) {
 			"interval": 1, "http_failures": 1, "tcp_failures": 1, "timeouts": 1,
 		},
 	}}
-	tasks := newStandaloneClusterTasks()
+	tasks, taskOwner := newTestClusterTaskOwner(t, "core/proxy-cluster/test/admission-rollback")
 	admissionErr := errors.New("second active health admission failed")
-	owner := &failSecondClusterTaskOwner{tasks: tasks, err: admissionErr}
+	owner := &failSecondClusterTaskOwner{tasks: taskOwner, err: admissionErr}
 	var transportCloses atomic.Int32
 	cluster, err := newOwnedClusterWithTransport(
 		config,
 		NopClusterObserver{},
 		owner,
-		tasks.Stop,
+		func(ctx context.Context) error {
+			_, stopErr := tasks.Stop(ctx)
+			return stopErr
+		},
 		roundTripperFunc(func(*http.Request) (*http.Response, error) {
 			return nil, errors.New("not dialed")
 		}),
@@ -71,10 +116,8 @@ func TestOwnedClusterAdmissionFailureRollsBackTasksAndTransport(t *testing.T) {
 	if cluster != nil || !errors.Is(err, admissionErr) {
 		t.Fatalf("newOwnedClusterWithTransport() = (%p, %v), want nil/%v", cluster, err, admissionErr)
 	}
-	select {
-	case <-tasks.waitDone:
-	default:
-		t.Fatal("admission rollback did not stop and join admitted tasks")
+	if active := tasks.Active(); len(active) != 0 {
+		t.Fatalf("admission rollback active tasks = %v, want none", active)
 	}
 	if transportCloses.Load() != 1 {
 		t.Fatalf("admission rollback transport closes = %d, want 1", transportCloses.Load())
@@ -97,13 +140,17 @@ func TestClusterCloseContextRetriesAfterActiveHealthResidual(t *testing.T) {
 		},
 	}}
 	observer := &blockingHealthObserver{entered: make(chan struct{}), release: make(chan struct{})}
-	tasks := newStandaloneClusterTasks()
+	tasks, owner := newTestClusterTaskOwner(t, "core/proxy-cluster/test/retry")
+	stopTasks := func(ctx context.Context) error {
+		_, stopErr := tasks.Stop(ctx)
+		return stopErr
+	}
 	var transportCloses atomic.Int32
 	cluster, err := newOwnedClusterWithTransport(
 		config,
 		observer,
-		tasks,
-		tasks.Stop,
+		owner,
+		stopTasks,
 		roundTripperFunc(func(request *http.Request) (*http.Response, error) {
 			return &http.Response{
 				StatusCode: http.StatusInternalServerError,
@@ -138,6 +185,71 @@ func TestClusterCloseContextRetriesAfterActiveHealthResidual(t *testing.T) {
 	}
 	if !cluster.Closed() || transportCloses.Load() != 1 {
 		t.Fatalf("terminal close released cluster=%t transport=%d", cluster.Closed(), transportCloses.Load())
+	}
+}
+
+func TestNewClusterCloseContextReturnsExactActiveHealthResidual(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(upstream.Close)
+
+	config := testClusterConfig()
+	config.Targets = map[string]int{upstream.URL: 1}
+	config.Checks = map[string]any{"active": map[string]any{
+		"type": "http", "http_path": "/", "timeout": 1,
+		"healthy": map[string]any{"interval": 1, "successes": 1},
+		"unhealthy": map[string]any{
+			"interval": 1, "http_failures": 1, "tcp_failures": 1, "timeouts": 1,
+			"http_statuses": []any{http.StatusInternalServerError},
+		},
+	}}
+	observer := &blockingHealthObserver{entered: make(chan struct{}), release: make(chan struct{})}
+	cluster, err := NewCluster(config, observer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var releaseOnce sync.Once
+	releaseObserver := func() { releaseOnce.Do(func() { close(observer.release) }) }
+	t.Cleanup(func() {
+		releaseObserver()
+		cluster.Close()
+	})
+
+	select {
+	case <-observer.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("active health transition did not reach observer")
+	}
+
+	key, err := config.Key()
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantResidual := runtime.TaskResidual{
+		Owner: "core/proxy-cluster/" + hex.EncodeToString(key[:]) + "/active-health",
+	}
+	short, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	closeErr := cluster.CloseContext(short)
+	var residualErr *runtime.TaskResidualError
+	if !errors.As(closeErr, &residualErr) || !errors.Is(closeErr, context.DeadlineExceeded) {
+		t.Fatalf("CloseContext() error=%v, want exact task residual", closeErr)
+	}
+	residuals := residualErr.Residuals()
+	if len(residuals) != 1 || residuals[0] != wantResidual {
+		t.Fatalf("CloseContext() residuals=%v, want %v", residuals, wantResidual)
+	}
+	if cluster.Closed() {
+		t.Fatal("cluster reported closed after incomplete task join")
+	}
+
+	releaseObserver()
+	if err := cluster.CloseContext(context.Background()); err != nil {
+		t.Fatalf("CloseContext() retry error = %v", err)
+	}
+	if !cluster.Closed() {
+		t.Fatal("cluster did not close after the active-health task joined")
 	}
 }
 
@@ -331,7 +443,7 @@ func TestClusterUpgradeBodyPreservesDuplexAndAdmissionLifetime(t *testing.T) {
 	config := testClusterConfig()
 	config.SendTimeout = 0
 	config.ReadTimeout = 0
-	cluster, err := newClusterWithTransport(config, NopClusterObserver{}, base, func() {})
+	cluster, err := newTestClusterWithTransport(config, NopClusterObserver{}, base, func() {})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -379,7 +491,7 @@ func TestClusterAdmissionRejectsOverloadUntilBodyCloses(t *testing.T) {
 	})
 
 	config := testClusterConfig()
-	cluster, err := newClusterWithTransport(config, NopClusterObserver{}, base, func() {})
+	cluster, err := newTestClusterWithTransport(config, NopClusterObserver{}, base, func() {})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -408,7 +520,7 @@ func TestClusterAdmissionRejectsOverloadUntilBodyCloses(t *testing.T) {
 func TestClusterCloseIsIdempotent(t *testing.T) {
 	closed := 0
 	config := testClusterConfig()
-	cluster, err := newClusterWithTransport(config, NopClusterObserver{}, roundTripperFunc(
+	cluster, err := newTestClusterWithTransport(config, NopClusterObserver{}, roundTripperFunc(
 		func(*http.Request) (*http.Response, error) {
 			return nil, errors.New("not dialed")
 		},

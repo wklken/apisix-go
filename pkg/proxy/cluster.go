@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"crypto/tls"
+	"encoding/hex"
 	"errors"
 	"io"
 	"net"
@@ -14,8 +15,8 @@ import (
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/runtime"
 	"golang.org/x/net/http2"
-	"golang.org/x/sync/errgroup"
 )
 
 // DefaultMaxInFlight bounds the number of concurrently active response bodies
@@ -150,52 +151,30 @@ type ClusterTaskOwner interface {
 	Go(component string, run func(context.Context) error) error
 }
 
-type standaloneClusterTasks struct {
-	ctx      context.Context
-	cancel   context.CancelFunc
-	group    errgroup.Group
-	waitDone chan struct{}
-	waitErr  error
-}
-
-func newStandaloneClusterTasks() *standaloneClusterTasks {
-	ctx, cancel := context.WithCancel(context.Background())
-	tasks := &standaloneClusterTasks{ctx: ctx, cancel: cancel, waitDone: make(chan struct{})}
-	context.AfterFunc(ctx, func() {
-		tasks.waitErr = tasks.group.Wait()
-		close(tasks.waitDone)
-	})
-	return tasks
-}
-
-func (tasks *standaloneClusterTasks) Go(_ string, run func(context.Context) error) error {
-	// Cluster construction admits every target synchronously before exposing
-	// the cluster. Stop begins errgroup.Wait only after construction completes
-	// or its admission loop has returned an error, so Go and Wait never race.
-	tasks.group.Go(func() error { return run(tasks.ctx) })
-	return nil
-}
-
-func (tasks *standaloneClusterTasks) Stop(ctx context.Context) error {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	tasks.cancel()
-	select {
-	case <-tasks.waitDone:
-		return tasks.waitErr
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-}
-
 // NewCluster constructs a cluster that owns its transport, health checker,
 // admission limiter, and immutable configuration identity.
 func NewCluster(config ClusterConfig, observer ClusterObserver) (*Cluster, error) {
-	tasks := newStandaloneClusterTasks()
-	cluster, err := newCluster(config, observer, tasks, tasks.Stop)
+	key, err := config.Key()
 	if err != nil {
-		_ = tasks.Stop(context.Background())
+		return nil, err
+	}
+	tasks := runtime.NewTaskRegistry(context.Background(), nil)
+	owner, err := runtime.NewTaskOwner(
+		tasks,
+		"core/proxy-cluster/"+hex.EncodeToString(key[:]),
+		runtime.TaskCore,
+	)
+	if err != nil {
+		_, stopErr := tasks.Stop(context.Background())
+		return nil, errors.Join(err, stopErr)
+	}
+	stopTasks := func(ctx context.Context) error {
+		_, stopErr := tasks.Stop(ctx)
+		return stopErr
+	}
+	cluster, err := newCluster(config, observer, owner, stopTasks)
+	if err != nil {
+		_ = stopTasks(context.Background())
 	}
 	return cluster, err
 }
@@ -240,24 +219,6 @@ func newCleartextHTTP2Transport(option TransportOption) *http2.Transport {
 			)
 		},
 	}
-}
-
-// newClusterWithTransport builds a cluster around an injected base transport
-// and idle-close callback. Production passes the configured *http.Transport;
-// tests inject a deterministic transport so admission, retry, and health
-// behavior can be observed without real connections.
-func newClusterWithTransport(
-	config ClusterConfig,
-	observer ClusterObserver,
-	base http.RoundTripper,
-	closeIdle func(),
-) (*Cluster, error) {
-	tasks := newStandaloneClusterTasks()
-	cluster, err := newOwnedClusterWithTransport(config, observer, tasks, tasks.Stop, base, closeIdle)
-	if err != nil {
-		_ = tasks.Stop(context.Background())
-	}
-	return cluster, err
 }
 
 func newOwnedClusterWithTransport(

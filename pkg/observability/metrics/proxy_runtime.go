@@ -2,7 +2,7 @@ package metrics
 
 import (
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/wklken/apisix-go/pkg/proxy"
+	"github.com/wklken/apisix-go/pkg/proxy/observer"
 )
 
 const (
@@ -17,7 +17,7 @@ const (
 // package's init-once lifecycle in Init. The observer resolves the current
 // vectors lazily at call time, so constructing it before metrics.Init() is
 // safe: every method is a no-op until Init registers the vectors.
-func NewProxyRuntimeObserver() proxy.ClusterObserver {
+func NewProxyRuntimeObserver() observer.ClusterObserver {
 	return &proxyRuntimeObserver{}
 }
 

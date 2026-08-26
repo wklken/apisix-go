@@ -12,7 +12,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/exec"
-	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -51,24 +50,11 @@ func (c *websocketPanicConn) Write(p []byte) (int, error) {
 }
 
 func (c *websocketPanicConn) Close() error {
-	if c.closePanic != nil && calledFromKafkaCloseConnectionsSafely() {
+	err := c.Conn.Close()
+	if c.closePanic != nil {
 		panic(c.closePanic)
 	}
-	return c.Conn.Close()
-}
-
-func calledFromKafkaCloseConnectionsSafely() bool {
-	callers := make([]uintptr, 16)
-	frames := runtime.CallersFrames(callers[:runtime.Callers(2, callers)])
-	for {
-		frame, more := frames.Next()
-		if strings.HasSuffix(frame.Function, ".closeConnectionsSafely") {
-			return true
-		}
-		if !more {
-			return false
-		}
-	}
+	return err
 }
 
 type websocketPanicListener struct {

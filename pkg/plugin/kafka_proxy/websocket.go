@@ -81,13 +81,12 @@ func ServeWebSocket(w http.ResponseWriter, r *http.Request, target string, optio
 		}
 		return fmt.Errorf("kafka dial %s: %w", address, err)
 	}
-	defer func() { _ = backend.Close() }()
 
 	conn, err := upgradeKafkaWebSocket(w, r, transport)
 	if err != nil {
+		_ = backend.Close()
 		return fmt.Errorf("upgrade Kafka WebSocket: %w", err)
 	}
-	defer func() { _ = conn.Close() }()
 
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
@@ -100,7 +99,6 @@ func ServeWebSocket(w http.ResponseWriter, r *http.Request, target string, optio
 		watcherStopped = true
 		closeOnCancel()
 	}
-	defer stopWatcher()
 
 	bridge := &websocketBridge{
 		conn:         conn,
@@ -110,6 +108,47 @@ func ServeWebSocket(w http.ResponseWriter, r *http.Request, target string, optio
 	}
 	tasks := runtime.NewRequestTaskGroup(ctx, "connection/kafka-proxy")
 	results := make(chan directionResult, 2)
+	admitted := 0
+	finished := false
+	finish := func(haveFirst bool) websocketFinishResult {
+		finished = true
+		outcome := websocketFinishResult{}
+		cancel()
+		if panicked, value := recoverWebSocketPanic(func() {
+			closeConnectionsSafely(conn.UnderlyingConn(), backend)
+		}); panicked {
+			outcome.cleanupPanicked = true
+			outcome.cleanupPanic = value
+		}
+
+		remaining := admitted
+		if haveFirst {
+			remaining--
+		}
+		for index := 0; index < remaining; index++ {
+			result := <-results
+			if haveFirst && index == 0 {
+				outcome.second = result
+			}
+		}
+
+		if panicked, value := recoverWebSocketPanic(stopWatcher); panicked {
+			outcome.stopPanicked = true
+			outcome.stopPanic = value
+		}
+		if panicked, value := recoverWebSocketPanic(func() {
+			outcome.waitErr = tasks.Wait()
+		}); panicked {
+			outcome.waitPanicked = true
+			outcome.waitPanic = value
+		}
+		return outcome
+	}
+	defer func() {
+		if !finished {
+			_ = finish(false)
+		}
+	}()
 	for _, direction := range []func(context.Context, net.Conn) error{
 		bridge.clientToKafka,
 		bridge.kafkaToClient,
@@ -124,47 +163,25 @@ func ServeWebSocket(w http.ResponseWriter, r *http.Request, target string, optio
 		}); err != nil {
 			panic(err)
 		}
+		admitted++
 	}
 
 	first := <-results
-	cancel()
-	_ = conn.Close()
-	_ = backend.Close()
-	second := <-results
-	var stopPanicked bool
-	var stopPanic any
-	func() {
-		defer func() {
-			if recovered := recover(); recovered != nil {
-				stopPanicked = true
-				stopPanic = recovered
-			}
-		}()
-		stopWatcher()
-	}()
-	var waitPanic bool
-	var waitPanicValue any
-	var waitErr error
-	func() {
-		defer func() {
-			if recovered := recover(); recovered != nil {
-				waitPanic = true
-				waitPanicValue = recovered
-			}
-		}()
-		waitErr = tasks.Wait()
-	}()
-	if waitPanic {
-		panic(waitPanicValue)
+	outcome := finish(true)
+	if outcome.waitPanicked {
+		panic(outcome.waitPanic)
 	}
-	if stopPanicked {
-		panic(stopPanic)
+	if outcome.cleanupPanicked {
+		panic(outcome.cleanupPanic)
+	}
+	if outcome.stopPanicked {
+		panic(outcome.stopPanic)
 	}
 	if !first.completed {
-		return waitErr
+		return outcome.waitErr
 	}
 	if websocketBridgeNormalClose(ctx, first.err) ||
-		(errors.Is(first.err, context.Canceled) && websocketBridgeNormalClose(ctx, second.err)) {
+		(errors.Is(first.err, context.Canceled) && websocketBridgeNormalClose(ctx, outcome.second.err)) {
 		return nil
 	}
 	return &websocketProxyError{hijacked: true, err: first.err}
@@ -389,6 +406,30 @@ type websocketBridge struct {
 type directionResult struct {
 	err       error
 	completed bool
+}
+
+type websocketFinishResult struct {
+	second          directionResult
+	waitErr         error
+	cleanupPanicked bool
+	cleanupPanic    any
+	stopPanicked    bool
+	stopPanic       any
+	waitPanicked    bool
+	waitPanic       any
+}
+
+func recoverWebSocketPanic(run func()) (panicked bool, value any) {
+	completed := false
+	defer func() {
+		if !completed {
+			panicked = true
+			value = recover()
+		}
+	}()
+	run()
+	completed = true
+	return false, nil
 }
 
 func (b *websocketBridge) clientToKafka(ctx context.Context, backend net.Conn) error {

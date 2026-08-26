@@ -18,6 +18,7 @@ import (
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/cache/memory"
 	"github.com/wklken/apisix-go/pkg/capability"
+	"github.com/wklken/apisix-go/pkg/httpclient"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/secret"
@@ -209,7 +210,7 @@ func (p *Plugin) PostInit() error {
 		return fmt.Errorf(`cookie.secure must be true when cookie.samesite is "None"`)
 	}
 	if p.client == nil {
-		p.client = &http.Client{Timeout: 10 * time.Second}
+		p.client = &http.Client{Transport: httpclient.NewTransport(), Timeout: 10 * time.Second}
 	}
 	if parsed, err := url.Parse(p.config.IDPURI); err == nil && parsed.Scheme == "http" {
 		logger.Warn("Using cas-auth idp_uri with no TLS is a security risk")

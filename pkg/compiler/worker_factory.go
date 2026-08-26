@@ -446,6 +446,13 @@ func (factory *WorkerCompilerFactory) transferRegisteredGeneration(
 	if err != nil {
 		return fail(err)
 	}
+	if err := cleanup.Own(cleanupRelease, "plugin-metadata", func(context.Context) error {
+		metadata.Close()
+		return nil
+	}); err != nil {
+		metadata.Close()
+		return fail(err)
+	}
 	if err := factory.runCheckpoint("prepare-metadata", state); err != nil {
 		return fail(err)
 	}

@@ -364,6 +364,32 @@ func TestServePubSubWebSocketFullLoop(t *testing.T) {
 	}
 }
 
+func TestKafkaWebSocketRejectsCrossOriginHandshake(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgradeKafkaWebSocket(w, r, NewTransport(TransportOptions{}))
+		if err != nil {
+			return
+		}
+		_ = conn.Close()
+	}))
+	defer server.Close()
+
+	header := http.Header{"Origin": []string{"https://attacker.example"}}
+	conn, response, err := websocket.DefaultDialer.Dial(
+		"ws"+strings.TrimPrefix(server.URL, "http")+"/kafka",
+		header,
+	)
+	if conn != nil {
+		_ = conn.Close()
+	}
+	if err == nil {
+		t.Fatal("cross-origin websocket handshake succeeded")
+	}
+	if response == nil || response.StatusCode != http.StatusForbidden {
+		t.Fatalf("cross-origin websocket response = %#v, want HTTP 403", response)
+	}
+}
+
 func echoKafkaFrame(conn net.Conn) {
 	var header [4]byte
 	if _, err := io.ReadFull(conn, header[:]); err != nil {

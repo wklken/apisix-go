@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/wklken/apisix-go/pkg/httpclient"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_common"
@@ -313,7 +314,7 @@ func (p *Plugin) postAzureJSON(
 
 	client := p.client
 	if client == nil {
-		client = http.DefaultClient
+		client = httpclient.New()
 	}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -345,7 +346,7 @@ func writePlainResponse(w http.ResponseWriter, status int, body string) {
 }
 
 func (p *Plugin) transport() http.RoundTripper {
-	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport := httpclient.NewTransport()
 	ai_common.ApplyTransportSSLVerify(transport, p.config.SSLVerify)
 	return transport
 }

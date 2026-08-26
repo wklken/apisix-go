@@ -49,6 +49,7 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 
 type ownedGraphQLCacheFixture struct {
 	plugin   *Plugin
+	registry *Registry
 	tasks    *runtime.TaskRegistry
 	failures <-chan runtime.TaskFailure
 	stopOnce sync.Once
@@ -59,6 +60,7 @@ func newOwnedGraphQLCacheFixture(
 	prefix string,
 	routeID string,
 	cfg Config,
+	registries ...*Registry,
 ) *ownedGraphQLCacheFixture {
 	t.Helper()
 	failures := make(chan runtime.TaskFailure, 4)
@@ -70,7 +72,12 @@ func newOwnedGraphQLCacheFixture(
 		t.Fatal(err)
 	}
 	p := &Plugin{config: cfg, cleanupInterval: time.Hour}
+	registry := NewRegistry()
+	if len(registries) > 0 && registries[0] != nil {
+		registry = registries[0]
+	}
 	p.SetDependencies(base.Dependencies{Config: &config.EffectiveConfig{}, Tasks: owner})
+	p.SetPurgeRegistry(registry)
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -80,7 +87,7 @@ func newOwnedGraphQLCacheFixture(
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
-	fixture := &ownedGraphQLCacheFixture{plugin: p, tasks: tasks, failures: failures}
+	fixture := &ownedGraphQLCacheFixture{plugin: p, registry: registry, tasks: tasks, failures: failures}
 	t.Cleanup(func() { fixture.stop(t) })
 	return fixture
 }
@@ -141,17 +148,20 @@ func TestGraphQLDiskCleanupUsesGenerationTaskOwner(t *testing.T) {
 
 func TestGraphQLStopDoesNotRemoveReplacementRouteCache(t *testing.T) {
 	setConfiguredZones(t, []config.Zone{{Name: "graphql-replacement-disk", DiskPath: t.TempDir()}})
+	registry := NewRegistry()
 	old := newOwnedGraphQLCacheFixture(
 		t,
 		"plugin/test/graphql/old",
 		"replacement-route",
 		Config{CacheStrategy: "disk", CacheZone: "graphql-replacement-disk", CacheTTL: 60},
+		registry,
 	)
 	next := newOwnedGraphQLCacheFixture(
 		t,
 		"plugin/test/graphql/new",
 		"replacement-route",
 		Config{CacheStrategy: "disk", CacheZone: "graphql-replacement-disk", CacheTTL: 60},
+		registry,
 	)
 	if got, want := old.tasks.Active(), []string{"plugin/test/graphql/old/disk-cleanup"}; !slices.Equal(got, want) {
 		t.Fatalf("old active owners = %v, want %v", got, want)
@@ -160,27 +170,54 @@ func TestGraphQLStopDoesNotRemoveReplacementRouteCache(t *testing.T) {
 		t.Fatalf("replacement active owners = %v, want %v", got, want)
 	}
 
-	routeCaches.RLock()
-	published := routeCaches.plugins["replacement-route"]
-	routeCaches.RUnlock()
+	published := registry.lookup("replacement-route")
 	if published != next.plugin {
 		t.Fatalf("published plugin = %p, want replacement %p", published, next.plugin)
 	}
 
 	old.stop(t)
-	routeCaches.RLock()
-	published = routeCaches.plugins["replacement-route"]
-	routeCaches.RUnlock()
+	published = registry.lookup("replacement-route")
 	if published != next.plugin {
 		t.Fatalf("published plugin after old stop = %p, want replacement %p", published, next.plugin)
 	}
 
 	next.stop(t)
-	routeCaches.RLock()
-	_, retained := routeCaches.plugins["replacement-route"]
-	routeCaches.RUnlock()
-	if retained {
+	if retained := registry.lookup("replacement-route"); retained != nil {
 		t.Fatal("replacement route cache remained published after replacement stop")
+	}
+}
+
+func TestGraphQLPurgeRegistryDoesNotCrossGenerations(t *testing.T) {
+	activeRegistry := NewRegistry()
+	candidateRegistry := NewRegistry()
+	active := newOwnedGraphQLCacheFixture(
+		t,
+		"plugin/test/graphql/active-generation",
+		"shared-route",
+		Config{CacheStrategy: "memory", CacheTTL: 60},
+		activeRegistry,
+	)
+	candidate := newOwnedGraphQLCacheFixture(
+		t,
+		"plugin/test/graphql/candidate-generation",
+		"shared-route",
+		Config{CacheStrategy: "memory", CacheTTL: 60},
+		candidateRegistry,
+	)
+
+	if got := activeRegistry.lookup("shared-route"); got != active.plugin {
+		t.Fatalf("active registry plugin = %p, want %p", got, active.plugin)
+	}
+	if got := candidateRegistry.lookup("shared-route"); got != candidate.plugin {
+		t.Fatalf("candidate registry plugin = %p, want %p", got, candidate.plugin)
+	}
+
+	candidate.stop(t)
+	if got := activeRegistry.lookup("shared-route"); got != active.plugin {
+		t.Fatalf("active registry after candidate stop = %p, want %p", got, active.plugin)
+	}
+	if got := candidateRegistry.lookup("shared-route"); got != nil {
+		t.Fatalf("candidate registry after stop = %p, want nil", got)
 	}
 }
 
@@ -198,6 +235,8 @@ func TestPostInitRollsBackGraphQLDiskStateWhenTaskAdmissionFails(t *testing.T) {
 		config: Config{CacheStrategy: "disk", CacheZone: "graphql-rejected-disk", CacheTTL: 60},
 	}
 	p.SetDependencies(base.Dependencies{Config: &config.EffectiveConfig{}, Tasks: owner})
+	registry := NewRegistry()
+	p.SetPurgeRegistry(registry)
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -211,10 +250,7 @@ func TestPostInitRollsBackGraphQLDiskStateWhenTaskAdmissionFails(t *testing.T) {
 	if p.memoryStore != nil || p.diskStore != nil {
 		t.Fatalf("stores after rejected admission = memory:%p disk:%p", p.memoryStore, p.diskStore)
 	}
-	routeCaches.RLock()
-	_, published := routeCaches.plugins["rejected-route"]
-	routeCaches.RUnlock()
-	if published {
+	if published := registry.lookup("rejected-route"); published != nil {
 		t.Fatal("route cache published after rejected task admission")
 	}
 }
@@ -1173,7 +1209,9 @@ func TestCacheKeyIncludesRouteServiceAndConsumerIdentity(t *testing.T) {
 
 func TestPurgeHandlerRemovesRouteCacheEntry(t *testing.T) {
 	p := &Plugin{config: Config{CacheStrategy: "memory", CacheTTL: 60}}
+	registry := NewRegistry()
 	p.SetDependencies(base.Dependencies{Config: &config.EffectiveConfig{}})
+	p.SetPurgeRegistry(registry)
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -1207,7 +1245,7 @@ func TestPurgeHandlerRemovesRouteCacheEntry(t *testing.T) {
 		nil,
 	)
 	purgeResponse := httptest.NewRecorder()
-	PurgeHandler(purgeResponse, purge)
+	registry.PurgeHandler().ServeHTTP(purgeResponse, purge)
 	if purgeResponse.Code != http.StatusOK {
 		t.Fatalf("purge response code = %d, want %d", purgeResponse.Code, http.StatusOK)
 	}

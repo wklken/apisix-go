@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/capability"
+	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -28,6 +29,7 @@ type Plugin struct {
 	base.BasePlugin
 	config       Config
 	randomReader io.Reader
+	secureCookie bool
 
 	secretMu  sync.RWMutex
 	key       *secret.Value
@@ -89,6 +91,9 @@ func (p *Plugin) PostInit() error {
 	}
 	if p.randomReader == nil {
 		p.randomReader = crand.Reader
+	}
+	if effective := p.StaticConfig(); effective != nil {
+		p.secureCookie = effective.Profiles.Security == config.SecurityStrict
 	}
 
 	p.config.safeMethods = map[string]struct{}{
@@ -219,6 +224,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 				Value:    csrfToken,
 				Path:     "/",
 				SameSite: http.SameSiteLaxMode,
+				Secure:   p.secureCookie,
 				Expires:  time.Now().Add(time.Duration(p.expires()) * time.Second),
 			})
 

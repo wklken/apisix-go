@@ -15,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/wklken/apisix-go/pkg/capability"
+	"github.com/wklken/apisix-go/pkg/httpclient"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/secret"
@@ -689,7 +690,7 @@ func (p *Plugin) sessionCookie(userinfo map[string]any) (*http.Cookie, error) {
 }
 
 func (p *Plugin) transport() http.RoundTripper {
-	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport := httpclient.NewTransport()
 	if p.config.SSLVerify != nil && !*p.config.SSLVerify {
 		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec
 	}

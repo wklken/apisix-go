@@ -9,8 +9,9 @@ This file inherits the repository root `AGENTS.md` and applies to
 - `config_apply_ready` requires provider observed+healthy and successful HTTP
   stage, plus successful stream stage only when stream is configured. Any
   quarantine blocks readiness.
-- `/livez` is independent. `/readyz` also requires provider reachability in etcd
-  mode; a recovered generation may keep serving while readiness is false.
+- The separate status listener exposes `/status` for process liveness and
+  `/status/ready` for committed serviceable configuration. Provider
+  reachability remains separate: last-good stays ready during an etcd outage.
 - A failed provider apply attempt increments failure evidence but must not erase
   the last acknowledged publication state.
 

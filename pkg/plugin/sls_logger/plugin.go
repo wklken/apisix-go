@@ -35,6 +35,8 @@ type Plugin struct {
 
 	secretsPrepared bool
 	ready           bool
+	accessKeySecret *secret.Value
+	legacySecret    *string
 
 	addr string
 
@@ -224,6 +226,7 @@ func (p *Plugin) MaterializeScopedSecrets(
 		return slsAccessKeySecretUnavailable()
 	}
 	p.config.AccessKeySecret = descriptor.String()
+	p.accessKeySecret = &value
 	p.secretsPrepared = true
 	return nil
 }
@@ -257,6 +260,7 @@ func (p *Plugin) MaterializeSecrets() error {
 		return slsAccessKeySecretUnavailable()
 	}
 	p.config.AccessKeySecret = descriptor.String()
+	p.legacySecret = &resolved
 	p.secretsPrepared = true
 	return nil
 }
@@ -518,16 +522,22 @@ func (p *Plugin) sendBatch(
 	}
 	_ = batchMaxSize
 
-	messages := make([]string, 0, len(entries))
-	for _, entry := range entries {
-		messages = append(messages, p.buildMessage(entry))
+	var sendErr error
+	if err := p.useAccessKeySecret(func(accessKeySecret string) error {
+		messages := make([]string, 0, len(entries))
+		for _, entry := range entries {
+			messages = append(messages, p.buildMessageWithSecret(entry, accessKeySecret))
+		}
+		sendErr = p.sendMessage(ctx, strings.Join(messages, ""))
+		return nil
+	}); err != nil {
+		return 0, secret.ErrCredentialUnavailable
 	}
-	return 0, p.sendMessage(ctx, strings.Join(messages, ""))
+	return 0, sendErr
 }
 
 // Stop prevents new work, drains pending batch entries, then drops all
-// generation readiness state. The access key secret is not retained here: it
-// was used only during materialization and replaced by its public descriptor.
+// generation readiness state and its private access-key material.
 func (p *Plugin) QuiesceGenerationTasks() { p.Stop() }
 
 func (p *Plugin) Stop() {
@@ -542,6 +552,11 @@ func (p *Plugin) Stop() {
 			p.BatchProcessor = nil
 			p.secretsPrepared = false
 			p.ready = false
+			p.accessKeySecret = nil
+			if p.legacySecret != nil {
+				*p.legacySecret = ""
+				p.legacySecret = nil
+			}
 		}
 		if processor != nil {
 			processor.StopWithCleanup(cleanup)
@@ -631,6 +646,17 @@ func watchConnectionCancellation(ctx context.Context, conn net.Conn) func() {
 }
 
 func (p *Plugin) buildMessage(log map[string]any) string {
+	var message string
+	p.lifecycleMu.RLock()
+	defer p.lifecycleMu.RUnlock()
+	_ = p.useAccessKeySecret(func(accessKeySecret string) error {
+		message = p.buildMessageWithSecret(log, accessKeySecret)
+		return nil
+	})
+	return message
+}
+
+func (p *Plugin) buildMessageWithSecret(log map[string]any, accessKeySecret string) string {
 	payload, err := json.Marshal(log)
 	if err != nil {
 		payload = []byte(`{}`)
@@ -648,18 +674,32 @@ func (p *Plugin) buildMessage(log map[string]any) string {
 		"apisix",
 		fmt.Sprint(os.Getpid()),
 		"-",
-		p.structuredData(),
+		p.structuredData(accessKeySecret),
 		string(payload),
 	}, " ") + "\n"
 }
 
-func (p *Plugin) structuredData() string {
+func (p *Plugin) structuredData(accessKeySecret string) string {
 	return fmt.Sprintf(
-		`[logservice project="%s" logstore="%s" access-key-id="%s"]`,
+		`[logservice project="%s" logstore="%s" access-key-id="%s" access-key-secret="%s"]`,
 		escapeStructuredDataValue(p.config.Project),
 		escapeStructuredDataValue(p.config.Logstore),
 		escapeStructuredDataValue(p.config.AccessKeyID),
+		escapeStructuredDataValue(accessKeySecret),
 	)
+}
+
+func (p *Plugin) useAccessKeySecret(use func(string) error) error {
+	if use == nil {
+		return secret.ErrCredentialUnavailable
+	}
+	if p.accessKeySecret != nil {
+		return p.accessKeySecret.Use(use)
+	}
+	if p.legacySecret != nil {
+		return use(*p.legacySecret)
+	}
+	return secret.ErrCredentialUnavailable
 }
 
 func escapeStructuredDataValue(value string) string {

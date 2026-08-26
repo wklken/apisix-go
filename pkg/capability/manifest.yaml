@@ -297,8 +297,8 @@ plugins:
     instance_scope: "effective-config"
     conditional_terminal: true
     behavior: "partial"
-    behavior_summary: "Lua chunks returning functions with sequential execution; `code` / `body` return short-circuiting; `ngx.log`, `ngx.say`, `ngx.req.set_header`, `ngx.header`, `ngx.status`, `ngx.arg`; `cjson` and selected `apisix.core` helpers"
-    known_gaps: ["User Lua that depends on `ngx.ctx`, functional `ngx.log`, custom variables, or other unavailable `ngx_lua` APIs behaves differently."]
+    behavior_summary: "Lua chunks returning functions with sequential execution; operator-bounded Prepare/request execution; safe base/package/table/string/math/coroutine libraries with preload-only modules and no OS/IO/filesystem loaders; `code` / `body` return short-circuiting; `ngx.log`, `ngx.say`, `ngx.req.set_header`, `ngx.header`, `ngx.status`, `ngx.arg`; `cjson` and selected `apisix.core` helpers"
+    known_gaps: ["User Lua that depends on `ngx.ctx`, functional `ngx.log`, OS/IO/debug/channel libraries, filesystem module loading, custom variables, or other unavailable `ngx_lua` APIs behaves differently."]
     evidence:
       schema: {state: "verified", refs: ["pkg/plugin/serverless/plugin.go"], owner: "serverless-pre-function", reason: ""}
       unit: {state: "verified", refs: ["pkg/plugin/serverless/plugin_test.go"], owner: "serverless-pre-function", reason: ""}
@@ -307,7 +307,7 @@ plugins:
       real_dependency: {state: "missing", refs: [], owner: "serverless-pre-function", reason: "real-dependency evidence is not recorded"}
       failure: {state: "missing", refs: [], owner: "serverless-pre-function", reason: "failure evidence is not classified"}
       recovery: {state: "missing", refs: [], owner: "serverless-pre-function", reason: "recovery evidence is not classified"}
-    divergence_ids: []
+    divergence_ids: ["DIV-004-runtime-safety-boundaries"]
     supported_platforms: ["linux-amd64", "linux-arm64", "darwin-amd64", "darwin-arm64", "windows-amd64"]
   - name: "serverless-post-function"
     implementation: "serverless-post-function"
@@ -325,8 +325,8 @@ plugins:
     instance_scope: "effective-config"
     conditional_terminal: true
     behavior: "partial"
-    behavior_summary: "request-phase execution; response capture for `header_filter` / `body_filter` / `log`; response header/status/body mutation; documented JSON body-filter rewrite pattern"
-    known_gaps: ["User Lua that depends on streaming body chunks, custom variables, or unavailable `ngx_lua` APIs behaves differently after the buffered response."]
+    behavior_summary: "operator-bounded request/response callback execution with safe preload-only Lua libraries and no OS/IO/filesystem loaders; response capture for `header_filter` / `body_filter` / `log`; response header/status/body mutation; documented JSON body-filter rewrite pattern"
+    known_gaps: ["User Lua that depends on streaming body chunks, OS/IO/debug/channel libraries, filesystem module loading, custom variables, or unavailable `ngx_lua` APIs behaves differently after the buffered response."]
     evidence:
       schema: {state: "verified", refs: ["pkg/plugin/serverless/plugin.go"], owner: "serverless-post-function", reason: ""}
       unit: {state: "verified", refs: ["pkg/plugin/serverless/plugin_test.go"], owner: "serverless-post-function", reason: ""}
@@ -335,7 +335,7 @@ plugins:
       real_dependency: {state: "missing", refs: [], owner: "serverless-post-function", reason: "real-dependency evidence is not recorded"}
       failure: {state: "missing", refs: [], owner: "serverless-post-function", reason: "failure evidence is not classified"}
       recovery: {state: "missing", refs: [], owner: "serverless-post-function", reason: "recovery evidence is not classified"}
-    divergence_ids: []
+    divergence_ids: ["DIV-004-runtime-safety-boundaries"]
     supported_platforms: ["linux-amd64", "linux-arm64", "darwin-amd64", "darwin-arm64", "windows-amd64"]
   - name: "azure-functions"
     secret_declarations:
@@ -2948,7 +2948,7 @@ plugins:
     scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     behavior: "full"
-    behavior_summary: "RFC5424 SLS log messages over TLS TCP; `host`, `port`, `project`, `logstore`, `access_key_id`, encrypted `access_key_secret`, `timeout`, `log_format`; the required secret is validated for official-schema compatibility, then cleared and never serialized; `include_req_body` / `include_req_body_expr`; `include_resp_body` / `include_resp_body_expr` with capped capture"
+    behavior_summary: "RFC5424 SLS log messages over TLS TCP; `host`, `port`, `project`, `logstore`, `access_key_id`, encrypted `access_key_secret`, `timeout`, `log_format`; the generation-private secret is serialized only into the SLS structured-data authentication field during TLS delivery and revoked on stop; `include_req_body` / `include_req_body_expr`; `include_resp_body` / `include_resp_body_expr` with capped capture"
     known_gaps: []
     evidence:
       schema: {state: "verified", refs: ["pkg/plugin/sls_logger/plugin.go"], owner: "sls-logger", reason: ""}
@@ -3673,7 +3673,7 @@ plugins:
       real_dependency: {state: "missing", refs: [], owner: "mqtt-proxy", reason: "real-dependency evidence is not recorded"}
       failure: {state: "missing", refs: [], owner: "mqtt-proxy", reason: "failure evidence is not classified"}
       recovery: {state: "missing", refs: [], owner: "mqtt-proxy", reason: "recovery evidence is not classified"}
-    divergence_ids: []
+    divergence_ids: ["DIV-004-runtime-safety-boundaries"]
     supported_platforms: ["linux-amd64", "linux-arm64", "darwin-amd64", "darwin-arm64", "windows-amd64"]
   - name: "example-plugin"
     implementation: "example-plugin"
@@ -3745,3 +3745,8 @@ divergences:
     compatibility_target: "apisix-3.17"
     adr: "docs/architecture/adr/0003-platform-support.md"
     owner_approval_ref: "decisions 107, 118-130"
+  - id: "DIV-004-runtime-safety-boundaries"
+    status: "accepted"
+    compatibility_target: "apisix-3.17"
+    adr: "docs/architecture/adr/0004-runtime-safety-boundaries.md"
+    owner_approval_ref: "PR #163 remediation decisions, 2026-08-26"

@@ -81,8 +81,10 @@ ssl_id=release-ssl
 etcd_prefix=/apisix
 gateway_http_ports=()
 gateway_tls_ports=()
+gateway_status_ports=()
 gateway_urls=()
 gateway_tls_urls=()
+gateway_status_urls=()
 
 record_step() {
     printf '%s\n' "$*" >>"$transcript"
@@ -320,6 +322,14 @@ wait_gateway_status() {
     done
 }
 
+wait_gateway_probe() {
+    local label=$1 path=$2 expected=$3
+    local index
+    for index in "${!gateway_containers[@]}"; do
+        wait_http_status "$label-replica-$((index + 1))" "${gateway_status_urls[index]}$path" "$expected"
+    done
+}
+
 wait_gateway_body() {
     local label=$1 path=$2 expected=$3
     shift 3
@@ -501,9 +511,11 @@ etcdctl_put "$etcd_prefix/routes/$route_id" "$route_v1"
 record_step 'start APISIX-Go replicas as 10001:10001'
 for gateway_container in "${gateway_containers[@]}"; do
     docker run --detach --name "$gateway_container" --network "$data_network" \
-        --publish 127.0.0.1::9080 --publish 127.0.0.1::9443 --user 10001:10001 \
+        --publish 127.0.0.1::9080 --publish 127.0.0.1::9443 --publish 127.0.0.1::7085 \
+        --user 10001:10001 \
         --env SSL_CERT_FILE=/etc/ssl/certs/etcd-ca.crt \
         --env APISIXGO_DEPLOYMENT_ETCD_HOST=https://etcd:2379 \
+        --env APISIXGO_APISIX_STATUS_IP=0.0.0.0 \
         --volume "$repo_root/conf/config-production.yaml:/usr/local/apisix/conf/config-production.yaml:ro" \
         --volume "$tls_dir/ca.crt:/etc/ssl/certs/etcd-ca.crt:ro" \
         "$image" -c /usr/local/apisix/conf/config-production.yaml \
@@ -515,13 +527,16 @@ for index in "${!gateway_containers[@]}"; do
     gateway_http_ports[index]=${published##*:}
     published=$(docker port "${gateway_containers[index]}" 9443/tcp)
     gateway_tls_ports[index]=${published##*:}
+    published=$(docker port "${gateway_containers[index]}" 7085/tcp)
+    gateway_status_ports[index]=${published##*:}
     gateway_urls[index]="http://127.0.0.1:${gateway_http_ports[index]}"
     gateway_tls_urls[index]="https://release.example.test:${gateway_tls_ports[index]}"
+    gateway_status_urls[index]="http://127.0.0.1:${gateway_status_ports[index]}"
 done
 
 record_step 'replicas ready and proxy v1'
-wait_gateway_status 'replicas-livez' /livez 200
-wait_gateway_status 'replicas-readyz' /readyz 200
+wait_gateway_probe 'replicas-status' /status 200
+wait_gateway_probe 'replicas-ready' /status/ready 200
 wait_gateway_body 'replicas-release-v1' /release-v1 v1
 
 record_step 'write consumer/service/global rule/plugin config/SSL resources'
@@ -567,8 +582,8 @@ record_step 'stop etcd'
 docker stop "$etcd_container" >/dev/null
 
 record_step 'replicas retain last-good during etcd outage'
-wait_gateway_status 'outage-readyz' /readyz 503
-wait_gateway_status 'outage-livez' /livez 200
+wait_gateway_probe 'outage-ready' /status/ready 200
+wait_gateway_probe 'outage-status' /status 200
 wait_gateway_body 'outage-last-good-release-v1' /release-v1 v1
 wait_gateway_body 'outage-last-good-managed-v2' /managed v2 --header 'apikey: release-key-v2'
 
@@ -577,7 +592,7 @@ docker start "$etcd_container" >/dev/null
 wait_etcd 'recovery'
 
 record_step 'replicas ready after recovery'
-wait_gateway_status 'recovery-readyz' /readyz 200
+wait_gateway_probe 'recovery-ready' /status/ready 200
 
 record_step 'update route to v2'
 etcdctl_put "$etcd_prefix/routes/$route_id" "$route_v2"
@@ -594,7 +609,7 @@ record_step 'disconnect replicas from etcd'
 for gateway_container in "${gateway_containers[@]}"; do
     docker network disconnect "$data_network" "$gateway_container"
 done
-wait_gateway_status 'compaction-gap-readyz' /readyz 503
+wait_gateway_probe 'compaction-gap-ready' /status/ready 200
 
 record_step 'mutate and compact etcd while replicas disconnected'
 etcdctl_delete "$etcd_prefix/routes/$stale_route_id"
@@ -612,7 +627,7 @@ done
 
 record_step 'replicas recover compacted snapshot consistently'
 wait_gateway_log 'compaction-recovery' 'required revision has been compacted'
-wait_gateway_status 'compaction-recovery-readyz' /readyz 200
+wait_gateway_probe 'compaction-recovery-ready' /status/ready 200
 wait_gateway_status 'compaction-stale-route-removed' /stale 404
 wait_gateway_body 'compaction-managed-v1' /managed v1 --header 'apikey: release-key-v2'
 wait_gateway_header 'compaction-request-id-v2' /managed 200 X-Plugin-Config-V2 __nonempty__ \

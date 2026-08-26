@@ -8,10 +8,12 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+
+	"github.com/wklken/apisix-go/pkg/httpclient"
 )
 
 func (p *Plugin) transport() http.RoundTripper {
-	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport := httpclient.NewTransport()
 	if p.config.SSLVerify != nil && !*p.config.SSLVerify {
 		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
 	}

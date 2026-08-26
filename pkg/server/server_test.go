@@ -534,6 +534,23 @@ func TestStripUntrustedForwardedForDropsForgedHeader(t *testing.T) {
 	}
 }
 
+func TestStripUntrustedForwardedForDropsForgedHeaderWithoutTrustedAddresses(t *testing.T) {
+	var gotForwardedFor string
+	handler := normalizeForwardedHeaders(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotForwardedFor = r.Header.Get("X-Forwarded-For")
+		w.WriteHeader(http.StatusNoContent)
+	}), nil)
+	req := httptest.NewRequest(http.MethodGet, "/hello", nil)
+	req.RemoteAddr = "127.0.0.1:12345"
+	req.Header.Set("X-Forwarded-For", "1.1.1.1")
+
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	if gotForwardedFor != "" {
+		t.Fatalf("X-Forwarded-For = %q, want forged header removed", gotForwardedFor)
+	}
+}
+
 func TestStripUntrustedForwardedForPreservesTrustedHeader(t *testing.T) {
 	var gotForwardedFor string
 	var trustedProxy bool
@@ -657,67 +674,72 @@ func TestConfiguredHTTPServerSkipsConnectionObserverWithoutPrometheus(t *testing
 	}
 }
 
-func TestHealthEndpointsKeepLivenessIndependentAndReserveExactPaths(t *testing.T) {
+func TestStatusEndpointsUseSeparateHandlerAndIgnoreEtcdLoss(t *testing.T) {
 	restoreMetrics := installHealthMetrics(t)
 	defer restoreMetrics()
 
-	dynamicCalls := 0
-	handler := newHealthHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		dynamicCalls++
-		w.WriteHeader(http.StatusNoContent)
-	}), false)
+	serviceable := false
+	handler := newStatusHandler(func() bool { return serviceable })
 
 	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/livez", nil))
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/status", nil))
 	if response.Code != http.StatusOK {
-		t.Fatalf("/livez status = %d, want %d", response.Code, http.StatusOK)
+		t.Fatalf("/status code = %d, want %d", response.Code, http.StatusOK)
+	}
+	if got, want := strings.TrimSpace(response.Body.String()), `{"status":"ok"}`; got != want {
+		t.Fatalf("/status body = %q, want %q", got, want)
 	}
 
 	response = httptest.NewRecorder()
-	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/status/ready", nil))
 	if response.Code != http.StatusServiceUnavailable {
-		t.Fatalf("/readyz before config apply status = %d, want %d", response.Code, http.StatusServiceUnavailable)
-	}
-	wantBody := `{"config_apply_ready":false,"etcd_reachable":false}`
-	if got, want := strings.TrimSpace(response.Body.String()), wantBody; got != want {
-		t.Fatalf("/readyz failure body = %q, want %q", got, want)
+		t.Fatalf("/status/ready before config apply = %d, want %d", response.Code, http.StatusServiceUnavailable)
 	}
 
 	metrics.RecordConfigApplyStageSuccess(metrics.ConfigApplyStageProvider)
 	metrics.RecordConfigApplyStageSuccess(metrics.ConfigApplyStageHTTPRoutes)
 	response = httptest.NewRecorder()
-	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/readyz", nil))
-	if response.Code != http.StatusOK {
-		t.Fatalf("/readyz after standalone config apply status = %d, want %d", response.Code, http.StatusOK)
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/status/ready", nil))
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf(
+			"/status/ready without active generation = %d, want %d",
+			response.Code,
+			http.StatusServiceUnavailable,
+		)
 	}
 
-	for _, path := range []string{"/livez/anything", "/readyz/anything"} {
-		response = httptest.NewRecorder()
-		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
-		if response.Code != http.StatusNoContent {
-			t.Fatalf("%s status = %d, want dynamic %d", path, response.Code, http.StatusNoContent)
-		}
+	serviceable = true
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/status/ready", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("/status/ready after config apply = %d, want %d", response.Code, http.StatusOK)
 	}
-	if dynamicCalls != 2 {
-		t.Fatalf("dynamic fallback calls = %d, want 2", dynamicCalls)
+
+	metrics.RecordEtcdReachable(false)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/status/ready", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("/status/ready after etcd loss = %d, want last-good ready", response.Code)
+	}
+
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/unknown", nil))
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("unknown status path = %d, want %d", response.Code, http.StatusNotFound)
 	}
 }
 
-func TestConfiguredHTTPHandlerLimitsHealthEndpoints(t *testing.T) {
-	cfg := &config.Config{NginxConfig: config.NginxConfig{
-		HTTP: config.NginxHTTP{ClientMaxBodySize: 3},
-	}}
-	handler := newConfiguredHTTPHandler(http.NotFoundHandler(), cfg)
+func TestConfiguredHTTPHandlerLeavesLegacyProbePathsToRoutes(t *testing.T) {
+	handler := newConfiguredHTTPHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}), &config.Config{})
 
-	for _, path := range []string{"/livez", "/readyz"} {
-		t.Run(path, func(t *testing.T) {
-			request := httptest.NewRequest(http.MethodPost, path, strings.NewReader("abcd"))
-			response := httptest.NewRecorder()
-
-			handler.ServeHTTP(response, request)
-
-			assertRequestBodyLimitResponse(t, response)
-		})
+	for _, requestPath := range []string{"/livez", "/readyz"} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, requestPath, nil))
+		if response.Code != http.StatusNoContent {
+			t.Fatalf("%s status = %d, want route-owned %d", requestPath, response.Code, http.StatusNoContent)
+		}
 	}
 }
 
@@ -761,39 +783,6 @@ func configApplyGaugeValue(t *testing.T, gauge prometheus.Gauge) float64 {
 		t.Fatalf("write gauge: %v", err)
 	}
 	return metric.GetGauge().GetValue()
-}
-
-func TestReadyzRequiresEtcdReachabilityInEtcdMode(t *testing.T) {
-	restoreMetrics := installHealthMetrics(t)
-	defer restoreMetrics()
-
-	metrics.RecordConfigApplyStageSuccess(metrics.ConfigApplyStageProvider)
-	metrics.RecordConfigApplyStageSuccess(metrics.ConfigApplyStageHTTPRoutes)
-	handler := newHealthHandler(http.NotFoundHandler(), true)
-
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/readyz", nil))
-	if response.Code != http.StatusServiceUnavailable {
-		t.Fatalf("/readyz before etcd reachability status = %d, want %d", response.Code, http.StatusServiceUnavailable)
-	}
-	wantBody := `{"config_apply_ready":true,"etcd_reachable":false}`
-	if got, want := strings.TrimSpace(response.Body.String()), wantBody; got != want {
-		t.Fatalf("/readyz etcd failure body = %q, want %q", got, want)
-	}
-
-	metrics.RecordEtcdReachable(true)
-	response = httptest.NewRecorder()
-	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/readyz", nil))
-	if response.Code != http.StatusOK {
-		t.Fatalf("/readyz after etcd reachability status = %d, want %d", response.Code, http.StatusOK)
-	}
-
-	metrics.RecordEtcdReachable(false)
-	response = httptest.NewRecorder()
-	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/readyz", nil))
-	if response.Code != http.StatusServiceUnavailable {
-		t.Fatalf("/readyz after etcd loss status = %d, want %d", response.Code, http.StatusServiceUnavailable)
-	}
 }
 
 func installHealthMetrics(t *testing.T) func() {

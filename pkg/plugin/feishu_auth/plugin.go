@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/wklken/apisix-go/pkg/capability"
+	"github.com/wklken/apisix-go/pkg/httpclient"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_common"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -656,7 +657,7 @@ func signAndClearFeishuSessionPayload(payload []byte, current string) string {
 }
 
 func (p *Plugin) transport() http.RoundTripper {
-	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport := httpclient.NewTransport()
 	ai_common.ApplyTransportSSLVerify(transport, p.config.SSLVerify)
 	return transport
 }

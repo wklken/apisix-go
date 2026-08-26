@@ -16,9 +16,30 @@ import (
 	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/runtime"
 )
+
+func TestPostInitStrictRejectsWAFDebugHeaders(t *testing.T) {
+	p := &Plugin{config: Config{AppendWAFDebugHeader: new(true)}}
+	p.SetDependencies(base.Dependencies{Config: &config.EffectiveConfig{
+		Profiles: config.ProfileSelection{Security: config.SecurityStrict},
+	}})
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.PostInit(); err == nil || !strings.Contains(err.Error(), "append_waf_debug_header") {
+		t.Fatalf("PostInit() error = %v, want strict debug header rejection", err)
+	}
+}
+
+func TestPostInitCompatAllowsWAFDebugHeaders(t *testing.T) {
+	p := newTestPlugin(t, Config{AppendWAFDebugHeader: new(true)})
+	if !*p.config.AppendWAFDebugHeader {
+		t.Fatal("compat PostInit disabled append_waf_debug_header")
+	}
+}
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	return newTestPluginWithMetadata(t, cfg, nil)

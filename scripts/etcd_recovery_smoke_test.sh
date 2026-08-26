@@ -325,8 +325,10 @@ if [[ ${1:-} == run ]]; then
         printf "%s\n" "$gateway_count" >"$state_dir/gateway-count"
         http_port=$((18079 + gateway_count))
         https_port=$((18442 + gateway_count))
+        status_port=$((18784 + gateway_count))
         printf "%s\n" "$http_port" >"$state_dir/gateway-$container_name-http"
         printf "%s\n" "$https_port" >"$state_dir/gateway-$container_name-https"
+        printf "%s\n" "$status_port" >"$state_dir/gateway-$container_name-status"
         : >"$state_dir/gateway-$container_name"
         printf "%s\n" "$container_name" >>"$state_dir/gateway-names"
         printf "fake-gateway-%s\n" "$gateway_count"
@@ -345,11 +347,12 @@ case "${1:-}" in
     port)
         container=${2:-}
         requested_port=${3:-}
-        if [[ "$requested_port" == 9080 || "$requested_port" == 9080/tcp ]]; then
-            cat "$state_dir/gateway-$container-http"
-        else
-            cat "$state_dir/gateway-$container-https"
-        fi
+        case "$requested_port" in
+            9080|9080/tcp) cat "$state_dir/gateway-$container-http" ;;
+            9443|9443/tcp) cat "$state_dir/gateway-$container-https" ;;
+            7085|7085/tcp) cat "$state_dir/gateway-$container-status" ;;
+            *) exit 2 ;;
+        esac
         printf "\n"
         exit 0
         ;;
@@ -472,6 +475,18 @@ for marker in "$state_dir"/gateway-*-$protocol; do
         break
     fi
 done
+if [[ -z "$gateway" && "$protocol" == http ]]; then
+    for marker in "$state_dir"/gateway-*-status; do
+        [[ -f "$marker" ]] || continue
+        if [[ $(cat "$marker") == "$port" ]]; then
+            marker_name=${marker##*/}
+            gateway=${marker_name#gateway-}
+            gateway=${gateway%-status}
+            protocol=status
+            break
+        fi
+    done
+fi
 if [[ -z "$gateway" ]]; then
     printf "fake contract: unknown gateway port %s\n" "$port" >&2
     exit 7
@@ -489,19 +504,14 @@ fi
 status=200
 body=
 case "$path" in
-    /readyz)
-        if [[ -e ${FAKE_ETCD_STOPPED:?} || ( -n "$gateway" && -e "$state_dir/disconnected-$gateway" ) ]]; then
-            status=503
-            body=etcd-unreachable
-            if [[ -n "$gateway" && -e "$state_dir/disconnected-$gateway" ]]; then
-                printf "\\n" >>"$state_dir/disconnected-readyz"
-                printf "\\n" >>"$state_dir/disconnected-readyz-$gateway"
-            fi
-        else
-            body=ready
+    /status/ready)
+        body=ready
+        if [[ -n "$gateway" && -e "$state_dir/disconnected-$gateway" ]]; then
+            printf "\\n" >>"$state_dir/disconnected-ready"
+            printf "\\n" >>"$state_dir/disconnected-ready-$gateway"
         fi
         ;;
-    /livez)
+    /status)
         body=live
         ;;
     /release-v1)
@@ -733,9 +743,10 @@ test_ordered_happy_path() {
     assert_count '--user 10001:10001' "$log" 2
     assert_count 'busybox:1.37.0' "$log" 2
     assert_count 'docker run --detach --name apisix-release-etcd-' "$log" 1
-    assert_at_least 'docker port ' "$log" 4
+    assert_at_least 'docker port ' "$log" 6
     assert_contains 'SSL_CERT_FILE' "$log"
     assert_contains 'https://etcd:2379' "$log"
+    assert_contains 'APISIXGO_APISIX_STATUS_IP=0.0.0.0' "$log"
     for resource in \
         upstreams/release-upstream-v1 \
         upstreams/release-upstream-v2 \
@@ -773,8 +784,8 @@ test_ordered_happy_path() {
     fi
     assert_at_least '--resolve release.example.test:' "$log" 2
     assert_at_least 'https://release.example.test:' "$log" 2
-    disconnected_readyz=$(wc -l <"$test_root/happy-state/disconnected-readyz" 2>/dev/null || printf '0')
-    (( disconnected_readyz >= 2 )) || fail "wanted readiness 503 on both disconnected replicas, got $disconnected_readyz"
+    disconnected_ready=$(wc -l <"$test_root/happy-state/disconnected-ready" 2>/dev/null || printf '0')
+    (( disconnected_ready >= 2 )) || fail "wanted last-good readiness on both disconnected replicas, got $disconnected_ready"
     ssl_failures=$(wc -l <"$test_root/happy-state/ssl-failure" 2>/dev/null || printf '0')
     (( ssl_failures >= 2 )) || fail "wanted fresh TLS failure on both deleted SSL probes, got $ssl_failures"
     gateway_log_count=$(cat "$test_root/happy-state/gateway-log-count" 2>/dev/null || printf '0')
@@ -783,7 +794,7 @@ test_ordered_happy_path() {
     (( gateway_name_count == 2 )) || fail "wanted two distinct gateway names, got $gateway_name_count"
     while IFS= read -r gateway; do
         [[ -n "$gateway" ]] || continue
-        [[ -s "$test_root/happy-state/disconnected-readyz-$gateway" ]] || \
+        [[ -s "$test_root/happy-state/disconnected-ready-$gateway" ]] || \
             fail "missing disconnected readiness probe for $gateway"
         [[ -e "$test_root/happy-state/reconnected-after-compaction-$gateway" ]] || \
             fail "missing post-compaction reconnect for $gateway"
@@ -791,7 +802,7 @@ test_ordered_happy_path() {
             fail "missing compacted-revision log for $gateway"
         [[ -s "$test_root/happy-state/ssl-failure-$gateway" ]] || \
             fail "missing deleted-SSL failure probe for $gateway"
-        assert_contains "$gateway http /readyz" "$test_root/happy-state/post-compaction-probes"
+        assert_contains "$gateway status /status/ready" "$test_root/happy-state/post-compaction-probes"
         assert_contains "$gateway http /managed" "$test_root/happy-state/post-compaction-probes"
         assert_contains "$gateway http /release-v2" "$test_root/happy-state/post-compaction-probes"
         assert_at_least "$gateway https /release-v2" "$test_root/happy-state/post-compaction-probes" 2

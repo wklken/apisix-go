@@ -1,11 +1,13 @@
 package referer_restriction
 
 import (
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
 
 	"github.com/Shopify/goreferrer"
+	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/util"
@@ -83,6 +85,16 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	if effective := p.StaticConfig(); effective != nil && effective.Profiles.Security == config.SecurityStrict {
+		for _, definition := range append(append([]string(nil), p.config.Whitelist...), p.config.Blacklist...) {
+			if strings.HasPrefix(definition, "*") && definition != "*" && !strings.HasPrefix(definition, "*.") {
+				return fmt.Errorf(
+					"security_profile strict: referer host pattern %q must use the *.example.com form",
+					definition,
+				)
+			}
+		}
+	}
 	if p.config.BypassMissing == nil {
 		b := false
 		p.config.BypassMissing = &b

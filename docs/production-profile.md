@@ -246,12 +246,15 @@ implementation limitation, not the governing lifecycle target.
 
 ## Readiness and reload behavior
 
-- `/livez` returns HTTP 200 while the process is alive.
-- `/readyz` remains HTTP 503 until configuration has been applied and the
-  configured etcd provider is reachable; it then returns HTTP 200 with the
-  config-apply and provider-reachability state.
+- The separate status listener defaults to `127.0.0.1:7085`; `/status` returns
+  HTTP 200 while it is serving.
+- `/status/ready` remains HTTP 503 until a serviceable configuration has
+  committed, then remains HTTP 200 while last-good continues serving. Etcd
+  reachability is monitored separately and does not withdraw last-good
+  readiness.
 - The container image does not define a Docker healthcheck. Orchestrators must
-  configure liveness on `/livez` and readiness on `/readyz` explicitly.
+  configure readiness on the status listener explicitly. A TCP socket probe on
+  the intended listener is sufficient for process liveness.
 - A generation-wide configuration or route startup failure is returned to the
   process entrypoint. An invalid individual HTTP route is quarantined instead:
   valid routes start, the invalid route receives 404, and readiness remains 503

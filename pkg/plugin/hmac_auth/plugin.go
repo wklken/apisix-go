@@ -1,13 +1,10 @@
 package hmac_auth
 
 import (
-	"bytes"
-	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"slices"
 	"strings"
@@ -101,6 +98,10 @@ type Config struct {
 	HideCredentials     *bool    `json:"hide_credentials,omitempty"`
 	Realm               string   `json:"realm,omitempty"`
 	AnonymousConsumer   string   `json:"anonymous_consumer,omitempty"`
+
+	validationBodyLimit int64
+	captureBodyLimit    int64
+	requestBodyTempDir  string
 }
 
 type consumerConfig struct {
@@ -113,8 +114,10 @@ type consumerConfig struct {
 // multi-auth's requestBodyIsolation contract advertise their body needs
 // instead of being special-cased by type.
 func (c *Config) BodyIsolation() (bool, int64) {
-	return c.ValidateRequestBody, c.MaxReqBodySize
+	return c.ValidateRequestBody, c.captureBodyLimit
 }
+
+func (c *Config) BodyIsolationTempDir() string { return c.requestBodyTempDir }
 
 type signatureParams struct {
 	KeyID      string
@@ -145,6 +148,15 @@ func (p *Plugin) PostInit() error {
 	}
 	if p.config.MaxReqBodySize == 0 {
 		p.config.MaxReqBodySize = 64 * 1024 * 1024
+	}
+	p.config.validationBodyLimit = p.config.MaxReqBodySize
+	p.config.captureBodyLimit = max(p.config.MaxReqBodySize, int64(64*1024*1024))
+	if effective := p.StaticConfig(); effective != nil {
+		if ingressLimit := effective.Config.NginxConfig.HTTP.ClientMaxBodySize; ingressLimit > 0 {
+			p.config.captureBodyLimit = ingressLimit
+			p.config.validationBodyLimit = min(p.config.validationBodyLimit, ingressLimit)
+		}
+		p.config.requestBodyTempDir = effective.Paths.TempDir
 	}
 	if p.config.HideCredentials == nil {
 		hideCredentials := false
@@ -342,30 +354,25 @@ func (p *Plugin) validateBodyDigest(r *http.Request, digestHeader string) error 
 		return errInvalidDigest
 	}
 
-	body, err := readAndRestoreBody(r, p.config.MaxReqBodySize)
+	snapshot, err := base.EnsureRequestBodySnapshot(
+		r,
+		p.config.captureBodyLimit,
+		base.DefaultRequestBodySnapshotMemoryLimit,
+		p.config.requestBodyTempDir,
+	)
 	if err != nil {
+		if errors.Is(err, base.ErrRequestBodyTooLarge) {
+			return errBodyTooLarge
+		}
 		return err
 	}
-	sum := sha256.Sum256(body)
+	if snapshot.Size() > p.config.validationBodyLimit {
+		return errBodyTooLarge
+	}
+	sum := snapshot.SHA256()
 	expected := "SHA-256=" + base64.StdEncoding.EncodeToString(sum[:])
 	if subtle.ConstantTimeCompare([]byte(expected), []byte(digestHeader)) != 1 {
 		return errInvalidDigest
 	}
 	return nil
-}
-
-func readAndRestoreBody(r *http.Request, maxSize int64) ([]byte, error) {
-	if r.Body == nil {
-		return nil, nil
-	}
-
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxSize+1))
-	if err != nil {
-		return nil, err
-	}
-	if int64(len(body)) > maxSize {
-		return nil, errBodyTooLarge
-	}
-	r.Body = io.NopCloser(bytes.NewReader(body))
-	return body, nil
 }

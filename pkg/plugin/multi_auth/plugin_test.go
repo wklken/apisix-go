@@ -271,6 +271,9 @@ func TestConfiguredBodyIsolationDispatchesByInterface(t *testing.T) {
 	if state == nil {
 		t.Fatal("isolateRequestBody() = nil, want interface-dispatched body isolation")
 	}
+	if state.snapshot == nil {
+		t.Fatal("isolateRequestBody() did not create a shared replay snapshot")
+	}
 
 	consumed, err := io.ReadAll(probe.Body)
 	if err != nil {

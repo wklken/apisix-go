@@ -267,20 +267,22 @@ run the probes:
 ```bash
 set -euo pipefail
 export GATEWAY_URL='https://<operator-endpoint>'
+export STATUS_URL='http://127.0.0.1:7085'
 export ALLOWLISTED_ROUTE='/<operator-allowlisted-route>'
 export PROBE_AUTH_HEADER='<operator-auth-header>'
 
-curl --fail --silent --show-error "$GATEWAY_URL/livez"
-curl --fail --silent --show-error "$GATEWAY_URL/readyz"
+curl --fail --silent --show-error "$STATUS_URL/status"
+curl --fail --silent --show-error "$STATUS_URL/status/ready"
 curl --fail --silent --show-error \
   -H "$PROBE_AUTH_HEADER" "$GATEWAY_URL$ALLOWLISTED_ROUTE"
 ```
 
-The expected rollout state is liveness 200, readiness 200 with configuration
-applied and the configured etcd provider reachable, and a successful response
-from the allowlisted authenticated route. Record the image digest, replica or
-deployment identity, timestamps, response status, and evidence links for each
-step. Do not infer qualification from workflow YAML inspection alone.
+The expected rollout state is status liveness 200, readiness 200 with a
+serviceable committed configuration, and a successful response from the
+allowlisted authenticated route. A deployment may use a TCP socket probe on
+the intended listener for process liveness instead. Record the image digest,
+replica or deployment identity, timestamps, response status, and evidence links
+for each step. Do not infer qualification from workflow YAML inspection alone.
 
 ## External ingress request-log evidence
 
@@ -321,17 +323,16 @@ gate passes.
 
 ## etcd degradation and recovery
 
-The periodic etcd reachability probe is a prerequisite for this contract. The
-pinned etcd watch can remain in a recoverable retry loop; without an independent
-bounded probe, `/readyz` may fail to change to 503 while etcd is unavailable.
-The production probe uses `deployment.etcd.health_check_timeout` as its interval
-in seconds, defaulting to 10 when omitted or non-positive. Each probe is bounded
-separately by the existing `deployment.etcd.timeout` request deadline.
+The periodic etcd reachability probe remains operational evidence, separate
+from readiness. The production probe uses
+`deployment.etcd.health_check_timeout` as its interval in seconds, defaulting to
+10 when omitted or non-positive. Each probe is bounded separately by the
+existing `deployment.etcd.timeout` request deadline.
 
 The verified-TLS recovery harness is the canonical acceptance scenario. During
-etcd loss, expect `/livez` 200, `/readyz` 503, and the last successfully applied
-route to continue serving. After etcd restarts, expect `/readyz` 200, update the
-same route ID to the second upstream resource, and prove the newer response.
+etcd loss, expect `/status` and `/status/ready` to remain 200 while the last
+successfully applied route continues serving. After etcd restarts, update the
+same route ID to the second upstream resource and prove the newer response.
 Capture the harness transcript, readiness bodies, container logs, and image
 identity. A manual request that does not exercise this order is not recovery
 evidence.
@@ -458,9 +459,9 @@ published digest exists and is exercised, rollback qualification must remain
 open; a local image, a tag-only reference, or the current digest cannot satisfy
 that requirement. Once the verified older digest exists, pass only
 `$PREVIOUS_IMAGE_REFERENCE` to the operator-supplied rollback command and rerun
-the `/livez`, `/readyz`, and allowlisted authenticated-route probes. Record the
-command, results, recovery time, timestamp, runner/environment details, and
-durable release-asset links.
+the `/status`, `/status/ready`, and allowlisted authenticated-route probes.
+Record the command, results, recovery time, timestamp, runner/environment
+details, and durable release-asset links.
 
 ## Qualification decision
 

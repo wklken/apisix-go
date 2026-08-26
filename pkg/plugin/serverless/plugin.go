@@ -2,6 +2,8 @@ package serverless
 
 import (
 	"bytes"
+	"context"
+	stdjson "encoding/json"
 	"fmt"
 	"math"
 	"net/http"
@@ -10,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
@@ -25,14 +28,17 @@ type Plugin struct {
 
 	// compiled holds the immutable precompiled function chunks, parsed once
 	// in PostInit instead of on every request.
-	compiled []*lua.FunctionProto
+	compiled         []*lua.FunctionProto
+	executionTimeout time.Duration
 }
 
 const (
-	preFunctionName      = "serverless-pre-function"
-	preFunctionPriority  = 10000
-	postFunctionName     = "serverless-post-function"
-	postFunctionPriority = -2000
+	preFunctionName         = "serverless-pre-function"
+	preFunctionPriority     = 10000
+	postFunctionName        = "serverless-post-function"
+	postFunctionPriority    = -2000
+	defaultExecutionTimeout = time.Second
+	maxExecutionTimeout     = 10 * time.Second
 )
 
 const schema = `
@@ -92,6 +98,11 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	executionTimeout, err := p.configuredExecutionTimeout()
+	if err != nil {
+		return err
+	}
+	p.executionTimeout = executionTimeout
 	if p.config.Phase == "" {
 		p.config.Phase = "access"
 	}
@@ -100,13 +111,60 @@ func (p *Plugin) PostInit() error {
 		if err != nil {
 			return err
 		}
-		if err := validateFunctionProto(proto); err != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), p.executionTimeout)
+		err = validateFunctionProto(ctx, proto)
+		cancel()
+		if err != nil {
 			return err
 		}
 		p.compiled = append(p.compiled, proto)
 	}
 
 	return nil
+}
+
+func (p *Plugin) configuredExecutionTimeout() (time.Duration, error) {
+	effective := p.StaticConfig()
+	if effective == nil {
+		return defaultExecutionTimeout, nil
+	}
+	attributes, ok := effective.Config.PluginAttr[p.Name]
+	if !ok {
+		return defaultExecutionTimeout, nil
+	}
+	raw, ok := attributes["execution_timeout_ms"]
+	if !ok {
+		return defaultExecutionTimeout, nil
+	}
+	var milliseconds int64
+	switch value := raw.(type) {
+	case int:
+		milliseconds = int64(value)
+	case int64:
+		milliseconds = value
+	case float64:
+		if value != math.Trunc(value) {
+			return 0, fmt.Errorf("plugin_attr.%s.execution_timeout_ms must be an integer", p.Name)
+		}
+		milliseconds = int64(value)
+	case stdjson.Number:
+		parsed, err := value.Int64()
+		if err != nil {
+			return 0, fmt.Errorf("plugin_attr.%s.execution_timeout_ms must be an integer", p.Name)
+		}
+		milliseconds = parsed
+	default:
+		return 0, fmt.Errorf("plugin_attr.%s.execution_timeout_ms must be an integer", p.Name)
+	}
+	maxMilliseconds := int64(maxExecutionTimeout / time.Millisecond)
+	if milliseconds <= 0 || milliseconds > maxMilliseconds {
+		return 0, fmt.Errorf(
+			"plugin_attr.%s.execution_timeout_ms must be between 1 and %d",
+			p.Name,
+			maxMilliseconds,
+		)
+	}
+	return time.Duration(milliseconds) * time.Millisecond, nil
 }
 
 func (p *Plugin) Config() any {
@@ -337,7 +395,13 @@ func responseSource(r *http.Request) apisixctx.ResponseSource {
 }
 
 func (p *Plugin) runFunctions(r *http.Request, resp *base.BufferedResponseWriter) (luaResult, error) {
-	runner := newLuaRunner(r, resp)
+	parent := context.Background()
+	if r != nil {
+		parent = r.Context()
+	}
+	ctx, cancel := context.WithTimeout(parent, p.executionTimeout)
+	defer cancel()
+	runner := newLuaRunner(ctx, r, resp)
 	defer runner.close()
 
 	for _, proto := range p.compiled {
@@ -379,8 +443,8 @@ func compileFunction(source string) (*lua.FunctionProto, error) {
 
 // validateFunctionProto executes the precompiled chunk in a scratch state to
 // confirm it evaluates to a Lua function.
-func validateFunctionProto(proto *lua.FunctionProto) error {
-	runner := newLuaRunner(nil, nil)
+func validateFunctionProto(ctx context.Context, proto *lua.FunctionProto) error {
+	runner := newLuaRunner(ctx, nil, nil)
 	defer runner.close()
 
 	_, err := runner.loadFunction(proto)
@@ -405,8 +469,35 @@ type luaRunner struct {
 	luaContext   *lua.LTable
 }
 
-func newLuaRunner(r *http.Request, resp *base.BufferedResponseWriter) *luaRunner {
-	l := lua.NewState()
+func newLuaRunner(ctx context.Context, r *http.Request, resp *base.BufferedResponseWriter) *luaRunner {
+	l := lua.NewState(lua.Options{SkipOpenLibs: true})
+	for _, library := range []struct {
+		name string
+		open lua.LGFunction
+	}{
+		{name: lua.LoadLibName, open: lua.OpenPackage},
+		{name: lua.BaseLibName, open: lua.OpenBase},
+		{name: lua.TabLibName, open: lua.OpenTable},
+		{name: lua.StringLibName, open: lua.OpenString},
+		{name: lua.MathLibName, open: lua.OpenMath},
+		{name: lua.CoroutineLibName, open: lua.OpenCoroutine},
+	} {
+		l.Push(l.NewFunction(library.open))
+		l.Push(lua.LString(library.name))
+		l.Call(1, 0)
+	}
+	l.SetGlobal("dofile", lua.LNil)
+	l.SetGlobal("loadfile", lua.LNil)
+	packageTable := l.GetGlobal(lua.LoadLibName).(*lua.LTable)
+	loaders := l.GetField(packageTable, "loaders").(*lua.LTable)
+	preloadOnly := l.NewTable()
+	preloadOnly.RawSetInt(1, l.RawGetInt(loaders, 1))
+	l.SetField(packageTable, "loaders", preloadOnly)
+	l.SetField(l.Get(lua.RegistryIndex), "_LOADERS", preloadOnly)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	l.SetContext(ctx)
 	runner := &luaRunner{
 		state: l,
 		req:   r,

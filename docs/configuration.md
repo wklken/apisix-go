@@ -217,19 +217,21 @@ mechanism, whose output is owned by the Go request pipeline. Qualification
 selection makes no request-logging egress claim; consult the generated status
 for the current `required_plugins` sequence.
 
-`/livez` returns HTTP 200 while the process is alive. `/readyz` returns HTTP
-503 until configuration has been applied and the configured etcd provider is
-reachable, then returns HTTP 200 with the config-apply and etcd-reachability
-state. The image does not define a Docker healthcheck. Orchestrators must
-configure `/livez` for process liveness and `/readyz` for config-apply and etcd
-reachability.
+The separate status listener is configured by `apisix.status.ip` and
+`apisix.status.port`, defaulting to `127.0.0.1:7085`. `/status` returns HTTP 200
+while that listener is serving. `/status/ready` returns HTTP 503 until a
+serviceable configuration has committed, then returns HTTP 200. The image does
+not define a Docker healthcheck. Orchestrators should use the status listener
+for HTTP readiness; `/livez` and `/readyz` on data-plane listeners are ordinary
+user route paths.
 
 The production release contract requires a bounded periodic etcd reachability
 probe in addition to the watch loop. During a verified recovery test, etcd loss
-must make `/readyz` return 503 while `/livez` and the last successfully applied
-route continue serving; readiness must return to 200 after recovery and a
-newer revision must apply. See the [production release runbook](runbooks/production-release.md)
-for the evidence and operator-supplied deployment step.
+must leave `/status/ready` at 200 while the last successfully committed route
+continues serving; the reachability metric must report the loss, recovery must
+restore it, and a newer revision must apply. See the
+[production release runbook](runbooks/production-release.md) for the evidence
+and operator-supplied deployment step.
 
 Deterministically invalid route, global-rule, consumer, and SSL payloads are
 rejected before replacing their last-good store value. During HTTP generation
@@ -237,7 +239,7 @@ build, a semantic failure scoped to one route quarantines that complete route;
 the remaining valid routes still publish. A malformed route or global-rule row
 left by an older database is likewise omitted from the immutable build
 snapshot. Every omission keeps the no-label
-`config_apply_quarantined_resources` gauge non-zero and `/readyz` at 503.
+`config_apply_quarantined_resources` gauge non-zero and `/status/ready` at 503.
 Global-rule and shared generation setup failures remain fail-closed.
 Provider-side and build-snapshot quarantine counts are aggregated
 independently, so clearing one source cannot hide the other.
@@ -524,11 +526,10 @@ runtime features called out below is rejected rather than silently ignored:
   addresses, and bind failures are rejected at startup. HTTPS certificate
   selection uses the implemented frontend TLS and APISIX SSL resource path; a
   listener-only field does not create a certificate.
-- General stream-plugin chaining and stream metrics. Liveness and readiness are
-  exposed through `/livez` and `/readyz`; startup failures are surfaced through
-  the process return, and `/readyz` remains unavailable until configuration and
-  the configured etcd provider are ready.
-- The APISIX Admin API, control API, status server, admin UI, admin CORS/IP
+- General stream-plugin chaining and stream metrics. Startup failures are
+  surfaced through the process return, and `/status/ready` remains unavailable
+  until a serviceable configuration has committed.
+- The APISIX Admin API, control API, admin UI, admin CORS/IP
   restrictions, and admin mTLS. The current Go admin router is not a complete
   APISIX Admin API implementation.
 - Lua external plugins, WASM plugins, XRPC protocol plugins, and the official
@@ -536,7 +537,7 @@ runtime features called out below is rejected rather than silently ignored:
   discovery activation fails startup; route/upstream discovery compatibility
   fields are preserved and rejected at route compilation.
 - Exact APISIX/OpenResty etcd watch resync semantics. The production
-  qualification profile uses its bounded reachability probe for readiness and
+  qualification profile exposes bounded provider reachability as metrics and
   does not claim OpenResty timing parity.
 - WebSocket upgrades require effective route or service
   `enable_websocket: true`. Every WebSocket upgrade attempt skips response

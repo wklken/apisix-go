@@ -297,6 +297,7 @@ type Server struct {
 
 	addrs           []string
 	server          *http.Server
+	statusServer    *http.Server
 	routes          *routeHandler
 	streamRuntime   streamRuntimeOwner
 	streamRuntimeMu sync.Mutex
@@ -472,6 +473,10 @@ func newServerWithFactories(
 		)
 	}
 	server.server = newConfiguredHTTPServer(newConfiguredHTTPHandler(server.routes, cfg), cfg)
+	server.statusServer = newConfiguredHTTPServer(newStatusHandler(server.httpGenerationReady), nil)
+	server.shutdownHTTP = func(ctx context.Context) error {
+		return errors.Join(server.server.Shutdown(ctx), server.statusServer.Shutdown(ctx))
+	}
 	return server, nil
 }
 
@@ -519,7 +524,7 @@ func newClusterObserver(cfg *config.Config) pxy.ClusterObserver {
 }
 
 func newConfiguredHTTPHandler(routes http.Handler, cfg *config.Config) http.Handler {
-	handler := newHealthHandler(routes, requiresEtcdReadiness(cfg))
+	handler := routes
 	var trustedAddresses []string
 	if cfg != nil {
 		handler = limitRequestBody(handler, cfg.NginxConfig.HTTP.ClientMaxBodySize)
@@ -545,32 +550,42 @@ func newConfiguredHTTPHandler(routes http.Handler, cfg *config.Config) http.Hand
 	return forceServerHeader(handler, cfg)
 }
 
-func newHealthHandler(next http.Handler, requireEtcd bool) http.Handler {
+func newStatusHandler(serviceable func() bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/livez":
-			w.WriteHeader(http.StatusOK)
-		case "/readyz":
-			writeReadinessResponse(w, requireEtcd)
+		case "/status":
+			writeStatusResponse(w, http.StatusOK, "ok")
+		case "/status/ready":
+			if metrics.GetReadiness().ConfigApplyReady && serviceable != nil && serviceable() {
+				writeStatusResponse(w, http.StatusOK, "ok")
+				return
+			}
+			writeStatusResponse(w, http.StatusServiceUnavailable, "not ready")
 		default:
-			next.ServeHTTP(w, r)
+			http.NotFound(w, r)
 		}
 	})
 }
 
-func writeReadinessResponse(w http.ResponseWriter, requireEtcd bool) {
-	state := metrics.GetReadiness()
-	status := http.StatusOK
-	if !state.ConfigApplyReady || (requireEtcd && !state.EtcdReachable) {
-		status = http.StatusServiceUnavailable
+func (s *Server) httpGenerationReady() bool {
+	if s == nil || s.engine == nil {
+		return false
 	}
-	w.Header().Set("Content-Type", "application/json; charset=UTF-8")
-	w.WriteHeader(status)
-	_, _ = fmt.Fprintf(w, `{"config_apply_ready":%t,"etcd_reachable":%t}`, state.ConfigApplyReady, state.EtcdReachable)
+	lease, ok := s.engine.acquireHTTP()
+	if !ok || lease.Snapshot == nil || lease.Snapshot.Handler() == nil || lease.Release == nil {
+		if ok && lease.Release != nil {
+			lease.Release()
+		}
+		return false
+	}
+	lease.Release()
+	return true
 }
 
-func requiresEtcdReadiness(cfg *config.Config) bool {
-	return cfg != nil && standaloneConfigProvider(cfg) == ""
+func writeStatusResponse(w http.ResponseWriter, status int, value string) {
+	w.Header().Set("Content-Type", "application/json; charset=UTF-8")
+	w.WriteHeader(status)
+	_, _ = fmt.Fprintf(w, `{"status":%q}`, value)
 }
 
 func normalizeForwardedHeaders(next http.Handler, addresses []string) http.Handler {
@@ -623,11 +638,7 @@ func normalizeForwardedHeaders(next http.Handler, addresses []string) http.Handl
 			r.Header.Set("X-Forwarded-Host", r.Host)
 			r.Header.Set("X-Forwarded-Port", listenPort(r))
 			r.Header.Del("Forwarded")
-			// When a trust boundary is configured, drop the spoofable inbound
-			// chain; otherwise preserve the compatible default.
-			if len(trustedNetworks) > 0 {
-				r.Header.Del("X-Forwarded-For")
-			}
+			r.Header.Del("X-Forwarded-For")
 		}
 		next.ServeHTTP(w, r)
 	})
@@ -769,6 +780,10 @@ func configuredTLSListenAddresses(cfg *config.Config) []string {
 		addresses = append(addresses, net.JoinHostPort(host, strconv.Itoa(listener.Port)))
 	}
 	return addresses
+}
+
+func configuredStatusAddress(cfg *config.Config) string {
+	return net.JoinHostPort(cfg.Apisix.Status.IP, strconv.Itoa(cfg.Apisix.Status.Port))
 }
 
 const (
@@ -1724,7 +1739,7 @@ func (s *Server) serveHTTPListenerRuntime(
 	tlsConfig *tls.Config,
 ) (<-chan error, error) {
 	addrs := s.addrs
-	serveErrors := make(chan error, len(addrs)+len(tlsAddrs))
+	serveErrors := make(chan error, len(addrs)+len(tlsAddrs)+1)
 	listeners := make([]net.Listener, 0, len(addrs)+len(tlsAddrs))
 	for _, addr := range addrs {
 		logger.Infof("listening on %s", addr)
@@ -1755,6 +1770,20 @@ func (s *Server) serveHTTPListenerRuntime(
 			}
 		}(listener)
 	}
+	statusAddr := configuredStatusAddress(&s.staticConfig.Config)
+	logger.Infof("status API listening on %s", statusAddr)
+	statusListener, err := net.Listen("tcp", statusAddr)
+	if err != nil {
+		s.closeOwnedListeners()
+		return nil, fmt.Errorf("open status listener %s: %w", statusAddr, err)
+	}
+	s.retainListener(statusListener)
+	go func() {
+		defer s.releaseListener(statusListener)
+		if err := s.statusServer.Serve(statusListener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			serveErrors <- err
+		}
+	}()
 
 	return serveErrors, nil
 }

@@ -11,6 +11,8 @@ import (
 	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/config"
+	"github.com/wklken/apisix-go/pkg/httpclient"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	pluginexpr "github.com/wklken/apisix-go/pkg/plugin/expr"
@@ -173,6 +175,11 @@ func (p *Plugin) Init() error {
 func (p *Plugin) PostInit() error {
 	routeConfig := p.config
 	p.applyDefaults()
+	if effective := p.StaticConfig(); effective != nil &&
+		effective.Profiles.Security == config.SecurityStrict &&
+		p.config.AppendWAFDebugHeader != nil && *p.config.AppendWAFDebugHeader {
+		return fmt.Errorf("security_profile strict: append_waf_debug_header must be false")
+	}
 	var metadata Metadata
 	if _, err := p.MetadataView().Decode(name, &metadata); err != nil {
 		return fmt.Errorf("chaitin-waf metadata decode failed: %w", err)
@@ -200,7 +207,10 @@ func (p *Plugin) PostInit() error {
 		}
 		p.match = append(p.match, expression)
 	}
-	p.client = &http.Client{Timeout: time.Duration(p.effective.Config.ReadTimeout) * time.Millisecond}
+	p.client = &http.Client{
+		Transport: httpclient.NewTransport(),
+		Timeout:   time.Duration(p.effective.Config.ReadTimeout) * time.Millisecond,
+	}
 
 	return nil
 }

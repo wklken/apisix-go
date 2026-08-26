@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -409,10 +410,14 @@ func prepareEngineStreamGeneration(
 ) generation.PublicationSet {
 	t.Helper()
 	resources := make([]generation.Resource, 0, len(routeIDs))
-	for _, routeID := range routeIDs {
+	for index, routeID := range routeIDs {
 		resources = append(resources, generation.Resource{
-			Key:   generation.ResourceKey{Kind: "stream_routes", ID: routeID},
-			Value: []byte(`{"id":"` + routeID + `","upstream":{"scheme":"tcp","nodes":{"127.0.0.1:1883":1}}}`),
+			Key: generation.ResourceKey{Kind: "stream_routes", ID: routeID},
+			Value: fmt.Appendf(nil,
+				`{"id":%q,"remote_addr":%q,"upstream":{"scheme":"tcp","nodes":{"127.0.0.1:1883":1}}}`,
+				routeID,
+				fmt.Sprintf("192.0.2.%d", index+1),
+			),
 		})
 	}
 	desired, err := generation.NewSnapshot(revision, resources, nil)

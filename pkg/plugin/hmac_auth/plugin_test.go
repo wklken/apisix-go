@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/runtime"
@@ -320,6 +321,22 @@ func TestHandlerValidatesRequestBodyDigestAndRestoresBody(t *testing.T) {
 
 	if rr.Code != http.StatusNoContent {
 		t.Fatalf("response code = %d, want %d; body=%s", rr.Code, http.StatusNoContent, rr.Body.String())
+	}
+}
+
+func TestPostInitCapsHMACBodyAtIngressLimit(t *testing.T) {
+	p := &Plugin{config: Config{ValidateRequestBody: true, MaxReqBodySize: 64 * 1024 * 1024}}
+	p.SetDependencies(base.Dependencies{Config: &config.EffectiveConfig{Config: config.Config{
+		NginxConfig: config.NginxConfig{HTTP: config.NginxHTTP{ClientMaxBodySize: 1024}},
+	}}})
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatal(err)
+	}
+	if enabled, limit := p.config.BodyIsolation(); !enabled || limit != 1024 {
+		t.Fatalf("BodyIsolation() = %t/%d, want ingress cap 1024", enabled, limit)
 	}
 }
 

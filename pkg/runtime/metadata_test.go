@@ -9,6 +9,43 @@ import (
 	"testing"
 )
 
+type metadataTestSecret string
+
+func (value metadataTestSecret) Use(use func(string) error) error {
+	return use(string(value))
+}
+
+func TestMetadataViewScopesSecretsToFactoryAndRevokesOnClose(t *testing.T) {
+	view, err := NewMetadataViewWithSecrets(map[string]MetadataDocument{
+		"factory-a": {
+			Document: []byte(`{"token":"plugin_metadata#sha256:redacted"}`),
+			Secrets:  map[string]MetadataSecret{"/token": metadataTestSecret("private-a")},
+		},
+		"factory-b": {Document: []byte(`{"token":"public-b"}`)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	scoped := view.ForFactory("factory-a")
+	var own map[string]string
+	if found, err := scoped.Decode("factory-a", &own); err != nil || !found || own["token"] != "private-a" {
+		t.Fatalf("own Decode() = (%v, %v, %#v)", found, err, own)
+	}
+	var sibling map[string]string
+	if found, err := scoped.Decode("factory-b", &sibling); err != nil || found {
+		t.Fatalf("sibling Decode() = (%v, %v), want hidden", found, err)
+	}
+	if got := string(view.state.documents["factory-a"].document); strings.Contains(got, "private-a") {
+		t.Fatalf("shared metadata document contains plaintext: %q", got)
+	}
+
+	view.Close()
+	if found, err := scoped.Decode("factory-a", &own); found || !errors.Is(err, errMetadataViewClosed) {
+		t.Fatalf("closed Decode() = (%v, %v), want revoked authority", found, err)
+	}
+}
+
 func TestMetadataViewZeroAndEmpty(t *testing.T) {
 	var zero MetadataView
 	for _, view := range []MetadataView{zero, mustMetadataView(t, nil), mustMetadataView(t, map[string][]byte{})} {
@@ -40,8 +77,12 @@ func TestMetadataViewCanonicalizesDocuments(t *testing.T) {
 	if !reflect.DeepEqual(firstTarget, secondTarget) {
 		t.Fatalf("canonical decode mismatch: %#v != %#v", firstTarget, secondTarget)
 	}
-	if !bytes.Equal(first.documents["factory"], second.documents["factory"]) {
-		t.Fatalf("canonical documents differ: %q != %q", first.documents["factory"], second.documents["factory"])
+	if !bytes.Equal(first.state.documents["factory"].document, second.state.documents["factory"].document) {
+		t.Fatalf(
+			"canonical documents differ: %q != %q",
+			first.state.documents["factory"].document,
+			second.state.documents["factory"].document,
+		)
 	}
 
 	number, ok := firstTarget["number"].(interface{ String() string })

@@ -6,8 +6,46 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/wklken/apisix-go/pkg/config"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/util"
 )
+
+func TestStrictProfileRejectsAmbiguousLeadingStar(t *testing.T) {
+	p := &Plugin{config: Config{Whitelist: []string{"*example.com"}}}
+	p.SetDependencies(base.Dependencies{Config: &config.EffectiveConfig{
+		Profiles: config.ProfileSelection{Security: config.SecurityStrict},
+	}})
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.PostInit(); err == nil || !strings.Contains(err.Error(), "*example.com") {
+		t.Fatalf("PostInit() error = %v, want ambiguous leading star rejection", err)
+	}
+}
+
+func TestCompatProfilePreservesLeadingStarSuffixMatch(t *testing.T) {
+	p := newTestPlugin(t, Config{Whitelist: []string{"*example.com"}})
+	if !p.inWhiteList("notexample.com") {
+		t.Fatal("compat leading-star suffix no longer matches notexample.com")
+	}
+}
+
+func TestStrictWildcardSubdomainDoesNotIncludeApex(t *testing.T) {
+	p := &Plugin{config: Config{Whitelist: []string{"*.example.com"}}}
+	p.SetDependencies(base.Dependencies{Config: &config.EffectiveConfig{
+		Profiles: config.ProfileSelection{Security: config.SecurityStrict},
+	}})
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+	if p.inWhiteList("example.com") {
+		t.Fatal("strict wildcard subdomain matched apex")
+	}
+}
 
 func TestWhitelistRejectsWithJSONMessage(t *testing.T) {
 	p := newTestPlugin(t, Config{Whitelist: []string{"allowed.example.com"}})

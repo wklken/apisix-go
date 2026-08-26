@@ -17,6 +17,7 @@ import (
 	"github.com/go-resty/resty/v2"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
+	"github.com/wklken/apisix-go/pkg/httpclient"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
@@ -160,7 +161,7 @@ func (p *Plugin) PostInit() error {
 	configUID.Add(p.config.Endpoint)
 	client := resty.New()
 	client.SetTimeout(p.reportTimeout)
-	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport := httpclient.NewTransport()
 	transport.DialContext = (&net.Dialer{Timeout: p.reportTimeout}).DialContext
 	client.SetTransport(transport)
 	value, release, err := shared.AcquireClient(

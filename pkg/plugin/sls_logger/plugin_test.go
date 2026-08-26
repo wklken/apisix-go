@@ -267,7 +267,7 @@ func slsSecretDescriptor(plaintext string) string {
 	return fmt.Sprintf("plugin_config#sha256:%s", hex.EncodeToString(digest[:]))
 }
 
-func TestMaterializeScopedSecretsValidatesAndDropsSLSSecret(t *testing.T) {
+func TestMaterializeScopedSecretsRetainsGenerationPrivateSLSSecret(t *testing.T) {
 	ciphertext := encryptSLSLoggerTestValue(t, "qeddd145sfvddff3", "cipher-private")
 	for index, tt := range []struct {
 		name     string
@@ -306,9 +306,8 @@ func TestMaterializeScopedSecretsValidatesAndDropsSLSSecret(t *testing.T) {
 			if p.config.AccessKeySecret != slsSecretDescriptor(tt.resolved) {
 				t.Fatalf("public access_key_secret = %q, want resolved descriptor", p.config.AccessKeySecret)
 			}
-			if pluginStructContainsString(reflect.ValueOf(p).Elem(), tt.raw) ||
-				pluginStructContainsString(reflect.ValueOf(p).Elem(), tt.resolved) {
-				t.Fatal("plugin retained raw or resolved access_key_secret after validation")
+			if pluginStructContainsString(reflect.ValueOf(p).Elem(), tt.raw) {
+				t.Fatal("plugin retained unresolved access_key_secret")
 			}
 			if p.BatchProcessor != nil {
 				t.Fatal("materialization caused batch side effects")
@@ -330,8 +329,9 @@ func TestMaterializeScopedSecretsValidatesAndDropsSLSSecret(t *testing.T) {
 				t.Fatalf("SendBatch() error = %v", err)
 			}
 			message := conn.message()
-			if strings.Contains(message, tt.raw) || strings.Contains(message, tt.resolved) {
-				t.Fatalf("delivery retained private access key material: %q", message)
+			wantSecret := `access-key-secret="` + tt.resolved + `"`
+			if strings.Contains(message, tt.raw) || !strings.Contains(message, wantSecret) {
+				t.Fatalf("delivery message = %q, want generation-private wire credential", message)
 			}
 			if calls := broker.callsSnapshot(); len(calls) != 1 {
 				t.Fatalf("PostInit/delivery resolver calls = %#v, want admission-only call", calls)
@@ -805,12 +805,9 @@ func TestBuildMessageUsesRFC5424Shape(t *testing.T) {
 	if !strings.HasPrefix(message, "<46>1 ") {
 		t.Fatalf("message = %q, want RFC5424 SYSLOG/INFO prefix <46>1", message)
 	}
-	wantStructured := `[logservice project="project-a" logstore="store-a" access-key-id="id"]`
+	wantStructured := `[logservice project="project-a" logstore="store-a" access-key-id="id" access-key-secret="secret"]`
 	if !strings.Contains(message, wantStructured) {
 		t.Fatalf("message = %q, want SLS structured data %s", message, wantStructured)
-	}
-	if strings.Contains(message, "secret") {
-		t.Fatalf("message = %q, want access key secret omitted", message)
 	}
 	if !strings.Contains(message, `"path":"/orders"`) {
 		t.Fatalf("message = %q, want JSON log entry", message)

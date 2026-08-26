@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/httpclient"
 	projectjson "github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -115,7 +116,7 @@ func (p *Plugin) PostInit() error {
 		p.config.SSLVerify = new(true)
 	}
 	if p.client == nil {
-		p.client = &http.Client{Timeout: 10 * time.Second}
+		p.client = &http.Client{Transport: httpclient.NewTransport(), Timeout: 10 * time.Second}
 	}
 	if p.insecureClient == nil {
 		p.insecureClient = insecureWolfClient(p.client)
@@ -353,9 +354,10 @@ func insecureWolfClient(base *http.Client) *http.Client {
 	client := *base
 	transport, ok := client.Transport.(*http.Transport)
 	if !ok || transport == nil {
-		transport = http.DefaultTransport.(*http.Transport)
+		transport = httpclient.NewTransport()
+	} else {
+		transport = transport.Clone()
 	}
-	transport = transport.Clone()
 	if transport.TLSClientConfig != nil {
 		transport.TLSClientConfig = transport.TLSClientConfig.Clone()
 	} else {

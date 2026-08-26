@@ -89,7 +89,7 @@ func (preparer *metadataPreparer) PrepareMetadata(
 		return runtime.MetadataView{}, errMetadataPreparationFailed
 	}
 
-	documents := make(map[string][]byte, len(expected))
+	documents := make(map[string]runtime.MetadataDocument, len(expected))
 	for _, key := range input.keys() {
 		if err := ctx.Err(); err != nil {
 			return runtime.MetadataView{}, err
@@ -114,11 +114,12 @@ func (preparer *metadataPreparer) PrepareMetadata(
 			return runtime.MetadataView{}, errMetadataPreparationFailed
 		}
 		occurrence := occurrences[metadataOccurrenceKey{resource: key, factory: key.ID}]
+		secrets := make(map[string]runtime.MetadataSecret)
 		if err := preparer.schemas.catalog.TransformDeclaredFields(
 			key.ID,
 			capability.SecretPluginMetadata,
 			document,
-			func(declaration capability.SecretDeclaration, _ string, raw any) (any, error) {
+			func(declaration capability.SecretDeclaration, pointer string, raw any) (any, error) {
 				if err := ctx.Err(); err != nil {
 					return raw, err
 				}
@@ -130,14 +131,12 @@ func (preparer *metadataPreparer) PrepareMetadata(
 				if err != nil {
 					return raw, errMetadataPreparationFailed
 				}
-				var plaintext string
-				if err := value.Use(func(resolved string) error {
-					plaintext = resolved
-					return nil
-				}); err != nil {
+				descriptor, err := value.Descriptor(capability.SecretPluginMetadata)
+				if err != nil {
 					return raw, errMetadataPreparationFailed
 				}
-				return plaintext, nil
+				secrets[pointer] = value
+				return descriptor.String(), nil
 			},
 		); err != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {
@@ -155,10 +154,10 @@ func (preparer *metadataPreparer) PrepareMetadata(
 		if err != nil {
 			return runtime.MetadataView{}, errMetadataPreparationFailed
 		}
-		documents[key.ID] = raw
+		documents[key.ID] = runtime.MetadataDocument{Document: raw, Secrets: secrets}
 	}
 
-	view, err := runtime.NewMetadataView(documents)
+	view, err := runtime.NewMetadataViewWithSecrets(documents)
 	if err != nil {
 		return runtime.MetadataView{}, errMetadataPreparationFailed
 	}

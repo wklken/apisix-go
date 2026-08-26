@@ -269,6 +269,10 @@ func TestMetadataPreparerMaterializesAzureMetadataWithExactOccurrence(t *testing
 	if got["master_apikey"] != "azure-secret" || got["master_clientid"] != "client-n" {
 		t.Fatalf("resolved Azure metadata = %#v", got)
 	}
+	var sibling map[string]any
+	if found, err := view.ForFactory("chaitin-waf").Decode("azure-functions", &sibling); err != nil || found {
+		t.Fatalf("foreign factory Decode() = (%v, %v), want scoped metadata hidden", found, err)
+	}
 	candidate, ok := attempt.Candidate(generation.DomainHTTP)
 	if !ok {
 		t.Fatal("Azure candidate is missing")

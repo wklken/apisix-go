@@ -6,6 +6,10 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	appconfig "github.com/wklken/apisix-go/pkg/config"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
+	graphql_proxy_cache "github.com/wklken/apisix-go/pkg/plugin/graphql_proxy_cache"
+	"github.com/wklken/apisix-go/pkg/plugin/public_api"
 	"github.com/wklken/apisix-go/pkg/resource"
 )
 
@@ -67,6 +71,42 @@ func TestCompileHTTPRejectsIncompleteInput(t *testing.T) {
 				t.Fatal("CompileHTTP() error = nil")
 			}
 		})
+	}
+}
+
+func TestCompileHTTPBindsGenerationGraphQLPurgeRegistry(t *testing.T) {
+	registry := graphql_proxy_cache.NewRegistry()
+	plugin := &graphql_proxy_cache.Plugin{}
+	plugin.Config().(*graphql_proxy_cache.Config).CacheStrategy = "memory"
+	plugin.SetDependencies(base.Dependencies{Config: &appconfig.EffectiveConfig{}})
+	plugin.SetPurgeRegistry(registry)
+	if err := plugin.Init(); err != nil {
+		t.Fatal(err)
+	}
+	plugin.SetResourceContext(resource.Route{ID: "route-1"}, resource.Service{})
+	if err := plugin.PostInit(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(plugin.Stop)
+
+	snapshot, err := CompileHTTP(context.Background(), CompileInput{
+		Revision:                  1,
+		StaticConfig:              &appconfig.Config{Plugins: []string{"graphql-proxy-cache"}},
+		PublicAPIRegistry:         public_api.NewRegistry(),
+		GraphQLProxyCacheRegistry: registry,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(
+		"PURGE",
+		"/apisix/plugin/graphql-proxy-cache/memory/route-1/cache-key",
+		nil,
+	)
+	response := httptest.NewRecorder()
+	snapshot.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("GraphQL purge status = %d, want %d", response.Code, http.StatusOK)
 	}
 }
 

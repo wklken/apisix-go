@@ -130,6 +130,7 @@ func TestPreparedGenerationExactDiscardClosesOnce(t *testing.T) {
 
 func TestPreparedGenerationCloseResidualRetainsOwnersUntilRetry(t *testing.T) {
 	prepared, cleanupCalls, detachCalls := preparedGenerationFixture(t)
+	prepared.taskFailure = func(runtime.TaskFailure) {}
 	tasks := runtime.NewTaskRegistry(context.Background(), nil)
 	prepared.tasks = tasks
 	if err := prepared.cleanup.Own(cleanupQuiesce, "generation-tasks", func(ctx context.Context) error {
@@ -173,7 +174,7 @@ func TestPreparedGenerationCloseResidualRetainsOwnersUntilRetry(t *testing.T) {
 		!errors.Is(first, errPreparedGenerationCleanupFailed) {
 		t.Fatalf("first discard = %v, residual = %#v", first, residual)
 	}
-	if prepared.cleanup == nil || prepared.tasks == nil || prepared.detach == nil ||
+	if prepared.cleanup == nil || prepared.tasks == nil || prepared.detach == nil || prepared.taskFailure == nil ||
 		cleanupCalls.Load() != 0 || detachCalls.Load() != 0 {
 		t.Fatal("incomplete close dropped or released cleanup, task, or detach ownership")
 	}
@@ -185,7 +186,7 @@ func TestPreparedGenerationCloseResidualRetainsOwnersUntilRetry(t *testing.T) {
 	if err := prepared.DiscardPrepared(context.Background(), set); err != nil {
 		t.Fatalf("retry discard = %v", err)
 	}
-	if prepared.cleanup != nil || prepared.tasks != nil || prepared.detach != nil ||
+	if prepared.cleanup != nil || prepared.tasks != nil || prepared.detach != nil || prepared.taskFailure != nil ||
 		cleanupCalls.Load() != 1 || detachCalls.Load() != 1 {
 		t.Fatal("terminal retry retained generation authority")
 	}

@@ -15,6 +15,7 @@ import (
 
 	"github.com/wklken/apisix-go/pkg/json"
 	"golang.org/x/net/http2"
+	"golang.org/x/sync/errgroup"
 )
 
 // DefaultMaxInFlight bounds the number of concurrently active response bodies
@@ -136,22 +137,96 @@ type Cluster struct {
 	transport   http.RoundTripper
 	observer    ClusterObserver
 	health      healthChecker
+	stopTasks   func(context.Context) error
 	closeIdle   func()
 	closed      atomic.Bool
 	closeOnce   sync.Once
 	maxInFlight int
 }
 
+// ClusterTaskOwner admits background work into the lifecycle owned by one
+// immutable cluster resource.
+type ClusterTaskOwner interface {
+	Go(component string, run func(context.Context) error) error
+}
+
+type standaloneClusterTasks struct {
+	ctx      context.Context
+	cancel   context.CancelFunc
+	group    errgroup.Group
+	waitDone chan struct{}
+	waitErr  error
+}
+
+func newStandaloneClusterTasks() *standaloneClusterTasks {
+	ctx, cancel := context.WithCancel(context.Background())
+	tasks := &standaloneClusterTasks{ctx: ctx, cancel: cancel, waitDone: make(chan struct{})}
+	context.AfterFunc(ctx, func() {
+		tasks.waitErr = tasks.group.Wait()
+		close(tasks.waitDone)
+	})
+	return tasks
+}
+
+func (tasks *standaloneClusterTasks) Go(_ string, run func(context.Context) error) error {
+	// Cluster construction admits every target synchronously before exposing
+	// the cluster. Stop begins errgroup.Wait only after construction completes
+	// or its admission loop has returned an error, so Go and Wait never race.
+	tasks.group.Go(func() error { return run(tasks.ctx) })
+	return nil
+}
+
+func (tasks *standaloneClusterTasks) Stop(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	tasks.cancel()
+	select {
+	case <-tasks.waitDone:
+		return tasks.waitErr
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 // NewCluster constructs a cluster that owns its transport, health checker,
 // admission limiter, and immutable configuration identity.
 func NewCluster(config ClusterConfig, observer ClusterObserver) (*Cluster, error) {
+	tasks := newStandaloneClusterTasks()
+	cluster, err := newCluster(config, observer, tasks, tasks.Stop)
+	if err != nil {
+		_ = tasks.Stop(context.Background())
+	}
+	return cluster, err
+}
+
+// NewOwnedCluster constructs a cluster whose active-health work is admitted
+// into the supplied resource-local task owner and stopped by stopTasks.
+func NewOwnedCluster(
+	config ClusterConfig,
+	observer ClusterObserver,
+	tasks ClusterTaskOwner,
+	stopTasks func(context.Context) error,
+) (*Cluster, error) {
+	if tasks == nil || stopTasks == nil {
+		return nil, errors.New("cluster task owner and stop callback are required")
+	}
+	return newCluster(config, observer, tasks, stopTasks)
+}
+
+func newCluster(
+	config ClusterConfig,
+	observer ClusterObserver,
+	tasks ClusterTaskOwner,
+	stopTasks func(context.Context) error,
+) (*Cluster, error) {
 	if config.HTTP2Cleartext {
 		transport := newCleartextHTTP2Transport(config.Transport)
 		base := newResponseHeaderTimeoutTransport(transport, config.Transport.responseHeaderTimeout)
-		return newClusterWithTransport(config, observer, base, transport.CloseIdleConnections)
+		return newOwnedClusterWithTransport(config, observer, tasks, stopTasks, base, transport.CloseIdleConnections)
 	}
 	transport := NewTransport(config.Transport)
-	return newClusterWithTransport(config, observer, transport, transport.CloseIdleConnections)
+	return newOwnedClusterWithTransport(config, observer, tasks, stopTasks, transport, transport.CloseIdleConnections)
 }
 
 func newCleartextHTTP2Transport(option TransportOption) *http2.Transport {
@@ -174,6 +249,22 @@ func newCleartextHTTP2Transport(option TransportOption) *http2.Transport {
 func newClusterWithTransport(
 	config ClusterConfig,
 	observer ClusterObserver,
+	base http.RoundTripper,
+	closeIdle func(),
+) (*Cluster, error) {
+	tasks := newStandaloneClusterTasks()
+	cluster, err := newOwnedClusterWithTransport(config, observer, tasks, tasks.Stop, base, closeIdle)
+	if err != nil {
+		_ = tasks.Stop(context.Background())
+	}
+	return cluster, err
+}
+
+func newOwnedClusterWithTransport(
+	config ClusterConfig,
+	observer ClusterObserver,
+	tasks ClusterTaskOwner,
+	stopTasks func(context.Context) error,
 	base http.RoundTripper,
 	closeIdle func(),
 ) (*Cluster, error) {
@@ -207,6 +298,7 @@ func newClusterWithTransport(
 		lb:          lb,
 		transport:   transport,
 		observer:    observer,
+		stopTasks:   stopTasks,
 		closeIdle:   closeIdle,
 		maxInFlight: maxInFlight,
 	}
@@ -218,7 +310,15 @@ func newClusterWithTransport(
 		}
 		if enabled {
 			checker := newActiveHealthChecker(active, healthAware, config.Targets, config.Name, observer, base)
-			checker.Start()
+			if err := checker.Start(tasks); err != nil {
+				stopErr := stopTasks(context.Background())
+				checker.Close()
+				healthAware.clearObserver()
+				if closeIdle != nil {
+					closeIdle()
+				}
+				return nil, errors.Join(err, stopErr)
+			}
 			cluster.health = checker
 		}
 	}
@@ -244,6 +344,21 @@ func (c *Cluster) MaxInFlight() int {
 // Close stops active health probes and closes idle upstream connections. It
 // is safe to call more than once.
 func (c *Cluster) Close() {
+	_ = c.CloseContext(context.Background())
+}
+
+// CloseContext stops resource-owned background tasks before releasing health
+// transports, observer attachment, or upstream idle connections. An
+// incomplete stop leaves all other ownership intact for an explicit retry.
+func (c *Cluster) CloseContext(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if c.stopTasks != nil {
+		if err := c.stopTasks(ctx); err != nil {
+			return err
+		}
+	}
 	c.closeOnce.Do(func() {
 		if c.health != nil {
 			c.health.Close()
@@ -256,6 +371,7 @@ func (c *Cluster) Close() {
 		}
 		c.closed.Store(true)
 	})
+	return nil
 }
 
 // Closed reports whether Close has been called. It exists only for

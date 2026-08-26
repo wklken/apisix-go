@@ -2,6 +2,8 @@ package compiler
 
 import (
 	"context"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -63,14 +65,36 @@ func (prepared *PreparedGeneration) acquireHTTPCluster(
 		func(context.Context) (*proxy.Cluster, func(context.Context) error, error) {
 			targets := slices.Collect(maps.Keys(owned.Targets))
 			observerLease := prepared.clusterObservers.acquire(owned.Name, targets)
-			cluster, createErr := proxy.NewCluster(owned, observerLease.Observer())
-			if createErr != nil {
+			resourceTasks := runtime.NewTaskRegistry(context.Background(), prepared.taskFailure)
+			owner, ownerErr := runtime.NewTaskOwner(
+				resourceTasks,
+				"core/proxy-cluster/"+hex.EncodeToString(digest[:]),
+				runtime.TaskCore,
+			)
+			if ownerErr != nil {
 				observerLease.Release()
-				return nil, nil, createErr
+				return nil, nil, ownerErr
+			}
+			stopTasks := func(stopCtx context.Context) error {
+				_, stopErr := resourceTasks.Stop(stopCtx)
+				return stopErr
+			}
+			cluster, createErr := proxy.NewOwnedCluster(
+				owned,
+				observerLease.Observer(),
+				owner,
+				stopTasks,
+			)
+			if createErr != nil {
+				_, stopErr := resourceTasks.Stop(context.Background())
+				observerLease.Release()
+				return nil, nil, errors.Join(createErr, stopErr)
 			}
 			observerLease.activate()
-			return cluster, func(context.Context) error {
-				cluster.Close()
+			return cluster, func(closeCtx context.Context) error {
+				if closeErr := cluster.CloseContext(closeCtx); closeErr != nil {
+					return closeErr
+				}
 				observerLease.Release()
 				return nil
 			}, nil

@@ -10,11 +10,136 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"golang.org/x/net/http2"
 )
+
+type blockingHealthObserver struct {
+	NopClusterObserver
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+type failSecondClusterTaskOwner struct {
+	tasks *standaloneClusterTasks
+	calls int
+	err   error
+}
+
+func (owner *failSecondClusterTaskOwner) Go(
+	component string,
+	run func(context.Context) error,
+) error {
+	owner.calls++
+	if owner.calls == 2 {
+		return owner.err
+	}
+	return owner.tasks.Go(component, run)
+}
+
+func TestOwnedClusterAdmissionFailureRollsBackTasksAndTransport(t *testing.T) {
+	config := testClusterConfig()
+	config.Targets = map[string]int{
+		"http://127.0.0.1:8080": 1,
+		"http://127.0.0.1:8081": 1,
+	}
+	config.Checks = map[string]any{"active": map[string]any{
+		"type": "http", "http_path": "/", "timeout": 1,
+		"healthy": map[string]any{"interval": 1, "successes": 1},
+		"unhealthy": map[string]any{
+			"interval": 1, "http_failures": 1, "tcp_failures": 1, "timeouts": 1,
+		},
+	}}
+	tasks := newStandaloneClusterTasks()
+	admissionErr := errors.New("second active health admission failed")
+	owner := &failSecondClusterTaskOwner{tasks: tasks, err: admissionErr}
+	var transportCloses atomic.Int32
+	cluster, err := newOwnedClusterWithTransport(
+		config,
+		NopClusterObserver{},
+		owner,
+		tasks.Stop,
+		roundTripperFunc(func(*http.Request) (*http.Response, error) {
+			return nil, errors.New("not dialed")
+		}),
+		func() { transportCloses.Add(1) },
+	)
+	if cluster != nil || !errors.Is(err, admissionErr) {
+		t.Fatalf("newOwnedClusterWithTransport() = (%p, %v), want nil/%v", cluster, err, admissionErr)
+	}
+	select {
+	case <-tasks.waitDone:
+	default:
+		t.Fatal("admission rollback did not stop and join admitted tasks")
+	}
+	if transportCloses.Load() != 1 {
+		t.Fatalf("admission rollback transport closes = %d, want 1", transportCloses.Load())
+	}
+}
+
+func (observer *blockingHealthObserver) SetHealth(string, string, bool) {
+	observer.once.Do(func() { close(observer.entered) })
+	<-observer.release
+}
+
+func TestClusterCloseContextRetriesAfterActiveHealthResidual(t *testing.T) {
+	config := testClusterConfig()
+	config.Checks = map[string]any{"active": map[string]any{
+		"type": "http", "http_path": "/", "timeout": 1,
+		"healthy": map[string]any{"interval": 1, "successes": 1},
+		"unhealthy": map[string]any{
+			"interval": 1, "http_failures": 1, "tcp_failures": 1, "timeouts": 1,
+			"http_statuses": []any{http.StatusInternalServerError},
+		},
+	}}
+	observer := &blockingHealthObserver{entered: make(chan struct{}), release: make(chan struct{})}
+	tasks := newStandaloneClusterTasks()
+	var transportCloses atomic.Int32
+	cluster, err := newOwnedClusterWithTransport(
+		config,
+		observer,
+		tasks,
+		tasks.Stop,
+		roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusInternalServerError,
+				Body:       http.NoBody,
+				Request:    request,
+			}, nil
+		}),
+		func() { transportCloses.Add(1) },
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-observer.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("active health transition did not reach observer")
+	}
+
+	short, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	err = cluster.CloseContext(short)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("first CloseContext() = %v, want deadline", err)
+	}
+	if cluster.Closed() || transportCloses.Load() != 0 {
+		t.Fatalf("incomplete close released cluster=%t transport=%d", cluster.Closed(), transportCloses.Load())
+	}
+
+	close(observer.release)
+	if err := cluster.CloseContext(context.Background()); err != nil {
+		t.Fatalf("retry CloseContext() error = %v", err)
+	}
+	if !cluster.Closed() || transportCloses.Load() != 1 {
+		t.Fatalf("terminal close released cluster=%t transport=%d", cluster.Closed(), transportCloses.Load())
+	}
+}
 
 func testClusterConfig() ClusterConfig {
 	return ClusterConfig{

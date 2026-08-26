@@ -31,6 +31,7 @@ type PreparedGeneration struct {
 	registry           *runtime.ResourceRegistry
 	observers          WorkerRuntimeObservers
 	clusterObservers   *clusterObserverRegistry
+	taskFailure        func(runtime.TaskFailure)
 	materializer       secret.Materializer
 	cleanup            *cleanupStack
 	detach             func()
@@ -277,6 +278,7 @@ func (prepared *PreparedGeneration) clearTerminalAuthorities() func() {
 	prepared.registry = nil
 	prepared.observers = WorkerRuntimeObservers{}
 	prepared.clusterObservers = nil
+	prepared.taskFailure = nil
 	prepared.materializer = nil
 	prepared.trustedClientCAPEM = nil
 	prepared.cleanup = nil

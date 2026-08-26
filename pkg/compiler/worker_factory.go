@@ -462,6 +462,7 @@ func (factory *WorkerCompilerFactory) transferRegisteredGeneration(
 		registry: factory.registry, materializer: factory.materializer, cleanup: cleanup,
 		observers:          factory.observers,
 		clusterObservers:   factory.clusterObservers,
+		taskFailure:        onFailure,
 		bindingOps:         factory.bindingOps.withDefaults(attemptID),
 		trustedClientCAPEM: bytes.Clone(factory.trustedClientCAPEM),
 	}

@@ -2,13 +2,18 @@ package server
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"go/ast"
 	"go/parser"
 	"go/token"
 	"maps"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -22,8 +27,11 @@ import (
 	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/generation"
+	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/observability/metrics"
 	"github.com/wklken/apisix-go/pkg/proxy"
+	"github.com/wklken/apisix-go/pkg/resource"
+	routepkg "github.com/wklken/apisix-go/pkg/route"
 	"github.com/wklken/apisix-go/pkg/runtime"
 	"github.com/wklken/apisix-go/pkg/secret"
 	streamruntime "github.com/wklken/apisix-go/pkg/stream"
@@ -33,6 +41,243 @@ type generationEngineFixture struct {
 	engine   *GenerationEngine
 	factory  *compiler.WorkerCompilerFactory
 	resolver *secret.GenerationSecretResolver
+}
+
+type activeHealthGenerationEngineFixture struct {
+	engine    *GenerationEngine
+	resolver  *secret.GenerationSecretResolver
+	effective *config.EffectiveConfig
+}
+
+type generationHealthGate struct {
+	entered     chan struct{}
+	release     chan struct{}
+	releaseOnce sync.Once
+}
+
+func (gate *generationHealthGate) AwaitEntered(t *testing.T) {
+	t.Helper()
+	select {
+	case <-gate.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("active health transition did not reach observer")
+	}
+}
+
+func (gate *generationHealthGate) Release() {
+	gate.releaseOnce.Do(func() { close(gate.release) })
+}
+
+type gatedGenerationClusterObserver struct {
+	proxy.NopClusterObserver
+	mu    sync.Mutex
+	gates []*generationHealthGate
+	next  int
+}
+
+func (observer *gatedGenerationClusterObserver) NextGate(t *testing.T) *generationHealthGate {
+	t.Helper()
+	gate := &generationHealthGate{entered: make(chan struct{}), release: make(chan struct{})}
+	observer.mu.Lock()
+	observer.gates = append(observer.gates, gate)
+	observer.mu.Unlock()
+	t.Cleanup(gate.Release)
+	return gate
+}
+
+func (observer *gatedGenerationClusterObserver) SetHealth(string, string, bool) {
+	observer.mu.Lock()
+	if observer.next >= len(observer.gates) {
+		observer.mu.Unlock()
+		return
+	}
+	gate := observer.gates[observer.next]
+	observer.next++
+	observer.mu.Unlock()
+	close(gate.entered)
+	<-gate.release
+}
+
+func newActiveHealthGenerationEngineFixture(
+	t *testing.T,
+) (*activeHealthGenerationEngineFixture, *gatedGenerationClusterObserver, string) {
+	t.Helper()
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(upstream.Close)
+	manifest, err := capability.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := capability.NewSecretDeclarationCatalog(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encryption := data_encryption.NewService(false, nil, catalog)
+	resolver, err := secret.NewGenerationSecretResolver(encryption)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profiles := config.ProfileSelection{
+		Compatibility: config.CompatibilityTarget(manifest.Target.Name),
+		Security:      config.SecurityCompat,
+	}
+	effective := &config.EffectiveConfig{
+		Config: config.Config{
+			CompatibilityTarget:  profiles.Compatibility,
+			SecurityProfile:      profiles.Security,
+			QualificationProfile: profiles.Qualification,
+		},
+		Profiles: profiles,
+	}
+	observer := &gatedGenerationClusterObserver{}
+	factory, err := compiler.NewWorkerCompilerFactory(
+		manifest,
+		effective,
+		secret.NewMaterializer(encryption, resolver),
+		compiler.WorkerRuntimeObservers{Cluster: observer, Stream: func(streamruntime.Result) {}},
+	)
+	if err != nil {
+		_ = resolver.Close(context.Background())
+		t.Fatal(err)
+	}
+	engine, err := NewGenerationEngine(&Server{}, factory)
+	if err != nil {
+		_ = factory.Close(context.Background())
+		_ = resolver.Close(context.Background())
+		t.Fatal(err)
+	}
+	if err := engine.InstallRecovery(context.Background(), generation.RecoveryState{}); err != nil {
+		_ = engine.Close(context.Background())
+		_ = resolver.Close(context.Background())
+		t.Fatal(err)
+	}
+	fixture := &activeHealthGenerationEngineFixture{
+		engine: engine, resolver: resolver, effective: effective,
+	}
+	t.Cleanup(func() {
+		if err := engine.Close(context.Background()); err != nil {
+			t.Errorf("GenerationEngine.Close() error = %v", err)
+		}
+		if err := resolver.Close(context.Background()); err != nil {
+			t.Errorf("GenerationSecretResolver.Close() error = %v", err)
+		}
+	})
+	return fixture, observer, upstream.URL
+}
+
+func activeHealthGenerationInput(
+	t *testing.T,
+	fixture *activeHealthGenerationEngineFixture,
+	revision uint64,
+	target string,
+) (generation.ApplyTicket, generation.Snapshot, string) {
+	t.Helper()
+	parsed, err := url.Parse(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(parsed.Port())
+	if err != nil {
+		t.Fatal(err)
+	}
+	route := resource.Route{
+		ID: "active-health", Uri: "/active-health",
+		Upstream: resource.Upstream{
+			Scheme: "http",
+			Nodes:  []resource.Node{{Host: parsed.Hostname(), Port: port, Weight: 1}},
+			Checks: map[string]any{"active": map[string]any{
+				"type": "http", "http_path": "/", "timeout": 1,
+				"healthy": map[string]any{"interval": 1, "successes": 1},
+				"unhealthy": map[string]any{
+					"interval": 1, "http_failures": 1, "tcp_failures": 1, "timeouts": 1,
+					"http_statuses": []any{http.StatusInternalServerError},
+				},
+			}},
+		},
+	}
+	raw, err := json.Marshal(route)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resources := []generation.Resource{{
+		Key: generation.ResourceKey{Kind: "routes", ID: route.ID}, Value: raw,
+	}}
+	desired, err := generation.NewSnapshot(revision, resources, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	planned, err := routepkg.PlanRouteUpstream(
+		route,
+		resource.Service{},
+		nil,
+		nil,
+		&fixture.effective.Config,
+	)
+	if err != nil || planned.ClusterConfig == nil {
+		t.Fatalf("PlanRouteUpstream() = %#v, %v", planned.ClusterConfig, err)
+	}
+	digest, err := planned.ClusterConfig.Key()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ticket := generation.ApplyTicket{
+		DesiredRevision: revision,
+		DesiredDigest:   desired.Digest(),
+		Cursor: generation.ProviderCursor{
+			Provider: "generation-engine-active-health", Revision: strconv.FormatUint(revision, 10),
+		},
+		RequiredDomains: []generation.Domain{generation.DomainHTTP},
+	}
+	return ticket, desired, "core/proxy-cluster/" + hex.EncodeToString(digest[:]) + "/active-health"
+}
+
+func TestGenerationEngineDiscardRetriesHTTPClusterResourceFinalization(t *testing.T) {
+	fixture, observer, target := newActiveHealthGenerationEngineFixture(t)
+	firstGate := observer.NextGate(t)
+	firstTicket, firstDesired, wantOwner := activeHealthGenerationInput(t, fixture, 1, target)
+	firstSet, err := fixture.engine.Prepare(context.Background(), firstTicket, firstDesired, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstGate.AwaitEntered(t)
+
+	short, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	first := fixture.engine.DiscardPrepared(short, firstSet)
+	var residual *runtime.TaskResidualError
+	if !errors.As(first, &residual) || !errors.Is(first, context.DeadlineExceeded) ||
+		!reflect.DeepEqual(residual.Residuals(), []runtime.TaskResidual{{Owner: wantOwner}}) {
+		t.Fatalf("first discard = %v, residuals = %v", first, residual)
+	}
+	key := mustEnginePreparedKey(t, firstSet)
+	if fixture.engine.pending[key] == nil {
+		t.Fatal("resource-finalization residual detached the Prepared/factory owner")
+	}
+
+	firstGate.Release()
+	if err := fixture.engine.DiscardPrepared(context.Background(), firstSet); err != nil {
+		t.Fatalf("retry discard = %v", err)
+	}
+	if fixture.engine.pending[key] != nil {
+		t.Fatal("terminal retry retained pending ownership")
+	}
+
+	secondGate := observer.NextGate(t)
+	secondTicket, secondDesired, secondOwner := activeHealthGenerationInput(t, fixture, 2, target)
+	if secondOwner != wantOwner {
+		t.Fatalf("same config owner changed: %q / %q", wantOwner, secondOwner)
+	}
+	secondSet, err := fixture.engine.Prepare(context.Background(), secondTicket, secondDesired, nil)
+	if err != nil {
+		t.Fatalf("same-key Prepare after retry = %v", err)
+	}
+	secondGate.AwaitEntered(t)
+	secondGate.Release()
+	if err := fixture.engine.DiscardPrepared(context.Background(), secondSet); err != nil {
+		t.Fatal(err)
+	}
 }
 
 var _ func(*Server, *compiler.WorkerCompilerFactory) (*GenerationEngine, error) = NewGenerationEngine

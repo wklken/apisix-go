@@ -483,6 +483,13 @@ func TestSSERequestCancelDrainsThenJoins(t *testing.T) {
 	sess := waitForMCPBridgeSession(t, p)
 	<-writer.blocked
 	waitForMCPBridgeChildrenReady(t, gate, 1)
+	bufferDeadline := time.Now().Add(time.Second)
+	for len(sess.events) < 2 {
+		if time.Now().After(bufferDeadline) {
+			t.Fatalf("buffered event count = %d, want 2", len(sess.events))
+		}
+		time.Sleep(time.Millisecond)
+	}
 	cancel()
 	close(writer.release)
 	waitForMCPBridgeMapEmpty(t, p)

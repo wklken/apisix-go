@@ -188,12 +188,12 @@ if grep -Eq 'TestPluginIntegration|make test-integration|-write|generate-capabil
 fi
 
 require_make_target_body generate-capabilities \
-	$'\tgo run ./cmd/capability-gen -repo-root . -write'
+	$'\t$(GO_CACHE_RUNNER) go run ./cmd/capability-gen -repo-root . -write'
 require_make_target_body check-capability-drift \
-	$'\tgo run ./cmd/capability-gen -repo-root . -check'
+	$'\t$(GO_CACHE_RUNNER) go run ./cmd/capability-gen -repo-root . -check'
 status_target_body=$(printf '\t%s\n\t%s' \
-	"go test ./pkg/capability ./pkg/config ./pkg/plugin -run '^(TestLoadedManifest|TestManifest|TestProfileSelection|TestCapabilityManifest|TestCapabilityRegistry)' -count=1" \
-	"APISIX_GO_SKIP_PLUGIN_INTEGRATION=1 go test ./t/plugin -run '^(TestCapabilityManifestSelection|TestManifestCorpusValidates|TestUpstreamCorpusAccountingWithoutSourceCheckout|TestCorpusEvidenceMatchesCompatibilityTarget)\$\$' -count=1")
+	"\$(GO_CACHE_RUNNER) go test ./pkg/capability ./pkg/config ./pkg/plugin -run '^(TestLoadedManifest|TestManifest|TestProfileSelection|TestCapabilityManifest|TestCapabilityRegistry)' -count=1" \
+	"APISIX_GO_SKIP_PLUGIN_INTEGRATION=1 \$(GO_CACHE_RUNNER) go test ./t/plugin -run '^(TestCapabilityManifestSelection|TestManifestCorpusValidates|TestUpstreamCorpusAccountingWithoutSourceCheckout|TestCorpusEvidenceMatchesCompatibilityTarget)\$\$' -count=1")
 require_make_target_body test-capability-status "$status_target_body"
 
 printf 'capability status workflow contract: PASS\n'

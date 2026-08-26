@@ -128,20 +128,24 @@ require_pattern '-X[[:space:]]+[[:punct:]]?github\.com/wklken/apisix-go/pkg/vers
 require_pattern '-X[[:space:]]+[[:punct:]]?github\.com/wklken/apisix-go/pkg/version\.Commit=\$\(COMMIT\)' "$makefile"
 require_pattern '-X[[:space:]]+[[:punct:]]?github\.com/wklken/apisix-go/pkg/version\.BuildTime=\$\(BUILD_TIME\)' "$makefile"
 require_pattern '-X[[:space:]]+[[:punct:]]?github\.com/wklken/apisix-go/pkg/version\.GoVersion=\$\(GO_VERSION\)' "$makefile"
-require_fixed 'APISIX_GO_SKIP_PLUGIN_INTEGRATION=1 go test ./t/plugin -count=1' "$makefile"
+require_fixed 'GO_CACHE_RUNNER ?= bash scripts/go_cache.sh run --' "$makefile"
+require_fixed 'APISIX_GO_SKIP_PLUGIN_INTEGRATION=1 $(GO_CACHE_RUNNER) go test ./t/plugin -count=1' "$makefile"
 require_fixed '.PHONY: generate-capabilities' "$makefile"
 require_fixed '.PHONY: check-capability-drift' "$makefile"
 require_fixed '.PHONY: test-capability-status' "$makefile"
 require_make_target_body generate-capabilities \
-    $'\tgo run ./cmd/capability-gen -repo-root . -write'
+    $'\t$(GO_CACHE_RUNNER) go run ./cmd/capability-gen -repo-root . -write'
 require_make_target_body check-capability-drift \
-    $'\tgo run ./cmd/capability-gen -repo-root . -check'
+    $'\t$(GO_CACHE_RUNNER) go run ./cmd/capability-gen -repo-root . -check'
 status_target_body=$(printf '\t%s\n\t%s' \
-    "go test ./pkg/capability ./pkg/config ./pkg/plugin -run '^(TestLoadedManifest|TestManifest|TestProfileSelection|TestCapabilityManifest|TestCapabilityRegistry)' -count=1" \
-    "APISIX_GO_SKIP_PLUGIN_INTEGRATION=1 go test ./t/plugin -run '^(TestCapabilityManifestSelection|TestManifestCorpusValidates|TestUpstreamCorpusAccountingWithoutSourceCheckout|TestCorpusEvidenceMatchesCompatibilityTarget)\$\$' -count=1")
+    "\$(GO_CACHE_RUNNER) go test ./pkg/capability ./pkg/config ./pkg/plugin -run '^(TestLoadedManifest|TestManifest|TestProfileSelection|TestCapabilityManifest|TestCapabilityRegistry)' -count=1" \
+    "APISIX_GO_SKIP_PLUGIN_INTEGRATION=1 \$(GO_CACHE_RUNNER) go test ./t/plugin -run '^(TestCapabilityManifestSelection|TestManifestCorpusValidates|TestUpstreamCorpusAccountingWithoutSourceCheckout|TestCorpusEvidenceMatchesCompatibilityTarget)\$\$' -count=1")
 require_make_target_body test-capability-status "$status_target_body"
 require_fixed '.PHONY: test-plugin-smoke' "$makefile"
-require_fixed 'APISIX_GO_PLUGIN_SMOKE_CASE="$(PLUGIN_SMOKE_CASE)" go test ./t/plugin -run '\''^TestPluginIntegration$$'\'' -count=1 -v' "$makefile"
+require_fixed 'APISIX_GO_PLUGIN_SMOKE_CASE="$(PLUGIN_SMOKE_CASE)" $(GO_CACHE_RUNNER) go test ./t/plugin -run '\''^TestPluginIntegration$$'\'' -count=1 -v' "$makefile"
+require_fixed '.PHONY: cache-gc-test' "$makefile"
+require_fixed '.PHONY: cache-gc' "$makefile"
+require_fixed '.PHONY: cache-clean-shared' "$makefile"
 require_job_fixed "$unit_workflow" build-and-unit 'run: make test-plugin-harness'
 require_job_fixed "$unit_workflow" build-and-unit 'run: bash scripts/release_gate_test.sh'
 require_job_fixed "$capability_status_workflow" capability-status 'run: bash scripts/capability_status_gate_test.sh'

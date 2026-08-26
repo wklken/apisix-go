@@ -20,7 +20,7 @@ Key runtime pieces:
 ## Setup Commands
 
 - Use Go 1.26 as the project target from `go.mod`. Run `source .envrc` before Go commands; it shares downloaded toolchains, modules, build cache, and installed tools across this repository's worktrees while keeping mutable task outputs inside the active worktree. It does not depend on GVM or a user-level Go environment file.
-- Download dependencies after sourcing `.envrc`: `source .envrc && go mod download`.
+- Download dependencies after sourcing `.envrc`: `source .envrc && scripts/go_cache.sh run -- go mod download`.
 - Install the golangci-lint linter and formatter: `make init`.
 - Do not run `make dep` casually. It runs `go mod tidy` and `go mod vendor`; use it only when dependency or vendoring changes are intentional.
 
@@ -51,14 +51,18 @@ path. Content-addressed/download state is shared; task outputs remain isolated:
 
 `source .envrc` is required for the current shell; `direnv allow` is not required. Do not run `go`, `go test`, `go build`, or `make` in a fresh shell before sourcing it, otherwise Go may fall back to user-level caches such as macOS `/private` paths and trigger unnecessary permission prompts. Verify the active paths with `make cache-status` or `env | rg '^(APISIX_GO_ROOT|APISIX_GO_SHARED_CACHE|GOPATH|GOBIN|GOCACHE|GOMODCACHE|GOLANGCI_LINT_CACHE|GOTMPDIR|TMPDIR|TEST_TELEMETRY_DIR)='`.
 
-Do not remove the main checkout's entire `.cache/`: it contains the shared cache and may be in use by other agents. `make clean` removes only the active worktree's application binary. After stopping the agent using a worktree, `make cache-clean-local` removes that worktree's temp/output directories and pre-migration duplicated Go/linter caches while preserving benchmark evidence, coverage, fixtures, and the shared cache. Stop all repository agents before manually clearing the exact shared path printed by `make cache-status`. Never commit `.cache/`.
+Make targets that use the shared Go build cache run through `scripts/go_cache.sh`, which registers an active lease for the command. Use the same runner for direct build, test, lint, install, and benchmark commands, for example `scripts/go_cache.sh run -- go test ./pkg/route -count=1`. A direct cache-using command outside the runner is invisible to coordinated cleanup.
+
+The runner checks cache pressure at most once per hour after the final active lease exits. It requests cleanup when `GOCACHE` reaches 50 GiB or filesystem free space falls to 40 GiB, and it limits automatic cleanup to once every 12 hours. Override `CACHE_GC_MAX_GIB`, `CACHE_GC_MIN_FREE_GIB`, `CACHE_GC_CHECK_INTERVAL`, or `CACHE_GC_COOLDOWN` only for a measured operational need. `make cache-gc` applies the thresholds immediately; `make cache-clean-shared` ignores thresholds but refuses to clean while a participating command is active. Test the protocol with `make cache-gc-test`.
+
+Do not remove the main checkout's entire `.cache/`: it contains the shared module cache, downloaded toolchain, and installed tools. `make clean` removes only the active worktree's application binary. After stopping the agent using a worktree, `make cache-clean-local` removes that worktree's temp/output directories and pre-migration duplicated Go/linter caches while preserving benchmark evidence, coverage, fixtures, and the shared cache. Use the coordinated targets instead of manually removing the shared build cache. Never commit `.cache/`.
 
 ## Development Workflow
 
 - Build the binary: `make build`. After sourcing `.envrc` (the agent/worktree workflow) this writes the worktree-local `.cache/out/apisix`; without `.envrc`, it writes `./apisix` at the repo root. Both are ignored by Git and can be removed with `make clean`.
 - Run the server after building: `make serve`.
 - Run with live rebuilds: `make live`. This uses `github.com/cosmtrek/air@v1.51.0`.
-- Run a specific config manually: `go run . -c conf/config.yaml`.
+- Run a specific config manually: `scripts/go_cache.sh run -- go run . -c conf/config.yaml`.
 - The default config path is `conf/config-default.yaml`; `conf/config.yaml` contains local overrides and an example admin key.
 - `conf/config-default.yaml` says not to modify default configurations there. Prefer custom settings in `conf/config.yaml`.
 - Running the server is not dependency-free: the current server starts an etcd watcher from `deployment.etcd` config and creates `apisix-go-store.db` in the working directory.
@@ -66,11 +70,11 @@ Do not remove the main checkout's entire `.cache/`: it contains the shared cache
 ## Testing Instructions
 
 - Repository-specific rule: verification is impact-scoped. This overrides generic instructions to run all existing tests, `make test`, or `go test ./...` after every code change.
-- Derive the smallest credible test set from the changed packages, imports, call sites, and behavior. Start with an exact test such as `source .envrc && go test ./pkg/plugin/redirect -run '^TestHandlerRedirectsWithRegexURI$' -count=1`, then expand only to directly affected package tests when needed.
+- Derive the smallest credible test set from the changed packages, imports, call sites, and behavior. Start with an exact test such as `source .envrc && scripts/go_cache.sh run -- go test ./pkg/plugin/redirect -run '^TestHandlerRedirectsWithRegexURI$' -count=1`, then expand only to directly affected package tests when needed.
 - Do not use `go test ./...`, `go test ./pkg/...`, or `make test` as routine validation. Run a repository-wide aggregation only when the user explicitly requests it or the change itself affects repository-wide test/build infrastructure and no narrower check can prove correctness.
-- Run `t/plugin` only when the change affects a specific integration manifest, the integration harness, or behavior that lacks a narrower test seam. Select the exact affected case, for example `source .envrc && go test ./t/plugin -run '^TestPluginIntegration/request-id/default-uuid-v4$' -count=1`; do not run `make test-integration` or the whole `t/plugin` package by default.
+- Run `t/plugin` only when the change affects a specific integration manifest, the integration harness, or behavior that lacks a narrower test seam. Select the exact affected case, for example `source .envrc && scripts/go_cache.sh run -- go test ./t/plugin -run '^TestPluginIntegration/request-id/default-uuid-v4$' -count=1`; do not run `make test-integration` or the whole `t/plugin` package by default.
 - Run only one real-process `t/plugin` command at a time because its cases use shared resources and fixed ports. Do not interrupt a relevant active run solely because it is slow when the process and its output/profile are still making progress.
-- For concurrency-sensitive changes, run the focused race gate as well, for example `source .envrc && go test -race ./pkg/etcd ./pkg/plugin/server_info ./pkg/server -count=1`.
+- For concurrency-sensitive changes, run the focused race gate as well, for example `source .envrc && scripts/go_cache.sh run -- go test -race ./pkg/etcd ./pkg/plugin/server_info ./pkg/server -count=1`.
 - Run a build smoke check for code changes: `source .envrc && make build`.
 - `make test` runs the broad `./cmd/... ./pkg/...` unit-test aggregation, while `make test-integration` runs the real-process `t/plugin` suite. Both are opt-in broad gates under the rule above. `make lint` runs golangci-lint with the repository configuration.
 - If a check already fails before your change, record the exact package, file, line, and message. Do not report a skipped or failing check as passing.
@@ -78,7 +82,7 @@ Do not remove the main checkout's entire `.cache/`: it contains the shared cache
 
 ## Performance Benchmarking
 
-Benchmark evidence is produced only through `scripts/benchmark.sh` via the Makefile `benchmark-*` targets; raw results, metadata, and profiles are written to the ignored `BENCH_DIR` (default `.cache/bench`) and never committed. Direct `go test -bench` runs are exploratory, not baseline evidence.
+Benchmark evidence is produced only through `scripts/benchmark.sh` via the Makefile `benchmark-*` targets; raw results, metadata, and profiles are written to the ignored `BENCH_DIR` (default `.cache/bench`) and never committed. Direct `go test -bench` runs through `scripts/go_cache.sh run --` are exploratory, not baseline evidence.
 
 Workflow:
 

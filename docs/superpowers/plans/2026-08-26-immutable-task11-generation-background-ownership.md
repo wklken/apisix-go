@@ -604,6 +604,8 @@ git diff --check
 - Modify: `pkg/plugin/logger_batch/processor.go`, `processor_test.go`
 - Modify: `pkg/plugin/base/types.go`, `types_test.go`
 - Modify: `pkg/plugin/error_log_logger/plugin.go`, `plugin_test.go`
+- Modify: `pkg/compiler/effective_binding_materializer.go`, `effective_binding_materializer_test.go`
+- Modify: `pkg/server/generation_engine.go`, `generation_engine_test.go`
 - Create: `pkg/server/task_residual_chain_test.go`
 - Modify every production result of:
 
@@ -704,6 +706,10 @@ The pre-admitted `/batch-shutdown` callback waits for `schedulerDone`, then `wor
 `StopWithCleanup(cleanup)` must register cleanup before initiating shutdown, synchronously initiate scheduler sealing, wait for `schedulerDone`, and return without waiting for `workersDone`. This is required so `error_log_logger.Plugin.Stop` can finish `/observer` before generation registry Stop snapshots residuals. `Shutdown(ctx)` initiates the same state machine and waits for terminal shutdown with the caller context; a deadline returns without releasing sink resources or hiding the still-owned worker/shutdown tasks. Concurrent/repeated Stop, Shutdown, registry cancellation, and final-worker exit must share the same exact-once state.
 
 Admission is atomic with publication: if scheduler, any worker, or shutdown task admission fails, seal the un-published processor, wake every admitted callback, wait for its private barriers, close the observer, and return the admission error. No constructor failure may publish a processor, retain entries, or leave an owner active.
+
+The real compiler chain also needs an opt-in pre-quiesce seam. The effective-binding creator registers a `cleanupQuiesce` step after `generation-tasks`; reverse cleanup order invokes a structural `QuiesceGenerationTasks()` hook before `TaskRegistry.Stop`. Only the creator instance may receive the hook: follower/shared leases must not borrow or retire it, and rollback must not quiesce an earlier shared owner. Every Task 8 batch logger implements the hook by calling its concrete idempotent `Stop`, so scheduler admission is sealed while delivery-owned sink cleanup remains deferred to `/batch-shutdown`. Generic plugin `Stop`, lease release, and all non-opt-in plugins keep the existing `cleanupRelease` ordering.
+
+When engine shutdown joins an active background retirement, its internal cancellation is transient evidence rather than the final residual snapshot. `closeRetirementOwners` must synchronously retry every retained owner with the public caller context in the same attempt. If that retry reaches the caller deadline, return the latest exact `TaskResidualError`, `context.DeadlineExceeded`, and the joined internal cancellation marker without retaining either transient in terminal replay. If the retry succeeds, discard the old cancellation. Do not return the old residual before the caller-bounded retry, and do not manufacture a deadline marker without performing that retry.
 
 - [ ] **Step 8: Run exact compatibility GREEN and race gates**
 

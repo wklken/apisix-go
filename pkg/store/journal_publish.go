@@ -7,7 +7,6 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -16,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/wklken/apisix-go/pkg/generation"
+	"github.com/wklken/apisix-go/pkg/json"
 	bolt "go.etcd.io/bbolt"
 )
 

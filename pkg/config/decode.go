@@ -1,7 +1,6 @@
 package config
 
 import (
-	"encoding/json"
 	"fmt"
 	"net"
 	"reflect"
@@ -12,6 +11,7 @@ import (
 	"time"
 
 	"github.com/go-viper/mapstructure/v2"
+	"github.com/wklken/apisix-go/pkg/json"
 )
 
 type staticExtensions struct {

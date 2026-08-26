@@ -4,11 +4,12 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/wklken/apisix-go/pkg/json"
 )
 
 func NewSnapshot(revision uint64, resources []Resource, tombstones []Tombstone) (Snapshot, error) {

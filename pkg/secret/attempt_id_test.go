@@ -161,7 +161,9 @@ func TestAttemptIDChangesForEveryCandidateMaterialIdentity(t *testing.T) {
 func TestAttemptIDChangesForEveryRecoveryMaterialIdentity(t *testing.T) {
 	baseRevisions := generation.RevisionSet{Desired: 17, HTTP: 13, Stream: 11}
 	basePublished := map[generation.Domain]generation.PublishedGeneration{
-		generation.DomainHTTP: generation.PublishedGeneration(attemptPublicationSet(t, false).Domains[generation.DomainHTTP]),
+		generation.DomainHTTP: generation.PublishedGeneration(
+			attemptPublicationSet(t, false).Domains[generation.DomainHTTP],
+		),
 	}
 	want := RecoveryAttemptID(baseRevisions, basePublished)
 	if want == (AttemptID{}) {
@@ -277,8 +279,9 @@ func TestCandidateAttemptIDV1Golden(t *testing.T) {
 
 func TestRecoveryAttemptIDV1Golden(t *testing.T) {
 	revisions := generation.RevisionSet{Desired: 17, HTTP: 13, Stream: 11}
+	httpPublication := attemptPublicationSet(t, false).Domains[generation.DomainHTTP]
 	published := map[generation.Domain]generation.PublishedGeneration{
-		generation.DomainHTTP: generation.PublishedGeneration(attemptPublicationSet(t, false).Domains[generation.DomainHTTP]),
+		generation.DomainHTTP: generation.PublishedGeneration(httpPublication),
 	}
 	got := RecoveryAttemptID(revisions, published)
 	const want = "e74d831dcb597391b2a5debd1fde629ec04d9ad8011b9b7ef09ea0e0b8179ce9"
@@ -361,7 +364,10 @@ func attemptSnapshot(t *testing.T, value []byte) generation.Snapshot {
 	return snapshot
 }
 
-func attemptPublicationCandidate(snapshot generation.Snapshot, domain generation.Domain) generation.PublicationCandidate {
+func attemptPublicationCandidate(
+	snapshot generation.Snapshot,
+	domain generation.Domain,
+) generation.PublicationCandidate {
 	return generation.PublicationCandidate{
 		Artifact: generation.GenerationArtifact{
 			Domain:   domain,

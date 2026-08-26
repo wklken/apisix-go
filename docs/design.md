@@ -66,9 +66,9 @@ Static configuration uses one presence-aware precedence chain:
 APISIXGO_* -> repeatable --set`. Maps merge recursively, sequences replace,
 and absent, null, false, zero, and empty string remain distinct. Each effective
 field retains provenance. Compatibility, security, and qualification are
-orthogonal selection axes; the removed `deployment.profile` must not be
-restored as a hidden combined mode. `EffectiveConfig` is defensively owned by
-the compiler factory and is never published as mutable global state.
+orthogonal selection axes; the removed combined profile selector must not be
+restored under another name. `EffectiveConfig` is defensively owned by the
+compiler factory and is never published as mutable global state.
 
 ### Durable desired-to-published transaction
 
@@ -282,7 +282,9 @@ repeatable `--set path=value` flags are applied last.
 before constructing the server and plugins. Configuration is not published as
 process-global state. The HTTP plugin allowlist and listener set must be
 non-empty, listeners must be valid, proxy connection limits must be positive,
-and the effective `etcd` provider must have endpoints and a prefix. See the
+and the effective `etcd` provider must have endpoints and a prefix. The startup
+plugin list comes from this validated effective configuration rather than
+mutable package-global state. See the
 [static-configuration program specification](superpowers/plans/2026-08-23-apisix-go-convergence-program-spec.md)
 and the [central capability manifest](../pkg/capability/manifest.yaml).
 
@@ -422,6 +424,28 @@ that domain. A failed prepare, stage, activation, or commit retains or restores
 the prior active bundle. Explicit deletion is a tombstone and cannot reuse
 last-good. URI registration and plugin materialization are attempt-owned and
 roll back with the prepared generation.
+
+#### Historical behavior before convergence: lifecycle
+
+WebSocket upgrades are admitted only when the effective route or service sets
+`enable_websocket: true`. Every WebSocket upgrade attempt skips response
+callbacks while request, authentication, access, before-proxy, and log phases
+run. For the candidate profile, a successful profile-allowed HTTP
+reverse-proxy tunnel remains subject to cluster admission and timeout limits;
+Kafka PubSub compatibility tunnels are outside that contract. Retiring a route
+generation closes its WebSocket connections. `SIGHUP` drains the server and
+returns an unsupported-reload error, so configuration changes require a new
+process rather than an in-process reload. Zipkin is v2-only, and OTel rejects
+`set_ngx_var` and non-zero `inactive_timeout` while retaining collector
+`request_timeout`.
+
+> **Superseded 2026-08-23:** route retirement and `SIGHUP` above describe the
+> pre-convergence implementation limitation, not the governing target. The
+> later [supervisor-generation child plan](superpowers/plans/2026-08-23-supervisor-worker-platform.md)
+> targets generation handoff that preserves ordinary hijacked connections.
+> See the [program specification](superpowers/plans/2026-08-23-apisix-go-convergence-program-spec.md),
+> [compatibility contract](architecture/compatibility-contract.md), and
+> [legacy conflict ledger](architecture/legacy-conflicts.md).
 
 #### Historical behavior before convergence: route schema
 

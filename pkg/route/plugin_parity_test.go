@@ -916,8 +916,17 @@ func TestProxyMirrorRouteChainPreservesMainRequestAndMirrors(t *testing.T) {
 		"http://route.example.com/original?x=1",
 		strings.NewReader("payload"),
 	)
+	req, lifecycle := apisixctx.EnsureRequestLifecycle(req, time.Now())
 	res := httptest.NewRecorder()
 	handler.ServeHTTP(res, req)
+	lifecycle.Complete(apisixctx.ResponseOutcome{
+		Kind:      apisixctx.RequestOutcomeCompleted,
+		Status:    res.Code,
+		Committed: true,
+	}, time.Now())
+	if finalization := lifecycle.FinalizeResult(); len(finalization.Failures) != 0 || finalization.FatalPanic != nil {
+		t.Fatalf("request finalization = %#v, want success", finalization)
+	}
 
 	if res.Code != http.StatusNoContent {
 		t.Fatalf("status = %d, want %d", res.Code, http.StatusNoContent)

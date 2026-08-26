@@ -39,6 +39,9 @@ apisix:
   node_listen:
     - ip: 0.0.0.0
       port: 9080
+apisix_go:
+  runtime_paths:
+    data_dir: /usr/local/apisix/data
 plugins: [request-id]
 deployment:
   role: data_plane

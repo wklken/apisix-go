@@ -343,6 +343,7 @@ type HTTPInput struct {
 	Scheme               string              `yaml:"scheme,omitempty"`
 	Version              string              `yaml:"version,omitempty"`
 	Path                 string              `yaml:"path"`
+	GenerationTimeout    time.Duration       `yaml:"generation_timeout,omitempty"`
 	Headers              map[string]string   `yaml:"headers,omitempty"`
 	HeaderValues         map[string][]string `yaml:"header_values,omitempty"`
 	Body                 string              `yaml:"body,omitempty"`
@@ -714,6 +715,7 @@ func (c *Case) hasScenario() bool {
 		c.Input.BodyRepeat != nil ||
 		c.Input.GRPC != nil ||
 		c.Input.Chunked ||
+		c.Input.GenerationTimeout != 0 ||
 		c.Upstream != nil ||
 		c.Output.Status != 0 ||
 		len(c.Output.Headers) > 0 ||
@@ -775,7 +777,7 @@ func (c *Case) validateScenario() error {
 		if c.Input.Method != "" || c.Input.Path != "" || len(c.Input.Headers) > 0 ||
 			len(c.Input.HeaderValues) > 0 || c.Input.Body != "" || c.Input.BodyBase64 != "" ||
 			c.Input.BodyRepeat != nil || c.Input.GRPC != nil ||
-			c.Input.Chunked ||
+			c.Input.Chunked || c.Input.GenerationTimeout != 0 ||
 			c.Upstream != nil || c.Output.Status != 0 || len(c.Output.Headers) > 0 || c.Output.Body != nil || c.Output.GRPC != nil ||
 			len(c.Output.StatusCounts) > 0 ||
 			c.Output.GzipBody != nil || c.Output.BrotliBody != nil || c.Output.Logs != nil || c.Output.SaveBodyLength != "" ||
@@ -953,6 +955,9 @@ func validateEnvironment(environment Environment, environmentUnset []string) err
 }
 
 func validateConfigProbeInput(input HTTPInput) error {
+	if input.GenerationTimeout != 0 {
+		return errors.New("input generation_timeout is not supported in config probes")
+	}
 	if input.Version != "" {
 		return errors.New("input version is not supported; config probes use HTTP/1.1")
 	}
@@ -1045,6 +1050,17 @@ func validateHTTPScenario(input HTTPInput, output HTTPOutput) error {
 	}
 	if input.Version != "" && input.Version != "1.0" && input.Version != "1.1" && input.Version != "2" {
 		return fmt.Errorf("input version %q is not supported", input.Version)
+	}
+	if input.GenerationTimeout < 0 {
+		return errors.New("input generation_timeout must not be negative")
+	}
+	if input.GenerationTimeout > 0 {
+		if input.Version != "" && input.Version != "1.1" {
+			return errors.New("input generation_timeout supports only HTTP/1.1")
+		}
+		if output.Status == http.StatusServiceUnavailable || len(output.StatusCounts) > 0 {
+			return errors.New("input generation_timeout requires a non-503 exact output status")
+		}
 	}
 	if input.BodyBase64 != "" {
 		if input.Body != "" || input.BodyRepeat != nil || input.GRPC != nil {

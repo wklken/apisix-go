@@ -37,7 +37,7 @@ cases:
         respond: [{status: 200, body: hello world}]
     steps:
       - name: valid-string-key-authenticates
-        input: {path: /hello, headers: {apikey: test-key}}
+        input: {path: /hello, generation_timeout: 5s, headers: {apikey: test-key}}
         output:
           status: 200
           body: {equals: hello world}

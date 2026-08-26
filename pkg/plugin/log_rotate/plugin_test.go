@@ -446,7 +446,10 @@ func TestRotateReopensFileLoggerAfterCurrentPathIsRecreated(t *testing.T) {
 	dir := t.TempDir()
 	access := filepath.Join(dir, "access.log")
 
+	tasks, owner := newRotationTasks(t, "plugin/test/file-logger/rotate", nil)
+	t.Cleanup(func() { stopTestRegistry(t, tasks) })
 	filePlugin := &file_logger.Plugin{}
+	filePlugin.SetDependencies(base.Dependencies{Tasks: owner})
 	if err := filePlugin.Init(); err != nil {
 		t.Fatalf("file logger Init() error = %v", err)
 	}

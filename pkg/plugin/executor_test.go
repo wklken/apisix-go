@@ -14,6 +14,7 @@ import (
 	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	appconfig "github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	corsplugin "github.com/wklken/apisix-go/pkg/plugin/cors"
 	requestcontext "github.com/wklken/apisix-go/pkg/plugin/request_context"
@@ -1610,6 +1611,7 @@ func (p *executorFilteredCORSPlugin) Handler(next http.Handler) http.Handler {
 func newExecutorRequestContextPlugin(t *testing.T, config requestcontext.Config) *requestcontext.Plugin {
 	t.Helper()
 	plugin := &requestcontext.Plugin{}
+	plugin.SetDependencies(base.Dependencies{Config: &appconfig.EffectiveConfig{}})
 	if err := plugin.Init(); err != nil {
 		t.Fatalf("request-context Init() error = %v", err)
 	}

@@ -1103,7 +1103,7 @@ func TestHarnessRunsTCPFixture(t *testing.T) {
 		}},
 	}
 
-	runCase(t, caseSpec)
+	runReadyCase(t, caseSpec)
 }
 
 func TestHarnessRunsUDPFixture(t *testing.T) {

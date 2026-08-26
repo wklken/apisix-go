@@ -525,6 +525,98 @@ func TestWaitForAppliedStateReportsLastProbeErrorAtTimeout(t *testing.T) {
 	}
 }
 
+func TestDoRequestAfterGenerationReadyRetriesOnlyUnavailableGeneration(t *testing.T) {
+	attempts := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		attempts++
+		if attempts < 3 {
+			http.Error(w, http.StatusText(http.StatusServiceUnavailable), http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(upstream.Close)
+
+	request, err := http.NewRequest(http.MethodPost, upstream.URL, strings.NewReader("payload"))
+	if err != nil {
+		t.Fatalf("NewRequest() error = %v", err)
+	}
+	response, err := doRequestAfterGenerationReady(upstream.Client(), request, 200*time.Millisecond)
+	if err != nil {
+		t.Fatalf("doRequestAfterGenerationReady() error = %v", err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode != http.StatusNoContent {
+		t.Fatalf("response status = %d, want %d", response.StatusCode, http.StatusNoContent)
+	}
+	if attempts != 3 {
+		t.Fatalf("request attempts = %d, want 3", attempts)
+	}
+}
+
+func TestDoRequestAfterGenerationReadyDoesNotConsumeSuccessfulBody(t *testing.T) {
+	body := &generationReadinessBody{}
+	client := &http.Client{Transport: generationReadinessRoundTripper(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       body,
+			Header:     make(http.Header),
+		}, nil
+	})}
+	request, err := http.NewRequest(http.MethodGet, "http://example.test/stream", nil)
+	if err != nil {
+		t.Fatalf("NewRequest() error = %v", err)
+	}
+	response, err := doRequestAfterGenerationReady(client, request, time.Second)
+	if err != nil {
+		t.Fatalf("doRequestAfterGenerationReady() error = %v", err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	if body.read {
+		t.Fatal("successful response body was consumed by generation readiness")
+	}
+}
+
+type generationReadinessRoundTripper func(*http.Request) (*http.Response, error)
+
+func (roundTrip generationReadinessRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
+	return roundTrip(request)
+}
+
+type generationReadinessBody struct {
+	read bool
+}
+
+func (body *generationReadinessBody) Read([]byte) (int, error) {
+	body.read = true
+	return 0, io.EOF
+}
+
+func (*generationReadinessBody) Close() error {
+	return nil
+}
+
+func TestIsolatedRuntimeOverridesOwnsAllMutablePaths(t *testing.T) {
+	original := map[string]any{"plugins": []any{"key-auth"}}
+	workDir := t.TempDir()
+	overrides, err := isolatedRuntimeOverrides(original, workDir)
+	if err != nil {
+		t.Fatalf("isolatedRuntimeOverrides() error = %v", err)
+	}
+	if _, exists := original["apisix_go"]; exists {
+		t.Fatal("isolatedRuntimeOverrides() mutated its input")
+	}
+	paths := overrides["apisix_go"].(map[string]any)["runtime_paths"].(map[string]any)
+	for name, suffix := range map[string]string{
+		"data_dir": "data", "runtime_dir": "run", "log_dir": "log", "temp_dir": "tmp",
+	} {
+		want := filepath.Join(workDir, suffix)
+		if got := paths[name]; got != want {
+			t.Fatalf("runtime path %s = %v, want %s", name, got, want)
+		}
+	}
+}
+
 func TestRenderRuntimeConfigPreservesRequiredPlugins(t *testing.T) {
 	rendered, err := renderRuntimeConfig(19080, map[string]any{
 		"plugins": []any{"node-status"},
@@ -647,7 +739,7 @@ func TestHarnessRunsStandaloneRoute(t *testing.T) {
 		},
 	}
 
-	runCase(t, caseSpec)
+	runReadyCase(t, caseSpec)
 }
 
 func TestHarnessRunsRequestSequence(t *testing.T) {
@@ -701,7 +793,7 @@ func TestHarnessRunsRequestSequence(t *testing.T) {
 		},
 	}
 
-	runCase(t, caseSpec)
+	runReadyCase(t, caseSpec)
 }
 
 func TestHarnessFixtureEchoesRequestBody(t *testing.T) {
@@ -745,7 +837,7 @@ func TestHarnessFixtureEchoesRequestBody(t *testing.T) {
 		},
 	}
 
-	runCase(t, caseSpec)
+	runReadyCase(t, caseSpec)
 }
 
 func TestHarnessExpandsIterationPlaceholders(t *testing.T) {
@@ -816,7 +908,7 @@ func TestHarnessExpandsIterationPlaceholders(t *testing.T) {
 		},
 	}
 
-	runCase(t, caseSpec)
+	runReadyCase(t, caseSpec)
 }
 
 func TestHarnessDoesNotBlockUnassertedFixtureCaptures(t *testing.T) {
@@ -855,7 +947,7 @@ func TestHarnessDoesNotBlockUnassertedFixtureCaptures(t *testing.T) {
 		},
 	}
 
-	runCase(t, caseSpec)
+	runReadyCase(t, caseSpec)
 }
 
 func TestHarnessRepeatsStepsAndChecksGeneratedHeaders(t *testing.T) {
@@ -891,7 +983,7 @@ func TestHarnessRepeatsStepsAndChecksGeneratedHeaders(t *testing.T) {
 		},
 	}
 
-	runCase(t, caseSpec)
+	runReadyCase(t, caseSpec)
 }
 
 func TestHarnessReusesResponseCookiesInLaterSteps(t *testing.T) {
@@ -947,7 +1039,7 @@ func TestHarnessReusesResponseCookiesInLaterSteps(t *testing.T) {
 		},
 	}
 
-	runCase(t, caseSpec)
+	runReadyCase(t, caseSpec)
 }
 
 func TestHarnessCanOmitStoredCookies(t *testing.T) {
@@ -1002,7 +1094,7 @@ func TestHarnessCanOmitStoredCookies(t *testing.T) {
 		},
 	}
 
-	runCase(t, caseSpec)
+	runReadyCase(t, caseSpec)
 }
 
 func TestHarnessCapturesResponseHeaderForLaterStep(t *testing.T) {
@@ -1058,7 +1150,7 @@ func TestHarnessCapturesResponseHeaderForLaterStep(t *testing.T) {
 		},
 	}
 
-	runCase(t, caseSpec)
+	runReadyCase(t, caseSpec)
 }
 
 func TestHarnessSendsRepeatedRequestHeaders(t *testing.T) {
@@ -1093,7 +1185,7 @@ func TestHarnessSendsRepeatedRequestHeaders(t *testing.T) {
 		Output: HTTPOutput{Status: http.StatusOK, Body: &Matcher{Equals: &body}},
 	}
 
-	runCase(t, caseSpec)
+	runReadyCase(t, caseSpec)
 }
 
 func TestHarnessGeneratesRepeatedChunkedBody(t *testing.T) {
@@ -1126,7 +1218,7 @@ func TestHarnessGeneratesRepeatedChunkedBody(t *testing.T) {
 		Output: HTTPOutput{Status: http.StatusOK},
 	}
 
-	runCase(t, caseSpec)
+	runReadyCase(t, caseSpec)
 }
 
 func TestHarnessRunsNamedFixtures(t *testing.T) {
@@ -1187,7 +1279,7 @@ func TestHarnessRunsNamedFixtures(t *testing.T) {
 		},
 	}
 
-	runCase(t, caseSpec)
+	runReadyCase(t, caseSpec)
 }
 
 func TestHTTPFixtureResponseDelay(t *testing.T) {
@@ -1298,7 +1390,7 @@ func TestHarnessPassesCaseEnvironmentOnlyToConfiguredChild(t *testing.T) {
 		}},
 	}
 
-	runCase(t, caseSpec)
+	runReadyCase(t, caseSpec)
 	if got := os.Getenv(environmentVariable); got != "ambient-user" {
 		t.Fatalf("parent %s = %q, want ambient value preserved", environmentVariable, got)
 	}
@@ -1390,7 +1482,7 @@ func TestHarnessRunsChunkedFixture(t *testing.T) {
 		Output: HTTPOutput{Status: http.StatusOK, Body: &Matcher{Equals: &body}},
 	}
 
-	runCase(t, caseSpec)
+	runReadyCase(t, caseSpec)
 }
 
 func TestHarnessDisconnectsClient(t *testing.T) {
@@ -1482,7 +1574,7 @@ func TestHarnessAssertsConcurrentStatusCounts(t *testing.T) {
 		}},
 	}
 
-	runCase(t, caseSpec)
+	runReadyCase(t, caseSpec)
 }
 
 func TestHarnessHoldsInflightRequestsWhileRunningProbes(t *testing.T) {
@@ -1558,7 +1650,7 @@ func TestHarnessHoldsInflightRequestsWhileRunningProbes(t *testing.T) {
 		}},
 	}
 
-	runCase(t, caseSpec)
+	runReadyCase(t, caseSpec)
 }
 
 func TestHarnessAssertsFlushedChunks(t *testing.T) {
@@ -1599,7 +1691,7 @@ func TestHarnessAssertsFlushedChunks(t *testing.T) {
 		},
 	}
 
-	runCase(t, caseSpec)
+	runReadyCase(t, caseSpec)
 }
 
 func TestHarnessRunsAWSEventStreamFixture(t *testing.T) {
@@ -1771,7 +1863,7 @@ func TestHarnessSupportsHTTP10AndGzipBody(t *testing.T) {
 		},
 	}
 
-	runCase(t, caseSpec)
+	runReadyCase(t, caseSpec)
 }
 
 func TestHarnessSupportsBrotliBody(t *testing.T) {
@@ -1821,7 +1913,7 @@ func TestHarnessSupportsBrotliBody(t *testing.T) {
 		}},
 	}
 
-	runCase(t, caseSpec)
+	runReadyCase(t, caseSpec)
 }
 
 func TestHarnessSupportsElapsedAssertions(t *testing.T) {
@@ -1864,7 +1956,7 @@ func TestHarnessSupportsElapsedAssertions(t *testing.T) {
 		}},
 	}
 
-	runCase(t, caseSpec)
+	runReadyCase(t, caseSpec)
 }
 
 func TestReplaceFixturePlaceholders(t *testing.T) {
@@ -3072,6 +3164,19 @@ func renderRuntimeConfigForStandalone(
 	return renderRuntimeConfig(port, overrides)
 }
 
+func isolatedRuntimeOverrides(overrides map[string]any, workDir string) (map[string]any, error) {
+	isolated, err := cloneConfigMap(overrides)
+	if err != nil {
+		return nil, fmt.Errorf("clone isolated runtime config: %w", err)
+	}
+	paths := ensureMap(ensureMap(isolated, "apisix_go"), "runtime_paths")
+	paths["data_dir"] = filepath.Join(workDir, "data")
+	paths["runtime_dir"] = filepath.Join(workDir, "run")
+	paths["log_dir"] = filepath.Join(workDir, "log")
+	paths["temp_dir"] = filepath.Join(workDir, "tmp")
+	return isolated, nil
+}
+
 func collectStandalonePluginNames(config map[string]any, pluginNames map[string]struct{}) {
 	resourceKinds := [...]string{
 		"routes",
@@ -3163,6 +3268,14 @@ func replaceFixturePlaceholders(data []byte, replacements map[string]string) ([]
 }
 
 func runCase(t *testing.T, spec Case) {
+	runCaseInternal(t, spec, false)
+}
+
+func runReadyCase(t *testing.T, spec Case) {
+	runCaseInternal(t, spec, true)
+}
+
+func runCaseInternal(t *testing.T, spec Case, waitForGeneration bool) {
 	t.Helper()
 	if err := spec.validate(); err != nil {
 		t.Fatalf("validate case: %v", err)
@@ -3245,6 +3358,10 @@ func runCase(t *testing.T, spec Case) {
 			t.Fatalf("prepare frontend TLS: %v", err)
 		}
 	}
+	runtimeOverrides, err = isolatedRuntimeOverrides(runtimeOverrides, workDir)
+	if err != nil {
+		t.Fatalf("isolate runtime paths: %v", err)
+	}
 	confDir := filepath.Join(workDir, "conf")
 	if err := os.MkdirAll(confDir, 0o755); err != nil {
 		t.Fatalf("create conf directory: %v", err)
@@ -3316,6 +3433,14 @@ func runCase(t *testing.T, spec Case) {
 			stopped = true
 			logs, _ := process.logs()
 			t.Fatalf("wait for APISIX TLS: %v\nchild logs:\n%s", err, logs)
+		}
+	}
+	if waitForGeneration {
+		if err := waitForGenerationReady(address, 5*time.Second); err != nil {
+			_ = process.stop()
+			stopped = true
+			logs, _ := process.logs()
+			t.Fatalf("wait for APISIX generation: %v\nchild logs:\n%s", err, logs)
 		}
 	}
 	integrationStartupMu.Unlock()
@@ -3514,7 +3639,6 @@ func runCase(t *testing.T, spec Case) {
 			requestFailed = true
 		}
 	}
-
 	if fixture != nil && fixtureAssertionsConfigured(spec.Upstream.Expect) {
 		select {
 		case received := <-fixture.requests:
@@ -3564,6 +3688,28 @@ func runCase(t *testing.T, spec Case) {
 			}
 		}
 	}
+}
+
+func waitForGenerationReady(address string, timeout time.Duration) error {
+	client := &http.Client{Timeout: 200 * time.Millisecond}
+	return waitForAppliedState(timeout, 20*time.Millisecond, func() error {
+		response, err := client.Get("http://" + address + "/readyz")
+		if err != nil {
+			return err
+		}
+		body, readErr := io.ReadAll(response.Body)
+		closeErr := response.Body.Close()
+		if readErr != nil {
+			return readErr
+		}
+		if closeErr != nil {
+			return closeErr
+		}
+		if response.StatusCode != http.StatusOK {
+			return fmt.Errorf("readiness status = %d, body = %q", response.StatusCode, body)
+		}
+		return nil
+	})
 }
 
 func nonSAMLResponseActions(actions []CaseAction) []CaseAction {
@@ -4505,6 +4651,52 @@ func waitForAppliedState(timeout, interval time.Duration, probe func() error) er
 	}
 }
 
+func doRequestAfterGenerationReady(
+	client *http.Client,
+	request *http.Request,
+	timeout time.Duration,
+) (*http.Response, error) {
+	if timeout <= 0 {
+		return client.Do(request)
+	}
+	deadline := time.Now().Add(timeout)
+	for {
+		response, err := client.Do(request)
+		if err != nil {
+			return nil, err
+		}
+		if response.StatusCode != http.StatusServiceUnavailable {
+			return response, nil
+		}
+		body, readErr := io.ReadAll(response.Body)
+		closeErr := response.Body.Close()
+		response.Body = io.NopCloser(bytes.NewReader(body))
+		if readErr != nil {
+			return nil, readErr
+		}
+		if closeErr != nil {
+			return nil, closeErr
+		}
+		generationUnavailable := string(body) == http.StatusText(http.StatusServiceUnavailable)+"\n"
+		remaining := time.Until(deadline)
+		if !generationUnavailable || remaining <= 0 {
+			return response, nil
+		}
+		if request.GetBody == nil {
+			return nil, errors.New("generation readiness retry requires a replayable request body")
+		}
+		request.Body, err = request.GetBody()
+		if err != nil {
+			return nil, fmt.Errorf("replay generation readiness request body: %w", err)
+		}
+		if remaining > 20*time.Millisecond {
+			time.Sleep(20 * time.Millisecond)
+		} else {
+			time.Sleep(remaining)
+		}
+	}
+}
+
 func probeHTTPInput(
 	client *http.Client,
 	httpAddress string,
@@ -4751,7 +4943,7 @@ func runHTTPInput(
 		requestClient = &clientWithoutCookies
 	}
 	started := time.Now()
-	response, err := requestClient.Do(request)
+	response, err := doRequestAfterGenerationReady(requestClient, request, input.GenerationTimeout)
 	if err != nil {
 		t.Errorf("client request: %v", err)
 		return err

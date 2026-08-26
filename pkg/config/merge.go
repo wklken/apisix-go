@@ -1,12 +1,13 @@
 package config
 
 import (
-	"encoding/json"
 	"fmt"
 	"reflect"
 	"regexp"
 	"strconv"
 	"unicode/utf8"
+
+	"github.com/wklken/apisix-go/pkg/json"
 )
 
 var (

@@ -1785,6 +1785,58 @@ cases:
 	}
 }
 
+func TestManifestAcceptsPerInputGenerationWait(t *testing.T) {
+	data := []byte(`source:
+  repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/example.t
+  tests: 1
+cases:
+  - name: startup
+    source: {tests: [1]}
+    config: {routes: []}
+    input: {path: /hello, generation_timeout: 5s}
+    output: {status: 200}
+`)
+
+	manifest, err := loadManifest("startup.yaml", data)
+	if err != nil {
+		t.Fatalf("loadManifest() error = %v", err)
+	}
+	if got := manifest.Cases[0].Input.GenerationTimeout; got != 5*time.Second {
+		t.Fatalf("generation timeout = %s, want 5s", got)
+	}
+}
+
+func TestHTTPScenarioRejectsInvalidGenerationWait(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		input  HTTPInput
+		output HTTPOutput
+		want   string
+	}{
+		{
+			name: "negative timeout", input: HTTPInput{Path: "/hello", GenerationTimeout: -time.Second},
+			output: HTTPOutput{Status: http.StatusOK}, want: "must not be negative",
+		},
+		{
+			name: "HTTP/2", input: HTTPInput{Path: "/hello", Version: "2", GenerationTimeout: time.Second},
+			output: HTTPOutput{Status: http.StatusOK}, want: "supports only HTTP/1.1",
+		},
+		{
+			name: "ambiguous 503", input: HTTPInput{Path: "/hello", GenerationTimeout: time.Second},
+			output: HTTPOutput{Status: http.StatusServiceUnavailable}, want: "requires a non-503 exact output status",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := validateHTTPScenario(test.input, test.output)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("validateHTTPScenario() error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
 func TestManifestRejectsScenarioFileOutsideWorkDirectory(t *testing.T) {
 	manifest := validManifest()
 	manifest.Cases[0].Files = []ScenarioFile{{Path: "../model.conf", Body: "model"}}

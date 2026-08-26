@@ -2,6 +2,7 @@ package metrics
 
 import (
 	"context"
+	stdjson "encoding/json"
 	"math"
 	"net"
 	"net/http"
@@ -383,6 +384,22 @@ func TestConfiguredExportServerUsesValidatedAddress(t *testing.T) {
 	}
 	if !cfg.Enabled || cfg.URI != "/custom/metrics" || cfg.Address != "0.0.0.0:19091" {
 		t.Fatalf("ConfiguredExportServer() = %#v, want enabled custom endpoint", cfg)
+	}
+}
+
+func TestConfiguredExportServerAcceptsExactJSONNumberPort(t *testing.T) {
+	cfg, err := ConfiguredExportServer(map[string]any{
+		"enable_export_server": true,
+		"export_addr": map[string]any{
+			"ip":   "127.0.0.1",
+			"port": stdjson.Number("19091"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("ConfiguredExportServer() error = %v", err)
+	}
+	if cfg.Address != "127.0.0.1:19091" {
+		t.Fatalf("ConfiguredExportServer().Address = %q, want 127.0.0.1:19091", cfg.Address)
 	}
 }
 

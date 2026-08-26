@@ -2,7 +2,6 @@ package config
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"io"
 	"math/big"
@@ -13,6 +12,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/wklken/apisix-go/pkg/json"
 	"go.yaml.in/yaml/v3"
 )
 

@@ -20,6 +20,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/spf13/cast"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/version"
 )
@@ -1159,6 +1160,9 @@ func parseMetricExpires(raw any) (map[string]time.Duration, error) {
 
 func strictInt64(raw any) (int64, bool) {
 	switch typed := raw.(type) {
+	case json.Number:
+		value, err := typed.Int64()
+		return value, err == nil
 	case int:
 		return int64(typed), true
 	case int8:

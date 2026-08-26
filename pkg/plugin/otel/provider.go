@@ -2,7 +2,6 @@ package otel
 
 import (
 	"context"
-	stdjson "encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -11,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/runtime"
 	"github.com/wklken/apisix-go/pkg/util"
 	"go.opentelemetry.io/otel/attribute"
@@ -202,7 +202,7 @@ func otelResource(configured map[string]any) *sdkresource.Resource {
 			attributes = append(attributes, attribute.Float64(key, typed))
 		case int:
 			attributes = append(attributes, attribute.Int(key, typed))
-		case stdjson.Number:
+		case json.Number:
 			attributes = appendJSONNumberResourceAttribute(attributes, key, typed)
 		}
 	}
@@ -212,7 +212,7 @@ func otelResource(configured map[string]any) *sdkresource.Resource {
 func appendJSONNumberResourceAttribute(
 	attributes []attribute.KeyValue,
 	key string,
-	value stdjson.Number,
+	value json.Number,
 ) []attribute.KeyValue {
 	if integer, err := strconv.ParseInt(string(value), 10, 64); err == nil {
 		return append(attributes, attribute.Int64(key, integer))

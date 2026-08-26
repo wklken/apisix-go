@@ -1,7 +1,6 @@
 package config
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -10,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/wklken/apisix-go/pkg/json"
 )
 
 const redactedValue = "[REDACTED]"

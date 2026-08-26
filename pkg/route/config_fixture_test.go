@@ -19,6 +19,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	pxy "github.com/wklken/apisix-go/pkg/proxy"
 	"github.com/wklken/apisix-go/pkg/resource"
+	"github.com/wklken/apisix-go/pkg/runtime"
 	"github.com/wklken/apisix-go/pkg/secret"
 	"github.com/wklken/apisix-go/pkg/util"
 )
@@ -356,6 +357,24 @@ func testPluginBindingForSourceWithDependencies(
 	dependencies base.Dependencies,
 ) plugin.Binding {
 	t.Helper()
+	if dependencies.Tasks == nil {
+		registry := runtime.NewTaskRegistry(context.Background(), func(failure runtime.TaskFailure) {
+			t.Errorf("plugin fixture task %q failed: %v", failure.Owner, failure.Err)
+		})
+		owner, err := runtime.NewTaskOwner(registry, "plugin/test/route-fixture", runtime.TaskPlugin)
+		if err != nil {
+			t.Fatalf("NewTaskOwner() error = %v", err)
+		}
+		dependencies.Tasks = owner
+		t.Cleanup(func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			residuals, stopErr := registry.Stop(ctx)
+			if stopErr != nil {
+				t.Errorf("stop plugin fixture tasks: %v (residuals=%v)", stopErr, residuals)
+			}
+		})
+	}
 	instance := plugin.New(name, dependencies)
 	if instance == nil {
 		t.Fatalf("plugin %q is not supported", name)

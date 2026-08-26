@@ -1,10 +1,13 @@
 package graphql_proxy_cache
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,6 +17,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/cacheutil"
 	"github.com/wklken/apisix-go/pkg/plugin/proxy_cache"
 	"github.com/wklken/apisix-go/pkg/resource"
+	"github.com/wklken/apisix-go/pkg/runtime"
 )
 
 type graphqlCacheHitCountingWriter struct {
@@ -40,18 +44,62 @@ func (w *graphqlCacheHitCountingWriter) Write(body []byte) (int, error) {
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
+	return newOwnedGraphQLCacheFixture(t, "plugin/test/graphql/helper", "", cfg).plugin
+}
 
-	p := &Plugin{config: cfg}
-	p.SetDependencies(base.Dependencies{Config: &config.EffectiveConfig{}})
+type ownedGraphQLCacheFixture struct {
+	plugin   *Plugin
+	tasks    *runtime.TaskRegistry
+	failures <-chan runtime.TaskFailure
+	stopOnce sync.Once
+}
+
+func newOwnedGraphQLCacheFixture(
+	t *testing.T,
+	prefix string,
+	routeID string,
+	cfg Config,
+) *ownedGraphQLCacheFixture {
+	t.Helper()
+	failures := make(chan runtime.TaskFailure, 4)
+	tasks := runtime.NewTaskRegistry(context.Background(), func(failure runtime.TaskFailure) {
+		failures <- failure
+	})
+	owner, err := runtime.NewTaskOwner(tasks, prefix, runtime.TaskPlugin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := &Plugin{config: cfg, cleanupInterval: time.Hour}
+	p.SetDependencies(base.Dependencies{Config: &config.EffectiveConfig{}, Tasks: owner})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
+	}
+	if routeID != "" {
+		p.SetResourceContext(resource.Route{ID: routeID}, resource.Service{})
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
-	t.Cleanup(p.Stop)
+	fixture := &ownedGraphQLCacheFixture{plugin: p, tasks: tasks, failures: failures}
+	t.Cleanup(func() { fixture.stop(t) })
+	return fixture
+}
 
-	return p
+func (fixture *ownedGraphQLCacheFixture) stop(t *testing.T) {
+	t.Helper()
+	fixture.stopOnce.Do(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if residuals, err := fixture.tasks.Stop(ctx); err != nil || len(residuals) != 0 {
+			t.Fatalf("TaskRegistry.Stop() = (%v, %v)", residuals, err)
+		}
+		fixture.plugin.Stop()
+		select {
+		case failure := <-fixture.failures:
+			t.Fatalf("unexpected task failure = %#v", failure)
+		default:
+		}
+	})
 }
 
 func TestPostInitRequiresEffectiveConfig(t *testing.T) {
@@ -70,6 +118,105 @@ func setConfiguredZones(t *testing.T, zones []config.Zone) {
 		t.Fatalf("RefreshConfiguredZones() error = %v", err)
 	}
 	t.Cleanup(func() { _ = proxy_cache.RefreshConfiguredZones(nil) })
+}
+
+func TestGraphQLDiskCleanupUsesGenerationTaskOwner(t *testing.T) {
+	setConfiguredZones(t, []config.Zone{{Name: "graphql-owned-disk", DiskPath: t.TempDir()}})
+	fixture := newOwnedGraphQLCacheFixture(
+		t,
+		"plugin/test/graphql/attempt-1",
+		"",
+		Config{CacheStrategy: "disk", CacheZone: "graphql-owned-disk", CacheTTL: 60},
+	)
+
+	want := []string{"plugin/test/graphql/attempt-1/disk-cleanup"}
+	if got := fixture.tasks.Active(); !slices.Equal(got, want) {
+		t.Fatalf("active owners = %v, want %v", got, want)
+	}
+	fixture.stop(t)
+	if got := fixture.tasks.Active(); len(got) != 0 {
+		t.Fatalf("active owners after stop = %v, want none", got)
+	}
+}
+
+func TestGraphQLStopDoesNotRemoveReplacementRouteCache(t *testing.T) {
+	setConfiguredZones(t, []config.Zone{{Name: "graphql-replacement-disk", DiskPath: t.TempDir()}})
+	old := newOwnedGraphQLCacheFixture(
+		t,
+		"plugin/test/graphql/old",
+		"replacement-route",
+		Config{CacheStrategy: "disk", CacheZone: "graphql-replacement-disk", CacheTTL: 60},
+	)
+	next := newOwnedGraphQLCacheFixture(
+		t,
+		"plugin/test/graphql/new",
+		"replacement-route",
+		Config{CacheStrategy: "disk", CacheZone: "graphql-replacement-disk", CacheTTL: 60},
+	)
+	if got, want := old.tasks.Active(), []string{"plugin/test/graphql/old/disk-cleanup"}; !slices.Equal(got, want) {
+		t.Fatalf("old active owners = %v, want %v", got, want)
+	}
+	if got, want := next.tasks.Active(), []string{"plugin/test/graphql/new/disk-cleanup"}; !slices.Equal(got, want) {
+		t.Fatalf("replacement active owners = %v, want %v", got, want)
+	}
+
+	routeCaches.RLock()
+	published := routeCaches.plugins["replacement-route"]
+	routeCaches.RUnlock()
+	if published != next.plugin {
+		t.Fatalf("published plugin = %p, want replacement %p", published, next.plugin)
+	}
+
+	old.stop(t)
+	routeCaches.RLock()
+	published = routeCaches.plugins["replacement-route"]
+	routeCaches.RUnlock()
+	if published != next.plugin {
+		t.Fatalf("published plugin after old stop = %p, want replacement %p", published, next.plugin)
+	}
+
+	next.stop(t)
+	routeCaches.RLock()
+	_, retained := routeCaches.plugins["replacement-route"]
+	routeCaches.RUnlock()
+	if retained {
+		t.Fatal("replacement route cache remained published after replacement stop")
+	}
+}
+
+func TestPostInitRollsBackGraphQLDiskStateWhenTaskAdmissionFails(t *testing.T) {
+	setConfiguredZones(t, []config.Zone{{Name: "graphql-rejected-disk", DiskPath: t.TempDir()}})
+	tasks := runtime.NewTaskRegistry(context.Background(), nil)
+	if residuals, err := tasks.Stop(context.Background()); err != nil || len(residuals) != 0 {
+		t.Fatalf("TaskRegistry.Stop() = (%v, %v)", residuals, err)
+	}
+	owner, err := runtime.NewTaskOwner(tasks, "plugin/test/graphql/rejected", runtime.TaskPlugin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := &Plugin{
+		config: Config{CacheStrategy: "disk", CacheZone: "graphql-rejected-disk", CacheTTL: 60},
+	}
+	p.SetDependencies(base.Dependencies{Config: &config.EffectiveConfig{}, Tasks: owner})
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	p.SetResourceContext(resource.Route{ID: "rejected-route"}, resource.Service{})
+	t.Cleanup(p.Stop)
+
+	err = p.PostInit()
+	if !errors.Is(err, runtime.ErrTaskRegistryStopped) {
+		t.Fatalf("PostInit() error = %v, want %v", err, runtime.ErrTaskRegistryStopped)
+	}
+	if p.memoryStore != nil || p.diskStore != nil {
+		t.Fatalf("stores after rejected admission = memory:%p disk:%p", p.memoryStore, p.diskStore)
+	}
+	routeCaches.RLock()
+	_, published := routeCaches.plugins["rejected-route"]
+	routeCaches.RUnlock()
+	if published {
+		t.Fatal("route cache published after rejected task admission")
+	}
 }
 
 func TestGraphQLCacheHitPublishesWithoutWriterAndReturnsCacheHitStop(t *testing.T) {
@@ -380,7 +527,6 @@ func TestConfiguredDiskZonePersistsGraphQLEntriesAcrossInstances(t *testing.T) {
 	if first.Header().Get(cacheStatusHeader) != "MISS" {
 		t.Fatalf("first cache status = %q, want MISS", first.Header().Get(cacheStatusHeader))
 	}
-	firstPlugin.Stop()
 
 	secondPlugin := newTestPlugin(t, Config{
 		CacheStrategy: "disk",

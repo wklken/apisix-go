@@ -716,6 +716,10 @@ When engine shutdown joins an active background retirement, its internal cancell
 ```bash
 bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test ./pkg/plugin/logger_batch ./pkg/plugin/error_log_logger ./pkg/server -run "^(TestProcessorBlockingDeliveryResidualSetIsWorkerAndShutdown|TestErrorLogObserverDelegatesBlockingBatchShutdownWithoutRemainingResidual|TestServerShutdownPreservesExactGenerationOwnersThroughRealChain)$" -count=1'
 bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test -race ./pkg/plugin/logger_batch ./pkg/plugin/error_log_logger ./pkg/server -run "^(TestProcessorBlockingDeliveryResidualSetIsWorkerAndShutdown|TestErrorLogObserverDelegatesBlockingBatchShutdownWithoutRemainingResidual|TestServerShutdownPreservesExactGenerationOwnersThroughRealChain)$" -count=1'
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test ./pkg/compiler -run "^(TestEffectiveBindingCreatorQuiescesGenerationTasksBeforeRegistryRelease|TestEffectiveBindingGenerationTaskQuiescerIsCreatorOnlyAndRollbackIsolated)$" -count=10'
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test -race ./pkg/compiler -run "^(TestEffectiveBindingCreatorQuiescesGenerationTasksBeforeRegistryRelease|TestEffectiveBindingGenerationTaskQuiescerIsCreatorOnlyAndRollbackIsolated)$" -count=3'
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test ./pkg/server -run "^TestGenerationEngineCloseCancelsActiveRetirementAttemptBeforeRetry$" -count=10'
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test -race ./pkg/server -run "^TestGenerationEngineCloseCancelsActiveRetirementAttemptBeforeRetry$" -count=3'
 ```
 
 Expected: PASS. Both lower-level tests and the real `clickhouse-logger` compiler -> `PreparedGeneration` -> factory -> engine -> server chain return exactly the independently derived sorted worker/shutdown set; the retry releases each owner and cleanup once. The lower error-log test separately proves observer delegation has exited before its batch residual snapshot.
@@ -736,6 +740,7 @@ Review `error_log_logger.StartObservingWithTasks`, `Plugin.Stop`, `logger_batch.
 
 ```bash
 git add pkg/plugin/logger_batch/processor.go pkg/plugin/logger_batch/processor_test.go \
+  pkg/compiler/effective_binding_materializer.go pkg/compiler/effective_binding_materializer_test.go \
   pkg/plugin/base/types.go pkg/plugin/base/types_test.go \
   pkg/plugin/clickhouse_logger pkg/plugin/datadog pkg/plugin/elasticsearch_logger \
   pkg/plugin/error_log_logger pkg/plugin/google_cloud_logging pkg/plugin/http_logger \
@@ -743,11 +748,12 @@ git add pkg/plugin/logger_batch/processor.go pkg/plugin/logger_batch/processor_t
   pkg/plugin/rocketmq_logger pkg/plugin/skywalking_logger pkg/plugin/sls_logger \
   pkg/plugin/splunk_hec_logging pkg/plugin/syslog pkg/plugin/tcp_logger \
   pkg/plugin/tencent_cloud_cls pkg/plugin/udp_logger pkg/plugin/zipkin \
+  pkg/server/generation_engine.go pkg/server/generation_engine_test.go \
   pkg/server/task_residual_chain_test.go
 git commit -m "refactor(logger): own batch delivery tasks"
 ```
 
-Before committing, rerun the production constructor inventory and inspect `git diff --cached --name-only`. The staged set must contain every and only Task 8 constructor caller, the four explicitly named processor/base files, `error_log_logger/plugin_test.go`, and `pkg/server/task_residual_chain_test.go`; do not stage unrelated plugin files.
+Before committing, rerun the production constructor inventory and inspect `git diff --cached --name-only`. The staged set must contain every and only Task 8 constructor caller, the explicitly named processor/base/compiler/engine files, `error_log_logger/plugin_test.go`, and `pkg/server/task_residual_chain_test.go`; do not stage unrelated plugin files.
 
 ---
 

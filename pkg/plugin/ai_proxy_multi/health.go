@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/wklken/apisix-go/pkg/httpclient"
 	"github.com/wklken/apisix-go/pkg/runtime"
 )
 
@@ -107,10 +108,10 @@ func (p *Plugin) publishHealthSnapshot() {
 }
 
 // newHealthCheckClient builds one HTTP client for an immutable health-check
-// configuration so repeated probes reuse the transport instead of cloning
-// http.DefaultTransport per probe.
+// configuration so repeated probes reuse the transport instead of cloning a
+// transport per probe.
 func newHealthCheckClient(check ActiveHealthCheck) *http.Client {
-	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport := httpclient.NewTransport()
 	if check.Type == "https" && check.HTTPSVerifyCertificate != nil && !*check.HTTPSVerifyCertificate {
 		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec
 	}

@@ -990,6 +990,37 @@ func TestCompileRouterRejectsConflictingListenAddresses(t *testing.T) {
 	}
 }
 
+func TestCompileRouterAllowsSharedListenForDifferentRemoteAddresses(t *testing.T) {
+	router, err := compileTestRouter(t, []resource.StreamRoute{
+		{
+			ID:         "private-network",
+			ServerAddr: "127.0.0.1",
+			ServerPort: 1883,
+			RemoteAddr: "10.0.0.0/8",
+			Upstream: resource.Upstream{
+				Scheme: "tcp",
+				Nodes:  []resource.Node{{Host: "127.0.0.1", Port: 1, Weight: 1}},
+			},
+		},
+		{
+			ID:         "site-network",
+			ServerAddr: "127.0.0.1",
+			ServerPort: 1883,
+			RemoteAddr: "192.168.0.0/16",
+			Upstream: resource.Upstream{
+				Scheme: "tcp",
+				Nodes:  []resource.Node{{Host: "127.0.0.1", Port: 2, Weight: 1}},
+			},
+		},
+	}, nil)
+	if err != nil {
+		t.Fatalf("CompileRouter() error = %v, want shared listen with distinct remote_addr", err)
+	}
+	if len(router.routes) != 2 {
+		t.Fatalf("compiled routes = %d, want 2", len(router.routes))
+	}
+}
+
 func TestRouterUsesDeterministicClientIDHashForChashUpstream(t *testing.T) {
 	router, err := compileTestRouter(t, []resource.StreamRoute{{
 		ID: "mqtt-hash",

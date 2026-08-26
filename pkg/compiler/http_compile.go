@@ -39,6 +39,7 @@ func (prepared *PreparedGeneration) compileAndAttachHTTP(ctx context.Context) er
 		Revision: candidate.Artifact.Revision,
 		Routes:   routes, NotFound: notFound,
 		StaticConfig: &prepared.effective.Config, PublicAPIRegistry: plan.publicAPIRegistry,
+		GraphQLProxyCacheRegistry: plan.purgeRegistry,
 	})
 	if err != nil {
 		return err

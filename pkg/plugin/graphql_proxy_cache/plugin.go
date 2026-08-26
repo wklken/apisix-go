@@ -43,6 +43,7 @@ type Plugin struct {
 	maxSize   int
 	routeID   string
 	serviceID string
+	registry  *Registry
 
 	configFingerprintValue string
 }
@@ -58,10 +59,45 @@ const (
 	defaultMaxSize    = 1048576
 )
 
-var routeCaches = struct {
+// Registry owns GraphQL cache purge targets for one prepared HTTP generation.
+type Registry struct {
 	sync.RWMutex
 	plugins map[string]*Plugin
-}{plugins: map[string]*Plugin{}}
+}
+
+func NewRegistry() *Registry {
+	return &Registry{plugins: make(map[string]*Plugin)}
+}
+
+func (registry *Registry) register(routeID string, plugin *Plugin) {
+	if registry == nil || routeID == "" || plugin == nil {
+		return
+	}
+	registry.Lock()
+	registry.plugins[routeID] = plugin
+	registry.Unlock()
+}
+
+func (registry *Registry) unregister(routeID string, plugin *Plugin) {
+	if registry == nil || routeID == "" || plugin == nil {
+		return
+	}
+	registry.Lock()
+	if registry.plugins[routeID] == plugin {
+		delete(registry.plugins, routeID)
+	}
+	registry.Unlock()
+}
+
+func (registry *Registry) lookup(routeID string) *Plugin {
+	if registry == nil {
+		return nil
+	}
+	registry.RLock()
+	plugin := registry.plugins[routeID]
+	registry.RUnlock()
+	return plugin
+}
 
 const schema = `
 {
@@ -138,6 +174,9 @@ func (p *Plugin) PostInit() error {
 		return fmt.Errorf("effective config is required")
 	}
 	p.Stop()
+	if p.routeID != "" && p.registry == nil {
+		return fmt.Errorf("graphql proxy cache purge registry is required")
+	}
 	if p.config.CacheZone == "" {
 		p.config.CacheZone = "disk_cache_one"
 	}
@@ -181,9 +220,7 @@ func (p *Plugin) PostInit() error {
 		}
 	}
 	if p.routeID != "" {
-		routeCaches.Lock()
-		routeCaches.plugins[p.routeID] = p
-		routeCaches.Unlock()
+		p.registry.register(p.routeID, p)
 	}
 	return nil
 }
@@ -196,16 +233,17 @@ func (p *Plugin) SetResourceContext(route resource.Route, service resource.Servi
 	}
 }
 
+// SetPurgeRegistry injects the purge registry owned by one HTTP generation.
+func (p *Plugin) SetPurgeRegistry(registry *Registry) {
+	p.registry = registry
+}
+
 func (p *Plugin) Stop() {
 	p.releaseStores()
 	if p.routeID == "" {
 		return
 	}
-	routeCaches.Lock()
-	if routeCaches.plugins[p.routeID] == p {
-		delete(routeCaches.plugins, p.routeID)
-	}
-	routeCaches.Unlock()
+	p.registry.unregister(p.routeID, p)
 }
 
 func (p *Plugin) releaseStores() {
@@ -563,7 +601,11 @@ func apisixVarString(r *http.Request, name string) string {
 	return value
 }
 
-func PurgeHandler(w http.ResponseWriter, r *http.Request) {
+func (registry *Registry) PurgeHandler() http.Handler {
+	return http.HandlerFunc(registry.handlePurge)
+}
+
+func (registry *Registry) handlePurge(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "PURGE" {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
@@ -583,9 +625,7 @@ func PurgeHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	routeCaches.RLock()
-	plugin := routeCaches.plugins[routeID]
-	routeCaches.RUnlock()
+	plugin := registry.lookup(routeID)
 	if plugin == nil {
 		w.WriteHeader(http.StatusNotFound)
 		return

@@ -107,7 +107,8 @@ func (prepared *PreparedGeneration) prepareHTTPRoutes(
 func (prepared *PreparedGeneration) httpRuntimeContextForNotFound(
 	plan *httpPreparationPlan,
 ) (effectiveBindingRuntimeContext, error) {
-	if prepared == nil || prepared.effective == nil || plan == nil || plan.publicAPIRegistry == nil {
+	if prepared == nil || prepared.effective == nil || plan == nil || plan.publicAPIRegistry == nil ||
+		plan.purgeRegistry == nil {
 		return effectiveBindingRuntimeContext{}, fmt.Errorf(
 			"%w: HTTP not-found runtime context is incomplete",
 			ErrInvalidInput,
@@ -116,6 +117,7 @@ func (prepared *PreparedGeneration) httpRuntimeContextForNotFound(
 	return effectiveBindingRuntimeContext{
 		configured: true, enabledFactories: slices.Clone(plan.enabledFactories),
 		publicAPIRegistry: plan.publicAPIRegistry,
+		purgeRegistry:     plan.purgeRegistry,
 		serverAddr:        httpPreparationServerAddr(prepared),
 		proxyCacheZones:   slices.Clone(prepared.effective.Config.Apisix.ProxyCache.Zones),
 		protoResolver:     plan.protoResolver,

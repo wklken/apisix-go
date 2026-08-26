@@ -52,6 +52,7 @@ func (prepared *PreparedGeneration) httpRuntimeContextForRoute(
 	plan *httpPreparationPlan,
 ) (effectiveBindingRuntimeContext, error) {
 	if prepared == nil || ctx == nil || prepared.effective == nil || plan == nil || plan.publicAPIRegistry == nil ||
+		plan.purgeRegistry == nil ||
 		routeResource.ID == "" {
 		return effectiveBindingRuntimeContext{}, fmt.Errorf(
 			"%w: HTTP route runtime context is incomplete",
@@ -79,6 +80,7 @@ func (prepared *PreparedGeneration) httpRuntimeContextForRoute(
 	return effectiveBindingRuntimeContext{
 		configured: true, enabledFactories: slices.Clone(plan.enabledFactories),
 		publicAPIRegistry: plan.publicAPIRegistry,
+		purgeRegistry:     plan.purgeRegistry,
 		serverAddr:        httpPreparationServerAddr(prepared),
 		proxyCacheZones:   slices.Clone(prepared.effective.Config.Apisix.ProxyCache.Zones),
 		runtimeAcquirer: &preparedTrafficSplitRuntimeAcquirer{

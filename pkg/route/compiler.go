@@ -12,6 +12,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	appconfig "github.com/wklken/apisix-go/pkg/config"
+	graphql_proxy_cache "github.com/wklken/apisix-go/pkg/plugin/graphql_proxy_cache"
 	"github.com/wklken/apisix-go/pkg/plugin/public_api"
 	"github.com/wklken/apisix-go/pkg/resource"
 )
@@ -27,11 +28,12 @@ type PreparedRoute struct {
 
 // CompileInput contains only owned values and already-prepared handlers.
 type CompileInput struct {
-	Revision          uint64
-	Routes            []PreparedRoute
-	NotFound          http.Handler
-	StaticConfig      *appconfig.Config
-	PublicAPIRegistry *public_api.Registry
+	Revision                  uint64
+	Routes                    []PreparedRoute
+	NotFound                  http.Handler
+	StaticConfig              *appconfig.Config
+	PublicAPIRegistry         *public_api.Registry
+	GraphQLProxyCacheRegistry *graphql_proxy_cache.Registry
 }
 
 // Snapshot is an immutable detached HTTP router snapshot.
@@ -134,11 +136,17 @@ func CompileHTTP(ctx context.Context, input CompileInput) (*Snapshot, error) {
 		input.NotFound = http.NotFoundHandler()
 	}
 	mux.NotFound(input.NotFound.ServeHTTP)
-	if (input.StaticConfig == nil) != (input.PublicAPIRegistry == nil) {
-		return nil, fmt.Errorf("compile HTTP: static config and public API registry must be supplied together")
+	if input.StaticConfig == nil && (input.PublicAPIRegistry != nil || input.GraphQLProxyCacheRegistry != nil) ||
+		input.StaticConfig != nil && (input.PublicAPIRegistry == nil || input.GraphQLProxyCacheRegistry == nil) {
+		return nil, fmt.Errorf("compile HTTP: static config and generation registries must be supplied together")
 	}
 	if input.StaticConfig != nil {
-		if err := registerExtraRoutesStrict(mux, input.StaticConfig, input.PublicAPIRegistry); err != nil {
+		if err := registerExtraRoutesStrict(
+			mux,
+			input.StaticConfig,
+			input.PublicAPIRegistry,
+			input.GraphQLProxyCacheRegistry,
+		); err != nil {
 			return nil, fmt.Errorf("compile HTTP extra routes: %w", err)
 		}
 	}

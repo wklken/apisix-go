@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/go-resty/resty/v2"
+	"github.com/wklken/apisix-go/pkg/httpclient"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/shared"
@@ -374,7 +375,7 @@ func (p *Plugin) sslVerify() bool {
 }
 
 func (p *Plugin) transport() (*http.Transport, string, error) {
-	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport := httpclient.NewTransport()
 	transport.DisableKeepAlives = !*p.config.Keepalive
 	transport.IdleConnTimeout = time.Duration(p.config.KeepaliveTimeout) * time.Millisecond
 	transport.MaxIdleConnsPerHost = p.config.KeepalivePool
@@ -584,7 +585,7 @@ type tokenFormTransport struct {
 func (transport tokenFormTransport) RoundTrip(request *http.Request) (*http.Response, error) {
 	baseTransport := transport.base
 	if baseTransport == nil {
-		baseTransport = http.DefaultTransport
+		baseTransport = httpclient.NewTransport()
 	}
 	response, err := baseTransport.RoundTrip(request)
 	request.Body = http.NoBody

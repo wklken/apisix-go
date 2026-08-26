@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	graphql_proxy_cache "github.com/wklken/apisix-go/pkg/plugin/graphql_proxy_cache"
 	"github.com/wklken/apisix-go/pkg/plugin/public_api"
 	"github.com/wklken/apisix-go/pkg/plugin/traffic_split"
 	"github.com/wklken/apisix-go/pkg/resource"
@@ -25,6 +26,7 @@ func TestHTTPRuntimeContextUsesImmutableResolversAndCompilerOwnedClusters(t *tes
 		},
 		enabledFactories:  []string{"traffic-split"},
 		publicAPIRegistry: public_api.NewRegistry(),
+		purgeRegistry:     graphql_proxy_cache.NewRegistry(),
 		protoResolver:     newHTTPProtoResolver(protos),
 	}
 	runtimeContext, err := prepared.httpRuntimeContextForRoute(
@@ -91,6 +93,7 @@ func TestHTTPPreparationPlanSharesProtoResolverWithRouteAndNotFoundRuntimes(t *t
 	calls := 0
 	plan := &httpPreparationPlan{
 		publicAPIRegistry: public_api.NewRegistry(),
+		purgeRegistry:     graphql_proxy_cache.NewRegistry(),
 		protoResolver: func(id string) (string, error) {
 			calls++
 			return id, nil

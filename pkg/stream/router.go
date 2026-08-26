@@ -92,7 +92,7 @@ func rejectConflictingStreamListens(routes []resource.StreamRoute) error {
 }
 
 func streamListenKey(route resource.StreamRoute) string {
-	return route.ServerAddr + "\x00" + strconv.Itoa(route.ServerPort)
+	return route.ServerAddr + "\x00" + strconv.Itoa(route.ServerPort) + "\x00" + route.RemoteAddr
 }
 
 func (r *Router) Serve(ctx context.Context, listener net.Listener, client net.Conn) error {

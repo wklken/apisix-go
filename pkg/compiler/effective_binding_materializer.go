@@ -15,6 +15,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	graphql_proxy_cache "github.com/wklken/apisix-go/pkg/plugin/graphql_proxy_cache"
 	"github.com/wklken/apisix-go/pkg/plugin/grpc_transcode"
 	"github.com/wklken/apisix-go/pkg/plugin/public_api"
 	"github.com/wklken/apisix-go/pkg/plugin/traffic_split"
@@ -65,6 +66,7 @@ type effectiveBindingRuntimeContext struct {
 	configured        bool
 	enabledFactories  []string
 	publicAPIRegistry *public_api.Registry
+	purgeRegistry     *graphql_proxy_cache.Registry
 	serverAddr        string
 	proxyCacheZones   []appconfig.Zone
 	runtimeAcquirer   traffic_split.RuntimeAcquirer
@@ -724,6 +726,11 @@ func (operations effectiveBindingOps) withDefaults(attempt [32]byte) effectiveBi
 			if setter, ok := instance.(interface{ SetPublicAPIRegistry(*public_api.Registry) }); ok {
 				setter.SetPublicAPIRegistry(value.publicAPIRegistry)
 			}
+			if setter, ok := instance.(interface {
+				SetPurgeRegistry(*graphql_proxy_cache.Registry)
+			}); ok {
+				setter.SetPurgeRegistry(value.purgeRegistry)
+			}
 			if setter, ok := instance.(interface{ SetConfiguredZones([]appconfig.Zone) }); ok {
 				setter.SetConfiguredZones(slices.Clone(value.proxyCacheZones))
 			}
@@ -997,6 +1004,7 @@ func cloneEffectiveBindingRuntimeContext(
 		configured:        true,
 		enabledFactories:  enabled,
 		publicAPIRegistry: value.publicAPIRegistry,
+		purgeRegistry:     value.purgeRegistry,
 		serverAddr:        value.serverAddr,
 		proxyCacheZones:   slices.Clone(value.proxyCacheZones),
 		runtimeAcquirer:   value.runtimeAcquirer,

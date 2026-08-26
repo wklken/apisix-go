@@ -380,9 +380,7 @@ func isKafkaAuthError(err error) bool {
 }
 
 func upgradeKafkaWebSocket(w http.ResponseWriter, r *http.Request, transport *Transport) (*websocket.Conn, error) {
-	upgrader := websocket.Upgrader{
-		CheckOrigin: func(*http.Request) bool { return true },
-	}
+	upgrader := websocket.Upgrader{}
 	responseHeader := make(http.Header)
 	if values := w.Header().Values("Server"); len(values) > 0 {
 		responseHeader["Server"] = append([]string(nil), values...)

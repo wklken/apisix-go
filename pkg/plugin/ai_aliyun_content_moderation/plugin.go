@@ -21,6 +21,7 @@ import (
 	"unicode/utf8"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/httpclient"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/observability/metrics"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_common"
@@ -1372,7 +1373,7 @@ func randomNonce() string {
 }
 
 func (p *Plugin) transport() http.RoundTripper {
-	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport := httpclient.NewTransport()
 	transport.MaxIdleConnsPerHost = p.config.KeepalivePool
 	transport.IdleConnTimeout = time.Duration(p.config.KeepaliveTimeout) * time.Millisecond
 	if p.config.Keepalive != nil && !*p.config.Keepalive {

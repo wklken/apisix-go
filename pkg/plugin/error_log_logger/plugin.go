@@ -22,6 +22,7 @@ import (
 	"github.com/segmentio/kafka-go/sasl"
 	"github.com/segmentio/kafka-go/sasl/plain"
 	"github.com/wklken/apisix-go/pkg/capability"
+	"github.com/wklken/apisix-go/pkg/httpclient"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -311,7 +312,10 @@ func (p *Plugin) PostInit() error {
 		}
 	}
 	p.applyDefaults()
-	p.client = &http.Client{Timeout: time.Duration(p.config.Timeout) * time.Second}
+	p.client = &http.Client{
+		Transport: httpclient.NewTransport(),
+		Timeout:   time.Duration(p.config.Timeout) * time.Second,
+	}
 	createdKafkaSender := false
 	if p.config.Kafka != nil && p.kafkaSender == nil {
 		writer, err := p.newKafkaWriter()

@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/wklken/apisix-go/pkg/generation"
+	graphql_proxy_cache "github.com/wklken/apisix-go/pkg/plugin/graphql_proxy_cache"
 	"github.com/wklken/apisix-go/pkg/plugin/grpc_transcode"
 	"github.com/wklken/apisix-go/pkg/plugin/public_api"
 	"github.com/wklken/apisix-go/pkg/resource"
@@ -148,6 +149,7 @@ func TestPrepareHTTPRoutesQuarantinesInvalidRouteWithoutLosingPreparedCluster(t 
 			}}},
 		}},
 		publicAPIRegistry: public_api.NewRegistry(),
+		purgeRegistry:     graphql_proxy_cache.NewRegistry(),
 	}
 
 	routes, err := prepared.prepareHTTPRoutes(context.Background(), plan)
@@ -176,6 +178,7 @@ func TestPrepareHTTPRoutesRollsBackClusterWhenLaterConsumerPreparationFails(t *t
 			Consumers: map[string][]routepkg.PluginPlan{"missing": nil},
 		},
 		publicAPIRegistry: public_api.NewRegistry(),
+		purgeRegistry:     graphql_proxy_cache.NewRegistry(),
 	}
 
 	routes, err := prepared.prepareHTTPRoutes(context.Background(), plan)

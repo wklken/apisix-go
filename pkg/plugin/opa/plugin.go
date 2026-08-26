@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/httpclient"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/resource"
@@ -388,7 +389,7 @@ func (p *Plugin) endpoint() string {
 }
 
 func (p *Plugin) transport() http.RoundTripper {
-	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport := httpclient.NewTransport()
 	transport.DisableKeepAlives = !*p.config.Keepalive
 	transport.MaxIdleConnsPerHost = p.config.KeepalivePool
 	transport.IdleConnTimeout = time.Duration(p.config.KeepaliveTimeout) * time.Millisecond

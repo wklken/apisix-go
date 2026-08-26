@@ -8,6 +8,7 @@ import (
 	"slices"
 
 	"github.com/wklken/apisix-go/pkg/generation"
+	graphql_proxy_cache "github.com/wklken/apisix-go/pkg/plugin/graphql_proxy_cache"
 	"github.com/wklken/apisix-go/pkg/plugin/grpc_transcode"
 	"github.com/wklken/apisix-go/pkg/plugin/public_api"
 	"github.com/wklken/apisix-go/pkg/resource"
@@ -19,6 +20,7 @@ type httpPreparationPlan struct {
 	plugins           *routepkg.HTTPPluginPlan
 	enabledFactories  []string
 	publicAPIRegistry *public_api.Registry
+	purgeRegistry     *graphql_proxy_cache.Registry
 	protoResolver     grpc_transcode.ProtoResolver
 }
 
@@ -81,6 +83,7 @@ func (prepared *PreparedGeneration) planHTTPPreparation(
 		resources: resources, plugins: plannedPlugins,
 		enabledFactories:  enabledFactories,
 		publicAPIRegistry: registry,
+		purgeRegistry:     graphql_proxy_cache.NewRegistry(),
 		protoResolver:     newHTTPProtoResolver(resources.protos),
 	}, nil
 }

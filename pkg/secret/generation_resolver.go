@@ -19,6 +19,7 @@ import (
 
 	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/generation"
+	"github.com/wklken/apisix-go/pkg/httpclient"
 	"github.com/wklken/apisix-go/pkg/json"
 )
 
@@ -106,7 +107,7 @@ func newGenerationSecretResolver(
 		return nil, ErrInvalidCapability
 	}
 	if client == nil {
-		client = &http.Client{}
+		client = httpclient.New()
 	}
 	client.CheckRedirect = func(*http.Request, []*http.Request) error {
 		return http.ErrUseLastResponse

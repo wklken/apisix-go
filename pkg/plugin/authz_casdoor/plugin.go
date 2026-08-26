@@ -17,6 +17,7 @@ import (
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/capability"
+	"github.com/wklken/apisix-go/pkg/httpclient"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -148,7 +149,7 @@ func (p *Plugin) PostInit() error {
 		p.config.CookieSameSite = "Lax"
 	}
 	if p.client == nil {
-		p.client = &http.Client{Timeout: 10 * time.Second}
+		p.client = &http.Client{Transport: httpclient.NewTransport(), Timeout: 10 * time.Second}
 	}
 	if p.newState == nil {
 		p.newState = func() (string, error) { return randomState(rand.Reader) }

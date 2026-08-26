@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/wklken/apisix-go/pkg/httpclient"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_auth"
@@ -389,7 +390,7 @@ func (p *Plugin) endpoint() string {
 }
 
 func (p *Plugin) transport() http.RoundTripper {
-	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport := httpclient.NewTransport()
 	ai_common.ApplyTransportSSLVerify(transport, p.config.Comprehend.SSLVerify)
 	return transport
 }

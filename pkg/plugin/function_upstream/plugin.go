@@ -17,6 +17,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/httpclient"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/observability/metrics"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -97,7 +98,7 @@ func (p *Plugin) newClient() *http.Client {
 }
 
 func (p *Plugin) transport() *http.Transport {
-	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport := httpclient.NewTransport()
 	timeout := time.Duration(p.Config.Timeout) * time.Millisecond
 	transport.DialContext = (&net.Dialer{Timeout: timeout, KeepAlive: 30 * time.Second}).DialContext
 	transport.ResponseHeaderTimeout = timeout

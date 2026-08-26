@@ -26,17 +26,21 @@ func registerPurgeMethod() {
 }
 
 func registerExtraRoutes(mux *chi.Mux, staticConfig *config.Config, registries ...*public_api.Registry) {
-	_ = registerExtraRoutesStrict(mux, staticConfig, registries...)
+	registry := public_api.NewRegistry()
+	if len(registries) > 0 && registries[0] != nil {
+		registry = registries[0]
+	}
+	_ = registerExtraRoutesStrict(mux, staticConfig, registry, graphql_proxy_cache.NewRegistry())
 }
 
 func registerExtraRoutesStrict(
 	mux *chi.Mux,
 	staticConfig *config.Config,
-	registries ...*public_api.Registry,
+	registry *public_api.Registry,
+	graphqlPurgeRegistry *graphql_proxy_cache.Registry,
 ) error {
-	registry := public_api.NewRegistry()
-	if len(registries) > 0 && registries[0] != nil {
-		registry = registries[0]
+	if registry == nil {
+		registry = public_api.NewRegistry()
 	}
 	if pluginEnabled(staticConfig, "node-status") {
 		mux.Handle("/apisix/status", http.NotFoundHandler())
@@ -59,8 +63,11 @@ func registerExtraRoutesStrict(
 		}
 	}
 	if pluginEnabled(staticConfig, "graphql-proxy-cache") {
+		if graphqlPurgeRegistry == nil {
+			return fmt.Errorf("graphql proxy cache purge registry is required")
+		}
 		registerPurgeMethod()
-		mux.Method("PURGE", graphql_proxy_cache.PurgeURI, http.HandlerFunc(graphql_proxy_cache.PurgeHandler))
+		mux.Method("PURGE", graphql_proxy_cache.PurgeURI, graphqlPurgeRegistry.PurgeHandler())
 	}
 	return nil
 }

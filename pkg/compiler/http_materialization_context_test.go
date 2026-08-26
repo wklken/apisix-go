@@ -9,6 +9,7 @@ import (
 
 	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/plugin"
+	graphql_proxy_cache "github.com/wklken/apisix-go/pkg/plugin/graphql_proxy_cache"
 	"github.com/wklken/apisix-go/pkg/plugin/grpc_transcode"
 	"github.com/wklken/apisix-go/pkg/plugin/public_api"
 	"github.com/wklken/apisix-go/pkg/plugin/traffic_split"
@@ -28,6 +29,7 @@ func (testTrafficSplitRuntimeAcquirer) Acquire(
 type runtimeContextPlugin struct {
 	enabled          func(string) bool
 	registry         *public_api.Registry
+	purgeRegistry    *graphql_proxy_cache.Registry
 	routeID          string
 	serverAddr       string
 	route            resource.Route
@@ -53,6 +55,10 @@ func (p *runtimeContextPlugin) SetPluginEnabledChecker(checker func(string) bool
 
 func (p *runtimeContextPlugin) SetPublicAPIRegistry(registry *public_api.Registry) {
 	p.registry = registry
+}
+
+func (p *runtimeContextPlugin) SetPurgeRegistry(registry *graphql_proxy_cache.Registry) {
+	p.purgeRegistry = registry
 }
 
 func (p *runtimeContextPlugin) ValidatePreMaterialization() error {
@@ -82,6 +88,7 @@ func (p *runtimeContextPlugin) SetProtoResolver(resolver grpc_transcode.ProtoRes
 
 func TestDefaultEffectiveBindingOpsInjectCompleteHTTPRuntimeContext(t *testing.T) {
 	registry := public_api.NewRegistry()
+	purgeRegistry := graphql_proxy_cache.NewRegistry()
 	acquirer := testTrafficSplitRuntimeAcquirer{}
 	resolver := traffic_split.ResourceUpstreamResolver(func(string) (resource.Upstream, error) {
 		return resource.Upstream{}, nil
@@ -91,6 +98,7 @@ func TestDefaultEffectiveBindingOpsInjectCompleteHTTPRuntimeContext(t *testing.T
 		configured:        true,
 		enabledFactories:  []string{"request-id", "workflow"},
 		publicAPIRegistry: registry,
+		purgeRegistry:     purgeRegistry,
 		serverAddr:        "127.0.0.1:9080",
 		runtimeAcquirer:   acquirer,
 		upstreamResolver:  resolver,
@@ -113,6 +121,9 @@ func TestDefaultEffectiveBindingOpsInjectCompleteHTTPRuntimeContext(t *testing.T
 
 	if instance.enabled == nil || !instance.enabled("workflow") || instance.enabled("disabled") {
 		t.Fatal("enabled-plugin checker was not generation-scoped")
+	}
+	if instance.purgeRegistry != purgeRegistry {
+		t.Fatal("generation-local GraphQL purge registry was not injected")
 	}
 	if instance.registry != registry || !instance.prevalidated {
 		t.Fatal("public API registry or pre-materialization validation was not injected")

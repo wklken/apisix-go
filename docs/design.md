@@ -293,8 +293,10 @@ role/provider values, listener and plugin counts, protocol-mode booleans, the
 etcd endpoint count, and whether proxy limits are configured. It excludes
 addresses, credentials, keys, certificates, tokens, and secret references.
 
-The runtime image is pinned to Alpine 3.24.1, contains the CA bundle without a
-`curl` dependency or built-in Docker healthcheck, and runs as UID/GID 10001.
+The runtime image is pinned to Alpine 3.24.1, applies the current v3.24
+repository security upgrades during the image build, contains the CA bundle
+without a `curl` dependency or built-in Docker healthcheck, and runs as UID/GID
+10001.
 Its default command uses `/usr/local/apisix/conf/config-production.yaml`, which
 intentionally fails closed until an operator supplies a real etcd endpoint. The executable
 `scripts/container_smoke.sh` mounts a generated standalone

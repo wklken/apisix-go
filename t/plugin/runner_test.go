@@ -119,13 +119,22 @@ func TestPluginIntegration(t *testing.T) {
 				defer func() { <-caseSlots }()
 
 				if len(spec.Variants) == 0 {
-					runCase(t, spec)
+					if spec.WaitForGeneration {
+						runReadyCase(t, spec)
+					} else {
+						runCase(t, spec)
+					}
 					return
 				}
 				for i := range spec.Variants {
 					variant := &spec.Variants[i]
 					t.Run(variant.Name, func(t *testing.T) {
-						runCase(t, *variant.caseSpec())
+						caseSpec := variant.caseSpec()
+						if caseSpec.WaitForGeneration {
+							runReadyCase(t, *caseSpec)
+						} else {
+							runCase(t, *caseSpec)
+						}
 					})
 				}
 			})

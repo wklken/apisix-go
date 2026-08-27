@@ -1,0 +1,131 @@
+sources:
+  - repository: https://github.com/apache/apisix
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
+    file: t/plugin/prometheus.t
+    tests: 6
+    test_numbers: [1, 2, 3, 4, 5, 6]
+  - repository: https://github.com/apache/apisix
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
+    file: t/plugin/prometheus2.t
+    tests: 3
+    test_numbers: [38, 39, 40]
+  - repository: https://github.com/apache/apisix
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
+    file: t/plugin/prometheus4.t
+    tests: 4
+    test_numbers: [1, 2, 3, 4]
+
+cases:
+  - name: invalid-prefer-name
+    source: {file: t/plugin/prometheus.t, tests: [1]}
+    config:
+      routes:
+        - id: prometheus-invalid
+          uri: /invalid
+          plugins: {prometheus: {prefer_name: invalid}}
+    input: {path: /invalid}
+    output:
+      status: 503
+      logs: {matches: 'worker generation preparation failed'}
+
+  - name: profile-metrics-scrape
+    wait_for_generation: true
+    source: {file: t/plugin/prometheus.t, tests: [2, 3, 4, 5, 6]}
+    config:
+      routes:
+        - id: prometheus-profile-metrics
+          uri: /apisix/prometheus/metrics
+          methods: [GET]
+          plugins: {public-api: {uri: /apisix/prometheus/metrics}}
+        - id: prometheus-profile
+          uri: /profile
+          plugins: {prometheus: {}}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect: [{path: {equals: /profile}}]
+        respond: [{status: 200, body: profile-ok}]
+    steps:
+      - name: record-profile-request
+        input: {path: /profile}
+        output: {status: 200, body: {equals: profile-ok}}
+      - name: scrape-profile-metrics
+        input: {path: /apisix/prometheus/metrics}
+        output:
+          status: 200
+          body:
+            matches: 'apisix_http_status\{[^\n]*code="200"[^\n]*route="prometheus-profile"[^\n]*\} 1'
+
+  - name: bounded-route-service-labels
+    wait_for_generation: true
+    source: {file: t/plugin/prometheus2.t, tests: [38, 39, 40]}
+    config:
+      services:
+        - id: prometheus-service-id
+          name: prometheus-service-name
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+      routes:
+        - id: prometheus-named-metrics
+          uri: /apisix/prometheus/metrics
+          methods: [GET]
+          plugins: {public-api: {uri: /apisix/prometheus/metrics}}
+        - id: prometheus-route-id
+          name: prometheus-route-name
+          uri: /named
+          service_id: prometheus-service-id
+          plugins: {prometheus: {prefer_name: true}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect: [{path: {equals: /named}}]
+        respond: [{status: 200, body: named-ok}]
+    steps:
+      - name: record-named-request
+        input: {path: /named}
+        output: {status: 200, body: {equals: named-ok}}
+      - name: scrape-named-labels
+        input: {path: /apisix/prometheus/metrics}
+        output:
+          status: 200
+          body:
+            matches: 'apisix_http_status\{[^\n]*route="prometheus-route-name"[^\n]*service="prometheus-service-name"[^\n]*\} 1'
+
+  - name: http-series-overflow
+    wait_for_generation: true
+    source: {file: t/plugin/prometheus4.t, tests: [1, 2, 3, 4]}
+    runtime:
+      plugin_attr:
+        prometheus:
+          max_http_series: 100
+          metrics:
+            http_status:
+              extra_labels:
+                - path: $uri
+    config:
+      routes:
+        - id: prometheus-overflow-metrics
+          uri: /apisix/prometheus/metrics
+          methods: [GET]
+          plugins: {public-api: {uri: /apisix/prometheus/metrics}}
+        - id: prometheus-series-one
+          uri: /series/*
+          plugins: {prometheus: {}}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        count: {at_least: 101, at_most: 101}
+        expect: [{path: {matches: '^/series/[0-9]+$'}}]
+        respond: [{status: 200, body: series-ok}]
+    steps:
+      - name: fill-and-overflow-series-budget
+        repeat: 101
+        input: {path: '/series/{{ITERATION}}'}
+        output: {status: 200, body: {equals: series-ok}}
+      - name: scrape-overflow-counter
+        input: {path: /apisix/prometheus/metrics}
+        output:
+          status: 200
+          body:
+            matches: 'apisix_http_metric_series_overflow_total\{metric="http_status"\} 1'

@@ -398,6 +398,51 @@ func TestCorpusScope(t *testing.T) {
 	}
 }
 
+func TestFirstWaveSourcesUseCompatibilityTarget(t *testing.T) {
+	scope, err := loadCorpusScopeFile(t)
+	if err != nil {
+		t.Fatalf("load ledger: %v", err)
+	}
+	manifest, err := capability.Load()
+	if err != nil {
+		t.Fatalf("load capability manifest: %v", err)
+	}
+	commits := sourceCommitsByFile(scope)
+	files := []string{
+		"t/plugin/basic-auth-anonymous-consumer.t",
+		"t/plugin/basic-auth-realm.t",
+		"t/plugin/basic-auth.t",
+		"t/plugin/cors.t",
+		"t/plugin/cors2.t",
+		"t/plugin/cors3.t",
+		"t/plugin/cors4.t",
+		"t/plugin/jwt-auth-anonymous-consumer.t",
+		"t/plugin/jwt-auth-more-algo.t",
+		"t/plugin/jwt-auth-realm.t",
+		"t/plugin/jwt-auth.t",
+		"t/plugin/jwt-auth2.t",
+		"t/plugin/jwt-auth3.t",
+		"t/plugin/jwt-auth4.t",
+		"t/plugin/key-auth-anonymous-consumer.t",
+		"t/plugin/key-auth-realm.t",
+		"t/plugin/key-auth-upstream-domain-node.t",
+		"t/plugin/key-auth.t",
+		"t/plugin/prometheus-metric-expire.t",
+		"t/plugin/prometheus.t",
+		"t/plugin/prometheus2.t",
+		"t/plugin/prometheus3.t",
+		"t/plugin/prometheus4.t",
+		"t/plugin/request-id.t",
+		"t/plugin/request-id2.t",
+		"t/plugin/request-id3.t",
+	}
+	for _, file := range files {
+		if got := commits[file]; got != manifest.Target.SourceCommit {
+			t.Errorf("%s effective commit = %s, want compatibility target %s", file, got, manifest.Target.SourceCommit)
+		}
+	}
+}
+
 func TestUpstreamCorpusAccounting(t *testing.T) {
 	scope, err := loadCorpusScopeFile(t)
 	if err != nil {

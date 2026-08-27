@@ -1,10 +1,11 @@
 sources:
-  - {repository: https://github.com/apache/apisix, commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7, file: t/plugin/cors.t, tests: 37}
-  - {repository: https://github.com/apache/apisix, commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7, file: t/plugin/cors2.t, tests: 5}
-  - {repository: https://github.com/apache/apisix, commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7, file: t/plugin/cors3.t, tests: 15}
-  - {repository: https://github.com/apache/apisix, commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7, file: t/plugin/cors4.t, tests: 29}
+  - {repository: https://github.com/apache/apisix, commit: 9ef2ecab67f652d38365049613610ef649bb4ad0, file: t/plugin/cors.t, tests: 37}
+  - {repository: https://github.com/apache/apisix, commit: 9ef2ecab67f652d38365049613610ef649bb4ad0, file: t/plugin/cors2.t, tests: 5}
+  - {repository: https://github.com/apache/apisix, commit: 9ef2ecab67f652d38365049613610ef649bb4ad0, file: t/plugin/cors3.t, tests: 15}
+  - {repository: https://github.com/apache/apisix, commit: 9ef2ecab67f652d38365049613610ef649bb4ad0, file: t/plugin/cors4.t, tests: 29}
 cases:
   - name: default-wildcard
+    wait_for_generation: true
     source: {file: t/plugin/cors.t, tests: [6, 7]}
     config:
       routes:

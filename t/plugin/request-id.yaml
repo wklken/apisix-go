@@ -1,19 +1,20 @@
 sources:
   - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
     file: t/plugin/request-id.t
-    tests: 28
+    tests: 27
   - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
     file: t/plugin/request-id2.t
     tests: 4
   - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
     file: t/plugin/request-id3.t
     tests: 5
 
 cases:
   - name: default-uuid-v4
+    wait_for_generation: true
     source:
       file: t/plugin/request-id.t
       tests: [1, 3, 4, 5, 23]
@@ -188,7 +189,7 @@ cases:
   - name: nanoid-generation
     source:
       file: t/plugin/request-id.t
-      tests: [15, 16, 28]
+      tests: [15, 16]
     config:
       routes:
         - id: request-id-nanoid

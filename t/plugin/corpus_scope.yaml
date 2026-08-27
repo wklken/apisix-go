@@ -416,18 +416,21 @@ sources:
     manifest: azure-functions.yaml
     reason: mapped by the azure-functions standalone manifest
   - file: t/plugin/basic-auth-anonymous-consumer.t
-    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8]
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
+    test_numbers: [1, 2, 3, 4, 5, 6, 7]
     owner: basic-auth
     disposition: converted
     manifest: basic-auth.yaml
     reason: mapped by the basic-auth standalone manifest
   - file: t/plugin/basic-auth-realm.t
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
     test_numbers: [1, 2, 3, 4, 5, 6]
     owner: basic-auth
     disposition: converted
     manifest: basic-auth.yaml
     reason: mapped by the basic-auth standalone manifest
   - file: t/plugin/basic-auth.t
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
     test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30]
     owner: basic-auth
     disposition: converted
@@ -556,24 +559,28 @@ sources:
     manifest: consumer-restriction.yaml
     reason: mapped by the consumer-restriction standalone manifest
   - file: t/plugin/cors.t
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
     test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37]
     owner: cors
     disposition: converted
     manifest: cors.yaml
     reason: mapped by the cors standalone manifest
   - file: t/plugin/cors2.t
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
     test_numbers: [1, 2, 3, 4, 5]
     owner: cors
     disposition: converted
     manifest: cors.yaml
     reason: mapped by the cors standalone manifest
   - file: t/plugin/cors3.t
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
     test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
     owner: cors
     disposition: converted
     manifest: cors.yaml
     reason: mapped by the cors standalone manifest
   - file: t/plugin/cors4.t
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
     test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29]
     owner: cors
     disposition: converted
@@ -958,58 +965,68 @@ sources:
     manifest: jwe-decrypt.yaml
     reason: mapped by the jwe-decrypt standalone manifest
   - file: t/plugin/jwt-auth-anonymous-consumer.t
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
     test_numbers: [1, 2, 3, 4, 5, 6, 7]
     owner: jwt-auth
     disposition: converted
     manifest: jwt-auth.yaml
     reason: mapped by the jwt-auth standalone manifest
   - file: t/plugin/jwt-auth-more-algo.t
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
     test_numbers: [1, 2, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
     owner: jwt-auth
     disposition: converted
     manifest: jwt-auth.yaml
     reason: mapped by the jwt-auth standalone manifest
   - file: t/plugin/jwt-auth-more-algo.t
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
     test_numbers: [3]
     owner: jwt-auth
     disposition: blocked_design
     reason: pinned test only registers a public-api route at /apisix/plugin/jwt/sign; this project has no jwt-auth sign endpoint to exercise
   - file: t/plugin/jwt-auth-realm.t
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
     test_numbers: [1, 2, 3, 4, 5, 6]
     owner: jwt-auth
     disposition: converted
     manifest: jwt-auth.yaml
     reason: mapped by the jwt-auth standalone manifest
   - file: t/plugin/jwt-auth.t
-    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59]
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58]
     owner: jwt-auth
     disposition: converted
     manifest: jwt-auth.yaml
     reason: mapped by the jwt-auth standalone manifest
   - file: t/plugin/jwt-auth.t
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
     test_numbers: [26]
     owner: jwt-auth
     disposition: blocked_design
     reason: pinned test signs/verifies RS256 with a 512-bit private key; Go's crypto/rsa stdlib rejects RSA keys under 1024 bits at verification time ("512-bit keys are insecure"), so this key size cannot be exercised through the standard library verifier this plugin uses
   - file: t/plugin/jwt-auth2.t
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
     test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9]
     owner: jwt-auth
     disposition: converted
     manifest: jwt-auth.yaml
     reason: mapped by the jwt-auth standalone manifest
   - file: t/plugin/jwt-auth3.t
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
     test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]
     owner: jwt-auth
     disposition: converted
     manifest: jwt-auth.yaml
     reason: mapped by the jwt-auth standalone manifest
   - file: t/plugin/jwt-auth4.t
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
     test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 11]
     owner: jwt-auth
     disposition: converted
     manifest: jwt-auth.yaml
     reason: mapped by the jwt-auth standalone manifest
   - file: t/plugin/jwt-auth4.t
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
     test_numbers: [10]
     owner: jwt-auth
     disposition: blocked_design
@@ -1057,25 +1074,29 @@ sources:
     manifest: kafka-proxy.yaml
     reason: mapped by the kafka-proxy standalone manifest
   - file: t/plugin/key-auth-anonymous-consumer.t
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
     test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
     owner: key-auth
     disposition: converted
     manifest: key-auth.yaml
     reason: mapped by the key-auth standalone manifest
   - file: t/plugin/key-auth-realm.t
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
     test_numbers: [1, 2, 3, 4, 5, 6]
     owner: key-auth
     disposition: converted
     manifest: key-auth.yaml
     reason: mapped by the key-auth standalone manifest
   - file: t/plugin/key-auth-upstream-domain-node.t
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
     test_numbers: [1, 2, 3, 4, 5, 6, 7]
     owner: key-auth
     disposition: converted
     manifest: key-auth.yaml
     reason: mapped by the key-auth standalone manifest
   - file: t/plugin/key-auth.t
-    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34]
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]
     owner: key-auth
     disposition: converted
     manifest: key-auth.yaml
@@ -1571,30 +1592,56 @@ sources:
     disposition: blocked_design
     reason: prometheus exporter internals; Task 5 separate subsystem decision required
   - file: t/plugin/prometheus-metric-expire.t
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
     test_numbers: [1]
     owner: prometheus
     disposition: blocked_design
     reason: prometheus exporter internals; Task 5 separate subsystem decision required
   - file: t/plugin/prometheus.t
-    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41]
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
+    test_numbers: [1, 2, 3, 4, 5, 6]
+    owner: prometheus
+    disposition: converted
+    manifest: prometheus.yaml
+    reason: mapped by the prometheus standalone manifest
+  - file: t/plugin/prometheus.t
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
+    test_numbers: [7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41]
     owner: prometheus
     disposition: blocked_design
-    reason: registered Deferred default; Task 5 separate subsystem decision required
+    reason: outside the first controlled HTTP rollout evidence slice; later parity waves must classify each remaining metric family
   - file: t/plugin/prometheus2.t
-    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50]
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50]
     owner: prometheus
     disposition: blocked_design
-    reason: registered Deferred default; Task 5 separate subsystem decision required
+    reason: outside the first controlled HTTP rollout evidence slice; later parity waves must classify each remaining metric family
+  - file: t/plugin/prometheus2.t
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
+    test_numbers: [38, 39, 40]
+    owner: prometheus
+    disposition: converted
+    manifest: prometheus.yaml
+    reason: mapped by the prometheus standalone manifest
   - file: t/plugin/prometheus3.t
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
     test_numbers: [1, 2, 3, 4, 5, 6, 7]
     owner: prometheus
     disposition: blocked_design
     reason: registered Deferred default; Task 5 separate subsystem decision required
   - file: t/plugin/prometheus4.t
-    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
+    test_numbers: [1, 2, 3, 4]
+    owner: prometheus
+    disposition: converted
+    manifest: prometheus.yaml
+    reason: mapped by the prometheus standalone manifest
+  - file: t/plugin/prometheus4.t
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
+    test_numbers: [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
     owner: prometheus
     disposition: blocked_design
-    reason: registered Deferred default; Task 5 separate subsystem decision required
+    reason: outside the first controlled HTTP rollout evidence slice; later parity waves must classify each remaining metric family
   - file: t/plugin/proxy-cache/disk.t
     test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29]
     owner: proxy-cache
@@ -1690,18 +1737,21 @@ sources:
     manifest: referer-restriction.yaml
     reason: mapped by the referer-restriction standalone manifest
   - file: t/plugin/request-id.t
-    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28]
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27]
     owner: request-id
     disposition: converted
     manifest: request-id.yaml
     reason: mapped by the request-id standalone manifest
   - file: t/plugin/request-id2.t
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
     test_numbers: [1, 2, 3, 4]
     owner: request-id
     disposition: converted
     manifest: request-id.yaml
     reason: mapped by the request-id standalone manifest
   - file: t/plugin/request-id3.t
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
     test_numbers: [1, 2, 3, 4, 5]
     owner: request-id
     disposition: converted

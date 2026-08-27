@@ -1,19 +1,20 @@
 sources:
   - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
     file: t/plugin/basic-auth.t
     tests: 30
   - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
     file: t/plugin/basic-auth-anonymous-consumer.t
-    tests: 8
+    tests: 7
   - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
     file: t/plugin/basic-auth-realm.t
     tests: 6
 
 cases:
   - name: valid-consumer-schema
+    wait_for_generation: true
     source: {file: t/plugin/basic-auth.t, tests: [1]}
     config:
       consumers:
@@ -550,42 +551,6 @@ cases:
       status: 401
       body: {equals: '{"message":"Invalid user authorization"}'}
       logs: {matches: 'failed to get anonymous consumer not-found-anonymous'}
-
-  - name: anonymous-consumer-schema
-    source: {file: t/plugin/basic-auth-anonymous-consumer.t, tests: [8]}
-    variants:
-      - name: number
-        config:
-          routes:
-            - id: basic-auth-anonymous-number
-              uri: /hello
-              plugins: {basic-auth: {anonymous_consumer: 123}}
-        input: {path: /hello}
-        output: {status: 404, logs: {matches: 'basic-auth.*anonymous_consumer.*expected string'}}
-      - name: boolean
-        config:
-          routes:
-            - id: basic-auth-anonymous-boolean
-              uri: /hello
-              plugins: {basic-auth: {anonymous_consumer: true}}
-        input: {path: /hello}
-        output: {status: 404, logs: {matches: 'basic-auth.*anonymous_consumer.*expected string'}}
-      - name: object
-        config:
-          routes:
-            - id: basic-auth-anonymous-object
-              uri: /hello
-              plugins: {basic-auth: {anonymous_consumer: {}}}
-        input: {path: /hello}
-        output: {status: 404, logs: {matches: 'basic-auth.*anonymous_consumer.*expected string'}}
-      - name: empty
-        config:
-          routes:
-            - id: basic-auth-anonymous-empty
-              uri: /hello
-              plugins: {basic-auth: {anonymous_consumer: ''}}
-        input: {path: /hello}
-        output: {status: 404, logs: {matches: 'basic-auth.*anonymous_consumer.*length.*1'}}
 
   - name: default-realm
     source: {file: t/plugin/basic-auth-realm.t, tests: [1, 2]}

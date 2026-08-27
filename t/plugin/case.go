@@ -43,6 +43,7 @@ type Case struct {
 	Source                   CaseSource      `yaml:"source"`
 	TargetPluginExemptReason string          `yaml:"target_plugin_exempt_reason,omitempty"`
 	Serial                   bool            `yaml:"serial,omitempty"`
+	WaitForGeneration        bool            `yaml:"wait_for_generation,omitempty"`
 	Variants                 []CaseVariant   `yaml:"variants,omitempty"`
 	Environment              Environment     `yaml:"environment,omitempty"`
 	EnvironmentUnset         []string        `yaml:"environment_unset,omitempty"`
@@ -61,6 +62,7 @@ type Case struct {
 type CaseVariant struct {
 	Name                     string          `yaml:"name"`
 	TargetPluginExemptReason string          `yaml:"target_plugin_exempt_reason,omitempty"`
+	WaitForGeneration        bool            `yaml:"wait_for_generation,omitempty"`
 	Environment              Environment     `yaml:"environment,omitempty"`
 	EnvironmentUnset         []string        `yaml:"environment_unset,omitempty"`
 	Runtime                  map[string]any  `yaml:"runtime,omitempty"`
@@ -745,6 +747,7 @@ func (v *CaseVariant) caseSpec() *Case {
 	return &Case{
 		Name:                     v.Name,
 		TargetPluginExemptReason: v.TargetPluginExemptReason,
+		WaitForGeneration:        v.WaitForGeneration,
 		Environment:              v.Environment,
 		EnvironmentUnset:         v.EnvironmentUnset,
 		Runtime:                  v.Runtime,

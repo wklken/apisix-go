@@ -2556,7 +2556,7 @@ plugins:
     evidence:
       schema: {state: "verified", refs: ["pkg/plugin/prometheus/plugin.go"], owner: "prometheus", reason: ""}
       unit: {state: "verified", refs: ["pkg/plugin/prometheus/plugin_test.go"], owner: "prometheus", reason: ""}
-      converted_upstream: {state: "deferred", refs: ["t/plugin/corpus_scope.yaml"], owner: "prometheus", reason: "corpus scope records blocked_design rows without a converted manifest"}
+      converted_upstream: {state: "deferred", refs: ["t/plugin/prometheus.yaml"], owner: "prometheus", reason: "target-pinned first-wave cases exist but qualification gates are not complete"}
       differential: {state: "missing", refs: [], owner: "prometheus", reason: "pinned APISIX differential evidence is not recorded"}
       real_dependency: {state: "missing", refs: [], owner: "prometheus", reason: "real-dependency evidence is not recorded"}
       failure: {state: "missing", refs: [], owner: "prometheus", reason: "failure evidence is not classified"}

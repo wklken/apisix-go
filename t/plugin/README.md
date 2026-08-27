@@ -16,7 +16,7 @@ rejected. Converted-upstream claims backed only by historical manifests remain
 stale, while claims whose referenced manifests all use the target commit may be
 promoted after their evidence gates pass. Integration selection comes from each
 capability claim's `t/plugin/*.yaml` evidence references and factory keys, not
-from `docs/plugins.md`; the checked-in catalog currently has 99 manifests,
+from `docs/plugins.md`; the checked-in catalog currently has 100 manifests,
 including the explicit supplemental `redirect2.yaml` alias. Every manifest
 contains at least one standalone scenario that activates its target plugin and
 assertions produced by the real APISIX-Go process. An intentional negative

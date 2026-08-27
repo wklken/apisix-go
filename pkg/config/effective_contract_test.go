@@ -169,7 +169,7 @@ func TestValidateQualificationPlugins(t *testing.T) {
 		}
 	})
 
-	t.Run("exact and reordered required membership pass without mutation", func(t *testing.T) {
+	t.Run("exact required order passes and reordered membership fails without mutation", func(t *testing.T) {
 		manifest := qualifiedProfileTestManifest(t)
 		profile, ok := manifest.Qualification(string(QualificationHTTPDataPlaneV1))
 		if !ok {
@@ -187,8 +187,10 @@ func TestValidateQualificationPlugins(t *testing.T) {
 
 		slices.Reverse(enabled)
 		enabledBefore = append([]string(nil), enabled...)
-		if err := ValidateQualificationPlugins(enabled, qualifiedSelection(), manifest); err != nil {
-			t.Fatalf("reordered membership error = %v", err)
+		err := ValidateQualificationPlugins(enabled, qualifiedSelection(), manifest)
+		want := "qualification_profile http-data-plane-v1: plugins must exactly match required order"
+		if err == nil || err.Error() != want {
+			t.Fatalf("reordered membership error = %v, want %q", err, want)
 		}
 		if !slices.Equal(enabled, enabledBefore) {
 			t.Fatalf("reordered enabled input mutated: got %v, want %v", enabled, enabledBefore)

@@ -343,6 +343,44 @@ func TestHTTPDataPlanePluginOrderMatchesManifestAndConfig(t *testing.T) {
 	}
 }
 
+func TestHTTPDataPlaneProductionConfigSelectsControlledTuple(t *testing.T) {
+	path := repositoryPath(t, "conf", "config-production.yaml")
+	document, err := readConfigDocument(path, FieldSource{
+		Kind: SourceOverrideFile, Origin: path, Explicit: true,
+	}, map[string]string{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, _, unused, err := decodeConfig(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(unused) != 0 {
+		t.Fatalf("production config has unknown fields: %v", unused)
+	}
+	if cfg.CompatibilityTarget != CompatibilityAPISIX317 ||
+		cfg.SecurityProfile != SecurityStrict ||
+		cfg.QualificationProfile != QualificationHTTPDataPlaneV1 {
+		t.Fatalf("production tuple = %q/%q/%q, want apisix-3.17/strict/http-data-plane-v1",
+			cfg.CompatibilityTarget, cfg.SecurityProfile, cfg.QualificationProfile)
+	}
+	if cfg.Deployment.Role != "data_plane" || cfg.Deployment.RoleDataPlane.ConfigProvider != "etcd" {
+		t.Fatalf("production deployment = %#v, want data_plane/etcd", cfg.Deployment)
+	}
+	if cfg.Apisix.ProxyMode != "http" || cfg.Apisix.EnableAdmin ||
+		len(cfg.Apisix.StreamProxy.Tcp) != 0 || len(cfg.Apisix.StreamProxy.Udp) != 0 ||
+		len(cfg.StreamPlugins) != 0 {
+		t.Fatalf("production HTTP-only shape is invalid: apisix=%#v stream_plugins=%v",
+			cfg.Apisix, cfg.StreamPlugins)
+	}
+	if cfg.Deployment.Etcd.TLS.Verify == nil || !*cfg.Deployment.Etcd.TLS.Verify {
+		t.Fatal("production etcd TLS verification must be explicitly true")
+	}
+	if err := validateProcessAccessLogs(cfg); err != nil {
+		t.Fatalf("production process access-log config = %v", err)
+	}
+}
+
 func readPluginListYAML(t *testing.T, path string) []string {
 	t.Helper()
 	contents, err := os.ReadFile(path)
@@ -590,6 +628,20 @@ func TestProductionPolicyRejectsOneMutatedFieldPerRow(t *testing.T) {
 			field: "plugins",
 			mutate: func(cfg *Config) {
 				cfg.Plugins = append(cfg.Plugins, "file-logger")
+			},
+		},
+		{
+			name:  "reordered plugins",
+			field: "plugins",
+			mutate: func(cfg *Config) {
+				cfg.Plugins[0], cfg.Plugins[1] = cfg.Plugins[1], cfg.Plugins[0]
+			},
+		},
+		{
+			name:  "duplicate plugin",
+			field: "plugins",
+			mutate: func(cfg *Config) {
+				cfg.Plugins = append(cfg.Plugins, cfg.Plugins[0])
 			},
 		},
 		{

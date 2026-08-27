@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 
 	"github.com/wklken/apisix-go/pkg/capability"
@@ -45,6 +46,12 @@ func ValidateQualificationPlugins(
 		return fmt.Errorf(
 			"qualification_profile %s: plugins missing count %d; unexpected count %d",
 			selection.Qualification, len(missing), len(unexpected),
+		)
+	}
+	if !slices.Equal(profile.RequiredPlugins, enabled) {
+		return fmt.Errorf(
+			"qualification_profile %s: plugins must exactly match required order",
+			selection.Qualification,
 		)
 	}
 	return nil

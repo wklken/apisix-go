@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/wklken/apisix-go/pkg/capability"
 	"go.yaml.in/yaml/v3"
 )
 
@@ -55,6 +56,11 @@ func TestStandaloneManifestMapsOneIndependentCasePerPinnedBlock(t *testing.T) {
 	if err := yaml.Unmarshal(data, &manifest); err != nil {
 		t.Fatalf("decode %s: %v", path, err)
 	}
+	capabilityManifest, err := capability.Load()
+	if err != nil {
+		t.Fatalf("load capability manifest: %v", err)
+	}
+	wantCommit := capabilityManifest.Target.SourceCommit
 
 	// testNumbers is nil when every pinned test 1..tests is converted with no
 	// gaps. A non-nil list names the exact pinned upstream test numbers that
@@ -71,7 +77,7 @@ func TestStandaloneManifestMapsOneIndependentCasePerPinnedBlock(t *testing.T) {
 		{"t/plugin/jwt-auth-realm.t", 6, nil},
 		{
 			"t/plugin/jwt-auth.t",
-			58,
+			57,
 			[]int{
 				1,
 				2,
@@ -130,7 +136,6 @@ func TestStandaloneManifestMapsOneIndependentCasePerPinnedBlock(t *testing.T) {
 				56,
 				57,
 				58,
-				59,
 			},
 		},
 		{"t/plugin/jwt-auth2.t", 9, nil},
@@ -147,8 +152,8 @@ func TestStandaloneManifestMapsOneIndependentCasePerPinnedBlock(t *testing.T) {
 	position := make(map[string]int, len(wantSources))
 	for i, want := range wantSources {
 		got := manifest.Sources[i]
-		if got.Commit != "c3d7d5ec69774121f53d2e20d29d09c816795dd7" {
-			t.Fatalf("source %d commit = %q, want pinned Apache APISIX commit", i+1, got.Commit)
+		if got.Commit != wantCommit {
+			t.Fatalf("source %d commit = %q, want capability target %q", i+1, got.Commit, wantCommit)
 		}
 		wantNumbers := want.testNumbers
 		if wantNumbers == nil {

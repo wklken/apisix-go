@@ -261,6 +261,38 @@ func TestConsumerBindingPreparerSkipsMissingOptionalDeclaredFields(t *testing.T)
 	}
 }
 
+func TestConsumerBindingPreparerIndexesNonCredentialConsumerPlugin(t *testing.T) {
+	broker := &consumerPreparationBroker{}
+	factory, _ := newConsumerAttemptFactory(t, broker)
+	desired := mustGenerationSnapshot(t, 64, []generation.Resource{
+		resourceValue(
+			"consumers",
+			"rate-limited-consumer",
+			`{"username":"rate-limited-consumer","plugins":{"limit-count":{"count":4,"time_window":60}}}`,
+		),
+	}, nil)
+	prepared, err := factory.prepareCandidateAttempt(
+		context.Background(), ticketForSnapshot(desired, generation.DomainHTTP), desired, nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	consumer, ok := prepared.consumers.ConsumerByID("rate-limited-consumer")
+	if !ok {
+		t.Fatal("consumer with a non-credential plugin was not indexed")
+	}
+	config, ok := consumer.Plugins["limit-count"].(map[string]any)
+	if !ok || fmt.Sprint(config["count"]) != "4" || fmt.Sprint(config["time_window"]) != "60" {
+		t.Fatalf("prepared limit-count config = %#v", consumer.Plugins["limit-count"])
+	}
+	if len(broker.scopes) != 0 {
+		t.Fatalf("non-credential plugin materialized credential scopes: %#v", broker.scopes)
+	}
+	if err := prepared.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestConsumerBindingPreparerPreservesEmptyResolvedLookupCompatibility(t *testing.T) {
 	broker := &consumerPreparationBroker{resolved: map[string]string{
 		"$ENV://EMPTY_USER": "",

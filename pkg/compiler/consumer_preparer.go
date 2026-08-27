@@ -133,13 +133,14 @@ func (preparer *consumerBindingPreparer) prepareConsumer(
 	bindings := make([]runtime.ConsumerCredentialBinding, 0, len(normalized.view.plugins))
 	used := make([]consumerOccurrenceKey, 0, len(normalized.view.plugins))
 	for _, factory := range sortedFactories(normalized.view.plugins) {
-		if !consumerregistry.Supports(factory) {
-			return runtime.ConsumerRecord{}, nil, nil, errConsumerPreparationFailed
-		}
 		key := consumerOccurrenceKey{resource: normalized.key, factory: factory}
 		occurrence, exists := occurrences[key]
 		if !exists {
 			return runtime.ConsumerRecord{}, nil, nil, errConsumerPreparationFailed
+		}
+		used = append(used, key)
+		if !consumerregistry.Supports(factory) {
+			continue
 		}
 		config := normalized.view.plugins[factory]
 		if err := preparer.catalog.TransformDeclaredFields(
@@ -177,7 +178,6 @@ func (preparer *consumerBindingPreparer) prepareConsumer(
 		bindings = append(bindings, runtime.ConsumerCredentialBinding{
 			Plugin: factory, Key: lookupKey, ConsumerID: normalized.key.ID,
 		})
-		used = append(used, key)
 	}
 
 	var consumer resource.Consumer
@@ -216,9 +216,6 @@ func validateConsumerOccurrenceSet(
 			continue
 		}
 		for _, factory := range sortedFactories(input.resources[resourceKey].view.plugins) {
-			if !consumerregistry.Supports(factory) {
-				return errConsumerPreparationFailed
-			}
 			expected[consumerOccurrenceKey{resource: resourceKey, factory: factory}] = struct{}{}
 		}
 	}

@@ -21,10 +21,11 @@ const (
 )
 
 type factorySchemas struct {
-	config   *util.CompiledSchema
-	metadata *util.CompiledSchema
-	consumer *util.CompiledSchema
-	domains  []generation.Domain
+	config          *util.CompiledSchema
+	metadata        *util.CompiledSchema
+	consumer        *util.CompiledSchema
+	consumerAllowed bool
+	domains         []generation.Domain
 }
 
 type schemaSet struct {
@@ -83,7 +84,9 @@ func newSchemaSet(manifest *capability.Manifest) (*schemaSet, error) {
 				}
 			}
 			set.factories[factory.Key] = factorySchemas{
-				config: config, metadata: metadata, consumer: consumerSchema, domains: domains,
+				config: config, metadata: metadata, consumer: consumerSchema,
+				consumerAllowed: slices.Contains(pluginCapability.Scopes, "consumer"),
+				domains:         domains,
 			}
 		}
 	}
@@ -153,8 +156,12 @@ func validateRawSchemas(
 			if !exists {
 				continue
 			}
-			if entry.consumer == nil ||
-				!schemaAccepts(entry.consumer, schemas.catalog, factory, capability.SecretConsumerConfig, config) {
+			consumerSchema := entry.consumer
+			if consumerSchema == nil && entry.consumerAllowed {
+				consumerSchema = entry.config
+			}
+			if consumerSchema == nil ||
+				!schemaAccepts(consumerSchema, schemas.catalog, factory, capability.SecretConsumerConfig, config) {
 				*issues = append(*issues, newIssue(
 					resource.key, consumerSchemaInvalidCode, "consumer schema validation failed",
 				))

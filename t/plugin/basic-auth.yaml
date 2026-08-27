@@ -465,6 +465,7 @@ cases:
         output: {status: 200, body: {equals: hello world}, logs: {matches: 'find consumer foo'}}
 
   - name: normal-consumer-limit-chain
+    wait_for_generation: true
     source: {file: t/plugin/basic-auth-anonymous-consumer.t, tests: [1, 2, 3]}
     config:
       consumers:

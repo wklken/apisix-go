@@ -140,7 +140,8 @@ func validateScopedSecretAuthority(
 	}
 	if (scope.Domain != generation.DomainHTTP && scope.Domain != generation.DomainStream) ||
 		scope.Plugin == "" || scope.Resource.Kind == "" || scope.Resource.ID == "" ||
-		scope.Source != capability.SecretPluginConfig || scope.Field != "" {
+		(scope.Source != capability.SecretPluginConfig &&
+			scope.Source != capability.SecretConsumerConfig) || scope.Field != "" {
 		return secret.ErrInvalidScope
 	}
 	return nil

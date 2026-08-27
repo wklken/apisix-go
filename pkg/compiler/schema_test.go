@@ -110,7 +110,7 @@ func TestRawSchemaAdmissionRejectsInvalidPluginMetadataAndConsumerConfigs(t *tes
 		{
 			name: "known non-consumer plugin",
 			resource: resourceValue(
-				"consumers", "alice", `{"username":"alice","plugins":{"request-id":{}}}`,
+				"consumers", "alice", `{"username":"alice","plugins":{"batch-requests":{}}}`,
 			),
 			wantCode: "consumer-schema-invalid", wantMessage: "consumer schema validation failed",
 		},
@@ -163,6 +163,37 @@ func TestRawSchemaAdmissionRejectsInvalidPluginMetadataAndConsumerConfigs(t *tes
 			assertDecision(
 				t, set.Domains[generation.DomainHTTP], test.resource.Key,
 				generation.DispositionFailClosed, test.wantCode,
+			)
+		})
+	}
+}
+
+func TestRawConsumerSchemaFallsBackToPluginSchema(t *testing.T) {
+	for name, test := range map[string]struct {
+		config      string
+		disposition generation.ResourceDisposition
+		code        string
+	}{
+		"valid non-auth consumer plugin": {
+			config:      `{"count":4,"time_window":60}`,
+			disposition: generation.DispositionPublished,
+			code:        "validated",
+		},
+		"invalid non-auth consumer plugin": {
+			config:      `{"count":0,"time_window":60}`,
+			disposition: generation.DispositionFailClosed,
+			code:        "consumer-schema-invalid",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			assertSchemaDecision(
+				t,
+				resourceValue(
+					"consumers", "alice",
+					`{"username":"alice","plugins":{"limit-count":`+test.config+`}}`,
+				),
+				test.disposition,
+				test.code,
 			)
 		})
 	}

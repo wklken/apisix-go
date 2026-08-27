@@ -11,6 +11,7 @@ import (
 	"go/token"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"reflect"
@@ -128,7 +129,7 @@ func TestEffectiveBindingMaterializerRejectsDuplicateEffectiveSpec(t *testing.T)
 	}
 }
 
-func TestEffectiveBindingMaterializerPreparedConsumerDoesNotRematerializeSecrets(t *testing.T) {
+func TestEffectiveBindingMaterializerPreparedConsumerWithoutSecretFieldsDoesNotMaterializeValues(t *testing.T) {
 	consumerConfig := map[string]any{"header_name": "X-Consumer-Request-ID"}
 	consumers, err := runtime.NewConsumerBindings([]runtime.ConsumerRecord{{
 		ID: "consumer-1",
@@ -139,14 +140,23 @@ func TestEffectiveBindingMaterializerPreparedConsumerDoesNotRematerializeSecrets
 	if err != nil {
 		t.Fatal(err)
 	}
-	prepared, fixture := newEffectiveBindingMaterializerFixtureWithConsumers(t, nil, consumers)
+	consumerKey := generation.ResourceKey{Kind: "consumers", ID: "consumer-1"}
+	prepared, fixture := newEffectiveBindingMaterializerFixtureWithOccurrenceSpecs(
+		t,
+		[]factoryOccurrenceSpec{{
+			domain: generation.DomainHTTP, resource: consumerKey,
+			source: capability.SecretConsumerConfig, factory: "request-id",
+		}},
+		consumers,
+	)
 	spec := effectiveBindingSpec{
 		domain:         generation.DomainHTTP,
 		executionOwner: generation.ResourceKey{Kind: "routes", ID: "route-1"},
 		source: effectiveBindingSource{
-			kind:     effectiveBindingPreparedConsumer,
-			resource: generation.ResourceKey{Kind: "consumers", ID: "consumer-1"},
-			source:   capability.SecretConsumerConfig,
+			kind:       effectiveBindingPreparedConsumer,
+			resource:   consumerKey,
+			source:     capability.SecretConsumerConfig,
+			occurrence: prepared.attempt.Occurrences(capability.SecretConsumerConfig)[0],
 		},
 		factory:    "request-id",
 		config:     consumerConfig,
@@ -163,6 +173,62 @@ func TestEffectiveBindingMaterializerPreparedConsumerDoesNotRematerializeSecrets
 	}
 	if fixture.registration.materializeCalls.Load() != 0 {
 		t.Fatalf("prepared consumer rematerialized secrets %d times", fixture.registration.materializeCalls.Load())
+	}
+}
+
+func TestEffectiveBindingMaterializerPreparesNonCredentialConsumerPlugin(t *testing.T) {
+	consumerConfig := map[string]any{"count": 4, "time_window": 60}
+	consumers, err := runtime.NewConsumerBindings([]runtime.ConsumerRecord{{
+		ID: "consumer-1",
+		Consumer: resource.Consumer{Username: "consumer-1", Plugins: map[string]resource.PluginConfig{
+			"limit-count": consumerConfig,
+		}},
+	}}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	consumerKey := generation.ResourceKey{Kind: "consumers", ID: "consumer-1"}
+	prepared, _ := newEffectiveBindingMaterializerFixtureWithOccurrenceSpecs(
+		t,
+		[]factoryOccurrenceSpec{{
+			domain: generation.DomainHTTP, resource: consumerKey,
+			source: capability.SecretConsumerConfig, factory: "limit-count",
+		}},
+		consumers,
+	)
+	spec := effectiveBindingSpec{
+		domain:         generation.DomainHTTP,
+		executionOwner: generation.ResourceKey{Kind: "routes", ID: "route-1"},
+		source: effectiveBindingSource{
+			kind: effectiveBindingPreparedConsumer, resource: consumerKey,
+			source:     capability.SecretConsumerConfig,
+			occurrence: prepared.attempt.Occurrences(capability.SecretConsumerConfig)[0],
+		},
+		factory:    "limit-count",
+		config:     consumerConfig,
+		scope:      plugin.ScopeConsumer,
+		provenance: plugin.ResourceProvenance{Kind: plugin.ResourceConsumer, ID: "consumer-1"},
+		resourceContext: effectiveBindingResourceContext{
+			kind:  effectiveBindingContextHTTP,
+			route: resource.Route{ID: "route-1"},
+		},
+	}
+	if _, err := prepared.validateEffectiveBindingSpec(spec); err != nil {
+		t.Fatalf("non-credential consumer spec validation = %v", err)
+	}
+	bindings, err := prepared.materializeEffectiveBindings(context.Background(), []effectiveBindingSpec{spec})
+	if err != nil || len(bindings) != 1 {
+		t.Fatalf("non-credential consumer materialization = (%#v, %v), want one binding", bindings, err)
+	}
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "http://example.test/", nil)
+	request.RemoteAddr = "192.0.2.1:1234"
+	bindings[0].Plugin.Handler(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("non-credential consumer response = (%d, %q), want 204", response.Code, response.Body.String())
 	}
 }
 
@@ -1324,12 +1390,6 @@ func newEffectiveBindingMaterializerFixtureWithConsumers(
 	candidates ...map[generation.Domain]generation.PublicationCandidate,
 ) (*PreparedGeneration, *effectiveBindingMaterializerFixture) {
 	t.Helper()
-	compiler := newTestCompiler(t)
-	registration := &materializerTestRegistration{id: secret.AttemptID{byte(materializerFixtureAttempt.Add(1))}}
-	capabilityValue, err := secret.NewGenerationCapability(registration, uint64(registration.id[0])+100)
-	if err != nil {
-		t.Fatal(err)
-	}
 	occurrenceSpecs := make([]factoryOccurrenceSpec, 0, len(factories))
 	for _, factory := range factories {
 		occurrenceSpecs = append(occurrenceSpecs, factoryOccurrenceSpec{
@@ -1338,6 +1398,24 @@ func newEffectiveBindingMaterializerFixtureWithConsumers(
 			source:   capability.SecretPluginConfig,
 			factory:  factory,
 		})
+	}
+	return newEffectiveBindingMaterializerFixtureWithOccurrenceSpecs(
+		t, occurrenceSpecs, consumers, candidates...,
+	)
+}
+
+func newEffectiveBindingMaterializerFixtureWithOccurrenceSpecs(
+	t *testing.T,
+	occurrenceSpecs []factoryOccurrenceSpec,
+	consumers *runtime.ConsumerBindings,
+	candidates ...map[generation.Domain]generation.PublicationCandidate,
+) (*PreparedGeneration, *effectiveBindingMaterializerFixture) {
+	t.Helper()
+	compiler := newTestCompiler(t)
+	registration := &materializerTestRegistration{id: secret.AttemptID{byte(materializerFixtureAttempt.Add(1))}}
+	capabilityValue, err := secret.NewGenerationCapability(registration, uint64(registration.id[0])+100)
+	if err != nil {
+		t.Fatal(err)
 	}
 	candidateSet := map[generation.Domain]generation.PublicationCandidate{}
 	if len(candidates) != 0 && candidates[0] != nil {
@@ -1391,9 +1469,9 @@ func newEffectiveBindingMaterializerFixtureWithConsumers(
 	}
 	fixture := &effectiveBindingMaterializerFixture{
 		prepared: prepared, registry: registry, registration: registration,
-		occurrences: make(map[string]FactoryOccurrence, len(factories)),
+		occurrences: make(map[string]FactoryOccurrence, len(occurrenceSpecs)),
 	}
-	for _, occurrence := range attempt.Occurrences(capability.SecretPluginConfig) {
+	for _, occurrence := range attempt.occurrences {
 		fixture.occurrences[occurrence.Factory()] = occurrence
 	}
 	defaultNew := prepared.bindingOps.newFactoryInstance

@@ -11,6 +11,7 @@ import (
 
 	"github.com/wklken/apisix-go/pkg/capability"
 	appconfig "github.com/wklken/apisix-go/pkg/config"
+	consumerregistry "github.com/wklken/apisix-go/pkg/consumer"
 	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin"
@@ -425,7 +426,11 @@ func (prepared *PreparedGeneration) validateEffectiveBindingSource(
 		}
 	case effectiveBindingPreparedConsumer:
 		if spec.domain != generation.DomainHTTP || source.source != capability.SecretConsumerConfig ||
-			spec.scope != plugin.ScopeConsumer {
+			spec.scope != plugin.ScopeConsumer || !prepared.attempt.owns(source.occurrence) ||
+			source.occurrence.Domain() != spec.domain ||
+			source.occurrence.Resource() != source.resource ||
+			source.occurrence.Source() != source.source ||
+			source.occurrence.Factory() != spec.factory {
 			return fmt.Errorf("%w: prepared-consumer source identity is invalid", ErrInvalidInput)
 		}
 		if source.resource.Kind != "consumers" ||
@@ -536,7 +541,9 @@ func (prepared *PreparedGeneration) acquireEffectiveBinding(
 		if err := operations.preMaterialize(instance); err != nil {
 			return plugin.Binding{}, nil, err
 		}
-		if selected.spec.source.kind == effectiveBindingPluginConfig {
+		if selected.spec.source.kind == effectiveBindingPluginConfig ||
+			(selected.spec.source.kind == effectiveBindingPreparedConsumer &&
+				!consumerregistry.Supports(selected.spec.factory)) {
 			if err := prepared.attempt.PrepareScopedPluginSecrets(
 				ctx, selected.spec.source.occurrence, factoryInstance,
 			); err != nil {

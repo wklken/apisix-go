@@ -29,7 +29,8 @@ The release note and manifest must continue to say the project as a whole is not
 
 - External supervisor/worker, listener inheritance, IPC activation, worker probation/restart, and multi-process zero-downtime lifecycle.
 - Stream TLS, UDP, PROXY protocol, discovery, and general stream plugin chaining.
-- Qualification of plugins outside the six-plugin profile.
+- Production qualification outside the six-plugin profile; APISIX 3.17 parity
+  implementation continues plugin-by-plugin in later corpus waves.
 - Linux `arm64`, multi-architecture OCI promotion, native macOS server qualification, and Windows release artifacts.
 - Generic “production ready” wording, a broad public support matrix, and removal of the repository’s project-level warning.
 - The complete cross-platform qualification framework in `2026-08-23-parity-qualification-release.md`; this plan implements only the subset required by the controlled HTTP milestone.
@@ -49,61 +50,36 @@ The release note and manifest must continue to say the project as a whole is not
 - External repository settings, environment settings, tag creation, image publication, staging deployment, canary traffic, and rollback are separate authorization boundaries. Scripts may verify them read-only; mutation requires explicit authorization and the required human reviewer/operator.
 - Under the repository’s subagent policy, execute this plan in the current agent unless the user explicitly authorizes delegation. The generic worker note above does not override `AGENTS.md`.
 
-## Stable Narrow Evidence Contract
+## Execution Revision: Global APISIX 3.17 Plugin Parity
 
-Create a versioned controlled-rollout record that the release workflow can validate without parsing log prose:
+This revision supersedes the original Task 3–10 design. The long-term product
+goal is observable APISIX 3.17 parity for every applicable plugin; the six
+HTTP-profile plugins are the first migration and release wave. Do not create
+`pkg/qualification` or a second profile-specific corpus.
 
-```go
-// package qualification
-type Outcome string
+### Canonical Source Ledger
 
-const (
-	OutcomePass          Outcome = "pass"
-	OutcomeFail          Outcome = "fail"
-	OutcomeNotApplicable Outcome = "not_applicable"
-)
+| Contract | Canonical source | Derived or consuming surfaces |
+| --- | --- | --- |
+| APISIX compatibility target | `pkg/capability/manifest.yaml.target.source_commit` | corpus freshness tests, generated docs |
+| Upstream block accounting and migration progress | `t/plugin/corpus_scope.yaml` | `t/plugin/*.yaml source.commit` and source selections |
+| Executable converted behavior | `t/plugin/*.yaml` | focused real-process integration results |
+| Plugin behavior/evidence status | `pkg/capability/manifest.yaml` | registry, `docs/plugins.md`, README summaries |
+| Release/operational acceptance | existing scripts and GitHub workflows | immutable CI evidence artifacts |
 
-type Observation struct {
-	Status       int                 `json:"status" yaml:"status"`
-	Headers      map[string][]string `json:"headers" yaml:"headers"`
-	BodyBase64   string              `json:"body_base64" yaml:"body_base64"`
-	MetricFamily map[string][]string `json:"metric_family,omitempty" yaml:"metric_family,omitempty"`
-}
+The corpus remains one global ledger. Its top-level `commit` is the default
+historical commit for rows not yet migrated. An optional row-level `commit`
+records the actual APISIX source commit for that exact file/test-number set.
+The effective row commit is `source.commit` when present, otherwise the
+top-level default. A converted standalone manifest must use the same effective
+commit as every ledger row it implements. Freshness is computed by comparing
+those effective commits with the capability target; it is never inferred from
+the top-level default alone.
 
-type EvidenceRecord struct {
-	ID             string   `json:"id"`
-	Plugin         string   `json:"plugin,omitempty"`
-	Kind           string   `json:"kind"`
-	Outcome        Outcome  `json:"outcome"`
-	SourceCommit   string   `json:"source_commit"`
-	ImageDigest    string   `json:"image_digest"`
-	OracleDigest   string   `json:"oracle_digest,omitempty"`
-	Command        []string `json:"command"`
-	OutputSHA256   string   `json:"output_sha256"`
-	Attempt        int      `json:"attempt"`
-	Owner          string   `json:"owner,omitempty"`
-	Reason         string   `json:"reason,omitempty"`
-}
-
-type ControlledRolloutResult struct {
-	SchemaVersion        int              `json:"schema_version"`
-	QualificationProfile string           `json:"qualification_profile"`
-	Environment          string           `json:"environment"`
-	SourceCommit         string           `json:"source_commit"`
-	ImageReference       string           `json:"image_reference"`
-	ConfigSHA256         string           `json:"config_sha256"`
-	Outcome              Outcome          `json:"outcome"`
-	Evidence             []EvidenceRecord `json:"evidence"`
-}
-
-func EvaluateHTTPDataPlaneV1(manifest *capability.Manifest, result *ControlledRolloutResult) error
-func WriteHTTPDataPlaneV1Bundle(root string, result *ControlledRolloutResult, files []string) error
-func VerifyHTTPDataPlaneV1Bundle(root string) (*ControlledRolloutResult, error)
-```
-
-`EvaluateHTTPDataPlaneV1` requires schema `1`, profile `http-data-plane-v1`, a 40-character source commit, a digest-qualified `linux/amd64` image, a non-empty named environment, the exact profile plugin/evidence matrix from the capability manifest, and all mandatory operational records. It rejects duplicate IDs, unknown kinds/outcomes, empty commands, invalid SHA-256 values, artifact/oracle identity drift, attempt `0`, a pass result containing any failed or absent requirement, and `not_applicable` without both owner and reason. `WriteHTTPDataPlaneV1Bundle` writes `result.json`, hashes sorted relative regular files, rejects symlinks/path escape, and writes `bundle-manifest.json`; verification recomputes every hash before evaluation.
-
-The narrow types intentionally cover only this milestone. The later production-readiness plan may extend them for multi-platform results, but must not reinterpret version `1` records.
+This schema permits reviewable plugin waves while preserving one source of
+truth. The end state is reached when every applicable row and executable
+manifest uses the APISIX 3.17 target commit; only then may the historical
+default be removed or advanced.
 
 ## Implementation Order
 
@@ -113,7 +89,7 @@ The narrow types intentionally cover only this milestone. The later production-r
 - Modify: `pkg/plugin/serverless/plugin.go`
 - Test: `pkg/json/imports_test.go`
 
-- [ ] **Step 1: Create the isolated implementation worktree**
+- [x] **Step 1: Create the isolated implementation worktree**
 
 ```bash
 git fetch origin master
@@ -126,7 +102,7 @@ git rev-parse HEAD
 
 Expected: clean status and `HEAD` equal to the freshly fetched `origin/master` SHA.
 
-- [ ] **Step 2: Reproduce the current master failure**
+- [x] **Step 2: Reproduce the current master failure**
 
 ```bash
 source .envrc && scripts/go_cache.sh run -- go test ./pkg/json -run '^TestProductionCodeUsesProjectJSON$' -count=1
@@ -134,11 +110,11 @@ source .envrc && scripts/go_cache.sh run -- go test ./pkg/json -run '^TestProduc
 
 Expected: FAIL because `pkg/plugin/serverless/plugin.go` imports `encoding/json` directly.
 
-- [ ] **Step 3: Make the minimum source fix**
+- [x] **Step 3: Make the minimum source fix**
 
 Remove the `stdjson "encoding/json"` import and use the project package’s `json.Number` alias at the existing number conversion site. Do not change serverless behavior or reformat unrelated code.
 
-- [ ] **Step 4: Verify the baseline repair and current source build**
+- [x] **Step 4: Verify the baseline repair and current source build**
 
 ```bash
 source .envrc && scripts/go_cache.sh run -- go test ./pkg/json -run '^TestProductionCodeUsesProjectJSON$' -count=1
@@ -148,7 +124,7 @@ git diff --check
 
 Expected: all commands pass. If another fresh `origin/master` failure appears, record it separately and stop before qualification work.
 
-- [ ] **Step 5: Commit the baseline-only repair**
+- [x] **Step 5: Commit the baseline-only repair**
 
 ```bash
 git add pkg/plugin/serverless/plugin.go
@@ -164,7 +140,7 @@ git commit -m "fix(json): use project JSON number alias"
 - Modify: `scripts/release_gate_test.sh`
 - Modify: `docs/production-profile.md` only if executable behavior text needs correction after the tests are final
 
-- [ ] **Step 1: Replace the reorder-pass regression with a reorder-fail test**
+- [x] **Step 1: Replace the reorder-pass regression with a reorder-fail test**
 
 Add a table case that reverses the six required plugins and expects an error containing:
 
@@ -174,7 +150,7 @@ qualification_profile http-data-plane-v1: plugins must exactly match required or
 
 Keep separate assertions for duplicate, missing, and unexpected plugins so error categories stay diagnosable.
 
-- [ ] **Step 2: Add release-tuple failure tests**
+- [x] **Step 2: Add release-tuple failure tests**
 
 Extend the release gate fixtures so each of these independently fails:
 
@@ -189,7 +165,7 @@ Extend the release gate fixtures so each of these independently fails:
 
 Also keep one production fixture that passes with the exact tuple and six-plugin order.
 
-- [ ] **Step 3: Run the focused tests and observe failure**
+- [x] **Step 3: Run the focused tests and observe failure**
 
 ```bash
 source .envrc && scripts/go_cache.sh run -- go test ./pkg/config -run '^(TestValidateQualificationPlugins|TestProductionReleaseGate)' -count=1
@@ -198,13 +174,13 @@ bash scripts/release_gate_test.sh
 
 Expected: reordered membership and at least the newly added release-tuple cases fail before implementation.
 
-- [ ] **Step 4: Implement ordered equality without coupling the profile axes**
+- [x] **Step 4: Implement ordered equality without coupling the profile axes**
 
 In `ValidateQualificationPlugins`, preserve the original slices for `slices.Equal(want, got)`. Use separately sorted copies only for duplicate/missing/unexpected diagnostics. Return the ordered-match error when membership is equal but sequence differs.
 
 The release gate, not the general config loader, enforces the controlled tuple `apisix-3.17 + strict + http-data-plane-v1`.
 
-- [ ] **Step 5: Verify focused configuration behavior**
+- [x] **Step 5: Verify focused configuration behavior**
 
 ```bash
 source .envrc && scripts/go_cache.sh run -- go test ./pkg/config -run '^(TestValidateQualificationPlugins|TestProductionReleaseGate)' -count=1
@@ -213,62 +189,105 @@ source .envrc && make build
 git diff --check
 ```
 
-- [ ] **Step 6: Commit the contract correction**
+- [x] **Step 6: Commit the contract correction**
 
 ```bash
 git add pkg/config/qualification.go pkg/config/effective_contract_test.go pkg/config/release_gate_test.go scripts/release_gate_test.sh docs/production-profile.md
 git commit -m "fix(config): enforce ordered HTTP qualification profile"
 ```
 
-### Task 3: Lock the Oracle and Refresh Only the Six-Plugin Corpus
+### Task 3: Make the Single Global Corpus Incrementally Migratable
+
+**Files:**
+- Modify: `t/plugin/corpus_test.go`
+- Modify: `t/plugin/coverage_test.go`
+- Modify: `t/plugin/corpus_scope.yaml`
+- Modify: `t/plugin/README.md`
+
+- [ ] **Step 1: Add failing mixed-commit ledger tests**
+
+Tests must prove that a row-level commit is a lowercase 40-character object ID,
+that converted manifest selections match the effective commit for every source
+label, and that a manifest cannot combine labels whose ledger rows disagree on
+commit. The old single-commit fixture must continue to pass unchanged.
+
+- [ ] **Step 2: Observe RED against the current loader**
+
+```bash
+source .envrc && scripts/go_cache.sh run -- go test ./t/plugin -run '^(TestCorpusScopeAllowsPerSourceMigration|TestManifestSelectionsUseEffectiveCorpusCommit|TestCorpusEvidenceMatchesCompatibilityTarget)$' -count=1
+```
+
+- [ ] **Step 3: Implement effective-commit resolution**
+
+Add optional `commit` to `corpusSourceScope`. Keep strict YAML and duplicate
+label validation. Replace global-commit manifest comparison with a lookup by
+`file + test number`; require every selected label to exist, name the same
+manifest, and have the same effective commit as the manifest source.
+
+- [ ] **Step 4: Make freshness plugin-specific**
+
+`TestCorpusEvidenceMatchesCompatibilityTarget` must inspect the manifests named
+by each plugin's converted-upstream refs. A claim is fresh only when every
+source in every referenced manifest uses the capability target commit. Other
+plugins remain stale while the first six migrate.
+
+- [ ] **Step 5: Verify legacy and mixed-commit accounting**
+
+```bash
+source .envrc && make test-plugin-harness
+source .envrc && make test-capability-status
+git diff --check
+```
+
+- [ ] **Step 6: Commit the ledger migration seam**
+
+```bash
+git add t/plugin/corpus_test.go t/plugin/coverage_test.go t/plugin/corpus_scope.yaml t/plugin/README.md
+git commit -m "test(corpus): support incremental APISIX source migration"
+```
+
+### Task 4: Migrate the First Six Plugins to the APISIX 3.17 Corpus
 
 **Files:**
 - Create: `qualification/oracle.yaml`
-- Create: `qualification/http-data-plane-v1.yaml`
 - Create: `scripts/qualification/resolve_oracle.sh`
 - Create: `scripts/qualification/resolve_oracle_test.sh`
 - Modify: `t/plugin/corpus_scope.yaml`
+- Modify: `t/plugin/basic-auth.yaml`
+- Modify: `t/plugin/cors.yaml`
+- Modify: `t/plugin/jwt-auth.yaml`
+- Modify: `t/plugin/key-auth.yaml`
 - Create: `t/plugin/prometheus.yaml`
-- Modify as required by fresh upstream mapping: `t/plugin/basic-auth.yaml`
-- Modify as required by fresh upstream mapping: `t/plugin/cors.yaml`
-- Modify as required by fresh upstream mapping: `t/plugin/jwt-auth.yaml`
-- Modify as required by fresh upstream mapping: `t/plugin/key-auth.yaml`
-- Modify as required by fresh upstream mapping: `t/plugin/request-id.yaml`
+- Modify: `t/plugin/request-id.yaml`
 
-- [ ] **Step 1: Write the oracle-lock validator tests**
+- [ ] **Step 1: Lock the official APISIX 3.17 oracle**
 
-Fixtures must reject a mutable-only image tag, uppercase or malformed digest, wrong APISIX version/source commit, unknown YAML fields, multiple YAML documents, and a registry result whose manifest digest differs from the committed lock.
+Resolve `apache/apisix:3.17.0-debian` to an immutable registry digest and verify
+the running image reports APISIX 3.17.0. The lock also records source commit
+`9ef2ecab67f652d38365049613610ef649bb4ad0`. Mutable tags or unverifiable
+source/version identity fail closed.
 
-- [ ] **Step 2: Resolve the official oracle identity**
+- [ ] **Step 2: Fetch the target source and enumerate six-plugin blocks**
 
-`qualification/oracle.yaml` must contain APISIX `3.17.0`, source commit `9ef2ecab67f652d38365049613610ef649bb4ad0`, repository `apache/apisix`, tag `3.17.0-debian`, and the real registry manifest digest returned by `docker buildx imagetools inspect`. The script must fail if the digest cannot be resolved or the image cannot prove the expected APISIX version; it must never substitute a community image.
+Use a temporary checkout at the exact target commit. For every basic-auth,
+cors, jwt-auth, key-auth, prometheus, and request-id upstream plugin test file,
+compare file presence and `=== TEST` labels with the historical manifest and
+ledger. Update row-level commits and selections only after exact accounting.
 
-- [ ] **Step 3: Enumerate fresh upstream blocks for the six plugins**
+- [ ] **Step 3: Resolve JWT boundaries explicitly**
 
-Fetch the pinned Apache APISIX source commit into a temporary directory and enumerate test blocks from only:
+The sign endpoint is outside the data-plane request contract. Insecure 512-bit
+RSA rejection requires an accepted strict-security divergence. Ed448 remains
+blocking unless implemented or covered by an accepted algorithm-subset ADR.
+No unresolved applicable block may be called converted.
 
-```text
-t/plugin/basic-auth.t
-t/plugin/cors.t and cors2.t when present at the pin
-t/plugin/jwt-auth.t and jwt-auth-*.t when present at the pin
-t/plugin/key-auth.t
-t/plugin/prometheus.t and prometheus*.t when present at the pin
-t/plugin/request-id.t
-```
+- [ ] **Step 4: Add the missing Prometheus standalone manifest**
 
-Update the corpus pin to the compatibility target and classify every enumerated block as `converted`, `not_applicable`, or `deferred`. `not_applicable` and `deferred` require an owner and substantive reason; any profile-applicable `deferred` block stops the milestone.
+Cover profile metrics scrape, bounded route/service labels, series overflow,
+and invalid configuration through the real process. Volatile timestamps,
+runtime internals, and exposition order are not asserted.
 
-- [ ] **Step 4: Resolve the known JWT boundary explicitly**
-
-- The APISIX sign endpoint is outside the data-plane route execution contract and may be `not_applicable` with that exact reason.
-- Rejection of insecure 512-bit RSA keys requires a reviewed strict-security divergence ADR before it can be `not_applicable`; without the ADR, qualification stops.
-- Ed448 remains blocking unless implemented or a reviewed profile-specific compatibility boundary records the algorithm subset. Do not silently mark the whole jwt-auth corpus converted.
-
-- [ ] **Step 5: Add the missing Prometheus standalone manifest**
-
-Cover at minimum a successful scrape with required APISIX-Go series, route/service labels under the bounded profile contract, series-limit behavior, and invalid configuration. Do not compare volatile timestamps, Go runtime internals, or exposition order.
-
-- [ ] **Step 6: Verify corpus completeness and six standalone manifests**
+- [ ] **Step 5: Run six exact real-process cases sequentially**
 
 ```bash
 source .envrc && make test-capability-status
@@ -282,73 +301,50 @@ source .envrc && make test-plugin-smoke PLUGIN_SMOKE_CASE='prometheus/profile-me
 source .envrc && make test-plugin-smoke PLUGIN_SMOKE_CASE='request-id/default-uuid-v4'
 ```
 
-Run the six real-process commands sequentially. `prometheus/profile-metrics-scrape` is the exact case created in Step 5; the other five names already exist at the implementation baseline.
+Run the six real-process commands sequentially. `prometheus/profile-metrics-scrape` is the exact case created in Step 4; the other five names already exist at the implementation baseline.
 
-- [ ] **Step 7: Commit oracle/corpus scope as evidence, not a readiness claim**
+- [ ] **Step 6: Commit the first global-corpus migration wave**
 
 ```bash
-git add qualification/oracle.yaml qualification/http-data-plane-v1.yaml scripts/qualification/resolve_oracle.sh scripts/qualification/resolve_oracle_test.sh t/plugin/corpus_scope.yaml t/plugin/basic-auth.yaml t/plugin/cors.yaml t/plugin/jwt-auth.yaml t/plugin/key-auth.yaml t/plugin/prometheus.yaml t/plugin/request-id.yaml
+git add qualification/oracle.yaml scripts/qualification/resolve_oracle.sh scripts/qualification/resolve_oracle_test.sh t/plugin/corpus_scope.yaml t/plugin/basic-auth.yaml t/plugin/cors.yaml t/plugin/jwt-auth.yaml t/plugin/key-auth.yaml t/plugin/prometheus.yaml t/plugin/request-id.yaml
 git commit -m "test(qualification): refresh six-plugin APISIX corpus"
 ```
 
-### Task 4: Add Versioned Differential and Failure Evidence
+### Task 5: Close First-Wave Plugin Parity Gaps
 
 **Files:**
-- Create: `pkg/qualification/differential.go`
-- Create: `pkg/qualification/normalize.go`
-- Create: `pkg/qualification/differential_test.go`
-- Create: `pkg/qualification/normalize_test.go`
-- Modify: `qualification/http-data-plane-v1.yaml`
-- Create: `scripts/qualification/http_data_plane_v1_differential.sh`
-- Create: `scripts/qualification/http_data_plane_v1_differential_test.sh`
+- Modify only the owning `pkg/plugin/<name>` packages exposed by fresh cases
+- Modify the corresponding focused unit tests
+- Modify the six `t/plugin/*.yaml` manifests only when upstream mapping requires it
 
-- [ ] **Step 1: Write strict manifest-loader tests**
+- [ ] **Step 1: Run each fresh case and record concrete parity failures**
 
-Require schema `1`, the exact oracle identity, sorted unique case IDs, one of the six plugin names, a source block mapping, subject-equivalent configuration, request input, expected observation, normalization version, and evidence kind `differential` or `failure`. Reject unknown fields, second YAML documents, missing fixtures, and case IDs that are absent from fresh corpus accounting.
+Do not change production code for a fixture/harness defect. For every real
+behavior mismatch, add the smallest owning-package test that reproduces it and
+observe RED before implementation.
 
-- [ ] **Step 2: Write normalization tests before the runner**
+- [ ] **Step 2: Implement minimum APISIX 3.17 observable behavior**
 
-Normalization may remove only generated `Date`, request IDs explicitly designated as nondeterministic, Prometheus timestamps, and exposition order. Tests must prove it does not change status, asserted headers, body bytes, authentication decisions, selected consumer, metric label values, or series-limit results.
+Preserve strict-security divergences only when accepted and recorded. Do not
+approximate Lua/OpenResty internals when the repository contract treats them as
+native-only.
 
-- [ ] **Step 3: Implement same-input dual execution**
-
-The script starts the immutable official APISIX oracle and the locally loaded candidate image with logically equivalent routes/consumers/plugin config and the same upstream/TLS fixtures. It records raw request, both raw observations, normalized observations, container identities, source commit, case ID, command, attempt, and SHA-256 values under `.cache/release-evidence/http-data-plane-v1/differential/`.
-
-- [ ] **Step 4: Cover minimum profile behavior and failure cases**
-
-For each plugin, include at least one successful and one rejected/edge request:
-
-- `basic-auth`: valid consumer; wrong or absent credentials.
-- `cors`: allowed preflight/actual response; disallowed origin or invalid config boundary.
-- `jwt-auth`: valid token; expired/bad signature/absent token under the declared algorithm subset.
-- `key-auth`: valid consumer; wrong/absent/duplicate credential source.
-- `prometheus`: bounded expected metric families; series overflow or invalid label/config boundary.
-- `request-id`: preserved valid incoming ID or generated output contract; invalid/absent input behavior.
-
-- [ ] **Step 5: Run the package and script contract tests**
+- [ ] **Step 3: Verify each plugin independently**
 
 ```bash
-source .envrc && scripts/go_cache.sh run -- go test ./pkg/qualification -run '^(TestLoadDifferentialManifest|TestNormalize|TestCompare)' -count=1
-bash scripts/qualification/http_data_plane_v1_differential_test.sh
-git diff --check
+source .envrc && scripts/go_cache.sh run -- go test ./pkg/plugin/basic_auth -count=1
+source .envrc && scripts/go_cache.sh run -- go test ./pkg/plugin/cors -count=1
+source .envrc && scripts/go_cache.sh run -- go test ./pkg/plugin/jwt_auth -count=1
+source .envrc && scripts/go_cache.sh run -- go test ./pkg/plugin/key_auth -count=1
+source .envrc && scripts/go_cache.sh run -- go test ./pkg/plugin/prometheus -count=1
+source .envrc && scripts/go_cache.sh run -- go test ./pkg/plugin/request_id -count=1
 ```
 
-- [ ] **Step 6: Run the real differential gate on a Docker host**
+- [ ] **Step 4: Re-run the exact six standalone cases and build**
 
-```bash
-bash scripts/qualification/http_data_plane_v1_differential.sh
-```
+Use the Task 4 selectors, then run `make build` and `git diff --check`.
 
-Expected: one pass record per required case, bound to the committed oracle digest and candidate image ID. Any unavailable Docker/registry prerequisite is reported as blocked and does not permit evidence promotion.
-
-- [ ] **Step 7: Commit differential infrastructure and cases**
-
-```bash
-git add pkg/qualification qualification/http-data-plane-v1.yaml scripts/qualification/http_data_plane_v1_differential.sh scripts/qualification/http_data_plane_v1_differential_test.sh
-git commit -m "test(qualification): add six-plugin differential gate"
-```
-
-### Task 5: Turn Verified-TLS Etcd Recovery into Six-Plugin Recovery Evidence
+### Task 6: Turn Verified-TLS Etcd Recovery into Six-Plugin Recovery Evidence
 
 **Files:**
 - Modify: `scripts/etcd_recovery_smoke.sh`
@@ -393,63 +389,6 @@ git add scripts/etcd_recovery_smoke.sh scripts/etcd_recovery_smoke_test.sh scrip
 git commit -m "test(recovery): qualify six-plugin HTTP generations"
 ```
 
-### Task 6: Add the Real Prometheus Consumer and Evidence Bundle Evaluator
-
-**Files:**
-- Create: `pkg/qualification/types.go`
-- Create: `pkg/qualification/evaluate.go`
-- Create: `pkg/qualification/bundle.go`
-- Create: `pkg/qualification/evaluate_test.go`
-- Create: `pkg/qualification/bundle_test.go`
-- Create: `scripts/qualification/http_data_plane_v1_prometheus.sh`
-- Create: `scripts/qualification/http_data_plane_v1_prometheus_test.sh`
-- Create: `qualification/http-data-plane-v1/required-evidence.yaml`
-
-- [ ] **Step 1: Implement the Stable Narrow Evidence Contract test-first**
-
-Write tests that reject a wrong profile, mutable image tag, missing plugin/evidence kind, failed record, stale source/oracle digest, duplicate record ID, invalid attempt, missing command/output hash, invalid `not_applicable`, symlink/path escape, extra bundle file, and an overall pass with any missing operational record.
-
-- [ ] **Step 2: Declare the exact required matrix**
-
-`required-evidence.yaml` maps the manifest’s seven evidence kinds for each six-plugin member and mandatory operational IDs:
-
-```text
-config-exact
-container-nonroot-smoke
-focused-race
-reachable-vulnerability-scan
-tls-etcd-recovery
-prometheus-real-consumer
-proxy-soak-30m
-external-access-log
-capacity-envelope
-failure-injection
-rollback-distinct-digest
-repository-policy
-release-environment-policy
-```
-
-The evaluator cross-checks plugin kinds against `pkg/capability/manifest.yaml` so this file cannot weaken the manifest requirement.
-
-- [ ] **Step 3: Add a pinned real Prometheus check**
-
-Start the candidate image and a digest-pinned Prometheus container, configure Prometheus to scrape the gateway, generate bounded six-plugin traffic, query required series through the Prometheus API, and record both the scrape target health and query results. The test script must reject a tag-only Prometheus image, an empty query result, unbounded cardinality, or evidence tied to another candidate image.
-
-- [ ] **Step 4: Verify evaluator and real-consumer contract**
-
-```bash
-source .envrc && scripts/go_cache.sh run -- go test ./pkg/qualification -run '^(TestEvaluateHTTPDataPlaneV1|TestWriteHTTPDataPlaneV1Bundle|TestVerifyHTTPDataPlaneV1Bundle)' -count=1
-bash scripts/qualification/http_data_plane_v1_prometheus_test.sh
-bash scripts/qualification/http_data_plane_v1_prometheus.sh '<candidate-image-id-or-digest>'
-```
-
-- [ ] **Step 5: Commit the evidence evaluator**
-
-```bash
-git add pkg/qualification scripts/qualification/http_data_plane_v1_prometheus.sh scripts/qualification/http_data_plane_v1_prometheus_test.sh qualification/http-data-plane-v1/required-evidence.yaml
-git commit -m "feat(qualification): evaluate controlled HTTP rollout evidence"
-```
-
 ### Task 7: Promote Capability Evidence Only After It Exists
 
 **Files:**
@@ -462,7 +401,10 @@ git commit -m "feat(qualification): evaluate controlled HTTP rollout evidence"
 
 - [ ] **Step 1: Add a fail-closed evidence-reference test**
 
-For every `verified` six-plugin evidence entry, assert that each referenced committed path exists and is represented in `qualification/http-data-plane-v1/required-evidence.yaml`. For `not_applicable`, assert non-empty owner/reason and prohibit references to passing runtime records.
+For every `verified` six-plugin converted-upstream entry, assert that every
+referenced manifest source uses the capability target commit. Other evidence
+states retain their existing source-specific validation. `not_applicable`
+requires non-empty owner/reason.
 
 - [ ] **Step 2: Run the test and observe current missing/stale states**
 
@@ -476,7 +418,8 @@ Expected before manifest promotion: the six plugins remain unqualified due to st
 - [ ] **Step 3: Update only evidence that is proven by Tasks 3–6**
 
 - `converted_upstream`: six fresh standalone manifests and complete current-pin corpus mapping.
-- `differential`: versioned oracle/candidate cases for all six plugins.
+- `differential`: record only when the release scripts execute equivalent
+  oracle/candidate cases; a fresh standalone conversion alone is insufficient.
 - `failure`: named negative cases for all six plugins.
 - `real_dependency`: Prometheus is `verified` by the real consumer; plugins without an outbound dependency may be `not_applicable` only with a concrete reason and owner.
 - `recovery`: five state-bearing profile paths are `verified`; request-id is `not_applicable` only for plugin-owned recovery while its route recovery probe remains mandatory.
@@ -508,7 +451,7 @@ git add pkg/capability/manifest.yaml pkg/capability/manifest_test.go pkg/plugin/
 git commit -m "docs(capability): qualify six-plugin HTTP rollout profile"
 ```
 
-### Task 8: Make RC and Final Workflows Enforce the Same Evidence Bundle
+### Task 8: Make RC and Final Workflows Enforce Existing Evidence Sources
 
 **Files:**
 - Modify: `.github/workflows/release-candidate.yml`
@@ -517,6 +460,10 @@ git commit -m "docs(capability): qualify six-plugin HTTP rollout profile"
 - Modify: `scripts/release_metadata.sh`
 - Modify: `scripts/release_metadata_test.sh`
 - Create: `scripts/qualification/http_data_plane_v1_workflow_test.sh`
+- Create: `scripts/qualification/http_data_plane_v1_differential.sh`
+- Create: `scripts/qualification/http_data_plane_v1_differential_test.sh`
+- Create: `scripts/qualification/http_data_plane_v1_prometheus.sh`
+- Create: `scripts/qualification/http_data_plane_v1_prometheus_test.sh`
 
 - [ ] **Step 1: Add workflow-structure tests**
 
@@ -524,7 +471,8 @@ The shell test parses the three workflow files and rejects:
 
 - a release matrix missing any of the six plugin smokes;
 - use of a non-production profile fixture in operational jobs;
-- publication without bundle verification;
+- publication without capability/corpus, immutable image, recovery, soak, and
+  rollback evidence verification;
 - a final release that rebuilds after qualification;
 - source commit, image digest, config hash, or oracle digest not propagated into the bundle;
 - artifact download with warning/ignore behavior for required evidence;
@@ -534,27 +482,40 @@ The shell test parses the three workflow files and rejects:
 
 Both RC and final release run one exact case per required plugin. Keep broader CI elsewhere; the release matrix’s purpose is the declared six-plugin profile, not representative unrelated plugins.
 
-- [ ] **Step 3: Add a qualification-bundle job**
+- [ ] **Step 3: Add script-owned differential and real Prometheus evidence**
 
-After the existing image, etcd, and soak jobs, download all required evidence, run `VerifyHTTPDataPlaneV1Bundle`, and upload one immutable bundle named with the source commit and image digest. Required files use `if-no-files-found: error`. Publication depends on this job and consumes the same loaded image archive/digest; it must not rebuild.
+Run equivalent declarative requests against the immutable APISIX oracle and
+candidate image, with reviewed normalization limited to volatile fields. Run a
+digest-pinned Prometheus consumer that scrapes and queries the candidate. Both
+scripts emit source/image/oracle/config identities and fail on missing cases,
+empty observations, or mutable-only images.
 
-- [ ] **Step 4: Preserve RC/final separation**
+- [ ] **Step 4: Add an evidence-archive job**
+
+After the existing image, etcd, and soak jobs, download all required evidence,
+verify their source commit/image/config/oracle identities with release scripts,
+and upload one immutable archive plus checksum. Required files use
+`if-no-files-found: error`. Publication consumes the same loaded image and must
+not rebuild. No Go qualification package is introduced.
+
+- [ ] **Step 5: Preserve RC/final separation**
 
 RC builds and qualifies without publishing a production tag. Final release accepts only the previously qualified source/image identity, re-verifies the bundle and protected environment, signs/attests, then promotes that digest. If the current pipeline cannot promote the RC digest without rebuilding, stop at RC until same-digest promotion is implemented; do not call a rebuilt final image qualified.
 
-- [ ] **Step 5: Verify scripts and workflow structure locally**
+- [ ] **Step 6: Verify scripts and workflow structure locally**
 
 ```bash
 bash scripts/release_metadata_test.sh
+bash scripts/qualification/http_data_plane_v1_differential_test.sh
+bash scripts/qualification/http_data_plane_v1_prometheus_test.sh
 bash scripts/qualification/http_data_plane_v1_workflow_test.sh
-source .envrc && scripts/go_cache.sh run -- go test ./pkg/qualification -count=1
 git diff --check
 ```
 
-- [ ] **Step 6: Commit the fail-closed workflow gate**
+- [ ] **Step 7: Commit the fail-closed workflow gate**
 
 ```bash
-git add .github/workflows/release-candidate.yml .github/workflows/release.yml .github/workflows/security-release-gates.yml scripts/release_metadata.sh scripts/release_metadata_test.sh scripts/qualification/http_data_plane_v1_workflow_test.sh
+git add .github/workflows/release-candidate.yml .github/workflows/release.yml .github/workflows/security-release-gates.yml scripts/release_metadata.sh scripts/release_metadata_test.sh scripts/qualification/http_data_plane_v1_differential.sh scripts/qualification/http_data_plane_v1_differential_test.sh scripts/qualification/http_data_plane_v1_prometheus.sh scripts/qualification/http_data_plane_v1_prometheus_test.sh scripts/qualification/http_data_plane_v1_workflow_test.sh
 git commit -m "ci(release): gate six-plugin controlled rollout"
 ```
 
@@ -665,7 +626,7 @@ git commit -m "docs(release): record controlled HTTP rollout qualification"
 Run these only after Tasks 1–9 have landed on the same candidate branch and the relevant Docker/external prerequisites are available:
 
 ```bash
-source .envrc && scripts/go_cache.sh run -- go test ./pkg/json ./pkg/config ./pkg/capability ./pkg/qualification -count=1
+source .envrc && scripts/go_cache.sh run -- go test ./pkg/json ./pkg/config ./pkg/capability -count=1
 source .envrc && scripts/go_cache.sh run -- go test -race ./pkg/etcd ./pkg/store ./pkg/generation ./pkg/server ./pkg/route ./pkg/proxy -count=1
 source .envrc && make test-capability-status
 source .envrc && make test-plugin-harness
@@ -698,7 +659,8 @@ Finally, verify the generated bundle, live repository policy, protected environm
 
 ## Stop/Go Decision
 
-`GO` is allowed only when all ten tasks are complete and the final bundle evaluator returns `pass`. The following are hard stops:
+`GO` is allowed only when all ten tasks are complete and every existing
+capability, corpus, release-script, workflow, and environment gate passes. The following are hard stops:
 
 - any of the six plugin evidence kinds remains stale/missing/deferred;
 - a profile-applicable APISIX test block is unimplemented or unclassified;

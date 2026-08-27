@@ -3,7 +3,6 @@ package serverless
 import (
 	"bytes"
 	"context"
-	stdjson "encoding/json"
 	"fmt"
 	"math"
 	"net/http"
@@ -147,7 +146,7 @@ func (p *Plugin) configuredExecutionTimeout() (time.Duration, error) {
 			return 0, fmt.Errorf("plugin_attr.%s.execution_timeout_ms must be an integer", p.Name)
 		}
 		milliseconds = int64(value)
-	case stdjson.Number:
+	case json.Number:
 		parsed, err := value.Int64()
 		if err != nil {
 			return 0, fmt.Errorf("plugin_attr.%s.execution_timeout_ms must be an integer", p.Name)

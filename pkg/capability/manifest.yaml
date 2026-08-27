@@ -1010,7 +1010,7 @@ plugins:
       real_dependency: {state: "missing", refs: [], owner: "basic-auth", reason: "real-dependency evidence is not recorded"}
       failure: {state: "missing", refs: [], owner: "basic-auth", reason: "failure evidence is not classified"}
       recovery: {state: "missing", refs: [], owner: "basic-auth", reason: "recovery evidence is not classified"}
-    divergence_ids: []
+    divergence_ids: ["DIV-005-credential-log-redaction"]
     supported_platforms: ["linux-amd64", "linux-arm64", "darwin-amd64", "darwin-arm64", "windows-amd64"]
   - name: "authz-keycloak"
     secret_declarations:
@@ -3750,3 +3750,8 @@ divergences:
     compatibility_target: "apisix-3.17"
     adr: "docs/architecture/adr/0004-runtime-safety-boundaries.md"
     owner_approval_ref: "PR #163 remediation decisions, 2026-08-26"
+  - id: "DIV-005-credential-log-redaction"
+    status: "accepted"
+    compatibility_target: "apisix-3.17"
+    adr: "docs/architecture/adr/0005-credential-log-redaction.md"
+    owner_approval_ref: "six-plugin rollout owner decision, 2026-08-27"

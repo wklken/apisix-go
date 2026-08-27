@@ -23,11 +23,16 @@ type corpusScope struct {
 
 type corpusSourceScope struct {
 	File        string `yaml:"file"`
+	Commit      string `yaml:"commit,omitempty"`
 	TestNumbers []int  `yaml:"test_numbers"`
 	Owner       string `yaml:"owner"`
 	Disposition string `yaml:"disposition"`
 	Manifest    string `yaml:"manifest,omitempty"`
 	Reason      string `yaml:"reason,omitempty"`
+}
+
+type corpusLabelSelection struct {
+	Commit string
 }
 
 var corpusDispositions = map[string]bool{
@@ -71,11 +76,29 @@ func (s *corpusScope) validate() error {
 		return fmt.Errorf("commit %q must be a lowercase 40-character Git object ID", s.Commit)
 	}
 	seen := make(map[string]map[int]string, len(s.Sources))
+	fileCommits := make(map[string]string, len(s.Sources))
 	for i := range s.Sources {
 		source := &s.Sources[i]
 		if strings.TrimSpace(source.File) == "" {
 			return fmt.Errorf("source %d file is required", i+1)
 		}
+		if source.Commit != "" && !gitCommitPattern.MatchString(source.Commit) {
+			return fmt.Errorf(
+				"source %q commit %q must be a lowercase 40-character Git object ID",
+				source.File,
+				source.Commit,
+			)
+		}
+		effectiveCommit := s.effectiveCommit(*source)
+		if previous, ok := fileCommits[source.File]; ok && previous != effectiveCommit {
+			return fmt.Errorf(
+				"source %q mixes effective commits %s and %s; migrate all rows for one source file together",
+				source.File,
+				previous,
+				effectiveCommit,
+			)
+		}
+		fileCommits[source.File] = effectiveCommit
 		if strings.TrimSpace(source.Owner) == "" {
 			return fmt.Errorf("source %q owner is required", source.File)
 		}
@@ -109,6 +132,13 @@ func (s *corpusScope) validate() error {
 		}
 	}
 	return nil
+}
+
+func (s *corpusScope) effectiveCommit(source corpusSourceScope) string {
+	if source.Commit != "" {
+		return source.Commit
+	}
+	return s.Commit
 }
 
 func testCorpusCommit() string {
@@ -212,6 +242,132 @@ func TestCorpusScopeRejectsMalformedCommit(t *testing.T) {
 	}
 }
 
+func TestCorpusScopeAllowsPerSourceMigration(t *testing.T) {
+	data := []byte(strings.Join([]string{
+		"commit: " + testCorpusCommit(),
+		"sources:",
+		"  - file: t/plugin/example.t",
+		"    commit: " + strings.Repeat("b", 40),
+		"    test_numbers: [1]",
+		"    owner: example-plugin",
+		"    disposition: converted",
+		"    manifest: example.yaml",
+	}, "\n"))
+	if _, err := loadCorpusScope("test", data); err != nil {
+		t.Fatalf("loadCorpusScope() rejected a per-source migration commit: %v", err)
+	}
+}
+
+func TestCorpusScopeRejectsMalformedPerSourceCommit(t *testing.T) {
+	data := []byte(strings.Join([]string{
+		"commit: " + testCorpusCommit(),
+		"sources:",
+		"  - file: t/plugin/example.t",
+		"    commit: not-a-git-object-id",
+		"    test_numbers: [1]",
+		"    owner: example-plugin",
+		"    disposition: converted",
+		"    manifest: example.yaml",
+	}, "\n"))
+	if _, err := loadCorpusScope("test", data); err == nil {
+		t.Fatal("loadCorpusScope() accepted a malformed per-source commit")
+	}
+}
+
+func TestCorpusScopeRejectsMixedCommitsWithinSourceFile(t *testing.T) {
+	data := []byte(strings.Join([]string{
+		"commit: " + testCorpusCommit(),
+		"sources:",
+		"  - file: t/plugin/example.t",
+		"    commit: " + strings.Repeat("b", 40),
+		"    test_numbers: [1]",
+		"    owner: example-plugin",
+		"    disposition: pending",
+		"    reason: migrated row",
+		"  - file: t/plugin/example.t",
+		"    test_numbers: [2]",
+		"    owner: example-plugin",
+		"    disposition: pending",
+		"    reason: historical row",
+	}, "\n"))
+	_, err := loadCorpusScope("test", data)
+	if err == nil || !strings.Contains(err.Error(), "mixes effective commits") {
+		t.Fatalf("loadCorpusScope() error = %v, want mixed source-file commit error", err)
+	}
+}
+
+func TestManifestSelectionsUseEffectiveCorpusCommit(t *testing.T) {
+	historicalCommit := "c3d7d5ec69774121f53d2e20d29d09c816795dd7"
+	targetCommit := strings.Repeat("b", 40)
+	scope := &corpusScope{
+		Commit: historicalCommit,
+		Sources: []corpusSourceScope{{
+			File:        "t/plugin/redirect2.t",
+			Commit:      targetCommit,
+			TestNumbers: []int{1, 2, 3},
+			Owner:       "redirect",
+			Disposition: "converted",
+			Manifest:    "redirect2.yaml",
+		}},
+	}
+	data, err := os.ReadFile("redirect2.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data = bytes.ReplaceAll(data, []byte(historicalCommit), []byte(targetCommit))
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "redirect2.yaml"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	selections, err := loadManifestSelections(root, scope)
+	if err != nil {
+		t.Fatalf("loadManifestSelections() rejected a migrated manifest: %v", err)
+	}
+	if got := selections["t/plugin/redirect2.t"][3]; got != "redirect2.yaml" {
+		t.Fatalf("selection owner = %q, want redirect2.yaml", got)
+	}
+}
+
+func TestManifestSelectionsRejectMixedEffectiveCommits(t *testing.T) {
+	historicalCommit := "c3d7d5ec69774121f53d2e20d29d09c816795dd7"
+	targetCommit := strings.Repeat("b", 40)
+	scope := &corpusScope{
+		Commit: historicalCommit,
+		Sources: []corpusSourceScope{
+			{
+				File:        "t/plugin/redirect2.t",
+				Commit:      targetCommit,
+				TestNumbers: []int{1, 2},
+				Owner:       "redirect",
+				Disposition: "converted",
+				Manifest:    "redirect2.yaml",
+			},
+			{
+				File:        "t/plugin/redirect2.t",
+				TestNumbers: []int{3},
+				Owner:       "redirect",
+				Disposition: "converted",
+				Manifest:    "redirect2.yaml",
+			},
+		},
+	}
+	data, err := os.ReadFile("redirect2.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data = bytes.ReplaceAll(data, []byte(historicalCommit), []byte(targetCommit))
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "redirect2.yaml"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = loadManifestSelections(root, scope)
+	if err == nil || !strings.Contains(err.Error(), "label 3 commit") {
+		t.Fatalf("loadManifestSelections() error = %v, want mixed effective commit rejection", err)
+	}
+}
+
 func TestCorpusScopeRejectsUnknownFields(t *testing.T) {
 	data := []byte(strings.Join([]string{
 		"commit: " + testCorpusCommit(),
@@ -249,9 +405,9 @@ func TestUpstreamCorpusAccounting(t *testing.T) {
 	}
 	checkOfflineCorpusAccounting(t, scope)
 
-	// A local checkout of the historical corpus commit adds source-label comparison but is not required for
+	// A local Apache APISIX repository adds per-commit source-label comparison but is not required for
 	// ledger/manifest consistency validation.
-	if sourceRoot, ok := optionalApacheAPISIXSourceRoot(t, scope.Commit); ok {
+	if sourceRoot, ok := optionalApacheAPISIXRepository(); ok {
 		checkCorpusScopeAgainstSource(t, scope, sourceRoot)
 	}
 }
@@ -265,17 +421,9 @@ func TestUpstreamCorpusAccountingWithoutSourceCheckout(t *testing.T) {
 }
 
 func TestCorpusEvidenceMatchesCompatibilityTarget(t *testing.T) {
-	scope, err := loadCorpusScopeFile(t)
-	if err != nil {
-		t.Fatalf("load ledger: %v", err)
-	}
 	manifest, err := capability.Load()
 	if err != nil {
 		t.Fatalf("load capability manifest: %v", err)
-	}
-	if scope.Commit == manifest.Target.SourceCommit {
-		t.Logf("corpus commit already matches compatibility target %s", manifest.Target.SourceCommit)
-		return
 	}
 
 	qualified := make(map[string]bool)
@@ -283,19 +431,36 @@ func TestCorpusEvidenceMatchesCompatibilityTarget(t *testing.T) {
 		qualified[pluginName] = true
 	}
 
-	staleClaims := 0
+	staleClaims, freshClaims := 0, 0
+	repoRoot := filepath.Join("..", "..")
 	for _, plugin := range manifest.Plugins {
 		if !onlyIntegrationManifestRefs(plugin.Evidence.Upstream.Refs) {
 			continue
 		}
+		fresh, freshErr := integrationManifestRefsFresh(
+			repoRoot,
+			plugin.Evidence.Upstream.Refs,
+			manifest.Target.SourceCommit,
+		)
+		if freshErr != nil {
+			t.Errorf("plugin %s converted_upstream refs: %v", plugin.Name, freshErr)
+			continue
+		}
+		if fresh {
+			freshClaims++
+			if plugin.Evidence.Upstream.State == capability.EvidenceStale {
+				t.Logf("plugin %s has target-pinned converted cases awaiting evidence promotion", plugin.Name)
+			}
+			continue
+		}
+
 		staleClaims++
 		if plugin.Evidence.Upstream.State != capability.EvidenceStale {
 			t.Errorf(
-				"plugin %s converted_upstream state = %q, want %q while corpus %s differs from target %s",
+				"plugin %s converted_upstream state = %q, want %q while referenced manifests differ from target %s",
 				plugin.Name,
 				plugin.Evidence.Upstream.State,
 				capability.EvidenceStale,
-				scope.Commit,
 				manifest.Target.SourceCommit,
 			)
 		}
@@ -304,12 +469,12 @@ func TestCorpusEvidenceMatchesCompatibilityTarget(t *testing.T) {
 		}
 	}
 	if staleClaims == 0 {
-		t.Fatal("capability manifest has no claims sourced only from integration manifests")
+		t.Log("all integration-manifest converted_upstream claims use the compatibility target")
 	}
 	t.Logf(
-		"corpus evidence: %d claims are stale at corpus %s versus compatibility target %s",
+		"corpus evidence: %d fresh claims and %d stale claims versus compatibility target %s",
+		freshClaims,
 		staleClaims,
-		scope.Commit,
 		manifest.Target.SourceCommit,
 	)
 }
@@ -327,11 +492,68 @@ func onlyIntegrationManifestRefs(refs []string) bool {
 	return true
 }
 
+func integrationManifestRefsFresh(repoRoot string, refs []string, targetCommit string) (bool, error) {
+	for _, ref := range refs {
+		path := filepath.Join(repoRoot, filepath.FromSlash(ref))
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return false, fmt.Errorf("read %s: %w", ref, err)
+		}
+		manifest, err := loadManifest(filepath.Base(ref), data)
+		if err != nil {
+			return false, fmt.Errorf("load %s: %w", ref, err)
+		}
+		for _, source := range manifestSources(manifest) {
+			if source.Commit != targetCommit {
+				return false, nil
+			}
+		}
+	}
+	return true, nil
+}
+
+func TestIntegrationManifestRefsFreshAtTarget(t *testing.T) {
+	historicalCommit := "c3d7d5ec69774121f53d2e20d29d09c816795dd7"
+	targetCommit := strings.Repeat("b", 40)
+	data, err := os.ReadFile("redirect2.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	manifestDir := filepath.Join(root, "t", "plugin")
+	if err := os.MkdirAll(manifestDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(manifestDir, "redirect2.yaml")
+	if err := os.WriteFile(
+		path,
+		bytes.ReplaceAll(data, []byte(historicalCommit), []byte(targetCommit)),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	fresh, err := integrationManifestRefsFresh(root, []string{"t/plugin/redirect2.yaml"}, targetCommit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !fresh {
+		t.Fatal("target-pinned manifest refs are stale")
+	}
+	fresh, err = integrationManifestRefsFresh(root, []string{"t/plugin/redirect2.yaml"}, historicalCommit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fresh {
+		t.Fatal("manifest refs pinned to another commit are fresh")
+	}
+}
+
 func checkOfflineCorpusAccounting(t *testing.T, scope *corpusScope) {
 	t.Helper()
 
 	// Every manifest-declared source label is converted and points back to a manifest.
-	manifestByFile, err := loadManifestSelections(scope.Commit)
+	manifestByFile, err := loadManifestSelections(".", scope)
 	if err != nil {
 		t.Fatalf("load manifests: %v", err)
 	}
@@ -395,27 +617,56 @@ func checkOfflineCorpusAccounting(t *testing.T, scope *corpusScope) {
 func checkCorpusScopeAgainstSource(t *testing.T, scope *corpusScope, sourceRoot string) {
 	t.Helper()
 
-	// Ledger file/label union must equal the pinned checkout when available.
-	pinnedLabels := upstreamSourceLabels(t, sourceRoot)
-	ledgerLabels := corpusScopeLabels(scope)
-	if len(ledgerLabels) != len(pinnedLabels) {
-		t.Fatalf("ledger labels = %d, pinned checkout labels = %d", len(ledgerLabels), len(pinnedLabels))
+	// The default commit remains the complete inventory baseline. A migrated file keeps its place in that
+	// inventory, but its exact labels are checked against its row-level effective commit.
+	baselineFiles, err := sourceFilesAtCommit(sourceRoot, scope.Commit)
+	if err != nil {
+		t.Fatalf("list baseline source files: %v", err)
 	}
-	for file, labels := range pinnedLabels {
-		for label := range labels {
-			if !ledgerLabels[file][label] {
-				t.Errorf("ledger is missing pinned label %d in %s", label, file)
-			}
+	ledgerLabels := corpusScopeLabels(scope)
+	if len(ledgerLabels) != len(baselineFiles) {
+		t.Fatalf("ledger source files = %d, baseline source files = %d", len(ledgerLabels), len(baselineFiles))
+	}
+	baselineSet := make(map[string]bool, len(baselineFiles))
+	for _, file := range baselineFiles {
+		baselineSet[file] = true
+		if _, ok := ledgerLabels[file]; !ok {
+			t.Errorf("ledger is missing baseline source file %s", file)
 		}
 	}
 	for file, labels := range ledgerLabels {
-		if _, exists := pinnedLabels[file]; !exists {
-			t.Errorf("ledger covers %s which has no pinned TEST blocks", file)
+		if !baselineSet[file] {
+			t.Errorf("ledger covers %s which is absent from the baseline source inventory", file)
 			continue
 		}
+		commit := sourceCommitsByFile(scope)[file]
+		data, err := sourceFileAtCommit(sourceRoot, commit, file)
+		if err != nil {
+			t.Errorf("ledger source %s: %v", file, err)
+			continue
+		}
+		_, sourceLabels, err := parseSourceTestHeaders(data)
+		if err != nil {
+			t.Errorf("ledger source %s at %s: %v", file, commit, err)
+			continue
+		}
+		if len(labels) != len(sourceLabels) {
+			t.Errorf(
+				"ledger source %s at %s has %d labels, source has %d",
+				file,
+				commit,
+				len(labels),
+				len(sourceLabels),
+			)
+		}
 		for label := range labels {
-			if !pinnedLabels[file][label] {
-				t.Errorf("ledger label %d in %s is absent from the pinned source", label, file)
+			if !sourceLabels[label] {
+				t.Errorf("ledger label %d in %s is absent from source commit %s", label, file, commit)
+			}
+		}
+		for label := range sourceLabels {
+			if !labels[label] {
+				t.Errorf("ledger is missing source label %d in %s at commit %s", label, file, commit)
 			}
 		}
 	}
@@ -484,49 +735,26 @@ func corpusScopeLabels(scope *corpusScope) map[string]map[int]bool {
 	return labels
 }
 
-func upstreamSourceLabels(t *testing.T, sourceRoot string) map[string]map[int]bool {
-	t.Helper()
-	labels := make(map[string]map[int]bool)
-	err := filepath.WalkDir(
-		filepath.Join(sourceRoot, "t", "plugin"),
-		func(path string, entry os.DirEntry, walkErr error) error {
-			if walkErr != nil {
-				return walkErr
+func loadManifestSelections(root string, scope *corpusScope) (map[string]map[int]string, error) {
+	ledgerSelections := make(map[string]map[int]corpusLabelSelection, len(scope.Sources))
+	for _, source := range scope.Sources {
+		if ledgerSelections[source.File] == nil {
+			ledgerSelections[source.File] = make(map[int]corpusLabelSelection, len(source.TestNumbers))
+		}
+		for _, number := range source.TestNumbers {
+			ledgerSelections[source.File][number] = corpusLabelSelection{
+				Commit: scope.effectiveCommit(source),
 			}
-			if entry.IsDir() || filepath.Ext(entry.Name()) != ".t" {
-				return nil
-			}
-			rel, err := filepath.Rel(sourceRoot, path)
-			if err != nil {
-				return err
-			}
-			rel = filepath.ToSlash(rel)
-			data, err := os.ReadFile(path)
-			if err != nil {
-				return err
-			}
-			_, found, err := parseSourceTestHeaders(data)
-			if err != nil {
-				return fmt.Errorf("%s: %w", rel, err)
-			}
-			labels[rel] = found
-			return nil
-		},
-	)
-	if err != nil {
-		t.Fatalf("walk pinned sources: %v", err)
+		}
 	}
-	return labels
-}
 
-func loadManifestSelections(corpusCommit string) (map[string]map[int]string, error) {
-	files, err := filepath.Glob("*.yaml")
+	files, err := filepath.Glob(filepath.Join(root, "*.yaml"))
 	if err != nil {
 		return nil, fmt.Errorf("discover manifests: %w", err)
 	}
 	selections := make(map[string]map[int]string)
 	for _, file := range files {
-		if file == corpusScopeFile {
+		if filepath.Base(file) == corpusScopeFile {
 			continue
 		}
 		data, err := os.ReadFile(file)
@@ -539,15 +767,6 @@ func loadManifestSelections(corpusCommit string) (map[string]map[int]string, err
 		}
 		manifestName := filepath.Base(file)
 		for _, source := range manifestSources(manifest) {
-			if source.Commit != corpusCommit {
-				return nil, fmt.Errorf(
-					"%s source %s commit = %q, want corpus commit %s",
-					manifestName,
-					source.File,
-					source.Commit,
-					corpusCommit,
-				)
-			}
 			if selections[source.File] == nil {
 				selections[source.File] = make(map[int]string)
 			}
@@ -559,6 +778,25 @@ func loadManifestSelections(corpusCommit string) (map[string]map[int]string, err
 				}
 			}
 			for _, number := range blocks {
+				ledgerSelection, ok := ledgerSelections[source.File][number]
+				if !ok {
+					return nil, fmt.Errorf(
+						"%s selects label %d in %s which is absent from the corpus ledger",
+						manifestName,
+						number,
+						source.File,
+					)
+				}
+				if source.Commit != ledgerSelection.Commit {
+					return nil, fmt.Errorf(
+						"%s source %s label %d commit = %q, want effective corpus commit %s",
+						manifestName,
+						source.File,
+						number,
+						source.Commit,
+						ledgerSelection.Commit,
+					)
+				}
 				if previous, ok := selections[source.File][number]; ok {
 					return nil, fmt.Errorf(
 						"label %d in %s is selected by both %s and %s",

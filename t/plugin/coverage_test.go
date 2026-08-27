@@ -1,6 +1,8 @@
 package pluginintegration
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -271,8 +273,15 @@ func firstYAMLAnchorOrAlias(node *yaml.Node) *yaml.Node {
 }
 
 func TestSourceCoverage(t *testing.T) {
-	corpusCommit := sourceCoverageCommit(t)
-	sourceRoot := apacheAPISIXSourceRoot(t, corpusCommit)
+	scope, err := loadCorpusScopeFile(t)
+	if err != nil {
+		t.Fatalf("load ledger: %v", err)
+	}
+	sourceRoot := apacheAPISIXRepository(t)
+	for _, commit := range sourceCoverageCommits(scope) {
+		assertSourceCommit(t, sourceRoot, commit)
+	}
+	sourceCommits := sourceCommitsByFile(scope)
 	files, err := manifestYAMLFiles()
 	if err != nil {
 		t.Fatalf("discover manifests: %v", err)
@@ -299,50 +308,169 @@ func TestSourceCoverage(t *testing.T) {
 					source.Repository,
 				)
 			}
-			if source.Commit != corpusCommit {
+			expectedCommit, ok := sourceCommits[source.File]
+			if !ok {
+				t.Errorf("%s source %s is absent from the corpus ledger", manifestFile, source.File)
+				continue
+			}
+			if source.Commit != expectedCommit {
 				t.Errorf(
 					"%s source %s commit = %q, want %s",
 					manifestFile,
 					source.File,
 					source.Commit,
-					corpusCommit,
+					expectedCommit,
 				)
 			}
-			assertSourceTests(t, sourceRoot, manifestFile, source)
+			assertSourceTestsAtCommit(t, sourceRoot, manifestFile, source)
 		}
 	}
 }
 
-func sourceCoverageCommit(t *testing.T) string {
-	t.Helper()
-	scope, err := loadCorpusScopeFile(t)
-	if err != nil {
-		t.Fatalf("load ledger: %v", err)
+func sourceCommitsByFile(scope *corpusScope) map[string]string {
+	commits := make(map[string]string, len(scope.Sources))
+	for _, source := range scope.Sources {
+		commits[source.File] = scope.effectiveCommit(source)
 	}
-	return scope.Commit
+	return commits
 }
 
-func TestSourceCoverageUsesCorpusCommit(t *testing.T) {
-	scope, err := loadCorpusScopeFile(t)
-	if err != nil {
-		t.Fatalf("load ledger: %v", err)
+func sourceCoverageCommits(scope *corpusScope) []string {
+	commits := map[string]bool{scope.Commit: true}
+	for _, source := range scope.Sources {
+		commits[scope.effectiveCommit(source)] = true
 	}
-	if got := sourceCoverageCommit(t); got != scope.Commit {
-		t.Fatalf("source coverage commit = %s, want historical corpus commit %s", got, scope.Commit)
+	result := make([]string, 0, len(commits))
+	for commit := range commits {
+		result = append(result, commit)
+	}
+	sort.Strings(result)
+	return result
+}
+
+func TestSourceCoverageCommitsIncludeMigratedSources(t *testing.T) {
+	scope := &corpusScope{
+		Commit: strings.Repeat("a", 40),
+		Sources: []corpusSourceScope{
+			{File: "t/plugin/legacy.t", TestNumbers: []int{1}},
+			{File: "t/plugin/migrated.t", Commit: strings.Repeat("b", 40), TestNumbers: []int{1}},
+		},
+	}
+	want := []string{strings.Repeat("a", 40), strings.Repeat("b", 40)}
+	if got := sourceCoverageCommits(scope); !slices.Equal(got, want) {
+		t.Fatalf("sourceCoverageCommits() = %v, want %v", got, want)
 	}
 }
 
-func apacheAPISIXSourceRoot(t *testing.T, commit string) string {
+func TestSourceFileAtCommitReadsExactRevision(t *testing.T) {
+	root := t.TempDir()
+	runGit := func(args ...string) string {
+		t.Helper()
+		command := exec.Command("git", append([]string{"-C", root}, args...)...)
+		output, err := command.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, output)
+		}
+		return strings.TrimSpace(string(output))
+	}
+	runGit("init", "--quiet")
+	runGit("config", "user.email", "corpus-test@example.invalid")
+	runGit("config", "user.name", "Corpus Test")
+	path := filepath.Join(root, "t", "plugin", "example.t")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("=== TEST 1: historical\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGit("add", "t/plugin/example.t")
+	runGit("commit", "--quiet", "-m", "historical")
+	historicalCommit := runGit("rev-parse", "HEAD")
+	if err := os.WriteFile(path, []byte("=== TEST 1: migrated\n=== TEST 2: added\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	addedPath := filepath.Join(root, "t", "plugin", "added.t")
+	if err := os.WriteFile(addedPath, []byte("=== TEST 1: added source\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGit("add", "t/plugin/example.t", "t/plugin/added.t")
+	runGit("commit", "--quiet", "-m", "migrated")
+	migratedCommit := runGit("rev-parse", "HEAD")
+
+	historical, err := sourceFileAtCommit(root, historicalCommit, "t/plugin/example.t")
+	if err != nil {
+		t.Fatal(err)
+	}
+	migrated, err := sourceFileAtCommit(root, migratedCommit, "t/plugin/example.t")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(historical) != "=== TEST 1: historical\n" {
+		t.Fatalf("historical source = %q", historical)
+	}
+	if string(migrated) != "=== TEST 1: migrated\n=== TEST 2: added\n" {
+		t.Fatalf("migrated source = %q", migrated)
+	}
+	historicalFiles, err := sourceFilesAtCommit(root, historicalCommit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	migratedFiles, err := sourceFilesAtCommit(root, migratedCommit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"t/plugin/example.t"}; !slices.Equal(historicalFiles, want) {
+		t.Fatalf("historical source files = %v, want %v", historicalFiles, want)
+	}
+	if want := []string{"t/plugin/added.t", "t/plugin/example.t"}; !slices.Equal(migratedFiles, want) {
+		t.Fatalf("migrated source files = %v, want %v", migratedFiles, want)
+	}
+}
+
+func sourceFileAtCommit(root, commit, file string) ([]byte, error) {
+	command := exec.Command("git", "-C", root, "show", commit+":"+file)
+	output, err := command.Output()
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			return nil, fmt.Errorf("read %s at %s: %w: %s", file, commit, err, exitErr.Stderr)
+		}
+		return nil, fmt.Errorf("read %s at %s: %w", file, commit, err)
+	}
+	return output, nil
+}
+
+func sourceFilesAtCommit(root, commit string) ([]string, error) {
+	command := exec.Command("git", "-C", root, "ls-tree", "-r", "--name-only", "-z", commit, "--", "t/plugin")
+	output, err := command.Output()
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			return nil, fmt.Errorf("list t/plugin at %s: %w: %s", commit, err, exitErr.Stderr)
+		}
+		return nil, fmt.Errorf("list t/plugin at %s: %w", commit, err)
+	}
+	files := make([]string, 0)
+	for raw := range bytes.SplitSeq(output, []byte{0}) {
+		file := string(raw)
+		if filepath.Ext(file) == ".t" {
+			files = append(files, file)
+		}
+	}
+	sort.Strings(files)
+	return files, nil
+}
+
+func apacheAPISIXRepository(t *testing.T) string {
 	t.Helper()
-	if sourceRoot, ok := optionalApacheAPISIXSourceRoot(t, commit); ok {
+	if sourceRoot, ok := optionalApacheAPISIXRepository(); ok {
 		return sourceRoot
 	}
-	t.Skip("historical corpus APISIX source checkout is unavailable; set APISIX_SOURCE_DIR to run source coverage")
+	t.Skip("Apache APISIX source repository is unavailable; set APISIX_SOURCE_DIR to run source coverage")
 	return ""
 }
 
-func optionalApacheAPISIXSourceRoot(t *testing.T, commit string) (string, bool) {
-	t.Helper()
+func optionalApacheAPISIXRepository() (string, bool) {
 	candidates := []string{os.Getenv("APISIX_SOURCE_DIR")}
 	if root := os.Getenv("APISIX_GO_ROOT"); root != "" {
 		candidates = append(candidates, filepath.Join(root, ".cache", "apache-apisix"))
@@ -354,37 +482,24 @@ func optionalApacheAPISIXSourceRoot(t *testing.T, commit string) (string, bool) 
 			continue
 		}
 		if _, err := os.Stat(filepath.Join(candidate, ".git")); err == nil {
-			assertSourceCheckout(t, candidate, commit)
 			return candidate, true
 		}
 	}
 	return "", false
 }
 
-func assertSourceCheckout(t *testing.T, root, commit string) {
+func assertSourceCommit(t *testing.T, root, commit string) {
 	t.Helper()
-	command := exec.Command("git", "-C", root, "rev-parse", "HEAD")
+	command := exec.Command("git", "-C", root, "cat-file", "-e", commit+"^{commit}")
 	output, err := command.CombinedOutput()
 	if err != nil {
-		t.Fatalf("read Apache APISIX source revision: %v: %s", err, output)
-	}
-	if got := strings.TrimSpace(string(output)); got != commit {
-		t.Fatalf("Apache APISIX source revision = %s, want %s", got, commit)
-	}
-
-	command = exec.Command("git", "-C", root, "status", "--short", "--untracked-files=no", "--", "t/plugin")
-	output, err = command.CombinedOutput()
-	if err != nil {
-		t.Fatalf("inspect Apache APISIX source status: %v: %s", err, output)
-	}
-	if len(output) != 0 {
-		t.Fatalf("Apache APISIX pinned t/plugin source is modified:\n%s", output)
+		t.Fatalf("Apache APISIX source commit %s is unavailable: %v: %s", commit, err, output)
 	}
 }
 
-func assertSourceTests(t *testing.T, sourceRoot, manifestFile string, source SourceSpec) {
+func assertSourceTestsAtCommit(t *testing.T, sourceRoot, manifestFile string, source SourceSpec) {
 	t.Helper()
-	data, err := os.ReadFile(filepath.Join(sourceRoot, filepath.FromSlash(source.File)))
+	data, err := sourceFileAtCommit(sourceRoot, source.Commit, source.File)
 	if err != nil {
 		t.Errorf("%s source %s: %v", manifestFile, source.File, err)
 		return

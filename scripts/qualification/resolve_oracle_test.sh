@@ -55,6 +55,29 @@ grep -Fq "index_digest=$index_digest" <<<"$output"
 grep -Fq 'platform_digest=sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' <<<"$output"
 grep -Fq 'version=3.17.0' <<<"$output"
 
+fake_podman="$task_dir/podman"
+cat >"$fake_podman" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$*" == "manifest inspect docker.io/apache/apisix@$FAKE_INDEX_DIGEST" ]]; then
+    cat "$FAKE_INDEX_JSON"
+    exit 0
+fi
+if [[ "$*" == "run --rm --platform linux/amd64 --entrypoint apisix docker.io/apache/apisix@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb version" ]]; then
+    printf 'Apache APISIX version %s\n' "${FAKE_APISIX_VERSION:-3.17.0}"
+    exit 0
+fi
+printf 'unexpected podman arguments: %s\n' "$*" >&2
+exit 2
+SH
+chmod +x "$fake_podman"
+
+output=$(FAKE_INDEX_JSON="$index_json" FAKE_INDEX_DIGEST="$index_digest" \
+    DOCKER_BIN="$fake_podman" "$resolver" "$oracle")
+grep -Fq "index_digest=$index_digest" <<<"$output"
+grep -Fq 'platform_digest=sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' <<<"$output"
+grep -Fq 'version=3.17.0' <<<"$output"
+
 if FAKE_INDEX_JSON="$index_json" FAKE_APISIX_VERSION=3.16.0 DOCKER_BIN="$fake_docker" \
     "$resolver" "$oracle" >"$task_dir/wrong-version.out" 2>&1; then
     printf 'resolver accepted the wrong runtime version\n' >&2

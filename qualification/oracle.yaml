@@ -1,6 +1,6 @@
 # Official Apache APISIX 3.17 compatibility oracle. The tag is descriptive;
 # qualification must use the immutable linux/amd64 manifest digest below and
-# must pass scripts/qualification/resolve_oracle.sh on a Docker host.
+# must pass scripts/qualification/resolve_oracle.sh with Docker or Podman.
 schema_version: 1
 image_tag: apache/apisix:3.17.0-debian
 image_repository: docker.io/apache/apisix

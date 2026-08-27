@@ -55,19 +55,31 @@ expected_version=$(read_scalar expected_version "$oracle") || die 'expected_vers
 [[ "$image_linux_amd64_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || die \
     "invalid linux/amd64 image digest: $image_linux_amd64_digest"
 
-docker_bin=${DOCKER_BIN:-docker}
-command -v "$docker_bin" >/dev/null 2>&1 || die "Docker CLI is required: $docker_bin"
+container_bin=${CONTAINER_BIN:-${DOCKER_BIN:-docker}}
+command -v "$container_bin" >/dev/null 2>&1 || die "Docker or Podman CLI is required: $container_bin"
 command -v jq >/dev/null 2>&1 || die 'jq is required'
+
+case "$(basename "$container_bin")" in
+    *podman*) container_runtime=podman ;;
+    *docker*) container_runtime=docker ;;
+    *) die "unsupported container CLI: $container_bin" ;;
+esac
 
 task_dir=$(mktemp -d)
 trap 'rm -rf "$task_dir"' EXIT
 index_file="$task_dir/index.json"
-"$docker_bin" buildx imagetools inspect --raw "$image_tag" >"$index_file" || \
-    die "cannot resolve oracle image index: $image_tag"
-
-resolved_index_digest="sha256:$(sha256_file "$index_file")"
-[[ "$resolved_index_digest" == "$image_index_digest" ]] || die \
-    "oracle image index digest mismatch: resolved $resolved_index_digest, locked $image_index_digest"
+if [[ "$container_runtime" == docker ]]; then
+    "$container_bin" buildx imagetools inspect --raw "$image_tag" >"$index_file" || \
+        die "cannot resolve oracle image index: $image_tag"
+    resolved_index_digest="sha256:$(sha256_file "$index_file")"
+    [[ "$resolved_index_digest" == "$image_index_digest" ]] || die \
+        "oracle image index digest mismatch: resolved $resolved_index_digest, locked $image_index_digest"
+else
+    image_index_reference="$image_repository@$image_index_digest"
+    "$container_bin" manifest inspect "$image_index_reference" >"$index_file" || \
+        die "cannot resolve oracle image index: $image_index_reference"
+    resolved_index_digest="$image_index_digest"
+fi
 
 resolved_platform_digest=$(jq -er '
     [.manifests[] | select(.platform.os == "linux" and .platform.architecture == "amd64")] |
@@ -77,7 +89,7 @@ resolved_platform_digest=$(jq -er '
     "oracle linux/amd64 digest mismatch: resolved $resolved_platform_digest, locked $image_linux_amd64_digest"
 
 image_reference="$image_repository@$image_linux_amd64_digest"
-if ! version_output=$("$docker_bin" run --rm --platform linux/amd64 --entrypoint apisix \
+if ! version_output=$("$container_bin" run --rm --platform linux/amd64 --entrypoint apisix \
     "$image_reference" version 2>&1); then
     die "cannot run oracle image $image_reference: $version_output"
 fi

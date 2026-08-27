@@ -23,10 +23,13 @@ cases:
         - id: prometheus-invalid
           uri: /invalid
           plugins: {prometheus: {prefer_name: invalid}}
-    input: {path: /invalid}
-    output:
-      status: 503
-      logs: {matches: 'worker generation preparation failed'}
+    steps:
+      - name: invalid-config-fails-closed
+        input: {path: /invalid}
+        output:
+          status: 503
+          logs: {matches: 'worker generation preparation failed'}
+        wait: 100ms
 
   - name: profile-metrics-scrape
     wait_for_generation: true

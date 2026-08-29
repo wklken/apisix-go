@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -177,10 +178,9 @@ func TestDifferentialCatalogDeclaresOneHundredTwentyFourCaseOneHundredElevenPlug
 		t.Fatal(err)
 	}
 	var catalog struct {
-		SchemaVersion   int      `yaml:"schema_version"`
-		Suite           string   `yaml:"suite"`
-		RequiredPlugins []string `yaml:"required_plugins"`
-		Cases           []struct {
+		SchemaVersion int    `yaml:"schema_version"`
+		Suite         string `yaml:"suite"`
+		Cases         []struct {
 			Plugin     string `yaml:"plugin"`
 			Obligation string `yaml:"obligation"`
 			Case       string `yaml:"case"`
@@ -196,10 +196,9 @@ func TestDifferentialCatalogDeclaresOneHundredTwentyFourCaseOneHundredElevenPlug
 			catalog.Suite,
 		)
 	}
-	if len(catalog.RequiredPlugins) != 111 || len(catalog.Cases) != 124 {
+	if len(catalog.Cases) != 124 {
 		t.Fatalf(
-			"catalog coverage = %d required plugins and %d cases, want 111 and 124",
-			len(catalog.RequiredPlugins),
+			"catalog coverage = %d cases, want 124",
 			len(catalog.Cases),
 		)
 	}
@@ -212,6 +211,37 @@ func TestDifferentialCatalogDeclaresOneHundredTwentyFourCaseOneHundredElevenPlug
 	}
 	if len(covered) != 111 {
 		t.Fatalf("catalog covered plugins = %d, want 111", len(covered))
+	}
+}
+
+func TestDifferentialCatalogRejectsHandMaintainedRequiredPlugins(t *testing.T) {
+	repoRoot, err := repositoryRootFromWorkingDirectory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(differentialCatalogPath(repoRoot))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(string(data), "\n")
+	inserted := false
+	for index, line := range lines {
+		if strings.HasPrefix(line, "suite:") {
+			lines = slices.Insert(lines, index+1, "required_plugins: [acl]")
+			inserted = true
+			break
+		}
+	}
+	if !inserted {
+		t.Fatal("catalog suite field not found")
+	}
+	path := filepath.Join(t.TempDir(), "catalog.yaml")
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadDifferentialCatalog(path, differentialCases()); err == nil ||
+		!strings.Contains(err.Error(), "field required_plugins not found") {
+		t.Fatalf("loadDifferentialCatalog() error = %v, want derived-field rejection", err)
 	}
 }
 

@@ -505,7 +505,7 @@ type DifferentialPluginResult struct {
 type DifferentialCatalog struct {
 	SchemaVersion    int                       `yaml:"schema_version"`
 	Suite            string                    `yaml:"suite"`
-	RequiredPlugins  []string                  `yaml:"required_plugins"`
+	RequiredPlugins  []string                  `yaml:"-"`
 	Cases            []DifferentialCatalogCase `yaml:"cases"`
 	CatalogSHA256    string                    `yaml:"-"`
 	fullCases        []DifferentialCatalogCase
@@ -547,6 +547,7 @@ func loadDifferentialCatalog(
 		}
 		return DifferentialCatalog{}, fmt.Errorf("decode differential catalog %s: %w", path, err)
 	}
+	catalog.RequiredPlugins = differentialRequiredPlugins(catalog.Cases)
 	if err := validateDifferentialCatalog(catalog, runtimeCases); err != nil {
 		return DifferentialCatalog{}, err
 	}
@@ -555,6 +556,21 @@ func loadDifferentialCatalog(
 	catalog.fullCases = append([]DifferentialCatalogCase(nil), catalog.Cases...)
 	catalog.fullRuntimeCases = append([]DifferentialCase(nil), runtimeCases...)
 	return catalog, nil
+}
+
+func differentialRequiredPlugins(cases []DifferentialCatalogCase) []string {
+	required := make(map[string]struct{}, len(cases))
+	for _, row := range cases {
+		if row.Plugin != "" {
+			required[row.Plugin] = struct{}{}
+		}
+	}
+	plugins := make([]string, 0, len(required))
+	for plugin := range required {
+		plugins = append(plugins, plugin)
+	}
+	sort.Strings(plugins)
+	return plugins
 }
 
 func validateDifferentialCatalog(

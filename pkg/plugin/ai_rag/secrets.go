@@ -36,17 +36,6 @@ type ragCredentialSnapshot struct {
 	scopedSearchAPIKey    secret.Value
 }
 
-// MaterializeSecrets is the transitional process-local preparation path used
-// by the current Builder. It remains separate from attempt-scoped resolution.
-func (p *Plugin) MaterializeSecrets() error {
-	p.beginRAGPreparation()
-	defer p.endRAGPreparation()
-	if prepared, err := p.ragPreparationState(); err != nil || prepared {
-		return err
-	}
-	return errRAGCredentialsUnavailable
-}
-
 // MaterializeScopedSecrets resolves exactly the two manifest-owned provider
 // keys for one attempt. Both values and descriptors are staged before either
 // credential becomes visible to provider requests.

@@ -121,16 +121,6 @@ func selectedLimitCountNodes(config Config, selection secretFieldSelection) []st
 	}
 }
 
-// MaterializeSecrets is the transitional Store-backed preparation path.
-func (p *Plugin) MaterializeSecrets() error {
-	p.beginLimitCountPreparation()
-	defer p.endLimitCountPreparation()
-	if prepared, err := p.limitCountPreparationState(); err != nil || prepared {
-		return err
-	}
-	return errLimitCountCredentialsUnavailable
-}
-
 // MaterializeScopedSecrets resolves the selected aliases using their exact
 // admitted manifest declarations before any root-to-nested normalization.
 func (p *Plugin) MaterializeScopedSecrets(

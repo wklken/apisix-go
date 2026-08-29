@@ -515,36 +515,6 @@ func TestScopedSecretsRAGRejectResolvedBlankKeysAndRetry(t *testing.T) {
 	}
 }
 
-func TestLegacyRAGMaterializationFailsClosed(t *testing.T) {
-	const (
-		embeddingEnv = "RAG_LEGACY_BLANK_EMBEDDING"
-		searchEnv    = "RAG_LEGACY_BLANK_SEARCH"
-	)
-	for _, test := range []struct {
-		name       string
-		invalidEnv string
-		blank      string
-	}{
-		{name: "embedding empty", invalidEnv: embeddingEnv, blank: ""},
-		{name: "embedding whitespace", invalidEnv: embeddingEnv, blank: " \t"},
-		{name: "search empty", invalidEnv: searchEnv, blank: ""},
-		{name: "search whitespace", invalidEnv: searchEnv, blank: " \t"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			p := &Plugin{config: ragConfig(
-				"http://127.0.0.1", "$ENV://"+embeddingEnv,
-				"http://127.0.0.1", "$ENV://"+searchEnv,
-			)}
-			if err := p.Init(); err != nil {
-				t.Fatal(err)
-			}
-			if err := p.MaterializeSecrets(); !errors.Is(err, errRAGCredentialsUnavailable) {
-				t.Fatalf("MaterializeSecrets() error = %v, want credential unavailable", err)
-			}
-		})
-	}
-}
-
 func TestScopedSecretsRAGConcurrentMaterializationIsSingleFlight(t *testing.T) {
 	const (
 		embeddingRaw = "$ENV://RAG_SINGLEFLIGHT_EMBEDDING"
@@ -598,92 +568,6 @@ func TestScopedSecretsRAGConcurrentMaterializationIsSingleFlight(t *testing.T) {
 		}
 	}
 	assertRAGScopedCalls(t, scope, broker.callsSnapshot(), []string{embeddingRaw, searchRaw})
-}
-
-func TestLegacyRAGConcurrentMaterializationFailsClosed(t *testing.T) {
-	const workers = 64
-	p := &Plugin{config: ragConfig(
-		"http://127.0.0.1", "legacy-concurrent-embedding",
-		"http://127.0.0.1", "legacy-concurrent-search",
-	)}
-	if err := p.Init(); err != nil {
-		t.Fatal(err)
-	}
-	start := make(chan struct{})
-	errs := make(chan error, workers)
-	for range workers {
-		go func() {
-			<-start
-			errs <- p.MaterializeSecrets()
-		}()
-	}
-	close(start)
-	for range workers {
-		if err := <-errs; !errors.Is(err, errRAGCredentialsUnavailable) {
-			t.Fatalf("concurrent legacy materialization error = %v, want credential unavailable", err)
-		}
-	}
-}
-
-func TestRAGLegacyEntryPointWaitsForScopedMaterialization(t *testing.T) {
-	const (
-		embeddingRaw = "$ENV://RAG_CROSS_MODE_EMBEDDING_NOT_SET"
-		searchRaw    = "$ENV://RAG_CROSS_MODE_SEARCH_NOT_SET"
-	)
-	capabilityValue, scope, broker, closeAttempt := newScopedSecretHarness(t, name, map[string]string{
-		embeddingRaw: "cross-mode-embedding",
-		searchRaw:    "cross-mode-search",
-	})
-	defer closeAttempt()
-	entered := make(chan struct{})
-	release := make(chan struct{})
-	var once sync.Once
-	broker.setHook(func(call scopedSecretCall) {
-		if call.Scope.Field == "embeddings_provider.azure_openai.api_key" {
-			once.Do(func() { close(entered) })
-			<-release
-		}
-	})
-	p := &Plugin{config: ragConfig(
-		"http://127.0.0.1", embeddingRaw, "http://127.0.0.1", searchRaw,
-	)}
-	if err := p.Init(); err != nil {
-		t.Fatal(err)
-	}
-	scopedDone := make(chan error, 1)
-	go func() {
-		scopedDone <- base.MaterializeScopedPluginSecrets(
-			context.Background(), scope, capabilityValue, p,
-		)
-	}()
-	select {
-	case <-entered:
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for scoped cross-mode leader")
-	}
-	legacyDone := make(chan error, 1)
-	go func() {
-		legacyDone <- p.MaterializeSecrets()
-	}()
-	select {
-	case err := <-legacyDone:
-		close(release)
-		<-scopedDone
-		t.Fatalf("MaterializeSecrets() returned before scoped materialization completed: %v", err)
-	default:
-	}
-	close(release)
-	if err := <-scopedDone; err != nil {
-		t.Fatalf("scoped cross-mode materialization error = %v", err)
-	}
-	if err := <-legacyDone; err != nil {
-		t.Fatalf("MaterializeSecrets() error after scoped materialization = %v", err)
-	}
-	assertRAGScopedCalls(t, scope, broker.callsSnapshot(), []string{embeddingRaw, searchRaw})
-	if !p.scopedSet {
-		t.Fatal("scoped credentials were not installed")
-	}
-	p.Stop()
 }
 
 func TestScopedSecretsRAGStopDuringMaterializeCannotReviveState(t *testing.T) {
@@ -740,9 +624,6 @@ func TestScopedSecretsRAGStopDuringMaterializeCannotReviveState(t *testing.T) {
 	}
 	if got := len(broker.callsSnapshot()); got != callCount {
 		t.Fatalf("broker calls after terminal Stop() = %d, want %d", got, callCount)
-	}
-	if err := p.MaterializeSecrets(); !errors.Is(err, errRAGCredentialsUnavailable) {
-		t.Fatalf("legacy materialization after Stop() error = %v, want terminal failure", err)
 	}
 }
 

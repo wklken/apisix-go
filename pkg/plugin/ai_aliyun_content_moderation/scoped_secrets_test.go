@@ -64,7 +64,7 @@ func (broker *scopedSecretBroker) ResolveScoped(
 func (*scopedSecretBroker) RevokeAttempt(context.Context, secret.AttemptID) error { return nil }
 
 func newScopedSecretHarness(
-	t *testing.T, factory string, values map[string]string,
+	t testing.TB, factory string, values map[string]string,
 ) (secret.GenerationCapability, secret.Scope, *scopedSecretBroker, func()) {
 	t.Helper()
 	const revision = uint64(7)

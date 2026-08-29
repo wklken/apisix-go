@@ -76,10 +76,6 @@ type awsCredentialSnapshot struct {
 	scopedSessionTokenSet bool
 }
 
-func (p *Plugin) MaterializeSecrets() error {
-	return errAWSCredentialsUnavailable
-}
-
 func (p *Plugin) MaterializeScopedSecrets(
 	ctx context.Context, access base.ScopedSecretAccess,
 ) error {

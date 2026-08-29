@@ -944,37 +944,3 @@ func TestSchemaRequiresDiscoveryOrRegistrationForLazyPaths(t *testing.T) {
 		t.Fatalf("Validate() with explicit resource registration endpoint error = %v", err)
 	}
 }
-
-func TestPostInitRedactsClientSecretResolutionError(t *testing.T) {
-	const secretReference = "$ENV://AUTHZ_KEYCLOAK_MISSING_SECRET"
-	old, existed := os.LookupEnv("AUTHZ_KEYCLOAK_MISSING_SECRET")
-	if err := os.Unsetenv("AUTHZ_KEYCLOAK_MISSING_SECRET"); err != nil {
-		t.Fatalf("Unsetenv() error = %v", err)
-	}
-	t.Cleanup(func() {
-		if existed {
-			_ = os.Setenv("AUTHZ_KEYCLOAK_MISSING_SECRET", old)
-		} else {
-			_ = os.Unsetenv("AUTHZ_KEYCLOAK_MISSING_SECRET")
-		}
-	})
-
-	p := &Plugin{config: Config{
-		TokenEndpoint: "http://keycloak.example.com/token",
-		ClientID:      "apisix",
-		ClientSecret:  secretReference,
-	}}
-	if err := p.Init(); err != nil {
-		t.Fatalf("Init() error = %v", err)
-	}
-	err := base.MaterializePluginSecrets(p)
-	if err == nil {
-		t.Fatal("MaterializePluginSecrets() error = nil, want secret resolution failure")
-	}
-	if got := err.Error(); got != "materialize plugin secrets: credential unavailable" {
-		t.Fatalf("MaterializePluginSecrets() error = %q, want redacted deterministic diagnostic", got)
-	}
-	if strings.Contains(err.Error(), secretReference) {
-		t.Fatalf("PostInit() error exposed secret reference: %v", err)
-	}
-}

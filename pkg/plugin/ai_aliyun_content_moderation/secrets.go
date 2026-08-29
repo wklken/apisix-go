@@ -19,20 +19,6 @@ var errAliyunCredentialsUnavailable = errors.New(
 	"ai-aliyun-content-moderation credentials are unavailable",
 )
 
-// MaterializeSecrets is the transitional process-local preparation path. It
-// keeps resolved credentials private and publishes content-only descriptors.
-func (p *Plugin) MaterializeSecrets() error {
-	p.secretMu.Lock()
-	defer p.secretMu.Unlock()
-	if p.stopped {
-		return errAliyunCredentialsUnavailable
-	}
-	if p.scopedCredentialsSet {
-		return nil
-	}
-	return errAliyunCredentialsUnavailable
-}
-
 // MaterializeScopedSecrets resolves exactly the two manifest-owned Aliyun
 // credentials for one immutable attempt. Values and descriptors are staged
 // before either value is installed, so a failure cannot publish partial state.

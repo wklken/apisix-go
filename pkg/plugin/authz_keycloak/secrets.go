@@ -38,18 +38,6 @@ type keycloakCredentialSnapshot struct {
 	scopedValue secret.Value
 }
 
-// MaterializeSecrets is the transitional process-local preparation path used
-// by the current Builder. Attempt-scoped preparation remains fully separate.
-func (p *Plugin) MaterializeSecrets() error {
-	p.beginKeycloakPreparation()
-	defer p.endKeycloakPreparation()
-	if prepared, err := p.keycloakPreparationState(); err != nil || prepared {
-		return err
-	}
-
-	return errKeycloakCredentialsUnavailable
-}
-
 // MaterializeScopedSecrets resolves only the exact manifest-owned optional
 // client_secret field for the current generation attempt.
 func (p *Plugin) MaterializeScopedSecrets(

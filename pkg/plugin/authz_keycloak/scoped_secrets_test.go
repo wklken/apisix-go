@@ -428,23 +428,6 @@ func TestScopedSecretsKeycloakFailureAndBlankAreAtomicAndRetryable(t *testing.T)
 	}
 }
 
-func TestLegacyKeycloakMaterializationFailsClosed(t *testing.T) {
-	const env = "KEYCLOAK_LEGACY_BLANK_SECRET"
-	for _, blank := range []string{"", " \t"} {
-		t.Run(fmt.Sprintf("blank-%q", blank), func(t *testing.T) {
-			p := &Plugin{config: scopedKeycloakConfig(
-				"http://keycloak.test/token", "$ENV://"+env,
-			)}
-			if err := p.Init(); err != nil {
-				t.Fatal(err)
-			}
-			if err := p.MaterializeSecrets(); !errors.Is(err, errKeycloakCredentialsUnavailable) {
-				t.Fatalf("MaterializeSecrets() error = %v, want unavailable", err)
-			}
-		})
-	}
-}
-
 func TestScopedSecretsKeycloakConcurrentMaterializationIsSingleFlight(t *testing.T) {
 	const (
 		raw     = "$ENV://KEYCLOAK_SINGLEFLIGHT_SECRET"
@@ -490,30 +473,6 @@ func TestScopedSecretsKeycloakConcurrentMaterializationIsSingleFlight(t *testing
 		}
 	}
 	assertScopedKeycloakCall(t, scope, broker.callsSnapshot(), raw)
-}
-
-func TestLegacyKeycloakConcurrentMaterializationFailsClosed(t *testing.T) {
-	const workers = 32
-	p := &Plugin{config: scopedKeycloakConfig(
-		"http://keycloak.test/token", "legacy-singleflight-client-secret",
-	)}
-	if err := p.Init(); err != nil {
-		t.Fatal(err)
-	}
-	start := make(chan struct{})
-	errs := make(chan error, workers)
-	for range workers {
-		go func() {
-			<-start
-			errs <- p.MaterializeSecrets()
-		}()
-	}
-	close(start)
-	for range workers {
-		if err := <-errs; !errors.Is(err, errKeycloakCredentialsUnavailable) {
-			t.Fatalf("concurrent legacy materialization error = %v, want unavailable", err)
-		}
-	}
 }
 
 func TestPostInitDoesNotResolveKeycloakClientSecret(t *testing.T) {
@@ -842,8 +801,5 @@ func TestScopedSecretsKeycloakStopDuringMaterializeCannotRevive(t *testing.T) {
 	}
 	if got := len(broker.callsSnapshot()); got != callCount {
 		t.Fatalf("broker calls after Stop() = %d, want %d", got, callCount)
-	}
-	if err := p.MaterializeSecrets(); !errors.Is(err, errKeycloakCredentialsUnavailable) {
-		t.Fatalf("legacy materialization after Stop() error = %v", err)
 	}
 }

@@ -12,10 +12,6 @@ import (
 
 var errClickHouseCredentialUnavailable = errors.New("clickhouse-logger: credential unavailable")
 
-func (p *Plugin) MaterializeSecrets() error {
-	return errClickHouseCredentialUnavailable
-}
-
 func (p *Plugin) MaterializeScopedSecrets(
 	ctx context.Context, access base.ScopedSecretAccess,
 ) error {

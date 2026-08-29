@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-`apisix-go` is a Go implementation of the Apache APISIX data plane. It remains under development and is not production ready. Observable APISIX 3.17 compatibility is the default direction; declared, evidenced Go-native extensions may intentionally diverge. Inventory counts do not prove validation or production readiness.
+`apisix-go` is a Go implementation of the Apache APISIX data plane. Observable APISIX 3.17 compatibility is the default direction; declared, evidenced Go-native extensions may intentionally diverge. Inventory counts do not prove validation or production readiness.
 
 This is a single Go module: `github.com/wklken/apisix-go`.
 

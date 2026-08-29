@@ -513,6 +513,7 @@ func TestPreparedErrorLogOwnerStopFlushesBatch(t *testing.T) {
 
 func TestInitPluginsStrictRejectsPluginWhenPostInitFails(t *testing.T) {
 	err := testPluginInitializationError(
+		t,
 		"limit-count",
 		map[string]any{
 			"rules": []any{
@@ -529,6 +530,7 @@ func TestInitPluginsStrictRejectsPluginWhenPostInitFails(t *testing.T) {
 
 func TestInitPluginsStrictRejectsInvalidProxyBufferingConfig(t *testing.T) {
 	err := testPluginInitializationError(
+		t,
 		"proxy-buffering",
 		map[string]any{
 			"disable_proxy_buffering": "yes",
@@ -541,6 +543,7 @@ func TestInitPluginsStrictRejectsInvalidProxyBufferingConfig(t *testing.T) {
 
 func TestInitPluginsStrictRejectsInvalidProxyControlConfig(t *testing.T) {
 	err := testPluginInitializationError(
+		t,
 		"proxy-control",
 		map[string]any{
 			"request_buffering": "yes",
@@ -865,6 +868,7 @@ func TestInitPluginsStrictRejectsProxyCacheConfigFailure(t *testing.T) {
 	t.Cleanup(func() { _ = proxy_cache.RefreshConfiguredZones(nil) })
 
 	err := testPluginInitializationError(
+		t,
 		"proxy-cache",
 		map[string]any{
 			"cache_strategy": "memory",
@@ -1049,6 +1053,7 @@ func TestBuildPreparedHandlerAllowsPluginOnlyRouteWithoutUpstreamNodes(t *testin
 
 func TestUnownedSecretReferenceRejectsRoutePluginBeforePostInit(t *testing.T) {
 	err := testPluginInitializationError(
+		t,
 		"basic-auth",
 		map[string]any{"realm": "$ENV://ROUTE_REALM"},
 	)
@@ -1062,6 +1067,7 @@ func TestUnownedSecretReferenceRejectsRoutePluginBeforePostInit(t *testing.T) {
 
 func TestUnownedSecretReferenceRejectsRoutePluginBeforePostInitLowercaseEnvironmentPrefix(t *testing.T) {
 	err := testPluginInitializationError(
+		t,
 		"basic-auth",
 		map[string]any{"realm": "$env://ROUTE_REALM"},
 	)

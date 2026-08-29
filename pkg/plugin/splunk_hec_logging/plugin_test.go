@@ -755,13 +755,6 @@ func mustMetadataView(t *testing.T, metadata map[string]any) runtime.MetadataVie
 	return view
 }
 
-func TestPostInitRejectsMissingDataEncryptionResolver(t *testing.T) {
-	p := &Plugin{config: Config{Endpoint: Endpoint{Token: "private"}}}
-	if err := p.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) {
-		t.Fatalf("MaterializeSecrets() error = %v, want credential unavailable", err)
-	}
-}
-
 func TestPostInitSetsSplunkDefaults(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		Endpoint: Endpoint{
@@ -781,20 +774,6 @@ func TestPostInitSetsSplunkDefaults(t *testing.T) {
 	}
 	if p.config.BatchMaxSize != 1000 {
 		t.Fatalf("batch_max_size = %d, want 1000", p.config.BatchMaxSize)
-	}
-}
-
-func TestPostInitRejectsInvalidEncryptedToken(t *testing.T) {
-	p := &Plugin{config: Config{Endpoint: Endpoint{Token: "not-a-ciphertext"}}}
-	p.SetDependencies(base.Dependencies{
-		Tasks:          newLoggerTestTaskOwner(t),
-		DataEncryption: testutil.DataEncryptionService(true, []string{"qeddd145sfvddff3"}).Resolver(),
-	})
-	if err := p.Init(); err != nil {
-		t.Fatalf("Init() error = %v", err)
-	}
-	if err := p.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) {
-		t.Fatalf("MaterializeSecrets() error = %v, want credential unavailable", err)
 	}
 }
 

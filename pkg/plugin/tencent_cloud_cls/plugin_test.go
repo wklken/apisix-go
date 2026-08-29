@@ -393,13 +393,6 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	return p
 }
 
-func TestPostInitRejectsMissingDataEncryptionResolver(t *testing.T) {
-	p := &Plugin{}
-	if err := p.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) {
-		t.Fatalf("MaterializeSecrets() error = %v, want credential unavailable", err)
-	}
-}
-
 func TestEffectiveLogFormatRouteWins(t *testing.T) {
 	route := map[string]string{"route": "$request_id"}
 	metadata := map[string]string{"metadata": "$route_id"}
@@ -562,26 +555,6 @@ func TestRunLogPhasePreservesSampleRatio(t *testing.T) {
 	p.sample = func() float64 { return 0.25 }
 	if err := p.RunLogPhase(base.LogSnapshot{}); err == nil {
 		t.Fatal("sampled-in RunLogPhase() error = nil, want unavailable processor")
-	}
-}
-
-func TestPostInitRejectsInvalidEncryptedSecretKey(t *testing.T) {
-	p := &Plugin{config: Config{
-		CLSHost:   "cls.example.com",
-		CLSTopic:  "topic-a",
-		SecretID:  "id",
-		SecretKey: "not-a-ciphertext",
-	}}
-	p.SetDependencies(base.Dependencies{
-		Tasks:          newLoggerTestTaskOwner(t),
-		DataEncryption: testutil.DataEncryptionService(true, []string{"qeddd145sfvddff3"}).Resolver(),
-	})
-	p.now = func() time.Time { return time.Unix(1710000000, 0) }
-	if err := p.Init(); err != nil {
-		t.Fatalf("Init() error = %v", err)
-	}
-	if err := p.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) {
-		t.Fatalf("MaterializeSecrets() error = %v, want credential unavailable", err)
 	}
 }
 
@@ -1082,24 +1055,6 @@ func TestCLSStopBeforePostInitPreventsPublication(t *testing.T) {
 	}
 	if p.client != nil || p.BatchProcessor != nil || p.secretKeySet || p.secretsPrepared || p.ready {
 		t.Fatal("Stop-before-PostInit published or retained CLS state")
-	}
-}
-
-func TestCLSMaterializeSecretsFailsClosed(t *testing.T) {
-	p := &Plugin{config: Config{
-		CLSHost: "cls.example.com", CLSTopic: "topic-a", SecretID: "secret-id",
-		SecretKey: "legacy-private-key", LogFormat: map[string]string{"id": "$request_id"},
-		Timeout: 1735,
-	}}
-	p.SetDependencies(base.Dependencies{
-		Tasks:          newLoggerTestTaskOwner(t),
-		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
-	})
-	if err := p.Init(); err != nil {
-		t.Fatal(err)
-	}
-	if err := p.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) {
-		t.Fatalf("MaterializeSecrets() error = %v, want credential unavailable", err)
 	}
 }
 

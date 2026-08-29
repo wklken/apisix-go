@@ -324,15 +324,6 @@ func materializeScopedSAMLSessionSecret(
 	return value, descriptor.String(), nil
 }
 
-func (p *Plugin) MaterializeSecrets() error {
-	p.lifecycleMu.Lock()
-	defer p.lifecycleMu.Unlock()
-	if !p.retired && p.secretsPrepared {
-		return nil
-	}
-	return secret.ErrCredentialUnavailable
-}
-
 func validateSAMLSessionSecret(plaintext string) error {
 	length := utf8.RuneCountInString(plaintext)
 	if length < 8 || length > 32 {

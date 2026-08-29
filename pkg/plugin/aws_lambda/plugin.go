@@ -247,24 +247,6 @@ func materializeScopedAWSLambdaCredential(
 	return value, descriptor.String(), nil
 }
 
-// MaterializeSecrets is the transitional process-local compatibility path.
-func (p *Plugin) MaterializeSecrets() error {
-	p.credentialsMu.Lock()
-	defer p.credentialsMu.Unlock()
-	if p.retired {
-		return secret.ErrCredentialUnavailable
-	}
-	if p.credentialsInstalledLocked() || p.config.Authorization == nil {
-		return nil
-	}
-
-	auth := p.config.Authorization
-	if auth.IAM != nil && (auth.IAM.AccessKey == "" || auth.IAM.SecretKey == "") {
-		return secret.ErrCredentialUnavailable
-	}
-	return secret.ErrCredentialUnavailable
-}
-
 func (p *Plugin) credentialsInstalledLocked() bool {
 	return p.apiKeySet || p.iamSet
 }
@@ -375,8 +357,8 @@ func (p *Plugin) signIAMRequest(r *http.Request, iam *IAM, accessKey, secretKey 
 	}, now())
 }
 
-// Stop releases the embedded neutral upstream before destroying transitional
-// owners and dropping immutable-generation values.
+// Stop releases the embedded neutral upstream before dropping the
+// immutable-generation credential values.
 func (p *Plugin) Stop() {
 	p.Plugin.Stop()
 	p.credentialsMu.Lock()

@@ -385,90 +385,6 @@ func TestCASScopedGenerationsKeepCookiesAndProcessSessionsIsolated(t *testing.T)
 	}
 }
 
-func TestCASStopWaitsForInFlightCallbackAndDestroysLegacyOwner(t *testing.T) {
-	requestEntered := make(chan struct{})
-	releaseRequest := make(chan struct{})
-	var enteredOnce sync.Once
-	casServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		enteredOnce.Do(func() { close(requestEntered) })
-		<-releaseRequest
-		_, _ = w.Write([]byte(
-			`<cas:serviceResponse><cas:authenticationSuccess><cas:user>alice</cas:user></cas:authenticationSuccess></cas:serviceResponse>`,
-		))
-	}))
-	defer casServer.Close()
-	config := testCASConfig("legacy-cookie-secret-legacy-cookie-secret")
-	config.IDPURI = casServer.URL
-	p := newTestPlugin(t, config)
-	stopper, ok := any(p).(interface{ Stop() })
-	if !ok {
-		close(releaseRequest)
-		t.Fatal("cas-auth Plugin does not implement Stop")
-	}
-
-	initial := httptest.NewRecorder()
-	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})).ServeHTTP(
-		initial, httptest.NewRequest(http.MethodGet, "http://example.com/orders", nil),
-	)
-	stateCookie := findSetCookie(initial.Result().Cookies(), requestURICookie)
-	if stateCookie == nil {
-		close(releaseRequest)
-		t.Fatal("initial request did not set initiation cookie")
-	}
-	callbackDone := make(chan *httptest.ResponseRecorder, 1)
-	go func() {
-		req := httptest.NewRequest(http.MethodGet, "http://example.com/cas_callback?ticket=ST-blocked", nil)
-		req.AddCookie(stateCookie)
-		rr := httptest.NewRecorder()
-		p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})).ServeHTTP(rr, req)
-		callbackDone <- rr
-	}()
-	select {
-	case <-requestEntered:
-	case <-time.After(time.Second):
-		close(releaseRequest)
-		t.Fatal("timed out waiting for CAS callback")
-	}
-
-	stopDone := make(chan struct{}, 2)
-	go func() { stopper.Stop(); stopDone <- struct{}{} }()
-	go func() { stopper.Stop(); stopDone <- struct{}{} }()
-	select {
-	case <-stopDone:
-		close(releaseRequest)
-		t.Fatal("Stop returned while CAS callback was in flight")
-	case <-time.After(100 * time.Millisecond):
-	}
-	close(releaseRequest)
-	select {
-	case rr := <-callbackDone:
-		if rr.Code != http.StatusFound {
-			t.Fatalf("callback status = %d, want 302", rr.Code)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for callback completion")
-	}
-	for range 2 {
-		select {
-		case <-stopDone:
-		case <-time.After(time.Second):
-			t.Fatal("timed out waiting for concurrent Stop")
-		}
-	}
-	stopper.Stop()
-	if !p.retired || p.client != nil || p.secretsPrepared || p.cookieSecretSet ||
-		p.cookieSecret != (secret.Value{}) {
-		t.Fatal("retired plugin retained secret/client state")
-	}
-	if err := p.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) {
-		t.Fatalf("post-retirement MaterializeSecrets() error = %v, want credential unavailable", err)
-	}
-	if err := p.PostInit(); !errors.Is(err, secret.ErrCredentialUnavailable) {
-		t.Fatalf("post-retirement PostInit() error = %v, want credential unavailable", err)
-	}
-	p.deleteSession("ST-blocked")
-}
-
 func TestCASScopedStopWaitsForInFlightCallback(t *testing.T) {
 	requestEntered := make(chan struct{})
 	releaseRequest := make(chan struct{})
@@ -540,30 +456,6 @@ func TestCASScopedStopWaitsForInFlightCallback(t *testing.T) {
 		t.Fatal("scoped Stop retained secret/client state")
 	}
 	p.deleteSession("ST-scoped")
-}
-
-func TestCASMaterializeSecretsFailsClosedWithoutRetainedState(t *testing.T) {
-	const raw = "$ENV://CAS_LEGACY_COOKIE_SECRET"
-	t.Setenv("CAS_LEGACY_COOKIE_SECRET", "short")
-	config := testCASConfig(raw)
-	p := &Plugin{config: config}
-	if err := p.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) ||
-		err.Error() != "credential unavailable" {
-		t.Fatalf("resolved-short legacy error = %v, want fixed credential unavailable", err)
-	}
-	if p.config.Cookie.Secret != raw || p.cookieSecretSet ||
-		p.secretsPrepared || p.client != nil || p.opts != (sessionOptions{}) {
-		t.Fatal("failed legacy materialization retained state")
-	}
-	const resolved = "legacy-retry-cookie-secret-legacy-retry-cookie-secret"
-	t.Setenv("CAS_LEGACY_COOKIE_SECRET", resolved)
-	if err := p.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) {
-		t.Fatalf("same-instance MaterializeSecrets() error = %v, want credential unavailable", err)
-	}
-	shortLiteral := &Plugin{config: testCASConfig("short")}
-	if err := shortLiteral.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) {
-		t.Fatalf("literal short plaintext error = %v, want credential unavailable after materialization", err)
-	}
 }
 
 func TestUnauthenticatedRequestRedirectsToCASLogin(t *testing.T) {

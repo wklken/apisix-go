@@ -930,11 +930,19 @@ func TestPreparedGenerationsRetainMetadataFormat(t *testing.T) {
 	}
 }
 
+func mustMetadataView(t *testing.T, documents map[string][]byte) runtime.MetadataView {
+	t.Helper()
+	view, err := runtime.NewMetadataView(documents)
+	if err != nil {
+		t.Fatalf("NewMetadataView() error = %v", err)
+	}
+	return view
+}
+
 func TestPostInitRejectsInvalidMetadataBeforeSideEffects(t *testing.T) {
 	p := &Plugin{config: Config{URI: "http://127.0.0.1/logs"}}
 	p.SetDependencies(base.Dependencies{
-		Tasks:          newLoggerTestTaskOwner(t),
-		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+		Tasks: newLoggerTestTaskOwner(t),
 		Metadata: mustMetadataView(t, map[string][]byte{
 			name: []byte(`{"log_format":"sensitive-invalid-metadata"}`),
 		}),
@@ -942,13 +950,13 @@ func TestPostInitRejectsInvalidMetadataBeforeSideEffects(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatalf("MaterializeSecrets() error = %v", err)
+	capabilityValue, scope, cleanup := testutil.ScopedSecretHarness(t, name, nil)
+	defer cleanup()
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	t.Cleanup(p.Stop)
-	if p.TaskOwner() == nil {
-		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
-	}
+
 	err := p.PostInit()
 	if err == nil || !strings.Contains(err.Error(), "http-logger metadata decode failed") {
 		t.Fatalf("PostInit() error = %v, want redacted metadata decode failure", err)
@@ -964,23 +972,6 @@ func TestPostInitRejectsInvalidMetadataBeforeSideEffects(t *testing.T) {
 			p.BatchProcessor,
 			p.config.Timeout,
 		)
-	}
-}
-
-func mustMetadataView(t *testing.T, documents map[string][]byte) runtime.MetadataView {
-	t.Helper()
-	view, err := runtime.NewMetadataView(documents)
-	if err != nil {
-		t.Fatalf("NewMetadataView() error = %v", err)
-	}
-	return view
-}
-
-func TestMaterializeSecretsRejectsMissingDataEncryptionResolver(t *testing.T) {
-	authHeader := "Bearer private"
-	p := &Plugin{config: Config{URI: "http://127.0.0.1/logs", AuthHeader: &authHeader}}
-	if err := p.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) {
-		t.Fatalf("MaterializeSecrets() error = %v, want credential unavailable", err)
 	}
 }
 
@@ -1044,39 +1035,6 @@ func TestPostInitNormalizesOfficialInBodyExpression(t *testing.T) {
 	}
 	if second[2] != `^(application/xml|application/json|text/plain|text/xml)$` {
 		t.Fatalf("normalized expression = %#v", second[2])
-	}
-}
-
-func TestMaterializeSecretsRejectsInvalidEncryptedAuthHeader(t *testing.T) {
-	authHeader := "not-a-ciphertext"
-	p := &Plugin{config: Config{URI: "http://127.0.0.1/logs", AuthHeader: &authHeader}}
-	p.SetDependencies(base.Dependencies{
-		Tasks:          newLoggerTestTaskOwner(t),
-		DataEncryption: testutil.DataEncryptionService(true, []string{"qeddd145sfvddff3"}).Resolver(),
-	})
-	if err := p.Init(); err != nil {
-		t.Fatalf("Init() error = %v", err)
-	}
-	if err := p.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) {
-		t.Fatalf("MaterializeSecrets() error = %v, want credential unavailable", err)
-	}
-}
-
-func TestMaterializeSecretsFailsClosedForEncryptedAuthHeader(t *testing.T) {
-	key := "qeddd145sfvddff3"
-	authHeader := encryptHTTPLoggerTestValue(t, key, "Bearer secret")
-	p := &Plugin{config: Config{URI: "http://127.0.0.1/logs", AuthHeader: &authHeader}}
-	p.SetDependencies(
-		base.Dependencies{
-			Tasks:          newLoggerTestTaskOwner(t),
-			DataEncryption: testutil.DataEncryptionService(true, []string{key}).Resolver(),
-		},
-	)
-	if err := p.Init(); err != nil {
-		t.Fatalf("Init() error = %v", err)
-	}
-	if err := p.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) {
-		t.Fatalf("MaterializeSecrets() error = %v, want credential unavailable", err)
 	}
 }
 
@@ -1767,23 +1725,6 @@ func TestSchemaMatchesAPISIX317Matrix(t *testing.T) {
 	}
 }
 
-func TestPostInitRejectsUnsupportedBodyExpressionOperator(t *testing.T) {
-	p := newRawHTTPLoggerPlugin(t, Config{
-		URI:                 "http://127.0.0.1/logs",
-		IncludeRespBody:     true,
-		IncludeRespBodyExpr: []any{[]any{"bar", "<>", "foo"}},
-	})
-	p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatalf("MaterializeSecrets() error = %v", err)
-	}
-	t.Cleanup(p.Stop)
-	err := p.PostInit()
-	if err == nil || !strings.Contains(err.Error(), `unsupported operator "<>"`) {
-		t.Fatalf("PostInit() error = %v, want APISIX 3.17 unsupported-operator rejection", err)
-	}
-}
-
 func TestSchemaAcceptsOfficialBatchFields(t *testing.T) {
 	p := &Plugin{}
 	if err := p.Init(); err != nil {
@@ -1801,5 +1742,25 @@ func TestSchemaAcceptsOfficialBatchFields(t *testing.T) {
 	}
 	if err := util.Validate(config, p.GetSchema()); err != nil {
 		t.Fatalf("schema rejected official batch fields: %v", err)
+	}
+}
+
+func TestPostInitRejectsUnsupportedBodyExpressionOperator(t *testing.T) {
+	p := newRawHTTPLoggerPlugin(t, Config{
+		URI:                 "http://127.0.0.1/logs",
+		IncludeRespBody:     true,
+		IncludeRespBodyExpr: []any{[]any{"bar", "<>", "foo"}},
+	})
+	p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
+	capabilityValue, scope, cleanup := testutil.ScopedSecretHarness(t, name, nil)
+	defer cleanup()
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
+	}
+	t.Cleanup(p.Stop)
+
+	err := p.PostInit()
+	if err == nil || !strings.Contains(err.Error(), `unsupported operator "<>"`) {
+		t.Fatalf("PostInit() error = %v, want APISIX 3.17 unsupported-operator rejection", err)
 	}
 }

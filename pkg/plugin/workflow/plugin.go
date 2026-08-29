@@ -244,54 +244,6 @@ func (p *Plugin) validatePreMaterialization(config Config) error {
 	return nil
 }
 
-func (p *Plugin) MaterializeSecrets() error {
-	sourceConfig, token := p.beginPreparation()
-	defer p.finishPreparation(token)
-	if err := p.validatePreMaterialization(sourceConfig); err != nil {
-		return err
-	}
-	children := make(map[actionPosition]workflowChild)
-	var stoppers []workflowChildStopper
-	configs := make(map[actionPosition]map[string]any)
-	committed := false
-	defer func() {
-		if !committed {
-			stopWorkflowChildren(stoppers)
-		}
-	}()
-	for ruleIndex := range sourceConfig.Rules {
-		for actionIndex := range sourceConfig.Rules[ruleIndex].Actions {
-			action := &sourceConfig.Rules[ruleIndex].Actions[actionIndex]
-			position := actionPosition{rule: ruleIndex, action: actionIndex}
-			if !isWorkflowLimitAction(action.Name) {
-				continue
-			}
-			child, err := newWorkflowChild(action.Name)
-			if err != nil {
-				return err
-			}
-			config, err := p.legacyMaterializeChild(action.Config, child)
-			if err != nil {
-				if stopper, ok := child.(workflowChildStopper); ok {
-					stopper.Stop()
-				}
-				return err
-			}
-			if stopper, ok := child.(workflowChildStopper); ok {
-				stoppers = append(stoppers, stopper)
-			}
-			children[position] = child
-			configs[position] = config
-		}
-	}
-	generation, publicConfig := prepareWorkflowGeneration(sourceConfig, children, stoppers, nil, configs)
-	if !p.publishPreparedGeneration(context.Background(), false, token, generation, publicConfig) {
-		return errWorkflowChildPreparation
-	}
-	committed = true
-	return nil
-}
-
 func (p *Plugin) MaterializeScopedSecrets(
 	ctx context.Context,
 	access base.ScopedSecretAccess,
@@ -389,25 +341,6 @@ func applyResourceContextToChild(child workflowChild, route resource.Route, serv
 	}); ok {
 		setter.SetResourceContext(route, service)
 	}
-}
-
-func (p *Plugin) legacyMaterializeChild(
-	config map[string]any,
-	child workflowChild,
-) (map[string]any, error) {
-	if err := child.Init(); err != nil {
-		return nil, err
-	}
-	if err := util.Parse(config, child.Config()); err != nil {
-		return nil, err
-	}
-	if err := base.MaterializePluginSecrets(child); err != nil {
-		return nil, err
-	}
-	if err := child.PostInit(); err != nil {
-		return nil, err
-	}
-	return descriptorSafeActionConfig(config, child.Config())
 }
 
 func descriptorSafeActionConfig(original map[string]any, materialized any) (map[string]any, error) {

@@ -476,8 +476,10 @@ func newTestPluginWithMetadataAndStaticConfig(
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatalf("MaterializeSecrets() error = %v", err)
+	capabilityValue, scope, closeAttempt := testutil.ScopedSecretHarness(t, name, nil)
+	t.Cleanup(closeAttempt)
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if p.TaskOwner() == nil {
 		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
@@ -504,13 +506,6 @@ func mustMetadataView(t *testing.T, metadata map[string]any) runtime.MetadataVie
 		t.Fatalf("NewMetadataView() error = %v", err)
 	}
 	return view
-}
-
-func TestPostInitRejectsMissingDataEncryptionResolver(t *testing.T) {
-	p := &Plugin{}
-	if err := p.MaterializeSecrets(); err == nil || err.Error() != "data-encryption resolver is required" {
-		t.Fatalf("MaterializeSecrets() error = %v, want missing resolver error", err)
-	}
 }
 
 func TestDefaultAccessLogFieldsRedactSensitiveHeaders(t *testing.T) {
@@ -595,60 +590,6 @@ func TestPostInitSetsSLSDefaults(t *testing.T) {
 	}
 	if p.config.SSLVerify == nil || *p.config.SSLVerify {
 		t.Fatalf("ssl_verify = %v, want APISIX-compatible default false", p.config.SSLVerify)
-	}
-}
-
-func TestPostInitRejectsInvalidEncryptedAccessKeySecret(t *testing.T) {
-	p := &Plugin{config: Config{
-		Host:            "127.0.0.1",
-		Port:            10009,
-		Project:         "project-a",
-		Logstore:        "store-a",
-		AccessKeyID:     "id",
-		AccessKeySecret: "not-a-ciphertext",
-	}}
-	p.SetDependencies(base.Dependencies{
-		Tasks:          newLoggerTestTaskOwner(t),
-		DataEncryption: testutil.DataEncryptionService(true, []string{"qeddd145sfvddff3"}).Resolver(),
-	})
-	if err := p.Init(); err != nil {
-		t.Fatalf("Init() error = %v", err)
-	}
-	if err := p.MaterializeSecrets(); err == nil {
-		t.Fatal("MaterializeSecrets() error = nil, want strict encrypted access_key_secret rejection")
-	}
-}
-
-func TestMaterializeSecretsValidatesRotatedEncryptedAccessKeySecret(t *testing.T) {
-	oldKey := "old-keyring-item"
-	newKey := "qeddd145sfvddff3"
-	p := &Plugin{config: Config{
-		Host:            "127.0.0.1",
-		Port:            10009,
-		Project:         "project-a",
-		Logstore:        "store-a",
-		AccessKeyID:     "id",
-		AccessKeySecret: encryptSLSLoggerTestValue(t, oldKey, "sls-secret"),
-	}}
-	p.SetDependencies(base.Dependencies{
-		Tasks:          newLoggerTestTaskOwner(t),
-		DataEncryption: testutil.DataEncryptionService(true, []string{newKey, oldKey}).Resolver(),
-	})
-	if err := p.Init(); err != nil {
-		t.Fatalf("Init() error = %v", err)
-	}
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatalf("MaterializeSecrets() error = %v", err)
-	}
-	if p.TaskOwner() == nil {
-		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
-	}
-	if err := p.PostInit(); err != nil {
-		t.Fatalf("PostInit() error = %v", err)
-	}
-	t.Cleanup(p.Stop)
-	if p.config.AccessKeySecret != slsSecretDescriptor("sls-secret") {
-		t.Fatalf("access_key_secret = %q, want resolved descriptor", p.config.AccessKeySecret)
 	}
 }
 
@@ -744,12 +685,6 @@ func TestStopDrainsPendingSLSBatchAndPreventsResurrection(t *testing.T) {
 	)
 	if got := len(p.FireChan); got != beforeFire {
 		t.Fatalf("post-Stop Handler FireChan length = %d, want unchanged %d", got, beforeFire)
-	}
-	if err := p.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) {
-		t.Fatalf("post-Stop MaterializeSecrets() error = %v", err)
-	}
-	if p.TaskOwner() == nil {
-		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
 	}
 	if err := p.PostInit(); !errors.Is(err, secret.ErrCredentialUnavailable) {
 		t.Fatalf("post-Stop PostInit() error = %v", err)
@@ -1377,8 +1312,7 @@ func TestMetadataDecodeFailsBeforeSLSProcessorAcquisition(t *testing.T) {
 		IncludeReqBodyExpr: expressions,
 	}}
 	p.SetDependencies(base.Dependencies{
-		Tasks:          newLoggerTestTaskOwner(t),
-		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+		Tasks: newLoggerTestTaskOwner(t),
 		Metadata: mustMetadataView(t, map[string]any{
 			"log_format": map[string]any{"generation": 1},
 		}),
@@ -1386,14 +1320,14 @@ func TestMetadataDecodeFailsBeforeSLSProcessorAcquisition(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatalf("MaterializeSecrets() error = %v", err)
+	capabilityValue, scope, cleanup := testutil.ScopedSecretHarness(t, name, nil)
+	defer cleanup()
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
-	if p.TaskOwner() == nil {
-		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
-	}
+	t.Cleanup(p.Stop)
+
 	err := p.PostInit()
-	defer p.Stop()
 	if err == nil {
 		t.Fatal("PostInit() error = nil for invalid metadata")
 	}

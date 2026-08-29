@@ -31,9 +31,8 @@ type Plugin struct {
 	now          func() time.Time
 	secureCookie bool
 
-	secretMu  sync.RWMutex
-	key       *secret.Value
-	legacyKey *string
+	secretMu sync.RWMutex
+	key      *secret.Value
 }
 
 type admittedResponseContextKey struct{}
@@ -90,7 +89,7 @@ func (p *Plugin) Init() error {
 
 func (p *Plugin) PostInit() error {
 	p.secretMu.RLock()
-	prepared := p.key != nil || p.legacyKey != nil
+	prepared := p.key != nil
 	p.secretMu.RUnlock()
 	if !prepared {
 		return secret.ErrCredentialUnavailable
@@ -118,37 +117,6 @@ func (p *Plugin) PostInit() error {
 	return nil
 }
 
-// MaterializeSecrets is the transitional process-local compatibility path.
-// Scoped generation preparation uses MaterializeScopedSecrets instead.
-func (p *Plugin) MaterializeSecrets() error {
-	p.secretMu.Lock()
-	defer p.secretMu.Unlock()
-	if p.key != nil || p.legacyKey != nil {
-		return nil
-	}
-
-	resolver := p.DataEncryption()
-	if !resolver.Configured() {
-		return errors.New("data-encryption resolver is required")
-	}
-	resolved, err := resolver.ResolveForContext(p.config.Key, "csrf.key")
-	if err != nil {
-		return fmt.Errorf("csrf key: %w", secret.ErrCredentialUnavailable)
-	}
-	if err := validateCSRFKey(resolved); err != nil {
-		return err
-	}
-	digest := sha256.Sum256([]byte(resolved))
-	descriptor, err := secret.NewDescriptor(capability.SecretPluginConfig, digest)
-	if err != nil {
-		return fmt.Errorf("csrf key: %w", secret.ErrCredentialUnavailable)
-	}
-
-	p.config.Key = descriptor.String()
-	p.legacyKey = &resolved
-	return nil
-}
-
 // MaterializeScopedSecrets admits only the strict plugin-config key for this
 // immutable attempt. The public configuration retains only a descriptor; the
 // admitted value remains private and is used through Value.Use.
@@ -157,7 +125,7 @@ func (p *Plugin) MaterializeScopedSecrets(
 ) error {
 	p.secretMu.Lock()
 	defer p.secretMu.Unlock()
-	if p.key != nil || p.legacyKey != nil {
+	if p.key != nil {
 		return nil
 	}
 
@@ -345,9 +313,6 @@ func (p *Plugin) useKey(use func(string) error) error {
 	if p.key != nil {
 		return p.key.Use(use)
 	}
-	if p.legacyKey != nil {
-		return use(*p.legacyKey)
-	}
 	return secret.ErrCredentialUnavailable
 }
 
@@ -355,10 +320,6 @@ func (p *Plugin) Stop() {
 	p.secretMu.Lock()
 	defer p.secretMu.Unlock()
 	p.key = nil
-	if p.legacyKey != nil {
-		*p.legacyKey = ""
-		p.legacyKey = nil
-	}
 }
 
 func validateCSRFKey(value string) error {

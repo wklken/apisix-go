@@ -258,20 +258,6 @@ func (p *Plugin) MaterializeScopedSecrets(
 	return nil
 }
 
-// MaterializeSecrets is the transitional process-local compatibility path.
-// Immutable generation preparation uses MaterializeScopedSecrets instead.
-func (p *Plugin) MaterializeSecrets() error {
-	p.lifecycleMu.Lock()
-	defer p.lifecycleMu.Unlock()
-	if p.retired {
-		return secret.ErrCredentialUnavailable
-	}
-	if p.secretsPrepared {
-		return nil
-	}
-	return secret.ErrCredentialUnavailable
-}
-
 func validateCookieSecret(plaintext string) error {
 	if utf8.RuneCountInString(plaintext) < minCookieSecretLen {
 		return secret.ErrCredentialUnavailable

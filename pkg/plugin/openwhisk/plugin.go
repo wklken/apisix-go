@@ -227,20 +227,6 @@ func (p *Plugin) MaterializeScopedSecrets(
 	return nil
 }
 
-// MaterializeSecrets is the transitional process-local compatibility path.
-// Immutable generation preparation uses MaterializeScopedSecrets instead.
-func (p *Plugin) MaterializeSecrets() error {
-	p.lifecycleMu.Lock()
-	defer p.lifecycleMu.Unlock()
-	if p.retired {
-		return secret.ErrCredentialUnavailable
-	}
-	if p.serviceTokenSet {
-		return nil
-	}
-	return secret.ErrCredentialUnavailable
-}
-
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if apisixctx.GetRequestLifecycle(r) != nil {

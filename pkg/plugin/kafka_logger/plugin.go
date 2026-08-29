@@ -354,26 +354,6 @@ func (p *Plugin) MaterializeScopedSecrets(
 	return nil
 }
 
-// MaterializeSecrets is the transitional process-local compatibility path.
-// Immutable generation preparation uses MaterializeScopedSecrets instead.
-func (p *Plugin) MaterializeSecrets() error {
-	p.lifecycleMu.Lock()
-	defer p.lifecycleMu.Unlock()
-	if p.stopped.Load() {
-		return secret.ErrCredentialUnavailable
-	}
-	if p.secretsPrepared {
-		return nil
-	}
-	for index := range p.config.Brokers {
-		if p.config.Brokers[index].SASLConfig != nil {
-			return kafkaPasswordUnavailable()
-		}
-	}
-	p.secretsPrepared = true
-	return nil
-}
-
 func validateKafkaPassword(value string) error {
 	if strings.TrimSpace(value) == "" {
 		return secret.ErrCredentialUnavailable

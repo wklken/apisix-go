@@ -26,10 +26,8 @@ func TestCompositePostInitDoesNotOwnChildPreparation(t *testing.T) {
 		{
 			path: "multi_auth/plugin.go",
 			forbidden: map[string]struct{}{
-				"MaterializePluginSecrets": {},
-				"MaterializeSecrets":       {},
-				"Parse":                    {},
-				"newAuthPlugin":            {},
+				"Parse":         {},
+				"newAuthPlugin": {},
 			},
 		},
 	}

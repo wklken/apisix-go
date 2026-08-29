@@ -45,19 +45,6 @@ type oasSecretSnapshot struct {
 	headerNames   []string
 }
 
-// MaterializeSecrets is the transitional Store-backed preparation path.
-func (p *Plugin) MaterializeSecrets() error {
-	p.beginOASPreparation()
-	defer p.endOASPreparation()
-	if prepared, err := p.oasPreparationState(); err != nil || prepared {
-		return err
-	}
-	if p.config.Spec == "" && len(p.config.SpecURLRequestHeaders) == 0 {
-		return nil
-	}
-	return secret.ErrCredentialUnavailable
-}
-
 // MaterializeScopedSecrets resolves one attempt's optional inline document and
 // every request-header value through the exact terminal-container declaration.
 func (p *Plugin) MaterializeScopedSecrets(

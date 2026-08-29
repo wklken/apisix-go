@@ -499,38 +499,6 @@ func TestAWSLambdaStopRetiresScopedAndLegacyCredentialsFailClosed(t *testing.T) 
 	}
 }
 
-func TestAWSLambdaMaterializeSecretsFailsClosedAtomically(t *testing.T) {
-	const secretEnv = "AWS_LAMBDA_LEGACY_SECRET_RETRY"
-	t.Setenv(secretEnv, " \t")
-	p := &Plugin{config: Config{
-		FunctionURI: "http://lambda.invalid",
-		Authorization: &Authorization{
-			APIKey: "legacy-api",
-			IAM: &IAM{
-				AccessKey: "legacy-access",
-				SecretKey: "$ENV://" + secretEnv,
-			},
-		},
-	}}
-	original := cloneAuthorization(p.config.Authorization)
-	if err := p.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) ||
-		err.Error() != "credential unavailable" {
-		t.Fatalf("MaterializeSecrets() error = %v, want fixed credential unavailable", err)
-	}
-	if !authorizationsEqual(p.config.Authorization, original) || p.credentialsInstalledLocked() {
-		t.Fatalf("failed legacy materialization retained state: config=%#v plugin=%#v", p.config.Authorization, p)
-	}
-	if p.Client != nil {
-		t.Fatal("failed legacy materialization constructed upstream client")
-	}
-
-	t.Setenv(secretEnv, "legacy-secret")
-	if err := p.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) {
-		t.Fatalf("same-instance MaterializeSecrets() error = %v, want credential unavailable", err)
-	}
-	p.Stop()
-}
-
 func TestAWSLambdaCredentialAndSignatureDataAreAbsentFromSharedClientIdentity(t *testing.T) {
 	tests := []struct {
 		name      string

@@ -1,9 +1,13 @@
 package cas_auth
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/testutil"
 )
 
 // BenchmarkStaticConfigPath measures the per-request cas-auth session check
@@ -21,8 +25,10 @@ func BenchmarkStaticConfigPath(b *testing.B) {
 	if err := p.Init(); err != nil {
 		b.Fatalf("Init() error = %v", err)
 	}
-	if err := p.MaterializeSecrets(); err != nil {
-		b.Fatalf("MaterializeSecrets() error = %v", err)
+	capabilityValue, scope, closeAttempt := testutil.ScopedSecretHarness(b, name, nil)
+	b.Cleanup(closeAttempt)
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		b.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
 		b.Fatalf("PostInit() error = %v", err)

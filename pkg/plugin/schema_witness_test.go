@@ -126,8 +126,7 @@ func TestSchemaWitnessRegisteredInitMethodsAvoidRuntimeDependencies(t *testing.T
 	forbidden := map[string]struct{}{
 		"StaticConfig": {}, "DataEncryption": {}, "ScopedSecrets": {},
 		"MetadataView": {}, "ConsumerLookup": {}, "TaskRegistry": {}, "CompositeChildPreparer": {},
-		"PostInit": {}, "Handler": {}, "MaterializeSecrets": {},
-		"MaterializeScopedSecrets": {}, "MaterializePluginSecrets": {},
+		"PostInit": {}, "Handler": {}, "MaterializeScopedSecrets": {},
 		"MaterializeScopedPluginSecrets": {}, "NewTaskRegistry": {},
 		"NewResourceRegistry": {}, "Acquire": {}, "Go": {},
 	}
@@ -210,10 +209,6 @@ func (*schemaWitnessSentinel) GetName() string  { return "schema-sentinel" }
 
 func (*schemaWitnessSentinel) SetDependencies(base.Dependencies) {
 	panic("SetDependencies called by schema witness")
-}
-
-func (*schemaWitnessSentinel) MaterializeSecrets() error {
-	panic("legacy materializer called by schema witness")
 }
 
 func (*schemaWitnessSentinel) MaterializeScopedSecrets(context.Context, base.ScopedSecretAccess) error {

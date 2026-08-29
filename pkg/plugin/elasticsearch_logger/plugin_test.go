@@ -3,8 +3,6 @@ package elasticsearch_logger
 import (
 	"bytes"
 	"context"
-	"crypto/aes"
-	"crypto/cipher"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -696,10 +694,23 @@ func (transport *retainingElasticsearchRoundTripper) RoundTrip(
 
 func TestElasticsearchCredentialTransportClearsRetainedAuthorization(t *testing.T) {
 	retained := &retainingElasticsearchRoundTripper{}
-	authorization := "Bearer private-token"
-	owner := &Plugin{
-		config:              Config{Headers: map[string]string{"Authorization": "descriptor"}},
-		legacyAuthorization: &authorization,
+	const rawAuthorization = "$ENV://ES_TRANSPORT_AUTHORIZATION"
+	capabilityValue, scope, _, closeAttempt := newElasticsearchScopedSecretHarness(
+		t,
+		42,
+		"es-transport",
+		map[string]any{"headers": map[string]string{"Authorization": rawAuthorization}},
+		map[string]string{rawAuthorization: "Bearer private-token"},
+	)
+	defer closeAttempt()
+	owner := &Plugin{config: Config{Headers: map[string]string{"Authorization": rawAuthorization}}}
+	if err := owner.Init(); err != nil {
+		t.Fatal(err)
+	}
+	if err := base.MaterializeScopedPluginSecrets(
+		context.Background(), scope, capabilityValue, owner,
+	); err != nil {
+		t.Fatal(err)
 	}
 	credentials := &elasticsearchCredentialTransport{
 		owner: owner, transport: retained, override: true,
@@ -754,99 +765,6 @@ func TestElasticsearchCredentialTransportClearsRetainedAuthorization(t *testing.
 	credentials.destroy()
 	if credentials.owner != nil || credentials.transport != nil {
 		t.Fatal("destroy retained credential transport state")
-	}
-}
-
-func TestStopDrainsActiveElasticsearchSendAndPreventsResurrection(t *testing.T) {
-	started := make(chan struct{})
-	release := make(chan struct{})
-	var releaseOnce sync.Once
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("X-Elastic-Product", "Elasticsearch")
-		if r.URL.Path == "/" {
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"version":{"number":"8.11.0"}}`))
-			return
-		}
-		close(started)
-		<-release
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"errors":false}`))
-	}))
-	t.Cleanup(func() {
-		releaseOnce.Do(func() { close(release) })
-		server.Close()
-	})
-	p := newTestPlugin(t, Config{
-		EndpointAddrs: []string{server.URL}, Field: FieldConfig{Index: "logs"},
-		Auth: &AuthConfig{Username: "elastic", Password: "private-password"}, BatchMaxSize: 1,
-	})
-	stopAttempted := make(chan struct{})
-	var stopAttemptOnce sync.Once
-	p.stopBeforeLock = func() { stopAttemptOnce.Do(func() { close(stopAttempted) }) }
-	activeResult := make(chan error, 1)
-	go func() {
-		_, err := p.SendBatch(context.Background(), []map[string]any{{"active": true}}, 1)
-		activeResult <- err
-	}()
-	select {
-	case <-started:
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for active Elasticsearch send")
-	}
-
-	stopDone := make(chan struct{})
-	go func() {
-		p.Stop()
-		close(stopDone)
-	}()
-	select {
-	case <-stopAttempted:
-	case <-time.After(time.Second):
-		t.Fatal("Stop did not reach the scheduler seal barrier")
-	}
-	select {
-	case <-stopDone:
-	case <-time.After(time.Second):
-		t.Fatal("Stop blocked on active credential use before sealing the scheduler")
-	}
-	processor := p.BatchProcessor
-	p.clientMu.Lock()
-	clientsRetained := len(p.clients) > 0
-	p.clientMu.Unlock()
-	if !clientsRetained {
-		t.Fatal("Stop released the active client before credential use drained")
-	}
-
-	releaseOnce.Do(func() { close(release) })
-	select {
-	case err := <-activeResult:
-		if err != nil {
-			t.Fatalf("active send error = %v", err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("active send did not finish")
-	}
-	if err := processor.Shutdown(context.Background()); err != nil {
-		t.Fatalf("batch Shutdown() error = %v", err)
-	}
-	if len(p.clients) != 0 || p.password != nil || p.legacyPassword != nil ||
-		p.authorization != nil || p.legacyAuthorization != nil {
-		t.Fatal("Stop retained client or credential state")
-	}
-	p.Stop()
-	if _, err := p.SendBatch(
-		context.Background(),
-		[]map[string]any{{"late": true}},
-		1,
-	); !errors.Is(
-		err,
-		secret.ErrCredentialUnavailable,
-	) {
-		t.Fatalf("post-Stop send error = %v, want credential unavailable", err)
-	}
-	if err := p.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) {
-		t.Fatalf("post-Stop materialization error = %v, want no resurrection", err)
 	}
 }
 
@@ -950,120 +868,83 @@ func TestStopDrainsActiveScopedElasticsearchSend(t *testing.T) {
 }
 
 func TestPostInitCannotPublishBatchProcessorAfterStop(t *testing.T) {
-	tests := []struct {
-		name    string
-		prepare func(*testing.T, *Plugin) func()
-	}{
-		{
-			name: "legacy",
-			prepare: func(t *testing.T, p *Plugin) func() {
-				t.Helper()
-				p.SetDependencies(base.Dependencies{
-					Tasks:          newLoggerTestTaskOwner(t),
-					DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
-				})
-				if err := p.MaterializeSecrets(); err != nil {
-					t.Fatalf("MaterializeSecrets() error = %v", err)
-				}
-				return func() {}
+	const rawPassword = "$secret://vault/es-post-init-stop"
+	p := &Plugin{config: Config{
+		EndpointAddrs: []string{"http://127.0.0.1:9200"},
+		Field:         FieldConfig{Index: "logs"},
+		LogFormat:     map[string]string{"request_id": "$request_id"},
+		Auth:          &AuthConfig{Username: "elastic", Password: rawPassword},
+	}}
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
+	capabilityValue, scope, _, closeAttempt := newElasticsearchScopedSecretHarness(
+		t,
+		42,
+		"es-post-init-stop",
+		map[string]any{
+			"endpoint_addrs": []string{"http://127.0.0.1:9200"},
+			"field":          map[string]any{"index": "logs"},
+			"log_format":     map[string]any{"request_id": "$request_id"},
+			"auth": map[string]any{
+				"username": "elastic", "password": rawPassword,
 			},
 		},
-		{
-			name: "scoped",
-			prepare: func(t *testing.T, p *Plugin) func() {
-				t.Helper()
-				const rawPassword = "$secret://vault/es-post-init-stop"
-				raw := map[string]any{
-					"endpoint_addrs": []string{"http://127.0.0.1:9200"},
-					"field":          map[string]any{"index": "logs"},
-					"log_format":     map[string]any{"request_id": "$request_id"},
-					"auth": map[string]any{
-						"username": "elastic", "password": rawPassword,
-					},
-				}
-				capabilityValue, scope, _, closeAttempt := newElasticsearchScopedSecretHarness(
-					t, 42, "es-post-init-stop", raw,
-					map[string]string{rawPassword: "scoped-post-init-password"},
-				)
-				if err := base.MaterializeScopedPluginSecrets(
-					context.Background(), scope, capabilityValue, p,
-				); err != nil {
-					closeAttempt()
-					t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
-				}
-				return closeAttempt
-			},
-		},
+		map[string]string{rawPassword: "scoped-post-init-password"},
+	)
+	defer closeAttempt()
+	if err := base.MaterializeScopedPluginSecrets(
+		context.Background(), scope, capabilityValue, p,
+	); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			p := &Plugin{config: Config{
-				EndpointAddrs: []string{"http://127.0.0.1:9200"},
-				Field:         FieldConfig{Index: "logs"},
-				LogFormat:     map[string]string{"request_id": "$request_id"},
-				Auth: &AuthConfig{
-					Username: "elastic", Password: "legacy-post-init-password",
-				},
-			}}
-			if tt.name == "scoped" {
-				p.config.Auth.Password = "$secret://vault/es-post-init-stop"
-			}
-			if err := p.Init(); err != nil {
-				t.Fatal(err)
-			}
-			p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
-			closeAttempt := tt.prepare(t, p)
-			defer closeAttempt()
+	atPublishBarrier := make(chan struct{})
+	releasePostInit := make(chan struct{})
+	var candidate *logger_batch.Processor
+	p.postInitBeforePublish = func(processor *logger_batch.Processor) {
+		candidate = processor
+		close(atPublishBarrier)
+		<-releasePostInit
+	}
+	postInitResult := make(chan error, 1)
+	go func() { postInitResult <- p.PostInit() }()
+	select {
+	case <-atPublishBarrier:
+	case <-time.After(time.Second):
+		t.Fatal("PostInit did not reach the batch publication barrier")
+	}
 
-			atPublishBarrier := make(chan struct{})
-			releasePostInit := make(chan struct{})
-			var candidate *logger_batch.Processor
-			p.postInitBeforePublish = func(processor *logger_batch.Processor) {
-				candidate = processor
-				close(atPublishBarrier)
-				<-releasePostInit
-			}
-			postInitResult := make(chan error, 1)
-			go func() { postInitResult <- p.PostInit() }()
-			select {
-			case <-atPublishBarrier:
-			case <-time.After(time.Second):
-				t.Fatal("PostInit did not reach the batch publication barrier")
-			}
-
-			stopDone := make(chan struct{})
-			go func() {
-				p.Stop()
-				close(stopDone)
-			}()
-			select {
-			case <-stopDone:
-			case <-time.After(time.Second):
-				t.Fatal("Stop did not finish while PostInit was paused before publication")
-			}
-			close(releasePostInit)
-			select {
-			case err := <-postInitResult:
-				if !errors.Is(err, secret.ErrCredentialUnavailable) {
-					t.Fatalf("PostInit() after Stop error = %v, want credential unavailable", err)
-				}
-			case <-time.After(time.Second):
-				t.Fatal("PostInit did not return after publication barrier was released")
-			}
-			if p.BatchProcessor != nil {
-				t.Fatal("PostInit published a batch processor after Stop")
-			}
-			if candidate == nil || candidate.Push(map[string]any{"late": true}) {
-				t.Fatal("PostInit left the unpublished batch processor alive after Stop")
-			}
-			p.Stop()
-			if !p.stopped.Load() || p.BatchProcessor != nil || len(p.clients) != 0 ||
-				p.password != nil || p.legacyPassword != nil ||
-				p.authorization != nil || p.legacyAuthorization != nil {
-				t.Fatal("repeated Stop left Elasticsearch generation state")
-			}
-		})
+	stopDone := make(chan struct{})
+	go func() {
+		p.Stop()
+		close(stopDone)
+	}()
+	select {
+	case <-stopDone:
+	case <-time.After(time.Second):
+		t.Fatal("Stop did not finish while PostInit was paused before publication")
+	}
+	close(releasePostInit)
+	select {
+	case err := <-postInitResult:
+		if !errors.Is(err, secret.ErrCredentialUnavailable) {
+			t.Fatalf("PostInit() after Stop error = %v, want credential unavailable", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("PostInit did not return after publication barrier was released")
+	}
+	if p.BatchProcessor != nil {
+		t.Fatal("PostInit published a batch processor after Stop")
+	}
+	if candidate == nil || candidate.Push(map[string]any{"late": true}) {
+		t.Fatal("PostInit left the unpublished batch processor alive after Stop")
+	}
+	p.Stop()
+	if !p.stopped.Load() || p.BatchProcessor != nil || len(p.clients) != 0 ||
+		p.password != nil || p.authorization != nil {
+		t.Fatal("repeated Stop left Elasticsearch generation state")
 	}
 }
 
@@ -1115,12 +996,28 @@ func TestNewElasticsearchClientUsesOfficialBulkTransport(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	sslVerify := true
+	const rawPassword = "$ENV://ES_OFFICIAL_TRANSPORT_PASSWORD"
 	p := &Plugin{config: Config{
-		Auth: &AuthConfig{Username: username}, Headers: map[string]string{"X-Cluster": "logs"},
+		Auth:    &AuthConfig{Username: username, Password: rawPassword},
+		Headers: map[string]string{"X-Cluster": "logs"},
 		Timeout: 10, SslVerify: &sslVerify,
 	}}
-	ownedPassword := password
-	p.legacyPassword = &ownedPassword
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	capabilityValue, scope, _, closeAttempt := newElasticsearchScopedSecretHarness(
+		t,
+		43,
+		"es-official-transport",
+		map[string]any{"auth": map[string]any{"username": username, "password": rawPassword}},
+		map[string]string{rawPassword: password},
+	)
+	defer closeAttempt()
+	if err := base.MaterializeScopedPluginSecrets(
+		context.Background(), scope, capabilityValue, p,
+	); err != nil {
+		t.Fatal(err)
+	}
 	client, credentials, release, err := p.newPluginOwnedClient(server.URL)
 	if err != nil {
 		t.Fatalf("newPluginOwnedClient() error = %v", err)
@@ -1262,8 +1159,10 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatalf("MaterializeSecrets() error = %v", err)
+	capabilityValue, scope, closeAttempt := testutil.ScopedSecretHarness(t, name, nil)
+	t.Cleanup(closeAttempt)
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if p.TaskOwner() == nil {
 		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
@@ -1272,14 +1171,6 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 		t.Fatalf("PostInit() error = %v", err)
 	}
 	return p
-}
-
-func TestPostInitRejectsMissingDataEncryptionResolver(t *testing.T) {
-	p := &Plugin{config: Config{Auth: &AuthConfig{Username: "elastic", Password: "private"}}}
-	if err := p.MaterializeSecrets(); err == nil ||
-		err.Error() != "data-encryption resolver is required" {
-		t.Fatalf("MaterializeSecrets() error = %v, want missing resolver error", err)
-	}
 }
 
 func TestEffectiveLogFormatRouteWins(t *testing.T) {
@@ -1468,57 +1359,6 @@ func TestPostInitDefaultsWithoutMetadataStore(t *testing.T) {
 	if p.config.BatchMaxSize != 1000 {
 		t.Fatalf("batch_max_size = %d, want 1000", p.config.BatchMaxSize)
 	}
-}
-
-func TestPostInitRejectsInvalidEncryptedAuthPassword(t *testing.T) {
-	p := &Plugin{config: Config{
-		EndpointAddrs: []string{"http://127.0.0.1:9200"},
-		Field:         FieldConfig{Index: "apisix"},
-		Auth:          &AuthConfig{Username: "elastic", Password: "not-a-ciphertext"},
-	}}
-	p.SetDependencies(base.Dependencies{
-		Tasks: newLoggerTestTaskOwner(t),
-		DataEncryption: testutil.DataEncryptionService(true, []string{"qeddd145sfvddff3"}).
-			Resolver(),
-	})
-	if err := p.Init(); err != nil {
-		t.Fatalf("Init() error = %v", err)
-	}
-	if err := p.MaterializeSecrets(); err == nil {
-		t.Fatal("MaterializeSecrets() error = nil, want strict encrypted auth.password rejection")
-	}
-}
-
-func TestPostInitResolvesRotatedEncryptedAuthPassword(t *testing.T) {
-	oldKey := "old-keyring-item"
-	newKey := "qeddd145sfvddff3"
-	p := &Plugin{config: Config{
-		EndpointAddrs: []string{"http://127.0.0.1:9200"},
-		Field:         FieldConfig{Index: "apisix"},
-		LogFormat:     map[string]string{"request_id": "$request_id"},
-		Auth: &AuthConfig{
-			Username: "elastic",
-			Password: encryptElasticsearchTestValue(t, oldKey, "elasticsearch-secret"),
-		},
-	}}
-	p.SetDependencies(base.Dependencies{
-		Tasks:          newLoggerTestTaskOwner(t),
-		DataEncryption: testutil.DataEncryptionService(true, []string{newKey, oldKey}).Resolver(),
-	})
-	if err := p.Init(); err != nil {
-		t.Fatalf("Init() error = %v", err)
-	}
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatalf("MaterializeSecrets() error = %v", err)
-	}
-	if p.TaskOwner() == nil {
-		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
-	}
-	if err := p.PostInit(); err != nil {
-		t.Fatalf("PostInit() error = %v", err)
-	}
-	t.Cleanup(func() { p.BatchProcessor.Stop() })
-	assertElasticsearchDescriptorFor(t, p.config.Auth.Password, "elasticsearch-secret")
 }
 
 func TestSendWritesBulkNDJSONWithHeadersAndAuth(t *testing.T) {
@@ -2258,22 +2098,6 @@ func TestResolveIndexTimeVarsMatchesAPISIX317(t *testing.T) {
 			t.Errorf("replaceIndexTimeVars(%q) = %q, want match %q", test.format, got, test.pattern)
 		}
 	}
-}
-
-func encryptElasticsearchTestValue(t *testing.T, key string, value string) string {
-	t.Helper()
-	padding := aes.BlockSize - len(value)%aes.BlockSize
-	padded := append([]byte(value), make([]byte, padding)...)
-	for i := len(padded) - padding; i < len(padded); i++ {
-		padded[i] = byte(padding)
-	}
-	block, err := aes.NewCipher([]byte(key))
-	if err != nil {
-		t.Fatalf("NewCipher() error = %v", err)
-	}
-	ciphertext := make([]byte, len(padded))
-	cipher.NewCBCEncrypter(block, []byte(key)).CryptBlocks(ciphertext, padded)
-	return base64.StdEncoding.EncodeToString(ciphertext)
 }
 
 func extractBulkDocument(t *testing.T, body string) map[string]any {

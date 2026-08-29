@@ -343,34 +343,6 @@ func (p *Other) prepare() error {
 	}
 }
 
-func TestScopedLegacyResolutionGuardAllowsSeparateLegacyMethod(t *testing.T) {
-	const source = `package fixture
-type Plugin struct{}
-type Resolver struct{}
-func (Resolver) ResolveForContext(string, string) (string, error) { return "", nil }
-func (p *Plugin) DataEncryption() Resolver { return Resolver{} }
-func (p *Plugin) MaterializeScopedSecrets() error { return nil }
-func (p *Plugin) MaterializeSecrets() error {
-	resolver := p.DataEncryption()
-	_, err := resolver.ResolveForContext("", "")
-	return err
-}`
-	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, "fixture.go", source, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	materializers, violations, err := scopedLegacyResolutionViolations(
-		fset, "fixture", map[string]*ast.File{"fixture.go": file},
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if materializers != 1 || len(violations) != 0 {
-		t.Fatalf("guard result = %d/%v, want one clean scoped materializer", materializers, violations)
-	}
-}
-
 func scopedLegacyResolutionViolations(
 	fset *token.FileSet,
 	packagePath string,
@@ -609,7 +581,7 @@ func secretGuardForbiddenName(name string) bool {
 	switch name {
 	case "DataEncryption", "DecryptPluginConfigWithResolver", "Environ", "ExpandEnv", "Getenv",
 		"GetPluginMetadata", "GetPluginMetadataRaw", "GetValidatedPluginMetadata", "LookupEnv",
-		"MaterializePluginSecrets", "MaterializeSecret", "MaterializeSecrets", "Resolve",
+		"MaterializeSecret", "Resolve",
 		"ResolveDeclared", "ResolveForContext", "ResolveScoped", "ResolveSecretReference":
 		return true
 	default:

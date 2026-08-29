@@ -19,20 +19,9 @@ type Plugin interface {
 	GetName() string
 }
 
-// SecretMaterializer resolves generation-owned credentials after schema
-// decoding and before PostInit. Implementations must retain only redacted
-// descriptors in their public config.
-type SecretMaterializer = base.SecretMaterializer
-
 type ScopedSecretAccess = base.ScopedSecretAccess
 
 type ScopedSecretMaterializer = base.ScopedSecretMaterializer
-
-// MaterializePluginSecrets rejects unresolved references from plugins that do
-// not declare SecretMaterializer ownership before PostInit.
-func MaterializePluginSecrets(p Plugin) error {
-	return base.MaterializePluginSecrets(p)
-}
 
 func MaterializeScopedPluginSecrets(
 	ctx context.Context,

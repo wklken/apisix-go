@@ -48,9 +48,7 @@ type Plugin struct {
 	startupWarningsSent bool
 
 	clickhousePassword         *secret.Value
-	clickhousePasswordLegacy   *string
 	kafkaPasswords             []indexedSecret
-	kafkaPasswordsLegacy       []indexedLegacySecret
 	metadataClickhousePassword *metadataSecret
 	metadataKafkaPasswords     []indexedMetadataSecret
 	metadataSelected           bool
@@ -256,11 +254,6 @@ type indexedSecret struct {
 	value secret.Value
 }
 
-type indexedLegacySecret struct {
-	index int
-	value string
-}
-
 type metadataSecret struct {
 	plaintext  string
 	descriptor secret.Descriptor
@@ -458,80 +451,6 @@ func newMetadataSecret(plaintext string) (metadataSecret, error) {
 	return metadataSecret{plaintext: plaintext, descriptor: descriptor}, nil
 }
 
-// MaterializeSecrets is the transitional Builder path. It is deliberately
-// separate from MaterializeScopedSecrets so a legacy process-global resolver
-// cannot become the scoped attempt's authority by accident.
-func (p *Plugin) MaterializeSecrets() error {
-	if p.secretsMaterialized {
-		return nil
-	}
-	resolver := p.DataEncryption()
-	if !resolver.Configured() {
-		return fmt.Errorf("%s: %w", name, secret.ErrCredentialUnavailable)
-	}
-
-	var clickhousePassword *string
-	var clickhouseDescriptor string
-	if p.config.Clickhouse != nil {
-		resolved, err := resolver.ResolveForContext(
-			p.config.Clickhouse.Password,
-			"error-log-logger.clickhouse.password",
-		)
-		if err != nil {
-			return fmt.Errorf("%s clickhouse.password: %w", name, secret.ErrCredentialUnavailable)
-		}
-		descriptor, err := descriptorForLegacySecret(resolved)
-		if err != nil {
-			return fmt.Errorf("%s clickhouse.password: %w", name, secret.ErrCredentialUnavailable)
-		}
-		clickhousePassword = &resolved
-		clickhouseDescriptor = descriptor.String()
-	}
-
-	legacyKafkaPasswords := make([]indexedLegacySecret, 0)
-	kafkaDescriptors := make([]struct {
-		index      int
-		descriptor string
-	}, 0)
-	if p.config.Kafka != nil {
-		for i := range p.config.Kafka.Brokers {
-			config := p.config.Kafka.Brokers[i].SASLConfig
-			if config == nil {
-				continue
-			}
-			resolved, err := resolver.ResolveForContext(
-				config.Password,
-				"error-log-logger.kafka.brokers.*.sasl_config.password",
-			)
-			if err != nil {
-				return fmt.Errorf("%s kafka.brokers.*.sasl_config.password: %w", name, secret.ErrCredentialUnavailable)
-			}
-			descriptor, err := descriptorForLegacySecret(resolved)
-			if err != nil {
-				return fmt.Errorf("%s kafka.brokers.*.sasl_config.password: %w", name, secret.ErrCredentialUnavailable)
-			}
-			legacyKafkaPasswords = append(legacyKafkaPasswords, indexedLegacySecret{index: i, value: resolved})
-			kafkaDescriptors = append(kafkaDescriptors, struct {
-				index      int
-				descriptor string
-			}{index: i, descriptor: descriptor.String()})
-		}
-	}
-
-	if p.config.Clickhouse != nil {
-		p.config.Clickhouse.Password = clickhouseDescriptor
-	}
-	if p.config.Kafka != nil {
-		for _, item := range kafkaDescriptors {
-			p.config.Kafka.Brokers[item.index].SASLConfig.Password = item.descriptor
-		}
-	}
-	p.clickhousePasswordLegacy = clickhousePassword
-	p.kafkaPasswordsLegacy = legacyKafkaPasswords
-	p.secretsMaterialized = true
-	return nil
-}
-
 // MaterializeScopedSecrets admits only plugin-config declarations. Metadata
 // declarations intentionally remain owned by the later M2 lifecycle work.
 func (p *Plugin) MaterializeScopedSecrets(ctx context.Context, access base.ScopedSecretAccess) error {
@@ -600,11 +519,6 @@ func (p *Plugin) MaterializeScopedSecrets(ctx context.Context, access base.Scope
 	p.kafkaPasswords = kafkaPasswords
 	p.secretsMaterialized = true
 	return nil
-}
-
-func descriptorForLegacySecret(value string) (secret.Descriptor, error) {
-	digest := sha256.Sum256([]byte(value))
-	return secret.NewDescriptor(capability.SecretPluginConfig, digest)
 }
 
 func (p *Plugin) Config() any {
@@ -716,9 +630,7 @@ func (p *Plugin) Stop() {
 				p.kafkaSender = nil
 			}
 			p.clickhousePassword = nil
-			p.clickhousePasswordLegacy = nil
 			p.kafkaPasswords = nil
-			p.kafkaPasswordsLegacy = nil
 			p.metadataClickhousePassword = nil
 			p.metadataKafkaPasswords = nil
 		}
@@ -1004,9 +916,6 @@ func (p *Plugin) useClickHousePassword(use func(string) error) error {
 	if p.clickhousePassword != nil {
 		return p.clickhousePassword.Use(use)
 	}
-	if p.clickhousePasswordLegacy != nil {
-		return use(*p.clickhousePasswordLegacy)
-	}
 	if p.metadataClickhousePassword != nil {
 		return use(p.metadataClickhousePassword.plaintext)
 	}
@@ -1074,7 +983,6 @@ func (p *Plugin) newKafkaWriter() (*kafka.Writer, error) {
 	if config == nil {
 		return nil, secret.ErrCredentialUnavailable
 	}
-	p.installLegacyKafkaPasswords(config)
 	p.installMetadataKafkaPasswords(config)
 	var writer *kafka.Writer
 	err := p.withScopedKafkaPasswords(config, 0, func() error {
@@ -1083,14 +991,6 @@ func (p *Plugin) newKafkaWriter() (*kafka.Writer, error) {
 		return err
 	})
 	return writer, err
-}
-
-func (p *Plugin) installLegacyKafkaPasswords(config *KafkaConfig) {
-	for _, item := range p.kafkaPasswordsLegacy {
-		if item.index >= 0 && item.index < len(config.Brokers) && config.Brokers[item.index].SASLConfig != nil {
-			config.Brokers[item.index].SASLConfig.Password = item.value
-		}
-	}
 }
 
 func (p *Plugin) installMetadataKafkaPasswords(config *KafkaConfig) {
@@ -1109,7 +1009,6 @@ func (p *Plugin) withScopedKafkaPasswords(
 	if index == len(p.kafkaPasswords) {
 		if err := validateKafkaPasswordCoverage(
 			config,
-			p.kafkaPasswordsLegacy,
 			p.kafkaPasswords,
 			p.metadataKafkaPasswords,
 		); err != nil {
@@ -1130,16 +1029,10 @@ func (p *Plugin) withScopedKafkaPasswords(
 
 func validateKafkaPasswordCoverage(
 	config *KafkaConfig,
-	legacy []indexedLegacySecret,
 	scoped []indexedSecret,
 	metadata []indexedMetadataSecret,
 ) error {
-	installed := make(map[int]struct{}, len(legacy)+len(scoped)+len(metadata))
-	for _, item := range legacy {
-		if item.index >= 0 && item.index < len(config.Brokers) && config.Brokers[item.index].SASLConfig != nil {
-			installed[item.index] = struct{}{}
-		}
-	}
+	installed := make(map[int]struct{}, len(scoped)+len(metadata))
 	for _, item := range scoped {
 		if item.index >= 0 && item.index < len(config.Brokers) && config.Brokers[item.index].SASLConfig != nil {
 			installed[item.index] = struct{}{}

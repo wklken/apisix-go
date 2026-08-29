@@ -490,66 +490,6 @@ func (p *Plugin) PostInit() error {
 	return nil
 }
 
-// MaterializeSecrets is the transitional Builder path. It uses the
-// process-local resolver only before the immutable generation path replaces
-// it; the resolved strings never remain in Config.
-func (p *Plugin) MaterializeSecrets() error {
-	p.secretMu.Lock()
-	defer p.secretMu.Unlock()
-	if p.secretsMaterialized {
-		return nil
-	}
-	needRedis, needSentinel := p.secretFieldsForPolicy()
-	if !needRedis && !needSentinel {
-		p.config.RedisPassword = ""
-		p.config.SentinelPassword = ""
-		p.secretsMaterialized = true
-		return nil
-	}
-	resolver := p.DataEncryption()
-	if !resolver.Configured() {
-		return errors.New("data-encryption resolver is required")
-	}
-
-	var (
-		redisPassword      *string
-		sentinelPassword   *string
-		redisDescriptor    string
-		sentinelDescriptor string
-	)
-	if needRedis && p.config.RedisPassword != "" {
-		resolved, err := p.resolveLegacySecret(resolver, "redis_password", p.config.RedisPassword)
-		if err != nil {
-			return err
-		}
-		redisPassword = &resolved.value
-		redisDescriptor = resolved.descriptor
-	}
-	if needSentinel && p.config.SentinelPassword != "" {
-		resolved, err := p.resolveLegacySecret(resolver, "sentinel_password", p.config.SentinelPassword)
-		if err != nil {
-			return err
-		}
-		sentinelPassword = &resolved.value
-		sentinelDescriptor = resolved.descriptor
-	}
-
-	if !needRedis {
-		p.config.RedisPassword = ""
-	} else if redisPassword != nil {
-		p.config.RedisPassword = redisDescriptor
-	}
-	if !needSentinel {
-		p.config.SentinelPassword = ""
-	} else if sentinelPassword != nil {
-		p.config.SentinelPassword = sentinelDescriptor
-	}
-	p.redisPasswordLegacy = redisPassword
-	p.sentinelPasswordLegacy = sentinelPassword
-	p.secretsMaterialized = true
-	return nil
-}
-
 // MaterializeScopedSecrets admits only fields declared for this plugin's
 // immutable attempt. It retains opaque values privately and publishes only
 // redacted descriptors in Config.
@@ -614,28 +554,6 @@ func (p *Plugin) MaterializeScopedSecrets(
 	p.sentinelPassword = sentinelPassword
 	p.secretsMaterialized = true
 	return nil
-}
-
-type legacySecret struct {
-	value      string
-	descriptor string
-}
-
-func (p *Plugin) resolveLegacySecret(
-	resolver interface {
-		ResolveForContext(string, string) (string, error)
-	}, field, raw string,
-) (legacySecret, error) {
-	value, err := resolver.ResolveForContext(raw, name+"."+field)
-	if err != nil {
-		return legacySecret{}, fmt.Errorf("%s %s: %w", name, field, secret.ErrCredentialUnavailable)
-	}
-	digest := sha256.Sum256([]byte(value))
-	descriptor, err := secret.NewDescriptor(capability.SecretPluginConfig, digest)
-	if err != nil {
-		return legacySecret{}, fmt.Errorf("%s %s: %w", name, field, secret.ErrCredentialUnavailable)
-	}
-	return legacySecret{value: value, descriptor: descriptor.String()}, nil
 }
 
 func (p *Plugin) secretFieldsForPolicy() (bool, bool) {

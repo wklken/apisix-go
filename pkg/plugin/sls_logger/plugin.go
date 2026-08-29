@@ -2,9 +2,7 @@ package sls_logger
 
 import (
 	"context"
-	"crypto/sha256"
 	"crypto/tls"
-	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -36,7 +34,6 @@ type Plugin struct {
 	secretsPrepared bool
 	ready           bool
 	accessKeySecret *secret.Value
-	legacySecret    *string
 
 	addr string
 
@@ -235,40 +232,6 @@ func (p *Plugin) MaterializeScopedSecrets(
 	}
 	p.config.AccessKeySecret = descriptor.String()
 	p.accessKeySecret = &value
-	p.secretsPrepared = true
-	return nil
-}
-
-// MaterializeSecrets is the transitional process-local compatibility path.
-// Immutable generation preparation uses MaterializeScopedSecrets instead.
-func (p *Plugin) MaterializeSecrets() error {
-	p.lifecycleMu.Lock()
-	defer p.lifecycleMu.Unlock()
-	if p.stopped.Load() {
-		return secret.ErrCredentialUnavailable
-	}
-	if p.secretsPrepared {
-		return nil
-	}
-	if !p.DataEncryption().Configured() {
-		return errors.New("data-encryption resolver is required")
-	}
-	resolved, err := p.DataEncryption().ResolveForContext(
-		p.config.AccessKeySecret,
-		name+".access_key_secret",
-	)
-	if err != nil || validateSLSAccessKeySecret(resolved) != nil {
-		return slsAccessKeySecretUnavailable()
-	}
-	plaintext := []byte(resolved)
-	digest := sha256.Sum256(plaintext)
-	clear(plaintext)
-	descriptor, err := secret.NewDescriptor(capability.SecretPluginConfig, digest)
-	if err != nil {
-		return slsAccessKeySecretUnavailable()
-	}
-	p.config.AccessKeySecret = descriptor.String()
-	p.legacySecret = &resolved
 	p.secretsPrepared = true
 	return nil
 }
@@ -563,10 +526,6 @@ func (p *Plugin) Stop() {
 			p.secretsPrepared = false
 			p.ready = false
 			p.accessKeySecret = nil
-			if p.legacySecret != nil {
-				*p.legacySecret = ""
-				p.legacySecret = nil
-			}
 		}
 		if processor != nil {
 			processor.StopWithCleanup(cleanup)
@@ -709,9 +668,6 @@ func (p *Plugin) useAccessKeySecret(use func(string) error) error {
 	}
 	if p.accessKeySecret != nil {
 		return p.accessKeySecret.Use(use)
-	}
-	if p.legacySecret != nil {
-		return use(*p.legacySecret)
 	}
 	return secret.ErrCredentialUnavailable
 }

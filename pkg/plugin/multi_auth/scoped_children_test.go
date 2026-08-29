@@ -209,11 +209,60 @@ func TestMaterializeScopedSecretsUsesDeterministicPositions(t *testing.T) {
 	if len(p.auths) != 3 {
 		t.Fatalf("published auths = %d, want 3", len(p.auths))
 	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v, want all plugins in an entry to be accepted", err)
+	}
 	p.Stop()
 	p.Stop()
 	wantClosed := []string{wantPositions[2], wantPositions[1], wantPositions[0]}
 	if !reflect.DeepEqual(closed, wantClosed) {
 		t.Fatalf("Close() order = %#v, want %#v", closed, wantClosed)
+	}
+}
+
+func TestValidatePreMaterializationRejectsDisabledAndUnsupportedAuthPlugins(t *testing.T) {
+	tests := []struct {
+		name    string
+		plugins []AuthPluginConfig
+		enabled func(string) bool
+		want    string
+	}{
+		{
+			name: "disabled",
+			plugins: []AuthPluginConfig{
+				{"unknown-auth": {}},
+				{"key-auth": {}},
+			},
+			enabled: func(name string) bool { return name != "unknown-auth" },
+			want:    "disabled",
+		},
+		{
+			name: "unsupported",
+			plugins: []AuthPluginConfig{
+				{"key-auth": {}},
+				{"unknown-auth": {}},
+			},
+			enabled: func(string) bool { return true },
+			want:    "unknown-auth",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			p := &Plugin{config: Config{AuthPlugins: test.plugins}}
+			if err := p.Init(); err != nil {
+				t.Fatalf("Init() error = %v", err)
+			}
+			p.SetPluginEnabledChecker(test.enabled)
+
+			err := p.ValidatePreMaterialization()
+			if err == nil || !strings.Contains(err.Error(), "unknown-auth") ||
+				!strings.Contains(err.Error(), test.want) {
+				t.Fatalf("ValidatePreMaterialization() error = %v, want %s rejection", err, test.want)
+			}
+			if len(p.auths) != 0 || p.current != nil {
+				t.Fatalf("rejection published child state: auths=%d current=%v", len(p.auths), p.current)
+			}
+		})
 	}
 }
 

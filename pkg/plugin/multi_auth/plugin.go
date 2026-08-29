@@ -241,28 +241,6 @@ func (p *Plugin) MaterializeScopedSecrets(
 	return p.publishPreparedGeneration(ctx, epoch, generation, publicConfig)
 }
 
-func (p *Plugin) MaterializeSecrets() error {
-	source, epoch := p.beginPreparation()
-	specs, err := p.validatedAuthChildSpecs(source)
-	if err != nil {
-		return err
-	}
-	generation, publicConfig, err := p.prepareAuthChildren(
-		context.Background(),
-		base.ScopedSecretAccess{},
-		epoch,
-		source,
-		specs,
-		func(_ context.Context, _ base.ScopedSecretAccess, spec authChildSpec) (base.PreparedCompositeChild, error) {
-			return legacyPrepareAuthChild(spec)
-		},
-	)
-	if err != nil {
-		return err
-	}
-	return p.publishPreparedGeneration(context.Background(), epoch, generation, publicConfig)
-}
-
 type authChildPrepareFunc func(
 	context.Context,
 	base.ScopedSecretAccess,
@@ -324,43 +302,6 @@ func (p *Plugin) prepareAuthChildren(
 	return &authGeneration{auths: stagedAuths, children: stagedOwners}, Config{
 		AuthPlugins: stagedConfig,
 	}, nil
-}
-
-func legacyPrepareAuthChild(spec authChildSpec) (base.PreparedCompositeChild, error) {
-	child, err := newAuthPlugin(spec.factory)
-	if err != nil {
-		return nil, errAuthChildPreparation
-	}
-	owner := &legacyPreparedAuthChild{factory: spec.factory, child: child}
-	fail := func() (base.PreparedCompositeChild, error) {
-		owner.Close()
-		return nil, errAuthChildPreparation
-	}
-	if err := child.Init(); err != nil {
-		return fail()
-	}
-	if err := util.Parse(spec.config, child.Config()); err != nil {
-		return fail()
-	}
-	if err := base.MaterializePluginSecrets(child); err != nil {
-		return fail()
-	}
-	if err := child.PostInit(); err != nil {
-		return fail()
-	}
-	return owner, nil
-}
-
-type legacyPreparedAuthChild struct {
-	factory string
-	child   authPlugin
-	close   sync.Once
-}
-
-func (c *legacyPreparedAuthChild) Factory() string { return c.factory }
-func (c *legacyPreparedAuthChild) Instance() any   { return c.child }
-func (c *legacyPreparedAuthChild) Close() {
-	c.close.Do(func() { stopAuthChild(c.child) })
 }
 
 func stopAuthChild(child authPlugin) {

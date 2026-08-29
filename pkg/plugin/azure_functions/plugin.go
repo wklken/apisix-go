@@ -168,20 +168,6 @@ func (p *Plugin) MaterializeScopedSecrets(
 	return nil
 }
 
-// MaterializeSecrets is the transitional process-local compatibility path.
-// New generation preparation uses MaterializeScopedSecrets instead.
-func (p *Plugin) MaterializeSecrets() error {
-	p.routeSecretsMu.Lock()
-	defer p.routeSecretsMu.Unlock()
-	if p.config.Authorization == nil || p.config.Authorization.APIKey == "" {
-		return nil
-	}
-	if p.routeAPIKeySet {
-		return nil
-	}
-	return secret.ErrCredentialUnavailable
-}
-
 func (p *Plugin) processRequest(r *http.Request, _ function_upstream.Config) {
 	if _, ok := r.Header["X-Functions-Key"]; ok {
 		return

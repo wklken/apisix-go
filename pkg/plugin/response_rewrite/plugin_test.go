@@ -4,8 +4,6 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
-	"crypto/aes"
-	"crypto/cipher"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -513,10 +511,10 @@ func TestMaterializeScopedSecretsFailureIsAtomicAndRetryable(t *testing.T) {
 		strings.Contains(err.Error(), "private resolver") {
 		t.Fatalf("materialization error leaked body details: %v", err)
 	}
-	if p.config.Body == nil || *p.config.Body != raw || p.body != nil || p.legacyBody != nil {
+	if p.config.Body == nil || *p.config.Body != raw || p.body != nil {
 		t.Fatalf(
-			"failed materialization retained state: config=%#v scoped=%#v legacy=%p",
-			p.config.Body, p.body, p.legacyBody,
+			"failed materialization retained state: config=%#v scoped=%#v",
+			p.config.Body, p.body,
 		)
 	}
 
@@ -553,7 +551,7 @@ func TestMaterializeScopedSecretsBase64FailureIsAtomicAndRetryable(t *testing.T)
 	); err == nil {
 		t.Fatal("invalid admitted base64 materialized successfully")
 	}
-	if p.config.Body == nil || *p.config.Body != raw || p.body != nil || p.legacyBody != nil {
+	if p.config.Body == nil || *p.config.Body != raw || p.body != nil {
 		t.Fatalf("failed base64 materialization retained state: config=%#v scoped=%#v", p.config.Body, p.body)
 	}
 
@@ -602,11 +600,10 @@ func TestResponseBodyRotationDoesNotCrossGenerationsAndStopIsRepeatable(t *testi
 	owned := pN.body
 	pN.Stop()
 	pN.Stop()
-	if pN.body != nil || pN.legacyBody != nil || !pN.stopped {
+	if pN.body != nil || !pN.stopped {
 		t.Fatalf(
-			"generation N retained body state: scoped=%#v legacy=%p stopped=%v",
+			"generation N retained body state: scoped=%#v stopped=%v",
 			pN.body,
-			pN.legacyBody,
 			pN.stopped,
 		)
 	}
@@ -678,23 +675,10 @@ func TestResponseBodyUseBlocksStopUntilResponseWriteFinishes(t *testing.T) {
 	if len(response.Body()) != 0 {
 		t.Fatalf("retained buffered response body = %q, want cleared", response.Body())
 	}
-	if p.body != nil || p.legacyBody != nil || owned == nil || *owned != (secret.Value{}) {
-		t.Fatalf("stopped body ownership = current:%#v legacy:%p saved:%#v", p.body, p.legacyBody, owned)
+	if p.body != nil || owned == nil || *owned != (secret.Value{}) {
+		t.Fatalf("stopped body ownership = current:%#v saved:%#v", p.body, owned)
 	}
 	p.Stop()
-}
-
-func TestLegacyResponseBodyIsDestroyedOnRepeatStop(t *testing.T) {
-	p := newTestPlugin(t, Config{Body: new("legacy-body")})
-	owned := p.legacyBody
-	if owned == nil || *owned != "legacy-body" {
-		t.Fatalf("legacy owner = %#v, want legacy-body", owned)
-	}
-	p.Stop()
-	p.Stop()
-	if p.legacyBody != nil || p.body != nil || owned == nil || *owned != "" {
-		t.Fatalf("legacy body after Stop = current:%p scoped:%#v saved:%q", p.legacyBody, p.body, *owned)
-	}
 }
 
 func TestResponseRewriteRunsOneAtomicBufferedBodyCallback(t *testing.T) {
@@ -736,21 +720,16 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatalf("MaterializeSecrets() error = %v", err)
+	capabilityValue, scope, closeAttempt := testutil.ScopedSecretHarness(t, name, nil)
+	t.Cleanup(closeAttempt)
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
 
 	return p
-}
-
-func TestMaterializeSecretsRejectsMissingDataEncryptionResolver(t *testing.T) {
-	p := &Plugin{config: Config{Body: new("body")}}
-	if err := p.MaterializeSecrets(); err == nil || err.Error() != "data-encryption resolver is required" {
-		t.Fatalf("MaterializeSecrets() error = %v, want missing resolver error", err)
-	}
 }
 
 func TestResponseRewriteDescribesAndRunsPureHeaderStreamingConfig(t *testing.T) {
@@ -860,30 +839,7 @@ func TestResponseRewriteExclusionsRemainBuffered(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			plugin := &Plugin{config: test.cfg}
-			plugin.SetDependencies(base.Dependencies{
-				DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
-			})
-			if err := plugin.Init(); err != nil {
-				t.Fatalf("Init() error = %v", err)
-			}
-			if err := plugin.MaterializeSecrets(); err != nil {
-				t.Fatalf("MaterializeSecrets() error = %v", err)
-			}
-			if test.name == "body_secret" {
-				// PostInit validates and resolves body_secret; the descriptor only
-				// needs to classify the already parsed configuration.
-				if descriptor, err := test.cfg.DescribeBindingPhases(); err != nil {
-					t.Fatalf("DescribeBindingPhases() error = %v", err)
-				} else if !descriptor.BufferedBody || descriptor.Header || descriptor.StreamingHeader {
-					t.Fatalf("descriptor = %#v, want buffered body only", descriptor)
-				}
-				return
-			}
-			if err := plugin.PostInit(); err != nil {
-				t.Fatalf("PostInit() error = %v", err)
-			}
-			descriptor, err := plugin.Config().(base.BindingPhaseDescriber).DescribeBindingPhases()
+			descriptor, err := test.cfg.DescribeBindingPhases()
 			if err != nil {
 				t.Fatalf("DescribeBindingPhases() error = %v", err)
 			}
@@ -949,46 +905,6 @@ func TestHandlerDecodesBase64Body(t *testing.T) {
 	}
 }
 
-func TestHandlerResolvesOptInBodySecret(t *testing.T) {
-	key := "qeddd145sfvddff3"
-	p := &Plugin{config: Config{BodySecret: new(encryptResponseBodyForTest(t, key, "secret-body"))}}
-	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(true, []string{key}).Resolver()})
-	if err := p.Init(); err != nil {
-		t.Fatalf("Init() error = %v", err)
-	}
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatalf("MaterializeSecrets() error = %v", err)
-	}
-	if err := p.PostInit(); err != nil {
-		t.Fatalf("PostInit() error = %v", err)
-	}
-	res := performRequest(p, func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("upstream"))
-	})
-
-	if got := res.Body.String(); got != "secret-body" {
-		t.Fatalf("body = %q, want secret-body", got)
-	}
-}
-
-func TestPostInitRejectsInvalidOptInBodySecret(t *testing.T) {
-	p := &Plugin{config: Config{BodySecret: new("not-a-ciphertext")}}
-	p.SetDependencies(base.Dependencies{
-		DataEncryption: testutil.DataEncryptionService(true, []string{"qeddd145sfvddff3"}).Resolver(),
-	})
-	if err := p.Init(); err != nil {
-		t.Fatalf("Init() error = %v", err)
-	}
-	err := p.MaterializeSecrets()
-	if err == nil {
-		t.Fatal("MaterializeSecrets() error = nil, want invalid body_secret rejection")
-	}
-	if strings.Contains(err.Error(), "not-a-ciphertext") {
-		t.Fatalf("PostInit() error leaks body_secret: %v", err)
-	}
-}
-
 func TestPostInitRejectsMixedBodySecretConfiguration(t *testing.T) {
 	tests := []struct {
 		name string
@@ -1020,29 +936,6 @@ func TestPostInitRejectsMixedBodySecretConfiguration(t *testing.T) {
 				t.Fatal("ValidatePreMaterialization() error = nil, want mixed body_secret rejection")
 			}
 		})
-	}
-}
-
-func TestPlainBodyRemainsCompatibleWhenEncryptionEnabled(t *testing.T) {
-	p := &Plugin{config: Config{Body: new("plain-body")}}
-	p.SetDependencies(base.Dependencies{
-		DataEncryption: testutil.DataEncryptionService(true, []string{"qeddd145sfvddff3"}).Resolver(),
-	})
-	if err := p.Init(); err != nil {
-		t.Fatalf("Init() error = %v", err)
-	}
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatalf("MaterializeSecrets() error = %v", err)
-	}
-	if err := p.PostInit(); err != nil {
-		t.Fatalf("PostInit() error = %v", err)
-	}
-	res := performRequest(p, func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("upstream"))
-	})
-	if got := res.Body.String(); got != "plain-body" {
-		t.Fatalf("body = %q, want plain-body", got)
 	}
 }
 
@@ -1487,17 +1380,6 @@ func TestSchemaValidatesOfficialHeaderForms(t *testing.T) {
 	}
 }
 
-func TestPostInitRejectsInvalidBase64Body(t *testing.T) {
-	p := &Plugin{config: Config{Body: new("not-base64"), BodyBase64: new(true)}}
-	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
-	if err := p.Init(); err != nil {
-		t.Fatalf("Init() error = %v", err)
-	}
-	if err := p.MaterializeSecrets(); err == nil {
-		t.Fatal("MaterializeSecrets() error = nil, want invalid base64 rejected")
-	}
-}
-
 func TestPostInitRejectsBodyAndFiltersTogether(t *testing.T) {
 	p := &Plugin{
 		config: Config{
@@ -1533,19 +1415,6 @@ func setRewriteRepresentationHeaders(header http.Header) {
 	for _, field := range rewriteRepresentationHeaders() {
 		header.Set(field, "stale")
 	}
-}
-
-func encryptResponseBodyForTest(t *testing.T, key string, value string) string {
-	t.Helper()
-	padding := aes.BlockSize - len(value)%aes.BlockSize
-	padded := append([]byte(value), bytes.Repeat([]byte{byte(padding)}, padding)...)
-	block, err := aes.NewCipher([]byte(key))
-	if err != nil {
-		t.Fatalf("NewCipher() error = %v", err)
-	}
-	ciphertext := make([]byte, len(padded))
-	cipher.NewCBCEncrypter(block, []byte(key)).CryptBlocks(ciphertext, padded)
-	return base64.StdEncoding.EncodeToString(ciphertext)
 }
 
 func gzipBody(t *testing.T, value string) []byte {

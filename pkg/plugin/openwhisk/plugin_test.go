@@ -657,28 +657,6 @@ func TestOpenWhiskScopedMaterializationUsesResolvedPlaintextDescriptor(t *testin
 	}
 }
 
-func TestOpenWhiskMaterializeSecretsFailsClosedWithoutRetainedState(t *testing.T) {
-	for index, resolved := range []string{"", " \t\n"} {
-		t.Run(fmt.Sprintf("reject resolved whitespace %d", index), func(t *testing.T) {
-			const raw = "$ENV://OPENWHISK_LEGACY_EMPTY_RETRY"
-			t.Setenv("OPENWHISK_LEGACY_EMPTY_RETRY", resolved)
-			p := &Plugin{config: Config{ServiceToken: raw}}
-			err := p.MaterializeSecrets()
-			if !errors.Is(err, secret.ErrCredentialUnavailable) || err.Error() != "credential unavailable" {
-				t.Fatalf("MaterializeSecrets() error = %v, want constant credential unavailable", err)
-			}
-			if p.config.ServiceToken != raw || p.serviceTokenSet ||
-				p.serviceToken != (secret.Value{}) || p.client != nil {
-				t.Fatal("failed legacy materialization retained secret or client state")
-			}
-			t.Setenv("OPENWHISK_LEGACY_EMPTY_RETRY", "retry-user:retry-pass")
-			if err := p.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) {
-				t.Fatalf("same-instance MaterializeSecrets() error = %v, want credential unavailable", err)
-			}
-		})
-	}
-}
-
 func TestOpenWhiskPostInitRejectsUnmaterializedServiceTokenWithoutClient(t *testing.T) {
 	p := &Plugin{config: Config{ServiceToken: "$ENV://OPENWHISK_UNPREPARED"}}
 	if err := p.PostInit(); !errors.Is(err, secret.ErrCredentialUnavailable) {

@@ -2,8 +2,6 @@ package kafka_proxy
 
 import (
 	"context"
-	"crypto/sha256"
-	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -18,11 +16,10 @@ type Plugin struct {
 	base.BasePlugin
 	config Config
 
-	secretMu           sync.RWMutex
-	saslPassword       *secret.Value
-	legacySASLPassword *string
-	stopped            bool
-	stopBeforeLock     func()
+	secretMu       sync.RWMutex
+	saslPassword   *secret.Value
+	stopped        bool
+	stopBeforeLock func()
 }
 
 const (
@@ -104,49 +101,11 @@ func (p *Plugin) PostInit() error {
 		return nil
 	}
 	p.secretMu.RLock()
-	prepared := !p.stopped && (p.saslPassword != nil || p.legacySASLPassword != nil)
+	prepared := !p.stopped && p.saslPassword != nil
 	p.secretMu.RUnlock()
 	if !prepared {
 		return secret.ErrCredentialUnavailable
 	}
-	return nil
-}
-
-// MaterializeSecrets is the transitional process-local compatibility path.
-// Scoped generation preparation uses MaterializeScopedSecrets instead.
-func (p *Plugin) MaterializeSecrets() error {
-	if p.config.SASL == nil {
-		return nil
-	}
-
-	p.secretMu.Lock()
-	defer p.secretMu.Unlock()
-	if p.stopped {
-		return secret.ErrCredentialUnavailable
-	}
-	if p.saslPassword != nil || p.legacySASLPassword != nil {
-		return nil
-	}
-
-	resolver := p.DataEncryption()
-	if !resolver.Configured() {
-		return errors.New("data-encryption resolver is required")
-	}
-	resolved, err := resolver.ResolveForContext(
-		p.config.SASL.Password,
-		"kafka-proxy.sasl.password",
-	)
-	if err != nil || strings.TrimSpace(resolved) == "" {
-		return fmt.Errorf("kafka-proxy sasl.password: %w", secret.ErrCredentialUnavailable)
-	}
-	digest := sha256.Sum256([]byte(resolved))
-	descriptor, err := secret.NewDescriptor(capability.SecretPluginConfig, digest)
-	if err != nil {
-		return fmt.Errorf("kafka-proxy sasl.password: %w", secret.ErrCredentialUnavailable)
-	}
-
-	p.config.SASL.Password = descriptor.String()
-	p.legacySASLPassword = &resolved
 	return nil
 }
 
@@ -164,7 +123,7 @@ func (p *Plugin) MaterializeScopedSecrets(
 	if p.stopped {
 		return secret.ErrCredentialUnavailable
 	}
-	if p.saslPassword != nil || p.legacySASLPassword != nil {
+	if p.saslPassword != nil {
 		return nil
 	}
 
@@ -221,9 +180,6 @@ func (p *Plugin) useSASLPassword(use func(string) error) error {
 	if p.saslPassword != nil {
 		return p.saslPassword.Use(use)
 	}
-	if p.legacySASLPassword != nil {
-		return use(*p.legacySASLPassword)
-	}
 	return secret.ErrCredentialUnavailable
 }
 
@@ -249,10 +205,6 @@ func (p *Plugin) Stop() {
 	if p.saslPassword != nil {
 		*p.saslPassword = secret.Value{}
 		p.saslPassword = nil
-	}
-	if p.legacySASLPassword != nil {
-		*p.legacySASLPassword = ""
-		p.legacySASLPassword = nil
 	}
 }
 

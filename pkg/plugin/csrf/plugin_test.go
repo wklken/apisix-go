@@ -3,8 +3,6 @@ package csrf
 import (
 	"bytes"
 	"context"
-	"crypto/aes"
-	"crypto/cipher"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -46,8 +44,10 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatalf("MaterializeSecrets() error = %v", err)
+	capabilityValue, scope, closeAttempt := testutil.ScopedSecretHarness(t, name, nil)
+	t.Cleanup(closeAttempt)
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
@@ -428,12 +428,11 @@ func TestMaterializeScopedSecretsRejectsEmptyAdmittedKeyAndRetriesAtomically(t *
 				(resolved != "" && strings.Contains(err.Error(), resolved)) {
 				t.Fatalf("empty-key error leaked secret details: %v", err)
 			}
-			if p.config.Key != raw || p.key != nil || p.legacyKey != nil {
+			if p.config.Key != raw || p.key != nil {
 				t.Fatalf(
-					"failed empty-key materialization retained state: config=%q key=%#v legacy=%p",
+					"failed empty-key materialization retained state: config=%q key=%#v",
 					p.config.Key,
 					p.key,
-					p.legacyKey,
 				)
 			}
 
@@ -517,8 +516,8 @@ func TestCSRFKeyRotationDoesNotCrossGenerationsAndStopIsIdempotent(t *testing.T)
 
 	pN.Stop()
 	pN.Stop()
-	if pN.key != nil || pN.legacyKey != nil {
-		t.Fatalf("generation N secret state after Stop = key:%#v legacy:%p", pN.key, pN.legacyKey)
+	if pN.key != nil {
+		t.Fatalf("generation N secret state after Stop = key:%#v", pN.key)
 	}
 	if got := request(pN1); got == "" {
 		t.Fatal("generation N+1 stopped producing csrf tokens after generation N retirement")
@@ -612,13 +611,6 @@ func TestCSRFRequestHoldsValueUseWhileStopWaits(t *testing.T) {
 	p.Stop()
 }
 
-func TestMaterializeSecretsRejectsMissingDataEncryptionResolver(t *testing.T) {
-	p := &Plugin{}
-	if err := p.MaterializeSecrets(); err == nil || err.Error() != "data-encryption resolver is required" {
-		t.Fatalf("MaterializeSecrets() error = %v, want missing resolver error", err)
-	}
-}
-
 func TestHandlerRejectsMissingHeaderWithJSONError(t *testing.T) {
 	p := newTestPlugin(t, Config{Key: "secret"})
 	req := httptest.NewRequest(http.MethodPost, "http://example.com/post", nil)
@@ -642,111 +634,6 @@ func TestHandlerRejectsMissingHeaderWithJSONError(t *testing.T) {
 		cookies[0].Path != "/" || cookies[0].SameSite != http.SameSiteLaxMode {
 		t.Fatalf("cookies = %#v, want one APISIX CSRF refresh cookie", cookies)
 	}
-}
-
-func TestPostInitRejectsInvalidEncryptedKey(t *testing.T) {
-	p := &Plugin{config: Config{Key: "plain"}}
-	p.SetDependencies(base.Dependencies{
-		DataEncryption: testutil.DataEncryptionService(true, []string{"qeddd145sfvddff3"}).Resolver(),
-	})
-	if err := p.Init(); err != nil {
-		t.Fatalf("Init() error = %v", err)
-	}
-	if err := p.MaterializeSecrets(); err == nil {
-		t.Fatal("MaterializeSecrets() error = nil, want strict encrypted csrf key rejection")
-	}
-}
-
-func TestPostInitRejectsEmptyKey(t *testing.T) {
-	for _, key := range []string{"", "   "} {
-		p := &Plugin{config: Config{Key: key}}
-		p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
-		if err := p.Init(); err != nil {
-			t.Fatalf("Init() error = %v", err)
-		}
-		if err := p.MaterializeSecrets(); err == nil {
-			t.Fatalf("MaterializeSecrets() error = nil for key %q, want empty key rejection", key)
-		}
-	}
-}
-
-func TestPostInitResolvesEncryptedKey(t *testing.T) {
-	key := "qeddd145sfvddff3"
-
-	p := &Plugin{config: Config{Key: encryptCSRFTestValue(t, key, "secret")}}
-	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(true, []string{key}).Resolver()})
-	if err := p.Init(); err != nil {
-		t.Fatalf("Init() error = %v", err)
-	}
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatalf("MaterializeSecrets() error = %v", err)
-	}
-	assertCSRFSecretDescriptorFor(t, p.config.Key, "secret")
-	if err := p.PostInit(); err != nil {
-		t.Fatalf("PostInit() error = %v", err)
-	}
-	var got string
-	if err := p.useKey(func(value string) error {
-		got = value
-		return nil
-	}); err != nil || got != "secret" {
-		t.Fatalf("private csrf key = %q, err = %v, want decrypted value", got, err)
-	}
-}
-
-func TestPostInitResolvesKeyFromRotatedKeyring(t *testing.T) {
-	oldKey := "qeddd145sfvddff3"
-	newKey := "1234567890abcdef"
-
-	p := &Plugin{config: Config{Key: encryptCSRFTestValue(t, oldKey, "rotated-secret")}}
-	p.SetDependencies(base.Dependencies{
-		DataEncryption: testutil.DataEncryptionService(true, []string{newKey, oldKey}).Resolver(),
-	})
-	if err := p.Init(); err != nil {
-		t.Fatalf("Init() error = %v", err)
-	}
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatalf("MaterializeSecrets() error = %v", err)
-	}
-	assertCSRFSecretDescriptorFor(t, p.config.Key, "rotated-secret")
-	if err := p.PostInit(); err != nil {
-		t.Fatalf("PostInit() error = %v", err)
-	}
-	var got string
-	if err := p.useKey(func(value string) error {
-		got = value
-		return nil
-	}); err != nil || got != "rotated-secret" {
-		t.Fatalf("private csrf key = %q, err = %v, want rotated plaintext", got, err)
-	}
-}
-
-func TestPostInitRejectsMissingKeyring(t *testing.T) {
-	p := &Plugin{config: Config{Key: "ciphertext"}}
-	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(true, nil).Resolver()})
-	if err := p.Init(); err != nil {
-		t.Fatalf("Init() error = %v", err)
-	}
-	if err := p.MaterializeSecrets(); err == nil {
-		t.Fatal("MaterializeSecrets() error = nil, want missing keyring rejection")
-	}
-}
-
-func encryptCSRFTestValue(t *testing.T, key string, value string) string {
-	t.Helper()
-
-	padding := aes.BlockSize - len(value)%aes.BlockSize
-	padded := append([]byte(value), make([]byte, padding)...)
-	for i := len(padded) - padding; i < len(padded); i++ {
-		padded[i] = byte(padding)
-	}
-	block, err := aes.NewCipher([]byte(key))
-	if err != nil {
-		t.Fatalf("NewCipher() error = %v", err)
-	}
-	ciphertext := make([]byte, len(padded))
-	cipher.NewCBCEncrypter(block, []byte(key)).CryptBlocks(ciphertext, padded)
-	return base64.StdEncoding.EncodeToString(ciphertext)
 }
 
 func TestCheckCSRFTokenAllowsExpiredTokenWhenExpiresIsZero(t *testing.T) {

@@ -37,10 +37,6 @@ on:
       image-reference:
         description: The published image reference verified by its immutable digest.
         value: ${{ jobs.publish-image.outputs.image-reference }}
-  pull_request:
-  push:
-    branches:
-      - master
   workflow_dispatch:
 
 permissions:
@@ -187,6 +183,8 @@ jobs:
           platforms: linux/amd64
           load: true
           push: false
+          cache-from: type=gha,scope=security-release-amd64
+          cache-to: type=gha,mode=max,scope=security-release-amd64
           tags: ${{ steps.metadata.outputs.tags }}
           build-args: |
             VERSION=${{ steps.source.outputs.version }}

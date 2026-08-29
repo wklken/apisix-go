@@ -215,7 +215,7 @@ require_job_fixed "$workflow" race-and-vulnerability 'needs: validate-inputs'
 require_job_fixed "$workflow" race-and-vulnerability 'ref: ${{ inputs.source-commit || github.sha }}'
 require_job_fixed "$workflow" race-and-vulnerability 'git rev-parse HEAD'
 require_job_fixed "$workflow" race-and-vulnerability 'go test -race ./pkg/config ./cmd ./pkg/server ./pkg/route ./pkg/proxy ./pkg/store ./pkg/etcd ./pkg/stream -count=1'
-require_job_fixed "$workflow" race-and-vulnerability 'govulncheck@v1.7.0'
+require_job_fixed "$workflow" race-and-vulnerability 'govulncheck@v1.7.0 . ./cmd/... ./pkg/...'
 require_job_fixed "$workflow" race-and-vulnerability 'contents: read'
 for job in race-and-vulnerability container-evidence etcd-recovery proxy-soak publish-image; do
     require_job_fixed "$workflow" "$job" 'ref: ${{ inputs.source-commit || github.sha }}'

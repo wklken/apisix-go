@@ -2,7 +2,10 @@
 
 `http-data-plane-v1` is a conservative operator contract for running
 `apisix-go` as an HTTP data plane behind a separately managed control plane and
-ingress boundary. It is a candidate awaiting release and operations
+ingress boundary. It covers the 110 plugins in the qualified APISIX 3.17
+all-plugin profile that declare the HTTP domain, in the same manifest order.
+The stream-only `mqtt-proxy` remains qualified by the all-plugin profile but is
+outside this first HTTP production scope. The profile is a candidate awaiting release and operations
 qualification. The repository-wide warning still applies: apisix-go is under
 active development and is not ready for production use. The executable
 operator procedure is the [production release runbook](runbooks/production-release.md);
@@ -16,7 +19,7 @@ independently in the merged runtime configuration:
 
 ```yaml
 compatibility_target: apisix-3.17
-security_profile: strict
+security_profile: compat
 qualification_profile: http-data-plane-v1
 
 deployment:
@@ -52,16 +55,19 @@ directory and set ownership and permissions for the runtime user. See
 relative-path resolution, and environment aliases.
 
 `compatibility_target` currently accepts only `apisix-3.17`.
-`security_profile` accepts `compat` or `strict`; `strict` enables the transport,
-credential, and trusted-address requirements below without selecting a
-qualification claim. `qualification_profile` accepts the empty value or
+`security_profile` accepts `compat` or `strict`; the checked-in production
+reference uses `compat` for APISIX-compatible plugin behavior. `strict` remains
+an independent optional security policy and is not required for this production
+claim. `qualification_profile` accepts the empty value or
 `http-data-plane-v1`; the empty value makes no qualification claim. Unknown
 axis values fail startup, and explicitly activated unsupported runtime features
 still fail closed in every selection.
 
-Strict security is independent of qualification. An empty qualification
-profile makes no qualification claim. Selection of `http-data-plane-v1` fails
-closed when any required manifest evidence is blocked. The capability manifest
+Security policy remains independent of qualification. An empty qualification
+profile makes no qualification claim. Selection of `http-data-plane-v1`
+directly enforces its production transport, listener, trusted-address, and
+Admin API requirements even under `security_profile: compat`, and fails closed
+when any required manifest evidence is blocked. The capability manifest
 owns the ordered `required_plugins` sequence. The effective HTTP plugin
 sequence must exactly equal the manifest `required_plugins` sequence, including
 order. Qualification derives from that ordered sequence and its required
@@ -72,29 +78,28 @@ mismatch fails closed.
 
 ## Exact profile requirements
 
-The checked-in production reference selects both `strict` security and
-`http-data-plane-v1` qualification. Its merged configuration must satisfy all
-of the following:
+The checked-in production reference selects `compat` security behavior and
+`http-data-plane-v1` qualification. The qualification owns the following
+production requirements directly:
 
-- Under `strict`, `debug: false`.
+- `debug: false`.
 - Under `http-data-plane-v1`, `deployment.role: data_plane` and the effective
   provider is `etcd`.
 - Every `deployment.etcd.host` endpoint uses the `https://` scheme and
-  `deployment.etcd.tls.verify` is explicitly `true` under `strict` when etcd is
-  the effective provider.
+  `deployment.etcd.tls.verify` is explicitly `true`.
 - Under `http-data-plane-v1`, `apisix.proxy_mode: http`; `apisix.stream_proxy.tcp` and
   `apisix.stream_proxy.udp` are empty; `stream_plugins` is empty.
 - `apisix.enable_admin: false`.
-- Under `strict`, `apisix.trusted_addresses` contains at least one syntactically
-  valid CIDR.
+- `apisix.trusted_addresses` contains at least one syntactically valid CIDR.
 - `nginx_config.http.client_max_body_size` is positive and
   `nginx_config.http.client_body_timeout` is mandatory and positive. The checked-in
   `conf/config-production.yaml` value for `client_body_timeout` is 60 seconds;
   Go applies it together with the header timeout as `net/http`'s combined
   `ReadTimeout`, because `net/http` has no body-only server deadline.
 - The effective HTTP plugin sequence exactly equals the manifest
-  `required_plugins` sequence, including order. This document does not maintain
-  a second plugin inventory; current membership, qualification result, and
+  `required_plugins` sequence, including order: the 110 qualified HTTP-domain
+  plugins from `apisix-3.17-all-plugins-v1`. This document does not maintain a
+  second plugin inventory; current membership, qualification result, and
   blockers are in the [generated plugin capability status](plugins.md).
 - `apisix_go.runtime_paths.data_dir`,
   `apisix_go.runtime_paths.runtime_dir`,
@@ -123,20 +128,19 @@ of the following:
   `metric_prefix: apisix_`, this is
   `apisix_http_metric_series_overflow_total{metric}`. These series are not
   reset during route reload.
-- Kafka PubSub and upstreams with `scheme: kafka` carry no
-  `http-data-plane-v1` evidence claim. Qualification selection does not disable
-  the Kafka compatibility owner. `security_profile: strict` permits plaintext
-  Kafka. When Kafka TLS is configured, `security_profile: strict` requires
-  `tls.verify: true`; `security_profile: compat` permits `tls.verify: false`.
+- The HTTP-domain Kafka plugins are part of the 110-plugin contract with the
+  behavior and dependency evidence recorded in the manifest. The selected
+  `security_profile: compat` keeps APISIX-compatible Kafka transport defaults;
+  operators must still qualify the real Kafka environment used by a release.
 
 The checked-in `conf/config-production.yaml` is the reference shape. It leaves
 the etcd endpoint empty and omits the runtime-path overlay, so an operator must
 supply a real endpoint through an override or
 `APISIXGO_DEPLOYMENT_ETCD_HOST`; it must not be replaced with a plaintext
 endpoint when selecting this profile. Providing an endpoint and writable
-directories does not replace the manifest's required qualification evidence.
-The repository snapshot is currently unqualified, and production static
-inspection is expected to fail closed while that evidence remains incomplete.
+directories does not replace release and operations qualification evidence.
+The manifest's 110 HTTP plugin contracts are ready, but that does not by itself
+make the repository production qualified.
 
 ## Static configuration preflight
 
@@ -147,9 +151,9 @@ apisix config test -c conf/config-example.yaml
 apisix config dump --effective --redacted -c conf/config-example.yaml
 ```
 
-Running `apisix config test -c conf/config-production.yaml` against the
-repository snapshot is expected to fail closed: the file supplies no etcd
-endpoint and the manifest does not yet contain complete qualification evidence.
+Running `apisix config test -c conf/config-production.yaml` without an override
+is expected to fail closed because the file supplies no etcd endpoint. Supplying
+an HTTPS endpoint and valid runtime paths proves only static configuration.
 Do not interpret that command as producing a current production JSON dump.
 
 `config test` checks static read, merge, decode, and profile contracts only. It
@@ -199,9 +203,9 @@ and excludes stateful cross-replica features:
 | Configuration | etcd/config snapshots | Shared desired configuration is the input to every replica; this profile does not add a consensus or configuration-write owner. |
 | Consumer state | etcd consumer snapshots | Consumer resources are shared inputs. Request authentication is evaluated locally from the snapshot and request credentials. |
 | Request authentication | Each request, route/plugin config, consumer snapshot | Stateless per-request processing; no cross-replica authentication session is assumed. |
-| Rate limiting | Excluded stateful rate-limit families | No cross-replica quota is provided by this profile. A per-replica counter must not be treated as a global quota. |
-| Sessions | Excluded stateful session families | Session-backed authentication and login flows require a separately qualified shared-session design. |
-| Cache | Excluded stateful cache families | Stateful cache contents and invalidation are not a profile contract. |
+| Rate limiting | Qualified HTTP rate-limit plugins and their configured backends | The manifest records each plugin's supported behavior. A per-replica counter must not be treated as a global quota; a shared quota requires the plugin's supported external store and qualification of that real dependency. |
+| Sessions | Qualified HTTP authentication plugins and their configured backends | No implicit cross-replica in-process session is provided. Any externally backed session behavior is limited to the plugin contract and requires the configured dependency to be qualified. |
+| Cache | Qualified HTTP cache plugins; each replica and configured backend | The plugin contract applies, but the profile does not turn per-replica cache contents into a shared cache or add cross-replica invalidation semantics. |
 | Upstream health | Each replica's own connections and probes | Health describes that replica's observations and connections; it is not a cross-replica quota or a shared health authority. |
 | Secret cache | Per-replica resolver/materialization boundary | Secrets come from supported config/etcd inputs and are materialized locally as needed. No cross-replica secret cache or rotation guarantee is implied. |
 | Metrics | Each replica's instrumentation and scrape endpoint | Metrics are per-replica observations and must be scraped/aggregated by external operations tooling; stream metrics are excluded. |
@@ -219,18 +223,17 @@ compatibility, but HTTP and stream compilation rejects discovery types or
 service references that require an unsupported discovery runtime. The
 qualification contract excludes general stream-plugin chaining, stream
 metrics, Lua/OpenResty runtime behavior, external plugin runners, and process
-access-log claims. It carries no Kafka PubSub or upstream `scheme: kafka`
-evidence claim, but qualification selection does not disable the Kafka
-compatibility owner. Plaintext Kafka remains permitted under strict security;
-strict requires verified TLS only when Kafka TLS is configured, while compat
-permits unverified Kafka TLS.
+access-log claims. Every manifest-qualified HTTP-domain plugin, including the
+HTTP Kafka and request-logger families, remains in scope at its documented
+behavior boundary; the profile adds no broader external-service guarantee.
 
-The bounded observability contract is strict: Zipkin is v2-only. OTel rejects
+The bounded observability contract is explicit: Zipkin is v2-only. OTel rejects
 `set_ngx_var: true` and any non-zero `inactive_timeout`; collector
-`request_timeout` remains supported. SkyWalking is not in the profile
-allowlist, and its multi-span behavior is not production-qualified. Stream
-metrics are excluded because the profile rejects stream activation; registered
-stream capabilities remain outside this candidate contract.
+`request_timeout` remains supported. SkyWalking and the other HTTP observability
+plugins are included only to the behavior and evidence boundaries recorded in
+the manifest. Stream metrics are excluded because the profile rejects stream
+activation; registered stream capabilities remain outside this candidate
+contract.
 
 ## WebSocket boundary
 
@@ -297,8 +300,8 @@ Route compilation also quarantines an individual route configured with
 `remote_addrs` or `vars`, non-null `script_id`, `script`, and non-empty
 `filter_func`. A singular `host` is supported by the same exact/wildcard
 dispatcher as a one-element `hosts`; `host` and `hosts` cannot both be set.
-Do not enable request loggers, `sls-logger`, stream, or `gm` under this profile.
-Strip unsupported route fields before migration. Keep `status: 0` only for
+Do not enable stream or `gm` under this profile. Strip unsupported route fields
+before migration. Keep `status: 0` only for
 routes that are intentionally disabled; those routes are accepted but omitted
 from the HTTP route table. The data plane quarantines unsupported route
 semantics instead of approximating them or blocking unrelated valid routes.

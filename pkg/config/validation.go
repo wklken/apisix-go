@@ -189,13 +189,13 @@ func validateRuntimeConfig(cfg *Config, manifest *capability.Manifest) error {
 			)
 		}
 	}
-	if err := validateUnsupportedRuntimeConfig(cfg); err != nil {
-		return err
-	}
 	if err := validateSecurityProfile(cfg, selection); err != nil {
 		return err
 	}
-	return validateQualificationProfile(cfg, manifest, selection)
+	if err := validateQualificationProfile(cfg, manifest, selection); err != nil {
+		return err
+	}
+	return validateUnsupportedRuntimeConfig(cfg)
 }
 
 func profileAwareRuntimeError(selection ProfileSelection, err error) error {
@@ -238,7 +238,10 @@ func validateSecurityProfile(cfg *Config, selection ProfileSelection) error {
 	if selection.Security != SecurityStrict {
 		return nil
 	}
-	profile := string(selection.Security)
+	return validateProductionHardening(cfg, string(selection.Security))
+}
+
+func validateProductionHardening(cfg *Config, profile string) error {
 	if cfg.Debug {
 		return profileFieldError(profile, "debug", "must be false")
 	}
@@ -298,6 +301,15 @@ func validateQualificationProfile(cfg *Config, manifest *capability.Manifest, se
 	if err != nil || provider != "etcd" {
 		return profileFieldError(profile, "deployment.role_data_plane.config_provider", "must resolve to etcd")
 	}
+	if err := validateProductionHardening(cfg, profile); err != nil {
+		return err
+	}
+	if cfg.Apisix.EnableAdmin {
+		return profileFieldError(profile, "apisix.enable_admin", "must be false")
+	}
+	if err := validateHTTPDataPlaneAccessLogs(cfg, profile); err != nil {
+		return err
+	}
 	if cfg.Apisix.ProxyMode != "http" {
 		return profileFieldError(profile, "apisix.proxy_mode", "must be http")
 	}
@@ -309,6 +321,30 @@ func validateQualificationProfile(cfg *Config, manifest *capability.Manifest, se
 	}
 	if len(cfg.StreamPlugins) > 0 {
 		return profileFieldError(profile, "stream_plugins", "must be empty")
+	}
+	return nil
+}
+
+func validateHTTPDataPlaneAccessLogs(cfg *Config, profile string) error {
+	http := cfg.NginxConfig.HTTP
+	stream := cfg.NginxConfig.Stream
+	for _, field := range []struct {
+		name   string
+		active bool
+	}{
+		{name: "nginx_config.http.enable_access_log", active: http.EnableAccessLog},
+		{name: "nginx_config.http.access_log", active: http.AccessLog != ""},
+		{name: "nginx_config.http.access_log_buffer", active: http.AccessLogBuffer != 0},
+		{name: "nginx_config.http.access_log_format", active: http.AccessLogFormat != ""},
+		{name: "nginx_config.http.access_log_format_escape", active: http.AccessLogFormatEscape != ""},
+		{name: "nginx_config.stream.enable_access_log", active: stream.EnableAccessLog},
+		{name: "nginx_config.stream.access_log", active: stream.AccessLog != ""},
+		{name: "nginx_config.stream.access_log_format", active: stream.AccessLogFormat != ""},
+		{name: "nginx_config.stream.access_log_format_escape", active: stream.AccessLogFormatEscape != ""},
+	} {
+		if field.active {
+			return profileFieldError(profile, field.name, "must be disabled or empty")
+		}
 	}
 	return nil
 }

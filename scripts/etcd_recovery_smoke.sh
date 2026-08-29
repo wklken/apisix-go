@@ -85,6 +85,17 @@ run_dir="$evidence_root/$run_id"
 mkdir -p "$run_dir"
 transcript="$run_dir/steps.log"
 : >"$transcript"
+survivor_monitor_pid=
+survivor_monitor_stop="$run_dir/survivor-monitor.stop"
+survivor_monitor_failure="$run_dir/survivor-monitor.failed"
+survivor_probe_count_file="$run_dir/survivor-monitor.count"
+survivor_monitor_started="$run_dir/survivor-monitor.started"
+survivor_monitor_window="$run_dir/survivor-monitor.window"
+survivor_window_probe_count_file="$run_dir/survivor-monitor.window.count"
+restart_before_identity=
+restart_after_identity=
+restart_survivor_probe_count=0
+restart_survivor_window_probe_count=0
 
 if [[ "$probe_mode" == podman-machine ]]; then
     mkdir -p "$repo_root/.cache/tmp"
@@ -94,22 +105,14 @@ else
 fi
 tls_dir="$temp_dir/tls"
 mkdir -p "$tls_dir"
-candidate_config="$temp_dir/config-qualification-candidate.yaml"
-awk '
-    /^qualification_profile: http-data-plane-v1$/ {
-        print "qualification_profile: \"\""
-        replaced++
-        next
-    }
-    { print }
-    END { if (replaced != 1) exit 42 }
-' "$production_config" >"$candidate_config" || die 'production configuration qualification marker is not exact'
+candidate_config="$production_config"
 config_sha256=$(openssl dgst -sha256 "$candidate_config" | awk '{print $NF}')
 [[ "$config_sha256" =~ ^[0-9a-f]{64}$ ]] || die 'failed to fingerprint qualification candidate configuration'
 
 data_network="apisix-release-etcd-data-$run_id"
 control_network="apisix-release-etcd-control-$run_id"
 etcd_container="apisix-release-etcd-$run_id"
+etcd_proxy_container="apisix-release-etcd-proxy-$run_id"
 upstream_v1_container="apisix-release-upstream-v1-$run_id"
 upstream_v2_container="apisix-release-upstream-v2-$run_id"
 gateway_a_container="apisix-release-gateway-a-$run_id"
@@ -140,15 +143,21 @@ record_step() {
 cleanup() {
     local status=$?
     set +e
+    if [[ -n "$survivor_monitor_pid" ]]; then
+        : >"$survivor_monitor_stop"
+        wait "$survivor_monitor_pid" >/dev/null 2>&1 || true
+    fi
     if [[ -n ${run_dir:-} ]]; then
         printf 'cleanup exit=%s\n' "$status" >>"$transcript"
-        for container in "${gateway_containers[@]}" "$upstream_v2_container" "$upstream_v1_container" "$etcd_container"; do
+        for container in "${gateway_containers[@]}" "$upstream_v2_container" "$upstream_v1_container" \
+            "$etcd_proxy_container" "$etcd_container"; do
             docker logs "$container" >"$run_dir/${container}.logs" 2>&1 || true
             docker inspect "$container" >"$run_dir/${container}.inspect" 2>&1 || true
         done
         printf 'cleanup: evidence preserved at %s\n' "$run_dir" >&2
     fi
-    docker rm -f "${gateway_containers[@]}" "$upstream_v2_container" "$upstream_v1_container" "$etcd_container" \
+    docker rm -f "${gateway_containers[@]}" "$upstream_v2_container" "$upstream_v1_container" \
+        "$etcd_proxy_container" "$etcd_container" \
         >"$run_dir/cleanup.log" 2>&1 || true
     docker network rm "$data_network" "$control_network" >>"$run_dir/cleanup.log" 2>&1 || true
     rm -rf "$temp_dir"
@@ -161,7 +170,7 @@ trap cleanup EXIT
 
 record_step 'generate temporary CA and etcd/gateway certificates'
 cat >"$temp_dir/etcd-server.ext" <<'EOF'
-subjectAltName = DNS:etcd
+subjectAltName = DNS:etcd,DNS:etcd-origin
 extendedKeyUsage = serverAuth
 EOF
 cat >"$temp_dir/frontend.ext" <<'EOF'
@@ -245,6 +254,92 @@ wait_http_body() {
         sleep_until_poll "$deadline"
     done
     die "timed out waiting for $label at $url (wanted body $expected)"
+}
+
+probe_survivor_once() {
+    local status_url=$1 route_url=$2
+    local status body
+    status=$(curl --silent --show-error --connect-timeout "$curl_timeout" \
+        --max-time "$curl_timeout" --output /dev/null --write-out '%{http_code}' \
+        "$status_url/status/ready" 2>>"$transcript") || return 1
+    [[ "$status" == 200 ]] || return 1
+    body=$(curl --fail --silent --show-error --connect-timeout "$curl_timeout" \
+        --max-time "$curl_timeout" "$route_url/managed" 2>>"$transcript") || return 1
+    [[ "$(printf '%s' "$body" | tr -d '\r\n')" == v1 ]]
+}
+
+start_survivor_monitor() {
+    local survivor_index=$1
+    rm -f "$survivor_monitor_stop" "$survivor_monitor_failure" \
+        "$survivor_monitor_started" "$survivor_monitor_window"
+    : >"$survivor_probe_count_file"
+    printf '0\n' >"$survivor_window_probe_count_file"
+    if ! probe_survivor_once \
+        "${gateway_status_urls[survivor_index]}" "${gateway_urls[survivor_index]}"; then
+        die 'surviving replica was unavailable before restart'
+    fi
+    printf '1\n' >"$survivor_probe_count_file"
+    (
+        local count=1 window_count=0
+        while [[ ! -e "$survivor_monitor_stop" ]]; do
+            if ! probe_survivor_once \
+                "${gateway_status_urls[survivor_index]}" "${gateway_urls[survivor_index]}"; then
+                : >"$survivor_monitor_failure"
+                exit 1
+            fi
+            count=$((count + 1))
+            printf '%s\n' "$count" >"$survivor_probe_count_file"
+            if [[ -e "$survivor_monitor_window" ]]; then
+                window_count=$((window_count + 1))
+                printf '%s\n' "$window_count" >"$survivor_window_probe_count_file"
+            fi
+            printf '1\n' >"$survivor_monitor_started"
+            sleep "$poll_interval"
+        done
+    ) &
+    survivor_monitor_pid=$!
+
+    local deadline=$((SECONDS + timeout_seconds))
+    while [[ ! -e "$survivor_monitor_started" ]]; do
+        [[ ! -e "$survivor_monitor_failure" ]] || die 'surviving replica failed while starting restart monitor'
+        kill -0 "$survivor_monitor_pid" 2>/dev/null || die 'surviving replica restart monitor exited before startup handshake'
+        (( SECONDS < deadline )) || die 'timed out waiting for surviving replica restart monitor startup'
+        sleep 0.01
+    done
+}
+
+wait_for_survivor_window_probe() {
+    local deadline=$((SECONDS + timeout_seconds)) count
+    while true; do
+        count=$(<"$survivor_window_probe_count_file")
+        if [[ "$count" =~ ^[1-9][0-9]*$ ]]; then
+            return
+        fi
+        [[ ! -e "$survivor_monitor_failure" ]] || die 'surviving replica failed during restart'
+        kill -0 "$survivor_monitor_pid" 2>/dev/null || die 'surviving replica restart monitor exited during restart'
+        (( SECONDS < deadline )) || die 'timed out waiting for surviving replica probe during restart'
+        sleep 0.01
+    done
+}
+
+stop_survivor_monitor() {
+    : >"$survivor_monitor_stop"
+    if ! wait "$survivor_monitor_pid"; then
+        survivor_monitor_pid=
+        die 'surviving replica failed during restart'
+        return
+    fi
+    survivor_monitor_pid=
+    [[ ! -e "$survivor_monitor_failure" ]] || die 'surviving replica failed during restart'
+    restart_survivor_probe_count=$(<"$survivor_probe_count_file")
+    restart_survivor_window_probe_count=$(<"$survivor_window_probe_count_file")
+    if [[ ! "$restart_survivor_probe_count" =~ ^[0-9]+$ ]] || \
+        (( restart_survivor_probe_count < 2 )); then
+        die 'survivor restart probe count is invalid'
+    fi
+    [[ "$restart_survivor_window_probe_count" =~ ^[1-9][0-9]*$ ]] || \
+        die 'survivor restart window probe count is invalid'
+    rm -f "$survivor_monitor_window"
 }
 
 wait_https_body() {
@@ -341,27 +436,6 @@ wait_gateway_tls_failure() {
     done
 }
 
-wait_gateway_log() {
-    local label=$1
-    local marker=$2
-    local deadline=$((SECONDS + timeout_seconds))
-    local index logs
-    while (( SECONDS < deadline )); do
-        for index in "${!gateway_containers[@]}"; do
-            logs=$(docker logs "${gateway_containers[index]}" 2>&1 || true)
-            printf '%s\n' "$logs" >"$run_dir/${label}-replica-$((index + 1)).logs"
-            if ! grep -Fq -- "$marker" <<<"$logs"; then
-                break
-            fi
-            if (( index == ${#gateway_containers[@]} - 1 )); then
-                return 0
-            fi
-        done
-        sleep_until_poll "$deadline"
-    done
-    die "timed out waiting for gateway logs to contain $marker"
-}
-
 etcdctl_with_timeout() {
     local command_timeout=$1
     shift
@@ -369,7 +443,7 @@ etcdctl_with_timeout() {
         --entrypoint /usr/local/bin/etcdctl \
         --volume "$tls_dir:/etc/etcd/tls:ro" \
         --env ETCDCTL_API=3 "$etcd_image" \
-        --endpoints=https://etcd:2379 \
+        --endpoints=https://etcd-origin:2379 \
         --cacert=/etc/etcd/tls/ca.crt \
         --dial-timeout="${command_timeout}s" \
         --command-timeout="${command_timeout}s" "$@"
@@ -432,9 +506,11 @@ write_recovery_evidence() {
     ca_sha256=$(openssl dgst -sha256 "$tls_dir/ca.crt" | awk '{print $NF}')
     server_cert_sha256=$(openssl dgst -sha256 "$tls_dir/server.crt" | awk '{print $NF}')
     for record_name in journal generation; do
-        printf '{"scope":"platform-recovery-v1","config_profile":"http-data-plane-v1","record":"%s","source_commit":"%s","image_id":"%s","config_sha256":"%s","before_generation":"%s","after_generation":"%s","probe_result":"pass","etcd_tls_peer":"etcd:2379","etcd_ca_sha256":"%s","etcd_server_cert_sha256":"%s","command":"scripts/etcd_recovery_smoke.sh <immutable-image>","attempt":"%s","output_sha256":"%s"}\n' \
+        printf '{"scope":"platform-recovery-v1","config_profile":"http-data-plane-v1","record":"%s","source_commit":"%s","image_id":"%s","config_sha256":"%s","before_generation":"%s","after_generation":"%s","probe_result":"pass","etcd_tls_peer":"etcd:2379","etcd_ca_sha256":"%s","etcd_server_cert_sha256":"%s","replica_before_identity":"%s","replica_after_identity":"%s","survivor_probe_count":"%s","survivor_window_probe_count":"%s","command":"scripts/etcd_recovery_smoke.sh <immutable-image>","attempt":"%s","output_sha256":"%s"}\n' \
             "$record_name" "$source_commit" "$image_id" "$config_sha256" "$before_generation" "$after_generation" \
-            "$ca_sha256" "$server_cert_sha256" "$run_id" "$output_sha256" >"$evidence_dir/$record_name.json"
+            "$ca_sha256" "$server_cert_sha256" "$restart_before_identity" "$restart_after_identity" \
+            "$restart_survivor_probe_count" "$restart_survivor_window_probe_count" \
+            "$run_id" "$output_sha256" >"$evidence_dir/$record_name.json"
     done
 }
 
@@ -466,12 +542,12 @@ docker network create "$data_network" >/dev/null
 docker network create "$control_network" >/dev/null
 
 record_step 'start etcd 3.6.13'
-docker run --detach --name "$etcd_container" --network "$data_network" --network-alias etcd \
+docker run --detach --name "$etcd_container" --network "$data_network" --network-alias etcd-origin \
     --volume "$tls_dir:/etc/etcd/tls:ro" "$etcd_image" \
     /usr/local/bin/etcd \
     --name=etcd0 --data-dir=/etcd-data \
     --listen-client-urls=https://0.0.0.0:2379 \
-    --advertise-client-urls=https://etcd:2379 \
+    --advertise-client-urls=https://etcd-origin:2379 \
     --listen-peer-urls=http://0.0.0.0:2380 \
     --initial-advertise-peer-urls=http://etcd:2380 \
     --initial-cluster=etcd0=http://etcd:2380 \
@@ -480,6 +556,12 @@ docker run --detach --name "$etcd_container" --network "$data_network" --network
     --key-file=/etc/etcd/tls/server.key \
     >/dev/null
 wait_etcd 'startup'
+
+record_step 'start etcd TCP gateway'
+	docker run --detach --name "$etcd_proxy_container" --network "$data_network" --network-alias etcd \
+		--entrypoint /usr/local/bin/etcd "$etcd_image" \
+		gateway start --listen-addr=0.0.0.0:2379 --endpoints=etcd-origin:2379 --retry-delay=1s \
+		>/dev/null
 
 record_step 'start upstream v1 and v2'
 start_upstream "$upstream_v1_container" "$upstream_v1_alias" v1
@@ -497,7 +579,6 @@ for gateway_container in "${gateway_containers[@]}"; do
         --env SSL_CERT_FILE=/etc/ssl/certs/etcd-ca.crt \
         --env APISIXGO_DEPLOYMENT_ETCD_HOST=https://etcd:2379 \
         --env APISIXGO_DEPLOYMENT_ETCD_TLS_VERIFY=true \
-        --env APISIXGO_SECURITY_PROFILE=strict \
         --env APISIXGO_APISIX_STATUS_IP=0.0.0.0 \
         --env HOME=/usr/local/apisix \
         --env APISIXGO_RUNTIME_PATHS_DATA_DIR=/usr/local/apisix/data \
@@ -581,13 +662,11 @@ record_step 'seed route before compaction gap'
 etcdctl_put "$etcd_prefix/routes/$stale_route_id" "$stale_route"
 wait_gateway_body 'stale-route-seeded' /stale v2
 
-record_step 'disconnect replicas from etcd'
-for gateway_container in "${gateway_containers[@]}"; do
-    docker network disconnect "$data_network" "$gateway_container"
-done
+record_step 'stop etcd TCP gateway to create revision gap'
+docker stop "$etcd_proxy_container" >/dev/null
 wait_gateway_probe 'compaction-gap-ready' /status/ready 200
 
-record_step 'mutate and compact etcd while replicas disconnected'
+record_step 'mutate and compact etcd behind stopped gateway'
 etcdctl_delete "$etcd_prefix/routes/$stale_route_id"
 etcdctl_put "$etcd_prefix/services/$service_id" "$service_v1"
 snapshot_json=$(etcdctl get "$etcd_prefix" --prefix --write-out=json 2>>"$run_dir/etcdctl.log")
@@ -597,13 +676,14 @@ revision=$(printf '%s\n' "$snapshot_json" | sed -n 's/.*"revision":[[:space:]]*\
 before_generation=$revision
 etcdctl compact "$revision" >>"$run_dir/etcdctl.log" 2>&1
 
-record_step 'reconnect replicas'
-for gateway_container in "${gateway_containers[@]}"; do
-    docker network connect "$data_network" "$gateway_container"
-done
+record_step 'replicas retain pre-gap state while disconnected'
+wait_gateway_body 'compaction-gap-stale-route' /stale v2
+wait_gateway_body 'compaction-gap-managed-v2' /managed v2
+
+record_step 'restart etcd TCP gateway after compaction'
+docker start "$etcd_proxy_container" >/dev/null
 
 record_step 'replicas recover compacted snapshot consistently'
-wait_gateway_log 'compaction-recovery' 'required revision has been compacted'
 wait_gateway_probe 'compaction-recovery-ready' /status/ready 200
 wait_gateway_status 'compaction-stale-route-removed' /stale 404
 wait_gateway_body 'compaction-managed-v1' /managed v1
@@ -611,9 +691,23 @@ wait_gateway_tls_body 'compaction-dynamic-ssl' /release-v2 v2
 wait_gateway_body 'compaction-route-v2' /release-v2 v2
 
 record_step 'restart one replica and recover committed journal state'
+restart_before_identity=$(docker inspect --format '{{.Id}} {{.State.StartedAt}}' "$gateway_a_container")
+start_survivor_monitor 1
+: >"$survivor_monitor_window"
 docker restart "$gateway_a_container" >/dev/null
-wait_gateway_probe 'replica-restart-ready' /status/ready 200
-wait_gateway_body 'replica-restart-managed' /managed v1
+wait_for_survivor_window_probe
+wait_http_status 'replica-restart-ready' "${gateway_status_urls[0]}/status/ready" 200
+wait_http_body 'replica-restart-managed' "${gateway_urls[0]}/managed" v1
+stop_survivor_monitor
+probe_survivor_once "${gateway_status_urls[1]}" "${gateway_urls[1]}" || \
+    die 'surviving replica failed after restart'
+restart_after_identity=$(docker inspect --format '{{.Id}} {{.State.StartedAt}}' "$gateway_a_container")
+[[ "$restart_before_identity" != "$restart_after_identity" ]] || \
+    die 'restarted replica identity did not change'
+printf '{"replica":"%s","before":"%s","after":"%s","survivor":"%s","survivor_probe_count":%s,"survivor_window_probe_count":%s}\n' \
+    "$gateway_a_container" "$restart_before_identity" "$restart_after_identity" \
+    "$gateway_b_container" "$restart_survivor_probe_count" \
+    "$restart_survivor_window_probe_count" >"$run_dir/replica-restart-identity.json"
 
 record_step 'delete SSL resource'
 etcdctl_delete "$etcd_prefix/ssls/$ssl_id"

@@ -8,6 +8,11 @@ on:
         required: false
         default: master
         type: string
+      rollback-release-tag:
+        description: Previously qualified final release used for upgrade and rollback
+        required: false
+        default: ''
+        type: string
   push:
     tags:
       - "v*-rc.*"
@@ -152,8 +157,11 @@ jobs:
       run-operational: true
       source-ref: ${{ inputs.ref || github.ref }}
       source-commit: ${{ needs.resolve-source.outputs.commit }}
+      rollback-release-tag: ${{ inputs.rollback-release-tag || vars.APISIX_GO_ROLLBACK_RELEASE_TAG }}
     permissions:
       contents: read
+      packages: read
+      attestations: read
 
   package-validation:
     name: RC Package Validation

@@ -343,15 +343,31 @@ case "${1:-}" in
         exit 0
         ;;
     stop)
-        : >"${FAKE_ETCD_STOPPED:?}"
+        container=${2:-}
+        if [[ "$container" == *etcd-proxy* ]]; then
+            : >"$state_dir/etcd-proxy-stopped"
+        else
+            : >"${FAKE_ETCD_STOPPED:?}"
+        fi
         exit 0
         ;;
     start)
-        rm -f "${FAKE_ETCD_STOPPED:?}"
-        : >"${FAKE_ETCD_RESTARTED:?}"
+        container=${2:-}
+        if [[ "$container" == *etcd-proxy* ]]; then
+            rm -f "$state_dir/etcd-proxy-stopped"
+        else
+            rm -f "${FAKE_ETCD_STOPPED:?}"
+            : >"${FAKE_ETCD_RESTARTED:?}"
+        fi
         exit 0
         ;;
     restart)
+        if [[ ${FAKE_FAIL_SURVIVOR_DURING_RESTART:-0} == 1 ]]; then
+            : >"$state_dir/restart-window"
+            sleep 0.1
+            rm -f "$state_dir/restart-window"
+        fi
+        : >"$state_dir/restart-complete"
         exit 0
         ;;
     exec)
@@ -359,20 +375,19 @@ case "${1:-}" in
         exit 0
         ;;
     logs)
-        container=${!#}
-        if [[ "$container" == *gateway* && -e "$state_dir/compaction" && \
-            -e "$state_dir/reconnected-after-compaction-$container" ]]; then
-            count=$(cat "$state_dir/gateway-log-count" 2>/dev/null || printf "0")
-            printf "%s\n" "$((count + 1))" >"$state_dir/gateway-log-count"
-            : >"$state_dir/compacted-log-$container"
-            printf "etcdserver: mvcc: required revision has been compacted\n"
-        else
-            printf "fake logs output\n"
-        fi
+        printf "fake logs output\n"
         exit 0
         ;;
     inspect)
-        printf "fake inspect output\n"
+        if [[ "$*" == *"--format"* ]]; then
+            if [[ -e "$state_dir/restart-complete" ]]; then
+                printf "fake-gateway-id 2026-08-29T05:00:01Z\n"
+            else
+                printf "fake-gateway-id 2026-08-29T05:00:00Z\n"
+            fi
+        else
+            printf "fake inspect output\n"
+        fi
         exit 0
         ;;
     rm|kill)
@@ -455,9 +470,16 @@ if [[ -z "$gateway" ]]; then
     printf "fake contract: unknown gateway port %s\n" "$port" >&2
     exit 7
 fi
+if [[ ${FAKE_FAIL_SURVIVOR_DURING_RESTART:-0} == 1 && \
+    -e "$state_dir/restart-window" && "$gateway" == *gateway-b-* ]]; then
+    exit 28
+fi
 printf "%s %s %s\n" "$gateway" "$protocol" "$path" >>"$state_dir/gateway-probes"
-if [[ -e "$state_dir/compaction" && -e "$state_dir/reconnected-after-compaction-$gateway" ]]; then
+if [[ -e "$state_dir/compaction" && ! -e "$state_dir/etcd-proxy-stopped" ]]; then
     printf "%s %s %s\n" "$gateway" "$protocol" "$path" >>"$state_dir/post-compaction-probes"
+fi
+if [[ -e "$state_dir/compaction" && -e "$state_dir/etcd-proxy-stopped" ]]; then
+    printf "%s %s %s\n" "$gateway" "$protocol" "$path" >>"$state_dir/pre-reconnect-compaction-probes"
 fi
 if [[ "$url" == https://* && ! -e "$state_dir/ssl" ]]; then
     printf "\\n" >>"$state_dir/ssl-failure"
@@ -470,7 +492,7 @@ body=
 case "$path" in
     /status/ready)
         body=ready
-        if [[ -n "$gateway" && -e "$state_dir/disconnected-$gateway" ]]; then
+        if [[ -n "$gateway" && -e "$state_dir/etcd-proxy-stopped" ]]; then
             printf "\\n" >>"$state_dir/disconnected-ready"
             printf "\\n" >>"$state_dir/disconnected-ready-$gateway"
         fi
@@ -498,6 +520,8 @@ case "$path" in
         if [[ ! -e "$state_dir/managed-route" ]]; then
             status=404
             body=not-found
+        elif [[ -e "$state_dir/compaction" && -e "$state_dir/etcd-proxy-stopped" ]]; then
+            body=v2
         else
             body=$(cat "$state_dir/service-version" 2>/dev/null || printf "v1")
         fi
@@ -507,7 +531,9 @@ case "$path" in
         body=not-found
         ;;
     /stale)
-        if [[ ! -e "$state_dir/stale-route" ]]; then
+        if [[ -e "$state_dir/compaction" && -e "$state_dir/etcd-proxy-stopped" ]]; then
+            body=v2
+        elif [[ ! -e "$state_dir/stale-route" ]]; then
             status=404
             body=not-found
         else
@@ -635,6 +661,28 @@ test_cleanup_on_failure() {
     assert_contains 'cleanup' "$output"
 }
 
+test_rejects_survivor_outage_during_replica_restart() {
+    local bin="$test_root/survivor-outage/bin"
+    local output="$test_root/survivor-outage.out"
+    local log="$test_root/survivor-outage.log"
+    local evidence="$test_root/survivor-outage-evidence"
+    mkdir -p "$bin"
+    write_fake_docker "$bin"
+    write_fake_curl "$bin"
+    write_fake_openssl "$bin"
+    : >"$log"
+    run_expect_failure "$output" env PATH="$bin:$original_path" \
+        FAKE_LOG="$log" FAKE_IMAGE_ID="$image_id" \
+        FAKE_STATE_DIR="$test_root/survivor-outage-state" \
+        FAKE_ETCD_STOPPED="$test_root/survivor-outage-stopped" \
+        FAKE_ETCD_RESTARTED="$test_root/survivor-outage-restarted" \
+        FAKE_FAIL_SURVIVOR_DURING_RESTART=1 \
+        SOURCE_COMMIT="$source_commit" RELEASE_EVIDENCE_ROOT="$evidence" \
+        ETCD_RECOVERY_TIMEOUT_SECONDS=2 ETCD_RECOVERY_POLL_INTERVAL_SECONDS=0 \
+        "$test_shell" "$runner" "$image_id"
+    assert_contains 'surviving replica failed during restart' "$output"
+}
+
 test_ordered_happy_path() {
     local bin="$test_root/happy/bin"
     local output="$test_root/happy.out"
@@ -651,7 +699,7 @@ test_ordered_happy_path() {
         FAKE_ETCD_STOPPED="$test_root/happy-stopped" \
         FAKE_ETCD_RESTARTED="$test_root/happy-restarted" \
         SOURCE_COMMIT="$source_commit" \
-        RELEASE_EVIDENCE_ROOT="$evidence" ETCD_RECOVERY_TIMEOUT_SECONDS=2 \
+        RELEASE_EVIDENCE_ROOT="$evidence" ETCD_RECOVERY_TIMEOUT_SECONDS=4 \
         "$test_shell" "$runner" "$image_id" >"$output" 2>&1; then
         sed -n '1,320p' "$output" >&2 || true
         fail 'happy-path runner failed'
@@ -664,6 +712,7 @@ test_ordered_happy_path() {
         'generate temporary CA and etcd/gateway certificates' \
         'network create' \
         'start etcd 3.6.13' \
+        'start etcd TCP gateway' \
         'start upstream v1 and v2' \
         'write route/upstream v1' \
         'start APISIX-Go replicas as 10001:10001' \
@@ -680,9 +729,10 @@ test_ordered_happy_path() {
         'update route to v2' \
         'replicas proxy route v2' \
         'seed route before compaction gap' \
-        'disconnect replicas from etcd' \
-        'mutate and compact etcd while replicas disconnected' \
-        'reconnect replicas' \
+        'stop etcd TCP gateway to create revision gap' \
+        'mutate and compact etcd behind stopped gateway' \
+        'replicas retain pre-gap state while disconnected' \
+        'restart etcd TCP gateway after compaction' \
         'replicas recover compacted snapshot consistently' \
         'restart one replica and recover committed journal state' \
         'delete SSL resource' \
@@ -693,12 +743,18 @@ test_ordered_happy_path() {
     assert_count 'docker network create' "$log" 2
     assert_count '--user 10001:10001' "$log" 2
     assert_count 'busybox:1.37.0' "$log" 2
-    assert_count 'docker run --detach --name apisix-release-etcd-' "$log" 1
+    assert_count 'docker run --detach --name apisix-release-etcd-' "$log" 2
     assert_at_least 'docker port ' "$log" 6
     assert_contains 'SSL_CERT_FILE' "$log"
     assert_contains 'https://etcd:2379' "$log"
     assert_contains 'APISIXGO_DEPLOYMENT_ETCD_TLS_VERIFY=true' "$log"
-    assert_contains 'APISIXGO_SECURITY_PROFILE=strict' "$log"
+    if grep -Fq -- 'APISIXGO_SECURITY_PROFILE=' "$log"; then
+        fail 'recovery gate overrides the production config security profile'
+    fi
+    assert_contains '/conf/config-production.yaml:/usr/local/apisix/conf/config-production.yaml:ro' "$log"
+    if grep -Fq -- 'config-qualification-candidate.yaml' "$log"; then
+        fail 'recovery gate stripped the qualification profile from the production config'
+    fi
     assert_contains 'HOME=/usr/local/apisix' "$log"
     assert_contains 'APISIXGO_RUNTIME_PATHS_DATA_DIR=/usr/local/apisix/data' "$log"
     assert_contains 'APISIXGO_RUNTIME_PATHS_RUNTIME_DIR=/usr/local/apisix/run' "$log"
@@ -731,13 +787,15 @@ test_ordered_happy_path() {
     assert_contains 'get /apisix --prefix --write-out=json' "$log"
     assert_contains 'compact 42' "$log"
     assert_contains 'docker restart apisix-release-gateway-a-' "$log"
+    assert_at_least 'docker inspect --format {{.Id}} {{.State.StartedAt}} apisix-release-gateway-a-' "$log" 2
+    assert_contains 'docker stop apisix-release-etcd-proxy-' "$log"
+    assert_contains 'docker start apisix-release-etcd-proxy-' "$log"
+    assert_contains 'gateway start --listen-addr=0.0.0.0:2379 --endpoints=etcd-origin:2379 --retry-delay=1s' "$log"
     data_network=$(cat "$test_root/happy-state/data-network")
     control_network=$(cat "$test_root/happy-state/control-network")
     assert_count "docker network connect $control_network " "$log" 2
-    assert_count "docker network disconnect $data_network " "$log" 2
-    assert_count "docker network connect $data_network " "$log" 2
-    if grep -Fq -- "docker network disconnect $control_network " "$log"; then
-        fail 'compaction gap disconnected the control network'
+    if grep -Fq -- 'docker network disconnect ' "$log"; then
+        fail 'compaction gap used container network disconnect instead of the TCP gateway'
     fi
     assert_at_least '--resolve release.example.test:' "$log" 2
     assert_at_least 'https://release.example.test:' "$log" 2
@@ -745,20 +803,16 @@ test_ordered_happy_path() {
     (( disconnected_ready >= 2 )) || fail "wanted last-good readiness on both disconnected replicas, got $disconnected_ready"
     ssl_failures=$(wc -l <"$test_root/happy-state/ssl-failure" 2>/dev/null || printf '0')
     (( ssl_failures >= 2 )) || fail "wanted fresh TLS failure on both deleted SSL probes, got $ssl_failures"
-    gateway_log_count=$(cat "$test_root/happy-state/gateway-log-count" 2>/dev/null || printf '0')
-    (( gateway_log_count >= 4 )) || fail "wanted compaction logs from both replicas in addition to cleanup, got $gateway_log_count"
     gateway_name_count=$(sort -u "$test_root/happy-state/gateway-names" | wc -l | tr -d ' ')
     (( gateway_name_count == 2 )) || fail "wanted two distinct gateway names, got $gateway_name_count"
     while IFS= read -r gateway; do
         [[ -n "$gateway" ]] || continue
         [[ -s "$test_root/happy-state/disconnected-ready-$gateway" ]] || \
             fail "missing disconnected readiness probe for $gateway"
-        [[ -e "$test_root/happy-state/reconnected-after-compaction-$gateway" ]] || \
-            fail "missing post-compaction reconnect for $gateway"
-        [[ -e "$test_root/happy-state/compacted-log-$gateway" ]] || \
-            fail "missing compacted-revision log for $gateway"
         [[ -s "$test_root/happy-state/ssl-failure-$gateway" ]] || \
             fail "missing deleted-SSL failure probe for $gateway"
+        assert_contains "$gateway http /stale" "$test_root/happy-state/pre-reconnect-compaction-probes"
+        assert_contains "$gateway http /managed" "$test_root/happy-state/pre-reconnect-compaction-probes"
         assert_contains "$gateway status /status/ready" "$test_root/happy-state/post-compaction-probes"
         assert_contains "$gateway http /managed" "$test_root/happy-state/post-compaction-probes"
         assert_contains "$gateway http /release-v2" "$test_root/happy-state/post-compaction-probes"
@@ -778,22 +832,41 @@ test_ordered_happy_path() {
         assert_contains '"before_generation":"' "$record"
         assert_contains '"after_generation":"' "$record"
         assert_contains '"probe_result":"pass"' "$record"
+        assert_contains '"replica_before_identity":"fake-gateway-id 2026-08-29T05:00:00Z"' "$record"
+        assert_contains '"replica_after_identity":"fake-gateway-id 2026-08-29T05:00:01Z"' "$record"
+        assert_contains '"survivor_probe_count":"' "$record"
+        assert_contains '"survivor_window_probe_count":"' "$record"
         assert_contains '"output_sha256":"' "$record"
     done
+    local restart_identity
+    restart_identity=$(dirname "$transcript")/replica-restart-identity.json
+    [[ -s "$restart_identity" ]] || fail 'missing replica restart identity evidence'
+    assert_contains '"before":"fake-gateway-id 2026-08-29T05:00:00Z"' "$restart_identity"
+    assert_contains '"after":"fake-gateway-id 2026-08-29T05:00:01Z"' "$restart_identity"
+    assert_contains '"survivor_probe_count":' "$restart_identity"
+    assert_contains '"survivor_window_probe_count":' "$restart_identity"
+    local run_dir survivor_window_probe_count
+    run_dir=$(dirname "$transcript")
+    [[ -s "$run_dir/survivor-monitor.started" ]] || fail 'survivor monitor did not record its startup handshake'
+    [[ -s "$run_dir/survivor-monitor.window.count" ]] || fail 'survivor monitor did not record restart-window probes'
+    survivor_window_probe_count=$(<"$run_dir/survivor-monitor.window.count")
+    [[ "$survivor_window_probe_count" =~ ^[1-9][0-9]*$ ]] || \
+        fail "wanted at least one survivor probe in the restart window, got $survivor_window_probe_count"
     assert_order "$log" \
         'docker network create apisix-release-etcd-' \
         'docker run --detach --name apisix-release-etcd-' \
+        'docker run --detach --name apisix-release-etcd-proxy-' \
         'docker run --detach --name apisix-release-upstream-v1-' \
         'docker run --detach --name apisix-release-upstream-v2-' \
         'put /apisix/routes/release-route' \
         'docker run --detach --name apisix-release-gateway-' \
         'docker stop apisix-release-etcd-' \
         'docker start apisix-release-etcd-' \
-        'docker network disconnect ' \
+        'docker stop apisix-release-etcd-proxy-' \
         'del /apisix/routes/release-stale-route' \
         'get /apisix --prefix --write-out=json' \
         'compact 42' \
-        "docker network connect $data_network " \
+        'docker start apisix-release-etcd-proxy-' \
         'docker restart apisix-release-gateway-a-' \
         'del /apisix/ssls/release-ssl' \
         'docker rm -f ' \
@@ -806,6 +879,7 @@ test_missing_tools
 test_rejects_mutable_image
 test_bounded_timeout
 test_cleanup_on_failure
+test_rejects_survivor_outage_during_replica_restart
 test_ordered_happy_path
 
 printf 'etcd recovery fixture: PASS\n'

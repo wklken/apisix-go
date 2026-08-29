@@ -325,7 +325,7 @@ func TestHTTPDataPlaneProductionConfigLoadsWhenQualified(t *testing.T) {
 	}
 	want := ProfileSelection{
 		Compatibility: CompatibilityAPISIX317,
-		Security:      SecurityStrict,
+		Security:      SecurityCompat,
 		Qualification: QualificationHTTPDataPlaneV1,
 	}
 	if got := cfg.Profiles(); got != want {
@@ -366,9 +366,9 @@ func TestHTTPDataPlaneProductionConfigSelectsControlledTuple(t *testing.T) {
 		t.Fatalf("production config has unknown fields: %v", unused)
 	}
 	if cfg.CompatibilityTarget != CompatibilityAPISIX317 ||
-		cfg.SecurityProfile != SecurityStrict ||
+		cfg.SecurityProfile != SecurityCompat ||
 		cfg.QualificationProfile != QualificationHTTPDataPlaneV1 {
-		t.Fatalf("production tuple = %q/%q/%q, want apisix-3.17/strict/http-data-plane-v1",
+		t.Fatalf("production tuple = %q/%q/%q, want apisix-3.17/compat/http-data-plane-v1",
 			cfg.CompatibilityTarget, cfg.SecurityProfile, cfg.QualificationProfile)
 	}
 	if cfg.Deployment.Role != "data_plane" || cfg.Deployment.RoleDataPlane.ConfigProvider != "etcd" {
@@ -415,7 +415,7 @@ func TestDefaultConfigDisablesAdmin(t *testing.T) {
 }
 
 func TestHTTPDataPlaneQualificationAcceptsValidConfig(t *testing.T) {
-	if err := validateRuntimeConfig(validProfileSelectionConfig(), qualifiedProfileTestManifest(t)); err != nil {
+	if err := validateRuntimeConfig(validProfileSelectionConfig(t), qualifiedProfileTestManifest(t)); err != nil {
 		t.Fatalf("validateRuntimeConfig() error = %v, want valid HTTP qualification", err)
 	}
 }
@@ -489,17 +489,17 @@ func TestUnsupportedRuntimeConfigRejectsEveryMode(t *testing.T) {
 			},
 		},
 		{
-			name: "strict HTTP qualification",
+			name: "compat HTTP qualification",
 			value: ProfileSelection{
 				Compatibility: CompatibilityAPISIX317,
-				Security:      SecurityStrict,
+				Security:      SecurityCompat,
 				Qualification: QualificationHTTPDataPlaneV1,
 			},
 		},
 	} {
 		for _, test := range tests {
 			t.Run(selection.name+"/"+test.name, func(t *testing.T) {
-				cfg := validProfileSelectionConfig()
+				cfg := validProfileSelectionConfig(t)
 				cfg.CompatibilityTarget = selection.value.Compatibility
 				cfg.SecurityProfile = selection.value.Security
 				cfg.QualificationProfile = selection.value.Qualification
@@ -512,7 +512,11 @@ func TestUnsupportedRuntimeConfigRejectsEveryMode(t *testing.T) {
 				if !strings.Contains(err.Error(), test.field) {
 					t.Fatalf("validateRuntimeConfig() error = %q, want field %q", err, test.field)
 				}
-				if !strings.Contains(err.Error(), "Go data plane") {
+				if test.field == "apisix.enable_admin" && selection.value.Qualification != QualificationNone {
+					if !strings.Contains(err.Error(), string(QualificationHTTPDataPlaneV1)) {
+						t.Fatalf("validateRuntimeConfig() error = %q, want HTTP qualification policy", err)
+					}
+				} else if !strings.Contains(err.Error(), "Go data plane") {
 					t.Fatalf("validateRuntimeConfig() error = %q, want global unsupported-runtime policy", err)
 				}
 				if strings.Contains(err.Error(), "logger.wasm") ||
@@ -530,6 +534,13 @@ func TestProductionPolicyRejectsOneMutatedFieldPerRow(t *testing.T) {
 		field  string
 		mutate func(*Config)
 	}{
+		{
+			name:  "admin API",
+			field: "apisix.enable_admin",
+			mutate: func(cfg *Config) {
+				cfg.Apisix.EnableAdmin = true
+			},
+		},
 		{
 			name:  "debug",
 			field: "debug",
@@ -725,7 +736,7 @@ func TestProductionPolicyRejectsOneMutatedFieldPerRow(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			cfg := validProfileSelectionConfig()
+			cfg := validProfileSelectionConfig(t)
 			test.mutate(cfg)
 
 			err := validateRuntimeConfig(cfg, qualifiedProfileTestManifest(t))
@@ -735,9 +746,8 @@ func TestProductionPolicyRejectsOneMutatedFieldPerRow(t *testing.T) {
 			if !strings.Contains(err.Error(), test.field) {
 				t.Fatalf("validateRuntimeConfig() error = %q, want field %q", err, test.field)
 			}
-			if !strings.Contains(err.Error(), string(SecurityStrict)) &&
-				!strings.Contains(err.Error(), string(QualificationHTTPDataPlaneV1)) {
-				t.Fatalf("validateRuntimeConfig() error = %q, want responsible security or qualification axis", err)
+			if !strings.Contains(err.Error(), string(QualificationHTTPDataPlaneV1)) {
+				t.Fatalf("validateRuntimeConfig() error = %q, want responsible qualification axis", err)
 			}
 			if strings.Contains(err.Error(), "/var/log/apisix") || strings.Contains(err.Error(), "$request") {
 				t.Fatalf("validateRuntimeConfig() error leaked config value: %q", err)
@@ -747,7 +757,7 @@ func TestProductionPolicyRejectsOneMutatedFieldPerRow(t *testing.T) {
 }
 
 func TestValidateProcessAccessLogsAllowsLogRotateOwnedSelection(t *testing.T) {
-	cfg := validProfileSelectionConfig()
+	cfg := validProfileSelectionConfig(t)
 	cfg.Plugins = append(cfg.Plugins, "log-rotate")
 	cfg.NginxConfig.HTTP.EnableAccessLog = true
 	cfg.NginxConfig.HTTP.AccessLog = "/var/log/apisix/access.log"

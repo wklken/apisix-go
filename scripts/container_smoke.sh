@@ -3,6 +3,7 @@ set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 image=${APISIX_IMAGE:-apisix-go:container-smoke}
+container_bin=${CONTAINER_BIN:-docker}
 network="apisix-smoke-${$}"
 gateway="apisix-smoke-gateway-${$}"
 upstream="apisix-smoke-upstream-${$}"
@@ -25,8 +26,30 @@ cleanup() {
     rmdir "$lock_dir" >/dev/null 2>&1 || true
 }
 
-require_command docker
+require_command "$container_bin"
 require_command curl
+docker() {
+    command "$container_bin" "$@"
+}
+probe_mode=${CONTAINER_SMOKE_PROBE_MODE:-auto}
+if [[ "$probe_mode" == auto ]]; then
+    if [[ $(basename "$container_bin") == podman ]] && docker machine ssh true >/dev/null 2>&1; then
+        probe_mode=podman-machine
+    else
+        probe_mode=host
+    fi
+fi
+if [[ "$probe_mode" != host && "$probe_mode" != podman-machine ]]; then
+    printf 'CONTAINER_SMOKE_PROBE_MODE must be auto, host, or podman-machine\n' >&2
+    exit 1
+fi
+curl() {
+    if [[ "$probe_mode" == podman-machine ]]; then
+        docker machine ssh -- curl "$@"
+        return
+    fi
+    command curl "$@"
+}
 if ! mkdir "$lock_dir" 2>/dev/null; then
     printf 'another container smoke owns %s\n' "$lock_dir" >&2
     exit 1
@@ -39,6 +62,9 @@ apisix:
   node_listen:
     - ip: 0.0.0.0
       port: 9080
+  status:
+    ip: 0.0.0.0
+    port: 7085
 apisix_go:
   runtime_paths:
     data_dir: /usr/local/apisix/data
@@ -90,12 +116,32 @@ routes:
         "${upstream_ip}:8081": 1
 #END
 YAML
-docker run --detach --name "$gateway" --network "$network" --publish 127.0.0.1::9080 \
+docker run --detach --name "$gateway" --network "$network" \
+    --publish 127.0.0.1::9080 --publish 127.0.0.1::7085 \
     --volume "$temp_dir/config.yaml:/usr/local/apisix/conf/config.yaml:ro" \
     --volume "$temp_dir/apisix.yaml:/usr/local/apisix/conf/apisix.yaml:ro" \
     "$image" -c /usr/local/apisix/conf/config.yaml >/dev/null
 
 published=$(docker port "$gateway" 9080/tcp | head -n 1)
+status_published=$(docker port "$gateway" 7085/tcp | head -n 1)
+status_deadline=$((SECONDS + 90))
+until curl --fail --silent --show-error "http://${status_published}/status" >/dev/null; do
+    if (( SECONDS >= status_deadline )); then
+        docker logs "$gateway" >&2
+        printf 'liveness probe did not succeed before timeout\n' >&2
+        exit 1
+    fi
+    sleep 1
+done
+ready_deadline=$((SECONDS + 90))
+until curl --fail --silent --show-error "http://${status_published}/status/ready" >/dev/null; do
+    if (( SECONDS >= ready_deadline )); then
+        docker logs "$gateway" >&2
+        printf 'readiness probe did not succeed before timeout\n' >&2
+        exit 1
+    fi
+    sleep 1
+done
 proxy_deadline=$((SECONDS + 90))
 response=""
 until response=$(curl --fail --silent --show-error "http://${published}/smoke"); do

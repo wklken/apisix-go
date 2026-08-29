@@ -36,7 +36,7 @@ func TestProfileSelectionValidate(t *testing.T) {
 			name: "qualified production manifest",
 			in: ProfileSelection{
 				Compatibility: CompatibilityAPISIX317,
-				Security:      SecurityStrict,
+				Security:      SecurityCompat,
 				Qualification: QualificationHTTPDataPlaneV1,
 			},
 		},
@@ -81,7 +81,7 @@ func TestProfileSelectionValidate(t *testing.T) {
 	t.Run("known but not yet qualified", func(t *testing.T) {
 		selection := ProfileSelection{
 			Compatibility: CompatibilityAPISIX317,
-			Security:      SecurityStrict,
+			Security:      SecurityCompat,
 			Qualification: QualificationHTTPDataPlaneV1,
 		}
 		err := selection.Validate(unqualifiedProfileTestManifest(t))
@@ -94,12 +94,12 @@ func TestProfileSelectionValidate(t *testing.T) {
 func TestProfileSelectionConfigAxes(t *testing.T) {
 	cfg := &Config{
 		CompatibilityTarget:  CompatibilityAPISIX317,
-		SecurityProfile:      SecurityStrict,
+		SecurityProfile:      SecurityCompat,
 		QualificationProfile: QualificationHTTPDataPlaneV1,
 	}
 	want := ProfileSelection{
 		Compatibility: CompatibilityAPISIX317,
-		Security:      SecurityStrict,
+		Security:      SecurityCompat,
 		Qualification: QualificationHTTPDataPlaneV1,
 	}
 	if got := cfg.Profiles(); got != want {
@@ -111,7 +111,7 @@ func TestProfileSelectionRuntimePoliciesAreOrthogonal(t *testing.T) {
 	manifest := loadProfileTestManifest(t)
 
 	t.Run("compat security preserves APISIX transport defaults", func(t *testing.T) {
-		cfg := validProfileSelectionConfig()
+		cfg := validProfileSelectionConfig(t)
 		cfg.SecurityProfile = SecurityCompat
 		cfg.QualificationProfile = QualificationNone
 		cfg.Debug = true
@@ -125,7 +125,8 @@ func TestProfileSelectionRuntimePoliciesAreOrthogonal(t *testing.T) {
 	})
 
 	t.Run("strict security applies without qualification", func(t *testing.T) {
-		cfg := validProfileSelectionConfig()
+		cfg := validProfileSelectionConfig(t)
+		cfg.SecurityProfile = SecurityStrict
 		cfg.QualificationProfile = QualificationNone
 		cfg.Plugins = []string{"request-id"}
 		cfg.Debug = true
@@ -136,16 +137,14 @@ func TestProfileSelectionRuntimePoliciesAreOrthogonal(t *testing.T) {
 		}
 	})
 
-	t.Run("HTTP qualification applies under compatibility security", func(t *testing.T) {
-		cfg := validProfileSelectionConfig()
-		cfg.SecurityProfile = SecurityCompat
+	t.Run("HTTP qualification owns production hardening under compatibility security", func(t *testing.T) {
+		cfg := validProfileSelectionConfig(t)
 		cfg.Debug = true
-		cfg.Apisix.TrustedAddresses = nil
-		cfg.Deployment.Etcd.Host = []string{"http://etcd.example:2379"}
-		cfg.Deployment.Etcd.TLS.Verify = nil
 
-		if err := validateRuntimeConfig(cfg, qualifiedProfileTestManifest(t)); err != nil {
-			t.Fatalf("validateRuntimeConfig() error = %v, want HTTP qualification independent of strict security", err)
+		err := validateRuntimeConfig(cfg, qualifiedProfileTestManifest(t))
+		if err == nil || !strings.Contains(err.Error(), string(QualificationHTTPDataPlaneV1)) ||
+			!strings.Contains(err.Error(), "debug") {
+			t.Fatalf("validateRuntimeConfig() error = %v, want HTTP qualification debug rejection", err)
 		}
 	})
 }
@@ -160,7 +159,7 @@ func TestHTTPDataPlaneQualificationUsesManifestPluginContract(t *testing.T) {
 		t.Fatal("test manifest does not qualify every required plugin")
 	}
 
-	cfg := validProfileSelectionConfig()
+	cfg := validProfileSelectionConfig(t)
 	if err := validateRuntimeConfig(cfg, manifest); err != nil {
 		t.Fatalf("validateRuntimeConfig() error = %v, want valid manifest-derived plugin contract", err)
 	}
@@ -215,11 +214,17 @@ func unqualifiedProfileTestManifest(t *testing.T) *capability.Manifest {
 	return manifest
 }
 
-func validProfileSelectionConfig() *Config {
+func validProfileSelectionConfig(t *testing.T) *Config {
+	t.Helper()
+	manifest := loadProfileTestManifest(t)
+	profile, ok := manifest.Qualification(string(QualificationHTTPDataPlaneV1))
+	if !ok {
+		t.Fatalf("qualification profile %q is missing", QualificationHTTPDataPlaneV1)
+	}
 	verify := true
 	return &Config{
 		CompatibilityTarget:  CompatibilityAPISIX317,
-		SecurityProfile:      SecurityStrict,
+		SecurityProfile:      SecurityCompat,
 		QualificationProfile: QualificationHTTPDataPlaneV1,
 		Apisix: Apisix{
 			NodeListen:       []NodeListen{{Ip: "0.0.0.0", Port: 9080}},
@@ -231,7 +236,7 @@ func validProfileSelectionConfig() *Config {
 			ClientBodyTimeout: 60,
 			ClientMaxBodySize: 10 * 1024 * 1024,
 		}},
-		Plugins: []string{"basic-auth", "cors", "jwt-auth", "key-auth", "prometheus", "request-id"},
+		Plugins: append([]string(nil), profile.RequiredPlugins...),
 		Proxy:   Proxy{MaxIdleConns: 1024, MaxIdleConnsPerHost: 256, MaxConnsPerHost: 512, MaxInFlight: 1024},
 		Deployment: Deployment{
 			Role:          "data_plane",

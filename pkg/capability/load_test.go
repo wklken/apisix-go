@@ -85,9 +85,13 @@ func TestQualifiedPluginsDistinguishesUnknownProfile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	profile, ok := m.Qualification("http-data-plane-v1")
+	if !ok {
+		t.Fatal("http-data-plane-v1 qualification profile missing")
+	}
 	qualified := m.QualifiedPlugins("http-data-plane-v1")
-	if !slices.Equal(qualified, []string{"basic-auth", "cors", "jwt-auth", "key-auth", "prometheus", "request-id"}) {
-		t.Fatalf("QualifiedPlugins() = %#v, want [basic-auth cors jwt-auth key-auth prometheus request-id]", qualified)
+	if !slices.Equal(qualified, profile.RequiredPlugins) {
+		t.Fatalf("QualifiedPlugins() = %#v, want required plugins %#v", qualified, profile.RequiredPlugins)
 	}
 	if unknown := m.QualifiedPlugins("missing"); unknown != nil {
 		t.Fatalf("QualifiedPlugins(missing) = %#v, want nil", unknown)
@@ -156,6 +160,42 @@ func TestAllPluginProfileSelectsEveryGoApplicableAPISIXCapability(t *testing.T) 
 	}
 	if !slices.Equal(profile.Domains, []string{"http", "stream"}) {
 		t.Fatalf("qualification domains = %#v, want [http stream]", profile.Domains)
+	}
+}
+
+func TestHTTPDataPlaneQualificationMatchesQualifiedHTTPSubset(t *testing.T) {
+	m, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	allPlugins, ok := m.Qualification("apisix-3.17-all-plugins-v1")
+	if !ok {
+		t.Fatal("apisix-3.17-all-plugins-v1 qualification profile missing")
+	}
+	httpDataPlane, ok := m.Qualification("http-data-plane-v1")
+	if !ok {
+		t.Fatal("http-data-plane-v1 qualification profile missing")
+	}
+
+	want := make([]string, 0, len(allPlugins.RequiredPlugins))
+	for _, name := range allPlugins.RequiredPlugins {
+		plugin, found := m.Plugin(name)
+		if !found {
+			t.Fatalf("all-plugin qualification references missing plugin %q", name)
+		}
+		if slices.Contains(plugin.Domains, DomainHTTP) {
+			want = append(want, name)
+		}
+	}
+	if len(want) != 110 {
+		t.Fatalf("qualified HTTP subset count = %d, want 110", len(want))
+	}
+	if slices.Contains(want, "mqtt-proxy") {
+		t.Fatal("qualified HTTP subset unexpectedly contains stream-only mqtt-proxy")
+	}
+	if !slices.Equal(httpDataPlane.RequiredPlugins, want) {
+		t.Fatalf("http-data-plane-v1 required plugins = %#v, want ordered HTTP subset %#v",
+			httpDataPlane.RequiredPlugins, want)
 	}
 }
 

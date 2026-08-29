@@ -24,7 +24,7 @@ func TestGrpcWebStreamingExecutorReachesUpstreamAndFramesOnce(t *testing.T) {
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
-	binding := plugin.BindPlugin("grpc-web", p, plugin.ScopeRoute, plugin.ResourceProvenance{
+	binding := bindPluginForTest("grpc-web", p, plugin.ScopeRoute, plugin.ResourceProvenance{
 		Kind: plugin.ResourceRoute,
 		ID:   "grpc-web",
 	})
@@ -108,10 +108,10 @@ func TestGrpcWebResponsePlanCompressesBinaryAndTextAfterFraming(t *testing.T) {
 			}
 
 			bindings := []plugin.Binding{
-				plugin.BindPlugin("grpc-web", grpcPlugin, plugin.ScopeRoute, plugin.ResourceProvenance{
+				bindPluginForTest("grpc-web", grpcPlugin, plugin.ScopeRoute, plugin.ResourceProvenance{
 					Kind: plugin.ResourceRoute, ID: "grpc-web",
 				}),
-				plugin.BindPlugin("gzip", compressor, plugin.ScopeRoute, plugin.ResourceProvenance{
+				bindPluginForTest("gzip", compressor, plugin.ScopeRoute, plugin.ResourceProvenance{
 					Kind: plugin.ResourceRoute, ID: "gzip",
 				}),
 			}

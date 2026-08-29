@@ -551,7 +551,7 @@ func TestResponseRewriteSelectsExactlyOneConfiguredResponseOwner(t *testing.T) {
 						return base.StopRequest(r)
 					},
 				)
-				bindings = append(bindings, BindPlugin(
+				bindings = append(bindings, bindPluginForTest(
 					"key-auth",
 					auth,
 					ScopeRoute,
@@ -604,7 +604,7 @@ func TestDynamicResponseRewriteConditionalFallbackRunsExactlyOnce(t *testing.T) 
 	)
 	static := []Binding{
 		checkedResponseBinding(t, "response-rewrite", staticRewrite, ScopeRoute, "route-1"),
-		BindPlugin(
+		bindPluginForTest(
 			"key-auth",
 			auth,
 			ScopeRoute,

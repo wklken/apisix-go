@@ -22,7 +22,7 @@ func TestGzipStreamingNotAcceptableIsBodyless406(t *testing.T) {
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
-	binding := plugin.BindPlugin("gzip", p, plugin.ScopeRoute, plugin.ResourceProvenance{
+	binding := bindPluginForTest("gzip", p, plugin.ScopeRoute, plugin.ResourceProvenance{
 		Kind: plugin.ResourceRoute,
 		ID:   "gzip",
 	})
@@ -57,7 +57,7 @@ func TestGzipStreamingExecutorIgnoresDeflateOffer(t *testing.T) {
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
-	binding := plugin.BindPlugin("gzip", p, plugin.ScopeRoute, plugin.ResourceProvenance{
+	binding := bindPluginForTest("gzip", p, plugin.ScopeRoute, plugin.ResourceProvenance{
 		Kind: plugin.ResourceRoute, ID: "deflate",
 	})
 	executor, err := plugin.NewStreamingResponseExecutor([]plugin.Binding{binding})

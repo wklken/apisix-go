@@ -107,7 +107,7 @@ func TestRequestPhaseMetadataContract(t *testing.T) {
 			phase:  p,
 			filter: filter,
 		}
-		handler := plugin.NewExecutor(wrapped).Then(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		handler := requestPipelineForTest(wrapped).Then(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			terminalCalls++
 			w.WriteHeader(http.StatusNoContent)
 		}))
@@ -132,7 +132,7 @@ func TestRequestPhaseMetadataContract(t *testing.T) {
 			t.Fatalf("compile filter: %v", err)
 		}
 		wrapped := metadataRequestPlugin{Plugin: p, phase: p, filter: filter}
-		handler := plugin.NewExecutor(wrapped).Then(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		handler := requestPipelineForTest(wrapped).Then(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			terminalCalls++
 			w.WriteHeader(http.StatusNoContent)
 		}))
@@ -155,19 +155,19 @@ func TestRequestPhaseMetadataContract(t *testing.T) {
 		low := &requestPhaseMetadataPlugin{name: "explicit-low", priority: 100, order: &order}
 		handler := assembleRouteExecutor(
 			[]plugin.Binding{
-				plugin.BindPlugin(
+				bindPluginForTest(
 					"synthetic-high",
 					high,
 					plugin.ScopeRoute,
 					plugin.ResourceProvenance{Kind: plugin.ResourceRoute, ID: "route-high"},
 				),
-				plugin.BindPlugin(
+				bindPluginForTest(
 					"synthetic-legacy",
 					legacy,
 					plugin.ScopeRoute,
 					plugin.ResourceProvenance{Kind: plugin.ResourceRoute, ID: "route-legacy"},
 				),
-				plugin.BindPlugin(
+				bindPluginForTest(
 					"synthetic-low",
 					low,
 					plugin.ScopeRoute,
@@ -201,7 +201,7 @@ func TestRequestPhaseMetadataContract(t *testing.T) {
 			phase:         p,
 			errorResponse: map[string]any{"message": "custom"},
 		}
-		handler := plugin.NewExecutor(wrapped).Then(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		handler := requestPipelineForTest(wrapped).Then(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			terminalCalls++
 			w.WriteHeader(http.StatusNoContent)
 		}))
@@ -224,7 +224,7 @@ func TestRequestPhaseMetadataContract(t *testing.T) {
 		routePlugin := &requestPhaseMetadataPlugin{name: "synthetic-auth", priority: 200, phaseCalls: &routeCalls}
 		consumerPlugin := &requestPhaseMetadataPlugin{name: "synthetic-auth", priority: 100, phaseCalls: &consumerCalls}
 		pipeline := plugin.NewRequestPipeline(
-			[]plugin.Binding{plugin.BindPlugin(
+			[]plugin.Binding{bindPluginForTest(
 				"synthetic-auth",
 				routePlugin,
 				plugin.ScopeRoute,
@@ -234,7 +234,7 @@ func TestRequestPhaseMetadataContract(t *testing.T) {
 				return plugin.ConsumerResolution{
 					Request:  r,
 					Resolved: true,
-					Bindings: []plugin.Binding{plugin.BindPlugin(
+					Bindings: []plugin.Binding{bindPluginForTest(
 						"synthetic-auth",
 						consumerPlugin,
 						plugin.ScopeConsumer,

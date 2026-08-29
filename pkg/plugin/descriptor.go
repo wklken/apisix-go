@@ -125,8 +125,7 @@ func descriptorForRuntimeFactory(factory string, p Plugin) (Descriptor, error) {
 }
 
 // ResolveDescriptorForFactory loads the embedded manifest and resolves one
-// initialized plugin. It is the direct bridge used by the legacy Builder
-// until the immutable compiler replaces that owner.
+// initialized plugin for compiler-owned materialization.
 func ResolveDescriptorForFactory(factory string, p Plugin) (Descriptor, error) {
 	return descriptorForRuntimeFactory(factory, p)
 }

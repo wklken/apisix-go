@@ -141,10 +141,6 @@ func TestPlan16CapabilityRegistryCoversExactHTTPIdentities(t *testing.T) {
 	}
 }
 
-type chainTestPlugin struct {
-	base.BasePlugin
-}
-
 type pluginWithoutBase struct{}
 
 func (p *pluginWithoutBase) Init() error                            { return nil }
@@ -155,30 +151,3 @@ func (p *pluginWithoutBase) GetSchema() string                      { return "" 
 func (p *pluginWithoutBase) GetMetadataSchema() string              { return "" }
 func (p *pluginWithoutBase) GetPriority() int                       { return 0 }
 func (p *pluginWithoutBase) GetName() string                        { return "test-plugin-without-base" }
-
-func (p *chainTestPlugin) Init() error     { return nil }
-func (p *chainTestPlugin) PostInit() error { return nil }
-func (p *chainTestPlugin) Handler(next http.Handler) http.Handler {
-	return next
-}
-func (p *chainTestPlugin) Config() any { return nil }
-
-func TestBuildPluginChainDoesNotMutateCallerSlice(t *testing.T) {
-	low := &chainTestPlugin{}
-	low.Name = "low"
-	low.SetPriority(10)
-	high := &chainTestPlugin{}
-	high.Name = "high"
-	high.SetPriority(100)
-
-	plugins := []Plugin{low, high}
-	BuildPluginChain(plugins...)
-
-	if plugins[0] != low || plugins[1] != high {
-		t.Fatalf(
-			"BuildPluginChain mutated the caller slice: got [%s %s], want [low high]",
-			plugins[0].GetName(),
-			plugins[1].GetName(),
-		)
-	}
-}

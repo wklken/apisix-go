@@ -62,19 +62,19 @@ func (p *benchmarkLogPhase) RunLogPhase(base.LogSnapshot) error { return nil }
 // binding so it exercises the real override/materialization path rather than
 // replacing the static request-id binding with the same factory identity.
 func BenchmarkRequestPipelineHotPath(b *testing.B) {
-	static := BindPlugin(
+	static := bindPluginForTest(
 		"request-id",
 		newBenchmarkRequestPhase("benchmark-static-request-id"),
 		ScopeRoute,
 		ResourceProvenance{Kind: ResourceRoute, ID: "benchmark"},
 	)
-	dynamic := BindPlugin(
+	dynamic := bindPluginForTest(
 		"proxy-rewrite",
 		newBenchmarkRequestPhase("benchmark-consumer-proxy-rewrite"),
 		ScopeConsumer,
 		ResourceProvenance{Kind: ResourceConsumer, ID: "benchmark-consumer"},
 	)
-	loggerBinding := BindPlugin(
+	loggerBinding := bindPluginForTest(
 		"http-logger",
 		newBenchmarkLogPhase("benchmark-http-logger"),
 		ScopeRoute,

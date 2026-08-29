@@ -731,8 +731,7 @@ func TestJWTAuthRouteChainUsesAnonymousConsumer(t *testing.T) {
 	}, routeResource, base.Dependencies{Consumers: &testConsumerLookup{
 		byKey: map[string]resource.Consumer{consumer.Username: consumer},
 	}})
-	handler := withRequestPipeline(
-		pluginpkg.BuildPluginChain(binding.Plugin),
+	handler := withRequestPipelineForTest(pluginChainForTest{binding.Plugin},
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if got := apisixctx.GetApisixVar(r, "$consumer_name"); got != "route-jwt-anonymous" {
 				t.Fatalf("consumer name = %v, want route-jwt-anonymous", got)
@@ -926,8 +925,7 @@ func TestErrorPageRouteChainRewritesConfiguredMetadata(t *testing.T) {
 		"127.0.0.1:9080",
 		base.Dependencies{Config: testEffectiveConfig(), Metadata: metadata},
 	)
-	handler := withRequestPipeline(
-		pluginpkg.BuildPluginChain(binding.Plugin),
+	handler := withRequestPipelineForTest(pluginChainForTest{binding.Plugin},
 		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusNotFound)
 			_, _ = w.Write([]byte("original"))
@@ -1049,7 +1047,7 @@ func buildRoutePluginChainWithFallback(
 		Plugins: map[string]resource.PluginConfig{name: config},
 	}
 	binding := testScopedSecretPluginBinding(t, name, config, routeResource)
-	return withRequestPipeline(pluginpkg.BuildPluginChain(binding.Plugin), fallback)
+	return withRequestPipelineForTest(pluginChainForTest{binding.Plugin}, fallback)
 }
 
 const routeOASSpec = `{"openapi":"3.0.0","info":{"title":"route-test","version":"1.0.0"},"paths":{"/pets":{"get":{"parameters":[{"name":"id","in":"query","required":true,"schema":{"type":"integer"}}],"responses":{"204":{"description":"ok"}}}}}}`

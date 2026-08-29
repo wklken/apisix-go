@@ -75,7 +75,7 @@ func bindScopedTestPlugin(
 	scope plugin.Scope,
 	provenance plugin.ResourceProvenance,
 ) plugin.Binding {
-	binding := plugin.BindPlugin(factory, p, scope, provenance)
+	binding := bindPluginForTest(factory, p, scope, provenance)
 	binding.Priority = p.GetPriority()
 	return binding
 }
@@ -130,7 +130,7 @@ func TestScopedRewriteUsesPriorityOnlyWithinScope(t *testing.T) {
 				plugin.ResourceProvenance{Kind: plugin.ResourceRoute, ID: "route-low"},
 			),
 			bindScopedTestPlugin(
-				"request-id",
+				"proxy-rewrite",
 				&scopedRewriteTestPlugin{name: "route-high", priority: 100, order: &order},
 				plugin.ScopeRoute,
 				plugin.ResourceProvenance{Kind: plugin.ResourceRoute, ID: "route-high"},

@@ -139,7 +139,7 @@ func serveBufferedTestPipeline(
 	w http.ResponseWriter,
 ) *apisixctx.RequestLifecycle {
 	t.Helper()
-	request, lifecycle, _ := executorRequest(t)
+	request, lifecycle := executorRequest(t)
 	NewRequestPipeline(bindings, resolver).
 		WithBufferedResponseExecutor(executor).
 		Then(terminal).

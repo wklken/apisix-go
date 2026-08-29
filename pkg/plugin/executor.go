@@ -1,7 +1,6 @@
 package plugin
 
 import (
-	"cmp"
 	"context"
 	"fmt"
 	"io"
@@ -661,7 +660,7 @@ func (p RequestPipeline) buildPostResolutionHandler(
 	handler = wrapScopedRequestStage(handler, bindings, RequestStageRewrite, ScopeRoute)
 	legacy := legacyRemainderBindings(bindings)
 	if len(legacy) > 0 {
-		legacyHandler := Executor{bindings: legacy}.thenLegacy(handler, legacy)
+		legacyHandler := wrapLegacyBindings(handler, legacy)
 		transformCount := 0
 		for _, binding := range legacy {
 			if binding.Plugin != nil && isResponseTransformPlugin(binding.Plugin.GetName()) {
@@ -951,31 +950,6 @@ func resolveBindingsForPlan(bindings []Binding) ([]Binding, error) {
 	return resolved, nil
 }
 
-// BindPlugin records the exact factory name and resolves its audited request
-// stage. Unknown names remain in the legacy remainder for compatibility.
-func BindPlugin(
-	factoryName string,
-	p Plugin,
-	scope Scope,
-	provenance ResourceProvenance,
-) Binding {
-	if binding, err := BindPluginChecked(factoryName, p, scope, provenance); err == nil {
-		binding.Priority = p.GetPriority()
-		return binding
-	}
-	priority := 0
-	if p != nil {
-		priority = p.GetPriority()
-	}
-	return Binding{
-		Plugin:     p,
-		Descriptor: Descriptor{Factory: factoryName, Priority: priority},
-		Priority:   priority,
-		Scope:      scope,
-		Provenance: provenance,
-	}
-}
-
 // BindPluginChecked is the strict production constructor. It records the
 // exact factory key and writes any config-derived request stage into the
 // immutable Binding before it can enter a pipeline.
@@ -1110,63 +1084,7 @@ func bindResolvedPlugin(
 	}, nil
 }
 
-// Executor owns an immutable snapshot of either a legacy plugin list or
-// scoped bindings, plus the response transform count captured at build time.
-type Executor struct {
-	bindings       []Binding
-	scoped         bool
-	transformCount int
-}
-
-func NewExecutor(plugins ...Plugin) Executor {
-	sorted := append([]Plugin(nil), plugins...)
-	slices.SortFunc(sorted, func(a, b Plugin) int {
-		return cmp.Compare(b.GetPriority(), a.GetPriority())
-	})
-
-	transformCount := 0
-	for _, plugin := range sorted {
-		if isResponseTransformPlugin(plugin.GetName()) {
-			transformCount++
-		}
-	}
-	bindings := make([]Binding, len(sorted))
-	for i, plugin := range sorted {
-		bindings[i] = Binding{Plugin: plugin, Descriptor: Descriptor{Factory: plugin.GetName()}}
-	}
-	return Executor{bindings: bindings, transformCount: transformCount}
-}
-
-// NewScopedExecutor clones the supplied bindings and executes only system and
-// global audited rewrite stages by scope while retaining route rewrites and
-// every other plugin in the legacy priority chain until the auth/consumer
-// boundary is migrated.
-func NewScopedExecutor(bindings ...Binding) Executor {
-	cloned := append([]Binding(nil), bindings...)
-	transformCount := 0
-	for _, binding := range cloned {
-		if binding.Plugin != nil && isResponseTransformPlugin(binding.Plugin.GetName()) {
-			transformCount++
-		}
-	}
-	return Executor{bindings: cloned, scoped: true, transformCount: transformCount}
-}
-
-func (e Executor) Then(terminal http.Handler) http.Handler {
-	handler := terminalHandler(terminal)
-	if !e.scoped {
-		return base.WithTransformPipeline(e.transformCount)(e.thenLegacy(handler, e.bindings))
-	}
-
-	legacy := e.legacyBindings()
-	handler = e.thenLegacy(handler, legacy)
-	for _, scope := range []Scope{ScopeGlobal, ScopeSystem} {
-		handler = e.thenScopedRewrite(handler, scope)
-	}
-	return base.WithTransformPipeline(e.transformCount)(handler)
-}
-
-func (e Executor) thenLegacy(handler http.Handler, bindings []Binding) http.Handler {
+func wrapLegacyBindings(handler http.Handler, bindings []Binding) http.Handler {
 	for _, current := range slices.Backward(bindings) {
 		if current.Plugin == nil {
 			continue
@@ -1176,54 +1094,15 @@ func (e Executor) thenLegacy(handler http.Handler, bindings []Binding) http.Hand
 	return handler
 }
 
-func (e Executor) legacyBindings() []Binding {
-	legacy := make([]Binding, 0, len(e.bindings))
-	for _, binding := range e.bindings {
-		if binding.Plugin == nil || e.isScopedRewrite(binding) {
-			continue
-		}
-		legacy = append(legacy, binding)
-	}
-	slices.SortStableFunc(legacy, compareLegacyBindings)
-	return legacy
-}
-
-func compareLegacyBindings(a, b Binding) int {
-	if priority := cmp.Compare(b.Priority, a.Priority); priority != 0 {
-		return priority
-	}
-	return cmp.Compare(a.Descriptor.Factory, b.Descriptor.Factory)
-}
-
-func (e Executor) isScopedRewrite(binding Binding) bool {
-	if binding.Descriptor.requestStage != RequestStageRewrite {
-		return false
-	}
-	switch binding.Scope {
-	case ScopeSystem, ScopeGlobal:
+func isResponseTransformPlugin(name string) bool {
+	switch name {
+	case "proxy-cache", "echo", "response-rewrite", "serverless-pre-function", "serverless-post-function",
+		"brotli", "ai-rate-limiting", "grpc-transcode", "exit-transformer", "body-transformer",
+		"error-page", "graphql-proxy-cache":
 		return true
 	default:
 		return false
 	}
-}
-
-func (e Executor) thenScopedRewrite(next http.Handler, scope Scope) http.Handler {
-	rewrites := make([]Binding, 0, len(e.bindings))
-	for _, binding := range e.bindings {
-		if binding.Scope != scope || !e.isScopedRewrite(binding) {
-			continue
-		}
-		rewrites = append(rewrites, binding)
-	}
-	slices.SortStableFunc(rewrites, compareBindings)
-	for _, binding := range slices.Backward(rewrites) {
-		next = e.scopedRewriteHandler(binding, next)
-	}
-	return next
-}
-
-func (e Executor) scopedRewriteHandler(binding Binding, next http.Handler) http.Handler {
-	return requestStageHandler(binding, next)
 }
 
 func terminalHandler(terminal http.Handler) http.Handler {

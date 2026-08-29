@@ -255,7 +255,7 @@ func matchedRouteLogBindings(
 			resource.Service{},
 			"127.0.0.1:9080",
 		),
-		plugin.BindPlugin(
+		bindPluginForTest(
 			"http-logger",
 			capture,
 			logScope,

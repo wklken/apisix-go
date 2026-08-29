@@ -220,7 +220,7 @@ func TestDynamicBoundedWinnerRejectsConflictBeforeTerminal(t *testing.T) {
 		descriptor: base.BindingPhaseDescriptor{RequestStage: "none", BufferedBody: true},
 	}
 	responseBinding := checkedRouteBinding(t, "echo", responsePlugin, plugin.ScopeConsumer)
-	conflict := plugin.BindPlugin("gzip", &routeBufferedPlugin{name: "gzip"}, plugin.ScopeConsumer,
+	conflict := bindPluginForTest("gzip", &routeBufferedPlugin{name: "gzip"}, plugin.ScopeConsumer,
 		plugin.ResourceProvenance{Kind: plugin.ResourceConsumer, ID: "conflict"})
 	terminalCalls := 0
 	response := serveBufferedRoute(

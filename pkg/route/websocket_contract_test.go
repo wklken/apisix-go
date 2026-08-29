@@ -293,7 +293,7 @@ func TestTransparentUpgradeSkipsDynamicConsumerHeaderHook(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildResponsePlan() error = %v", err)
 	}
-	binding := plugin.BindPlugin(
+	binding := bindPluginForTest(
 		"dynamic-websocket-header",
 		dynamic,
 		plugin.ScopeConsumer,

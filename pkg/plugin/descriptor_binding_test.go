@@ -188,7 +188,7 @@ func TestDescriptorStageRunsHandlerAndPropagatesReplacementRequest(t *testing.T)
 		t.Fatal(err)
 	}
 	var terminalRequest *http.Request
-	NewScopedExecutor(binding).Then(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+	NewRequestPipeline([]Binding{binding}, nil).Then(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		terminalRequest = r
 	})).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
 	if terminalRequest == nil ||

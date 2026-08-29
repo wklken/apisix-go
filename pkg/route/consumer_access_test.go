@@ -222,7 +222,7 @@ func TestPlan14V2DeferredLegacyEffectiveWinnerRunsOnce(t *testing.T) {
 	consumer := consumerAccessLegacy("consumer", 50, &order)
 	pipeline := plugin.NewRequestPipeline(
 		[]plugin.Binding{
-			plugin.BindPlugin(
+			bindPluginForTest(
 				"same-name",
 				route,
 				plugin.ScopeRoute,
@@ -234,7 +234,7 @@ func TestPlan14V2DeferredLegacyEffectiveWinnerRunsOnce(t *testing.T) {
 				Request:  r,
 				Resolved: true,
 				Bindings: []plugin.Binding{
-					plugin.BindPlugin(
+					bindPluginForTest(
 						"same-name",
 						consumer,
 						plugin.ScopeConsumer,
@@ -263,13 +263,13 @@ func TestPlan14V2DeferredLegacyDoesNotObserveAuthFailure(t *testing.T) {
 	legacy := consumerAccessLegacy("legacy", 10, &order)
 	pipeline := plugin.NewRequestPipeline(
 		[]plugin.Binding{
-			plugin.BindPlugin(
+			bindPluginForTest(
 				"jwt-auth",
 				auth,
 				plugin.ScopeRoute,
 				plugin.ResourceProvenance{Kind: plugin.ResourceRoute, ID: "auth"},
 			),
-			plugin.BindPlugin(
+			bindPluginForTest(
 				"legacy",
 				legacy,
 				plugin.ScopeRoute,

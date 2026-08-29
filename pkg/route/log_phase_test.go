@@ -65,7 +65,7 @@ func TestRoutePipelineInstallsStaticLogExecutorBeforeTerminal(t *testing.T) {
 	target := &metadataLogContractPlugin{metadataResponseContractPlugin: metadataResponseContractPlugin{
 		name: "http-logger",
 	}}
-	binding := pluginpkg.BindPlugin(
+	binding := bindPluginForTest(
 		"http-logger",
 		target,
 		pluginpkg.ScopeRoute,
@@ -578,11 +578,11 @@ func TestMetadataLogSanitizersEvaluateFiltersAgainstSamePreSanitizedSnapshot(t *
 		name: "http-logger",
 	}}
 	bindings := []pluginpkg.Binding{
-		pluginpkg.BindPlugin("data-mask", global, pluginpkg.ScopeGlobal,
+		bindPluginForTest("data-mask", global, pluginpkg.ScopeGlobal,
 			pluginpkg.ResourceProvenance{Kind: pluginpkg.ResourceGlobalRule, ID: "global-mask"}),
-		pluginpkg.BindPlugin("data-mask", wrappedRoute, pluginpkg.ScopeRoute,
+		bindPluginForTest("data-mask", wrappedRoute, pluginpkg.ScopeRoute,
 			pluginpkg.ResourceProvenance{Kind: pluginpkg.ResourceRoute, ID: "route-mask"}),
-		pluginpkg.BindPlugin("http-logger", logger, pluginpkg.ScopeRoute,
+		bindPluginForTest("http-logger", logger, pluginpkg.ScopeRoute,
 			pluginpkg.ResourceProvenance{Kind: pluginpkg.ResourceRoute, ID: "route-mask"}),
 	}
 	executor, err := pluginpkg.NewLogExecutorFromBindings(bindings)

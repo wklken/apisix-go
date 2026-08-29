@@ -46,8 +46,7 @@ var _ pluginpkg.Plugin = (*recordingPlugin)(nil)
 
 func TestBeforeProxyHookRunsOnceAfterTransformsAndBeforeFallback(t *testing.T) {
 	var order []string
-	fallback := withRequestPipeline(
-		pluginpkg.BuildPluginChain(),
+	fallback := pluginpkg.NewRequestPipeline(nil, nil).Then(
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			order = append(order, "fallback:"+r.URL.Path)
 			w.WriteHeader(http.StatusNoContent)
@@ -72,15 +71,15 @@ func TestBeforeProxyHookRunsOnceAfterTransformsAndBeforeFallback(t *testing.T) {
 	}
 }
 
-func TestBuildRoutePluginChainOrdersGlobalAndLocalPluginsByPriority(t *testing.T) {
+func TestRouteRequestPipelineRunsGlobalBeforeRouteLegacyPlugins(t *testing.T) {
 	order := []string{}
-	local := []pluginpkg.Binding{pluginpkg.BindPlugin(
+	local := []pluginpkg.Binding{bindPluginForTest(
 		"local-auth",
 		&recordingPlugin{name: "local-auth", priority: 2500, order: &order},
 		pluginpkg.ScopeRoute,
 		pluginpkg.ResourceProvenance{Kind: pluginpkg.ResourceRoute, ID: "route-order"},
 	)}
-	global := []pluginpkg.Binding{pluginpkg.BindPlugin(
+	global := []pluginpkg.Binding{bindPluginForTest(
 		"global-label",
 		&recordingPlugin{name: "global-label", priority: 2399, order: &order},
 		pluginpkg.ScopeGlobal,
@@ -97,8 +96,8 @@ func TestBuildRoutePluginChainOrdersGlobalAndLocalPluginsByPriority(t *testing.T
 	if response.Code != http.StatusNoContent {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusNoContent)
 	}
-	if got := strings.Join(order, ","); got != "local-auth,global-label,upstream" {
-		t.Fatalf("execution order = %q, want local-auth,global-label,upstream", got)
+	if got := strings.Join(order, ","); got != "global-label,local-auth,upstream" {
+		t.Fatalf("execution order = %q, want global-label,local-auth,upstream", got)
 	}
 }
 

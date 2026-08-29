@@ -1172,7 +1172,7 @@ func TestLogExecutorOriginalRegistrationUsesMaterializedBindings(t *testing.T) {
 
 func TestRequestPipelineRegistersLogCompositeBeforeTerminalPanic(t *testing.T) {
 	loggerPlugin := newLogExecutorTestPlugin("logger", 1, nil)
-	binding := BindPlugin(
+	binding := bindPluginForTest(
 		"http-logger",
 		loggerPlugin,
 		ScopeRoute,
@@ -1217,13 +1217,13 @@ func TestRequestPipelineRegistersLogCompositeBeforeTerminalPanic(t *testing.T) {
 func TestRequestPipelineUsesResolvedConsumerLogWinner(t *testing.T) {
 	routeLogger := newLogExecutorTestPlugin("route", 1, nil)
 	consumerLogger := newLogExecutorTestPlugin("consumer", 2, nil)
-	routeBinding := BindPlugin(
+	routeBinding := bindPluginForTest(
 		"http-logger",
 		routeLogger,
 		ScopeRoute,
 		ResourceProvenance{Kind: ResourceRoute, ID: "route-1"},
 	)
-	consumerBinding := BindPlugin(
+	consumerBinding := bindPluginForTest(
 		"http-logger",
 		consumerLogger,
 		ScopeConsumer,
@@ -1262,11 +1262,11 @@ func TestPrometheusLogBindingPrefersRouteOverGlobal(t *testing.T) {
 	global := newLogExecutorTestPlugin("global-prometheus", 1, nil)
 	route := newLogExecutorTestPlugin("route-prometheus", 2, nil)
 	bindings := []Binding{
-		BindPlugin("prometheus", global, ScopeGlobal, ResourceProvenance{
+		bindPluginForTest("prometheus", global, ScopeGlobal, ResourceProvenance{
 			Kind: ResourceGlobalRule,
 			ID:   "global-1",
 		}),
-		BindPlugin("prometheus", route, ScopeRoute, ResourceProvenance{
+		bindPluginForTest("prometheus", route, ScopeRoute, ResourceProvenance{
 			Kind: ResourceRoute,
 			ID:   "route-1",
 		}),
@@ -1300,7 +1300,7 @@ func TestPrometheusLogBindingPrefersRouteOverGlobal(t *testing.T) {
 
 func TestPrometheusLogBindingUsesGlobalWhenRouteAbsent(t *testing.T) {
 	global := newLogExecutorTestPlugin("global-prometheus", 1, nil)
-	binding := BindPlugin("prometheus", global, ScopeGlobal, ResourceProvenance{
+	binding := bindPluginForTest("prometheus", global, ScopeGlobal, ResourceProvenance{
 		Kind: ResourceGlobalRule,
 		ID:   "global-1",
 	})
@@ -1330,7 +1330,7 @@ func TestPrometheusLogBindingUsesGlobalWhenRouteAbsent(t *testing.T) {
 
 func TestPrometheusConsumerBindingRunsWithEmptyStaticLogExecutor(t *testing.T) {
 	consumer := newLogExecutorTestPlugin("consumer-prometheus", 2, nil)
-	consumerBinding := BindPlugin("prometheus", consumer, ScopeConsumer, ResourceProvenance{
+	consumerBinding := bindPluginForTest("prometheus", consumer, ScopeConsumer, ResourceProvenance{
 		Kind: ResourceConsumer,
 		ID:   "consumer-1",
 	})
@@ -1362,7 +1362,7 @@ func TestPrometheusConsumerBindingRunsWithEmptyStaticLogExecutor(t *testing.T) {
 
 func TestEmptyLogExecutorSkipsRequestStateAndFinalizer(t *testing.T) {
 	requestContext := &requestcontext.Plugin{}
-	binding := BindPlugin("request-context", requestContext, ScopeSystem, ResourceProvenance{
+	binding := bindPluginForTest("request-context", requestContext, ScopeSystem, ResourceProvenance{
 		Kind: ResourceSystem,
 		ID:   "request-context",
 	})
@@ -1406,13 +1406,13 @@ func TestRequestPipelineLogsFinalReplacementRequest(t *testing.T) {
 		},
 	)
 	bindings := []Binding{
-		BindPlugin(
+		bindPluginForTest(
 			"jwt-auth",
 			auth,
 			ScopeRoute,
 			ResourceProvenance{Kind: ResourceRoute, ID: "route-1"},
 		),
-		BindPlugin(
+		bindPluginForTest(
 			"http-logger",
 			loggerPlugin,
 			ScopeRoute,
@@ -1470,7 +1470,7 @@ func TestRequestPipelineAuthStopWithBufferedResponseRegistersLogComposite(t *tes
 	bindings := []Binding{
 		pipelineBinding("basic-auth", auth, ScopeRoute, 10),
 		checkedResponseBinding(t, "response-rewrite", bounded, ScopeRoute, "route-1"),
-		BindPlugin(
+		bindPluginForTest(
 			"http-logger",
 			loggerPlugin,
 			ScopeRoute,
@@ -1571,7 +1571,7 @@ func TestRequestPipelineAuthStopStillSanitizesKeyAuthLogSnapshot(t *testing.T) {
 
 func TestRequestPipelinePreparationErrorRegistersLogComposite(t *testing.T) {
 	loggerPlugin := newLogExecutorTestPlugin("logger", 1, nil)
-	binding := BindPlugin(
+	binding := bindPluginForTest(
 		"http-logger",
 		loggerPlugin,
 		ScopeRoute,

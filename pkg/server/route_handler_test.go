@@ -73,7 +73,7 @@ func TestServeRouteRequestOwnsConsumerIdentityAtIngress(t *testing.T) {
 			loggerPlugin := &panicSnapshotLogPlugin{}
 			loggerPlugin.Name = "test-ingress-logger"
 			bindings := []pluginpkg.Binding{
-				pluginpkg.BindPlugin(
+				bindPluginForTest(
 					"http-logger",
 					loggerPlugin,
 					pluginpkg.ScopeRoute,
@@ -83,7 +83,7 @@ func TestServeRouteRequestOwnsConsumerIdentityAtIngress(t *testing.T) {
 			if test.withAuth {
 				authPlugin := &rejectingIngressAuthPlugin{}
 				authPlugin.Name = "jwt-auth"
-				bindings = append(bindings, pluginpkg.BindPlugin(
+				bindings = append(bindings, bindPluginForTest(
 					"jwt-auth",
 					authPlugin,
 					pluginpkg.ScopeRoute,
@@ -1314,7 +1314,7 @@ func TestPluginPhaseClosurePreTerminalPanicLogsAndRecycles(t *testing.T) {
 	generation := newRouteRequestGenerationFixture(t, 322)
 	loggerPlugin := &panicSnapshotLogPlugin{}
 	loggerPlugin.Name = "test-logger"
-	loggerBinding := pluginpkg.BindPlugin(
+	loggerBinding := bindPluginForTest(
 		"http-logger",
 		loggerPlugin,
 		pluginpkg.ScopeRoute,
@@ -1362,7 +1362,7 @@ func TestPluginPhaseClosureLoggerPanicStillFinalizesAndRecycles(t *testing.T) {
 	generation := newRouteRequestGenerationFixture(t, 323)
 	loggerPlugin := &panicSnapshotLogPlugin{panicLog: true}
 	loggerPlugin.Name = "test-logger"
-	loggerBinding := pluginpkg.BindPlugin(
+	loggerBinding := bindPluginForTest(
 		"http-logger",
 		loggerPlugin,
 		pluginpkg.ScopeRoute,

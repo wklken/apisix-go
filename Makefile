@@ -62,8 +62,8 @@ build:
 docker-build:
 	docker build --build-arg VERSION="$(VERSION)" --build-arg COMMIT="$(COMMIT)" --build-arg BUILD_TIME="$(BUILD_TIME)" --build-arg GO_VERSION="$(GO_VERSION)" -t apisix-go .
 
-.PHONY: release-etcd-recovery
-release-etcd-recovery:
+.PHONY: candidate-etcd-recovery
+candidate-etcd-recovery:
 	@test -n "$(APISIX_IMAGE)" || (printf 'APISIX_IMAGE is required\n' >&2; exit 1)
 	bash scripts/etcd_recovery_smoke.sh "$(APISIX_IMAGE)"
 

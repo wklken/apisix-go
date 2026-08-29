@@ -1,20 +1,10 @@
-name: Security And Release Gates
+name: HTTP Candidate Gates
 
 on:
   workflow_call:
     inputs:
-      publish-image:
-        description: Publish the verified image to GHCR.
-        required: false
-        type: boolean
-        default: false
       run-operational:
         description: Run the etcd recovery and proxy soak validation gates.
-        required: false
-        type: boolean
-        default: false
-      run-upgrade-rollback:
-        description: Run upgrade and rollback validation against a previous final release.
         required: false
         type: boolean
         default: false
@@ -28,62 +18,33 @@ on:
         required: false
         type: string
         default: ''
-      rollback-release-tag:
-        description: Distinct previously verified final release used for upgrade and rollback.
-        required: false
-        type: string
-        default: ''
-    outputs:
-      image-reference:
-        description: The published image reference verified by its immutable digest.
-        value: ${{ jobs.publish-image.outputs.image-reference }}
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: security-release-${{ github.workflow }}-${{ github.ref }}
+  group: http-candidate-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
-  EVIDENCE_DIR: .cache/release-evidence
+  EVIDENCE_DIR: .cache/candidate-evidence
   IMAGE_REPOSITORY: ghcr.io/${{ github.repository }}
 
 jobs:
   validate-inputs:
-    name: Validate Release Inputs
+    name: Validate Candidate Inputs
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       contents: read
     steps:
-      - name: Reject publication without operational validation
+      - name: Validate immutable source identity
         env:
-          PUBLISH_IMAGE: ${{ inputs.publish-image }}
-          RUN_OPERATIONAL: ${{ inputs.run-operational }}
-          RUN_UPGRADE_ROLLBACK: ${{ inputs.run-upgrade-rollback }}
           SOURCE_REF: ${{ inputs.source-ref }}
           SOURCE_COMMIT: ${{ inputs.source-commit || github.sha }}
-          ROLLBACK_RELEASE_TAG: ${{ inputs.rollback-release-tag }}
         run: |
           set -euo pipefail
-          if [[ "$PUBLISH_IMAGE" == true && "$RUN_OPERATIONAL" != true ]]; then
-            printf 'publish-image requires run-operational=true\n' >&2
-            exit 1
-          fi
-          if [[ "$RUN_UPGRADE_ROLLBACK" == true && "$RUN_OPERATIONAL" != true ]]; then
-            printf 'run-upgrade-rollback requires run-operational=true\n' >&2
-            exit 1
-          fi
-          if [[ "$RUN_UPGRADE_ROLLBACK" == true || "$PUBLISH_IMAGE" == true ]] && [[ -z "$ROLLBACK_RELEASE_TAG" ]]; then
-            printf 'upgrade/rollback or publication requires rollback-release-tag\n' >&2
-            exit 1
-          fi
-          if [[ -n "$ROLLBACK_RELEASE_TAG" && ! "$ROLLBACK_RELEASE_TAG" =~ ^v[0-9] ]]; then
-            printf 'rollback-release-tag must name a final v* release\n' >&2
-            exit 1
-          fi
           if [[ -z "$SOURCE_REF" ]]; then
             printf 'source-ref is not set; using the triggering ref\n'
           else
@@ -130,7 +91,7 @@ jobs:
     permissions:
       contents: read
     env:
-      EVIDENCE_DIR: .cache/release-evidence
+      EVIDENCE_DIR: .cache/candidate-evidence
     steps:
       - name: Checkout selected source ref
         uses: actions/checkout@v7.0.1
@@ -152,9 +113,9 @@ jobs:
           set -euo pipefail
           commit=$(git rev-parse HEAD)
           [[ "$commit" == "$EXPECTED_SOURCE_COMMIT" ]]
-          selected_ref=${SELECTED_SOURCE_REF:-${GITHUB_REF:-security-release-gate}}
+          selected_ref=${SELECTED_SOURCE_REF:-${GITHUB_REF:-http-candidate-gate}}
           version=${selected_ref##*/}
-          [[ -n "$version" ]] || version=security-release-gate
+          [[ -n "$version" ]] || version=http-candidate-gate
           go_version=$(go version)
           mkdir -p "$EVIDENCE_DIR"
           printf '%s\n' "$commit" | tee "$EVIDENCE_DIR/source-commit.txt"
@@ -183,13 +144,13 @@ jobs:
           platforms: linux/amd64
           load: true
           push: false
-          cache-from: type=gha,scope=security-release-amd64
-          cache-to: type=gha,mode=max,scope=security-release-amd64
+          cache-from: type=gha,scope=http-candidate-amd64
+          cache-to: type=gha,mode=max,scope=http-candidate-amd64
           tags: ${{ steps.metadata.outputs.tags }}
           build-args: |
             VERSION=${{ steps.source.outputs.version }}
             COMMIT=${{ steps.source.outputs.commit }}
-            BUILD_TIME=security-release-gate
+            BUILD_TIME=http-candidate-gate
             GO_VERSION=${{ steps.source.outputs.go_version }}
           labels: |
             ${{ steps.metadata.outputs.labels }}
@@ -234,25 +195,14 @@ jobs:
           )
 
       - name: Write immutable local image metadata
-        id: local-image
         env:
           APISIX_IMAGE: ${{ steps.metadata.outputs.tags }}
-          SOURCE_REF: ${{ inputs.source-ref || github.ref }}
-          SOURCE_COMMIT: ${{ steps.source.outputs.commit }}
         run: |
           set -euo pipefail
           image_digest=$(docker image inspect --format '{{.Id}}' "$APISIX_IMAGE")
           [[ "$image_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
           printf '%s\n' "$APISIX_IMAGE" >"$EVIDENCE_DIR/image-reference.txt"
           printf '%s\n' "$image_digest" >"$EVIDENCE_DIR/image-config-digest.txt"
-          bash scripts/release_metadata.sh \
-            "$APISIX_IMAGE" \
-            "$image_digest" \
-            "$EVIDENCE_DIR/rollback-metadata.json" \
-            "$EVIDENCE_DIR/sbom.cdx.json" \
-            "$EVIDENCE_DIR/trivy.json" \
-            "$EVIDENCE_DIR/apisix-image.tar.gz" \
-            "$EVIDENCE_DIR/apisix-image.tar.gz.sha256"
 
       - name: Reject high or critical image vulnerabilities
         run: |
@@ -263,11 +213,11 @@ jobs:
             | length == 0
           ' "$EVIDENCE_DIR/trivy.json" >/dev/null
 
-      - name: Upload qualified image evidence
+      - name: Upload candidate image evidence
         if: always()
         uses: actions/upload-artifact@v7.0.1
         with:
-          name: qualified-image-${{ github.run_id }}
+          name: candidate-image-${{ github.run_id }}
           path: ${{ env.EVIDENCE_DIR }}
           if-no-files-found: error
           include-hidden-files: true
@@ -285,7 +235,7 @@ jobs:
     permissions:
       contents: read
     env:
-      EVIDENCE_DIR: .cache/release-evidence
+      EVIDENCE_DIR: .cache/candidate-evidence
     steps:
       - name: Checkout selected source ref
         uses: actions/checkout@v7.0.1
@@ -298,7 +248,7 @@ jobs:
       - name: Download qualified image archive
         uses: actions/download-artifact@v8.0.1
         with:
-          name: qualified-image-${{ github.run_id }}
+          name: candidate-image-${{ github.run_id }}
           path: ${{ env.EVIDENCE_DIR }}
 
       - name: Verify and load qualified image
@@ -327,7 +277,7 @@ jobs:
         uses: actions/upload-artifact@v7.0.1
         with:
           name: etcd-recovery-${{ github.run_id }}
-          path: .cache/release-evidence/etcd-recovery
+          path: .cache/candidate-evidence/etcd-recovery
           if-no-files-found: warn
           include-hidden-files: true
           retention-days: 30
@@ -344,7 +294,7 @@ jobs:
     permissions:
       contents: read
     env:
-      EVIDENCE_DIR: .cache/release-evidence
+      EVIDENCE_DIR: .cache/candidate-evidence
     steps:
       - name: Checkout selected source ref
         uses: actions/checkout@v7.0.1
@@ -375,299 +325,7 @@ jobs:
         uses: actions/upload-artifact@v7.0.1
         with:
           name: proxy-soak-${{ github.run_id }}
-          path: .cache/release-evidence/proxy-soak.json
+          path: .cache/candidate-evidence/proxy-soak.json
           if-no-files-found: warn
           include-hidden-files: true
           retention-days: 30
-
-  upgrade-rollback:
-    name: Rolling Upgrade And Rollback
-    needs:
-      - validate-inputs
-      - race-and-vulnerability
-      - container-evidence
-    if: ${{ inputs.run-upgrade-rollback || inputs.publish-image }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    permissions:
-      contents: read
-      packages: read
-      attestations: read
-    env:
-      EVIDENCE_DIR: .cache/release-evidence
-      ROLLBACK_RELEASE_TAG: ${{ inputs.rollback-release-tag }}
-    steps:
-      - name: Checkout selected source ref
-        uses: actions/checkout@v7.0.1
-        with:
-          ref: ${{ inputs.source-commit || github.sha }}
-
-      - name: Record checked-out commit
-        run: echo "checked-out commit=$(git rev-parse HEAD)"
-
-      - name: Download qualified candidate image archive
-        uses: actions/download-artifact@v8.0.1
-        with:
-          name: qualified-image-${{ github.run_id }}
-          path: ${{ env.EVIDENCE_DIR }}
-
-      - name: Verify and load qualified candidate image
-        id: candidate
-        run: |
-          set -euo pipefail
-          (
-            cd "$EVIDENCE_DIR"
-            sha256sum -c apisix-image.tar.gz.sha256
-          )
-          docker load --input "$EVIDENCE_DIR/apisix-image.tar.gz"
-          candidate_reference=$(<"$EVIDENCE_DIR/image-reference.txt")
-          candidate_id=$(docker image inspect --format '{{.Id}}' "$candidate_reference")
-          [[ "$candidate_id" == "$(<"$EVIDENCE_DIR/image-config-digest.txt")" ]]
-          printf 'image_id=%s\n' "$candidate_id" >> "$GITHUB_OUTPUT"
-
-      - name: Download and verify previous qualified release
-        id: rollback
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          rollback_root="$RUNNER_TEMP/rollback-release"
-          mkdir -p "$rollback_root"
-          release_state=$(gh release view "$ROLLBACK_RELEASE_TAG" \
-            --repo "$GITHUB_REPOSITORY" \
-            --json isDraft,isPrerelease \
-            --jq '[.isDraft, .isPrerelease] | @tsv')
-          [[ "$release_state" == $'false\tfalse' ]]
-          gh release download "$ROLLBACK_RELEASE_TAG" \
-            --repo "$GITHUB_REPOSITORY" \
-            --pattern container-image.txt \
-            --pattern release-evidence.tar.gz \
-            --pattern release-evidence.tar.gz.sha256 \
-            --pattern production-verification.json \
-            --dir "$rollback_root"
-          (
-            cd "$rollback_root"
-            sha256sum -c release-evidence.tar.gz.sha256
-            tar -xzf release-evidence.tar.gz
-            cd release-evidence
-            sha256sum -c MANIFEST.sha256
-          )
-          rollback_reference=$(<"$rollback_root/container-image.txt")
-          [[ "$rollback_reference" =~ ^ghcr\.io/.+@sha256:[0-9a-f]{64}$ ]]
-          rollback_context="$rollback_root/release-evidence/verification-context.json"
-          rollback_commit=$(jq -er '.source.commit' "$rollback_context")
-          rollback_config_digest=$(<"$rollback_root/release-evidence/qualified-image/image-config-digest.txt")
-          jq -e \
-            --arg ref "$rollback_reference" \
-            --arg commit "$rollback_commit" '
-            .source.commit == $commit and
-            .image_reference == $ref and
-            .repository_gates == {scope: "http-data-plane", result: "passed"}
-          ' "$rollback_context" >/dev/null
-          jq -e \
-            --arg ref "$rollback_reference" \
-            --arg digest "$rollback_config_digest" \
-            --arg commit "$rollback_commit" '
-            .schema_version == 1 and
-            .image_reference == $ref and
-            .image_digest == $digest and
-            .source.commit == $commit and
-            .verification == {scope: "http-data-plane", result: "passed"} and
-            (.environment.name | type == "string" and length > 0) and
-            (.environment.config_sha256 | test("^[0-9a-f]{64}$")) and
-            ([.evidence.ingress_logs_sha256, .evidence.capacity_sha256,
-              .evidence.failure_sha256, .evidence.deployment_sha256]
-              | all(test("^[0-9a-f]{64}$")))
-          ' "$rollback_root/production-verification.json" >/dev/null
-          {
-            printf 'image_reference=%s\n' "$rollback_reference"
-            printf 'image_config_digest=%s\n' "$rollback_config_digest"
-            printf 'source_commit=%s\n' "$rollback_commit"
-            printf 'metadata=%s\n' "$rollback_root/production-verification.json"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Verify previous image provenance and pull exact digest
-        env:
-          GH_TOKEN: ${{ github.token }}
-          ROLLBACK_IMAGE_REFERENCE: ${{ steps.rollback.outputs.image_reference }}
-          ROLLBACK_SOURCE_COMMIT: ${{ steps.rollback.outputs.source_commit }}
-          EXPECTED_ROLLBACK_IMAGE_ID: ${{ steps.rollback.outputs.image_config_digest }}
-        run: |
-          set -euo pipefail
-          rollback_root="$RUNNER_TEMP/rollback-release"
-          gh attestation verify "$rollback_root/release-evidence.tar.gz" \
-            --repo "$GITHUB_REPOSITORY" \
-            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
-            --source-ref "refs/tags/$ROLLBACK_RELEASE_TAG" \
-            --source-digest "$ROLLBACK_SOURCE_COMMIT"
-          gh attestation verify "$rollback_root/production-verification.json" \
-            --repo "$GITHUB_REPOSITORY" \
-            --source-ref "refs/tags/$ROLLBACK_RELEASE_TAG" \
-            --source-digest "$ROLLBACK_SOURCE_COMMIT"
-          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-          docker pull "$ROLLBACK_IMAGE_REFERENCE"
-          rollback_image_id=$(docker image inspect --format '{{.Id}}' "$ROLLBACK_IMAGE_REFERENCE")
-          [[ "$rollback_image_id" == "$EXPECTED_ROLLBACK_IMAGE_ID" ]]
-
-      - name: Run rolling upgrade and rollback smoke
-        env:
-          CONTAINER_BIN: docker
-          RELEASE_EVIDENCE_ROOT: ${{ env.EVIDENCE_DIR }}/upgrade-rollback
-        run: |
-          bash scripts/upgrade_rollback_smoke.sh \
-            '${{ steps.candidate.outputs.image_id }}' \
-            '${{ steps.rollback.outputs.image_reference }}' \
-            '${{ steps.rollback.outputs.metadata }}'
-
-      - name: Upload upgrade and rollback evidence
-        if: always()
-        uses: actions/upload-artifact@v7.0.1
-        with:
-          name: upgrade-rollback-${{ github.run_id }}
-          path: .cache/release-evidence/upgrade-rollback
-          if-no-files-found: error
-          include-hidden-files: true
-          retention-days: 30
-
-  publish-image:
-    name: Publish Qualified Image
-    needs:
-      - validate-inputs
-      - container-evidence
-      - race-and-vulnerability
-      - etcd-recovery
-      - proxy-soak
-      - upgrade-rollback
-    if: ${{ inputs.publish-image && inputs.run-operational }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    environment: production-release
-    permissions:
-      contents: read
-      packages: write
-      id-token: write
-      attestations: write
-    env:
-      EVIDENCE_DIR: .cache/release-evidence
-    outputs:
-      image-reference: ${{ steps.publish.outputs.image-reference }}
-    steps:
-      - name: Checkout selected source ref
-        uses: actions/checkout@v7.0.1
-        with:
-          fetch-depth: 0
-          ref: ${{ inputs.source-commit || github.sha }}
-
-      - name: Record checked-out commit
-        id: source
-        run: |
-          set -euo pipefail
-          mkdir -p "$EVIDENCE_DIR"
-          commit=$(git rev-parse HEAD)
-          printf '%s\n' "$commit" | tee "$EVIDENCE_DIR/publication-source-commit.txt"
-          printf 'commit=%s\n' "$commit" >> "$GITHUB_OUTPUT"
-
-      - name: Download qualified image archive
-        uses: actions/download-artifact@v8.0.1
-        with:
-          name: qualified-image-${{ github.run_id }}
-          path: ${{ env.EVIDENCE_DIR }}
-
-      - name: Verify and load exact image archive
-        id: archive
-        env:
-          EXPECTED_SOURCE_COMMIT: ${{ inputs.source-commit || github.sha }}
-        run: |
-          set -euo pipefail
-          (
-            cd "$EVIDENCE_DIR"
-            sha256sum -c apisix-image.tar.gz.sha256
-          )
-          [[ "$(<"$EVIDENCE_DIR/source-commit.txt")" == "$EXPECTED_SOURCE_COMMIT" ]]
-          [[ "$(<"$EVIDENCE_DIR/publication-source-commit.txt")" == "$EXPECTED_SOURCE_COMMIT" ]]
-          docker load --input "$EVIDENCE_DIR/apisix-image.tar.gz"
-          image_reference=$(<"$EVIDENCE_DIR/image-reference.txt")
-          image_id=$(docker image inspect --format '{{.Id}}' "$image_reference")
-          [[ "$image_id" == "$(<"$EVIDENCE_DIR/image-config-digest.txt")" ]]
-          image_repository=${image_reference%:*}
-          [[ "$image_reference" == "$image_repository:"* ]]
-          printf 'image_reference=%s\n' "$image_reference" >> "$GITHUB_OUTPUT"
-
-      - name: Log in to GHCR
-        uses: docker/login-action@v4.6.0
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Push exact qualified tag and validate canonical digest
-        id: push
-        env:
-          IMAGE_REFERENCE: ${{ steps.archive.outputs.image_reference }}
-        run: |
-          set -euo pipefail
-          docker push "$IMAGE_REFERENCE" 2>&1 | tee "$EVIDENCE_DIR/docker-push.log"
-          image_repository=${IMAGE_REFERENCE%:*}
-          repo_digest=$(docker image inspect --format '{{index .RepoDigests 0}}' "$IMAGE_REFERENCE")
-          canonical_repository=${repo_digest%@*}
-          image_digest=${repo_digest##*@}
-          [[ "$canonical_repository" == "$image_repository" ]]
-          [[ "$image_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
-          canonical_reference="$canonical_repository@$image_digest"
-          printf '%s\n' "$canonical_reference" >"$EVIDENCE_DIR/container-image.txt"
-          {
-            printf 'IMAGE_REPOSITORY=%s\n' "$canonical_repository"
-            printf 'IMAGE_DIGEST=%s\n' "$image_digest"
-            printf 'PUBLISHED_IMAGE_REFERENCE=%s\n' "$canonical_reference"
-          } >> "$GITHUB_ENV"
-          printf 'digest=%s\n' "$image_digest" >> "$GITHUB_OUTPUT"
-
-      - name: Install cosign
-        uses: sigstore/cosign-installer@v4.1.2
-
-      - name: Sign image digest with keyless cosign
-        run: |
-          set -euo pipefail
-          cosign sign --yes "$PUBLISHED_IMAGE_REFERENCE" 2>&1 | tee "$EVIDENCE_DIR/cosign-sign.log"
-
-      - name: Attest image digest
-        uses: actions/attest-build-provenance@v4.2.2
-        with:
-          subject-name: ${{ env.IMAGE_REPOSITORY }}
-          subject-digest: ${{ steps.push.outputs.digest }}
-          push-to-registry: true
-
-      - name: Write final release metadata
-        id: publish
-        env:
-          SOURCE_REF: ${{ inputs.source-ref || github.ref }}
-          SOURCE_COMMIT: ${{ steps.source.outputs.commit }}
-        run: |
-          set -euo pipefail
-          PUBLISH_IMAGE=true \
-            bash scripts/release_metadata.sh \
-              "$PUBLISHED_IMAGE_REFERENCE" \
-              "$IMAGE_DIGEST" \
-              "$EVIDENCE_DIR/release-metadata.json" \
-              "$EVIDENCE_DIR/sbom.cdx.json" \
-              "$EVIDENCE_DIR/trivy.json" \
-              "$EVIDENCE_DIR/apisix-image.tar.gz" \
-              "$EVIDENCE_DIR/apisix-image.tar.gz.sha256" \
-              "$EVIDENCE_DIR/docker-push.log" \
-              "$EVIDENCE_DIR/cosign-sign.log"
-          printf 'image-reference=%s\n' "$PUBLISHED_IMAGE_REFERENCE" >> "$GITHUB_OUTPUT"
-
-      - name: Upload publication evidence
-        if: always()
-        uses: actions/upload-artifact@v7.0.1
-        with:
-          name: release-publication-${{ github.run_id }}
-          path: |
-            ${{ env.EVIDENCE_DIR }}/container-image.txt
-            ${{ env.EVIDENCE_DIR }}/publication-source-commit.txt
-            ${{ env.EVIDENCE_DIR }}/release-metadata.json
-            ${{ env.EVIDENCE_DIR }}/docker-push.log
-            ${{ env.EVIDENCE_DIR }}/cosign-sign.log
-          if-no-files-found: error
-          include-hidden-files: true
-          retention-days: 90

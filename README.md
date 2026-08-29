@@ -66,7 +66,7 @@ The exact status definitions, supported behavior, and remaining gaps are project
 - [Configuration](docs/configuration.md)
 - [Plugin capability status](docs/plugins.md)
 - [Architecture and decisions](docs/design.md)
-- [Production release runbook](docs/runbooks/production-release.md)
+- [HTTP candidate qualification](docs/runbooks/http-candidate-qualification.md)
 - [Proxy runtime performance acceptance](docs/performance/proxy-runtime-acceptance.md)
 - [Standalone plugin integration tests](t/plugin/README.md)
 

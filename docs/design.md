@@ -11,7 +11,7 @@ code and focused tests remain authoritative for implementation details.
 | What is implemented and verified for each plugin? | Generated [plugin status](plugins.md) |
 | How is static configuration loaded? | [Configuration](configuration.md) |
 | What can an APISIX HTTP user expect? | [HTTP data-plane compatibility](http-data-plane.md) |
-| How is a candidate qualified or released? | [Production release runbook](runbooks/production-release.md) |
+| How is an HTTP candidate qualified? | [HTTP candidate qualification](runbooks/http-candidate-qualification.md) |
 | Why does behavior intentionally differ from APISIX? | [Architecture decisions](#architecture-decisions) |
 
 ## Compatibility model
@@ -32,7 +32,7 @@ pkg/capability/manifest.yaml
   -> generated README summaries
 ```
 
-Generated files must not be edited directly. Validation and release evidence
+Generated files must not be edited directly. Validation and candidate evidence
 describe what was tested; they never change runtime behavior.
 
 ## Runtime overview
@@ -208,7 +208,7 @@ Plaintext exists only inside `secret.Value.Use`; logs, metrics, status, errors,
 and persistent records expose only redacted identity. Cache eviction and close
 zero retained bytes, and incomplete close keeps the attempt reserved for retry.
 
-## Process and release boundary
+## Process and candidate boundary
 
 One APISIX-Go process runs per replica. Kubernetes, systemd, or another service
 manager owns abnormal-exit restart, replica replacement, and rollout
@@ -218,10 +218,10 @@ supervisor/worker or listener-inheritance protocol.
 
 The container runs as UID/GID `10001:10001` and defaults to
 `/usr/local/apisix/conf/config.yaml`. `conf/config-production.yaml` is an
-explicit production example used by operational validation. GoReleaser builds
-Linux amd64 and arm64 archives; the qualified container workflow currently
-builds Linux amd64. See the [release runbook](runbooks/production-release.md)
-for evidence and publication rules.
+explicit production example used by operational validation. Candidate
+qualification builds an ephemeral Linux amd64 image for container, recovery,
+and stability evidence; the repository does not publish that image. See
+[HTTP candidate qualification](runbooks/http-candidate-qualification.md).
 
 ## Architecture decisions
 
@@ -232,7 +232,6 @@ divergences until owner approval is recorded in the manifest.
 | ADR | Status | Decision |
 | --- | --- | --- |
 | [0001](architecture/adr/0001-compatibility-governance.md) | accepted | Separate APISIX compatibility from Go-native extensions. |
-| [0003](architecture/adr/0003-platform-support.md) | accepted | Publish only explicitly qualified platform artifacts. |
 | [0004](architecture/adr/0004-runtime-safety-boundaries.md) | accepted | Bound ambiguous stream routing and embedded Lua execution. |
 | [0005](architecture/adr/0005-credential-log-redaction.md) | accepted | Redact credential material from authentication logs. |
 | [0006](architecture/adr/0006-opa-resource-context-redaction.md) | accepted | Limit OPA resource context to non-secret identity fields. |

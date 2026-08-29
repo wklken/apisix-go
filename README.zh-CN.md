@@ -65,7 +65,7 @@ curl http://127.0.0.1:9080/hello
 - [插件支持情况和剩余差距](docs/plugins.md)
 - [配置兼容性](docs/configuration.md)
 - [HTTP 数据面兼容说明](docs/http-data-plane.md)
-- [生产发布手册](docs/runbooks/production-release.md)
+- [HTTP 候选版本资格验证](docs/runbooks/http-candidate-qualification.md)
 - [设计说明](docs/design.md)
 - [独立插件集成测试](t/plugin/README.md)
 

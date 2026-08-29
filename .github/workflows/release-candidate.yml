@@ -172,7 +172,7 @@ jobs:
           CONTAINER_BIN: docker
           APISIX_SOURCE_DIR: .cache/apache-apisix
           APISIX_GO_CANDIDATE_SOURCE_COMMIT: ${{ needs.resolve-source.outputs.commit }}
-          APISIX_GO_BEHAVIOR_GATE_EVIDENCE_DIR: .cache/release-evidence/plugin-validation/attempt-1
+          APISIX_GO_BEHAVIOR_GATE_EVIDENCE_DIR: .cache/candidate-evidence/plugin-validation/attempt-1
         run: make validate-plugin-behavior
 
       - name: Upload source-bound differential evidence
@@ -180,13 +180,13 @@ jobs:
         uses: actions/upload-artifact@v7.0.1
         with:
           name: plugin-validation-${{ github.run_id }}
-          path: .cache/release-evidence/plugin-validation/attempt-1
+          path: .cache/candidate-evidence/plugin-validation/attempt-1
           if-no-files-found: error
           include-hidden-files: true
           retention-days: 30
 
   security-release-gates:
-    name: RC Security And Operational Verification
+    name: RC HTTP Functional And Stability Verification
     needs:
       - resolve-source
       - lint
@@ -195,48 +195,8 @@ jobs:
       - plugin-differential
     uses: ./.github/workflows/security-release-gates.yml
     with:
-      publish-image: false
       run-operational: true
-      run-upgrade-rollback: false
       source-ref: ${{ inputs.ref || github.ref }}
       source-commit: ${{ needs.resolve-source.outputs.commit }}
     permissions:
       contents: read
-
-  package-validation:
-    name: RC Package Validation
-    needs:
-      - resolve-source
-      - lint
-      - build-and-unit
-      - integration-smoke
-      - security-release-gates
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    permissions:
-      contents: read
-    steps:
-      - name: Checkout selected source ref
-        uses: actions/checkout@v7.0.1
-        with:
-          fetch-depth: 0
-          ref: ${{ needs.resolve-source.outputs.commit }}
-
-      - name: Record checked-out commit
-        run: echo "checked-out commit=$(git rev-parse HEAD)"
-
-      - name: Set up Go
-        uses: actions/setup-go@v7.0.0
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: Record Go version for GoReleaser
-        run: echo "GOVERSION=$(go version)" >> "$GITHUB_ENV"
-
-      - name: Validate GoReleaser packaging in snapshot mode
-        uses: goreleaser/goreleaser-action@v7
-        with:
-          distribution: goreleaser
-          version: "~> v2"
-          args: release --snapshot --clean --skip=publish

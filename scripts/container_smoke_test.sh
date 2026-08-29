@@ -108,4 +108,4 @@ if ! grep -Fq 'required command is unavailable: docker' "$failure_output"; then
     exit 1
 fi
 
-printf 'container release contract: PASS\n'
+printf 'container candidate contract: PASS\n'

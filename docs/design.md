@@ -12,6 +12,7 @@ code and focused tests remain authoritative for implementation details.
 | How is static configuration loaded? | [Configuration](configuration.md) |
 | What can an APISIX HTTP user expect? | [HTTP data-plane compatibility](http-data-plane.md) |
 | How is an HTTP candidate qualified? | [HTTP candidate qualification](runbooks/http-candidate-qualification.md) |
+| Where does plugin test and compatibility evidence belong? | [Plugin testing and compatibility qualification](plugin-testing.md) |
 | Why does behavior intentionally differ from APISIX? | [Architecture decisions](#architecture-decisions) |
 
 ## Compatibility model
@@ -34,6 +35,14 @@ pkg/capability/manifest.yaml
 
 Generated files must not be edited directly. Validation and candidate evidence
 describe what was tested; they never change runtime behavior.
+
+Plugin verification has separate owners: package tests cover plugin-local
+logic, `t/plugin` covers candidate-only real-process behavior, and the opt-in
+`t/compatibility` runner consumes target-pinned configuration from
+`validation/compatibility/`. Differential findings must become durable unit or
+integration regressions; compatibility artifacts remain qualification evidence,
+not a second regression-test implementation. See
+[Plugin testing and compatibility qualification](plugin-testing.md).
 
 ## Runtime overview
 

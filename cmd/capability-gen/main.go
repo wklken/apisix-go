@@ -5,7 +5,9 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"go/ast"
 	"go/format"
+	"go/parser"
 	"go/token"
 	"io"
 	"os"
@@ -94,7 +96,7 @@ func run(args []string, stderr io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("load capability manifest: %w", err)
 	}
-	outputs, err := buildOutputs(*repoRoot, manifest)
+	outputs, err := buildValidatedOutputs(*repoRoot, manifest)
 	if err != nil {
 		return err
 	}
@@ -102,6 +104,16 @@ func run(args []string, stderr io.Writer) error {
 		return writeOutputs(*repoRoot, outputs)
 	}
 	return checkOutputs(*repoRoot, outputs)
+}
+
+func buildValidatedOutputs(
+	repoRoot string,
+	manifest *capability.Manifest,
+) ([]generatedOutput, error) {
+	if err := validateEvidenceRefs(repoRoot, manifest); err != nil {
+		return nil, err
+	}
+	return buildOutputs(repoRoot, manifest)
 }
 
 func buildOutputs(repoRoot string, manifest *capability.Manifest) ([]generatedOutput, error) {
@@ -158,6 +170,82 @@ func buildOutputs(repoRoot string, manifest *capability.Manifest) ([]generatedOu
 		{relativePath: readmeOutputPath, content: english},
 		{relativePath: readmeChineseOutputPath, content: chinese},
 	}, nil
+}
+
+func validateEvidenceRefs(repoRoot string, manifest *capability.Manifest) error {
+	if manifest == nil {
+		return errors.New("validate evidence refs: capability manifest must not be nil")
+	}
+	root, err := openOutputRoot(repoRoot)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = root.Close() }()
+
+	for _, plugin := range manifest.Plugins {
+		for _, evidence := range []struct {
+			kind  capability.EvidenceKind
+			claim capability.EvidenceClaim
+		}{
+			{capability.EvidenceSchema, plugin.Evidence.Schema},
+			{capability.EvidenceUnit, plugin.Evidence.Unit},
+			{capability.EvidenceUpstream, plugin.Evidence.Upstream},
+			{capability.EvidenceDifferential, plugin.Evidence.Differential},
+			{capability.EvidenceRealDependency, plugin.Evidence.RealDependency},
+			{capability.EvidenceFailure, plugin.Evidence.Failure},
+		} {
+			if evidence.claim.State != capability.EvidenceVerified {
+				continue
+			}
+			for _, ref := range evidence.claim.Refs {
+				if err := validateEvidenceRef(root, ref); err != nil {
+					return fmt.Errorf(
+						"plugin %q evidence %q ref %q: %w",
+						plugin.Name,
+						evidence.kind,
+						ref,
+						err,
+					)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func validateEvidenceRef(root *os.Root, ref string) error {
+	path, symbol, hasSymbol := strings.Cut(ref, "#")
+	relativePath, err := containedOutputRelativePath(path)
+	if err != nil {
+		return err
+	}
+	if err := rejectRootedSymlinks(root, relativePath, "evidence ref"); err != nil {
+		return err
+	}
+	content, err := root.ReadFile(relativePath)
+	if errors.Is(err, os.ErrNotExist) {
+		return errors.New("does not exist")
+	}
+	if err != nil {
+		return fmt.Errorf("read file: %w", err)
+	}
+	if !hasSymbol {
+		return nil
+	}
+	if symbol == "" || strings.Contains(symbol, "#") {
+		return errors.New("has an invalid test symbol anchor")
+	}
+	parsed, err := parser.ParseFile(token.NewFileSet(), relativePath, content, 0)
+	if err != nil {
+		return fmt.Errorf("parse Go test file: %w", err)
+	}
+	for _, declaration := range parsed.Decls {
+		function, ok := declaration.(*ast.FuncDecl)
+		if ok && function.Recv == nil && function.Name.Name == symbol {
+			return nil
+		}
+	}
+	return fmt.Errorf("does not define test function %q", symbol)
 }
 
 func validateDivergenceADR(repoRoot string, divergence capability.Divergence) error {
@@ -284,12 +372,22 @@ func validateDivergenceADRs(repoRoot string, manifest *capability.Manifest) erro
 	return nil
 }
 
-func validateDivergenceADRInRoot(root *os.Root, divergence capability.Divergence) (adrFrontMatter, error) {
+func validateDivergenceADRInRoot(
+	root *os.Root,
+	divergence capability.Divergence,
+) (adrFrontMatter, error) {
 	if divergence.Status != capability.DivergenceAccepted {
-		return adrFrontMatter{}, fmt.Errorf("divergence %q: status %q is not active", divergence.ID, divergence.Status)
+		return adrFrontMatter{}, fmt.Errorf(
+			"divergence %q: status %q is not active",
+			divergence.ID,
+			divergence.Status,
+		)
 	}
 	if strings.TrimSpace(divergence.OwnerApprovalRef) == "" {
-		return adrFrontMatter{}, fmt.Errorf("divergence %q: owner_approval_ref must not be blank", divergence.ID)
+		return adrFrontMatter{}, fmt.Errorf(
+			"divergence %q: owner_approval_ref must not be blank",
+			divergence.ID,
+		)
 	}
 	relativePath, err := validateADRRelativePath(divergence.ADR)
 	if err != nil {
@@ -300,10 +398,19 @@ func validateDivergenceADRInRoot(root *os.Root, divergence capability.Divergence
 	}
 	content, err := root.ReadFile(filepath.FromSlash(relativePath))
 	if errors.Is(err, os.ErrNotExist) {
-		return adrFrontMatter{}, fmt.Errorf("divergence %q: missing ADR %q", divergence.ID, relativePath)
+		return adrFrontMatter{}, fmt.Errorf(
+			"divergence %q: missing ADR %q",
+			divergence.ID,
+			relativePath,
+		)
 	}
 	if err != nil {
-		return adrFrontMatter{}, fmt.Errorf("divergence %q: read ADR %q: %w", divergence.ID, relativePath, err)
+		return adrFrontMatter{}, fmt.Errorf(
+			"divergence %q: read ADR %q: %w",
+			divergence.ID,
+			relativePath,
+			err,
+		)
 	}
 	frontMatter, err := parseADR(relativePath, content)
 	if err != nil {
@@ -372,16 +479,26 @@ func validateDivergenceADRInRoot(root *os.Root, divergence capability.Divergence
 
 func validateADRRelativePath(relativePath string) (string, error) {
 	if relativePath == "" || filepath.IsAbs(relativePath) || strings.Contains(relativePath, `\`) {
-		return "", fmt.Errorf("ADR path %q must be a lexical repository-relative path", relativePath)
+		return "", fmt.Errorf(
+			"ADR path %q must be a lexical repository-relative path",
+			relativePath,
+		)
 	}
 	components := strings.Split(relativePath, "/")
 	for _, component := range components {
 		if component == "" || component == "." || component == ".." {
-			return "", fmt.Errorf("ADR path %q must not contain empty, dot, or parent components", relativePath)
+			return "", fmt.Errorf(
+				"ADR path %q must not contain empty, dot, or parent components",
+				relativePath,
+			)
 		}
 	}
 	if len(components) != 4 || strings.Join(components[:3], "/") != adrDirectoryPath {
-		return "", fmt.Errorf("ADR path %q must be strictly inside %s/", relativePath, adrDirectoryPath)
+		return "", fmt.Errorf(
+			"ADR path %q must be strictly inside %s/",
+			relativePath,
+			adrDirectoryPath,
+		)
 	}
 	if filepath.Ext(relativePath) != ".md" {
 		return "", fmt.Errorf("ADR path %q must use the .md extension", relativePath)
@@ -399,7 +516,10 @@ func adrIDFromPath(relativePath string) (string, error) {
 	base := filepath.Base(filepath.FromSlash(relativePath))
 	prefix, suffix, ok := strings.Cut(base, "-")
 	if !ok || len(prefix) != 4 || suffix == "" || suffix == ".md" {
-		return "", fmt.Errorf("ADR path %q must start with a four-digit ADR number and a name", relativePath)
+		return "", fmt.Errorf(
+			"ADR path %q must start with a four-digit ADR number and a name",
+			relativePath,
+		)
 	}
 	if _, err := strconv.Atoi(prefix); err != nil {
 		return "", fmt.Errorf("ADR path %q has non-numeric ADR prefix %q", relativePath, prefix)
@@ -415,7 +535,10 @@ func parseADR(relativePath string, content []byte) (adrFrontMatter, error) {
 	}
 	end := bytes.Index(content[len(opening):], []byte(closing))
 	if end < 0 {
-		return adrFrontMatter{}, fmt.Errorf("ADR %q has unterminated YAML front matter", relativePath)
+		return adrFrontMatter{}, fmt.Errorf(
+			"ADR %q has unterminated YAML front matter",
+			relativePath,
+		)
 	}
 	frontMatterBytes := content[len(opening) : len(opening)+end]
 	body := content[len(opening)+end+len(closing):]
@@ -446,7 +569,11 @@ func parseADR(relativePath string, content []byte) (adrFrontMatter, error) {
 	}
 	for _, field := range requiredFields {
 		if _, ok := fields[field]; !ok {
-			return adrFrontMatter{}, fmt.Errorf("ADR %q front matter is missing field %q", relativePath, field)
+			return adrFrontMatter{}, fmt.Errorf(
+				"ADR %q front matter is missing field %q",
+				relativePath,
+				field,
+			)
 		}
 	}
 	if strings.TrimSpace(frontMatter.ID) == "" ||
@@ -455,20 +582,36 @@ func parseADR(relativePath string, content []byte) (adrFrontMatter, error) {
 		strings.TrimSpace(frontMatter.CompatibilityTarget) == "" ||
 		strings.TrimSpace(frontMatter.Owner) == "" ||
 		strings.TrimSpace(frontMatter.Date) == "" {
-		return adrFrontMatter{}, fmt.Errorf("ADR %q front matter contains a blank required field", relativePath)
+		return adrFrontMatter{}, fmt.Errorf(
+			"ADR %q front matter contains a blank required field",
+			relativePath,
+		)
 	}
 	if frontMatter.Status != string(capability.DivergenceProposed) &&
 		frontMatter.Status != string(capability.DivergenceAccepted) &&
 		frontMatter.Status != string(capability.DivergenceRetired) {
-		return adrFrontMatter{}, fmt.Errorf("ADR %q has unknown status %q", relativePath, frontMatter.Status)
+		return adrFrontMatter{}, fmt.Errorf(
+			"ADR %q has unknown status %q",
+			relativePath,
+			frontMatter.Status,
+		)
 	}
-	requiredHeadings := []string{"# Context", "# Decision", "# Consequences", "# Evidence required to retire"}
+	requiredHeadings := []string{
+		"# Context",
+		"# Decision",
+		"# Consequences",
+		"# Evidence required to retire",
+	}
 	previous := -1
 	for _, heading := range requiredHeadings {
 		needle := []byte("\n" + heading + "\n")
 		index := bytes.Index(append([]byte{'\n'}, body...), needle)
 		if index < 0 || index <= previous {
-			return adrFrontMatter{}, fmt.Errorf("ADR %q must contain ordered heading %q", relativePath, heading)
+			return adrFrontMatter{}, fmt.Errorf(
+				"ADR %q must contain ordered heading %q",
+				relativePath,
+				heading,
+			)
 		}
 		previous = index
 	}
@@ -478,10 +621,6 @@ func parseADR(relativePath string, content []byte) (adrFrontMatter, error) {
 func renderPluginsMarkdown(manifest *capability.Manifest) ([]byte, error) {
 	if manifest == nil {
 		return nil, errors.New("render plugins Markdown: manifest must not be nil")
-	}
-	profile, ok := manifest.Qualification(qualificationProfileName)
-	if !ok {
-		return nil, fmt.Errorf("render plugins Markdown: qualification profile %q is missing", qualificationProfileName)
 	}
 	counts := deriveCapabilityCounts(manifest)
 	plugins := sortedCapabilities(manifest)
@@ -512,43 +651,59 @@ func renderPluginsMarkdown(manifest *capability.Manifest) ([]byte, error) {
 		counts.deferredDefaults,
 		counts.notApplicableDefaults,
 	)
-	fmt.Fprintf(&document, "- Qualification `%s`: **%d/%d** required plugins qualified; required evidence: %s\n",
-		markdownCell(profile.Name),
-		counts.qualified,
-		counts.required,
-		markdownCell(evidenceKindList(profile.RequiredEvidence)),
-	)
+	for _, profile := range manifest.QualificationProfiles {
+		fmt.Fprintf(
+			&document,
+			"- Qualification `%s`: **%d/%d** required plugins contract-ready; required evidence: %s\n",
+			markdownCell(profile.Name),
+			len(manifest.ContractReadyPlugins(profile.Name)),
+			len(profile.RequiredPlugins),
+			markdownCell(evidenceKindList(profile.RequiredEvidence)),
+		)
+	}
 	document.WriteString("\n## Status semantics\n\n")
 	document.WriteString(
 		"Behavior status describes the implemented compatibility contract independently from evidence:\n\n",
 	)
-	document.WriteString("- **full**: the manifest records no known behavioral gap for the declared contract.\n")
-	document.WriteString("- **partial**: the declared behavior has one or more explicit known gaps.\n")
-	document.WriteString("- **deferred**: implementation is intentionally postponed.\n")
-	document.WriteString("- **not_applicable**: the APISIX facility has no Go-plugin contract in this data plane.\n\n")
 	document.WriteString(
-		"Evidence states are independent for Schema, Unit, Converted upstream, Differential, Real dependency, Failure, and Recovery:\n\n",
+		"- **full**: the manifest records no known behavioral gap for the declared contract.\n",
+	)
+	document.WriteString(
+		"- **partial**: the declared behavior has one or more explicit known gaps.\n",
+	)
+	document.WriteString("- **deferred**: implementation is intentionally postponed.\n")
+	document.WriteString(
+		"- **not_applicable**: the APISIX facility has no Go-plugin contract in this data plane.\n\n",
+	)
+	document.WriteString(
+		"Plugin evidence states are independent for Schema, Unit, Converted upstream, Differential, Real dependency, and Failure. Platform lifecycle recovery is qualified separately and is never projected onto plugin rows:\n\n",
 	)
 	document.WriteString("- **verified**: current auditable evidence is recorded.\n")
 	document.WriteString("- **missing**: required evidence is not recorded.\n")
-	document.WriteString("- **stale**: evidence exists but does not match the current compatibility target.\n")
+	document.WriteString(
+		"- **stale**: evidence exists but does not match the current compatibility target.\n",
+	)
 	document.WriteString("- **flaky**: evidence exists but is not repeatably reliable.\n")
-	document.WriteString("- **deferred**: evidence collection is intentionally postponed with an owner and reason.\n")
-	document.WriteString("- **not_applicable**: the evidence dimension does not apply, with a concrete reason.\n")
+	document.WriteString(
+		"- **deferred**: evidence collection is intentionally postponed with an owner and reason.\n",
+	)
+	document.WriteString(
+		"- **not_applicable**: the evidence dimension does not apply, with a concrete reason.\n",
+	)
 	document.WriteString("\n## Capability rows\n\n")
 	document.WriteString(
 		"APISIX defaults are sorted first by name. Remaining Go extension entries follow by namespace and name.\n\n",
 	)
 	document.WriteString(
-		"| Plugin | Namespace | APISIX default | Domains | Behavior status | Behavior summary | Known gaps | Platforms | Schema | Unit | Converted upstream | Differential | Real dependency | Failure | Recovery |\n",
+		"| Plugin | Namespace | APISIX default | Domains | Behavior status | Behavior summary | Known gaps | Platforms | Schema | Unit | Converted upstream | Differential | Real dependency | Failure |\n",
 	)
 	document.WriteString(
-		"| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n",
+		"| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n",
 	)
 	for _, plugin := range plugins {
 		fmt.Fprintf(
 			&document,
-			"| `%s` | `%s` | %s | %s | **%s** | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |\n",
+			"| `%s` | `%s` | %s | %s | **%s** | %s | %s | %s | %s | %s | %s | %s | %s | %s |\n",
 			markdownCell(plugin.Name),
 			markdownCell(string(plugin.Namespace)),
 			yesNo(plugin.APISIXDefault),
@@ -563,7 +718,6 @@ func renderPluginsMarkdown(manifest *capability.Manifest) ([]byte, error) {
 			renderEvidenceClaim(plugin.Evidence.Differential),
 			renderEvidenceClaim(plugin.Evidence.RealDependency),
 			renderEvidenceClaim(plugin.Evidence.Failure),
-			renderEvidenceClaim(plugin.Evidence.Recovery),
 		)
 	}
 	return document.Bytes(), nil
@@ -578,15 +732,24 @@ func renderReadmeSummary(manifest *capability.Manifest, locale readmeLocale) ([]
 	}
 	profile, ok := manifest.Qualification(qualificationProfileName)
 	if !ok {
-		return nil, fmt.Errorf("render README summary: qualification profile %q is missing", qualificationProfileName)
+		return nil, fmt.Errorf(
+			"render README summary: qualification profile %q is missing",
+			qualificationProfileName,
+		)
 	}
 	counts := deriveCapabilityCounts(manifest)
 	plugins := sortedCapabilities(manifest)
 
 	var summary bytes.Buffer
 	if locale == readmeEnglish {
-		fmt.Fprintf(&summary, "Target `%s` is Apache APISIX `%s` at `%s` (image `%s`).\n\n",
-			manifest.Target.Name, manifest.Target.Version, manifest.Target.SourceCommit, manifest.Target.Image)
+		fmt.Fprintf(
+			&summary,
+			"Target `%s` is Apache APISIX `%s` at `%s` (image `%s`).\n\n",
+			manifest.Target.Name,
+			manifest.Target.Version,
+			manifest.Target.SourceCommit,
+			manifest.Target.Image,
+		)
 		fmt.Fprintf(
 			&summary,
 			"The manifest contains **%d** capability rows and **%d** APISIX defaults. Of the **%d** Go-applicable defaults, **%d** are full, **%d** are partial, and **%d** are deferred; **%d** defaults are not applicable to the Go plugin contract.\n\n",
@@ -600,7 +763,7 @@ func renderReadmeSummary(manifest *capability.Manifest, locale readmeLocale) ([]
 		)
 		fmt.Fprintf(
 			&summary,
-			"Qualification profile `%s` currently qualifies **%d/%d** required plugins. Status is derived from behavior plus the required evidence dimensions, not registration counts.\n\n",
+			"Qualification profile `%s` currently has **%d/%d** contract-ready required plugins. Candidate qualification additionally requires a matching immutable runtime artifact.\n\n",
 			profile.Name,
 			counts.qualified,
 			counts.required,
@@ -623,7 +786,7 @@ func renderReadmeSummary(manifest *capability.Manifest, locale readmeLocale) ([]
 			counts.deferredDefaults,
 			counts.notApplicableDefaults,
 		)
-		fmt.Fprintf(&summary, "资格配置 `%s` 当前有 **%d/%d** 个必需插件通过。状态由行为和必需证据维度共同推导，而不是由注册数量推导。\n\n",
+		fmt.Fprintf(&summary, "资格配置 `%s` 当前有 **%d/%d** 个必需插件的静态契约就绪；候选程序仍须通过身份匹配的不可变运行产物。\n\n",
 			profile.Name, counts.qualified, counts.required)
 		summary.WriteString("清单中的明确差距：\n")
 	}
@@ -682,7 +845,7 @@ func deriveCapabilityCounts(manifest *capability.Manifest) capabilityCounts {
 	profile, ok := manifest.Qualification(qualificationProfileName)
 	if ok {
 		counts.required = len(profile.RequiredPlugins)
-		counts.qualified = len(manifest.QualifiedPlugins(profile.Name))
+		counts.qualified = len(manifest.ContractReadyPlugins(profile.Name))
 	}
 	return counts
 }
@@ -812,7 +975,8 @@ func renderRegistry(manifest *capability.Manifest) ([]byte, error) {
 					factory.Constructor,
 				)
 			}
-			if alias, exists := importsByPath[factory.ImportPath]; exists && alias != factory.ImportAlias {
+			if alias, exists := importsByPath[factory.ImportPath]; exists &&
+				alias != factory.ImportAlias {
 				return nil, fmt.Errorf(
 					"render registry: import %q uses aliases %q and %q",
 					factory.ImportPath,
@@ -820,7 +984,8 @@ func renderRegistry(manifest *capability.Manifest) ([]byte, error) {
 					factory.ImportAlias,
 				)
 			}
-			if path, exists := pathsByAlias[factory.ImportAlias]; exists && path != factory.ImportPath {
+			if path, exists := pathsByAlias[factory.ImportAlias]; exists &&
+				path != factory.ImportPath {
 				return nil, fmt.Errorf(
 					"render registry: import alias %q is shared by %q and %q",
 					factory.ImportAlias,
@@ -883,14 +1048,22 @@ func validateGeneratedFacts(plugin capability.PluginCapability) error {
 		case "rewrite", "consumer_rewrite", "access", "before_proxy", "header_filter",
 			"body_filter", "log", "finalizer", "protocol":
 		default:
-			return fmt.Errorf("render registry: capability %q has unsupported phase %q", plugin.Name, phase)
+			return fmt.Errorf(
+				"render registry: capability %q has unsupported phase %q",
+				plugin.Name,
+				phase,
+			)
 		}
 	}
 	for _, scope := range plugin.Scopes {
 		switch scope {
 		case "system", "global_rule", "route", "service", "consumer", "consumer_group":
 		default:
-			return fmt.Errorf("render registry: capability %q has unsupported scope %q", plugin.Name, scope)
+			return fmt.Errorf(
+				"render registry: capability %q has unsupported scope %q",
+				plugin.Name,
+				scope,
+			)
 		}
 	}
 	return nil
@@ -1032,7 +1205,12 @@ func rejectRootedSymlinks(root *os.Root, relativePath, pathKind string) error {
 			return fmt.Errorf("inspect %s %q: %w", pathKind, relativePath, err)
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("%s %q contains symbolic link %q", pathKind, relativePath, currentPath)
+			return fmt.Errorf(
+				"%s %q contains symbolic link %q",
+				pathKind,
+				relativePath,
+				currentPath,
+			)
 		}
 	}
 	return nil

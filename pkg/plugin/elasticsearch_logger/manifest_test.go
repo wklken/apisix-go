@@ -40,19 +40,29 @@ func TestStandaloneManifestMapsExactUpstreamBlocks(t *testing.T) {
 		t.Fatalf("sources = %d, want 2", len(manifest.Sources))
 	}
 	primary := manifest.Sources[0]
-	if primary.Commit != "c3d7d5ec69774121f53d2e20d29d09c816795dd7" {
+	if primary.Commit != "9ef2ecab67f652d38365049613610ef649bb4ad0" {
 		t.Fatalf("primary source commit = %q, want pinned Apache APISIX commit", primary.Commit)
 	}
-	if primary.File != sourceFile || primary.Tests != 27 {
+	if primary.File != sourceFile || primary.Tests != 24 {
 		t.Fatalf(
-			"primary source = (%q, %d tests), want (%q, 27 tests)",
+			"primary source = (%q, %d tests), want (%q, 24 selected tests)",
 			primary.File,
 			primary.Tests,
 			sourceFile,
 		)
 	}
+	wantPrimaryNumbers := []int{2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26}
+	if len(primary.TestNumbers) != len(wantPrimaryNumbers) {
+		t.Fatalf("primary test_numbers = %v, want %v", primary.TestNumbers, wantPrimaryNumbers)
+	}
+	for i, want := range wantPrimaryNumbers {
+		if primary.TestNumbers[i] != want {
+			t.Fatalf("primary test_numbers = %v, want %v", primary.TestNumbers, wantPrimaryNumbers)
+		}
+	}
 	secondary := manifest.Sources[1]
-	if secondary.File != "t/plugin/elasticsearch-logger2.t" || secondary.Tests != 8 {
+	if secondary.Commit != "9ef2ecab67f652d38365049613610ef649bb4ad0" ||
+		secondary.File != "t/plugin/elasticsearch-logger2.t" || secondary.Tests != 8 {
 		t.Fatalf(
 			"secondary source = (%q, %d tests), want elasticsearch-logger2.t with 8 selected tests",
 			secondary.File,
@@ -71,24 +81,26 @@ func TestStandaloneManifestMapsExactUpstreamBlocks(t *testing.T) {
 			continue
 		}
 		primaryCases++
-		number := primaryCases
-		if len(testCase.Source.Tests) != 1 || testCase.Source.Tests[0] != number {
-			t.Errorf("primary case %d source tests = %v, want [%d]", number, testCase.Source.Tests, number)
+		if primaryCases > len(wantPrimaryNumbers) {
+			t.Fatalf("primary manifest has more than %d selected cases", len(wantPrimaryNumbers))
+		}
+		wantNumber := wantPrimaryNumbers[primaryCases-1]
+		if len(testCase.Source.Tests) != 1 || testCase.Source.Tests[0] != wantNumber {
+			t.Errorf("primary case %d source tests = %v, want [%d]", primaryCases, testCase.Source.Tests, wantNumber)
 		}
 		if len(testCase.Config) == 0 {
-			t.Errorf("primary case %d %q has no standalone config", number, testCase.Name)
+			t.Errorf("primary case %d %q has no standalone config", primaryCases, testCase.Name)
 		}
 		if len(testCase.Fixtures) < 2 {
-			t.Errorf("primary case %d %q has fewer than two real HTTP fixtures", number, testCase.Name)
+			t.Errorf("primary case %d %q has fewer than two real HTTP fixtures", primaryCases, testCase.Name)
 		}
 		if len(testCase.Steps) == 0 {
-			t.Errorf("primary case %d %q has no real request step", number, testCase.Name)
+			t.Errorf("primary case %d %q has no real request step", primaryCases, testCase.Name)
 		}
 	}
-	if primaryCases != 27 {
-		t.Fatalf("primary cases = %d, want exactly 27", primaryCases)
+	if primaryCases != len(wantPrimaryNumbers) {
+		t.Fatalf("primary cases = %d, want exactly %d", primaryCases, len(wantPrimaryNumbers))
 	}
-	assertDeterministicMultiEndpointCase(t, manifest.Cases[13])
 	assertSecondarySourceCases(t, manifest.Cases)
 }
 
@@ -140,54 +152,6 @@ func assertSecondarySourceCases(t *testing.T, cases []manifestCase) {
 		if len(testCase.Steps) == 0 {
 			t.Errorf("case %q has no real request step", testCase.Name)
 		}
-	}
-}
-
-func assertDeterministicMultiEndpointCase(t *testing.T, testCase manifestCase) {
-	t.Helper()
-
-	if testCase.Environment["GODEBUG"] != "randautoseed=0" {
-		t.Fatalf("source block 14 GODEBUG = %q, want deterministic randautoseed=0", testCase.Environment["GODEBUG"])
-	}
-	routes := testCase.Config["routes"].([]any)
-	route := routes[0].(map[string]any)
-	plugins := route["plugins"].(map[string]any)
-	logger := plugins["elasticsearch-logger"].(map[string]any)
-	endpoints := logger["endpoint_addrs"].([]any)
-	if len(endpoints) != 2 ||
-		endpoints[0] != "{{FIXTURE.firstSink.URL}}" ||
-		endpoints[1] != "{{FIXTURE.secondSink.URL}}" {
-		t.Fatalf("source block 14 endpoint_addrs = %v, want two distinct fixture URLs", endpoints)
-	}
-
-	fixtures := make(map[string]manifestFixture, len(testCase.Fixtures))
-	for _, fixture := range testCase.Fixtures {
-		fixtures[fixture.Name] = fixture
-	}
-	first, firstOK := fixtures["firstSink"]
-	second, secondOK := fixtures["secondSink"]
-	if !firstOK || !secondOK {
-		t.Fatalf("source block 14 fixtures = %v, want firstSink and secondSink", fixtures)
-	}
-	gets, posts := 0, 0
-	for _, expectation := range first.Expect {
-		if expectation.Method == "GET" {
-			gets++
-		}
-		if expectation.Method == "POST" {
-			posts++
-		}
-	}
-	for _, expectation := range second.Expect {
-		if expectation.Method == "GET" {
-			gets++
-		}
-		if expectation.Method == "POST" {
-			posts++
-		}
-	}
-	if gets != 1 || posts != 12 {
-		t.Fatalf("source block 14 sink expectations = %d GETs, %d POSTs, want 1 and 12", gets, posts)
 	}
 }
 

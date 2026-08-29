@@ -30,27 +30,44 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/chash"
 	pxy "github.com/wklken/apisix-go/pkg/proxy"
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 type Plugin struct {
 	base.BasePlugin
-	config    Config
-	client    *http.Client
-	mu        sync.Mutex
-	nextSlot  map[int]int
-	selection map[int]*weightSelection
-	chash     map[int]*chash.Ring
-	priority  []int
-	instances map[string]int
-	now       func() time.Time
-	gcpTokens gcpTokenApplier
-	healthMu  sync.Mutex
-	health    map[int]*instanceHealthState
-	healthNow func() time.Time
+	config     Config
+	client     *http.Client
+	authClient *http.Client
+	secrets    aiProxyMultiSecretState
+	mu         sync.Mutex
+	nextSlot   map[int]int
+	selection  map[int]*weightSelection
+	chash      map[int]*chash.Ring
+	priority   []int
+	instances  map[string]int
+	now        func() time.Time
+	gcpTokens  gcpTokenApplier
+	healthMu   sync.Mutex
+	health     map[int]*instanceHealthState
+	healthNow  func() time.Time
 
-	healthClients map[int]*http.Client
+	healthClients   map[int]*http.Client
+	lookupNetIP     lookupNetIPFunc
+	resolverTTL     time.Duration
+	resolverTimeout time.Duration
+	nodeRefreshMu   sync.Mutex
+	nodeMu          sync.Mutex
+	nodeSets        map[int][]*resolvedNode
+	nodeExpires     map[int]time.Time
+	nodeRequired    map[int]bool
+	nodeResolveErr  map[int]error
+	nodeSnapshot    atomic.Pointer[resolvedNodeSnapshot]
+	nodeRandom      func(int) int
 
 	healthCloseOnce sync.Once
+	healthCancel    context.CancelFunc
+	healthDone      chan struct{}
+	healthStopping  bool
 	stoppedHealth   atomic.Bool
 	wakeHealth      chan struct{}
 	snapshot        atomic.Pointer[healthSnapshot]
@@ -102,7 +119,12 @@ const (
 	name     = "ai-proxy-multi"
 )
 
-var errRequestBodyTooLarge = errors.New("request body exceeds max_req_body_size")
+var (
+	errRequestBodyEmpty    = errors.New("missing request body")
+	errRequestBodyTooLarge = errors.New("request body exceeds max_req_body_size")
+)
+
+const apisixEmptyRequestBodyMessage = "could not get body: request body is empty"
 
 const schema = `
 {
@@ -221,7 +243,8 @@ const schema = `
             "properties": {
               "endpoint": {
                 "type": "string",
-                "minLength": 1
+                "minLength": 1,
+                "pattern": "^https?://[^:/]+(:[0-9]*)?/?.*$"
               },
               "llm_options": {
                 "type": "object",
@@ -654,6 +677,7 @@ func (p *Plugin) PostInit() error {
 	}
 
 	p.client = &http.Client{Transport: p.transport()}
+	p.authClient = &http.Client{Transport: p.transport()}
 	if p.now == nil {
 		p.now = time.Now
 	}
@@ -663,11 +687,17 @@ func (p *Plugin) PostInit() error {
 	if p.healthNow == nil {
 		p.healthNow = time.Now
 	}
+	p.initResolverDefaults()
+	// Publish domain requirements without doing network I/O during generation
+	// preparation. The owned health task resolves them and requests stay
+	// fail-closed until a bounded node set is available.
+	p.initializeResolvedNodeMetadata()
 	p.initHealthStates()
-	if len(p.health) > 0 {
+	if len(p.health) > 0 || p.hasDomainEndpoints() {
 		if err := p.startHealthLoop(); err != nil {
 			return err
 		}
+		p.wakeHealthRefresh()
 	}
 	return nil
 }
@@ -682,38 +712,50 @@ func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.Re
 		if errors.Is(err, errRequestBodyTooLarge) {
 			status = http.StatusRequestEntityTooLarge
 		}
-		base.WriteJSONMessage(w, status, err.Error())
+		if errors.Is(err, errRequestBodyEmpty) {
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			w.WriteHeader(status)
+			_, _ = io.WriteString(w, util.BuildMessageResponse(apisixEmptyRequestBodyMessage)+"\n")
+		} else {
+			base.WriteJSONMessage(w, status, err.Error())
+		}
 		return base.StopRequestWithSource(r, apisixctx.ResponseSourceEarlyStop)
 	}
 	p.refreshHealth(r.Context())
-	firstIndex, ok := p.pickInstance(r, nil)
+	firstTarget, ok, targetErr := p.pickExecutionTarget(r, nil)
+	if targetErr != nil {
+		base.WriteJSONMessage(w, http.StatusServiceUnavailable, "failed to pick AI instance: "+targetErr.Error())
+		return base.StopRequestWithSource(r, apisixctx.ResponseSourceEarlyStop)
+	}
 	if !ok {
 		base.WriteJSONMessage(w, http.StatusServiceUnavailable, "failed to pick AI instance")
 		return base.StopRequestWithSource(r, apisixctx.ResponseSourceEarlyStop)
 	}
-	tried := map[int]bool{firstIndex: true}
+	tried := map[int]bool{firstTarget.index: true}
+	selectedTarget := firstTarget
+	var selectedTargetMu sync.Mutex
 	var state *ai_runtime.State
-	request := ai_runtime.WithExecution(r, p.config.Instances[firstIndex].Name, func(
+	request := ai_runtime.WithExecution(r, p.config.Instances[firstTarget.index].Name, func(
 		w http.ResponseWriter,
 		r *http.Request,
 	) {
-		index, ok := p.instanceIndex(state.InstanceName())
-		if !ok {
-			base.WriteJSONMessage(w, http.StatusServiceUnavailable, "failed to pick AI instance")
-			p.registerLogging(r, protocol, body)
-			return
-		}
-		p.executeInstanceRequest(w, r, body, document, protocol, index, tried)
+		selectedTargetMu.Lock()
+		target := selectedTarget
+		selectedTargetMu.Unlock()
+		p.executeInstanceRequest(w, r, body, document, protocol, target, tried)
 	})
 	state = ai_runtime.FromRequest(request)
 	state.SetStreamingIntent(document.IsStreaming(protocol))
 	state.ConfigureRateLimitFallback(rateLimitFallbackEnabled(p.config.FallbackStrategy), func() bool {
-		index, ok := p.pickInstance(request, tried)
-		if !ok {
+		selectedTargetMu.Lock()
+		defer selectedTargetMu.Unlock()
+		target, ok, err := p.pickExecutionTarget(request, tried)
+		if err != nil || !ok {
 			return false
 		}
-		tried[index] = true
-		state.SetInstanceName(p.config.Instances[index].Name)
+		tried[target.index] = true
+		selectedTarget = target
+		state.SetInstanceName(p.config.Instances[target.index].Name)
 		return true
 	})
 	return base.ContinueRequest(request)
@@ -772,12 +814,13 @@ func (p *Plugin) executeInstanceRequest(
 	body []byte,
 	document ai_protocols.Document,
 	protocol ai_protocols.Protocol,
-	firstIndex int,
+	firstTarget requestExecutionTarget,
 	tried map[int]bool,
 ) {
 	retries := 0
-	index := firstIndex
+	target := firstTarget
 	for {
+		index := target.index
 		tried[index] = true
 		instance := p.config.Instances[index]
 		if err := validateBedrockInstanceRequest(instance, document, protocol); err != nil {
@@ -790,7 +833,7 @@ func (p *Plugin) executeInstanceRequest(
 		doneMetric := metrics.BeginLLMRequest(r)
 
 		start := time.Now()
-		resp, prepared, err := p.requestInstance(r, body, document, protocol, instance)
+		resp, prepared, err := p.requestInstance(r, body, document, protocol, target)
 		if err != nil {
 			doneMetric()
 			if prepared.cancel != nil {
@@ -800,12 +843,12 @@ func (p *Plugin) executeInstanceRequest(
 			if p.canRetry(http.StatusServiceUnavailable, time.Since(start), retries) {
 				retries++
 				var ok bool
-				index, ok = p.pickInstance(r, tried)
+				target, ok, _ = p.pickExecutionTarget(r, tried)
 				if !ok {
 					base.WriteJSONMessage(w, http.StatusServiceUnavailable, "failed to pick AI instance")
 					return
 				}
-				ai_runtime.FromRequest(r).SetInstanceName(p.config.Instances[index].Name)
+				ai_runtime.FromRequest(r).SetInstanceName(p.config.Instances[target.index].Name)
 				continue
 			}
 			base.WriteJSONMessage(w, http.StatusServiceUnavailable, "failed to request LLM: "+err.Error())
@@ -813,24 +856,38 @@ func (p *Plugin) executeInstanceRequest(
 			return
 		}
 
-		if p.canRetry(resp.StatusCode, time.Since(start), retries) && len(tried) < len(p.config.Instances) {
-			doneMetric()
-			ai_runtime.MarkLLMRequestDone(r, started)
-			retries++
-			_, _ = io.Copy(io.Discard, resp.Body)
-			_ = resp.Body.Close()
-			if prepared.cancel != nil {
-				prepared.cancel()
+		if p.canRetry(resp.StatusCode, time.Since(start), retries) {
+			if len(tried) < len(p.config.Instances) {
+				doneMetric()
+				ai_runtime.MarkLLMRequestDone(r, started)
+				retries++
+				_, _ = io.Copy(io.Discard, resp.Body)
+				_ = resp.Body.Close()
+				if prepared.cancel != nil {
+					prepared.cancel()
+				}
+				var ok bool
+				target, ok, _ = p.pickExecutionTarget(r, tried)
+				if !ok {
+					base.WriteJSONMessage(w, http.StatusBadGateway, "failed to pick AI instance")
+					p.registerLogging(r, protocol, body)
+					return
+				}
+				ai_runtime.FromRequest(r).SetInstanceName(p.config.Instances[target.index].Name)
+				continue
 			}
-			var ok bool
-			index, ok = p.pickInstance(r, tried)
-			if !ok {
-				base.WriteJSONMessage(w, http.StatusServiceUnavailable, "failed to pick AI instance")
+			if len(p.config.Instances) > 1 {
+				doneMetric()
+				ai_runtime.MarkLLMRequestDone(r, started)
+				_, _ = io.Copy(io.Discard, resp.Body)
+				_ = resp.Body.Close()
+				if prepared.cancel != nil {
+					prepared.cancel()
+				}
+				base.WriteJSONMessage(w, http.StatusBadGateway, "failed to pick AI instance")
 				p.registerLogging(r, protocol, body)
 				return
 			}
-			ai_runtime.FromRequest(r).SetInstanceName(p.config.Instances[index].Name)
-			continue
 		}
 
 		defer func() { _ = resp.Body.Close() }()
@@ -885,9 +942,15 @@ func (p *Plugin) registerRequestIdentity(
 	}
 	apisixctx.RegisterRequestVar(r, "$request_type", requestType)
 	apisixctx.RegisterRequestVar(r, "$llm_request_body", document.Raw)
-	if model := instanceModelDocument(instance, document); model != "" {
+	apisixctx.RegisterRequestVar(r, "$llm_model", nil)
+	if model := document.Model(); model != "" {
 		apisixctx.RegisterRequestVar(r, "$request_llm_model", model)
+	}
+	if model := instanceModelDocument(instance, document); model != "" {
 		apisixctx.RegisterRequestVar(r, "$llm_model", model)
+	}
+	if instance.Name != "" {
+		apisixctx.RegisterRequestVar(r, "$balancer_ip", instance.Name)
 	}
 }
 
@@ -928,7 +991,7 @@ func (p *Plugin) readJSONDocument(r *http.Request) ([]byte, ai_protocols.Documen
 		return nil, ai_protocols.Document{}, ai_protocols.Protocol{}, errRequestBodyTooLarge
 	}
 	if len(bytes.TrimSpace(body)) == 0 {
-		return nil, ai_protocols.Document{}, ai_protocols.Protocol{}, fmt.Errorf("missing request body")
+		return nil, ai_protocols.Document{}, ai_protocols.Protocol{}, errRequestBodyEmpty
 	}
 
 	document, err := ai_protocols.DecodeDocument(body)
@@ -950,8 +1013,10 @@ func (p *Plugin) requestInstance(
 	body []byte,
 	document ai_protocols.Document,
 	protocol ai_protocols.Protocol,
-	instance Instance,
+	target requestExecutionTarget,
 ) (*http.Response, preparedInstanceRequest, error) {
+	index := target.index
+	instance := p.config.Instances[index]
 	prepared, err := p.prepareInstanceRequest(body, document, protocol, instance)
 	if err != nil {
 		return nil, prepared, err
@@ -962,6 +1027,10 @@ func (p *Plugin) requestInstance(
 	if err != nil {
 		return nil, prepared, err
 	}
+	requestClient := p.client
+	if target.node != nil {
+		requestClient = target.node.client
+	}
 
 	method := http.MethodPost
 	if protocol == ai_protocols.Passthrough {
@@ -971,11 +1040,9 @@ func (p *Plugin) requestInstance(
 	if err != nil {
 		return nil, prepared, fmt.Errorf("failed to create LLM request: %w", err)
 	}
+	normalizeURLDefaultPort(req.URL)
 	ai_common.CopyForwardHeaders(req.Header, r.Header)
 	req.Header.Set("Content-Type", "application/json")
-	for header, value := range instance.Auth.Header {
-		req.Header.Set(header, value)
-	}
 	query := req.URL.Query()
 	if protocol == ai_protocols.Passthrough {
 		if req.URL.Path == "" || req.URL.Path == "/" {
@@ -989,29 +1056,37 @@ func (p *Plugin) requestInstance(
 			}
 		}
 	}
-	for key, value := range instance.Auth.Query {
-		apisixctx.RegisterSensitiveQueryName(r, key)
-		query.Set(key, value)
-	}
-	req.URL.RawQuery = query.Encode()
-	registerUpstreamTargetVars(r, req)
-	if instance.Auth.GCP != nil {
-		if err := p.gcpTokens.Apply(r.Context(), p.client, req, *instance.Auth.GCP); err != nil {
-			return nil, prepared, fmt.Errorf("authenticate GCP request: %w", err)
+	if err := p.withInstanceAuth(index, func(auth Auth) error {
+		for header, value := range auth.Header {
+			req.Header.Set(header, value)
 		}
-	}
-	if instance.Provider == "bedrock" {
-		region, _ := instance.ProviderConf["region"].(string)
-		if err := ai_auth.SignAWSRequest(
-			req,
-			prepared.providerBody,
-			*instance.Auth.AWS,
-			region,
-			"bedrock",
-			p.now(),
-		); err != nil {
-			return nil, prepared, fmt.Errorf("sign Bedrock request: %w", err)
+		for key, value := range auth.Query {
+			apisixctx.RegisterSensitiveQueryName(r, key)
+			query.Set(key, value)
 		}
+		req.URL.RawQuery = query.Encode()
+		registerUpstreamTargetVars(r, req)
+		if auth.GCP != nil {
+			if err := p.gcpTokens.Apply(r.Context(), p.authClient, req, *auth.GCP); err != nil {
+				return fmt.Errorf("authenticate GCP request: %w", err)
+			}
+		}
+		if instance.Provider == "bedrock" {
+			region, _ := instance.ProviderConf["region"].(string)
+			if err := ai_auth.SignAWSRequest(
+				req,
+				prepared.providerBody,
+				*auth.AWS,
+				region,
+				"bedrock",
+				p.now(),
+			); err != nil {
+				return fmt.Errorf("sign Bedrock request: %w", err)
+			}
+		}
+		return nil
+	}); err != nil {
+		return nil, prepared, err
 	}
 	if prepared.anthropicConversion {
 		ai_protocols.ConvertAnthropicHeadersToOpenAI(req.Header)
@@ -1026,11 +1101,22 @@ func (p *Plugin) requestInstance(
 	}
 
 	prepared.upstreamStarted = time.Now()
-	resp, err := p.client.Do(req)
+	resp, err := requestClient.Do(req)
 	if err != nil {
 		registerUpstreamResponseTime(r, time.Since(prepared.upstreamStarted))
+		if target.node != nil {
+			target.node.finalizeIfRetired()
+		}
+		return nil, prepared, err
 	}
-	return resp, prepared, err
+	if target.node != nil {
+		if resp.Body == nil {
+			target.node.finalizeIfRetired()
+		} else {
+			resp.Body = &resolvedNodeResponseBody{body: resp.Body, node: target.node}
+		}
+	}
+	return resp, prepared, nil
 }
 
 func (p *Plugin) prepareInstanceRequest(
@@ -1451,9 +1537,6 @@ func (p *Plugin) writeProviderResponse(
 	}
 	responseDocument, _ := ai_protocols.DecodeDocument(body)
 	registerLLMRequestVars(r, prepared.clientDocument, prepared.clientProtocol, responseDocument)
-	if requestModel != "" && apisixctx.GetRequestVars(r) != nil {
-		apisixctx.RegisterRequestVar(r, "$request_llm_model", requestModel)
-	}
 
 	for field, values := range resp.Header {
 		if convertedResponse && strings.EqualFold(field, "Content-Length") {

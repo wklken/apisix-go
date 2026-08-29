@@ -83,7 +83,8 @@ var expectedPluginFields = map[string][]string{
 		"redis_cluster_nodes",
 		"redis_cluster_config.redis_cluster_nodes",
 	},
-	"oas-validator": {"spec", "spec_url_request_headers"},
+	"oas-validator":      {"spec", "spec_url_request_headers"},
+	"request-validation": {"body_schema", "header_schema"},
 }
 
 var expectedStrictPluginFields = map[string][]string{

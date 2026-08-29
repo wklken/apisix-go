@@ -141,9 +141,9 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		}
 
 		if p.filter != nil && !p.filter.Allowed(clientIP) {
-			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 			w.WriteHeader(p.config.ResponseCode)
-			_, _ = w.Write([]byte(p.body))
+			_, _ = w.Write([]byte(p.body + "\n"))
 			return
 		}
 

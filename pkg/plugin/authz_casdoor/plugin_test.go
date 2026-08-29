@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -20,7 +21,9 @@ import (
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/generation"
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/plugin/proxy_rewrite"
 	"github.com/wklken/apisix-go/pkg/secret"
 	"github.com/wklken/apisix-go/pkg/testutil"
 	"github.com/wklken/apisix-go/pkg/util"
@@ -55,6 +58,46 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	}
 
 	return p
+}
+
+func TestPostInitWarnsOnlyForInsecureURLs(t *testing.T) {
+	tests := []struct {
+		name         string
+		scheme       string
+		wantWarnings []string
+	}{
+		{
+			name:   "insecure",
+			scheme: "http",
+			wantWarnings: []string{
+				"Using authz-casdoor endpoint_addr with no TLS is a security risk",
+				"Using authz-casdoor callback_url with no TLS is a security risk",
+			},
+		},
+		{name: "secure", scheme: "https"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var warnings []string
+			stop := logger.ReplaceObserver("authz-casdoor-security-warning-"+test.name, func(entry logger.Entry) {
+				if entry.Level == "WARN" && strings.Contains(entry.Message, "authz-casdoor") {
+					warnings = append(warnings, entry.Message)
+				}
+			})
+			defer stop()
+
+			newTestPlugin(t, Config{
+				EndpointAddr: test.scheme + "://door.example.com",
+				ClientID:     "client-a",
+				ClientSecret: testClientSecret,
+				CallbackURL:  test.scheme + "://gateway.example.com/callback",
+			})
+
+			if !reflect.DeepEqual(warnings, test.wantWarnings) {
+				t.Fatalf("warnings = %#v, want %#v", warnings, test.wantWarnings)
+			}
+		})
+	}
 }
 
 // TestMaterializeScopedSecretsOwnsCasdoorSessionSecrets catches installing the
@@ -772,6 +815,157 @@ func TestCallbackFetchesAccessTokenAndRedirectsOriginalURI(t *testing.T) {
 	}
 	if protectedRR.Code != http.StatusAccepted {
 		t.Fatalf("status = %d, want 202", protectedRR.Code)
+	}
+}
+
+func TestCallbackWithoutSessionReturnsBareServiceUnavailable(t *testing.T) {
+	logged := make(chan logger.Entry, 1)
+	stop := logger.ReplaceObserver(t.Name(), func(entry logger.Entry) {
+		if entry.Level == "ERROR" && entry.Message == "no session found" {
+			logged <- entry
+		}
+	})
+	t.Cleanup(stop)
+
+	p := newTestPlugin(t, Config{
+		EndpointAddr: "https://door.example.com",
+		ClientID:     "client-a",
+		ClientSecret: testClientSecret,
+		CallbackURL:  "https://gateway.example.com/anything/callback",
+	})
+	transport := &retainingCasdoorTransport{}
+	p.client.Transport = transport
+	nextCalled := false
+	request := httptest.NewRequest(
+		http.MethodGet,
+		"https://gateway.example.com/anything/callback?code=aaa&state=bbb",
+		nil,
+	)
+	response := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		nextCalled = true
+	})).ServeHTTP(response, request)
+
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", response.Code)
+	}
+	if got := response.Body.String(); got != "" {
+		t.Fatalf("body = %q, want bare 503", got)
+	}
+	if got := response.Header().Get("Content-Type"); got != "" {
+		t.Fatalf("Content-Type = %q, want absent", got)
+	}
+	if nextCalled {
+		t.Fatal("callback without session reached next handler")
+	}
+	if transport.request != nil {
+		t.Fatalf("callback without session contacted Casdoor: %#v", transport.request)
+	}
+	if !apisixctx.IsSensitiveQueryName(request, "code") {
+		t.Fatal("callback did not register code as a sensitive query name")
+	}
+	select {
+	case <-logged:
+	default:
+		t.Fatal("callback without session did not log the pinned APISIX error")
+	}
+}
+
+func TestCallbackUsesOriginalRequestURIWhenProxyRewriteRunsFirst(t *testing.T) {
+	tokenRequests := make(chan url.Values, 1)
+	casdoor := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/login/oauth/access_token" {
+			http.Error(w, "unexpected token path", http.StatusNotFound)
+			return
+		}
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "invalid token form", http.StatusBadRequest)
+			return
+		}
+		tokenRequests <- r.PostForm
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token": "token-a",
+			"expires_in":   3600,
+		})
+	}))
+	t.Cleanup(casdoor.Close)
+
+	authz := newTestPlugin(t, Config{
+		EndpointAddr: casdoor.URL,
+		ClientID:     "client-a",
+		ClientSecret: testClientSecret,
+		CallbackURL:  "http://gateway.example.com/anything/callback",
+	})
+	rewrite := &proxy_rewrite.Plugin{}
+	if err := rewrite.Init(); err != nil {
+		t.Fatalf("proxy-rewrite Init() error = %v", err)
+	}
+	rewrite.Config().(*proxy_rewrite.Config).Uri = "/echo"
+	if err := rewrite.PostInit(); err != nil {
+		t.Fatalf("proxy-rewrite PostInit() error = %v", err)
+	}
+
+	terminalCalled := false
+	handler := rewrite.Handler(authz.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		terminalCalled = true
+		w.WriteHeader(http.StatusOK)
+	})))
+	initial := httptest.NewRecorder()
+	handler.ServeHTTP(
+		initial,
+		httptest.NewRequest(
+			http.MethodGet,
+			"http://gateway.example.com/anything/d?param1=foo&param2=bar",
+			nil,
+		),
+	)
+	loginCookie := findSessionCookie(initial.Result().Cookies())
+	if loginCookie == nil {
+		t.Fatal("initial request did not set a session cookie")
+	}
+
+	callback := httptest.NewRequest(
+		http.MethodGet,
+		"http://gateway.example.com/anything/callback?code=aaa&state=state-1",
+		nil,
+	)
+	callback.AddCookie(loginCookie)
+	callbackResponse := httptest.NewRecorder()
+	handler.ServeHTTP(callbackResponse, callback)
+	if callbackResponse.Code != http.StatusFound {
+		t.Fatalf("callback status = %d, want 302", callbackResponse.Code)
+	}
+	if got := callbackResponse.Header().Get("Location"); got != "/anything/d?param1=foo&param2=bar" {
+		t.Fatalf("callback Location = %q, want original request URI", got)
+	}
+	select {
+	case form := <-tokenRequests:
+		if got := form.Get("code"); got != "aaa" {
+			t.Fatalf("token code = %q, want aaa", got)
+		}
+	default:
+		t.Fatal("callback did not exchange the authorization code")
+	}
+
+	authenticatedCookie := findSessionCookie(callbackResponse.Result().Cookies())
+	if authenticatedCookie == nil {
+		t.Fatal("callback did not set an authenticated session cookie")
+	}
+	authenticated := httptest.NewRequest(
+		http.MethodGet,
+		"http://gateway.example.com/anything/d?param1=foo&param2=bar",
+		nil,
+	)
+	authenticated.AddCookie(authenticatedCookie)
+	authenticatedResponse := httptest.NewRecorder()
+	handler.ServeHTTP(authenticatedResponse, authenticated)
+	if !terminalCalled || authenticatedResponse.Code != http.StatusOK {
+		t.Fatalf(
+			"authenticated request = called:%t status:%d, want called:true status:200",
+			terminalCalled,
+			authenticatedResponse.Code,
+		)
 	}
 }
 

@@ -34,8 +34,8 @@ func TestTrackReportsServerWideRequestCounters(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/apisix/status", nil))
-	if got := recorder.Header().Get("Content-Type"); got != "application/json; charset=UTF-8" {
-		t.Fatalf("Content-Type = %q", got)
+	if got := recorder.Header().Get("Content-Type"); got != "text/plain; charset=utf-8" {
+		t.Fatalf("Content-Type = %q, want APISIX 3.17 text/plain response", got)
 	}
 	if strings.HasSuffix(recorder.Body.String(), "\n") {
 		t.Fatalf("body has trailing newline: %q", recorder.Body.String())

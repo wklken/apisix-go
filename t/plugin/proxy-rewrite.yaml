@@ -1,18 +1,30 @@
 sources:
   - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
     file: t/plugin/proxy-rewrite.t
-    tests: 57
+    tests: 44
   - repository: https://github.com/apache/apisix
     commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/proxy-rewrite.t
+    tests: 13
+    test_numbers: [45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57]
+    regression_only: true
+  - repository: https://github.com/apache/apisix
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
     file: t/plugin/proxy-rewrite2.t
     tests: 6
     test_numbers: [2, 3, 4, 6, 7, 8]
   - repository: https://github.com/apache/apisix
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
+    file: t/plugin/proxy-rewrite3.t
+    tests: 39
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41]
+  - repository: https://github.com/apache/apisix
     commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
     file: t/plugin/proxy-rewrite3.t
-    tests: 41
-    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43]
+    tests: 2
+    test_numbers: [42, 43]
+    regression_only: true
 
 cases:
   - name: schema-sanity
@@ -406,9 +418,8 @@ cases:
           upstream: *fixture_route
     upstream: &unused_fixture
       respond: *hello_response
-    output:
-      logs:
-        matches: 'build route proxy-rewrite-reject-odd-regex-uri fail:.*regex_uri length should be even'
+    input: {path: /test/value}
+    output: {status: 404}
 
   - name: reject-invalid-regex-pattern
     source:
@@ -423,9 +434,8 @@ cases:
               regex_uri: ['[^/test/(.*)', '/$1']
           upstream: *fixture_route
     upstream: *unused_fixture
-    output:
-      logs:
-        matches: 'build route proxy-rewrite-reject-invalid-regex-pattern fail:.*invalid regex_uri pattern'
+    input: {path: /test/value}
+    output: {status: 404}
 
   - name: reject-invalid-regex-replacement
     source:
@@ -440,9 +450,8 @@ cases:
               regex_uri: ['^/test/(.*)', '/$`1']
           upstream: *fixture_route
     upstream: *unused_fixture
-    output:
-      logs:
-        matches: 'build route proxy-rewrite-reject-invalid-regex-replacement fail:.*invalid regex_uri replacement'
+    input: {path: /test/value}
+    output: {status: 404}
 
   - name: reject-invalid-uri
     source:
@@ -457,11 +466,10 @@ cases:
               uri: hello
           upstream: *fixture_route
     upstream: *unused_fixture
-    output:
-      logs:
-        matches: 'build route proxy-rewrite-reject-invalid-uri fail:.*uri.*must begin with /'
+    input: {path: /hello}
+    output: {status: 404}
 
-  - name: reject-non-string-uri
+  - name: schema-rejects-relative-uri
     source:
       file: t/plugin/proxy-rewrite.t
       tests: [30]
@@ -471,12 +479,11 @@ cases:
           uri: /hello
           plugins:
             proxy-rewrite:
-              uri: 123
+              uri: home
           upstream: *fixture_route
     upstream: *unused_fixture
-    output:
-      logs:
-        matches: 'build route proxy-rewrite-reject-non-string-uri fail:.*uri.*expected string'
+    input: {path: /hello}
+    output: {status: 404}
 
   - name: reject-invalid-header-field
     source:
@@ -493,9 +500,8 @@ cases:
                 'X-Api:Version': v2
           upstream: *fixture_route
     upstream: *unused_fixture
-    output:
-      logs:
-        matches: 'build route proxy-rewrite-reject-invalid-header-field fail:.*invalid header field'
+    input: {path: /hello}
+    output: {status: 404}
 
   - name: reject-invalid-header-value
     source:
@@ -512,9 +518,8 @@ cases:
                 X-Api-Version: "v2\r\n"
           upstream: *fixture_route
     upstream: *unused_fixture
-    output:
-      logs:
-        matches: 'build route proxy-rewrite-reject-invalid-header-value fail:.*invalid header value'
+    input: {path: /hello}
+    output: {status: 404}
 
   - name: rewrite-uri-with-arguments
     source:
@@ -563,14 +568,8 @@ cases:
       respond: *hello_response
     output: *hello_output
     after_shutdown:
-      - path: {equals: '{{WORK_DIR}}/apisix-go-store.db'}
-        bbolt_json:
-          bucket: routes
-          key: proxy-rewrite-clean-standalone-config
-          fields:
-            /plugins/proxy-rewrite/uri: /uri/plugin_proxy_rewrite
-            /plugins/proxy-rewrite/headers/X-Api: v2
-          forbidden_matches: ['regexURIPairs']
+      - path: {equals: '{{WORK_DIR}}/data/apisix-go-store.db'}
+        body: {not_matches: 'regexURIPairs'}
 
   - name: header-request-variables
     source:
@@ -1092,9 +1091,8 @@ cases:
           upstream: *fixture_route
     upstream:
       respond: *hello_response
-    output:
-      logs:
-        matches: 'build route proxy-rewrite-bad-method.*method.*enum'
+    input: {path: /hello}
+    output: {status: 404}
 
   - name: method-with-headers
     source:

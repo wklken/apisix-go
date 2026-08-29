@@ -465,9 +465,9 @@ func (p *Plugin) setAccessTokenHeader(r *http.Request, token string) {
 	r.Header.Set("X-Access-Token", token)
 }
 
-func (p *Plugin) writeBearerUnauthorized(w http.ResponseWriter, message string) {
+func (p *Plugin) writeBearerUnauthorized(w http.ResponseWriter) {
 	w.Header().Set("WWW-Authenticate", fmt.Sprintf(`Bearer realm="%s"`, p.config.Realm))
-	http.Error(w, message, http.StatusUnauthorized)
+	w.WriteHeader(http.StatusUnauthorized)
 }
 
 func (p *Plugin) writeInvalidToken(w http.ResponseWriter, message string) {

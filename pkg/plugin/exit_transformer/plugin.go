@@ -1,12 +1,14 @@
 package exit_transformer
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"net/http"
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
@@ -23,12 +25,15 @@ type Plugin struct {
 
 	// compiled holds the immutable precompiled function chunks, parsed once
 	// in PostInit instead of on every response.
-	compiled []*lua.FunctionProto
+	compiled         []*lua.FunctionProto
+	executionTimeout time.Duration
 }
 
 const (
-	priority = 22950
-	name     = "exit-transformer"
+	priority                = 22950
+	name                    = "exit-transformer"
+	defaultExecutionTimeout = time.Second
+	maxExecutionTimeout     = 10 * time.Second
 )
 
 const schema = `
@@ -51,11 +56,13 @@ type Config struct {
 }
 
 type exitResponse struct {
-	status       int
-	body         []byte
-	header       http.Header
-	method       string
-	bodyReplaced bool
+	status         int
+	body           []byte
+	header         http.Header
+	originalHeader http.Header
+	callbackHeader http.Header
+	method         string
+	bodyReplaced   bool
 }
 
 func (p *Plugin) Init() error {
@@ -67,20 +74,72 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
-	runner := newTransformerRunner(nil)
-	defer runner.close()
+	executionTimeout, err := p.configuredExecutionTimeout()
+	if err != nil {
+		return err
+	}
+	p.executionTimeout = executionTimeout
 
 	for _, source := range p.config.Functions {
 		proto, err := compileFunction(source)
 		if err != nil {
 			return err
 		}
-		if err := runner.validate(proto); err != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), p.executionTimeout)
+		runner := newTransformerRunner(ctx, nil)
+		err = runner.validate(proto)
+		runner.close()
+		cancel()
+		if err != nil {
 			return err
 		}
 		p.compiled = append(p.compiled, proto)
 	}
 	return nil
+}
+
+func (p *Plugin) configuredExecutionTimeout() (time.Duration, error) {
+	effective := p.StaticConfig()
+	if effective == nil {
+		return defaultExecutionTimeout, nil
+	}
+	attributes, ok := effective.Config.PluginAttr[p.Name]
+	if !ok {
+		return defaultExecutionTimeout, nil
+	}
+	raw, ok := attributes["execution_timeout_ms"]
+	if !ok {
+		return defaultExecutionTimeout, nil
+	}
+	var milliseconds int64
+	switch value := raw.(type) {
+	case int:
+		milliseconds = int64(value)
+	case int64:
+		milliseconds = value
+	case float64:
+		if value != math.Trunc(value) {
+			return 0, fmt.Errorf("plugin_attr.%s.execution_timeout_ms must be an integer", p.Name)
+		}
+		milliseconds = int64(value)
+	case json.Number:
+		parsed, err := value.Int64()
+		if err != nil {
+			return 0, fmt.Errorf("plugin_attr.%s.execution_timeout_ms must be an integer", p.Name)
+		}
+		milliseconds = parsed
+	default:
+		return 0, fmt.Errorf("plugin_attr.%s.execution_timeout_ms must be an integer", p.Name)
+	}
+	maxMilliseconds := int64(maxExecutionTimeout / time.Millisecond)
+	if milliseconds <= 0 || milliseconds > maxMilliseconds {
+		return 0, fmt.Errorf(
+			"plugin_attr.%s.execution_timeout_ms must be between 1 and %d",
+			p.Name,
+			maxMilliseconds,
+		)
+	}
+	return time.Duration(milliseconds) * time.Millisecond, nil
 }
 
 func (p *Plugin) Config() any {
@@ -95,12 +154,14 @@ func (p *Plugin) RunBufferedBodyFilter(r *http.Request, state *base.ResponseStat
 		return nil
 	}
 	resp := exitResponse{
-		status: state.Status,
-		body:   append([]byte(nil), state.Body...),
-		header: state.Header.Clone(),
-		method: r.Method,
+		status:         state.Status,
+		body:           append([]byte(nil), state.Body...),
+		header:         state.Header.Clone(),
+		originalHeader: state.Header.Clone(),
+		method:         r.Method,
 	}
-	runner := newTransformerRunner(r)
+	runner, cancel := p.newRequestTransformerRunner(r)
+	defer cancel()
 	defer runner.close()
 	for _, proto := range p.compiled {
 		transformed, err := runner.transform(resp, proto)
@@ -130,16 +191,18 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		next.ServeHTTP(recorder, r)
 
 		resp := exitResponse{
-			status: recorder.StatusCode(),
-			body:   recorder.Body(),
-			header: recorder.Header().Clone(),
-			method: r.Method,
+			status:         recorder.StatusCode(),
+			body:           recorder.Body(),
+			header:         recorder.Header().Clone(),
+			originalHeader: recorder.Header().Clone(),
+			method:         r.Method,
 		}
 		if source, _ := apisixctx.GetRequestVar(r, "$response_source").(string); source == "upstream" {
 			writeResponse(w, resp)
 			return
 		}
-		runner := newTransformerRunner(r)
+		runner, cancel := p.newRequestTransformerRunner(r)
+		defer cancel()
 		defer runner.close()
 		for _, proto := range p.compiled {
 			transformed, err := runner.transform(resp, proto)
@@ -194,8 +257,21 @@ type transformerRunner struct {
 	req   *http.Request
 }
 
-func newTransformerRunner(r *http.Request) *transformerRunner {
+func (p *Plugin) newRequestTransformerRunner(r *http.Request) (*transformerRunner, context.CancelFunc) {
+	parent := context.Background()
+	if r != nil {
+		parent = r.Context()
+	}
+	ctx, cancel := context.WithTimeout(parent, p.executionTimeout)
+	return newTransformerRunner(ctx, r), cancel
+}
+
+func newTransformerRunner(ctx context.Context, r *http.Request) *transformerRunner {
 	state := lua.NewState(lua.Options{SkipOpenLibs: true})
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	state.SetContext(ctx)
 	runner := &transformerRunner{state: state, req: r}
 	runner.openSafeLibraries()
 	runner.preloadApisixCore()
@@ -333,11 +409,13 @@ func (r *transformerRunner) transform(resp exitResponse, proto *lua.FunctionProt
 	}
 
 	transformed := exitResponse{
-		status:       resp.status,
-		body:         resp.body,
-		header:       resp.header,
-		method:       resp.method,
-		bodyReplaced: resp.bodyReplaced,
+		status:         resp.status,
+		body:           resp.body,
+		header:         resp.header,
+		originalHeader: resp.originalHeader,
+		callbackHeader: resp.callbackHeader,
+		method:         resp.method,
+		bodyReplaced:   resp.bodyReplaced,
 	}
 	if status, ok := luaValueToStatus(r.state.Get(1)); ok && status > 0 {
 		transformed.status = status
@@ -348,11 +426,13 @@ func (r *transformerRunner) transform(resp exitResponse, proto *lua.FunctionProt
 	}
 	if value := r.state.Get(3); value != lua.LNil {
 		if table, ok := value.(*lua.LTable); ok {
-			transformed.header = luautil.LuaTableToHeader(table)
+			transformed.callbackHeader = luautil.LuaTableToHeader(table)
+			transformed.header = overlayResponseHeaders(resp.originalHeader, transformed.callbackHeader)
 		}
 	}
 	if transformed.bodyReplaced {
 		base.InvalidateBodyDerivedHeaders(transformed.header)
+		base.InvalidateBodyDerivedHeaders(transformed.callbackHeader)
 	}
 	r.state.SetTop(0)
 	return transformed, nil
@@ -360,7 +440,7 @@ func (r *transformerRunner) transform(resp exitResponse, proto *lua.FunctionProt
 
 func responseValues(l *lua.LState, resp exitResponse) (lua.LValue, lua.LValue, lua.LValue) {
 	header := l.NewTable()
-	for field, values := range resp.header {
+	for field, values := range resp.callbackHeader {
 		if len(values) == 1 {
 			header.RawSetString(field, lua.LString(values[0]))
 		} else {
@@ -397,10 +477,26 @@ func luaValueToBody(value lua.LValue) []byte {
 	if value.Type() == lua.LTTable {
 		data, err := json.Marshal(luautil.LuaValueToGo(value))
 		if err == nil {
-			return data
+			return append(data, '\n')
 		}
 	}
 	return []byte(luaValueToString(value))
+}
+
+func overlayResponseHeaders(original, updates http.Header) http.Header {
+	merged := original.Clone()
+	if merged == nil {
+		merged = make(http.Header)
+	}
+	for field, values := range updates {
+		for actual := range merged {
+			if strings.EqualFold(actual, field) {
+				delete(merged, actual)
+			}
+		}
+		merged[field] = append([]string(nil), values...)
+	}
+	return merged
 }
 
 func luaValueToString(value lua.LValue) string {

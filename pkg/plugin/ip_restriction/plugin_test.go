@@ -4,7 +4,6 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
@@ -26,11 +25,11 @@ func TestWhitelistRejectsWithJSONMessage(t *testing.T) {
 	if rr.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, want %d", rr.Code, http.StatusForbidden)
 	}
-	if got := strings.TrimSpace(rr.Body.String()); got != `{"message":"Your IP address is not allowed"}` {
+	if got := rr.Body.String(); got != "{\"message\":\"Your IP address is not allowed\"}\n" {
 		t.Fatalf("body = %q", got)
 	}
-	if got := rr.Header().Get("Content-Type"); got != "application/json" {
-		t.Fatalf("Content-Type = %q, want application/json", got)
+	if got := rr.Header().Get("Content-Type"); got != "text/plain; charset=utf-8" {
+		t.Fatalf("Content-Type = %q, want APISIX response type", got)
 	}
 }
 
@@ -47,7 +46,7 @@ func TestBlacklistRejectsCustomMessage(t *testing.T) {
 		t.Fatal("ip-restriction should not call the next handler")
 	})).ServeHTTP(rr, req)
 
-	if got := strings.TrimSpace(rr.Body.String()); got != `{"message":"blocked ip"}` {
+	if got := rr.Body.String(); got != "{\"message\":\"blocked ip\"}\n" {
 		t.Fatalf("body = %q", got)
 	}
 }

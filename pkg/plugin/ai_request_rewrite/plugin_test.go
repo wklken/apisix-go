@@ -13,6 +13,7 @@ import (
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_auth"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -101,6 +102,13 @@ func TestHandlerRewritesRequestWithOpenAICompatibleProvider(t *testing.T) {
 	}
 	if got := messages[1].(map[string]any)["content"]; got != `{"content":"4111 1111 1111 1111"}` {
 		t.Fatalf("user message content = %v, want original request body", got)
+	}
+}
+
+func TestPluginOwnsDeclaredScopedSecrets(t *testing.T) {
+	var instance any = &Plugin{}
+	if _, ok := instance.(base.ScopedSecretMaterializer); !ok {
+		t.Fatal("ai-request-rewrite declares plugin_config secrets but does not own scoped materialization")
 	}
 }
 

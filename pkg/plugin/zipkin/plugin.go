@@ -11,12 +11,12 @@ import (
 	"net/http"
 	"regexp"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/go-resty/resty/v2"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
-	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/httpclient"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -64,10 +64,11 @@ const schema = `
       "default": "APISIX"
     },
     "server_addr": {
-      "type": "string"
+      "type": "string",
+      "pattern": "^[0-9]{1,3}.[0-9]{1,3}.[0-9]{1,3}.[0-9]{1,3}$"
     },
     "span_version": {
-      "enum": [2],
+      "enum": [1, 2],
       "default": 2
     }
   },
@@ -90,6 +91,7 @@ type b3Context struct {
 	SpanID       string
 	ParentSpanID string
 	Sampled      string
+	Debug        bool
 }
 
 type spanStateContextKey struct{}
@@ -138,8 +140,11 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
-	if p.config.SpanVersion != 0 && p.config.SpanVersion != 2 {
-		return fmt.Errorf("zipkin span_version %d is unsupported; only v2 is emitted", p.config.SpanVersion)
+	if p.config.SpanVersion != 0 && p.config.SpanVersion != 1 && p.config.SpanVersion != 2 {
+		return fmt.Errorf("zipkin span_version %d is unsupported; only v1 and v2 are accepted", p.config.SpanVersion)
+	}
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(p.config.Endpoint)), "http://") {
+		logger.Warn("Using zipkin endpoint with no TLS is a security risk")
 	}
 	if p.config.ServiceName == "" {
 		p.config.ServiceName = "APISIX"
@@ -179,7 +184,7 @@ func (p *Plugin) PostInit() error {
 		Tasks:             p.TaskOwner(),
 		Name:              "zipkin span reporter",
 		PluginID:          name,
-		BatchMaxSize:      1,
+		BatchMaxSize:      min(logger_batch.DefaultBatchMaxSize, p.maxPendingEntries),
 		MaxRetryCount:     0,
 		RetryDelay:        logger_batch.DefaultRetryDelay,
 		BufferDuration:    logger_batch.DefaultBufferDuration,
@@ -322,7 +327,11 @@ func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.Re
 		return base.StopRequestWithSource(r, apisixctx.ResponseSourceAPISIX)
 	}
 	injectB3(r, traceContext)
-	state := &spanState{context: traceContext, started: time.Now()}
+	started := lifecycle.StartedAt()
+	if started.IsZero() {
+		started = time.Now()
+	}
+	state := &spanState{context: traceContext, started: started}
 	r = r.WithContext(context.WithValue(r.Context(), spanStateContextKey{}, state))
 	if traceContext.Sampled != "1" {
 		return base.ContinueRequest(r)
@@ -364,7 +373,6 @@ func (p *Plugin) finishSpan(state *spanState, lifecycle *apisixctx.RequestLifecy
 			state.started,
 			duration,
 			lifecycle.ResponseSource(),
-			outcome.Kind,
 		)) {
 			logger.Errorf("failed to enqueue zipkin span to %s", p.config.Endpoint)
 		}
@@ -400,7 +408,6 @@ func (p *Plugin) buildSpanWithSource(
 	start time.Time,
 	duration time.Duration,
 	source apisixctx.ResponseSource,
-	outcomes ...apisixctx.RequestOutcomeKind,
 ) map[string]any {
 	serverAddr := p.config.ServerAddr
 	if serverAddr == "" {
@@ -431,20 +438,6 @@ func (p *Plugin) buildSpanWithSource(
 	}
 	if source != apisixctx.ResponseSourceUnknown {
 		tags["apisix.response_source"] = string(source)
-	}
-	correlation := apisixlog.CaptureRequestCorrelation(r)
-	for key, value := range map[string]string{
-		"apisix.request_id":         correlation.RequestID,
-		"apisix.node_id":            correlation.NodeID,
-		"apisix.retry_count":        correlation.RetryCount,
-		"http.upstream_status_code": correlation.UpstreamStatus,
-	} {
-		if value != "" {
-			tags[key] = value
-		}
-	}
-	if len(outcomes) > 0 && outcomes[0] != "" {
-		tags["apisix.outcome"] = string(outcomes[0])
 	}
 
 	localEndpoint := map[string]any{"serviceName": p.config.ServiceName}

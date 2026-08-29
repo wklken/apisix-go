@@ -158,6 +158,8 @@ type ErrorResponse struct {
 	ErrorMessage string `json:"error_msg"`
 }
 
+var errMissingPipeline = errors.New(`bad request body: object matches none of the required: ["pipeline"]`)
+
 func (p *Plugin) Init() error {
 	p.Name = name
 	p.Priority = priority
@@ -209,6 +211,19 @@ func serveBatchRequest(dispatcher *batchDispatcher, limits Limits, w http.Respon
 	}()
 	responses, errStatus, err := handleBatchRequest(dispatcher, w, r, limits, tasks)
 	if err != nil {
+		if errors.Is(err, errMissingPipeline) {
+			body, marshalErr := json.Marshal(ErrorResponse{ErrorMessage: err.Error()})
+			if marshalErr != nil {
+				logger.Debugf("failed to marshal batch-requests missing-pipeline response: %s", marshalErr)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(errStatus)
+			if _, writeErr := w.Write(append(body, '\n')); writeErr != nil {
+				logger.Debugf("failed to write batch-requests missing-pipeline response: %s", writeErr)
+			}
+			return
+		}
 		if writeErr := util.WriteJSON(w, errStatus, ErrorResponse{ErrorMessage: err.Error()}); writeErr != nil {
 			logger.Debugf("failed to write batch-requests error response: %s", writeErr)
 		}
@@ -248,7 +263,7 @@ func handleBatchRequest(
 		return nil, http.StatusBadRequest, fmt.Errorf("bad request body: %w", err)
 	}
 	if !pipelinePresent {
-		return nil, http.StatusBadRequest, fmt.Errorf("bad request body: pipeline is required")
+		return nil, http.StatusBadRequest, errMissingPipeline
 	}
 
 	var req Request
@@ -284,7 +299,7 @@ func handleBatchRequest(
 			}
 		}
 		responses = append(responses, result.response)
-		if timedOut && r.Context().Err() != nil {
+		if timedOut {
 			break
 		}
 	}

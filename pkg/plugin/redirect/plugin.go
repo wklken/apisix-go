@@ -41,7 +41,8 @@ const schema = `
 	  },
 	  "uri": {
 		"type": "string",
-		"minLength": 2
+		"minLength": 2,
+		"pattern": "(\\$|[^$\\\\]+)"
 	  },
 	  "regex_uri": {
 		"description": "params for generating new uri that substitute from client uri, first param is regular expression, the second one is uri template",

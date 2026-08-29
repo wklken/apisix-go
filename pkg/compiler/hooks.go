@@ -150,7 +150,8 @@ func (attempt PreparationAttempt) PrepareScopedPluginSecrets(
 ) error {
 	instance := bound.Plugin()
 	if ctx == nil || isNilInterface(instance) || !attempt.owns(occurrence) ||
-		occurrence.source != capability.SecretPluginConfig {
+		(occurrence.source != capability.SecretPluginConfig &&
+			occurrence.source != capability.SecretConsumerConfig) {
 		return fmt.Errorf("%w: scoped plugin occurrence authority is invalid", ErrInvalidInput)
 	}
 	if bound.Factory() != occurrence.factory {

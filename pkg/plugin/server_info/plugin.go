@@ -3,6 +3,8 @@ package server_info
 import (
 	"net/http"
 	"os"
+	"strings"
+	"sync/atomic"
 	"time"
 
 	apisixid "github.com/wklken/apisix-go/pkg/apisix/id"
@@ -40,6 +42,47 @@ type Response struct {
 	BootTime    int64  `json:"boot_time"`
 }
 
+// View is the process-owned server-info snapshot shared by the control API
+// and the etcd reporter. It owns no external client or background task.
+type View struct {
+	configuredID string
+	etcdVersion  atomic.Value
+}
+
+func NewView(configuredID string) *View {
+	view := &View{configuredID: configuredID}
+	view.etcdVersion.Store("unknown")
+	return view
+}
+
+func (view *View) SetEtcdVersion(value string) {
+	if view == nil {
+		return
+	}
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return
+	}
+	view.etcdVersion.Store(value)
+}
+
+func (view *View) Current() Response {
+	if view == nil {
+		return CurrentInfo("")
+	}
+	etcdVersion, _ := view.etcdVersion.Load().(string)
+	if etcdVersion == "" {
+		etcdVersion = "unknown"
+	}
+	return currentInfo(view.configuredID, etcdVersion)
+}
+
+func (view *View) Handler() http.HandlerFunc {
+	return func(w http.ResponseWriter, _ *http.Request) {
+		_ = util.WriteJSON(w, http.StatusOK, view.Current())
+	}
+}
+
 func (p *Plugin) Init() error {
 	p.Name = name
 	p.Priority = priority
@@ -63,9 +106,13 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 }
 
 func CurrentInfo(configuredID string) Response {
+	return currentInfo(configuredID, "unknown")
+}
+
+func currentInfo(configuredID string, etcdVersion string) Response {
 	hostname := hostname()
 	return Response{
-		EtcdVersion: "unknown",
+		EtcdVersion: etcdVersion,
 		Hostname:    hostname,
 		ID:          apisixid.Get(configuredID),
 		Version:     version,
@@ -130,11 +177,7 @@ func reportTTLValue(value any) (int64, bool) {
 }
 
 func InfoHandler(configuredID string) http.HandlerFunc {
-	return func(w http.ResponseWriter, _ *http.Request) {
-		resp := CurrentInfo(configuredID)
-
-		_ = util.WriteJSON(w, http.StatusOK, resp)
-	}
+	return NewView(configuredID).Handler()
 }
 
 func hostname() string {

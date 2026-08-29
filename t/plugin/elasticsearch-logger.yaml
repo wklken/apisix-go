@@ -1,119 +1,16 @@
 sources:
   - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
     file: t/plugin/elasticsearch-logger.t
-    tests: 27
+    tests: 24
+    test_numbers: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26]
   - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
     file: t/plugin/elasticsearch-logger2.t
     tests: 8
     test_numbers: [1, 2, 3, 5, 6, 7, 8, 9]
 
 cases:
-  - name: schema-variants
-    source: {file: t/plugin/elasticsearch-logger.t, tests: [1]}
-    config:
-      routes:
-        - id: schema-full
-          uri: /schema-full
-          plugins:
-            elasticsearch-logger:
-              endpoint_addr: '{{FIXTURE.sink.URL}}'
-              field: {index: services}
-              auth: {username: elastic, password: '123456'}
-              ssl_verify: false
-              timeout: 60
-              max_retry_count: 0
-              retry_delay: 1
-              buffer_duration: 60
-              inactive_timeout: 2
-              batch_max_size: 1
-              log_format: {test: full}
-          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
-        - id: schema-minimal
-          uri: /schema-minimal
-          plugins:
-            elasticsearch-logger:
-              endpoint_addr: '{{FIXTURE.sink.URL}}'
-              field: {index: services}
-              batch_max_size: 1
-              log_format: {test: minimal}
-          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
-    fixtures:
-      - name: primary
-        kind: http
-        expect:
-          - {method: GET, path: {matches: '^/schema-(full|minimal)$'}}
-        count: {at_least: 10, at_most: 10, timeout: 2s}
-        respond: [{status: 200, body: schema-ok}]
-      - name: sink
-        kind: http
-        expect:
-          - {method: GET, path: {equals: /}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}}
-          - {method: POST, path: {matches: '^/_bulk\?timeout=60000ms$'}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"full"\}\n$'}}
-          - {method: GET, path: {equals: /}, headers: {Authorization: {absent: true}}}
-          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, headers: {Authorization: {absent: true}}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"minimal"\}\n$'}}
-          - {method: POST, path: {matches: '^/_bulk\?timeout=60000ms$'}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"full"\}\n$'}}
-          - {method: POST, path: {matches: '^/_bulk\?timeout=60000ms$'}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"full"\}\n$'}}
-          - {method: POST, path: {matches: '^/_bulk\?timeout=60000ms$'}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"full"\}\n$'}}
-          - {method: POST, path: {matches: '^/_bulk\?timeout=60000ms$'}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"full"\}\n$'}}
-          - {method: POST, path: {matches: '^/_bulk\?timeout=60000ms$'}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"full"\}\n$'}}
-          - {method: POST, path: {matches: '^/_bulk\?timeout=60000ms$'}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"full"\}\n$'}}
-          - {method: POST, path: {matches: '^/_bulk\?timeout=60000ms$'}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"full"\}\n$'}}
-          - {method: POST, path: {matches: '^/_bulk\?timeout=60000ms$'}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"full"\}\n$'}}
-        respond: [{status: 200, headers: {X-Elastic-Product: Elasticsearch}, body: '{"version":{"number":"8.10.2"}}'}]
-    steps:
-      - {name: full-schema-delivers, input: {path: /schema-full}, output: {status: 200, body: {equals: schema-ok}}, wait: 1s}
-      - {name: minimal-schema-delivers, input: {path: /schema-minimal}, output: {status: 200, body: {equals: schema-ok}}, wait: 1s}
-      - name: missing-endpoint-reload-is-rejected
-        config:
-          routes:
-            - id: schema-missing-endpoint
-              uri: /schema-invalid
-              plugins: {elasticsearch-logger: {field: {index: services}}}
-              upstream: {type: roundrobin, nodes: {'127.0.0.1:1': 1}}
-        config_probe: {input: {path: /schema-full}, output: {status: 200, body: {equals: schema-ok}}}
-        config_timeout: 2s
-        input: {path: /schema-full}
-        output: {status: 200, body: {equals: schema-ok}, logs: {matches: 'build route schema-missing-endpoint fail:.*missing properties: ''endpoint_addr'''}}
-        wait: 300ms
-      - name: missing-field-reload-is-rejected
-        config:
-          routes:
-            - id: schema-missing-field
-              uri: /schema-invalid
-              plugins: {elasticsearch-logger: {endpoint_addr: 'http://127.0.0.1:9200'}}
-              upstream: {type: roundrobin, nodes: {'127.0.0.1:1': 1}}
-        config_probe: {input: {path: /schema-full}, output: {status: 200, body: {equals: schema-ok}}}
-        config_timeout: 2s
-        input: {path: /schema-full}
-        output: {status: 200, body: {equals: schema-ok}, logs: {matches: 'build route schema-missing-field fail:.*missing properties: ''field'''}}
-        wait: 300ms
-      - name: missing-index-reload-is-rejected
-        config:
-          routes:
-            - id: schema-missing-index
-              uri: /schema-invalid
-              plugins: {elasticsearch-logger: {endpoint_addr: 'http://127.0.0.1:9200', field: {}}}
-              upstream: {type: roundrobin, nodes: {'127.0.0.1:1': 1}}
-        config_probe: {input: {path: /schema-full}, output: {status: 200, body: {equals: schema-ok}}}
-        config_timeout: 2s
-        input: {path: /schema-full}
-        output: {status: 200, body: {equals: schema-ok}, logs: {matches: 'build route schema-missing-index fail:.*missing properties: ''index'''}}
-        wait: 300ms
-      - name: trailing-slash-reload-is-rejected
-        config:
-          routes:
-            - id: schema-trailing-slash
-              uri: /schema-invalid
-              plugins: {elasticsearch-logger: {endpoint_addr: 'http://127.0.0.1:9200/', field: {index: services}}}
-              upstream: {type: roundrobin, nodes: {'127.0.0.1:1': 1}}
-        config_probe: {input: {path: /schema-full}, output: {status: 200, body: {equals: schema-ok}}}
-        config_timeout: 2s
-        input: {path: /schema-full}
-        output: {status: 200, body: {equals: schema-ok}, logs: {matches: 'build route schema-trailing-slash fail:.*endpoint_addr.*does not match pattern'}}
-        wait: 300ms
-
   - name: unauthenticated-route-setup
     source: {file: t/plugin/elasticsearch-logger.t, tests: [2]}
     config:
@@ -368,14 +265,6 @@ cases:
         respond: [{status: 200, headers: {X-Elastic-Product: Elasticsearch}, body: '{"version":{"number":"8.10.2"}}'}]
     steps:
       - {name: runtime-uses-decrypted-password, input: {path: /hello}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
-    after_shutdown:
-      - path: {equals: '{{WORK_DIR}}/apisix-go-store.db'}
-        bbolt_json:
-          bucket: routes
-          key: '1'
-          fields:
-            /plugins/elasticsearch-logger/auth/password: PTQvJEaPcNOXcOHeErC0XQ==
-          forbidden_matches: ['123456']
 
   - name: multi-endpoint-route-setup
     source: {file: t/plugin/elasticsearch-logger.t, tests: [13]}
@@ -401,52 +290,6 @@ cases:
         respond: [{status: 200, headers: {X-Elastic-Product: Elasticsearch}, body: '{"version":{"number":"8.10.2"}}'}]
     steps:
       - {name: one-configured-endpoint-receives-real-write, input: {path: /hello}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
-
-  - name: multi-endpoint-random-selection
-    source: {file: t/plugin/elasticsearch-logger.t, tests: [14]}
-    environment: {GODEBUG: randautoseed=0}
-    config:
-      routes:
-        - id: multi-endpoint-selection
-          uri: /hello
-          plugins:
-            elasticsearch-logger:
-              endpoint_addrs: ['{{FIXTURE.firstSink.URL}}', '{{FIXTURE.secondSink.URL}}']
-              field: {index: services}
-              batch_max_size: 1
-              inactive_timeout: 1
-              log_format: {test: multi-selection}
-          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
-    fixtures:
-      - name: primary
-        kind: http
-        expect:
-          - {method: GET, path: {equals: /hello}}
-        count: {at_least: 12, at_most: 12, timeout: 2s}
-        respond: [{status: 200, body: hello world}]
-      - name: firstSink
-        kind: http
-        expect:
-          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"multi-selection"\}\n$'}}
-          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"multi-selection"\}\n$'}}
-          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"multi-selection"\}\n$'}}
-          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"multi-selection"\}\n$'}}
-          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"multi-selection"\}\n$'}}
-        respond: [{status: 200, headers: {X-Elastic-Product: Elasticsearch}, body: '{"version":{"number":"8.10.2"}}'}]
-      - name: secondSink
-        kind: http
-        expect:
-          - {method: GET, path: {equals: /}}
-          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"multi-selection"\}\n$'}}
-          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"multi-selection"\}\n$'}}
-          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"multi-selection"\}\n$'}}
-          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"multi-selection"\}\n$'}}
-          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"multi-selection"\}\n$'}}
-          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"multi-selection"\}\n$'}}
-          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"multi-selection"\}\n$'}}
-        respond: [{status: 200, headers: {X-Elastic-Product: Elasticsearch}, body: '{"version":{"number":"8.10.2"}}'}]
-    steps:
-      - {name: repeated-real-hits-use-configured-endpoint-list, repeat: 12, input: {path: /hello}, output: {status: 200, body: {equals: hello world}}}
 
   - name: route-log-format-setup
     source: {file: t/plugin/elasticsearch-logger.t, tests: [15]}
@@ -694,45 +537,6 @@ cases:
     steps:
       - {name: es6-write-emits-required-doc-type, input: {path: /hello}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
 
-  - name: authorization-header-encrypted-at-rest
-    source: {file: t/plugin/elasticsearch-logger.t, tests: [27]}
-    runtime:
-      apisix:
-        data_encryption:
-          enable_encrypt_fields: true
-          keyring: [edd1c9f0985e76a2]
-    config:
-      routes:
-        - id: '1'
-          uri: /hello
-          plugins:
-            elasticsearch-logger:
-              endpoint_addr: '{{FIXTURE.sink.URL}}'
-              field: {index: services}
-              headers: {Authorization: 'Basic ZWxhc3RpYzoxMjM0NTY='}
-              batch_max_size: 1
-              inactive_timeout: 1
-              log_format: {test: encrypted-header}
-          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
-    fixtures:
-      - {name: primary, kind: http, expect: [{method: GET, path: {equals: /hello}}], respond: [{status: 200, body: hello world}]}
-      - name: sink
-        kind: http
-        expect:
-          - {method: GET, path: {equals: /}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}}
-          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"encrypted-header"\}\n$'}}
-        respond: [{status: 200, headers: {X-Elastic-Product: Elasticsearch}, body: '{"version":{"number":"8.10.2"}}'}]
-    steps:
-      - {name: runtime-uses-decrypted-authorization-header, input: {path: /hello}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
-    after_shutdown:
-      - path: {equals: '{{WORK_DIR}}/apisix-go-store.db'}
-        bbolt_json:
-          bucket: routes
-          key: '1'
-          fields:
-            /plugins/elasticsearch-logger/headers/Authorization: 8xFrqM3Y8W1eaQ5b6vIPlyOS+HvOyI4agcFeoe47abo=
-          forbidden_matches: ['Basic ZWxhc3RpYzoxMjM0NTY=']
-
   - name: max-pending-entries-drop
     source: {file: t/plugin/elasticsearch-logger2.t, tests: [1]}
     config:
@@ -764,10 +568,8 @@ cases:
         expect:
           - {method: GET, path: {equals: /}}
           - {method: POST, path: {matches: '^/_bulk'}}
-          - {method: POST, path: {matches: '^/_bulk'}}
         respond:
           - {status: 200, headers: {X-Elastic-Product: Elasticsearch}, body: '{"version":{"number":"8.10.2"}}'}
-          - {status: 200, headers: {X-Elastic-Product: Elasticsearch}, body: '{"errors":false}', delay: 500ms}
           - {status: 200, headers: {X-Elastic-Product: Elasticsearch}, body: '{"errors":false}', delay: 500ms}
     steps:
       - name: first

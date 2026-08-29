@@ -214,6 +214,7 @@ func (p *Plugin) RegisterCompressionOffers(r *http.Request, _ *compression.State
 	return []compression.Offer{{
 		Coding:   compression.Brotli,
 		Rank:     996,
+		Vary:     p.config.Vary != nil && *p.config.Vary,
 		Eligible: p.requestEligible(r),
 	}}
 }
@@ -281,7 +282,7 @@ func (w *streamingCompressionWriter) WriteHeader(status int) {
 		w.ResponseWriter.WriteHeader(status)
 		return
 	}
-	base.InvalidateBodyDerivedHeaders(w.Header())
+	prepareBrotliHeaders(w.Header())
 	w.Header().Set("Content-Encoding", "br")
 	w.ResponseWriter.WriteHeader(status)
 }
@@ -322,7 +323,12 @@ func (w *streamingCompressionWriter) Hijack() (net.Conn, *bufio.ReadWriter, erro
 func (w *streamingCompressionWriter) Close() error {
 	w.closeOnce.Do(func() {
 		if w.compressor != nil && !w.hijacked {
-			w.closeErr = w.compressor.Close()
+			closeErr := w.compressor.Close()
+			flushErr := http.NewResponseController(w.ResponseWriter).Flush()
+			if errors.Is(flushErr, http.ErrNotSupported) {
+				flushErr = nil
+			}
+			w.closeErr = errors.Join(closeErr, flushErr)
 		}
 	})
 	return w.closeErr
@@ -348,6 +354,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		r, state := compression.Register(r, compression.Offer{
 			Coding:   compression.Brotli,
 			Rank:     996,
+			Vary:     p.config.Vary != nil && *p.config.Vary,
 			Eligible: eligible,
 		})
 		bw := newBoundedResponseWriter(w, *p.config.MaxResponseSize)
@@ -640,10 +647,28 @@ func (p *Plugin) compressResponse(resp *base.BufferedResponseWriter) error {
 		return errors.Join(writeErr, closeErr)
 	}
 
-	resp.ReplaceBody(compressed.Bytes())
+	resp.SetBody(compressed.Bytes())
+	prepareBrotliHeaders(resp.Header())
 	resp.Header().Set("Content-Encoding", "br")
-	deleteHeader(resp.Header(), "Content-Length")
 	return nil
+}
+
+func prepareBrotliHeaders(header http.Header) {
+	deleteHeader(header, "Content-Length")
+	etag := headerValue(header, "Etag")
+	if etag == "" {
+		return
+	}
+	if strings.HasPrefix(etag, `W/"`) && strings.HasSuffix(etag, `"`) && len(etag) >= 4 {
+		return
+	}
+	if strings.HasPrefix(etag, `"`) && strings.HasSuffix(etag, `"`) && len(etag) >= 2 {
+		deleteHeader(header, "Etag")
+		header.Set("Etag", "W/"+etag)
+		return
+	}
+	deleteHeader(header, "Etag")
+	logger.Errorf("no standard etag or regex match failed:")
 }
 
 func (p *Plugin) writerOptions() brotlienc.WriterOptions {

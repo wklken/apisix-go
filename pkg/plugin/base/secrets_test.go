@@ -283,6 +283,20 @@ func TestScopedAndLegacySecretWrappersDoNotCrossCall(t *testing.T) {
 	if plugin.legacyCalls != 1 || plugin.scopedCalls != 1 {
 		t.Fatalf("scoped wrapper calls = legacy:%d scoped:%d", plugin.legacyCalls, plugin.scopedCalls)
 	}
+	consumerScope := scopedSecretTestScope(9, id)
+	consumerScope.Source = capability.SecretConsumerConfig
+	consumerScope.Resource = generation.ResourceKey{Kind: "consumers", ID: "consumer-1"}
+	if err := MaterializeScopedPluginSecrets(
+		context.Background(),
+		consumerScope,
+		capabilityValue,
+		plugin,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if plugin.legacyCalls != 1 || plugin.scopedCalls != 2 {
+		t.Fatalf("consumer-scoped wrapper calls = legacy:%d scoped:%d", plugin.legacyCalls, plugin.scopedCalls)
+	}
 }
 
 func TestCompositeChildPreparerScopedSecretHelperNeverFallsBackToLegacy(t *testing.T) {

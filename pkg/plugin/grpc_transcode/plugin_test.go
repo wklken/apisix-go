@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -285,6 +286,57 @@ func TestHandlerHonorsEnumAsValueOption(t *testing.T) {
 	}
 }
 
+func TestHandlerAcceptsEnumNameAndNumberAndRejectsUnknownName(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		input      string
+		wantStatus int
+	}{
+		{name: "number", input: `1`, wantStatus: http.StatusOK},
+		{name: "name", input: `"MODE_ACTIVE"`, wantStatus: http.StatusOK},
+		{name: "unknown name", input: `"MODE_UNKNOWN"`, wantStatus: http.StatusBadRequest},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			restore := stubProtoContent(t, "echo-proto", testDescriptorContent(t))
+			defer restore()
+
+			p := newTestPlugin(t, Config{
+				ProtoID: "echo-proto", Service: "echo.EchoService", Method: "Echo",
+				PBOption: []string{"enum_as_name", "no_default_values"},
+			})
+			req := httptest.NewRequest(
+				http.MethodPost,
+				"/echo",
+				strings.NewReader(`{"msg":"Hello","mode":`+test.input+`}`),
+			)
+			req.Header.Set("Content-Type", "application/json")
+			res := httptest.NewRecorder()
+			p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if test.wantStatus != http.StatusOK {
+					t.Fatal("next handler should not be called")
+				}
+				frame, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Fatalf("read request frame: %v", err)
+				}
+				message := decodeEchoMessage(t, unframeGRPCMessageForTest(t, frame))
+				if got := message.Get(message.Descriptor().Fields().ByName("mode")).Enum(); got != 1 {
+					t.Fatalf("decoded mode = %d, want 1", got)
+				}
+				w.Header().Set("Grpc-Status", "0")
+				_, _ = w.Write(frame)
+			})).ServeHTTP(res, req)
+
+			if res.Code != test.wantStatus {
+				t.Fatalf("status = %d, want %d; body=%q", res.Code, test.wantStatus, res.Body.String())
+			}
+			if test.wantStatus == http.StatusOK && !strings.Contains(res.Body.String(), `"mode":"MODE_ACTIVE"`) {
+				t.Fatalf("response body = %q, want MODE_ACTIVE", res.Body.String())
+			}
+		})
+	}
+}
+
 func TestHandlerHonorsInt64OutputOptions(t *testing.T) {
 	const rawID = "9007199254740993"
 	for _, test := range []struct {
@@ -507,6 +559,37 @@ func TestHandlerAcceptsHashPrefixedInt64Inputs(t *testing.T) {
 
 			if res.Code != http.StatusOK {
 				t.Fatalf("response status = %d, want 200; body=%q", res.Code, res.Body.String())
+			}
+		})
+	}
+}
+
+func TestHandlerRejectsIllegalInt64StringFormats(t *testing.T) {
+	for _, value := range []string{"#a", "+aaa", "#aaaa", "#-aa"} {
+		t.Run(value, func(t *testing.T) {
+			restore := stubProtoContent(t, "echo-proto", testDescriptorContent(t))
+			defer restore()
+
+			p := newTestPlugin(t, Config{
+				ProtoID:  "echo-proto",
+				Service:  "echo.EchoService",
+				Method:   "Echo",
+				PBOption: []string{"no_default_values"},
+			})
+			req := httptest.NewRequest(
+				http.MethodPost,
+				"/echo",
+				strings.NewReader(fmt.Sprintf(`{"msg":"Hello","id":%q}`, value)),
+			)
+			req.Header.Set("Content-Type", "application/json")
+			res := httptest.NewRecorder()
+
+			p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				t.Fatal("next handler should not be called")
+			})).ServeHTTP(res, req)
+
+			if res.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400; body=%q", res.Code, res.Body.String())
 			}
 		})
 	}
@@ -953,6 +1036,42 @@ func TestHandlerReadsPOSTJSONBody(t *testing.T) {
 	}
 }
 
+func TestHandlerReadsPOSTFormBody(t *testing.T) {
+	restore := stubProtoContent(t, "echo-proto", testDescriptorContent(t))
+	defer restore()
+
+	p := newTestPlugin(t, Config{
+		ProtoID:  "echo-proto",
+		Service:  "echo.EchoService",
+		Method:   "Echo",
+		PBOption: []string{"no_default_values"},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/echo", strings.NewReader("msg=Hello&tags=first&tags=second"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	res := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read request body: %v", err)
+		}
+		msg := decodeEchoMessage(t, unframeGRPCMessageForTest(t, body))
+		if got := msg.Get(msg.Descriptor().Fields().ByName("msg")).String(); got != "Hello" {
+			t.Fatalf("decoded upstream msg = %q, want Hello", got)
+		}
+		tags := msg.Get(msg.Descriptor().Fields().ByName("tags")).List()
+		if tags.Len() != 2 || tags.Get(0).String() != "first" || tags.Get(1).String() != "second" {
+			t.Fatalf("decoded upstream tags = %v, want [first second]", tags)
+		}
+		w.Header().Set("Grpc-Status", "0")
+		_, _ = w.Write(frameGRPCMessageForTest(t, encodeEchoMessage(t, "ok")))
+	})).ServeHTTP(res, req)
+
+	if res.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%q", res.Code, res.Body.String())
+	}
+}
+
 func TestHandlerMapsRepeatedMessageJSONBody(t *testing.T) {
 	restore := stubProtoContent(t, "echo-proto", testDescriptorContent(t))
 	defer restore()
@@ -1017,6 +1136,36 @@ func TestHandlerMapsGRPCStatusToHTTPStatus(t *testing.T) {
 	}
 	if got := res.Body.String(); got != `{"error":{"code":7,"message":"permission denied"}}` {
 		t.Fatalf("response body = %q, want normalized error status", got)
+	}
+}
+
+func TestHandlerMapsAdditionalGRPCStatusCodes(t *testing.T) {
+	for _, test := range []struct {
+		grpcStatus string
+		wantStatus int
+	}{
+		{grpcStatus: "4", wantStatus: http.StatusGatewayTimeout},
+		{grpcStatus: "14", wantStatus: http.StatusServiceUnavailable},
+		{grpcStatus: "17", wantStatus: 599},
+	} {
+		t.Run(test.grpcStatus, func(t *testing.T) {
+			restore := stubProtoContent(t, "echo-proto", testDescriptorContent(t))
+			defer restore()
+
+			p := newTestPlugin(t, Config{
+				ProtoID: "echo-proto", Service: "echo.EchoService", Method: "Echo",
+			})
+			req := httptest.NewRequest(http.MethodGet, "/echo?msg=failed", nil)
+			res := httptest.NewRecorder()
+			p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Grpc-Status", test.grpcStatus)
+				w.Header().Set("Grpc-Message", "failed")
+			})).ServeHTTP(res, req)
+
+			if res.Code != test.wantStatus {
+				t.Fatalf("status = %d, want %d; body=%q", res.Code, test.wantStatus, res.Body.String())
+			}
+		})
 	}
 }
 
@@ -1149,6 +1298,42 @@ func TestHandlerDecodesConfiguredGRPCStatusDetailType(t *testing.T) {
 	}
 }
 
+func TestHandlerPreservesMappedGRPCStatusWhenConfiguredDetailTypeCannotDecode(t *testing.T) {
+	restore := stubProtoContent(t, "echo-proto", testDescriptorContent(t))
+	defer restore()
+
+	p := newTestPlugin(t, Config{
+		ProtoID:          "echo-proto",
+		Service:          "echo.EchoService",
+		Method:           "Echo",
+		ShowStatusInBody: true,
+		StatusDetailType: "echo.DoesNotExist",
+	})
+	statusDetails, err := proto.Marshal(&statuspb.Status{
+		Code:    14,
+		Message: "out of service",
+		Details: []*anypb.Any{{Value: []byte("detail")}},
+	})
+	if err != nil {
+		t.Fatalf("marshal status details: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/echo?msg=denied", nil)
+	res := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Grpc-Status", "14")
+		w.Header().Set("Grpc-Message", "out of service")
+		w.Header().Set("Grpc-Status-Details-Bin", base64.StdEncoding.EncodeToString(statusDetails))
+	})).ServeHTTP(res, req)
+
+	if res.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503; body=%q", res.Code, res.Body.String())
+	}
+	if !strings.Contains(res.Body.String(), `resolve grpc status detail type "echo.DoesNotExist"`) {
+		t.Fatalf("response body = %q, want configured detail decode error", res.Body.String())
+	}
+}
+
 func TestHandlerRejectsMalformedGRPCStatusDetails(t *testing.T) {
 	restore := stubProtoContent(t, "echo-proto", testDescriptorContent(t))
 	defer restore()
@@ -1166,8 +1351,8 @@ func TestHandlerRejectsMalformedGRPCStatusDetails(t *testing.T) {
 		w.Header().Set("Grpc-Status-Details-Bin", "not-base64!")
 	})).ServeHTTP(res, req)
 
-	if res.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 500", res.Code)
+	if res.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", res.Code)
 	}
 	if !strings.Contains(res.Body.String(), "grpc-status-details-bin") {
 		t.Fatalf("error body = %q, want status-details decode error", res.Body.String())
@@ -1215,6 +1400,34 @@ func TestPostInitRejectsInvalidDescriptorResource(t *testing.T) {
 	}
 }
 
+func TestPostInitRejectsUnknownServiceOrMethod(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		service string
+		method  string
+		want    string
+	}{
+		{name: "service", service: "echo.UnknownService", method: "Echo", want: "undefined service"},
+		{name: "method", service: "echo.EchoService", method: "Unknown", want: "undefined service method"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			restore := stubProtoContent(t, "echo-proto", testDescriptorContent(t))
+			defer restore()
+
+			p := &Plugin{config: Config{
+				ProtoID: "echo-proto", Service: test.service, Method: test.method,
+			}}
+			p.SetProtoResolver(testProtoResolver)
+			if err := p.Init(); err != nil {
+				t.Fatalf("Init() error = %v", err)
+			}
+			if err := p.PostInit(); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("PostInit() error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
 func TestLoadBindingCachesUnchangedDescriptor(t *testing.T) {
 	restore := stubProtoContent(t, "echo-proto", testDescriptorContent(t))
 	defer restore()
@@ -1234,6 +1447,45 @@ func TestLoadBindingCachesUnchangedDescriptor(t *testing.T) {
 	}
 	if first != second {
 		t.Fatal("loadBinding() returned different bindings for unchanged descriptor")
+	}
+}
+
+func TestDescriptorReloadUsesFreshGenerationBinding(t *testing.T) {
+	content := testDescriptorContent(t)
+	newPlugin := func() *Plugin {
+		p := &Plugin{config: Config{
+			ProtoID: "echo-proto", Service: "echo.EchoService", Method: "Echo",
+		}}
+		p.SetProtoResolver(func(id string) (string, error) {
+			if id != "echo-proto" {
+				return "", errProtoNotFound
+			}
+			return content, nil
+		})
+		if err := p.Init(); err != nil {
+			t.Fatalf("Init() error = %v", err)
+		}
+		if err := p.PostInit(); err != nil {
+			t.Fatalf("PostInit() error = %v", err)
+		}
+		return p
+	}
+
+	previous := newPlugin()
+	if got := previous.binding.method.Input().Fields().ByName("msg").Kind(); got != protoreflect.StringKind {
+		t.Fatalf("previous msg kind = %s, want string", got)
+	}
+
+	updatedFile := proto.Clone(echoFileDescriptor()).(*descriptorpb.FileDescriptorProto)
+	updatedFile.MessageType[0].Field[0].Type = descriptorpb.FieldDescriptorProto_TYPE_INT32.Enum()
+	content = descriptorContent(t, updatedFile)
+	current := newPlugin()
+
+	if got := current.binding.method.Input().Fields().ByName("msg").Kind(); got != protoreflect.Int32Kind {
+		t.Fatalf("current msg kind = %s, want int32", got)
+	}
+	if got := previous.binding.method.Input().Fields().ByName("msg").Kind(); got != protoreflect.StringKind {
+		t.Fatalf("previous msg kind after reload = %s, want immutable string binding", got)
 	}
 }
 
@@ -1349,6 +1601,39 @@ func TestSchemaRejectsFractionalDeadline(t *testing.T) {
 	}
 }
 
+func TestSchemaRejectsInvalidConfig(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	valid := map[string]any{
+		"proto_id": "echo",
+		"service":  "echo.EchoService",
+		"method":   "Echo",
+	}
+	for _, test := range []struct {
+		name   string
+		mutate func(map[string]any)
+	}{
+		{name: "missing proto_id", mutate: func(cfg map[string]any) { delete(cfg, "proto_id") }},
+		{name: "missing service", mutate: func(cfg map[string]any) { delete(cfg, "service") }},
+		{name: "missing method", mutate: func(cfg map[string]any) { delete(cfg, "method") }},
+		{name: "invalid proto_id", mutate: func(cfg map[string]any) { cfg["proto_id"] = []string{"echo"} }},
+		{name: "negative deadline", mutate: func(cfg map[string]any) { cfg["deadline"] = -1 }},
+		{name: "empty pb_option", mutate: func(cfg map[string]any) { cfg["pb_option"] = []string{} }},
+		{name: "unknown pb_option", mutate: func(cfg map[string]any) { cfg["pb_option"] = []string{"unknown"} }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := maps.Clone(valid)
+			test.mutate(cfg)
+			if err := util.Validate(cfg, p.GetSchema()); err == nil {
+				t.Fatal("validation error = nil")
+			}
+		})
+	}
+}
+
 var testProtoResolver ProtoResolver
 
 func stubProtoContent(t *testing.T, id string, content string) func() {
@@ -1384,7 +1669,12 @@ func stubProtoSources(t *testing.T, sources map[string]string) func() {
 func testDescriptorContent(t *testing.T) string {
 	t.Helper()
 
-	fd := echoFileDescriptor()
+	return descriptorContent(t, echoFileDescriptor())
+}
+
+func descriptorContent(t *testing.T, fd *descriptorpb.FileDescriptorProto) string {
+	t.Helper()
+
 	set := &descriptorpb.FileDescriptorSet{File: []*descriptorpb.FileDescriptorProto{fd}}
 	raw, err := proto.Marshal(set)
 	if err != nil {

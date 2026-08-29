@@ -13,7 +13,9 @@ import (
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/resource"
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -28,6 +30,63 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	}
 
 	return p
+}
+
+func TestPostInitWarnsOnlyForInsecureHost(t *testing.T) {
+	tests := []struct {
+		name     string
+		host     string
+		wantWarn bool
+	}{
+		{name: "http", host: "http://127.0.0.1:8181", wantWarn: true},
+		{name: "https", host: "https://127.0.0.1:8181"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var warnings []logger.Entry
+			stop := logger.ReplaceObserver("opa-security-warning-"+test.name, func(entry logger.Entry) {
+				if entry.Level == "WARN" && strings.Contains(entry.Message, "opa host") {
+					warnings = append(warnings, entry)
+				}
+			})
+			defer stop()
+
+			_ = newTestPlugin(t, Config{Host: test.host, Policy: "example/allow"})
+			if got := len(warnings); got != 0 && !test.wantWarn {
+				t.Fatalf("warnings = %#v, want none for TLS host", warnings)
+			}
+			if got := len(warnings); got != 1 && test.wantWarn {
+				t.Fatalf("warnings = %#v, want one insecure host warning", warnings)
+			}
+		})
+	}
+}
+
+func TestSchemaMatchesAPISIX317SanityMatrix(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	tests := []struct {
+		name    string
+		config  map[string]any
+		wantErr bool
+	}{
+		{name: "valid", config: map[string]any{"host": "http://127.0.0.1:8181", "policy": "example/allow"}},
+		{name: "missing policy", config: map[string]any{"host": "http://127.0.0.1:8181"}, wantErr: true},
+		{name: "numeric host", config: map[string]any{"host": 3233, "policy": "example/allow"}, wantErr: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := util.Validate(test.config, p.GetSchema())
+			if test.wantErr && err == nil {
+				t.Fatal("Validate() error = nil, want APISIX 3.17 schema rejection")
+			}
+			if !test.wantErr && err != nil {
+				t.Fatalf("Validate() error = %v, want APISIX 3.17 schema acceptance", err)
+			}
+		})
+	}
 }
 
 func TestHandlerAllowsRequestAndSendsOPAInput(t *testing.T) {
@@ -145,10 +204,10 @@ func TestBuildOPARequestUsesAPISIXHTTPShape(t *testing.T) {
 	}
 	request := decoded["input"].(map[string]any)["request"].(map[string]any)
 	headers := request["headers"].(map[string]any)
-	if got := headers["host"]; !sameJSONValues(got, []any{"gateway.test:9080"}) {
+	if got := headers["host"]; got != "gateway.test:9080" {
 		t.Fatalf("headers.host = %#v, want gateway.test:9080", got)
 	}
-	if got := headers["x-test"]; !sameJSONValues(got, []any{"yes"}) {
+	if got := headers["x-test"]; got != "yes" {
 		t.Fatalf("headers.x-test = %#v, want yes", got)
 	}
 	if _, ok := headers["X-Test"]; ok {
@@ -196,7 +255,86 @@ func TestBuildOPARequestIncludesSafeConsumerIdentity(t *testing.T) {
 	}
 }
 
-func TestBuildOPARequestIncludesVersionFactsRepeatedHeadersAndAddresses(t *testing.T) {
+func TestOPAResourceContextExposesOnlySafeIdentities(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Host:         "http://opa.test",
+		Policy:       "authz",
+		WithRoute:    true,
+		WithService:  true,
+		WithConsumer: true,
+	})
+	p.SetResourceContext(
+		resource.Route{
+			ID:   "route-1",
+			Name: "orders-route",
+			Uri:  "/orders/*",
+			Plugins: map[string]resource.PluginConfig{
+				"key-auth": map[string]any{"key": "route-plugin-secret"},
+			},
+			Upstream: resource.Upstream{
+				Name: "route-upstream-secret",
+				TLS:  &resource.UpstreamTLS{ClientKey: "route-client-key-secret"},
+			},
+		},
+		resource.Service{
+			ID:   "service-1",
+			Name: "orders-service",
+			Plugins: map[string]resource.PluginConfig{
+				"basic-auth": map[string]any{"password": "service-plugin-secret"},
+			},
+			Upstream: resource.Upstream{
+				Name: "service-upstream-secret",
+				TLS:  &resource.UpstreamTLS{ClientKey: "service-client-key-secret"},
+			},
+		},
+	)
+	req := httptest.NewRequest(http.MethodGet, "http://gateway.test/orders/1", nil)
+	req = apisixctx.WithApisixVars(req, nil)
+	apisixctx.AttachConsumer(req, resource.Consumer{
+		Username: "test-user",
+		GroupID:  "group-1",
+		Plugins: map[string]resource.PluginConfig{
+			"key-auth": map[string]any{"key": "consumer-plugin-secret"},
+		},
+	})
+
+	body, err := json.Marshal(p.buildOPARequest(req))
+	if err != nil {
+		t.Fatalf("marshal OPA request: %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		t.Fatalf("unmarshal OPA request: %v", err)
+	}
+	input := decoded["input"].(map[string]any)
+	route := input["route"].(map[string]any)
+	if route["id"] != "route-1" || route["name"] != "orders-route" || route["uri"] != "/orders/*" || len(route) != 3 {
+		t.Fatalf("route = %#v, want id/name/uri only", route)
+	}
+	service := input["service"].(map[string]any)
+	if service["id"] != "service-1" || service["name"] != "orders-service" || len(service) != 2 {
+		t.Fatalf("service = %#v, want id/name only", service)
+	}
+	consumer := input["consumer"].(map[string]any)
+	if consumer["username"] != "test-user" || consumer["group_id"] != "group-1" || len(consumer) != 2 {
+		t.Fatalf("consumer = %#v, want username/group_id only", consumer)
+	}
+	for _, secret := range []string{
+		"route-plugin-secret",
+		"route-upstream-secret",
+		"route-client-key-secret",
+		"service-plugin-secret",
+		"service-upstream-secret",
+		"service-client-key-secret",
+		"consumer-plugin-secret",
+	} {
+		if strings.Contains(string(body), secret) {
+			t.Fatalf("resource secret %q leaked in OPA input: %s", secret, body)
+		}
+	}
+}
+
+func TestBuildOPARequestMatchesAPISIX317FactsRepeatedHeadersAndAddresses(t *testing.T) {
 	p := newTestPlugin(t, Config{Host: "http://opa.test", Policy: "authz"})
 	req := httptest.NewRequest(http.MethodGet, "https://gateway.test:9443/get?x=1&x=2", nil)
 	req.Host = "gateway.test:9443"
@@ -216,12 +354,12 @@ func TestBuildOPARequestIncludesVersionFactsRepeatedHeadersAndAddresses(t *testi
 		t.Fatalf("unmarshal OPA request: %v", err)
 	}
 	input := decoded["input"].(map[string]any)
-	if input["version"] != float64(1) {
-		t.Fatalf("input.version = %#v, want 1", input["version"])
+	if _, exists := input["version"]; exists {
+		t.Fatalf("input.version = %#v, want absent for APISIX 3.17 parity", input["version"])
 	}
 	request := input["request"].(map[string]any)
-	if request["port"] != float64(9443) || request["query"].(map[string]any)["x"].([]any)[1] != "2" {
-		t.Fatalf("request = %#v, want port/query from facts", request)
+	if request["port"] != float64(9080) || request["query"].(map[string]any)["x"].([]any)[1] != "2" {
+		t.Fatalf("request = %#v, want listener port and query from facts", request)
 	}
 	requestHeaders := request["headers"].(map[string]any)
 	if !sameJSONValues(requestHeaders["x-role"], []any{"admin", "reader"}) {

@@ -47,7 +47,7 @@ func TestStrictWildcardSubdomainDoesNotIncludeApex(t *testing.T) {
 	}
 }
 
-func TestWhitelistRejectsWithJSONMessage(t *testing.T) {
+func TestWhitelistRejectsWithAPISIX317JSONMessageResponse(t *testing.T) {
 	p := newTestPlugin(t, Config{Whitelist: []string{"allowed.example.com"}})
 	req := httptest.NewRequest(http.MethodGet, "/restricted", nil)
 	req.Header.Set("Referer", "https://blocked.example.com/path")
@@ -60,11 +60,11 @@ func TestWhitelistRejectsWithJSONMessage(t *testing.T) {
 	if rr.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, want %d", rr.Code, http.StatusForbidden)
 	}
-	if got := strings.TrimSpace(rr.Body.String()); got != `{"message":"Your referer host is not allowed"}` {
+	if got := rr.Body.String(); got != "{\"message\":\"Your referer host is not allowed\"}\n" {
 		t.Fatalf("body = %q", got)
 	}
-	if got := rr.Header().Get("Content-Type"); got != "application/json" {
-		t.Fatalf("Content-Type = %q, want application/json", got)
+	if got := rr.Header().Get("Content-Type"); got != "text/plain; charset=utf-8" {
+		t.Fatalf("Content-Type = %q, want text/plain; charset=utf-8", got)
 	}
 }
 

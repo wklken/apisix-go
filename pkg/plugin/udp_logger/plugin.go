@@ -284,8 +284,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		var logFields map[string]any
 		if len(p.LogFormat) > 0 {
 			logFields = resolveUDPLogFormat(r, request, p.LogFormat)
-			logFields["route_id"] = p.RouteID
-			logFields["service_id"] = base.ApisixString(r, "$service_id")
+			base.ApplyMatchedRouteFields(logFields, p.RouteID, base.ApisixString(r, "$service_id"))
 		} else {
 			logFields = base.BuildAccessLogSnapshot(
 				request,
@@ -315,8 +314,11 @@ func (p *Plugin) RunLogPhase(snapshot base.LogSnapshot) error {
 	var fields map[string]any
 	if len(p.LogFormat) > 0 {
 		fields = resolveUDPSnapshotFormat(snapshot, p.LogFormat)
-		fields["route_id"] = p.RouteID
-		fields["service_id"] = base.SnapshotValue(snapshot, "$service_id")
+		base.ApplyMatchedRouteFields(
+			fields,
+			p.RouteID,
+			fmt.Sprint(base.SnapshotValue(snapshot, "$service_id")),
+		)
 	} else {
 		fields = base.BuildAccessLogFromSnapshot(snapshot, p.RouteID, p.ServerAddr)
 	}

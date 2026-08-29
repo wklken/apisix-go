@@ -490,6 +490,9 @@ func (p *Plugin) transformRequest(r *http.Request, binding *methodBinding) error
 	if err != nil {
 		return err
 	}
+	if err := validateEnumJSON(payload, msg.Descriptor()); err != nil {
+		return err
+	}
 	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(payload, msg); err != nil {
 		return fmt.Errorf("decode HTTP request as protobuf JSON: %w", err)
 	}
@@ -517,6 +520,70 @@ func (p *Plugin) transformRequest(r *http.Request, binding *methodBinding) error
 	return nil
 }
 
+func validateEnumJSON(payload []byte, desc protoreflect.MessageDescriptor) error {
+	var value any
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder.UseNumber()
+	if err := decoder.Decode(&value); err != nil {
+		return nil
+	}
+	return validateEnumJSONValue(value, desc)
+}
+
+func validateEnumJSONValue(value any, desc protoreflect.MessageDescriptor) error {
+	object, ok := value.(map[string]any)
+	if !ok || desc == nil {
+		return nil
+	}
+	fields := desc.Fields()
+	for index := 0; index < fields.Len(); index++ {
+		field := fields.Get(index)
+		fieldValue, found := object[field.JSONName()]
+		if !found {
+			fieldValue, found = object[string(field.Name())]
+		}
+		if !found {
+			continue
+		}
+		if field.IsMap() {
+			entries, _ := fieldValue.(map[string]any)
+			for _, entry := range entries {
+				if err := validateEnumJSONFieldValue(entry, field.MapValue()); err != nil {
+					return err
+				}
+			}
+			continue
+		}
+		if field.IsList() {
+			items, _ := fieldValue.([]any)
+			for _, item := range items {
+				if err := validateEnumJSONFieldValue(item, field); err != nil {
+					return err
+				}
+			}
+			continue
+		}
+		if err := validateEnumJSONFieldValue(fieldValue, field); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateEnumJSONFieldValue(value any, field protoreflect.FieldDescriptor) error {
+	if field.Kind() == protoreflect.MessageKind || field.Kind() == protoreflect.GroupKind {
+		return validateEnumJSONValue(value, field.Message())
+	}
+	if field.Kind() != protoreflect.EnumKind {
+		return nil
+	}
+	name, ok := value.(string)
+	if !ok || field.Enum().Values().ByName(protoreflect.Name(name)) != nil {
+		return nil
+	}
+	return fmt.Errorf("invalid enum value %q for %s", name, field.FullName())
+}
+
 func (p *Plugin) requestPayload(r *http.Request, desc protoreflect.MessageDescriptor) ([]byte, error) {
 	if r.Body != nil && r.Body != http.NoBody && strings.Contains(r.Header.Get("Content-Type"), jsonContentType) {
 		body, err := base.ReadRequestBody(r)
@@ -528,7 +595,19 @@ func (p *Plugin) requestPayload(r *http.Request, desc protoreflect.MessageDescri
 		}
 	}
 
-	values, err := queryMessageValues(desc, r.URL.Query(), "")
+	requestValues := r.URL.Query()
+	if r.Method == http.MethodPost && r.Body != nil && r.Body != http.NoBody {
+		body, err := base.ReadRequestBody(r)
+		if err != nil {
+			return nil, err
+		}
+		requestValues, err = url.ParseQuery(string(body))
+		if err != nil {
+			return nil, fmt.Errorf("decode HTTP form request: %w", err)
+		}
+	}
+
+	values, err := queryMessageValues(desc, requestValues, "")
 	if err != nil {
 		return nil, err
 	}
@@ -997,9 +1076,10 @@ func (p *Plugin) transformResponse(resp *base.ResponseState, binding *methodBind
 			encodedStatus != "" {
 			body, decodeErr := p.decodeStatusDetails(encodedStatus, binding)
 			if decodeErr != nil {
-				return decodeErr
+				resp.Body = []byte(decodeErr.Error())
+			} else {
+				resp.Body = body
 			}
-			resp.Body = body
 		} else {
 			message, decodeErr := url.PathUnescape(resp.Trailer.Get("Grpc-Message"))
 			if decodeErr != nil {

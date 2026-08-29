@@ -12,10 +12,44 @@ import (
 	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/runtime"
 	"github.com/wklken/apisix-go/pkg/util"
 )
+
+func TestPostInitWarnsOnlyForInsecureEndpointAddr(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		scheme   string
+		wantWarn bool
+	}{
+		{name: "http", scheme: "http", wantWarn: true},
+		{name: "https", scheme: "https"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var warnings []string
+			stop := logger.ReplaceObserver("skywalking-logger-security-warning-"+test.name, func(entry logger.Entry) {
+				if entry.Level == "WARN" && strings.Contains(entry.Message, "skywalking-logger endpoint_addr") {
+					warnings = append(warnings, entry.Message)
+				}
+			})
+			defer stop()
+
+			p := newTestPlugin(t, Config{EndpointAddr: test.scheme + "://127.0.0.1:12800"})
+			t.Cleanup(p.Stop)
+
+			if test.wantWarn {
+				if len(warnings) != 1 ||
+					warnings[0] != "Using skywalking-logger endpoint_addr with no TLS is a security risk" {
+					t.Fatalf("warnings = %#v, want exact insecure endpoint warning", warnings)
+				}
+			} else if len(warnings) != 0 {
+				t.Fatalf("warnings = %#v, want none for TLS endpoint", warnings)
+			}
+		})
+	}
+}
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()

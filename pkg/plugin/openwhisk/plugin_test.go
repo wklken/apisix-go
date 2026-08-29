@@ -25,11 +25,47 @@ import (
 	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/secret"
 	"github.com/wklken/apisix-go/pkg/testutil"
 	"github.com/wklken/apisix-go/pkg/util"
 )
+
+func TestPostInitWarnsOnlyForInsecureAPIHost(t *testing.T) {
+	tests := []struct {
+		name     string
+		apiHost  string
+		wantWarn bool
+	}{
+		{name: "http", apiHost: "http://127.0.0.1:3233", wantWarn: true},
+		{name: "https", apiHost: "https://127.0.0.1:3233"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var warnings []logger.Entry
+			stop := logger.ReplaceObserver("openwhisk-security-warning-"+test.name, func(entry logger.Entry) {
+				if entry.Level == "WARN" && strings.Contains(entry.Message, "openwhisk api_host") {
+					warnings = append(warnings, entry)
+				}
+			})
+			defer stop()
+
+			_ = newTestPlugin(t, Config{
+				APIHost:      test.apiHost,
+				ServiceToken: "test:test",
+				Namespace:    "test",
+				Action:       "test",
+			})
+			if got := len(warnings); got != 0 && !test.wantWarn {
+				t.Fatalf("warnings = %#v, want none for TLS API host", warnings)
+			}
+			if got := len(warnings); got != 1 && test.wantWarn {
+				t.Fatalf("warnings = %#v, want one insecure API host warning", warnings)
+			}
+		})
+	}
+}
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
@@ -53,11 +89,12 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 }
 
 func TestHandlerInvokesOpenWhiskActionAndUsesJSONResult(t *testing.T) {
-	var gotMethod, gotPath, gotQuery, gotAuthorization, gotContentType, gotBody string
+	var gotMethod, gotPath, gotQuery, gotHost, gotAuthorization, gotContentType, gotBody string
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotMethod = r.Method
 		gotPath = r.URL.Path
 		gotQuery = r.URL.RawQuery
+		gotHost = r.Host
 		gotAuthorization = r.Header.Get("Authorization")
 		gotContentType = r.Header.Get("Content-Type")
 		body, err := io.ReadAll(r.Body)
@@ -97,7 +134,10 @@ func TestHandlerInvokesOpenWhiskActionAndUsesJSONResult(t *testing.T) {
 		t.Fatalf("action path = %q, want OpenWhisk action endpoint", gotPath)
 	}
 	if gotQuery != "blocking=true&result=true&timeout=3000" {
-		t.Fatalf("action query = %q, want blocking=true&result=true&timeout=3000", gotQuery)
+		t.Fatalf("action query = %q, want APISIX 3.17 encoded query order", gotQuery)
+	}
+	if want := strings.TrimPrefix(api.URL, "http://"); gotHost != want {
+		t.Fatalf("action Host = %q, want API authority %q", gotHost, want)
 	}
 	if gotAuthorization != "Basic dXNlcjpwYXNz" {
 		t.Fatalf("Authorization = %q, want Basic dXNlcjpwYXNz", gotAuthorization)
@@ -194,6 +234,51 @@ func TestSchemaRejectsInvalidOpenWhiskNames(t *testing.T) {
 	}
 	if err := util.Validate(config, p.GetSchema()); err == nil {
 		t.Fatal("Validate() error = nil, want invalid namespace rejected")
+	}
+}
+
+func TestSchemaMatchesAPISIX317SanityMatrix(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	tests := []struct {
+		name    string
+		config  map[string]any
+		wantErr bool
+	}{
+		{
+			name: "minimal valid configuration",
+			config: map[string]any{
+				"api_host": "http://127.0.0.1:3233", "service_token": "test:test",
+				"namespace": "test", "action": "test",
+			},
+		},
+		{
+			name: "missing api_host",
+			config: map[string]any{
+				"service_token": "test:test", "namespace": "test", "action": "test",
+			},
+			wantErr: true,
+		},
+		{
+			name: "numeric api_host",
+			config: map[string]any{
+				"api_host": 3233, "service_token": "test:test", "namespace": "test", "action": "test",
+			},
+			wantErr: true,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := util.Validate(test.config, p.GetSchema())
+			if test.wantErr && err == nil {
+				t.Fatal("Validate() error = nil, want APISIX 3.17 schema rejection")
+			}
+			if !test.wantErr && err != nil {
+				t.Fatalf("Validate() error = %v, want APISIX 3.17 schema acceptance", err)
+			}
+		})
 	}
 }
 

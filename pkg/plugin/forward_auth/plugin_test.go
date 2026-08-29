@@ -33,6 +33,74 @@ func TestSchemaAcceptsSSLVerifyAndKeepaliveOptions(t *testing.T) {
 	}
 }
 
+func TestSchemaMatchesAPISIX317SanityMatrix(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		config map[string]any
+		valid  bool
+	}{
+		{name: "uri only", config: map[string]any{"uri": "http://127.0.0.1:8199"}, valid: true},
+		{name: "missing uri", config: map[string]any{"request_headers": []any{"test"}}},
+		{name: "numeric uri", config: map[string]any{"uri": 3233}},
+		{name: "scalar request headers", config: map[string]any{
+			"uri": "http://127.0.0.1:8199", "request_headers": "test",
+		}},
+		{name: "post method", config: map[string]any{
+			"uri": "http://127.0.0.1:8199", "request_method": "POST",
+		}, valid: true},
+		{name: "put method", config: map[string]any{
+			"uri": "http://127.0.0.1:8199", "request_method": "PUT",
+		}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := util.Validate(test.config, p.GetSchema())
+			if test.valid && err != nil {
+				t.Fatalf("valid APISIX 3.17 configuration rejected: %v", err)
+			}
+			if !test.valid && err == nil {
+				t.Fatal("invalid APISIX 3.17 configuration accepted")
+			}
+		})
+	}
+}
+
+func TestPostInitWarnsOnlyForInsecureURI(t *testing.T) {
+	tests := []struct {
+		name     string
+		uri      string
+		wantWarn bool
+	}{
+		{name: "http", uri: "http://127.0.0.1:8199", wantWarn: true},
+		{name: "https", uri: "https://127.0.0.1:8199"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var warnings []logger.Entry
+			stop := logger.ReplaceObserver("forward-auth-security-warning-"+test.name, func(entry logger.Entry) {
+				if entry.Level == "WARN" && strings.Contains(entry.Message, "forward-auth uri") {
+					warnings = append(warnings, entry)
+				}
+			})
+			defer stop()
+
+			_ = newTestPlugin(t, Config{URI: test.uri})
+			if got := len(warnings); got != 0 && !test.wantWarn {
+				t.Fatalf("warnings = %#v, want none for TLS URI", warnings)
+			}
+			if got := len(warnings); got != 1 && test.wantWarn {
+				t.Fatalf("warnings = %#v, want one insecure URI warning", warnings)
+			}
+		})
+	}
+}
+
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
 

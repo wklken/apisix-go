@@ -483,8 +483,11 @@ func TestHandlerFormatsMissingAuthorizationLikeAPISIX(t *testing.T) {
 		t.Fatal("next handler should not be called")
 	})).ServeHTTP(rr, req)
 
-	if got := rr.Body.String(); got != `{"message":"Missing authorization in request"}` {
+	if got := rr.Body.String(); got != "{\"message\":\"Missing authorization in request\"}\n" {
 		t.Fatalf("body = %q, want APISIX response JSON", got)
+	}
+	if got := rr.Header().Get("Content-Type"); got != "text/plain; charset=utf-8" {
+		t.Fatalf("Content-Type = %q, want APISIX response type", got)
 	}
 }
 
@@ -724,10 +727,21 @@ func TestParseBasicAuthorizationDiagnostics(t *testing.T) {
 		wantUser string
 		wantPass string
 		wantErr  string
+		redacted []string
 	}{
 		{name: "invalid scheme", header: "Bad_header YmFyOmJhcgo=", wantErr: "Invalid authorization header format"},
-		{name: "invalid base64", header: "Basic aca_a", wantErr: "invalid Basic authorization encoding"},
-		{name: "missing password", header: "Basic YmFy", wantErr: "invalid Basic authorization value"},
+		{
+			name:     "invalid base64",
+			header:   "Basic aca_a",
+			wantErr:  "invalid Basic authorization encoding",
+			redacted: []string{"aca_a"},
+		},
+		{
+			name:     "missing password",
+			header:   "Basic YmFy",
+			wantErr:  "invalid Basic authorization value",
+			redacted: []string{"YmFy", "bar"},
+		},
 		{name: "case insensitive", header: "bASiC Zm9vOmJhcg==", wantUser: "foo", wantPass: "bar"},
 	}
 
@@ -737,6 +751,11 @@ func TestParseBasicAuthorizationDiagnostics(t *testing.T) {
 			if test.wantErr != "" {
 				if err == nil || err.Error() != test.wantErr {
 					t.Fatalf("parseBasicAuthorization() error = %v, want %q", err, test.wantErr)
+				}
+				for _, secret := range test.redacted {
+					if strings.Contains(err.Error(), secret) {
+						t.Fatalf("parseBasicAuthorization() error %q exposes credential material %q", err, secret)
+					}
 				}
 				return
 			}

@@ -9,14 +9,16 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/wklken/apisix-go/pkg/capability"
 	"go.yaml.in/yaml/v3"
 )
 
 type jwtManifestCase struct {
 	Name   string `yaml:"name"`
 	Source struct {
-		File  string `yaml:"file"`
-		Tests []int  `yaml:"tests"`
+		File        string `yaml:"file"`
+		Tests       []int  `yaml:"tests"`
+		LocalReason string `yaml:"local_reason"`
 	} `yaml:"source"`
 	Environment   map[string]string `yaml:"environment"`
 	Runtime       map[string]any    `yaml:"runtime"`
@@ -27,7 +29,8 @@ type jwtManifestCase struct {
 }
 
 type jwtStep struct {
-	Name string `yaml:"name"`
+	Name   string         `yaml:"name"`
+	Output map[string]any `yaml:"output"`
 }
 
 func TestStandaloneManifestMapsOneIndependentCasePerPinnedBlock(t *testing.T) {
@@ -55,6 +58,11 @@ func TestStandaloneManifestMapsOneIndependentCasePerPinnedBlock(t *testing.T) {
 	if err := yaml.Unmarshal(data, &manifest); err != nil {
 		t.Fatalf("decode %s: %v", path, err)
 	}
+	capabilityManifest, err := capability.Load()
+	if err != nil {
+		t.Fatalf("load capability manifest: %v", err)
+	}
+	wantCommit := capabilityManifest.Target.SourceCommit
 
 	// testNumbers is nil when every pinned test 1..tests is converted with no
 	// gaps. A non-nil list names the exact pinned upstream test numbers that
@@ -71,7 +79,7 @@ func TestStandaloneManifestMapsOneIndependentCasePerPinnedBlock(t *testing.T) {
 		{"t/plugin/jwt-auth-realm.t", 6, nil},
 		{
 			"t/plugin/jwt-auth.t",
-			58,
+			57,
 			[]int{
 				1,
 				2,
@@ -130,7 +138,6 @@ func TestStandaloneManifestMapsOneIndependentCasePerPinnedBlock(t *testing.T) {
 				56,
 				57,
 				58,
-				59,
 			},
 		},
 		{"t/plugin/jwt-auth2.t", 9, nil},
@@ -147,8 +154,8 @@ func TestStandaloneManifestMapsOneIndependentCasePerPinnedBlock(t *testing.T) {
 	position := make(map[string]int, len(wantSources))
 	for i, want := range wantSources {
 		got := manifest.Sources[i]
-		if got.Commit != "c3d7d5ec69774121f53d2e20d29d09c816795dd7" {
-			t.Fatalf("source %d commit = %q, want pinned Apache APISIX commit", i+1, got.Commit)
+		if got.Commit != wantCommit {
+			t.Fatalf("source %d commit = %q, want capability target %q", i+1, got.Commit, wantCommit)
 		}
 		wantNumbers := want.testNumbers
 		if wantNumbers == nil {
@@ -167,12 +174,26 @@ func TestStandaloneManifestMapsOneIndependentCasePerPinnedBlock(t *testing.T) {
 		sequence[want.file] = wantNumbers
 		position[want.file] = 0
 	}
-	if len(manifest.Cases) != total {
-		t.Fatalf("top-level cases = %d, want exactly %d", len(manifest.Cases), total)
+	if len(manifest.Cases) != total+1 {
+		t.Fatalf(
+			"top-level cases = %d, want %d pinned cases plus one local security boundary",
+			len(manifest.Cases),
+			total,
+		)
 	}
 	names := make(map[string]struct{}, len(manifest.Cases))
 	genericName := regexp.MustCompile(`(?i)(block-[0-9]+|source-block|placeholder|generic|probe)`)
+	localCases := 0
 	for i, testCase := range manifest.Cases {
+		if testCase.Source.LocalReason != "" {
+			localCases++
+			if testCase.Name != "jwt-auth-rejects-512-bit-rsa-local-security-boundary" {
+				t.Errorf("case %d has unexpected local behavior name %q", i+1, testCase.Name)
+			}
+			assertJWTCaseHasStandaloneResources(t, i+1, testCase)
+			assertJWTSensitiveCaseSemantics(t, testCase)
+			continue
+		}
 		if len(testCase.Source.Tests) != 1 {
 			t.Fatalf("case %d %q source tests = %v, want one pinned block", i+1, testCase.Name, testCase.Source.Tests)
 		}
@@ -200,9 +221,12 @@ func TestStandaloneManifestMapsOneIndependentCasePerPinnedBlock(t *testing.T) {
 		assertJWTCaseHasStandaloneResources(t, i+1, testCase)
 		assertJWTSensitiveCaseSemantics(t, testCase)
 	}
-	for _, want := range wantSources {
-		if got := position[want.file]; got != want.tests {
-			t.Fatalf("%s mapped through block %d, want %d", want.file, got, want.tests)
+	if localCases != 1 {
+		t.Fatalf("local security boundary cases = %d, want 1", localCases)
+	}
+	for file, numbers := range sequence {
+		if got := position[file]; got != len(numbers) {
+			t.Fatalf("%s mapped through block %d, want %d", file, got, len(numbers))
 		}
 	}
 }
@@ -274,6 +298,16 @@ func assertJWTSensitiveCaseSemantics(t *testing.T, testCase jwtManifestCase) {
 		t.Fatalf("encode case %q for semantic assertions: %v", testCase.Name, err)
 	}
 	text := string(encoded)
+	if testCase.Source.LocalReason != "" {
+		assertJWTCaseContains(t, testCase, text,
+			"upstream APISIX accepts this 512-bit RSA token",
+			"algorithm: RS256",
+			"expect_requests: 0",
+			"status: 401",
+			"failed to verify jwt",
+		)
+		return
+	}
 	testNumber := testCase.Source.Tests[0]
 
 	switch testCase.Source.File {

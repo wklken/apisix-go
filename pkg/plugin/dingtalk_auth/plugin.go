@@ -122,7 +122,7 @@ const schema = `
     },
     "cookie_secure": {
       "type": "boolean",
-      "default": true
+      "default": false
     },
     "cookie_same_site": {
       "type": "string",
@@ -238,7 +238,7 @@ func (p *Plugin) PostInit() error {
 		p.config.CookieExpiresIn = 86400
 	}
 	if p.config.CookieSecure == nil {
-		cookieSecure := true
+		cookieSecure := false
 		p.config.CookieSecure = &cookieSecure
 	}
 	if p.config.CookieSameSite == "" {
@@ -641,16 +641,16 @@ func (p *Plugin) userInfoFromSession(r *http.Request) (map[string]any, bool) {
 
 	var payload []byte
 	err = p.useSessionSecretsLocked(func(current string, fallbacks []string) error {
-		var ok bool
-		payload, ok = base.VerifySessionValue(cookie.Value, current, fallbacks)
-		if !ok {
-			return secret.ErrCredentialUnavailable
-		}
-		return nil
+		var openErr error
+		payload, openErr = base.OpenOAuthSession(
+			cookie.Value, current, fallbacks, p.oauthStateFingerprint(), time.Now(),
+		)
+		return openErr
 	})
 	if err != nil {
 		return nil, false
 	}
+	defer clear(payload)
 
 	var session sessionPayload
 	if err := json.Unmarshal(payload, &session); err != nil {
@@ -663,18 +663,24 @@ func (p *Plugin) userInfoFromSession(r *http.Request) (map[string]any, bool) {
 }
 
 func (p *Plugin) sessionCookie(userinfo map[string]any) (*http.Cookie, error) {
+	now := time.Now()
+	expiresAt := now.Add(time.Duration(p.config.CookieExpiresIn) * time.Second)
 	payload, err := json.Marshal(sessionPayload{
 		UserInfo:  userinfo,
-		ExpiresAt: time.Now().Add(time.Duration(p.config.CookieExpiresIn) * time.Second).Unix(),
+		ExpiresAt: expiresAt.Unix(),
 	})
 	if err != nil {
 		return nil, err
 	}
+	defer clear(payload)
 
 	var value string
 	if err := p.useSessionSecretsLocked(func(current string, _ []string) error {
-		value = base.SignSessionValue(payload, current)
-		return nil
+		var sealErr error
+		value, sealErr = base.SealOAuthSession(
+			payload, current, p.oauthStateFingerprint(), now, expiresAt,
+		)
+		return sealErr
 	}); err != nil {
 		return nil, err
 	}
@@ -685,7 +691,6 @@ func (p *Plugin) sessionCookie(userinfo map[string]any) (*http.Cookie, error) {
 		HttpOnly: true,
 		Secure:   *p.config.CookieSecure,
 		SameSite: base.CookieSameSite(p.config.CookieSameSite),
-		MaxAge:   p.config.CookieExpiresIn,
 	}, nil
 }
 

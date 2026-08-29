@@ -13,7 +13,10 @@ import (
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/capability"
+	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/testutil"
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 type responseTestConfig struct {
@@ -192,6 +195,96 @@ func checkedResponseBinding(
 	return binding
 }
 
+func initializedCSRFResponsePlugin(t *testing.T) Plugin {
+	t.Helper()
+	instance := New("csrf", base.Dependencies{
+		Config:         &config.EffectiveConfig{},
+		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+	})
+	if instance == nil {
+		t.Fatal("csrf plugin is not registered")
+	}
+	if err := instance.Init(); err != nil {
+		t.Fatalf("csrf Init() error = %v", err)
+	}
+	if err := util.Parse(map[string]any{"key": "secret"}, instance.Config()); err != nil {
+		t.Fatalf("parse csrf config: %v", err)
+	}
+	if err := MaterializePluginSecrets(instance); err != nil {
+		t.Fatalf("materialize csrf secrets: %v", err)
+	}
+	if err := instance.PostInit(); err != nil {
+		t.Fatalf("csrf PostInit() error = %v", err)
+	}
+	return instance
+}
+
+func TestCSRFResponsePlanStreamsLargeUpstreamAndBuffersEarlyStop(t *testing.T) {
+	for _, scope := range []Scope{ScopeRoute, ScopeConsumer} {
+		t.Run(map[Scope]string{ScopeRoute: "route", ScopeConsumer: "consumer"}[scope], func(t *testing.T) {
+			instance := initializedCSRFResponsePlugin(t)
+			binding := checkedResponseBinding(t, "csrf", instance, scope, "csrf-binding")
+			var (
+				plan     ResponsePlan
+				pipeline RequestPipeline
+				err      error
+			)
+			if scope == ScopeRoute {
+				plan, err = BuildResponsePlan(ResponsePlanInput{StaticBindings: []Binding{binding}})
+				pipeline = NewRequestPipeline([]Binding{binding}, nil)
+			} else {
+				binding.Provenance.Kind = ResourceConsumer
+				plan, err = BuildResponsePlan(ResponsePlanInput{})
+				pipeline = NewRequestPipeline(nil, func(r *http.Request) (ConsumerResolution, error) {
+					return ConsumerResolution{Request: r, Resolved: true, Bindings: []Binding{binding}}, nil
+				})
+			}
+			if err != nil {
+				t.Fatalf("BuildResponsePlan() error = %v", err)
+			}
+			terminalCalls := 0
+			payload := strings.Repeat("x", int(base.DefaultBufferedResponseMaxBytes)+1)
+			handler := plan.Install(pipeline, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				terminalCalls++
+				apisixctx.SetRequestResponseSource(r, apisixctx.ResponseSourceUpstream)
+				_, _ = w.Write([]byte(payload))
+			}))
+
+			allowed, _ := apisixctx.EnsureRequestLifecycle(
+				httptest.NewRequest(http.MethodGet, "http://gateway.test/large", nil), time.Unix(0, 0),
+			)
+			allowedResponse := httptest.NewRecorder()
+			handler.ServeHTTP(allowedResponse, allowed)
+			if allowedResponse.Code != http.StatusOK || allowedResponse.Body.String() != payload {
+				t.Fatalf(
+					"allowed response = %d/%d bytes, want 200/%d bytes",
+					allowedResponse.Code,
+					allowedResponse.Body.Len(),
+					len(payload),
+				)
+			}
+			if cookies := allowedResponse.Result().Cookies(); len(cookies) != 1 {
+				t.Fatalf("allowed Set-Cookie count = %d, want 1", len(cookies))
+			}
+
+			denied, _ := apisixctx.EnsureRequestLifecycle(
+				httptest.NewRequest(http.MethodPost, "http://gateway.test/protected", nil), time.Unix(0, 0),
+			)
+			deniedResponse := httptest.NewRecorder()
+			handler.ServeHTTP(deniedResponse, denied)
+			if deniedResponse.Code != http.StatusUnauthorized {
+				t.Fatalf("denied status = %d, want 401", deniedResponse.Code)
+			}
+			if terminalCalls != 1 {
+				t.Fatalf("terminal calls = %d, want 1", terminalCalls)
+			}
+			if cookies := deniedResponse.Result().Cookies(); len(cookies) != 1 {
+				t.Fatalf("denied Set-Cookie count = %d, want 1", len(cookies))
+			}
+		})
+	}
+}
+
 func TestMaterializeResponseBindingsUsesExactManifestAndPartitionOrder(t *testing.T) {
 	global := newResponseTestPlugin("global", 100, responseTestConfig{stage: "none", header: true})
 	merged := newResponseTestPlugin("merged", 200, responseTestConfig{stage: "none", body: true})
@@ -223,6 +316,81 @@ func TestResponseModeDescriptorCannotInventUndeclaredCallbacksOrRemoveProtocolOw
 	}
 	if !capability.StreamingResponseOwner || capability.ExclusiveProtocol != ProtocolAI {
 		t.Fatalf("protocol owner capability = %#v, want AI streaming owner", capability)
+	}
+}
+
+func TestResponsePlanInstallAdmitsDynamicConsumerDualModeBinding(t *testing.T) {
+	body := newDualModeResponseTestPlugin(base.RequestResponseModeBounded)
+	binding := checkedResponseBinding(t, "ai-rate-limiting", body, ScopeConsumer, "consumer-rate")
+	binding.Provenance.Kind = ResourceConsumer
+	plan, err := BuildResponsePlan(ResponsePlanInput{})
+	if err != nil {
+		t.Fatalf("BuildResponsePlan() error = %v", err)
+	}
+	pipeline := NewRequestPipeline(nil, func(r *http.Request) (ConsumerResolution, error) {
+		return ConsumerResolution{Request: r, Resolved: true, Bindings: []Binding{binding}}, nil
+	})
+	terminalCalls := 0
+	handler := plan.Install(pipeline, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		terminalCalls++
+		apisixctx.SetRequestResponseSource(r, apisixctx.ResponseSourceUpstream)
+		_, _ = w.Write([]byte("body"))
+	}))
+	request, _ := apisixctx.EnsureRequestLifecycle(
+		httptest.NewRequest(http.MethodPost, "/ai", nil),
+		time.Now(),
+	)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK || response.Body.String() != "body" || terminalCalls != 1 {
+		t.Fatalf(
+			"response = %d/%q, terminal calls %d, want 200/body and one terminal call",
+			response.Code,
+			response.Body.String(),
+			terminalCalls,
+		)
+	}
+	if body.bufferedCalls.Load() != 1 || body.streamCalls.Load() != 0 {
+		t.Fatalf(
+			"response callbacks = buffered:%d streaming:%d, want 1/0",
+			body.bufferedCalls.Load(),
+			body.streamCalls.Load(),
+		)
+	}
+}
+
+func TestResponsePlanInstallStreamsDynamicConsumerDualModeBinding(t *testing.T) {
+	body := newDualModeResponseTestPlugin(base.RequestResponseModeStreaming)
+	binding := checkedResponseBinding(t, "ai-rate-limiting", body, ScopeConsumer, "consumer-rate")
+	binding.Provenance.Kind = ResourceConsumer
+	plan, err := BuildResponsePlan(ResponsePlanInput{})
+	if err != nil {
+		t.Fatalf("BuildResponsePlan() error = %v", err)
+	}
+	pipeline := NewRequestPipeline(nil, func(r *http.Request) (ConsumerResolution, error) {
+		return ConsumerResolution{Request: r, Resolved: true, Bindings: []Binding{binding}}, nil
+	})
+	handler := plan.Install(pipeline, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		apisixctx.SetRequestResponseSource(r, apisixctx.ResponseSourceUpstream)
+		_, _ = w.Write([]byte("stream"))
+	}))
+	request, _ := apisixctx.EnsureRequestLifecycle(
+		httptest.NewRequest(http.MethodPost, "/ai", nil),
+		time.Now(),
+	)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK || response.Body.String() != "stream" {
+		t.Fatalf("response = %d/%q, want 200/stream", response.Code, response.Body.String())
+	}
+	if body.bufferedCalls.Load() != 0 || body.streamCalls.Load() != 1 {
+		t.Fatalf(
+			"response callbacks = buffered:%d streaming:%d, want 0/1",
+			body.bufferedCalls.Load(),
+			body.streamCalls.Load(),
+		)
 	}
 }
 
@@ -469,7 +637,7 @@ func TestDynamicResponseRewriteConditionalFallbackRunsExactlyOnce(t *testing.T) 
 
 func TestResponseRegistryHasExactDeclaredIdentities(t *testing.T) {
 	responseWant := []string{
-		"api-breaker", "body-transformer", "echo", "error-page", "exit-transformer",
+		"api-breaker", "body-transformer", "csrf", "echo", "error-page", "exit-transformer",
 		"graphql-proxy-cache", "proxy-cache", "response-rewrite",
 		"serverless-post-function", "serverless-pre-function",
 	}

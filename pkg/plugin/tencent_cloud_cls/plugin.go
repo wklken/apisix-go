@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand/v2"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -38,6 +39,9 @@ type Plugin struct {
 	sample func() float64
 
 	clientRelease func()
+	sourceMu      sync.Mutex
+	sourceIP      string
+	lookupHostIP  func(string) ([]net.IP, error)
 
 	lifecycleMu sync.RWMutex
 	stopped     atomic.Bool
@@ -428,7 +432,9 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		if p.config.SampleRatio < 1 && p.sampleValue() >= p.config.SampleRatio {
 			return
 		}
-		_ = p.enqueueLogIfRunning(apisixlog.GetFields(r, p.LogFormat))
+		fields := apisixlog.GetFields(r, p.LogFormat)
+		base.ApplyRequestMatchedRouteFields(fields, r, p.RouteID)
+		_ = p.enqueueLogIfRunning(fields)
 	})
 }
 
@@ -437,6 +443,7 @@ func (p *Plugin) RunLogPhase(snapshot base.LogSnapshot) error {
 		return nil
 	}
 	fields := base.GetFieldsFromSnapshot(snapshot, p.LogFormat)
+	base.ApplySnapshotMatchedRouteFields(fields, snapshot, p.RouteID)
 	if p.config.IncludeReqBody &&
 		base.SnapshotExpressionMatches(snapshot, p.config.IncludeReqBodyExpr) {
 		if body := base.SnapshotRequestBody(snapshot, p.config.MaxReqBodyBytes); body != "" {
@@ -542,14 +549,17 @@ func (p *Plugin) sendBatch(
 	if (!allowRetired && p.stopped.Load()) || !p.ready || p.client == nil {
 		return 0, secret.ErrCredentialUnavailable
 	}
-	payload := p.buildBatchPayload(entries)
+	payload, err := p.buildBatchPayload(entries)
+	if err != nil {
+		return 0, fmt.Errorf("resolve Tencent Cloud CLS source: %w", err)
+	}
 	defer clear(payload)
 	if len(payload) == 0 {
 		return 0, nil
 	}
 
 	endpoint := p.endpointURL()
-	err := p.useSigningConfigLocked(func(config *Config) error {
+	err = p.useSigningConfigLocked(func(config *Config) error {
 		request := p.client.R().
 			SetContext(ctx).
 			SetHeader("Host", p.config.CLSHost).
@@ -704,7 +714,11 @@ func authorization(config *Config, now time.Time) string {
 		"&q-signature=" + signature
 }
 
-func (p *Plugin) buildBatchPayload(logs []map[string]any) []byte {
+func (p *Plugin) buildBatchPayload(logs []map[string]any) ([]byte, error) {
+	sourceIP, err := p.resolveSourceIP()
+	if err != nil {
+		return nil, err
+	}
 	group := []byte(nil)
 	totalSize := 0
 	truncatedValues := 0
@@ -730,12 +744,37 @@ func (p *Plugin) buildBatchPayload(logs []map[string]any) []byte {
 		logger.Errorf("Tencent Cloud CLS dropped %d log(s) over the 5MB limit", droppedEntries)
 	}
 	if len(group) == 0 {
-		return nil
+		return nil, nil
 	}
-	if hostname := base.Hostname(); hostname != "" {
-		group = appendStringField(group, 4, hostname)
+	group = appendStringField(group, 4, sourceIP)
+	return appendBytesField(nil, 1, group), nil
+}
+
+func (p *Plugin) resolveSourceIP() (string, error) {
+	p.sourceMu.Lock()
+	defer p.sourceMu.Unlock()
+	if p.sourceIP != "" {
+		return p.sourceIP, nil
 	}
-	return appendBytesField(nil, 1, group)
+	hostname := base.Hostname()
+	if hostname == "" {
+		return "", fmt.Errorf("local hostname is empty")
+	}
+	lookup := p.lookupHostIP
+	if lookup == nil {
+		lookup = net.LookupIP
+	}
+	addresses, err := lookup(hostname)
+	if err != nil {
+		return "", fmt.Errorf("resolve hostname %q: %w", hostname, err)
+	}
+	for _, address := range addresses {
+		if address != nil {
+			p.sourceIP = address.String()
+			return p.sourceIP, nil
+		}
+	}
+	return "", fmt.Errorf("resolve hostname %q: no IP addresses", hostname)
 }
 
 type clsContent struct {

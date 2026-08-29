@@ -1,19 +1,20 @@
 sources:
   - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
     file: t/plugin/basic-auth.t
     tests: 30
   - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
     file: t/plugin/basic-auth-anonymous-consumer.t
-    tests: 8
+    tests: 7
   - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
     file: t/plugin/basic-auth-realm.t
     tests: 6
 
 cases:
   - name: valid-consumer-schema
+    wait_for_generation: true
     source: {file: t/plugin/basic-auth.t, tests: [1]}
     config:
       consumers:
@@ -76,6 +77,7 @@ cases:
           logs: {not_matches: '\bbar\b'}
 
   - name: credential-validation
+    wait_for_generation: true
     source: {file: t/plugin/basic-auth.t, tests: [5, 6, 7, 9, 10]}
     config:
       consumers:
@@ -107,7 +109,13 @@ cases:
         output:
           status: 401
           body: {equals: '{"message":"Invalid authorization in request"}'}
-          logs: {matches: 'Failed to decode authentication header: aca_a'}
+          logs: {matches: 'invalid Basic authorization encoding'}
+      - name: invalid-base64-does-not-log-credential
+        input: {path: /hello, headers: {Authorization: "Basic aca_a"}}
+        output:
+          status: 401
+          body: {equals: '{"message":"Invalid authorization in request"}'}
+          logs: {not_matches: 'aca_a'}
       - name: invalid-username
         input: {path: /hello, headers: {Authorization: "Basic YmFyOmJhcgo="}}
         output: {status: 401, body: {equals: '{"message":"Invalid user authorization"}'}}
@@ -128,6 +136,7 @@ cases:
         output: {status: 401, body: {equals: '{"message":"Invalid user authorization"}'}}
 
   - name: missing-password-diagnostic
+    wait_for_generation: true
     source: {file: t/plugin/basic-auth.t, tests: [8]}
     config:
       consumers:
@@ -137,11 +146,19 @@ cases:
         - id: basic-auth-missing-password-diagnostic
           uri: /hello
           plugins: {basic-auth: {}}
-    input: {path: /hello, headers: {Authorization: "Basic YmFy"}}
-    output:
-      status: 401
-      body: {equals: '{"message":"Invalid authorization in request"}'}
-      logs: {matches: 'Split authorization err: invalid decoded data: bar'}
+    steps:
+      - name: invalid-decoded-value-uses-redacted-diagnostic
+        input: {path: /hello, headers: {Authorization: "Basic YmFy"}}
+        output:
+          status: 401
+          body: {equals: '{"message":"Invalid authorization in request"}'}
+          logs: {matches: 'invalid Basic authorization value'}
+      - name: invalid-decoded-value-does-not-log-credential
+        input: {path: /hello, headers: {Authorization: "Basic YmFy"}}
+        output:
+          status: 401
+          body: {equals: '{"message":"Invalid authorization in request"}'}
+          logs: {not_matches: '\bbar\b'}
 
   - name: valid-authorization-confidentiality
     source: {file: t/plugin/basic-auth.t, tests: [11]}
@@ -464,6 +481,7 @@ cases:
         output: {status: 200, body: {equals: hello world}, logs: {matches: 'find consumer foo'}}
 
   - name: normal-consumer-limit-chain
+    wait_for_generation: true
     source: {file: t/plugin/basic-auth-anonymous-consumer.t, tests: [1, 2, 3]}
     config:
       consumers:
@@ -550,42 +568,6 @@ cases:
       status: 401
       body: {equals: '{"message":"Invalid user authorization"}'}
       logs: {matches: 'failed to get anonymous consumer not-found-anonymous'}
-
-  - name: anonymous-consumer-schema
-    source: {file: t/plugin/basic-auth-anonymous-consumer.t, tests: [8]}
-    variants:
-      - name: number
-        config:
-          routes:
-            - id: basic-auth-anonymous-number
-              uri: /hello
-              plugins: {basic-auth: {anonymous_consumer: 123}}
-        input: {path: /hello}
-        output: {status: 404, logs: {matches: 'basic-auth.*anonymous_consumer.*expected string'}}
-      - name: boolean
-        config:
-          routes:
-            - id: basic-auth-anonymous-boolean
-              uri: /hello
-              plugins: {basic-auth: {anonymous_consumer: true}}
-        input: {path: /hello}
-        output: {status: 404, logs: {matches: 'basic-auth.*anonymous_consumer.*expected string'}}
-      - name: object
-        config:
-          routes:
-            - id: basic-auth-anonymous-object
-              uri: /hello
-              plugins: {basic-auth: {anonymous_consumer: {}}}
-        input: {path: /hello}
-        output: {status: 404, logs: {matches: 'basic-auth.*anonymous_consumer.*expected string'}}
-      - name: empty
-        config:
-          routes:
-            - id: basic-auth-anonymous-empty
-              uri: /hello
-              plugins: {basic-auth: {anonymous_consumer: ''}}
-        input: {path: /hello}
-        output: {status: 404, logs: {matches: 'basic-auth.*anonymous_consumer.*length.*1'}}
 
   - name: default-realm
     source: {file: t/plugin/basic-auth-realm.t, tests: [1, 2]}

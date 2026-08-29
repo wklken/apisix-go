@@ -103,10 +103,20 @@ func (prepared *PreparedGeneration) effectiveHTTPBindingSource(
 				ErrInvalidInput,
 			)
 		}
-		return effectiveBindingSource{
-			kind: effectiveBindingPreparedConsumer, resource: plan.Source,
-			source: capability.SecretConsumerConfig,
-		}, nil
+		for _, occurrence := range prepared.attempt.Occurrences(capability.SecretConsumerConfig) {
+			if occurrence.Domain() == generation.DomainHTTP &&
+				occurrence.Resource() == plan.Source &&
+				occurrence.Factory() == plan.Factory {
+				return effectiveBindingSource{
+					kind: effectiveBindingPreparedConsumer, resource: plan.Source,
+					source: capability.SecretConsumerConfig, occurrence: occurrence,
+				}, nil
+			}
+		}
+		return effectiveBindingSource{}, fmt.Errorf(
+			"%w: exact HTTP consumer factory occurrence is missing",
+			ErrInvalidInput,
+		)
 	default:
 		wantScope, wantProvenance, ok := effectivePluginSourceIdentity(plan.Source)
 		if !ok || plan.Scope != wantScope || plan.Provenance != wantProvenance {

@@ -627,7 +627,7 @@ func TestRunLogPhaseOriginPreservesHTTPFraming(t *testing.T) {
 	snapshot := base.LogSnapshot{
 		Request: apisixlog.RequestLogSnapshot{
 			Method: http.MethodPost, URI: "/orders?x=1", Proto: "HTTP/1.1",
-			Header: http.Header{"X-Test": {"one"}}, Body: []byte("payload"),
+			Host: "gateway.test", Header: http.Header{"X-Test": {"one"}}, Body: []byte("payload"),
 		},
 		Outcome: apisixctx.ResponseOutcome{Status: http.StatusOK},
 	}
@@ -637,7 +637,8 @@ func TestRunLogPhaseOriginPreservesHTTPFraming(t *testing.T) {
 	select {
 	case entry := <-delivered:
 		origin, ok := entry[originLogKey].(string)
-		if !ok || !strings.Contains(origin, "POST /orders?x=1 HTTP/1.1\r\nX-Test: one\r\n\r\npayload") {
+		if !ok ||
+			!strings.Contains(origin, "POST /orders?x=1 HTTP/1.1\r\nHost: gateway.test\r\nX-Test: one\r\n\r\npayload") {
 			t.Fatalf("origin payload = %q", origin)
 		}
 	case <-time.After(time.Second):
@@ -1230,6 +1231,9 @@ func TestHandlerSendsOriginRequestLog(t *testing.T) {
 	if !strings.Contains(payload, "X-Tenant: gold\r\n") {
 		t.Fatalf("origin payload = %q, want request header", payload)
 	}
+	if !strings.Contains(payload, "Host: example.com\r\n") {
+		t.Fatalf("origin payload = %q, want request host", payload)
+	}
 	if !strings.HasSuffix(payload, "\r\n\r\n"+`{"order":1}`) {
 		t.Fatalf("origin payload = %q, want request body after header block", payload)
 	}
@@ -1478,6 +1482,173 @@ func TestSchemaAcceptsAPIVersionTwoAndRejectsThree(t *testing.T) {
 	base["api_version"] = 3
 	if err := util.Validate(base, p.GetSchema()); err == nil {
 		t.Fatal("validate api_version 3 = nil, want enum rejection")
+	}
+}
+
+// These are the direct schema checks from APISIX 3.17
+// kafka-logger-large-body.t TEST 1, kafka-logger.t TESTS 2-3, and
+// kafka-logger2.t TEST 1.
+func TestSchemaRejectsAPISIX317InvalidRootConfigurations(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	tests := []struct {
+		name   string
+		config map[string]any
+	}{
+		{
+			name: "string max request body bytes",
+			config: map[string]any{
+				"broker_list": map[string]any{"127.0.0.1": 9092},
+				"kafka_topic": "integration", "max_req_body_bytes": "10",
+			},
+		},
+		{
+			name:   "missing broker source",
+			config: map[string]any{"kafka_topic": "integration"},
+		},
+		{
+			name: "string timeout",
+			config: map[string]any{
+				"broker_list": map[string]any{"127.0.0.1": 9092},
+				"kafka_topic": "integration", "timeout": "10",
+			},
+		},
+		{
+			name: "unsupported required acknowledgements",
+			config: map[string]any{
+				"broker_list": map[string]any{"127.0.0.1": 9092},
+				"kafka_topic": "integration", "required_acks": 2,
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if err := util.Validate(test.config, p.GetSchema()); err == nil {
+				t.Fatalf("Validate(%#v) error = nil, want APISIX 3.17 schema rejection", test.config)
+			}
+		})
+	}
+}
+
+// APISIX 3.17 t/plugin/kafka-logger2.t TEST 5 checks these configurations
+// through plugin.check_schema. Keep the field-level contract in this package;
+// the data-plane integration only needs to prove that invalid configuration is
+// never published.
+func TestSchemaRejectsAPISIX317InvalidBrokerConfigurations(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	tests := []struct {
+		name   string
+		config map[string]any
+	}{
+		{name: "empty broker list", config: map[string]any{"broker_list": map[string]any{}}},
+		{name: "string broker-list port", config: map[string]any{"broker_list": map[string]any{"127.0.0.1": "9092"}}},
+		{name: "zero broker-list port", config: map[string]any{"broker_list": map[string]any{"127.0.0.1": 0}}},
+		{name: "oversized broker-list port", config: map[string]any{"broker_list": map[string]any{"127.0.0.1": 65536}}},
+		{name: "empty brokers", config: map[string]any{"brokers": []any{}}},
+		{name: "broker without port", config: map[string]any{"brokers": []any{map[string]any{"host": "127.0.0.1"}}}},
+		{name: "broker without host", config: map[string]any{"brokers": []any{map[string]any{"port": 9092}}}},
+		{
+			name:   "string broker port",
+			config: map[string]any{"brokers": []any{map[string]any{"host": "127.0.0.1", "port": "9093"}}},
+		},
+		{
+			name:   "zero broker port",
+			config: map[string]any{"brokers": []any{map[string]any{"host": "127.0.0.1", "port": 0}}},
+		},
+		{
+			name:   "oversized broker port",
+			config: map[string]any{"brokers": []any{map[string]any{"host": "127.0.0.1", "port": 65536}}},
+		},
+		{
+			name: "invalid SASL mechanism",
+			config: map[string]any{
+				"brokers": []any{
+					map[string]any{
+						"host": "127.0.0.1",
+						"port": 9093,
+						"sasl_config": map[string]any{
+							"mechanism": "INVALID",
+							"user":      "admin",
+							"password":  "admin-secret",
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "SASL without password",
+			config: map[string]any{
+				"brokers": []any{
+					map[string]any{"host": "127.0.0.1", "port": 9093, "sasl_config": map[string]any{"user": "admin"}},
+				},
+			},
+		},
+		{
+			name: "SASL without user",
+			config: map[string]any{
+				"brokers": []any{
+					map[string]any{
+						"host":        "127.0.0.1",
+						"port":        9093,
+						"sasl_config": map[string]any{"password": "admin-secret"},
+					},
+				},
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			test.config["kafka_topic"] = "integration"
+			if err := util.Validate(test.config, p.GetSchema()); err == nil {
+				t.Fatalf("Validate(%#v) error = nil, want APISIX 3.17 schema rejection", test.config)
+			}
+		})
+	}
+}
+
+// APISIX 3.17 t/plugin/kafka-logger2.t TESTS 10-11 perform custom
+// expression validation after JSON Schema validation.
+func TestPostInitRejectsAPISIX317InvalidBodyExpressionOperators(t *testing.T) {
+	tests := []struct {
+		name       string
+		field      string
+		expression [][]any
+	}{
+		{name: "request body", field: "include_req_body_expr", expression: [][]any{{"bar", "<>", "foo"}}},
+		{name: "response body", field: "include_resp_body_expr", expression: [][]any{{"bar", "<!>", "foo"}}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			config := Config{
+				BrokerList: map[string]int{"127.0.0.1": 9092},
+				KafkaTopic: "integration",
+			}
+			if test.field == "include_req_body_expr" {
+				config.IncludeReqBody = true
+				config.IncludeReqBodyExpr = test.expression
+			} else {
+				config.IncludeRespBody = true
+				config.IncludeRespBodyExpr = test.expression
+			}
+			p := &Plugin{config: config, sender: &captureSender{}}
+			p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
+			if err := p.Init(); err != nil {
+				t.Fatalf("Init() error = %v", err)
+			}
+			if err := p.MaterializeSecrets(); err != nil {
+				t.Fatalf("MaterializeSecrets() error = %v", err)
+			}
+			err := p.PostInit()
+			if err == nil || !strings.Contains(err.Error(), test.field) ||
+				!strings.Contains(err.Error(), "invalid operator") {
+				t.Fatalf("PostInit() error = %v, want %s invalid operator rejection", err, test.field)
+			}
+		})
 	}
 }
 

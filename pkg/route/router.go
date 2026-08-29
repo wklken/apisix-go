@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/go-chi/chi/v5"
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/resource"
 )
@@ -140,12 +141,12 @@ func (r *routeRegistrar) registerRouteWithHosts(
 		return nil
 	}
 	if len(methods) == 0 {
-		r.mux.Handle(converted, handler)
+		r.mux.Handle(converted, withMatchedRoute(handler, uri, ""))
 		return nil
 	}
 	for _, method := range methods {
 		logger.Debugf("add route: %s %s", method, converted)
-		r.mux.Method(method, converted, handler)
+		r.mux.Method(method, converted, withMatchedRoute(handler, uri, ""))
 	}
 	return nil
 }
@@ -434,7 +435,7 @@ func (d *wildcardDispatcher) ServeHTTP(writer http.ResponseWriter, request *http
 					pathMatched = pathMatched || matchedPath
 					hostMatched = hostMatched || matchedHost
 					if matched {
-						route.handler.ServeHTTP(writer, request)
+						serveMatchedRoute(writer, request, route, host)
 						return
 					}
 					continue
@@ -450,7 +451,7 @@ func (d *wildcardDispatcher) ServeHTTP(writer http.ResponseWriter, request *http
 				pathMatched = pathMatched || matchedPath
 				hostMatched = hostMatched || matchedHost
 				if matched {
-					route.handler.ServeHTTP(writer, request)
+					serveMatchedRoute(writer, request, route, host)
 					return
 				}
 			}
@@ -465,6 +466,39 @@ func (d *wildcardDispatcher) ServeHTTP(writer http.ResponseWriter, request *http
 		return
 	}
 	http.NotFound(writer, request)
+}
+
+func withMatchedRoute(next http.Handler, uri string, host string) http.Handler {
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		next.ServeHTTP(writer, apisixctx.WithMatchedRoute(request, uri, host))
+	})
+}
+
+func serveMatchedRoute(
+	writer http.ResponseWriter,
+	request *http.Request,
+	route wildcardRoute,
+	requestHost string,
+) {
+	route.handler.ServeHTTP(
+		writer,
+		apisixctx.WithMatchedRoute(request, route.pattern, matchedRouteHost(route.hosts, requestHost)),
+	)
+}
+
+func matchedRouteHost(hosts []string, requestHost string) string {
+	for _, host := range hosts {
+		normalized := normalizeRouteHost(host)
+		if normalized == requestHost {
+			return host
+		}
+	}
+	for _, host := range hosts {
+		if matchOneLabelHostWildcard(normalizeRouteHost(host), requestHost) {
+			return host
+		}
+	}
+	return ""
 }
 
 func (d *wildcardDispatcher) allowedMethods(request *http.Request) []string {

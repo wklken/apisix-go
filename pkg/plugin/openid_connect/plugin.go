@@ -20,6 +20,7 @@ import (
 	"github.com/redis/go-redis/v9"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/shared"
 	"github.com/wklken/apisix-go/pkg/util"
@@ -419,6 +420,26 @@ func (p *Plugin) PostInit() error {
 	if err != nil {
 		return err
 	}
+	insecureURLs := []struct {
+		field string
+		value string
+	}{
+		{field: "discovery", value: p.config.Discovery},
+		{field: "introspection_endpoint", value: p.config.IntrospectionEndpoint},
+		{field: "redirect_uri", value: p.config.RedirectURI},
+		{field: "post_logout_redirect_uri", value: p.config.PostLogoutRedirectURI},
+	}
+	if p.config.ProxyOpts != nil {
+		insecureURLs = append(insecureURLs, struct {
+			field string
+			value string
+		}{field: "proxy_opts.http_proxy", value: p.config.ProxyOpts.HTTPProxy})
+	}
+	for _, configuredURL := range insecureURLs {
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(configuredURL.value)), "http://") {
+			logger.Warn("Using openid-connect " + configuredURL.field + " with no TLS is a security risk")
+		}
+	}
 	if p.now == nil {
 		p.now = time.Now
 	}
@@ -758,7 +779,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		}
 		if !hasToken {
 			if p.config.BearerOnly {
-				p.writeBearerUnauthorized(w, "No bearer token found in request.")
+				p.writeBearerUnauthorized(w)
 				return
 			}
 			if p.config.UnauthAction == "pass" {

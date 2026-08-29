@@ -16,6 +16,7 @@ import (
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	appconfig "github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/plugin"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/proxy"
 	"github.com/wklken/apisix-go/pkg/resource"
 )
@@ -423,5 +424,108 @@ func TestBuildPreparedHandlerUsesOnlyPreparedBindingsAndRuntime(t *testing.T) {
 	}
 	if got, want := response.Body.String(), "http://upstream.test:8080/orders|gateway.test|ran"; got != want {
 		t.Fatalf("body = %q, want %q", got, want)
+	}
+}
+
+func TestBuildPreparedHandlerRunsBeforeProxyHookAfterDirectorOnce(t *testing.T) {
+	t.Parallel()
+
+	const target = "http://upstream.test:8080"
+	hookCalls := 0
+	seenByHook := ""
+	handler, err := BuildPreparedHandler(PreparedHandlerInput{
+		Route: resource.Route{ID: "before-proxy-route", Uri: "/orders"},
+		Upstream: UpstreamPlan{
+			Upstream: resource.Upstream{
+				Scheme:   "http",
+				PassHost: "node",
+				Nodes: []resource.Node{{
+					Host: "upstream.test", Port: 8080, Weight: 1,
+				}},
+			},
+			Provenance: plugin.ResourceProvenance{Kind: plugin.ResourceRoute, ID: "before-proxy-route"},
+			Targets:    map[string]int{target: 1},
+		},
+		Runtime: PreparedUpstreamRuntime{
+			LoadBalancer: proxy.NewSingleLoadBalance(target),
+			RoundTripper: preparedHandlerRoundTripper(func(request *http.Request) (*http.Response, error) {
+				if hookCalls != 1 {
+					t.Fatalf("before-proxy hook calls before RoundTrip = %d, want 1", hookCalls)
+				}
+				return &http.Response{
+					StatusCode: http.StatusNoContent,
+					Header:     make(http.Header),
+					Body:       http.NoBody,
+					Request:    request,
+				}, nil
+			}),
+		},
+	})
+	if err != nil {
+		t.Fatalf("BuildPreparedHandler() error = %v", err)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "http://gateway.test/orders", nil)
+	request = apisixctx.WithBeforeProxyHookRegistration(request, apisixctx.BeforeProxyHookRegistration{
+		Owner: "proxy-mirror",
+		Phase: string(plugin.PhaseBeforeProxy),
+		Hook: func(request *http.Request) error {
+			hookCalls++
+			seenByHook = request.URL.String() + "|" + request.Host
+			return nil
+		},
+	})
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d; body=%q", response.Code, http.StatusNoContent, response.Body.String())
+	}
+	if got, want := seenByHook, "http://upstream.test:8080/orders|upstream.test:8080"; got != want {
+		t.Fatalf("request seen by before-proxy hook = %q, want %q", got, want)
+	}
+	if err := apisixctx.RunBeforeProxyHooks(request); err != nil {
+		t.Fatalf("repeat RunBeforeProxyHooks() error = %v", err)
+	}
+	if hookCalls != 1 {
+		t.Fatalf("before-proxy hook calls = %d, want 1", hookCalls)
+	}
+}
+
+func TestBuildPreparedHandlerMapsBeforeProxyBodyLimitTo413(t *testing.T) {
+	t.Parallel()
+
+	const target = "http://upstream.test:8080"
+	primaryCalled := false
+	handler, err := BuildPreparedHandler(PreparedHandlerInput{
+		Route: resource.Route{ID: "before-proxy-limit-route", Uri: "/upload"},
+		Upstream: UpstreamPlan{
+			Upstream: resource.Upstream{Scheme: "http", Nodes: []resource.Node{{
+				Host: "upstream.test", Port: 8080, Weight: 1,
+			}}},
+			Provenance: plugin.ResourceProvenance{Kind: plugin.ResourceRoute, ID: "before-proxy-limit-route"},
+			Targets:    map[string]int{target: 1},
+		},
+		Runtime: PreparedUpstreamRuntime{
+			LoadBalancer: proxy.NewSingleLoadBalance(target),
+			RoundTripper: preparedHandlerRoundTripper(func(*http.Request) (*http.Response, error) {
+				primaryCalled = true
+				return nil, nil
+			}),
+		},
+	})
+	if err != nil {
+		t.Fatalf("BuildPreparedHandler() error = %v", err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "http://gateway.test/upload", strings.NewReader("123456"))
+	request = apisixctx.WithBeforeProxyHook(request, func(*http.Request) error {
+		return &base.BodyTooLargeError{Limit: 5}
+	})
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusRequestEntityTooLarge || primaryCalled {
+		t.Fatalf("status=%d primary-called=%t, want 413 before primary RoundTrip", response.Code, primaryCalled)
 	}
 }

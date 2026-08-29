@@ -1039,7 +1039,7 @@ func TestHandlerCachesAccessToken(t *testing.T) {
 	}
 }
 
-func TestSessionCookieSecureByDefault(t *testing.T) {
+func TestSessionCookieMatchesAPISIX317Defaults(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		AppKey:      "app-key",
 		AppSecret:   "app-secret",
@@ -1050,18 +1050,44 @@ func TestSessionCookieSecureByDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sessionCookie() error = %v", err)
 	}
-	if !cookie.Secure || !cookie.HttpOnly || cookie.SameSite != http.SameSiteLaxMode {
+	if cookie.Path != "/" || cookie.Secure || !cookie.HttpOnly ||
+		cookie.SameSite != http.SameSiteLaxMode || cookie.MaxAge != 0 || !cookie.Expires.IsZero() {
 		t.Fatalf(
-			"cookie attributes = secure:%t httpOnly:%t sameSite:%v",
+			"cookie attributes = path:%q secure:%t httpOnly:%t sameSite:%v maxAge:%d expires:%v",
+			cookie.Path,
 			cookie.Secure,
 			cookie.HttpOnly,
 			cookie.SameSite,
+			cookie.MaxAge,
+			cookie.Expires,
 		)
 	}
 }
 
+func TestSessionCookieSchemaMatchesAPISIX317SecureDefault(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(p.GetSchema()), &parsed); err != nil {
+		t.Fatalf("schema JSON error = %v", err)
+	}
+	properties, ok := parsed["properties"].(map[string]any)
+	if !ok {
+		t.Fatal("schema properties are missing")
+	}
+	cookieSecure, ok := properties["cookie_secure"].(map[string]any)
+	if !ok {
+		t.Fatal("cookie_secure schema is missing")
+	}
+	if value, ok := cookieSecure["default"].(bool); !ok || value {
+		t.Fatalf("cookie_secure schema default = %#v, want false", cookieSecure["default"])
+	}
+}
+
 func TestSessionCookieHonorsCookieControls(t *testing.T) {
-	cookieSecure := false
+	cookieSecure := true
 	p := newTestPlugin(t, Config{
 		AppKey:         "app-key",
 		AppSecret:      "app-secret",
@@ -1074,8 +1100,137 @@ func TestSessionCookieHonorsCookieControls(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sessionCookie() error = %v", err)
 	}
-	if cookie.Secure || cookie.SameSite != http.SameSiteStrictMode {
-		t.Fatalf("cookie attributes = secure:%t sameSite:%v", cookie.Secure, cookie.SameSite)
+	if !cookie.Secure || cookie.SameSite != http.SameSiteStrictMode || cookie.MaxAge != 0 {
+		t.Fatalf(
+			"cookie attributes = secure:%t sameSite:%v maxAge:%d",
+			cookie.Secure, cookie.SameSite, cookie.MaxAge,
+		)
+	}
+}
+
+func TestDingTalkSessionCookieUsesEncryptedConfigBoundEnvelope(t *testing.T) {
+	const (
+		currentSecret  = "current-session-secret"
+		previousSecret = "previous-session-secret"
+	)
+	config := Config{
+		AppKey:      "app-key",
+		AppSecret:   "app-secret",
+		Secret:      previousSecret,
+		RedirectURI: "https://login.dingtalk.com/oauth2/auth",
+	}
+	issuer := newTestPlugin(t, config)
+	cookie, err := issuer.sessionCookie(map[string]any{
+		"userid": "sensitive-user-id",
+		"mobile": "13800138000",
+	})
+	if err != nil {
+		t.Fatalf("sessionCookie() error = %v", err)
+	}
+	assertDingTalkSessionCookieOpaque(t, cookie, "userid", "sensitive-user-id", "mobile", "13800138000")
+
+	t.Run("second request reuses decrypted session", func(t *testing.T) {
+		request := httptest.NewRequest(http.MethodGet, "http://gateway.test/orders", nil)
+		request.AddCookie(cookie)
+		userinfo, ok := issuer.userInfoFromSession(request)
+		if !ok || userinfo["userid"] != "sensitive-user-id" || userinfo["mobile"] != "13800138000" {
+			t.Fatalf("userInfoFromSession() = %#v/%t, want decrypted userinfo", userinfo, ok)
+		}
+	})
+
+	t.Run("tamper is rejected", func(t *testing.T) {
+		tampered := *cookie
+		first := tampered.Value[0]
+		if first == 'A' {
+			first = 'B'
+		} else {
+			first = 'A'
+		}
+		tampered.Value = string(first) + tampered.Value[1:]
+		assertDingTalkSessionRejected(t, issuer, &tampered)
+	})
+
+	t.Run("expired envelope is rejected", func(t *testing.T) {
+		payload, marshalErr := json.Marshal(sessionPayload{
+			UserInfo:  map[string]any{"userid": "not-expired-in-payload"},
+			ExpiresAt: time.Now().Add(time.Hour).Unix(),
+		})
+		if marshalErr != nil {
+			t.Fatal(marshalErr)
+		}
+		var expiredValue string
+		sealErr := issuer.useSessionSecretsLocked(func(current string, _ []string) error {
+			now := time.Now()
+			var err error
+			expiredValue, err = base.SealOAuthSession(
+				payload, current, issuer.oauthStateFingerprint(), now.Add(-2*time.Hour), now.Add(-time.Hour),
+			)
+			return err
+		})
+		if sealErr != nil {
+			t.Fatal(sealErr)
+		}
+		assertDingTalkSessionRejected(t, issuer, &http.Cookie{Name: sessionCookieName, Value: expiredValue})
+	})
+
+	t.Run("fallback secret opens previous session", func(t *testing.T) {
+		rotatedConfig := config
+		rotatedConfig.Secret = currentSecret
+		rotatedConfig.SecretFallbacks = []string{previousSecret}
+		rotated := newTestPlugin(t, rotatedConfig)
+		request := httptest.NewRequest(http.MethodGet, "http://gateway.test/orders", nil)
+		request.AddCookie(cookie)
+		userinfo, ok := rotated.userInfoFromSession(request)
+		if !ok || userinfo["userid"] != "sensitive-user-id" {
+			t.Fatalf("rotated userInfoFromSession() = %#v/%t, want fallback-opened userinfo", userinfo, ok)
+		}
+	})
+
+	t.Run("config fingerprint mismatch is rejected", func(t *testing.T) {
+		mismatchedConfig := config
+		mismatchedConfig.AppKey = "different-app-key"
+		mismatched := newTestPlugin(t, mismatchedConfig)
+		assertDingTalkSessionRejected(t, mismatched, cookie)
+	})
+
+	t.Run("legacy signed plaintext cookie is rejected", func(t *testing.T) {
+		payload, marshalErr := json.Marshal(sessionPayload{
+			UserInfo:  map[string]any{"userid": "legacy-user"},
+			ExpiresAt: time.Now().Add(time.Hour).Unix(),
+		})
+		if marshalErr != nil {
+			t.Fatal(marshalErr)
+		}
+		legacy := &http.Cookie{
+			Name:  sessionCookieName,
+			Value: base.SignSessionValue(payload, previousSecret),
+		}
+		assertDingTalkSessionRejected(t, issuer, legacy)
+	})
+}
+
+func assertDingTalkSessionCookieOpaque(t *testing.T, cookie *http.Cookie, sensitive ...string) {
+	t.Helper()
+	searchable := []byte(cookie.Value)
+	for part := range strings.SplitSeq(cookie.Value, ".") {
+		decoded, err := base64.RawURLEncoding.DecodeString(part)
+		if err == nil {
+			searchable = append(searchable, decoded...)
+		}
+	}
+	for _, value := range sensitive {
+		if strings.Contains(string(searchable), value) {
+			t.Fatalf("session cookie exposes sensitive value %q", value)
+		}
+	}
+}
+
+func assertDingTalkSessionRejected(t *testing.T, p *Plugin, cookie *http.Cookie) {
+	t.Helper()
+	request := httptest.NewRequest(http.MethodGet, "http://gateway.test/orders", nil)
+	request.AddCookie(cookie)
+	if userinfo, ok := p.userInfoFromSession(request); ok {
+		t.Fatalf("userInfoFromSession() accepted invalid cookie: %#v", userinfo)
 	}
 }
 

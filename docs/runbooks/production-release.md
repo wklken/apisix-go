@@ -24,7 +24,7 @@ families, and unsupported discovery remain outside this contract.
 
 Before an operator starts, obtain:
 
-- a clean Bash host with Git, Docker, `curl`, `jq`, `openssl`, `make`, `tar`,
+- a clean Bash host with Git, Docker or Podman, `curl`, `jq`, `openssl`, `make`, `tar`,
   `sha256sum`, and network access to GHCR and the release evidence;
 - authenticated GHCR read access for pulling the image and verifying its OCI
   attestation, plus `cosign` and `gh` with access to the repository;
@@ -75,9 +75,9 @@ The operational gates are:
 1. focused race and vulnerability checks;
 2. the exact container smoke, SBOM, and fail-closed Trivy result;
 3. the release-grade verified-TLS etcd recovery scenario described below:
-   readiness becomes 503 during an etcd outage while liveness and the last-good
-   route continue to work, then readiness returns to 200 and the same route ID
-   switches to the second upstream resource;
+   readiness and liveness remain 200 while the committed last-good route set
+   continues to work during an etcd outage, then the same route ID switches to
+   the second upstream resource after recovery;
 4. the canonical 30-minute proxy soak, with real JSON evidence produced by:
 
    ```bash
@@ -220,16 +220,17 @@ confirm the image user, and run the existing smoke without rebuilding:
 
 ```bash
 set -euo pipefail
+export CONTAINER_BIN=${CONTAINER_BIN:-docker}
 [[ "$(git rev-parse HEAD)" == "$SOURCE_COMMIT" ]] || {
   echo "repository checkout does not match the qualified source commit" >&2
   exit 1
 }
-docker pull "$IMAGE_REFERENCE"
+"$CONTAINER_BIN" pull "$IMAGE_REFERENCE"
 export EXPECTED_IMAGE_ID="$(sed -n '1p' \
   "$EVIDENCE_DIR/release-evidence/qualified-image/image-config-digest.txt")"
 [[ "$EXPECTED_IMAGE_ID" =~ ^sha256:[0-9a-f]{64}$ ]]
-[[ "$(docker image inspect --format '{{.Id}}' "$IMAGE_REFERENCE")" == "$EXPECTED_IMAGE_ID" ]]
-test "$(docker image inspect --format '{{.Config.User}}' "$IMAGE_REFERENCE")" = '10001:10001'
+[[ "$("$CONTAINER_BIN" image inspect --format '{{.Id}}' "$IMAGE_REFERENCE")" == "$EXPECTED_IMAGE_ID" ]]
+test "$("$CONTAINER_BIN" image inspect --format '{{.Config.User}}' "$IMAGE_REFERENCE")" = '10001:10001'
 APISIX_IMAGE="$IMAGE_REFERENCE" APISIX_SKIP_BUILD=1 bash scripts/container_smoke.sh
 ```
 
@@ -237,22 +238,26 @@ The real etcd recovery gate uses the generated CA/server certificate and
 `SSL_CERT_FILE` against exactly one TLS etcd 3.6.13 member from
 `gcr.io/etcd-development/etcd:v3.6.13`. It must run as UID/GID `10001:10001`,
 use the exact `conf/config-production.yaml` profile, and reject a tag-only
-handoff. Pass the immutable local image ID produced by Docker:
+handoff. Pass the immutable local image ID produced by the selected runtime:
 
 ```bash
 set -euo pipefail
-export APISIX_IMAGE="$(docker image inspect --format '{{.Id}}' "$IMAGE_REFERENCE")"
+export CONTAINER_BIN=${CONTAINER_BIN:-docker}
+export APISIX_IMAGE="$("$CONTAINER_BIN" image inspect --format '{{.Id}}' "$IMAGE_REFERENCE")"
 [[ "$APISIX_IMAGE" =~ ^sha256:[0-9a-f]{64}$ ]] || {
   echo "loaded image ID is not immutable" >&2
   exit 1
 }
-make release-etcd-recovery APISIX_IMAGE="$APISIX_IMAGE"
+SOURCE_COMMIT="$SOURCE_COMMIT" CONTAINER_BIN="$CONTAINER_BIN" \
+  make release-etcd-recovery APISIX_IMAGE="$APISIX_IMAGE"
 ```
 
 The recovery command must leave the evidence transcript and captured logs in
-`.cache/release-evidence/etcd-recovery/<run-id>/` before cleanup. A host without
-Docker cannot claim recovery or clean-host qualification; record the gate as
-pending and retain the CI/RC evidence instead.
+`.cache/release-evidence/etcd-recovery/<run-id>/` and the platform-owned
+`journal` and `generation` records in its `platform-recovery-v1/` child before
+cleanup. Validate those records with `scripts/qualification/platform_recovery_test.sh
+--evidence-dir <dir>`. A host without a compatible Docker or Podman runtime
+cannot claim recovery or clean-host qualification; record the gate as pending.
 
 ## Rollout probes and operator deployment
 
@@ -341,30 +346,33 @@ The harness is a real-etcd lifecycle gate, not a YAML or fake-watcher check. It
 starts exactly one TLS etcd 3.6.13 member, two upstream fixtures, and two
 independent APISIX-Go gateway containers. Every readiness, liveness, resource,
 and proxy assertion is made against both gateway replicas. The initial etcd
-PUTs cover the route and upstreams, a service, a key-auth consumer, a cors
-global rule, a request-id plugin config, and a frontend SSL resource. The gate
-observes authentication, service-selected upstream responses, global CORS,
-plugin-config request-ID changes, and a fresh TLS SNI handshake. It also
-updates credentials, the global rule, the plugin config, the direct route, and
-the service's upstream to prove dynamic convergence.
+PUTs cover routes, upstreams, a service, and a frontend SSL resource. The gate
+observes service-selected upstream responses and a fresh TLS SNI handshake. It
+updates the direct route and service upstream, while an invalid route
+generation must remain uncommitted and the exact predecessor continues to
+serve. Plugin behavior is qualified separately by plugin-owned unit,
+integration, corpus, and differential tests; this harness does not emit
+per-plugin recovery claims.
 
 The gate exercises real deletes as well as puts. During the compaction gap it
 deletes a route and changes the service back to the first upstream; after
 recovery both replicas must return 404 for the deleted route and serve the
-first upstream. It then deletes the consumer, global rule, and SSL resource;
-both replicas must reject the old consumer key, omit the deleted
-global CORS origin, and fail a fresh TLS handshake for the deleted SNI.
+first upstream. It then deletes and re-adds the SSL resource; both replicas
+must fail a fresh TLS handshake while it is deleted and serve it again only
+after the re-add is committed.
 
 For compaction recovery, the harness keeps both gateways on a control network
 and disconnects only their data/etcd network until both still-reachable
-processes report readiness 503. It mutates and deletes etcd state, compacts at
+processes report readiness 200 from their committed last-good state. It mutates and deletes etcd state, compacts at
 the current revision, reconnects the data network, and requires each gateway
 log to contain the stable etcd compacted-revision error. It then proves that
 both replicas publish the same recovered snapshot, including the current
-consumer, service, global rule, plugin config, SSL, and route state. All
-created gateway, fixture, etcd, and network resources are cleaned up on every exit. A
-non-Docker host may run the Docker-free contract test, but cannot claim that
-this real-etcd gate passed; record it as pending.
+service, SSL, and route state. All
+created gateway, fixture, etcd, and network resources are cleaned up on every
+exit. The gate also restarts one replica from its committed journal, then
+writes identity-bound platform evidence after the SSL delete/re-add cycle.
+A host without a compatible container runtime may run the Docker-free contract
+test, but cannot claim that this real-etcd gate passed; record it as pending.
 
 ## Immutable rollback
 

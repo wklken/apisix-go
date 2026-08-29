@@ -77,7 +77,10 @@ func (m *Manifest) Qualification(name string) (QualificationProfile, bool) {
 	return cloneQualification(m.QualificationProfiles[index]), true
 }
 
-func (m *Manifest) QualifiedPlugins(profile string) []string {
+// ContractReadyPlugins returns required plugins whose static manifest contract
+// is complete. It does not prove that a particular candidate binary passed an
+// immutable qualification run.
+func (m *Manifest) ContractReadyPlugins(profile string) []string {
 	if m == nil {
 		return nil
 	}
@@ -101,6 +104,12 @@ func (m *Manifest) QualifiedPlugins(profile string) []string {
 		qualified = append(qualified, key)
 	}
 	return qualified
+}
+
+// QualifiedPlugins is retained for compatibility. Candidate qualification
+// additionally requires a matching immutable runtime artifact.
+func (m *Manifest) QualifiedPlugins(profile string) []string {
+	return m.ContractReadyPlugins(profile)
 }
 
 func (m *Manifest) validate() error {
@@ -593,7 +602,6 @@ func evidenceClaims(evidence Evidence) []struct {
 		{EvidenceDifferential, evidence.Differential},
 		{EvidenceRealDependency, evidence.RealDependency},
 		{EvidenceFailure, evidence.Failure},
-		{EvidenceRecovery, evidence.Recovery},
 	}
 }
 
@@ -621,8 +629,6 @@ func evidenceClaim(evidence Evidence, kind EvidenceKind) EvidenceClaim {
 		return evidence.RealDependency
 	case EvidenceFailure:
 		return evidence.Failure
-	case EvidenceRecovery:
-		return evidence.Recovery
 	default:
 		return EvidenceClaim{}
 	}
@@ -771,7 +777,7 @@ func validBehavior(behavior BehaviorStatus) bool {
 func validEvidenceKind(kind EvidenceKind) bool {
 	switch kind {
 	case EvidenceSchema, EvidenceUnit, EvidenceUpstream, EvidenceDifferential,
-		EvidenceRealDependency, EvidenceFailure, EvidenceRecovery:
+		EvidenceRealDependency, EvidenceFailure:
 		return true
 	default:
 		return false
@@ -814,7 +820,6 @@ func cloneEvidence(evidence Evidence) Evidence {
 	evidence.Differential.Refs = append([]string(nil), evidence.Differential.Refs...)
 	evidence.RealDependency.Refs = append([]string(nil), evidence.RealDependency.Refs...)
 	evidence.Failure.Refs = append([]string(nil), evidence.Failure.Refs...)
-	evidence.Recovery.Refs = append([]string(nil), evidence.Recovery.Refs...)
 	return evidence
 }
 

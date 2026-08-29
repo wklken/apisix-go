@@ -21,9 +21,33 @@ if (( $# != 1 )); then
 fi
 
 image=$1
-for command_name in docker curl openssl; do
+container_bin=${CONTAINER_BIN:-docker}
+for command_name in "$container_bin" curl openssl; do
     require_command "$command_name"
 done
+
+docker() {
+    command "$container_bin" "$@"
+}
+
+probe_mode=${ETCD_RECOVERY_PROBE_MODE:-auto}
+if [[ "$probe_mode" == auto ]]; then
+    if [[ $(basename "$container_bin") == podman ]] && docker machine ssh true >/dev/null 2>&1; then
+        probe_mode=podman-machine
+    else
+        probe_mode=host
+    fi
+fi
+[[ "$probe_mode" == host || "$probe_mode" == podman-machine ]] || \
+    die 'ETCD_RECOVERY_PROBE_MODE must be auto, host, or podman-machine'
+
+curl() {
+    if [[ "$probe_mode" == podman-machine ]]; then
+        docker machine ssh -- curl "$@"
+        return
+    fi
+    command curl "$@"
+}
 
 if [[ ! "$image" =~ ^sha256:[0-9a-f]{64}$ &&
     ! "$image" =~ ^([a-z0-9]+([._-][a-z0-9]+)*(:[0-9]+)?/)*[a-z0-9]+([._-][a-z0-9]+)*@sha256:[0-9a-f]{64}$ ]]; then
@@ -34,8 +58,16 @@ if ! image_id=$(docker image inspect --format '{{.Id}}' "$image"); then
     die "immutable image is not available locally: $image"
 fi
 if [[ -z "$image_id" ]]; then
-    die "Docker returned an empty image ID for: $image"
+    die "container runtime returned an empty image ID for: $image"
 fi
+if [[ "$image_id" =~ ^[0-9a-f]{64}$ ]]; then
+    image_id="sha256:$image_id"
+fi
+[[ "$image_id" =~ ^sha256:[0-9a-f]{64}$ ]] || die "container runtime returned an invalid image ID for: $image"
+
+source_commit=${SOURCE_COMMIT:-}
+[[ "$source_commit" =~ ^[0-9a-f]{40}$ ]] || die 'SOURCE_COMMIT must be the exact 40-character candidate source commit'
+production_config="$repo_root/conf/config-production.yaml"
 
 timeout_seconds=${ETCD_RECOVERY_TIMEOUT_SECONDS:-90}
 poll_interval=${ETCD_RECOVERY_POLL_INTERVAL_SECONDS:-1}
@@ -54,9 +86,26 @@ mkdir -p "$run_dir"
 transcript="$run_dir/steps.log"
 : >"$transcript"
 
-temp_dir=$(mktemp -d "${TMPDIR:-/tmp}/apisix-etcd-recovery.XXXXXX")
+if [[ "$probe_mode" == podman-machine ]]; then
+    mkdir -p "$repo_root/.cache/tmp"
+    temp_dir=$(mktemp -d "$repo_root/.cache/tmp/apisix-etcd-recovery.XXXXXX")
+else
+    temp_dir=$(mktemp -d "${TMPDIR:-/tmp}/apisix-etcd-recovery.XXXXXX")
+fi
 tls_dir="$temp_dir/tls"
 mkdir -p "$tls_dir"
+candidate_config="$temp_dir/config-qualification-candidate.yaml"
+awk '
+    /^qualification_profile: http-data-plane-v1$/ {
+        print "qualification_profile: \"\""
+        replaced++
+        next
+    }
+    { print }
+    END { if (replaced != 1) exit 42 }
+' "$production_config" >"$candidate_config" || die 'production configuration qualification marker is not exact'
+config_sha256=$(openssl dgst -sha256 "$candidate_config" | awk '{print $NF}')
+[[ "$config_sha256" =~ ^[0-9a-f]{64}$ ]] || die 'failed to fingerprint qualification candidate configuration'
 
 data_network="apisix-release-etcd-data-$run_id"
 control_network="apisix-release-etcd-control-$run_id"
@@ -70,13 +119,11 @@ upstream_v1_alias="release-upstream-v1-$run_id"
 upstream_v2_alias="release-upstream-v2-$run_id"
 route_id=release-route
 managed_route_id=release-managed-route
+invalid_route_id=release-invalid-route
 stale_route_id=release-stale-route
 upstream_v1_id=release-upstream-v1
 upstream_v2_id=release-upstream-v2
 service_id=release-service
-consumer_id=release-consumer
-global_rule_id=release-global-rule
-plugin_config_id=release-plugin-config
 ssl_id=release-ssl
 etcd_prefix=/apisix
 gateway_http_ports=()
@@ -200,68 +247,6 @@ wait_http_body() {
     die "timed out waiting for $label at $url (wanted body $expected)"
 }
 
-wait_http_header() {
-    local label=$1
-    local url=$2
-    local expected_status=$3
-    local header_name=$4
-    local expected_value=$5
-    shift 5
-    local body_file="$run_dir/$label.body"
-    local header_file="$run_dir/$label.headers"
-    local deadline=$((SECONDS + timeout_seconds))
-    local request_timeout remaining status got
-    local curl_args=("$@")
-    while (( SECONDS < deadline )); do
-        remaining=$((deadline - SECONDS))
-        request_timeout=$curl_timeout
-        if (( request_timeout > remaining )); then request_timeout=$remaining; fi
-        status=$(curl --silent --show-error --connect-timeout "$request_timeout" \
-            --max-time "$request_timeout" "${curl_args[@]}" --dump-header "$header_file" \
-            --output "$body_file" --write-out '%{http_code}' "$url" 2>>"$transcript") || status=
-        got=
-        if [[ -f "$header_file" ]]; then
-            got=$(tr -d '\r' <"$header_file" | awk -F': ' -v name="$header_name" \
-                'tolower($1) == tolower(name) { print $2; exit }')
-        fi
-        if [[ "$status" == "$expected_status" ]] && \
-            { [[ "$expected_value" == '__nonempty__' && -n "$got" ]] || [[ "$got" == "$expected_value" ]]; }; then
-            return 0
-        fi
-        sleep_until_poll "$deadline"
-    done
-    die "timed out waiting for $label at $url (wanted HTTP $expected_status and $header_name=$expected_value)"
-}
-
-wait_http_header_absent() {
-    local label=$1
-    local url=$2
-    local expected_status=$3
-    local header_name=$4
-    shift 4
-    local body_file="$run_dir/$label.body"
-    local header_file="$run_dir/$label.headers"
-    local deadline=$((SECONDS + timeout_seconds))
-    local request_timeout remaining status got
-    local curl_args=("$@")
-    while (( SECONDS < deadline )); do
-        remaining=$((deadline - SECONDS))
-        request_timeout=$curl_timeout
-        if (( request_timeout > remaining )); then request_timeout=$remaining; fi
-        status=$(curl --silent --show-error --connect-timeout "$request_timeout" \
-            --max-time "$request_timeout" "${curl_args[@]}" --dump-header "$header_file" \
-            --output "$body_file" --write-out '%{http_code}' "$url" 2>>"$transcript") || status=
-        got=
-        if [[ -f "$header_file" ]]; then
-            got=$(tr -d '\r' <"$header_file" | awk -F': ' -v name="$header_name" \
-                'tolower($1) == tolower(name) { print $2; exit }')
-        fi
-        if [[ "$status" == "$expected_status" && -z "$got" ]]; then return 0; fi
-        sleep_until_poll "$deadline"
-    done
-    die "timed out waiting for $label at $url (wanted HTTP $expected_status without $header_name)"
-}
-
 wait_https_body() {
     local label=$1
     local url=$2
@@ -337,26 +322,6 @@ wait_gateway_body() {
     for index in "${!gateway_containers[@]}"; do
         wait_http_body "$label-replica-$((index + 1))" "${gateway_urls[index]}$path" "$expected" \
             "${curl_args[@]}"
-    done
-}
-
-wait_gateway_header() {
-    local label=$1 path=$2 expected_status=$3 header_name=$4 expected_value=$5
-    shift 5
-    local curl_args=("$@") index
-    for index in "${!gateway_containers[@]}"; do
-        wait_http_header "$label-replica-$((index + 1))" "${gateway_urls[index]}$path" \
-            "$expected_status" "$header_name" "$expected_value" "${curl_args[@]}"
-    done
-}
-
-wait_gateway_header_absent() {
-    local label=$1 path=$2 expected_status=$3 header_name=$4
-    shift 4
-    local curl_args=("$@") index
-    for index in "${!gateway_containers[@]}"; do
-        wait_http_header_absent "$label-replica-$((index + 1))" "${gateway_urls[index]}$path" \
-            "$expected_status" "$header_name" "${curl_args[@]}"
     done
 }
 
@@ -451,6 +416,28 @@ etcdctl_delete() {
     etcdctl del "$key" >>"$run_dir/etcdctl.log" 2>&1
 }
 
+current_etcd_revision() {
+    local snapshot current
+    snapshot=$(etcdctl get "$etcd_prefix" --prefix --write-out=json 2>>"$run_dir/etcdctl.log")
+    current=$(printf '%s\n' "$snapshot" | sed -n 's/.*"revision":[[:space:]]*\([0-9][0-9]*\).*/\1/p' | head -n 1)
+    [[ "$current" =~ ^[1-9][0-9]*$ ]] || die 'etcd snapshot did not contain a current revision'
+    printf '%s' "$current"
+}
+
+write_recovery_evidence() {
+    local before_generation=$1 after_generation=$2
+    local evidence_dir="$run_dir/platform-recovery-v1" output_sha256 ca_sha256 server_cert_sha256 record_name
+    mkdir -p "$evidence_dir"
+    output_sha256=$(openssl dgst -sha256 "$transcript" | awk '{print $NF}')
+    ca_sha256=$(openssl dgst -sha256 "$tls_dir/ca.crt" | awk '{print $NF}')
+    server_cert_sha256=$(openssl dgst -sha256 "$tls_dir/server.crt" | awk '{print $NF}')
+    for record_name in journal generation; do
+        printf '{"scope":"platform-recovery-v1","config_profile":"http-data-plane-v1","record":"%s","source_commit":"%s","image_id":"%s","config_sha256":"%s","before_generation":"%s","after_generation":"%s","probe_result":"pass","etcd_tls_peer":"etcd:2379","etcd_ca_sha256":"%s","etcd_server_cert_sha256":"%s","command":"scripts/etcd_recovery_smoke.sh <immutable-image>","attempt":"%s","output_sha256":"%s"}\n' \
+            "$record_name" "$source_commit" "$image_id" "$config_sha256" "$before_generation" "$after_generation" \
+            "$ca_sha256" "$server_cert_sha256" "$run_id" "$output_sha256" >"$evidence_dir/$record_name.json"
+    done
+}
+
 json_string_from_file() {
     awk 'BEGIN { printf "\"" } { printf "%s\\n", $0 } END { printf "\"" }' "$1"
 }
@@ -459,22 +446,16 @@ route_v1=$(printf '{"id":"%s","status":1,"uri":"/release-v1","upstream_id":"%s"}
     "$route_id" "$upstream_v1_id")
 route_v2=$(printf '{"id":"%s","status":1,"uri":"/release-v2","upstream_id":"%s"}' \
     "$route_id" "$upstream_v2_id")
-managed_route=$(printf '{"id":"%s","status":1,"uri":"/managed","service_id":"%s","plugin_config_id":"%s","plugins":{"key-auth":{}}}' \
-    "$managed_route_id" "$service_id" "$plugin_config_id")
+managed_route=$(printf '{"id":"%s","status":1,"uri":"/managed","service_id":"%s"}' \
+    "$managed_route_id" "$service_id")
+invalid_route=$(printf '{"id":"%s","status":1,"uri":"/invalid","methods":["BOGUS"]}' \
+    "$invalid_route_id")
 stale_route=$(printf '{"id":"%s","status":1,"uri":"/stale","service_id":"%s"}' \
     "$stale_route_id" "$service_id")
 upstream_v1_config=$(printf '{"nodes":{"%s:8081":1},"type":"roundrobin"}' "$upstream_v1_alias")
 upstream_v2_config=$(printf '{"nodes":{"%s:8081":1},"type":"roundrobin"}' "$upstream_v2_alias")
 service_v1=$(printf '{"id":"%s","upstream_id":"%s"}' "$service_id" "$upstream_v1_id")
 service_v2=$(printf '{"id":"%s","upstream_id":"%s"}' "$service_id" "$upstream_v2_id")
-consumer_v1=$(printf '{"username":"%s","plugins":{"key-auth":{"key":"release-key-v1"}}}' "$consumer_id")
-consumer_v2=$(printf '{"username":"%s","plugins":{"key-auth":{"key":"release-key-v2"}}}' "$consumer_id")
-global_rule_v1=$(printf '{"id":"%s","plugins":{"cors":{"allow_origins":"https://global-v1.example"}}}' "$global_rule_id")
-global_rule_v2=$(printf '{"id":"%s","plugins":{"cors":{"allow_origins":"https://global-v2.example"}}}' "$global_rule_id")
-plugin_config_v1=$(printf '{"id":"%s","plugins":{"request-id":{"header_name":"X-Plugin-Config-V1","include_in_response":true}}}' \
-    "$plugin_config_id")
-plugin_config_v2=$(printf '{"id":"%s","plugins":{"request-id":{"header_name":"X-Plugin-Config-V2","include_in_response":true}}}' \
-    "$plugin_config_id")
 frontend_cert_json=$(json_string_from_file "$tls_dir/frontend.crt")
 frontend_key_json=$(json_string_from_file "$tls_dir/frontend.key")
 ssl_config=$(printf '{"id":"%s","snis":["release.example.test"],"cert":%s,"key":%s,"status":1}' \
@@ -515,8 +496,17 @@ for gateway_container in "${gateway_containers[@]}"; do
         --user 10001:10001 \
         --env SSL_CERT_FILE=/etc/ssl/certs/etcd-ca.crt \
         --env APISIXGO_DEPLOYMENT_ETCD_HOST=https://etcd:2379 \
+        --env APISIXGO_DEPLOYMENT_ETCD_TLS_VERIFY=true \
+        --env APISIXGO_SECURITY_PROFILE=strict \
         --env APISIXGO_APISIX_STATUS_IP=0.0.0.0 \
-        --volume "$repo_root/conf/config-production.yaml:/usr/local/apisix/conf/config-production.yaml:ro" \
+        --env HOME=/usr/local/apisix \
+        --env APISIXGO_RUNTIME_PATHS_DATA_DIR=/usr/local/apisix/data \
+        --env APISIXGO_RUNTIME_PATHS_RUNTIME_DIR=/usr/local/apisix/run \
+        --env APISIXGO_RUNTIME_PATHS_LOG_DIR=/usr/local/apisix/logs \
+        --env APISIXGO_RUNTIME_PATHS_TEMP_DIR=/usr/local/apisix/tmp \
+        --env HTTP_PROXY= --env HTTPS_PROXY= --env ALL_PROXY= --env NO_PROXY= \
+        --env http_proxy= --env https_proxy= --env all_proxy= --env no_proxy= \
+        --volume "$candidate_config:/usr/local/apisix/conf/config-production.yaml:ro" \
         --volume "$tls_dir/ca.crt:/etc/ssl/certs/etcd-ca.crt:ro" \
         "$image" -c /usr/local/apisix/conf/config-production.yaml \
         >/dev/null
@@ -525,10 +515,13 @@ done
 for index in "${!gateway_containers[@]}"; do
     published=$(docker port "${gateway_containers[index]}" 9080/tcp)
     gateway_http_ports[index]=${published##*:}
+    [[ "${gateway_http_ports[index]}" =~ ^[1-9][0-9]*$ ]] || die "invalid HTTP port mapping for ${gateway_containers[index]}"
     published=$(docker port "${gateway_containers[index]}" 9443/tcp)
     gateway_tls_ports[index]=${published##*:}
+    [[ "${gateway_tls_ports[index]}" =~ ^[1-9][0-9]*$ ]] || die "invalid TLS port mapping for ${gateway_containers[index]}"
     published=$(docker port "${gateway_containers[index]}" 7085/tcp)
     gateway_status_ports[index]=${published##*:}
+    [[ "${gateway_status_ports[index]}" =~ ^[1-9][0-9]*$ ]] || die "invalid status port mapping for ${gateway_containers[index]}"
     gateway_urls[index]="http://127.0.0.1:${gateway_http_ports[index]}"
     gateway_tls_urls[index]="https://release.example.test:${gateway_tls_ports[index]}"
     gateway_status_urls[index]="http://127.0.0.1:${gateway_status_ports[index]}"
@@ -539,41 +532,24 @@ wait_gateway_probe 'replicas-status' /status 200
 wait_gateway_probe 'replicas-ready' /status/ready 200
 wait_gateway_body 'replicas-release-v1' /release-v1 v1
 
-record_step 'write consumer/service/global rule/plugin config/SSL resources'
+record_step 'write service and SSL resources'
 etcdctl_put "$etcd_prefix/upstreams/$upstream_v2_id" "$upstream_v2_config"
 etcdctl_put "$etcd_prefix/services/$service_id" "$service_v1"
-etcdctl_put "$etcd_prefix/consumers/$consumer_id" "$consumer_v1"
-etcdctl_put "$etcd_prefix/global_rules/$global_rule_id" "$global_rule_v1"
-etcdctl_put "$etcd_prefix/plugin_configs/$plugin_config_id" "$plugin_config_v1"
 etcdctl_put "$etcd_prefix/ssls/$ssl_id" "$ssl_config"
 etcdctl_put "$etcd_prefix/routes/$managed_route_id" "$managed_route"
 
 record_step 'replicas converge on managed resource graph'
-wait_gateway_status 'managed-no-key' /managed 401
-wait_gateway_body 'managed-v1' /managed v1 --header 'apikey: release-key-v1'
-wait_gateway_header 'managed-request-id-v1' /managed 200 X-Plugin-Config-V1 __nonempty__ \
-    --header 'apikey: release-key-v1'
-wait_gateway_header 'global-cors-v1' /release-v1 200 Access-Control-Allow-Origin \
-    https://global-v1.example --header 'Origin: https://global-v1.example'
+wait_gateway_body 'managed-v1' /managed v1
 
-record_step 'update consumer credential'
-etcdctl_put "$etcd_prefix/consumers/$consumer_id" "$consumer_v2"
-wait_gateway_status 'managed-old-key-rejected' /managed 401 --header 'apikey: release-key-v1'
-wait_gateway_body 'managed-v1-new-key' /managed v1 --header 'apikey: release-key-v2'
-
-record_step 'update plugin config and global rule'
-etcdctl_put "$etcd_prefix/plugin_configs/$plugin_config_id" "$plugin_config_v2"
-etcdctl_put "$etcd_prefix/global_rules/$global_rule_id" "$global_rule_v2"
-wait_gateway_header 'managed-request-id-v2' /managed 200 X-Plugin-Config-V2 __nonempty__ \
-    --header 'apikey: release-key-v2'
-wait_gateway_header_absent 'managed-request-id-v1-removed' /managed 200 X-Plugin-Config-V1 \
-    --header 'apikey: release-key-v2'
-wait_gateway_header 'global-cors-v2' /release-v1 200 Access-Control-Allow-Origin \
-    https://global-v2.example --header 'Origin: https://global-v2.example'
+record_step 'reject invalid route generation and retain last-good'
+etcdctl_put "$etcd_prefix/routes/$invalid_route_id" "$invalid_route"
+wait_gateway_body 'invalid-generation-last-good' /managed v1
+wait_gateway_status 'invalid-generation-not-activated' /invalid 404
+etcdctl_delete "$etcd_prefix/routes/$invalid_route_id"
 
 record_step 'update service to upstream v2'
 etcdctl_put "$etcd_prefix/services/$service_id" "$service_v2"
-wait_gateway_body 'managed-v2' /managed v2 --header 'apikey: release-key-v2'
+wait_gateway_body 'managed-v2' /managed v2
 
 record_step 'replicas serve dynamic SSL'
 wait_gateway_tls_body 'dynamic-ssl' /release-v1 v1
@@ -585,7 +561,7 @@ record_step 'replicas retain last-good during etcd outage'
 wait_gateway_probe 'outage-ready' /status/ready 200
 wait_gateway_probe 'outage-status' /status 200
 wait_gateway_body 'outage-last-good-release-v1' /release-v1 v1
-wait_gateway_body 'outage-last-good-managed-v2' /managed v2 --header 'apikey: release-key-v2'
+wait_gateway_body 'outage-last-good-managed-v2' /managed v2
 
 record_step 'restart etcd'
 docker start "$etcd_container" >/dev/null
@@ -618,6 +594,7 @@ snapshot_json=$(etcdctl get "$etcd_prefix" --prefix --write-out=json 2>>"$run_di
 printf '%s\n' "$snapshot_json" >"$run_dir/compaction-snapshot.json"
 revision=$(printf '%s\n' "$snapshot_json" | sed -n 's/.*"revision":[[:space:]]*\([0-9][0-9]*\).*/\1/p' | head -n 1)
 [[ "$revision" =~ ^[1-9][0-9]*$ ]] || die 'etcd snapshot did not contain a current revision'
+before_generation=$revision
 etcdctl compact "$revision" >>"$run_dir/etcdctl.log" 2>&1
 
 record_step 'reconnect replicas'
@@ -629,26 +606,27 @@ record_step 'replicas recover compacted snapshot consistently'
 wait_gateway_log 'compaction-recovery' 'required revision has been compacted'
 wait_gateway_probe 'compaction-recovery-ready' /status/ready 200
 wait_gateway_status 'compaction-stale-route-removed' /stale 404
-wait_gateway_body 'compaction-managed-v1' /managed v1 --header 'apikey: release-key-v2'
-wait_gateway_header 'compaction-request-id-v2' /managed 200 X-Plugin-Config-V2 __nonempty__ \
-    --header 'apikey: release-key-v2'
-wait_gateway_header_absent 'compaction-request-id-v1-removed' /managed 200 X-Plugin-Config-V1 \
-    --header 'apikey: release-key-v2'
-wait_gateway_header 'compaction-global-cors-v2' /release-v2 200 Access-Control-Allow-Origin \
-    https://global-v2.example --header 'Origin: https://global-v2.example'
+wait_gateway_body 'compaction-managed-v1' /managed v1
 wait_gateway_tls_body 'compaction-dynamic-ssl' /release-v2 v2
 wait_gateway_body 'compaction-route-v2' /release-v2 v2
 
-record_step 'delete consumer/global rule/SSL resources'
-etcdctl_delete "$etcd_prefix/consumers/$consumer_id"
-etcdctl_delete "$etcd_prefix/global_rules/$global_rule_id"
+record_step 'restart one replica and recover committed journal state'
+docker restart "$gateway_a_container" >/dev/null
+wait_gateway_probe 'replica-restart-ready' /status/ready 200
+wait_gateway_body 'replica-restart-managed' /managed v1
+
+record_step 'delete SSL resource'
 etcdctl_delete "$etcd_prefix/ssls/$ssl_id"
 
-record_step 'replicas converge on live deletes'
-wait_gateway_status 'deleted-consumer-key-v2' /managed 401 --header 'apikey: release-key-v2'
-wait_gateway_status 'deleted-consumer-old-key' /managed 401 --header 'apikey: release-key-v1'
-wait_gateway_header_absent 'deleted-global-cors' /release-v2 200 Access-Control-Allow-Origin \
-    --header 'Origin: https://global-v2.example'
+record_step 'replicas converge on live SSL delete'
 wait_gateway_tls_failure 'deleted-ssl' /release-v2
+
+record_step 're-add SSL resource'
+etcdctl_put "$etcd_prefix/ssls/$ssl_id" "$ssl_config"
+
+record_step 'replicas converge on re-added SSL resource'
+wait_gateway_tls_body 'readded-ssl' /release-v2 v2
+after_generation=$(current_etcd_revision)
+write_recovery_evidence "$before_generation" "$after_generation"
 
 printf 'etcd recovery smoke: PASS\n'

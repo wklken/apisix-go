@@ -110,6 +110,33 @@ func TestPostInitAcceptsWildcardTypesString(t *testing.T) {
 	}
 }
 
+func TestSchemaRejectsInvalidAPISIXOptions(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		config map[string]any
+	}{
+		{name: "empty types", config: map[string]any{"types": []any{}}},
+		{name: "zero minimum length", config: map[string]any{"min_length": 0}},
+		{name: "compression level above maximum", config: map[string]any{"comp_level": 10}},
+		{name: "unsupported HTTP version", config: map[string]any{"http_version": 2}},
+		{name: "zero buffer number", config: map[string]any{"buffers": map[string]any{"number": 0}}},
+		{name: "zero buffer size", config: map[string]any{"buffers": map[string]any{"size": 0}}},
+		{name: "numeric vary", config: map[string]any{"vary": 0}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := util.Validate(tt.config, p.GetSchema()); err == nil {
+				t.Fatal("Validate() error = nil, want invalid configuration rejected")
+			}
+		})
+	}
+}
+
 func TestHandlerSkipsSmallContentLength(t *testing.T) {
 	p := newTestPlugin(t, Config{Types: []string{"text/plain"}, MinLength: new(10)})
 	req := httptest.NewRequest(http.MethodGet, "/text", nil)
@@ -198,21 +225,18 @@ func TestHandlerHonorsAcceptEncodingQuality(t *testing.T) {
 			name:           "explicit gzip disabled",
 			acceptEncoding: "gzip;q=0",
 			wantEncoding:   "",
-			wantVary:       true,
 			wantStatus:     http.StatusOK,
 		},
 		{
 			name:           "disabled gzip uses identity when deflate is requested",
 			acceptEncoding: "gzip;q=0, deflate;q=1",
 			wantEncoding:   "",
-			wantVary:       true,
 			wantStatus:     http.StatusOK,
 		},
 		{
 			name:           "wildcard disabled",
 			acceptEncoding: "*;q=0",
 			wantEncoding:   "",
-			wantVary:       true,
 			wantStatus:     http.StatusNotAcceptable,
 		},
 		{
@@ -289,7 +313,7 @@ func decodeGzip(t *testing.T, body []byte) string {
 	return string(decoded)
 }
 
-func TestNegotiationVaryIdentityAndNotAcceptable(t *testing.T) {
+func TestNegotiationWithoutVaryIdentityAndNotAcceptable(t *testing.T) {
 	tests := []struct {
 		name           string
 		acceptEncoding string
@@ -315,8 +339,8 @@ func TestNegotiationVaryIdentityAndNotAcceptable(t *testing.T) {
 			if res.Code != tt.status {
 				t.Fatalf("status = %d, want %d", res.Code, tt.status)
 			}
-			if got := res.Header().Get("Vary"); got != "Accept-Encoding" {
-				t.Fatalf("Vary = %q, want Accept-Encoding", got)
+			if got := res.Header().Get("Vary"); got != "" {
+				t.Fatalf("Vary = %q, want absent", got)
 			}
 			if got := res.Body.String(); got != tt.body {
 				t.Fatalf("body = %q, want %q", got, tt.body)
@@ -479,7 +503,7 @@ func TestGzipBodylessNegotiationPreservesStatusAndMetadata(t *testing.T) {
 	}
 }
 
-func TestGzipNotModifiedWithoutContentTypePreservesEncodingAndVary(t *testing.T) {
+func TestGzipNotModifiedWithoutContentTypePreservesEncodingWithoutVary(t *testing.T) {
 	p := newTestPlugin(t, Config{Types: []string{"text/plain"}, MinLength: new(1)})
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Header.Set("Accept-Encoding", "*;q=0")
@@ -495,8 +519,8 @@ func TestGzipNotModifiedWithoutContentTypePreservesEncodingAndVary(t *testing.T)
 	if got := res.Header().Get("Content-Encoding"); got != "gzip" {
 		t.Fatalf("Content-Encoding = %q, want gzip", got)
 	}
-	if got := res.Header().Get("Vary"); got != "Accept-Encoding" {
-		t.Fatalf("Vary = %q, want exactly Accept-Encoding", got)
+	if got := res.Header().Get("Vary"); got != "" {
+		t.Fatalf("Vary = %q, want absent", got)
 	}
 	if res.Body.Len() != 0 {
 		t.Fatalf("body length = %d, want empty", res.Body.Len())

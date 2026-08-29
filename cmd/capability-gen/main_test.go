@@ -83,10 +83,18 @@ func TestRenderPluginsMarkdownSeparatesBehaviorAndEvidence(t *testing.T) {
 		"Differential",
 		"Real dependency",
 		"Failure",
-		"Recovery",
 	} {
 		if !bytes.Contains(generated, []byte(text)) {
 			t.Fatalf("generated plugins.md missing %q", text)
+		}
+	}
+	if bytes.Contains(generated, []byte("| Recovery |")) {
+		t.Fatal("generated plugins.md must not project platform recovery onto plugin rows")
+	}
+	for _, profile := range manifest.QualificationProfiles {
+		needle := []byte("Qualification `" + profile.Name + "`")
+		if !bytes.Contains(generated, needle) {
+			t.Fatalf("generated plugins.md missing profile %q", profile.Name)
 		}
 	}
 	for _, field := range []string{
@@ -308,6 +316,75 @@ func TestGeneratedDocumentationDriftIsChecked(t *testing.T) {
 				t.Fatal(err)
 			}
 		})
+	}
+}
+
+func TestValidateEvidenceRefsRejectsMissingFilesAndTestSymbols(t *testing.T) {
+	root := t.TempDir()
+	testFile := filepath.Join(root, "pkg", "plugin", "example", "plugin_test.go")
+	if err := os.MkdirAll(filepath.Dir(testFile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(testFile, []byte(`package example
+
+import "testing"
+
+func TestExistingEvidence(t *testing.T) {}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	manifestWithRef := func(ref string) *capability.Manifest {
+		return &capability.Manifest{Plugins: []capability.PluginCapability{{
+			Name: "example",
+			Evidence: capability.Evidence{Unit: capability.EvidenceClaim{
+				State: capability.EvidenceVerified,
+				Refs:  []string{ref},
+			}},
+		}}}
+	}
+
+	for _, test := range []struct {
+		name string
+		ref  string
+		want string
+	}{
+		{name: "missing file", ref: "pkg/plugin/example/missing_test.go", want: "does not exist"},
+		{
+			name: "missing test symbol",
+			ref:  "pkg/plugin/example/plugin_test.go#TestMissingEvidence",
+			want: "does not define test function",
+		},
+		{name: "path escape", ref: "../outside_test.go", want: "escapes repository root"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := validateEvidenceRefs(root, manifestWithRef(test.ref))
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("validateEvidenceRefs() error = %v, want %q", err, test.want)
+			}
+		})
+	}
+
+	if err := validateEvidenceRefs(
+		root,
+		manifestWithRef("pkg/plugin/example/plugin_test.go#TestExistingEvidence"),
+	); err != nil {
+		t.Fatalf("validateEvidenceRefs() error = %v", err)
+	}
+}
+
+func TestBuildValidatedOutputsRejectsMissingEvidenceRefBeforeRendering(t *testing.T) {
+	manifest := &capability.Manifest{Plugins: []capability.PluginCapability{{
+		Name: "example",
+		Evidence: capability.Evidence{Unit: capability.EvidenceClaim{
+			State: capability.EvidenceVerified,
+			Refs:  []string{"pkg/plugin/example/missing_test.go"},
+		}},
+	}}}
+
+	_, err := buildValidatedOutputs(t.TempDir(), manifest)
+	if err == nil || !strings.Contains(err.Error(), "does not exist") {
+		t.Fatalf("buildValidatedOutputs() error = %v, want missing evidence rejection", err)
 	}
 }
 

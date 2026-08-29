@@ -93,6 +93,96 @@ func TestCompatProfilePreservesNonSecureCSRFCookie(t *testing.T) {
 	}
 }
 
+func TestResponsePhaseGeneratesCSRFCookieAfterDownstreamCompletes(t *testing.T) {
+	expires := int64(60)
+	p := newTestPlugin(t, Config{Key: "secret", Expires: &expires})
+	p.randomReader = bytes.NewReader(make([]byte, 8))
+	requestTime := time.Unix(1700000000, 0).UTC()
+	responseTime := requestTime.Add(30 * time.Second)
+	current := requestTime
+	p.now = func() time.Time { return current }
+
+	response := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if got := w.Header().Values("Set-Cookie"); len(got) != 0 {
+			t.Fatalf("Set-Cookie before downstream completion = %#v", got)
+		}
+		current = responseTime
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/safe", nil))
+
+	cookies := response.Result().Cookies()
+	if len(cookies) != 1 {
+		t.Fatalf("Set-Cookie count = %d, want 1", len(cookies))
+	}
+	if !cookies[0].Expires.Equal(responseTime.Add(time.Duration(expires) * time.Second)) {
+		t.Fatalf("cookie Expires = %s, want %s", cookies[0].Expires, responseTime.Add(time.Minute))
+	}
+	decoded, err := base64.StdEncoding.DecodeString(cookies[0].Value)
+	if err != nil {
+		t.Fatalf("decode token: %v", err)
+	}
+	var token csrfToken
+	if err := json.Unmarshal(decoded, &token); err != nil {
+		t.Fatalf("decode token JSON: %v", err)
+	}
+	if token.Expires != responseTime.Unix() {
+		t.Fatalf("token timestamp = %d, want response time %d", token.Expires, responseTime.Unix())
+	}
+}
+
+func TestExplicitResponseCallbacksIssueCSRFCookieForUpstreamAndEarlyStop(t *testing.T) {
+	p := newTestPlugin(t, Config{Key: "secret"})
+	p.randomReader = bytes.NewReader(make([]byte, 16))
+	p.now = func() time.Time { return time.Unix(1700000000, 0).UTC() }
+
+	descriptor, err := p.config.DescribeBindingPhases()
+	if err != nil {
+		t.Fatalf("DescribeBindingPhases() error = %v", err)
+	}
+	if descriptor != (base.BindingPhaseDescriptor{RequestStage: "access", StreamingHeader: true}) {
+		t.Fatalf("DescribeBindingPhases() = %#v", descriptor)
+	}
+
+	safeResponse := httptest.NewRecorder()
+	safeRequest := httptest.NewRequest(http.MethodGet, "/safe", nil)
+	result := p.RunRequestPhase(safeResponse, safeRequest)
+	if result.Decision != base.RequestContinue {
+		t.Fatalf("safe RunRequestPhase() = %#v", result)
+	}
+	safeRequest = result.Request
+	if got := safeResponse.Header().Values("Set-Cookie"); len(got) != 0 {
+		t.Fatalf("safe access phase Set-Cookie = %#v", got)
+	}
+	streaming := base.StreamingResponseState{Status: http.StatusOK, Header: make(http.Header)}
+	if err := p.RunStreamingHeaderFilter(safeRequest, &streaming); err != nil {
+		t.Fatalf("RunStreamingHeaderFilter() error = %v", err)
+	}
+	if got := streaming.Header.Values("Set-Cookie"); len(got) != 1 {
+		t.Fatalf("streaming Set-Cookie = %#v, want one", got)
+	}
+
+	deniedResponse := httptest.NewRecorder()
+	deniedRequest := httptest.NewRequest(http.MethodPost, "/protected", nil)
+	if result := p.RunRequestPhase(deniedResponse, deniedRequest); result.Decision != base.RequestStop {
+		t.Fatalf("denied RunRequestPhase() = %#v", result)
+	}
+	if got := deniedResponse.Header().Values("Set-Cookie"); len(got) != 0 {
+		t.Fatalf("denied access phase Set-Cookie = %#v", got)
+	}
+	buffered := base.ResponseState{
+		Status: deniedResponse.Code,
+		Header: deniedResponse.Header().Clone(),
+		Body:   deniedResponse.Body.Bytes(),
+	}
+	if err := p.RunBufferedBodyFilter(deniedRequest, &buffered); err != nil {
+		t.Fatalf("RunBufferedBodyFilter() error = %v", err)
+	}
+	if got := buffered.Header.Values("Set-Cookie"); len(got) != 1 {
+		t.Fatalf("early-stop Set-Cookie = %#v, want one", got)
+	}
+}
+
 type csrfScopedSecretCall struct {
 	Scope secret.Scope
 	Raw   string
@@ -566,11 +656,16 @@ func TestHandlerRejectsMissingHeaderWithJSONError(t *testing.T) {
 	if rr.Code != http.StatusUnauthorized {
 		t.Fatalf("response code = %d, want %d", rr.Code, http.StatusUnauthorized)
 	}
-	if got := rr.Header().Get("Content-Type"); got != "application/json; charset=UTF-8" {
-		t.Fatalf("Content-Type = %q, want application/json with UTF-8 charset", got)
+	if got := rr.Header().Get("Content-Type"); got != "text/plain; charset=utf-8" {
+		t.Fatalf("Content-Type = %q, want APISIX response type", got)
 	}
-	if got := rr.Body.String(); got != `{"error_msg":"no csrf token in headers"}` {
+	if got := rr.Body.String(); got != "{\"error_msg\":\"no csrf token in headers\"}\n" {
 		t.Fatalf("body = %q, want APISIX csrf error JSON", got)
+	}
+	cookies := rr.Result().Cookies()
+	if len(cookies) != 1 || cookies[0].Name != "apisix-csrf-token" ||
+		cookies[0].Path != "/" || cookies[0].SameSite != http.SameSiteLaxMode {
+		t.Fatalf("cookies = %#v, want one APISIX CSRF refresh cookie", cookies)
 	}
 }
 
@@ -724,15 +819,20 @@ func TestGenCSRFTokenUsesInjectedReader(t *testing.T) {
 	}
 }
 
-func TestHandlerFailsClosedWhenEntropyReadFails(t *testing.T) {
+func TestHandlerFailsClosedAfterDownstreamWhenResponsePhaseEntropyFails(t *testing.T) {
 	p := newTestPlugin(t, Config{Key: "secret", Name: "csrf-token"})
 	p.randomReader = bytes.NewReader(nil)
 
 	response := httptest.NewRecorder()
+	called := false
 	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		t.Fatal("next handler should not run when csrf entropy fails")
+		called = true
+		w.WriteHeader(http.StatusNoContent)
 	})).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://example.com/safe", nil))
 
+	if !called {
+		t.Fatal("next handler did not run before response-phase csrf entropy failure")
+	}
 	if response.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusInternalServerError)
 	}

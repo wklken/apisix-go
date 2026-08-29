@@ -38,6 +38,42 @@ type cancellationWatchConn struct {
 	releaseClose <-chan struct{}
 }
 
+func TestPostInitWarnsOnlyWhenTLSDisabled(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		tls      bool
+		wantWarn bool
+	}{
+		{name: "plain", wantWarn: true},
+		{name: "tls", tls: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var warnings []string
+			stop := logger.ReplaceObserver(
+				"tcp-logger-security-warning-"+test.name,
+				func(entry logger.Entry) {
+					if entry.Level == "WARN" &&
+						strings.Contains(entry.Message, "tls disabled in tcp-logger") {
+						warnings = append(warnings, entry.Message)
+					}
+				},
+			)
+			defer stop()
+
+			newTestPlugin(t, Config{Host: "127.0.0.1", Port: 3000, TLS: test.tls})
+
+			if test.wantWarn {
+				if len(warnings) != 1 ||
+					warnings[0] != "Keeping tls disabled in tcp-logger configuration is a security risk" {
+					t.Fatalf("warnings = %#v, want exact disabled TLS warning", warnings)
+				}
+			} else if len(warnings) != 0 {
+				t.Fatalf("warnings = %#v, want none with TLS enabled", warnings)
+			}
+		})
+	}
+}
+
 func (c *cancellationWatchConn) Close() error {
 	c.closeCalls.Add(1)
 	select {
@@ -123,7 +159,9 @@ func TestWatchConnectionCancellation(t *testing.T) {
 func TestRunLogPhasePreservesDefaultAndCustomAccessFields(t *testing.T) {
 	delivered := make(chan map[string]any, 1)
 	p := &Plugin{config: Config{}, BaseLoggerPlugin: base.BaseLoggerPlugin{RouteID: "route-1"}}
-	p.logFormat = map[string]any{"host": "$host", "remote": "$remote_addr", "started": "$time_iso8601"}
+	p.logFormat = map[string]any{
+		"host": "$host", "remote": "$remote_addr", "started": "$time_iso8601", "status": "$status",
+	}
 	p.SetSnapshotLogFormat(p.logFormat, nil)
 	p.BatchProcessor = newOwnedBatchProcessorForTest(t, logger_batch.Config{
 		BatchMaxSize: 1, MaxPendingEntries: 1, InactiveTimeout: time.Hour,
@@ -148,7 +186,8 @@ func TestRunLogPhasePreservesDefaultAndCustomAccessFields(t *testing.T) {
 	select {
 	case fields := <-delivered:
 		if fields["host"] != "gateway.test" || fields["remote"] != "192.0.2.4" ||
-			fields["started"] != started.Format(time.RFC3339) {
+			fields["started"] != started.Format(time.RFC3339) ||
+			fields["status"] != http.StatusAccepted {
 			t.Fatalf("custom fields = %#v", fields)
 		}
 	case <-time.After(time.Second):
@@ -156,7 +195,8 @@ func TestRunLogPhasePreservesDefaultAndCustomAccessFields(t *testing.T) {
 	}
 	p.logFormat = nil
 	fields := base.BuildAccessLogFromSnapshot(snapshot, "route-1")
-	if fields["route_id"] != "route-1" || fields["response"].(map[string]any)["status"] != http.StatusAccepted {
+	if fields["route_id"] != "route-1" ||
+		fields["response"].(map[string]any)["status"] != http.StatusAccepted {
 		t.Fatalf("default fields = %#v", fields)
 	}
 }
@@ -200,7 +240,12 @@ func TestEncodeBatchPreservesTCPMarshalErrorContext(t *testing.T) {
 		batchMaxSize int
 		want         string
 	}{
-		{name: "single", entries: []map[string]any{badEntry}, batchMaxSize: 1, want: "failed to marshal tcp log entry"},
+		{
+			name:         "single",
+			entries:      []map[string]any{badEntry},
+			batchMaxSize: 1,
+			want:         "failed to marshal tcp log entry",
+		},
 		{
 			name:         "batch",
 			entries:      []map[string]any{badEntry},
@@ -373,8 +418,14 @@ func TestHandlerBatchesTCPLogs(t *testing.T) {
 	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
-	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://example.com/one", nil))
-	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://example.com/two", nil))
+	handler.ServeHTTP(
+		httptest.NewRecorder(),
+		httptest.NewRequest(http.MethodGet, "http://example.com/one", nil),
+	)
+	handler.ServeHTTP(
+		httptest.NewRecorder(),
+		httptest.NewRequest(http.MethodGet, "http://example.com/two", nil),
+	)
 
 	select {
 	case message := <-received:
@@ -460,7 +511,10 @@ func TestHandlerDefaultLogMatchesAPISIXFullLogShape(t *testing.T) {
 		t.Errorf("request.headers.host = %#v, want original request host", requestHeaders["host"])
 	}
 	if requestHeaders["x-request"] != "request-value" {
-		t.Fatalf("request.headers.x-request = %#v, want scalar request-value", requestHeaders["x-request"])
+		t.Fatalf(
+			"request.headers.x-request = %#v, want scalar request-value",
+			requestHeaders["x-request"],
+		)
 	}
 	queryString := requestLog["querystring"].(map[string]any)
 	if queryString["ID"] != "1" {
@@ -472,7 +526,10 @@ func TestHandlerDefaultLogMatchesAPISIXFullLogShape(t *testing.T) {
 	responseLog := payload["response"].(map[string]any)
 	responseHeaders := responseLog["headers"].(map[string]any)
 	if responseHeaders["x-upstream"] != "response-value" {
-		t.Fatalf("response.headers.x-upstream = %#v, want scalar response-value", responseHeaders["x-upstream"])
+		t.Fatalf(
+			"response.headers.x-upstream = %#v, want scalar response-value",
+			responseHeaders["x-upstream"],
+		)
 	}
 	for _, field := range []string{"route", "client", "timing"} {
 		if _, ok := payload[field]; ok {
@@ -641,7 +698,10 @@ func TestHandlerCustomFormatOmitsAbsentServiceID(t *testing.T) {
 
 	payload := waitForTCPPayload(t, received)
 	if _, ok := payload["service_id"]; ok {
-		t.Fatalf("service_id = %#v, want field omitted without service context", payload["service_id"])
+		t.Fatalf(
+			"service_id = %#v, want field omitted without service context",
+			payload["service_id"],
+		)
 	}
 }
 
@@ -673,7 +733,11 @@ func TestHandlerIncludesRequestAndResponseBody(t *testing.T) {
 	})
 
 	upstreamBody := make(chan string, 1)
-	req := httptest.NewRequest(http.MethodPost, "http://example.com/orders", strings.NewReader(`{"order":1}`))
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"http://example.com/orders",
+		strings.NewReader(`{"order":1}`),
+	)
 	rr := httptest.NewRecorder()
 	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
@@ -739,7 +803,11 @@ func TestHandlerIncludesBodiesWhenExpressionsMatch(t *testing.T) {
 		MaxRespBodyBytes:    32,
 	})
 
-	req := httptest.NewRequest(http.MethodPost, "http://example.com/orders", strings.NewReader(`{"order":2}`))
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"http://example.com/orders",
+		strings.NewReader(`{"order":2}`),
+	)
 	req.Header.Set("X-Log-Body", "yes")
 	rr := httptest.NewRecorder()
 	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -790,7 +858,11 @@ func TestHandlerSkipsBodiesWhenExpressionsDoNotMatch(t *testing.T) {
 	})
 
 	upstreamBody := make(chan string, 1)
-	req := httptest.NewRequest(http.MethodPost, "http://example.com/orders", strings.NewReader(`{"order":3}`))
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"http://example.com/orders",
+		strings.NewReader(`{"order":3}`),
+	)
 	req.Header.Set("X-Log-Body", "no")
 	rr := httptest.NewRecorder()
 	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -927,7 +999,12 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 func newTestPluginWithMetadata(t *testing.T, cfg Config, metadata map[string]any) *Plugin {
 	t.Helper()
 	p := &Plugin{config: cfg}
-	p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t), Metadata: mustMetadataView(t, metadata)})
+	p.SetDependencies(
+		base.Dependencies{
+			Tasks:    newLoggerTestTaskOwner(t),
+			Metadata: mustMetadataView(t, metadata),
+		},
+	)
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -983,9 +1060,14 @@ func TestPreparedGenerationsRetainMetadataFormat(t *testing.T) {
 
 func TestMetadataDecodeFailsBeforeTCPProcessorAcquisition(t *testing.T) {
 	p := &Plugin{config: Config{Host: "127.0.0.1", Port: 9000}}
-	p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t), Metadata: mustMetadataView(t, map[string]any{
-		"max_pending_entries": "invalid",
-	})})
+	p.SetDependencies(
+		base.Dependencies{
+			Tasks: newLoggerTestTaskOwner(t),
+			Metadata: mustMetadataView(t, map[string]any{
+				"max_pending_entries": "invalid",
+			}),
+		},
+	)
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -998,7 +1080,11 @@ func TestMetadataDecodeFailsBeforeTCPProcessorAcquisition(t *testing.T) {
 		t.Fatal("PostInit() error = nil for invalid metadata")
 	}
 	if p.BatchProcessor != nil || p.conn != nil {
-		t.Fatalf("decode failure acquired TCP resources: processor=%v conn=%v", p.BatchProcessor, p.conn)
+		t.Fatalf(
+			"decode failure acquired TCP resources: processor=%v conn=%v",
+			p.BatchProcessor,
+			p.conn,
+		)
 	}
 }
 

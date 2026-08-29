@@ -502,6 +502,12 @@ func (p *Plugin) PostInit() error {
 	if len(p.config.EndpointAddrs) == 0 && p.config.EndpointAddr != "" {
 		p.config.EndpointAddrs = []string{p.config.EndpointAddr}
 	}
+	for _, endpoint := range p.config.EndpointAddrs {
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(endpoint)), "http://") {
+			logger.Warn("Using elasticsearch-logger endpoint_addrs with no TLS is a security risk")
+			break
+		}
+	}
 
 	logFormat, err := base.RequireStringLogFormat(name, p.config.LogFormat, metadata.LogFormat)
 	if err != nil {
@@ -580,6 +586,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		}
 
 		logFields := elasticsearchLogFields(r, p.LogFormat)
+		base.ApplyRequestMatchedRouteFields(logFields, r, p.RouteID)
 		if requestBody != "" {
 			base.NestedLogMap(logFields, "request")["body"] = requestBody
 		}
@@ -594,6 +601,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 
 func (p *Plugin) RunLogPhase(snapshot base.LogSnapshot) error {
 	fields := elasticsearchSnapshotLogFields(snapshot, p.LogFormat)
+	base.ApplySnapshotMatchedRouteFields(fields, snapshot, p.RouteID)
 	if p.config.IncludeReqBody && base.SnapshotExpressionMatches(snapshot, p.config.IncludeReqBodyExpr) {
 		if body := base.SnapshotRequestBody(snapshot, p.config.MaxReqBodyBytes); body != "" {
 			base.NestedLogMap(fields, "request")["body"] = body
@@ -692,12 +700,13 @@ func (p *Plugin) SendBatch(ctx context.Context, entries []map[string]any, _ int)
 		return 0, fmt.Errorf("failed to marshal Elasticsearch bulk body: %w", err)
 	}
 	firstFail := 0
+	sendCtx, cancel := context.WithTimeout(ctx, time.Duration(p.config.Timeout)*time.Second)
+	defer cancel()
 	err = p.withClient(endpoint, func(client *elasticsearch.BaseClient) error {
 		resp, sendErr := (esapi.BulkRequest{
-			Body:    bytes.NewReader(body),
-			Header:  http.Header{"Content-Type": []string{"application/x-ndjson"}},
-			Timeout: time.Duration(p.config.Timeout) * time.Second,
-		}).Do(ctx, client)
+			Body:   bytes.NewReader(body),
+			Header: http.Header{"Content-Type": []string{"application/x-ndjson"}},
+		}).Do(sendCtx, client)
 		if sendErr != nil {
 			return fmt.Errorf("failed to send log message: %w", sendErr)
 		}

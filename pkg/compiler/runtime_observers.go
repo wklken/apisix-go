@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/wklken/apisix-go/pkg/config"
+	"github.com/wklken/apisix-go/pkg/plugin/server_info"
 	"github.com/wklken/apisix-go/pkg/proxy"
 	streamruntime "github.com/wklken/apisix-go/pkg/stream"
 )
@@ -14,8 +15,9 @@ import (
 // WorkerRuntimeObservers are fixed when a worker compiler factory is created
 // and are inherited by every prepared generation it owns.
 type WorkerRuntimeObservers struct {
-	Cluster proxy.ClusterObserver
-	Stream  func(streamruntime.Result)
+	Cluster    proxy.ClusterObserver
+	Stream     func(streamruntime.Result)
+	ServerInfo *server_info.View
 }
 
 func validateWorkerRuntimeObservers(

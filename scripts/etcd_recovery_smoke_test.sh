@@ -10,6 +10,7 @@ trap 'rm -rf "$test_root"' EXIT
 
 image_id=sha256:$(printf '%064d' 1)
 image_hex=${image_id#sha256:}
+source_commit=$(printf 'a%.0s' {1..40})
 
 fail() {
     printf 'etcd recovery fixture: %s\n' "$1" >&2
@@ -73,6 +74,18 @@ set -euo pipefail
 state_dir=${FAKE_STATE_DIR:-${TMPDIR:-/tmp}/apisix-etcd-recovery-fake}
 mkdir -p "$state_dir"
 printf "openssl %s\n" "$*" >>"${FAKE_LOG:-/dev/null}"
+if [[ ${1:-} == base64 ]]; then
+    /usr/bin/base64 | tr -d "\n"
+    exit 0
+fi
+if [[ ${1:-} == dgst ]]; then
+    if [[ " $* " == *" -binary "* ]]; then
+        printf "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    else
+        printf "SHA2-256(stdin)= %064d\n" 2
+    fi
+    exit 0
+fi
 if [[ ${1:-} == s_client ]]; then
     if [[ -e "$state_dir/ssl-deleted" ]]; then
         printf "SSL handshake failed for release.example.test\n" >&2
@@ -146,30 +159,6 @@ record_etcd_put() {
                 printf "v1\n" >"$state_dir/service-version"
             fi
             ;;
-        */consumers/release-consumer)
-            : >"$state_dir/consumer"
-            if [[ "$value" == *release-key-v2* ]]; then
-                printf "release-key-v2\n" >"$state_dir/consumer-key"
-            else
-                printf "release-key-v1\n" >"$state_dir/consumer-key"
-            fi
-            ;;
-        */global_rules/release-global-rule)
-            : >"$state_dir/global-rule"
-            if [[ "$value" == *global-v2.example* ]]; then
-                printf "https://global-v2.example\n" >"$state_dir/global-origin"
-            else
-                printf "https://global-v1.example\n" >"$state_dir/global-origin"
-            fi
-            ;;
-        */plugin_configs/release-plugin-config)
-            : >"$state_dir/plugin-config"
-            if [[ "$value" == *X-Plugin-Config-V2* ]]; then
-                printf "X-Plugin-Config-V2\n" >"$state_dir/plugin-header"
-            else
-                printf "X-Plugin-Config-V1\n" >"$state_dir/plugin-header"
-            fi
-            ;;
         */ssls/release-ssl)
             : >"$state_dir/ssl"
             rm -f "$state_dir/ssl-deleted"
@@ -184,11 +173,8 @@ record_etcd_delete() {
         */routes/release-stale-route)
             rm -f "$state_dir/stale-route"
             ;;
-        */consumers/release-consumer)
-            rm -f "$state_dir/consumer" "$state_dir/consumer-key"
-            ;;
-        */global_rules/release-global-rule)
-            rm -f "$state_dir/global-rule" "$state_dir/global-origin"
+        */routes/release-invalid-route)
+            rm -f "$state_dir/invalid-route"
             ;;
         */ssls/release-ssl)
             rm -f "$state_dir/ssl"
@@ -365,6 +351,13 @@ case "${1:-}" in
         : >"${FAKE_ETCD_RESTARTED:?}"
         exit 0
         ;;
+    restart)
+        exit 0
+        ;;
+    exec)
+        printf "apisix_http_status{code=\"200\",route=\"release-managed-route\"} 1\n"
+        exit 0
+        ;;
     logs)
         container=${!#}
         if [[ "$container" == *gateway* && -e "$state_dir/compaction" && \
@@ -406,12 +399,7 @@ if [[ ${FAKE_CURL_MODE:-happy} == timeout ]]; then
     exit 28
 fi
 body_file=
-header_file=
 write_out=
-include_headers=0
-fail_response=0
-origin=
-api_key=
 url=
 for ((i = 1; i <= $#; i++)); do
     argument=${!i}
@@ -420,33 +408,9 @@ for ((i = 1; i <= $#; i++)); do
             next=$((i + 1))
             body_file=${!next}
             ;;
-        --dump-header|-D)
-            next=$((i + 1))
-            header_file=${!next}
-            ;;
         --write-out|-w)
             next=$((i + 1))
             write_out=${!next}
-            ;;
-        --include)
-            include_headers=1
-            ;;
-        --fail|--fail-with-body)
-            fail_response=1
-            ;;
-        --header|-H)
-            next=$((i + 1))
-            header=${!next}
-            case "$header" in
-                apikey:*|Apikey:*|APIKEY:*|X-API-Key:*|X-Api-Key:*)
-                    api_key=${header#*:}
-                    api_key=${api_key# }
-                    ;;
-                origin:*|Origin:*|ORIGIN:*)
-                    origin=${header#*:}
-                    origin=${origin# }
-                    ;;
-            esac
             ;;
     esac
     case "$argument" in
@@ -534,12 +498,13 @@ case "$path" in
         if [[ ! -e "$state_dir/managed-route" ]]; then
             status=404
             body=not-found
-        elif [[ ! -e "$state_dir/consumer" || ! -e "$state_dir/consumer-key" || "$api_key" != "$(cat "$state_dir/consumer-key")" ]]; then
-            status=401
-            body=unauthorized
         else
             body=$(cat "$state_dir/service-version" 2>/dev/null || printf "v1")
         fi
+        ;;
+    /invalid)
+        status=404
+        body=not-found
         ;;
     /stale)
         if [[ ! -e "$state_dir/stale-route" ]]; then
@@ -554,29 +519,6 @@ case "$path" in
         body=not-found
         ;;
 esac
-if [[ "$status" == 200 && -n "$origin" && -e "$state_dir/global-rule" ]]; then
-    response_origin=$(cat "$state_dir/global-origin")
-else
-    response_origin=
-fi
-response_plugin=
-if [[ "$status" == 200 && -e "$state_dir/plugin-config" ]]; then
-    response_plugin=$(cat "$state_dir/plugin-header")
-fi
-if [[ -n "$header_file" ]]; then
-    {
-        printf "HTTP/1.1 %s\r\n" "$status"
-        [[ -n "$response_origin" ]] && printf "Access-Control-Allow-Origin: %s\r\n" "$response_origin"
-        [[ -n "$response_plugin" ]] && printf "%s: enabled\r\n" "$response_plugin"
-        printf "\r\n"
-    } >"$header_file"
-fi
-if (( include_headers == 1 )) && [[ -z "$body_file" ]]; then
-    printf "HTTP/1.1 %s\r\n" "$status"
-    [[ -n "$response_origin" ]] && printf "Access-Control-Allow-Origin: %s\r\n" "$response_origin"
-    [[ -n "$response_plugin" ]] && printf "%s: enabled\r\n" "$response_plugin"
-    printf "\r\n"
-fi
 if [[ -n "$body_file" ]]; then
     printf "%s" "$body" >"$body_file"
 else
@@ -584,9 +526,6 @@ else
 fi
 if [[ "$write_out" == *"%{http_code}"* ]]; then
     printf "%s" "$status"
-fi
-if (( fail_response == 1 && status >= 400 )); then
-    exit 22
 fi
 '
 }
@@ -658,10 +597,15 @@ test_bounded_timeout() {
         FAKE_STATE_DIR="$test_root/timeout-state" \
         FAKE_ETCD_STOPPED="$test_root/timeout-stopped" \
         FAKE_ETCD_RESTARTED="$test_root/timeout-restarted" \
+        SOURCE_COMMIT="$source_commit" \
         FAKE_CURL_MODE=timeout RELEASE_EVIDENCE_ROOT="$evidence" \
         ETCD_RECOVERY_TIMEOUT_SECONDS=1 ETCD_RECOVERY_POLL_INTERVAL_SECONDS=4 \
         "$test_shell" "$runner" "$image_id"
     local wait_started elapsed
+    if [[ ! -s "$test_root/timeout-state/timeout-wait-started" ]]; then
+        sed -n '1,240p' "$output" >&2 || true
+        fail 'timeout scenario exited before the bounded HTTP wait started'
+    fi
     wait_started=$(cat "$test_root/timeout-state/timeout-wait-started")
     elapsed=$(($(date +%s) - wait_started))
     (( elapsed < 4 )) || fail "timeout fixture exceeded bound (${elapsed}s)"
@@ -683,6 +627,7 @@ test_cleanup_on_failure() {
         FAKE_STATE_DIR="$test_root/cleanup-state" \
         FAKE_ETCD_STOPPED="$test_root/cleanup-stopped" \
         FAKE_ETCD_RESTARTED="$test_root/cleanup-restarted" \
+        SOURCE_COMMIT="$source_commit" \
         FAKE_FAIL_GATEWAY=1 RELEASE_EVIDENCE_ROOT="$evidence" \
         ETCD_RECOVERY_TIMEOUT_SECONDS=1 "$test_shell" "$runner" "$image_id"
     assert_contains 'docker rm -f' "$log"
@@ -700,13 +645,17 @@ test_ordered_happy_path() {
     write_fake_curl "$bin"
     write_fake_openssl "$bin"
     : >"$log"
-    env PATH="$bin:$original_path" \
+    if ! env PATH="$bin:$original_path" \
         FAKE_LOG="$log" FAKE_IMAGE_ID="$image_id" \
         FAKE_STATE_DIR="$test_root/happy-state" \
         FAKE_ETCD_STOPPED="$test_root/happy-stopped" \
         FAKE_ETCD_RESTARTED="$test_root/happy-restarted" \
+        SOURCE_COMMIT="$source_commit" \
         RELEASE_EVIDENCE_ROOT="$evidence" ETCD_RECOVERY_TIMEOUT_SECONDS=2 \
-        "$test_shell" "$runner" "$image_id" >"$output" 2>&1
+        "$test_shell" "$runner" "$image_id" >"$output" 2>&1; then
+        sed -n '1,320p' "$output" >&2 || true
+        fail 'happy-path runner failed'
+    fi
     assert_contains 'etcd recovery smoke: PASS' "$output"
     local transcript
     transcript=$(find "$evidence" -type f -name steps.log -print -quit)
@@ -719,10 +668,9 @@ test_ordered_happy_path() {
         'write route/upstream v1' \
         'start APISIX-Go replicas as 10001:10001' \
         'replicas ready and proxy v1' \
-        'write consumer/service/global rule/plugin config/SSL resources' \
+        'write service and SSL resources' \
         'replicas converge on managed resource graph' \
-        'update consumer credential' \
-        'update plugin config and global rule' \
+        'reject invalid route generation and retain last-good' \
         'update service to upstream v2' \
         'replicas serve dynamic SSL' \
         'stop etcd' \
@@ -736,8 +684,11 @@ test_ordered_happy_path() {
         'mutate and compact etcd while replicas disconnected' \
         'reconnect replicas' \
         'replicas recover compacted snapshot consistently' \
-        'delete consumer/global rule/SSL resources' \
-        'replicas converge on live deletes'
+        'restart one replica and recover committed journal state' \
+        'delete SSL resource' \
+        'replicas converge on live SSL delete' \
+        're-add SSL resource' \
+        'replicas converge on re-added SSL resource'
     assert_contains 'gcr.io/etcd-development/etcd:v3.6.13' "$log"
     assert_count 'docker network create' "$log" 2
     assert_count '--user 10001:10001' "$log" 2
@@ -746,34 +697,40 @@ test_ordered_happy_path() {
     assert_at_least 'docker port ' "$log" 6
     assert_contains 'SSL_CERT_FILE' "$log"
     assert_contains 'https://etcd:2379' "$log"
+    assert_contains 'APISIXGO_DEPLOYMENT_ETCD_TLS_VERIFY=true' "$log"
+    assert_contains 'APISIXGO_SECURITY_PROFILE=strict' "$log"
+    assert_contains 'HOME=/usr/local/apisix' "$log"
+    assert_contains 'APISIXGO_RUNTIME_PATHS_DATA_DIR=/usr/local/apisix/data' "$log"
+    assert_contains 'APISIXGO_RUNTIME_PATHS_RUNTIME_DIR=/usr/local/apisix/run' "$log"
+    assert_contains 'APISIXGO_RUNTIME_PATHS_LOG_DIR=/usr/local/apisix/logs' "$log"
+    assert_contains 'APISIXGO_RUNTIME_PATHS_TEMP_DIR=/usr/local/apisix/tmp' "$log"
+    assert_contains 'HTTP_PROXY=' "$log"
+    assert_contains 'HTTPS_PROXY=' "$log"
+    assert_contains 'NO_PROXY=' "$log"
     assert_contains 'APISIXGO_APISIX_STATUS_IP=0.0.0.0' "$log"
     for resource in \
         upstreams/release-upstream-v1 \
         upstreams/release-upstream-v2 \
         services/release-service \
-        consumers/release-consumer \
-        global_rules/release-global-rule \
-        plugin_configs/release-plugin-config \
         ssls/release-ssl \
         routes/release-route \
         routes/release-managed-route \
+        routes/release-invalid-route \
         routes/release-stale-route; do
         assert_contains "put /apisix/$resource" "$log"
     done
     assert_at_least 'put /apisix/services/release-service' "$log" 2
-    assert_at_least 'put /apisix/consumers/release-consumer' "$log" 2
-    assert_at_least 'put /apisix/global_rules/release-global-rule' "$log" 2
-    assert_at_least 'put /apisix/plugin_configs/release-plugin-config' "$log" 2
     assert_at_least 'put /apisix/routes/release-route' "$log" 2
+    assert_contains 'put /apisix/routes/release-invalid-route' "$log"
     for resource in \
         routes/release-stale-route \
-        consumers/release-consumer \
-        global_rules/release-global-rule \
+        routes/release-invalid-route \
         ssls/release-ssl; do
         assert_contains "del /apisix/$resource" "$log"
     done
     assert_contains 'get /apisix --prefix --write-out=json' "$log"
     assert_contains 'compact 42' "$log"
+    assert_contains 'docker restart apisix-release-gateway-a-' "$log"
     data_network=$(cat "$test_root/happy-state/data-network")
     control_network=$(cat "$test_root/happy-state/control-network")
     assert_count "docker network connect $control_network " "$log" 2
@@ -807,6 +764,22 @@ test_ordered_happy_path() {
         assert_contains "$gateway http /release-v2" "$test_root/happy-state/post-compaction-probes"
         assert_at_least "$gateway https /release-v2" "$test_root/happy-state/post-compaction-probes" 2
     done < <(sort -u "$test_root/happy-state/gateway-names")
+    local platform_evidence record_name record
+    platform_evidence=$(dirname "$transcript")/platform-recovery-v1
+    for record_name in journal generation; do
+        record="$platform_evidence/$record_name.json"
+        [[ -s "$record" ]] || fail "missing platform recovery evidence for $record_name"
+        assert_contains '"scope":"platform-recovery-v1"' "$record"
+        assert_contains '"config_profile":"http-data-plane-v1"' "$record"
+        assert_contains "\"record\":\"$record_name\"" "$record"
+        assert_contains "\"source_commit\":\"$source_commit\"" "$record"
+        assert_contains "\"image_id\":\"$image_id\"" "$record"
+        assert_contains '"config_sha256":"' "$record"
+        assert_contains '"before_generation":"' "$record"
+        assert_contains '"after_generation":"' "$record"
+        assert_contains '"probe_result":"pass"' "$record"
+        assert_contains '"output_sha256":"' "$record"
+    done
     assert_order "$log" \
         'docker network create apisix-release-etcd-' \
         'docker run --detach --name apisix-release-etcd-' \
@@ -821,8 +794,7 @@ test_ordered_happy_path() {
         'get /apisix --prefix --write-out=json' \
         'compact 42' \
         "docker network connect $data_network " \
-        'del /apisix/consumers/release-consumer' \
-        'del /apisix/global_rules/release-global-rule' \
+        'docker restart apisix-release-gateway-a-' \
         'del /apisix/ssls/release-ssl' \
         'docker rm -f ' \
         'docker network rm '

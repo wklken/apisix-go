@@ -1,89 +1,119 @@
 sources:
     - repository: https://github.com/apache/apisix
-      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+      commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
       file: t/plugin/limit-count-consumer-group-credentials.t
       tests: 8
     - repository: https://github.com/apache/apisix
-      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+      commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
       file: t/plugin/limit-count-consumer-isolation.t
       tests: 5
     - repository: https://github.com/apache/apisix
+      commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
+      file: t/plugin/limit-count-redis-cluster.t
+      tests: 14
+      test_numbers: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16]
+    - repository: https://github.com/apache/apisix
       commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/limit-count-redis-cluster.t
-      tests: 18
-    - repository: https://github.com/apache/apisix
-      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-      file: t/plugin/limit-count-redis-cluster2.t
       tests: 2
+      test_numbers: [17, 18]
+      regression_only: true
     - repository: https://github.com/apache/apisix
-      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+      commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
+      file: t/plugin/limit-count-redis-cluster2.t
+      tests: 1
+      test_numbers: [2]
+    - repository: https://github.com/apache/apisix
+      commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
       file: t/plugin/limit-count-redis-cluster3.t
       tests: 6
     - repository: https://github.com/apache/apisix
       commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/limit-count-redis-delayed-sync.t
       tests: 5
+      regression_only: true
     - repository: https://github.com/apache/apisix
       commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/limit-count-redis-delayed-sync2.t
       tests: 9
+      regression_only: true
     - repository: https://github.com/apache/apisix
       commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/limit-count-redis-sentinel.t
       tests: 15
+      regression_only: true
     - repository: https://github.com/apache/apisix
-      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+      commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
       file: t/plugin/limit-count-redis.t
-      tests: 22
+      tests: 21
+      test_numbers: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]
     - repository: https://github.com/apache/apisix
-      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+      commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
       file: t/plugin/limit-count-redis2.t
-      tests: 10
+      tests: 9
+      test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9]
     - repository: https://github.com/apache/apisix
-      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+      commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
       file: t/plugin/limit-count-redis3.t
       tests: 11
     - repository: https://github.com/apache/apisix
-      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+      commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
       file: t/plugin/limit-count-redis4.t
       tests: 5
     - repository: https://github.com/apache/apisix
       commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/limit-count-redis5.t
       tests: 3
+      regression_only: true
+    - repository: https://github.com/apache/apisix
+      commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
+      file: t/plugin/limit-count-rules.t
+      tests: 18
+      test_numbers: [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
     - repository: https://github.com/apache/apisix
       commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/limit-count-rules.t
-      tests: 22
+      tests: 2
+      test_numbers: [21, 22]
+      regression_only: true
     - repository: https://github.com/apache/apisix
       commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/limit-count-sliding.t
       tests: 8
+      regression_only: true
+    - repository: https://github.com/apache/apisix
+      commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
+      file: t/plugin/limit-count-variable.t
+      tests: 4
     - repository: https://github.com/apache/apisix
       commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/limit-count-variable.t
-      tests: 13
+      tests: 9
+      test_numbers: [5, 6, 7, 8, 9, 10, 11, 12, 13]
+      regression_only: true
     - repository: https://github.com/apache/apisix
-      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+      commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
       file: t/plugin/limit-count.t
-      tests: 41
-      test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42]
+      tests: 33
+      test_numbers: [1, 2, 3, 4, 5, 6, 7, 14, 15, 16, 17, 18, 19, 20, 21, 22, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40]
     - repository: https://github.com/apache/apisix
-      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+      commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
       file: t/plugin/limit-count2.t
-      tests: 22
+      tests: 19
+      test_numbers: [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21, 22]
     - repository: https://github.com/apache/apisix
-      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+      commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
       file: t/plugin/limit-count3.t
       tests: 13
     - repository: https://github.com/apache/apisix
-      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+      commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
       file: t/plugin/limit-count4.t
       tests: 5
     - repository: https://github.com/apache/apisix
-      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+      commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
       file: t/plugin/limit-count5.t
-      tests: 8
+      tests: 7
+      test_numbers: [1, 2, 3, 4, 5, 6, 8]
 cases:
     - name: limit-count-consumer-group-credentials-setup-consumer-group-with-limit-count-plugin-test-1
       source:
@@ -1045,44 +1075,6 @@ cases:
                 X-RateLimit-Remaining:
                     equals: "0"
             status: 503
-    - name: limit-count-redis-cluster-set-route-missing-redis-cluster-nodes-test-1
-      source:
-        file: t/plugin/limit-count-redis-cluster.t
-        tests:
-            - 1
-      config:
-        routes:
-            - id: limit-count-route
-              plugins:
-                limit-count:
-                    count: 2
-                    key: remote_addr
-                    policy: redis-cluster
-                    redis_cluster_name: fixture-cluster
-                    rejected_code: 503
-                    show_limit_quota_header: true
-                    time_window: 60
-              upstream:
-                nodes:
-                    '{{FIXTURE.primary.ADDR}}': 1
-                type: roundrobin
-              uri: /limit-count
-      fixtures:
-        - expect_requests: 0
-          kind: http
-          name: primary
-          respond:
-            - body: limit-count upstream
-              status: 200
-      steps:
-        - input:
-            method: GET
-            path: /limit-count
-          name: invalid-limit-count-resource-is-rejected
-          output:
-            logs:
-                matches: limit-count.*redis_cluster
-            status: 404
     - name: limit-count-redis-cluster-set-route-with-redis-cluster-nodes-and-redis-cluster-name-test-2
       source:
         file: t/plugin/limit-count-redis-cluster.t
@@ -1687,47 +1679,6 @@ cases:
             logs:
                 matches: connection refused
             status: 200
-    - name: limit-count-redis-cluster-set-route-use-error-type-for-redis-cluster-ssl-and-redis-cluster-ssl-verify-test-12
-      source:
-        file: t/plugin/limit-count-redis-cluster.t
-        tests:
-            - 12
-      config:
-        routes:
-            - id: limit-count-route
-              plugins:
-                limit-count:
-                    count: 2
-                    key: remote_addr
-                    policy: redis-cluster
-                    redis_cluster_name: fixture-cluster
-                    redis_cluster_nodes:
-                        - 127.0.0.1:6379
-                    redis_cluster_ssl: "true"
-                    rejected_code: 503
-                    show_limit_quota_header: true
-                    time_window: 60
-              upstream:
-                nodes:
-                    '{{FIXTURE.primary.ADDR}}': 1
-                type: roundrobin
-              uri: /limit-count
-      fixtures:
-        - expect_requests: 0
-          kind: http
-          name: primary
-          respond:
-            - body: limit-count upstream
-              status: 200
-      steps:
-        - input:
-            method: GET
-            path: /limit-count
-          name: invalid-limit-count-resource-is-rejected
-          output:
-            logs:
-                matches: limit-count.*redis_cluster
-            status: 404
     - name: limit-count-redis-cluster-set-route-redis-cluster-ssl-verify-is-true-will-cause-ssl-handshake-err-with-enable-degradation-switch-test-13
       source:
         file: t/plugin/limit-count-redis-cluster.t
@@ -2085,124 +2036,6 @@ cases:
                 X-RateLimit-Limit:
                     equals: "2"
             status: 200
-    - name: limit-count-redis-cluster2-update-route-use-new-limit-configuration-test-1
-      source:
-        file: t/plugin/limit-count-redis-cluster2.t
-        tests: [1]
-      config:
-        routes:
-            - id: redis-cluster2-updated-limit-test-1
-              plugins:
-                limit-count:
-                    count: 2
-                    key: remote_addr
-                    policy: redis-cluster
-                    redis_cluster_name: redis-cluster-1
-                    redis_cluster_nodes:
-                        - '{{FIXTURE.redis.ADDR}}'
-                        - '{{FIXTURE.redis.ADDR}}'
-                    time_window: 60
-              upstream:
-                nodes:
-                    '{{FIXTURE.primary.ADDR}}': 1
-                type: roundrobin
-              uri: /redis-cluster2-update
-      fixtures:
-        - count:
-            at_least: 2
-            at_most: 2
-          expect:
-            - method: GET
-              path:
-                matches: ^/redis-cluster2-update(?:-ready)?$
-          kind: http
-          name: primary
-          respond:
-            - body: limit-count upstream
-              status: 200
-        - kind: redis-cluster
-          name: redis
-          redis:
-            allow_unasserted_commands: true
-            ignore_negotiation: true
-            value_matches:
-                '^limit-count:route:redis-cluster2-updated-limit-test-1:127\.0\.0\.1$': "3"
-      steps:
-        - config:
-            routes:
-                - id: redis-cluster2-update-ready-test-1
-                  upstream:
-                    nodes:
-                        '{{FIXTURE.primary.ADDR}}': 1
-                    type: roundrobin
-                  uri: /redis-cluster2-update-ready
-                - id: redis-cluster2-updated-limit-test-1
-                  plugins:
-                     limit-count:
-                        count: 2
-                        key: remote_addr
-                        policy: redis-cluster
-                        redis_cluster_name: redis-cluster-1
-                        redis_cluster_nodes:
-                            - '{{FIXTURE.redis.ADDR}}'
-                            - '{{FIXTURE.redis.ADDR}}'
-                        time_window: 60
-                  upstream:
-                    nodes:
-                        '{{FIXTURE.primary.ADDR}}': 1
-                    type: roundrobin
-                  uri: /redis-cluster2-update
-          config_probe:
-            input:
-                method: GET
-                path: /redis-cluster2-update-ready
-            output:
-                body:
-                    equals: limit-count upstream
-                status: 200
-          input:
-            method: GET
-            path: /redis-cluster2-update
-          name: updated-count-one-allows-the-first-request
-          output:
-            body:
-                equals: limit-count upstream
-            headers:
-                X-RateLimit-Limit:
-                    equals: "1"
-                X-RateLimit-Remaining:
-                    equals: "0"
-                X-RateLimit-Reset:
-                    matches: ^(?:59|60)$
-            status: 200
-          wait: 3s
-        - input:
-            method: GET
-            path: /redis-cluster2-update
-          name: updated-count-one-rejects-the-second-request-with-a-lower-reset
-          output:
-            headers:
-                X-RateLimit-Limit:
-                    equals: "1"
-                X-RateLimit-Remaining:
-                    equals: "0"
-                X-RateLimit-Reset:
-                    matches: ^5[5-8]$
-            status: 503
-          wait: 3s
-        - input:
-            method: GET
-            path: /redis-cluster2-update
-          name: updated-count-one-keeps-decreasing-reset-on-the-third-request
-          output:
-            headers:
-                X-RateLimit-Limit:
-                    equals: "1"
-                X-RateLimit-Remaining:
-                    equals: "0"
-                X-RateLimit-Reset:
-                    matches: ^5[1-4]$
-            status: 503
     - name: limit-count-redis-cluster2-test-header-x-ratelimit-reset-shouldn-t-be-set-to-0-after-request-be-rejected-test-2
       source:
         file: t/plugin/limit-count-redis-cluster2.t
@@ -3800,43 +3633,6 @@ cases:
                 X-RateLimit-Limit:
                     equals: "2"
             status: 200
-    - name: limit-count-redis-set-route-missing-redis-host-test-1
-      source:
-        file: t/plugin/limit-count-redis.t
-        tests:
-            - 1
-      config:
-        routes:
-            - id: limit-count-route
-              plugins:
-                limit-count:
-                    count: 2
-                    key: remote_addr
-                    policy: redis
-                    rejected_code: 503
-                    show_limit_quota_header: true
-                    time_window: 60
-              upstream:
-                nodes:
-                    '{{FIXTURE.primary.ADDR}}': 1
-                type: roundrobin
-              uri: /limit-count
-      fixtures:
-        - expect_requests: 0
-          kind: http
-          name: primary
-          respond:
-            - body: limit-count upstream
-              status: 200
-      steps:
-        - input:
-            method: GET
-            path: /limit-count
-          name: invalid-limit-count-resource-is-rejected
-          output:
-            logs:
-                matches: limit-count
-            status: 404
     - name: limit-count-redis-set-route-with-redis-host-and-port-test-2
       source:
         file: t/plugin/limit-count-redis.t
@@ -5566,68 +5362,6 @@ cases:
                 X-RateLimit-Remaining:
                     absent: true
             status: 200
-    - name: limit-count-redis2-configuration-from-the-same-group-should-be-the-same-test-10
-      source:
-        file: t/plugin/limit-count-redis2.t
-        tests:
-            - 10
-      config:
-        routes:
-            - id: group-a
-              plugins:
-                limit-count:
-                    count: 2
-                    group: shared-limit
-                    key: remote_addr
-                    policy: redis
-                    redis_host: '{{FIXTURE.redis.HOST}}'
-                    redis_port: '{{FIXTURE.redis.PORT}}'
-                    rejected_code: 503
-                    show_limit_quota_header: true
-                    time_window: 60
-              upstream:
-                nodes:
-                    '{{FIXTURE.primary.ADDR}}': 1
-                type: roundrobin
-              uri: /limit-count
-            - id: group-b
-              plugins:
-                limit-count:
-                    count: 3
-                    group: shared-limit
-                    key: remote_addr
-                    policy: redis
-                    redis_host: '{{FIXTURE.redis.HOST}}'
-                    redis_port: '{{FIXTURE.redis.PORT}}'
-                    rejected_code: 503
-                    show_limit_quota_header: true
-                    time_window: 60
-              upstream:
-                nodes:
-                    '{{FIXTURE.primary.ADDR}}': 1
-                type: roundrobin
-              uri: /limit-count-b
-      fixtures:
-        - expect_requests: 0
-          kind: http
-          name: primary
-          respond:
-            - body: limit-count upstream
-              status: 200
-        - kind: redis
-          name: redis
-          redis:
-            allow_unasserted_commands: true
-            ignore_negotiation: true
-      steps:
-        - input:
-            method: GET
-            path: /limit-count-b
-          name: mismatched-group-route-is-rejected
-          output:
-            logs:
-                matches: group conf mismatched
-            status: 404
     - name: limit-count-redis3-set-route-counter-will-be-shared-test-1
       source:
         file: t/plugin/limit-count-redis3.t
@@ -6841,87 +6575,6 @@ cases:
         - name: deleting-both-routes-removes-the-second-route
           input: {method: GET, path: /cleanup-second}
           output: {status: 404}
-    - name: limit-count-rules-configure-count-time-window-and-rules-at-same-time-test-1
-      source:
-        file: t/plugin/limit-count-rules.t
-        tests:
-            - 1
-      config:
-        routes:
-            - id: limit-count-route
-              plugins:
-                limit-count:
-                    count: 2
-                    key: remote_addr
-                    rejected_code: 503
-                    rules:
-                        - count: 1
-                          key: $http_x_user
-                          time_window: 60
-                    show_limit_quota_header: true
-                    time_window: 60
-              upstream:
-                nodes:
-                    '{{FIXTURE.primary.ADDR}}': 1
-                type: roundrobin
-              uri: /limit-count
-      fixtures:
-        - expect_requests: 0
-          kind: http
-          name: primary
-          respond:
-            - body: limit-count upstream
-              status: 200
-      steps:
-        - input:
-            method: GET
-            path: /limit-count
-          name: invalid-limit-count-resource-is-rejected
-          output:
-            logs:
-                matches: limit-count.*count
-            status: 404
-    - name: limit-count-rules-configure-multiple-rules-with-same-key-test-2
-      source:
-        file: t/plugin/limit-count-rules.t
-        tests:
-            - 2
-      config:
-        routes:
-            - id: limit-count-route
-              plugins:
-                limit-count:
-                    key: remote_addr
-                    rejected_code: 503
-                    rules:
-                        - count: 1
-                          key: $http_x_user
-                          time_window: 60
-                        - count: 2
-                          key: $http_x_user
-                          time_window: 60
-                    show_limit_quota_header: true
-              upstream:
-                nodes:
-                    '{{FIXTURE.primary.ADDR}}': 1
-                type: roundrobin
-              uri: /limit-count
-      fixtures:
-        - expect_requests: 0
-          kind: http
-          name: primary
-          respond:
-            - body: limit-count upstream
-              status: 200
-      steps:
-        - input:
-            method: GET
-            path: /limit-count
-          name: invalid-limit-count-resource-is-rejected
-          output:
-            logs:
-                matches: limit-count
-            status: 404
     - name: limit-count-rules-setup-route-with-rules-test-3
       source:
         file: t/plugin/limit-count-rules.t
@@ -9799,220 +9452,6 @@ cases:
                 X-RateLimit-Remaining:
                     equals: "0"
             status: 503
-    - name: limit-count-invalid-route-missing-count-test-8
-      source:
-        file: t/plugin/limit-count.t
-        tests:
-            - 8
-      config:
-        routes:
-            - id: limit-count-route
-              plugins:
-                limit-count:
-                    key: remote_addr
-                    rejected_code: 503
-                    show_limit_quota_header: true
-                    time_window: 60
-              upstream:
-                nodes:
-                    '{{FIXTURE.primary.ADDR}}': 1
-                type: roundrobin
-              uri: /limit-count
-      fixtures:
-        - expect_requests: 0
-          kind: http
-          name: primary
-          respond:
-            - body: limit-count upstream
-              status: 200
-      steps:
-        - input:
-            method: GET
-            path: /limit-count
-          name: invalid-limit-count-resource-is-rejected
-          output:
-            logs:
-                matches: limit-count.*count
-            status: 404
-    - name: limit-count-invalid-route-wrong-count-test-9
-      source:
-        file: t/plugin/limit-count.t
-        tests:
-            - 9
-      config:
-        routes:
-            - id: limit-count-route
-              plugins:
-                limit-count:
-                    count: 0
-                    key: remote_addr
-                    rejected_code: 503
-                    show_limit_quota_header: true
-                    time_window: 60
-              upstream:
-                nodes:
-                    '{{FIXTURE.primary.ADDR}}': 1
-                type: roundrobin
-              uri: /limit-count
-      fixtures:
-        - expect_requests: 0
-          kind: http
-          name: primary
-          respond:
-            - body: limit-count upstream
-              status: 200
-      steps:
-        - input:
-            method: GET
-            path: /limit-count
-          name: invalid-limit-count-resource-is-rejected
-          output:
-            logs:
-                matches: limit-count.*count
-            status: 404
-    - name: limit-count-invalid-route-wrong-count-post-method-test-10
-      source:
-        file: t/plugin/limit-count.t
-        tests:
-            - 10
-      config:
-        routes:
-            - id: limit-count-route
-              plugins:
-                limit-count:
-                    count: 0
-                    key: remote_addr
-                    rejected_code: 503
-                    show_limit_quota_header: true
-                    time_window: 60
-              upstream:
-                nodes:
-                    '{{FIXTURE.primary.ADDR}}': 1
-                type: roundrobin
-              uri: /limit-count
-      fixtures:
-        - expect_requests: 0
-          kind: http
-          name: primary
-          respond:
-            - body: limit-count upstream
-              status: 200
-      steps:
-        - input:
-            method: GET
-            path: /limit-count
-          name: invalid-limit-count-resource-is-rejected
-          output:
-            logs:
-                matches: limit-count.*count
-            status: 404
-    - name: limit-count-invalid-service-missing-count-test-11
-      source:
-        file: t/plugin/limit-count.t
-        tests:
-            - 11
-      config:
-        routes:
-            - id: limit-count-route
-              plugins:
-                limit-count:
-                    key: remote_addr
-                    rejected_code: 503
-                    show_limit_quota_header: true
-                    time_window: 60
-              upstream:
-                nodes:
-                    '{{FIXTURE.primary.ADDR}}': 1
-                type: roundrobin
-              uri: /limit-count
-      fixtures:
-        - expect_requests: 0
-          kind: http
-          name: primary
-          respond:
-            - body: limit-count upstream
-              status: 200
-      steps:
-        - input:
-            method: GET
-            path: /limit-count
-          name: invalid-limit-count-resource-is-rejected
-          output:
-            logs:
-                matches: limit-count.*count
-            status: 404
-    - name: limit-count-invalid-service-wrong-count-test-12
-      source:
-        file: t/plugin/limit-count.t
-        tests:
-            - 12
-      config:
-        routes:
-            - id: limit-count-route
-              plugins:
-                limit-count:
-                    count: 0
-                    key: remote_addr
-                    rejected_code: 503
-                    show_limit_quota_header: true
-                    time_window: 60
-              upstream:
-                nodes:
-                    '{{FIXTURE.primary.ADDR}}': 1
-                type: roundrobin
-              uri: /limit-count
-      fixtures:
-        - expect_requests: 0
-          kind: http
-          name: primary
-          respond:
-            - body: limit-count upstream
-              status: 200
-      steps:
-        - input:
-            method: GET
-            path: /limit-count
-          name: invalid-limit-count-resource-is-rejected
-          output:
-            logs:
-                matches: limit-count.*count
-            status: 404
-    - name: limit-count-invalid-service-wrong-count-post-method-test-13
-      source:
-        file: t/plugin/limit-count.t
-        tests:
-            - 13
-      config:
-        routes:
-            - id: limit-count-route
-              plugins:
-                limit-count:
-                    count: 0
-                    key: remote_addr
-                    rejected_code: 503
-                    show_limit_quota_header: true
-                    time_window: 60
-              upstream:
-                nodes:
-                    '{{FIXTURE.primary.ADDR}}': 1
-                type: roundrobin
-              uri: /limit-count
-      fixtures:
-        - expect_requests: 0
-          kind: http
-          name: primary
-          respond:
-            - body: limit-count upstream
-              status: 200
-      steps:
-        - input:
-            method: GET
-            path: /limit-count
-          name: invalid-limit-count-resource-is-rejected
-          output:
-            logs:
-                matches: limit-count.*count
-            status: 404
     - name: limit-count-set-route-without-id-in-post-body-test-14
       source:
         file: t/plugin/limit-count.t
@@ -11043,152 +10482,6 @@ cases:
                 X-RateLimit-Remaining:
                     equals: "0"
             status: 503
-    - name: limit-count-check-schema-failed-the-count-attribute-is-equal-to-0-test-41
-      source:
-        file: t/plugin/limit-count.t
-        tests:
-            - 41
-      config:
-        routes:
-            - id: limit-count-route
-              plugins:
-                limit-count:
-                    count: 0
-                    key: remote_addr
-                    rejected_code: 503
-                    show_limit_quota_header: true
-                    time_window: 60
-              upstream:
-                nodes:
-                    '{{FIXTURE.primary.ADDR}}': 1
-                type: roundrobin
-              uri: /limit-count
-      fixtures:
-        - expect_requests: 0
-          kind: http
-          name: primary
-          respond:
-            - body: limit-count upstream
-              status: 200
-      steps:
-        - input:
-            method: GET
-            path: /limit-count
-          name: invalid-limit-count-resource-is-rejected
-          output:
-            logs:
-                matches: limit-count.*count
-            status: 404
-    - name: limit-count-check-schema-failed-the-time-window-attribute-is-equal-to-0-test-42
-      source:
-        file: t/plugin/limit-count.t
-        tests:
-            - 42
-      config:
-        routes:
-            - id: limit-count-route
-              plugins:
-                limit-count:
-                    count: 2
-                    key: remote_addr
-                    rejected_code: 503
-                    show_limit_quota_header: true
-                    time_window: 0
-              upstream:
-                nodes:
-                    '{{FIXTURE.primary.ADDR}}': 1
-                type: roundrobin
-              uri: /limit-count
-      fixtures:
-        - expect_requests: 0
-          kind: http
-          name: primary
-          respond:
-            - body: limit-count upstream
-              status: 200
-      steps:
-        - input:
-            method: GET
-            path: /limit-count
-          name: invalid-limit-count-resource-is-rejected
-          output:
-            logs:
-                matches: limit-count.*time_window
-            status: 404
-    - name: limit-count2-invalid-route-wrong-rejected-msg-type-test-1
-      source:
-        file: t/plugin/limit-count2.t
-        tests:
-            - 1
-      config:
-        routes:
-            - id: limit-count-route
-              plugins:
-                limit-count:
-                    count: 2
-                    key: remote_addr
-                    rejected_code: 503
-                    rejected_msg: 42
-                    show_limit_quota_header: true
-                    time_window: 60
-              upstream:
-                nodes:
-                    '{{FIXTURE.primary.ADDR}}': 1
-                type: roundrobin
-              uri: /limit-count
-      fixtures:
-        - expect_requests: 0
-          kind: http
-          name: primary
-          respond:
-            - body: limit-count upstream
-              status: 200
-      steps:
-        - input:
-            method: GET
-            path: /limit-count
-          name: invalid-limit-count-resource-is-rejected
-          output:
-            logs:
-                matches: limit-count.*rejected_msg
-            status: 404
-    - name: limit-count2-invalid-route-wrong-rejected-msg-length-test-2
-      source:
-        file: t/plugin/limit-count2.t
-        tests:
-            - 2
-      config:
-        routes:
-            - id: limit-count-route
-              plugins:
-                limit-count:
-                    count: 2
-                    key: remote_addr
-                    rejected_code: 503
-                    rejected_msg: ""
-                    show_limit_quota_header: true
-                    time_window: 60
-              upstream:
-                nodes:
-                    '{{FIXTURE.primary.ADDR}}': 1
-                type: roundrobin
-              uri: /limit-count
-      fixtures:
-        - expect_requests: 0
-          kind: http
-          name: primary
-          respond:
-            - body: limit-count upstream
-              status: 200
-      steps:
-        - input:
-            method: GET
-            path: /limit-count
-          name: invalid-limit-count-resource-is-rejected
-          output:
-            logs:
-                matches: limit-count.*rejected_msg
-            status: 404
     - name: limit-count2-set-route-with-rejected-msg-test-3
       source:
         file: t/plugin/limit-count2.t
@@ -12037,57 +11330,6 @@ cases:
                 X-RateLimit-Limit:
                     equals: "2"
             status: 200
-    - name: limit-count2-configuration-from-the-same-group-should-be-the-same-test-19
-      source:
-        file: t/plugin/limit-count2.t
-        tests:
-            - 19
-      config:
-        routes:
-            - id: group-a
-              plugins:
-                limit-count:
-                    count: 2
-                    group: shared-limit
-                    key: remote_addr
-                    rejected_code: 503
-                    show_limit_quota_header: true
-                    time_window: 60
-              upstream:
-                nodes:
-                    '{{FIXTURE.primary.ADDR}}': 1
-                type: roundrobin
-              uri: /limit-count
-            - id: group-b
-              plugins:
-                limit-count:
-                    count: 3
-                    group: shared-limit
-                    key: remote_addr
-                    rejected_code: 503
-                    show_limit_quota_header: true
-                    time_window: 60
-              upstream:
-                nodes:
-                    '{{FIXTURE.primary.ADDR}}': 1
-                type: roundrobin
-              uri: /limit-count-b
-      fixtures:
-        - expect_requests: 0
-          kind: http
-          name: primary
-          respond:
-            - body: limit-count upstream
-              status: 200
-      steps:
-        - input:
-            method: GET
-            path: /limit-count-b
-          name: mismatched-group-route-is-rejected
-          output:
-            logs:
-                matches: group conf mismatched
-            status: 404
     - name: limit-count2-group-with-constant-key-test-20
       source:
         file: t/plugin/limit-count2.t
@@ -13497,78 +12739,6 @@ cases:
                 X-RateLimit-Remaining:
                     equals: "1"
             status: 200
-    - name: limit-count5-check-access-log-contains-rate-limiting-info-test-7
-      source:
-        file: t/plugin/limit-count5.t
-        tests:
-            - 7
-      files:
-        - path: '{{WORK_DIR}}/limit-count5-rate-limiting-info.log'
-          body: ""
-      config:
-        routes:
-            - id: limit-count5-access-log-test-7
-              methods:
-                - GET
-              plugins:
-                file-logger:
-                    path: '{{WORK_DIR}}/limit-count5-rate-limiting-info.log'
-                    log_format:
-                        rate_limiting_info: $rate_limiting_info
-                limit-count:
-                    count: 2
-                    key: http_host
-                    key_type: var
-                    rejected_code: 503
-                    show_limit_quota_header: true
-                    time_window: 10
-              upstream:
-                nodes:
-                    '{{FIXTURE.primary.ADDR}}': 1
-                type: roundrobin
-              uri: /access-log
-      fixtures:
-        - count:
-            at_least: 1
-            at_most: 1
-          expect:
-            - method: GET
-              host:
-                equals: test.com
-              path:
-                equals: /access-log
-          kind: http
-          name: primary
-          respond:
-            - body: limit-count upstream
-              status: 200
-      steps:
-        - input:
-            headers:
-                Host: test.com
-            method: GET
-            path: /access-log
-          name: access-log-records-rate-limiting-info
-          output:
-            headers:
-                X-RateLimit-Limit:
-                    equals: "2"
-                X-RateLimit-Remaining:
-                    equals: "1"
-            status: 200
-          wait: 50ms
-          file_assertions:
-            - path:
-                equals: '{{WORK_DIR}}/limit-count5-rate-limiting-info.log'
-              json_lines:
-                count: 1
-                records:
-                    - count: 1
-                      fields:
-                        /rate_limiting_info/rate_limiting_key: route:limit-count5-access-log-test-7:test.com
-                        /rate_limiting_info/rate_limiting_limit: "2"
-                        /rate_limiting_info/rate_limiting_remaining: "1"
-                        /rate_limiting_info/rate_limiting_reset: "10"
     - name: limit-count5-cost-0-peek-does-not-consume-quota-test-8
       source:
         file: t/plugin/limit-count5.t

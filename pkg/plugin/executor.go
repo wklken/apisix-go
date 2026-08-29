@@ -129,6 +129,7 @@ type RequestPipeline struct {
 	responseExecutor  *BufferedResponseExecutor
 	streamingExecutor *StreamingResponseExecutor
 	logExecutor       *LogExecutor
+	deferBeforeProxy  bool
 }
 
 type preparedStaticPipeline struct {
@@ -191,6 +192,15 @@ func (p RequestPipeline) WithStreamingResponseExecutor(
 
 func (p RequestPipeline) WithLogExecutor(executor *LogExecutor) RequestPipeline {
 	p.logExecutor = executor
+	return p
+}
+
+// WithBeforeProxyHooksAtTransport defers registered before-proxy hooks to a
+// transport installed with WrapBeforeProxyHooks. The ordinary prepared HTTP
+// proxy uses this seam so ReverseProxy's Director can materialize the selected
+// upstream and pass_host before the hook observes the request.
+func (p RequestPipeline) WithBeforeProxyHooksAtTransport() RequestPipeline {
+	p.deferBeforeProxy = true
 	return p
 }
 
@@ -594,15 +604,14 @@ func (p RequestPipeline) buildPostResolutionHandler(
 			}
 		}
 		apisixctx.FinalizeProxyRewrite(r)
-		if err := apisixctx.RunBeforeProxyHookRegistrations(
-			r,
-			func(registration apisixctx.BeforeProxyHookRegistration) error {
-				return invokeBeforeProxyHook(r, registration)
-			},
-		); err != nil {
+		var beforeProxyErr error
+		if !p.deferBeforeProxy {
+			beforeProxyErr = runBeforeProxyHooks(r)
+		}
+		if beforeProxyErr != nil {
 			status := http.StatusInternalServerError
 			message := "Internal Server Error"
-			if base.IsBodyTooLarge(err) {
+			if base.IsBodyTooLarge(beforeProxyErr) {
 				status = http.StatusRequestEntityTooLarge
 				message = "Request Entity Too Large"
 			}
@@ -805,6 +814,33 @@ func invokeBeforeProxyHook(
 		panic(panicErr)
 	}
 	return err
+}
+
+func runBeforeProxyHooks(r *http.Request) error {
+	return apisixctx.RunBeforeProxyHookRegistrations(
+		r,
+		func(registration apisixctx.BeforeProxyHookRegistration) error {
+			return invokeBeforeProxyHook(r, registration)
+		},
+	)
+}
+
+type beforeProxyHookRoundTripper struct {
+	next http.RoundTripper
+}
+
+// WrapBeforeProxyHooks runs registered hooks after ReverseProxy's Director and
+// immediately before the actual upstream RoundTripper. Hook errors are
+// returned to ReverseProxy so its existing ErrorHandler owns the response.
+func WrapBeforeProxyHooks(next http.RoundTripper) http.RoundTripper {
+	return &beforeProxyHookRoundTripper{next: next}
+}
+
+func (t *beforeProxyHookRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) {
+	if err := runBeforeProxyHooks(r); err != nil {
+		return nil, err
+	}
+	return t.next.RoundTrip(r)
 }
 
 func isRuntimePluginPhase(phase Phase) bool {

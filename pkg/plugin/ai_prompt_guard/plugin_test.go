@@ -314,6 +314,30 @@ func TestHandlerDefaultsToLastUserMessageOnly(t *testing.T) {
 	}
 }
 
+func TestHandlerDefaultsToUserRoleAndAllowsSystemOnlyRequest(t *testing.T) {
+	p := newTestPlugin(t, Config{AllowPatterns: []string{`goodword`}})
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/v1/chat/completions",
+		strings.NewReader(`{"messages":[{"role":"system","content":"badword"}]}`),
+	)
+	rr := httptest.NewRecorder()
+	nextCalls := 0
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		nextCalls++
+		w.WriteHeader(http.StatusAccepted)
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("response code = %d, want 202", rr.Code)
+	}
+	if nextCalls != 1 {
+		t.Fatalf("next calls = %d, want 1", nextCalls)
+	}
+}
+
 func TestHandlerCanCheckAllRolesAndHistory(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		MatchAllRoles:               true,
@@ -403,8 +427,11 @@ func TestHandlerDeniesExtractableProtocolsWithAPISIXMessage(t *testing.T) {
 			if rr.Code != http.StatusBadRequest {
 				t.Fatalf("response code = %d, want 400", rr.Code)
 			}
-			if got := strings.TrimSpace(rr.Body.String()); got != `{"message":"Request contains prohibited content"}` {
-				t.Fatalf("response body = %q, want APISIX message body", got)
+			if got := rr.Body.String(); got != "{\"message\":\"Request contains prohibited content\"}\n" {
+				t.Fatalf("response body = %q, want APISIX 3.17 message body", got)
+			}
+			if got := rr.Header().Get("Content-Type"); got != "text/plain; charset=utf-8" {
+				t.Fatalf("Content-Type = %q, want APISIX 3.17 response type", got)
 			}
 		})
 	}

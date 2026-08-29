@@ -7,12 +7,14 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
 
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/util"
@@ -134,6 +136,51 @@ func newTestPluginWithConfig(t *testing.T, overrides map[string]any, authenticat
 	}
 
 	return p
+}
+
+func TestPostInitWarnsOnlyForInsecureTLSOptions(t *testing.T) {
+	tests := []struct {
+		name         string
+		useTLS       bool
+		tlsVerify    *bool
+		wantWarnings []string
+	}{
+		{
+			name:      "insecure",
+			tlsVerify: new(false),
+			wantWarnings: []string{
+				"Keeping tls_verify disabled in ldap-auth configuration is a security risk",
+				"Keeping use_tls disabled in ldap-auth configuration is a security risk",
+			},
+		},
+		{name: "secure", useTLS: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var warnings []string
+			stop := logger.ReplaceObserver("ldap-auth-security-warning-"+test.name, func(entry logger.Entry) {
+				if entry.Level == "WARN" && strings.Contains(entry.Message, "ldap-auth configuration") {
+					warnings = append(warnings, entry.Message)
+				}
+			})
+			defer stop()
+
+			p := &Plugin{config: Config{
+				BaseDN: "dc=example,dc=org", LDAPURI: "127.0.0.1:1389",
+				UseTLS: test.useTLS, TLSVerify: test.tlsVerify,
+			}}
+			if err := p.Init(); err != nil {
+				t.Fatal(err)
+			}
+			if err := p.PostInit(); err != nil {
+				t.Fatal(err)
+			}
+
+			if !reflect.DeepEqual(warnings, test.wantWarnings) {
+				t.Fatalf("warnings = %#v, want %#v", warnings, test.wantWarnings)
+			}
+		})
+	}
 }
 
 func TestLDAPSchemaSupportsHideCredentialsAndDefaultsFalse(t *testing.T) {
@@ -619,7 +666,7 @@ func TestHandlerRecordsMissingConsumerDiagnostic(t *testing.T) {
 	}
 }
 
-func TestHandlerWritesExactJSONAuthorizationErrors(t *testing.T) {
+func TestHandlerWritesAPISIXAuthorizationErrorRepresentation(t *testing.T) {
 	tests := []struct {
 		name    string
 		request func() *http.Request
@@ -635,7 +682,7 @@ func TestHandlerWritesExactJSONAuthorizationErrors(t *testing.T) {
 				t.Fatal("LDAP authenticator should not be called")
 				return nil
 			},
-			body: `{"message":"Missing authorization in request"}`,
+			body: "{\"message\":\"Missing authorization in request\"}\n",
 		},
 		{
 			name: "invalid authorization",
@@ -648,7 +695,7 @@ func TestHandlerWritesExactJSONAuthorizationErrors(t *testing.T) {
 				t.Fatal("LDAP authenticator should not be called")
 				return nil
 			},
-			body: `{"message":"Invalid authorization in request"}`,
+			body: "{\"message\":\"Invalid authorization in request\"}\n",
 		},
 		{
 			name: "invalid user authorization",
@@ -658,7 +705,7 @@ func TestHandlerWritesExactJSONAuthorizationErrors(t *testing.T) {
 			auth: func(username, password string, cfg Config) error {
 				return errors.New("invalid credentials")
 			},
-			body: `{"message":"Invalid user authorization"}`,
+			body: "{\"message\":\"Invalid user authorization\"}\n",
 		},
 	}
 
@@ -677,8 +724,11 @@ func TestHandlerWritesExactJSONAuthorizationErrors(t *testing.T) {
 			if got := rr.Body.String(); got != tt.body {
 				t.Fatalf("body = %q, want %q", got, tt.body)
 			}
-			if got := rr.Header().Get("Content-Type"); got != "application/json" {
-				t.Fatalf("Content-Type = %q, want application/json", got)
+			if got := rr.Header().Get("Content-Type"); got != "text/plain; charset=utf-8" {
+				t.Fatalf("Content-Type = %q, want APISIX response type", got)
+			}
+			if got := rr.Header().Get("X-Content-Type-Options"); got != "" {
+				t.Fatalf("X-Content-Type-Options = %q, want absent", got)
 			}
 		})
 	}

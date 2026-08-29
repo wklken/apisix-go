@@ -131,13 +131,90 @@ func TestConvertAnthropicResponseFormatStrictSchema(t *testing.T) {
 	}
 }
 
+func TestConvertAnthropicMessagesMatchesAPISIX317OutputConfigResponseFormat(t *testing.T) {
+	converted, _, err := ConvertAnthropicMessagesToOpenAI([]byte(`{
+	  "model":"m","max_tokens":100,
+	  "messages":[{"role":"user","content":"hi"}],
+	  "output_config":{"type":"json_schema","json_schema":{"name":"response","schema":{"type":"object"}}}
+	}`))
+	if err != nil {
+		t.Fatalf("ConvertAnthropicMessagesToOpenAI() error = %v", err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(converted, &body); err != nil {
+		t.Fatalf("decode converted request: %v", err)
+	}
+	format, ok := body["response_format"].(map[string]any)
+	if !ok || format["type"] != "json_schema" {
+		t.Fatalf("response_format = %#v, want APISIX 3.17 json_schema", body["response_format"])
+	}
+	jsonSchema, ok := format["json_schema"].(map[string]any)
+	if !ok || jsonSchema["name"] != "response" {
+		t.Fatalf("response_format.json_schema = %#v, want name response", format["json_schema"])
+	}
+	if _, leaked := body["output_config"]; leaked {
+		t.Fatalf("output_config leaked into converted request: %#v", body)
+	}
+}
+
+func TestConvertAnthropicMessagesMatchesAPISIX317JSONObjectOutputFormat(t *testing.T) {
+	converted, _, err := ConvertAnthropicMessagesToOpenAI([]byte(`{
+	  "model":"m","max_tokens":100,
+	  "messages":[{"role":"user","content":"hi"}],
+	  "output_format":{"type":"json_object"}
+	}`))
+	if err != nil {
+		t.Fatalf("ConvertAnthropicMessagesToOpenAI() error = %v", err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(converted, &body); err != nil {
+		t.Fatalf("decode converted request: %v", err)
+	}
+	format, ok := body["response_format"].(map[string]any)
+	if !ok || format["type"] != "json_object" {
+		t.Fatalf("response_format = %#v, want APISIX 3.17 json_object", body["response_format"])
+	}
+	if _, leaked := body["output_format"]; leaked {
+		t.Fatalf("output_format leaked into converted request: %#v", body)
+	}
+}
+
+func TestConvertAnthropicMessagesMatchesAPISIX317ToolResultOrdering(t *testing.T) {
+	converted, _, err := ConvertAnthropicMessagesToOpenAI([]byte(`{
+	  "model":"m","max_tokens":100,
+	  "messages":[{"role":"user","content":[
+	    {"type":"text","text":"Here are the results:"},
+	    {"type":"tool_result","tool_use_id":"call_1","content":"done"}
+	  ]}]
+	}`))
+	if err != nil {
+		t.Fatalf("ConvertAnthropicMessagesToOpenAI() error = %v", err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(converted, &body); err != nil {
+		t.Fatalf("decode converted request: %v", err)
+	}
+	messages := body["messages"].([]any)
+	if len(messages) != 2 {
+		t.Fatalf("messages = %#v, want two messages", messages)
+	}
+	first := messages[0].(map[string]any)
+	second := messages[1].(map[string]any)
+	if first["role"] != "user" || first["content"] != "Here are the results:" {
+		t.Fatalf("first message = %#v, want APISIX 3.17 user text", first)
+	}
+	if second["role"] != "tool" || second["tool_call_id"] != "call_1" {
+		t.Fatalf("second message = %#v, want APISIX 3.17 tool result", second)
+	}
+}
+
 func TestConvertAnthropicResponseFormatNonObjectSchemas(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		format string
 		wantRF bool
 	}{
-		{"json_object never maps", `{"type":"json_object"}`, false},
+		{"json_object maps in APISIX 3.17", `{"type":"json_object"}`, true},
 		{"schema-less json_schema omitted", `{"type":"json_schema"}`, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

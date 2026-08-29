@@ -191,9 +191,9 @@ func (p *Plugin) consumerByID(id string) (resource.Consumer, bool) {
 
 func (p *Plugin) writeAuthError(w http.ResponseWriter, body string) {
 	w.Header().Set("WWW-Authenticate", fmt.Sprintf(`Basic realm="%s"`, p.config.Realm))
-	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusUnauthorized)
-	_, _ = w.Write([]byte(body))
+	_, _ = w.Write([]byte(body + "\n"))
 }
 
 type authorizationError string

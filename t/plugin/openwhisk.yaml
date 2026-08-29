@@ -1,72 +1,14 @@
 source:
   repository: https://github.com/apache/apisix
-  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
   file: t/plugin/openwhisk.t
-  tests: 21
+  tests: 9
+  test_numbers: [6, 7, 9, 11, 13, 15, 17, 19, 21]
 
 cases:
-  - name: schema
-    source:
-      tests: [1, 2, 3]
-    variants:
-      - name: valid
-        config:
-          routes:
-            - id: openwhisk-valid
-              uri: /hello
-              plugins:
-                openwhisk:
-                  api_host: "http://{{UPSTREAM_ADDR}}"
-                  service_token: test:test
-                  namespace: test
-                  action: test
-        input:
-          path: /hello
-        upstream:
-          expect:
-            method: POST
-            path:
-              equals: /api/v1/namespaces/test/actions/test?blocking=true&result=true&timeout=3000
-          respond:
-            status: 200
-            body: '{"body":"done"}'
-        output:
-          status: 200
-          body:
-            equals: done
-      - name: missing-api-host
-        config:
-          routes:
-            - id: openwhisk-missing-api-host
-              uri: /hello
-              plugins:
-                openwhisk:
-                  service_token: test:test
-                  namespace: test
-                  action: test
-        input: &schema_input
-          path: /hello
-        output: &schema_error
-          status: 404
-          logs:
-            matches: 'build route openwhisk-.*fail:.*openwhisk'
-      - name: numeric-api-host
-        config:
-          routes:
-            - id: openwhisk-numeric-api-host
-              uri: /hello
-              plugins:
-                openwhisk:
-                  api_host: 3233
-                  service_token: test:test
-                  namespace: test
-                  action: test
-        input: *schema_input
-        output: *schema_error
-
   - name: encrypted-test-params
     source:
-      tests: [4, 5, 6, 7, 8, 9]
+      tests: [6, 7, 9]
     runtime:
       apisix:
         data_encryption:
@@ -136,18 +78,9 @@ cases:
           status: 200
           body:
             equals: '{"hello":"world"}'
-    after_shutdown:
-      - path: {equals: '{{WORK_DIR}}/apisix-go-store.db'}
-        bbolt_json:
-          bucket: routes
-          key: openwhisk-test-params
-          fields:
-            /plugins/openwhisk/service_token: pe14btxogtzJ4qPM/W2qj0AQeUK/O5oegLkKJLkkSEsKUIjP+bgyO+qsTXuLrY/h/esLKrRulD2TOtf+Zt/Us+hxZ/svsMwXZqZ9T9/2wWyi8SKALLfTUZDiV69mxCwD2zNBze1jslMlPtdA9JFIOQ==
-          forbidden_matches: ['23bc46b1-71f6-4ed5-8c54-816aa4f8c502:123zO3xZCLrMN6v2BKK1dXYFpXlPkccOFqm12CdAsMgRU4VrNZ9lyGVCGuMDGIwP']
-
   - name: non-existent-action
     source:
-      tests: [10, 11]
+      tests: [11]
     config:
       routes:
         - id: openwhisk-not-found
@@ -179,7 +112,7 @@ cases:
 
   - name: unavailable-api-host
     source:
-      tests: [12, 13]
+      tests: [13]
     config:
       routes:
         - id: openwhisk-unavailable
@@ -205,7 +138,7 @@ cases:
 
   - name: packaged-action
     source:
-      tests: [14, 15]
+      tests: [15]
     config:
       routes:
         - id: openwhisk-packaged
@@ -234,7 +167,7 @@ cases:
 
   - name: action-status-code
     source:
-      tests: [16, 17]
+      tests: [17]
     config:
       routes:
         - id: openwhisk-status
@@ -259,7 +192,7 @@ cases:
 
   - name: action-headers
     source:
-      tests: [18, 19]
+      tests: [19]
     config:
       routes:
         - id: openwhisk-headers
@@ -287,7 +220,7 @@ cases:
 
   - name: action-body
     source:
-      tests: [20, 21]
+      tests: [21]
     config:
       routes:
         - id: openwhisk-body

@@ -115,6 +115,9 @@ type Acknowledgement struct {
 	Cursor    ProviderCursor
 	Revisions RevisionSet
 	Decisions map[Domain][]ResourceDecision
+	// CommittedReplay is transient delivery metadata set only when Coordinator
+	// returns an acknowledgement already committed for the requested cursor.
+	CommittedReplay bool
 }
 
 type RecoveryFailure struct {

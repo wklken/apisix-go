@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/sha512"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
@@ -71,6 +72,7 @@ const (
 	stateLifetime       = 10 * time.Minute
 	sessionLifetime     = 24 * time.Hour
 	rsaSHA256Method     = "http://www.w3.org/2001/04/xmldsig-more#rsa-sha256"
+	rsaSHA512Method     = "http://www.w3.org/2001/04/xmldsig-more#rsa-sha512"
 )
 
 const schema = `
@@ -113,12 +115,16 @@ const schema = `
       "enum": ["HTTP-Redirect", "HTTP-POST"]
     },
     "secret": {
-      "type": "string"
+      "type": "string",
+      "minLength": 8,
+      "maxLength": 32
     },
     "secret_fallbacks": {
       "type": "array",
       "items": {
-        "type": "string"
+        "type": "string",
+        "minLength": 8,
+        "maxLength": 32
       }
     }
   },
@@ -422,7 +428,7 @@ func (p *Plugin) startAuthentication(w http.ResponseWriter, r *http.Request) {
 	if p.config.AuthProtocolBindingMethod == "HTTP-POST" {
 		binding = saml.HTTPPostBinding
 	}
-	authReq, err := sp.MakeAuthenticationRequest(p.config.IDPURI, binding, saml.HTTPPostBinding)
+	authReq, err := sp.MakeAuthenticationRequest(p.config.IDPURI, binding, binding)
 	if err != nil {
 		http.Error(w, util.BuildMessageResponse("saml authentication failed"), http.StatusInternalServerError)
 		return
@@ -718,7 +724,7 @@ func (p *Plugin) serviceProviderLocked(r *http.Request) (*saml.ServiceProvider, 
 		AcsURL:            *acsURL,
 		SloURL:            *sloURL,
 		IDPMetadata:       p.spIDPMetadata,
-		SignatureMethod:   rsaSHA256Method,
+		SignatureMethod:   rsaSHA512Method,
 		AuthnNameIDFormat: saml.UnspecifiedNameIDFormat,
 		LogoutBindings:    []string{saml.HTTPRedirectBinding, saml.HTTPPostBinding},
 	}, nil
@@ -1138,9 +1144,9 @@ func signedSAMLRedirectURL(
 	if relayState != "" {
 		signedQuery += "&RelayState=" + url.QueryEscape(relayState)
 	}
-	signedQuery += "&SigAlg=" + url.QueryEscape(rsaSHA256Method)
-	digest := sha256.Sum256([]byte(signedQuery))
-	signature, err := signer.Sign(rand.Reader, digest[:], crypto.SHA256)
+	signedQuery += "&SigAlg=" + url.QueryEscape(rsaSHA512Method)
+	digest := sha512.Sum512([]byte(signedQuery))
+	signature, err := signer.Sign(rand.Reader, digest[:], crypto.SHA512)
 	if err != nil {
 		return nil, err
 	}
@@ -1174,8 +1180,8 @@ func verifySAMLRedirectSignature(rawQuery string, field string, certificatePEM s
 		return errors.New("signature is required")
 	}
 	decodedSigAlg, err := url.QueryUnescape(sigAlg)
-	if err != nil || decodedSigAlg != rsaSHA256Method {
-		return errors.New("SAML Redirect SigAlg must be rsa-sha256")
+	if err != nil {
+		return errors.New("SAML Redirect SigAlg is invalid")
 	}
 
 	signedQuery := field + "=" + message
@@ -1203,8 +1209,19 @@ func verifySAMLRedirectSignature(rawQuery string, field string, certificatePEM s
 	if !ok {
 		return errors.New("SAML signing certificate does not contain an RSA public key")
 	}
-	digest := sha256.Sum256([]byte(signedQuery))
-	if err := rsa.VerifyPKCS1v15(publicKey, crypto.SHA256, digest[:], signature); err != nil {
+	var hash crypto.Hash
+	var digest []byte
+	switch decodedSigAlg {
+	case rsaSHA256Method:
+		sum := sha256.Sum256([]byte(signedQuery))
+		hash, digest = crypto.SHA256, sum[:]
+	case rsaSHA512Method:
+		sum := sha512.Sum512([]byte(signedQuery))
+		hash, digest = crypto.SHA512, sum[:]
+	default:
+		return errors.New("SAML Redirect SigAlg must be rsa-sha256 or rsa-sha512")
+	}
+	if err := rsa.VerifyPKCS1v15(publicKey, hash, digest, signature); err != nil {
 		return fmt.Errorf("verify Redirect signature: %w", err)
 	}
 	return nil

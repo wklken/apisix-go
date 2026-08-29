@@ -23,11 +23,63 @@ import (
 	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/util"
 
 	"github.com/golang-jwt/jwt/v5"
 )
+
+func TestPostInitWarnsOnlyForInsecureURLs(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		scheme       string
+		wantWarnings []string
+	}{
+		{
+			name:   "http",
+			scheme: "http",
+			wantWarnings: []string{
+				"Using openid-connect discovery with no TLS is a security risk",
+				"Using openid-connect introspection_endpoint with no TLS is a security risk",
+				"Using openid-connect redirect_uri with no TLS is a security risk",
+				"Using openid-connect post_logout_redirect_uri with no TLS is a security risk",
+				"Using openid-connect proxy_opts.http_proxy with no TLS is a security risk",
+			},
+		},
+		{name: "https", scheme: "https"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var warnings []string
+			stop := logger.ReplaceObserver("openid-connect-security-warning-"+test.name, func(entry logger.Entry) {
+				if entry.Level == "WARN" && strings.Contains(entry.Message, "openid-connect") {
+					warnings = append(warnings, entry.Message)
+				}
+			})
+			defer stop()
+
+			newTestPlugin(t, Config{
+				ClientID:              "a",
+				ClientSecret:          "b",
+				Discovery:             test.scheme + "://a.example/.well-known/openid-configuration",
+				IntrospectionEndpoint: test.scheme + "://b.example/introspect",
+				RedirectURI:           test.scheme + "://c.example/callback",
+				PostLogoutRedirectURI: test.scheme + "://d.example/logout",
+				ProxyOpts:             &ProxyOptions{HTTPProxy: test.scheme + "://e.example"},
+				BearerOnly:            true,
+			})
+
+			if len(warnings) != len(test.wantWarnings) {
+				t.Fatalf("warnings = %#v, want %#v", warnings, test.wantWarnings)
+			}
+			for index := range warnings {
+				if warnings[index] != test.wantWarnings[index] {
+					t.Fatalf("warnings = %#v, want %#v", warnings, test.wantWarnings)
+				}
+			}
+		})
+	}
+}
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
@@ -753,6 +805,15 @@ func TestHandlerBearerOnlyRequiresToken(t *testing.T) {
 	}
 	if got := rr.Header().Get("WWW-Authenticate"); got != `Bearer realm="demo"` {
 		t.Fatalf("WWW-Authenticate = %q, want bearer realm", got)
+	}
+	if got := rr.Body.String(); got != "" {
+		t.Fatalf("body = %q, want APISIX bare unauthorized response", got)
+	}
+	if got := rr.Header().Get("Content-Type"); got != "" {
+		t.Fatalf("Content-Type = %q, want absent", got)
+	}
+	if got := rr.Header().Get("X-Content-Type-Options"); got != "" {
+		t.Fatalf("X-Content-Type-Options = %q, want absent", got)
 	}
 }
 

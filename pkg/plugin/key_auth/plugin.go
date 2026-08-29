@@ -190,7 +190,10 @@ func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.Re
 		if result, ok := p.anonymousConsumerResult(w, r); ok {
 			return result
 		}
-		p.writeAuthError(w, http.StatusUnauthorized, `{"message":"Missing API key in request"}`)
+		w.Header().Set("WWW-Authenticate", fmt.Sprintf(`apikey realm="%s"`, p.config.Realm))
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte("{\"message\":\"Missing API key in request\"}\n"))
 		return base.StopRequest(r)
 	}
 

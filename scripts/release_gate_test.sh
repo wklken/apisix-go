@@ -10,6 +10,7 @@ unit_workflow="$repo_root/.github/workflows/unit-test.yml"
 capability_status_workflow="$repo_root/.github/workflows/capability-status.yml"
 rc_workflow="$repo_root/.github/workflows/release-candidate.yml"
 release_workflow="$repo_root/.github/workflows/release.yml"
+production_config="$repo_root/conf/config-production.yaml"
 
 require_pattern() {
     local pattern=$1
@@ -120,6 +121,18 @@ test -f "$unit_workflow"
 test -f "$capability_status_workflow"
 test -f "$dockerfile"
 test -f "$goreleaser"
+test -f "$production_config"
+
+# The release image must retain the exact controlled-rollout selection. The
+# general loader keeps these axes independent; this gate owns their release
+# combination.
+require_fixed 'compatibility_target: apisix-3.17' "$production_config"
+require_fixed 'security_profile: strict' "$production_config"
+require_fixed 'qualification_profile: http-data-plane-v1' "$production_config"
+require_fixed '  role: data_plane' "$production_config"
+require_fixed '    config_provider: etcd' "$production_config"
+require_fixed '  proxy_mode: http' "$production_config"
+require_fixed '  enable_admin: false' "$production_config"
 
 # Every local and packaged binary must use the same path/symbol stripping
 # contract while retaining the four runtime build metadata values.
@@ -202,7 +215,7 @@ require_job_fixed "$workflow" race-and-vulnerability 'needs: validate-inputs'
 require_job_fixed "$workflow" race-and-vulnerability 'ref: ${{ inputs.source-commit || github.sha }}'
 require_job_fixed "$workflow" race-and-vulnerability 'git rev-parse HEAD'
 require_job_fixed "$workflow" race-and-vulnerability 'go test -race ./pkg/config ./cmd ./pkg/server ./pkg/route ./pkg/proxy ./pkg/store ./pkg/etcd ./pkg/stream -count=1'
-require_job_fixed "$workflow" race-and-vulnerability 'govulncheck@v1.7.0'
+require_job_fixed "$workflow" race-and-vulnerability 'govulncheck@v1.7.0 . ./cmd/... ./pkg/...'
 require_job_fixed "$workflow" race-and-vulnerability 'contents: read'
 for job in race-and-vulnerability container-evidence etcd-recovery proxy-soak publish-image; do
     require_job_fixed "$workflow" "$job" 'ref: ${{ inputs.source-commit || github.sha }}'

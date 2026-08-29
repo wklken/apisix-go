@@ -22,6 +22,7 @@ import (
 type Plugin struct {
 	base.BasePlugin
 	config    Config
+	secrets   rewriteSecretState
 	client    *http.Client
 	now       func() time.Time
 	gcpTokens gcpTokenApplier
@@ -286,28 +287,46 @@ func (p *Plugin) requestLLM(r *http.Request, originalBody string) ([]byte, error
 	if err != nil {
 		return nil, fmt.Errorf("failed to encode LLM request body: %w", err)
 	}
+	var rewritten []byte
+	err = p.withAuth(func(auth Auth) error {
+		var requestErr error
+		rewritten, requestErr = p.requestLLMWithAuth(r, protocol, endpoint, llmBody, auth)
+		return requestErr
+	})
+	return rewritten, err
+}
 
+func (p *Plugin) requestLLMWithAuth(
+	r *http.Request,
+	protocol ai_protocols.Protocol,
+	endpoint string,
+	llmBody []byte,
+	auth Auth,
+) ([]byte, error) {
 	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, endpoint, bytes.NewReader(llmBody))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create LLM request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	for header, value := range p.config.Auth.Header {
+	for header, value := range auth.Header {
 		req.Header.Set(header, value)
 	}
 	query := req.URL.Query()
-	for key, value := range p.config.Auth.Query {
+	for key, value := range auth.Query {
 		query.Set(key, value)
 	}
 	req.URL.RawQuery = query.Encode()
-	if p.config.Auth.GCP != nil {
-		if err := p.gcpTokens.Apply(r.Context(), p.client, req, *p.config.Auth.GCP); err != nil {
+	if auth.GCP != nil {
+		if err := p.gcpTokens.Apply(r.Context(), p.client, req, *auth.GCP); err != nil {
 			return nil, fmt.Errorf("authenticate GCP request: %w", err)
 		}
 	}
 	if p.config.Provider == "bedrock" {
 		region, _ := p.config.ProviderConf["region"].(string)
-		if err := ai_auth.SignAWSRequest(req, llmBody, *p.config.Auth.AWS, region, "bedrock", p.now()); err != nil {
+		if auth.AWS == nil {
+			return nil, fmt.Errorf("sign Bedrock request: credentials unavailable")
+		}
+		if err := ai_auth.SignAWSRequest(req, llmBody, *auth.AWS, region, "bedrock", p.now()); err != nil {
 			return nil, fmt.Errorf("sign Bedrock request: %w", err)
 		}
 	}

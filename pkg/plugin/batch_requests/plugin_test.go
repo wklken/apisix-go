@@ -241,7 +241,7 @@ func TestHandlerReportsSSLVerifyTypeMismatchAsBadRequestBody(t *testing.T) {
 	}
 }
 
-func TestHandlerContinuesAfterTimedOutPipelineRequest(t *testing.T) {
+func TestHandlerStopsAfterTimedOutPipelineRequest(t *testing.T) {
 	var calls atomic.Int32
 	dispatcher := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
@@ -266,11 +266,11 @@ func TestHandlerContinuesAfterTimedOutPipelineRequest(t *testing.T) {
 	if responses[0].Status != http.StatusGatewayTimeout {
 		t.Fatalf("pipeline status = %d, want 504", responses[0].Status)
 	}
-	if len(responses) != 2 || responses[1].Status != http.StatusNoContent {
-		t.Fatalf("responses = %#v, want timeout followed by 204", responses)
+	if len(responses) != 1 {
+		t.Fatalf("responses = %#v, want only the timed-out response", responses)
 	}
-	if got := calls.Load(); got != 2 {
-		t.Fatalf("dispatcher calls = %d, want 2", got)
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("dispatcher calls = %d, want 1", got)
 	}
 }
 
@@ -313,11 +313,11 @@ func TestHandlerBoundsCancellationIgnoringWorkers(t *testing.T) {
 	}
 
 	responses := decodeAllPipelineResponses(t, res.Body.String())
-	if len(responses) != 4 {
-		t.Fatalf("responses length = %d, want 4", len(responses))
+	if len(responses) != 1 || responses[0].Status != http.StatusGatewayTimeout {
+		t.Fatalf("responses = %#v, want one timeout response", responses)
 	}
-	if got := peak.Load(); got != 2 {
-		t.Fatalf("peak workers = %d, want exactly 2 admitted slots", got)
+	if got := peak.Load(); got != 1 {
+		t.Fatalf("peak workers = %d, want exactly 1 admitted slot", got)
 	}
 	deadline := time.Now().Add(time.Second)
 	for active.Load() != 0 {
@@ -573,6 +573,38 @@ func TestHandlerAllowsUnknownTopLevelFields(t *testing.T) {
 	}
 }
 
+func TestHandlerMatchesAPISIXMissingPipelineError(t *testing.T) {
+	var dispatchCalls atomic.Int32
+	handler := NewHandlerWithLimits(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		dispatchCalls.Add(1)
+		w.WriteHeader(http.StatusNoContent)
+	}), Limits{})
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(
+		response,
+		httptest.NewRequest(
+			http.MethodPost,
+			DefaultURI,
+			strings.NewReader(`{"pipeline1":[{"path":"/inner"}]}`),
+		),
+	)
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("response code = %d, want 400; body=%q", response.Code, response.Body.String())
+	}
+	if got := response.Header().Get("Content-Type"); got != "application/json" {
+		t.Fatalf("Content-Type = %q, want application/json", got)
+	}
+	const wantBody = `{"error_msg":"bad request body: object matches none of the required: [\"pipeline\"]"}` + "\n"
+	if got := response.Body.String(); got != wantBody {
+		t.Fatalf("response body = %q, want %q", got, wantBody)
+	}
+	if got := dispatchCalls.Load(); got != 0 {
+		t.Fatalf("dispatcher calls = %d, want 0", got)
+	}
+}
+
 func TestHandlerDistinguishesMissingPipelineFromEmptyPipeline(t *testing.T) {
 	handler := NewHandlerWithLimits(http.NewServeMux(), Limits{})
 
@@ -589,8 +621,8 @@ func TestHandlerDistinguishesMissingPipelineFromEmptyPipeline(t *testing.T) {
 		t.Fatalf("missing pipeline response code = %d, want 400; body=%q",
 			missing.Code, missing.Body.String())
 	}
-	if !strings.Contains(missing.Body.String(), "pipeline is required") {
-		t.Fatalf("missing pipeline body = %q, want required reason", missing.Body.String())
+	if !strings.Contains(missing.Body.String(), "object matches none of the required") {
+		t.Fatalf("missing pipeline body = %q, want APISIX required-schema reason", missing.Body.String())
 	}
 
 	empty := httptest.NewRecorder()
@@ -701,21 +733,11 @@ func TestNewHandlerFromMetadataBindsMaxConcurrency(t *testing.T) {
 
 	var calls atomic.Int32
 	firstEntered := make(chan struct{})
-	firstExited := make(chan struct{})
-	releaseWorker := make(chan struct{})
-	var released atomic.Bool
-	release := func() {
-		if released.CompareAndSwap(false, true) {
-			close(releaseWorker)
-		}
-	}
-	t.Cleanup(release)
+	releaseFirst := make(chan struct{})
 	dispatcher := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		call := calls.Add(1)
-		if call == 1 {
+		if calls.Add(1) == 1 {
 			close(firstEntered)
-			<-releaseWorker
-			defer close(firstExited)
+			<-releaseFirst
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})
@@ -724,25 +746,16 @@ func TestNewHandlerFromMetadataBindsMaxConcurrency(t *testing.T) {
 		t.Fatalf("NewHandlerFromMetadata() error = %v", err)
 	}
 
-	itemTimeout := 1
-	body, err := json.Marshal(Request{
-		Timeout: &itemTimeout,
-		Pipeline: []PipelineRequest{
-			{Path: "/first"},
-			{Path: "/second"},
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	outerCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
-	req := httptest.NewRequest(http.MethodPost, DefaultURI, bytes.NewReader(body)).WithContext(outerCtx)
-	res := &batchCommitSignalWriter{ResponseRecorder: httptest.NewRecorder(), committed: make(chan struct{})}
-	served := make(chan struct{})
+	first := httptest.NewRequest(
+		http.MethodPost,
+		DefaultURI,
+		strings.NewReader(`{"timeout":1000,"pipeline":[{"path":"/first"}]}`),
+	)
+	firstResponse := httptest.NewRecorder()
+	firstServed := make(chan struct{})
 	go func() {
-		handler.ServeHTTP(res, req)
-		close(served)
+		handler.ServeHTTP(firstResponse, first)
+		close(firstServed)
 	}()
 	select {
 	case <-firstEntered:
@@ -750,38 +763,30 @@ func TestNewHandlerFromMetadataBindsMaxConcurrency(t *testing.T) {
 		t.Fatal("first dispatcher call did not enter")
 	}
 
-	select {
-	case <-res.committed:
-	case <-time.After(time.Second):
-		t.Fatal("batch timeout response was not committed")
-	}
-	if res.Code != http.StatusOK {
-		t.Fatalf("batch response code = %d, want 200; body=%q", res.Code, res.Body.String())
-	}
-	responses := decodeAllPipelineResponses(t, res.Body.String())
-	if len(responses) != 2 || responses[0].Status != http.StatusGatewayTimeout ||
-		responses[1].Status != http.StatusGatewayTimeout {
-		t.Fatalf("pipeline responses = %#v, want two timeout responses", responses)
+	second := httptest.NewRequest(
+		http.MethodPost,
+		DefaultURI,
+		strings.NewReader(`{"timeout":10,"pipeline":[{"path":"/second"}]}`),
+	)
+	secondResponse := httptest.NewRecorder()
+	handler.ServeHTTP(secondResponse, second)
+	secondResults := decodeAllPipelineResponses(t, secondResponse.Body.String())
+	if len(secondResults) != 1 || secondResults[0].Status != http.StatusGatewayTimeout {
+		t.Fatalf("second pipeline responses = %#v, want one timeout", secondResults)
 	}
 	if got := calls.Load(); got != 1 {
-		t.Fatalf("dispatcher calls = %d, want one worker while the concurrency slot is occupied", got)
-	}
-	select {
-	case <-served:
-		t.Fatal("batch handler returned before the accepted worker exited")
-	default:
+		t.Fatalf("dispatcher calls = %d, want second request excluded by the one-worker limit", got)
 	}
 
-	release()
+	close(releaseFirst)
 	select {
-	case <-firstExited:
+	case <-firstServed:
 	case <-time.After(time.Second):
-		t.Fatal("first dispatcher worker did not exit after release")
+		t.Fatal("first batch request did not finish after releasing its worker")
 	}
-	select {
-	case <-served:
-	case <-time.After(time.Second):
-		t.Fatal("batch handler did not return after releasing the worker")
+	firstResults := decodeAllPipelineResponses(t, firstResponse.Body.String())
+	if len(firstResults) != 1 || firstResults[0].Status != http.StatusNoContent {
+		t.Fatalf("first pipeline responses = %#v, want one 204", firstResults)
 	}
 }
 

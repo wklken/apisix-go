@@ -1,6 +1,6 @@
 sources:
-  - {repository: https://github.com/apache/apisix, commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7, file: t/plugin/request-validation.t, tests: 53}
-  - {repository: https://github.com/apache/apisix, commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7, file: t/plugin/request-validation2.t, tests: 2}
+  - {repository: https://github.com/apache/apisix, commit: 9ef2ecab67f652d38365049613610ef649bb4ad0, file: t/plugin/request-validation.t, tests: 53}
+  - {repository: https://github.com/apache/apisix, commit: 9ef2ecab67f652d38365049613610ef649bb4ad0, file: t/plugin/request-validation2.t, tests: 2}
 cases:
   - name: body-schema-requires-bytes-and-accepts-present-values
     source: {file: t/plugin/request-validation.t, tests: [1]}

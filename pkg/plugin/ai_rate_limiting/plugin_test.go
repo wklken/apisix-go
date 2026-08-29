@@ -26,6 +26,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/secret"
 	"github.com/wklken/apisix-go/pkg/testutil"
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 func newTestPlugin(t *testing.T, cfg Config, now func() time.Time) *Plugin {
@@ -620,8 +621,8 @@ func TestHandlerChargesTotalTokensAndRejectsNextRequest(t *testing.T) {
 	if got := first.Header().Get("X-AI-RateLimit-Limit-global"); got != "10" {
 		t.Fatalf("limit header = %q, want 10", got)
 	}
-	if got := first.Header().Get("X-AI-RateLimit-Remaining-global"); got != "9" {
-		t.Fatalf("remaining header = %q, want 9 after atomic reservation", got)
+	if got := first.Header().Get("X-AI-RateLimit-Remaining-global"); got != "10" {
+		t.Fatalf("remaining header = %q, want pre-charge quota 10", got)
 	}
 	if got := first.Header().Get("X-AI-RateLimit-Reset-global"); got != "60" {
 		t.Fatalf("reset header = %q, want remaining window duration 60", got)
@@ -967,16 +968,16 @@ func TestHandlerResetsQuotaAfterWindow(t *testing.T) {
 	}
 }
 
-func TestHandlerReportsPinnedPreChargeSnapshots(t *testing.T) {
+func TestHandlerReportsAPISIX317PreChargeSnapshots(t *testing.T) {
 	p := newTestPlugin(t, Config{Limit: 30, TimeWindow: 60}, time.Now)
 	upstream := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"usage":{"total_tokens":10}}`))
 	})
-	for i, want := range []string{"29", "19", "9", "0"} {
+	for i, want := range []string{"30", "20", "10", "0"} {
 		response := httptest.NewRecorder()
 		p.Handler(upstream).ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/", nil))
 		if got := response.Header().Get("X-AI-RateLimit-Remaining-global"); got != want {
-			t.Fatalf("response %d remaining = %q, want reserved snapshot %q", i+1, got, want)
+			t.Fatalf("response %d remaining = %q, want pre-charge snapshot %q", i+1, got, want)
 		}
 		wantStatus := http.StatusOK
 		if i == 3 {
@@ -985,6 +986,67 @@ func TestHandlerReportsPinnedPreChargeSnapshots(t *testing.T) {
 		if response.Code != wantStatus {
 			t.Fatalf("response %d status = %d, want %d", i+1, response.Code, wantStatus)
 		}
+	}
+}
+
+func TestHandlerUsesAPISIX317ProviderTotalTokensWhenItDiffersFromComponentSum(t *testing.T) {
+	p := newTestPlugin(t, Config{Limit: 30, TimeWindow: 60}, time.Now)
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		apisixctx.RegisterRequestVar(r, "$llm_raw_usage", map[string]any{
+			"prompt_tokens":     float64(8),
+			"completion_tokens": float64(5),
+			"total_tokens":      float64(10),
+		})
+		apisixctx.RegisterRequestVar(r, "$ai_token_usage", map[string]any{
+			"prompt_tokens":     int64(8),
+			"completion_tokens": int64(5),
+			"total_tokens":      int64(13),
+		})
+		_, _ = w.Write([]byte(`{"usage":{"prompt_tokens":8,"completion_tokens":5,"total_tokens":10}}`))
+	})
+
+	for i, want := range []string{"30", "20", "10"} {
+		response := httptest.NewRecorder()
+		request := apisixctx.WithRequestVars(httptest.NewRequest(http.MethodPost, "/ai", nil))
+		p.Handler(upstream).ServeHTTP(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("response %d status = %d, want 200", i+1, response.Code)
+		}
+		if got := response.Header().Get("X-AI-RateLimit-Remaining-global"); got != want {
+			t.Fatalf("response %d remaining = %q, want provider-total snapshot %q", i+1, got, want)
+		}
+	}
+}
+
+func TestHandlerWritesAPISIX317CustomRejectionResponse(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Limit:        1,
+		TimeWindow:   60,
+		RejectedCode: http.StatusForbidden,
+		RejectedMsg:  "rate limit exceeded",
+	}, time.Now)
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"usage":{"total_tokens":1}}`))
+	})
+	p.Handler(upstream).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/ai", nil))
+
+	rejected := httptest.NewRecorder()
+	p.Handler(upstream).ServeHTTP(rejected, httptest.NewRequest(http.MethodPost, "/ai", nil))
+
+	if rejected.Code != http.StatusForbidden {
+		t.Fatalf("rejected status = %d, want 403", rejected.Code)
+	}
+	if got := rejected.Header().Get("X-AI-RateLimit-Remaining-global"); got != "0" {
+		t.Fatalf("rejected remaining = %q, want 0", got)
+	}
+	if got := rejected.Header().Get("Content-Type"); got != "text/plain; charset=utf-8" {
+		t.Fatalf("rejected Content-Type = %q, want text/plain; charset=utf-8", got)
+	}
+	if got := rejected.Header().Get("X-Content-Type-Options"); got != "" {
+		t.Fatalf("rejected X-Content-Type-Options = %q, want absent", got)
+	}
+	if got := rejected.Body.String(); got != "{\"error_msg\":\"rate limit exceeded\"}\n" {
+		t.Fatalf("rejected body = %q, want APISIX error object", got)
 	}
 }
 
@@ -1030,8 +1092,8 @@ func TestAIProxyAndRateLimiterExecuteInAPISIXPhaseOrder(t *testing.T) {
 	if first.Code != http.StatusOK {
 		t.Fatalf("first response code = %d, want 200", first.Code)
 	}
-	if got := first.Header().Get("X-AI-RateLimit-Remaining-ai-proxy-openai-compatible"); got != "1" {
-		t.Fatalf("remaining header = %q, want reserved quota 1", got)
+	if got := first.Header().Get("X-AI-RateLimit-Remaining-ai-proxy-openai-compatible"); got != "2" {
+		t.Fatalf("remaining header = %q, want pre-charge quota 2", got)
 	}
 
 	blocked := httptest.NewRecorder()
@@ -1146,8 +1208,8 @@ func TestAIProxyMultiPublishesInstanceBeforeRateLimitPreflight(t *testing.T) {
 	if first.Code != http.StatusOK {
 		t.Fatalf("first response code = %d, want 200", first.Code)
 	}
-	if got := first.Header().Get("X-AI-RateLimit-Remaining-model-a"); got != "1" {
-		t.Fatalf("remaining header = %q, want reserved quota 1", got)
+	if got := first.Header().Get("X-AI-RateLimit-Remaining-model-a"); got != "2" {
+		t.Fatalf("remaining header = %q, want pre-charge quota 2", got)
 	}
 
 	blocked := httptest.NewRecorder()
@@ -1378,8 +1440,8 @@ func TestAIProxyMultiSkipsRateLimitedInstance(t *testing.T) {
 	if firstCalls.Load() != 0 || secondCalls.Load() != 1 {
 		t.Fatalf("provider calls = (%d, %d), want (0, 1)", firstCalls.Load(), secondCalls.Load())
 	}
-	if got := allowed.Header().Get("X-AI-RateLimit-Remaining-model-b"); got != "4" {
-		t.Fatalf("model-b remaining header = %q, want reserved quota 4", got)
+	if got := allowed.Header().Get("X-AI-RateLimit-Remaining-model-b"); got != "5" {
+		t.Fatalf("model-b remaining header = %q, want pre-charge quota 5", got)
 	}
 
 	rate.reconcile(
@@ -1411,6 +1473,197 @@ func TestPostInitAcceptsExpressionCostStrategy(t *testing.T) {
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
+	}
+}
+
+type configAdmissionStage string
+
+const (
+	configAdmissionAccepted configAdmissionStage = "accepted"
+	configAdmissionSchema   configAdmissionStage = "schema"
+	configAdmissionPostInit configAdmissionStage = "post_init"
+)
+
+func admitAPISIX317Config(t *testing.T, raw map[string]any) (configAdmissionStage, error) {
+	t.Helper()
+
+	p := &Plugin{}
+	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := util.Validate(raw, p.GetSchema()); err != nil {
+		return configAdmissionSchema, err
+	}
+	payload, err := json.Marshal(raw)
+	if err != nil {
+		t.Fatalf("marshal config: %v", err)
+	}
+	if err := json.Unmarshal(payload, p.Config()); err != nil {
+		t.Fatalf("unmarshal config: %v", err)
+	}
+	if err := base.MaterializePluginSecrets(p); err != nil {
+		t.Fatalf("MaterializePluginSecrets() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		return configAdmissionPostInit, err
+	}
+	return configAdmissionAccepted, nil
+}
+
+func TestAPISIX317ExpressionConfigurationAdmissionMatrix(t *testing.T) {
+	tests := []struct {
+		name      string
+		config    map[string]any
+		wantStage configAdmissionStage
+	}{
+		{
+			name: "missing cost expression",
+			config: map[string]any{
+				"limit": 100, "time_window": 60, "limit_strategy": "expression",
+			},
+			wantStage: configAdmissionPostInit,
+		},
+		{
+			name: "empty cost expression",
+			config: map[string]any{
+				"limit": 100, "time_window": 60, "limit_strategy": "expression", "cost_expr": "",
+			},
+			wantStage: configAdmissionSchema,
+		},
+		{
+			name: "invalid cost expression syntax",
+			config: map[string]any{
+				"limit": 100, "time_window": 60, "limit_strategy": "expression",
+				"cost_expr": "invalid $$$ syntax %%%",
+			},
+			wantStage: configAdmissionPostInit,
+		},
+		{
+			name: "simple cost expression",
+			config: map[string]any{
+				"limit": 100, "time_window": 60, "limit_strategy": "expression",
+				"cost_expr": "input_tokens + output_tokens",
+			},
+			wantStage: configAdmissionAccepted,
+		},
+		{
+			name: "complex cost expression",
+			config: map[string]any{
+				"limit":          100,
+				"time_window":    60,
+				"limit_strategy": "expression",
+				"cost_expr":      "(input_tokens - cache_read_input_tokens) + cache_creation_input_tokens * 1.25 + output_tokens",
+			},
+			wantStage: configAdmissionAccepted,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			stage, err := admitAPISIX317Config(t, test.config)
+			if stage != test.wantStage {
+				t.Fatalf("admission stage = %q, error = %v, want %q", stage, err, test.wantStage)
+			}
+			if test.wantStage == configAdmissionAccepted && err != nil {
+				t.Fatalf("accepted config error = %v", err)
+			}
+			if test.wantStage != configAdmissionAccepted && err == nil {
+				t.Fatalf("rejected config error = nil at %q", stage)
+			}
+		})
+	}
+}
+
+func TestAPISIX317QuotaShapeConfigurationAdmissionMatrix(t *testing.T) {
+	instance := func() map[string]any {
+		return map[string]any{"name": "instance1", "limit": 30, "time_window": 60}
+	}
+	tests := []struct {
+		name      string
+		config    map[string]any
+		wantStage configAdmissionStage
+	}{
+		{
+			name:      "missing global limit",
+			config:    map[string]any{"time_window": 60},
+			wantStage: configAdmissionSchema,
+		},
+		{
+			name:      "missing global time window",
+			config:    map[string]any{"limit": 30},
+			wantStage: configAdmissionSchema,
+		},
+		{
+			name:      "rejected code below minimum",
+			config:    map[string]any{"limit": 30, "time_window": 60, "rejected_code": 199},
+			wantStage: configAdmissionSchema,
+		},
+		{
+			name:      "unknown limit strategy",
+			config:    map[string]any{"limit": 30, "time_window": 60, "limit_strategy": "invalid"},
+			wantStage: configAdmissionSchema,
+		},
+		{
+			name: "instance missing name",
+			config: map[string]any{"instances": []any{
+				instance(), map[string]any{"limit": 30, "time_window": 60},
+			}},
+			wantStage: configAdmissionSchema,
+		},
+		{
+			name:      "global limit missing beside instances",
+			config:    map[string]any{"time_window": 60, "instances": []any{instance()}},
+			wantStage: configAdmissionSchema,
+		},
+		{
+			name:      "global time window missing beside instances",
+			config:    map[string]any{"limit": 30, "instances": []any{instance()}},
+			wantStage: configAdmissionSchema,
+		},
+		{
+			name: "instances and rules are mutually exclusive",
+			config: map[string]any{
+				"instances": []any{instance()},
+				"rules": []any{map[string]any{
+					"count": 1, "time_window": 10, "key": "${http_company}",
+				}},
+			},
+			wantStage: configAdmissionSchema,
+		},
+		{
+			name:      "instances only",
+			config:    map[string]any{"instances": []any{instance()}},
+			wantStage: configAdmissionAccepted,
+		},
+		{
+			name: "global only",
+			config: map[string]any{
+				"limit": 30, "time_window": 60, "limit_strategy": "completion_tokens",
+				"rejected_code": 403, "rejected_msg": "rate limit exceeded",
+			},
+			wantStage: configAdmissionAccepted,
+		},
+		{
+			name: "global and instances",
+			config: map[string]any{
+				"limit": 30, "time_window": 60, "instances": []any{instance()},
+			},
+			wantStage: configAdmissionAccepted,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			stage, err := admitAPISIX317Config(t, test.config)
+			if stage != test.wantStage {
+				t.Fatalf("admission stage = %q, error = %v, want %q", stage, err, test.wantStage)
+			}
+			if test.wantStage == configAdmissionAccepted && err != nil {
+				t.Fatalf("accepted config error = %v", err)
+			}
+			if test.wantStage != configAdmissionAccepted && err == nil {
+				t.Fatalf("rejected config error = nil at %q", stage)
+			}
+		})
 	}
 }
 
@@ -1644,7 +1897,7 @@ func TestHandlerRuleUsesFixedWindowAndDefaultIndexHeaders(t *testing.T) {
 	p.Handler(upstream).ServeHTTP(first, request())
 	for header, want := range map[string]string{
 		"X-AI-1-RateLimit-Limit":     "1",
-		"X-AI-1-RateLimit-Remaining": "0",
+		"X-AI-1-RateLimit-Remaining": "1",
 		"X-AI-1-RateLimit-Reset":     "2",
 	} {
 		if got := first.Header().Get(header); got != want {
@@ -1663,8 +1916,8 @@ func TestHandlerRuleUsesFixedWindowAndDefaultIndexHeaders(t *testing.T) {
 	if replayed.Code != http.StatusOK {
 		t.Fatalf("replayed response status = %d, want 200 after fixed-window reset", replayed.Code)
 	}
-	if got := replayed.Header().Get("X-AI-1-RateLimit-Remaining"); got != "0" {
-		t.Fatalf("replayed remaining = %q, want reserved quota 0 after reset", got)
+	if got := replayed.Header().Get("X-AI-1-RateLimit-Remaining"); got != "1" {
+		t.Fatalf("replayed remaining = %q, want pre-charge quota 1 after reset", got)
 	}
 }
 
@@ -1752,8 +2005,8 @@ func TestHandlerExpressionUsesRawUsageFromRequestContext(t *testing.T) {
 		_, _ = w.Write([]byte(`{"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
 	})).ServeHTTP(rr, req)
 
-	if got := rr.Header().Get("X-AI-RateLimit-Remaining-global"); got != "19" {
-		t.Fatalf("remaining header = %q, want reserved quota 19", got)
+	if got := rr.Header().Get("X-AI-RateLimit-Remaining-global"); got != "20" {
+		t.Fatalf("remaining header = %q, want pre-charge quota 20", got)
 	}
 }
 

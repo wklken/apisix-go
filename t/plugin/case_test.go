@@ -1288,6 +1288,63 @@ func TestManifestMultipleSources(t *testing.T) {
 	}
 }
 
+func TestManifestAllowsDisjointRegressionSourceFromNewerUpstreamCommit(t *testing.T) {
+	data := []byte(`sources:
+  - repository: https://github.com/apache/apisix
+    commit: 1111111111111111111111111111111111111111
+    file: t/plugin/example.t
+    tests: 2
+    test_numbers: [1, 2]
+  - repository: https://github.com/apache/apisix
+    commit: 2222222222222222222222222222222222222222
+    file: t/plugin/example.t
+    tests: 2
+    test_numbers: [3, 4]
+    regression_only: true
+cases:
+  - name: qualified-target-cases
+    source: {file: t/plugin/example.t, tests: [1, 2]}
+    config: {routes: []}
+    input: {path: /target}
+    output: {status: 200, body: {equals: ok}}
+  - name: newer-regression-cases
+    source: {file: t/plugin/example.t, tests: [3, 4]}
+    config: {routes: []}
+    input: {path: /regression}
+    output: {status: 200, body: {equals: ok}}
+`)
+
+	if _, err := loadManifest("regression-source.yaml", data); err != nil {
+		t.Fatalf("validate() error = %v, want disjoint regression source accepted", err)
+	}
+}
+
+func TestManifestAcceptsExplicitLocalBehaviorCaseWithoutUpstreamClaim(t *testing.T) {
+	data := []byte(`source:
+  repository: https://github.com/apache/apisix
+  commit: 1111111111111111111111111111111111111111
+  file: t/plugin/example.t
+  tests: 1
+cases:
+  - name: converted-upstream
+    source: {tests: [1]}
+    config: {routes: []}
+    input: {path: /converted}
+    output: {status: 200}
+  - name: local-regression
+    source:
+      local_reason: guards a Go-specific regression and makes no upstream coverage claim
+    config: {routes: []}
+    input: {path: /local}
+    output: {status: 200}
+`)
+
+	_, err := loadManifest("local-case.yaml", data)
+	if err != nil {
+		t.Fatalf("loadManifest() error = %v, want explicit local case accepted", err)
+	}
+}
+
 func TestManifestRejectsMissingSourceFile(t *testing.T) {
 	manifest := validManifest()
 	manifest.Sources = []SourceSpec{

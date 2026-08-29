@@ -12,8 +12,11 @@ import (
 
 type logRotateManifest struct {
 	Sources []struct {
-		File  string `yaml:"file"`
-		Tests int    `yaml:"tests"`
+		Commit         string `yaml:"commit"`
+		File           string `yaml:"file"`
+		Tests          int    `yaml:"tests"`
+		TestNumbers    []int  `yaml:"test_numbers"`
+		RegressionOnly bool   `yaml:"regression_only"`
 	} `yaml:"sources"`
 	Cases []struct {
 		Name     string          `yaml:"name"`
@@ -52,29 +55,42 @@ func TestManifestMapsEveryPinnedBlockToIndependentRealProcessCase(t *testing.T) 
 	if err := yaml.Unmarshal(data, &manifest); err != nil {
 		t.Fatalf("decode log-rotate manifest: %v", err)
 	}
-	wantSources := map[string]int{
-		"t/plugin/log-rotate.t":  6,
-		"t/plugin/log-rotate2.t": 5,
-		"t/plugin/log-rotate3.t": 6,
+	wantSources := []struct {
+		file       string
+		tests      int
+		numbers    []int
+		regression bool
+	}{
+		{file: "t/plugin/log-rotate.t", tests: 4, numbers: []int{1, 2, 3, 5}},
+		{file: "t/plugin/log-rotate.t", tests: 1, numbers: []int{6}, regression: true},
+		{file: "t/plugin/log-rotate2.t", tests: 5},
+		{file: "t/plugin/log-rotate3.t", tests: 6},
 	}
 	if len(manifest.Sources) != len(wantSources) {
 		t.Fatalf("sources = %d, want %d", len(manifest.Sources), len(wantSources))
 	}
-	for _, source := range manifest.Sources {
-		if want := wantSources[source.File]; source.Tests != want {
-			t.Fatalf("source %s tests = %d, want %d", source.File, source.Tests, want)
+	for index, want := range wantSources {
+		source := manifest.Sources[index]
+		if source.File != want.file || source.Tests != want.tests ||
+			!slices.Equal(source.TestNumbers, want.numbers) || source.RegressionOnly != want.regression {
+			t.Fatalf("source %d = %#v, want %#v", index+1, source, want)
 		}
 	}
-	if len(manifest.Cases) != 17 {
-		t.Fatalf("top-level cases = %d, want 17 pinned TEST blocks", len(manifest.Cases))
+	if len(manifest.Cases) != 16 {
+		t.Fatalf("top-level cases = %d, want 16 real-process TEST blocks", len(manifest.Cases))
 	}
 
-	mapped := make(map[string][]int, len(wantSources))
+	wantMappings := map[string][]int{
+		"t/plugin/log-rotate.t":  {1, 2, 3, 5, 6},
+		"t/plugin/log-rotate2.t": {1, 2, 3, 4, 5},
+		"t/plugin/log-rotate3.t": {1, 2, 3, 4, 5, 6},
+	}
+	mapped := make(map[string][]int, len(wantMappings))
 	for i, testCase := range manifest.Cases {
 		if len(testCase.Source.Tests) != 1 {
 			t.Fatalf("case %d %q maps tests %v, want exactly one", i+1, testCase.Name, testCase.Source.Tests)
 		}
-		if _, ok := wantSources[testCase.Source.File]; !ok {
+		if _, ok := wantMappings[testCase.Source.File]; !ok {
 			t.Fatalf("case %d %q maps unknown source %q", i+1, testCase.Name, testCase.Source.File)
 		}
 		mapped[testCase.Source.File] = append(mapped[testCase.Source.File], testCase.Source.Tests[0])
@@ -82,13 +98,9 @@ func TestManifestMapsEveryPinnedBlockToIndependentRealProcessCase(t *testing.T) 
 			t.Fatalf("case %d %q lacks fixture, request steps, or file assertions", i+1, testCase.Name)
 		}
 		assertLogRotateRuntimeConfiguration(t, i+1, testCase.Name, testCase.Runtime)
-		assertLogRotateStandaloneRoute(t, i+1, testCase.Name, testCase.Config)
+		assertLogRotateSystemRoute(t, i+1, testCase.Name, testCase.Config)
 	}
-	for file, count := range wantSources {
-		want := make([]int, count)
-		for i := range want {
-			want[i] = i + 1
-		}
+	for file, want := range wantMappings {
 		if !slices.Equal(mapped[file], want) {
 			t.Fatalf("source %s mappings = %v, want %v", file, mapped[file], want)
 		}
@@ -104,9 +116,13 @@ func assertLogRotateRuntimeConfiguration(t *testing.T, index int, name string, r
 	if _, ok := pluginAttr["log-rotate"].(map[string]any); !ok {
 		t.Fatalf("case %d %q lacks log-rotate plugin_attr", index, name)
 	}
+	plugins, ok := runtime["plugins"].([]any)
+	if !ok || !slices.Contains(plugins, any("log-rotate")) {
+		t.Fatalf("case %d %q lacks runtime log-rotate enablement", index, name)
+	}
 }
 
-func assertLogRotateStandaloneRoute(t *testing.T, index int, name string, config map[string]any) {
+func assertLogRotateSystemRoute(t *testing.T, index int, name string, config map[string]any) {
 	t.Helper()
 	routes, ok := config["routes"].([]any)
 	if !ok || len(routes) == 0 {
@@ -120,9 +136,11 @@ func assertLogRotateStandaloneRoute(t *testing.T, index int, name string, config
 	if !ok {
 		t.Fatalf("case %d %q lacks route plugins", index, name)
 	}
-	configured, ok := plugins["log-rotate"].(map[string]any)
-	if !ok || configured["access_log"] == nil || configured["error_log"] == nil {
-		t.Fatalf("case %d %q lacks real log-rotate log paths", index, name)
+	if _, configured := plugins["log-rotate"]; configured {
+		t.Fatalf("case %d %q configures system-only log-rotate on a route", index, name)
+	}
+	if _, ok := plugins["file-logger"].(map[string]any); !ok {
+		t.Fatalf("case %d %q lacks the file-logger traffic source", index, name)
 	}
 }
 

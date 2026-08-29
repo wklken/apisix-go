@@ -1310,6 +1310,41 @@ func TestSchemaAcceptsOfficialBodyExpressionFields(t *testing.T) {
 	}
 }
 
+func TestSchemaMatchesAPISIX317SanityMatrix(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		config map[string]any
+		valid  bool
+	}{
+		{name: "full", config: map[string]any{
+			"customer_token": "TEST-Token-Must-Be-Passed", "severity": "INFO",
+			"tags": []any{"special-route", "highpriority-route"}, "max_retry_count": 0,
+			"retry_delay": 1, "buffer_duration": 60, "inactive_timeout": 2, "batch_max_size": 10,
+		}, valid: true},
+		{name: "minimal", config: map[string]any{"customer_token": "minimized-config"}, valid: true},
+		{name: "missing token", config: map[string]any{"severity": "DEBUG"}},
+		{name: "unknown severity", config: map[string]any{"customer_token": "test", "severity": "UNKNOWN"}},
+		{name: "lowercase severity", config: map[string]any{"customer_token": "test", "severity": "crit"}, valid: true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := util.Validate(test.config, p.GetSchema())
+			if test.valid && err != nil {
+				t.Fatalf("valid APISIX 3.17 configuration rejected: %v", err)
+			}
+			if !test.valid && err == nil {
+				t.Fatal("invalid APISIX 3.17 configuration accepted")
+			}
+		})
+	}
+}
+
 func TestSchemaAcceptsOfficialBodySizeAndSSLFields(t *testing.T) {
 	p := &Plugin{}
 	if err := p.Init(); err != nil {

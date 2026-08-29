@@ -18,6 +18,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/proxy_cache"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/runtime"
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 type graphqlCacheHitCountingWriter struct {
@@ -779,6 +780,89 @@ func TestPostInitRejectsUnknownConfiguredGraphQLCacheZone(t *testing.T) {
 	}
 	if err := p.PostInit(); err == nil {
 		t.Fatal("PostInit() error = nil, want unknown cache zone rejection")
+	}
+}
+
+func TestAPISIX317ConfigurationRejectionMatrix(t *testing.T) {
+	t.Run("unknown cache zone", func(t *testing.T) {
+		setConfiguredZones(t, []config.Zone{{Name: "graphql-missing", MemorySize: "1M"}})
+
+		effective := &config.EffectiveConfig{}
+		p := &Plugin{config: Config{CacheStrategy: "memory", CacheZone: "graphql-missing"}}
+		p.SetDependencies(base.Dependencies{Config: effective})
+		p.SetConfiguredZones([]config.Zone{{Name: "graphql-valid", MemorySize: "1M"}})
+		if err := p.Init(); err != nil {
+			t.Fatalf("Init() error = %v", err)
+		}
+		if err := p.PostInit(); err == nil {
+			t.Fatal("PostInit() error = nil, want generation-local unknown cache zone rejection")
+		} else if !strings.Contains(err.Error(), `cache_zone "graphql-missing" is not declared`) {
+			t.Fatalf("PostInit() error = %q, want unknown generation-local zone context", err)
+		}
+	})
+
+	t.Run("unsupported cache strategy", func(t *testing.T) {
+		p := &Plugin{}
+		if err := p.Init(); err != nil {
+			t.Fatalf("Init() error = %v", err)
+		}
+		err := util.Validate(
+			map[string]any{"cache_zone": "gql-valid", "cache_strategy": "redis"},
+			p.GetSchema(),
+		)
+		if err == nil || !strings.Contains(err.Error(), "cache_strategy") {
+			t.Fatalf("schema error = %v, want cache_strategy rejection", err)
+		}
+	})
+}
+
+func TestPostInitUsesGenerationLocalGraphQLMemoryZone(t *testing.T) {
+	setConfiguredZones(t, nil)
+
+	effective := &config.EffectiveConfig{}
+	p := &Plugin{config: Config{CacheStrategy: "memory", CacheZone: "graphql-memory-local"}}
+	p.SetDependencies(base.Dependencies{Config: effective})
+	p.SetConfiguredZones([]config.Zone{{Name: "graphql-memory-local", MemorySize: "1M"}})
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v, want generation-local memory zone admission", err)
+	}
+	t.Cleanup(p.Stop)
+	if p.memoryStore == nil {
+		t.Fatal("generation-local memory store = nil")
+	}
+}
+
+func TestPostInitUsesGenerationLocalGraphQLDiskZone(t *testing.T) {
+	setConfiguredZones(t, nil)
+
+	tasks := runtime.NewTaskRegistry(context.Background(), nil)
+	owner, err := runtime.NewTaskOwner(tasks, "plugin/test/graphql/generation-local-disk", runtime.TaskPlugin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	effective := &config.EffectiveConfig{}
+	p := &Plugin{config: Config{CacheStrategy: "disk", CacheZone: "graphql-disk-local"}}
+	p.SetDependencies(base.Dependencies{Config: effective, Tasks: owner})
+	p.SetConfiguredZones([]config.Zone{{Name: "graphql-disk-local", DiskPath: t.TempDir()}})
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v, want generation-local disk zone admission", err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if residuals, stopErr := tasks.Stop(ctx); stopErr != nil || len(residuals) != 0 {
+			t.Fatalf("TaskRegistry.Stop() = (%v, %v)", residuals, stopErr)
+		}
+		p.Stop()
+	})
+	if p.diskStore == nil {
+		t.Fatal("generation-local disk store = nil")
 	}
 }
 

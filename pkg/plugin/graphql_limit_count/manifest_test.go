@@ -46,7 +46,7 @@ func TestStandaloneManifestMapsEveryPinnedSourceBlockToIndependentCase(t *testin
 
 	const (
 		sourceFile   = "t/plugin/graphql-limit-count.t"
-		sourceCommit = "c3d7d5ec69774121f53d2e20d29d09c816795dd7"
+		sourceCommit = "9ef2ecab67f652d38365049613610ef649bb4ad0"
 		sourceTests  = 26
 	)
 	sourceFound := false

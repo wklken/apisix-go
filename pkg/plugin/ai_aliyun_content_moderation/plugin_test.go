@@ -17,6 +17,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/observability/metrics"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_protocols"
+	"github.com/wklken/apisix-go/pkg/plugin/ai_runtime"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/util"
 )
@@ -82,6 +83,47 @@ func TestSchemaValidatesDenyCodeBounds(t *testing.T) {
 				t.Fatalf("Validate() error = %v, want deny_code %v accepted", err, test.value)
 			}
 		})
+	}
+}
+
+func TestAPISIX317RequiresSelectedAIInstanceInRuntimeRequest(t *testing.T) {
+	moderation := aliyunServer(t, `{"Data":{"RiskLevel":"low"}}`, http.StatusOK)
+	defer moderation.Close()
+	p := newTestPlugin(t, Config{
+		Endpoint: moderation.URL, RegionID: "cn-shanghai", AccessKeyID: "key", AccessKeySecret: "secret",
+	})
+	body := `{"messages":[{"role":"user","content":"safe"}]}`
+
+	missing := apisixctx.WithRequestVars(
+		httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body)),
+	)
+	missing.Header.Set("Content-Type", "application/json")
+	missingResponse := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next handler called without an AI proxy selection")
+	})).ServeHTTP(missingResponse, missing)
+	const want = "no ai instance picked, ai-aliyun-content-moderation plugin must be used with " +
+		"ai-proxy or ai-proxy-multi plugin"
+	if missingResponse.Code != http.StatusInternalServerError || missingResponse.Body.String() != want {
+		t.Fatalf(
+			"missing selection response = (%d, %q), want (500, %q)",
+			missingResponse.Code,
+			missingResponse.Body.String(),
+			want,
+		)
+	}
+
+	selected := apisixctx.WithRequestVars(
+		httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body)),
+	)
+	selected = ai_runtime.WithSelectedInstanceName(selected, "openai")
+	selected.Header.Set("Content-Type", "application/json")
+	selectedResponse := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+	})).ServeHTTP(selectedResponse, selected)
+	if selectedResponse.Code != http.StatusAccepted {
+		t.Fatalf("selected response = (%d, %q), want 202", selectedResponse.Code, selectedResponse.Body.String())
 	}
 }
 
@@ -310,6 +352,39 @@ func TestHandlerReturnsStreamingDenyForStreamingChat(t *testing.T) {
 	}
 }
 
+func TestAPISIX317RequestDenyUsesOpenAIModelAndUsageShape(t *testing.T) {
+	moderation := aliyunServer(
+		t,
+		`{"Data":{"RiskLevel":"high","Advice":[{"Answer":"blocked"}]}}`,
+		http.StatusOK,
+	)
+	defer moderation.Close()
+	p := newTestPlugin(t, Config{
+		Endpoint: moderation.URL, RegionID: "cn-shanghai", AccessKeyID: "key", AccessKeySecret: "secret",
+		RiskLevelBar: "high", DenyCode: http.StatusBadRequest,
+	})
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/v1/chat/completions",
+		strings.NewReader(`{"model":"gpt-3.5-turbo","messages":[{"role":"user","content":"unsafe"}]}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next handler called for denied request")
+	})).ServeHTTP(rr, req)
+
+	var response map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode OpenAI deny: %v", err)
+	}
+	usage, _ := response["usage"].(map[string]any)
+	if rr.Code != http.StatusBadRequest || response["model"] != "gpt-3.5-turbo" ||
+		usage["prompt_tokens"] != float64(0) || usage["completion_tokens"] != float64(0) {
+		t.Fatalf("OpenAI request deny = (%d, %#v)", rr.Code, response)
+	}
+}
+
 func TestHandlerSkipsWhenCheckRequestDisabled(t *testing.T) {
 	moderationCalled := false
 	moderation := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -516,6 +591,46 @@ func TestHandlerReplacesRiskyResponseWithProtocolDeny(t *testing.T) {
 	}
 }
 
+func TestAPISIX317ResponseDenyPreservesUpstreamModelAndUsage(t *testing.T) {
+	moderation := aliyunServer(
+		t,
+		`{"Data":{"RiskLevel":"high","Advice":[{"Answer":"blocked response"}]}}`,
+		http.StatusOK,
+	)
+	defer moderation.Close()
+
+	checkRequest := false
+	p := newTestPlugin(t, Config{
+		Endpoint: moderation.URL, RegionID: "cn-shanghai", AccessKeyID: "key", AccessKeySecret: "secret",
+		CheckRequest: &checkRequest, CheckResponse: true, DenyCode: http.StatusBadRequest,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
+	  "model":"request-model","messages":[{"role":"user","content":"hello"}]
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+		  "model":"upstream-model",
+		  "choices":[{"message":{"content":"unsafe answer"}}],
+		  "usage":{"prompt_tokens":8,"completion_tokens":5,"total_tokens":13}
+		}`))
+	})).ServeHTTP(rr, req)
+
+	var response map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode denied response: %v", err)
+	}
+	usage, _ := response["usage"].(map[string]any)
+	if rr.Code != http.StatusBadRequest || response["model"] != "upstream-model" ||
+		usage["prompt_tokens"] != float64(8) || usage["completion_tokens"] != float64(5) ||
+		usage["total_tokens"] != float64(13) {
+		t.Fatalf("denied response = (%d, %#v), want upstream model and usage", rr.Code, response)
+	}
+}
+
 func TestHandlerSkipsResponseModerationForUpstreamError(t *testing.T) {
 	moderationCalled := false
 	moderation := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
@@ -558,6 +673,7 @@ func TestHandlerAddsRiskLevelToFinalStreamingPacket(t *testing.T) {
 	req := apisixctx.WithRequestVars(httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
 	  "model":"gpt","stream":true,"messages":[{"role":"user","content":"hello"}]
 	}`)))
+	req = ai_runtime.WithSelectedInstanceName(req, "openai")
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
 
@@ -575,6 +691,52 @@ func TestHandlerAddsRiskLevelToFinalStreamingPacket(t *testing.T) {
 	}
 	if got := apisixctx.GetRequestVar(req, "$llm_content_risk_level"); got != "medium" {
 		t.Fatalf("$llm_content_risk_level = %#v, want medium", got)
+	}
+}
+
+func TestAPISIX317FinalPacketAnnotatesRiskyStreamWithoutReplacingIt(t *testing.T) {
+	vector := prometheus.NewCounterVec(
+		prometheus.CounterOpts{Name: "test_aliyun_final_packet_safety_total"},
+		[]string{"plugin", "phase", "outcome", "reason"},
+	)
+	previous := metrics.AISafetyOutcomes
+	metrics.AISafetyOutcomes = vector
+	t.Cleanup(func() { metrics.AISafetyOutcomes = previous })
+
+	moderation := aliyunServer(
+		t,
+		`{"Data":{"RiskLevel":"high","Advice":[{"Answer":"replacement should not be used"}]}}`,
+		http.StatusOK,
+	)
+	defer moderation.Close()
+
+	checkRequest := false
+	p := newTestPlugin(t, Config{
+		Endpoint: moderation.URL, RegionID: "cn-shanghai", AccessKeyID: "key", AccessKeySecret: "secret",
+		CheckRequest: &checkRequest, CheckResponse: true, StreamCheckMode: "final_packet", RiskLevelBar: "high",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
+	  "model":"gpt","stream":true,"messages":[{"role":"user","content":"hello"}]
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"unsafe answer\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), "unsafe answer") ||
+		!strings.Contains(rr.Body.String(), `"risk_level":"high"`) ||
+		strings.Contains(rr.Body.String(), "replacement should not be used") {
+		t.Fatalf("final-packet response = (%d, %q), want annotated original stream", rr.Code, rr.Body.String())
+	}
+	if got := counterValue(t, vector.WithLabelValues(name, "response", "allow", "risk_threshold")); got != 1 {
+		t.Fatalf("final-packet allow/risk_threshold outcomes = %v, want 1", got)
+	}
+	if got := counterValue(t, vector.WithLabelValues(name, "response", "deny", "risk_threshold")); got != 0 {
+		t.Fatalf("final-packet deny/risk_threshold outcomes = %v, want 0", got)
 	}
 }
 
@@ -653,6 +815,63 @@ func TestHandlerChecksRealtimeStreamWhenIntervalElapses(t *testing.T) {
 	if moderatedContent != "bad" || !strings.Contains(rr.Body.String(), "interval blocked") ||
 		strings.Contains(rr.Body.String(), `"content":"bad"`) {
 		t.Fatalf("interval moderated stream = content %q, body %q", moderatedContent, rr.Body.String())
+	}
+}
+
+func TestAPISIX317RealtimeModerationUsesCacheSizeAndInterval(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		cacheSize     int
+		interval      float64
+		advanceClock  bool
+		wantModerates int
+	}{
+		{name: "final close", cacheSize: 30000, interval: 30, wantModerates: 1},
+		{name: "cache size", cacheSize: 1, interval: 30, wantModerates: 3},
+		{name: "interval", cacheSize: 30000, interval: 0.1, advanceClock: true, wantModerates: 3},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			moderationCalls := 0
+			moderation := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				moderationCalls++
+				_, _ = w.Write([]byte(`{"Data":{"RiskLevel":"low"}}`))
+			}))
+			defer moderation.Close()
+			checkRequest := false
+			p := newTestPlugin(t, Config{
+				Endpoint: moderation.URL, RegionID: "cn-shanghai", AccessKeyID: "key", AccessKeySecret: "secret",
+				CheckRequest: &checkRequest, CheckResponse: true, StreamCheckMode: "realtime", FailMode: "warn",
+				StreamCheckCacheSize: test.cacheSize, StreamCheckInterval: test.interval,
+			})
+			if test.advanceClock {
+				started := time.Unix(100, 0)
+				clockCalls := 0
+				p.streamNow = func() time.Time {
+					value := started.Add(time.Duration(clockCalls) * time.Second)
+					clockCalls++
+					return value
+				}
+			}
+			req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+			rr := httptest.NewRecorder()
+			writer := newRealtimeResponseWriter(
+				rr,
+				req,
+				p,
+				ai_protocols.OpenAIChat,
+				map[string]any{"model": "gpt", "stream": true},
+			)
+			for _, content := range []string{"one", "two", "three"} {
+				_, _ = writer.Write([]byte(
+					"data: {\"choices\":[{\"delta\":{\"content\":\"" + content + "\"}}]}\n\n",
+				))
+			}
+			_, _ = writer.Write([]byte("data: [DONE]\n\n"))
+			writer.Close()
+			if moderationCalls != test.wantModerates {
+				t.Fatalf("moderation calls = %d, want %d", moderationCalls, test.wantModerates)
+			}
+		})
 	}
 }
 
@@ -865,7 +1084,7 @@ func TestPostInitRejectsRealtimeResponseFailClosedMode(t *testing.T) {
 	}
 }
 
-func TestHandlerRejectsUnknownOrEmptyRequestContent(t *testing.T) {
+func TestHandlerRejectsInvalidOrUnknownRequestContent(t *testing.T) {
 	tests := []struct {
 		name    string
 		body    string
@@ -873,11 +1092,6 @@ func TestHandlerRejectsUnknownOrEmptyRequestContent(t *testing.T) {
 	}{
 		{name: "invalid JSON", body: `{"messages":`, message: requestInvalidPayloadMessage},
 		{name: "unknown protocol", body: `{"unexpected":"value"}`, message: requestUnknownProtocolMessage},
-		{
-			name:    "empty extracted content",
-			body:    `{"messages":[{"role":"user","content":""}]}`,
-			message: requestEmptyContentMessage,
-		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -906,6 +1120,192 @@ func TestHandlerRejectsUnknownOrEmptyRequestContent(t *testing.T) {
 				t.Fatalf("response body = %q, want stable message %q", got, tt.message)
 			}
 		})
+	}
+}
+
+func TestAPISIX317ModeratesOnlyTextFromMultimodalAndToolMessages(t *testing.T) {
+	moderated := make([]string, 0, 3)
+	moderation := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		formBody, _ := io.ReadAll(r.Body)
+		form, _ := url.ParseQuery(string(formBody))
+		var parameters map[string]any
+		_ = json.Unmarshal([]byte(form.Get("ServiceParameters")), &parameters)
+		content, _ := parameters["content"].(string)
+		moderated = append(moderated, content)
+		if strings.Contains(content, "kill") {
+			_, _ = w.Write([]byte(`{"Data":{"RiskLevel":"high","Advice":[{"Answer":"blocked"}]}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"Data":{"RiskLevel":"low"}}`))
+	}))
+	defer moderation.Close()
+	p := newTestPlugin(t, Config{
+		Endpoint: moderation.URL, RegionID: "cn-shanghai", AccessKeyID: "key", AccessKeySecret: "secret",
+		RiskLevelBar: "high",
+	})
+
+	tests := []struct {
+		name       string
+		body       string
+		wantStatus int
+		wantText   string
+	}{
+		{
+			name: "text and image denied from text",
+			body: `{"messages":[{"role":"user","content":[` +
+				`{"type":"text","text":"I want to kill you"},` +
+				`{"type":"image_url","image_url":{"url":"data:image/jpg;base64,abc"}}]}]}`,
+			wantStatus: http.StatusOK,
+			wantText:   "I want to kill you",
+		},
+		{
+			name: "safe text and image allowed",
+			body: `{"messages":[{"role":"user","content":[` +
+				`{"type":"text","text":"What is 1+1?"},` +
+				`{"type":"image_url","image_url":{"url":"data:image/jpg;base64,abc"}}]}]}`,
+			wantStatus: http.StatusAccepted,
+			wantText:   "What is 1+1?",
+		},
+		{
+			name: "tool role text is inspectable",
+			body: `{"messages":[{"role":"user","content":"hello"},` +
+				`{"role":"assistant","tool_calls":[{"id":"call_1","type":"function",` +
+				`"function":{"name":"get_weather"}}]},` +
+				`{"role":"tool","tool_call_id":"call_1","content":"sunny"}]}`,
+			wantStatus: http.StatusAccepted,
+			wantText:   "hello sunny",
+		},
+	}
+	for index, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(test.body))
+			req.Header.Set("Content-Type", "application/json")
+			rr := httptest.NewRecorder()
+			p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusAccepted)
+			})).ServeHTTP(rr, req)
+			if rr.Code != test.wantStatus || moderated[index] != test.wantText {
+				t.Fatalf(
+					"response = %d, moderated = %q; want %d and %q",
+					rr.Code,
+					moderated[index],
+					test.wantStatus,
+					test.wantText,
+				)
+			}
+		})
+	}
+}
+
+func TestAPISIX317AllowsEmptyAndImageOnlyRequestsWithoutModeration(t *testing.T) {
+	moderationCalls := 0
+	moderation := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		moderationCalls++
+	}))
+	defer moderation.Close()
+	p := newTestPlugin(t, Config{
+		Endpoint: moderation.URL, RegionID: "cn-shanghai", AccessKeyID: "key", AccessKeySecret: "secret",
+	})
+
+	for _, test := range []struct {
+		name string
+		body string
+	}{
+		{name: "empty string", body: `{"messages":[{"role":"user","content":""}]}`},
+		{
+			name: "image only",
+			body: `{"messages":[{"role":"user","content":[` +
+				`{"type":"image_url","image_url":{"url":"data:image/jpg;base64,abc"}}]}]}`,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(test.body))
+			req.Header.Set("Content-Type", "application/json")
+			rr := httptest.NewRecorder()
+			p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusAccepted)
+			})).ServeHTTP(rr, req)
+			if rr.Code != http.StatusAccepted {
+				t.Fatalf("response = (%d, %q), want 202 passthrough", rr.Code, rr.Body.String())
+			}
+		})
+	}
+	if moderationCalls != 0 {
+		t.Fatalf("moderation calls for requests without text = %d, want 0", moderationCalls)
+	}
+}
+
+func TestAPISIX317ResponsesAPIUsesNativeDenyWireShape(t *testing.T) {
+	moderation := aliyunServer(
+		t,
+		`{"Data":{"RiskLevel":"high","Advice":[{"Answer":"blocked response"}]}}`,
+		http.StatusOK,
+	)
+	defer moderation.Close()
+	p := newTestPlugin(t, Config{
+		Endpoint: moderation.URL, RegionID: "cn-shanghai", AccessKeyID: "key", AccessKeySecret: "secret",
+		RiskLevelBar: "high",
+	})
+
+	for _, test := range []struct {
+		name string
+		body string
+	}{
+		{name: "non streaming", body: `{"input":"I want to kill you","model":"gpt-4o"}`},
+		{name: "streaming", body: `{"input":"I want to kill you","model":"gpt-4o","stream":true}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(test.body))
+			req.Header.Set("Content-Type", "application/json")
+			rr := httptest.NewRecorder()
+			p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				t.Fatal("next handler called for denied Responses API request")
+			})).ServeHTTP(rr, req)
+
+			if test.name == "streaming" {
+				if rr.Header().Get("Content-Type") != "text/event-stream" ||
+					!strings.Contains(rr.Body.String(), "event: response.output_text.delta") ||
+					!strings.Contains(rr.Body.String(), "event: response.completed") ||
+					!strings.Contains(rr.Body.String(), `"object":"response"`) {
+					t.Fatalf("streaming Responses deny = (%q, %q)", rr.Header().Get("Content-Type"), rr.Body.String())
+				}
+				return
+			}
+			var response map[string]any
+			if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
+				t.Fatalf("decode Responses deny: %v", err)
+			}
+			usage, _ := response["usage"].(map[string]any)
+			if response["object"] != "response" || response["model"] != "gpt-4o" ||
+				usage["input_tokens"] != float64(0) || usage["output_tokens"] != float64(0) {
+				t.Fatalf("Responses deny = %#v", response)
+			}
+			if _, exists := usage["prompt_tokens"]; exists {
+				t.Fatalf("Responses usage contains prompt_tokens: %#v", usage)
+			}
+		})
+	}
+}
+
+func TestAPISIX317ResponsesAPIWithNonOpenAIInstanceDoesNotPanic(t *testing.T) {
+	moderation := aliyunServer(t, `{"Data":{"RiskLevel":"low"}}`, http.StatusOK)
+	defer moderation.Close()
+	p := newTestPlugin(t, Config{
+		Endpoint: moderation.URL, RegionID: "cn-shanghai", AccessKeyID: "key", AccessKeySecret: "secret",
+	})
+	req := apisixctx.WithRequestVars(httptest.NewRequest(
+		http.MethodPost,
+		"/v1/responses",
+		strings.NewReader(`{"input":"safe prompt","model":"deepseek-chat"}`),
+	))
+	req = ai_runtime.WithSelectedInstanceName(req, "deepseek")
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+	})).ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("non-OpenAI Responses status = %d, want downstream 400", rr.Code)
 	}
 }
 
@@ -1034,7 +1434,7 @@ func TestHandlerContinuesResponseModerationAfterRequestFailureDegradation(t *tes
 	}
 }
 
-func TestHandlerRejectsRiskyFinalPacketInsteadOfForwardingCapturedStream(t *testing.T) {
+func TestHandlerAnnotatesRiskyFinalPacketAndForwardsCapturedStream(t *testing.T) {
 	moderation := aliyunServer(
 		t,
 		`{"Data":{"RiskLevel":"high","Advice":[{"Answer":"blocked"}]}}`,
@@ -1062,8 +1462,9 @@ func TestHandlerRejectsRiskyFinalPacketInsteadOfForwardingCapturedStream(t *test
 		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"unsafe\"}}]}\n\ndata: [DONE]\n\n"))
 	})).ServeHTTP(rr, req)
 
-	if strings.Contains(rr.Body.String(), "unsafe") || !strings.Contains(rr.Body.String(), "blocked") {
-		t.Fatalf("response body = %q, want streaming deny without captured unsafe content", rr.Body.String())
+	if !strings.Contains(rr.Body.String(), "unsafe") || !strings.Contains(rr.Body.String(), `"risk_level":"high"`) ||
+		strings.Contains(rr.Body.String(), "blocked") {
+		t.Fatalf("response body = %q, want annotated captured stream", rr.Body.String())
 	}
 }
 

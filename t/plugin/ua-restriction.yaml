@@ -1,6 +1,6 @@
 source:
   repository: https://github.com/apache/apisix
-  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
   file: t/plugin/ua-restriction.t
   tests: 33
 
@@ -142,9 +142,9 @@ cases:
           status: 403
           headers:
             Content-Type:
-              equals: application/json
+              equals: text/plain; charset=utf-8
           body:
-            equals: '{"message":"Not allowed"}'
+            equals: "{\"message\":\"Not allowed\"}\n"
       - name: multiple-first-denied
         input:
           version: "1.0"

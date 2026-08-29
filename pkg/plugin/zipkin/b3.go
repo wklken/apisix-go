@@ -19,6 +19,7 @@ func extractB3(r *http.Request) (b3Context, error) {
 	}
 	if r.Header.Get("x-b3-flags") == "1" {
 		ctx.Sampled = "1"
+		ctx.Debug = true
 	}
 	if err := validateB3IDs(ctx); err != nil {
 		return b3Context{}, err
@@ -29,10 +30,11 @@ func extractB3(r *http.Request) (b3Context, error) {
 func parseSingleB3(header string) (b3Context, error) {
 	if header == "0" || header == "1" || header == "d" {
 		sampled := header
+		debug := sampled == "d"
 		if sampled == "d" {
 			sampled = "1"
 		}
-		return b3Context{Sampled: sampled}, nil
+		return b3Context{Sampled: sampled, Debug: debug}, nil
 	}
 
 	parts := strings.Split(header, "-")
@@ -50,6 +52,7 @@ func parseSingleB3(header string) (b3Context, error) {
 	}
 	if len(parts) >= 3 {
 		ctx.Sampled = normalizeSampled(parts[2])
+		ctx.Debug = strings.EqualFold(parts[2], "d")
 	}
 	if len(parts) == 4 {
 		ctx.ParentSpanID = strings.ToLower(parts[3])
@@ -96,6 +99,9 @@ func injectB3(r *http.Request, ctx b3Context) {
 	r.Header.Set("x-b3-traceid", ctx.TraceID)
 	r.Header.Set("x-b3-spanid", ctx.SpanID)
 	r.Header.Set("x-b3-sampled", ctx.Sampled)
+	if ctx.Debug {
+		r.Header.Set("x-b3-flags", "1")
+	}
 	if ctx.ParentSpanID != "" {
 		r.Header.Set("x-b3-parentspanid", ctx.ParentSpanID)
 	} else {

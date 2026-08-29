@@ -846,7 +846,6 @@ func googleTokenSource(ctx context.Context, auth *AuthConfig, client *http.Clien
 	rawJSON, err := json.Marshal(map[string]any{
 		"type":         "service_account",
 		"client_email": auth.ClientEmail,
-		"subject":      auth.ClientEmail,
 		"private_key":  auth.PrivateKey,
 		"project_id":   auth.ProjectID,
 		"token_uri":    auth.TokenURI,

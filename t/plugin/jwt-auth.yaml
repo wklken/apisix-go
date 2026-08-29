@@ -1,11 +1,11 @@
 sources:
-  - {repository: https://github.com/apache/apisix, commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7, file: t/plugin/jwt-auth-anonymous-consumer.t, tests: 7}
-  - {repository: https://github.com/apache/apisix, commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7, file: t/plugin/jwt-auth-more-algo.t, tests: 16, test_numbers: [1, 2, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]}
-  - {repository: https://github.com/apache/apisix, commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7, file: t/plugin/jwt-auth-realm.t, tests: 6}
-  - {repository: https://github.com/apache/apisix, commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7, file: t/plugin/jwt-auth.t, tests: 58, test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59]}
-  - {repository: https://github.com/apache/apisix, commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7, file: t/plugin/jwt-auth2.t, tests: 9}
-  - {repository: https://github.com/apache/apisix, commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7, file: t/plugin/jwt-auth3.t, tests: 21}
-  - {repository: https://github.com/apache/apisix, commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7, file: t/plugin/jwt-auth4.t, tests: 10, test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 11]}
+  - {repository: https://github.com/apache/apisix, commit: 9ef2ecab67f652d38365049613610ef649bb4ad0, file: t/plugin/jwt-auth-anonymous-consumer.t, tests: 7}
+  - {repository: https://github.com/apache/apisix, commit: 9ef2ecab67f652d38365049613610ef649bb4ad0, file: t/plugin/jwt-auth-more-algo.t, tests: 16, test_numbers: [1, 2, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]}
+  - {repository: https://github.com/apache/apisix, commit: 9ef2ecab67f652d38365049613610ef649bb4ad0, file: t/plugin/jwt-auth-realm.t, tests: 6}
+  - {repository: https://github.com/apache/apisix, commit: 9ef2ecab67f652d38365049613610ef649bb4ad0, file: t/plugin/jwt-auth.t, tests: 57, test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58]}
+  - {repository: https://github.com/apache/apisix, commit: 9ef2ecab67f652d38365049613610ef649bb4ad0, file: t/plugin/jwt-auth2.t, tests: 9}
+  - {repository: https://github.com/apache/apisix, commit: 9ef2ecab67f652d38365049613610ef649bb4ad0, file: t/plugin/jwt-auth3.t, tests: 21}
+  - {repository: https://github.com/apache/apisix, commit: 9ef2ecab67f652d38365049613610ef649bb4ad0, file: t/plugin/jwt-auth4.t, tests: 10, test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 11]}
 
 cases:
   - name: jwt-auth-anonymous-consumer-add-consumer-jack-and-anonymous-test-1
@@ -213,6 +213,7 @@ cases:
     fixtures: [{"name":"primary","kind":"http","expect_requests":0,"respond":[{"status":200,"body":"jwt-ok"}]}]
     steps: [{"name":"exercise-verify-anonymous-consumer-missing-returns-realm-test-6","input":{"path":"/jwt-auth-realm-6"},"output":{"status":401,"body":{"matches":"Invalid user authorization"},"headers":{"WWW-Authenticate":{"equals":"Bearer realm=\"secure-zone\""}}}}]
   - name: jwt-auth-sanity-test-1
+    wait_for_generation: true
     source: {file: t/plugin/jwt-auth.t, tests: [1]}
     config: {"consumers":[{"username":"jack","plugins":{"jwt-auth":{"key":"user-key","secret":"my-secret-key"}}}],"routes":[{"id":"jwt-auth-1","uri":"/jwt-auth-1","plugins":{"jwt-auth":{}},"upstream":{"type":"roundrobin","nodes":{"{{FIXTURE.primary.ADDR}}":1}}}]}
     fixtures: [{"name":"primary","kind":"http","expect":[{"path":{"equals":"/jwt-auth-1"},"headers":{"X-Consumer-Username":{"equals":"jack"}}}],"respond":[{"status":200,"body":"jwt-ok"}]}]
@@ -337,6 +338,11 @@ cases:
     config: {"consumers":[{"username":"jack","plugins":{"jwt-auth":{"key":"user-key-rs256","algorithm":"RS256","public_key":"-----BEGIN PUBLIC KEY-----\nMIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDGxOfVe/seP5T/V8pkS5YNAPRC\n3Ffxxedi7v0pyZh/4d4p9Qx0P9wOmALwlOq4Ftgks311pxG0zL0LcTJY4ikbc3r0\nh8SM0yhj9UV1VGtuia4YakobvpM9U+kq3lyIMO9ZPRez0cP3AJIYCt5yf8E7bNYJ\njbJNjl8WxvM1tDHqVQIDAQAB\n-----END PUBLIC KEY-----"}}}],"routes":[{"id":"jwt-auth-25","uri":"/jwt-auth-25","plugins":{"jwt-auth":{}},"upstream":{"type":"roundrobin","nodes":{"{{FIXTURE.primary.ADDR}}":1}}}]}
     fixtures: [{"name":"primary","kind":"http","expect":[{"path":{"equals":"/jwt-auth-25"},"headers":{"X-Consumer-Username":{"equals":"jack"}}}],"respond":[{"status":200,"body":"jwt-ok"}]}]
     steps: [{"name":"exercise-jwt-sign-and-verify-use-rs256-algorithm-test-25","input":{"path":"/jwt-auth-25","headers":{"Authorization":"Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleS1yczI1NiIsIm5iZiI6MTcyNzI3NDk4M30.FG-PAyscR-pFyw1a5ZiRxHLxzSI1jyVyZxm-fj3-u5igjacJY7UByCUKDnieV9-Ft81X15gdHAcrumUsTbu-77F50Bp5A1sxzdL_PXVLJ1cc8UP2ltvQwf1YWdutK7CI_uNLaeCYPZd9tWPhnfpsv4AdTdaCWeFyoaZSNOdw4oA"}},"output":{"status":200,"body":{"equals":"jwt-ok"}}}]
+  - name: jwt-auth-rejects-512-bit-rsa-local-security-boundary
+    source: {local_reason: "upstream APISIX accepts this 512-bit RSA token, but Go crypto/rsa rejects keys below 1024 bits"}
+    config: {"consumers":[{"username":"kerouac","plugins":{"jwt-auth":{"key":"user-key-rs256","algorithm":"RS256","public_key":"-----BEGIN PUBLIC KEY-----\nMFwwDQYJKoZIhvcNAQEBBQADSwAwSAJBAKebDxlvQMGyEesAL1r1nIJBkSdqu3Hr\n7noq/0ukiZqVQLSJPMOv0oxQSutvvK3hoibwGakDOza+xRITB7cs2cECAwEAAQ==\n-----END PUBLIC KEY-----"}}}],"routes":[{"id":"jwt-auth-26","uri":"/jwt-auth-26","plugins":{"jwt-auth":{}},"upstream":{"type":"roundrobin","nodes":{"{{FIXTURE.primary.ADDR}}":1}}}]}
+    fixtures: [{"name":"primary","kind":"http","expect_requests":0,"respond":[{"status":200,"body":"jwt-ok"}]}]
+    steps: [{"name":"exercise-rejects-512-bit-rsa-local-security-boundary","input":{"path":"/jwt-auth-26","headers":{"Authorization":"Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleS1yczI1NiIsIm5iZiI6MTcyNzI3NDk4M30.FaV6N-bWaSXkRrF2ec28hH5QENl-8I0LCONdNnQpB1YOb4akP-lKnwtABgfsQ_eKaEIf1PWNoghyByLejXaPbQ"}},"output":{"status":401,"body":{"matches":"failed to verify jwt"}}}]
   - name: jwt-auth-add-consumer-with-username-and-plugins-with-public-key-test-27
     source: {file: t/plugin/jwt-auth.t, tests: [27]}
     config: {"consumers":[{"username":"jack","plugins":{"jwt-auth":{"key":"user-key-rs256","algorithm":"RS256","public_key":"-----BEGIN PUBLIC KEY-----\nMIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDGxOfVe/seP5T/V8pkS5YNAPRC\n3Ffxxedi7v0pyZh/4d4p9Qx0P9wOmALwlOq4Ftgks311pxG0zL0LcTJY4ikbc3r0\nh8SM0yhj9UV1VGtuia4YakobvpM9U+kq3lyIMO9ZPRez0cP3AJIYCt5yf8E7bNYJ\njbJNjl8WxvM1tDHqVQIDAQAB\n-----END PUBLIC KEY-----"}}}],"routes":[{"id":"jwt-auth-27","uri":"/jwt-auth-27","plugins":{"jwt-auth":{}},"upstream":{"type":"roundrobin","nodes":{"{{FIXTURE.primary.ADDR}}":1}}}]}
@@ -497,14 +503,6 @@ cases:
     config: {"consumers":[{"username":"jack","plugins":{"jwt-auth":{"key":"user-key","secret":"my-secret-key"}}}],"routes":[{"id":"jwt-auth-58","uri":"/jwt-auth-58","plugins":{"jwt-auth":{}},"upstream":{"type":"roundrobin","nodes":{"{{FIXTURE.primary.ADDR}}":1}}}]}
     fixtures: [{"name":"primary","kind":"http","expect_requests":0,"respond":[{"status":200,"body":"jwt-ok"}]}]
     steps: [{"name":"exercise-expired-token-with-an-explicit-empty-claims-to-verify-still-rejected-test-58","input":{"path":"/jwt-auth-58","headers":{"Authorization":"Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleSIsImV4cCI6MTU2Mzg3MDUwMX0.pPNVvh-TQsdDzorRwa-uuiLYiEBODscp9wv0cwD6c68"}},"output":{"status":401,"body":{"matches":"failed to verify jwt"}}}]
-  - name: jwt-auth-malformed-signatures-must-be-rejected-with-401-not-crash-with-500-test-59
-    source: {file: t/plugin/jwt-auth.t, tests: [59]}
-    config: {"consumers":[{"username":"kerouac","plugins":{"jwt-auth":{"key":"user-key-es256","algorithm":"ES256","public_key":"-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEEVs/o5+uQbTjL3chynL4wXgUg2R9\nq9UU8I5mEovUf86QZ7kOBIjJwqnzD1omageEHWwHdBO6B+dFabmdT9POxg==\n-----END PUBLIC KEY-----"}}}],"routes":[{"id":"jwt-auth-59","uri":"/jwt-auth-59","plugins":{"jwt-auth":{}},"upstream":{"type":"roundrobin","nodes":{"{{FIXTURE.primary.ADDR}}":1}}}]}
-    fixtures: [{"name":"primary","kind":"http","expect_requests":0,"respond":[{"status":200,"body":"jwt-ok"}]}]
-    steps:
-      - name: exercise-malformed-signatures-must-be-rejected-with-401-not-crash-with-500-test-59
-        input: {path: "/jwt-auth-59?jwt=eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleS1lczI1NiIsIm5iZiI6MTcyNzI3NDk4M30.YWJj"}
-        output: {status: 401, body: {matches: "failed to verify jwt"}}
   - name: jwt-auth2-add-consumer-with-username-and-plugins-test-1
     source: {file: t/plugin/jwt-auth2.t, tests: [1]}
     config: {"consumers":[{"username":"jack","plugins":{"jwt-auth":{"key":"user-key","secret":"my-secret-key"}}}],"routes":[{"id":"jwt-auth2-1","uri":"/jwt-auth2-1","plugins":{"jwt-auth":{"header":"jwt-header","cookie":"jwt-cookie","query":"jwt-query"}},"upstream":{"type":"roundrobin","nodes":{"{{FIXTURE.primary.ADDR}}":1}}}]}

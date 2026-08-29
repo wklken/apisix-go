@@ -1,26 +1,27 @@
 sources:
   - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
     file: t/plugin/hmac-auth.t
     tests: 40
   - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
     file: t/plugin/hmac-auth2.t
-    tests: 5
+    tests: 2
+    test_numbers: [1, 5]
   - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
     file: t/plugin/hmac-auth3.t
     tests: 8
   - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
     file: t/plugin/hmac-auth4.t
     tests: 5
   - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
     file: t/plugin/hmac-auth-anonymous-consumer.t
     tests: 6
   - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
     file: t/plugin/hmac-auth-realm.t
     tests: 6
 
@@ -638,7 +639,7 @@ cases:
         output: {status: 200, body: {equals: hello world}}
 
   - name: default-route-schema
-    source: {file: t/plugin/hmac-auth2.t, tests: [1, 2]}
+    source: {file: t/plugin/hmac-auth2.t, tests: [1]}
     config:
       routes:
         - id: hmac-default-route-schema
@@ -651,7 +652,8 @@ cases:
       body: {equals: '{"message":"client request can''t be validated: missing Authorization header"}'}
 
   - name: consumer-schema-selection
-    source: {file: t/plugin/hmac-auth2.t, tests: [3]}
+    source:
+      local_reason: verifies Go consumer-schema authentication; APISIX source test 3 exercises the Admin Schema API instead
     config:
       consumers:
         - username: jack
@@ -672,7 +674,8 @@ cases:
         output: {status: 200, body: {equals: passed}}
 
   - name: unknown-schema-type-falls-back-to-route-schema
-    source: {file: t/plugin/hmac-auth2.t, tests: [4]}
+    source:
+      local_reason: verifies the Go route-schema fallback; APISIX source test 4 exercises the Admin Schema API instead
     config:
       routes:
         - id: hmac-unknown-schema-type

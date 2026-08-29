@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/plugin"
 	"github.com/wklken/apisix-go/pkg/resource"
@@ -76,7 +77,24 @@ func TestMaterializeHTTPPluginPlansAppliesPlanMetadataInTransaction(t *testing.T
 }
 
 func TestEffectiveHTTPBindingSpecSupportsSystemAndPreparedConsumer(t *testing.T) {
-	prepared, _ := newEffectiveBindingMaterializerFixture(t, nil, nil)
+	consumerKey := generation.ResourceKey{Kind: "consumers", ID: "consumer-1"}
+	consumers, err := runtime.NewConsumerBindings([]runtime.ConsumerRecord{{
+		ID: "consumer-1",
+		Consumer: resource.Consumer{Username: "consumer-1", Plugins: map[string]resource.PluginConfig{
+			"request-id": map[string]any{"header_name": "X-Consumer-ID"},
+		}},
+	}}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared, _ := newEffectiveBindingMaterializerFixtureWithOccurrenceSpecs(
+		t,
+		[]factoryOccurrenceSpec{{
+			domain: generation.DomainHTTP, resource: consumerKey,
+			source: capability.SecretConsumerConfig, factory: "request-id",
+		}},
+		consumers,
+	)
 	system, err := prepared.effectiveHTTPBindingSpec(
 		generation.ResourceKey{Kind: "system", ID: "request-context"},
 		routepkg.PluginPlan{
@@ -97,14 +115,15 @@ func TestEffectiveHTTPBindingSpecSupportsSystemAndPreparedConsumer(t *testing.T)
 			Factory: "request-id", Config: map[string]any{"header_name": "X-Consumer-ID"},
 			Scope:      plugin.ScopeConsumer,
 			Provenance: plugin.ResourceProvenance{Kind: plugin.ResourceConsumer, ID: "consumer-1"},
-			Source:     generation.ResourceKey{Kind: "consumers", ID: "consumer-1"},
+			Source:     consumerKey,
 		},
 		effectiveBindingResourceContext{
 			kind: effectiveBindingContextHTTP, route: resource.Route{ID: "route-1"},
 		},
 		effectiveBindingRuntimeContext{},
 	)
-	if err != nil || consumer.source.kind != effectiveBindingPreparedConsumer {
+	if err != nil || consumer.source.kind != effectiveBindingPreparedConsumer ||
+		consumer.source.occurrence != prepared.attempt.Occurrences(capability.SecretConsumerConfig)[0] {
 		t.Fatalf("consumer spec = (%#v, %v)", consumer, err)
 	}
 }
@@ -122,12 +141,20 @@ func TestEffectiveHTTPBindingSpecValidatesPreparedConsumerAfterMetadataRemoval(t
 	if err != nil {
 		t.Fatal(err)
 	}
-	prepared, _ := newEffectiveBindingMaterializerFixtureWithConsumers(t, nil, consumers)
+	consumerKey := generation.ResourceKey{Kind: "consumers", ID: "consumer-meta"}
+	prepared, _ := newEffectiveBindingMaterializerFixtureWithOccurrenceSpecs(
+		t,
+		[]factoryOccurrenceSpec{{
+			domain: generation.DomainHTTP, resource: consumerKey,
+			source: capability.SecretConsumerConfig, factory: "request-id",
+		}},
+		consumers,
+	)
 	plan := routepkg.PluginPlan{
 		Factory: "request-id", Config: map[string]any{"header_name": "X-Consumer-ID"},
 		Scope:      plugin.ScopeConsumer,
 		Provenance: plugin.ResourceProvenance{Kind: plugin.ResourceConsumer, ID: "consumer-meta"},
-		Source:     generation.ResourceKey{Kind: "consumers", ID: "consumer-meta"},
+		Source:     consumerKey,
 	}
 	spec, err := prepared.effectiveHTTPBindingSpec(
 		generation.ResourceKey{Kind: "routes", ID: "route-1"}, plan,

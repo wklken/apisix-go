@@ -180,10 +180,7 @@ func (p *Plugin) RunExclusiveProtocol(
 func rewriteGRPCPath(r *http.Request) error {
 	path, ok := wildcardParam(r)
 	if !ok {
-		if chi.RouteContext(r.Context()) == nil {
-			return nil
-		}
-		return fmt.Errorf("grpc-web plugin requires prefix wildcard route")
+		return nil
 	}
 
 	if path == "" {

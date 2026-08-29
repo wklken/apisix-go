@@ -256,6 +256,31 @@ func TestReadJSONBodyRejectsNullWithoutPanicking(t *testing.T) {
 	}
 }
 
+func TestHandlerMatchesAPISIX317EmptyRequestBodyResponse(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Provider: "openai",
+		Auth:     Auth{Header: map[string]string{"Authorization": "Bearer token"}},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next handler called for empty request body")
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("response code = %d, want 400", rr.Code)
+	}
+	if got := rr.Header().Get("Content-Type"); got != "text/plain; charset=utf-8" {
+		t.Fatalf("Content-Type = %q, want text/plain; charset=utf-8", got)
+	}
+	const wantBody = "{\"message\":\"could not get body: request body is empty\"}\n"
+	if got := rr.Body.String(); got != wantBody {
+		t.Fatalf("response body = %q, want %q", got, wantBody)
+	}
+}
+
 func TestHandlerMergesRequestBodyOverrideWithoutForce(t *testing.T) {
 	var upstreamBody map[string]any
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1243,6 +1268,13 @@ func TestHandlerForwardsOpenAIChatSSEAndRegistersUsage(t *testing.T) {
 	assertLLMRequestVar(t, req, "$llm_prompt_tokens", int64(4))
 	assertLLMRequestVar(t, req, "$llm_completion_tokens", int64(2))
 	assertUsageRequestVars(t, req, float64(4), int64(6))
+	upstreamAddress := strings.TrimPrefix(upstream.URL, "http://")
+	assertLLMRequestVar(t, req, "$upstream_addr", upstreamAddress)
+	assertLLMRequestVar(t, req, "$upstream_status", "200")
+	assertLLMRequestVar(t, req, "$upstream_response_length", int64(len(streamBody)))
+	if got := apisixctx.GetRequestVar(req, "$upstream_response_time"); got == nil || got == "" {
+		t.Fatal("$upstream_response_time is empty")
+	}
 }
 
 func TestHandlerConvertsOpenAIStreamBackToAnthropicSSE(t *testing.T) {

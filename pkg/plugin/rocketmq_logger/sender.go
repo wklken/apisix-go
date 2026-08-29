@@ -25,6 +25,8 @@ type rocketmqClientSender struct {
 	producer rocketmq.Producer
 }
 
+var newRocketMQProducer = rocketmq.NewProducer
+
 func (*Plugin) newSender(config *Config) (rocketmqSender, error) {
 	options := []producer.Option{
 		producer.WithNameServer(config.NameServerList),
@@ -34,6 +36,12 @@ func (*Plugin) newSender(config *Config) (rocketmqSender, error) {
 			producerInstanceSequence.Add(1),
 		)),
 	}
+	if config.UseTLS {
+		options = append(options,
+			producer.WithTls(true),
+			producer.WithTlsVerify(config.TLSVerifyValue()),
+		)
+	}
 	if config.AccessKey != "" {
 		options = append(options, producer.WithCredentials(primitive.Credentials{
 			AccessKey: config.AccessKey,
@@ -41,11 +49,12 @@ func (*Plugin) newSender(config *Config) (rocketmqSender, error) {
 		}))
 	}
 
-	prod, err := rocketmq.NewProducer(options...)
+	prod, err := newRocketMQProducer(options...)
 	if err != nil {
 		return nil, err
 	}
 	if err := prod.Start(); err != nil {
+		_ = prod.Shutdown()
 		return nil, err
 	}
 

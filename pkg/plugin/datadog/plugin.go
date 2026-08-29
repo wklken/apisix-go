@@ -10,14 +10,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/felixge/httpsnoop"
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
+	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
 	"github.com/wklken/apisix-go/pkg/resource"
-	"github.com/wklken/apisix-go/pkg/util"
 )
 
 type Plugin struct {
@@ -37,9 +36,8 @@ type Plugin struct {
 }
 
 const (
-	priority        = 495
-	name            = "datadog"
-	maxDatagramSize = 8192
+	priority = 495
+	name     = "datadog"
 
 	datadogSendTimeout = time.Second
 )
@@ -304,13 +302,15 @@ func (p *Plugin) RunLogPhase(snapshot base.LogSnapshot) error {
 		latency = snapshot.Finished.Sub(snapshot.Started).Milliseconds()
 	}
 	upstreamLatency, hasUpstreamLatency := snapshotInt64(snapshot, "$upstream_latency")
+	ingressSize, _ := snapshotInt64(snapshot, "$request_length")
+	egressSize, _ := snapshotInt64(snapshot, "$bytes_sent")
 	entry := metricEntry{
 		LatencyMS:          latency,
 		UpstreamLatency:    upstreamLatency,
 		HasUpstreamLatency: hasUpstreamLatency,
 		ApisixLatency:      apisixLatency(latency, upstreamLatency),
-		IngressSize:        max(snapshot.Request.ContentLength, 0),
-		EgressSize:         snapshot.Outcome.Bytes,
+		IngressSize:        ingressSize,
+		EgressSize:         egressSize,
 		Status:             snapshot.Outcome.Status,
 		RouteID:            snapshotString(snapshot, "$route_id"),
 		RouteName:          snapshotString(snapshot, "$route_name"),
@@ -371,16 +371,28 @@ func (p *Plugin) Stop() {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
-		captured := httpsnoop.CaptureMetrics(next, w, r)
+		started := time.Now()
+		requestLength, requestLengthKnown := apisixlog.EstimateHTTP1RequestLength(r)
+		wrapped, capture := base.CaptureResponseOutcomeController(w)
+		next.ServeHTTP(wrapped, r)
+		outcome := capture.Outcome()
+		responseLength, responseLengthKnown := capture.HTTPWireLength(r)
+		latency := time.Since(started).Milliseconds()
 		upstreamLatency, hasUpstreamLatency := requestInt64Var(r, "$upstream_latency")
+		if !requestLengthKnown {
+			requestLength = max(r.ContentLength, 0)
+		}
+		if !responseLengthKnown {
+			responseLength = outcome.Bytes
+		}
 		entry := metricEntry{
-			LatencyMS:          captured.Duration.Milliseconds(),
+			LatencyMS:          latency,
 			UpstreamLatency:    upstreamLatency,
 			HasUpstreamLatency: hasUpstreamLatency,
-			ApisixLatency:      apisixLatency(captured.Duration.Milliseconds(), upstreamLatency),
-			IngressSize:        util.RequestSize(r),
-			EgressSize:         captured.Written,
-			Status:             captured.Code,
+			ApisixLatency:      apisixLatency(latency, upstreamLatency),
+			IngressSize:        requestLength,
+			EgressSize:         responseLength,
+			Status:             outcome.Status,
 			RouteID:            apisixStringVar(r, "$route_id"),
 			RouteName:          apisixStringVar(r, "$route_name"),
 			ServiceID:          apisixStringVar(r, "$service_id"),
@@ -410,7 +422,6 @@ func (p *Plugin) send(ctx context.Context, entry metricEntry) error {
 		return err
 	}
 	lines := p.metricLines(entry)
-	payload := strings.Join(lines, "\n")
 
 	p.connMu.Lock()
 	defer p.connMu.Unlock()
@@ -431,14 +442,6 @@ func (p *Plugin) send(ctx context.Context, entry metricEntry) error {
 	_ = conn.SetWriteDeadline(deadline)
 	stopWatcher := watchConnectionCancellation(ctx, conn)
 	defer stopWatcher()
-
-	if len(payload) <= maxDatagramSize {
-		if _, err := conn.Write([]byte(payload)); err != nil {
-			p.resetConnLocked(conn)
-			return fmt.Errorf("send DogStatsD metrics: %w", err)
-		}
-		return nil
-	}
 
 	for _, line := range lines {
 		if _, err := conn.Write([]byte(line)); err != nil {

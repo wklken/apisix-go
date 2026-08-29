@@ -8,7 +8,33 @@ import (
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	apisixvar "github.com/wklken/apisix-go/pkg/apisix/variable"
+	"github.com/wklken/apisix-go/pkg/util"
 )
+
+func TestSchemaAndPostInitMatchAPISIX317Rejections(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := util.Validate(map[string]any{}, p.GetSchema()); err == nil {
+		t.Fatal("Validate() error = nil, want missing source rejected")
+	}
+
+	for _, address := range []string{"127.0.0.1/33", "::1/129"} {
+		t.Run(address, func(t *testing.T) {
+			p := &Plugin{config: Config{
+				Source:           "http_xff",
+				TrustedAddresses: []string{address},
+			}}
+			if err := p.Init(); err != nil {
+				t.Fatalf("Init() error = %v", err)
+			}
+			if err := p.PostInit(); err == nil {
+				t.Fatalf("PostInit() error = nil, want invalid CIDR %q rejected", address)
+			}
+		})
+	}
+}
 
 func TestXForwardedForWithoutTrustedAddressesDoesNotOverrideRemoteAddress(t *testing.T) {
 	p := newTestPlugin(t, Config{Source: "http_x_forwarded_for"})
@@ -85,6 +111,28 @@ func TestTrustedAddressesAllowTrustedRemote(t *testing.T) {
 	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := apisixctx.GetString(r.Context(), "remote_addr"); got != "203.0.113.12" {
 			t.Fatalf("remote_addr = %q, want 203.0.113.12", got)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusNoContent)
+	}
+}
+
+func TestTrustedAddressesUseForwardedForCandidateAfterIngressSanitization(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Source:           "http_x_forwarded_for",
+		TrustedAddresses: []string{"127.0.0.0/24"},
+	})
+	req := httptest.NewRequest(http.MethodGet, "/real-ip", nil)
+	req.RemoteAddr = "127.0.0.1:12345"
+	req = apisixctx.WithForwardedForCandidate(req, []string{"203.0.113.12"})
+
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := apisixctx.GetString(r.Context(), "remote_addr"); got != "203.0.113.12" {
+			t.Fatalf("remote_addr = %q, want privately retained forwarded-for candidate", got)
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})).ServeHTTP(rr, req)

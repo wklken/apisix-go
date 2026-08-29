@@ -249,6 +249,7 @@ func snapshotFormatContainsString(format map[string]string, expression string) b
 // AsyncBlock behavior can block a request goroutine.
 func (p *BaseLoggerPlugin) RunLogPhase(snapshot LogSnapshot) error {
 	fields := p.snapshotFields(snapshot)
+	ApplySnapshotMatchedRouteFields(fields, snapshot, p.RouteID)
 	if p.IncludeRequestBody && SnapshotExpressionMatches(snapshot, p.RequestBodyExpr) {
 		if body := SnapshotRequestBody(snapshot, p.LogCapturePolicy().RequestBodyBytes); body != "" {
 			NestedLogMap(fields, "request")["body"] = body

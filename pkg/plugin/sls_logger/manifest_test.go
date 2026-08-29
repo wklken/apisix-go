@@ -66,7 +66,7 @@ func TestStandaloneManifestMapsOneIndependentCasePerPinnedBlock(t *testing.T) {
 		t.Fatalf("sources = %d, want 1", len(manifest.Sources))
 	}
 	source := manifest.Sources[0]
-	if source.Commit != "c3d7d5ec69774121f53d2e20d29d09c816795dd7" {
+	if source.Commit != "9ef2ecab67f652d38365049613610ef649bb4ad0" {
 		t.Fatalf("source commit = %q, want pinned Apache APISIX commit", source.Commit)
 	}
 	if source.File != sourceFile || source.Tests != 17 {

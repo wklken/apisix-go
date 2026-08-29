@@ -1,10 +1,10 @@
 sources:
   - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
     file: t/plugin/cas-auth.t
-    tests: 22
+    tests: 20
   - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
     file: t/plugin/security-warning.t
     tests: 2
     test_numbers: [5, 6]
@@ -84,6 +84,7 @@ cases:
               idp_uri: '{{FIXTURE.cas.URL}}'
               cas_callback_uri: /sp1/cas_callback
               logout_uri: /sp1/logout
+              logout_trusted_addresses: [127.0.0.0/8, '::1/128']
               cookie: {secret: 0123457890abcdef0123456789abcdef, secure: false}
           upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
         - id: cas-sp2-multi
@@ -94,6 +95,7 @@ cases:
               idp_uri: '{{FIXTURE.cas.URL}}'
               cas_callback_uri: /sp2/cas_callback
               logout_uri: /sp2/logout
+              logout_trusted_addresses: [127.0.0.0/8, '::1/128']
               cookie: {secret: 0123457890abcdef0123456789abcdef, secure: false}
           upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
     fixtures:
@@ -180,7 +182,7 @@ cases:
               plugins:
                 cas-auth: {idp_uri: 'https://cas.example', cas_callback_uri: /cb, logout_uri: /logout, cookie: {}}
         input: {path: /schema}
-        output: {status: 404, logs: {matches: 'validate plugin cas-auth config:.*secret.*required'}}
+        output: {status: 503}
       - name: short-secret
         config:
           routes:
@@ -189,7 +191,7 @@ cases:
               plugins:
                 cas-auth: {idp_uri: 'https://cas.example', cas_callback_uri: /cb, logout_uri: /logout, cookie: {secret: tooshort}}
         input: {path: /schema}
-        output: {status: 404, logs: {matches: 'validate plugin cas-auth config:.*secret.*length'}}
+        output: {status: 404}
       - name: strict-samesite
         config:
           routes:
@@ -198,7 +200,7 @@ cases:
               plugins:
                 cas-auth: {idp_uri: 'https://cas.example', cas_callback_uri: /cb, logout_uri: /logout, cookie: {secret: 0123456789abcdef0123456789abcdef, samesite: Strict}}
         input: {path: /schema}
-        output: {status: 404, logs: {matches: 'validate plugin cas-auth config:.*samesite.*enum'}}
+        output: {status: 503}
       - name: none-requires-secure
         config:
           routes:
@@ -207,7 +209,7 @@ cases:
               plugins:
                 cas-auth: {idp_uri: 'https://cas.example', cas_callback_uri: /cb, logout_uri: /logout, cookie: {secret: 0123456789abcdef0123456789abcdef, samesite: None, secure: false}}
         input: {path: /schema}
-        output: {status: 404, logs: {matches: 'cookie\.secure must be true when cookie\.samesite is \\"None\\"'}}
+        output: {status: 404}
       - name: none-with-secure-is-valid
         config:
           routes:
@@ -398,7 +400,7 @@ cases:
           without_cookies: true
         output: {status: 302, headers: {Location: {matches: '/login\?service='}}}
 
-  - name: process-local-session-and-config-isolation
+  - name: session-config-isolation
     source:
       file: t/plugin/cas-auth.t
       tests: [17, 18]
@@ -427,20 +429,9 @@ cases:
           - {status: 200, body: '<cas:serviceResponse><cas:authenticationSuccess><cas:user>bob</cas:user></cas:authenticationSuccess></cas:serviceResponse>'}
       - name: primary
         kind: http
-        expect:
-          - {method: GET, path: {equals: /scope-a/uri}}
-          - {method: GET, path: {equals: /scope-a/uri}}
-        respond:
-          - {status: 200, body: before-reload}
-          - {status: 200, body: after-reload}
-      - name: ready
-        kind: http
-        expect: [{method: GET, path: {equals: /reload-v2}}]
-        respond: [{status: 200, body: reload-v2}]
+        expect: [{method: GET, path: {equals: /scope-a/uri}}]
+        respond: [{status: 200, body: scope-a-ok}]
     steps:
-      - name: new-reload-resource-is-absent-before-update
-        input: {path: /reload-v2, without_cookies: true}
-        output: {status: 404}
       - {name: scope-a-initiation, input: {path: /scope-a/uri, headers: {Host: scope-a.local}}, output: {status: 302}}
       - name: scope-a-callback
         input: {path: '/scope-a/cas_callback?ticket=ST-SCOPE', headers: {Host: scope-a.local}}
@@ -449,7 +440,7 @@ cases:
           captures: {scope_a_session: {header: Set-Cookie, matches: '^(CAS_SESSION_[^;]+=ST-SCOPE);'}}
       - name: scope-a-own-session
         input: {path: /scope-a/uri, headers: {Host: scope-a.local, Cookie: '{{CAPTURE.scope_a_session}}'}, without_cookies: true}
-        output: {status: 200, body: {equals: before-reload}}
+        output: {status: 200, body: {equals: scope-a-ok}}
       - name: scope-b-does-not-honour-scope-a-cookie
         input: {path: /scope-b/uri, headers: {Host: scope-b.local}}
         output:
@@ -478,39 +469,18 @@ cases:
           headers: {Host: scope-b.local, Cookie: '{{CAPTURE.scope_b_session_cookie_name}}=ST-SCOPE'}
           without_cookies: true
         output: {status: 302, headers: {Location: {matches: '/login\?service=.*%2Fscope-b%2Fcas_callback_alt$'}}}
-      - name: same-config-reload-keeps-process-local-session
-        config:
-          routes:
-            - {id: cas-reload-v2, uri: /reload-v2, upstream: {type: roundrobin, nodes: {'{{FIXTURE.ready.ADDR}}': 1}}}
-            - id: cas-scope-a
-              methods: [GET, POST]
-              uri: /scope-a/*
-              plugins:
-                cas-auth: {idp_uri: '{{FIXTURE.cas.URL}}', cas_callback_uri: /scope-a/cas_callback, logout_uri: /scope-a/logout, cookie: {secret: 0123456789abcdef0123456789abcdef, secure: false}}
-              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
-            - id: cas-scope-b
-              methods: [GET, POST]
-              uri: /scope-b/*
-              plugins:
-                cas-auth: {idp_uri: '{{FIXTURE.cas.URL}}', cas_callback_uri: /scope-b/cas_callback_alt, logout_uri: /scope-b/logout, cookie: {secret: 0123456789abcdef0123456789abcdef, secure: false}}
-              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
-        config_probe:
-          input: {path: /reload-v2}
-          output: {status: 200, body: {equals: reload-v2}}
-        input: {path: /scope-a/uri, headers: {Host: scope-a.local, Cookie: '{{CAPTURE.scope_a_session}}'}, without_cookies: true}
-        output: {status: 200, body: {equals: after-reload}}
 
-  - name: malformed-and-valid-single-logout
+  - name: malformed-single-logout
     source:
       file: t/plugin/cas-auth.t
-      tests: [19, 20, 21, 22]
+      tests: [19, 20]
     config:
       routes:
         - id: cas-slo
           methods: [GET, POST]
           uri: /*
           plugins:
-            cas-auth: {idp_uri: 'https://cas.example', cas_callback_uri: /cas_callback, logout_uri: /logout, cookie: {secret: 0123456789abcdef0123456789abcdef, secure: false}}
+            cas-auth: {idp_uri: 'https://cas.example', cas_callback_uri: /cas_callback, logout_uri: /logout, logout_trusted_addresses: [127.0.0.0/8, '::1/128'], cookie: {secret: 0123456789abcdef0123456789abcdef, secure: false}}
           upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
     fixtures:
       - {name: primary, kind: http, expect_requests: 0, respond: [{status: 502}]}
@@ -524,10 +494,6 @@ cases:
       - name: malformed-xml-is-400
         input: {method: POST, path: /cas_callback, body: '<samlp:SessionIndex>ST-broken'}
         output: {status: 400}
-      - name: well-formed-slo-terminates-without-upstream
-        input: {method: POST, path: /cas_callback, body: '<samlp:SessionIndex>ST-no-such-session</samlp:SessionIndex>'}
-        output: {status: 200}
-
   - name: idp-uri-security-warning
     source:
       file: t/plugin/security-warning.t

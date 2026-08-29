@@ -157,19 +157,16 @@ func TestValidateQualificationPlugins(t *testing.T) {
 		}
 	})
 
-	t.Run("production manifest fails at evidence qualification", func(t *testing.T) {
-		manifest, err := capability.Load()
-		if err != nil {
-			t.Fatal(err)
-		}
+	t.Run("incomplete manifest fails at evidence qualification", func(t *testing.T) {
+		manifest := unqualifiedProfileTestManifest(t)
 		selection := qualifiedSelection()
-		err = ValidateQualificationPlugins(nil, selection, manifest)
+		err := ValidateQualificationPlugins(nil, selection, manifest)
 		if err == nil || !strings.Contains(err.Error(), "unqualified required plugins") {
 			t.Fatalf("ValidateQualificationPlugins() error = %v", err)
 		}
 	})
 
-	t.Run("exact and reordered required membership pass without mutation", func(t *testing.T) {
+	t.Run("exact required order passes and reordered membership fails without mutation", func(t *testing.T) {
 		manifest := qualifiedProfileTestManifest(t)
 		profile, ok := manifest.Qualification(string(QualificationHTTPDataPlaneV1))
 		if !ok {
@@ -187,8 +184,10 @@ func TestValidateQualificationPlugins(t *testing.T) {
 
 		slices.Reverse(enabled)
 		enabledBefore = append([]string(nil), enabled...)
-		if err := ValidateQualificationPlugins(enabled, qualifiedSelection(), manifest); err != nil {
-			t.Fatalf("reordered membership error = %v", err)
+		err := ValidateQualificationPlugins(enabled, qualifiedSelection(), manifest)
+		want := "qualification_profile http-data-plane-v1: plugins must exactly match required order"
+		if err == nil || err.Error() != want {
+			t.Fatalf("reordered membership error = %v, want %q", err, want)
 		}
 		if !slices.Equal(enabled, enabledBefore) {
 			t.Fatalf("reordered enabled input mutated: got %v, want %v", enabled, enabledBefore)

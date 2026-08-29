@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -14,6 +15,7 @@ import (
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
 	"github.com/wklken/apisix-go/pkg/runtime"
@@ -143,6 +145,38 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	}
 
 	return p
+}
+
+func TestPostInitWarnsOnlyForInsecureEndpointAddrs(t *testing.T) {
+	tests := []struct {
+		name         string
+		scheme       string
+		wantWarnings []string
+	}{
+		{
+			name:         "insecure",
+			scheme:       "http",
+			wantWarnings: []string{"Using loki-logger endpoint_addrs with no TLS is a security risk"},
+		},
+		{name: "secure", scheme: "https"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var warnings []string
+			stop := logger.ReplaceObserver("loki-logger-security-warning-"+test.name, func(entry logger.Entry) {
+				if entry.Level == "WARN" && strings.Contains(entry.Message, "loki-logger") {
+					warnings = append(warnings, entry.Message)
+				}
+			})
+			defer stop()
+
+			newTestPlugin(t, Config{EndpointAddrs: []string{test.scheme + "://127.0.0.1:8199"}})
+
+			if !reflect.DeepEqual(warnings, test.wantWarnings) {
+				t.Fatalf("warnings = %#v, want %#v", warnings, test.wantWarnings)
+			}
+		})
+	}
 }
 
 func newTestPluginWithMetadata(t *testing.T, cfg Config, metadata map[string]any) *Plugin {
@@ -977,6 +1011,68 @@ func TestSchemaAcceptsBatchAndMaxPendingFields(t *testing.T) {
 	}
 	if err := util.Validate(config, p.GetSchema()); err != nil {
 		t.Fatalf("schema rejected batch and max pending fields: %v", err)
+	}
+}
+
+func TestAPISIX317SchemaMatrix(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	tests := []struct {
+		name    string
+		config  map[string]any
+		wantErr string
+	}{
+		{name: "endpoint array", config: map[string]any{"endpoint_addrs": []any{"http://127.0.0.1:8199"}}},
+		{name: "endpoint uri and labels", config: map[string]any{
+			"endpoint_addrs": []any{"http://127.0.0.1:8199"},
+			"endpoint_uri":   "/loki/api/v1/push",
+			"log_labels":     map[string]any{"job": "apisix6"},
+		}},
+		{
+			name:    "string endpoints",
+			config:  map[string]any{"endpoint_addrs": "http://127.0.0.1:8199"},
+			wantErr: "endpoint_addrs",
+		},
+		{name: "empty endpoints", config: map[string]any{"endpoint_addrs": []any{}}, wantErr: "endpoint_addrs"},
+		{name: "missing endpoints", config: map[string]any{}, wantErr: "endpoint_addrs"},
+		{
+			name:    "numeric endpoint uri",
+			config:  map[string]any{"endpoint_addrs": []any{"http://127.0.0.1:8199"}, "endpoint_uri": 1234},
+			wantErr: "endpoint_uri",
+		},
+		{
+			name:    "numeric tenant",
+			config:  map[string]any{"endpoint_addrs": []any{"http://127.0.0.1:8199"}, "tenant_id": 1234},
+			wantErr: "tenant_id",
+		},
+		{
+			name:    "numeric headers",
+			config:  map[string]any{"endpoint_addrs": []any{"http://127.0.0.1:8199"}, "headers": 1234},
+			wantErr: "headers",
+		},
+		{
+			name:    "string labels",
+			config:  map[string]any{"endpoint_addrs": []any{"http://127.0.0.1:8199"}, "log_labels": "1234"},
+			wantErr: "log_labels",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := util.Validate(tt.config, p.GetSchema())
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("Validate() error = %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("Validate() error = %v, want field %q", err, tt.wantErr)
+			}
+		})
 	}
 }
 

@@ -139,6 +139,43 @@ func TestSchemaAdmitsShortCASCookieSecretReferences(t *testing.T) {
 	}
 }
 
+func TestSchemaRejectsAPISIX317InvalidCASConfigurations(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name   string
+		config map[string]any
+	}{
+		{
+			name: "missing cookie secret",
+			config: map[string]any{
+				"idp_uri": "https://cas.example.com", "cas_callback_uri": "/callback",
+				"logout_uri": "/logout", "cookie": map[string]any{},
+			},
+		},
+		{
+			name: "unsupported strict SameSite",
+			config: map[string]any{
+				"idp_uri": "https://cas.example.com", "cas_callback_uri": "/callback",
+				"logout_uri": "/logout", "cookie": map[string]any{
+					"secret": strings.Repeat("s", 32), "samesite": "Strict",
+				},
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if err := util.Validate(test.config, p.GetSchema()); err == nil {
+				t.Fatal("schema accepted invalid APISIX 3.17 cas-auth configuration")
+			}
+		})
+	}
+}
+
 func TestCASScopedMaterializationDecryptsContextualCookieSecret(t *testing.T) {
 	const plaintext = "legacy-context-cookie-secret-legacy-context-cookie-secret"
 	service := testutil.DataEncryptionService(true, []string{"0123456789abcdef"})

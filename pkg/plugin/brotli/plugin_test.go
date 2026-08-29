@@ -18,6 +18,7 @@ import (
 
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/compression"
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -41,7 +42,12 @@ func TestPostInitMatchesAPISIXDefaults(t *testing.T) {
 		t.Fatalf("Types = %#v, want [text/html]", p.config.Types)
 	}
 	if *p.config.MinLength != 20 || *p.config.Mode != 0 || *p.config.CompLevel != 6 {
-		t.Fatalf("minimum/mode/level = %d/%d/%d, want 20/0/6", *p.config.MinLength, *p.config.Mode, *p.config.CompLevel)
+		t.Fatalf(
+			"minimum/mode/level = %d/%d/%d, want 20/0/6",
+			*p.config.MinLength,
+			*p.config.Mode,
+			*p.config.CompLevel,
+		)
 	}
 	if *p.config.LGWin != 19 || *p.config.LGBlock != 0 {
 		t.Fatalf("window/block = %d/%d, want 19/0", *p.config.LGWin, *p.config.LGBlock)
@@ -51,6 +57,35 @@ func TestPostInitMatchesAPISIXDefaults(t *testing.T) {
 	}
 	if p.config.Vary != nil {
 		t.Fatalf("Vary = %v, want unset", *p.config.Vary)
+	}
+}
+
+func TestSchemaMatchesAPISIX317Rejections(t *testing.T) {
+	p := newTestPlugin(t, Config{})
+	if err := util.Validate(map[string]any{}, p.GetSchema()); err != nil {
+		t.Fatalf("default config validation error = %v", err)
+	}
+
+	for _, tt := range []struct {
+		name   string
+		config map[string]any
+		field  string
+	}{
+		{name: "empty types", config: map[string]any{"types": []any{}}, field: "types"},
+		{name: "minimum length", config: map[string]any{"min_length": 0}, field: "min_length"},
+		{name: "mode", config: map[string]any{"mode": 4}, field: "mode"},
+		{name: "compression level", config: map[string]any{"comp_level": 12}, field: "comp_level"},
+		{name: "http version", config: map[string]any{"http_version": 2}, field: "http_version"},
+		{name: "window", config: map[string]any{"lgwin": 100}, field: "lgwin"},
+		{name: "block", config: map[string]any{"lgblock": 8}, field: "lgblock"},
+		{name: "vary type", config: map[string]any{"vary": 0}, field: "vary"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			err := util.Validate(tt.config, p.GetSchema())
+			if err == nil || !strings.Contains(err.Error(), tt.field) {
+				t.Fatalf("Validate(%v) error = %v, want %s rejection", tt.config, err, tt.field)
+			}
+		})
 	}
 }
 
@@ -67,7 +102,14 @@ func TestPostInitPreservesAPISIXConfigMatrix(t *testing.T) {
 	}{
 		{name: "defaults", config: Config{}, mode: 0, level: 6, window: 19, block: 0},
 		{name: "mode one", config: Config{Mode: new(1)}, mode: 1, level: 6, window: 19, block: 0},
-		{name: "level five", config: Config{CompLevel: new(5)}, mode: 0, level: 5, window: 19, block: 0},
+		{
+			name:   "level five",
+			config: Config{CompLevel: new(5)},
+			mode:   0,
+			level:  5,
+			window: 19,
+			block:  0,
+		},
 		{
 			name:   "window twelve",
 			config: Config{CompLevel: new(5), LGWin: new(12)},
@@ -95,8 +137,14 @@ func TestPostInitPreservesAPISIXConfigMatrix(t *testing.T) {
 			wantVary: &trueValue,
 		},
 		{
-			name:     "mode two",
-			config:   Config{Mode: new(2), CompLevel: new(5), LGWin: new(12), LGBlock: new(16), Vary: &trueValue},
+			name: "mode two",
+			config: Config{
+				Mode:      new(2),
+				CompLevel: new(5),
+				LGWin:     new(12),
+				LGBlock:   new(16),
+				Vary:      &trueValue,
+			},
 			mode:     2,
 			level:    5,
 			window:   12,
@@ -108,7 +156,8 @@ func TestPostInitPreservesAPISIXConfigMatrix(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			p := newTestPlugin(t, tt.config)
-			if len(p.config.Types) != 1 || p.config.Types[0] != "text/html" || *p.config.MinLength != 20 ||
+			if len(p.config.Types) != 1 || p.config.Types[0] != "text/html" ||
+				*p.config.MinLength != 20 ||
 				*p.config.HTTPVersion != 1.1 {
 				t.Fatalf(
 					"shared defaults = types %#v, minimum %d, HTTP %g",
@@ -117,7 +166,8 @@ func TestPostInitPreservesAPISIXConfigMatrix(t *testing.T) {
 					*p.config.HTTPVersion,
 				)
 			}
-			if *p.config.Mode != tt.mode || *p.config.CompLevel != tt.level || *p.config.LGWin != tt.window ||
+			if *p.config.Mode != tt.mode || *p.config.CompLevel != tt.level ||
+				*p.config.LGWin != tt.window ||
 				*p.config.LGBlock != tt.block {
 				t.Fatalf(
 					"mode/level/window/block = %d/%d/%d/%d, want %d/%d/%d/%d",
@@ -157,6 +207,7 @@ func TestHandlerCompressesMatchingResponse(t *testing.T) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.Header().Set("Content-Length", "11")
 		w.Header().Set("Etag", `"strong"`)
+		w.Header().Set("Last-Modified", "Thu, 27 Nov 2025 00:32:33 GMT")
 		_, _ = w.Write([]byte("hello world"))
 	})).ServeHTTP(res, req)
 
@@ -169,8 +220,11 @@ func TestHandlerCompressesMatchingResponse(t *testing.T) {
 	if got := res.Header().Get("Vary"); got != "Accept-Encoding" {
 		t.Fatalf("Vary = %q, want Accept-Encoding", got)
 	}
-	if got := res.Header().Get("Etag"); got != "" {
-		t.Fatalf("Etag = %q, want body-derived ETag removed", got)
+	if got := res.Header().Get("Etag"); got != `W/"strong"` {
+		t.Fatalf("Etag = %q, want downgraded weak ETag", got)
+	}
+	if got := res.Header().Get("Last-Modified"); got != "Thu, 27 Nov 2025 00:32:33 GMT" {
+		t.Fatalf("Last-Modified = %q, want preserved", got)
 	}
 	if decoded := decodeBrotli(t, res.Body.Bytes()); decoded != "hello world" {
 		t.Fatalf("decoded body = %q, want hello world", decoded)
@@ -179,11 +233,13 @@ func TestHandlerCompressesMatchingResponse(t *testing.T) {
 
 func TestHandlerDoesNotSynthesizeContentLengthAfterCompression(t *testing.T) {
 	p := newTestPlugin(t, Config{Types: []string{"text/plain"}, MinLength: new(1)})
-	server := httptest.NewServer(p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/plain")
-		w.Header().Set("Content-Length", "11")
-		_, _ = w.Write([]byte("hello world"))
-	})))
+	server := httptest.NewServer(
+		p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/plain")
+			w.Header().Set("Content-Length", "11")
+			_, _ = w.Write([]byte("hello world"))
+		})),
+	)
 	defer server.Close()
 
 	req, err := http.NewRequest(http.MethodGet, server.URL, nil)
@@ -220,20 +276,47 @@ func TestHandlerAppendsVaryToExistingResponseValue(t *testing.T) {
 	}
 }
 
-func TestHandlerClearsEmbeddedQuoteETag(t *testing.T) {
+func TestHandlerMatchesAPISIX317ETagRules(t *testing.T) {
+	p := newTestPlugin(t, Config{Types: []string{"text/plain"}, MinLength: new(1)})
+	for _, tt := range []struct {
+		name string
+		etag string
+		want string
+	}{
+		{name: "invalid unquoted", etag: "123456789"},
+		{name: "weak remains weak", etag: `W/"123456789"`, want: `W/"123456789"`},
+		{name: "strong becomes weak", etag: `"123456789"`, want: `W/"123456789"`},
+		{name: "embedded quote is accepted", etag: `"12"34"`, want: `W/"12"34"`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/text", nil)
+			req.Header.Set("Accept-Encoding", "br")
+			res := httptest.NewRecorder()
+			p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/plain")
+				w.Header().Set("Etag", tt.etag)
+				_, _ = w.Write([]byte("hello world"))
+			})).ServeHTTP(res, req)
+
+			if got := res.Header().Get("Etag"); got != tt.want {
+				t.Fatalf("Etag = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestHandlerDoesNotAddVaryByDefault(t *testing.T) {
 	p := newTestPlugin(t, Config{Types: []string{"text/plain"}, MinLength: new(1)})
 	req := httptest.NewRequest(http.MethodGet, "/text", nil)
 	req.Header.Set("Accept-Encoding", "br")
 	res := httptest.NewRecorder()
-
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
-		w.Header().Set("Etag", `"12"34"`)
 		_, _ = w.Write([]byte("hello world"))
 	})).ServeHTTP(res, req)
 
-	if got := res.Header().Get("Etag"); got != "" {
-		t.Fatalf("Etag = %q, want embedded-quote ETag cleared", got)
+	if got := res.Header().Get("Vary"); got != "" {
+		t.Fatalf("Vary = %q, want absent for APISIX 3.17 default", got)
 	}
 }
 
@@ -447,7 +530,10 @@ func TestBrotliHandlerCanRecoverAfterFailedHijack(t *testing.T) {
 
 	t.Run("delegated error", func(t *testing.T) {
 		p := newTestPlugin(t, Config{})
-		baseWriter := &hijackCaptureWriter{header: make(http.Header), hijackErr: errors.New("hijack failed")}
+		baseWriter := &hijackCaptureWriter{
+			header:    make(http.Header),
+			hijackErr: errors.New("hijack failed"),
+		}
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			_, _, err := w.(http.Hijacker).Hijack()
@@ -709,7 +795,11 @@ func TestBoundedResponseWriterNeverBuffersBeyondCapPlusChunk(t *testing.T) {
 		t.Fatal("bounded writer did not switch to pass-through for an oversized body")
 	}
 	if writer.maxBuffered > cap+int64(len(chunk)) {
-		t.Fatalf("max buffered = %d, want at most cap+largestWrite %d", writer.maxBuffered, cap+int64(len(chunk)))
+		t.Fatalf(
+			"max buffered = %d, want at most cap+largestWrite %d",
+			writer.maxBuffered,
+			cap+int64(len(chunk)),
+		)
 	}
 	if got := base.Body.Len(); got != 4096 {
 		t.Fatalf("streamed body length = %d, want 4096", got)
@@ -735,11 +825,34 @@ func TestBrotliNegotiationVaryStatusAndHead(t *testing.T) {
 		contentEnc     string
 		wantEnc        string
 		wantBody       string
+		wantVary       bool
 	}{
-		{name: "identity varies", method: http.MethodGet, status: http.StatusOK, wantBody: "body"},
-		{name: "not acceptable", method: http.MethodGet, acceptEncoding: "*;q=0", status: http.StatusNotAcceptable},
-		{name: "head advertises", method: http.MethodHead, acceptEncoding: "br", status: http.StatusOK, wantEnc: "br"},
-		{name: "no content", method: http.MethodGet, acceptEncoding: "br", status: http.StatusNoContent},
+		{
+			name:     "identity without accepted coding",
+			method:   http.MethodGet,
+			status:   http.StatusOK,
+			wantBody: "body",
+		},
+		{
+			name:           "not acceptable",
+			method:         http.MethodGet,
+			acceptEncoding: "*;q=0",
+			status:         http.StatusNotAcceptable,
+		},
+		{
+			name:           "head advertises",
+			method:         http.MethodHead,
+			acceptEncoding: "br",
+			status:         http.StatusOK,
+			wantEnc:        "br",
+			wantVary:       true,
+		},
+		{
+			name:           "no content",
+			method:         http.MethodGet,
+			acceptEncoding: "br",
+			status:         http.StatusNoContent,
+		},
 		{
 			name:           "not modified preserves encoding",
 			method:         http.MethodGet,
@@ -751,7 +864,10 @@ func TestBrotliNegotiationVaryStatusAndHead(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			p := newTestPlugin(t, Config{Types: []string{"text/plain"}, MinLength: new(1)})
+			p := newTestPlugin(
+				t,
+				Config{Types: []string{"text/plain"}, MinLength: new(1), Vary: new(true)},
+			)
 			req := httptest.NewRequest(tt.method, "/", nil)
 			if tt.acceptEncoding != "" {
 				req.Header.Set("Accept-Encoding", tt.acceptEncoding)
@@ -772,11 +888,18 @@ func TestBrotliNegotiationVaryStatusAndHead(t *testing.T) {
 			if got := res.Header().Get("Content-Encoding"); got != tt.wantEnc {
 				t.Fatalf("Content-Encoding = %q, want %q", got, tt.wantEnc)
 			}
-			if got := res.Header().Get("Vary"); tt.status != http.StatusNoContent && got != "Accept-Encoding" {
-				t.Fatalf("Vary = %q, want Accept-Encoding", got)
+			wantVary := ""
+			if tt.wantVary {
+				wantVary = "Accept-Encoding"
+			}
+			if got := res.Header().Get("Vary"); got != wantVary {
+				t.Fatalf("Vary = %q, want %q", got, wantVary)
 			}
 			if tt.method == http.MethodHead && res.Header().Get("Content-Length") != "" {
-				t.Fatalf("HEAD Content-Length = %q, want removed", res.Header().Get("Content-Length"))
+				t.Fatalf(
+					"HEAD Content-Length = %q, want removed",
+					res.Header().Get("Content-Length"),
+				)
 			}
 			if tt.status == http.StatusNotAcceptable && res.Body.Len() != 0 {
 				t.Fatalf("406 body length = %d, want empty", res.Body.Len())
@@ -847,7 +970,7 @@ func TestBrotliBodylessNegotiationPreservesStatusAndMetadata(t *testing.T) {
 	}
 }
 
-func TestBrotliNotModifiedWithoutContentTypePreservesEncodingAndVary(t *testing.T) {
+func TestBrotliNotModifiedWithoutContentTypePreservesEncodingWithoutVary(t *testing.T) {
 	p := newTestPlugin(t, Config{Types: []string{"text/plain"}, MinLength: new(1)})
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Header.Set("Accept-Encoding", "*;q=0")
@@ -863,8 +986,8 @@ func TestBrotliNotModifiedWithoutContentTypePreservesEncodingAndVary(t *testing.
 	if got := res.Header().Get("Content-Encoding"); got != "gzip" {
 		t.Fatalf("Content-Encoding = %q, want gzip", got)
 	}
-	if got := res.Header().Get("Vary"); got != "Accept-Encoding" {
-		t.Fatalf("Vary = %q, want exactly Accept-Encoding", got)
+	if got := res.Header().Get("Vary"); got != "" {
+		t.Fatalf("Vary = %q, want absent", got)
 	}
 	if res.Body.Len() != 0 {
 		t.Fatalf("body length = %d, want empty", res.Body.Len())
@@ -917,7 +1040,10 @@ func TestBrotliStreamingPassthroughWhenAlreadyEncoded(t *testing.T) {
 	decision := state.Decide(compression.ResponseMeta{
 		Method: http.MethodGet,
 		Status: http.StatusOK,
-		Header: http.Header{"Content-Type": []string{"text/plain"}, "Content-Encoding": []string{"br"}},
+		Header: http.Header{
+			"Content-Type":     []string{"text/plain"},
+			"Content-Encoding": []string{"br"},
+		},
 	})
 	underlying := httptest.NewRecorder()
 	wrapped, err := p.WrapCompression(underlying, registered, state, decision)

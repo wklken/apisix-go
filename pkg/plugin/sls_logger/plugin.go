@@ -17,6 +17,7 @@ import (
 
 	"github.com/felixge/httpsnoop"
 	"github.com/wklken/apisix-go/pkg/capability"
+	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -46,7 +47,15 @@ type Plugin struct {
 const (
 	priority = 406
 	name     = "sls-logger"
+
+	slsQueuedLogEnvelopeKey = "apisix-go:sls-logger:queued-entry"
+	slsTimestampLayout      = "2006-01-02T15:04:05.000Z"
 )
+
+type slsQueuedLogEntry struct {
+	fields   map[string]any
+	hostname string
+}
 
 const schema = `
 {
@@ -72,7 +81,7 @@ const schema = `
     },
     "ssl_verify": {
       "type": "boolean",
-      "default": true
+      "default": false
     },
     "timeout": {
       "type": "integer",
@@ -296,7 +305,11 @@ func (p *Plugin) PostInit() error {
 	}
 
 	if p.config.SSLVerify == nil {
-		verify := true
+		verify := false
+		if effective := p.StaticConfig(); effective != nil &&
+			effective.Profiles.Security == config.SecurityStrict {
+			verify = true
+		}
 		p.config.SSLVerify = &verify
 	}
 	if p.config.Timeout == 0 {
@@ -392,7 +405,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			base.NestedLogMap(logFields, "response")["body"] = recorder.BodyTruncated(p.config.MaxRespBodyBytes)
 		}
 
-		_ = p.enqueueSLSIfRunning(logFields)
+		_ = p.enqueueSLSIfRunning(logFields, base.HostWithoutPort(r.Host))
 	}
 	return http.HandlerFunc(fn)
 }
@@ -419,16 +432,18 @@ func (p *Plugin) RunLogPhase(snapshot base.LogSnapshot) error {
 			base.NestedLogMap(fields, "response")["body"] = body
 		}
 	}
-	return p.enqueueSLSIfRunning(fields)
+	return p.enqueueSLSIfRunning(fields, base.HostWithoutPort(snapshot.Request.Host))
 }
 
-func (p *Plugin) enqueueSLSIfRunning(fields map[string]any) error {
+func (p *Plugin) enqueueSLSIfRunning(fields map[string]any, hostname string) error {
 	p.lifecycleMu.RLock()
 	defer p.lifecycleMu.RUnlock()
 	if p.stopped.Load() || !p.ready {
 		return base.ErrLogQueueUnavailable
 	}
-	return p.EnqueueLog(fields)
+	return p.EnqueueLog(map[string]any{
+		slsQueuedLogEnvelopeKey: slsQueuedLogEntry{fields: fields, hostname: hostname},
+	})
 }
 
 func slsSnapshotDefaultFields(snapshot base.LogSnapshot) map[string]any {
@@ -657,19 +672,23 @@ func (p *Plugin) buildMessage(log map[string]any) string {
 }
 
 func (p *Plugin) buildMessageWithSecret(log map[string]any, accessKeySecret string) string {
+	hostname := base.Hostname()
+	if queued, ok := log[slsQueuedLogEnvelopeKey].(slsQueuedLogEntry); ok {
+		log = queued.fields
+		hostname = queued.hostname
+	}
 	payload, err := json.Marshal(log)
 	if err != nil {
 		payload = []byte(`{}`)
 	}
 
-	hostname := base.Hostname()
 	if hostname == "" {
 		hostname = "-"
 	}
 
 	return strings.Join([]string{
 		"<46>1",
-		time.Now().UTC().Format(time.RFC3339Nano),
+		time.Now().UTC().Format(slsTimestampLayout),
 		hostname,
 		"apisix",
 		fmt.Sprint(os.Getpid()),

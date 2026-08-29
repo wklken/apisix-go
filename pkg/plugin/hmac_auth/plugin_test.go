@@ -207,8 +207,14 @@ func TestHandlerWritesExactMissingAuthorizationResponse(t *testing.T) {
 	if response.Code != http.StatusUnauthorized {
 		t.Fatalf("response code = %d, want %d", response.Code, http.StatusUnauthorized)
 	}
-	if got := response.Body.String(); got != `{"message":"client request can't be validated: missing Authorization header"}` {
+	if got := response.Body.String(); got != "{\"message\":\"client request can't be validated: missing Authorization header\"}\n" {
 		t.Fatalf("response body = %q", got)
+	}
+	if got := response.Header().Get("Content-Type"); got != "text/plain; charset=utf-8" {
+		t.Fatalf("Content-Type = %q, want APISIX response type", got)
+	}
+	if got := response.Header().Get("X-Content-Type-Options"); got != "" {
+		t.Fatalf("X-Content-Type-Options = %q, want absent", got)
 	}
 	if got := response.Header().Get("WWW-Authenticate"); got != `hmac realm="hmac"` {
 		t.Fatalf("WWW-Authenticate = %q", got)
@@ -228,7 +234,7 @@ func TestHandlerWritesExactMissingAnonymousConsumerResponse(t *testing.T) {
 	if response.Code != http.StatusUnauthorized {
 		t.Fatalf("response code = %d, want %d", response.Code, http.StatusUnauthorized)
 	}
-	if got := response.Body.String(); got != `{"message":"Invalid user authorization"}` {
+	if got := response.Body.String(); got != "{\"message\":\"Invalid user authorization\"}\n" {
 		t.Fatalf("response body = %q", got)
 	}
 	if got := response.Header().Get("WWW-Authenticate"); got != `hmac realm="hmac"` {

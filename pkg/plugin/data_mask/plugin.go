@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode/utf16"
 
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -127,7 +128,12 @@ func (p *Plugin) PostInit() error {
 				rule.compiledRegex = compiled
 			}
 			if rule.Type == "body" && rule.BodyFormat == "json" {
-				rule.pathSegments = parseJSONPath(rule.Name)
+				segments, err := parseJSONPath(rule.Name)
+				if err != nil {
+					p.bodyRules = p.bodyRules[:0]
+					return fmt.Errorf("invalid JSONPath for rule %q: %w", rule.Name, err)
+				}
+				rule.pathSegments = segments
 			}
 			if rule.Type == "body" {
 				p.bodyRules = append(p.bodyRules, *rule)
@@ -256,7 +262,7 @@ func maskSnapshotRequestID(snapshot *base.LogSnapshot, original, masked string) 
 }
 
 func updateSnapshotRequestTargets(snapshot *base.LogSnapshot) error {
-	encoded := snapshot.Request.Query.Encode()
+	encoded := encodeSnapshotQuery(snapshot.Request.Query)
 	if snapshot.Request.URI != "" {
 		parsed, err := url.ParseRequestURI(snapshot.Request.URI)
 		if err != nil {
@@ -278,6 +284,14 @@ func updateSnapshotRequestTargets(snapshot *base.LogSnapshot) error {
 		snapshot.Request.URL = parsed.String()
 	}
 	return nil
+}
+
+// encodeSnapshotQuery matches APISIX's logged request-target representation for
+// masking placeholders. url.Values.Encode correctly escapes the remaining
+// query data, but it percent-encodes '*' even though APISIX leaves the masking
+// marker visible in $request_uri and $request_line.
+func encodeSnapshotQuery(query url.Values) string {
+	return strings.ReplaceAll(query.Encode(), "%2A", "*")
 }
 
 func (p *Plugin) maskBodyRules(body []byte, rules []MaskRule) ([]byte, bool, error) {
@@ -395,10 +409,11 @@ func maskValues(values url.Values, rule MaskRule) bool {
 func maskJSONPath(root any, rule MaskRule) bool {
 	segments := rule.pathSegments
 	if len(segments) == 0 {
-		segments = parseJSONPath(rule.Name)
-	}
-	if len(segments) == 0 {
-		return false
+		var err error
+		segments, err = parseJSONPath(rule.Name)
+		if err != nil {
+			return false
+		}
 	}
 	return maskJSONNode(root, segments, rule)
 }
@@ -416,73 +431,30 @@ func maskJSONNode(node any, segments []pathSegment, rule MaskRule) bool {
 		return maskJSONRecursive(node, remaining, rule)
 	}
 	segment := segments[0]
-	if segment.name == "" {
-		items, ok := node.([]any)
-		if !ok {
-			return false
-		}
-		if segment.each {
-			masked := false
-			for index, item := range items {
-				if len(segments) == 1 {
-					if maskJSONArrayElement(items, index, rule) {
-						masked = true
-					}
-					continue
-				}
-				if maskJSONNode(item, segments[1:], rule) {
-					masked = true
-				}
-			}
-			return masked
-		}
-		if !segment.hasIndex || segment.index < 0 || segment.index >= len(items) {
-			return false
-		}
-		if len(segments) == 1 {
-			return maskJSONArrayElement(items, segment.index, rule)
-		}
-		return maskJSONNode(items[segment.index], segments[1:], rule)
-	}
-	object, ok := node.(map[string]any)
-	if !ok {
-		return false
-	}
-	value, exists := object[segment.name]
-	if !exists {
-		return false
-	}
-	if segment.each {
-		items, ok := value.([]any)
-		if !ok {
-			return false
-		}
-		masked := false
-		for index, item := range items {
+	masked := false
+	switch typed := node.(type) {
+	case map[string]any:
+		for _, field := range selectedObjectFields(typed, segment) {
 			if len(segments) == 1 {
-				if maskJSONArrayElement(items, index, rule) {
-					masked = true
-				}
-			} else if maskJSONNode(item, segments[1:], rule) {
+				masked = maskJSONField(typed, field, rule) || masked
+				continue
+			}
+			if maskJSONNode(typed[field], segments[1:], rule) {
 				masked = true
 			}
 		}
-		return masked
-	}
-	if segment.hasIndex {
-		items, ok := value.([]any)
-		if !ok || segment.index < 0 || segment.index >= len(items) {
-			return false
+	case []any:
+		for _, index := range selectedArrayIndexes(len(typed), segment) {
+			if len(segments) == 1 {
+				masked = maskJSONArrayElement(typed, index, rule) || masked
+				continue
+			}
+			if maskJSONNode(typed[index], segments[1:], rule) {
+				masked = true
+			}
 		}
-		if len(segments) == 1 {
-			return maskJSONArrayElement(items, segment.index, rule)
-		}
-		return maskJSONNode(items[segment.index], segments[1:], rule)
 	}
-	if len(segments) == 1 {
-		return maskJSONField(object, segment.name, rule)
-	}
-	return maskJSONNode(value, segments[1:], rule)
+	return masked
 }
 
 func maskJSONRecursive(node any, remaining []pathSegment, rule MaskRule) bool {
@@ -498,7 +470,7 @@ func maskJSONRecursive(node any, remaining []pathSegment, rule MaskRule) bool {
 			}
 		}
 	case []any:
-		if remaining[0].name == "" && maskJSONNode(typed, remaining, rule) {
+		if maskJSONNode(typed, remaining, rule) {
 			masked = true
 		}
 		for _, value := range typed {
@@ -508,6 +480,52 @@ func maskJSONRecursive(node any, remaining []pathSegment, rule MaskRule) bool {
 		}
 	}
 	return masked
+}
+
+func selectedObjectFields(object map[string]any, segment pathSegment) []string {
+	if segment.wildcard {
+		fields := make([]string, 0, len(object))
+		for field := range object {
+			fields = append(fields, field)
+		}
+		return fields
+	}
+	fields := make([]string, 0, len(segment.fields))
+	for _, field := range segment.fields {
+		if _, ok := object[field]; ok {
+			fields = append(fields, field)
+		}
+	}
+	return fields
+}
+
+func selectedArrayIndexes(length int, segment pathSegment) []int {
+	if segment.wildcard {
+		indexes := make([]int, length)
+		for i := range length {
+			indexes[i] = i
+		}
+		return indexes
+	}
+	if segment.slice != nil {
+		return segment.slice.indexes(length)
+	}
+	indexes := make([]int, 0, len(segment.indexes))
+	seen := make(map[int]struct{}, len(segment.indexes))
+	for _, index := range segment.indexes {
+		if index < 0 {
+			index += length
+		}
+		if index < 0 || index >= length {
+			continue
+		}
+		if _, ok := seen[index]; ok {
+			continue
+		}
+		seen[index] = struct{}{}
+		indexes = append(indexes, index)
+	}
+	return indexes
 }
 
 func maskJSONField(object map[string]any, field string, rule MaskRule) bool {
@@ -578,104 +596,365 @@ func maskString(value string, rule MaskRule) (string, bool) {
 }
 
 type pathSegment struct {
-	name      string
-	each      bool
-	hasIndex  bool
-	index     int
+	fields    []string
+	indexes   []int
+	wildcard  bool
+	slice     *pathSlice
 	recursive bool
 }
 
-func parseJSONPath(path string) []pathSegment {
-	path = strings.TrimSpace(path)
-	recursive := false
-	if after, ok := strings.CutPrefix(path, "$.."); ok {
-		path = after
-		recursive = true
-	} else if after, ok := strings.CutPrefix(path, "$"); ok {
-		path = strings.TrimPrefix(after, ".")
-	}
-	if path == "" {
+type pathSlice struct {
+	start *int
+	end   *int
+	step  int
+}
+
+func (slice pathSlice) indexes(length int) []int {
+	if length == 0 {
 		return nil
+	}
+	if slice.step > 0 {
+		start := normalizePositiveSliceBound(slice.start, 0, length)
+		end := normalizePositiveSliceBound(slice.end, length, length)
+		if start >= end {
+			return nil
+		}
+		count := 1 + (end-1-start)/slice.step
+		indexes := make([]int, 0, count)
+		for index, remaining := start, count; remaining > 0; remaining-- {
+			indexes = append(indexes, index)
+			if remaining > 1 {
+				index += slice.step
+			}
+		}
+		return indexes
+	}
+
+	start := normalizeNegativeSliceBound(slice.start, length-1, length)
+	end := normalizeNegativeSliceBound(slice.end, -1, length)
+	indexes := make([]int, 0)
+	for index := start; index > end; index += slice.step {
+		indexes = append(indexes, index)
+	}
+	return indexes
+}
+
+func normalizePositiveSliceBound(bound *int, fallback, length int) int {
+	if bound == nil {
+		return fallback
+	}
+	value := *bound
+	if value < 0 {
+		value += length
+	}
+	return min(max(value, 0), length)
+}
+
+func normalizeNegativeSliceBound(bound *int, fallback, length int) int {
+	if bound == nil {
+		return fallback
+	}
+	value := *bound
+	if value < 0 {
+		value += length
+	}
+	return min(max(value, -1), length-1)
+}
+
+func parseJSONPath(path string) ([]pathSegment, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return nil, fmt.Errorf("path is empty")
+	}
+
+	position := 0
+	nextRecursive := false
+	switch path[0] {
+	case '$':
+		position++
+		if position == len(path) {
+			return nil, fmt.Errorf("root-only path cannot select a value")
+		}
+		switch path[position] {
+		case '[':
+		case '.':
+			position++
+			if position < len(path) && path[position] == '.' {
+				nextRecursive = true
+				position++
+			}
+		default:
+			return nil, fmt.Errorf("root marker must be followed by '.' or '['")
+		}
+	case '.':
+		position++
+	}
+	if position == len(path) || path[position] == '.' {
+		return nil, fmt.Errorf("path has an empty selector")
 	}
 
 	segments := make([]pathSegment, 0, strings.Count(path, ".")+1)
-	for position := 0; position < len(path); {
-		if path[position] == '.' {
+	for position < len(path) {
+		segment, next, err := parseJSONPathSegment(path, position)
+		if err != nil {
+			return nil, err
+		}
+		segment.recursive = nextRecursive
+		nextRecursive = false
+		segments = append(segments, segment)
+		position = next
+		if position == len(path) {
+			break
+		}
+		if path[position] == '[' {
+			continue
+		}
+		if path[position] != '.' {
+			return nil, fmt.Errorf("selector must be followed by '.' or '['")
+		}
+		position++
+		if position < len(path) && path[position] == '.' {
+			nextRecursive = true
 			position++
-			if position == len(path) || path[position] == '.' {
-				return nil
-			}
-			continue
 		}
-		if path[position] != '[' {
-			end := position
-			for end < len(path) && path[end] != '.' && path[end] != '[' {
-				end++
-			}
-			segment, ok := parsePathSegment(path[position:end])
-			if !ok {
-				return nil
-			}
-			segments = append(segments, segment)
-			position = end
-			continue
+		if position == len(path) || path[position] == '.' {
+			return nil, fmt.Errorf("path has an empty selector")
 		}
-
-		close := strings.IndexByte(path[position+1:], ']')
-		if close < 0 {
-			return nil
-		}
-		close += position + 1
-		content := path[position+1 : close]
-		if len(content) >= 2 && (content[0] == '\'' || content[0] == '"') && content[len(content)-1] == content[0] {
-			segments = append(segments, pathSegment{name: content[1 : len(content)-1]})
-		} else {
-			if len(segments) == 0 || (position > 0 && path[position-1] == '.') {
-				segments = append(segments, pathSegment{})
-			}
-			segment := &segments[len(segments)-1]
-			if content == "*" {
-				segment.each = true
-			} else {
-				index, err := strconv.Atoi(content)
-				if err != nil {
-					return nil
-				}
-				segment.hasIndex = true
-				segment.index = index
-			}
-		}
-		position = close + 1
 	}
-	if len(segments) == 0 {
-		return nil
-	}
-	if recursive {
-		segments[0].recursive = true
-	}
-	return segments
+	return segments, nil
 }
 
-func parsePathSegment(part string) (pathSegment, bool) {
-	segment := pathSegment{name: part}
-	if before, ok := strings.CutSuffix(part, "[*]"); ok {
-		segment.name = before
-		segment.each = true
-		return segment, segment.name != "" || segment.each
+func parseJSONPathSegment(path string, position int) (pathSegment, int, error) {
+	if path[position] == '[' {
+		close, err := findBracketClose(path, position)
+		if err != nil {
+			return pathSegment{}, 0, err
+		}
+		segment, err := parseBracketSelector(strings.TrimSpace(path[position+1 : close]))
+		return segment, close + 1, err
 	}
-	if !strings.HasSuffix(part, "]") {
-		return segment, true
+
+	end := position
+	for end < len(path) && path[end] != '.' && path[end] != '[' {
+		end++
 	}
-	open := strings.LastIndex(part, "[")
-	if open < 0 {
-		return pathSegment{}, false
+	name := path[position:end]
+	if name == "" || strings.TrimSpace(name) != name || strings.ContainsAny(name, `]$,'":?()@`) {
+		return pathSegment{}, 0, fmt.Errorf("invalid dot selector")
 	}
-	index, err := strconv.Atoi(part[open+1 : len(part)-1])
+	if name == "*" {
+		return pathSegment{wildcard: true}, end, nil
+	}
+	return pathSegment{fields: []string{name}}, end, nil
+}
+
+func findBracketClose(path string, open int) (int, error) {
+	quote := byte(0)
+	escaped := false
+	for position := open + 1; position < len(path); position++ {
+		char := path[position]
+		if escaped {
+			escaped = false
+			continue
+		}
+		if quote != 0 {
+			switch char {
+			case '\\':
+				escaped = true
+			case quote:
+				quote = 0
+			}
+			continue
+		}
+		if char == '\'' || char == '"' {
+			quote = char
+			continue
+		}
+		if char == ']' {
+			return position, nil
+		}
+	}
+	return 0, fmt.Errorf("unterminated bracket selector")
+}
+
+func parseBracketSelector(content string) (pathSegment, error) {
+	if content == "" {
+		return pathSegment{}, fmt.Errorf("bracket selector is empty")
+	}
+	if content == "*" {
+		return pathSegment{wildcard: true}, nil
+	}
+	if content[0] == '\'' || content[0] == '"' {
+		fields, err := parseQuotedFieldUnion(content)
+		if err != nil {
+			return pathSegment{}, err
+		}
+		return pathSegment{fields: fields}, nil
+	}
+	if strings.Contains(content, ":") {
+		slice, err := parseArraySlice(content)
+		if err != nil {
+			return pathSegment{}, err
+		}
+		return pathSegment{slice: &slice}, nil
+	}
+	if strings.ContainsAny(content, `?'"()@`) {
+		return pathSegment{}, fmt.Errorf("unsupported bracket selector")
+	}
+	parts := strings.Split(content, ",")
+	indexes := make([]int, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			return pathSegment{}, fmt.Errorf("array index union has an empty member")
+		}
+		index, err := strconv.Atoi(part)
+		if err != nil {
+			return pathSegment{}, fmt.Errorf("array selector is not an integer union")
+		}
+		indexes = append(indexes, index)
+	}
+	return pathSegment{indexes: indexes}, nil
+}
+
+func parseQuotedFieldUnion(content string) ([]string, error) {
+	fields := make([]string, 0, strings.Count(content, ",")+1)
+	for position := 0; position < len(content); {
+		for position < len(content) && (content[position] == ' ' || content[position] == '\t') {
+			position++
+		}
+		if position == len(content) || (content[position] != '\'' && content[position] != '"') {
+			return nil, fmt.Errorf("object field union requires quoted members")
+		}
+		field, next, err := parseQuotedField(content, position)
+		if err != nil {
+			return nil, err
+		}
+		if field == "" {
+			return nil, fmt.Errorf("object field union has an empty member")
+		}
+		fields = append(fields, field)
+		position = next
+		for position < len(content) && (content[position] == ' ' || content[position] == '\t') {
+			position++
+		}
+		if position == len(content) {
+			break
+		}
+		if content[position] != ',' {
+			return nil, fmt.Errorf("object field union members must be comma-separated")
+		}
+		position++
+		if position == len(content) {
+			return nil, fmt.Errorf("object field union has an empty member")
+		}
+	}
+	return fields, nil
+}
+
+func parseQuotedField(content string, position int) (string, int, error) {
+	quote := content[position]
+	position++
+	var field strings.Builder
+	for position < len(content) {
+		char := content[position]
+		position++
+		if char == quote {
+			return field.String(), position, nil
+		}
+		if char != '\\' {
+			field.WriteByte(char)
+			continue
+		}
+		if position == len(content) {
+			return "", 0, fmt.Errorf("quoted field has an incomplete escape")
+		}
+		escaped := content[position]
+		position++
+		switch escaped {
+		case '\\', '/', '\'', '"':
+			field.WriteByte(escaped)
+		case 'b':
+			field.WriteByte('\b')
+		case 'f':
+			field.WriteByte('\f')
+		case 'n':
+			field.WriteByte('\n')
+		case 'r':
+			field.WriteByte('\r')
+		case 't':
+			field.WriteByte('\t')
+		case 'u':
+			if position+4 > len(content) {
+				return "", 0, fmt.Errorf("quoted field has an incomplete unicode escape")
+			}
+			codepoint, err := strconv.ParseUint(content[position:position+4], 16, 16)
+			if err != nil {
+				return "", 0, fmt.Errorf("quoted field has an invalid unicode escape")
+			}
+			position += 4
+			first := rune(codepoint)
+			switch {
+			case 0xD800 <= first && first <= 0xDBFF:
+				if position+6 > len(content) || content[position] != '\\' || content[position+1] != 'u' {
+					return "", 0, fmt.Errorf("quoted field has an unpaired high surrogate")
+				}
+				codepoint, err = strconv.ParseUint(content[position+2:position+6], 16, 16)
+				if err != nil || codepoint < 0xDC00 || codepoint > 0xDFFF {
+					return "", 0, fmt.Errorf("quoted field has an unpaired high surrogate")
+				}
+				field.WriteRune(utf16.DecodeRune(first, rune(codepoint)))
+				position += 6
+			case 0xDC00 <= first && first <= 0xDFFF:
+				return "", 0, fmt.Errorf("quoted field has an unpaired low surrogate")
+			default:
+				field.WriteRune(first)
+			}
+		default:
+			return "", 0, fmt.Errorf("quoted field has an unsupported escape")
+		}
+	}
+	return "", 0, fmt.Errorf("quoted field is unterminated")
+}
+
+func parseArraySlice(content string) (pathSlice, error) {
+	if strings.Contains(content, ",") {
+		return pathSlice{}, fmt.Errorf("slice cannot be combined with a union")
+	}
+	parts := strings.Split(content, ":")
+	if len(parts) < 2 || len(parts) > 3 {
+		return pathSlice{}, fmt.Errorf("slice requires start:end or start:end:step")
+	}
+	start, err := parseOptionalInteger(parts[0])
 	if err != nil {
-		return pathSegment{}, false
+		return pathSlice{}, fmt.Errorf("slice start is not an integer")
 	}
-	segment.name = part[:open]
-	segment.hasIndex = true
-	segment.index = index
-	return segment, segment.name != "" || segment.hasIndex
+	end, err := parseOptionalInteger(parts[1])
+	if err != nil {
+		return pathSlice{}, fmt.Errorf("slice end is not an integer")
+	}
+	step := 1
+	if len(parts) == 3 {
+		parsed, err := parseOptionalInteger(parts[2])
+		if err != nil || parsed == nil {
+			return pathSlice{}, fmt.Errorf("slice step is not an integer")
+		}
+		step = *parsed
+	}
+	if step == 0 {
+		return pathSlice{}, fmt.Errorf("slice step cannot be zero")
+	}
+	return pathSlice{start: start, end: end, step: step}, nil
+}
+
+func parseOptionalInteger(raw string) (*int, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil {
+		return nil, err
+	}
+	return &value, nil
 }

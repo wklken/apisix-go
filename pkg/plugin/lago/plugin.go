@@ -130,7 +130,7 @@ const schema = `
     "batch_max_size": {
       "type": "integer",
       "minimum": 1,
-      "default": 1000
+      "default": 100
     },
     "inactive_timeout": {
       "type": "integer",

@@ -2,6 +2,7 @@ package traffic_label
 
 import (
 	"fmt"
+	"math/rand/v2"
 	"net/http"
 	"strings"
 	"sync"
@@ -15,9 +16,16 @@ type Plugin struct {
 	base.BasePlugin
 	config Config
 
-	actionSequences [][]int
-	actionCursors   []int
-	lock            sync.Mutex
+	actionPickers []weightedActionPicker
+	lock          sync.Mutex
+}
+
+type weightedActionPicker struct {
+	weights       []int
+	lastAction    int
+	currentWeight int
+	maxWeight     int
+	weightGCD     int
 }
 
 const (
@@ -67,7 +75,7 @@ const schema = `
                 "weight": {
                   "type": "integer",
                   "default": 1,
-                  "minimum": 0
+                  "minimum": 1
                 }
               },
               "additionalProperties": false
@@ -127,8 +135,7 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
-	p.actionSequences = make([][]int, len(p.config.Rules))
-	p.actionCursors = make([]int, len(p.config.Rules))
+	p.actionPickers = make([]weightedActionPicker, len(p.config.Rules))
 
 	for ruleIndex, rule := range p.config.Rules {
 		if hasMixedLogicalOperators(rule.Match) {
@@ -145,12 +152,39 @@ func (p *Plugin) PostInit() error {
 				weight = 1
 				p.config.Rules[ruleIndex].Actions[actionIndex].Weight = weight
 			}
-			for i := 0; i < weight; i++ {
-				p.actionSequences[ruleIndex] = append(p.actionSequences[ruleIndex], actionIndex)
+			if weight < 1 {
+				return fmt.Errorf("traffic-label rule %d action %d weight must be at least 1", ruleIndex, actionIndex)
 			}
+			p.actionPickers[ruleIndex].weights = append(p.actionPickers[ruleIndex].weights, weight)
+		}
+
+		picker := &p.actionPickers[ruleIndex]
+		if len(picker.weights) > 0 {
+			picker.lastAction = rand.IntN(len(picker.weights))
+			picker.maxWeight, picker.weightGCD = weightMetadata(picker.weights)
+			picker.currentWeight = picker.maxWeight
 		}
 	}
 	return nil
+}
+
+func weightMetadata(weights []int) (int, int) {
+	maxWeight := 0
+	weightGCD := 0
+	for _, weight := range weights {
+		if weight > maxWeight {
+			maxWeight = weight
+		}
+		weightGCD = greatestCommonDivisor(weightGCD, weight)
+	}
+	return maxWeight, weightGCD
+}
+
+func greatestCommonDivisor(a, b int) int {
+	for b != 0 {
+		a, b = b, a%b
+	}
+	return a
 }
 
 func hasMixedLogicalOperators(match []any) bool {
@@ -196,22 +230,27 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 }
 
 func (p *Plugin) nextAction(ruleIndex int) *Action {
-	if ruleIndex >= len(p.actionSequences) || len(p.actionSequences[ruleIndex]) == 0 {
+	if ruleIndex >= len(p.actionPickers) || len(p.actionPickers[ruleIndex].weights) == 0 {
 		return nil
 	}
 
 	p.lock.Lock()
 	defer p.lock.Unlock()
 
-	sequence := p.actionSequences[ruleIndex]
-	cursor := p.actionCursors[ruleIndex] % len(sequence)
-	p.actionCursors[ruleIndex]++
-
-	actionIndex := sequence[cursor]
-	if actionIndex >= len(p.config.Rules[ruleIndex].Actions) {
-		return nil
+	picker := &p.actionPickers[ruleIndex]
+	for {
+		picker.lastAction++
+		if picker.lastAction >= len(picker.weights) {
+			picker.lastAction = 0
+			picker.currentWeight -= picker.weightGCD
+			if picker.currentWeight <= 0 {
+				picker.currentWeight = picker.maxWeight
+			}
+		}
+		if picker.weights[picker.lastAction] >= picker.currentWeight {
+			return &p.config.Rules[ruleIndex].Actions[picker.lastAction]
+		}
 	}
-	return &p.config.Rules[ruleIndex].Actions[actionIndex]
 }
 
 func applyAction(r *http.Request, action Action) {

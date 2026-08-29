@@ -145,7 +145,11 @@ func TestBuildGlobalNotFoundHandlerRunsGlobalPlugins(t *testing.T) {
 }
 
 func TestBuildSystemPluginConfigsDoesNotGenerateGlobalClientControl(t *testing.T) {
-	plugins := buildSystemPluginConfigs(resource.Route{ID: "global-limit"}, resource.Service{})
+	plugins := buildSystemPluginConfigs(
+		resource.Route{ID: "global-limit"},
+		resource.Service{},
+		pluginpkg.NewEnabledSet(nil),
+	)
 	if _, ok := plugins["client-control"]; ok {
 		t.Fatalf("system client-control = %#v, want server-owned global streaming limit", plugins["client-control"])
 	}

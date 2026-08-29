@@ -388,6 +388,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			logFields = base.ResolveStringLogFormat(p.LogFormat, func(value string) any {
 				return p.resolveLogFormatValue(r, value, request.host, request.remoteAddr)
 			})
+			base.ApplyRequestMatchedRouteFields(logFields, r, p.RouteID)
 		} else {
 			logFields = buildDefaultEvent(request, w.Header(), r, metrics)
 			for key, value := range p.logFormatExtra {
@@ -427,6 +428,7 @@ func (p *Plugin) RunLogPhase(snapshot base.LogSnapshot) error {
 				return base.SnapshotValue(snapshot, value)
 			}
 		})
+		base.ApplySnapshotMatchedRouteFields(fields, snapshot, p.RouteID)
 	} else {
 		fields = splunkSnapshotDefaultEvent(snapshot)
 		for key, value := range p.logFormatExtra {
@@ -666,7 +668,6 @@ func (p *Plugin) encodeBatch(entries []map[string]any) ([]byte, error) {
 			return nil, fmt.Errorf("failed to marshal Splunk HEC event: %w", err)
 		}
 		body.Write(event)
-		body.WriteByte('\n')
 	}
 	return body.Bytes(), nil
 }

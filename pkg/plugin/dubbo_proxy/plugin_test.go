@@ -7,6 +7,7 @@ import (
 
 	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -22,6 +23,56 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	}
 
 	return p
+}
+
+func TestSchemaMatchesAPISIX317RouteMatrix(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		config map[string]any
+		valid  bool
+	}{
+		{
+			name: "explicit method",
+			config: map[string]any{
+				"service_name":    "org.apache.dubbo.backend.DemoService",
+				"service_version": "1.0.0",
+				"method":          "hello",
+			},
+			valid: true,
+		},
+		{
+			name: "URI-derived method",
+			config: map[string]any{
+				"service_name":    "org.apache.dubbo.backend.DemoService",
+				"service_version": "1.0.0",
+			},
+			valid: true,
+		},
+		{
+			name: "missing service version",
+			config: map[string]any{
+				"service_name": "org.apache.dubbo.backend.DemoService",
+				"method":       "hello",
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := util.Validate(test.config, p.GetSchema())
+			if test.valid && err != nil {
+				t.Fatalf("valid APISIX 3.17 configuration rejected: %v", err)
+			}
+			if !test.valid && err == nil {
+				t.Fatal("invalid APISIX 3.17 configuration accepted")
+			}
+		})
+	}
 }
 
 func TestPostInitRequiresEffectiveConfig(t *testing.T) {

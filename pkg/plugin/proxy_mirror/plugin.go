@@ -10,9 +10,11 @@ import (
 	"math/rand"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
@@ -32,6 +34,9 @@ type Plugin struct {
 	// it instead of reparsing the static configuration.
 	baseURL *url.URL
 
+	lookupNetIP     func(context.Context, string, string) ([]netip.Addr, error)
+	resolverTimeout time.Duration
+
 	mirrorMu        sync.Mutex
 	mirrorAdmission chan struct{}
 	mirrorStopped   bool
@@ -45,6 +50,7 @@ const (
 	// maxInFlightMirrors bounds best-effort detached mirror requests per plugin.
 	// Admission is non-blocking so a saturated mirror never delays the primary.
 	maxInFlightMirrors = 16
+	mirrorTimeout      = 5 * time.Second
 )
 
 const schema = `
@@ -113,16 +119,30 @@ func (p *Plugin) PostInit() error {
 	if p.config.MaxBodySize <= 0 {
 		p.config.MaxBodySize = base.DefaultRequestBodyMaxBytes
 	}
+	if p.resolverTimeout <= 0 {
+		p.resolverTimeout = mirrorTimeout
+		if effective := p.StaticConfig(); effective != nil && effective.Config.Apisix.ResolverTimeout > 0 {
+			p.resolverTimeout = time.Duration(effective.Config.Apisix.ResolverTimeout) * time.Second
+		}
+	}
+	if p.lookupNetIP == nil {
+		p.lookupNetIP = p.configuredResolver().LookupNetIP
+	}
+	dialContext := p.dialMirrorContext
+	transport := proxy.NewTransport(
+		(&proxy.TransportOptionBuilder{}).WithDialTimeout(mirrorTimeout).Build(),
+	)
+	transport.DialContext = dialContext
 	p.client = &http.Client{
-		Timeout:   5 * time.Second,
-		Transport: proxy.NewTransport((&proxy.TransportOptionBuilder{}).Build()),
+		Timeout:   mirrorTimeout,
+		Transport: transport,
 	}
 	p.h2cClient = &http.Client{
-		Timeout: 5 * time.Second,
+		Timeout: mirrorTimeout,
 		Transport: &http2.Transport{
 			AllowHTTP: true,
 			DialTLSContext: func(ctx context.Context, network, address string, _ *tls.Config) (net.Conn, error) {
-				return (&net.Dialer{Timeout: 5 * time.Second}).DialContext(ctx, network, address)
+				return dialContext(ctx, network, address)
 			},
 		},
 	}
@@ -136,6 +156,65 @@ func (p *Plugin) PostInit() error {
 	p.mirrorMu.Unlock()
 
 	return nil
+}
+
+func (p *Plugin) configuredResolver() *net.Resolver {
+	effective := p.StaticConfig()
+	if effective == nil || len(effective.Config.Apisix.DnsResolver) == 0 {
+		return net.DefaultResolver
+	}
+	servers := append([]string(nil), effective.Config.Apisix.DnsResolver...)
+	var next atomic.Uint64
+	return &net.Resolver{
+		PreferGo:     true,
+		StrictErrors: true,
+		Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			index := next.Add(1) - 1
+			address := mirrorDNSServerAddress(servers[index%uint64(len(servers))])
+			return (&net.Dialer{Timeout: p.resolverTimeout}).DialContext(ctx, network, address)
+		},
+	}
+}
+
+func mirrorDNSServerAddress(server string) string {
+	server = strings.TrimSpace(server)
+	if ip := net.ParseIP(server); ip != nil {
+		return net.JoinHostPort(server, "53")
+	}
+	if _, _, err := net.SplitHostPort(server); err == nil {
+		return server
+	}
+	return net.JoinHostPort(server, "53")
+}
+
+func (p *Plugin) dialMirrorContext(ctx context.Context, network, address string) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil || net.ParseIP(host) != nil || p.lookupNetIP == nil {
+		return (&net.Dialer{Timeout: mirrorTimeout}).DialContext(ctx, network, address)
+	}
+	lookupCtx, cancel := context.WithTimeout(ctx, p.resolverTimeout)
+	addresses, err := p.lookupNetIP(lookupCtx, "ip", host)
+	cancel()
+	if err != nil {
+		return nil, fmt.Errorf("resolve mirror host %q: %w", host, err)
+	}
+	if len(addresses) == 0 {
+		return nil, fmt.Errorf("resolve mirror host %q: no addresses", host)
+	}
+
+	var dialErrors []error
+	for _, ip := range addresses {
+		connection, dialErr := (&net.Dialer{Timeout: mirrorTimeout}).DialContext(
+			ctx,
+			network,
+			net.JoinHostPort(ip.String(), port),
+		)
+		if dialErr == nil {
+			return connection, nil
+		}
+		dialErrors = append(dialErrors, dialErr)
+	}
+	return nil, fmt.Errorf("dial mirror host %q: %w", host, errors.Join(dialErrors...))
 }
 
 func (p *Plugin) Config() any {
@@ -245,6 +324,7 @@ func (p *Plugin) buildMirrorRequest(r *http.Request, body []byte) (*http.Request
 		return nil, err
 	}
 	mirrorReq.Header = cloneMirrorHeaders(r.Header, p.config.KeepSensitiveHeaders)
+	mirrorReq.Host = r.Host
 
 	return mirrorReq, nil
 }

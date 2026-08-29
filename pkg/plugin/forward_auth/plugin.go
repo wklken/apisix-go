@@ -171,6 +171,9 @@ func (p *Plugin) PostInit() error {
 	if p.config.KeepalivePool == 0 {
 		p.config.KeepalivePool = 5
 	}
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(p.config.URI)), "http://") {
+		logger.Warn("Using forward-auth uri with no TLS is a security risk")
+	}
 
 	p.client = &http.Client{
 		Timeout:   time.Duration(p.config.Timeout) * time.Millisecond,

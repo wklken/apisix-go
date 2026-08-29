@@ -400,8 +400,20 @@ func TestDataMaskRoutePreservesUpstreamAndSanitizesDetachedLogger(t *testing.T) 
 				t.Fatalf("logger payload leaked %q: %s", secret, text)
 			}
 		}
+		requestPayload, ok := payload["request"].(map[string]any)
+		if !ok {
+			t.Fatalf("logger request payload = %#v, want object", payload["request"])
+		}
+		maskedURI, ok := requestPayload["uri"].(string)
+		if !ok {
+			t.Fatalf("logger request uri = %#v, want string", requestPayload["uri"])
+		}
+		parsedURI, parseErr := url.ParseRequestURI(maskedURI)
+		if parseErr != nil {
+			t.Fatalf("parse sanitized logger uri %q: %v", maskedURI, parseErr)
+		}
 		if payload["request_id"] != "masked-id" || !strings.Contains(text, `\"token\":\"***\"`) ||
-			!strings.Contains(text, "token=%2A%2A%2A") {
+			parsedURI.Query().Get("token") != "***" {
 			t.Fatalf("logger payload is not fully sanitized: %#v", payload)
 		}
 	case <-time.After(time.Second):

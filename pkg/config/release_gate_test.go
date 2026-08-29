@@ -315,14 +315,21 @@ func TestProductionConfigRequiresExplicitEtcdEndpoint(t *testing.T) {
 	}
 }
 
-func TestHTTPDataPlaneProductionConfigFailsClosedUntilQualified(t *testing.T) {
+func TestHTTPDataPlaneProductionConfigLoadsWhenQualified(t *testing.T) {
 	defaultPath, productionPath := repositoryConfigPaths(t)
-	_, err := loadEffectiveTestFiles(t, defaultPath, productionPath, map[string]string{
+	cfg, err := loadEffectiveTestFiles(t, defaultPath, productionPath, map[string]string{
 		"APISIXGO_DEPLOYMENT_ETCD_HOST": "https://etcd.example:2379",
 	})
-	if err == nil || !strings.Contains(err.Error(), "http-data-plane-v1") ||
-		!strings.Contains(err.Error(), "unqualified required plugins") {
-		t.Fatalf("LoadEffective() error = %v, want incomplete qualification evidence rejection", err)
+	if err != nil {
+		t.Fatalf("LoadEffective() error = %v, want qualified production config accepted", err)
+	}
+	want := ProfileSelection{
+		Compatibility: CompatibilityAPISIX317,
+		Security:      SecurityStrict,
+		Qualification: QualificationHTTPDataPlaneV1,
+	}
+	if got := cfg.Profiles(); got != want {
+		t.Fatalf("Profiles() = %#v, want %#v", got, want)
 	}
 }
 
@@ -340,6 +347,44 @@ func TestHTTPDataPlanePluginOrderMatchesManifestAndConfig(t *testing.T) {
 	if !reflect.DeepEqual(production, qualification.RequiredPlugins) {
 		t.Errorf("conf/config-production.yaml plugins = %#v, want manifest order %#v",
 			production, qualification.RequiredPlugins)
+	}
+}
+
+func TestHTTPDataPlaneProductionConfigSelectsControlledTuple(t *testing.T) {
+	path := repositoryPath(t, "conf", "config-production.yaml")
+	document, err := readConfigDocument(path, FieldSource{
+		Kind: SourceOverrideFile, Origin: path, Explicit: true,
+	}, map[string]string{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, _, unused, err := decodeConfig(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(unused) != 0 {
+		t.Fatalf("production config has unknown fields: %v", unused)
+	}
+	if cfg.CompatibilityTarget != CompatibilityAPISIX317 ||
+		cfg.SecurityProfile != SecurityStrict ||
+		cfg.QualificationProfile != QualificationHTTPDataPlaneV1 {
+		t.Fatalf("production tuple = %q/%q/%q, want apisix-3.17/strict/http-data-plane-v1",
+			cfg.CompatibilityTarget, cfg.SecurityProfile, cfg.QualificationProfile)
+	}
+	if cfg.Deployment.Role != "data_plane" || cfg.Deployment.RoleDataPlane.ConfigProvider != "etcd" {
+		t.Fatalf("production deployment = %#v, want data_plane/etcd", cfg.Deployment)
+	}
+	if cfg.Apisix.ProxyMode != "http" || cfg.Apisix.EnableAdmin ||
+		len(cfg.Apisix.StreamProxy.Tcp) != 0 || len(cfg.Apisix.StreamProxy.Udp) != 0 ||
+		len(cfg.StreamPlugins) != 0 {
+		t.Fatalf("production HTTP-only shape is invalid: apisix=%#v stream_plugins=%v",
+			cfg.Apisix, cfg.StreamPlugins)
+	}
+	if cfg.Deployment.Etcd.TLS.Verify == nil || !*cfg.Deployment.Etcd.TLS.Verify {
+		t.Fatal("production etcd TLS verification must be explicitly true")
+	}
+	if err := validateProcessAccessLogs(cfg); err != nil {
+		t.Fatalf("production process access-log config = %v", err)
 	}
 }
 
@@ -593,6 +638,20 @@ func TestProductionPolicyRejectsOneMutatedFieldPerRow(t *testing.T) {
 			},
 		},
 		{
+			name:  "reordered plugins",
+			field: "plugins",
+			mutate: func(cfg *Config) {
+				cfg.Plugins[0], cfg.Plugins[1] = cfg.Plugins[1], cfg.Plugins[0]
+			},
+		},
+		{
+			name:  "duplicate plugin",
+			field: "plugins",
+			mutate: func(cfg *Config) {
+				cfg.Plugins = append(cfg.Plugins, cfg.Plugins[0])
+			},
+		},
+		{
 			name:  "missing plugin",
 			field: "plugins",
 			mutate: func(cfg *Config) {
@@ -684,6 +743,16 @@ func TestProductionPolicyRejectsOneMutatedFieldPerRow(t *testing.T) {
 				t.Fatalf("validateRuntimeConfig() error leaked config value: %q", err)
 			}
 		})
+	}
+}
+
+func TestValidateProcessAccessLogsAllowsLogRotateOwnedSelection(t *testing.T) {
+	cfg := validProfileSelectionConfig()
+	cfg.Plugins = append(cfg.Plugins, "log-rotate")
+	cfg.NginxConfig.HTTP.EnableAccessLog = true
+	cfg.NginxConfig.HTTP.AccessLog = "/var/log/apisix/access.log"
+	if err := validateProcessAccessLogs(cfg); err != nil {
+		t.Fatalf("validateProcessAccessLogs() error = %v, want log-rotate path selection accepted", err)
 	}
 }
 

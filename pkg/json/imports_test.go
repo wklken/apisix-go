@@ -23,7 +23,7 @@ func TestProductionCodeUsesProjectJSON(t *testing.T) {
 		}
 		if entry.IsDir() {
 			switch entry.Name() {
-			case ".git", ".cache", ".worktrees", "vendor":
+			case ".git", ".cache", ".worktrees", "vendor", "third_party":
 				return filepath.SkipDir
 			}
 			if path == filepath.Join(root, "t") {

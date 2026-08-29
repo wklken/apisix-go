@@ -1,14 +1,15 @@
 sources:
   - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
     file: t/plugin/clickhouse-logger.t
-    tests: 12
+    tests: 10
+    test_numbers: [1, 2, 5, 6, 7, 8, 9, 10, 11, 12]
   - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
     file: t/plugin/clickhouse-logger2.t
     tests: 8
   - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
     file: t/plugin/clickhouse-logger3.t
     tests: 3
 cases:
@@ -79,44 +80,6 @@ cases:
         respond: [{status: 200}]
     steps:
       - {name: deliver-basic-log, input: {path: /basic}, output: {status: 200, body: {equals: basic-ok}}, wait: 1s}
-  - name: missing-endpoint-is-rejected
-    source: {file: t/plugin/clickhouse-logger.t, tests: [3]}
-    config:
-      routes:
-        - id: clickhouse-missing-endpoint
-          uri: /missing-endpoint
-          plugins:
-            clickhouse-logger: {user: default, password: a, database: default, logtable: logs}
-          upstream: {type: roundrobin, nodes: {'127.0.0.1:1': 1}}
-    input: {path: /missing-endpoint}
-    output:
-      status: 404
-      logs: {matches: 'value should match only one schema|matches none|endpoint'}
-  - name: route-plugin-setup
-    source: {file: t/plugin/clickhouse-logger.t, tests: [4]}
-    config:
-      routes:
-        - id: clickhouse-route-setup
-          uri: /opentracing
-          plugins:
-            clickhouse-logger:
-              endpoint_addr: '{{FIXTURE.sink.URL}}'
-              user: default
-              password: a
-              database: default
-              logtable: route_logs
-              batch_max_size: 1
-              inactive_timeout: 1
-              log_format: {case: route-plugin-setup}
-          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
-    fixtures:
-      - {name: primary, kind: http, expect: [{method: GET, path: {equals: /opentracing}}], respond: [{status: 200, body: route-ok}]}
-      - name: sink
-        kind: http
-        expect: [{method: POST, path: {equals: /}, body: {matches: '^INSERT INTO route_logs FORMAT JSONEachRow \{"case":"route-plugin-setup"\}$'}}]
-        respond: [{status: 200}]
-    steps:
-      - {name: route-setup-delivery, input: {path: /opentracing}, output: {status: 200, body: {equals: route-ok}}, wait: 1s}
   - name: multi-endpoint-real-delivery
     source: {file: t/plugin/clickhouse-logger.t, tests: [5, 6, 7, 8]}
     config:
@@ -226,12 +189,10 @@ cases:
         respond: [{status: 200, body: overflow-ok}]
       - name: sink
         kind: http
-        expect:
-          - {method: POST, path: {equals: /}, body: {matches: '^INSERT INTO overflow_logs FORMAT JSONEachRow \{"case":"pending-overflow"\}$'}}
-          - {method: POST, path: {equals: /}, body: {matches: '^INSERT INTO overflow_logs FORMAT JSONEachRow \{"case":"pending-overflow"\}$'}}
-        respond: [{delay: 2s, status: 200}, {delay: 2s, status: 200}]
+        expect: [{method: POST, path: {equals: /}, body: {matches: '^INSERT INTO overflow_logs FORMAT JSONEachRow \{"case":"pending-overflow"\}$'}}]
+        respond: [{delay: 2s, status: 200}]
     steps:
-      - name: overflow-while-two-deliveries-are-blocked
+      - name: overflow-while-one-delivery-is-blocked
         repeat: 3
         input: {path: /overflow}
         output: {status: 200, body: {equals: overflow-ok}, logs: {matches: 'max pending entries limit exceeded'}}

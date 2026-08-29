@@ -261,7 +261,14 @@ func BuildResponsePlan(input any) (ResponsePlan, error) {
 		if descriptorErr != nil {
 			return ResponsePlan{}, descriptorErr
 		}
-		if capability.HeaderFilter && bufferStreamingHeaders && streamingHeader {
+		bufferStreamingHeader, fallbackErr := bindingUsesBufferedStreamingHeaderFallback(
+			binding,
+			bufferStreamingHeaders,
+		)
+		if fallbackErr != nil {
+			return ResponsePlan{}, fallbackErr
+		}
+		if capability.HeaderFilter && bufferStreamingHeader && streamingHeader {
 			capability.HeaderFilter = false
 		}
 		if capability.HeaderFilter || capability.StreamingBodyFilter || capability.StreamingResponseOwner {
@@ -389,7 +396,7 @@ func validateResponsePlanCompatibility(plan ResponsePlan) error {
 		if err != nil {
 			return err
 		}
-		if allBufferedDualMode && isDualModeResponseBinding(binding, capability) {
+		if allBufferedDualMode && isRequestSelectableResponseBinding(binding, capability) {
 			continue
 		}
 		if allBufferedDualMode && len(terminals) == 1 && terminals[0].Protocol == ProtocolAI &&
@@ -434,12 +441,28 @@ func responseBindingsAreDualMode(bindings []ResponseBinding) bool {
 	}
 	for _, binding := range bindings {
 		capability := binding.Descriptor.responseCapability
-		if !binding.Descriptor.resolved ||
-			!isDualModeResponseBinding(Binding{Plugin: binding.Plugin}, capability) {
+		if !binding.Descriptor.resolved || !isRequestSelectableResponseBinding(Binding{
+			Plugin: binding.Plugin, Descriptor: binding.Descriptor,
+			Scope: binding.Scope, Provenance: binding.Provenance,
+		}, capability) {
 			return false
 		}
 	}
 	return true
+}
+
+func isRequestSelectableResponseBinding(binding Binding, capability ResponseCapability) bool {
+	if isDualModeResponseBinding(binding, capability) {
+		return true
+	}
+	if binding.Plugin == nil ||
+		!binding.Descriptor.HasResponseOwner(ResponseOwnerStreamingHeaderFilter) {
+		return false
+	}
+	_, selects := binding.Plugin.(base.RequestResponseModeSelector)
+	_, buffers := binding.Plugin.(base.BufferedBodyFilterPlugin)
+	_, streams := binding.Plugin.(base.StreamingHeaderFilterPlugin)
+	return selects && buffers && streams
 }
 
 func isDualModeResponseBinding(binding Binding, capability ResponseCapability) bool {
@@ -499,7 +522,7 @@ func (p ResponsePlan) Install(pipeline RequestPipeline, terminal http.Handler) h
 		})
 	}
 	pipeline = pipeline.WithStreamingResponseExecutor(streaming)
-	if len(p.bufferedBindings) == 0 {
+	if len(p.bufferedBindings) == 0 && pipeline.resolve == nil {
 		return pipeline.Then(terminal)
 	}
 	executor, err := NewBufferedResponseExecutor(
@@ -545,6 +568,7 @@ var responseFactoryRegistry = map[string]responseFactorySpec{
 	"ai-rate-limiting":             {mask: ResponsePhaseBufferedBody, allowBody: true},
 	"api-breaker":                  {},
 	"body-transformer":             {configAware: true, allowBody: true},
+	"csrf":                         {configAware: true, allowStreamingHeader: true, allowBody: true},
 	"echo":                         {configAware: true, allowHeader: true, allowBody: true},
 	"error-page":                   {mask: ResponsePhaseBufferedBody, allowBody: true},
 	"exit-transformer":             {mask: ResponsePhaseBufferedBody, allowBody: true},

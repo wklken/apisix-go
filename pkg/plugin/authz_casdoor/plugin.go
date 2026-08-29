@@ -141,6 +141,12 @@ func (p *Plugin) PostInit() error {
 	if p.retired || !p.secretsPrepared {
 		return secret.ErrCredentialUnavailable
 	}
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(p.config.EndpointAddr)), "http://") {
+		logger.Warn("Using authz-casdoor endpoint_addr with no TLS is a security risk")
+	}
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(p.config.CallbackURL)), "http://") {
+		logger.Warn("Using authz-casdoor callback_url with no TLS is a security risk")
+	}
 	if p.config.CookieSecure == nil {
 		cookieSecure := true
 		p.config.CookieSecure = &cookieSecure
@@ -263,8 +269,9 @@ func validateCasdoorSessionSecret(plaintext string) error {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		originalURL := originalRequestURL(r)
 		p.lifecycleMu.RLock()
-		if r.URL.Path == base.CallbackPath(p.config.CallbackURL) {
+		if originalURL.Path == base.CallbackPath(p.config.CallbackURL) {
 			if p.retired {
 				p.lifecycleMu.RUnlock()
 				http.Error(w, util.BuildMessageResponse("credential unavailable"), http.StatusServiceUnavailable)
@@ -286,7 +293,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			return
 		}
 
-		p.redirectToAuthorizeLocked(w, r)
+		p.redirectToAuthorizeLocked(w, r, originalURL.RequestURI())
 		p.lifecycleMu.RUnlock()
 	})
 }
@@ -296,7 +303,7 @@ func (p *Plugin) handleCallbackLocked(w http.ResponseWriter, r *http.Request) {
 	session, err := p.openSessionLocked(r)
 	if err != nil {
 		logger.Error("no session found")
-		http.Error(w, util.BuildMessageResponse("no session found"), http.StatusServiceUnavailable)
+		w.WriteHeader(http.StatusServiceUnavailable)
 		return
 	}
 
@@ -337,7 +344,7 @@ func (p *Plugin) handleCallbackLocked(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, session.OriginalURI, http.StatusFound)
 }
 
-func (p *Plugin) redirectToAuthorizeLocked(w http.ResponseWriter, r *http.Request) {
+func (p *Plugin) redirectToAuthorizeLocked(w http.ResponseWriter, r *http.Request, originalURI string) {
 	state, err := p.newState()
 	if err != nil {
 		logger.Error(err.Error())
@@ -349,7 +356,7 @@ func (p *Plugin) redirectToAuthorizeLocked(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if err := p.setSessionCookieLocked(w, sessionData{
-		OriginalURI: r.URL.RequestURI(),
+		OriginalURI: originalURI,
 		State:       state,
 	}, 10*time.Minute); err != nil {
 		logger.Error(err.Error())
@@ -369,6 +376,15 @@ func (p *Plugin) redirectToAuthorizeLocked(w http.ResponseWriter, r *http.Reques
 		strings.TrimRight(p.config.EndpointAddr, "/")+"/login/oauth/authorize?"+values.Encode(),
 		http.StatusFound,
 	)
+}
+
+func originalRequestURL(r *http.Request) *url.URL {
+	if r.RequestURI != "" {
+		if original, err := url.ParseRequestURI(r.RequestURI); err == nil {
+			return original
+		}
+	}
+	return r.URL
 }
 
 func (p *Plugin) authenticatedLocked(r *http.Request) bool {

@@ -24,9 +24,10 @@ func TestStandaloneManifestMapsEveryPinnedBlockToOneRocketMQPublishCase(t *testi
 
 	var manifest struct {
 		Sources []struct {
-			Commit string `yaml:"commit"`
-			File   string `yaml:"file"`
-			Tests  int    `yaml:"tests"`
+			Commit      string `yaml:"commit"`
+			File        string `yaml:"file"`
+			Tests       int    `yaml:"tests"`
+			TestNumbers []int  `yaml:"test_numbers"`
 		} `yaml:"sources"`
 		Cases []struct {
 			Name   string `yaml:"name"`
@@ -59,43 +60,81 @@ func TestStandaloneManifestMapsEveryPinnedBlockToOneRocketMQPublishCase(t *testi
 	}
 
 	wantSources := []struct {
-		file  string
-		tests int
+		file        string
+		testNumbers []int
 	}{
-		{"t/plugin/rocketmq-logger-log-format.t", 5},
-		{"t/plugin/rocketmq-logger.t", 19},
-		{"t/plugin/rocketmq-logger2.t", 18},
+		{"t/plugin/rocketmq-logger-log-format.t", []int{1, 2, 3, 4, 5}},
+		{
+			"t/plugin/rocketmq-logger.t",
+			[]int{4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19},
+		},
+		{
+			"t/plugin/rocketmq-logger2.t",
+			[]int{1, 2, 3, 4, 5, 6, 7, 10, 11, 12, 13, 14, 15, 16, 17},
+		},
 	}
 	if len(manifest.Sources) != len(wantSources) {
 		t.Fatalf("sources = %d, want %d", len(manifest.Sources), len(wantSources))
 	}
 	for i, want := range wantSources {
 		source := manifest.Sources[i]
-		if source.Commit != "c3d7d5ec69774121f53d2e20d29d09c816795dd7" {
+		if source.Commit != "9ef2ecab67f652d38365049613610ef649bb4ad0" {
 			t.Fatalf("source %d commit = %q, want pinned Apache APISIX commit", i+1, source.Commit)
 		}
-		if source.File != want.file || source.Tests != want.tests {
-			t.Fatalf("source %d = (%q, %d), want (%q, %d)", i+1, source.File, source.Tests, want.file, want.tests)
+		if source.File != want.file || source.Tests != len(want.testNumbers) {
+			t.Fatalf(
+				"source %d = (%q, %d), want (%q, %d)",
+				i+1,
+				source.File,
+				source.Tests,
+				want.file,
+				len(want.testNumbers),
+			)
+		}
+		gotTestNumbers := source.TestNumbers
+		if len(gotTestNumbers) == 0 {
+			gotTestNumbers = make([]int, source.Tests)
+			for number := range gotTestNumbers {
+				gotTestNumbers[number] = number + 1
+			}
+		}
+		if !slices.Equal(gotTestNumbers, want.testNumbers) {
+			t.Fatalf(
+				"source %d test_numbers = %v, want %v",
+				i+1,
+				gotTestNumbers,
+				want.testNumbers,
+			)
 		}
 	}
-	if len(manifest.Cases) != 42 {
-		t.Fatalf("top-level cases = %d, want exactly 42", len(manifest.Cases))
+	wantCaseCount := 0
+	for _, source := range wantSources {
+		wantCaseCount += len(source.testNumbers)
+	}
+	if len(manifest.Cases) != wantCaseCount {
+		t.Fatalf("top-level cases = %d, want exactly %d", len(manifest.Cases), wantCaseCount)
 	}
 
 	next := make(map[string]int, len(wantSources))
+	wantTests := make(map[string][]int, len(wantSources))
 	for _, source := range wantSources {
-		next[source.file] = 1
+		wantTests[source.file] = source.testNumbers
 	}
 	names := make(map[string]struct{}, len(manifest.Cases))
 	for i, testCase := range manifest.Cases {
-		want, ok := next[testCase.Source.File]
+		wantNumbers, ok := wantTests[testCase.Source.File]
 		if !ok {
 			t.Fatalf("case %d %q has unknown source %q", i+1, testCase.Name, testCase.Source.File)
 		}
+		index := next[testCase.Source.File]
+		if index >= len(wantNumbers) {
+			t.Fatalf("case %d %q exceeds source selection %v", i+1, testCase.Name, wantNumbers)
+		}
+		want := wantNumbers[index]
 		if len(testCase.Source.Tests) != 1 || testCase.Source.Tests[0] != want {
 			t.Errorf("case %d %q source tests = %v, want [%d]", i+1, testCase.Name, testCase.Source.Tests, want)
 		}
-		next[testCase.Source.File]++
+		next[testCase.Source.File] = index + 1
 
 		lowerName := strings.ToLower(strings.TrimSpace(testCase.Name))
 		for _, forbidden := range []string{"placeholder", "generic", "probe", "source-", "block-", "skip"} {
@@ -163,14 +202,14 @@ func TestStandaloneManifestMapsEveryPinnedBlockToOneRocketMQPublishCase(t *testi
 		)
 	}
 	for _, source := range wantSources {
-		want := make([]int, source.tests)
-		got := make([]int, next[source.file]-1)
-		for i := range want {
-			want[i] = i + 1
-			got[i] = i + 1
-		}
-		if !slices.Equal(got, want) {
-			t.Fatalf("%s mapped tests = %v, want %v", source.file, got, want)
+		if next[source.file] != len(source.testNumbers) {
+			t.Fatalf(
+				"%s mapped case count = %d, want %d for tests %v",
+				source.file,
+				next[source.file],
+				len(source.testNumbers),
+				source.testNumbers,
+			)
 		}
 	}
 }

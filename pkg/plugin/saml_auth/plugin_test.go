@@ -180,6 +180,64 @@ func assertSAMLDescriptor(t *testing.T, got, plaintext string) {
 	}
 }
 
+func TestSchemaMatchesAPISIX317Matrix(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	validConfig := func() map[string]any {
+		return map[string]any{
+			"sp_issuer":           "sp",
+			"idp_uri":             "https://idp.example.test/sso",
+			"idp_cert":            "certificate",
+			"login_callback_uri":  "/login/callback",
+			"logout_uri":          "/logout",
+			"logout_callback_uri": "/logout/callback",
+			"logout_redirect_uri": "/logged-out",
+			"sp_cert":             "certificate",
+			"sp_private_key":      "private-key",
+			"secret":              "12345678",
+		}
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(map[string]any)
+		valid  bool
+	}{
+		{name: "required fields", valid: true},
+		{name: "missing sp issuer", mutate: func(config map[string]any) { delete(config, "sp_issuer") }},
+		{name: "missing idp uri", mutate: func(config map[string]any) { delete(config, "idp_uri") }},
+		{name: "invalid binding", mutate: func(config map[string]any) {
+			config["auth_protocol_binding_method"] = "HTTP-INVALID"
+		}},
+		{name: "missing secret", mutate: func(config map[string]any) { delete(config, "secret") }},
+		{name: "short secret", mutate: func(config map[string]any) { config["secret"] = "short" }},
+		{name: "optional fields", mutate: func(config map[string]any) {
+			config["idp_entity_id"] = "https://idp.example.test/realms/integration"
+			config["auth_protocol_binding_method"] = "HTTP-POST"
+			config["secret_fallbacks"] = []any{"previous-secret"}
+		}, valid: true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			config := validConfig()
+			if test.mutate != nil {
+				test.mutate(config)
+			}
+			err := util.Validate(config, p.GetSchema())
+			if test.valid && err != nil {
+				t.Fatalf("valid APISIX 3.17 configuration rejected: %v", err)
+			}
+			if !test.valid && err == nil {
+				t.Fatal("invalid APISIX 3.17 configuration accepted")
+			}
+		})
+	}
+}
+
 func TestMaterializeScopedSecretsOwnsSAMLPrivateAndSessionKeys(t *testing.T) {
 	const (
 		privateRaw  = "$ENV://SAML_SP_PRIVATE_KEY"
@@ -357,7 +415,7 @@ func TestSAMLResolvedSessionSecretRuneBoundaries(t *testing.T) {
 	}
 }
 
-func TestSAMLRawCookieTextIsValidatedAfterResolution(t *testing.T) {
+func TestSAMLRawShortCookieTextIsRejectedBySchema(t *testing.T) {
 	config := testConfig(t)
 	config.Secret = "short"
 	config.SecretFallbacks = []string{"tiny"}
@@ -373,8 +431,8 @@ func TestSAMLRawCookieTextIsValidatedAfterResolution(t *testing.T) {
 		"sp_private_key": config.SPPrivateKey, "secret": config.Secret,
 		"secret_fallbacks": []any{"tiny"},
 	}
-	if err := util.Validate(rawConfig, p.GetSchema()); err != nil {
-		t.Fatalf("schema rejected raw secret text before materialization: %v", err)
+	if err := util.Validate(rawConfig, p.GetSchema()); err == nil {
+		t.Fatal("schema accepted APISIX-invalid short session secret")
 	}
 	p.config = config
 	if err := p.MaterializeSecrets(); err == nil {
@@ -502,6 +560,23 @@ func TestUnauthenticatedRequestRedirectsToIDP(t *testing.T) {
 	if redirectURL.Query().Get("SAMLRequest") == "" {
 		t.Fatalf("Location = %q, want SAMLRequest", location)
 	}
+	if got := redirectURL.Query().Get("SigAlg"); got != rsaSHA512Method {
+		t.Fatalf("SigAlg = %q, want APISIX 3.17 RSA-SHA512", got)
+	}
+	if err := verifySAMLRedirectSignature(redirectURL.RawQuery, "SAMLRequest", cfg.SPCert); err != nil {
+		t.Fatalf("verify APISIX 3.17 authentication redirect signature: %v", err)
+	}
+	rawRequest, err := decodeSAMLRedirectValue(redirectURL.Query().Get("SAMLRequest"))
+	if err != nil {
+		t.Fatalf("decode authentication request: %v", err)
+	}
+	var authnRequest saml.AuthnRequest
+	if err := xml.Unmarshal(rawRequest, &authnRequest); err != nil {
+		t.Fatalf("unmarshal authentication request: %v", err)
+	}
+	if authnRequest.ProtocolBinding != saml.HTTPRedirectBinding {
+		t.Fatalf("ProtocolBinding = %q, want configured HTTP-Redirect binding", authnRequest.ProtocolBinding)
+	}
 	relayState := redirectURL.Query().Get("RelayState")
 	if relayState == "" {
 		t.Fatalf("Location = %q, want RelayState", location)
@@ -627,9 +702,9 @@ func TestLogoutDeletesSessionAndRedirectsToIDP(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse logout redirect: %v", err)
 	}
-	if redirectURL.Query().Get("SigAlg") != rsaSHA256Method ||
+	if redirectURL.Query().Get("SigAlg") != rsaSHA512Method ||
 		redirectURL.Query().Get("Signature") == "" {
-		t.Fatalf("Location = %q, want external Redirect binding signature", redirectURL)
+		t.Fatalf("Location = %q, want APISIX 3.17 RSA-SHA512 Redirect binding signature", redirectURL)
 	}
 	rawRequest, err := decodeSAMLRedirectValue(redirectURL.Query().Get("SAMLRequest"))
 	if err != nil {

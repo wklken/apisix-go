@@ -217,9 +217,9 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 }
 
 func writeJSON(w http.ResponseWriter, status int, body string) {
-	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(status)
-	_, _ = w.Write([]byte(body))
+	_, _ = w.Write([]byte(body + "\n"))
 }
 
 func isMethodAllowed(methods []AllowedByMethodsItem, method string, user string) bool {

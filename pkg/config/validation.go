@@ -101,6 +101,18 @@ func validateRuntimeConfig(cfg *Config, manifest *capability.Manifest) error {
 			fmt.Errorf("apisix.status.ip must be a valid IP address"),
 		)
 	}
+	if cfg.Apisix.EnableControl && (cfg.Apisix.Control.Port < 1 || cfg.Apisix.Control.Port > 65535) {
+		return profileAwareRuntimeError(
+			selection,
+			fmt.Errorf("apisix.control.port must be between 1 and 65535"),
+		)
+	}
+	if cfg.Apisix.EnableControl && net.ParseIP(cfg.Apisix.Control.Ip) == nil {
+		return profileAwareRuntimeError(
+			selection,
+			fmt.Errorf("apisix.control.ip must be a valid IP address"),
+		)
+	}
 	for _, limit := range []struct {
 		field string
 		value int
@@ -304,12 +316,13 @@ func validateQualificationProfile(cfg *Config, manifest *capability.Manifest, se
 func validateProcessAccessLogs(cfg *Config) error {
 	http := cfg.NginxConfig.HTTP
 	stream := cfg.NginxConfig.Stream
+	logRotateOwnsHTTPSelection := slices.Contains(cfg.Plugins, "log-rotate")
 	for _, field := range []struct {
 		name   string
 		active bool
 	}{
-		{name: "nginx_config.http.enable_access_log", active: http.EnableAccessLog},
-		{name: "nginx_config.http.access_log", active: http.AccessLog != ""},
+		{name: "nginx_config.http.enable_access_log", active: http.EnableAccessLog && !logRotateOwnsHTTPSelection},
+		{name: "nginx_config.http.access_log", active: http.AccessLog != "" && !logRotateOwnsHTTPSelection},
 		{name: "nginx_config.http.access_log_buffer", active: http.AccessLogBuffer != 0},
 		{name: "nginx_config.http.access_log_format", active: http.AccessLogFormat != ""},
 		{name: "nginx_config.http.access_log_format_escape", active: http.AccessLogFormatEscape != ""},

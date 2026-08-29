@@ -20,6 +20,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
+	"github.com/wklken/apisix-go/pkg/plugin/ai_runtime"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	pluginexpr "github.com/wklken/apisix-go/pkg/plugin/expr"
 	"github.com/wklken/apisix-go/pkg/secret"
@@ -492,6 +493,25 @@ func (p Config) DescribeBindingPhases() (base.BindingPhaseDescriptor, error) {
 	return base.BindingPhaseDescriptor{RequestStage: "none", BufferedBody: true}, nil
 }
 
+func (p Config) DescribeResponseMode() (base.ResponseModeDescriptor, error) {
+	if p.pureHeaderOnly() {
+		return base.ResponseModeDescriptor{
+			Modes: base.ResponseModeBounded | base.ResponseModeStreaming,
+		}, nil
+	}
+	return base.ResponseModeDescriptor{Modes: base.ResponseModeBounded}, nil
+}
+
+// SelectResponseMode keeps early-stop and non-streaming AI responses on the
+// bounded fallback while allowing an AI streaming terminal to remain
+// transparent. Both paths run the same header rewrite exactly once.
+func (*Plugin) SelectResponseMode(r *http.Request) base.RequestResponseMode {
+	if state := ai_runtime.FromRequest(r); state != nil && state.StreamingIntent() {
+		return base.RequestResponseModeStreaming
+	}
+	return base.RequestResponseModeBounded
+}
+
 func (p Config) pureHeaderOnly() bool {
 	return !p.Headers.empty() && p.StatusCode == 0 && len(p.Vars) == 0 &&
 		p.Body == nil && p.BodySecret == nil && len(p.Filters) == 0 &&
@@ -585,6 +605,11 @@ func (p *Plugin) rewrite(r *http.Request, resp *base.BufferedResponseWriter) err
 	if p.config.StatusCode != 0 {
 		resp.SetStatusCode(p.config.StatusCode)
 	}
+	responseEncoding := ""
+	if p.config.Body != nil || p.config.BodySecret != nil || len(p.config.Filters) > 0 {
+		responseEncoding = resp.Header().Get("Content-Encoding")
+		clearHeadersAsBodyModified(resp.Header())
+	}
 
 	_, err := p.useBody(func(effectiveBody string) error {
 		var body []byte
@@ -609,13 +634,13 @@ func (p *Plugin) rewrite(r *http.Request, resp *base.BufferedResponseWriter) err
 		body := resp.Body()
 		bodyChanged := false
 		canFilter := true
-		if encoding := resp.Header().Get("Content-Encoding"); encoding != "" {
-			decoded, ok := decodeFilterBody(resp)
+		if responseEncoding != "" {
+			decoded, ok := decodeFilterBody(resp, responseEncoding)
 			if !ok {
 				canFilter = false
 				logger.Errorf(
 					"filters may not work as expected due to unsupported compression encoding type: %s",
-					encoding,
+					responseEncoding,
 				)
 			} else {
 				body = decoded
@@ -638,6 +663,18 @@ func (p *Plugin) rewrite(r *http.Request, resp *base.BufferedResponseWriter) err
 
 	p.config.Headers.apply(r, resp)
 	return nil
+}
+
+func clearHeadersAsBodyModified(header http.Header) {
+	for actual := range header {
+		switch {
+		case strings.EqualFold(actual, "Content-Length"),
+			strings.EqualFold(actual, "Content-Encoding"),
+			strings.EqualFold(actual, "Last-Modified"),
+			strings.EqualFold(actual, "ETag"):
+			delete(header, actual)
+		}
+	}
 }
 
 func (p *Plugin) varsMatched(r *http.Request, resp *base.BufferedResponseWriter) bool {
@@ -744,8 +781,8 @@ func replaceFirstString(pattern *regexp.Regexp, body string, replacement string)
 	})
 }
 
-func decodeFilterBody(resp *base.BufferedResponseWriter) ([]byte, bool) {
-	switch strings.ToLower(strings.TrimSpace(resp.Header().Get("Content-Encoding"))) {
+func decodeFilterBody(resp *base.BufferedResponseWriter, encoding string) ([]byte, bool) {
+	switch strings.ToLower(strings.TrimSpace(encoding)) {
 	case "gzip":
 		reader, err := gzip.NewReader(bytes.NewReader(resp.Body()))
 		if err != nil {

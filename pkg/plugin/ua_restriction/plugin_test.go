@@ -121,11 +121,11 @@ func TestDenylistRejectsWithJSONMessage(t *testing.T) {
 	if rr.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, want %d", rr.Code, http.StatusForbidden)
 	}
-	if got := strings.TrimSpace(rr.Body.String()); got != `{"message":"Not allowed"}` {
-		t.Fatalf("body = %q", got)
+	if got := rr.Body.String(); got != "{\"message\":\"Not allowed\"}\n" {
+		t.Fatalf("body = %q, want APISIX 3.17 JSON response with trailing newline", got)
 	}
-	if got := rr.Header().Get("Content-Type"); got != "application/json" {
-		t.Fatalf("Content-Type = %q, want application/json", got)
+	if got := rr.Header().Get("Content-Type"); got != "text/plain; charset=utf-8" {
+		t.Fatalf("Content-Type = %q, want APISIX 3.17 response type", got)
 	}
 }
 
@@ -147,19 +147,45 @@ func TestAllowlistMissIsRejected(t *testing.T) {
 	}
 }
 
-func TestAllowlistRejectsWhenAnyUserAgentHeaderIsNotAllowed(t *testing.T) {
-	p := newTestPlugin(t, Config{AllowList: []string{`^allowed-bot$`}})
-	req := httptest.NewRequest(http.MethodGet, "/ua", nil)
-	req.Header.Add("User-Agent", "allowed-bot")
-	req.Header.Add("User-Agent", "evil")
+func TestUserAgentHeaderValuesAreMatchedIndividually(t *testing.T) {
+	allowlist := Config{AllowList: []string{`^allowed-bot$`}}
+	denylist := Config{DenyList: []string{`^blocked-bot$`}}
 
-	rr := httptest.NewRecorder()
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Fatal("ua-restriction should not call the next handler for a mixed User-Agent list")
-	})).ServeHTTP(rr, req)
+	for _, test := range []struct {
+		name       string
+		config     Config
+		userAgents []string
+		wantStatus int
+	}{
+		{name: "allowlist single match", config: allowlist, userAgents: []string{"allowed-bot"}, wantStatus: http.StatusNoContent},
+		{name: "allowlist single miss", config: allowlist, userAgents: []string{"other-bot"}, wantStatus: http.StatusForbidden},
+		{name: "allowlist match first", config: allowlist, userAgents: []string{"allowed-bot", "other-bot"}, wantStatus: http.StatusNoContent},
+		{name: "allowlist match second", config: allowlist, userAgents: []string{"other-bot", "allowed-bot"}, wantStatus: http.StatusNoContent},
+		{name: "allowlist empty then match", config: allowlist, userAgents: []string{"", "allowed-bot"}, wantStatus: http.StatusNoContent},
+		{name: "allowlist only empty", config: allowlist, userAgents: []string{""}, wantStatus: http.StatusForbidden},
+		{name: "denylist single match", config: denylist, userAgents: []string{"blocked-bot"}, wantStatus: http.StatusForbidden},
+		{name: "denylist single miss", config: denylist, userAgents: []string{"other-bot"}, wantStatus: http.StatusNoContent},
+		{name: "denylist match first", config: denylist, userAgents: []string{"blocked-bot", "other-bot"}, wantStatus: http.StatusForbidden},
+		{name: "denylist match second", config: denylist, userAgents: []string{"other-bot", "blocked-bot"}, wantStatus: http.StatusForbidden},
+		{name: "denylist empty then match", config: denylist, userAgents: []string{"", "blocked-bot"}, wantStatus: http.StatusForbidden},
+		{name: "denylist only empty", config: denylist, userAgents: []string{""}, wantStatus: http.StatusNoContent},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			p := newTestPlugin(t, test.config)
+			req := httptest.NewRequest(http.MethodGet, "/ua", nil)
+			for _, userAgent := range test.userAgents {
+				req.Header.Add("User-Agent", userAgent)
+			}
 
-	if rr.Code != http.StatusForbidden {
-		t.Fatalf("status = %d, want %d", rr.Code, http.StatusForbidden)
+			rr := httptest.NewRecorder()
+			p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusNoContent)
+			})).ServeHTTP(rr, req)
+
+			if rr.Code != test.wantStatus {
+				t.Fatalf("status = %d, want %d", rr.Code, test.wantStatus)
+			}
+		})
 	}
 }
 

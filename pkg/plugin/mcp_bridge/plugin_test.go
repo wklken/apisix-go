@@ -21,11 +21,42 @@ import (
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/runtime"
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 type failingReader struct{}
 
 func (failingReader) Read([]byte) (int, error) { return 0, errors.New("random unavailable") }
+
+func TestSchemaMatchesAPISIX317SanityMatrix(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	tests := []struct {
+		name    string
+		config  map[string]any
+		wantErr bool
+	}{
+		{name: "command", config: map[string]any{"command": "npx"}},
+		{name: "missing command", config: map[string]any{}, wantErr: true},
+		{name: "numeric command", config: map[string]any{"command": 123}, wantErr: true},
+		{name: "string args", config: map[string]any{"command": "npx", "args": []any{"-y", "test"}}},
+		{name: "scalar args", config: map[string]any{"command": "npx", "args": "test"}, wantErr: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := util.Validate(test.config, p.GetSchema())
+			if test.wantErr && err == nil {
+				t.Fatal("Validate() error = nil, want APISIX 3.17 schema rejection")
+			}
+			if !test.wantErr && err != nil {
+				t.Fatalf("Validate() error = %v, want APISIX 3.17 schema acceptance", err)
+			}
+		})
+	}
+}
 
 func TestNewSessionIDReturnsErrorForFailingReader(t *testing.T) {
 	id, err := newSessionID(failingReader{})
@@ -120,6 +151,26 @@ func TestSSEStartsProcessAndAdvertisesMessageEndpoint(t *testing.T) {
 	}
 	if data != `{"jsonrpc":"2.0","id":1,"result":{}}` {
 		t.Fatalf("process data = %q", data)
+	}
+}
+
+func TestSSECommandStartFailureReturns500WithoutPublishingSession(t *testing.T) {
+	p := newTestPlugin(t, Config{Command: filepath.Join(t.TempDir(), "missing-mcp-command")})
+	request := httptest.NewRequest(http.MethodGet, "/sse", nil)
+	response := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next handler should not be called")
+	})).ServeHTTP(response, request)
+
+	if response.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", response.Code)
+	}
+	p.mu.Lock()
+	sessions := len(p.sessions)
+	p.mu.Unlock()
+	if sessions != 0 {
+		t.Fatalf("published sessions = %d, want 0 after command start failure", sessions)
 	}
 }
 

@@ -387,6 +387,7 @@ type attemptRegistration struct {
 	resolve    func(context.Context, Scope, string) (string, error)
 	close      func(context.Context) error
 	registry   *attemptRegistry
+	resources  *attemptResourceSet
 
 	gate      sync.RWMutex
 	closed    bool
@@ -409,7 +410,15 @@ func newAttemptRegistration(
 		resolve:    resolve,
 		close:      closeAttempt,
 		registry:   registry,
+		resources:  newAttemptResourceSet(),
 	}
+}
+
+func (registration *attemptRegistration) generationResources() *attemptResourceSet {
+	if registration == nil {
+		return nil
+	}
+	return registration.resources
 }
 
 func (registration *attemptRegistration) AttemptID() AttemptID {
@@ -461,6 +470,7 @@ func (registration *attemptRegistration) Close(ctx context.Context) error {
 		registration.gate.Lock()
 		registration.closed = true
 		registration.gate.Unlock()
+		registration.resources.stop()
 
 		cleanupErr := error(nil)
 		if registration.close != nil {
@@ -479,13 +489,24 @@ func (registration *attemptRegistration) Close(ctx context.Context) error {
 type GenerationCapability struct {
 	generation uint64
 	attempt    AttemptRegistration
+	resources  *attemptResourceSet
 }
 
 func NewGenerationCapability(attempt AttemptRegistration, generationNumber uint64) (GenerationCapability, error) {
 	if attempt == nil || generationNumber == 0 || attempt.AttemptID() == (AttemptID{}) {
 		return GenerationCapability{}, ErrInvalidCapability
 	}
-	return GenerationCapability{generation: generationNumber, attempt: attempt}, nil
+	resources := newAttemptResourceSet()
+	if provider, ok := attempt.(interface{ generationResources() *attemptResourceSet }); ok {
+		if owned := provider.generationResources(); owned != nil {
+			resources = owned
+		}
+	}
+	return GenerationCapability{
+		generation: generationNumber,
+		attempt:    attempt,
+		resources:  resources,
+	}, nil
 }
 
 func (capability GenerationCapability) AttemptID() AttemptID {
@@ -500,7 +521,16 @@ func (capability GenerationCapability) Generation() uint64 {
 }
 
 func (capability GenerationCapability) Valid() bool {
-	return capability.generation != 0 && capability.AttemptID() != (AttemptID{})
+	return capability.generation != 0 && capability.AttemptID() != (AttemptID{}) && capability.resources != nil
+}
+
+// SharedLimiter returns one attempt-owned named limiter. Repeated calls with
+// the same name and capacity share slots; a capacity mismatch fails closed.
+func (capability GenerationCapability) SharedLimiter(name string, capacity int) (AttemptLimiter, error) {
+	if !capability.Valid() {
+		return AttemptLimiter{}, ErrInvalidCapability
+	}
+	return capability.resources.limiter(name, capacity)
 }
 
 // SameAuthority reports whether both capabilities refer to the exact same

@@ -482,6 +482,34 @@ func TestHandlerResolvesCustomFormatAfterDownstream(t *testing.T) {
 	}
 }
 
+func TestHandlerCustomFormatOmitsAbsentServiceID(t *testing.T) {
+	addr, received := startUDPServer(t)
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatalf("split udp addr: %v", err)
+	}
+
+	p := newTestPlugin(t, Config{
+		Host: host, Port: mustAtoi(t, port), BatchMaxSize: 1,
+		LogFormat: map[string]string{
+			"case":       "no-service",
+			"service_id": "stale-service",
+		},
+	})
+	p.SetRouteContext("route-without-service", "127.0.0.1:9080")
+	req := httptest.NewRequest(http.MethodGet, "http://gateway.example/hello", nil)
+	req = apisixctx.WithApisixVars(req, map[string]string{})
+	req = apisixctx.WithRequestVars(req)
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(httptest.NewRecorder(), req)
+
+	payload := waitForUDPPayload(t, received)
+	if _, ok := payload["service_id"]; ok {
+		t.Fatalf("service_id = %#v, want field omitted without service context", payload["service_id"])
+	}
+}
+
 func TestHandlerResolvesUDPLoggerVariables(t *testing.T) {
 	addr, received := startUDPServer(t)
 	host, port, err := net.SplitHostPort(addr)

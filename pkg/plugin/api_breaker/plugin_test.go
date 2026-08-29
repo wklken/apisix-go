@@ -3,63 +3,34 @@ package api_breaker
 import (
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+	"unsafe"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
 
-func TestAPIBreakerFinalizerObservesOnlyCompletedCommittedNonHijacked(t *testing.T) {
-	p := newTestPlugin(t, Config{
+func TestAPIBreakerFinalizerRejectsMalformedUpstreamStatus(t *testing.T) {
+	config := Config{
 		BreakResponseCode: http.StatusServiceUnavailable,
 		Unhealthy: UnHealthCheck{
 			HTTPStatuses: []int{http.StatusInternalServerError},
 			Failures:     new(1),
 		},
-	})
-	request := httptest.NewRequest(http.MethodGet, "http://example.com/anything", nil)
-	request, lifecycle := apisixctx.EnsureRequestLifecycle(request, time.Now())
-	result := p.RunRequestPhase(httptest.NewRecorder(), request)
-	if result.Decision != base.RequestContinue {
-		t.Fatalf("RunRequestPhase() decision = %v, want continue", result.Decision)
 	}
-	lifecycle.SetOutcome(apisixctx.ResponseOutcome{
-		Kind:      apisixctx.RequestOutcomeCompleted,
-		Status:    http.StatusInternalServerError,
-		Committed: true,
-	})
-	lifecycle.Finalize()
-	if p.unhealthyCount != 1 {
-		t.Fatalf("unhealthyCount = %d, want 1 for completed committed response", p.unhealthyCount)
-	}
-
-	for name, outcome := range map[string]apisixctx.ResponseOutcome{
-		"not committed": {Kind: apisixctx.RequestOutcomeCompleted, Status: http.StatusInternalServerError},
-		"panic":         {Kind: apisixctx.RequestOutcomeRecoveredPanic, Status: http.StatusInternalServerError, Committed: true},
-		"hijacked":      {Kind: apisixctx.RequestOutcomeCompleted, Status: http.StatusInternalServerError, Committed: true, Hijacked: true},
-	} {
-		t.Run(name, func(t *testing.T) {
-			plugin := newTestPlugin(t, Config{
-				BreakResponseCode: http.StatusServiceUnavailable,
-				Unhealthy: UnHealthCheck{
-					HTTPStatuses: []int{http.StatusInternalServerError},
-					Failures:     new(1),
-				},
-			})
-			req := httptest.NewRequest(http.MethodGet, "http://example.com/anything", nil)
-			req, lc := apisixctx.EnsureRequestLifecycle(req, time.Now())
-			if got := plugin.RunRequestPhase(httptest.NewRecorder(), req); got.Decision != base.RequestContinue {
-				t.Fatalf("RunRequestPhase() decision = %v, want continue", got.Decision)
-			}
-			lc.SetOutcome(outcome)
-			lc.Finalize()
-			if plugin.unhealthyCount != 0 {
-				t.Fatalf("unhealthyCount = %d, want 0 for %s", plugin.unhealthyCount, name)
-			}
-		})
+	for _, value := range []any{"502, invalid", float64(500), 0, 1000} {
+		plugin := newTestPlugin(t, config)
+		observeAPIBreakerUpstreamValue(
+			t, plugin, "http://example.test/anything", value, http.StatusInternalServerError,
+		)
+		assertAPIBreakerDecision(
+			t, plugin, "http://example.test/anything", base.RequestContinue,
+		)
 	}
 }
 
@@ -99,7 +70,7 @@ func TestHandlerResolvesBreakResponseHeaders(t *testing.T) {
 	}))
 
 	first := httptest.NewRecorder()
-	firstReq := httptest.NewRequest(http.MethodGet, "/first", nil)
+	firstReq := httptest.NewRequest(http.MethodGet, "/blocked?first=1", nil)
 	handler.ServeHTTP(first, firstReq)
 	if first.Code != http.StatusInternalServerError {
 		t.Fatalf("first response code = %d, want %d", first.Code, http.StatusInternalServerError)
@@ -225,10 +196,11 @@ func TestBreakerTimeLogIsDebugLevel(t *testing.T) {
 		Unhealthy:     UnHealthCheck{Failures: &failures},
 		MaxBreakerSec: 300,
 	})
-	p.unhealthyCount = 2
-	p.lastUnhealthyTime = time.Now()
+	key := breakerKey{host: "example.test", uri: "/"}
+	p.observeStatus(key, http.StatusInternalServerError)
+	p.observeStatus(key, http.StatusInternalServerError)
 
-	_ = p.shouldBreak()
+	_ = p.shouldBreak(key)
 	select {
 	case entry := <-entries:
 		t.Fatalf("breaker_time logged at info level: %q", entry.Message)
@@ -238,7 +210,7 @@ func TestBreakerTimeLogIsDebugLevel(t *testing.T) {
 	if err := logger.ConfigureLevel("debug"); err != nil {
 		t.Fatalf("configure debug level: %v", err)
 	}
-	_ = p.shouldBreak()
+	_ = p.shouldBreak(key)
 	select {
 	case entry := <-entries:
 		if !strings.Contains(entry.Message, "breaker_time") {
@@ -246,5 +218,290 @@ func TestBreakerTimeLogIsDebugLevel(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("breaker_time not logged at debug level")
+	}
+}
+
+func TestAPIBreakerSharesStateByHostAndURIAcrossPluginInstances(t *testing.T) {
+	state := NewState()
+	config := Config{
+		BreakResponseCode: http.StatusServiceUnavailable,
+		Unhealthy: UnHealthCheck{
+			HTTPStatuses: []int{http.StatusInternalServerError},
+			Failures:     new(1),
+		},
+	}
+	first := newTestPlugin(t, config)
+	second := newTestPlugin(t, config)
+	first.SetState(state)
+	second.SetState(state)
+	now := time.Unix(1_700_000_000, 0)
+	first.now = func() time.Time { return now }
+	second.now = func() time.Time { return now }
+
+	observeAPIBreakerUpstreamStatus(
+		t, first, "http://Example.TEST:9080/api?first=1", http.StatusInternalServerError, http.StatusOK,
+	)
+	assertAPIBreakerDecision(
+		t, second, "http://example.test/api?second=2", base.RequestStop,
+	)
+	assertAPIBreakerDecision(
+		t, second, "http://other.example.test/api", base.RequestContinue,
+	)
+	assertAPIBreakerDecision(
+		t, second, "http://example.test/other", base.RequestContinue,
+	)
+}
+
+func TestAPIBreakerRecoveryIsKeyScoped(t *testing.T) {
+	plugin := newTestPlugin(t, Config{
+		BreakResponseCode: http.StatusServiceUnavailable,
+		Unhealthy: UnHealthCheck{
+			HTTPStatuses: []int{http.StatusInternalServerError},
+			Failures:     new(1),
+		},
+		Healthy: HealthCheck{
+			HTTPStatuses: []int{http.StatusOK},
+			Successes:    new(1),
+		},
+	})
+	now := time.Unix(1_700_000_000, 0)
+	plugin.now = func() time.Time { return now }
+	first := breakerKey{host: "example.test", uri: "/first"}
+	second := breakerKey{host: "example.test", uri: "/second"}
+	plugin.observeStatus(first, http.StatusInternalServerError)
+	plugin.observeStatus(second, http.StatusInternalServerError)
+	plugin.observeStatus(first, http.StatusOK)
+
+	if plugin.shouldBreak(first) {
+		t.Fatal("healthy recovery retained the recovered key")
+	}
+	if !plugin.shouldBreak(second) {
+		t.Fatal("healthy recovery cleared an unrelated key")
+	}
+}
+
+func TestAPIBreakerWindowExpiryAllowsConcurrentTrials(t *testing.T) {
+	plugin := newTestPlugin(t, Config{
+		BreakResponseCode: http.StatusServiceUnavailable,
+		Unhealthy: UnHealthCheck{
+			HTTPStatuses: []int{http.StatusInternalServerError},
+			Failures:     new(1),
+		},
+	})
+	now := time.Unix(1_700_000_000, 0)
+	plugin.now = func() time.Time { return now }
+	key := breakerKey{host: "example.test", uri: "/api"}
+	plugin.observeStatus(key, http.StatusInternalServerError)
+	now = now.Add(3 * time.Second)
+
+	start := make(chan struct{})
+	results := make(chan bool, 2)
+	var wait sync.WaitGroup
+	for range 2 {
+		wait.Go(func() {
+			<-start
+			results <- plugin.shouldBreak(key)
+		})
+	}
+	close(start)
+	wait.Wait()
+	close(results)
+	for blocked := range results {
+		if blocked {
+			t.Fatal("expired breaker window admitted only one trial")
+		}
+	}
+}
+
+func TestAPIBreakerLastTimeExpiresUsingWritingConfiguration(t *testing.T) {
+	state := NewState()
+	now := time.Unix(1_700_000_000, 0)
+	writer := newTestPlugin(t, Config{
+		MaxBreakerSec: 3,
+		Unhealthy: UnHealthCheck{
+			HTTPStatuses: []int{http.StatusInternalServerError},
+			Failures:     new(1),
+		},
+	})
+	reader := newTestPlugin(t, Config{
+		MaxBreakerSec: 300,
+		Unhealthy: UnHealthCheck{
+			HTTPStatuses: []int{http.StatusInternalServerError},
+			Failures:     new(1),
+		},
+	})
+	writer.SetState(state)
+	reader.SetState(state)
+	writer.now = func() time.Time { return now }
+	reader.now = func() time.Time { return now }
+	key := breakerKey{host: "example.test", uri: "/api"}
+	for range 4 {
+		writer.observeStatus(key, http.StatusInternalServerError)
+	}
+	if !reader.shouldBreak(key) {
+		t.Fatal("shared lasttime did not block before the writing configuration TTL")
+	}
+	now = now.Add(3 * time.Second)
+	if reader.shouldBreak(key) {
+		t.Fatal("shared lasttime outlived the writing configuration TTL")
+	}
+}
+
+func TestAPIBreakerStateOwnsStoredKeyBytes(t *testing.T) {
+	state := newStateWithBudget(1024)
+	key := breakerKey{
+		host: strings.Repeat("host", 8),
+		uri:  "/" + strings.Repeat("path", 16),
+	}
+	state.mu.Lock()
+	entry := state.insertLocked(key)
+	var stored breakerKey
+	for stored = range state.entries {
+		break
+	}
+	state.mu.Unlock()
+	if entry == nil {
+		t.Fatal("breaker state rejected a key within budget")
+	}
+	if unsafe.StringData(stored.host) == unsafe.StringData(key.host) {
+		t.Fatal("stored host retained the request key backing bytes")
+	}
+	if unsafe.StringData(stored.uri) == unsafe.StringData(key.uri) {
+		t.Fatal("stored URI retained the request key backing bytes")
+	}
+}
+
+func TestAPIBreakerStateEvictsWithinMemoryBudget(t *testing.T) {
+	const budget = 512
+	state := newStateWithBudget(budget)
+	plugin := newTestPlugin(t, Config{
+		Unhealthy: UnHealthCheck{
+			HTTPStatuses: []int{http.StatusInternalServerError},
+			Failures:     new(1),
+		},
+	})
+	plugin.SetState(state)
+	now := time.Unix(1_700_000_000, 0)
+	plugin.now = func() time.Time { return now }
+	first := breakerKey{host: "example.test", uri: "/" + strings.Repeat("a", 64)}
+	plugin.observeStatus(first, http.StatusInternalServerError)
+	var latest breakerKey
+	for index := range 32 {
+		latest = breakerKey{
+			host: "example.test",
+			uri:  "/" + strconv.Itoa(index) + strings.Repeat("x", 64),
+		}
+		plugin.observeStatus(latest, http.StatusInternalServerError)
+	}
+	if state.usedBytes > budget {
+		t.Fatalf("state used bytes = %d, budget %d", state.usedBytes, budget)
+	}
+	if plugin.shouldBreak(first) {
+		t.Fatal("oldest breaker key survived bounded-state eviction")
+	}
+	if !plugin.shouldBreak(latest) {
+		t.Fatal("newest breaker key was not retained after bounded-state eviction")
+	}
+}
+
+func TestAPIBreakerFinalizerUsesLastUpstreamStatus(t *testing.T) {
+	config := Config{
+		BreakResponseCode: http.StatusServiceUnavailable,
+		Unhealthy: UnHealthCheck{
+			HTTPStatuses: []int{http.StatusInternalServerError},
+			Failures:     new(1),
+		},
+	}
+
+	t.Run("last retry status trips despite rewritten final success", func(t *testing.T) {
+		plugin := newTestPlugin(t, config)
+		observeAPIBreakerUpstreamValue(t, plugin, "http://example.test/api", "502, 500", http.StatusOK)
+		assertAPIBreakerDecision(t, plugin, "http://example.test/api", base.RequestStop)
+	})
+
+	t.Run("healthy upstream is not replaced by final failure", func(t *testing.T) {
+		plugin := newTestPlugin(t, config)
+		observeAPIBreakerUpstreamStatus(
+			t, plugin, "http://example.test/api", http.StatusOK, http.StatusInternalServerError,
+		)
+		assertAPIBreakerDecision(t, plugin, "http://example.test/api", base.RequestContinue)
+	})
+
+	t.Run("local failure without upstream is ignored", func(t *testing.T) {
+		plugin := newTestPlugin(t, config)
+		observeAPIBreakerUpstreamValue(
+			t, plugin, "http://example.test/api", nil, http.StatusInternalServerError,
+		)
+		assertAPIBreakerDecision(t, plugin, "http://example.test/api", base.RequestContinue)
+	})
+}
+
+func TestAPIBreakerCapturesKeyBeforeDownstreamRequestMutation(t *testing.T) {
+	plugin := newTestPlugin(t, Config{
+		BreakResponseCode: http.StatusServiceUnavailable,
+		Unhealthy: UnHealthCheck{
+			HTTPStatuses: []int{http.StatusInternalServerError},
+			Failures:     new(1),
+		},
+	})
+	request := httptest.NewRequest(http.MethodGet, "http://example.test/original", nil)
+	request, lifecycle := apisixctx.EnsureRequestLifecycle(request, time.Now())
+	result := plugin.RunRequestPhase(httptest.NewRecorder(), request)
+	if result.Decision != base.RequestContinue {
+		t.Fatalf("RunRequestPhase() decision = %v, want continue", result.Decision)
+	}
+	result.Request.Host = "rewritten.example.test"
+	result.Request.URL.Path = "/rewritten"
+	apisixctx.RegisterRequestVar(result.Request, "$upstream_status", http.StatusInternalServerError)
+	lifecycle.SetOutcome(apisixctx.ResponseOutcome{
+		Kind: apisixctx.RequestOutcomeCompleted, Status: http.StatusOK, Committed: true,
+	})
+	lifecycle.Finalize()
+
+	assertAPIBreakerDecision(t, plugin, "http://example.test/original", base.RequestStop)
+	assertAPIBreakerDecision(t, plugin, "http://rewritten.example.test/rewritten", base.RequestContinue)
+}
+
+func observeAPIBreakerUpstreamStatus(
+	t *testing.T,
+	plugin *Plugin,
+	target string,
+	upstreamStatus int,
+	finalStatus int,
+) {
+	t.Helper()
+	observeAPIBreakerUpstreamValue(t, plugin, target, upstreamStatus, finalStatus)
+}
+
+func observeAPIBreakerUpstreamValue(
+	t *testing.T,
+	plugin *Plugin,
+	target string,
+	upstreamStatus any,
+	finalStatus int,
+) {
+	t.Helper()
+	request := httptest.NewRequest(http.MethodGet, target, nil)
+	request, lifecycle := apisixctx.EnsureRequestLifecycle(request, time.Now())
+	result := plugin.RunRequestPhase(httptest.NewRecorder(), request)
+	if result.Decision != base.RequestContinue {
+		t.Fatalf("RunRequestPhase() decision = %v, want continue", result.Decision)
+	}
+	if upstreamStatus != nil {
+		apisixctx.RegisterRequestVar(result.Request, "$upstream_status", upstreamStatus)
+	}
+	lifecycle.SetOutcome(apisixctx.ResponseOutcome{
+		Kind: apisixctx.RequestOutcomeCompleted, Status: finalStatus, Committed: true,
+	})
+	lifecycle.Finalize()
+}
+
+func assertAPIBreakerDecision(t *testing.T, plugin *Plugin, target string, want base.RequestDecision) {
+	t.Helper()
+	request := httptest.NewRequest(http.MethodGet, target, nil)
+	request, _ = apisixctx.EnsureRequestLifecycle(request, time.Now())
+	result := plugin.RunRequestPhase(httptest.NewRecorder(), request)
+	if result.Decision != want {
+		t.Fatalf("RunRequestPhase(%q) decision = %v, want %v", target, result.Decision, want)
 	}
 }

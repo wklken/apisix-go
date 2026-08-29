@@ -17,8 +17,8 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/riandyrn/otelchi"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
-	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	v "github.com/wklken/apisix-go/pkg/apisix/variable"
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/resource"
 	otelapi "go.opentelemetry.io/otel"
@@ -245,9 +245,14 @@ func (p *Plugin) PostInit() error {
 	if p.config.Sampler.Options.Root.Name == "" {
 		p.config.Sampler.Options.Root.Name = "always_off"
 	}
-	metadata, configured, err := loadMetadata(p.MetadataView(), effective.Config.PluginAttr)
+	metadata, configured, err := loadEnabledMetadata(
+		p.MetadataView(), effective.Config.PluginAttr, effective.Config.Plugins,
+	)
 	if err != nil {
 		return err
+	}
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(metadata.Collector.Address)), "http://") {
+		logger.Warn("Using opentelemetry collector.address with no TLS is a security risk")
 	}
 	p.metadata = metadata
 
@@ -310,15 +315,33 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 }
 
 func captureHTTPSpanAttributes(r *http.Request) []attribute.KeyValue {
+	scheme := requestScheme(r)
 	attrs := []attribute.KeyValue{
 		attribute.String("http.method", r.Method),
+		attribute.String("http.scheme", scheme),
 		attribute.String("http.target", r.URL.RequestURI()),
+		attribute.String("http.request.method", r.Method),
 		attribute.String("net.host.name", requestHost(r.Host)),
+		attribute.String("url.path", r.URL.Path),
+		attribute.String("url.scheme", scheme),
 	}
 	if userAgent := r.UserAgent(); userAgent != "" {
-		attrs = append(attrs, attribute.String("http.user_agent", userAgent))
+		attrs = append(attrs,
+			attribute.String("http.user_agent", userAgent),
+			attribute.String("user_agent.original", userAgent),
+		)
 	}
 	return attrs
+}
+
+func requestScheme(r *http.Request) string {
+	if r.URL.Scheme != "" {
+		return r.URL.Scheme
+	}
+	if r.TLS != nil {
+		return "https"
+	}
+	return "http"
 }
 
 func requestHost(hostPort string) string {
@@ -584,7 +607,7 @@ func (p *Plugin) tracer() trace.Tracer {
 	if p.tracerProvider == nil {
 		p.tracerProvider = sdktrace.NewTracerProvider(sdktrace.WithSampler(sdktrace.AlwaysSample()))
 	}
-	return p.tracerProvider.Tracer(name)
+	return p.tracerProvider.Tracer("opentelemetry-lua")
 }
 
 func (p *Plugin) finishSpan(state *spanState, lifecycle *apisixctx.RequestLifecycle, fallback *http.Request) error {
@@ -605,7 +628,6 @@ func (p *Plugin) finishSpan(state *spanState, lifecycle *apisixctx.RequestLifecy
 			state.span.SetStatus(codes.Error, http.StatusText(outcome.Status))
 		}
 		if request != nil {
-			correlation := apisixlog.CaptureRequestCorrelation(request)
 			requestTime := finished.Sub(state.started).Seconds()
 			if requestTime < 0 {
 				requestTime = 0
@@ -616,25 +638,10 @@ func (p *Plugin) finishSpan(state *spanState, lifecycle *apisixctx.RequestLifecy
 			attrs = append(attrs, p.additionalSpanAttributes(request)...)
 			attrs = append(attrs,
 				attribute.Int("http.status_code", outcome.Status),
-				attribute.Int64("http.response_content_length", outcome.Bytes),
+				attribute.Int("http.response.status_code", outcome.Status),
 			)
 			if source := lifecycle.ResponseSource(); source != apisixctx.ResponseSourceUnknown {
 				attrs = append(attrs, attribute.String("apisix.response_source", string(source)))
-			}
-			if correlation.RequestID != "" {
-				attrs = append(attrs, attribute.String("apisix.request_id", correlation.RequestID))
-			}
-			if correlation.NodeID != "" {
-				attrs = append(attrs, attribute.String("apisix.node_id", correlation.NodeID))
-			}
-			if outcome.Kind != "" {
-				attrs = append(attrs, attribute.String("apisix.outcome", string(outcome.Kind)))
-			}
-			if correlation.RetryCount != "" {
-				attrs = append(attrs, attribute.String("apisix.retry_count", correlation.RetryCount))
-			}
-			if correlation.UpstreamStatus != "" {
-				attrs = append(attrs, attribute.String("http.upstream_status_code", correlation.UpstreamStatus))
 			}
 			state.span.SetAttributes(attrs...)
 		}

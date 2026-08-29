@@ -2,6 +2,8 @@ package request_validation
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -9,16 +11,20 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/santhosh-tekuri/jsonschema/v5"
+
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/secret"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
 type Plugin struct {
 	base.BasePlugin
-	config Config
+	config  Config
+	secrets requestValidationSecretState
 }
 
 const (
@@ -75,6 +81,7 @@ func (p *Plugin) Init() error {
 	p.Name = name
 	p.Priority = priority
 	p.Schema = schema
+	p.secrets.initializeCompileGate()
 
 	return nil
 }
@@ -84,33 +91,77 @@ func (p *Plugin) PostInit() error {
 		p.config.RejectedCode = 400
 	}
 
-	if p.config.HeaderSchema != nil {
-		p.config.HeaderSchema = normalizeAPISIXSchema(p.config.HeaderSchema)
-		headerSchemaStr, err := json.Marshal(p.config.HeaderSchema)
+	var headerSchema, bodySchema *util.CompiledSchema
+	err := p.withSchemaDocuments(context.Background(), func(
+		headerDocument, bodyDocument map[string]any,
+		headerSensitive, bodySensitive bool,
+	) error {
+		var err error
+		headerSchema, err = prepareRequestValidationSchema(
+			"header_schema", headerDocument, headerSensitive,
+		)
 		if err != nil {
-			return fmt.Errorf("failed to marshal header schema: %w", err)
+			return err
 		}
-		compiled, err := util.CompileSchema(util.BytesToString(headerSchemaStr))
-		if err != nil {
-			return fmt.Errorf("invalid header_schema: %w", err)
-		}
-		p.config.headerSchema = compiled
+		bodySchema, err = prepareRequestValidationSchema(
+			"body_schema", bodyDocument, bodySensitive,
+		)
+		return err
+	})
+	if err != nil {
+		return err
 	}
+	return p.installCompiledSchemas(headerSchema, bodySchema)
+}
 
-	if p.config.BodySchema != nil {
-		p.config.BodySchema = normalizeAPISIXSchema(p.config.BodySchema)
-		bodySchemaStr, err := json.Marshal(p.config.BodySchema)
-		if err != nil {
-			return fmt.Errorf("failed to marshal body schema: %w", err)
-		}
-		compiled, err := util.CompileSchema(util.BytesToString(bodySchemaStr))
-		if err != nil {
-			return fmt.Errorf("invalid body_schema: %w", err)
-		}
-		p.config.bodySchema = compiled
+func prepareRequestValidationSchema(
+	field string, document map[string]any, sensitive bool,
+) (*util.CompiledSchema, error) {
+	compiled, err := compileRequestValidationSchema(field, document, sensitive)
+	if err != nil || sensitive {
+		// A compiled schema may retain literals in constants, enums, regexps,
+		// references, annotations, and prebuilt diagnostic strings. Secret-backed
+		// schemas are compiled only to verify admission and never installed.
+		return nil, err
 	}
+	return compiled, nil
+}
 
-	return nil
+func compileRequestValidationSchema(
+	field string, document map[string]any, sensitive bool,
+) (*util.CompiledSchema, error) {
+	if document == nil {
+		return nil, nil
+	}
+	if err := validateRequestValidationSchemaDocument(document, false); err != nil {
+		if sensitive {
+			return nil, secret.ErrCredentialUnavailable
+		}
+		return nil, fmt.Errorf("invalid %s: %w", field, err)
+	}
+	normalized := normalizeAPISIXSchema(document)
+	if err := validateRequestValidationSchemaDocument(normalized, false); err != nil {
+		if sensitive {
+			return nil, secret.ErrCredentialUnavailable
+		}
+		return nil, fmt.Errorf("invalid %s: %w", field, err)
+	}
+	encoded, err := json.Marshal(normalized)
+	if err != nil {
+		if sensitive {
+			return nil, secret.ErrCredentialUnavailable
+		}
+		return nil, fmt.Errorf("failed to marshal %s: %w", field, err)
+	}
+	defer clear(encoded)
+	compiled, err := util.CompileSchema(util.BytesToString(encoded))
+	if err != nil {
+		if sensitive {
+			return nil, secret.ErrCredentialUnavailable
+		}
+		return nil, fmt.Errorf("invalid %s: %w", field, err)
+	}
+	return compiled, nil
 }
 
 func (p *Plugin) Config() any {
@@ -119,15 +170,39 @@ func (p *Plugin) Config() any {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
-		if p.config.headerSchema != nil {
-			if err := p.config.headerSchema.Validate(requestHeaders(r)); err != nil {
-				logger.Error("req schema validation failed: " + err.Error())
-				http.Error(w, p.rejectedMessage(err), p.config.RejectedCode)
+		schemas, release, err := p.acquireValidationSchemas()
+		if err != nil {
+			http.Error(w, "request validation unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		defer release()
+
+		if schemas.headerSchema != nil {
+			err := p.validateRequestValidationSchema(
+				r.Context(),
+				"header_schema",
+				schemas.headerSchema,
+				schemas.headerSecrets,
+				schemas.headerCompiled,
+				requestHeaders(r),
+			)
+			if requestValidationUnavailable(err) {
+				http.Error(w, "request validation unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			if err != nil {
+				message := schemaValidationDiagnostic(err, schemas.headerSensitive)
+				logger.Error("req schema validation failed: " + message)
+				writeSchemaRejection(
+					w,
+					p.schemaRejectedMessage(err, schemas.headerSensitive),
+					p.config.RejectedCode,
+				)
 				return
 			}
 		}
 
-		if p.config.bodySchema != nil {
+		if schemas.bodySchema != nil {
 			body, err := ctx.ReadRequestBody(r)
 			if err != nil {
 				err = fmt.Errorf("failed to read request body: %w", err)
@@ -150,9 +225,26 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 				return
 			}
 
-			err = p.config.bodySchema.Validate(bodyData)
+			err = p.validateRequestValidationSchema(
+				r.Context(),
+				"body_schema",
+				schemas.bodySchema,
+				schemas.bodySecrets,
+				schemas.bodyCompiled,
+				bodyData,
+			)
+			if requestValidationUnavailable(err) {
+				http.Error(w, "request validation unavailable", http.StatusServiceUnavailable)
+				return
+			}
 			if err != nil {
-				http.Error(w, p.rejectedMessage(err), p.config.RejectedCode)
+				message := schemaValidationDiagnostic(err, schemas.bodySensitive)
+				logger.Error("req schema validation failed: " + message)
+				writeSchemaRejection(
+					w,
+					p.schemaRejectedMessage(err, schemas.bodySensitive),
+					p.config.RejectedCode,
+				)
 				return
 			}
 			if bodyIsJSON {
@@ -171,11 +263,102 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(fn)
 }
 
+var errSensitiveSchemaMismatch = errors.New("request does not match schema")
+
+func requestValidationUnavailable(err error) bool {
+	return errors.Is(err, secret.ErrCredentialUnavailable) ||
+		errors.Is(err, context.Canceled) ||
+		errors.Is(err, context.DeadlineExceeded)
+}
+
+func (p *Plugin) validateRequestValidationSchema(
+	ctx context.Context,
+	field string,
+	document map[string]any,
+	secrets []schemaSecret,
+	compiled *util.CompiledSchema,
+	instance any,
+) error {
+	if len(secrets) == 0 {
+		if compiled == nil {
+			return secret.ErrCredentialUnavailable
+		}
+		return compiled.Validate(instance)
+	}
+	// Resolve every terminal secret, compile, and validate within the innermost
+	// Value.Use callback. Only the redacted result crosses that boundary.
+	releaseCompile, err := p.secrets.acquireSensitiveCompile(ctx)
+	if err != nil {
+		return err
+	}
+	defer releaseCompile()
+	return withResolvedSchemaDocument(
+		document,
+		secrets,
+		func(resolved map[string]any) error {
+			ephemeral, err := compileRequestValidationSchema(field, resolved, true)
+			if err != nil {
+				return err
+			}
+			if err := ephemeral.Validate(instance); err != nil {
+				return errSensitiveSchemaMismatch
+			}
+			return nil
+		},
+	)
+}
+
 func (p *Plugin) rejectedMessage(err error) string {
 	if p.config.RejectedMsg != "" {
 		return p.config.RejectedMsg
 	}
-	return err.Error()
+	return schemaValidationMessage(err)
+}
+
+func (p *Plugin) schemaRejectedMessage(err error, sensitive bool) string {
+	if p.config.RejectedMsg != "" {
+		return p.config.RejectedMsg
+	}
+	return schemaValidationDiagnostic(err, sensitive)
+}
+
+func schemaValidationDiagnostic(err error, sensitive bool) string {
+	if sensitive {
+		return "request does not match schema"
+	}
+	return schemaValidationMessage(err)
+}
+
+func schemaValidationMessage(err error) string {
+	var validationErr *jsonschema.ValidationError
+	if !errors.As(err, &validationErr) {
+		return err.Error()
+	}
+
+	leaf := validationErr
+	for len(leaf.Causes) > 0 {
+		leaf = leaf.Causes[0]
+	}
+	if strings.HasSuffix(leaf.KeywordLocation, "/required") {
+		const missingPropertiesPrefix = "missing properties: "
+		if missing, ok := strings.CutPrefix(leaf.Message, missingPropertiesPrefix); ok {
+			if firstProperty, ok := strings.CutPrefix(missing, "'"); ok {
+				if property, _, ok := strings.Cut(firstProperty, "'"); ok {
+					return fmt.Sprintf("property %q is required", property)
+				}
+			}
+		}
+	}
+	if leaf.Message != "" {
+		return leaf.Message
+	}
+	return "request does not match schema"
+}
+
+func writeSchemaRejection(w http.ResponseWriter, message string, status int) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(status)
+	_, _ = io.WriteString(w, message)
 }
 
 func requestHeaders(r *http.Request) map[string]any {

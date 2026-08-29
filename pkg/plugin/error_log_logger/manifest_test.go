@@ -50,9 +50,10 @@ func TestStandaloneManifestMapsEveryPinnedBlockToIndependentBehavior(t *testing.
 
 	var manifest struct {
 		Sources []struct {
-			Commit string `yaml:"commit"`
-			File   string `yaml:"file"`
-			Tests  int    `yaml:"tests"`
+			Commit      string `yaml:"commit"`
+			File        string `yaml:"file"`
+			Tests       int    `yaml:"tests"`
+			TestNumbers []int  `yaml:"test_numbers"`
 		} `yaml:"sources"`
 		Cases []errorLogManifestCase `yaml:"cases"`
 	}
@@ -61,29 +62,47 @@ func TestStandaloneManifestMapsEveryPinnedBlockToIndependentBehavior(t *testing.
 	}
 
 	wantSources := []struct {
-		file  string
-		tests int
+		file        string
+		testNumbers []int
 	}{
-		{"t/plugin/error-log-logger-clickhouse.t", 9},
-		{"t/plugin/error-log-logger-kafka.t", 7},
-		{"t/plugin/error-log-logger-skywalking.t", 8},
-		{"t/plugin/error-log-logger.t", 15},
+		{"t/plugin/error-log-logger-clickhouse.t", []int{1, 2, 3, 4, 5, 6, 7, 9}},
+		{"t/plugin/error-log-logger-kafka.t", []int{1, 2, 3, 4, 5, 6}},
+		{"t/plugin/error-log-logger-skywalking.t", []int{1, 2, 3, 4, 5, 6, 7, 8}},
+		{"t/plugin/error-log-logger.t", []int{1, 2, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14, 15}},
 	}
 	if len(manifest.Sources) != len(wantSources) {
 		t.Fatalf("sources = %d, want %d", len(manifest.Sources), len(wantSources))
 	}
 	next := make(map[string]int, len(wantSources))
+	labels := make(map[string][]int, len(wantSources))
 	total := 0
 	for i, want := range wantSources {
 		source := manifest.Sources[i]
-		if source.Commit != "c3d7d5ec69774121f53d2e20d29d09c816795dd7" {
+		if source.Commit != "9ef2ecab67f652d38365049613610ef649bb4ad0" {
 			t.Fatalf("source %d commit = %q, want pinned Apache APISIX commit", i+1, source.Commit)
 		}
-		if source.File != want.file || source.Tests != want.tests {
-			t.Fatalf("source %d = (%q, %d), want (%q, %d)", i+1, source.File, source.Tests, want.file, want.tests)
+		if source.File != want.file || source.Tests != len(want.testNumbers) {
+			t.Fatalf(
+				"source %d = (%q, %d), want (%q, %d)",
+				i+1,
+				source.File,
+				source.Tests,
+				want.file,
+				len(want.testNumbers),
+			)
 		}
-		next[want.file] = 1
-		total += want.tests
+		gotNumbers := source.TestNumbers
+		if len(gotNumbers) == 0 {
+			gotNumbers = make([]int, source.Tests)
+			for j := range gotNumbers {
+				gotNumbers[j] = j + 1
+			}
+		}
+		if !slices.Equal(gotNumbers, want.testNumbers) {
+			t.Fatalf("source %d test_numbers = %v, want %v", i+1, gotNumbers, want.testNumbers)
+		}
+		labels[want.file] = want.testNumbers
+		total += len(want.testNumbers)
 	}
 	if len(manifest.Cases) != total {
 		t.Fatalf("top-level cases = %d, want exactly %d", len(manifest.Cases), total)
@@ -92,14 +111,20 @@ func TestStandaloneManifestMapsEveryPinnedBlockToIndependentBehavior(t *testing.
 	generic := regexp.MustCompile(`(?i)(block-[0-9]+|placeholder|generic|probe|preserves-upstream)`)
 	names := make(map[string]struct{}, total)
 	for i, testCase := range manifest.Cases {
-		want, ok := next[testCase.Source.File]
+		index, ok := next[testCase.Source.File]
 		if !ok {
-			t.Fatalf("case %d %q has unknown source %q", i+1, testCase.Name, testCase.Source.File)
+			if _, exists := labels[testCase.Source.File]; !exists {
+				t.Fatalf("case %d %q has unknown source %q", i+1, testCase.Name, testCase.Source.File)
+			}
 		}
+		if index >= len(labels[testCase.Source.File]) {
+			t.Fatalf("case %d %q exceeds selected labels for %q", i+1, testCase.Name, testCase.Source.File)
+		}
+		want := labels[testCase.Source.File][index]
 		if !slices.Equal(testCase.Source.Tests, []int{want}) {
 			t.Fatalf("case %d %q source tests = %v, want [%d]", i+1, testCase.Name, testCase.Source.Tests, want)
 		}
-		next[testCase.Source.File]++
+		next[testCase.Source.File] = index + 1
 		if strings.TrimSpace(testCase.Name) == "" || generic.MatchString(testCase.Name) {
 			t.Errorf("case %d has generic behavior name %q", i+1, testCase.Name)
 		}
@@ -110,8 +135,8 @@ func TestStandaloneManifestMapsEveryPinnedBlockToIndependentBehavior(t *testing.
 		assertErrorLogCaseRunsStandalone(t, i+1, testCase)
 	}
 	for _, source := range wantSources {
-		if got := next[source.file] - 1; got != source.tests {
-			t.Fatalf("%s mapped through block %d, want %d", source.file, got, source.tests)
+		if got := next[source.file]; got != len(source.testNumbers) {
+			t.Fatalf("%s mapped through %d blocks, want %d", source.file, got, len(source.testNumbers))
 		}
 	}
 }

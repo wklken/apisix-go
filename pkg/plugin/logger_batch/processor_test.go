@@ -413,6 +413,48 @@ func TestProcessorDropsEntriesPastMaxPendingEntries(t *testing.T) {
 	}
 }
 
+func TestProcessorAcceptsAfterCompletedDeliveryFreesCapacity(t *testing.T) {
+	started := make(chan struct{}, 2)
+	release := make(chan struct{}, 2)
+	p := mustNewWithContext(t, Config{
+		BatchMaxSize:      1,
+		MaxPendingEntries: 1,
+		InactiveTimeout:   time.Hour,
+		BufferDuration:    time.Hour,
+	}, func(context.Context, []map[string]any, int) (int, error) {
+		started <- struct{}{}
+		<-release
+		return 0, nil
+	})
+	t.Cleanup(func() {
+		release <- struct{}{}
+		p.Stop()
+	})
+
+	if !p.Push(map[string]any{"id": 1}) {
+		t.Fatal("first push was rejected")
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("first delivery did not start")
+	}
+	if p.Push(map[string]any{"id": 2}) {
+		t.Fatal("second push was accepted while capacity was occupied")
+	}
+	release <- struct{}{}
+	deadline := time.Now().Add(time.Second)
+	for p.Stats().Pending != 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := p.Stats().Pending; got != 0 {
+		t.Fatalf("pending = %d, want completed delivery to release capacity", got)
+	}
+	if !p.Push(map[string]any{"id": 3}) {
+		t.Fatal("push was rejected after completed delivery released capacity")
+	}
+}
+
 func TestProcessorUpdatesBatchProcessEntriesMetric(t *testing.T) {
 	oldBatchProcessEntries := metrics.BatchProcessEntries
 	gauge := prometheus.NewGaugeVec(

@@ -44,6 +44,8 @@ type Plugin struct {
 
 	observerLifecycleMu sync.Mutex
 	observerStopped     bool
+	startupWarnings     []string
+	startupWarningsSent bool
 
 	clickhousePassword         *secret.Value
 	clickhousePasswordLegacy   *string
@@ -62,7 +64,9 @@ const (
 	name     = "error-log-logger"
 )
 
-const schema = `
+const schema = `{"type":"object"}`
+
+const metadataSchema = `
 {
   "type": "object",
   "properties": {
@@ -294,7 +298,7 @@ func (p *Plugin) Init() error {
 	p.Name = name
 	p.Priority = priority
 	p.Schema = schema
-	p.MetadataSchema = schema
+	p.MetadataSchema = metadataSchema
 
 	return nil
 }
@@ -312,6 +316,16 @@ func (p *Plugin) PostInit() error {
 		}
 	}
 	p.applyDefaults()
+	if !hasExplicitConfig(p.config) && !hasMetadata {
+		logger.Info("please set the correct plugin_metadata for error-log-logger")
+		return nil
+	}
+	p.startupWarnings = p.securityWarnings()
+	if !p.metadataSelected {
+		for _, warning := range p.startupWarnings {
+			logger.Warn(warning)
+		}
+	}
 	p.client = &http.Client{
 		Transport: httpclient.NewTransport(),
 		Timeout:   time.Duration(p.config.Timeout) * time.Second,
@@ -344,6 +358,33 @@ func (p *Plugin) PostInit() error {
 	p.BatchProcessor = processor
 
 	return nil
+}
+
+func (p *Plugin) securityWarnings() []string {
+	warnings := make([]string, 0, 3)
+	if p.config.Skywalking != nil && strings.HasPrefix(
+		strings.ToLower(strings.TrimSpace(p.config.Skywalking.EndpointAddr)), "http://",
+	) {
+		warnings = append(
+			warnings,
+			"Using error-log-logger skywalking.endpoint_addr with no TLS is a security risk",
+		)
+	}
+	if p.config.Clickhouse != nil && strings.HasPrefix(
+		strings.ToLower(strings.TrimSpace(p.config.Clickhouse.EndpointAddr)), "http://",
+	) {
+		warnings = append(
+			warnings,
+			"Using error-log-logger clickhouse.endpoint_addr with no TLS is a security risk",
+		)
+	}
+	if p.config.TCP != nil && !p.config.TCP.TLS {
+		warnings = append(
+			warnings,
+			"Keeping tcp.tls disabled in error-log-logger configuration is a security risk",
+		)
+	}
+	return warnings
 }
 
 func (p *Plugin) decodeMetadataConfig() (Config, bool, error) {
@@ -581,6 +622,7 @@ func (p *Plugin) StartObserving() {
 		return
 	}
 	p.observerStop = p.installObserver()
+	p.enqueueStartupWarningsLocked()
 }
 
 func (p *Plugin) StartObservingWithTasks(tasks *runtime.TaskOwner) error {
@@ -614,25 +656,42 @@ func (p *Plugin) StartObservingWithTasks(tasks *runtime.TaskOwner) error {
 
 	stop := p.installObserver()
 	p.observerStop = stop
+	p.enqueueStartupWarningsLocked()
 	close(ready)
 	return nil
 }
 
 func (p *Plugin) installObserver() func() {
+	return logger.ReplaceObserver(name, p.observeEntry)
+}
+
+func (p *Plugin) enqueueStartupWarningsLocked() {
+	if p.startupWarningsSent || len(p.startupWarnings) == 0 || p.BatchProcessor == nil {
+		return
+	}
+	p.startupWarningsSent = true
+	for _, warning := range p.startupWarnings {
+		now := time.Now()
+		p.observeEntry(logger.Entry{
+			Time: now, Level: "WARN", Message: warning,
+			Line: fmt.Sprintf("%s [warn] %s", now.UTC().Format(time.RFC3339Nano), warning),
+		})
+	}
+}
+
+func (p *Plugin) observeEntry(entry logger.Entry) {
+	message := strings.ToLower(entry.Message)
 	processorName := strings.ToLower(p.config.Name)
-	return logger.ReplaceObserver(name, func(entry logger.Entry) {
-		message := strings.ToLower(entry.Message)
-		if strings.Contains(message, "logger batch processor ["+processorName+"]") {
-			return
-		}
-		threshold := levelOrder[p.config.Level]
-		if level, ok := levelOrder[strings.ToUpper(entry.Level)]; ok && level > threshold {
-			return
-		}
-		if p.BatchProcessor != nil {
-			_ = p.BatchProcessor.Push(map[string]any{"message": entry.Line})
-		}
-	})
+	if strings.Contains(message, "logger batch processor ["+processorName+"]") {
+		return
+	}
+	threshold := levelOrder[p.config.Level]
+	if level, ok := levelOrder[strings.ToUpper(entry.Level)]; ok && level > threshold {
+		return
+	}
+	if p.BatchProcessor != nil {
+		_ = p.BatchProcessor.Push(map[string]any{"message": entry.Line})
+	}
 }
 
 func (p *Plugin) QuiesceGenerationTasks() { p.Stop() }

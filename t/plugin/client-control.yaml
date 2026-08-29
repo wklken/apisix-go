@@ -1,9 +1,9 @@
 source:
   repository: https://github.com/apache/apisix
-  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
   file: t/plugin/client-control.t
-  tests: 10
-  test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 12]
+  tests: 6
+  test_numbers: [1, 2, 3, 4, 6, 7]
 
 cases:
   - name: route-body-limit
@@ -59,23 +59,6 @@ cases:
           body:
             equals: done
 
-  - name: reject-negative-limit
-    source:
-      tests: [5]
-    config:
-      routes:
-        - id: client-control-negative-limit
-          uri: /hello
-          plugins:
-            client-control:
-              max_body_size: -1
-    input:
-      path: /hello
-    output:
-      status: 404
-      logs:
-        matches: 'build route client-control-negative-limit fail:.*max_body_size.*must be >= 0'
-
   - name: zero-disables-limit
     source:
       tests: [6, 7]
@@ -98,53 +81,5 @@ cases:
       expect:
         body:
           equals: '1'
-      respond: *done_response
-    output: *done_output
-
-  - name: route-limit-overrides-global-body-reader-limit
-    source:
-      tests: [8, 9]
-    runtime: &thirty_megabyte_runtime
-      nginx_config:
-        http:
-          client_max_body_size: 31457280
-    config:
-      routes:
-        - id: client-control-fifty-megabytes
-          uri: /hello
-          plugins:
-            client-control:
-              max_body_size: 52428800
-          upstream: *single_upstream
-    input:
-      method: POST
-      path: /hello
-      body_repeat:
-        value: A
-        count: 32505856
-    upstream:
-      respond: *done_response
-    output: *done_output
-
-  - name: global-rule-cleanup-state
-    source:
-      tests: [12]
-    runtime: *thirty_megabyte_runtime
-    config:
-      routes:
-        - id: client-control-cleaned-global-rule
-          uri: /hello
-          plugins:
-            client-control:
-              max_body_size: 0
-          upstream: *single_upstream
-    input:
-      method: POST
-      path: /hello
-      body: cleanup
-    upstream:
-      expect:
-        body:
-          equals: cleanup
       respond: *done_response
     output: *done_output

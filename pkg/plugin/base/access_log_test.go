@@ -199,6 +199,31 @@ func TestBuildAccessLogSnapshot(t *testing.T) {
 	}
 }
 
+func TestApplyMatchedRouteFieldsMatchesAPISIX317CustomLogFormat(t *testing.T) {
+	fields := map[string]any{
+		"case": "logger", "route_id": "configured-route", "service_id": "configured-service",
+	}
+	ApplyMatchedRouteFields(fields, "matched-route", "")
+
+	if fields["route_id"] != "matched-route" {
+		t.Fatalf("route_id = %#v, want matched-route", fields["route_id"])
+	}
+	if _, exists := fields["service_id"]; exists {
+		t.Fatalf("service_id = %#v, want omitted when matched route has no service", fields["service_id"])
+	}
+
+	ApplyMatchedRouteFields(fields, "matched-route", "matched-service")
+	if fields["service_id"] != "matched-service" {
+		t.Fatalf("service_id = %#v, want matched-service", fields["service_id"])
+	}
+
+	unmatched := map[string]any{"route_id": "configured-route", "service_id": "configured-service"}
+	ApplyMatchedRouteFields(unmatched, "", "")
+	if unmatched["route_id"] != "configured-route" || unmatched["service_id"] != "configured-service" {
+		t.Fatalf("unmatched fields = %#v, want configured values unchanged", unmatched)
+	}
+}
+
 func TestBuildAccessLogDefaultsRedactSensitiveHeaders(t *testing.T) {
 	r := httptest.NewRequest(http.MethodGet, "http://gateway.test/orders", nil)
 	r.Host = "gateway.test:9443"

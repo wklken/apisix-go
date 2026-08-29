@@ -54,9 +54,11 @@ func TestStandaloneManifestMapsEveryPinnedBlockToIndependentBehavior(t *testing.
 
 	var manifest struct {
 		Sources []struct {
-			Commit string `yaml:"commit"`
-			File   string `yaml:"file"`
-			Tests  int    `yaml:"tests"`
+			Commit         string `yaml:"commit"`
+			File           string `yaml:"file"`
+			Tests          int    `yaml:"tests"`
+			TestNumbers    []int  `yaml:"test_numbers"`
+			RegressionOnly bool   `yaml:"regression_only"`
 		} `yaml:"sources"`
 		Cases []kafkaLoggerManifestCase `yaml:"cases"`
 	}
@@ -65,30 +67,47 @@ func TestStandaloneManifestMapsEveryPinnedBlockToIndependentBehavior(t *testing.
 	}
 
 	wantSources := []struct {
-		file  string
-		tests int
+		commit         string
+		file           string
+		tests          int
+		testNumbers    []int
+		regressionOnly bool
 	}{
-		{"t/plugin/kafka-logger-large-body.t", 28},
-		{"t/plugin/kafka-logger-log-format.t", 5},
-		{"t/plugin/kafka-logger.t", 29},
-		{"t/plugin/kafka-logger2.t", 27},
-		{"t/plugin/kafka-logger3.t", 2},
-		{"t/plugin/kafka-logger4.t", 8},
+		{commit: "9ef2ecab67f652d38365049613610ef649bb4ad0", file: "t/plugin/kafka-logger-large-body.t", tests: 28},
+		{commit: "9ef2ecab67f652d38365049613610ef649bb4ad0", file: "t/plugin/kafka-logger-log-format.t", tests: 5},
+		{commit: "9ef2ecab67f652d38365049613610ef649bb4ad0", file: "t/plugin/kafka-logger.t", tests: 27},
+		{
+			commit:         "c3d7d5ec69774121f53d2e20d29d09c816795dd7",
+			file:           "t/plugin/kafka-logger.t",
+			tests:          2,
+			testNumbers:    []int{28, 29},
+			regressionOnly: true,
+		},
+		{commit: "9ef2ecab67f652d38365049613610ef649bb4ad0", file: "t/plugin/kafka-logger2.t", tests: 27},
+		{commit: "9ef2ecab67f652d38365049613610ef649bb4ad0", file: "t/plugin/kafka-logger3.t", tests: 2},
+		{commit: "9ef2ecab67f652d38365049613610ef649bb4ad0", file: "t/plugin/kafka-logger4.t", tests: 8},
 	}
 	if len(manifest.Sources) != len(wantSources) {
 		t.Fatalf("sources = %d, want %d", len(manifest.Sources), len(wantSources))
 	}
 	next := make(map[string]int, len(wantSources))
+	wantMapped := make(map[string]int, len(wantSources))
 	total := 0
 	for index, want := range wantSources {
 		source := manifest.Sources[index]
-		if source.Commit != "c3d7d5ec69774121f53d2e20d29d09c816795dd7" {
-			t.Fatalf("source %d commit = %q, want pinned Apache APISIX commit", index+1, source.Commit)
+		if source.Commit != want.commit || source.File != want.file || source.Tests != want.tests ||
+			!slices.Equal(source.TestNumbers, want.testNumbers) ||
+			source.RegressionOnly != want.regressionOnly {
+			t.Fatalf("source %d = %#v, want %#v", index+1, source, want)
 		}
-		if source.File != want.file || source.Tests != want.tests {
-			t.Fatalf("source %d = (%q, %d), want (%q, %d)", index+1, source.File, source.Tests, want.file, want.tests)
+		if _, exists := next[want.file]; !exists {
+			next[want.file] = 1
 		}
-		next[want.file] = 1
+		if len(want.testNumbers) > 0 {
+			wantMapped[want.file] = max(wantMapped[want.file], slices.Max(want.testNumbers))
+		} else {
+			wantMapped[want.file] = max(wantMapped[want.file], want.tests)
+		}
 		total += want.tests
 	}
 	if len(manifest.Cases) != total {
@@ -115,9 +134,9 @@ func TestStandaloneManifestMapsEveryPinnedBlockToIndependentBehavior(t *testing.
 		names[testCase.Name] = struct{}{}
 		assertKafkaLoggerCaseRunsStandalone(t, index+1, testCase)
 	}
-	for _, source := range wantSources {
-		if got := next[source.file] - 1; got != source.tests {
-			t.Fatalf("%s mapped through block %d, want %d", source.file, got, source.tests)
+	for file, want := range wantMapped {
+		if got := next[file] - 1; got != want {
+			t.Fatalf("%s mapped through block %d, want %d", file, got, want)
 		}
 	}
 }

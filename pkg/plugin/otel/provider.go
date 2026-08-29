@@ -98,6 +98,28 @@ func loadMetadata(
 	return applyMetadataDefaults(metadata), false, nil
 }
 
+func loadEnabledMetadata(
+	view runtime.MetadataView,
+	pluginAttr map[string]map[string]any,
+	enabledPlugins []string,
+) (Metadata, bool, error) {
+	aliasEnabled := false
+	for _, pluginName := range enabledPlugins {
+		switch pluginName {
+		case name:
+			return loadMetadata(view, pluginAttr)
+		case aliasName:
+			aliasEnabled = true
+		}
+	}
+	if aliasEnabled {
+		if aliasAttr, ok := pluginAttr[aliasName]; ok {
+			return loadMetadata(view, map[string]map[string]any{aliasName: aliasAttr})
+		}
+	}
+	return loadMetadata(view, pluginAttr)
+}
+
 func applyMetadataDefaults(metadata Metadata) Metadata {
 	if metadata.TraceIDSource == "" {
 		metadata.TraceIDSource = "random"
@@ -177,7 +199,7 @@ func validateMetadata(metadata Metadata) error {
 	if metadata.SetNgxVar {
 		return unsupportedMetadataError{message: "opentelemetry set_ngx_var is unsupported by the Go data plane"}
 	}
-	if metadata.BatchSpanProcessor.InactiveTimeout != 0 {
+	if metadata.BatchSpanProcessor.InactiveTimeout < 0 {
 		return unsupportedMetadataError{
 			message: "opentelemetry batch_span_processor.inactive_timeout is unsupported by the Go data plane",
 		}
@@ -188,7 +210,12 @@ func validateMetadata(metadata Metadata) error {
 func otelResource(configured map[string]any) *sdkresource.Resource {
 	configured = flattenResourceAttributes(configured)
 	hostname, _ := os.Hostname()
-	attributes := []attribute.KeyValue{attribute.String("hostname", hostname)}
+	attributes := []attribute.KeyValue{
+		attribute.String("hostname", hostname),
+		attribute.String("telemetry.sdk.language", "lua"),
+		attribute.String("telemetry.sdk.name", "opentelemetry-lua"),
+		attribute.String("telemetry.sdk.version", "0.1.1"),
+	}
 	if _, ok := configured["service.name"]; !ok {
 		attributes = append(attributes, attribute.String("service.name", "APISIX"))
 	}

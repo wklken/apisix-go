@@ -72,6 +72,32 @@ deployment: {role: data_plane, role_data_plane: {config_provider: yaml}}
 	if got := effective.Config.Apisix.Status; got != (Status{IP: "127.0.0.1", Port: 7085}) {
 		t.Fatalf("apisix.status = %#v, want loopback status listener", got)
 	}
+	if got := effective.Config.Apisix.Control; got != (Control{Ip: "127.0.0.1", Port: 9090}) {
+		t.Fatalf("apisix.control = %#v, want APISIX 3.17 control listener default", got)
+	}
+	for _, field := range []string{"apisix.control.ip", "apisix.control.port"} {
+		source := effective.Provenance[field]
+		if source.Kind != SourceBuiltin || source.Explicit {
+			t.Fatalf("provenance[%q] = %#v, want implicit builtin", field, source)
+		}
+	}
+}
+
+func TestLoadEffectivePreservesExplicitControlListenerOverride(t *testing.T) {
+	effective := loadEffectiveFixture(t, `
+apisix:
+  enable_control: true
+  control: {ip: 127.0.0.2, port: 19090}
+`)
+	if got := effective.Config.Apisix.Control; got != (Control{Ip: "127.0.0.2", Port: 19090}) {
+		t.Fatalf("apisix.control = %#v, want explicit override", got)
+	}
+	for _, field := range []string{"apisix.control.ip", "apisix.control.port"} {
+		source := effective.Provenance[field]
+		if source.Kind == SourceBuiltin || !source.Explicit {
+			t.Fatalf("provenance[%q] = %#v, want explicit config source", field, source)
+		}
+	}
 }
 
 func TestLoadEffectiveRejectsInvalidRuntimeValues(t *testing.T) {
@@ -93,6 +119,16 @@ func TestLoadEffectiveRejectsInvalidRuntimeValues(t *testing.T) {
 			name:     "status IP",
 			override: "apisix: {status: {ip: public.example.com, port: 7085}}",
 			want:     "apisix.status.ip",
+		},
+		{
+			name:     "control port",
+			override: "apisix: {enable_control: true, control: {port: 0}}",
+			want:     "apisix.control.port",
+		},
+		{
+			name:     "control IP",
+			override: "apisix: {enable_control: true, control: {ip: public.example.com}}",
+			want:     "apisix.control.ip",
 		},
 		{name: "empty plugin", override: "plugins: ['']", want: "plugins[0] must not be empty"},
 		{name: "duplicate plugin", override: "plugins: [request-id, request-id]", want: "duplicates"},

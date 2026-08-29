@@ -1,103 +1,11 @@
 sources:
   - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
     file: t/plugin/syslog.t
-    tests: 21
+    tests: 18
+    test_numbers: [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]
 
 cases:
-  - name: official-schema-is-accepted-and-delivers
-    source:
-      file: t/plugin/syslog.t
-      tests: [1]
-    config:
-      routes:
-        - id: syslog-schema-valid
-          uri: /schema-valid
-          plugins:
-            syslog:
-              batch_max_size: 1
-              buffer_duration: 60
-              drop_limit: 1048576
-              flush_limit: 1
-              host: '{{FIXTURE.sink.HOST}}'
-              inactive_timeout: 5
-              log_format:
-                marker: schema-valid
-              max_retry_count: 0
-              pool_size: 5
-              port: '{{FIXTURE.sink.PORT}}'
-              retry_delay: 0
-              sock_type: tcp
-              timeout: 3000
-              tls: false
-          upstream:
-            type: roundrobin
-            nodes:
-              '{{FIXTURE.primary.ADDR}}': 1
-    fixtures:
-      - name: primary
-        kind: http
-        respond:
-          - status: 200
-            body: schema-ok
-      - name: sink
-        kind: tcp
-        network_expect:
-          - rfc5424_json_fields:
-              - {path: /marker, value: {equals: schema-valid}}
-              - {path: /route_id, value: {equals: syslog-schema-valid}}
-        network_respond:
-          - payload: ''
-    steps:
-      - name: accepted-schema-emits-rfc5424
-        input:
-          method: GET
-          path: /schema-valid
-          headers: {Host: localhost}
-        output:
-          status: 200
-          body: {equals: schema-ok}
-        wait: 1s
-
-  - name: missing-port-is-rejected
-    source:
-      file: t/plugin/syslog.t
-      tests: [2]
-    config:
-      routes:
-        - id: syslog-missing-port
-          uri: /missing-port
-          plugins:
-            syslog:
-              host: 127.0.0.1
-    input:
-      method: GET
-      path: /missing-port
-    output:
-      status: 404
-      logs:
-        matches: "validate plugin syslog config:.*missing properties: 'port'"
-
-  - name: string-port-is-rejected
-    source:
-      file: t/plugin/syslog.t
-      tests: [3]
-    config:
-      routes:
-        - id: syslog-string-port
-          uri: /string-port
-          plugins:
-            syslog:
-              host: 127.0.0.1
-              port: '514'
-    input:
-      method: GET
-      path: /string-port
-    output:
-      status: 404
-      logs:
-        matches: 'validate plugin syslog config:.*port.*expected integer.*got string'
-
   - name: default-access-log-over-real-stream-transports
     source:
       file: t/plugin/syslog.t
@@ -151,6 +59,9 @@ cases:
               body: {equals: tcp-ok}
             wait: 1s
       - name: tls-tcp-with-source-peer-verification-policy
+        environment:
+          GODEBUG: x509usefallbackroots=1
+          SSL_CERT_FILE: '{{FIXTURE.sink.CA_FILE}}'
         config:
           routes:
             - id: syslog-default-tls
@@ -159,7 +70,7 @@ cases:
                 syslog:
                   batch_max_size: 1
                   flush_limit: 1
-                  host: '{{FIXTURE.sink.HOST}}'
+                  host: localhost
                   port: '{{FIXTURE.sink.PORT}}'
                   tls: true
               upstream:

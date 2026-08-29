@@ -51,7 +51,9 @@ func (c *Coordinator) Apply(ctx context.Context, batch DesiredBatch) (Acknowledg
 		if activeErr := c.engine.ConfirmActive(ctx, set); activeErr != nil {
 			return Acknowledgement{}, activeErr
 		}
-		return cloneCoordinatorAck(committed), nil
+		replayed := cloneCoordinatorAck(committed)
+		replayed.CommittedReplay = true
+		return replayed, nil
 	}
 	if !errors.Is(err, ErrNotFound) {
 		return Acknowledgement{}, err
@@ -95,7 +97,7 @@ func (c *Coordinator) Apply(ctx context.Context, batch DesiredBatch) (Acknowledg
 		discardErr := c.engine.DiscardPrepared(context.WithoutCancel(ctx), set)
 		return Acknowledgement{}, errors.Join(err, discardErr)
 	}
-	if err := c.engine.Activate(ctx, token, set); err != nil {
+	if err := c.engine.Activate(context.WithoutCancel(ctx), token, set); err != nil {
 		cleanupCtx := context.WithoutCancel(ctx)
 		rollbackErr := c.engine.RollbackActivation(cleanupCtx, token, set)
 		abortErr := c.journal.Abort(cleanupCtx, token, stableAbortCode("activation", err))

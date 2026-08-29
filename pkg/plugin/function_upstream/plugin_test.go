@@ -384,6 +384,22 @@ func TestBuildRequestAppendsMatchedExtPath(t *testing.T) {
 	}
 }
 
+func TestBuildRequestMatchesAPISIX317EmptyQueryAndHostAuthority(t *testing.T) {
+	p := newTestPlugin(t, Config{FunctionURI: "http://127.0.0.1:1980/default/test-body"})
+	req := httptest.NewRequest(http.MethodPost, "http://gateway.example/functions", strings.NewReader("test"))
+
+	upstream, err := p.buildRequest(req)
+	if err != nil {
+		t.Fatalf("buildRequest() error = %v", err)
+	}
+	if got := upstream.URL.RequestURI(); got != "/default/test-body?" {
+		t.Fatalf("upstream request URI = %q, want APISIX 3.17 empty query marker", got)
+	}
+	if upstream.Host != "127.0.0.1" {
+		t.Fatalf("upstream Host = %q, want function hostname without port", upstream.Host)
+	}
+}
+
 func TestBuildRequestUsesChiWildcardAndNormalizesRepeatedSlashes(t *testing.T) {
 	p := newTestPlugin(t, Config{FunctionURI: "https://function.example/api"})
 	routeContext := chi.NewRouteContext()

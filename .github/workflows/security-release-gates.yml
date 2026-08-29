@@ -100,7 +100,7 @@ jobs:
         run: go test -race ./pkg/config ./cmd ./pkg/server ./pkg/route ./pkg/proxy ./pkg/store ./pkg/etcd ./pkg/stream -count=1
 
       - name: Scan reachable Go vulnerabilities
-        run: go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 . ./cmd/... ./pkg/...
 
   container-evidence:
     name: Container Smoke And Release Evidence

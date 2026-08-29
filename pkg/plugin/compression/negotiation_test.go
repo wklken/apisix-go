@@ -11,9 +11,47 @@ func eligibleOffer(coding Coding, rank int) Offer {
 	return Offer{
 		Coding: coding,
 		Rank:   rank,
+		Vary:   true,
 		Eligible: func(ResponseMeta) bool {
 			return true
 		},
+	}
+}
+
+func TestNegotiationRespectsOfferVaryPolicy(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		status   int
+		header   http.Header
+		wantVary bool
+	}{
+		{name: "compressed response", status: http.StatusOK},
+		{name: "not modified", status: http.StatusNotModified},
+		{
+			name:   "preencoded response",
+			status: http.StatusOK,
+			header: http.Header{"Content-Encoding": []string{"gzip"}},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			req.Header.Set("Accept-Encoding", "br")
+			_, state := Register(req, Offer{
+				Coding: Brotli,
+				Rank:   996,
+				Eligible: func(ResponseMeta) bool {
+					return true
+				},
+			})
+			decision := state.Decide(ResponseMeta{
+				Method: http.MethodGet,
+				Status: tt.status,
+				Header: tt.header,
+			})
+			if decision.Vary != tt.wantVary {
+				t.Fatalf("Vary = %t, want %t (%#v)", decision.Vary, tt.wantVary, decision)
+			}
+		})
 	}
 }
 
@@ -35,18 +73,16 @@ func TestNegotiationMatrix(t *testing.T) {
 		wantVary       bool
 	}{
 		{
-			name:           "missing selects identity but varies",
+			name:           "missing selects identity without vary",
 			acceptEncoding: nil,
 			offers:         allOffers(),
 			wantCoding:     Identity,
-			wantVary:       true,
 		},
 		{
 			name:           "empty selects identity",
 			acceptEncoding: []string{""},
 			offers:         allOffers(),
 			wantCoding:     Identity,
-			wantVary:       true,
 		},
 		{
 			name:           "repeated fields and duplicate coding use highest valid q",
@@ -67,7 +103,6 @@ func TestNegotiationMatrix(t *testing.T) {
 			acceptEncoding: []string{"gzip;q=1.0000, *;q=0"},
 			offers:         allOffers(),
 			wantNA:         true,
-			wantVary:       true,
 		},
 		{
 			name:           "invalid duplicate does not erase valid q",
@@ -88,7 +123,6 @@ func TestNegotiationMatrix(t *testing.T) {
 			acceptEncoding: []string{"br;q=1"},
 			offers:         []Offer{eligibleOffer(Gzip, 995)},
 			wantCoding:     Identity,
-			wantVary:       true,
 		},
 		{
 			name:           "tie uses server rank",
@@ -102,7 +136,6 @@ func TestNegotiationMatrix(t *testing.T) {
 			acceptEncoding: []string{"gzip;q=0, deflate;q=0, br;q=0, identity;q=0"},
 			offers:         allOffers(),
 			wantNA:         true,
-			wantVary:       true,
 		},
 	}
 
@@ -174,7 +207,7 @@ func TestNegotiationBodylessStatusesDoNotParticipate(t *testing.T) {
 	}{
 		{name: "switching protocols", status: http.StatusSwitchingProtocols},
 		{name: "no content", status: http.StatusNoContent},
-		{name: "not modified", status: http.StatusNotModified, wantVary: true},
+		{name: "not modified", status: http.StatusNotModified},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -210,8 +243,8 @@ func TestNegotiationPreservesAcceptedExistingCoding(t *testing.T) {
 		Status: http.StatusOK,
 		Header: http.Header{"Content-Encoding": []string{"br"}},
 	})
-	if decision.Coding != Brotli || decision.NotAcceptable || !decision.Vary {
-		t.Fatalf("decision = %#v, want br pass-through with Vary", decision)
+	if decision.Coding != Brotli || decision.NotAcceptable || decision.Vary {
+		t.Fatalf("decision = %#v, want br pass-through without plugin-added Vary", decision)
 	}
 }
 

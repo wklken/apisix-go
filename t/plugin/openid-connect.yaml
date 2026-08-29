@@ -12202,25 +12202,25 @@
   "sources": [
     {
       "repository": "https://github.com/apache/apisix",
-      "commit": "c3d7d5ec69774121f53d2e20d29d09c816795dd7",
+      "commit": "9ef2ecab67f652d38365049613610ef649bb4ad0",
       "file": "t/plugin/openid-connect-identity-headers.t",
       "tests": 4
     },
     {
       "repository": "https://github.com/apache/apisix",
-      "commit": "c3d7d5ec69774121f53d2e20d29d09c816795dd7",
+      "commit": "9ef2ecab67f652d38365049613610ef649bb4ad0",
       "file": "t/plugin/openid-connect-redis.t",
       "tests": 4
     },
     {
       "repository": "https://github.com/apache/apisix",
-      "commit": "c3d7d5ec69774121f53d2e20d29d09c816795dd7",
+      "commit": "9ef2ecab67f652d38365049613610ef649bb4ad0",
       "file": "t/plugin/openid-connect.t",
       "tests": 54
     },
     {
       "repository": "https://github.com/apache/apisix",
-      "commit": "c3d7d5ec69774121f53d2e20d29d09c816795dd7",
+      "commit": "9ef2ecab67f652d38365049613610ef649bb4ad0",
       "file": "t/plugin/openid-connect10.t",
       "tests": 11,
       "test_numbers": [
@@ -12239,43 +12239,43 @@
     },
     {
       "repository": "https://github.com/apache/apisix",
-      "commit": "c3d7d5ec69774121f53d2e20d29d09c816795dd7",
+      "commit": "9ef2ecab67f652d38365049613610ef649bb4ad0",
       "file": "t/plugin/openid-connect2.t",
       "tests": 21
     },
     {
       "repository": "https://github.com/apache/apisix",
-      "commit": "c3d7d5ec69774121f53d2e20d29d09c816795dd7",
+      "commit": "9ef2ecab67f652d38365049613610ef649bb4ad0",
       "file": "t/plugin/openid-connect3.t",
       "tests": 6
     },
     {
       "repository": "https://github.com/apache/apisix",
-      "commit": "c3d7d5ec69774121f53d2e20d29d09c816795dd7",
+      "commit": "9ef2ecab67f652d38365049613610ef649bb4ad0",
       "file": "t/plugin/openid-connect4.t",
       "tests": 6
     },
     {
       "repository": "https://github.com/apache/apisix",
-      "commit": "c3d7d5ec69774121f53d2e20d29d09c816795dd7",
+      "commit": "9ef2ecab67f652d38365049613610ef649bb4ad0",
       "file": "t/plugin/openid-connect6.t",
       "tests": 8
     },
     {
       "repository": "https://github.com/apache/apisix",
-      "commit": "c3d7d5ec69774121f53d2e20d29d09c816795dd7",
+      "commit": "9ef2ecab67f652d38365049613610ef649bb4ad0",
       "file": "t/plugin/openid-connect7.t",
       "tests": 10
     },
     {
       "repository": "https://github.com/apache/apisix",
-      "commit": "c3d7d5ec69774121f53d2e20d29d09c816795dd7",
+      "commit": "9ef2ecab67f652d38365049613610ef649bb4ad0",
       "file": "t/plugin/openid-connect8.t",
       "tests": 8
     },
     {
       "repository": "https://github.com/apache/apisix",
-      "commit": "c3d7d5ec69774121f53d2e20d29d09c816795dd7",
+      "commit": "9ef2ecab67f652d38365049613610ef649bb4ad0",
       "file": "t/plugin/openid-connect9.t",
       "tests": 6
     }

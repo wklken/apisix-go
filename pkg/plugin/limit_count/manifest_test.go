@@ -85,7 +85,8 @@ func TestStandaloneManifestDuplicateBacklogOnlyDecreases(t *testing.T) {
 			currentSourceDuplicates,
 		)
 	}
-	if duplicateGroups > maxHistoricalDuplicateGroups || duplicateCases > maxHistoricalDuplicateCases {
+	if duplicateGroups > maxHistoricalDuplicateGroups ||
+		duplicateCases > maxHistoricalDuplicateCases {
 		t.Fatalf(
 			"historical duplicate backlog grew to %d groups/%d cases, maximum %d/%d; largest group (%d): %v",
 			duplicateGroups,
@@ -166,10 +167,11 @@ func TestStandaloneManifestMapsEveryPinnedBlockInOrder(t *testing.T) {
 
 	var manifest struct {
 		Sources []struct {
-			Commit      string `yaml:"commit"`
-			File        string `yaml:"file"`
-			Tests       int    `yaml:"tests"`
-			TestNumbers []int  `yaml:"test_numbers"`
+			Commit         string `yaml:"commit"`
+			File           string `yaml:"file"`
+			Tests          int    `yaml:"tests"`
+			TestNumbers    []int  `yaml:"test_numbers"`
+			RegressionOnly bool   `yaml:"regression_only"`
 		} `yaml:"sources"`
 		Cases []limitCountManifestCase `yaml:"cases"`
 	}
@@ -178,30 +180,196 @@ func TestStandaloneManifestMapsEveryPinnedBlockInOrder(t *testing.T) {
 	}
 
 	wantSources := []struct {
-		file  string
-		tests int
+		file           string
+		commit         string
+		tests          int
+		testNumbers    []int
+		regressionOnly bool
 	}{
-		{"t/plugin/limit-count-consumer-group-credentials.t", 8},
-		{"t/plugin/limit-count-consumer-isolation.t", 5},
-		{"t/plugin/limit-count-redis-cluster.t", 18},
-		{"t/plugin/limit-count-redis-cluster2.t", 2},
-		{"t/plugin/limit-count-redis-cluster3.t", 6},
-		{"t/plugin/limit-count-redis-delayed-sync.t", 5},
-		{"t/plugin/limit-count-redis-delayed-sync2.t", 9},
-		{"t/plugin/limit-count-redis-sentinel.t", 15},
-		{"t/plugin/limit-count-redis.t", 22},
-		{"t/plugin/limit-count-redis2.t", 10},
-		{"t/plugin/limit-count-redis3.t", 11},
-		{"t/plugin/limit-count-redis4.t", 5},
-		{"t/plugin/limit-count-redis5.t", 3},
-		{"t/plugin/limit-count-rules.t", 22},
-		{"t/plugin/limit-count-sliding.t", 8},
-		{"t/plugin/limit-count-variable.t", 13},
-		{"t/plugin/limit-count.t", 41},
-		{"t/plugin/limit-count2.t", 22},
-		{"t/plugin/limit-count3.t", 13},
-		{"t/plugin/limit-count4.t", 5},
-		{"t/plugin/limit-count5.t", 8},
+		{
+			"t/plugin/limit-count-consumer-group-credentials.t",
+			"9ef2ecab67f652d38365049613610ef649bb4ad0",
+			8,
+			nil,
+			false,
+		},
+		{
+			"t/plugin/limit-count-consumer-isolation.t",
+			"9ef2ecab67f652d38365049613610ef649bb4ad0",
+			5,
+			nil,
+			false,
+		},
+		{
+			"t/plugin/limit-count-redis-cluster.t",
+			"9ef2ecab67f652d38365049613610ef649bb4ad0",
+			14,
+			[]int{2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16},
+			false,
+		},
+		{
+			"t/plugin/limit-count-redis-cluster.t",
+			"c3d7d5ec69774121f53d2e20d29d09c816795dd7",
+			2,
+			[]int{17, 18},
+			true,
+		},
+		{
+			"t/plugin/limit-count-redis-cluster2.t",
+			"9ef2ecab67f652d38365049613610ef649bb4ad0",
+			1,
+			[]int{2},
+			false,
+		},
+		{
+			"t/plugin/limit-count-redis-cluster3.t",
+			"9ef2ecab67f652d38365049613610ef649bb4ad0",
+			6,
+			nil,
+			false,
+		},
+		{
+			"t/plugin/limit-count-redis-delayed-sync.t",
+			"c3d7d5ec69774121f53d2e20d29d09c816795dd7",
+			5,
+			nil,
+			true,
+		},
+		{
+			"t/plugin/limit-count-redis-delayed-sync2.t",
+			"c3d7d5ec69774121f53d2e20d29d09c816795dd7",
+			9,
+			nil,
+			true,
+		},
+		{
+			"t/plugin/limit-count-redis-sentinel.t",
+			"c3d7d5ec69774121f53d2e20d29d09c816795dd7",
+			15,
+			nil,
+			true,
+		},
+		{
+			"t/plugin/limit-count-redis.t",
+			"9ef2ecab67f652d38365049613610ef649bb4ad0",
+			21,
+			[]int{2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22},
+			false,
+		},
+		{
+			"t/plugin/limit-count-redis2.t",
+			"9ef2ecab67f652d38365049613610ef649bb4ad0",
+			9,
+			[]int{1, 2, 3, 4, 5, 6, 7, 8, 9},
+			false,
+		},
+		{
+			"t/plugin/limit-count-redis3.t",
+			"9ef2ecab67f652d38365049613610ef649bb4ad0",
+			11,
+			nil,
+			false,
+		},
+		{
+			"t/plugin/limit-count-redis4.t",
+			"9ef2ecab67f652d38365049613610ef649bb4ad0",
+			5,
+			nil,
+			false,
+		},
+		{"t/plugin/limit-count-redis5.t", "c3d7d5ec69774121f53d2e20d29d09c816795dd7", 3, nil, true},
+		{
+			"t/plugin/limit-count-rules.t",
+			"9ef2ecab67f652d38365049613610ef649bb4ad0",
+			18,
+			[]int{3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20},
+			false,
+		},
+		{
+			"t/plugin/limit-count-rules.t",
+			"c3d7d5ec69774121f53d2e20d29d09c816795dd7",
+			2,
+			[]int{21, 22},
+			true,
+		},
+		{
+			"t/plugin/limit-count-sliding.t",
+			"c3d7d5ec69774121f53d2e20d29d09c816795dd7",
+			8,
+			nil,
+			true,
+		},
+		{
+			"t/plugin/limit-count-variable.t",
+			"9ef2ecab67f652d38365049613610ef649bb4ad0",
+			4,
+			nil,
+			false,
+		},
+		{
+			"t/plugin/limit-count-variable.t",
+			"c3d7d5ec69774121f53d2e20d29d09c816795dd7",
+			9,
+			[]int{5, 6, 7, 8, 9, 10, 11, 12, 13},
+			true,
+		},
+		{
+			"t/plugin/limit-count.t",
+			"9ef2ecab67f652d38365049613610ef649bb4ad0",
+			33,
+			[]int{
+				1,
+				2,
+				3,
+				4,
+				5,
+				6,
+				7,
+				14,
+				15,
+				16,
+				17,
+				18,
+				19,
+				20,
+				21,
+				22,
+				24,
+				25,
+				26,
+				27,
+				28,
+				29,
+				30,
+				31,
+				32,
+				33,
+				34,
+				35,
+				36,
+				37,
+				38,
+				39,
+				40,
+			},
+			false,
+		},
+		{
+			"t/plugin/limit-count2.t",
+			"9ef2ecab67f652d38365049613610ef649bb4ad0",
+			19,
+			[]int{3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21, 22},
+			false,
+		},
+		{"t/plugin/limit-count3.t", "9ef2ecab67f652d38365049613610ef649bb4ad0", 13, nil, false},
+		{"t/plugin/limit-count4.t", "9ef2ecab67f652d38365049613610ef649bb4ad0", 5, nil, false},
+		{
+			"t/plugin/limit-count5.t",
+			"9ef2ecab67f652d38365049613610ef649bb4ad0",
+			7,
+			[]int{1, 2, 3, 4, 5, 6, 8},
+			false,
+		},
 	}
 	if len(manifest.Sources) != len(wantSources) {
 		t.Fatalf("sources = %d, want %d", len(manifest.Sources), len(wantSources))
@@ -217,17 +385,22 @@ func TestStandaloneManifestMapsEveryPinnedBlockInOrder(t *testing.T) {
 	cursor := make(map[string]int, len(wantSources))
 	for i, want := range wantSources {
 		source := manifest.Sources[i]
-		if source.Commit != "c3d7d5ec69774121f53d2e20d29d09c816795dd7" {
-			t.Fatalf("source %d commit = %q, want pinned Apache APISIX commit", i+1, source.Commit)
+		if source.Commit != want.commit {
+			t.Fatalf("source %d commit = %q, want %q", i+1, source.Commit, want.commit)
 		}
-		if source.File != want.file || source.Tests != want.tests {
+		if source.File != want.file || source.Tests != want.tests ||
+			source.RegressionOnly != want.regressionOnly || !slices.Equal(source.TestNumbers, want.testNumbers) {
 			t.Fatalf(
-				"source %d = (%q, %d), want (%q, %d)",
+				"source %d = (%q, %d, %v, %v), want (%q, %d, %v, %v)",
 				i+1,
 				source.File,
 				source.Tests,
+				source.TestNumbers,
+				source.RegressionOnly,
 				want.file,
 				want.tests,
+				want.testNumbers,
+				want.regressionOnly,
 			)
 		}
 		numbers := source.TestNumbers
@@ -246,10 +419,12 @@ func TestStandaloneManifestMapsEveryPinnedBlockInOrder(t *testing.T) {
 			)
 		}
 		total += want.tests
-		sequence[want.file] = numbers
+		sequence[want.file] = append(sequence[want.file], numbers...)
 		cursor[want.file] = 0
 	}
-	genericName := regexp.MustCompile(`(?i)(block-[0-9]+|source-[0-9]+|placeholder|generic|probe|lifecycle)`)
+	genericName := regexp.MustCompile(
+		`(?i)(block-[0-9]+|source-[0-9]+|placeholder|generic|probe|lifecycle)`,
+	)
 	names := make(map[string]struct{}, len(manifest.Cases))
 	covered := 0
 	for i, testCase := range manifest.Cases {
@@ -292,9 +467,9 @@ func TestStandaloneManifestMapsEveryPinnedBlockInOrder(t *testing.T) {
 	if covered != total {
 		t.Fatalf("covered source tests = %d, want exactly %d", covered, total)
 	}
-	for _, source := range wantSources {
-		if got := cursor[source.file]; got != source.tests {
-			t.Fatalf("%s mapped through block %d, want %d", source.file, got, source.tests)
+	for file, numbers := range sequence {
+		if got := cursor[file]; got != len(numbers) {
+			t.Fatalf("%s mapped through block %d, want %d", file, got, len(numbers))
 		}
 	}
 }

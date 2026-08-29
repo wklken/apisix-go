@@ -94,6 +94,13 @@ func ValidateCacheZoneStrategy(name, strategy string) error {
 	return validateCacheZoneStrategy(configuredZones(), name, strategy)
 }
 
+// ValidateCacheZoneStrategyWithZones validates against an immutable
+// generation-local zone snapshot instead of the process compatibility
+// registry.
+func ValidateCacheZoneStrategyWithZones(zones []appconfig.Zone, name, strategy string) error {
+	return validateCacheZoneStrategy(zones, name, strategy)
+}
+
 func validateCacheZoneStrategy(zones []appconfig.Zone, name, strategy string) error {
 	seen, err := validateZoneDefinitions(zones)
 	if err != nil {
@@ -125,6 +132,15 @@ func AcquireMemoryZoneStore(name string) *MemoryZoneStore {
 		return nil
 	}
 	return &MemoryZoneStore{zone: acquireMemoryZone(name), name: name}
+}
+
+// AcquireMemoryZoneStoreWithZones acquires a store from an immutable
+// generation-local zone snapshot.
+func AcquireMemoryZoneStoreWithZones(zones []appconfig.Zone, name string) *MemoryZoneStore {
+	if name == "" {
+		return nil
+	}
+	return &MemoryZoneStore{zone: acquireMemoryZoneIn(zones, name), name: name}
 }
 
 func (s *MemoryZoneStore) Load(key string) (SharedCacheEntry, bool) {
@@ -352,6 +368,23 @@ type DiskZoneStore struct {
 // compatibility in-memory fallback used by local tests and development.
 func NewDiskZoneStore(name string) (*DiskZoneStore, bool, error) {
 	root, diskSize, configured, err := diskZonePath(name)
+	return newDiskZoneStore(name, root, diskSize, configured, err)
+}
+
+// NewDiskZoneStoreWithZones resolves and prepares a disk store from an
+// immutable generation-local zone snapshot.
+func NewDiskZoneStoreWithZones(zones []appconfig.Zone, name string) (*DiskZoneStore, bool, error) {
+	root, diskSize, configured, err := diskZonePathIn(zones, name)
+	return newDiskZoneStore(name, root, diskSize, configured, err)
+}
+
+func newDiskZoneStore(
+	name string,
+	root string,
+	diskSize int64,
+	configured bool,
+	err error,
+) (*DiskZoneStore, bool, error) {
 	if err != nil || !configured {
 		return nil, configured, err
 	}

@@ -14,7 +14,9 @@ import (
 	appconfig "github.com/wklken/apisix-go/pkg/config"
 	graphql_proxy_cache "github.com/wklken/apisix-go/pkg/plugin/graphql_proxy_cache"
 	"github.com/wklken/apisix-go/pkg/plugin/public_api"
+	"github.com/wklken/apisix-go/pkg/plugin/server_info"
 	"github.com/wklken/apisix-go/pkg/resource"
+	"github.com/wklken/apisix-go/pkg/runtime"
 )
 
 // PreparedRoute is the authority-free input to detached HTTP router assembly.
@@ -32,8 +34,10 @@ type CompileInput struct {
 	Routes                    []PreparedRoute
 	NotFound                  http.Handler
 	StaticConfig              *appconfig.Config
+	Metadata                  runtime.MetadataView
 	PublicAPIRegistry         *public_api.Registry
 	GraphQLProxyCacheRegistry *graphql_proxy_cache.Registry
+	ServerInfo                *server_info.View
 }
 
 // Snapshot is an immutable detached HTTP router snapshot.
@@ -144,8 +148,10 @@ func CompileHTTP(ctx context.Context, input CompileInput) (*Snapshot, error) {
 		if err := registerExtraRoutesStrict(
 			mux,
 			input.StaticConfig,
+			input.Metadata,
 			input.PublicAPIRegistry,
 			input.GraphQLProxyCacheRegistry,
+			input.ServerInfo,
 		); err != nil {
 			return nil, fmt.Errorf("compile HTTP extra routes: %w", err)
 		}

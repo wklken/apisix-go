@@ -237,9 +237,9 @@ func (p *Plugin) writeAuthError(w http.ResponseWriter, statusCode int, message s
 	if statusCode == http.StatusUnauthorized {
 		w.Header().Set("WWW-Authenticate", fmt.Sprintf(`hmac realm="%s"`, p.config.Realm))
 	}
-	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(statusCode)
-	_, _ = w.Write([]byte(util.BuildMessageResponse(message)))
+	_, _ = fmt.Fprintln(w, util.BuildMessageResponse(message))
 }
 
 func (p *Plugin) authenticate(r *http.Request) (resource.Consumer, int, error) {

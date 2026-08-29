@@ -3,9 +3,10 @@ package uri_blocker
 import (
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 
+	"github.com/wklken/apisix-go/pkg/config"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -42,11 +43,11 @@ func TestBlockedURICustomMessageUsesErrorMessageJSON(t *testing.T) {
 	if rr.Code != http.StatusTeapot {
 		t.Fatalf("status = %d, want %d", rr.Code, http.StatusTeapot)
 	}
-	if got := strings.TrimSpace(rr.Body.String()); got != `{"error_msg":"blocked by uri"}` {
-		t.Fatalf("body = %q", got)
+	if got := rr.Body.String(); got != "{\"error_msg\":\"blocked by uri\"}\n" {
+		t.Fatalf("body = %q, want APISIX 3.17 JSON response with trailing newline", got)
 	}
-	if got := rr.Header().Get("Content-Type"); got != "application/json" {
-		t.Fatalf("Content-Type = %q, want application/json", got)
+	if got := rr.Header().Get("Content-Type"); got != "text/plain; charset=utf-8" {
+		t.Fatalf("Content-Type = %q, want APISIX 3.17 response type", got)
 	}
 }
 
@@ -113,8 +114,46 @@ func TestSchemaRejectsRejectedCodeAboveHTTPMaximum(t *testing.T) {
 	}
 }
 
+func TestSchemaAcceptsAPISIX317ThreeDigitNonstandardRejectedCodes(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	for _, rejectedCode := range []int{600, 999} {
+		config := map[string]any{
+			"block_rules":   []any{"^/blocked"},
+			"rejected_code": rejectedCode,
+		}
+		if err := util.Validate(config, p.GetSchema()); err != nil {
+			t.Fatalf("rejected_code=%d failed schema validation: %v", rejectedCode, err)
+		}
+	}
+}
+
+func TestHandlerMatchesOriginalRawRequestURI(t *testing.T) {
+	p := newTestPlugin(t, Config{BlockRules: []string{`%2Fprivate\?token=%2f`}})
+	req := httptest.NewRequest(http.MethodGet, "/decoded/private?token=/", nil)
+	req.RequestURI = "/encoded%2Fprivate?token=%2f"
+	req.URL.Path = "/decoded/private"
+	req.URL.RawPath = ""
+	req.URL.RawQuery = "token=/"
+
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("uri-blocker should match the original raw request URI")
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusForbidden)
+	}
+}
+
 func TestNormalizedPathCannotBypassAnchoredRule(t *testing.T) {
 	p := newTestPlugin(t, Config{BlockRules: []string{`^/internal/`}})
+	p.SetDependencies(base.Dependencies{Config: &config.EffectiveConfig{Config: config.Config{
+		Apisix: config.Apisix{NormalizeURILikeServlet: true},
+	}}})
 	req := httptest.NewRequest(http.MethodGet, "/./internal/x?aa=1", nil)
 	req.URL.Path = "/internal/x"
 

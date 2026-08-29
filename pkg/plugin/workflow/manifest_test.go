@@ -25,9 +25,11 @@ func TestStandaloneManifestMapsOneIndependentCasePerPinnedBlock(t *testing.T) {
 
 	var manifest struct {
 		Sources []struct {
-			Commit string `yaml:"commit"`
-			File   string `yaml:"file"`
-			Tests  int    `yaml:"tests"`
+			Commit         string `yaml:"commit"`
+			File           string `yaml:"file"`
+			Tests          int    `yaml:"tests"`
+			TestNumbers    []int  `yaml:"test_numbers"`
+			RegressionOnly bool   `yaml:"regression_only"`
 		} `yaml:"sources"`
 		Cases []struct {
 			Name   string `yaml:"name"`
@@ -55,33 +57,48 @@ func TestStandaloneManifestMapsOneIndependentCasePerPinnedBlock(t *testing.T) {
 	}
 
 	wantSources := []struct {
-		file  string
-		tests int
+		file           string
+		commit         string
+		testNumbers    []int
+		regressionOnly bool
 	}{
-		{"t/plugin/workflow-without-case.t", 7},
-		{"t/plugin/workflow.t", 20},
-		{"t/plugin/workflow2.t", 8},
-		{"t/plugin/workflow3.t", 7},
+		{
+			file: "t/plugin/workflow-without-case.t", commit: "c3d7d5ec69774121f53d2e20d29d09c816795dd7",
+			testNumbers: []int{1, 2, 3, 4}, regressionOnly: true,
+		},
+		{
+			file: "t/plugin/workflow.t", commit: "9ef2ecab67f652d38365049613610ef649bb4ad0",
+			testNumbers: []int{2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15, 16, 17, 18, 19, 20},
+		},
+		{
+			file: "t/plugin/workflow2.t", commit: "9ef2ecab67f652d38365049613610ef649bb4ad0",
+			testNumbers: []int{1, 2, 3, 4, 5, 6, 7},
+		},
+		{
+			file: "t/plugin/workflow3.t", commit: "c3d7d5ec69774121f53d2e20d29d09c816795dd7",
+			testNumbers: []int{1, 2, 3, 4, 5, 6, 7}, regressionOnly: true,
+		},
 	}
 	if len(manifest.Sources) != len(wantSources) {
 		t.Fatalf("sources = %d, want %d", len(manifest.Sources), len(wantSources))
 	}
 	for i, want := range wantSources {
 		source := manifest.Sources[i]
-		if source.Commit != "c3d7d5ec69774121f53d2e20d29d09c816795dd7" {
-			t.Fatalf("source %d commit = %q, want pinned Apache APISIX commit", i+1, source.Commit)
+		if source.Commit != want.commit {
+			t.Fatalf("source %d commit = %q, want %q", i+1, source.Commit, want.commit)
 		}
-		if source.File != want.file || source.Tests != want.tests {
-			t.Fatalf("source %d = (%q, %d), want (%q, %d)", i+1, source.File, source.Tests, want.file, want.tests)
+		if source.File != want.file || source.Tests != len(want.testNumbers) ||
+			!slices.Equal(source.TestNumbers, want.testNumbers) || source.RegressionOnly != want.regressionOnly {
+			t.Fatalf("source %d = %#v, want %#v", i+1, source, want)
 		}
 	}
-	if len(manifest.Cases) != 42 {
-		t.Fatalf("top-level cases = %d, want exactly 42", len(manifest.Cases))
+	if len(manifest.Cases) != 36 {
+		t.Fatalf("top-level cases = %d, want exactly 36", len(manifest.Cases))
 	}
 
 	next := make(map[string]int, len(wantSources))
 	for _, source := range wantSources {
-		next[source.file] = 1
+		next[source.file] = 0
 	}
 	seenNames := make(map[string]struct{}, len(manifest.Cases))
 	sourceIndex := 0
@@ -101,16 +118,30 @@ func TestStandaloneManifestMapsOneIndependentCasePerPinnedBlock(t *testing.T) {
 			)
 		}
 		sourceCase++
-		if sourceCase == wantSources[sourceIndex].tests {
+		if sourceCase == len(wantSources[sourceIndex].testNumbers) {
 			sourceIndex++
 			sourceCase = 0
 		}
-		want, ok := next[testCase.Source.File]
+		index, ok := next[testCase.Source.File]
 		if !ok {
 			t.Fatalf("case %d %q has unknown source %q", i+1, testCase.Name, testCase.Source.File)
 		}
-		if len(testCase.Source.Tests) != 1 || testCase.Source.Tests[0] != want {
-			t.Errorf("case %d %q source tests = %v, want [%d]", i+1, testCase.Name, testCase.Source.Tests, want)
+		wantIndex := sourceIndex
+		if sourceCase == 0 {
+			wantIndex--
+		}
+		want := wantSources[wantIndex]
+		if index >= len(want.testNumbers) {
+			t.Fatalf("case %d %q exceeds selected labels for %s", i+1, testCase.Name, testCase.Source.File)
+		}
+		if len(testCase.Source.Tests) != 1 || testCase.Source.Tests[0] != want.testNumbers[index] {
+			t.Errorf(
+				"case %d %q source tests = %v, want [%d]",
+				i+1,
+				testCase.Name,
+				testCase.Source.Tests,
+				want.testNumbers[index],
+			)
 		}
 		next[testCase.Source.File]++
 		lowerName := strings.ToLower(testCase.Name)
@@ -159,8 +190,8 @@ func TestStandaloneManifestMapsOneIndependentCasePerPinnedBlock(t *testing.T) {
 		}
 	}
 	for _, source := range wantSources {
-		if got := next[source.file] - 1; got != source.tests {
-			t.Fatalf("%s mapped through block %d, want %d", source.file, got, source.tests)
+		if got := next[source.file]; got != len(source.testNumbers) {
+			t.Fatalf("%s mapped through %d selected blocks, want %d", source.file, got, len(source.testNumbers))
 		}
 	}
 }

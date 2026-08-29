@@ -71,6 +71,71 @@ func TestSchemaValidatesOfficialConfig(t *testing.T) {
 	}
 }
 
+func TestAPISIX317MQTTConnectMatrix(t *testing.T) {
+	tests := []struct {
+		name       string
+		packet     []byte
+		level      int
+		wantID     string
+		wantDialID string
+		wantErr    error
+	}{
+		{
+			name:    "invalid packet header",
+			packet:  []byte("mmm"),
+			level:   4,
+			wantErr: ErrMalformedConnect,
+		},
+		{
+			name:       "MQTT 3.1.1 client ID",
+			packet:     []byte("\x10\x0f\x00\x04MQTT\x04\x02\x00\x3c\x00\x03foo"),
+			level:      4,
+			wantID:     "foo",
+			wantDialID: "foo",
+		},
+		{
+			name:       "MQTT 3.1.1 empty client ID",
+			packet:     []byte("\x10\x0c\x00\x04MQTT\x04\x02\x00\x3c\x00\x00"),
+			level:      4,
+			wantDialID: "192.0.2.10:1883",
+		},
+		{
+			name:       "MQTT 5 empty properties and client ID",
+			packet:     []byte("\x10\x0d\x00\x04MQTT\x05\x02\x00\x3c\x00\x00\x00"),
+			level:      5,
+			wantDialID: "192.0.2.10:1883",
+		},
+		{
+			name:       "MQTT 5 session-expiry property and client ID",
+			packet:     []byte("\x10\x1b\x00\x04MQTT\x05\x02\x00\x3c\x05\x11\x00\x00\x0e\x10\x00\x09clint-111"),
+			level:      5,
+			wantID:     "clint-111",
+			wantDialID: "clint-111",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			info, _, err := decodeConnect(bytes.NewReader(tt.packet), "MQTT", tt.level)
+			if tt.wantErr != nil {
+				if !errors.Is(err, tt.wantErr) {
+					t.Fatalf("decodeConnect() error = %v, want %v", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("decodeConnect() error = %v", err)
+			}
+			if info.ClientID != tt.wantID {
+				t.Fatalf("client ID = %q, want %q", info.ClientID, tt.wantID)
+			}
+			if got := ClientIDOrPeer(info, "192.0.2.10:1883"); got != tt.wantDialID {
+				t.Fatalf("ClientIDOrPeer() = %q, want %q", got, tt.wantDialID)
+			}
+		})
+	}
+}
+
 func TestDecodeConnectExtractsClientIDAndPreservesPacketLength(t *testing.T) {
 	packet := mqttConnectPacket(4, 0x02, "client-1", nil, nil)
 	packet = append(packet, []byte("next-packet")...)

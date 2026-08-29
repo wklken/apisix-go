@@ -250,6 +250,12 @@ func (p *Plugin) PostInit() error {
 	if _, err := p.MetadataView().Decode(name, &metadata); err != nil {
 		return fmt.Errorf("loki-logger metadata decode failed: %w", err)
 	}
+	for _, endpoint := range p.config.EndpointAddrs {
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(endpoint)), "http://") {
+			logger.Warn("Using loki-logger endpoint_addrs with no TLS is a security risk")
+			break
+		}
+	}
 	if err := base.PrepareExprRegexps(
 		p.config.IncludeReqBodyExpr, p.config.IncludeRespBodyExpr,
 	); err != nil {
@@ -414,6 +420,7 @@ func (p *Plugin) RunLogPhase(snapshot base.LogSnapshot) error {
 	var fields map[string]any
 	if len(p.LogFormat) > 0 {
 		fields = base.GetFieldsFromSnapshot(snapshot, p.LogFormat)
+		base.ApplySnapshotMatchedRouteFields(fields, snapshot, p.RouteID)
 	} else {
 		fields = lokiSnapshotDefaultFields(snapshot, requestStart)
 	}
@@ -536,6 +543,7 @@ func (p *Plugin) logFields(
 	var fields map[string]any
 	if len(p.LogFormat) > 0 {
 		fields = apisixlog.GetFields(r, p.LogFormat)
+		base.ApplyRequestMatchedRouteFields(fields, r, p.RouteID)
 	} else {
 		fields = p.defaultLogFields(r, responseHeaders, status, responseSize, requestStart)
 	}

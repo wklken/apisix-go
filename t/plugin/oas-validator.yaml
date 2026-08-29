@@ -1,11 +1,11 @@
 sources:
   - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
     file: t/plugin/oas-validator.t
     tests: 32
     test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34]
-  - {repository: https://github.com/apache/apisix, commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7, file: t/plugin/oas-validator2.t, tests: 55}
-  - {repository: https://github.com/apache/apisix, commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7, file: t/plugin/oas-validator3.t, tests: 23}
+  - {repository: https://github.com/apache/apisix, commit: 9ef2ecab67f652d38365049613610ef649bb4ad0, file: t/plugin/oas-validator2.t, tests: 55}
+  - {repository: https://github.com/apache/apisix, commit: 9ef2ecab67f652d38365049613610ef649bb4ad0, file: t/plugin/oas-validator3.t, tests: 23}
 
 cases:
   - name: invalid-inline-openapi-json

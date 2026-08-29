@@ -297,13 +297,15 @@ func TestHandlerRejectsInvalidRAGRequestsWithSourceDiagnostics(t *testing.T) {
 	})
 
 	tests := []struct {
-		name string
-		body string
-		want string
+		name        string
+		body        string
+		want        string
+		contentType string
 	}{
 		{
-			name: "empty body",
-			want: "failed to get request body: request body is empty",
+			name:        "empty body",
+			want:        "{\"message\":\"could not get body: request body is empty\"}\n",
+			contentType: "text/plain; charset=utf-8",
 		},
 		{
 			name: "missing ai_rag",
@@ -336,6 +338,11 @@ func TestHandlerRejectsInvalidRAGRequestsWithSourceDiagnostics(t *testing.T) {
 			}
 			if got := rr.Body.String(); got != test.want {
 				t.Fatalf("response body = %q, want %q", got, test.want)
+			}
+			if test.contentType != "" {
+				if got := rr.Header().Get("Content-Type"); got != test.contentType {
+					t.Fatalf("Content-Type = %q, want %q", got, test.contentType)
+				}
 			}
 		})
 	}

@@ -37,6 +37,50 @@ type splunkScopedSecretCall struct {
 	Raw   string
 }
 
+func TestSchemaMatchesAPISIX317Matrix(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		config map[string]any
+		valid  bool
+	}{
+		{name: "full", config: map[string]any{
+			"endpoint": map[string]any{
+				"uri": "http://127.0.0.1:18088/services/collector", "token": "token",
+				"channel": "channel", "timeout": 1, "keepalive_timeout": 60000,
+			},
+			"max_retry_count": 0, "retry_delay": 1, "buffer_duration": 1,
+			"inactive_timeout": 1, "batch_max_size": 1,
+		}, valid: true},
+		{name: "minimal", config: map[string]any{"endpoint": map[string]any{
+			"uri": "http://127.0.0.1:18088/services/collector", "token": "token",
+		}}, valid: true},
+		{name: "missing uri", config: map[string]any{"endpoint": map[string]any{"token": "token"}}},
+		{name: "missing token", config: map[string]any{"endpoint": map[string]any{
+			"uri": "http://127.0.0.1:18088/services/collector",
+		}}},
+		{name: "invalid uri", config: map[string]any{"endpoint": map[string]any{
+			"uri": "127.0.0.1:18088/services/collector", "token": "token",
+		}}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := util.Validate(test.config, p.GetSchema())
+			if test.valid && err != nil {
+				t.Fatalf("valid APISIX 3.17 configuration rejected: %v", err)
+			}
+			if !test.valid && err == nil {
+				t.Fatal("invalid APISIX 3.17 configuration accepted")
+			}
+		})
+	}
+}
+
 type splunkScopedSecretBroker struct {
 	mu     sync.Mutex
 	values map[string]string
@@ -1145,9 +1189,19 @@ func TestSendBatchPostsConcatenatedSplunkHECEvents(t *testing.T) {
 		if !strings.Contains(body, `"path":"/a"`) || !strings.Contains(body, `"path":"/b"`) {
 			t.Fatalf("body = %q, want both Splunk events", body)
 		}
-		lines := strings.Split(strings.TrimSuffix(body, "\n"), "\n")
-		if len(lines) != 2 || !strings.HasPrefix(body, "{") || !strings.HasSuffix(body, "\n") {
-			t.Fatalf("body = %q, want two newline-separated Splunk HEC events", body)
+		if strings.Contains(body, "\n") {
+			t.Fatalf("body = %q, want APISIX 3.17 concatenated events without delimiters", body)
+		}
+		decoder := json.NewDecoder(strings.NewReader(body))
+		for index := range 2 {
+			var event map[string]any
+			if err := decoder.Decode(&event); err != nil {
+				t.Fatalf("decode event %d: %v", index, err)
+			}
+		}
+		var extra map[string]any
+		if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+			t.Fatalf("decode trailing event = %v, want EOF", err)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for Splunk HEC batch request")

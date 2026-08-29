@@ -1,8 +1,8 @@
 source:
   repository: https://github.com/apache/apisix
-  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
   file: t/plugin/authz-casdoor.t
-  tests: 14
+  tests: 12
 
 cases:
   - name: schema
@@ -18,8 +18,8 @@ cases:
                 authz-casdoor:
                   callback_url: "{{APISIX_URL}}/anything/callback"
                   endpoint_addr: "{{FIXTURE.casdoor.URL}}"
-                  client_id: client-a
-                  client_secret: secret-a
+                  client_id: 7ceb9b7fda4a9061ec1c
+                  client_secret: 3416238e1edf915eac08b8fe345b2b95cdba7e04
         fixtures:
           - &unused_casdoor
             name: casdoor
@@ -36,7 +36,7 @@ cases:
               status: 302
               headers:
                 Location:
-                  matches: '^http://127\.0\.0\.1:[0-9]+/login/oauth/authorize\?.*client_id=client-a.*$'
+                  matches: '^http://127\.0\.0\.1:[0-9]+/login/oauth/authorize\?.*client_id=7ceb9b7fda4a9061ec1c.*$'
       - name: callback-query-rejected
         config:
           routes:
@@ -51,9 +51,9 @@ cases:
         input:
           path: /anything/d
         output: &schema_rejection
-          status: 404
+          status: 503
           logs:
-            matches: 'build route authz-casdoor-.*fail:.*authz-casdoor'
+            matches: 'worker generation preparation failed'
       - name: endpoint-trailing-slash-rejected
         config:
           routes:
@@ -306,15 +306,6 @@ cases:
           path: /anything/callback?code=aaa&state={{CAPTURE.state}}
         output:
           status: 302
-    after_shutdown:
-      - path: {equals: '{{WORK_DIR}}/apisix-go-store.db'}
-        bbolt_json:
-          bucket: routes
-          key: authz-casdoor-encrypted-secret
-          fields:
-            /plugins/authz-casdoor/client_secret: YUfqAO0kPXjZIoAbPSuryCkUDksEmwSq08UDTIUWolN6KQwEUrh72TazePueo4/S
-          forbidden_matches: [3416238e1edf915eac08b8fe345b2b95cdba7e04]
-
   - name: session-cookie-scoped-per-client-id
     source:
       tests: [11, 12]
@@ -327,7 +318,7 @@ cases:
               callback_url: "{{APISIX_URL}}/low/callback"
               endpoint_addr: "{{FIXTURE.casdoor.URL}}"
               client_id: low-client
-              client_secret: low-secret
+              client_secret: low-secret-0123456789abcdef0123456789
           upstream: *primary_upstream
         - id: authz-casdoor-high
           uri: /high/*
@@ -336,7 +327,7 @@ cases:
               callback_url: "{{APISIX_URL}}/high/callback"
               endpoint_addr: "{{FIXTURE.casdoor.URL}}"
               client_id: high-client
-              client_secret: high-secret
+              client_secret: high-secret-0123456789abcdef0123456789
           upstream: *primary_upstream
     fixtures:
       - name: casdoor
@@ -344,7 +335,7 @@ cases:
         expect:
           - method: POST
             body:
-              matches: 'client_id=low-client.*client_secret=low-secret.*code=aaa'
+              matches: 'client_id=low-client.*client_secret=low-secret-0123456789abcdef0123456789.*code=aaa'
         respond:
           - *valid_token
       - name: primary
@@ -383,7 +374,7 @@ cases:
 
   - name: session-expiry
     source:
-      tests: [13, 14]
+      local_reason: post-target Casdoor session-expiry regression; absent from the APISIX 3.17 compatibility commit
     config:
       routes:
         - id: authz-casdoor-short-expiry

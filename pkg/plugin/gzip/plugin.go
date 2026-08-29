@@ -201,7 +201,10 @@ func (p *Plugin) Config() any {
 // the selected wrapper is constructed.
 func (p *Plugin) RegisterCompressionOffers(r *http.Request, _ *compression.State) []compression.Offer {
 	eligible := p.requestEligible(r)
-	return []compression.Offer{{Coding: compression.Gzip, Rank: 995, Eligible: eligible}}
+	return []compression.Offer{{
+		Coding: compression.Gzip, Rank: 995,
+		Vary: *p.config.Vary, Eligible: eligible,
+	}}
 }
 
 func (p *Plugin) WrapCompression(
@@ -243,7 +246,10 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			return p.responseEligible(meta)
 		}
 		r, state := compression.Register(r,
-			compression.Offer{Coding: compression.Gzip, Rank: 995, Eligible: eligible},
+			compression.Offer{
+				Coding: compression.Gzip, Rank: 995,
+				Vary: *p.config.Vary, Eligible: eligible,
+			},
 		)
 		mcw := &maybeCompressResponseWriter{
 			ResponseWriter: w,

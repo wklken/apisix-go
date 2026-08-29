@@ -12,6 +12,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/ai_common"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_protocols"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 type Plugin struct {
@@ -135,11 +136,11 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
 		body, err := base.ReadRequestBody(r)
 		if err != nil {
-			writePlainResponse(w, http.StatusBadRequest, "failed to get request body: "+err.Error())
+			writeRequestBodyError(w, "could not get body: "+err.Error())
 			return
 		}
 		if len(bytes.TrimSpace(body)) == 0 {
-			writePlainResponse(w, http.StatusBadRequest, "failed to get request body: request body is empty")
+			writeRequestBodyError(w, "could not get body: request body is empty")
 			return
 		}
 
@@ -343,6 +344,12 @@ func appendSearchResult(r *http.Request, body map[string]any, searchResult strin
 func writePlainResponse(w http.ResponseWriter, status int, body string) {
 	w.WriteHeader(status)
 	_, _ = io.WriteString(w, body)
+}
+
+func writeRequestBodyError(w http.ResponseWriter, message string) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(http.StatusBadRequest)
+	_, _ = io.WriteString(w, util.BuildMessageResponse(message)+"\n")
 }
 
 func (p *Plugin) transport() http.RoundTripper {

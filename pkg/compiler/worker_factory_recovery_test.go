@@ -135,7 +135,7 @@ func TestWorkerCompilerFactoryPrepareRecoveryCompilesSystemRouteHTTPSnapshot(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	if factory.registry.Len() != 3 || prepared.ConsumerLookup() == nil ||
+	if factory.registry.Len() != 4 || prepared.ConsumerLookup() == nil ||
 		prepared.PublicationSet().DesiredRevision != revisions.Desired || prepared.HTTP() == nil ||
 		prepared.HTTP().Revision() != revisions.HTTP {
 		t.Fatalf("system-route recovery returned unusable owner/resource count %d", factory.registry.Len())
@@ -258,8 +258,11 @@ func TestWorkerCompilerFactoryPrepareRecoveryDoesNotAliasCandidateResources(t *t
 		t.Fatalf("candidate/recovery instance attempts = %x/%x, want %x/%x",
 			candidateBinding.InstanceKey.Attempt, recoveryBinding.InstanceKey.Attempt, candidateID, recoveryID)
 	}
-	if got := factory.registry.Len(); got != 4 {
-		t.Fatalf("candidate/recovery compiled resources = %d, want 4 isolated resources", got)
+	if got := factory.registry.Len(); got != 5 {
+		t.Fatalf(
+			"candidate/recovery compiled resources = %d, want 4 isolated resources plus one shared api-breaker state",
+			got,
+		)
 	}
 	if err := recovery.Close(context.Background()); err != nil {
 		t.Fatal(err)

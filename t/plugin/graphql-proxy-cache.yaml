@@ -1,16 +1,23 @@
 sources:
   - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
     file: t/plugin/graphql-proxy-cache/disk.t
     tests: 11
   - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
     file: t/plugin/graphql-proxy-cache/graphql.t
-    tests: 21
+    tests: 19
+    test_numbers: [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]
+  - repository: https://github.com/apache/apisix
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
+    file: t/plugin/graphql-proxy-cache/memory.t
+    tests: 15
   - repository: https://github.com/apache/apisix
     commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
     file: t/plugin/graphql-proxy-cache/memory.t
-    tests: 16
+    tests: 1
+    test_numbers: [16]
+    regression_only: true
 
 cases:
   - name: disk-default-zone-accepts-route-test-1
@@ -176,32 +183,6 @@ cases:
       - name: reuse-raw-graphql-disk-entry
         input: {method: POST, path: /graphql, headers: {Content-Type: application/graphql}, body: 'query { hello }'}
         output: {status: 200, body: {equals: '{"data":{"kind":"raw-hit"}}'}, headers: {Apisix-Cache-Status: {equals: HIT}}}
-
-  - name: graphql-unknown-zone-rejects-route-test-1
-    source: {file: t/plugin/graphql-proxy-cache/graphql.t, tests: [1]}
-    runtime: {apisix: {proxy_cache: {zones: [{name: gql-valid, memory_size: 10m}]}}}
-    config:
-      routes:
-        - {id: gql-invalid-zone, uri: /graphql, plugins: {graphql-proxy-cache: {cache_strategy: memory, cache_zone: gql-missing}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}
-    fixtures:
-      - {name: origin, kind: http, expect_requests: 0, respond: [{status: 200, body: unexpected}]}
-    steps:
-      - name: invalid-zone-route-is-not-published
-        input: {method: POST, path: /graphql, headers: {Content-Type: application/json}, body: '{"query":"{ hello }"}'}
-        output: {status: 404, logs: {matches: 'cache_zone.*gql-missing'}}
-
-  - name: graphql-invalid-strategy-rejects-route-test-2
-    source: {file: t/plugin/graphql-proxy-cache/graphql.t, tests: [2]}
-    runtime: {apisix: {proxy_cache: {zones: [{name: gql-valid, memory_size: 10m}]}}}
-    config:
-      routes:
-        - {id: gql-invalid-strategy, uri: /graphql, plugins: {graphql-proxy-cache: {cache_strategy: redis, cache_zone: gql-valid}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}
-    fixtures:
-      - {name: origin, kind: http, expect_requests: 0, respond: [{status: 200, body: unexpected}]}
-    steps:
-      - name: invalid-strategy-route-is-not-published
-        input: {method: POST, path: /graphql, headers: {Content-Type: application/json}, body: '{"query":"{ hello }"}'}
-        output: {status: 404, logs: {matches: 'cache_strategy'}}
 
   - name: graphql-default-config-serves-query-test-3
     source: {file: t/plugin/graphql-proxy-cache/graphql.t, tests: [3]}

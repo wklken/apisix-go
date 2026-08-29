@@ -16,25 +16,28 @@ import (
 	"sync"
 	"time"
 
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/secret"
-	"github.com/wklken/apisix-go/pkg/util"
 )
 
 type Plugin struct {
 	base.BasePlugin
 	config       Config
 	randomReader io.Reader
+	now          func() time.Time
 	secureCookie bool
 
 	secretMu  sync.RWMutex
 	key       *secret.Value
 	legacyKey *string
 }
+
+type admittedResponseContextKey struct{}
 
 const (
 	// version  = "0.1"
@@ -74,6 +77,10 @@ type Config struct {
 	safeMethods map[string]struct{}
 }
 
+func (c Config) DescribeBindingPhases() (base.BindingPhaseDescriptor, error) {
+	return base.BindingPhaseDescriptor{RequestStage: "access", StreamingHeader: true}, nil
+}
+
 func (p *Plugin) Init() error {
 	p.Name = name
 	p.Priority = priority
@@ -91,6 +98,9 @@ func (p *Plugin) PostInit() error {
 	}
 	if p.randomReader == nil {
 		p.randomReader = crand.Reader
+	}
+	if p.now == nil {
+		p.now = time.Now
 	}
 	if effective := p.StaticConfig(); effective != nil {
 		p.secureCookie = effective.Profiles.Security == config.SecurityStrict
@@ -180,66 +190,156 @@ func (p *Plugin) Config() any {
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
-	fn := func(w http.ResponseWriter, r *http.Request) {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		err := p.useKey(func(key string) error {
-			if _, ok := p.config.safeMethods[r.Method]; !ok {
-				// check csrf token
-				headerToken := r.Header.Get(p.config.Name)
-				if headerToken == "" {
-					// token not found
-					writeCSRFError(w, "no csrf token in headers")
-					return errCSRFResponseWritten
-				}
-				// read token from cookie
-				cookie, err := r.Cookie(p.config.Name)
-				if err != nil {
-					// 如果 Cookie 不存在
-					writeCSRFError(w, "no csrf cookie")
-					return errCSRFResponseWritten
-				}
-				cookieToken := cookie.Value
-
-				if headerToken != cookieToken {
-					// token not match
-					writeCSRFError(w, "csrf token mismatch")
-					return errCSRFResponseWritten
-				}
-
-				// check token expires
-				ok := checkCSRFToken(cookieToken, key, p.expires())
-				if !ok {
-					writeCSRFError(w, "Failed to verify the csrf token signature")
-					return errCSRFResponseWritten
-				}
+			recorder := base.GetOrCreateTransformResponseWriter(r)
+			result := p.runRequestPhaseWithKey(recorder, r, key)
+			request := result.Request
+			if request == nil {
+				request = r
 			}
-
-			// add csrf token into cookie
-			csrfToken, err := genCSRFToken(key, p.randomReader)
-			if err != nil {
-				writeCSRFErrorStatus(w, http.StatusInternalServerError, "failed to generate csrf token")
-				return errCSRFResponseWritten
+			if result.Decision == base.RequestContinue {
+				next.ServeHTTP(recorder, request)
 			}
-			http.SetCookie(w, &http.Cookie{
-				Name:     p.config.Name,
-				Value:    csrfToken,
-				Path:     "/",
-				SameSite: http.SameSiteLaxMode,
-				Secure:   p.secureCookie,
-				Expires:  time.Now().Add(time.Duration(p.expires()) * time.Second),
-			})
-
-			next.ServeHTTP(w, r)
+			if err := p.issueCSRFCookieWithKey(recorder.Header(), key, p.now()); err != nil {
+				return err
+			}
+			recorder.Commit(w)
 			return nil
 		})
-		if err == nil || errors.Is(err, errCSRFResponseWritten) {
+		if err == nil {
 			return
 		}
-		writeCSRFErrorStatus(w, http.StatusInternalServerError, "csrf key unavailable")
-	}
-	return http.HandlerFunc(fn)
+		if errors.Is(err, secret.ErrCredentialUnavailable) {
+			writeCSRFErrorStatus(w, http.StatusInternalServerError, "csrf key unavailable")
+			return
+		}
+		writeCSRFErrorStatus(w, http.StatusInternalServerError, "failed to generate csrf token")
+	})
 }
 
-var errCSRFResponseWritten = errors.New("csrf response written")
+func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+	if _, ok := p.config.safeMethods[r.Method]; ok {
+		return base.ContinueRequest(markResponseAdmitted(r))
+	}
+
+	result := base.StopRequest(r)
+	err := p.useKey(func(key string) error {
+		result = p.runRequestPhaseWithKey(w, r, key)
+		return nil
+	})
+	if err != nil {
+		writeCSRFErrorStatus(w, http.StatusInternalServerError, "csrf key unavailable")
+		return base.StopRequest(r)
+	}
+	return result
+}
+
+func (p *Plugin) runRequestPhaseWithKey(
+	w http.ResponseWriter,
+	r *http.Request,
+	key string,
+) base.RequestPhaseResult {
+	if _, ok := p.config.safeMethods[r.Method]; ok {
+		return base.ContinueRequest(r)
+	}
+	headerToken := r.Header.Get(p.config.Name)
+	if headerToken == "" {
+		writeCSRFError(w, "no csrf token in headers")
+		return base.StopRequest(r)
+	}
+	cookie, err := r.Cookie(p.config.Name)
+	if err != nil {
+		writeCSRFError(w, "no csrf cookie")
+		return base.StopRequest(r)
+	}
+	if headerToken != cookie.Value {
+		writeCSRFError(w, "csrf token mismatch")
+		return base.StopRequest(r)
+	}
+	if !checkCSRFToken(cookie.Value, key, p.expires()) {
+		writeCSRFError(w, "Failed to verify the csrf token signature")
+		return base.StopRequest(r)
+	}
+	return base.ContinueRequest(markResponseAdmitted(r))
+}
+
+func markResponseAdmitted(r *http.Request) *http.Request {
+	return r.WithContext(context.WithValue(r.Context(), admittedResponseContextKey{}, true))
+}
+
+func responseAdmitted(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	admitted, _ := r.Context().Value(admittedResponseContextKey{}).(bool)
+	return admitted
+}
+
+// SelectResponseMode keeps request-phase denials on the bounded fallback so
+// they can receive the CSRF cookie, while admitted requests add the cookie at
+// streaming header commit without buffering the upstream response body.
+func (*Plugin) SelectResponseMode(r *http.Request) base.RequestResponseMode {
+	if responseAdmitted(r) {
+		return base.RequestResponseModeStreaming
+	}
+	return base.RequestResponseModeBounded
+}
+
+func (p *Plugin) RunStreamingHeaderFilter(
+	r *http.Request,
+	state *base.StreamingResponseState,
+) error {
+	if state == nil || !responseAdmitted(r) {
+		return nil
+	}
+	if state.Header == nil {
+		state.Header = make(http.Header)
+	}
+	return p.issueCSRFCookie(state.Header)
+}
+
+func (p *Plugin) RunBufferedBodyFilter(r *http.Request, state *base.ResponseState) error {
+	if state == nil || responseAdmitted(r) {
+		return nil
+	}
+	if state.Header == nil {
+		state.Header = make(http.Header)
+	}
+	return p.issueCSRFCookie(state.Header)
+}
+
+func (p *Plugin) AppliesToResponseSource(source apisixctx.ResponseSource) bool {
+	switch source {
+	case apisixctx.ResponseSourceUpstream, apisixctx.ResponseSourceAPISIX,
+		apisixctx.ResponseSourceEarlyStop:
+		return true
+	default:
+		return false
+	}
+}
+
+func (p *Plugin) issueCSRFCookie(header http.Header) error {
+	return p.useKey(func(key string) error {
+		return p.issueCSRFCookieWithKey(header, key, p.now())
+	})
+}
+
+func (p *Plugin) issueCSRFCookieWithKey(header http.Header, key string, issuedAt time.Time) error {
+	value, err := genCSRFTokenAt(key, p.randomReader, issuedAt.Unix())
+	if err != nil {
+		return err
+	}
+	header.Add("Set-Cookie", (&http.Cookie{
+		Name:     p.config.Name,
+		Value:    value,
+		Path:     "/",
+		SameSite: http.SameSiteLaxMode,
+		Secure:   p.secureCookie,
+		Expires:  issuedAt.Add(time.Duration(p.expires()) * time.Second),
+	}).String())
+	return nil
+}
 
 func (p *Plugin) useKey(use func(string) error) error {
 	if use == nil {
@@ -285,7 +385,10 @@ func writeCSRFError(w http.ResponseWriter, message string) {
 }
 
 func writeCSRFErrorStatus(w http.ResponseWriter, status int, message string) {
-	_ = util.WriteJSON(w, status, map[string]string{"error_msg": message})
+	body, _ := json.Marshal(map[string]string{"error_msg": message})
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(status)
+	_, _ = w.Write(append(body, '\n'))
 }
 
 type csrfToken struct {
@@ -337,11 +440,14 @@ func constantTimeEqual(left, right string) bool {
 
 // genCSRFToken 生成一个 CSRF Token，并以 Base64 编码的 JSON 形式返回
 func genCSRFToken(key string, reader io.Reader) (string, error) {
+	return genCSRFTokenAt(key, reader, time.Now().Unix())
+}
+
+func genCSRFTokenAt(key string, reader io.Reader, timestamp int64) (string, error) {
 	random, err := secureRandomFloat64(reader)
 	if err != nil {
 		return "", fmt.Errorf("generate csrf token random value: %w", err)
 	}
-	timestamp := time.Now().Unix()
 
 	sign := genSign(random, timestamp, key)
 

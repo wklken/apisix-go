@@ -15,6 +15,7 @@ import (
 	prometheusplugin "github.com/wklken/apisix-go/pkg/plugin/prometheus"
 	"github.com/wklken/apisix-go/pkg/plugin/public_api"
 	"github.com/wklken/apisix-go/pkg/plugin/server_info"
+	"github.com/wklken/apisix-go/pkg/runtime"
 )
 
 var registerPurgeMethodOnce sync.Once
@@ -30,14 +31,23 @@ func registerExtraRoutes(mux *chi.Mux, staticConfig *config.Config, registries .
 	if len(registries) > 0 && registries[0] != nil {
 		registry = registries[0]
 	}
-	_ = registerExtraRoutesStrict(mux, staticConfig, registry, graphql_proxy_cache.NewRegistry())
+	_ = registerExtraRoutesStrict(
+		mux,
+		staticConfig,
+		runtime.MetadataView{},
+		registry,
+		graphql_proxy_cache.NewRegistry(),
+		nil,
+	)
 }
 
 func registerExtraRoutesStrict(
 	mux *chi.Mux,
 	staticConfig *config.Config,
+	metadata runtime.MetadataView,
 	registry *public_api.Registry,
 	graphqlPurgeRegistry *graphql_proxy_cache.Registry,
+	serverInfoView *server_info.View,
 ) error {
 	if registry == nil {
 		registry = public_api.NewRegistry()
@@ -49,12 +59,17 @@ func registerExtraRoutesStrict(
 		registry.Register("GET", "/apisix/status", handler)
 	}
 	if pluginEnabled(staticConfig, "server-info") {
-		handler := server_info.InfoHandler(staticConfig.Apisix.ID)
-		mux.Get("/v1/server_info", handler)
+		if serverInfoView == nil {
+			serverInfoView = server_info.NewView(staticConfig.Apisix.ID)
+		}
+		handler := serverInfoView.Handler()
 		registry.Register("GET", "/v1/server_info", handler)
 	}
 	if pluginEnabled(staticConfig, "batch-requests") {
-		handler := batch_requests.NewHandler(mux)
+		handler, err := batch_requests.NewHandlerFromMetadata(mux, metadata)
+		if err != nil {
+			return fmt.Errorf("configure batch-requests endpoint: %w", err)
+		}
 		uri := batchRequestsURI(staticConfig)
 		mux.Method("POST", uri, handler)
 		registry.Register("POST", batch_requests.DefaultURI, handler)

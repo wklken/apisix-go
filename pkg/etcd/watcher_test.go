@@ -458,6 +458,54 @@ func TestConfigClientSameCursorReplayUsesCommittedAcknowledgement(t *testing.T) 
 	}
 }
 
+func TestConfigClientCommittedSnapshotReplayUsesAcknowledgedDomains(t *testing.T) {
+	for name, committedReplay := range map[string]bool{
+		"committed replay":                 true,
+		"unmarked partial acknowledgement": false,
+	} {
+		t.Run(name, func(t *testing.T) {
+			applier := &recordingDesiredApplier{apply: func(
+				_ context.Context,
+				batch generation.DesiredBatch,
+			) (generation.Acknowledgement, error) {
+				return generation.Acknowledgement{
+					Cursor:          batch.Cursor,
+					Revisions:       generation.RevisionSet{Desired: 4, HTTP: 4, Stream: 2},
+					CommittedReplay: committedReplay,
+					Decisions: map[generation.Domain][]generation.ResourceDecision{
+						generation.DomainHTTP: {{
+							Key:         generation.ResourceKey{Kind: "routes", ID: "current"},
+							Disposition: generation.DispositionPublished,
+							Code:        "committed-http-publication",
+						}},
+					},
+				}, nil
+			}}
+			client := newEtcdTestConfigClient(applier)
+			err := client.applySnapshot(context.Background(), &clientv3.GetResponse{
+				Header: &etcdserverpb.ResponseHeader{ClusterId: 1, Revision: 12},
+				Kvs: []*mvccpb.KeyValue{{
+					Key: []byte("/apisix/routes/current"), Value: []byte(`{"id":"current"}`), ModRevision: 10,
+				}},
+			})
+			if !committedReplay {
+				if err == nil {
+					t.Fatal("applySnapshot() error = nil, want partial acknowledgement rejection")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("applySnapshot() committed replay: %v", err)
+			}
+			if client.revisions != (generation.RevisionSet{Desired: 4, HTTP: 4, Stream: 2}) ||
+				!slices.Equal(client.domains, []generation.Domain{generation.DomainHTTP}) ||
+				client.lastRevision != 12 {
+				t.Fatalf("committed replay state = %+v", client.snapshotAcknowledgedState())
+			}
+		})
+	}
+}
+
 func TestConfigClientAcknowledgementCommitsFullClosureDecisionsAndQuarantine(t *testing.T) {
 	applier := &recordingDesiredApplier{apply: func(
 		_ context.Context,

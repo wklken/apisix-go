@@ -1,8 +1,12 @@
 package route
 
 import (
-	stdjson "encoding/json"
+	"bufio"
+	"bytes"
+	"encoding/binary"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -768,29 +772,11 @@ func TestJWTAuthRouteChainRejectsMissingToken(t *testing.T) {
 }
 
 func TestChaitinWAFRouteChainAllowsAndBlocks(t *testing.T) {
-	waf := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		decision := map[string]any{"status": http.StatusOK}
-		if r.Header.Get("X-WAF-Decision") == "deny" {
-			decision = map[string]any{"status": http.StatusForbidden, "event_id": "route-event"}
-		}
-		if err := stdjson.NewEncoder(w).Encode(decision); err != nil {
-			t.Errorf("encode WAF decision: %v", err)
-		}
-	}))
-	t.Cleanup(waf.Close)
-
-	wafURL, err := url.Parse(waf.URL)
-	if err != nil {
-		t.Fatalf("parse WAF URL: %v", err)
-	}
-	port, err := strconv.Atoi(wafURL.Port())
-	if err != nil {
-		t.Fatalf("parse WAF port: %v", err)
-	}
+	host, port, fixtureDone := startRouteChaitinT1KFixture(t, 2)
 	config := map[string]any{
 		"mode": "block",
 		"nodes": []any{
-			map[string]any{"host": wafURL.Hostname(), "port": port},
+			map[string]any{"host": host, "port": port},
 		},
 	}
 	handler := buildRoutePluginChainWithFallback(
@@ -817,6 +803,106 @@ func TestChaitinWAFRouteChainAllowsAndBlocks(t *testing.T) {
 	if blockedRes.Code != http.StatusForbidden {
 		t.Fatalf("blocked status = %d, want %d", blockedRes.Code, http.StatusForbidden)
 	}
+	select {
+	case fixtureErr := <-fixtureDone:
+		if fixtureErr != nil {
+			t.Fatalf("T1K fixture: %v", fixtureErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("T1K fixture did not process both route requests")
+	}
+}
+
+func startRouteChaitinT1KFixture(t *testing.T, requests int) (string, int, <-chan error) {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen for T1K route fixture: %v", err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	host, portText, err := net.SplitHostPort(listener.Addr().String())
+	if err != nil {
+		t.Fatalf("split T1K route fixture address: %v", err)
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil {
+		t.Fatalf("parse T1K route fixture port: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		for range requests {
+			connection, acceptErr := listener.Accept()
+			if acceptErr != nil {
+				done <- fmt.Errorf("accept T1K connection: %w", acceptErr)
+				return
+			}
+			if serveErr := serveRouteChaitinT1KConnection(connection); serveErr != nil {
+				done <- serveErr
+				return
+			}
+		}
+		done <- nil
+	}()
+	return host, port, done
+}
+
+func serveRouteChaitinT1KConnection(connection net.Conn) error {
+	defer func() { _ = connection.Close() }()
+	if err := connection.SetDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		return fmt.Errorf("set T1K fixture deadline: %w", err)
+	}
+
+	var requestHead []byte
+	for frameIndex := 0; ; frameIndex++ {
+		var header [5]byte
+		if _, err := io.ReadFull(connection, header[:]); err != nil {
+			return fmt.Errorf("read T1K request header: %w", err)
+		}
+		length := binary.LittleEndian.Uint32(header[1:])
+		if length > 1<<20 {
+			return fmt.Errorf("T1K request frame length %d exceeds fixture limit", length)
+		}
+		payload := make([]byte, int(length))
+		if _, err := io.ReadFull(connection, payload); err != nil {
+			return fmt.Errorf("read T1K request payload: %w", err)
+		}
+		if frameIndex == 0 {
+			if header[0] != 0x41 {
+				return fmt.Errorf("first T1K request tag = 0x%02x, want HEAD", header[0])
+			}
+			requestHead = payload
+		}
+		if header[0]&0x80 != 0 {
+			break
+		}
+	}
+
+	request, err := http.ReadRequest(bufio.NewReader(bytes.NewReader(requestHead)))
+	if err != nil {
+		return fmt.Errorf("parse embedded T1K request: %w", err)
+	}
+	_ = request.Body.Close()
+	if request.Header.Get("X-WAF-Decision") != "deny" {
+		return writeRouteChaitinT1KFrame(connection, 0xc1, []byte("."))
+	}
+	if err := writeRouteChaitinT1KFrame(connection, 0x41, []byte("?")); err != nil {
+		return err
+	}
+	if err := writeRouteChaitinT1KFrame(connection, 0x02, []byte("403")); err != nil {
+		return err
+	}
+	return writeRouteChaitinT1KFrame(connection, 0xa4, []byte("<!-- event_id: routeevent -->"))
+}
+
+func writeRouteChaitinT1KFrame(writer io.Writer, tag byte, payload []byte) error {
+	wire := make([]byte, 5+len(payload))
+	wire[0] = tag
+	binary.LittleEndian.PutUint32(wire[1:5], uint32(len(payload)))
+	copy(wire[5:], payload)
+	if _, err := io.Copy(writer, bytes.NewReader(wire)); err != nil {
+		return fmt.Errorf("write T1K response frame: %w", err)
+	}
+	return nil
 }
 
 func TestErrorPageRouteChainRewritesConfiguredMetadata(t *testing.T) {

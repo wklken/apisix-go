@@ -14,6 +14,7 @@ import (
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/config"
+	apisixjson "github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/file_logger"
 	"github.com/wklken/apisix-go/pkg/runtime"
@@ -535,6 +536,113 @@ func TestExplicitZeroMaxKeptPrunesAllHistory(t *testing.T) {
 	}
 }
 
+func TestRotateCustomLogNamesCompressesAndPrunesHistory(t *testing.T) {
+	dir := t.TempDir()
+	access := filepath.Join(dir, "acc1.log")
+	errorLog := filepath.Join(dir, "err1.log")
+	for path, body := range map[string]string{
+		access: "custom access", errorLog: "custom error",
+		filepath.Join(dir, "2020-01-01_00-00-00__acc1.log.tar.gz"): "old access",
+		filepath.Join(dir, "2020-01-01_00-00-00__err1.log.tar.gz"): "old error",
+	} {
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p := newTestPlugin(t, Config{
+		AccessLog: access, ErrorLog: errorLog, EnableAccessLog: new(true),
+		MaxSize: 1, MaxKept: 1, EnableCompression: true,
+	})
+	now := time.Date(2026, 7, 6, 13, 14, 15, 0, time.UTC)
+	if err := p.Rotate(now); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"acc1.log", "err1.log"} {
+		newest := filepath.Join(dir, "2026-07-06_13-14-15__"+name+".tar.gz")
+		if _, err := os.Stat(newest); err != nil {
+			t.Fatalf("new compressed %s history: %v", name, err)
+		}
+		old := filepath.Join(dir, "2020-01-01_00-00-00__"+name+".tar.gz")
+		if _, err := os.Stat(old); !os.IsNotExist(err) {
+			t.Fatalf("old compressed %s history stat = %v, want removed", name, err)
+		}
+	}
+}
+
+func TestRotateCustomNamesWithZeroMaxKeptRetainsCurrentFilesOnly(t *testing.T) {
+	dir := t.TempDir()
+	access := filepath.Join(dir, "acc2.log")
+	errorLog := filepath.Join(dir, "err2.log")
+	for path, body := range map[string]string{access: "access", errorLog: "error"} {
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p := &Plugin{}
+	tasks, owner := newRotationTasks(t, "plugin/test/log-rotate/custom-zero", nil)
+	p.SetDependencies(base.Dependencies{Config: &config.EffectiveConfig{}, Tasks: owner})
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	if err := util.Parse(map[string]any{
+		"access_log": access, "error_log": errorLog, "enable_access_log": true,
+		"max_size": 1, "max_kept": 0,
+	}, p.Config()); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		stopTestRegistry(t, tasks)
+		p.Stop()
+	})
+	if err := p.Rotate(time.Date(2026, 7, 6, 13, 14, 15, 0, time.UTC)); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{access, errorLog} {
+		if info, err := os.Stat(path); err != nil || info.Size() != 0 {
+			t.Fatalf("current %s stat = %+v/%v, want recreated empty file", path, info, err)
+		}
+		rotated := filepath.Join(dir, "2026-07-06_13-14-15__"+filepath.Base(path))
+		if _, err := os.Stat(rotated); !os.IsNotExist(err) {
+			t.Fatalf("rotated %s stat = %v, want max_kept 0 removal", path, err)
+		}
+	}
+}
+
+func TestRotateSkipsAccessLogWhenDisabled(t *testing.T) {
+	dir := t.TempDir()
+	access := filepath.Join(dir, "acc3.log")
+	errorLog := filepath.Join(dir, "error.log")
+	if err := os.WriteFile(access, []byte("disabled access remains"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(errorLog, []byte("error rotates"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p := newTestPlugin(t, Config{
+		AccessLog: access, ErrorLog: errorLog, EnableAccessLog: new(false),
+		MaxSize: 1, MaxKept: 2,
+	})
+	now := time.Date(2026, 7, 6, 13, 14, 15, 0, time.UTC)
+	if err := p.Rotate(now); err != nil {
+		t.Fatal(err)
+	}
+	if body, err := os.ReadFile(access); err != nil || string(body) != "disabled access remains" {
+		t.Fatalf("disabled access log = %q/%v, want unchanged", body, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "2026-07-06_13-14-15__acc3.log")); !os.IsNotExist(err) {
+		t.Fatalf("disabled access history stat = %v, want absent", err)
+	}
+	if body, err := os.ReadFile(
+		filepath.Join(dir, "2026-07-06_13-14-15__error.log"),
+	); err != nil ||
+		string(body) != "error rotates" {
+		t.Fatalf("rotated error log = %q/%v, want original error content", body, err)
+	}
+}
+
 func TestNextRotateTimeAlignsToIntervalBoundary(t *testing.T) {
 	now := time.Date(2026, 7, 6, 13, 14, 15, 0, time.UTC)
 	got := nextRotateTime(now, time.Hour)
@@ -561,5 +669,73 @@ func TestDefaultsMatchOfficialPluginAttr(t *testing.T) {
 	}
 	if p.config.EnableCompression {
 		t.Fatal("enable_compression = true, want false")
+	}
+}
+
+func TestPluginAttrAcceptsEffectiveConfigNumbers(t *testing.T) {
+	tasks := runtime.NewTaskRegistry(context.Background(), nil)
+	owner, err := runtime.NewTaskOwner(tasks, "plugin/test/log-rotate/config-numbers", runtime.TaskPlugin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	effective := &config.EffectiveConfig{}
+	effective.Config.PluginAttr = map[string]map[string]any{name: {
+		"interval": apisixjson.Number("7"),
+		"max_kept": apisixjson.Number("5"),
+		"max_size": apisixjson.Number("11"),
+		"timeout":  apisixjson.Number("13"),
+	}}
+	p := &Plugin{}
+	p.SetDependencies(base.Dependencies{Config: effective, Tasks: owner})
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		stopTestRegistry(t, tasks)
+		p.Stop()
+	})
+	if p.config.Interval != 7 || p.config.MaxKept != 5 ||
+		p.config.MaxSize != 11 || p.config.Timeout != 13 {
+		t.Fatalf("plugin_attr numbers = %+v, want interval/max_kept/max_size/timeout 7/5/11/13", p.config)
+	}
+}
+
+func TestPostInitUsesAPISIXProcessLogSelection(t *testing.T) {
+	tasks := runtime.NewTaskRegistry(context.Background(), nil)
+	owner, err := runtime.NewTaskOwner(tasks, "plugin/test/log-rotate/process-log-selection", runtime.TaskPlugin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	effective := &config.EffectiveConfig{
+		Config: config.Config{NginxConfig: config.NginxConfig{
+			ErrorLog: "logs/err3.log",
+			HTTP: config.NginxHTTP{
+				AccessLog: "logs/acc3.log", EnableAccessLog: false,
+			},
+		}},
+		Provenance: config.Provenance{
+			"nginx_config.http.enable_access_log": {
+				Kind: config.SourceOverrideFile, Origin: "fixture.yaml", Explicit: true,
+			},
+		},
+	}
+	p := &Plugin{}
+	p.SetDependencies(base.Dependencies{Config: effective, Tasks: owner})
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		stopTestRegistry(t, tasks)
+		p.Stop()
+	})
+	if p.config.AccessLog != "logs/acc3.log" || p.config.ErrorLog != "logs/err3.log" ||
+		p.config.EnableAccessLog == nil || *p.config.EnableAccessLog {
+		t.Fatalf("process log selection = %+v, want custom paths with access disabled", p.config)
 	}
 }

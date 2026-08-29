@@ -44,8 +44,8 @@ func (p ProfileSelection) Validate(manifest *capability.Manifest) error {
 	if !ok {
 		return fmt.Errorf("qualification_profile is unsupported")
 	}
-	qualified := manifest.QualifiedPlugins(string(p.Qualification))
-	if !slices.Equal(qualification.RequiredPlugins, qualified) {
+	contractReady := manifest.ContractReadyPlugins(string(p.Qualification))
+	if !slices.Equal(qualification.RequiredPlugins, contractReady) {
 		return fmt.Errorf("qualification_profile %q has unqualified required plugins", p.Qualification)
 	}
 	return nil

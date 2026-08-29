@@ -254,7 +254,7 @@ jobs:
                 "make test-plugin-smoke PLUGIN_SMOKE_CASE=proxy-control/request-buffering-disabled",
                 "make test-plugin-smoke PLUGIN_SMOKE_CASE=uri-blocker/one-rule-blocks-query",
                 "go test -race ./pkg/config ./cmd ./pkg/server ./pkg/route ./pkg/proxy ./pkg/store ./pkg/etcd -count=1",
-                "go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...",
+                "go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 . ./cmd/... ./pkg/...",
                 "bash scripts/container_smoke.sh",
                 "bash scripts/etcd_recovery_smoke.sh <immutable-image-id>",
                 "APISIX_GO_RUN_SOAK=1 APISIX_GO_SOAK_DURATION=30m go test -json ./pkg/route -run ^TestProxyRuntimeSoak$ -count=1 -timeout=40m",

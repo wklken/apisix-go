@@ -16,6 +16,7 @@ import (
 	"github.com/felixge/httpsnoop"
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/capability"
+	appconfig "github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
@@ -81,10 +82,14 @@ const schema = `
       "minimum": 1,
       "default": 3
     },
-    "use_tls": {
-      "type": "boolean",
-      "default": false
-    },
+	"use_tls": {
+	  "type": "boolean",
+	  "default": false
+	},
+	"tls_verify": {
+	  "type": "boolean",
+	  "default": false
+	},
     "access_key": {
       "type": "string",
       "default": ""
@@ -186,6 +191,7 @@ type Config struct {
 	LogFormat      map[string]string `json:"log_format,omitempty"`
 	Timeout        int               `json:"timeout,omitempty"`
 	UseTLS         bool              `json:"use_tls,omitempty"`
+	TLSVerify      *bool             `json:"tls_verify,omitempty"`
 	AccessKey      string            `json:"access_key,omitempty"`
 	SecretKey      string            `json:"secret_key,omitempty"`
 
@@ -271,9 +277,6 @@ func (p *Plugin) MaterializeScopedSecrets(
 	if p.secretsPrepared {
 		return nil
 	}
-	if err := validateRocketMQTLS(p.config.UseTLS); err != nil {
-		return err
-	}
 	if p.config.SecretKey == "" {
 		p.secretsPrepared = true
 		return nil
@@ -304,21 +307,11 @@ func (p *Plugin) MaterializeSecrets() error {
 	if p.secretsPrepared {
 		return nil
 	}
-	if err := validateRocketMQTLS(p.config.UseTLS); err != nil {
-		return err
-	}
 	if p.config.SecretKey == "" {
 		p.secretsPrepared = true
 		return nil
 	}
 	return rocketMQSecretKeyUnavailable()
-}
-
-func validateRocketMQTLS(useTLS bool) error {
-	if useTLS {
-		return fmt.Errorf("%s use_tls is not supported by rocketmq-client-go/v2", name)
-	}
-	return nil
 }
 
 func validateRocketMQSecretKey(value string) error {
@@ -341,9 +334,6 @@ func (p *Plugin) PostInit() error {
 	if p.ready {
 		return nil
 	}
-	if err := validateRocketMQTLS(p.config.UseTLS); err != nil {
-		return err
-	}
 	if err := base.PrepareExprRegexps(
 		p.config.IncludeReqBodyExpr, p.config.IncludeRespBodyExpr,
 	); err != nil {
@@ -358,6 +348,29 @@ func (p *Plugin) PostInit() error {
 	var metadata pluginMetadata
 	if _, err := p.MetadataView().Decode(name, &metadata); err != nil {
 		return fmt.Errorf("rocketmq-logger metadata decode failed: %w", err)
+	}
+	if p.config.TLSVerify == nil {
+		verify := false
+		if effective := p.StaticConfig(); effective != nil &&
+			effective.Profiles.Security == appconfig.SecurityStrict {
+			verify = true
+		}
+		p.config.TLSVerify = &verify
+	}
+	if effective := p.StaticConfig(); effective != nil &&
+		effective.Profiles.Security == appconfig.SecurityStrict {
+		if !p.config.UseTLS {
+			return fmt.Errorf("security_profile strict: rocketmq-logger use_tls must be true")
+		}
+		if !p.config.TLSVerifyValue() {
+			return fmt.Errorf("security_profile strict: rocketmq-logger tls_verify must be true")
+		}
+	}
+	if !p.config.UseTLS {
+		logger.Warn("Keeping use_tls disabled in rocketmq-logger configuration is a security risk")
+	}
+	if !p.config.TLSVerifyValue() {
+		logger.Warn("Keeping tls_verify disabled in rocketmq-logger configuration is a security risk")
 	}
 
 	p.applyDefaults()
@@ -496,7 +509,12 @@ func (p *Plugin) withPrivateConfigLocked(use func(*Config) error) error {
 	config := Config{
 		NameServerList: append([]string(nil), p.config.NameServerList...),
 		Timeout:        p.config.Timeout,
+		UseTLS:         p.config.UseTLS,
 		AccessKey:      p.config.AccessKey,
+	}
+	if p.config.TLSVerify != nil {
+		verify := *p.config.TLSVerify
+		config.TLSVerify = &verify
 	}
 	defer func() { config = Config{} }()
 	if p.secretKeySet {
@@ -507,6 +525,10 @@ func (p *Plugin) withPrivateConfigLocked(use func(*Config) error) error {
 		})
 	}
 	return use(&config)
+}
+
+func (c Config) TLSVerifyValue() bool {
+	return c.TLSVerify != nil && *c.TLSVerify
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
@@ -538,6 +560,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		var logFields map[string]any
 		if len(p.LogFormat) > 0 {
 			logFields = apisixlog.GetFields(r, p.LogFormat)
+			base.ApplyRequestMatchedRouteFields(logFields, r, p.RouteID)
 		} else {
 			logFields = p.defaultLogFields(r, metrics)
 		}
@@ -567,6 +590,7 @@ func (p *Plugin) RunLogPhase(snapshot base.LogSnapshot) error {
 	var fields map[string]any
 	if len(p.LogFormat) > 0 {
 		fields = base.GetFieldsFromSnapshot(snapshot, p.LogFormat)
+		base.ApplySnapshotMatchedRouteFields(fields, snapshot, p.RouteID)
 	} else {
 		fields = rocketSnapshotDefaultFields(p, snapshot)
 	}

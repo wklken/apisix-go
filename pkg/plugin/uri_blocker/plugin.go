@@ -41,7 +41,7 @@ const schema = `
 	  "rejected_code": {
 		"type": "integer",
 		"minimum": 200,
-		"maximum": 599,
+		"maximum": 999,
 		"default": 403
 	  },
 	  "rejected_msg": {
@@ -131,15 +131,12 @@ func (p *Plugin) Config() any {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
-		requestURI := r.URL.EscapedPath()
-		if r.URL.RawQuery != "" {
-			requestURI += "?" + r.URL.RawQuery
-		}
+		requestURI := p.requestURIForMatch(r)
 		if p.config.RegexRule.MatchString(requestURI) {
 			if p.config.RejectedMsg != "" {
-				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 				w.WriteHeader(p.config.RejectedCode)
-				_, _ = w.Write([]byte(p.config.rejectBody))
+				_, _ = fmt.Fprintln(w, p.config.rejectBody)
 			} else {
 				w.WriteHeader(p.config.RejectedCode)
 			}
@@ -149,4 +146,14 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 	}
 	return http.HandlerFunc(fn)
+}
+
+func (p *Plugin) requestURIForMatch(r *http.Request) string {
+	if effective := p.StaticConfig(); effective != nil && effective.Config.Apisix.NormalizeURILikeServlet {
+		return r.URL.RequestURI()
+	}
+	if r.RequestURI != "" {
+		return r.RequestURI
+	}
+	return r.URL.RequestURI()
 }

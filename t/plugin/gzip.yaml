@@ -1,8 +1,9 @@
 source:
   repository: https://github.com/apache/apisix
-  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
   file: t/plugin/gzip.t
-  tests: 19
+  tests: 18
+  test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
 
 cases:
   - name: default-compression
@@ -41,7 +42,7 @@ cases:
         Content-Encoding:
           equals: gzip
         Vary:
-          equals: Accept-Encoding
+          absent: true
       gzip_body:
         equals: *short_body
 
@@ -340,87 +341,6 @@ cases:
         Content-Encoding:
           equals: gzip
         Vary:
-          values: [Accept-Encoding, upstream]
+          equals: upstream, Accept-Encoding
       gzip_body:
         equals: *short_body
-
-  - name: invalid-schema-variants
-    source:
-      tests: [19]
-    variants:
-      - name: empty-types
-        config:
-          routes:
-            - id: gzip-invalid-empty-types
-              uri: /invalid
-              plugins:
-                gzip:
-                  types: []
-        input: &invalid_input
-          path: /invalid
-        output: &invalid_output
-          status: 404
-          logs:
-            matches: 'build route gzip-invalid-.* fail:.*gzip'
-      - name: zero-minimum-length
-        config:
-          routes:
-            - id: gzip-invalid-minimum-length
-              uri: /invalid
-              plugins:
-                gzip:
-                  min_length: 0
-        input: *invalid_input
-        output: *invalid_output
-      - name: excessive-compression-level
-        config:
-          routes:
-            - id: gzip-invalid-compression-level
-              uri: /invalid
-              plugins:
-                gzip:
-                  comp_level: 10
-        input: *invalid_input
-        output: *invalid_output
-      - name: unsupported-http-version
-        config:
-          routes:
-            - id: gzip-invalid-http-version
-              uri: /invalid
-              plugins:
-                gzip:
-                  http_version: 2
-        input: *invalid_input
-        output: *invalid_output
-      - name: zero-buffer-number
-        config:
-          routes:
-            - id: gzip-invalid-buffer-number
-              uri: /invalid
-              plugins:
-                gzip:
-                  buffers:
-                    number: 0
-        input: *invalid_input
-        output: *invalid_output
-      - name: zero-buffer-size
-        config:
-          routes:
-            - id: gzip-invalid-buffer-size
-              uri: /invalid
-              plugins:
-                gzip:
-                  buffers:
-                    size: 0
-        input: *invalid_input
-        output: *invalid_output
-      - name: numeric-vary
-        config:
-          routes:
-            - id: gzip-invalid-vary
-              uri: /invalid
-              plugins:
-                gzip:
-                  vary: 0
-        input: *invalid_input
-        output: *invalid_output

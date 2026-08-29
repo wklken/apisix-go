@@ -11,11 +11,94 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/runtime"
 	"github.com/wklken/apisix-go/pkg/testutil"
 	"github.com/wklken/apisix-go/pkg/util"
 )
+
+func TestPostInitWarnsOnlyForInsecureEndpointAddrs(t *testing.T) {
+	tests := []struct {
+		name          string
+		endpointAddrs []string
+		wantWarn      bool
+	}{
+		{name: "http", endpointAddrs: []string{"http://127.0.0.1:8123"}, wantWarn: true},
+		{name: "https", endpointAddrs: []string{"https://127.0.0.1:8123"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var warnings []logger.Entry
+			stop := logger.ReplaceObserver("clickhouse-logger-security-warning-"+test.name, func(entry logger.Entry) {
+				if entry.Level == "WARN" && strings.Contains(entry.Message, "clickhouse-logger endpoint_addrs") {
+					warnings = append(warnings, entry)
+				}
+			})
+			defer stop()
+
+			p := newTestPlugin(t, Config{
+				EndpointAddrs: test.endpointAddrs,
+				User:          "default",
+				Password:      "a",
+				Database:      "default",
+				LogTable:      "logs",
+			})
+			t.Cleanup(p.Stop)
+			if got := len(warnings); got != 0 && !test.wantWarn {
+				t.Fatalf("warnings = %#v, want none for TLS endpoints", warnings)
+			}
+			if got := len(warnings); got != 1 && test.wantWarn {
+				t.Fatalf("warnings = %#v, want one insecure endpoint warning", warnings)
+			}
+		})
+	}
+}
+
+func TestSchemaMatchesAPISIX317EndpointMatrix(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	valid := []map[string]any{
+		{
+			"endpoint_addr":   "http://127.0.0.1:8123",
+			"user":            "default",
+			"password":        "a",
+			"database":        "default",
+			"logtable":        "logs",
+			"timeout":         3,
+			"retry_delay":     1,
+			"batch_max_size":  500,
+			"max_retry_count": 1,
+			"name":            "clickhouse logger",
+			"ssl_verify":      false,
+		},
+		{
+			"endpoint_addr": "http://127.0.0.1:8123",
+			"user":          "default",
+			"password":      "a",
+			"database":      "default",
+			"logtable":      "logs",
+		},
+	}
+	for i, config := range valid {
+		if err := util.Validate(config, p.GetSchema()); err != nil {
+			t.Fatalf("valid APISIX 3.17 schema case %d rejected: %v", i+1, err)
+		}
+	}
+
+	missingEndpoint := map[string]any{
+		"user":     "default",
+		"password": "a",
+		"database": "default",
+		"logtable": "logs",
+	}
+	if err := util.Validate(missingEndpoint, p.GetSchema()); err == nil {
+		t.Fatal("configuration without endpoint_addr or endpoint_addrs was accepted")
+	}
+}
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
@@ -518,6 +601,41 @@ func TestSendPostsClickHouseInsert(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for ClickHouse body")
+	}
+}
+
+func TestRunLogPhaseAddsAPISIX317MatchedRouteToCustomFormat(t *testing.T) {
+	bodies := make(chan string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read request body: %v", err)
+		}
+		bodies <- string(body)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+
+	sslVerify := false
+	p := newTestPlugin(t, Config{
+		EndpointAddrs: []string{server.URL}, User: "default", Password: "secret",
+		Database: "default", LogTable: "logs", LogFormat: map[string]string{"case": "clickhouse-logger"},
+		BatchMaxSize: 1, MaxRetryCount: 0, SSLVerify: &sslVerify,
+	})
+	p.RouteID = "route-1"
+	t.Cleanup(p.Stop)
+
+	if err := p.RunLogPhase(base.LogSnapshot{}); err != nil {
+		t.Fatalf("RunLogPhase() error = %v", err)
+	}
+	select {
+	case body := <-bodies:
+		if !strings.Contains(body, `"case":"clickhouse-logger"`) ||
+			!strings.Contains(body, `"route_id":"route-1"`) {
+			t.Fatalf("body = %q, want custom field and APISIX route_id", body)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for ClickHouse log-phase delivery")
 	}
 }
 

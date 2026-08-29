@@ -5,9 +5,11 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/go-ldap/ldap/v3"
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
@@ -26,8 +28,9 @@ type Plugin struct {
 type ldapAuthenticator func(username, password string, cfg Config) error
 
 const (
-	priority = 2540
-	name     = "ldap-auth"
+	priority              = 2540
+	name                  = "ldap-auth"
+	ldapDependencyTimeout = 10 * time.Second
 )
 
 const schema = `
@@ -88,6 +91,12 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	if p.config.TLSVerify != nil && !*p.config.TLSVerify {
+		logger.Warn("Keeping tls_verify disabled in ldap-auth configuration is a security risk")
+	}
+	if !p.config.UseTLS {
+		logger.Warn("Keeping use_tls disabled in ldap-auth configuration is a security risk")
+	}
 	if p.config.HideCredentials == nil {
 		hideCredentials := false
 		p.config.HideCredentials = &hideCredentials
@@ -95,9 +104,6 @@ func (p *Plugin) PostInit() error {
 	if p.config.TLSVerify == nil {
 		verify := true
 		p.config.TLSVerify = &verify
-	}
-	if p.config.UseTLS && !*p.config.TLSVerify {
-		logger.Warn("LDAP TLS certificate verification is disabled")
 	}
 	if p.config.UID == "" {
 		p.config.UID = "cn"
@@ -220,9 +226,9 @@ func ldapUserDN(uid, username, baseDN string) string {
 
 func (p *Plugin) writeAuthError(w http.ResponseWriter, status int, message string) {
 	w.Header().Set("WWW-Authenticate", `Basic realm="`+p.config.Realm+`"`)
-	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(status)
-	_, _ = w.Write([]byte(util.BuildMessageResponse(message)))
+	_, _ = fmt.Fprintln(w, util.BuildMessageResponse(message))
 }
 
 func (p *Plugin) recordAuthDiagnostic(r *http.Request, message string) {
@@ -236,11 +242,16 @@ func defaultLDAPAuthenticate(username, password string, cfg Config) error {
 	if err != nil {
 		return err
 	}
-	conn, err := ldap.DialURL(ldapDialURL(cfg), ldap.DialWithTLSConfig(tlsConfig))
+	conn, err := ldap.DialURL(
+		ldapDialURL(cfg),
+		ldap.DialWithDialer(&net.Dialer{Timeout: ldapDependencyTimeout}),
+		ldap.DialWithTLSConfig(tlsConfig),
+	)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = conn.Close() }()
+	conn.SetTimeout(ldapDependencyTimeout)
 
 	userDN := ldapUserDN(cfg.UID, username, cfg.BaseDN)
 	return conn.Bind(userDN, password)

@@ -8,7 +8,7 @@ on:
     paths:
       - Makefile
       - pkg/capability/**
-      - pkg/config/profiles.go
+      - pkg/config/types.go
       - pkg/plugin/registry_gen.go
       - cmd/capability-gen/**
       - docs/plugins.md
@@ -18,12 +18,12 @@ on:
       - t/plugin/coverage_test.go
       - t/plugin/corpus_test.go
       - scripts/capability_status_gate_test.sh
-      - scripts/qualification/plugin_behavior_gate.sh
-      - scripts/qualification/plugin_behavior_gate_test.sh
-      - scripts/qualification/plugin_differential.sh
-      - scripts/qualification/plugin_differential_test.sh
-      - scripts/qualification/resolve_oracle.sh
-      - qualification/oracle.yaml
+      - scripts/validation/plugin_behavior_gate.sh
+      - scripts/validation/plugin_behavior_gate_test.sh
+      - scripts/validation/plugin_differential.sh
+      - scripts/validation/plugin_differential_test.sh
+      - scripts/validation/resolve_oracle.sh
+      - validation/oracle.yaml
       - .github/CODEOWNERS
       - .github/workflows/capability-status.yml
       - .github/workflows/unit-test.yml

@@ -3,7 +3,7 @@
 set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
-gate=$repo_root/scripts/qualification/plugin_behavior_gate.sh
+gate=$repo_root/scripts/validation/plugin_behavior_gate.sh
 test_root=$(mktemp -d "${TMPDIR:-/tmp}/plugin-behavior-gate-test.XXXXXX")
 trap 'rm -rf "$test_root"' EXIT
 
@@ -26,7 +26,7 @@ write_valid_artifact() {
         --arg sha "$output_sha" \
         '{
             schema_version: 1,
-            profile: "apisix-3.17-all-plugins-v1",
+            suite: "apisix-3.17-plugin-differential-v1",
             candidate: {source_commit: $candidate, working_tree_sha256: $sha, binary_sha256: $sha},
             oracle: {source_commit: $source, image_linux_amd64_digest: $digest},
             case_counts: {
@@ -49,7 +49,7 @@ write_valid_artifact() {
             first_attempt: true,
             stages: [
                 "capability_contract", "generator_drift", "candidate_build", "plugin_units", "dependency_failure",
-                "strict_corpus", "real_process", "differential"
+                "corpus", "real_process", "differential"
             ] | map({name: ., status: "pass", skipped: false, attempts: 1, first_attempt: true, output_sha256: $sha}),
             differential: {
                 artifact_sha256: $sha,
@@ -126,9 +126,8 @@ jq -n \
     --arg digest "$image_digest" \
     --arg sha "$output_sha" \
     '{
-        schema_version: 2,
-        profile: "apisix-3.17-differential-smoke-v1",
-        target_qualification_profile: "apisix-3.17-all-plugins-v1",
+        schema_version: 3,
+        suite: "apisix-3.17-plugin-differential-v1",
         catalog_sha256: ("sha256:" + $sha),
         selection: {
             plugins: [],
@@ -140,7 +139,7 @@ jq -n \
         },
         attempt: 1,
         first_attempt: true,
-        candidate: {source_commit: $candidate, binary_sha256: $sha, security_profile: "compat"},
+        candidate: {source_commit: $candidate, binary_sha256: $sha},
         oracle: {source_commit: $source, image_linux_amd64_digest: $digest},
         coverage: {
             required_count: 111,
@@ -179,14 +178,14 @@ jq '.selection.full_catalog_run = false | .selection.plugins = ["plugin-0"]' \
     "$differential" >"$partial_selection"
 if "$gate" --validate-differential-artifact \
     "$partial_selection" "$candidate_commit" "$output_sha" "$image_digest" "sha256:$output_sha" >/dev/null 2>&1; then
-    fail 'partial differential selection was accepted as full qualification'
+    fail 'partial differential selection was accepted as full validation'
 fi
 
 sharded_selection=$test_root/sharded-selection.json
 jq '.selection.shard_count = 2' "$differential" >"$sharded_selection"
 if "$gate" --validate-differential-artifact \
     "$sharded_selection" "$candidate_commit" "$output_sha" "$image_digest" "sha256:$output_sha" >/dev/null 2>&1; then
-    fail 'sharded differential selection was accepted as full qualification'
+    fail 'sharded differential selection was accepted as full validation'
 fi
 
 missing_binary=$test_root/missing-differential-binary.json

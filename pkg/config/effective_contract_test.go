@@ -4,24 +4,15 @@ import (
 	"encoding/json"
 	"path/filepath"
 	"reflect"
-	"slices"
-	"strings"
 	"testing"
-
-	"github.com/wklken/apisix-go/pkg/capability"
 )
 
 func TestEffectiveConfigContract(t *testing.T) {
-	manifest := qualifiedProfileTestManifest(t)
 	effective := EffectiveConfig{
 		Config: Config{Debug: true},
 		Provenance: Provenance{"proxy.max_in_flight": {
 			Kind: SourceCLI, Origin: "proxy.max_in_flight", Explicit: true,
 		}},
-		Profiles: ProfileSelection{
-			Compatibility: CompatibilityAPISIX317,
-			Security:      SecurityCompat,
-		},
 		Paths: RuntimePaths{DataDir: "/var/lib/apisix-go"},
 	}
 	request := LoadRequest{
@@ -30,7 +21,6 @@ func TestEffectiveConfigContract(t *testing.T) {
 		DefaultPaths: effective.Paths,
 		Environment:  map[string]string{"APISIX_PORT": "9080"},
 		CLIOverrides: map[string]any{"proxy.max_in_flight": 32},
-		Manifest:     manifest,
 	}
 
 	if !effective.Config.Debug {
@@ -41,10 +31,7 @@ func TestEffectiveConfigContract(t *testing.T) {
 	}) {
 		t.Fatalf("Provenance source = %#v", got)
 	}
-	if effective.Profiles.Compatibility != CompatibilityAPISIX317 {
-		t.Fatal("profile was lost")
-	}
-	if request.Manifest != manifest || request.DefaultPaths != effective.Paths ||
+	if request.DefaultPaths != effective.Paths ||
 		request.Environment["APISIX_PORT"] != "9080" || request.CLIOverrides["proxy.max_in_flight"] != 32 {
 		t.Fatalf("LoadRequest lost explicit inputs: %#v", request)
 	}
@@ -125,134 +112,4 @@ func TestJournalPath(t *testing.T) {
 			})
 		}
 	})
-}
-
-func TestValidateQualificationPlugins(t *testing.T) {
-	validEmptySelection := ProfileSelection{
-		Compatibility: CompatibilityAPISIX317,
-		Security:      SecurityCompat,
-	}
-
-	t.Run("empty qualification still validates selection", func(t *testing.T) {
-		manifest, err := capability.Load()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := ValidateQualificationPlugins([]string{"not-checked"}, validEmptySelection, manifest); err != nil {
-			t.Fatalf("ValidateQualificationPlugins() error = %v", err)
-		}
-
-		invalid := validEmptySelection
-		invalid.Compatibility = "unsupported"
-		err = ValidateQualificationPlugins(nil, invalid, manifest)
-		if err == nil || err.Error() != "compatibility_target is unsupported" {
-			t.Fatalf("ValidateQualificationPlugins() error = %v", err)
-		}
-	})
-
-	t.Run("nil manifest returns selection error", func(t *testing.T) {
-		err := ValidateQualificationPlugins(nil, validEmptySelection, nil)
-		if err == nil || err.Error() != "capability manifest must not be nil" {
-			t.Fatalf("ValidateQualificationPlugins() error = %v", err)
-		}
-	})
-
-	t.Run("incomplete manifest fails at evidence qualification", func(t *testing.T) {
-		manifest := unqualifiedProfileTestManifest(t)
-		selection := qualifiedSelection()
-		err := ValidateQualificationPlugins(nil, selection, manifest)
-		if err == nil || !strings.Contains(err.Error(), "unqualified required plugins") {
-			t.Fatalf("ValidateQualificationPlugins() error = %v", err)
-		}
-	})
-
-	t.Run("exact required order passes and reordered membership fails without mutation", func(t *testing.T) {
-		manifest := qualifiedProfileTestManifest(t)
-		profile, ok := manifest.Qualification(string(QualificationHTTPDataPlaneV1))
-		if !ok {
-			t.Fatal("qualification profile is missing")
-		}
-		manifestBefore := append([]string(nil), profile.RequiredPlugins...)
-		enabled := append([]string(nil), profile.RequiredPlugins...)
-		enabledBefore := append([]string(nil), enabled...)
-		if err := ValidateQualificationPlugins(enabled, qualifiedSelection(), manifest); err != nil {
-			t.Fatalf("exact membership error = %v", err)
-		}
-		if !slices.Equal(enabled, enabledBefore) {
-			t.Fatalf("enabled input mutated: got %v, want %v", enabled, enabledBefore)
-		}
-
-		slices.Reverse(enabled)
-		enabledBefore = append([]string(nil), enabled...)
-		err := ValidateQualificationPlugins(enabled, qualifiedSelection(), manifest)
-		want := "qualification_profile http-data-plane-v1: plugins must exactly match required order"
-		if err == nil || err.Error() != want {
-			t.Fatalf("reordered membership error = %v, want %q", err, want)
-		}
-		if !slices.Equal(enabled, enabledBefore) {
-			t.Fatalf("reordered enabled input mutated: got %v, want %v", enabled, enabledBefore)
-		}
-		assertQualificationRequiredPlugins(t, manifest, manifestBefore)
-	})
-
-	t.Run("stable sorted set difference without mutation", func(t *testing.T) {
-		manifest := qualifiedProfileTestManifest(t)
-		profile, ok := manifest.Qualification(string(QualificationHTTPDataPlaneV1))
-		if !ok || len(profile.RequiredPlugins) < 2 {
-			t.Fatalf("qualification profile = %#v", profile)
-		}
-		manifestBefore := append([]string(nil), profile.RequiredPlugins...)
-		enabled := append([]string(nil), profile.RequiredPlugins[2:]...)
-		enabled = append(enabled, "zz-extra", "aa-extra")
-		enabledBefore := append([]string(nil), enabled...)
-		err := ValidateQualificationPlugins(enabled, qualifiedSelection(), manifest)
-		want := "qualification_profile http-data-plane-v1: plugins missing count 2; unexpected count 2"
-		if err == nil || err.Error() != want {
-			t.Fatalf("ValidateQualificationPlugins() error = %v, want %q", err, want)
-		}
-		if !slices.Equal(enabled, enabledBefore) {
-			t.Fatalf("enabled input mutated: got %v, want %v", enabled, enabledBefore)
-		}
-		assertQualificationRequiredPlugins(t, manifest, manifestBefore)
-	})
-
-	t.Run("duplicates fail closed and are sorted", func(t *testing.T) {
-		manifest := qualifiedProfileTestManifest(t)
-		profile, ok := manifest.Qualification(string(QualificationHTTPDataPlaneV1))
-		if !ok || len(profile.RequiredPlugins) < 2 {
-			t.Fatalf("qualification profile = %#v", profile)
-		}
-		manifestBefore := append([]string(nil), profile.RequiredPlugins...)
-		enabled := append([]string(nil), profile.RequiredPlugins...)
-		enabled = append(enabled, profile.RequiredPlugins[1], profile.RequiredPlugins[0])
-		enabledBefore := append([]string(nil), enabled...)
-		err := ValidateQualificationPlugins(enabled, qualifiedSelection(), manifest)
-		want := "qualification_profile http-data-plane-v1: plugins duplicate enabled count 2"
-		if err == nil || err.Error() != want {
-			t.Fatalf("ValidateQualificationPlugins() error = %v, want %q", err, want)
-		}
-		if !slices.Equal(enabled, enabledBefore) {
-			t.Fatalf("enabled input mutated: got %v, want %v", enabled, enabledBefore)
-		}
-		assertQualificationRequiredPlugins(t, manifest, manifestBefore)
-	})
-}
-
-func qualifiedSelection() ProfileSelection {
-	return ProfileSelection{
-		Compatibility: CompatibilityAPISIX317,
-		Security:      SecurityStrict,
-		Qualification: QualificationHTTPDataPlaneV1,
-	}
-}
-
-func assertQualificationRequiredPlugins(t *testing.T, manifest *capability.Manifest, want []string) {
-	t.Helper()
-	profile, ok := manifest.Qualification(string(QualificationHTTPDataPlaneV1))
-	if !ok {
-		t.Fatal("qualification profile is missing")
-	}
-	if !slices.Equal(profile.RequiredPlugins, want) {
-		t.Fatalf("manifest required plugins mutated: got %v, want %v", profile.RequiredPlugins, want)
-	}
 }

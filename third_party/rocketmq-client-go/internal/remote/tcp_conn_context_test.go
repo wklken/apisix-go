@@ -104,7 +104,7 @@ func TestTLSVerificationRejectsWrongServerName(t *testing.T) {
 	}
 }
 
-func TestTLSCompatibilityModeSkipsVerification(t *testing.T) {
+func TestTLSVerificationDisabledSkipsVerification(t *testing.T) {
 	listener, _ := startTestTLSServer(t, []string{"broker.example"}, nil)
 
 	conn, err := initConn(context.Background(), listener.Addr().String(), &RemotingClientConfig{

@@ -2,7 +2,7 @@
 id: ADR-0001
 title: Keep APISIX compatibility separate from Go-native extensions
 status: accepted
-compatibility_target: apisix-3.17
+target: apisix-3.17
 divergence_ids: [DIV-001-go-native-extension-identity]
 owner: wklken
 owner_approval_ref: "decisions 1-42"

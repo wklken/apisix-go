@@ -172,13 +172,6 @@ func PlanRouteUpstream(
 	if err := validatePlannedPassHost(resolved); err != nil {
 		return UpstreamPlan{}, err
 	}
-	if err := validateSecurityUpstreamPolicy(
-		staticConfig.Profiles(),
-		resolved,
-		fmt.Sprintf("%s %q for route %q", provenance.Kind, provenance.ID, routeResource.ID),
-	); err != nil {
-		return UpstreamPlan{}, fmt.Errorf("route %q: %w", routeResource.ID, err)
-	}
 	targets, priorities, err := planUpstreamNodes(resolved)
 	if err != nil {
 		return UpstreamPlan{}, err

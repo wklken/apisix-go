@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-`apisix-go` is a Go implementation of the Apache APISIX data plane. It remains under development and is not production ready. Observable APISIX 3.17 compatibility is the default direction; declared, evidenced Go-native extensions may intentionally diverge. Inventory counts do not prove qualification or production readiness.
+`apisix-go` is a Go implementation of the Apache APISIX data plane. It remains under development and is not production ready. Observable APISIX 3.17 compatibility is the default direction; declared, evidenced Go-native extensions may intentionally diverge. Inventory counts do not prove validation or production readiness.
 
 This is a single Go module: `github.com/wklken/apisix-go`.
 
@@ -10,7 +10,7 @@ Key runtime pieces:
 
 - `main.go` enters the Cobra CLI in `cmd/root.go`.
 - Static configuration is loaded by the presence/provenance-aware `pkg/config` loader from builtins, `conf/config-default.yaml`, an optional `-c/--config` override, recognized `APISIXGO_*` overlays, and repeatable `--set` flags.
-- `pkg/capability/manifest.yaml` is the editable source for plugin factories, aliases, behavior/evidence status, qualification, gaps/divergences, and secret declarations. It generates the plugin registry and plugin-status documentation.
+- `pkg/capability/manifest.yaml` is the editable source for plugin factories, aliases, behavior/evidence status, gaps/divergences, and secret declarations. It generates the plugin registry and plugin-status documentation.
 - Providers submit desired snapshots to the single-writer `pkg/generation` coordinator. `pkg/store` is the bbolt durable generation journal, not a mutable runtime resource store.
 - `pkg/compiler` plans and materializes immutable HTTP/TLS and stream snapshots. `pkg/route` and `pkg/stream` contain detached snapshot compilers; `pkg/server` atomically activates them and owns generation leases.
 - HTTP and TLS listeners come from effective configuration; the default HTTP listener is `0.0.0.0:9080`.
@@ -23,7 +23,7 @@ Key runtime pieces:
 - [`docs/design.md`](docs/design.md) is the canonical human architecture record. Files under `docs/superpowers/plans/` are intent and execution history, not proof that planned code exists.
 - `pkg/capability/manifest.yaml` is the machine-readable capability truth. Do not hand-edit `pkg/plugin/registry_gen.go`, `docs/plugins.md`, or the generated README summaries.
 - Current source and focused tests override stale prose. If a plan, design paragraph, generated projection, and code disagree, verify the current call chain and then update the owning source rather than averaging them.
-- The current runtime is a single process with an in-process `Server + GenerationEngine`. External supervisor/worker, IPC activation, listener inheritance, worker probation/restart, and the proposed next-generation qualification packages remain planned-only.
+- The current runtime is a single process with an in-process `Server + GenerationEngine`. External supervisor/worker, IPC activation, listener inheritance, worker probation/restart, and proposed next-generation validation packages remain planned-only.
 
 Directory-scoped instructions inherit this file. Read the closest `AGENTS.md` before changing a core module:
 
@@ -148,7 +148,7 @@ Correctness:
 ## APISIX Plugin Parity Scope
 
 - The authoritative editable status source is `pkg/capability/manifest.yaml`; [`docs/plugins.md`](docs/plugins.md) and README summaries are generated projections. Use `scripts/go_cache.sh run -- go run ./cmd/capability-gen -repo-root . -check` to detect drift.
-- Keep behavior support, qualification evidence, and production readiness separate. Do not infer one from registration or inventory counts.
+- Keep behavior support, validation evidence, and production readiness separate. Do not infer one from registration or inventory counts.
 - OpenResty-native, NGINX-native, and Lua-runtime-native parity is not required unless the user explicitly asks for a Go-native approximation.
 - Treat manifest-declared missing/deferred official defaults as native/runtime features that are not required for normal parity work; do not add placeholder Go implementations merely to increase inventory.
 - `serverless-pre-function` and `serverless-post-function` have bounded compatibility implementations, but full Lua/OpenResty parity is intentionally out of scope. Do not expand them into a general Lua runtime or claim full phase/streaming fidelity.

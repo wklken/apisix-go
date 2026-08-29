@@ -1,18 +1,18 @@
-# HTTP Functional And Stability Qualification Implementation Plan
+# HTTP Functional And Stability Validation Implementation Plan
 
 > **For Codex:** Execute this plan task by task with `superpowers:executing-plans`. Stop on an unexplained failing gate; do not convert a failure into a documented exception.
 
-**Goal:** Make the already-defined `http-data-plane-v1` scope independently qualifiable for HTTP functionality and single-process runtime stability, without requiring upgrade, publication, or environment-specific deployment work.
+**Goal:** Make the HTTP data-plane scope independently verifiable for HTTP functionality and single-process runtime stability, without requiring upgrade, publication, or environment-specific deployment work.
 
-**Architecture:** Keep the existing single-process `Server + GenerationEngine` architecture and the existing 110-plugin HTTP profile. Separate the reusable operational gates into (a) functional/stability gates and (b) optional upgrade/publication gates. Add a process-boundary smoke that proves an in-flight HTTP request completes during graceful termination, then use the existing verified-TLS etcd recovery harness and 30-minute proxy soak as the runtime stability evidence.
+**Architecture:** Keep the existing single-process `Server + GenerationEngine` architecture and HTTP plugin contract. Separate the reusable operational gates into (a) functional/stability gates and (b) optional upgrade/publication gates. Add a process-boundary smoke that proves an in-flight HTTP request completes during graceful termination, then use the existing verified-TLS etcd recovery harness and 30-minute proxy soak as the runtime stability evidence.
 
 **Tech Stack:** Go 1.26, Bash, GitHub Actions reusable workflows, Docker/Podman, etcd 3.6.13.
 
-**Non-goals:** Kubernetes/systemd manifests, environment-specific ingress validation, upgrade/rollback qualification, registry publication, signing, and release packaging.
+**Non-goals:** Kubernetes/systemd manifests, environment-specific ingress validation, upgrade/rollback validation, registry publication, signing, and release packaging.
 
 ---
 
-### Task 1: Decouple Functional/Stability Qualification From Upgrade And Publication
+### Task 1: Decouple Functional/Stability Validation From Upgrade And Publication
 
 **Files:**
 - Modify: `scripts/release_gate_test.sh`
@@ -22,7 +22,7 @@
 
 **Step 1: Write the failing workflow-contract assertions**
 
-Change `scripts/release_gate_test.sh` to require a `run-upgrade-rollback` reusable input, require a rollback tag only when upgrade/rollback or publication is requested, require RC qualification to run without rollback permissions or inputs, and require the final-release caller to explicitly retain upgrade/rollback.
+Change `scripts/release_gate_test.sh` to require a `run-upgrade-rollback` reusable input, require a rollback tag only when upgrade/rollback or publication is requested, require RC validation to run without rollback permissions or inputs, and require the final-release caller to explicitly retain upgrade/rollback.
 
 **Step 2: Run the contract test and confirm RED**
 
@@ -38,7 +38,7 @@ Expected: FAIL because the new input and caller separation do not exist yet.
 - Require `rollback-release-tag` only for upgrade/rollback or publication.
 - Remove the rollback input and elevated read permissions from the RC workflow.
 - Require the RC to rerun capability drift and the complete source/binary-bound
-  APISIX 3.17 plugin differential before operational qualification.
+  APISIX 3.17 plugin differential before operational validation.
 - Set `run-upgrade-rollback: true` in the final-release workflow so its existing behavior does not silently change.
 
 **Step 4: Run the contract and workflow syntax gates**
@@ -127,21 +127,21 @@ Run: `source .envrc && make build`
 
 Run: `source .envrc && make lint`
 
-Expected: PASS, or report any pre-existing failure precisely without weakening the qualification result.
+Expected: PASS, or report any pre-existing failure precisely without weakening the validation result.
 
 ### Task 4: Publish The Exact Narrow Claim In Documentation
 
 **Files:**
-- Modify: `docs/production-profile.md`
+- Modify: `docs/http-data-plane.md`
 - Modify: `docs/runbooks/production-release.md`
 
 **Step 1: Replace the obsolete blocker list**
 
-Document that the current milestone is `http-data-plane-v1` functional/stability qualification. State explicitly that deployment, upgrade/rollback, and formal publication are deferred and do not block this milestone.
+Document that the current milestone is HTTP data-plane functional/stability validation. State explicitly that deployment, upgrade/rollback, and formal publication are deferred and do not block this milestone.
 
 **Step 2: Keep the claim bounded**
 
-Do not call the whole project production ready. Permit only this claim after a post-merge immutable revision passes the functional/stability workflow: the HTTP data-plane profile is functionally and runtime-stability qualified within its documented plugin and dependency boundaries.
+Do not call the whole project production ready. Permit only this claim after a post-merge immutable revision passes the functional/stability workflow: the HTTP data plane is functionally and runtime-stability verified within its documented plugin and dependency boundaries.
 
 **Step 3: Review the final diff**
 
@@ -149,4 +149,4 @@ Run: `git diff --check`
 
 Run: `git diff --stat && git diff -- . ':(exclude)docs/superpowers/plans/2026-08-29-http-functional-stability.md'`
 
-Expected: only workflow separation, active-request smoke, and the narrowed qualification documentation changed.
+Expected: only workflow separation, active-request smoke, and the narrowed validation documentation changed.

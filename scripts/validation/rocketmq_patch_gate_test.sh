@@ -4,7 +4,7 @@ set -euo pipefail
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 dockerfile="$repo_root/Dockerfile"
 makefile="$repo_root/Makefile"
-gate="$repo_root/scripts/qualification/rocketmq_patch_gate.sh"
+gate="$repo_root/scripts/validation/rocketmq_patch_gate.sh"
 patch_doc="$repo_root/third_party/rocketmq-client-go/APISIX_GO_PATCHES.md"
 
 require_fixed() {
@@ -34,9 +34,9 @@ require_fixed 'carries six narrowly scoped runtime-safety patches' "$patch_doc"
 
 nested_mod=$(line_number 'COPY third_party/rocketmq-client-go/go.mod /app/third_party/rocketmq-client-go/go.mod' "$dockerfile")
 nested_sum=$(line_number 'COPY third_party/rocketmq-client-go/go.sum /app/third_party/rocketmq-client-go/go.sum' "$dockerfile")
-download=$(line_number 'RUN go mod download' "$dockerfile")
+download=$(line_number 'go mod download' "$dockerfile")
 full_copy=$(line_number 'COPY third_party/rocketmq-client-go /app/third_party/rocketmq-client-go' "$dockerfile")
-build=$(line_number 'RUN go build -trimpath' "$dockerfile")
+build=$(line_number 'go build -trimpath' "$dockerfile")
 (( nested_mod < download && nested_sum < download && download < full_copy && full_copy < build )) || {
 	printf 'rocketmq contract: Dockerfile nested-module copy order is invalid\n' >&2
 	exit 1

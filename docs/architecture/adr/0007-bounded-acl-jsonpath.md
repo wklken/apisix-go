@@ -2,7 +2,7 @@
 id: ADR-0007
 title: Prefer bounded all-match ACL JSONPath evaluation
 status: proposed
-compatibility_target: apisix-3.17
+target: apisix-3.17
 divergence_ids: [DIV-007-bounded-acl-jsonpath]
 owner: wklken
 owner_approval_ref: ""
@@ -77,7 +77,7 @@ headroom beneath the 4096-byte admission ceiling. The hard path and terminal
 label limits remain security constraints rather than APISIX 3.17 behavior.
 
 This proposal does not become an accepted production divergence until the
-owner explicitly approves it. Qualification must keep the pinned 3.17
+owner explicitly approves it. Validation must keep the pinned 3.17
 single-match behavior, the post-3.17 multi-match correction, and every runtime
 budget visible as separate evidence.
 

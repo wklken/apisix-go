@@ -63,55 +63,6 @@ func (m *Manifest) Plugin(name string) (PluginCapability, bool) {
 	return clonePlugin(m.Plugins[index]), true
 }
 
-func (m *Manifest) Qualification(name string) (QualificationProfile, bool) {
-	if m == nil {
-		return QualificationProfile{}, false
-	}
-	index, ok := m.profilesByName[name]
-	if !ok {
-		return QualificationProfile{}, false
-	}
-	if index < 0 || index >= len(m.QualificationProfiles) {
-		return QualificationProfile{}, false
-	}
-	return cloneQualification(m.QualificationProfiles[index]), true
-}
-
-// ContractReadyPlugins returns required plugins whose static manifest contract
-// is complete. It does not prove that a particular candidate binary passed an
-// immutable qualification run.
-func (m *Manifest) ContractReadyPlugins(profile string) []string {
-	if m == nil {
-		return nil
-	}
-	qualification, ok := m.Qualification(profile)
-	if !ok {
-		return nil
-	}
-
-	qualified := make([]string, 0, len(qualification.RequiredPlugins))
-	for _, key := range qualification.RequiredPlugins {
-		plugin, ok := m.Plugin(key)
-		if !ok || plugin.Namespace != NamespaceAPISIX || plugin.Behavior != BehaviorFull {
-			continue
-		}
-		if !supportsDomain(plugin.Domains, qualification.Domains) {
-			continue
-		}
-		if !hasRequiredEvidence(plugin.Evidence, qualification.RequiredEvidence) {
-			continue
-		}
-		qualified = append(qualified, key)
-	}
-	return qualified
-}
-
-// QualifiedPlugins is retained for compatibility. Candidate qualification
-// additionally requires a matching immutable runtime artifact.
-func (m *Manifest) QualifiedPlugins(profile string) []string {
-	return m.ContractReadyPlugins(profile)
-}
-
 func (m *Manifest) validate() error {
 	if m.SchemaVersion != 1 {
 		return fmt.Errorf("schema_version %d is unsupported; want 1", m.SchemaVersion)
@@ -167,19 +118,6 @@ func (m *Manifest) validate() error {
 		}
 	}
 
-	m.profilesByName = make(map[string]int, len(m.QualificationProfiles))
-	for index, profile := range m.QualificationProfiles {
-		if strings.TrimSpace(profile.Name) == "" {
-			return fmt.Errorf("qualification_profiles[%d]: name must not be blank", index)
-		}
-		if _, exists := m.profilesByName[profile.Name]; exists {
-			return fmt.Errorf("duplicate profile id %q", profile.Name)
-		}
-		m.profilesByName[profile.Name] = index
-		if err := validateQualification(profile, factoryByKey); err != nil {
-			return fmt.Errorf("qualification profile %q: %w", profile.Name, err)
-		}
-	}
 	if _, err := NewSecretDeclarationCatalog(m); err != nil {
 		return fmt.Errorf("secret declarations: %w", err)
 	}
@@ -557,37 +495,6 @@ func validateEvidence(kind EvidenceKind, claim EvidenceClaim) error {
 	return nil
 }
 
-func validateQualification(profile QualificationProfile, factoryByKey map[string]int) error {
-	if !sortedUniqueStrings(profile.Domains) {
-		return errors.New("domains must be sorted and unique")
-	}
-	for _, domain := range profile.Domains {
-		if !validDomain(Domain(domain)) {
-			return fmt.Errorf("unknown domain %q", domain)
-		}
-	}
-	if !sortedUniqueStrings(profile.RequiredPlugins) {
-		return errors.New("required_plugins must be sorted and unique")
-	}
-	for _, plugin := range profile.RequiredPlugins {
-		if strings.TrimSpace(plugin) == "" {
-			return errors.New("required_plugins must not contain blank keys")
-		}
-		if _, exists := factoryByKey[plugin]; !exists {
-			return fmt.Errorf("required_plugins key %q has no factory", plugin)
-		}
-	}
-	if !sortedUniqueEvidence(profile.RequiredEvidence) {
-		return errors.New("required_evidence must be sorted and unique")
-	}
-	for _, kind := range profile.RequiredEvidence {
-		if !validEvidenceKind(kind) {
-			return fmt.Errorf("unknown required evidence kind %q", kind)
-		}
-	}
-	return nil
-}
-
 func evidenceClaims(evidence Evidence) []struct {
 	kind  EvidenceKind
 	claim EvidenceClaim
@@ -603,46 +510,6 @@ func evidenceClaims(evidence Evidence) []struct {
 		{EvidenceRealDependency, evidence.RealDependency},
 		{EvidenceFailure, evidence.Failure},
 	}
-}
-
-func hasRequiredEvidence(evidence Evidence, required []EvidenceKind) bool {
-	for _, kind := range required {
-		claim := evidenceClaim(evidence, kind)
-		if claim.State != EvidenceVerified && claim.State != EvidenceNotApplicable {
-			return false
-		}
-	}
-	return true
-}
-
-func evidenceClaim(evidence Evidence, kind EvidenceKind) EvidenceClaim {
-	switch kind {
-	case EvidenceSchema:
-		return evidence.Schema
-	case EvidenceUnit:
-		return evidence.Unit
-	case EvidenceUpstream:
-		return evidence.Upstream
-	case EvidenceDifferential:
-		return evidence.Differential
-	case EvidenceRealDependency:
-		return evidence.RealDependency
-	case EvidenceFailure:
-		return evidence.Failure
-	default:
-		return EvidenceClaim{}
-	}
-}
-
-func supportsDomain(pluginDomains []Domain, profileDomains []string) bool {
-	for _, pluginDomain := range pluginDomains {
-		for _, profileDomain := range profileDomains {
-			if pluginDomain == Domain(profileDomain) {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 func concreteReason(reason string) bool {
@@ -734,13 +601,6 @@ func genericReasonToken(token string) bool {
 	}
 }
 
-func sortedUniqueStrings(values []string) bool {
-	if !sort.StringsAreSorted(values) {
-		return false
-	}
-	return !duplicateStrings(values)
-}
-
 func duplicateStrings(values []string) bool {
 	seen := make(map[string]struct{}, len(values))
 	for _, value := range values {
@@ -750,15 +610,6 @@ func duplicateStrings(values []string) bool {
 		seen[value] = struct{}{}
 	}
 	return false
-}
-
-func sortedUniqueEvidence(values []EvidenceKind) bool {
-	for index := 1; index < len(values); index++ {
-		if values[index-1] >= values[index] {
-			return false
-		}
-	}
-	return true
 }
 
 func validNamespace(namespace Namespace) bool {
@@ -772,16 +623,6 @@ func validDomain(domain Domain) bool {
 func validBehavior(behavior BehaviorStatus) bool {
 	return behavior == BehaviorFull || behavior == BehaviorPartial ||
 		behavior == BehaviorNotApplicable || behavior == BehaviorDeferred
-}
-
-func validEvidenceKind(kind EvidenceKind) bool {
-	switch kind {
-	case EvidenceSchema, EvidenceUnit, EvidenceUpstream, EvidenceDifferential,
-		EvidenceRealDependency, EvidenceFailure:
-		return true
-	default:
-		return false
-	}
 }
 
 func validEvidenceState(state EvidenceState) bool {
@@ -821,11 +662,4 @@ func cloneEvidence(evidence Evidence) Evidence {
 	evidence.RealDependency.Refs = append([]string(nil), evidence.RealDependency.Refs...)
 	evidence.Failure.Refs = append([]string(nil), evidence.Failure.Refs...)
 	return evidence
-}
-
-func cloneQualification(profile QualificationProfile) QualificationProfile {
-	profile.Domains = append([]string(nil), profile.Domains...)
-	profile.RequiredPlugins = append([]string(nil), profile.RequiredPlugins...)
-	profile.RequiredEvidence = append([]EvidenceKind(nil), profile.RequiredEvidence...)
-	return profile
 }

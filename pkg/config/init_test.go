@@ -50,7 +50,7 @@ plugin_attr: {prometheus: {export_addr: {ip: 127.0.0.1, port: 9091}}}
 }
 
 func TestLoadEffectiveAppliesSafeRequestBodyDefaultsWhenOmitted(t *testing.T) {
-	req := loadRequestFixture(t, SecurityCompat, "")
+	req := loadRequestFixture(t, "")
 	if err := writeTestConfig(req.DefaultPath, `
 apisix: {node_listen: [{port: 9080}]}
 proxy: {max_idle_conns: 10, max_idle_conns_per_host: 10, max_conns_per_host: 10, max_in_flight: 10}
@@ -136,7 +136,7 @@ func TestLoadEffectiveRejectsInvalidRuntimeValues(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			_, err := LoadEffective(loadRequestFixture(t, SecurityCompat, test.override))
+			_, err := LoadEffective(loadRequestFixture(t, test.override))
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("LoadEffective() error = %v, want %q", err, test.want)
 			}

@@ -126,27 +126,18 @@ type SecretDeclarationCatalog struct {
 	digest       [32]byte
 }
 
-type QualificationProfile struct {
-	Name             string         `yaml:"name"`
-	Domains          []string       `yaml:"domains"`
-	RequiredPlugins  []string       `yaml:"required_plugins"`
-	RequiredEvidence []EvidenceKind `yaml:"required_evidence"`
-}
-
 type Divergence struct {
 	ID               string           `yaml:"id"`
 	Status           DivergenceStatus `yaml:"status"`
-	Compatibility    string           `yaml:"compatibility_target"`
+	Target           string           `yaml:"target"`
 	ADR              string           `yaml:"adr"`
 	OwnerApprovalRef string           `yaml:"owner_approval_ref"`
 }
 
 type Manifest struct {
-	SchemaVersion         int                    `yaml:"schema_version"`
-	Target                Target                 `yaml:"target"`
-	Plugins               []PluginCapability     `yaml:"plugins"`
-	QualificationProfiles []QualificationProfile `yaml:"qualification_profiles"`
-	Divergences           []Divergence           `yaml:"divergences"`
-	pluginsByName         map[string]int
-	profilesByName        map[string]int
+	SchemaVersion int                `yaml:"schema_version"`
+	Target        Target             `yaml:"target"`
+	Plugins       []PluginCapability `yaml:"plugins"`
+	Divergences   []Divergence       `yaml:"divergences"`
+	pluginsByName map[string]int
 }

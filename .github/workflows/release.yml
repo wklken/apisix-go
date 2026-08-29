@@ -108,7 +108,7 @@ jobs:
         run: make test-plugin-smoke PLUGIN_SMOKE_CASE='${{ matrix.case.pattern }}'
 
   security-release-gates:
-    name: Release Security And Operational Qualification
+    name: Release Security And Operational Validation
     needs:
       - lint
       - build-and-unit
@@ -247,7 +247,7 @@ jobs:
               },
               image_reference: $image_reference,
               repository_gates: {
-                profile: "http-data-plane-v1",
+                scope: "http-data-plane",
                 result: "passed"
               },
               runner: {
@@ -270,7 +270,7 @@ jobs:
                 "go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 . ./cmd/... ./pkg/...",
                 "bash scripts/container_smoke.sh",
                 "bash scripts/etcd_recovery_smoke.sh <immutable-image-id>",
-                "bash scripts/upgrade_rollback_smoke.sh <candidate-image-id> <rollback-image-reference> <rollback-qualification-metadata>",
+                "bash scripts/upgrade_rollback_smoke.sh <candidate-image-id> <rollback-image-reference> <rollback-validation-metadata>",
                 "APISIX_GO_RUN_SOAK=1 APISIX_GO_SOAK_DURATION=30m go test -json ./pkg/route -run ^TestProxyRuntimeSoak$ -count=1 -timeout=40m",
                 "docker push <qualified-tag>",
                 "cosign sign --yes <digest-qualified-reference>"
@@ -282,7 +282,7 @@ jobs:
                 evidence_attestation: "actions/attest-build-provenance@v4.2.2"
               }
             }
-          ' > "$evidence_root/qualification-context.json"
+          ' > "$evidence_root/verification-context.json"
           manifest="$RUNNER_TEMP/release-evidence-manifest.sha256"
           (
             cd "$evidence_root"

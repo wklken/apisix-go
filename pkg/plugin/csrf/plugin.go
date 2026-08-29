@@ -18,7 +18,6 @@ import (
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/capability"
-	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -102,10 +101,6 @@ func (p *Plugin) PostInit() error {
 	if p.now == nil {
 		p.now = time.Now
 	}
-	if effective := p.StaticConfig(); effective != nil {
-		p.secureCookie = effective.Profiles.Security == config.SecurityStrict
-	}
-
 	p.config.safeMethods = map[string]struct{}{
 		http.MethodGet:     {},
 		http.MethodHead:    {},

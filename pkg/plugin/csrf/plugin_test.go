@@ -19,7 +19,6 @@ import (
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/capability"
-	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -38,15 +37,10 @@ func TestCSRFPluginSourceGuardRejectsDirectComparison(t *testing.T) {
 }
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
-	return newTestPluginWithSecurity(t, cfg, config.SecurityCompat)
-}
-
-func newTestPluginWithSecurity(t *testing.T, cfg Config, profile config.SecurityProfile) *Plugin {
 	t.Helper()
 
 	p := &Plugin{config: cfg}
 	p.SetDependencies(base.Dependencies{
-		Config:         &config.EffectiveConfig{Profiles: config.ProfileSelection{Security: profile}},
 		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
 	})
 	if err := p.Init(); err != nil {
@@ -62,26 +56,7 @@ func newTestPluginWithSecurity(t *testing.T, cfg Config, profile config.Security
 	return p
 }
 
-func TestStrictProfileSetsSecureReadableCSRFCookie(t *testing.T) {
-	p := newTestPluginWithSecurity(t, Config{Key: "secret"}, config.SecurityStrict)
-	response := httptest.NewRecorder()
-	p.Handler(http.NotFoundHandler()).ServeHTTP(
-		response,
-		httptest.NewRequest(http.MethodGet, "https://example.com/orders", nil),
-	)
-	cookies := response.Result().Cookies()
-	if len(cookies) != 1 {
-		t.Fatalf("Set-Cookie count = %d, want 1", len(cookies))
-	}
-	if !cookies[0].Secure {
-		t.Fatal("strict CSRF cookie Secure = false, want true")
-	}
-	if cookies[0].HttpOnly {
-		t.Fatal("strict CSRF cookie HttpOnly = true, want readable double-submit cookie")
-	}
-}
-
-func TestCompatProfilePreservesNonSecureCSRFCookie(t *testing.T) {
+func TestAPISIXBehaviorUsesNonSecureCSRFCookie(t *testing.T) {
 	p := newTestPlugin(t, Config{Key: "secret"})
 	response := httptest.NewRecorder()
 	p.Handler(http.NotFoundHandler()).ServeHTTP(
@@ -89,7 +64,7 @@ func TestCompatProfilePreservesNonSecureCSRFCookie(t *testing.T) {
 		httptest.NewRequest(http.MethodGet, "http://example.com/orders", nil),
 	)
 	if cookies := response.Result().Cookies(); len(cookies) != 1 || cookies[0].Secure {
-		t.Fatalf("compat cookies = %#v, want one non-Secure cookie", cookies)
+		t.Fatalf("cookies = %#v, want one non-Secure cookie", cookies)
 	}
 }
 

@@ -1,8 +1,8 @@
 # Production release runbook
 
-This runbook separates the current `http-data-plane-v1` functional/stability
-qualification from future publication and environment-specific deployment
-acceptance. It is not evidence by itself. The bounded profile remains a
+This runbook separates the current HTTP data-plane functional/stability
+verification from future publication and environment-specific deployment
+acceptance. It is not evidence by itself. The bounded release remains a
 candidate until a post-merge release-candidate run passes against one resolved
 commit. A final tag, published image, upgrade/rollback baseline, or deployment
 manifest is not required for this milestone.
@@ -10,12 +10,12 @@ manifest is not required for this milestone.
 The runtime is one APISIX-Go process per replica. An external service manager
 owns restart and replica replacement; APISIX-Go owns startup recovery,
 readiness, and graceful termination. Environment-specific deployment commands
-are outside the current qualification.
+are outside the current verification.
 
-## Functional and stability qualification
+## Functional and stability verification
 
-The qualification scope is exactly [`http-data-plane-v1`](../production-profile.md):
-an HTTP-only data plane using every APISIX 3.17-qualified HTTP-domain plugin.
+The verification scope is exactly [`HTTP data plane`](../http-data-plane.md):
+an HTTP-only data plane using every APISIX 3.17-verified HTTP-domain plugin.
 The stream-only `mqtt-proxy` remains outside this first production claim.
 The selected configuration must use the data-plane etcd provider, verified
 HTTPS etcd endpoints, no stream listeners or stream plugins, no Admin API, and
@@ -23,7 +23,7 @@ no process access-log claim. Lua/OpenResty behavior, external plugins, WASM,
 XRPC, QUIC/HTTP/3, stream TLS/mTLS, Kafka PubSub, stateful session/cache
 families, and unsupported discovery remain outside this contract.
 
-The post-merge RC resolves its selected ref once and every qualification job
+The post-merge RC resolves its selected ref once and every validation job
 uses that immutable commit. Run `.github/workflows/release-candidate.yml` for
 that ref. Its reusable gate call sets `run-operational: true` and
 `run-upgrade-rollback: false`, so a previous release is neither read nor
@@ -71,7 +71,7 @@ functional/stability milestone. Before that later work starts, obtain:
   running repository scripts. Do not substitute a branch head, mutable tag,
   drifted harness checkout, or unrecorded local build for that identity;
 - an environment-specific deployment procedure and an authenticated probe
-  credential for one route using the qualified HTTP plugin set;
+  credential for one route using the verified HTTP plugin set;
 - an external ingress request-log evidence owner and a redacted evidence bundle
   plan covering representative successful, rejected, and failed requests.
 
@@ -85,7 +85,7 @@ implementation do not mutate repository settings or bypass those protections.
 Before final publication, the release owner must verify that `master`
 remains protected, the required CI, security, and independent `Capability
 Status Contract` checks are enforced, and no self-approval is permitted. The
-capability check validates manifest, generated-output, profile, corpus, and
+capability check validates manifest, generated output, differential corpus, and
 accepted-ADR drift. The
 `production-release` environment must retain its required reviewers and wait
 timer while allowing only the explicitly approved `v*` tag policy. These are
@@ -95,9 +95,9 @@ does not change them.
 ## Future publication evidence contract
 
 If publication is later enabled, the post-merge RC and independent final must
-qualify the same recorded source revision. RC and final runs build different
-artifacts; RC evidence is never relabeled as final evidence. A read-only
-`container-evidence` job builds and loads one
+verify the same recorded source revision. RC and final runs build different
+artifacts; RC evidence applies only to the RC image and is never relabeled as
+final evidence. A read-only `container-evidence` job builds and loads one
 `linux/amd64` image, runs the non-root container smoke, creates the SBOM,
 rejects HIGH/CRITICAL Trivy findings, and archives the exact image. A separate
 guarded `publish-image` job alone has registry write, OIDC, and attestation
@@ -105,7 +105,7 @@ permissions; it downloads and checks that archive, pushes that exact image,
 captures the registry digest, and then signs and attests that digest. The
 publish job cannot start until `container-evidence`, the security/race and
 vulnerability gates, `etcd-recovery`, and `proxy-soak` all succeed. Publication
-is never an opt-out from operational qualification.
+is never an opt-out from operational verification.
 
 `.cache/telemetry` is optional and reserved for a producer; do not describe it
 as populated unless a workflow step actually creates it. The final workflow
@@ -113,10 +113,10 @@ verifies the SBOM, Trivy JSON, image archive/checksum, rollback metadata,
 recovery transcript and logs, soak JSON, source ref/commit, and publication
 record, writes `MANIFEST.sha256`, and attaches `release-evidence.tar.gz` plus
 its checksum to the GitHub release. The protected final workflow separately
-attests that bundle and includes `qualification-context.json` with the run URL,
+attests that bundle and includes `verification-context.json` with the run URL,
 source identity, timestamp, runner identity, and exact gate command/action
 identities. Actions artifacts are transient transfer objects, not the durable
-qualification record.
+verification record.
 
 ## Discover and verify the immutable image
 
@@ -144,7 +144,7 @@ tar -C "$EVIDENCE_DIR" -xzf "$EVIDENCE_DIR/release-evidence.tar.gz"
 export IMAGE_REFERENCE="$(sed -n '1p' "$EVIDENCE_DIR/container-image.txt")"
 case "$IMAGE_REFERENCE" in
   ghcr.io/wklken/apisix-go@sha256:[0-9a-fA-F]*) ;;
-  *) echo "container-image.txt is not a digest-qualified GHCR reference" >&2; exit 1 ;;
+  *) echo "container-image.txt is not a digest-verified GHCR reference" >&2; exit 1 ;;
 esac
 export IMAGE_DIGEST="${IMAGE_REFERENCE##*@}"
 [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || {
@@ -173,7 +173,7 @@ jq -e \
   .source.commit == $commit and
   .image_reference == $ref and
   (.workflow.url | startswith("https://github.com/wklken/apisix-go/actions/runs/"))
-' "$EVIDENCE_DIR/release-evidence/qualification-context.json" >/dev/null
+' "$EVIDENCE_DIR/release-evidence/verification-context.json" >/dev/null
 
 verify_recorded_artifacts() {
   local root=$1
@@ -202,14 +202,14 @@ verify_recorded_artifacts() {
 }
 verify_recorded_artifacts \
   "$EVIDENCE_DIR/release-evidence" \
-  "$EVIDENCE_DIR/release-evidence/qualified-image/rollback-metadata.json"
+  "$EVIDENCE_DIR/release-evidence/verified-image/rollback-metadata.json"
 verify_recorded_artifacts \
   "$EVIDENCE_DIR/release-evidence" \
   "$EVIDENCE_DIR/release-evidence/publication/release-metadata.json"
 ```
 
 The signature and provenance checks are fail-closed and must be run against
-that digest-qualified reference. GHCR authentication is required before the
+that digest-verified reference. GHCR authentication is required before the
 OCI attestation lookup:
 
 ```bash
@@ -231,7 +231,7 @@ The digest is operator-supplied through the selected release asset, not a value
 asserted by this document. The verification identity, source ref, and source
 commit must match that exact release tag and its
 `security-release-gates.yml` invocation; a signature or attestation for another
-repository, workflow, tag, commit, or digest does not qualify the release.
+repository, workflow, tag, commit, or digest does not verify the release.
 
 ## Clean-host acceptance
 
@@ -242,12 +242,12 @@ confirm the image user, and run the existing smoke without rebuilding:
 set -euo pipefail
 export CONTAINER_BIN=${CONTAINER_BIN:-docker}
 [[ "$(git rev-parse HEAD)" == "$SOURCE_COMMIT" ]] || {
-  echo "repository checkout does not match the qualified source commit" >&2
+  echo "repository checkout does not match the verified source commit" >&2
   exit 1
 }
 "$CONTAINER_BIN" pull "$IMAGE_REFERENCE"
 export EXPECTED_IMAGE_ID="$(sed -n '1p' \
-  "$EVIDENCE_DIR/release-evidence/qualified-image/image-config-digest.txt")"
+  "$EVIDENCE_DIR/release-evidence/verified-image/image-config-digest.txt")"
 [[ "$EXPECTED_IMAGE_ID" =~ ^sha256:[0-9a-f]{64}$ ]]
 [[ "$("$CONTAINER_BIN" image inspect --format '{{.Id}}' "$IMAGE_REFERENCE")" == "$EXPECTED_IMAGE_ID" ]]
 test "$("$CONTAINER_BIN" image inspect --format '{{.Config.User}}' "$IMAGE_REFERENCE")" = '10001:10001'
@@ -257,7 +257,7 @@ APISIX_IMAGE="$IMAGE_REFERENCE" APISIX_SKIP_BUILD=1 bash scripts/container_smoke
 The real etcd recovery gate uses the generated CA/server certificate and
 `SSL_CERT_FILE` against exactly one TLS etcd 3.6.13 member from
 `gcr.io/etcd-development/etcd:v3.6.13`. It must run as UID/GID `10001:10001`,
-use the exact `conf/config-production.yaml` profile, and reject a tag-only
+use the exact `conf/config-production.yaml` configuration, and reject a tag-only
 handoff. Pass the immutable local image ID produced by the selected runtime:
 
 ```bash
@@ -275,9 +275,9 @@ SOURCE_COMMIT="$SOURCE_COMMIT" CONTAINER_BIN="$CONTAINER_BIN" \
 The recovery command must leave the evidence transcript and captured logs in
 `.cache/release-evidence/etcd-recovery/<run-id>/` and the platform-owned
 `journal` and `generation` records in its `platform-recovery-v1/` child before
-cleanup. Validate those records with `scripts/qualification/platform_recovery_test.sh
+cleanup. Validate those records with `scripts/validation/platform_recovery_test.sh
 --evidence-dir <dir>`. A host without a compatible Docker or Podman runtime
-cannot claim recovery or clean-host qualification; record the gate as pending.
+cannot claim recovery or clean-host verification; record the gate as pending.
 
 ## Rollout probes and operator deployment
 
@@ -307,7 +307,7 @@ serviceable committed configuration, and a successful response from the
 allowlisted authenticated route. A deployment may use a TCP socket probe on
 the intended listener for process liveness instead. Record the image digest,
 replica or deployment identity, timestamps, response status, and evidence links
-for each step. Do not infer qualification from workflow YAML inspection alone.
+for each step. Do not infer verification from workflow YAML inspection alone.
 
 ## External ingress request-log evidence
 
@@ -329,7 +329,7 @@ procedure used to produce it. This is external ingress evidence, not a claim
 that the Go runtime emits these fields; container logs or process access-log
 settings alone cannot satisfy this gate.
 
-## Environment capacity and failure qualification
+## Environment capacity and failure verification
 
 Repository gates do not establish production capacity for an operator's
 topology. The production deployment must run at least two replicas under
@@ -348,7 +348,7 @@ material beyond the canonical etcd outage, such as ingress/upstream loss or a
 replica termination, with explicit health, proxy-traffic, recovery-time, and
 data-consistency expectations. This runbook does not invent a load tool,
 capacity threshold, or platform failure command. Without that operator-supplied
-evidence, that particular environment is not deployment-qualified even if every
+evidence, that particular environment is not deployment-verified even if every
 repository workflow gate passes. This does not invalidate the narrower process
 functional/stability result.
 
@@ -376,7 +376,7 @@ PUTs cover routes, upstreams, a service, and a frontend SSL resource. The gate
 observes service-selected upstream responses and a fresh TLS SNI handshake. It
 updates the direct route and service upstream, while an invalid route
 generation must remain uncommitted and the exact predecessor continues to
-serve. Plugin behavior is qualified separately by plugin-owned unit,
+serve. Plugin behavior is verified separately by plugin-owned unit,
 integration, corpus, and differential tests; this harness does not emit
 per-plugin recovery claims.
 
@@ -429,7 +429,7 @@ tar -C "$PREVIOUS_EVIDENCE_DIR" -xzf "$PREVIOUS_EVIDENCE_DIR/release-evidence.ta
 export PREVIOUS_IMAGE_REFERENCE="$(sed -n '1p' \
   "$PREVIOUS_EVIDENCE_DIR/container-image.txt")"
 [[ "$PREVIOUS_IMAGE_REFERENCE" =~ ^ghcr.io/wklken/apisix-go@sha256:[0-9a-f]{64}$ ]] || {
-  echo "previous image must be a published digest-qualified reference" >&2
+  echo "previous image must be a published digest-verified reference" >&2
   exit 1
 }
 [[ "$PREVIOUS_IMAGE_REFERENCE" != "$IMAGE_REFERENCE" ]] || {
@@ -453,7 +453,7 @@ jq -e --arg ref "$PREVIOUS_IMAGE_REFERENCE" --arg commit "$PREVIOUS_SOURCE_COMMI
 declare -F verify_recorded_artifacts >/dev/null
 verify_recorded_artifacts \
   "$PREVIOUS_EVIDENCE_DIR/release-evidence" \
-  "$PREVIOUS_EVIDENCE_DIR/release-evidence/qualified-image/rollback-metadata.json"
+  "$PREVIOUS_EVIDENCE_DIR/release-evidence/verified-image/rollback-metadata.json"
 verify_recorded_artifacts \
   "$PREVIOUS_EVIDENCE_DIR/release-evidence" \
   "$PREVIOUS_EVIDENCE_DIR/release-evidence/publication/release-metadata.json"
@@ -469,12 +469,12 @@ gh attestation verify "oci://$PREVIOUS_IMAGE_REFERENCE" \
   --source-digest "$PREVIOUS_SOURCE_COMMIT"
 
 export PREVIOUS_ARCHIVE_REFERENCE="$(sed -n '1p' \
-  "$PREVIOUS_EVIDENCE_DIR/release-evidence/qualified-image/image-reference.txt")"
+  "$PREVIOUS_EVIDENCE_DIR/release-evidence/verified-image/image-reference.txt")"
 export EXPECTED_PREVIOUS_IMAGE_ID="$(sed -n '1p' \
-  "$PREVIOUS_EVIDENCE_DIR/release-evidence/qualified-image/image-config-digest.txt")"
+  "$PREVIOUS_EVIDENCE_DIR/release-evidence/verified-image/image-config-digest.txt")"
 [[ "$EXPECTED_PREVIOUS_IMAGE_ID" =~ ^sha256:[0-9a-f]{64}$ ]]
 docker load --input \
-  "$PREVIOUS_EVIDENCE_DIR/release-evidence/qualified-image/apisix-image.tar.gz"
+  "$PREVIOUS_EVIDENCE_DIR/release-evidence/verified-image/apisix-image.tar.gz"
 export LOADED_PREVIOUS_IMAGE_ID="$(docker image inspect --format '{{.Id}}' \
   "$PREVIOUS_ARCHIVE_REFERENCE")"
 [[ "$LOADED_PREVIOUS_IMAGE_ID" == "$EXPECTED_PREVIOUS_IMAGE_ID" ]]
@@ -484,41 +484,41 @@ docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' \
 export PREVIOUS_IMAGE_ID="$(docker image inspect --format '{{.Id}}' \
   "$PREVIOUS_IMAGE_REFERENCE")"
 [[ "$PREVIOUS_IMAGE_ID" == "$EXPECTED_PREVIOUS_IMAGE_ID" ]] || {
-  echo "pulled image ID does not match the qualified archive" >&2
+  echo "pulled image ID does not match the verified archive" >&2
   exit 1
 }
 ```
 
 The first release has no previous immutable digest. Until a distinct older
-published digest exists and is exercised, rollback qualification must remain
+published digest exists and is exercised, rollback verification must remain
 open; a local image, a tag-only reference, or the current digest cannot satisfy
 that requirement. Set the repository variable
-`APISIX_GO_ROLLBACK_RELEASE_TAG` to that distinct, previously qualified final
+`APISIX_GO_ROLLBACK_RELEASE_TAG` to that distinct, previously verified final
 release before enabling upgrade/rollback or final publication. The reusable
 release workflow verifies the prior release evidence bundle, image identity,
-and a separately attested `production-qualification.json`. That record may be
+and a separately attested `production-verification.json`. That record may be
 created only after the named environment's deployment, ingress-log, capacity,
 and failure evidence has been reviewed; it binds their SHA-256 values, the
 effective configuration SHA-256, source commit, and image identity. The
-repository-generated `qualification-context.json` records only
-`repository_gates: passed` and is not a production qualification record.
+repository-generated `verification-context.json` records only
+`repository_gates: passed` and is not a production verification record.
 
 After validating that prior evidence, the workflow runs
 `scripts/upgrade_rollback_smoke.sh` against two replicas. It replaces
 one replica at a time with the candidate and then one at a time with the prior
 digest, requiring the survivor, readiness, HTTP route, and TLS route probes at
 every transition. The resulting append-only JSONL record is included in the
-durable release evidence bundle. Missing prior qualification metadata, a
+durable release evidence bundle. Missing prior verification metadata, a
 mutable reference, identical image identity, or any probe failure blocks
 publication.
 
-## Qualification decision
+## Verification decision
 
 The bounded functional/stability decision requires one post-merge RC to pass
 the evidence group listed at the start of this runbook for its resolved commit.
-That permits only the claim defined in `production-profile.md`; it does not make
-the repository or an operator environment production ready. A successful local
-shell test or workflow definition is not by itself the post-merge result.
+That permits only the claim defined in `http-data-plane.md`; it does not make
+the repository or an operator environment production ready. A successful
+local shell test or workflow definition is not by itself the post-merge result.
 
 A future published-release or deployment decision has additional gates:
 clean-host acceptance, deployment probes, environment-specific

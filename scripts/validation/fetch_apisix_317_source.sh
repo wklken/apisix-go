@@ -32,7 +32,7 @@ git -C "$destination" fetch --quiet --no-tags --depth=1 origin "refs/tags/$targe
 resolved_target=$(git -C "$destination" rev-parse 'FETCH_HEAD^{commit}')
 [[ "$resolved_target" == "$target_commit" ]] || \
     die "tag $target_tag resolved to $resolved_target, expected $target_commit"
-git -C "$destination" update-ref refs/qualification/apisix-3.17.0 "$resolved_target"
+git -C "$destination" update-ref refs/validation/apisix-3.17.0 "$resolved_target"
 
 # Keep the previous corpus snapshot reachable until every ledger row has been
 # reconciled against the 3.17.0 target. It is evidence input, never the target.
@@ -40,7 +40,7 @@ git -C "$destination" fetch --quiet --no-tags --depth=1 origin "$historical_comm
 resolved_historical=$(git -C "$destination" rev-parse 'FETCH_HEAD^{commit}')
 [[ "$resolved_historical" == "$historical_commit" ]] || \
     die "historical corpus commit resolved to $resolved_historical, expected $historical_commit"
-git -C "$destination" update-ref refs/qualification/historical-corpus "$resolved_historical"
+git -C "$destination" update-ref refs/validation/historical-corpus "$resolved_historical"
 
 printf 'APISIX source ready: path=%s target=%s historical=%s origin=%s\n' \
     "$destination" "$resolved_target" "$resolved_historical" "$origin"

@@ -140,7 +140,7 @@ jobs:
         run: make test-plugin-smoke PLUGIN_SMOKE_CASE='${{ matrix.case.pattern }}'
 
   plugin-differential:
-    name: RC Full Plugin Differential Qualification
+    name: RC Full Plugin Differential Validation
     needs: resolve-source
     runs-on: ubuntu-latest
     timeout-minutes: 120
@@ -165,28 +165,28 @@ jobs:
         run: make check-capability-drift
 
       - name: Fetch pinned APISIX 3.17 source
-        run: scripts/qualification/fetch_apisix_317_source.sh .cache/apache-apisix
+        run: scripts/validation/fetch_apisix_317_source.sh .cache/apache-apisix
 
-      - name: Run full APISIX 3.17 plugin differential qualification
+      - name: Run full APISIX 3.17 plugin differential validation
         env:
           CONTAINER_BIN: docker
           APISIX_SOURCE_DIR: .cache/apache-apisix
           APISIX_GO_CANDIDATE_SOURCE_COMMIT: ${{ needs.resolve-source.outputs.commit }}
-          APISIX_GO_BEHAVIOR_GATE_EVIDENCE_DIR: .cache/release-evidence/plugin-behavior/attempt-1
-        run: make qualify-plugin-behavior
+          APISIX_GO_BEHAVIOR_GATE_EVIDENCE_DIR: .cache/release-evidence/plugin-validation/attempt-1
+        run: make validate-plugin-behavior
 
       - name: Upload source-bound differential evidence
         if: always()
         uses: actions/upload-artifact@v7.0.1
         with:
-          name: plugin-differential-${{ github.run_id }}
-          path: .cache/release-evidence/plugin-behavior/attempt-1
+          name: plugin-validation-${{ github.run_id }}
+          path: .cache/release-evidence/plugin-validation/attempt-1
           if-no-files-found: error
           include-hidden-files: true
           retention-days: 30
 
   security-release-gates:
-    name: RC Security And Operational Qualification
+    name: RC Security And Operational Verification
     needs:
       - resolve-source
       - lint

@@ -5,7 +5,6 @@ import (
 	"reflect"
 	"testing"
 
-	appconfig "github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/generation"
 	pluginpkg "github.com/wklken/apisix-go/pkg/plugin"
 	"github.com/wklken/apisix-go/pkg/resource"
@@ -418,38 +417,6 @@ func TestPlanHTTPPluginsQuarantinesRouteErrorsAndFailsGenerationWideSources(t *t
 			t.Fatalf("dynamic disabled route plan = %+v, want quarantined", plan)
 		}
 	})
-}
-
-func TestPlanHTTPPluginsAppliesStrictPolicyAndRouteCompatibilityBeforeSideEffects(t *testing.T) {
-	strict := appconfig.ProfileSelection{Security: appconfig.SecurityStrict}
-	plan, err := PlanHTTPPlugins(context.Background(), PlanningInput{
-		Routes: []resource.Route{
-			{ID: "bad-policy", Plugins: map[string]resource.PluginConfig{
-				"key-auth": map[string]any{"hide_credentials": false},
-			}},
-			{ID: "bad-uri", Uri: "relative"},
-			{ID: "good", Uri: "/good"},
-		},
-		EnabledPlugins: []string{"key-auth"}, Profiles: strict,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(plan.Routes) != 1 || plan.Routes[0].Route.ID != "good" || len(plan.Quarantined) != 2 {
-		t.Fatalf("strict/URI planning = routes %#v quarantine %#v", plan.Routes, plan.Quarantined)
-	}
-
-	_, err = PlanHTTPPlugins(context.Background(), PlanningInput{
-		GlobalRules: []resource.GlobalRule{
-			{ID: "strict-global", Plugins: map[string]resource.PluginConfig{
-				"jwt-auth": map[string]any{"hide_credentials": true},
-			}},
-		},
-		EnabledPlugins: []string{"jwt-auth"}, Profiles: strict,
-	})
-	if err == nil {
-		t.Fatal("strict global JWT without exp was not rejected generation-wide")
-	}
 }
 
 func assertPluginPlanSource(

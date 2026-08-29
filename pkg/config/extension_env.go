@@ -8,8 +8,6 @@ import (
 	"strings"
 )
 
-const removedDeploymentProfileError = "deployment.profile was removed; use compatibility_target, security_profile, and qualification_profile"
-
 var reservedRuntimePathAliases = map[string]string{
 	"apisix_go.runtime_paths.data_dir":    "APISIXGO_RUNTIME_PATHS_DATA_DIR",
 	"apisix_go.runtime_paths.runtime_dir": "APISIXGO_RUNTIME_PATHS_RUNTIME_DIR",
@@ -112,9 +110,6 @@ func ValidateStaticOverridePath(path string) error {
 	if err := validateConfigurationPath(path); err != nil {
 		return errors.New("configuration path is invalid")
 	}
-	if path == "deployment.profile" {
-		return fmt.Errorf("%s", removedDeploymentProfileError)
-	}
 	if configStaticSchemaErr != nil {
 		return fmt.Errorf("build static configuration schema: %w", configStaticSchemaErr)
 	}
@@ -138,9 +133,6 @@ func applyAPISIXGO(root *valueNode, environment map[string]string) error {
 	for _, name := range names {
 		if !strings.HasPrefix(name, "APISIXGO_") {
 			continue
-		}
-		if name == "APISIXGO_DEPLOYMENT_PROFILE" {
-			return fmt.Errorf("%s", removedDeploymentProfileError)
 		}
 		path, ok := configStaticSchema.byAlias[name]
 		if !ok {

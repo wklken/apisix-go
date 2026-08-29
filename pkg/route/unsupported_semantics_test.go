@@ -6,7 +6,6 @@ import (
 	"strings"
 	"testing"
 
-	appconfig "github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/resource"
 )
 
@@ -149,17 +148,14 @@ func TestPlanRouteUpstreamValidatesHTTPUpstreamTypes(t *testing.T) {
 	}
 }
 
-func TestPlanRouteUpstreamAcceptsKafkaAcrossProfileAxes(t *testing.T) {
+func TestPlanRouteUpstreamAcceptsKafka(t *testing.T) {
 	static := testEffectiveConfig().Config
-	static.CompatibilityTarget = appconfig.CompatibilityAPISIX317
-	static.SecurityProfile = appconfig.SecurityStrict
-	static.QualificationProfile = appconfig.QualificationHTTPDataPlaneV1
 	_, err := PlanRouteUpstream(
-		resource.Route{ID: "profile-kafka-route", Upstream: resource.Upstream{Scheme: "kafka", Type: "chash"}},
+		resource.Route{ID: "kafka-route", Upstream: resource.Upstream{Scheme: "kafka", Type: "chash"}},
 		resource.Service{}, nil, nil, &static,
 	)
 	if err != nil {
-		t.Fatalf("PlanRouteUpstream() error = %v, want Kafka owner available across axes", err)
+		t.Fatalf("PlanRouteUpstream() error = %v, want Kafka owner available", err)
 	}
 }
 

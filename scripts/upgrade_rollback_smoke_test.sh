@@ -186,8 +186,8 @@ write_metadata() {
           image_reference: $reference,
           image_digest: $image_id,
           source: {commit: $commit},
-          qualification: {
-            profile: "http-data-plane-v1",
+		  verification: {
+		    scope: "http-data-plane",
             result: $result
           }
         }
@@ -238,7 +238,7 @@ assert_contains 'must be distinct' "$same_output"
 
 missing_output="$test_root/missing.out"
 if run_fixture missing "$candidate_ref" "$rollback_ref" "$test_root/missing.json" >"$missing_output" 2>&1; then
-    fail 'missing rollback qualification metadata unexpectedly succeeded'
+    fail 'missing rollback verification metadata unexpectedly succeeded'
 fi
 assert_contains 'metadata is not a file' "$missing_output"
 
@@ -246,7 +246,7 @@ mismatch_metadata="$test_root/mismatch.json"
 write_metadata "$mismatch_metadata" "$candidate_ref"
 mismatch_output="$test_root/mismatch.out"
 if run_fixture mismatch "$candidate_ref" "$rollback_ref" "$mismatch_metadata" >"$mismatch_output" 2>&1; then
-    fail 'mismatched rollback qualification metadata unexpectedly succeeded'
+    fail 'mismatched rollback verification metadata unexpectedly succeeded'
 fi
 assert_contains 'does not match rollback image' "$mismatch_output"
 
@@ -254,9 +254,9 @@ failed_metadata="$test_root/failed.json"
 write_metadata "$failed_metadata" "$rollback_ref" "$rollback_id" "$rollback_commit" failed
 failed_output="$test_root/failed.out"
 if run_fixture failed "$candidate_ref" "$rollback_ref" "$failed_metadata" >"$failed_output" 2>&1; then
-    fail 'failed prior qualification unexpectedly succeeded'
+    fail 'failed prior verification unexpectedly succeeded'
 fi
-assert_contains 'does not prove a passed http-data-plane-v1 qualification' "$failed_output"
+assert_contains 'does not prove a passed http-data-plane verification' "$failed_output"
 
 metadata="$test_root/rollback-metadata.json"
 write_metadata "$metadata"

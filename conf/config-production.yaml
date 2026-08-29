@@ -1,9 +1,5 @@
 # Production image override. Supply APISIXGO_DEPLOYMENT_ETCD_HOST explicitly.
 
-compatibility_target: apisix-3.17
-security_profile: compat
-qualification_profile: http-data-plane-v1
-
 debug: false
 
 apisix:

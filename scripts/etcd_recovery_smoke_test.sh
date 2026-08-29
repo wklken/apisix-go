@@ -748,13 +748,7 @@ test_ordered_happy_path() {
     assert_contains 'SSL_CERT_FILE' "$log"
     assert_contains 'https://etcd:2379' "$log"
     assert_contains 'APISIXGO_DEPLOYMENT_ETCD_TLS_VERIFY=true' "$log"
-    if grep -Fq -- 'APISIXGO_SECURITY_PROFILE=' "$log"; then
-        fail 'recovery gate overrides the production config security profile'
-    fi
     assert_contains '/conf/config-production.yaml:/usr/local/apisix/conf/config-production.yaml:ro' "$log"
-    if grep -Fq -- 'config-qualification-candidate.yaml' "$log"; then
-        fail 'recovery gate stripped the qualification profile from the production config'
-    fi
     assert_contains 'HOME=/usr/local/apisix' "$log"
     assert_contains 'APISIXGO_RUNTIME_PATHS_DATA_DIR=/usr/local/apisix/data' "$log"
     assert_contains 'APISIXGO_RUNTIME_PATHS_RUNTIME_DIR=/usr/local/apisix/run' "$log"
@@ -824,7 +818,6 @@ test_ordered_happy_path() {
         record="$platform_evidence/$record_name.json"
         [[ -s "$record" ]] || fail "missing platform recovery evidence for $record_name"
         assert_contains '"scope":"platform-recovery-v1"' "$record"
-        assert_contains '"config_profile":"http-data-plane-v1"' "$record"
         assert_contains "\"record\":\"$record_name\"" "$record"
         assert_contains "\"source_commit\":\"$source_commit\"" "$record"
         assert_contains "\"image_id\":\"$image_id\"" "$record"

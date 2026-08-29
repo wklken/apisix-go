@@ -20,7 +20,6 @@ validate_record_identity() {
     [[ $(json_string "$file" image_id) == "$expected_image" ]] || { fail "$file image_id mismatch"; return 1; }
     [[ $(json_string "$file" config_sha256) == "$expected_config" ]] || { fail "$file config_sha256 mismatch"; return 1; }
     [[ $(json_string "$file" scope) == platform-recovery-v1 ]] || { fail "$file scope mismatch"; return 1; }
-    [[ $(json_string "$file" config_profile) == http-data-plane-v1 ]] || { fail "$file config profile mismatch"; return 1; }
     [[ $(json_string "$file" probe_result) == pass ]] || { fail "$file probe did not pass"; return 1; }
     [[ -z $(json_string "$file" plugin) ]] || { fail "$file must not claim plugin recovery"; return 1; }
     before=$(json_string "$file" before_generation)
@@ -70,7 +69,7 @@ write_fixture() {
     local evidence_dir=$1 source=$2 image=$3 config=$4 output=$5 record_name
     mkdir -p "$evidence_dir"
     for record_name in "${required_records[@]}"; do
-        printf '{"scope":"platform-recovery-v1","config_profile":"http-data-plane-v1","record":"%s","source_commit":"%s","image_id":"%s","config_sha256":"%s","before_generation":"41","after_generation":"42","probe_result":"pass","etcd_tls_peer":"etcd:2379","etcd_ca_sha256":"%s","etcd_server_cert_sha256":"%s","replica_before_identity":"replica 2026-08-29T05:00:00Z","replica_after_identity":"replica 2026-08-29T05:00:01Z","survivor_probe_count":"2","survivor_window_probe_count":"1","attempt":"test","output_sha256":"%s"}\n' \
+        printf '{"scope":"platform-recovery-v1","record":"%s","source_commit":"%s","image_id":"%s","config_sha256":"%s","before_generation":"41","after_generation":"42","probe_result":"pass","etcd_tls_peer":"etcd:2379","etcd_ca_sha256":"%s","etcd_server_cert_sha256":"%s","replica_before_identity":"replica 2026-08-29T05:00:00Z","replica_after_identity":"replica 2026-08-29T05:00:01Z","survivor_probe_count":"2","survivor_window_probe_count":"1","attempt":"test","output_sha256":"%s"}\n' \
             "$record_name" "$source" "$image" "$config" "$config" "$config" "$output" >"$evidence_dir/$record_name.json"
     done
 }

@@ -2,13 +2,13 @@
 
 set -euo pipefail
 
-# Keep the fake resolver/runner contract identical to a real qualification
+# Keep the fake resolver/runner contract identical to a real validation
 # invocation: no developer or CI proxy may affect image or fixture traffic.
 unset HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY FTP_PROXY
 unset http_proxy https_proxy all_proxy no_proxy ftp_proxy
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
-script=$repo_root/scripts/qualification/plugin_differential.sh
+script=$repo_root/scripts/validation/plugin_differential.sh
 test_root=$(mktemp -d "${TMPDIR:-/tmp}/plugin-differential-test.XXXXXX")
 relative_artifact_abs=
 cleanup() {
@@ -85,13 +85,12 @@ printf '%s\n' "$*" >"$FAKE_RUNNER_ARGS"
 env | sort >"$FAKE_RUNNER_ENV"
 cat >"$APISIX_GO_DIFFERENTIAL_ARTIFACT" <<JSON
 {
-  "schema_version": 2,
-  "profile": "apisix-3.17-differential-smoke-v1",
-  "target_qualification_profile": "apisix-3.17-all-plugins-v1",
+  "schema_version": 3,
+  "suite": "apisix-3.17-plugin-differential-v1",
   "catalog_sha256": "$FAKE_CATALOG_SHA",
   "attempt": 1,
   "first_attempt": true,
-  "candidate": {"source_commit": "$APISIX_GO_CANDIDATE_SOURCE_COMMIT", "binary_sha256": "$APISIX_GO_CANDIDATE_BINARY_SHA256", "security_profile": "compat"},
+  "candidate": {"source_commit": "$APISIX_GO_CANDIDATE_SOURCE_COMMIT", "binary_sha256": "$APISIX_GO_CANDIDATE_BINARY_SHA256"},
   "oracle": {
     "schema_version": 1,
     "image_tag": "apache/apisix:3.17.0-debian",
@@ -212,7 +211,7 @@ preflight_env_log=$test_root/preflight.env
 container_log=$test_root/container.log
 candidate_commit=$(printf 'a%.0s' {1..40})
 candidate_sha256=$(sha256_file "$candidate")
-catalog_sha256=sha256:$(sha256_file "$repo_root/qualification/differential-cases.yaml")
+catalog_sha256=sha256:$(sha256_file "$repo_root/validation/differential-cases.yaml")
 selection_json='{"plugins":["cors","key-auth","proxy-rewrite","request-validation","response-rewrite"],"cases":["five","four","one","six","three","two"],"shard_index":0,"shard_count":1,"selected_case_count":6,"full_catalog_run":false}'
 export FAKE_SELECTION_JSON="$selection_json"
 export FAKE_PREFLIGHT_ARGS="$preflight_args_log"
@@ -275,7 +274,7 @@ FAKE_MACHINE_HOST_GATEWAY=192.168.127.254 \
 grep -Fq 'APISIX_GO_DIFFERENTIAL_HOST_GATEWAY=192.168.127.254' "$env_log" || fail \
     'Podman machine host alias was not forwarded as the differential host gateway'
 
-relative_artifact=.cache/qualification/differential/plugin-differential-relative-$$.json
+relative_artifact=.cache/validation/differential/plugin-differential-relative-$$.json
 relative_artifact_abs=$repo_root/$relative_artifact
 relative_output=$(
     cd "$test_root"

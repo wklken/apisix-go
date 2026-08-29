@@ -52,7 +52,7 @@ rollback_manifest_digest=${rollback_reference##*@}
     die 'candidate and rollback image digests must be distinct'
 
 [[ -f "$rollback_metadata" ]] || \
-    die "rollback qualification metadata is not a file: $rollback_metadata"
+    die "rollback verification metadata is not a file: $rollback_metadata"
 
 inspect_image() {
     local reference=$1
@@ -97,17 +97,17 @@ if ! jq -e \
       .image_reference == $reference and
       .image_digest == $image_id and
       .source.commit == $source_commit and
-      .qualification.profile == "http-data-plane-v1" and
-      .qualification.result == "passed"
+      .verification.scope == "http-data-plane" and
+      .verification.result == "passed"
     ' "$rollback_metadata" >/dev/null; then
     if jq -e '
         .schema_version == 1 and
-        .qualification.profile == "http-data-plane-v1" and
-        .qualification.result == "passed"
+        .verification.scope == "http-data-plane" and
+        .verification.result == "passed"
       ' "$rollback_metadata" >/dev/null 2>&1; then
-        die 'rollback qualification metadata identity does not match rollback image'
+        die 'rollback verification metadata identity does not match rollback image'
     fi
-    die 'rollback metadata does not prove a passed http-data-plane-v1 qualification'
+    die 'rollback metadata does not prove a passed http-data-plane verification'
 fi
 
 probe_mode=${UPGRADE_ROLLBACK_PROBE_MODE:-auto}
@@ -199,7 +199,7 @@ append_run_started() {
             manifest_digest: $rollback_manifest_digest,
             image_id: $rollback_image_id,
             source_commit: $rollback_source_commit,
-            qualification_profile: "http-data-plane-v1"
+            validation_scope: "http-data-plane"
           }
         }
     ' >>"$events"
@@ -317,7 +317,7 @@ EOF
         -extfile "$temp_dir/etcd-server.ext"
     openssl req -newkey rsa:2048 -nodes \
         -keyout "$tls_dir/etcd-client.key" -out "$temp_dir/etcd-client.csr" \
-        -subj '/CN=apisix-go-qualification-client'
+        -subj '/CN=apisix-go-verification-client'
     openssl x509 -req -in "$temp_dir/etcd-client.csr" \
         -CA "$tls_dir/ca.crt" -CAkey "$tls_dir/ca.key" \
         -CAserial "$temp_dir/ca.srl" \
@@ -359,7 +359,7 @@ docker run --detach --name "$etcd" --network "$network" --network-alias etcd \
     --client-cert-auth=true >>"$transcript"
 docker run --detach --name "$upstream" --network "$network" \
     --network-alias "$upstream_alias" busybox:1.37.0 sh -c \
-    'mkdir -p /www && printf "%s" "apisix-upgrade-rollback" >/www/qualification && exec httpd -f -p 8081 -h /www' \
+    'mkdir -p /www && printf "%s" "apisix-upgrade-rollback" >/www/verification && exec httpd -f -p 8081 -h /www' \
     >>"$transcript"
 
 sleep_until_poll() {
@@ -410,7 +410,7 @@ json_string_from_file() {
 }
 
 wait_etcd
-route_config=$(printf '{"id":"upgrade-rollback-route","status":1,"uri":"/qualification","upstream_id":"upgrade-rollback-upstream","plugins":{"request-id":{}}}')
+route_config=$(printf '{"id":"upgrade-rollback-route","status":1,"uri":"/verification","upstream_id":"upgrade-rollback-upstream","plugins":{"request-id":{}}}')
 upstream_config=$(printf '{"nodes":{"%s:8081":1},"type":"roundrobin"}' "$upstream_alias")
 frontend_cert_json=$(json_string_from_file "$tls_dir/frontend.crt")
 frontend_key_json=$(json_string_from_file "$tls_dir/frontend.key")
@@ -536,10 +536,10 @@ probe_replica() {
         "http://$status_endpoint/status/ready" 200
     append_probe "$phase" "$replica" readiness
     wait_body "$phase-$replica-http-route" \
-        "http://$http_endpoint/qualification" apisix-upgrade-rollback
+        "http://$http_endpoint/verification" apisix-upgrade-rollback
     append_probe "$phase" "$replica" http-route
     wait_body "$phase-$replica-tls-route" \
-        "https://rollout.example.test:$tls_port/qualification" apisix-upgrade-rollback \
+        "https://rollout.example.test:$tls_port/verification" apisix-upgrade-rollback \
         --cacert "$tls_dir/ca.crt" \
         --resolve "rollout.example.test:$tls_port:127.0.0.1"
     append_probe "$phase" "$replica" tls-route
@@ -564,7 +564,7 @@ probe_replica_once() {
 
     body=$(curl --fail --silent --show-error --noproxy '*' \
         --connect-timeout "$curl_timeout" --max-time "$curl_timeout" \
-        "http://$http_endpoint/qualification" 2>>"$transcript") || return 1
+        "http://$http_endpoint/verification" 2>>"$transcript") || return 1
     [[ "$body" == apisix-upgrade-rollback ]] || return 1
     append_probe "$phase" "$replica" http-route
 
@@ -572,7 +572,7 @@ probe_replica_once() {
         --connect-timeout "$curl_timeout" --max-time "$curl_timeout" \
         --cacert "$tls_dir/ca.crt" \
         --resolve "rollout.example.test:$tls_port:127.0.0.1" \
-        "https://rollout.example.test:$tls_port/qualification" \
+        "https://rollout.example.test:$tls_port/verification" \
         2>>"$transcript") || return 1
     [[ "$body" == apisix-upgrade-rollback ]] || return 1
     append_probe "$phase" "$replica" tls-route

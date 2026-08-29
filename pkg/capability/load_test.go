@@ -3,7 +3,6 @@ package capability
 import (
 	"reflect"
 	"slices"
-	"sort"
 	"strings"
 	"testing"
 
@@ -17,7 +16,6 @@ target:
   version: 3.17.0
   source_commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
 plugins: []
-qualification_profiles: []
 divergences: []
 surprise: true
 `)
@@ -80,125 +78,6 @@ func TestLoadedManifestPinsCompleteAPISIX317Inventory(t *testing.T) {
 	}
 }
 
-func TestQualifiedPluginsDistinguishesUnknownProfile(t *testing.T) {
-	m, err := Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	profile, ok := m.Qualification("http-data-plane-v1")
-	if !ok {
-		t.Fatal("http-data-plane-v1 qualification profile missing")
-	}
-	qualified := m.QualifiedPlugins("http-data-plane-v1")
-	if !slices.Equal(qualified, profile.RequiredPlugins) {
-		t.Fatalf("QualifiedPlugins() = %#v, want required plugins %#v", qualified, profile.RequiredPlugins)
-	}
-	if unknown := m.QualifiedPlugins("missing"); unknown != nil {
-		t.Fatalf("QualifiedPlugins(missing) = %#v, want nil", unknown)
-	}
-}
-
-func TestContractReadyPluginsPreservesFailClosedSelection(t *testing.T) {
-	m, err := Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got, want := m.ContractReadyPlugins(
-		"http-data-plane-v1",
-	), m.QualifiedPlugins(
-		"http-data-plane-v1",
-	); !slices.Equal(
-		got,
-		want,
-	) {
-		t.Fatalf("ContractReadyPlugins() = %#v, want existing fail-closed selection %#v", got, want)
-	}
-	if unknown := m.ContractReadyPlugins("missing"); unknown != nil {
-		t.Fatalf("ContractReadyPlugins(missing) = %#v, want nil", unknown)
-	}
-}
-
-func TestPluginQualificationDoesNotRequirePlatformRecovery(t *testing.T) {
-	m, err := Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	profile, ok := m.Qualification("http-data-plane-v1")
-	if !ok {
-		t.Fatal("http-data-plane-v1 qualification profile missing")
-	}
-	if slices.Contains(profile.RequiredEvidence, EvidenceKind("recovery")) {
-		t.Fatal("plugin qualification must not require platform recovery evidence")
-	}
-}
-
-func TestAllPluginProfileSelectsEveryGoApplicableAPISIXCapability(t *testing.T) {
-	m, err := Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	profile, ok := m.Qualification("apisix-3.17-all-plugins-v1")
-	if !ok {
-		t.Fatal("apisix-3.17-all-plugins-v1 qualification profile missing")
-	}
-
-	want := make([]string, 0, len(m.Plugins))
-	for _, plugin := range m.Plugins {
-		if plugin.Namespace != NamespaceAPISIX || plugin.Behavior == BehaviorNotApplicable ||
-			len(plugin.Factories) == 0 {
-			continue
-		}
-		want = append(want, plugin.Name)
-	}
-	sort.Strings(want)
-	if !slices.Equal(profile.RequiredPlugins, want) {
-		t.Fatalf(
-			"required plugins = %#v, want every Go-applicable APISIX capability %#v",
-			profile.RequiredPlugins,
-			want,
-		)
-	}
-	if !slices.Equal(profile.Domains, []string{"http", "stream"}) {
-		t.Fatalf("qualification domains = %#v, want [http stream]", profile.Domains)
-	}
-}
-
-func TestHTTPDataPlaneQualificationMatchesQualifiedHTTPSubset(t *testing.T) {
-	m, err := Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	allPlugins, ok := m.Qualification("apisix-3.17-all-plugins-v1")
-	if !ok {
-		t.Fatal("apisix-3.17-all-plugins-v1 qualification profile missing")
-	}
-	httpDataPlane, ok := m.Qualification("http-data-plane-v1")
-	if !ok {
-		t.Fatal("http-data-plane-v1 qualification profile missing")
-	}
-
-	want := make([]string, 0, len(allPlugins.RequiredPlugins))
-	for _, name := range allPlugins.RequiredPlugins {
-		plugin, found := m.Plugin(name)
-		if !found {
-			t.Fatalf("all-plugin qualification references missing plugin %q", name)
-		}
-		if slices.Contains(plugin.Domains, DomainHTTP) {
-			want = append(want, name)
-		}
-	}
-	if len(want) != 110 {
-		t.Fatalf("qualified HTTP subset count = %d, want 110", len(want))
-	}
-	if slices.Contains(want, "mqtt-proxy") {
-		t.Fatal("qualified HTTP subset unexpectedly contains stream-only mqtt-proxy")
-	}
-	if !slices.Equal(httpDataPlane.RequiredPlugins, want) {
-		t.Fatalf("http-data-plane-v1 required plugins = %#v, want ordered HTTP subset %#v",
-			httpDataPlane.RequiredPlugins, want)
-	}
-}
-
 func TestParseRejectsInvalidManifestFixtures(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -242,13 +121,6 @@ func TestParseRejectsInvalidManifestFixtures(t *testing.T) {
 			want: "duplicate plugin",
 		},
 		{
-			name: "duplicate profile id",
-			mutate: func(m *Manifest) {
-				m.QualificationProfiles = append(m.QualificationProfiles, m.QualificationProfiles[0])
-			},
-			want: "duplicate profile",
-		},
-		{
 			name: "duplicate factory id",
 			mutate: func(m *Manifest) {
 				duplicate := m.Plugins[0]
@@ -290,13 +162,6 @@ func TestParseRejectsInvalidManifestFixtures(t *testing.T) {
 			want: "unknown domain",
 		},
 		{
-			name: "unknown qualification domain",
-			mutate: func(m *Manifest) {
-				m.QualificationProfiles[0].Domains = []string{"tcp"}
-			},
-			want: "unknown domain",
-		},
-		{
 			name: "unknown behavior",
 			mutate: func(m *Manifest) {
 				m.Plugins[0].Behavior = BehaviorStatus("unknown")
@@ -309,13 +174,6 @@ func TestParseRejectsInvalidManifestFixtures(t *testing.T) {
 				m.Plugins[0].Evidence.Schema.State = EvidenceState("unknown")
 			},
 			want: "unknown state",
-		},
-		{
-			name: "unknown required evidence kind",
-			mutate: func(m *Manifest) {
-				m.QualificationProfiles[0].RequiredEvidence = []EvidenceKind{EvidenceKind("unknown")}
-			},
-			want: "unknown required evidence kind",
 		},
 		{
 			name: "unknown divergence status",
@@ -465,55 +323,6 @@ func TestParseRejectsInvalidManifestFixtures(t *testing.T) {
 			want: "constructor",
 		},
 		{
-			name: "qualification domains unsorted",
-			mutate: func(m *Manifest) {
-				m.QualificationProfiles[0].Domains = []string{"stream", "http"}
-			},
-			want: "domains must be sorted and unique",
-		},
-		{
-			name: "qualification domains duplicate",
-			mutate: func(m *Manifest) {
-				m.QualificationProfiles[0].Domains = []string{"http", "http"}
-			},
-			want: "domains must be sorted and unique",
-		},
-		{
-			name: "qualification plugins unsorted",
-			mutate: func(m *Manifest) {
-				m.QualificationProfiles[0].RequiredPlugins = []string{"request-id", "another"}
-			},
-			want: "required_plugins must be sorted and unique",
-		},
-		{
-			name: "qualification plugins duplicate",
-			mutate: func(m *Manifest) {
-				m.QualificationProfiles[0].RequiredPlugins = []string{"request-id", "request-id"}
-			},
-			want: "required_plugins must be sorted and unique",
-		},
-		{
-			name: "qualification evidence unsorted",
-			mutate: func(m *Manifest) {
-				m.QualificationProfiles[0].RequiredEvidence = []EvidenceKind{EvidenceUnit, EvidenceSchema}
-			},
-			want: "required_evidence must be sorted and unique",
-		},
-		{
-			name: "qualification evidence duplicate",
-			mutate: func(m *Manifest) {
-				m.QualificationProfiles[0].RequiredEvidence = []EvidenceKind{EvidenceSchema, EvidenceSchema}
-			},
-			want: "required_evidence must be sorted and unique",
-		},
-		{
-			name: "required plugin without factory",
-			mutate: func(m *Manifest) {
-				m.QualificationProfiles[0].RequiredPlugins = []string{"missing-plugin"}
-			},
-			want: "has no factory",
-		},
-		{
 			name: "missing divergence reference",
 			mutate: func(m *Manifest) {
 				m.Plugins[0].DivergenceIDs = []string{"missing-divergence"}
@@ -565,66 +374,6 @@ func TestParseRejectsInvalidManifestFixtures(t *testing.T) {
 	}
 }
 
-func TestQualifiedPluginsFailClosedByEvidenceState(t *testing.T) {
-	tests := []struct {
-		name      string
-		state     EvidenceState
-		reason    string
-		qualified bool
-	}{
-		{name: "verified", state: EvidenceVerified, qualified: true},
-		{
-			name:      "not an HTTP plugin",
-			state:     EvidenceNotApplicable,
-			reason:    "not an HTTP plugin",
-			qualified: true,
-		},
-		{
-			name:      "no external dependency",
-			state:     EvidenceNotApplicable,
-			reason:    "plugin has no external dependency",
-			qualified: true,
-		},
-		{
-			name:      "explained not applicable",
-			state:     EvidenceNotApplicable,
-			reason:    "not applicable: plugin is stateless",
-			qualified: true,
-		},
-		{name: "missing", state: EvidenceMissing, reason: "evidence is not recorded", qualified: false},
-		{name: "deferred", state: EvidenceDeferred, reason: "evidence is deferred", qualified: false},
-		{name: "flaky", state: EvidenceFlaky, reason: "evidence is flaky", qualified: false},
-		{name: "stale", state: EvidenceStale, reason: "evidence is stale", qualified: false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			manifest := testManifest()
-			claim := manifest.Plugins[0].Evidence.Schema
-			claim.State = tt.state
-			claim.Owner = "fixture-owner"
-			claim.Reason = tt.reason
-			if tt.state == EvidenceVerified {
-				claim.Refs = []string{"fixture/schema"}
-			} else {
-				claim.Refs = nil
-			}
-			manifest.Plugins[0].Evidence.Schema = claim
-			loaded := parseManifest(t, manifest)
-			got := loaded.QualifiedPlugins("http-data-plane-v1")
-			if tt.qualified {
-				if !slices.Equal(got, []string{"request-id"}) {
-					t.Fatalf("QualifiedPlugins() = %#v, want [request-id]", got)
-				}
-				return
-			}
-			if got == nil || len(got) != 0 {
-				t.Fatalf("QualifiedPlugins() = %#v, want non-nil empty slice", got)
-			}
-		})
-	}
-}
-
 func TestManifestQueriesReturnDeepCopies(t *testing.T) {
 	manifest := testManifest()
 	copyPlugin := manifest.Plugins[0]
@@ -666,28 +415,6 @@ func TestManifestQueriesReturnDeepCopies(t *testing.T) {
 	if !reflect.DeepEqual(original, again) {
 		t.Fatal("Plugin returned mutable manifest storage")
 	}
-
-	qualification, ok := loaded.Qualification("http-data-plane-v1")
-	if !ok {
-		t.Fatal("qualification profile missing")
-	}
-	originalQualification := yamlQualificationSnapshot(t, qualification)
-	qualification.Domains[0] = "stream"
-	qualification.RequiredPlugins[0] = "mutated"
-	qualification.RequiredEvidence[0] = EvidenceUnit
-	againQualification, _ := loaded.Qualification("http-data-plane-v1")
-	if !reflect.DeepEqual(originalQualification, againQualification) {
-		t.Fatal("Qualification returned mutable manifest storage")
-	}
-
-	qualified := loaded.QualifiedPlugins("http-data-plane-v1")
-	if !slices.Equal(qualified, []string{"request-id"}) {
-		t.Fatalf("QualifiedPlugins() = %#v, want [request-id]", qualified)
-	}
-	qualified[0] = "mutated"
-	if again := loaded.QualifiedPlugins("http-data-plane-v1"); !slices.Equal(again, []string{"request-id"}) {
-		t.Fatalf("QualifiedPlugins() returned mutable storage: %#v", again)
-	}
 }
 
 func testManifest() Manifest {
@@ -722,19 +449,6 @@ func testManifest() Manifest {
 			SupportedPlatforms: []string{
 				"linux-amd64",
 				"darwin-arm64",
-			},
-		}},
-		QualificationProfiles: []QualificationProfile{{
-			Name:            "http-data-plane-v1",
-			Domains:         []string{"http"},
-			RequiredPlugins: []string{"request-id"},
-			RequiredEvidence: []EvidenceKind{
-				EvidenceUpstream,
-				EvidenceDifferential,
-				EvidenceFailure,
-				EvidenceRealDependency,
-				EvidenceSchema,
-				EvidenceUnit,
 			},
 		}},
 		Divergences: []Divergence{{
@@ -794,19 +508,6 @@ func yamlPluginSnapshot(t *testing.T, plugin PluginCapability) PluginCapability 
 	var snapshot PluginCapability
 	if err := yaml.Unmarshal(data, &snapshot); err != nil {
 		t.Fatalf("yaml.Unmarshal(plugin) error = %v", err)
-	}
-	return snapshot
-}
-
-func yamlQualificationSnapshot(t *testing.T, profile QualificationProfile) QualificationProfile {
-	t.Helper()
-	data, err := yaml.Marshal(profile)
-	if err != nil {
-		t.Fatalf("yaml.Marshal(profile) error = %v", err)
-	}
-	var snapshot QualificationProfile
-	if err := yaml.Unmarshal(data, &snapshot); err != nil {
-		t.Fatalf("yaml.Unmarshal(profile) error = %v", err)
 	}
 	return snapshot
 }

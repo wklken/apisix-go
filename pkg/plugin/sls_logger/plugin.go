@@ -17,7 +17,6 @@ import (
 
 	"github.com/felixge/httpsnoop"
 	"github.com/wklken/apisix-go/pkg/capability"
-	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -306,10 +305,6 @@ func (p *Plugin) PostInit() error {
 
 	if p.config.SSLVerify == nil {
 		verify := false
-		if effective := p.StaticConfig(); effective != nil &&
-			effective.Profiles.Security == config.SecurityStrict {
-			verify = true
-		}
 		p.config.SSLVerify = &verify
 	}
 	if p.config.Timeout == 0 {

@@ -21,9 +21,6 @@ func parseSetOverrides(values []string) (map[string]any, error) {
 			return nil, errors.New("--set must use path=value")
 		}
 		if err := config.ValidateStaticOverridePath(path); err != nil {
-			if path == "deployment.profile" {
-				return nil, err
-			}
 			return nil, errors.New("--set path does not map to a static configuration field")
 		}
 		if _, exists := result[path]; exists {
@@ -61,7 +58,7 @@ func loadEffectiveForStartup(
 func loadEffectiveForManifest(
 	configPath string,
 	setValues []string,
-	manifest *capability.Manifest,
+	_ *capability.Manifest,
 ) (*config.EffectiveConfig, error) {
 	overrides, err := parseSetOverrides(setValues)
 	if err != nil {
@@ -91,7 +88,6 @@ func loadEffectiveForManifest(
 		DefaultPaths: paths,
 		Environment:  environmentMap(os.Environ()),
 		CLIOverrides: overrides,
-		Manifest:     manifest,
 	})
 }
 

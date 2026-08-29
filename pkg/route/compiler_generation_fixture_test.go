@@ -765,21 +765,11 @@ func newRouteGenerationFactory(
 	if err != nil {
 		t.Fatalf("build generation secret resolver: %v", err)
 	}
-	profiles := config.ProfileSelection{
-		Compatibility: config.CompatibilityTarget(manifest.Target.Name),
-		Security:      config.SecurityCompat,
-	}
-	staticConfig := config.Config{
-		CompatibilityTarget: profiles.Compatibility,
-		SecurityProfile:     profiles.Security,
-	}
+	staticConfig := config.Config{}
 	if configure != nil {
 		configure(&staticConfig)
 	}
-	effective := &config.EffectiveConfig{
-		Config:   staticConfig,
-		Profiles: profiles,
-	}
+	effective := &config.EffectiveConfig{Config: staticConfig}
 	factory, err := compiler.NewWorkerCompilerFactory(
 		manifest,
 		effective,

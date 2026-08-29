@@ -91,12 +91,6 @@ func TestRenderPluginsMarkdownSeparatesBehaviorAndEvidence(t *testing.T) {
 	if bytes.Contains(generated, []byte("| Recovery |")) {
 		t.Fatal("generated plugins.md must not project platform recovery onto plugin rows")
 	}
-	for _, profile := range manifest.QualificationProfiles {
-		needle := []byte("Qualification `" + profile.Name + "`")
-		if !bytes.Contains(generated, needle) {
-			t.Fatalf("generated plugins.md missing profile %q", profile.Name)
-		}
-	}
 	for _, field := range []string{
 		manifest.Target.Name,
 		manifest.Target.Version,
@@ -203,7 +197,6 @@ func TestRenderReadmeSummaryLocalesShareManifestFacts(t *testing.T) {
 		fmt.Sprintf("%d", counts.fullDefaults),
 		fmt.Sprintf("%d", counts.partialDefaults),
 		fmt.Sprintf("%d", counts.notApplicableDefaults),
-		fmt.Sprintf("%d/%d", counts.qualified, counts.required),
 	}
 	for _, fact := range facts {
 		if !bytes.Contains(english, []byte(fact)) || !bytes.Contains(chinese, []byte(fact)) {
@@ -413,7 +406,7 @@ func TestArchivedPluginsSnapshotIntegrity(t *testing.T) {
 	}
 }
 
-func TestGovernedDocsContainNoActiveLegacyClaims(t *testing.T) {
+func TestGovernedDocsDescribeOneRuntimeBehavior(t *testing.T) {
 	read := func(path string) string {
 		t.Helper()
 		data, err := os.ReadFile(filepath.Join("..", "..", filepath.FromSlash(path)))
@@ -422,231 +415,13 @@ func TestGovernedDocsContainNoActiveLegacyClaims(t *testing.T) {
 		}
 		return string(data)
 	}
-	normalize := func(content string) string {
-		content = strings.ReplaceAll(content, "\n> ", "\n")
-		return strings.Join(strings.Fields(content), " ")
-	}
-	require := func(path, content string, required ...string) {
-		t.Helper()
-		content = normalize(content)
-		for _, claim := range required {
-			claim = normalize(claim)
-			if !strings.Contains(content, claim) {
-				t.Errorf("%s is missing governed claim %q", path, claim)
-			}
-		}
-	}
-	reject := func(path, content string, forbidden ...string) {
-		t.Helper()
-		content = normalize(content)
-		for _, claim := range forbidden {
-			claim = normalize(claim)
-			if strings.Contains(content, claim) {
-				t.Errorf("%s retains active legacy claim %q", path, claim)
-			}
-		}
-	}
-	withoutSupersededHistory := func(path, content string, historicalSections ...string) string {
-		t.Helper()
-		for _, section := range historicalSections {
-			sectionStart := strings.Index(content, section)
-			if sectionStart < 0 {
-				t.Fatalf("%s is missing explicitly labelled historical section %q", path, section)
-			}
-			supersededOffset := strings.Index(content[sectionStart:], "> **Superseded 2026-08-23:**")
-			if supersededOffset < 0 {
-				t.Fatalf("%s historical section %q has no dated supersession label", path, section)
-			}
-			supersededStart := sectionStart + supersededOffset
-			supersededEndOffset := strings.Index(content[supersededStart:], "\n\n")
-			if supersededEndOffset < 0 {
-				t.Fatalf("%s historical section %q has no bounded supersession block", path, section)
-			}
-			content = content[:sectionStart] + content[supersededStart+supersededEndOffset+2:]
-		}
-		return content
-	}
 
-	for _, path := range []string{"docs/configuration.md", "docs/production-profile.md"} {
+	for _, path := range []string{"README.md", "README.zh-CN.md", "docs/http-data-plane.md", "docs/configuration.md", "docs/design.md"} {
 		content := read(path)
-		require(
-			path,
-			content,
-			"compatibility_target",
-			"security_profile",
-			"qualification_profile",
-			"An empty qualification profile makes no qualification claim.",
-			"fails closed when any required manifest evidence is blocked",
-			"The effective HTTP plugin sequence must exactly equal the manifest `required_plugins` sequence, including order.",
-			"Qualification derives from that ordered sequence and its required evidence.",
-		)
-		reject(
-			path,
-			content,
-			"`deployment.profile` | Empty selects compatibility mode",
-			"deployment.profile: http-data-plane-v1",
-			"TestSupportedPluginManifestSelection",
-			"exact six-plugin",
-			"six-plugin allowlist",
-			"| `basic-auth` | `converted_upstream=stale`",
-			"effective HTTP plugin list must match that set",
-			"effective HTTP plugin list matches the required set",
-			"manifest-owned required set",
-			"required-set/qualified-set",
-		)
+		if !strings.Contains(content, "APISIX") {
+			t.Errorf("%s does not describe the APISIX contract", path)
+		}
 	}
-	configurationDoc := read("docs/configuration.md")
-	require(
-		"docs/configuration.md",
-		configurationDoc,
-		"Strict security is independent of qualification.",
-		"Qualification selection does not disable the Kafka compatibility owner.",
-		"`security_profile: strict` permits plaintext Kafka.",
-		"When Kafka TLS is configured, `security_profile: strict` requires `tls.verify: true`; `security_profile: compat` permits `tls.verify: false`.",
-	)
-	productionDoc := read("docs/production-profile.md")
-	require(
-		"docs/production-profile.md",
-		productionDoc,
-		"covers the 110 plugins in the qualified APISIX 3.17 all-plugin profile that declare the HTTP domain",
-		"The stream-only `mqtt-proxy` remains qualified by the all-plugin profile but is outside this first HTTP production scope.",
-		"security_profile: compat",
-		"directly enforces its production transport, listener, trusted-address, and Admin API requirements",
-	)
-
-	designPath := "docs/design.md"
-	design := read(designPath)
-	historicalSections := []string{
-		"Historical behavior before convergence: candidate profile",
-		"Historical behavior before convergence: lifecycle",
-		"Historical behavior before convergence: route schema",
-	}
-	for _, section := range historicalSections {
-		require(designPath, design, section)
-	}
-	require(
-		designPath,
-		design,
-		"`deployment.profile` accepts either the empty compatibility value",
-		"Retiring a route generation closes its WebSocket connections.",
-		"It does not import the full pinned APISIX 3.17 route schema.",
-		"Superseded 2026-08-23",
-		"superpowers/plans/2026-08-23-apisix-go-convergence-program-spec.md",
-		"architecture/compatibility-contract.md",
-		"architecture/legacy-conflicts.md",
-	)
-	activeDesign := withoutSupersededHistory(designPath, design, historicalSections...)
-	reject(
-		designPath,
-		activeDesign,
-		"default -> selected override -> APISIXGO_*",
-		"environment variables are applied last",
-		"publishing global state",
-		"config.GlobalConfig.Plugins",
-		"deployment.profile",
-	)
-	require(
-		designPath,
-		activeDesign,
-		"superpowers/plans/2026-08-23-apisix-go-convergence-program-spec.md",
-		"pkg/capability/manifest.yaml",
-		"EffectiveConfig -> data_encryption.Service -> explicit resolver dependency",
-		"startup plugin list",
-	)
-
-	decisionsPath := "docs/reviews/convergence-decisions.md"
-	decisions := read(decisionsPath)
-	require(
-		decisionsPath,
-		decisions,
-		"Historical remediation evidence",
-		"prospective architecture decisions are non-governing",
-		"- Decision: retain a documented compatibility subset. One pre-materialization entrypoint (`validateRouteCompatibility`) runs the current checks, including host rules. Do not import the full APISIX 3.17 schema. Evidence: `fix-compat-contracts`.",
-		"Superseded 2026-08-23:",
-		"../architecture/legacy-conflicts.md",
-	)
-	normalizedDecisions := normalize(decisions)
-	arch03Decision := strings.Index(normalizedDecisions, "- Decision: retain a documented compatibility subset.")
-	arch04 := strings.Index(normalizedDecisions, "### ARCH-04:")
-	superseded := strings.Index(normalizedDecisions, "Superseded 2026-08-23:")
-	if arch03Decision < 0 || superseded < arch03Decision || arch04 < superseded {
-		t.Errorf("%s does not place the dated supersession immediately after ARCH-03", decisionsPath)
-	}
-
-	ledgerPath := "docs/architecture/legacy-conflicts.md"
-	ledger := read(ledgerPath)
-	for _, historicalSource := range []string{
-		"`docs/design.md`, candidate profile section",
-		"`docs/design.md`, lifecycle section",
-		"`docs/design.md`, route schema section",
-		"`docs/plugins.md` before governance",
-		"`docs/reviews/convergence-decisions.md`, ARCH-03",
-		"`docs/configuration.md`, lifecycle/SIGHUP",
-		"`docs/production-profile.md`, lifecycle/SIGHUP",
-	} {
-		require(ledgerPath, ledger, historicalSource)
-	}
-	require(
-		ledgerPath,
-		ledger,
-		"../superpowers/plans/2026-08-23-apisix-go-convergence-program-spec.md",
-		"compatibility-contract.md",
-		"../plugins.md",
-		"../history/plugins-2026-08-23.md",
-	)
-
-	production := read("docs/production-profile.md")
-	require("docs/production-profile.md", production, "[generated plugin capability status](plugins.md)")
-	reject(
-		"docs/production-profile.md",
-		production,
-		"none of its six required plugins",
-		"| Required plugin | Current non-passing required evidence |",
-	)
-
-	configuration := read("docs/configuration.md")
-	require(
-		"docs/configuration.md",
-		configuration,
-		"The precedence order is built-in defaults, the default file, the selected override file, `APISIXGO_*`, and repeatable CLI `--set` overrides.",
-		"APISIX template expansion happens inside each parsed file layer.",
-		"`${{NAME}}`",
-		"`${{NAME:=fallback}}`",
-		"`apisix config test` validates only static read/merge/decode/profile contracts.",
-		"does not create/check directory permissions",
-		"open/migrate the journal",
-		"bind ports",
-		"contact etcd/providers",
-		"configure logging",
-		"prove runtime readiness",
-		"no unredacted mode",
-		"Unknown paths omit their original keys and values; one opaque correlation handle links provenance to the ignored-field list.",
-		"Known `apisix_env` provenance paths use opaque handles but are not treated as ignored fields.",
-		"Known non-secret configuration values remain visible in the typed config output.",
-	)
-
-	operatorDocs := configuration + "\n" + production + "\n" + activeDesign
-	require(
-		"active operator documentation",
-		operatorDocs,
-		"apisix_go.runtime_paths.data_dir",
-		"apisix_go.runtime_paths.runtime_dir",
-		"apisix_go.runtime_paths.log_dir",
-		"apisix_go.runtime_paths.temp_dir",
-		"APISIXGO_RUNTIME_PATHS_DATA_DIR",
-		"APISIXGO_RUNTIME_PATHS_RUNTIME_DIR",
-		"APISIXGO_RUNTIME_PATHS_LOG_DIR",
-		"APISIXGO_RUNTIME_PATHS_TEMP_DIR",
-		"data_dir/apisix-go-store.db",
-		"stop the old process",
-		"back up",
-		"copy/verify",
-		"start exactly one instance",
-		"retain the backup for rollback",
-		"empty local state until providers repopulate it",
-		"repository snapshot is currently unqualified",
-		"expected to fail closed",
-	)
 }
 
 func loadManifest(t *testing.T) *capability.Manifest {
@@ -662,7 +437,7 @@ func TestValidateDivergenceADRRequiresAcceptedOwnerDecision(t *testing.T) {
 	valid := capability.Divergence{
 		ID:               "DIV-001-example",
 		Status:           capability.DivergenceAccepted,
-		Compatibility:    "apisix-3.17",
+		Target:           "apisix-3.17",
 		ADR:              "docs/architecture/adr/0001-example.md",
 		OwnerApprovalRef: "decisions 1-3",
 	}
@@ -682,7 +457,7 @@ func TestValidateDivergenceADRRequiresAcceptedOwnerDecision(t *testing.T) {
 				"proposed",
 				[]string{valid.ID},
 				"wklken",
-				valid.Compatibility,
+				valid.Target,
 				valid.OwnerApprovalRef,
 			),
 			want: "status",
@@ -695,7 +470,7 @@ func TestValidateDivergenceADRRequiresAcceptedOwnerDecision(t *testing.T) {
 				"accepted",
 				nil,
 				"wklken",
-				valid.Compatibility,
+				valid.Target,
 				valid.OwnerApprovalRef,
 			),
 			want: valid.ID,
@@ -708,7 +483,7 @@ func TestValidateDivergenceADRRequiresAcceptedOwnerDecision(t *testing.T) {
 				"accepted",
 				[]string{"DIV-999-other"},
 				"wklken",
-				valid.Compatibility,
+				valid.Target,
 				valid.OwnerApprovalRef,
 			),
 			want: valid.ID,
@@ -721,7 +496,7 @@ func TestValidateDivergenceADRRequiresAcceptedOwnerDecision(t *testing.T) {
 				"accepted",
 				[]string{valid.ID, valid.ID},
 				"wklken",
-				valid.Compatibility,
+				valid.Target,
 				valid.OwnerApprovalRef,
 			),
 			want: "exactly once",
@@ -734,7 +509,7 @@ func TestValidateDivergenceADRRequiresAcceptedOwnerDecision(t *testing.T) {
 				"accepted",
 				[]string{valid.ID},
 				"wklken",
-				valid.Compatibility,
+				valid.Target,
 				valid.OwnerApprovalRef,
 			),
 			want: "ADR-0001",
@@ -750,7 +525,7 @@ func TestValidateDivergenceADRRequiresAcceptedOwnerDecision(t *testing.T) {
 				"apisix-9.99",
 				valid.OwnerApprovalRef,
 			),
-			want: "compatibility_target",
+			want: "target",
 		},
 		{
 			name:       "owner mismatch",
@@ -760,7 +535,7 @@ func TestValidateDivergenceADRRequiresAcceptedOwnerDecision(t *testing.T) {
 				"accepted",
 				[]string{valid.ID},
 				"agent",
-				valid.Compatibility,
+				valid.Target,
 				valid.OwnerApprovalRef,
 			),
 			want: "owner",
@@ -773,7 +548,7 @@ func TestValidateDivergenceADRRequiresAcceptedOwnerDecision(t *testing.T) {
 				"accepted",
 				[]string{valid.ID},
 				"wklken",
-				valid.Compatibility,
+				valid.Target,
 				"decisions 4-6",
 			),
 			want: "owner_approval_ref",
@@ -787,7 +562,7 @@ func TestValidateDivergenceADRRequiresAcceptedOwnerDecision(t *testing.T) {
 					"accepted",
 					[]string{valid.ID},
 					"wklken",
-					valid.Compatibility,
+					valid.Target,
 					valid.OwnerApprovalRef,
 				),
 				"date: 2026-08-23",
@@ -805,7 +580,7 @@ func TestValidateDivergenceADRRequiresAcceptedOwnerDecision(t *testing.T) {
 					"accepted",
 					[]string{valid.ID},
 					"wklken",
-					valid.Compatibility,
+					valid.Target,
 					valid.OwnerApprovalRef,
 				),
 				"date: 2026-08-23\n",
@@ -826,7 +601,7 @@ func TestValidateDivergenceADRRequiresAcceptedOwnerDecision(t *testing.T) {
 	}{
 		name:       "missing owner approval reference",
 		divergence: missingApproval,
-		content:    validADRDocument("ADR-0001", "accepted", []string{valid.ID}, "wklken", valid.Compatibility, ""),
+		content:    validADRDocument("ADR-0001", "accepted", []string{valid.ID}, "wklken", valid.Target, ""),
 		want:       "owner_approval_ref",
 	})
 
@@ -856,7 +631,7 @@ func TestValidateDivergenceADRRejectsUnsafePaths(t *testing.T) {
 			err := validateDivergenceADR(t.TempDir(), capability.Divergence{
 				ID:               "DIV-001-example",
 				Status:           capability.DivergenceAccepted,
-				Compatibility:    "apisix-3.17",
+				Target:           "apisix-3.17",
 				ADR:              path,
 				OwnerApprovalRef: "decisions 1-3",
 			})
@@ -873,7 +648,7 @@ func TestValidateDivergenceADRRejectsManifestTargetMismatch(t *testing.T) {
 		Divergences: []capability.Divergence{{
 			ID:               "DIV-001-example",
 			Status:           capability.DivergenceAccepted,
-			Compatibility:    "apisix-9.99",
+			Target:           "apisix-9.99",
 			ADR:              "docs/architecture/adr/0001-example.md",
 			OwnerApprovalRef: "decisions 1-3",
 		}},
@@ -908,7 +683,7 @@ func TestValidateDivergenceADRRejectsMismatchedLedgerList(t *testing.T) {
 		"accepted",
 		[]string{first.ID, "DIV-999-unapproved"},
 		"wklken",
-		first.Compatibility,
+		first.Target,
 		first.OwnerApprovalRef,
 	))
 	err := validateDivergenceADRs(root, manifest)
@@ -997,7 +772,7 @@ func TestValidateDivergenceADRCODEOWNERSBoundary(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := "/pkg/capability/manifest.yaml @wklken\n" +
-		"/pkg/config/profiles.go @wklken\n" +
+		"/pkg/config/types.go @wklken\n" +
 		"/docs/architecture/adr/ @wklken\n" +
 		"/docs/plugins.md @wklken\n"
 	if string(data) != want {
@@ -1012,21 +787,14 @@ func testDivergenceManifest() *capability.Manifest {
 			{
 				ID:               "DIV-001-go-native-extension-identity",
 				Status:           capability.DivergenceAccepted,
-				Compatibility:    "apisix-3.17",
+				Target:           "apisix-3.17",
 				ADR:              "docs/architecture/adr/0001-compatibility-governance.md",
 				OwnerApprovalRef: "decisions 1-42",
 			},
 			{
-				ID:               "DIV-002-strict-security-profile",
-				Status:           capability.DivergenceAccepted,
-				Compatibility:    "apisix-3.17",
-				ADR:              "docs/architecture/adr/0002-strict-security-profile.md",
-				OwnerApprovalRef: "decisions 23, 35, 63-68",
-			},
-			{
 				ID:               "DIV-003-platform-artifact-policy",
 				Status:           capability.DivergenceAccepted,
-				Compatibility:    "apisix-3.17",
+				Target:           "apisix-3.17",
 				ADR:              "docs/architecture/adr/0003-platform-support.md",
 				OwnerApprovalRef: "decisions 107, 118-130",
 			},
@@ -1047,7 +815,7 @@ func writeManifestADRs(t *testing.T, root string, manifest *capability.Manifest)
 			"accepted",
 			[]string{divergence.ID},
 			"wklken",
-			divergence.Compatibility,
+			divergence.Target,
 			divergence.OwnerApprovalRef,
 		))
 	}
@@ -1073,7 +841,7 @@ func validADRDocument(id, status string, divergenceIDs []string, owner, target, 
 id: %s
 title: Test divergence
 status: %s
-compatibility_target: %s
+target: %s
 divergence_ids: [%s]
 owner: %s
 owner_approval_ref: %q

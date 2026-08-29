@@ -116,7 +116,6 @@ func TestBuildGlobalNotFoundHandlerRunsGlobalPlugins(t *testing.T) {
 	plan, err := PlanHTTPPlugins(context.Background(), PlanningInput{
 		GlobalRules:    []resource.GlobalRule{globalRule},
 		EnabledPlugins: []string{"exit-transformer"},
-		Profiles:       testEffectiveConfig().Profiles,
 	})
 	if err != nil {
 		t.Fatalf("PlanHTTPPlugins() error = %v", err)

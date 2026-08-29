@@ -51,19 +51,23 @@ func TestCapabilityManifestSelection(t *testing.T) {
 	t.Logf("capability selection: %d manifest files cover %d factory keys", len(files), factoryCount)
 }
 
-func TestAllPluginProfileHasConvertedEvidenceForEveryFactory(t *testing.T) {
+func TestDifferentialSuiteHasConvertedEvidenceForEveryFactory(t *testing.T) {
 	manifest, err := capability.Load()
 	if err != nil {
 		t.Fatalf("load capability manifest: %v", err)
 	}
-	profile, ok := manifest.Qualification("apisix-3.17-all-plugins-v1")
-	if !ok {
-		t.Fatal("apisix-3.17-all-plugins-v1 qualification profile is missing")
+	repoRoot, err := repositoryRootFromWorkingDirectory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := loadDifferentialCatalog(differentialCatalogPath(repoRoot), differentialCases())
+	if err != nil {
+		t.Fatal(err)
 	}
 
 	var problems []string
 	factoryCount := 0
-	for _, pluginName := range profile.RequiredPlugins {
+	for _, pluginName := range catalog.RequiredPlugins {
 		plugin, found := manifest.Plugin(pluginName)
 		if !found {
 			problems = append(problems, "missing capability "+pluginName)
@@ -97,8 +101,8 @@ func TestAllPluginProfileHasConvertedEvidenceForEveryFactory(t *testing.T) {
 		t.Fatalf("all-plugin converted evidence problems = %v", problems)
 	}
 	t.Logf(
-		"all-plugin converted evidence covers %d capabilities and %d factory keys",
-		len(profile.RequiredPlugins),
+		"differential suite converted evidence covers %d capabilities and %d factory keys",
+		len(catalog.RequiredPlugins),
 		factoryCount,
 	)
 }

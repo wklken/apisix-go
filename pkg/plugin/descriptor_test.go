@@ -70,7 +70,6 @@ plugins:
       failure: {state: not_applicable, refs: [], owner: test, reason: not exercised by descriptor unit fixture}
     divergence_ids: []
     supported_platforms: [linux-amd64]
-qualification_profiles: []
 divergences: []
 `))
 	if err != nil {

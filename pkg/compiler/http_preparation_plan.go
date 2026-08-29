@@ -67,7 +67,7 @@ func (prepared *PreparedGeneration) planHTTPPreparation(
 		PluginConfigs: resources.pluginConfigs, GlobalRules: resources.globalRules,
 		Consumers: consumers, ConsumerGroups: consumerGroups,
 		EnabledPlugins: slices.Clone(prepared.effective.Config.Plugins),
-		DynamicPlugins: dynamicPlugins, Profiles: prepared.effective.Profiles,
+		DynamicPlugins: dynamicPlugins,
 	})
 	if err != nil {
 		return nil, err

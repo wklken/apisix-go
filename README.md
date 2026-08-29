@@ -43,7 +43,7 @@ Target `apisix-3.17` is Apache APISIX `3.17.0` at `9ef2ecab67f652d38365049613610
 
 The manifest contains **119** capability rows and **104** APISIX defaults. Of the **99** Go-applicable defaults, **99** are full, **0** are partial, and **0** are deferred; **5** defaults are not applicable to the Go plugin contract.
 
-Qualification profile `http-data-plane-v1` currently has **110/110** contract-ready required plugins. Candidate qualification additionally requires a matching immutable runtime artifact.
+Existing Apache APISIX HTTP data-plane users need no apisix-go-specific configuration: review the incompatibilities below, replace the image, and restart with the same APISIX configuration.
 
 Explicit manifest gaps:
 - `ai` (`apisix`): N/A: APISIX uses this empty-schema module as a Lua router and balancer coordinator; Go owns those responsibilities in its native pipeline.
@@ -61,8 +61,8 @@ The exact status definitions, supported behavior, and remaining gaps are project
 
 - [Plugin support and remaining gaps](docs/plugins.md)
 - [Configuration compatibility](docs/configuration.md)
-- [Candidate HTTP data-plane profile](docs/production-profile.md) (awaiting release and operations qualification)
-- [Production release runbook](docs/runbooks/production-release.md) (qualification evidence required)
+- [HTTP data-plane compatibility](docs/http-data-plane.md)
+- [Production release runbook](docs/runbooks/production-release.md)
 - [Proxy runtime performance acceptance](docs/performance/proxy-runtime-acceptance.md)
 - [Design notes](docs/design.md)
 - [Standalone plugin integration tests](t/plugin/README.md)

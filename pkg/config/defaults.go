@@ -14,8 +14,6 @@ func builtinDefaults(paths RuntimePaths) *valueNode {
 			"client_max_body_size": defaultClientMaxBodySize,
 			"client_body_timeout":  defaultClientBodyTimeout.String(),
 		}},
-		"compatibility_target": string(CompatibilityAPISIX317),
-		"security_profile":     string(SecurityCompat),
 		"apisix": map[string]any{
 			"status":  map[string]any{"ip": "127.0.0.1", "port": 7085},
 			"control": map[string]any{"ip": "127.0.0.1", "port": 9090},

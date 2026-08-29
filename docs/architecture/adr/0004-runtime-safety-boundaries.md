@@ -2,7 +2,7 @@
 id: ADR-0004
 title: Bound ambiguous stream routing and embedded Lua execution
 status: accepted
-compatibility_target: apisix-3.17
+target: apisix-3.17
 divergence_ids: [DIV-004-runtime-safety-boundaries]
 owner: wklken
 owner_approval_ref: "PR #163 remediation decisions, 2026-08-26"

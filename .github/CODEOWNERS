@@ -1,4 +1,4 @@
 /pkg/capability/manifest.yaml @wklken
-/pkg/config/profiles.go @wklken
+/pkg/config/types.go @wklken
 /docs/architecture/adr/ @wklken
 /docs/plugins.md @wklken

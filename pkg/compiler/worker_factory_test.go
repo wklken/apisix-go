@@ -570,23 +570,6 @@ func TestWorkerCompilerFactoryPrepareGenerationOwnsEffectiveConfig(t *testing.T)
 		t.Fatal("acyclic shared alias was rejected or changed concrete type")
 	}
 
-	mismatch := workerTestEffective(manifest)
-	mismatch.Profiles.Security = config.SecurityStrict
-	if got, err := NewWorkerCompilerFactory(
-		manifest, mismatch, &workerTestMaterializer{digest: compiler.schemas.catalog.Digest()},
-		workerTestRuntimeObservers(),
-	); got != nil || !errors.Is(err, ErrInvalidInput) {
-		t.Fatalf("profile mismatch = %#v/%v", got, err)
-	}
-	invalid := workerTestEffective(manifest)
-	invalid.Config.SecurityProfile = config.SecurityProfile("invalid")
-	invalid.Profiles = invalid.Config.Profiles()
-	if got, err := NewWorkerCompilerFactory(
-		manifest, invalid, &workerTestMaterializer{digest: compiler.schemas.catalog.Digest()},
-		workerTestRuntimeObservers(),
-	); got != nil || !errors.Is(err, ErrInvalidInput) {
-		t.Fatalf("invalid profile = %#v/%v", got, err)
-	}
 	opaque := workerTestEffective(manifest)
 	opaque.Config.PluginAttr = map[string]map[string]any{"bad": {"callback": func() {}}}
 	if got, err := NewWorkerCompilerFactory(
@@ -971,19 +954,8 @@ func containsWorkerTestError(err error, text string) bool {
 	return err != nil && strings.Contains(err.Error(), text)
 }
 
-func workerTestEffective(manifest *capability.Manifest) *config.EffectiveConfig {
-	profiles := config.ProfileSelection{
-		Compatibility: config.CompatibilityTarget(manifest.Target.Name),
-		Security:      config.SecurityCompat,
-	}
-	return &config.EffectiveConfig{
-		Config: config.Config{
-			CompatibilityTarget:  profiles.Compatibility,
-			SecurityProfile:      profiles.Security,
-			QualificationProfile: profiles.Qualification,
-		},
-		Profiles: profiles,
-	}
+func workerTestEffective(_ *capability.Manifest) *config.EffectiveConfig {
+	return &config.EffectiveConfig{}
 }
 
 func resourceConsumer(id string) resource.Consumer {

@@ -16,7 +16,6 @@ import (
 	"github.com/felixge/httpsnoop"
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/capability"
-	appconfig "github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
@@ -351,20 +350,7 @@ func (p *Plugin) PostInit() error {
 	}
 	if p.config.TLSVerify == nil {
 		verify := false
-		if effective := p.StaticConfig(); effective != nil &&
-			effective.Profiles.Security == appconfig.SecurityStrict {
-			verify = true
-		}
 		p.config.TLSVerify = &verify
-	}
-	if effective := p.StaticConfig(); effective != nil &&
-		effective.Profiles.Security == appconfig.SecurityStrict {
-		if !p.config.UseTLS {
-			return fmt.Errorf("security_profile strict: rocketmq-logger use_tls must be true")
-		}
-		if !p.config.TLSVerifyValue() {
-			return fmt.Errorf("security_profile strict: rocketmq-logger tls_verify must be true")
-		}
 	}
 	if !p.config.UseTLS {
 		logger.Warn("Keeping use_tls disabled in rocketmq-logger configuration is a security risk")

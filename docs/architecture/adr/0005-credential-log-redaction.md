@@ -2,7 +2,7 @@
 id: ADR-0005
 title: Redact credential material from authentication diagnostics
 status: accepted
-compatibility_target: apisix-3.17
+target: apisix-3.17
 divergence_ids: [DIV-005-credential-log-redaction]
 owner: wklken
 owner_approval_ref: "six-plugin rollout owner decision, 2026-08-27"
@@ -24,7 +24,7 @@ status, response body, and challenge header. Its diagnostics instead emit
 stable classifications for an invalid authorization format, invalid Basic
 base64 encoding, or an invalid decoded Basic value. The raw Authorization
 value, encoded credential payload, decoded username, and decoded password are
-not included in logs in any security profile.
+not included in logs in any runtime configuration.
 
 # Consequences
 

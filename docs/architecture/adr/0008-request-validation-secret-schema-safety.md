@@ -2,7 +2,7 @@
 id: ADR-0008
 title: Bound secret-backed request-validation schema execution
 status: proposed
-compatibility_target: apisix-3.17
+target: apisix-3.17
 divergence_ids: [DIV-008-request-validation-secret-schema-safety]
 owner: wklken
 owner_approval_ref: ""

@@ -459,8 +459,6 @@ func testPlannedPluginBinding(
 
 func testEffectiveConfig() *appconfig.EffectiveConfig {
 	static := appconfig.Config{
-		CompatibilityTarget: appconfig.CompatibilityAPISIX317,
-		SecurityProfile:     appconfig.SecurityCompat,
 		Apisix: appconfig.Apisix{
 			NodeListen: []appconfig.NodeListen{{Port: 9080}},
 			ProxyMode:  "http",
@@ -482,10 +480,6 @@ func testEffectiveConfig() *appconfig.EffectiveConfig {
 	root := filepath.Join(os.TempDir(), "apisix-go-route-test")
 	return &appconfig.EffectiveConfig{
 		Config: static,
-		Profiles: appconfig.ProfileSelection{
-			Compatibility: appconfig.CompatibilityAPISIX317,
-			Security:      appconfig.SecurityCompat,
-		},
 		Paths: appconfig.RuntimePaths{
 			DataDir: filepath.Join(root, "data"), RuntimeDir: filepath.Join(root, "run"),
 			LogDir: filepath.Join(root, "log"), TempDir: filepath.Join(root, "tmp"),

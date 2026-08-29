@@ -91,14 +91,14 @@ test-plugin-harness:
 .PHONY: test-rocketmq-patch
 test-rocketmq-patch:
 	$(GO_CACHE_RUNNER) go mod download github.com/apache/rocketmq-client-go/v2@v2.1.3-0.20231106021916-c9e197c3af45
-	$(GO_CACHE_RUNNER) bash scripts/qualification/rocketmq_patch_gate.sh
+	$(GO_CACHE_RUNNER) bash scripts/validation/rocketmq_patch_gate.sh
 
 .PHONY: test-rocketmq-client-patch
 test-rocketmq-client-patch: test-rocketmq-patch test-rocketmq-nested
 
 .PHONY: test-rocketmq-nested
 test-rocketmq-nested:
-	cd third_party/rocketmq-client-go && ../../scripts/go_cache.sh run -- go test ./internal/remote -run '^(TestTLSHandshakeHonorsContext|TestTLSVerificationUsesRootsAndAddressServerName|TestTLSVerificationRejectsUnknownAuthority|TestTLSVerificationRejectsWrongServerName|TestTLSCompatibilityModeSkipsVerification|TestInvokeOneWayHonorsContextWhileConnectionLockIsHeld|TestDoRequestHonorsContextWhileConnectionWriteLockIsHeld|TestDoRequestCancelsBlockedWrite|TestDoRequestWaitsForCancellationDeadlineCallbackBeforeReusingConnection|TestSendRequestPassesCallerContextThroughInterceptor)$$' -count=1
+	cd third_party/rocketmq-client-go && ../../scripts/go_cache.sh run -- go test ./internal/remote -run '^(TestTLSHandshakeHonorsContext|TestTLSVerificationUsesRootsAndAddressServerName|TestTLSVerificationRejectsUnknownAuthority|TestTLSVerificationRejectsWrongServerName|TestTLSVerificationDisabledSkipsVerification|TestInvokeOneWayHonorsContextWhileConnectionLockIsHeld|TestDoRequestHonorsContextWhileConnectionWriteLockIsHeld|TestDoRequestCancelsBlockedWrite|TestDoRequestWaitsForCancellationDeadlineCallbackBeforeReusingConnection|TestSendRequestPassesCallerContextThroughInterceptor)$$' -count=1
 	cd third_party/rocketmq-client-go && ../../scripts/go_cache.sh run -- go test ./internal -run '^(TestTopicRouteLockHonorsContext|TestDefaultClientOptionsOwnsRemotingConfig|TestStartTaskCancellationSkipsDelayedOperation|TestRMQClientShutdownJoinsAllStartTasks)$$' -count=1
 	cd third_party/rocketmq-client-go && ../../scripts/go_cache.sh run -- go test ./producer -run '^(TestSendSyncStopsBeforeRetryWhenContextIsCanceled|TestSendOneWayStopsBeforeRetryWhenContextIsCanceled|TestTLSOptionsPropagateToEachProducerRemotingConfig)$$' -count=1
 
@@ -112,16 +112,16 @@ check-capability-drift:
 
 .PHONY: test-capability-status
 test-capability-status:
-	$(GO_CACHE_RUNNER) go test ./pkg/capability ./pkg/config ./pkg/plugin -run '^(TestLoadedManifest|TestManifest|TestProfileSelection|TestCapabilityManifest|TestCapabilityRegistry)' -count=1
-	APISIX_GO_SKIP_PLUGIN_INTEGRATION=1 $(GO_CACHE_RUNNER) go test ./t/plugin -run '^(TestCapabilityManifestSelection|TestManifestCorpusValidates|TestUpstreamCorpusAccountingWithoutSourceCheckout|TestCorpusEvidenceMatchesCompatibilityTarget)$$' -count=1
+	$(GO_CACHE_RUNNER) go test ./pkg/capability ./pkg/config ./pkg/plugin -run '^(TestLoadedManifest|TestManifest|TestCapabilityManifest|TestCapabilityRegistry)' -count=1
+	APISIX_GO_SKIP_PLUGIN_INTEGRATION=1 $(GO_CACHE_RUNNER) go test ./t/plugin -run '^(TestCapabilityManifestSelection|TestManifestCorpusValidates|TestUpstreamCorpusAccountingWithoutSourceCheckout|TestCorpusEvidenceMatchesPinnedAPISIXTarget)$$' -count=1
 
 .PHONY: test-plugin-behavior-gate
 test-plugin-behavior-gate:
-	bash scripts/qualification/plugin_behavior_gate_test.sh
+	bash scripts/validation/plugin_behavior_gate_test.sh
 
-.PHONY: qualify-plugin-behavior
-qualify-plugin-behavior:
-	bash scripts/qualification/plugin_behavior_gate.sh
+.PHONY: validate-plugin-behavior
+validate-plugin-behavior:
+	bash scripts/validation/plugin_behavior_gate.sh
 
 PLUGIN_SMOKE_CASE ?=
 

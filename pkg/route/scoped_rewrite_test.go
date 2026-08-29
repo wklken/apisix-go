@@ -242,7 +242,7 @@ func TestScopedRewriteMaterializesRoutePluginConfigAndServiceWinners(t *testing.
 	effective := httpPluginAllowlist("request-id")
 	plan, err := PlanHTTPPlugins(context.Background(), PlanningInput{
 		Routes: routes, Services: services, PluginConfigs: pluginConfigs,
-		EnabledPlugins: []string{"request-id"}, Profiles: effective.Profiles,
+		EnabledPlugins: []string{"request-id"},
 	})
 	if err != nil {
 		t.Fatalf("PlanHTTPPlugins() error = %v", err)
@@ -422,7 +422,7 @@ func TestGlobalNotFoundInjectsOnlyRequestContextSystemPlugin(t *testing.T) {
 	effective := testEffectiveConfig()
 	effective.Config.Plugins = nil
 	effective.Config.NginxConfig.HTTP.ClientMaxBodySize = 1
-	plan, err := PlanHTTPPlugins(context.Background(), PlanningInput{Profiles: effective.Profiles})
+	plan, err := PlanHTTPPlugins(context.Background(), PlanningInput{})
 	if err != nil {
 		t.Fatalf("PlanHTTPPlugins() error = %v", err)
 	}
@@ -676,7 +676,6 @@ func TestServiceProvenanceUsesAuthoritativeRouteServiceID(t *testing.T) {
 			},
 		}},
 		EnabledPlugins: []string{"proxy-rewrite"},
-		Profiles:       testEffectiveConfig().Profiles,
 	})
 	if err != nil {
 		t.Fatalf("PlanHTTPPlugins() error = %v", err)
@@ -712,7 +711,6 @@ func TestBuildRejectsGlobalRuleWithoutEmbeddedID(t *testing.T) {
 			Plugins: map[string]resource.PluginConfig{"request-id": map[string]any{}},
 		}},
 		EnabledPlugins: []string{"request-id"},
-		Profiles:       testEffectiveConfig().Profiles,
 	})
 	if err == nil {
 		t.Fatal("PlanHTTPPlugins() error = nil, want fail-closed missing global-rule ID")

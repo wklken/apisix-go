@@ -58,15 +58,6 @@ func TestSchemaSetCoversManifestFactories(t *testing.T) {
 
 func TestCompilerNewRejectsUnregisteredManifestFactory(t *testing.T) {
 	manifest := mustManifest(t)
-	for profileIndex := range manifest.QualificationProfiles {
-		required := manifest.QualificationProfiles[profileIndex].RequiredPlugins[:0]
-		for _, factory := range manifest.QualificationProfiles[profileIndex].RequiredPlugins {
-			if factory != "proxy-control" {
-				required = append(required, factory)
-			}
-		}
-		manifest.QualificationProfiles[profileIndex].RequiredPlugins = required
-	}
 	for index := range manifest.Plugins {
 		if manifest.Plugins[index].Name == "proxy-control" {
 			manifest.Plugins[index].Name = "unregistered-schema-factory"

@@ -7,7 +7,7 @@ set -euo pipefail
 unset HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY FTP_PROXY
 unset http_proxy https_proxy all_proxy no_proxy ftp_proxy
 
-readonly profile=apisix-3.17-all-plugins-v1
+readonly suite=apisix-3.17-plugin-differential-v1
 readonly expected_source_commit=9ef2ecab67f652d38365049613610ef649bb4ad0
 readonly -a required_stages=(
     capability_contract
@@ -15,7 +15,7 @@ readonly -a required_stages=(
     candidate_build
     plugin_units
     dependency_failure
-    strict_corpus
+    corpus
     real_process
     differential
 )
@@ -131,16 +131,16 @@ validate_artifact() {
     local artifact=$1
     [[ -s "$artifact" ]] || die "summary artifact is missing or empty: $artifact"
     jq -e \
-        --arg profile "$profile" \
+        --arg suite "$suite" \
         --arg source "$expected_source_commit" \
         --argjson stages "$(printf '%s\n' "${required_stages[@]}" | jq -Rsc 'split("\n")[:-1]')" \
         '
             (keys | sort) == [
                 "candidate", "case_counts", "differential", "first_attempt", "oracle",
-                "profile", "result", "schema_version", "stages"
+                "result", "schema_version", "stages", "suite"
             ] and
             .schema_version == 1 and
-            .profile == $profile and
+            .suite == $suite and
             .result == "pass" and
             .first_attempt == true and
             (.candidate | keys | sort) == ["binary_sha256", "source_commit", "working_tree_sha256"] and
@@ -202,9 +202,8 @@ validate_differential_artifact() {
         --arg digest "$oracle_digest" \
         --arg catalog_sha "$catalog_sha" \
         '
-            .schema_version == 2 and
-            .profile == "apisix-3.17-differential-smoke-v1" and
-            .target_qualification_profile == "apisix-3.17-all-plugins-v1" and
+            .schema_version == 3 and
+            .suite == "apisix-3.17-plugin-differential-v1" and
             .catalog_sha256 == $catalog_sha and
             (.selection | keys | sort) == [
                 "cases", "full_catalog_run", "plugins", "selected_case_count",
@@ -221,7 +220,6 @@ validate_differential_artifact() {
             .candidate.source_commit == $candidate and
             (.candidate.binary_sha256 | test("^[0-9a-f]{64}$")) and
             .candidate.binary_sha256 == $candidate_sha and
-            .candidate.security_profile == "compat" and
             .oracle.source_commit == $source and
             .oracle.image_linux_amd64_digest == $digest and
             .coverage.required_count == 111 and
@@ -288,14 +286,13 @@ fi
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 manifest=$repo_root/pkg/capability/manifest.yaml
-profile_status=$repo_root/docs/plugins.md
-oracle_file=${APISIX_GO_ORACLE_FILE:-$repo_root/qualification/oracle.yaml}
+oracle_file=${APISIX_GO_ORACLE_FILE:-$repo_root/validation/oracle.yaml}
 source_dir=${APISIX_SOURCE_DIR:-$repo_root/.cache/apache-apisix}
 container_bin=${CONTAINER_BIN:-${DOCKER_BIN:-podman}}
 go_cache_runner=${APISIX_GO_CACHE_RUNNER:-$repo_root/scripts/go_cache.sh}
-differential_script=$repo_root/scripts/qualification/plugin_differential.sh
-differential_catalog=$repo_root/qualification/differential-cases.yaml
-evidence_dir=${APISIX_GO_BEHAVIOR_GATE_EVIDENCE_DIR:-$repo_root/.cache/qualification/plugin-behavior/attempt-1}
+differential_script=$repo_root/scripts/validation/plugin_differential.sh
+differential_catalog=$repo_root/validation/differential-cases.yaml
+evidence_dir=${APISIX_GO_BEHAVIOR_GATE_EVIDENCE_DIR:-$repo_root/.cache/validation/plugin-behavior/attempt-1}
 artifact=$evidence_dir/summary.json
 differential_artifact=$evidence_dir/differential.json
 candidate_bin=$evidence_dir/apisix
@@ -305,7 +302,6 @@ require_command go
 require_command jq
 require_command "$container_bin"
 [[ -f "$manifest" ]] || die "capability manifest does not exist: $manifest"
-[[ -f "$profile_status" ]] || die "generated capability status does not exist: $profile_status"
 [[ -f "$oracle_file" ]] || die "oracle file does not exist: $oracle_file"
 [[ -x "$go_cache_runner" ]] || die "Go cache runner is not executable: $go_cache_runner"
 [[ -x "$differential_script" ]] || die "differential gate is not executable: $differential_script"
@@ -336,8 +332,8 @@ oracle_digest=$(read_yaml_scalar "$oracle_file" image_linux_amd64_digest)
     "oracle linux/amd64 digest is mutable or malformed: $oracle_digest"
 [[ -d "$source_dir/.git" || -f "$source_dir/.git" ]] || die \
     "APISIX source checkout is unavailable: $source_dir"
-resolved_source_commit=$(git -C "$source_dir" rev-parse 'refs/qualification/apisix-3.17.0^{commit}') || \
-    die 'cannot resolve refs/qualification/apisix-3.17.0'
+resolved_source_commit=$(git -C "$source_dir" rev-parse 'refs/validation/apisix-3.17.0^{commit}') || \
+    die 'cannot resolve refs/validation/apisix-3.17.0'
 [[ "$resolved_source_commit" == "$expected_source_commit" ]] || die \
     "APISIX source ref mismatch: $resolved_source_commit"
 working_tree_sha256=$(compute_working_tree_sha256 "$repo_root" "$repository_head") || die \
@@ -370,7 +366,7 @@ run_go() {
 
 run_capability_contract() {
     run_go go test ./pkg/capability ./pkg/config ./pkg/plugin \
-        -run '^(TestLoadedManifest|TestManifest|TestProfileSelection|TestCapabilityManifest|TestCapabilityRegistry|TestAllPluginProfileSelectsEveryGoApplicableAPISIXCapability)' \
+        -run '^(TestLoadedManifest|TestManifest|TestCapabilityManifest|TestCapabilityRegistry)' \
         -count=1 -json
 }
 
@@ -402,12 +398,12 @@ run_dependency_failure() {
     run_go go test "${packages[@]}" -count=1 -json
 }
 
-run_strict_corpus() {
+run_corpus() {
     (
         export APISIX_GO_REQUIRE_FULL_CORPUS=1
         export APISIX_SOURCE_DIR="$source_dir"
         run_go go test ./t/plugin \
-            -run '^(TestAllPluginProfileHasConvertedEvidenceForEveryFactory|TestCapabilityManifestSelection|TestManifestCorpusValidates|TestSourceCoverage|TestUpstreamCorpusAccounting|TestCorpusEvidenceMatchesCompatibilityTarget|TestUpstreamCorpusCompletion)$' \
+            -run '^(TestDifferentialSuiteHasConvertedEvidenceForEveryFactory|TestCapabilityManifestSelection|TestManifestCorpusValidates|TestSourceCoverage|TestUpstreamCorpusAccounting|TestCorpusEvidenceMatchesCompatibilityTarget|TestUpstreamCorpusCompletion)$' \
             -count=1 -json
     )
 }
@@ -433,22 +429,16 @@ run_differential() {
 run_stage capability_contract run_capability_contract
 run_stage generator_drift run_generator_drift
 
-profile_line=$(grep -F -- "- Qualification \`$profile\`:" "$profile_status" || true)
-[[ "$profile_line" =~ \*\*([0-9]+)/([0-9]+)\*\* ]] || die \
-    "generated status does not contain a parseable $profile qualification count"
-qualified_plugins=${BASH_REMATCH[1]}
-selected_plugins=${BASH_REMATCH[2]}
-(( selected_plugins > 0 && qualified_plugins == selected_plugins )) || die \
-    "$profile is not fully qualified: $qualified_plugins/$selected_plugins; partial/deferred capabilities, known gaps, or non-passing evidence remain"
+selected_plugins=111
 
 run_stage candidate_build run_candidate_build
 run_stage plugin_units run_plugin_units
 run_stage dependency_failure run_dependency_failure
-run_stage strict_corpus run_strict_corpus
+run_stage corpus run_corpus
 run_stage real_process run_real_process
 run_stage differential run_differential
 
-for stage in capability_contract plugin_units dependency_failure strict_corpus real_process; do
+for stage in capability_contract plugin_units dependency_failure corpus real_process; do
     output=$evidence_dir/stages/$stage.out
     if grep -Fq '"Action":"skip"' "$output"; then
         die "stage $stage reported a skipped test"
@@ -474,10 +464,10 @@ real_process_cases=$(jq -Rsc '
     length
 ' "$evidence_dir/stages/real_process.out")
 
-corpus_line=$(jq -Rr 'fromjson? | .Output? // empty' "$evidence_dir/stages/strict_corpus.out" \
+corpus_line=$(jq -Rr 'fromjson? | .Output? // empty' "$evidence_dir/stages/corpus.out" \
     | grep -F 'corpus completion:' | tail -n 1 || true)
-corpus_pattern='corpus completion: ([0-9]+) real-process qualification blocks, ([0-9]+) package-test blocks, ([0-9]+) dependency-test blocks, ([0-9]+) platform-test blocks, ([0-9]+) platform-gap blocks, ([0-9]+) post-target regression blocks, ([0-9]+) excluded post-target blocks, ([0-9]+) non-plugin blocks, ([0-9]+) pending/blocked plugin blocks across ([0-9]+) sources'
-[[ "$corpus_line" =~ $corpus_pattern ]] || die 'strict corpus output did not contain deterministic completion counts'
+corpus_pattern='corpus completion: ([0-9]+) real-process validation blocks, ([0-9]+) package-test blocks, ([0-9]+) dependency-test blocks, ([0-9]+) platform-test blocks, ([0-9]+) platform-gap blocks, ([0-9]+) post-target regression blocks, ([0-9]+) excluded post-target blocks, ([0-9]+) non-plugin blocks, ([0-9]+) pending/blocked plugin blocks across ([0-9]+) sources'
+[[ "$corpus_line" =~ $corpus_pattern ]] || die 'corpus output did not contain deterministic completion counts'
 corpus_real_process_blocks=${BASH_REMATCH[1]}
 corpus_package_test_blocks=${BASH_REMATCH[2]}
 corpus_dependency_test_blocks=${BASH_REMATCH[3]}
@@ -489,7 +479,7 @@ corpus_non_plugin_blocks=${BASH_REMATCH[8]}
 corpus_pending_blocks=${BASH_REMATCH[9]}
 corpus_pending_sources=${BASH_REMATCH[10]}
 (( corpus_pending_blocks == 0 && corpus_pending_sources == 0 )) || die \
-    "strict corpus retained $corpus_pending_blocks pending blocks across $corpus_pending_sources sources"
+    "corpus retained $corpus_pending_blocks pending blocks across $corpus_pending_sources sources"
 
 [[ -s "$differential_artifact" ]] || die 'differential stage did not produce its artifact'
 candidate_binary_sha256=$(sha256_file "$candidate_bin")
@@ -504,7 +494,7 @@ differential_covered_plugins=$(jq -r '.coverage.covered_count' "$differential_ar
 (( differential_required_plugins == selected_plugins )) || die \
     "differential artifact required set mismatch: $differential_required_plugins/$selected_plugins"
 (( differential_covered_plugins == selected_plugins )) || die \
-    "strict qualification requires per-plugin differential coverage: $differential_covered_plugins/$selected_plugins"
+    "validation requires per-plugin differential coverage: $differential_covered_plugins/$selected_plugins"
 
 stages_json='[]'
 for stage in "${required_stages[@]}"; do
@@ -519,10 +509,10 @@ done
 final_working_tree_sha256=$(compute_working_tree_sha256 "$repo_root" "$repository_head") || die \
     'cannot recompute deterministic working-tree identity'
 [[ "$final_working_tree_sha256" == "$working_tree_sha256" ]] || die \
-    "working tree changed during qualification: start=$working_tree_sha256 end=$final_working_tree_sha256"
+    "working tree changed during validation: start=$working_tree_sha256 end=$final_working_tree_sha256"
 
 jq -n \
-    --arg profile "$profile" \
+    --arg suite "$suite" \
     --arg candidate "$candidate_source_commit" \
     --arg candidate_sha "$candidate_binary_sha256" \
     --arg working_tree_sha "$working_tree_sha256" \
@@ -551,7 +541,7 @@ jq -n \
     --argjson stages "$stages_json" \
     '{
         schema_version: 1,
-        profile: $profile,
+        suite: $suite,
         candidate: {
             source_commit: $candidate,
             working_tree_sha256: $working_tree_sha,

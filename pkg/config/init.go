@@ -8,9 +8,6 @@ import (
 )
 
 func LoadEffective(req LoadRequest) (*EffectiveConfig, error) {
-	if req.Manifest == nil {
-		return nil, fmt.Errorf("load effective config: capability manifest is required")
-	}
 	if req.DefaultPath == "" || !filepath.IsAbs(req.DefaultPath) {
 		return nil, fmt.Errorf("load effective config: default path must be a non-empty absolute path")
 	}
@@ -41,9 +38,6 @@ func LoadEffective(req LoadRequest) (*EffectiveConfig, error) {
 		}
 		root = mergeNodes(root, override)
 	}
-	if lookupStaticNode(root, "deployment.profile") != nil {
-		return nil, fmt.Errorf("%s", removedDeploymentProfileError)
-	}
 	if err := applyAPISIXGO(root, req.Environment); err != nil {
 		return nil, err
 	}
@@ -55,18 +49,14 @@ func LoadEffective(req LoadRequest) (*EffectiveConfig, error) {
 	if err != nil {
 		return nil, err
 	}
-	profiles := cfg.Profiles()
-	if err := profiles.Validate(req.Manifest); err != nil {
-		return nil, err
-	}
 	paths, err = resolveRuntimePaths(paths, root, req)
 	if err != nil {
 		return nil, err
 	}
 	effective := &EffectiveConfig{
-		Config: *cfg, Provenance: flattenProvenance(root), Profiles: profiles, Paths: paths,
+		Config: *cfg, Provenance: flattenProvenance(root), Paths: paths,
 	}
-	if err := validateEffective(effective, unused, req.Manifest); err != nil {
+	if err := validateEffective(effective, unused); err != nil {
 		return nil, err
 	}
 	return effective, nil

@@ -83,7 +83,7 @@ func (s *corpusScope) validate() error {
 		return fmt.Errorf("commit %q must be a lowercase 40-character Git object ID", s.Commit)
 	}
 	seen := make(map[string]map[int]string, len(s.Sources))
-	qualificationCommits := make(map[string]string, len(s.Sources))
+	validationCommits := make(map[string]string, len(s.Sources))
 	for i := range s.Sources {
 		source := &s.Sources[i]
 		if strings.TrimSpace(source.File) == "" {
@@ -98,15 +98,15 @@ func (s *corpusScope) validate() error {
 		}
 		effectiveCommit := s.effectiveCommit(*source)
 		if source.Disposition != "regression_test" && source.Disposition != "post_target" {
-			if previous, ok := qualificationCommits[source.File]; ok && previous != effectiveCommit {
+			if previous, ok := validationCommits[source.File]; ok && previous != effectiveCommit {
 				return fmt.Errorf(
-					"source %q mixes qualification commits %s and %s",
+					"source %q mixes validation commits %s and %s",
 					source.File,
 					previous,
 					effectiveCommit,
 				)
 			}
-			qualificationCommits[source.File] = effectiveCommit
+			validationCommits[source.File] = effectiveCommit
 		}
 		if strings.TrimSpace(source.Owner) == "" {
 			return fmt.Errorf("source %q owner is required", source.File)
@@ -373,7 +373,7 @@ func TestCorpusScopeAllowsHistoricalRegressionLabelsBesideMigratedTarget(t *test
 	}
 }
 
-func TestCorpusScopeRejectsMixedQualificationCommitsWithinSourceFile(t *testing.T) {
+func TestCorpusScopeRejectsMixedValidationCommitsWithinSourceFile(t *testing.T) {
 	data := []byte(strings.Join([]string{
 		"commit: " + testCorpusCommit(),
 		"sources:",
@@ -382,16 +382,16 @@ func TestCorpusScopeRejectsMixedQualificationCommitsWithinSourceFile(t *testing.
 		"    test_numbers: [1]",
 		"    owner: example-plugin",
 		"    disposition: pending",
-		"    reason: first qualification row",
+		"    reason: first validation row",
 		"  - file: t/plugin/example.t",
 		"    test_numbers: [2]",
 		"    owner: example-plugin",
 		"    disposition: pending",
-		"    reason: second qualification row",
+		"    reason: second validation row",
 	}, "\n"))
 	_, err := loadCorpusScope("test", data)
-	if err == nil || !strings.Contains(err.Error(), "mixes qualification commits") {
-		t.Fatalf("loadCorpusScope() error = %v, want mixed qualification commit error", err)
+	if err == nil || !strings.Contains(err.Error(), "mixes validation commits") {
+		t.Fatalf("loadCorpusScope() error = %v, want mixed validation commit error", err)
 	}
 }
 
@@ -484,14 +484,14 @@ cases:
 		t.Fatalf("target selection = %q, want example.yaml", got)
 	}
 	if _, ok := selections[sourceFile][2]; ok {
-		t.Fatal("regression-only source label was counted as qualification evidence")
+		t.Fatal("regression-only source label was counted as validation evidence")
 	}
 	regressions, err := loadManifestRegressionSelections(root, scope)
 	if err != nil {
 		t.Fatalf("loadManifestRegressionSelections() error = %v", err)
 	}
 	if _, ok := regressions[sourceFile][2]; ok {
-		t.Fatal("post-migration regression label absent from the qualification ledger was imported")
+		t.Fatal("post-migration regression label absent from the validation ledger was imported")
 	}
 }
 
@@ -568,7 +568,7 @@ func TestCorpusScope(t *testing.T) {
 	}
 }
 
-func TestFirstWaveSourcesUseCompatibilityTarget(t *testing.T) {
+func TestFirstWaveSourcesUsePinnedAPISIXTarget(t *testing.T) {
 	scope, err := loadCorpusScopeFile(t)
 	if err != nil {
 		t.Fatalf("load ledger: %v", err)
@@ -613,7 +613,7 @@ func TestFirstWaveSourcesUseCompatibilityTarget(t *testing.T) {
 	}
 }
 
-func TestByteIdenticalSourcesUseCompatibilityTarget(t *testing.T) {
+func TestByteIdenticalSourcesUsePinnedAPISIXTarget(t *testing.T) {
 	scope, err := loadCorpusScopeFile(t)
 	if err != nil {
 		t.Fatalf("load ledger: %v", err)
@@ -674,15 +674,10 @@ func TestUpstreamCorpusAccountingWithoutSourceCheckout(t *testing.T) {
 	checkOfflineCorpusAccounting(t, scope)
 }
 
-func TestCorpusEvidenceMatchesCompatibilityTarget(t *testing.T) {
+func TestCorpusEvidenceMatchesPinnedAPISIXTarget(t *testing.T) {
 	manifest, err := capability.Load()
 	if err != nil {
 		t.Fatalf("load capability manifest: %v", err)
-	}
-
-	qualified := make(map[string]bool)
-	for _, pluginName := range manifest.QualifiedPlugins("http-data-plane-v1") {
-		qualified[pluginName] = true
 	}
 
 	staleClaims, freshClaims := 0, 0
@@ -719,9 +714,6 @@ func TestCorpusEvidenceMatchesCompatibilityTarget(t *testing.T) {
 				capability.EvidenceStale,
 				manifest.Target.SourceCommit,
 			)
-		}
-		if qualified[plugin.Name] {
-			t.Errorf("QualifiedPlugins(http-data-plane-v1) includes %s with stale corpus evidence", plugin.Name)
 		}
 	}
 	if staleClaims == 0 {
@@ -859,14 +851,14 @@ cases:
 		t.Fatal(err)
 	}
 	if !fresh {
-		t.Fatal("target qualification source was marked stale by a regression-only source")
+		t.Fatal("target validation source was marked stale by a regression-only source")
 	}
 }
 
 func checkOfflineCorpusAccounting(t *testing.T, scope *corpusScope) {
 	t.Helper()
 
-	// Qualification and post-target regression labels are tracked independently so additional
+	// Validation and post-target regression labels are tracked independently so additional
 	// regression coverage cannot promote a compatibility claim.
 	manifestByFile, err := loadManifestSelections(".", scope)
 	if err != nil {
@@ -896,7 +888,7 @@ func checkOfflineCorpusAccounting(t *testing.T, scope *corpusScope) {
 			selections[source.File][number] = source.Manifest
 		}
 	}
-	checkManifestSelectionsMatchLedger(t, "qualification", manifestByFile, convertedByFile)
+	checkManifestSelectionsMatchLedger(t, "validation", manifestByFile, convertedByFile)
 	checkManifestSelectionsMatchLedger(t, "regression", regressionManifestByFile, regressionByFile)
 
 	for i := range scope.Sources {
@@ -996,8 +988,8 @@ func checkGoTestEvidence(t *testing.T, evidence string) {
 
 func checkDependencyTestEvidence(t *testing.T, evidence string) {
 	t.Helper()
-	if !strings.HasPrefix(evidence, "scripts/qualification/") || !strings.HasSuffix(evidence, ".sh") {
-		t.Errorf("dependency test evidence %q must be scripts/qualification/*.sh", evidence)
+	if !strings.HasPrefix(evidence, "scripts/validation/") || !strings.HasSuffix(evidence, ".sh") {
+		t.Errorf("dependency test evidence %q must be scripts/validation/*.sh", evidence)
 		return
 	}
 	info, err := os.Stat(filepath.Join("..", "..", filepath.FromSlash(evidence)))
@@ -1014,7 +1006,7 @@ func checkCorpusScopeAgainstSource(t *testing.T, scope *corpusScope, sourceRoot 
 	t.Helper()
 
 	// The default commit remains the complete HTTP plugin inventory baseline. A migrated file may keep
-	// post-target regression labels at the baseline commit while its qualification labels move to the
+	// post-target regression labels at the baseline commit while its validation labels move to the
 	// compatibility target. Explicit stream-plugin sources supplement that baseline.
 	baselineFiles, err := sourceFilesAtCommit(sourceRoot, scope.Commit)
 	if err != nil {
@@ -1038,7 +1030,7 @@ func checkCorpusScopeAgainstSource(t *testing.T, scope *corpusScope, sourceRoot 
 
 	// Every row must name labels that exist at its own historical or target commit.
 	labelsByFileCommit := make(map[string]map[string]map[int]bool)
-	qualificationLabels := make(map[string]map[int]bool)
+	validationLabels := make(map[string]map[int]bool)
 	for i := range scope.Sources {
 		source := &scope.Sources[i]
 		commit := scope.effectiveCommit(*source)
@@ -1052,11 +1044,11 @@ func checkCorpusScopeAgainstSource(t *testing.T, scope *corpusScope, sourceRoot 
 			labelsByFileCommit[source.File][commit][label] = true
 		}
 		if source.Disposition != "regression_test" && source.Disposition != "post_target" {
-			if qualificationLabels[source.File] == nil {
-				qualificationLabels[source.File] = make(map[int]bool)
+			if validationLabels[source.File] == nil {
+				validationLabels[source.File] = make(map[int]bool)
 			}
 			for _, label := range source.TestNumbers {
-				qualificationLabels[source.File][label] = true
+				validationLabels[source.File][label] = true
 			}
 		}
 	}
@@ -1080,23 +1072,23 @@ func checkCorpusScopeAgainstSource(t *testing.T, scope *corpusScope, sourceRoot 
 		}
 	}
 
-	// Qualification rows, unlike historical regression rows, must account for the complete source
+	// Validation rows, unlike historical regression rows, must account for the complete source
 	// at their effective compatibility commit.
-	for file, labels := range qualificationLabels {
+	for file, labels := range validationLabels {
 		commit := sourceCommitsByFile(scope)[file]
 		data, readErr := sourceFileAtCommit(sourceRoot, commit, file)
 		if readErr != nil {
-			t.Errorf("qualification source %s at %s: %v", file, commit, readErr)
+			t.Errorf("validation source %s at %s: %v", file, commit, readErr)
 			continue
 		}
 		_, sourceLabels, parseErr := parseSourceTestHeaders(data)
 		if parseErr != nil {
-			t.Errorf("qualification source %s at %s: %v", file, commit, parseErr)
+			t.Errorf("validation source %s at %s: %v", file, commit, parseErr)
 			continue
 		}
 		if len(labels) != len(sourceLabels) {
 			t.Errorf(
-				"qualification source %s at %s has %d labels, source has %d",
+				"validation source %s at %s has %d labels, source has %d",
 				file,
 				commit,
 				len(labels),
@@ -1105,7 +1097,7 @@ func checkCorpusScopeAgainstSource(t *testing.T, scope *corpusScope, sourceRoot 
 		}
 		for label := range sourceLabels {
 			if !labels[label] {
-				t.Errorf("qualification ledger is missing source label %d in %s at commit %s", label, file, commit)
+				t.Errorf("validation ledger is missing source label %d in %s at commit %s", label, file, commit)
 			}
 		}
 	}
@@ -1144,7 +1136,7 @@ func TestUpstreamCorpusCompletion(t *testing.T) {
 	}
 	sort.Strings(pluginOwnedPending)
 	t.Logf(
-		"corpus completion: %d real-process qualification blocks, %d package-test blocks, %d dependency-test blocks, %d platform-test blocks, %d platform-gap blocks, %d post-target regression blocks, %d excluded post-target blocks, %d non-plugin blocks, %d pending/blocked plugin blocks across %d sources",
+		"corpus completion: %d real-process validation blocks, %d package-test blocks, %d dependency-test blocks, %d platform-test blocks, %d platform-gap blocks, %d post-target regression blocks, %d excluded post-target blocks, %d non-plugin blocks, %d pending/blocked plugin blocks across %d sources",
 		convertedBlocks,
 		packageTestBlocks,
 		dependencyTestBlocks,

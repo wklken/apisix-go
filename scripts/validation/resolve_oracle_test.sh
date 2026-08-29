@@ -3,7 +3,7 @@
 set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
-resolver="$repo_root/scripts/qualification/resolve_oracle.sh"
+resolver="$repo_root/scripts/validation/resolve_oracle.sh"
 task_dir=$(mktemp -d)
 trap 'rm -rf "$task_dir"' EXIT
 

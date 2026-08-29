@@ -286,17 +286,10 @@ func newGenerationContractFixture(t *testing.T, frontendTLS bool) *generationCon
 	if err != nil {
 		t.Fatal(err)
 	}
-	profiles := config.ProfileSelection{
-		Compatibility: config.CompatibilityTarget(manifest.Target.Name),
-		Security:      config.SecurityCompat,
-	}
 	effective := &config.EffectiveConfig{
 		Config: config.Config{
-			CompatibilityTarget: profiles.Compatibility, SecurityProfile: profiles.Security,
-			QualificationProfile: profiles.Qualification,
-			Plugins:              []string{"basic-auth", "file-logger", "grpc-transcode"},
+			Plugins: []string{"basic-auth", "file-logger", "grpc-transcode"},
 		},
-		Profiles: profiles,
 	}
 	if frontendTLS {
 		effective.Config.Apisix.Ssl = config.Ssl{

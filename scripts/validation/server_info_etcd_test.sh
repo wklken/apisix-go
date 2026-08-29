@@ -82,7 +82,6 @@ done
 
 config_path="$work_dir/config.yaml"
 cat >"$config_path" <<'EOF'
-qualification_profile: ""
 apisix:
   id: "123456"
   node_listen:

@@ -1,7 +1,5 @@
 package config
 
-import "github.com/wklken/apisix-go/pkg/capability"
-
 type SourceKind string
 
 const (
@@ -24,7 +22,6 @@ type Provenance map[string]FieldSource
 type EffectiveConfig struct {
 	Config     Config
 	Provenance Provenance
-	Profiles   ProfileSelection
 	Paths      RuntimePaths
 }
 
@@ -34,5 +31,4 @@ type LoadRequest struct {
 	DefaultPaths RuntimePaths
 	Environment  map[string]string
 	CLIOverrides map[string]any
-	Manifest     *capability.Manifest
 }

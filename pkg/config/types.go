@@ -8,12 +8,9 @@ import (
 )
 
 type Config struct {
-	CompatibilityTarget  CompatibilityTarget  `mapstructure:"compatibility_target"`
-	SecurityProfile      SecurityProfile      `mapstructure:"security_profile"`
-	QualificationProfile QualificationProfile `mapstructure:"qualification_profile"`
-	Debug                bool                 `mapstructure:"debug"`
-	Apisix               Apisix               `mapstructure:"apisix"`
-	NginxConfig          NginxConfig          `mapstructure:"nginx_config"`
+	Debug       bool        `mapstructure:"debug"`
+	Apisix      Apisix      `mapstructure:"apisix"`
+	NginxConfig NginxConfig `mapstructure:"nginx_config"`
 
 	// NGINX-only directives are retained for config compatibility; the Go server
 	// applies the HTTP timeout settings that have direct net/http equivalents.
@@ -29,14 +26,6 @@ type Config struct {
 	// PluginAttr    PluginAttr `mapstructure:"plugin_attr"`
 	PluginAttr map[string]map[string]any `mapstructure:"plugin_attr" secret:"container"`
 	Deployment Deployment                `mapstructure:"deployment"`
-}
-
-func (c *Config) Profiles() ProfileSelection {
-	return ProfileSelection{
-		Compatibility: c.CompatibilityTarget,
-		Security:      c.SecurityProfile,
-		Qualification: c.QualificationProfile,
-	}
 }
 
 // section: apisix

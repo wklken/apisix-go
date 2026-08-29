@@ -244,9 +244,8 @@ func TestPluginDifferential(t *testing.T) {
 		selectedCases,
 		selection,
 		DifferentialCandidateID{
-			SourceCommit:    candidateSourceCommit(),
-			BinarySHA256:    candidateSHA256,
-			SecurityProfile: "compat",
+			SourceCommit: candidateSourceCommit(),
+			BinarySHA256: candidateSHA256,
 		},
 		identity,
 		results,

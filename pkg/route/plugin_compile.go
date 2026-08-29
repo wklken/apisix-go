@@ -13,7 +13,6 @@ import (
 
 	"github.com/felixge/httpsnoop"
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
-	appconfig "github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
@@ -92,7 +91,6 @@ type PlanningInput struct {
 	ConsumerGroups map[string]resource.ConsumerGroup
 	EnabledPlugins []string
 	DynamicPlugins []string
-	Profiles       appconfig.ProfileSelection
 }
 
 type HTTPPluginPlan struct {
@@ -131,9 +129,6 @@ func PlanHTTPPlugins(ctx context.Context, input PlanningInput) (*HTTPPluginPlan,
 	}
 
 	globalRules := deduplicateGlobalRules(clonePlanningGlobalRules(input.GlobalRules))
-	if err := validateSecurityGlobalRulePolicy(input.Profiles, globalRules, ""); err != nil {
-		return nil, fmt.Errorf("plan global rules: %w", err)
-	}
 	for _, rule := range globalRules {
 		if rule.ID == "" {
 			return nil, fmt.Errorf("plan global rule: id is required")
@@ -237,16 +232,6 @@ func planRoutePlugins(
 		pluginConfigs, routeResource.PluginConfigID,
 		service.Plugins, routeResource.ServiceID,
 	)
-	if err := validateSecurityMaterializedPluginSources(
-		input.Profiles,
-		append(slices.Clone(local), serviceSources...),
-		routeResource.ID,
-	); err != nil {
-		return PlannedRoute{}, err
-	}
-	if err := validateSecurityGlobalRulePolicy(input.Profiles, input.GlobalRules, routeResource.ID); err != nil {
-		return PlannedRoute{}, err
-	}
 	localPlans, err := planPluginSources(local, enabled, false)
 	if err != nil {
 		return PlannedRoute{}, err

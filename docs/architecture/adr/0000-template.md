@@ -2,7 +2,7 @@
 id: ADR-0000
 title: Replace with the decided divergence
 status: proposed
-compatibility_target: apisix-3.17
+target: apisix-3.17
 divergence_ids: [DIV-000]
 owner: wklken
 owner_approval_ref: "project-owner review URL or dated architecture decision range"
@@ -15,7 +15,7 @@ State the pinned APISIX behavior and evidence.
 
 # Decision
 
-State the exact observable divergence and namespace/profile where it applies.
+State the exact observable divergence and namespace where it applies.
 
 # Consequences
 

@@ -15,12 +15,12 @@ that a planned package or feature exists.
 
 Observable APISIX `3.17.0` compatibility is the default product direction.
 Go-native extensions may intentionally diverge when they are declared and
-evidenced; inventory parity by itself is not qualification or production
+evidenced; inventory parity by itself is not validation or production
 readiness.
 
 `pkg/capability/manifest.yaml` is the only editable source for the pinned APISIX
 source/image, capability factories and aliases, phases and priorities, behavior
-status, evidence, qualification profiles, platform gaps, accepted divergences,
+status, validation evidence, platform gaps, accepted divergences,
 and secret declarations. It is parsed with strict YAML fields and generates:
 
 ```text
@@ -31,8 +31,8 @@ pkg/capability/manifest.yaml
 ```
 
 The generated registry and documentation projections must not be hand-edited.
-Behavior support and qualification evidence are independent dimensions: a
-registered or implemented factory is not automatically qualified.
+Behavior support and validation evidence are independent dimensions: a
+registered or implemented factory is not automatically verified.
 
 ### Bootstrap and immutable configuration
 
@@ -65,9 +65,9 @@ Static configuration uses one presence-aware precedence chain:
 `builtin defaults -> default file -> optional override -> recognized
 APISIXGO_* -> repeatable --set`. Maps merge recursively, sequences replace,
 and absent, null, false, zero, and empty string remain distinct. Each effective
-field retains provenance. Compatibility, security, and qualification are
-orthogonal selection axes; the removed combined profile selector must not be
-restored under another name. `EffectiveConfig` is defensively owned by the
+field retains provenance. The runtime has one APISIX-compatible behavior; no
+mode selector changes routes, plugins, defaults, or rendered runtime state.
+`EffectiveConfig` is defensively owned by the
 compiler factory and is never published as mutable global state.
 
 ### Durable desired-to-published transaction
@@ -264,10 +264,10 @@ packages.
 
 The repository has existing security/release workflows and amd64 image, SBOM,
 Trivy, signing, attestation, and operational evidence gates. The proposed
-next-generation qualification subsystem, APISIX-oracle evidence bundle,
+next-generation validation subsystem, APISIX-oracle evidence bundle,
 multi-architecture OCI promotion contract, and native macOS/Windows artifacts
-remain planned-only; there is currently no `pkg/qualification`,
-`qualification/policy.json`, or `.github/workflows/qualification.yml`.
+remain planned-only; there is currently no `pkg/validation`,
+`validation/policy.json`, or `.github/workflows/validation.yml`.
 
 ## Configuration, container, and release gates
 
@@ -327,12 +327,12 @@ pushes/signs/attests the captured immutable registry digest. The reusable
 workflow and its final caller both grant `attestations: write` where required;
 PR/master and RC paths remain read-only.
 
-Each qualification workflow resolves its selected ref once and all jobs use
+Each validation workflow resolves its selected ref once and all jobs use
 that immutable commit. RC and final runs build separate, digest-bound artifacts
 and each reruns the complete gate set; RC evidence is not relabeled or mixed
 with final-release evidence. The final workflow verifies all evidence identities,
 creates a checksum manifest, and attaches the evidence bundle and checksum to
-the GitHub release so the qualification record does not expire with Actions
+the GitHub release so the validation record does not expire with Actions
 artifact retention.
 
 The rollback file binds the selected source ref and actual `git rev-parse HEAD`
@@ -351,39 +351,21 @@ bash scripts/release_metadata_test.sh
 bash scripts/release_gate_test.sh
 ```
 
-### Candidate HTTP data-plane profile and lifecycle
+### HTTP data-plane behavior and lifecycle
 
-#### Historical behavior before convergence: candidate profile
+The runtime exposes one APISIX 3.17-compatible HTTP data-plane behavior. Users
+do not select a compatibility, security, or validation mode. Supported plugins
+use the same defaults, route compilation, and runtime rendering in every
+deployment. Known incompatibilities are documented in
+[`http-data-plane.md`](http-data-plane.md) and the generated plugin inventory.
+Validation suites and release evidence describe what was tested; they never
+change runtime behavior.
 
-`deployment.profile` accepts either the empty compatibility value or the
-strict `http-data-plane-v1` candidate. The strict profile is an ordered,
-HTTP-only contract: it uses the six-plugin allowlist
-`request-id`, `cors`, `key-auth`, `jwt-auth`, `basic-auth`, `prometheus`,
-disables Admin and stream listeners/plugins, requires data-plane etcd over
-verified HTTPS, a trusted source CIDR, a positive request-body limit, and no
-process access-log claims. It excludes Kafka PubSub and upstreams with
-`scheme: kafka`; the Kafka owner remains available in empty compatibility mode.
-Its full operator contract is in
-[`production-profile.md`](production-profile.md) and the
-[`production release runbook`](runbooks/production-release.md); it is awaiting
-post-merge RC/final release and operations evidence and does not change the
-repository-wide not-ready status. The first release has no previous immutable
-digest, so rollback qualification remains open until a distinct older
-published digest is exercised.
-
-> **Superseded 2026-08-23:** the governing design has three independent
-> selection axes and manifest-derived qualification. See the
-> [program specification](superpowers/plans/2026-08-23-apisix-go-convergence-program-spec.md),
-> [compatibility contract](architecture/compatibility-contract.md), and
-> [legacy conflict ledger](architecture/legacy-conflicts.md). The text above is
-> retained only as historical evidence of the pre-convergence candidate.
-
-NGINX HTTP and stream process access-log settings are unsupported in both the
-compatibility and candidate profiles: any explicitly non-zero boolean or
+NGINX HTTP and stream process access-log settings are unsupported: any
+explicitly non-zero boolean or
 numeric value, or non-empty string value, fails during configuration load.
 Route/plugin loggers are the supported compatibility/general-plugin request-
-logging mechanism. The exact six-plugin `http-data-plane-v1` allowlist contains
-no request logger and makes no request-logging egress claim. Elasticsearch,
+logging mechanism. Elasticsearch,
 ClickHouse, and Tencent CLS loggers require a non-empty effective flat-string
 `log_format` from effective resource/plugin configuration or plugin metadata
 before acquiring clients or creating processors; effective resource/plugin
@@ -437,9 +419,9 @@ roll back with the prepared generation.
 WebSocket upgrades are admitted only when the effective route or service sets
 `enable_websocket: true`. Every WebSocket upgrade attempt skips response
 callbacks while request, authentication, access, before-proxy, and log phases
-run. For the candidate profile, a successful profile-allowed HTTP
-reverse-proxy tunnel remains subject to cluster admission and timeout limits;
-Kafka PubSub compatibility tunnels are outside that contract. Retiring a route
+run. Every successful HTTP reverse-proxy tunnel remains subject to cluster
+admission and timeout limits. Kafka PubSub tunnels are outside the ordinary
+HTTP data-plane contract. Retiring a route
 generation closes its WebSocket connections. `SIGHUP` drains the server and
 returns an unsupported-reload error, so configuration changes require a new
 process rather than an in-process reload. Zipkin is v2-only, and OTel rejects
@@ -452,8 +434,7 @@ process rather than an in-process reload. Zipkin is v2-only, and OTel rejects
 > was subsequent design exploration and is itself superseded by the selected
 > single-process production model recorded above. See the
 > [program specification](superpowers/plans/2026-08-23-apisix-go-convergence-program-spec.md),
-> [compatibility contract](architecture/compatibility-contract.md), and
-> [legacy conflict ledger](architecture/legacy-conflicts.md).
+> [compatibility contract](architecture/compatibility-contract.md).
 
 #### Historical behavior before convergence: route schema
 
@@ -472,8 +453,7 @@ existing post-entrypoint path.
 > APISIX contract with explicit gap accounting, not preservation of this subset
 > as the final compatibility boundary. See the
 > [program specification](superpowers/plans/2026-08-23-apisix-go-convergence-program-spec.md),
-> [compatibility contract](architecture/compatibility-contract.md), and
-> [legacy conflict ledger](architecture/legacy-conflicts.md). The text above is
+> [compatibility contract](architecture/compatibility-contract.md). The text above is
 > retained as historical implementation evidence until the later HTTP
 > compatibility child plan converges it.
 
@@ -565,9 +545,8 @@ real broker or external service to the default test suite.
 #### Contract decision
 
 The APISIX plugin is an upstream Kafka consumer bridge, not a REST producer
-facade. The following Kafka owner is available in compatibility mode; it is
-outside the `http-data-plane-v1` candidate profile. Its official Go scope is
-therefore:
+facade. This bounded extension is outside the ordinary HTTP data-plane
+compatibility claim. Its official Go scope is:
 
 - support `scheme: kafka` upstream nodes and the APISIX WebSocket PubSub
   protobuf protocol;

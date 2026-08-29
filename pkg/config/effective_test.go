@@ -9,12 +9,10 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/wklken/apisix-go/pkg/capability"
 )
 
 func TestLoadEffectiveAppliesAllLayersAndProvenance(t *testing.T) {
-	req := loadRequestFixture(t, SecurityCompat, "proxy: {max_in_flight: 20}\n")
+	req := loadRequestFixture(t, "proxy: {max_in_flight: 20}\n")
 	req.Environment = map[string]string{"APISIXGO_PROXY_MAX_IN_FLIGHT": "30"}
 	req.CLIOverrides = map[string]any{"proxy.max_in_flight": 40}
 
@@ -29,12 +27,6 @@ func TestLoadEffectiveAppliesAllLayersAndProvenance(t *testing.T) {
 		Kind: SourceCLI, Origin: "proxy.max_in_flight", Explicit: true,
 	}) {
 		t.Fatalf("source = %+v", got)
-	}
-	if effective.Profiles != (ProfileSelection{
-		Compatibility: CompatibilityAPISIX317,
-		Security:      SecurityCompat,
-	}) {
-		t.Fatalf("profiles = %+v", effective.Profiles)
 	}
 }
 
@@ -62,8 +54,8 @@ func TestLoadEffectivePreservesExactUntypedNumber(t *testing.T) {
 	}
 }
 
-func TestLoadEffectiveResolvesCompatRelativeRuntimePathAgainstOwningFile(t *testing.T) {
-	req := loadRequestFixture(t, SecurityCompat, `apisix_go: {runtime_paths: {data_dir: relative-data}}`)
+func TestLoadEffectiveResolvesRelativeRuntimePathAgainstOwningFile(t *testing.T) {
+	req := loadRequestFixture(t, `apisix_go: {runtime_paths: {data_dir: relative-data}}`)
 	effective, err := LoadEffective(req)
 	if err != nil {
 		t.Fatal(err)
@@ -96,7 +88,7 @@ func TestLoadEffectiveResolvesEnvironmentAndCLIPathsAgainstOverrideFile(t *testi
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			req := loadRequestFixture(t, SecurityCompat, "")
+			req := loadRequestFixture(t, "")
 			test.apply(&req)
 			effective, err := LoadEffective(req)
 			if err != nil {
@@ -110,27 +102,14 @@ func TestLoadEffectiveResolvesEnvironmentAndCLIPathsAgainstOverrideFile(t *testi
 	}
 }
 
-func TestLoadEffectiveUnknownFieldsFollowSecurityProfile(t *testing.T) {
-	compat := loadRequestFixture(t, SecurityCompat, "unknown_section: {token: must-not-appear}\n")
-	effective, err := LoadEffective(compat)
+func TestLoadEffectiveRetainsUnknownFieldsOnlyAsProvenance(t *testing.T) {
+	req := loadRequestFixture(t, "unknown_section: {token: must-not-appear}\n")
+	effective, err := LoadEffective(req)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := effective.Provenance["unknown_section.token"]; !ok {
 		t.Fatal("ignored field missing provenance")
-	}
-
-	const secretKey = "must-not-appear-secret-key"
-	const secretValue = "must-not-appear-secret-value"
-	strict := loadRequestFixture(t, SecurityStrict, "${{UNKNOWN_KEY}}: {token: "+secretValue+"}\n")
-	strict.Environment["UNKNOWN_KEY"] = secretKey
-	_, err = LoadEffective(strict)
-	want := "security_profile strict: unknown static configuration field"
-	if err == nil || err.Error() != want {
-		t.Fatalf("strict LoadEffective() error = %v, want %q", err, want)
-	}
-	if strings.Contains(err.Error(), secretKey) || strings.Contains(err.Error(), secretValue) {
-		t.Fatalf("strict LoadEffective() error leaked an expanded key or value: %q", err)
 	}
 }
 
@@ -149,13 +128,6 @@ func TestLoadEffectiveValidationErrorsDoNotExposeExpandedOrOverrideValues(t *tes
 					t.Fatal(err)
 				}
 				req.Environment["ROLE"] = secret
-			},
-		},
-		{
-			name:     "APISIXGO profile override",
-			sentinel: secret,
-			apply: func(req *LoadRequest) {
-				req.Environment["APISIXGO_SECURITY_PROFILE"] = secret
 			},
 		},
 		{
@@ -228,37 +200,10 @@ func TestLoadEffectiveValidationErrorsDoNotExposeExpandedOrOverrideValues(t *tes
 				req.CLIOverrides["plugins"] = []any{" " + secret}
 			},
 		},
-		{
-			name:     "qualified plugin membership",
-			sentinel: secret,
-			apply: func(req *LoadRequest) {
-				manifest := qualifiedProfileTestManifest(t)
-				qualification, ok := manifest.Qualification(string(QualificationHTTPDataPlaneV1))
-				if !ok {
-					t.Fatal("qualification profile is missing")
-				}
-				req.Manifest = manifest
-				override := `
-qualification_profile: http-data-plane-v1
-apisix: {proxy_mode: http}
-plugins: [` + strings.Join(qualification.RequiredPlugins, ",") + `]
-deployment:
-  role: data_plane
-  role_data_plane: {config_provider: etcd}
-  etcd: {host: [https://etcd.example:2379], prefix: /apisix}
-`
-				if err := writeTestConfig(req.OverridePath, override); err != nil {
-					t.Fatal(err)
-				}
-				plugins := append([]string(nil), qualification.RequiredPlugins...)
-				plugins[0] = secret
-				req.CLIOverrides["plugins"] = plugins
-			},
-		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			req := loadRequestFixture(t, SecurityCompat, "")
+			req := loadRequestFixture(t, "")
 			test.apply(&req)
 			_, err := LoadEffective(req)
 			if err == nil {
@@ -271,31 +216,14 @@ deployment:
 	}
 }
 
-func TestLoadEffectiveRejectsRemovedDeploymentProfile(t *testing.T) {
-	req := loadRequestFixture(t, SecurityCompat, "deployment: {profile: http-data-plane-v1}\n")
-	_, err := LoadEffective(req)
-	if err == nil || !strings.Contains(err.Error(), removedDeploymentProfileError) {
-		t.Fatalf("LoadEffective() error = %v", err)
-	}
-}
-
-func TestLoadEffectiveRequiresExplicitManifest(t *testing.T) {
-	req := loadRequestFixture(t, SecurityCompat, "")
-	req.Manifest = nil
-	_, err := LoadEffective(req)
-	if err == nil || err.Error() != "load effective config: capability manifest is required" {
-		t.Fatalf("error = %v", err)
-	}
-}
-
 func TestLoadEffectiveRequiresAbsoluteInputPaths(t *testing.T) {
-	req := loadRequestFixture(t, SecurityCompat, "")
+	req := loadRequestFixture(t, "")
 	req.DefaultPath = "relative-default.yaml"
 	if _, err := LoadEffective(req); err == nil || err.Error() !=
 		"load effective config: default path must be a non-empty absolute path" {
 		t.Fatalf("relative default error = %v", err)
 	}
-	req = loadRequestFixture(t, SecurityCompat, "")
+	req = loadRequestFixture(t, "")
 	req.OverridePath = "relative-override.yaml"
 	if _, err := LoadEffective(req); err == nil || err.Error() !=
 		"load effective config: override path must be absolute" {
@@ -321,7 +249,7 @@ func TestStaticSecretTagsCoverStaticCredentials(t *testing.T) {
 }
 
 func TestLoadEffectiveTreatsEmptyDocumentAsNoopAndNullAsReplacement(t *testing.T) {
-	req := loadRequestFixture(t, SecurityCompat, "")
+	req := loadRequestFixture(t, "")
 	if err := writeTestConfig(req.OverridePath, "# comment only\n"); err != nil {
 		t.Fatal(err)
 	}
@@ -333,31 +261,6 @@ func TestLoadEffectiveTreatsEmptyDocumentAsNoopAndNullAsReplacement(t *testing.T
 	}
 	if _, err := LoadEffective(req); err == nil || !strings.Contains(err.Error(), "root must be a mapping") {
 		t.Fatalf("explicit null error = %v", err)
-	}
-}
-
-func TestLoadEffectiveQualificationRequiresFourAbsoluteRuntimePaths(t *testing.T) {
-	manifest := qualifiedProfileTestManifest(t)
-	qualification, ok := manifest.Qualification(string(QualificationHTTPDataPlaneV1))
-	if !ok {
-		t.Fatal("qualification profile is missing")
-	}
-	override := `
-qualification_profile: http-data-plane-v1
-apisix: {proxy_mode: http}
-plugins: [` + strings.Join(qualification.RequiredPlugins, ",") + `]
-deployment:
-  role: data_plane
-  role_data_plane: {config_provider: etcd}
-  etcd: {host: [https://etcd.example:2379], prefix: /apisix}
-apisix_go: {runtime_paths: {log_dir: ""}}
-`
-	req := loadRequestFixture(t, SecurityCompat, override)
-	req.Manifest = manifest
-	_, err := LoadEffective(req)
-	want := "qualification_profile http-data-plane-v1: runtime path log_dir must be a non-empty absolute path"
-	if err == nil || err.Error() != want {
-		t.Fatalf("LoadEffective() error = %v, want %q", err, want)
 	}
 }
 
@@ -397,11 +300,6 @@ func TestRenderEffectiveRedactedDeterministicSchemaAndSecrets(t *testing.T) {
 			LogDir:     "/var/log/apisix-go",
 			TempDir:    "/var/tmp/apisix-go",
 		},
-		Profiles: ProfileSelection{
-			Compatibility: CompatibilityAPISIX317,
-			Security:      SecurityStrict,
-			Qualification: QualificationHTTPDataPlaneV1,
-		},
 		Provenance: Provenance{
 			"graphql.max_size": {
 				Kind: SourceCLI, Origin: "graphql.max_size", Explicit: true,
@@ -438,7 +336,7 @@ func TestRenderEffectiveRedactedDeterministicSchemaAndSecrets(t *testing.T) {
 		}
 	}
 	for _, want := range []string{
-		`"config"`, `"paths"`, `"profiles"`, `"provenance"`, `"ignored_fields"`,
+		`"config"`, `"paths"`, `"provenance"`, `"ignored_fields"`,
 		`"client_max_body_size": 9007199254740993`, `"client_body_timeout": 3000000000`,
 		`"key": "[REDACTED]"`, `"password": "[REDACTED]"`,
 		`"prometheus": "[REDACTED]"`, `"etcd": "[REDACTED]"`,
@@ -759,19 +657,15 @@ func TestSanitizeEtcdEndpoint(t *testing.T) {
 
 func loadEffectiveFixture(t *testing.T, override string) *EffectiveConfig {
 	t.Helper()
-	effective, err := LoadEffective(loadRequestFixture(t, SecurityCompat, override))
+	effective, err := LoadEffective(loadRequestFixture(t, override))
 	if err != nil {
 		t.Fatal(err)
 	}
 	return effective
 }
 
-func loadRequestFixture(t *testing.T, security SecurityProfile, override string) LoadRequest {
+func loadRequestFixture(t *testing.T, override string) LoadRequest {
 	t.Helper()
-	manifest, err := capability.Load()
-	if err != nil {
-		t.Fatal(err)
-	}
 	root := t.TempDir()
 	defaults := filepath.Join(root, "default.yaml")
 	if err := writeTestConfig(defaults, `
@@ -784,8 +678,7 @@ deployment: {role: data_plane, role_data_plane: {config_provider: yaml}}
 		t.Fatal(err)
 	}
 	overridePath := filepath.Join(root, "override.yaml")
-	profileOverlay := "compatibility_target: apisix-3.17\nsecurity_profile: " + string(security) + "\n"
-	if err := writeTestConfig(overridePath, profileOverlay+override); err != nil {
+	if err := writeTestConfig(overridePath, override); err != nil {
 		t.Fatal(err)
 	}
 	return LoadRequest{
@@ -794,7 +687,7 @@ deployment: {role: data_plane, role_data_plane: {config_provider: yaml}}
 			DataDir: filepath.Join(root, "data"), RuntimeDir: filepath.Join(root, "run"),
 			LogDir: filepath.Join(root, "log"), TempDir: filepath.Join(root, "tmp"),
 		},
-		Environment: map[string]string{}, CLIOverrides: map[string]any{}, Manifest: manifest,
+		Environment: map[string]string{}, CLIOverrides: map[string]any{},
 	}
 }
 

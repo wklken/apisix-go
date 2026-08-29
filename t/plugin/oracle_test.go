@@ -167,27 +167,20 @@ func TestDifferentialCasesIncludePreparedRealIPAndRequestIDCases(t *testing.T) {
 	}
 }
 
-func TestDifferentialSmokeCannotMasqueradeAsAllPluginQualification(t *testing.T) {
-	if differentialProfile == "apisix-3.17-all-plugins-v1" {
-		t.Fatal("differential smoke uses the all-plugin qualification profile")
-	}
-}
-
-func TestDifferentialCatalogDeclaresOneHundredTwentyFourCaseOneHundredElevenPluginSmoke(t *testing.T) {
+func TestDifferentialCatalogDeclaresOneHundredTwentyFourCaseOneHundredElevenPluginSuite(t *testing.T) {
 	repoRoot, err := repositoryRootFromWorkingDirectory()
 	if err != nil {
 		t.Fatal(err)
 	}
-	data, err := os.ReadFile(filepath.Join(repoRoot, "qualification", "differential-cases.yaml"))
+	data, err := os.ReadFile(filepath.Join(repoRoot, "validation", "differential-cases.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	var catalog struct {
-		SchemaVersion              int      `yaml:"schema_version"`
-		Profile                    string   `yaml:"profile"`
-		TargetQualificationProfile string   `yaml:"target_qualification_profile"`
-		RequiredPlugins            []string `yaml:"required_plugins"`
-		Cases                      []struct {
+		SchemaVersion   int      `yaml:"schema_version"`
+		Suite           string   `yaml:"suite"`
+		RequiredPlugins []string `yaml:"required_plugins"`
+		Cases           []struct {
 			Plugin     string `yaml:"plugin"`
 			Obligation string `yaml:"obligation"`
 			Case       string `yaml:"case"`
@@ -196,13 +189,11 @@ func TestDifferentialCatalogDeclaresOneHundredTwentyFourCaseOneHundredElevenPlug
 	if err := yaml.Unmarshal(data, &catalog); err != nil {
 		t.Fatal(err)
 	}
-	if catalog.SchemaVersion != 1 || catalog.Profile != differentialProfile ||
-		catalog.TargetQualificationProfile != "apisix-3.17-all-plugins-v1" {
+	if catalog.SchemaVersion != 2 || catalog.Suite != differentialSuite {
 		t.Fatalf(
-			"catalog identity = schema %d profile %q target %q",
+			"catalog identity = schema %d suite %q",
 			catalog.SchemaVersion,
-			catalog.Profile,
-			catalog.TargetQualificationProfile,
+			catalog.Suite,
 		)
 	}
 	if len(catalog.RequiredPlugins) != 111 || len(catalog.Cases) != 124 {
@@ -243,18 +234,16 @@ func TestDifferentialCatalogAndArtifactReportOneHundredElevenOf111(t *testing.T)
 		})
 	}
 	artifact, err := buildDifferentialArtifact(catalog, DifferentialCandidateID{
-		SourceCommit: "candidate", BinarySHA256: strings.Repeat("2", 64), SecurityProfile: "compat",
+		SourceCommit: "candidate", BinarySHA256: strings.Repeat("2", 64),
 	}, OracleIdentity{SourceCommit: compatibilityOracleSourceCommit}, results)
 	if err != nil {
 		t.Fatalf("buildDifferentialArtifact() error = %v", err)
 	}
-	if artifact.SchemaVersion != 2 || artifact.Profile != differentialProfile ||
-		artifact.TargetQualificationProfile != "apisix-3.17-all-plugins-v1" {
+	if artifact.SchemaVersion != 3 || artifact.Suite != differentialSuite {
 		t.Fatalf(
-			"artifact identity = schema %d profile %q target %q",
+			"artifact identity = schema %d suite %q",
 			artifact.SchemaVersion,
-			artifact.Profile,
-			artifact.TargetQualificationProfile,
+			artifact.Suite,
 		)
 	}
 	if !artifact.Selection.FullCatalogRun || artifact.Selection.SelectedCaseCount != 124 ||
@@ -446,14 +435,14 @@ func TestSelectedDifferentialArtifactRecordsExactSelectionAndFailures(t *testing
 		selectedCatalog,
 		selected,
 		normalized,
-		DifferentialCandidateID{SourceCommit: "candidate", SecurityProfile: "compat"},
+		DifferentialCandidateID{SourceCommit: "candidate"},
 		OracleIdentity{SourceCommit: compatibilityOracleSourceCommit},
 		[]DifferentialCaseResult{failedResult},
 	)
 	if err != nil {
 		t.Fatalf("buildSelectedDifferentialArtifact() error = %v", err)
 	}
-	if artifact.SchemaVersion != 2 ||
+	if artifact.SchemaVersion != 3 ||
 		!reflect.DeepEqual(artifact.Selection.Plugins, []string{"csrf"}) ||
 		!reflect.DeepEqual(artifact.Selection.Cases, []string{"csrf-safe-get-issues-cookie"}) ||
 		artifact.Selection.ShardIndex != 0 || artifact.Selection.ShardCount != 1 ||
@@ -1808,9 +1797,9 @@ func TestDifferentialNormalizationRejectsUnknownFields(t *testing.T) {
 func TestDifferentialArtifactIsAppendOnlyPerAttempt(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "evidence", "differential.json")
 	artifact := DifferentialArtifact{
-		SchemaVersion: 2, Profile: differentialProfile, TargetQualificationProfile: differentialTargetProfile,
+		SchemaVersion: 3, Suite: differentialSuite,
 		Attempt: 1, FirstAttempt: true,
-		Candidate: DifferentialCandidateID{SourceCommit: "candidate", SecurityProfile: "compat"},
+		Candidate: DifferentialCandidateID{SourceCommit: "candidate"},
 		Oracle: OracleIdentity{
 			ImageTag:        compatibilityOracleImage,
 			ImageRepository: compatibilityOracleRepository,
@@ -1849,15 +1838,15 @@ func TestWriteDifferentialArtifactCannotOverwriteConcurrentPublish(t *testing.T)
 	path := filepath.Join(directory, "differential.json")
 	artifacts := []DifferentialArtifact{
 		{
-			SchemaVersion: 2,
-			Profile:       differentialProfile,
+			SchemaVersion: 3,
+			Suite:         differentialSuite,
 			Cases: []DifferentialCaseResult{{
 				Name: "writer-a", Error: strings.Repeat("a", 8<<20),
 			}},
 		},
 		{
-			SchemaVersion: 2,
-			Profile:       differentialProfile,
+			SchemaVersion: 3,
+			Suite:         differentialSuite,
 			Cases: []DifferentialCaseResult{{
 				Name: "writer-b", Error: strings.Repeat("b", 8<<20),
 			}},
@@ -1975,9 +1964,6 @@ func TestRenderDifferentialRuntimeConfigurations(t *testing.T) {
 	if err := yaml.Unmarshal(candidate, &config); err != nil {
 		t.Fatalf("decode candidate runtime: %v", err)
 	}
-	if got := config["security_profile"]; got != "compat" {
-		t.Fatalf("security_profile = %#v, want compat for compatibility qualification", got)
-	}
 	if _, ok := config["apisix_go"]; !ok {
 		t.Fatal("candidate runtime lacks isolated apisix_go paths")
 	}
@@ -2004,8 +1990,7 @@ func TestRenderDifferentialRuntimeConfigurations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("render oracle runtime: %v", err)
 	}
-	if strings.Contains(string(oracle), "apisix_go") ||
-		strings.Contains(string(oracle), "security_profile") {
+	if strings.Contains(string(oracle), "apisix_go") {
 		t.Fatal("oracle runtime projection contains candidate-only apisix-go configuration")
 	}
 	config = nil

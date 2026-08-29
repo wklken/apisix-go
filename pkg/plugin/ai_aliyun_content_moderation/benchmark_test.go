@@ -1,6 +1,7 @@
 package ai_aliyun_content_moderation
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -37,8 +38,12 @@ func BenchmarkAIStreaming(b *testing.B) {
 			if err := p.Init(); err != nil {
 				b.Fatalf("Init() error = %v", err)
 			}
-			if err := base.MaterializePluginSecrets(p); err != nil {
-				b.Fatalf("MaterializePluginSecrets() error = %v", err)
+			capabilityValue, scope, _, closeAttempt := newScopedSecretHarness(b, name, nil)
+			b.Cleanup(closeAttempt)
+			if err := base.MaterializeScopedPluginSecrets(
+				context.Background(), scope, capabilityValue, p,
+			); err != nil {
+				b.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 			}
 			if err := p.PostInit(); err != nil {
 				b.Fatalf("PostInit() error = %v", err)

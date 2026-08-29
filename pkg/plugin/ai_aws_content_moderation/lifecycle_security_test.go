@@ -2,7 +2,6 @@ package ai_aws_content_moderation
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -115,38 +114,6 @@ func TestScopedSecretsRejectResolvedBlankCredentialsAndRetryExactFields(t *testi
 	}
 }
 
-func TestMaterializeSecretsFailsClosedWithoutScopedCredentials(t *testing.T) {
-	const (
-		accessEnv = "AWS_LEGACY_VALIDATION_ACCESS"
-		secretEnv = "AWS_LEGACY_VALIDATION_SECRET"
-		tokenEnv  = "AWS_LEGACY_VALIDATION_TOKEN"
-	)
-	for _, test := range []struct {
-		name       string
-		invalidEnv string
-		blank      string
-	}{
-		{name: "required access key is empty", invalidEnv: accessEnv, blank: ""},
-		{name: "required secret key is whitespace", invalidEnv: secretEnv, blank: " \t"},
-		{name: "present optional token resolves whitespace", invalidEnv: tokenEnv, blank: "  "},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			p := &Plugin{config: awsScopedConfig(
-				"$ENV://"+accessEnv,
-				"$ENV://"+secretEnv,
-				"$ENV://"+tokenEnv,
-				"http://127.0.0.1",
-			)}
-			if err := p.Init(); err != nil {
-				t.Fatal(err)
-			}
-			if err := p.MaterializeSecrets(); !errors.Is(err, errAWSCredentialsUnavailable) {
-				t.Fatalf("MaterializeSecrets() error = %v, want credential unavailable", err)
-			}
-		})
-	}
-}
-
 func TestScopedSecretsConcurrentMaterializeResolvesOnce(t *testing.T) {
 	const (
 		rawAccess = "$ENV://AWS_SINGLEFLIGHT_ACCESS"
@@ -222,99 +189,6 @@ func TestScopedSecretsConcurrentMaterializeResolvesOnce(t *testing.T) {
 	)
 }
 
-func TestMaterializeSecretsFailsClosedWhileScopedPreparationIsInFlight(t *testing.T) {
-	const (
-		rawAccess = "$ENV://AWS_CROSS_MODE_ACCESS_NOT_SET"
-		rawSecret = "$ENV://AWS_CROSS_MODE_SECRET_NOT_SET"
-		rawToken  = "$ENV://AWS_CROSS_MODE_TOKEN_NOT_SET"
-	)
-	capabilityValue, scope, broker, closeAttempt := newScopedSecretHarness(t, name, map[string]string{
-		rawAccess: "cross-mode-access",
-		rawSecret: "cross-mode-secret",
-		rawToken:  "cross-mode-token",
-	})
-	defer closeAttempt()
-	entered := make(chan struct{})
-	release := make(chan struct{})
-	var once sync.Once
-	broker.setHook(func(call scopedSecretCall) {
-		if call.Scope.Field == "comprehend.access_key_id" {
-			once.Do(func() { close(entered) })
-			<-release
-		}
-	})
-	p := &Plugin{config: awsScopedConfig(rawAccess, rawSecret, rawToken, "http://127.0.0.1")}
-	if err := p.Init(); err != nil {
-		t.Fatal(err)
-	}
-	scopedDone := make(chan error, 1)
-	go func() {
-		scopedDone <- base.MaterializeScopedPluginSecrets(
-			context.Background(), scope, capabilityValue, p,
-		)
-	}()
-	select {
-	case <-entered:
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for scoped cross-mode resolution")
-	}
-	if err := p.MaterializeSecrets(); !errors.Is(err, errAWSCredentialsUnavailable) {
-		close(release)
-		<-scopedDone
-		t.Fatalf("MaterializeSecrets() error = %v, want credential unavailable", err)
-	}
-	close(release)
-	if err := <-scopedDone; err != nil {
-		t.Fatalf("scoped cross-mode materialization error = %v", err)
-	}
-	assertAWSScopedCalls(t, scope, broker.callsSnapshot(),
-		[]string{"comprehend.access_key_id", "comprehend.secret_access_key", "comprehend.session_token"},
-		[]string{rawAccess, rawSecret, rawToken},
-	)
-	if !p.scopedSet {
-		t.Fatal("scoped credentials were not installed after legacy entry point failed closed")
-	}
-	p.Stop()
-}
-
-func TestMaterializeSecretsConcurrentCallsFailClosed(t *testing.T) {
-	const (
-		accessEnv = "AWS_LEGACY_SINGLEFLIGHT_ACCESS"
-		secretEnv = "AWS_LEGACY_SINGLEFLIGHT_SECRET"
-		tokenEnv  = "AWS_LEGACY_SINGLEFLIGHT_TOKEN"
-		workers   = 64
-	)
-	t.Setenv(accessEnv, "legacy-singleflight-access")
-	t.Setenv(secretEnv, "legacy-singleflight-secret")
-	t.Setenv(tokenEnv, "legacy-singleflight-token")
-	p := &Plugin{config: awsScopedConfig(
-		"$ENV://"+accessEnv,
-		"$ENV://"+secretEnv,
-		"$ENV://"+tokenEnv,
-		"http://127.0.0.1",
-	)}
-	if err := p.Init(); err != nil {
-		t.Fatal(err)
-	}
-	start := make(chan struct{})
-	errs := make(chan error, workers)
-	var wg sync.WaitGroup
-	for range workers {
-		wg.Go(func() {
-			<-start
-			errs <- p.MaterializeSecrets()
-		})
-	}
-	close(start)
-	wg.Wait()
-	close(errs)
-	for err := range errs {
-		if !errors.Is(err, errAWSCredentialsUnavailable) {
-			t.Fatalf("concurrent MaterializeSecrets() error = %v, want credential unavailable", err)
-		}
-	}
-}
-
 func TestScopedSecretsStopDuringMaterializeDoesNotRevive(t *testing.T) {
 	const (
 		rawAccess = "$ENV://AWS_STOP_RACE_ACCESS"
@@ -370,9 +244,6 @@ func TestScopedSecretsStopDuringMaterializeDoesNotRevive(t *testing.T) {
 	}
 	if got := len(broker.callsSnapshot()); got != callCount {
 		t.Fatalf("broker calls after terminal Stop() = %d, want %d", got, callCount)
-	}
-	if err := p.MaterializeSecrets(); !errors.Is(err, errAWSCredentialsUnavailable) {
-		t.Fatalf("legacy materialization after Stop() error = %v, want terminal failure", err)
 	}
 }
 

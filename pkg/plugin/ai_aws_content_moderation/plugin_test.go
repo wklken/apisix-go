@@ -2,7 +2,6 @@ package ai_aws_content_moderation
 
 import (
 	"context"
-	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -476,24 +475,6 @@ func TestScopedSecretsUsePluginConfigDescriptorsAndSignResolvedCredentials(t *te
 	p.Stop()
 	if p.scopedSet || p.scopedSessionTokenSet {
 		t.Fatal("scoped credential state retained after Stop()")
-	}
-}
-
-func TestLegacyMaterializeEntryPointFailsClosedWithoutScopedCredentials(t *testing.T) {
-	t.Setenv("AWS_CONTENT_MODERATION_ACCESS_KEY", "environment-access")
-	t.Setenv("AWS_CONTENT_MODERATION_SECRET_KEY", "environment-secret")
-	p := &Plugin{config: Config{Comprehend: Comprehend{
-		AccessKeyID:     "$ENV://AWS_CONTENT_MODERATION_ACCESS_KEY",
-		SecretAccessKey: "$ENV://AWS_CONTENT_MODERATION_SECRET_KEY",
-		SessionToken:    "$ENV://AWS_CONTENT_MODERATION_MISSING_SESSION_TOKEN",
-		Region:          "us-east-1",
-	}}}
-	if err := p.Init(); err != nil {
-		t.Fatalf("Init() error = %v", err)
-	}
-
-	if err := p.MaterializeSecrets(); !errors.Is(err, errAWSCredentialsUnavailable) {
-		t.Fatalf("MaterializeSecrets() error = %v, want credential unavailable", err)
 	}
 }
 

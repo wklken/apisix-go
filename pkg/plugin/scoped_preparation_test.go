@@ -77,9 +77,8 @@ func TestSupportsScopedSecretMaterializationOnlyConstructsDualInterfaceFactory(t
 	}
 	if plugin.initCalls != 0 || plugin.postInitCalls != 0 || plugin.handlerCalls != 0 ||
 		plugin.configCalls != 0 || plugin.schemaCalls != 0 || plugin.metadataCalls != 0 ||
-		plugin.priorityCalls != 0 || plugin.nameCalls != 0 || plugin.scopedCalls != 0 ||
-		plugin.legacyCalls != 0 {
-		t.Fatalf("dual-interface lifecycle calls = %#v, want all zero", plugin)
+		plugin.priorityCalls != 0 || plugin.nameCalls != 0 || plugin.scopedCalls != 0 {
+		t.Fatalf("scoped lifecycle calls = %#v, want all zero", plugin)
 	}
 }
 
@@ -131,7 +130,6 @@ type scopedPreparationPoisonPlugin struct {
 	priorityCalls int
 	nameCalls     int
 	scopedCalls   int
-	legacyCalls   int
 }
 
 func (p *scopedPreparationPoisonPlugin) Init() error {
@@ -176,10 +174,5 @@ func (p *scopedPreparationPoisonPlugin) GetName() string {
 
 func (p *scopedPreparationPoisonPlugin) MaterializeScopedSecrets(context.Context, base.ScopedSecretAccess) error {
 	p.scopedCalls++
-	return nil
-}
-
-func (p *scopedPreparationPoisonPlugin) MaterializeSecrets() error {
-	p.legacyCalls++
 	return nil
 }

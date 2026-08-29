@@ -21,6 +21,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/runtime"
 	"github.com/wklken/apisix-go/pkg/secret"
+	"github.com/wklken/apisix-go/pkg/testutil"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -60,9 +61,11 @@ func (testLiteralSecretBroker) RevokeAttempt(context.Context, secret.AttemptID) 
 }
 
 func testPluginInitializationError(
+	t testing.TB,
 	name string,
 	config resource.PluginConfig,
 ) error {
+	t.Helper()
 	instance := plugin.New(name, base.Dependencies{
 		Config:         testEffectiveConfig(),
 		DataEncryption: testDataEncryptionResolver(),
@@ -76,14 +79,16 @@ func testPluginInitializationError(
 	if err := util.Parse(config, instance.Config()); err != nil {
 		return err
 	}
-	if materializer, ok := instance.(interface {
-		MaterializeScopedSecrets(context.Context, base.ScopedSecretAccess) error
-	}); ok {
-		if err := materializer.MaterializeScopedSecrets(context.Background(), base.ScopedSecretAccess{}); err != nil {
-			return err
-		}
-	}
-	if err := plugin.MaterializePluginSecrets(instance); err != nil {
+	capabilityValue, scope, cleanup := testutil.ScopedSecretHarness(
+		t,
+		name,
+		nil,
+		generation.ApplyTicket{DesiredRevision: 1, RequiredDomains: []generation.Domain{generation.DomainHTTP}},
+	)
+	defer cleanup()
+	if err := plugin.MaterializeScopedPluginSecrets(
+		context.Background(), scope, capabilityValue, instance,
+	); err != nil {
 		return err
 	}
 	return instance.PostInit()

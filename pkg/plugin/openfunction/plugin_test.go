@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -328,18 +327,6 @@ func TestOpenFunctionGenerationsDoNotShareAuthorizationOrRetirement(t *testing.T
 	pN1.processRequest(retained, function_upstream.Config{})
 	if got := retained.Header.Get("Authorization"); got != "Basic c2VydmljZS1uMQ==" {
 		t.Fatalf("retained generation Authorization = %q, want generation N+1 value", got)
-	}
-}
-
-func TestOpenFunctionMaterializeSecretsFailsClosed(t *testing.T) {
-	const raw = "$ENV://OPENFUNCTION_LEGACY_TOKEN"
-	t.Setenv("OPENFUNCTION_LEGACY_TOKEN", "legacy-service-token")
-	p := &Plugin{config: Config{
-		FunctionURI:   "http://function.invalid",
-		Authorization: &Authorization{ServiceToken: raw},
-	}}
-	if err := p.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) {
-		t.Fatalf("MaterializeSecrets() error = %v, want credential unavailable", err)
 	}
 }
 

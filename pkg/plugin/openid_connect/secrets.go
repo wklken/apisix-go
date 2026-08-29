@@ -75,26 +75,6 @@ type oidcSecretSnapshot struct {
 	redisPasswordPresent bool
 }
 
-func (p *Plugin) MaterializeSecrets() error {
-	releaseWork, err := p.acquireOIDCWork()
-	if err != nil {
-		return err
-	}
-	defer releaseWork()
-	p.beginOIDCPreparation()
-	defer p.endOIDCPreparation()
-	if prepared, err := p.oidcPreparationState(); err != nil || prepared {
-		return err
-	}
-
-	for _, raw := range p.oidcSecretRaws() {
-		if raw != "" {
-			return errOIDCCredentialsUnavailable
-		}
-	}
-	return nil
-}
-
 func (p *Plugin) MaterializeScopedSecrets(
 	ctx context.Context, access base.ScopedSecretAccess,
 ) error {

@@ -478,12 +478,6 @@ func TestLagoStopDrainsActiveSendAndPreventsResurrection(t *testing.T) {
 	if len(p.FireChan) != queued {
 		t.Fatal("post-Stop handler enqueued work")
 	}
-	if err := p.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) {
-		t.Fatalf("post-Stop MaterializeSecrets() error = %v", err)
-	}
-	if p.TaskOwner() == nil {
-		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
-	}
 	if err := p.PostInit(); !errors.Is(err, secret.ErrCredentialUnavailable) {
 		t.Fatalf("post-Stop PostInit() error = %v", err)
 	}
@@ -734,13 +728,6 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	return p
 }
 
-func TestMaterializeSecretsRejectsMissingDataEncryptionResolver(t *testing.T) {
-	p := &Plugin{config: Config{Token: "private"}}
-	if err := p.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) {
-		t.Fatalf("MaterializeSecrets() error = %v, want credential unavailable", err)
-	}
-}
-
 func TestPostInitSetsLagoDefaults(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		EndpointAddrs:       []string{"http://127.0.0.1:3000"},
@@ -793,20 +780,6 @@ func TestSchemaMatchesAPISIX317LagoBatchLimitDefault(t *testing.T) {
 			properties["batch_max_size"],
 			defaultBatchMaxSize,
 		)
-	}
-}
-
-func TestPostInitRejectsInvalidEncryptedToken(t *testing.T) {
-	p := &Plugin{config: Config{Token: "not-a-ciphertext"}}
-	p.SetDependencies(base.Dependencies{
-		Tasks:          newLoggerTestTaskOwner(t),
-		DataEncryption: testutil.DataEncryptionService(true, []string{"qeddd145sfvddff3"}).Resolver(),
-	})
-	if err := p.Init(); err != nil {
-		t.Fatalf("Init() error = %v", err)
-	}
-	if err := p.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) {
-		t.Fatalf("MaterializeSecrets() error = %v, want credential unavailable", err)
 	}
 }
 

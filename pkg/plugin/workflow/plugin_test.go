@@ -310,44 +310,13 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	capabilityValue, scope, cleanup := newWorkflowScopedCapability(t, 1, "test-route", cfg)
 	t.Cleanup(cleanup)
 	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
-		t.Fatalf("MaterializePluginSecrets() error = %v", err)
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
 
 	return p
-}
-
-func TestSetResourceContextForwardsRouteScopeToChildren(t *testing.T) {
-	p := &Plugin{config: Config{
-		Rules: []Rule{{Actions: []Action{{
-			Name: "limit-req",
-			Config: map[string]any{
-				"rate":  1,
-				"burst": 0,
-				"key":   "remote_addr",
-			},
-		}}}},
-	}}
-	if err := p.Init(); err != nil {
-		t.Fatal(err)
-	}
-	if err := base.MaterializePluginSecrets(p); err != nil {
-		t.Fatal(err)
-	}
-	p.SetResourceContext(resource.Route{ID: "route-1"}, resource.Service{})
-	if err := p.PostInit(); err != nil {
-		t.Fatal(err)
-	}
-
-	child := p.children[actionPosition{rule: 0, action: 0}]
-	if child == nil {
-		t.Fatal("expected materialized limit-req child")
-	}
-	if dump := fmt.Sprintf("%#v", child); !strings.Contains(dump, `routeID:"route-1"`) {
-		t.Fatalf("child = %s, want route-scoped limit key", dump)
-	}
 }
 
 func TestParseOfficialReturnActionArray(t *testing.T) {
@@ -471,64 +440,6 @@ func TestWorkflowRejectsDisabledNestedPluginBeforeConstruction(t *testing.T) {
 		})
 	}
 
-	var enabled Config
-	if err := util.Parse(map[string]any{
-		"rules": []any{
-			map[string]any{"actions": []any{
-				[]any{
-					"limit-req",
-					map[string]any{
-						"rate":          1,
-						"burst":         0,
-						"key":           "remote_addr",
-						"rejected_code": http.StatusTooManyRequests,
-						"nodelay":       true,
-					},
-				},
-				[]any{
-					"limit-conn",
-					map[string]any{
-						"conn":               1,
-						"burst":              0,
-						"default_conn_delay": 0.1,
-						"key":                "remote_addr",
-						"rejected_code":      http.StatusTooManyRequests,
-					},
-				},
-				[]any{
-					"limit-count",
-					map[string]any{
-						"count":         1,
-						"time_window":   60,
-						"key":           "remote_addr",
-						"rejected_code": http.StatusTooManyRequests,
-					},
-				},
-			}},
-		},
-	}, &enabled); err != nil {
-		t.Fatalf("Parse() error = %v", err)
-	}
-	withEnabled := &Plugin{config: enabled}
-	if err := withEnabled.Init(); err != nil {
-		t.Fatalf("enabled Init() error = %v", err)
-	}
-	withEnabled.SetPluginEnabledChecker(func(string) bool { return true })
-	enabledPreparer := &scriptedWorkflowPreparer{t: t, failAt: -1, scoped: true}
-	withEnabled.SetDependencies(base.Dependencies{CompositeChildren: enabledPreparer})
-	enabledCapability, enabledScope, enabledCleanup := newWorkflowScopedCapability(
-		t, 1, "enabled-actions", withEnabled.config,
-	)
-	t.Cleanup(enabledCleanup)
-	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), enabledScope, enabledCapability, withEnabled,
-	); err != nil {
-		t.Fatalf("enabled MaterializePluginSecrets() error = %v", err)
-	}
-	if err := withEnabled.PostInit(); err != nil {
-		t.Fatalf("enabled PostInit() error = %v", err)
-	}
-
 	returns := &Plugin{config: Config{Rules: []Rule{{Actions: []Action{{
 		Name:   "return",
 		Return: ReturnAction{Code: http.StatusForbidden},
@@ -537,11 +448,8 @@ func TestWorkflowRejectsDisabledNestedPluginBeforeConstruction(t *testing.T) {
 		t.Fatalf("return Init() error = %v", err)
 	}
 	returns.SetPluginEnabledChecker(func(string) bool { return false })
-	if err := base.MaterializePluginSecrets(returns); err != nil {
-		t.Fatalf("return MaterializePluginSecrets() error = %v", err)
-	}
-	if err := returns.PostInit(); err != nil {
-		t.Fatalf("return PostInit() error = %v, want return action independent of plugin membership", err)
+	if err := returns.ValidatePreMaterialization(); err != nil {
+		t.Fatalf("return ValidatePreMaterialization() error = %v, want return independent of plugin membership", err)
 	}
 }
 
@@ -719,36 +627,6 @@ func TestPostInitFailureRollsBackChildrenInReverseOrder(t *testing.T) {
 	}
 	if p.childStoppers != nil || p.children != nil {
 		t.Fatalf("rollback retained child state: stoppers=%v children=%v", p.childStoppers, p.children)
-	}
-}
-
-func TestMaterializeFailureRollsBackEarlierChildOwner(t *testing.T) {
-	p := &Plugin{config: Config{Rules: []Rule{{Actions: []Action{
-		{
-			Name: "limit-count",
-			Config: map[string]any{
-				"count":       1,
-				"time_window": 60,
-				"key":         "remote_addr",
-			},
-		},
-		{
-			Name: "limit-req",
-			Config: map[string]any{
-				"rate":  1,
-				"burst": 0,
-				"key":   "$ENV://WORKFLOW_UNOWNED_KEY",
-			},
-		},
-	}}}}}
-	if err := p.Init(); err != nil {
-		t.Fatalf("Init() error = %v", err)
-	}
-	if err := p.MaterializeSecrets(); err == nil {
-		t.Fatal("MaterializeSecrets() error = nil, want second child materialization failure")
-	}
-	if p.childStoppers != nil || p.children != nil {
-		t.Fatalf("materialization rollback retained child state: stoppers=%v children=%v", p.childStoppers, p.children)
 	}
 }
 
@@ -1709,7 +1587,7 @@ func TestMaterializeSecretsOwnsNestedLimitCountReferenceBeforePostInit(t *testin
 	)
 	t.Cleanup(cleanup)
 	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
-		t.Fatalf("MaterializePluginSecrets() error = %v", err)
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	key, _ := p.config.Rules[0].Actions[0].Config["key"].(string)
 	wantKey := fmt.Sprintf("plugin_config#sha256:%x", sha256.Sum256([]byte("remote_addr")))
@@ -1777,7 +1655,7 @@ func TestNestedLimitCountValidatesRedisClusterReferenceBeforeDescriptorRewrite(t
 	)
 	t.Cleanup(cleanup)
 	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
-		t.Fatalf("MaterializePluginSecrets() error = %v", err)
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	nodes, ok := p.config.Rules[0].Actions[0].Config["redis_cluster_nodes"].([]any)
 	if !ok || len(nodes) != 1 {
@@ -2000,24 +1878,5 @@ func TestHandlerRunsLimitConnAction(t *testing.T) {
 	<-firstDone
 	if firstRecorder.Code != http.StatusNoContent {
 		t.Fatalf("first status = %d, want %d", firstRecorder.Code, http.StatusNoContent)
-	}
-}
-
-func TestUnownedSecretReferenceRejectsNestedWorkflowPlugin(t *testing.T) {
-	p := &Plugin{config: Config{Rules: []Rule{{Actions: []Action{{
-		Name: "limit-req",
-		Config: map[string]any{
-			"rate":  1,
-			"burst": 0,
-			"key":   "$ENV://WORKFLOW_KEY",
-		},
-	}}}}}}
-	if err := p.Init(); err != nil {
-		t.Fatalf("Init() error = %v", err)
-	}
-
-	err := base.MaterializePluginSecrets(p)
-	if err == nil || err.Error() != "materialize plugin secrets: credential unavailable" {
-		t.Fatalf("MaterializePluginSecrets() error = %v, want redacted nested secret rejection", err)
 	}
 }

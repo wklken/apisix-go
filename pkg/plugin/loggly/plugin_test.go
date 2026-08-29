@@ -564,9 +564,6 @@ func TestLogglyStopDrainsActiveSendAndPreventsResurrection(t *testing.T) {
 	); !errors.Is(err, secret.ErrCredentialUnavailable) {
 		t.Fatalf("post-Stop SendBatch() error = %v", err)
 	}
-	if err := p.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) {
-		t.Fatalf("post-Stop MaterializeSecrets() error = %v", err)
-	}
 	if err := p.PostInit(); !errors.Is(err, secret.ErrCredentialUnavailable) {
 		t.Fatalf("post-Stop PostInit() error = %v", err)
 	}
@@ -723,13 +720,6 @@ func mustMetadataView(t *testing.T, metadata map[string]any) runtime.MetadataVie
 	return view
 }
 
-func TestPostInitRejectsMissingDataEncryptionResolver(t *testing.T) {
-	p := &Plugin{config: Config{CustomerToken: "private"}}
-	if err := p.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) {
-		t.Fatalf("MaterializeSecrets() error = %v, want credential unavailable", err)
-	}
-}
-
 func TestPostInitSetsDefaults(t *testing.T) {
 	p := newTestPlugin(t, Config{CustomerToken: "token"})
 
@@ -756,20 +746,6 @@ func TestPostInitSetsDefaults(t *testing.T) {
 	}
 	if p.config.InactiveTimeout != 5 {
 		t.Fatalf("inactive_timeout = %d, want 5", p.config.InactiveTimeout)
-	}
-}
-
-func TestPostInitRejectsInvalidEncryptedCustomerToken(t *testing.T) {
-	p := &Plugin{config: Config{CustomerToken: "not-a-ciphertext"}}
-	p.SetDependencies(base.Dependencies{
-		Tasks:          newLoggerTestTaskOwner(t),
-		DataEncryption: testutil.DataEncryptionService(true, []string{"qeddd145sfvddff3"}).Resolver(),
-	})
-	if err := p.Init(); err != nil {
-		t.Fatalf("Init() error = %v", err)
-	}
-	if err := p.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) {
-		t.Fatalf("MaterializeSecrets() error = %v, want credential unavailable", err)
 	}
 }
 

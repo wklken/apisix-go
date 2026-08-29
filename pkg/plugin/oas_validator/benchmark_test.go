@@ -9,8 +9,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/runtime"
+	"github.com/wklken/apisix-go/pkg/testutil"
 )
 
 // BenchmarkValidatorRefresh measures validation latency with a fresh spec and
@@ -71,8 +73,15 @@ func BenchmarkValidatorRefresh(b *testing.B) {
 			if err := p.Init(); err != nil {
 				b.Fatalf("Init() error = %v", err)
 			}
-			if err := base.MaterializePluginSecrets(p); err != nil {
-				b.Fatalf("MaterializePluginSecrets() error = %v", err)
+			capabilityValue, scope, closeAttempt := testutil.ScopedSecretHarness(
+				b,
+				name,
+				nil,
+				generation.ApplyTicket{DesiredRevision: 1, RequiredDomains: []generation.Domain{generation.DomainHTTP}},
+			)
+			b.Cleanup(closeAttempt)
+			if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+				b.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 			}
 			if err := p.PostInit(); err != nil {
 				b.Fatalf("PostInit() error = %v", err)

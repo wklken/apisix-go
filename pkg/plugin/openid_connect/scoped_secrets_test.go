@@ -854,32 +854,6 @@ func idpURL(r *http.Request) string {
 	return "http://" + r.Host
 }
 
-func TestMaterializeSecretsOIDCAllFiveFieldsFailsClosed(t *testing.T) {
-	privateKey, publicKey := oidcRSAFixtures(t)
-	values := []string{
-		"legacy-client-secret", privateKey, publicKey,
-		"legacy-session-secret", "legacy-redis-password",
-	}
-	envNames := []string{
-		"OIDC_LEGACY_CLIENT", "OIDC_LEGACY_PRIVATE", "OIDC_LEGACY_PUBLIC",
-		"OIDC_LEGACY_SESSION", "OIDC_LEGACY_REDIS",
-	}
-	for index, name := range envNames {
-		t.Setenv(name, values[index])
-	}
-	p := &Plugin{config: Config{
-		ClientID: "apisix", ClientSecret: "$ENV://" + envNames[0], Discovery: "https://idp.test",
-		ClientRSAPrivateKey: "$ENV://" + envNames[1], PublicKey: "$ENV://" + envNames[2],
-		Session: SessionConfig{
-			Secret: "$ENV://" + envNames[3],
-			Redis:  &SessionRedisConfig{Password: "$ENV://" + envNames[4]},
-		},
-	}}
-	if err := base.MaterializePluginSecrets(p); !errors.Is(err, secret.ErrCredentialUnavailable) {
-		t.Fatalf("MaterializePluginSecrets() error = %v, want credential unavailable", err)
-	}
-}
-
 func TestOIDCStopDrainsScopedClientSecretUseAndDropsState(t *testing.T) {
 	const raw = "$ENV://OIDC_STOP_SCOPED_CLIENT"
 	capabilityValue, scope, _, closeAttempt := newOIDCScopedSecretHarness(
@@ -932,21 +906,6 @@ func TestOIDCStopDrainsScopedClientSecretUseAndDropsState(t *testing.T) {
 			p.scopedSet,
 			p.activeUses,
 		)
-	}
-}
-
-func TestOIDCLegacyMaterializeEntryPointFailsClosed(t *testing.T) {
-	const (
-		envName   = "OIDC_STOP_LEGACY_CLIENT"
-		plaintext = "legacy-stop-client-secret"
-	)
-	t.Setenv(envName, plaintext)
-	p := &Plugin{config: Config{
-		ClientID: "apisix", ClientSecret: "$ENV://" + envName,
-		Discovery: "https://idp.test", BearerOnly: true,
-	}}
-	if err := base.MaterializePluginSecrets(p); !errors.Is(err, secret.ErrCredentialUnavailable) {
-		t.Fatalf("MaterializePluginSecrets() error = %v, want credential unavailable", err)
 	}
 }
 

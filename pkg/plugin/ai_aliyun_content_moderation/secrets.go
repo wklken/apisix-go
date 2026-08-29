@@ -123,7 +123,7 @@ func (p *Plugin) buildFormBodyWithCredentials(
 
 // sendModerationRequest signs and submits one request while the credential
 // callback owns the plaintext. Stop therefore waits for this boundary before
-// destroying either legacy or scoped credential owners.
+// destroying the generation-scoped credential owners.
 func (p *Plugin) sendModerationRequest(
 	ctx context.Context, sessionID, content, serviceName string,
 ) (int, []byte, error) {

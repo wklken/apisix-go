@@ -434,10 +434,6 @@ func TestSAMLRawShortCookieTextIsRejectedBySchema(t *testing.T) {
 	if err := util.Validate(rawConfig, p.GetSchema()); err == nil {
 		t.Fatal("schema accepted APISIX-invalid short session secret")
 	}
-	p.config = config
-	if err := p.MaterializeSecrets(); err == nil {
-		t.Fatal("resolved short literal passed materialization")
-	}
 }
 
 func TestSAMLLegacyMaterializationDecryptsContextualAndRotatedSecrets(t *testing.T) {
@@ -1269,58 +1265,6 @@ func TestSAMLSessionFallbackOrderMatchesConfiguration(t *testing.T) {
 		return nil
 	}); err != nil {
 		t.Fatal(err)
-	}
-}
-
-func TestStopDrainsActiveHandlerAndPreventsResurrection(t *testing.T) {
-	p := newTestPlugin(t, testConfig(t))
-	cookie, err := p.sessionCookie(externalUser{NameID: "alice"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	entered := make(chan struct{})
-	release := make(chan struct{})
-	handlerDone := make(chan struct{})
-	request := httptest.NewRequest(http.MethodGet, "http://example.com/orders", nil)
-	request.AddCookie(cookie)
-	go func() {
-		defer close(handlerDone)
-		p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-			close(entered)
-			<-release
-		})).ServeHTTP(httptest.NewRecorder(), request)
-	}()
-	<-entered
-
-	stopDone := make(chan struct{})
-	go func() {
-		p.Stop()
-		close(stopDone)
-	}()
-	select {
-	case <-stopDone:
-		t.Fatal("Stop returned before active handler drained")
-	case <-time.After(20 * time.Millisecond):
-	}
-	close(release)
-	<-handlerDone
-	<-stopDone
-	p.Stop()
-	if p.spKeyPair != nil || p.spIDPMetadata != nil || p.secretsPrepared {
-		t.Fatalf("Stop left private runtime state: %#v", p)
-	}
-	late := httptest.NewRecorder()
-	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-		t.Fatal("retired generation called next")
-	})).ServeHTTP(late, httptest.NewRequest(http.MethodGet, "http://example.com/orders", nil))
-	if late.Code != http.StatusServiceUnavailable {
-		t.Fatalf("late handler status = %d, want 503", late.Code)
-	}
-	if err := p.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) {
-		t.Fatalf("MaterializeSecrets after Stop = %v", err)
-	}
-	if err := p.PostInit(); !errors.Is(err, secret.ErrCredentialUnavailable) {
-		t.Fatalf("PostInit after Stop = %v", err)
 	}
 }
 

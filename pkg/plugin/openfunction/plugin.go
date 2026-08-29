@@ -151,21 +151,6 @@ func (p *Plugin) MaterializeScopedSecrets(
 	return nil
 }
 
-// MaterializeSecrets is the transitional process-local compatibility path.
-// Scoped generation preparation uses MaterializeScopedSecrets instead.
-func (p *Plugin) MaterializeSecrets() error {
-	p.serviceTokenMu.Lock()
-	defer p.serviceTokenMu.Unlock()
-
-	if p.config.Authorization == nil || p.config.Authorization.ServiceToken == "" {
-		return nil
-	}
-	if p.serviceTokenSet {
-		return nil
-	}
-	return errOpenFunctionCredentialUnavailable
-}
-
 func (p *Plugin) processRequest(r *http.Request, _ function_upstream.Config) {
 	p.serviceTokenMu.RLock()
 	defer p.serviceTokenMu.RUnlock()

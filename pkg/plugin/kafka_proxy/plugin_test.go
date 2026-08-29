@@ -2,10 +2,7 @@ package kafka_proxy
 
 import (
 	"context"
-	"crypto/aes"
-	"crypto/cipher"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"net/http"
@@ -31,8 +28,15 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatalf("MaterializeSecrets() error = %v", err)
+	capabilityValue, scope, closeAttempt := testutil.ScopedSecretHarness(
+		t,
+		name,
+		nil,
+		generation.ApplyTicket{DesiredRevision: 1, RequiredDomains: []generation.Domain{generation.DomainHTTP}},
+	)
+	t.Cleanup(closeAttempt)
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
@@ -69,12 +73,11 @@ func TestMaterializeScopedSecretsFailureIsAtomicAndRetryable(t *testing.T) {
 		strings.Contains(err.Error(), "private resolver") {
 		t.Fatalf("materialization error leaked secret details: %v", err)
 	}
-	if p.config.SASL.Password != raw || p.saslPassword != nil || p.legacySASLPassword != nil {
+	if p.config.SASL.Password != raw || p.saslPassword != nil {
 		t.Fatalf(
-			"failed materialization retained state: config=%q scoped=%#v legacy=%p",
+			"failed materialization retained state: config=%q scoped=%#v",
 			p.config.SASL.Password,
 			p.saslPassword,
-			p.legacySASLPassword,
 		)
 	}
 
@@ -112,12 +115,11 @@ func TestMaterializeScopedSecretsRejectsEmptyPasswordAndRetriesAtomically(t *tes
 				(resolved != "" && strings.Contains(err.Error(), resolved)) {
 				t.Fatalf("empty-password error leaked secret details: %v", err)
 			}
-			if p.config.SASL.Password != raw || p.saslPassword != nil || p.legacySASLPassword != nil {
+			if p.config.SASL.Password != raw || p.saslPassword != nil {
 				t.Fatalf(
-					"failed empty materialization retained state: config=%q scoped=%#v legacy=%p",
+					"failed empty materialization retained state: config=%q scoped=%#v",
 					p.config.SASL.Password,
 					p.saslPassword,
-					p.legacySASLPassword,
 				)
 			}
 
@@ -220,11 +222,10 @@ func TestKafkaProxyPasswordRotationDoesNotCrossGenerationsAndStopIsIdempotent(t 
 	owned := pN.saslPassword
 	pN.Stop()
 	pN.Stop()
-	if pN.saslPassword != nil || pN.legacySASLPassword != nil || !pN.stopped {
+	if pN.saslPassword != nil || !pN.stopped {
 		t.Fatalf(
-			"generation N state after Stop = scoped:%#v legacy:%p stopped:%v",
+			"generation N state after Stop = scoped:%#v stopped:%v",
 			pN.saslPassword,
-			pN.legacySASLPassword,
 			pN.stopped,
 		)
 	}
@@ -287,16 +288,19 @@ func TestKafkaProxyHandlerClearsRetainedRequestPasswordAfterPanic(t *testing.T) 
 	}
 }
 
-func TestKafkaProxyLegacyStopZerosPassword(t *testing.T) {
-	p := newTestPlugin(t, Config{SASL: &SASL{Username: "user", Password: "legacy-password"}})
-	owned := p.legacySASLPassword
+func TestKafkaProxyStopZerosPasswordAndRetiresHandler(t *testing.T) {
+	p, cleanup := materializeKafkaProxyScopedPlugin(
+		t, 59, "kafka-stop", "$ENV://KAFKA_STOP", "scoped-password",
+	)
+	defer cleanup()
+	owned := p.saslPassword
 	p.Stop()
 	p.Stop()
-	if owned == nil || *owned != "" {
-		t.Fatalf("legacy password after Stop = %q, want zeroed", *owned)
+	if owned == nil || *owned != (secret.Value{}) {
+		t.Fatalf("scoped password after Stop = %#v, want zeroed", owned)
 	}
-	if p.legacySASLPassword != nil || p.saslPassword != nil || !p.stopped {
-		t.Fatalf("legacy state after Stop = %#v", p)
+	if p.saslPassword != nil || !p.stopped {
+		t.Fatalf("scoped state after Stop = %#v", p)
 	}
 	response := httptest.NewRecorder()
 	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
@@ -312,109 +316,77 @@ func TestKafkaProxyLegacyStopZerosPassword(t *testing.T) {
 	}
 }
 
-func TestKafkaProxyStopWaitsForScopedAndLegacySASLTerminals(t *testing.T) {
-	tests := []struct {
-		name string
-		new  func(*testing.T) (*Plugin, func())
-	}{
-		{
-			name: "scoped",
-			new: func(t *testing.T) (*Plugin, func()) {
-				return materializeKafkaProxyScopedPlugin(
-					t, 60, "kafka-stop-scoped", "$ENV://KAFKA_STOP_SCOPED", "scoped-password",
-				)
-			},
-		},
-		{
-			name: "legacy",
-			new: func(t *testing.T) (*Plugin, func()) {
-				return newTestPlugin(t, Config{SASL: &SASL{
-					Username: "user", Password: "legacy-password",
-				}}), func() {}
-			},
-		},
+func TestKafkaProxyStopWaitsForScopedSASLTerminal(t *testing.T) {
+	p, cleanup := materializeKafkaProxyScopedPlugin(
+		t, 60, "kafka-stop-scoped", "$ENV://KAFKA_STOP_SCOPED", "scoped-password",
+	)
+	defer cleanup()
+	saved := p.saslPassword
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	requestDone := make(chan struct{})
+	stopAttempted := make(chan struct{}, 2)
+	stopDone := make(chan struct{}, 2)
+	p.stopBeforeLock = func() { stopAttempted <- struct{}{} }
+
+	go func() {
+		p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if got := SASLPassword(r); got == "" {
+				t.Errorf("terminal SASLPassword() = empty")
+			}
+			close(entered)
+			<-release
+			w.WriteHeader(http.StatusNoContent)
+		})).ServeHTTP(
+			httptest.NewRecorder(),
+			httptest.NewRequest(http.MethodGet, "/kafka", nil),
+		)
+		close(requestDone)
+	}()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for terminal entry")
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			p, cleanup := tt.new(t)
-			defer cleanup()
-			savedScoped := p.saslPassword
-			savedLegacy := p.legacySASLPassword
-			entered := make(chan struct{})
-			release := make(chan struct{})
-			requestDone := make(chan struct{})
-			stopAttempted := make(chan struct{}, 2)
-			stopDone := make(chan struct{}, 2)
-			p.stopBeforeLock = func() { stopAttempted <- struct{}{} }
-
-			go func() {
-				p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					if got := SASLPassword(r); got == "" {
-						t.Errorf("terminal SASLPassword() = empty")
-					}
-					close(entered)
-					<-release
-					w.WriteHeader(http.StatusNoContent)
-				})).ServeHTTP(
-					httptest.NewRecorder(),
-					httptest.NewRequest(http.MethodGet, "/kafka", nil),
-				)
-				close(requestDone)
-			}()
-			select {
-			case <-entered:
-			case <-time.After(time.Second):
-				t.Fatal("timed out waiting for terminal entry")
-			}
-			for range 2 {
-				go func() {
-					p.Stop()
-					stopDone <- struct{}{}
-				}()
-			}
-			for range 2 {
-				select {
-				case <-stopAttempted:
-				case <-time.After(time.Second):
-					t.Fatal("timed out waiting for Stop write-lock attempt")
-				}
-			}
-			select {
-			case <-stopDone:
-				t.Fatal("concurrent Stop returned while terminal held the credential read lock")
-			case <-time.After(100 * time.Millisecond):
-			}
-
-			close(release)
-			select {
-			case <-requestDone:
-			case <-time.After(time.Second):
-				t.Fatal("timed out waiting for terminal release")
-			}
-			for range 2 {
-				select {
-				case <-stopDone:
-				case <-time.After(time.Second):
-					t.Fatal("timed out waiting for concurrent Stop completion")
-				}
-			}
-			if p.saslPassword != nil || p.legacySASLPassword != nil || !p.stopped {
-				t.Fatalf(
-					"retired state = scoped:%#v legacy:%p stopped:%v",
-					p.saslPassword,
-					p.legacySASLPassword,
-					p.stopped,
-				)
-			}
-			if savedScoped != nil && *savedScoped != (secret.Value{}) {
-				t.Fatalf("saved scoped owner after Stop = %#v, want zero", *savedScoped)
-			}
-			if savedLegacy != nil && *savedLegacy != "" {
-				t.Fatalf("saved legacy owner after Stop = %q, want zero", *savedLegacy)
-			}
+	for range 2 {
+		go func() {
 			p.Stop()
-		})
+			stopDone <- struct{}{}
+		}()
 	}
+	for range 2 {
+		select {
+		case <-stopAttempted:
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for Stop write-lock attempt")
+		}
+	}
+	select {
+	case <-stopDone:
+		t.Fatal("concurrent Stop returned while terminal held the credential read lock")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(release)
+	select {
+	case <-requestDone:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for terminal release")
+	}
+	for range 2 {
+		select {
+		case <-stopDone:
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for concurrent Stop completion")
+		}
+	}
+	if p.saslPassword != nil || !p.stopped {
+		t.Fatalf("retired state = scoped:%#v stopped:%v", p.saslPassword, p.stopped)
+	}
+	if saved == nil || *saved != (secret.Value{}) {
+		t.Fatalf("saved scoped owner after Stop = %#v, want zero", saved)
+	}
+	p.Stop()
 }
 
 func runConcurrentKafkaScopedMaterialization(
@@ -476,7 +448,7 @@ func TestMaterializeScopedSecretsConcurrentAdmissionIsSingleAndRetryable(t *test
 		); err == nil {
 			t.Fatal("initial materialization failure = nil")
 		}
-		if p.config.SASL.Password != raw || p.saslPassword != nil || p.legacySASLPassword != nil {
+		if p.config.SASL.Password != raw || p.saslPassword != nil {
 			t.Fatalf("failed initial materialization retained state")
 		}
 		broker.mu.Lock()
@@ -496,37 +468,6 @@ func TestMaterializeScopedSecretsConcurrentAdmissionIsSingleAndRetryable(t *test
 		}
 		assertKafkaProxySecretDescriptorFor(t, p.config.SASL.Password, "concurrent-password")
 	})
-}
-
-func TestMaterializeSecretsConcurrentLegacySASLStateIsStable(t *testing.T) {
-	p := &Plugin{config: Config{SASL: &SASL{Username: "user", Password: "legacy-password"}}}
-	p.SetDependencies(base.Dependencies{
-		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
-	})
-	if err := p.Init(); err != nil {
-		t.Fatal(err)
-	}
-	const workers = 32
-	start := make(chan struct{})
-	errorsByWorker := make([]error, workers)
-	var group sync.WaitGroup
-	for index := range workers {
-		group.Go(func() {
-			<-start
-			errorsByWorker[index] = p.MaterializeSecrets()
-		})
-	}
-	close(start)
-	group.Wait()
-	for index, err := range errorsByWorker {
-		if err != nil {
-			t.Fatalf("legacy materialization %d error = %v", index, err)
-		}
-	}
-	if p.legacySASLPassword == nil || p.saslPassword != nil {
-		t.Fatalf("legacy concurrent state = legacy:%p scoped:%#v", p.legacySASLPassword, p.saslPassword)
-	}
-	assertKafkaProxySecretDescriptorFor(t, p.config.SASL.Password, "legacy-password")
 }
 
 type kafkaProxyScopedSecretCall struct {
@@ -738,13 +679,6 @@ func TestMaterializeScopedSecretsOwnsKafkaProxySASLPassword(t *testing.T) {
 	})
 }
 
-func TestMaterializeSecretsRejectsMissingDataEncryptionResolver(t *testing.T) {
-	p := &Plugin{config: Config{SASL: &SASL{Username: "user", Password: "password"}}}
-	if err := p.MaterializeSecrets(); err == nil || err.Error() != "data-encryption resolver is required" {
-		t.Fatalf("MaterializeSecrets() error = %v, want missing resolver error", err)
-	}
-}
-
 func TestPostInitWithSASLRequiresMaterialization(t *testing.T) {
 	p := &Plugin{config: Config{SASL: &SASL{
 		Username: "user", Password: "$ENV://KAFKA_UNPREPARED",
@@ -811,90 +745,4 @@ func TestHandlerDoesNotSetSASLContextWhenDisabled(t *testing.T) {
 	if rr.Code != http.StatusAccepted {
 		t.Fatalf("response code = %d, want 202", rr.Code)
 	}
-}
-
-func TestMaterializeSecretsRejectsInvalidEncryptedSASLPassword(t *testing.T) {
-	p := &Plugin{config: Config{SASL: &SASL{Username: "user", Password: "plain"}}}
-	p.SetDependencies(base.Dependencies{
-		DataEncryption: testutil.DataEncryptionService(true, []string{"qeddd145sfvddff3"}).Resolver(),
-	})
-	if err := p.Init(); err != nil {
-		t.Fatalf("Init() error = %v", err)
-	}
-	if err := p.MaterializeSecrets(); err == nil {
-		t.Fatal("MaterializeSecrets() error = nil, want strict SASL password rejection")
-	}
-}
-
-func TestMaterializeSecretsRejectsEmptySASLPassword(t *testing.T) {
-	for _, password := range []string{"", "   "} {
-		p := &Plugin{config: Config{SASL: &SASL{Username: "user", Password: password}}}
-		p.SetDependencies(base.Dependencies{
-			DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
-		})
-		if err := p.Init(); err != nil {
-			t.Fatal(err)
-		}
-		if err := p.MaterializeSecrets(); err == nil || !errors.Is(err, secret.ErrCredentialUnavailable) {
-			t.Fatalf("MaterializeSecrets() error = %v for password %q", err, password)
-		}
-		if p.legacySASLPassword != nil || p.saslPassword != nil || p.config.SASL.Password != password {
-			t.Fatalf("failed legacy materialization retained state for password %q", password)
-		}
-	}
-}
-
-func TestMaterializeSecretsResolvesEncryptedSASLPassword(t *testing.T) {
-	key := "qeddd145sfvddff3"
-	p := &Plugin{config: Config{SASL: &SASL{
-		Username: "user",
-		Password: encryptKafkaProxyTestValue(t, key, "secret"),
-	}}}
-	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(true, []string{key}).Resolver()})
-	if err := p.Init(); err != nil {
-		t.Fatalf("Init() error = %v", err)
-	}
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatalf("MaterializeSecrets() error = %v", err)
-	}
-	assertKafkaProxySecretDescriptorFor(t, p.config.SASL.Password, "secret")
-	if err := p.PostInit(); err != nil {
-		t.Fatalf("PostInit() error = %v", err)
-	}
-}
-
-func TestMaterializeSecretsResolvesContextualV2SASLPassword(t *testing.T) {
-	key := "qeddd145sfvddff3"
-	ciphertext, err := data_encryption.EncryptForContext("secret", key, "kafka-proxy.sasl.password")
-	if err != nil {
-		t.Fatalf("EncryptForContext() error = %v", err)
-	}
-	p := &Plugin{config: Config{SASL: &SASL{Username: "user", Password: ciphertext}}}
-	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(true, []string{key}).Resolver()})
-	if err := p.Init(); err != nil {
-		t.Fatalf("Init() error = %v", err)
-	}
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatalf("MaterializeSecrets() error = %v", err)
-	}
-	assertKafkaProxySecretDescriptorFor(t, p.config.SASL.Password, "secret")
-	if err := p.PostInit(); err != nil {
-		t.Fatalf("PostInit() error = %v", err)
-	}
-}
-
-func encryptKafkaProxyTestValue(t *testing.T, key string, value string) string {
-	t.Helper()
-	padding := aes.BlockSize - len(value)%aes.BlockSize
-	padded := append([]byte(value), make([]byte, padding)...)
-	for i := len(padded) - padding; i < len(padded); i++ {
-		padded[i] = byte(padding)
-	}
-	block, err := aes.NewCipher([]byte(key))
-	if err != nil {
-		t.Fatalf("NewCipher() error = %v", err)
-	}
-	ciphertext := make([]byte, len(padded))
-	cipher.NewCBCEncrypter(block, []byte(key)).CryptBlocks(ciphertext, padded)
-	return base64.StdEncoding.EncodeToString(ciphertext)
 }

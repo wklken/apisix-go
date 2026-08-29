@@ -2,10 +2,7 @@ package error_log_logger
 
 import (
 	"context"
-	"crypto/aes"
-	"crypto/cipher"
 	"crypto/tls"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -136,8 +133,15 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := base.MaterializePluginSecrets(p); err != nil {
-		t.Fatalf("MaterializePluginSecrets() error = %v", err)
+	capabilityValue, scope, closeAttempt := testutil.ScopedSecretHarness(
+		t,
+		name,
+		nil,
+		generation.ApplyTicket{DesiredRevision: 1, RequiredDomains: []generation.Domain{generation.DomainHTTP}},
+	)
+	t.Cleanup(closeAttempt)
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if p.TaskOwner() == nil {
 		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
@@ -214,13 +218,6 @@ func TestPostInitDoesNotWarnForPluginMetadataTransport(t *testing.T) {
 
 	if len(warnings) != 0 {
 		t.Fatalf("plugin metadata warnings = %#v, want none", warnings)
-	}
-}
-
-func TestMaterializeSecretsRejectsMissingDataEncryptionResolver(t *testing.T) {
-	p := &Plugin{}
-	if err := base.MaterializePluginSecrets(p); err == nil || !strings.Contains(err.Error(), "credential unavailable") {
-		t.Fatalf("PostInit() error = %v, want missing resolver error", err)
 	}
 }
 
@@ -893,62 +890,6 @@ func mustJSONBytes(t *testing.T, value any) []byte {
 	return encoded
 }
 
-func TestMaterializeSecretsRejectsInvalidEncryptedClickHousePassword(t *testing.T) {
-	p := &Plugin{config: Config{Clickhouse: &ClickHouseConfig{Password: "not-a-ciphertext"}}}
-	p.SetDependencies(base.Dependencies{
-		Tasks:          newLoggerTestTaskOwner(t),
-		DataEncryption: testutil.DataEncryptionService(true, []string{"qeddd145sfvddff3"}).Resolver(),
-	})
-	if err := p.Init(); err != nil {
-		t.Fatalf("Init() error = %v", err)
-	}
-	if err := base.MaterializePluginSecrets(p); err == nil {
-		t.Fatal("PostInit() error = nil, want strict encrypted ClickHouse password rejection")
-	}
-}
-
-func TestPostInitResolvesRotatedEncryptedKafkaPassword(t *testing.T) {
-	oldKey := "old-keyring-item"
-	newKey := "qeddd145sfvddff3"
-	p := &Plugin{
-		config: Config{Kafka: &KafkaConfig{
-			Brokers: []KafkaBroker{{
-				Host: "127.0.0.1",
-				Port: 9092,
-				SASLConfig: &SASLConfig{
-					User:     "user",
-					Password: encryptErrorLoggerTestValue(t, oldKey, "kafka-secret"),
-				},
-			}},
-			KafkaTopic: "apisix-error-logs",
-		}},
-		kafkaSender: &fakeKafkaSender{},
-	}
-	p.SetDependencies(base.Dependencies{
-		Tasks:          newLoggerTestTaskOwner(t),
-		DataEncryption: testutil.DataEncryptionService(true, []string{newKey, oldKey}).Resolver(),
-	})
-	if err := p.Init(); err != nil {
-		t.Fatalf("Init() error = %v", err)
-	}
-	if err := base.MaterializePluginSecrets(p); err != nil {
-		t.Fatalf("MaterializePluginSecrets() error = %v", err)
-	}
-	if p.TaskOwner() == nil {
-		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
-	}
-	if err := p.PostInit(); err != nil {
-		t.Fatalf("PostInit() error = %v", err)
-	}
-	t.Cleanup(func() { p.Stop() })
-	if got := p.config.Kafka.Brokers[0].SASLConfig.Password; !strings.Contains(got, "#sha256:") {
-		t.Fatalf("kafka password = %q, want descriptor", got)
-	}
-	if err := p.kafkaPasswordsLegacy[0].value; err != "kafka-secret" {
-		t.Fatalf("private kafka password = %q, want resolved plaintext", err)
-	}
-}
-
 func TestMaterializeScopedSecretsOwnsErrorLoggerPluginConfig(t *testing.T) {
 	rawConfig := map[string]any{
 		"clickhouse": map[string]any{
@@ -1167,8 +1108,7 @@ func TestStopDropsScopedKafkaWriterAndPrivateSecrets(t *testing.T) {
 	if p.kafkaSender != nil {
 		t.Fatal("Stop() retained Kafka sender and its credential-bearing writer")
 	}
-	if p.clickhousePassword != nil || p.clickhousePasswordLegacy != nil ||
-		len(p.kafkaPasswords) != 0 || len(p.kafkaPasswordsLegacy) != 0 {
+	if p.clickhousePassword != nil || len(p.kafkaPasswords) != 0 {
 		t.Fatal("Stop() retained private plugin-config secrets")
 	}
 
@@ -1663,7 +1603,15 @@ func TestNewKafkaWriterUsesBrokerSASLConfig(t *testing.T) {
 			KafkaTopic: "apisix-error-logs",
 		},
 	}}
-	p.kafkaPasswordsLegacy = []indexedLegacySecret{{index: 0, value: "pass"}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	fixture := newScopedPluginSecretFixture(t, map[string]string{"pass": "pass"})
+	if err := base.MaterializeScopedPluginSecrets(
+		context.Background(), fixture.scope, fixture.capability, p,
+	); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
+	}
 	p.applyDefaults()
 
 	writer, err := p.newKafkaWriter()
@@ -2114,22 +2062,6 @@ func waitFor(t *testing.T, condition func() bool, description string) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for %s", description)
-}
-
-func encryptErrorLoggerTestValue(t *testing.T, key string, value string) string {
-	t.Helper()
-	padding := aes.BlockSize - len(value)%aes.BlockSize
-	padded := append([]byte(value), make([]byte, padding)...)
-	for i := len(padded) - padding; i < len(padded); i++ {
-		padded[i] = byte(padding)
-	}
-	block, err := aes.NewCipher([]byte(key))
-	if err != nil {
-		t.Fatalf("NewCipher() error = %v", err)
-	}
-	ciphertext := make([]byte, len(padded))
-	cipher.NewCBCEncrypter(block, []byte(key)).CryptBlocks(ciphertext, padded)
-	return base64.StdEncoding.EncodeToString(ciphertext)
 }
 
 func mustAtoi(t *testing.T, s string) int {

@@ -4,9 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
-	"crypto/sha256"
 	"encoding/base64"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -31,10 +29,9 @@ type Plugin struct {
 	config Config
 	expr   *pluginexpr.Expression
 
-	secretMu   sync.RWMutex
-	body       *secret.Value
-	legacyBody *string
-	stopped    bool
+	secretMu sync.RWMutex
+	body     *secret.Value
+	stopped  bool
 }
 
 const (
@@ -316,51 +313,6 @@ func (p *Plugin) ValidatePreMaterialization() error {
 	return nil
 }
 
-// MaterializeSecrets is the transitional process-local compatibility path.
-// Scoped generation preparation uses MaterializeScopedSecrets instead.
-func (p *Plugin) MaterializeSecrets() error {
-	p.secretMu.Lock()
-	defer p.secretMu.Unlock()
-	if p.stopped {
-		return secret.ErrCredentialUnavailable
-	}
-	if p.body != nil || p.legacyBody != nil {
-		return nil
-	}
-	field, raw, present, err := p.selectedBody()
-	if err != nil {
-		return err
-	}
-	if !present || (field == "body" && raw == "") {
-		return p.validateEffectiveBody(raw)
-	}
-	resolver := p.DataEncryption()
-	if !resolver.Configured() {
-		return errors.New("data-encryption resolver is required")
-	}
-	var resolved string
-	if field == "body_secret" {
-		resolved, err = resolver.ResolveForContext(raw, name+"."+field)
-	} else {
-		resolved = resolver.ResolveOptionalForContext(raw, name+"."+field)
-	}
-	if err != nil {
-		return fmt.Errorf("%s %s: %w", name, field, secret.ErrCredentialUnavailable)
-	}
-	if err := p.validateEffectiveBody(resolved); err != nil {
-		return err
-	}
-	digest := sha256.Sum256([]byte(resolved))
-	descriptor, err := secret.NewDescriptor(capability.SecretPluginConfig, digest)
-	if err != nil {
-		return fmt.Errorf("%s %s: %w", name, field, secret.ErrCredentialUnavailable)
-	}
-	owned := resolved
-	p.installBody(field, descriptor.String())
-	p.legacyBody = &owned
-	return nil
-}
-
 // MaterializeScopedSecrets admits the selected manifest-owned response body
 // for this immutable attempt. Config retains only its content descriptor.
 func (p *Plugin) MaterializeScopedSecrets(
@@ -371,7 +323,7 @@ func (p *Plugin) MaterializeScopedSecrets(
 	if p.stopped {
 		return secret.ErrCredentialUnavailable
 	}
-	if p.body != nil || p.legacyBody != nil {
+	if p.body != nil {
 		return nil
 	}
 	field, raw, present, err := p.selectedBody()
@@ -452,9 +404,6 @@ func (p *Plugin) useBody(use func(string) error) (bool, error) {
 	if p.body != nil {
 		return true, p.body.Use(use)
 	}
-	if p.legacyBody != nil {
-		return true, use(*p.legacyBody)
-	}
 	if field == "body" && raw == "" {
 		return true, use("")
 	}
@@ -471,10 +420,6 @@ func (p *Plugin) Stop() {
 	if p.body != nil {
 		*p.body = secret.Value{}
 		p.body = nil
-	}
-	if p.legacyBody != nil {
-		*p.legacyBody = ""
-		p.legacyBody = nil
 	}
 }
 

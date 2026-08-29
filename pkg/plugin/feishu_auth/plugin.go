@@ -308,17 +308,6 @@ func materializeScopedFeishuSecret(
 	return value, descriptor.String(), nil
 }
 
-// MaterializeSecrets is the transitional process-local compatibility path.
-// Immutable generation preparation uses MaterializeScopedSecrets instead.
-func (p *Plugin) MaterializeSecrets() error {
-	p.lifecycleMu.Lock()
-	defer p.lifecycleMu.Unlock()
-	if !p.retired && p.secretsPrepared {
-		return nil
-	}
-	return secret.ErrCredentialUnavailable
-}
-
 func validateFeishuAppSecret(plaintext string) error {
 	if strings.TrimSpace(plaintext) == "" {
 		return secret.ErrCredentialUnavailable

@@ -523,21 +523,20 @@ func TestKafkaStopDrainsActiveSendAndPreventsResurrection(t *testing.T) {
 		},
 		sender: sender,
 	}
-	p.SetDependencies(
-		base.Dependencies{
-			Tasks:          newLoggerTestTaskOwner(t),
-			DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
-		},
-	)
+	p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
 	if err := p.Init(); err != nil {
 		t.Fatal(err)
 	}
 	p.sender = sender
-	if err := p.MaterializeSecrets(); err != nil {
+	capabilityValue, scope, cleanup := testutil.ScopedSecretHarness(
+		t,
+		name,
+		nil,
+		generation.ApplyTicket{DesiredRevision: 1, RequiredDomains: []generation.Domain{generation.DomainHTTP}},
+	)
+	defer cleanup()
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
 		t.Fatal(err)
-	}
-	if p.TaskOwner() == nil {
-		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatal(err)
@@ -592,17 +591,8 @@ func TestKafkaStopDrainsActiveSendAndPreventsResurrection(t *testing.T) {
 		context.Background(),
 		[]map[string]any{{"route_id": "late"}},
 		1,
-	); !errors.Is(
-		err,
-		secret.ErrCredentialUnavailable,
-	) {
+	); !errors.Is(err, secret.ErrCredentialUnavailable) {
 		t.Fatalf("post-Stop SendBatch() error = %v", err)
-	}
-	if err := p.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) {
-		t.Fatalf("post-Stop MaterializeSecrets() error = %v", err)
-	}
-	if p.TaskOwner() == nil {
-		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
 	}
 	if err := p.PostInit(); !errors.Is(err, secret.ErrCredentialUnavailable) {
 		t.Fatalf("post-Stop PostInit() error = %v", err)
@@ -815,14 +805,22 @@ func TestPreparedGenerationsRetainMetadataFormat(t *testing.T) {
 	}
 }
 
+func mustMetadataView(t *testing.T, documents map[string][]byte) runtime.MetadataView {
+	t.Helper()
+	view, err := runtime.NewMetadataView(documents)
+	if err != nil {
+		t.Fatalf("NewMetadataView() error = %v", err)
+	}
+	return view
+}
+
 func TestPostInitRejectsInvalidMetadataBeforeSideEffects(t *testing.T) {
 	p := &Plugin{config: Config{
 		BrokerList: map[string]int{"127.0.0.1": 9092},
 		KafkaTopic: "invalid-metadata",
 	}}
 	p.SetDependencies(base.Dependencies{
-		Tasks:          newLoggerTestTaskOwner(t),
-		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+		Tasks: newLoggerTestTaskOwner(t),
 		Metadata: mustMetadataView(t, map[string][]byte{
 			name: []byte(`{"log_format":"sensitive-invalid-metadata"}`),
 		}),
@@ -830,13 +828,18 @@ func TestPostInitRejectsInvalidMetadataBeforeSideEffects(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatalf("MaterializeSecrets() error = %v", err)
+	capabilityValue, scope, cleanup := testutil.ScopedSecretHarness(
+		t,
+		name,
+		nil,
+		generation.ApplyTicket{DesiredRevision: 1, RequiredDomains: []generation.Domain{generation.DomainHTTP}},
+	)
+	defer cleanup()
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	t.Cleanup(p.Stop)
-	if p.TaskOwner() == nil {
-		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
-	}
+
 	err := p.PostInit()
 	if err == nil || !strings.Contains(err.Error(), "kafka-logger metadata decode failed") {
 		t.Fatalf("PostInit() error = %v, want redacted metadata decode failure", err)
@@ -854,22 +857,53 @@ func TestPostInitRejectsInvalidMetadataBeforeSideEffects(t *testing.T) {
 	}
 }
 
-func mustMetadataView(t *testing.T, documents map[string][]byte) runtime.MetadataView {
-	t.Helper()
-	view, err := runtime.NewMetadataView(documents)
-	if err != nil {
-		t.Fatalf("NewMetadataView() error = %v", err)
+// APISIX 3.17 t/plugin/kafka-logger2.t TESTS 10-11 perform custom
+// expression validation after JSON Schema validation.
+func TestPostInitRejectsAPISIX317InvalidBodyExpressionOperators(t *testing.T) {
+	tests := []struct {
+		name       string
+		field      string
+		expression [][]any
+	}{
+		{name: "request body", field: "include_req_body_expr", expression: [][]any{{"bar", "<>", "foo"}}},
+		{name: "response body", field: "include_resp_body_expr", expression: [][]any{{"bar", "<!>", "foo"}}},
 	}
-	return view
-}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			config := Config{
+				BrokerList: map[string]int{"127.0.0.1": 9092},
+				KafkaTopic: "integration",
+			}
+			if test.field == "include_req_body_expr" {
+				config.IncludeReqBody = true
+				config.IncludeReqBodyExpr = test.expression
+			} else {
+				config.IncludeRespBody = true
+				config.IncludeRespBodyExpr = test.expression
+			}
+			p := &Plugin{config: config, sender: &captureSender{}}
+			p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
+			if err := p.Init(); err != nil {
+				t.Fatalf("Init() error = %v", err)
+			}
+			capabilityValue, scope, cleanup := testutil.ScopedSecretHarness(
+				t,
+				name,
+				nil,
+				generation.ApplyTicket{DesiredRevision: 1, RequiredDomains: []generation.Domain{generation.DomainHTTP}},
+			)
+			defer cleanup()
+			if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+				t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
+			}
+			t.Cleanup(p.Stop)
 
-func TestPostInitRejectsMissingDataEncryptionResolver(t *testing.T) {
-	p := &Plugin{config: Config{Brokers: []Broker{{
-		Host: "127.0.0.1", Port: 9092,
-		SASLConfig: &SASLConfig{User: "logger", Password: "private"},
-	}}}}
-	if err := p.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) {
-		t.Fatalf("MaterializeSecrets() error = %v, want credential unavailable", err)
+			err := p.PostInit()
+			if err == nil || !strings.Contains(err.Error(), test.field) ||
+				!strings.Contains(err.Error(), "invalid operator") {
+				t.Fatalf("PostInit() error = %v, want %s invalid operator rejection", err, test.field)
+			}
+		})
 	}
 }
 
@@ -986,30 +1020,6 @@ func TestPostInitAcceptsDeprecatedBrokerListAndAppliesDefaults(t *testing.T) {
 	}
 	if p.config.BatchMaxSize != 1000 {
 		t.Fatalf("batch_max_size = %d, want 1000", p.config.BatchMaxSize)
-	}
-}
-
-func TestPostInitRejectsInvalidEncryptedSASLPassword(t *testing.T) {
-	p := &Plugin{
-		config: Config{
-			Brokers: []Broker{{
-				Host:       "127.0.0.1",
-				Port:       9092,
-				SASLConfig: &SASLConfig{User: "logger", Password: "not-a-ciphertext"},
-			}},
-			KafkaTopic: "apisix-logs",
-		},
-		sender: &captureSender{},
-	}
-	p.SetDependencies(base.Dependencies{
-		Tasks:          newLoggerTestTaskOwner(t),
-		DataEncryption: testutil.DataEncryptionService(true, []string{"qeddd145sfvddff3"}).Resolver(),
-	})
-	if err := p.Init(); err != nil {
-		t.Fatalf("Init() error = %v", err)
-	}
-	if err := p.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) {
-		t.Fatalf("MaterializeSecrets() error = %v, want credential unavailable", err)
 	}
 }
 
@@ -1606,47 +1616,6 @@ func TestSchemaRejectsAPISIX317InvalidBrokerConfigurations(t *testing.T) {
 			test.config["kafka_topic"] = "integration"
 			if err := util.Validate(test.config, p.GetSchema()); err == nil {
 				t.Fatalf("Validate(%#v) error = nil, want APISIX 3.17 schema rejection", test.config)
-			}
-		})
-	}
-}
-
-// APISIX 3.17 t/plugin/kafka-logger2.t TESTS 10-11 perform custom
-// expression validation after JSON Schema validation.
-func TestPostInitRejectsAPISIX317InvalidBodyExpressionOperators(t *testing.T) {
-	tests := []struct {
-		name       string
-		field      string
-		expression [][]any
-	}{
-		{name: "request body", field: "include_req_body_expr", expression: [][]any{{"bar", "<>", "foo"}}},
-		{name: "response body", field: "include_resp_body_expr", expression: [][]any{{"bar", "<!>", "foo"}}},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			config := Config{
-				BrokerList: map[string]int{"127.0.0.1": 9092},
-				KafkaTopic: "integration",
-			}
-			if test.field == "include_req_body_expr" {
-				config.IncludeReqBody = true
-				config.IncludeReqBodyExpr = test.expression
-			} else {
-				config.IncludeRespBody = true
-				config.IncludeRespBodyExpr = test.expression
-			}
-			p := &Plugin{config: config, sender: &captureSender{}}
-			p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
-			if err := p.Init(); err != nil {
-				t.Fatalf("Init() error = %v", err)
-			}
-			if err := p.MaterializeSecrets(); err != nil {
-				t.Fatalf("MaterializeSecrets() error = %v", err)
-			}
-			err := p.PostInit()
-			if err == nil || !strings.Contains(err.Error(), test.field) ||
-				!strings.Contains(err.Error(), "invalid operator") {
-				t.Fatalf("PostInit() error = %v, want %s invalid operator rejection", err, test.field)
 			}
 		})
 	}

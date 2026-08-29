@@ -246,20 +246,6 @@ func materializeScopedCasdoorSecret(
 	return value, descriptor.String(), nil
 }
 
-// MaterializeSecrets is the transitional process-local compatibility path.
-// Immutable generation preparation uses MaterializeScopedSecrets instead.
-func (p *Plugin) MaterializeSecrets() error {
-	p.lifecycleMu.Lock()
-	defer p.lifecycleMu.Unlock()
-	if p.retired {
-		return secret.ErrCredentialUnavailable
-	}
-	if p.secretsPrepared {
-		return nil
-	}
-	return secret.ErrCredentialUnavailable
-}
-
 func validateCasdoorSessionSecret(plaintext string) error {
 	if utf8.RuneCountInString(plaintext) < minSessionSecretLength {
 		return secret.ErrCredentialUnavailable
@@ -550,7 +536,7 @@ func useScopedCasdoorFallbacks(
 }
 
 // Stop waits for in-flight authentication/session callbacks, closes the
-// generation-neutral client, then retires legacy and scoped secret owners.
+// generation-neutral client, then retires scoped secret owners.
 func (p *Plugin) Stop() {
 	if hook := p.testLifecycleHook; hook != nil {
 		hook(lifecycleBeforeStopWait)

@@ -358,24 +358,6 @@ func (p *Plugin) MaterializeScopedSecrets(
 	return nil
 }
 
-// MaterializeSecrets is the transitional process-local compatibility path.
-// Immutable generation preparation uses MaterializeScopedSecrets instead.
-func (p *Plugin) MaterializeSecrets() error {
-	p.lifecycleMu.Lock()
-	defer p.lifecycleMu.Unlock()
-	if p.stopped.Load() {
-		return secret.ErrCredentialUnavailable
-	}
-	if p.secretsPrepared {
-		return nil
-	}
-	if p.config.AuthConfig == nil {
-		p.secretsPrepared = true
-		return nil
-	}
-	return googlePrivateKeyUnavailable()
-}
-
 func (p *Plugin) buildResolvedInlineAuth(privateKey string) (*AuthConfig, error) {
 	if err := validateGooglePrivateKey(privateKey); err != nil {
 		return nil, err

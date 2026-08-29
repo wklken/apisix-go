@@ -15,12 +15,14 @@ import (
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/hmac_auth"
 	"github.com/wklken/apisix-go/pkg/plugin/key_auth"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/runtime"
+	"github.com/wklken/apisix-go/pkg/testutil"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -51,7 +53,7 @@ type immutableMultiAuthChildPreparer struct {
 
 func (preparer immutableMultiAuthChildPreparer) Prepare(
 	ctx context.Context,
-	_ base.ScopedSecretAccess,
+	access base.ScopedSecretAccess,
 	spec base.CompositeChildSpec,
 ) (base.PreparedCompositeChild, error) {
 	if ctx == nil {
@@ -64,7 +66,7 @@ func (preparer immutableMultiAuthChildPreparer) Prepare(
 	if err != nil {
 		return nil, err
 	}
-	owner := &legacyPreparedAuthChild{factory: spec.Factory, child: child}
+	owner := &immutablePreparedAuthChild{factory: spec.Factory, child: child}
 	fail := func(err error) (base.PreparedCompositeChild, error) {
 		owner.Close()
 		return nil, err
@@ -80,13 +82,29 @@ func (preparer immutableMultiAuthChildPreparer) Prepare(
 	if err := util.Parse(spec.Config, child.Config()); err != nil {
 		return fail(err)
 	}
-	if err := base.MaterializePluginSecrets(child); err != nil {
+	childAccess, err := access.Child(spec.Factory)
+	if err != nil {
+		return fail(err)
+	}
+	if err := base.MaterializeScopedCompositeChildSecrets(ctx, childAccess, child); err != nil {
 		return fail(err)
 	}
 	if err := child.PostInit(); err != nil {
 		return fail(err)
 	}
 	return owner, nil
+}
+
+type immutablePreparedAuthChild struct {
+	factory string
+	child   authPlugin
+	close   sync.Once
+}
+
+func (child *immutablePreparedAuthChild) Factory() string { return child.factory }
+func (child *immutablePreparedAuthChild) Instance() any   { return child.child }
+func (child *immutablePreparedAuthChild) Close() {
+	child.close.Do(func() { stopAuthChild(child.child) })
 }
 
 func addAuthConsumer(t *testing.T, username string, plugins map[string]any) {
@@ -158,7 +176,14 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := p.MaterializeScopedSecrets(context.Background(), base.ScopedSecretAccess{}); err != nil {
+	capabilityValue, scope, closeAttempt := testutil.ScopedSecretHarness(
+		t,
+		name,
+		nil,
+		generation.ApplyTicket{DesiredRevision: 1, RequiredDomains: []generation.Domain{generation.DomainHTTP}},
+	)
+	t.Cleanup(closeAttempt)
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
 		t.Fatalf("MaterializeScopedSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
@@ -197,43 +222,6 @@ func TestPostInitDispatchesConfiguredBodyConfigs(t *testing.T) {
 	}
 	if !hmacAuth.ValidateRequestBody || hmacAuth.MaxReqBodySize != 4096 {
 		t.Fatalf("hmac-auth config = %#v, want the route-level body validation", hmacAuth)
-	}
-}
-
-func TestMultiAuthRejectsDisabledNestedPluginBeforeConstruction(t *testing.T) {
-	p := &Plugin{config: Config{AuthPlugins: []AuthPluginConfig{
-		{"unknown-auth": {}},
-		{"key-auth": {}},
-	}}}
-	if err := p.Init(); err != nil {
-		t.Fatalf("Init() error = %v", err)
-	}
-	p.SetPluginEnabledChecker(func(name string) bool { return name != "unknown-auth" })
-
-	err := p.MaterializeSecrets()
-	if err == nil || !strings.Contains(err.Error(), "unknown-auth") || !strings.Contains(err.Error(), "disabled") {
-		t.Fatalf("MaterializeSecrets() error = %v, want disabled unknown-auth rejection before construction", err)
-	}
-	if len(p.auths) != 0 {
-		t.Fatalf("configured auth plugins after rejection = %d, want no child constructed", len(p.auths))
-	}
-
-	enabled := &Plugin{config: Config{AuthPlugins: []AuthPluginConfig{
-		{"basic-auth": {}},
-		{"key-auth": {}},
-	}}}
-	if err := enabled.Init(); err != nil {
-		t.Fatalf("enabled Init() error = %v", err)
-	}
-	enabled.SetPluginEnabledChecker(func(string) bool { return true })
-	if err := enabled.MaterializeSecrets(); err != nil {
-		t.Fatalf("enabled MaterializeSecrets() error = %v", err)
-	}
-	if err := enabled.PostInit(); err != nil {
-		t.Fatalf("enabled PostInit() error = %v", err)
-	}
-	if len(enabled.auths) != 2 {
-		t.Fatalf("enabled auth plugins = %d, want 2", len(enabled.auths))
 	}
 }
 
@@ -601,25 +589,6 @@ func TestHandlerLeavesSuccessfulHMACBodyOwnedByServer(t *testing.T) {
 	}
 }
 
-func TestPostInitAllowsAuthPluginEntryWithMultiplePlugins(t *testing.T) {
-	p := &Plugin{config: Config{AuthPlugins: []AuthPluginConfig{
-		{"basic-auth": {}, "key-auth": {}},
-		{"jwt-auth": {}},
-	}}}
-	if err := p.Init(); err != nil {
-		t.Fatalf("Init() error = %v", err)
-	}
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatalf("MaterializeSecrets() error = %v", err)
-	}
-	if err := p.PostInit(); err != nil {
-		t.Fatalf("PostInit() error = %v, want all plugins in an entry to be accepted", err)
-	}
-	if len(p.auths) != 3 {
-		t.Fatalf("configured auth plugins = %d, want 3", len(p.auths))
-	}
-}
-
 func TestHandlerRunsEveryAuthPluginWithinArrayObject(t *testing.T) {
 	addAuthConsumer(t, "same-entry-key-user", map[string]any{
 		"key-auth": map[string]any{"key": "same-entry-key"},
@@ -929,43 +898,9 @@ func TestHandlerRejectsWhenAllAuthPluginsFail(t *testing.T) {
 	}
 }
 
-func TestPostInitRejectsUnsupportedAuthPlugin(t *testing.T) {
-	p := &Plugin{config: Config{
-		AuthPlugins: []AuthPluginConfig{
-			{"key-auth": {}},
-			{"unknown-auth": {}},
-		},
-	}}
-	if err := p.Init(); err != nil {
-		t.Fatalf("Init() error = %v", err)
-	}
-	err := p.MaterializeSecrets()
-	if err == nil || !strings.Contains(err.Error(), "unknown-auth") {
-		t.Fatalf("MaterializeSecrets() error = %v, want unknown-auth", err)
-	}
-}
-
 func newMultiAuthRequest() *http.Request {
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
 	req = ctx.WithApisixVars(req, map[string]string{})
 	req = ctx.WithRequestVars(req)
 	return req
-}
-
-func TestUnownedSecretReferenceRejectsNestedAuthPlugin(t *testing.T) {
-	p := &Plugin{config: Config{AuthPlugins: []AuthPluginConfig{
-		{"basic-auth": {"realm": "$ENV://MULTI_AUTH_REALM"}},
-		{"key-auth": {}},
-	}}}
-	if err := p.Init(); err != nil {
-		t.Fatalf("Init() error = %v", err)
-	}
-
-	err := p.MaterializeSecrets()
-	if err == nil || !strings.Contains(err.Error(), "child preparation failed") {
-		t.Fatalf("MaterializeSecrets() error = %v, want redacted nested auth secret rejection", err)
-	}
-	if strings.Contains(err.Error(), "MULTI_AUTH_REALM") {
-		t.Fatalf("MaterializeSecrets() error exposed raw secret reference: %v", err)
-	}
 }

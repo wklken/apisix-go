@@ -451,13 +451,12 @@ func TestStopDrainsActiveGoogleSendAndDropsPrivateState(t *testing.T) {
 				t, uint64(40+index), "google-stop", rawConfig,
 				map[string]string{rawPrivateKey: pemKey},
 			)
+			defer closeAttempt()
 			if err := base.MaterializeScopedPluginSecrets(
 				context.Background(), scope, capabilityValue, p,
 			); err != nil {
-				closeAttempt()
 				t.Fatal(err)
 			}
-			defer closeAttempt()
 			if p.TaskOwner() == nil {
 				p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
 			}
@@ -521,9 +520,6 @@ func TestStopDrainsActiveGoogleSendAndDropsPrivateState(t *testing.T) {
 				context.Background(), []map[string]any{{"late": true}}, 1,
 			); !errors.Is(err, secret.ErrCredentialUnavailable) {
 				t.Fatalf("post-Stop SendBatch() error = %v, want credential unavailable", err)
-			}
-			if err := p.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) {
-				t.Fatalf("post-Stop materialization error = %v, want credential unavailable", err)
 			}
 			p.Stop()
 		})
@@ -802,11 +798,19 @@ func TestPreparedGenerationsRetainMetadataFormat(t *testing.T) {
 	}
 }
 
+func mustMetadataView(t *testing.T, documents map[string][]byte) runtime.MetadataView {
+	t.Helper()
+	view, err := runtime.NewMetadataView(documents)
+	if err != nil {
+		t.Fatalf("NewMetadataView() error = %v", err)
+	}
+	return view
+}
+
 func TestPostInitRejectsInvalidMetadataBeforeSideEffects(t *testing.T) {
 	p := &Plugin{}
 	p.SetDependencies(base.Dependencies{
-		Tasks:          newLoggerTestTaskOwner(t),
-		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+		Tasks: newLoggerTestTaskOwner(t),
 		Metadata: mustMetadataView(t, map[string][]byte{
 			name: []byte(`{"log_format":"sensitive-invalid-metadata"}`),
 		}),
@@ -814,13 +818,18 @@ func TestPostInitRejectsInvalidMetadataBeforeSideEffects(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatalf("MaterializeSecrets() error = %v", err)
+	capabilityValue, scope, cleanup := testutil.ScopedSecretHarness(
+		t,
+		name,
+		nil,
+		generation.ApplyTicket{DesiredRevision: 1, RequiredDomains: []generation.Domain{generation.DomainHTTP}},
+	)
+	defer cleanup()
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	t.Cleanup(p.Stop)
-	if p.TaskOwner() == nil {
-		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
-	}
+
 	err := p.PostInit()
 	if err == nil || !strings.Contains(err.Error(), "google-cloud-logging metadata decode failed") {
 		t.Fatalf("PostInit() error = %v, want redacted metadata decode failure", err)
@@ -836,22 +845,6 @@ func TestPostInitRejectsInvalidMetadataBeforeSideEffects(t *testing.T) {
 			p.BatchProcessor,
 			p.config.Resource.Type,
 		)
-	}
-}
-
-func mustMetadataView(t *testing.T, documents map[string][]byte) runtime.MetadataView {
-	t.Helper()
-	view, err := runtime.NewMetadataView(documents)
-	if err != nil {
-		t.Fatalf("NewMetadataView() error = %v", err)
-	}
-	return view
-}
-
-func TestMaterializeSecretsRejectsMissingDataEncryptionResolver(t *testing.T) {
-	p := &Plugin{config: Config{AuthConfig: &AuthConfig{PrivateKey: "private"}}}
-	if err := p.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) {
-		t.Fatalf("MaterializeSecrets() error = %v, want credential unavailable", err)
 	}
 }
 
@@ -932,20 +925,6 @@ func TestPostInitLoadsSSLCAFileForVerifiedClient(t *testing.T) {
 	}
 	if response.StatusCode() != http.StatusNoContent {
 		t.Fatalf("status = %d, want %d", response.StatusCode(), http.StatusNoContent)
-	}
-}
-
-func TestMaterializeSecretsRejectsInvalidEncryptedPrivateKey(t *testing.T) {
-	p := &Plugin{config: Config{AuthConfig: &AuthConfig{PrivateKey: "not-a-ciphertext"}}}
-	p.SetDependencies(base.Dependencies{
-		Tasks:          newLoggerTestTaskOwner(t),
-		DataEncryption: testutil.DataEncryptionService(true, []string{"qeddd145sfvddff3"}).Resolver(),
-	})
-	if err := p.Init(); err != nil {
-		t.Fatalf("Init() error = %v", err)
-	}
-	if err := p.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) {
-		t.Fatalf("MaterializeSecrets() error = %v, want credential unavailable", err)
 	}
 }
 

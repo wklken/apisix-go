@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/base64"
-	"errors"
 	"fmt"
 	"io"
 	"math/rand"
@@ -208,9 +207,7 @@ type Plugin struct {
 
 	secretMu              sync.RWMutex
 	password              *secret.Value
-	legacyPassword        *string
 	authorization         *secret.Value
-	legacyAuthorization   *string
 	stopped               atomic.Bool
 	stopBeforeLock        func()
 	postInitBeforePublish func(*logger_batch.Processor)
@@ -288,58 +285,6 @@ func (p *Plugin) Init() error {
 	return nil
 }
 
-// MaterializeSecrets is the transitional process-local compatibility path.
-// Scoped generation preparation uses MaterializeScopedSecrets instead.
-func (p *Plugin) MaterializeSecrets() error {
-	p.secretMu.Lock()
-	defer p.secretMu.Unlock()
-	if p.stopped.Load() {
-		return secret.ErrCredentialUnavailable
-	}
-	if p.credentialsInstalled() {
-		return nil
-	}
-	passwordRaw, hasPassword, authorizationRaw, hasAuthorization := p.rawCredentials()
-	if !hasPassword && !hasAuthorization {
-		return nil
-	}
-	resolver := p.DataEncryption()
-	if !resolver.Configured() {
-		return errors.New("data-encryption resolver is required")
-	}
-
-	var resolvedPassword, resolvedAuthorization string
-	var err error
-	if hasPassword {
-		resolvedPassword, err = resolver.ResolveForContext(passwordRaw, name+".auth.password")
-		if err != nil || strings.TrimSpace(resolvedPassword) == "" {
-			return fmt.Errorf("%s auth.password: %w", name, secret.ErrCredentialUnavailable)
-		}
-	}
-	if hasAuthorization {
-		resolvedAuthorization = resolver.ResolveOptionalForContext(
-			authorizationRaw, name+".headers.Authorization",
-		)
-		if strings.TrimSpace(resolvedAuthorization) == "" {
-			return fmt.Errorf("%s headers.Authorization: %w", name, secret.ErrCredentialUnavailable)
-		}
-	}
-
-	passwordDescriptor, err := legacyElasticsearchDescriptor(resolvedPassword, hasPassword)
-	if err != nil {
-		return fmt.Errorf("%s auth.password: %w", name, secret.ErrCredentialUnavailable)
-	}
-	authorizationDescriptor, err := legacyElasticsearchDescriptor(resolvedAuthorization, hasAuthorization)
-	if err != nil {
-		return fmt.Errorf("%s headers.Authorization: %w", name, secret.ErrCredentialUnavailable)
-	}
-	p.installCredentials(
-		resolvedPassword, hasPassword, passwordDescriptor,
-		resolvedAuthorization, hasAuthorization, authorizationDescriptor,
-	)
-	return nil
-}
-
 // MaterializeScopedSecrets admits only the two exact manifest-owned fields.
 // Public config retains content descriptors while plaintext remains private.
 func (p *Plugin) MaterializeScopedSecrets(
@@ -409,24 +354,10 @@ func (p *Plugin) rawCredentials() (
 }
 
 func (p *Plugin) credentialsInstalled() bool {
-	passwordReady := p.config.Auth == nil || p.password != nil || p.legacyPassword != nil
+	passwordReady := p.config.Auth == nil || p.password != nil
 	_, authorizationConfigured := p.config.Headers["Authorization"]
-	authorizationReady := !authorizationConfigured || p.authorization != nil || p.legacyAuthorization != nil
+	authorizationReady := !authorizationConfigured || p.authorization != nil
 	return passwordReady && authorizationReady
-}
-
-func (p *Plugin) installCredentials(
-	password string, hasPassword bool, passwordDescriptor string,
-	authorization string, hasAuthorization bool, authorizationDescriptor string,
-) {
-	if hasPassword {
-		p.config.Auth.Password = passwordDescriptor
-		p.legacyPassword = &password
-	}
-	if hasAuthorization {
-		p.config.Headers["Authorization"] = authorizationDescriptor
-		p.legacyAuthorization = &authorization
-	}
 }
 
 func validateElasticsearchSecret(value secret.Value) error {
@@ -440,18 +371,6 @@ func validateElasticsearchSecret(value secret.Value) error {
 
 func scopedElasticsearchDescriptor(value secret.Value) (string, error) {
 	descriptor, err := value.Descriptor(capability.SecretPluginConfig)
-	if err != nil {
-		return "", err
-	}
-	return descriptor.String(), nil
-}
-
-func legacyElasticsearchDescriptor(value string, present bool) (string, error) {
-	if !present {
-		return "", nil
-	}
-	digest := sha256.Sum256([]byte(value))
-	descriptor, err := secret.NewDescriptor(capability.SecretPluginConfig, digest)
 	if err != nil {
 		return "", err
 	}
@@ -788,13 +707,9 @@ func (p *Plugin) withClient(
 	key := esClientKey{endpoint: endpoint}
 	if p.password != nil {
 		key.passwordDigest = p.password.Digest()
-	} else if p.legacyPassword != nil {
-		key.passwordDigest = sha256.Sum256([]byte(*p.legacyPassword))
 	}
 	if p.authorization != nil {
 		key.authorizationDigest = p.authorization.Digest()
-	} else if p.legacyAuthorization != nil {
-		key.authorizationDigest = sha256.Sum256([]byte(*p.legacyAuthorization))
 	}
 
 	client, err := p.clientForEndpoint(key)
@@ -834,16 +749,10 @@ func (p *Plugin) useCredentialPlaintext(use func(password, authorization string)
 				return use(password, authorization)
 			})
 		}
-		if p.legacyAuthorization != nil {
-			return use(password, *p.legacyAuthorization)
-		}
 		return use(password, "")
 	}
 	if p.password != nil {
 		return p.password.Use(useAuthorization)
-	}
-	if p.legacyPassword != nil {
-		return useAuthorization(*p.legacyPassword)
 	}
 	return useAuthorization("")
 }
@@ -977,17 +886,9 @@ func (p *Plugin) Stop() {
 				*p.password = secret.Value{}
 				p.password = nil
 			}
-			if p.legacyPassword != nil {
-				*p.legacyPassword = ""
-				p.legacyPassword = nil
-			}
 			if p.authorization != nil {
 				*p.authorization = secret.Value{}
 				p.authorization = nil
-			}
-			if p.legacyAuthorization != nil {
-				*p.legacyAuthorization = ""
-				p.legacyAuthorization = nil
 			}
 			p.secretMu.Unlock()
 		}

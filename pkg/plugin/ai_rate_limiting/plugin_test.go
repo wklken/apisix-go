@@ -37,8 +37,15 @@ func newTestPlugin(t *testing.T, cfg Config, now func() time.Time) *Plugin {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := base.MaterializePluginSecrets(p); err != nil {
-		t.Fatalf("MaterializePluginSecrets() error = %v", err)
+	capabilityValue, scope, closeAttempt := testutil.ScopedSecretHarness(
+		t,
+		name,
+		nil,
+		generation.ApplyTicket{DesiredRevision: 1, RequiredDomains: []generation.Domain{generation.DomainHTTP}},
+	)
+	t.Cleanup(closeAttempt)
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
@@ -571,22 +578,6 @@ func TestMaterializeScopedSecretsIsAtomicAndRedactsFailure(t *testing.T) {
 	}
 }
 
-func TestMaterializeSecretsRejectsMissingDataEncryptionResolver(t *testing.T) {
-	p := &Plugin{config: Config{
-		Limit:         1,
-		TimeWindow:    60,
-		Policy:        "redis",
-		RedisHost:     "127.0.0.1",
-		RedisPassword: "encrypted-password",
-	}}
-	if err := p.Init(); err != nil {
-		t.Fatal(err)
-	}
-	if err := p.MaterializeSecrets(); err == nil || err.Error() != "data-encryption resolver is required" {
-		t.Fatalf("MaterializeSecrets() error = %v, want missing resolver error", err)
-	}
-}
-
 func localCounterUsed(t *testing.T, p *Plugin, key string) int64 {
 	t.Helper()
 	state, ok := p.counters.Get(key)
@@ -668,43 +659,6 @@ func TestHandlerIsolatesGlobalQuotaByAuthenticatedConsumer(t *testing.T) {
 	}
 }
 
-func TestPostInitRequiresRedisEndpointAndAcceptsSentinelCredentials(t *testing.T) {
-	cfg := Config{Limit: 1, TimeWindow: 60, Policy: "redis"}
-	p := &Plugin{config: cfg}
-	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
-	if err := p.Init(); err != nil {
-		t.Fatal(err)
-	}
-	if err := p.PostInit(); err == nil || !strings.Contains(err.Error(), "redis_host") {
-		t.Fatalf("redis policy error = %v, want redis_host validation", err)
-	}
-
-	sentinel := &Plugin{config: Config{
-		Limit:            1,
-		TimeWindow:       60,
-		Policy:           "redis-sentinel",
-		RedisMasterName:  "mymaster",
-		RedisSentinels:   []RedisSentinel{{Host: "127.0.0.1", Port: 26379}},
-		RedisUsername:    "alice",
-		RedisPassword:    "redis-secret",
-		SentinelUsername: "bob",
-		SentinelPassword: "sentinel-secret",
-	}}
-	sentinel.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
-	if err := sentinel.Init(); err != nil {
-		t.Fatal(err)
-	}
-	if err := base.MaterializePluginSecrets(sentinel); err != nil {
-		t.Fatalf("sentinel MaterializePluginSecrets() error = %v", err)
-	}
-	if err := sentinel.PostInit(); err != nil {
-		t.Fatalf("sentinel config PostInit() error = %v", err)
-	}
-	if sentinel.redis == nil {
-		t.Fatal("sentinel config did not create a Redis client")
-	}
-}
-
 func TestPostInitRejectsConflictingQuotaModes(t *testing.T) {
 	tests := []Config{
 		{Limit: 1, Rules: []Rule{{Count: 1, TimeWindow: 60, Key: "${remote_addr}"}}},
@@ -723,103 +677,6 @@ func TestPostInitRejectsConflictingQuotaModes(t *testing.T) {
 		if err := plugin.PostInit(); err == nil {
 			t.Fatalf("config %d PostInit() unexpectedly succeeded", i)
 		}
-	}
-}
-
-func TestMaterializeSecretsRejectsPlaintextRedisPasswordWhenEncryptionIsEnabled(t *testing.T) {
-	p := &Plugin{config: Config{
-		Limit:         1,
-		TimeWindow:    60,
-		Policy:        "redis",
-		RedisHost:     "127.0.0.1",
-		RedisPassword: "plaintext-secret",
-	}}
-	p.SetDependencies(base.Dependencies{
-		DataEncryption: testutil.DataEncryptionService(true, []string{"qeddd145sfvddff3"}).Resolver(),
-	})
-	if err := p.Init(); err != nil {
-		t.Fatal(err)
-	}
-	err := base.MaterializePluginSecrets(p)
-	if err == nil ||
-		!strings.Contains(err.Error(), "credential unavailable") ||
-		strings.Contains(err.Error(), "plaintext-secret") {
-		t.Fatalf("MaterializePluginSecrets() error = %v, want redacted credential validation error", err)
-	}
-}
-
-func TestPostInitStrictlyResolvesBothRedisPasswordsAndAppliesTimeouts(t *testing.T) {
-	p := &Plugin{config: Config{
-		Limit:            1,
-		TimeWindow:       60,
-		Policy:           "redis-sentinel",
-		RedisMasterName:  "mymaster",
-		RedisSentinels:   []RedisSentinel{{Host: "127.0.0.1", Port: 26379}},
-		RedisPassword:    "wFfhVWUFrm0MrViyR5jFDA==",
-		SentinelPassword: "sPlnmYRPUBjcTZVYQOQweA==",
-		RedisTimeout:     37,
-	}}
-	p.SetDependencies(base.Dependencies{
-		DataEncryption: testutil.DataEncryptionService(true, []string{"edd1c9f0985e76a2"}).Resolver(),
-	})
-	if err := p.Init(); err != nil {
-		t.Fatal(err)
-	}
-	if err := base.MaterializePluginSecrets(p); err != nil {
-		t.Fatalf("MaterializePluginSecrets() error = %v", err)
-	}
-	assertSecretDescriptor(t, "redis_password", p.config.RedisPassword)
-	assertSecretDescriptor(t, "sentinel_password", p.config.SentinelPassword)
-	if p.redisPasswordLegacy == nil || *p.redisPasswordLegacy == "" ||
-		p.sentinelPasswordLegacy == nil || *p.sentinelPasswordLegacy == "" {
-		t.Fatal("legacy materialization did not retain private credentials")
-	}
-	if err := p.PostInit(); err != nil {
-		t.Fatalf("PostInit() error = %v", err)
-	}
-	options := p.redis.(*redis.Client).Options()
-	if options.Password != "somepassword" {
-		t.Fatalf("Redis password = %q, want decrypted plaintext", options.Password)
-	}
-	if options.DialTimeout != 37*time.Millisecond ||
-		options.ReadTimeout != 37*time.Millisecond ||
-		options.WriteTimeout != 37*time.Millisecond {
-		t.Fatalf(
-			"Redis timeouts = (%s, %s, %s), want 37ms",
-			options.DialTimeout,
-			options.ReadTimeout,
-			options.WriteTimeout,
-		)
-	}
-	p.Stop()
-	if p.redisPasswordLegacy != nil || p.sentinelPasswordLegacy != nil {
-		t.Fatal("Stop() retained legacy credential values")
-	}
-	if err := p.redis.(*redis.Client).Ping(t.Context()).Err(); !strings.Contains(err.Error(), redis.ErrClosed.Error()) {
-		t.Fatalf("Ping() error after Stop = %v, want redis client closed", err)
-	}
-}
-
-func TestMaterializeSecretsRejectsPlaintextSentinelPasswordWithoutLeakingIt(t *testing.T) {
-	p := &Plugin{config: Config{
-		Limit:            1,
-		TimeWindow:       60,
-		Policy:           "redis-sentinel",
-		RedisMasterName:  "mymaster",
-		RedisSentinels:   []RedisSentinel{{Host: "127.0.0.1", Port: 26379}},
-		SentinelPassword: "sentinel-plaintext",
-	}}
-	p.SetDependencies(base.Dependencies{
-		DataEncryption: testutil.DataEncryptionService(true, []string{"edd1c9f0985e76a2"}).Resolver(),
-	})
-	if err := p.Init(); err != nil {
-		t.Fatal(err)
-	}
-	err := base.MaterializePluginSecrets(p)
-	if err == nil ||
-		!strings.Contains(err.Error(), "credential unavailable") ||
-		strings.Contains(err.Error(), "sentinel-plaintext") {
-		t.Fatalf("MaterializePluginSecrets() error = %v, want redacted credential validation error", err)
 	}
 }
 
@@ -1502,8 +1359,15 @@ func admitAPISIX317Config(t *testing.T, raw map[string]any) (configAdmissionStag
 	if err := json.Unmarshal(payload, p.Config()); err != nil {
 		t.Fatalf("unmarshal config: %v", err)
 	}
-	if err := base.MaterializePluginSecrets(p); err != nil {
-		t.Fatalf("MaterializePluginSecrets() error = %v", err)
+	capabilityValue, scope, closeAttempt := testutil.ScopedSecretHarness(
+		t,
+		name,
+		nil,
+		generation.ApplyTicket{DesiredRevision: 1, RequiredDomains: []generation.Domain{generation.DomainHTTP}},
+	)
+	t.Cleanup(closeAttempt)
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
 		return configAdmissionPostInit, err

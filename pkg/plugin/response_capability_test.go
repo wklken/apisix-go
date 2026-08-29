@@ -1,6 +1,7 @@
 package plugin
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -210,7 +211,12 @@ func initializedCSRFResponsePlugin(t *testing.T) Plugin {
 	if err := util.Parse(map[string]any{"key": "secret"}, instance.Config()); err != nil {
 		t.Fatalf("parse csrf config: %v", err)
 	}
-	if err := MaterializePluginSecrets(instance); err != nil {
+	harness := newCompositeSecretHarness(t, 73, "csrf-response-capability")
+	defer harness.close()
+	harness.scope.Plugin = "csrf"
+	if err := base.MaterializeScopedPluginSecrets(
+		context.Background(), harness.scope, harness.capability, instance,
+	); err != nil {
 		t.Fatalf("materialize csrf secrets: %v", err)
 	}
 	if err := instance.PostInit(); err != nil {

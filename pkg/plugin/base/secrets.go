@@ -13,12 +13,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/secret"
 )
 
-// SecretMaterializer resolves generation-owned credentials after schema
-// decoding and before PostInit.
-type SecretMaterializer interface {
-	MaterializeSecrets() error
-}
-
 // ScopedSecretAccess binds every authority dimension except the declared
 // field. Plugins can select a field, while generation, attempt, domain,
 // resource, source, and factory remain owned by the preparation boundary.
@@ -152,32 +146,6 @@ func validateScopedSecretAuthority(
 		(scope.Source != capability.SecretPluginConfig &&
 			scope.Source != capability.SecretConsumerConfig) || scope.Field != "" {
 		return secret.ErrInvalidScope
-	}
-	return nil
-}
-
-// MaterializePluginSecrets runs the pre-PostInit secret phase. Plugins that
-// expose a secret reference in Config must declare ownership by implementing
-// SecretMaterializer.
-func MaterializePluginSecrets(p any) error {
-	materializer, ownsSecrets := p.(SecretMaterializer)
-	if !ownsSecrets {
-		if owner, ok := p.(configOwner); ok {
-			result := firstUnmaterializedSecretReference(owner.Config())
-			if err := secretScanError(result, false); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
-	if err := materializer.MaterializeSecrets(); err != nil {
-		return redactedSecretMaterializationError{}
-	}
-	if owner, ok := p.(configOwner); ok {
-		result := firstUnmaterializedSecretReference(owner.Config())
-		if err := secretScanError(result, true); err != nil {
-			return err
-		}
 	}
 	return nil
 }

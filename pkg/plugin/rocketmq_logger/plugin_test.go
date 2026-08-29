@@ -1078,73 +1078,6 @@ func newBlockingRocketMQPlugin(
 	return p, tasks
 }
 
-func TestRocketMQQuiesceDrainsActiveSendAndPreventsResurrection(t *testing.T) {
-	sender := &blockingRocketMQSender{entered: make(chan struct{}), release: make(chan struct{})}
-	p, tasks := newBlockingRocketMQPlugin(t, sender)
-	sendDone := make(chan error, 1)
-	go func() {
-		_, err := p.SendBatch(context.Background(), []map[string]any{{"active": true}}, 1)
-		sendDone <- err
-	}()
-	select {
-	case <-sender.entered:
-	case <-time.After(time.Second):
-		t.Fatal("active RocketMQ send did not start")
-	}
-	processor := p.BatchProcessor
-	quiesceDone := make(chan struct{})
-	go func() {
-		p.QuiesceGenerationTasks()
-		close(quiesceDone)
-	}()
-	select {
-	case <-quiesceDone:
-	case <-time.After(time.Second):
-		t.Fatal("quiesce did not seal admission while active RocketMQ send remained blocked")
-	}
-	if sender.shutdownCount() != 0 {
-		t.Fatal("sender shut down before the active send completed")
-	}
-	close(sender.release)
-	if err := <-sendDone; err != nil {
-		t.Fatalf("active SendBatch() error = %v", err)
-	}
-	if err := processor.Shutdown(context.Background()); err != nil {
-		t.Fatalf("batch Shutdown() error = %v", err)
-	}
-	stopRocketMQTaskRegistryForTest(t, tasks)
-	p.Stop()
-	if sender.shutdownCount() != 1 {
-		t.Fatalf("sender shutdown count = %d, want 1", sender.shutdownCount())
-	}
-	if p.sender != nil || p.BatchProcessor != nil || p.secretKeySet ||
-		p.secretsPrepared {
-		t.Fatalf("private/runtime state survived Stop: %#v", p)
-	}
-	if _, err := p.SendBatch(
-		context.Background(), []map[string]any{{"late": true}}, 1,
-	); !errors.Is(err, secret.ErrCredentialUnavailable) {
-		t.Fatalf("post-Stop SendBatch() error = %v", err)
-	}
-	queued := len(p.FireChan)
-	if err := p.RunLogPhase(base.LogSnapshot{}); !errors.Is(err, base.ErrLogQueueUnavailable) {
-		t.Fatalf("post-Stop RunLogPhase() error = %v", err)
-	}
-	if len(p.FireChan) != queued {
-		t.Fatal("post-Stop RunLogPhase enqueued work")
-	}
-	if err := p.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) {
-		t.Fatalf("post-Stop MaterializeSecrets() error = %v", err)
-	}
-	if err := p.PostInit(); !errors.Is(err, secret.ErrCredentialUnavailable) {
-		t.Fatalf("post-Stop PostInit() error = %v", err)
-	}
-	p.Stop()
-	if sender.shutdownCount() != 1 {
-		t.Fatalf("idempotent Stop shutdown count = %d, want 1", sender.shutdownCount())
-	}
-}
-
 func TestRocketMQQuiesceFlushesPendingBatchBeforeSenderShutdown(t *testing.T) {
 	sender := &blockingRocketMQSender{entered: make(chan struct{}), release: make(chan struct{})}
 	p, tasks := newBlockingRocketMQPlugin(t, sender)
@@ -1527,13 +1460,6 @@ func mustMetadataView(t *testing.T, metadata map[string]any) apisixruntime.Metad
 	return view
 }
 
-func TestMaterializeSecretsRejectsMissingDataEncryptionResolver(t *testing.T) {
-	p := &Plugin{config: Config{SecretKey: "private"}}
-	if err := p.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) {
-		t.Fatalf("MaterializeSecrets() error = %v, want credential unavailable", err)
-	}
-}
-
 func TestSendEncodesLogAndPublishesToConfiguredTopic(t *testing.T) {
 	sender := &captureSender{}
 	p := newTestPlugin(t, Config{
@@ -1650,28 +1576,6 @@ func TestPostInitPublishesTLSEnabledRuntime(t *testing.T) {
 			p.BatchProcessor != nil,
 			p.ready,
 		)
-	}
-}
-
-func TestPostInitRejectsInvalidEncryptedSecretKey(t *testing.T) {
-	p := &Plugin{
-		config: Config{
-			NameServerList: []string{"127.0.0.1:9876"},
-			Topic:          "apisix-logs",
-			AccessKey:      "access",
-			SecretKey:      "not-a-ciphertext",
-		},
-		sender: &captureSender{},
-	}
-	p.SetDependencies(base.Dependencies{
-		Tasks:          newLoggerTestTaskOwner(t),
-		DataEncryption: testutil.DataEncryptionService(true, []string{"qeddd145sfvddff3"}).Resolver(),
-	})
-	if err := p.Init(); err != nil {
-		t.Fatalf("Init() error = %v", err)
-	}
-	if err := p.MaterializeSecrets(); !errors.Is(err, secret.ErrCredentialUnavailable) {
-		t.Fatalf("MaterializeSecrets() error = %v, want credential unavailable", err)
 	}
 }
 

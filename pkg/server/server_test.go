@@ -1368,17 +1368,8 @@ func newServerInputs(
 	if err != nil {
 		t.Fatal(err)
 	}
-	profiles := config.ProfileSelection{
-		Compatibility: config.CompatibilityTarget(manifest.Target.Name),
-		Security:      config.SecurityCompat,
-	}
 	effective := &config.EffectiveConfig{
-		Config: config.Config{
-			CompatibilityTarget: profiles.Compatibility,
-			SecurityProfile:     profiles.Security,
-		},
-		Profiles: profiles,
-		Paths:    config.RuntimePaths{DataDir: t.TempDir()},
+		Paths: config.RuntimePaths{DataDir: t.TempDir()},
 	}
 	return manifest, effective, encryption, resolver
 }

@@ -335,32 +335,6 @@ func TestValidateStaticOverridePathDoesNotExposeRejectedPath(t *testing.T) {
 	}
 }
 
-func TestOverlayRemovedDeploymentProfileTombstone(t *testing.T) {
-	const want = "deployment.profile was removed; use compatibility_target, security_profile, and qualification_profile"
-	root := mustNodeFromAny(map[string]any{}, FieldSource{Kind: SourceDefaultFile})
-	err := applyAPISIXGO(root, map[string]string{"APISIXGO_DEPLOYMENT_PROFILE": "traditional"})
-	if err == nil || err.Error() != want {
-		t.Fatalf("APISIXGO tombstone error = %v", err)
-	}
-	err = applyCLIOverrides(root, map[string]any{"deployment.profile": "traditional"})
-	if err == nil || err.Error() != want {
-		t.Fatalf("CLI tombstone error = %v", err)
-	}
-	if err := ValidateStaticOverridePath("deployment.profile"); err == nil || err.Error() != want {
-		t.Fatalf("path tombstone error = %v", err)
-	}
-	index, err := buildStaticSchemaIndex(reflect.TypeFor[Config]())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := index.byPath["deployment.profile"]; ok {
-		t.Fatal("removed path entered schema index")
-	}
-	if _, ok := index.byAlias["APISIXGO_DEPLOYMENT_PROFILE"]; ok {
-		t.Fatal("removed alias entered schema index")
-	}
-}
-
 func TestSetPathValidatesRootSegmentsCrossingsAndClonesValue(t *testing.T) {
 	value := mustNodeFromAny(
 		map[string]any{"nested": []string{"a"}},

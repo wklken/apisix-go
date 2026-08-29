@@ -27,7 +27,6 @@ import (
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/capability"
-	appconfig "github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -119,103 +118,11 @@ func TestSchemaMatchesAPISIX317Matrix(t *testing.T) {
 	}
 }
 
-func TestRocketMQTLSVerifyDefaultsFollowSecurityProfile(t *testing.T) {
-	newPlugin := func(security appconfig.SecurityProfile) *Plugin {
-		p := &Plugin{
-			config: Config{
-				NameServerList: []string{"127.0.0.1:9876"},
-				Topic:          "apisix-logs",
-				UseTLS:         true,
-			},
-			sender: &captureSender{},
-		}
-		p.SetDependencies(base.Dependencies{
-			Config: &appconfig.EffectiveConfig{
-				Profiles: appconfig.ProfileSelection{Security: security},
-			},
-			Tasks:          newLoggerTestTaskOwner(t),
-			DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
-		})
-		if err := p.Init(); err != nil {
-			t.Fatalf("Init() error = %v", err)
-		}
-		if err := p.MaterializeSecrets(); err != nil {
-			t.Fatalf("MaterializeSecrets() error = %v", err)
-		}
-		if err := p.PostInit(); err != nil {
-			t.Fatalf("PostInit() error = %v", err)
-		}
-		t.Cleanup(p.Stop)
-		return p
+func TestRocketMQTLSVerifyDefaultsOff(t *testing.T) {
+	p := newTestPlugin(t, Config{UseTLS: true}, &captureSender{})
+	if p.config.TLSVerify == nil || *p.config.TLSVerify {
+		t.Fatalf("TLSVerify = %v, want APISIX-compatible default false", p.config.TLSVerify)
 	}
-
-	compat := newPlugin(appconfig.SecurityCompat)
-	if compat.config.TLSVerify == nil || *compat.config.TLSVerify {
-		t.Fatalf("compat TLSVerify = %v, want false", compat.config.TLSVerify)
-	}
-	strict := newPlugin(appconfig.SecurityStrict)
-	if strict.config.TLSVerify == nil || !*strict.config.TLSVerify {
-		t.Fatalf("strict TLSVerify = %v, want true", strict.config.TLSVerify)
-	}
-}
-
-func TestRocketMQStrictTLSVerifyRejectsExplicitOptOut(t *testing.T) {
-	verify := false
-	p := &Plugin{
-		config: Config{
-			NameServerList: []string{"127.0.0.1:9876"},
-			Topic:          "apisix-logs",
-			UseTLS:         true,
-			TLSVerify:      &verify,
-		},
-		sender: &captureSender{},
-	}
-	p.SetDependencies(base.Dependencies{
-		Config: &appconfig.EffectiveConfig{
-			Profiles: appconfig.ProfileSelection{Security: appconfig.SecurityStrict},
-		},
-		Tasks:          newLoggerTestTaskOwner(t),
-		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
-	})
-	if err := p.Init(); err != nil {
-		t.Fatalf("Init() error = %v", err)
-	}
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatalf("MaterializeSecrets() error = %v", err)
-	}
-	err := p.PostInit()
-	if err == nil || !strings.Contains(err.Error(), "tls_verify must be true") {
-		t.Fatalf("strict explicit tls_verify=false error = %v, want strict rejection", err)
-	}
-	p.Stop()
-}
-
-func TestRocketMQStrictRejectsPlaintextTransport(t *testing.T) {
-	p := &Plugin{
-		config: Config{
-			NameServerList: []string{"127.0.0.1:9876"},
-			Topic:          "apisix-logs",
-		},
-		sender: &captureSender{},
-	}
-	p.SetDependencies(base.Dependencies{
-		Config: &appconfig.EffectiveConfig{
-			Profiles: appconfig.ProfileSelection{Security: appconfig.SecurityStrict},
-		},
-		Tasks:          newLoggerTestTaskOwner(t),
-		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
-	})
-	if err := p.Init(); err != nil {
-		t.Fatalf("Init() error = %v", err)
-	}
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatalf("MaterializeSecrets() error = %v", err)
-	}
-	err := p.PostInit()
-	if err == nil || !strings.Contains(err.Error(), "use_tls must be true") {
-		t.Fatalf("strict use_tls=false error = %v, want strict rejection", err)
-	}
-	p.Stop()
 }
 
 func TestAPISIX317WarnsWhenRocketMQTLSIsDisabled(t *testing.T) {

@@ -50,12 +50,6 @@ func TestParseSetOverridesPreservesValuesAndRejectsUnsafeSyntax(t *testing.T) {
 			args: []string{"not.a.real.static.path=must-not-appear"},
 			path: "not.a.real.static.path",
 		},
-		{
-			name:      "removed path",
-			args:      []string{"deployment.profile=must-not-appear"},
-			path:      "deployment.profile",
-			allowPath: true,
-		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -93,7 +87,6 @@ func TestMalformedSetCommandDoesNotEchoSensitiveInput(t *testing.T) {
 		{"=must-not-appear"},
 		{"apisix.id=first", "apisix.id=must-not-appear"},
 		{"not.a.real.path=must-not-appear"},
-		{"deployment.profile=must-not-appear"},
 	} {
 		root := newRootCommand()
 		var stdout, stderr bytes.Buffer
@@ -264,7 +257,7 @@ func TestConfigCommandDumpRequiresEffectiveAndRedacted(t *testing.T) {
 		}
 	}
 	for _, want := range []string{
-		`"max_in_flight": 77`, `"kind": "cli"`, `"profiles"`, `"paths"`, `"ignored_fields"`,
+		`"max_in_flight": 77`, `"kind": "cli"`, `"paths"`, `"ignored_fields"`,
 	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("dump missing %q: %s", want, output)

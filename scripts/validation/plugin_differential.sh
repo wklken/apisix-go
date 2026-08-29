@@ -2,21 +2,21 @@
 
 set -euo pipefail
 
-# A qualification run must not inherit a developer or CI proxy. This applies
+# A validation run must not inherit a developer or CI proxy. This applies
 # to resolver, candidate, fixture, and oracle processes.
 unset HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY FTP_PROXY
 unset http_proxy https_proxy all_proxy no_proxy ftp_proxy
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 container_bin=${CONTAINER_BIN:-${DOCKER_BIN:-podman}}
-oracle_file=${APISIX_GO_ORACLE_FILE:-$repo_root/qualification/oracle.yaml}
-catalog_file=${APISIX_GO_DIFFERENTIAL_CATALOG:-$repo_root/qualification/differential-cases.yaml}
+oracle_file=${APISIX_GO_ORACLE_FILE:-$repo_root/validation/oracle.yaml}
+catalog_file=${APISIX_GO_DIFFERENTIAL_CATALOG:-$repo_root/validation/differential-cases.yaml}
 candidate_bin=${APISIX_GO_CANDIDATE_BIN:-$repo_root/.cache/out/apisix}
-artifact=${APISIX_GO_DIFFERENTIAL_ARTIFACT:-$repo_root/.cache/qualification/differential/attempt-1.json}
+artifact=${APISIX_GO_DIFFERENTIAL_ARTIFACT:-$repo_root/.cache/validation/differential/attempt-1.json}
 if [[ "$artifact" != /* ]]; then
     artifact=$repo_root/$artifact
 fi
-resolver=$repo_root/scripts/qualification/resolve_oracle.sh
+resolver=$repo_root/scripts/validation/resolve_oracle.sh
 go_cache_runner=${APISIX_GO_CACHE_RUNNER:-$repo_root/scripts/go_cache.sh}
 
 selection_environment=()
@@ -203,15 +203,13 @@ jq -e \
     --argjson expected_full_run "$expected_full_run_json" \
     '
         . as $artifact |
-        .schema_version == 2 and
-        .profile == "apisix-3.17-differential-smoke-v1" and
-        .target_qualification_profile == "apisix-3.17-all-plugins-v1" and
+        .schema_version == 3 and
+        .suite == "apisix-3.17-plugin-differential-v1" and
         .catalog_sha256 == $catalog_sha and
         .attempt == 1 and
         .first_attempt == true and
         .candidate.source_commit == $candidate and
         .candidate.binary_sha256 == $candidate_sha and
-        .candidate.security_profile == "compat" and
         .oracle.source_commit == $source and
         .oracle.image_linux_amd64_digest == $digest and
         (.selection | type == "object") and

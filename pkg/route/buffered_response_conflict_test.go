@@ -325,7 +325,6 @@ func TestTerminalOwnerIgnoresDisabledBoundedTerminalPlugins(t *testing.T) {
 			}
 			plan, err := PlanHTTPPlugins(context.Background(), PlanningInput{
 				Routes: []resource.Route{route}, EnabledPlugins: []string{"body-transformer", name},
-				Profiles: testEffectiveConfig().Profiles,
 			})
 			if err != nil {
 				t.Fatalf("PlanHTTPPlugins() error = %v", err)

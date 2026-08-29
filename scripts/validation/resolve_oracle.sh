@@ -33,7 +33,7 @@ sha256_file() {
     die 'sha256sum or shasum is required'
 }
 
-oracle=${1:-qualification/oracle.yaml}
+oracle=${1:-validation/oracle.yaml}
 [[ -f "$oracle" ]] || die "oracle file does not exist: $oracle"
 
 schema_version=$(read_scalar schema_version "$oracle") || die 'schema_version is required'

@@ -2,7 +2,7 @@
 id: ADR-0006
 title: Redact credential-bearing resource maps from OPA input
 status: accepted
-compatibility_target: apisix-3.17
+target: apisix-3.17
 divergence_ids: [DIV-006-opa-resource-context-redaction]
 owner: wklken
 owner_approval_ref: "all-plugin production-readiness continuation decision, 2026-08-28"
@@ -22,14 +22,14 @@ stable resource identity, but do not require unrestricted credential material.
 The Go OPA plugin sends only policy-useful identity fields: route `id`, `name`,
 and `uri`; service `id` and `name`; and consumer `username` and `group_id`. It
 never serializes plugin maps, upstream definitions, credential fields, or other
-resource configuration into the OPA request, regardless of security profile.
+resource configuration into the OPA request in every runtime configuration.
 
 # Consequences
 
 OPA policies that inspect APISIX plugin configuration maps must be rewritten to
 use the stable identity fields or another operator-controlled data source.
 Authorization decisions, request facts, decision responses, and
-`send_headers_upstream` otherwise keep the APISIX 3.17 contract. Qualification
+`send_headers_upstream` otherwise keep the APISIX 3.17 contract. Validation
 must prove both the useful identity projection and the absence of representative
 route, service, consumer, upstream, and TLS secrets.
 

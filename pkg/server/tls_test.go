@@ -194,21 +194,13 @@ func newTLSHTTPLeaseFixture(
 	if err != nil {
 		t.Fatal(err)
 	}
-	profiles := config.ProfileSelection{
-		Compatibility: config.CompatibilityTarget(manifest.Target.Name),
-		Security:      config.SecurityCompat,
-	}
 	effective := &config.EffectiveConfig{
 		Config: config.Config{
-			CompatibilityTarget:  profiles.Compatibility,
-			SecurityProfile:      profiles.Security,
-			QualificationProfile: profiles.Qualification,
 			Apisix: config.Apisix{Ssl: config.Ssl{
 				Enable: true, Listen: []config.Listen{{Port: 9443}},
 				SslProtocols: "TLSv1.2", SslCiphers: frontendTLS12Cipher,
 			}},
 		},
-		Profiles: profiles,
 	}
 	materializer := &ownerTestMaterializer{digest: catalog.Digest()}
 	factory, err := compiler.NewWorkerCompilerFactory(

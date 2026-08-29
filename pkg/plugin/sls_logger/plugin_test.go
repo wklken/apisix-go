@@ -458,11 +458,6 @@ func newTestPluginWithMetadata(t *testing.T, cfg Config, metadata map[string]any
 	return newTestPluginWithMetadataAndStaticConfig(t, cfg, metadata, nil)
 }
 
-func newTestPluginWithStaticConfig(t *testing.T, cfg Config, effective *config.EffectiveConfig) *Plugin {
-	t.Helper()
-	return newTestPluginWithMetadataAndStaticConfig(t, cfg, nil, effective)
-}
-
 func newTestPluginWithMetadataAndStaticConfig(
 	t *testing.T,
 	cfg Config,
@@ -600,31 +595,6 @@ func TestPostInitSetsSLSDefaults(t *testing.T) {
 	}
 	if p.config.SSLVerify == nil || *p.config.SSLVerify {
 		t.Fatalf("ssl_verify = %v, want APISIX-compatible default false", p.config.SSLVerify)
-	}
-}
-
-func TestPostInitStrictProfileSetsTLSVerificationDefault(t *testing.T) {
-	p := &Plugin{config: Config{
-		Host: "127.0.0.1", Port: 10009, Project: "project-a", Logstore: "store-a",
-		AccessKeyID: "id", AccessKeySecret: "secret",
-	}}
-	p.SetDependencies(base.Dependencies{
-		Config:         &config.EffectiveConfig{Profiles: config.ProfileSelection{Security: config.SecurityStrict}},
-		Tasks:          newLoggerTestTaskOwner(t),
-		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
-	})
-	if err := p.Init(); err != nil {
-		t.Fatalf("Init() error = %v", err)
-	}
-	if err := p.MaterializeSecrets(); err != nil {
-		t.Fatalf("MaterializeSecrets() error = %v", err)
-	}
-	if err := p.PostInit(); err != nil {
-		t.Fatalf("PostInit() error = %v", err)
-	}
-	t.Cleanup(p.Stop)
-	if p.config.SSLVerify == nil || !*p.config.SSLVerify {
-		t.Fatalf("ssl_verify = %v, want strict default true", p.config.SSLVerify)
 	}
 }
 
@@ -930,7 +900,7 @@ func TestRequestPathsUseAPISIX317HostInRFC5424Frame(t *testing.T) {
 	}
 }
 
-func TestSendMessageCompatTLSVerifyDefaultsOff(t *testing.T) {
+func TestSendMessageAPISIXTLSVerifyDefaultsOff(t *testing.T) {
 	addr, received := startTLSServer(t)
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -956,26 +926,6 @@ func TestSendMessageCompatTLSVerifyDefaultsOff(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for APISIX-compatible default TLS delivery")
-	}
-}
-
-func TestSendMessageStrictTLSVerifyDefaultsOn(t *testing.T) {
-	addr, received := startTLSServer(t)
-	host, port, err := net.SplitHostPort(addr)
-	if err != nil {
-		t.Fatalf("split tls addr: %v", err)
-	}
-
-	p := newTestPluginWithStaticConfig(t, Config{
-		Host: host, Port: mustAtoi(t, port), Project: "project-a", Logstore: "store-a",
-		AccessKeyID: "id", AccessKeySecret: "secret", Timeout: 1000,
-	}, &config.EffectiveConfig{Profiles: config.ProfileSelection{Security: config.SecurityStrict}})
-	p.Send(map[string]any{"path": "/orders"})
-
-	select {
-	case message := <-received:
-		t.Fatalf("strict TLS verification accepted self-signed certificate: %q", message)
-	case <-time.After(500 * time.Millisecond):
 	}
 }
 

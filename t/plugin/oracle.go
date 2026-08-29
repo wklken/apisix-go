@@ -28,8 +28,7 @@ const (
 	compatibilityOracleRepository      = "docker.io/apache/apisix"
 	compatibilityOracleVersion         = "3.17.0"
 	compatibilityOracleImageDigest     = "sha256:5a8d7dfd8382aebfc0cab7bf9d24edf8dd73a6f0eed0b789d25578a373e86f64"
-	differentialProfile                = "apisix-3.17-differential-smoke-v1"
-	differentialTargetProfile          = "apisix-3.17-all-plugins-v1"
+	differentialSuite                  = "apisix-3.17-plugin-differential-v1"
 	differentialRequiredPluginCount    = 111
 	differentialFixturePlaceholder     = "{{FIXTURE.ADDR}}"
 	differentialFixtureHostPlaceholder = "{{FIXTURE.HOST}}"
@@ -460,21 +459,20 @@ func makeStringSet(values []string) map[string]struct{} {
 }
 
 type DifferentialArtifact struct {
-	SchemaVersion              int                           `json:"schema_version"`
-	Profile                    string                        `json:"profile"`
-	TargetQualificationProfile string                        `json:"target_qualification_profile"`
-	CatalogSHA256              string                        `json:"catalog_sha256"`
-	Selection                  DifferentialArtifactSelection `json:"selection"`
-	Attempt                    int                           `json:"attempt"`
-	FirstAttempt               bool                          `json:"first_attempt"`
-	Candidate                  DifferentialCandidateID       `json:"candidate"`
-	Oracle                     OracleIdentity                `json:"oracle"`
-	Cases                      []DifferentialCaseResult      `json:"cases"`
-	Coverage                   DifferentialCoverage          `json:"coverage"`
-	Plugins                    []DifferentialPluginResult    `json:"plugins"`
-	Passed                     int                           `json:"passed"`
-	Failed                     int                           `json:"failed"`
-	Result                     string                        `json:"result"`
+	SchemaVersion int                           `json:"schema_version"`
+	Suite         string                        `json:"suite"`
+	CatalogSHA256 string                        `json:"catalog_sha256"`
+	Selection     DifferentialArtifactSelection `json:"selection"`
+	Attempt       int                           `json:"attempt"`
+	FirstAttempt  bool                          `json:"first_attempt"`
+	Candidate     DifferentialCandidateID       `json:"candidate"`
+	Oracle        OracleIdentity                `json:"oracle"`
+	Cases         []DifferentialCaseResult      `json:"cases"`
+	Coverage      DifferentialCoverage          `json:"coverage"`
+	Plugins       []DifferentialPluginResult    `json:"plugins"`
+	Passed        int                           `json:"passed"`
+	Failed        int                           `json:"failed"`
+	Result        string                        `json:"result"`
 }
 
 type DifferentialArtifactSelection struct {
@@ -505,14 +503,13 @@ type DifferentialPluginResult struct {
 }
 
 type DifferentialCatalog struct {
-	SchemaVersion              int                       `yaml:"schema_version"`
-	Profile                    string                    `yaml:"profile"`
-	TargetQualificationProfile string                    `yaml:"target_qualification_profile"`
-	RequiredPlugins            []string                  `yaml:"required_plugins"`
-	Cases                      []DifferentialCatalogCase `yaml:"cases"`
-	CatalogSHA256              string                    `yaml:"-"`
-	fullCases                  []DifferentialCatalogCase
-	fullRuntimeCases           []DifferentialCase
+	SchemaVersion    int                       `yaml:"schema_version"`
+	Suite            string                    `yaml:"suite"`
+	RequiredPlugins  []string                  `yaml:"required_plugins"`
+	Cases            []DifferentialCatalogCase `yaml:"cases"`
+	CatalogSHA256    string                    `yaml:"-"`
+	fullCases        []DifferentialCatalogCase
+	fullRuntimeCases []DifferentialCase
 }
 
 type DifferentialCatalogCase struct {
@@ -522,9 +519,8 @@ type DifferentialCatalogCase struct {
 }
 
 type DifferentialCandidateID struct {
-	SourceCommit    string `json:"source_commit"`
-	BinarySHA256    string `json:"binary_sha256"`
-	SecurityProfile string `json:"security_profile"`
+	SourceCommit string `json:"source_commit"`
+	BinarySHA256 string `json:"binary_sha256"`
 }
 
 func loadDifferentialCatalog(
@@ -565,21 +561,14 @@ func validateDifferentialCatalog(
 	catalog DifferentialCatalog,
 	runtimeCases []DifferentialCase,
 ) error {
-	if catalog.SchemaVersion != 1 {
-		return fmt.Errorf("differential catalog schema_version = %d, want 1", catalog.SchemaVersion)
+	if catalog.SchemaVersion != 2 {
+		return fmt.Errorf("differential catalog schema_version = %d, want 2", catalog.SchemaVersion)
 	}
-	if catalog.Profile != differentialProfile {
+	if catalog.Suite != differentialSuite {
 		return fmt.Errorf(
-			"differential catalog profile = %q, want %q",
-			catalog.Profile,
-			differentialProfile,
-		)
-	}
-	if catalog.TargetQualificationProfile != differentialTargetProfile {
-		return fmt.Errorf(
-			"differential catalog target qualification profile = %q, want %q",
-			catalog.TargetQualificationProfile,
-			differentialTargetProfile,
+			"differential catalog suite = %q, want %q",
+			catalog.Suite,
+			differentialSuite,
 		)
 	}
 	if len(catalog.RequiredPlugins) != differentialRequiredPluginCount {
@@ -625,7 +614,7 @@ func validateDifferentialCatalog(
 			return fmt.Errorf(
 				"differential catalog plugin %q is not required by %s",
 				row.Plugin,
-				catalog.TargetQualificationProfile,
+				catalog.Suite,
 			)
 		}
 		key := row.Plugin + "\x00" + row.Obligation
@@ -864,10 +853,9 @@ func buildSelectedDifferentialArtifact(
 		result = "pass"
 	}
 	return DifferentialArtifact{
-		SchemaVersion:              2,
-		Profile:                    catalog.Profile,
-		TargetQualificationProfile: catalog.TargetQualificationProfile,
-		CatalogSHA256:              catalog.CatalogSHA256,
+		SchemaVersion: 3,
+		Suite:         catalog.Suite,
+		CatalogSHA256: catalog.CatalogSHA256,
 		Selection: DifferentialArtifactSelection{
 			Plugins:           append([]string{}, selection.Plugins...),
 			Cases:             append([]string{}, selection.Cases...),
@@ -1724,8 +1712,6 @@ func renderDifferentialCandidateRuntimeWithOverlay(
 		prometheusEnabled = prometheusEnabled || plugin == "prometheus"
 	}
 	runtime := map[string]any{
-		"compatibility_target": "apisix-3.17",
-		"security_profile":     "compat",
 		"apisix": map[string]any{
 			"enable_admin":   false,
 			"enable_control": true,
@@ -1903,7 +1889,7 @@ func repositoryRootFromWorkingDirectory() (string, error) {
 		return "", err
 	}
 	for current := workingDirectory; ; current = filepath.Dir(current) {
-		if _, err := os.Stat(filepath.Join(current, "qualification", "oracle.yaml")); err == nil {
+		if _, err := os.Stat(filepath.Join(current, "validation", "oracle.yaml")); err == nil {
 			return current, nil
 		}
 		parent := filepath.Dir(current)
@@ -1918,14 +1904,14 @@ func differentialOraclePath(repoRoot string) string {
 	if configured := strings.TrimSpace(os.Getenv("APISIX_GO_ORACLE_FILE")); configured != "" {
 		return configured
 	}
-	return filepath.Join(repoRoot, "qualification", "oracle.yaml")
+	return filepath.Join(repoRoot, "validation", "oracle.yaml")
 }
 
 func differentialCatalogPath(repoRoot string) string {
 	if configured := strings.TrimSpace(os.Getenv("APISIX_GO_DIFFERENTIAL_CATALOG")); configured != "" {
 		return configured
 	}
-	return filepath.Join(repoRoot, "qualification", "differential-cases.yaml")
+	return filepath.Join(repoRoot, "validation", "differential-cases.yaml")
 }
 
 func differentialNormalizationPath(repoRoot string) string {

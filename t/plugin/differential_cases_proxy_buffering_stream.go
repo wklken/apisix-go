@@ -16,7 +16,7 @@ type differentialProxyBufferingStreamCase struct {
 // differentialProxyBufferingStreamingCases is intentionally separate from
 // differentialCases until the shared runner can drive the candidate locally
 // and the oracle from inside its network namespace. The old static-body case
-// remains a transit-only check and is not streaming qualification evidence.
+// remains a transit-only check and is not streaming validation evidence.
 func differentialProxyBufferingStreamingCases() []differentialProxyBufferingStreamCase {
 	const routeID = "differential-proxy-buffering-sse"
 	return []differentialProxyBufferingStreamCase{{

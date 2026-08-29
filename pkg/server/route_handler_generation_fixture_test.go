@@ -50,18 +50,10 @@ func newCompiledHTTPGenerationFixture(
 	if err != nil {
 		t.Fatal(err)
 	}
-	profiles := config.ProfileSelection{
-		Compatibility: config.CompatibilityTarget(manifest.Target.Name),
-		Security:      config.SecurityCompat,
-	}
 	effective := &config.EffectiveConfig{
 		Config: config.Config{
-			CompatibilityTarget:  profiles.Compatibility,
-			SecurityProfile:      profiles.Security,
-			QualificationProfile: profiles.Qualification,
-			Plugins:              plugins,
+			Plugins: plugins,
 		},
-		Profiles: profiles,
 	}
 	factory, err := compiler.NewWorkerCompilerFactory(
 		manifest,

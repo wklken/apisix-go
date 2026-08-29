@@ -9,12 +9,12 @@ on:
         type: boolean
         default: false
       run-operational:
-        description: Run the etcd recovery and proxy soak qualification gates.
+        description: Run the etcd recovery and proxy soak validation gates.
         required: false
         type: boolean
         default: false
       source-ref:
-        description: Git ref to qualify.
+        description: Git ref to verify.
         required: false
         type: string
         default: ''
@@ -57,7 +57,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - name: Reject publication without operational qualification
+      - name: Reject publication without operational validation
         env:
           PUBLISH_IMAGE: ${{ inputs.publish-image }}
           RUN_OPERATIONAL: ${{ inputs.run-operational }}
@@ -81,7 +81,7 @@ jobs:
           if [[ -z "$SOURCE_REF" ]]; then
             printf 'source-ref is not set; using the triggering ref\n'
           else
-            printf 'qualifying source ref: %s\n' "$SOURCE_REF"
+            printf 'verifying source ref: %s\n' "$SOURCE_REF"
           fi
           [[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]] || {
             printf 'source commit must be an immutable 40-hex SHA\n' >&2
@@ -435,7 +435,7 @@ jobs:
             --pattern container-image.txt \
             --pattern release-evidence.tar.gz \
             --pattern release-evidence.tar.gz.sha256 \
-            --pattern production-qualification.json \
+            --pattern production-verification.json \
             --dir "$rollback_root"
           (
             cd "$rollback_root"
@@ -446,7 +446,7 @@ jobs:
           )
           rollback_reference=$(<"$rollback_root/container-image.txt")
           [[ "$rollback_reference" =~ ^ghcr\.io/.+@sha256:[0-9a-f]{64}$ ]]
-          rollback_context="$rollback_root/release-evidence/qualification-context.json"
+          rollback_context="$rollback_root/release-evidence/verification-context.json"
           rollback_commit=$(jq -er '.source.commit' "$rollback_context")
           rollback_config_digest=$(<"$rollback_root/release-evidence/qualified-image/image-config-digest.txt")
           jq -e \
@@ -454,7 +454,7 @@ jobs:
             --arg commit "$rollback_commit" '
             .source.commit == $commit and
             .image_reference == $ref and
-            .repository_gates == {profile: "http-data-plane-v1", result: "passed"}
+		    .repository_gates == {scope: "http-data-plane", result: "passed"}
           ' "$rollback_context" >/dev/null
           jq -e \
             --arg ref "$rollback_reference" \
@@ -464,18 +464,18 @@ jobs:
             .image_reference == $ref and
             .image_digest == $digest and
             .source.commit == $commit and
-            .qualification == {profile: "http-data-plane-v1", result: "passed"} and
+		    .verification == {scope: "http-data-plane", result: "passed"} and
             (.environment.name | type == "string" and length > 0) and
             (.environment.config_sha256 | test("^[0-9a-f]{64}$")) and
             ([.evidence.ingress_logs_sha256, .evidence.capacity_sha256,
               .evidence.failure_sha256, .evidence.deployment_sha256]
               | all(test("^[0-9a-f]{64}$")))
-          ' "$rollback_root/production-qualification.json" >/dev/null
+          ' "$rollback_root/production-verification.json" >/dev/null
           {
             printf 'image_reference=%s\n' "$rollback_reference"
             printf 'image_config_digest=%s\n' "$rollback_config_digest"
             printf 'source_commit=%s\n' "$rollback_commit"
-            printf 'metadata=%s\n' "$rollback_root/production-qualification.json"
+            printf 'metadata=%s\n' "$rollback_root/production-verification.json"
           } >> "$GITHUB_OUTPUT"
 
       - name: Verify previous image provenance and pull exact digest
@@ -492,7 +492,7 @@ jobs:
             --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
             --source-ref "refs/tags/$ROLLBACK_RELEASE_TAG" \
             --source-digest "$ROLLBACK_SOURCE_COMMIT"
-          gh attestation verify "$rollback_root/production-qualification.json" \
+          gh attestation verify "$rollback_root/production-verification.json" \
             --repo "$GITHUB_REPOSITORY" \
             --source-ref "refs/tags/$ROLLBACK_RELEASE_TAG" \
             --source-digest "$ROLLBACK_SOURCE_COMMIT"

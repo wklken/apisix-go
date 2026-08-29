@@ -42,4 +42,4 @@ COPY --from=builder /apisix /usr/bin/apisix
 USER 10001:10001
 
 ENTRYPOINT ["/usr/bin/apisix"]
-CMD ["-c", "/usr/local/apisix/conf/config-production.yaml"]
+CMD ["-c", "/usr/local/apisix/conf/config.yaml"]

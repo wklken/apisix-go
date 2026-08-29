@@ -85,18 +85,10 @@ func TestServerShutdownPreservesExactGenerationOwnersThroughRealChain(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	profiles := config.ProfileSelection{
-		Compatibility: config.CompatibilityTarget(manifest.Target.Name),
-		Security:      config.SecurityCompat,
-	}
 	effective := &config.EffectiveConfig{
 		Config: config.Config{
-			CompatibilityTarget:  profiles.Compatibility,
-			SecurityProfile:      profiles.Security,
-			QualificationProfile: profiles.Qualification,
-			Plugins:              []string{"clickhouse-logger"},
+			Plugins: []string{"clickhouse-logger"},
 		},
-		Profiles: profiles,
 	}
 	factory, err := compiler.NewWorkerCompilerFactory(
 		manifest,
@@ -177,7 +169,7 @@ func TestServerShutdownPreservesExactGenerationOwnersThroughRealChain(t *testing
 		)
 	}
 
-	ownerPrefix := independentClickHouseOwnerPrefix(t, manifest, profiles, ticket, set, rawRoute)
+	ownerPrefix := independentClickHouseOwnerPrefix(t, manifest, ticket, set, rawRoute)
 	clientKey := independentClickHouseClientKey(
 		t,
 		clickhouse.URL,
@@ -310,7 +302,6 @@ func independentClickHouseClientKey(
 func independentClickHouseOwnerPrefix(
 	t *testing.T,
 	manifest *capability.Manifest,
-	profiles config.ProfileSelection,
 	ticket generation.ApplyTicket,
 	set generation.PublicationSet,
 	rawRoute []byte,
@@ -331,7 +322,7 @@ func independentClickHouseOwnerPrefix(
 		t.Fatal(err)
 	}
 	planned, err := routepkg.PlanHTTPPlugins(context.Background(), routepkg.PlanningInput{
-		Routes: []resource.Route{route}, EnabledPlugins: []string{"clickhouse-logger"}, Profiles: profiles,
+		Routes: []resource.Route{route}, EnabledPlugins: []string{"clickhouse-logger"},
 	})
 	if err != nil {
 		t.Fatal(err)

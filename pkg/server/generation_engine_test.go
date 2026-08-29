@@ -120,18 +120,7 @@ func newActiveHealthGenerationEngineFixture(
 	if err != nil {
 		t.Fatal(err)
 	}
-	profiles := config.ProfileSelection{
-		Compatibility: config.CompatibilityTarget(manifest.Target.Name),
-		Security:      config.SecurityCompat,
-	}
-	effective := &config.EffectiveConfig{
-		Config: config.Config{
-			CompatibilityTarget:  profiles.Compatibility,
-			SecurityProfile:      profiles.Security,
-			QualificationProfile: profiles.Qualification,
-		},
-		Profiles: profiles,
-	}
+	effective := &config.EffectiveConfig{}
 	observer := &gatedGenerationClusterObserver{}
 	factory, err := compiler.NewWorkerCompilerFactory(
 		manifest,
@@ -306,18 +295,7 @@ func newGenerationEngineFixtureWithRecovery(t *testing.T, installRecovery bool) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	profiles := config.ProfileSelection{
-		Compatibility: config.CompatibilityTarget(manifest.Target.Name),
-		Security:      config.SecurityCompat,
-	}
-	effective := &config.EffectiveConfig{
-		Config: config.Config{
-			CompatibilityTarget:  profiles.Compatibility,
-			SecurityProfile:      profiles.Security,
-			QualificationProfile: profiles.Qualification,
-		},
-		Profiles: profiles,
-	}
+	effective := &config.EffectiveConfig{}
 	factory, err := compiler.NewWorkerCompilerFactory(
 		manifest,
 		effective,
@@ -2128,16 +2106,7 @@ func newGenerationEngineWithMaterializer(
 	if err != nil {
 		t.Fatal(err)
 	}
-	profiles := config.ProfileSelection{
-		Compatibility: config.CompatibilityTarget(manifest.Target.Name), Security: config.SecurityCompat,
-	}
-	effective := &config.EffectiveConfig{
-		Config: config.Config{
-			CompatibilityTarget: profiles.Compatibility, SecurityProfile: profiles.Security,
-			QualificationProfile: profiles.Qualification,
-		},
-		Profiles: profiles,
-	}
+	effective := &config.EffectiveConfig{}
 	factory, err := compiler.NewWorkerCompilerFactory(
 		manifest, effective, materializer,
 		compiler.WorkerRuntimeObservers{Cluster: proxy.NopClusterObserver{}, Stream: func(streamruntime.Result) {}},

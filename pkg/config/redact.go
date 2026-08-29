@@ -15,12 +15,6 @@ import (
 
 const redactedValue = "[REDACTED]"
 
-type profileDump struct {
-	Compatibility CompatibilityTarget  `json:"compatibility_target"`
-	Security      SecurityProfile      `json:"security_profile"`
-	Qualification QualificationProfile `json:"qualification_profile"`
-}
-
 type provenanceEntry struct {
 	Path     string     `json:"path"`
 	Kind     SourceKind `json:"kind"`
@@ -31,7 +25,6 @@ type provenanceEntry struct {
 type effectiveDump struct {
 	Config        map[string]any    `json:"config"`
 	Paths         RuntimePaths      `json:"paths"`
-	Profiles      profileDump       `json:"profiles"`
 	Provenance    []provenanceEntry `json:"provenance"`
 	IgnoredFields []string          `json:"ignored_fields"`
 }
@@ -83,13 +76,8 @@ func RenderEffectiveRedacted(effective *EffectiveConfig) ([]byte, error) {
 	}
 	provenance, ignored := ctx.renderProvenance()
 	dump := effectiveDump{
-		Config: configMap,
-		Paths:  effective.Paths,
-		Profiles: profileDump{
-			Compatibility: effective.Profiles.Compatibility,
-			Security:      effective.Profiles.Security,
-			Qualification: effective.Profiles.Qualification,
-		},
+		Config:        configMap,
+		Paths:         effective.Paths,
 		Provenance:    provenance,
 		IgnoredFields: ignored,
 	}

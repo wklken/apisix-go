@@ -10,8 +10,8 @@ This file inherits the repository root `AGENTS.md` and applies to `pkg/config`.
   recursively; sequences replace as a whole.
 - Preserve the distinction among absent, null, false, zero, and empty string,
   and retain provenance for effective fields.
-- Compatibility, security, and qualification are orthogonal axes.
-  `deployment.profile` was removed and must not reappear as a combined switch.
+- The runtime has one APISIX-compatible behavior. Removed selectors must not
+  reappear under another name or alter route, plugin, or rendering behavior.
 - `EffectiveConfig` is immutable input to compiler construction. Do not add a
   process-global mutable config or Viper-backed production path.
 
@@ -21,7 +21,7 @@ This file inherits the repository root `AGENTS.md` and applies to `pkg/config`.
   and redacted-summary coverage as applicable.
 - Diagnostics must remain bounded and exclude endpoints, credentials, keys,
   certificates, tokens, and secret references.
-- Static provider/listener shape, selection, and profile validation belongs
+- Static provider/listener shape and selection validation belongs
   here. Binding, stream protocol/listen conflict checks, and desired-state
   publication do not.
 

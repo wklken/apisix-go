@@ -107,7 +107,7 @@ tls_dir="$temp_dir/tls"
 mkdir -p "$tls_dir"
 candidate_config="$production_config"
 config_sha256=$(openssl dgst -sha256 "$candidate_config" | awk '{print $NF}')
-[[ "$config_sha256" =~ ^[0-9a-f]{64}$ ]] || die 'failed to fingerprint qualification candidate configuration'
+[[ "$config_sha256" =~ ^[0-9a-f]{64}$ ]] || die 'failed to fingerprint validation candidate configuration'
 
 data_network="apisix-release-etcd-data-$run_id"
 control_network="apisix-release-etcd-control-$run_id"
@@ -506,7 +506,7 @@ write_recovery_evidence() {
     ca_sha256=$(openssl dgst -sha256 "$tls_dir/ca.crt" | awk '{print $NF}')
     server_cert_sha256=$(openssl dgst -sha256 "$tls_dir/server.crt" | awk '{print $NF}')
     for record_name in journal generation; do
-        printf '{"scope":"platform-recovery-v1","config_profile":"http-data-plane-v1","record":"%s","source_commit":"%s","image_id":"%s","config_sha256":"%s","before_generation":"%s","after_generation":"%s","probe_result":"pass","etcd_tls_peer":"etcd:2379","etcd_ca_sha256":"%s","etcd_server_cert_sha256":"%s","replica_before_identity":"%s","replica_after_identity":"%s","survivor_probe_count":"%s","survivor_window_probe_count":"%s","command":"scripts/etcd_recovery_smoke.sh <immutable-image>","attempt":"%s","output_sha256":"%s"}\n' \
+        printf '{"scope":"platform-recovery-v1","record":"%s","source_commit":"%s","image_id":"%s","config_sha256":"%s","before_generation":"%s","after_generation":"%s","probe_result":"pass","etcd_tls_peer":"etcd:2379","etcd_ca_sha256":"%s","etcd_server_cert_sha256":"%s","replica_before_identity":"%s","replica_after_identity":"%s","survivor_probe_count":"%s","survivor_window_probe_count":"%s","command":"scripts/etcd_recovery_smoke.sh <immutable-image>","attempt":"%s","output_sha256":"%s"}\n' \
             "$record_name" "$source_commit" "$image_id" "$config_sha256" "$before_generation" "$after_generation" \
             "$ca_sha256" "$server_cert_sha256" "$restart_before_identity" "$restart_after_identity" \
             "$restart_survivor_probe_count" "$restart_survivor_window_probe_count" \

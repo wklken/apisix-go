@@ -285,16 +285,3 @@ func TestPlanRouteUpstreamEmptyClusterRulesAndInputIsolation(t *testing.T) {
 		t.Fatal("planned cluster identity changed after SSL input mutation")
 	}
 }
-
-func TestPlanRouteUpstreamAppliesStrictTLSPolicyBeforeClusterAcquisition(t *testing.T) {
-	static := appconfig.Config{
-		SecurityProfile: appconfig.SecurityStrict,
-	}
-	_, err := PlanRouteUpstream(resource.Route{ID: "strict", Upstream: resource.Upstream{
-		Scheme: "https", Nodes: []resource.Node{{Host: "node", Port: 443, Weight: 1}},
-		TLS: &resource.UpstreamTLS{Verify: false},
-	}}, resource.Service{}, nil, nil, &static)
-	if err == nil {
-		t.Fatal("strict TLS upstream without verification was not rejected")
-	}
-}

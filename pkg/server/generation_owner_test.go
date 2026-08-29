@@ -413,18 +413,7 @@ func newTestGenerationOwner(
 		t.Fatal(err)
 	}
 	materializer := &ownerTestMaterializer{digest: catalog.Digest()}
-	profiles := config.ProfileSelection{
-		Compatibility: config.CompatibilityTarget(manifest.Target.Name),
-		Security:      config.SecurityCompat,
-	}
-	effective := &config.EffectiveConfig{
-		Config: config.Config{
-			CompatibilityTarget:  profiles.Compatibility,
-			SecurityProfile:      profiles.Security,
-			QualificationProfile: profiles.Qualification,
-		},
-		Profiles: profiles,
-	}
+	effective := &config.EffectiveConfig{}
 	factory, err := compiler.NewWorkerCompilerFactory(
 		manifest,
 		effective,

@@ -2,7 +2,7 @@
 id: ADR-0009
 title: Bound RocketMQ logger transport and client lifecycle
 status: proposed
-compatibility_target: apisix-3.17
+target: apisix-3.17
 divergence_ids: [DIV-009-rocketmq-client-safety]
 owner: wklken
 owner_approval_ref: ""
@@ -18,8 +18,7 @@ blocked socket write after the logger's request context has expired. Its
 background client tasks also use uninterruptible initial sleeps and are not
 joined by `Shutdown`.
 
-The logger must keep APISIX 3.17 compatibility available while making the
-strict security profile safe to operate. The local client copy is pinned to
+The logger keeps APISIX 3.17 transport defaults. The local client copy is pinned to
 `v2.1.3-0.20231106021916-c9e197c3af45`; it must not silently become a fork of a
 different upstream revision.
 
@@ -39,11 +38,8 @@ request joins it before releasing the per-connection write lock so a late
 deadline cannot corrupt the next user of that pooled connection. Producer retry
 loops stop rather than wrapping the cancellation and continuing.
 
-TLS keeps the APISIX-compatible default of `tls_verify = false` when the
-effective security profile is `compat`. Under `strict`, an omitted
-`tls_verify` becomes true, an explicit false is rejected, and `use_tls = false`
-is rejected before producer publication. Verified connections use the system
-root pool and derive
+TLS keeps the APISIX 3.17 default of `tls_verify = false`. When verification is
+enabled, connections use the system root pool and derive
 `ServerName` from each name-server or broker address. Tests may inject a
 private root pool through the client option solely for local fixtures.
 
@@ -55,14 +51,12 @@ error is returned.
 
 # Consequences
 
-The compat profile can still connect to deployments that rely on the upstream
-TLS verification-off behavior. That is an explicit security difference and is
-not production-safe by itself. The strict profile requires TLS plus CA and
-hostname verification and therefore requires operators to provision a
+The APISIX-compatible default can connect to deployments that do not verify
+RocketMQ TLS certificates. Operators that enable verification must provision a
 certificate chain whose SAN matches every configured RocketMQ endpoint.
 
 The local patch adds lifecycle and cancellation safety but does not claim
-qualification against an external RocketMQ cluster. The protocol-faithful
+validation against an external RocketMQ cluster. The protocol-faithful
 local fixture proves both name-server and broker TLS handshakes; nested client
 tests prove cancellation, retry, and task-join behavior. Container tests prove
 the nested replacement source is present before the image build.
@@ -76,5 +70,5 @@ for the controlled HTTP data-plane slice.
 Retirement requires an official RocketMQ client release that provides the same
 context, blocked-write, TLS identity, and lifecycle guarantees, plus a pinned
 source comparison and all focused tests passing against that release. The
-replacement must preserve the strict-profile contract and provide rollback
+replacement must preserve the documented transport behavior and provide rollback
 evidence before this proposed divergence is removed.

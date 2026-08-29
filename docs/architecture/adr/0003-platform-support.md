@@ -2,7 +2,7 @@
 id: ADR-0003
 title: Publish artifacts by explicit platform support tier
 status: accepted
-compatibility_target: apisix-3.17
+target: apisix-3.17
 divergence_ids: [DIV-003-platform-artifact-policy]
 owner: wklken
 owner_approval_ref: "decisions 107, 118-130"
@@ -12,7 +12,7 @@ date: 2026-08-23
 # Context
 
 The Go source can compile on more systems than the data-plane runtime and its
-release process can qualify. Treating compilation, native smoke evidence, and
+release process can verify. Treating compilation, native smoke evidence, and
 production artifact support as the same claim would overstate the current
 platform contract.
 

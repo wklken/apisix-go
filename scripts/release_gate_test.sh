@@ -126,9 +126,6 @@ test -f "$production_config"
 # The release image must retain the exact controlled-rollout selection. The
 # general loader keeps these axes independent; this gate owns their release
 # combination.
-require_fixed 'compatibility_target: apisix-3.17' "$production_config"
-require_fixed 'security_profile: compat' "$production_config"
-require_fixed 'qualification_profile: http-data-plane-v1' "$production_config"
 require_fixed '  role: data_plane' "$production_config"
 require_fixed '    config_provider: etcd' "$production_config"
 require_fixed '  proxy_mode: http' "$production_config"
@@ -151,8 +148,8 @@ require_make_target_body generate-capabilities \
 require_make_target_body check-capability-drift \
     $'\t$(GO_CACHE_RUNNER) go run ./cmd/capability-gen -repo-root . -check'
 status_target_body=$(printf '\t%s\n\t%s' \
-    "\$(GO_CACHE_RUNNER) go test ./pkg/capability ./pkg/config ./pkg/plugin -run '^(TestLoadedManifest|TestManifest|TestProfileSelection|TestCapabilityManifest|TestCapabilityRegistry)' -count=1" \
-    "APISIX_GO_SKIP_PLUGIN_INTEGRATION=1 \$(GO_CACHE_RUNNER) go test ./t/plugin -run '^(TestCapabilityManifestSelection|TestManifestCorpusValidates|TestUpstreamCorpusAccountingWithoutSourceCheckout|TestCorpusEvidenceMatchesCompatibilityTarget)\$\$' -count=1")
+    "\$(GO_CACHE_RUNNER) go test ./pkg/capability ./pkg/config ./pkg/plugin -run '^(TestLoadedManifest|TestManifest|TestCapabilityManifest|TestCapabilityRegistry)' -count=1" \
+    "APISIX_GO_SKIP_PLUGIN_INTEGRATION=1 \$(GO_CACHE_RUNNER) go test ./t/plugin -run '^(TestCapabilityManifestSelection|TestManifestCorpusValidates|TestUpstreamCorpusAccountingWithoutSourceCheckout|TestCorpusEvidenceMatchesPinnedAPISIXTarget)\$\$' -count=1")
 require_make_target_body test-capability-status "$status_target_body"
 require_fixed '.PHONY: test-plugin-smoke' "$makefile"
 require_fixed 'APISIX_GO_PLUGIN_SMOKE_CASE="$(PLUGIN_SMOKE_CASE)" $(GO_CACHE_RUNNER) go test ./t/plugin -run '\''^TestPluginIntegration$$'\'' -count=1 -v' "$makefile"
@@ -269,8 +266,8 @@ require_job_fixed "$workflow" upgrade-rollback 'container-evidence'
 require_job_fixed "$workflow" upgrade-rollback 'if: ${{ inputs.run-operational }}'
 require_job_fixed "$workflow" upgrade-rollback 'name: qualified-image-${{ github.run_id }}'
 require_job_fixed "$workflow" upgrade-rollback 'gh release download "$ROLLBACK_RELEASE_TAG"'
-require_job_fixed "$workflow" upgrade-rollback '--pattern production-qualification.json'
-require_job_fixed "$workflow" upgrade-rollback 'gh attestation verify "$rollback_root/production-qualification.json"'
+require_job_fixed "$workflow" upgrade-rollback '--pattern production-verification.json'
+require_job_fixed "$workflow" upgrade-rollback 'gh attestation verify "$rollback_root/production-verification.json"'
 require_job_fixed "$workflow" upgrade-rollback 'sha256sum -c release-evidence.tar.gz.sha256'
 require_job_fixed "$workflow" upgrade-rollback 'sha256sum -c MANIFEST.sha256'
 require_job_fixed "$workflow" upgrade-rollback 'scripts/upgrade_rollback_smoke.sh'
@@ -324,7 +321,7 @@ require_job_fixed "$workflow" publish-image 'PUBLISHED_IMAGE_REFERENCE'
 require_job_fixed "$workflow" publish-image 'release-publication-${{ github.run_id }}'
 
 # Callers must pass the fixed interface, and RC packaging must wait for the
-# reusable qualification result.
+# reusable validation result.
 require_job_fixed "$rc_workflow" resolve-source 'ref: ${{ inputs.ref || github.sha }}'
 require_job_fixed "$rc_workflow" resolve-source 'commit=$(git rev-parse HEAD)'
 require_job_fixed "$rc_workflow" resolve-source 'commit=%s'
@@ -369,9 +366,9 @@ require_job_fixed "$release_workflow" release 'sha256sum -c apisix-image.tar.gz.
 require_job_fixed "$release_workflow" release '.source.commit == $commit'
 require_job_fixed "$release_workflow" release '.image_digest == $digest'
 require_job_fixed "$release_workflow" release 'publication-source-commit.txt'
-require_job_fixed "$release_workflow" release 'qualification-context.json'
+require_job_fixed "$release_workflow" release 'verification-context.json'
 require_job_fixed "$release_workflow" release 'repository_gates:'
-reject_job_pattern "$release_workflow" release '^[[:space:]]+qualification:[[:space:]]*\{'
+reject_job_pattern "$release_workflow" release '^[[:space:]]+validation:[[:space:]]*\{'
 require_job_fixed "$release_workflow" release '"make test-plugin-harness"'
 require_job_fixed "$release_workflow" release 'make test-plugin-smoke PLUGIN_SMOKE_CASE=key-auth/valid-consumer-schema'
 require_job_fixed "$release_workflow" release 'make test-plugin-smoke PLUGIN_SMOKE_CASE=proxy-rewrite/rewrite-host'

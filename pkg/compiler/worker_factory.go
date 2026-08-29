@@ -92,12 +92,6 @@ func NewWorkerCompilerFactory(
 	if err != nil {
 		return nil, fmt.Errorf("%w: effective config is not defensively ownable", ErrInvalidInput)
 	}
-	if ownedEffective.Config.Profiles() != ownedEffective.Profiles {
-		return nil, fmt.Errorf("%w: effective config profile selection is inconsistent", ErrInvalidInput)
-	}
-	if err := ownedEffective.Profiles.Validate(compiler.manifest); err != nil {
-		return nil, fmt.Errorf("%w: effective config profile selection is invalid", ErrInvalidInput)
-	}
 	trustedClientCAPEM, err := readWorkerTrustedClientCA(&ownedEffective.Config)
 	if err != nil {
 		return nil, err

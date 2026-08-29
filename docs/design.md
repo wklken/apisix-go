@@ -253,11 +253,14 @@ authority for retry.
 
 The immutable generation compiler, in-process `Server + GenerationEngine`,
 lease-aware retirement, and retryable task/resource cleanup are implemented.
-The external supervisor/exec-worker architecture, IPC activation protocol,
-listener inheritance, worker probation/restart policy, and cross-platform
-lifecycle packages described by the supervisor child plan are not implemented.
-There are currently no `pkg/supervisor`, `pkg/worker`, `pkg/lifecycle`, or
-`pkg/platform` packages.
+The production process model is deliberately one APISIX-Go process per replica.
+Kubernetes or systemd owns abnormal-exit restart, replica replacement, and
+rollout availability; APISIX-Go owns startup journal recovery, readiness,
+generation activation, connection draining, and graceful termination. Internal
+supervisor/exec-worker processes, IPC activation, listener inheritance, and
+worker probation are not required by the HTTP production contract. There are
+therefore no `pkg/supervisor`, `pkg/worker`, `pkg/lifecycle`, or `pkg/platform`
+packages.
 
 The repository has existing security/release workflows and amd64 image, SBOM,
 Trivy, signing, attestation, and operational evidence gates. The proposed
@@ -446,8 +449,9 @@ process rather than an in-process reload. Zipkin is v2-only, and OTel rejects
 > **Superseded 2026-08-23:** route retirement and `SIGHUP` above describe the
 > pre-convergence implementation limitation, not the governing target. The
 > later [supervisor-generation child plan](superpowers/plans/2026-08-23-supervisor-worker-platform.md)
-> targets generation handoff that preserves ordinary hijacked connections.
-> See the [program specification](superpowers/plans/2026-08-23-apisix-go-convergence-program-spec.md),
+> was subsequent design exploration and is itself superseded by the selected
+> single-process production model recorded above. See the
+> [program specification](superpowers/plans/2026-08-23-apisix-go-convergence-program-spec.md),
 > [compatibility contract](architecture/compatibility-contract.md), and
 > [legacy conflict ledger](architecture/legacy-conflicts.md).
 

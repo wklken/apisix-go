@@ -475,12 +475,8 @@ func TestGovernedDocsContainNoActiveLegacyClaims(t *testing.T) {
 			"compatibility_target",
 			"security_profile",
 			"qualification_profile",
-			"Strict security is independent of qualification.",
 			"An empty qualification profile makes no qualification claim.",
 			"fails closed when any required manifest evidence is blocked",
-			"Qualification selection does not disable the Kafka compatibility owner.",
-			"`security_profile: strict` permits plaintext Kafka.",
-			"When Kafka TLS is configured, `security_profile: strict` requires `tls.verify: true`; `security_profile: compat` permits `tls.verify: false`.",
 			"The effective HTTP plugin sequence must exactly equal the manifest `required_plugins` sequence, including order.",
 			"Qualification derives from that ordered sequence and its required evidence.",
 		)
@@ -499,6 +495,24 @@ func TestGovernedDocsContainNoActiveLegacyClaims(t *testing.T) {
 			"required-set/qualified-set",
 		)
 	}
+	configurationDoc := read("docs/configuration.md")
+	require(
+		"docs/configuration.md",
+		configurationDoc,
+		"Strict security is independent of qualification.",
+		"Qualification selection does not disable the Kafka compatibility owner.",
+		"`security_profile: strict` permits plaintext Kafka.",
+		"When Kafka TLS is configured, `security_profile: strict` requires `tls.verify: true`; `security_profile: compat` permits `tls.verify: false`.",
+	)
+	productionDoc := read("docs/production-profile.md")
+	require(
+		"docs/production-profile.md",
+		productionDoc,
+		"covers the 110 plugins in the qualified APISIX 3.17 all-plugin profile that declare the HTTP domain",
+		"The stream-only `mqtt-proxy` remains qualified by the all-plugin profile but is outside this first HTTP production scope.",
+		"security_profile: compat",
+		"directly enforces its production transport, listener, trusted-address, and Admin API requirements",
+	)
 
 	designPath := "docs/design.md"
 	design := read(designPath)

@@ -16,7 +16,7 @@
 - Capability rows: **119**
 - APISIX defaults: **104**; Go-applicable: **99**; full: **99**; partial: **0**; deferred: **0**; not applicable: **5**
 - Qualification `apisix-3.17-all-plugins-v1`: **111/111** required plugins contract-ready; required evidence: converted_upstream, differential, failure, real_dependency, schema, unit
-- Qualification `http-data-plane-v1`: **6/6** required plugins contract-ready; required evidence: converted_upstream, differential, failure, real_dependency, schema, unit
+- Qualification `http-data-plane-v1`: **110/110** required plugins contract-ready; required evidence: converted_upstream, differential, failure, real_dependency, schema, unit
 
 ## Status semantics
 

@@ -127,7 +127,7 @@ test -f "$production_config"
 # general loader keeps these axes independent; this gate owns their release
 # combination.
 require_fixed 'compatibility_target: apisix-3.17' "$production_config"
-require_fixed 'security_profile: strict' "$production_config"
+require_fixed 'security_profile: compat' "$production_config"
 require_fixed 'qualification_profile: http-data-plane-v1' "$production_config"
 require_fixed '  role: data_plane' "$production_config"
 require_fixed '    config_provider: etcd' "$production_config"
@@ -171,6 +171,9 @@ require_job_fixed "$rc_workflow" build-and-unit 'run: make test-plugin-harness'
 require_job_fixed "$release_workflow" integration-smoke 'run: make test-plugin-smoke PLUGIN_SMOKE_CASE='\''${{ matrix.case.pattern }}'\'''
 require_job_fixed "$rc_workflow" integration-smoke 'run: make test-plugin-smoke PLUGIN_SMOKE_CASE='\''${{ matrix.case.pattern }}'\'''
 require_pattern 'go build[[:space:]]+-trimpath[[:space:]]+-ldflags[[:space:]]+"-s[[:space:]]+-w[[:space:]]+' "$dockerfile"
+require_fixed '# syntax=docker/dockerfile:1.7' "$dockerfile"
+require_pattern '^RUN --mount=type=cache,target=/go/pkg/mod go mod download$' "$dockerfile"
+require_pattern '^RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/\.cache/go-build go build ' "$dockerfile"
 require_pattern '^    flags:[[:space:]]*\[[[:space:]]*-trimpath[[:space:]]*\][[:space:]]*$' "$goreleaser"
 require_pattern '^    ldflags:[[:space:]]*$' "$goreleaser"
 require_pattern '-s[[:space:]]+-w' "$goreleaser"
@@ -189,6 +192,7 @@ require_text 'publish-image:' "$header"
 require_text 'run-operational:' "$header"
 require_text 'source-ref:' "$header"
 require_text 'source-commit:' "$header"
+require_text 'rollback-release-tag:' "$header"
 require_text 'image-reference:' "$header"
 require_text 'workflow_dispatch:' "$header"
 permissions_block=$(awk '/^permissions:/{in_permissions=1; next} in_permissions && /^concurrency:/{exit} in_permissions{print}' "$workflow")
@@ -207,7 +211,9 @@ fi
 require_job_fixed "$workflow" validate-inputs 'PUBLISH_IMAGE: ${{ inputs.publish-image }}'
 require_job_fixed "$workflow" validate-inputs 'RUN_OPERATIONAL: ${{ inputs.run-operational }}'
 require_job_fixed "$workflow" validate-inputs 'SOURCE_COMMIT: ${{ inputs.source-commit || github.sha }}'
+require_job_fixed "$workflow" validate-inputs 'ROLLBACK_RELEASE_TAG: ${{ inputs.rollback-release-tag }}'
 require_job_fixed "$workflow" validate-inputs 'publish-image requires run-operational=true'
+require_job_fixed "$workflow" validate-inputs 'run-operational requires rollback-release-tag'
 require_job_fixed "$workflow" validate-inputs 'exit 1'
 require_job_fixed "$workflow" validate-inputs 'contents: read'
 
@@ -217,7 +223,7 @@ require_job_fixed "$workflow" race-and-vulnerability 'git rev-parse HEAD'
 require_job_fixed "$workflow" race-and-vulnerability 'go test -race ./pkg/config ./cmd ./pkg/server ./pkg/route ./pkg/proxy ./pkg/store ./pkg/etcd ./pkg/stream -count=1'
 require_job_fixed "$workflow" race-and-vulnerability 'govulncheck@v1.7.0 . ./cmd/... ./pkg/...'
 require_job_fixed "$workflow" race-and-vulnerability 'contents: read'
-for job in race-and-vulnerability container-evidence etcd-recovery proxy-soak publish-image; do
+for job in race-and-vulnerability container-evidence etcd-recovery proxy-soak upgrade-rollback publish-image; do
     require_job_fixed "$workflow" "$job" 'ref: ${{ inputs.source-commit || github.sha }}'
 done
 
@@ -258,6 +264,20 @@ require_job_fixed "$workflow" container-evidence 'if: always()'
 reject_job_pattern "$workflow" container-evidence '(packages|id-token|attestations): write'
 reject_job_pattern "$workflow" container-evidence 'contents: write'
 
+require_job_fixed "$workflow" upgrade-rollback 'needs:'
+require_job_fixed "$workflow" upgrade-rollback 'container-evidence'
+require_job_fixed "$workflow" upgrade-rollback 'if: ${{ inputs.run-operational }}'
+require_job_fixed "$workflow" upgrade-rollback 'name: qualified-image-${{ github.run_id }}'
+require_job_fixed "$workflow" upgrade-rollback 'gh release download "$ROLLBACK_RELEASE_TAG"'
+require_job_fixed "$workflow" upgrade-rollback '--pattern production-qualification.json'
+require_job_fixed "$workflow" upgrade-rollback 'gh attestation verify "$rollback_root/production-qualification.json"'
+require_job_fixed "$workflow" upgrade-rollback 'sha256sum -c release-evidence.tar.gz.sha256'
+require_job_fixed "$workflow" upgrade-rollback 'sha256sum -c MANIFEST.sha256'
+require_job_fixed "$workflow" upgrade-rollback 'scripts/upgrade_rollback_smoke.sh'
+require_job_fixed "$workflow" upgrade-rollback 'upgrade-rollback-${{ github.run_id }}'
+require_job_fixed "$workflow" upgrade-rollback 'attestations: read'
+require_job_fixed "$workflow" publish-image 'upgrade-rollback'
+
 for job in etcd-recovery proxy-soak; do
     require_job_fixed "$workflow" "$job" 'if: ${{ inputs.run-operational }}'
     require_job_fixed "$workflow" "$job" 'race-and-vulnerability'
@@ -268,6 +288,7 @@ require_job_fixed "$workflow" etcd-recovery 'actions/download-artifact@v8.0.1'
 require_job_fixed "$workflow" etcd-recovery 'sha256sum -c apisix-image.tar.gz.sha256'
 require_job_fixed "$workflow" etcd-recovery 'docker load --input'
 require_job_fixed "$workflow" etcd-recovery 'bash scripts/etcd_recovery_smoke.sh "$APISIX_IMAGE"'
+require_job_fixed "$workflow" etcd-recovery 'SOURCE_COMMIT: ${{ inputs.source-commit || github.sha }}'
 require_job_fixed "$workflow" etcd-recovery 'image_id=$(docker image inspect --format'
 require_job_fixed "$workflow" proxy-soak 'APISIX_GO_SOAK_DURATION=30m'
 require_job_fixed "$workflow" proxy-soak 'go test -json ./pkg/route -run '\''^TestProxyRuntimeSoak$'\'' -count=1 -timeout=40m'
@@ -317,6 +338,9 @@ require_job_fixed "$rc_workflow" security-release-gates 'publish-image: false'
 require_job_fixed "$rc_workflow" security-release-gates 'run-operational: true'
 require_job_fixed "$rc_workflow" security-release-gates 'source-ref: ${{ inputs.ref || github.ref }}'
 require_job_fixed "$rc_workflow" security-release-gates 'source-commit: ${{ needs.resolve-source.outputs.commit }}'
+require_job_fixed "$rc_workflow" security-release-gates 'rollback-release-tag: ${{ inputs.rollback-release-tag || vars.APISIX_GO_ROLLBACK_RELEASE_TAG }}'
+require_job_fixed "$rc_workflow" security-release-gates 'packages: read'
+require_job_fixed "$rc_workflow" security-release-gates 'attestations: read'
 require_job_fixed "$rc_workflow" package-validation 'security-release-gates'
 require_fixed 'group: release-candidate-${{ inputs.ref || github.ref }}' "$rc_workflow"
 
@@ -325,6 +349,7 @@ require_job_fixed "$release_workflow" security-release-gates 'publish-image: tru
 require_job_fixed "$release_workflow" security-release-gates 'run-operational: true'
 require_job_fixed "$release_workflow" security-release-gates 'source-ref: ${{ github.ref }}'
 require_job_fixed "$release_workflow" security-release-gates 'source-commit: ${{ github.sha }}'
+require_job_fixed "$release_workflow" security-release-gates 'rollback-release-tag: ${{ vars.APISIX_GO_ROLLBACK_RELEASE_TAG }}'
 for permission in 'contents: read' 'packages: write' 'id-token: write' 'attestations: write'; do
     require_job_fixed "$release_workflow" security-release-gates "$permission"
 done
@@ -333,7 +358,7 @@ require_job_fixed "$release_workflow" release 'needs.security-release-gates.outp
 require_job_fixed "$release_workflow" release 'id-token: write'
 require_job_fixed "$release_workflow" release 'attestations: write'
 require_job_fixed "$release_workflow" release 'actions/download-artifact@v8.0.1'
-for artifact in qualified-image etcd-recovery proxy-soak release-publication; do
+for artifact in qualified-image etcd-recovery proxy-soak upgrade-rollback release-publication; do
     require_job_fixed "$release_workflow" release "${artifact}-\${{ github.run_id }}"
 done
 require_job_fixed "$release_workflow" release '$RUNNER_TEMP/container-image.txt'
@@ -345,6 +370,8 @@ require_job_fixed "$release_workflow" release '.source.commit == $commit'
 require_job_fixed "$release_workflow" release '.image_digest == $digest'
 require_job_fixed "$release_workflow" release 'publication-source-commit.txt'
 require_job_fixed "$release_workflow" release 'qualification-context.json'
+require_job_fixed "$release_workflow" release 'repository_gates:'
+reject_job_pattern "$release_workflow" release '^[[:space:]]+qualification:[[:space:]]*\{'
 require_job_fixed "$release_workflow" release '"make test-plugin-harness"'
 require_job_fixed "$release_workflow" release 'make test-plugin-smoke PLUGIN_SMOKE_CASE=key-auth/valid-consumer-schema'
 require_job_fixed "$release_workflow" release 'make test-plugin-smoke PLUGIN_SMOKE_CASE=proxy-rewrite/rewrite-host'
@@ -354,6 +381,7 @@ require_job_fixed "$release_workflow" release 'GITHUB_RUN_ID'
 require_job_fixed "$release_workflow" release 'RUNNER_OS'
 require_job_fixed "$release_workflow" release 'ImageVersion'
 require_job_fixed "$release_workflow" release 'go test -json ./pkg/route'
+require_job_fixed "$release_workflow" release 'scripts/upgrade_rollback_smoke.sh'
 require_job_fixed "$release_workflow" release 'actions/attest-build-provenance@v4.2.2'
 require_job_fixed "$release_workflow" release 'subject-path: ${{ runner.temp }}/release-evidence.tar.gz'
 reject_job_pattern "$release_workflow" release '> container-image.txt'

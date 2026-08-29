@@ -15,7 +15,7 @@ json_string() {
 
 validate_record_identity() {
     local file=$1 expected_source=$2 expected_image=$3 expected_config=$4
-    local before after
+    local before after before_identity after_identity probe_count window_probe_count
     [[ $(json_string "$file" source_commit) == "$expected_source" ]] || { fail "$file source_commit mismatch"; return 1; }
     [[ $(json_string "$file" image_id) == "$expected_image" ]] || { fail "$file image_id mismatch"; return 1; }
     [[ $(json_string "$file" config_sha256) == "$expected_config" ]] || { fail "$file config_sha256 mismatch"; return 1; }
@@ -28,6 +28,18 @@ validate_record_identity() {
     [[ "$before" =~ ^[1-9][0-9]*$ && "$after" =~ ^[1-9][0-9]*$ ]] || \
         { fail "$file generation bounds are invalid"; return 1; }
     (( after > before )) || { fail "$file generation did not advance"; return 1; }
+    before_identity=$(json_string "$file" replica_before_identity)
+    after_identity=$(json_string "$file" replica_after_identity)
+    [[ -n "$before_identity" && -n "$after_identity" && "$before_identity" != "$after_identity" ]] || \
+        { fail "$file replica restart identity did not change"; return 1; }
+    probe_count=$(json_string "$file" survivor_probe_count)
+    window_probe_count=$(json_string "$file" survivor_window_probe_count)
+    if [[ ! "$probe_count" =~ ^[0-9]+$ ]] || (( probe_count < 2 )); then
+        fail "$file survivor probe count is invalid"
+        return 1
+    fi
+    [[ "$window_probe_count" =~ ^[1-9][0-9]*$ ]] || \
+        { fail "$file restart-window survivor probe count is invalid"; return 1; }
     [[ $(json_string "$file" output_sha256) =~ ^[0-9a-f]{64}$ ]] || { fail "$file output_sha256 is invalid"; return 1; }
     [[ $(json_string "$file" etcd_tls_peer) == etcd:2379 ]] || { fail "$file TLS peer mismatch"; return 1; }
     [[ $(json_string "$file" etcd_ca_sha256) =~ ^[0-9a-f]{64}$ ]] || { fail "$file CA fingerprint is invalid"; return 1; }
@@ -58,7 +70,7 @@ write_fixture() {
     local evidence_dir=$1 source=$2 image=$3 config=$4 output=$5 record_name
     mkdir -p "$evidence_dir"
     for record_name in "${required_records[@]}"; do
-        printf '{"scope":"platform-recovery-v1","config_profile":"http-data-plane-v1","record":"%s","source_commit":"%s","image_id":"%s","config_sha256":"%s","before_generation":"41","after_generation":"42","probe_result":"pass","etcd_tls_peer":"etcd:2379","etcd_ca_sha256":"%s","etcd_server_cert_sha256":"%s","attempt":"test","output_sha256":"%s"}\n' \
+        printf '{"scope":"platform-recovery-v1","config_profile":"http-data-plane-v1","record":"%s","source_commit":"%s","image_id":"%s","config_sha256":"%s","before_generation":"41","after_generation":"42","probe_result":"pass","etcd_tls_peer":"etcd:2379","etcd_ca_sha256":"%s","etcd_server_cert_sha256":"%s","replica_before_identity":"replica 2026-08-29T05:00:00Z","replica_after_identity":"replica 2026-08-29T05:00:01Z","survivor_probe_count":"2","survivor_window_probe_count":"1","attempt":"test","output_sha256":"%s"}\n' \
             "$record_name" "$source" "$image" "$config" "$config" "$config" "$output" >"$evidence_dir/$record_name.json"
     done
 }
@@ -83,6 +95,12 @@ output_sha=$(printf 'd%.0s' {1..64})
 write_fixture "$test_root/valid" "$source_commit" "$image_id" "$config_sha" "$output_sha"
 validate_evidence_dir "$test_root/valid"
 
+write_fixture "$test_root/double-digit-probes" "$source_commit" "$image_id" "$config_sha" "$output_sha"
+sed -i.bak 's/"survivor_probe_count":"2"/"survivor_probe_count":"10"/' \
+    "$test_root/double-digit-probes/journal.json" "$test_root/double-digit-probes/generation.json"
+rm "$test_root/double-digit-probes/journal.json.bak" "$test_root/double-digit-probes/generation.json.bak"
+validate_evidence_dir "$test_root/double-digit-probes"
+
 write_fixture "$test_root/missing" "$source_commit" "$image_id" "$config_sha" "$output_sha"
 rm "$test_root/missing/generation.json"
 if validate_evidence_dir "$test_root/missing" 2>/dev/null; then
@@ -103,6 +121,14 @@ sed -i.bak 's/"record":"journal"/"record":"journal","plugin":"key-auth"/' \
 rm "$test_root/plugin-coupled/journal.json.bak"
 if validate_evidence_dir "$test_root/plugin-coupled" 2>/dev/null; then
     fail 'plugin-coupled recovery evidence was accepted'
+fi
+
+write_fixture "$test_root/missing-window-probe" "$source_commit" "$image_id" "$config_sha" "$output_sha"
+sed -i.bak 's/"survivor_window_probe_count":"1"/"survivor_window_probe_count":"0"/' \
+    "$test_root/missing-window-probe/generation.json"
+rm "$test_root/missing-window-probe/generation.json.bak"
+if validate_evidence_dir "$test_root/missing-window-probe" 2>/dev/null; then
+    fail 'recovery evidence without a restart-window survivor probe was accepted'
 fi
 
 printf 'platform recovery evidence: PASS\n'

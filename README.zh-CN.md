@@ -43,7 +43,7 @@ curl http://127.0.0.1:9080/hello
 
 能力清单包含 **119** 条记录和 **104** 个 APISIX 默认插件。在 **99** 个适用于 Go 的默认插件中，**99** 个为完整实现，**0** 个为部分实现，**0** 个为延期实现；另有 **5** 个默认插件不适用于 Go 插件契约。
 
-资格配置 `http-data-plane-v1` 当前有 **6/6** 个必需插件的静态契约就绪；候选程序仍须通过身份匹配的不可变运行产物。
+资格配置 `http-data-plane-v1` 当前有 **110/110** 个必需插件的静态契约就绪；候选程序仍须通过身份匹配的不可变运行产物。
 
 清单中的明确差距：
 - `ai` (`apisix`): N/A: APISIX uses this empty-schema module as a Lua router and balancer coordinator; Go owns those responsibilities in its native pipeline.

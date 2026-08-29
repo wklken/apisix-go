@@ -7,15 +7,17 @@ the repository remains **not ready for production** until a post-merge release
 candidate has passed against its own immutable image and the final release has
 independently passed with durable evidence for the final image.
 
-The runbook deliberately does not invent Kubernetes, Helm, or environment-
-specific deployment commands. The deployment owner supplies that step and
-must keep the image reference digest-qualified.
+The runtime is one APISIX-Go process per replica. Kubernetes or systemd owns
+restart, replica replacement, and rollout availability; APISIX-Go owns startup
+recovery, readiness, and graceful termination. The runbook deliberately does
+not invent environment-specific deployment commands. The deployment owner
+supplies that step and must keep the image reference digest-qualified.
 
 ## Scope and prerequisites
 
 The qualification scope is exactly [`http-data-plane-v1`](../production-profile.md):
-an HTTP-only data plane using the six-plugin allowlist
-`request-id`, `cors`, `key-auth`, `jwt-auth`, `basic-auth`, and `prometheus`.
+an HTTP-only data plane using every APISIX 3.17-qualified HTTP-domain plugin.
+The stream-only `mqtt-proxy` remains outside this first production claim.
 The selected configuration must use the data-plane etcd provider, verified
 HTTPS etcd endpoints, no stream listeners or stream plugins, no Admin API, and
 no process access-log claim. Lua/OpenResty behavior, external plugins, WASM,
@@ -33,7 +35,7 @@ Before an operator starts, obtain:
   running repository scripts. Do not substitute a branch head, mutable tag,
   drifted harness checkout, or unrecorded local build for that identity;
 - an environment-specific deployment procedure and an authenticated probe
-  credential for one route in the six-plugin allowlist;
+  credential for one route using the qualified HTTP plugin set;
 - an external ingress request-log evidence owner and a redacted evidence bundle
   plan covering representative successful, rejected, and failed requests.
 
@@ -291,10 +293,10 @@ for each step. Do not infer qualification from workflow YAML inspection alone.
 
 ## External ingress request-log evidence
 
-The exact six-plugin profile has no in-process request logger. Before RC/final
-qualification, the external ingress owner must export a redacted evidence
-bundle for representative successful, rejected, and failed requests. Each
-sample or its correlated record must demonstrate:
+Route-specific logger plugins do not replace the baseline deployment log
+contract. Before RC/final qualification, the external ingress owner must export
+a redacted evidence bundle for representative successful, rejected, and failed
+requests. Each sample or its correlated record must demonstrate:
 
 - a redacted request ID and trace correlation;
 - the HTTP method and normalized path with query-string secrets removed;
@@ -311,9 +313,13 @@ settings alone cannot satisfy this gate.
 ## Environment capacity and failure qualification
 
 Repository gates do not establish production capacity for an operator's
-topology. Before qualification, the deployment owner must declare the exact
-replica count, upstream shape, traffic mix, concurrency and duration, latency
-and error-rate thresholds, resource ceilings, and pass/fail criteria. Run that
+topology. The production deployment must run at least two replicas under
+Kubernetes or systemd, restart abnormal exits, allow at least 30 seconds for
+SIGTERM shutdown, use `/status` for liveness and `/status/ready` for readiness,
+and replace replicas without taking the last ready replica out of service.
+Before qualification, the deployment owner must declare the exact replica
+count, upstream shape, traffic mix, concurrency and duration, latency and
+error-rate thresholds, resource ceilings, and pass/fail criteria. Run that
 environment-specific load exercise against `$IMAGE_REFERENCE`, retain the raw
 results and monitoring evidence, and record the digest, source commit,
 configuration fingerprint, runner/load-generator details, and timestamps.
@@ -361,13 +367,14 @@ first upstream. It then deletes and re-adds the SSL resource; both replicas
 must fail a fresh TLS handshake while it is deleted and serve it again only
 after the re-add is committed.
 
-For compaction recovery, the harness keeps both gateways on a control network
-and disconnects only their data/etcd network until both still-reachable
-processes report readiness 200 from their committed last-good state. It mutates and deletes etcd state, compacts at
-the current revision, reconnects the data network, and requires each gateway
-log to contain the stable etcd compacted-revision error. It then proves that
-both replicas publish the same recovered snapshot, including the current
-service, SSL, and route state. All
+For compaction recovery, the harness places a pinned etcd TCP gateway between
+the replicas and the real etcd member. It stops only that gateway, proves both
+replicas remain ready and serve the pre-gap committed state, mutates and deletes
+the real etcd state through the direct `etcd-origin` endpoint, and compacts at
+the current revision. After restarting the TCP gateway, it proves through
+black-box HTTP and TLS probes that both replicas publish the same recovered
+snapshot, including the current service, SSL, and route state. No exact internal
+log message is required. All
 created gateway, fixture, etcd, and network resources are cleaned up on every
 exit. The gate also restarts one replica from its committed journal, then
 writes identity-bound platform evidence after the SSL delete/re-add cycle.
@@ -465,11 +472,25 @@ export PREVIOUS_IMAGE_ID="$(docker image inspect --format '{{.Id}}' \
 The first release has no previous immutable digest. Until a distinct older
 published digest exists and is exercised, rollback qualification must remain
 open; a local image, a tag-only reference, or the current digest cannot satisfy
-that requirement. Once the verified older digest exists, pass only
-`$PREVIOUS_IMAGE_REFERENCE` to the operator-supplied rollback command and rerun
-the `/status`, `/status/ready`, and allowlisted authenticated-route probes.
-Record the command, results, recovery time, timestamp, runner/environment
-details, and durable release-asset links.
+that requirement. Set the repository variable
+`APISIX_GO_ROLLBACK_RELEASE_TAG` to that distinct, previously qualified final
+release before running RC or final operational qualification. The reusable
+release workflow verifies the prior release evidence bundle, image identity,
+and a separately attested `production-qualification.json`. That record may be
+created only after the named environment's deployment, ingress-log, capacity,
+and failure evidence has been reviewed; it binds their SHA-256 values, the
+effective configuration SHA-256, source commit, and image identity. The
+repository-generated `qualification-context.json` records only
+`repository_gates: passed` and is not a production qualification record.
+
+After validating that prior evidence, the workflow runs
+`scripts/upgrade_rollback_smoke.sh` against two replicas. It replaces
+one replica at a time with the candidate and then one at a time with the prior
+digest, requiring the survivor, readiness, HTTP route, and TLS route probes at
+every transition. The resulting append-only JSONL record is included in the
+durable release evidence bundle. Missing prior qualification metadata, a
+mutable reference, identical image identity, or any probe failure blocks
+publication.
 
 ## Qualification decision
 

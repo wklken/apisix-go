@@ -119,6 +119,7 @@ jobs:
       run-operational: true
       source-ref: ${{ github.ref }}
       source-commit: ${{ github.sha }}
+      rollback-release-tag: ${{ vars.APISIX_GO_ROLLBACK_RELEASE_TAG }}
     permissions:
       contents: read
       packages: write
@@ -175,6 +176,12 @@ jobs:
           name: proxy-soak-${{ github.run_id }}
           path: ${{ runner.temp }}/release-evidence/proxy-soak
 
+      - name: Download upgrade and rollback evidence
+        uses: actions/download-artifact@v8.0.1
+        with:
+          name: upgrade-rollback-${{ github.run_id }}
+          path: ${{ runner.temp }}/release-evidence/upgrade-rollback
+
       - name: Download publication evidence
         uses: actions/download-artifact@v8.0.1
         with:
@@ -207,6 +214,7 @@ jobs:
           ' "$evidence_root/publication/release-metadata.json" >/dev/null
           test -s "$evidence_root/proxy-soak/proxy-soak.json"
           test -n "$(find "$evidence_root/etcd-recovery" -type f -print -quit)"
+          test -n "$(find "$evidence_root/upgrade-rollback" -type f -print -quit)"
           generated_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT"
           jq --null-input \
@@ -237,6 +245,10 @@ jobs:
                 commit: $source_commit
               },
               image_reference: $image_reference,
+              repository_gates: {
+                profile: "http-data-plane-v1",
+                result: "passed"
+              },
               runner: {
                 os: $runner_os,
                 arch: $runner_arch,
@@ -257,6 +269,7 @@ jobs:
                 "go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 . ./cmd/... ./pkg/...",
                 "bash scripts/container_smoke.sh",
                 "bash scripts/etcd_recovery_smoke.sh <immutable-image-id>",
+                "bash scripts/upgrade_rollback_smoke.sh <candidate-image-id> <rollback-image-reference> <rollback-qualification-metadata>",
                 "APISIX_GO_RUN_SOAK=1 APISIX_GO_SOAK_DURATION=30m go test -json ./pkg/route -run ^TestProxyRuntimeSoak$ -count=1 -timeout=40m",
                 "docker push <qualified-tag>",
                 "cosign sign --yes <digest-qualified-reference>"

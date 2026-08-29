@@ -1,9 +1,8 @@
 # APISIX-Go Architecture
 
 APISIX-Go is a single-process Go implementation of the Apache APISIX 3.17 data
-plane. It is still under development and is not production ready. This document
-describes the current cross-package architecture; source code and focused tests
-remain authoritative for implementation details.
+plane. This document describes the current cross-package architecture; source
+code and focused tests remain authoritative for implementation details.
 
 ## Reading map
 

@@ -487,6 +487,117 @@ func TestKafkaPrivateBrokerCloneIsClearedAfterWriterConstruction(t *testing.T) {
 	p.Stop()
 }
 
+type blockingKafkaSender struct {
+	entered   chan struct{}
+	release   chan struct{}
+	enterOnce sync.Once
+	mu        sync.Mutex
+	closes    int
+}
+
+func (s *blockingKafkaSender) Send(context.Context, kafkaMessage) error {
+	s.enterOnce.Do(func() { close(s.entered) })
+	<-s.release
+	return nil
+}
+
+func (s *blockingKafkaSender) Close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.closes++
+	return nil
+}
+
+func (s *blockingKafkaSender) closeCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.closes
+}
+
+func TestKafkaStopDrainsActiveSendAndPreventsResurrection(t *testing.T) {
+	sender := &blockingKafkaSender{entered: make(chan struct{}), release: make(chan struct{})}
+	p := &Plugin{
+		config: Config{
+			BrokerList: map[string]int{"127.0.0.1": 9092},
+			KafkaTopic: "apisix-logs",
+		},
+		sender: sender,
+	}
+	p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	p.sender = sender
+	capabilityValue, scope, cleanup := testutil.ScopedSecretHarness(t, name, nil)
+	defer cleanup()
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatal(err)
+	}
+
+	sendDone := make(chan error, 1)
+	go func() {
+		_, err := p.SendBatch(context.Background(), []map[string]any{{"route_id": "r1"}}, 1)
+		sendDone <- err
+	}()
+	select {
+	case <-sender.entered:
+	case <-time.After(time.Second):
+		t.Fatal("active Kafka send did not start")
+	}
+	processor := p.BatchProcessor
+	stopDone := make(chan struct{})
+	go func() {
+		p.Stop()
+		close(stopDone)
+	}()
+	select {
+	case <-stopDone:
+	case <-time.After(time.Second):
+		t.Fatal("Stop waited for active Kafka send instead of sealing scheduler admission")
+	}
+	if sender.closeCount() != 0 {
+		t.Fatal("Kafka sender closed before the active send completed")
+	}
+	close(sender.release)
+	if err := <-sendDone; err != nil {
+		t.Fatalf("active SendBatch() error = %v", err)
+	}
+	if err := processor.Shutdown(context.Background()); err != nil {
+		t.Fatalf("batch Shutdown() error = %v", err)
+	}
+	if sender.closeCount() != 1 {
+		t.Fatalf("Kafka sender close count = %d, want 1", sender.closeCount())
+	}
+	if p.sender != nil || p.BatchProcessor != nil || p.secretsPrepared ||
+		len(p.saslPasswords) != 0 || len(p.saslBrokerIndexes) != 0 {
+		t.Fatal("Stop retained Kafka writer, processor, or private password owners")
+	}
+	queued := len(p.FireChan)
+	if err := p.RunLogPhase(base.LogSnapshot{}); !errors.Is(err, base.ErrLogQueueUnavailable) {
+		t.Fatalf("post-Stop RunLogPhase() error = %v", err)
+	}
+	if len(p.FireChan) != queued {
+		t.Fatal("post-Stop RunLogPhase enqueued work")
+	}
+	if _, err := p.SendBatch(
+		context.Background(),
+		[]map[string]any{{"route_id": "late"}},
+		1,
+	); !errors.Is(err, secret.ErrCredentialUnavailable) {
+		t.Fatalf("post-Stop SendBatch() error = %v", err)
+	}
+	if err := p.PostInit(); !errors.Is(err, secret.ErrCredentialUnavailable) {
+		t.Fatalf("post-Stop PostInit() error = %v", err)
+	}
+	p.Stop()
+	if sender.closeCount() != 1 {
+		t.Fatalf("idempotent Stop close count = %d, want 1", sender.closeCount())
+	}
+}
+
 func TestRunLogPhaseOriginPreservesHTTPFraming(t *testing.T) {
 	delivered := make(chan map[string]any, 1)
 	p := &Plugin{config: Config{MetaFormat: "origin", IncludeReqBody: true, MaxReqBodyBytes: 64}}

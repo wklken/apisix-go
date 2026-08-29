@@ -494,6 +494,81 @@ func TestLogglyHTTPDeliveryScrubsRetainedTokenURLAndBody(t *testing.T) {
 	}
 }
 
+type blockingLogglyRoundTripper struct {
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (transport *blockingLogglyRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
+	transport.once.Do(func() { close(transport.started) })
+	<-transport.release
+	return &http.Response{
+		StatusCode: http.StatusAccepted,
+		Header:     make(http.Header),
+		Body:       http.NoBody,
+		Request:    request,
+	}, nil
+}
+
+func TestLogglyStopDrainsActiveSendAndPreventsResurrection(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		CustomerToken: "active-private",
+		Host:          "http://loggly.invalid",
+		Protocol:      "http",
+		Timeout:       1000,
+	})
+	transport := &blockingLogglyRoundTripper{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	p.httpClient = &http.Client{Transport: transport}
+	processor := p.BatchProcessor
+	sendDone := make(chan error, 1)
+	go func() {
+		_, err := p.SendBatch(context.Background(), []map[string]any{{"active": true}}, 1)
+		sendDone <- err
+	}()
+	select {
+	case <-transport.started:
+	case <-time.After(time.Second):
+		t.Fatal("active Loggly send did not start")
+	}
+	p.Stop()
+	if p.httpClient == nil || p.BatchProcessor == nil || !p.tokenSet || !p.ready {
+		t.Fatal("Stop cleaned active Loggly resources before delivery returned")
+	}
+	if !p.stopped.Load() {
+		t.Fatal("Stop did not seal the Loggly log entrypoint")
+	}
+	close(transport.release)
+	if err := <-sendDone; err != nil {
+		t.Fatalf("active SendBatch() error = %v", err)
+	}
+	if err := processor.Shutdown(context.Background()); err != nil {
+		t.Fatalf("batch Shutdown() error = %v", err)
+	}
+	if p.httpClient != nil || p.BatchProcessor != nil ||
+		p.tokenSet || p.secretsPrepared || p.ready {
+		t.Fatal("Stop retained client, processor, or private token")
+	}
+	before := len(p.FireChan)
+	if err := p.RunLogPhase(base.LogSnapshot{}); !errors.Is(err, base.ErrLogQueueUnavailable) {
+		t.Fatalf("post-Stop RunLogPhase() error = %v", err)
+	}
+	if len(p.FireChan) != before {
+		t.Fatal("post-Stop log phase enqueued work")
+	}
+	if _, err := p.SendBatch(
+		context.Background(), []map[string]any{{"late": true}}, 1,
+	); !errors.Is(err, secret.ErrCredentialUnavailable) {
+		t.Fatalf("post-Stop SendBatch() error = %v", err)
+	}
+	if err := p.PostInit(); !errors.Is(err, secret.ErrCredentialUnavailable) {
+		t.Fatalf("post-Stop PostInit() error = %v", err)
+	}
+}
+
 func TestLogglyStopFlushesPendingBatchBeforeCleanup(t *testing.T) {
 	received := make(chan string, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

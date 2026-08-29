@@ -403,6 +403,87 @@ func TestLagoGenerationsShareNeutralClientWithoutAuthorizationLeak(t *testing.T)
 	}
 }
 
+func TestLagoStopDrainsActiveSendAndPreventsResurrection(t *testing.T) {
+	requestStarted := make(chan struct{})
+	releaseRequest := make(chan struct{})
+	t.Cleanup(func() {
+		select {
+		case <-releaseRequest:
+		default:
+			close(releaseRequest)
+		}
+	})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		close(requestStarted)
+		<-releaseRequest
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(server.Close)
+	p := newTestPlugin(t, lagoTestConfig(server.URL, "active-private"))
+	sendDone := make(chan error, 1)
+	go func() {
+		_, err := p.SendBatch(context.Background(), []map[string]any{{"active": true}}, 1)
+		sendDone <- err
+	}()
+	select {
+	case <-requestStarted:
+	case <-time.After(time.Second):
+		t.Fatal("active Lago request did not start")
+	}
+	processor := p.BatchProcessor
+	stopDone := make(chan struct{})
+	go func() {
+		p.Stop()
+		close(stopDone)
+	}()
+	select {
+	case <-stopDone:
+	case <-time.After(time.Second):
+		t.Fatal("Stop waited for active Lago request instead of sealing scheduler admission")
+	}
+	if p.client == nil || p.clientRelease == nil || p.BatchProcessor == nil {
+		t.Fatal("Stop released Lago runtime before the active request drained")
+	}
+	close(releaseRequest)
+	if err := <-sendDone; err != nil {
+		t.Fatalf("active SendBatch() error = %v", err)
+	}
+	if err := processor.Shutdown(context.Background()); err != nil {
+		t.Fatalf("batch Shutdown() error = %v", err)
+	}
+	if p.client != nil || p.clientRelease != nil || p.BatchProcessor != nil ||
+		p.tokenSet || p.secretsPrepared || p.ready {
+		t.Fatalf("private/runtime state survived Stop: %#v", p)
+	}
+	if _, err := p.SendBatch(
+		context.Background(), []map[string]any{{"late": true}}, 1,
+	); !errors.Is(err, secret.ErrCredentialUnavailable) {
+		t.Fatalf("post-Stop SendBatch() error = %v", err)
+	}
+	queued := len(p.FireChan)
+	if err := p.RunLogPhase(base.LogSnapshot{}); !errors.Is(err, base.ErrLogQueueUnavailable) {
+		t.Fatalf("post-Stop RunLogPhase() error = %v", err)
+	}
+	if len(p.FireChan) != queued {
+		t.Fatal("post-Stop RunLogPhase enqueued work")
+	}
+	nextCalled := false
+	handler := p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		nextCalled = true
+	}))
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
+	if !nextCalled {
+		t.Fatal("post-Stop handler did not call next")
+	}
+	if len(p.FireChan) != queued {
+		t.Fatal("post-Stop handler enqueued work")
+	}
+	if err := p.PostInit(); !errors.Is(err, secret.ErrCredentialUnavailable) {
+		t.Fatalf("post-Stop PostInit() error = %v", err)
+	}
+	p.Stop()
+}
+
 func TestLagoRejectsPrePostInitLogEnqueue(t *testing.T) {
 	config := lagoTestConfig("http://127.0.0.1:3000", "unready-private")
 	p := newRawLagoPlugin(t, config)

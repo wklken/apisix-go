@@ -6,8 +6,6 @@ toolchain go1.26.6
 
 replace github.com/coreos/bbolt => go.etcd.io/bbolt v1.3.9
 
-replace github.com/apache/rocketmq-client-go/v2 => ./third_party/rocketmq-client-go
-
 // replace google.golang.org/grpc => google.golang.org/grpc v1.29.0
 
 require (

@@ -12,14 +12,11 @@ ARG GO_VERSION=unknown
 
 COPY go.mod /app/
 COPY go.sum /app/
-COPY third_party/rocketmq-client-go/go.mod /app/third_party/rocketmq-client-go/go.mod
-COPY third_party/rocketmq-client-go/go.sum /app/third_party/rocketmq-client-go/go.sum
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
 
 COPY main.go /app/
 COPY cmd /app/cmd
 COPY pkg /app/pkg
-COPY third_party/rocketmq-client-go /app/third_party/rocketmq-client-go
 
 RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build go build -trimpath -ldflags "-s -w -X github.com/wklken/apisix-go/pkg/version.Version=${VERSION} -X github.com/wklken/apisix-go/pkg/version.Commit=${COMMIT} -X github.com/wklken/apisix-go/pkg/version.BuildTime=${BUILD_TIME} -X 'github.com/wklken/apisix-go/pkg/version.GoVersion=${GO_VERSION}'" -o /apisix
 

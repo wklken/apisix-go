@@ -2669,16 +2669,20 @@ plugins:
     priority: 402
     scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
-    behavior: "full"
-    behavior_summary: "`nameserver_list`, `topic`, `key`, `tag`, `timeout`; `access_key`, encrypted `secret_key`; `meta_format = origin`, `log_format`; `include_req_body` / `include_req_body_expr`; APISIX-compatible TLS defaults (`use_tls = false`, `tls_verify = false`)"
+    behavior: "partial"
+    behavior_summary: "`nameserver_list`, `topic`, `key`, `tag`, `timeout`; `access_key`, encrypted `secret_key`; `meta_format = origin`, `log_format`; `include_req_body` / `include_req_body_expr`; upstream RocketMQ client TLS toggle through `use_tls`"
+    known_gaps:
+      - "The pinned upstream RocketMQ client enables TLS with certificate verification disabled and exposes no public CA, server-name, or verification option; the former private `tls_verify` extension is rejected."
+      - "The upstream `WithTls` option mutates shared default remoting configuration, so mixed plaintext and TLS producers are not isolated per generation."
+      - "Upstream TLS handshakes, route lookup and connection locks, blocked writes, retries, and background-task shutdown are not all bounded by the caller context or joined at shutdown; residual client work can outlive cancellation."
     evidence:
       schema: {state: "verified", refs: ["pkg/plugin/rocketmq_logger/plugin.go"], owner: "rocketmq-logger", reason: ""}
       unit: {state: "verified", refs: ["pkg/plugin/rocketmq_logger/plugin_test.go"], owner: "rocketmq-logger", reason: ""}
       converted_upstream: {state: "verified", refs: ["t/plugin/rocketmq-logger.yaml"], owner: "rocketmq-logger", reason: ""}
       differential: {state: "verified", refs: ["validation/differential-cases.yaml", "t/plugin/differential_test.go#TestPluginDifferential"], owner: "rocketmq-logger", reason: "the immutable APISIX 3.17 differential catalog verifies the case-scoped obligation 'publish-route-format-entry-to-local-rocketmq-endpoint' for the exact candidate binary"}
-      real_dependency: {state: "verified", refs: ["t/plugin/rocketmq-logger.yaml", "t/plugin/fixture_rocketmq_test.go#TestRocketMQFixtureAcceptsRealProducerMessage", "t/plugin/fixture_rocketmq_test.go#TestRocketMQFixtureAcceptsTLSNameServerAndBrokerConnections"], owner: "rocketmq-logger", reason: "the production RocketMQ client publishes to protocol-faithful local fixtures, including separately verified TLS name-server and broker connections, without claiming a production RocketMQ cluster"}
-      failure: {state: "verified", refs: ["pkg/plugin/rocketmq_logger/plugin_test.go#TestSenderCancellationUnblocksSendWithoutLeakedGoroutine", "pkg/plugin/rocketmq_logger/plugin_test.go#TestRocketMQSenderShutdownIsOwnedAndResidualVisible", "pkg/plugin/rocketmq_logger/plugin_test.go#TestRocketMQQuiesceDrainsActiveSendAndPreventsResurrection", "third_party/rocketmq-client-go/internal/remote/remote_context_test.go#TestDoRequestCancelsBlockedWrite", "third_party/rocketmq-client-go/internal/remote/remote_context_test.go#TestDoRequestWaitsForCancellationDeadlineCallbackBeforeReusingConnection", "third_party/rocketmq-client-go/internal/client_lifecycle_test.go#TestRMQClientShutdownJoinsAllStartTasks", "scripts/validation/rocketmq_patch_gate.sh", "scripts/validation/rocketmq_patch_gate_test.sh", "Dockerfile"], owner: "rocketmq-logger", reason: "context cancellation, blocked-write termination, cancellation callback join before pooled connection reuse, client task join, nested-module provenance, and container copy-order contracts are covered"}
-    divergence_ids: ["DIV-009-rocketmq-client-safety"]
+      real_dependency: {state: "verified", refs: ["t/plugin/rocketmq-logger.yaml", "t/plugin/fixture_rocketmq_test.go#TestRocketMQFixtureAcceptsRealProducerMessage", "t/plugin/fixture_rocketmq_test.go#TestRocketMQFixtureAcceptsTLSNameServerAndBrokerConnections"], owner: "rocketmq-logger", reason: "the upstream RocketMQ client publishes to protocol-faithful local fixtures over plaintext and its public TLS toggle; certificate verification remains an explicit upstream limitation, and this does not claim a production RocketMQ cluster"}
+      failure: {state: "verified", refs: ["pkg/plugin/rocketmq_logger/plugin_test.go#TestSenderCancellationUnblocksSendWithoutLeakedGoroutine", "pkg/plugin/rocketmq_logger/plugin_test.go#TestRocketMQSenderShutdownIsOwnedAndResidualVisible", "pkg/plugin/rocketmq_logger/plugin_test.go#TestRocketMQQuiesceDrainsActiveSendAndPreventsResurrection"], owner: "rocketmq-logger", reason: "plugin-owned send cancellation, sender shutdown visibility, active-send drain, and post-stop admission are covered; upstream client transport and task-lifecycle limitations remain explicit known gaps"}
+    divergence_ids: []
     supported_platforms: ["linux-amd64", "linux-arm64", "darwin-amd64", "darwin-arm64", "windows-amd64"]
   - name: "udp-logger"
     implementation: "udp-logger"
@@ -3647,10 +3651,6 @@ divergences:
     status: "proposed"
     target: "apisix-3.17"
     adr: "docs/architecture/adr/0008-request-validation-secret-schema-safety.md"
-  - id: "DIV-009-rocketmq-client-safety"
-    status: "proposed"
-    target: "apisix-3.17"
-    adr: "docs/architecture/adr/0009-rocketmq-client-safety.md"
   - id: "DIV-010-bounded-ai-proxy-multi-dns"
     status: "proposed"
     target: "apisix-3.17"

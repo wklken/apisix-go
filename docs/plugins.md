@@ -13,7 +13,7 @@
 ## Summary
 
 - **119** capabilities: **104** APISIX defaults and **15** extensions.
-- APISIX defaults: **99** Go-applicable (**99** full, **0** partial, **0** deferred) and **5** not applicable.
+- APISIX defaults: **99** Go-applicable (**98** full, **1** partial, **0** deferred) and **5** not applicable.
 - Evidence claims: **619** verified, **95** not applicable, **0** requiring attention.
 
 ## Status semantics
@@ -43,7 +43,6 @@ Evidence dimensions are Schema, Unit, Converted upstream, Differential, Real dep
 | `DIV-006-opa-resource-context-redaction` | **accepted** | [`0006-opa-resource-context-redaction.md`](architecture/adr/0006-opa-resource-context-redaction.md) |
 | `DIV-007-bounded-acl-jsonpath` | **proposed** | [`0007-bounded-acl-jsonpath.md`](architecture/adr/0007-bounded-acl-jsonpath.md) |
 | `DIV-008-request-validation-secret-schema-safety` | **proposed** | [`0008-request-validation-secret-schema-safety.md`](architecture/adr/0008-request-validation-secret-schema-safety.md) |
-| `DIV-009-rocketmq-client-safety` | **proposed** | [`0009-rocketmq-client-safety.md`](architecture/adr/0009-rocketmq-client-safety.md) |
 | `DIV-010-bounded-ai-proxy-multi-dns` | **proposed** | [`0010-bounded-ai-proxy-multi-dns.md`](architecture/adr/0010-bounded-ai-proxy-multi-dns.md) |
 
 ## Capabilities requiring attention
@@ -102,8 +101,10 @@ Only non-full behavior, known gaps, declared divergences, or incomplete evidence
 
 ### `rocketmq-logger`
 
-- Contract: `apisix`, http, behavior **full**.
-- Divergences: `DIV-009-rocketmq-client-safety`.
+- Contract: `apisix`, http, behavior **partial**.
+- Gap: The pinned upstream RocketMQ client enables TLS with certificate verification disabled and exposes no public CA, server-name, or verification option; the former private `tls_verify` extension is rejected.
+- Gap: The upstream `WithTls` option mutates shared default remoting configuration, so mixed plaintext and TLS producers are not isolated per generation.
+- Gap: Upstream TLS handshakes, route lookup and connection locks, blocked writes, retries, and background-task shutdown are not all bounded by the caller context or joined at shutdown; residual client work can outlive cancellation.
 
 ### `serverless-post-function`
 
@@ -227,7 +228,7 @@ APISIX defaults are sorted first by name. Remaining Go extension entries follow 
 | `request-id` | `apisix` | yes | http | **full** | verified |
 | `request-validation` | `apisix` | yes | http | **full** | verified |
 | `response-rewrite` | `apisix` | yes | http | **full** | verified |
-| `rocketmq-logger` | `apisix` | yes | http | **full** | verified |
+| `rocketmq-logger` | `apisix` | yes | http | **partial** | verified |
 | `saml-auth` | `apisix` | yes | http | **full** | verified |
 | `serverless-post-function` | `apisix` | yes | http | **full** | verified |
 | `serverless-pre-function` | `apisix` | yes | http | **full** | verified |

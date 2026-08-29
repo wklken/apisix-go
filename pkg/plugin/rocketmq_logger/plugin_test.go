@@ -73,21 +73,12 @@ func TestSchemaMatchesAPISIX317Matrix(t *testing.T) {
 			valid: true,
 		},
 		{
-			name: "TLS verification enabled",
+			name: "TLS verification is not an APISIX option",
 			config: map[string]any{
 				"nameserver_list": []any{"127.0.0.1:3"},
 				"topic":           "test",
 				"use_tls":         true,
 				"tls_verify":      true,
-			},
-			valid: true,
-		},
-		{
-			name: "TLS verification must be boolean",
-			config: map[string]any{
-				"nameserver_list": []any{"127.0.0.1:3"},
-				"topic":           "test",
-				"tls_verify":      "true",
 			},
 		},
 		{
@@ -115,13 +106,6 @@ func TestSchemaMatchesAPISIX317Matrix(t *testing.T) {
 				t.Fatal("invalid APISIX 3.17 configuration accepted")
 			}
 		})
-	}
-}
-
-func TestRocketMQTLSVerifyDefaultsOff(t *testing.T) {
-	p := newTestPlugin(t, Config{UseTLS: true}, &captureSender{})
-	if p.config.TLSVerify == nil || *p.config.TLSVerify {
-		t.Fatalf("TLSVerify = %v, want APISIX-compatible default false", p.config.TLSVerify)
 	}
 }
 

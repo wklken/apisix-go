@@ -24,7 +24,7 @@ APISIX-Go-specific migration selector is required.
   plugins marked applicable in the generated status.
 - Durable journal recovery, immutable generation activation, graceful
   termination, and serviceability-based readiness.
-- The same runtime behavior for unit, integration, differential, and release
+- The same runtime behavior for unit, integration, differential, and candidate
   validation.
 
 ## Excluded scope
@@ -39,7 +39,7 @@ APISIX-Go-specific migration selector is required.
 
 Plugin evidence is owned by the capability manifest and its validation corpus.
 Platform recovery and runtime stability are qualified separately by the
-[release runbook](runbooks/production-release.md).
+[HTTP candidate qualification](runbooks/http-candidate-qualification.md).
 
 A green release-candidate run supports only this bounded claim:
 

@@ -624,7 +624,7 @@ test_bounded_timeout() {
         FAKE_ETCD_STOPPED="$test_root/timeout-stopped" \
         FAKE_ETCD_RESTARTED="$test_root/timeout-restarted" \
         SOURCE_COMMIT="$source_commit" \
-        FAKE_CURL_MODE=timeout RELEASE_EVIDENCE_ROOT="$evidence" \
+        FAKE_CURL_MODE=timeout CANDIDATE_EVIDENCE_ROOT="$evidence" \
         ETCD_RECOVERY_TIMEOUT_SECONDS=1 ETCD_RECOVERY_POLL_INTERVAL_SECONDS=4 \
         "$test_shell" "$runner" "$image_id"
     local wait_started elapsed
@@ -654,7 +654,7 @@ test_cleanup_on_failure() {
         FAKE_ETCD_STOPPED="$test_root/cleanup-stopped" \
         FAKE_ETCD_RESTARTED="$test_root/cleanup-restarted" \
         SOURCE_COMMIT="$source_commit" \
-        FAKE_FAIL_GATEWAY=1 RELEASE_EVIDENCE_ROOT="$evidence" \
+        FAKE_FAIL_GATEWAY=1 CANDIDATE_EVIDENCE_ROOT="$evidence" \
         ETCD_RECOVERY_TIMEOUT_SECONDS=1 "$test_shell" "$runner" "$image_id"
     assert_contains 'docker rm -f' "$log"
     assert_contains 'docker network rm' "$log"
@@ -677,7 +677,7 @@ test_rejects_survivor_outage_during_replica_restart() {
         FAKE_ETCD_STOPPED="$test_root/survivor-outage-stopped" \
         FAKE_ETCD_RESTARTED="$test_root/survivor-outage-restarted" \
         FAKE_FAIL_SURVIVOR_DURING_RESTART=1 \
-        SOURCE_COMMIT="$source_commit" RELEASE_EVIDENCE_ROOT="$evidence" \
+        SOURCE_COMMIT="$source_commit" CANDIDATE_EVIDENCE_ROOT="$evidence" \
         ETCD_RECOVERY_TIMEOUT_SECONDS=2 ETCD_RECOVERY_POLL_INTERVAL_SECONDS=0 \
         "$test_shell" "$runner" "$image_id"
     assert_contains 'surviving replica failed during restart' "$output"
@@ -699,7 +699,7 @@ test_ordered_happy_path() {
         FAKE_ETCD_STOPPED="$test_root/happy-stopped" \
         FAKE_ETCD_RESTARTED="$test_root/happy-restarted" \
         SOURCE_COMMIT="$source_commit" \
-        RELEASE_EVIDENCE_ROOT="$evidence" ETCD_RECOVERY_TIMEOUT_SECONDS=4 \
+        CANDIDATE_EVIDENCE_ROOT="$evidence" ETCD_RECOVERY_TIMEOUT_SECONDS=4 \
         "$test_shell" "$runner" "$image_id" >"$output" 2>&1; then
         sed -n '1,320p' "$output" >&2 || true
         fail 'happy-path runner failed'

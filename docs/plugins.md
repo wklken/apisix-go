@@ -37,7 +37,6 @@ Evidence dimensions are Schema, Unit, Converted upstream, Differential, Real dep
 | ID | Status | Decision |
 | --- | --- | --- |
 | `DIV-001-go-native-extension-identity` | **accepted** | [`0001-compatibility-governance.md`](architecture/adr/0001-compatibility-governance.md) |
-| `DIV-003-platform-artifact-policy` | **accepted** | [`0003-platform-support.md`](architecture/adr/0003-platform-support.md) |
 | `DIV-004-runtime-safety-boundaries` | **accepted** | [`0004-runtime-safety-boundaries.md`](architecture/adr/0004-runtime-safety-boundaries.md) |
 | `DIV-005-credential-log-redaction` | **accepted** | [`0005-credential-log-redaction.md`](architecture/adr/0005-credential-log-redaction.md) |
 | `DIV-006-opa-resource-context-redaction` | **accepted** | [`0006-opa-resource-context-redaction.md`](architecture/adr/0006-opa-resource-context-redaction.md) |

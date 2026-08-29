@@ -80,7 +80,7 @@ done
 [[ "$poll_interval" =~ ^[0-9]+$ ]] || die 'poll_interval must be a non-negative integer'
 
 run_id="$(date -u +%Y%m%dT%H%M%SZ)-$$-${RANDOM}"
-evidence_root=${RELEASE_EVIDENCE_ROOT:-"$repo_root/.cache/release-evidence/etcd-recovery"}
+evidence_root=${CANDIDATE_EVIDENCE_ROOT:-"$repo_root/.cache/candidate-evidence/etcd-recovery"}
 run_dir="$evidence_root/$run_id"
 mkdir -p "$run_dir"
 transcript="$run_dir/steps.log"

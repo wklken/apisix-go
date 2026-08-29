@@ -765,7 +765,7 @@ func TestValidateDivergenceADRRejectsSymlinksWithoutChangingExternalFile(t *test
 	}
 }
 
-func TestValidateDivergenceADRValidThreeDecisionRepository(t *testing.T) {
+func TestValidateDivergenceADRValidTwoDecisionRepository(t *testing.T) {
 	root := t.TempDir()
 	manifest := testDivergenceManifest()
 	writeManifestADRs(t, root, manifest)
@@ -800,11 +800,11 @@ func testDivergenceManifest() *capability.Manifest {
 				OwnerApprovalRef: "decisions 1-42",
 			},
 			{
-				ID:               "DIV-003-platform-artifact-policy",
+				ID:               "DIV-002-test-second-decision",
 				Status:           capability.DivergenceAccepted,
 				Target:           "apisix-3.17",
-				ADR:              "docs/architecture/adr/0003-platform-support.md",
-				OwnerApprovalRef: "decisions 107, 118-130",
+				ADR:              "docs/architecture/adr/0002-test-second-decision.md",
+				OwnerApprovalRef: "test approval",
 			},
 		},
 	}

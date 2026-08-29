@@ -13,9 +13,11 @@ import (
 
 type opentelemetryManifest struct {
 	Sources []struct {
-		File        string `yaml:"file"`
-		Tests       int    `yaml:"tests"`
-		TestNumbers []int  `yaml:"test_numbers"`
+		Commit         string `yaml:"commit"`
+		File           string `yaml:"file"`
+		Tests          int    `yaml:"tests"`
+		TestNumbers    []int  `yaml:"test_numbers"`
+		RegressionOnly bool   `yaml:"regression_only"`
 	} `yaml:"sources"`
 	Cases []struct {
 		Name     string                      `yaml:"name"`
@@ -28,8 +30,39 @@ type opentelemetryManifest struct {
 }
 
 type opentelemetryManifestSource struct {
-	File  string `yaml:"file"`
-	Tests []int  `yaml:"tests"`
+	File        string `yaml:"file"`
+	Tests       []int  `yaml:"tests"`
+	LocalReason string `yaml:"local_reason"`
+}
+
+func TestManifestHasDirectOtelAliasActivationCase(t *testing.T) {
+	path := filepath.Join("..", "..", "..", "t", "plugin", "opentelemetry.yaml")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read opentelemetry manifest: %v", err)
+	}
+	var manifest opentelemetryManifest
+	if err := yaml.Unmarshal(data, &manifest); err != nil {
+		t.Fatalf("decode opentelemetry manifest: %v", err)
+	}
+
+	const name = "otel-alias-direct-activation-produces-span"
+	for i, testCase := range manifest.Cases {
+		if testCase.Name != name {
+			continue
+		}
+		if strings.TrimSpace(testCase.Source.LocalReason) == "" {
+			t.Fatalf("case %q lacks a local evidence reason", name)
+		}
+		if len(testCase.Fixtures) < 2 || len(testCase.Steps) == 0 {
+			t.Fatalf("case %q lacks real upstream/collector fixtures or request steps", name)
+		}
+		assertOpenTelemetryRuntimeKey(t, i+1, name, testCase.Runtime, "otel")
+		assertOpenTelemetryAllowlistKey(t, i+1, name, testCase.Runtime, "otel")
+		assertOpenTelemetryRouteKey(t, i+1, name, testCase.Config, "otel")
+		return
+	}
+	t.Fatalf("manifest lacks direct activation case %q", name)
 }
 
 func TestManifestMapsEveryPinnedBlockToIndependentRealProcessCase(t *testing.T) {
@@ -63,9 +96,11 @@ func TestManifestMapsEveryPinnedBlockToIndependentRealProcessCase(t *testing.T) 
 	if err := yaml.Unmarshal(data, &manifest); err != nil {
 		t.Fatalf("decode opentelemetry manifest: %v", err)
 	}
-	// testNumbers is nil when every pinned test 1..tests is converted. A
-	// non-nil list names the exact converted upstream numbers, allowing
-	// blocked gaps (opentelemetry.t TEST 26-28 serverless rewrite injection).
+	// testNumbers is nil when every pinned test 1..tests is converted. The
+	// APISIX 3.17 source owns TEST 1-25; later source blocks remain explicit
+	// regression-only evidence instead of being attributed to the target.
+	// A non-nil list names the exact upstream numbers, allowing blocked gaps
+	// (opentelemetry.t TEST 26-28 serverless rewrite injection).
 	// TEST 30 (opentelemetry.t) and TEST 6 (opentelemetry6.t) verify the
 	// OpenResty inject_core_spans phase-level span tree (apisix.phase.*
 	// spans with sni_radixtree_match/http_router_match/resolve_dns
@@ -73,23 +108,41 @@ func TestManifestMapsEveryPinnedBlockToIndependentRealProcessCase(t *testing.T) 
 	// span per request and has no phase-span instrumentation, so both
 	// numbers are blocked_design in corpus_scope.yaml instead of converted.
 	wantSources := []struct {
-		file        string
-		tests       int
-		testNumbers []int
+		commit         string
+		file           string
+		tests          int
+		testNumbers    []int
+		regressionOnly bool
 	}{
 		{
+			"9ef2ecab67f652d38365049613610ef649bb4ad0",
 			"t/plugin/opentelemetry.t",
-			44,
+			25,
 			[]int{
 				1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
-				21, 22, 23, 24, 25, 29, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40,
+				21, 22, 23, 24, 25,
+			},
+			false,
+		},
+		{
+			"c3d7d5ec69774121f53d2e20d29d09c816795dd7",
+			"t/plugin/opentelemetry.t",
+			19,
+			[]int{
+				29, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40,
 				41, 42, 43, 44, 45, 46, 47, 48,
 			},
+			true,
 		},
-		{"t/plugin/opentelemetry2.t", 4, nil},
-		{"t/plugin/opentelemetry4-bugfix-pb-state.t", 3, nil},
-		{"t/plugin/opentelemetry5.t", 13, nil},
-		{"t/plugin/opentelemetry6.t", 8, []int{1, 2, 3, 4, 5, 7, 8, 9}},
+		{"9ef2ecab67f652d38365049613610ef649bb4ad0", "t/plugin/opentelemetry2.t", 4, nil, false},
+		{"9ef2ecab67f652d38365049613610ef649bb4ad0", "t/plugin/opentelemetry4-bugfix-pb-state.t", 3, nil, false},
+		{"9ef2ecab67f652d38365049613610ef649bb4ad0", "t/plugin/opentelemetry5.t", 13, nil, false},
+		{
+			"9ef2ecab67f652d38365049613610ef649bb4ad0",
+			"t/plugin/opentelemetry6.t", 8,
+			[]int{1, 2, 3, 4, 5, 7, 8, 9},
+			false,
+		},
 	}
 	if len(manifest.Sources) != len(wantSources) {
 		t.Fatalf("sources = %d, want %d", len(manifest.Sources), len(wantSources))
@@ -105,21 +158,24 @@ func TestManifestMapsEveryPinnedBlockToIndependentRealProcessCase(t *testing.T) 
 				wantNumbers[n] = n + 1
 			}
 		}
-		if got.File != want.file || got.Tests != want.tests || !slices.Equal(got.TestNumbers, want.testNumbers) {
+		if got.Commit != want.commit || got.File != want.file || got.Tests != want.tests ||
+			!slices.Equal(got.TestNumbers, want.testNumbers) || got.RegressionOnly != want.regressionOnly {
 			t.Fatalf(
-				"source %d = (%q, %d, %v), want (%q, %d, %v)",
-				i+1, got.File, got.Tests, got.TestNumbers, want.file, want.tests, want.testNumbers,
+				"source %d = (%q, %q, %d, %v, regression=%t), want (%q, %q, %d, %v, regression=%t)",
+				i+1, got.Commit, got.File, got.Tests, got.TestNumbers, got.RegressionOnly,
+				want.commit, want.file, want.tests, want.testNumbers, want.regressionOnly,
 			)
 		}
 		total += len(wantNumbers)
-		sequence[want.file] = wantNumbers
+		sequence[want.file] = append(sequence[want.file], wantNumbers...)
 	}
-	if len(manifest.Cases) != total {
-		t.Fatalf("top-level cases = %d, want %d pinned TEST blocks", len(manifest.Cases), total)
-	}
-
 	mapped := make(map[string][]int, len(wantSources))
+	mappedCases := 0
 	for i, testCase := range manifest.Cases {
+		if strings.TrimSpace(testCase.Source.LocalReason) != "" {
+			continue
+		}
+		mappedCases++
 		if strings.TrimSpace(testCase.Name) == "" || len(testCase.Source.Tests) != 1 {
 			t.Fatalf(
 				"case %d name/source = %q/%v, want named singleton source",
@@ -138,6 +194,9 @@ func TestManifestMapsEveryPinnedBlockToIndependentRealProcessCase(t *testing.T) 
 		assertOpenTelemetryRuntime(t, i+1, testCase.Name, testCase.Runtime)
 		assertOpenTelemetryRoute(t, i+1, testCase.Name, testCase.Config)
 	}
+	if mappedCases != total {
+		t.Fatalf("mapped cases = %d, want %d pinned TEST blocks", mappedCases, total)
+	}
 	for file, want := range sequence {
 		if !slices.Equal(mapped[file], want) {
 			t.Fatalf("source %s mappings = %v, want %v", file, mapped[file], want)
@@ -146,14 +205,24 @@ func TestManifestMapsEveryPinnedBlockToIndependentRealProcessCase(t *testing.T) 
 }
 
 func assertOpenTelemetryRuntime(t *testing.T, index int, name string, runtime map[string]any) {
+	assertOpenTelemetryRuntimeKey(t, index, name, runtime, "opentelemetry")
+}
+
+func assertOpenTelemetryRuntimeKey(
+	t *testing.T,
+	index int,
+	name string,
+	runtime map[string]any,
+	pluginName string,
+) {
 	t.Helper()
 	pluginAttr, ok := runtime["plugin_attr"].(map[string]any)
 	if !ok {
 		t.Fatalf("case %d %q lacks runtime plugin_attr", index, name)
 	}
-	attr, ok := pluginAttr["opentelemetry"].(map[string]any)
+	attr, ok := pluginAttr[pluginName].(map[string]any)
 	if !ok {
-		t.Fatalf("case %d %q lacks opentelemetry runtime metadata", index, name)
+		t.Fatalf("case %d %q lacks %s runtime metadata", index, name, pluginName)
 	}
 	collector, ok := attr["collector"].(map[string]any)
 	if !ok || collector["address"] == nil {
@@ -161,7 +230,37 @@ func assertOpenTelemetryRuntime(t *testing.T, index int, name string, runtime ma
 	}
 }
 
+func assertOpenTelemetryAllowlistKey(
+	t *testing.T,
+	index int,
+	name string,
+	runtime map[string]any,
+	pluginName string,
+) {
+	t.Helper()
+	plugins, ok := runtime["plugins"].([]any)
+	if !ok {
+		t.Fatalf("case %d %q lacks runtime plugin allowlist", index, name)
+	}
+	for _, configured := range plugins {
+		if configured == pluginName {
+			return
+		}
+	}
+	t.Fatalf("case %d %q runtime allowlist lacks %s", index, name, pluginName)
+}
+
 func assertOpenTelemetryRoute(t *testing.T, index int, name string, config map[string]any) {
+	assertOpenTelemetryRouteKey(t, index, name, config, "opentelemetry")
+}
+
+func assertOpenTelemetryRouteKey(
+	t *testing.T,
+	index int,
+	name string,
+	config map[string]any,
+	pluginName string,
+) {
 	t.Helper()
 	routes, ok := config["routes"].([]any)
 	if !ok || len(routes) == 0 {
@@ -176,11 +275,11 @@ func assertOpenTelemetryRoute(t *testing.T, index int, name string, config map[s
 		if !ok {
 			continue
 		}
-		if configured, ok := plugins["opentelemetry"].(map[string]any); ok && configured != nil {
+		if configured, ok := plugins[pluginName].(map[string]any); ok && configured != nil {
 			return
 		}
 	}
-	t.Fatalf("case %d %q has no route that configures opentelemetry", index, name)
+	t.Fatalf("case %d %q has no route that configures %s", index, name, pluginName)
 }
 
 func firstOpenTelemetryAnchorOrAlias(node *yaml.Node) *yaml.Node {

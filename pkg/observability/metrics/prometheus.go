@@ -1194,8 +1194,16 @@ func strictInt64(raw any) (int64, bool) {
 	}
 }
 
+var jsonNumberPattern = regexp.MustCompile(`^-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?$`)
+
 func strictFloat64(raw any) (float64, bool) {
 	switch typed := raw.(type) {
+	case json.Number:
+		if !jsonNumberPattern.MatchString(typed.String()) {
+			return 0, false
+		}
+		value, err := typed.Float64()
+		return value, err == nil
 	case float32:
 		return float64(typed), true
 	case float64:

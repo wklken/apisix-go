@@ -3423,6 +3423,22 @@ func runCaseInternal(t *testing.T, spec Case, waitForGeneration bool) {
 	if err != nil {
 		t.Fatalf("start APISIX: %v", err)
 	}
+	defer func() {
+		if !t.Failed() {
+			return
+		}
+		logs, logsErr := process.logs()
+		if logsErr != nil {
+			t.Logf("read child logs after case failure: %v", logsErr)
+			return
+		}
+		t.Logf(
+			"child logs after case failure:\n%s\nruntime config:\n%s\nstandalone config:\n%s",
+			logs,
+			runtimeConfig,
+			standaloneConfig,
+		)
+	}()
 	stopped := false
 	defer func() {
 		if !stopped {
@@ -3452,13 +3468,15 @@ func runCaseInternal(t *testing.T, spec Case, waitForGeneration bool) {
 			t.Fatalf("wait for APISIX TLS: %v\nchild logs:\n%s", err, logs)
 		}
 	}
-	if waitForGeneration {
-		if err := waitForGenerationReady(statusAddress, 5*time.Second); err != nil {
-			_ = process.stop()
-			stopped = true
-			logs, _ := process.logs()
-			t.Fatalf("wait for APISIX generation: %v\nchild logs:\n%s", err, logs)
+	generationReady, err := waitForInitialGeneration(statusAddress, process.logs, 5*time.Second)
+	if err != nil || (waitForGeneration && !generationReady) {
+		_ = process.stop()
+		stopped = true
+		logs, _ := process.logs()
+		if err == nil {
+			err = errors.New("initial standalone generation was rejected")
 		}
+		t.Fatalf("wait for APISIX generation: %v\nchild logs:\n%s", err, logs)
 	}
 	integrationStartupMu.Unlock()
 	startupLocked = false
@@ -3707,26 +3725,85 @@ func runCaseInternal(t *testing.T, spec Case, waitForGeneration bool) {
 	}
 }
 
-func waitForGenerationReady(address string, timeout time.Duration) error {
+func waitForInitialGeneration(
+	address string,
+	readLogs func() (string, error),
+	timeout time.Duration,
+) (bool, error) {
 	client := &http.Client{Timeout: 200 * time.Millisecond}
-	return waitForAppliedState(timeout, 20*time.Millisecond, func() error {
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for time.Now().Before(deadline) {
 		response, err := client.Get("http://" + address + "/status/ready")
-		if err != nil {
-			return err
+		if err == nil {
+			_, readErr := io.Copy(io.Discard, response.Body)
+			closeErr := response.Body.Close()
+			switch {
+			case readErr != nil:
+				lastErr = readErr
+			case closeErr != nil:
+				lastErr = closeErr
+			case response.StatusCode == http.StatusOK:
+				return true, nil
+			case response.StatusCode != http.StatusServiceUnavailable:
+				lastErr = fmt.Errorf("readiness status = %d", response.StatusCode)
+			}
+		} else {
+			lastErr = err
 		}
-		body, readErr := io.ReadAll(response.Body)
-		closeErr := response.Body.Close()
-		if readErr != nil {
-			return readErr
+
+		if readLogs != nil {
+			logs, logsErr := readLogs()
+			if logsErr == nil &&
+				(strings.Contains(logs, "reconcile standalone config") ||
+					strings.Contains(logs, "reload standalone config")) &&
+				strings.Contains(logs, " failed") {
+				return false, nil
+			}
+			if logsErr != nil {
+				lastErr = logsErr
+			}
 		}
-		if closeErr != nil {
-			return closeErr
-		}
-		if response.StatusCode != http.StatusOK {
-			return fmt.Errorf("readiness status = %d, body = %q", response.StatusCode, body)
-		}
-		return nil
-	})
+		time.Sleep(20 * time.Millisecond)
+	}
+	if lastErr == nil {
+		lastErr = errors.New("initial standalone generation did not settle")
+	}
+	return false, fmt.Errorf("wait for initial standalone generation within %s: %w", timeout, lastErr)
+}
+
+func TestWaitForInitialGenerationAcceptsReadyPublication(t *testing.T) {
+	status := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer status.Close()
+
+	ready, err := waitForInitialGeneration(
+		strings.TrimPrefix(status.URL, "http://"),
+		func() (string, error) { return "", nil },
+		time.Second,
+	)
+	if err != nil || !ready {
+		t.Fatalf("waitForInitialGeneration() = %t, %v; want ready", ready, err)
+	}
+}
+
+func TestWaitForInitialGenerationAcceptsRejectedPublication(t *testing.T) {
+	status := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer status.Close()
+
+	ready, err := waitForInitialGeneration(
+		strings.TrimPrefix(status.URL, "http://"),
+		func() (string, error) {
+			return `{"level":"error","msg":"reconcile standalone config failed: invalid plugin"}`, nil
+		},
+		time.Second,
+	)
+	if err != nil || ready {
+		t.Fatalf("waitForInitialGeneration() = %t, %v; want settled rejection", ready, err)
+	}
 }
 
 func nonSAMLResponseActions(actions []CaseAction) []CaseAction {

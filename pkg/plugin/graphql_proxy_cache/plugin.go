@@ -15,6 +15,7 @@ import (
 	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	appconfig "github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/cacheutil"
@@ -44,6 +45,9 @@ type Plugin struct {
 	routeID   string
 	serviceID string
 	registry  *Registry
+
+	configuredZones []appconfig.Zone
+	zonesSet        bool
 
 	configFingerprintValue string
 }
@@ -168,6 +172,20 @@ func (p *Plugin) Init() error {
 	return nil
 }
 
+// SetConfiguredZones supplies the immutable generation-local proxy-cache zone
+// snapshot before PostInit.
+func (p *Plugin) SetConfiguredZones(zones []appconfig.Zone) {
+	p.configuredZones = slices.Clone(zones)
+	p.zonesSet = true
+}
+
+func (p *Plugin) effectiveConfiguredZones() ([]appconfig.Zone, bool) {
+	if p.zonesSet {
+		return slices.Clone(p.configuredZones), true
+	}
+	return nil, false
+}
+
 func (p *Plugin) PostInit() error {
 	effective := p.StaticConfig()
 	if effective == nil {
@@ -190,7 +208,14 @@ func (p *Plugin) PostInit() error {
 		value := true
 		p.config.ConsumerIsolation = &value
 	}
-	if err := proxy_cache.ValidateCacheZoneStrategy(p.config.CacheZone, p.config.CacheStrategy); err != nil {
+	zones, zonesSet := p.effectiveConfiguredZones()
+	var err error
+	if zonesSet {
+		err = proxy_cache.ValidateCacheZoneStrategyWithZones(zones, p.config.CacheZone, p.config.CacheStrategy)
+	} else {
+		err = proxy_cache.ValidateCacheZoneStrategy(p.config.CacheZone, p.config.CacheStrategy)
+	}
+	if err != nil {
 		return err
 	}
 	p.configFingerprintValue = p.buildConfigFingerprint()
@@ -203,11 +228,23 @@ func (p *Plugin) PostInit() error {
 	if effective.Config.GraphQL.MaxSize > 0 {
 		p.maxSize = effective.Config.GraphQL.MaxSize
 	}
-	if p.config.CacheStrategy == "memory" && proxy_cache.CacheZoneDeclared(p.config.CacheZone) {
-		p.memoryStore = proxy_cache.AcquireMemoryZoneStore(p.config.CacheZone)
+	if p.config.CacheStrategy == "memory" {
+		if zonesSet {
+			if len(zones) > 0 {
+				p.memoryStore = proxy_cache.AcquireMemoryZoneStoreWithZones(zones, p.config.CacheZone)
+			}
+		} else if proxy_cache.CacheZoneDeclared(p.config.CacheZone) {
+			p.memoryStore = proxy_cache.AcquireMemoryZoneStore(p.config.CacheZone)
+		}
 	}
 	if p.config.CacheStrategy == "disk" {
-		store, configured, err := proxy_cache.NewDiskZoneStore(p.config.CacheZone)
+		var store *proxy_cache.DiskZoneStore
+		var configured bool
+		if zonesSet {
+			store, configured, err = proxy_cache.NewDiskZoneStoreWithZones(zones, p.config.CacheZone)
+		} else {
+			store, configured, err = proxy_cache.NewDiskZoneStore(p.config.CacheZone)
+		}
 		if err != nil {
 			return err
 		}

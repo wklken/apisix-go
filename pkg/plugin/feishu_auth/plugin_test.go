@@ -369,10 +369,15 @@ func TestFeishuDerivedOAuthAndSessionPayloadsAreCleared(t *testing.T) {
 
 	t.Run("verified session payload", func(t *testing.T) {
 		payload := []byte(`{"userinfo":{"open_id":"ou-a"},"expires_at":1800000060}`)
-		signed := base.SignSessionValue(payload, sessionSecret)
+		sealed, err := base.SealOAuthSession(
+			payload, sessionSecret, fingerprint, now, now.Add(time.Minute),
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
 		var retained []byte
-		err := useVerifiedFeishuSessionPayload(
-			signed, sessionSecret, nil,
+		err = useVerifiedFeishuSessionPayload(
+			sealed, sessionSecret, nil, fingerprint, now,
 			func(verified []byte) error {
 				retained = verified
 				var session sessionPayload
@@ -391,14 +396,19 @@ func TestFeishuDerivedOAuthAndSessionPayloadsAreCleared(t *testing.T) {
 		assertFeishuBytesCleared(t, retained)
 	})
 
-	t.Run("session signing input", func(t *testing.T) {
-		payload := []byte("session-signing-input")
-		signed := signAndClearFeishuSessionPayload(payload, sessionSecret)
-		verified, ok := base.VerifySessionValue(signed, sessionSecret, nil)
-		if !ok || string(verified) != "session-signing-input" {
-			t.Fatalf("signed payload verification = %q/%t", verified, ok)
+	t.Run("session sealing input", func(t *testing.T) {
+		payload := []byte("session-sealing-input")
+		sealed, err := sealAndClearFeishuSessionPayload(
+			payload, sessionSecret, fingerprint, now, now.Add(time.Minute),
+		)
+		if err != nil {
+			t.Fatal(err)
 		}
-		clear(verified)
+		opened, err := base.OpenOAuthSession(sealed, sessionSecret, nil, fingerprint, now)
+		if err != nil || string(opened) != "session-sealing-input" {
+			t.Fatalf("sealed payload open = %q/%v", opened, err)
+		}
+		clear(opened)
 		assertFeishuBytesCleared(t, payload)
 	})
 }
@@ -1221,7 +1231,7 @@ func TestHandlerRejectsFailedUserInfo(t *testing.T) {
 	}
 }
 
-func TestSessionCookieSecureByDefault(t *testing.T) {
+func TestSessionCookieMatchesAPISIX317Defaults(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		AppID:           "app-id",
 		AppSecret:       "app-secret",
@@ -1233,18 +1243,44 @@ func TestSessionCookieSecureByDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sessionCookie() error = %v", err)
 	}
-	if !cookie.Secure || !cookie.HttpOnly || cookie.SameSite != http.SameSiteLaxMode {
+	if cookie.Path != "/" || cookie.Secure || !cookie.HttpOnly ||
+		cookie.SameSite != http.SameSiteLaxMode || cookie.MaxAge != 0 || !cookie.Expires.IsZero() {
 		t.Fatalf(
-			"cookie attributes = secure:%t httpOnly:%t sameSite:%v",
+			"cookie attributes = path:%q secure:%t httpOnly:%t sameSite:%v maxAge:%d expires:%v",
+			cookie.Path,
 			cookie.Secure,
 			cookie.HttpOnly,
 			cookie.SameSite,
+			cookie.MaxAge,
+			cookie.Expires,
 		)
 	}
 }
 
+func TestSessionCookieSchemaMatchesAPISIX317SecureDefault(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(p.GetSchema()), &parsed); err != nil {
+		t.Fatalf("schema JSON error = %v", err)
+	}
+	properties, ok := parsed["properties"].(map[string]any)
+	if !ok {
+		t.Fatal("schema properties are missing")
+	}
+	cookieSecure, ok := properties["cookie_secure"].(map[string]any)
+	if !ok {
+		t.Fatal("cookie_secure schema is missing")
+	}
+	if value, ok := cookieSecure["default"].(bool); !ok || value {
+		t.Fatalf("cookie_secure schema default = %#v, want false", cookieSecure["default"])
+	}
+}
+
 func TestSessionCookieHonorsCookieControls(t *testing.T) {
-	cookieSecure := false
+	cookieSecure := true
 	p := newTestPlugin(t, Config{
 		AppID:           "app-id",
 		AppSecret:       "app-secret",
@@ -1258,8 +1294,138 @@ func TestSessionCookieHonorsCookieControls(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sessionCookie() error = %v", err)
 	}
-	if cookie.Secure || cookie.SameSite != http.SameSiteStrictMode {
-		t.Fatalf("cookie attributes = secure:%t sameSite:%v", cookie.Secure, cookie.SameSite)
+	if !cookie.Secure || cookie.SameSite != http.SameSiteStrictMode || cookie.MaxAge != 0 {
+		t.Fatalf(
+			"cookie attributes = secure:%t sameSite:%v maxAge:%d",
+			cookie.Secure, cookie.SameSite, cookie.MaxAge,
+		)
+	}
+}
+
+func TestFeishuSessionCookieUsesEncryptedConfigBoundEnvelope(t *testing.T) {
+	const (
+		currentSecret  = "current-session-secret"
+		previousSecret = "previous-session-secret"
+	)
+	config := Config{
+		AppID:           "app-id",
+		AppSecret:       "app-secret",
+		Secret:          previousSecret,
+		AuthRedirectURI: "https://gateway.example.com/callback",
+		RedirectURI:     "https://login.feishu.cn/oauth",
+	}
+	issuer := newTestPlugin(t, config)
+	cookie, err := issuer.sessionCookie(map[string]any{
+		"open_id": "sensitive-open-id",
+		"email":   "sensitive@example.com",
+	})
+	if err != nil {
+		t.Fatalf("sessionCookie() error = %v", err)
+	}
+	assertFeishuSessionCookieOpaque(t, cookie, "open_id", "sensitive-open-id", "email", "sensitive@example.com")
+
+	t.Run("second request reuses decrypted session", func(t *testing.T) {
+		request := httptest.NewRequest(http.MethodGet, "http://gateway.test/orders", nil)
+		request.AddCookie(cookie)
+		userinfo, ok := issuer.userInfoFromSession(request)
+		if !ok || userinfo["open_id"] != "sensitive-open-id" || userinfo["email"] != "sensitive@example.com" {
+			t.Fatalf("userInfoFromSession() = %#v/%t, want decrypted userinfo", userinfo, ok)
+		}
+	})
+
+	t.Run("tamper is rejected", func(t *testing.T) {
+		tampered := *cookie
+		first := tampered.Value[0]
+		if first == 'A' {
+			first = 'B'
+		} else {
+			first = 'A'
+		}
+		tampered.Value = string(first) + tampered.Value[1:]
+		assertFeishuSessionRejected(t, issuer, &tampered)
+	})
+
+	t.Run("expired envelope is rejected", func(t *testing.T) {
+		payload, marshalErr := json.Marshal(sessionPayload{
+			UserInfo:  map[string]any{"open_id": "not-expired-in-payload"},
+			ExpiresAt: time.Now().Add(time.Hour).Unix(),
+		})
+		if marshalErr != nil {
+			t.Fatal(marshalErr)
+		}
+		var expiredValue string
+		sealErr := issuer.useSessionSecretsLocked(func(current string, _ []string) error {
+			now := time.Now()
+			var err error
+			expiredValue, err = base.SealOAuthSession(
+				payload, current, issuer.oauthStateFingerprint(), now.Add(-2*time.Hour), now.Add(-time.Hour),
+			)
+			return err
+		})
+		if sealErr != nil {
+			t.Fatal(sealErr)
+		}
+		assertFeishuSessionRejected(t, issuer, &http.Cookie{Name: sessionCookieName, Value: expiredValue})
+	})
+
+	t.Run("fallback secret opens previous session", func(t *testing.T) {
+		rotatedConfig := config
+		rotatedConfig.Secret = currentSecret
+		rotatedConfig.SecretFallbacks = []string{previousSecret}
+		rotated := newTestPlugin(t, rotatedConfig)
+		request := httptest.NewRequest(http.MethodGet, "http://gateway.test/orders", nil)
+		request.AddCookie(cookie)
+		userinfo, ok := rotated.userInfoFromSession(request)
+		if !ok || userinfo["open_id"] != "sensitive-open-id" {
+			t.Fatalf("rotated userInfoFromSession() = %#v/%t, want fallback-opened userinfo", userinfo, ok)
+		}
+	})
+
+	t.Run("config fingerprint mismatch is rejected", func(t *testing.T) {
+		mismatchedConfig := config
+		mismatchedConfig.AppID = "different-app-id"
+		mismatched := newTestPlugin(t, mismatchedConfig)
+		assertFeishuSessionRejected(t, mismatched, cookie)
+	})
+
+	t.Run("legacy signed plaintext cookie is rejected", func(t *testing.T) {
+		payload, marshalErr := json.Marshal(sessionPayload{
+			UserInfo:  map[string]any{"open_id": "legacy-user"},
+			ExpiresAt: time.Now().Add(time.Hour).Unix(),
+		})
+		if marshalErr != nil {
+			t.Fatal(marshalErr)
+		}
+		legacy := &http.Cookie{
+			Name:  sessionCookieName,
+			Value: base.SignSessionValue(payload, previousSecret),
+		}
+		assertFeishuSessionRejected(t, issuer, legacy)
+	})
+}
+
+func assertFeishuSessionCookieOpaque(t *testing.T, cookie *http.Cookie, sensitive ...string) {
+	t.Helper()
+	searchable := []byte(cookie.Value)
+	for part := range strings.SplitSeq(cookie.Value, ".") {
+		decoded, err := base64.RawURLEncoding.DecodeString(part)
+		if err == nil {
+			searchable = append(searchable, decoded...)
+		}
+	}
+	for _, value := range sensitive {
+		if strings.Contains(string(searchable), value) {
+			t.Fatalf("session cookie exposes sensitive value %q", value)
+		}
+	}
+}
+
+func assertFeishuSessionRejected(t *testing.T, p *Plugin, cookie *http.Cookie) {
+	t.Helper()
+	request := httptest.NewRequest(http.MethodGet, "http://gateway.test/orders", nil)
+	request.AddCookie(cookie)
+	if userinfo, ok := p.userInfoFromSession(request); ok {
+		t.Fatalf("userInfoFromSession() accepted invalid cookie: %#v", userinfo)
 	}
 }
 

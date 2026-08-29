@@ -13,6 +13,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -294,6 +295,54 @@ func TestHandlerStreamingResponseObservesClientCancellation(t *testing.T) {
 	}
 }
 
+func TestHandlerStreamsTextResponseBeforeUpstreamReturns(t *testing.T) {
+	p := newTestPlugin(t, Config{})
+	release := make(chan struct{})
+	server := httptest.NewServer(p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Grpc-Status", "0")
+		_, _ = w.Write([]byte("first"))
+		w.(http.Flusher).Flush()
+		<-release
+		_, _ = w.Write([]byte("second"))
+	})))
+	defer server.Close()
+
+	req, err := http.NewRequest(
+		http.MethodPost,
+		server.URL+"/hello.Service/Method",
+		strings.NewReader(base64.StdEncoding.EncodeToString([]byte("request"))),
+	)
+	if err != nil {
+		t.Fatalf("NewRequest() error = %v", err)
+	}
+	req.Header.Set("Content-Type", "application/grpc-web-text+proto")
+	resp, err := server.Client().Do(req)
+	if err != nil {
+		t.Fatalf("client.Do() error = %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	wantFirst := base64.StdEncoding.EncodeToString([]byte("first"))
+	first := make([]byte, len(wantFirst))
+	if _, err := io.ReadFull(resp.Body, first); err != nil {
+		t.Fatalf("read first text chunk: %v", err)
+	}
+	if string(first) != wantFirst {
+		t.Fatalf("first text chunk = %q, want %q", first, wantFirst)
+	}
+
+	close(release)
+	rest, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read remaining text response: %v", err)
+	}
+	wantRest := base64.StdEncoding.EncodeToString([]byte("second")) +
+		base64.StdEncoding.EncodeToString(buildTrailerForTest("0", ""))
+	if string(rest) != wantRest {
+		t.Fatalf("remaining text response = %q, want %q", rest, wantRest)
+	}
+}
+
 func TestHandlerPreservesTrailersOnlyResponseMetadata(t *testing.T) {
 	p := newTestPlugin(t, Config{})
 	req := httptest.NewRequest(http.MethodPost, "/hello.Service/Method", strings.NewReader("hello"))
@@ -348,6 +397,25 @@ func TestHandlerConvertsUpstreamTrailerPrefixMetadata(t *testing.T) {
 	}
 }
 
+func TestHandlerFramesMissingUpstreamStatusAsUnknown(t *testing.T) {
+	p := newTestPlugin(t, Config{})
+	req := httptest.NewRequest(http.MethodPost, "/hello.Service/Method", strings.NewReader("hello"))
+	req.Header.Set("Content-Type", "application/grpc-web")
+	res := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("reply"))
+	})).ServeHTTP(res, req)
+
+	wantBody := append(
+		[]byte("reply"),
+		buildTrailerForTest("2", "upstream grpc status not received")...,
+	)
+	if got := res.Body.Bytes(); string(got) != string(wantBody) {
+		t.Fatalf("response body = %q, want fallback status trailer %q", got, wantBody)
+	}
+}
+
 func TestHandlerPreservesExistingCorsOrigin(t *testing.T) {
 	p := newTestPlugin(t, Config{})
 	req := httptest.NewRequest(http.MethodPost, "/hello.Service/Method", strings.NewReader("hello"))
@@ -388,21 +456,28 @@ func TestHandlerRewritesWildcardRouteToGRPCPath(t *testing.T) {
 	}
 }
 
-func TestHandlerRejectsRoutedRequestWithoutWildcard(t *testing.T) {
+func TestHandlerPreservesAbsoluteMatchRoute(t *testing.T) {
 	p := newTestPlugin(t, Config{})
 	router := chi.NewRouter()
-	router.Method(http.MethodPost, "/grpc", p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Fatal("next handler should not be called")
-	})))
+	router.Method(
+		http.MethodPost,
+		"/grpc/helloworld.Greeter/SayHello",
+		p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/grpc/helloworld.Greeter/SayHello" {
+				t.Fatalf("upstream path = %q, want absolute route path preserved", r.URL.Path)
+			}
+			w.Header().Set("Grpc-Status", "0")
+		})),
+	)
 
-	req := httptest.NewRequest(http.MethodPost, "/grpc", strings.NewReader("hello"))
+	req := httptest.NewRequest(http.MethodPost, "/grpc/helloworld.Greeter/SayHello", strings.NewReader("hello"))
 	req.Header.Set("Content-Type", "application/grpc-web")
 	res := httptest.NewRecorder()
 
 	router.ServeHTTP(res, req)
 
-	if res.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400", res.Code)
+	if res.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%q", res.Code, res.Body.String())
 	}
 }
 
@@ -455,6 +530,18 @@ func TestGrpcWebImplementsDeclaredStreamingBodyOwner(t *testing.T) {
 	}
 	if wrapped == nil {
 		t.Fatal("WrapStreamingResponse() returned nil writer")
+	}
+}
+
+func TestSchemaRejectsNonStringCorsAllowHeaders(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := util.Validate(map[string]any{
+		"cors_allow_headers": []string{"content-type"},
+	}, p.GetSchema()); err == nil {
+		t.Fatal("validation error = nil")
 	}
 }
 

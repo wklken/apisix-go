@@ -26,6 +26,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/observability/metrics"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_common"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_protocols"
+	"github.com/wklken/apisix-go/pkg/plugin/ai_runtime"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/secret"
 )
@@ -244,11 +245,12 @@ func (e *moderationError) Classify() string {
 const (
 	requestInvalidPayloadMessage   = "Request body is not valid JSON"
 	requestUnknownProtocolMessage  = "Request format not recognized by ai-aliyun-content-moderation"
-	requestEmptyContentMessage     = "No inspectable AI request content"
 	requestReadFailureMessage      = "Unable to read request body"
 	requestContentTypeMessage      = "Unsupported request content type"
 	moderationUnavailableMessage   = "AI content moderation service unavailable"
 	upstreamInvalidResponseMessage = "Upstream response is not valid AI JSON"
+	missingAIInstanceMessage       = "no ai instance picked, ai-aliyun-content-moderation plugin must be used with " +
+		"ai-proxy or ai-proxy-multi plugin"
 )
 
 func (p *Plugin) Config() any {
@@ -346,6 +348,9 @@ func (p *Plugin) PostInit() error {
 // protocol/body for the explicit bounded and streaming response owners. It
 // never invokes the downstream handler.
 func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+	if rejectMissingAIInstance(w, r) {
+		return base.StopRequestWithSource(r, apisixctx.ResponseSourceEarlyStop)
+	}
 	checkRequest := p.config.CheckRequest == nil || *p.config.CheckRequest
 	if !checkRequest && !p.config.CheckResponse {
 		return base.ContinueRequest(r)
@@ -383,9 +388,11 @@ func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.Re
 	}
 	if checkRequest {
 		if strings.TrimSpace(content) == "" {
-			if !p.handleRequestFailure(w, r, ai_common.SafetyEmptyContent, requestEmptyContentMessage) {
-				return base.StopRequestWithSource(r, apisixctx.ResponseSourceEarlyStop)
-			}
+			recordOutcome(
+				ai_common.SafetyPhaseRequest,
+				ai_common.SafetyOutcomeAllow,
+				string(ai_common.SafetyReasonClean),
+			)
 		} else {
 			result, moderationErr := p.moderateContent(
 				r, content, p.config.RequestCheckLengthLimit, p.config.RequestCheckService,
@@ -444,7 +451,9 @@ func (p *Plugin) RunBufferedBodyFilter(r *http.Request, state *base.ResponseStat
 		return nil
 	}
 	requestState := moderationStateFromRequest(r)
-	if requestState == nil || ai_protocols.IsStreaming(requestState.protocol, requestState.bodyTab) {
+	if requestState == nil ||
+		(ai_protocols.IsStreaming(requestState.protocol, requestState.bodyTab) &&
+			p.config.StreamCheckMode != "final_packet") {
 		return nil
 	}
 	source := newCapturedResponse()
@@ -482,6 +491,9 @@ func (*Config) DescribeResponseMode() (base.ResponseModeDescriptor, error) {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
+		if rejectMissingAIInstance(w, r) {
+			return
+		}
 		checkRequest := p.config.CheckRequest == nil || *p.config.CheckRequest
 		if !checkRequest && !p.config.CheckResponse {
 			next.ServeHTTP(w, r)
@@ -525,9 +537,11 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 
 		if checkRequest {
 			if strings.TrimSpace(content) == "" {
-				if !p.handleRequestFailure(w, r, ai_common.SafetyEmptyContent, requestEmptyContentMessage) {
-					return
-				}
+				recordOutcome(
+					ai_common.SafetyPhaseRequest,
+					ai_common.SafetyOutcomeAllow,
+					string(ai_common.SafetyReasonClean),
+				)
 			} else {
 				result, err := p.moderateContent(
 					r,
@@ -578,6 +592,19 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		p.writeModeratedResponse(w, r, response, protocol, bodyTab)
 	}
 	return http.HandlerFunc(fn)
+}
+
+func rejectMissingAIInstance(w http.ResponseWriter, r *http.Request) bool {
+	if apisixctx.GetRequestVars(r) == nil {
+		return false
+	}
+	if _, ok := ai_runtime.SelectedInstanceName(r); ok {
+		return false
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(http.StatusInternalServerError)
+	_, _ = w.Write([]byte(missingAIInstanceMessage))
+	return true
 }
 
 type requestContentError struct {
@@ -892,7 +919,14 @@ func (p *Plugin) writeModeratedResponse(
 
 	copyResponseHeaders(w.Header(), response.header)
 	w.Header().Del("Content-Length")
-	writeProtocolDeny(w, p.config.DenyCode, protocol, requestBody, result.Message)
+	writeProtocolDenyWithUpstreamMetadata(
+		w,
+		p.config.DenyCode,
+		protocol,
+		requestBody,
+		body,
+		result.Message,
+	)
 }
 
 func (p *Plugin) writeModeratedStream(
@@ -934,6 +968,19 @@ func (p *Plugin) writeModeratedStream(
 		)
 		return
 	}
+	if p.config.StreamCheckMode == "final_packet" {
+		reason := ai_common.SafetyReasonClean
+		if result.Denied {
+			reason = ai_common.SafetyReasonRiskThreshold
+		}
+		recordOutcome(ai_common.SafetyPhaseResponse, ai_common.SafetyOutcomeAllow, string(reason))
+		body := response.body.Bytes()
+		if result.RiskLevel != "" {
+			body = addRiskLevelToFinalSSEPacket(body, result.RiskLevel)
+		}
+		writeCapturedResponse(w, response, body)
+		return
+	}
 	if result.Denied {
 		recordOutcome(
 			ai_common.SafetyPhaseResponse,
@@ -946,11 +993,7 @@ func (p *Plugin) writeModeratedStream(
 		return
 	}
 	recordOutcome(ai_common.SafetyPhaseResponse, ai_common.SafetyOutcomeAllow, string(ai_common.SafetyReasonClean))
-	body := response.body.Bytes()
-	if p.config.StreamCheckMode == "final_packet" && result.RiskLevel != "" {
-		body = addRiskLevelToFinalSSEPacket(body, result.RiskLevel)
-	}
-	writeCapturedResponse(w, response, body)
+	writeCapturedResponse(w, response, response.body.Bytes())
 }
 
 func (p *Plugin) handleBufferedResponseFailure(
@@ -1343,6 +1386,32 @@ func writeProtocolDeny(
 		return
 	}
 	w.Header().Set("Content-Type", contentType)
+	w.WriteHeader(status)
+	_, _ = w.Write(encoded)
+}
+
+func writeProtocolDenyWithUpstreamMetadata(
+	w http.ResponseWriter,
+	status int,
+	protocol ai_protocols.Protocol,
+	requestBody map[string]any,
+	upstreamBody map[string]any,
+	message string,
+) {
+	model, _ := upstreamBody["model"].(string)
+	if model == "" {
+		model, _ = requestBody["model"].(string)
+	}
+	denied := ai_protocols.BuildDenyResponse(protocol, model, message)
+	if usage, ok := upstreamBody["usage"].(map[string]any); ok {
+		denied["usage"] = usage
+	}
+	encoded, err := json.Marshal(denied)
+	if err != nil {
+		base.WriteJSONMessage(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_, _ = w.Write(encoded)
 }

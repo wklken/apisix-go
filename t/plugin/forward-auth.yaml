@@ -1,110 +1,25 @@
 sources:
   - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
     file: t/plugin/forward-auth.t
-    tests: 21
+    tests: 18
+    test_numbers: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
   - repository: https://github.com/apache/apisix
     commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/forward-auth.t
+    tests: 2
+    test_numbers: [20, 21]
+    regression_only: true
+  - repository: https://github.com/apache/apisix
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
     file: t/plugin/forward-auth2.t
     tests: 5
   - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
     file: t/plugin/forward-auth3.t
     tests: 2
 
 cases:
-  - name: schema-sanity
-    source:
-      file: t/plugin/forward-auth.t
-      tests: [1]
-    variants:
-      - name: uri-only-is-valid
-        config:
-          routes:
-            - id: forward-auth-schema-uri
-              uri: /schema-uri
-              plugins:
-                forward-auth: {uri: '{{FIXTURE.auth.URL}}/check'}
-              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
-        fixtures:
-          - name: auth
-            kind: http
-            expect: [{method: GET, path: {equals: /check}}]
-            respond: [{status: 200}]
-          - name: primary
-            kind: http
-            expect: [{method: GET, path: {equals: /schema-uri}}]
-            respond: [{status: 200, body: done}]
-        steps:
-          - name: accepted-route-runs
-            input: {path: /schema-uri}
-            output: {status: 200, body: {equals: done}}
-      - name: uri-is-required
-        config:
-          routes:
-            - id: forward-auth-schema-missing-uri
-              uri: /schema-missing-uri
-              plugins:
-                forward-auth: {request_headers: [test]}
-        input: {path: /schema-missing-uri}
-        output:
-          status: 404
-          logs: {matches: 'validate plugin forward-auth config:.*uri.*required'}
-      - name: uri-must-be-string
-        config:
-          routes:
-            - id: forward-auth-schema-number-uri
-              uri: /schema-number-uri
-              plugins:
-                forward-auth: {uri: 3233}
-        input: {path: /schema-number-uri}
-        output:
-          status: 404
-          logs: {matches: 'validate plugin forward-auth config:.*uri.*expected string.*got number'}
-      - name: request-headers-must-be-array
-        config:
-          routes:
-            - id: forward-auth-schema-request-headers
-              uri: /schema-request-headers
-              plugins:
-                forward-auth: {uri: 'http://127.0.0.1:8199', request_headers: test}
-        input: {path: /schema-request-headers}
-        output:
-          status: 404
-          logs: {matches: 'validate plugin forward-auth config:.*request_headers.*expected array.*got string'}
-      - name: post-method-is-valid
-        config:
-          routes:
-            - id: forward-auth-schema-post
-              uri: /schema-post
-              plugins:
-                forward-auth: {uri: '{{FIXTURE.auth.URL}}/check', request_method: POST}
-              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
-        fixtures:
-          - name: auth
-            kind: http
-            expect: [{method: POST, path: {equals: /check}, body: {equals: ''}}]
-            respond: [{status: 200}]
-          - name: primary
-            kind: http
-            expect: [{method: GET, path: {equals: /schema-post}}]
-            respond: [{status: 200, body: done}]
-        steps:
-          - name: accepted-post-auth-runs
-            input: {path: /schema-post}
-            output: {status: 200, body: {equals: done}}
-      - name: put-method-is-rejected
-        config:
-          routes:
-            - id: forward-auth-schema-put
-              uri: /schema-put
-              plugins:
-                forward-auth: {uri: 'http://127.0.0.1:8199', request_method: PUT}
-        input: {path: /schema-put}
-        output:
-          status: 404
-          logs: {matches: 'validate plugin forward-auth config:.*request_method.*enum'}
-
   - name: get-auth-header-contract
     source:
       file: t/plugin/forward-auth.t

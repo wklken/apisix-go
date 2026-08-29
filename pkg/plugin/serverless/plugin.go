@@ -38,6 +38,7 @@ const (
 	postFunctionPriority    = -2000
 	defaultExecutionTimeout = time.Second
 	maxExecutionTimeout     = 10 * time.Second
+	luaExitSignal           = "apisix-go ngx.exit"
 )
 
 const schema = `
@@ -466,6 +467,7 @@ type luaRunner struct {
 	originalBody string
 	sayBody      bytes.Buffer
 	luaContext   *lua.LTable
+	exitStatus   int
 }
 
 func newLuaRunner(ctx context.Context, r *http.Request, resp *base.BufferedResponseWriter) *luaRunner {
@@ -541,7 +543,13 @@ func (r *luaRunner) call(fn lua.LValue, conf Config) (luaResult, error) {
 	l.Push(r.configTable(conf))
 	l.Push(r.ctxTable())
 	if err := l.PCall(2, lua.MultRet, nil); err != nil {
+		if result, exited := r.collectExit(); exited {
+			return result, nil
+		}
 		return luaResult{}, err
+	}
+	if result, exited := r.collectExit(); exited {
+		return result, nil
 	}
 	r.persistContext()
 
@@ -565,6 +573,21 @@ func (r *luaRunner) call(fn lua.LValue, conf Config) (luaResult, error) {
 	return r.collect(), nil
 }
 
+func (r *luaRunner) collectExit() (luaResult, bool) {
+	if r.exitStatus == 0 {
+		return luaResult{}, false
+	}
+	r.state.SetTop(0)
+	r.persistContext()
+	result := r.collect()
+	result.respond = true
+	result.status = r.exitStatus
+	if result.header.Get("Content-Type") == "" {
+		result.header.Set("Content-Type", "text/plain; charset=utf-8")
+	}
+	return result, true
+}
+
 func (r *luaRunner) configTable(conf Config) lua.LValue {
 	l := r.state
 	t := l.NewTable()
@@ -578,6 +601,9 @@ func (r *luaRunner) configTable(conf Config) lua.LValue {
 }
 
 func (r *luaRunner) ctxTable() lua.LValue {
+	if r.luaContext != nil {
+		return r.luaContext
+	}
 	l := r.state
 	t := l.NewTable()
 	r.luaContext = t
@@ -624,6 +650,16 @@ func (r *luaRunner) registerNgx() {
 			r.sayBody.WriteString(luaValueToString(l.Get(i)))
 		}
 		r.sayBody.WriteByte('\n')
+		return 0
+	}))
+	ngx.RawSetString("exit", l.NewFunction(func(l *lua.LState) int {
+		status, ok := luaValueToStatus(l.Get(1))
+		if !ok {
+			l.RaiseError("ngx.exit requires an HTTP status between 200 and 599")
+			return 0
+		}
+		r.exitStatus = status
+		l.RaiseError(luaExitSignal)
 		return 0
 	}))
 

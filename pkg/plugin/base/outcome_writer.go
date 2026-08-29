@@ -12,6 +12,7 @@ import (
 
 	"github.com/felixge/httpsnoop"
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
+	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 )
 
 // ResponseCaptureSnapshot is the detached bounded response view used by log
@@ -27,15 +28,16 @@ type ResponseCaptureSnapshot struct {
 // metadata for every response while retaining a bounded body only when a log
 // binding explicitly enables it.
 type ResponseCapture struct {
-	mu            sync.Mutex
-	root          http.ResponseWriter
-	outcome       ctx.ResponseOutcome
-	body          []byte
-	bodyLimit     int
-	bodyTruncated bool
-	hijackedConn  io.Closer
-	closeOnce     sync.Once
-	closeErr      error
+	mu             sync.Mutex
+	root           http.ResponseWriter
+	outcome        ctx.ResponseOutcome
+	body           []byte
+	bodyLimit      int
+	bodyTruncated  bool
+	wireBodyPrefix []byte
+	hijackedConn   io.Closer
+	closeOnce      sync.Once
+	closeErr       error
 }
 
 // CaptureResponseOutcomeController installs one response capture controller
@@ -77,7 +79,7 @@ func CaptureResponseOutcomeController(w http.ResponseWriter) (http.ResponseWrite
 		ReadFrom: func(readFrom httpsnoop.ReadFromFunc) httpsnoop.ReadFromFunc {
 			return func(reader io.Reader) (int64, error) {
 				capture.commit(http.StatusOK)
-				tracked := &captureReader{reader: reader, limit: capture.remainingBodyLimit()}
+				tracked := &captureReader{reader: reader, limit: capture.readCaptureLimit()}
 				n, err := readFrom(tracked)
 				capture.recordWrite(tracked.body, n)
 				return n, err
@@ -106,6 +108,25 @@ func CaptureResponseOutcomeController(w http.ResponseWriter) (http.ResponseWrite
 		},
 	})
 	return wrapped, capture
+}
+
+// HTTPWireLength returns the exact buffered HTTP/1.1 response length when the
+// outer response capture retained enough framing information to reconstruct
+// it. Unsupported framing returns known=false.
+func (c *ResponseCapture) HTTPWireLength(r *http.Request) (size int64, known bool) {
+	if c == nil {
+		return 0, false
+	}
+	c.mu.Lock()
+	outcome := c.outcome
+	bodyPrefix := append([]byte(nil), c.wireBodyPrefix...)
+	root := c.root
+	c.mu.Unlock()
+	var header http.Header
+	if root != nil {
+		header = root.Header().Clone()
+	}
+	return apisixlog.EstimateHTTP1ResponseLength(r, header, outcome, bodyPrefix)
 }
 
 // CaptureResponseOutcome is retained only as a direct-package compatibility
@@ -281,6 +302,11 @@ func (c *ResponseCapture) recordWrite(body []byte, written int64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.outcome.Bytes += written
+	if written > 0 && len(c.wireBodyPrefix) < 512 {
+		confirmed := min(int64(len(body)), written)
+		keep := min(int64(512-len(c.wireBodyPrefix)), confirmed)
+		c.wireBodyPrefix = append(c.wireBodyPrefix, body[:keep]...)
+	}
 	if c.bodyLimit <= 0 || written <= 0 {
 		return
 	}
@@ -299,10 +325,10 @@ func (c *ResponseCapture) recordWrite(body []byte, written int64) {
 	}
 }
 
-func (c *ResponseCapture) remainingBodyLimit() int {
+func (c *ResponseCapture) readCaptureLimit() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return max(c.bodyLimit-len(c.body), 0)
+	return max(max(c.bodyLimit-len(c.body), 0), 512-len(c.wireBodyPrefix))
 }
 
 type captureReader struct {

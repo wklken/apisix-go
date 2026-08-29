@@ -46,9 +46,11 @@ func TestStandaloneManifestMapsEveryPinnedBlockToIndependentGraphQLCacheCase(t *
 
 	var manifest struct {
 		Sources []struct {
-			Commit string `yaml:"commit"`
-			File   string `yaml:"file"`
-			Tests  int    `yaml:"tests"`
+			Commit         string `yaml:"commit"`
+			File           string `yaml:"file"`
+			Tests          int    `yaml:"tests"`
+			TestNumbers    []int  `yaml:"test_numbers"`
+			RegressionOnly bool   `yaml:"regression_only"`
 		} `yaml:"sources"`
 		Cases []graphqlProxyCacheManifestCase `yaml:"cases"`
 	}
@@ -57,51 +59,68 @@ func TestStandaloneManifestMapsEveryPinnedBlockToIndependentGraphQLCacheCase(t *
 	}
 
 	wantSources := []struct {
-		file  string
-		tests int
+		commit         string
+		file           string
+		tests          int
+		testNumbers    []int
+		regressionOnly bool
 	}{
-		{"t/plugin/graphql-proxy-cache/disk.t", 11},
-		{"t/plugin/graphql-proxy-cache/graphql.t", 21},
-		{"t/plugin/graphql-proxy-cache/memory.t", 16},
+		{commit: "9ef2ecab67f652d38365049613610ef649bb4ad0", file: "t/plugin/graphql-proxy-cache/disk.t", tests: 11},
+		{
+			commit: "9ef2ecab67f652d38365049613610ef649bb4ad0",
+			file:   "t/plugin/graphql-proxy-cache/graphql.t", tests: 19,
+			testNumbers: []int{3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21},
+		},
+		{commit: "9ef2ecab67f652d38365049613610ef649bb4ad0", file: "t/plugin/graphql-proxy-cache/memory.t", tests: 15},
+		{
+			commit: "c3d7d5ec69774121f53d2e20d29d09c816795dd7",
+			file:   "t/plugin/graphql-proxy-cache/memory.t", tests: 1,
+			testNumbers: []int{16}, regressionOnly: true,
+		},
 	}
 	if len(manifest.Sources) != len(wantSources) {
 		t.Fatalf("sources = %d, want %d", len(manifest.Sources), len(wantSources))
 	}
-	total := 0
-	next := make(map[string]int, len(wantSources))
 	for i, want := range wantSources {
 		source := manifest.Sources[i]
-		if source.Commit != "c3d7d5ec69774121f53d2e20d29d09c816795dd7" {
-			t.Fatalf("source %d commit = %q, want pinned Apache APISIX commit", i+1, source.Commit)
-		}
-		if source.File != want.file || source.Tests != want.tests {
+		if source.Commit != want.commit || source.File != want.file || source.Tests != want.tests ||
+			!slices.Equal(source.TestNumbers, want.testNumbers) || source.RegressionOnly != want.regressionOnly {
 			t.Fatalf(
-				"source %d = (%q, %d), want (%q, %d)",
+				"source %d = (%q, %q, %d, %v, %v), want (%q, %q, %d, %v, %v)",
 				i+1,
+				source.Commit,
 				source.File,
 				source.Tests,
+				source.TestNumbers,
+				source.RegressionOnly,
+				want.commit,
 				want.file,
 				want.tests,
+				want.testNumbers,
+				want.regressionOnly,
 			)
 		}
-		total += want.tests
-		next[want.file] = 1
 	}
-	if len(manifest.Cases) != total {
-		t.Fatalf("top-level cases = %d, want exactly %d", len(manifest.Cases), total)
+	if len(manifest.Cases) != 46 {
+		t.Fatalf("top-level cases = %d, want exactly 46", len(manifest.Cases))
 	}
 
 	genericName := regexp.MustCompile(`(?i)(block-[0-9]+|source-[0-9]+|placeholder|generic|probe|lifecycle)`)
-	names := make(map[string]struct{}, total)
+	names := make(map[string]struct{}, len(manifest.Cases))
+	wantMappings := map[string][]int{
+		"t/plugin/graphql-proxy-cache/disk.t":    {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11},
+		"t/plugin/graphql-proxy-cache/graphql.t": {3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21},
+		"t/plugin/graphql-proxy-cache/memory.t":  {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16},
+	}
+	mapped := make(map[string][]int, len(wantMappings))
 	for i, testCase := range manifest.Cases {
-		want, ok := next[testCase.Source.File]
-		if !ok {
+		if _, ok := wantMappings[testCase.Source.File]; !ok {
 			t.Fatalf("case %d %q has unknown source %q", i+1, testCase.Name, testCase.Source.File)
 		}
-		if len(testCase.Source.Tests) != 1 || testCase.Source.Tests[0] != want {
-			t.Fatalf("case %d %q source tests = %v, want [%d]", i+1, testCase.Name, testCase.Source.Tests, want)
+		if len(testCase.Source.Tests) != 1 {
+			t.Fatalf("case %d %q source tests = %v, want exactly one", i+1, testCase.Name, testCase.Source.Tests)
 		}
-		next[testCase.Source.File]++
+		mapped[testCase.Source.File] = append(mapped[testCase.Source.File], testCase.Source.Tests[0])
 		if _, duplicate := names[testCase.Name]; duplicate {
 			t.Errorf("case %d has duplicate behavior name %q", i+1, testCase.Name)
 		}
@@ -109,9 +128,9 @@ func TestStandaloneManifestMapsEveryPinnedBlockToIndependentGraphQLCacheCase(t *
 		assertGraphQLProxyCacheCaseIdentity(t, i+1, testCase, genericName)
 		assertGraphQLProxyCacheCaseResources(t, i+1, testCase)
 	}
-	for _, source := range wantSources {
-		if got := next[source.file] - 1; got != source.tests {
-			t.Fatalf("%s mapped through block %d, want %d", source.file, got, source.tests)
+	for file, want := range wantMappings {
+		if !slices.Equal(mapped[file], want) {
+			t.Fatalf("%s mappings = %v, want %v", file, mapped[file], want)
 		}
 	}
 }

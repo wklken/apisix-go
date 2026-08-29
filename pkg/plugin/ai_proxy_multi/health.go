@@ -3,6 +3,7 @@ package ai_proxy_multi
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -59,7 +60,11 @@ type instanceHealthState struct {
 // healthSnapshot is an immutable view of the latest probe results. Requests
 // read it without locking and never wait for an in-flight probe.
 type healthSnapshot struct {
-	healthy []bool
+	healthy        []bool
+	allNodes       [][]*resolvedNode
+	healthyNodes   [][]*resolvedNode
+	nodeRequired   []bool
+	nodeResolveErr []error
 }
 
 type healthProbeResult struct {
@@ -70,9 +75,17 @@ type healthProbeResult struct {
 
 type healthProbeCompletion struct {
 	index     int
+	node      *resolvedNode
 	result    healthProbeResult
 	completed bool
 }
+
+const (
+	maxHealthProbeWorkers = 32
+	healthPassRetryDelay  = time.Second
+)
+
+var errHealthProbePanicked = errors.New("health probe panicked")
 
 func (p *Plugin) initHealthStates() {
 	p.health = make(map[int]*instanceHealthState)
@@ -98,13 +111,44 @@ func (p *Plugin) initHealthStates() {
 // is required.
 func (p *Plugin) publishHealthSnapshot() {
 	healthy := make([]bool, len(p.config.Instances))
+	allNodes := make([][]*resolvedNode, len(p.config.Instances))
+	healthyNodes := make([][]*resolvedNode, len(p.config.Instances))
+	nodeRequired := make([]bool, len(p.config.Instances))
+	nodeResolveErr := make([]error, len(p.config.Instances))
 	for index := range healthy {
 		healthy[index] = true
 	}
 	for index, state := range p.health {
 		healthy[index] = state.healthy
 	}
-	p.snapshot.Store(&healthSnapshot{healthy: healthy})
+	if nodes := p.nodeSnapshot.Load(); nodes != nil {
+		copy(nodeRequired, nodes.required)
+		copy(nodeResolveErr, nodes.resolveErr)
+		for index, instanceNodes := range nodes.instances {
+			allNodes[index] = slices.Clone(instanceNodes)
+			if len(instanceNodes) == 0 {
+				if nodeRequired[index] {
+					healthy[index] = false
+				}
+				continue
+			}
+			if p.config.Instances[index].Checks == nil {
+				healthyNodes[index] = slices.Clone(instanceNodes)
+				continue
+			}
+			healthy[index] = false
+			for _, node := range instanceNodes {
+				if node.health.healthy {
+					healthyNodes[index] = append(healthyNodes[index], node)
+					healthy[index] = true
+				}
+			}
+		}
+	}
+	p.snapshot.Store(&healthSnapshot{
+		healthy: healthy, allNodes: allNodes, healthyNodes: healthyNodes,
+		nodeRequired: nodeRequired, nodeResolveErr: nodeResolveErr,
+	})
 }
 
 // newHealthCheckClient builds one HTTP client for an immutable health-check
@@ -130,17 +174,47 @@ func (p *Plugin) Stop() {
 	p.healthCloseOnce.Do(func() {
 		p.stoppedHealth.Store(true)
 		p.healthMu.Lock()
+		p.healthStopping = true
+		cancelHealth := p.healthCancel
+		healthDone := p.healthDone
+		p.healthMu.Unlock()
+		if cancelHealth != nil {
+			cancelHealth()
+		}
+		if healthDone != nil {
+			<-healthDone
+		}
+
+		p.healthMu.Lock()
 		clients := make([]*http.Client, 0, len(p.healthClients))
 		for _, client := range p.healthClients {
 			clients = append(clients, client)
 		}
 		p.healthClients = nil
 		p.healthMu.Unlock()
+		p.nodeMu.Lock()
+		nodes := p.nodeSnapshot.Load()
+		p.nodeMu.Unlock()
 
 		for _, client := range clients {
 			client.CloseIdleConnections()
 		}
+		if nodes != nil {
+			for _, instanceNodes := range nodes.instances {
+				for _, node := range instanceNodes {
+					node.retired.Store(true)
+					node.closeIdleConnections()
+				}
+			}
+		}
+		if p.client != nil {
+			p.client.CloseIdleConnections()
+		}
+		if p.authClient != nil {
+			p.authClient.CloseIdleConnections()
+		}
 	})
+	p.stopMultiSecrets()
 }
 
 func applyHealthDefaults(check *ActiveHealthCheck) {
@@ -203,7 +277,30 @@ func (p *Plugin) startHealthLoop() error {
 		return runtime.ErrTaskOwnerRequired
 	}
 	p.wakeHealth = make(chan struct{}, 1)
-	if err := owner.Go("health-refresh", p.healthLoop); err != nil {
+	p.healthMu.Lock()
+	p.healthDone = make(chan struct{})
+	p.healthStopping = false
+	healthDone := p.healthDone
+	p.healthMu.Unlock()
+	if err := owner.Go("health-refresh", func(ctx context.Context) error {
+		loopCtx, cancel := context.WithCancel(ctx)
+		p.healthMu.Lock()
+		p.healthCancel = cancel
+		stopping := p.healthStopping
+		p.healthMu.Unlock()
+		if stopping {
+			cancel()
+		}
+		defer func() {
+			cancel()
+			p.healthMu.Lock()
+			p.healthCancel = nil
+			p.healthMu.Unlock()
+			close(healthDone)
+		}()
+		return p.healthLoop(loopCtx)
+	}); err != nil {
+		close(healthDone)
 		p.wakeHealth = nil
 		return err
 	}
@@ -223,29 +320,111 @@ func (p *Plugin) wakeHealthRefresh() {
 }
 
 func (p *Plugin) healthLoop(ctx context.Context) error {
+	timer := time.NewTimer(time.Hour)
+	if !timer.Stop() {
+		<-timer.C
+	}
+	defer timer.Stop()
+	started := false
+	retrying := false
 	for {
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+		wake := p.wakeHealth
+		var scheduled <-chan time.Time
+		if started {
+			delay, ok := p.nextHealthRefreshDelay()
+			if retrying {
+				wake = nil
+				if !ok || delay < healthPassRetryDelay {
+					delay = healthPassRetryDelay
+					ok = true
+				}
+			}
+			if ok {
+				timer.Reset(delay)
+				scheduled = timer.C
+			}
+		}
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-p.wakeHealth:
+		case <-wake:
+		case <-scheduled:
 		}
 		if ctx.Err() != nil {
 			return nil
 		}
-		if !p.refreshHealthPass(ctx) {
-			return nil
+		started = true
+		retrying = !p.refreshHealthPass(ctx)
+	}
+}
+
+func (p *Plugin) nextHealthRefreshDelay() (time.Duration, bool) {
+	now := time.Now()
+	if p.healthNow != nil {
+		now = p.healthNow()
+	}
+	p.nodeMu.Lock()
+	defer p.nodeMu.Unlock()
+
+	var deadline time.Time
+	record := func(candidate time.Time) {
+		if deadline.IsZero() || candidate.Before(deadline) {
+			deadline = candidate
 		}
 	}
+	for index := range p.config.Instances {
+		state, checked := p.health[index]
+		if p.nodeRequired[index] {
+			record(p.nodeExpires[index])
+			if checked {
+				for _, node := range p.nodeSets[index] {
+					record(node.health.nextCheck)
+				}
+			}
+			continue
+		}
+		if checked {
+			record(state.nextCheck)
+		}
+	}
+	if deadline.IsZero() || !deadline.After(now) {
+		return 0, !deadline.IsZero()
+	}
+	return deadline.Sub(now), true
 }
 
 // refreshHealthPass probes every instance whose next check is due, records
 // the results, and publishes one immutable snapshot.
 func (p *Plugin) refreshHealthPass(ctx context.Context) bool {
+	_ = p.refreshResolvedNodes(ctx, false)
 	now := p.healthNow()
-	due := make([]int, 0)
+	type dueProbe struct {
+		index int
+		node  *resolvedNode
+	}
+	due := make([]dueProbe, 0)
 	for index, state := range p.health {
-		if !now.Before(state.nextCheck) {
-			due = append(due, index)
+		nodes := p.resolvedNodes(index)
+		if len(nodes) == 0 {
+			nodeSnapshot := p.nodeSnapshot.Load()
+			if nodeSnapshot != nil && index < len(nodeSnapshot.required) && nodeSnapshot.required[index] {
+				continue
+			}
+			if !now.Before(state.nextCheck) {
+				due = append(due, dueProbe{index: index})
+			}
+			continue
+		}
+		for _, node := range nodes {
+			if !now.Before(node.health.nextCheck) {
+				due = append(due, dueProbe{index: index, node: node})
+			}
 		}
 	}
 	if ctx.Err() != nil {
@@ -254,62 +433,185 @@ func (p *Plugin) refreshHealthPass(ctx context.Context) bool {
 
 	passCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	ready := make(chan chan healthProbeCompletion, len(due))
+	results := make(chan healthProbeCompletion, len(due))
 	completed := make([]healthProbeCompletion, 0, len(due))
-	admitted := 0
+	workerCount := min(len(due), maxHealthProbeWorkers)
+	workerDone := make(chan struct{}, workerCount)
+	jobs := make(chan dueProbe, len(due))
+	for _, probe := range due {
+		jobs <- probe
+	}
+	close(jobs)
+	admittedWorkers := 0
 	completePass := true
 	owner := p.TaskOwner()
 	if owner == nil {
 		return false
 	}
-	for _, index := range due {
-		completion := make(chan healthProbeCompletion, 1)
-		err := owner.Go("health-probe", func(context.Context) error {
-			marker := healthProbeCompletion{index: index}
-			defer func() {
-				completion <- marker
-				ready <- completion
-			}()
-			if p.probeForTest != nil {
-				marker.result = p.probeForTest(passCtx, index)
-			} else {
-				marker.result = p.probeInstance(passCtx, index)
+	probeSlots := make(map[int]chan struct{}, len(p.health))
+	for index := range p.health {
+		limit := p.config.Instances[index].Checks.Active.Concurrency
+		if limit <= 0 {
+			limit = 1
+		}
+		probeSlots[index] = make(chan struct{}, limit)
+	}
+	for workerIndex := range workerCount {
+		component := fmt.Sprintf("health-probe-worker-%d", workerIndex)
+		err := owner.Go(component, func(context.Context) error {
+			defer func() { workerDone <- struct{}{} }()
+			for {
+				var probe dueProbe
+				var ok bool
+				select {
+				case <-passCtx.Done():
+					return nil
+				case probe, ok = <-jobs:
+					if !ok {
+						return nil
+					}
+				}
+				marker := healthProbeCompletion{index: probe.index, node: probe.node}
+				select {
+				case probeSlots[probe.index] <- struct{}{}:
+				case <-passCtx.Done():
+					return nil
+				}
+				func() {
+					defer func() { <-probeSlots[probe.index] }()
+					defer func() {
+						if recover() != nil {
+							marker.result = healthProbeResult{err: errHealthProbePanicked}
+						}
+					}()
+					if p.probeForTest != nil {
+						marker.result = p.probeForTest(passCtx, probe.index)
+					} else if probe.node != nil {
+						marker.result = p.probeResolvedNode(passCtx, probe.index, probe.node)
+					} else {
+						marker.result = p.probeInstance(passCtx, probe.index)
+					}
+				}()
+				if passCtx.Err() != nil {
+					return nil
+				}
+				marker.completed = true
+				results <- marker
 			}
-			if passCtx.Err() != nil {
-				return nil
-			}
-			marker.completed = true
-			return nil
 		})
 		if err != nil {
 			completePass = false
 			cancel()
 			break
 		}
-		admitted++
+		admittedWorkers++
 	}
-	for range admitted {
-		completion := <-ready
-		marker := <-completion
-		if !marker.completed {
-			completePass = false
-			cancel()
-		}
+	for range admittedWorkers {
+		<-workerDone
+	}
+	close(results)
+	for marker := range results {
 		completed = append(completed, marker)
 	}
-	if !completePass || admitted != len(due) || ctx.Err() != nil {
+	if !completePass || len(completed) != len(due) || ctx.Err() != nil {
 		return false
 	}
 	for _, marker := range completed {
-		p.recordProbeResult(marker.index, marker.result, p.healthNow())
+		if marker.node != nil {
+			p.recordResolvedNodeProbeResult(marker.index, marker.node, marker.result, p.healthNow())
+		} else {
+			p.recordProbeResult(marker.index, marker.result, p.healthNow())
+		}
 	}
 	p.publishHealthSnapshot()
 	return true
 }
 
+func (p *Plugin) probeResolvedNode(ctx context.Context, index int, node *resolvedNode) healthProbeResult {
+	instance := p.config.Instances[index]
+	check := instance.Checks.Active
+	var result healthProbeResult
+	err := p.withInstanceAuth(index, func(auth Auth) error {
+		instance.Auth = auth
+		result = p.probeResolvedNodeWithAuth(ctx, instance, check, node)
+		return nil
+	})
+	if err != nil {
+		return healthProbeResult{err: err}
+	}
+	return result
+}
+
+func (p *Plugin) probeResolvedNodeWithAuth(
+	ctx context.Context, instance Instance, check ActiveHealthCheck, node *resolvedNode,
+) healthProbeResult {
+	timeout := time.Duration(check.Timeout * float64(time.Second))
+	if timeout <= 0 {
+		timeout = time.Second
+	}
+	probeContext, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	target, err := healthTarget(instance, check)
+	if err != nil {
+		return healthProbeResult{err: err}
+	}
+	if check.Type == "tcp" {
+		port := target.Port()
+		connection, dialErr := (&net.Dialer{}).DialContext(
+			probeContext, "tcp", net.JoinHostPort(node.ip.String(), port),
+		)
+		if dialErr != nil {
+			return healthProbeResult{err: dialErr, timeout: probeContext.Err() == context.DeadlineExceeded}
+		}
+		_ = connection.Close()
+		return healthProbeResult{status: http.StatusOK}
+	}
+	request, err := http.NewRequestWithContext(probeContext, http.MethodGet, target.String(), nil)
+	if err != nil {
+		return healthProbeResult{err: err}
+	}
+	if check.Host != "" {
+		request.Host = check.Host
+	}
+	for name, value := range instance.Auth.Header {
+		request.Header.Set(name, value)
+	}
+	for _, rawHeader := range check.ReqHeaders {
+		name, value, ok := strings.Cut(rawHeader, ":")
+		if ok && request.Header.Get(strings.TrimSpace(name)) == "" {
+			request.Header.Set(strings.TrimSpace(name), strings.TrimSpace(value))
+		}
+	}
+	response, err := node.healthClient.Do(request)
+	if err != nil {
+		node.finalizeIfRetired()
+		return healthProbeResult{err: err, timeout: probeContext.Err() == context.DeadlineExceeded}
+	}
+	defer func() {
+		_ = response.Body.Close()
+		node.finalizeIfRetired()
+	}()
+	return healthProbeResult{status: response.StatusCode}
+}
+
 func (p *Plugin) probeInstance(ctx context.Context, index int) healthProbeResult {
 	instance := p.config.Instances[index]
 	check := instance.Checks.Active
+	var result healthProbeResult
+	err := p.withInstanceAuth(index, func(auth Auth) error {
+		instance.Auth = auth
+		result = p.probeInstanceWithAuth(ctx, index, instance, check)
+		return nil
+	})
+	if err != nil {
+		return healthProbeResult{err: err}
+	}
+	return result
+}
+
+func (p *Plugin) probeInstanceWithAuth(
+	ctx context.Context, index int, instance Instance, check ActiveHealthCheck,
+) healthProbeResult {
 	timeout := time.Duration(check.Timeout * float64(time.Second))
 	if timeout <= 0 {
 		timeout = time.Second
@@ -334,6 +636,9 @@ func (p *Plugin) probeInstance(ctx context.Context, index int) healthProbeResult
 	if err != nil {
 		return healthProbeResult{err: err}
 	}
+	if check.Host != "" {
+		request.Host = check.Host
+	}
 	for name, value := range instance.Auth.Header {
 		request.Header.Set(name, value)
 	}
@@ -352,22 +657,16 @@ func (p *Plugin) probeInstance(ctx context.Context, index int) healthProbeResult
 }
 
 func healthTarget(instance Instance, check ActiveHealthCheck) (*url.URL, error) {
-	if check.Host != "" {
-		scheme := check.Type
-		if scheme == "tcp" {
-			scheme = "tcp"
-		} else if scheme != "https" {
-			scheme = "http"
-		}
-		host := check.Host
-		if check.Port > 0 {
-			host = net.JoinHostPort(strings.Trim(host, "[]"), strconv.Itoa(check.Port))
-		}
-		return healthURL(scheme, host, check.HTTPPath, instance.Auth.Query), nil
-	}
 	base, err := instanceHealthBaseURL(instance)
 	if err != nil {
 		return nil, err
+	}
+	if base.Port() == "" {
+		port := "80"
+		if base.Scheme == "https" {
+			port = "443"
+		}
+		base.Host = net.JoinHostPort(base.Hostname(), port)
 	}
 	switch check.Type {
 	case "tcp":
@@ -378,6 +677,7 @@ func healthTarget(instance Instance, check ActiveHealthCheck) (*url.URL, error) 
 	if check.Port > 0 {
 		base.Host = net.JoinHostPort(base.Hostname(), strconv.Itoa(check.Port))
 	}
+	normalizeURLDefaultPort(base)
 	base.Path = check.HTTPPath
 	query := base.Query()
 	for name, value := range instance.Auth.Query {
@@ -387,14 +687,11 @@ func healthTarget(instance Instance, check ActiveHealthCheck) (*url.URL, error) 
 	return base, nil
 }
 
-func healthURL(scheme, host, path string, authQuery map[string]string) *url.URL {
-	target := &url.URL{Scheme: scheme, Host: host, Path: path}
-	query := target.Query()
-	for name, value := range authQuery {
-		query.Set(name, value)
+func normalizeURLDefaultPort(target *url.URL) {
+	port := target.Port()
+	if (target.Scheme == "http" && port == "80") || (target.Scheme == "https" && port == "443") {
+		target.Host = strings.TrimSuffix(target.Host, ":"+port)
 	}
-	target.RawQuery = query.Encode()
-	return target
 }
 
 func instanceHealthBaseURL(instance Instance) (*url.URL, error) {
@@ -433,6 +730,47 @@ func (p *Plugin) recordProbeResult(index int, result healthProbeResult, now time
 		return
 	}
 	check := p.config.Instances[index].Checks.Active
+	success := result.err == nil && slices.Contains(check.Healthy.HTTPStatuses, result.status)
+	failure := result.err != nil || slices.Contains(check.Unhealthy.HTTPStatuses, result.status)
+	if success {
+		state.successes++
+		state.httpFailures, state.tcpFailures, state.timeouts = 0, 0, 0
+		if state.successes >= check.Healthy.Successes {
+			state.healthy = true
+		}
+	} else if failure {
+		state.successes = 0
+		if result.timeout {
+			state.timeouts++
+		} else if check.Type == "tcp" || result.err != nil {
+			state.tcpFailures++
+		} else {
+			state.httpFailures++
+		}
+		if state.httpFailures >= check.Unhealthy.HTTPFailures ||
+			state.tcpFailures >= check.Unhealthy.TCPFailures || state.timeouts >= check.Unhealthy.Timeouts {
+			state.healthy = false
+		}
+	}
+	interval := check.Healthy.Interval
+	if !state.healthy {
+		interval = check.Unhealthy.Interval
+	}
+	state.nextCheck = now.Add(time.Duration(interval) * time.Second)
+}
+
+func (p *Plugin) recordResolvedNodeProbeResult(
+	index int, node *resolvedNode, result healthProbeResult, now time.Time,
+) {
+	if node.retired.Load() || !p.currentResolvedNode(index, node) {
+		return
+	}
+	recordHealthState(&node.health, p.config.Instances[index].Checks.Active, result, now)
+}
+
+func recordHealthState(
+	state *instanceHealthState, check ActiveHealthCheck, result healthProbeResult, now time.Time,
+) {
 	success := result.err == nil && slices.Contains(check.Healthy.HTTPStatuses, result.status)
 	failure := result.err != nil || slices.Contains(check.Unhealthy.HTTPStatuses, result.status)
 	if success {

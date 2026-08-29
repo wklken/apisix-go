@@ -248,6 +248,19 @@ func (p *Plugin) loadPluginAttr() error {
 	if value, ok := attr["enable_compression"].(bool); ok {
 		p.config.EnableCompression = value
 	}
+	if p.config.ErrorLog == "" && effective.Config.NginxConfig.ErrorLog != "" {
+		p.config.ErrorLog = effective.Config.NginxConfig.ErrorLog
+	}
+	httpLogs := effective.Config.NginxConfig.HTTP
+	if p.config.AccessLog == "" && httpLogs.AccessLog != "" {
+		p.config.AccessLog = httpLogs.AccessLog
+	}
+	if p.config.EnableAccessLog == nil {
+		if source, ok := effective.Provenance["nginx_config.http.enable_access_log"]; ok && source.Explicit {
+			enabled := httpLogs.EnableAccessLog
+			p.config.EnableAccessLog = &enabled
+		}
+	}
 	return nil
 }
 
@@ -370,6 +383,12 @@ func intFromAttr(attr map[string]any, key string) int {
 		return int(v)
 	case uint64:
 		return int(v)
+	case json.Number:
+		parsed, err := v.Int64()
+		if err == nil {
+			return int(parsed)
+		}
+		return 0
 	default:
 		return 0
 	}

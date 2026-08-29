@@ -1,0 +1,172 @@
+source:
+  repository: https://github.com/apache/apisix
+  commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
+  file: t/plugin/ai-prompt-template.t
+  tests: 8
+  test_numbers: [1, 3, 4, 5, 6, 7, 8, 9]
+
+cases:
+  - name: named-templates-render-request-json
+    source: {tests: [1, 3, 4, 5, 6]}
+    config:
+      routes:
+        - id: ai-prompt-template-render
+          uri: /render
+          plugins:
+            ai-prompt-template:
+              templates:
+                - name: programming question
+                  template:
+                    model: some model
+                    messages:
+                      - {role: system, content: 'You are a {{ language }} programmer.'}
+                      - {role: user, content: 'Write a {{ program_name }} program.'}
+                - name: level of detail
+                  template:
+                    model: some model
+                    messages:
+                      - {role: user, content: 'Explain about {{ topic }} in {{ level }}.'}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - method: POST
+            path: {equals: /render}
+            body: {json_equals: '{"model":"some model","messages":[{"role":"system","content":"You are a python programmer."},{"role":"user","content":"Write a quick sort program."}]}' }
+          - method: POST
+            path: {equals: /render}
+            body: {json_equals: '{"model":"some model","messages":[{"role":"user","content":"Explain about psychology in brief."}]}' }
+          - method: POST
+            path: {equals: /render}
+            body: {json_equals: '{"model":"some model","messages":[{"role":"user","content":"Explain about  in ."}]}' }
+        respond: [{status: 200, headers: {Content-Type: text/plain}, body: passed}]
+    steps:
+      - name: first-template-is-rendered
+        input:
+          method: POST
+          path: /render
+          headers: {Content-Type: application/json}
+          body: '{"template_name":"programming question","language":"python","program_name":"quick sort"}'
+        output: {status: 200, body: {equals: passed}}
+      - name: second-template-is-rendered
+        input:
+          method: POST
+          path: /render
+          headers: {Content-Type: application/json}
+          body: '{"template_name":"level of detail","topic":"psychology","level":"brief"}'
+        output: {status: 200, body: {equals: passed}}
+      - name: missing-values-render-as-empty-strings
+        input:
+          method: POST
+          path: /render
+          headers: {Content-Type: application/json}
+          body: '{"template_name":"level of detail","topic-missing":"psychology","level-missing":"brief"}'
+        output: {status: 200, body: {equals: passed}}
+
+  - name: missing-or-unknown-template-is-rejected
+    source: {tests: [7, 8]}
+    config:
+      routes:
+        - id: ai-prompt-template-errors
+          uri: /errors
+          plugins:
+            ai-prompt-template:
+              templates:
+                - name: configured
+                  template:
+                    model: some model
+                    messages: [{role: user, content: configured}]
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect_requests: 0
+        respond: [{status: 200, body: unexpected}]
+    steps:
+      - name: unknown-template-is-rejected
+        input:
+          method: POST
+          path: /errors
+          headers: {Content-Type: application/json}
+          body: '{"template_name":"random","some-key":"some-value"}'
+        output: {status: 400, body: {json_equals: '{"message":"template: random not configured."}'}}
+      - name: missing-template-name-is-rejected
+        input:
+          method: POST
+          path: /errors
+          headers: {Content-Type: application/json}
+          body: '{"missing-template-name":"haha"}'
+        output: {status: 400, body: {json_equals: '{"message":"template name is missing in request."}'}}
+
+  - name: same-template-name-is-isolated-per-route
+    source: {tests: [9]}
+    config:
+      routes:
+        - &route1
+          id: ai-prompt-template-route-1
+          uri: /1
+          plugins:
+            ai-prompt-template:
+              templates:
+                - name: same name
+                  template:
+                    model: some model
+                    messages: [{role: system, content: 'Field: {{ field }} in route1.'}]
+          upstream: &primary-upstream {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        - <<: *route1
+          id: ai-prompt-template-route-2
+          uri: /2
+          plugins:
+            ai-prompt-template:
+              templates:
+                - name: same name
+                  template:
+                    model: some model
+                    messages: [{role: system, content: 'Field: {{ field }} in route2.'}]
+        - <<: *route1
+          id: ai-prompt-template-route-3
+          uri: /3
+          plugins:
+            ai-prompt-template:
+              templates:
+                - name: same name
+                  template:
+                    model: some model
+                    messages: [{role: system, content: 'Field: {{ field }} in route3.'}]
+        - <<: *route1
+          id: ai-prompt-template-route-4
+          uri: /4
+          plugins:
+            ai-prompt-template:
+              templates:
+                - name: same name
+                  template:
+                    model: some model
+                    messages: [{role: system, content: 'Field: {{ field }} in route4.'}]
+        - <<: *route1
+          id: ai-prompt-template-route-5
+          uri: /5
+          plugins:
+            ai-prompt-template:
+              templates:
+                - name: same name
+                  template:
+                    model: some model
+                    messages: [{role: system, content: 'Field: {{ field }} in route5.'}]
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - {method: POST, path: {equals: /1}, body: {json_equals: '{"model":"some model","messages":[{"role":"system","content":"Field: foo in route1."}]}'}}
+          - {method: POST, path: {equals: /2}, body: {json_equals: '{"model":"some model","messages":[{"role":"system","content":"Field: foo in route2."}]}'}}
+          - {method: POST, path: {equals: /3}, body: {json_equals: '{"model":"some model","messages":[{"role":"system","content":"Field: foo in route3."}]}'}}
+          - {method: POST, path: {equals: /4}, body: {json_equals: '{"model":"some model","messages":[{"role":"system","content":"Field: foo in route4."}]}'}}
+          - {method: POST, path: {equals: /5}, body: {json_equals: '{"model":"some model","messages":[{"role":"system","content":"Field: foo in route5."}]}'}}
+        respond: [{status: 200, body: passed}]
+    steps:
+      - {name: route-1-uses-its-template, input: {method: POST, path: /1, headers: {Content-Type: application/json}, body: '{"template_name":"same name","field":"foo"}'}, output: {status: 200, body: {equals: passed}}}
+      - {name: route-2-uses-its-template, input: {method: POST, path: /2, headers: {Content-Type: application/json}, body: '{"template_name":"same name","field":"foo"}'}, output: {status: 200, body: {equals: passed}}}
+      - {name: route-3-uses-its-template, input: {method: POST, path: /3, headers: {Content-Type: application/json}, body: '{"template_name":"same name","field":"foo"}'}, output: {status: 200, body: {equals: passed}}}
+      - {name: route-4-uses-its-template, input: {method: POST, path: /4, headers: {Content-Type: application/json}, body: '{"template_name":"same name","field":"foo"}'}, output: {status: 200, body: {equals: passed}}}
+      - {name: route-5-uses-its-template, input: {method: POST, path: /5, headers: {Content-Type: application/json}, body: '{"template_name":"same name","field":"foo"}'}, output: {status: 200, body: {equals: passed}}}

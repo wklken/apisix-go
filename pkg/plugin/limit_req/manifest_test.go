@@ -49,7 +49,7 @@ func TestStandaloneManifestMapsEveryLocalSourceBlockToIndependentCase(t *testing
 
 	const (
 		sourceFile   = "t/plugin/limit-req.t"
-		sourceCommit = "c3d7d5ec69774121f53d2e20d29d09c816795dd7"
+		sourceCommit = "9ef2ecab67f652d38365049613610ef649bb4ad0"
 		sourceTests  = 21
 	)
 	assertLocalSourceCasesDoNotUseYAMLAliases(t, data, sourceFile)
@@ -158,7 +158,7 @@ func TestStandaloneManifestMapsEveryRedisSourceBlockToIndependentCase(t *testing
 
 	const (
 		sourceFile   = "t/plugin/limit-req-redis.t"
-		sourceCommit = "c3d7d5ec69774121f53d2e20d29d09c816795dd7"
+		sourceCommit = "9ef2ecab67f652d38365049613610ef649bb4ad0"
 		sourceTests  = 30
 	)
 	assertLocalSourceCasesDoNotUseYAMLAliases(t, data, sourceFile)
@@ -262,7 +262,7 @@ func TestStandaloneManifestMapsEveryRedisClusterSourceBlockToIndependentCase(t *
 
 	const (
 		sourceFile   = "t/plugin/limit-req-redis-cluster.t"
-		sourceCommit = "c3d7d5ec69774121f53d2e20d29d09c816795dd7"
+		sourceCommit = "9ef2ecab67f652d38365049613610ef649bb4ad0"
 		sourceTests  = 22
 	)
 	assertLocalSourceCasesDoNotUseYAMLAliases(t, data, sourceFile)
@@ -369,7 +369,7 @@ func TestStandaloneManifestMapsEveryRemainingSourceBlockToIndependentCase(t *tes
 		t.Fatalf("decode %s: %v", path, err)
 	}
 
-	const sourceCommit = "c3d7d5ec69774121f53d2e20d29d09c816795dd7"
+	const sourceCommit = "9ef2ecab67f652d38365049613610ef649bb4ad0"
 	remainingSources := []string{
 		"t/plugin/limit-req-shared-counter.t",
 		"t/plugin/limit-req2.t",

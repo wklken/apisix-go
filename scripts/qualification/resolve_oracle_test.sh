@@ -50,7 +50,13 @@ source_commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
 expected_version: 3.17.0
 EOF
 
+started_at=$SECONDS
 output=$(FAKE_INDEX_JSON="$index_json" DOCKER_BIN="$fake_docker" "$resolver" "$oracle")
+elapsed=$((SECONDS - started_at))
+if (( elapsed > 4 )); then
+    printf 'resolver kept a completed-command watchdog alive for %ss\n' "$elapsed" >&2
+    exit 1
+fi
 grep -Fq "index_digest=$index_digest" <<<"$output"
 grep -Fq 'platform_digest=sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' <<<"$output"
 grep -Fq 'version=3.17.0' <<<"$output"
@@ -93,5 +99,36 @@ if FAKE_INDEX_JSON="$index_json" DOCKER_BIN="$fake_docker" \
     exit 1
 fi
 grep -Fq 'index digest' "$task_dir/wrong-digest.out"
+
+hung_podman="$task_dir/podman-hung"
+cat >"$hung_podman" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+while :; do
+    sleep 1
+done
+SH
+chmod +x "$hung_podman"
+started_at=$SECONDS
+if APISIX_GO_CONTAINER_TIMEOUT_SECONDS=1 DOCKER_BIN="$hung_podman" \
+    "$resolver" "$oracle" >"$task_dir/timeout.out" 2>&1; then
+    printf 'resolver accepted a hung container runtime\n' >&2
+    exit 1
+fi
+elapsed=$((SECONDS - started_at))
+if (( elapsed > 4 )); then
+    printf 'resolver timeout exceeded its bounded grace period: %ss\n' "$elapsed" >&2
+    exit 1
+fi
+grep -Fqi 'timeout' "$task_dir/timeout.out"
+
+for invalid_timeout in 0 -1 invalid 1.5; do
+    if APISIX_GO_CONTAINER_TIMEOUT_SECONDS="$invalid_timeout" DOCKER_BIN="$fake_docker" \
+        "$resolver" "$oracle" >"$task_dir/invalid-timeout.out" 2>&1; then
+        printf 'resolver accepted invalid timeout: %s\n' "$invalid_timeout" >&2
+        exit 1
+    fi
+    grep -Fq 'must be a positive integer' "$task_dir/invalid-timeout.out"
+done
 
 printf 'resolve_oracle tests passed\n'

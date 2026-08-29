@@ -270,8 +270,14 @@ func TestHandlerRejectsRequestWhenPolicyDoesNotMatch(t *testing.T) {
 	if rr.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, want 403", rr.Code)
 	}
-	if !strings.Contains(rr.Body.String(), "Access Denied") {
-		t.Fatalf("body = %q, want Access Denied message", rr.Body.String())
+	if got := rr.Body.String(); got != "{\"message\":\"Access Denied\"}\n" {
+		t.Fatalf("body = %q, want APISIX Access Denied response", got)
+	}
+	if got := rr.Header().Get("Content-Type"); got != "text/plain; charset=utf-8" {
+		t.Fatalf("Content-Type = %q, want APISIX response type", got)
+	}
+	if got := rr.Header().Get("X-Content-Type-Options"); got != "" {
+		t.Fatalf("X-Content-Type-Options = %q, want absent", got)
 	}
 }
 

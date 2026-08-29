@@ -106,11 +106,11 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
 		body, err := base.ReadRequestBody(r)
 		if err != nil {
-			base.WriteJSONMessage(w, http.StatusBadRequest, "Empty request body")
+			writeAPISIXMessage(w, http.StatusBadRequest, "Empty request body")
 			return
 		}
 		if len(bytes.TrimSpace(body)) == 0 {
-			base.WriteJSONMessage(w, http.StatusBadRequest, "Empty request body")
+			writeAPISIXMessage(w, http.StatusBadRequest, "Empty request body")
 			return
 		}
 
@@ -139,6 +139,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		}
 
 		messages := extractMessages(protocol, bodyTab)
+		hasMessages := len(messages) > 0
 		if protocol != ai_protocols.OpenAIResponses && !p.config.MatchAllConversationHistory {
 			messages = lastMessage(messages)
 		}
@@ -146,13 +147,23 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			messages = userMessages(messages)
 		}
 		if len(messages) == 0 {
-			p.handleSafetyFailure(
-				w,
-				r,
-				next,
-				ai_common.SafetyEmptyContent,
-				"No inspectable AI prompt content",
-			)
+			if hasMessages {
+				metrics.RecordAISafetyOutcome(
+					name,
+					string(ai_common.SafetyPhaseRequest),
+					string(ai_common.SafetyOutcomeAllow),
+					string(ai_common.SafetyReasonClean),
+				)
+				next.ServeHTTP(w, r)
+			} else {
+				p.handleSafetyFailure(
+					w,
+					r,
+					next,
+					ai_common.SafetyEmptyContent,
+					"No inspectable AI prompt content",
+				)
+			}
 			return
 		}
 
@@ -174,7 +185,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 				string(ai_common.SafetyOutcomeDeny),
 				string(ai_common.SafetyReasonAllowPatternMiss),
 			)
-			base.WriteJSONMessage(w, http.StatusBadRequest, "Request doesn't match allow patterns")
+			writeAPISIXMessage(w, http.StatusBadRequest, "Request doesn't match allow patterns")
 			return
 		}
 		if matchesAny(p.config.denyPatterns, content) {
@@ -184,7 +195,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 				string(ai_common.SafetyOutcomeDeny),
 				string(ai_common.SafetyReasonDenyPatternMatch),
 			)
-			base.WriteJSONMessage(w, http.StatusBadRequest, "Request contains prohibited content")
+			writeAPISIXMessage(w, http.StatusBadRequest, "Request contains prohibited content")
 			return
 		}
 
@@ -197,6 +208,13 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 	}
 	return http.HandlerFunc(fn)
+}
+
+func writeAPISIXMessage(w http.ResponseWriter, status int, message string) {
+	body, _ := json.Marshal(map[string]string{"message": message})
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(status)
+	_, _ = w.Write(append(body, '\n'))
 }
 
 func (p *Plugin) handleSafetyFailure(
@@ -214,7 +232,7 @@ func (p *Plugin) handleSafetyFailure(
 		string(class),
 	)
 	if decision.Action == ai_common.SafetyReject {
-		base.WriteJSONMessage(w, decision.Status, publicMessage)
+		writeAPISIXMessage(w, decision.Status, publicMessage)
 		return
 	}
 

@@ -19,9 +19,9 @@ import (
 )
 
 var (
-	sourceTestHeader            = regexp.MustCompile(`^=== TEST\s+([0-9]+)`)
-	manifestTargetPluginAliases = map[string][]string{
-		"ai-proxy": {"ai-proxy", "ai-proxy-multi"},
+	sourceTestHeader           = regexp.MustCompile(`^=== TEST\s+([0-9]+)`)
+	manifestTargetPluginGroups = map[string][]string{
+		"ai-proxy": {"ai-proxy-multi"},
 	}
 )
 
@@ -49,6 +49,58 @@ func TestCapabilityManifestSelection(t *testing.T) {
 		t.Fatalf("capability manifest selection problems = %v", problems)
 	}
 	t.Logf("capability selection: %d manifest files cover %d factory keys", len(files), factoryCount)
+}
+
+func TestAllPluginProfileHasConvertedEvidenceForEveryFactory(t *testing.T) {
+	manifest, err := capability.Load()
+	if err != nil {
+		t.Fatalf("load capability manifest: %v", err)
+	}
+	profile, ok := manifest.Qualification("apisix-3.17-all-plugins-v1")
+	if !ok {
+		t.Fatal("apisix-3.17-all-plugins-v1 qualification profile is missing")
+	}
+
+	var problems []string
+	factoryCount := 0
+	for _, pluginName := range profile.RequiredPlugins {
+		plugin, found := manifest.Plugin(pluginName)
+		if !found {
+			problems = append(problems, "missing capability "+pluginName)
+			continue
+		}
+		if plugin.Evidence.Upstream.State != capability.EvidenceVerified &&
+			plugin.Evidence.Upstream.State != capability.EvidenceNotApplicable {
+			problems = append(
+				problems,
+				fmt.Sprintf("%s converted_upstream=%s", pluginName, plugin.Evidence.Upstream.State),
+			)
+		}
+		factoryCount += len(plugin.Factories)
+		if len(plugin.Factories) <= 1 {
+			continue
+		}
+		aliasEvidence := false
+		for _, ref := range plugin.Evidence.Upstream.Refs {
+			if strings.HasPrefix(ref, "pkg/plugin/init_test.go#TestNewPreservesHistoricalFactoryAliases") {
+				aliasEvidence = true
+				break
+			}
+		}
+		if !aliasEvidence {
+			problems = append(problems, pluginName+" has multiple factories without direct alias evidence")
+		}
+	}
+
+	sort.Strings(problems)
+	if len(problems) != 0 {
+		t.Fatalf("all-plugin converted evidence problems = %v", problems)
+	}
+	t.Logf(
+		"all-plugin converted evidence covers %d capabilities and %d factory keys",
+		len(profile.RequiredPlugins),
+		factoryCount,
+	)
 }
 
 func TestCapabilityManifestSelectionRequiresCanonicalManifest(t *testing.T) {
@@ -308,6 +360,11 @@ func TestSourceCoverage(t *testing.T) {
 					source.Repository,
 				)
 			}
+			if source.RegressionOnly {
+				assertSourceCommit(t, sourceRoot, source.Commit)
+				assertSourceTestsAtCommit(t, sourceRoot, manifestFile, source)
+				continue
+			}
 			expectedCommit, ok := sourceCommits[source.File]
 			if !ok {
 				t.Errorf("%s source %s is absent from the corpus ledger", manifestFile, source.File)
@@ -330,6 +387,9 @@ func TestSourceCoverage(t *testing.T) {
 func sourceCommitsByFile(scope *corpusScope) map[string]string {
 	commits := make(map[string]string, len(scope.Sources))
 	for _, source := range scope.Sources {
+		if source.Disposition == "regression_test" || source.Disposition == "post_target" {
+			continue
+		}
 		commits[source.File] = scope.effectiveCommit(source)
 	}
 	return commits
@@ -625,6 +685,14 @@ func TestManifestExercisesTargetPlugin(t *testing.T) {
 			want:   true,
 		},
 		{
+			name: "canonical factory alias",
+			manifest: &Manifest{Cases: []Case{{Config: map[string]any{
+				"routes": []any{map[string]any{"plugins": map[string]any{"otel": map[string]any{}}}},
+			}}}},
+			plugin: "opentelemetry",
+			want:   true,
+		},
+		{
 			name: "step config plugin",
 			manifest: &Manifest{Cases: []Case{{
 				Config: map[string]any{
@@ -665,7 +733,8 @@ func TestManifestExercisesTargetPlugin(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			if got := manifestExercisesPlugin(test.manifest, test.plugin); got != test.want {
+			pluginNames := targetPluginActivationNames(t, test.plugin)
+			if got := manifestExercisesPlugin(test.manifest, pluginNames); got != test.want {
 				t.Fatalf("manifestExercisesPlugin() = %v, want %v", got, test.want)
 			}
 		})
@@ -703,7 +772,8 @@ func manifestPluginName(file string) string {
 
 func assertManifestExercisesTargetPlugin(t *testing.T, file string, manifest *Manifest, pluginName string) {
 	t.Helper()
-	if !manifestExercisesPlugin(manifest, pluginName) {
+	pluginNames := targetPluginActivationNames(t, pluginName)
+	if !manifestExercisesPlugin(manifest, pluginNames) {
 		t.Errorf("%s never activates target plugin %q", file, pluginName)
 	}
 	for caseIndex := range manifest.Cases {
@@ -713,7 +783,7 @@ func assertManifestExercisesTargetPlugin(t *testing.T, file string, manifest *Ma
 				caseSpec.Runtime,
 				caseSpec.Config,
 				caseSpec.Steps,
-				pluginName,
+				pluginNames,
 			)
 			if err := validateTargetPluginExemption(caseSpec.TargetPluginExemptReason, activates); err != nil {
 				t.Errorf("%s case %q target plugin %q: %v", file, caseSpec.Name, pluginName, err)
@@ -726,7 +796,7 @@ func assertManifestExercisesTargetPlugin(t *testing.T, file string, manifest *Ma
 				variant.Runtime,
 				variant.Config,
 				variant.Steps,
-				pluginName,
+				pluginNames,
 			)
 			if err := validateTargetPluginExemption(variant.TargetPluginExemptReason, activates); err != nil {
 				t.Errorf(
@@ -808,7 +878,8 @@ func TestTargetPluginExemptionRejectedWhenScenarioActivatesTarget(t *testing.T) 
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if !caseExercisesTargetPlugin(tt.runtime, tt.config, tt.steps, "error-log-logger") {
+			pluginNames := targetPluginActivationNames(t, "error-log-logger")
+			if !caseExercisesTargetPlugin(tt.runtime, tt.config, tt.steps, pluginNames) {
 				t.Fatal("caseExercisesTargetPlugin() = false, want active target plugin")
 			}
 			err := validateTargetPluginExemption(tt.exempted, true)
@@ -819,15 +890,34 @@ func TestTargetPluginExemptionRejectedWhenScenarioActivatesTarget(t *testing.T) 
 	}
 }
 
-func manifestExercisesPlugin(manifest *Manifest, pluginName string) bool {
+func targetPluginActivationNames(t *testing.T, pluginName string) []string {
+	t.Helper()
+	capabilities, err := capability.Load()
+	if err != nil {
+		t.Fatalf("load capability manifest: %v", err)
+	}
+	plugin, found := capabilities.Plugin(pluginName)
+	if !found {
+		t.Fatalf("capability plugin %q is missing", pluginName)
+	}
+	names := []string{pluginName}
+	for _, factory := range plugin.Factories {
+		names = append(names, factory.Key)
+	}
+	names = append(names, manifestTargetPluginGroups[pluginName]...)
+	sort.Strings(names)
+	return slices.Compact(names)
+}
+
+func manifestExercisesPlugin(manifest *Manifest, pluginNames []string) bool {
 	for i := range manifest.Cases {
 		caseSpec := &manifest.Cases[i]
-		if caseExercisesTargetPlugin(caseSpec.Runtime, caseSpec.Config, caseSpec.Steps, pluginName) {
+		if caseExercisesTargetPlugin(caseSpec.Runtime, caseSpec.Config, caseSpec.Steps, pluginNames) {
 			return true
 		}
 		for j := range caseSpec.Variants {
 			variant := &caseSpec.Variants[j]
-			if caseExercisesTargetPlugin(variant.Runtime, variant.Config, variant.Steps, pluginName) {
+			if caseExercisesTargetPlugin(variant.Runtime, variant.Config, variant.Steps, pluginNames) {
 				return true
 			}
 		}
@@ -838,24 +928,20 @@ func manifestExercisesPlugin(manifest *Manifest, pluginName string) bool {
 func caseExercisesTargetPlugin(
 	runtime, config map[string]any,
 	steps []CaseStep,
-	pluginName string,
+	pluginNames []string,
 ) bool {
-	if scenarioExercisesTargetPlugin(runtime, config, pluginName) {
+	if scenarioExercisesTargetPlugin(runtime, config, pluginNames) {
 		return true
 	}
 	for i := range steps {
-		if scenarioExercisesTargetPlugin(nil, steps[i].Config, pluginName) {
+		if scenarioExercisesTargetPlugin(nil, steps[i].Config, pluginNames) {
 			return true
 		}
 	}
 	return false
 }
 
-func scenarioExercisesTargetPlugin(runtime, config map[string]any, pluginName string) bool {
-	pluginNames := manifestTargetPluginAliases[pluginName]
-	if len(pluginNames) == 0 {
-		pluginNames = []string{pluginName}
-	}
+func scenarioExercisesTargetPlugin(runtime, config map[string]any, pluginNames []string) bool {
 	for _, candidate := range pluginNames {
 		if scenarioExercisesPlugin(runtime, config, candidate) {
 			return true

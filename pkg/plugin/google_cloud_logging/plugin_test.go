@@ -1044,8 +1044,14 @@ func TestServiceAccountAssertionUsesConfiguredClaims(t *testing.T) {
 	if claims["iss"] != "svc@example.iam.gserviceaccount.com" {
 		t.Fatalf("iss = %v, want service account email", claims["iss"])
 	}
-	if claims["sub"] != "svc@example.iam.gserviceaccount.com" {
-		t.Fatalf("sub = %v, want service account email", claims["sub"])
+	if len(claims) != 5 {
+		t.Fatalf("claims = %#v, want exactly iss, aud, scope, iat, and exp", claims)
+	}
+	if _, exists := claims["sub"]; exists {
+		t.Fatalf("claims unexpectedly contain delegated subject: %#v", claims)
+	}
+	if _, exists := claims["prn"]; exists {
+		t.Fatalf("claims unexpectedly contain legacy principal: %#v", claims)
 	}
 	if claims["aud"] != tokenServer.URL {
 		t.Fatalf("aud = %v, want token uri", claims["aud"])

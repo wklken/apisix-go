@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -25,6 +26,7 @@ import (
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/config"
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/runtime"
@@ -32,6 +34,49 @@ import (
 )
 
 type failingReader struct{}
+
+func TestPostInitWarnsOnlyForInsecureCollectorAddress(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		scheme   string
+		wantWarn bool
+	}{
+		{name: "http", scheme: "http", wantWarn: true},
+		{name: "https", scheme: "https"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var warnings []string
+			stop := logger.ReplaceObserver("opentelemetry-security-warning-"+test.name, func(entry logger.Entry) {
+				if entry.Level == "WARN" && strings.Contains(entry.Message, "opentelemetry collector.address") {
+					warnings = append(warnings, entry.Message)
+				}
+			})
+			defer stop()
+
+			view := mustOpenTelemetryMetadataView(t, map[string]string{
+				name: `{"collector":{"address":"` + test.scheme + `://127.0.0.1:4318"}}`,
+			})
+			p := &Plugin{}
+			p.SetDependencies(base.Dependencies{Config: &config.EffectiveConfig{}, Metadata: view})
+			if err := p.Init(); err != nil {
+				t.Fatalf("Init() error = %v", err)
+			}
+			if err := p.PostInit(); err != nil {
+				t.Fatalf("PostInit() error = %v", err)
+			}
+			t.Cleanup(p.Stop)
+
+			if test.wantWarn {
+				const warning = "Using opentelemetry collector.address with no TLS is a security risk"
+				if len(warnings) != 1 || warnings[0] != warning {
+					t.Fatalf("warnings = %#v, want exact insecure collector warning", warnings)
+				}
+			} else if len(warnings) != 0 {
+				t.Fatalf("warnings = %#v, want none for TLS collector", warnings)
+			}
+		})
+	}
+}
 
 func (failingReader) Read([]byte) (int, error) { return 0, errors.New("random unavailable") }
 
@@ -131,19 +176,28 @@ func TestAdditionalSpanAttributesUseRequestVarsAndHeaders(t *testing.T) {
 	}
 }
 
-func TestCaptureHTTPSpanAttributesIncludesRequestMethod(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "/orders", nil)
+func TestCaptureHTTPSpanAttributesMatchesAPISIX317HTTPConventions(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "http://gateway.example.test/orders?state=open", nil)
+	req.Header.Set("User-Agent", "otel-client")
 
-	attrs := captureHTTPSpanAttributes(req)
-	for _, attr := range attrs {
-		if attr.Key == "http.method" {
-			if got := attr.Value.AsString(); got != http.MethodGet {
-				t.Fatalf("http.method = %q, want %q", got, http.MethodGet)
-			}
-			return
-		}
+	got := make(map[string]string)
+	for _, attr := range captureHTTPSpanAttributes(req) {
+		got[string(attr.Key)] = attr.Value.AsString()
 	}
-	t.Fatal("http.method attribute missing")
+	want := map[string]string{
+		"http.method":         http.MethodGet,
+		"http.scheme":         "http",
+		"http.target":         "/orders?state=open",
+		"http.user_agent":     "otel-client",
+		"http.request.method": http.MethodGet,
+		"net.host.name":       "gateway.example.test",
+		"url.path":            "/orders",
+		"url.scheme":          "http",
+		"user_agent.original": "otel-client",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("HTTP span attributes = %#v, want %#v", got, want)
+	}
 }
 
 func TestHandlerAddsDownstreamAndNumericAttributesBeforeSpanEnds(t *testing.T) {
@@ -724,6 +778,70 @@ func TestLoadMetadataPrecedenceAndAliases(t *testing.T) {
 	}
 }
 
+func TestPostInitPluginAttributeAliasFollowsAllowlistIdentity(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		plugins    []string
+		wantSource string
+		wantAddr   string
+	}{
+		{
+			name:       "alias-only allowlist uses alias attributes",
+			plugins:    []string{aliasName},
+			wantSource: "random",
+			wantAddr:   "127.0.0.1:24318",
+		},
+		{
+			name:       "canonical-only allowlist uses canonical attributes",
+			plugins:    []string{name},
+			wantSource: "x-request-id",
+			wantAddr:   "127.0.0.1:4318",
+		},
+		{
+			name:       "canonical keeps priority when both names are allowed",
+			plugins:    []string{aliasName, name},
+			wantSource: "x-request-id",
+			wantAddr:   "127.0.0.1:4318",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			effective := &config.EffectiveConfig{Config: config.Config{
+				Plugins: test.plugins,
+				PluginAttr: map[string]map[string]any{
+					name: {
+						"trace_id_source": "x-request-id",
+						"collector":       map[string]any{"address": "127.0.0.1:4318"},
+					},
+					aliasName: {
+						"trace_id_source": "random",
+						"collector":       map[string]any{"address": "127.0.0.1:24318"},
+					},
+				},
+			}}
+
+			p := &Plugin{}
+			p.SetDependencies(base.Dependencies{Config: effective})
+			if err := p.Init(); err != nil {
+				t.Fatalf("Init() error = %v", err)
+			}
+			if err := p.PostInit(); err != nil {
+				t.Fatalf("PostInit() error = %v", err)
+			}
+			t.Cleanup(p.Stop)
+
+			if p.metadata.TraceIDSource != test.wantSource || p.metadata.Collector.Address != test.wantAddr {
+				t.Fatalf(
+					"metadata source/address = %q/%q, want %q/%q",
+					p.metadata.TraceIDSource,
+					p.metadata.Collector.Address,
+					test.wantSource,
+					test.wantAddr,
+				)
+			}
+		})
+	}
+}
+
 func TestPreparedGenerationsRetainOpenTelemetryMetadata(t *testing.T) {
 	nSource := []byte(
 		`{"trace_id_source":"x-request-id","resource":{"service.name":"generation-n"},"collector":{"address":"127.0.0.1:4318","request_headers":{"Authorization":"generation-n"}}}`,
@@ -859,29 +977,23 @@ func TestNewTracerProviderRejectsSetNgxVarBeforeAllocation(t *testing.T) {
 	}
 }
 
-func TestNewTracerProviderRejectsAnyNonZeroInactiveTimeoutBeforeAllocation(t *testing.T) {
-	for _, inactiveTimeout := range []float64{1, -1} {
-		t.Run(fmt.Sprintf("inactive_timeout_%v", inactiveTimeout), func(t *testing.T) {
-			metadata := Metadata{
-				Collector: CollectorConfig{Address: "://invalid"},
-				BatchSpanProcessor: BatchSpanProcessorConfig{
-					InactiveTimeout: inactiveTimeout,
-				},
-			}
-
-			provider, err := newTracerProvider(SamplerConfig{Name: "always_on"}, metadata, true)
-			if err == nil {
-				t.Fatal("newTracerProvider() error = nil, want unsupported inactive_timeout rejection")
-			}
-			const want = "opentelemetry batch_span_processor.inactive_timeout is unsupported by the Go data plane"
-			if err.Error() != want {
-				t.Fatalf("newTracerProvider() error = %q, want %q", err, want)
-			}
-			if provider != nil {
-				t.Fatal("newTracerProvider() returned a provider after rejecting inactive_timeout")
-			}
-		})
+func TestNewTracerProviderAcceptsAPISIX317PositiveInactiveTimeout(t *testing.T) {
+	collector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(collector.Close)
+	metadata := Metadata{
+		Collector: CollectorConfig{Address: collector.URL},
+		BatchSpanProcessor: BatchSpanProcessorConfig{
+			InactiveTimeout: 0.5,
+		},
 	}
+
+	provider, err := newTracerProvider(SamplerConfig{Name: "always_on"}, metadata, true)
+	if err != nil {
+		t.Fatalf("newTracerProvider() rejected APISIX 3.17 inactive_timeout=0.5: %v", err)
+	}
+	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
 }
 
 func TestOTelResourceRestoresDottedKeysNestedByRuntimeConfigLoader(t *testing.T) {
@@ -901,6 +1013,15 @@ func TestOTelResourceRestoresDottedKeysNestedByRuntimeConfigLoader(t *testing.T)
 	}
 	if got["deployment.environment"] != "integration" {
 		t.Fatalf("deployment.environment = %q, want integration; attrs=%#v", got["deployment.environment"], got)
+	}
+	for key, want := range map[string]string{
+		"telemetry.sdk.language": "lua",
+		"telemetry.sdk.name":     "opentelemetry-lua",
+		"telemetry.sdk.version":  "0.1.1",
+	} {
+		if got[key] != want {
+			t.Fatalf("%s = %q, want %q; attrs=%#v", key, got[key], want, got)
+		}
 	}
 }
 
@@ -1275,10 +1396,60 @@ func TestTraceUsesFinalReplacementRequestSourceAndOutcome(t *testing.T) {
 	if attrs["apisix.response_source"] != string(apisixctx.ResponseSourceCacheHit) {
 		t.Fatalf("response source = %q, want cache_hit", attrs["apisix.response_source"])
 	}
-	if attrs["apisix.request_id"] != "trace-request-1" || attrs["apisix.outcome"] != "completed" ||
-		attrs["apisix.retry_count"] != "2" || attrs["http.upstream_status_code"] != "304" {
-		t.Fatalf("correlation attributes = %#v", attrs)
+	if attrs["http.response.status_code"] != "304" {
+		t.Fatalf("http.response.status_code = %q, want 304", attrs["http.response.status_code"])
 	}
+	for _, key := range []string{
+		"http.response_content_length", "apisix.request_id", "apisix.node_id",
+		"apisix.outcome", "apisix.retry_count", "http.upstream_status_code",
+	} {
+		if _, exists := attrs[key]; exists {
+			t.Fatalf("non-APISIX OpenTelemetry attribute %q = %q; attrs=%#v", key, attrs[key], attrs)
+		}
+	}
+}
+
+func TestTraceFinalizerCapturesHeadersAddedByLaterPlugin(t *testing.T) {
+	recorder := tracetest.NewSpanRecorder()
+	provider := sdktrace.NewTracerProvider(
+		sdktrace.WithSampler(sdktrace.AlwaysSample()),
+		sdktrace.WithSpanProcessor(recorder),
+	)
+	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
+	p := &Plugin{
+		config: Config{
+			AdditionalHeaderPrefixAttributes: []string{"x-injected-*"},
+		},
+		tracerProvider: provider,
+	}
+	request, lifecycle := apisixctx.EnsureRequestLifecycle(
+		httptest.NewRequest(http.MethodGet, "http://gateway.test/orders", nil), time.Now(),
+	)
+	result := p.RunRequestPhase(httptest.NewRecorder(), request)
+	laterRequest := result.Request.Clone(result.Request.Context())
+	laterRequest.Header.Set("X-Injected-By-Plugin", "test-value")
+	lifecycle.SetFinalRequest(laterRequest)
+	lifecycle.Complete(
+		apisixctx.ResponseOutcome{Kind: apisixctx.RequestOutcomeCompleted, Status: http.StatusOK},
+		time.Now(),
+	)
+	if failures := lifecycle.Finalize(); len(failures) != 0 {
+		t.Fatalf("lifecycle failures = %#v", failures)
+	}
+
+	spans := recorder.Ended()
+	if len(spans) != 1 {
+		t.Fatalf("ended spans = %d, want one", len(spans))
+	}
+	for _, item := range spans[0].Attributes() {
+		if item.Key == "x-injected-by-plugin" {
+			if got := item.Value.AsString(); got != "test-value" {
+				t.Fatalf("x-injected-by-plugin = %q, want test-value", got)
+			}
+			return
+		}
+	}
+	t.Fatal("final span does not contain the request header added by the later plugin")
 }
 
 func TestTracerDirectHandlerDoesNotDuplicateProductionOwner(t *testing.T) {

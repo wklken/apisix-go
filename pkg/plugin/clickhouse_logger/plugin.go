@@ -253,6 +253,12 @@ func (p *Plugin) PostInit() error {
 	if p.config.InactiveTimeout == 0 {
 		p.config.InactiveTimeout = int(logger_batch.DefaultInactiveTimeout / time.Second)
 	}
+	for _, endpoint := range p.config.EndpointAddrs {
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(endpoint)), "http://") {
+			logger.Warn("Using clickhouse-logger endpoint_addrs with no TLS is a security risk")
+			break
+		}
+	}
 
 	logFormat, err := base.RequireStringLogFormat(name, p.config.LogFormat, metadata.LogFormat)
 	if err != nil {
@@ -354,6 +360,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		}
 
 		logFields := apisixlog.GetFields(r, p.LogFormat)
+		base.ApplyRequestMatchedRouteFields(logFields, r, p.RouteID)
 		if requestBody != "" {
 			base.NestedLogMap(logFields, "request")["body"] = requestBody
 		}

@@ -174,7 +174,10 @@ func (s *responseExecution) selectRequestResponseMode(r *http.Request) error {
 			return fmt.Errorf("factory %q has no resolved descriptor", binding.factoryKey)
 		}
 		capability := binding.Descriptor.responseCapability
-		if !isDualModeResponseBinding(Binding{Plugin: binding.Plugin}, capability) {
+		if !isRequestSelectableResponseBinding(Binding{
+			Plugin: binding.Plugin, Descriptor: binding.Descriptor,
+			Scope: binding.Scope, Provenance: binding.Provenance,
+		}, capability) {
 			continue
 		}
 		selector := binding.Plugin.(base.RequestResponseModeSelector)
@@ -433,7 +436,9 @@ func (s *responseExecution) flush(transparentFlush httpsnoop.FlushFunc) {
 		transparentFlush()
 		return
 	}
-	s.unsupported = true
+	// A bounded response deliberately delays downstream visibility until every
+	// body transform has completed. Absorb upstream flush hints instead of
+	// turning an otherwise valid chunked response into a gateway failure.
 }
 
 func (s *responseExecution) flushError(transparentFlush httpsnoop.FlushErrorFunc) error {
@@ -446,8 +451,8 @@ func (s *responseExecution) flushError(transparentFlush httpsnoop.FlushErrorFunc
 		s.transparentCommitted = true
 		return transparentFlush()
 	}
-	s.unsupported = true
-	return errBufferedResponseUnsupported
+	// See flush: completing the bounded transform is the flush boundary.
+	return nil
 }
 
 func (s *responseExecution) hijack(

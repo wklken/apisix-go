@@ -23,13 +23,11 @@ func TestMissingConsumerReturnsOfficialMessage(t *testing.T) {
 	if rr.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want %d", rr.Code, http.StatusUnauthorized)
 	}
-	if got := strings.TrimSpace(
-		rr.Body.String(),
-	); got != `{"message":"The request is rejected, please check the consumer_name for this request"}` {
+	if got := rr.Body.String(); got != "{\"message\":\"The request is rejected, please check the consumer_name for this request\"}\n" {
 		t.Fatalf("body = %q", got)
 	}
-	if got := rr.Header().Get("Content-Type"); got != "application/json" {
-		t.Fatalf("Content-Type = %q, want application/json", got)
+	if got := rr.Header().Get("Content-Type"); got != "text/plain; charset=utf-8" {
+		t.Fatalf("Content-Type = %q, want APISIX response type", got)
 	}
 }
 
@@ -66,8 +64,11 @@ func TestDefaultRejectMessageIncludesPeriod(t *testing.T) {
 	if rr.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, want %d", rr.Code, http.StatusForbidden)
 	}
-	if got := strings.TrimSpace(rr.Body.String()); got != `{"message":"The consumer_name is forbidden."}` {
+	if got := rr.Body.String(); got != "{\"message\":\"The consumer_name is forbidden.\"}\n" {
 		t.Fatalf("body = %q", got)
+	}
+	if got := rr.Header().Get("Content-Type"); got != "text/plain; charset=utf-8" {
+		t.Fatalf("Content-Type = %q, want APISIX response type", got)
 	}
 }
 

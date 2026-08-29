@@ -33,6 +33,7 @@ import (
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/capability"
+	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/runtime"
@@ -449,14 +450,30 @@ func pluginStructContainsString(value reflect.Value, target string) bool {
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
-	return newTestPluginWithMetadata(t, cfg, nil)
+	return newTestPluginWithMetadataAndStaticConfig(t, cfg, nil, nil)
 }
 
 func newTestPluginWithMetadata(t *testing.T, cfg Config, metadata map[string]any) *Plugin {
 	t.Helper()
+	return newTestPluginWithMetadataAndStaticConfig(t, cfg, metadata, nil)
+}
+
+func newTestPluginWithStaticConfig(t *testing.T, cfg Config, effective *config.EffectiveConfig) *Plugin {
+	t.Helper()
+	return newTestPluginWithMetadataAndStaticConfig(t, cfg, nil, effective)
+}
+
+func newTestPluginWithMetadataAndStaticConfig(
+	t *testing.T,
+	cfg Config,
+	metadata map[string]any,
+	effective *config.EffectiveConfig,
+) *Plugin {
+	t.Helper()
 
 	p := &Plugin{config: cfg}
 	p.SetDependencies(base.Dependencies{
+		Config:         effective,
 		Tasks:          newLoggerTestTaskOwner(t),
 		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
 		Metadata:       mustMetadataView(t, metadata),
@@ -581,8 +598,33 @@ func TestPostInitSetsSLSDefaults(t *testing.T) {
 	if p.config.InactiveTimeout != 5 {
 		t.Fatalf("inactive_timeout = %d, want 5", p.config.InactiveTimeout)
 	}
+	if p.config.SSLVerify == nil || *p.config.SSLVerify {
+		t.Fatalf("ssl_verify = %v, want APISIX-compatible default false", p.config.SSLVerify)
+	}
+}
+
+func TestPostInitStrictProfileSetsTLSVerificationDefault(t *testing.T) {
+	p := &Plugin{config: Config{
+		Host: "127.0.0.1", Port: 10009, Project: "project-a", Logstore: "store-a",
+		AccessKeyID: "id", AccessKeySecret: "secret",
+	}}
+	p.SetDependencies(base.Dependencies{
+		Config:         &config.EffectiveConfig{Profiles: config.ProfileSelection{Security: config.SecurityStrict}},
+		Tasks:          newLoggerTestTaskOwner(t),
+		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+	})
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.MaterializeSecrets(); err != nil {
+		t.Fatalf("MaterializeSecrets() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+	t.Cleanup(p.Stop)
 	if p.config.SSLVerify == nil || !*p.config.SSLVerify {
-		t.Fatalf("ssl_verify = %v, want secure default true", p.config.SSLVerify)
+		t.Fatalf("ssl_verify = %v, want strict default true", p.config.SSLVerify)
 	}
 }
 
@@ -817,7 +859,78 @@ func TestBuildMessageUsesRFC5424Shape(t *testing.T) {
 	}
 }
 
-func TestSendMessageTLSVerifyDefaultsOn(t *testing.T) {
+func TestBuildMessageUsesAPISIX317MillisecondUTCTimestamp(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Host: "127.0.0.1", Port: 10009, Project: "project-a", Logstore: "store-a",
+		AccessKeyID: "id", AccessKeySecret: "secret",
+	})
+
+	message := p.buildMessage(map[string]any{"case": "timestamp"})
+	parts := strings.SplitN(strings.TrimSuffix(message, "\n"), " ", 7)
+	if len(parts) != 7 {
+		t.Fatalf("message = %q, want RFC5424 fields", message)
+	}
+	if _, err := time.Parse("2006-01-02T15:04:05.000Z", parts[1]); err != nil {
+		t.Fatalf("timestamp = %q, want APISIX 3.17 millisecond UTC format: %v", parts[1], err)
+	}
+}
+
+func TestRequestPathsUseAPISIX317HostInRFC5424Frame(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		emit func(*Plugin) error
+	}{
+		{
+			name: "handler",
+			emit: func(p *Plugin) error {
+				request := httptest.NewRequest(http.MethodGet, "http://gateway.example.test/orders", nil)
+				request.Host = "gateway.example.test:8443"
+				p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					w.WriteHeader(http.StatusNoContent)
+				})).ServeHTTP(httptest.NewRecorder(), request)
+				return nil
+			},
+		},
+		{
+			name: "detached log phase",
+			emit: func(p *Plugin) error {
+				return p.RunLogPhase(base.LogSnapshot{
+					Request: apisixlog.RequestLogSnapshot{
+						Method: http.MethodGet, URI: "/orders", Host: "gateway.example.test:8443",
+					},
+					Outcome: apisixctx.ResponseOutcome{Status: http.StatusNoContent},
+				})
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			addr, received := startTLSServer(t)
+			host, port, err := net.SplitHostPort(addr)
+			if err != nil {
+				t.Fatalf("split tls addr: %v", err)
+			}
+			p := newTestPlugin(t, Config{
+				Host: host, Port: mustAtoi(t, port), Project: "project-a", Logstore: "store-a",
+				AccessKeyID: "id", AccessKeySecret: "secret", SSLVerify: tlsVerifyOff(),
+				Timeout: 1000, BatchMaxSize: 1,
+			})
+			if err := test.emit(p); err != nil {
+				t.Fatalf("emit SLS log: %v", err)
+			}
+			select {
+			case message := <-received:
+				parts := strings.SplitN(strings.TrimSuffix(message, "\n"), " ", 7)
+				if len(parts) != 7 || parts[2] != "gateway.example.test" {
+					t.Fatalf("RFC5424 frame = %q, want request hostname gateway.example.test", message)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("timed out waiting for SLS RFC5424 frame")
+			}
+		})
+	}
+}
+
+func TestSendMessageCompatTLSVerifyDefaultsOff(t *testing.T) {
 	addr, received := startTLSServer(t)
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -838,7 +951,30 @@ func TestSendMessageTLSVerifyDefaultsOn(t *testing.T) {
 
 	select {
 	case message := <-received:
-		t.Fatalf("default TLS verification accepted self-signed certificate: %q", message)
+		if !strings.Contains(message, `"path":"/orders"`) {
+			t.Fatalf("message = %q, want JSON log payload", message)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for APISIX-compatible default TLS delivery")
+	}
+}
+
+func TestSendMessageStrictTLSVerifyDefaultsOn(t *testing.T) {
+	addr, received := startTLSServer(t)
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatalf("split tls addr: %v", err)
+	}
+
+	p := newTestPluginWithStaticConfig(t, Config{
+		Host: host, Port: mustAtoi(t, port), Project: "project-a", Logstore: "store-a",
+		AccessKeyID: "id", AccessKeySecret: "secret", Timeout: 1000,
+	}, &config.EffectiveConfig{Profiles: config.ProfileSelection{Security: config.SecurityStrict}})
+	p.Send(map[string]any{"path": "/orders"})
+
+	select {
+	case message := <-received:
+		t.Fatalf("strict TLS verification accepted self-signed certificate: %q", message)
 	case <-time.After(500 * time.Millisecond):
 	}
 }

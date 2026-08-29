@@ -299,7 +299,15 @@ func snapshotField(snapshot LogSnapshot, key string) any {
 		return snapshot.Request.Proto
 	case "$status", "$status_code":
 		return snapshot.Outcome.Status
+	case "$request_length":
+		if value, ok := snapshot.Request.RequestVars[key]; ok {
+			return value
+		}
+		return max(snapshot.Request.ContentLength, 0)
 	case "$bytes_sent":
+		if value, ok := snapshot.Request.RequestVars[key]; ok {
+			return value
+		}
 		return snapshot.Outcome.Bytes
 	case "$request_body":
 		return string(snapshot.Request.Body)

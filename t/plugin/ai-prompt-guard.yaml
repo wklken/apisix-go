@@ -1,8 +1,14 @@
-source:
-  repository: https://github.com/apache/apisix
-  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-  file: t/plugin/ai-prompt-guard.t
-  tests: 44
+sources:
+  - repository: https://github.com/apache/apisix
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
+    file: t/plugin/ai-prompt-guard.t
+    tests: 29
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/ai-prompt-guard.t
+    tests: 15
+    test_numbers: [30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44]
+    regression_only: true
 
 cases:
   - name: invalid-regex-is-rejected
@@ -20,8 +26,6 @@ cases:
       path: /invalid-regex
     output:
       status: 404
-      logs:
-        matches: 'build route ai-prompt-guard-invalid-regex.*ai-prompt-guard'
 
   - name: allow-and-deny-check-all-roles
     source:

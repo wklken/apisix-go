@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
@@ -114,7 +115,10 @@ func TestHandlerPreservesAndMergesQueryForConfiguredURI(t *testing.T) {
 				rewrite = r.Context().Value(apisixctx.ProxyRewriteKey).(map[string]any)
 			}))
 
-			handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/source?a=1", nil))
+			handler.ServeHTTP(
+				httptest.NewRecorder(),
+				httptest.NewRequest(http.MethodGet, "/source?a=1", nil),
+			)
 			if got := rewrite["uri"].(string); got != test.want {
 				t.Fatalf("rewrite uri = %q, want %q", got, test.want)
 			}
@@ -142,7 +146,12 @@ func TestRegexURIQueryContract(t *testing.T) {
 			repl:   "/products/$1?fixed=1",
 			want:   "/products/42?fixed=1&tenant=a",
 		},
-		{name: "empty incoming query", source: "/items/42", repl: "/products/$1", want: "/products/42"},
+		{
+			name:   "empty incoming query",
+			source: "/items/42",
+			repl:   "/products/$1",
+			want:   "/products/42",
+		},
 		{
 			name:   "unsafe source includes query once",
 			unsafe: true,
@@ -167,7 +176,10 @@ func TestRegexURIQueryContract(t *testing.T) {
 				rewrite = r.Context().Value(apisixctx.ProxyRewriteKey).(map[string]any)
 			}))
 
-			handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, test.source, nil))
+			handler.ServeHTTP(
+				httptest.NewRecorder(),
+				httptest.NewRequest(http.MethodGet, test.source, nil),
+			)
 			if got := rewrite["uri"].(string); got != test.want {
 				t.Fatalf("rewrite uri = %q, want %q", got, test.want)
 			}
@@ -210,7 +222,10 @@ func TestHandlerExpandsConfiguredURIVariables(t *testing.T) {
 		rewrite = r.Context().Value(apisixctx.ProxyRewriteKey).(map[string]any)
 	}))
 
-	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/source?target=hello", nil))
+	handler.ServeHTTP(
+		httptest.NewRecorder(),
+		httptest.NewRequest(http.MethodGet, "/source?target=hello", nil),
+	)
 	if got := rewrite["uri"].(string); got != "/hello?target=hello" {
 		t.Fatalf("rewrite uri = %q, want /hello?target=hello", got)
 	}
@@ -352,7 +367,10 @@ func TestHandlerExpandsAdjacentRegexCaptures(t *testing.T) {
 		rewrite = r.Context().Value(apisixctx.ProxyRewriteKey).(map[string]any)
 	}))
 
-	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/test/plugin/proxy/rewrite", nil))
+	handler.ServeHTTP(
+		httptest.NewRecorder(),
+		httptest.NewRequest(http.MethodGet, "/test/plugin/proxy/rewrite", nil),
+	)
 	if got := rewrite["uri"].(string); got != "/plugin_proxy_rewrite" {
 		t.Fatalf("rewrite uri = %q, want /plugin_proxy_rewrite", got)
 	}
@@ -384,13 +402,32 @@ func TestPostInitRejectsOddRegexURI(t *testing.T) {
 
 func TestPostInitRejectsInvalidOfficialFields(t *testing.T) {
 	tests := []struct {
-		name   string
-		config Config
+		name    string
+		config  Config
+		wantErr string
 	}{
-		{name: "relative uri", config: Config{Uri: "hello"}},
-		{name: "invalid regex replacement", config: Config{RegexURI: []string{`^/test/(.*)`, `/$` + "`1"}}},
-		{name: "invalid header name", config: Config{Headers: Headers{LegacySet: HeaderValues{"X-Bad:Name": "v"}}}},
-		{name: "invalid header value", config: Config{Headers: Headers{LegacySet: HeaderValues{"X-Test": "v\r\n"}}}},
+		{name: "relative uri", config: Config{Uri: "hello"}, wantErr: "must begin with /"},
+		{
+			name:    "invalid regex pattern",
+			config:  Config{RegexURI: []string{`[^/test/(.*)`, `/$1`}},
+			wantErr: "invalid regex_uri pattern",
+		},
+		{
+			name:    "invalid regex replacement",
+			config:  Config{RegexURI: []string{`^/test/(.*)`, `/$` + "`1"}},
+			wantErr: "invalid regex_uri replacement",
+		},
+		{
+			name:    "invalid header name",
+			config:  Config{Headers: Headers{LegacySet: HeaderValues{"X-Bad:Name": "v"}}},
+			wantErr: "invalid header field",
+		},
+		{
+			name:    "invalid header value",
+			config:  Config{Headers: Headers{LegacySet: HeaderValues{"X-Test": "v\r\n"}}},
+			wantErr: "invalid header value",
+		},
+		{name: "invalid method", config: Config{Method: "GET1"}, wantErr: "method"},
 	}
 
 	for _, test := range tests {
@@ -399,8 +436,8 @@ func TestPostInitRejectsInvalidOfficialFields(t *testing.T) {
 			if err := p.Init(); err != nil {
 				t.Fatalf("Init() error = %v", err)
 			}
-			if err := p.PostInit(); err == nil {
-				t.Fatal("PostInit() error = nil, want invalid field rejected")
+			if err := p.PostInit(); err == nil || !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf("PostInit() error = %v, want rejection containing %q", err, test.wantErr)
 			}
 		})
 	}

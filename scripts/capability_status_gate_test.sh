@@ -92,6 +92,12 @@ expected_paths=$(printf '%s\n' \
 	t/plugin/coverage_test.go \
 	t/plugin/corpus_test.go \
 	scripts/capability_status_gate_test.sh \
+	scripts/qualification/plugin_behavior_gate.sh \
+	scripts/qualification/plugin_behavior_gate_test.sh \
+	scripts/qualification/plugin_differential.sh \
+	scripts/qualification/plugin_differential_test.sh \
+	scripts/qualification/resolve_oracle.sh \
+	qualification/oracle.yaml \
 	.github/CODEOWNERS \
 	.github/workflows/capability-status.yml \
 	.github/workflows/unit-test.yml | sort)
@@ -158,12 +164,13 @@ require_fixed 'uses: actions/checkout@v7' "$jobs"
 require_fixed 'uses: actions/setup-go@v7' "$jobs"
 require_fixed '          go-version-file: go.mod' "$jobs"
 require_fixed '        run: bash scripts/capability_status_gate_test.sh' "$jobs"
+require_fixed "        run: bash -lc 'source .envrc && make test-plugin-behavior-gate'" "$jobs"
 require_fixed "        run: bash -lc 'source .envrc && make check-capability-drift'" "$jobs"
 require_fixed "        run: bash -lc 'source .envrc && make test-capability-status'" "$jobs"
 
 step_count=$(grep -Ec '^      - name:' <<<"$jobs")
-if [[ "$step_count" -ne 5 ]]; then
-	printf 'expected exactly five capability status steps in %s, found %s\n' "$workflow" "$step_count" >&2
+if [[ "$step_count" -ne 6 ]]; then
+	printf 'expected exactly six capability status steps in %s, found %s\n' "$workflow" "$step_count" >&2
 	exit 1
 fi
 expected_uses=$(printf '%s\n' 'actions/checkout@v7' 'actions/setup-go@v7' | sort)
@@ -174,6 +181,7 @@ if [[ "$actual_uses" != "$expected_uses" ]]; then
 fi
 expected_runs=$(printf '%s\n' \
 	'bash scripts/capability_status_gate_test.sh' \
+	"bash -lc 'source .envrc && make test-plugin-behavior-gate'" \
 	"bash -lc 'source .envrc && make check-capability-drift'" \
 	"bash -lc 'source .envrc && make test-capability-status'" | sort)
 actual_runs=$(sed -n 's/^[[:space:]]*run: //p' <<<"$jobs" | sort)
@@ -195,5 +203,9 @@ status_target_body=$(printf '\t%s\n\t%s' \
 	"\$(GO_CACHE_RUNNER) go test ./pkg/capability ./pkg/config ./pkg/plugin -run '^(TestLoadedManifest|TestManifest|TestProfileSelection|TestCapabilityManifest|TestCapabilityRegistry)' -count=1" \
 	"APISIX_GO_SKIP_PLUGIN_INTEGRATION=1 \$(GO_CACHE_RUNNER) go test ./t/plugin -run '^(TestCapabilityManifestSelection|TestManifestCorpusValidates|TestUpstreamCorpusAccountingWithoutSourceCheckout|TestCorpusEvidenceMatchesCompatibilityTarget)\$\$' -count=1")
 require_make_target_body test-capability-status "$status_target_body"
+require_make_target_body test-plugin-behavior-gate \
+	$'\tbash scripts/qualification/plugin_behavior_gate_test.sh'
+require_make_target_body qualify-plugin-behavior \
+	$'\tbash scripts/qualification/plugin_behavior_gate.sh'
 
 printf 'capability status workflow contract: PASS\n'

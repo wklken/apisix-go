@@ -739,6 +739,16 @@ func TestProductionPolicyRejectsOneMutatedFieldPerRow(t *testing.T) {
 	}
 }
 
+func TestValidateProcessAccessLogsAllowsLogRotateOwnedSelection(t *testing.T) {
+	cfg := validProfileSelectionConfig()
+	cfg.Plugins = append(cfg.Plugins, "log-rotate")
+	cfg.NginxConfig.HTTP.EnableAccessLog = true
+	cfg.NginxConfig.HTTP.AccessLog = "/var/log/apisix/access.log"
+	if err := validateProcessAccessLogs(cfg); err != nil {
+		t.Fatalf("validateProcessAccessLogs() error = %v, want log-rotate path selection accepted", err)
+	}
+}
+
 func TestProductionDockerfileContract(t *testing.T) {
 	contents, err := os.ReadFile(repositoryPath(t, "Dockerfile"))
 	if err != nil {

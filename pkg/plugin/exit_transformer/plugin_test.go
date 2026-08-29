@@ -1,6 +1,7 @@
 package exit_transformer
 
 import (
+	"context"
 	"encoding/json"
 	"math"
 	"net/http"
@@ -8,8 +9,11 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/config"
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	lua "github.com/yuin/gopher-lua"
 )
@@ -38,8 +42,8 @@ func TestExitTransformerRunsOneAtomicBufferedBodyCallback(t *testing.T) {
 	if got := state.Header.Get("Content-Length"); got != "" {
 		t.Fatalf("Content-Length = %q, want invalidated", got)
 	}
-	if got := state.Header.Get("X-Unchanged"); got != "" {
-		t.Fatalf("X-Unchanged = %q, want replaced atomically", got)
+	if got := state.Header.Get("X-Unchanged"); got != "yes" {
+		t.Fatalf("X-Unchanged = %q, want original response header preserved", got)
 	}
 }
 
@@ -51,6 +55,131 @@ func TestPostInitRejectsNonFunctionLua(t *testing.T) {
 	if err := p.PostInit(); err == nil || !strings.Contains(err.Error(), "only accept Lua function") {
 		t.Fatalf("PostInit() error = %v", err)
 	}
+}
+
+func TestPostInitInterruptsInfiniteTopLevelChunk(t *testing.T) {
+	p := &Plugin{config: Config{Functions: []string{`while true do end`}}}
+	p.SetDependencies(base.Dependencies{Config: exitTransformerStaticConfig(20)})
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- p.PostInit() }()
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "context deadline exceeded") {
+			t.Fatalf("PostInit() error = %v, want deadline interruption", err)
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("PostInit() did not interrupt infinite top-level chunk")
+	}
+}
+
+func TestRequestInterruptsInfiniteTransformCallback(t *testing.T) {
+	p := newTestPluginWithStaticConfig(t, Config{
+		Functions: []string{`return function() while true do end end`},
+	}, exitTransformerStaticConfig(20))
+	observed := make(chan logger.Entry, 1)
+	stopObserver := logger.ReplaceObserver(t.Name(), func(entry logger.Entry) {
+		if strings.HasPrefix(entry.Message, "exit-transformer: ") {
+			select {
+			case observed <- entry:
+			default:
+			}
+		}
+	})
+	t.Cleanup(stopObserver)
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/anything", nil)
+	req = apisixctx.WithRequestVars(req)
+	apisixctx.SetRequestResponseSource(req, apisixctx.ResponseSourceAPISIX)
+	state := base.ResponseState{
+		Status: http.StatusBadGateway,
+		Header: http.Header{"X-Original": {"yes"}},
+		Body:   []byte("original"),
+	}
+	done := make(chan error, 1)
+	go func() { done <- p.RunBufferedBodyFilter(req, &state) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("RunBufferedBodyFilter() error = %v", err)
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("request did not interrupt infinite transform callback")
+	}
+	select {
+	case entry := <-observed:
+		if !strings.Contains(entry.Message, "context deadline exceeded") {
+			t.Fatalf("callback error = %q, want stable deadline error", entry.Message)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("infinite transform callback did not report its deadline error")
+	}
+	if state.Status != http.StatusBadGateway || string(state.Body) != "original" ||
+		state.Header.Get("X-Original") != "yes" {
+		t.Fatalf("state after interrupted callback = %#v, want original response", state)
+	}
+}
+
+func TestRequestCancellationPreemptsTransformHardDeadline(t *testing.T) {
+	p := newTestPluginWithStaticConfig(t, Config{
+		Functions: []string{`return function() while true do end end`},
+	}, exitTransformerStaticConfig(1000))
+	observed := make(chan logger.Entry, 1)
+	stopObserver := logger.ReplaceObserver(t.Name(), func(entry logger.Entry) {
+		if strings.HasPrefix(entry.Message, "exit-transformer: ") {
+			select {
+			case observed <- entry:
+			default:
+			}
+		}
+	})
+	t.Cleanup(stopObserver)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/anything", nil).WithContext(ctx)
+	req = apisixctx.WithRequestVars(req)
+	apisixctx.SetRequestResponseSource(req, apisixctx.ResponseSourceAPISIX)
+	state := base.ResponseState{Status: http.StatusBadGateway, Header: make(http.Header), Body: []byte("original")}
+	done := make(chan error, 1)
+	go func() { done <- p.RunBufferedBodyFilter(req, &state) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("RunBufferedBodyFilter() error = %v", err)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("canceled request did not interrupt transform callback")
+	}
+	select {
+	case entry := <-observed:
+		if !strings.Contains(entry.Message, "context canceled") {
+			t.Fatalf("callback error = %q, want stable caller cancellation", entry.Message)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("canceled transform callback did not report caller cancellation")
+	}
+}
+
+func TestPostInitRejectsInvalidOperatorExecutionTimeout(t *testing.T) {
+	for _, timeout := range []any{0, 10001, int64(math.MaxInt64)} {
+		p := &Plugin{config: Config{Functions: []string{`return function() end`}}}
+		p.SetDependencies(base.Dependencies{Config: exitTransformerStaticConfig(timeout)})
+		if err := p.Init(); err != nil {
+			t.Fatal(err)
+		}
+		if err := p.PostInit(); err == nil || !strings.Contains(err.Error(), "execution_timeout_ms") {
+			t.Fatalf("PostInit(timeout=%v) error = %v, want operator timeout rejection", timeout, err)
+		}
+	}
+}
+
+func exitTransformerStaticConfig(timeoutMS any) *config.EffectiveConfig {
+	return &config.EffectiveConfig{Config: config.Config{PluginAttr: map[string]map[string]any{
+		name: {"execution_timeout_ms": timeoutMS},
+	}}}
 }
 
 func TestHandlerExecutesGeneralLuaControlFlow(t *testing.T) {
@@ -95,6 +224,20 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	return p
 }
 
+func newTestPluginWithStaticConfig(t *testing.T, cfg Config, static *config.EffectiveConfig) *Plugin {
+	t.Helper()
+
+	p := &Plugin{config: cfg}
+	p.SetDependencies(base.Dependencies{Config: static})
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+	return p
+}
+
 func TestHandlerRemapsStatusWithDocumentedLuaPattern(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		Functions: []string{
@@ -110,7 +253,7 @@ func TestHandlerRemapsStatusWithDocumentedLuaPattern(t *testing.T) {
 	if res.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, want 403", res.Code)
 	}
-	if got := res.Body.String(); got != `{"message":"Missing API key in request"}` {
+	if got := res.Body.String(); got != "{\"message\":\"Missing API key in request\"}\n" {
 		t.Fatalf("body = %q, want original body", got)
 	}
 }
@@ -268,7 +411,7 @@ func TestHandlerRemapsStatusForDocumentedRequestContentTypeCondition(t *testing.
 func TestHandlerTransformsDocumentedErrorTable(t *testing.T) {
 	p := newTestPlugin(t, Config{Functions: []string{`
 		return (function(code, body, header)
-			if code == 401 and body.message == "Missing API key in request" then
+			if code == 401 and body.message == "Missing API key in request" and next(header) == nil then
 				return 400, {message = "authentication Failed"}, {["content-type"] = "application/json"}
 			end
 			return code, body, header
@@ -276,6 +419,8 @@ func TestHandlerTransformsDocumentedErrorTable(t *testing.T) {
 	`}})
 
 	res := performRequest(p, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.Header().Set("WWW-Authenticate", `Bearer realm="apisix"`)
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = w.Write([]byte(`{"message":"Missing API key in request"}`))
 	})
@@ -286,7 +431,10 @@ func TestHandlerTransformsDocumentedErrorTable(t *testing.T) {
 	if got := res.Header().Get("Content-Type"); got != "application/json" {
 		t.Fatalf("Content-Type = %q, want application/json", got)
 	}
-	if got := res.Body.String(); got != `{"message":"authentication Failed"}` {
+	if got := res.Header().Get("WWW-Authenticate"); got != `Bearer realm="apisix"` {
+		t.Fatalf("WWW-Authenticate = %q, want original challenge preserved", got)
+	}
+	if got := res.Body.String(); got != "{\"message\":\"authentication Failed\"}\n" {
 		t.Fatalf("body = %q, want transformed JSON body", got)
 	}
 }
@@ -321,8 +469,8 @@ func TestHandlerNormalizesErrorBodyAndHeaderWithDocumentedLuaPattern(t *testing.
 func TestHandlerChainsTransformers(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		Functions: []string{
-			"return (function(code, body, header) if code == 401 then return 403, body, header end return code, body, header end)(...)",
-			`return (function(code, body, header) if code and code >= 400 then header = header or {} header["X-Error-Code"] = tostring(code) body = {error = true, status = code, message = (type(body) == "table" and body.message) or "request failed"} end return code, body, header end)(...)`,
+			`return (function(code, body, header) if code == 401 and next(header) == nil then return 403, body, { ["X-First-Callback"] = "seen" } end return code, body, header end)(...)`,
+			`return (function(code, body, header) if code and code >= 400 and header["X-First-Callback"] == "seen" then body = {error = true, status = code, message = (type(body) == "table" and body.message) or "request failed"} return code, body, { ["X-Error-Code"] = tostring(code) } end return code, body, header end)(...)`,
 		},
 	})
 
@@ -336,6 +484,9 @@ func TestHandlerChainsTransformers(t *testing.T) {
 	}
 	if got := res.Header().Get("X-Error-Code"); got != "403" {
 		t.Fatalf("X-Error-Code = %q, want 403", got)
+	}
+	if got := res.Header().Get("X-First-Callback"); got != "" {
+		t.Fatalf("X-First-Callback = %q, want absent from the final callback header table", got)
 	}
 }
 

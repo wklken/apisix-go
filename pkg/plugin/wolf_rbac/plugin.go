@@ -173,7 +173,9 @@ func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.Re
 
 	rawToken := fetchRBACToken(r)
 	if rawToken == "" {
-		_ = util.WriteJSONMessage(w, http.StatusUnauthorized, "Missing rbac token in request")
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = fmt.Fprintln(w, util.BuildMessageResponse("Missing rbac token in request"))
 		return base.StopRequest(r)
 	}
 
@@ -562,7 +564,9 @@ func (p *Plugin) publicAPIToken(
 ) (resource.Consumer, consumerConfig, rbacToken, bool) {
 	rawToken := fetchRBACToken(r)
 	if rawToken == "" {
-		_ = util.WriteJSONMessage(w, http.StatusUnauthorized, "Missing rbac token in request")
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = fmt.Fprintln(w, util.BuildMessageResponse("Missing rbac token in request"))
 		return resource.Consumer{}, consumerConfig{}, rbacToken{}, false
 	}
 	token, err := parseRBACToken(rawToken)

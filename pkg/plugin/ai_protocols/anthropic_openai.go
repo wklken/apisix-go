@@ -220,7 +220,6 @@ func convertAnthropicMessage(role string, content any) ([]any, error) {
 	}
 	if len(toolResults) > 0 {
 		messages := make([]any, 0, len(toolResults)+1)
-		messages = append(messages, toolResults...)
 		if len(contentParts) > 0 {
 			if text := textFromOpenAIContentParts(contentParts); len(contentParts) == 1 && text != "" {
 				messages = append(messages, map[string]any{"role": role, "content": text})
@@ -228,6 +227,7 @@ func convertAnthropicMessage(role string, content any) ([]any, error) {
 				messages = append(messages, map[string]any{"role": role, "content": contentParts})
 			}
 		}
+		messages = append(messages, toolResults...)
 		return messages, nil
 	}
 	message := map[string]any{"role": role}
@@ -470,20 +470,32 @@ func anthropicOutputFormat(request map[string]any) any {
 		if format, ok := config["format"]; ok {
 			return format
 		}
+		if config["type"] != nil {
+			return config
+		}
 	}
 	return nil
 }
 
 func convertAnthropicResponseFormat(dst map[string]any, value any) {
 	format, _ := value.(map[string]any)
+	if format["type"] == "json_object" {
+		dst["response_format"] = map[string]any{"type": "json_object"}
+		return
+	}
 	if format["type"] != "json_schema" {
 		return
 	}
-	var schema any
 	if raw, ok := format["json_schema"].(map[string]any); ok {
-		schema = raw
-	} else if raw, ok := format["schema"]; ok {
-		schema = raw
+		dst["response_format"] = map[string]any{
+			"type":        "json_schema",
+			"json_schema": raw,
+		}
+		return
+	}
+	schema, ok := format["schema"]
+	if !ok {
+		return
 	}
 	if schema == nil {
 		return

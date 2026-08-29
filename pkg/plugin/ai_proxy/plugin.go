@@ -23,6 +23,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/ai_runtime"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_stream"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 type Plugin struct {
@@ -31,6 +32,7 @@ type Plugin struct {
 	client    *http.Client
 	now       func() time.Time
 	gcpTokens gcpTokenApplier
+	secrets   aiProxySecretState
 
 	streamOutcomeRecorded func()
 }
@@ -68,6 +70,7 @@ const (
 
 var (
 	errInvalidClientRequest = errors.New("invalid client request")
+	errRequestBodyEmpty     = errors.New("could not get body: request body is empty")
 	errRequestBodyTooLarge  = errors.New("request body exceeds max_req_body_size")
 )
 
@@ -385,7 +388,13 @@ func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.Re
 			status = http.StatusRequestEntityTooLarge
 			logger.Errorf("failed to read request body: %v", err)
 		}
-		base.WriteJSONMessage(w, status, err.Error())
+		if errors.Is(err, errRequestBodyEmpty) {
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			w.WriteHeader(status)
+			_, _ = io.WriteString(w, util.BuildMessageResponse(err.Error())+"\n")
+		} else {
+			base.WriteJSONMessage(w, status, err.Error())
+		}
 		return base.StopRequestWithSource(r, apisixctx.ResponseSourceEarlyStop)
 	}
 	if err := p.validateProviderRequest(document, protocol); err != nil {
@@ -617,7 +626,7 @@ func (p *Plugin) readJSONDocument(r *http.Request) ([]byte, ai_protocols.Documen
 		return nil, ai_protocols.Document{}, ai_protocols.Protocol{}, errRequestBodyTooLarge
 	}
 	if len(bytes.TrimSpace(body)) == 0 {
-		return nil, ai_protocols.Document{}, ai_protocols.Protocol{}, fmt.Errorf("missing request body")
+		return nil, ai_protocols.Document{}, ai_protocols.Protocol{}, errRequestBodyEmpty
 	}
 
 	document, err := ai_protocols.DecodeDocument(body)
@@ -804,9 +813,6 @@ func (p *Plugin) buildProviderRequestDocument(
 	}
 	ai_common.CopyForwardHeaders(req.Header, r.Header)
 	req.Header.Set("Content-Type", "application/json")
-	for header, value := range p.config.Auth.Header {
-		req.Header.Set(header, value)
-	}
 	query := req.URL.Query()
 	if protocol == ai_protocols.Passthrough {
 		if req.URL.Path == "" || req.URL.Path == "/" {
@@ -820,28 +826,36 @@ func (p *Plugin) buildProviderRequestDocument(
 			}
 		}
 	}
-	for key, value := range p.config.Auth.Query {
-		apisixctx.RegisterSensitiveQueryName(r, key)
-		query.Set(key, value)
-	}
-	req.URL.RawQuery = query.Encode()
-	if p.config.Auth.GCP != nil {
-		if err := p.gcpTokens.Apply(r.Context(), p.client, req, *p.config.Auth.GCP); err != nil {
-			return nil, fmt.Errorf("authenticate GCP request: %w", err)
+	if err := p.withAuth(func(auth Auth) error {
+		for header, value := range auth.Header {
+			req.Header.Set(header, value)
 		}
-	}
-	if p.config.Provider == "bedrock" {
-		region, _ := p.config.ProviderConf["region"].(string)
-		if err := ai_auth.SignAWSRequest(
-			req,
-			providerBody,
-			*p.config.Auth.AWS,
-			region,
-			"bedrock",
-			p.now(),
-		); err != nil {
-			return nil, fmt.Errorf("sign Bedrock request: %w", err)
+		for key, value := range auth.Query {
+			apisixctx.RegisterSensitiveQueryName(r, key)
+			query.Set(key, value)
 		}
+		req.URL.RawQuery = query.Encode()
+		if auth.GCP != nil {
+			if err := p.gcpTokens.Apply(r.Context(), p.client, req, *auth.GCP); err != nil {
+				return fmt.Errorf("authenticate GCP request: %w", err)
+			}
+		}
+		if p.config.Provider == "bedrock" {
+			region, _ := p.config.ProviderConf["region"].(string)
+			if err := ai_auth.SignAWSRequest(
+				req,
+				providerBody,
+				*auth.AWS,
+				region,
+				"bedrock",
+				p.now(),
+			); err != nil {
+				return fmt.Errorf("sign Bedrock request: %w", err)
+			}
+		}
+		return nil
+	}); err != nil {
+		return nil, err
 	}
 
 	return req, nil

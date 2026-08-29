@@ -201,7 +201,7 @@ func (m hostMatcher) match(host string) bool {
 }
 
 func writeJSON(w http.ResponseWriter, body string) {
-	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusForbidden)
-	_, _ = w.Write([]byte(body))
+	_, _ = w.Write([]byte(body + "\n"))
 }

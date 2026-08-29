@@ -1,8 +1,9 @@
 source:
   repository: https://github.com/apache/apisix
-  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
   file: t/plugin/echo.t
-  tests: 11
+  tests: 9
+  test_numbers: [1, 3, 4, 5, 6, 8, 9, 10, 11]
 
 cases:
   - name: schema-sanity
@@ -31,27 +32,6 @@ cases:
       status: 200
       body:
         equals: body beforebody to attachbody after
-
-  - name: reject-wrong-after-body-type
-    source:
-      tests: [2]
-    config:
-      routes:
-        - id: echo-invalid-after-body
-          uri: /echo-invalid
-          plugins:
-            echo:
-              before_body: body before
-              body: body to attach
-              after_body: 10
-          upstream: *fixture_route
-    input:
-      path: /echo-invalid
-    upstream: *hello_fixture
-    output:
-      status: 404
-      logs:
-        matches: 'build route echo-invalid-after-body fail:.*echo'
 
   - name: replace-body-and-add-headers
     source:
@@ -105,38 +85,6 @@ cases:
           equals: https://www.iresty.com
       body:
         equals: before the body modification hello world
-
-  - name: clean-standalone-config
-    source:
-      tests: [7]
-    config:
-      routes:
-        - id: echo-clean-standalone-config
-          uri: /hello
-          plugins:
-            echo:
-              before_body: "before the body modification "
-              headers:
-                Location: https://www.iresty.com
-          upstream: *fixture_route
-    input:
-      path: /hello
-    upstream: *hello_fixture
-    output:
-      status: 200
-      headers:
-        Location:
-          equals: https://www.iresty.com
-      body:
-        equals: before the body modification hello world
-    after_shutdown:
-      - path: {equals: '{{WORK_DIR}}/apisix-go-store.db'}
-        bbolt_json:
-          bucket: routes
-          key: echo-clean-standalone-config
-          fields:
-            /plugins/echo/before_body: 'before the body modification '
-            /plugins/echo/headers/Location: https://www.iresty.com
 
   - name: replace-chunked-body
     source:

@@ -1,15 +1,15 @@
 sources:
   - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
     file: t/plugin/body-transformer.t
-    tests: 20
+    tests: 18
   - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
     file: t/plugin/body-transformer-multipart.t
     tests: 2
     test_numbers: [1, 2]
   - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
     file: t/plugin/body-transformer2.t
     tests: 1
     test_numbers: [3]
@@ -700,8 +700,7 @@ cases:
 
   - name: namespaced-xml-tree
     source:
-      file: t/plugin/body-transformer.t
-      tests: [19]
+      local_reason: post-target namespace-normalization regression; absent from the APISIX 3.17 compatibility commit
     config:
       routes:
         - id: body-transformer-namespaced-tree
@@ -741,8 +740,7 @@ cases:
 
   - name: namespace-layout-sweep
     source:
-      file: t/plugin/body-transformer.t
-      tests: [20]
+      local_reason: post-target namespace-layout regression; absent from the APISIX 3.17 compatibility commit
     config:
       routes:
         - id: body-transformer-namespace-sweep

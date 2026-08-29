@@ -412,10 +412,13 @@ func TestHandlerRejectsMissingAndInvalidToken(t *testing.T) {
 	if missing.Code != http.StatusUnauthorized {
 		t.Fatalf("missing token status = %d, want 401", missing.Code)
 	}
-	if got := missing.Header().Get("Content-Type"); got != "application/json; charset=UTF-8" {
-		t.Fatalf("missing token Content-Type = %q", got)
+	if got := missing.Header().Get("Content-Type"); got != "text/plain; charset=utf-8" {
+		t.Fatalf("missing token Content-Type = %q, want text/plain; charset=utf-8", got)
 	}
-	if got := missing.Body.String(); got != `{"message":"Missing rbac token in request"}` {
+	if got := missing.Header().Get("X-Content-Type-Options"); got != "" {
+		t.Fatalf("missing token X-Content-Type-Options = %q, want absent", got)
+	}
+	if got := missing.Body.String(); got != "{\"message\":\"Missing rbac token in request\"}\n" {
 		t.Fatalf("missing token body = %q", missing.Body.String())
 	}
 
@@ -423,8 +426,36 @@ func TestHandlerRejectsMissingAndInvalidToken(t *testing.T) {
 	if invalid.Code != http.StatusUnauthorized {
 		t.Fatalf("invalid token status = %d, want 401", invalid.Code)
 	}
-	if !strings.Contains(invalid.Body.String(), "invalid rbac token") {
+	if got := invalid.Header().Get("Content-Type"); got != "application/json; charset=UTF-8" {
+		t.Fatalf("invalid token Content-Type = %q, want application/json; charset=UTF-8", got)
+	}
+	if got := invalid.Body.String(); got != `{"message":"invalid rbac token: parse failed"}` {
 		t.Fatalf("invalid token body = %q", invalid.Body.String())
+	}
+}
+
+func TestWolfRBACUserInfoPublicAPIMissingTokenMatchesAPISIX317(t *testing.T) {
+	registry := public_api.NewRegistry()
+	newTestPlugin(t, Config{}, registry)
+	handler := registry.Lookup(http.MethodGet, WolfUserInfoURI)
+	if handler == nil {
+		t.Fatal("wolf user-info public API is not registered")
+	}
+
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, WolfUserInfoURI, nil))
+
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", response.Code)
+	}
+	if got := response.Header().Get("Content-Type"); got != "text/plain; charset=utf-8" {
+		t.Fatalf("Content-Type = %q, want text/plain; charset=utf-8", got)
+	}
+	if got := response.Header().Get("X-Content-Type-Options"); got != "" {
+		t.Fatalf("X-Content-Type-Options = %q, want absent", got)
+	}
+	if got := response.Body.String(); got != "{\"message\":\"Missing rbac token in request\"}\n" {
+		t.Fatalf("body = %q", got)
 	}
 }
 

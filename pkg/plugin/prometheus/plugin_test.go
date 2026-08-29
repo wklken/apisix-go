@@ -12,7 +12,24 @@ import (
 	"github.com/wklken/apisix-go/pkg/observability/metrics"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/resource"
+	"github.com/wklken/apisix-go/pkg/util"
 )
+
+func TestSchemaAcceptsOfficialConfigAndRejectsInvalidPreferName(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := util.Validate(map[string]any{}, p.GetSchema()); err != nil {
+		t.Fatalf("official empty configuration rejected: %v", err)
+	}
+	if err := util.Validate(map[string]any{"prefer_name": true}, p.GetSchema()); err != nil {
+		t.Fatalf("official prefer_name configuration rejected: %v", err)
+	}
+	if err := util.Validate(map[string]any{"prefer_name": "true"}, p.GetSchema()); err == nil {
+		t.Fatal("non-boolean prefer_name was accepted")
+	}
+}
 
 func TestHandlerPassesThrough(t *testing.T) {
 	p := &Plugin{}
@@ -98,6 +115,9 @@ func TestRunLogPhaseRecordsRequestMetrics(t *testing.T) {
 	apisixctx.RegisterRequestVar(request, "$request_type", "ai_chat")
 	apisixctx.RegisterRequestVar(request, "$request_llm_model", "gpt-request")
 	apisixctx.RegisterRequestVar(request, "$llm_model", "gpt-upstream")
+	apisixctx.RegisterRequestVar(request, "$llm_time_to_first_token", int64(3))
+	apisixctx.RegisterRequestVar(request, "$llm_prompt_tokens", int64(8))
+	apisixctx.RegisterRequestVar(request, "$llm_completion_tokens", int64(5))
 	apisixctx.RegisterRequestVar(request, "$response_source", "request-source")
 	started := time.Unix(1, 0)
 	snapshot := base.BuildLogSnapshot(
@@ -127,6 +147,29 @@ func TestRunLogPhaseRecordsRequestMetrics(t *testing.T) {
 	)); got != 5 {
 		t.Fatalf("egress bytes = %v, want 5", got)
 	}
+	if got := counterValue(t, metrics.Bandwidth.WithLabelValues(
+		"ingress", "route-1", "service-1", "alice", "10.0.0.8", "ai_chat", "gpt-request", "gpt-upstream",
+	)); got != 7 {
+		t.Fatalf("ingress bytes = %v, want 7", got)
+	}
+	for metricType, want := range map[string]float64{"request": 12, "upstream": 1, "apisix": 11} {
+		count, sum := histogramValue(t, metrics.HttpLatency.WithLabelValues(
+			metricType, "route-1", "service-1", "alice", "10.0.0.8", "ai_chat", "gpt-request", "gpt-upstream",
+		))
+		if count != 1 || sum != want {
+			t.Errorf("%s latency = (count %d, sum %v), want (1, %v)", metricType, count, sum, want)
+		}
+	}
+	llmMetricLabels := []string{"route-1", "service-1", "alice", "10.0.0.8", "ai_chat", "gpt-request", "gpt-upstream"}
+	if count, sum := histogramValue(t, metrics.LLMLatency.WithLabelValues(llmMetricLabels...)); count != 1 || sum != 3 {
+		t.Errorf("LLM latency = (count %d, sum %v), want (1, 3)", count, sum)
+	}
+	if got := counterValue(t, metrics.LLMPromptTokens.WithLabelValues(llmMetricLabels...)); got != 8 {
+		t.Errorf("LLM prompt tokens = %v, want 8", got)
+	}
+	if got := counterValue(t, metrics.LLMCompletionTokens.WithLabelValues(llmMetricLabels...)); got != 5 {
+		t.Errorf("LLM completion tokens = %v, want 5", got)
+	}
 }
 
 func counterValue(t *testing.T, counter promclient.Counter) float64 {
@@ -136,4 +179,45 @@ func counterValue(t *testing.T, counter promclient.Counter) float64 {
 		t.Fatalf("write counter: %v", err)
 	}
 	return metric.GetCounter().GetValue()
+}
+
+func histogramValue(t *testing.T, observer promclient.Observer) (uint64, float64) {
+	t.Helper()
+	metricWriter, ok := observer.(promclient.Metric)
+	if !ok {
+		t.Fatalf("histogram observer %T does not implement prometheus.Metric", observer)
+	}
+	metric := &dto.Metric{}
+	if err := metricWriter.Write(metric); err != nil {
+		t.Fatalf("write histogram: %v", err)
+	}
+	return metric.GetHistogram().GetSampleCount(), metric.GetHistogram().GetSampleSum()
+}
+
+func TestMetricResourceLabelPrefersNameWithIDFallback(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		id         string
+		resource   string
+		preferName bool
+		want       string
+	}{
+		{name: "identifier by default", id: "route-id", resource: "route-name", want: "route-id"},
+		{name: "preferred name", id: "route-id", resource: "route-name", preferName: true, want: "route-name"},
+		{name: "missing name falls back to identifier", id: "route-id", preferName: true, want: "route-id"},
+		{name: "missing identifier falls back to name", resource: "route-name", want: "route-name"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := metricResourceLabel(test.id, test.resource, test.preferName); got != test.want {
+				t.Fatalf(
+					"metricResourceLabel(%q, %q, %v) = %q, want %q",
+					test.id,
+					test.resource,
+					test.preferName,
+					got,
+					test.want,
+				)
+			}
+		})
+	}
 }

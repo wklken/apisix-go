@@ -5,6 +5,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"math"
+	"math/rand/v2"
 	"net/http"
 	"sort"
 	"strconv"
@@ -42,7 +43,7 @@ const schema = `
 		"type": "integer",
 		"default": 200,
 		"minimum": 200,
-		"maximum": 599
+		"maximum": 999
 	  },
 	  "content_type": {
 		"type": "string",
@@ -110,6 +111,11 @@ func (p *Plugin) PostInit() error {
 	if p.config.ContentType == "" {
 		p.config.ContentType = defaultContentType
 	}
+	switch parseContentType(p.config.ContentType) {
+	case "application/json", "application/xml", "text/html", "text/plain", "text/xml":
+	default:
+		return fmt.Errorf("unsupported content type %q", p.config.ContentType)
+	}
 
 	if p.config.WithMockHeader == nil {
 		defaultValue := true
@@ -149,7 +155,11 @@ func (p *Plugin) serve(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Set content type
-	w.Header().Set("Content-Type", p.config.ContentType)
+	contentType := p.config.ContentType
+	if contentType == "text/plain" {
+		contentType = "text/plain; charset=utf-8"
+	}
+	w.Header().Set("Content-Type", contentType)
 
 	// Set response headers
 	for key, value := range p.config.ResponseHeaders {
@@ -183,8 +193,12 @@ func responseBodyFromSchema(contentType string, responseSchema map[string]any) (
 	switch parseContentType(contentType) {
 	case "application/xml", "text/xml":
 		return objectToXML(output, "data"), nil
-	default:
+	case "application/json", "text/plain":
 		return json.Marshal(output)
+	case "text/html":
+		return nil, nil
+	default:
+		return nil, fmt.Errorf("unsupported content type %q", contentType)
 	}
 }
 
@@ -195,29 +209,37 @@ func generateByProperty(property map[string]any) any {
 		if !ok {
 			return nil
 		}
-		return []any{generateByProperty(items)}
+		output := make([]any, 1+rand.IntN(3))
+		for index := range output {
+			output[index] = generateByProperty(items)
+		}
+		return output
 	case "object", "":
 		return generateObject(property)
 	case "string":
 		if example, ok := property["example"].(string); ok {
 			return example
 		}
-		return ""
+		output := make([]byte, 1+rand.IntN(10))
+		for index := range output {
+			output[index] = byte('a' + rand.IntN(26))
+		}
+		return string(output)
 	case "number":
 		if example, ok := numberValue(property["example"]); ok {
 			return example
 		}
-		return float64(0)
+		return rand.Float64() * 10000
 	case "integer":
 		if example, ok := numberValue(property["example"]); ok {
 			return math.Floor(example)
 		}
-		return float64(0)
+		return float64(1 + rand.IntN(10000))
 	case "boolean":
 		if example, ok := property["example"].(bool); ok {
 			return example
 		}
-		return false
+		return rand.IntN(2) == 1
 	default:
 		return nil
 	}

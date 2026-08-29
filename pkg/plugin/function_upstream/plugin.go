@@ -183,13 +183,13 @@ func (p *Plugin) buildRequest(r *http.Request) (*http.Request, error) {
 		target.Path = path.Clean(appendExtensionPath(target.Path, extension))
 	}
 	target.RawQuery = r.URL.RawQuery
+	target.ForceQuery = r.URL.RawQuery == ""
 	upstreamReq, err := http.NewRequestWithContext(r.Context(), r.Method, target.String(), bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
 	upstreamReq.Header = r.Header.Clone()
-	upstreamReq.Host = target.Host
-	upstreamReq.Header.Set("Host", target.Host)
+	upstreamReq.Host = target.Hostname()
 
 	return upstreamReq, nil
 }

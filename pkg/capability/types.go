@@ -54,7 +54,6 @@ const (
 	EvidenceDifferential   EvidenceKind = "differential"
 	EvidenceRealDependency EvidenceKind = "real_dependency"
 	EvidenceFailure        EvidenceKind = "failure"
-	EvidenceRecovery       EvidenceKind = "recovery"
 
 	EvidenceVerified      EvidenceState = "verified"
 	EvidenceMissing       EvidenceState = "missing"
@@ -96,7 +95,6 @@ type Evidence struct {
 	Differential   EvidenceClaim `yaml:"differential"`
 	RealDependency EvidenceClaim `yaml:"real_dependency"`
 	Failure        EvidenceClaim `yaml:"failure"`
-	Recovery       EvidenceClaim `yaml:"recovery"`
 }
 
 type PluginCapability struct {

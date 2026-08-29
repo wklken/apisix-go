@@ -18,6 +18,12 @@ on:
       - t/plugin/coverage_test.go
       - t/plugin/corpus_test.go
       - scripts/capability_status_gate_test.sh
+      - scripts/qualification/plugin_behavior_gate.sh
+      - scripts/qualification/plugin_behavior_gate_test.sh
+      - scripts/qualification/plugin_differential.sh
+      - scripts/qualification/plugin_differential_test.sh
+      - scripts/qualification/resolve_oracle.sh
+      - qualification/oracle.yaml
       - .github/CODEOWNERS
       - .github/workflows/capability-status.yml
       - .github/workflows/unit-test.yml
@@ -41,6 +47,9 @@ jobs:
 
       - name: Verify capability status workflow contract
         run: bash scripts/capability_status_gate_test.sh
+
+      - name: Verify plugin behavior gate contract
+        run: bash -lc 'source .envrc && make test-plugin-behavior-gate'
 
       - name: Verify generated capability and ADR drift
         run: bash -lc 'source .envrc && make check-capability-drift'

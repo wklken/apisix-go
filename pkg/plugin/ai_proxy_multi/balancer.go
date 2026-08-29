@@ -14,12 +14,18 @@ import (
 )
 
 func (p *Plugin) pickInstance(r *http.Request, tried map[int]bool) (int, bool) {
+	return p.pickInstanceFromSnapshot(r, tried, p.snapshot.Load())
+}
+
+func (p *Plugin) pickInstanceFromSnapshot(
+	r *http.Request, tried map[int]bool, snapshot *healthSnapshot,
+) (int, bool) {
 	priorities := p.priority
 	if len(priorities) == 0 {
 		return 0, false
 	}
 	if p.config.Balancer.Algorithm == "chash" {
-		return p.pickChashInstance(r, tried)
+		return p.pickChashInstanceFromSnapshot(r, tried, snapshot)
 	}
 
 	// Advance each priority's rotation slot exactly once per pick, then reuse
@@ -45,7 +51,8 @@ func (p *Plugin) pickInstance(r *http.Request, tried map[int]bool) (int, bool) {
 			first := weightInstanceAtSlot(sel, starts[i])
 			for offset := range len(sel.ids) {
 				index := sel.ids[(first+offset)%len(sel.ids)]
-				if !tried[index] && (!requireHealthy || p.instanceHealthy(index)) {
+				if !tried[index] && instanceUsableFromSnapshot(snapshot, index) &&
+					(!requireHealthy || instanceHealthyFromSnapshot(snapshot, index)) {
 					return index, true
 				}
 			}
@@ -54,20 +61,37 @@ func (p *Plugin) pickInstance(r *http.Request, tried map[int]bool) (int, bool) {
 	return 0, false
 }
 
-func (p *Plugin) pickChashInstance(r *http.Request, tried map[int]bool) (int, bool) {
+func (p *Plugin) pickChashInstanceFromSnapshot(
+	r *http.Request, tried map[int]bool, snapshot *healthSnapshot,
+) (int, bool) {
 	key := p.hashKey(r)
 	for _, requireHealthy := range []bool{true, false} {
 		for _, priority := range p.priority {
 			ring := p.chash[priority]
 			for _, name := range ring.Candidates(key) {
 				index, ok := p.instances[name]
-				if ok && !tried[index] && (!requireHealthy || p.instanceHealthy(index)) {
+				if ok && !tried[index] && instanceUsableFromSnapshot(snapshot, index) &&
+					(!requireHealthy || instanceHealthyFromSnapshot(snapshot, index)) {
 					return index, true
 				}
 			}
 		}
 	}
 	return 0, false
+}
+
+func instanceUsableFromSnapshot(snapshot *healthSnapshot, index int) bool {
+	if snapshot == nil || index < 0 || index >= len(snapshot.nodeRequired) || !snapshot.nodeRequired[index] {
+		return true
+	}
+	return index < len(snapshot.allNodes) && len(snapshot.allNodes[index]) > 0
+}
+
+func instanceHealthyFromSnapshot(snapshot *healthSnapshot, index int) bool {
+	if snapshot == nil || index < 0 || index >= len(snapshot.healthy) {
+		return true
+	}
+	return snapshot.healthy[index]
 }
 
 // weightInstanceAtSlot maps a slot in [0, sel.total) to the index of its

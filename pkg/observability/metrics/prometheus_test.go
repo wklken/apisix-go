@@ -250,6 +250,55 @@ func TestPrometheusMetricConfigParsesOfficialPluginAttr(t *testing.T) {
 	}
 }
 
+func TestPrometheusMetricConfigAcceptsJSONNumberBuckets(t *testing.T) {
+	cfg, err := newPrometheusMetricConfig(map[string]any{
+		"default_buckets": []any{
+			stdjson.Number("10"),
+			stdjson.Number("50.5"),
+			stdjson.Number("100"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("newPrometheusMetricConfig() error = %v", err)
+	}
+
+	want := []float64{10, 50.5, 100}
+	if !reflect.DeepEqual(cfg.Buckets, want) {
+		t.Fatalf("Buckets = %v, want %v", cfg.Buckets, want)
+	}
+}
+
+func TestPrometheusMetricConfigRejectsInvalidJSONNumberBuckets(t *testing.T) {
+	tests := []struct {
+		name    string
+		buckets []any
+	}{
+		{name: "zero", buckets: []any{stdjson.Number("0")}},
+		{name: "negative", buckets: []any{stdjson.Number("-1")}},
+		{name: "nan", buckets: []any{stdjson.Number("NaN")}},
+		{name: "positive infinity", buckets: []any{stdjson.Number("+Inf")}},
+		{name: "negative infinity", buckets: []any{stdjson.Number("-Inf")}},
+		{name: "malformed", buckets: []any{stdjson.Number("not-a-number")}},
+		{name: "hexadecimal float", buckets: []any{stdjson.Number("0x1p2")}},
+		{name: "leading plus", buckets: []any{stdjson.Number("+1")}},
+		{name: "leading zero", buckets: []any{stdjson.Number("01")}},
+		{name: "missing integer", buckets: []any{stdjson.Number(".5")}},
+		{name: "missing fraction", buckets: []any{stdjson.Number("1.")}},
+		{name: "overflow", buckets: []any{stdjson.Number("1e10000")}},
+		{name: "duplicate", buckets: []any{stdjson.Number("1"), stdjson.Number("1.0")}},
+		{name: "descending", buckets: []any{stdjson.Number("2"), stdjson.Number("1")}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := newPrometheusMetricConfig(map[string]any{
+				"default_buckets": test.buckets,
+			}); err == nil {
+				t.Fatal("newPrometheusMetricConfig() error = nil")
+			}
+		})
+	}
+}
+
 func TestPrometheusMetricConfigRejectsMalformedConfiguration(t *testing.T) {
 	tests := []struct {
 		name string

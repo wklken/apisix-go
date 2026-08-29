@@ -389,6 +389,10 @@ func (e LogExecutor) runComposite(
 	var response base.ResponseCaptureSnapshot
 	if capture, ok := base.ResponseCaptureFromRequest(request); ok {
 		response = capture.Snapshot()
+		if bytesSent, known := capture.HTTPWireLength(request); known &&
+			apisixctx.GetRequestVars(request) != nil {
+			apisixctx.RegisterRequestVar(request, "$bytes_sent", bytesSent)
+		}
 	}
 	var requestBody []byte
 	var requestBodyTruncated bool

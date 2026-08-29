@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -27,6 +28,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/generation"
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
 	"github.com/wklken/apisix-go/pkg/runtime"
@@ -34,6 +36,58 @@ import (
 	"github.com/wklken/apisix-go/pkg/testutil"
 	"github.com/wklken/apisix-go/pkg/util"
 )
+
+func TestPostInitWarnsOnlyForInsecureEndpointAddrs(t *testing.T) {
+	tests := []struct {
+		name     string
+		tls      bool
+		wantWarn bool
+	}{
+		{name: "http", wantWarn: true},
+		{name: "https", tls: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("X-Elastic-Product", "Elasticsearch")
+				_, _ = w.Write([]byte(`{"version":{"number":"8.11.0"}}`))
+			})
+			var server *httptest.Server
+			if test.tls {
+				server = httptest.NewTLSServer(handler)
+			} else {
+				server = httptest.NewServer(handler)
+			}
+			t.Cleanup(server.Close)
+
+			var warnings []logger.Entry
+			stop := logger.ReplaceObserver(
+				"elasticsearch-logger-security-warning-"+test.name,
+				func(entry logger.Entry) {
+					if entry.Level == "WARN" &&
+						strings.Contains(entry.Message, "elasticsearch-logger endpoint_addrs") {
+						warnings = append(warnings, entry)
+					}
+				},
+			)
+			defer stop()
+
+			sslVerify := false
+			p := newTestPlugin(t, Config{
+				EndpointAddrs: []string{server.URL},
+				Field:         FieldConfig{Index: "services"},
+				SslVerify:     &sslVerify,
+			})
+			t.Cleanup(p.Stop)
+			if got := len(warnings); got != 0 && !test.wantWarn {
+				t.Fatalf("warnings = %#v, want none for TLS endpoints", warnings)
+			}
+			if got := len(warnings); got != 1 && test.wantWarn {
+				t.Fatalf("warnings = %#v, want one insecure endpoint warning", warnings)
+			}
+		})
+	}
+}
 
 type elasticsearchScopedSecretCall struct {
 	Scope secret.Scope
@@ -83,7 +137,11 @@ func (*elasticsearchScopedSecretBroker) RevokeAttempt(context.Context, secret.At
 }
 
 func newElasticsearchScopedSecretHarness(
-	t *testing.T, revision uint64, resourceID string, rawConfig map[string]any, values map[string]string,
+	t *testing.T,
+	revision uint64,
+	resourceID string,
+	rawConfig map[string]any,
+	values map[string]string,
 ) (secret.GenerationCapability, secret.Scope, *elasticsearchScopedSecretBroker, func()) {
 	t.Helper()
 	key := generation.ResourceKey{Kind: "routes", ID: resourceID}
@@ -248,12 +306,21 @@ func TestMaterializeScopedSecretsOwnsElasticsearchCredentials(t *testing.T) {
 				wantScope := scope
 				wantScope.Field = field
 				if broker.calls[i].Scope != wantScope {
-					t.Fatalf("resolver call %d scope = %#v, want %#v", i, broker.calls[i].Scope, wantScope)
+					t.Fatalf(
+						"resolver call %d scope = %#v, want %#v",
+						i,
+						broker.calls[i].Scope,
+						wantScope,
+					)
 				}
 			}
 			assertElasticsearchDescriptorFor(t, p.config.Auth.Password, tt.password)
 			if tt.authorization != nil {
-				assertElasticsearchDescriptorFor(t, p.config.Headers["Authorization"], tt.resolvedAuth)
+				assertElasticsearchDescriptorFor(
+					t,
+					p.config.Headers["Authorization"],
+					tt.resolvedAuth,
+				)
 			}
 			if tt.lowerAuth != "" && p.config.Headers["authorization"] != tt.lowerAuth {
 				t.Fatalf(
@@ -292,7 +359,8 @@ func TestMaterializeScopedSecretsFailureIsAtomicRetryableAndSingleflight(t *test
 		t.Fatal("first materialization error = nil")
 	}
 	if p.config.Auth.Password != passwordRaw || p.config.Headers["Authorization"] != authorizationRaw ||
-		p.password != nil || p.authorization != nil {
+		p.password != nil ||
+		p.authorization != nil {
 		t.Fatalf(
 			"failed materialization retained partial state: config=%#v password=%#v authorization=%#v",
 			p.config,
@@ -311,7 +379,12 @@ func TestMaterializeScopedSecretsFailureIsAtomicRetryableAndSingleflight(t *test
 	for index := range workers {
 		group.Go(func() {
 			<-start
-			errs[index] = base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p)
+			errs[index] = base.MaterializeScopedPluginSecrets(
+				context.Background(),
+				scope,
+				capabilityValue,
+				p,
+			)
 		})
 	}
 	close(start)
@@ -331,7 +404,12 @@ func TestMaterializeScopedSecretsFailureIsAtomicRetryableAndSingleflight(t *test
 		wantScope := scope
 		wantScope.Field = field
 		if broker.calls[index].Scope != wantScope {
-			t.Fatalf("resolver call %d scope = %#v, want %#v", index, broker.calls[index].Scope, wantScope)
+			t.Fatalf(
+				"resolver call %d scope = %#v, want %#v",
+				index,
+				broker.calls[index].Scope,
+				wantScope,
+			)
 		}
 	}
 	assertElasticsearchDescriptorFor(t, p.config.Auth.Password, "retry-password")
@@ -367,7 +445,8 @@ func TestMaterializeScopedSecretsRejectsBlankCredentialsAndRetries(t *testing.T)
 			if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err == nil {
 				t.Fatal("blank materialization error = nil")
 			}
-			if p.config.Auth.Password != passwordRaw || p.config.Headers["Authorization"] != authorizationRaw {
+			if p.config.Auth.Password != passwordRaw ||
+				p.config.Headers["Authorization"] != authorizationRaw {
 				t.Fatal("blank materialization changed public config")
 			}
 			broker.mu.Lock()
@@ -411,7 +490,11 @@ func TestAuthorizationIsolationAcrossElasticsearchGenerations(t *testing.T) {
 	t.Cleanup(first.Stop)
 	t.Cleanup(second.Stop)
 	if len(first.clients) != 1 || len(second.clients) != 1 {
-		t.Fatalf("client counts = %d/%d, want one per generation", len(first.clients), len(second.clients))
+		t.Fatalf(
+			"client counts = %d/%d, want one per generation",
+			len(first.clients),
+			len(second.clients),
+		)
 	}
 	var firstRef, secondRef *esClientRef
 	for _, ref := range first.clients {
@@ -453,9 +536,18 @@ func TestAuthorizationIsolationAcrossElasticsearchGenerations(t *testing.T) {
 			t.Fatalf("Authorization %q remaining count = %d", authorization, remaining)
 		}
 	}
-	assertElasticsearchClientRetainsNone(t, firstRef.client,
-		"first-password", "Basic "+base64.StdEncoding.EncodeToString([]byte("elastic:first-password")))
-	assertElasticsearchClientRetainsNone(t, secondRef.client, "second-password", "Bearer second-token")
+	assertElasticsearchClientRetainsNone(
+		t,
+		firstRef.client,
+		"first-password",
+		"Basic "+base64.StdEncoding.EncodeToString([]byte("elastic:first-password")),
+	)
+	assertElasticsearchClientRetainsNone(
+		t,
+		secondRef.client,
+		"second-password",
+		"Bearer second-token",
+	)
 }
 
 func assertElasticsearchClientRetainsNone(t *testing.T, client any, forbidden ...string) {
@@ -535,7 +627,8 @@ func findElasticsearchRetainedSecret(
 		credentialType := reflect.TypeFor[elasticsearchCredentialTransport]()
 		for index := range value.NumField() {
 			field := value.Type().Field(index)
-			if value.Type() == credentialType && (field.Name == "owner" || field.Name == "transport") {
+			if value.Type() == credentialType &&
+				(field.Name == "owner" || field.Name == "transport") {
 				continue
 			}
 			if foundPath, text, ok := findElasticsearchRetainedSecret(
@@ -574,7 +667,10 @@ func TestLowercaseAuthorizationRemainsOrdinaryHeader(t *testing.T) {
 		select {
 		case got := <-received:
 			if got != "ordinary-lowercase" {
-				t.Fatalf("Authorization = %q, want ordinary lowercase header to retain precedence", got)
+				t.Fatalf(
+					"Authorization = %q, want ordinary lowercase header to retain precedence",
+					got,
+				)
 			}
 		case <-time.After(time.Second):
 			t.Fatal("timed out waiting for Elasticsearch request")
@@ -586,7 +682,9 @@ type retainingElasticsearchRoundTripper struct {
 	request *http.Request
 }
 
-func (transport *retainingElasticsearchRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+func (transport *retainingElasticsearchRoundTripper) RoundTrip(
+	req *http.Request,
+) (*http.Response, error) {
 	transport.request = req
 	return &http.Response{
 		StatusCode: http.StatusOK,
@@ -608,7 +706,11 @@ func TestElasticsearchCredentialTransportClearsRetainedAuthorization(t *testing.
 	}
 	var derived []byte
 	credentials.afterDerive = func(value []byte) { derived = value }
-	req := httptest.NewRequest(http.MethodPost, "http://example.com/_bulk", strings.NewReader("{}\n"))
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"http://example.com/_bulk",
+		strings.NewReader("{}\n"),
+	)
 	req.Header.Set("Authorization", "ordinary")
 	resp, err := credentials.RoundTrip(req)
 	if err != nil {
@@ -616,7 +718,10 @@ func TestElasticsearchCredentialTransportClearsRetainedAuthorization(t *testing.
 	}
 	_ = resp.Body.Close()
 	if req.Header.Get("Authorization") != "ordinary" {
-		t.Fatalf("caller request Authorization = %q, want untouched ordinary value", req.Header.Get("Authorization"))
+		t.Fatalf(
+			"caller request Authorization = %q, want untouched ordinary value",
+			req.Header.Get("Authorization"),
+		)
 	}
 	if retained.request == req {
 		t.Fatal("credential transport passed the caller request directly")
@@ -639,7 +744,11 @@ func TestElasticsearchCredentialTransportClearsRetainedAuthorization(t *testing.
 	for field := range credentialType.Fields() {
 		if field.Type.Kind() == reflect.String || field.Type.Kind() == reflect.Slice ||
 			field.Type.Kind() == reflect.Array {
-			t.Fatalf("credential transport persistently retains credential-capable field %s %s", field.Name, field.Type)
+			t.Fatalf(
+				"credential transport persistently retains credential-capable field %s %s",
+				field.Name,
+				field.Type,
+			)
 		}
 	}
 	credentials.destroy()
@@ -979,12 +1088,20 @@ func TestNewElasticsearchClientUsesOfficialBulkTransport(t *testing.T) {
 		}
 		gotUsername, gotPassword, ok := r.BasicAuth()
 		if !ok || gotUsername != username || gotPassword != password {
-			t.Errorf("BasicAuth() = %q/%q/%v, want %q/%q/true", gotUsername, gotPassword, ok, username, password)
+			t.Errorf(
+				"BasicAuth() = %q/%q/%v, want %q/%q/true",
+				gotUsername,
+				gotPassword,
+				ok,
+				username,
+				password,
+			)
 		}
-		gotTimeout := r.URL.Query().Get("timeout")
-		parsedTimeout, err := time.ParseDuration(gotTimeout)
-		if err != nil || parsedTimeout != 10*time.Second {
-			t.Errorf("timeout = %q, want 10s", gotTimeout)
+		if r.URL.RawQuery != "" {
+			t.Errorf(
+				"RawQuery = %q, want empty to match APISIX 3.17 client-only timeout",
+				r.URL.RawQuery,
+			)
 		}
 
 		if attempts.Add(1) == 1 {
@@ -1014,9 +1131,8 @@ func TestNewElasticsearchClientUsesOfficialBulkTransport(t *testing.T) {
 	})
 
 	resp, err := (esapi.BulkRequest{
-		Body:    strings.NewReader("{}\n"),
-		Header:  http.Header{"Content-Type": []string{"application/x-ndjson"}},
-		Timeout: 10 * time.Second,
+		Body:   strings.NewReader("{}\n"),
+		Header: http.Header{"Content-Type": []string{"application/x-ndjson"}},
 	}).Do(context.Background(), client)
 	if err != nil {
 		t.Fatalf("BulkRequest.Do() error = %v", err)
@@ -1122,7 +1238,10 @@ func TestSendBatchCancelsElasticsearchBulkWithContext(t *testing.T) {
 	case <-canceled:
 	case <-time.After(100 * time.Millisecond):
 		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-			t.Fatalf("SendBatch() error = %v, want context cancellation when backend did not observe it", err)
+			t.Fatalf(
+				"SendBatch() error = %v, want context cancellation when backend did not observe it",
+				err,
+			)
 		}
 	}
 }
@@ -1157,7 +1276,8 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 
 func TestPostInitRejectsMissingDataEncryptionResolver(t *testing.T) {
 	p := &Plugin{config: Config{Auth: &AuthConfig{Username: "elastic", Password: "private"}}}
-	if err := p.MaterializeSecrets(); err == nil || err.Error() != "data-encryption resolver is required" {
+	if err := p.MaterializeSecrets(); err == nil ||
+		err.Error() != "data-encryption resolver is required" {
 		t.Fatalf("MaterializeSecrets() error = %v, want missing resolver error", err)
 	}
 }
@@ -1172,7 +1292,11 @@ func TestEffectiveLogFormatRouteWins(t *testing.T) {
 		LogFormat: route,
 	}, view)
 	if len(p.LogFormat) != 1 || p.LogFormat["route"] != route["route"] {
-		t.Fatalf("effective format = %#v, want route format over metadata %#v", p.LogFormat, metadata)
+		t.Fatalf(
+			"effective format = %#v, want route format over metadata %#v",
+			p.LogFormat,
+			metadata,
+		)
 	}
 	route["route"] = "mutated"
 	if p.LogFormat["route"] == "mutated" {
@@ -1212,11 +1336,16 @@ func TestEffectiveLogFormatRejectsEmptyBeforeSideEffects(t *testing.T) {
 		p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
 	}
 	err := p.PostInit()
-	if err == nil || !strings.Contains(err.Error(), name) || !strings.Contains(err.Error(), "log_format") {
+	if err == nil || !strings.Contains(err.Error(), name) ||
+		!strings.Contains(err.Error(), "log_format") {
 		t.Fatalf("PostInit() error = %v, want %s log_format rejection", err, name)
 	}
 	if p.BatchProcessor != nil || len(p.clients) != 0 {
-		t.Fatalf("PostInit() side effects = batch=%v clients=%d, want none", p.BatchProcessor, len(p.clients))
+		t.Fatalf(
+			"PostInit() side effects = batch=%v clients=%d, want none",
+			p.BatchProcessor,
+			len(p.clients),
+		)
 	}
 }
 
@@ -1235,7 +1364,11 @@ func TestPreparedGenerationsRetainMetadataFormat(t *testing.T) {
 		t.Fatalf("N metadata = format %q pending %d, want n/11", got, n.config.MaxPendingEntries)
 	}
 	if got := n1.LogFormat["generation"]; got != "n1" || n1.config.MaxPendingEntries != 12 {
-		t.Fatalf("N+1 metadata = format %q pending %d, want n1/12", got, n1.config.MaxPendingEntries)
+		t.Fatalf(
+			"N+1 metadata = format %q pending %d, want n1/12",
+			got,
+			n1.config.MaxPendingEntries,
+		)
 	}
 }
 
@@ -1266,7 +1399,11 @@ func TestPostInitRejectsInvalidMetadataBeforeSideEffects(t *testing.T) {
 		t.Fatalf("PostInit() leaked metadata: %v", err)
 	}
 	if p.BatchProcessor != nil || len(p.clients) != 0 {
-		t.Fatalf("PostInit() side effects = batch=%v clients=%d, want none", p.BatchProcessor, len(p.clients))
+		t.Fatalf(
+			"PostInit() side effects = batch=%v clients=%d, want none",
+			p.BatchProcessor,
+			len(p.clients),
+		)
 	}
 }
 
@@ -1340,8 +1477,9 @@ func TestPostInitRejectsInvalidEncryptedAuthPassword(t *testing.T) {
 		Auth:          &AuthConfig{Username: "elastic", Password: "not-a-ciphertext"},
 	}}
 	p.SetDependencies(base.Dependencies{
-		Tasks:          newLoggerTestTaskOwner(t),
-		DataEncryption: testutil.DataEncryptionService(true, []string{"qeddd145sfvddff3"}).Resolver(),
+		Tasks: newLoggerTestTaskOwner(t),
+		DataEncryption: testutil.DataEncryptionService(true, []string{"qeddd145sfvddff3"}).
+			Resolver(),
 	})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
@@ -1394,6 +1532,12 @@ func TestSendWritesBulkNDJSONWithHeadersAndAuth(t *testing.T) {
 		}
 		if r.URL.Path != "/_bulk" {
 			t.Fatalf("path = %q, want /_bulk", r.URL.Path)
+		}
+		if r.URL.RawQuery != "" {
+			t.Fatalf(
+				"RawQuery = %q, want empty to match APISIX 3.17 client-only timeout",
+				r.URL.RawQuery,
+			)
 		}
 		if r.Method != http.MethodPost {
 			t.Fatalf("method = %s, want POST", r.Method)
@@ -1696,7 +1840,11 @@ func TestBulkBodyIgnoresUnsupportedConfiguredType(t *testing.T) {
 			}
 			if test.wantType == "" {
 				if strings.Contains(action, `"_type"`) {
-					t.Fatalf("bulk action = %s, want no _type for Elasticsearch %s", action, test.version)
+					t.Fatalf(
+						"bulk action = %s, want no _type for Elasticsearch %s",
+						action,
+						test.version,
+					)
 				}
 				return
 			}
@@ -1807,7 +1955,11 @@ func TestHandlerIncludesRequestAndResponseBody(t *testing.T) {
 		BatchMaxSize:     1,
 	})
 
-	req := httptest.NewRequest(http.MethodPost, "http://example.com/orders", bytes.NewBufferString(`{"order":1}`))
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"http://example.com/orders",
+		bytes.NewBufferString(`{"order":1}`),
+	)
 	rr := httptest.NewRecorder()
 	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
@@ -1885,7 +2037,11 @@ func TestHandlerIncludesBodiesWhenExpressionsMatch(t *testing.T) {
 		BatchMaxSize:        1,
 	})
 
-	req := httptest.NewRequest(http.MethodPost, "http://example.com/orders", bytes.NewBufferString(`{"order":2}`))
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"http://example.com/orders",
+		bytes.NewBufferString(`{"order":2}`),
+	)
 	req.Header.Set("X-Log-Body", "yes")
 	rr := httptest.NewRecorder()
 	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1949,7 +2105,11 @@ func TestHandlerSkipsBodiesWhenExpressionsDoNotMatch(t *testing.T) {
 		BatchMaxSize:        1,
 	})
 
-	req := httptest.NewRequest(http.MethodPost, "http://example.com/orders", bytes.NewBufferString(`{"order":3}`))
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"http://example.com/orders",
+		bytes.NewBufferString(`{"order":3}`),
+	)
 	req.Header.Set("X-Log-Body", "no")
 	rr := httptest.NewRecorder()
 	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -2039,6 +2199,67 @@ func TestSchemaAcceptsEndpointAddrHeadersAndBodyFields(t *testing.T) {
 	}
 }
 
+func TestSchemaMatchesAPISIX317Matrix(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	valid := []map[string]any{
+		{
+			"endpoint_addr":    "http://127.0.0.1:9200",
+			"field":            map[string]any{"index": "services"},
+			"auth":             map[string]any{"username": "elastic", "password": "123456"},
+			"ssl_verify":       false,
+			"timeout":          60,
+			"max_retry_count":  0,
+			"retry_delay":      1,
+			"buffer_duration":  60,
+			"inactive_timeout": 2,
+			"batch_max_size":   1,
+		},
+		{
+			"endpoint_addr": "http://127.0.0.1:9200",
+			"field":         map[string]any{"index": "services"},
+		},
+	}
+	for i, config := range valid {
+		if err := util.Validate(config, p.GetSchema()); err != nil {
+			t.Fatalf("valid Elasticsearch schema case %d rejected: %v", i+1, err)
+		}
+	}
+
+	invalid := []map[string]any{
+		{"field": map[string]any{"index": "services"}},
+		{"endpoint_addr": "http://127.0.0.1:9200"},
+		{"endpoint_addr": "http://127.0.0.1:9200", "field": map[string]any{}},
+		{"endpoint_addr": "http://127.0.0.1:9200/", "field": map[string]any{"index": "services"}},
+	}
+	for i, config := range invalid {
+		if err := util.Validate(config, p.GetSchema()); err == nil {
+			t.Fatalf("invalid Elasticsearch schema case %d accepted: %#v", i+1, config)
+		}
+	}
+}
+
+func TestResolveIndexTimeVarsMatchesAPISIX317(t *testing.T) {
+	tests := []struct {
+		format  string
+		pattern string
+	}{
+		{format: "%Y", pattern: `^prefix\d{4}suffix$`},
+		{format: "%m", pattern: `^prefix\d{2}suffix$`},
+		{format: "%d", pattern: `^prefix\d{2}suffix$`},
+		{format: "%Y.%m.%d", pattern: `^prefix\d{4}\.\d{2}\.\d{2}suffix$`},
+	}
+	for _, test := range tests {
+		got := replaceIndexTimeVars("prefix{" + test.format + "}suffix")
+		if !regexp.MustCompile(test.pattern).MatchString(got) {
+			t.Errorf("replaceIndexTimeVars(%q) = %q, want match %q", test.format, got, test.pattern)
+		}
+	}
+}
+
 func encryptElasticsearchTestValue(t *testing.T, key string, value string) string {
 	t.Helper()
 	padding := aes.BlockSize - len(value)%aes.BlockSize
@@ -2108,7 +2329,11 @@ func TestHandlerResolvesBraceFormApisixVariableInIndex(t *testing.T) {
 	case body := <-received:
 		wantIndex := `"services-myservice-` + time.Now().Format("2006.01.02") + `"`
 		if !strings.Contains(body, `"_index":`+wantIndex) {
-			t.Fatalf("bulk body = %q, want resolved brace-form index containing %s", body, wantIndex)
+			t.Fatalf(
+				"bulk body = %q, want resolved brace-form index containing %s",
+				body,
+				wantIndex,
+			)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for Elasticsearch bulk request")

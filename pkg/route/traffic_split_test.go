@@ -81,7 +81,7 @@ func testTrafficSplitBinding(t testing.TB, routeResource resource.Route) plugin.
 	return binding
 }
 
-func TestApplyTrafficSplitOverrideUpdatesProxyTarget(t *testing.T) {
+func TestApplyTrafficSplitOverrideDefaultsToPassHost(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "http://route.example.com/get", nil)
 	req = traffic_split.WithOverride(req, &traffic_split.Override{
 		Scheme: "https",
@@ -96,8 +96,8 @@ func TestApplyTrafficSplitOverrideUpdatesProxyTarget(t *testing.T) {
 	if req.URL.Host != "shadow.example.com:9443" {
 		t.Fatalf("URL host = %q, want shadow.example.com:9443", req.URL.Host)
 	}
-	if req.Host != "shadow.example.com:9443" {
-		t.Fatalf("Host = %q, want shadow.example.com:9443", req.Host)
+	if req.Host != "route.example.com" {
+		t.Fatalf("Host = %q, want route.example.com", req.Host)
 	}
 }
 

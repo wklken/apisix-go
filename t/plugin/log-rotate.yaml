@@ -1,14 +1,21 @@
 sources:
   - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
     file: t/plugin/log-rotate.t
-    tests: 6
+    tests: 4
+    test_numbers: [1, 2, 3, 5]
   - repository: https://github.com/apache/apisix
     commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/log-rotate.t
+    tests: 1
+    test_numbers: [6]
+    regression_only: true
+  - repository: https://github.com/apache/apisix
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
     file: t/plugin/log-rotate2.t
     tests: 5
   - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
     file: t/plugin/log-rotate3.t
     tests: 6
 
@@ -30,9 +37,6 @@ cases:
         - id: log-rotate-interval
           uri: /interval
           plugins:
-            log-rotate:
-              access_log: '{{WORK_DIR}}/logs/access.log'
-              error_log: '{{WORK_DIR}}/logs/error.log'
             file-logger: {path: '{{WORK_DIR}}/logs/access.log'}
           upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
     fixtures:
@@ -47,6 +51,7 @@ cases:
         actions: [{wait: 1100ms}]
         input: {path: /interval}
         output: {status: 200, body: {equals: ok}}
+        wait: 100ms
     after_shutdown:
       - path: {equals: '{{WORK_DIR}}/logs/access.log'}
         body: {matches: '"path":"/interval"'}
@@ -71,9 +76,6 @@ cases:
         - id: log-rotate-current
           uri: /current
           plugins:
-            log-rotate:
-              access_log: '{{WORK_DIR}}/logs/access.log'
-              error_log: '{{WORK_DIR}}/logs/error.log'
             file-logger: {path: '{{WORK_DIR}}/logs/access.log'}
           upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
     fixtures:
@@ -105,9 +107,6 @@ cases:
         - id: log-rotate-concurrent
           uri: /concurrent
           plugins:
-            log-rotate:
-              access_log: '{{WORK_DIR}}/logs/access.log'
-              error_log: '{{WORK_DIR}}/logs/error.log'
             file-logger: {path: '{{WORK_DIR}}/logs/access.log'}
           upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
     fixtures:
@@ -132,58 +131,6 @@ cases:
       - path: {equals: '{{WORK_DIR}}/logs/error.log'}
         body: {equals: ""}
 
-  - name: standalone-hot-reload-disables-log-rotate
-    source: {file: t/plugin/log-rotate.t, tests: [4]}
-    runtime:
-      plugins: [log-rotate, file-logger]
-      plugin_attr:
-        log-rotate: {interval: 1, max_kept: 3, max_size: -1, enable_compression: false}
-    files:
-      - {path: logs/access.log, body: "survives disabled rotation\n"}
-    config:
-      plugin_metadata:
-        - id: file-logger
-          log_format: {path: $uri}
-      routes:
-        - id: log-rotate-disable
-          uri: /disabled
-          plugins:
-            log-rotate:
-              access_log: '{{WORK_DIR}}/logs/access.log'
-              error_log: '{{WORK_DIR}}/logs/error.log'
-            file-logger: {path: '{{WORK_DIR}}/logs/access.log'}
-          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
-    fixtures:
-      - name: primary
-        kind: http
-        expect: [{path: {equals: /disabled}}]
-        count: {at_least: 3, at_most: 3}
-        respond: [{status: 200, body: ok}]
-    steps:
-      - name: initialize-before-disable
-        input: {path: /disabled}
-        output: {status: 200, body: {equals: ok}}
-      - name: remove-log-rotate-from-standalone-route
-        config:
-          plugin_metadata:
-            - id: file-logger
-              log_format: {path: $uri}
-          routes:
-            - id: log-rotate-disable
-              uri: /disabled
-              plugins:
-                file-logger: {path: '{{WORK_DIR}}/logs/access.log'}
-              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
-        config_probe:
-          input: {path: /disabled}
-          output: {status: 200, body: {equals: ok}}
-        actions: [{wait: 1100ms}]
-        input: {path: /disabled}
-        output: {status: 200, body: {equals: ok}}
-    after_shutdown:
-      - path: {equals: '{{WORK_DIR}}/logs/access.log'}
-        body: {matches: '(?s)^survives disabled rotation\n(?:\{[^\n]*"path":"/disabled"[^\n]*\}\n){3}$'}
-
   - name: uncompressed-history-does-not-change-without-a-tick
     source: {file: t/plugin/log-rotate.t, tests: [5]}
     runtime:
@@ -201,9 +148,6 @@ cases:
         - id: log-rotate-uncompressed-stable
           uri: /stable
           plugins:
-            log-rotate:
-              access_log: '{{WORK_DIR}}/logs/access.log'
-              error_log: '{{WORK_DIR}}/logs/error.log'
             file-logger: {path: '{{WORK_DIR}}/logs/access.log'}
           upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
     fixtures:
@@ -238,9 +182,6 @@ cases:
         - id: log-rotate-missing-access
           uri: /missing-access
           plugins:
-            log-rotate:
-              access_log: '{{WORK_DIR}}/logs/access.log'
-              error_log: '{{WORK_DIR}}/logs/error.log'
             file-logger: {path: '{{WORK_DIR}}/logs/access.log'}
           upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
     fixtures:
@@ -284,9 +225,6 @@ cases:
         - id: log-rotate-compress
           uri: /compress
           plugins:
-            log-rotate:
-              access_log: '{{WORK_DIR}}/logs/access.log'
-              error_log: '{{WORK_DIR}}/logs/error.log'
             file-logger: {path: '{{WORK_DIR}}/logs/access.log'}
           upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
     fixtures:
@@ -301,6 +239,7 @@ cases:
         actions: [{wait: 1100ms}]
         input: {path: /compress}
         output: {status: 200, body: {equals: ok}}
+        wait: 100ms
     after_shutdown:
       - path: {equals: '{{WORK_DIR}}/logs/access.log'}
         body: {matches: '"path":"/compress"'}
@@ -325,9 +264,6 @@ cases:
         - id: log-rotate-compress-current
           uri: /compress-current
           plugins:
-            log-rotate:
-              access_log: '{{WORK_DIR}}/logs/access.log'
-              error_log: '{{WORK_DIR}}/logs/error.log'
             file-logger: {path: '{{WORK_DIR}}/logs/access.log'}
           upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
     fixtures:
@@ -359,9 +295,6 @@ cases:
         - id: log-rotate-compress-stable
           uri: /compress-stable
           plugins:
-            log-rotate:
-              access_log: '{{WORK_DIR}}/logs/access.log'
-              error_log: '{{WORK_DIR}}/logs/error.log'
             file-logger: {path: '{{WORK_DIR}}/logs/access.log'}
           upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
     fixtures:
@@ -398,9 +331,6 @@ cases:
         - id: log-rotate-align
           uri: /align
           plugins:
-            log-rotate:
-              access_log: '{{WORK_DIR}}/logs/access.log'
-              error_log: '{{WORK_DIR}}/logs/error.log'
             file-logger: {path: '{{WORK_DIR}}/logs/access.log'}
           upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
     fixtures:
@@ -433,9 +363,6 @@ cases:
         - id: log-rotate-compress-prune
           uri: /compress-prune
           plugins:
-            log-rotate:
-              access_log: '{{WORK_DIR}}/logs/access.log'
-              error_log: '{{WORK_DIR}}/logs/error.log'
             file-logger: {path: '{{WORK_DIR}}/logs/access.log'}
           upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
     fixtures:
@@ -471,9 +398,6 @@ cases:
         - id: log-rotate-max-size
           uri: /max-size
           plugins:
-            log-rotate:
-              access_log: '{{WORK_DIR}}/logs/access.log'
-              error_log: '{{WORK_DIR}}/logs/error.log'
             file-logger: {path: '{{WORK_DIR}}/logs/access.log'}
           upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
     fixtures:
@@ -507,9 +431,6 @@ cases:
         - id: log-rotate-max-size-current
           uri: /max-size-current
           plugins:
-            log-rotate:
-              access_log: '{{WORK_DIR}}/logs/access.log'
-              error_log: '{{WORK_DIR}}/logs/error.log'
             file-logger: {path: '{{WORK_DIR}}/logs/access.log'}
           upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
     fixtures:
@@ -543,9 +464,6 @@ cases:
         - id: log-rotate-max-size-stable
           uri: /max-size-stable
           plugins:
-            log-rotate:
-              access_log: '{{WORK_DIR}}/logs/access.log'
-              error_log: '{{WORK_DIR}}/logs/error.log'
             file-logger: {path: '{{WORK_DIR}}/logs/access.log'}
           upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
     fixtures:
@@ -566,6 +484,9 @@ cases:
     source: {file: t/plugin/log-rotate3.t, tests: [4]}
     runtime:
       plugins: [log-rotate, file-logger]
+      nginx_config:
+        error_log: logs/err1.log
+        http: {access_log: logs/acc1.log, enable_access_log: true}
       plugin_attr:
         log-rotate: {interval: 86400, max_kept: 1, max_size: 1, enable_compression: true}
     files:
@@ -581,9 +502,6 @@ cases:
         - id: log-rotate-custom-names
           uri: /custom-names
           plugins:
-            log-rotate:
-              access_log: '{{WORK_DIR}}/logs/acc1.log'
-              error_log: '{{WORK_DIR}}/logs/err1.log'
             file-logger: {path: '{{WORK_DIR}}/logs/acc1.log'}
           upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
     fixtures:
@@ -594,6 +512,7 @@ cases:
       - name: rotate-custom-log-names
         input: {path: /custom-names}
         output: {status: 200, body: {equals: "2"}}
+        wait: 100ms
     after_shutdown:
       - path: {equals: '{{WORK_DIR}}/logs/2020-01-01_00-00-00__acc1.log.tar.gz'}
         absent: true
@@ -608,6 +527,9 @@ cases:
     source: {file: t/plugin/log-rotate3.t, tests: [5]}
     runtime:
       plugins: [log-rotate, file-logger]
+      nginx_config:
+        error_log: logs/err2.log
+        http: {access_log: logs/acc2.log, enable_access_log: true}
       plugin_attr:
         log-rotate: {interval: 86400, max_kept: 0, max_size: 1, enable_compression: false}
     files:
@@ -621,9 +543,6 @@ cases:
         - id: log-rotate-max-kept-zero
           uri: /max-kept-zero
           plugins:
-            log-rotate:
-              access_log: '{{WORK_DIR}}/logs/acc2.log'
-              error_log: '{{WORK_DIR}}/logs/err2.log'
             file-logger: {path: '{{WORK_DIR}}/logs/acc2.log'}
           upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
     fixtures:
@@ -634,6 +553,7 @@ cases:
       - name: rotate-and-remove-all-history
         input: {path: /max-kept-zero}
         output: {status: 200, body: {equals: "2"}}
+        wait: 100ms
     after_shutdown:
       - path: {equals: '{{WORK_DIR}}/logs/acc2.log'}
         body: {matches: '"path":"/max-kept-zero"'}
@@ -646,6 +566,9 @@ cases:
     source: {file: t/plugin/log-rotate3.t, tests: [6]}
     runtime:
       plugins: [log-rotate, file-logger]
+      nginx_config:
+        error_log: logs/error.log
+        http: {access_log: logs/acc3.log, enable_access_log: false}
       plugin_attr:
         log-rotate: {interval: 86400, max_kept: 2, max_size: 1, enable_compression: false}
     files:
@@ -659,10 +582,6 @@ cases:
         - id: log-rotate-access-disabled
           uri: /access-disabled
           plugins:
-            log-rotate:
-              access_log: '{{WORK_DIR}}/logs/acc3.log'
-              error_log: '{{WORK_DIR}}/logs/error.log'
-              enable_access_log: false
             file-logger: {path: '{{WORK_DIR}}/logs/acc3.log'}
           upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
     fixtures:
@@ -673,6 +592,7 @@ cases:
       - name: rotate-error-with-access-disabled
         input: {path: /access-disabled}
         output: {status: 200, body: {equals: "0"}}
+        wait: 100ms
     after_shutdown:
       - path: {equals: '{{WORK_DIR}}/logs/acc3.log'}
         body: {matches: '(?s)^disabled access remains\n.*"path":"/access-disabled".*$'}

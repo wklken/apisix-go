@@ -145,6 +145,9 @@ func BuildPreparedHandler(input PreparedHandlerInput) (http.Handler, error) {
 	if err != nil {
 		return nil, fmt.Errorf("build prepared handler route %q request pipeline: %w", routeResource.ID, err)
 	}
+	if len(terminalCandidates) == 0 {
+		pipeline = pipeline.WithBeforeProxyHooksAtTransport()
+	}
 	websocketEnabled := routeResource.EnableWebsocket
 	if !routeResource.EnableWebsocketConfigured() {
 		websocketEnabled = service.EnableWebsocket
@@ -287,8 +290,9 @@ func buildPreparedReverseHandler(
 		return nil, routeProtocolTerminals{}, err
 	}
 	loadBalancer := runtime.LoadBalancer
-	transport := &trafficSplitRoundTripper{fallback: runtime.RoundTripper}
+	transport := plugin.WrapBeforeProxyHooks(&trafficSplitRoundTripper{fallback: runtime.RoundTripper})
 	director := func(request *http.Request) {
+		applyProxyRewriteBeforeUpstream(request)
 		originalHost := request.Host
 		if applyTrafficSplitOverride(request) {
 			// The materialized traffic-split binding selected a prepared runtime.
@@ -421,6 +425,7 @@ func newRequestPipelineWithLog(
 	bindings []plugin.Binding,
 	resolve plugin.ConsumerBindingResolver,
 ) (plugin.RequestPipeline, error) {
+	bindings = bindMatchedRouteRequestContext(bindings)
 	logExecutor, err := plugin.NewLogExecutorFromBindings(bindings)
 	if err != nil {
 		return plugin.RequestPipeline{}, err
@@ -479,11 +484,15 @@ func applyFinalProxyRewrite(request *http.Request) {
 		apisixctx.RegisterApisixVar(request, "$balancer_port", request.URL.Port())
 	}
 	rewrite := apisixctx.FinalizeProxyRewrite(request)
-	if rewrite.Host != "" {
-		request.Host = rewrite.Host
-	}
 	if rewrite.Scheme != "" {
 		request.URL.Scheme = rewrite.Scheme
+	}
+}
+
+func applyProxyRewriteBeforeUpstream(request *http.Request) {
+	rewrite := apisixctx.FinalizeProxyRewrite(request)
+	if rewrite.Host != "" {
+		request.Host = rewrite.Host
 	}
 }
 
@@ -595,7 +604,7 @@ func newErrorHandler(staticConfig *appconfig.Config) pxy.ErrorHandler {
 		// })
 
 		var maxBytesErr *http.MaxBytesError
-		if errors.As(err, &maxBytesErr) {
+		if errors.As(err, &maxBytesErr) || base.IsBodyTooLarge(err) {
 			apisixctx.SetRequestResponseSource(r, apisixctx.ResponseSourceAPISIX)
 			_ = util.WriteJSONMessage(w, http.StatusRequestEntityTooLarge, "request body too large")
 			return

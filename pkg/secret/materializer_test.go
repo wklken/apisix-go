@@ -62,6 +62,56 @@ func TestGenerationCapabilitySameAuthorityRequiresExactRegistration(t *testing.T
 	}
 }
 
+func TestGenerationCapabilitySharedLimiterUsesExactAttemptLifetime(t *testing.T) {
+	resource := generation.ResourceKey{Kind: "routes", ID: "shared-limiter"}
+	ticket, set := testPublication(t, 10, generation.DomainHTTP, resource)
+	firstRegistration, err := NewScopedMaterializer(&testScopedBroker{}, testCatalog(t)).
+		RegisterCandidate(context.Background(), ticket, set)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := NewGenerationCapability(firstRegistration, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	alias, err := NewGenerationCapability(firstRegistration, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstLimiter, err := first.SharedLimiter("request-validation", 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	aliasLimiter, err := alias.SharedLimiter("request-validation", 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	releases := make([]func(), 0, 4)
+	for range 4 {
+		release, err := firstLimiter.Acquire(context.Background(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		releases = append(releases, release)
+	}
+	defer func() {
+		for _, release := range releases {
+			release()
+		}
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if _, err := aliasLimiter.Acquire(ctx, nil); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("alias limiter error = %v, want shared capacity", err)
+	}
+	if err := firstRegistration.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := aliasLimiter.Acquire(context.Background(), nil); !errors.Is(err, ErrCredentialUnavailable) {
+		t.Fatalf("closed attempt limiter error = %v, want credential unavailable", err)
+	}
+}
+
 type testAttemptResolver struct {
 	resolve func(context.Context, Scope, string) (string, error)
 	close   func(context.Context) error

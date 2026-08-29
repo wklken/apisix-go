@@ -150,6 +150,73 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	return p
 }
 
+func TestPostInitWarnsOnlyForInsecureTransports(t *testing.T) {
+	tests := []struct {
+		name         string
+		tls          bool
+		scheme       string
+		wantWarnings []string
+	}{
+		{
+			name:   "insecure",
+			scheme: "http",
+			wantWarnings: []string{
+				"Using error-log-logger skywalking.endpoint_addr with no TLS is a security risk",
+				"Using error-log-logger clickhouse.endpoint_addr with no TLS is a security risk",
+				"Keeping tcp.tls disabled in error-log-logger configuration is a security risk",
+			},
+		},
+		{name: "secure", tls: true, scheme: "https"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var warnings []string
+			stop := logger.ReplaceObserver("error-log-logger-security-warning-"+test.name, func(entry logger.Entry) {
+				if entry.Level == "WARN" && strings.Contains(entry.Message, "error-log-logger") {
+					warnings = append(warnings, entry.Message)
+				}
+			})
+			defer stop()
+
+			newTestPlugin(t, Config{
+				TCP: &TCPConfig{Host: "host.com", Port: 99, TLS: test.tls},
+				Skywalking: &SkywalkingConfig{
+					EndpointAddr: test.scheme + "://a.example",
+				},
+				Clickhouse: &ClickHouseConfig{
+					EndpointAddr: test.scheme + "://clickhouse.example",
+					User:         "user",
+					Password:     "secret",
+					Database:     "default",
+					LogTable:     "logs",
+				},
+			})
+
+			if !reflect.DeepEqual(warnings, test.wantWarnings) {
+				t.Fatalf("warnings = %#v, want %#v", warnings, test.wantWarnings)
+			}
+		})
+	}
+}
+
+func TestPostInitDoesNotWarnForPluginMetadataTransport(t *testing.T) {
+	var warnings []string
+	stop := logger.ReplaceObserver("error-log-logger-metadata-security-warning", func(entry logger.Entry) {
+		if entry.Level == "WARN" && strings.Contains(entry.Message, "error-log-logger") {
+			warnings = append(warnings, entry.Message)
+		}
+	})
+	defer stop()
+
+	newPreparedMetadataPlugin(t, Config{}, map[string]any{
+		"tcp": map[string]any{"host": "host.com", "port": 99, "tls": false},
+	})
+
+	if len(warnings) != 0 {
+		t.Fatalf("plugin metadata warnings = %#v, want none", warnings)
+	}
+}
+
 func TestMaterializeSecretsRejectsMissingDataEncryptionResolver(t *testing.T) {
 	p := &Plugin{}
 	if err := base.MaterializePluginSecrets(p); err == nil || !strings.Contains(err.Error(), "credential unavailable") {
@@ -165,13 +232,34 @@ func TestMetadataSchemaIsExplicitForErrorLogLogger(t *testing.T) {
 	if p.GetMetadataSchema() == "" {
 		t.Fatal("error-log-logger metadata schema is empty")
 	}
-	if p.GetMetadataSchema() != p.GetSchema() {
-		t.Fatal("metadata schema diverged from the additive error-log-logger schema")
+	if p.GetMetadataSchema() == p.GetSchema() {
+		t.Fatal("metadata schema unexpectedly reused the route-level empty-object schema")
+	}
+	if err := util.Validate(map[string]any{"ignored": true}, p.GetSchema()); err != nil {
+		t.Fatalf("route-level schema rejected an object APISIX ignores: %v", err)
 	}
 	if err := util.Validate(map[string]any{
 		"tcp": map[string]any{"host": "127.0.0.1", "port": 19001},
 	}, p.GetMetadataSchema()); err != nil {
 		t.Fatalf("metadata schema rejected valid TCP document: %v", err)
+	}
+}
+
+func TestPostInitWithoutMetadataReportsConfigurationAndStartsNoSender(t *testing.T) {
+	var messages []string
+	stop := logger.ReplaceObserver("error-log-logger-missing-metadata", func(entry logger.Entry) {
+		if strings.Contains(entry.Message, "plugin_metadata for error-log-logger") {
+			messages = append(messages, entry.Message)
+		}
+	})
+	defer stop()
+
+	p := newTestPlugin(t, Config{})
+	if !reflect.DeepEqual(messages, []string{"please set the correct plugin_metadata for error-log-logger"}) {
+		t.Fatalf("missing metadata messages = %#v", messages)
+	}
+	if p.BatchProcessor != nil || p.client != nil || p.kafkaSender != nil {
+		t.Fatalf("missing metadata started sender resources: %#v/%#v/%#v", p.BatchProcessor, p.client, p.kafkaSender)
 	}
 }
 
@@ -186,6 +274,87 @@ func TestPostInitUsesPreparedErrorLogMetadata(t *testing.T) {
 	}
 	if p.config.Level != "INFO" {
 		t.Fatalf("prepared metadata level = %q, want INFO", p.config.Level)
+	}
+}
+
+func TestMetadataSecurityWarningIsDeliveredOnceAfterObserverAdmission(t *testing.T) {
+	received := make(chan string, 2)
+	sink := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		received <- string(body)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(sink.Close)
+
+	p := newPreparedMetadataPlugin(t, Config{}, map[string]any{
+		"clickhouse": map[string]any{
+			"endpoint_addr": sink.URL,
+			"user":          "default",
+			"password":      "secret",
+			"database":      "default",
+			"logtable":      "logs",
+		},
+		"level": "WARN", "batch_max_size": 1, "max_retry_count": 0,
+	})
+	select {
+	case payload := <-received:
+		t.Fatalf("security warning delivered before observer admission: %q", payload)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	registry := runtime.NewTaskRegistry(context.Background(), nil)
+	owner := newObserverTaskOwner(t, registry)
+	if err := p.StartObservingWithTasks(owner); err != nil {
+		t.Fatalf("StartObservingWithTasks() error = %v", err)
+	}
+	select {
+	case payload := <-received:
+		const warning = "Using error-log-logger clickhouse.endpoint_addr with no TLS is a security risk"
+		if !strings.Contains(payload, `"data":"`) || !strings.Contains(payload, "[warn] "+warning) {
+			t.Fatalf("startup security warning payload = %q, want exact warning", payload)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for startup security warning delivery")
+	}
+
+	p.StartObserving()
+	select {
+	case payload := <-received:
+		t.Fatalf("observer re-entry repeated startup security warning: %q", payload)
+	case <-time.After(150 * time.Millisecond):
+	}
+	stopTaskRegistry(t, registry)
+}
+
+func TestRejectedObserverAdmissionDoesNotDeliverMetadataSecurityWarning(t *testing.T) {
+	received := make(chan string, 1)
+	sink := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		received <- string(body)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(sink.Close)
+
+	p := newPreparedMetadataPlugin(t, Config{}, map[string]any{
+		"clickhouse": map[string]any{
+			"endpoint_addr": sink.URL,
+			"user":          "default",
+			"password":      "secret",
+			"database":      "default",
+			"logtable":      "logs",
+		},
+		"level": "WARN", "batch_max_size": 1, "max_retry_count": 0,
+	})
+	registry := runtime.NewTaskRegistry(context.Background(), nil)
+	owner := newObserverTaskOwner(t, registry)
+	stopTaskRegistry(t, registry)
+	if err := p.StartObservingWithTasks(owner); !errors.Is(err, errObserverTaskRegistration) {
+		t.Fatalf("StartObservingWithTasks(stopped) error = %v, want %v", err, errObserverTaskRegistration)
+	}
+	select {
+	case payload := <-received:
+		t.Fatalf("rejected observer admission delivered startup security warning: %q", payload)
+	case <-time.After(150 * time.Millisecond):
 	}
 }
 
@@ -1225,6 +1394,7 @@ func TestSendToTCPHonorsParentDeadline(t *testing.T) {
 
 func TestBatchProcessorDefaultsMaxPendingEntries(t *testing.T) {
 	p := newTestPlugin(t, Config{
+		TCP:             &TCPConfig{Host: "127.0.0.1", Port: 1},
 		BatchMaxSize:    50000,
 		InactiveTimeout: 3600,
 		BufferDuration:  3600,
@@ -1250,7 +1420,7 @@ func TestMetadataSchemaAcceptsMaxPendingEntries(t *testing.T) {
 	if err := util.Validate(map[string]any{
 		"tcp":                 map[string]any{"host": "127.0.0.1", "port": 1999},
 		"max_pending_entries": 100,
-	}, p.GetSchema()); err != nil {
+	}, p.GetMetadataSchema()); err != nil {
 		t.Fatalf("schema rejected max_pending_entries: %v", err)
 	}
 }
@@ -1614,16 +1784,27 @@ func TestStartObservingForwardsApplicationLogsToCurrentOwner(t *testing.T) {
 	second.StartObserving()
 
 	first.Stop()
-	received := make(chan string, 1)
+	received := make(chan string, 2)
 	go func() {
-		conn, acceptErr := secondListener.Accept()
-		if acceptErr != nil {
-			return
+		for range 2 {
+			conn, acceptErr := secondListener.Accept()
+			if acceptErr != nil {
+				return
+			}
+			body, _ := io.ReadAll(conn)
+			_ = conn.Close()
+			received <- string(body)
 		}
-		defer func() { _ = conn.Close() }()
-		body, _ := io.ReadAll(conn)
-		received <- string(body)
 	}()
+
+	select {
+	case payload := <-received:
+		if !strings.Contains(payload, "Keeping tcp.tls disabled in error-log-logger configuration is a security risk") {
+			t.Fatalf("startup payload = %q, want TCP security warning", payload)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for startup security warning")
+	}
 
 	logger.Warn("standalone error-log observer marker")
 	select {
@@ -1653,16 +1834,31 @@ func TestStartObservingFiltersBeforeBatching(t *testing.T) {
 	})
 	p.StartObserving()
 
-	received := make(chan string, 1)
+	received := make(chan string, 2)
 	go func() {
-		conn, acceptErr := listener.Accept()
-		if acceptErr != nil {
-			return
+		for range 2 {
+			conn, acceptErr := listener.Accept()
+			if acceptErr != nil {
+				return
+			}
+			body, _ := io.ReadAll(conn)
+			_ = conn.Close()
+			received <- string(body)
 		}
-		defer func() { _ = conn.Close() }()
-		body, _ := io.ReadAll(conn)
-		received <- string(body)
 	}()
+	logger.Warn("flush startup security warning")
+	select {
+	case payload := <-received:
+		if !strings.Contains(
+			payload,
+			"Keeping tcp.tls disabled in error-log-logger configuration is a security risk",
+		) ||
+			!strings.Contains(payload, "flush startup security warning") {
+			t.Fatalf("startup payload = %q, want security warning batch", payload)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for startup warning batch")
+	}
 
 	logger.Info("filtered observer info")
 	logger.Warn("first eligible observer warning")
@@ -1744,7 +1940,7 @@ func TestMetadataSchemaRejectsTCPWithoutHost(t *testing.T) {
 
 	err := util.Validate(map[string]any{
 		"tcp": map[string]any{"port": 1999},
-	}, p.GetSchema())
+	}, p.GetMetadataSchema())
 	if err == nil || !strings.Contains(err.Error(), "host") {
 		t.Fatalf("Validate() error = %v, want missing tcp.host rejection", err)
 	}
@@ -1756,7 +1952,7 @@ func TestMetadataSchemaRejectsMissingSink(t *testing.T) {
 		t.Fatalf("Init() error = %v", err)
 	}
 
-	if err := util.Validate(map[string]any{"level": "WARN"}, p.GetSchema()); err == nil {
+	if err := util.Validate(map[string]any{"level": "WARN"}, p.GetMetadataSchema()); err == nil {
 		t.Fatal("Validate() error = nil, want metadata without a sink rejected")
 	}
 }

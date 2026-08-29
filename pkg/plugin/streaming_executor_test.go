@@ -1566,9 +1566,9 @@ func TestStreamingExecutorRejectsUnacceptableEncodingWithBodyless406(t *testing.
 			if response.Code != http.StatusNotAcceptable || response.Body.Len() != 0 {
 				t.Fatalf("response = %d/%q, want bodyless 406", response.Code, response.Body.String())
 			}
-			if response.Header().Get("Vary") != "Accept-Encoding" ||
+			if response.Header().Get("Vary") != "" ||
 				response.Header().Get("Content-Length") != "" || response.Header().Get("Content-MD5") != "" {
-				t.Fatalf("response headers = %#v, want Vary and no body-derived headers", response.Header())
+				t.Fatalf("response headers = %#v, want no Vary or body-derived headers", response.Header())
 			}
 		})
 	}
@@ -1767,6 +1767,47 @@ func TestStreamingExecutorRejectsDynamicConsumerBodyFilter(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "body-transformer") ||
 		!strings.Contains(err.Error(), "consumer-body") {
 		t.Fatalf("PostResolutionHook() error = %v, want dynamic body-filter rejection", err)
+	}
+}
+
+func TestStreamingExecutorAllowsDynamicConsumerDualModeBodyFilter(t *testing.T) {
+	executor, err := NewStreamingResponseExecutor(nil)
+	if err != nil {
+		t.Fatalf("NewStreamingResponseExecutor() error = %v", err)
+	}
+	body := newDualModeResponseTestPlugin(base.RequestResponseModeBounded)
+	binding := checkedResponseBinding(t, "ai-rate-limiting", body, ScopeConsumer, "consumer-rate")
+	binding.Provenance.Kind = ResourceConsumer
+
+	replacement, err := executor.PostResolutionHook(
+		httptest.NewRequest(http.MethodPost, "/ai", nil),
+		EffectiveBindingSet{merged: []Binding{binding}},
+	)
+	if err != nil {
+		t.Fatalf("PostResolutionHook() error = %v", err)
+	}
+	dynamic := dynamicStreamingBindings(replacement)
+	if len(dynamic) != 1 || dynamic[0].Plugin != body {
+		t.Fatalf("dynamic streaming bindings = %#v, want consumer dual-mode binding", dynamic)
+	}
+}
+
+func TestDynamicStreamingBindingsPreserveBodyBindingWhenHeadersAreAddedLater(t *testing.T) {
+	body := newDualModeResponseTestPlugin(base.RequestResponseModeStreaming)
+	bodyBinding := checkedResponseBinding(t, "ai-rate-limiting", body, ScopeConsumer, "consumer-rate")
+	bodyBinding.Provenance.Kind = ResourceConsumer
+	header := newExecutorCORSPlugin(t, corsplugin.Config{AllowOrigins: "*"})
+	headerBinding := pipelineBinding("cors", header, ScopeConsumer, 4000)
+	headerBinding.Provenance = ResourceProvenance{Kind: ResourceConsumer, ID: "consumer-cors"}
+
+	request := withDynamicStreamingBindings(
+		httptest.NewRequest(http.MethodGet, "/", nil),
+		[]Binding{bodyBinding},
+	)
+	request = withDynamicStreamingBindings(request, []Binding{headerBinding})
+	dynamic := dynamicStreamingBindings(request)
+	if len(dynamic) != 2 || dynamic[0].Plugin != body || dynamic[1].Plugin != header {
+		t.Fatalf("dynamic bindings = %#v, want body binding followed by header binding", dynamic)
 	}
 }
 

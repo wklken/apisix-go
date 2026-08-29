@@ -27,7 +27,9 @@ import (
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/capability"
+	appconfig "github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/generation"
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
 	apisixruntime "github.com/wklken/apisix-go/pkg/runtime"
@@ -39,6 +41,221 @@ import (
 type rocketMQScopedSecretCall struct {
 	Scope secret.Scope
 	Raw   string
+}
+
+func TestSchemaMatchesAPISIX317Matrix(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		config map[string]any
+		valid  bool
+	}{
+		{
+			name: "sanity",
+			config: map[string]any{
+				"nameserver_list": []any{"127.0.0.1:3"},
+				"topic":           "test",
+				"key":             "key1",
+			},
+			valid: true,
+		},
+		{
+			name: "TLS enabled",
+			config: map[string]any{
+				"nameserver_list": []any{"127.0.0.1:3"},
+				"topic":           "test",
+				"key":             "key1",
+				"use_tls":         true,
+			},
+			valid: true,
+		},
+		{
+			name: "TLS verification enabled",
+			config: map[string]any{
+				"nameserver_list": []any{"127.0.0.1:3"},
+				"topic":           "test",
+				"use_tls":         true,
+				"tls_verify":      true,
+			},
+			valid: true,
+		},
+		{
+			name: "TLS verification must be boolean",
+			config: map[string]any{
+				"nameserver_list": []any{"127.0.0.1:3"},
+				"topic":           "test",
+				"tls_verify":      "true",
+			},
+		},
+		{
+			name:   "missing nameserver list",
+			config: map[string]any{"topic": "test", "key": "key1"},
+		},
+		{
+			name: "string timeout",
+			config: map[string]any{
+				"nameserver_list": []any{"127.0.0.1:3000"},
+				"timeout":         "10",
+				"topic":           "test",
+				"key":             "key1",
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := util.Validate(test.config, p.GetSchema())
+			if test.valid && err != nil {
+				t.Fatalf("valid APISIX 3.17 configuration rejected: %v", err)
+			}
+			if !test.valid && err == nil {
+				t.Fatal("invalid APISIX 3.17 configuration accepted")
+			}
+		})
+	}
+}
+
+func TestRocketMQTLSVerifyDefaultsFollowSecurityProfile(t *testing.T) {
+	newPlugin := func(security appconfig.SecurityProfile) *Plugin {
+		p := &Plugin{
+			config: Config{
+				NameServerList: []string{"127.0.0.1:9876"},
+				Topic:          "apisix-logs",
+				UseTLS:         true,
+			},
+			sender: &captureSender{},
+		}
+		p.SetDependencies(base.Dependencies{
+			Config: &appconfig.EffectiveConfig{
+				Profiles: appconfig.ProfileSelection{Security: security},
+			},
+			Tasks:          newLoggerTestTaskOwner(t),
+			DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+		})
+		if err := p.Init(); err != nil {
+			t.Fatalf("Init() error = %v", err)
+		}
+		if err := p.MaterializeSecrets(); err != nil {
+			t.Fatalf("MaterializeSecrets() error = %v", err)
+		}
+		if err := p.PostInit(); err != nil {
+			t.Fatalf("PostInit() error = %v", err)
+		}
+		t.Cleanup(p.Stop)
+		return p
+	}
+
+	compat := newPlugin(appconfig.SecurityCompat)
+	if compat.config.TLSVerify == nil || *compat.config.TLSVerify {
+		t.Fatalf("compat TLSVerify = %v, want false", compat.config.TLSVerify)
+	}
+	strict := newPlugin(appconfig.SecurityStrict)
+	if strict.config.TLSVerify == nil || !*strict.config.TLSVerify {
+		t.Fatalf("strict TLSVerify = %v, want true", strict.config.TLSVerify)
+	}
+}
+
+func TestRocketMQStrictTLSVerifyRejectsExplicitOptOut(t *testing.T) {
+	verify := false
+	p := &Plugin{
+		config: Config{
+			NameServerList: []string{"127.0.0.1:9876"},
+			Topic:          "apisix-logs",
+			UseTLS:         true,
+			TLSVerify:      &verify,
+		},
+		sender: &captureSender{},
+	}
+	p.SetDependencies(base.Dependencies{
+		Config: &appconfig.EffectiveConfig{
+			Profiles: appconfig.ProfileSelection{Security: appconfig.SecurityStrict},
+		},
+		Tasks:          newLoggerTestTaskOwner(t),
+		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+	})
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.MaterializeSecrets(); err != nil {
+		t.Fatalf("MaterializeSecrets() error = %v", err)
+	}
+	err := p.PostInit()
+	if err == nil || !strings.Contains(err.Error(), "tls_verify must be true") {
+		t.Fatalf("strict explicit tls_verify=false error = %v, want strict rejection", err)
+	}
+	p.Stop()
+}
+
+func TestRocketMQStrictRejectsPlaintextTransport(t *testing.T) {
+	p := &Plugin{
+		config: Config{
+			NameServerList: []string{"127.0.0.1:9876"},
+			Topic:          "apisix-logs",
+		},
+		sender: &captureSender{},
+	}
+	p.SetDependencies(base.Dependencies{
+		Config: &appconfig.EffectiveConfig{
+			Profiles: appconfig.ProfileSelection{Security: appconfig.SecurityStrict},
+		},
+		Tasks:          newLoggerTestTaskOwner(t),
+		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+	})
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.MaterializeSecrets(); err != nil {
+		t.Fatalf("MaterializeSecrets() error = %v", err)
+	}
+	err := p.PostInit()
+	if err == nil || !strings.Contains(err.Error(), "use_tls must be true") {
+		t.Fatalf("strict use_tls=false error = %v, want strict rejection", err)
+	}
+	p.Stop()
+}
+
+func TestAPISIX317WarnsWhenRocketMQTLSIsDisabled(t *testing.T) {
+	var warnings []string
+	stop := logger.ReplaceObserver("rocketmq-logger-security-warning", func(entry logger.Entry) {
+		if entry.Level == "WARN" && strings.Contains(entry.Message, "use_tls disabled in rocketmq-logger") {
+			warnings = append(warnings, entry.Message)
+		}
+	})
+	defer stop()
+
+	newTestPlugin(t, Config{
+		NameServerList: []string{"127.0.0.1:9876"},
+		Topic:          "apisix-logs",
+	}, &captureSender{})
+
+	want := "Keeping use_tls disabled in rocketmq-logger configuration is a security risk"
+	if len(warnings) != 1 || warnings[0] != want {
+		t.Fatalf("warnings = %#v, want [%q]", warnings, want)
+	}
+}
+
+func TestAPISIX317DoesNotWarnWhenRocketMQTLSIsEnabled(t *testing.T) {
+	warnings := 0
+	stop := logger.ReplaceObserver("rocketmq-logger-tls-warning", func(entry logger.Entry) {
+		if entry.Level == "WARN" && strings.Contains(entry.Message, "use_tls disabled in rocketmq-logger") {
+			warnings++
+		}
+	})
+	defer stop()
+
+	newTestPlugin(t, Config{
+		NameServerList: []string{"127.0.0.1:9876"},
+		Topic:          "apisix-logs",
+		UseTLS:         true,
+	}, &captureSender{})
+
+	if warnings != 0 {
+		t.Fatalf("TLS-enabled warning count = %d, want zero", warnings)
+	}
 }
 
 type rocketMQScopedSecretBroker struct {
@@ -310,25 +527,33 @@ func TestMaterializeScopedSecretsOwnsRocketMQSecretKey(t *testing.T) {
 		t.Fatalf("singleflight calls = %#v, want one", calls)
 	}
 	concurrent.Stop()
+}
 
+func TestMaterializeScopedSecretsAllowsTLSAndOwnsSecret(t *testing.T) {
 	const tlsRaw = "$secret://vault/rocketmq/tls-ordering"
 	tlsConfig := rocketMQRawConfig(tlsRaw, true)
 	tlsCapability, tlsScope, tlsBroker := newRocketMQScopedSecretHarness(
 		t, 122, "rocketmq-tls", tlsConfig, map[string]string{tlsRaw: "tls-private"},
 	)
 	tlsPlugin := newRawRocketMQPlugin(t, tlsConfig)
-	err = base.MaterializeScopedPluginSecrets(
+	t.Cleanup(tlsPlugin.Stop)
+
+	err := base.MaterializeScopedPluginSecrets(
 		context.Background(), tlsScope, tlsCapability, tlsPlugin,
 	)
-	if !errors.Is(err, secret.ErrCredentialUnavailable) ||
-		strings.Contains(err.Error(), tlsRaw) || strings.Contains(err.Error(), "tls-private") {
-		t.Fatalf("unsupported TLS materialization error = %v, want redacted unavailable", err)
+	if err != nil {
+		t.Fatalf("TLS secret materialization error = %v", err)
 	}
-	if calls := tlsBroker.callsSnapshot(); len(calls) != 0 {
-		t.Fatalf("unsupported TLS resolver calls = %#v, want zero", calls)
+	calls := tlsBroker.callsSnapshot()
+	wantScope := tlsScope
+	wantScope.Field = "secret_key"
+	if len(calls) != 1 || calls[0].Scope != wantScope || calls[0].Raw != tlsRaw {
+		t.Fatalf("TLS resolver calls = %#v, want exact secret_key scope %#v", calls, wantScope)
 	}
-	if tlsPlugin.config.SecretKey != tlsRaw || tlsPlugin.sender != nil || tlsPlugin.BatchProcessor != nil {
-		t.Fatal("unsupported TLS installed public or runtime state")
+	if !tlsPlugin.secretsPrepared || !tlsPlugin.secretKeySet || !tlsPlugin.config.UseTLS ||
+		tlsPlugin.config.SecretKey != rocketMQSecretDescriptor("tls-private") ||
+		tlsPlugin.sender != nil || tlsPlugin.BatchProcessor != nil {
+		t.Fatal("TLS materialization did not install only the attempt-owned secret state")
 	}
 }
 
@@ -1202,6 +1427,36 @@ func TestRunLogPhaseOriginPreservesHTTPFraming(t *testing.T) {
 	}
 }
 
+func TestRunLogPhaseAddsMatchedRouteToCustomFormat(t *testing.T) {
+	delivered := make(chan map[string]any, 1)
+	p := &Plugin{ready: true}
+	p.LogFormat = map[string]string{"x_ip": "$remote_addr"}
+	p.RouteID = "fallback-route"
+	p.BatchProcessor = newOwnedBatchProcessorForTest(t, logger_batch.Config{
+		BatchMaxSize: 1, MaxPendingEntries: 1, InactiveTimeout: time.Hour,
+		BufferDuration: time.Hour, ShutdownTimeout: time.Second,
+	}, func(_ context.Context, entries []map[string]any, _ int) (int, error) {
+		delivered <- entries[0]
+		return 0, nil
+	})
+	t.Cleanup(p.Stop)
+	snapshot := base.LogSnapshot{Request: apisixlog.RequestLogSnapshot{
+		RemoteAddr: "127.0.0.1:32000",
+		APISIXVars: map[string]any{"$route_id": "matched-route"},
+	}}
+	if err := p.RunLogPhase(snapshot); err != nil {
+		t.Fatalf("RunLogPhase() error = %v", err)
+	}
+	select {
+	case entry := <-delivered:
+		if entry["x_ip"] != "127.0.0.1" || entry["route_id"] != "matched-route" {
+			t.Fatalf("custom RocketMQ entry = %#v", entry)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("detached RocketMQ custom entry was not delivered")
+	}
+}
+
 type captureSender struct {
 	mu       sync.Mutex
 	messages []rocketmqMessage
@@ -1465,14 +1720,22 @@ func TestPostInitAppliesDefaults(t *testing.T) {
 	}
 }
 
-func TestPostInitRejectsUnsupportedTLS(t *testing.T) {
+func TestPostInitPublishesTLSEnabledRuntime(t *testing.T) {
+	factoryCalls := 0
 	p := &Plugin{
 		config: Config{
 			NameServerList: []string{"127.0.0.1:9876"},
 			Topic:          "apisix-logs",
 			UseTLS:         true,
 		},
-		sender: &captureSender{},
+		senderFactory: func(config *Config) (rocketmqSender, error) {
+			factoryCalls++
+			if !config.UseTLS {
+				t.Fatal("sender factory received use_tls=false, want true")
+			}
+			return &captureSender{}, nil
+		},
+		secretsPrepared: true,
 	}
 	p.SetDependencies(
 		base.Dependencies{
@@ -1483,13 +1746,19 @@ func TestPostInitRejectsUnsupportedTLS(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
+	t.Cleanup(p.Stop)
 
-	err := p.MaterializeSecrets()
-	if err == nil {
-		t.Fatal("MaterializeSecrets() error = nil, want unsupported use_tls rejection")
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
 	}
-	if !strings.Contains(err.Error(), "use_tls") || !strings.Contains(err.Error(), "not supported") {
-		t.Fatalf("PostInit() error = %q, want use_tls unsupported message", err)
+	if factoryCalls != 1 || p.sender == nil || p.BatchProcessor == nil || !p.ready {
+		t.Fatalf(
+			"TLS runtime state: factory_calls=%d sender=%T processor=%v ready=%v",
+			factoryCalls,
+			p.sender,
+			p.BatchProcessor != nil,
+			p.ready,
+		)
 	}
 }
 
@@ -1681,6 +1950,7 @@ func TestHandlerSendsFormattedRequestLog(t *testing.T) {
 		},
 		BatchMaxSize: 1,
 	}, sender)
+	p.RouteID = "matched-route"
 
 	req := httptest.NewRequest(http.MethodPatch, "http://example.com/orders/1?debug=true", nil)
 	rr := httptest.NewRecorder()
@@ -1706,6 +1976,9 @@ func TestHandlerSendsFormattedRequestLog(t *testing.T) {
 	}
 	if payload["plugin"] != "rocketmq-logger" {
 		t.Fatalf("plugin = %v, want rocketmq-logger", payload["plugin"])
+	}
+	if payload["route_id"] != "matched-route" {
+		t.Fatalf("route_id = %v, want matched-route", payload["route_id"])
 	}
 }
 

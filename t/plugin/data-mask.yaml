@@ -1,8 +1,8 @@
 source:
   repository: https://github.com/apache/apisix
-  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
   file: t/plugin/data-mask.t
-  tests: 20
+  tests: 16
 
 cases:
   - name: mask-query-log-fields
@@ -249,7 +249,7 @@ cases:
 
   - name: multi-value-query-regex
     source:
-      tests: [15, 16]
+      local_reason: post-target multi-value query masking regression; absent from the APISIX 3.17 compatibility commit
     config:
       routes:
         - id: data-mask-multi-value-query
@@ -274,7 +274,7 @@ cases:
 
   - name: non-string-json-regex
     source:
-      tests: [17, 18]
+      local_reason: post-target non-string JSON masking regression; absent from the APISIX 3.17 compatibility commit
     config:
       routes:
         - id: data-mask-non-string-json
@@ -307,7 +307,7 @@ cases:
 
   - name: access-log-request-line
     source:
-      tests: [19, 20]
+      tests: [15, 16]
     config:
       routes:
         - id: data-mask-access-log

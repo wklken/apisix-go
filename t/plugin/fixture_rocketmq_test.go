@@ -6,6 +6,8 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha1"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
@@ -26,12 +28,46 @@ import (
 )
 
 const (
-	rocketMQGetRouteInfoCode = int16(105)
-	rocketMQSendMessageCode  = int16(10)
-	rocketMQSendBatchCode    = int16(320)
-	rocketMQResponseFlag     = int32(1)
-	rocketMQTopicMissingCode = int16(17)
+	rocketMQGetRouteInfoCode  = int16(105)
+	rocketMQSendMessageCode   = int16(10)
+	rocketMQSendMessageV2Code = int16(310)
+	rocketMQSendBatchCode     = int16(320)
+	rocketMQResponseFlag      = int32(1)
+	rocketMQTopicMissingCode  = int16(17)
 )
+
+type rocketMQExtFields map[string]string
+
+func (fields *rocketMQExtFields) UnmarshalJSON(data []byte) error {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	decoded := make(rocketMQExtFields, len(raw))
+	for key, value := range raw {
+		if bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+			return fmt.Errorf("RocketMQ extField %q must not be null", key)
+		}
+		var text string
+		if err := json.Unmarshal(value, &text); err == nil {
+			decoded[key] = text
+			continue
+		}
+		var boolean bool
+		if err := json.Unmarshal(value, &boolean); err == nil {
+			decoded[key] = strconv.FormatBool(boolean)
+			continue
+		}
+		var number json.Number
+		if err := json.Unmarshal(value, &number); err == nil {
+			decoded[key] = number.String()
+			continue
+		}
+		return fmt.Errorf("RocketMQ extField %q must be a JSON scalar", key)
+	}
+	*fields = decoded
+	return nil
+}
 
 type rocketMQCommand struct {
 	Code      int16             `json:"code"`
@@ -40,7 +76,7 @@ type rocketMQCommand struct {
 	Opaque    int32             `json:"opaque"`
 	Flag      int32             `json:"flag"`
 	Remark    string            `json:"remark"`
-	ExtFields map[string]string `json:"extFields"`
+	ExtFields rocketMQExtFields `json:"extFields"`
 	Body      []byte            `json:"-"`
 }
 
@@ -501,6 +537,73 @@ func TestRocketMQFixtureAcceptsRealProducerMessage(t *testing.T) {
 	message.WithTag("access")
 	if _, err := client.SendSync(context.Background(), message); err != nil {
 		t.Fatalf("send RocketMQ message: %v", err)
+	}
+	fixture.assert(t, spec)
+}
+
+func TestRocketMQFixtureAcceptsTLSNameServerAndBrokerConnections(t *testing.T) {
+	spec := FixtureSpec{
+		Name: "rocketmq-tls",
+		Kind: "rocketmq",
+		RocketMQ: &RocketMQFixtureAssertion{
+			Partitions:     1,
+			ExpectMessages: 1,
+			Messages: []RocketMQMessageAssertion{{
+				Topic: Matcher{Equals: new("integration-tls")},
+				Body:  Matcher{Equals: new(`{"transport":"tls"}`)},
+			}},
+		},
+	}
+	certPEM, keyPEM, err := generateRedisFixtureCertificate()
+	if err != nil {
+		t.Fatalf("generate RocketMQ fixture certificate: %v", err)
+	}
+	certificate, err := tls.X509KeyPair(certPEM, keyPEM)
+	if err != nil {
+		t.Fatalf("load RocketMQ fixture certificate: %v", err)
+	}
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM(certPEM) {
+		t.Fatal("add RocketMQ fixture certificate to the trust pool")
+	}
+	listener, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{ //nolint:gosec // test-only self-signed fixture
+		Certificates: []tls.Certificate{certificate},
+		MinVersion:   tls.VersionTLS12,
+	})
+	if err != nil {
+		t.Fatalf("listen TLS RocketMQ fixture: %v", err)
+	}
+	fixture := &rocketMQFixture{
+		listener:     listener,
+		addressValue: listener.Addr().String(),
+		config:       spec.RocketMQ,
+		received:     make(chan capturedRocketMQMessage, 2),
+		errors:       make(chan error, 5),
+		done:         make(chan struct{}),
+		connections:  make(map[net.Conn]struct{}),
+	}
+	fixture.wg.Add(1)
+	go fixture.serve()
+	defer fixture.close()
+
+	client, err := rocketmq.NewProducer(
+		producer.WithNameServer([]string{fixture.address()}),
+		producer.WithSendMsgTimeout(2*time.Second),
+		producer.WithTls(true),
+		producer.WithTlsVerify(true),
+		producer.WithTlsRootCAs(roots),
+	)
+	if err != nil {
+		t.Fatalf("new TLS RocketMQ producer: %v", err)
+	}
+	if err := client.Start(); err != nil {
+		t.Fatalf("start TLS RocketMQ producer: %v", err)
+	}
+	defer func() { _ = client.Shutdown() }()
+
+	message := primitive.NewMessage("integration-tls", []byte(`{"transport":"tls"}`))
+	if _, err := client.SendSync(context.Background(), message); err != nil {
+		t.Fatalf("send TLS RocketMQ message: %v", err)
 	}
 	fixture.assert(t, spec)
 }

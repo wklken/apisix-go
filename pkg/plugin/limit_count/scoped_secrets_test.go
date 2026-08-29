@@ -306,6 +306,57 @@ func TestScopedSecretsSkipEmptyLimitCountOptionalFields(t *testing.T) {
 	}
 }
 
+func TestPrepareConsumerConfigAdmitsLiteralValues(t *testing.T) {
+	p := &Plugin{config: Config{
+		Count: 1, TimeWindow: 60, Key: "remote_addr", KeyType: "var",
+		Policy: "redis", RedisHost: "redis.test",
+	}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PrepareConsumerConfig(); err != nil {
+		t.Fatalf("PrepareConsumerConfig() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+	defer p.Stop()
+	if !p.scopedSet {
+		t.Fatal("literal consumer config did not enter the scoped credential lifecycle")
+	}
+	if err := p.withLimitCountKey(func(value string) error {
+		if value != "remote_addr" {
+			t.Fatalf("consumer key = %q, want remote_addr", value)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("withLimitCountKey() error = %v", err)
+	}
+	if err := p.withLimitCountRedisHost(func(value string) error {
+		if value != "redis.test" {
+			t.Fatalf("consumer Redis host = %q, want redis.test", value)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("withLimitCountRedisHost() error = %v", err)
+	}
+}
+
+func TestPrepareConsumerConfigRejectsUnmaterializedSecret(t *testing.T) {
+	p := &Plugin{config: Config{
+		Count: 1, TimeWindow: 60, Key: "$ENV://LIMIT_COUNT_CONSUMER_KEY",
+	}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PrepareConsumerConfig(); !errors.Is(err, secret.ErrCredentialUnavailable) {
+		t.Fatalf("PrepareConsumerConfig() error = %v, want credential unavailable", err)
+	}
+	if p.scopedSet {
+		t.Fatal("rejected consumer config installed scoped credentials")
+	}
+}
+
 func TestScopedSecretsLimitCountNodeFailureIsAtomic(t *testing.T) {
 	const rawKey = "$ENV://LIMIT_COUNT_RETRY_KEY"
 	raws := []string{"$ENV://LIMIT_COUNT_RETRY_NODE_0", "$ENV://LIMIT_COUNT_RETRY_NODE_1"}

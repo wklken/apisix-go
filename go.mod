@@ -6,13 +6,15 @@ toolchain go1.26.6
 
 replace github.com/coreos/bbolt => go.etcd.io/bbolt v1.3.9
 
+replace github.com/apache/rocketmq-client-go/v2 => ./third_party/rocketmq-client-go
+
 // replace google.golang.org/grpc => google.golang.org/grpc v1.29.0
 
 require (
 	github.com/Shopify/goreferrer v0.0.0-20250617153402-88c1d9a79b05
 	github.com/andybalholm/brotli v1.2.2
 	github.com/apache/dubbo-go-hessian2 v1.13.2
-	github.com/apache/rocketmq-client-go/v2 v2.1.2
+	github.com/apache/rocketmq-client-go/v2 v2.1.3-0.20231106021916-c9e197c3af45
 	github.com/aws/aws-sdk-go-v2 v1.43.6
 	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.18
 	github.com/beevik/etree v1.7.1

@@ -58,6 +58,9 @@ expected_version=$(read_scalar expected_version "$oracle") || die 'expected_vers
 container_bin=${CONTAINER_BIN:-${DOCKER_BIN:-docker}}
 command -v "$container_bin" >/dev/null 2>&1 || die "Docker or Podman CLI is required: $container_bin"
 command -v jq >/dev/null 2>&1 || die 'jq is required'
+container_timeout_seconds=${APISIX_GO_CONTAINER_TIMEOUT_SECONDS:-30}
+[[ "$container_timeout_seconds" =~ ^[1-9][0-9]*$ ]] || die \
+    "APISIX_GO_CONTAINER_TIMEOUT_SECONDS must be a positive integer: $container_timeout_seconds"
 
 case "$(basename "$container_bin")" in
     *podman*) container_runtime=podman ;;
@@ -67,16 +70,65 @@ esac
 
 task_dir=$(mktemp -d)
 trap 'rm -rf "$task_dir"' EXIT
+
+run_bounded() {
+    local description=$1
+    shift
+    local timeout_marker="$task_dir/timeout.$$.$RANDOM"
+    local timer_pid_file="$task_dir/timer.$$.$RANDOM"
+    local command_pid watchdog_pid timer_pid command_status
+
+    "$@" &
+    command_pid=$!
+    (
+        sleep "$container_timeout_seconds" &
+        printf '%s\n' "$!" >"$timer_pid_file"
+        wait "$!"
+        if kill -0 "$command_pid" 2>/dev/null; then
+            : >"$timeout_marker"
+            kill -TERM "$command_pid" 2>/dev/null || true
+            sleep 1
+            kill -KILL "$command_pid" 2>/dev/null || true
+        fi
+    ) </dev/null >/dev/null 2>&1 &
+    watchdog_pid=$!
+    while [[ ! -s "$timer_pid_file" ]] && kill -0 "$watchdog_pid" 2>/dev/null; do
+        :
+    done
+    timer_pid=$(cat "$timer_pid_file" 2>/dev/null || true)
+
+    command_status=0
+    wait "$command_pid" || command_status=$?
+    if [[ -e "$timeout_marker" ]]; then
+        wait "$watchdog_pid" 2>/dev/null || true
+    else
+        if [[ -n "$timer_pid" ]]; then
+            kill "$timer_pid" 2>/dev/null || true
+        fi
+        kill "$watchdog_pid" 2>/dev/null || true
+        wait "$watchdog_pid" 2>/dev/null || true
+    fi
+    rm -f "$timer_pid_file"
+    if [[ -e "$timeout_marker" ]]; then
+        rm -f "$timeout_marker"
+        printf '%s timeout after %ss\n' "$description" "$container_timeout_seconds" >&2
+        return 124
+    fi
+    return "$command_status"
+}
+
 index_file="$task_dir/index.json"
 if [[ "$container_runtime" == docker ]]; then
-    "$container_bin" buildx imagetools inspect --raw "$image_tag" >"$index_file" || \
+    run_bounded 'oracle image index resolution' \
+        "$container_bin" buildx imagetools inspect --raw "$image_tag" >"$index_file" || \
         die "cannot resolve oracle image index: $image_tag"
     resolved_index_digest="sha256:$(sha256_file "$index_file")"
     [[ "$resolved_index_digest" == "$image_index_digest" ]] || die \
         "oracle image index digest mismatch: resolved $resolved_index_digest, locked $image_index_digest"
 else
     image_index_reference="$image_repository@$image_index_digest"
-    "$container_bin" manifest inspect "$image_index_reference" >"$index_file" || \
+    run_bounded 'oracle image index resolution' \
+        "$container_bin" manifest inspect "$image_index_reference" >"$index_file" || \
         die "cannot resolve oracle image index: $image_index_reference"
     resolved_index_digest="$image_index_digest"
 fi
@@ -89,7 +141,8 @@ resolved_platform_digest=$(jq -er '
     "oracle linux/amd64 digest mismatch: resolved $resolved_platform_digest, locked $image_linux_amd64_digest"
 
 image_reference="$image_repository@$image_linux_amd64_digest"
-if ! version_output=$("$container_bin" run --rm --platform linux/amd64 --entrypoint apisix \
+if ! version_output=$(run_bounded 'oracle runtime version check' \
+    "$container_bin" run --rm --platform linux/amd64 --entrypoint apisix \
     "$image_reference" version 2>&1); then
     die "cannot run oracle image $image_reference: $version_output"
 fi

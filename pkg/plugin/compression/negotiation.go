@@ -31,6 +31,7 @@ type ResponseMeta struct {
 type Offer struct {
 	Coding   Coding
 	Rank     int
+	Vary     bool
 	Eligible func(ResponseMeta) bool
 }
 
@@ -111,24 +112,19 @@ type preferences struct {
 
 func decide(headerValues []string, offers []Offer, meta ResponseMeta) Decision {
 	// Final bodyless/status-transition responses do not participate in content
-	// negotiation. A 304 still carries the cache-safety Vary contract whenever
-	// this request registered at least one compression offer, but it must retain
-	// the upstream representation metadata unchanged.
+	// negotiation. A 304 may still carry an explicitly configured Vary contract,
+	// but it must retain the upstream representation metadata unchanged.
 	switch meta.Status {
 	case http.StatusSwitchingProtocols, http.StatusNoContent:
 		return Decision{Coding: Identity, IdentityAllowed: true}
-	case http.StatusNotModified:
-		return Decision{Coding: Identity, Vary: hasCompressionOffer(offers), IdentityAllowed: true}
 	}
 
 	prefs := parsePreferences(headerValues)
 	identityAllowed, identityQuality, identityExplicit := identityPreference(prefs)
 	if coding := responseContentCoding(meta.Header); coding != "" {
-		return Decision{
-			Coding:          coding,
-			Vary:            hasCompressionOffer(offers),
-			IdentityAllowed: identityAllowed,
-		}
+		// APISIX compression plugins return before applying their optional Vary
+		// policy when the upstream response is already encoded.
+		return Decision{Coding: coding, IdentityAllowed: identityAllowed}
 	}
 	eligibleOffers := make([]Offer, 0, len(offers))
 	vary := false
@@ -138,9 +134,14 @@ func decide(headerValues []string, offers []Offer, meta ResponseMeta) Decision {
 		}
 		eligible := offer.Eligible == nil || offer.Eligible(meta)
 		if eligible {
-			vary = true
 			eligibleOffers = append(eligibleOffers, offer)
+			if q, available := codingQuality(prefs, offer.Coding); offer.Vary && available && q > 0 {
+				vary = true
+			}
 		}
+	}
+	if meta.Status == http.StatusNotModified {
+		return Decision{Coding: Identity, Vary: vary, IdentityAllowed: true}
 	}
 
 	best := candidate{}
@@ -178,15 +179,6 @@ func responseContentCoding(header http.Header) Coding {
 		}
 	}
 	return ""
-}
-
-func hasCompressionOffer(offers []Offer) bool {
-	for _, offer := range offers {
-		if offer.Coding != Identity {
-			return true
-		}
-	}
-	return false
 }
 
 type candidate struct {

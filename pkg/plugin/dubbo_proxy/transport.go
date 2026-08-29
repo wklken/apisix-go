@@ -175,7 +175,7 @@ func buildDubboRequest(r *http.Request, cfg Config) ([]byte, error) {
 		cfg.Method,
 		"Ljava/util/Map;",
 		httpContext,
-		map[string]string{},
+		nil,
 	}
 	for _, value := range values {
 		if err := encoder.Encode(value); err != nil {

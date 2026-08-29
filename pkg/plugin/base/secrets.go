@@ -57,6 +57,15 @@ func (access ScopedSecretAccess) ValidFor(expected secret.GenerationCapability) 
 	return access.capability.SameAuthority(expected)
 }
 
+// SharedLimiter returns an acquire-only attempt resource after validating the
+// same exact scoped authority used for secret materialization.
+func (access ScopedSecretAccess) SharedLimiter(name string, capacity int) (secret.AttemptLimiter, error) {
+	if err := validateScopedSecretAuthority(access.scope, access.capability); err != nil {
+		return secret.AttemptLimiter{}, err
+	}
+	return access.capability.SharedLimiter(name, capacity)
+}
+
 type ScopedSecretMaterializer interface {
 	MaterializeScopedSecrets(context.Context, ScopedSecretAccess) error
 }

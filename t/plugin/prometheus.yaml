@@ -1,23 +1,41 @@
 sources:
   - repository: https://github.com/apache/apisix
     commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
+    file: t/plugin/prometheus-ai-proxy.t
+    tests: 2
+    test_numbers: [9, 10]
+  - repository: https://github.com/apache/apisix
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
+    file: t/plugin/prometheus-ai-proxy2.t
+    tests: 3
+  - repository: https://github.com/apache/apisix
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
+    file: t/plugin/prometheus-metric-expire.t
+    tests: 1
+  - repository: https://github.com/apache/apisix
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
     file: t/plugin/prometheus.t
-    tests: 6
-    test_numbers: [1, 2, 3, 4, 5, 6]
+    tests: 23
+    test_numbers: [1, 2, 4, 5, 6, 9, 10, 11, 12, 13, 14, 15, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 40]
   - repository: https://github.com/apache/apisix
     commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
     file: t/plugin/prometheus2.t
+    tests: 19
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49]
+  - repository: https://github.com/apache/apisix
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
+    file: t/plugin/prometheus3.t
     tests: 3
-    test_numbers: [38, 39, 40]
+    test_numbers: [5, 6, 7]
   - repository: https://github.com/apache/apisix
     commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
     file: t/plugin/prometheus4.t
-    tests: 4
-    test_numbers: [1, 2, 3, 4]
+    tests: 9
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 14]
 
 cases:
   - name: invalid-prefer-name
-    source: {file: t/plugin/prometheus.t, tests: [1]}
+    source: {local_reason: strict Go plugin schema rejects a non-boolean prefer_name value}
     config:
       routes:
         - id: prometheus-invalid
@@ -33,7 +51,7 @@ cases:
 
   - name: profile-metrics-scrape
     wait_for_generation: true
-    source: {file: t/plugin/prometheus.t, tests: [2, 3, 4, 5, 6]}
+    source: {file: t/plugin/prometheus.t, tests: [1, 2, 4, 5, 6, 9, 10, 11]}
     config:
       routes:
         - id: prometheus-profile-metrics
@@ -47,19 +65,40 @@ cases:
     fixtures:
       - name: primary
         kind: http
+        count: {at_least: 10, at_most: 10}
         expect: [{path: {equals: /profile}}]
         respond: [{status: 200, body: profile-ok}]
     steps:
-      - name: record-profile-request
+      - name: record-four-profile-requests
+        repeat: 4
         input: {path: /profile}
         output: {status: 200, body: {equals: profile-ok}}
+      - {name: first-nonmatching-request, input: {path: /profile-missing-1}, output: {status: 404}}
+      - name: record-three-more-profile-requests
+        repeat: 3
+        input: {path: /profile}
+        output: {status: 200, body: {equals: profile-ok}}
+      - {name: second-nonmatching-request, input: {path: /profile-missing-2}, output: {status: 404}}
       - name: scrape-profile-metrics
         input: {path: /apisix/prometheus/metrics}
         output:
           status: 200
           body:
-            matches: 'apisix_http_status\{[^\n]*code="200"[^\n]*route="prometheus-profile"[^\n]*\} 1'
-
+            matches: 'apisix_http_status\{[^\n]*code="200"[^\n]*route="prometheus-profile"[^\n]*\} 7'
+      - name: scrape-profile-bandwidth
+        input: {path: /apisix/prometheus/metrics}
+        output:
+          status: 200
+          body: {matches: 'apisix_bandwidth\{[^\n]*route="prometheus-profile"[^\n]*type="egress"[^\n]*\} [1-9][0-9]*'}
+      - name: record-three-post-update-equivalent-requests
+        repeat: 3
+        input: {path: /profile}
+        output: {status: 200, body: {equals: profile-ok}}
+      - name: scrape-profile-latency-after-ten-requests
+        input: {path: /apisix/prometheus/metrics}
+        output:
+          status: 200
+          body: {matches: 'apisix_http_latency_count\{[^\n]*route="prometheus-profile"[^\n]*type="request"[^\n]*\} 10'}
   - name: bounded-route-service-labels
     wait_for_generation: true
     source: {file: t/plugin/prometheus2.t, tests: [38, 39, 40]}
@@ -95,8 +134,8 @@ cases:
             matches: 'apisix_http_status\{[^\n]*route="prometheus-route-name"[^\n]*service="prometheus-service-name"[^\n]*\} 1'
 
   - name: http-series-overflow
+    source: {local_reason: Go-native bounded-cardinality regression coverage beyond APISIX 3.17}
     wait_for_generation: true
-    source: {file: t/plugin/prometheus4.t, tests: [1, 2, 3, 4]}
     runtime:
       plugin_attr:
         prometheus:
@@ -132,3 +171,453 @@ cases:
           status: 200
           body:
             matches: 'apisix_http_metric_series_overflow_total\{metric="http_status"\} 1'
+
+  - name: ai-proxy-active-connections
+    wait_for_generation: true
+    source: {file: t/plugin/prometheus-ai-proxy.t, tests: [9, 10]}
+    config:
+      routes:
+        - id: prometheus-ai-active-metrics
+          uri: /apisix/prometheus/metrics
+          methods: [GET]
+          plugins: {public-api: {uri: /apisix/prometheus/metrics}}
+        - id: prometheus-ai-active-chat
+          uri: /chat
+          plugins:
+            prometheus: {}
+            ai-proxy-multi:
+              instances:
+                - name: openai-gpt4
+                  provider: openai-compatible
+                  weight: 1
+                  auth: {header: {Authorization: Bearer test-token}}
+                  options: {model: gpt-4}
+                  override: {endpoint: '{{FIXTURE.slow.URL}}'}
+    fixtures:
+      - name: slow
+        kind: http
+        count: {at_least: 3, at_most: 3}
+        expect: [{method: POST, path: {equals: /v1/chat/completions}}]
+        respond:
+          - status: 200
+            headers: {Content-Type: application/json}
+            body: '{"model":"gpt-4","choices":[{"message":{"role":"assistant","content":"2"}}],"usage":{"prompt_tokens":8,"completion_tokens":5,"total_tokens":13}}'
+    steps:
+      - name: observe-three-held-ai-connections
+        repeat: 3
+        concurrency: 3
+        hold_upstream:
+          fixture: slow
+          requests: 3
+          probes:
+            - input: {path: /apisix/prometheus/metrics}
+              output: {status: 200, body: {matches: 'apisix_llm_active_connections\{[^\n]*route_id="prometheus-ai-active-chat"[^\n]*\} 3'}}
+        input:
+          method: POST
+          path: /chat
+          headers: {Content-Type: application/json}
+          body: '{"messages":[{"role":"user","content":"What is 1+1?"}],"model":"gpt-3"}'
+        output: {status_counts: {200: 3}}
+      - name: active-connections-drain-after-release
+        input: {path: /apisix/prometheus/metrics}
+        output: {status: 200, body: {matches: 'apisix_llm_active_connections\{[^\n]*route_id="prometheus-ai-active-chat"[^\n]*\} 0'}}
+
+  - name: regular-request-omits-llm-series
+    wait_for_generation: true
+    source: {file: t/plugin/prometheus-ai-proxy2.t, tests: [1, 2, 3]}
+    config:
+      routes:
+        - id: prometheus-regular-metrics
+          uri: /apisix/prometheus/metrics
+          methods: [GET]
+          plugins: {public-api: {uri: /apisix/prometheus/metrics}}
+        - id: prometheus-regular
+          uri: /regular
+          plugins: {prometheus: {}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, respond: [{status: 200, body: regular-ok}]}
+    steps:
+      - {name: record-regular-request, input: {path: /regular}, output: {status: 200, body: {equals: regular-ok}}}
+      - name: scrape-without-llm-series
+        input: {path: /apisix/prometheus/metrics}
+        output: {status: 200, body: {not_matches: 'apisix_llm_(latency|prompt_tokens|completion_tokens|active_connections)\{'}}
+
+  - name: request-metric-expiration
+    wait_for_generation: true
+    source: {file: t/plugin/prometheus-metric-expire.t, tests: [1]}
+    runtime:
+      plugin_attr:
+        prometheus:
+          metrics:
+            http_status: {expire: 1}
+            http_latency: {expire: 1}
+            bandwidth: {expire: 1}
+    config:
+      routes:
+        - id: prometheus-expire-metrics
+          uri: /apisix/prometheus/metrics
+          methods: [GET]
+          plugins: {public-api: {uri: /apisix/prometheus/metrics}}
+        - id: prometheus-expire
+          uri: /expire
+          plugins: {prometheus: {}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, respond: [{status: 200, body: expire-ok}]}
+    steps:
+      - {name: record-expiring-request, input: {path: /expire}, output: {status: 200, body: {equals: expire-ok}}}
+      - name: status-series-exists-before-expiry
+        input: {path: /apisix/prometheus/metrics}
+        output: {status: 200, body: {matches: 'apisix_http_status\{[^\n]*route="prometheus-expire"[^\n]*\} 1'}}
+      - name: latency-series-exists-before-expiry
+        input: {path: /apisix/prometheus/metrics}
+        output: {status: 200, body: {matches: 'apisix_http_latency_count\{[^\n]*route="prometheus-expire"[^\n]*\} 1'}}
+      - name: bandwidth-series-exists-before-expiry
+        input: {path: /apisix/prometheus/metrics}
+        output: {status: 200, body: {matches: 'apisix_bandwidth\{[^\n]*route="prometheus-expire"[^\n]*\} [1-9][0-9]*'}}
+        wait: 2500ms
+      - name: expired-request-series-are-removed
+        input: {path: /apisix/prometheus/metrics}
+        output: {status: 200, body: {not_matches: '(apisix_(http_status|bandwidth)|apisix_http_latency_(bucket|count|sum))\{[^\n]*route="prometheus-expire"'}}
+
+  - name: service-bound-metrics
+    wait_for_generation: true
+    source: {file: t/plugin/prometheus.t, tests: [12, 13, 14, 15]}
+    config:
+      services:
+        - id: prometheus-source-service
+          plugins: {prometheus: {}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+      routes:
+        - id: prometheus-service-metrics
+          uri: /apisix/prometheus/metrics
+          methods: [GET]
+          plugins: {public-api: {uri: /apisix/prometheus/metrics}}
+        - {id: prometheus-source-route, uri: /service, service_id: prometheus-source-service}
+    fixtures:
+      - {name: primary, kind: http, respond: [{status: 200, body: service-ok}]}
+    steps:
+      - {name: record-service-request, input: {path: /service}, output: {status: 200, body: {equals: service-ok}}}
+      - name: scrape-service-labels
+        input: {path: /apisix/prometheus/metrics}
+        output: {status: 200, body: {matches: 'apisix_bandwidth\{[^\n]*route="prometheus-source-route"[^\n]*service="prometheus-source-service"[^\n]*type="egress"[^\n]*\} [1-9][0-9]*'}}
+
+  - name: early-response-metrics
+    wait_for_generation: true
+    source: {file: t/plugin/prometheus.t, tests: [17, 18]}
+    config:
+      routes:
+        - id: prometheus-early-metrics
+          uri: /apisix/prometheus/metrics
+          methods: [GET]
+          plugins: {public-api: {uri: /apisix/prometheus/metrics}}
+        - id: prometheus-early
+          uri: /early
+          plugins:
+            prometheus: {}
+            fault-injection: {abort: {http_status: 200, body: Fault Injection!}}
+    steps:
+      - {name: trigger-early-response, input: {path: /early}, output: {status: 200, body: {equals: Fault Injection!}}}
+      - name: scrape-early-response
+        input: {path: /apisix/prometheus/metrics}
+        output: {status: 200, body: {matches: 'apisix_http_status\{[^\n]*code="200"[^\n]*response_source="early_stop"[^\n]*route="prometheus-early"[^\n]*\} 1'}}
+
+  - name: global-rule-request-metrics
+    wait_for_generation: true
+    source: {file: t/plugin/prometheus.t, tests: [19, 20, 21, 22]}
+    config:
+      global_rules:
+        - id: prometheus-global
+          plugins: {prometheus: {}}
+      routes:
+        - id: prometheus-global-metrics
+          uri: /apisix/prometheus/metrics
+          methods: [GET]
+          plugins: {public-api: {uri: /apisix/prometheus/metrics}}
+        - id: prometheus-global-route
+          uri: /global
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, respond: [{status: 404, body: missing}]}
+    steps:
+      - {name: record-global-request, input: {path: /global}, output: {status: 404, body: {equals: missing}}}
+      - name: scrape-global-status
+        input: {path: /apisix/prometheus/metrics}
+        output: {status: 200, body: {matches: 'apisix_http_status\{[^\n]*code="404"[^\n]*route="prometheus-global-route"[^\n]*\} 1'}}
+      - name: scrape-global-apisix-latency
+        input: {path: /apisix/prometheus/metrics}
+        output: {status: 200, body: {matches: 'apisix_http_latency_count\{[^\n]*route="prometheus-global-route"[^\n]*type="apisix"[^\n]*\} 1'}}
+
+  - name: service-latency-buckets
+    wait_for_generation: true
+    source: {file: t/plugin/prometheus.t, tests: [23, 24, 25, 26]}
+    config:
+      services:
+        - id: "3"
+          plugins: {prometheus: {}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.slow.ADDR}}': 1}}
+      routes:
+        - id: prometheus-latency-metrics
+          uri: /apisix/prometheus/metrics
+          methods: [GET]
+          plugins: {public-api: {uri: /apisix/prometheus/metrics}}
+        - {id: "4", uri: /mysleep, service_id: "3"}
+    fixtures:
+      - name: slow
+        kind: http
+        count: {at_least: 3, at_most: 3}
+        expect: [{path: {equals: /mysleep}}]
+        respond: [{status: 200, body: slow-ok, delay: 100ms}]
+    steps:
+      - name: record-three-slow-service-requests
+        repeat: 3
+        input: {path: /mysleep}
+        output: {status: 200, body: {equals: slow-ok}}
+      - name: scrape-service-apisix-latency-bucket
+        input: {path: /apisix/prometheus/metrics}
+        output: {status: 200, body: {matches: 'apisix_http_latency_bucket\{[^\n]*service="3"[^\n]*type="apisix"[^\n]*le="500"[^\n]*\} 3'}}
+
+  - name: node-info-from-prometheus-source
+    source: {file: t/plugin/prometheus.t, tests: [40]}
+    config:
+      routes:
+        - id: prometheus-node-info-metrics
+          uri: /apisix/prometheus/metrics
+          methods: [GET]
+          plugins: {public-api: {uri: /apisix/prometheus/metrics}}
+        - {id: prometheus-node-info-owner, uri: /unused, plugins: {prometheus: {}}}
+    input: {path: /apisix/prometheus/metrics}
+    output: {status: 200, body: {matches: 'apisix_node_info\{hostname="[^"]+",version="[^"]+"\} 1'}}
+
+  - name: consumer-labels
+    wait_for_generation: true
+    source: {file: t/plugin/prometheus2.t, tests: [1, 2, 3, 4, 5, 6, 7]}
+    config:
+      consumers:
+        - username: jack
+          plugins: {key-auth: {key: auth-one}}
+      global_rules:
+        - id: prometheus-consumer-global
+          plugins: {prometheus: {}}
+      routes:
+        - id: prometheus-consumer-metrics
+          uri: /apisix/prometheus/metrics
+          methods: [GET]
+          plugins: {public-api: {uri: /apisix/prometheus/metrics}}
+        - id: prometheus-consumer-route
+          uri: /consumer
+          plugins: {prometheus: {}, key-auth: {}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, respond: [{status: 200, body: consumer-ok}]}
+    steps:
+      - {name: unauthenticated-request, input: {path: /consumer}, output: {status: 401}}
+      - name: scrape-empty-consumer-egress-bandwidth
+        input: {path: /apisix/prometheus/metrics}
+        output: {status: 200, body: {matches: 'apisix_bandwidth\{[^\n]*consumer=""[^\n]*route="prometheus-consumer-route"[^\n]*type="egress"[^\n]*\} [1-9][0-9]*'}}
+      - {name: authenticated-request, input: {path: /consumer, headers: {apikey: auth-one}}, output: {status: 200, body: {equals: consumer-ok}}}
+      - name: scrape-empty-consumer-on-unauthorized-status
+        input: {path: /apisix/prometheus/metrics}
+        output: {status: 200, body: {matches: 'apisix_http_status\{[^\n]*code="401"[^\n]*consumer=""[^\n]*route="prometheus-consumer-route"[^\n]*\} 1'}}
+      - name: scrape-consumer-label
+        input: {path: /apisix/prometheus/metrics}
+        output: {status: 200, body: {matches: 'apisix_http_status\{[^\n]*code="200"[^\n]*consumer="jack"[^\n]*route="prometheus-consumer-route"[^\n]*\} 1'}}
+
+  - name: route-name-with-service-id-fallback
+    wait_for_generation: true
+    source: {file: t/plugin/prometheus2.t, tests: [41, 42, 43]}
+    config:
+      services:
+        - id: prometheus-unnamed-service
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+      routes:
+        - id: prometheus-route-name-metrics
+          uri: /apisix/prometheus/metrics
+          methods: [GET]
+          plugins: {public-api: {uri: /apisix/prometheus/metrics}}
+        - id: prometheus-named-route-id
+          name: prometheus-named-route
+          uri: /named-route
+          service_id: prometheus-unnamed-service
+          plugins: {prometheus: {prefer_name: true}}
+    fixtures:
+      - {name: primary, kind: http, respond: [{status: 200, body: named-ok}]}
+    steps:
+      - {name: record-named-route, input: {path: /named-route}, output: {status: 200, body: {equals: named-ok}}}
+      - name: scrape-name-and-id-fallback
+        input: {path: /apisix/prometheus/metrics}
+        output: {status: 200, body: {matches: 'apisix_bandwidth\{[^\n]*route="prometheus-named-route"[^\n]*service="prometheus-unnamed-service"[^\n]*\} [1-9][0-9]*'}}
+
+  - name: route-id-with-service-name
+    wait_for_generation: true
+    source: {file: t/plugin/prometheus2.t, tests: [44, 45, 46]}
+    config:
+      services:
+        - id: prometheus-named-service-id
+          name: prometheus-named-service
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+      routes:
+        - id: prometheus-service-name-metrics
+          uri: /apisix/prometheus/metrics
+          methods: [GET]
+          plugins: {public-api: {uri: /apisix/prometheus/metrics}}
+        - id: prometheus-unnamed-route
+          uri: /named-service
+          service_id: prometheus-named-service-id
+          plugins: {prometheus: {prefer_name: true}}
+    fixtures:
+      - {name: primary, kind: http, respond: [{status: 200, body: named-ok}]}
+    steps:
+      - {name: record-named-service, input: {path: /named-service}, output: {status: 200, body: {equals: named-ok}}}
+      - name: scrape-id-and-name
+        input: {path: /apisix/prometheus/metrics}
+        output: {status: 200, body: {matches: 'apisix_bandwidth\{[^\n]*route="prometheus-unnamed-route"[^\n]*service="prometheus-named-service"[^\n]*\} [1-9][0-9]*'}}
+
+  - name: source-retains-service-name-after-route-name-removal
+    wait_for_generation: true
+    source: {file: t/plugin/prometheus2.t, tests: [47, 48, 49]}
+    config:
+      services:
+        - id: prometheus-retained-service-id
+          name: prometheus-retained-service
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+      routes:
+        - id: prometheus-retained-name-metrics
+          uri: /apisix/prometheus/metrics
+          methods: [GET]
+          plugins: {public-api: {uri: /apisix/prometheus/metrics}}
+        - id: prometheus-retained-route-id
+          uri: /retained-service-name
+          service_id: prometheus-retained-service-id
+          plugins: {prometheus: {prefer_name: true}}
+    fixtures:
+      - {name: primary, kind: http, respond: [{status: 200, body: named-ok}]}
+    steps:
+      - {name: record-retained-service-name, input: {path: /retained-service-name}, output: {status: 200, body: {equals: named-ok}}}
+      - name: scrape-retained-service-name
+        input: {path: /apisix/prometheus/metrics}
+        output: {status: 200, body: {matches: 'apisix_bandwidth\{[^\n]*route="prometheus-retained-route-id"[^\n]*service="prometheus-retained-service"[^\n]*\} [1-9][0-9]*'}}
+
+  - name: route-binding-wins-over-global-binding
+    wait_for_generation: true
+    source: {file: t/plugin/prometheus3.t, tests: [5, 6, 7]}
+    config:
+      global_rules:
+        - id: prometheus-no-double-global
+          plugins: {prometheus: {}}
+      routes:
+        - id: prometheus-no-double-metrics
+          uri: /apisix/prometheus/metrics
+          methods: [GET]
+          plugins: {public-api: {uri: /apisix/prometheus/metrics}}
+        - id: prometheus-no-double
+          uri: /no-double
+          plugins: {prometheus: {}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, respond: [{status: 200, body: no-double}]}
+    steps:
+      - {name: record-one-effective-binding, input: {path: /no-double}, output: {status: 200, body: {equals: no-double}}}
+      - name: scrape-one-status-observation
+        input: {path: /apisix/prometheus/metrics}
+        output: {status: 200, body: {matches: 'apisix_http_status\{[^\n]*code="200"[^\n]*route="prometheus-no-double"[^\n]*\} 1'}}
+
+  - name: configured-request-extra-labels
+    wait_for_generation: true
+    source: {file: t/plugin/prometheus4.t, tests: [1, 2, 3, 4]}
+    runtime:
+      plugin_attr:
+        prometheus:
+          metrics:
+            bandwidth:
+              extra_labels:
+                - upstream_addr: $upstream_addr
+                - upstream_status: $upstream_status
+    config:
+      routes:
+        - id: prometheus-extra-label-metrics
+          uri: /apisix/prometheus/metrics
+          methods: [GET]
+          plugins: {public-api: {uri: /apisix/prometheus/metrics}}
+        - id: prometheus-extra-label
+          uri: /extra-label
+          plugins: {prometheus: {}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, respond: [{status: 200, body: extra-ok}]}
+    steps:
+      - {name: record-extra-label-request, input: {path: /extra-label}, output: {status: 200, body: {equals: extra-ok}}}
+      - name: scrape-extra-labels
+        input: {path: /apisix/prometheus/metrics}
+        output: {status: 200, body: {matches: 'apisix_bandwidth\{[^\n]*route="prometheus-extra-label"[^\n]*upstream_addr="[^"]+"[^\n]*upstream_status="200"[^\n]*\} [1-9][0-9]*'}}
+
+  - name: configured-latency-buckets
+    wait_for_generation: true
+    source: {file: t/plugin/prometheus4.t, tests: [7, 8]}
+    runtime:
+      plugin_attr:
+        prometheus:
+          default_buckets: [15, 55, 105, 205, 505]
+    config:
+      routes:
+        - id: prometheus-configured-bucket-metrics
+          uri: /apisix/prometheus/metrics
+          methods: [GET]
+          plugins: {public-api: {uri: /apisix/prometheus/metrics}}
+        - id: prometheus-configured-bucket
+          uri: /configured-bucket
+          plugins: {prometheus: {}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, respond: [{status: 200, body: bucket-ok}]}
+    steps:
+      - name: record-configured-bucket-request
+        input: {path: /configured-bucket}
+        output: {status: 200, body: {equals: bucket-ok}}
+      - name: scrape-configured-latency-buckets
+        input: {path: /apisix/prometheus/metrics}
+        output:
+          status: 200
+          body:
+            matches: 'apisix_http_latency_bucket\{[^\n]*route="prometheus-configured-bucket"[^\n]*type="upstream"[^\n]*le="15"[^\n]*\} [0-9]+\n[^\n]*le="55"[^\n]*\} [0-9]+\n[^\n]*le="105"[^\n]*\} [0-9]+\n[^\n]*le="205"[^\n]*\} [0-9]+\n[^\n]*le="505"[^\n]*\} [0-9]+'
+
+  - name: missing-extra-label-variable-is-empty
+    wait_for_generation: true
+    source: {file: t/plugin/prometheus4.t, tests: [5, 6]}
+    runtime:
+      plugin_attr:
+        prometheus:
+          metrics:
+            http_status:
+              extra_labels:
+                - dummy: $dummy
+    config:
+      routes:
+        - id: prometheus-missing-label-metrics
+          uri: /apisix/prometheus/metrics
+          methods: [GET]
+          plugins: {public-api: {uri: /apisix/prometheus/metrics}}
+        - id: prometheus-missing-label
+          uri: /missing-label
+          plugins: {prometheus: {}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, respond: [{status: 200, body: missing-label-ok}]}
+    steps:
+      - {name: record-missing-label-request, input: {path: /missing-label}, output: {status: 200, body: {equals: missing-label-ok}}}
+      - name: scrape-empty-missing-label
+        input: {path: /apisix/prometheus/metrics}
+        output: {status: 200, body: {matches: 'apisix_http_status\{[^\n]*dummy=""[^\n]*route="prometheus-missing-label"[^\n]*\} 1'}}
+
+  - name: node-info-from-prometheus4-source
+    source: {file: t/plugin/prometheus4.t, tests: [14]}
+    config:
+      routes:
+        - id: prometheus4-node-info-metrics
+          uri: /apisix/prometheus/metrics
+          methods: [GET]
+          plugins: {public-api: {uri: /apisix/prometheus/metrics}}
+        - {id: prometheus4-node-info-owner, uri: /unused, plugins: {prometheus: {}}}
+    input: {path: /apisix/prometheus/metrics}
+    output: {status: 200, body: {matches: 'apisix_node_info\{hostname="[^"]+",version="[^"]+"\} 1'}}

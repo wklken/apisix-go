@@ -117,7 +117,7 @@ func PlanHTTPPlugins(ctx context.Context, input PlanningInput) (*HTTPPluginPlan,
 	enabled := plugin.NewEnabledSet(enabledNames)
 	result := &HTTPPluginPlan{Consumers: make(map[string][]PluginPlan)}
 	systemSources := materializedPluginSources(
-		buildSystemPluginConfigs(resource.Route{}, resource.Service{}),
+		buildSystemPluginConfigs(resource.Route{}, resource.Service{}, enabled),
 		plugin.ResourceProvenance{Kind: plugin.ResourceSystem},
 	)
 	for index := range systemSources {
@@ -256,7 +256,7 @@ func planRoutePlugins(
 		return PlannedRoute{}, err
 	}
 	systemSources := materializedPluginSources(
-		buildSystemPluginConfigs(routeResource, service),
+		buildSystemPluginConfigs(routeResource, service, enabled),
 		plugin.ResourceProvenance{Kind: plugin.ResourceSystem},
 	)
 	for index := range systemSources {
@@ -329,6 +329,9 @@ func planPluginSources(
 			)
 		}
 		if metadata.disabled {
+			continue
+		}
+		if source.name == "error-log-logger" && source.scope != plugin.ScopeSystem {
 			continue
 		}
 		priority := metadata.priority
@@ -515,10 +518,18 @@ func materializedPluginSources(
 func buildSystemPluginConfigs(
 	r resource.Route,
 	service resource.Service,
+	enabled plugin.EnabledSet,
 ) map[string]resource.PluginConfig {
-	return map[string]resource.PluginConfig{
+	configs := map[string]resource.PluginConfig{
 		"request-context": buildRequestContextConfig(r, service),
 	}
+	if enabled.Contains("log-rotate") {
+		configs["log-rotate"] = map[string]any{}
+	}
+	if enabled.Contains("error-log-logger") {
+		configs["error-log-logger"] = map[string]any{}
+	}
+	return configs
 }
 
 func buildRequestContextConfig(

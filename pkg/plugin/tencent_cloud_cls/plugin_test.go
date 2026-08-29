@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -37,6 +38,33 @@ import (
 type clsScopedSecretCall struct {
 	Scope secret.Scope
 	Raw   string
+}
+
+func TestResolveSourceIPCachesFirstResolvedAddressAndFailsClosed(t *testing.T) {
+	lookups := 0
+	p := &Plugin{lookupHostIP: func(host string) ([]net.IP, error) {
+		lookups++
+		if strings.TrimSpace(host) == "" {
+			t.Fatal("lookup hostname is empty")
+		}
+		return []net.IP{net.ParseIP("192.0.2.10"), net.ParseIP("192.0.2.11")}, nil
+	}}
+	for range 2 {
+		got, err := p.resolveSourceIP()
+		if err != nil || got != "192.0.2.10" {
+			t.Fatalf("resolveSourceIP() = %q, %v, want 192.0.2.10", got, err)
+		}
+	}
+	if lookups != 1 {
+		t.Fatalf("lookups = %d, want cached single lookup", lookups)
+	}
+
+	failed := &Plugin{lookupHostIP: func(string) ([]net.IP, error) {
+		return nil, errors.New("dns unavailable")
+	}}
+	if _, err := failed.resolveSourceIP(); err == nil || !strings.Contains(err.Error(), "dns unavailable") {
+		t.Fatalf("resolveSourceIP() error = %v, want DNS failure", err)
+	}
 }
 
 type clsScopedSecretBroker struct {
@@ -1661,9 +1689,13 @@ func TestBuildBatchPayloadReportsTruncatedFieldCount(t *testing.T) {
 
 	p := &Plugin{}
 	p.applyDefaults()
+	p.sourceIP = "192.0.2.10"
 
 	big := strings.Repeat("v", maxSingleValueSize+10)
-	payload := p.buildBatchPayload([]map[string]any{{"big": big}})
+	payload, err := p.buildBatchPayload([]map[string]any{{"big": big}})
+	if err != nil {
+		t.Fatalf("buildBatchPayload() error = %v", err)
+	}
 	if len(payload) == 0 {
 		t.Fatal("buildBatchPayload() = nil, want a payload despite truncation")
 	}
@@ -1683,6 +1715,7 @@ func TestBuildBatchPayloadReportsOverLimitEntryDrops(t *testing.T) {
 
 	p := &Plugin{}
 	p.applyDefaults()
+	p.sourceIP = "192.0.2.10"
 
 	// Six 1MB values in one entry exceed the 5MB group limit and must be
 	// reported as a dropped entry rather than sent.
@@ -1690,7 +1723,10 @@ func TestBuildBatchPayloadReportsOverLimitEntryDrops(t *testing.T) {
 	for i := range 6 {
 		huge["f"+string(rune('a'+i))] = strings.Repeat("v", maxSingleValueSize)
 	}
-	payload := p.buildBatchPayload([]map[string]any{huge})
+	payload, err := p.buildBatchPayload([]map[string]any{huge})
+	if err != nil {
+		t.Fatalf("buildBatchPayload() error = %v", err)
+	}
 	if len(payload) != 0 {
 		t.Fatalf("buildBatchPayload() = %d bytes, want empty payload for an over-limit entry", len(payload))
 	}
@@ -1710,6 +1746,7 @@ func TestBuildBatchPayloadReportsDroppedBatchRemainder(t *testing.T) {
 
 	p := &Plugin{}
 	p.applyDefaults()
+	p.sourceIP = "192.0.2.10"
 
 	// Six 1MB entries exceed the 5MB group limit; the last two are dropped
 	// and the remaining batch is still sent.
@@ -1718,7 +1755,10 @@ func TestBuildBatchPayloadReportsDroppedBatchRemainder(t *testing.T) {
 	for range 6 {
 		logs = append(logs, map[string]any{"v": big})
 	}
-	payload := p.buildBatchPayload(logs)
+	payload, err := p.buildBatchPayload(logs)
+	if err != nil {
+		t.Fatalf("buildBatchPayload() error = %v", err)
+	}
 	if len(payload) == 0 {
 		t.Fatal("buildBatchPayload() = nil, want the accepted entries' payload")
 	}

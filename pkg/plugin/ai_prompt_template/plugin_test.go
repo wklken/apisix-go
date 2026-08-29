@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -22,6 +23,15 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	}
 
 	return p
+}
+
+func TestSchemaRejectsEmptyTemplates(t *testing.T) {
+	p := newTestPlugin(t, Config{})
+
+	err := util.Validate(map[string]any{"templates": []any{}}, p.GetSchema())
+	if err == nil || !strings.Contains(err.Error(), "templates") {
+		t.Fatalf("Validate() error = %v, want empty templates rejection", err)
+	}
 }
 
 func TestHandlerRendersSelectedPromptTemplate(t *testing.T) {

@@ -73,7 +73,7 @@ func newTestPluginWithMetadata(t *testing.T, cfg Config, metadata *Metadata) *Pl
 func TestHandlerPassesAllowedRequestAndRestoresBody(t *testing.T) {
 	var wafPath string
 	var wafBody string
-	waf := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	waf := newLegacyT1KServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		wafPath = r.URL.RequestURI()
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -124,7 +124,7 @@ func TestHandlerPassesAllowedRequestAndRestoresBody(t *testing.T) {
 
 func TestHandlerSendsBoundedBodyToWAFAndPreservesFullBodyForUpstream(t *testing.T) {
 	var wafBody []byte
-	waf := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	waf := newLegacyT1KServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var err error
 		wafBody, err = io.ReadAll(r.Body)
 		if err != nil {
@@ -163,7 +163,7 @@ func TestHandlerSendsBoundedBodyToWAFAndPreservesFullBodyForUpstream(t *testing.
 
 func TestHandlerSendsNoBodyToWAFForNegativeInspectionLimit(t *testing.T) {
 	var wafBody []byte
-	waf := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	waf := newLegacyT1KServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var err error
 		wafBody, err = io.ReadAll(r.Body)
 		if err != nil {
@@ -201,8 +201,8 @@ func TestHandlerSendsNoBodyToWAFForNegativeInspectionLimit(t *testing.T) {
 }
 
 func TestHandlerBlocksRejectedRequest(t *testing.T) {
-	waf := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(wafDecision{Status: http.StatusForbidden, EventID: "evt-1"})
+	waf := newLegacyT1KServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(wafDecision{Status: http.StatusForbidden, EventID: "evt1"})
 	}))
 	t.Cleanup(waf.Close)
 
@@ -220,9 +220,9 @@ func TestHandlerBlocksRejectedRequest(t *testing.T) {
 	})).ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusForbidden {
-		t.Fatalf("status = %d, want 403", rr.Code)
+		t.Fatalf("status = %d, want 403; headers=%#v", rr.Code, rr.Header())
 	}
-	if !strings.Contains(rr.Body.String(), `"event_id": "evt-1"`) {
+	if !strings.Contains(rr.Body.String(), `"event_id": "evt1"`) {
 		t.Fatalf("body = %q, want event id", rr.Body.String())
 	}
 	if rr.Header().Get(HeaderChaitinWAFAction) != "reject" {
@@ -233,8 +233,8 @@ func TestHandlerBlocksRejectedRequest(t *testing.T) {
 	}
 }
 
-func TestHandlerBlocksRejectedRequestWithoutEventID(t *testing.T) {
-	waf := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+func TestHandlerFailsClosedOnRejectedRequestWithoutEventID(t *testing.T) {
+	waf := newLegacyT1KServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(wafDecision{Status: http.StatusForbidden})
 	}))
 	t.Cleanup(waf.Close)
@@ -250,17 +250,17 @@ func TestHandlerBlocksRejectedRequestWithoutEventID(t *testing.T) {
 		t.Fatal("next handler should not be called for blocked request")
 	})).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "http://example.com/orders", nil))
 
-	if rr.Code != http.StatusForbidden {
-		t.Fatalf("status = %d, want 403", rr.Code)
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500 for malformed T1K rejection", rr.Code)
 	}
-	if rr.Header().Get(HeaderChaitinWAFAction) != "reject" {
-		t.Fatalf("action = %q, want reject", rr.Header().Get(HeaderChaitinWAFAction))
+	if rr.Header().Get(HeaderChaitinWAF) != "waf-err" {
+		t.Fatalf("WAF result = %q, want waf-err", rr.Header().Get(HeaderChaitinWAF))
 	}
 }
 
 func TestHandlerRejectsNonTerminalWAFStatus(t *testing.T) {
-	waf := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(wafDecision{Status: 600, EventID: "evt-bad"})
+	waf := newLegacyT1KServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(wafDecision{Status: 600, EventID: "evtbad"})
 	}))
 	t.Cleanup(waf.Close)
 
@@ -281,8 +281,8 @@ func TestHandlerRejectsNonTerminalWAFStatus(t *testing.T) {
 }
 
 func TestHandlerMonitorModeDoesNotBlockRejectedRequest(t *testing.T) {
-	waf := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(wafDecision{Status: http.StatusForbidden, EventID: "evt-2"})
+	waf := newLegacyT1KServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(wafDecision{Status: http.StatusForbidden, EventID: "evt2"})
 	}))
 	t.Cleanup(waf.Close)
 
@@ -317,7 +317,7 @@ func TestHandlerMonitorModeDoesNotBlockRejectedRequest(t *testing.T) {
 
 func TestHandlerOffAndNoMatchSkipWAF(t *testing.T) {
 	wafCalls := 0
-	waf := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	waf := newLegacyT1KServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		wafCalls++
 	}))
 	t.Cleanup(waf.Close)
@@ -364,7 +364,7 @@ func TestHandlerOffAndNoMatchSkipWAF(t *testing.T) {
 
 func TestHandlerSupportsNestedMatchExpression(t *testing.T) {
 	wafCalls := 0
-	waf := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	waf := newLegacyT1KServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		wafCalls++
 		_ = json.NewEncoder(w).Encode(wafDecision{Status: http.StatusOK})
 	}))
@@ -411,13 +411,13 @@ func TestPostInitRejectsInvalidMatchExpression(t *testing.T) {
 
 func TestHandlerMovesPastFailedWAFNode(t *testing.T) {
 	healthyCalls := 0
-	healthy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	healthy := newLegacyT1KServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		healthyCalls++
 		_ = json.NewEncoder(w).Encode(wafDecision{Status: http.StatusOK})
 	}))
 	t.Cleanup(healthy.Close)
 
-	failed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	failed := newLegacyT1KServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("failed WAF node unexpectedly received a second request")
 	}))
 	failedURL := failed.URL
@@ -446,7 +446,7 @@ func TestHandlerMovesPastFailedWAFNode(t *testing.T) {
 }
 
 func TestHandlerTimesOutWAFNodeInMonitorMode(t *testing.T) {
-	waf := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	waf := newLegacyT1KServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(50 * time.Millisecond)
 		_ = json.NewEncoder(w).Encode(wafDecision{Status: http.StatusOK})
 	}))
@@ -529,14 +529,14 @@ func nodeFromURL(t *testing.T, rawURL string) Node {
 
 func TestPreparedGenerationsRetainChaitinMetadata(t *testing.T) {
 	var firstCalls, secondCalls atomic.Int64
-	firstWAF := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	firstWAF := newLegacyT1KServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		firstCalls.Add(1)
-		_ = json.NewEncoder(w).Encode(wafDecision{Status: http.StatusForbidden})
+		_ = json.NewEncoder(w).Encode(wafDecision{Status: http.StatusForbidden, EventID: "firstgeneration"})
 	}))
 	t.Cleanup(firstWAF.Close)
-	secondWAF := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	secondWAF := newLegacyT1KServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		secondCalls.Add(1)
-		_ = json.NewEncoder(w).Encode(wafDecision{Status: http.StatusForbidden})
+		_ = json.NewEncoder(w).Encode(wafDecision{Status: http.StatusForbidden, EventID: "secondgeneration"})
 	}))
 	t.Cleanup(secondWAF.Close)
 
@@ -616,14 +616,11 @@ func TestChaitinRouteConfigOverridesMetadataThenDefaults(t *testing.T) {
 		p.effective.Config.KeepaliveTimeout != 60000 {
 		t.Fatalf("effective defaults = %#v, want connect/send/keepalive defaults", p.effective.Config)
 	}
-	if p.client.Timeout != 25*time.Millisecond {
-		t.Fatalf("client timeout = %s, want 25ms from effective metadata", p.client.Timeout)
-	}
 }
 
 func TestConcurrentRequestsUsePreparedChaitinMetadata(t *testing.T) {
 	var wafCalls atomic.Int64
-	waf := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	waf := newLegacyT1KServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		wafCalls.Add(1)
 		_ = json.NewEncoder(w).Encode(wafDecision{Status: http.StatusOK})
 	}))

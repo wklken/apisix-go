@@ -24,6 +24,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/plugin/ai_runtime"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/body_transformer"
 	"github.com/wklken/apisix-go/pkg/secret"
@@ -801,6 +802,28 @@ func TestResponseRewriteDescribesAndRunsPureHeaderStreamingConfig(t *testing.T) 
 	}
 }
 
+func TestResponseRewritePureHeaderSelectsAIResponseMode(t *testing.T) {
+	config := Config{Headers: Headers{Set: map[string]string{"X-Mode": "$llm_model"}}}
+	descriptor, err := config.DescribeResponseMode()
+	if err != nil {
+		t.Fatalf("DescribeResponseMode() error = %v", err)
+	}
+	wantModes := base.ResponseModeBounded | base.ResponseModeStreaming
+	if descriptor.Modes != wantModes {
+		t.Fatalf("response modes = %d, want bounded|streaming", descriptor.Modes)
+	}
+	p := &Plugin{config: config}
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	request = ai_runtime.WithExecution(request, "openai", func(http.ResponseWriter, *http.Request) {})
+	if mode := p.SelectResponseMode(request); mode != base.RequestResponseModeBounded {
+		t.Fatalf("non-streaming AI mode = %d, want bounded", mode)
+	}
+	ai_runtime.FromRequest(request).SetStreamingIntent(true)
+	if mode := p.SelectResponseMode(request); mode != base.RequestResponseModeStreaming {
+		t.Fatalf("streaming AI mode = %d, want streaming", mode)
+	}
+}
+
 func TestResponseRewriteExclusionsRemainBuffered(t *testing.T) {
 	tests := []struct {
 		name string
@@ -1255,15 +1278,15 @@ func TestHandlerDecodesBrotliBodyBeforeFilters(t *testing.T) {
 	}
 }
 
-func TestHandlerPreservesGzipBodyWhenDecompressedBodyExceedsLimit(t *testing.T) {
-	testOversizedEncodedBodyIsPreserved(t, "gzip")
+func TestHandlerClearsGzipEncodingWhenDecompressedBodyExceedsLimit(t *testing.T) {
+	testOversizedEncodedBodyHeaderIsCleared(t, "gzip")
 }
 
-func TestHandlerPreservesBrotliBodyWhenDecompressedBodyExceedsLimit(t *testing.T) {
-	testOversizedEncodedBodyIsPreserved(t, "br")
+func TestHandlerClearsBrotliEncodingWhenDecompressedBodyExceedsLimit(t *testing.T) {
+	testOversizedEncodedBodyHeaderIsCleared(t, "br")
 }
 
-func testOversizedEncodedBodyIsPreserved(t *testing.T, encoding string) {
+func testOversizedEncodedBodyHeaderIsCleared(t *testing.T, encoding string) {
 	t.Helper()
 	expanded := bytes.Repeat([]byte("secret"), int(base.DefaultBufferedResponseMaxBytes/int64(len("secret")))+1)
 	var encoded []byte
@@ -1282,8 +1305,8 @@ func testOversizedEncodedBodyIsPreserved(t *testing.T, encoding string) {
 		_, _ = w.Write(encoded)
 	})
 
-	if got := res.Header().Get("Content-Encoding"); got != encoding {
-		t.Fatalf("Content-Encoding = %q, want %q", got, encoding)
+	if got := res.Header().Get("Content-Encoding"); got != "" {
+		t.Fatalf("Content-Encoding = %q, want cleared before filter dispatch", got)
 	}
 	if got := res.Body.Bytes(); !bytes.Equal(got, encoded) {
 		t.Fatalf(
@@ -1320,18 +1343,14 @@ func TestHandlerSkipsFiltersWhenEncodedBodyCannotBeDecoded(t *testing.T) {
 			if got := res.Body.String(); got != "secret token" {
 				t.Fatalf("body = %q, want encoded body left unfiltered", got)
 			}
-			// The representation metadata survives when the filters cannot
-			// decode the body, even though the body is left unfiltered.
 			for _, field := range rewriteRepresentationHeaders() {
 				want := "stale"
-				if field == "Content-Encoding" {
-					want = tt.encoding
-				}
-				if field == "Content-Length" {
-					want = "12"
+				switch field {
+				case "Content-Length", "Content-Encoding", "ETag", "Last-Modified":
+					want = ""
 				}
 				if got := res.Header().Get(field); got != want {
-					t.Errorf("%s = %q, want preserved %q", field, got, want)
+					t.Errorf("%s = %q, want %q", field, got, want)
 				}
 			}
 		})
@@ -1350,6 +1369,9 @@ func TestHandlerWarnsWhenFiltersSeeUnsupportedEncoding(t *testing.T) {
 	})
 	if got := res.Body.String(); got != "secret token" {
 		t.Fatalf("body = %q, want encoded body left unfiltered", got)
+	}
+	if got := res.Header().Get("Content-Encoding"); got != "" {
+		t.Fatalf("Content-Encoding = %q, want cleared before filter dispatch", got)
 	}
 }
 

@@ -9,13 +9,34 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/generation"
 	graphql_proxy_cache "github.com/wklken/apisix-go/pkg/plugin/graphql_proxy_cache"
 	"github.com/wklken/apisix-go/pkg/plugin/grpc_transcode"
 	"github.com/wklken/apisix-go/pkg/plugin/public_api"
 	"github.com/wklken/apisix-go/pkg/resource"
 	routepkg "github.com/wklken/apisix-go/pkg/route"
+	"github.com/wklken/apisix-go/pkg/secret"
 )
+
+func newScopedWorkerTestFactory(t *testing.T) *WorkerCompilerFactory {
+	t.Helper()
+	manifest := mustManifest(t)
+	catalog, err := capability.NewSecretDeclarationCatalog(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	factory, err := NewWorkerCompilerFactory(
+		manifest,
+		workerTestEffective(manifest),
+		secret.NewScopedMaterializer(&countingScopedBroker{}, catalog),
+		workerTestRuntimeObservers(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return factory
+}
 
 func TestPreparedGenerationCompilesGenerationLocalGRPCProtoImports(t *testing.T) {
 	compile := func(revision uint64, fieldNumber int) []byte {
@@ -137,6 +158,86 @@ func TestWorkerFactoryCompilesGlobalGRPCTranscodeWithGenerationProtoImports(t *t
 	}
 }
 
+func TestWorkerFactoryPreparesAIProxyMultiTerminalRoute(t *testing.T) {
+	factory := newScopedWorkerTestFactory(t)
+	factory.effective.Config.Plugins = []string{"ai-proxy-multi"}
+	t.Cleanup(func() {
+		if err := factory.Close(context.Background()); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+
+	desired := mustGenerationSnapshot(t, 94, []generation.Resource{
+		resourceValue("routes", "ai-proxy-multi", `{
+"id":"ai-proxy-multi","uri":"/v1/messages","plugins":{"ai-proxy-multi":{
+"instances":[{"name":"openai-backend","provider":"openai-compatible","weight":1,
+"auth":{"header":{"Authorization":"Bearer test-token"}},
+"options":{"model":"gpt-4o"},"override":{"endpoint":"http://127.0.0.1:1"}}],
+"ssl_verify":false}}}`),
+	}, nil)
+	var trace []string
+	factory.checkpoint = func(stage string, _ workerFactoryCheckpointState) error {
+		trace = append(trace, stage)
+		return nil
+	}
+	ticket := ticketForSnapshot(desired, generation.DomainHTTP)
+	registered, err := factory.attempts.prepareCandidateAttempt(
+		context.Background(),
+		ticket,
+		desired,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("prepareCandidateAttempt() error = %v", err)
+	}
+	prepared, err := factory.transferRegisteredGeneration(context.Background(), registered, nil)
+	if err != nil {
+		t.Fatalf("transferRegisteredGeneration() error = %v, completed stages = %v", err, trace)
+	}
+	if prepared.HTTP() == nil {
+		t.Fatal("prepared HTTP snapshot = nil")
+	}
+	if err := prepared.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestWorkerFactoryPreparesAIProxyWithResponseRewrite(t *testing.T) {
+	factory := newScopedWorkerTestFactory(t)
+	factory.effective.Config.Plugins = []string{"ai-proxy", "response-rewrite"}
+	t.Cleanup(func() {
+		if err := factory.Close(context.Background()); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+
+	desired := mustGenerationSnapshot(t, 95, []generation.Resource{
+		resourceValue("routes", "ai-proxy-response-rewrite", `{
+"id":"ai-proxy-response-rewrite","uri":"/v1/messages","plugins":{
+"ai-proxy":{"provider":"anthropic","auth":{"header":{"x-api-key":"test-key"}},
+"options":{"model":"claude"},"override":{"endpoint":"http://127.0.0.1:1/v1/messages"}},
+"response-rewrite":{"headers":{"set":{"X-LLM-Tool-Count":"$llm_tool_count"}}}}}`),
+	}, nil)
+	prepared, err := factory.PrepareGeneration(
+		context.Background(),
+		ticketForSnapshot(desired, generation.DomainHTTP),
+		desired,
+		nil,
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := prepared.Close(context.Background()); err != nil {
+			t.Error(err)
+		}
+	}()
+	if got := prepared.HTTP().Quarantined(); len(got) != 0 {
+		t.Fatalf("AI proxy + response-rewrite route quarantined = %#v", got)
+	}
+}
+
 func TestPrepareHTTPRoutesQuarantinesInvalidRouteWithoutLosingPreparedCluster(t *testing.T) {
 	prepared, fixture := newEffectiveBindingMaterializerFixture(t, nil, nil)
 	plan := &httpPreparationPlan{
@@ -191,5 +292,37 @@ func TestPrepareHTTPRoutesRollsBackClusterWhenLaterConsumerPreparationFails(t *t
 	}
 	if fixture.registry.Len() != 0 {
 		t.Fatalf("registry len = %d, want tentative cluster released", fixture.registry.Len())
+	}
+}
+
+func TestWorkerFactoryKeepsRouteWithRedisLimitCountConsumer(t *testing.T) {
+	factory := newScopedWorkerTestFactory(t)
+	factory.effective.Config.Plugins = []string{"key-auth", "limit-count"}
+	t.Cleanup(func() {
+		if err := factory.Close(context.Background()); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+
+	desired := mustGenerationSnapshot(t, 196, []generation.Resource{
+		resourceValue("consumers", "jack1", `{
+"username":"jack1","plugins":{
+"key-auth":{"key":"jack1"},
+"limit-count":{"count":2,"key":"remote_addr","policy":"redis",
+"redis_host":"127.0.0.1","redis_port":6379,"redis_timeout":1001,
+"rejected_code":503,"show_limit_quota_header":true,"time_window":60}
+}}`),
+		resourceValue("routes", "consumer-limit-count", `{
+"id":"consumer-limit-count","uri":"/consumer-limit-count",
+"plugins":{"key-auth":{}},"upstream":{"nodes":{"127.0.0.1:9080":1},"type":"roundrobin"}}`),
+	}, nil)
+	prepared, err := factory.PrepareGeneration(
+		context.Background(), ticketForSnapshot(desired, generation.DomainHTTP), desired, nil, nil,
+	)
+	if err != nil {
+		t.Fatalf("PrepareGeneration() error = %v", err)
+	}
+	if got := prepared.HTTP().Quarantined(); len(got) != 0 {
+		t.Fatalf("quarantined routes = %#v, want none", got)
 	}
 }

@@ -74,7 +74,7 @@ func TestStandaloneManifestMapsEveryPinnedBlockToIndependentCacheCase(t *testing
 	next := make(map[string]int, len(wantSources))
 	for i, want := range wantSources {
 		source := manifest.Sources[i]
-		if source.Commit != "c3d7d5ec69774121f53d2e20d29d09c816795dd7" {
+		if source.Commit != "9ef2ecab67f652d38365049613610ef649bb4ad0" {
 			t.Fatalf("source %d commit = %q, want pinned Apache APISIX commit", i+1, source.Commit)
 		}
 		if source.File != want.file || source.Tests != want.tests {

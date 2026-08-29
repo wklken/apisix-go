@@ -27,6 +27,48 @@ func Hostname() string {
 	return accessLogHostname()
 }
 
+// ApplyMatchedRouteFields mirrors APISIX 3.17 custom log formatting: a
+// matched route overwrites the configured route_id and either overwrites or
+// removes service_id according to the matched route.
+func ApplyMatchedRouteFields(fields map[string]any, routeID string, serviceID string) {
+	if fields == nil || routeID == "" {
+		return
+	}
+	fields["route_id"] = routeID
+	if serviceID == "" {
+		delete(fields, "service_id")
+		return
+	}
+	fields["service_id"] = serviceID
+}
+
+// ApplyRequestMatchedRouteFields resolves the matched resource identifiers
+// while the live request is still available.
+func ApplyRequestMatchedRouteFields(fields map[string]any, r *http.Request, fallbackRouteID string) {
+	routeID := RequestVar(r, "$route_id", 0)
+	if routeID == "" {
+		routeID = fallbackRouteID
+	}
+	ApplyMatchedRouteFields(fields, routeID, RequestVar(r, "$service_id", 0))
+}
+
+// ApplySnapshotMatchedRouteFields resolves the same identifiers from the
+// detached log-phase snapshot.
+func ApplySnapshotMatchedRouteFields(fields map[string]any, snapshot LogSnapshot, fallbackRouteID string) {
+	routeID := logIdentifier(SnapshotValue(snapshot, "$route_id"))
+	if routeID == "" {
+		routeID = fallbackRouteID
+	}
+	ApplyMatchedRouteFields(fields, routeID, logIdentifier(SnapshotValue(snapshot, "$service_id")))
+}
+
+func logIdentifier(value any) string {
+	if value == nil {
+		return ""
+	}
+	return fmt.Sprint(value)
+}
+
 // AccessLogRequest is the captured request snapshot shared by the
 // access-log style logger plugins.
 type AccessLogRequest struct {

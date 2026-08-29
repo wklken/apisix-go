@@ -698,16 +698,7 @@ func kafkaSnapshotOrigin(snapshot base.LogSnapshot, body string) string {
 		proto = "HTTP/1.1"
 	}
 	fmt.Fprintf(&b, "%s %s %s\r\n", snapshot.Request.Method, snapshotURI(snapshot), proto)
-	names := make([]string, 0, len(snapshot.Request.Header))
-	for name := range snapshot.Request.Header {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	for _, name := range names {
-		for _, value := range snapshot.Request.Header.Values(name) {
-			fmt.Fprintf(&b, "%s: %s\r\n", name, value)
-		}
-	}
+	writeKafkaOriginHeaders(&b, snapshot.Request.Header, snapshot.Request.Host)
 	b.WriteString("\r\n")
 	b.WriteString(body)
 	return b.String()
@@ -794,22 +785,33 @@ func buildOriginRequestLog(r *http.Request, requestBody string, includeReqBody b
 	}
 	_, _ = fmt.Fprintf(&b, "%s %s %s\r\n", r.Method, requestURI, r.Proto)
 
-	headerNames := make([]string, 0, len(r.Header))
-	for name := range r.Header {
-		headerNames = append(headerNames, name)
-	}
-	sort.Strings(headerNames)
-	for _, name := range headerNames {
-		for _, value := range r.Header.Values(name) {
-			_, _ = fmt.Fprintf(&b, "%s: %s\r\n", name, value)
-		}
-	}
+	writeKafkaOriginHeaders(&b, r.Header, r.Host)
 
 	b.WriteString("\r\n")
 	if includeReqBody {
 		b.WriteString(requestBody)
 	}
 	return b.String()
+}
+
+func writeKafkaOriginHeaders(b *strings.Builder, source http.Header, host string) {
+	headers := source.Clone()
+	if headers == nil {
+		headers = make(http.Header, 1)
+	}
+	if host != "" {
+		headers.Set("Host", host)
+	}
+	headerNames := make([]string, 0, len(headers))
+	for name := range headers {
+		headerNames = append(headerNames, name)
+	}
+	sort.Strings(headerNames)
+	for _, name := range headerNames {
+		for _, value := range headers.Values(name) {
+			_, _ = fmt.Fprintf(b, "%s: %s\r\n", name, value)
+		}
+	}
 }
 
 func (p *Plugin) applyDefaults() {

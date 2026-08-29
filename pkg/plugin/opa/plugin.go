@@ -14,6 +14,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/httpclient"
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/util"
@@ -109,7 +110,6 @@ type opaRequest struct {
 }
 
 type opaInput struct {
-	Version  int                         `json:"version"`
 	Type     string                      `json:"type"`
 	Request  opaHTTPRequest              `json:"request"`
 	Vars     map[string]any              `json:"var"`
@@ -119,13 +119,13 @@ type opaInput struct {
 }
 
 type opaHTTPRequest struct {
-	Scheme  string              `json:"scheme"`
-	Method  string              `json:"method"`
-	Host    string              `json:"host"`
-	Port    int                 `json:"port"`
-	Path    string              `json:"path"`
-	Headers map[string][]string `json:"headers"`
-	Query   map[string]any      `json:"query"`
+	Scheme  string         `json:"scheme"`
+	Method  string         `json:"method"`
+	Host    string         `json:"host"`
+	Port    int            `json:"port"`
+	Path    string         `json:"path"`
+	Headers map[string]any `json:"headers"`
+	Query   map[string]any `json:"query"`
 }
 
 type opaConsumer struct {
@@ -169,6 +169,9 @@ func (p *Plugin) PostInit() error {
 	}
 	if p.config.KeepalivePool == 0 {
 		p.config.KeepalivePool = 5
+	}
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(p.config.Host)), "http://") {
+		logger.Warn("Using opa host with no TLS is a security risk")
 	}
 
 	p.client = &http.Client{
@@ -271,9 +274,11 @@ func (p *Plugin) buildOPARequest(r *http.Request) opaRequest {
 	}
 	facts := base.CaptureAuthorizationFacts(r, serverAddr, route, service)
 	host, port := splitHostPort(facts.Host, facts.Scheme)
+	if listenerPort, err := strconv.Atoi(facts.ServerPort); err == nil && listenerPort > 0 && listenerPort <= 65535 {
+		port = listenerPort
+	}
 	input := opaInput{
-		Version: facts.Version,
-		Type:    "http",
+		Type: "http",
 		Request: opaHTTPRequest{
 			Scheme:  facts.Scheme,
 			Method:  facts.Method,
@@ -427,11 +432,15 @@ func splitHostPort(host, requestScheme string) (string, int) {
 	return host, 80
 }
 
-func headers(values map[string][]string) map[string][]string {
-	dst := make(map[string][]string, len(values))
+func headers(values map[string][]string) map[string]any {
+	dst := make(map[string]any, len(values))
 	for key, current := range values {
 		key = strings.ToLower(key)
-		dst[key] = append(dst[key], current...)
+		if len(current) == 1 {
+			dst[key] = current[0]
+			continue
+		}
+		dst[key] = append([]string(nil), current...)
 	}
 	return dst
 }

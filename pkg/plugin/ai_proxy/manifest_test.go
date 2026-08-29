@@ -47,9 +47,10 @@ func TestRequestBodyOverrideManifestMapsEveryPinnedBlockToIndependentBehavior(t 
 
 	var manifest struct {
 		Sources []struct {
-			Commit string `yaml:"commit"`
-			File   string `yaml:"file"`
-			Tests  int    `yaml:"tests"`
+			Commit      string `yaml:"commit"`
+			File        string `yaml:"file"`
+			Tests       int    `yaml:"tests"`
+			TestNumbers []int  `yaml:"test_numbers"`
 		} `yaml:"sources"`
 		Cases []requestBodyManifestCase `yaml:"cases"`
 	}
@@ -63,8 +64,17 @@ func TestRequestBodyOverrideManifestMapsEveryPinnedBlockToIndependentBehavior(t 
 			continue
 		}
 		foundSource = true
-		if source.Commit != "c3d7d5ec69774121f53d2e20d29d09c816795dd7" || source.Tests != 19 {
-			t.Fatalf("pinned source = (%q, %d), want APISIX c3d7d5ec with 19 tests", source.Commit, source.Tests)
+		if source.Commit != "9ef2ecab67f652d38365049613610ef649bb4ad0" ||
+			source.Tests != 17 ||
+			len(source.TestNumbers) != 17 ||
+			source.TestNumbers[0] != 3 ||
+			source.TestNumbers[16] != 19 {
+			t.Fatalf(
+				"pinned source = (%q, %d, %v), want APISIX 3.17 runtime tests 3..19",
+				source.Commit,
+				source.Tests,
+				source.TestNumbers,
+			)
 		}
 	}
 	if !foundSource {
@@ -85,13 +95,13 @@ func TestRequestBodyOverrideManifestMapsEveryPinnedBlockToIndependentBehavior(t 
 		}
 		cases = append(cases, testCase)
 	}
-	if len(cases) != 19 {
-		t.Fatalf("%s cases = %d, want exactly 19 independent cases", requestBodyOverrideSource, len(cases))
+	if len(cases) != 17 {
+		t.Fatalf("%s cases = %d, want exactly 17 independent runtime cases", requestBodyOverrideSource, len(cases))
 	}
 
 	names := make(map[string]struct{}, len(cases))
 	for i, testCase := range cases {
-		testNumber := i + 1
+		testNumber := i + 3
 		if len(testCase.Source.Tests) != 1 || testCase.Source.Tests[0] != testNumber {
 			t.Fatalf(
 				"case %d %q source tests = %v, want [%d]",
@@ -118,15 +128,7 @@ func TestRequestBodyOverrideManifestMapsEveryPinnedBlockToIndependentBehavior(t 
 		if len(fixture.Respond) == 0 {
 			t.Errorf("case %d %q provider fixture has no response", testNumber, testCase.Name)
 		}
-		if testNumber <= 2 {
-			if fixture.ExpectRequests == nil || *fixture.ExpectRequests != 0 {
-				t.Errorf(
-					"case %d %q must assert invalid config makes zero provider requests",
-					testNumber,
-					testCase.Name,
-				)
-			}
-		} else if len(fixture.Expect) == 0 || fixture.Expect[0]["body"] == nil {
+		if len(fixture.Expect) == 0 || fixture.Expect[0]["body"] == nil {
 			t.Errorf("case %d %q provider fixture lacks a body assertion", testNumber, testCase.Name)
 		}
 		if len(testCase.Steps) != 1 ||
@@ -168,8 +170,8 @@ func TestProtocolConversionManifestMapsEveryPinnedBlockToIndependentBehavior(t *
 			continue
 		}
 		foundSource = true
-		if source.Commit != "c3d7d5ec69774121f53d2e20d29d09c816795dd7" || source.Tests != 28 {
-			t.Fatalf("pinned source = (%q, %d), want APISIX c3d7d5ec with 28 tests", source.Commit, source.Tests)
+		if source.Commit != "9ef2ecab67f652d38365049613610ef649bb4ad0" || source.Tests != 28 {
+			t.Fatalf("pinned source = (%q, %d), want APISIX 3.17 target with 28 tests", source.Commit, source.Tests)
 		}
 	}
 	if !foundSource {
@@ -473,6 +475,72 @@ func TestFixtureFamilyManifestPreservesPinnedErrorBehavior(t *testing.T) {
 		}
 		if !strings.Contains(outputBody, want.outputBody) {
 			t.Errorf("case %q output body = %q, want pinned %q", found.Name, outputBody, want.outputBody)
+		}
+	}
+}
+
+func TestTargetPostResponseObservationsUseLogPhaseLifecycle(t *testing.T) {
+	path := filepath.Join("..", "..", "..", "t", "plugin", "ai-proxy.yaml")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+
+	var manifest struct {
+		Cases []struct {
+			Name          string           `yaml:"name"`
+			Config        map[string]any   `yaml:"config"`
+			AfterShutdown []map[string]any `yaml:"after_shutdown"`
+			Steps         []struct {
+				FileAssertions []map[string]any `yaml:"file_assertions"`
+			} `yaml:"steps"`
+		} `yaml:"cases"`
+	}
+	if err := yaml.Unmarshal(data, &manifest); err != nil {
+		t.Fatalf("decode %s: %v", path, err)
+	}
+
+	expectations := map[string]bool{
+		"openai-fragmented-sse-usage":                                  false,
+		"openai-multiple-sse-events-one-chunk":                         false,
+		"openai-responses-nonstream-usage-context":                     false,
+		"openai-responses-streaming-usage-context":                     false,
+		"streaming-request-populates-upstream-address-status-and-time": true,
+		"streaming-response-has-nonzero-upstream-response-length":      true,
+	}
+	found := make(map[string]bool, len(expectations))
+	for _, testCase := range manifest.Cases {
+		needsLogPhaseConfig, wanted := expectations[testCase.Name]
+		if !wanted {
+			continue
+		}
+		found[testCase.Name] = true
+		if len(testCase.AfterShutdown) == 0 {
+			t.Errorf("case %q has no after_shutdown assertion", testCase.Name)
+		}
+		for _, step := range testCase.Steps {
+			if len(step.FileAssertions) != 0 {
+				t.Errorf("case %q observes asynchronous log output before shutdown", testCase.Name)
+			}
+		}
+		if !needsLogPhaseConfig {
+			continue
+		}
+		encoded, err := yaml.Marshal(testCase.Config)
+		if err != nil {
+			t.Fatalf("encode case %q config: %v", testCase.Name, err)
+		}
+		config := string(encoded)
+		if !strings.Contains(config, "file-logger:") {
+			t.Errorf("case %q does not observe pinned upstream variables in log phase", testCase.Name)
+		}
+		if strings.Contains(config, "response-rewrite:") {
+			t.Errorf("case %q observes post-response upstream variables in response headers", testCase.Name)
+		}
+	}
+	for name := range expectations {
+		if !found[name] {
+			t.Errorf("manifest omits target case %q", name)
 		}
 	}
 }

@@ -3,6 +3,7 @@ package capability
 import (
 	"reflect"
 	"slices"
+	"sort"
 	"strings"
 	"testing"
 
@@ -58,11 +59,24 @@ func TestLoadedManifestPinsCompleteAPISIX317Inventory(t *testing.T) {
 	if defaults != 104 {
 		t.Fatalf("APISIX default count = %d, want 104", defaults)
 	}
-	for _, name := range []string{"ext-plugin-pre-req", "ext-plugin-post-req", "ext-plugin-post-resp", "inspect", "ai"} {
+	for _, name := range []string{
+		"ext-plugin-pre-req",
+		"ext-plugin-post-req",
+		"ext-plugin-post-resp",
+		"inspect",
+		"ocsp-stapling",
+	} {
 		plugin, ok := m.Plugin(name)
 		if !ok || plugin.Behavior != BehaviorNotApplicable {
 			t.Fatalf("%s = %#v/%v, want not_applicable", name, plugin, ok)
 		}
+		if len(plugin.Factories) != 0 {
+			t.Fatalf("%s factories = %#v, want none for native/runtime-only capability", name, plugin.Factories)
+		}
+	}
+	ai, ok := m.Plugin("ai")
+	if !ok || ai.Behavior != BehaviorNotApplicable {
+		t.Fatalf("ai = %#v/%v, want not_applicable", ai, ok)
 	}
 }
 
@@ -72,11 +86,76 @@ func TestQualifiedPluginsDistinguishesUnknownProfile(t *testing.T) {
 		t.Fatal(err)
 	}
 	qualified := m.QualifiedPlugins("http-data-plane-v1")
-	if qualified == nil || len(qualified) != 0 {
-		t.Fatalf("QualifiedPlugins() = %#v, want non-nil empty slice", qualified)
+	if !slices.Equal(qualified, []string{"basic-auth", "cors", "jwt-auth", "key-auth", "prometheus", "request-id"}) {
+		t.Fatalf("QualifiedPlugins() = %#v, want [basic-auth cors jwt-auth key-auth prometheus request-id]", qualified)
 	}
 	if unknown := m.QualifiedPlugins("missing"); unknown != nil {
 		t.Fatalf("QualifiedPlugins(missing) = %#v, want nil", unknown)
+	}
+}
+
+func TestContractReadyPluginsPreservesFailClosedSelection(t *testing.T) {
+	m, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := m.ContractReadyPlugins(
+		"http-data-plane-v1",
+	), m.QualifiedPlugins(
+		"http-data-plane-v1",
+	); !slices.Equal(
+		got,
+		want,
+	) {
+		t.Fatalf("ContractReadyPlugins() = %#v, want existing fail-closed selection %#v", got, want)
+	}
+	if unknown := m.ContractReadyPlugins("missing"); unknown != nil {
+		t.Fatalf("ContractReadyPlugins(missing) = %#v, want nil", unknown)
+	}
+}
+
+func TestPluginQualificationDoesNotRequirePlatformRecovery(t *testing.T) {
+	m, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile, ok := m.Qualification("http-data-plane-v1")
+	if !ok {
+		t.Fatal("http-data-plane-v1 qualification profile missing")
+	}
+	if slices.Contains(profile.RequiredEvidence, EvidenceKind("recovery")) {
+		t.Fatal("plugin qualification must not require platform recovery evidence")
+	}
+}
+
+func TestAllPluginProfileSelectsEveryGoApplicableAPISIXCapability(t *testing.T) {
+	m, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile, ok := m.Qualification("apisix-3.17-all-plugins-v1")
+	if !ok {
+		t.Fatal("apisix-3.17-all-plugins-v1 qualification profile missing")
+	}
+
+	want := make([]string, 0, len(m.Plugins))
+	for _, plugin := range m.Plugins {
+		if plugin.Namespace != NamespaceAPISIX || plugin.Behavior == BehaviorNotApplicable ||
+			len(plugin.Factories) == 0 {
+			continue
+		}
+		want = append(want, plugin.Name)
+	}
+	sort.Strings(want)
+	if !slices.Equal(profile.RequiredPlugins, want) {
+		t.Fatalf(
+			"required plugins = %#v, want every Go-applicable APISIX capability %#v",
+			profile.RequiredPlugins,
+			want,
+		)
+	}
+	if !slices.Equal(profile.Domains, []string{"http", "stream"}) {
+		t.Fatalf("qualification domains = %#v, want [http stream]", profile.Domains)
 	}
 }
 
@@ -467,12 +546,6 @@ func TestQualifiedPluginsFailClosedByEvidenceState(t *testing.T) {
 			qualified: true,
 		},
 		{
-			name:      "no recovery lifecycle",
-			state:     EvidenceNotApplicable,
-			reason:    "no recovery lifecycle",
-			qualified: true,
-		},
-		{
 			name:      "explained not applicable",
 			state:     EvidenceNotApplicable,
 			reason:    "not applicable: plugin is stateless",
@@ -547,7 +620,6 @@ func TestManifestQueriesReturnDeepCopies(t *testing.T) {
 	byName.Evidence.Differential.Refs[0] = "mutated"
 	byName.Evidence.RealDependency.Refs[0] = "mutated"
 	byName.Evidence.Failure.Refs[0] = "mutated"
-	byName.Evidence.Recovery.Refs[0] = "mutated"
 	byName.DivergenceIDs[0] = "mutated"
 	byName.SupportedPlatforms[0] = "mutated"
 	again, _ := loaded.Plugin("copy-capability")
@@ -621,7 +693,6 @@ func testManifest() Manifest {
 				EvidenceDifferential,
 				EvidenceFailure,
 				EvidenceRealDependency,
-				EvidenceRecovery,
 				EvidenceSchema,
 				EvidenceUnit,
 			},
@@ -644,7 +715,6 @@ func testEvidence() Evidence {
 		Differential:   claim("fixture/differential"),
 		RealDependency: claim("fixture/real-dependency"),
 		Failure:        claim("fixture/failure"),
-		Recovery:       claim("fixture/recovery"),
 	}
 }
 

@@ -150,19 +150,22 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			return
 		}
 
-		userAgent := strings.Join(userAgents, ", ")
 		if len(p.config.AllowList) > 0 {
-			if p.matchUserAgent(userAgent) == matchAllow {
-				next.ServeHTTP(w, r)
-				return
+			for _, userAgent := range userAgents {
+				if p.matchUserAgent(userAgent) == matchAllow {
+					next.ServeHTTP(w, r)
+					return
+				}
 			}
 			writeJSON(w, p.message)
 			return
 		}
 
-		if p.matchUserAgent(userAgent) == matchDeny {
-			writeJSON(w, p.message)
-			return
+		for _, userAgent := range userAgents {
+			if p.matchUserAgent(userAgent) == matchDeny {
+				writeJSON(w, p.message)
+				return
+			}
 		}
 
 		next.ServeHTTP(w, r)
@@ -188,7 +191,7 @@ func (p *Plugin) matchUserAgent(userAgent string) int {
 }
 
 func writeJSON(w http.ResponseWriter, body string) {
-	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusForbidden)
-	_, _ = w.Write([]byte(body))
+	_, _ = fmt.Fprintln(w, body)
 }

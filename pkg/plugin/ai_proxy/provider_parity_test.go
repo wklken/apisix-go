@@ -2,6 +2,7 @@ package ai_proxy
 
 import (
 	"context"
+	stdjson "encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -22,6 +23,80 @@ type timeoutTransportError struct{}
 func (timeoutTransportError) Error() string   { return "connect: timeout" }
 func (timeoutTransportError) Timeout() bool   { return true }
 func (timeoutTransportError) Temporary() bool { return true }
+
+func TestProviderRequestPreservesEmptyContainersAndNull(t *testing.T) {
+	var providerBody []byte
+	p := newTestPlugin(t, Config{
+		Provider: "openai-compatible",
+		Override: Override{
+			Endpoint: "http://provider.test",
+			RequestBody: map[string]any{
+				"openai-chat": map[string]any{"metadata": map[string]any{}},
+			},
+		},
+	})
+	p.client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		var err error
+		providerBody, err = io.ReadAll(request.Body)
+		if err != nil {
+			return nil, err
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": {"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"choices":[{"message":{"content":"ok"}}]}`)),
+		}, nil
+	})
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/v1/chat/completions",
+		strings.NewReader(
+			`{"model":"m","messages":[],"tools":[`+
+				`{"type":"function","function":{"name":"fn",`+
+				`"parameters":{"type":"object","required":[],"properties":{}}}}],`+
+				`"empty_obj":{},"stop":null}`,
+		),
+	)
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+
+	p.Handler(http.NotFoundHandler()).ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %q", response.Code, response.Body.String())
+	}
+	var document map[string]stdjson.RawMessage
+	if err := stdjson.Unmarshal(providerBody, &document); err != nil {
+		t.Fatalf("decode provider body %q: %v", providerBody, err)
+	}
+	for field, want := range map[string]string{
+		"messages":  "[]",
+		"empty_obj": "{}",
+		"stop":      "null",
+		"metadata":  "{}",
+	} {
+		if got := string(document[field]); got != want {
+			t.Errorf("provider body %s = %q, want %q", field, got, want)
+		}
+	}
+	var tools []struct {
+		Function struct {
+			Parameters map[string]stdjson.RawMessage `json:"parameters"`
+		} `json:"function"`
+	}
+	if err := stdjson.Unmarshal(document["tools"], &tools); err != nil {
+		t.Fatalf("decode provider tools: %v", err)
+	}
+	if len(tools) != 1 {
+		t.Fatalf("provider tools = %#v, want one tool", tools)
+	}
+	if got := string(tools[0].Function.Parameters["required"]); got != "[]" {
+		t.Errorf("provider required = %q, want []", got)
+	}
+	if got := string(tools[0].Function.Parameters["properties"]); got != "{}" {
+		t.Errorf("provider properties = %q, want {}", got)
+	}
+}
 
 func TestAIMLAPIDefaultEndpointMatchesAPISIX317(t *testing.T) {
 	p := &Plugin{config: Config{Provider: "aimlapi"}}

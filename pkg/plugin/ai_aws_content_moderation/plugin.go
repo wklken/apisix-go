@@ -21,9 +21,10 @@ import (
 
 type Plugin struct {
 	base.BasePlugin
-	config Config
-	client *http.Client
-	now    func() time.Time
+	config        Config
+	client        *http.Client
+	now           func() time.Time
+	legacyRawBody bool
 	awsCredentialState
 }
 
@@ -147,6 +148,7 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	p.legacyRawBody = p.config.FailMode == ""
 	if p.config.FailMode == "" {
 		p.config.FailMode = "skip"
 	}
@@ -178,6 +180,10 @@ func (p *Plugin) PostInit() error {
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
 		if _, ok := ai_runtime.SelectedInstanceName(r); !ok {
+			if p.legacyRawBody {
+				p.handleAPISIX317RawBody(w, r, next)
+				return
+			}
 			p.handleMissingAIInstance(w, r, next)
 			return
 		}
@@ -222,6 +228,33 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 	}
 	return http.HandlerFunc(fn)
+}
+
+func (p *Plugin) handleAPISIX317RawBody(
+	w http.ResponseWriter,
+	r *http.Request,
+	next http.Handler,
+) {
+	body, err := base.ReadRequestBody(r)
+	if err != nil {
+		writeText(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if len(body) == 0 {
+		writeText(w, http.StatusBadRequest, "missing request body")
+		return
+	}
+	reason, err := p.checkContent(r, string(body))
+	if err != nil {
+		logger.Error(err.Error())
+		writeText(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if reason != "" {
+		writeText(w, http.StatusBadRequest, reason)
+		return
+	}
+	next.ServeHTTP(w, r)
 }
 
 func (p *Plugin) handleMissingAIInstance(w http.ResponseWriter, r *http.Request, next http.Handler) {

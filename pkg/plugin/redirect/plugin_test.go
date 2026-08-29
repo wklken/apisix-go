@@ -72,6 +72,20 @@ func TestSchemaRejectsRetCodeAboveHTTPMaximum(t *testing.T) {
 	}
 }
 
+func TestSchemaRejectsURIWithoutAPISIX317PatternToken(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	config := map[string]any{
+		"uri": `\\`,
+	}
+	if err := util.Validate(config, p.GetSchema()); err == nil {
+		t.Fatal(`uri="\\" should fail the APISIX 3.17 redirect URI pattern`)
+	}
+}
+
 func TestHandlerRegexURIReplacesFirstMatchOnly(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		RegexUri: []string{`foo`, `bar`},

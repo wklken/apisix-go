@@ -20,6 +20,37 @@ type serverInfoLeaseClient interface {
 	KeepAliveOnce(context.Context, clientv3.LeaseID) (*clientv3.LeaseKeepAliveResponse, error)
 }
 
+// ServerVersion returns the first reachable etcd server version using the
+// existing configuration client and its request timeout.
+func (c *ConfigClient) ServerVersion(ctx context.Context) (string, error) {
+	if c == nil || c.status == nil || len(c.endpoints) == 0 {
+		return "", errors.New("etcd config client cannot query server version")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	timeout := c.requestTimeout
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+	var failures []error
+	for _, endpoint := range c.endpoints {
+		statusCtx, cancel := context.WithTimeout(ctx, timeout)
+		response, err := c.status(statusCtx, endpoint)
+		cancel()
+		if err != nil {
+			failures = append(failures, fmt.Errorf("status %s: %w", endpoint, err))
+			continue
+		}
+		if response == nil || strings.TrimSpace(response.Version) == "" {
+			failures = append(failures, fmt.Errorf("status %s returned an empty version", endpoint))
+			continue
+		}
+		return strings.TrimSpace(response.Version), nil
+	}
+	return "", errors.Join(failures...)
+}
+
 // ServerInfoReporter owns the lease used for the control-plane server-info
 // record. It deliberately reports through the same etcd client as the config
 // watcher so the record follows the configured prefix and credentials.

@@ -249,6 +249,24 @@ func TestStartFailureCleanupStopsPrometheusExpiration(t *testing.T) {
 	}
 }
 
+func TestDrainRuntimeOwnersTreatsClosedHTTPListenerAsDrained(t *testing.T) {
+	server := &Server{
+		shutdownHTTP: func(context.Context) error {
+			return errors.Join(errors.New("close listener"), net.ErrClosed)
+		},
+		routesDrained: true,
+		streamDrained: true,
+	}
+
+	err, complete := server.drainRuntimeOwners(context.Background())
+	if err != nil || !complete || !server.httpDrained {
+		t.Fatalf("drain closed HTTP listener = (%v, %v, %v), want nil/true/true", err, complete, server.httpDrained)
+	}
+	if len(server.shutdownErrors) != 0 {
+		t.Fatalf("closed HTTP listener recorded shutdown errors: %v", server.shutdownErrors)
+	}
+}
+
 func TestServerShutdownRejectsLatePrometheusExpirationRetention(t *testing.T) {
 	server := &Server{}
 	if err := server.stopPrometheusExpirationRuntime(context.Background()); err != nil {
@@ -519,8 +537,10 @@ func TestNormalizeRequestPathCleansDotSegments(t *testing.T) {
 
 func TestStripUntrustedForwardedForDropsForgedHeader(t *testing.T) {
 	var gotForwardedFor string
+	var gotCandidate []string
 	handler := normalizeForwardedHeaders(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotForwardedFor = r.Header.Get("X-Forwarded-For")
+		gotCandidate = apisixctx.ForwardedForCandidate(r)
 		w.WriteHeader(http.StatusNoContent)
 	}), []string{"192.128.0.0/16"})
 	req := httptest.NewRequest(http.MethodGet, "/hello", nil)
@@ -532,12 +552,17 @@ func TestStripUntrustedForwardedForDropsForgedHeader(t *testing.T) {
 	if gotForwardedFor != "" {
 		t.Fatalf("X-Forwarded-For = %q, want forged header removed", gotForwardedFor)
 	}
+	if len(gotCandidate) != 0 {
+		t.Fatalf("forwarded-for candidate = %q, want absent under configured global policy", gotCandidate)
+	}
 }
 
 func TestStripUntrustedForwardedForDropsForgedHeaderWithoutTrustedAddresses(t *testing.T) {
 	var gotForwardedFor string
+	var gotCandidate []string
 	handler := normalizeForwardedHeaders(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotForwardedFor = r.Header.Get("X-Forwarded-For")
+		gotCandidate = apisixctx.ForwardedForCandidate(r)
 		w.WriteHeader(http.StatusNoContent)
 	}), nil)
 	req := httptest.NewRequest(http.MethodGet, "/hello", nil)
@@ -548,6 +573,9 @@ func TestStripUntrustedForwardedForDropsForgedHeaderWithoutTrustedAddresses(t *t
 
 	if gotForwardedFor != "" {
 		t.Fatalf("X-Forwarded-For = %q, want forged header removed", gotForwardedFor)
+	}
+	if !slices.Equal(gotCandidate, []string{"1.1.1.1"}) {
+		t.Fatalf("forwarded-for candidate = %q, want ingress value retained privately", gotCandidate)
 	}
 }
 
@@ -646,6 +674,27 @@ func TestNormalizeForwardedHeadersSetsObservedHostAndPort(t *testing.T) {
 				t.Fatalf("X-Forwarded-Port = %q, want %q", gotPort, test.wantPort)
 			}
 		})
+	}
+}
+
+func TestNormalizeForwardedHeadersCapturesOriginalRequestLengthBeforeMutation(t *testing.T) {
+	var gotLength any
+	handler := normalizeForwardedHeaders(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		gotLength = apisixctx.GetRequestVar(r, "$request_length")
+		if r.Header.Get("X-Forwarded-Proto") != "http" ||
+			r.Header.Get("X-Forwarded-Host") != "gateway.example.test" {
+			t.Fatalf("normalized forwarded headers = %#v", r.Header)
+		}
+	}), nil)
+	request := httptest.NewRequest(http.MethodGet, "http://gateway.example.test/opentracing", nil)
+	request.RequestURI = "/opentracing"
+	request.Header.Set("User-Agent", "Go-http-client/1.1")
+	request.RemoteAddr = "127.0.0.1:12345"
+
+	handler.ServeHTTP(httptest.NewRecorder(), request)
+
+	if gotLength != int64(89) {
+		t.Fatalf("$request_length = %#v, want original 89-byte request before forwarded headers", gotLength)
 	}
 }
 
@@ -1028,6 +1077,57 @@ func TestStartHTTPListenerRuntimeReturnsListenError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), occupied.Addr().String()) {
 		t.Fatalf("startHTTPListenerRuntime() error = %v, want the occupied address in the error", err)
+	}
+}
+
+func TestServeHTTPListenerRuntimeReturnsControlListenErrorAndClosesOwnedListeners(t *testing.T) {
+	occupiedControl, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("occupy control listener: %v", err)
+	}
+	defer func() { _ = occupiedControl.Close() }()
+	controlAddress := occupiedControl.Addr().(*net.TCPAddr)
+
+	dataProbe, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve data listener: %v", err)
+	}
+	dataAddress := dataProbe.Addr().String()
+	_ = dataProbe.Close()
+
+	statusProbe, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve status listener: %v", err)
+	}
+	statusAddress := statusProbe.Addr().(*net.TCPAddr)
+	_ = statusProbe.Close()
+
+	cfg := config.Config{Apisix: config.Apisix{
+		EnableControl: true,
+		Control:       config.Control{Ip: "127.0.0.1", Port: controlAddress.Port},
+		Status:        config.Status{IP: "127.0.0.1", Port: statusAddress.Port},
+	}}
+	server := &Server{
+		staticConfig:  &config.EffectiveConfig{Config: cfg},
+		addrs:         []string{dataAddress},
+		server:        newConfiguredHTTPServer(http.NotFoundHandler(), nil),
+		statusServer:  newConfiguredHTTPServer(http.NotFoundHandler(), nil),
+		controlServer: newConfiguredHTTPServer(http.NotFoundHandler(), nil),
+	}
+	_, err = server.serveHTTPListenerRuntime(nil, nil)
+	if err == nil || !strings.Contains(err.Error(), occupiedControl.Addr().String()) {
+		t.Fatalf("serveHTTPListenerRuntime() error = %v, want occupied control address", err)
+	}
+
+	for name, address := range map[string]string{
+		"data":   dataAddress,
+		"status": statusAddress.String(),
+	} {
+		listener, listenErr := net.Listen("tcp", address)
+		if listenErr != nil {
+			t.Fatalf("%s listener %s was not released: %v", name, address, listenErr)
+		}
+		_ = listener.Close()
 	}
 }
 

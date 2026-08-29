@@ -337,6 +337,9 @@ func (p *Plugin) PostInit() error {
 	if p.config.InactiveTimeout == 0 {
 		p.config.InactiveTimeout = int(logger_batch.DefaultInactiveTimeout / time.Second)
 	}
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(p.config.URI)), "http://") {
+		logger.Warn("Using http-logger uri with no TLS is a security risk")
+	}
 
 	// client
 	configUID := shared.NewConfigUID()
@@ -526,6 +529,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		var logFields map[string]any
 		if len(p.logFormat) > 0 {
 			logFields = resolveLogFormat(p.logFormat, r, requestBody, responseBody, status, p.routeLabels)
+			base.ApplyRequestMatchedRouteFields(logFields, r, p.RouteID)
 		} else {
 			logFields = p.defaultLogFields(r, status)
 		}
@@ -596,6 +600,7 @@ func (p *Plugin) RunLogPhase(snapshot base.LogSnapshot) error {
 				return base.SnapshotValue(snapshot, value)
 			}
 		})
+		base.ApplySnapshotMatchedRouteFields(fields, snapshot, p.RouteID)
 	} else {
 		fields = p.defaultSnapshotLogFields(snapshot)
 	}
@@ -730,7 +735,10 @@ func (p *Plugin) encodeBatch(entries []map[string]any, batchMaxSize int) ([]byte
 func (p *Plugin) sendBody(ctx context.Context, body []byte) error {
 	p.lifecycleMu.RLock()
 	defer p.lifecycleMu.RUnlock()
-	if p.stopped.Load() || p.client == nil {
+	// Stop seals admission first, then asks the batch processor to drain entries
+	// that were already accepted. The client remains owned until the processor's
+	// terminal cleanup, so those admitted deliveries must stay usable here.
+	if p.client == nil {
 		return secret.ErrCredentialUnavailable
 	}
 	request := p.client.R().SetContext(ctx).SetBody(body)

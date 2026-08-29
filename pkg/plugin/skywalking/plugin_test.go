@@ -14,11 +14,44 @@ import (
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/config"
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/runtime"
 )
 
 type failingReader struct{}
+
+func TestPostInitWarnsOnlyForInsecureEndpointAddr(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		scheme   string
+		wantWarn bool
+	}{
+		{name: "http", scheme: "http", wantWarn: true},
+		{name: "https", scheme: "https"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var warnings []string
+			stop := logger.ReplaceObserver("skywalking-security-warning-"+test.name, func(entry logger.Entry) {
+				if entry.Level == "WARN" && strings.Contains(entry.Message, "skywalking endpoint_addr") {
+					warnings = append(warnings, entry.Message)
+				}
+			})
+			defer stop()
+
+			newTestPlugin(t, Config{EndpointAddr: test.scheme + "://127.0.0.1:12800"})
+
+			if test.wantWarn {
+				if len(warnings) != 1 ||
+					warnings[0] != "Using skywalking endpoint_addr with no TLS is a security risk" {
+					t.Fatalf("warnings = %#v, want exact insecure endpoint warning", warnings)
+				}
+			} else if len(warnings) != 0 {
+				t.Fatalf("warnings = %#v, want none for TLS endpoint", warnings)
+			}
+		})
+	}
+}
 
 func (failingReader) Read([]byte) (int, error) { return 0, errors.New("random unavailable") }
 
@@ -351,6 +384,30 @@ func TestHandlerInjectsSW8AndReportsSegment(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for SkyWalking report")
+	}
+}
+
+func TestRunRequestPhaseInjectsAPISIX317ExitSpanAndPeerService(t *testing.T) {
+	p := newTestPlugin(t, Config{SampleRatio: 1})
+	request := httptest.NewRequest(http.MethodGet, "http://gateway.test/opentracing", nil)
+
+	result := p.RunRequestPhase(httptest.NewRecorder(), request)
+	propagated, ok := parseSW8(result.Request.Header.Get("sw8"))
+	if !ok {
+		t.Fatalf("injected sw8 = %q, want a valid header", result.Request.Header.Get("sw8"))
+	}
+	if propagated.ParentSpanID != 1 {
+		t.Fatalf("propagated span id = %d, want APISIX 3.17 exit span 1", propagated.ParentSpanID)
+	}
+	if propagated.AddressUsedAtClient != "upstream service" {
+		t.Fatalf(
+			"propagated peer service = %q, want APISIX 3.17 upstream service",
+			propagated.AddressUsedAtClient,
+		)
+	}
+	if propagated.ParentService != "APISIX" || propagated.ParentInstance != "APISIX Instance Name" ||
+		propagated.ParentEndpoint != "/opentracing" {
+		t.Fatalf("propagated static SW8 context = %#v", propagated)
 	}
 }
 

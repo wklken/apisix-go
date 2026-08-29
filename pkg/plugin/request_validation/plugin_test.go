@@ -50,6 +50,38 @@ func TestHandlerRejectsInvalidHeaders(t *testing.T) {
 	}
 }
 
+func TestHandlerRejectsMissingRequiredHeaderWithAPISIXMessage(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		HeaderSchema: map[string]any{
+			"type":     "object",
+			"required": []any{"x-required"},
+		},
+	})
+	reachedDownstream := false
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		reachedDownstream = true
+	})).ServeHTTP(rr, req)
+
+	if reachedDownstream {
+		t.Fatal("missing required header reached downstream")
+	}
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("response code = %d, want %d", rr.Code, http.StatusBadRequest)
+	}
+	if got := rr.Body.String(); got != `property "x-required" is required` {
+		t.Fatalf("response body = %q, want APISIX required-property message", got)
+	}
+	if got := rr.Header().Get("Content-Type"); got != "text/plain; charset=utf-8" {
+		t.Fatalf("Content-Type = %q, want text/plain; charset=utf-8", got)
+	}
+	if got := rr.Header().Get("X-Content-Type-Options"); got != "" {
+		t.Fatalf("X-Content-Type-Options = %q, want absent to match APISIX", got)
+	}
+}
+
 func TestHandlerAcceptsScalarJSONBody(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		BodySchema: map[string]any{"type": "string"},

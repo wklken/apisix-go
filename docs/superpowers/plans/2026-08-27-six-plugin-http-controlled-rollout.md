@@ -344,33 +344,45 @@ source .envrc && scripts/go_cache.sh run -- go test ./pkg/plugin/request_id -cou
 
 Use the Task 4 selectors, then run `make build` and `git diff --check`.
 
-### Task 6: Turn Verified-TLS Etcd Recovery into Six-Plugin Recovery Evidence
+### Task 6: Qualify Verified-TLS Etcd and Journal Recovery as a Platform Contract
 
 **Files:**
 - Modify: `scripts/etcd_recovery_smoke.sh`
 - Modify: `scripts/etcd_recovery_smoke_test.sh`
-- Create: `scripts/qualification/http_data_plane_v1_recovery_test.sh`
+- Create: `scripts/qualification/platform_recovery_test.sh`
 - Modify: `docs/runbooks/production-release.md`
 
 - [ ] **Step 1: Add shell-fixture failures before changing the harness**
 
-Tests must fail when the recovery script omits any required plugin, uses plaintext etcd, disables certificate verification, accepts only one data-plane replica, restores an uncommitted generation, loses a committed route after compaction/restart, or writes evidence without source/image identities.
+Tests must fail when the recovery script uses plaintext etcd, disables
+certificate verification, accepts only one data-plane replica, restores an
+uncommitted generation, loses a committed route after compaction/restart, or
+writes evidence without source/image identities. They must also reject any
+platform recovery record that claims plugin-specific qualification.
 
-- [ ] **Step 2: Define one six-plugin route set and expected probes**
+- [ ] **Step 2: Define a plugin-independent platform resource graph**
 
-The TLS etcd fixture provisions two apisix-go replicas with the exact production profile. It writes routes/consumers that exercise all six plugins, verifies both replicas, updates credentials/CORS/JWT/request-id/Prometheus-visible route data, compacts etcd, disconnects/reconnects, restarts one replica, deletes and re-adds resources, and checks that committed state is preserved while deleted state never falls back.
+The TLS etcd fixture provisions two apisix-go replicas with the exact
+production profile. It writes routes, services, upstreams, and SSL resources,
+verifies both replicas, compacts etcd, disconnects/reconnects, restarts one
+replica, deletes and re-adds SSL state, and checks that committed state is
+preserved while deleted state never falls back. Plugin behavior remains owned
+by plugin tests and APISIX differential evidence.
 
-- [ ] **Step 3: Record recovery evidence per plugin**
+- [ ] **Step 3: Record platform recovery evidence**
 
-Write one JSON record per plugin plus journal/generation records under `.cache/release-evidence/etcd-recovery/http-data-plane-v1/`. Each record includes source commit, candidate image ID/digest, profile, plugin, before/after generation, probe result, etcd TLS peer/certificate metadata without secrets, command, attempt, and output hash.
-
-`request-id` may remain `not_applicable` for plugin-owned recovery because it has no durable external dependency, but route publication/recovery must still exercise it. The other five plugins require passing recovery records.
+Write only `journal.json` and `generation.json` under
+`.cache/release-evidence/etcd-recovery/<run-id>/platform-recovery-v1/`. Each
+record includes source commit, candidate image ID/digest, config profile and
+hash, before/after generation, probe result, etcd TLS peer/certificate metadata
+without secrets, command, attempt, and output hash. No record contains a
+plugin name or promotes plugin evidence.
 
 - [ ] **Step 4: Run focused shell and package verification**
 
 ```bash
 bash scripts/etcd_recovery_smoke_test.sh
-bash scripts/qualification/http_data_plane_v1_recovery_test.sh
+bash scripts/qualification/platform_recovery_test.sh
 source .envrc && scripts/go_cache.sh run -- go test -race ./pkg/etcd ./pkg/store ./pkg/generation ./pkg/server ./pkg/route -count=1
 ```
 
@@ -380,13 +392,15 @@ source .envrc && scripts/go_cache.sh run -- go test -race ./pkg/etcd ./pkg/store
 source .envrc && make release-etcd-recovery APISIX_IMAGE='<candidate-image-id-or-digest>'
 ```
 
-Expected: both replicas and all profile probes pass through compaction, disconnect, restart, delete, and re-add. A local source run or Docker-free fixture test is not qualification evidence.
+Expected: both replicas and the platform resource graph pass through
+compaction, disconnect, restart, delete, and re-add. A local source run or
+Docker-free fixture test is not qualification evidence.
 
 - [ ] **Step 6: Commit recovery-gate changes**
 
 ```bash
-git add scripts/etcd_recovery_smoke.sh scripts/etcd_recovery_smoke_test.sh scripts/qualification/http_data_plane_v1_recovery_test.sh docs/runbooks/production-release.md
-git commit -m "test(recovery): qualify six-plugin HTTP generations"
+git add scripts/etcd_recovery_smoke.sh scripts/etcd_recovery_smoke_test.sh scripts/qualification/platform_recovery_test.sh docs/runbooks/production-release.md
+git commit -m "test(recovery): qualify platform generation recovery"
 ```
 
 ### Task 7: Promote Capability Evidence Only After It Exists
@@ -422,7 +436,9 @@ Expected before manifest promotion: the six plugins remain unqualified due to st
   oracle/candidate cases; a fresh standalone conversion alone is insufficient.
 - `failure`: named negative cases for all six plugins.
 - `real_dependency`: Prometheus is `verified` by the real consumer; plugins without an outbound dependency may be `not_applicable` only with a concrete reason and owner.
-- `recovery`: five state-bearing profile paths are `verified`; request-id is `not_applicable` only for plugin-owned recovery while its route recovery probe remains mandatory.
+- `recovery`: platform recovery is not projected into per-plugin evidence.
+  Plugin-owned external-state recovery is recorded only for a plugin that
+  actually owns such state and has a dedicated behavior test.
 - `schema` and `unit`: retain current verified references unless fresh inspection shows drift.
 
 Do not promote a state from CI intent, a local source-only run, or a planned script.
@@ -636,7 +652,7 @@ bash scripts/release_metadata_test.sh
 bash scripts/etcd_recovery_smoke_test.sh
 bash scripts/qualification/resolve_oracle_test.sh
 bash scripts/qualification/http_data_plane_v1_differential_test.sh
-bash scripts/qualification/http_data_plane_v1_recovery_test.sh
+bash scripts/qualification/platform_recovery_test.sh
 bash scripts/qualification/http_data_plane_v1_prometheus_test.sh
 bash scripts/qualification/http_data_plane_v1_workflow_test.sh
 bash scripts/qualification/repository_policy_test.sh

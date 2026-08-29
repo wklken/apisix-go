@@ -484,6 +484,47 @@ func TestBufferedResponseAcceptsExactFourMiB(t *testing.T) {
 	}
 }
 
+func TestBufferedResponseAbsorbsUpstreamFlushUntilBodyTransformCompletes(t *testing.T) {
+	plugin := newResponseTestPlugin(
+		"body-transformer",
+		1,
+		responseTestConfig{stage: "none", body: true},
+	)
+	plugin.body = func(_ *http.Request, state *base.ResponseState) error {
+		state.Body = append([]byte("before-"), state.Body...)
+		return nil
+	}
+	binding := checkedResponseBinding(t, "body-transformer", plugin, ScopeRoute, "route")
+	response := &responseOptionalWriter{responseCommitRecorder: newResponseCommitRecorder()}
+	var flushErr error
+	serveBufferedTestPipeline(
+		t,
+		[]Binding{binding},
+		nil,
+		newBufferedTestExecutor(t, []Binding{binding}),
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			apisixctx.SetRequestResponseSource(r, apisixctx.ResponseSourceUpstream)
+			_, _ = w.Write([]byte("hello "))
+			flushErr = http.NewResponseController(w).Flush()
+			_, _ = w.Write([]byte("world"))
+		}),
+		response,
+	)
+	if flushErr != nil {
+		t.Fatalf("buffered upstream Flush() error = %v, want nil", flushErr)
+	}
+	if !reflect.DeepEqual(response.statuses, []int{http.StatusOK}) || response.body.String() != "before-hello world" {
+		t.Fatalf(
+			"response = %v/%q, want [200]/transformed chunked body",
+			response.statuses,
+			response.body.String(),
+		)
+	}
+	if response.flushed {
+		t.Fatal("destination flushed before the buffered body transform committed")
+	}
+}
+
 func TestBufferedResponseCapPlusOneReturnsStable502WithoutCallbacks(t *testing.T) {
 	plugin := newResponseTestPlugin(
 		"body-transformer",

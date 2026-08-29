@@ -873,6 +873,43 @@ func TestLogExecutorSealAndRegisterAreIdempotent(t *testing.T) {
 	}
 }
 
+func TestLogExecutorCapturesAPISIX317BytesSentBeforeBuildingSnapshot(t *testing.T) {
+	request := httptest.NewRequest(http.MethodGet, "http://gateway.example.test/opentracing", nil)
+	request, lifecycle := ctx.EnsureRequestLifecycle(request, time.Unix(1, 0))
+	request = ctx.WithRequestVars(request)
+	response := httptest.NewRecorder()
+	response.Header().Set("Server", "APISIX-test")
+	response.Header().Set("Content-Type", "text/plain")
+	wrapped, capture := base.CaptureResponseOutcomeController(response)
+	request = base.WithResponseCapture(request, capture)
+	logger := newLogExecutorTestPlugin("logger", 1, nil)
+	executor, err := NewLogExecutor([]LogBinding{{Plugin: logger, Scope: ScopeRoute}})
+	if err != nil {
+		t.Fatalf("NewLogExecutor() error = %v", err)
+	}
+	request, err = executor.Prepare(request)
+	if err != nil {
+		t.Fatalf("Prepare() error = %v", err)
+	}
+	if err := executor.SealAndRegister(request); err != nil {
+		t.Fatalf("SealAndRegister() error = %v", err)
+	}
+	_, _ = wrapped.Write([]byte("opentracing"))
+	lifecycle.Complete(capture.Outcome(), time.Unix(2, 0))
+	if failures := lifecycle.Finalize(); len(failures) != 0 {
+		t.Fatalf("Finalize() failures = %#v", failures)
+	}
+	if len(logger.seen) != 1 {
+		t.Fatalf("logger snapshot count = %d, want 1", len(logger.seen))
+	}
+	if got := base.SnapshotValue(logger.seen[0], "$bytes_sent"); got != int64(134) {
+		t.Fatalf("$bytes_sent = %#v, want exact 134-byte HTTP/1.1 response", got)
+	}
+	if logger.seen[0].Outcome.Bytes != 11 {
+		t.Fatalf("body bytes = %d, want body-only outcome preserved at 11", logger.seen[0].Outcome.Bytes)
+	}
+}
+
 func TestLogExecutorPrepareRestoresFullRequestBody(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("abcdefgh"))
 	request, _ = ctx.EnsureRequestLifecycle(request, time.Now())

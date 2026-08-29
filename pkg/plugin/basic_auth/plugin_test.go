@@ -483,8 +483,11 @@ func TestHandlerFormatsMissingAuthorizationLikeAPISIX(t *testing.T) {
 		t.Fatal("next handler should not be called")
 	})).ServeHTTP(rr, req)
 
-	if got := rr.Body.String(); got != `{"message":"Missing authorization in request"}` {
+	if got := rr.Body.String(); got != "{\"message\":\"Missing authorization in request\"}\n" {
 		t.Fatalf("body = %q, want APISIX response JSON", got)
+	}
+	if got := rr.Header().Get("Content-Type"); got != "text/plain; charset=utf-8" {
+		t.Fatalf("Content-Type = %q, want APISIX response type", got)
 	}
 }
 

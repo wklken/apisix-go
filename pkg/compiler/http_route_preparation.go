@@ -121,6 +121,7 @@ func (prepared *PreparedGeneration) httpRuntimeContextForNotFound(
 		serverAddr:        httpPreparationServerAddr(prepared),
 		proxyCacheZones:   slices.Clone(prepared.effective.Config.Apisix.ProxyCache.Zones),
 		protoResolver:     plan.protoResolver,
+		apiBreakerState:   plan.apiBreakerState,
 	}, nil
 }
 

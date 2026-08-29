@@ -64,6 +64,26 @@ func TestServerInfoKeyUsesEtcdPrefix(t *testing.T) {
 	}
 }
 
+func TestConfigClientServerVersionUsesFirstReachableEndpoint(t *testing.T) {
+	client := &ConfigClient{
+		endpoints:      []string{"unreachable:2379", "etcd:2379"},
+		requestTimeout: time.Second,
+		status: func(_ context.Context, endpoint string) (*clientv3.StatusResponse, error) {
+			if endpoint == "unreachable:2379" {
+				return nil, errors.New("unreachable")
+			}
+			return &clientv3.StatusResponse{Version: "3.6.13"}, nil
+		},
+	}
+	version, err := client.ServerVersion(context.Background())
+	if err != nil {
+		t.Fatalf("ServerVersion() error = %v", err)
+	}
+	if version != "3.6.13" {
+		t.Fatalf("ServerVersion() = %q, want 3.6.13", version)
+	}
+}
+
 func TestServerInfoReporterCreatesLeasePutsValueAndRenews(t *testing.T) {
 	client := &fakeServerInfoLeaseClient{nextLeaseID: 42}
 	reporter := newServerInfoReporter(client, "/apisix/data_plane/server_info/node-a", 60*time.Second)

@@ -18,6 +18,7 @@ import (
 	"github.com/go-resty/resty/v2"
 	"github.com/wklken/apisix-go/pkg/httpclient"
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/shared"
 	"github.com/wklken/apisix-go/pkg/util"
@@ -263,6 +264,19 @@ func (p *Plugin) Init() error {
 
 func (p *Plugin) PostInit() error {
 	p.applyDefaults()
+	for _, field := range []struct {
+		name  string
+		value string
+	}{
+		{name: "discovery", value: p.config.Discovery},
+		{name: "token_endpoint", value: p.config.TokenEndpoint},
+		{name: "resource_registration_endpoint", value: p.config.ResourceRegistrationEndpoint},
+		{name: "access_denied_redirect_uri", value: p.config.AccessDeniedRedirectURI},
+	} {
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(field.value)), "http://") {
+			logger.Warn("Using authz-keycloak " + field.name + " with no TLS is a security risk")
+		}
+	}
 
 	if p.config.LazyLoadPaths && p.config.Discovery == "" && p.config.ResourceRegistrationEndpoint == "" {
 		return errors.New("authz-keycloak lazy_load_paths requires discovery or resource_registration_endpoint")

@@ -35,6 +35,8 @@ github.com/apache/dubbo-go-hessian2 v1.13.2 h1:A15pmQMReoT0ho74j/B4m+mhCs+bngqyC
 github.com/apache/dubbo-go-hessian2 v1.13.2/go.mod h1:BBLS7rwDB/q+xPJs5T66iyUI6TuAQC/m0mqok+JtEj0=
 github.com/apache/rocketmq-client-go/v2 v2.1.2 h1:yt73olKe5N6894Dbm+ojRf/JPiP0cxfDNNffKwhpJVg=
 github.com/apache/rocketmq-client-go/v2 v2.1.2/go.mod h1:6I6vgxHR3hzrvn+6n/4mrhS+UTulzK/X9LB2Vk1U5gE=
+github.com/apache/rocketmq-client-go/v2 v2.1.3-0.20231106021916-c9e197c3af45 h1:RGY1uvbIgVGspKcY9cTNJOuKb1EDjxq8uCakF3QuSe4=
+github.com/apache/rocketmq-client-go/v2 v2.1.3-0.20231106021916-c9e197c3af45/go.mod h1:6I6vgxHR3hzrvn+6n/4mrhS+UTulzK/X9LB2Vk1U5gE=
 github.com/armon/circbuf v0.0.0-20150827004946-bbbad097214e/go.mod h1:3U/XgcO3hCbHZ8TKRvWD2dDTCfh9M9ya+I9JpbB7O8o=
 github.com/armon/go-metrics v0.0.0-20180917152333-f0300d1749da/go.mod h1:Q73ZrmVTwzkszR9V5SSuryQ31EELlFMUz1kKyl939pY=
 github.com/armon/go-radix v0.0.0-20180808171621-7fddfc383310/go.mod h1:ufUuZ+zHj4x4TnLV4JWEpy2hxWSpsRywHrMgIH9cCH8=

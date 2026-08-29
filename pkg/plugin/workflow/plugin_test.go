@@ -378,6 +378,71 @@ func TestParseOfficialReturnActionArray(t *testing.T) {
 	}
 }
 
+func TestSchemaMatchesAPISIX317Matrices(t *testing.T) {
+	condition := []any{[]any{"uri", "==", "/hello"}}
+	configWithRule := func(caseValue []any, actions []any) map[string]any {
+		return map[string]any{"rules": []any{map[string]any{
+			"case": caseValue, "actions": actions,
+		}}}
+	}
+	workflowConfig := func(action []any) map[string]any {
+		return configWithRule(condition, []any{action})
+	}
+	validate := func(config map[string]any) error {
+		p := &Plugin{}
+		if err := p.Init(); err != nil {
+			return err
+		}
+		if err := util.Validate(config, p.GetSchema()); err != nil {
+			return err
+		}
+		if err := util.Parse(config, p.Config()); err != nil {
+			return err
+		}
+		return p.ValidatePreMaterialization()
+	}
+
+	tests := []struct {
+		name   string
+		config map[string]any
+		valid  bool
+	}{
+		{name: "return", config: workflowConfig([]any{"return", map[string]any{"code": 403}}), valid: true},
+		{name: "missing actions", config: map[string]any{"rules": []any{map[string]any{"case": condition}}}},
+		{name: "empty action", config: workflowConfig([]any{})},
+		{name: "return missing code", config: workflowConfig([]any{"return", map[string]any{"status": 403}})},
+		{name: "return string code", config: workflowConfig([]any{"return", map[string]any{"code": "403"}})},
+		{name: "empty case", config: configWithRule(
+			[]any{}, []any{[]any{"return", map[string]any{"code": 403}}},
+		)},
+		{name: "unsupported action", config: workflowConfig([]any{"fake", map[string]any{"code": 403}})},
+		{name: "limit count", config: workflowConfig([]any{"limit-count", map[string]any{
+			"count": 2, "time_window": 60, "rejected_code": 503, "key": "remote_addr",
+		}}), valid: true},
+		{name: "limit count missing window", config: workflowConfig([]any{"limit-count", map[string]any{"count": 2}})},
+		{
+			name:   "limit count missing count",
+			config: workflowConfig([]any{"limit-count", map[string]any{"time_window": 60}}),
+		},
+		{name: "limit count group", config: workflowConfig([]any{"limit-count", map[string]any{
+			"count": 2, "time_window": 60, "rejected_code": 503, "group": "services_1",
+		}})},
+		{name: "missing rules", config: map[string]any{}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := validate(test.config)
+			if test.valid && err != nil {
+				t.Fatalf("valid APISIX 3.17 workflow rejected: %v", err)
+			}
+			if !test.valid && err == nil {
+				t.Fatal("invalid APISIX 3.17 workflow accepted")
+			}
+		})
+	}
+}
+
 func TestWorkflowRejectsDisabledNestedPluginBeforeConstruction(t *testing.T) {
 	for _, actionName := range []string{"limit-req", "limit-conn", "limit-count"} {
 		t.Run(actionName, func(t *testing.T) {
@@ -525,8 +590,11 @@ func TestHandlerReturnsConfiguredStatusForMatchingCase(t *testing.T) {
 	if rr.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, want 403", rr.Code)
 	}
-	if !strings.Contains(rr.Body.String(), "rejected by workflow") {
-		t.Fatalf("body = %q, want workflow rejection message", rr.Body.String())
+	if got := rr.Body.String(); got != "{\"error_msg\":\"rejected by workflow\"}\n" {
+		t.Fatalf("body = %q, want APISIX 3.17 workflow rejection", got)
+	}
+	if got := rr.Header().Get("Content-Type"); got != "text/plain; charset=utf-8" {
+		t.Fatalf("Content-Type = %q, want APISIX 3.17 response type", got)
 	}
 }
 

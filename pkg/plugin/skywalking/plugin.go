@@ -43,6 +43,7 @@ const (
 	name     = "skywalking"
 
 	componentIDAPISIX = 6002
+	upstreamService   = "upstream service"
 
 	// maxPendingSkyWalkingSegments bounds the queued segment window so a
 	// failing collector cannot grow memory without limit.
@@ -151,6 +152,9 @@ func (p *Plugin) PostInit() error {
 		return err
 	}
 	p.applyDefaults()
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(p.config.EndpointAddr)), "http://") {
+		logger.Warn("Using skywalking endpoint_addr with no TLS is a security risk")
+	}
 	if p.sampleRandom == nil {
 		p.sampleRandom = func() (float64, error) { return randomUnit(rand.Reader) }
 	}
@@ -234,7 +238,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			}
 			ctx.TraceSegmentID = segmentID
 		}
-		ctx.SpanID = 0
+		ctx.SpanID = 1
 		r.Header.Set("sw8", ctx.header(p.config.ServiceName, p.serviceInstanceName(), r.URL.Path))
 
 		start := time.Now()
@@ -292,7 +296,7 @@ func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.Re
 			return base.StopRequestWithSource(r, apisixctx.ResponseSourceAPISIX)
 		}
 	}
-	traceContext.SpanID = 0
+	traceContext.SpanID = 1
 	r.Header.Set("sw8", traceContext.header(p.config.ServiceName, p.serviceInstanceName(), r.URL.Path))
 	state.context = traceContext
 	state.started = time.Now()

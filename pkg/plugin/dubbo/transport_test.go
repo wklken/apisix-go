@@ -250,6 +250,58 @@ func TestAttemptRoundTripOverTCP(t *testing.T) {
 	}
 }
 
+func TestAttemptClosesConnectionAfterResponse(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+
+	closed := make(chan error, 1)
+	go func() {
+		conn, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			closed <- acceptErr
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		if _, readErr := io.ReadFull(conn, make([]byte, 16)); readErr != nil {
+			closed <- readErr
+			return
+		}
+		if _, writeErr := conn.Write([]byte("ok")); writeErr != nil {
+			closed <- writeErr
+			return
+		}
+		_ = conn.SetReadDeadline(time.Now().Add(time.Second))
+		_, readErr := conn.Read(make([]byte, 1))
+		closed <- readErr
+	}()
+
+	result := Attempt(context.Background(), listener.Addr().String(), Config{
+		ConnectTimeout: time.Second,
+		SendTimeout:    time.Second,
+		ReadTimeout:    time.Second,
+		DecodeResponse: func(conn net.Conn) (Response, error) {
+			body := make([]byte, 2)
+			_, readErr := io.ReadFull(conn, body)
+			return Response{Status: http.StatusOK, Body: body}, readErr
+		},
+	}, make([]byte, 16))
+	if result.Err != nil {
+		t.Fatalf("Attempt() error = %v", result.Err)
+	}
+
+	select {
+	case closeErr := <-closed:
+		if !errors.Is(closeErr, io.EOF) {
+			t.Fatalf("server read after response = %v, want EOF from client close", closeErr)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("client connection remained open after response")
+	}
+}
+
 func TestAttemptConnectFailureIsRetryableAndMarked(t *testing.T) {
 	result := Attempt(context.Background(), "127.0.0.1:1", Config{
 		ConnectTimeout: 100 * time.Millisecond,

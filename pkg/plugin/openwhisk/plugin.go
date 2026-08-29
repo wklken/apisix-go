@@ -160,6 +160,9 @@ func (p *Plugin) PostInit() error {
 		value := true
 		p.config.Keepalive = &value
 	}
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(p.config.APIHost)), "http://") {
+		logger.Warn("Using openwhisk api_host with no TLS is a security risk")
+	}
 	if p.client == nil {
 		p.client = &http.Client{
 			Timeout:   time.Duration(p.config.Timeout) * time.Millisecond,

@@ -1,9 +1,13 @@
 package api_breaker
 
 import (
+	"container/list"
 	"context"
+	"net"
 	"net/http"
 	"slices"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -19,12 +23,67 @@ type Plugin struct {
 	base.BasePlugin
 	config Config
 
-	// APISIX shares breaker counters by host and URI; this Go implementation keeps route-local state.
-	mu                sync.Mutex
+	state *State
+	now   func() time.Time
+}
+
+type breakerKey struct {
+	host string
+	uri  string
+}
+
+type breakerEntry struct {
 	unhealthyCount    int
 	healthyCount      int
 	lastUnhealthyTime time.Time
-	now               func() time.Time
+	lastTimeExpiresAt time.Time
+	lruElement        *list.Element
+	accountedBytes    int
+}
+
+// State owns the APISIX process-local breaker counters shared by every route
+// and plugin instance in overlapping HTTP generations.
+type State struct {
+	mu        sync.Mutex
+	entries   map[breakerKey]*breakerEntry
+	lru       *list.List
+	maxBytes  int
+	usedBytes int
+	closed    bool
+}
+
+const (
+	defaultStateBudgetBytes = 10 << 20
+	breakerEntryOverhead    = 256
+)
+
+func NewState() *State {
+	return newStateWithBudget(defaultStateBudgetBytes)
+}
+
+func newStateWithBudget(maxBytes int) *State {
+	return &State{
+		entries:  make(map[breakerKey]*breakerEntry),
+		lru:      list.New(),
+		maxBytes: max(maxBytes, 1),
+	}
+}
+
+// Close releases all counters after the final generation resource lease has
+// drained. Closed state fails open and cannot be reused.
+func (state *State) Close() {
+	if state == nil {
+		return
+	}
+	state.mu.Lock()
+	clear(state.entries)
+	state.entries = nil
+	if state.lru != nil {
+		state.lru.Init()
+	}
+	state.usedBytes = 0
+	state.closed = true
+	state.mu.Unlock()
 }
 
 const (
@@ -157,6 +216,9 @@ func (p *Plugin) PostInit() error {
 	if p.now == nil {
 		p.now = time.Now
 	}
+	if p.state == nil {
+		p.state = NewState()
+	}
 	if p.config.MaxBreakerSec == 0 {
 		p.config.MaxBreakerSec = 300
 	}
@@ -179,15 +241,23 @@ func (p *Plugin) PostInit() error {
 	return nil
 }
 
+// SetState injects the generation-owned process-local counter store before
+// PostInit. Direct package users retain an isolated fallback state.
+func (p *Plugin) SetState(state *State) {
+	if state != nil {
+		p.state = state
+	}
+}
+
 func (p *Plugin) Config() any {
 	return &p.config
 }
 
 // RunRequestPhase performs the breaker decision and, on continuation,
-// registers one request-local outcome observer. The observer updates breaker
-// counters only for completed, committed, non-hijacked HTTP outcomes.
+// registers one request-local upstream-status observer.
 func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
-	if p.shouldBreak() {
+	key := breakerKeyForRequest(r)
+	if p.shouldBreak(key) {
 		if p.config.BreakResponseBody != nil && p.config.BreakResponseHeaders != nil {
 			for _, header := range p.config.BreakResponseHeaders {
 				w.Header().Set(header.Key, resolveHeaderValue(r, header.Value))
@@ -214,11 +284,9 @@ func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.Re
 	registrations = cloneFinalizerRegistrations(registrations)
 	registrations[p] = struct{}{}
 	if lifecycle.AddFinalizer(name, func() error {
-		outcome := lifecycle.Outcome()
-		if outcome.Kind != apisixctx.RequestOutcomeCompleted || !outcome.Committed || outcome.Hijacked {
-			return nil
+		if status, ok := lastUpstreamStatus(apisixctx.GetRequestVar(r, "$upstream_status")); ok {
+			p.observeStatus(key, status)
 		}
-		p.observeStatus(outcome.Status)
 		return nil
 	}) {
 		r = r.WithContext(context.WithValue(r.Context(), finalizerRegistrationsKey{}, registrations))
@@ -240,7 +308,8 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			base.AdaptRequestPhase(p, next).ServeHTTP(w, r)
 			return
 		}
-		if p.shouldBreak() {
+		key := breakerKeyForRequest(r)
+		if p.shouldBreak(key) {
 			if p.config.BreakResponseBody != nil && p.config.BreakResponseHeaders != nil {
 				for _, header := range p.config.BreakResponseHeaders {
 					w.Header().Set(header.Key, resolveHeaderValue(r, header.Value))
@@ -256,43 +325,157 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
 
 		next.ServeHTTP(ww, r)
-		p.observeStatus(ww.Status())
+		if status, ok := lastUpstreamStatus(apisixctx.GetRequestVar(r, "$upstream_status")); ok {
+			p.observeStatus(key, status)
+			return
+		}
+		// Without the production request lifecycle, next is the direct upstream
+		// seam and its response status is the only available upstream outcome.
+		p.observeStatus(key, ww.Status())
 	}
 	return http.HandlerFunc(fn)
 }
 
-func (p *Plugin) shouldBreak() bool {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.unhealthyCount == 0 || p.lastUnhealthyTime.IsZero() {
+func (p *Plugin) shouldBreak(key breakerKey) bool {
+	if p.state == nil {
 		return false
 	}
-	seconds := breakerSeconds(p.unhealthyCount, *p.config.Unhealthy.Failures, p.config.MaxBreakerSec)
+	p.state.mu.Lock()
+	defer p.state.mu.Unlock()
+	entry := p.state.entries[key]
+	if p.state.closed || entry == nil || entry.unhealthyCount == 0 || entry.lastUnhealthyTime.IsZero() {
+		return false
+	}
+	p.state.touchLocked(entry)
+	now := p.now()
+	if !entry.lastTimeExpiresAt.IsZero() && !now.Before(entry.lastTimeExpiresAt) {
+		entry.lastUnhealthyTime = time.Time{}
+		entry.lastTimeExpiresAt = time.Time{}
+		return false
+	}
+	seconds := breakerSeconds(entry.unhealthyCount, *p.config.Unhealthy.Failures, p.config.MaxBreakerSec)
 	logger.Debugf("breaker_time: %d", seconds)
-	return !p.now().After(p.lastUnhealthyTime.Add(time.Duration(seconds) * time.Second))
+	return !now.After(entry.lastUnhealthyTime.Add(time.Duration(seconds) * time.Second))
 }
 
-func (p *Plugin) observeStatus(status int) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+func (p *Plugin) observeStatus(key breakerKey, status int) {
+	if p.state == nil {
+		return
+	}
+	p.state.mu.Lock()
+	defer p.state.mu.Unlock()
+	if p.state.closed {
+		return
+	}
+	entry := p.state.entries[key]
 	switch {
 	case slices.Contains(p.config.Unhealthy.HTTPStatuses, status):
-		p.unhealthyCount++
-		p.healthyCount = 0
-		if p.unhealthyCount%*p.config.Unhealthy.Failures == 0 {
-			p.lastUnhealthyTime = p.now()
+		if entry == nil {
+			entry = p.state.insertLocked(key)
+			if entry == nil {
+				return
+			}
+		} else {
+			p.state.touchLocked(entry)
+		}
+		entry.unhealthyCount++
+		entry.healthyCount = 0
+		if entry.unhealthyCount%*p.config.Unhealthy.Failures == 0 {
+			now := p.now()
+			entry.lastUnhealthyTime = now
+			entry.lastTimeExpiresAt = now.Add(time.Duration(p.config.MaxBreakerSec) * time.Second)
 		}
 	case slices.Contains(p.config.Healthy.HTTPStatuses, status):
-		if p.unhealthyCount == 0 {
+		if entry == nil || entry.unhealthyCount == 0 {
 			return
 		}
-		p.healthyCount++
-		if p.healthyCount >= *p.config.Healthy.Successes {
-			p.unhealthyCount = 0
-			p.healthyCount = 0
-			p.lastUnhealthyTime = time.Time{}
+		p.state.touchLocked(entry)
+		entry.healthyCount++
+		if entry.healthyCount >= *p.config.Healthy.Successes {
+			p.state.removeLocked(key, entry)
 		}
 	}
+}
+
+func (state *State) insertLocked(key breakerKey) *breakerEntry {
+	accountedBytes := breakerEntryOverhead + len(key.host) + len(key.uri)
+	if accountedBytes > state.maxBytes {
+		return nil
+	}
+	for state.usedBytes+accountedBytes > state.maxBytes {
+		oldest := state.lru.Back()
+		if oldest == nil {
+			return nil
+		}
+		oldestKey := oldest.Value.(breakerKey)
+		state.removeLocked(oldestKey, state.entries[oldestKey])
+	}
+	key = breakerKey{
+		host: strings.Clone(key.host),
+		uri:  strings.Clone(key.uri),
+	}
+	entry := &breakerEntry{accountedBytes: accountedBytes}
+	entry.lruElement = state.lru.PushFront(key)
+	state.entries[key] = entry
+	state.usedBytes += accountedBytes
+	return entry
+}
+
+func (state *State) touchLocked(entry *breakerEntry) {
+	if entry != nil && entry.lruElement != nil {
+		state.lru.MoveToFront(entry.lruElement)
+	}
+}
+
+func (state *State) removeLocked(key breakerKey, entry *breakerEntry) {
+	if entry == nil {
+		return
+	}
+	delete(state.entries, key)
+	if entry.lruElement != nil {
+		state.lru.Remove(entry.lruElement)
+	}
+	state.usedBytes -= entry.accountedBytes
+}
+
+func breakerKeyForRequest(r *http.Request) breakerKey {
+	if r == nil || r.URL == nil {
+		return breakerKey{}
+	}
+	host := strings.TrimSpace(r.Host)
+	if parsed, _, err := net.SplitHostPort(host); err == nil {
+		host = parsed
+	} else if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
+		host = strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
+	}
+	host = strings.ToLower(strings.TrimSuffix(host, "."))
+	uri := r.URL.Path
+	if uri == "" {
+		uri = "/"
+	}
+	return breakerKey{host: host, uri: uri}
+}
+
+func lastUpstreamStatus(value any) (int, bool) {
+	switch value := value.(type) {
+	case int:
+		return validUpstreamStatus(value)
+	case string:
+		if separator := strings.LastIndexByte(value, ','); separator >= 0 {
+			value = value[separator+1:]
+		}
+		status, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil {
+			return 0, false
+		}
+		return validUpstreamStatus(status)
+	default:
+		return 0, false
+	}
+}
+
+func validUpstreamStatus(status int) (int, bool) {
+	return status, status >= 100 && status <= 999
 }
 
 func breakerSeconds(unhealthyCount, failures, maximum int) int {

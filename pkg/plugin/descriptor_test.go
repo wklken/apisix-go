@@ -68,7 +68,6 @@ plugins:
       differential: {state: not_applicable, refs: [], owner: test, reason: not exercised by descriptor unit fixture}
       real_dependency: {state: not_applicable, refs: [], owner: test, reason: not exercised by descriptor unit fixture}
       failure: {state: not_applicable, refs: [], owner: test, reason: not exercised by descriptor unit fixture}
-      recovery: {state: not_applicable, refs: [], owner: test, reason: not exercised by descriptor unit fixture}
     divergence_ids: []
     supported_platforms: [linux-amd64]
 qualification_profiles: []

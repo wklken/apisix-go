@@ -15,10 +15,12 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/secret"
 	"github.com/wklken/apisix-go/pkg/util"
@@ -61,6 +63,49 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	}
 
 	return p
+}
+
+func TestPostInitWarnsOnlyForInsecureURLs(t *testing.T) {
+	tests := []struct {
+		name         string
+		scheme       string
+		wantWarnings []string
+	}{
+		{
+			name:   "insecure",
+			scheme: "http",
+			wantWarnings: []string{
+				"Using authz-keycloak discovery with no TLS is a security risk",
+				"Using authz-keycloak token_endpoint with no TLS is a security risk",
+				"Using authz-keycloak resource_registration_endpoint with no TLS is a security risk",
+				"Using authz-keycloak access_denied_redirect_uri with no TLS is a security risk",
+			},
+		},
+		{name: "secure", scheme: "https"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var warnings []string
+			stop := logger.ReplaceObserver("authz-keycloak-security-warning-"+test.name, func(entry logger.Entry) {
+				if entry.Level == "WARN" && strings.Contains(entry.Message, "authz-keycloak") {
+					warnings = append(warnings, entry.Message)
+				}
+			})
+			defer stop()
+
+			newTestPlugin(t, Config{
+				Discovery:                    test.scheme + "://keycloak.example.com/discovery",
+				TokenEndpoint:                test.scheme + "://keycloak.example.com/token",
+				ResourceRegistrationEndpoint: test.scheme + "://keycloak.example.com/resources",
+				AccessDeniedRedirectURI:      test.scheme + "://gateway.example.com/denied",
+				ClientID:                     "client-a",
+			})
+
+			if !reflect.DeepEqual(warnings, test.wantWarnings) {
+				t.Fatalf("warnings = %#v, want %#v", warnings, test.wantWarnings)
+			}
+		})
+	}
 }
 
 func TestHandlerPostsUMADecisionWithStaticPermissions(t *testing.T) {

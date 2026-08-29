@@ -55,7 +55,7 @@ func (ctx sw8Context) header(service, instance, endpoint string) string {
 		encodeBase64URL(service),
 		encodeBase64URL(instance),
 		encodeBase64URL(endpoint),
-		encodeBase64URL("apisix-go"),
+		encodeBase64URL(upstreamService),
 	}, "-")
 }
 

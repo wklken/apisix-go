@@ -6,7 +6,22 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/wklken/apisix-go/pkg/util"
 )
+
+func TestSchemaRejectsNegativeMaxBodySize(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := util.Validate(map[string]any{"max_body_size": -1}, p.GetSchema()); err == nil {
+		t.Fatal("Validate() error = nil, want APISIX 3.17 negative max_body_size rejection")
+	}
+	if err := util.Validate(map[string]any{"max_body_size": 0}, p.GetSchema()); err != nil {
+		t.Fatalf("Validate() zero limit error = %v", err)
+	}
+}
 
 func TestClientControlHandlerBodyLimits(t *testing.T) {
 	tests := []struct {

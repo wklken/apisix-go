@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -51,7 +52,56 @@ const (
 type (
 	authenticationStateKey     struct{}
 	requestHeaderProvenanceKey struct{}
+	forwardedForCandidateKey   struct{}
+	matchedRouteKey            struct{}
 )
+
+type matchedRoute struct {
+	uri  string
+	host string
+}
+
+// WithMatchedRoute records the immutable route pattern and host pattern
+// selected for one request. Compiled route metadata remains shared and is
+// never mutated while requests are matched.
+func WithMatchedRoute(r *http.Request, uri string, host string) *http.Request {
+	if r == nil {
+		return nil
+	}
+	return r.WithContext(context.WithValue(r.Context(), matchedRouteKey{}, matchedRoute{
+		uri: uri, host: host,
+	}))
+}
+
+// MatchedRoute returns the route pattern and host pattern selected for the
+// current request.
+func MatchedRoute(r *http.Request) (uri string, host string, ok bool) {
+	if r == nil {
+		return "", "", false
+	}
+	matched, ok := r.Context().Value(matchedRouteKey{}).(matchedRoute)
+	return matched.uri, matched.host, ok
+}
+
+// WithForwardedForCandidate preserves ingress-supplied X-Forwarded-For values
+// after the public header has been removed. The values remain untrusted; only
+// real-ip may consume them after independently validating the socket peer.
+func WithForwardedForCandidate(r *http.Request, values []string) *http.Request {
+	if r == nil || len(values) == 0 {
+		return r
+	}
+	return r.WithContext(context.WithValue(r.Context(), forwardedForCandidateKey{}, slices.Clone(values)))
+}
+
+// ForwardedForCandidate returns a detached copy of the ingress-supplied
+// X-Forwarded-For values retained for real-ip peer validation.
+func ForwardedForCandidate(r *http.Request) []string {
+	if r == nil {
+		return nil
+	}
+	values, _ := r.Context().Value(forwardedForCandidateKey{}).([]string)
+	return slices.Clone(values)
+}
 
 type requestHeaderProvenance struct {
 	trusted    http.Header

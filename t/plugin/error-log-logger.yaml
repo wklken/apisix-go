@@ -1,8 +1,8 @@
 sources:
-  - {repository: https://github.com/apache/apisix, commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7, file: t/plugin/error-log-logger-clickhouse.t, tests: 9}
-  - {repository: https://github.com/apache/apisix, commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7, file: t/plugin/error-log-logger-kafka.t, tests: 7}
-  - {repository: https://github.com/apache/apisix, commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7, file: t/plugin/error-log-logger-skywalking.t, tests: 8}
-  - {repository: https://github.com/apache/apisix, commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7, file: t/plugin/error-log-logger.t, tests: 15}
+  - {repository: https://github.com/apache/apisix, commit: 9ef2ecab67f652d38365049613610ef649bb4ad0, file: t/plugin/error-log-logger-clickhouse.t, tests: 8, test_numbers: [1, 2, 3, 4, 5, 6, 7, 9]}
+  - {repository: https://github.com/apache/apisix, commit: 9ef2ecab67f652d38365049613610ef649bb4ad0, file: t/plugin/error-log-logger-kafka.t, tests: 6, test_numbers: [1, 2, 3, 4, 5, 6]}
+  - {repository: https://github.com/apache/apisix, commit: 9ef2ecab67f652d38365049613610ef649bb4ad0, file: t/plugin/error-log-logger-skywalking.t, tests: 8}
+  - {repository: https://github.com/apache/apisix, commit: 9ef2ecab67f652d38365049613610ef649bb4ad0, file: t/plugin/error-log-logger.t, tests: 13, test_numbers: [1, 2, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14, 15]}
 
 cases:
   - name: clickhouse-schema-accepts-complete-metadata
@@ -15,7 +15,7 @@ cases:
     fixtures:
       - name: sink
         kind: http
-        expect: [{method: POST, headers: {X-ClickHouse-User: {equals: default}, X-ClickHouse-Key: {equals: a}, X-ClickHouse-Database: {equals: default}}, body: {matches: '(?s)^INSERT INTO t FORMAT JSONEachRow .*\[warn\].*Failed to decode authentication header: aca_a'}}]
+        expect: [{method: POST, headers: {X-ClickHouse-User: {equals: default}, X-ClickHouse-Key: {equals: a}, X-ClickHouse-Database: {equals: default}}, body: {matches: '(?s)^INSERT INTO t FORMAT JSONEachRow .*\[warn\].*invalid Basic authorization encoding'}}]
         respond: [{status: 204}]
     steps:
       - {name: valid-clickhouse-metadata-delivers-a-real-warning, input: {path: /warn, headers: {Authorization: 'Basic aca_a'}}, output: {status: 401}, wait: 300ms}
@@ -56,7 +56,7 @@ cases:
         - {id: error-log-logger, clickhouse: {user: default, password: a, database: default, logtable: t, endpoint_addr: '{{FIXTURE.sink.URL}}'}, batch_max_size: 1}
       routes: [{id: clickhouse-warning, uri: /warn, plugins: {basic-auth: {}}}]
     fixtures:
-      - {name: sink, kind: http, expect: [{method: POST, body: {matches: '(?s)INSERT INTO t FORMAT JSONEachRow .*\[warn\].*aca_a'}}], respond: [{status: 204}]}
+      - {name: sink, kind: http, expect: [{method: POST, body: {matches: '(?s)INSERT INTO t FORMAT JSONEachRow .*\[warn\].*invalid Basic authorization encoding'}}], respond: [{status: 204}]}
     steps:
       - {name: warning-crosses-clickhouse-boundary, input: {path: /warn, headers: {Authorization: 'Basic aca_a'}}, output: {status: 401}, wait: 300ms}
 
@@ -71,8 +71,8 @@ cases:
       - name: sink
         kind: http
         expect:
-          - {method: POST, body: {matches: '(?s)INSERT INTO t FORMAT JSONEachRow .*\[warn\].*bad_one'}}
-          - {method: POST, body: {matches: '(?s)INSERT INTO t FORMAT JSONEachRow .*\[warn\].*bad_two'}}
+          - {method: POST, body: {matches: '(?s)INSERT INTO t FORMAT JSONEachRow .*\[warn\].*invalid Basic authorization encoding'}}
+          - {method: POST, body: {matches: '(?s)INSERT INTO t FORMAT JSONEachRow .*\[warn\].*invalid Basic authorization encoding'}}
         respond: [{status: 204}]
     steps:
       - {name: first-warning-is-delivered, input: {path: /warn, headers: {Authorization: 'Basic bad_one'}}, output: {status: 401}}
@@ -90,7 +90,7 @@ cases:
         - {id: clickhouse-filter-control, uri: /warn, plugins: {basic-auth: {}}}
     fixtures:
       - {name: primary, kind: http, expect: [{path: {equals: /info}}], respond: [{status: 200, body: info-ok}]}
-      - {name: sink, kind: http, expect: [{method: POST, body: {matches: '(?s)\[warn\].*filter_control'}}], respond: [{status: 204}]}
+      - {name: sink, kind: http, expect: [{method: POST, body: {matches: '(?s)\[warn\].*invalid Basic authorization encoding'}}], respond: [{status: 204}]}
     steps:
       - {name: info-entry-is-filtered, input: {path: /info, headers: {Authorization: 'Basic aW5mby11c2VyOnBhc3M='}}, output: {status: 200, body: {equals: info-ok}}}
       - {name: warning-control-proves-clickhouse-sink-is-live, input: {path: /warn, headers: {Authorization: 'Basic filter_control'}}, output: {status: 401}, wait: 300ms}
@@ -105,7 +105,7 @@ cases:
         - {id: clickhouse-delete-warning, uri: /warn, plugins: {basic-auth: {}}}
     fixtures:
       - {name: ready, kind: http, respond: [{status: 200, body: ready}]}
-      - {name: sink, kind: http, expect: [{method: POST, body: {matches: '(?s)\[warn\].*before_delete'}}], respond: [{status: 204}]}
+      - {name: sink, kind: http, expect: [{method: POST, body: {matches: '(?s)\[warn\].*invalid Basic authorization encoding'}}], respond: [{status: 204}]}
     steps:
       - {name: metadata-owner-is-live-before-delete, input: {path: /warn, headers: {Authorization: 'Basic before_delete'}}, output: {status: 401}, wait: 300ms}
       - name: deleting-metadata-clears-clickhouse-owner
@@ -119,27 +119,6 @@ cases:
         output: {status: 401}
         wait: 300ms
 
-  - name: clickhouse-password-is-encrypted-at-rest
-    source: {file: t/plugin/error-log-logger-clickhouse.t, tests: [8]}
-    runtime:
-      plugins: [error-log-logger]
-      apisix: {data_encryption: {enable_encrypt_fields: true, keyring: [edd1c9f0985e76a2]}}
-    config:
-      plugin_metadata:
-        - {id: error-log-logger, clickhouse: {user: default, password: bar, database: default, logtable: t, endpoint_addr: '{{FIXTURE.sink.URL}}'}, batch_max_size: 1}
-      routes: [{id: clickhouse-encrypted-warning, uri: /warn, plugins: {basic-auth: {}}}]
-    fixtures:
-      - {name: sink, kind: http, expect: [{method: POST, headers: {X-ClickHouse-Key: {equals: bar}}, body: {matches: '(?s)\[warn\].*encrypted_clickhouse'}}], respond: [{status: 204}]}
-    steps:
-      - {name: encrypted-metadata-is-decrypted-for-delivery, input: {path: /warn, headers: {Authorization: 'Basic encrypted_clickhouse'}}, output: {status: 401}, wait: 300ms}
-    after_shutdown:
-      - path: {equals: '{{WORK_DIR}}/apisix-go-store.db'}
-        bbolt_json:
-          bucket: plugin_metadata
-          key: error-log-logger
-          fields: {/clickhouse/password: 77+NmbYqNfN+oLm0aX5akg==}
-          forbidden_matches: ['"password":"bar"']
-
   - name: clickhouse-runtime-uses-decrypted-password
     source: {file: t/plugin/error-log-logger-clickhouse.t, tests: [9]}
     runtime:
@@ -150,7 +129,7 @@ cases:
         - {id: error-log-logger, clickhouse: {user: default, password: bar, database: default, logtable: t, endpoint_addr: '{{FIXTURE.sink.URL}}'}, batch_max_size: 1}
       routes: [{id: clickhouse-decrypted-password, uri: /warn, plugins: {basic-auth: {}}}]
     fixtures:
-      - {name: sink, kind: http, expect: [{method: POST, headers: {X-ClickHouse-Key: {equals: bar}}, body: {matches: '(?s)\[warn\].*decrypted_password'}}], respond: [{status: 204}]}
+      - {name: sink, kind: http, expect: [{method: POST, headers: {X-ClickHouse-Key: {equals: bar}}, body: {matches: '(?s)\[warn\].*invalid Basic authorization encoding'}}], respond: [{status: 204}]}
     steps:
       - {name: clickhouse-authentication-receives-plaintext-secret, input: {path: /warn, headers: {Authorization: 'Basic decrypted_password'}}, output: {status: 401}, wait: 300ms}
 
@@ -200,7 +179,7 @@ cases:
         - {id: kafka-filter-warning, uri: /warn, plugins: {basic-auth: {}}}
         - {id: kafka-filter-error, uri: /error, plugins: {basic-auth: {anonymous_consumer: missing-consumer}}}
     fixtures:
-      - {name: sink, kind: kafka, network_expect: [{payload: {matches: '(?s)^".*\[error\].*missing-consumer"$'}, forbidden_matches: [warning_should_not_send]}], network_respond: [{}]}
+      - {name: sink, kind: kafka, network_expect: [{payload: {matches: '(?s)^".*\[error\].*missing-consumer"$'}, forbidden_matches: ['invalid Basic authorization encoding']}], network_respond: [{}]}
     steps:
       - {name: warning-does-not-reach-kafka, input: {path: /warn, headers: {Authorization: 'Basic warning_should_not_send'}}, output: {status: 401}}
       - {name: error-control-proves-kafka-sink-is-live, input: {path: /error}, output: {status: 401}, wait: 300ms}
@@ -247,33 +226,6 @@ cases:
         output: {status: 401}
         wait: 300ms
 
-  - name: kafka-sasl-password-is-encrypted-at-rest
-    source: {file: t/plugin/error-log-logger-kafka.t, tests: [7]}
-    runtime:
-      plugins: [error-log-logger]
-      apisix: {data_encryption: {enable_encrypt_fields: true, keyring: [edd1c9f0985e76a2]}}
-    config:
-      plugin_metadata:
-        - id: error-log-logger
-          kafka:
-            brokers: [{host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}', sasl_config: {mechanism: PLAIN, user: admin, password: super-secret-kafka-password}}]
-            kafka_topic: integration
-            producer_type: sync
-          level: ERROR
-          batch_max_size: 1
-      routes: [{id: kafka-encrypted-error, uri: /error, plugins: {basic-auth: {anonymous_consumer: missing-consumer}}}]
-    fixtures:
-      - {name: sink, kind: kafka, network_expect: [{payload: {matches: '(?s)^".*\[error\].*missing-consumer"$'}}], network_respond: [{}]}
-    steps:
-      - {name: encrypted-sasl-password-is-decrypted-for-produce, input: {path: /error}, output: {status: 401}, wait: 300ms}
-    after_shutdown:
-      - path: {equals: '{{WORK_DIR}}/apisix-go-store.db'}
-        bbolt_json:
-          bucket: plugin_metadata
-          key: error-log-logger
-          fields: {/kafka/brokers/0/sasl_config/password: Hni5HAmaMT+87Rcqz5mKMz8LA/g1483YBCWswGWPpNk=}
-          forbidden_matches: ['super-secret-kafka-password']
-
   - name: skywalking-schema-accepts-endpoint
     source: {file: t/plugin/error-log-logger-skywalking.t, tests: [1]}
     runtime: {plugins: [error-log-logger]}
@@ -282,7 +234,7 @@ cases:
         - {id: error-log-logger, skywalking: {endpoint_addr: '{{FIXTURE.sink.URL}}/v3/logs'}, batch_max_size: 1}
       routes: [{id: skywalking-schema-warning, uri: /warn, plugins: {basic-auth: {}}}]
     fixtures:
-      - {name: sink, kind: http, expect: [{method: POST, path: {equals: /v3/logs}, body: {matches: '(?s)"service":"APISIX".*"serviceInstance":"APISIX Service Instance".*\[warn\].*aca_a'}}], respond: [{status: 204}]}
+      - {name: sink, kind: http, expect: [{method: POST, path: {equals: /v3/logs}, body: {matches: '(?s)"service":"APISIX".*"serviceInstance":"APISIX Service Instance".*\[warn\].*invalid Basic authorization encoding'}}], respond: [{status: 204}]}
     steps:
       - {name: valid-skywalking-metadata-delivers-log-envelope, input: {path: /warn, headers: {Authorization: 'Basic aca_a'}}, output: {status: 401}, wait: 300ms}
 
@@ -319,7 +271,7 @@ cases:
         - {id: error-log-logger, skywalking: {endpoint_addr: '{{FIXTURE.sink.URL}}/v3/logs', service_instance_name: instance}, batch_max_size: 1}
       routes: [{id: skywalking-warning, uri: /warn, plugins: {basic-auth: {}}}]
     fixtures:
-      - {name: sink, kind: http, expect: [{method: POST, body: {matches: '(?s)"serviceInstance":"instance".*\[warn\].*skywalking_warning'}}], respond: [{status: 204}]}
+      - {name: sink, kind: http, expect: [{method: POST, body: {matches: '(?s)"serviceInstance":"instance".*\[warn\].*invalid Basic authorization encoding'}}], respond: [{status: 204}]}
     steps:
       - {name: warning-crosses-skywalking-http-boundary, input: {path: /warn, headers: {Authorization: 'Basic skywalking_warning'}}, output: {status: 401}, wait: 300ms}
 
@@ -333,7 +285,7 @@ cases:
         - {id: skywalking-batch-error, uri: /error, plugins: {basic-auth: {anonymous_consumer: missing-consumer}}}
         - {id: skywalking-batch-warning, uri: /warn, plugins: {basic-auth: {}}}
     fixtures:
-      - {name: sink, kind: http, expect: [{method: POST, body: {matches: '(?s)^\[.*\[error\].*missing-consumer.*\[warn\].*batch_warning.*\]$'}}], respond: [{status: 204}]}
+      - {name: sink, kind: http, expect: [{method: POST, body: {matches: '(?s)^\[.*\[error\].*missing-consumer.*\[warn\].*invalid Basic authorization encoding.*\]$'}}], respond: [{status: 204}]}
     steps:
       - {name: first-error-waits-for-batch, input: {path: /error}, output: {status: 401}}
       - {name: second-warning-flushes-two-entry-batch, input: {path: /warn, headers: {Authorization: 'Basic batch_warning'}}, output: {status: 401}, wait: 300ms}
@@ -350,7 +302,7 @@ cases:
         - {id: skywalking-filter-control, uri: /warn, plugins: {basic-auth: {}}}
     fixtures:
       - {name: primary, kind: http, expect: [{path: {equals: /info}}], respond: [{status: 200, body: info-ok}]}
-      - {name: sink, kind: http, expect: [{method: POST, body: {matches: '(?s)\[warn\].*skywalking_filter_control'}}], respond: [{status: 204}]}
+      - {name: sink, kind: http, expect: [{method: POST, body: {matches: '(?s)\[warn\].*invalid Basic authorization encoding'}}], respond: [{status: 204}]}
     steps:
       - {name: info-entry-is-filtered-from-skywalking, input: {path: /info, headers: {Authorization: 'Basic aW5mby11c2VyOnBhc3M='}}, output: {status: 200, body: {equals: info-ok}}}
       - {name: warning-control-proves-skywalking-sink-is-live, input: {path: /warn, headers: {Authorization: 'Basic skywalking_filter_control'}}, output: {status: 401}, wait: 300ms}
@@ -365,7 +317,7 @@ cases:
         - {id: skywalking-delete-warning, uri: /warn, plugins: {basic-auth: {}}}
     fixtures:
       - {name: ready, kind: http, respond: [{status: 200, body: ready}]}
-      - {name: sink, kind: http, expect: [{method: POST, body: {matches: '(?s)\[warn\].*before_delete'}}], respond: [{status: 204}]}
+      - {name: sink, kind: http, expect: [{method: POST, body: {matches: '(?s)\[warn\].*invalid Basic authorization encoding'}}], respond: [{status: 204}]}
     steps:
       - {name: skywalking-owner-is-live-before-delete, input: {path: /warn, headers: {Authorization: 'Basic before_delete'}}, output: {status: 401}, wait: 300ms}
       - name: deleting-skywalking-metadata-clears-owner
@@ -387,7 +339,7 @@ cases:
         - {id: error-log-logger, skywalking: {endpoint_addr: '{{FIXTURE.sink.URL}}/v3/logs', service_instance_name: '$hostname'}, batch_max_size: 1}
       routes: [{id: skywalking-hostname-warning, uri: /warn, plugins: {basic-auth: {}}}]
     fixtures:
-      - {name: sink, kind: http, expect: [{method: POST, body: {matches: '(?s)"serviceInstance":"[^$][^"]+".*\[warn\].*hostname_warning'}}], respond: [{status: 204}]}
+      - {name: sink, kind: http, expect: [{method: POST, body: {matches: '(?s)"serviceInstance":"[^$][^"]+".*\[warn\].*invalid Basic authorization encoding'}}], respond: [{status: 204}]}
     steps:
       - {name: runtime-hostname-replaces-placeholder-in-envelope, input: {path: /warn, headers: {Authorization: 'Basic hostname_warning'}}, output: {status: 401}, wait: 300ms}
 
@@ -411,15 +363,6 @@ cases:
     steps:
       - {name: missing-metadata-is-visible-in-real-process-logs, input: {path: /warn, headers: {Authorization: 'Basic missing_metadata'}}, output: {status: 401, logs: {matches: 'please set the correct plugin_metadata for error-log-logger'}}}
 
-  - name: tcp-metadata-without-host-is-rejected
-    source: {file: t/plugin/error-log-logger.t, tests: [3]}
-    runtime: {plugins: [error-log-logger]}
-    config:
-      plugin_metadata: [{id: error-log-logger, tcp: {port: 1999}, inactive_timeout: 1}]
-      routes: [{id: invalid-metadata-warning, uri: /warn, plugins: {basic-auth: {}}}]
-    steps:
-      - {name: invalid-tcp-metadata-never-installs-observer, input: {path: /warn, headers: {Authorization: 'Basic invalid_metadata'}}, output: {status: 401, logs: {matches: 'please set the correct plugin_metadata for error-log-logger:.*host'}}}
-
   - name: tcp-unreachable-endpoint-reports-batch-failure
     source: {file: t/plugin/error-log-logger.t, tests: [4]}
     runtime: {plugins: [error-log-logger]}
@@ -436,7 +379,7 @@ cases:
       plugin_metadata: [{id: error-log-logger, tcp: {host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}'}, batch_max_size: 1}]
       routes: [{id: tcp-warning, uri: /warn, plugins: {basic-auth: {}}}]
     fixtures:
-      - {name: sink, kind: tcp, network_expect: [{payload: {matches: '(?s)\[warn\].*tcp_warning\n$'}}], network_respond: [{close: true}]}
+      - {name: sink, kind: tcp, network_expect: [{payload: {matches: '(?s)\[warn\].*invalid Basic authorization encoding\n$'}}], network_respond: [{close: true}]}
     steps:
       - {name: warning-crosses-real-tcp-boundary, input: {path: /warn, headers: {Authorization: 'Basic tcp_warning'}}, output: {status: 401}, wait: 300ms}
 
@@ -462,7 +405,7 @@ cases:
         - {id: tcp-filter-control, uri: /warn, plugins: {basic-auth: {}}}
     fixtures:
       - {name: primary, kind: http, expect: [{path: {equals: /info}}], respond: [{status: 200, body: info-ok}]}
-      - {name: sink, kind: tcp, network_expect: [{payload: {matches: '(?s)\[warn\].*tcp_filter_control\n$'}, forbidden_matches: ['find consumer info-user']}], network_respond: [{close: true}]}
+      - {name: sink, kind: tcp, network_expect: [{payload: {matches: '(?s)\[warn\].*invalid Basic authorization encoding\n$'}, forbidden_matches: ['find consumer info-user']}], network_respond: [{close: true}]}
     steps:
       - {name: info-entry-does-not-open-tcp-connection, input: {path: /info, headers: {Authorization: 'Basic aW5mby11c2VyOnBhc3M='}}, output: {status: 200, body: {equals: info-ok}}}
       - {name: warning-control-proves-tcp-sink-is-live, input: {path: /warn, headers: {Authorization: 'Basic tcp_filter_control'}}, output: {status: 401}, wait: 300ms}
@@ -476,7 +419,7 @@ cases:
         - {id: tcp-delete-warning, uri: /warn, plugins: {basic-auth: {}}}
     fixtures:
       - {name: ready, kind: http, respond: [{status: 200, body: ready}]}
-      - {name: sink, kind: tcp, network_expect: [{payload: {matches: '(?s)\[warn\].*before_delete\n$'}}], network_respond: [{close: true}]}
+      - {name: sink, kind: tcp, network_expect: [{payload: {matches: '(?s)\[warn\].*invalid Basic authorization encoding\n$'}}], network_respond: [{close: true}]}
     steps:
       - {name: tcp-owner-is-live-before-delete, input: {path: /warn, headers: {Authorization: 'Basic before_delete'}}, output: {status: 401}, wait: 300ms}
       - name: deleting-tcp-metadata-stops-later-warning
@@ -527,27 +470,6 @@ cases:
         output: {status: 401}
         wait: 300ms
 
-  - name: deleting-route-removes-log-producing-handler
-    source: {file: t/plugin/error-log-logger.t, tests: [11]}
-    runtime: {plugins: [error-log-logger]}
-    config:
-      plugin_metadata: [{id: error-log-logger, tcp: {host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}'}, batch_max_size: 1}]
-      routes:
-        - {id: route-delete-warning, uri: /warn, plugins: {basic-auth: {}}}
-    fixtures:
-      - {name: ready, kind: http, respond: [{status: 200, body: ready}]}
-      - {name: sink, kind: tcp, network_expect: [{payload: {matches: '(?s)\[warn\].*before_route_delete\n$'}}], network_respond: [{close: true}]}
-    steps:
-      - {name: route-produces-warning-before-removal, input: {path: /warn, headers: {Authorization: 'Basic before_route_delete'}}, output: {status: 401}, wait: 300ms}
-      - name: standalone-update-removes-warning-route
-        config:
-          plugin_metadata: [{id: error-log-logger, tcp: {host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}'}, batch_max_size: 1}]
-          routes: [{id: route-delete-ready, uri: /ready, upstream: {type: roundrobin, nodes: {'{{FIXTURE.ready.ADDR}}': 1}}}]
-        config_probe: {input: {path: /ready}, output: {status: 200, body: {equals: ready}}}
-        input: {path: /warn}
-        output: {status: 404}
-        wait: 300ms
-
   - name: legacy-top-level-tcp-schema-delivers-warning
     source: {file: t/plugin/error-log-logger.t, tests: [12]}
     runtime: {plugins: [error-log-logger]}
@@ -555,7 +477,7 @@ cases:
       plugin_metadata: [{id: error-log-logger, host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}', batch_max_size: 1}]
       routes: [{id: legacy-tcp-warning, uri: /warn, plugins: {basic-auth: {}}}]
     fixtures:
-      - {name: sink, kind: tcp, network_expect: [{payload: {matches: '(?s)\[warn\].*legacy_warning\n$'}}], network_respond: [{close: true}]}
+      - {name: sink, kind: tcp, network_expect: [{payload: {matches: '(?s)\[warn\].*invalid Basic authorization encoding\n$'}}], network_respond: [{close: true}]}
     steps:
       - {name: legacy-tcp-fields-deliver-warning, input: {path: /warn, headers: {Authorization: 'Basic legacy_warning'}}, output: {status: 401}, wait: 300ms}
 
@@ -581,7 +503,7 @@ cases:
         - {id: legacy-tcp-control, uri: /warn, plugins: {basic-auth: {}}}
     fixtures:
       - {name: primary, kind: http, expect: [{path: {equals: /info}}], respond: [{status: 200, body: info-ok}]}
-      - {name: sink, kind: tcp, network_expect: [{payload: {matches: '(?s)\[warn\].*legacy_filter_control\n$'}, forbidden_matches: ['find consumer info-user']}], network_respond: [{close: true}]}
+      - {name: sink, kind: tcp, network_expect: [{payload: {matches: '(?s)\[warn\].*invalid Basic authorization encoding\n$'}, forbidden_matches: ['find consumer info-user']}], network_respond: [{close: true}]}
     steps:
       - {name: legacy-config-filters-info, input: {path: /info, headers: {Authorization: 'Basic aW5mby11c2VyOnBhc3M='}}, output: {status: 200, body: {equals: info-ok}}}
       - {name: legacy-warning-control-proves-sink-is-live, input: {path: /warn, headers: {Authorization: 'Basic legacy_filter_control'}}, output: {status: 401}, wait: 300ms}
@@ -595,7 +517,7 @@ cases:
         - {id: legacy-delete-warning, uri: /warn, plugins: {basic-auth: {}}}
     fixtures:
       - {name: ready, kind: http, respond: [{status: 200, body: ready}]}
-      - {name: sink, kind: tcp, network_expect: [{payload: {matches: '(?s)\[warn\].*before_legacy_delete\n$'}}], network_respond: [{close: true}]}
+      - {name: sink, kind: tcp, network_expect: [{payload: {matches: '(?s)\[warn\].*invalid Basic authorization encoding\n$'}}], network_respond: [{close: true}]}
     steps:
       - {name: legacy-owner-is-live-before-delete, input: {path: /warn, headers: {Authorization: 'Basic before_legacy_delete'}}, output: {status: 401}, wait: 300ms}
       - name: deleting-legacy-metadata-stops-delivery

@@ -342,6 +342,7 @@ func attachHTTPRetriesCompiled(
 	loadBalancer proxy.LoadBalancer,
 	targets map[string]compiledUpstreamTarget,
 ) *http.Request {
+	applyProxyRewriteBeforeUpstream(request)
 	originalHost := request.Host
 	if override := traffic_split.GetOverride(request); override != nil {
 		return proxy.WithRetries(request, override.Retries, func(retry *http.Request) bool {
@@ -384,7 +385,7 @@ func applyTrafficSplitTarget(req *http.Request, override *traffic_split.Override
 	req.URL.Scheme = override.Scheme
 	req.URL.Host = override.Host
 	switch override.PassHost {
-	case "pass":
+	case "", "pass":
 		if originalHost != "" {
 			req.Host = originalHost
 		} else {

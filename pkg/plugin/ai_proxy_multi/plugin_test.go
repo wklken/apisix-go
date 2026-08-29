@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"os"
 	"slices"
 	"strconv"
@@ -18,10 +19,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/json"
+	observabilitymetrics "github.com/wklken/apisix-go/pkg/observability/metrics"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_auth"
+	"github.com/wklken/apisix-go/pkg/plugin/ai_common"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_protocols"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_stream"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -43,14 +48,43 @@ func newTestPluginWithTasks(t *testing.T, cfg Config) (*Plugin, *runtime.TaskReg
 	if err != nil {
 		t.Fatalf("NewTaskOwner() error = %v", err)
 	}
-	p := &Plugin{config: cfg}
+	p := &Plugin{
+		config: cfg,
+		lookupNetIP: func(context.Context, string, string) ([]netip.Addr, error) {
+			return []netip.Addr{netip.MustParseAddr("192.0.2.1")}, nil
+		},
+	}
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
 	p.SetDependencies(base.Dependencies{Tasks: owner})
+	p.stoppedHealth.Store(true)
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
+	if err := p.refreshResolvedNodes(context.Background(), true); err != nil {
+		t.Fatalf("refreshResolvedNodes() error = %v", err)
+	}
+	p.publishHealthSnapshot()
+	for index := range p.config.Instances {
+		for _, node := range p.resolvedNodes(index) {
+			node.client = &http.Client{Transport: multiStreamRoundTripFunc(
+				func(request *http.Request) (*http.Response, error) {
+					return p.client.Transport.RoundTrip(request)
+				},
+			)}
+			node.healthClient = &http.Client{Transport: multiStreamRoundTripFunc(
+				func(request *http.Request) (*http.Response, error) {
+					client := p.healthClients[index]
+					if client == nil {
+						return nil, errors.New("test health client is unavailable")
+					}
+					return client.Transport.RoundTrip(request)
+				},
+			)}
+		}
+	}
+	p.stoppedHealth.Store(false)
 	t.Cleanup(func() {
 		stopTestRegistry(t, tasks)
 		p.Stop()
@@ -92,6 +126,63 @@ func TestSchemaValidatesActiveHealthCheckFields(t *testing.T) {
 	}
 }
 
+func TestSchemaMatchesAPISIX317BaseProviderAndEndpointContracts(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	valid := map[string]any{
+		"instances": []any{map[string]any{
+			"name": "openai-official", "provider": "openai", "weight": 1,
+			"auth":    map[string]any{"header": map[string]any{"some_header": "some_value"}},
+			"options": map[string]any{"model": "gpt-4"},
+		}},
+	}
+	if err := util.Validate(valid, p.GetSchema()); err != nil {
+		t.Fatalf("minimal APISIX 3.17 configuration rejected: %v", err)
+	}
+
+	unsupportedProvider := ai_common.CloneJSONValue(valid).(map[string]any)
+	unsupportedProvider["instances"].([]any)[0].(map[string]any)["provider"] = "some-unique"
+	if err := util.Validate(unsupportedProvider, p.GetSchema()); err == nil {
+		t.Fatal("unsupported provider was accepted")
+	}
+
+	invalidEndpoint := ai_common.CloneJSONValue(valid).(map[string]any)
+	invalidEndpoint["instances"].([]any)[0].(map[string]any)["override"] = map[string]any{
+		"endpoint": "http//127.0.0.1:1980",
+	}
+	if err := util.Validate(invalidEndpoint, p.GetSchema()); err == nil {
+		t.Fatal("invalid override endpoint was accepted")
+	}
+}
+
+// TestSchemaRejectsAPISIX317MissingBedrockSecret mirrors
+// t/plugin/ai-proxy-bedrock.t TEST 5.  The plugin schema owns the required
+// AWS fields; route publication must not be used as a substitute for this
+// direct contract test.
+func TestSchemaRejectsAPISIX317MissingBedrockSecret(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	config := map[string]any{
+		"instances": []any{map[string]any{
+			"name":     "bedrock-bad",
+			"provider": "bedrock",
+			"weight":   1,
+			"auth": map[string]any{
+				"aws": map[string]any{"access_key_id": "AKIAIOSFODNN7EXAMPLE"},
+			},
+			"provider_conf": map[string]any{"region": "us-east-1"},
+			"options":       map[string]any{"model": "anthropic.claude-3-5-sonnet-20241022-v2:0"},
+		}},
+	}
+	if err := util.Validate(config, p.GetSchema()); err == nil {
+		t.Fatal("Bedrock instance without secret_access_key was accepted")
+	}
+}
+
 func TestSchemaRejectsUnknownRequestBodyProtocolKey(t *testing.T) {
 	p := &Plugin{}
 	if err := p.Init(); err != nil {
@@ -109,6 +200,33 @@ func TestSchemaRejectsUnknownRequestBodyProtocolKey(t *testing.T) {
 
 	if err := util.Validate(config, p.GetSchema()); err == nil {
 		t.Fatal("unknown request_body protocol key was accepted")
+	}
+}
+
+func TestHandlerMatchesAPISIX317EmptyRequestBodyResponse(t *testing.T) {
+	p := newTestPlugin(t, Config{Instances: []Instance{{
+		Name:     "openai",
+		Provider: "openai",
+		Weight:   1,
+		Auth:     Auth{Header: map[string]string{"Authorization": "Bearer token"}},
+	}}})
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next handler called for empty request body")
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("response code = %d, want 400", rr.Code)
+	}
+	if got := rr.Header().Get("Content-Type"); got != "text/plain; charset=utf-8" {
+		t.Fatalf("Content-Type = %q, want text/plain; charset=utf-8", got)
+	}
+	const wantBody = "{\"message\":\"could not get body: request body is empty\"}\n"
+	if got := rr.Body.String(); got != wantBody {
+		t.Fatalf("response body = %q, want %q", got, wantBody)
 	}
 }
 
@@ -775,6 +893,146 @@ func TestHandlerSkipsActivelyUnhealthyHigherPriorityInstance(t *testing.T) {
 	}
 }
 
+func TestAPISIX317HealthTransitionsForOneAndTwoCheckedInstances(t *testing.T) {
+	newProvider := func(t *testing.T, health *atomic.Int64, name string) *httptest.Server {
+		t.Helper()
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodGet && r.URL.Path == "/health" {
+				w.WriteHeader(int(health.Load()))
+				return
+			}
+			_, _ = w.Write([]byte(`{"instance":"` + name + `"}`))
+		}))
+		t.Cleanup(server.Close)
+		return server
+	}
+	checks := func() *HealthChecks {
+		return &HealthChecks{Active: ActiveHealthCheck{
+			HTTPPath: "/health", Host: "health.authority.test",
+			Healthy: HealthyCheckPolicy{
+				HTTPStatuses: []int{http.StatusOK}, Successes: 1,
+			},
+			Unhealthy: UnhealthyCheckPolicy{
+				HTTPStatuses: []int{http.StatusInternalServerError}, HTTPFailures: 1,
+			},
+		}}
+	}
+	waitHealth := func(t *testing.T, p *Plugin, want ...bool) {
+		t.Helper()
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			got := make([]bool, len(want))
+			for index := range want {
+				got[index] = p.instanceHealthy(index)
+			}
+			if slices.Equal(got, want) {
+				return
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		got := make([]bool, len(want))
+		for index := range want {
+			got[index] = p.instanceHealthy(index)
+		}
+		t.Fatalf("instance health = %v, want %v", got, want)
+	}
+	installClock := func(p *Plugin) *atomic.Int64 {
+		clock := &atomic.Int64{}
+		clock.Store(time.Now().UnixNano())
+		p.healthNow = func() time.Time { return time.Unix(0, clock.Load()) }
+		return clock
+	}
+	refresh := func(t *testing.T, p *Plugin, clock *atomic.Int64, want ...bool) {
+		t.Helper()
+		clock.Add(int64(2 * time.Second))
+		p.refreshHealth(context.Background())
+		waitHealth(t, p, want...)
+	}
+
+	t.Run("one checked instance recovers into balanced selection", func(t *testing.T) {
+		var checkedHealth atomic.Int64
+		checkedHealth.Store(http.StatusInternalServerError)
+		checked := newProvider(t, &checkedHealth, "checked")
+		var uncheckedHealth atomic.Int64
+		uncheckedHealth.Store(http.StatusOK)
+		unchecked := newProvider(t, &uncheckedHealth, "unchecked")
+
+		p := newTestPlugin(t, Config{Instances: []Instance{
+			{
+				Name: "checked", Provider: "openai-compatible", Weight: 1,
+				Override: Override{Endpoint: checked.URL + "/v1/chat/completions"}, Checks: checks(),
+			},
+			{
+				Name: "unchecked", Provider: "openai-compatible", Weight: 1,
+				Override: Override{Endpoint: unchecked.URL + "/v1/chat/completions"},
+			},
+		}})
+		clock := installClock(p)
+
+		refresh(t, p, clock, false, true)
+		for range 4 {
+			if body := serveChat(t, p, ""); !strings.Contains(body, `"instance":"unchecked"`) {
+				t.Fatalf("unhealthy selection body = %q, want unchecked instance", body)
+			}
+		}
+
+		checkedHealth.Store(http.StatusOK)
+		refresh(t, p, clock, true, true)
+		counts := map[string]int{}
+		for range 10 {
+			body := serveChat(t, p, "")
+			switch {
+			case strings.Contains(body, `"instance":"checked"`):
+				counts["checked"]++
+			case strings.Contains(body, `"instance":"unchecked"`):
+				counts["unchecked"]++
+			default:
+				t.Fatalf("unexpected provider body %q", body)
+			}
+		}
+		if diff := counts["checked"] - counts["unchecked"]; diff < -2 || diff > 2 {
+			t.Fatalf("recovered selection = %#v, want distribution difference <= 2", counts)
+		}
+	})
+
+	t.Run("two checked instances exchange health", func(t *testing.T) {
+		var firstHealth atomic.Int64
+		firstHealth.Store(http.StatusInternalServerError)
+		first := newProvider(t, &firstHealth, "first")
+		var secondHealth atomic.Int64
+		secondHealth.Store(http.StatusOK)
+		second := newProvider(t, &secondHealth, "second")
+
+		p := newTestPlugin(t, Config{Instances: []Instance{
+			{
+				Name: "first", Provider: "openai-compatible", Weight: 1,
+				Override: Override{Endpoint: first.URL + "/v1/chat/completions"}, Checks: checks(),
+			},
+			{
+				Name: "second", Provider: "openai-compatible", Weight: 1,
+				Override: Override{Endpoint: second.URL + "/v1/chat/completions"}, Checks: checks(),
+			},
+		}})
+		clock := installClock(p)
+
+		refresh(t, p, clock, false, true)
+		for range 4 {
+			if body := serveChat(t, p, ""); !strings.Contains(body, `"instance":"second"`) {
+				t.Fatalf("first transition body = %q, want second instance", body)
+			}
+		}
+
+		firstHealth.Store(http.StatusOK)
+		secondHealth.Store(http.StatusInternalServerError)
+		refresh(t, p, clock, true, false)
+		for range 4 {
+			if body := serveChat(t, p, ""); !strings.Contains(body, `"instance":"first"`) {
+				t.Fatalf("second transition body = %q, want first instance", body)
+			}
+		}
+	})
+}
+
 func TestHandlerUsesDefaultPriorityWhenAllHealthChecksFail(t *testing.T) {
 	newServer := func(name string, calls *atomic.Int64) *httptest.Server {
 		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1093,6 +1351,7 @@ func TestHandlerRegistersNonStreamingLLMRequestVars(t *testing.T) {
 	})
 
 	req := httptest.NewRequest(http.MethodPost, "/anything", strings.NewReader(`{
+	  "model": "client-model",
 	  "messages": [{"role": "user", "content": "ping"}]
 	}`))
 	req = apisixctx.WithRequestVars(req)
@@ -1107,8 +1366,9 @@ func TestHandlerRegistersNonStreamingLLMRequestVars(t *testing.T) {
 		t.Fatalf("response code = %d, want 200", rr.Code)
 	}
 	assertLLMRequestVar(t, req, "$request_type", "ai_chat")
-	assertLLMRequestVar(t, req, "$request_llm_model", "gpt-4")
+	assertLLMRequestVar(t, req, "$request_llm_model", "client-model")
 	assertLLMRequestVar(t, req, "$llm_model", "gpt-4-0613")
+	assertLLMRequestVar(t, req, "$balancer_ip", "one")
 	assertLLMRequestVar(t, req, "$llm_prompt_tokens", int64(23))
 	assertLLMRequestVar(t, req, "$llm_completion_tokens", int64(8))
 	assertUsageRequestVars(t, req, float64(23), int64(31))
@@ -1128,6 +1388,216 @@ func TestHandlerRegistersNonStreamingLLMRequestVars(t *testing.T) {
 	if got := apisixctx.GetRequestVar(req, "$upstream_response_time"); got == nil || got == "" {
 		t.Fatal("$upstream_response_time is empty")
 	}
+	if got := apisixctx.GetRequestVar(req, "$llm_time_to_first_token"); got == nil {
+		t.Fatal("$llm_time_to_first_token is unset")
+	}
+}
+
+func TestHandlerTracksActiveLLMConnection(t *testing.T) {
+	previous := observabilitymetrics.LLMActiveConnections
+	observabilitymetrics.LLMActiveConnections = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{Name: "test_ai_proxy_multi_active"},
+		[]string{
+			"route", "route_id", "matched_uri", "matched_host", "service", "service_id", "consumer", "node",
+			"request_type", "request_llm_model", "llm_model",
+		},
+	)
+	t.Cleanup(func() { observabilitymetrics.LLMActiveConnections = previous })
+
+	activeGauge := func(node, requestModel, providerModel string) prometheus.Gauge {
+		return observabilitymetrics.LLMActiveConnections.WithLabelValues(
+			"", "", "", "", "", "", "", node, "ai_chat", requestModel, providerModel,
+		)
+	}
+	runSingleAttempt := func(t *testing.T, response *http.Response, responseErr error) {
+		t.Helper()
+		entered := make(chan struct{})
+		release := make(chan struct{})
+		p := newTestPlugin(t, Config{Instances: []Instance{{
+			Name: "provider-node", Provider: "openai-compatible", Weight: 1,
+			Options:  map[string]any{"model": "provider-model"},
+			Override: Override{Endpoint: "http://provider.test/v1/chat/completions"},
+		}}})
+		p.client.Transport = multiStreamRoundTripFunc(func(*http.Request) (*http.Response, error) {
+			close(entered)
+			<-release
+			return response, responseErr
+		})
+		req := apisixctx.WithRequestVars(httptest.NewRequest(
+			http.MethodPost,
+			"/v1/chat/completions",
+			strings.NewReader(`{"model":"client-model","messages":[{"role":"user","content":"hello"}]}`),
+		))
+		req.Header.Set("Content-Type", "application/json")
+		done := make(chan struct{})
+		go func() {
+			p.Handler(http.NotFoundHandler()).ServeHTTP(httptest.NewRecorder(), req)
+			close(done)
+		}()
+		<-entered
+		gauge := activeGauge("provider-node", "client-model", "provider-model")
+		if got := testMultiGaugeValue(t, gauge); got != 1 {
+			t.Fatalf("active connections = %v, want 1", got)
+		}
+		close(release)
+		<-done
+		if got := testMultiGaugeValue(t, gauge); got != 0 {
+			t.Fatalf("active connections after terminal path = %v, want 0", got)
+		}
+	}
+
+	t.Run("normal", func(t *testing.T) {
+		runSingleAttempt(t, &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body: io.NopCloser(strings.NewReader(
+				`{"model":"response-model","choices":[{"message":{"content":"ok"}}]}`,
+			)),
+		}, nil)
+	})
+	t.Run("error", func(t *testing.T) {
+		runSingleAttempt(t, nil, errors.New("provider unavailable"))
+	})
+	t.Run("retry", func(t *testing.T) {
+		enteredFirst := make(chan struct{})
+		releaseFirst := make(chan struct{})
+		enteredSecond := make(chan struct{})
+		releaseSecond := make(chan struct{})
+		p := newTestPlugin(t, Config{
+			FallbackStrategy: "http_5xx",
+			MaxRetries:       new(1),
+			Instances: []Instance{
+				{
+					Name: "first", Provider: "openai-compatible", Weight: 1,
+					Options:  map[string]any{"model": "provider-one"},
+					Override: Override{Endpoint: "http://first.test/v1/chat/completions"},
+				},
+				{
+					Name: "second", Provider: "openai-compatible", Weight: 1,
+					Options:  map[string]any{"model": "provider-two"},
+					Override: Override{Endpoint: "http://second.test/v1/chat/completions"},
+				},
+			},
+		})
+		var calls atomic.Int64
+		p.client.Transport = multiStreamRoundTripFunc(func(*http.Request) (*http.Response, error) {
+			if calls.Add(1) == 1 {
+				close(enteredFirst)
+				<-releaseFirst
+				return &http.Response{
+					StatusCode: http.StatusServiceUnavailable,
+					Header:     make(http.Header),
+					Body:       io.NopCloser(strings.NewReader(`{"error":"retry"}`)),
+				}, nil
+			}
+			close(enteredSecond)
+			<-releaseSecond
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body: io.NopCloser(strings.NewReader(
+					`{"model":"response-model","choices":[{"message":{"content":"ok"}}]}`,
+				)),
+			}, nil
+		})
+		req := apisixctx.WithRequestVars(httptest.NewRequest(
+			http.MethodPost,
+			"/v1/chat/completions",
+			strings.NewReader(`{"model":"client-model","messages":[{"role":"user","content":"hello"}]}`),
+		))
+		req.Header.Set("Content-Type", "application/json")
+		done := make(chan struct{})
+		go func() {
+			p.Handler(http.NotFoundHandler()).ServeHTTP(httptest.NewRecorder(), req)
+			close(done)
+		}()
+
+		<-enteredFirst
+		firstGauge := activeGauge("first", "client-model", "provider-one")
+		if got := testMultiGaugeValue(t, firstGauge); got != 1 {
+			t.Fatalf("first attempt active connections = %v, want 1", got)
+		}
+		close(releaseFirst)
+		<-enteredSecond
+		if got := testMultiGaugeValue(t, firstGauge); got != 0 {
+			t.Fatalf("first attempt active connections after retry = %v, want 0", got)
+		}
+		secondGauge := activeGauge("second", "client-model", "provider-two")
+		if got := testMultiGaugeValue(t, secondGauge); got != 1 {
+			t.Fatalf("second attempt active connections = %v, want 1", got)
+		}
+		close(releaseSecond)
+		<-done
+		if got := testMultiGaugeValue(t, secondGauge); got != 0 {
+			t.Fatalf("second attempt active connections after terminal response = %v, want 0", got)
+		}
+	})
+	t.Run("retry clears stale model on error", func(t *testing.T) {
+		enteredSecond := make(chan struct{})
+		releaseSecond := make(chan struct{})
+		var releaseOnce sync.Once
+		release := func() { releaseOnce.Do(func() { close(releaseSecond) }) }
+		t.Cleanup(release)
+		p := newTestPlugin(t, Config{
+			FallbackStrategy: "http_5xx",
+			MaxRetries:       new(1),
+			Instances: []Instance{
+				{
+					Name: "first", Provider: "openai-compatible", Weight: 1,
+					Options:  map[string]any{"model": "provider-one"},
+					Override: Override{Endpoint: "http://first.test/v1/chat/completions"},
+				},
+				{
+					Name: "second", Provider: "openai-compatible", Weight: 1,
+					Override: Override{Endpoint: "http://second.test/v1/chat/completions"},
+				},
+			},
+		})
+		var calls atomic.Int64
+		p.client.Transport = multiStreamRoundTripFunc(func(*http.Request) (*http.Response, error) {
+			if calls.Add(1) == 1 {
+				return &http.Response{
+					StatusCode: http.StatusServiceUnavailable,
+					Header:     make(http.Header),
+					Body:       io.NopCloser(strings.NewReader(`{"error":"retry"}`)),
+				}, nil
+			}
+			close(enteredSecond)
+			<-releaseSecond
+			return nil, errors.New("second provider unavailable")
+		})
+		req := apisixctx.WithRequestVars(httptest.NewRequest(
+			http.MethodPost,
+			"/v1/chat/completions",
+			strings.NewReader(`{"messages":[{"role":"user","content":"hello"}]}`),
+		))
+		req.Header.Set("Content-Type", "application/json")
+		done := make(chan struct{})
+		go func() {
+			p.Handler(http.NotFoundHandler()).ServeHTTP(httptest.NewRecorder(), req)
+			close(done)
+		}()
+
+		<-enteredSecond
+		secondGauge := activeGauge("second", "", "")
+		if got := testMultiGaugeValue(t, secondGauge); got != 1 {
+			t.Fatalf("model-less second attempt active connections = %v, want 1", got)
+		}
+		if got := testMultiGaugeValue(t, activeGauge("second", "", "provider-one")); got != 0 {
+			t.Fatalf("stale first-model active connections = %v, want 0", got)
+		}
+		release()
+		<-done
+		if got := testMultiGaugeValue(t, secondGauge); got != 0 {
+			t.Fatalf("model-less second attempt after terminal error = %v, want 0", got)
+		}
+		if got := apisixctx.GetRequestVar(req, "$request_llm_model"); got != nil {
+			t.Fatalf("$request_llm_model = %#v, want omitted client model preserved", got)
+		}
+		if got := apisixctx.GetRequestVar(req, "$llm_model"); got != nil {
+			t.Fatalf("$llm_model = %#v, want cleared after model-less retry", got)
+		}
+	})
 }
 
 func TestHandlerUpstreamResponseTimeExcludesAuthenticationAndIncludesResponseBody(t *testing.T) {
@@ -1270,7 +1740,10 @@ func TestHandlerConvertsSelectedVertexEmbeddingsInstance(t *testing.T) {
 		t.Fatalf("OpenAI embeddings response = %#v", response)
 	}
 	assertLLMRequestVar(t, req, "$request_type", "ai_embeddings")
-	assertLLMRequestVar(t, req, "$request_llm_model", "text-embedding-005")
+	if got := apisixctx.GetRequestVar(req, "$request_llm_model"); got != nil {
+		t.Fatalf("$request_llm_model = %#v, want unset when the client omits model", got)
+	}
+	assertLLMRequestVar(t, req, "$llm_model", "text-embedding-005")
 	assertLLMRequestVar(t, req, "$llm_prompt_tokens", int64(3))
 }
 
@@ -1671,6 +2144,15 @@ func assertUsageRequestVars(t *testing.T, req *http.Request, wantRawPrompt float
 	}
 }
 
+func testMultiGaugeValue(t *testing.T, gauge prometheus.Gauge) float64 {
+	t.Helper()
+	metric := &dto.Metric{}
+	if err := gauge.Write(metric); err != nil {
+		t.Fatalf("write gauge: %v", err)
+	}
+	return metric.GetGauge().GetValue()
+}
+
 type countingRoundTripper struct {
 	requests atomic.Int32
 	closed   atomic.Int32
@@ -1724,9 +2206,11 @@ func newAIHealthPlugin(t *testing.T, tasks *runtime.TaskRegistry, owner *runtime
 		t.Fatalf("Init() error = %v", err)
 	}
 	p.SetDependencies(base.Dependencies{Tasks: owner})
+	p.stoppedHealth.Store(true)
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
+	p.stoppedHealth.Store(false)
 	t.Cleanup(func() {
 		stopTestRegistry(t, tasks)
 		p.Stop()
@@ -1740,7 +2224,7 @@ func newBlockingHealthPlugin(
 	owner *runtime.TaskOwner,
 ) (*Plugin, <-chan struct{}, <-chan struct{}, func()) {
 	t.Helper()
-	p := newAIHealthPlugin(t, tasks, owner, healthProbeConfig("http://health.test"))
+	p := newAIHealthPlugin(t, tasks, owner, healthProbeConfig("http://192.0.2.10"))
 	p.health[0].nextCheck = time.Now().Add(-time.Second)
 	probeStarted := make(chan struct{})
 	probeCanceled := make(chan struct{})
@@ -1766,7 +2250,7 @@ func newBlockingHealthPlugin(
 
 func newTwoProbeHealthPlugin(t *testing.T, tasks *runtime.TaskRegistry, owner *runtime.TaskOwner) *Plugin {
 	t.Helper()
-	cfg := healthProbeConfig("http://health.test")
+	cfg := healthProbeConfig("http://192.0.2.10")
 	second := cfg.Instances[0]
 	second.Name = "probe-2"
 	cfg.Instances = append(cfg.Instances, second)
@@ -1786,17 +2270,6 @@ func stopTestRegistry(t *testing.T, tasks *runtime.TaskRegistry) {
 	residuals, err := tasks.Stop(context.Background())
 	if err != nil || len(residuals) != 0 {
 		t.Errorf("TaskRegistry.Stop() = (%v, %v)", residuals, err)
-	}
-}
-
-func awaitTaskFailure(t *testing.T, failures <-chan runtime.TaskFailure) runtime.TaskFailure {
-	t.Helper()
-	select {
-	case failure := <-failures:
-		return failure
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for task failure")
-		return runtime.TaskFailure{}
 	}
 }
 
@@ -1849,7 +2322,7 @@ func TestAIHealthUsesAttemptQualifiedTaskOwners(t *testing.T) {
 
 	got := tasks.Active()
 	want := []string{
-		"plugin/test/ai-multi/attempt-1/health-probe",
+		"plugin/test/ai-multi/attempt-1/health-probe-worker-0",
 		"plugin/test/ai-multi/attempt-1/health-refresh",
 	}
 	if !slices.Equal(got, want) {
@@ -1885,49 +2358,115 @@ func TestAIHealthGenerationStopJoinsOwnedInFlightProbes(t *testing.T) {
 	awaitClosed(t, stopped)
 }
 
-func TestAIHealthProbePanicCompletesPassWithoutPartialPublication(t *testing.T) {
+func TestAIHealthProbePanicDoesNotFailOwnedLoop(t *testing.T) {
 	tasks, owner, failures := newAIHealthTestTasks(t)
 	p := newTwoProbeHealthPlugin(t, tasks, owner)
-	before := p.snapshot.Load()
-	wantPanic := &struct{ marker string }{marker: "probe-panic"}
-	firstEntered := make(chan struct{})
-	secondStarted := make(chan struct{})
-	panicNow := make(chan struct{})
-	var firstOnce, secondOnce sync.Once
+	recoveredCycle := make(chan struct{})
+	var firstCalls atomic.Int32
 	p.probeForTest = func(_ context.Context, index int) healthProbeResult {
 		if index == 0 {
-			firstOnce.Do(func() { close(firstEntered) })
-			<-panicNow
-			panic(wantPanic)
+			if firstCalls.Add(1) == 1 {
+				panic("probe-panic")
+			}
+			select {
+			case <-recoveredCycle:
+			default:
+				close(recoveredCycle)
+			}
 		}
-		secondOnce.Do(func() { close(secondStarted) })
 		return healthyProbeResult(index)
 	}
 	p.wakeHealthRefresh()
 	select {
-	case <-firstEntered:
-	case <-time.After(2 * time.Second):
-		t.Fatal("first health probe did not start")
+	case <-recoveredCycle:
+	case <-time.After(2500 * time.Millisecond):
+		t.Fatal("health loop did not run another cycle after a probe panic")
 	}
 	select {
-	case <-secondStarted:
-	case <-time.After(2 * time.Second):
-		t.Fatal("second health probe was not admitted")
-	}
-	close(panicNow)
-	failure := awaitTaskFailure(t, failures)
-	if failure.Owner != "plugin/test/ai-multi/attempt-1/health-probe" || failure.PanicValue != wantPanic {
-		t.Fatalf("failure = %#v", failure)
-	}
-	awaitOwnerExit(t, tasks, "plugin/test/ai-multi/attempt-1/health-refresh")
-	stopTestRegistry(t, tasks)
-	select {
-	case extra := <-failures:
-		t.Fatalf("unexpected additional task failure = %#v", extra)
+	case failure := <-failures:
+		t.Fatalf("recovered probe panic failed the generation task owner: %#v", failure)
 	default:
 	}
-	if got := p.snapshot.Load(); got != before {
-		t.Fatal("incomplete pass published a partial snapshot")
+}
+
+func TestAIHealthLoopProbesAgainAtIdleDeadline(t *testing.T) {
+	tasks, owner, failures := newAIHealthTestTasks(t)
+	p := newAIHealthPlugin(t, tasks, owner, healthProbeConfig("http://192.0.2.10"))
+	p.health[0].nextCheck = time.Now().Add(-time.Second)
+	probes := make(chan struct{}, 3)
+	p.probeForTest = func(context.Context, int) healthProbeResult {
+		probes <- struct{}{}
+		return healthProbeResult{status: http.StatusOK}
+	}
+
+	p.wakeHealthRefresh()
+	for probe := 1; probe <= 2; probe++ {
+		select {
+		case <-probes:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("idle health probe %d did not run at its configured deadline", probe)
+		}
+	}
+	select {
+	case failure := <-failures:
+		t.Fatalf("unexpected health task failure = %#v", failure)
+	default:
+	}
+}
+
+func TestPluginStopCancelsOwnedPeriodicHealthLoop(t *testing.T) {
+	tasks, owner, _ := newAIHealthTestTasks(t)
+	p := newAIHealthPlugin(t, tasks, owner, healthProbeConfig("http://192.0.2.10"))
+	p.health[0].nextCheck = time.Now().Add(-time.Second)
+	probed := make(chan struct{}, 1)
+	p.probeForTest = func(context.Context, int) healthProbeResult {
+		probed <- struct{}{}
+		return healthProbeResult{status: http.StatusOK}
+	}
+	p.wakeHealthRefresh()
+	select {
+	case <-probed:
+	case <-time.After(time.Second):
+		t.Fatal("initial health probe did not run")
+	}
+
+	p.Stop()
+	awaitOwnerExit(t, tasks, "plugin/test/ai-multi/attempt-1/health-refresh")
+}
+
+func TestProviderRequestNormalizesDefaultPortAuthority(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		endpoint string
+		wantHost string
+	}{
+		{name: "HTTP default", endpoint: "http://127.0.0.1:80", wantHost: "127.0.0.1"},
+		{name: "HTTPS default", endpoint: "https://127.0.0.1:443", wantHost: "127.0.0.1"},
+		{name: "HTTP non-default", endpoint: "http://127.0.0.1:8080", wantHost: "127.0.0.1:8080"},
+		{name: "HTTPS non-default", endpoint: "https://127.0.0.1:8443", wantHost: "127.0.0.1:8443"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			p := newTestPlugin(t, Config{Instances: []Instance{{
+				Name: "provider", Provider: "openai-compatible", Weight: 1,
+				Override: Override{Endpoint: test.endpoint},
+			}}})
+			var gotHost string
+			p.client.Transport = multiStreamRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+				gotHost = request.URL.Host
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     make(http.Header),
+					Body: io.NopCloser(strings.NewReader(
+						`{"choices":[{"message":{"content":"ok","role":"assistant"}}]}`,
+					)),
+					Request: request,
+				}, nil
+			})
+			_ = serveChat(t, p, "")
+			if gotHost != test.wantHost {
+				t.Fatalf("provider URL Host = %q, want %q", gotHost, test.wantHost)
+			}
+		})
 	}
 }
 
@@ -1959,6 +2498,193 @@ func TestHealthProbeReusesClientForRepeatedProbes(t *testing.T) {
 	}
 	if got := counting.requests.Load(); got != 3 {
 		t.Fatalf("transport requests across three probes = %d, want 3 through the shared client", got)
+	}
+}
+
+func TestAPISIX317HealthDNSAddressChangesStayAttachedToInstance(t *testing.T) {
+	var firstCalls atomic.Int32
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		firstCalls.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(first.Close)
+	var secondCalls atomic.Int32
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		secondCalls.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(second.Close)
+
+	p := newTestPlugin(t, healthProbeConfig("http://test.example.com"))
+	var resolvedAddress atomic.Value
+	resolvedAddress.Store(strings.TrimPrefix(first.URL, "http://"))
+	transport := &http.Transport{DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, network, resolvedAddress.Load().(string))
+	}}
+	p.healthClients[0].Transport = transport
+
+	firstResult := p.probeInstance(context.Background(), 0)
+	if firstResult.err != nil || firstResult.status != http.StatusOK {
+		t.Fatalf("first resolved address probe = %+v, want status 200", firstResult)
+	}
+	transport.CloseIdleConnections()
+	resolvedAddress.Store(strings.TrimPrefix(second.URL, "http://"))
+	secondResult := p.probeInstance(context.Background(), 0)
+	if secondResult.err != nil || secondResult.status != http.StatusOK {
+		t.Fatalf("changed resolved address probe = %+v, want status 200", secondResult)
+	}
+	if firstCalls.Load() != 1 || secondCalls.Load() != 1 {
+		t.Fatalf("probe calls after address change = (%d, %d), want (1, 1)", firstCalls.Load(), secondCalls.Load())
+	}
+}
+
+func TestAPISIX317HealthCheckHostIsAuthorityNotDialTarget(t *testing.T) {
+	var gotHost string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHost = r.Host
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+
+	config := healthProbeConfig(server.URL + "/v1/chat/completions")
+	config.Instances[0].Checks.Active.Host = "health.authority.test"
+	p := newTestPlugin(t, config)
+	result := p.probeInstance(context.Background(), 0)
+	if result.err != nil || result.status != http.StatusOK {
+		t.Fatalf("health probe = %+v, want endpoint target status 200", result)
+	}
+	if gotHost != "health.authority.test" {
+		t.Fatalf("health probe Host = %q, want configured authority", gotHost)
+	}
+}
+
+func TestAPISIX317DNSOrderChangeDoesNotReplaceInFlightHealthProbe(t *testing.T) {
+	firstStarted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	var firstCalls atomic.Int32
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		firstCalls.Add(1)
+		close(firstStarted)
+		<-releaseFirst
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(first.Close)
+	var secondCalls atomic.Int32
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		secondCalls.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(second.Close)
+
+	p, tasks := newTestPluginWithTasks(t, healthProbeConfig("http://multi-ip.example.com"))
+	client := p.healthClients[0]
+	var clock atomic.Int64
+	clock.Store(time.Now().UnixNano())
+	p.healthNow = func() time.Time { return time.Unix(0, clock.Load()) }
+	var resolvedAddress atomic.Value
+	resolvedAddress.Store(strings.TrimPrefix(first.URL, "http://"))
+	transport := &http.Transport{DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, network, resolvedAddress.Load().(string))
+	}}
+	client.Transport = transport
+	p.refreshHealth(context.Background())
+	select {
+	case <-firstStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first health probe did not start")
+	}
+
+	resolvedAddress.Store(strings.TrimPrefix(second.URL, "http://"))
+	for range 16 {
+		p.refreshHealth(context.Background())
+	}
+	if p.healthClients[0] != client {
+		t.Fatal("DNS order change replaced the plugin-owned health client")
+	}
+	if secondCalls.Load() != 0 {
+		t.Fatalf("second address probes while first was in flight = %d, want 0", secondCalls.Load())
+	}
+	close(releaseFirst)
+	awaitOwnerExit(t, tasks, "plugin/test/ai-multi/attempt-1/health-probe-worker-0")
+	clock.Add(int64(2 * time.Second))
+	deadline := time.Now().Add(2 * time.Second)
+	transport.CloseIdleConnections()
+	p.refreshHealth(context.Background())
+	for secondCalls.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if firstCalls.Load() != 1 || secondCalls.Load() != 1 || !p.instanceHealthy(0) {
+		t.Fatalf(
+			"probes/health after DNS change = (%d, %d, %v), want (1, 1, true)",
+			firstCalls.Load(), secondCalls.Load(), p.instanceHealthy(0),
+		)
+	}
+}
+
+func TestAPISIX317DomainHealthAndRequestUseResolvedAddresses(t *testing.T) {
+	newProvider := func(t *testing.T, address string) *httptest.Server {
+		t.Helper()
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte(`{"host":"` + r.Host + `","server_addr":"` + address +
+				`","choices":[{"message":{"content":"ok","role":"assistant"}}]}`))
+		}))
+		t.Cleanup(server.Close)
+		return server
+	}
+	first := newProvider(t, "first")
+	second := newProvider(t, "second")
+	var resolvedAddress atomic.Value
+	resolvedAddress.Store(strings.TrimPrefix(first.URL, "http://"))
+	transport := &http.Transport{DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, network, resolvedAddress.Load().(string))
+	}}
+	p := newTestPlugin(t, Config{Instances: []Instance{{
+		Name: "domain", Provider: "openai-compatible", Weight: 1,
+		Override: Override{Endpoint: "http://multi-ip.example.com:16724/v1/chat/completions"},
+		Checks: &HealthChecks{Active: ActiveHealthCheck{
+			HTTPPath: "/health", Host: "multi-ip.example.com",
+			Healthy: HealthyCheckPolicy{HTTPStatuses: []int{http.StatusOK}, Successes: 1},
+		}},
+	}}})
+	p.client = &http.Client{Transport: transport}
+	p.healthClients[0].Transport = transport
+
+	firstProbe := p.probeInstance(context.Background(), 0)
+	if firstProbe.err != nil || firstProbe.status != http.StatusOK {
+		t.Fatalf("first resolved-address health probe = %+v, want status 200", firstProbe)
+	}
+	firstBody := serveChat(t, p, "")
+	transport.CloseIdleConnections()
+	resolvedAddress.Store(strings.TrimPrefix(second.URL, "http://"))
+	secondProbe := p.probeInstance(context.Background(), 0)
+	if secondProbe.err != nil || secondProbe.status != http.StatusOK {
+		t.Fatalf("second resolved-address health probe = %+v, want status 200", secondProbe)
+	}
+	secondBody := serveChat(t, p, "")
+	for name, body := range map[string]string{"first": firstBody, "second": secondBody} {
+		if !strings.Contains(body, `"host":"multi-ip.example.com:16724"`) ||
+			!strings.Contains(body, `"server_addr":"`+name+`"`) {
+			t.Fatalf("%s resolved-address response = %q, want stable Host and selected address", name, body)
+		}
+	}
+}
+
+func TestHealthTargetRecomputesFromReplacementConfigWithoutDNSCache(t *testing.T) {
+	check := ActiveHealthCheck{Type: "https", HTTPPath: "/health"}
+	first, err := healthTarget(Instance{
+		Name: "first", Override: Override{Endpoint: "https://first.example:443"},
+	}, check)
+	if err != nil {
+		t.Fatalf("first healthTarget() error = %v", err)
+	}
+	replacement, err := healthTarget(Instance{
+		Name: "replacement", Override: Override{Endpoint: "https://127.0.0.1:443"},
+	}, check)
+	if err != nil {
+		t.Fatalf("replacement healthTarget() error = %v", err)
+	}
+	if first.Host != "first.example" || replacement.Host != "127.0.0.1" {
+		t.Fatalf("health targets = (%q, %q), want config-derived hosts", first.Host, replacement.Host)
 	}
 }
 

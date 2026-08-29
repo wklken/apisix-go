@@ -85,7 +85,21 @@ test-integration:
 
 .PHONY: test-plugin-harness
 test-plugin-harness:
+	$(MAKE) test-rocketmq-client-patch
 	APISIX_GO_SKIP_PLUGIN_INTEGRATION=1 $(GO_CACHE_RUNNER) go test ./t/plugin -count=1
+
+.PHONY: test-rocketmq-patch
+test-rocketmq-patch:
+	$(GO_CACHE_RUNNER) bash scripts/qualification/rocketmq_patch_gate.sh
+
+.PHONY: test-rocketmq-client-patch
+test-rocketmq-client-patch: test-rocketmq-patch test-rocketmq-nested
+
+.PHONY: test-rocketmq-nested
+test-rocketmq-nested:
+	cd third_party/rocketmq-client-go && ../../scripts/go_cache.sh run -- go test ./internal/remote -run '^(TestTLSHandshakeHonorsContext|TestTLSVerificationUsesRootsAndAddressServerName|TestTLSVerificationRejectsUnknownAuthority|TestTLSVerificationRejectsWrongServerName|TestTLSCompatibilityModeSkipsVerification|TestInvokeOneWayHonorsContextWhileConnectionLockIsHeld|TestDoRequestHonorsContextWhileConnectionWriteLockIsHeld|TestDoRequestCancelsBlockedWrite|TestDoRequestWaitsForCancellationDeadlineCallbackBeforeReusingConnection|TestSendRequestPassesCallerContextThroughInterceptor)$$' -count=1
+	cd third_party/rocketmq-client-go && ../../scripts/go_cache.sh run -- go test ./internal -run '^(TestTopicRouteLockHonorsContext|TestDefaultClientOptionsOwnsRemotingConfig|TestStartTaskCancellationSkipsDelayedOperation|TestRMQClientShutdownJoinsAllStartTasks)$$' -count=1
+	cd third_party/rocketmq-client-go && ../../scripts/go_cache.sh run -- go test ./producer -run '^(TestSendSyncStopsBeforeRetryWhenContextIsCanceled|TestSendOneWayStopsBeforeRetryWhenContextIsCanceled|TestTLSOptionsPropagateToEachProducerRemotingConfig)$$' -count=1
 
 .PHONY: generate-capabilities
 generate-capabilities:
@@ -99,6 +113,14 @@ check-capability-drift:
 test-capability-status:
 	$(GO_CACHE_RUNNER) go test ./pkg/capability ./pkg/config ./pkg/plugin -run '^(TestLoadedManifest|TestManifest|TestProfileSelection|TestCapabilityManifest|TestCapabilityRegistry)' -count=1
 	APISIX_GO_SKIP_PLUGIN_INTEGRATION=1 $(GO_CACHE_RUNNER) go test ./t/plugin -run '^(TestCapabilityManifestSelection|TestManifestCorpusValidates|TestUpstreamCorpusAccountingWithoutSourceCheckout|TestCorpusEvidenceMatchesCompatibilityTarget)$$' -count=1
+
+.PHONY: test-plugin-behavior-gate
+test-plugin-behavior-gate:
+	bash scripts/qualification/plugin_behavior_gate_test.sh
+
+.PHONY: qualify-plugin-behavior
+qualify-plugin-behavior:
+	bash scripts/qualification/plugin_behavior_gate.sh
 
 PLUGIN_SMOKE_CASE ?=
 

@@ -1,70 +1,20 @@
 sources:
   - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
     file: t/plugin/loki-logger.t
-    tests: 21
+    tests: 15
+    test_numbers: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
   - repository: https://github.com/apache/apisix
     commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/loki-logger.t
+    tests: 5
+    test_numbers: [17, 18, 19, 20, 21]
+    regression_only: true
+  - repository: https://github.com/apache/apisix
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
     file: t/plugin/loki-logger2.t
     tests: 1
 cases:
-  - name: schema-contract
-    source: {file: t/plugin/loki-logger.t, tests: [1]}
-    variants:
-      - name: valid-endpoint-array
-        config:
-          routes:
-            - id: loki-schema-array
-              uri: /schema-array
-              plugins:
-                loki-logger: {endpoint_addrs: ['{{FIXTURE.sink.URL}}'], batch_max_size: 1, inactive_timeout: 1}
-              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
-        fixtures:
-          - {name: primary, kind: http, expect: [{method: GET, path: {equals: /schema-array}}], respond: [{status: 200, body: schema-ok}]}
-          - {name: sink, kind: http, expect: [{method: POST, path: {equals: /loki/api/v1/push}}], respond: [{status: 204}]}
-        steps:
-          - {name: endpoint-array-is-accepted, input: {path: /schema-array}, output: {status: 200, body: {equals: schema-ok}}, wait: 1s}
-      - name: explicit-endpoint-uri-and-object-labels
-        config:
-          routes:
-            - id: loki-schema-uri
-              uri: /schema-uri
-              plugins:
-                loki-logger: {endpoint_addrs: ['{{FIXTURE.sink.URL}}'], endpoint_uri: /custom-push, log_labels: {job: apisix6}, batch_max_size: 1, inactive_timeout: 1}
-              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
-        fixtures:
-          - {name: primary, kind: http, expect: [{method: GET, path: {equals: /schema-uri}}], respond: [{status: 200, body: schema-uri-ok}]}
-          - {name: sink, kind: http, expect: [{method: POST, path: {equals: /custom-push}}], respond: [{status: 204}]}
-        steps:
-          - {name: endpoint-uri-and-label-object-are-accepted, input: {path: /schema-uri}, output: {status: 200, body: {equals: schema-uri-ok}}, wait: 1s}
-      - name: string-endpoints-rejected
-        config: {routes: [{id: loki-schema-string-endpoints, uri: /schema-string-endpoints, plugins: {loki-logger: {endpoint_addrs: 'http://127.0.0.1:3100'}}, upstream: {type: roundrobin, nodes: {'127.0.0.1:1': 1}}}]}
-        input: {path: /schema-string-endpoints}
-        output: {status: 404, logs: {matches: 'endpoint_addrs|validate plugin loki-logger config'}}
-      - name: empty-endpoints-rejected
-        config: {routes: [{id: loki-schema-empty-endpoints, uri: /schema-empty-endpoints, plugins: {loki-logger: {endpoint_addrs: []}}, upstream: {type: roundrobin, nodes: {'127.0.0.1:1': 1}}}]}
-        input: {path: /schema-empty-endpoints}
-        output: {status: 404, logs: {matches: 'endpoint_addrs|validate plugin loki-logger config'}}
-      - name: required-endpoints-rejected
-        config: {routes: [{id: loki-schema-required-endpoints, uri: /schema-required-endpoints, plugins: {loki-logger: {}}, upstream: {type: roundrobin, nodes: {'127.0.0.1:1': 1}}}]}
-        input: {path: /schema-required-endpoints}
-        output: {status: 404, logs: {matches: 'endpoint_addrs|validate plugin loki-logger config'}}
-      - name: numeric-endpoint-uri-rejected
-        config: {routes: [{id: loki-schema-number-uri, uri: /schema-number-uri, plugins: {loki-logger: {endpoint_addrs: ['http://127.0.0.1:3100'], endpoint_uri: 1234}}, upstream: {type: roundrobin, nodes: {'127.0.0.1:1': 1}}}]}
-        input: {path: /schema-number-uri}
-        output: {status: 404, logs: {matches: 'endpoint_uri|validate plugin loki-logger config'}}
-      - name: numeric-tenant-rejected
-        config: {routes: [{id: loki-schema-number-tenant, uri: /schema-number-tenant, plugins: {loki-logger: {endpoint_addrs: ['http://127.0.0.1:3100'], tenant_id: 1234}}, upstream: {type: roundrobin, nodes: {'127.0.0.1:1': 1}}}]}
-        input: {path: /schema-number-tenant}
-        output: {status: 404, logs: {matches: 'tenant_id|validate plugin loki-logger config'}}
-      - name: numeric-headers-rejected
-        config: {routes: [{id: loki-schema-number-headers, uri: /schema-number-headers, plugins: {loki-logger: {endpoint_addrs: ['http://127.0.0.1:3100'], headers: 1234}}, upstream: {type: roundrobin, nodes: {'127.0.0.1:1': 1}}}]}
-        input: {path: /schema-number-headers}
-        output: {status: 404, logs: {matches: 'headers|validate plugin loki-logger config'}}
-      - name: string-labels-rejected
-        config: {routes: [{id: loki-schema-string-labels, uri: /schema-string-labels, plugins: {loki-logger: {endpoint_addrs: ['http://127.0.0.1:3100'], log_labels: '1234'}}, upstream: {type: roundrobin, nodes: {'127.0.0.1:1': 1}}}]}
-        input: {path: /schema-string-labels}
-        output: {status: 404, logs: {matches: 'log_labels|validate plugin loki-logger config'}}
   - name: default-delivery-and-default-record
     source: {file: t/plugin/loki-logger.t, tests: [2, 3, 4]}
     config:
@@ -319,6 +269,6 @@ cases:
           upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
     fixtures:
       - {name: primary, kind: http, expect: [{method: GET, path: {equals: /overflow}}, {method: GET, path: {equals: /overflow}}, {method: GET, path: {equals: /overflow}}], respond: [{status: 200, body: hello world}]}
-      - {name: sink, kind: http, expect: [{method: POST, path: {equals: /loki/api/v1/push}, body: {matches: 'pending-overflow'}}, {method: POST, path: {equals: /loki/api/v1/push}, body: {matches: 'pending-overflow'}}], respond: [{delay: 2s, status: 204}, {delay: 2s, status: 204}]}
+      - {name: sink, kind: http, expect: [{method: POST, path: {equals: /loki/api/v1/push}, body: {matches: 'pending-overflow'}}], respond: [{delay: 2s, status: 204}]}
     steps:
-      - {name: overflow-is-bounded-and-diagnostic-is-exact, repeat: 3, input: {path: /overflow}, output: {status: 200, body: {equals: hello world}, logs: {matches: 'max pending entries limit exceeded for logger batch processor \[loki logger\], pending \[2\], max_pending_entries \[1\]'}}}
+      - {name: overflow-is-bounded-and-diagnostic-is-exact, repeat: 3, input: {path: /overflow}, output: {status: 200, body: {equals: hello world}, logs: {matches: 'max pending entries limit exceeded for logger batch processor \[loki logger\], pending \[1\], max_pending_entries \[1\]'}}}

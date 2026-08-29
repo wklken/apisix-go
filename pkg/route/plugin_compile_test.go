@@ -100,6 +100,90 @@ func TestPlanHTTPPluginsUsesLegacyStablePriorityOrder(t *testing.T) {
 	}
 }
 
+func TestPlanHTTPPluginsInjectsEnabledLogRotateAsSystemPlugin(t *testing.T) {
+	plan, err := PlanHTTPPlugins(context.Background(), PlanningInput{
+		Routes:         []resource.Route{{ID: "log-rotate-route", Uri: "/logs"}},
+		EnabledPlugins: []string{"log-rotate"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for scope, plans := range map[string][]PluginPlan{
+		"not-found": plan.System,
+		"route":     plan.Routes[0].System,
+	} {
+		logRotate := pluginPlanNamed(plans, "log-rotate")
+		if logRotate == nil {
+			t.Fatalf("%s system plans = %#v, want log-rotate", scope, plans)
+		}
+		if logRotate.Scope != pluginpkg.ScopeSystem ||
+			logRotate.Source != (generation.ResourceKey{Kind: "system", ID: "log-rotate"}) {
+			t.Fatalf("%s log-rotate plan = %#v, want system scope and source", scope, logRotate)
+		}
+	}
+	disabled, err := PlanHTTPPlugins(context.Background(), PlanningInput{
+		Routes: []resource.Route{{ID: "log-rotate-disabled-route", Uri: "/logs"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pluginPlanNamed(disabled.System, "log-rotate") != nil ||
+		pluginPlanNamed(disabled.Routes[0].System, "log-rotate") != nil {
+		t.Fatalf("disabled log-rotate remained in system plans: %#v / %#v", disabled.System, disabled.Routes[0].System)
+	}
+}
+
+func TestPlanHTTPPluginsInjectsEnabledErrorLogLoggerAsSystemPlugin(t *testing.T) {
+	plan, err := PlanHTTPPlugins(context.Background(), PlanningInput{
+		Routes:         []resource.Route{{ID: "error-log-route", Uri: "/logs"}},
+		EnabledPlugins: []string{"error-log-logger"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for scope, plans := range map[string][]PluginPlan{
+		"not-found": plan.System,
+		"route":     plan.Routes[0].System,
+	} {
+		errorLogLogger := pluginPlanNamed(plans, "error-log-logger")
+		if errorLogLogger == nil {
+			t.Fatalf("%s system plans = %#v, want error-log-logger", scope, plans)
+		}
+		if errorLogLogger.Scope != pluginpkg.ScopeSystem ||
+			errorLogLogger.Source != (generation.ResourceKey{Kind: "system", ID: "error-log-logger"}) {
+			t.Fatalf(
+				"%s error-log-logger plan = %#v, want system scope and source",
+				scope,
+				errorLogLogger,
+			)
+		}
+	}
+}
+
+func TestPlanHTTPPluginsIgnoresRouteLocalErrorLogLoggerConfig(t *testing.T) {
+	plan, err := PlanHTTPPlugins(context.Background(), PlanningInput{
+		Routes: []resource.Route{{
+			ID:  "error-log-route",
+			Uri: "/logs",
+			Plugins: map[string]resource.PluginConfig{
+				"error-log-logger": map[string]any{
+					"tcp": map[string]any{"host": "127.0.0.1", "port": 1},
+				},
+			},
+		}},
+		EnabledPlugins: []string{"error-log-logger"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pluginPlanNamed(plan.Routes[0].Local, "error-log-logger") != nil {
+		t.Fatalf("route-local error-log-logger remained in plans: %#v", plan.Routes[0].Local)
+	}
+	if pluginPlanNamed(plan.Routes[0].System, "error-log-logger") == nil {
+		t.Fatalf("system error-log-logger missing from plans: %#v", plan.Routes[0].System)
+	}
+}
+
 func TestPlanHTTPPluginsDisabledWinnerDoesNotRestoreLoser(t *testing.T) {
 	plan, err := PlanHTTPPlugins(context.Background(), PlanningInput{
 		Routes: []resource.Route{

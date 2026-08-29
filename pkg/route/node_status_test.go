@@ -8,6 +8,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/plugin/public_api"
 )
 
 func TestRegisterExtraRoutesAddsNodeStatusWhenEnabled(t *testing.T) {
@@ -76,23 +77,33 @@ func TestRegisterExtraRoutesSkipsNodeStatusWhenDisabled(t *testing.T) {
 	}
 }
 
-func TestRegisterExtraRoutesAddsServerInfoWhenEnabled(t *testing.T) {
+func TestRegisterExtraRoutesRegistersServerInfoWithoutDataPlaneExposure(t *testing.T) {
 	staticConfig := &config.Config{
 		Apisix:  config.Apisix{ID: "server-info-id"},
 		Plugins: []string{"server-info"},
 	}
 
 	mux := chi.NewRouter()
-	registerExtraRoutes(mux, staticConfig)
+	registry := public_api.NewRegistry()
+	registerExtraRoutes(mux, staticConfig, registry)
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/server_info", nil)
 	rr := httptest.NewRecorder()
 	mux.ServeHTTP(rr, req)
 
-	if rr.Code != http.StatusOK {
-		t.Fatalf("response code = %d, want %d; body=%s", rr.Code, http.StatusOK, rr.Body.String())
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("data-plane response code = %d, want %d", rr.Code, http.StatusNotFound)
 	}
 
+	handler := registry.Lookup(http.MethodGet, "/v1/server_info")
+	if handler == nil {
+		t.Fatal("server-info handler is missing from public API registry")
+	}
+	rr = httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("registry response code = %d, want %d; body=%s", rr.Code, http.StatusOK, rr.Body.String())
+	}
 	var body map[string]any
 	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode body: %v", err)

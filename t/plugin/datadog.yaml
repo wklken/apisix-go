@@ -1,8 +1,15 @@
 sources:
   - repository: https://github.com/apache/apisix
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
+    file: t/plugin/datadog.t
+    tests: 11
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+  - repository: https://github.com/apache/apisix
     commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
     file: t/plugin/datadog.t
-    tests: 13
+    tests: 1
+    test_numbers: [13]
+    regression_only: true
 
 cases:
   - name: metadata-schema-endpoint-is-accepted-and-used
@@ -129,8 +136,8 @@ cases:
         input: {method: GET, path: /opentracing}
         output: {status: 200, body: {equals: opentracing}}
 
-  - name: metadata-live-update-changes-namespace-and-constant-tags-without-stale-state
-    source: {file: t/plugin/datadog.t, tests: [5, 6]}
+  - name: custom-metric-namespace
+    source: {file: t/plugin/datadog.t, tests: [5]}
     config:
       plugin_metadata:
         - id: datadog
@@ -146,44 +153,46 @@ cases:
     fixtures:
       - name: primary
         kind: http
-        expect:
-          - {path: {equals: /opentracing}}
-          - {path: {equals: /opentracing}}
-        respond:
-          - {status: 200, body: opentracing}
-          - {status: 200, body: opentracing}
+        expect: [{path: {equals: /opentracing}}]
+        respond: [{status: 200, body: opentracing}]
       - name: sink
         kind: udp
         network_expect:
           - payload:
               matches: '(?s)^mycompany\.request\.counter:1\|c\|#source:apisix,route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http\nmycompany\.request\.latency:[0-9]+\|h\|#source:apisix,route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http\nmycompany\.upstream\.latency:[0-9]+\|h\|#source:apisix,route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http\nmycompany\.apisix\.latency:[0-9]+\|h\|#source:apisix,route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http\nmycompany\.ingress\.size:0\|ms\|#source:apisix,route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http\nmycompany\.egress\.size:11\|ms\|#source:apisix,route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
-          - payload:
-              matches: '(?s)^apisix\.request\.counter:1\|c\|#source:apisix,new_tag:must,route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http\napisix\.request\.latency:[0-9]+\|h\|#source:apisix,new_tag:must,route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http\napisix\.upstream\.latency:[0-9]+\|h\|#source:apisix,new_tag:must,route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http\napisix\.apisix\.latency:[0-9]+\|h\|#source:apisix,new_tag:must,route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http\napisix\.ingress\.size:0\|ms\|#source:apisix,new_tag:must,route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http\napisix\.egress\.size:11\|ms\|#source:apisix,new_tag:must,route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
-        network_respond: [{payload: ''}, {payload: ''}]
+        network_respond: [{payload: ''}]
     steps:
       - name: custom-namespace-is-live
         input: {method: GET, path: /opentracing}
         output: {status: 200, body: {equals: opentracing}}
-      - name: metadata-update-rebuilds-existing-route
-        config:
-          plugin_metadata:
-            - id: datadog
-              host: '{{FIXTURE.sink.HOST}}'
-              port: '{{FIXTURE.sink.PORT}}'
-              constant_tags: [source:apisix, new_tag:must]
-          routes:
-            - id: datadog-metadata-update
-              name: datadog
-              uri: /opentracing
-              plugins: {datadog: {batch_max_size: 1, retry_delay: 0}}
-              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
-            - id: datadog-metadata-probe
-              uri: /reload-probe
-              plugins: {mocking: {response_status: 204, response_example: ready}}
-        config_probe:
-          input: {path: /reload-probe}
-          output: {status: 204}
-        config_timeout: 2s
+
+  - name: custom-constant-tags
+    source: {file: t/plugin/datadog.t, tests: [6]}
+    config:
+      plugin_metadata:
+        - id: datadog
+          host: '{{FIXTURE.sink.HOST}}'
+          port: '{{FIXTURE.sink.PORT}}'
+          constant_tags: [source:apisix, new_tag:must]
+      routes:
+        - id: datadog-custom-tags
+          name: datadog
+          uri: /opentracing
+          plugins: {datadog: {batch_max_size: 1, retry_delay: 0}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect: [{path: {equals: /opentracing}}]
+        respond: [{status: 200, body: opentracing}]
+      - name: sink
+        kind: udp
+        network_expect:
+          - payload:
+              matches: '(?s)^apisix\.request\.counter:1\|c\|#source:apisix,new_tag:must,route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http\napisix\.request\.latency:[0-9]+\|h\|#source:apisix,new_tag:must,route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http\napisix\.upstream\.latency:[0-9]+\|h\|#source:apisix,new_tag:must,route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http\napisix\.apisix\.latency:[0-9]+\|h\|#source:apisix,new_tag:must,route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http\napisix\.ingress\.size:0\|ms\|#source:apisix,new_tag:must,route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http\napisix\.egress\.size:11\|ms\|#source:apisix,new_tag:must,route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
+        network_respond: [{payload: ''}]
+    steps:
+      - name: custom-tags-are-emitted
         input: {method: GET, path: /opentracing}
         output: {status: 200, body: {equals: opentracing}}
 
@@ -348,39 +357,6 @@ cases:
       - name: wildcard-route-matches-rewrites-and-tags-original-pattern
         input: {method: GET, path: '/articles/12345/comments?foo=bar'}
         output: {status: 200, body: {equals: opentracing}}
-
-  - name: invalid-constant-tag-keeps-route-inactive-with-zero-side-effects
-    source: {file: t/plugin/datadog.t, tests: [12]}
-    config:
-      plugin_metadata:
-        - {id: datadog, host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}'}
-      routes:
-        - id: datadog-invalid-tag
-          name: datadog
-          uri: /articles/*/comments
-          plugins:
-            datadog:
-              batch_max_size: 1
-              max_retry_count: 0
-              retry_delay: 0
-              constant_tags: ['1 invalid tag']
-            proxy-rewrite: {uri: /opentracing}
-          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
-    fixtures:
-      - name: primary
-        kind: http
-        expect_requests: 0
-        respond: [{status: 200, body: should-not-run}]
-      - name: sink
-        kind: udp
-        count: {at_least: 0, at_most: 0}
-    steps:
-      - name: invalid-route-is-not-activated
-        input: {method: GET, path: '/articles/12345/comments?foo=bar'}
-        output:
-          status: 404
-          logs:
-            matches: "build route datadog-invalid-tag fail: validate plugin datadog config: validate fail: jsonschema: '/constant_tags/0' does not validate with .+#/properties/constant_tags/items/pattern: does not match pattern"
 
   - name: oversized-payload-falls-back-to-six-ordered-single-metric-datagrams
     source: {file: t/plugin/datadog.t, tests: [13]}

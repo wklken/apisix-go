@@ -21,6 +21,10 @@ func (prepared *PreparedGeneration) compileAndAttachHTTP(ctx context.Context) er
 	if err != nil {
 		return err
 	}
+	plan.apiBreakerState, err = prepared.acquireHTTPAPIBreakerState(ctx)
+	if err != nil {
+		return err
+	}
 	preparedRoutes, err := prepared.prepareHTTPRoutes(ctx, plan)
 	if err != nil {
 		return err
@@ -38,8 +42,10 @@ func (prepared *PreparedGeneration) compileAndAttachHTTP(ctx context.Context) er
 	router, err := routepkg.CompileHTTP(ctx, routepkg.CompileInput{
 		Revision: candidate.Artifact.Revision,
 		Routes:   routes, NotFound: notFound,
-		StaticConfig: &prepared.effective.Config, PublicAPIRegistry: plan.publicAPIRegistry,
+		StaticConfig: &prepared.effective.Config, Metadata: prepared.MetadataView(),
+		PublicAPIRegistry:         plan.publicAPIRegistry,
 		GraphQLProxyCacheRegistry: plan.purgeRegistry,
+		ServerInfo:                prepared.observers.ServerInfo,
 	})
 	if err != nil {
 		return err

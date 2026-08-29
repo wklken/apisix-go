@@ -27,6 +27,7 @@ type (
 	snapshotFunc    func(context.Context) (*clientv3.GetResponse, error)
 	healthCheckFunc func(context.Context) error
 	getFunc         func(context.Context, string, ...clientv3.OpOption) (*clientv3.GetResponse, error)
+	statusFunc      func(context.Context, string) (*clientv3.StatusResponse, error)
 )
 
 const defaultHealthCheckInterval = 10 * time.Second
@@ -40,9 +41,10 @@ func canonicalEtcdPrefix(prefix string) string {
 }
 
 type ConfigClient struct {
-	client  *clientv3.Client
-	prefix  string
-	applier generation.DesiredApplier
+	client    *clientv3.Client
+	endpoints []string
+	prefix    string
+	applier   generation.DesiredApplier
 
 	closeOnce           sync.Once
 	closeErr            error
@@ -54,6 +56,7 @@ type ConfigClient struct {
 	reporters           map[*ServerInfoReporter]struct{}
 	closed              bool
 	requestTimeout      time.Duration
+	status              statusFunc
 	startupRetry        int
 	healthCheck         healthCheckFunc
 	healthCheckInterval time.Duration
@@ -136,12 +139,14 @@ func NewConfigClientWithOptions(
 	lifetimeCtx, cancelLifetime := context.WithCancel(context.Background())
 	configClient := &ConfigClient{
 		client:              client,
+		endpoints:           slices.Clone(endpoints),
 		prefix:              canonicalPrefix,
 		applier:             applier,
 		lifetimeCtx:         lifetimeCtx,
 		cancelLifetime:      cancelLifetime,
 		reporters:           make(map[*ServerInfoReporter]struct{}),
 		requestTimeout:      options.RequestTimeout,
+		status:              client.Status,
 		startupRetry:        options.StartupRetry,
 		healthCheck:         options.HealthCheck,
 		healthCheckInterval: options.HealthCheckInterval,
@@ -841,6 +846,16 @@ func revisionForEtcdDomain(revisions generation.RevisionSet, domain generation.D
 	}
 }
 
+func acknowledgedEtcdDomains(ack generation.Acknowledgement) []generation.Domain {
+	domains := make([]generation.Domain, 0, 2)
+	for _, domain := range []generation.Domain{generation.DomainHTTP, generation.DomainStream} {
+		if _, acknowledged := ack.Decisions[domain]; acknowledged {
+			domains = append(domains, domain)
+		}
+	}
+	return domains
+}
+
 func validEtcdDisposition(disposition generation.ResourceDisposition) bool {
 	switch disposition {
 	case generation.DispositionPublished, generation.DispositionLastGood,
@@ -913,15 +928,30 @@ func (c *ConfigClient) validateAcknowledgement(
 			return nil, 0, errors.New("etcd desired batch contains a duplicate domain")
 		}
 		required[domain] = struct{}{}
-		if revisionForEtcdDomain(ack.Revisions, domain) != ack.Revisions.Desired {
-			return nil, 0, errors.New("etcd acknowledged domain does not reference desired revision")
+	}
+	committedSnapshotReplay := ack.CommittedReplay && batch.ReplaceManaged
+	if committedSnapshotReplay {
+		clear(required)
+		for _, domain := range acknowledgedEtcdDomains(ack) {
+			required[domain] = struct{}{}
 		}
 	}
 	for _, domain := range []generation.Domain{generation.DomainHTTP, generation.DomainStream} {
-		if _, domainRequired := required[domain]; domainRequired {
+		_, domainRequired := required[domain]
+		domainRevision := revisionForEtcdDomain(ack.Revisions, domain)
+		if domainRequired {
+			if domainRevision != ack.Revisions.Desired {
+				return nil, 0, errors.New("etcd acknowledged domain does not reference desired revision")
+			}
 			continue
 		}
-		if revisionForEtcdDomain(ack.Revisions, domain) != revisionForEtcdDomain(c.revisions, domain) {
+		if committedSnapshotReplay {
+			if domainRevision >= ack.Revisions.Desired {
+				return nil, 0, errors.New("etcd committed replay omitted a current decision domain")
+			}
+			continue
+		}
+		if domainRevision != revisionForEtcdDomain(c.revisions, domain) {
 			return nil, 0, errors.New("etcd acknowledgement advanced an untouched domain")
 		}
 	}
@@ -1038,15 +1068,15 @@ func (c *ConfigClient) applyCandidate(ctx context.Context, candidate etcdProvide
 	c.lastCursor = ack.Cursor
 	c.lastRevision = providerRevision
 	c.revisions = ack.Revisions
-	c.domains = slices.Clone(candidate.batch.RequiredDomains)
+	c.domains = acknowledgedEtcdDomains(ack)
 	c.decisions = cloneEtcdDecisions(ack.Decisions)
 	for key, revision := range candidate.modified {
 		metrics.RecordEtcdModifyIndex(key, revision)
 	}
 	metrics.RecordEtcdAppliedRevision(providerRevision)
 	metrics.RecordConfigApplyAcknowledgement(
-		slices.Contains(candidate.batch.RequiredDomains, generation.DomainHTTP),
-		slices.Contains(candidate.batch.RequiredDomains, generation.DomainStream),
+		slices.Contains(c.domains, generation.DomainHTTP),
+		slices.Contains(c.domains, generation.DomainStream),
 		len(nextQuarantine),
 	)
 	return nil

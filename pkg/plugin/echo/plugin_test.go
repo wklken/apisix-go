@@ -257,6 +257,14 @@ func TestSchemaMatchesOfficialBodyAndHeaderRequirements(t *testing.T) {
 			},
 		},
 		{
+			name: "non-string after body is rejected",
+			config: map[string]any{
+				"body":       "replacement",
+				"after_body": 10,
+			},
+			wantErr: true,
+		},
+		{
 			name: "boolean header is rejected",
 			config: map[string]any{
 				"body":    "replacement",

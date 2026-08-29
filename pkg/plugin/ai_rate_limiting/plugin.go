@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -233,9 +234,8 @@ const schema = `
     "redis_master_name": {"type": "string", "minLength": 1},
     "sentinel_username": {"type": "string"},
     "sentinel_password": {"type": "string"}
-    }
   },
-  "dependencies": {
+  "dependentRequired": {
     "limit": ["time_window"],
     "time_window": ["limit"]
   },
@@ -809,9 +809,7 @@ func (p *Plugin) RunBufferedBodyFilter(r *http.Request, response *base.ResponseS
 	if response.Header == nil {
 		response.Header = make(http.Header)
 	}
-	for _, q := range state.quotasForResponse(p, r) {
-		p.writeQuotaHeaders(r.Context(), response.Header, q)
-	}
+	state.writeQuotaHeaders(p, r, response.Header)
 	state.chargeOnce(p, r, response.Body)
 	return nil
 }
@@ -840,6 +838,16 @@ func (s *requestQuotaState) quotasForResponse(p *Plugin, r *http.Request) []quot
 		}
 	}
 	return append([]quota(nil), s.quotas...)
+}
+
+func (s *requestQuotaState) writeQuotaHeaders(p *Plugin, r *http.Request, header http.Header) {
+	for _, q := range s.quotasForResponse(p, r) {
+		reservationCredit := int64(0)
+		if slices.Contains(s.quotas, q) {
+			reservationCredit = 1
+		}
+		p.writeQuotaHeadersWithCredit(r.Context(), header, q, reservationCredit)
+	}
 }
 
 func (s *requestQuotaState) chargeOnce(p *Plugin, r *http.Request, body []byte) {
@@ -909,9 +917,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 
 		recorder := base.GetOrCreateTransformResponseWriter(request)
 		next.ServeHTTP(recorder, request)
-		for _, q := range state.quotasForResponse(p, request) {
-			p.writeQuotaHeaders(request.Context(), recorder.Header(), q)
-		}
+		state.writeQuotaHeaders(p, request, recorder.Header())
 		state.chargeOnce(p, request, recorder.Body())
 		recorder.Commit(w)
 	}
@@ -957,7 +963,8 @@ func (w *quotaResponseWriter) writeQuotaHeaders() {
 	w.wroteHeader = true
 	var quotas []quota
 	if w.state != nil {
-		quotas = w.state.quotasForResponse(w.plugin, w.request)
+		w.state.writeQuotaHeaders(w.plugin, w.request, w.Header())
+		return
 	} else {
 		var ok bool
 		var err error
@@ -1285,13 +1292,18 @@ func (p *Plugin) responseTokenCost(body []byte) int64 {
 }
 
 func (p *Plugin) responseTokenCostForRequest(r *http.Request, body []byte) int64 {
-	if p.config.LimitStrategy == "expression" {
-		if rawUsage, ok := apisixctx.GetRequestVar(r, "$llm_raw_usage").(map[string]any); ok {
+	if rawUsage, ok := apisixctx.GetRequestVar(r, "$llm_raw_usage").(map[string]any); ok {
+		if p.config.LimitStrategy == "expression" {
 			return p.expressionCost(rawUsage)
+		}
+		if value, exists := rawUsage[p.config.LimitStrategy]; exists {
+			if numeric := ai_protocols.NumericUsage(value, true); numeric >= 0 {
+				return numeric
+			}
 		}
 	}
 	if usage, ok := apisixctx.GetRequestVar(r, "$ai_token_usage").(map[string]any); ok {
-		if value := ai_protocols.NumericUsage(usage[p.config.LimitStrategy], true); value > 0 {
+		if value := ai_protocols.NumericUsage(usage[p.config.LimitStrategy], true); value >= 0 {
 			return value
 		}
 	}
@@ -1432,12 +1444,18 @@ func numericArguments(arguments []any, minimum int) ([]float64, error) {
 }
 
 func (p *Plugin) writeQuotaHeaders(ctx context.Context, header http.Header, q quota) {
+	p.writeQuotaHeadersWithCredit(ctx, header, q, 0)
+}
+
+func (p *Plugin) writeQuotaHeadersWithCredit(
+	ctx context.Context, header http.Header, q quota, reservationCredit int64,
+) {
 	if p.config.ShowLimitQuotaHeader != nil && !*p.config.ShowLimitQuotaHeader {
 		return
 	}
 
 	used, reset := p.snapshot(ctx, q)
-	remaining := max(q.limit-used, 0)
+	remaining := max(min(q.limit-used+reservationCredit, q.limit), 0)
 	if q.headerPrefix != "" {
 		header.Set("X-AI-"+q.headerPrefix+"-RateLimit-Limit", strconv.FormatInt(q.limit, 10))
 		header.Set("X-AI-"+q.headerPrefix+"-RateLimit-Remaining", strconv.FormatInt(remaining, 10))
@@ -1508,5 +1526,8 @@ func (p *Plugin) reject(w http.ResponseWriter) {
 		http.Error(w, http.StatusText(p.config.RejectedCode), p.config.RejectedCode)
 		return
 	}
-	http.Error(w, p.config.RejectedMsg, p.config.RejectedCode)
+	payload, _ := json.Marshal(map[string]string{"error_msg": p.config.RejectedMsg})
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(p.config.RejectedCode)
+	_, _ = w.Write(append(payload, '\n'))
 }

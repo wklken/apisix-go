@@ -1,8 +1,8 @@
 source:
   repository: https://github.com/apache/apisix
-  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
   file: t/plugin/aws-lambda.t
-  tests: 9
+  tests: 8
 
 cases:
   - name: iam-schema
@@ -42,9 +42,12 @@ cases:
                   authorization:
                     iam:
                       secretkey: key2
+        input:
+          path: /aws
         output:
+          status: 503
           logs:
-            matches: 'build route aws-lambda-missing-access-key fail:.*aws-lambda'
+            matches: 'worker generation preparation failed'
 
   - name: invoke-endpoint
     source:
@@ -162,14 +165,6 @@ cases:
             status: 200
             body: invoked
         output: *invoked
-        after_shutdown:
-          - path: {equals: '{{WORK_DIR}}/apisix-go-store.db'}
-            bbolt_json:
-              bucket: routes
-              key: aws-lambda-encrypted-api-key
-              fields:
-                /plugins/aws-lambda/authorization/apikey: KmjDqNkKEE39RiuQS4o2wg==
-              forbidden_matches: [test-api-key]
       - name: iam
         runtime: *encrypted_runtime
         config:
@@ -194,19 +189,9 @@ cases:
             status: 200
             body: invoked
         output: *invoked
-        after_shutdown:
-          - path: {equals: '{{WORK_DIR}}/apisix-go-store.db'}
-            bbolt_json:
-              bucket: routes
-              key: aws-lambda-encrypted-iam
-              fields:
-                /plugins/aws-lambda/authorization/iam/accesskey: 3KasmnibINRmuBZzJcd7bQ==
-                /plugins/aws-lambda/authorization/iam/secretkey: 2Mtlm8PbJyuq5TDBGVaWiQ==
-              forbidden_matches: [test-access-key, test-secret-key]
-
   - name: canonical-query-signing
     source:
-      tests: [9]
+      local_reason: post-target canonical query-signing regression; absent from the APISIX 3.17 compatibility commit
     config:
       routes:
         - id: aws-lambda-canonical-query

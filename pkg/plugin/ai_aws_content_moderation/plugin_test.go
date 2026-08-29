@@ -141,6 +141,65 @@ func TestHandlerCallsComprehendAndPreservesRequestBody(t *testing.T) {
 	}
 }
 
+func TestHandlerDefaultsToAPISIX317RawBodyModerationWithoutAIInstance(t *testing.T) {
+	var moderationCalls int
+	moderation := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		moderationCalls++
+		var request comprehendRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode moderation request: %v", err)
+		}
+		if len(request.TextSegments) != 1 || request.TextSegments[0].Text != "raw request body" {
+			t.Fatalf("TextSegments = %#v, want raw request body", request.TextSegments)
+		}
+		_, _ = w.Write([]byte(`{"ResultList":[{"Toxicity":0.1,"Labels":[]}]}`))
+	}))
+	defer moderation.Close()
+
+	p := newTestPlugin(t, Config{Comprehend: Comprehend{
+		AccessKeyID: "access", SecretAccessKey: "secret",
+		Region: "us-east-1", Endpoint: moderation.URL,
+	}})
+	req := httptest.NewRequest(http.MethodPost, "/echo", strings.NewReader("raw request body"))
+	response := httptest.NewRecorder()
+	var forwarded string
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read forwarded body: %v", err)
+		}
+		forwarded = string(body)
+		w.WriteHeader(http.StatusAccepted)
+	})).ServeHTTP(response, req)
+
+	if response.Code != http.StatusAccepted || moderationCalls != 1 || forwarded != "raw request body" {
+		t.Fatalf("response/calls/forwarded = %d/%d/%q, want 202/1/raw request body",
+			response.Code, moderationCalls, forwarded)
+	}
+}
+
+func TestHandlerAPISIX317RawBodyToxicityReturnsBadRequest(t *testing.T) {
+	moderation := moderationServer(
+		t,
+		`{"ResultList":[{"Toxicity":0.9,"Labels":[]}]}`,
+		http.StatusOK,
+	)
+	defer moderation.Close()
+	p := newTestPlugin(t, Config{Comprehend: Comprehend{
+		AccessKeyID: "access", SecretAccessKey: "secret",
+		Region: "us-east-1", Endpoint: moderation.URL,
+	}})
+	req := httptest.NewRequest(http.MethodPost, "/echo", strings.NewReader("toxic"))
+	response := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next handler called for toxic raw body")
+	})).ServeHTTP(response, req)
+
+	if response.Code != http.StatusBadRequest || response.Body.String() != "request body exceeds toxicity threshold" {
+		t.Fatalf("response = %d/%q, want 400/toxicity threshold", response.Code, response.Body.String())
+	}
+}
+
 func TestHandlerSignsSessionToken(t *testing.T) {
 	moderation := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("X-Amz-Security-Token"); got != "temporary-token" {
@@ -291,19 +350,22 @@ func TestHandlerReturnsServiceErrorForInvalidModerationResponse(t *testing.T) {
 	}
 }
 
-func TestHandlerSkipsWithoutSelectedAIInstance(t *testing.T) {
+func TestHandlerExplicitSkipModeSkipsWithoutSelectedAIInstance(t *testing.T) {
 	moderationCalls := 0
 	moderation := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		moderationCalls++
 	}))
 	defer moderation.Close()
 
-	p := newTestPlugin(t, Config{Comprehend: Comprehend{
-		AccessKeyID:     "test-access",
-		SecretAccessKey: "test-secret",
-		Region:          "us-east-1",
-		Endpoint:        moderation.URL,
-	}})
+	p := newTestPlugin(t, Config{
+		Comprehend: Comprehend{
+			AccessKeyID:     "test-access",
+			SecretAccessKey: "test-secret",
+			Region:          "us-east-1",
+			Endpoint:        moderation.URL,
+		},
+		FailMode: "skip",
+	})
 	const body = `{"messages":[{"role":"user","content":"toxic"}]}`
 	req := httptest.NewRequest(http.MethodPost, "/echo", strings.NewReader(body))
 	rr := httptest.NewRecorder()

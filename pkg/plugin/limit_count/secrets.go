@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 
@@ -184,6 +185,23 @@ func (p *Plugin) MaterializeScopedSecrets(
 	return p.installLimitCountSecrets(staged)
 }
 
+// PrepareConsumerConfig admits a consumer-scoped configuration that has no
+// manifest-declared secret fields. Such a configuration keeps its literal
+// values in the plugin config and still enters the same credential lifecycle
+// as a scoped materialization. Secret envelopes are rejected instead of being
+// allowed to bypass the attempt-bound materializer.
+func (p *Plugin) PrepareConsumerConfig() error {
+	p.beginLimitCountPreparation()
+	defer p.endLimitCountPreparation()
+	if prepared, err := p.limitCountPreparationState(); err != nil || prepared {
+		return err
+	}
+	if limitCountConfigHasUnmaterializedSecret(p.config) {
+		return errLimitCountCredentialsUnavailable
+	}
+	return p.installLimitCountLiteralSecrets()
+}
+
 func (p *Plugin) beginLimitCountPreparation() {
 	p.preparationMu.Lock()
 	if p.preparationCond == nil {
@@ -262,6 +280,93 @@ func (p *Plugin) installLimitCountSecrets(staged stagedLimitCountSecrets) error 
 		}
 	}
 	return nil
+}
+
+func (p *Plugin) installLimitCountLiteralSecrets() error {
+	p.credentialMu.Lock()
+	defer p.credentialMu.Unlock()
+	if p.retired {
+		return errLimitCountCredentialsUnavailable
+	}
+	p.scopedKeySecret = secret.Value{}
+	p.scopedRedisHost = secret.Value{}
+	p.scopedRedisClusterNodes = nil
+	p.keyPresent = false
+	p.redisHostPresent = false
+	p.redisNodesPresent = false
+	p.scopedSet = true
+	p.keyDigest = [sha256.Size]byte{}
+	p.redisHostDigest = [sha256.Size]byte{}
+	p.redisNodeDigests = nil
+	p.keyField = ""
+	p.redisHostField = ""
+	p.redisNodesField = ""
+	return nil
+}
+
+func limitCountConfigHasUnmaterializedSecret(config Config) bool {
+	return limitCountValueHasUnmaterializedSecret(reflect.ValueOf(config), 0, make(map[uintptr]struct{}))
+}
+
+func limitCountValueHasUnmaterializedSecret(
+	value reflect.Value, depth int, visited map[uintptr]struct{},
+) bool {
+	if !value.IsValid() {
+		return false
+	}
+	if depth >= 32 {
+		return true
+	}
+	for value.Kind() == reflect.Interface {
+		if value.IsNil() {
+			return false
+		}
+		value = value.Elem()
+	}
+	switch value.Kind() {
+	case reflect.Pointer:
+		if value.IsNil() {
+			return false
+		}
+		pointer := value.Pointer()
+		if _, exists := visited[pointer]; exists {
+			return false
+		}
+		visited[pointer] = struct{}{}
+		defer delete(visited, pointer)
+		return limitCountValueHasUnmaterializedSecret(value.Elem(), depth+1, visited)
+	case reflect.String:
+		return isUnmaterializedLimitCountSecret(value.String())
+	case reflect.Struct:
+		for _, field := range value.Fields() {
+			if limitCountValueHasUnmaterializedSecret(field, depth+1, visited) {
+				return true
+			}
+		}
+	case reflect.Map:
+		for _, key := range value.MapKeys() {
+			if limitCountValueHasUnmaterializedSecret(value.MapIndex(key), depth+1, visited) {
+				return true
+			}
+		}
+	case reflect.Array, reflect.Slice:
+		for index := 0; index < value.Len(); index++ {
+			if limitCountValueHasUnmaterializedSecret(value.Index(index), depth+1, visited) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func isUnmaterializedLimitCountSecret(value string) bool {
+	if len(value) >= len("$ENV://") && strings.EqualFold(value[:len("$ENV://")], "$ENV://") {
+		return !strings.Contains(value, "#sha256:")
+	}
+	if strings.HasPrefix(value, "$secret://") || strings.HasPrefix(value, "$encrypted://") {
+		return !strings.Contains(value, "#sha256:")
+	}
+	return false
 }
 
 func validLimitCountScopedValue(value secret.Value) bool {

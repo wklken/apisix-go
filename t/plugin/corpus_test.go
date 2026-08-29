@@ -28,6 +28,7 @@ type corpusSourceScope struct {
 	Owner       string `yaml:"owner"`
 	Disposition string `yaml:"disposition"`
 	Manifest    string `yaml:"manifest,omitempty"`
+	Evidence    string `yaml:"evidence,omitempty"`
 	Reason      string `yaml:"reason,omitempty"`
 }
 
@@ -37,6 +38,12 @@ type corpusLabelSelection struct {
 
 var corpusDispositions = map[string]bool{
 	"converted":       true,
+	"package_test":    true,
+	"dependency_test": true,
+	"platform_test":   true,
+	"platform_gap":    true,
+	"regression_test": true,
+	"post_target":     true,
 	"pending":         true,
 	"blocked_runtime": true,
 	"blocked_design":  true,
@@ -76,7 +83,7 @@ func (s *corpusScope) validate() error {
 		return fmt.Errorf("commit %q must be a lowercase 40-character Git object ID", s.Commit)
 	}
 	seen := make(map[string]map[int]string, len(s.Sources))
-	fileCommits := make(map[string]string, len(s.Sources))
+	qualificationCommits := make(map[string]string, len(s.Sources))
 	for i := range s.Sources {
 		source := &s.Sources[i]
 		if strings.TrimSpace(source.File) == "" {
@@ -90,27 +97,34 @@ func (s *corpusScope) validate() error {
 			)
 		}
 		effectiveCommit := s.effectiveCommit(*source)
-		if previous, ok := fileCommits[source.File]; ok && previous != effectiveCommit {
-			return fmt.Errorf(
-				"source %q mixes effective commits %s and %s; migrate all rows for one source file together",
-				source.File,
-				previous,
-				effectiveCommit,
-			)
+		if source.Disposition != "regression_test" && source.Disposition != "post_target" {
+			if previous, ok := qualificationCommits[source.File]; ok && previous != effectiveCommit {
+				return fmt.Errorf(
+					"source %q mixes qualification commits %s and %s",
+					source.File,
+					previous,
+					effectiveCommit,
+				)
+			}
+			qualificationCommits[source.File] = effectiveCommit
 		}
-		fileCommits[source.File] = effectiveCommit
 		if strings.TrimSpace(source.Owner) == "" {
 			return fmt.Errorf("source %q owner is required", source.File)
 		}
 		if !corpusDispositions[source.Disposition] {
 			return fmt.Errorf(
-				"source %q disposition %q is not allowed; want one of converted, pending, blocked_runtime, blocked_design, non_plugin",
+				"source %q disposition %q is not allowed; want one of converted, package_test, dependency_test, platform_test, platform_gap, regression_test, post_target, pending, blocked_runtime, blocked_design, non_plugin",
 				source.File,
 				source.Disposition,
 			)
 		}
-		if source.Disposition == "converted" && strings.TrimSpace(source.Manifest) == "" {
-			return fmt.Errorf("source %q is converted but has no manifest", source.File)
+		if (source.Disposition == "converted" || source.Disposition == "regression_test") &&
+			strings.TrimSpace(source.Manifest) == "" {
+			return fmt.Errorf("source %q is %s but has no manifest", source.File, source.Disposition)
+		}
+		if (source.Disposition == "package_test" || source.Disposition == "dependency_test" || source.Disposition == "platform_test") &&
+			strings.TrimSpace(source.Evidence) == "" {
+			return fmt.Errorf("source %q is %s but has no evidence", source.File, source.Disposition)
 		}
 		if source.Disposition != "converted" && strings.TrimSpace(source.Reason) == "" {
 			return fmt.Errorf("source %q disposition %q requires a reason", source.File, source.Disposition)
@@ -212,6 +226,69 @@ func TestCorpusScopeRequiresManifestForConverted(t *testing.T) {
 	}
 }
 
+func TestCorpusScopeAllowsRegressionTestWithManifest(t *testing.T) {
+	data := []byte(strings.Join([]string{
+		"commit: " + testCorpusCommit(),
+		"sources:",
+		"  - file: t/plugin/example.t",
+		"    test_numbers: [1]",
+		"    owner: example-plugin",
+		"    disposition: regression_test",
+		"    manifest: example.yaml",
+		"    reason: post-target regression coverage",
+	}, "\n"))
+	if _, err := loadCorpusScope("test", data); err != nil {
+		t.Fatalf("loadCorpusScope() rejected regression test evidence: %v", err)
+	}
+}
+
+func TestCorpusScopeRequiresEvidenceForPackageTest(t *testing.T) {
+	data := []byte(strings.Join([]string{
+		"commit: " + testCorpusCommit(),
+		"sources:",
+		"  - file: t/plugin/example.t",
+		"    test_numbers: [1]",
+		"    owner: example-plugin",
+		"    disposition: package_test",
+		"    reason: missing evidence",
+	}, "\n"))
+	_, err := loadCorpusScope("test", data)
+	if err == nil || !strings.Contains(err.Error(), "evidence") {
+		t.Fatalf("loadCorpusScope() error = %v, want missing package-test evidence error", err)
+	}
+}
+
+func TestCorpusScopeRequiresEvidenceForDependencyTest(t *testing.T) {
+	data := []byte(strings.Join([]string{
+		"commit: " + testCorpusCommit(),
+		"sources:",
+		"  - file: t/plugin/example.t",
+		"    test_numbers: [1]",
+		"    owner: example-plugin",
+		"    disposition: dependency_test",
+		"    reason: missing evidence",
+	}, "\n"))
+	_, err := loadCorpusScope("test", data)
+	if err == nil || !strings.Contains(err.Error(), "evidence") {
+		t.Fatalf("loadCorpusScope() error = %v, want missing dependency-test evidence error", err)
+	}
+}
+
+func TestCorpusScopeAllowsExplicitPlatformGapWithoutPluginEvidence(t *testing.T) {
+	data := []byte(strings.Join([]string{
+		"commit: " + testCorpusCommit(),
+		"sources:",
+		"  - file: t/plugin/example.t",
+		"    test_numbers: [1]",
+		"    owner: generation-runtime",
+		"    disposition: platform_gap",
+		"    reason: config publication lifecycle is not plugin behavior",
+	}, "\n"))
+	if _, err := loadCorpusScope("test", data); err != nil {
+		t.Fatalf("loadCorpusScope() rejected explicit platform gap: %v", err)
+	}
+}
+
 func TestCorpusScopeRequiresReasonForNonConverted(t *testing.T) {
 	data := []byte(strings.Join([]string{
 		"commit: " + testCorpusCommit(),
@@ -274,7 +351,7 @@ func TestCorpusScopeRejectsMalformedPerSourceCommit(t *testing.T) {
 	}
 }
 
-func TestCorpusScopeRejectsMixedCommitsWithinSourceFile(t *testing.T) {
+func TestCorpusScopeAllowsHistoricalRegressionLabelsBesideMigratedTarget(t *testing.T) {
 	data := []byte(strings.Join([]string{
 		"commit: " + testCorpusCommit(),
 		"sources:",
@@ -287,12 +364,34 @@ func TestCorpusScopeRejectsMixedCommitsWithinSourceFile(t *testing.T) {
 		"  - file: t/plugin/example.t",
 		"    test_numbers: [2]",
 		"    owner: example-plugin",
-		"    disposition: pending",
+		"    disposition: regression_test",
+		"    manifest: example.yaml",
 		"    reason: historical row",
 	}, "\n"))
+	if _, err := loadCorpusScope("test", data); err != nil {
+		t.Fatalf("loadCorpusScope() rejected disjoint target and regression commits: %v", err)
+	}
+}
+
+func TestCorpusScopeRejectsMixedQualificationCommitsWithinSourceFile(t *testing.T) {
+	data := []byte(strings.Join([]string{
+		"commit: " + testCorpusCommit(),
+		"sources:",
+		"  - file: t/plugin/example.t",
+		"    commit: " + strings.Repeat("b", 40),
+		"    test_numbers: [1]",
+		"    owner: example-plugin",
+		"    disposition: pending",
+		"    reason: first qualification row",
+		"  - file: t/plugin/example.t",
+		"    test_numbers: [2]",
+		"    owner: example-plugin",
+		"    disposition: pending",
+		"    reason: second qualification row",
+	}, "\n"))
 	_, err := loadCorpusScope("test", data)
-	if err == nil || !strings.Contains(err.Error(), "mixes effective commits") {
-		t.Fatalf("loadCorpusScope() error = %v, want mixed source-file commit error", err)
+	if err == nil || !strings.Contains(err.Error(), "mixes qualification commits") {
+		t.Fatalf("loadCorpusScope() error = %v, want mixed qualification commit error", err)
 	}
 }
 
@@ -326,6 +425,69 @@ func TestManifestSelectionsUseEffectiveCorpusCommit(t *testing.T) {
 	}
 	if got := selections["t/plugin/redirect2.t"][3]; got != "redirect2.yaml" {
 		t.Fatalf("selection owner = %q, want redirect2.yaml", got)
+	}
+}
+
+func TestManifestSelectionsExcludeRegressionOnlySources(t *testing.T) {
+	const (
+		targetCommit = "1111111111111111111111111111111111111111"
+		sourceFile   = "t/plugin/example.t"
+	)
+	scope := &corpusScope{
+		Commit: targetCommit,
+		Sources: []corpusSourceScope{{
+			File:        sourceFile,
+			TestNumbers: []int{1},
+			Owner:       "example",
+			Disposition: "converted",
+			Manifest:    "example.yaml",
+		}},
+	}
+	manifest := []byte(`sources:
+  - repository: https://github.com/apache/apisix
+    commit: 1111111111111111111111111111111111111111
+    file: t/plugin/example.t
+    tests: 1
+    test_numbers: [1]
+  - repository: https://github.com/apache/apisix
+    commit: 2222222222222222222222222222222222222222
+    file: t/plugin/example.t
+    tests: 1
+    test_numbers: [2]
+    regression_only: true
+cases:
+  - name: target
+    source: {file: t/plugin/example.t, tests: [1]}
+    config: {routes: []}
+    input: {path: /target}
+    output: {status: 200}
+  - name: regression
+    source: {file: t/plugin/example.t, tests: [2]}
+    config: {routes: []}
+    input: {path: /regression}
+    output: {status: 200}
+`)
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "example.yaml"), manifest, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	selections, err := loadManifestSelections(root, scope)
+	if err != nil {
+		t.Fatalf("loadManifestSelections() error = %v", err)
+	}
+	if got := selections[sourceFile][1]; got != "example.yaml" {
+		t.Fatalf("target selection = %q, want example.yaml", got)
+	}
+	if _, ok := selections[sourceFile][2]; ok {
+		t.Fatal("regression-only source label was counted as qualification evidence")
+	}
+	regressions, err := loadManifestRegressionSelections(root, scope)
+	if err != nil {
+		t.Fatalf("loadManifestRegressionSelections() error = %v", err)
+	}
+	if _, ok := regressions[sourceFile][2]; ok {
+		t.Fatal("post-migration regression label absent from the qualification ledger was imported")
 	}
 }
 
@@ -443,6 +605,45 @@ func TestFirstWaveSourcesUseCompatibilityTarget(t *testing.T) {
 	}
 }
 
+func TestByteIdenticalSourcesUseCompatibilityTarget(t *testing.T) {
+	scope, err := loadCorpusScopeFile(t)
+	if err != nil {
+		t.Fatalf("load ledger: %v", err)
+	}
+	manifest, err := capability.Load()
+	if err != nil {
+		t.Fatalf("load capability manifest: %v", err)
+	}
+	sourceRoot := apacheAPISIXRepository(t)
+	var stale []string
+	for file, commit := range sourceCommitsByFile(scope) {
+		if commit == manifest.Target.SourceCommit {
+			continue
+		}
+		targetData, targetErr := sourceFileAtCommit(sourceRoot, manifest.Target.SourceCommit, file)
+		if targetErr != nil {
+			continue
+		}
+		currentData, currentErr := sourceFileAtCommit(sourceRoot, commit, file)
+		if currentErr != nil {
+			t.Fatalf("read ledger source %s at %s: %v", file, commit, currentErr)
+		}
+		if bytes.Equal(targetData, currentData) {
+			stale = append(stale, file)
+		}
+	}
+	sort.Strings(stale)
+	if len(stale) > 0 {
+		limit := min(len(stale), 20)
+		t.Fatalf(
+			"%d byte-identical sources still use a non-target commit (first %d: %v)",
+			len(stale),
+			limit,
+			stale[:limit],
+		)
+	}
+}
+
 func TestUpstreamCorpusAccounting(t *testing.T) {
 	scope, err := loadCorpusScopeFile(t)
 	if err != nil {
@@ -477,6 +678,7 @@ func TestCorpusEvidenceMatchesCompatibilityTarget(t *testing.T) {
 	}
 
 	staleClaims, freshClaims := 0, 0
+	stalePlugins := make([]string, 0)
 	repoRoot := filepath.Join("..", "..")
 	for _, plugin := range manifest.Plugins {
 		if !onlyIntegrationManifestRefs(plugin.Evidence.Upstream.Refs) {
@@ -500,6 +702,7 @@ func TestCorpusEvidenceMatchesCompatibilityTarget(t *testing.T) {
 		}
 
 		staleClaims++
+		stalePlugins = append(stalePlugins, plugin.Name)
 		if plugin.Evidence.Upstream.State != capability.EvidenceStale {
 			t.Errorf(
 				"plugin %s converted_upstream state = %q, want %q while referenced manifests differ from target %s",
@@ -515,6 +718,9 @@ func TestCorpusEvidenceMatchesCompatibilityTarget(t *testing.T) {
 	}
 	if staleClaims == 0 {
 		t.Log("all integration-manifest converted_upstream claims use the compatibility target")
+	} else {
+		sort.Strings(stalePlugins)
+		t.Logf("stale converted_upstream plugins: %v", stalePlugins)
 	}
 	t.Logf(
 		"corpus evidence: %d fresh claims and %d stale claims versus compatibility target %s",
@@ -549,6 +755,9 @@ func integrationManifestRefsFresh(repoRoot string, refs []string, targetCommit s
 			return false, fmt.Errorf("load %s: %w", ref, err)
 		}
 		for _, source := range manifestSources(manifest) {
+			if source.RegressionOnly {
+				continue
+			}
 			if source.Commit != targetCommit {
 				return false, nil
 			}
@@ -558,12 +767,20 @@ func integrationManifestRefsFresh(repoRoot string, refs []string, targetCommit s
 }
 
 func TestIntegrationManifestRefsFreshAtTarget(t *testing.T) {
-	historicalCommit := "c3d7d5ec69774121f53d2e20d29d09c816795dd7"
 	targetCommit := strings.Repeat("b", 40)
 	data, err := os.ReadFile("redirect2.yaml")
 	if err != nil {
 		t.Fatal(err)
 	}
+	manifest, err := loadManifest("redirect2.yaml", data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sources := manifestSources(manifest)
+	if len(sources) == 0 {
+		t.Fatal("redirect2 manifest has no source")
+	}
+	currentCommit := sources[0].Commit
 	root := t.TempDir()
 	manifestDir := filepath.Join(root, "t", "plugin")
 	if err := os.MkdirAll(manifestDir, 0o700); err != nil {
@@ -572,7 +789,7 @@ func TestIntegrationManifestRefsFreshAtTarget(t *testing.T) {
 	path := filepath.Join(manifestDir, "redirect2.yaml")
 	if err := os.WriteFile(
 		path,
-		bytes.ReplaceAll(data, []byte(historicalCommit), []byte(targetCommit)),
+		bytes.ReplaceAll(data, []byte(currentCommit), []byte(targetCommit)),
 		0o600,
 	); err != nil {
 		t.Fatal(err)
@@ -585,7 +802,7 @@ func TestIntegrationManifestRefsFreshAtTarget(t *testing.T) {
 	if !fresh {
 		t.Fatal("target-pinned manifest refs are stale")
 	}
-	fresh, err = integrationManifestRefsFresh(root, []string{"t/plugin/redirect2.yaml"}, historicalCommit)
+	fresh, err = integrationManifestRefsFresh(root, []string{"t/plugin/redirect2.yaml"}, currentCommit)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -594,62 +811,93 @@ func TestIntegrationManifestRefsFreshAtTarget(t *testing.T) {
 	}
 }
 
+func TestIntegrationManifestRefsFreshIgnoresRegressionOnlySources(t *testing.T) {
+	const targetCommit = "1111111111111111111111111111111111111111"
+	root := t.TempDir()
+	manifestDir := filepath.Join(root, "t", "plugin")
+	if err := os.MkdirAll(manifestDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	manifest := []byte(`sources:
+  - repository: https://github.com/apache/apisix
+    commit: 1111111111111111111111111111111111111111
+    file: t/plugin/example.t
+    tests: 1
+    test_numbers: [1]
+  - repository: https://github.com/apache/apisix
+    commit: 2222222222222222222222222222222222222222
+    file: t/plugin/example.t
+    tests: 1
+    test_numbers: [2]
+    regression_only: true
+cases:
+  - name: target
+    source: {file: t/plugin/example.t, tests: [1]}
+    config: {routes: []}
+    input: {path: /target}
+    output: {status: 200}
+  - name: regression
+    source: {file: t/plugin/example.t, tests: [2]}
+    config: {routes: []}
+    input: {path: /regression}
+    output: {status: 200}
+`)
+	if err := os.WriteFile(filepath.Join(manifestDir, "example.yaml"), manifest, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	fresh, err := integrationManifestRefsFresh(root, []string{"t/plugin/example.yaml"}, targetCommit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !fresh {
+		t.Fatal("target qualification source was marked stale by a regression-only source")
+	}
+}
+
 func checkOfflineCorpusAccounting(t *testing.T, scope *corpusScope) {
 	t.Helper()
 
-	// Every manifest-declared source label is converted and points back to a manifest.
+	// Qualification and post-target regression labels are tracked independently so additional
+	// regression coverage cannot promote a compatibility claim.
 	manifestByFile, err := loadManifestSelections(".", scope)
 	if err != nil {
 		t.Fatalf("load manifests: %v", err)
 	}
+	regressionManifestByFile, err := loadManifestRegressionSelections(".", scope)
+	if err != nil {
+		t.Fatalf("load regression manifests: %v", err)
+	}
 	convertedByFile := make(map[string]map[int]string, len(scope.Sources))
+	regressionByFile := make(map[string]map[int]string, len(scope.Sources))
 	for i := range scope.Sources {
 		source := &scope.Sources[i]
-		if source.Disposition != "converted" {
+		var selections map[string]map[int]string
+		switch source.Disposition {
+		case "converted":
+			selections = convertedByFile
+		case "regression_test":
+			selections = regressionByFile
+		default:
 			continue
 		}
-		if convertedByFile[source.File] == nil {
-			convertedByFile[source.File] = make(map[int]string)
+		if selections[source.File] == nil {
+			selections[source.File] = make(map[int]string)
 		}
 		for _, number := range source.TestNumbers {
-			convertedByFile[source.File][number] = source.Manifest
+			selections[source.File][number] = source.Manifest
 		}
 	}
-	for file, labels := range manifestByFile {
-		for label, manifestName := range labels {
-			convertedManifest, ok := convertedByFile[file][label]
-			if !ok {
-				t.Errorf(
-					"manifest %s maps label %d in %s but the ledger does not mark it converted",
-					manifestName,
-					label,
-					file,
-				)
-				continue
-			}
-			if convertedManifest != manifestName {
-				t.Errorf(
-					"label %d in %s converted by %s, manifest %s disagrees",
-					label,
-					file,
-					convertedManifest,
-					manifestName,
-				)
-			}
-		}
-	}
+	checkManifestSelectionsMatchLedger(t, "qualification", manifestByFile, convertedByFile)
+	checkManifestSelectionsMatchLedger(t, "regression", regressionManifestByFile, regressionByFile)
 
-	// Every converted ledger row exists in exactly one manifest.
-	for file, labels := range convertedByFile {
-		for label, manifestName := range labels {
-			owner, ok := manifestByFile[file][label]
-			if !ok {
-				t.Errorf("ledger converts label %d in %s via %s but no manifest maps it", label, file, manifestName)
-				continue
-			}
-			if owner != manifestName {
-				t.Errorf("label %d in %s converted via %s but manifest %s owns it", label, file, manifestName, owner)
-			}
+	for i := range scope.Sources {
+		source := &scope.Sources[i]
+		if source.Disposition == "package_test" || source.Disposition == "platform_test" {
+			checkGoTestEvidence(t, source.Evidence)
+		}
+		if source.Disposition == "dependency_test" {
+			checkDependencyTestEvidence(t, source.Evidence)
 		}
 	}
 
@@ -659,19 +907,112 @@ func checkOfflineCorpusAccounting(t *testing.T, scope *corpusScope) {
 	}
 }
 
+func checkManifestSelectionsMatchLedger(
+	t *testing.T,
+	kind string,
+	manifestByFile map[string]map[int]string,
+	ledgerByFile map[string]map[int]string,
+) {
+	t.Helper()
+	for file, labels := range manifestByFile {
+		for label, manifestName := range labels {
+			ledgerManifest, ok := ledgerByFile[file][label]
+			if !ok {
+				t.Errorf(
+					"manifest %s maps %s label %d in %s but the ledger does not account for it",
+					manifestName,
+					kind,
+					label,
+					file,
+				)
+				continue
+			}
+			if ledgerManifest != manifestName {
+				t.Errorf(
+					"%s label %d in %s accounted by %s, manifest %s disagrees",
+					kind,
+					label,
+					file,
+					ledgerManifest,
+					manifestName,
+				)
+			}
+		}
+	}
+
+	for file, labels := range ledgerByFile {
+		for label, manifestName := range labels {
+			owner, ok := manifestByFile[file][label]
+			if !ok {
+				t.Errorf(
+					"ledger accounts for %s label %d in %s via %s but no manifest maps it",
+					kind,
+					label,
+					file,
+					manifestName,
+				)
+				continue
+			}
+			if owner != manifestName {
+				t.Errorf(
+					"%s label %d in %s accounted via %s but manifest %s owns it",
+					kind,
+					label,
+					file,
+					manifestName,
+					owner,
+				)
+			}
+		}
+	}
+}
+
+func checkGoTestEvidence(t *testing.T, evidence string) {
+	t.Helper()
+	path, testName, ok := strings.Cut(evidence, "#")
+	if !ok || !strings.HasPrefix(path, "pkg/") || !strings.HasSuffix(path, "_test.go") ||
+		!strings.HasPrefix(testName, "Test") || strings.Contains(testName, "#") {
+		t.Errorf("Go test evidence %q must be pkg/..._test.go#TestName", evidence)
+		return
+	}
+	data, err := os.ReadFile(filepath.Join("..", "..", filepath.FromSlash(path)))
+	if err != nil {
+		t.Errorf("read Go test evidence %q: %v", evidence, err)
+		return
+	}
+	pattern := regexp.MustCompile(`(?m)^func\s+` + regexp.QuoteMeta(testName) + `\s*\(`)
+	if !pattern.Match(data) {
+		t.Errorf("Go test evidence %q does not name a test function", evidence)
+	}
+}
+
+func checkDependencyTestEvidence(t *testing.T, evidence string) {
+	t.Helper()
+	if !strings.HasPrefix(evidence, "scripts/qualification/") || !strings.HasSuffix(evidence, ".sh") {
+		t.Errorf("dependency test evidence %q must be scripts/qualification/*.sh", evidence)
+		return
+	}
+	info, err := os.Stat(filepath.Join("..", "..", filepath.FromSlash(evidence)))
+	if err != nil {
+		t.Errorf("read dependency test evidence %q: %v", evidence, err)
+		return
+	}
+	if info.Mode()&0o111 == 0 {
+		t.Errorf("dependency test evidence %q is not executable", evidence)
+	}
+}
+
 func checkCorpusScopeAgainstSource(t *testing.T, scope *corpusScope, sourceRoot string) {
 	t.Helper()
 
-	// The default commit remains the complete inventory baseline. A migrated file keeps its place in that
-	// inventory, but its exact labels are checked against its row-level effective commit.
+	// The default commit remains the complete HTTP plugin inventory baseline. A migrated file may keep
+	// post-target regression labels at the baseline commit while its qualification labels move to the
+	// compatibility target. Explicit stream-plugin sources supplement that baseline.
 	baselineFiles, err := sourceFilesAtCommit(sourceRoot, scope.Commit)
 	if err != nil {
 		t.Fatalf("list baseline source files: %v", err)
 	}
 	ledgerLabels := corpusScopeLabels(scope)
-	if len(ledgerLabels) != len(baselineFiles) {
-		t.Fatalf("ledger source files = %d, baseline source files = %d", len(ledgerLabels), len(baselineFiles))
-	}
 	baselineSet := make(map[string]bool, len(baselineFiles))
 	for _, file := range baselineFiles {
 		baselineSet[file] = true
@@ -679,39 +1020,84 @@ func checkCorpusScopeAgainstSource(t *testing.T, scope *corpusScope, sourceRoot 
 			t.Errorf("ledger is missing baseline source file %s", file)
 		}
 	}
-	for file, labels := range ledgerLabels {
+	for file := range ledgerLabels {
 		if !baselineSet[file] {
-			t.Errorf("ledger covers %s which is absent from the baseline source inventory", file)
-			continue
+			if !strings.HasPrefix(file, "t/stream-plugin/") {
+				t.Errorf("ledger covers %s which is absent from the baseline source inventory", file)
+			}
 		}
+	}
+
+	// Every row must name labels that exist at its own historical or target commit.
+	labelsByFileCommit := make(map[string]map[string]map[int]bool)
+	qualificationLabels := make(map[string]map[int]bool)
+	for i := range scope.Sources {
+		source := &scope.Sources[i]
+		commit := scope.effectiveCommit(*source)
+		if labelsByFileCommit[source.File] == nil {
+			labelsByFileCommit[source.File] = make(map[string]map[int]bool)
+		}
+		if labelsByFileCommit[source.File][commit] == nil {
+			labelsByFileCommit[source.File][commit] = make(map[int]bool)
+		}
+		for _, label := range source.TestNumbers {
+			labelsByFileCommit[source.File][commit][label] = true
+		}
+		if source.Disposition != "regression_test" && source.Disposition != "post_target" {
+			if qualificationLabels[source.File] == nil {
+				qualificationLabels[source.File] = make(map[int]bool)
+			}
+			for _, label := range source.TestNumbers {
+				qualificationLabels[source.File][label] = true
+			}
+		}
+	}
+	for file, commits := range labelsByFileCommit {
+		for commit, labels := range commits {
+			data, readErr := sourceFileAtCommit(sourceRoot, commit, file)
+			if readErr != nil {
+				t.Errorf("ledger source %s at %s: %v", file, commit, readErr)
+				continue
+			}
+			_, sourceLabels, parseErr := parseSourceTestHeaders(data)
+			if parseErr != nil {
+				t.Errorf("ledger source %s at %s: %v", file, commit, parseErr)
+				continue
+			}
+			for label := range labels {
+				if !sourceLabels[label] {
+					t.Errorf("ledger label %d in %s is absent from source commit %s", label, file, commit)
+				}
+			}
+		}
+	}
+
+	// Qualification rows, unlike historical regression rows, must account for the complete source
+	// at their effective compatibility commit.
+	for file, labels := range qualificationLabels {
 		commit := sourceCommitsByFile(scope)[file]
-		data, err := sourceFileAtCommit(sourceRoot, commit, file)
-		if err != nil {
-			t.Errorf("ledger source %s: %v", file, err)
+		data, readErr := sourceFileAtCommit(sourceRoot, commit, file)
+		if readErr != nil {
+			t.Errorf("qualification source %s at %s: %v", file, commit, readErr)
 			continue
 		}
-		_, sourceLabels, err := parseSourceTestHeaders(data)
-		if err != nil {
-			t.Errorf("ledger source %s at %s: %v", file, commit, err)
+		_, sourceLabels, parseErr := parseSourceTestHeaders(data)
+		if parseErr != nil {
+			t.Errorf("qualification source %s at %s: %v", file, commit, parseErr)
 			continue
 		}
 		if len(labels) != len(sourceLabels) {
 			t.Errorf(
-				"ledger source %s at %s has %d labels, source has %d",
+				"qualification source %s at %s has %d labels, source has %d",
 				file,
 				commit,
 				len(labels),
 				len(sourceLabels),
 			)
 		}
-		for label := range labels {
-			if !sourceLabels[label] {
-				t.Errorf("ledger label %d in %s is absent from source commit %s", label, file, commit)
-			}
-		}
 		for label := range sourceLabels {
 			if !labels[label] {
-				t.Errorf("ledger is missing source label %d in %s at commit %s", label, file, commit)
+				t.Errorf("qualification ledger is missing source label %d in %s at commit %s", label, file, commit)
 			}
 		}
 	}
@@ -723,12 +1109,24 @@ func TestUpstreamCorpusCompletion(t *testing.T) {
 		t.Fatalf("load ledger: %v", err)
 	}
 	var pluginOwnedPending []string
-	var pendingBlocks, nonPluginBlocks, convertedBlocks int
+	var pendingBlocks, nonPluginBlocks, convertedBlocks, packageTestBlocks, dependencyTestBlocks, platformTestBlocks, platformGapBlocks, regressionTestBlocks, postTargetBlocks int
 	for i := range scope.Sources {
 		source := &scope.Sources[i]
 		switch source.Disposition {
 		case "converted":
 			convertedBlocks += len(source.TestNumbers)
+		case "package_test":
+			packageTestBlocks += len(source.TestNumbers)
+		case "dependency_test":
+			dependencyTestBlocks += len(source.TestNumbers)
+		case "platform_test":
+			platformTestBlocks += len(source.TestNumbers)
+		case "platform_gap":
+			platformGapBlocks += len(source.TestNumbers)
+		case "regression_test":
+			regressionTestBlocks += len(source.TestNumbers)
+		case "post_target":
+			postTargetBlocks += len(source.TestNumbers)
 		case "non_plugin":
 			nonPluginBlocks += len(source.TestNumbers)
 		default:
@@ -738,8 +1136,14 @@ func TestUpstreamCorpusCompletion(t *testing.T) {
 	}
 	sort.Strings(pluginOwnedPending)
 	t.Logf(
-		"corpus completion: %d converted blocks, %d non-plugin blocks, %d pending/blocked blocks across %d sources",
+		"corpus completion: %d real-process qualification blocks, %d package-test blocks, %d dependency-test blocks, %d platform-test blocks, %d platform-gap blocks, %d post-target regression blocks, %d excluded post-target blocks, %d non-plugin blocks, %d pending/blocked plugin blocks across %d sources",
 		convertedBlocks,
+		packageTestBlocks,
+		dependencyTestBlocks,
+		platformTestBlocks,
+		platformGapBlocks,
+		regressionTestBlocks,
+		postTargetBlocks,
 		nonPluginBlocks,
 		pendingBlocks,
 		len(pluginOwnedPending),
@@ -781,6 +1185,18 @@ func corpusScopeLabels(scope *corpusScope) map[string]map[int]bool {
 }
 
 func loadManifestSelections(root string, scope *corpusScope) (map[string]map[int]string, error) {
+	return loadManifestSelectionsByMode(root, scope, false)
+}
+
+func loadManifestRegressionSelections(root string, scope *corpusScope) (map[string]map[int]string, error) {
+	return loadManifestSelectionsByMode(root, scope, true)
+}
+
+func loadManifestSelectionsByMode(
+	root string,
+	scope *corpusScope,
+	regressionOnly bool,
+) (map[string]map[int]string, error) {
 	ledgerSelections := make(map[string]map[int]corpusLabelSelection, len(scope.Sources))
 	for _, source := range scope.Sources {
 		if ledgerSelections[source.File] == nil {
@@ -812,6 +1228,9 @@ func loadManifestSelections(root string, scope *corpusScope) (map[string]map[int
 		}
 		manifestName := filepath.Base(file)
 		for _, source := range manifestSources(manifest) {
+			if source.RegressionOnly != regressionOnly {
+				continue
+			}
 			if selections[source.File] == nil {
 				selections[source.File] = make(map[int]string)
 			}
@@ -825,6 +1244,9 @@ func loadManifestSelections(root string, scope *corpusScope) (map[string]map[int
 			for _, number := range blocks {
 				ledgerSelection, ok := ledgerSelections[source.File][number]
 				if !ok {
+					if regressionOnly {
+						continue
+					}
 					return nil, fmt.Errorf(
 						"%s selects label %d in %s which is absent from the corpus ledger",
 						manifestName,

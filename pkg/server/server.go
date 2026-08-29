@@ -18,6 +18,7 @@ import (
 
 	"github.com/felixge/httpsnoop"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/compiler"
 	"github.com/wklken/apisix-go/pkg/config"
@@ -286,6 +287,7 @@ type Server struct {
 	staticConfig     *config.EffectiveConfig
 	dataEncryption   data_encryption.Service
 	resolver         *secret.GenerationSecretResolver
+	serverInfo       *server_info.View
 	journal          generation.Journal
 	engine           generationEngineOwner
 	coordinator      *generation.Coordinator
@@ -298,6 +300,7 @@ type Server struct {
 	addrs           []string
 	server          *http.Server
 	statusServer    *http.Server
+	controlServer   *http.Server
 	routes          *routeHandler
 	streamRuntime   streamRuntimeOwner
 	streamRuntimeMu sync.Mutex
@@ -401,6 +404,7 @@ func newServerWithFactories(
 		closeJournal:     factories.closeJournal,
 		runtimeFactories: defaultServerRuntimeFactories(),
 		addrs:            addrs,
+		serverInfo:       server_info.NewView(cfg.Apisix.ID),
 	}
 
 	otelShutdown, err := factories.initObservability("apisix-go")
@@ -421,6 +425,7 @@ func newServerWithFactories(
 		)
 	}
 	observers := compiler.WorkerRuntimeObservers{Cluster: newClusterObserver(cfg)}
+	observers.ServerInfo = server.serverInfo
 	if streamProxyModeEnabled(cfg) {
 		observers.Stream = logStreamResult
 	}
@@ -474,8 +479,13 @@ func newServerWithFactories(
 	}
 	server.server = newConfiguredHTTPServer(newConfiguredHTTPHandler(server.routes, cfg), cfg)
 	server.statusServer = newConfiguredHTTPServer(newStatusHandler(server.httpGenerationReady), nil)
+	server.controlServer = newConfiguredHTTPServer(newControlHandler(cfg, server.serverInfo), nil)
 	server.shutdownHTTP = func(ctx context.Context) error {
-		return errors.Join(server.server.Shutdown(ctx), server.statusServer.Shutdown(ctx))
+		return errors.Join(
+			server.server.Shutdown(ctx),
+			server.statusServer.Shutdown(ctx),
+			server.controlServer.Shutdown(ctx),
+		)
 	}
 	return server, nil
 }
@@ -567,6 +577,20 @@ func newStatusHandler(serviceable func() bool) http.Handler {
 	})
 }
 
+func newControlHandler(cfg *config.Config, view *server_info.View) http.Handler {
+	if cfg == nil || !cfg.Apisix.EnableControl || !pluginConfigured(cfg, "server-info") || view == nil {
+		return http.NotFoundHandler()
+	}
+	serverInfoHandler := view.Handler()
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/server_info" {
+			http.NotFound(w, r)
+			return
+		}
+		serverInfoHandler.ServeHTTP(w, r)
+	})
+}
+
 func (s *Server) httpGenerationReady() bool {
 	if s == nil || s.engine == nil {
 		return false
@@ -608,6 +632,11 @@ func normalizeForwardedHeaders(next http.Handler, addresses []string) http.Handl
 	}
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if requestLength, known := apisixlog.EstimateHTTP1RequestLength(r); known {
+			r = apisixctx.WithRequestVars(r)
+			apisixctx.RegisterRequestVar(r, "$request_length", requestLength)
+		}
+		forwardedFor := r.Header.Values("X-Forwarded-For")
 		host, _, err := net.SplitHostPort(r.RemoteAddr)
 		if err != nil {
 			host = r.RemoteAddr
@@ -634,6 +663,11 @@ func normalizeForwardedHeaders(next http.Handler, addresses []string) http.Handl
 		} else {
 			// Untrusted peers cannot forge the observed values: overwrite with
 			// the trusted ones, mirroring APISIX handle_x_forwarded_headers.
+			// When no global policy exists, retain the raw X-Forwarded-For values
+			// privately so real-ip can apply its own route-scoped peer policy.
+			if len(addresses) == 0 {
+				r = apisixctx.WithForwardedForCandidate(r, forwardedFor)
+			}
 			r.Header.Set("X-Forwarded-Proto", scheme(r))
 			r.Header.Set("X-Forwarded-Host", r.Host)
 			r.Header.Set("X-Forwarded-Port", listenPort(r))
@@ -784,6 +818,21 @@ func configuredTLSListenAddresses(cfg *config.Config) []string {
 
 func configuredStatusAddress(cfg *config.Config) string {
 	return net.JoinHostPort(cfg.Apisix.Status.IP, strconv.Itoa(cfg.Apisix.Status.Port))
+}
+
+func configuredControlAddress(cfg *config.Config) (string, bool) {
+	if cfg == nil || !cfg.Apisix.EnableControl {
+		return "", false
+	}
+	host := strings.TrimSpace(cfg.Apisix.Control.Ip)
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	port := cfg.Apisix.Control.Port
+	if port == 0 {
+		port = 9090
+	}
+	return net.JoinHostPort(host, strconv.Itoa(port)), true
 }
 
 const (
@@ -1256,7 +1305,9 @@ func (s *Server) drainRuntimeOwners(ctx context.Context) (error, bool) {
 		}
 		if shutdownHTTP == nil {
 			s.httpDrained = true
-		} else if err := shutdownHTTP(ctx); err != nil {
+		} else if err := shutdownHTTP(ctx); errors.Is(err, net.ErrClosed) {
+			s.httpDrained = true
+		} else if err != nil {
 			wrapped := wrapCleanupError("drain HTTP server", err)
 			if contextError(err) {
 				errs = append(errs, wrapped)
@@ -1654,14 +1705,19 @@ func (s *Server) constructEtcdConfigProducer(ctx context.Context) (configProduce
 	producer := newEtcdConfigProducer(etcdClient)
 	if serverInfoReportingEnabled(cfg) {
 		producer.afterInitial = func(ctx context.Context) {
-			nodeID := server_info.CurrentInfo(cfg.Apisix.ID).ID
+			if etcdVersion, versionErr := etcdClient.ServerVersion(ctx); versionErr != nil {
+				logger.Warnf("resolve server-info etcd version fail: %s", versionErr)
+			} else {
+				s.serverInfo.SetEtcdVersion(etcdVersion)
+			}
+			nodeID := s.serverInfo.Current().ID
 			attr := cfg.PluginAttr["server-info"]
 			_, reporterErr := etcdClient.StartServerInfoReporter(
 				ctx,
 				nodeID,
 				server_info.ReportTTL(attr),
 				func() ([]byte, error) {
-					return json.Marshal(server_info.CurrentInfo(cfg.Apisix.ID))
+					return json.Marshal(s.serverInfo.Current())
 				},
 			)
 			if reporterErr != nil {
@@ -1739,7 +1795,12 @@ func (s *Server) serveHTTPListenerRuntime(
 	tlsConfig *tls.Config,
 ) (<-chan error, error) {
 	addrs := s.addrs
-	serveErrors := make(chan error, len(addrs)+len(tlsAddrs)+1)
+	controlAddr, controlEnabled := configuredControlAddress(&s.staticConfig.Config)
+	listenerCount := len(addrs) + len(tlsAddrs) + 1
+	if controlEnabled {
+		listenerCount++
+	}
+	serveErrors := make(chan error, listenerCount)
 	listeners := make([]net.Listener, 0, len(addrs)+len(tlsAddrs))
 	for _, addr := range addrs {
 		logger.Infof("listening on %s", addr)
@@ -1784,6 +1845,25 @@ func (s *Server) serveHTTPListenerRuntime(
 			serveErrors <- err
 		}
 	}()
+	if controlEnabled {
+		if s.controlServer == nil {
+			s.closeOwnedListeners()
+			return nil, errors.New("control HTTP server is required when apisix.enable_control is true")
+		}
+		logger.Infof("control API listening on %s", controlAddr)
+		controlListener, err := net.Listen("tcp", controlAddr)
+		if err != nil {
+			s.closeOwnedListeners()
+			return nil, fmt.Errorf("open control listener %s: %w", controlAddr, err)
+		}
+		s.retainListener(controlListener)
+		go func() {
+			defer s.releaseListener(controlListener)
+			if err := s.controlServer.Serve(controlListener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				serveErrors <- err
+			}
+		}()
+	}
 
 	return serveErrors, nil
 }

@@ -150,3 +150,17 @@ func TestRequestPhaseInitializesStateWithoutFinalizer(t *testing.T) {
 	}
 	apisixctx.RecycleVars(result.Request)
 }
+
+func TestRequestPhasePreservesCapturedAPISIX317RequestLength(t *testing.T) {
+	request := httptest.NewRequest(http.MethodGet, "http://gateway.example.test/opentracing", nil)
+	request.RequestURI = "/opentracing"
+	request.Header.Set("User-Agent", "Go-http-client/1.1")
+	request, _ = apisixctx.EnsureRequestLifecycle(request, time.Now())
+	request = apisixctx.WithRequestVars(request)
+	apisixctx.RegisterRequestVar(request, "$request_length", int64(89))
+
+	result := (&Plugin{}).RunRequestPhase(httptest.NewRecorder(), request)
+	if got := apisixctx.GetRequestVar(result.Request, "$request_length"); got != int64(89) {
+		t.Fatalf("$request_length = %#v, want preserved ingress value 89", got)
+	}
+}

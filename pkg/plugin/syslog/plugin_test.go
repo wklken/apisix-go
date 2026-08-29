@@ -22,11 +22,49 @@ import (
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
 	"github.com/wklken/apisix-go/pkg/runtime"
 	"github.com/wklken/apisix-go/pkg/util"
 )
+
+func TestPostInitWarnsOnlyWhenTLSDisabled(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		tls      bool
+		wantWarn bool
+	}{
+		{name: "plain", wantWarn: true},
+		{name: "tls", tls: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var warnings []string
+			stop := logger.ReplaceObserver(
+				"syslog-security-warning-"+test.name,
+				func(entry logger.Entry) {
+					if entry.Level == "WARN" &&
+						strings.Contains(entry.Message, "tls disabled in syslog") {
+						warnings = append(warnings, entry.Message)
+					}
+				},
+			)
+			defer stop()
+
+			p := newTestPlugin(t, Config{Host: "127.0.0.1", Port: 5140, TLS: test.tls})
+			t.Cleanup(p.Stop)
+
+			if test.wantWarn {
+				if len(warnings) != 1 ||
+					warnings[0] != "Keeping tls disabled in syslog configuration is a security risk" {
+					t.Fatalf("warnings = %#v, want exact disabled TLS warning", warnings)
+				}
+			} else if len(warnings) != 0 {
+				t.Fatalf("warnings = %#v, want none with TLS enabled", warnings)
+			}
+		})
+	}
+}
 
 func TestRunLogPhaseEnqueuesRFC5424FrameWithDetachedFields(t *testing.T) {
 	delivered := make(chan map[string]any, 1)
@@ -93,7 +131,12 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 func newTestPluginWithMetadata(t *testing.T, cfg Config, metadata map[string]any) *Plugin {
 	t.Helper()
 	p := &Plugin{config: cfg}
-	p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t), Metadata: mustMetadataView(t, metadata)})
+	p.SetDependencies(
+		base.Dependencies{
+			Tasks:    newLoggerTestTaskOwner(t),
+			Metadata: mustMetadataView(t, metadata),
+		},
+	)
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -137,9 +180,14 @@ func TestPreparedGenerationsRetainMetadataFormat(t *testing.T) {
 	firstNested, firstNestedOK := first.SnapshotLogFormat["nested"].(map[string]any)
 	secondNested, secondNestedOK := second.SnapshotLogFormat["nested"].(map[string]any)
 	if !firstNestedOK || !secondNestedOK {
-		t.Fatalf("custom snapshot metadata = %#v/%#v", first.SnapshotLogFormat, second.SnapshotLogFormat)
+		t.Fatalf(
+			"custom snapshot metadata = %#v/%#v",
+			first.SnapshotLogFormat,
+			second.SnapshotLogFormat,
+		)
 	}
-	if firstNested["generation"] != "n" || first.config.MaxPendingEntries != 11 || !first.customLogFormat {
+	if firstNested["generation"] != "n" || first.config.MaxPendingEntries != 11 ||
+		!first.customLogFormat {
 		t.Fatalf(
 			"generation N custom metadata = %#v/%d/%v",
 			firstNested,
@@ -179,18 +227,31 @@ func TestPreparedGenerationsRetainMetadataFormat(t *testing.T) {
 		)
 	}
 	if firstExtraNested["generation"] != "n-extra" || firstExtra.customLogFormat {
-		t.Fatalf("generation N extra metadata = %#v/%v", firstExtraNested, firstExtra.customLogFormat)
+		t.Fatalf(
+			"generation N extra metadata = %#v/%v",
+			firstExtraNested,
+			firstExtra.customLogFormat,
+		)
 	}
 	if secondExtraNested["generation"] != "n-plus-one-extra" || secondExtra.customLogFormat {
-		t.Fatalf("generation N+1 extra metadata = %#v/%v", secondExtraNested, secondExtra.customLogFormat)
+		t.Fatalf(
+			"generation N+1 extra metadata = %#v/%v",
+			secondExtraNested,
+			secondExtra.customLogFormat,
+		)
 	}
 }
 
 func TestMetadataDecodeFailsBeforeSyslogTransportAndProcessorAcquisition(t *testing.T) {
 	p := &Plugin{config: Config{Host: "127.0.0.1", Port: 514}}
-	p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t), Metadata: mustMetadataView(t, map[string]any{
-		"max_pending_entries": "invalid",
-	})})
+	p.SetDependencies(
+		base.Dependencies{
+			Tasks: newLoggerTestTaskOwner(t),
+			Metadata: mustMetadataView(t, map[string]any{
+				"max_pending_entries": "invalid",
+			}),
+		},
+	)
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -519,8 +580,14 @@ func TestHandlerBatchesSyslogMessages(t *testing.T) {
 	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
-	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://example.com/one", nil))
-	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://example.com/two", nil))
+	handler.ServeHTTP(
+		httptest.NewRecorder(),
+		httptest.NewRequest(http.MethodGet, "http://example.com/one", nil),
+	)
+	handler.ServeHTTP(
+		httptest.NewRecorder(),
+		httptest.NewRequest(http.MethodGet, "http://example.com/two", nil),
+	)
 
 	select {
 	case message := <-received:
@@ -531,7 +598,11 @@ func TestHandlerBatchesSyslogMessages(t *testing.T) {
 		first := extractJSONPayload(t, frames[0])
 		second := extractJSONPayload(t, frames[1])
 		if first["path"] != "/one" || second["path"] != "/two" {
-			t.Fatalf("batch paths = %#v then %#v, want /one then /two", first["path"], second["path"])
+			t.Fatalf(
+				"batch paths = %#v then %#v, want /one then /two",
+				first["path"],
+				second["path"],
+			)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for syslog UDP batch message")
@@ -596,7 +667,11 @@ func TestHandlerIncludesRequestAndResponseBody(t *testing.T) {
 		MaxRespBodyBytes: 32,
 	})
 
-	req := httptest.NewRequest(http.MethodPost, "http://example.com/orders", bytes.NewBufferString(`{"order":1}`))
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"http://example.com/orders",
+		bytes.NewBufferString(`{"order":1}`),
+	)
 	rr := httptest.NewRecorder()
 	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
@@ -793,7 +868,10 @@ func TestHandlerRemovesStaleServiceIDWithoutRuntimeService(t *testing.T) {
 	case message := <-received:
 		payload := extractJSONPayload(t, message)
 		if _, ok := payload["service_id"]; ok {
-			t.Fatalf("payload service_id = %#v, want absent without runtime service", payload["service_id"])
+			t.Fatalf(
+				"payload service_id = %#v, want absent without runtime service",
+				payload["service_id"],
+			)
 		}
 		if payload["route_id"] != "route-no-service" {
 			t.Fatalf("payload route_id = %#v, want route-no-service", payload["route_id"])
@@ -960,7 +1038,11 @@ func TestHandlerIncludesBodiesWhenExpressionsMatch(t *testing.T) {
 		MaxRespBodyBytes:    32,
 	})
 
-	req := httptest.NewRequest(http.MethodPost, "http://example.com/orders", bytes.NewBufferString(`{"order":2}`))
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"http://example.com/orders",
+		bytes.NewBufferString(`{"order":2}`),
+	)
 	req.Header.Set("X-Log-Body", "yes")
 	rr := httptest.NewRecorder()
 	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1013,7 +1095,11 @@ func TestHandlerSkipsBodiesWhenExpressionsDoNotMatch(t *testing.T) {
 		MaxRespBodyBytes:    32,
 	})
 
-	req := httptest.NewRequest(http.MethodPost, "http://example.com/orders", bytes.NewBufferString(`{"order":3}`))
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"http://example.com/orders",
+		bytes.NewBufferString(`{"order":3}`),
+	)
 	req.Header.Set("X-Log-Body", "no")
 	rr := httptest.NewRecorder()
 	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1388,7 +1474,9 @@ func assertDirectRFC5424Frame(t *testing.T, message, body string) {
 	t.Helper()
 
 	pattern := `^<46>1 [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z - apisix [0-9]+ - - ` +
-		regexp.QuoteMeta(body) + `\n$`
+		regexp.QuoteMeta(
+			body,
+		) + `\n$`
 	if !regexp.MustCompile(pattern).MatchString(message) {
 		t.Fatalf("message = %q, want RFC5424 frame matching %q", message, pattern)
 	}
@@ -1420,10 +1508,18 @@ func TestUnmarshalJSONPreservesExplicitFieldPresence(t *testing.T) {
 	}
 
 	if cfg.RetryDelay != 0 || !cfg.retryDelaySet {
-		t.Fatalf("retry_delay = %d, set = %v, want explicit zero preserved", cfg.RetryDelay, cfg.retryDelaySet)
+		t.Fatalf(
+			"retry_delay = %d, set = %v, want explicit zero preserved",
+			cfg.RetryDelay,
+			cfg.retryDelaySet,
+		)
 	}
 	if cfg.LogFormat["method"] != "$request_method" || !cfg.logFormatSet {
-		t.Fatalf("log_format = %#v, set = %v, want decoded and present", cfg.LogFormat, cfg.logFormatSet)
+		t.Fatalf(
+			"log_format = %#v, set = %v, want decoded and present",
+			cfg.LogFormat,
+			cfg.logFormatSet,
+		)
 	}
 	if cfg.LogFormatExtra["host"] != "$host" || !cfg.logFormatExtraSet {
 		t.Fatalf(

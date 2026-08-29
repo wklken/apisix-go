@@ -5,7 +5,9 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/pem"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -15,6 +17,93 @@ import (
 
 	"github.com/wklken/apisix-go/pkg/json"
 )
+
+func TestGCPServiceAccountTokenExchangeAndCacheContract(t *testing.T) {
+	var calls atomic.Int64
+	var tokenServer *httptest.Server
+	tokenServer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Errorf("parse token form: %v", err)
+			http.Error(w, "invalid form", http.StatusBadRequest)
+			return
+		}
+		if got := r.Form.Get("grant_type"); got != gcpJWTBearerGrantType {
+			t.Errorf("grant_type = %q, want %q", got, gcpJWTBearerGrantType)
+		}
+		assertion := r.Form.Get("assertion")
+		parts := strings.Split(assertion, ".")
+		if len(parts) != 3 || parts[2] == "" {
+			t.Errorf("assertion = %q, want signed JWT", assertion)
+			http.Error(w, "invalid assertion", http.StatusBadRequest)
+			return
+		}
+		payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+		if err != nil {
+			t.Errorf("decode JWT payload: %v", err)
+			http.Error(w, "invalid assertion", http.StatusBadRequest)
+			return
+		}
+		var claims map[string]any
+		if err := json.Unmarshal(payload, &claims); err != nil {
+			t.Errorf("decode JWT claims: %v", err)
+			http.Error(w, "invalid assertion", http.StatusBadRequest)
+			return
+		}
+		if claims["aud"] != tokenServer.URL || claims["scope"] != gcpCloudPlatformScope {
+			t.Errorf("JWT claims = %#v, want token audience and cloud-platform scope", claims)
+		}
+		if issuer, _ := claims["iss"].(string); !strings.HasSuffix(issuer, "@example.test") {
+			t.Errorf("JWT issuer = %#v, want service-account email", claims["iss"])
+		}
+		call := calls.Add(1)
+		_, _ = fmt.Fprintf(w, `{"access_token":"token-%d","expires_in":3600}`, call)
+	}))
+	t.Cleanup(tokenServer.Close)
+
+	baseTime := time.Date(2026, time.July, 11, 1, 2, 3, 0, time.UTC)
+	now := baseTime
+	source := NewGCPTokenSource()
+	source.now = func() time.Time { return now }
+	accountOne := testServiceAccount(t, tokenServer.URL, "one@example.test")
+	configuredTTL := GCPConfig{ServiceAccountJSON: string(accountOne), MaxTTL: 8}
+
+	req := httptest.NewRequest(http.MethodPost, "https://aiplatform.example.test/predict", nil)
+	if err := source.Apply(t.Context(), tokenServer.Client(), req, configuredTTL); err != nil {
+		t.Fatalf("apply first access token: %v", err)
+	}
+	if got := req.Header.Get("Authorization"); got != "Bearer token-1" {
+		t.Fatalf("Authorization = %q, want Bearer token-1", got)
+	}
+	now = baseTime.Add(7 * time.Second)
+	if token, err := source.Token(t.Context(), tokenServer.Client(), configuredTTL); err != nil || token != "token-1" {
+		t.Fatalf("cached configured-TTL token = (%q, %v), want token-1", token, err)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("token endpoint calls before configured max_ttl = %d, want 1", got)
+	}
+	now = baseTime.Add(9 * time.Second)
+	if token, err := source.Token(t.Context(), tokenServer.Client(), configuredTTL); err != nil || token != "token-2" {
+		t.Fatalf("refreshed configured-TTL token = (%q, %v), want token-2", token, err)
+	}
+
+	accountTwo := testServiceAccount(t, tokenServer.URL, "two@example.test")
+	defaultTTL := GCPConfig{ServiceAccountJSON: string(accountTwo)}
+	now = baseTime
+	if token, err := source.Token(t.Context(), tokenServer.Client(), defaultTTL); err != nil || token != "token-3" {
+		t.Fatalf("second service-account token = (%q, %v), want token-3", token, err)
+	}
+	now = baseTime.Add(299 * time.Second)
+	if token, err := source.Token(t.Context(), tokenServer.Client(), defaultTTL); err != nil || token != "token-3" {
+		t.Fatalf("cached default-TTL token = (%q, %v), want token-3", token, err)
+	}
+	now = baseTime.Add(301 * time.Second)
+	if token, err := source.Token(t.Context(), tokenServer.Client(), defaultTTL); err != nil || token != "token-4" {
+		t.Fatalf("refreshed default-TTL token = (%q, %v), want token-4", token, err)
+	}
+	if got := calls.Load(); got != 4 {
+		t.Fatalf("token endpoint calls = %d, want four exchanges across configured/default TTL and two accounts", got)
+	}
+}
 
 func testServiceAccount(t *testing.T, tokenURI string, email string) []byte {
 	t.Helper()

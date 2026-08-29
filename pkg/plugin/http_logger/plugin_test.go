@@ -26,6 +26,7 @@ import (
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/generation"
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
 	"github.com/wklken/apisix-go/pkg/runtime"
@@ -33,6 +34,70 @@ import (
 	"github.com/wklken/apisix-go/pkg/testutil"
 	"github.com/wklken/apisix-go/pkg/util"
 )
+
+func TestPostInitWarnsOnlyForInsecureURI(t *testing.T) {
+	tests := []struct {
+		name     string
+		uri      string
+		wantWarn bool
+	}{
+		{name: "http", uri: "http://127.0.0.1/logs", wantWarn: true},
+		{name: "https", uri: "https://127.0.0.1/logs"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var warnings []logger.Entry
+			stop := logger.ReplaceObserver("http-logger-security-warning-"+test.name, func(entry logger.Entry) {
+				if entry.Level == "WARN" && strings.Contains(entry.Message, "http-logger uri") {
+					warnings = append(warnings, entry)
+				}
+			})
+			defer stop()
+
+			_ = newTestPlugin(t, Config{URI: test.uri})
+			if got := len(warnings); got != 0 && !test.wantWarn {
+				t.Fatalf("warnings = %#v, want none for TLS URI", warnings)
+			}
+			if got := len(warnings); got != 1 && test.wantWarn {
+				t.Fatalf("warnings = %#v, want one insecure URI warning", warnings)
+			}
+		})
+	}
+}
+
+func TestStopFlushesBufferedEntriesBeforeRetiringDelivery(t *testing.T) {
+	delivered := make(chan string, 1)
+	sink := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read flushed body: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		delivered <- string(body)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer sink.Close()
+
+	p := newTestPlugin(t, Config{
+		URI:             sink.URL + "/logs",
+		BatchMaxSize:    2,
+		InactiveTimeout: 60,
+	})
+	if err := p.EnqueueLog(map[string]any{"sink": "retiring"}); err != nil {
+		t.Fatalf("EnqueueLog() error = %v", err)
+	}
+	p.Stop()
+
+	select {
+	case body := <-delivered:
+		if body != `[{"sink":"retiring"}]` {
+			t.Fatalf("flushed body = %q, want buffered JSON batch", body)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Stop() did not flush the buffered entry before retiring delivery")
+	}
+}
 
 type httpLoggerScopedSecretCall struct {
 	Scope secret.Scope
@@ -1653,6 +1718,69 @@ func TestSchemaAcceptsOfficialBodySizeFields(t *testing.T) {
 	}
 	if err := util.Validate(config, p.GetSchema()); err != nil {
 		t.Fatalf("schema rejected official body size fields: %v", err)
+	}
+}
+
+func TestSchemaMatchesAPISIX317Matrix(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	full := map[string]any{
+		"uri": "http://127.0.0.1", "auth_header": "Basic 123", "timeout": 3,
+		"name": "http-logger", "max_retry_count": 2, "retry_delay": 2,
+		"buffer_duration": 2, "inactive_timeout": 2, "batch_max_size": 500,
+		"ssl_verify": false,
+	}
+	tests := []struct {
+		name    string
+		config  map[string]any
+		wantErr bool
+	}{
+		{name: "minimal", config: map[string]any{"uri": "http://127.0.0.1"}},
+		{name: "full", config: full},
+		{name: "missing uri", config: map[string]any{"timeout": 3}, wantErr: true},
+		{name: "host without scheme", config: map[string]any{"uri": "127.0.0.1"}, wantErr: true},
+		{name: "host and port without scheme", config: map[string]any{"uri": "127.0.0.1:1024"}, wantErr: true},
+		{name: "path and query", config: map[string]any{"uri": "http://127.0.0.1:1024/x?aa=b"}},
+		{name: "query without path", config: map[string]any{"uri": "http://127.0.0.1:1024?aa=b"}},
+		{name: "host and port", config: map[string]any{"uri": "http://127.0.0.1:1024"}},
+		{name: "http domain", config: map[string]any{"uri": "http://x.con"}},
+		{name: "https domain", config: map[string]any{"uri": "https://x.con"}},
+		{name: "request body size string", config: map[string]any{
+			"uri": "http://127.0.0.1", "max_req_body_bytes": "10", "include_req_body": true,
+		}, wantErr: true},
+		{name: "response body size string", config: map[string]any{
+			"uri": "http://127.0.0.1", "max_resp_body_bytes": "10", "include_resp_body": true,
+		}, wantErr: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := util.Validate(test.config, p.GetSchema())
+			if test.wantErr && err == nil {
+				t.Fatal("Validate() error = nil, want APISIX 3.17 schema rejection")
+			}
+			if !test.wantErr && err != nil {
+				t.Fatalf("Validate() error = %v, want APISIX 3.17 schema acceptance", err)
+			}
+		})
+	}
+}
+
+func TestPostInitRejectsUnsupportedBodyExpressionOperator(t *testing.T) {
+	p := newRawHTTPLoggerPlugin(t, Config{
+		URI:                 "http://127.0.0.1/logs",
+		IncludeRespBody:     true,
+		IncludeRespBodyExpr: []any{[]any{"bar", "<>", "foo"}},
+	})
+	p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
+	if err := p.MaterializeSecrets(); err != nil {
+		t.Fatalf("MaterializeSecrets() error = %v", err)
+	}
+	t.Cleanup(p.Stop)
+	err := p.PostInit()
+	if err == nil || !strings.Contains(err.Error(), `unsupported operator "<>"`) {
+		t.Fatalf("PostInit() error = %v, want APISIX 3.17 unsupported-operator rejection", err)
 	}
 }
 

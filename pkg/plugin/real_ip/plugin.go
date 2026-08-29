@@ -146,6 +146,9 @@ func (p *Plugin) sourceValue(r *http.Request) string {
 	if strings.HasPrefix(source, "http_") {
 		header := httpHeaderName(source[5:])
 		values := r.Header.Values(header)
+		if len(values) == 0 && strings.EqualFold(source, "http_x_forwarded_for") {
+			values = apisixctx.ForwardedForCandidate(r)
+		}
 		if len(values) == 0 {
 			return ""
 		}

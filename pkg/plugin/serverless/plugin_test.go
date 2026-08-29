@@ -14,8 +14,57 @@ import (
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/util"
 	lua "github.com/yuin/gopher-lua"
 )
+
+func TestSchemaMatchesAPISIX317ServerlessMatrix(t *testing.T) {
+	p := NewPreFunction()
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		config map[string]any
+		valid  bool
+	}{
+		{
+			name:   "default access phase",
+			config: map[string]any{"functions": []any{`return function() end`}},
+			valid:  true,
+		},
+		{
+			name: "explicit rewrite phase",
+			config: map[string]any{
+				"phase":     "rewrite",
+				"functions": []any{`return function() end`},
+			},
+			valid: true,
+		},
+		{
+			name: "invalid phase",
+			config: map[string]any{
+				"phase":     "abc",
+				"functions": []any{`return function() end`},
+			},
+		},
+		{name: "missing functions", config: map[string]any{}},
+		{name: "empty functions", config: map[string]any{"functions": []any{}}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := util.Validate(test.config, p.GetSchema())
+			if test.valid && err != nil {
+				t.Fatalf("valid APISIX 3.17 configuration rejected: %v", err)
+			}
+			if !test.valid && err == nil {
+				t.Fatal("invalid APISIX 3.17 configuration accepted")
+			}
+		})
+	}
+}
 
 func TestPostInitInterruptsInfiniteTopLevelChunk(t *testing.T) {
 	p := NewPreFunction()
@@ -375,6 +424,58 @@ func TestPreFunctionReturnsCodeAndBodyWithoutUpstream(t *testing.T) {
 	}
 }
 
+func TestAPISIX317PreFunctionNgxExitStopsWithStatus(t *testing.T) {
+	p := newTestPlugin(t, NewPreFunction(), Config{
+		Functions: []string{
+			`return function() ngx.log(ngx.ERR, 'serverless pre function'); ngx.exit(201); end`,
+		},
+	})
+
+	upstreamCalled := false
+	res := performRequest(p, func(w http.ResponseWriter, _ *http.Request) {
+		upstreamCalled = true
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	if upstreamCalled {
+		t.Fatal("upstream was called after ngx.exit")
+	}
+	if res.Code != http.StatusCreated || res.Body.Len() != 0 {
+		t.Fatalf("response = %d %q, want empty 201", res.Code, res.Body.String())
+	}
+	if got := res.Header().Get("Content-Type"); got != "text/plain; charset=utf-8" {
+		t.Fatalf("Content-Type = %q, want APISIX 3.17 text/plain response", got)
+	}
+}
+
+func TestAPISIX317FunctionsShareContextAndStopOnResponse(t *testing.T) {
+	p := newTestPlugin(t, NewPreFunction(), Config{
+		Functions: []string{
+			`return function(conf, ctx) ctx.source_order = "first" end`,
+			`return function(conf, ctx)
+				if ctx.source_order ~= "first" then
+					return 500, "missing shared context"
+				end
+				return 202, "second"
+			end`,
+			`return function() return 500, "unreachable" end`,
+		},
+	})
+
+	upstreamCalled := false
+	res := performRequest(p, func(w http.ResponseWriter, _ *http.Request) {
+		upstreamCalled = true
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	if upstreamCalled {
+		t.Fatal("upstream was called after the second serverless function returned a response")
+	}
+	if res.Code != http.StatusAccepted || res.Body.String() != "second" {
+		t.Fatalf("response = %d %q, want 202 from the second function", res.Code, res.Body.String())
+	}
+}
+
 func TestPreFunctionCanSetRequestHeaderAndContinue(t *testing.T) {
 	p := newTestPlugin(t, NewPreFunction(), Config{
 		Phase: "rewrite",
@@ -501,6 +602,19 @@ func TestPostInitRejectsLuaChunkThatDoesNotReturnFunction(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "only accept Lua function") {
 		t.Fatalf("PostInit() error = %v, want only accept Lua function", err)
+	}
+}
+
+func TestAPISIX317RejectsInvalidLuaChunk(t *testing.T) {
+	p := NewPreFunction()
+	p.config = Config{Functions: []string{`a`}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	err := p.PostInit()
+	if err == nil || !strings.Contains(err.Error(), "failed to loadstring") {
+		t.Fatalf("PostInit() error = %v, want invalid Lua chunk rejection", err)
 	}
 }
 

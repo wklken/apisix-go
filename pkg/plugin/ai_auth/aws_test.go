@@ -55,6 +55,39 @@ func TestSignAWSRequestAddsDeterministicSigV4Headers(t *testing.T) {
 	}
 }
 
+func TestAPISIX317SigV4SignsHostAuthorityInsteadOfResolvedAddress(t *testing.T) {
+	body := []byte(`{"messages":[{"role":"user","content":[{"text":"hi"}]}]}`)
+	newRequest := func(authority string) *http.Request {
+		req, err := http.NewRequest(
+			http.MethodPost,
+			"https://127.0.0.1:16724/model/test/converse",
+			bytes.NewReader(body),
+		)
+		if err != nil {
+			t.Fatalf("new request: %v", err)
+		}
+		req.Host = authority
+		return req
+	}
+	now := time.Date(2026, time.May, 26, 0, 0, 0, 0, time.UTC)
+	config := AWSConfig{AccessKeyID: "AKIDEXAMPLE", SecretAccessKey: "secret"}
+
+	domainRequest := newRequest("bedrock-domain.example.com:16724")
+	if err := SignAWSRequest(domainRequest, body, config, "us-east-1", "bedrock", now); err != nil {
+		t.Fatalf("sign domain authority: %v", err)
+	}
+	resolvedRequest := newRequest("127.0.0.1:16724")
+	if err := SignAWSRequest(resolvedRequest, body, config, "us-east-1", "bedrock", now); err != nil {
+		t.Fatalf("sign resolved address: %v", err)
+	}
+	if domainRequest.Host != "bedrock-domain.example.com:16724" {
+		t.Fatalf("signed request Host = %q, want domain authority", domainRequest.Host)
+	}
+	if domainRequest.Header.Get("Authorization") == resolvedRequest.Header.Get("Authorization") {
+		t.Fatal("SigV4 signature ignored the domain Host authority")
+	}
+}
+
 func TestSignAWSRequestValidatesCredentialsAndRegion(t *testing.T) {
 	req, _ := http.NewRequest(http.MethodPost, "https://example.com/model/x/converse", nil)
 	if err := SignAWSRequest(req, nil, AWSConfig{}, "us-east-1", "bedrock", time.Now()); err == nil {

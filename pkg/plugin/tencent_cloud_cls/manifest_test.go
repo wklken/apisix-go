@@ -49,7 +49,7 @@ func TestStandaloneManifestMapsOneIndependentCasePerPinnedBlock(t *testing.T) {
 		t.Fatalf("decode %s: %v", path, err)
 	}
 
-	if manifest.Source.Commit != "c3d7d5ec69774121f53d2e20d29d09c816795dd7" {
+	if manifest.Source.Commit != "9ef2ecab67f652d38365049613610ef649bb4ad0" {
 		t.Fatalf("source commit = %q, want pinned Apache APISIX commit", manifest.Source.Commit)
 	}
 	if manifest.Source.File != sourceFile || manifest.Source.Tests != sourceTests {

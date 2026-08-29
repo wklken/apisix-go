@@ -112,7 +112,7 @@ const schema = `
     },
     "cookie_secure": {
       "type": "boolean",
-      "default": true
+      "default": false
     },
     "cookie_same_site": {
       "type": "string",
@@ -219,7 +219,7 @@ func (p *Plugin) PostInit() error {
 		p.config.CookieExpiresIn = 86400
 	}
 	if p.config.CookieSecure == nil {
-		cookieSecure := true
+		cookieSecure := false
 		p.config.CookieSecure = &cookieSecure
 	}
 	if p.config.CookieSameSite == "" {
@@ -591,7 +591,7 @@ func (p *Plugin) userInfoFromSession(r *http.Request) (map[string]any, bool) {
 	var session sessionPayload
 	err = p.useSessionSecretsLocked(func(current string, fallbacks []string) error {
 		return useVerifiedFeishuSessionPayload(
-			cookie.Value, current, fallbacks,
+			cookie.Value, current, fallbacks, p.oauthStateFingerprint(), time.Now(),
 			func(payload []byte) error {
 				return json.Unmarshal(payload, &session)
 			},
@@ -610,23 +610,27 @@ func useVerifiedFeishuSessionPayload(
 	value string,
 	current string,
 	fallbacks []string,
+	fingerprint string,
+	now time.Time,
 	use func([]byte) error,
 ) error {
 	if use == nil {
 		return secret.ErrCredentialUnavailable
 	}
-	payload, ok := base.VerifySessionValue(value, current, fallbacks)
-	if !ok {
-		return secret.ErrCredentialUnavailable
+	payload, err := base.OpenOAuthSession(value, current, fallbacks, fingerprint, now)
+	if err != nil {
+		return err
 	}
 	defer clear(payload)
 	return use(payload)
 }
 
 func (p *Plugin) sessionCookie(userinfo map[string]any) (*http.Cookie, error) {
+	now := time.Now()
+	expiresAt := now.Add(time.Duration(p.config.CookieExpiresIn) * time.Second)
 	payload, err := json.Marshal(sessionPayload{
 		UserInfo:  userinfo,
-		ExpiresAt: time.Now().Add(time.Duration(p.config.CookieExpiresIn) * time.Second).Unix(),
+		ExpiresAt: expiresAt.Unix(),
 	})
 	if err != nil {
 		return nil, err
@@ -635,8 +639,11 @@ func (p *Plugin) sessionCookie(userinfo map[string]any) (*http.Cookie, error) {
 
 	var value string
 	if err := p.useSessionSecretsLocked(func(current string, _ []string) error {
-		value = signAndClearFeishuSessionPayload(payload, current)
-		return nil
+		var sealErr error
+		value, sealErr = sealAndClearFeishuSessionPayload(
+			payload, current, p.oauthStateFingerprint(), now, expiresAt,
+		)
+		return sealErr
 	}); err != nil {
 		return nil, err
 	}
@@ -647,13 +654,18 @@ func (p *Plugin) sessionCookie(userinfo map[string]any) (*http.Cookie, error) {
 		HttpOnly: true,
 		Secure:   *p.config.CookieSecure,
 		SameSite: base.CookieSameSite(p.config.CookieSameSite),
-		MaxAge:   p.config.CookieExpiresIn,
 	}, nil
 }
 
-func signAndClearFeishuSessionPayload(payload []byte, current string) string {
+func sealAndClearFeishuSessionPayload(
+	payload []byte,
+	current string,
+	fingerprint string,
+	issuedAt time.Time,
+	expiresAt time.Time,
+) (string, error) {
 	defer clear(payload)
-	return base.SignSessionValue(payload, current)
+	return base.SealOAuthSession(payload, current, fingerprint, issuedAt, expiresAt)
 }
 
 func (p *Plugin) transport() http.RoundTripper {

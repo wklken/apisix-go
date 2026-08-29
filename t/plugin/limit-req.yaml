@@ -1,26 +1,26 @@
 sources:
   - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
     file: t/plugin/limit-req-redis-cluster.t
     tests: 22
   - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
     file: t/plugin/limit-req-redis.t
     tests: 30
   - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
     file: t/plugin/limit-req-shared-counter.t
     tests: 3
   - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
     file: t/plugin/limit-req.t
     tests: 21
   - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
     file: t/plugin/limit-req2.t
     tests: 10
   - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
     file: t/plugin/limit-req3.t
     tests: 3
 cases:

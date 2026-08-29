@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -184,10 +185,10 @@ func TestLogSnapshotSanitizerMasksRequestLineForLoggerFields(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/orders?token=secret&keep=yes", nil)
 	rr := httptest.NewRecorder()
 	serveSanitizedSnapshot(t, p, rr, req, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got := apisixlog.GetField(r, "$request_uri"); got != "/orders?keep=yes&token=%2A%2A%2A%2A%2A" {
+		if got := apisixlog.GetField(r, "$request_uri"); got != "/orders?keep=yes&token=*****" {
 			t.Fatalf("request_uri log field = %q, want masked URI", got)
 		}
-		if got := apisixlog.GetField(r, "$request_line"); got != "GET /orders?keep=yes&token=%2A%2A%2A%2A%2A HTTP/1.1" {
+		if got := apisixlog.GetField(r, "$request_line"); got != "GET /orders?keep=yes&token=***** HTTP/1.1" {
 			t.Fatalf("request_line log field = %q, want masked request line", got)
 		}
 		w.WriteHeader(http.StatusNoContent)
@@ -252,6 +253,306 @@ func TestLogSnapshotSanitizerMasksJSONBodyWithSimpleJSONPath(t *testing.T) {
 			t.Fatalf("second card = %v, want masked", second)
 		}
 	}))
+}
+
+func TestLogSnapshotSanitizerMasksJSONBodyWithObjectFieldUnion(t *testing.T) {
+	p := newTestPlugin(t, Config{Request: []MaskRule{{
+		Type:       "body",
+		BodyFormat: "json",
+		Name:       `$['password','token']`,
+		Action:     "replace",
+		Value:      "*****",
+	}}})
+	snapshot := base.LogSnapshot{Request: apisixlog.RequestLogSnapshot{
+		Body: []byte(`{"password":"secret","token":"credential","keep":"visible"}`),
+	}}
+
+	if err := p.SanitizeLogSnapshot(&snapshot); err != nil {
+		t.Fatalf("SanitizeLogSnapshot() error = %v", err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(snapshot.Request.Body, &body); err != nil {
+		t.Fatalf("decode sanitized body: %v", err)
+	}
+	if body["password"] != "*****" || body["token"] != "*****" || body["keep"] != "visible" {
+		t.Fatalf("sanitized body = %s, want both union fields masked and keep preserved", snapshot.Request.Body)
+	}
+}
+
+func TestLogSnapshotSanitizerMasksJSONBodyWithArrayIndexUnion(t *testing.T) {
+	p := newTestPlugin(t, Config{Request: []MaskRule{{
+		Type:       "body",
+		BodyFormat: "json",
+		Name:       `$.users[-3,-1].token`,
+		Action:     "replace",
+		Value:      "*****",
+	}}})
+	snapshot := base.LogSnapshot{Request: apisixlog.RequestLogSnapshot{
+		Body: []byte(`{"users":[{"token":"zero"},{"token":"one"},{"token":"two"}]}`),
+	}}
+
+	if err := p.SanitizeLogSnapshot(&snapshot); err != nil {
+		t.Fatalf("SanitizeLogSnapshot() error = %v", err)
+	}
+	var body struct {
+		Users []map[string]any `json:"users"`
+	}
+	if err := json.Unmarshal(snapshot.Request.Body, &body); err != nil {
+		t.Fatalf("decode sanitized body: %v", err)
+	}
+	want := []string{"*****", "one", "*****"}
+	for i, user := range body.Users {
+		if user["token"] != want[i] {
+			t.Fatalf("users[%d].token = %v, want %q", i, user["token"], want[i])
+		}
+	}
+}
+
+func TestLogSnapshotSanitizerMasksJSONBodyWithObjectWildcard(t *testing.T) {
+	p := newTestPlugin(t, Config{Request: []MaskRule{{
+		Type:       "body",
+		BodyFormat: "json",
+		Name:       `$.accounts.*.token`,
+		Action:     "replace",
+		Value:      "*****",
+	}}})
+	snapshot := base.LogSnapshot{Request: apisixlog.RequestLogSnapshot{
+		Body: []byte(`{"accounts":{"primary":{"token":"one"},"backup":{"token":"two"}},"token":"outside"}`),
+	}}
+
+	if err := p.SanitizeLogSnapshot(&snapshot); err != nil {
+		t.Fatalf("SanitizeLogSnapshot() error = %v", err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(snapshot.Request.Body, &body); err != nil {
+		t.Fatalf("decode sanitized body: %v", err)
+	}
+	accounts := body["accounts"].(map[string]any)
+	for name, value := range accounts {
+		if got := value.(map[string]any)["token"]; got != "*****" {
+			t.Fatalf("accounts[%q].token = %v, want masked", name, got)
+		}
+	}
+	if body["token"] != "outside" {
+		t.Fatalf("outer token = %v, want preserved", body["token"])
+	}
+}
+
+func TestLogSnapshotSanitizerRemovesEquivalentArrayIndexUnionOnce(t *testing.T) {
+	p := newTestPlugin(t, Config{Request: []MaskRule{{
+		Type:       "body",
+		BodyFormat: "json",
+		Name:       `$[0,-3,0]`,
+		Action:     "remove",
+	}}})
+	snapshot := base.LogSnapshot{Request: apisixlog.RequestLogSnapshot{
+		Body: []byte(`["zero","one","two"]`),
+	}}
+
+	if err := p.SanitizeLogSnapshot(&snapshot); err != nil {
+		t.Fatalf("SanitizeLogSnapshot() error = %v", err)
+	}
+	if got := string(snapshot.Request.Body); got != `[null,"one","two"]` {
+		t.Fatalf("sanitized body = %s, want only equivalent index zero removed", got)
+	}
+}
+
+func TestLogSnapshotSanitizerMasksJSONBodyWithArraySlice(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		path       string
+		wantMasked map[int]bool
+	}{
+		{name: "bounded step", path: `$.users[1:5:2].token`, wantMasked: map[int]bool{1: true, 3: true}},
+		{name: "omitted start", path: `$.users[:2].token`, wantMasked: map[int]bool{0: true, 1: true}},
+		{name: "negative boundary", path: `$.users[-2:].token`, wantMasked: map[int]bool{4: true, 5: true}},
+		{name: "negative step", path: `$.users[4:0:-2].token`, wantMasked: map[int]bool{2: true, 4: true}},
+		{name: "full reverse", path: `$.users[::-1].token`, wantMasked: map[int]bool{0: true, 1: true, 2: true, 3: true, 4: true, 5: true}},
+		{name: "omitted negative end", path: `$.users[3::-2].token`, wantMasked: map[int]bool{1: true, 3: true}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			p := newTestPlugin(t, Config{Request: []MaskRule{{
+				Type:       "body",
+				BodyFormat: "json",
+				Name:       test.path,
+				Action:     "replace",
+				Value:      "*****",
+			}}})
+			snapshot := base.LogSnapshot{Request: apisixlog.RequestLogSnapshot{
+				Body: []byte(
+					`{"users":[{"token":"0"},{"token":"1"},{"token":"2"},` +
+						`{"token":"3"},{"token":"4"},{"token":"5"}]}`,
+				),
+			}}
+
+			if err := p.SanitizeLogSnapshot(&snapshot); err != nil {
+				t.Fatalf("SanitizeLogSnapshot() error = %v", err)
+			}
+			var body struct {
+				Users []map[string]any `json:"users"`
+			}
+			if err := json.Unmarshal(snapshot.Request.Body, &body); err != nil {
+				t.Fatalf("decode sanitized body: %v", err)
+			}
+			for i, user := range body.Users {
+				want := string(rune('0' + i))
+				if test.wantMasked[i] {
+					want = "*****"
+				}
+				if user["token"] != want {
+					t.Fatalf("users[%d].token = %v, want %q for path %q", i, user["token"], want, test.path)
+				}
+			}
+		})
+	}
+}
+
+func TestLogSnapshotSanitizerHandlesMaximumPositiveSliceStep(t *testing.T) {
+	maxInt := int(^uint(0) >> 1)
+	p := newTestPlugin(t, Config{Request: []MaskRule{{
+		Type:       "body",
+		BodyFormat: "json",
+		Name:       `$.users[1:2:` + strconv.Itoa(maxInt) + `].token`,
+		Action:     "replace",
+		Value:      "*****",
+	}}})
+	snapshot := base.LogSnapshot{Request: apisixlog.RequestLogSnapshot{
+		Body: []byte(`{"users":[{"token":"zero"},{"token":"one"},{"token":"two"}]}`),
+	}}
+
+	if err := p.SanitizeLogSnapshot(&snapshot); err != nil {
+		t.Fatalf("SanitizeLogSnapshot() error = %v", err)
+	}
+	if got := string(snapshot.Request.Body); got != `{"users":[{"token":"zero"},{"token":"*****"},{"token":"two"}]}` {
+		t.Fatalf("sanitized body = %s, want only slice start masked", got)
+	}
+}
+
+func TestLogSnapshotSanitizerHandlesMinimumNegativeSliceStep(t *testing.T) {
+	minInt := -int(^uint(0)>>1) - 1
+	p := newTestPlugin(t, Config{Request: []MaskRule{{
+		Type:       "body",
+		BodyFormat: "json",
+		Name:       `$.users[1::` + strconv.Itoa(minInt) + `].token`,
+		Action:     "replace",
+		Value:      "*****",
+	}}})
+	snapshot := base.LogSnapshot{Request: apisixlog.RequestLogSnapshot{
+		Body: []byte(`{"users":[{"token":"zero"},{"token":"one"},{"token":"two"}]}`),
+	}}
+
+	if err := p.SanitizeLogSnapshot(&snapshot); err != nil {
+		t.Fatalf("SanitizeLogSnapshot() error = %v", err)
+	}
+	if got := string(snapshot.Request.Body); got != `{"users":[{"token":"zero"},{"token":"*****"},{"token":"two"}]}` {
+		t.Fatalf("sanitized body = %s, want only slice start masked", got)
+	}
+}
+
+func TestLogSnapshotSanitizerMasksUnicodeSurrogatePairField(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		action    string
+		value     string
+		wantValue string
+		wantField bool
+	}{
+		{name: "replace", action: "replace", value: "*****", wantValue: "*****", wantField: true},
+		{name: "remove", action: "remove"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			p := newTestPlugin(t, Config{Request: []MaskRule{{
+				Type:       "body",
+				BodyFormat: "json",
+				Name:       `$['\uD83D\uDE00']`,
+				Action:     test.action,
+				Value:      test.value,
+			}}})
+			snapshot := base.LogSnapshot{Request: apisixlog.RequestLogSnapshot{
+				Body: []byte(`{"😀":"secret","keep":"visible"}`),
+			}}
+
+			if err := p.SanitizeLogSnapshot(&snapshot); err != nil {
+				t.Fatalf("SanitizeLogSnapshot() error = %v", err)
+			}
+			var body map[string]any
+			if err := json.Unmarshal(snapshot.Request.Body, &body); err != nil {
+				t.Fatalf("decode sanitized body: %v", err)
+			}
+			value, ok := body["😀"]
+			if ok != test.wantField || (ok && value != test.wantValue) || body["keep"] != "visible" {
+				t.Fatalf(
+					"sanitized body = %s, want emoji field present=%v value=%q and keep preserved",
+					snapshot.Request.Body, test.wantField, test.wantValue,
+				)
+			}
+		})
+	}
+}
+
+func TestPostInitRejectsUnpairedUnicodeSurrogateInJSONPath(t *testing.T) {
+	for _, path := range []string{`$['\uD83D']`, `$['\uDE00']`} {
+		t.Run(path, func(t *testing.T) {
+			const replacement = "replacement-secret-must-not-leak"
+			p := &Plugin{config: Config{Request: []MaskRule{{
+				Type:       "body",
+				BodyFormat: "json",
+				Name:       path,
+				Action:     "replace",
+				Value:      replacement,
+			}}}}
+			if err := p.Init(); err != nil {
+				t.Fatalf("Init() error = %v", err)
+			}
+
+			err := p.PostInit()
+			if err == nil {
+				t.Fatal("PostInit() error = nil, want unpaired surrogate rejection")
+			}
+			if !strings.Contains(err.Error(), strconv.Quote(path)) {
+				t.Fatalf("PostInit() error = %q, want rule name %q", err, path)
+			}
+			if strings.Contains(err.Error(), replacement) {
+				t.Fatalf("PostInit() error leaked replacement: %q", err)
+			}
+		})
+	}
+}
+
+func TestPostInitRejectsMalformedOrUnsupportedJSONPath(t *testing.T) {
+	for _, path := range []string{
+		`$.users[`,
+		`$.users[?(@.active)].token`,
+		`$.users[(@.length-1)].token`,
+		`$.users[::0].token`,
+		`$['token',]`,
+		`$`,
+	} {
+		t.Run(path, func(t *testing.T) {
+			const replacement = "configured-mask-value-must-not-leak"
+			p := &Plugin{config: Config{Request: []MaskRule{{
+				Type:       "body",
+				BodyFormat: "json",
+				Name:       path,
+				Action:     "replace",
+				Value:      replacement,
+			}}}}
+			if err := p.Init(); err != nil {
+				t.Fatalf("Init() error = %v", err)
+			}
+
+			err := p.PostInit()
+			if err == nil {
+				t.Fatal("PostInit() error = nil, want JSONPath rejection before publication")
+			}
+			if !strings.Contains(err.Error(), path) {
+				t.Fatalf("PostInit() error = %q, want rule name %q", err, path)
+			}
+			if strings.Contains(err.Error(), replacement) {
+				t.Fatalf("PostInit() error leaked configured mask value: %q", err)
+			}
+		})
+	}
 }
 
 func TestLogSnapshotSanitizerRejectsMalformedJSON(t *testing.T) {

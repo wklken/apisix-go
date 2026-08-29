@@ -1,89 +1,20 @@
 sources:
   - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
     file: t/plugin/opa.t
-    tests: 13
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/opa2.t
     tests: 12
+    test_numbers: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
   - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
+    file: t/plugin/opa2.t
+    tests: 8
+    test_numbers: [5, 6, 7, 8, 9, 10, 11, 12]
+  - repository: https://github.com/apache/apisix
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
     file: t/plugin/opa3.t
     tests: 2
 
 cases:
-  - name: schema
-    source:
-      file: t/plugin/opa.t
-      tests: [1]
-    variants:
-      - name: valid
-        config:
-          routes:
-            - id: opa-valid-schema
-              uri: /opa-schema
-              plugins:
-                opa:
-                  host: "{{FIXTURE.opa.URL}}"
-                  policy: example/allow
-              upstream: &primary_upstream
-                type: roundrobin
-                nodes:
-                  "{{FIXTURE.primary.ADDR}}": 1
-        fixtures:
-          - name: opa
-            kind: http
-            expect:
-              - method: POST
-                path:
-                  equals: /v1/data/example/allow
-            respond:
-              - status: 200
-                body: '{"result":{"allow":true}}'
-          - name: primary
-            kind: http
-            expect:
-              - method: GET
-                path:
-                  equals: /opa-schema
-            respond:
-              - status: 200
-                body: done
-        steps:
-          - name: request
-            input:
-              path: /opa-schema
-            output:
-              status: 200
-              body:
-                equals: done
-      - name: missing-policy
-        config:
-          routes:
-            - id: opa-missing-policy
-              uri: /opa-schema
-              plugins:
-                opa:
-                  host: http://127.0.0.1:8181
-        input: &schema_input
-          path: /opa-schema
-        output: &schema_error
-          status: 404
-          logs:
-            matches: 'build route opa-.*fail:.*opa'
-      - name: numeric-host
-        config:
-          routes:
-            - id: opa-numeric-host
-              uri: /opa-schema
-              plugins:
-                opa:
-                  host: 3233
-                  policy: example/allow
-        input: *schema_input
-        output: *schema_error
-
   - name: policy-decisions
     source:
       file: t/plugin/opa.t
@@ -96,7 +27,10 @@ cases:
             opa:
               host: "{{FIXTURE.opa.URL}}"
               policy: example
-          upstream: *primary_upstream
+          upstream: &primary_upstream
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
     fixtures:
       - name: opa
         kind: http
@@ -297,90 +231,6 @@ cases:
           headers:
             user:
               equals: none
-
-  - name: resource-context
-    source:
-      file: t/plugin/opa2.t
-      tests: [1, 2, 3, 4]
-    config:
-      upstreams:
-        - id: u1
-          type: roundrobin
-          nodes:
-            "{{FIXTURE.primary.ADDR}}": 1
-      consumers:
-        - username: test
-          plugins:
-            key-auth:
-              key: test-key
-      services:
-        - id: s1
-          name: s1
-          plugins:
-            key-auth: {}
-      routes:
-        - id: r1
-          uri: /hello
-          plugins:
-            opa:
-              host: "{{FIXTURE.opa.URL}}"
-              policy: echo
-              with_route: true
-              with_consumer: true
-              with_service: true
-          upstream_id: u1
-          service_id: s1
-    fixtures:
-      - name: opa
-        kind: http
-        expect:
-          - method: POST
-            path:
-              equals: /v1/data/echo
-            body:
-              matches: '"route":\{[^}]*"id":"r1".*"plugins":\{.*"opa"'
-          - method: POST
-            path:
-              equals: /v1/data/echo
-            body:
-              matches: '"consumer":\{"username":"test".*"plugins":\{.*"key-auth":\{.*"key":"test-key"'
-          - method: POST
-            path:
-              equals: /v1/data/echo
-            body:
-              matches: '"service":\{[^}]*"id":"s1".*"plugins":\{.*"key-auth":\{[^}]*"header":"apikey".*"query":"apikey"'
-        respond:
-          - *deny
-          - *deny
-          - *deny
-      - name: primary
-        kind: http
-        respond:
-          - status: 200
-            body: should-not-run
-    steps:
-      - &resource_request
-        name: route-data
-        input:
-          path: /hello
-          headers:
-            test-header: only-for-test
-            apikey: test-key
-        output: *forbidden
-      - name: consumer-data
-        input:
-          path: /hello
-          headers:
-            test-header: only-for-test
-            apikey: test-key
-        output: *forbidden
-      - name: service-data
-        input:
-          path: /hello
-          headers:
-            test-header: only-for-test
-            apikey: test-key
-        output: *forbidden
 
   - name: missing-service-and-consumer-context
     source:

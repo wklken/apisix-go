@@ -177,6 +177,9 @@ func TestCoordinatorActivationAndCommitFailuresRollbackThenAbort(t *testing.T) {
 			if !engine.rollbackContextOK || !journal.abortContextOK {
 				t.Fatalf("rollback/abort cleanup context = %t/%t", engine.rollbackContextOK, journal.abortContextOK)
 			}
+			if !engine.activationContextOK {
+				t.Fatal("activation inherited caller cancellation after durable staging")
+			}
 		})
 	}
 }
@@ -509,6 +512,9 @@ func TestCoordinatorCommittedReplayReturnsDefensiveValues(t *testing.T) {
 	ack, err := NewCoordinator(journal, engine).Apply(context.Background(), desiredHTTPBatch("etcd", "61"))
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !ack.CommittedReplay {
+		t.Fatal("committed acknowledgement replay was not identified")
 	}
 	ack.Decisions[DomainHTTP][0].Code = "mutated-by-caller"
 	delete(ack.Decisions, DomainHTTP)
@@ -877,14 +883,15 @@ type coordinatorFakeEngine struct {
 	confirmHook   func(PublicationSet)
 	finalizePanic any
 
-	contextKey        any
-	contextValue      any
-	cleanupContextOK  bool
-	rollbackContextOK bool
-	prepareEntered    chan struct{}
-	prepareRelease    chan struct{}
-	activePrepare     atomic.Int32
-	maxPrepare        atomic.Int32
+	contextKey          any
+	contextValue        any
+	cleanupContextOK    bool
+	activationContextOK bool
+	rollbackContextOK   bool
+	prepareEntered      chan struct{}
+	prepareRelease      chan struct{}
+	activePrepare       atomic.Int32
+	maxPrepare          atomic.Int32
 
 	prepareCalls    int
 	compiledDomains int
@@ -965,12 +972,14 @@ func (e *coordinatorFakeEngine) DiscardPrepared(ctx context.Context, _ Publicati
 	return e.discardErr
 }
 
-func (e *coordinatorFakeEngine) Activate(_ context.Context, _ PublicationToken, set PublicationSet) error {
+func (e *coordinatorFakeEngine) Activate(ctx context.Context, _ PublicationToken, set PublicationSet) error {
 	e.recorder.add("activate")
 	e.activated = cloneCoordinatorPublicationSet(set)
 	if e.activateHook != nil {
 		e.activateHook()
 	}
+	e.activationContextOK = ctx.Err() == nil &&
+		(e.contextKey == nil || ctx.Value(e.contextKey) == e.contextValue)
 	return e.activateErr
 }
 

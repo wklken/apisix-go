@@ -82,10 +82,22 @@ type streamingCompression struct {
 type dynamicStreamingBindingsKey struct{}
 
 func withDynamicStreamingBindings(r *http.Request, bindings []Binding) *http.Request {
+	merged := dynamicStreamingBindings(r)
+	for _, binding := range bindings {
+		index := slices.IndexFunc(merged, func(existing Binding) bool {
+			return existing.Descriptor.Factory == binding.Descriptor.Factory &&
+				existing.Scope == binding.Scope && existing.Provenance == binding.Provenance
+		})
+		if index >= 0 {
+			merged[index] = binding
+			continue
+		}
+		merged = append(merged, binding)
+	}
 	return r.WithContext(context.WithValue(
 		r.Context(),
 		dynamicStreamingBindingsKey{},
-		cloneBindings(bindings),
+		cloneBindings(merged),
 	))
 }
 
@@ -523,7 +535,7 @@ func (e *StreamingResponseExecutor) PostResolutionHook(
 		return r, nil
 	}
 	bufferStreamingHeaders := hasConditionalTerminalEffective(effective)
-	dynamicHeaders := make([]Binding, 0)
+	dynamicBindings := make([]Binding, 0)
 	for _, binding := range effective.all() {
 		if binding.Provenance.Kind != ResourceConsumer && binding.Provenance.Kind != ResourceConsumerGroup {
 			continue
@@ -546,6 +558,12 @@ func (e *StreamingResponseExecutor) PostResolutionHook(
 		if err != nil {
 			return r, err
 		}
+		if isDualModeResponseBinding(binding, capability) &&
+			!capability.CompressionOffer && !capability.StreamingResponseOwner &&
+			capability.ExclusiveProtocol == ProtocolNone && len(buffered) > 0 {
+			dynamicBindings = append(dynamicBindings, binding)
+			continue
+		}
 		if capability.CompressionOffer || capability.BufferedBodyFilter || capability.StreamingBodyFilter ||
 			capability.StreamingResponseOwner || capability.ExclusiveProtocol != ProtocolNone ||
 			(len(buffered) > 0 && !bufferStreamingHeader) {
@@ -557,11 +575,11 @@ func (e *StreamingResponseExecutor) PostResolutionHook(
 			)
 		}
 		if capability.HeaderFilter && !bufferStreamingHeader {
-			dynamicHeaders = append(dynamicHeaders, binding)
+			dynamicBindings = append(dynamicBindings, binding)
 		}
 	}
-	if len(dynamicHeaders) > 0 {
-		return withDynamicStreamingBindings(r, dynamicHeaders), nil
+	if len(dynamicBindings) > 0 {
+		return withDynamicStreamingBindings(r, dynamicBindings), nil
 	}
 	return r, nil
 }
@@ -601,7 +619,15 @@ func bindingUsesBufferedStreamingHeaderFallback(binding Binding, enabled bool) (
 	if !enabled {
 		return false, nil
 	}
-	return bindingDeclaresStreamingHeader(binding)
+	declared, err := bindingDeclaresStreamingHeader(binding)
+	if err != nil || !declared {
+		return declared, err
+	}
+	capability, err := responseCapabilityForBinding(binding)
+	if err != nil {
+		return false, err
+	}
+	return !isRequestSelectableResponseBinding(binding, capability), nil
 }
 
 func (e *StreamingResponseExecutor) runHeaderFilters(r *http.Request, state *base.StreamingResponseState) error {
@@ -706,7 +732,10 @@ func (e *StreamingResponseExecutor) wrapBody(
 	finish *streamingFinish,
 ) (http.ResponseWriter, error) {
 	current := http.ResponseWriter(w)
-	bodyBindings := e.phaseBindings(func(capability ResponseCapability) bool { return capability.StreamingBodyFilter })
+	bodyBindings := e.phaseBindingsFor(
+		mergeStreamingBindings(e.bindings, dynamicStreamingBindings(r)),
+		func(capability ResponseCapability) bool { return capability.StreamingBodyFilter },
+	)
 	for _, binding := range slices.Backward(bodyBindings) {
 		capability, capabilityErr := responseCapabilityForBinding(binding)
 		if capabilityErr != nil {

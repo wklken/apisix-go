@@ -174,11 +174,13 @@ func loadProfileTestManifest(t *testing.T) *capability.Manifest {
 func qualifiedProfileTestManifest(t *testing.T) *capability.Manifest {
 	t.Helper()
 	manifest := loadProfileTestManifest(t)
-	if len(manifest.QualificationProfiles) != 1 ||
-		manifest.QualificationProfiles[0].Name != string(QualificationHTTPDataPlaneV1) {
+	index := slices.IndexFunc(manifest.QualificationProfiles, func(profile capability.QualificationProfile) bool {
+		return profile.Name == string(QualificationHTTPDataPlaneV1)
+	})
+	if index < 0 {
 		t.Fatalf("qualification profiles = %#v, want %q", manifest.QualificationProfiles, QualificationHTTPDataPlaneV1)
 	}
-	manifest.QualificationProfiles[0].RequiredEvidence = nil
+	manifest.QualificationProfiles[index].RequiredEvidence = nil
 	return manifest
 }
 

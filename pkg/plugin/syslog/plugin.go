@@ -268,6 +268,9 @@ func (p *Plugin) PostInit() error {
 	if _, err := p.MetadataView().Decode(name, &metadata); err != nil {
 		return fmt.Errorf("syslog metadata decode failed: %w", err)
 	}
+	if !p.config.TLS {
+		logger.Warn("Keeping tls disabled in syslog configuration is a security risk")
+	}
 	if p.config.Timeout == 0 {
 		p.config.Timeout = 3000
 	}

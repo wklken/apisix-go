@@ -208,6 +208,9 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(p.config.EndpointAddr)), "http://") {
+		logger.Warn("Using skywalking-logger endpoint_addr with no TLS is a security risk")
+	}
 	if err := base.PrepareExprRegexps(
 		p.config.IncludeReqBodyExpr, p.config.IncludeRespBodyExpr,
 	); err != nil {

@@ -126,34 +126,62 @@ func TestHandlerUsesWeightedActions(t *testing.T) {
 	}
 }
 
-func TestHandlerNeverSelectsZeroWeightAction(t *testing.T) {
-	p := &Plugin{}
-	if err := p.Init(); err != nil {
-		t.Fatalf("Init() error = %v", err)
-	}
-	if err := util.Parse(map[string]any{
-		"rules": []any{map[string]any{
-			"match": []any{[]any{"uri", "==", "/anything"}},
-			"actions": []any{
-				map[string]any{"set_headers": map[string]any{"X-Bucket": "zero"}, "weight": 0},
-				map[string]any{"set_headers": map[string]any{"X-Bucket": "hundred"}, "weight": 100},
+func TestHandlerUsesAPISIXWeightedRoundRobinFromFixedInitialAction(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Rules: []Rule{
+			{
+				Match: []any{[]any{"uri", "==", "/anything"}},
+				Actions: []Action{
+					{SetHeaders: map[string]any{"X-Bucket": "blue"}, Weight: 5},
+					{SetHeaders: map[string]any{"X-Bucket": "green"}, Weight: 3},
+					{SetHeaders: map[string]any{"X-Bucket": "red"}, Weight: 1},
+				},
 			},
-		}},
-	}, p.Config()); err != nil {
-		t.Fatalf("Parse() error = %v", err)
-	}
-	if err := p.PostInit(); err != nil {
-		t.Fatalf("PostInit() error = %v", err)
-	}
+		},
+	})
 
-	for range 3 {
+	// APISIX starts each round-robin picker at a random action. Fix that
+	// starting point here so the weighted selection order is deterministic.
+	p.actionPickers[0].lastAction = len(p.config.Rules[0].Actions) - 1
+
+	got := make([]string, 0, 9)
+	for range 9 {
 		req := httptest.NewRequest(http.MethodGet, "/anything", nil)
 		p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if got := r.Header.Get("X-Bucket"); got != "hundred" {
-				t.Fatalf("X-Bucket = %q, want hundred", got)
-			}
+			got = append(got, r.Header.Get("X-Bucket"))
 		})).ServeHTTP(httptest.NewRecorder(), req)
 	}
+
+	want := []string{"blue", "blue", "green", "blue", "green", "blue", "green", "red", "blue"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("weighted action order = %v, want %v", got, want)
+	}
+}
+
+func TestHandlerRandomizesInitialActionAcrossPluginInstances(t *testing.T) {
+	seen := map[string]bool{}
+	for range 128 {
+		p := newTestPlugin(t, Config{
+			Rules: []Rule{
+				{
+					Actions: []Action{
+						{SetHeaders: map[string]any{"X-Bucket": "blue"}},
+						{SetHeaders: map[string]any{"X-Bucket": "green"}},
+					},
+				},
+			},
+		})
+
+		req := httptest.NewRequest(http.MethodGet, "/anything", nil)
+		p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			seen[r.Header.Get("X-Bucket")] = true
+		})).ServeHTTP(httptest.NewRecorder(), req)
+		if len(seen) == 2 {
+			return
+		}
+	}
+
+	t.Fatalf("initial weighted action remained fixed across plugin instances: %v", seen)
 }
 
 func TestMatchSupportsRequestHeaderAndNotEquals(t *testing.T) {
@@ -327,6 +355,7 @@ func TestSchemaValidatesOfficialTrafficLabelShape(t *testing.T) {
 
 	invalid := []map[string]any{
 		{"rules": []any{map[string]any{"match": []any{}, "actions": []any{map[string]any{"weight": 1}}}}},
+		{"rules": []any{map[string]any{"actions": []any{map[string]any{"weight": 0}}}}},
 		{"rules": []any{map[string]any{"actions": []any{map[string]any{"add_headers": map[string]any{"X": "y"}}}}}},
 		{"rules": []any{map[string]any{"actions": []any{map[string]any{"set_headers": map[string]any{"X": true}}}}}},
 	}

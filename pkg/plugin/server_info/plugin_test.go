@@ -106,6 +106,24 @@ func TestInfoHandlerWritesJSON(t *testing.T) {
 	}
 }
 
+func TestViewPublishesResolvedEtcdVersionToCurrentInfoAndHandler(t *testing.T) {
+	view := NewView("node-test")
+	view.SetEtcdVersion("3.6.13")
+	if got := view.Current().EtcdVersion; got != "3.6.13" {
+		t.Fatalf("Current().EtcdVersion = %q, want 3.6.13", got)
+	}
+
+	response := httptest.NewRecorder()
+	view.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/server_info", nil))
+	var decoded Response
+	if err := json.Unmarshal(response.Body.Bytes(), &decoded); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if decoded.EtcdVersion != "3.6.13" || decoded.ID != "node-test" {
+		t.Fatalf("decoded = %+v, want resolved etcd version and configured ID", decoded)
+	}
+}
+
 func TestReportTTLValue(t *testing.T) {
 	tests := []struct {
 		name string

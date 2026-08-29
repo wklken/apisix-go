@@ -16,9 +16,10 @@ func builtinDefaults(paths RuntimePaths) *valueNode {
 		}},
 		"compatibility_target": string(CompatibilityAPISIX317),
 		"security_profile":     string(SecurityCompat),
-		"apisix": map[string]any{"status": map[string]any{
-			"ip": "127.0.0.1", "port": 7085,
-		}},
+		"apisix": map[string]any{
+			"status":  map[string]any{"ip": "127.0.0.1", "port": 7085},
+			"control": map[string]any{"ip": "127.0.0.1", "port": 9090},
+		},
 		"apisix_go": map[string]any{"runtime_paths": map[string]any{
 			"data_dir": paths.DataDir, "runtime_dir": paths.RuntimeDir,
 			"log_dir": paths.LogDir, "temp_dir": paths.TempDir,

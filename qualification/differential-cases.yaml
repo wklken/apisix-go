@@ -1,0 +1,377 @@
+schema_version: 1
+profile: apisix-3.17-differential-smoke-v1
+target_qualification_profile: apisix-3.17-all-plugins-v1
+required_plugins: [acl, ai-aliyun-content-moderation, ai-aws-content-moderation, ai-prompt-decorator, ai-prompt-guard, ai-prompt-template, ai-proxy, ai-proxy-multi, ai-rag, ai-rate-limiting, ai-request-rewrite, api-breaker, attach-consumer-label, authz-casbin, authz-casdoor, authz-keycloak, aws-lambda, azure-functions, basic-auth, batch-requests, body-transformer, brotli, cas-auth, chaitin-waf, clickhouse-logger, client-control, consumer-restriction, cors, csrf, data-mask, datadog, degraphql, dingtalk-auth, dubbo-proxy, echo, elasticsearch-logger, error-log-logger, error-page, example-plugin, exit-transformer, fault-injection, feishu-auth, file-logger, forward-auth, google-cloud-logging, graphql-limit-count, graphql-proxy-cache, grpc-transcode, grpc-web, gzip, hmac-auth, http-dubbo, http-logger, ip-restriction, jwe-decrypt, jwt-auth, kafka-logger, kafka-proxy, key-auth, lago, ldap-auth, limit-conn, limit-count, limit-req, log-rotate, loggly, loki-logger, mcp-bridge, mocking, mqtt-proxy, multi-auth, node-status, oas-validator, opa, openfunction, openid-connect, opentelemetry, openwhisk, prometheus, proxy-buffering, proxy-cache, proxy-control, proxy-mirror, proxy-rewrite, public-api, real-ip, redirect, referer-restriction, request-id, request-validation, response-rewrite, rocketmq-logger, saml-auth, server-info, serverless-post-function, serverless-pre-function, skywalking, skywalking-logger, sls-logger, splunk-hec-logging, syslog, tcp-logger, tencent-cloud-cls, traffic-label, traffic-split, ua-restriction, udp-logger, uri-blocker, wolf-rbac, workflow, zipkin]
+cases:
+  - plugin: acl
+    obligation: deny-basic-auth-consumer-with-nonmatching-label
+    case: acl-basic-auth-nonmatching-label-denied
+  - plugin: ai-prompt-decorator
+    obligation: append-responses-string-input
+    case: ai-prompt-decorator-append-responses-input
+  - plugin: ai-prompt-guard
+    obligation: reject-anchored-deny-pattern
+    case: ai-prompt-guard-anchored-deny
+  - plugin: ai-prompt-template
+    obligation: rewrite-request-from-selected-named-template
+    case: ai-prompt-template-named-model-rewrite
+  - plugin: attach-consumer-label
+    obligation: project-present-labels-and-remove-absent-spoofed-label
+    case: attach-consumer-label-authenticated-consumer-labels
+  - plugin: basic-auth
+    obligation: hide-credentials-before-upstream
+    case: basic-auth-hide-credentials
+  - plugin: basic-auth
+    obligation: preserve-credentials-before-upstream
+    case: basic-auth-preserve-credentials
+  - plugin: body-transformer
+    obligation: rewrite-json-request-body
+    case: body-transformer-json-request-rewrite
+  - plugin: client-control
+    obligation: reject-content-length-above-limit
+    case: client-control-content-length-too-large
+  - plugin: client-control
+    obligation: allow-content-length-at-limit
+    case: client-control-content-length-exact-limit
+  - plugin: consumer-restriction
+    obligation: deny-missing-authentication-before-consumer-check
+    case: consumer-restriction-basic-whitelist-missing-authorization
+  - plugin: consumer-restriction
+    obligation: allow-whitelisted-authenticated-consumer
+    case: consumer-restriction-basic-whitelist-jack1-allowed
+  - plugin: consumer-restriction
+    obligation: deny-non-whitelisted-authenticated-consumer
+    case: consumer-restriction-basic-whitelist-jack2-denied
+  - plugin: cors
+    obligation: default-response-headers
+    case: cors-default-response-headers
+  - plugin: csrf
+    obligation: safe-method-allows-and-issues-token-cookie
+    case: csrf-safe-get-issues-cookie
+  - plugin: csrf
+    obligation: unsafe-method-without-token-is-rejected
+    case: csrf-post-missing-token-rejected
+  - plugin: degraphql
+    obligation: rewrite-post-request-to-configured-query
+    case: degraphql-post-query-without-variables
+  - plugin: degraphql
+    obligation: rewrite-get-request-to-configured-query
+    case: degraphql-get-query-without-variables
+  - plugin: echo
+    obligation: rewrite-response-body-and-headers
+    case: echo-replace-body-and-add-headers
+  - plugin: example-plugin
+    obligation: override-route-upstream
+    case: example-plugin-overrides-route-upstream
+  - plugin: fault-injection
+    obligation: abort-with-fixed-status-and-body
+    case: fault-injection-fixed-abort
+  - plugin: key-auth
+    obligation: allow-valid-api-key
+    case: key-auth-valid
+  - plugin: key-auth
+    obligation: deny-missing-api-key
+    case: key-auth-missing
+  - plugin: ip-restriction
+    obligation: allow-loopback-cidr-whitelist
+    case: ip-restriction-loopback-cidr-whitelist-allows
+  - plugin: ip-restriction
+    obligation: deny-loopback-cidr-blacklist
+    case: ip-restriction-loopback-cidr-blacklist-denies
+  - plugin: ip-restriction
+    obligation: return-custom-message-for-denied-peer
+    case: ip-restriction-loopback-blacklist-custom-message
+  - plugin: jwe-decrypt
+    obligation: decrypt-and-forward-fixed-jwe-token
+    case: jwe-decrypt-forward-plaintext-header
+  - plugin: jwt-auth
+    obligation: allow-valid-non-expiring-hs256-token
+    case: jwt-auth-hs256-token-without-exp
+  - plugin: proxy-rewrite
+    obligation: rewrite-uri-and-host
+    case: proxy-rewrite-rewrite-host
+  - plugin: proxy-buffering
+    obligation: deliver-three-sse-events-before-upstream-eof
+    case: proxy-buffering-disabled-incremental-sse
+  - plugin: http-dubbo
+    obligation: encode-pojo-fastjson-request-and-decode-response
+    case: http-dubbo-pojo-fastjson
+  - plugin: dubbo-proxy
+    obligation: encode-hessian2-request-with-http-context-and-decode-response
+    case: dubbo-proxy-hessian2-http-context
+  - plugin: mqtt-proxy
+    obligation: reject-invalid-header-then-forward-exact-connect
+    case: mqtt-proxy-rejects-invalid-then-forwards-connect
+  - plugin: rocketmq-logger
+    obligation: publish-route-format-entry-to-local-rocketmq-endpoint
+    case: rocketmq-logger-publishes-route-format-entry
+  - plugin: referer-restriction
+    obligation: allow-wildcard-whitelist
+    case: referer-restriction-wildcard-whitelist-allows
+  - plugin: referer-restriction
+    obligation: deny-subdomain-for-exact-whitelist
+    case: referer-restriction-exact-whitelist-rejects-subdomain
+  - plugin: mcp-bridge
+    obligation: forward-message-over-dynamic-persistent-sse-session
+    case: mcp-bridge-forwards-message-over-dynamic-sse-session
+  - plugin: mocking
+    obligation: return-fixed-example-response
+    case: mocking-returns-fixed-example
+  - plugin: multi-auth
+    obligation: select-first-successful-auth-child
+    case: multi-auth-basic-wins-over-valid-key
+  - plugin: oas-validator
+    obligation: allow-valid-pinned-pet-request
+    case: oas-validator-valid-json-body
+  - plugin: openfunction
+    obligation: map-post-body-and-function-response
+    case: openfunction-post-body-response
+  - plugin: openwhisk
+    obligation: map-json-action-request-and-response
+    case: openwhisk-json-action-response
+  - plugin: real-ip
+    obligation: rewrite-effective-client-ip-from-trusted-forwarded-for
+    case: real-ip-trusted-peer-rewrites-from-forwarded-for
+  - plugin: real-ip
+    obligation: ignore-forwarded-for-from-untrusted-peer
+    case: real-ip-untrusted-peer-ignores-forwarded-for
+  - plugin: request-id
+    obligation: preserve-client-provided-id-in-response
+    case: request-id-preserves-client-id-in-response
+  - plugin: request-id
+    obligation: omit-client-provided-id-from-response
+    case: request-id-omits-client-id-from-response
+  - plugin: redirect
+    obligation: redirect-to-fixed-uri-with-301
+    case: redirect-fixed-uri-301
+  - plugin: request-validation
+    obligation: reject-missing-required-header
+    case: request-validation-empty-header
+  - plugin: response-rewrite
+    obligation: rewrite-body-and-headers
+    case: response-rewrite-body-and-headers
+  - plugin: serverless-post-function
+    obligation: stop-after-first-forbidden-function
+    case: serverless-post-function-early-forbidden
+  - plugin: traffic-label
+    obligation: override-observed-request-header-for-matching-rule
+    case: traffic-label-overrides-request-header
+  - plugin: ua-restriction
+    obligation: deny-listed-user-agent
+    case: ua-restriction-denies-listed-agent
+  - plugin: uri-blocker
+    obligation: reject-matching-query
+    case: uri-blocker-rejects-matching-query
+  - plugin: workflow
+    obligation: stop-at-first-matching-rule
+    case: workflow-first-matching-rule-stops
+  - plugin: hmac-auth
+    obligation: reject-missing-authorization
+    case: hmac-auth-missing-authorization
+  - plugin: authz-casbin
+    obligation: reject-missing-username
+    case: authz-casbin-missing-username
+  - plugin: authz-casdoor
+    obligation: reject-callback-without-session
+    case: authz-casdoor-callback-without-session
+  - plugin: authz-keycloak
+    obligation: reject-empty-enforcing-permissions
+    case: authz-keycloak-enforcing-empty-permissions
+  - plugin: forward-auth
+    obligation: copy-auth-response-header-on-deny
+    case: forward-auth-deny-copies-client-header
+  - plugin: ldap-auth
+    obligation: reject-missing-authorization
+    case: ldap-auth-missing-authorization
+  - plugin: openid-connect
+    obligation: reject-missing-bearer-token
+    case: openid-connect-bearer-only-missing-token
+  - plugin: traffic-split
+    obligation: route-matching-request-to-plugin-upstream
+    case: traffic-split-matched-upstream-pass-host
+  - plugin: proxy-cache
+    obligation: expose-memory-cache-miss-on-first-request
+    case: proxy-cache-memory-first-request-miss
+  - plugin: error-page
+    obligation: replace-500-body-from-plugin-metadata
+    case: error-page-custom-500-body
+  - plugin: exit-transformer
+    obligation: transform-missing-key-auth-response
+    case: exit-transformer-missing-api-key-json
+  - plugin: batch-requests
+    obligation: reject-missing-pipeline
+    case: batch-requests-missing-pipeline
+  - plugin: graphql-limit-count
+    obligation: reject-wrong-method
+    case: graphql-limit-count-wrong-method-head
+  - plugin: graphql-proxy-cache
+    obligation: reject-wrong-method
+    case: graphql-proxy-cache-wrong-method-head
+  - plugin: public-api
+    obligation: dispatch-wolf-rbac-userinfo
+    case: public-api-wolf-rbac-userinfo-missing-token
+  - plugin: limit-count
+    obligation: allow-configured-count-then-reject-over-limit
+    case: limit-count-two-allows-then-rejects
+  - plugin: cas-auth
+    obligation: reject-callback-without-initiation-cookie
+    case: cas-auth-callback-without-initiation-cookie
+  - plugin: grpc-web
+    obligation: answer-options-preflight-with-cors
+    case: grpc-web-options-preflight
+  - plugin: grpc-transcode
+    obligation: transcode-json-get-to-unary-grpc-over-h2c
+    case: grpc-transcode-unary-get
+  - plugin: ai-aliyun-content-moderation
+    obligation: reject-missing-selected-ai-instance
+    case: ai-aliyun-content-moderation-missing-ai-instance
+  - plugin: ai-rag
+    obligation: reject-empty-request-body
+    case: ai-rag-empty-request-body
+  - plugin: wolf-rbac
+    obligation: reject-missing-rbac-token
+    case: wolf-rbac-missing-token
+  - plugin: ai-proxy
+    obligation: reject-empty-request-body
+    case: ai-proxy-empty-request-body
+  - plugin: ai-proxy-multi
+    obligation: reject-empty-request-body
+    case: ai-proxy-multi-empty-request-body
+  - plugin: gzip
+    obligation: compress-response-with-gzip
+    case: gzip-default-compression
+  - plugin: brotli
+    obligation: compress-response-with-brotli
+    case: brotli-default-compression
+  - plugin: proxy-mirror
+    obligation: deliver-request-to-primary-and-mirror-upstreams
+    case: proxy-mirror-normal-delivery
+  - plugin: limit-req
+    obligation: allow-requests-within-rate-and-burst
+    case: limit-req-rate-four-burst-two-allows-four
+  - plugin: limit-req
+    obligation: reject-followup-requests-over-small-burst
+    case: limit-req-low-rate-small-burst-rejects-followups
+  - plugin: ai-rate-limiting
+    obligation: reject-after-token-budget-is-consumed
+    case: ai-rate-limiting-custom-rejection
+  - plugin: chaitin-waf
+    obligation: reject-request-in-block-mode
+    case: chaitin-waf-block-mode-reject
+  - plugin: api-breaker
+    obligation: return-custom-response-after-unhealthy-threshold
+    case: api-breaker-custom-response-after-threshold
+  - plugin: node-status
+    obligation: report-node-id-and-request-counters
+    case: node-status-reports-json-counters
+  - plugin: prometheus
+    obligation: record-route-status-series
+    case: prometheus-records-route-status-series
+  - plugin: ai-aws-content-moderation
+    obligation: reject-toxic-raw-body-via-comprehend
+    case: ai-aws-content-moderation-toxic-raw-body
+  - plugin: ai-request-rewrite
+    obligation: rewrite-request-body-through-override
+    case: ai-request-rewrite-override-replays-body
+  - plugin: aws-lambda
+    obligation: invoke-local-function-endpoint
+    case: aws-lambda-local-function-response
+  - plugin: serverless-pre-function
+    obligation: terminate-request-from-pre-function
+    case: serverless-pre-function-exits-201
+  - plugin: azure-functions
+    obligation: invoke-local-function-with-configured-api-key
+    case: azure-functions-keyed-local-invocation
+  - plugin: opa
+    obligation: deny-request-with-string-policy-reason
+    case: opa-denies-with-string-reason
+  - plugin: dingtalk-auth
+    obligation: exchange-header-code-and-forward-userinfo
+    case: dingtalk-auth-header-code-provider-flow
+  - plugin: feishu-auth
+    obligation: exchange-header-code-and-forward-userinfo
+    case: feishu-auth-header-code-provider-flow
+  - plugin: clickhouse-logger
+    obligation: deliver-single-custom-log-entry-to-local-clickhouse-endpoint
+    case: clickhouse-logger-posts-single-formatted-entry
+  - plugin: elasticsearch-logger
+    obligation: deliver-single-custom-log-entry-to-local-bulk-endpoint
+    case: elasticsearch-logger-posts-single-custom-entry
+  - plugin: http-logger
+    obligation: deliver-single-authenticated-custom-log-entry
+    case: http-logger-posts-single-formatted-entry
+  - plugin: loki-logger
+    obligation: deliver-single-labelled-tenant-log-entry
+    case: loki-logger-pushes-single-labelled-entry
+  - plugin: splunk-hec-logging
+    obligation: deliver-single-authenticated-custom-hec-event
+    case: splunk-hec-logging-posts-single-custom-event
+  - plugin: tencent-cloud-cls
+    obligation: deliver-single-signed-protobuf-log-to-local-cls-endpoint
+    case: tencent-cloud-cls-posts-single-formatted-log
+  - plugin: lago
+    obligation: deliver-single-authenticated-usage-event-to-local-batch-endpoint
+    case: lago-posts-single-usage-event
+  - plugin: loggly
+    obligation: deliver-single-custom-log-entry-to-local-http-bulk-endpoint
+    case: loggly-http-posts-single-formatted-entry
+  - plugin: log-rotate
+    obligation: size-triggered-rotate-compress-prune-and-reopen
+    case: log-rotate-size-compress-prune-reopen
+  - plugin: data-mask
+    obligation: preserve-upstream-query-while-sanitizing-logged-request-line
+    case: data-mask-sanitizes-logged-request-line
+  - plugin: error-log-logger
+    obligation: deliver-basic-auth-warning-to-local-clickhouse-endpoint
+    case: error-log-logger-clickhouse-delivers-basic-auth-warning
+  - plugin: zipkin
+    obligation: propagate-incoming-debug-b3-and-export-v2-server-span
+    case: zipkin-v2-exports-incoming-debug-child-server-span
+  - plugin: limit-conn
+    obligation: share-global-rule-capacity-across-routes-and-release-admissions
+    case: limit-conn-global-rule-shares-capacity-across-routes
+  - plugin: opentelemetry
+    obligation: export-pinned-otlp-http-server-span-core
+    case: opentelemetry-exports-pinned-otlp-http-server-span
+  - plugin: google-cloud-logging
+    obligation: exchange-service-account-jwt-and-deliver-custom-log-entry
+    case: google-cloud-logging-exchanges-jwt-and-writes-custom-entry
+  - plugin: skywalking-logger
+    obligation: deliver-single-route-format-entry-to-local-skywalking-endpoint
+    case: skywalking-logger-posts-single-route-format-entry
+  - plugin: datadog
+    obligation: emit-six-ordered-single-metric-dogstatsd-datagrams
+    case: datadog-emits-six-ordered-single-metric-datagrams
+  - plugin: tcp-logger
+    obligation: deliver-single-route-format-json-object-over-plain-tcp
+    case: tcp-logger-sends-single-route-format-frame
+  - plugin: udp-logger
+    obligation: deliver-single-metadata-format-json-object-in-one-udp-datagram
+    case: udp-logger-sends-single-metadata-format-datagram
+  - plugin: syslog
+    obligation: deliver-single-rfc5424-frame-over-plain-tcp
+    case: syslog-sends-single-rfc5424-frame-over-tcp
+  - plugin: sls-logger
+    obligation: deliver-single-signed-rfc5424-frame-over-tls
+    case: sls-logger-sends-single-rfc5424-frame-over-tls
+  - plugin: proxy-control
+    obligation: deliver-exact-large-request-body-with-request-buffering-disabled
+    case: proxy-control-request-buffering-off-large-body
+  - plugin: saml-auth
+    obligation: initiate-signed-login-redirect-with-state-cookie
+    case: saml-auth-signed-login-initiation
+  - plugin: file-logger
+    obligation: write-one-route-format-jsonl-entry-to-side-local-file
+    case: file-logger-route-format-jsonl-write
+  - plugin: server-info
+    obligation: serve-five-field-control-api-response
+    case: server-info-control-api-shape
+  - plugin: skywalking
+    obligation: inject-valid-sw8-on-full-sampling-origin-call
+    case: skywalking-full-sampling-injects-valid-sw8
+  - plugin: kafka-logger
+    obligation: publish-one-origin-format-request-body-record-to-kafka
+    case: kafka-logger-publishes-origin-request-body
+  - plugin: kafka-proxy
+    obligation: list-last-offset-and-fetch-real-record-over-websocket
+    case: kafka-proxy-lists-offset-and-fetches-record

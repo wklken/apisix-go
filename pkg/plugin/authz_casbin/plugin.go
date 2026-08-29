@@ -148,7 +148,9 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			return
 		}
 		if !allowed {
-			http.Error(w, util.BuildMessageResponse("Access Denied"), http.StatusForbidden)
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = fmt.Fprintln(w, util.BuildMessageResponse("Access Denied"))
 			return
 		}
 

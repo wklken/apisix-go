@@ -2,10 +2,14 @@ package proxy_mirror
 
 import (
 	"bytes"
+	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"net/url"
 	"os"
 	"os/exec"
@@ -16,8 +20,10 @@ import (
 	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/util"
+	"golang.org/x/net/dns/dnsmessage"
 )
 
 type mirrorRequest struct {
@@ -144,7 +150,116 @@ func newMirrorServer(t *testing.T) (*httptest.Server, <-chan mirrorRequest) {
 	return server, seen
 }
 
-func TestHandlerMirrorsRequestAndPreservesUpstreamBody(t *testing.T) {
+type testDNSServer struct {
+	address   string
+	questions chan dnsmessage.Question
+	errors    chan error
+}
+
+func newTestDNSServer(t *testing.T, respond bool) *testDNSServer {
+	t.Helper()
+
+	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatalf("listen for test DNS: %v", err)
+	}
+	server := &testDNSServer{
+		address:   conn.LocalAddr().String(),
+		questions: make(chan dnsmessage.Question, 16),
+		errors:    make(chan error, 1),
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		buffer := make([]byte, 2048)
+		for {
+			n, peer, readErr := conn.ReadFromUDP(buffer)
+			if readErr != nil {
+				return
+			}
+			var query dnsmessage.Message
+			if unpackErr := query.Unpack(buffer[:n]); unpackErr != nil {
+				select {
+				case server.errors <- fmt.Errorf("unpack DNS query: %w", unpackErr):
+				default:
+				}
+				continue
+			}
+			if len(query.Questions) != 1 {
+				select {
+				case server.errors <- fmt.Errorf("DNS question count = %d, want 1", len(query.Questions)):
+				default:
+				}
+				continue
+			}
+			question := query.Questions[0]
+			select {
+			case server.questions <- question:
+			default:
+			}
+			if !respond {
+				continue
+			}
+
+			response := dnsmessage.Message{
+				Header: dnsmessage.Header{
+					ID:                 query.ID,
+					Response:           true,
+					Authoritative:      true,
+					RecursionAvailable: true,
+				},
+				Questions: query.Questions,
+			}
+			if question.Type == dnsmessage.TypeA {
+				response.Answers = []dnsmessage.Resource{{
+					Header: dnsmessage.ResourceHeader{
+						Name:  question.Name,
+						Type:  dnsmessage.TypeA,
+						Class: dnsmessage.ClassINET,
+						TTL:   60,
+					},
+					Body: &dnsmessage.AResource{A: [4]byte{127, 0, 0, 1}},
+				}}
+			}
+			wire, packErr := response.Pack()
+			if packErr != nil {
+				select {
+				case server.errors <- fmt.Errorf("pack DNS response: %w", packErr):
+				default:
+				}
+				continue
+			}
+			if _, writeErr := conn.WriteToUDP(wire, peer); writeErr != nil {
+				select {
+				case server.errors <- fmt.Errorf("write DNS response: %w", writeErr):
+				default:
+				}
+			}
+		}
+	}()
+	t.Cleanup(func() {
+		_ = conn.Close()
+		<-done
+	})
+
+	return server
+}
+
+func (s *testDNSServer) waitForQuestion(t *testing.T) dnsmessage.Question {
+	t.Helper()
+
+	select {
+	case question := <-s.questions:
+		return question
+	case err := <-s.errors:
+		t.Fatal(err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for DNS query")
+	}
+	return dnsmessage.Question{}
+}
+
+func TestHandlerMirrorsMaterializedUpstreamHostAndPreservesUpstreamBody(t *testing.T) {
 	mirror, seen := newMirrorServer(t)
 	defer mirror.Close()
 
@@ -159,10 +274,13 @@ func TestHandlerMirrorsRequestAndPreservesUpstreamBody(t *testing.T) {
 	))
 	t.Cleanup(func() { lifecycle.FinalizeResult() })
 	req.Header.Set("X-Test", "yes")
-	req.Host = "original.example"
+	req.Host = "gateway.example.test"
 	rr := httptest.NewRecorder()
 
 	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Simulate the route-side before-proxy contract: expose the effective
+		// Host after pass_host handling, rather than the ingress authority.
+		r.Host = "differential.example.test"
 		if err := apisixctx.RunBeforeProxyHooks(r); err != nil {
 			t.Fatalf("run before-proxy hook: %v", err)
 		}
@@ -193,8 +311,169 @@ func TestHandlerMirrorsRequestAndPreservesUpstreamBody(t *testing.T) {
 	if got := mirrored.Header.Get("X-Test"); got != "yes" {
 		t.Fatalf("mirror X-Test = %q, want yes", got)
 	}
-	if mirrored.Host != mustParseURL(t, mirror.URL).Host {
-		t.Fatalf("mirror Host = %q, want mirror target host %q", mirrored.Host, mustParseURL(t, mirror.URL).Host)
+	if mirrored.Host != "differential.example.test" {
+		t.Fatalf("mirror Host = %q, want materialized upstream Host", mirrored.Host)
+	}
+}
+
+func TestHTTPSMirrorPreservesLogicalSNIAndMaterializedHost(t *testing.T) {
+	dns := newTestDNSServer(t, true)
+	sni := make(chan string, 1)
+	seen := make(chan mirrorRequest, 1)
+	mirror := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen <- mirrorRequest{Host: r.Host}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	mirror.TLS = &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		GetConfigForClient: func(info *tls.ClientHelloInfo) (*tls.Config, error) {
+			select {
+			case sni <- info.ServerName:
+			default:
+			}
+			return nil, nil
+		},
+	}
+	mirror.StartTLS()
+	t.Cleanup(mirror.Close)
+	parsed, err := url.Parse(mirror.URL)
+	if err != nil {
+		t.Fatalf("parse mirror URL: %v", err)
+	}
+	_, port, err := net.SplitHostPort(parsed.Host)
+	if err != nil {
+		t.Fatalf("split mirror address: %v", err)
+	}
+
+	p := &Plugin{config: Config{Host: "https://example.com:" + port}}
+	p.SetDependencies(base.Dependencies{Config: &config.EffectiveConfig{Config: config.Config{
+		Apisix: config.Apisix{DnsResolver: []string{dns.address}, ResolverTimeout: 1},
+	}}})
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+	t.Cleanup(p.Stop)
+	transport, ok := p.client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("client transport = %T, want *http.Transport", p.client.Transport)
+	}
+	mirrorTransport, ok := mirror.Client().Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("mirror client transport = %T, want *http.Transport", mirror.Client().Transport)
+	}
+	transport.TLSClientConfig.RootCAs = mirrorTransport.TLSClientConfig.RootCAs
+
+	req, lifecycle := withMirrorLifecycle(httptest.NewRequest(
+		http.MethodGet, "http://gateway.example.test/original", nil,
+	))
+	req.Host = "materialized-upstream.example.test"
+	if err := p.mirrorFinalizedRequest(req); err != nil {
+		t.Fatalf("mirrorFinalizedRequest() error = %v", err)
+	}
+	if result := lifecycle.FinalizeResult(); len(result.Failures) != 0 || result.FatalPanic != nil {
+		t.Fatalf("finalization result = %#v, want success", result)
+	}
+
+	if question := dns.waitForQuestion(t); question.Name.String() != "example.com." {
+		t.Fatalf("resolved host = %q, want logical mirror host example.com.", question.Name.String())
+	}
+	select {
+	case got := <-sni:
+		if got != "example.com" {
+			t.Fatalf("TLS ClientHello ServerName = %q, want example.com", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for TLS ClientHello")
+	}
+	if mirrored := waitForMirror(t, seen); mirrored.Host != "materialized-upstream.example.test" {
+		t.Fatalf("mirrored Host = %q, want materialized upstream Host", mirrored.Host)
+	}
+}
+
+func TestConfiguredResolverIsGenerationPinned(t *testing.T) {
+	first := newTestDNSServer(t, true)
+	second := newTestDNSServer(t, true)
+	effective := &config.EffectiveConfig{Config: config.Config{
+		Apisix: config.Apisix{
+			DnsResolver:     []string{first.address, second.address},
+			ResolverTimeout: 1,
+		},
+	}}
+	p := &Plugin{config: Config{Host: "http://mirror.internal"}}
+	p.SetDependencies(base.Dependencies{Config: effective})
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+	t.Cleanup(p.Stop)
+
+	effective.Config.Apisix.DnsResolver[0] = "127.0.0.1:1"
+	effective.Config.Apisix.DnsResolver[1] = "127.0.0.1:2"
+	effective.Config.Apisix.ResolverTimeout = 9
+	for i := range 2 {
+		addresses, err := p.lookupNetIP(context.Background(), "ip4", "mirror.internal")
+		if err != nil {
+			t.Fatalf("LookupNetIP() call %d error = %v", i+1, err)
+		}
+		if len(addresses) != 1 || addresses[0] != netip.MustParseAddr("127.0.0.1") {
+			t.Fatalf("LookupNetIP() call %d addresses = %v, want [127.0.0.1]", i+1, addresses)
+		}
+	}
+	for index, server := range []*testDNSServer{first, second} {
+		question := server.waitForQuestion(t)
+		if question.Name.String() != "mirror.internal." || question.Type != dnsmessage.TypeA {
+			t.Fatalf("DNS server %d question = %#v, want mirror.internal. A", index+1, question)
+		}
+	}
+	if p.resolverTimeout != time.Second {
+		t.Fatalf("resolver timeout = %s, want 1s pinned before config mutation", p.resolverTimeout)
+	}
+
+	for _, test := range []struct {
+		server string
+		want   string
+	}{
+		{server: "192.0.2.53", want: "192.0.2.53:53"},
+		{server: "2001:db8::53", want: "[2001:db8::53]:53"},
+		{server: "[2001:db8::53]:5353", want: "[2001:db8::53]:5353"},
+	} {
+		if got := mirrorDNSServerAddress(test.server); got != test.want {
+			t.Fatalf("mirrorDNSServerAddress(%q) = %q, want %q", test.server, got, test.want)
+		}
+	}
+}
+
+func TestConfiguredResolverTimeoutBoundsLookup(t *testing.T) {
+	dns := newTestDNSServer(t, false)
+	p := &Plugin{config: Config{Host: "http://mirror.timeout.test"}}
+	p.SetDependencies(base.Dependencies{Config: &config.EffectiveConfig{Config: config.Config{
+		Apisix: config.Apisix{DnsResolver: []string{dns.address}, ResolverTimeout: 1},
+	}}})
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+	t.Cleanup(p.Stop)
+
+	started := time.Now()
+	_, err := p.dialMirrorContext(context.Background(), "tcp", "mirror.timeout.test:443")
+	elapsed := time.Since(started)
+	if err == nil {
+		t.Fatal("dialMirrorContext() error = nil, want resolver timeout")
+	}
+	if elapsed < 900*time.Millisecond || elapsed > 2*time.Second {
+		t.Fatalf("resolver elapsed = %s, want configured 1s timeout", elapsed)
+	}
+	question := dns.waitForQuestion(t)
+	if question.Name.String() != "mirror.timeout.test." {
+		t.Fatalf("resolved host = %q, want mirror.timeout.test.", question.Name.String())
 	}
 }
 
@@ -1234,16 +1513,6 @@ func performRequest(p *Plugin, rawURL string) *httptest.ResponseRecorder {
 	})).ServeHTTP(rr, req)
 	lifecycle.FinalizeResult()
 	return rr
-}
-
-func mustParseURL(t *testing.T, rawURL string) *url.URL {
-	t.Helper()
-
-	parsed, err := url.Parse(rawURL)
-	if err != nil {
-		t.Fatalf("parse URL %q: %v", rawURL, err)
-	}
-	return parsed
 }
 
 func waitForMirror(t *testing.T, seen <-chan mirrorRequest) mirrorRequest {

@@ -101,6 +101,29 @@ func TestPublicAPIReturnsNotFoundForUnknownInternalURI(t *testing.T) {
 	}
 }
 
+func TestPublicAPIExplicitlyExposesServerInfo(t *testing.T) {
+	registry := public_api.NewRegistry()
+	mux := chi.NewRouter()
+	registerExtraRoutes(mux, &config.Config{
+		Apisix: config.Apisix{ID: "server-info-public-id"}, Plugins: []string{"server-info"},
+	}, registry)
+	p := newPublicAPITestPlugin(t, map[string]any{"uri": "/v1/server_info"}, registry)
+	mux.Method(http.MethodGet, "/expose-server-info", p.Handler(http.NotFoundHandler()))
+
+	res := httptest.NewRecorder()
+	mux.ServeHTTP(res, httptest.NewRequest(http.MethodGet, "/expose-server-info", nil))
+	if res.Code != http.StatusOK {
+		t.Fatalf("response code = %d, want 200; body=%s", res.Code, res.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(res.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if body["id"] != "server-info-public-id" {
+		t.Fatalf("id = %v, want server-info-public-id", body["id"])
+	}
+}
+
 func newPublicAPITestPlugin(
 	t *testing.T,
 	cfg map[string]any,

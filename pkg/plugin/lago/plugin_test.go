@@ -773,6 +773,29 @@ func TestPostInitSetsLagoDefaults(t *testing.T) {
 	}
 }
 
+func TestSchemaMatchesAPISIX317LagoBatchLimitDefault(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	var document map[string]any
+	if err := json.Unmarshal([]byte(p.GetSchema()), &document); err != nil {
+		t.Fatalf("decode Lago schema: %v", err)
+	}
+	properties, ok := document["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("schema properties = %#v", document["properties"])
+	}
+	batchMaxSize, ok := properties["batch_max_size"].(map[string]any)
+	if !ok || batchMaxSize["default"] != float64(defaultBatchMaxSize) {
+		t.Fatalf(
+			"batch_max_size schema = %#v, want APISIX 3.17 default %d",
+			properties["batch_max_size"],
+			defaultBatchMaxSize,
+		)
+	}
+}
+
 func TestPostInitRejectsInvalidEncryptedToken(t *testing.T) {
 	p := &Plugin{config: Config{Token: "not-a-ciphertext"}}
 	p.SetDependencies(base.Dependencies{

@@ -15,6 +15,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin"
+	api_breaker "github.com/wklken/apisix-go/pkg/plugin/api_breaker"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	graphql_proxy_cache "github.com/wklken/apisix-go/pkg/plugin/graphql_proxy_cache"
 	"github.com/wklken/apisix-go/pkg/plugin/grpc_transcode"
@@ -73,6 +74,7 @@ type effectiveBindingRuntimeContext struct {
 	runtimeAcquirer   traffic_split.RuntimeAcquirer
 	upstreamResolver  traffic_split.ResourceUpstreamResolver
 	protoResolver     grpc_transcode.ProtoResolver
+	apiBreakerState   *api_breaker.State
 }
 
 type effectiveBindingSpec struct {
@@ -358,7 +360,19 @@ func (prepared *PreparedGeneration) validateEffectiveBindingSpec(
 	if err != nil {
 		return validatedEffectiveBindingSpec{}, fmt.Errorf("%w: error identity is invalid", ErrInvalidInput)
 	}
-	ownedContext, err := cloneEffectiveBindingContext(supplied.domain, supplied.scope, supplied.resourceContext)
+	identityContext := supplied.resourceContext
+	resourceOwner := supplied.executionOwner
+	if descriptor.InstanceScope == plugin.InstancePerGlobalRule && supplied.scope == plugin.ScopeGlobal {
+		if supplied.source.resource.Kind != "global_rules" {
+			return validatedEffectiveBindingSpec{}, fmt.Errorf(
+				"%w: global-rule instance source is invalid",
+				ErrInvalidInput,
+			)
+		}
+		identityContext = effectiveBindingResourceContext{kind: effectiveBindingContextNone}
+		resourceOwner = supplied.source.resource
+	}
+	ownedContext, err := cloneEffectiveBindingContext(supplied.domain, supplied.scope, identityContext)
 	if err != nil {
 		return validatedEffectiveBindingSpec{}, err
 	}
@@ -394,7 +408,7 @@ func (prepared *PreparedGeneration) validateEffectiveBindingSpec(
 		return validatedEffectiveBindingSpec{}, fmt.Errorf("%w: plugin instance identity is invalid", ErrInvalidInput)
 	}
 	resourceKey := effectiveBindingResourceKey(
-		supplied.domain, supplied.executionOwner, ownedSpec.source, instance,
+		supplied.domain, resourceOwner, ownedSpec.source, instance,
 	)
 	if resourceKey.Kind == "" || resourceKey.Scope == "" || resourceKey.Digest == ([32]byte{}) {
 		return validatedEffectiveBindingSpec{}, fmt.Errorf("%w: runtime resource identity is invalid", ErrInvalidInput)
@@ -453,10 +467,8 @@ func (prepared *PreparedGeneration) validateEffectiveBindingSource(
 			spec.scope != plugin.ScopeSystem || source.resource != spec.executionOwner ||
 			source.resource.Kind != "system" || source.resource.ID != spec.factory ||
 			spec.provenance != (plugin.ResourceProvenance{Kind: plugin.ResourceSystem, ID: spec.factory}) ||
-			factoryDeclaresSecret(
-				entry,
-				spec.factory,
-			) || prepared.hasOrdinaryFactoryOccurrence(spec.domain, spec.factory) {
+			(prepared.hasBindingConfigFactoryOccurrence(spec.domain, spec.factory) &&
+				spec.factory != "error-log-logger") {
 			return fmt.Errorf("%w: system source is not compiler-derived or declares secrets", ErrInvalidInput)
 		}
 	default:
@@ -541,9 +553,18 @@ func (prepared *PreparedGeneration) acquireEffectiveBinding(
 		if err := operations.preMaterialize(instance); err != nil {
 			return plugin.Binding{}, nil, err
 		}
+		if selected.spec.source.kind == effectiveBindingPreparedConsumer &&
+			!prepared.declaresConsumerScopedSecrets(selected.spec.factory) {
+			if preparer, ok := instance.(interface{ PrepareConsumerConfig() error }); ok {
+				if err := preparer.PrepareConsumerConfig(); err != nil {
+					return plugin.Binding{}, nil, err
+				}
+			}
+		}
 		if selected.spec.source.kind == effectiveBindingPluginConfig ||
 			(selected.spec.source.kind == effectiveBindingPreparedConsumer &&
-				!consumerregistry.Supports(selected.spec.factory)) {
+				!consumerregistry.Supports(selected.spec.factory) &&
+				prepared.declaresConsumerScopedSecrets(selected.spec.factory)) {
 			if err := prepared.attempt.PrepareScopedPluginSecrets(
 				ctx, selected.spec.source.occurrence, factoryInstance,
 			); err != nil {
@@ -747,6 +768,10 @@ func (operations effectiveBindingOps) withDefaults(attempt [32]byte) effectiveBi
 			}); ok {
 				setter.SetProtoResolver(value.protoResolver)
 			}
+			if setter, ok := instance.(interface{ SetState(*api_breaker.State) }); ok &&
+				value.apiBreakerState != nil {
+				setter.SetState(value.apiBreakerState)
+			}
 		}
 	}
 	if operations.preMaterialize == nil {
@@ -905,20 +930,13 @@ func manifestFactorySupportsDomain(
 	return declared && slices.Contains(entry.Domains, want)
 }
 
-func factoryDeclaresSecret(entry capability.PluginCapability, factory string) bool {
-	return slices.ContainsFunc(entry.SecretDeclarations, func(declaration capability.SecretDeclaration) bool {
-		return declaration.Factory == factory
-	})
-}
-
-func (prepared *PreparedGeneration) hasOrdinaryFactoryOccurrence(
+func (prepared *PreparedGeneration) hasBindingConfigFactoryOccurrence(
 	domain generation.Domain,
 	factory string,
 ) bool {
 	for _, source := range []capability.SecretDeclarationSource{
 		capability.SecretPluginConfig,
 		capability.SecretConsumerConfig,
-		capability.SecretPluginMetadata,
 	} {
 		for _, occurrence := range prepared.attempt.Occurrences(source) {
 			if occurrence.Domain() == domain && occurrence.Factory() == factory {
@@ -927,6 +945,19 @@ func (prepared *PreparedGeneration) hasOrdinaryFactoryOccurrence(
 		}
 	}
 	return false
+}
+
+func (prepared *PreparedGeneration) declaresConsumerScopedSecrets(factory string) bool {
+	if prepared == nil || prepared.manifest == nil || factory == "" {
+		return false
+	}
+	entry, exists := prepared.manifest.Plugin(factory)
+	if !exists {
+		return false
+	}
+	return slices.ContainsFunc(entry.SecretDeclarations, func(declaration capability.SecretDeclaration) bool {
+		return declaration.Source == capability.SecretConsumerConfig
+	})
 }
 
 func cloneEffectiveBindingContext(
@@ -1018,6 +1049,7 @@ func cloneEffectiveBindingRuntimeContext(
 		runtimeAcquirer:   value.runtimeAcquirer,
 		upstreamResolver:  value.upstreamResolver,
 		protoResolver:     value.protoResolver,
+		apiBreakerState:   value.apiBreakerState,
 	}, nil
 }
 

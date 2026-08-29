@@ -943,9 +943,9 @@ func (p *Plugin) handleAction(w http.ResponseWriter, r *http.Request, next http.
 		return false
 	}
 
-	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(action.Return.Code)
-	_, _ = w.Write([]byte(`{"error_msg":"rejected by workflow"}`))
+	_, _ = fmt.Fprintln(w, `{"error_msg":"rejected by workflow"}`)
 	return true
 }
 

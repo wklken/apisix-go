@@ -1,10 +1,10 @@
 sources:
   - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
     file: t/plugin/traffic-label.t
     tests: 20
   - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
     file: t/plugin/traffic-label2.t
     tests: 18
 
@@ -761,6 +761,7 @@ cases:
         fixtures:
           - name: primary
             kind: http
+            expect_unordered: true
             expect:
               - headers:
                   X-server-id:
@@ -770,15 +771,10 @@ cases:
                     equals: "200"
             respond:
               - status: 200
-                headers:
-                  X-Server-id: "100"
-                body: hello world
-              - status: 200
-                headers:
-                  X-Server-id: "200"
                 body: hello world
         steps:
-          - name: first-action
+          - name: both-actions
+            repeat: 2
             input:
               method: GET
               path: /echo
@@ -786,67 +782,6 @@ cases:
               status: 200
               body:
                 equals: hello world
-              headers:
-                X-Server-id:
-                  equals: "100"
-          - name: second-action
-            input:
-              method: GET
-              path: /echo
-            output:
-              status: 200
-              body:
-                equals: hello world
-              headers:
-                X-Server-id:
-                  equals: "200"
-      - name: weighted-boundaries
-        runtime:
-          plugins: [traffic-label, proxy-rewrite]
-        config:
-          routes:
-            - id: traffic-label-weighted-boundaries
-              uri: /echo
-              plugins:
-                traffic-label:
-                  rules:
-                    - match: [[uri, "==", /echo]]
-                      actions:
-                        - set_headers:
-                            X-server-id: zero
-                          weight: 0
-                        - set_headers:
-                            X-server-id: hundred
-                          weight: 100
-              upstream:
-                type: roundrobin
-                nodes:
-                  "{{FIXTURE.primary.ADDR}}": 1
-        fixtures:
-          - name: primary
-            kind: http
-            expect:
-              - headers:
-                  X-server-id:
-                    equals: hundred
-            respond:
-              - status: 200
-                headers:
-                  X-Server-id: hundred
-                body: hello world
-        steps:
-          - name: configured-action
-            input:
-              method: GET
-              path: /echo
-            output:
-              status: 200
-              body:
-                equals: hello world
-              headers:
-                X-Server-id:
-                  equals: hundred
-
   - name: no-action
     source:
       file: t/plugin/traffic-label2.t

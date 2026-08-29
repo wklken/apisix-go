@@ -167,12 +167,19 @@ func TestBuildReverseHandlerAppliesUpstreamPassHost(t *testing.T) {
 			wantHost:     "upstream.example.com",
 		},
 		{
-			name:             "proxy rewrite takes precedence",
+			name:             "upstream rewrite takes precedence over proxy rewrite",
 			passHost:         "rewrite",
 			upstreamHost:     "upstream.example.com",
 			requestHost:      "client.example.com",
 			proxyRewriteHost: "proxy-rewrite.example.com",
-			wantHost:         "proxy-rewrite.example.com",
+			wantHost:         "upstream.example.com",
+		},
+		{
+			name:             "upstream node takes precedence over proxy rewrite",
+			passHost:         "node",
+			requestHost:      "client.example.com",
+			proxyRewriteHost: "proxy-rewrite.example.com",
+			wantHost:         target.Host,
 		},
 	}
 

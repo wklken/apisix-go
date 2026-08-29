@@ -1442,15 +1442,26 @@ func TestPostInitRollsBackWriterLeaseWhenTaskAdmissionFails(t *testing.T) {
 	}
 }
 
-func TestPostInitRejectsMissingPath(t *testing.T) {
-	p := &Plugin{}
-	if err := p.Init(); err != nil {
-		t.Fatalf("Init() error = %v", err)
-	}
+func TestAPISIX317SchemaMatrix(t *testing.T) {
+	t.Run("explicit path is valid", func(t *testing.T) {
+		p := &Plugin{}
+		if err := p.Init(); err != nil {
+			t.Fatalf("Init() error = %v", err)
+		}
+		if err := util.Validate(map[string]any{"path": "file.log"}, p.GetSchema()); err != nil {
+			t.Fatalf("schema rejected explicit path: %v", err)
+		}
+	})
 
-	if err := p.PostInit(); err == nil {
-		t.Fatal("PostInit() error = nil, want missing path error")
-	}
+	t.Run("missing path is rejected", func(t *testing.T) {
+		p := &Plugin{}
+		if err := p.Init(); err != nil {
+			t.Fatalf("Init() error = %v", err)
+		}
+		if err := p.PostInit(); err == nil {
+			t.Fatal("PostInit() error = nil, want missing path error")
+		}
+	})
 }
 
 func readLogFile(t *testing.T, path string) string {

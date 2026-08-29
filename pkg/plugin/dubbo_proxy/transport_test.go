@@ -73,6 +73,13 @@ func TestBuildDubboRequestEncodesHTTPContextMap(t *testing.T) {
 		values[1] != "second" {
 		t.Fatalf("context x-multi = %#v, want two values", contextMap["x-multi"])
 	}
+	attachments, err := decoder.Decode()
+	if err != nil {
+		t.Fatalf("decode attachments: %v", err)
+	}
+	if attachments != nil {
+		t.Fatalf("attachments = %#v, want APISIX 3.17 null", attachments)
+	}
 }
 
 func TestServeDubboDecodesMapResponseIntoHTTP(t *testing.T) {

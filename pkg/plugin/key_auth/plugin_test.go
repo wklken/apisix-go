@@ -403,14 +403,11 @@ func TestHandlerRejectsMissingKey(t *testing.T) {
 	if rr.Code != http.StatusUnauthorized {
 		t.Fatalf("response code = %d, want %d", rr.Code, http.StatusUnauthorized)
 	}
-	if !strings.Contains(rr.Body.String(), "Missing API key in request") {
-		t.Fatalf("body = %q, want missing key message", rr.Body.String())
-	}
-	if got := rr.Body.String(); got != `{"message":"Missing API key in request"}` {
+	if got := rr.Body.String(); got != "{\"message\":\"Missing API key in request\"}\n" {
 		t.Fatalf("body = %q, want APISIX error JSON", got)
 	}
-	if got := rr.Header().Get("Content-Type"); got != "text/plain" {
-		t.Fatalf("Content-Type = %q, want text/plain", got)
+	if got := rr.Header().Get("Content-Type"); got != "text/plain; charset=utf-8" {
+		t.Fatalf("Content-Type = %q, want text/plain; charset=utf-8", got)
 	}
 	if got := rr.Header().Get("WWW-Authenticate"); got != `apikey realm="key"` {
 		t.Fatalf("WWW-Authenticate = %q, want default key-auth realm", got)

@@ -48,9 +48,9 @@ func loadRedirectManifest(t *testing.T) ([]redirectManifestCase, string) {
 	if manifest.Source.File != redirectSource {
 		t.Fatalf("source file = %q, want %s", manifest.Source.File, redirectSource)
 	}
-	if manifest.Source.Commit != "c3d7d5ec69774121f53d2e20d29d09c816795dd7" || manifest.Source.Tests != 48 {
+	if manifest.Source.Commit != "9ef2ecab67f652d38365049613610ef649bb4ad0" || manifest.Source.Tests != 46 {
 		t.Fatalf(
-			"pinned source = (%q, %d), want APISIX c3d7d5ec with 48 tests",
+			"pinned source = (%q, %d), want APISIX 3.17 target with 46 converted tests",
 			manifest.Source.Commit,
 			manifest.Source.Tests,
 		)

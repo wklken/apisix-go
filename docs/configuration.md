@@ -1,7 +1,7 @@
 # Configuration
 
-apisix-go reads the ordinary Apache APISIX static configuration. There is one
-HTTP data-plane behavior; no apisix-go-only selector changes route or plugin
+APISIX-Go reads Apache APISIX static configuration. APISIX-Go-only fields
+control local process behavior; they do not select different route or plugin
 semantics.
 
 ## Load order
@@ -17,6 +17,10 @@ Configuration is merged in this order:
 Lists replace earlier lists. Unknown APISIX fields are retained only as
 provenance and do not gain runtime behavior. Unknown `APISIXGO_*` and `--set`
 paths fail closed.
+
+`${{NAME}}` and `${{NAME:=fallback}}` expressions are expanded inside each
+file before that layer is merged. Absent, null, false, zero, and empty string
+remain distinct, and effective fields retain their source.
 
 ## Runtime paths
 
@@ -34,12 +38,11 @@ apisix_go:
 These fields have matching `APISIXGO_RUNTIME_PATHS_*` environment variables.
 They control local files only and do not alter APISIX route or plugin behavior.
 
-## Image replacement
+## Validate and inspect
 
-The container starts with `/usr/local/apisix/conf/config.yaml`. Existing APISIX
-HTTP data-plane users can keep their configuration, review the documented
-incompatibilities, replace the image, and restart. See
-[HTTP data-plane compatibility](http-data-plane.md).
+The container reads `/usr/local/apisix/conf/config.yaml` by default.
 
 Use `apisix config test -c /path/to/config.yaml` before restart and
 `apisix config dump --effective --redacted` when inspecting the merged result.
+See [HTTP data-plane compatibility](http-data-plane.md) before replacing an
+existing APISIX image.

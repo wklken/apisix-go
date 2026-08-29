@@ -20,10 +20,17 @@ Key runtime pieces:
 
 ## Architecture Sources of Truth
 
-- [`docs/design.md`](docs/design.md) is the canonical human architecture record. Files under `docs/superpowers/plans/` are intent and execution history, not proof that planned code exists.
+- [`docs/design.md`](docs/design.md) is the canonical human architecture record; accepted compatibility differences live in `docs/architecture/adr/`.
 - `pkg/capability/manifest.yaml` is the machine-readable capability truth. Do not hand-edit `pkg/plugin/registry_gen.go`, `docs/plugins.md`, or the generated README summaries.
-- Current source and focused tests override stale prose. If a plan, design paragraph, generated projection, and code disagree, verify the current call chain and then update the owning source rather than averaging them.
-- The current runtime is a single process with an in-process `Server + GenerationEngine`. External supervisor/worker, IPC activation, listener inheritance, worker probation/restart, and proposed next-generation validation packages remain planned-only.
+- Current source and focused tests override stale prose. If a process document, design paragraph, generated projection, and code disagree, verify the current call chain and then update the owning source rather than averaging them.
+- The current runtime is a single process with an in-process `Server + GenerationEngine`. External supervisor/worker, IPC activation, listener inheritance, and worker probation/restart are not implemented runtime contracts.
+
+### Documentation lifecycle
+
+- Plans, review reports, remediation ledgers, and dated snapshots are temporary process evidence. Before closing a development stage, move each still-current fact to its durable owner and remove the process artifact.
+- Route cross-package architecture to `docs/design.md`; accepted compatibility/security decisions to an ADR; plugin behavior/evidence to `pkg/capability/manifest.yaml` and its corpus; operator procedures to maintained runbooks; future-agent invariants to the closest `AGENTS.md`.
+- Branch names, commit hashes, checked TODOs, review verdicts, and old pass counts are point-in-time evidence. Do not copy them into `AGENTS.md` or use them as current qualification proof.
+- Keep durable specialized contracts such as configuration, HTTP scope, release, and performance acceptance documents when they still govern current behavior. Filename dates alone do not determine whether a document is disposable.
 
 Directory-scoped instructions inherit this file. Read the closest `AGENTS.md` before changing a core module:
 

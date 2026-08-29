@@ -626,85 +626,126 @@ func renderPluginsMarkdown(manifest *capability.Manifest) ([]byte, error) {
 	document.WriteString(generatedDocumentPreamble)
 	document.WriteString("\n# Plugin Capability Status\n\n")
 	document.WriteString(
-		"> This document is generated from the capability manifest. " +
-			"Its rows are manifest projections, not proof; evidence states and references " +
-			"identify the recorded validation basis.\n\n",
+		"> Human-readable projection of [`pkg/capability/manifest.yaml`](../pkg/capability/manifest.yaml). " +
+			"The manifest remains authoritative and contains the full evidence ledger.\n\n",
 	)
 	document.WriteString("## Compatibility target\n\n")
-	fmt.Fprintf(&document, "- Name: `%s`\n", markdownCell(manifest.Target.Name))
-	fmt.Fprintf(&document, "- Version: `%s`\n", markdownCell(manifest.Target.Version))
-	fmt.Fprintf(&document, "- Source commit: `%s`\n", markdownCell(manifest.Target.SourceCommit))
-	fmt.Fprintf(&document, "- Image: `%s`\n", markdownCell(manifest.Target.Image))
-	document.WriteString("\n## Manifest summary\n\n")
-	fmt.Fprintf(&document, "- Capability rows: **%d**\n", counts.total)
+	document.WriteString("| Target | Version | Source commit | Oracle image |\n")
+	document.WriteString("| --- | --- | --- | --- |\n")
 	fmt.Fprintf(
 		&document,
-		"- APISIX defaults: **%d**; Go-applicable: **%d**; full: **%d**; "+
-			"partial: **%d**; deferred: **%d**; not applicable: **%d**\n",
+		"| `%s` | `%s` | `%s` | `%s` |\n",
+		markdownCell(manifest.Target.Name),
+		markdownCell(manifest.Target.Version),
+		markdownCell(manifest.Target.SourceCommit),
+		markdownCell(manifest.Target.Image),
+	)
+	document.WriteString("\n## Summary\n\n")
+	fmt.Fprintf(
+		&document,
+		"- **%d** capabilities: **%d** APISIX defaults and **%d** extensions.\n",
+		counts.total,
 		counts.defaults,
+		counts.total-counts.defaults,
+	)
+	fmt.Fprintf(
+		&document,
+		"- APISIX defaults: **%d** Go-applicable (**%d** full, **%d** partial, **%d** deferred) and **%d** not applicable.\n",
 		counts.applicableDefaults,
 		counts.fullDefaults,
 		counts.partialDefaults,
 		counts.deferredDefaults,
 		counts.notApplicableDefaults,
 	)
+	verifiedEvidence, notApplicableEvidence, attentionEvidence := evidenceCounts(plugins)
+	fmt.Fprintf(
+		&document,
+		"- Evidence claims: **%d** verified, **%d** not applicable, **%d** requiring attention.\n",
+		verifiedEvidence,
+		notApplicableEvidence,
+		attentionEvidence,
+	)
 	document.WriteString("\n## Status semantics\n\n")
 	document.WriteString(
-		"Behavior status describes the implemented compatibility contract independently from evidence:\n\n",
+		"Behavior status and evidence are independent: implemented behavior is not automatically verified.\n\n",
 	)
-	document.WriteString(
-		"- **full**: the manifest records no known behavioral gap for the declared contract.\n",
-	)
-	document.WriteString(
-		"- **partial**: the declared behavior has one or more explicit known gaps.\n",
-	)
+	document.WriteString("- **full**: no known behavioral gap in the declared contract.\n")
+	document.WriteString("- **partial**: one or more known gaps remain.\n")
 	document.WriteString("- **deferred**: implementation is intentionally postponed.\n")
+	document.WriteString("- **not_applicable**: no Go-plugin contract exists for this APISIX facility.\n\n")
 	document.WriteString(
-		"- **not_applicable**: the APISIX facility has no Go-plugin contract in this data plane.\n\n",
-	)
-	document.WriteString(
-		"Plugin evidence states are independent for Schema, Unit, Converted upstream, Differential, Real dependency, and Failure. Platform lifecycle recovery is qualified separately and is never projected onto plugin rows:\n\n",
+		"Evidence dimensions are Schema, Unit, Converted upstream, Differential, Real dependency, and Failure. " +
+			"Platform recovery is qualified separately.\n\n",
 	)
 	document.WriteString("- **verified**: current auditable evidence is recorded.\n")
-	document.WriteString("- **missing**: required evidence is not recorded.\n")
+	document.WriteString("- **missing**, **stale**, or **flaky**: evidence requires attention.\n")
+	document.WriteString("- **deferred**: evidence collection is intentionally postponed.\n")
+	document.WriteString("- **not_applicable**: the dimension does not apply.\n")
+
+	document.WriteString("\n## Project divergences\n\n")
+	document.WriteString("| ID | Status | Decision |\n")
+	document.WriteString("| --- | --- | --- |\n")
+	for _, divergence := range manifest.Divergences {
+		adrLink := strings.TrimPrefix(divergence.ADR, "docs/")
+		fmt.Fprintf(
+			&document,
+			"| `%s` | **%s** | [`%s`](%s) |\n",
+			markdownCell(divergence.ID),
+			markdownCell(string(divergence.Status)),
+			markdownCell(filepath.Base(divergence.ADR)),
+			adrLink,
+		)
+	}
+
+	document.WriteString("\n## Capabilities requiring attention\n\n")
 	document.WriteString(
-		"- **stale**: evidence exists but does not match the current compatibility target.\n",
+		"Only non-full behavior, known gaps, declared divergences, or incomplete evidence appear here.\n",
 	)
-	document.WriteString("- **flaky**: evidence exists but is not repeatably reliable.\n")
-	document.WriteString(
-		"- **deferred**: evidence collection is intentionally postponed with an owner and reason.\n",
-	)
-	document.WriteString(
-		"- **not_applicable**: the evidence dimension does not apply, with a concrete reason.\n",
-	)
-	document.WriteString("\n## Capability rows\n\n")
+	for _, plugin := range plugins {
+		issues := evidenceIssues(plugin.Evidence)
+		if plugin.Behavior == capability.BehaviorFull && len(plugin.KnownGaps) == 0 &&
+			len(plugin.DivergenceIDs) == 0 && len(issues) == 0 {
+			continue
+		}
+		fmt.Fprintf(&document, "\n### `%s`\n\n", markdownCell(plugin.Name))
+		fmt.Fprintf(
+			&document,
+			"- Contract: `%s`, %s, behavior **%s**.\n",
+			markdownCell(string(plugin.Namespace)),
+			markdownCell(domainList(plugin.Domains)),
+			markdownCell(string(plugin.Behavior)),
+		)
+		for _, gap := range plugin.KnownGaps {
+			fmt.Fprintf(&document, "- Gap: %s\n", markdownCell(gap))
+		}
+		if len(plugin.DivergenceIDs) != 0 {
+			fmt.Fprintf(&document, "- Divergences: %s.\n", inlineCodeList(plugin.DivergenceIDs))
+		}
+		if len(issues) != 0 {
+			fmt.Fprintf(&document, "- Evidence: %s.\n", strings.Join(issues, ", "))
+		}
+	}
+
+	document.WriteString("\n## Capability index\n\n")
 	document.WriteString(
 		"APISIX defaults are sorted first by name. Remaining Go extension entries follow by namespace and name.\n\n",
 	)
 	document.WriteString(
-		"| Plugin | Namespace | APISIX default | Domains | Behavior status | Behavior summary | Known gaps | Platforms | Schema | Unit | Converted upstream | Differential | Real dependency | Failure |\n",
+		"| Plugin | Namespace | APISIX default | Domains | Behavior | Evidence |\n",
 	)
 	document.WriteString(
-		"| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n",
+		"| --- | --- | --- | --- | --- | --- |\n",
 	)
 	for _, plugin := range plugins {
 		fmt.Fprintf(
 			&document,
-			"| `%s` | `%s` | %s | %s | **%s** | %s | %s | %s | %s | %s | %s | %s | %s | %s |\n",
+			"| `%s` | `%s` | %s | %s | **%s** | %s |\n",
 			markdownCell(plugin.Name),
 			markdownCell(string(plugin.Namespace)),
 			yesNo(plugin.APISIXDefault),
 			markdownCell(domainList(plugin.Domains)),
 			markdownCell(string(plugin.Behavior)),
-			markdownCell(plugin.BehaviorSummary),
-			renderKnownGaps(plugin.KnownGaps),
-			markdownCell(strings.Join(plugin.SupportedPlatforms, ", ")),
-			renderEvidenceClaim(plugin.Evidence.Schema),
-			renderEvidenceClaim(plugin.Evidence.Unit),
-			renderEvidenceClaim(plugin.Evidence.Upstream),
-			renderEvidenceClaim(plugin.Evidence.Differential),
-			renderEvidenceClaim(plugin.Evidence.RealDependency),
-			renderEvidenceClaim(plugin.Evidence.Failure),
+			markdownCell(evidenceSummary(plugin.Evidence)),
 		)
 	}
 	return document.Bytes(), nil
@@ -843,33 +884,70 @@ func markdownCell(value string) string {
 	return strings.ReplaceAll(value, "\n", "<br>")
 }
 
-func renderKnownGaps(gaps []string) string {
-	if len(gaps) == 0 {
-		return "none"
+func evidenceClaims(evidence capability.Evidence) []struct {
+	label string
+	claim capability.EvidenceClaim
+} {
+	return []struct {
+		label string
+		claim capability.EvidenceClaim
+	}{
+		{label: "schema", claim: evidence.Schema},
+		{label: "unit", claim: evidence.Unit},
+		{label: "upstream", claim: evidence.Upstream},
+		{label: "differential", claim: evidence.Differential},
+		{label: "dependency", claim: evidence.RealDependency},
+		{label: "failure", claim: evidence.Failure},
 	}
-	rendered := make([]string, len(gaps))
-	for index, gap := range gaps {
-		rendered[index] = markdownCell(gap)
-	}
-	return strings.Join(rendered, "<br>")
 }
 
-func renderEvidenceClaim(claim capability.EvidenceClaim) string {
-	refs := "none"
-	if len(claim.Refs) != 0 {
-		refs = strings.Join(claim.Refs, ", ")
+func evidenceIssues(evidence capability.Evidence) []string {
+	var issues []string
+	for _, item := range evidenceClaims(evidence) {
+		if item.claim.State == capability.EvidenceVerified ||
+			item.claim.State == capability.EvidenceNotApplicable {
+			continue
+		}
+		issues = append(issues, item.label+":"+string(item.claim.State))
 	}
-	reason := "none"
-	if claim.Reason != "" {
-		reason = claim.Reason
+	return issues
+}
+
+func evidenceSummary(evidence capability.Evidence) string {
+	issues := evidenceIssues(evidence)
+	if len(issues) != 0 {
+		return strings.Join(issues, ", ")
 	}
-	return fmt.Sprintf(
-		"**%s**<br>owner: %s<br>reason: %s<br>refs: %s",
-		markdownCell(string(claim.State)),
-		markdownCell(claim.Owner),
-		markdownCell(reason),
-		markdownCell(refs),
-	)
+	for _, item := range evidenceClaims(evidence) {
+		if item.claim.State == capability.EvidenceVerified {
+			return "verified"
+		}
+	}
+	return "not applicable"
+}
+
+func evidenceCounts(plugins []capability.PluginCapability) (verified, notApplicable, attention int) {
+	for _, plugin := range plugins {
+		for _, item := range evidenceClaims(plugin.Evidence) {
+			switch item.claim.State {
+			case capability.EvidenceVerified:
+				verified++
+			case capability.EvidenceNotApplicable:
+				notApplicable++
+			default:
+				attention++
+			}
+		}
+	}
+	return verified, notApplicable, attention
+}
+
+func inlineCodeList(values []string) string {
+	rendered := make([]string, len(values))
+	for index, value := range values {
+		rendered[index] = "`" + markdownCell(value) + "`"
+	}
+	return strings.Join(rendered, ", ")
 }
 
 func domainList(domains []capability.Domain) string {

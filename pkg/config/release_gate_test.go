@@ -315,14 +315,21 @@ func TestProductionConfigRequiresExplicitEtcdEndpoint(t *testing.T) {
 	}
 }
 
-func TestHTTPDataPlaneProductionConfigFailsClosedUntilQualified(t *testing.T) {
+func TestHTTPDataPlaneProductionConfigLoadsWhenQualified(t *testing.T) {
 	defaultPath, productionPath := repositoryConfigPaths(t)
-	_, err := loadEffectiveTestFiles(t, defaultPath, productionPath, map[string]string{
+	cfg, err := loadEffectiveTestFiles(t, defaultPath, productionPath, map[string]string{
 		"APISIXGO_DEPLOYMENT_ETCD_HOST": "https://etcd.example:2379",
 	})
-	if err == nil || !strings.Contains(err.Error(), "http-data-plane-v1") ||
-		!strings.Contains(err.Error(), "unqualified required plugins") {
-		t.Fatalf("LoadEffective() error = %v, want incomplete qualification evidence rejection", err)
+	if err != nil {
+		t.Fatalf("LoadEffective() error = %v, want qualified production config accepted", err)
+	}
+	want := ProfileSelection{
+		Compatibility: CompatibilityAPISIX317,
+		Security:      SecurityStrict,
+		Qualification: QualificationHTTPDataPlaneV1,
+	}
+	if got := cfg.Profiles(); got != want {
+		t.Fatalf("Profiles() = %#v, want %#v", got, want)
 	}
 }
 

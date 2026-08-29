@@ -33,13 +33,12 @@ func TestProfileSelectionValidate(t *testing.T) {
 			},
 		},
 		{
-			name: "known but not yet qualified",
+			name: "qualified production manifest",
 			in: ProfileSelection{
 				Compatibility: CompatibilityAPISIX317,
 				Security:      SecurityStrict,
 				Qualification: QualificationHTTPDataPlaneV1,
 			},
-			wantErr: "unqualified required plugins",
 		},
 		{
 			name: "unknown target",
@@ -78,6 +77,18 @@ func TestProfileSelectionValidate(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("known but not yet qualified", func(t *testing.T) {
+		selection := ProfileSelection{
+			Compatibility: CompatibilityAPISIX317,
+			Security:      SecurityStrict,
+			Qualification: QualificationHTTPDataPlaneV1,
+		}
+		err := selection.Validate(unqualifiedProfileTestManifest(t))
+		if err == nil || !strings.Contains(err.Error(), "unqualified required plugins") {
+			t.Fatalf("Validate() error = %v, want unqualified required plugins", err)
+		}
+	})
 }
 
 func TestProfileSelectionConfigAxes(t *testing.T) {
@@ -181,6 +192,26 @@ func qualifiedProfileTestManifest(t *testing.T) *capability.Manifest {
 		t.Fatalf("qualification profiles = %#v, want %q", manifest.QualificationProfiles, QualificationHTTPDataPlaneV1)
 	}
 	manifest.QualificationProfiles[index].RequiredEvidence = nil
+	return manifest
+}
+
+func unqualifiedProfileTestManifest(t *testing.T) *capability.Manifest {
+	t.Helper()
+	manifest := loadProfileTestManifest(t)
+	profile, ok := manifest.Qualification(string(QualificationHTTPDataPlaneV1))
+	if !ok || len(profile.RequiredPlugins) == 0 {
+		t.Fatalf("qualification profile %q has no required plugins", QualificationHTTPDataPlaneV1)
+	}
+	index := slices.IndexFunc(manifest.Plugins, func(plugin capability.PluginCapability) bool {
+		return plugin.Name == profile.RequiredPlugins[0]
+	})
+	if index < 0 {
+		t.Fatalf("required plugin %q is missing", profile.RequiredPlugins[0])
+	}
+	manifest.Plugins[index].Evidence.Differential = capability.EvidenceClaim{
+		State:  capability.EvidenceMissing,
+		Reason: "test fixture intentionally lacks differential evidence",
+	}
 	return manifest
 }
 

@@ -157,13 +157,10 @@ func TestValidateQualificationPlugins(t *testing.T) {
 		}
 	})
 
-	t.Run("production manifest fails at evidence qualification", func(t *testing.T) {
-		manifest, err := capability.Load()
-		if err != nil {
-			t.Fatal(err)
-		}
+	t.Run("incomplete manifest fails at evidence qualification", func(t *testing.T) {
+		manifest := unqualifiedProfileTestManifest(t)
 		selection := qualifiedSelection()
-		err = ValidateQualificationPlugins(nil, selection, manifest)
+		err := ValidateQualificationPlugins(nil, selection, manifest)
 		if err == nil || !strings.Contains(err.Error(), "unqualified required plugins") {
 			t.Fatalf("ValidateQualificationPlugins() error = %v", err)
 		}

@@ -4,15 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sync/atomic"
 	"testing"
 
 	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/secret"
 )
-
-var scopedSecretRevision atomic.Uint64
 
 type scopedSecretBroker struct {
 	values map[string]string
@@ -58,9 +55,10 @@ func ScopedSecretHarness(
 	t testing.TB,
 	factory string,
 	values map[string]string,
+	ticket generation.ApplyTicket,
 ) (secret.GenerationCapability, secret.Scope, func()) {
 	t.Helper()
-	revision := scopedSecretRevision.Add(1)
+	revision := ticket.DesiredRevision
 	resourceKey := generation.ResourceKey{Kind: "routes", ID: fmt.Sprintf("scoped-secret-%d", revision)}
 	snapshot, err := generation.NewSnapshot(revision, []generation.Resource{{
 		Key: resourceKey, Value: []byte(`{"plugins":{}}`),
@@ -78,9 +76,6 @@ func ScopedSecretHarness(
 		Decisions: []generation.ResourceDecision{{
 			Key: resourceKey, Disposition: generation.DispositionPublished, Code: "scoped-secret-test",
 		}},
-	}
-	ticket := generation.ApplyTicket{
-		DesiredRevision: revision, RequiredDomains: []generation.Domain{generation.DomainHTTP},
 	}
 	set := generation.PublicationSet{
 		DesiredRevision: revision,

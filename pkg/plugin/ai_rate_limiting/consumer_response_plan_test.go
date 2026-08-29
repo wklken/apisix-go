@@ -8,6 +8,7 @@ import (
 	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/generation"
 	pluginpkg "github.com/wklken/apisix-go/pkg/plugin"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_rate_limiting"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -21,7 +22,12 @@ func TestConsumerScopedPluginJoinsResponsePlanAfterAuthentication(t *testing.T) 
 	if err := rateLimiter.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	capabilityValue, scope, cleanup := testutil.ScopedSecretHarness(t, "ai-rate-limiting", nil)
+	capabilityValue, scope, cleanup := testutil.ScopedSecretHarness(
+		t,
+		"ai-rate-limiting",
+		nil,
+		generation.ApplyTicket{DesiredRevision: 1, RequiredDomains: []generation.Domain{generation.DomainHTTP}},
+	)
 	defer cleanup()
 	if err := base.MaterializeScopedPluginSecrets(
 		context.Background(), scope, capabilityValue, rateLimiter,

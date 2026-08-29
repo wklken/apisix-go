@@ -79,7 +79,12 @@ func testPluginInitializationError(
 	if err := util.Parse(config, instance.Config()); err != nil {
 		return err
 	}
-	capabilityValue, scope, cleanup := testutil.ScopedSecretHarness(t, name, nil)
+	capabilityValue, scope, cleanup := testutil.ScopedSecretHarness(
+		t,
+		name,
+		nil,
+		generation.ApplyTicket{DesiredRevision: 1, RequiredDomains: []generation.Domain{generation.DomainHTTP}},
+	)
 	defer cleanup()
 	if err := plugin.MaterializeScopedPluginSecrets(
 		context.Background(), scope, capabilityValue, instance,

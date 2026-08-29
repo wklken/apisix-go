@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/testutil"
 )
@@ -26,7 +27,12 @@ func BenchmarkStaticConfigPath(b *testing.B) {
 	if err := p.Init(); err != nil {
 		b.Fatalf("Init() error = %v", err)
 	}
-	capabilityValue, scope, closeAttempt := testutil.ScopedSecretHarness(b, name, nil)
+	capabilityValue, scope, closeAttempt := testutil.ScopedSecretHarness(
+		b,
+		name,
+		nil,
+		generation.ApplyTicket{DesiredRevision: 1, RequiredDomains: []generation.Domain{generation.DomainHTTP}},
+	)
 	b.Cleanup(closeAttempt)
 	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
 		b.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)

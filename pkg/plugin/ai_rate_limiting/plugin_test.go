@@ -37,7 +37,12 @@ func newTestPlugin(t *testing.T, cfg Config, now func() time.Time) *Plugin {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	capabilityValue, scope, closeAttempt := testutil.ScopedSecretHarness(t, name, nil)
+	capabilityValue, scope, closeAttempt := testutil.ScopedSecretHarness(
+		t,
+		name,
+		nil,
+		generation.ApplyTicket{DesiredRevision: 1, RequiredDomains: []generation.Domain{generation.DomainHTTP}},
+	)
 	t.Cleanup(closeAttempt)
 	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
@@ -1354,7 +1359,12 @@ func admitAPISIX317Config(t *testing.T, raw map[string]any) (configAdmissionStag
 	if err := json.Unmarshal(payload, p.Config()); err != nil {
 		t.Fatalf("unmarshal config: %v", err)
 	}
-	capabilityValue, scope, closeAttempt := testutil.ScopedSecretHarness(t, name, nil)
+	capabilityValue, scope, closeAttempt := testutil.ScopedSecretHarness(
+		t,
+		name,
+		nil,
+		generation.ApplyTicket{DesiredRevision: 1, RequiredDomains: []generation.Domain{generation.DomainHTTP}},
+	)
 	t.Cleanup(closeAttempt)
 	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)

@@ -635,7 +635,12 @@ func TestDingTalkStopDrainsActiveRefreshAndPreventsResurrection(t *testing.T) {
 	if late.Code != http.StatusServiceUnavailable || providerCalls.Load() != 2 {
 		t.Fatalf("post-Stop status/provider calls = %d/%d, want 503/2", late.Code, providerCalls.Load())
 	}
-	capabilityValue, scope, cleanup := testutil.ScopedSecretHarness(t, name, nil)
+	capabilityValue, scope, cleanup := testutil.ScopedSecretHarness(
+		t,
+		name,
+		nil,
+		generation.ApplyTicket{DesiredRevision: 1, RequiredDomains: []generation.Domain{generation.DomainHTTP}},
+	)
 	defer cleanup()
 	if err := base.MaterializeScopedPluginSecrets(
 		context.Background(), scope, capabilityValue, p,

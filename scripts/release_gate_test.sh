@@ -7,7 +7,6 @@ dockerfile="$repo_root/Dockerfile"
 goreleaser="$repo_root/.goreleaser.yaml"
 workflow="$repo_root/.github/workflows/security-release-gates.yml"
 unit_workflow="$repo_root/.github/workflows/unit-test.yml"
-capability_status_workflow="$repo_root/.github/workflows/capability-status.yml"
 rc_workflow="$repo_root/.github/workflows/release-candidate.yml"
 release_workflow="$repo_root/.github/workflows/release.yml"
 production_config="$repo_root/conf/config-production.yaml"
@@ -118,7 +117,6 @@ test -f "$rc_workflow"
 test -f "$release_workflow"
 test -f "$makefile"
 test -f "$unit_workflow"
-test -f "$capability_status_workflow"
 test -f "$dockerfile"
 test -f "$goreleaser"
 test -f "$production_config"
@@ -151,6 +149,10 @@ status_target_body=$(printf '\t%s\n\t%s' \
     "\$(GO_CACHE_RUNNER) go test ./pkg/capability ./pkg/config ./pkg/plugin -run '^(TestLoadedManifest|TestManifest|TestCapabilityManifest|TestCapabilityRegistry)' -count=1" \
     "APISIX_GO_SKIP_PLUGIN_INTEGRATION=1 \$(GO_CACHE_RUNNER) go test ./t/plugin -run '^(TestCapabilityManifestSelection|TestManifestCorpusValidates|TestUpstreamCorpusAccountingWithoutSourceCheckout|TestCorpusEvidenceMatchesPinnedAPISIXTarget)\$\$' -count=1")
 require_make_target_body test-capability-status "$status_target_body"
+require_make_target_body test-plugin-behavior-gate \
+    $'\tbash scripts/validation/plugin_behavior_gate_test.sh'
+require_make_target_body validate-plugin-behavior \
+    $'\tbash scripts/validation/plugin_behavior_gate.sh'
 require_fixed '.PHONY: test-plugin-smoke' "$makefile"
 require_fixed 'APISIX_GO_PLUGIN_SMOKE_CASE="$(PLUGIN_SMOKE_CASE)" $(GO_CACHE_RUNNER) go test ./t/plugin -run '\''^TestPluginIntegration$$'\'' -count=1 -v' "$makefile"
 require_fixed '.PHONY: cache-gc-test' "$makefile"
@@ -158,11 +160,50 @@ require_fixed '.PHONY: cache-gc' "$makefile"
 require_fixed '.PHONY: cache-clean-shared' "$makefile"
 require_job_fixed "$unit_workflow" build-and-unit 'run: make test-plugin-harness'
 require_job_fixed "$unit_workflow" build-and-unit 'run: bash scripts/release_gate_test.sh'
-require_job_fixed "$capability_status_workflow" capability-status 'run: bash scripts/capability_status_gate_test.sh'
-require_job_fixed "$capability_status_workflow" capability-status 'run: bash -lc '\''source .envrc && make check-capability-drift'\'''
-require_job_fixed "$capability_status_workflow" capability-status 'run: bash -lc '\''source .envrc && make test-capability-status'\'''
-require_job_fixed "$unit_workflow" integration-smoke 'run: make test-plugin-smoke PLUGIN_SMOKE_CASE='\''${{ matrix.case.selector }}'\'''
-reject_job_pattern "$unit_workflow" integration-smoke 'go test[[:space:]]+\./t/plugin[[:space:]]+-run'
+require_job_fixed "$unit_workflow" build-and-unit 'run: make test-plugin-behavior-gate'
+require_job_fixed "$unit_workflow" build-and-unit 'run: make check-capability-drift'
+require_job_fixed "$unit_workflow" lint 'uses: golangci/golangci-lint-action@v9.3.0'
+require_job_fixed "$unit_workflow" lint 'version: v2.12.2'
+reject_job_pattern "$unit_workflow" lint 'run: make (init|lint)'
+unit_header=$(sed -n '1,/^jobs:$/p' "$unit_workflow")
+require_text '  pull_request:' "$unit_header"
+require_text '  push:' "$unit_header"
+require_text '      - master' "$unit_header"
+if grep -Fq 'paths-ignore:' <<<"$unit_header"; then
+    printf 'ordinary CI must use ordered paths so capability documentation is re-included\n' >&2
+    exit 1
+fi
+expected_unit_paths=$(printf '%s\n' \
+    "      - '**'" \
+    "      - '!**/*.md'" \
+    '      - docs/plugins.md' \
+    "      - 'docs/architecture/**'")
+for trigger in pull_request push; do
+    trigger_paths=$(awk -v target="$trigger" '
+        $0 == "on:" { in_on = 1; next }
+        in_on && $0 !~ /^[[:space:]]/ { exit }
+        in_on && $0 == "  " target ":" { in_trigger = 1; next }
+        in_trigger && $0 ~ /^  [A-Za-z0-9_-]+:/ { exit }
+        in_trigger && $0 == "    paths:" { in_paths = 1; next }
+        in_paths && $0 ~ /^    [A-Za-z0-9_-]+:/ { exit }
+        in_paths { print }
+    ' "$unit_workflow")
+    if [[ "$trigger_paths" != "$expected_unit_paths" ]]; then
+        printf '%s paths must preserve the capability documentation include order in %s\n' "$trigger" "$unit_workflow" >&2
+        exit 1
+    fi
+done
+unit_jobs=$(sed -n '/^jobs:$/,$p' "$unit_workflow")
+unit_job_count=$(grep -Ec '^  [A-Za-z0-9_-]+:$' <<<"$unit_jobs")
+if [[ "$unit_job_count" -ne 2 ]] || grep -Fxq '  integration-smoke:' <<<"$unit_jobs"; then
+    printf 'ordinary CI must contain only lint and build-and-unit jobs in %s\n' "$unit_workflow" >&2
+    exit 1
+fi
+require_job_pattern "$unit_workflow" lint '^    name: Lint$'
+require_job_pattern "$unit_workflow" build-and-unit '^    name: Build And Unit Coverage$'
+for job in lint build-and-unit; do
+    reject_job_pattern "$unit_workflow" "$job" '^[[:space:]]+(needs|strategy):'
+done
 require_job_fixed "$release_workflow" build-and-unit 'run: make test-plugin-harness'
 require_job_fixed "$rc_workflow" build-and-unit 'run: make test-plugin-harness'
 require_job_fixed "$release_workflow" integration-smoke 'run: make test-plugin-smoke PLUGIN_SMOKE_CASE='\''${{ matrix.case.pattern }}'\'''
@@ -193,6 +234,10 @@ require_text 'source-commit:' "$header"
 require_text 'rollback-release-tag:' "$header"
 require_text 'image-reference:' "$header"
 require_text 'workflow_dispatch:' "$header"
+if grep -Eq '^  (pull_request|push):' <<<"$header"; then
+    printf 'security release gates must not run automatically for pull requests or pushes\n' >&2
+    exit 1
+fi
 permissions_block=$(awk '/^permissions:/{in_permissions=1; next} in_permissions && /^concurrency:/{exit} in_permissions{print}' "$workflow")
 require_text 'contents: read' "$permissions_block"
 permission_lines=$(sed '/^[[:space:]]*$/d' <<<"$permissions_block")
@@ -240,6 +285,8 @@ require_job_fixed "$workflow" container-evidence 'id: build-image'
 require_job_fixed "$workflow" container-evidence 'docker/setup-buildx-action@v4.2.0'
 require_job_fixed "$workflow" container-evidence 'docker/metadata-action@v6.2.0'
 require_job_fixed "$workflow" container-evidence 'docker/build-push-action@v7.3.0'
+require_job_fixed "$workflow" container-evidence 'cache-from: type=gha,scope=security-release-amd64'
+require_job_fixed "$workflow" container-evidence 'cache-to: type=gha,mode=max,scope=security-release-amd64'
 require_job_fixed "$workflow" container-evidence 'platforms: linux/amd64'
 require_job_fixed "$workflow" container-evidence 'load: true'
 require_job_fixed "$workflow" container-evidence 'push: false'

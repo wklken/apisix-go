@@ -32,3 +32,4 @@ dashboard
 *.log
 apisix-go-store.db
 todo.md
+docs/superpowers

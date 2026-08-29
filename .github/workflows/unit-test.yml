@@ -2,13 +2,19 @@ name: CI
 
 on:
   pull_request:
-    paths-ignore:
-      - '**/*.md'
+    paths:
+      - '**'
+      - '!**/*.md'
+      - docs/plugins.md
+      - 'docs/architecture/**'
   push:
     branches:
       - master
-    paths-ignore:
-      - '**/*.md'
+    paths:
+      - '**'
+      - '!**/*.md'
+      - docs/plugins.md
+      - 'docs/architecture/**'
   workflow_dispatch:
 
 permissions:
@@ -33,11 +39,10 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Install golangci-lint
-        run: make init
-
       - name: Run lint
-        run: make lint
+        uses: golangci/golangci-lint-action@v9.3.0
+        with:
+          version: v2.12.2
 
   build-and-unit:
     name: Build And Unit Coverage
@@ -56,6 +61,12 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Verify plugin behavior gate contract
+        run: make test-plugin-behavior-gate
+
+      - name: Verify generated capability and ADR drift
+        run: make check-capability-drift
+
       - name: Build
         run: make build
 
@@ -64,32 +75,3 @@ jobs:
 
       - name: Run plugin harness unit tests
         run: make test-plugin-harness
-
-  integration-smoke:
-    name: Integration Smoke (${{ matrix.case.name }})
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    strategy:
-      fail-fast: false
-      matrix:
-        case:
-          - name: key-auth
-            selector: key-auth/valid-consumer-schema
-          - name: proxy-rewrite
-            selector: proxy-rewrite/rewrite-host
-          - name: proxy-control
-            selector: proxy-control/request-buffering-disabled
-          - name: uri-blocker
-            selector: uri-blocker/one-rule-blocks-query
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Set up Go
-        uses: actions/setup-go@v7
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: Run focused standalone smoke case
-        run: make test-plugin-smoke PLUGIN_SMOKE_CASE='${{ matrix.case.selector }}'

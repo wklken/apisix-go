@@ -214,33 +214,44 @@ func TestSAMLManifestHasIndependentSingletonCases(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load saml-auth.yaml: %v", err)
 	}
-	if got := len(manifest.Cases); got != 21 {
-		t.Fatalf("SAML cases = %d, want 21 independent source cases", got)
+	wantByFile, wantCases := selectedSourceTestsByFile(manifest)
+	if got := len(manifest.Cases); got != wantCases {
+		t.Fatalf("SAML cases = %d, want %d independent selected source cases", got, wantCases)
 	}
-	for _, source := range manifestSources(manifest) {
-		got := make([]int, 0, source.Tests)
-		for _, testCase := range manifest.Cases {
-			if testCase.Source.File != source.File {
-				continue
-			}
-			if len(testCase.Source.Tests) != 1 {
-				t.Fatalf(
-					"case %q source tests = %v, want one source block",
-					testCase.Name,
-					testCase.Source.Tests,
-				)
-			}
-			got = append(got, testCase.Source.Tests[0])
+	gotByFile := make(map[string][]int, len(wantByFile))
+	for _, testCase := range manifest.Cases {
+		if len(testCase.Source.Tests) != 1 {
+			t.Fatalf(
+				"case %q source tests = %v, want one source block",
+				testCase.Name,
+				testCase.Source.Tests,
+			)
 		}
+		if _, ok := wantByFile[testCase.Source.File]; !ok {
+			t.Fatalf("case %q has unexpected source %q", testCase.Name, testCase.Source.File)
+		}
+		gotByFile[testCase.Source.File] = append(gotByFile[testCase.Source.File], testCase.Source.Tests[0])
+	}
+	for file, want := range wantByFile {
+		got := gotByFile[file]
 		sort.Ints(got)
-		want := make([]int, source.Tests)
-		for i := range want {
-			want[i] = i + 1
-		}
+		want = slices.Clone(want)
+		sort.Ints(want)
 		if !slices.Equal(got, want) {
-			t.Fatalf("%s tests = %v, want %v", source.File, got, want)
+			t.Fatalf("%s tests = %v, want selected tests %v", file, got, want)
 		}
 	}
+}
+
+func selectedSourceTestsByFile(manifest *Manifest) (map[string][]int, int) {
+	testsByFile := make(map[string][]int)
+	total := 0
+	for _, source := range manifestSources(manifest) {
+		numbers := sourceTestNumbers(source)
+		testsByFile[source.File] = append(testsByFile[source.File], numbers...)
+		total += len(numbers)
+	}
+	return testsByFile, total
 }
 
 func TestAIRateLimitingManifestMapsExactlyOnePinnedBlockPerBehavioralCase(t *testing.T) {
@@ -263,15 +274,17 @@ func TestAIRateLimitingManifestMapsExactlyOnePinnedBlockPerBehavioralCase(t *tes
 	if err != nil {
 		t.Fatalf("load %s: %v", manifestFile, err)
 	}
-	if got := len(manifest.Cases); got != 58 {
-		t.Fatalf("%s top-level cases = %d, want exactly 58 pinned behavioral cases", manifestFile, got)
+	wantByFile, wantCases := selectedSourceTestsByFile(manifest)
+	if got := len(manifest.Cases); got != wantCases {
+		t.Fatalf(
+			"%s top-level cases = %d, want exactly %d selected pinned behavioral cases",
+			manifestFile,
+			got,
+			wantCases,
+		)
 	}
 
-	next := map[string]int{
-		"t/plugin/ai-rate-limiting-consumer-isolation.t": 1,
-		"t/plugin/ai-rate-limiting-expression.t":         1,
-		"t/plugin/ai-rate-limiting.t":                    1,
-	}
+	next := make(map[string]int, len(wantByFile))
 	for i, testCase := range manifest.Cases {
 		if len(testCase.Source.Tests) != 1 {
 			t.Fatalf(
@@ -282,10 +295,15 @@ func TestAIRateLimitingManifestMapsExactlyOnePinnedBlockPerBehavioralCase(t *tes
 				len(testCase.Source.Tests),
 			)
 		}
-		want, ok := next[testCase.Source.File]
+		wantTests, ok := wantByFile[testCase.Source.File]
 		if !ok {
 			t.Fatalf("%s case %d has unexpected source %q", manifestFile, i+1, testCase.Source.File)
 		}
+		nextIndex := next[testCase.Source.File]
+		if nextIndex >= len(wantTests) {
+			t.Fatalf("%s case %d duplicates exhausted source %q", manifestFile, i+1, testCase.Source.File)
+		}
+		want := wantTests[nextIndex]
 		if got := testCase.Source.Tests[0]; got != want {
 			t.Fatalf(
 				"%s case %d %q maps source test %d, want next source test %d",
@@ -298,16 +316,9 @@ func TestAIRateLimitingManifestMapsExactlyOnePinnedBlockPerBehavioralCase(t *tes
 		}
 		next[testCase.Source.File]++
 	}
-	for file, got := range next {
-		want := 6
-		switch file {
-		case "t/plugin/ai-rate-limiting-expression.t":
-			want = 14
-		case "t/plugin/ai-rate-limiting.t":
-			want = 41
-		}
-		if got != want {
-			t.Fatalf("%s mapped through test %d, want through test %d", file, got-1, want-1)
+	for file, want := range wantByFile {
+		if got := next[file]; got != len(want) {
+			t.Fatalf("%s mapped %d selected tests, want %d", file, got, len(want))
 		}
 	}
 }

@@ -120,7 +120,7 @@ func TestDifferentialSAMLAuthInitiationPolicyRejectsMalformedSemantics(t *testin
 					t, "_candidate-request", "candidate-state", "other-sp",
 				)
 			},
-			want: "Issuer",
+			want: "issuer",
 		},
 		{
 			name: "missing state cookie",

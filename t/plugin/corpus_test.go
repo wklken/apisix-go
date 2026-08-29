@@ -413,7 +413,11 @@ func TestManifestSelectionsUseEffectiveCorpusCommit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	data = bytes.ReplaceAll(data, []byte(historicalCommit), []byte(targetCommit))
+	manifest, err := loadManifest("redirect2.yaml", data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data = bytes.ReplaceAll(data, []byte(manifest.Source.Commit), []byte(targetCommit))
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "redirect2.yaml"), data, 0o600); err != nil {
 		t.Fatal(err)
@@ -518,7 +522,11 @@ func TestManifestSelectionsRejectMixedEffectiveCommits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	data = bytes.ReplaceAll(data, []byte(historicalCommit), []byte(targetCommit))
+	manifest, err := loadManifest("redirect2.yaml", data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data = bytes.ReplaceAll(data, []byte(manifest.Source.Commit), []byte(targetCommit))
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "redirect2.yaml"), data, 0o600); err != nil {
 		t.Fatal(err)

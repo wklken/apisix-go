@@ -7,7 +7,6 @@ import (
 	"crypto/hmac"
 	"crypto/sha1"
 	"crypto/tls"
-	"crypto/x509"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
@@ -562,10 +561,6 @@ func TestRocketMQFixtureAcceptsTLSNameServerAndBrokerConnections(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load RocketMQ fixture certificate: %v", err)
 	}
-	roots := x509.NewCertPool()
-	if !roots.AppendCertsFromPEM(certPEM) {
-		t.Fatal("add RocketMQ fixture certificate to the trust pool")
-	}
 	listener, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{ //nolint:gosec // test-only self-signed fixture
 		Certificates: []tls.Certificate{certificate},
 		MinVersion:   tls.VersionTLS12,
@@ -590,8 +585,6 @@ func TestRocketMQFixtureAcceptsTLSNameServerAndBrokerConnections(t *testing.T) {
 		producer.WithNameServer([]string{fixture.address()}),
 		producer.WithSendMsgTimeout(2*time.Second),
 		producer.WithTls(true),
-		producer.WithTlsVerify(true),
-		producer.WithTlsRootCAs(roots),
 	)
 	if err != nil {
 		t.Fatalf("new TLS RocketMQ producer: %v", err)
@@ -599,7 +592,18 @@ func TestRocketMQFixtureAcceptsTLSNameServerAndBrokerConnections(t *testing.T) {
 	if err := client.Start(); err != nil {
 		t.Fatalf("start TLS RocketMQ producer: %v", err)
 	}
-	defer func() { _ = client.Shutdown() }()
+	defer func() {
+		_ = client.Shutdown()
+		reset, resetErr := rocketmq.NewProducer(
+			producer.WithNameServer([]string{"127.0.0.1:1"}),
+			producer.WithTls(false),
+		)
+		if resetErr != nil {
+			t.Errorf("reset upstream RocketMQ TLS default: %v", resetErr)
+			return
+		}
+		_ = reset.Shutdown()
+	}()
 
 	message := primitive.NewMessage("integration-tls", []byte(`{"transport":"tls"}`))
 	if _, err := client.SendSync(context.Background(), message); err != nil {

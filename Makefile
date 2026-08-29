@@ -85,22 +85,7 @@ test-integration:
 
 .PHONY: test-plugin-harness
 test-plugin-harness:
-	$(MAKE) test-rocketmq-client-patch
 	APISIX_GO_SKIP_PLUGIN_INTEGRATION=1 $(GO_CACHE_RUNNER) go test ./t/plugin -count=1
-
-.PHONY: test-rocketmq-patch
-test-rocketmq-patch:
-	$(GO_CACHE_RUNNER) go mod download github.com/apache/rocketmq-client-go/v2@v2.1.3-0.20231106021916-c9e197c3af45
-	$(GO_CACHE_RUNNER) bash scripts/validation/rocketmq_patch_gate.sh
-
-.PHONY: test-rocketmq-client-patch
-test-rocketmq-client-patch: test-rocketmq-patch test-rocketmq-nested
-
-.PHONY: test-rocketmq-nested
-test-rocketmq-nested:
-	cd third_party/rocketmq-client-go && ../../scripts/go_cache.sh run -- go test ./internal/remote -run '^(TestTLSHandshakeHonorsContext|TestTLSVerificationUsesRootsAndAddressServerName|TestTLSVerificationRejectsUnknownAuthority|TestTLSVerificationRejectsWrongServerName|TestTLSVerificationDisabledSkipsVerification|TestInvokeOneWayHonorsContextWhileConnectionLockIsHeld|TestDoRequestHonorsContextWhileConnectionWriteLockIsHeld|TestDoRequestCancelsBlockedWrite|TestDoRequestWaitsForCancellationDeadlineCallbackBeforeReusingConnection|TestSendRequestPassesCallerContextThroughInterceptor)$$' -count=1
-	cd third_party/rocketmq-client-go && ../../scripts/go_cache.sh run -- go test ./internal -run '^(TestTopicRouteLockHonorsContext|TestDefaultClientOptionsOwnsRemotingConfig|TestStartTaskCancellationSkipsDelayedOperation|TestRMQClientShutdownJoinsAllStartTasks)$$' -count=1
-	cd third_party/rocketmq-client-go && ../../scripts/go_cache.sh run -- go test ./producer -run '^(TestSendSyncStopsBeforeRetryWhenContextIsCanceled|TestSendOneWayStopsBeforeRetryWhenContextIsCanceled|TestTLSOptionsPropagateToEachProducerRemotingConfig)$$' -count=1
 
 .PHONY: generate-capabilities
 generate-capabilities:

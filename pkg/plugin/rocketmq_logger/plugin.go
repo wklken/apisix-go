@@ -85,10 +85,6 @@ const schema = `
 	  "type": "boolean",
 	  "default": false
 	},
-	"tls_verify": {
-	  "type": "boolean",
-	  "default": false
-	},
     "access_key": {
       "type": "string",
       "default": ""
@@ -159,6 +155,9 @@ const schema = `
       "minimum": 1
     }
   },
+  "not": {
+    "required": ["tls_verify"]
+  },
   "required": ["nameserver_list", "topic"]
 }
 `
@@ -190,7 +189,6 @@ type Config struct {
 	LogFormat      map[string]string `json:"log_format,omitempty"`
 	Timeout        int               `json:"timeout,omitempty"`
 	UseTLS         bool              `json:"use_tls,omitempty"`
-	TLSVerify      *bool             `json:"tls_verify,omitempty"`
 	AccessKey      string            `json:"access_key,omitempty"`
 	SecretKey      string            `json:"secret_key,omitempty"`
 
@@ -348,15 +346,8 @@ func (p *Plugin) PostInit() error {
 	if _, err := p.MetadataView().Decode(name, &metadata); err != nil {
 		return fmt.Errorf("rocketmq-logger metadata decode failed: %w", err)
 	}
-	if p.config.TLSVerify == nil {
-		verify := false
-		p.config.TLSVerify = &verify
-	}
 	if !p.config.UseTLS {
 		logger.Warn("Keeping use_tls disabled in rocketmq-logger configuration is a security risk")
-	}
-	if !p.config.TLSVerifyValue() {
-		logger.Warn("Keeping tls_verify disabled in rocketmq-logger configuration is a security risk")
 	}
 
 	p.applyDefaults()
@@ -498,10 +489,6 @@ func (p *Plugin) withPrivateConfigLocked(use func(*Config) error) error {
 		UseTLS:         p.config.UseTLS,
 		AccessKey:      p.config.AccessKey,
 	}
-	if p.config.TLSVerify != nil {
-		verify := *p.config.TLSVerify
-		config.TLSVerify = &verify
-	}
 	defer func() { config = Config{} }()
 	if p.secretKeySet {
 		return p.secretKey.Use(func(secretKey string) error {
@@ -511,10 +498,6 @@ func (p *Plugin) withPrivateConfigLocked(use func(*Config) error) error {
 		})
 	}
 	return use(&config)
-}
-
-func (c Config) TLSVerifyValue() bool {
-	return c.TLSVerify != nil && *c.TLSVerify
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {

@@ -35,12 +35,7 @@ func (*Plugin) newSender(config *Config) (rocketmqSender, error) {
 			"apisix-go-rocketmq-%d",
 			producerInstanceSequence.Add(1),
 		)),
-	}
-	if config.UseTLS {
-		options = append(options,
-			producer.WithTls(true),
-			producer.WithTlsVerify(config.TLSVerifyValue()),
-		)
+		producer.WithTls(config.UseTLS),
 	}
 	if config.AccessKey != "" {
 		options = append(options, producer.WithCredentials(primitive.Credentials{

@@ -1,53 +1,50 @@
-# Apache APISIX HTTP data-plane compatibility
+# HTTP Data-Plane Compatibility
 
-apisix-go exposes one runtime behavior: the Apache APISIX 3.17 HTTP data-plane
-contract implemented by this repository. It has no apisix-go-only behavior
-selector.
+APISIX-Go implements one Apache APISIX 3.17 HTTP data-plane contract. Runtime
+configuration does not select a compatibility, security, plugin, or evidence
+mode.
 
-## Replacing an APISIX image
+## Before replacing an APISIX image
 
-1. Review the incompatibilities in the generated [plugin status](plugins.md).
-2. Keep the existing Apache APISIX configuration and data-plane connection to
-   etcd.
-3. Replace the container image with the apisix-go image.
-4. Restart the data plane and run the normal route probes.
+1. Review the generated [plugin status](plugins.md), especially capabilities
+   requiring attention and proposed divergences.
+2. Validate the existing configuration with
+   `apisix config test -c /path/to/config.yaml`.
+3. Replace the image and keep the existing etcd connection and APISIX static
+   configuration.
+4. Restart the data plane and verify liveness, readiness, and representative
+   authenticated routes.
 
-No apisix-go-specific migration setting is required. The image starts with
-`/usr/local/apisix/conf/config.yaml`, the same configuration path used for a
-normal image replacement.
+The container reads `/usr/local/apisix/conf/config.yaml` by default. No
+APISIX-Go-specific migration selector is required.
 
-## Scope
+## Included scope
 
-The supported user-facing contract is the ordinary HTTP data plane. Stream
-features, OpenResty/Lua internals, external plugin runners, native NGINX/TLS
-features, and other explicit gaps remain listed in [plugin status](plugins.md)
-and the [design document](design.md).
+- HTTP routes, services, consumers, upstreams, frontend TLS, WebSocket, and the
+  plugins marked applicable in the generated status.
+- Durable journal recovery, immutable generation activation, graceful
+  termination, and serviceability-based readiness.
+- The same runtime behavior for unit, integration, differential, and release
+  validation.
 
-The differential suite under `validation/` is developer evidence only. It
-does not select or alter runtime behavior.
+## Excluded scope
 
-## Functional and stability verification
+- UDP, stream TLS/mTLS, PROXY protocol, and general stream-plugin chaining.
+- OpenResty/Lua internals beyond explicitly bounded implementations.
+- External plugin runners, WASM, XRPC, QUIC, HTTP/3, and unsupported discovery.
+- Operator-specific external services, ingress, capacity, observability, and
+  deployment automation.
 
-The current release milestone has two evidence groups:
+## Qualification claim
 
-1. HTTP functionality: the APISIX 3.17 differential corpus remains green for
-   the resolved source commit and candidate-binary SHA-256, followed by
-   real-process assembly smoke for representative authentication, rewrite,
-   proxy-control, blocking, and standalone-provider paths.
-2. Runtime stability: non-root container startup, an in-flight request that
-   completes during graceful TERM, verified-TLS etcd last-good/recovery,
-   compaction recovery, replica restart, live delete/re-add convergence, and
-   the canonical 30-minute proxy soak all pass for the same resolved revision.
+Plugin evidence is owned by the capability manifest and its validation corpus.
+Platform recovery and runtime stability are qualified separately by the
+[release runbook](runbooks/production-release.md).
 
-After a post-merge release-candidate run records those gates, the permitted
-claim is: **the documented HTTP data plane is functionally and
-runtime-stability verified within its plugin and dependency boundaries.** This
-is not a repository-wide production-ready claim and does not verify stream
-data-plane behavior.
+A green release-candidate run supports only this bounded claim:
 
-Upgrade/rollback, registry publication, signing, release packaging, and
-environment-specific Kubernetes/systemd, ingress, capacity, and observability
-acceptance are separate future work. They do not block this bounded functional
-and stability result. Real external services remain conditional boundaries for
-the plugins that use them; local fixture parity does not verify an operator's
-Kafka, Redis, cloud-provider, or logging environment.
+> The documented HTTP data plane is functionally and runtime-stability verified
+> for the recorded source revision, candidate identity, plugin evidence, and
+> dependency boundaries.
+
+It is not a repository-wide or environment-specific production-readiness claim.

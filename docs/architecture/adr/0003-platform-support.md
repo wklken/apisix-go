@@ -11,30 +11,25 @@ date: 2026-08-23
 
 # Context
 
-The Go source can compile on more systems than the data-plane runtime and its
-release process can verify. Treating compilation, native smoke evidence, and
-production artifact support as the same claim would overstate the current
-platform contract.
+Source portability, published archives, and qualified container platforms are
+different claims. The release configuration must state each one explicitly.
 
 # Decision
 
-Linux is the production artifact platform. macOS artifacts are published only
-after native smoke execution on their target architecture. Windows remains
-source-buildable and experimental; the project does not publish a Windows
-artifact. These support tiers do not assert that the project as a whole is
-production ready.
+GoReleaser publishes Linux amd64 and arm64 archives. The container qualification
+and publication workflow currently targets Linux amd64. The project publishes
+no macOS or Windows artifact.
 
 # Consequences
 
-Release metadata and documentation must distinguish Linux, native-smoked
-macOS, and experimental Windows source builds. Cross-compilation alone cannot
-promote a platform tier. A failed native smoke blocks the affected artifact;
-rollback stops publishing that artifact without weakening the other platform
-or compatibility gates.
+Documentation must distinguish source portability, archive targets, and the
+qualified container target. Cross-compilation alone cannot promote a platform.
+Adding or removing one artifact must not weaken unrelated compatibility,
+security, or runtime gates.
 
 # Evidence required to retire
 
-Changing a tier requires reproducible native build and smoke evidence for each
-affected architecture, release-pipeline provenance for the exact artifact,
-runtime dependency coverage, rollback evidence, manifest updates, and an exact
-project-owner-approved replacement ADR.
+Changing a published or qualified platform requires reproducible native build
+and smoke evidence, release provenance for the exact artifact, runtime
+dependency coverage, rollback evidence, manifest updates, and an
+owner-approved replacement ADR.

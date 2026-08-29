@@ -59,12 +59,12 @@ The exact status definitions, supported behavior, and remaining gaps are project
 
 ## Documentation
 
-- [Plugin support and remaining gaps](docs/plugins.md)
-- [Configuration compatibility](docs/configuration.md)
 - [HTTP data-plane compatibility](docs/http-data-plane.md)
+- [Configuration](docs/configuration.md)
+- [Plugin capability status](docs/plugins.md)
+- [Architecture and decisions](docs/design.md)
 - [Production release runbook](docs/runbooks/production-release.md)
 - [Proxy runtime performance acceptance](docs/performance/proxy-runtime-acceptance.md)
-- [Design notes](docs/design.md)
 - [Standalone plugin integration tests](t/plugin/README.md)
 
 ## Open source

@@ -1,38 +1,53 @@
 # Proxy Runtime Acceptance
 
-## Scope
+This contract detects regressions in the local proxy harness. It does not
+predict public-network or cross-region production capacity.
 
-The corpus covers weighted selection and a loopback request through route matching, plugin middleware, upstream selection, retry/timeout transport wrappers, ReverseProxy, and response copying. It does not represent public-network or cross-region production RPS.
+## Benchmark scope
 
-The loopback benchmark corpus is exercised through the immutable baseline runner. The cached-environment harness (`perf(route): cache loopback benchmark environments`) keeps untimed setup flat so full-corpus runs complete in minutes instead of an hour. Accepted comparisons run on the repository's declared Go 1.26 toolchain and record the exact patch version in benchmark metadata.
+The corpus covers weighted upstream selection and loopback requests through
+route matching, plugin middleware, retries/timeouts, `ReverseProxy`, and
+response copying. Focused hot-path rows measure request-pipeline materialization
+and metrics finalization.
 
-The GC hot-path corpus adds focused `BenchmarkRequestPipelineHotPath` and `BenchmarkSnapshotMetricsFinalizer` rows. These rows isolate request-pipeline materialization and detached metrics finalization, but still include their test request and response fixtures. They are allocation-regression evidence, not production throughput claims.
+Accepted evidence comes only from the repository benchmark runner. Baseline and
+candidate runs must use identical corpus fingerprints, settings, hardware, and
+the declared Go 1.26 toolchain.
 
 ## Comparative gates
 
-- Primary row: `routes=100/plugins=none/nodes=10` ns/op.
-- Reject a statistically significant slowdown greater than 10% in any affected row.
-- Reject more than 512 additional B/op or 2 additional allocs/op in any affected row without an explicitly accepted retained object.
-- Comparisons are invalid when benchmark metadata or corpus fingerprints differ.
+| Metric | Rejection threshold |
+| --- | --- |
+| Primary latency | More than 10% statistically significant slowdown in `routes=100/plugins=none/nodes=10`. |
+| Other affected rows | More than 10% statistically significant slowdown. |
+| Allocation bytes | More than 512 additional B/op without an accepted retained object. |
+| Allocations | More than 2 additional allocs/op without an accepted retained object. |
 
-## Stability gates
+A metadata or corpus mismatch invalidates the comparison.
 
-- Focused race tests report no races.
-- Fault tests produce exact status and attempt counts:
-  - Reset/EOF transport failures map to 502; GET retries once per configured retry, POST/PATCH retry only with an `Idempotency-Key` or `X-Idempotency-Key`.
-  - Response-header inactivity maps to 504 and is retried like any transport failure.
-  - Body inactivity on a committed response terminates the copy within the read timeout; Go's `ReverseProxy` aborts the client connection (`ErrAbortHandler`) rather than rewriting the committed status, so the client observes a transport error, never a truncated 200 or a 504 rewrite.
-  - Cluster admission rejects requests beyond `max_in_flight` with 503 and resumes once a held body closes.
-  - Active health probes quarantine a failing node and re-admit it after the configured consecutive successes.
-- The 30-minute, concurrency-256 soak produces zero unexpected errors.
-- Final goroutines are at most warmup baseline plus 32.
-- Heap in use after two final GCs is at most 25% above the warmed five-minute sample.
-- The measurement window reports request count and throughput plus bounded p50, p95, p99, and p999 latency estimates. Request latency uses fixed upper-bound buckets and stores no per-request samples.
-- The same window reports allocation bytes, allocation bytes per request, GC CPU seconds, and p99/p999 deltas for runtime GC and scheduler-other pause histograms. Runtime histograms are cumulative counters, so only the end-minus-warmup delta is interpreted.
-- Runtime allocation and pause deltas cover the entire single-process soak harness: its client workers, gateway, ten upstream test servers, and test machinery. Treat them as comparative harness evidence, never as gateway-only or production allocation figures.
+## Stability gate
 
-`APISIX_GO_SOAK_DURATION=5s` is a wiring smoke for the measurement path only. It is not stability or tail-latency acceptance evidence; the accepted stability run remains 30 minutes at concurrency 256.
+The canonical soak is 30 minutes at concurrency 256. It must report:
 
-## Evidence location
+- zero unexpected errors;
+- no race findings in the focused concurrency paths;
+- final goroutines no more than warmup baseline plus 32;
+- heap in use after two final GCs no more than 25% above the warmed five-minute
+  sample; and
+- bounded p50, p95, p99, and p999 latency estimates plus request, allocation,
+  GC CPU, and runtime pause deltas.
 
-Raw benchmark, benchstat, and pprof artifacts are stored under ignored `.cache/bench`. Delivery reports include the commands, HEAD SHA, hardware, Go version, affected rows, and any regressions; raw artifacts are never committed.
+Fault coverage must preserve the documented 502/504 mapping, retry rules,
+committed-body abort behavior, cluster admission recovery, and active-health
+quarantine/re-admission.
+
+Runtime allocation and pause metrics cover the whole single-process harness,
+including clients, gateway, fixtures, and test machinery. They are comparative
+harness evidence, not gateway-only measurements. A five-second run validates
+wiring only; it is not stability evidence.
+
+## Evidence
+
+Use the `benchmark-*` Make targets. Raw results, metadata, and profiles remain
+under ignored `.cache/bench`. A report records the commit, hardware, Go
+version, commands, affected rows, and every regression.

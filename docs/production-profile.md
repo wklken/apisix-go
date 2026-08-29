@@ -5,12 +5,12 @@
 ingress boundary. It covers the 110 plugins in the qualified APISIX 3.17
 all-plugin profile that declare the HTTP domain, in the same manifest order.
 The stream-only `mqtt-proxy` remains qualified by the all-plugin profile but is
-outside this first HTTP production scope. The profile is a candidate awaiting release and operations
-qualification. The repository-wide warning still applies: apisix-go is under
-active development and is not ready for production use. The executable
-operator procedure is the [production release runbook](runbooks/production-release.md);
-it does not turn a workflow definition or local test into qualification
-evidence.
+outside this first HTTP production scope. The profile is a candidate awaiting
+post-merge functional and runtime-stability qualification. The repository-wide
+warning still applies: this bounded profile does not make the whole apisix-go
+project production ready. The executable qualification procedure is the
+[production release runbook](runbooks/production-release.md); a workflow
+definition or an unrecorded local test is not qualification evidence.
 
 ## Selection
 
@@ -181,17 +181,15 @@ QUIC/HTTP/3 and stream TLS/mTLS remain outside this profile. The external TLS
 boundary, certificate rotation procedure, ingress policy, and Internet-facing
 network controls remain operator responsibilities.
 
-## External ingress request-log qualification
+## External ingress request-log boundary
 
-This qualification profile makes no in-process request-logging guarantee. A
-deployment that relies on an external TLS-terminating ingress must provide a
-redacted request-log evidence bundle before it can be qualified. The bundle
-must demonstrate a request ID, method, normalized path without query-string
-secrets, status, latency, upstream identity, retention owner, and trace
-correlation for representative successful, rejected, and failed requests.
-These are ingress evidence requirements; the Go runtime does not claim to emit
-those fields, and this document does not mutate or verify the external logging
-system.
+This qualification profile makes no in-process request-logging guarantee.
+External ingress logging belongs to environment-specific deployment acceptance
+and is outside the functional/stability milestone. A deployment may require a
+redacted bundle containing request ID, method, normalized path without
+query-string secrets, status, latency, upstream identity, retention owner, and
+trace correlation, but the absence of that external artifact does not block
+qualification of the APISIX-Go process itself.
 
 ## State ownership
 
@@ -265,12 +263,11 @@ implementation limitation, not the governing lifecycle target.
 - The current pre-convergence `SIGHUP` path performs graceful shutdown and
   returns an unsupported-reload error; it does not hand off a live generation.
 
-The governing
-[supervisor-generation target](superpowers/plans/2026-08-23-supervisor-worker-platform.md)
-validates a replacement generation before handoff and preserves ordinary
-hijacked connections. That target belongs to a later child plan and is not yet
-implemented. See the
-[legacy conflict ledger](architecture/legacy-conflicts.md).
+The selected architecture is one APISIX-Go process per replica. There is no
+in-process supervisor/worker handoff requirement in this profile; process
+restart belongs to the external service manager. APISIX-Go remains responsible
+for committed-journal recovery, readiness, generation leases, and graceful
+termination of the running process.
 
 ## Candidate authentication and TLS admission
 
@@ -308,24 +305,36 @@ semantics instead of approximating them or blocking unrelated valid routes.
 
 ## Qualification status
 
-This profile is a conservative candidate, not a production-readiness claim. It
-still requires the later release and operations qualification work: provenance
-and artifact verification, real deployment/ingress validation, operational
-runbooks, rollback evidence, and environment-specific capacity and failure
-testing. Until those gates are complete, keep the global not-ready warning and
-do not advertise `http-data-plane-v1` as production qualified. The first
-release also has no previous immutable digest, so rollback qualification cannot
-be claimed until a distinct older published digest exists and is exercised.
-The manifest/ADR/generated-document contract is checked read-only with
-`go run ./cmd/capability-gen -repo-root . -check`; a passing drift check is not
-release qualification evidence.
-The final workflow must retain the protected `production-release` reviewers and
-wait timer; the current environment's protected-branch-only tag policy must be
-updated by an operator to permit the intended `v*` tag before publication.
+The current milestone has exactly two required evidence groups:
 
-The static-configuration milestone proves the effective loader, explicit
-dependency injection, and operator contract only. It does not change the
-repository snapshot's unqualified, fail-closed production status.
+1. HTTP functionality: the APISIX 3.17 differential corpus and selected
+   110-plugin HTTP profile remain green, followed by real-process assembly
+   smoke for representative authentication, rewrite, proxy-control, blocking,
+   and standalone-provider paths.
+2. Runtime stability: non-root container startup, an in-flight request that
+   completes during graceful TERM, verified-TLS etcd last-good/recovery,
+   compaction recovery, replica restart, live delete/re-add convergence, and
+   the canonical 30-minute proxy soak all pass for one immutable source
+   revision.
+
+After a post-merge run records those gates against its resolved commit, the
+permitted claim is: **`http-data-plane-v1` is functionally and
+runtime-stability qualified within its documented HTTP plugin and dependency
+boundaries.** This is not a repository-wide production-ready claim and does
+not qualify stream data plane behavior.
+
+Upgrade/rollback, registry publication, signing, release packaging, and
+environment-specific Kubernetes/systemd, ingress, capacity, and observability
+acceptance are deliberately deferred. They do not block this functional and
+stability claim. Real external services remain conditional boundaries for the
+plugins that use them; local fixture parity does not certify an operator's
+Kafka, Redis, cloud-provider, or logging environment.
+
+The manifest/ADR/generated-document contract is checked read-only with
+`go run ./cmd/capability-gen -repo-root . -check`; a passing drift check alone
+is not functional/stability qualification evidence. Selecting the profile in
+configuration also does not create a qualification claim without the recorded
+post-merge gate result.
 
 The current selection result and every blocking evidence claim are derived from
 the manifest and published in the

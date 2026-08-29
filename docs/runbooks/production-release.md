@@ -1,19 +1,18 @@
 # Production release runbook
 
-This runbook is the operator contract for the `http-data-plane-v1` release
-candidate. It describes the release and operations evidence that must be
-collected; it is not evidence by itself. The profile remains a candidate and
-the repository remains **not ready for production** until a post-merge release
-candidate has passed against its own immutable image and the final release has
-independently passed with durable evidence for the final image.
+This runbook separates the current `http-data-plane-v1` functional/stability
+qualification from future publication and environment-specific deployment
+acceptance. It is not evidence by itself. The bounded profile remains a
+candidate until a post-merge release-candidate run passes against one resolved
+commit. A final tag, published image, upgrade/rollback baseline, or deployment
+manifest is not required for this milestone.
 
-The runtime is one APISIX-Go process per replica. Kubernetes or systemd owns
-restart, replica replacement, and rollout availability; APISIX-Go owns startup
-recovery, readiness, and graceful termination. The runbook deliberately does
-not invent environment-specific deployment commands. The deployment owner
-supplies that step and must keep the image reference digest-qualified.
+The runtime is one APISIX-Go process per replica. An external service manager
+owns restart and replica replacement; APISIX-Go owns startup recovery,
+readiness, and graceful termination. Environment-specific deployment commands
+are outside the current qualification.
 
-## Scope and prerequisites
+## Functional and stability qualification
 
 The qualification scope is exactly [`http-data-plane-v1`](../production-profile.md):
 an HTTP-only data plane using every APISIX 3.17-qualified HTTP-domain plugin.
@@ -24,7 +23,44 @@ no process access-log claim. Lua/OpenResty behavior, external plugins, WASM,
 XRPC, QUIC/HTTP/3, stream TLS/mTLS, Kafka PubSub, stateful session/cache
 families, and unsupported discovery remain outside this contract.
 
-Before an operator starts, obtain:
+The post-merge RC resolves its selected ref once and every qualification job
+uses that immutable commit. Run `.github/workflows/release-candidate.yml` for
+that ref. Its reusable gate call sets `run-operational: true` and
+`run-upgrade-rollback: false`, so a previous release is neither read nor
+required.
+
+The required evidence is:
+
+1. capability drift, source unit coverage, plugin harness, and the four
+   real-process HTTP assembly cases for authentication, rewrite,
+   proxy-control, and URI blocking; the full differential job rebuilds the
+   candidate from that resolved commit and uploads evidence bound to both the
+   source commit and candidate-binary SHA-256;
+2. focused race checks for configuration, server, route, proxy, store, etcd,
+   and stream packages;
+3. a non-root container smoke proving standalone-provider proxying and proving
+   that an already-active HTTP request completes after the process receives
+   TERM;
+4. verified-TLS etcd recovery proving readiness and last-good service during
+   outage, recovery update, compacted-watch recovery, replica restart,
+   live SSL deletion, and re-add convergence;
+5. the canonical 30-minute proxy soak, with real JSON evidence produced by:
+
+   ```bash
+   APISIX_GO_RUN_SOAK=1 APISIX_GO_SOAK_DURATION=30m \
+     go test -json ./pkg/route -run '^TestProxyRuntimeSoak$' -count=1 -timeout=40m \
+     | tee .cache/release-evidence/proxy-soak.json
+   ```
+
+The RC may also run security and artifact-inspection checks. Those checks do
+not expand this document's functional/stability claim. The RC does not publish
+or relabel its locally built image.
+
+## Future release and deployment prerequisites
+
+The remaining sections describe optional future publication and
+environment-specific deployment work. They do not block the current
+functional/stability milestone. Before that later work starts, obtain:
 
 - a clean Bash host with Git, Docker or Podman, `curl`, `jq`, `openssl`, `make`, `tar`,
   `sha256sum`, and network access to GHCR and the release evidence;
@@ -46,7 +82,7 @@ operator must explicitly allow the intended `v*` tag policy in that environment
 without removing its required reviewers or wait timer. This runbook and the
 implementation do not mutate repository settings or bypass those protections.
 
-Before RC or final qualification, the release owner must verify that `master`
+Before final publication, the release owner must verify that `master`
 remains protected, the required CI, security, and independent `Capability
 Status Contract` checks are enforced, and no self-approval is permitted. The
 capability check validates manifest, generated-output, profile, corpus, and
@@ -56,13 +92,12 @@ timer while allowing only the explicitly approved `v*` tag policy. These are
 repository and environment prerequisites to verify externally; this runbook
 does not change them.
 
-## Gate and evidence contract
+## Future publication evidence contract
 
-The post-merge RC and the independent final must qualify the same recorded
-source revision. Each RC/final run resolves its selected ref once and every job
-uses the same immutable commit. RC and final runs build different artifacts and
-must each pass the full gates; RC evidence qualifies only the RC image and is
-never relabeled as final evidence. A read-only `container-evidence` job builds and loads one
+If publication is later enabled, the post-merge RC and independent final must
+qualify the same recorded source revision. RC and final runs build different
+artifacts; RC evidence is never relabeled as final evidence. A read-only
+`container-evidence` job builds and loads one
 `linux/amd64` image, runs the non-root container smoke, creates the SBOM,
 rejects HIGH/CRITICAL Trivy findings, and archives the exact image. A separate
 guarded `publish-image` job alone has registry write, OIDC, and attestation
@@ -71,23 +106,6 @@ captures the registry digest, and then signs and attests that digest. The
 publish job cannot start until `container-evidence`, the security/race and
 vulnerability gates, `etcd-recovery`, and `proxy-soak` all succeed. Publication
 is never an opt-out from operational qualification.
-
-The operational gates are:
-
-1. focused race and vulnerability checks;
-2. the exact container smoke, SBOM, and fail-closed Trivy result;
-3. the release-grade verified-TLS etcd recovery scenario described below:
-   readiness and liveness remain 200 while the committed last-good route set
-   continues to work during an etcd outage, then the same route ID switches to
-   the second upstream resource after recovery;
-4. the canonical 30-minute proxy soak, with real JSON evidence produced by:
-
-   ```bash
-   APISIX_GO_RUN_SOAK=1 APISIX_GO_SOAK_DURATION=30m \
-     go test -json ./pkg/route -run '^TestProxyRuntimeSoak$' -count=1 -timeout=40m \
-     | tee .cache/release-evidence/proxy-soak.json
-   ```
-5. the external ingress request-log evidence bundle described below.
 
 `.cache/telemetry` is optional and reserved for a producer; do not describe it
 as populated unless a workflow step actually creates it. The final workflow
@@ -294,9 +312,10 @@ for each step. Do not infer qualification from workflow YAML inspection alone.
 ## External ingress request-log evidence
 
 Route-specific logger plugins do not replace the baseline deployment log
-contract. Before RC/final qualification, the external ingress owner must export
-a redacted evidence bundle for representative successful, rejected, and failed
-requests. Each sample or its correlated record must demonstrate:
+contract. Before future environment deployment or final publication
+acceptance, the external ingress owner must export a redacted evidence bundle
+for representative successful, rejected, and failed requests. Each sample or
+its correlated record must demonstrate:
 
 - a redacted request ID and trace correlation;
 - the HTTP method and normalized path with query-string secrets removed;
@@ -317,9 +336,9 @@ topology. The production deployment must run at least two replicas under
 Kubernetes or systemd, restart abnormal exits, allow at least 30 seconds for
 SIGTERM shutdown, use `/status` for liveness and `/status/ready` for readiness,
 and replace replicas without taking the last ready replica out of service.
-Before qualification, the deployment owner must declare the exact replica
-count, upstream shape, traffic mix, concurrency and duration, latency and
-error-rate thresholds, resource ceilings, and pass/fail criteria. Run that
+Before deployment acceptance, the deployment owner must declare the exact
+replica count, upstream shape, traffic mix, concurrency and duration, latency
+and error-rate thresholds, resource ceilings, and pass/fail criteria. Run that
 environment-specific load exercise against `$IMAGE_REFERENCE`, retain the raw
 results and monitoring evidence, and record the digest, source commit,
 configuration fingerprint, runner/load-generator details, and timestamps.
@@ -329,8 +348,9 @@ material beyond the canonical etcd outage, such as ingress/upstream loss or a
 replica termination, with explicit health, proxy-traffic, recovery-time, and
 data-consistency expectations. This runbook does not invent a load tool,
 capacity threshold, or platform failure command. Without that operator-supplied
-evidence, the profile remains a candidate even if every repository workflow
-gate passes.
+evidence, that particular environment is not deployment-qualified even if every
+repository workflow gate passes. This does not invalidate the narrower process
+functional/stability result.
 
 ## etcd degradation and recovery
 
@@ -474,7 +494,7 @@ published digest exists and is exercised, rollback qualification must remain
 open; a local image, a tag-only reference, or the current digest cannot satisfy
 that requirement. Set the repository variable
 `APISIX_GO_ROLLBACK_RELEASE_TAG` to that distinct, previously qualified final
-release before running RC or final operational qualification. The reusable
+release before enabling upgrade/rollback or final publication. The reusable
 release workflow verifies the prior release evidence bundle, image identity,
 and a separately attested `production-qualification.json`. That record may be
 created only after the named environment's deployment, ingress-log, capacity,
@@ -494,14 +514,15 @@ publication.
 
 ## Qualification decision
 
-Keep the profile and ledger wording as candidate/not-ready until a post-merge
-RC has passed for its own digest and all final-release gates, clean-host
-acceptance, deployment probes, environment-specific capacity/failure evidence,
-external ingress request-log evidence, and verified rollback evidence exist for
-the final digest. The protected `master` policy, required CI/security/
-`Capability Status Contract` checks, protected `production-release`
-reviewers/wait timer, approved
-`v*` tag policy, and no-self-approval rule must also remain in force. Never
-combine RC and final evidence as though independently built images had one
-identity. A successful local shell test, workflow definition, or attached
-artifact is not by itself a production qualification claim.
+The bounded functional/stability decision requires one post-merge RC to pass
+the evidence group listed at the start of this runbook for its resolved commit.
+That permits only the claim defined in `production-profile.md`; it does not make
+the repository or an operator environment production ready. A successful local
+shell test or workflow definition is not by itself the post-merge result.
+
+A future published-release or deployment decision has additional gates:
+clean-host acceptance, deployment probes, environment-specific
+capacity/failure evidence, external ingress request-log evidence, and verified
+rollback evidence for the final digest. Its protected repository/environment
+policies also remain independent requirements. Never combine RC and final
+evidence as though independently built images had one identity.

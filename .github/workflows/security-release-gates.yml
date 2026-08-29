@@ -13,6 +13,11 @@ on:
         required: false
         type: boolean
         default: false
+      run-upgrade-rollback:
+        description: Run upgrade and rollback qualification against a previous final release.
+        required: false
+        type: boolean
+        default: false
       source-ref:
         description: Git ref to qualify.
         required: false
@@ -61,6 +66,7 @@ jobs:
         env:
           PUBLISH_IMAGE: ${{ inputs.publish-image }}
           RUN_OPERATIONAL: ${{ inputs.run-operational }}
+          RUN_UPGRADE_ROLLBACK: ${{ inputs.run-upgrade-rollback }}
           SOURCE_REF: ${{ inputs.source-ref }}
           SOURCE_COMMIT: ${{ inputs.source-commit || github.sha }}
           ROLLBACK_RELEASE_TAG: ${{ inputs.rollback-release-tag }}
@@ -70,8 +76,12 @@ jobs:
             printf 'publish-image requires run-operational=true\n' >&2
             exit 1
           fi
-          if [[ "$RUN_OPERATIONAL" == true && -z "$ROLLBACK_RELEASE_TAG" ]]; then
-            printf 'run-operational requires rollback-release-tag\n' >&2
+          if [[ "$RUN_UPGRADE_ROLLBACK" == true && "$RUN_OPERATIONAL" != true ]]; then
+            printf 'run-upgrade-rollback requires run-operational=true\n' >&2
+            exit 1
+          fi
+          if [[ "$RUN_UPGRADE_ROLLBACK" == true || "$PUBLISH_IMAGE" == true ]] && [[ -z "$ROLLBACK_RELEASE_TAG" ]]; then
+            printf 'upgrade/rollback or publication requires rollback-release-tag\n' >&2
             exit 1
           fi
           if [[ -n "$ROLLBACK_RELEASE_TAG" && ! "$ROLLBACK_RELEASE_TAG" =~ ^v[0-9] ]]; then
@@ -378,7 +388,7 @@ jobs:
       - validate-inputs
       - race-and-vulnerability
       - container-evidence
-    if: ${{ inputs.run-operational }}
+    if: ${{ inputs.run-upgrade-rollback || inputs.publish-image }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:

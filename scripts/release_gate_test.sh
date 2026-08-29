@@ -187,6 +187,7 @@ header=$(sed -n '1,/^jobs:$/p' "$workflow")
 require_text 'workflow_call:' "$header"
 require_text 'publish-image:' "$header"
 require_text 'run-operational:' "$header"
+require_text 'run-upgrade-rollback:' "$header"
 require_text 'source-ref:' "$header"
 require_text 'source-commit:' "$header"
 require_text 'rollback-release-tag:' "$header"
@@ -207,10 +208,13 @@ fi
 
 require_job_fixed "$workflow" validate-inputs 'PUBLISH_IMAGE: ${{ inputs.publish-image }}'
 require_job_fixed "$workflow" validate-inputs 'RUN_OPERATIONAL: ${{ inputs.run-operational }}'
+require_job_fixed "$workflow" validate-inputs 'RUN_UPGRADE_ROLLBACK: ${{ inputs.run-upgrade-rollback }}'
 require_job_fixed "$workflow" validate-inputs 'SOURCE_COMMIT: ${{ inputs.source-commit || github.sha }}'
 require_job_fixed "$workflow" validate-inputs 'ROLLBACK_RELEASE_TAG: ${{ inputs.rollback-release-tag }}'
 require_job_fixed "$workflow" validate-inputs 'publish-image requires run-operational=true'
-require_job_fixed "$workflow" validate-inputs 'run-operational requires rollback-release-tag'
+require_job_fixed "$workflow" validate-inputs 'run-upgrade-rollback requires run-operational=true'
+require_job_fixed "$workflow" validate-inputs 'upgrade/rollback or publication requires rollback-release-tag'
+reject_job_pattern "$workflow" validate-inputs 'run-operational requires rollback-release-tag'
 require_job_fixed "$workflow" validate-inputs 'exit 1'
 require_job_fixed "$workflow" validate-inputs 'contents: read'
 
@@ -263,7 +267,7 @@ reject_job_pattern "$workflow" container-evidence 'contents: write'
 
 require_job_fixed "$workflow" upgrade-rollback 'needs:'
 require_job_fixed "$workflow" upgrade-rollback 'container-evidence'
-require_job_fixed "$workflow" upgrade-rollback 'if: ${{ inputs.run-operational }}'
+require_job_fixed "$workflow" upgrade-rollback 'if: ${{ inputs.run-upgrade-rollback || inputs.publish-image }}'
 require_job_fixed "$workflow" upgrade-rollback 'name: qualified-image-${{ github.run_id }}'
 require_job_fixed "$workflow" upgrade-rollback 'gh release download "$ROLLBACK_RELEASE_TAG"'
 require_job_fixed "$workflow" upgrade-rollback '--pattern production-verification.json'
@@ -325,25 +329,44 @@ require_job_fixed "$workflow" publish-image 'release-publication-${{ github.run_
 require_job_fixed "$rc_workflow" resolve-source 'ref: ${{ inputs.ref || github.sha }}'
 require_job_fixed "$rc_workflow" resolve-source 'commit=$(git rev-parse HEAD)'
 require_job_fixed "$rc_workflow" resolve-source 'commit=%s'
-for job in lint build-and-unit integration-smoke package-validation; do
+for job in lint build-and-unit integration-smoke plugin-differential package-validation; do
     require_job_fixed "$rc_workflow" "$job" 'resolve-source'
     require_job_fixed "$rc_workflow" "$job" 'ref: ${{ needs.resolve-source.outputs.commit }}'
 done
+require_job_fixed "$rc_workflow" plugin-differential 'run: make check-capability-drift'
+require_job_fixed "$rc_workflow" plugin-differential 'run: scripts/validation/fetch_apisix_317_source.sh .cache/apache-apisix'
+require_job_fixed "$rc_workflow" plugin-differential 'CONTAINER_BIN: docker'
+require_job_fixed "$rc_workflow" plugin-differential 'APISIX_SOURCE_DIR: .cache/apache-apisix'
+require_job_fixed "$rc_workflow" plugin-differential 'APISIX_GO_CANDIDATE_SOURCE_COMMIT: ${{ needs.resolve-source.outputs.commit }}'
+require_job_fixed "$rc_workflow" plugin-differential 'APISIX_GO_BEHAVIOR_GATE_EVIDENCE_DIR: .cache/release-evidence/plugin-validation/attempt-1'
+require_job_fixed "$rc_workflow" plugin-differential 'run: make validate-plugin-behavior'
+require_job_fixed "$rc_workflow" plugin-differential 'actions/upload-artifact@v7.0.1'
+require_job_fixed "$rc_workflow" plugin-differential 'name: plugin-validation-${{ github.run_id }}'
+require_job_fixed "$rc_workflow" plugin-differential 'path: .cache/release-evidence/plugin-validation/attempt-1'
+require_job_fixed "$rc_workflow" plugin-differential 'if-no-files-found: error'
+require_job_fixed "$rc_workflow" plugin-differential 'include-hidden-files: true'
+reject_job_pattern "$rc_workflow" plugin-differential 'APISIX_GO_DIFFERENTIAL_ARTIFACT:'
 require_job_fixed "$rc_workflow" security-release-gates 'uses: ./.github/workflows/security-release-gates.yml'
 require_job_fixed "$rc_workflow" security-release-gates 'resolve-source'
+require_job_fixed "$rc_workflow" security-release-gates 'plugin-differential'
 require_job_fixed "$rc_workflow" security-release-gates 'publish-image: false'
 require_job_fixed "$rc_workflow" security-release-gates 'run-operational: true'
+require_job_fixed "$rc_workflow" security-release-gates 'run-upgrade-rollback: false'
 require_job_fixed "$rc_workflow" security-release-gates 'source-ref: ${{ inputs.ref || github.ref }}'
 require_job_fixed "$rc_workflow" security-release-gates 'source-commit: ${{ needs.resolve-source.outputs.commit }}'
-require_job_fixed "$rc_workflow" security-release-gates 'rollback-release-tag: ${{ inputs.rollback-release-tag || vars.APISIX_GO_ROLLBACK_RELEASE_TAG }}'
-require_job_fixed "$rc_workflow" security-release-gates 'packages: read'
-require_job_fixed "$rc_workflow" security-release-gates 'attestations: read'
+reject_job_pattern "$rc_workflow" security-release-gates 'rollback-release-tag:'
+reject_job_pattern "$rc_workflow" security-release-gates '(packages|attestations): read'
 require_job_fixed "$rc_workflow" package-validation 'security-release-gates'
 require_fixed 'group: release-candidate-${{ inputs.ref || github.ref }}' "$rc_workflow"
+if grep -Fq 'rollback-release-tag:' "$rc_workflow"; then
+    printf 'release candidate must not expose an upgrade/rollback input\n' >&2
+    exit 1
+fi
 
 require_job_fixed "$release_workflow" security-release-gates 'uses: ./.github/workflows/security-release-gates.yml'
 require_job_fixed "$release_workflow" security-release-gates 'publish-image: true'
 require_job_fixed "$release_workflow" security-release-gates 'run-operational: true'
+require_job_fixed "$release_workflow" security-release-gates 'run-upgrade-rollback: true'
 require_job_fixed "$release_workflow" security-release-gates 'source-ref: ${{ github.ref }}'
 require_job_fixed "$release_workflow" security-release-gates 'source-commit: ${{ github.sha }}'
 require_job_fixed "$release_workflow" security-release-gates 'rollback-release-tag: ${{ vars.APISIX_GO_ROLLBACK_RELEASE_TAG }}'

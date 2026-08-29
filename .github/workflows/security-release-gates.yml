@@ -4,12 +4,17 @@ on:
   workflow_call:
     inputs:
       publish-image:
-        description: Publish the qualified image to GHCR.
+        description: Publish the verified image to GHCR.
         required: false
         type: boolean
         default: false
       run-operational:
         description: Run the etcd recovery and proxy soak validation gates.
+        required: false
+        type: boolean
+        default: false
+      run-upgrade-rollback:
+        description: Run upgrade and rollback validation against a previous final release.
         required: false
         type: boolean
         default: false
@@ -24,13 +29,13 @@ on:
         type: string
         default: ''
       rollback-release-tag:
-        description: Distinct previously qualified final release used for upgrade and rollback.
+        description: Distinct previously verified final release used for upgrade and rollback.
         required: false
         type: string
         default: ''
     outputs:
       image-reference:
-        description: The published image reference qualified by its immutable digest.
+        description: The published image reference verified by its immutable digest.
         value: ${{ jobs.publish-image.outputs.image-reference }}
   pull_request:
   push:
@@ -61,6 +66,7 @@ jobs:
         env:
           PUBLISH_IMAGE: ${{ inputs.publish-image }}
           RUN_OPERATIONAL: ${{ inputs.run-operational }}
+          RUN_UPGRADE_ROLLBACK: ${{ inputs.run-upgrade-rollback }}
           SOURCE_REF: ${{ inputs.source-ref }}
           SOURCE_COMMIT: ${{ inputs.source-commit || github.sha }}
           ROLLBACK_RELEASE_TAG: ${{ inputs.rollback-release-tag }}
@@ -70,8 +76,12 @@ jobs:
             printf 'publish-image requires run-operational=true\n' >&2
             exit 1
           fi
-          if [[ "$RUN_OPERATIONAL" == true && -z "$ROLLBACK_RELEASE_TAG" ]]; then
-            printf 'run-operational requires rollback-release-tag\n' >&2
+          if [[ "$RUN_UPGRADE_ROLLBACK" == true && "$RUN_OPERATIONAL" != true ]]; then
+            printf 'run-upgrade-rollback requires run-operational=true\n' >&2
+            exit 1
+          fi
+          if [[ "$RUN_UPGRADE_ROLLBACK" == true || "$PUBLISH_IMAGE" == true ]] && [[ -z "$ROLLBACK_RELEASE_TAG" ]]; then
+            printf 'upgrade/rollback or publication requires rollback-release-tag\n' >&2
             exit 1
           fi
           if [[ -n "$ROLLBACK_RELEASE_TAG" && ! "$ROLLBACK_RELEASE_TAG" =~ ^v[0-9] ]]; then
@@ -378,7 +388,7 @@ jobs:
       - validate-inputs
       - race-and-vulnerability
       - container-evidence
-    if: ${{ inputs.run-operational }}
+    if: ${{ inputs.run-upgrade-rollback || inputs.publish-image }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
@@ -454,7 +464,7 @@ jobs:
             --arg commit "$rollback_commit" '
             .source.commit == $commit and
             .image_reference == $ref and
-		    .repository_gates == {scope: "http-data-plane", result: "passed"}
+            .repository_gates == {scope: "http-data-plane", result: "passed"}
           ' "$rollback_context" >/dev/null
           jq -e \
             --arg ref "$rollback_reference" \
@@ -464,7 +474,7 @@ jobs:
             .image_reference == $ref and
             .image_digest == $digest and
             .source.commit == $commit and
-		    .verification == {scope: "http-data-plane", result: "passed"} and
+            .verification == {scope: "http-data-plane", result: "passed"} and
             (.environment.name | type == "string" and length > 0) and
             (.environment.config_sha256 | test("^[0-9a-f]{64}$")) and
             ([.evidence.ingress_logs_sha256, .evidence.capacity_sha256,

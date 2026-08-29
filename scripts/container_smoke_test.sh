@@ -23,6 +23,21 @@ reject_pattern() {
     fi
 }
 
+assert_order() {
+    local file=$1
+    shift
+    local previous=0
+    local text line
+    for text in "$@"; do
+        line=$(grep -nF -- "$text" "$file" | head -n 1 | cut -d: -f1 || true)
+        if [[ -z "$line" || "$line" -le "$previous" ]]; then
+            printf 'missing or out-of-order %q in %s\n' "$text" "$file" >&2
+            return 1
+        fi
+        previous=$line
+    done
+}
+
 require_pattern '^FROM golang:1\.26\.6-alpine3\.24 AS builder$' "$dockerfile"
 require_pattern '^FROM alpine:3\.24\.1$' "$dockerfile"
 require_pattern 'go build[[:space:]]+-trimpath[[:space:]]+-ldflags[[:space:]]+"-s[[:space:]]+-w[[:space:]]+' "$dockerfile"
@@ -50,6 +65,7 @@ require_pattern 'flock|mkdir .*lock' "$smoke"
 require_pattern 'docker network create' "$smoke"
 require_pattern 'busybox:1\.37\.0' "$smoke"
 require_pattern '/www/smoke' "$smoke"
+require_pattern '/www/cgi-bin/slow' "$smoke"
 require_pattern 'upstream_ip=.*docker inspect.*IPAddress' "$smoke"
 require_pattern 'upstream_deadline=' "$smoke"
 require_pattern '\$\{upstream_ip\}:8081' "$smoke"
@@ -63,9 +79,20 @@ require_pattern '/status/ready' "$smoke"
 require_pattern 'proxy_deadline=' "$smoke"
 require_pattern 'docker exec.*id -u' "$smoke"
 require_pattern 'docker exec.*id -g' "$smoke"
+require_pattern 'slow_request_pid=\$!' "$smoke"
+require_pattern 'active_request_deadline=' "$smoke"
+require_pattern '/tmp/request-active' "$smoke"
+require_pattern '/tmp/release-request' "$smoke"
 require_pattern 'docker kill.*TERM' "$smoke"
+require_pattern 'wait "\$slow_request_pid"' "$smoke"
+require_pattern 'apisix-container-slow' "$smoke"
 require_pattern 'shutdown_deadline=' "$smoke"
 require_pattern 'docker wait' "$smoke"
+assert_order "$smoke" \
+    'until docker exec "$upstream" test -f /tmp/request-active; do' \
+    'docker kill --signal TERM "$gateway"' \
+    'docker exec "$upstream" touch /tmp/release-request' \
+    'if ! wait "$slow_request_pid"; then'
 
 test_bin=$(mktemp -d "${TMPDIR:-/tmp}/apisix-container-contract-bin.XXXXXX")
 failure_output=$(mktemp "${TMPDIR:-/tmp}/apisix-container-contract-output.XXXXXX")

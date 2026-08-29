@@ -117,6 +117,7 @@ jobs:
     with:
       publish-image: true
       run-operational: true
+      run-upgrade-rollback: true
       source-ref: ${{ github.ref }}
       source-commit: ${{ github.sha }}
       rollback-release-tag: ${{ vars.APISIX_GO_ROLLBACK_RELEASE_TAG }}
@@ -245,9 +246,9 @@ jobs:
                 commit: $source_commit
               },
               image_reference: $image_reference,
-		      repository_gates: {
-		        scope: "http-data-plane",
-		        result: "passed"
+              repository_gates: {
+                scope: "http-data-plane",
+                result: "passed"
               },
               runner: {
                 os: $runner_os,

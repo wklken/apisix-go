@@ -8,11 +8,6 @@ on:
         required: false
         default: master
         type: string
-      rollback-release-tag:
-        description: Previously qualified final release used for upgrade and rollback
-        required: false
-        default: ''
-        type: string
   push:
     tags:
       - "v*-rc.*"
@@ -144,24 +139,69 @@ jobs:
       - name: Run focused standalone smoke case
         run: make test-plugin-smoke PLUGIN_SMOKE_CASE='${{ matrix.case.pattern }}'
 
+  plugin-differential:
+    name: RC Full Plugin Differential Validation
+    needs: resolve-source
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout selected source ref
+        uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ needs.resolve-source.outputs.commit }}
+
+      - name: Record checked-out commit
+        run: echo "checked-out commit=$(git rev-parse HEAD)"
+
+      - name: Set up Go
+        uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Check capability projections
+        run: make check-capability-drift
+
+      - name: Fetch pinned APISIX 3.17 source
+        run: scripts/validation/fetch_apisix_317_source.sh .cache/apache-apisix
+
+      - name: Run full APISIX 3.17 plugin differential validation
+        env:
+          CONTAINER_BIN: docker
+          APISIX_SOURCE_DIR: .cache/apache-apisix
+          APISIX_GO_CANDIDATE_SOURCE_COMMIT: ${{ needs.resolve-source.outputs.commit }}
+          APISIX_GO_BEHAVIOR_GATE_EVIDENCE_DIR: .cache/release-evidence/plugin-validation/attempt-1
+        run: make validate-plugin-behavior
+
+      - name: Upload source-bound differential evidence
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: plugin-validation-${{ github.run_id }}
+          path: .cache/release-evidence/plugin-validation/attempt-1
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 30
+
   security-release-gates:
-    name: RC Security And Operational Qualification
+    name: RC Security And Operational Verification
     needs:
       - resolve-source
       - lint
       - build-and-unit
       - integration-smoke
+      - plugin-differential
     uses: ./.github/workflows/security-release-gates.yml
     with:
       publish-image: false
       run-operational: true
+      run-upgrade-rollback: false
       source-ref: ${{ inputs.ref || github.ref }}
       source-commit: ${{ needs.resolve-source.outputs.commit }}
-      rollback-release-tag: ${{ inputs.rollback-release-tag || vars.APISIX_GO_ROLLBACK_RELEASE_TAG }}
     permissions:
       contents: read
-      packages: read
-      attestations: read
 
   package-validation:
     name: RC Package Validation

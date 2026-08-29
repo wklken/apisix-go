@@ -9,6 +9,7 @@ gateway="apisix-smoke-gateway-${$}"
 upstream="apisix-smoke-upstream-${$}"
 lock_dir="${TMPDIR:-/tmp}/apisix-go-container-smoke.lock"
 temp_dir=""
+slow_response_file=""
 
 require_command() {
     if ! command -v "$1" >/dev/null 2>&1; then
@@ -57,6 +58,7 @@ fi
 trap cleanup EXIT INT TERM
 
 temp_dir=$(mktemp -d "${TMPDIR:-/tmp}/apisix-container-smoke.XXXXXX")
+slow_response_file="$temp_dir/slow-response.txt"
 cat >"$temp_dir/config.yaml" <<'YAML'
 apisix:
   node_listen:
@@ -87,7 +89,11 @@ fi
 docker network create "$network" >/dev/null
 docker run --detach --name "$upstream" --network "$network" --network-alias apisix-smoke-upstream \
     busybox:1.37.0 sh -c \
-    'mkdir -p /www && printf "%s" "apisix-container-smoke" >/www/smoke && exec httpd -f -p 8081 -h /www' \
+    'mkdir -p /www/cgi-bin &&
+        printf "%s" "apisix-container-smoke" >/www/smoke &&
+        printf '\''#!/bin/sh\ntouch /tmp/request-active\nwhile [ ! -e /tmp/release-request ]; do sleep 0.1; done\nprintf "Content-Type: text/plain\\r\\n\\r\\napisix-container-slow"\n'\'' >/www/cgi-bin/slow &&
+        chmod +x /www/cgi-bin/slow &&
+        exec httpd -f -p 8081 -h /www' \
     >/dev/null
 upstream_deadline=$((SECONDS + 30))
 upstream_ip=""
@@ -110,6 +116,12 @@ routes:
     uri: /smoke
     plugins:
       request-id: {}
+    upstream:
+      type: roundrobin
+      nodes:
+        "${upstream_ip}:8081": 1
+  - id: container-smoke-slow
+    uri: /cgi-bin/slow
     upstream:
       type: roundrobin
       nodes:
@@ -165,7 +177,36 @@ if [[ $(docker exec "$gateway" id -g) != 10001 ]]; then
     exit 1
 fi
 
+curl --fail --silent --show-error "http://${published}/cgi-bin/slow" >"$slow_response_file" &
+slow_request_pid=$!
+active_request_deadline=$((SECONDS + 15))
+until docker exec "$upstream" test -f /tmp/request-active; do
+    if ! kill -0 "$slow_request_pid" >/dev/null 2>&1; then
+        wait "$slow_request_pid" || true
+        docker logs "$gateway" >&2
+        printf 'slow proxied request exited before reaching the upstream\n' >&2
+        exit 1
+    fi
+    if (( SECONDS >= active_request_deadline )); then
+        docker logs "$gateway" >&2
+        printf 'slow proxied request did not become active before timeout\n' >&2
+        exit 1
+    fi
+    sleep 0.1
+done
+
 docker kill --signal TERM "$gateway" >/dev/null
+docker exec "$upstream" touch /tmp/release-request
+if ! wait "$slow_request_pid"; then
+    docker logs "$gateway" >&2
+    printf 'in-flight proxied request failed during graceful termination\n' >&2
+    exit 1
+fi
+slow_response=$(<"$slow_response_file")
+if [[ "$slow_response" != apisix-container-slow ]]; then
+    printf 'in-flight response = %q, want apisix-container-slow\n' "$slow_response" >&2
+    exit 1
+fi
 shutdown_deadline=$((SECONDS + 30))
 while [[ $(docker inspect --format '{{.State.Running}}' "$gateway") == true ]]; do
     if (( SECONDS >= shutdown_deadline )); then

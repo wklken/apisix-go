@@ -68,15 +68,6 @@ func (*feishuScopedSecretBroker) AuthorizeCandidate(
 	return nil
 }
 
-func (*feishuScopedSecretBroker) AuthorizeRecovery(
-	context.Context,
-	secret.AttemptID,
-	generation.RevisionSet,
-	map[generation.Domain]generation.PublishedGeneration,
-) error {
-	return nil
-}
-
 func (broker *feishuScopedSecretBroker) ResolveScoped(
 	_ context.Context,
 	scope secret.Scope,

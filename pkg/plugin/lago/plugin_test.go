@@ -54,15 +54,6 @@ func (*lagoScopedSecretBroker) AuthorizeCandidate(
 	return nil
 }
 
-func (*lagoScopedSecretBroker) AuthorizeRecovery(
-	context.Context,
-	secret.AttemptID,
-	generation.RevisionSet,
-	map[generation.Domain]generation.PublishedGeneration,
-) error {
-	return errors.New("recovery is not used by the Lago scoped fixture")
-}
-
 func (broker *lagoScopedSecretBroker) ResolveScoped(
 	ctx context.Context,
 	scope secret.Scope,

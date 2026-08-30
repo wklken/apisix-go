@@ -3,7 +3,6 @@ package config
 import (
 	"fmt"
 	"net"
-	"path/filepath"
 	"slices"
 	"strings"
 )
@@ -19,17 +18,7 @@ func validateEffective(effective *EffectiveConfig, unused []string) error {
 		}
 		return fmt.Errorf("static configuration contains %d unsupported %s", len(unused), field)
 	}
-	if err := validateRuntimePaths(effective.Paths); err != nil {
-		return err
-	}
 	return validateRuntimeConfig(&effective.Config)
-}
-
-func validateRuntimePaths(paths RuntimePaths) error {
-	if paths.DataDir == "" || !filepath.IsAbs(paths.DataDir) {
-		return fmt.Errorf("runtime path data_dir must be a non-empty absolute path")
-	}
-	return nil
 }
 
 func validateRuntimeConfig(cfg *Config) error {

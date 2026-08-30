@@ -63,24 +63,16 @@ func TestPrometheusInitErrorsPropagateToServerCallers(t *testing.T) {
 	}
 }
 
-func TestPrometheusInitRepublishesRecoveredStreamRouteMetrics(t *testing.T) {
-	const childEnv = "APISIX_GO_SERVER_RECOVERY_METRICS_CHILD"
+func TestPrometheusInitPublishesActiveStreamRouteMetrics(t *testing.T) {
+	const childEnv = "APISIX_GO_SERVER_ACTIVE_METRICS_CHILD"
 	if os.Getenv(childEnv) == "1" {
 		if metrics.StreamConnections != nil {
-			t.Fatal("stream metrics initialized before recovery ordering test")
+			t.Fatal("stream metrics initialized before publication ordering test")
 		}
-		source := newGenerationEngineFixture(t)
-		publishedSet := prepareEngineStreamGeneration(t, source.engine, 86, "recovered-before-metrics")
-		target := newUnrecoveredGenerationEngineFixture(t)
-		if err := target.engine.InstallRecovery(context.Background(), generation.RecoveryState{
-			Revisions: generation.RevisionSet{Desired: 86, Stream: 86},
-			Desired:   publishedSet.Domains[generation.DomainStream].Snapshot,
-			Published: publishedFromEngineSet(publishedSet),
-		}); err != nil {
-			t.Fatal(err)
-		}
+		fixture := newGenerationEngineFixture(t)
+		prepareEngineStreamGeneration(t, fixture.engine, 86, "active-before-metrics")
 		if metrics.StreamConnections != nil {
-			t.Fatal("recovery unexpectedly initialized stream metrics")
+			t.Fatal("publication unexpectedly initialized stream metrics")
 		}
 
 		server := &Server{
@@ -90,15 +82,15 @@ func TestPrometheusInitRepublishesRecoveredStreamRouteMetrics(t *testing.T) {
 					"prometheus": {"enable_export_server": false},
 				},
 			}},
-			engine: target.engine,
+			engine: fixture.engine,
 		}
 		if err := server.startPrometheusExportServer(); err != nil {
 			t.Fatal(err)
 		}
-		assertGenerationStreamMetricDelta(t, "recovered-before-metrics", 1)
+		assertGenerationStreamMetricDelta(t, "active-before-metrics", 1)
 		return
 	}
-	command := exec.Command(os.Args[0], "-test.run", "^TestPrometheusInitRepublishesRecoveredStreamRouteMetrics$")
+	command := exec.Command(os.Args[0], "-test.run", "^TestPrometheusInitPublishesActiveStreamRouteMetrics$")
 	command.Env = append(os.Environ(), childEnv+"=1")
 	output, err := command.CombinedOutput()
 	if err != nil {
@@ -122,8 +114,6 @@ func TestNewServerRejectsNilEffectiveConfigBeforeCreatingRuntimeFiles(t *testing
 		nil,
 		testutil.DataEncryptionService(false, nil),
 		nil,
-		nil,
-		generation.RecoveryState{},
 	)
 	if server != nil || err == nil || err.Error() != "effective config is required" {
 		t.Fatalf("NewServer(nil) = (%#v, %v)", server, err)
@@ -372,10 +362,9 @@ func TestStartFailureCleanupIsBoundedWithActiveHTTPRequest(t *testing.T) {
 	}))
 	t.Cleanup(backend.Close)
 	fixture := newGenerationContractFixture(t, false)
-	set := prepareGenerationContract(t, fixture.engine, 301, generationContractResources(
+	prepareGenerationContract(t, fixture.engine, 301, generationContractResources(
 		t, backend.URL, "startup-cleanup", "TASK9_STARTUP_LOGIN", "TASK9_STARTUP_PASSWORD", "", nil,
 	))
-	finalizeEngineGeneration(t, fixture.engine, "startup-cleanup", set)
 	owner := fixture.engine.active.Load().http
 	routes := newGenerationRouteHandler(fixture.engine.acquireHTTP)
 	httpServer := &http.Server{Handler: routes}
@@ -1164,12 +1153,7 @@ func TestLogStreamResultReportsErrorsAndCompletions(t *testing.T) {
 
 type newServerTestEngine struct {
 	generation.PublicationEngine
-	install func(context.Context, generation.RecoveryState) error
-	close   func(context.Context) error
-}
-
-func (e *newServerTestEngine) InstallRecovery(ctx context.Context, recovery generation.RecoveryState) error {
-	return e.install(ctx, recovery)
+	close func(context.Context) error
 }
 
 func (e *newServerTestEngine) Close(ctx context.Context) error { return e.close(ctx) }
@@ -1184,84 +1168,10 @@ func (*newServerTestEngine) acquireStream() (streamGenerationLease, bool) {
 
 func (*newServerTestEngine) refreshStreamMetrics() {}
 
-type newServerTestJournal struct {
-	generation.Journal
-	close func() error
-}
-
-func (j *newServerTestJournal) Close() error { return j.close() }
-
-func TestNewServerRecoveryInstallFailureClosesEngineResolverJournalAndObservabilityInReverse(t *testing.T) {
-	manifest, effective, encryption, resolver := newServerInputs(t)
-	recoveryErr := errors.New("install recovery failed")
-	var calls []string
-	journal := &newServerTestJournal{close: func() error {
-		calls = append(calls, "journal-close")
-		return nil
-	}}
-	factories := newServerFactories{
-		initObservability: func(string) (func(context.Context) error, error) {
-			calls = append(calls, "observability")
-			return func(context.Context) error {
-				calls = append(calls, "observability-close")
-				return nil
-			}, nil
-		},
-		newFactory: func(
-			*capability.Manifest,
-			*config.EffectiveConfig,
-			secret.Materializer,
-			compiler.WorkerRuntimeObservers,
-		) (*compiler.WorkerCompilerFactory, error) {
-			calls = append(calls, "factory")
-			return &compiler.WorkerCompilerFactory{}, nil
-		},
-		newEngine: func(*Server, *compiler.WorkerCompilerFactory) (generationEngineOwner, error) {
-			calls = append(calls, "engine")
-			return &newServerTestEngine{
-				install: func(context.Context, generation.RecoveryState) error {
-					calls = append(calls, "recovery")
-					return recoveryErr
-				},
-				close: func(context.Context) error {
-					calls = append(calls, "engine-close")
-					return nil
-				},
-			}, nil
-		},
-		newCoordinator: generation.NewCoordinator,
-		closeResolver: func(resolver *secret.GenerationSecretResolver, ctx context.Context) error {
-			calls = append(calls, "resolver-close")
-			return resolver.Close(ctx)
-		},
-		closeJournal: func(journal generation.Journal) error {
-			return journal.Close()
-		},
-	}
-
-	server, err := newServerWithFactories(
-		effective, manifest, encryption, resolver, journal, generation.RecoveryState{}, factories,
-	)
-	if server != nil || !errors.Is(err, recoveryErr) {
-		t.Fatalf("newServerWithFactories() = (%#v, %v), want recovery failure", server, err)
-	}
-	want := []string{
-		"observability", "factory", "engine", "recovery", "engine-close",
-		"resolver-close", "journal-close", "observability-close",
-	}
-	if !slices.Equal(calls, want) {
-		t.Fatalf("constructor cleanup = %v, want %v", calls, want)
-	}
-}
-
-func TestNewServerFactoryFailureClosesResolverAndJournalWithoutDoubleClose(t *testing.T) {
+func TestNewServerFactoryFailureClosesResolverWithoutDoubleClose(t *testing.T) {
 	manifest, effective, encryption, resolver := newServerInputs(t)
 	factoryErr := errors.New("factory failed")
 	var calls []string
-	journal := &newServerTestJournal{close: func() error {
-		calls = append(calls, "journal-close")
-		return nil
-	}}
 	factories := newServerFactories{
 		initObservability: func(string) (func(context.Context) error, error) {
 			calls = append(calls, "observability")
@@ -1283,16 +1193,15 @@ func TestNewServerFactoryFailureClosesResolverAndJournalWithoutDoubleClose(t *te
 			calls = append(calls, "resolver-close")
 			return resolver.Close(ctx)
 		},
-		closeJournal: func(journal generation.Journal) error { return journal.Close() },
 	}
 
 	server, err := newServerWithFactories(
-		effective, manifest, encryption, resolver, journal, generation.RecoveryState{}, factories,
+		effective, manifest, encryption, resolver, factories,
 	)
 	if server != nil || !errors.Is(err, factoryErr) {
 		t.Fatalf("newServerWithFactories() = (%#v, %v), want factory failure", server, err)
 	}
-	want := []string{"observability", "factory", "resolver-close", "journal-close", "observability-close"}
+	want := []string{"observability", "factory", "resolver-close", "observability-close"}
 	if !slices.Equal(calls, want) {
 		t.Fatalf("factory cleanup = %v, want %v", calls, want)
 	}
@@ -1300,10 +1209,6 @@ func TestNewServerFactoryFailureClosesResolverAndJournalWithoutDoubleClose(t *te
 
 func TestNewServerRejectsNilDependencyBeforeTakingOwnership(t *testing.T) {
 	manifest, effective, encryption, resolver := newServerInputs(t)
-	journal := &newServerTestJournal{close: func() error {
-		t.Fatal("invalid dependency validation closed journal")
-		return nil
-	}}
 	closeResolver := func(*secret.GenerationSecretResolver, context.Context) error {
 		t.Fatal("invalid dependency validation closed resolver")
 		return nil
@@ -1314,7 +1219,6 @@ func TestNewServerRejectsNilDependencyBeforeTakingOwnership(t *testing.T) {
 			return nil, nil
 		},
 		closeResolver: closeResolver,
-		closeJournal:  func(generation.Journal) error { t.Fatal("closed journal"); return nil },
 	}
 	tests := []struct {
 		name       string
@@ -1322,13 +1226,11 @@ func TestNewServerRejectsNilDependencyBeforeTakingOwnership(t *testing.T) {
 		manifest   *capability.Manifest
 		encryption data_encryption.Service
 		resolver   *secret.GenerationSecretResolver
-		journal    generation.Journal
 	}{
-		{name: "effective", manifest: manifest, encryption: encryption, resolver: resolver, journal: journal},
-		{name: "manifest", effective: effective, encryption: encryption, resolver: resolver, journal: journal},
-		{name: "encryption", effective: effective, manifest: manifest, resolver: resolver, journal: journal},
-		{name: "resolver", effective: effective, manifest: manifest, encryption: encryption, journal: journal},
-		{name: "journal", effective: effective, manifest: manifest, encryption: encryption, resolver: resolver},
+		{name: "effective", manifest: manifest, encryption: encryption, resolver: resolver},
+		{name: "manifest", effective: effective, encryption: encryption, resolver: resolver},
+		{name: "encryption", effective: effective, manifest: manifest, resolver: resolver},
+		{name: "resolver", effective: effective, manifest: manifest, encryption: encryption},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -1337,8 +1239,6 @@ func TestNewServerRejectsNilDependencyBeforeTakingOwnership(t *testing.T) {
 				test.manifest,
 				test.encryption,
 				test.resolver,
-				test.journal,
-				generation.RecoveryState{},
 				factories,
 			)
 			if server != nil || err == nil {
@@ -1368,9 +1268,7 @@ func newServerInputs(
 	if err != nil {
 		t.Fatal(err)
 	}
-	effective := &config.EffectiveConfig{
-		Paths: config.RuntimePaths{DataDir: t.TempDir()},
-	}
+	effective := &config.EffectiveConfig{}
 	return manifest, effective, encryption, resolver
 }
 
@@ -1423,14 +1321,13 @@ type lifecycleTestAddr string
 func (a lifecycleTestAddr) Network() string { return string(a) }
 func (a lifecycleTestAddr) String() string  { return string(a) }
 
-func TestServerStartsRecoveredEngineThenStreamHTTPAndProvider(t *testing.T) {
+func TestServerStartsProviderBeforeStreamAndHTTP(t *testing.T) {
 	var calls []string
 	var mu sync.Mutex
 	record := func(call string) { mu.Lock(); calls = append(calls, call); mu.Unlock() }
 	ctx, cancel := context.WithCancel(context.Background())
 	engine := &newServerTestEngine{
-		install: func(context.Context, generation.RecoveryState) error { return nil },
-		close:   func(context.Context) error { record("engine-close"); return nil },
+		close: func(context.Context) error { record("engine-close"); return nil },
 	}
 	stream := &lifecycleTestStream{close: func(context.Context) error {
 		record("stream-close")
@@ -1439,7 +1336,6 @@ func TestServerStartsRecoveredEngineThenStreamHTTPAndProvider(t *testing.T) {
 	producer := &lifecycleTestProducer{
 		start: func(context.Context) error {
 			record("provider")
-			cancel()
 			return nil
 		},
 		stop: func() error { record("provider-stop"); return nil },
@@ -1452,9 +1348,7 @@ func TestServerStartsRecoveredEngineThenStreamHTTPAndProvider(t *testing.T) {
 		server:        &http.Server{},
 		routes:        newGenerationRouteHandler(engine.acquireHTTP),
 		engine:        engine,
-		journal:       &newServerTestJournal{close: func() error { return nil }},
 		closeResolver: func(*secret.GenerationSecretResolver, context.Context) error { return nil },
-		closeJournal:  func(journal generation.Journal) error { return journal.Close() },
 		runtimeFactories: serverRuntimeFactories{
 			newStream: func(context.Context, []config.TcpListen, streamruntime.RouterSource) (streamRuntimeOwner, error) {
 				record("stream")
@@ -1462,6 +1356,7 @@ func TestServerStartsRecoveredEngineThenStreamHTTPAndProvider(t *testing.T) {
 			},
 			startHTTP: func(*Server, context.Context) (<-chan error, error) {
 				record("http")
+				cancel()
 				return make(chan error), nil
 			},
 			newProducer: func(*Server, context.Context) (configProducer, error) { return producer, nil },
@@ -1473,8 +1368,8 @@ func TestServerStartsRecoveredEngineThenStreamHTTPAndProvider(t *testing.T) {
 	mu.Lock()
 	got := slices.Clone(calls)
 	mu.Unlock()
-	if len(got) < 3 || !slices.Equal(got[:3], []string{"stream", "http", "provider"}) {
-		t.Fatalf("startup order = %v, want stream, HTTP, provider prefix", got)
+	if len(got) < 3 || !slices.Equal(got[:3], []string{"provider", "stream", "http"}) {
+		t.Fatalf("startup order = %v, want provider, stream, HTTP prefix", got)
 	}
 }
 
@@ -1527,44 +1422,41 @@ func TestServerStartCancellationJoinsBlockedStandaloneInitialApply(t *testing.T)
 	}
 }
 
-func TestServerListenerFailureStopsAndJoinsBlockedProducerStart(t *testing.T) {
-	terminalErr := errors.New("terminal HTTP listener failure")
+func TestServerCancellationStopsBlockedProducerBeforeListeners(t *testing.T) {
 	producerStartEntered := make(chan struct{})
 	producerStartExited := make(chan struct{})
-	releaseProducerStart := make(chan struct{})
 	producerStopEntered := make(chan struct{})
 	producer := &lifecycleTestProducer{
-		start: func(context.Context) error {
+		start: func(ctx context.Context) error {
 			close(producerStartEntered)
-			<-releaseProducerStart
+			<-ctx.Done()
 			close(producerStartExited)
-			return nil
+			return ctx.Err()
 		},
 		stop: func() error {
 			close(producerStopEntered)
-			close(releaseProducerStart)
-			<-producerStartExited
 			return nil
 		},
 	}
-	serveErrors := make(chan error, 1)
+	listenerStarted := false
 	server := newShutdownLifecycleServer(t, nil)
 	server.staticConfig = &config.EffectiveConfig{}
 	server.runtimeFactories = serverRuntimeFactories{
 		startHTTP: func(*Server, context.Context) (<-chan error, error) {
-			return serveErrors, nil
+			listenerStarted = true
+			return make(chan error), nil
 		},
 		newProducer: func(*Server, context.Context) (configProducer, error) {
 			return producer, nil
 		},
 	}
+	ctx, cancel := context.WithCancel(context.Background())
 	startDone := make(chan error, 1)
-	go func() { startDone <- server.Start(context.Background()) }()
+	go func() { startDone <- server.Start(ctx) }()
 	<-producerStartEntered
-
-	serveErrors <- terminalErr
-	if err := <-startDone; !errors.Is(err, terminalErr) {
-		t.Fatalf("Start() error = %v, want %v", err, terminalErr)
+	cancel()
+	if err := <-startDone; !errors.Is(err, context.Canceled) {
+		t.Fatalf("Start() error = %v, want context cancellation", err)
 	}
 	select {
 	case <-producerStopEntered:
@@ -1574,93 +1466,42 @@ func TestServerListenerFailureStopsAndJoinsBlockedProducerStart(t *testing.T) {
 	select {
 	case <-producerStartExited:
 	default:
-		t.Fatal("Start() returned before the producer Start goroutine exited")
+		t.Fatal("Start() returned before producer Start exited")
+	}
+	if listenerStarted {
+		t.Fatal("HTTP listener started while initial provider synchronization was blocked")
 	}
 }
 
-func TestServerOfflineRecoveryServesWhileProviderReadinessIsDegraded(t *testing.T) {
-	providerStarted := make(chan struct{})
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	engine := &newServerTestEngine{
-		install: func(context.Context, generation.RecoveryState) error { return nil },
-		close:   func(context.Context) error { return nil },
-	}
-	server := &Server{
-		staticConfig:  &config.EffectiveConfig{},
-		server:        &http.Server{},
-		routes:        newGenerationRouteHandler(engine.acquireHTTP),
-		engine:        engine,
-		journal:       &newServerTestJournal{close: func() error { return nil }},
-		closeResolver: func(*secret.GenerationSecretResolver, context.Context) error { return nil },
-		closeJournal:  func(journal generation.Journal) error { return journal.Close() },
-		runtimeFactories: serverRuntimeFactories{
-			startHTTP: func(*Server, context.Context) (<-chan error, error) {
-				return make(chan error), nil
-			},
-			newProducer: func(*Server, context.Context) (configProducer, error) {
-				return &lifecycleTestProducer{
-					start: func(context.Context) error { close(providerStarted); return nil },
-					stop:  func() error { return nil },
-				}, nil
-			},
-		},
-	}
-	done := make(chan error, 1)
-	go func() { done <- server.Start(ctx) }()
-	<-providerStarted
-	select {
-	case err := <-done:
-		t.Fatalf("Start() returned on transient degraded readiness: %v", err)
-	default:
-	}
-	cancel()
-	if err := <-done; err != nil && !errors.Is(err, context.Canceled) {
-		t.Fatalf("Start() after cancellation error = %v", err)
-	}
-}
-
-func TestServerEtcdInitialFetchFailureStartsWatchAndServesRecoveredHandler(t *testing.T) {
+func TestServerEtcdInitialFetchFailureStopsBeforeWatchAndListeners(t *testing.T) {
 	client := &failingInitialEtcdClient{
 		watchStarted: make(chan struct{}),
 		closeCalled:  make(chan struct{}),
 		fetchErr:     errors.New("etcd offline"),
 	}
 	producer := newEtcdConfigProducer(client)
-	fixture := newCountedHTTPLeaseFixture(t, 316)
 	server := newShutdownLifecycleServer(t, nil)
 	server.staticConfig = &config.EffectiveConfig{}
-	server.routes = newGenerationRouteHandler(fixture.Acquire)
+	listenerStarted := false
 	server.runtimeFactories = serverRuntimeFactories{
 		startHTTP: func(*Server, context.Context) (<-chan error, error) {
+			listenerStarted = true
 			return make(chan error), nil
 		},
 		newProducer: func(*Server, context.Context) (configProducer, error) {
 			return producer, nil
 		},
 	}
-	startCtx, cancel := context.WithCancel(context.Background())
-	startDone := make(chan error, 1)
-	go func() { startDone <- server.Start(startCtx) }()
-	<-client.watchStarted
-
-	response := httptest.NewRecorder()
-	server.routes.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/recovered", nil))
-	if response.Code == http.StatusServiceUnavailable {
-		t.Fatalf("recovered handler status = %d after initial etcd fetch failure", response.Code)
+	if err := server.Start(context.Background()); !errors.Is(err, client.fetchErr) {
+		t.Fatalf("Start() error = %v, want initial fetch failure", err)
 	}
-	if got := fixture.releases.Load(); got != 1 {
-		t.Fatalf("recovered handler release count = %d, want 1", got)
+	if listenerStarted {
+		t.Fatal("HTTP listeners started before successful initial etcd synchronization")
 	}
 	select {
-	case err := <-startDone:
-		t.Fatalf("Start() returned after transient initial etcd failure: %v", err)
+	case <-client.watchStarted:
+		t.Fatal("etcd watch started after failed initial synchronization")
 	default:
-	}
-
-	cancel()
-	if err := <-startDone; !errors.Is(err, context.Canceled) {
-		t.Fatalf("Start() error = %v, want %v", err, context.Canceled)
 	}
 	select {
 	case <-client.closeCalled:
@@ -1669,24 +1510,19 @@ func TestServerEtcdInitialFetchFailureStartsWatchAndServesRecoveredHandler(t *te
 	}
 }
 
-func TestServerProviderStartFailureClosesStartedListenersBeforeEngine(t *testing.T) {
+func TestServerProviderStartFailureDoesNotOpenListeners(t *testing.T) {
 	var calls []string
-	listener := &lifecycleTestListener{closed: make(chan struct{}), onClose: func() {
-		calls = append(calls, "listener-close")
-	}}
+	listenerStarted := false
 	engine := &newServerTestEngine{
-		install: func(context.Context, generation.RecoveryState) error { return nil },
-		close:   func(context.Context) error { calls = append(calls, "engine-close"); return nil },
+		close: func(context.Context) error { calls = append(calls, "engine-close"); return nil },
 	}
 	server := &Server{
 		staticConfig: &config.EffectiveConfig{}, server: &http.Server{},
 		routes: newGenerationRouteHandler(engine.acquireHTTP), engine: engine,
-		journal:       &newServerTestJournal{close: func() error { return nil }},
 		closeResolver: func(*secret.GenerationSecretResolver, context.Context) error { return nil },
-		closeJournal:  func(journal generation.Journal) error { return journal.Close() },
 		runtimeFactories: serverRuntimeFactories{
-			startHTTP: func(server *Server, _ context.Context) (<-chan error, error) {
-				server.retainListener(listener)
+			startHTTP: func(*Server, context.Context) (<-chan error, error) {
+				listenerStarted = true
 				return make(chan error), nil
 			},
 			newProducer: func(*Server, context.Context) (configProducer, error) {
@@ -1700,9 +1536,11 @@ func TestServerProviderStartFailureClosesStartedListenersBeforeEngine(t *testing
 	if err := server.Start(context.Background()); err == nil {
 		t.Fatal("Start() error = nil for static provider failure")
 	}
-	listenerIndex, engineIndex := slices.Index(calls, "listener-close"), slices.Index(calls, "engine-close")
-	if listenerIndex < 0 || engineIndex < 0 || listenerIndex > engineIndex {
-		t.Fatalf("startup failure cleanup order = %v", calls)
+	if listenerStarted {
+		t.Fatal("HTTP listeners started before provider initialization succeeded")
+	}
+	if !slices.Equal(calls, []string{"provider-stop", "engine-close"}) {
+		t.Fatalf("startup failure cleanup = %v", calls)
 	}
 }
 
@@ -1825,102 +1663,6 @@ func TestServerShutdownDoesNotCancelLifecycleBeforeProviderStopJoins(t *testing.
 	}
 }
 
-func TestServerShutdownJoinsLateStartupOwnersBeforeListenerRejection(t *testing.T) {
-	var callsMu sync.Mutex
-	var calls []string
-	producerStopCalls := 0
-	lateProducerStopErr := errors.New("late producer stop failed")
-	record := func(call string) {
-		callsMu.Lock()
-		calls = append(calls, call)
-		callsMu.Unlock()
-	}
-	httpConstructionEntered := make(chan struct{})
-	listenerRetained := make(chan struct{})
-	providerConstructionEntered := make(chan struct{})
-	releaseProviderConstruction := make(chan struct{})
-	producerStopEntered := make(chan struct{})
-	producerStopExited := make(chan struct{})
-	releaseProducerStop := make(chan struct{})
-	listener := &lifecycleTestListener{
-		closed:  make(chan struct{}),
-		onClose: func() { record("listener-close") },
-	}
-	producer := &lifecycleTestProducer{
-		start: func(context.Context) error { return nil },
-		stop: func() error {
-			close(producerStopEntered)
-			<-releaseProducerStop
-			callsMu.Lock()
-			producerStopCalls++
-			callsMu.Unlock()
-			record("provider-stop")
-			close(producerStopExited)
-			return lateProducerStopErr
-		},
-	}
-	server := newShutdownLifecycleServer(t, nil)
-	server.staticConfig = &config.EffectiveConfig{}
-	server.shutdownHTTP = func(context.Context) error {
-		<-producerStopEntered
-		return nil
-	}
-	server.runtimeFactories = serverRuntimeFactories{
-		startHTTP: func(server *Server, ctx context.Context) (<-chan error, error) {
-			close(httpConstructionEntered)
-			<-ctx.Done()
-			server.retainListener(listener)
-			close(listenerRetained)
-			return make(chan error), nil
-		},
-		newProducer: func(*Server, context.Context) (configProducer, error) {
-			close(providerConstructionEntered)
-			<-releaseProviderConstruction
-			return producer, nil
-		},
-	}
-	startDone := make(chan error, 1)
-	go func() { startDone <- server.Start(context.Background()) }()
-	<-httpConstructionEntered
-
-	shutdownDone := make(chan error, 1)
-	go func() { shutdownDone <- server.Shutdown(context.Background()) }()
-	<-listenerRetained
-	<-providerConstructionEntered
-	close(releaseProviderConstruction)
-	<-producerStopEntered
-	close(releaseProducerStop)
-	if err := <-shutdownDone; !errors.Is(err, lateProducerStopErr) {
-		t.Fatalf("Shutdown() error = %v, want %v", err, lateProducerStopErr)
-	}
-	if err := <-startDone; !errors.Is(err, context.Canceled) || !errors.Is(err, lateProducerStopErr) {
-		t.Fatalf("Start() error = %v, want %v and %v", err, context.Canceled, lateProducerStopErr)
-	}
-	if err := server.Shutdown(context.Background()); !errors.Is(err, lateProducerStopErr) {
-		t.Fatalf("repeated Shutdown() error = %v, want %v", err, lateProducerStopErr)
-	}
-	select {
-	case <-producerStopExited:
-	default:
-		t.Fatal("Shutdown() returned before joining the late provider Stop")
-	}
-	select {
-	case <-listener.closed:
-	default:
-		t.Fatal("Shutdown() left a listener retained by the admitted startup")
-	}
-	callsMu.Lock()
-	got := slices.Clone(calls)
-	gotStopCalls := producerStopCalls
-	callsMu.Unlock()
-	if !slices.Equal(got, []string{"provider-stop", "listener-close"}) {
-		t.Fatalf("late owner shutdown order = %v", got)
-	}
-	if gotStopCalls != 1 {
-		t.Fatalf("late producer Stop calls = %d, want 1", gotStopCalls)
-	}
-}
-
 func TestServerShutdownRejectsStreamBeforeHTTPDrain(t *testing.T) {
 	sourceCalled := make(chan struct{}, 1)
 	runtime, err := streamruntime.NewRuntime(
@@ -2009,9 +1751,9 @@ func TestServerShutdownDrainsHTTPHijackAndStreamBeforeEngineClose(t *testing.T) 
 	<-engineClosed
 }
 
-func TestServerShutdownTimeoutDoesNotReleaseEngineResolverOrJournal(t *testing.T) {
+func TestServerShutdownTimeoutDoesNotReleaseEngineOrResolver(t *testing.T) {
 	drainRelease := make(chan struct{})
-	var engineCloses, resolverCloses, journalCloses int
+	var engineCloses, resolverCloses int
 	server := newShutdownLifecycleServer(t, func(context.Context) error { engineCloses++; return nil })
 	server.shutdownHTTP = func(ctx context.Context) error {
 		select {
@@ -2025,24 +1767,23 @@ func TestServerShutdownTimeoutDoesNotReleaseEngineResolverOrJournal(t *testing.T
 		resolverCloses++
 		return nil
 	}
-	server.journal = &newServerTestJournal{close: func() error { journalCloses++; return nil }}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	if err := server.Shutdown(ctx); !errors.Is(err, context.Canceled) {
 		t.Fatalf("first Shutdown() error = %v, want context.Canceled", err)
 	}
-	if engineCloses != 0 || resolverCloses != 0 || journalCloses != 0 {
-		t.Fatalf("timeout released later owners: engine=%d resolver=%d journal=%d",
-			engineCloses, resolverCloses, journalCloses)
+	if engineCloses != 0 || resolverCloses != 0 {
+		t.Fatalf("timeout released later owners: engine=%d resolver=%d",
+			engineCloses, resolverCloses)
 	}
 	close(drainRelease)
 	if err := server.Shutdown(context.Background()); err != nil {
 		t.Fatalf("resumed Shutdown() error = %v", err)
 	}
-	if engineCloses != 1 || resolverCloses != 1 || journalCloses != 1 {
+	if engineCloses != 1 || resolverCloses != 1 {
 		t.Fatalf(
-			"resumed cleanup closes = engine:%d resolver:%d journal:%d",
-			engineCloses, resolverCloses, journalCloses,
+			"resumed cleanup closes = engine:%d resolver:%d",
+			engineCloses, resolverCloses,
 		)
 	}
 }
@@ -2063,10 +1804,6 @@ func TestServerShutdownEngineResidualRetriesBeforeLaterOwners(t *testing.T) {
 		calls = append(calls, "resolver")
 		return nil
 	}
-	server.journal = &newServerTestJournal{close: func() error {
-		calls = append(calls, "journal")
-		return nil
-	}}
 	server.otelShutdown = func(context.Context) error {
 		calls = append(calls, "observability")
 		return nil
@@ -2088,7 +1825,7 @@ func TestServerShutdownEngineResidualRetriesBeforeLaterOwners(t *testing.T) {
 	if err := server.Shutdown(context.Background()); err != nil {
 		t.Fatalf("retry Shutdown() error = %v", err)
 	}
-	want := []string{"engine", "engine", "resolver", "journal", "observability"}
+	want := []string{"engine", "engine", "resolver", "observability"}
 	if !slices.Equal(calls, want) {
 		t.Fatalf("retry Shutdown() calls = %v, want %v", calls, want)
 	}
@@ -2247,7 +1984,7 @@ func newServerShutdownResidualError(t *testing.T) error {
 	return residualErr
 }
 
-func TestServerShutdownClosesEngineResolverJournalObservabilityInOrder(t *testing.T) {
+func TestServerShutdownClosesEngineResolverObservabilityInOrder(t *testing.T) {
 	var calls []string
 	server := newShutdownLifecycleServer(t, func(context.Context) error {
 		calls = append(calls, "engine")
@@ -2257,10 +1994,6 @@ func TestServerShutdownClosesEngineResolverJournalObservabilityInOrder(t *testin
 		calls = append(calls, "resolver")
 		return nil
 	}
-	server.journal = &newServerTestJournal{close: func() error {
-		calls = append(calls, "journal")
-		return nil
-	}}
 	server.otelShutdown = func(context.Context) error {
 		calls = append(calls, "observability")
 		return nil
@@ -2268,7 +2001,7 @@ func TestServerShutdownClosesEngineResolverJournalObservabilityInOrder(t *testin
 	if err := server.Shutdown(context.Background()); err != nil {
 		t.Fatalf("Shutdown() error = %v", err)
 	}
-	want := []string{"engine", "resolver", "journal", "observability"}
+	want := []string{"engine", "resolver", "observability"}
 	if !slices.Equal(calls, want) {
 		t.Fatalf("terminal cleanup order = %v, want %v", calls, want)
 	}
@@ -2326,16 +2059,13 @@ func newShutdownLifecycleServer(t *testing.T, closeEngine func(context.Context) 
 		closeEngine = func(context.Context) error { return nil }
 	}
 	engine := &newServerTestEngine{
-		install: func(context.Context, generation.RecoveryState) error { return nil },
-		close:   closeEngine,
+		close: closeEngine,
 	}
 	return &Server{
 		server:        &http.Server{},
 		routes:        newGenerationRouteHandler(engine.acquireHTTP),
 		engine:        engine,
-		journal:       &newServerTestJournal{close: func() error { return nil }},
 		closeResolver: func(*secret.GenerationSecretResolver, context.Context) error { return nil },
-		closeJournal:  func(journal generation.Journal) error { return journal.Close() },
 	}
 }
 

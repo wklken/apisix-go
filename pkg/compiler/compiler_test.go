@@ -5,14 +5,12 @@ import (
 	"context"
 	"errors"
 	"maps"
-	"path/filepath"
 	"slices"
 	"sync/atomic"
 	"testing"
 
 	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/generation"
-	"github.com/wklken/apisix-go/pkg/store"
 )
 
 func TestCompilerRejectsTicketSnapshotAndDependencyContractViolations(t *testing.T) {
@@ -402,44 +400,6 @@ func TestCompilerRejectsSameFutureAndStructurallyInvalidPredecessors(t *testing.
 				t.Fatalf("predecessor error = %v, want ErrInvalidClosure", err)
 			}
 		})
-	}
-}
-
-func TestCompilerPublicationIsAcceptedByRealJournalStage(t *testing.T) {
-	journal, err := store.OpenJournal(filepath.Join(t.TempDir(), "journal.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = journal.Close() })
-	ticket, err := journal.ApplyDesired(context.Background(), generation.DesiredBatch{
-		Cursor: generation.ProviderCursor{Provider: "compiler-test", Revision: "1"},
-		Mutations: []generation.Mutation{
-			{
-				Type:  generation.MutationPut,
-				Key:   generation.ResourceKey{Kind: "routes", ID: "r1"},
-				Value: []byte(`{"id":"r1","upstream_id":"u1"}`),
-			},
-			{
-				Type:  generation.MutationPut,
-				Key:   generation.ResourceKey{Kind: "upstreams", ID: "u1"},
-				Value: []byte(`{"id":"u1"}`),
-			},
-		},
-		RequiredDomains: []generation.Domain{generation.DomainHTTP},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	desired, err := journal.LoadDesired(context.Background(), ticket.DesiredRevision)
-	if err != nil {
-		t.Fatal(err)
-	}
-	set, err := newTestCompiler(t).PreparePublication(context.Background(), ticket, desired, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := journal.Stage(context.Background(), ticket, set); err != nil {
-		t.Fatalf("real Journal.Stage rejected compiler publication: %v", err)
 	}
 }
 

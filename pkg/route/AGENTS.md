@@ -4,8 +4,8 @@ This file inherits the repository root `AGENTS.md` and applies to `pkg/route`.
 
 ## Boundary
 
-- This package compiles/assembles detached HTTP snapshots. It must not read the
-  journal, enumerate a mutable Store, instantiate plugin factories, resolve
+- This package compiles/assembles detached HTTP snapshots. It must not read
+  provider state, instantiate plugin factories, resolve
   secrets, acquire shared resources, start background tasks, or activate a
   generation.
 - Clone externally supplied route/service/upstream/plugin data before retaining

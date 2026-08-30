@@ -31,15 +31,6 @@ func (scopedMultiAuthBroker) AuthorizeCandidate(
 	return nil
 }
 
-func (scopedMultiAuthBroker) AuthorizeRecovery(
-	context.Context,
-	secret.AttemptID,
-	generation.RevisionSet,
-	map[generation.Domain]generation.PublishedGeneration,
-) error {
-	return errors.New("recovery not used")
-}
-
 func (scopedMultiAuthBroker) ResolveScoped(
 	context.Context,
 	secret.Scope,

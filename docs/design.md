@@ -45,30 +45,28 @@ regression-test implementation. See [Plugin testing](plugin-testing.md).
 
 ```text
 static configuration
-  -> journal recovery
-  -> HTTP/TLS and stream listeners
-  -> etcd or standalone provider
+  -> etcd or standalone initial sync
   -> generation coordinator
-  -> durable journal
+  -> in-memory desired state
   -> compiler and prepared generation
   -> atomic generation activation
+  -> HTTP/TLS and stream listeners
 ```
 
 The process has one `Server + GenerationEngine`. Providers submit immutable
 desired batches; they do not mutate routes, plugins, listeners, or runtime
 resources. `generation.Coordinator` is the single desired-to-published writer.
 
-Startup recovers the committed journal before listeners and providers begin.
-The production construction path is:
+Startup requires the provider's initial desired-state submission before opening
+listeners. The production construction path is:
 
 ```text
 cmd/root.go
   -> capability and effective configuration
   -> encryption and generation-scoped secret resolver
-  -> durable journal recovery
   -> server, compiler factory, and generation engine
+  -> provider initial sync and atomic publication
   -> listeners
-  -> provider
 ```
 
 ## Configuration
@@ -87,32 +85,28 @@ zero, and empty string remain distinct. The effective result is passed
 explicitly into runtime construction; it is not mutable global state. See
 [Configuration](configuration.md) for operator-facing details.
 
-## Desired-to-published transaction
+## Desired-to-published publication
 
-`pkg/store` is the bbolt implementation of the generation journal, not a
-mutable runtime resource store. The journal records desired revisions, staged
-transactions, committed HTTP and stream heads, decisions, provider cursors,
-and acknowledgements under the configured data directory.
-
-The only publication order is:
+`generation.Coordinator` serializes provider updates and owns the in-memory
+desired snapshot, provider cursor, published domain heads, and last
+acknowledgement. The publication order is:
 
 ```text
-ApplyDesired
-  -> Prepare
-  -> Stage
-  -> Activate
-  -> Commit acknowledgement
-  -> FinalizeActivation
+Apply desired batch in memory
+  -> compile and prepare required domains
+  -> atomically replace the active generation bundle
+  -> commit coordinator state
   -> acknowledge the provider
 ```
 
-Activation may temporarily expose a candidate before durable commit. If
-activation or commit fails, the engine restores the exact predecessor before
-aborting the stage. Recovery serves only committed published state, never the
-newest desired state.
+Compilation or activation failure leaves both the active bundle and coordinator
+state unchanged. Exact same-cursor replay returns the in-memory acknowledgement
+without recompilation; cursor reuse with different content fails. After process
+restart, etcd or standalone supplies a fresh authoritative snapshot before the
+data plane accepts traffic.
 
 Invalid first-generation input fails closed. `last-good` may reuse only the
-exact same-domain resource from a committed predecessor. A tombstone is a
+exact same-domain resource from the active predecessor. A tombstone is a
 deletion and never falls back. HTTP and stream can advance independently, but
 all domains required by one commit change atomically.
 
@@ -145,7 +139,7 @@ connection pins the exact generation it uses. Activation and rollback affect
 new acquisitions, not already admitted work.
 
 `pkg/route` and `pkg/stream` compile detached immutable snapshots. They do not
-read the journal or own plugin materialization. `pkg/compiler` owns side
+own provider state or plugin materialization. `pkg/compiler` owns side
 effects, and `pkg/server` owns activation and listener lifecycle.
 
 Background work uses the runtime task APIs. Request and connection children
@@ -162,7 +156,6 @@ stop provider
   -> reject new listener and lease admission
   -> drain HTTP, stream, and generation leases
   -> close generation engine and secret resolver
-  -> close journal
   -> close metrics and tracing
 ```
 
@@ -170,8 +163,8 @@ An incomplete phase cannot release a later dependency. A subsequent shutdown
 continues from the first incomplete phase.
 
 The status listener defaults to `127.0.0.1:7085`. `/status` is liveness;
-`/status/ready` reports whether a committed serviceable configuration is
-active. Etcd loss does not withdraw readiness while the committed last-good
+`/status/ready` reports whether a serviceable configuration is active. Etcd
+loss does not withdraw readiness while the current last-good
 generation remains serviceable.
 
 Metrics use bounded label sets. Untrusted provider, route, resource, owner, or
@@ -190,7 +183,7 @@ re-panic decision.
 
 WebSocket upgrades require `enable_websocket: true` and retain their HTTP
 generation until the connection closes. `SIGHUP` is not an in-process reload
-mechanism; provider updates use the durable generation transaction.
+mechanism; provider updates use atomic in-memory publication.
 
 Protocol-specific transports remain plugin owned:
 
@@ -204,7 +197,7 @@ Protocol-specific transports remain plugin owned:
 ## Secret authority
 
 Secret declarations in the capability manifest are runtime authority. Each
-candidate or recovery attempt gets a distinct identity scoped by generation,
+candidate attempt gets an identity scoped by generation,
 domain, plugin factory, resource, source, and field.
 
 The resolver can read only the exact publication closure. Cross-generation,
@@ -217,15 +210,15 @@ zero retained bytes, and incomplete close keeps the attempt reserved for retry.
 
 One APISIX-Go process runs per replica. Kubernetes, systemd, or another service
 manager owns abnormal-exit restart, replica replacement, and rollout
-availability. APISIX-Go owns journal recovery, activation, readiness,
+availability. APISIX-Go owns activation, readiness,
 connection draining, and graceful termination. There is no internal
 supervisor/worker or listener-inheritance protocol.
 
 The container runs as UID/GID `10001:10001` and defaults to
 `/usr/local/apisix/conf/config.yaml`. `conf/config-production.yaml` is an
 explicit production example used by operational validation. Candidate
-qualification builds an ephemeral Linux amd64 image for container, recovery,
-and stability evidence; the repository does not publish that image. See
+qualification builds an ephemeral Linux amd64 image for container and
+stability evidence; the repository does not publish that image. See
 [HTTP candidate qualification](runbooks/http-candidate-qualification.md).
 
 ## Architecture decisions

@@ -105,13 +105,6 @@ func (*elasticsearchScopedSecretBroker) AuthorizeCandidate(
 	return nil
 }
 
-func (*elasticsearchScopedSecretBroker) AuthorizeRecovery(
-	context.Context, secret.AttemptID, generation.RevisionSet,
-	map[generation.Domain]generation.PublishedGeneration,
-) error {
-	return errors.New("recovery is not used by this leaf fixture")
-}
-
 func (broker *elasticsearchScopedSecretBroker) ResolveScoped(
 	ctx context.Context, scope secret.Scope, raw string,
 ) (string, error) {

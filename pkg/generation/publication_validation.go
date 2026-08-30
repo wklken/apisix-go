@@ -111,54 +111,13 @@ func ValidatePublicationCandidate(
 }
 
 // ValidatePublishedGeneration checks the structural identity and closure
-// invariants for a recovered published generation.
+// invariants for a previously published generation.
 func ValidatePublishedGeneration(
 	domain Domain,
 	revision uint64,
 	published PublishedGeneration,
 ) error {
 	return ValidatePublicationCandidate(domain, revision, PublicationCandidate(published))
-}
-
-// ValidateRecoverySet checks that the committed domain revisions and
-// published generations describe exactly the same recovery boundary. A
-// desired-only commit is structurally valid, but it does not create a secret
-// attempt until at least one published domain exists.
-func ValidateRecoverySet(
-	revisions RevisionSet,
-	published map[Domain]PublishedGeneration,
-) error {
-	if revisions.Desired == 0 || revisions.HTTP > revisions.Desired || revisions.Stream > revisions.Desired {
-		return ErrIntegrity
-	}
-	expected := 0
-	if revisions.HTTP != 0 {
-		expected++
-	}
-	if revisions.Stream != 0 {
-		expected++
-	}
-	if len(published) != expected {
-		return ErrIntegrity
-	}
-	for domain, value := range published {
-		revision := uint64(0)
-		switch domain {
-		case DomainHTTP:
-			revision = revisions.HTTP
-		case DomainStream:
-			revision = revisions.Stream
-		default:
-			return ErrIntegrity
-		}
-		if revision == 0 {
-			return ErrIntegrity
-		}
-		if err := ValidatePublishedGeneration(domain, revision, value); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func equalNormalizedDomains(domains []Domain) bool {

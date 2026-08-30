@@ -62,10 +62,9 @@ func TestGenerationEngineOldAndNewRequestsUseOwnConsumerMetadataProtoAndSecrets(
 	t.Cleanup(newBackend.Close)
 	fixture := newGenerationContractFixture(t, false)
 
-	oldSet := prepareGenerationContract(t, fixture.engine, 201, generationContractResources(
+	prepareGenerationContract(t, fixture.engine, 201, generationContractResources(
 		t, oldBackend.URL, "old", "TASK9_OLD_LOGIN", "TASK9_OLD_PASSWORD", oldLogPath, nil,
 	))
-	finalizeEngineGeneration(t, fixture.engine, "old", oldSet)
 	oldOwner := fixture.engine.active.Load().http
 	if quarantined := oldOwner.prepared.HTTP().Quarantined(); len(quarantined) != 0 {
 		t.Fatalf("old generation quarantined routes = %v", quarantined)
@@ -101,10 +100,9 @@ func TestGenerationEngineOldAndNewRequestsUseOwnConsumerMetadataProtoAndSecrets(
 		t.Fatal("old request reached its upstream without retaining the predecessor lease")
 	}
 
-	newSet := prepareGenerationContract(t, fixture.engine, 202, generationContractResources(
+	prepareGenerationContract(t, fixture.engine, 202, generationContractResources(
 		t, newBackend.URL, "new", "TASK9_NEW_LOGIN", "TASK9_NEW_PASSWORD", newLogPath, nil,
 	))
-	finalizeEngineGeneration(t, fixture.engine, "new", newSet)
 	newOwner := fixture.engine.active.Load().http
 	if newOwner == nil || newOwner == oldOwner {
 		t.Fatal("new publication did not install a distinct generation owner")
@@ -143,8 +141,7 @@ func TestGenerationEngineOldAndNewRequestsUseOwnConsumerMetadataProtoAndSecrets(
 
 func TestGenerationEngineHijackedConnectionRetainsPredecessorResources(t *testing.T) {
 	fixture := newGenerationContractFixture(t, false)
-	oldSet := prepareEngineGeneration(t, fixture.engine, 211, generation.DomainHTTP)
-	finalizeEngineGeneration(t, fixture.engine, "old", oldSet)
+	prepareEngineGeneration(t, fixture.engine, 211, generation.DomainHTTP)
 	oldOwner := fixture.engine.active.Load().http
 
 	parent, ok := fixture.engine.acquireHTTP()
@@ -174,8 +171,7 @@ func TestGenerationEngineHijackedConnectionRetainsPredecessorResources(t *testin
 		t.Fatal("request did not return a generation-wrapped hijacked connection")
 	}
 
-	newSet := prepareEngineGeneration(t, fixture.engine, 212, generation.DomainHTTP)
-	finalizeEngineGeneration(t, fixture.engine, "new", newSet)
+	prepareEngineGeneration(t, fixture.engine, 212, generation.DomainHTTP)
 	select {
 	case <-oldOwner.closeDone:
 		t.Fatal("predecessor closed while its hijacked connection was live")
@@ -194,7 +190,7 @@ func TestGenerationEngineHijackedConnectionRetainsPredecessorResources(t *testin
 	}
 }
 
-func TestGenerationEngineTLSAndHTTPActivateAndRollbackTogether(t *testing.T) {
+func TestGenerationEngineTLSAndHTTPPublishTogether(t *testing.T) {
 	t.Setenv("TASK9_TLS_A_LOGIN", "login-a")
 	t.Setenv("TASK9_TLS_B_LOGIN", "login-b")
 	t.Setenv("TASK9_TLS_A_PASSWORD", "password-a")
@@ -211,64 +207,21 @@ func TestGenerationEngineTLSAndHTTPActivateAndRollbackTogether(t *testing.T) {
 	fixture := newGenerationContractFixture(t, true)
 
 	certA := generationContractSSL(t, "certificate-a", "certificate-a")
-	setA := prepareGenerationContract(t, fixture.engine, 221, generationContractResources(
+	prepareGenerationContract(t, fixture.engine, 221, generationContractResources(
 		t, backendA.URL, "tls-a", "TASK9_TLS_A_LOGIN", "TASK9_TLS_A_PASSWORD", "", &certA,
 	))
-	finalizeEngineGeneration(t, fixture.engine, "a", setA)
 	ownerA := fixture.engine.active.Load().http
 	assertHTTPAndTLSGeneration(t, fixture.engine, ownerA, "handler-a", "certificate-a")
 
 	certB := generationContractSSL(t, "certificate-b", "certificate-b")
-	setB := prepareGenerationContract(t, fixture.engine, 222, generationContractResources(
+	prepareGenerationContract(t, fixture.engine, 222, generationContractResources(
 		t, backendB.URL, "tls-b", "TASK9_TLS_B_LOGIN", "TASK9_TLS_B_PASSWORD", "", &certB,
 	))
-	activateEngineGeneration(t, fixture.engine, "b", setB)
 	ownerB := fixture.engine.active.Load().http
 	if ownerB == nil || ownerB == ownerA || fixture.engine.active.Load().stream != nil {
-		t.Fatalf("tentative HTTP/TLS bundle owner = %#v", fixture.engine.active.Load())
+		t.Fatalf("published HTTP/TLS bundle owner = %#v", fixture.engine.active.Load())
 	}
-
-	tlsLeaseB, ok := fixture.engine.acquireHTTP()
-	if !ok || tlsLeaseB.Snapshot != ownerB.prepared.HTTP() {
-		t.Fatal("tentative TLS lease did not come from the tentative HTTP owner")
-	}
-	defer tlsLeaseB.Release()
-	assertHTTPSnapshotHandlerAndCertificate(t, tlsLeaseB.Snapshot, "handler-b", "certificate-b")
-
-	restored := make(chan struct{})
-	var restoredOnce sync.Once
-	fixture.engine.mu.Lock()
-	fixture.engine.checkpoint = func(stage string) error {
-		if stage == "before-owner-retirement" {
-			restoredOnce.Do(func() { close(restored) })
-		}
-		return nil
-	}
-	fixture.engine.mu.Unlock()
-	rollbackDone := make(chan error, 1)
-	go func() {
-		rollbackDone <- fixture.engine.RollbackActivation(context.Background(), "b", setB)
-	}()
-	receiveContractSignal(t, restored, "rollback predecessor restoration")
-	if active := fixture.engine.active.Load(); active.http != ownerA || active.http == ownerB {
-		t.Fatalf("rollback active bundle = %#v, want predecessor owner", active)
-	}
-	select {
-	case err := <-rollbackDone:
-		t.Fatalf("rollback returned before tentative TLS lease drained: %v", err)
-	default:
-	}
-	assertHTTPAndTLSGeneration(t, fixture.engine, ownerA, "handler-a", "certificate-a")
-
-	tlsLeaseB.Release()
-	select {
-	case err := <-rollbackDone:
-		if err != nil {
-			t.Fatalf("RollbackActivation() error = %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("rollback did not finish after tentative TLS lease drained")
-	}
+	assertHTTPAndTLSGeneration(t, fixture.engine, ownerB, "handler-b", "certificate-b")
 }
 
 func newGenerationContractFixture(t *testing.T, frontendTLS bool) *generationContractFixture {
@@ -312,11 +265,6 @@ func newGenerationContractFixture(t *testing.T, frontendTLS bool) *generationCon
 	engine, err := NewGenerationEngine(&Server{}, factory)
 	if err != nil {
 		_ = factory.Close(context.Background())
-		_ = resolver.Close(context.Background())
-		t.Fatal(err)
-	}
-	if err := engine.InstallRecovery(context.Background(), generation.RecoveryState{}); err != nil {
-		_ = engine.Close(context.Background())
 		_ = resolver.Close(context.Background())
 		t.Fatal(err)
 	}
@@ -433,9 +381,9 @@ func prepareGenerationContract(
 		},
 		RequiredDomains: []generation.Domain{generation.DomainHTTP},
 	}
-	set, err := engine.Prepare(context.Background(), ticket, desired, nil)
+	set, err := engine.Publish(context.Background(), ticket, desired, nil)
 	if err != nil {
-		t.Fatalf("Prepare() error = %v", err)
+		t.Fatalf("Publish() error = %v", err)
 	}
 	return set
 }

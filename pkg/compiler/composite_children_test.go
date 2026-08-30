@@ -134,7 +134,7 @@ func TestFinalCandidateCompositeChildOccurrencesRespectOuterMetadataAndFinalStat
 	}
 }
 
-func TestRecoveryCompositeChildOccurrencesPreserveRouteServiceOrder(t *testing.T) {
+func TestCompositeChildOccurrencesPreserveRouteServiceOrder(t *testing.T) {
 	compiler := newTestCompiler(t)
 	snapshot := mustGenerationSnapshot(t, 908, []generation.Resource{
 		resourceValue("services", "composite-service", `{
@@ -184,12 +184,12 @@ func TestRecoveryCompositeChildOccurrencesPreserveRouteServiceOrder(t *testing.T
 		{Kind: "services", ID: "composite-service"},
 	}
 	if len(got) != len(wantFactories) {
-		t.Fatalf("recovery composite children = %#v, want %d", got, len(wantFactories))
+		t.Fatalf("composite children = %#v, want %d", got, len(wantFactories))
 	}
 	for index, child := range got {
 		if child.factory != wantFactories[index] || child.outer.resource != wantResources[index] ||
 			child.outer.domain != generation.DomainHTTP {
-			t.Fatalf("recovery child[%d] = %#v", index, child)
+			t.Fatalf("child[%d] = %#v", index, child)
 		}
 	}
 	got[2].config["server"] = "mutated"
@@ -198,7 +198,7 @@ func TestRecoveryCompositeChildOccurrencesPreserveRouteServiceOrder(t *testing.T
 		t.Fatal(err)
 	}
 	if again[2].config["server"] != "https://wolf.example.com" {
-		t.Fatalf("recovery child config was not defensively copied: %#v", again[2].config)
+		t.Fatalf("child config was not defensively copied: %#v", again[2].config)
 	}
 }
 
@@ -226,31 +226,6 @@ func TestAttemptFactoryIgnoresHTTPOnlyCompositeChildrenInStreamDomain(t *testing
 				"candidate registrations = %d authorizations = %d, want 1/1",
 				materializer.candidateCalls,
 				broker.candidateAuthorizations,
-			)
-		}
-		if err := prepared.Close(context.Background()); err != nil {
-			t.Fatal(err)
-		}
-	})
-
-	t.Run("recovery", func(t *testing.T) {
-		broker := &countingScopedBroker{}
-		factory, materializer, _, _ := newScopedAttemptFactory(t, broker)
-		prepared, err := factory.prepareRecoveryAttempt(
-			context.Background(),
-			generation.RevisionSet{Desired: 910, Stream: snapshot.Revision()},
-			map[generation.Domain]generation.PublishedGeneration{
-				generation.DomainStream: publishedForDomain(generation.DomainStream, snapshot),
-			},
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if materializer.recoveryCalls != 1 || broker.recoveryAuthorizations != 1 {
-			t.Fatalf(
-				"recovery registrations = %d authorizations = %d, want 1/1",
-				materializer.recoveryCalls,
-				broker.recoveryAuthorizations,
 			)
 		}
 		if err := prepared.Close(context.Background()); err != nil {
@@ -334,16 +309,6 @@ func TestValidateScopedSecretSupportRejectsNestedBeforeRegistration(t *testing.T
 	)
 	if !errors.Is(candidateErr, errAttemptPreparationFailed) || materializer.candidateCalls != 0 {
 		t.Fatalf("candidate nested support = %v registrations=%d", candidateErr, materializer.candidateCalls)
-	}
-	_, recoveryErr := factory.prepareRecoveryAttempt(
-		context.Background(),
-		generation.RevisionSet{Desired: 906, HTTP: snapshot.Revision()},
-		map[generation.Domain]generation.PublishedGeneration{
-			generation.DomainHTTP: publishedForDomain(generation.DomainHTTP, snapshot),
-		},
-	)
-	if !errors.Is(recoveryErr, errAttemptPreparationFailed) || materializer.recoveryCalls != 0 {
-		t.Fatalf("recovery nested support = %v registrations=%d", recoveryErr, materializer.recoveryCalls)
 	}
 	if broker.candidateAuthorizations != 0 || broker.recoveryAuthorizations != 0 ||
 		broker.resolveCalls != 0 || broker.revokeCalls != 0 || len(*trace) != 0 {

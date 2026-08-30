@@ -193,15 +193,6 @@ func (*workflowScopedSecretBroker) AuthorizeCandidate(
 	return nil
 }
 
-func (*workflowScopedSecretBroker) AuthorizeRecovery(
-	context.Context,
-	secret.AttemptID,
-	generation.RevisionSet,
-	map[generation.Domain]generation.PublishedGeneration,
-) error {
-	return nil
-}
-
 func (broker *workflowScopedSecretBroker) ResolveScoped(
 	_ context.Context,
 	_ secret.Scope,

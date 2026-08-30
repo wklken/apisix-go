@@ -87,15 +87,6 @@ func (*scopedCancelingBroker) AuthorizeCandidate(
 	return nil
 }
 
-func (*scopedCancelingBroker) AuthorizeRecovery(
-	context.Context,
-	secret.AttemptID,
-	generation.RevisionSet,
-	map[generation.Domain]generation.PublishedGeneration,
-) error {
-	return errors.New("recovery is not used by cancellation fixture")
-}
-
 func (broker *scopedCancelingBroker) ResolveScoped(
 	ctx context.Context,
 	_ secret.Scope,

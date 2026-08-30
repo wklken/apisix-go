@@ -11,14 +11,10 @@ import (
 )
 
 // AttemptID identifies the immutable inputs owned by one secret materialization
-// attempt. Candidate and recovery attempts use separate domains so that a
-// desired-state publication can never alias a recovered publication.
+// attempt.
 type AttemptID [32]byte
 
-const (
-	candidateAttemptDomain = "apisix-go/secret-attempt/candidate/v1"
-	recoveryAttemptDomain  = "apisix-go/secret-attempt/recovery/v1"
-)
+const candidateAttemptDomain = "apisix-go/secret-attempt/candidate/v1"
 
 // CandidateAttemptID returns the identity of a desired publication attempt.
 // A zero ID denotes an encoding failure.
@@ -30,35 +26,11 @@ func CandidateAttemptID(ticket generation.ApplyTicket, set generation.Publicatio
 	return id
 }
 
-// RecoveryAttemptID returns the identity of the verified published state used
-// by a recovery attempt. A zero ID denotes an encoding failure.
-func RecoveryAttemptID(
-	revisions generation.RevisionSet,
-	published map[generation.Domain]generation.PublishedGeneration,
-) (id AttemptID) {
-	id, err := recoveryAttemptIDChecked(revisions, published)
-	if err != nil {
-		return AttemptID{}
-	}
-	return id
-}
-
 func candidateAttemptIDChecked(
 	ticket generation.ApplyTicket,
 	set generation.PublicationSet,
 ) (AttemptID, error) {
 	encoded, err := encodeCandidateAttempt(ticket, set)
-	if err != nil {
-		return AttemptID{}, err
-	}
-	return sha256.Sum256(encoded), nil
-}
-
-func recoveryAttemptIDChecked(
-	revisions generation.RevisionSet,
-	published map[generation.Domain]generation.PublishedGeneration,
-) (AttemptID, error) {
-	encoded, err := encodeRecoveryAttempt(revisions, published)
 	if err != nil {
 		return AttemptID{}, err
 	}
@@ -88,26 +60,6 @@ func encodeCandidateAttempt(
 	for _, domain := range domains {
 		encoder.writeString(string(domain))
 		if err := encoder.writePublicationCandidate(set.Domains[domain]); err != nil {
-			return nil, err
-		}
-	}
-	return encoder.bytes(), nil
-}
-
-func encodeRecoveryAttempt(
-	revisions generation.RevisionSet,
-	published map[generation.Domain]generation.PublishedGeneration,
-) ([]byte, error) {
-	encoder := newAttemptEncoder(recoveryAttemptDomain)
-	encoder.writeUint64(revisions.Desired)
-	encoder.writeUint64(revisions.HTTP)
-	encoder.writeUint64(revisions.Stream)
-
-	domains := sortedPublishedDomains(published)
-	encoder.writeUint64(uint64(len(domains)))
-	for _, domain := range domains {
-		encoder.writeString(string(domain))
-		if err := encoder.writePublicationCandidate(generation.PublicationCandidate(published[domain])); err != nil {
 			return nil, err
 		}
 	}
@@ -187,15 +139,6 @@ func (encoder *attemptEncoder) writeResourceKey(key generation.ResourceKey) {
 }
 
 func sortedCandidateDomains(domains map[generation.Domain]generation.PublicationCandidate) []generation.Domain {
-	result := make([]generation.Domain, 0, len(domains))
-	for domain := range domains {
-		result = append(result, domain)
-	}
-	sortDomains(result)
-	return result
-}
-
-func sortedPublishedDomains(domains map[generation.Domain]generation.PublishedGeneration) []generation.Domain {
 	result := make([]generation.Domain, 0, len(domains))
 	for domain := range domains {
 		result = append(result, domain)

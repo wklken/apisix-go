@@ -488,13 +488,6 @@ func (*kafkaProxyScopedSecretBroker) AuthorizeCandidate(
 	return nil
 }
 
-func (*kafkaProxyScopedSecretBroker) AuthorizeRecovery(
-	context.Context, secret.AttemptID, generation.RevisionSet,
-	map[generation.Domain]generation.PublishedGeneration,
-) error {
-	return errors.New("recovery is not used by this leaf fixture")
-}
-
 func (broker *kafkaProxyScopedSecretBroker) ResolveScoped(
 	ctx context.Context, scope secret.Scope, raw string,
 ) (string, error) {

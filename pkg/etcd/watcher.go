@@ -929,25 +929,12 @@ func (c *ConfigClient) validateAcknowledgement(
 		}
 		required[domain] = struct{}{}
 	}
-	committedSnapshotReplay := ack.CommittedReplay && batch.ReplaceManaged
-	if committedSnapshotReplay {
-		clear(required)
-		for _, domain := range acknowledgedEtcdDomains(ack) {
-			required[domain] = struct{}{}
-		}
-	}
 	for _, domain := range []generation.Domain{generation.DomainHTTP, generation.DomainStream} {
 		_, domainRequired := required[domain]
 		domainRevision := revisionForEtcdDomain(ack.Revisions, domain)
 		if domainRequired {
 			if domainRevision != ack.Revisions.Desired {
 				return nil, 0, errors.New("etcd acknowledged domain does not reference desired revision")
-			}
-			continue
-		}
-		if committedSnapshotReplay {
-			if domainRevision >= ack.Revisions.Desired {
-				return nil, 0, errors.New("etcd committed replay omitted a current decision domain")
 			}
 			continue
 		}

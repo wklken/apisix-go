@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -17,11 +16,9 @@ import (
 	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/data_encryption"
-	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/secret"
 	"github.com/wklken/apisix-go/pkg/server"
-	"github.com/wklken/apisix-go/pkg/store"
 
 	_ "github.com/wklken/apisix-go/pkg/observability/otel"
 	_ "github.com/wklken/apisix-go/pkg/proxy"
@@ -46,15 +43,11 @@ type startupFactories struct {
 	configureLogger func(*config.Config) error
 	newResolver     func(data_encryption.Service) (*secret.GenerationSecretResolver, error)
 	closeResolver   func(*secret.GenerationSecretResolver, context.Context) error
-	mkdirAll        func(string, os.FileMode) error
-	openJournal     func(string) (generation.Journal, error)
 	newServer       func(
 		*config.EffectiveConfig,
 		*capability.Manifest,
 		data_encryption.Service,
 		*secret.GenerationSecretResolver,
-		generation.Journal,
-		generation.RecoveryState,
 	) (serverLifecycle, error)
 	runServer func(serverLifecycle) error
 }
@@ -79,19 +72,13 @@ func defaultStartupFactories() startupFactories {
 		closeResolver: func(resolver *secret.GenerationSecretResolver, ctx context.Context) error {
 			return resolver.Close(ctx)
 		},
-		mkdirAll: os.MkdirAll,
-		openJournal: func(path string) (generation.Journal, error) {
-			return store.OpenJournal(path)
-		},
 		newServer: func(
 			effective *config.EffectiveConfig,
 			manifest *capability.Manifest,
 			encryption data_encryption.Service,
 			resolver *secret.GenerationSecretResolver,
-			journal generation.Journal,
-			recovery generation.RecoveryState,
 		) (serverLifecycle, error) {
-			return server.NewServer(effective, manifest, encryption, resolver, journal, recovery)
+			return server.NewServer(effective, manifest, encryption, resolver)
 		},
 		runServer: runServer,
 	}
@@ -119,12 +106,6 @@ func (factories startupFactories) withDefaults() startupFactories {
 	}
 	if factories.closeResolver == nil {
 		factories.closeResolver = defaults.closeResolver
-	}
-	if factories.mkdirAll == nil {
-		factories.mkdirAll = defaults.mkdirAll
-	}
-	if factories.openJournal == nil {
-		factories.openJournal = defaults.openJournal
 	}
 	if factories.newServer == nil {
 		factories.newServer = defaults.newServer
@@ -198,37 +179,8 @@ func startWithOptionsWithFactories(options rootOptions, factories startupFactori
 	if err != nil {
 		return fmt.Errorf("create generation secret resolver: %w", err)
 	}
-	journalPath := config.JournalPath(effective)
-	if journalPath == "" || !filepath.IsAbs(journalPath) {
-		return errors.Join(
-			errors.New("generation journal path is invalid"),
-			factories.closeResolver(resolver, context.Background()),
-		)
-	}
-	if err := factories.mkdirAll(filepath.Dir(journalPath), 0o700); err != nil {
-		return errors.Join(
-			fmt.Errorf("create generation data directory: %w", err),
-			factories.closeResolver(resolver, context.Background()),
-		)
-	}
-	journal, err := factories.openJournal(journalPath)
-	if err != nil {
-		return errors.Join(
-			fmt.Errorf("open generation journal: %w", err),
-			factories.closeResolver(resolver, context.Background()),
-		)
-	}
-	recovery, err := journal.Recover(context.Background())
-	if err != nil {
-		return errors.Join(
-			fmt.Errorf("recover generation journal: %w", err),
-			journal.Close(),
-			factories.closeResolver(resolver, context.Background()),
-		)
-	}
-
 	logger.Info("Starting server")
-	srv, err := factories.newServer(effective, manifest, encryption, resolver, journal, recovery)
+	srv, err := factories.newServer(effective, manifest, encryption, resolver)
 	if err != nil {
 		return fmt.Errorf("create server: %w", err)
 	}

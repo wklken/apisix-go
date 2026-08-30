@@ -18,10 +18,8 @@ type recordingAttemptMaterializer struct {
 	digest         [32]byte
 	trace          *[]string
 	candidateSet   generation.PublicationSet
-	recoveryState  map[generation.Domain]generation.PublishedGeneration
 	registration   *recordingFactoryRegistration
 	candidateCalls int
-	recoveryCalls  int
 }
 
 type countingScopedBroker struct {
@@ -39,16 +37,6 @@ func (broker *countingScopedBroker) AuthorizeCandidate(
 	generation.PublicationSet,
 ) error {
 	broker.candidateAuthorizations++
-	return nil
-}
-
-func (broker *countingScopedBroker) AuthorizeRecovery(
-	context.Context,
-	secret.AttemptID,
-	generation.RevisionSet,
-	map[generation.Domain]generation.PublishedGeneration,
-) error {
-	broker.recoveryAuthorizations++
 	return nil
 }
 
@@ -72,7 +60,6 @@ func (broker *countingScopedBroker) RevokeAttempt(context.Context, secret.Attemp
 type countingMaterializer struct {
 	delegate       secret.Materializer
 	candidateCalls int
-	recoveryCalls  int
 	last           secret.AttemptRegistration
 }
 
@@ -83,17 +70,6 @@ func (materializer *countingMaterializer) RegisterCandidate(
 ) (secret.AttemptRegistration, error) {
 	materializer.candidateCalls++
 	registration, err := materializer.delegate.RegisterCandidate(ctx, ticket, set)
-	materializer.last = registration
-	return registration, err
-}
-
-func (materializer *countingMaterializer) RegisterRecovery(
-	ctx context.Context,
-	revisions generation.RevisionSet,
-	published map[generation.Domain]generation.PublishedGeneration,
-) (secret.AttemptRegistration, error) {
-	materializer.recoveryCalls++
-	registration, err := materializer.delegate.RegisterRecovery(ctx, revisions, published)
 	materializer.last = registration
 	return registration, err
 }
@@ -167,21 +143,6 @@ func (materializer *recordingAttemptMaterializer) RegisterCandidate(
 	materializer.candidateSet = clonePublicationSetForPreparation(set)
 	registration := &recordingFactoryRegistration{
 		id: secret.CandidateAttemptID(ticket, set), trace: materializer.trace,
-	}
-	materializer.registration = registration
-	return registration, nil
-}
-
-func (materializer *recordingAttemptMaterializer) RegisterRecovery(
-	_ context.Context,
-	revisions generation.RevisionSet,
-	published map[generation.Domain]generation.PublishedGeneration,
-) (secret.AttemptRegistration, error) {
-	materializer.recoveryCalls++
-	*materializer.trace = append(*materializer.trace, "register-recovery")
-	materializer.recoveryState = cloneRecoveryMapForFactoryTest(published)
-	registration := &recordingFactoryRegistration{
-		id: secret.RecoveryAttemptID(revisions, published), trace: materializer.trace,
 	}
 	materializer.registration = registration
 	return registration, nil
@@ -508,29 +469,6 @@ func TestAttemptFactoryRejectsUnownedPluginTargetBeforeScopedRegistration(t *tes
 				}
 			},
 		},
-		"recovery": {
-			prepare: func(factory *attemptFactory) error {
-				snapshot := mustGenerationSnapshot(t, 462, []generation.Resource{
-					resourceValue(
-						"routes", "r1",
-						`{"id":"r1","plugins":{"echo":{"body":"$ENV://BODY"}}}`,
-					),
-				}, nil)
-				_, err := factory.prepareRecoveryAttempt(
-					context.Background(),
-					generation.RevisionSet{Desired: 463, HTTP: snapshot.Revision()},
-					map[generation.Domain]generation.PublishedGeneration{
-						generation.DomainHTTP: publishedForDomain(generation.DomainHTTP, snapshot),
-					},
-				)
-				return err
-			},
-			check: func(materializer *countingMaterializer) {
-				if materializer.recoveryCalls != 0 {
-					t.Fatalf("recovery registrations = %d, want zero", materializer.recoveryCalls)
-				}
-			},
-		},
 	}
 
 	for name, test := range tests {
@@ -627,8 +565,6 @@ func TestAttemptFactoryAllowsValidEmptyAndDeleteOnlyPublications(t *testing.T) {
 
 type wrongIDMaterializer struct{ *recordingAttemptMaterializer }
 
-type wrongRecoveryIDMaterializer struct{ *recordingAttemptMaterializer }
-
 func (materializer *wrongIDMaterializer) RegisterCandidate(
 	ctx context.Context,
 	ticket generation.ApplyTicket,
@@ -639,53 +575,6 @@ func (materializer *wrongIDMaterializer) RegisterCandidate(
 		materializer.registration.id[0]++
 	}
 	return registration, err
-}
-
-func (materializer *wrongRecoveryIDMaterializer) RegisterRecovery(
-	ctx context.Context,
-	revisions generation.RevisionSet,
-	published map[generation.Domain]generation.PublishedGeneration,
-) (secret.AttemptRegistration, error) {
-	registration, err := materializer.recordingAttemptMaterializer.RegisterRecovery(ctx, revisions, published)
-	if err == nil {
-		materializer.registration.id[0]++
-	}
-	return registration, err
-}
-
-func TestAttemptFactoryRejectsRecoveryRegistrationWithWrongAttemptID(t *testing.T) {
-	factory, materializer, _, _ := newRecordingAttemptFactory(t)
-	factory.materializer = &wrongRecoveryIDMaterializer{recordingAttemptMaterializer: materializer}
-
-	prepared, err := factory.prepareRecoveryAttempt(
-		context.Background(),
-		generation.RevisionSet{Desired: 9, HTTP: 5, Stream: 6},
-		factoryRecoveryPublished(t),
-	)
-	if prepared != nil || !errors.Is(err, ErrInvalidInput) {
-		t.Fatalf("wrong recovery registration ID = %#v/%v, want ErrInvalidInput", prepared, err)
-	}
-	if materializer.registration == nil || materializer.registration.closed != 1 {
-		t.Fatalf("wrong recovery registration cleanup = %#v", materializer.registration)
-	}
-}
-
-func factoryRecoveryPublished(t *testing.T) map[generation.Domain]generation.PublishedGeneration {
-	t.Helper()
-	return map[generation.Domain]generation.PublishedGeneration{
-		generation.DomainHTTP: publishedForDomain(
-			generation.DomainHTTP,
-			mustGenerationSnapshot(t, 5, []generation.Resource{
-				resourceValue("routes", "http-route", `{"id":"http-route"}`),
-			}, nil),
-		),
-		generation.DomainStream: publishedForDomain(
-			generation.DomainStream,
-			mustGenerationSnapshot(t, 6, []generation.Resource{
-				resourceValue("stream_routes", "stream-route", `{"id":"stream-route"}`),
-			}, nil),
-		),
-	}
 }
 
 func newRecordingAttemptFactory(
@@ -742,14 +631,4 @@ func newScopedAttemptFactoryWithCompiler(
 		t.Fatal(err)
 	}
 	return factory, materializer, consumerPreparer, trace
-}
-
-func cloneRecoveryMapForFactoryTest(
-	published map[generation.Domain]generation.PublishedGeneration,
-) map[generation.Domain]generation.PublishedGeneration {
-	clone := make(map[generation.Domain]generation.PublishedGeneration, len(published))
-	for domain, value := range published {
-		clone[domain] = clonePublishedGenerationForRecovery(value)
-	}
-	return clone
 }

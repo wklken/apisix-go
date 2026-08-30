@@ -93,14 +93,14 @@ func TestLoadEffectivePreservesExactUntypedNumber(t *testing.T) {
 }
 
 func TestLoadEffectiveResolvesRelativeRuntimePathAgainstOwningFile(t *testing.T) {
-	req := loadRequestFixture(t, `apisix_go: {runtime_paths: {data_dir: relative-data}}`)
+	req := loadRequestFixture(t, `apisix_go: {runtime_paths: {runtime_dir: relative-run}}`)
 	effective, err := LoadEffective(req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := filepath.Join(filepath.Dir(req.OverridePath), "relative-data")
-	if effective.Paths.DataDir != want {
-		t.Fatalf("data_dir = %q, want %q", effective.Paths.DataDir, want)
+	want := filepath.Join(filepath.Dir(req.OverridePath), "relative-run")
+	if effective.Paths.RuntimeDir != want {
+		t.Fatalf("runtime_dir = %q, want %q", effective.Paths.RuntimeDir, want)
 	}
 }
 
@@ -306,8 +306,8 @@ deployment: {role: data_plane, role_data_plane: {config_provider: yaml}}
 	return LoadRequest{
 		DefaultPath: defaults, OverridePath: overridePath,
 		DefaultPaths: RuntimePaths{
-			DataDir: filepath.Join(root, "data"), RuntimeDir: filepath.Join(root, "run"),
-			LogDir: filepath.Join(root, "log"), TempDir: filepath.Join(root, "tmp"),
+			RuntimeDir: filepath.Join(root, "run"),
+			LogDir:     filepath.Join(root, "log"), TempDir: filepath.Join(root, "tmp"),
 		},
 		Environment: map[string]string{},
 	}

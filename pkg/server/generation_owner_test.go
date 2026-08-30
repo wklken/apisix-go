@@ -517,14 +517,6 @@ func (materializer *ownerTestMaterializer) RegisterCandidate(
 	return materializer.registration, nil
 }
 
-func (*ownerTestMaterializer) RegisterRecovery(
-	context.Context,
-	generation.RevisionSet,
-	map[generation.Domain]generation.PublishedGeneration,
-) (secret.AttemptRegistration, error) {
-	return nil, errors.New("unexpected recovery registration")
-}
-
 func (materializer *ownerTestMaterializer) DeclarationDigest() [32]byte {
 	return materializer.digest
 }

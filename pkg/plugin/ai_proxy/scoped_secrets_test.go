@@ -49,15 +49,6 @@ func (*aiProxyScopedSecretBroker) AuthorizeCandidate(
 	return nil
 }
 
-func (*aiProxyScopedSecretBroker) AuthorizeRecovery(
-	context.Context,
-	secret.AttemptID,
-	generation.RevisionSet,
-	map[generation.Domain]generation.PublishedGeneration,
-) error {
-	return errors.New("recovery is not used by this plugin fixture")
-}
-
 func (broker *aiProxyScopedSecretBroker) ResolveScoped(
 	ctx context.Context, scope secret.Scope, raw string,
 ) (string, error) {

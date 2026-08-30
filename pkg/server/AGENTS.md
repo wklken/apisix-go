@@ -6,11 +6,9 @@ This file inherits the repository root `AGENTS.md` and applies to `pkg/server`.
 
 - Maintain one atomic active bundle with independent HTTP and stream revisions
   and owners. A one-domain update must preserve the other domain exactly.
-- Activation may precede durable commit; rollback restores the complete
-  predecessor. `FinalizeActivation` runs only after commit and must queue
-  retirement without blocking on drain.
-- Recovery installs only `RecoveryState.Published`; desired state is never
-  serving input. Start providers only after recovery installation.
+- Publish prepares detached candidates and swaps the complete active bundle
+  atomically. A failed publish leaves the predecessor active.
+- Complete the provider's initial synchronization before opening listeners.
 - The current runtime is single-process. Do not document or code against an
   assumed external supervisor/worker lifecycle that does not exist.
 
@@ -29,13 +27,13 @@ This file inherits the repository root `AGENTS.md` and applies to `pkg/server`.
 - Preserve shutdown phases: stop/join the config producer -> reject listeners
   and new route leases while initiating stream close -> drain HTTP, generation
   leases, and stream runtime -> close generation engine -> secret resolver ->
-  journal -> metrics/exporter/tracing. An incomplete authority-owning phase,
+  metrics/exporter/tracing. An incomplete authority-owning phase,
   including residual/deadline, cannot advance; terminal errors are recorded by
   their phase and completed phases are not repeated.
 
 ## Focused verification
 
 ```bash
-bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && scripts/go_cache.sh run -- go test ./pkg/server -run "^(TestGenerationEngine|TestGenerationOwner|TestRouteHandler|TestFrontendTLSSelector|TestServerShutdown|TestServerStartsRecovered)" -count=1'
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && scripts/go_cache.sh run -- go test ./pkg/server -run "^(TestGenerationEngine|TestGenerationOwner|TestRouteHandler|TestFrontendTLSSelector|TestServerShutdown|TestServerStartsProvider)" -count=1'
 bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && scripts/go_cache.sh run -- go test -race ./pkg/server -run "^(TestGenerationEngine|TestGenerationOwner|TestRouteHandler|TestServerShutdown)" -count=1'
 ```

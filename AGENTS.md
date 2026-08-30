@@ -14,7 +14,7 @@ Key runtime pieces:
 - `main.go` enters the Cobra CLI in `cmd/root.go`.
 - Static configuration is loaded by the presence-aware `pkg/config` loader from builtins, `conf/config-default.yaml`, an optional `-c/--config` file, APISIX file-template expansion, and APISIX 3.17 reserved environment overrides.
 - `pkg/capability/manifest.yaml` is the temporary editable source for runtime plugin factories, aliases, execution metadata, and secret declarations. It generates only the plugin registry.
-- Providers submit desired snapshots to the single-writer `pkg/generation` coordinator. `pkg/store` is the bbolt durable generation journal, not a mutable runtime resource store.
+- Providers submit desired snapshots to the single-writer `pkg/generation` coordinator, which owns in-memory desired and published state.
 - `pkg/compiler` plans and materializes immutable HTTP/TLS and stream snapshots. `pkg/route` and `pkg/stream` contain detached snapshot compilers; `pkg/server` atomically activates them and owns generation leases.
 - HTTP and TLS listeners come from effective configuration; the default HTTP listener is `0.0.0.0:9080`.
 - APISIX plugins live under `pkg/plugin/<plugin_name>` and are instantiated through the manifest-generated registry consumed by `pkg/plugin/init.go`.
@@ -40,15 +40,15 @@ Directory-scoped instructions inherit this file. Read the closest `AGENTS.md` be
 | Area | Local instructions |
 |---|---|
 | Capability/configuration | `pkg/capability/AGENTS.md`, `pkg/config/AGENTS.md` |
-| Desired/published state | `pkg/generation/AGENTS.md`, `pkg/store/AGENTS.md` |
+| Desired/published state | `pkg/generation/AGENTS.md` |
 | Compiler/runtime/secrets | `pkg/compiler/AGENTS.md`, `pkg/runtime/AGENTS.md`, `pkg/secret/AGENTS.md` |
 | Serving/protocol | `pkg/server/AGENTS.md`, `pkg/route/AGENTS.md`, `pkg/stream/AGENTS.md` |
 | Proxy/plugins/metrics | `pkg/proxy/AGENTS.md`, `pkg/plugin/AGENTS.md`, `pkg/plugin/logger_batch/AGENTS.md`, `pkg/observability/metrics/AGENTS.md` |
 
 ## Cross-package Runtime Invariants
 
-- The only production publication path is provider -> `generation.Coordinator` -> durable journal -> compiler -> `GenerationEngine`. Do not restore direct Store getters, mutable route builders, or provider-owned activation.
-- Publication order is `ApplyDesired -> Prepare -> Stage -> Activate -> Commit (persist acknowledgement) -> FinalizeActivation -> return acknowledgement to provider`. Activation/commit failure restores the exact predecessor before abort; recovery serves only committed published state.
+- The only production publication path is provider -> `generation.Coordinator` -> compiler -> `GenerationEngine`. Do not restore mutable route builders or provider-owned activation.
+- Publication order is `apply desired in memory -> compile/prepare -> atomic active-bundle swap -> commit coordinator state -> return acknowledgement to provider`. Publication failure preserves the exact predecessor and does not advance coordinator state.
 - First-generation invalid state fails closed. `last-good` requires an exact same-domain published predecessor; a tombstone is deletion and never falls back.
 - A prepared generation owns its secret attempt, task registry, resource leases, and HTTP/stream snapshots. Cleanup is retryable and ordered `quiesce -> resource finalize -> authority release`; a residual or deadline retains ownership.
 - HTTP requests, hijacked connections, TLS callbacks, and stream connections pin the exact generation they use. A generation retires only after it owns no active domain and all leases drain.
@@ -103,7 +103,7 @@ Do not remove the main checkout's entire `.cache/`: it contains the shared modul
 - Run a specific config manually: `scripts/go_cache.sh run -- go run . -c conf/config.yaml`.
 - The default config path is `conf/config-default.yaml`; `conf/config.yaml` contains local overrides and an example admin key.
 - `conf/config-default.yaml` says not to modify default configurations there. Prefer custom settings in `conf/config.yaml`.
-- Running the server is not dependency-free in etcd mode. Etcd and standalone providers both submit desired batches only after startup journal recovery. The bbolt journal is created under the absolute `EffectiveConfig.Paths.DataDir` as `apisix-go-store.db`.
+- Running the server is not dependency-free in etcd mode. Etcd and standalone providers must complete their initial desired-state submission before listeners start.
 
 ## Testing Instructions
 
@@ -170,8 +170,7 @@ Correctness:
 - Cobra defines `--config` / `-c`; the loader expands APISIX file templates and implements only APISIX 3.17 reserved environment overrides.
 - `deployment.role_traditional.config_provider` is currently `etcd` in `conf/config.yaml`.
 - When `server-info` is enabled with traditional etcd configuration, the server reports under `<deployment.etcd.prefix>/data_plane/server_info/<apisix-id>` using `plugin_attr.server-info.report_ttl` and renews the lease until shutdown. Data-plane mode intentionally does not write this registration record.
-- TCP stream routing is enabled through `apisix.proxy_mode` plus `apisix.stream_proxy.tcp`. Provider desired state is journaled and compiled into an immutable stream router; each accepted connection leases that exact generation.
-- The local bbolt generation journal `<EffectiveConfig.Paths.DataDir>/apisix-go-store.db` is generated at runtime and ignored by git.
+- TCP stream routing is enabled through `apisix.proxy_mode` plus `apisix.stream_proxy.tcp`. Provider desired state is compiled into an immutable stream router; each accepted connection leases that exact generation.
 - Do not treat the example admin key in `conf/config.yaml` as a production secret.
 
 ## Build and Deployment

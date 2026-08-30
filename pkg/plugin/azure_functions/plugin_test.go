@@ -828,15 +828,6 @@ func (broker *azureScopedBroker) AuthorizeCandidate(
 	return nil
 }
 
-func (broker *azureScopedBroker) AuthorizeRecovery(
-	context.Context,
-	secret.AttemptID,
-	generation.RevisionSet,
-	map[generation.Domain]generation.PublishedGeneration,
-) error {
-	return nil
-}
-
 func (broker *azureScopedBroker) ResolveScoped(
 	_ context.Context,
 	scope secret.Scope,

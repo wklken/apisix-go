@@ -39,10 +39,6 @@ type immutableStreamTestEngine struct {
 	acquire func() (streamGenerationLease, bool)
 }
 
-func (*immutableStreamTestEngine) InstallRecovery(context.Context, generation.RecoveryState) error {
-	return nil
-}
-
 func (*immutableStreamTestEngine) Close(context.Context) error { return nil }
 
 func (*immutableStreamTestEngine) acquireHTTP() (httpGenerationLease, bool) {

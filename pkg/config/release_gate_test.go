@@ -419,8 +419,8 @@ func loadEffectiveTestFiles(
 	effective, err := LoadEffective(LoadRequest{
 		DefaultPath: defaultPath, OverridePath: overridePath,
 		DefaultPaths: RuntimePaths{
-			DataDir: filepath.Join(pathRoot, "data"), RuntimeDir: filepath.Join(pathRoot, "run"),
-			LogDir: filepath.Join(pathRoot, "log"), TempDir: filepath.Join(pathRoot, "tmp"),
+			RuntimeDir: filepath.Join(pathRoot, "run"),
+			LogDir:     filepath.Join(pathRoot, "log"), TempDir: filepath.Join(pathRoot, "tmp"),
 		},
 		Environment: environment,
 	})

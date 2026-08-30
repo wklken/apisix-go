@@ -4,8 +4,6 @@ go 1.26.0
 
 toolchain go1.26.6
 
-replace github.com/coreos/bbolt => go.etcd.io/bbolt v1.3.9
-
 // replace google.golang.org/grpc => google.golang.org/grpc v1.29.0
 
 require (

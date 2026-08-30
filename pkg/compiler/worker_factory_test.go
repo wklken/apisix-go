@@ -911,19 +911,17 @@ func (m *workerTestMaterializer) RegisterCandidate(
 	return m.registration, m.registerErr
 }
 
-func (*workerTestMaterializer) RegisterRecovery(
-	context.Context,
-	generation.RevisionSet,
-	map[generation.Domain]generation.PublishedGeneration,
-) (secret.AttemptRegistration, error) {
-	return nil, errors.New("unexpected recovery registration")
-}
-
 func (m *workerTestMaterializer) DeclarationDigest() [32]byte {
 	if m == nil {
 		return [32]byte{}
 	}
 	return m.digest
+}
+
+func (m *workerTestMaterializer) registrationsSnapshot() []*workerTestRegistration {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return slices.Clone(m.registrations)
 }
 
 func newWorkerTestFactory(t *testing.T) (*WorkerCompilerFactory, *workerTestMaterializer) {

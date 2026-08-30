@@ -45,15 +45,6 @@ func (*dingtalkScopedSecretBroker) AuthorizeCandidate(
 	return nil
 }
 
-func (*dingtalkScopedSecretBroker) AuthorizeRecovery(
-	context.Context,
-	secret.AttemptID,
-	generation.RevisionSet,
-	map[generation.Domain]generation.PublishedGeneration,
-) error {
-	return nil
-}
-
 func (broker *dingtalkScopedSecretBroker) ResolveScoped(
 	_ context.Context,
 	scope secret.Scope,

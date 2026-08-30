@@ -4,7 +4,7 @@ on:
   workflow_call:
     inputs:
       run-operational:
-        description: Run the etcd recovery and proxy soak validation gates.
+        description: Run the proxy soak validation gate.
         required: false
         type: boolean
         default: false
@@ -78,7 +78,7 @@ jobs:
           cache: true
 
       - name: Run focused race tests
-        run: go test -race ./pkg/config ./cmd ./pkg/server ./pkg/route ./pkg/proxy ./pkg/store ./pkg/etcd ./pkg/stream -count=1
+        run: go test -race ./pkg/config ./cmd ./pkg/server ./pkg/route ./pkg/proxy ./pkg/etcd ./pkg/stream -count=1
 
       - name: Scan reachable Go vulnerabilities
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 . ./cmd/... ./pkg/...
@@ -220,65 +220,6 @@ jobs:
           name: candidate-image-${{ github.run_id }}
           path: ${{ env.EVIDENCE_DIR }}
           if-no-files-found: error
-          include-hidden-files: true
-          retention-days: 30
-
-  etcd-recovery:
-    name: Verified TLS Etcd Recovery
-    needs:
-      - validate-inputs
-      - race-and-vulnerability
-      - container-evidence
-    if: ${{ inputs.run-operational }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 40
-    permissions:
-      contents: read
-    env:
-      EVIDENCE_DIR: .cache/candidate-evidence
-    steps:
-      - name: Checkout selected source ref
-        uses: actions/checkout@v7.0.1
-        with:
-          ref: ${{ inputs.source-commit || github.sha }}
-
-      - name: Record checked-out commit
-        run: echo "checked-out commit=$(git rev-parse HEAD)"
-
-      - name: Download qualified image archive
-        uses: actions/download-artifact@v8.0.1
-        with:
-          name: candidate-image-${{ github.run_id }}
-          path: ${{ env.EVIDENCE_DIR }}
-
-      - name: Verify and load qualified image
-        id: image
-        run: |
-          set -euo pipefail
-          (
-            cd "$EVIDENCE_DIR"
-            sha256sum -c apisix-image.tar.gz.sha256
-          )
-          docker load --input "$EVIDENCE_DIR/apisix-image.tar.gz"
-          image_reference=$(<"$EVIDENCE_DIR/image-reference.txt")
-          image_id=$(docker image inspect --format '{{.Id}}' "$image_reference")
-          [[ "$image_id" =~ ^sha256:[0-9a-f]{64}$ ]]
-          [[ "$image_id" == "$(<"$EVIDENCE_DIR/image-config-digest.txt")" ]]
-          printf 'image_id=%s\n' "$image_id" >> "$GITHUB_OUTPUT"
-
-      - name: Run verified TLS etcd recovery smoke
-        env:
-          APISIX_IMAGE: ${{ steps.image.outputs.image_id }}
-          SOURCE_COMMIT: ${{ inputs.source-commit || github.sha }}
-        run: bash scripts/etcd_recovery_smoke.sh "$APISIX_IMAGE"
-
-      - name: Upload etcd recovery evidence
-        if: always()
-        uses: actions/upload-artifact@v7.0.1
-        with:
-          name: etcd-recovery-${{ github.run_id }}
-          path: .cache/candidate-evidence/etcd-recovery
-          if-no-files-found: warn
           include-hidden-files: true
           retention-days: 30
 

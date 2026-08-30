@@ -25,10 +25,9 @@ It must pass:
 | HTTP smoke | Focused real-process authentication, rewrite, proxy-control, and rejection cases. |
 | Concurrency and dependencies | Focused race tests plus reachable Go and container vulnerability checks. |
 | Container | Linux amd64 build, non-root proxy smoke, graceful shutdown, SBOM, and immutable local image identity. |
-| Recovery | Verified-TLS etcd service continuity, update, compaction recovery, restart, and delete/re-add convergence. |
 | Stability | Canonical 30-minute concurrency-256 proxy soak using [Proxy Runtime Acceptance](../performance/proxy-runtime-acceptance.md). |
 
-The container image is an ephemeral workflow artifact used by recovery checks.
+The container image is an ephemeral workflow artifact used by candidate checks.
 It is not pushed, signed, tagged as a release, or reused by another run.
 
 Missing, skipped, stale, or identity-mismatched evidence fails the candidate.
@@ -41,11 +40,10 @@ Use these checks when changing the workflow or its retained smoke scripts:
 ```bash
 bash scripts/release_gate_test.sh
 bash scripts/container_smoke_test.sh
-bash scripts/etcd_recovery_smoke_test.sh
 ```
 
 They validate local script and workflow contracts. They do not replace the
-post-merge candidate run, Docker-based recovery evidence, or the timed soak.
+post-merge candidate run or the timed soak.
 
 ## Decision record
 

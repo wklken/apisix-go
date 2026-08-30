@@ -41,15 +41,6 @@ func (*scopedWorkflowBroker) AuthorizeCandidate(
 	return nil
 }
 
-func (*scopedWorkflowBroker) AuthorizeRecovery(
-	context.Context,
-	secret.AttemptID,
-	generation.RevisionSet,
-	map[generation.Domain]generation.PublishedGeneration,
-) error {
-	return errors.New("recovery is not used by scoped workflow tests")
-}
-
 func (broker *scopedWorkflowBroker) ResolveScoped(
 	ctx context.Context,
 	scope secret.Scope,

@@ -94,13 +94,6 @@ func (*splunkScopedSecretBroker) AuthorizeCandidate(
 	return nil
 }
 
-func (*splunkScopedSecretBroker) AuthorizeRecovery(
-	context.Context, secret.AttemptID, generation.RevisionSet,
-	map[generation.Domain]generation.PublishedGeneration,
-) error {
-	return errors.New("recovery is not used by this Splunk fixture")
-}
-
 func (broker *splunkScopedSecretBroker) ResolveScoped(
 	ctx context.Context, scope secret.Scope, raw string,
 ) (string, error) {

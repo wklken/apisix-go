@@ -19,7 +19,6 @@ import (
 type metadataPreparationBroker struct {
 	resolveCalls            int
 	candidateAuthorizations int
-	recoveryAuthorizations  int
 	scopes                  []secret.Scope
 	raws                    []string
 	resolved                string
@@ -34,16 +33,6 @@ func (broker *metadataPreparationBroker) AuthorizeCandidate(
 	generation.PublicationSet,
 ) error {
 	broker.candidateAuthorizations++
-	return nil
-}
-
-func (broker *metadataPreparationBroker) AuthorizeRecovery(
-	context.Context,
-	secret.AttemptID,
-	generation.RevisionSet,
-	map[generation.Domain]generation.PublishedGeneration,
-) error {
-	broker.recoveryAuthorizations++
 	return nil
 }
 
@@ -297,87 +286,6 @@ func TestMetadataPreparerMaterializesAzureMetadataWithExactOccurrence(t *testing
 		scope.Plugin != "azure-functions" || scope.Source != capability.SecretPluginMetadata ||
 		scope.Field != "master_apikey" || broker.raws[0] != "$ENV://AZURE_MASTER_APIKEY" {
 		t.Fatalf("materialization scope/raw = %#v/%q", scope, broker.raws[0])
-	}
-}
-
-func TestMetadataPreparerKeepsCandidateAndRecoveryAttemptsDistinct(t *testing.T) {
-	compiler := newTestCompiler(t)
-	candidateSnapshot := metadataSnapshot(t, 105, `{"master_apikey":"$ENV://AZURE_CANDIDATE"}`)
-	candidateTicket, candidateSet := metadataPublicationSet(candidateSnapshot)
-	recoverySnapshot := metadataSnapshot(t, 106, `{"master_apikey":"$ENV://AZURE_RECOVERY"}`)
-	broker := &metadataPreparationBroker{resolvedByRaw: map[string]string{
-		"$ENV://AZURE_CANDIDATE": "candidate-secret",
-		"$ENV://AZURE_RECOVERY":  "recovery-secret",
-	}}
-	candidateAttempt, candidateRegistration := registerMetadataCandidate(
-		t,
-		compiler,
-		broker,
-		candidateTicket,
-		candidateSet,
-	)
-	defer closeMetadataRegistration(t, candidateRegistration)
-	published := publishedForDomain(generation.DomainHTTP, recoverySnapshot)
-	revisions := generation.RevisionSet{Desired: 205, HTTP: recoverySnapshot.Revision()}
-	recoveryMaterializer := testutil.NewSecretMaterializer(broker, compiler.schemas.catalog)
-	recoveryRegistration, err := recoveryMaterializer.RegisterRecovery(
-		context.Background(),
-		revisions,
-		map[generation.Domain]generation.PublishedGeneration{
-			generation.DomainHTTP: published,
-		},
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer closeMetadataRegistration(t, recoveryRegistration)
-	recoveryAttempt := newMetadataPreparationAttempt(
-		t,
-		compiler,
-		revisions.Desired,
-		map[generation.Domain]generation.PublicationCandidate{
-			generation.DomainHTTP: generation.PublicationCandidate(published),
-		},
-		recoveryRegistration,
-	)
-	preparer, err := newMetadataPreparer(compiler.schemas)
-	if err != nil {
-		t.Fatal(err)
-	}
-	candidateView, err := preparer.PrepareMetadata(context.Background(), candidateAttempt)
-	if err != nil {
-		t.Fatal(err)
-	}
-	recoveryView, err := preparer.PrepareMetadata(context.Background(), recoveryAttempt)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var candidateMetadata, recoveryMetadata map[string]any
-	if found, err := candidateView.Decode("azure-functions", &candidateMetadata); err != nil || !found {
-		t.Fatalf("candidate metadata Decode() = (%v, %v), want present", found, err)
-	}
-	if found, err := recoveryView.Decode("azure-functions", &recoveryMetadata); err != nil || !found {
-		t.Fatalf("recovery metadata Decode() = (%v, %v), want present", found, err)
-	}
-	if candidateMetadata["master_apikey"] != "candidate-secret" ||
-		recoveryMetadata["master_apikey"] != "recovery-secret" {
-		t.Fatalf(
-			"candidate/recovery metadata = %#v/%#v, want distinct resolved values",
-			candidateMetadata,
-			recoveryMetadata,
-		)
-	}
-	if candidateAttempt.AttemptID() == recoveryAttempt.AttemptID() {
-		t.Fatal("candidate and recovery attempts unexpectedly share identity")
-	}
-	if len(broker.scopes) != 2 {
-		t.Fatalf("materialization scopes = %#v, want candidate and recovery", broker.scopes)
-	}
-	if broker.scopes[0].Generation != candidateSnapshot.Revision() ||
-		broker.scopes[1].Generation != revisions.Desired ||
-		broker.scopes[0].Attempt != candidateAttempt.AttemptID() ||
-		broker.scopes[1].Attempt != recoveryAttempt.AttemptID() {
-		t.Fatalf("candidate/recovery scopes = %#v, want distinct generation and attempt", broker.scopes)
 	}
 }
 

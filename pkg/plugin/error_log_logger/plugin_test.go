@@ -1242,15 +1242,6 @@ func (*errorLoggerScopedBroker) AuthorizeCandidate(
 	return nil
 }
 
-func (*errorLoggerScopedBroker) AuthorizeRecovery(
-	context.Context,
-	secret.AttemptID,
-	generation.RevisionSet,
-	map[generation.Domain]generation.PublishedGeneration,
-) error {
-	return nil
-}
-
 func (broker *errorLoggerScopedBroker) ResolveScoped(
 	_ context.Context,
 	scope secret.Scope,

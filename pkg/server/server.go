@@ -9,7 +9,6 @@ import (
 	"net"
 	"net/http"
 	"path"
-	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -105,7 +104,9 @@ func (p *etcdConfigProducer) Start(parent context.Context) error {
 				return
 			}
 			metrics.RecordEtcdReachable(false)
-			logger.Errorf("initial etcd reconciliation failed; serving recovered generation: %v", err)
+			p.startErr = fmt.Errorf("initial etcd reconciliation: %w", err)
+			close(p.watchDone)
+			return
 		}
 		if p.afterInitial != nil {
 			p.afterInitial(ctx)
@@ -175,7 +176,6 @@ func (p *standaloneConfigProducer) Stop() error {
 
 type generationEngineOwner interface {
 	generation.PublicationEngine
-	InstallRecovery(context.Context, generation.RecoveryState) error
 	Close(context.Context) error
 	acquireHTTP() (httpGenerationLease, bool)
 	acquireStream() (streamGenerationLease, bool)
@@ -191,10 +191,9 @@ type newServerFactories struct {
 		compiler.WorkerRuntimeObservers,
 	) (*compiler.WorkerCompilerFactory, error)
 	newEngine      func(*Server, *compiler.WorkerCompilerFactory) (generationEngineOwner, error)
-	newCoordinator func(generation.Journal, generation.PublicationEngine) *generation.Coordinator
+	newCoordinator func(generation.PublicationEngine) *generation.Coordinator
 	closeFactory   func(*compiler.WorkerCompilerFactory, context.Context) error
 	closeResolver  func(*secret.GenerationSecretResolver, context.Context) error
-	closeJournal   func(generation.Journal) error
 }
 
 type serverRuntimeFactories struct {
@@ -253,7 +252,6 @@ func defaultNewServerFactories() newServerFactories {
 		closeResolver: func(resolver *secret.GenerationSecretResolver, ctx context.Context) error {
 			return resolver.Close(ctx)
 		},
-		closeJournal: func(journal generation.Journal) error { return journal.Close() },
 	}
 }
 
@@ -277,9 +275,6 @@ func (factories newServerFactories) withDefaults() newServerFactories {
 	if factories.closeResolver == nil {
 		factories.closeResolver = defaults.closeResolver
 	}
-	if factories.closeJournal == nil {
-		factories.closeJournal = defaults.closeJournal
-	}
 	return factories
 }
 
@@ -288,11 +283,9 @@ type Server struct {
 	dataEncryption   data_encryption.Service
 	resolver         *secret.GenerationSecretResolver
 	serverInfo       *server_info.View
-	journal          generation.Journal
 	engine           generationEngineOwner
 	coordinator      *generation.Coordinator
 	closeResolver    func(*secret.GenerationSecretResolver, context.Context) error
-	closeJournal     func(generation.Journal) error
 	runtimeFactories serverRuntimeFactories
 	shutdownHTTP     func(context.Context) error
 	drainRoutes      func(context.Context) error
@@ -326,7 +319,6 @@ type Server struct {
 	streamDrained     bool
 	engineClosed      bool
 	resolverClosed    bool
-	journalClosed     bool
 	expirationStopped bool
 	exporterStopped   bool
 	tracingStopped    bool
@@ -357,7 +349,6 @@ const (
 	shutdownPhaseDrained
 	shutdownPhaseEngineClosed
 	shutdownPhaseResolverClosed
-	shutdownPhaseJournalClosed
 	shutdownPhaseObservabilityClosed
 )
 
@@ -366,16 +357,12 @@ func NewServer(
 	manifest *capability.Manifest,
 	encryption data_encryption.Service,
 	resolver *secret.GenerationSecretResolver,
-	journal generation.Journal,
-	recovery generation.RecoveryState,
 ) (*Server, error) {
 	return newServerWithFactories(
 		effective,
 		manifest,
 		encryption,
 		resolver,
-		journal,
-		recovery,
 		defaultNewServerFactories(),
 	)
 }
@@ -385,11 +372,9 @@ func newServerWithFactories(
 	manifest *capability.Manifest,
 	encryption data_encryption.Service,
 	resolver *secret.GenerationSecretResolver,
-	journal generation.Journal,
-	recovery generation.RecoveryState,
 	factories newServerFactories,
 ) (*Server, error) {
-	if err := validateNewServerDependencies(effective, manifest, encryption, resolver, journal); err != nil {
+	if err := validateNewServerDependencies(effective, manifest, encryption, resolver); err != nil {
 		return nil, err
 	}
 	factories = factories.withDefaults()
@@ -399,9 +384,7 @@ func newServerWithFactories(
 		staticConfig:     effective,
 		dataEncryption:   encryption,
 		resolver:         resolver,
-		journal:          journal,
 		closeResolver:    factories.closeResolver,
-		closeJournal:     factories.closeJournal,
 		runtimeFactories: defaultServerRuntimeFactories(),
 		addrs:            addrs,
 		serverInfo:       server_info.NewView(cfg.Apisix.ID),
@@ -412,7 +395,6 @@ func newServerWithFactories(
 		return nil, errors.Join(
 			fmt.Errorf("initialize tracing: %w", err),
 			factories.closeResolver(resolver, context.Background()),
-			factories.closeJournal(journal),
 		)
 	}
 	server.otelShutdown = otelShutdown
@@ -420,7 +402,6 @@ func newServerWithFactories(
 		return errors.Join(
 			primary,
 			factories.closeResolver(resolver, context.Background()),
-			factories.closeJournal(journal),
 			otelShutdown(context.Background()),
 		)
 	}
@@ -444,27 +425,16 @@ func newServerWithFactories(
 			fmt.Errorf("create generation engine: %w", err),
 			factories.closeFactory(factory, context.Background()),
 			factories.closeResolver(resolver, context.Background()),
-			factories.closeJournal(journal),
 			otelShutdown(context.Background()),
 		)
 	}
 	server.engine = engine
-	server.coordinator = factories.newCoordinator(journal, engine)
+	server.coordinator = factories.newCoordinator(engine)
 	if server.coordinator == nil {
 		return nil, errors.Join(
 			errors.New("create generation coordinator: nil coordinator"),
 			engine.Close(context.Background()),
 			factories.closeResolver(resolver, context.Background()),
-			factories.closeJournal(journal),
-			otelShutdown(context.Background()),
-		)
-	}
-	if err := engine.InstallRecovery(context.Background(), recovery); err != nil {
-		return nil, errors.Join(
-			fmt.Errorf("install generation recovery: %w", err),
-			engine.Close(context.Background()),
-			factories.closeResolver(resolver, context.Background()),
-			factories.closeJournal(journal),
 			otelShutdown(context.Background()),
 		)
 	}
@@ -473,7 +443,6 @@ func newServerWithFactories(
 			errors.New("generation engine did not bind HTTP runtime"),
 			engine.Close(context.Background()),
 			factories.closeResolver(resolver, context.Background()),
-			factories.closeJournal(journal),
 			otelShutdown(context.Background()),
 		)
 	}
@@ -495,7 +464,6 @@ func validateNewServerDependencies(
 	manifest *capability.Manifest,
 	encryption data_encryption.Service,
 	resolver *secret.GenerationSecretResolver,
-	journal generation.Journal,
 ) error {
 	switch {
 	case effective == nil:
@@ -506,23 +474,8 @@ func validateNewServerDependencies(
 		return errors.New("data encryption service is required")
 	case resolver == nil:
 		return errors.New("generation secret resolver is required")
-	case nilInterface(journal):
-		return errors.New("generation journal is required")
 	default:
 		return nil
-	}
-}
-
-func nilInterface(value any) bool {
-	if value == nil {
-		return true
-	}
-	ref := reflect.ValueOf(value)
-	switch ref.Kind() {
-	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
-		return ref.IsNil()
-	default:
-		return false
 	}
 }
 
@@ -1011,6 +964,16 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 	metrics.SetConfigApplyStreamRequired(streamProxyModeEnabled(cfg))
 	factories := s.runtimeFactories.withDefaults()
 	s.runtimeFactories = factories
+	producer, err := factories.newProducer(s, ctx)
+	if err != nil {
+		return fmt.Errorf("construct config producer: %w", err)
+	}
+	if err := s.retainProducer(producer); err != nil {
+		return fmt.Errorf("retain config producer: %w", err)
+	}
+	if err := producer.Start(ctx); err != nil {
+		return fmt.Errorf("start config producer: %w", err)
+	}
 	if err := s.startImmutableStreamRuntime(ctx, factories.newStream); err != nil {
 		return err
 	}
@@ -1023,30 +986,6 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 	serveErrors, err := factories.startHTTP(s, ctx)
 	if err != nil {
 		return fmt.Errorf("start HTTP listeners: %w", err)
-	}
-	producer, err := factories.newProducer(s, ctx)
-	if err != nil {
-		return fmt.Errorf("construct config producer: %w", err)
-	}
-	if err := s.retainProducer(producer); err != nil {
-		return fmt.Errorf("retain config producer: %w", err)
-	}
-	producerStartDone := make(chan error, 1)
-	go func() {
-		producerStartDone <- producer.Start(ctx)
-	}()
-	select {
-	case err := <-producerStartDone:
-		if err != nil {
-			return fmt.Errorf("start config producer: %w", err)
-		}
-	case <-ctx.Done():
-		return ctx.Err()
-	case err := <-serveErrors:
-		if err == nil || errors.Is(err, http.ErrServerClosed) {
-			return nil
-		}
-		return err
 	}
 
 	select {
@@ -1201,17 +1140,6 @@ func (s *Server) shutdownAttempt(ctx context.Context) (error, bool) {
 			s.resolverClosed = true
 		}
 		s.shutdownPhase = shutdownPhaseResolverClosed
-	}
-	if s.shutdownPhase < shutdownPhaseJournalClosed {
-		if s.journal != nil && !s.journalClosed {
-			closer := s.closeJournal
-			if closer == nil {
-				closer = func(journal generation.Journal) error { return journal.Close() }
-			}
-			s.appendShutdownError(wrapCleanupError("close generation journal", closer(s.journal)))
-			s.journalClosed = true
-		}
-		s.shutdownPhase = shutdownPhaseJournalClosed
 	}
 	if s.shutdownPhase < shutdownPhaseObservabilityClosed {
 		observabilityErr, complete := s.closeObservability(ctx)

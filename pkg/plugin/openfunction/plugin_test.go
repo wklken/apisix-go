@@ -690,15 +690,6 @@ func (broker *openFunctionScopedBroker) AuthorizeCandidate(
 	return nil
 }
 
-func (broker *openFunctionScopedBroker) AuthorizeRecovery(
-	context.Context,
-	secret.AttemptID,
-	generation.RevisionSet,
-	map[generation.Domain]generation.PublishedGeneration,
-) error {
-	return nil
-}
-
 func (broker *openFunctionScopedBroker) ResolveScoped(
 	_ context.Context,
 	scope secret.Scope,

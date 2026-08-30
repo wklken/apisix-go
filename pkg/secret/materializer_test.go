@@ -166,7 +166,6 @@ type testResolverFactory struct {
 	openCalls     int
 	closeCalls    int
 	lastCandidate generation.PublicationSet
-	lastRecovery  map[generation.Domain]generation.PublishedGeneration
 }
 
 func (factory *testResolverFactory) OpenCandidate(
@@ -179,22 +178,6 @@ func (factory *testResolverFactory) OpenCandidate(
 	defer factory.mu.Unlock()
 	factory.openCalls++
 	factory.lastCandidate = clonePublicationSet(set)
-	if factory.openErr != nil {
-		return factory.openResolver, factory.openErr
-	}
-	return factory.newResolver(), nil
-}
-
-func (factory *testResolverFactory) OpenRecovery(
-	_ context.Context,
-	_ AttemptID,
-	_ generation.RevisionSet,
-	published map[generation.Domain]generation.PublishedGeneration,
-) (AttemptResolver, error) {
-	factory.mu.Lock()
-	defer factory.mu.Unlock()
-	factory.openCalls++
-	factory.lastRecovery = clonePublishedGenerations(published)
 	if factory.openErr != nil {
 		return factory.openResolver, factory.openErr
 	}
@@ -554,19 +537,6 @@ func (factory *testResolverFactoryWithResolver) OpenCandidate(
 	return &testAttemptResolver{resolve: factory.resolve, close: resolver.Close}, nil
 }
 
-func (factory *testResolverFactoryWithResolver) OpenRecovery(
-	ctx context.Context,
-	id AttemptID,
-	revisions generation.RevisionSet,
-	published map[generation.Domain]generation.PublishedGeneration,
-) (AttemptResolver, error) {
-	resolver, err := factory.factory.OpenRecovery(ctx, id, revisions, published)
-	if err != nil {
-		return nil, err
-	}
-	return &testAttemptResolver{resolve: factory.resolve, close: resolver.Close}, nil
-}
-
 func TestMaterializerRejectsUndeclaredAndWrongSourceBeforeBackend(t *testing.T) {
 	service, _ := testService(t, false)
 	resolverCalls := 0
@@ -605,41 +575,6 @@ func TestMaterializerRejectsUndeclaredAndWrongSourceBeforeBackend(t *testing.T) 
 	}
 	if resolverCalls != 0 {
 		t.Fatalf("resolver calls = %d, want zero", resolverCalls)
-	}
-}
-
-func TestCandidateAndRecoverySameRevisionHaveDistinctAttempts(t *testing.T) {
-	service, _ := testService(t, false)
-	factory := &testResolverFactory{}
-	materializer := NewMaterializer(service, factory)
-	ticket, set := testPublication(t, 9, generation.DomainHTTP, generation.ResourceKey{Kind: "routes", ID: "r1"})
-	candidate, err := materializer.RegisterCandidate(context.Background(), ticket, set)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() {
-		if err := candidate.Close(context.Background()); err != nil {
-			t.Errorf("candidate Close() error = %v", err)
-		}
-	}()
-	published := map[generation.Domain]generation.PublishedGeneration{
-		generation.DomainHTTP: generation.PublishedGeneration(set.Domains[generation.DomainHTTP]),
-	}
-	recovery, err := materializer.RegisterRecovery(
-		context.Background(),
-		generation.RevisionSet{Desired: 9, HTTP: 9},
-		published,
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() {
-		if err := recovery.Close(context.Background()); err != nil {
-			t.Errorf("recovery Close() error = %v", err)
-		}
-	}()
-	if candidate.AttemptID() == recovery.AttemptID() {
-		t.Fatal("candidate and recovery attempts aliased")
 	}
 }
 
@@ -715,19 +650,6 @@ func TestMalformedRegistrationsDoNotReachResolver(t *testing.T) {
 	) {
 		t.Fatalf("malformed candidate error = %v, want ErrInvalidCapability", err)
 	}
-	published := map[generation.Domain]generation.PublishedGeneration{
-		generation.DomainHTTP: generation.PublishedGeneration(set.Domains[generation.DomainHTTP]),
-	}
-	if _, err := materializer.RegisterRecovery(
-		context.Background(),
-		generation.RevisionSet{Desired: 9, HTTP: 9},
-		published,
-	); !errors.Is(
-		err,
-		ErrInvalidCapability,
-	) {
-		t.Fatalf("malformed recovery error = %v, want ErrInvalidCapability", err)
-	}
 	factory.mu.Lock()
 	openCalls := factory.openCalls
 	factory.mu.Unlock()
@@ -736,7 +658,7 @@ func TestMalformedRegistrationsDoNotReachResolver(t *testing.T) {
 	}
 }
 
-func TestOpenCleanupFailureQuarantinesCandidateAndRecoveryIDs(t *testing.T) {
+func TestOpenCleanupFailureQuarantinesCandidateID(t *testing.T) {
 	service, _ := testService(t, false)
 	_, set := testPublication(t, 9, generation.DomainHTTP, generation.ResourceKey{Kind: "routes", ID: "r1"})
 	ticket := generation.ApplyTicket{
@@ -773,39 +695,6 @@ func TestOpenCleanupFailureQuarantinesCandidateAndRecoveryIDs(t *testing.T) {
 		ErrAttemptAlreadyRegistered,
 	) {
 		t.Fatalf("candidate retry error = %v, want ErrAttemptAlreadyRegistered", err)
-	}
-
-	published := map[generation.Domain]generation.PublishedGeneration{
-		generation.DomainHTTP: generation.PublishedGeneration(set.Domains[generation.DomainHTTP]),
-	}
-	revisions := generation.RevisionSet{Desired: 9, HTTP: 9}
-	recoveryFactory := &testResolverFactory{
-		openErr: cleanupErr,
-		openResolver: &testAttemptResolver{close: func(context.Context) error {
-			return cleanupErr
-		}},
-	}
-	recoveryMaterializer := NewMaterializer(service, recoveryFactory)
-	if _, err := recoveryMaterializer.RegisterRecovery(
-		context.Background(),
-		revisions,
-		published,
-	); !errors.Is(
-		err,
-		ErrCredentialUnavailable,
-	) {
-		t.Fatalf("recovery open error = %v, want ErrCredentialUnavailable", err)
-	}
-	recoveryFactory.openErr = nil
-	if _, err := recoveryMaterializer.RegisterRecovery(
-		context.Background(),
-		revisions,
-		published,
-	); !errors.Is(
-		err,
-		ErrAttemptAlreadyRegistered,
-	) {
-		t.Fatalf("recovery retry error = %v, want ErrAttemptAlreadyRegistered", err)
 	}
 }
 
@@ -1108,42 +997,6 @@ func TestCloseFailureQuarantinesAndRedactsError(t *testing.T) {
 		ErrAttemptAlreadyRegistered,
 	) {
 		t.Fatalf("quarantined duplicate error = %v, want ErrAttemptAlreadyRegistered", err)
-	}
-}
-
-func TestRecoveryValidationRejectsInvalidRevisionAndEmptyMap(t *testing.T) {
-	service, _ := testService(t, false)
-	materializer := NewMaterializer(service, &testResolverFactory{})
-	if _, err := materializer.RegisterRecovery(
-		context.Background(),
-		generation.RevisionSet{},
-		nil,
-	); !errors.Is(
-		err,
-		ErrInvalidCapability,
-	) {
-		t.Fatalf("empty recovery error = %v", err)
-	}
-	_, set := testPublication(t, 9, generation.DomainHTTP, generation.ResourceKey{Kind: "routes", ID: "r1"})
-	published := map[generation.Domain]generation.PublishedGeneration{
-		generation.DomainHTTP: generation.PublishedGeneration(set.Domains[generation.DomainHTTP]),
-	}
-	if _, err := materializer.RegisterRecovery(
-		context.Background(),
-		generation.RevisionSet{Desired: 9, HTTP: 8},
-		published,
-	); !errors.Is(
-		err,
-		ErrInvalidCapability,
-	) {
-		t.Fatalf("revision mismatch error = %v", err)
-	}
-	if _, err := materializer.RegisterRecovery(
-		context.Background(),
-		generation.RevisionSet{Desired: 9, HTTP: 9, Stream: 8},
-		published,
-	); !errors.Is(err, ErrInvalidCapability) {
-		t.Fatalf("missing committed stream error = %v, want ErrInvalidCapability", err)
 	}
 }
 

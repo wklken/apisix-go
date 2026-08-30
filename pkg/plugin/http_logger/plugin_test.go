@@ -117,13 +117,6 @@ func (*httpLoggerScopedSecretBroker) AuthorizeCandidate(
 	return nil
 }
 
-func (*httpLoggerScopedSecretBroker) AuthorizeRecovery(
-	context.Context, secret.AttemptID, generation.RevisionSet,
-	map[generation.Domain]generation.PublishedGeneration,
-) error {
-	return errors.New("recovery is not used by this HTTP logger fixture")
-}
-
 func (broker *httpLoggerScopedSecretBroker) ResolveScoped(
 	ctx context.Context, scope secret.Scope, raw string,
 ) (string, error) {

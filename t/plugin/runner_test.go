@@ -617,7 +617,7 @@ func TestIsolatedRuntimeOverridesOwnsAllMutablePaths(t *testing.T) {
 	}
 	paths := overrides["apisix_go"].(map[string]any)["runtime_paths"].(map[string]any)
 	for name, suffix := range map[string]string{
-		"data_dir": "data", "runtime_dir": "run", "log_dir": "log", "temp_dir": "tmp",
+		"runtime_dir": "run", "log_dir": "log", "temp_dir": "tmp",
 	} {
 		want := filepath.Join(workDir, suffix)
 		if got := paths[name]; got != want {
@@ -3179,7 +3179,6 @@ func isolatedRuntimeOverrides(overrides map[string]any, workDir string) (map[str
 		return nil, fmt.Errorf("clone isolated runtime config: %w", err)
 	}
 	paths := ensureMap(ensureMap(isolated, "apisix_go"), "runtime_paths")
-	paths["data_dir"] = filepath.Join(workDir, "data")
 	paths["runtime_dir"] = filepath.Join(workDir, "run")
 	paths["log_dir"] = filepath.Join(workDir, "log")
 	paths["temp_dir"] = filepath.Join(workDir, "tmp")

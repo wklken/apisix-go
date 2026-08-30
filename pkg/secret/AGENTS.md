@@ -9,8 +9,7 @@ This file inherits the repository root `AGENTS.md` and applies to `pkg/secret`.
 - Resolver access is limited to defensive bytes in the exact publication
   closure. Do not add Store/global config lookup.
 - Catalog digest mismatch fails compiler/factory construction closed.
-- Candidate and recovery attempts have distinct identities even at the same
-  desired revision. Reject cross-scope or undeclared access before backend use.
+- Reject cross-scope or undeclared access before backend use.
 
 ## Plaintext and lifecycle
 

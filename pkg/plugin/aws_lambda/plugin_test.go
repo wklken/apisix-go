@@ -865,13 +865,6 @@ func (*awsLambdaScopedSecretBroker) AuthorizeCandidate(
 	return nil
 }
 
-func (*awsLambdaScopedSecretBroker) AuthorizeRecovery(
-	context.Context, secret.AttemptID, generation.RevisionSet,
-	map[generation.Domain]generation.PublishedGeneration,
-) error {
-	return nil
-}
-
 func (broker *awsLambdaScopedSecretBroker) ResolveScoped(
 	_ context.Context, scope secret.Scope, raw string,
 ) (string, error) {

@@ -181,13 +181,6 @@ func (*csrfScopedSecretBroker) AuthorizeCandidate(
 	return nil
 }
 
-func (*csrfScopedSecretBroker) AuthorizeRecovery(
-	context.Context, secret.AttemptID, generation.RevisionSet,
-	map[generation.Domain]generation.PublishedGeneration,
-) error {
-	return errors.New("recovery is not used by this leaf fixture")
-}
-
 func (broker *csrfScopedSecretBroker) ResolveScoped(
 	ctx context.Context, scope secret.Scope, raw string,
 ) (string, error) {

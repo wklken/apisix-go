@@ -47,8 +47,9 @@ type PreparedConsumerRecord struct {
 	Bindings []plugin.Binding
 }
 
-// PreparedHandlerInput contains only owned configuration values and runtime
-// objects whose lifecycle remains with the preparing generation.
+// PreparedHandlerInput contains only owned configuration values, an already
+// resolved node identity, and runtime objects whose lifecycle remains with the
+// preparing generation.
 type PreparedHandlerInput struct {
 	Route          resource.Route
 	Service        resource.Service
@@ -57,12 +58,16 @@ type PreparedHandlerInput struct {
 	Upstream       UpstreamPlan
 	Runtime        PreparedUpstreamRuntime
 	StaticConfig   appconfig.Config
+	NodeID         string
 	SSLs           map[string]resource.SSL
 }
 
 // BuildPreparedNotFoundHandler assembles the detached generation's 404 path
 // from already materialized system/global bindings.
-func BuildPreparedNotFoundHandler(bindings []plugin.Binding) (http.Handler, error) {
+func BuildPreparedNotFoundHandler(
+	nodeID string,
+	bindings []plugin.Binding,
+) (http.Handler, error) {
 	for _, binding := range bindings {
 		if binding.Scope != plugin.ScopeSystem && binding.Scope != plugin.ScopeGlobal {
 			return nil, fmt.Errorf(
@@ -87,7 +92,12 @@ func BuildPreparedNotFoundHandler(bindings []plugin.Binding) (http.Handler, erro
 		apisixctx.SetRequestResponseSource(request, apisixctx.ResponseSourceEarlyStop)
 		http.NotFoundHandler().ServeHTTP(writer, request)
 	})
-	return ensureRouteLifecycle(responsePlan.Install(pipeline, terminal)), nil
+	return ensureRouteLifecycle(initializeAPISIXVars(
+		responsePlan.Install(pipeline, terminal),
+		nodeID,
+		resource.Route{},
+		resource.Service{},
+	)), nil
 }
 
 // BuildPreparedHandler assembles one detached route handler without Store
@@ -157,13 +167,19 @@ func BuildPreparedHandler(input PreparedHandlerInput) (http.Handler, error) {
 	if err != nil {
 		return nil, fmt.Errorf("build prepared handler route %q upgrade path: %w", routeResource.ID, err)
 	}
-	return ensureRouteLifecycle(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+	handler := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if isWebsocketUpgradeRequest(request) {
 			upgrade.ServeHTTP(writer, request)
 			return
 		}
 		ordinary.ServeHTTP(writer, request)
-	})), nil
+	})
+	return ensureRouteLifecycle(initializeAPISIXVars(
+		handler,
+		input.NodeID,
+		routeResource,
+		service,
+	)), nil
 }
 
 func freezePreparedConsumerResolver(
@@ -425,7 +441,6 @@ func newRequestPipelineWithLog(
 	bindings []plugin.Binding,
 	resolve plugin.ConsumerBindingResolver,
 ) (plugin.RequestPipeline, error) {
-	bindings = bindMatchedRouteRequestContext(bindings)
 	logExecutor, err := plugin.NewLogExecutorFromBindings(bindings)
 	if err != nil {
 		return plugin.RequestPipeline{}, err

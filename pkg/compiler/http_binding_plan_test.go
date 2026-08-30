@@ -96,11 +96,11 @@ func TestEffectiveHTTPBindingSpecSupportsSystemAndPreparedConsumer(t *testing.T)
 		consumers,
 	)
 	system, err := prepared.effectiveHTTPBindingSpec(
-		generation.ResourceKey{Kind: "system", ID: "request-context"},
+		generation.ResourceKey{Kind: "system", ID: "example-plugin"},
 		routepkg.PluginPlan{
-			Factory: "request-context", Config: map[string]any{}, Scope: plugin.ScopeSystem,
-			Provenance: plugin.ResourceProvenance{Kind: plugin.ResourceSystem, ID: "request-context"},
-			Source:     generation.ResourceKey{Kind: "system", ID: "request-context"},
+			Factory: "example-plugin", Config: map[string]any{}, Scope: plugin.ScopeSystem,
+			Provenance: plugin.ResourceProvenance{Kind: plugin.ResourceSystem, ID: "example-plugin"},
+			Source:     generation.ResourceKey{Kind: "system", ID: "example-plugin"},
 		},
 		effectiveBindingResourceContext{},
 		effectiveBindingRuntimeContext{},

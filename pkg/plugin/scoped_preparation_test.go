@@ -83,7 +83,7 @@ func TestSupportsScopedSecretMaterializationOnlyConstructsDualInterfaceFactory(t
 }
 
 func TestNewFactoryInstancePreservesExactRegistryIdentity(t *testing.T) {
-	for _, factory := range []string{"otel", "request-context"} {
+	for _, factory := range []string{"otel", "opentelemetry"} {
 		instance, err := NewFactoryInstance(factory, base.Dependencies{})
 		if err != nil || instance.Factory() != factory || instance.Plugin() == nil {
 			t.Fatalf("NewFactoryInstance(%q) = %#v/%v", factory, instance, err)

@@ -12,8 +12,7 @@ import (
 // pluginNameAliases maps registry keys to the plugin names they register,
 // which differ for historical compatibility.
 var pluginNameAliases = map[string]string{
-	"otel":            "opentelemetry",
-	"request-context": "request_context",
+	"otel": "opentelemetry",
 }
 
 func TestNewConstructsEveryRegisteredPlugin(t *testing.T) {
@@ -38,10 +37,16 @@ func TestNewConstructsEveryRegisteredPlugin(t *testing.T) {
 }
 
 func TestNewRejectsUnknownNames(t *testing.T) {
-	for _, name := range []string{"", "unknown-plugin", "request-context-misspelled"} {
+	for _, name := range []string{"", "unknown-plugin", "unknown-plugin-misspelled"} {
 		if got := New(name, base.Dependencies{}); got != nil {
 			t.Fatalf("New(%q) = %v, want nil", name, got)
 		}
+	}
+}
+
+func TestNewRejectsRequestContext(t *testing.T) {
+	if got := New("request-context", base.Dependencies{}); got != nil {
+		t.Fatalf("New(request-context) = %T, want nil", got)
 	}
 }
 
@@ -95,9 +100,8 @@ func TestNewReturnsRegisteredPlugin(t *testing.T) {
 
 func TestNewPreservesHistoricalFactoryAliases(t *testing.T) {
 	for factory, wantName := range map[string]string{
-		"otel":            "opentelemetry",
-		"opentelemetry":   "opentelemetry",
-		"request-context": "request_context",
+		"otel":          "opentelemetry",
+		"opentelemetry": "opentelemetry",
 	} {
 		plugin := New(factory, base.Dependencies{})
 		if plugin == nil {

@@ -101,10 +101,10 @@ func TestScopedRewriteRunsSystemThenGlobalThenRoute(t *testing.T) {
 		},
 		[]plugin.Binding{
 			bindScopedTestPlugin(
-				"request-context",
+				"example-plugin",
 				&scopedRewriteTestPlugin{name: "system", priority: 1, order: &order},
 				plugin.ScopeSystem,
-				plugin.ResourceProvenance{Kind: plugin.ResourceSystem, ID: "request-context"},
+				plugin.ResourceProvenance{Kind: plugin.ResourceSystem, ID: "example-plugin"},
 			),
 		},
 	)
@@ -401,10 +401,10 @@ func TestScopedRewriteGlobalNotFoundRunsSystemAndGlobalOnly(t *testing.T) {
 		},
 		[]plugin.Binding{
 			bindScopedTestPlugin(
-				"request-context",
+				"example-plugin",
 				&scopedRewriteTestPlugin{name: "system", priority: 1, order: &order},
 				plugin.ScopeSystem,
-				plugin.ResourceProvenance{Kind: plugin.ResourceSystem, ID: "request-context"},
+				plugin.ResourceProvenance{Kind: plugin.ResourceSystem, ID: "example-plugin"},
 			),
 		},
 	).Then(http.NotFoundHandler())
@@ -418,37 +418,21 @@ func TestScopedRewriteGlobalNotFoundRunsSystemAndGlobalOnly(t *testing.T) {
 	}
 }
 
-func TestGlobalNotFoundInjectsOnlyRequestContextSystemPlugin(t *testing.T) {
+func TestGlobalNotFoundInitializesCoreAPISIXVarsWithoutSystemPlugin(t *testing.T) {
 	effective := testEffectiveConfig()
+	effective.Config.Apisix.ID = "node-1"
 	effective.Config.Plugins = nil
 	effective.Config.NginxConfig.HTTP.ClientMaxBodySize = 1
 	plan, err := PlanHTTPPlugins(context.Background(), PlanningInput{})
 	if err != nil {
 		t.Fatalf("PlanHTTPPlugins() error = %v", err)
 	}
-	if len(plan.System) != 1 || plan.System[0].Factory != "request-context" {
-		t.Fatalf("system plans = %#v, want request-context only", plan.System)
+	if len(plan.System) != 0 {
+		t.Fatalf("system plans = %#v, want none", plan.System)
 	}
-	system := testPluginBindingForSource(
-		t,
-		plan.System[0].Factory,
-		plan.System[0].Config,
-		plan.System[0].Scope,
-		plan.System[0].Provenance,
-		resource.Route{},
-		resource.Service{},
-		"127.0.0.1:9080",
-	)
-	system, err = plan.System[0].Apply(system)
+	handler, err := BuildPreparedNotFoundHandler("node-1", nil)
 	if err != nil {
-		t.Fatalf("PluginPlan.Apply() error = %v", err)
-	}
-	handler, err := BuildPreparedNotFoundHandler([]plugin.Binding{system})
-	if err != nil {
-		t.Fatalf(
-			"BuildPreparedNotFoundHandler() error = %v, want request-context-only system setup",
-			err,
-		)
+		t.Fatalf("BuildPreparedNotFoundHandler() error = %v", err)
 	}
 	request, lifecycle := apisixctx.EnsureRequestLifecycle(
 		httptest.NewRequest(http.MethodGet, "/missing", nil),
@@ -461,12 +445,12 @@ func TestGlobalNotFoundInjectsOnlyRequestContextSystemPlugin(t *testing.T) {
 	}
 	final := lifecycle.FinalRequest()
 	if final == nil {
-		t.Fatal("final request = nil, want request-context final request")
+		t.Fatal("final request = nil, want lifecycle final request")
 	}
 	if vars := apisixctx.GetApisixVars(final); vars == nil {
-		t.Fatal("global not-found APISIX vars = nil, want request-context system vars")
-	} else if _, ok := vars["$route_id"]; !ok {
-		t.Fatalf("global not-found APISIX vars = %#v, want $route_id from request-context", vars)
+		t.Fatal("global not-found APISIX vars = nil, want core vars")
+	} else if vars["$node_id"] != "node-1" || vars["$route_id"] != "" {
+		t.Fatalf("global not-found APISIX vars = %#v, want node and empty route IDs", vars)
 	}
 }
 

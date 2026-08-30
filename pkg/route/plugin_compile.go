@@ -115,7 +115,7 @@ func PlanHTTPPlugins(ctx context.Context, input PlanningInput) (*HTTPPluginPlan,
 	enabled := plugin.NewEnabledSet(enabledNames)
 	result := &HTTPPluginPlan{Consumers: make(map[string][]PluginPlan)}
 	systemSources := materializedPluginSources(
-		buildSystemPluginConfigs(resource.Route{}, resource.Service{}, enabled),
+		buildSystemPluginConfigs(enabled),
 		plugin.ResourceProvenance{Kind: plugin.ResourceSystem},
 	)
 	for index := range systemSources {
@@ -123,7 +123,7 @@ func PlanHTTPPlugins(ctx context.Context, input PlanningInput) (*HTTPPluginPlan,
 		systemSources[index].provenance.ID = systemSources[index].name
 	}
 	var err error
-	result.System, err = planPluginSources(systemSources, enabled, true)
+	result.System, err = planPluginSources(systemSources, enabled)
 	if err != nil {
 		return nil, fmt.Errorf("plan system plugins: %w", err)
 	}
@@ -139,7 +139,7 @@ func PlanHTTPPlugins(ctx context.Context, input PlanningInput) (*HTTPPluginPlan,
 		for index := range sources {
 			sources[index].scope = plugin.ScopeGlobal
 		}
-		plans, err := planPluginSources(sources, enabled, false)
+		plans, err := planPluginSources(sources, enabled)
 		if err != nil {
 			return nil, fmt.Errorf("plan global rule %q: %w", rule.ID, err)
 		}
@@ -165,7 +165,7 @@ func PlanHTTPPlugins(ctx context.Context, input PlanningInput) (*HTTPPluginPlan,
 			}
 			group = clonePlanningConsumerGroup(group)
 		}
-		plans, err := planPluginSources(consumerPluginSources(group, consumer), enabled, false)
+		plans, err := planPluginSources(consumerPluginSources(group, consumer), enabled)
 		if err != nil {
 			return nil, fmt.Errorf("plan consumer %q: %w", id, err)
 		}
@@ -232,23 +232,23 @@ func planRoutePlugins(
 		pluginConfigs, routeResource.PluginConfigID,
 		service.Plugins, routeResource.ServiceID,
 	)
-	localPlans, err := planPluginSources(local, enabled, false)
+	localPlans, err := planPluginSources(local, enabled)
 	if err != nil {
 		return PlannedRoute{}, err
 	}
-	servicePlans, err := planPluginSources(serviceSources, enabled, false)
+	servicePlans, err := planPluginSources(serviceSources, enabled)
 	if err != nil {
 		return PlannedRoute{}, err
 	}
 	systemSources := materializedPluginSources(
-		buildSystemPluginConfigs(routeResource, service, enabled),
+		buildSystemPluginConfigs(enabled),
 		plugin.ResourceProvenance{Kind: plugin.ResourceSystem},
 	)
 	for index := range systemSources {
 		systemSources[index].scope = plugin.ScopeSystem
 		systemSources[index].provenance.ID = systemSources[index].name
 	}
-	systemPlans, err := planPluginSources(systemSources, enabled, true)
+	systemPlans, err := planPluginSources(systemSources, enabled)
 	if err != nil {
 		return PlannedRoute{}, err
 	}
@@ -290,12 +290,10 @@ func validatePlannedRouteURIs(routeResource resource.Route) error {
 func planPluginSources(
 	sources []materializedPluginSource,
 	enabled plugin.EnabledSet,
-	allowRequestContext bool,
 ) ([]PluginPlan, error) {
 	plans := make([]PluginPlan, 0, len(sources))
 	for _, source := range sources {
-		if !enabled.Contains(source.name) &&
-			(!allowRequestContext || source.name != "request-context") {
+		if !enabled.Contains(source.name) {
 			return nil, fmt.Errorf(
 				"plugin %q from %s %q is disabled",
 				source.name,
@@ -500,14 +498,8 @@ func materializedPluginSources(
 	return sources
 }
 
-func buildSystemPluginConfigs(
-	r resource.Route,
-	service resource.Service,
-	enabled plugin.EnabledSet,
-) map[string]resource.PluginConfig {
-	configs := map[string]resource.PluginConfig{
-		"request-context": buildRequestContextConfig(r, service),
-	}
+func buildSystemPluginConfigs(enabled plugin.EnabledSet) map[string]resource.PluginConfig {
+	configs := make(map[string]resource.PluginConfig)
 	if enabled.Contains("log-rotate") {
 		configs["log-rotate"] = map[string]any{}
 	}
@@ -515,37 +507,6 @@ func buildSystemPluginConfigs(
 		configs["error-log-logger"] = map[string]any{}
 	}
 	return configs
-}
-
-func buildRequestContextConfig(
-	r resource.Route,
-	service resource.Service,
-) map[string]any {
-	return map[string]any{
-		"$route_id":     r.ID,
-		"$route_name":   r.Name,
-		"$matched_uri":  matchedURI(r),
-		"$matched_host": matchedHost(r),
-		"$service_id":   r.ServiceID,
-		"$service_name": service.Name,
-	}
-}
-
-func matchedURI(r resource.Route) string {
-	if r.Uri != "" {
-		return r.Uri
-	}
-	if len(r.Uris) > 0 {
-		return r.Uris[0]
-	}
-	return ""
-}
-
-func matchedHost(r resource.Route) string {
-	if len(r.Hosts) > 0 {
-		return r.Hosts[0]
-	}
-	return ""
 }
 
 type pluginMetadata struct {

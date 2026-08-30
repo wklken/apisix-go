@@ -15,7 +15,7 @@ Key runtime pieces:
 - Static configuration is loaded by the presence-aware `pkg/config` loader from builtins, `conf/config-default.yaml`, an optional `-c/--config` file, APISIX file-template expansion, and APISIX 3.17 reserved environment overrides.
 - `pkg/plugin/registry.go` directly owns implemented plugin factories, aliases, and execution metadata. `pkg/capability/declarations.go` owns encrypted-field declarations.
 - Providers submit desired snapshots to the single-writer `pkg/generation` coordinator, which owns in-memory desired and published state.
-- `pkg/compiler` plans and materializes immutable HTTP/TLS and stream snapshots. `pkg/route` and `pkg/stream` contain detached snapshot compilers; `pkg/server` atomically activates them and owns generation leases.
+- `pkg/compiler` plans and materializes immutable HTTP/TLS and stream snapshots. `pkg/route` and `pkg/stream` contain detached snapshot compilers; the HTTP route core installs APISIX request variables before plugin execution, and `pkg/server` atomically activates snapshots and owns generation leases.
 - HTTP and TLS listeners come from effective configuration; the default HTTP listener is `0.0.0.0:9080`.
 - APISIX plugins live under `pkg/plugin/<plugin_name>` and are instantiated through the Go registry consumed by `pkg/plugin/init.go`.
 - Proxying, load balancing, and transport behavior live under `pkg/proxy`.

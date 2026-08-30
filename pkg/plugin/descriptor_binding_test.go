@@ -96,7 +96,7 @@ func TestDescriptorBindingRejectsScopeOutsideRegistry(t *testing.T) {
 		provenance ResourceProvenance
 	}{
 		{
-			factory: "request-context", scope: ScopeRoute,
+			factory: "batch-requests", scope: ScopeRoute,
 			provenance: ResourceProvenance{Kind: ResourceRoute, ID: "r1"},
 		},
 		{
@@ -126,7 +126,7 @@ func TestDescriptorBindingAcceptsExistingMaterializationScopes(t *testing.T) {
 		provenance ResourceProvenance
 	}{
 		{
-			name: "system", factory: "request-context", scope: ScopeSystem,
+			name: "system", factory: "batch-requests", scope: ScopeSystem,
 			provenance: ResourceProvenance{Kind: ResourceSystem, ID: "system"},
 		},
 		{

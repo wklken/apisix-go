@@ -443,30 +443,30 @@ func (p *metadataLogContractPlugin) LogCapturePolicy() base.LogCapturePolicy {
 	return base.LogCapturePolicy{RequestBodyBytes: 7, ResponseBodyBytes: 9}
 }
 
-func TestMetadataRequestContextOwnsOnlyRequestPhase(t *testing.T) {
+func TestMetadataRequestOnlyPluginOwnsOnlyRequestPhase(t *testing.T) {
 	target := &metadataLogContractPlugin{metadataResponseContractPlugin: metadataResponseContractPlugin{
-		name: "request-context",
+		name: "request-id",
 	}}
 	filter, err := pluginexpr.Compile([]any{[]any{"arg_enabled", "==", "yes"}})
 	if err != nil {
 		t.Fatalf("compile filter: %v", err)
 	}
-	wrapper, err := newTestMetadataPlugin("request-context", target, pluginMetadata{filter: filter})
+	wrapper, err := newTestMetadataPlugin("request-id", target, pluginMetadata{filter: filter})
 	if err != nil {
 		t.Fatalf("newTestMetadataPlugin() error = %v", err)
 	}
 	requestPhase, ok := wrapper.(base.RequestPhasePlugin)
 	if !ok {
-		t.Fatalf("metadata request-context lost request phase: %T", wrapper)
+		t.Fatalf("metadata request-only plugin lost request phase: %T", wrapper)
 	}
 	if _, ok := wrapper.(base.LogPhasePlugin); ok {
-		t.Fatalf("metadata request-context gained undeclared log phase: %T", wrapper)
+		t.Fatalf("metadata request-only plugin gained undeclared log phase: %T", wrapper)
 	}
 	if _, ok := wrapper.(base.SnapshotFinalizerPlugin); ok {
-		t.Fatalf("metadata request-context retained removed snapshot finalizer: %T", wrapper)
+		t.Fatalf("metadata request-only plugin gained snapshot finalizer: %T", wrapper)
 	}
 	if _, ok := wrapper.(base.LogCapturePolicyPlugin); ok {
-		t.Fatalf("metadata request-context retained log capture policy: %T", wrapper)
+		t.Fatalf("metadata request-only plugin gained log capture policy: %T", wrapper)
 	}
 
 	request := httptest.NewRequest(http.MethodGet, "/?enabled=yes", nil)

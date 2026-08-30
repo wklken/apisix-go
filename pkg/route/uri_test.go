@@ -6,8 +6,10 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/resource"
 )
 
@@ -683,14 +685,25 @@ func TestRouteRegistrarMatchesHostConstrainedParameters(t *testing.T) {
 	}
 }
 
-func TestRequestContextPreservesOriginalEmbeddedWildcardURI(t *testing.T) {
+func TestAPISIXRouteVarsPreserveOriginalEmbeddedWildcardURI(t *testing.T) {
 	t.Parallel()
 
-	config := buildRequestContextConfig(
+	request, _ := apisixctx.EnsureRequestLifecycle(
+		httptest.NewRequest(http.MethodGet, "/articles/one/comments", nil),
+		time.Now(),
+	)
+	t.Cleanup(func() { apisixctx.RecycleVars(request) })
+	var got any
+	handler := initializeAPISIXVars(
+		http.HandlerFunc(func(_ http.ResponseWriter, request *http.Request) {
+			got = apisixctx.GetApisixVar(request, "$matched_uri")
+		}),
+		"",
 		resource.Route{ID: "articles", Uri: "/articles/*/comments"},
 		resource.Service{},
 	)
-	if got := config["$matched_uri"]; got != "/articles/*/comments" {
+	handler.ServeHTTP(httptest.NewRecorder(), request)
+	if got != "/articles/*/comments" {
 		t.Fatalf("$matched_uri = %q, want original APISIX pattern", got)
 	}
 }

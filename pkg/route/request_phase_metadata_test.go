@@ -265,7 +265,7 @@ func TestRequestPhaseMetadataContract(t *testing.T) {
 }
 
 func TestGlobalNotFoundHandlerRecordsEarlyStopSource(t *testing.T) {
-	handler, err := BuildPreparedNotFoundHandler(nil)
+	handler, err := BuildPreparedNotFoundHandler("", nil)
 	if err != nil {
 		t.Fatalf("BuildPreparedNotFoundHandler() error = %v", err)
 	}

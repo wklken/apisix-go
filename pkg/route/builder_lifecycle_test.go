@@ -131,7 +131,7 @@ func TestBuildGlobalNotFoundHandlerRunsGlobalPlugins(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PluginPlan.Apply() error = %v", err)
 	}
-	handler, err := BuildPreparedNotFoundHandler([]pluginpkg.Binding{binding})
+	handler, err := BuildPreparedNotFoundHandler("", []pluginpkg.Binding{binding})
 	if err != nil {
 		t.Fatalf("BuildPreparedNotFoundHandler() error = %v", err)
 	}
@@ -144,8 +144,6 @@ func TestBuildGlobalNotFoundHandlerRunsGlobalPlugins(t *testing.T) {
 
 func TestBuildSystemPluginConfigsDoesNotGenerateGlobalClientControl(t *testing.T) {
 	plugins := buildSystemPluginConfigs(
-		resource.Route{ID: "global-limit"},
-		resource.Service{},
 		pluginpkg.NewEnabledSet(nil),
 	)
 	if _, ok := plugins["client-control"]; ok {
@@ -577,7 +575,6 @@ func TestInitPluginsStrictAppliesMetaDisable(t *testing.T) {
 			pluginpkg.ResourceProvenance{Kind: pluginpkg.ResourceRoute, ID: "meta-disabled"},
 		),
 		pluginpkg.NewEnabledSet([]string{"request-id"}),
-		false,
 	)
 	if err != nil {
 		t.Fatalf("planPluginSources() error = %v", err)
@@ -677,7 +674,6 @@ func TestInitPluginsStrictRejectsInvalidMetaFilter(t *testing.T) {
 			pluginpkg.ResourceProvenance{Kind: pluginpkg.ResourceRoute, ID: "meta-invalid-filter"},
 		),
 		pluginpkg.NewEnabledSet([]string{"request-id"}),
-		false,
 	)
 	if err == nil {
 		t.Fatal("planPluginSources() error = nil, want invalid metadata filter rejection")
@@ -845,7 +841,6 @@ func TestInitPluginsStrictRejectsUnknownPlugin(t *testing.T) {
 			pluginpkg.ResourceProvenance{Kind: pluginpkg.ResourceRoute, ID: "unknown-plugin"},
 		),
 		pluginpkg.NewEnabledSet([]string{"request-id"}),
-		false,
 	)
 	if err == nil {
 		t.Fatal("planPluginSources() error = nil, want unknown plugin rejection")

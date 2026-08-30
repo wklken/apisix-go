@@ -1490,10 +1490,10 @@ func TestRequestPhaseLimitConnFinalizesBeforeRequestStateRecycle(t *testing.T) {
 	limiter.observe = func(string) {
 		seenVars = apisixctx.GetRequestVars(request) != nil
 	}
-	if !lifecycle.AddFinalizer("request-context", func() error {
+	if !lifecycle.AddFinalizer("pre-recycle-observer", func() error {
 		return nil
 	}) {
-		t.Fatal("failed to register request-context marker")
+		t.Fatal("failed to register pre-recycle observer")
 	}
 	base.AdaptRequestPhase(p, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)

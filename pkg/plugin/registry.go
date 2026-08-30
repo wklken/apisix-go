@@ -93,7 +93,6 @@ import (
 	real_ip "github.com/wklken/apisix-go/pkg/plugin/real_ip"
 	redirect "github.com/wklken/apisix-go/pkg/plugin/redirect"
 	referer_restriction "github.com/wklken/apisix-go/pkg/plugin/referer_restriction"
-	request_context "github.com/wklken/apisix-go/pkg/plugin/request_context"
 	request_id "github.com/wklken/apisix-go/pkg/plugin/request_id"
 	request_validation "github.com/wklken/apisix-go/pkg/plugin/request_validation"
 	response_rewrite "github.com/wklken/apisix-go/pkg/plugin/response_rewrite"
@@ -1148,14 +1147,6 @@ var pluginRegistry = map[string]registration{
 		create:              func() Plugin { return &example_plugin.Plugin{} },
 		phases:              phaseRewrite,
 		scopes:              scopeSystem | scopeGlobal | scopeRoute | scopeConsumer,
-		instanceScope:       InstanceEffectiveConfig,
-		conditionalTerminal: false,
-		domain:              DomainHTTP,
-	},
-	"request-context": {
-		create:              func() Plugin { return &request_context.Plugin{} },
-		phases:              phaseRewrite,
-		scopes:              scopeSystem,
 		instanceScope:       InstanceEffectiveConfig,
 		conditionalTerminal: false,
 		domain:              DomainHTTP,

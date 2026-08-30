@@ -292,7 +292,7 @@ func TestCloneEffectiveBindingRuntimeContextAllowsGenerationWideHTTPContext(t *t
 		effectiveBindingResourceContext{kind: effectiveBindingContextNone},
 		effectiveBindingRuntimeContext{
 			configured: true, publicAPIRegistry: registry,
-			enabledFactories: []string{"request-context"},
+			enabledFactories: []string{"example-plugin"},
 		},
 	)
 	if err != nil {

@@ -13,10 +13,8 @@ import (
 	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
-	appconfig "github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	corsplugin "github.com/wklken/apisix-go/pkg/plugin/cors"
-	requestcontext "github.com/wklken/apisix-go/pkg/plugin/request_context"
 )
 
 type executorTraceKey struct{}
@@ -114,7 +112,7 @@ func TestRequestPipelineRunsPlan14V2Order(t *testing.T) {
 	}
 	bindings := []Binding{
 		pipelineBinding(
-			"request-context",
+			"example-plugin",
 			newExecutorRequestPlugin("system", 1, mark("system")),
 			ScopeSystem,
 			1,
@@ -1052,40 +1050,6 @@ func newExecutorCORSPlugin(t *testing.T, config corsplugin.Config) *corsplugin.P
 	return plugin
 }
 
-type executorFilteredCORSPlugin struct {
-	*corsplugin.Plugin
-	filter func(*http.Request) bool
-}
-
-func (p *executorFilteredCORSPlugin) Handler(next http.Handler) http.Handler {
-	handler := p.Plugin.Handler(next)
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if p.filter != nil && !p.filter(r) {
-			next.ServeHTTP(w, r)
-			return
-		}
-		handler.ServeHTTP(w, r)
-	})
-}
-
-func newExecutorRequestContextPlugin(t *testing.T, config requestcontext.Config) *requestcontext.Plugin {
-	t.Helper()
-	plugin := &requestcontext.Plugin{}
-	plugin.SetDependencies(base.Dependencies{Config: &appconfig.EffectiveConfig{}})
-	if err := plugin.Init(); err != nil {
-		t.Fatalf("request-context Init() error = %v", err)
-	}
-	configured, ok := plugin.Config().(*requestcontext.Config)
-	if !ok {
-		t.Fatalf("request-context Config() type = %T, want *request_context.Config", plugin.Config())
-	}
-	*configured = config
-	if err := plugin.PostInit(); err != nil {
-		t.Fatalf("request-context PostInit() error = %v", err)
-	}
-	return plugin
-}
-
 func countExecutorVaryToken(header http.Header, want string) int {
 	count := 0
 	for _, value := range header.Values("Vary") {
@@ -1374,64 +1338,5 @@ func TestRequestPipelineCORSDoesNotApplyConsumerBindingBeforeAuthentication(t *t
 	}
 	if resolverCalls != 0 {
 		t.Fatalf("resolver calls = %d, want 0 before authentication succeeds", resolverCalls)
-	}
-}
-
-func TestRequestPipelineCORSFilterSeesRequestContextBeforeAuthentication(t *testing.T) {
-	for _, test := range []struct {
-		name       string
-		routeID    string
-		wantOrigin string
-	}{
-		{name: "matching route id", routeID: "route-match", wantOrigin: "https://client.example"},
-		{name: "non-matching route id", routeID: "route-other"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			cors := &executorFilteredCORSPlugin{
-				Plugin: newExecutorCORSPlugin(t, corsplugin.Config{
-					AllowOrigins: "https://client.example",
-				}),
-				filter: func(r *http.Request) bool {
-					return apisixctx.GetApisixVar(r, "$route_id") == "route-match"
-				},
-			}
-			requestContext := newExecutorRequestContextPlugin(t, requestcontext.Config{RouteID: test.routeID})
-			auth := newExecutorRequestPlugin(
-				"auth",
-				1,
-				func(w http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
-					w.WriteHeader(http.StatusUnauthorized)
-					_, _ = w.Write([]byte("unauthorized"))
-					return base.StopRequest(r)
-				},
-			)
-			pipeline := NewRequestPipeline([]Binding{
-				pipelineBinding("request-context", requestContext, ScopeSystem, requestContext.GetPriority()),
-				pipelineBinding("cors", cors, ScopeRoute, 4000),
-				pipelineBinding("jwt-auth", auth, ScopeRoute, 1),
-			}, nil)
-			request := httptest.NewRequest(http.MethodGet, "http://example.com/resource", nil)
-			request.Header.Set("Origin", "https://client.example")
-			response := httptest.NewRecorder()
-			pipeline.Then(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-				t.Fatal("terminal called after authentication rejection")
-			})).ServeHTTP(response, request)
-
-			if response.Code != http.StatusUnauthorized || response.Body.String() != "unauthorized" {
-				t.Fatalf(
-					"authentication response = %d/%q, want 401/unauthorized",
-					response.Code,
-					response.Body.String(),
-				)
-			}
-			if response.Header().Get("Access-Control-Allow-Origin") != test.wantOrigin {
-				t.Fatalf(
-					"CORS origin = %q, want %q for route_id=%q",
-					response.Header().Get("Access-Control-Allow-Origin"),
-					test.wantOrigin,
-					test.routeID,
-				)
-			}
-		})
 	}
 }

@@ -51,28 +51,19 @@ func TestCompileHTTPPublishesActualMatchedHostAndURIForEachRequest(t *testing.T)
 		Hosts: []string{"foo.com", "bar.com"},
 		Uris:  []string{"/foo*", "/bar*"},
 	}
-	requestContext := testPluginBindingForSource(
-		t,
-		"request-context",
-		buildRequestContextConfig(routeResource, resource.Service{}),
-		plugin.ScopeSystem,
-		plugin.ResourceProvenance{Kind: plugin.ResourceSystem, ID: "request-context"},
+	handler := ensureRouteLifecycle(initializeAPISIXVars(
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = fmt.Fprintf(
+				w,
+				"%s|%s",
+				apisixctx.GetApisixVar(r, "$matched_host"),
+				apisixctx.GetApisixVar(r, "$matched_uri"),
+			)
+		}),
+		"",
 		routeResource,
 		resource.Service{},
-		"127.0.0.1:9080",
-	)
-	pipeline, err := newRequestPipelineWithLog([]plugin.Binding{requestContext}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	handler := ensureRouteLifecycle(pipeline.Then(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = fmt.Fprintf(
-			w,
-			"%s|%s",
-			apisixctx.GetApisixVar(r, "$matched_host"),
-			apisixctx.GetApisixVar(r, "$matched_uri"),
-		)
-	})))
+	))
 	snapshot, err := CompileHTTP(context.Background(), CompileInput{
 		Revision: 1,
 		Routes: []PreparedRoute{{
@@ -147,9 +138,9 @@ func TestCompileHTTPPublishesActualMatchedRouteToDetachedLogSnapshot(t *testing.
 	}
 	capture := newMatchedRouteLogCapture()
 	routeBindings := matchedRouteLogBindings(t, staticRoute, capture, plugin.ScopeRoute)
-	routeHandler := matchedRouteLogHandler(t, routeBindings)
+	routeHandler := matchedRouteLogHandler(t, routeBindings, staticRoute)
 	notFoundBindings := matchedRouteLogBindings(t, resource.Route{}, capture, plugin.ScopeGlobal)
-	notFoundHandler, err := BuildPreparedNotFoundHandler(notFoundBindings)
+	notFoundHandler, err := BuildPreparedNotFoundHandler("", notFoundBindings)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -245,16 +236,6 @@ func matchedRouteLogBindings(
 ) []plugin.Binding {
 	t.Helper()
 	bindings := []plugin.Binding{
-		testPluginBindingForSource(
-			t,
-			"request-context",
-			buildRequestContextConfig(routeResource, resource.Service{}),
-			plugin.ScopeSystem,
-			plugin.ResourceProvenance{Kind: plugin.ResourceSystem, ID: "request-context"},
-			routeResource,
-			resource.Service{},
-			"127.0.0.1:9080",
-		),
 		bindPluginForTest(
 			"http-logger",
 			capture,
@@ -262,25 +243,32 @@ func matchedRouteLogBindings(
 			plugin.ResourceProvenance{Kind: plugin.ResourceRoute, ID: routeResource.ID},
 		),
 	}
-	originalPlugins := []plugin.Plugin{bindings[0].Plugin, bindings[1].Plugin}
+	originalPlugin := bindings[0].Plugin
 	if _, err := newRequestPipelineWithLog(bindings, nil); err != nil {
 		t.Fatal(err)
 	}
-	for index := range bindings {
-		if bindings[index].Plugin != originalPlugins[index] {
-			t.Fatalf("binding %d plugin was mutated while adapting request context", index)
-		}
+	if bindings[0].Plugin != originalPlugin {
+		t.Fatal("log binding was mutated while building the pipeline")
 	}
 	return bindings
 }
 
-func matchedRouteLogHandler(t *testing.T, bindings []plugin.Binding) http.Handler {
+func matchedRouteLogHandler(
+	t *testing.T,
+	bindings []plugin.Binding,
+	routeResource resource.Route,
+) http.Handler {
 	t.Helper()
 	pipeline, err := newRequestPipelineWithLog(bindings, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return ensureRouteLifecycle(pipeline.Then(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	})))
+	return ensureRouteLifecycle(initializeAPISIXVars(
+		pipeline.Then(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		})),
+		"",
+		routeResource,
+		resource.Service{},
+	))
 }

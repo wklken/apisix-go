@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	apisixid "github.com/wklken/apisix-go/pkg/apisix/id"
 	"github.com/wklken/apisix-go/pkg/generation"
 	routepkg "github.com/wklken/apisix-go/pkg/route"
 	"github.com/wklken/apisix-go/pkg/tlsconfig"
@@ -25,11 +26,15 @@ func (prepared *PreparedGeneration) compileAndAttachHTTP(ctx context.Context) er
 	if err != nil {
 		return err
 	}
-	preparedRoutes, err := prepared.prepareHTTPRoutes(ctx, plan)
+	nodeID := apisixid.Get(prepared.effective.Config.Apisix.ID)
+	preparedRoutes, err := prepared.prepareHTTPRoutes(ctx, plan, nodeID)
 	if err != nil {
 		return err
 	}
-	notFound, err := routepkg.BuildPreparedNotFoundHandler(preparedRoutes.notFound)
+	notFound, err := routepkg.BuildPreparedNotFoundHandler(
+		nodeID,
+		preparedRoutes.notFound,
+	)
 	if err != nil {
 		return err
 	}

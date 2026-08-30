@@ -3,9 +3,7 @@ id: ADR-0010
 title: Bound ai-proxy-multi DNS and active-health work
 status: proposed
 target: apisix-3.17
-divergence_ids: [DIV-010-bounded-ai-proxy-multi-dns]
 owner: wklken
-owner_approval_ref: ""
 date: 2026-08-29
 ---
 

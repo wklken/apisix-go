@@ -3,9 +3,7 @@ id: ADR-0006
 title: Redact credential-bearing resource maps from OPA input
 status: accepted
 target: apisix-3.17
-divergence_ids: [DIV-006-opa-resource-context-redaction]
 owner: wklken
-owner_approval_ref: "all-plugin production-readiness continuation decision, 2026-08-28"
 date: 2026-08-28
 ---
 

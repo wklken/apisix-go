@@ -6,13 +6,11 @@ mode.
 
 ## Before replacing an APISIX image
 
-1. Review the generated [plugin status](plugins.md), especially capabilities
-   requiring attention and proposed divergences.
-2. Validate the existing configuration with
+1. Validate the existing configuration with
    `apisix config test -c /path/to/config.yaml`.
-3. Replace the image and keep the existing etcd connection and APISIX static
+2. Replace the image and keep the existing etcd connection and APISIX static
    configuration.
-4. Restart the data plane and verify liveness, readiness, and representative
+3. Restart the data plane and verify liveness, readiness, and representative
    authenticated routes.
 
 The container reads `/usr/local/apisix/conf/config.yaml` by default. No
@@ -20,8 +18,8 @@ APISIX-Go-specific migration selector is required.
 
 ## Included scope
 
-- HTTP routes, services, consumers, upstreams, frontend TLS, WebSocket, and the
-  plugins marked applicable in the generated status.
+- HTTP routes, services, consumers, upstreams, frontend TLS, WebSocket, and
+  implemented APISIX 3.17 HTTP plugins.
 - Durable journal recovery, immutable generation activation, graceful
   termination, and serviceability-based readiness.
 - The same runtime behavior for unit, integration, differential, and candidate
@@ -37,8 +35,9 @@ APISIX-Go-specific migration selector is required.
 
 ## Qualification claim
 
-Plugin evidence is owned by the capability manifest and its validation corpus.
-Platform recovery and runtime stability are qualified separately by the
+Plugin behavior is tested by plugin unit tests, standalone real-process cases,
+and the opt-in APISIX 3.17 differential suite. Platform recovery and runtime
+stability are qualified separately by the
 [HTTP candidate qualification](runbooks/http-candidate-qualification.md).
 
 A green release-candidate run supports only this bounded claim:

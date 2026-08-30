@@ -1,11 +1,9 @@
 ---
 id: ADR-0000
-title: Replace with the decided divergence
+title: Replace with the architecture decision
 status: proposed
 target: apisix-3.17
-divergence_ids: [DIV-000]
 owner: wklken
-owner_approval_ref: "project-owner review URL or dated architecture decision range"
 date: 2026-08-23
 ---
 
@@ -15,7 +13,7 @@ State the pinned APISIX behavior and evidence.
 
 # Decision
 
-State the exact observable divergence and namespace where it applies.
+State the exact observable difference and where it applies.
 
 # Consequences
 
@@ -23,4 +21,4 @@ State compatibility, security, migration, testing, and rollback consequences.
 
 # Evidence required to retire
 
-State the exact differential test or capability change that retires this ADR.
+State the exact upstream or implementation change that retires this ADR.

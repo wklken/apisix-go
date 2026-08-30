@@ -9,8 +9,8 @@ unset http_proxy https_proxy all_proxy no_proxy ftp_proxy
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 container_bin=${CONTAINER_BIN:-${DOCKER_BIN:-podman}}
-oracle_file=${APISIX_GO_ORACLE_FILE:-$repo_root/validation/oracle.yaml}
-catalog_file=${APISIX_GO_DIFFERENTIAL_CATALOG:-$repo_root/validation/differential-cases.yaml}
+oracle_file=${APISIX_GO_ORACLE_FILE:-$repo_root/validation/compatibility/apisix-3.17/oracle.yaml}
+catalog_file=${APISIX_GO_DIFFERENTIAL_CATALOG:-$repo_root/validation/compatibility/apisix-3.17/cases.yaml}
 candidate_bin=${APISIX_GO_CANDIDATE_BIN:-$repo_root/.cache/out/apisix}
 artifact=${APISIX_GO_DIFFERENTIAL_ARTIFACT:-$repo_root/.cache/validation/differential/attempt-1.json}
 if [[ "$artifact" != /* ]]; then
@@ -133,7 +133,7 @@ preflight_output=$(
     )
     preflight_environment+=("${selection_environment[@]}")
     env "${preflight_environment[@]}" \
-        "$go_cache_runner" run -- go test ./t/plugin -run '^TestDifferentialSelectionPreflight$' -count=1 -v
+        "$go_cache_runner" run -- go test ./t/compatibility -run '^TestDifferentialSelectionPreflight$' -count=1 -v
 ) || preflight_status=$?
 (( preflight_status == 0 )) || die "differential selection preflight failed with status $preflight_status"
 selection_marker_count=$(printf '%s\n' "$preflight_output" | \
@@ -173,7 +173,7 @@ run_status=0
         "APISIX_GO_REPO_ROOT=$repo_root"
         "APISIX_GO_ORACLE_FILE=$oracle_file"
         "APISIX_GO_DIFFERENTIAL_CATALOG=$catalog_file"
-        "APISIX_GO_NORMALIZATION_FILE=$repo_root/t/plugin/testdata/normalization.yaml"
+        "APISIX_GO_NORMALIZATION_FILE=$repo_root/validation/compatibility/apisix-3.17/normalization.yaml"
         "APISIX_GO_CANDIDATE_BIN=$candidate_bin"
         "APISIX_GO_CANDIDATE_BINARY_SHA256=$candidate_binary_sha256"
         "APISIX_GO_CONTAINER_BIN=$container_bin"
@@ -185,7 +185,7 @@ run_status=0
     fi
     runner_environment+=("${selection_environment[@]}")
     env "${runner_environment[@]}" \
-        "$go_cache_runner" run -- go test ./t/plugin -run '^TestPluginDifferential$' -count=1 -v
+        "$go_cache_runner" run -- go test ./t/compatibility -run '^TestPluginDifferential$' -count=1 -v
 ) || run_status=$?
 
 [[ -s "$artifact" ]] || die "differential test did not write first-attempt artifact: $artifact"

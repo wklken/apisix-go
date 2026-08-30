@@ -286,12 +286,12 @@ fi
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 manifest=$repo_root/pkg/capability/manifest.yaml
-oracle_file=${APISIX_GO_ORACLE_FILE:-$repo_root/validation/oracle.yaml}
+oracle_file=${APISIX_GO_ORACLE_FILE:-$repo_root/validation/compatibility/apisix-3.17/oracle.yaml}
 source_dir=${APISIX_SOURCE_DIR:-$repo_root/.cache/apache-apisix}
 container_bin=${CONTAINER_BIN:-${DOCKER_BIN:-podman}}
 go_cache_runner=${APISIX_GO_CACHE_RUNNER:-$repo_root/scripts/go_cache.sh}
 differential_script=$repo_root/scripts/validation/plugin_differential.sh
-differential_catalog=$repo_root/validation/differential-cases.yaml
+differential_catalog=$repo_root/validation/compatibility/apisix-3.17/cases.yaml
 evidence_dir=${APISIX_GO_BEHAVIOR_GATE_EVIDENCE_DIR:-$repo_root/.cache/validation/plugin-behavior/attempt-1}
 artifact=$evidence_dir/summary.json
 differential_artifact=$evidence_dir/differential.json
@@ -403,7 +403,10 @@ run_corpus() {
         export APISIX_GO_REQUIRE_FULL_CORPUS=1
         export APISIX_SOURCE_DIR="$source_dir"
         run_go go test ./t/plugin \
-            -run '^(TestDifferentialSuiteHasConvertedEvidenceForEveryFactory|TestCapabilityManifestSelection|TestManifestCorpusValidates|TestSourceCoverage|TestUpstreamCorpusAccounting|TestCorpusEvidenceMatchesCompatibilityTarget|TestUpstreamCorpusCompletion)$' \
+            -run '^(TestCapabilityManifestSelection|TestManifestCorpusValidates|TestSourceCoverage|TestUpstreamCorpusAccounting|TestCorpusEvidenceMatchesCompatibilityTarget|TestUpstreamCorpusCompletion)$' \
+            -count=1 -json
+        run_go go test ./t/compatibility \
+            -run '^TestDifferentialSuiteHasDurableEvidenceForEveryFactory$' \
             -count=1 -json
     )
 }

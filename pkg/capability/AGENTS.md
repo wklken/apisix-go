@@ -24,7 +24,8 @@ This file inherits the repository root `AGENTS.md` and applies to
 - Never weaken a missing-evidence validation failure into an inventory pass.
 - Upstream source-block accounting belongs to `t/plugin/corpus_scope.yaml`,
   executable converted behavior to `t/plugin/*.yaml`, and differential
-  obligations to `validation/differential-cases.yaml`. Do not create a second
+  obligations to `validation/compatibility/<target>/cases.yaml`; the generic
+  opt-in runner lives in `t/compatibility`. Do not create a second
   profile-specific corpus or hand-maintained status ledger.
 - A qualification result is current only when its source commit, oracle
   identity, manifest/catalog digests, and exact candidate binary or image

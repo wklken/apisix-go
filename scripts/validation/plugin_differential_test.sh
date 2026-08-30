@@ -211,7 +211,7 @@ preflight_env_log=$test_root/preflight.env
 container_log=$test_root/container.log
 candidate_commit=$(printf 'a%.0s' {1..40})
 candidate_sha256=$(sha256_file "$candidate")
-catalog_sha256=sha256:$(sha256_file "$repo_root/validation/differential-cases.yaml")
+catalog_sha256=sha256:$(sha256_file "$repo_root/validation/compatibility/apisix-3.17/cases.yaml")
 selection_json='{"plugins":["cors","key-auth","proxy-rewrite","request-validation","response-rewrite"],"cases":["five","four","one","six","three","two"],"shard_index":0,"shard_count":1,"selected_case_count":6,"full_catalog_run":false}'
 export FAKE_SELECTION_JSON="$selection_json"
 export FAKE_PREFLIGHT_ARGS="$preflight_args_log"
@@ -221,8 +221,8 @@ export FAKE_CONTAINER_LOG="$container_log"
 output=$(FAKE_INDEX_JSON="$index_json" FAKE_INDEX_DIGEST="$index_digest" FAKE_CATALOG_SHA="$catalog_sha256" FAKE_RUNNER_ARGS="$args_log" FAKE_RUNNER_ENV="$env_log" CONTAINER_BIN="$fake_container" APISIX_GO_ORACLE_FILE="$oracle_file" APISIX_GO_CANDIDATE_BIN="$candidate" APISIX_GO_CANDIDATE_SOURCE_COMMIT="$candidate_commit" APISIX_GO_DIFFERENTIAL_ARTIFACT="$artifact" APISIX_GO_CACHE_RUNNER="$fake_runner" APISIX_GO_DIFFERENTIAL_HOST_GATEWAY=192.0.2.10 APISIX_GO_DIFFERENTIAL_PLUGINS="proxy-rewrite,cors,key-auth,request-validation,response-rewrite" APISIX_GO_DIFFERENTIAL_CASES="six,one,three,two,four,five" APISIX_GO_DIFFERENTIAL_SHARD_INDEX=0 APISIX_GO_DIFFERENTIAL_SHARD_COUNT=1 APISIX_GO_SKIP_BUILD=1 "$script")
 grep -Fq '"result": "pass"' <<<"$output" || fail 'script did not print the passing artifact'
 grep -Fq '"covered_count": 5' <<<"$output" || fail 'script did not report five-plugin smoke coverage'
-grep -Fq 'go test ./t/plugin -run ^TestPluginDifferential$ -count=1 -v' "$args_log" || fail 'script did not invoke the focused differential test'
-grep -Fq "go test ./t/plugin -run ^TestDifferentialSelectionPreflight$ -count=1 -v" "$preflight_args_log" || fail \
+grep -Fq 'go test ./t/compatibility -run ^TestPluginDifferential$ -count=1 -v' "$args_log" || fail 'script did not invoke the focused differential test'
+grep -Fq "go test ./t/compatibility -run ^TestDifferentialSelectionPreflight$ -count=1 -v" "$preflight_args_log" || fail \
     'script did not invoke the shared Go selection preflight'
 grep -Fq 'APISIX_GO_DIFFERENTIAL_PLUGINS=proxy-rewrite,cors,key-auth,request-validation,response-rewrite' "$env_log" || fail \
     'script did not forward differential plugin selectors unchanged'

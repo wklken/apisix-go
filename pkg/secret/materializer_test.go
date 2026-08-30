@@ -303,11 +303,11 @@ func testCatalog(t *testing.T) *capability.SecretDeclarationCatalog {
 			{Key: "metadata-plugin"},
 		},
 		SecretDeclarations: []capability.SecretDeclaration{
-			{Factory: "http-logger", Source: capability.SecretPluginConfig, Field: "token", Strict: true},
+			{Factory: "http-logger", Source: capability.SecretPluginConfig, Field: "token"},
 			{Factory: "key-auth", Source: capability.SecretPluginConfig, Field: "key"},
 			{Factory: "key-auth", Source: capability.SecretConsumerConfig, Field: "key"},
 			{Factory: "metadata-plugin", Source: capability.SecretPluginConfig, Field: "token"},
-			{Factory: "metadata-plugin", Source: capability.SecretPluginMetadata, Field: "token", Strict: true},
+			{Factory: "metadata-plugin", Source: capability.SecretPluginMetadata, Field: "token"},
 		},
 	}}}
 	catalog, err := capability.NewSecretDeclarationCatalog(manifest)
@@ -524,7 +524,7 @@ func TestMaterializerUsesCanonicalDecryptThenReferenceResolution(t *testing.T) {
 	}
 }
 
-func TestMaterializerPreservesStrictAndOptionalDeclarationPolicies(t *testing.T) {
+func TestMaterializerUsesAPISIXFallbackForAllDeclarations(t *testing.T) {
 	service, _ := testService(t, true, "0123456789abcdef")
 	materializer := NewMaterializer(service, &testResolverFactory{})
 	ticket, set := testPublication(t, 9, generation.DomainHTTP, generation.ResourceKey{Kind: "routes", ID: "r1"})
@@ -538,52 +538,48 @@ func TestMaterializerPreservesStrictAndOptionalDeclarationPolicies(t *testing.T)
 		}
 	}()
 	resource := generation.ResourceKey{Kind: "routes", ID: "r1"}
-	strictScope := testScope(
-		registration,
-		generation.DomainHTTP,
-		"http-logger",
-		resource,
-		capability.SecretPluginConfig,
-		"token",
-	)
-	strictCiphertext, err := service.EncryptForContext("strict-secret", "http-logger.token")
-	if err != nil {
-		t.Fatal(err)
+	tests := []struct {
+		name    string
+		plugin  string
+		field   string
+		context string
+	}{
+		{name: "http logger", plugin: "http-logger", field: "token", context: "http-logger.token"},
+		{name: "key auth", plugin: "key-auth", field: "key", context: "key-auth.key"},
 	}
-	value, err := registration.Materialize(context.Background(), strictScope, strictCiphertext)
-	if err != nil || valuePlaintext(t, value) != "strict-secret" {
-		t.Fatalf("strict ciphertext materialization = %q/%v", valuePlaintext(t, value), err)
-	}
-	if _, err := registration.Materialize(
-		context.Background(),
-		strictScope,
-		"strict-secret",
-	); !errors.Is(
-		err,
-		ErrCredentialUnavailable,
-	) {
-		t.Fatalf("strict plaintext error = %v, want ErrCredentialUnavailable", err)
-	}
-
-	optionalScope := testScope(
-		registration,
-		generation.DomainHTTP,
-		"key-auth",
-		resource,
-		capability.SecretPluginConfig,
-		"key",
-	)
-	optionalCiphertext, err := service.EncryptForContext("optional-secret", "key-auth.key")
-	if err != nil {
-		t.Fatal(err)
-	}
-	value, err = registration.Materialize(context.Background(), optionalScope, optionalCiphertext)
-	if err != nil || valuePlaintext(t, value) != "optional-secret" {
-		t.Fatalf("optional ciphertext materialization = %q/%v", valuePlaintext(t, value), err)
-	}
-	value, err = registration.Materialize(context.Background(), optionalScope, "legacy-plaintext")
-	if err != nil || valuePlaintext(t, value) != "legacy-plaintext" {
-		t.Fatalf("optional plaintext materialization = %q/%v", valuePlaintext(t, value), err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			scope := testScope(
+				registration,
+				generation.DomainHTTP,
+				tt.plugin,
+				resource,
+				capability.SecretPluginConfig,
+				tt.field,
+			)
+			ciphertext, err := service.EncryptForContext("encrypted-secret", tt.context)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for name, raw := range map[string]string{
+				"ciphertext": ciphertext,
+				"plaintext":  "plain-secret",
+			} {
+				t.Run(name, func(t *testing.T) {
+					value, err := registration.Materialize(context.Background(), scope, raw)
+					if err != nil {
+						t.Fatal(err)
+					}
+					want := "plain-secret"
+					if name == "ciphertext" {
+						want = "encrypted-secret"
+					}
+					if got := valuePlaintext(t, value); got != want {
+						t.Fatalf("Materialize() = %q, want %q", got, want)
+					}
+				})
+			}
+		})
 	}
 }
 

@@ -454,7 +454,7 @@ func newUnsupportedNestedPluginTargetTestCompiler(t *testing.T) *Compiler {
 				continue
 			}
 			entry.SecretDeclarations = append(entry.SecretDeclarations, capability.SecretDeclaration{
-				Factory: "limit-req", Source: capability.SecretPluginConfig, Field: "key", Strict: false,
+				Factory: "limit-req", Source: capability.SecretPluginConfig, Field: "key",
 			})
 			found = true
 		}

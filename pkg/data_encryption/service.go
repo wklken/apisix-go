@@ -84,16 +84,17 @@ func (s Service) ValidateDeclaration(
 	return declaration, nil
 }
 
-// ResolveDeclared validates the manifest-owned declaration before applying
-// the declaration's strict/optional ciphertext policy. The raw value is
-// intentionally absent from errors so callers cannot leak credentials.
+// ResolveDeclared validates the manifest-owned declaration, then follows the
+// APISIX encrypt_fields policy: try each key and preserve the original value
+// when none can decrypt it. The raw value is intentionally absent from errors
+// so undeclared fields cannot leak credentials through diagnostics.
 func (s Service) ResolveDeclared(
 	factory string,
 	source capability.SecretDeclarationSource,
 	field string,
 	value string,
 ) (string, error) {
-	declaration, err := s.ValidateDeclaration(factory, source, field)
+	_, err := s.ValidateDeclaration(factory, source, field)
 	if err != nil {
 		return "", err
 	}
@@ -102,9 +103,6 @@ func (s Service) ResolveDeclared(
 	}
 	resolver := s.Resolver()
 	context := factory + "." + field
-	if declaration.Strict {
-		return resolver.ResolveForContext(value, context)
-	}
 	return resolver.ResolveOptionalForContext(value, context), nil
 }
 

@@ -41,16 +41,14 @@ func (r Resolver) Configured() bool {
 	return r.configured
 }
 
-// Resolve strictly resolves a value that is expected to be encrypted when
-// encryption is enabled. Callers that need legacy plaintext compatibility can
-// use ResolveOptional instead.
+// Resolve reports decryption failures to callers that need strict validation.
 func (r Resolver) Resolve(value string) (string, error) {
 	return r.resolve(value, "")
 }
 
-// ResolveForContext strictly resolves a value using the registered canonical
-// field context as authenticated associated data for v2 envelopes. Legacy
-// unversioned CBC values remain readable during key rotation.
+// ResolveForContext resolves a value using the registered canonical field
+// context as authenticated associated data for v2 envelopes. APISIX CBC values
+// remain readable during key rotation.
 func (r Resolver) ResolveForContext(value string, context string) (string, error) {
 	return r.resolve(value, context)
 }
@@ -73,8 +71,8 @@ func (r Resolver) resolve(value string, context string) (string, error) {
 	return plaintext, nil
 }
 
-// ResolveOptional decrypts a value when possible and preserves legacy
-// plaintext values when encryption is disabled or the value is not encrypted.
+// ResolveOptional follows APISIX encrypt_fields behavior by decrypting with the
+// configured keyring and preserving the original value when no key succeeds.
 func (r Resolver) ResolveOptional(value string) string {
 	if !r.configured {
 		panic(ErrDeclarationCatalogUnavailable)
@@ -86,8 +84,8 @@ func (r Resolver) ResolveOptional(value string) string {
 	return plaintext
 }
 
-// ResolveOptionalForContext is the legacy-plaintext-compatible counterpart to
-// ResolveForContext. It is used only for non-strict registered fields.
+// ResolveOptionalForContext applies the APISIX fallback behavior while binding
+// valid v2 envelopes to their canonical field context.
 func (r Resolver) ResolveOptionalForContext(value string, context string) string {
 	if !r.configured {
 		panic(ErrDeclarationCatalogUnavailable)

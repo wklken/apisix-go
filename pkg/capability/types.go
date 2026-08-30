@@ -17,7 +17,6 @@ type SecretDeclaration struct {
 	Factory string                      `yaml:"factory"`
 	Source  SecretDeclarationSource     `yaml:"source"`
 	Field   string                      `yaml:"field"`
-	Strict  bool                        `yaml:"strict"`
 	Target  SecretMaterializationTarget `yaml:"target,omitempty"`
 }
 

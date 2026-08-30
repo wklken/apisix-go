@@ -1083,175 +1083,108 @@ func TestHandlerSendsFormattedRequestLog(t *testing.T) {
 	}
 }
 
-func TestHandlerIncludesRequestAndResponseBody(t *testing.T) {
-	bodies := make(chan []byte, 1)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			t.Fatalf("read request body: %v", err)
-		}
-		bodies <- body
-		w.WriteHeader(http.StatusOK)
-	}))
-	t.Cleanup(server.Close)
-
-	p := newTestPlugin(t, Config{
-		Scheme:           "http",
-		CLSHost:          strings.TrimPrefix(server.URL, "http://"),
-		CLSTopic:         "topic-a",
-		SecretID:         "secret-id",
-		SecretKey:        "secret-key",
-		IncludeReqBody:   true,
-		IncludeRespBody:  true,
-		MaxReqBodyBytes:  32,
-		MaxRespBodyBytes: 32,
-		Timeout:          1000,
-		BatchMaxSize:     1,
-	})
-
-	req := httptest.NewRequest(http.MethodPost, "http://example.com/orders", bytes.NewBufferString(`{"order":1}`))
-	rr := httptest.NewRecorder()
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			t.Fatalf("read upstream request body: %v", err)
-		}
-		if string(body) != `{"order":1}` {
-			t.Fatalf("upstream body = %q, want original request body", body)
-		}
-
-		w.WriteHeader(http.StatusCreated)
-		_, _ = w.Write([]byte(`{"ok":true}`))
-	})).ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusCreated {
-		t.Fatalf("response status = %d, want %d", rr.Code, http.StatusCreated)
-	}
-	if body := rr.Body.String(); body != `{"ok":true}` {
-		t.Fatalf("response body = %q, want upstream response body", body)
+func TestHandlerBodyCaptureMatrix(t *testing.T) {
+	tests := []struct {
+		name         string
+		requestBody  string
+		responseBody string
+		header       string
+		requestExpr  [][]any
+		responseExpr [][]any
+		wantBodies   bool
+	}{
+		{name: "unconditional", requestBody: `{"order":1}`, responseBody: `{"ok":true}`, wantBodies: true},
+		{
+			name:         "expressions match",
+			requestBody:  `{"order":2}`,
+			responseBody: `{"created":true}`,
+			header:       "yes",
+			requestExpr: [][]any{
+				{"http_x_log_body", "==", "yes"},
+			},
+			responseExpr: [][]any{{"status", "==", "201"}},
+			wantBodies:   true,
+		},
+		{
+			name: "expressions miss", requestBody: `{"order":3}`, responseBody: `{"created":false}`, header: "no",
+			requestExpr: [][]any{{"http_x_log_body", "==", "yes"}}, responseExpr: [][]any{{"status", "==", "500"}},
+		},
 	}
 
-	logs := decodeCLSBody(t, waitBody(t, bodies))
-	if len(logs) != 1 {
-		t.Fatalf("logs = %d, want 1", len(logs))
-	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			bodies := make(chan []byte, 1)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Errorf("read request body: %v", err)
+					return
+				}
+				bodies <- body
+				w.WriteHeader(http.StatusOK)
+			}))
+			t.Cleanup(server.Close)
 
-	request := decodeJSONStringField(t, logs[0]["request"])
-	if request["body"] != `{"order":1}` {
-		t.Fatalf("request body = %#v, want original request body", request["body"])
-	}
+			p := newTestPlugin(t, Config{
+				Scheme: "http", CLSHost: strings.TrimPrefix(server.URL, "http://"), CLSTopic: "topic-a",
+				SecretID: "secret-id", SecretKey: "secret-key", Timeout: 1000, BatchMaxSize: 1,
+				IncludeReqBody: true, IncludeReqBodyExpr: test.requestExpr,
+				IncludeRespBody: true, IncludeRespBodyExpr: test.responseExpr,
+				MaxReqBodyBytes: 32, MaxRespBodyBytes: 32,
+			})
 
-	response := decodeJSONStringField(t, logs[0]["response"])
-	if response["body"] != `{"ok":true}` {
-		t.Fatalf("response body = %#v, want upstream response body", response["body"])
-	}
-}
+			req := httptest.NewRequest(
+				http.MethodPost,
+				"http://example.com/orders",
+				bytes.NewBufferString(test.requestBody),
+			)
+			if test.header != "" {
+				req.Header.Set("X-Log-Body", test.header)
+			}
+			rr := httptest.NewRecorder()
+			p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Fatalf("read upstream request body: %v", err)
+				}
+				if string(body) != test.requestBody {
+					t.Fatalf("upstream body = %q, want %q", body, test.requestBody)
+				}
+				w.WriteHeader(http.StatusCreated)
+				_, _ = w.Write([]byte(test.responseBody))
+			})).ServeHTTP(rr, req)
 
-func TestHandlerIncludesBodiesWhenExpressionsMatch(t *testing.T) {
-	bodies := make(chan []byte, 1)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			t.Fatalf("read request body: %v", err)
-		}
-		bodies <- body
-		w.WriteHeader(http.StatusOK)
-	}))
-	t.Cleanup(server.Close)
-
-	p := newTestPlugin(t, Config{
-		Scheme:              "http",
-		CLSHost:             strings.TrimPrefix(server.URL, "http://"),
-		CLSTopic:            "topic-a",
-		SecretID:            "secret-id",
-		SecretKey:           "secret-key",
-		IncludeReqBody:      true,
-		IncludeReqBodyExpr:  [][]any{{"http_x_log_body", "==", "yes"}},
-		IncludeRespBody:     true,
-		IncludeRespBodyExpr: [][]any{{"status", "==", "201"}},
-		MaxReqBodyBytes:     32,
-		MaxRespBodyBytes:    32,
-		Timeout:             1000,
-		BatchMaxSize:        1,
-	})
-
-	req := httptest.NewRequest(http.MethodPost, "http://example.com/orders", bytes.NewBufferString(`{"order":2}`))
-	req.Header.Set("X-Log-Body", "yes")
-	rr := httptest.NewRecorder()
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusCreated)
-		_, _ = w.Write([]byte(`{"created":true}`))
-	})).ServeHTTP(rr, req)
-
-	logs := decodeCLSBody(t, waitBody(t, bodies))
-	if len(logs) != 1 {
-		t.Fatalf("logs = %d, want 1", len(logs))
-	}
-
-	request := decodeJSONStringField(t, logs[0]["request"])
-	if request["body"] != `{"order":2}` {
-		t.Fatalf("request body = %#v, want captured request body", request["body"])
-	}
-
-	response := decodeJSONStringField(t, logs[0]["response"])
-	if response["body"] != `{"created":true}` {
-		t.Fatalf("response body = %#v, want captured response body", response["body"])
-	}
-}
-
-func TestHandlerSkipsBodiesWhenExpressionsDoNotMatch(t *testing.T) {
-	bodies := make(chan []byte, 1)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			t.Fatalf("read request body: %v", err)
-		}
-		bodies <- body
-		w.WriteHeader(http.StatusOK)
-	}))
-	t.Cleanup(server.Close)
-
-	p := newTestPlugin(t, Config{
-		Scheme:              "http",
-		CLSHost:             strings.TrimPrefix(server.URL, "http://"),
-		CLSTopic:            "topic-a",
-		SecretID:            "secret-id",
-		SecretKey:           "secret-key",
-		IncludeReqBody:      true,
-		IncludeReqBodyExpr:  [][]any{{"http_x_log_body", "==", "yes"}},
-		IncludeRespBody:     true,
-		IncludeRespBodyExpr: [][]any{{"status", "==", "500"}},
-		MaxReqBodyBytes:     32,
-		MaxRespBodyBytes:    32,
-		Timeout:             1000,
-		BatchMaxSize:        1,
-	})
-
-	req := httptest.NewRequest(http.MethodPost, "http://example.com/orders", bytes.NewBufferString(`{"order":3}`))
-	req.Header.Set("X-Log-Body", "no")
-	rr := httptest.NewRecorder()
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			t.Fatalf("read upstream request body: %v", err)
-		}
-		if string(body) != `{"order":3}` {
-			t.Fatalf("upstream body = %q, want original request body", body)
-		}
-
-		w.WriteHeader(http.StatusCreated)
-		_, _ = w.Write([]byte(`{"created":false}`))
-	})).ServeHTTP(rr, req)
-
-	logs := decodeCLSBody(t, waitBody(t, bodies))
-	if len(logs) != 1 {
-		t.Fatalf("logs = %d, want 1", len(logs))
-	}
-	if _, ok := logs[0]["request"]; ok {
-		t.Fatalf("request field = %q, want no request body", logs[0]["request"])
-	}
-	if _, ok := logs[0]["response"]; ok {
-		t.Fatalf("response field = %q, want no response body", logs[0]["response"])
+			if rr.Code != http.StatusCreated || rr.Body.String() != test.responseBody {
+				t.Fatalf(
+					"response = (%d, %q), want (%d, %q)",
+					rr.Code,
+					rr.Body.String(),
+					http.StatusCreated,
+					test.responseBody,
+				)
+			}
+			logs := decodeCLSBody(t, waitBody(t, bodies))
+			if len(logs) != 1 {
+				t.Fatalf("logs = %d, want 1", len(logs))
+			}
+			if !test.wantBodies {
+				if _, ok := logs[0]["request"]; ok {
+					t.Fatalf("request field = %q, want omitted", logs[0]["request"])
+				}
+				if _, ok := logs[0]["response"]; ok {
+					t.Fatalf("response field = %q, want omitted", logs[0]["response"])
+				}
+				return
+			}
+			request := decodeJSONStringField(t, logs[0]["request"])
+			if request["body"] != test.requestBody {
+				t.Fatalf("request body = %#v, want %q", request["body"], test.requestBody)
+			}
+			response := decodeJSONStringField(t, logs[0]["response"])
+			if response["body"] != test.responseBody {
+				t.Fatalf("response body = %#v, want %q", response["body"], test.responseBody)
+			}
+		})
 	}
 }
 

@@ -690,211 +690,110 @@ func TestHandlerBatchesClickHouseRows(t *testing.T) {
 	}
 }
 
-func TestHandlerIncludesRequestAndResponseBody(t *testing.T) {
-	bodies := make(chan string, 1)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			t.Fatalf("read request body: %v", err)
-		}
-		bodies <- string(body)
-		w.WriteHeader(http.StatusOK)
-	}))
-	t.Cleanup(server.Close)
-
-	sslVerify := false
-	p := newTestPlugin(t, Config{
-		EndpointAddrs:    []string{server.URL},
-		User:             "default",
-		Password:         "secret",
-		Database:         "analytics",
-		LogTable:         "apisix_logs",
-		Timeout:          1,
-		SSLVerify:        &sslVerify,
-		IncludeReqBody:   true,
-		IncludeRespBody:  true,
-		MaxReqBodyBytes:  32,
-		MaxRespBodyBytes: 32,
-		BatchMaxSize:     1,
-	})
-
-	req := httptest.NewRequest(http.MethodPost, "http://example.com/orders", bytes.NewBufferString(`{"order":1}`))
-	rr := httptest.NewRecorder()
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			t.Fatalf("read upstream request body: %v", err)
-		}
-		if string(body) != `{"order":1}` {
-			t.Fatalf("upstream body = %q, want original request body", body)
-		}
-
-		w.WriteHeader(http.StatusCreated)
-		_, _ = w.Write([]byte(`{"ok":true}`))
-	})).ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusCreated {
-		t.Fatalf("response status = %d, want %d", rr.Code, http.StatusCreated)
+func TestHandlerBodyCaptureMatrix(t *testing.T) {
+	tests := []struct {
+		name         string
+		requestBody  string
+		responseBody string
+		header       string
+		requestExpr  [][]any
+		responseExpr [][]any
+		wantBodies   bool
+	}{
+		{name: "unconditional", requestBody: `{"order":1}`, responseBody: `{"ok":true}`, wantBodies: true},
+		{
+			name: "expressions match", requestBody: `{"order":2}`, responseBody: `{"created":true}`,
+			header: "yes", requestExpr: [][]any{{"http_x_log_body", "==", "yes"}},
+			responseExpr: [][]any{{"status", "==", "201"}}, wantBodies: true,
+		},
+		{
+			name: "expressions miss", requestBody: `{"order":3}`, responseBody: `{"created":false}`,
+			header: "no", requestExpr: [][]any{{"http_x_log_body", "==", "yes"}},
+			responseExpr: [][]any{{"status", "==", "500"}},
+		},
 	}
-	if body := rr.Body.String(); body != `{"ok":true}` {
-		t.Fatalf("response body = %q, want upstream response body", body)
-	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			bodies := make(chan string, 1)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Errorf("read request body: %v", err)
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				bodies <- string(body)
+				w.WriteHeader(http.StatusOK)
+			}))
+			t.Cleanup(server.Close)
 
-	select {
-	case body := <-bodies:
-		payload := strings.TrimPrefix(body, "INSERT INTO apisix_logs FORMAT JSONEachRow ")
-		var logEntry map[string]any
-		if err := json.Unmarshal([]byte(payload), &logEntry); err != nil {
-			t.Fatalf("unmarshal clickhouse payload %q: %v", payload, err)
-		}
+			sslVerify := false
+			p := newTestPlugin(t, Config{
+				EndpointAddrs: []string{server.URL}, User: "default", Password: "secret",
+				Database: "analytics", LogTable: "apisix_logs", Timeout: 1, SSLVerify: &sslVerify,
+				IncludeReqBody: true, IncludeReqBodyExpr: test.requestExpr,
+				IncludeRespBody: true, IncludeRespBodyExpr: test.responseExpr,
+				MaxReqBodyBytes: 32, MaxRespBodyBytes: 32, BatchMaxSize: 1,
+			})
+			req := httptest.NewRequest(
+				http.MethodPost,
+				"http://example.com/orders",
+				bytes.NewBufferString(test.requestBody),
+			)
+			if test.header != "" {
+				req.Header.Set("X-Log-Body", test.header)
+			}
+			rr := httptest.NewRecorder()
+			p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Fatalf("read upstream request body: %v", err)
+				}
+				if string(body) != test.requestBody {
+					t.Fatalf("upstream body = %q, want %q", body, test.requestBody)
+				}
+				w.WriteHeader(http.StatusCreated)
+				_, _ = w.Write([]byte(test.responseBody))
+			})).ServeHTTP(rr, req)
+			if rr.Code != http.StatusCreated || rr.Body.String() != test.responseBody {
+				t.Fatalf(
+					"response = %d/%q, want %d/%q",
+					rr.Code,
+					rr.Body.String(),
+					http.StatusCreated,
+					test.responseBody,
+				)
+			}
 
-		request, ok := logEntry["request"].(map[string]any)
-		if !ok {
-			t.Fatalf("payload request = %#v, want object", logEntry["request"])
-		}
-		if request["body"] != `{"order":1}` {
-			t.Fatalf("payload request body = %#v, want original request body", request["body"])
-		}
-
-		response, ok := logEntry["response"].(map[string]any)
-		if !ok {
-			t.Fatalf("payload response = %#v, want object", logEntry["response"])
-		}
-		if response["body"] != `{"ok":true}` {
-			t.Fatalf("payload response body = %#v, want upstream response body", response["body"])
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for ClickHouse body")
-	}
-}
-
-func TestHandlerIncludesBodiesWhenExpressionsMatch(t *testing.T) {
-	bodies := make(chan string, 1)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			t.Fatalf("read request body: %v", err)
-		}
-		bodies <- string(body)
-		w.WriteHeader(http.StatusOK)
-	}))
-	t.Cleanup(server.Close)
-
-	sslVerify := false
-	p := newTestPlugin(t, Config{
-		EndpointAddrs:       []string{server.URL},
-		User:                "default",
-		Password:            "secret",
-		Database:            "analytics",
-		LogTable:            "apisix_logs",
-		Timeout:             1,
-		SSLVerify:           &sslVerify,
-		IncludeReqBody:      true,
-		IncludeReqBodyExpr:  [][]any{{"http_x_log_body", "==", "yes"}},
-		IncludeRespBody:     true,
-		IncludeRespBodyExpr: [][]any{{"status", "==", "201"}},
-		MaxReqBodyBytes:     32,
-		MaxRespBodyBytes:    32,
-		BatchMaxSize:        1,
-	})
-
-	req := httptest.NewRequest(http.MethodPost, "http://example.com/orders", bytes.NewBufferString(`{"order":2}`))
-	req.Header.Set("X-Log-Body", "yes")
-	rr := httptest.NewRecorder()
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusCreated)
-		_, _ = w.Write([]byte(`{"created":true}`))
-	})).ServeHTTP(rr, req)
-
-	select {
-	case body := <-bodies:
-		payload := strings.TrimPrefix(body, "INSERT INTO apisix_logs FORMAT JSONEachRow ")
-		var logEntry map[string]any
-		if err := json.Unmarshal([]byte(payload), &logEntry); err != nil {
-			t.Fatalf("unmarshal clickhouse payload %q: %v", payload, err)
-		}
-
-		request, ok := logEntry["request"].(map[string]any)
-		if !ok {
-			t.Fatalf("payload request = %#v, want object", logEntry["request"])
-		}
-		if request["body"] != `{"order":2}` {
-			t.Fatalf("payload request body = %#v, want captured request body", request["body"])
-		}
-
-		response, ok := logEntry["response"].(map[string]any)
-		if !ok {
-			t.Fatalf("payload response = %#v, want object", logEntry["response"])
-		}
-		if response["body"] != `{"created":true}` {
-			t.Fatalf("payload response body = %#v, want captured response body", response["body"])
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for ClickHouse body")
-	}
-}
-
-func TestHandlerSkipsBodiesWhenExpressionsDoNotMatch(t *testing.T) {
-	bodies := make(chan string, 1)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			t.Fatalf("read request body: %v", err)
-		}
-		bodies <- string(body)
-		w.WriteHeader(http.StatusOK)
-	}))
-	t.Cleanup(server.Close)
-
-	sslVerify := false
-	p := newTestPlugin(t, Config{
-		EndpointAddrs:       []string{server.URL},
-		User:                "default",
-		Password:            "secret",
-		Database:            "analytics",
-		LogTable:            "apisix_logs",
-		Timeout:             1,
-		SSLVerify:           &sslVerify,
-		IncludeReqBody:      true,
-		IncludeReqBodyExpr:  [][]any{{"http_x_log_body", "==", "yes"}},
-		IncludeRespBody:     true,
-		IncludeRespBodyExpr: [][]any{{"status", "==", "500"}},
-		MaxReqBodyBytes:     32,
-		MaxRespBodyBytes:    32,
-		BatchMaxSize:        1,
-	})
-
-	req := httptest.NewRequest(http.MethodPost, "http://example.com/orders", bytes.NewBufferString(`{"order":3}`))
-	req.Header.Set("X-Log-Body", "no")
-	rr := httptest.NewRecorder()
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			t.Fatalf("read upstream request body: %v", err)
-		}
-		if string(body) != `{"order":3}` {
-			t.Fatalf("upstream body = %q, want original request body", body)
-		}
-
-		w.WriteHeader(http.StatusCreated)
-		_, _ = w.Write([]byte(`{"created":false}`))
-	})).ServeHTTP(rr, req)
-
-	select {
-	case body := <-bodies:
-		payload := strings.TrimPrefix(body, "INSERT INTO apisix_logs FORMAT JSONEachRow ")
-		var logEntry map[string]any
-		if err := json.Unmarshal([]byte(payload), &logEntry); err != nil {
-			t.Fatalf("unmarshal clickhouse payload %q: %v", payload, err)
-		}
-		if _, ok := logEntry["request"]; ok {
-			t.Fatalf("payload request = %#v, want no request body", logEntry["request"])
-		}
-		if _, ok := logEntry["response"]; ok {
-			t.Fatalf("payload response = %#v, want no response body", logEntry["response"])
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for ClickHouse body")
+			select {
+			case body := <-bodies:
+				payload := strings.TrimPrefix(body, "INSERT INTO apisix_logs FORMAT JSONEachRow ")
+				var logEntry map[string]any
+				if err := json.Unmarshal([]byte(payload), &logEntry); err != nil {
+					t.Fatalf("unmarshal clickhouse payload %q: %v", payload, err)
+				}
+				if test.wantBodies {
+					request, requestOK := logEntry["request"].(map[string]any)
+					response, responseOK := logEntry["response"].(map[string]any)
+					if !requestOK || !responseOK || request["body"] != test.requestBody ||
+						response["body"] != test.responseBody {
+						t.Fatalf(
+							"logged bodies = %#v/%#v, want %q/%q",
+							logEntry["request"],
+							logEntry["response"],
+							test.requestBody,
+							test.responseBody,
+						)
+					}
+				} else if _, requestOK := logEntry["request"]; requestOK {
+					t.Fatalf("payload request = %#v, want omitted", logEntry["request"])
+				} else if _, responseOK := logEntry["response"]; responseOK {
+					t.Fatalf("payload response = %#v, want omitted", logEntry["response"])
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("timed out waiting for ClickHouse body")
+			}
+		})
 	}
 }
 

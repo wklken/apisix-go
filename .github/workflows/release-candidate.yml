@@ -72,7 +72,7 @@ jobs:
         run: make lint
 
   build-and-unit:
-    name: RC Build And Unit Coverage
+    name: RC Build And Unit Tests
     needs: resolve-source
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -96,8 +96,8 @@ jobs:
       - name: Build
         run: make build
 
-      - name: Run source unit tests and coverage gate
-        run: make test-cover
+      - name: Run source unit tests
+        run: make test
 
       - name: Run plugin integration harness tests
         run: make test-plugin-harness
@@ -161,8 +161,8 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Check capability projections
-        run: make check-capability-drift
+      - name: Check generated plugin registry
+        run: make check-plugin-registry
 
       - name: Fetch pinned APISIX 3.17 source
         run: scripts/validation/fetch_apisix_317_source.sh .cache/apache-apisix

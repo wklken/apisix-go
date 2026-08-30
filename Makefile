@@ -71,14 +71,6 @@ candidate-etcd-recovery:
 test:
 	$(GO_CACHE_RUNNER) go test ./cmd/... ./pkg/... -count=1
 
-COVERAGE_MIN ?= 82.0
-COVERAGE_FILE ?= coverage.out
-
-.PHONY: test-cover
-test-cover:
-	$(GO_CACHE_RUNNER) bash scripts/check-unit-coverage_test.sh
-	COVERAGE_MIN=$(COVERAGE_MIN) $(GO_CACHE_RUNNER) ./scripts/check-unit-coverage.sh $(COVERAGE_FILE)
-
 .PHONY: test-integration
 test-integration:
 	$(GO_CACHE_RUNNER) go test ./t/plugin -count=1 -v

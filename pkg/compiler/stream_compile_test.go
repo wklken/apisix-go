@@ -126,8 +126,8 @@ func TestCompileAndAttachStreamUsesExactRouteOccurrence(t *testing.T) {
 		identity plugin.InstanceIdentityInput,
 	) (plugin.Binding, error) {
 		gotProvenance = provenance
-		return plugin.BindAttemptResolvedPlugin(
-			prepared.attempt.AttemptID(), descriptor, instance, scope, provenance, identity,
+		return plugin.BindGenerationResolvedPlugin(
+			prepared.preparation.Generation(), descriptor, instance, scope, provenance, identity,
 		)
 	}
 
@@ -372,11 +372,13 @@ func installStreamOccurrence(
 	factory string,
 	domain generation.Domain,
 ) {
-	prepared.attempt.occurrences = append(prepared.attempt.occurrences, FactoryOccurrence{
-		authority: prepared.attempt.authority,
-		domain:    domain,
-		resource:  key,
-		source:    capability.SecretPluginConfig,
-		factory:   factory,
-	})
+	occurrence := FactoryOccurrence{
+		owner:    prepared.preparation.secrets,
+		domain:   domain,
+		resource: key,
+		source:   capability.SecretPluginConfig,
+		factory:  factory,
+	}
+	prepared.preparation.occurrences = append(prepared.preparation.occurrences, occurrence)
+	prepared.preparation.occurrenceSet[occurrence.spec()] = struct{}{}
 }

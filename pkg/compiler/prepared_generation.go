@@ -21,7 +21,7 @@ var errPreparedGenerationCleanupFailed = errors.New("prepared generation cleanup
 // generation until it is discarded or transferred to a runtime owner.
 type PreparedGeneration struct {
 	publication        generation.PublicationSet
-	attempt            PreparationAttempt
+	preparation        PreparationGeneration
 	metadata           runtime.MetadataView
 	consumers          *runtime.ConsumerBindings
 	lookup             consumerLookupView
@@ -268,7 +268,7 @@ func (prepared *PreparedGeneration) clearTerminalAuthorities() func() {
 		prepared.streamSnapshot.revoke()
 	}
 	prepared.streamSnapshot = nil
-	prepared.attempt = PreparationAttempt{}
+	prepared.preparation = PreparationGeneration{}
 	prepared.metadata = runtime.MetadataView{}
 	prepared.consumers = nil
 	prepared.lookup = consumerLookupView{}
@@ -310,7 +310,7 @@ func preparedCleanupResult(cleanupErr error, terminal bool) error {
 		context.Canceled,
 		context.DeadlineExceeded,
 		errWorkerGenerationCleanupFailed,
-		errWorkerRegistrationCleanupFailed,
+		errWorkerSecretCleanupFailed,
 	} {
 		if errors.Is(cleanupErr, marker) {
 			causes = append(causes, marker)

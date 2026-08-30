@@ -32,15 +32,6 @@ type scopedWorkflowBroker struct {
 	calls   []scopedWorkflowSecretCall
 }
 
-func (*scopedWorkflowBroker) AuthorizeCandidate(
-	context.Context,
-	secret.AttemptID,
-	generation.ApplyTicket,
-	generation.PublicationSet,
-) error {
-	return nil
-}
-
 func (broker *scopedWorkflowBroker) ResolveScoped(
 	ctx context.Context,
 	scope secret.Scope,
@@ -61,8 +52,6 @@ func (broker *scopedWorkflowBroker) ResolveScoped(
 	return broker.value, nil
 }
 
-func (*scopedWorkflowBroker) RevokeAttempt(context.Context, secret.AttemptID) error { return nil }
-
 func (broker *scopedWorkflowBroker) snapshotCalls() []scopedWorkflowSecretCall {
 	broker.mu.Lock()
 	defer broker.mu.Unlock()
@@ -73,8 +62,8 @@ type scopedWorkflowHarness struct {
 	revision   uint64
 	routeID    string
 	key        generation.ResourceKey
-	attempt    secret.AttemptID
-	capability secret.GenerationCapability
+	attempt    uint64
+	capability secret.GenerationSecrets
 	scope      secret.Scope
 	broker     *scopedWorkflowBroker
 	close      func()
@@ -105,10 +94,6 @@ func newScopedWorkflowHarness(
 			Key: key, Disposition: generation.DispositionPublished, Code: "workflow-scoped-test",
 		}},
 	}
-	ticket := generation.ApplyTicket{
-		DesiredRevision: revision,
-		RequiredDomains: []generation.Domain{generation.DomainHTTP},
-	}
 	set := generation.PublicationSet{
 		DesiredRevision: revision,
 		Domains: map[generation.Domain]generation.PublicationCandidate{
@@ -124,24 +109,19 @@ func newScopedWorkflowHarness(
 		t.Fatal(err)
 	}
 	broker := &scopedWorkflowBroker{value: value}
-	registration, err := testutil.NewSecretMaterializer(broker, catalog).
-		RegisterCandidate(context.Background(), ticket, set)
+	materialization, err := testutil.NewSecretMaterializer(broker, catalog).PrepareGeneration(context.Background(), set)
 	if err != nil {
 		t.Fatal(err)
 	}
-	generationCapability, err := secret.NewGenerationCapability(registration, revision)
-	if err != nil {
-		t.Fatal(err)
-	}
+	generationCapability := materialization.Secrets()
 	return scopedWorkflowHarness{
 		revision:   revision,
 		routeID:    routeID,
 		key:        key,
-		attempt:    registration.AttemptID(),
+		attempt:    generationCapability.Generation(),
 		capability: generationCapability,
 		scope: secret.Scope{
 			Generation: revision,
-			Attempt:    registration.AttemptID(),
 			Domain:     generation.DomainHTTP,
 			Plugin:     "workflow",
 			Resource:   key,
@@ -149,7 +129,7 @@ func newScopedWorkflowHarness(
 		},
 		broker: broker,
 		close: func() {
-			if closeErr := registration.Close(context.Background()); closeErr != nil {
+			if closeErr := materialization.Close(context.Background()); closeErr != nil {
 				t.Fatalf("close scoped workflow registration: %v", closeErr)
 			}
 		},
@@ -210,7 +190,7 @@ func TestMaterializeScopedSecretsBindsLimitCountToOuterAttemptAndRoute(t *testin
 		t.Fatalf("broker calls = %d, want 1", len(calls))
 	}
 	got := calls[0]
-	if got.scope.Generation != harness.revision || got.scope.Attempt != harness.attempt ||
+	if got.scope.Generation != harness.revision || got.scope.Generation != harness.attempt ||
 		got.scope.Domain != generation.DomainHTTP || got.scope.Resource != harness.key ||
 		got.scope.Plugin != "limit-count" || got.scope.Field != "key" || got.raw != raw {
 		t.Fatalf("child authority = %+v raw=%q, want outer route attempt with limit-count field", got.scope, got.raw)
@@ -258,7 +238,6 @@ func TestScopedWorkflowGenerationOverlapKeepsChildrenAndSecretsIsolated(t *testi
 	firstCalls := firstHarness.broker.snapshotCalls()
 	secondCalls := secondHarness.broker.snapshotCalls()
 	if len(firstCalls) != 1 || len(secondCalls) != 1 ||
-		firstCalls[0].scope.Attempt == secondCalls[0].scope.Attempt ||
 		firstCalls[0].scope.Generation == secondCalls[0].scope.Generation {
 		t.Fatalf("generation authority was not isolated: first=%+v second=%+v", firstCalls, secondCalls)
 	}

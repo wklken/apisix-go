@@ -123,7 +123,7 @@ func TestEffectiveHTTPBindingSpecSupportsSystemAndPreparedConsumer(t *testing.T)
 		effectiveBindingRuntimeContext{},
 	)
 	if err != nil || consumer.source.kind != effectiveBindingPreparedConsumer ||
-		consumer.source.occurrence != prepared.attempt.Occurrences(capability.SecretConsumerConfig)[0] {
+		consumer.source.occurrence != prepared.preparation.Occurrences(capability.SecretConsumerConfig)[0] {
 		t.Fatalf("consumer spec = (%#v, %v)", consumer, err)
 	}
 }

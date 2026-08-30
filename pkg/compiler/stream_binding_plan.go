@@ -72,7 +72,7 @@ func (prepared *PreparedGeneration) materializePlannedStreamRoutes(
 func (prepared *PreparedGeneration) effectiveStreamBindingSpec(
 	planned plannedStreamRoute,
 ) (effectiveBindingSpec, error) {
-	if prepared == nil || prepared.attempt.authority == nil || planned.route.ID == "" ||
+	if prepared == nil || !prepared.preparation.secrets.Valid() || planned.route.ID == "" ||
 		planned.binding == nil || planned.binding.factory == "" {
 		return effectiveBindingSpec{}, fmt.Errorf(
 			"%w: stream binding plan is incomplete",
@@ -112,7 +112,7 @@ func (prepared *PreparedGeneration) effectiveStreamBindingSource(
 	}
 	var exact FactoryOccurrence
 	matches := 0
-	for _, occurrence := range prepared.attempt.Occurrences(capability.SecretPluginConfig) {
+	for _, occurrence := range prepared.preparation.Occurrences(capability.SecretPluginConfig) {
 		if occurrence.Domain() == generation.DomainStream &&
 			occurrence.Resource() == request.source &&
 			occurrence.Factory() == request.factory {

@@ -15,38 +15,24 @@ import (
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/data_encryption"
+	generationpkg "github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/runtime"
 	"github.com/wklken/apisix-go/pkg/secret"
+	"github.com/wklken/apisix-go/pkg/testutil"
 )
 
-type testBaseAttemptRegistration struct {
-	id secret.AttemptID
-}
-
-func (registration testBaseAttemptRegistration) AttemptID() secret.AttemptID {
-	return registration.id
-}
-
-func (testBaseAttemptRegistration) Materialize(context.Context, secret.Scope, string) (secret.Value, error) {
-	panic("base dependency accessor materialized a secret")
-}
-
-func (testBaseAttemptRegistration) Close(context.Context) error {
-	return nil
-}
-
-func testBaseGenerationCapability(t *testing.T, generation uint64) secret.GenerationCapability {
+func testBaseGenerationSecrets(t *testing.T, generation uint64) secret.GenerationSecrets {
 	t.Helper()
-	capability, err := secret.NewGenerationCapability(
-		testBaseAttemptRegistration{id: secret.AttemptID{byte(generation)}},
-		generation,
+	secrets, _, cleanup := testutil.ScopedSecretHarness(
+		t,
+		"key-auth",
+		nil,
+		generationpkg.ApplyTicket{DesiredRevision: generation},
 	)
-	if err != nil {
-		t.Fatalf("NewGenerationCapability() error = %v", err)
-	}
-	return capability
+	t.Cleanup(cleanup)
+	return secrets
 }
 
 func newBaseBatchProcessorForTest(
@@ -136,8 +122,8 @@ func TestBasePluginScopedDependenciesRemainInstanceScoped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	leftSecrets := testBaseGenerationCapability(t, 1)
-	rightSecrets := testBaseGenerationCapability(t, 2)
+	leftSecrets := testBaseGenerationSecrets(t, 1)
+	rightSecrets := testBaseGenerationSecrets(t, 2)
 
 	left := &BasePlugin{}
 	left.SetDependencies(Dependencies{
@@ -154,7 +140,7 @@ func TestBasePluginScopedDependenciesRemainInstanceScoped(t *testing.T) {
 		Tasks:     rightOwner,
 	})
 
-	if left.ScopedSecrets().AttemptID() == right.ScopedSecrets().AttemptID() {
+	if left.ScopedSecrets().Generation() == right.ScopedSecrets().Generation() {
 		t.Fatal("secret capabilities were not isolated")
 	}
 	if consumer, ok := left.ConsumerLookup().ConsumerByID("left"); !ok || consumer.Username != "left" {

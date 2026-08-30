@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
-	"reflect"
 	"strings"
 	"sync"
 
@@ -18,18 +17,14 @@ var (
 	ErrInvalidCapability         = errors.New("invalid secret capability")
 	ErrCapabilityScopeMismatch   = errors.New("secret capability scope mismatch")
 	ErrInvalidScope              = errors.New("invalid secret scope")
-	ErrAttemptAlreadyRegistered  = errors.New("secret attempt already registered")
-	errSecretDeclarationInvalid  = errors.New("secret declaration is not admitted")
 	errSecretUseCallbackRequired = errors.New("secret use callback is required")
 )
 
-// Scope identifies the exact resource and declaration admitted by one
-// generation attempt. Domain is deliberately part of the authority key: the
-// same resource key may have different bytes in independently published
-// domains.
+// Scope identifies one declared secret field in an immutable runtime
+// generation. The compiler supplies every field except Field; plugins may only
+// select a field declared for their own factory and source.
 type Scope struct {
 	Generation uint64
-	Attempt    AttemptID
 	Domain     generation.Domain
 	Plugin     string
 	Resource   generation.ResourceKey
@@ -49,58 +44,43 @@ func (value Value) Use(use func(string) error) error {
 	return use(value.plaintext)
 }
 
-func (value Value) Digest() [32]byte {
-	return value.digest
-}
+func (value Value) Digest() [32]byte { return value.digest }
 
-type ScopedResolver interface {
-	ResolveScoped(context.Context, Scope, string) (string, error)
-}
-
-type AttemptResolver interface {
-	ScopedResolver
+// GenerationResolver resolves external references against the exact resource
+// bytes owned by one generation and releases those bytes on Close.
+type GenerationResolver interface {
+	ResolveReference(context.Context, Scope, string) (string, error)
 	Close(context.Context) error
 }
 
-type AttemptResolverFactory interface {
-	OpenCandidate(
-		context.Context,
-		AttemptID,
-		generation.ApplyTicket,
-		generation.PublicationSet,
-	) (AttemptResolver, error)
+type GenerationResolverFactory interface {
+	// OpenGeneration transfers resolver ownership to the caller only when it
+	// returns a nil error. On error, implementations return nil after releasing
+	// any partial resources.
+	OpenGeneration(context.Context, uint64, generation.PublicationSet) (GenerationResolver, error)
 }
 
-type AttemptRegistration interface {
-	AttemptID() AttemptID
-	Materialize(context.Context, Scope, string) (Value, error)
+// GenerationMaterialization is the compiler-owned lifecycle handle. Runtime
+// plugins receive only its read-only Secrets view.
+type GenerationMaterialization interface {
+	Secrets() GenerationSecrets
 	Close(context.Context) error
 }
 
 type Materializer interface {
-	RegisterCandidate(
-		context.Context,
-		generation.ApplyTicket,
-		generation.PublicationSet,
-	) (AttemptRegistration, error)
+	PrepareGeneration(context.Context, generation.PublicationSet) (GenerationMaterialization, error)
 	DeclarationDigest() [32]byte
 }
 
 type materializer struct {
 	encryption data_encryption.Service
-	resolvers  AttemptResolverFactory
-	registry   *attemptRegistry
+	resolvers  GenerationResolverFactory
 }
 
-// NewMaterializer constructs the in-process materializer. A zero-value
-// encryption service or nil resolver factory creates a fail-closed value; it
-// never creates a registration that can resolve credentials.
-func NewMaterializer(encryption data_encryption.Service, resolvers AttemptResolverFactory) Materializer {
-	return &materializer{
-		encryption: encryption,
-		resolvers:  resolvers,
-		registry:   newAttemptRegistry(),
-	}
+// NewMaterializer constructs a generation-owned secret materializer. A zero
+// encryption service or nil resolver factory stays fail closed.
+func NewMaterializer(encryption data_encryption.Service, resolvers GenerationResolverFactory) Materializer {
+	return &materializer{encryption: encryption, resolvers: resolvers}
 }
 
 func (materializer *materializer) DeclarationDigest() [32]byte {
@@ -110,85 +90,62 @@ func (materializer *materializer) DeclarationDigest() [32]byte {
 	return materializer.encryption.DeclarationDigest()
 }
 
-func (materializer *materializer) RegisterCandidate(
+func (materializer *materializer) PrepareGeneration(
 	ctx context.Context,
-	ticket generation.ApplyTicket,
 	set generation.PublicationSet,
-) (AttemptRegistration, error) {
-	if materializer == nil ||
-		materializer.registry == nil ||
-		!materializer.encryption.Configured() ||
-		materializer.resolvers == nil {
+) (GenerationMaterialization, error) {
+	if materializer == nil || !materializer.encryption.Configured() || materializer.resolvers == nil {
 		return nil, ErrInvalidCapability
 	}
-	if err := validateCandidateRegistration(ticket, set); err != nil {
+	if err := validateGenerationPublication(set); err != nil {
 		return nil, err
 	}
 	ctx = normalizeContext(ctx)
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-
-	ownedTicket := cloneApplyTicket(ticket)
-	ownedSet := clonePublicationSet(set)
-	id, err := candidateAttemptIDChecked(ownedTicket, ownedSet)
-	if err != nil || id == (AttemptID{}) {
-		return nil, ErrInvalidCapability
-	}
-	allowed := buildCandidateClosureIndex(ownedSet)
-	if err := materializer.registry.reserve(id); err != nil {
-		return nil, err
-	}
-	resolver, openErr := materializer.resolvers.OpenCandidate(ctx, id, ownedTicket, ownedSet)
-	if openErr != nil || resolver == nil {
-		cleanupOpenedAttempt(materializer.registry, id, resolver, ctx)
+	owned := clonePublicationSet(set)
+	resolver, err := materializer.resolvers.OpenGeneration(ctx, set.DesiredRevision, owned)
+	if err != nil || resolver == nil {
+		if resolver != nil {
+			_ = resolver.Close(context.WithoutCancel(ctx))
+		}
 		return nil, ErrCredentialUnavailable
 	}
-
-	registration := newAttemptRegistration(
-		id,
-		ticket.DesiredRevision,
-		allowed,
-		func(resolveCtx context.Context, scope Scope, raw string) (string, error) {
-			return materializer.resolve(resolver, resolveCtx, scope, raw)
-		},
-		resolver.Close,
-		materializer.registry,
-	)
-	materializer.registry.activate(id)
-	return registration, nil
+	state := &generationSecretsState{
+		generation: set.DesiredRevision,
+		allowed:    buildGenerationClosureIndex(owned),
+		encryption: materializer.encryption,
+		resolver:   resolver,
+		resources:  newGenerationResourceSet(),
+	}
+	return &generationMaterialization{state: state}, nil
 }
 
-func (materializer *materializer) resolve(
-	resolver AttemptResolver,
-	ctx context.Context,
-	scope Scope,
-	raw string,
-) (string, error) {
-	if _, err := materializer.encryption.ValidateDeclaration(scope.Plugin, scope.Source, scope.Field); err != nil {
-		return "", errSecretDeclarationInvalid
-	}
-	if isReference(raw) {
-		return resolver.ResolveScoped(ctx, scope, raw)
-	}
-	resolved, err := materializer.encryption.ResolveDeclared(scope.Plugin, scope.Source, scope.Field, raw)
-	if err != nil {
-		return "", err
-	}
-	if isReference(resolved) {
-		return resolver.ResolveScoped(ctx, scope, resolved)
-	}
-	return resolved, nil
+type generationMaterialization struct {
+	state *generationSecretsState
 }
 
-type attemptRegistration struct {
-	id         AttemptID
+func (materialization *generationMaterialization) Secrets() GenerationSecrets {
+	if materialization == nil {
+		return GenerationSecrets{}
+	}
+	return GenerationSecrets{state: materialization.state}
+}
+
+func (materialization *generationMaterialization) Close(ctx context.Context) error {
+	if materialization == nil || materialization.state == nil {
+		return ErrInvalidCapability
+	}
+	return materialization.state.close(ctx)
+}
+
+type generationSecretsState struct {
 	generation uint64
 	allowed    closureIndex
-	resolve    func(context.Context, Scope, string) (string, error)
-	close      func(context.Context) error
-	registry   *attemptRegistry
-	resources  *attemptResourceSet
+	encryption data_encryption.Service
+	resolver   GenerationResolver
+	resources  *generationResourceSet
 
 	gate      sync.RWMutex
 	closed    bool
@@ -196,173 +153,112 @@ type attemptRegistration struct {
 	closeErr  error
 }
 
-func newAttemptRegistration(
-	id AttemptID,
-	generationNumber uint64,
-	allowed closureIndex,
-	resolve func(context.Context, Scope, string) (string, error),
-	closeAttempt func(context.Context) error,
-	registry *attemptRegistry,
-) *attemptRegistration {
-	return &attemptRegistration{
-		id:         id,
-		generation: generationNumber,
-		allowed:    allowed,
-		resolve:    resolve,
-		close:      closeAttempt,
-		registry:   registry,
-		resources:  newAttemptResourceSet(),
-	}
+// GenerationSecrets is the generation-local view injected into plugins. It
+// has no lifecycle authority and cannot be recreated from provider tickets.
+type GenerationSecrets struct {
+	state *generationSecretsState
 }
 
-func (registration *attemptRegistration) generationResources() *attemptResourceSet {
-	if registration == nil {
-		return nil
+func (secrets GenerationSecrets) Generation() uint64 {
+	if secrets.state == nil {
+		return 0
 	}
-	return registration.resources
+	return secrets.state.generation
 }
 
-func (registration *attemptRegistration) AttemptID() AttemptID {
-	if registration == nil {
-		return AttemptID{}
+func (secrets GenerationSecrets) Valid() bool {
+	if secrets.state == nil || secrets.state.generation == 0 || secrets.state.resources == nil {
+		return false
 	}
-	return registration.id
+	secrets.state.gate.RLock()
+	defer secrets.state.gate.RUnlock()
+	return !secrets.state.closed
 }
 
-func (registration *attemptRegistration) Materialize(ctx context.Context, scope Scope, raw string) (Value, error) {
-	if registration == nil {
+func (secrets GenerationSecrets) SameGeneration(other GenerationSecrets) bool {
+	return secrets.Valid() && other.Valid() && secrets.state == other.state
+}
+
+func (secrets GenerationSecrets) SharedLimiter(name string, capacity int) (GenerationLimiter, error) {
+	if !secrets.Valid() {
+		return GenerationLimiter{}, ErrInvalidCapability
+	}
+	return secrets.state.resources.limiter(name, capacity)
+}
+
+func (secrets GenerationSecrets) Materialize(
+	ctx context.Context,
+	scope Scope,
+	raw string,
+) (Value, error) {
+	if secrets.state == nil {
 		return Value{}, ErrInvalidCapability
 	}
 	ctx = normalizeContext(ctx)
-	registration.gate.RLock()
-	defer registration.gate.RUnlock()
-	if registration.closed {
+	secrets.state.gate.RLock()
+	defer secrets.state.gate.RUnlock()
+	if secrets.state.closed {
 		return Value{}, ErrCredentialUnavailable
 	}
 	if err := validateScope(scope); err != nil {
 		return Value{}, err
 	}
-	if scope.Generation != registration.generation || scope.Attempt != registration.id ||
-		!registration.allowed.Contains(scope.Domain, scope.Resource) {
+	if scope.Generation != secrets.state.generation ||
+		!secrets.state.allowed.Contains(scope.Domain, scope.Resource) {
 		return Value{}, ErrCapabilityScopeMismatch
 	}
 	if err := ctx.Err(); err != nil {
 		return Value{}, err
 	}
-	if registration.resolve == nil {
+	if _, err := secrets.state.encryption.ValidateDeclaration(scope.Plugin, scope.Source, scope.Field); err != nil {
+		return Value{}, ErrInvalidScope
+	}
+	resolved, err := secrets.state.encryption.ResolveDeclared(scope.Plugin, scope.Source, scope.Field, raw)
+	if err != nil {
 		return Value{}, ErrCredentialUnavailable
 	}
-	resolved, err := registration.resolve(ctx, scope, raw)
-	if err != nil {
-		if errors.Is(err, errSecretDeclarationInvalid) {
-			return Value{}, ErrInvalidScope
+	if isReference(resolved) {
+		resolved, err = secrets.state.resolver.ResolveReference(ctx, scope, resolved)
+		if err != nil {
+			if contextErr := ctx.Err(); contextErr != nil {
+				return Value{}, contextErr
+			}
+			return Value{}, ErrCredentialUnavailable
 		}
-		return Value{}, ErrCredentialUnavailable
 	}
 	return newValue(resolved), nil
 }
 
-func (registration *attemptRegistration) Close(ctx context.Context) error {
-	if registration == nil {
-		return ErrInvalidCapability
-	}
+func (state *generationSecretsState) close(ctx context.Context) error {
 	ctx = normalizeContext(ctx)
-	registration.closeOnce.Do(func() {
-		registration.gate.Lock()
-		registration.closed = true
-		registration.gate.Unlock()
-		registration.resources.stop()
-
-		cleanupErr := error(nil)
-		if registration.close != nil {
-			cleanupErr = registration.close(context.WithoutCancel(ctx))
+	state.closeOnce.Do(func() {
+		state.gate.Lock()
+		state.closed = true
+		state.resources.stop()
+		resolver := state.resolver
+		state.resolver = nil
+		state.allowed = nil
+		state.gate.Unlock()
+		if resolver != nil && resolver.Close(context.WithoutCancel(ctx)) != nil {
+			state.closeErr = ErrCredentialUnavailable
 		}
-		if cleanupErr != nil {
-			registration.closeErr = ErrCredentialUnavailable
-			registration.registry.quarantine(registration.id)
-			return
-		}
-		registration.registry.release(registration.id)
 	})
-	return registration.closeErr
+	return state.closeErr
 }
 
-type GenerationCapability struct {
-	generation uint64
-	attempt    AttemptRegistration
-	resources  *attemptResourceSet
-}
-
-func NewGenerationCapability(attempt AttemptRegistration, generationNumber uint64) (GenerationCapability, error) {
-	if attempt == nil || generationNumber == 0 || attempt.AttemptID() == (AttemptID{}) {
-		return GenerationCapability{}, ErrInvalidCapability
+func validateGenerationPublication(set generation.PublicationSet) error {
+	if set.DesiredRevision == 0 || len(set.Domains) == 0 {
+		return ErrInvalidCapability
 	}
-	resources := newAttemptResourceSet()
-	if provider, ok := attempt.(interface{ generationResources() *attemptResourceSet }); ok {
-		if owned := provider.generationResources(); owned != nil {
-			resources = owned
+	for domain, candidate := range set.Domains {
+		if domain != generation.DomainHTTP && domain != generation.DomainStream {
+			return ErrInvalidCapability
 		}
-	}
-	return GenerationCapability{
-		generation: generationNumber,
-		attempt:    attempt,
-		resources:  resources,
-	}, nil
-}
-
-func (capability GenerationCapability) AttemptID() AttemptID {
-	if capability.attempt == nil {
-		return AttemptID{}
-	}
-	return capability.attempt.AttemptID()
-}
-
-func (capability GenerationCapability) Generation() uint64 {
-	return capability.generation
-}
-
-func (capability GenerationCapability) Valid() bool {
-	return capability.generation != 0 && capability.AttemptID() != (AttemptID{}) && capability.resources != nil
-}
-
-// SharedLimiter returns one attempt-owned named limiter. Repeated calls with
-// the same name and capacity share slots; a capacity mismatch fails closed.
-func (capability GenerationCapability) SharedLimiter(name string, capacity int) (AttemptLimiter, error) {
-	if !capability.Valid() {
-		return AttemptLimiter{}, ErrInvalidCapability
-	}
-	return capability.resources.limiter(name, capacity)
-}
-
-// SameAuthority reports whether both capabilities refer to the exact same
-// registration and generation. It exposes no registration lifecycle methods
-// or internal authority fields and fails closed for non-pointer registrations.
-func (capability GenerationCapability) SameAuthority(other GenerationCapability) bool {
-	if !capability.Valid() || !other.Valid() || capability.generation != other.generation {
-		return false
-	}
-	left := reflect.ValueOf(capability.attempt)
-	right := reflect.ValueOf(other.attempt)
-	return left.IsValid() && right.IsValid() && left.Type() == right.Type() &&
-		left.Kind() == reflect.Pointer && left.Pointer() == right.Pointer()
-}
-
-func (capability GenerationCapability) Materialize(ctx context.Context, scope Scope, raw string) (Value, error) {
-	if capability.attempt == nil || capability.generation == 0 {
-		return Value{}, ErrInvalidCapability
-	}
-	if scope.Generation != capability.generation || scope.Attempt != capability.AttemptID() {
-		return Value{}, ErrCapabilityScopeMismatch
-	}
-	return capability.attempt.Materialize(ctx, scope, raw)
-}
-
-func validateCandidateRegistration(ticket generation.ApplyTicket, set generation.PublicationSet) error {
-	if err := generation.ValidatePublicationSet(ticket, set); err != nil {
-		return ErrInvalidCapability
-	}
-	if len(ticket.RequiredDomains) == 0 {
-		return ErrInvalidCapability
+		if err := generation.ValidatePublicationCandidate(
+			domain, set.DesiredRevision, candidate,
+		); err != nil {
+			return ErrInvalidCapability
+		}
 	}
 	return nil
 }
@@ -378,7 +274,7 @@ func (index closureIndex) Contains(domain generation.Domain, resource generation
 	return ok
 }
 
-func buildCandidateClosureIndex(set generation.PublicationSet) closureIndex {
+func buildGenerationClosureIndex(set generation.PublicationSet) closureIndex {
 	index := make(closureIndex, len(set.Domains))
 	for domain, candidate := range set.Domains {
 		resources := make(map[generation.ResourceKey]struct{})
@@ -397,7 +293,7 @@ func buildCandidateClosureIndex(set generation.PublicationSet) closureIndex {
 }
 
 func validateScope(scope Scope) error {
-	if scope.Generation == 0 || scope.Attempt == (AttemptID{}) ||
+	if scope.Generation == 0 ||
 		(scope.Domain != generation.DomainHTTP && scope.Domain != generation.DomainStream) ||
 		scope.Plugin == "" || scope.Resource.Kind == "" || scope.Resource.ID == "" ||
 		(scope.Source != capability.SecretPluginConfig && scope.Source != capability.SecretPluginMetadata &&
@@ -423,87 +319,17 @@ func normalizeContext(ctx context.Context) context.Context {
 	return ctx
 }
 
-type attemptState uint8
-
-const (
-	attemptReserved attemptState = iota + 1
-	attemptLive
-	attemptQuarantined
-)
-
-type attemptRegistry struct {
-	mu       sync.Mutex
-	attempts map[AttemptID]attemptState
-}
-
-func cleanupOpenedAttempt(
-	registry *attemptRegistry,
-	id AttemptID,
-	resolver AttemptResolver,
-	ctx context.Context,
-) {
-	if resolver != nil && resolver.Close(context.WithoutCancel(normalizeContext(ctx))) != nil {
-		registry.quarantine(id)
-		return
-	}
-	registry.release(id)
-}
-
-func newAttemptRegistry() *attemptRegistry {
-	return &attemptRegistry{attempts: make(map[AttemptID]attemptState)}
-}
-
-func (registry *attemptRegistry) reserve(id AttemptID) error {
-	registry.mu.Lock()
-	defer registry.mu.Unlock()
-	if _, exists := registry.attempts[id]; exists {
-		return ErrAttemptAlreadyRegistered
-	}
-	registry.attempts[id] = attemptReserved
-	return nil
-}
-
-func (registry *attemptRegistry) activate(id AttemptID) {
-	registry.mu.Lock()
-	defer registry.mu.Unlock()
-	if registry.attempts[id] == attemptReserved {
-		registry.attempts[id] = attemptLive
-	}
-}
-
-func (registry *attemptRegistry) release(id AttemptID) {
-	registry.mu.Lock()
-	defer registry.mu.Unlock()
-	delete(registry.attempts, id)
-}
-
-func (registry *attemptRegistry) quarantine(id AttemptID) {
-	registry.mu.Lock()
-	defer registry.mu.Unlock()
-	registry.attempts[id] = attemptQuarantined
-}
-
-func cloneApplyTicket(ticket generation.ApplyTicket) generation.ApplyTicket {
-	ticket.RequiredDomains = append([]generation.Domain(nil), ticket.RequiredDomains...)
-	return ticket
-}
-
 func clonePublicationSet(set generation.PublicationSet) generation.PublicationSet {
 	owned := generation.PublicationSet{
 		DesiredRevision: set.DesiredRevision,
 		Domains:         make(map[generation.Domain]generation.PublicationCandidate, len(set.Domains)),
 	}
 	for domain, candidate := range set.Domains {
-		owned.Domains[domain] = clonePublicationCandidate(candidate)
+		owned.Domains[domain] = generation.PublicationCandidate{
+			Artifact: candidate.Artifact, Snapshot: candidate.Snapshot.Clone(),
+			Closure:   append([]generation.ResourceKey(nil), candidate.Closure...),
+			Decisions: append([]generation.ResourceDecision(nil), candidate.Decisions...),
+		}
 	}
 	return owned
-}
-
-func clonePublicationCandidate(candidate generation.PublicationCandidate) generation.PublicationCandidate {
-	return generation.PublicationCandidate{
-		Artifact:  candidate.Artifact,
-		Snapshot:  candidate.Snapshot.Clone(),
-		Closure:   append([]generation.ResourceKey(nil), candidate.Closure...),
-		Decisions: append([]generation.ResourceDecision(nil), candidate.Decisions...),
-	}
 }

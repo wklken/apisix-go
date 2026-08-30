@@ -179,7 +179,7 @@ func (p *Plugin) MaterializeScopedSecrets(
 // manifest-declared secret fields. Such a configuration keeps its literal
 // values in the plugin config and still enters the same credential lifecycle
 // as a scoped materialization. Secret envelopes are rejected instead of being
-// allowed to bypass the attempt-bound materializer.
+// allowed to bypass generation-scoped materialization.
 func (p *Plugin) PrepareConsumerConfig() error {
 	p.beginLimitCountPreparation()
 	defer p.endLimitCountPreparation()

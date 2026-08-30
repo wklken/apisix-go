@@ -60,7 +60,7 @@ func (prepared *PreparedGeneration) effectiveHTTPBindingSpec(
 	resourceContext effectiveBindingResourceContext,
 	runtimeContext effectiveBindingRuntimeContext,
 ) (effectiveBindingSpec, error) {
-	if prepared == nil || prepared.attempt.authority == nil || plan.Factory == "" ||
+	if prepared == nil || !prepared.preparation.secrets.Valid() || plan.Factory == "" ||
 		plan.Source.Kind == "" || plan.Source.ID == "" {
 		return effectiveBindingSpec{}, fmt.Errorf(
 			"%w: HTTP binding plan is incomplete",
@@ -103,7 +103,7 @@ func (prepared *PreparedGeneration) effectiveHTTPBindingSource(
 				ErrInvalidInput,
 			)
 		}
-		for _, occurrence := range prepared.attempt.Occurrences(capability.SecretConsumerConfig) {
+		for _, occurrence := range prepared.preparation.Occurrences(capability.SecretConsumerConfig) {
 			if occurrence.Domain() == generation.DomainHTTP &&
 				occurrence.Resource() == plan.Source &&
 				occurrence.Factory() == plan.Factory {
@@ -125,7 +125,7 @@ func (prepared *PreparedGeneration) effectiveHTTPBindingSource(
 				ErrInvalidInput,
 			)
 		}
-		for _, occurrence := range prepared.attempt.Occurrences(capability.SecretPluginConfig) {
+		for _, occurrence := range prepared.preparation.Occurrences(capability.SecretPluginConfig) {
 			if occurrence.Domain() == generation.DomainHTTP &&
 				occurrence.Resource() == plan.Source &&
 				occurrence.Factory() == plan.Factory {

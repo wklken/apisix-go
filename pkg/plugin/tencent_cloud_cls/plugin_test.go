@@ -74,12 +74,6 @@ type clsScopedSecretBroker struct {
 	calls  []clsScopedSecretCall
 }
 
-func (*clsScopedSecretBroker) AuthorizeCandidate(
-	context.Context, secret.AttemptID, generation.ApplyTicket, generation.PublicationSet,
-) error {
-	return nil
-}
-
 func (broker *clsScopedSecretBroker) ResolveScoped(
 	ctx context.Context, scope secret.Scope, raw string,
 ) (string, error) {
@@ -99,8 +93,6 @@ func (broker *clsScopedSecretBroker) ResolveScoped(
 	return value, nil
 }
 
-func (*clsScopedSecretBroker) RevokeAttempt(context.Context, secret.AttemptID) error { return nil }
-
 func (broker *clsScopedSecretBroker) scopedCalls() []clsScopedSecretCall {
 	broker.mu.Lock()
 	defer broker.mu.Unlock()
@@ -114,7 +106,7 @@ func newCLSScopedSecretHarness(
 	config Config,
 	values map[string]string,
 	keyring ...string,
-) (secret.GenerationCapability, secret.Scope, *clsScopedSecretBroker, func()) {
+) (secret.GenerationSecrets, secret.Scope, *clsScopedSecretBroker, func()) {
 	t.Helper()
 	key := generation.ResourceKey{Kind: "routes", ID: resourceID}
 	document, err := json.Marshal(map[string]any{
@@ -140,10 +132,6 @@ func newCLSScopedSecretHarness(
 			Key: key, Disposition: generation.DispositionPublished, Code: "cls-test",
 		}},
 	}
-	ticket := generation.ApplyTicket{
-		DesiredRevision: revision, DesiredDigest: snapshot.Digest(),
-		RequiredDomains: []generation.Domain{generation.DomainHTTP},
-	}
 	publication := generation.PublicationSet{
 		DesiredRevision: revision,
 		Domains: map[generation.Domain]generation.PublicationCandidate{
@@ -159,24 +147,19 @@ func newCLSScopedSecretHarness(
 		t.Fatal(err)
 	}
 	broker := &clsScopedSecretBroker{values: values, fail: make(map[string]error)}
-	registration, err := testutil.NewSecretMaterializerWithKeyring(broker, catalog, keyring).RegisterCandidate(
-		context.Background(), ticket, publication,
-	)
+	materialization, err := testutil.NewSecretMaterializerWithKeyring(broker, catalog, keyring).
+		PrepareGeneration(context.Background(), publication)
 	if err != nil {
 		t.Fatal(err)
 	}
-	capabilityValue, err := secret.NewGenerationCapability(registration, revision)
-	if err != nil {
-		_ = registration.Close(context.Background())
-		t.Fatal(err)
-	}
+	secrets := materialization.Secrets()
 	scope := secret.Scope{
-		Generation: revision, Attempt: registration.AttemptID(), Domain: generation.DomainHTTP,
+		Generation: revision, Domain: generation.DomainHTTP,
 		Plugin: name, Resource: key, Source: capability.SecretPluginConfig,
 	}
-	return capabilityValue, scope, broker, func() {
-		if err := registration.Close(context.Background()); err != nil {
-			t.Errorf("close CLS scoped attempt: %v", err)
+	return secrets, scope, broker, func() {
+		if err := materialization.Close(context.Background()); err != nil {
+			t.Errorf("close CLS scoped generation: %v", err)
 		}
 	}
 }
@@ -193,7 +176,7 @@ func TestMaterializeScopedSecretsOwnsTencentCLSSecretKey(t *testing.T) {
 		CLSHost: "cls.example.com", CLSTopic: "topic-a",
 		SecretID: "ordinary-secret-id", SecretKey: raw,
 	}
-	capabilityValue, scope, broker, closeAttempt := newCLSScopedSecretHarness(
+	secrets, scope, broker, closeAttempt := newCLSScopedSecretHarness(
 		t, 101, "route-cls", config, map[string]string{raw: plaintext},
 	)
 	defer closeAttempt()
@@ -202,7 +185,7 @@ func TestMaterializeScopedSecretsOwnsTencentCLSSecretKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, capabilityValue, p,
+		context.Background(), scope, secrets, p,
 	); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
@@ -230,7 +213,7 @@ func TestMaterializeScopedSecretsSupportsCLSReferences(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			plaintext := "resolved-" + test.name
 			config := Config{SecretID: "opaque-secret-id", SecretKey: test.raw}
-			capabilityValue, scope, broker, closeAttempt := newCLSScopedSecretHarness(
+			secrets, scope, broker, closeAttempt := newCLSScopedSecretHarness(
 				t, uint64(110+index), "route-"+test.name, config,
 				map[string]string{test.raw: plaintext},
 			)
@@ -240,7 +223,7 @@ func TestMaterializeScopedSecretsSupportsCLSReferences(t *testing.T) {
 				t.Fatal(err)
 			}
 			if err := base.MaterializeScopedPluginSecrets(
-				context.Background(), scope, capabilityValue, p,
+				context.Background(), scope, secrets, p,
 			); err != nil {
 				t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 			}
@@ -258,7 +241,7 @@ func TestMaterializeScopedSecretsSupportsCLSReferences(t *testing.T) {
 func TestMaterializeScopedSecretsRejectsSecretIDReferenceWithoutBrokerCall(t *testing.T) {
 	const rawKey = "$ENV://CLS_SECRET_KEY"
 	config := Config{SecretID: "$secret://must/not/resolve", SecretKey: rawKey}
-	capabilityValue, scope, broker, closeAttempt := newCLSScopedSecretHarness(
+	secrets, scope, broker, closeAttempt := newCLSScopedSecretHarness(
 		t, 120, "route-secret-id", config, map[string]string{rawKey: "private-key"},
 	)
 	defer closeAttempt()
@@ -266,7 +249,7 @@ func TestMaterializeScopedSecretsRejectsSecretIDReferenceWithoutBrokerCall(t *te
 	if err := p.Init(); err != nil {
 		t.Fatal(err)
 	}
-	err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p)
+	err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p)
 	if err == nil || strings.Contains(err.Error(), config.SecretID) ||
 		strings.Contains(err.Error(), rawKey) {
 		t.Fatalf("materialization error = %v, want redacted fail-closed rejection", err)
@@ -287,7 +270,7 @@ func TestMaterializeScopedSecretsFailureIsAtomicAndRetryable(t *testing.T) {
 	const raw = "$secret://vault/cls/key"
 	const plaintext = "resolved-private-cls-key"
 	config := Config{SecretID: "secret-id", SecretKey: raw}
-	capabilityValue, scope, broker, closeAttempt := newCLSScopedSecretHarness(
+	secrets, scope, broker, closeAttempt := newCLSScopedSecretHarness(
 		t, 121, "route-retry", config, map[string]string{raw: plaintext},
 	)
 	defer closeAttempt()
@@ -296,7 +279,7 @@ func TestMaterializeScopedSecretsFailureIsAtomicAndRetryable(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatal(err)
 	}
-	err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p)
+	err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p)
 	if err == nil || strings.Contains(err.Error(), raw) || strings.Contains(err.Error(), plaintext) {
 		t.Fatalf("first materialization error = %v, want redacted error", err)
 	}
@@ -311,7 +294,7 @@ func TestMaterializeScopedSecretsFailureIsAtomicAndRetryable(t *testing.T) {
 	delete(broker.fail, raw)
 	broker.mu.Unlock()
 	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, capabilityValue, p,
+		context.Background(), scope, secrets, p,
 	); err != nil {
 		t.Fatalf("retry MaterializeScopedPluginSecrets() error = %v", err)
 	}
@@ -326,7 +309,7 @@ func TestMaterializeScopedSecretsFailureIsAtomicAndRetryable(t *testing.T) {
 func TestMaterializeScopedSecretsSingleflight(t *testing.T) {
 	const raw = "$ENV://CLS_SECRET_KEY"
 	config := Config{SecretID: "secret-id", SecretKey: raw}
-	capabilityValue, scope, broker, closeAttempt := newCLSScopedSecretHarness(
+	secrets, scope, broker, closeAttempt := newCLSScopedSecretHarness(
 		t, 122, "route-singleflight", config, map[string]string{raw: "resolved-key"},
 	)
 	defer closeAttempt()
@@ -338,7 +321,7 @@ func TestMaterializeScopedSecretsSingleflight(t *testing.T) {
 	errs := make(chan error, 16)
 	for range 16 {
 		wg.Go(func() {
-			errs <- base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p)
+			errs <- base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p)
 		})
 	}
 	wg.Wait()
@@ -371,11 +354,11 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 		t.Fatalf("Init() error = %v", err)
 	}
 	p.now = func() time.Time { return time.Unix(1710000000, 0) }
-	capabilityValue, scope, _, cleanup := newCLSScopedSecretHarness(
+	secrets, scope, _, cleanup := newCLSScopedSecretHarness(
 		t, 1, "test-route", cfg, map[string]string{cfg.SecretKey: cfg.SecretKey},
 	)
 	t.Cleanup(cleanup)
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
@@ -441,11 +424,11 @@ func TestEffectiveLogFormatRejectsEmptyBeforeSideEffects(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	capabilityValue, scope, _, cleanup := newCLSScopedSecretHarness(
+	secrets, scope, _, cleanup := newCLSScopedSecretHarness(
 		t, 1, "empty-log-format", p.config, map[string]string{p.config.SecretKey: p.config.SecretKey},
 	)
 	t.Cleanup(cleanup)
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	t.Cleanup(p.Stop)
@@ -476,11 +459,11 @@ func newRawTestPlugin(t *testing.T, cfg Config, metadata runtime.MetadataView) *
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	capabilityValue, scope, _, cleanup := newCLSScopedSecretHarness(
+	secrets, scope, _, cleanup := newCLSScopedSecretHarness(
 		t, 1, "raw-metadata", p.config, map[string]string{p.config.SecretKey: p.config.SecretKey},
 	)
 	t.Cleanup(cleanup)
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
@@ -569,12 +552,12 @@ func TestPostInitResolvesRotatedEncryptedSecretKey(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	capabilityValue, scope, _, cleanup := newCLSScopedSecretHarness(
+	secrets, scope, _, cleanup := newCLSScopedSecretHarness(
 		t, 1, "rotated-secret", p.config, map[string]string{p.config.SecretKey: "cls-secret"},
 		newKey, oldKey,
 	)
 	t.Cleanup(cleanup)
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
@@ -664,7 +647,7 @@ func newScopedReadyCLSPlugin(
 	if len(config.LogFormat) == 0 {
 		config.LogFormat = map[string]string{"request_id": "$request_id"}
 	}
-	capabilityValue, scope, _, closeAttempt := newCLSScopedSecretHarness(
+	secrets, scope, _, closeAttempt := newCLSScopedSecretHarness(
 		t, revision, resourceID, config, map[string]string{config.SecretKey: resolved},
 	)
 	t.Cleanup(closeAttempt)
@@ -675,7 +658,7 @@ func newScopedReadyCLSPlugin(
 		t.Fatal(err)
 	}
 	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, capabilityValue, p,
+		context.Background(), scope, secrets, p,
 	); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
@@ -1029,7 +1012,7 @@ func TestCLSStopBeforePostInitPreventsPublication(t *testing.T) {
 		CLSHost: "cls.example.com", CLSTopic: "topic-a", SecretID: "secret-id",
 		SecretKey: "$ENV://CLS_PREPARED_KEY", LogFormat: map[string]string{"id": "$request_id"},
 	}
-	capabilityValue, scope, _, closeAttempt := newCLSScopedSecretHarness(
+	secrets, scope, _, closeAttempt := newCLSScopedSecretHarness(
 		t, 135, "route-prepared", config,
 		map[string]string{config.SecretKey: "prepared-private-key"},
 	)
@@ -1039,7 +1022,7 @@ func TestCLSStopBeforePostInitPreventsPublication(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, capabilityValue, p,
+		context.Background(), scope, secrets, p,
 	); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
@@ -1383,11 +1366,11 @@ func TestMetadataDecodeFailsBeforeCLSClientAndProcessorAcquisition(t *testing.T)
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	capabilityValue, scope, _, cleanup := newCLSScopedSecretHarness(
+	secrets, scope, _, cleanup := newCLSScopedSecretHarness(
 		t, 1, "invalid-metadata", p.config, map[string]string{p.config.SecretKey: p.config.SecretKey},
 	)
 	t.Cleanup(cleanup)
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	err := p.PostInit()

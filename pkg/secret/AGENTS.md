@@ -5,7 +5,7 @@ This file inherits the repository root `AGENTS.md` and applies to `pkg/secret`.
 ## Authority and access
 
 - Declarations come from the capability manifest. Preserve full scope:
-  generation, attempt, domain, factory, resource kind/id, source, and field.
+  generation, domain, factory, resource kind/id, source, and field.
 - Resolver access is limited to defensive bytes in the exact publication
   closure. Do not add Store/global config lookup.
 - Catalog digest mismatch fails compiler/factory construction closed.
@@ -17,10 +17,10 @@ This file inherits the repository root `AGENTS.md` and applies to `pkg/secret`.
   redacted digest/descriptor. Never return plaintext from a status API.
 - Errors, logs, metrics, status, and cleanup ledgers must not contain plaintext,
   ciphertext, references, or key material.
-- Attempt cache bounds, TTL, eviction, expiry, and close must zero retained
+- Generation cache bounds, TTL, eviction, expiry, and close must zero retained
   bytes. Close waits for in-flight use.
-- Incomplete close retains the attempt identity and authority for retry; it must
-  not permit a replacement attempt with the same identity.
+- The lifecycle-capable materialization stays compiler-owned; plugins receive
+  only a read-only `GenerationSecrets` view. Closing it invalidates that view.
 
 ## Focused verification
 

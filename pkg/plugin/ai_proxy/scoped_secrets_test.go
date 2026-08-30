@@ -43,12 +43,6 @@ func (transport *aiProxyCloseRecordingTransport) CloseIdleConnections() {
 	transport.closeOnce.Do(func() { close(transport.closed) })
 }
 
-func (*aiProxyScopedSecretBroker) AuthorizeCandidate(
-	context.Context, secret.AttemptID, generation.ApplyTicket, generation.PublicationSet,
-) error {
-	return nil
-}
-
 func (broker *aiProxyScopedSecretBroker) ResolveScoped(
 	ctx context.Context, scope secret.Scope, raw string,
 ) (string, error) {
@@ -63,13 +57,9 @@ func (broker *aiProxyScopedSecretBroker) ResolveScoped(
 	return value, nil
 }
 
-func (*aiProxyScopedSecretBroker) RevokeAttempt(context.Context, secret.AttemptID) error {
-	return nil
-}
-
 func newAIProxyScopedSecretHarness(
 	t *testing.T, factory string, values map[string]string,
-) (secret.GenerationCapability, secret.Scope, *aiProxyScopedSecretBroker, func()) {
+) (secret.GenerationSecrets, secret.Scope, *aiProxyScopedSecretBroker, func()) {
 	t.Helper()
 	const revision = uint64(121)
 	key := generation.ResourceKey{Kind: "routes", ID: factory + "-scoped"}
@@ -90,9 +80,6 @@ func newAIProxyScopedSecretHarness(
 			Key: key, Disposition: generation.DispositionPublished, Code: "ai-proxy-scoped-test",
 		}},
 	}
-	ticket := generation.ApplyTicket{
-		DesiredRevision: revision, RequiredDomains: []generation.Domain{generation.DomainHTTP},
-	}
 	publication := generation.PublicationSet{
 		DesiredRevision: revision,
 		Domains: map[generation.Domain]generation.PublicationCandidate{
@@ -108,24 +95,19 @@ func newAIProxyScopedSecretHarness(
 		t.Fatal(err)
 	}
 	broker := &aiProxyScopedSecretBroker{values: values}
-	registration, err := testutil.NewSecretMaterializer(broker, catalog).RegisterCandidate(
-		context.Background(), ticket, publication,
-	)
+	materialization, err := testutil.NewSecretMaterializer(broker, catalog).
+		PrepareGeneration(context.Background(), publication)
 	if err != nil {
 		t.Fatal(err)
 	}
-	capabilityValue, err := secret.NewGenerationCapability(registration, revision)
-	if err != nil {
-		_ = registration.Close(context.Background())
-		t.Fatal(err)
-	}
+	secrets := materialization.Secrets()
 	scope := secret.Scope{
-		Generation: revision, Attempt: registration.AttemptID(), Domain: generation.DomainHTTP,
+		Generation: revision, Domain: generation.DomainHTTP,
 		Plugin: factory, Resource: key, Source: capability.SecretPluginConfig,
 	}
-	return capabilityValue, scope, broker, func() {
-		if err := registration.Close(context.Background()); err != nil {
-			t.Errorf("close scoped AI proxy attempt: %v", err)
+	return secrets, scope, broker, func() {
+		if err := materialization.Close(context.Background()); err != nil {
+			t.Errorf("close scoped AI proxy generation: %v", err)
 		}
 	}
 }
@@ -147,7 +129,7 @@ func TestMaterializeScopedSecretsOwnsAIProxyCredentials(t *testing.T) {
 		gcpRaw: `{"client_email":"resolved@example.com"}`,
 		awsRaw: "resolved-aws-secret", sessionRaw: "resolved-session",
 	}
-	capabilityValue, scope, broker, closeAttempt := newAIProxyScopedSecretHarness(t, name, values)
+	secrets, scope, broker, closeAttempt := newAIProxyScopedSecretHarness(t, name, values)
 	defer closeAttempt()
 	p := &Plugin{config: Config{Auth: Auth{
 		Header: map[string]string{"Authorization": headerRaw},
@@ -161,7 +143,7 @@ func TestMaterializeScopedSecretsOwnsAIProxyCredentials(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, capabilityValue, p,
+		context.Background(), scope, secrets, p,
 	); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
@@ -219,7 +201,7 @@ func TestMaterializeScopedSecretsOwnsAIProxyCredentials(t *testing.T) {
 
 func TestAIProxyStopDrainsCredentialUseAndClosesIdleConnections(t *testing.T) {
 	const raw = "$ENV://AI_PROXY_STOP_HEADER"
-	capabilityValue, scope, _, closeAttempt := newAIProxyScopedSecretHarness(
+	secrets, scope, _, closeAttempt := newAIProxyScopedSecretHarness(
 		t, name, map[string]string{raw: "Bearer private-stop-token"},
 	)
 	defer closeAttempt()
@@ -235,7 +217,7 @@ func TestAIProxyStopDrainsCredentialUseAndClosesIdleConnections(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, capabilityValue, p,
+		context.Background(), scope, secrets, p,
 	); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}

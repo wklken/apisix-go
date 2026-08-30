@@ -99,9 +99,9 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 
 func materializeOIDCTestPlugin(t *testing.T, p *Plugin) {
 	t.Helper()
-	capabilityValue, scope, _, cleanup := newOIDCScopedSecretHarness(t, 1, "test-route", nil)
+	secrets, scope, _, cleanup := newOIDCScopedSecretHarness(t, 1, "test-route", nil)
 	t.Cleanup(cleanup)
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 }
@@ -866,11 +866,11 @@ func TestMaterializeSecretsParsesPublicKeyAndKeepsOnlyDescriptor(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	capabilityValue, scope, _, cleanup := newOIDCScopedSecretHarness(t, 2, "public-key", map[string]string{
+	secrets, scope, _, cleanup := newOIDCScopedSecretHarness(t, 2, "public-key", map[string]string{
 		"$ENV://OPENID_CONNECT_PUBLIC_KEY": resolved,
 	})
 	defer cleanup()
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
@@ -908,11 +908,11 @@ func TestPostInitParsesStaticPublicKey(t *testing.T) {
 			if err := p.Init(); err != nil {
 				t.Fatalf("Init() error = %v", err)
 			}
-			capabilityValue, scope, _, cleanup := newOIDCScopedSecretHarness(
+			secrets, scope, _, cleanup := newOIDCScopedSecretHarness(
 				t, 3, "static-public-key-"+test.name, nil,
 			)
 			defer cleanup()
-			err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p)
+			err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p)
 			if test.wantErr {
 				if err == nil || err.Error() != "materialize plugin secrets: credential unavailable" {
 					t.Fatalf("MaterializeScopedPluginSecrets() error = %v, want redacted credential failure", err)

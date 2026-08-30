@@ -131,12 +131,6 @@ type logglyScopedSecretBroker struct {
 	calls  []logglyScopedSecretCall
 }
 
-func (*logglyScopedSecretBroker) AuthorizeCandidate(
-	context.Context, secret.AttemptID, generation.ApplyTicket, generation.PublicationSet,
-) error {
-	return nil
-}
-
 func (broker *logglyScopedSecretBroker) ResolveScoped(
 	ctx context.Context, scope secret.Scope, raw string,
 ) (string, error) {
@@ -156,10 +150,6 @@ func (broker *logglyScopedSecretBroker) ResolveScoped(
 	return value, nil
 }
 
-func (*logglyScopedSecretBroker) RevokeAttempt(context.Context, secret.AttemptID) error {
-	return nil
-}
-
 func (broker *logglyScopedSecretBroker) callsSnapshot() []logglyScopedSecretCall {
 	broker.mu.Lock()
 	defer broker.mu.Unlock()
@@ -173,7 +163,7 @@ func newLogglyScopedSecretHarness(
 	config Config,
 	values map[string]string,
 	keyring ...string,
-) (secret.GenerationCapability, secret.Scope, *logglyScopedSecretBroker, func()) {
+) (secret.GenerationSecrets, secret.Scope, *logglyScopedSecretBroker, func()) {
 	t.Helper()
 	key := generation.ResourceKey{Kind: "routes", ID: resourceID}
 	document, err := json.Marshal(map[string]any{
@@ -199,11 +189,6 @@ func newLogglyScopedSecretHarness(
 			Key: key, Disposition: generation.DispositionPublished, Code: "loggly-test",
 		}},
 	}
-	ticket := generation.ApplyTicket{
-		DesiredRevision: revision,
-		DesiredDigest:   snapshot.Digest(),
-		RequiredDomains: []generation.Domain{generation.DomainHTTP},
-	}
 	publication := generation.PublicationSet{
 		DesiredRevision: revision,
 		Domains: map[generation.Domain]generation.PublicationCandidate{
@@ -219,28 +204,22 @@ func newLogglyScopedSecretHarness(
 		t.Fatal(err)
 	}
 	broker := &logglyScopedSecretBroker{values: values, fail: make(map[string]error)}
-	registration, err := testutil.NewSecretMaterializerWithKeyring(broker, catalog, keyring).RegisterCandidate(
-		context.Background(), ticket, publication,
-	)
+	materialization, err := testutil.NewSecretMaterializerWithKeyring(broker, catalog, keyring).
+		PrepareGeneration(context.Background(), publication)
 	if err != nil {
 		t.Fatal(err)
 	}
-	capabilityValue, err := secret.NewGenerationCapability(registration, revision)
-	if err != nil {
-		_ = registration.Close(context.Background())
-		t.Fatal(err)
-	}
+	secrets := materialization.Secrets()
 	scope := secret.Scope{
 		Generation: revision,
-		Attempt:    registration.AttemptID(),
 		Domain:     generation.DomainHTTP,
 		Plugin:     name,
 		Resource:   key,
 		Source:     capability.SecretPluginConfig,
 	}
-	return capabilityValue, scope, broker, func() {
-		if err := registration.Close(context.Background()); err != nil {
-			t.Errorf("close Loggly scoped attempt: %v", err)
+	return secrets, scope, broker, func() {
+		if err := materialization.Close(context.Background()); err != nil {
+			t.Errorf("close Loggly scoped generation: %v", err)
 		}
 	}
 }
@@ -263,7 +242,7 @@ func TestMaterializeScopedSecretsOwnsLogglyToken(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			config := Config{CustomerToken: tt.raw, Protocol: "http", Host: "http://127.0.0.1"}
-			capabilityValue, scope, broker, closeAttempt := newLogglyScopedSecretHarness(
+			secrets, scope, broker, closeAttempt := newLogglyScopedSecretHarness(
 				t, uint64(index+1), "loggly-"+tt.name, config,
 				map[string]string{tt.raw: tt.resolved},
 				"qeddd145sfvddff3",
@@ -274,7 +253,7 @@ func TestMaterializeScopedSecretsOwnsLogglyToken(t *testing.T) {
 				t.Fatal(err)
 			}
 			if err := base.MaterializeScopedPluginSecrets(
-				context.Background(), scope, capabilityValue, p,
+				context.Background(), scope, secrets, p,
 			); err != nil {
 				t.Fatal(err)
 			}
@@ -309,7 +288,7 @@ func TestMaterializeScopedSecretsOwnsLogglyToken(t *testing.T) {
 
 	const failedRaw = "$secret://vault/loggly/failure"
 	config := Config{CustomerToken: failedRaw}
-	capabilityValue, scope, broker, closeAttempt := newLogglyScopedSecretHarness(
+	secrets, scope, broker, closeAttempt := newLogglyScopedSecretHarness(
 		t, 10, "loggly-retry", config, map[string]string{failedRaw: "recovered-private"},
 	)
 	defer closeAttempt()
@@ -318,7 +297,7 @@ func TestMaterializeScopedSecretsOwnsLogglyToken(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatal(err)
 	}
-	err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p)
+	err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p)
 	if !errors.Is(err, secret.ErrCredentialUnavailable) || strings.Contains(err.Error(), failedRaw) {
 		t.Fatalf("first materialization error = %v, want redacted unavailable", err)
 	}
@@ -329,7 +308,7 @@ func TestMaterializeScopedSecretsOwnsLogglyToken(t *testing.T) {
 	delete(broker.fail, failedRaw)
 	broker.mu.Unlock()
 	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, capabilityValue, p,
+		context.Background(), scope, secrets, p,
 	); err != nil {
 		t.Fatalf("same-instance retry error = %v", err)
 	}
@@ -342,7 +321,7 @@ func TestMaterializeScopedSecretsOwnsLogglyToken(t *testing.T) {
 func TestLogglyScopedMaterializationIsSingleFlight(t *testing.T) {
 	const raw = "$ENV://LOGGLY_SINGLEFLIGHT_TOKEN"
 	config := Config{CustomerToken: raw}
-	capabilityValue, scope, broker, closeAttempt := newLogglyScopedSecretHarness(
+	secrets, scope, broker, closeAttempt := newLogglyScopedSecretHarness(
 		t, 20, "loggly-singleflight", config, map[string]string{raw: "singleflight-private"},
 	)
 	defer closeAttempt()
@@ -357,7 +336,7 @@ func TestLogglyScopedMaterializationIsSingleFlight(t *testing.T) {
 		group.Go(func() {
 			<-start
 			errs <- base.MaterializeScopedPluginSecrets(
-				context.Background(), scope, capabilityValue, p,
+				context.Background(), scope, secrets, p,
 			)
 		})
 	}
@@ -391,7 +370,7 @@ func TestLogglyTokensAreAttemptOwnedAcrossHTTPDeliveries(t *testing.T) {
 			Timeout:       1000,
 			BatchMaxSize:  1,
 		}
-		capabilityValue, scope, _, closeAttempt := newLogglyScopedSecretHarness(
+		secrets, scope, _, closeAttempt := newLogglyScopedSecretHarness(
 			t, revision, resourceID, config, map[string]string{raw: resolved},
 		)
 		p := &Plugin{config: config}
@@ -401,7 +380,7 @@ func TestLogglyTokensAreAttemptOwnedAcrossHTTPDeliveries(t *testing.T) {
 			t.Fatal(err)
 		}
 		if err := base.MaterializeScopedPluginSecrets(
-			context.Background(), scope, capabilityValue, p,
+			context.Background(), scope, secrets, p,
 		); err != nil {
 			closeAttempt()
 			t.Fatal(err)
@@ -689,11 +668,11 @@ func newTestPluginWithMetadata(t *testing.T, cfg Config, metadata map[string]any
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	capabilityValue, scope, _, cleanup := newLogglyScopedSecretHarness(
+	secrets, scope, _, cleanup := newLogglyScopedSecretHarness(
 		t, 1, "test-route", cfg, map[string]string{cfg.CustomerToken: cfg.CustomerToken},
 	)
 	t.Cleanup(cleanup)
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
@@ -760,12 +739,12 @@ func TestPostInitResolvesRotatedEncryptedCustomerToken(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	capabilityValue, scope, _, cleanup := newLogglyScopedSecretHarness(
+	secrets, scope, _, cleanup := newLogglyScopedSecretHarness(
 		t, 1, "rotated-token", p.config, map[string]string{p.config.CustomerToken: "loggly-token"},
 		newKey, oldKey,
 	)
 	t.Cleanup(cleanup)
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
@@ -1448,11 +1427,11 @@ func TestMetadataDecodeFailsBeforeLogglyClientAndProcessorAcquisition(t *testing
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	capabilityValue, scope, _, cleanup := newLogglyScopedSecretHarness(
+	secrets, scope, _, cleanup := newLogglyScopedSecretHarness(
 		t, 1, "invalid-metadata", p.config, map[string]string{p.config.CustomerToken: p.config.CustomerToken},
 	)
 	t.Cleanup(cleanup)
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	err := p.PostInit()

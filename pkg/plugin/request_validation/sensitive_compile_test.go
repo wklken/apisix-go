@@ -51,12 +51,12 @@ func TestSensitiveCompileSemaphoreIsSharedByAttemptAndBindingStopIsLocal(t *test
 		raw       = "$ENV://REQUEST_VALIDATION_SHARED_COMPILE"
 		plaintext = "shared-compile-private"
 	)
-	capabilityValue, scope, _, closeAttempt := newRequestValidationSecretHarness(
+	secrets, scope, _, closeAttempt := newRequestValidationSecretHarness(
 		t, 710, map[string]string{raw: plaintext},
 	)
 	defer closeAttempt()
-	first := newSensitiveCompilePluginWithAccess(t, capabilityValue, scope, raw)
-	second := newSensitiveCompilePluginWithAccess(t, capabilityValue, scope, raw)
+	first := newSensitiveCompilePluginWithAccess(t, secrets, scope, raw)
+	second := newSensitiveCompilePluginWithAccess(t, secrets, scope, raw)
 	defer second.Stop()
 
 	releases := holdSensitiveCompileSlots(t, first)
@@ -244,7 +244,7 @@ func newQueuedSensitiveCompilePlugin(t *testing.T, revision uint64) (*Plugin, fu
 		raw       = "$ENV://REQUEST_VALIDATION_QUEUED_COMPILE"
 		plaintext = "queued-private"
 	)
-	capabilityValue, scope, _, closeAttempt := newRequestValidationSecretHarness(
+	secrets, scope, _, closeAttempt := newRequestValidationSecretHarness(
 		t, revision, map[string]string{raw: plaintext},
 	)
 	p := &Plugin{config: Config{BodySchema: map[string]any{
@@ -257,7 +257,7 @@ func newQueuedSensitiveCompilePlugin(t *testing.T, revision uint64) (*Plugin, fu
 		t.Fatal(err)
 	}
 	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, capabilityValue, p,
+		context.Background(), scope, secrets, p,
 	); err != nil {
 		closeAttempt()
 		t.Fatal(err)
@@ -271,7 +271,7 @@ func newQueuedSensitiveCompilePlugin(t *testing.T, revision uint64) (*Plugin, fu
 
 func newSensitiveCompilePluginWithAccess(
 	t *testing.T,
-	capabilityValue secret.GenerationCapability,
+	secrets secret.GenerationSecrets,
 	scope secret.Scope,
 	raw string,
 ) *Plugin {
@@ -283,7 +283,7 @@ func newSensitiveCompilePluginWithAccess(
 		t.Fatal(err)
 	}
 	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, capabilityValue, p,
+		context.Background(), scope, secrets, p,
 	); err != nil {
 		t.Fatal(err)
 	}

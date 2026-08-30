@@ -9,7 +9,7 @@ import (
 
 type RuntimeDependencies struct {
 	Config    *config.EffectiveConfig
-	Secrets   secret.GenerationCapability
+	Secrets   secret.GenerationSecrets
 	Metadata  MetadataView
 	Resources *ResourceRegistry
 	Tasks     *TaskRegistry
@@ -21,7 +21,7 @@ func (dependencies RuntimeDependencies) Validate() error {
 		return errors.New("runtime dependencies: effective config is required")
 	}
 	if !dependencies.Secrets.Valid() {
-		return errors.New("runtime dependencies: generation secret capability is required")
+		return errors.New("runtime dependencies: generation secrets are required")
 	}
 	if dependencies.Resources == nil {
 		return errors.New("runtime dependencies: resource registry is required")

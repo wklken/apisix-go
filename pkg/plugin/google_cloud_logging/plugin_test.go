@@ -47,12 +47,6 @@ type googleScopedSecretBroker struct {
 	calls  []googleScopedSecretCall
 }
 
-func (*googleScopedSecretBroker) AuthorizeCandidate(
-	context.Context, secret.AttemptID, generation.ApplyTicket, generation.PublicationSet,
-) error {
-	return nil
-}
-
 func (broker *googleScopedSecretBroker) ResolveScoped(
 	ctx context.Context, scope secret.Scope, raw string,
 ) (string, error) {
@@ -72,10 +66,6 @@ func (broker *googleScopedSecretBroker) ResolveScoped(
 	return value, nil
 }
 
-func (*googleScopedSecretBroker) RevokeAttempt(context.Context, secret.AttemptID) error {
-	return nil
-}
-
 func (broker *googleScopedSecretBroker) scopedCalls() []googleScopedSecretCall {
 	broker.mu.Lock()
 	defer broker.mu.Unlock()
@@ -89,7 +79,7 @@ func newGoogleScopedSecretHarness(
 	rawConfig map[string]any,
 	values map[string]string,
 	keyring ...string,
-) (secret.GenerationCapability, secret.Scope, *googleScopedSecretBroker, func()) {
+) (secret.GenerationSecrets, secret.Scope, *googleScopedSecretBroker, func()) {
 	t.Helper()
 	key := generation.ResourceKey{Kind: "routes", ID: resourceID}
 	resourceJSON, err := json.Marshal(map[string]any{
@@ -115,11 +105,6 @@ func newGoogleScopedSecretHarness(
 			Key: key, Disposition: generation.DispositionPublished, Code: "google-test",
 		}},
 	}
-	ticket := generation.ApplyTicket{
-		DesiredRevision: revision,
-		DesiredDigest:   snapshot.Digest(),
-		RequiredDomains: []generation.Domain{generation.DomainHTTP},
-	}
 	publication := generation.PublicationSet{
 		DesiredRevision: revision,
 		Domains: map[generation.Domain]generation.PublicationCandidate{
@@ -138,27 +123,21 @@ func newGoogleScopedSecretHarness(
 		values: values,
 		fail:   make(map[string]error),
 	}
-	registration, err := testutil.NewSecretMaterializerWithKeyring(broker, catalog, keyring).RegisterCandidate(
-		context.Background(), ticket, publication,
-	)
+	materialization, err := testutil.NewSecretMaterializerWithKeyring(broker, catalog, keyring).
+		PrepareGeneration(context.Background(), publication)
 	if err != nil {
 		t.Fatal(err)
 	}
-	capabilityValue, err := secret.NewGenerationCapability(registration, revision)
-	if err != nil {
-		_ = registration.Close(context.Background())
-		t.Fatal(err)
-	}
+	secrets := materialization.Secrets()
 	scope := secret.Scope{
 		Generation: revision,
-		Attempt:    registration.AttemptID(),
 		Domain:     generation.DomainHTTP,
 		Plugin:     name,
 		Resource:   key,
 		Source:     capability.SecretPluginConfig,
 	}
-	return capabilityValue, scope, broker, func() {
-		if err := registration.Close(context.Background()); err != nil {
+	return secrets, scope, broker, func() {
+		if err := materialization.Close(context.Background()); err != nil {
 			t.Errorf("close Google scoped secret registration: %v", err)
 		}
 	}
@@ -206,7 +185,7 @@ func TestMaterializeScopedSecretsOwnsGooglePrivateKey(t *testing.T) {
 	for index, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			rawConfig := googleInlineRawConfig(tt.raw)
-			capabilityValue, scope, broker, closeAttempt := newGoogleScopedSecretHarness(
+			secrets, scope, broker, closeAttempt := newGoogleScopedSecretHarness(
 				t, uint64(index+1), "google-inline", rawConfig,
 				map[string]string{tt.raw: pemKey},
 				"old-keyring-item",
@@ -214,7 +193,7 @@ func TestMaterializeScopedSecretsOwnsGooglePrivateKey(t *testing.T) {
 			defer closeAttempt()
 			p := newRawGooglePlugin(t, rawConfig)
 			if err := base.MaterializeScopedPluginSecrets(
-				context.Background(), scope, capabilityValue, p,
+				context.Background(), scope, secrets, p,
 			); err != nil {
 				t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 			}
@@ -247,13 +226,13 @@ func TestMaterializeScopedSecretsOwnsGooglePrivateKey(t *testing.T) {
 	}
 
 	authFileConfig := map[string]any{"auth_file": "/private/google-auth.json"}
-	capabilityValue, scope, broker, closeAttempt := newGoogleScopedSecretHarness(
+	secrets, scope, broker, closeAttempt := newGoogleScopedSecretHarness(
 		t, 10, "google-auth-file", authFileConfig, nil,
 	)
 	defer closeAttempt()
 	authFilePlugin := newRawGooglePlugin(t, authFileConfig)
 	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, capabilityValue, authFilePlugin,
+		context.Background(), scope, secrets, authFilePlugin,
 	); err != nil {
 		t.Fatalf("auth_file materialization error = %v", err)
 	}
@@ -282,7 +261,7 @@ func TestMaterializeScopedSecretsOwnsGooglePrivateKey(t *testing.T) {
 	} {
 		t.Run(failure.name, func(t *testing.T) {
 			rawConfig := googleInlineRawConfig(failure.raw)
-			capabilityValue, scope, broker, closeAttempt := newGoogleScopedSecretHarness(
+			secrets, scope, broker, closeAttempt := newGoogleScopedSecretHarness(
 				t, 20, "google-retry", rawConfig,
 				map[string]string{failure.raw: failure.resolved},
 			)
@@ -292,7 +271,7 @@ func TestMaterializeScopedSecretsOwnsGooglePrivateKey(t *testing.T) {
 			}
 			p := newRawGooglePlugin(t, rawConfig)
 			err := base.MaterializeScopedPluginSecrets(
-				context.Background(), scope, capabilityValue, p,
+				context.Background(), scope, secrets, p,
 			)
 			if err == nil || !strings.Contains(err.Error(), "credential unavailable") {
 				t.Fatalf("first materialization error = %v, want redacted credential unavailable", err)
@@ -310,7 +289,7 @@ func TestMaterializeScopedSecretsOwnsGooglePrivateKey(t *testing.T) {
 			broker.values[failure.raw] = pemKey
 			broker.mu.Unlock()
 			if err := base.MaterializeScopedPluginSecrets(
-				context.Background(), scope, capabilityValue, p,
+				context.Background(), scope, secrets, p,
 			); err != nil {
 				t.Fatalf("same-instance retry error = %v", err)
 			}
@@ -449,13 +428,13 @@ func TestStopDrainsActiveGoogleSendAndDropsPrivateState(t *testing.T) {
 			rawConfig := googleInlineRawConfig(rawPrivateKey)
 			rawConfig["auth_config"].(map[string]any)["entries_uri"] = server.URL
 			p := newRawGooglePlugin(t, rawConfig)
-			capabilityValue, scope, _, closeAttempt := newGoogleScopedSecretHarness(
+			secrets, scope, _, closeAttempt := newGoogleScopedSecretHarness(
 				t, uint64(40+index), "google-stop", rawConfig,
 				map[string]string{rawPrivateKey: pemKey},
 			)
 			defer closeAttempt()
 			if err := base.MaterializeScopedPluginSecrets(
-				context.Background(), scope, capabilityValue, p,
+				context.Background(), scope, secrets, p,
 			); err != nil {
 				t.Fatal(err)
 			}
@@ -650,13 +629,13 @@ func TestGoogleGenerationsShareOnlyCredentialNeutralClient(t *testing.T) {
 		authConfig["entries_uri"] = entriesServer.URL
 		sslVerify := false
 		rawConfig["ssl_verify"] = sslVerify
-		capabilityValue, scope, _, closeAttempt := newGoogleScopedSecretHarness(
+		secrets, scope, _, closeAttempt := newGoogleScopedSecretHarness(
 			t, revision, "same-google-route", rawConfig,
 			map[string]string{rawPrivateKey: resolvedPrivateKey},
 		)
 		p := newRawGooglePlugin(t, rawConfig)
 		if err := base.MaterializeScopedPluginSecrets(
-			context.Background(), scope, capabilityValue, p,
+			context.Background(), scope, secrets, p,
 		); err != nil {
 			closeAttempt()
 			t.Fatal(err)
@@ -759,9 +738,9 @@ func newTestPluginWithMetadata(t *testing.T, cfg Config, metadata runtime.Metada
 	if cfg.AuthConfig != nil {
 		values[cfg.AuthConfig.PrivateKey] = cfg.AuthConfig.PrivateKey
 	}
-	capabilityValue, scope, _, cleanup := newGoogleScopedSecretHarness(t, 1, "test-route", rawConfig, values)
+	secrets, scope, _, cleanup := newGoogleScopedSecretHarness(t, 1, "test-route", rawConfig, values)
 	t.Cleanup(cleanup)
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if p.TaskOwner() == nil {
@@ -820,14 +799,14 @@ func TestPostInitRejectsInvalidMetadataBeforeSideEffects(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	capabilityValue, scope, cleanup := testutil.ScopedSecretHarness(
+	secrets, scope, cleanup := testutil.ScopedSecretHarness(
 		t,
 		name,
 		nil,
 		generation.ApplyTicket{DesiredRevision: 1, RequiredDomains: []generation.Domain{generation.DomainHTTP}},
 	)
 	defer cleanup()
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	t.Cleanup(p.Stop)
@@ -943,14 +922,14 @@ func TestMaterializeSecretsResolvesRotatedEncryptedPrivateKey(t *testing.T) {
 		t.Fatalf("Init() error = %v", err)
 	}
 	rawConfig := googleInlineRawConfig(config.AuthConfig.PrivateKey)
-	capabilityValue, scope, _, cleanup := newGoogleScopedSecretHarness(
+	secrets, scope, _, cleanup := newGoogleScopedSecretHarness(
 		t, 1, "google-rotated", rawConfig,
 		map[string]string{config.AuthConfig.PrivateKey: pemKey},
 		oldKey,
 	)
 	t.Cleanup(cleanup)
 	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, capabilityValue, p,
+		context.Background(), scope, secrets, p,
 	); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
@@ -1594,12 +1573,12 @@ func TestSendBatchTimesOutTokenEndpoint(t *testing.T) {
 	rawAuthConfig := rawConfig["auth_config"].(map[string]any)
 	rawAuthConfig["token_uri"] = tokenServer.URL
 	rawAuthConfig["entries_uri"] = entryServer.URL
-	capabilityValue, scope, _, cleanup := newGoogleScopedSecretHarness(
+	secrets, scope, _, cleanup := newGoogleScopedSecretHarness(
 		t, 1, "google-timeout-token", rawConfig, map[string]string{pemKey: pemKey},
 	)
 	t.Cleanup(cleanup)
 	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, capabilityValue, p,
+		context.Background(), scope, secrets, p,
 	); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
@@ -1661,12 +1640,12 @@ func TestSendBatchTimesOutWriteEndpoint(t *testing.T) {
 	rawAuthConfig := rawConfig["auth_config"].(map[string]any)
 	rawAuthConfig["token_uri"] = tokenServer.URL
 	rawAuthConfig["entries_uri"] = entryServer.URL
-	capabilityValue, scope, _, cleanup := newGoogleScopedSecretHarness(
+	secrets, scope, _, cleanup := newGoogleScopedSecretHarness(
 		t, 2, "google-timeout-write", rawConfig, map[string]string{pemKey: pemKey},
 	)
 	t.Cleanup(cleanup)
 	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, capabilityValue, p,
+		context.Background(), scope, secrets, p,
 	); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}

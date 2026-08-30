@@ -41,9 +41,9 @@ func TestPostInitTaskAdmissionFailureReleasesStagedClient(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatal(err)
 	}
-	capabilityValue, scope, _, cleanup := newScopedSecretHarness(t, name, nil)
+	secrets, scope, _, cleanup := newScopedSecretHarness(t, name, nil)
 	t.Cleanup(cleanup)
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatal(err)
 	}
 	if err := p.PostInit(); !errors.Is(err, runtime.ErrTaskOwnerRequired) {

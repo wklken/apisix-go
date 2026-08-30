@@ -55,7 +55,7 @@ func TestMaterializeScopedSecretsOwnsCASCookieSecret(t *testing.T) {
 	for index, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			config := testCASConfig(test.raw)
-			capabilityValue, scope, broker, closeAttempt := newCASScopedSecretHarness(
+			secrets, scope, broker, closeAttempt := newCASScopedSecretHarness(
 				t, uint64(index+1), "cas-raw-form", config,
 				map[string]string{test.raw: test.resolved},
 				"0123456789abcdef",
@@ -66,7 +66,7 @@ func TestMaterializeScopedSecretsOwnsCASCookieSecret(t *testing.T) {
 				t.Fatal(err)
 			}
 			if err := base.MaterializeScopedPluginSecrets(
-				context.Background(), scope, capabilityValue, p,
+				context.Background(), scope, secrets, p,
 			); err != nil {
 				t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 			}
@@ -82,7 +82,7 @@ func TestMaterializeScopedSecretsOwnsCASCookieSecret(t *testing.T) {
 				}
 				call := calls[0]
 				if call.Raw != test.raw || call.Scope.Generation != scope.Generation ||
-					call.Scope.Attempt != scope.Attempt || call.Scope.Domain != generation.DomainHTTP ||
+					call.Scope.Domain != generation.DomainHTTP ||
 					call.Scope.Plugin != name || call.Scope.Resource != scope.Resource ||
 					call.Scope.Source != capability.SecretPluginConfig || call.Scope.Field != "cookie.secret" {
 					t.Fatalf("scoped call = %#v, want exact cookie.secret authority", call)
@@ -99,12 +99,12 @@ func TestMaterializeScopedSecretsOwnsCASCookieSecret(t *testing.T) {
 
 	const raw = "$ENV://CAS_COOKIE_SHORT"
 	config := testCASConfig(raw)
-	capabilityValue, scope, broker, closeAttempt := newCASScopedSecretHarness(
+	secrets, scope, broker, closeAttempt := newCASScopedSecretHarness(
 		t, 10, "cas-retry", config, map[string]string{raw: "short"},
 	)
 	defer closeAttempt()
 	p := &Plugin{config: config}
-	err = base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p)
+	err = base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p)
 	if err == nil || err.Error() != "materialize plugin secrets: credential unavailable" {
 		t.Fatalf("resolved-short materialization error = %v, want fixed redaction", err)
 	}
@@ -118,7 +118,7 @@ func TestMaterializeScopedSecretsOwnsCASCookieSecret(t *testing.T) {
 	}
 	broker.setValue(raw, "retry-cookie-secret-retry-cookie-secret")
 	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, capabilityValue, p,
+		context.Background(), scope, secrets, p,
 	); err != nil {
 		t.Fatalf("same-instance retry error = %v", err)
 	}
@@ -187,7 +187,7 @@ func TestSchemaRejectsAPISIX317InvalidCASConfigurations(t *testing.T) {
 func TestCASConcurrentScopedMaterializationIsSingleFlight(t *testing.T) {
 	const raw = "$ENV://CAS_CONCURRENT_COOKIE_SECRET"
 	config := testCASConfig(raw)
-	capabilityValue, scope, broker, closeAttempt := newCASScopedSecretHarness(
+	secrets, scope, broker, closeAttempt := newCASScopedSecretHarness(
 		t, 30, "cas-concurrent", config,
 		map[string]string{raw: "concurrent-cookie-secret-concurrent-cookie-secret"},
 	)
@@ -200,7 +200,7 @@ func TestCASConcurrentScopedMaterializationIsSingleFlight(t *testing.T) {
 		group.Go(func() {
 			<-start
 			errorsOut <- base.MaterializeScopedPluginSecrets(
-				context.Background(), scope, capabilityValue, p,
+				context.Background(), scope, secrets, p,
 			)
 		})
 	}
@@ -224,11 +224,11 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	capabilityValue, scope, _, cleanup := newCASScopedSecretHarness(
+	secrets, scope, _, cleanup := newCASScopedSecretHarness(
 		t, 1, "test-route", cfg, map[string]string{cfg.Cookie.Secret: cfg.Cookie.Secret},
 	)
 	t.Cleanup(cleanup)
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
@@ -247,11 +247,11 @@ func materializeCASForTest(
 	values map[string]string,
 ) error {
 	t.Helper()
-	capabilityValue, scope, _, cleanup := newCASScopedSecretHarness(
+	secrets, scope, _, cleanup := newCASScopedSecretHarness(
 		t, revision, resourceID, config, values,
 	)
 	t.Cleanup(cleanup)
-	return base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p)
+	return base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p)
 }
 
 func TestCASInitiationCookieUsesPrivateMaterializedSecret(t *testing.T) {
@@ -295,11 +295,11 @@ func TestCASPostInitNeverResolvesCookieSecret(t *testing.T) {
 		len(p.logoutTrustedNets) != 0 {
 		t.Fatal("PostInit resolved or installed secret-dependent state")
 	}
-	capabilityValue, scope, _, cleanup := newCASScopedSecretHarness(
+	secrets, scope, _, cleanup := newCASScopedSecretHarness(
 		t, 1, "post-init", p.config, map[string]string{raw: "post-init-cookie-secret-post-init-cookie-secret"},
 	)
 	t.Cleanup(cleanup)
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
@@ -1126,15 +1126,6 @@ type casScopedSecretBroker struct {
 	calls  []casScopedSecretCall
 }
 
-func (*casScopedSecretBroker) AuthorizeCandidate(
-	context.Context,
-	secret.AttemptID,
-	generation.ApplyTicket,
-	generation.PublicationSet,
-) error {
-	return nil
-}
-
 func (broker *casScopedSecretBroker) ResolveScoped(
 	_ context.Context,
 	scope secret.Scope,
@@ -1148,10 +1139,6 @@ func (broker *casScopedSecretBroker) ResolveScoped(
 		return "", errors.New("missing private CAS test value")
 	}
 	return value, nil
-}
-
-func (*casScopedSecretBroker) RevokeAttempt(context.Context, secret.AttemptID) error {
-	return nil
 }
 
 func (broker *casScopedSecretBroker) scopedCalls() []casScopedSecretCall {
@@ -1173,7 +1160,7 @@ func newCASScopedSecretHarness(
 	config Config,
 	values map[string]string,
 	keyring ...string,
-) (secret.GenerationCapability, secret.Scope, *casScopedSecretBroker, func()) {
+) (secret.GenerationSecrets, secret.Scope, *casScopedSecretBroker, func()) {
 	t.Helper()
 	key := generation.ResourceKey{Kind: "routes", ID: resourceID}
 	document, err := json.Marshal(map[string]any{
@@ -1205,11 +1192,6 @@ func newCASScopedSecretHarness(
 			Key: key, Disposition: generation.DispositionPublished, Code: "cas-auth-test",
 		}},
 	}
-	ticket := generation.ApplyTicket{
-		DesiredRevision: revision,
-		DesiredDigest:   snapshot.Digest(),
-		RequiredDomains: []generation.Domain{generation.DomainHTTP},
-	}
 	publication := generation.PublicationSet{
 		DesiredRevision: revision,
 		Domains: map[generation.Domain]generation.PublicationCandidate{
@@ -1225,28 +1207,22 @@ func newCASScopedSecretHarness(
 		t.Fatal(err)
 	}
 	broker := &casScopedSecretBroker{values: values}
-	registration, err := testutil.NewSecretMaterializerWithKeyring(broker, catalog, keyring).RegisterCandidate(
-		context.Background(), ticket, publication,
-	)
+	materialization, err := testutil.NewSecretMaterializerWithKeyring(broker, catalog, keyring).
+		PrepareGeneration(context.Background(), publication)
 	if err != nil {
 		t.Fatal(err)
 	}
-	capabilityValue, err := secret.NewGenerationCapability(registration, revision)
-	if err != nil {
-		_ = registration.Close(context.Background())
-		t.Fatal(err)
-	}
+	secrets := materialization.Secrets()
 	scope := secret.Scope{
 		Generation: revision,
-		Attempt:    registration.AttemptID(),
 		Domain:     generation.DomainHTTP,
 		Plugin:     name,
 		Resource:   key,
 		Source:     capability.SecretPluginConfig,
 	}
-	return capabilityValue, scope, broker, func() {
-		if err := registration.Close(context.Background()); err != nil {
-			t.Errorf("close CAS scoped attempt: %v", err)
+	return secrets, scope, broker, func() {
+		if err := materialization.Close(context.Background()); err != nil {
+			t.Errorf("close CAS scoped generation: %v", err)
 		}
 	}
 }
@@ -1259,7 +1235,7 @@ func newScopedCASTestPlugin(
 	values map[string]string,
 ) (*Plugin, func()) {
 	t.Helper()
-	capabilityValue, scope, _, closeAttempt := newCASScopedSecretHarness(
+	secrets, scope, _, closeAttempt := newCASScopedSecretHarness(
 		t, revision, resourceID, config, values,
 	)
 	p := &Plugin{config: config}
@@ -1268,7 +1244,7 @@ func newScopedCASTestPlugin(
 		t.Fatal(err)
 	}
 	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, capabilityValue, p,
+		context.Background(), scope, secrets, p,
 	); err != nil {
 		closeAttempt()
 		t.Fatal(err)

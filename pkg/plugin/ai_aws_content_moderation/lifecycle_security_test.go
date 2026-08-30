@@ -58,14 +58,14 @@ func TestScopedSecretsRejectResolvedBlankCredentialsAndRetryExactFields(t *testi
 				rawToken:  "validation-token",
 			}
 			values[test.invalidRaw] = test.blank
-			capabilityValue, scope, broker, closeAttempt := newScopedSecretHarness(t, name, values)
+			secrets, scope, broker, closeAttempt := newScopedSecretHarness(t, name, values)
 			defer closeAttempt()
 			p := &Plugin{config: awsScopedConfig(rawAccess, rawSecret, rawToken, "http://127.0.0.1")}
 			if err := p.Init(); err != nil {
 				t.Fatal(err)
 			}
 
-			err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p)
+			err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p)
 			if err == nil || err.Error() != "materialize plugin secrets: credential unavailable" {
 				t.Fatalf("blank resolved credential error = %v, want redacted credential unavailable", err)
 			}
@@ -91,7 +91,7 @@ func TestScopedSecretsRejectResolvedBlankCredentialsAndRetryExactFields(t *testi
 			broker.setValue(test.invalidRaw, "validation-retry")
 			broker.resetCalls()
 			if err := base.MaterializeScopedPluginSecrets(
-				context.Background(), scope, capabilityValue, p,
+				context.Background(), scope, secrets, p,
 			); err != nil {
 				t.Fatalf("same-instance retry error = %v", err)
 			}
@@ -121,7 +121,7 @@ func TestScopedSecretsConcurrentMaterializeResolvesOnce(t *testing.T) {
 		rawToken  = "$ENV://AWS_SINGLEFLIGHT_TOKEN"
 		workers   = 32
 	)
-	capabilityValue, scope, broker, closeAttempt := newScopedSecretHarness(t, name, map[string]string{
+	secrets, scope, broker, closeAttempt := newScopedSecretHarness(t, name, map[string]string{
 		rawAccess: "singleflight-access",
 		rawSecret: "singleflight-secret",
 		rawToken:  "singleflight-token",
@@ -155,7 +155,7 @@ func TestScopedSecretsConcurrentMaterializeResolvesOnce(t *testing.T) {
 	for range workers {
 		wg.Go(func() {
 			<-start
-			errs <- base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p)
+			errs <- base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p)
 		})
 	}
 	close(start)
@@ -195,7 +195,7 @@ func TestScopedSecretsStopDuringMaterializeDoesNotRevive(t *testing.T) {
 		rawSecret = "$ENV://AWS_STOP_RACE_SECRET"
 		rawToken  = "$ENV://AWS_STOP_RACE_TOKEN"
 	)
-	capabilityValue, scope, broker, closeAttempt := newScopedSecretHarness(t, name, map[string]string{
+	secrets, scope, broker, closeAttempt := newScopedSecretHarness(t, name, map[string]string{
 		rawAccess: "stop-race-access",
 		rawSecret: "stop-race-secret",
 		rawToken:  "stop-race-token",
@@ -217,7 +217,7 @@ func TestScopedSecretsStopDuringMaterializeDoesNotRevive(t *testing.T) {
 	materializeDone := make(chan error, 1)
 	go func() {
 		materializeDone <- base.MaterializeScopedPluginSecrets(
-			context.Background(), scope, capabilityValue, p,
+			context.Background(), scope, secrets, p,
 		)
 	}()
 	select {
@@ -238,7 +238,7 @@ func TestScopedSecretsStopDuringMaterializeDoesNotRevive(t *testing.T) {
 	}
 	callCount := len(broker.callsSnapshot())
 	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, capabilityValue, p,
+		context.Background(), scope, secrets, p,
 	); err == nil {
 		t.Fatal("scoped materialization after Stop() error = nil, want terminal failure")
 	}

@@ -69,7 +69,7 @@ func TestSecretBackedSchemaAdmissionRejectsResourceBudgetExcessWithoutPlaintext(
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			capabilityValue, scope, _, closeAttempt := newRequestValidationSecretHarness(
+			secrets, scope, _, closeAttempt := newRequestValidationSecretHarness(
 				t, test.revision, map[string]string{raw: test.plaintext},
 			)
 			defer closeAttempt()
@@ -78,7 +78,7 @@ func TestSecretBackedSchemaAdmissionRejectsResourceBudgetExcessWithoutPlaintext(
 				t.Fatal(err)
 			}
 			err := base.MaterializeScopedPluginSecrets(
-				context.Background(), scope, capabilityValue, p,
+				context.Background(), scope, secrets, p,
 			)
 			if err == nil {
 				err = p.PostInit()
@@ -101,7 +101,7 @@ func TestSecretBackedSchemaRejectsExternalReferenceBeforePublication(t *testing.
 		t.Fatal(err)
 	}
 	externalURL := (&url.URL{Scheme: "file", Path: externalPath}).String()
-	capabilityValue, scope, _, closeAttempt := newRequestValidationSecretHarness(
+	secrets, scope, _, closeAttempt := newRequestValidationSecretHarness(
 		t, 705, map[string]string{raw: externalURL},
 	)
 	defer closeAttempt()
@@ -112,7 +112,7 @@ func TestSecretBackedSchemaRejectsExternalReferenceBeforePublication(t *testing.
 		t.Fatal(err)
 	}
 	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, capabilityValue, p,
+		context.Background(), scope, secrets, p,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -161,7 +161,7 @@ func TestSecretBackedSchemaAllowsInDocumentReference(t *testing.T) {
 		raw       = "$ENV://REQUEST_VALIDATION_INTERNAL_REF_VALUE"
 		plaintext = "internal-ref-private-value"
 	)
-	capabilityValue, scope, _, closeAttempt := newRequestValidationSecretHarness(
+	secrets, scope, _, closeAttempt := newRequestValidationSecretHarness(
 		t, 706, map[string]string{raw: plaintext},
 	)
 	defer closeAttempt()
@@ -176,7 +176,7 @@ func TestSecretBackedSchemaAllowsInDocumentReference(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, capabilityValue, p,
+		context.Background(), scope, secrets, p,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -225,7 +225,7 @@ func TestSecretBackedSchemaAllowsEmbeddedIDReferenceWithoutLoader(t *testing.T) 
 		raw       = "$ENV://REQUEST_VALIDATION_EMBEDDED_ID_VALUE"
 		plaintext = "embedded-id-private-value"
 	)
-	capabilityValue, scope, _, closeAttempt := newRequestValidationSecretHarness(
+	secrets, scope, _, closeAttempt := newRequestValidationSecretHarness(
 		t, 709, map[string]string{raw: plaintext},
 	)
 	defer closeAttempt()
@@ -242,7 +242,7 @@ func TestSecretBackedSchemaAllowsEmbeddedIDReferenceWithoutLoader(t *testing.T) 
 		t.Fatal(err)
 	}
 	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, capabilityValue, p,
+		context.Background(), scope, secrets, p,
 	); err != nil {
 		t.Fatal(err)
 	}

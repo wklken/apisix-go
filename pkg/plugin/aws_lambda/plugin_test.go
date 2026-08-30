@@ -33,9 +33,9 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	capabilityValue, scope, _, cleanup := newAWSLambdaScopedSecretHarness(t, 1, "test-route", cfg, nil)
+	secrets, scope, _, cleanup := newAWSLambdaScopedSecretHarness(t, 1, "test-route", cfg, nil)
 	t.Cleanup(cleanup)
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
@@ -166,7 +166,7 @@ func TestMaterializeScopedSecretsOwnsAWSLambdaCredentials(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			original := cloneAuthorization(tt.auth)
 			cfg := Config{FunctionURI: "http://lambda.invalid", Authorization: tt.auth}
-			capabilityValue, scope, broker, closeAttempt := newAWSLambdaScopedSecretHarness(
+			secrets, scope, broker, closeAttempt := newAWSLambdaScopedSecretHarness(
 				t, uint64(index+1), "aws-lambda-materialize-"+fmt.Sprint(index), cfg, tt.values,
 				"0123456789abcdef",
 			)
@@ -175,7 +175,7 @@ func TestMaterializeScopedSecretsOwnsAWSLambdaCredentials(t *testing.T) {
 			p := &Plugin{config: cfg}
 
 			err := base.MaterializeScopedPluginSecrets(
-				context.Background(), scope, capabilityValue, p,
+				context.Background(), scope, secrets, p,
 			)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("MaterializeScopedPluginSecrets() error = %v, wantErr %v", err, tt.wantErr)
@@ -245,14 +245,14 @@ func TestMaterializeScopedSecretsRejectsResolvedAWSLambdaCredentialsAndRetries(t
 		t.Run(tt.name, func(t *testing.T) {
 			original := cloneAuthorization(tt.auth)
 			cfg := Config{FunctionURI: "http://lambda.invalid", Authorization: tt.auth}
-			capabilityValue, scope, broker, closeAttempt := newAWSLambdaScopedSecretHarness(
+			secrets, scope, broker, closeAttempt := newAWSLambdaScopedSecretHarness(
 				t, uint64(index+30), "aws-lambda-empty-"+fmt.Sprint(index), cfg,
 				map[string]string{tt.raw: tt.resolved},
 			)
 			defer closeAttempt()
 			p := &Plugin{config: cfg}
 
-			err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p)
+			err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p)
 			if !errors.Is(err, secret.ErrCredentialUnavailable) {
 				t.Fatalf("MaterializeScopedPluginSecrets() error = %v, want credential unavailable", err)
 			}
@@ -271,7 +271,7 @@ func TestMaterializeScopedSecretsRejectsResolvedAWSLambdaCredentialsAndRetries(t
 
 			broker.setValue(tt.raw, "retry-credential")
 			if err := base.MaterializeScopedPluginSecrets(
-				context.Background(), scope, capabilityValue, p,
+				context.Background(), scope, secrets, p,
 			); err != nil {
 				t.Fatalf("same-instance retry error = %v", err)
 			}
@@ -296,12 +296,12 @@ func TestAWSLambdaAPIKeyPrecedenceAndGenerationIsolation(t *testing.T) {
 		values := map[string]string{
 			auth.APIKey: apiKey, auth.IAM.AccessKey: accessKey, auth.IAM.SecretKey: secretKey,
 		}
-		capabilityValue, scope, _, closeAttempt := newAWSLambdaScopedSecretHarness(
+		secrets, scope, _, closeAttempt := newAWSLambdaScopedSecretHarness(
 			t, revision, "shared-route", cfg, values,
 		)
 		p := &Plugin{config: cfg}
 		if err := base.MaterializeScopedPluginSecrets(
-			context.Background(), scope, capabilityValue, p,
+			context.Background(), scope, secrets, p,
 		); err != nil {
 			closeAttempt()
 			t.Fatal(err)
@@ -354,13 +354,13 @@ func TestAWSLambdaIAMSignatureGenerationIsolationAndHeaderCleanup(t *testing.T) 
 			AWSRegion: "us-west-2", Service: "lambda",
 		}}
 		cfg := Config{FunctionURI: "http://lambda.invalid", Authorization: auth}
-		capabilityValue, scope, _, closeAttempt := newAWSLambdaScopedSecretHarness(
+		secrets, scope, _, closeAttempt := newAWSLambdaScopedSecretHarness(
 			t, revision, "same-resource", cfg,
 			map[string]string{auth.IAM.AccessKey: accessKey, auth.IAM.SecretKey: secretKey},
 		)
 		p := &Plugin{config: cfg}
 		if err := base.MaterializeScopedPluginSecrets(
-			context.Background(), scope, capabilityValue, p,
+			context.Background(), scope, secrets, p,
 		); err != nil {
 			closeAttempt()
 			t.Fatal(err)
@@ -428,7 +428,7 @@ func TestAWSLambdaStopRetiresScopedAndLegacyCredentialsFailClosed(t *testing.T) 
 					AccessKey: "$secret://aws/stop-access", SecretKey: "$secret://aws/stop-secret",
 				}}
 				cfg := Config{FunctionURI: "http://lambda.invalid", Authorization: auth}
-				capabilityValue, scope, _, closeAttempt := newAWSLambdaScopedSecretHarness(
+				secrets, scope, _, closeAttempt := newAWSLambdaScopedSecretHarness(
 					t, 70, "aws-lambda-stop-scoped", cfg, map[string]string{
 						auth.APIKey: "stop-api", auth.IAM.AccessKey: "stop-access", auth.IAM.SecretKey: "stop-secret",
 					},
@@ -439,7 +439,7 @@ func TestAWSLambdaStopRetiresScopedAndLegacyCredentialsFailClosed(t *testing.T) 
 					t.Fatal(err)
 				}
 				if err := base.MaterializeScopedPluginSecrets(
-					context.Background(), scope, capabilityValue, p,
+					context.Background(), scope, secrets, p,
 				); err != nil {
 					closeAttempt()
 					t.Fatal(err)
@@ -859,12 +859,6 @@ type awsLambdaScopedSecretBroker struct {
 	calls   []awsLambdaScopedSecretCall
 }
 
-func (*awsLambdaScopedSecretBroker) AuthorizeCandidate(
-	context.Context, secret.AttemptID, generation.ApplyTicket, generation.PublicationSet,
-) error {
-	return nil
-}
-
 func (broker *awsLambdaScopedSecretBroker) ResolveScoped(
 	_ context.Context, scope secret.Scope, raw string,
 ) (string, error) {
@@ -878,10 +872,6 @@ func (broker *awsLambdaScopedSecretBroker) ResolveScoped(
 		return value, nil
 	}
 	return raw, nil
-}
-
-func (*awsLambdaScopedSecretBroker) RevokeAttempt(context.Context, secret.AttemptID) error {
-	return nil
 }
 
 func (broker *awsLambdaScopedSecretBroker) scopedCalls() []awsLambdaScopedSecretCall {
@@ -903,7 +893,7 @@ func newAWSLambdaScopedSecretHarness(
 	config Config,
 	values map[string]string,
 	keyring ...string,
-) (secret.GenerationCapability, secret.Scope, *awsLambdaScopedSecretBroker, func()) {
+) (secret.GenerationSecrets, secret.Scope, *awsLambdaScopedSecretBroker, func()) {
 	t.Helper()
 	key := generation.ResourceKey{Kind: "routes", ID: resourceID}
 	document, err := json.Marshal(map[string]any{
@@ -928,11 +918,6 @@ func newAWSLambdaScopedSecretHarness(
 			Key: key, Disposition: generation.DispositionPublished, Code: "aws-lambda-test",
 		}},
 	}
-	ticket := generation.ApplyTicket{
-		DesiredRevision: revision,
-		DesiredDigest:   snapshot.Digest(),
-		RequiredDomains: []generation.Domain{generation.DomainHTTP},
-	}
 	publication := generation.PublicationSet{
 		DesiredRevision: revision,
 		Domains: map[generation.Domain]generation.PublicationCandidate{
@@ -948,26 +933,21 @@ func newAWSLambdaScopedSecretHarness(
 		t.Fatal(err)
 	}
 	broker := &awsLambdaScopedSecretBroker{values: values}
-	registration, err := testutil.NewSecretMaterializerWithKeyring(broker, catalog, keyring).RegisterCandidate(
-		context.Background(), ticket, publication,
-	)
+	materialization, err := testutil.NewSecretMaterializerWithKeyring(broker, catalog, keyring).
+		PrepareGeneration(context.Background(), publication)
 	if err != nil {
 		t.Fatal(err)
 	}
-	capabilityValue, err := secret.NewGenerationCapability(registration, revision)
-	if err != nil {
-		t.Fatal(err)
-	}
+	secrets := materialization.Secrets()
 	scope := secret.Scope{
 		Generation: revision,
-		Attempt:    registration.AttemptID(),
 		Domain:     generation.DomainHTTP,
 		Plugin:     name,
 		Resource:   key,
 		Source:     capability.SecretPluginConfig,
 	}
-	return capabilityValue, scope, broker, func() {
-		if err := registration.Close(context.Background()); err != nil {
+	return secrets, scope, broker, func() {
+		if err := materialization.Close(context.Background()); err != nil {
 			t.Fatalf("close scoped secret registration: %v", err)
 		}
 	}

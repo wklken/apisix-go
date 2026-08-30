@@ -223,7 +223,7 @@ func (prepared *PreparedGeneration) materializeEffectiveBindingsWithPolicy(
 	}
 
 	prepared.bindingOpsMu.Lock()
-	operations := prepared.bindingOps.withDefaults(prepared.attempt.AttemptID())
+	operations := prepared.bindingOps.withDefaults(prepared.preparation.Generation())
 	prepared.bindingOpsMu.Unlock()
 	validated, err := prepared.validateEffectiveBindingSpecs(specs)
 	if err != nil {
@@ -302,8 +302,8 @@ func recoverableEffectiveBindingError(primary error) error {
 func (prepared *PreparedGeneration) validateEffectiveBindingSpecs(
 	specs []effectiveBindingSpec,
 ) ([]validatedEffectiveBindingSpec, error) {
-	if len(specs) == 0 || prepared.attempt.authority == nil ||
-		prepared.attempt.AttemptID() == ([32]byte{}) || prepared.manifest == nil ||
+	if len(specs) == 0 || !prepared.preparation.secrets.Valid() ||
+		prepared.preparation.Generation() == 0 || prepared.manifest == nil ||
 		prepared.registry == nil || prepared.cleanup == nil || prepared.tasks == nil ||
 		prepared.effective == nil || prepared.consumers == nil {
 		return nil, fmt.Errorf("%w: effective binding owner is incomplete", ErrInvalidInput)
@@ -401,8 +401,8 @@ func (prepared *PreparedGeneration) validateEffectiveBindingSpec(
 		Filter:        ownedFilter,
 		ErrorResponse: ownedError,
 	}
-	instance, err := plugin.NewAttemptInstanceKey(
-		prepared.attempt.AttemptID(), descriptor, supplied.scope, supplied.provenance, identity,
+	instance, err := plugin.NewGenerationInstanceKey(
+		prepared.preparation.Generation(), descriptor, supplied.scope, supplied.provenance, identity,
 	)
 	if err != nil {
 		return validatedEffectiveBindingSpec{}, fmt.Errorf("%w: plugin instance identity is invalid", ErrInvalidInput)
@@ -427,7 +427,7 @@ func (prepared *PreparedGeneration) validateEffectiveBindingSource(
 	switch source.kind {
 	case effectiveBindingPluginConfig:
 		if source.source != capability.SecretPluginConfig ||
-			!prepared.attempt.owns(source.occurrence) ||
+			!prepared.preparation.owns(source.occurrence) ||
 			source.occurrence.Domain() != spec.domain ||
 			source.occurrence.Resource() != source.resource ||
 			source.occurrence.Source() != source.source ||
@@ -440,7 +440,7 @@ func (prepared *PreparedGeneration) validateEffectiveBindingSource(
 		}
 	case effectiveBindingPreparedConsumer:
 		if spec.domain != generation.DomainHTTP || source.source != capability.SecretConsumerConfig ||
-			spec.scope != plugin.ScopeConsumer || !prepared.attempt.owns(source.occurrence) ||
+			spec.scope != plugin.ScopeConsumer || !prepared.preparation.owns(source.occurrence) ||
 			source.occurrence.Domain() != spec.domain ||
 			source.occurrence.Resource() != source.resource ||
 			source.occurrence.Source() != source.source ||
@@ -463,7 +463,7 @@ func (prepared *PreparedGeneration) validateEffectiveBindingSource(
 			return fmt.Errorf("%w: prepared-consumer config is not authoritative", ErrInvalidInput)
 		}
 	case effectiveBindingSystem:
-		if source.source != "" || source.occurrence.authority != nil ||
+		if source.source != "" || validOccurrence(source.occurrence) ||
 			spec.scope != plugin.ScopeSystem || source.resource != spec.executionOwner ||
 			source.resource.Kind != "system" || source.resource.ID != spec.factory ||
 			spec.provenance != (plugin.ResourceProvenance{Kind: plugin.ResourceSystem, ID: spec.factory}) ||
@@ -512,13 +512,13 @@ func (prepared *PreparedGeneration) acquireEffectiveBinding(
 			return plugin.Binding{}, nil, err
 		}
 		dependencies := base.Dependencies{
-			Config: prepared.effective, Secrets: prepared.attempt.capability,
+			Config: prepared.effective, Secrets: prepared.preparation.secrets,
 			Metadata:  prepared.metadata.ForFactory(selected.spec.factory),
 			Consumers: prepared.lookup, Tasks: taskOwner,
 		}
 		children, err := plugin.NewCompositeChildPreparer(
 			dependencies,
-			prepared.attempt.AttemptID(),
+			prepared.preparation.Generation(),
 			selected.spec.scope,
 			selected.spec.provenance,
 		)
@@ -565,7 +565,7 @@ func (prepared *PreparedGeneration) acquireEffectiveBinding(
 			(selected.spec.source.kind == effectiveBindingPreparedConsumer &&
 				!consumerregistry.Supports(selected.spec.factory) &&
 				prepared.declaresConsumerScopedSecrets(selected.spec.factory)) {
-			if err := prepared.attempt.PrepareScopedPluginSecrets(
+			if err := prepared.preparation.PrepareScopedPluginSecrets(
 				ctx, selected.spec.source.occurrence, factoryInstance,
 			); err != nil {
 				return plugin.Binding{}, nil, err
@@ -712,14 +712,14 @@ type redactedEffectiveBindingCleanup struct{}
 func (redactedEffectiveBindingCleanup) Error() string { return "effective binding cleanup failed" }
 
 func defaultEffectiveBindingOps() effectiveBindingOps {
-	operations := effectiveBindingOps{}.withDefaults([32]byte{})
-	// Binding is the only default that captures attempt identity. Leave it
-	// unset until the generation supplies its exact attempt.
+	operations := effectiveBindingOps{}.withDefaults(0)
+	// Binding is the only default that captures generation identity. Leave it
+	// unset until the generation supplies its number.
 	operations.bind = nil
 	return operations
 }
 
-func (operations effectiveBindingOps) withDefaults(attempt [32]byte) effectiveBindingOps {
+func (operations effectiveBindingOps) withDefaults(generationNumber uint64) effectiveBindingOps {
 	if operations.newFactoryInstance == nil {
 		operations.newFactoryInstance = plugin.NewFactoryInstance
 	}
@@ -850,8 +850,8 @@ func (operations effectiveBindingOps) withDefaults(attempt [32]byte) effectiveBi
 			provenance plugin.ResourceProvenance,
 			identity plugin.InstanceIdentityInput,
 		) (plugin.Binding, error) {
-			return plugin.BindAttemptResolvedPlugin(
-				attempt, descriptor, instance, scope, provenance, identity,
+			return plugin.BindGenerationResolvedPlugin(
+				generationNumber, descriptor, instance, scope, provenance, identity,
 			)
 		}
 	}
@@ -938,7 +938,7 @@ func (prepared *PreparedGeneration) hasBindingConfigFactoryOccurrence(
 		capability.SecretPluginConfig,
 		capability.SecretConsumerConfig,
 	} {
-		for _, occurrence := range prepared.attempt.Occurrences(source) {
+		for _, occurrence := range prepared.preparation.Occurrences(source) {
 			if occurrence.Domain() == domain && occurrence.Factory() == factory {
 				return true
 			}
@@ -1270,7 +1270,7 @@ func effectiveBindingResourceKey(
 		ExecutionOwner generation.ResourceKey         `json:"execution_owner"`
 		Source         effectiveBindingSourceIdentity `json:"source"`
 		Factory        string                         `json:"factory"`
-		Attempt        [32]byte                       `json:"attempt"`
+		Generation     uint64                         `json:"generation"`
 		Scope          plugin.Scope                   `json:"scope"`
 		Provenance     plugin.ResourceProvenance      `json:"provenance"`
 		ConfigDigest   [32]byte                       `json:"config_digest"`
@@ -1279,7 +1279,7 @@ func effectiveBindingResourceKey(
 		Source: effectiveBindingSourceIdentity{
 			Kind: source.kind, Source: source.source, Resource: source.resource,
 		},
-		Factory: instance.Factory, Attempt: instance.Attempt, Scope: instance.Scope,
+		Factory: instance.Factory, Generation: instance.Generation, Scope: instance.Scope,
 		Provenance: instance.Owner, ConfigDigest: instance.ConfigDigest,
 	})
 	if err != nil {

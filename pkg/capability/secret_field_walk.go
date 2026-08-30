@@ -1,7 +1,6 @@
 package capability
 
 import (
-	"fmt"
 	"sort"
 	"strconv"
 	"strings"
@@ -36,38 +35,6 @@ func (c *SecretDeclarationCatalog) TransformDeclaredFields(
 	var transformErr error
 	c.ForEach(factory, source, func(declaration SecretDeclaration) {
 		if transformErr != nil {
-			return
-		}
-		transformErr = transformDeclaredPath(
-			document,
-			strings.Split(declaration.Field, "."),
-			"",
-			declaration,
-			transform,
-		)
-	})
-	return transformErr
-}
-
-// TransformDeclaredFieldsForTarget visits and replaces leaves selected by
-// declarations for one factory, source, and materialization target.
-func (c *SecretDeclarationCatalog) TransformDeclaredFieldsForTarget(
-	factory string,
-	source SecretDeclarationSource,
-	target SecretMaterializationTarget,
-	document any,
-	transform SecretFieldTransform,
-) error {
-	if !validSecretMaterializationTarget(target) {
-		return fmt.Errorf("unknown materialization target %q", target)
-	}
-	if c == nil || transform == nil {
-		return nil
-	}
-
-	var transformErr error
-	c.ForEach(factory, source, func(declaration SecretDeclaration) {
-		if transformErr != nil || declaration.EffectiveTarget() != target {
 			return
 		}
 		transformErr = transformDeclaredPath(

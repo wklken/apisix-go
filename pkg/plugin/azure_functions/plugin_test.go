@@ -40,13 +40,13 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	if cfg.Authorization != nil && cfg.Authorization.APIKey != "" {
 		broker.values[cfg.Authorization.APIKey] = cfg.Authorization.APIKey
 	}
-	capabilityValue, registration, scope := registerAzureScopedRouteConfigAt(t, broker, 1, cfg)
+	secrets, materialization, scope := registerAzureScopedRouteConfigAt(t, broker, 1, cfg)
 	t.Cleanup(func() {
-		if err := registration.Close(context.Background()); err != nil {
+		if err := materialization.Close(context.Background()); err != nil {
 			t.Error(err)
 		}
 	})
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
@@ -278,11 +278,11 @@ func TestScopedRouteAuthorizationOverridesMetadataAuthorization(t *testing.T) {
 		},
 	}
 	broker := &azureScopedBroker{values: map[string]string{raw: "scoped-route-key"}}
-	capabilityValue, registration, scope := registerAzureScopedRouteConfigAt(
+	secrets, materialization, scope := registerAzureScopedRouteConfigAt(
 		t, broker, 1, routeConfig,
 	)
 	t.Cleanup(func() {
-		if err := registration.Close(context.Background()); err != nil {
+		if err := materialization.Close(context.Background()); err != nil {
 			t.Error(err)
 		}
 	})
@@ -296,7 +296,7 @@ func TestScopedRouteAuthorizationOverridesMetadataAuthorization(t *testing.T) {
 	p := &Plugin{config: routeConfig}
 	p.SetDependencies(base.Dependencies{Metadata: metadata})
 	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, capabilityValue, p,
+		context.Background(), scope, secrets, p,
 	); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
@@ -399,14 +399,14 @@ func TestProcessRequestPreservesPresentAzureAuthorizationHeaders(t *testing.T) {
 		},
 	}
 	broker := &azureScopedBroker{values: map[string]string{"route-key": "resolved-route-key"}}
-	capabilityValue, registration, scope := registerAzureScopedRouteConfigAt(t, broker, 1, routeConfig)
+	secrets, materialization, scope := registerAzureScopedRouteConfigAt(t, broker, 1, routeConfig)
 	t.Cleanup(func() {
-		if err := registration.Close(context.Background()); err != nil {
+		if err := materialization.Close(context.Background()); err != nil {
 			t.Error(err)
 		}
 	})
 	p := &Plugin{config: routeConfig}
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatal(err)
 	}
 	p.metadata = Metadata{MasterAPIKey: "metadata-key", MasterClientID: "metadata-client"}
@@ -472,9 +472,9 @@ func TestProcessRequestPreservesPresentAzureAuthorizationHeaders(t *testing.T) {
 
 func TestAzureRouteFixtureOmitsAbsentAuthorization(t *testing.T) {
 	broker := &azureScopedBroker{}
-	_, registration, _ := registerAzureScopedRoute(t, broker, "")
+	_, materialization, _ := registerAzureScopedRoute(t, broker, "")
 	t.Cleanup(func() {
-		if err := registration.Close(context.Background()); err != nil {
+		if err := materialization.Close(context.Background()); err != nil {
 			t.Error(err)
 		}
 	})
@@ -500,14 +500,14 @@ func TestMaterializeScopedSecretsSkipsPresentEmptyAzureAPIKey(t *testing.T) {
 		Authorization: &Authorization{APIKey: ""},
 	}
 	broker := &azureScopedBroker{}
-	capabilityValue, registration, scope := registerAzureScopedRouteConfigAt(t, broker, 1, config)
+	secrets, materialization, scope := registerAzureScopedRouteConfigAt(t, broker, 1, config)
 	t.Cleanup(func() {
-		if err := registration.Close(context.Background()); err != nil {
+		if err := materialization.Close(context.Background()); err != nil {
 			t.Error(err)
 		}
 	})
 	p := &Plugin{config: config}
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatal(err)
 	}
 	if got := broker.scopedCalls(); len(got) != 0 {
@@ -526,9 +526,9 @@ func TestMaterializeScopedSecretsSkipsPresentEmptyAzureAPIKey(t *testing.T) {
 func TestMaterializeScopedSecretsOwnsAzureRouteAPIKey(t *testing.T) {
 	const raw = "$ENV://AZURE_ROUTE_KEY"
 	broker := &azureScopedBroker{values: map[string]string{raw: "route-key"}}
-	capabilityValue, registration, scope := registerAzureScopedRoute(t, broker, raw)
+	secrets, materialization, scope := registerAzureScopedRoute(t, broker, raw)
 	t.Cleanup(func() {
-		if err := registration.Close(context.Background()); err != nil {
+		if err := materialization.Close(context.Background()); err != nil {
 			t.Error(err)
 		}
 	})
@@ -538,7 +538,7 @@ func TestMaterializeScopedSecretsOwnsAzureRouteAPIKey(t *testing.T) {
 		Authorization: &Authorization{APIKey: raw},
 	}}
 	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, capabilityValue, p,
+		context.Background(), scope, secrets, p,
 	); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
@@ -598,9 +598,9 @@ func TestMaterializeScopedSecretsOwnsAzureRouteAPIKey(t *testing.T) {
 func TestAzureRouteMaterializationFailsBeforePostInit(t *testing.T) {
 	const raw = "$ENV://AZURE_ROUTE_FAILURE"
 	broker := &azureScopedBroker{failRaw: raw}
-	capabilityValue, registration, scope := registerAzureScopedRoute(t, broker, raw)
+	secrets, materialization, scope := registerAzureScopedRoute(t, broker, raw)
 	t.Cleanup(func() {
-		if err := registration.Close(context.Background()); err != nil {
+		if err := materialization.Close(context.Background()); err != nil {
 			t.Error(err)
 		}
 	})
@@ -610,7 +610,7 @@ func TestAzureRouteMaterializationFailsBeforePostInit(t *testing.T) {
 		Authorization: &Authorization{APIKey: raw},
 	}}
 	err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, capabilityValue, p,
+		context.Background(), scope, secrets, p,
 	)
 	if err == nil {
 		t.Fatal("MaterializeScopedPluginSecrets() error = nil")
@@ -683,9 +683,9 @@ func TestAzureRouteKeyRotationDoesNotCrossGenerations(t *testing.T) {
 
 func TestAzureStopIsIdempotentAndDropsRouteValue(t *testing.T) {
 	broker := &azureScopedBroker{values: map[string]string{"route-key": "resolved-route-key"}}
-	capabilityValue, registration, scope := registerAzureScopedRoute(t, broker, "route-key")
+	secrets, materialization, scope := registerAzureScopedRoute(t, broker, "route-key")
 	t.Cleanup(func() {
-		if err := registration.Close(context.Background()); err != nil {
+		if err := materialization.Close(context.Background()); err != nil {
 			t.Error(err)
 		}
 	})
@@ -693,7 +693,7 @@ func TestAzureStopIsIdempotentAndDropsRouteValue(t *testing.T) {
 		FunctionURI:   "http://function.invalid",
 		Authorization: &Authorization{APIKey: "route-key"},
 	}}
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatal(err)
 	}
 	p.Stop()
@@ -714,9 +714,9 @@ func TestMaterializeScopedSecretsIsSingleFlight(t *testing.T) {
 		resolveStarted: make(chan struct{}),
 		resolveRelease: make(chan struct{}),
 	}
-	capabilityValue, registration, scope := registerAzureScopedRoute(t, broker, raw)
+	secrets, materialization, scope := registerAzureScopedRoute(t, broker, raw)
 	t.Cleanup(func() {
-		if err := registration.Close(context.Background()); err != nil {
+		if err := materialization.Close(context.Background()); err != nil {
 			t.Error(err)
 		}
 	})
@@ -733,7 +733,7 @@ func TestMaterializeScopedSecretsIsSingleFlight(t *testing.T) {
 		go func() {
 			defer group.Done()
 			errs <- base.MaterializeScopedPluginSecrets(
-				context.Background(), scope, capabilityValue, p,
+				context.Background(), scope, secrets, p,
 			)
 		}()
 	}
@@ -757,9 +757,9 @@ func TestMaterializeScopedSecretsIsSingleFlight(t *testing.T) {
 
 func TestAzureProcessRequestAndStopAreSafeConcurrently(t *testing.T) {
 	broker := &azureScopedBroker{values: map[string]string{"route-key": "resolved-route-key"}}
-	capabilityValue, registration, scope := registerAzureScopedRoute(t, broker, "route-key")
+	secrets, materialization, scope := registerAzureScopedRoute(t, broker, "route-key")
 	t.Cleanup(func() {
-		if err := registration.Close(context.Background()); err != nil {
+		if err := materialization.Close(context.Background()); err != nil {
 			t.Error(err)
 		}
 	})
@@ -767,7 +767,7 @@ func TestAzureProcessRequestAndStopAreSafeConcurrently(t *testing.T) {
 		FunctionURI:   "http://function.invalid",
 		Authorization: &Authorization{APIKey: "route-key"},
 	}}
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatal(err)
 	}
 
@@ -816,18 +816,6 @@ type azureScopedBroker struct {
 	resolveOnce    sync.Once
 }
 
-func (broker *azureScopedBroker) AuthorizeCandidate(
-	_ context.Context,
-	_ secret.AttemptID,
-	_ generation.ApplyTicket,
-	set generation.PublicationSet,
-) error {
-	broker.mu.Lock()
-	defer broker.mu.Unlock()
-	broker.candidateSets = append(broker.candidateSets, set)
-	return nil
-}
-
 func (broker *azureScopedBroker) ResolveScoped(
 	_ context.Context,
 	scope secret.Scope,
@@ -849,10 +837,6 @@ func (broker *azureScopedBroker) ResolveScoped(
 	return "", fmt.Errorf("missing test credential")
 }
 
-func (broker *azureScopedBroker) RevokeAttempt(context.Context, secret.AttemptID) error {
-	return nil
-}
-
 func (broker *azureScopedBroker) scopedCalls() []secret.Scope {
 	broker.mu.Lock()
 	defer broker.mu.Unlock()
@@ -872,7 +856,7 @@ func registerAzureScopedRoute(
 	t *testing.T,
 	broker *azureScopedBroker,
 	raw string,
-) (secret.GenerationCapability, secret.AttemptRegistration, secret.Scope) {
+) (secret.GenerationSecrets, secret.GenerationMaterialization, secret.Scope) {
 	return registerAzureScopedRouteAt(t, broker, 1, raw)
 }
 
@@ -881,7 +865,7 @@ func registerAzureScopedRouteAt(
 	broker *azureScopedBroker,
 	revision uint64,
 	raw string,
-) (secret.GenerationCapability, secret.AttemptRegistration, secret.Scope) {
+) (secret.GenerationSecrets, secret.GenerationMaterialization, secret.Scope) {
 	authorization := (*Authorization)(nil)
 	if raw != "" {
 		authorization = &Authorization{APIKey: raw}
@@ -897,7 +881,7 @@ func registerAzureScopedRouteConfigAt(
 	broker *azureScopedBroker,
 	revision uint64,
 	config Config,
-) (secret.GenerationCapability, secret.AttemptRegistration, secret.Scope) {
+) (secret.GenerationSecrets, secret.GenerationMaterialization, secret.Scope) {
 	t.Helper()
 	manifest, err := capability.Load()
 	if err != nil {
@@ -945,30 +929,25 @@ func registerAzureScopedRouteConfigAt(
 			Code:        "test",
 		}},
 	}
-	ticket := generation.ApplyTicket{
+	set := generation.PublicationSet{
 		DesiredRevision: snapshot.Revision(),
-		DesiredDigest:   snapshot.Digest(),
-		RequiredDomains: []generation.Domain{generation.DomainHTTP},
+		Domains: map[generation.Domain]generation.PublicationCandidate{
+			generation.DomainHTTP: candidate,
+		},
 	}
 	materializer := testutil.NewSecretMaterializer(broker, catalog)
-	registration, err := materializer.RegisterCandidate(
-		context.Background(), ticket, generation.PublicationSet{
-			DesiredRevision: snapshot.Revision(),
-			Domains: map[generation.Domain]generation.PublicationCandidate{
-				generation.DomainHTTP: candidate,
-			},
-		},
+	materialization, err := materializer.PrepareGeneration(
+		context.Background(), set,
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	capabilityValue, err := secret.NewGenerationCapability(registration, snapshot.Revision())
-	if err != nil {
-		t.Fatal(err)
-	}
-	return capabilityValue, registration, secret.Scope{
+	broker.mu.Lock()
+	broker.candidateSets = append(broker.candidateSets, set)
+	broker.mu.Unlock()
+	secrets := materialization.Secrets()
+	return secrets, materialization, secret.Scope{
 		Generation: snapshot.Revision(),
-		Attempt:    registration.AttemptID(),
 		Domain:     generation.DomainHTTP,
 		Plugin:     name,
 		Resource:   key,

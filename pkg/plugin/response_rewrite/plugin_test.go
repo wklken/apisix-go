@@ -42,12 +42,6 @@ type responseRewriteScopedSecretBroker struct {
 	calls  []responseRewriteScopedSecretCall
 }
 
-func (*responseRewriteScopedSecretBroker) AuthorizeCandidate(
-	context.Context, secret.AttemptID, generation.ApplyTicket, generation.PublicationSet,
-) error {
-	return nil
-}
-
 func (broker *responseRewriteScopedSecretBroker) ResolveScoped(
 	ctx context.Context, scope secret.Scope, raw string,
 ) (string, error) {
@@ -66,14 +60,10 @@ func (broker *responseRewriteScopedSecretBroker) ResolveScoped(
 	return raw, nil
 }
 
-func (*responseRewriteScopedSecretBroker) RevokeAttempt(context.Context, secret.AttemptID) error {
-	return nil
-}
-
 func newResponseRewriteScopedSecretHarness(
 	t *testing.T, revision uint64, resourceID string, rawConfig map[string]any, values map[string]string,
 	keyring ...string,
-) (secret.GenerationCapability, secret.Scope, *responseRewriteScopedSecretBroker, func()) {
+) (secret.GenerationSecrets, secret.Scope, *responseRewriteScopedSecretBroker, func()) {
 	t.Helper()
 	key := generation.ResourceKey{Kind: "routes", ID: resourceID}
 	resourceJSON, err := json.Marshal(map[string]any{
@@ -99,9 +89,6 @@ func newResponseRewriteScopedSecretHarness(
 			Key: key, Disposition: generation.DispositionPublished, Code: "response-rewrite-test",
 		}},
 	}
-	ticket := generation.ApplyTicket{
-		DesiredRevision: revision, RequiredDomains: []generation.Domain{generation.DomainHTTP},
-	}
 	set := generation.PublicationSet{
 		DesiredRevision: revision,
 		Domains: map[generation.Domain]generation.PublicationCandidate{
@@ -120,25 +107,21 @@ func newResponseRewriteScopedSecretHarness(
 		values: values,
 		fail:   make(map[string]error),
 	}
-	registration, err := testutil.NewSecretMaterializerWithKeyring(broker, catalog, keyring).
-		RegisterCandidate(context.Background(), ticket, set)
+	materialization, err := testutil.NewSecretMaterializerWithKeyring(broker, catalog, keyring).
+		PrepareGeneration(context.Background(), set)
 	if err != nil {
 		t.Fatal(err)
 	}
-	capabilityValue, err := secret.NewGenerationCapability(registration, revision)
-	if err != nil {
-		t.Fatal(err)
-	}
+	secrets := materialization.Secrets()
 	scope := secret.Scope{
 		Generation: revision,
-		Attempt:    registration.AttemptID(),
 		Domain:     generation.DomainHTTP,
 		Plugin:     name,
 		Resource:   key,
 		Source:     capability.SecretPluginConfig,
 	}
-	return capabilityValue, scope, broker, func() {
-		if err := registration.Close(context.Background()); err != nil {
+	return secrets, scope, broker, func() {
+		if err := materialization.Close(context.Background()); err != nil {
 			t.Fatalf("close scoped secret registration: %v", err)
 		}
 	}
@@ -197,7 +180,7 @@ func TestMaterializeScopedSecretsOwnsResponseBodies(t *testing.T) {
 	for index, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			rawConfig := map[string]any{tt.field: tt.raw}
-			capabilityValue, scope, broker, closeAttempt := newResponseRewriteScopedSecretHarness(
+			secrets, scope, broker, closeAttempt := newResponseRewriteScopedSecretHarness(
 				t, uint64(index+1), fmt.Sprintf("response-route-%d", index), rawConfig,
 				map[string]string{tt.raw: tt.resolved}, encryptionKey,
 			)
@@ -211,7 +194,7 @@ func TestMaterializeScopedSecretsOwnsResponseBodies(t *testing.T) {
 				t.Fatal(err)
 			}
 			if err := base.MaterializeScopedPluginSecrets(
-				context.Background(), scope, capabilityValue, p,
+				context.Background(), scope, secrets, p,
 			); err != nil {
 				t.Fatal(err)
 			}
@@ -287,7 +270,7 @@ func TestMaterializeScopedSecretsOwnsResponseBodies(t *testing.T) {
 
 	t.Run("empty optional body", func(t *testing.T) {
 		rawConfig := map[string]any{"body": ""}
-		capabilityValue, scope, broker, closeAttempt := newResponseRewriteScopedSecretHarness(
+		secrets, scope, broker, closeAttempt := newResponseRewriteScopedSecretHarness(
 			t, 20, "response-empty", rawConfig, nil,
 		)
 		defer closeAttempt()
@@ -299,7 +282,7 @@ func TestMaterializeScopedSecretsOwnsResponseBodies(t *testing.T) {
 			t.Fatal(err)
 		}
 		if err := base.MaterializeScopedPluginSecrets(
-			context.Background(), scope, capabilityValue, p,
+			context.Background(), scope, secrets, p,
 		); err != nil {
 			t.Fatal(err)
 		}
@@ -319,7 +302,7 @@ func TestMaterializeScopedSecretsOwnsResponseBodies(t *testing.T) {
 
 	t.Run("body and body_secret conflict before resolver", func(t *testing.T) {
 		rawConfig := map[string]any{"body": "plain", "body_secret": contextualSecret}
-		capabilityValue, scope, broker, closeAttempt := newResponseRewriteScopedSecretHarness(
+		secrets, scope, broker, closeAttempt := newResponseRewriteScopedSecretHarness(
 			t, 21, "response-conflict", rawConfig,
 			map[string]string{"plain": "plain", contextualSecret: "secret-body"},
 		)
@@ -340,7 +323,7 @@ func TestMaterializeScopedSecretsOwnsResponseBodies(t *testing.T) {
 			t.Fatalf("ValidatePreMaterialization() error = %v, want body/body_secret conflict", err)
 		}
 		if err := base.MaterializeScopedPluginSecrets(
-			context.Background(), scope, capabilityValue, p,
+			context.Background(), scope, secrets, p,
 		); err == nil {
 			t.Fatal("MaterializeScopedPluginSecrets() error = nil, want conflict rejection")
 		}
@@ -384,7 +367,7 @@ func TestTransformPipelineClearsLongAdmittedBodyAfterShorterOuterTransform(t *te
 			"set": map[string]any{"X-Rewritten": "yes"},
 		},
 	}
-	capabilityValue, scope, _, closeAttempt := newResponseRewriteScopedSecretHarness(
+	secrets, scope, _, closeAttempt := newResponseRewriteScopedSecretHarness(
 		t, 60, "response-identity-pipeline", rawConfig, map[string]string{raw: resolved},
 	)
 	defer closeAttempt()
@@ -396,7 +379,7 @@ func TestTransformPipelineClearsLongAdmittedBodyAfterShorterOuterTransform(t *te
 		t.Fatal(err)
 	}
 	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, capabilityValue, rewrite,
+		context.Background(), scope, secrets, rewrite,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -476,7 +459,7 @@ func materializeResponseRewriteScopedPlugin(
 ) (*Plugin, *responseRewriteScopedSecretBroker, func()) {
 	t.Helper()
 	rawConfig := map[string]any{"body": raw}
-	capabilityValue, scope, broker, closeAttempt := newResponseRewriteScopedSecretHarness(
+	secrets, scope, broker, closeAttempt := newResponseRewriteScopedSecretHarness(
 		t, revision, resourceID, rawConfig, map[string]string{raw: resolved},
 	)
 	p := &Plugin{}
@@ -487,7 +470,7 @@ func materializeResponseRewriteScopedPlugin(
 		t.Fatal(err)
 	}
 	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, capabilityValue, p,
+		context.Background(), scope, secrets, p,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -500,7 +483,7 @@ func materializeResponseRewriteScopedPlugin(
 func TestMaterializeScopedSecretsFailureIsAtomicAndRetryable(t *testing.T) {
 	const raw = "$secret://vault/response-failure"
 	rawConfig := map[string]any{"body": raw}
-	capabilityValue, scope, broker, closeAttempt := newResponseRewriteScopedSecretHarness(
+	secrets, scope, broker, closeAttempt := newResponseRewriteScopedSecretHarness(
 		t, 30, "response-failure", rawConfig, map[string]string{raw: "private-response"},
 	)
 	defer closeAttempt()
@@ -512,7 +495,7 @@ func TestMaterializeScopedSecretsFailureIsAtomicAndRetryable(t *testing.T) {
 	if err := util.Parse(rawConfig, p.Config()); err != nil {
 		t.Fatal(err)
 	}
-	err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p)
+	err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p)
 	if err == nil {
 		t.Fatal("MaterializeScopedPluginSecrets() error = nil")
 	}
@@ -531,7 +514,7 @@ func TestMaterializeScopedSecretsFailureIsAtomicAndRetryable(t *testing.T) {
 	delete(broker.fail, raw)
 	broker.mu.Unlock()
 	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, capabilityValue, p,
+		context.Background(), scope, secrets, p,
 	); err != nil {
 		t.Fatalf("retry materialization error = %v", err)
 	}
@@ -544,7 +527,7 @@ func TestMaterializeScopedSecretsFailureIsAtomicAndRetryable(t *testing.T) {
 func TestMaterializeScopedSecretsBase64FailureIsAtomicAndRetryable(t *testing.T) {
 	const raw = "$ENV://RESPONSE_BASE64"
 	rawConfig := map[string]any{"body": raw, "body_base64": true}
-	capabilityValue, scope, broker, closeAttempt := newResponseRewriteScopedSecretHarness(
+	secrets, scope, broker, closeAttempt := newResponseRewriteScopedSecretHarness(
 		t, 31, "response-base64", rawConfig, map[string]string{raw: "not-base64"},
 	)
 	defer closeAttempt()
@@ -556,7 +539,7 @@ func TestMaterializeScopedSecretsBase64FailureIsAtomicAndRetryable(t *testing.T)
 		t.Fatal(err)
 	}
 	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, capabilityValue, p,
+		context.Background(), scope, secrets, p,
 	); err == nil {
 		t.Fatal("invalid admitted base64 materialized successfully")
 	}
@@ -568,7 +551,7 @@ func TestMaterializeScopedSecretsBase64FailureIsAtomicAndRetryable(t *testing.T)
 	broker.values[raw] = base64.StdEncoding.EncodeToString([]byte("retried-body"))
 	broker.mu.Unlock()
 	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, capabilityValue, p,
+		context.Background(), scope, secrets, p,
 	); err != nil {
 		t.Fatalf("base64 retry materialization error = %v", err)
 	}
@@ -729,14 +712,14 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	capabilityValue, scope, closeAttempt := testutil.ScopedSecretHarness(
+	secrets, scope, closeAttempt := testutil.ScopedSecretHarness(
 		t,
 		name,
 		nil,
 		generation.ApplyTicket{DesiredRevision: 1, RequiredDomains: []generation.Domain{generation.DomainHTTP}},
 	)
 	t.Cleanup(closeAttempt)
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {

@@ -19,6 +19,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/runtime"
 	"github.com/wklken/apisix-go/pkg/secret"
 	streamruntime "github.com/wklken/apisix-go/pkg/stream"
+	"github.com/wklken/apisix-go/pkg/testutil"
 )
 
 func TestActiveBundlePreservesUntouchedDomainOwner(t *testing.T) {
@@ -412,7 +413,9 @@ func newTestGenerationOwner(
 	if err != nil {
 		t.Fatal(err)
 	}
-	materializer := &ownerTestMaterializer{digest: catalog.Digest()}
+	materializer := &ownerTestMaterializer{
+		delegate: testutil.NewSecretMaterializer(ownerTestResolver{}, catalog),
+	}
 	effective := &config.EffectiveConfig{}
 	factory, err := compiler.NewWorkerCompilerFactory(
 		manifest,
@@ -504,37 +507,42 @@ func assertPanics(t *testing.T, operation func()) {
 }
 
 type ownerTestMaterializer struct {
-	digest       [32]byte
+	delegate     secret.Materializer
 	registration *ownerTestRegistration
 }
 
-func (materializer *ownerTestMaterializer) RegisterCandidate(
-	_ context.Context,
-	ticket generation.ApplyTicket,
+func (materializer *ownerTestMaterializer) PrepareGeneration(
+	ctx context.Context,
 	set generation.PublicationSet,
-) (secret.AttemptRegistration, error) {
-	materializer.registration = &ownerTestRegistration{id: secret.CandidateAttemptID(ticket, set)}
+) (secret.GenerationMaterialization, error) {
+	delegate, err := materializer.delegate.PrepareGeneration(ctx, set)
+	if err != nil {
+		return nil, err
+	}
+	materializer.registration = &ownerTestRegistration{delegate: delegate}
 	return materializer.registration, nil
 }
 
 func (materializer *ownerTestMaterializer) DeclarationDigest() [32]byte {
-	return materializer.digest
+	return materializer.delegate.DeclarationDigest()
 }
 
 type ownerTestRegistration struct {
-	id         secret.AttemptID
+	delegate   secret.GenerationMaterialization
 	closeCalls atomic.Int64
 }
 
-func (registration *ownerTestRegistration) AttemptID() secret.AttemptID {
-	return registration.id
+func (registration *ownerTestRegistration) Secrets() secret.GenerationSecrets {
+	return registration.delegate.Secrets()
 }
 
-func (*ownerTestRegistration) Materialize(context.Context, secret.Scope, string) (secret.Value, error) {
-	return secret.Value{}, secret.ErrCredentialUnavailable
-}
-
-func (registration *ownerTestRegistration) Close(context.Context) error {
+func (registration *ownerTestRegistration) Close(ctx context.Context) error {
 	registration.closeCalls.Add(1)
-	return nil
+	return registration.delegate.Close(ctx)
+}
+
+type ownerTestResolver struct{}
+
+func (ownerTestResolver) ResolveScoped(context.Context, secret.Scope, string) (string, error) {
+	return "", secret.ErrCredentialUnavailable
 }

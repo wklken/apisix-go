@@ -28,14 +28,14 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	capabilityValue, scope, closeAttempt := testutil.ScopedSecretHarness(
+	secrets, scope, closeAttempt := testutil.ScopedSecretHarness(
 		t,
 		name,
 		nil,
 		generation.ApplyTicket{DesiredRevision: 1, RequiredDomains: []generation.Domain{generation.DomainHTTP}},
 	)
 	t.Cleanup(closeAttempt)
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
@@ -56,7 +56,7 @@ func TestKafkaProxyDoesNotImplementRequestPhasePlugin(t *testing.T) {
 
 func TestMaterializeScopedSecretsFailureIsAtomicAndRetryable(t *testing.T) {
 	const raw = "$secret://vault/kafka-failure"
-	capabilityValue, scope, broker, closeAttempt := newKafkaProxyScopedSecretHarness(
+	secrets, scope, broker, closeAttempt := newKafkaProxyScopedSecretHarness(
 		t, 30, "kafka-failure", map[string]string{raw: "private-password"},
 	)
 	defer closeAttempt()
@@ -65,7 +65,7 @@ func TestMaterializeScopedSecretsFailureIsAtomicAndRetryable(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatal(err)
 	}
-	err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p)
+	err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p)
 	if err == nil {
 		t.Fatal("MaterializeScopedPluginSecrets() error = nil")
 	}
@@ -85,7 +85,7 @@ func TestMaterializeScopedSecretsFailureIsAtomicAndRetryable(t *testing.T) {
 	delete(broker.fail, raw)
 	broker.mu.Unlock()
 	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, capabilityValue, p,
+		context.Background(), scope, secrets, p,
 	); err != nil {
 		t.Fatalf("retry materialization error = %v", err)
 	}
@@ -99,7 +99,7 @@ func TestMaterializeScopedSecretsRejectsEmptyPasswordAndRetriesAtomically(t *tes
 	const raw = "$ENV://KAFKA_EMPTY"
 	for _, resolved := range []string{"", "   "} {
 		t.Run("resolved-"+strings.ReplaceAll(resolved, " ", "space"), func(t *testing.T) {
-			capabilityValue, scope, broker, closeAttempt := newKafkaProxyScopedSecretHarness(
+			secrets, scope, broker, closeAttempt := newKafkaProxyScopedSecretHarness(
 				t, 31, "kafka-empty", map[string]string{raw: resolved},
 			)
 			defer closeAttempt()
@@ -107,7 +107,7 @@ func TestMaterializeScopedSecretsRejectsEmptyPasswordAndRetriesAtomically(t *tes
 			if err := p.Init(); err != nil {
 				t.Fatal(err)
 			}
-			err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p)
+			err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p)
 			if err == nil {
 				t.Fatal("empty admitted password materialized successfully")
 			}
@@ -127,7 +127,7 @@ func TestMaterializeScopedSecretsRejectsEmptyPasswordAndRetriesAtomically(t *tes
 			broker.values[raw] = "retry-password"
 			broker.mu.Unlock()
 			if err := base.MaterializeScopedPluginSecrets(
-				context.Background(), scope, capabilityValue, p,
+				context.Background(), scope, secrets, p,
 			); err != nil {
 				t.Fatalf("retry materialization error = %v", err)
 			}
@@ -138,7 +138,7 @@ func TestMaterializeScopedSecretsRejectsEmptyPasswordAndRetriesAtomically(t *tes
 
 func TestMaterializeScopedSecretsIsIdempotent(t *testing.T) {
 	const raw = "$ENV://KAFKA_IDEMPOTENT"
-	capabilityValue, scope, broker, closeAttempt := newKafkaProxyScopedSecretHarness(
+	secrets, scope, broker, closeAttempt := newKafkaProxyScopedSecretHarness(
 		t, 32, "kafka-idempotent", map[string]string{raw: "idempotent-password"},
 	)
 	defer closeAttempt()
@@ -147,13 +147,13 @@ func TestMaterializeScopedSecretsIsIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, capabilityValue, p,
+		context.Background(), scope, secrets, p,
 	); err != nil {
 		t.Fatal(err)
 	}
 	descriptor := p.config.SASL.Password
 	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, capabilityValue, p,
+		context.Background(), scope, secrets, p,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -171,7 +171,7 @@ func materializeKafkaProxyScopedPlugin(
 	t *testing.T, revision uint64, resourceID, raw, resolved string,
 ) (*Plugin, func()) {
 	t.Helper()
-	capabilityValue, scope, _, closeAttempt := newKafkaProxyScopedSecretHarness(
+	secrets, scope, _, closeAttempt := newKafkaProxyScopedSecretHarness(
 		t, revision, resourceID, map[string]string{raw: resolved},
 	)
 	p := &Plugin{config: Config{SASL: &SASL{Username: "user", Password: raw}}}
@@ -179,7 +179,7 @@ func materializeKafkaProxyScopedPlugin(
 		t.Fatal(err)
 	}
 	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, capabilityValue, p,
+		context.Background(), scope, secrets, p,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -390,7 +390,7 @@ func TestKafkaProxyStopWaitsForScopedSASLTerminal(t *testing.T) {
 }
 
 func runConcurrentKafkaScopedMaterialization(
-	p *Plugin, scope secret.Scope, capabilityValue secret.GenerationCapability,
+	p *Plugin, scope secret.Scope, secrets secret.GenerationSecrets,
 ) []error {
 	const workers = 32
 	start := make(chan struct{})
@@ -400,7 +400,7 @@ func runConcurrentKafkaScopedMaterialization(
 		group.Go(func() {
 			<-start
 			errorsByWorker[index] = base.MaterializeScopedPluginSecrets(
-				context.Background(), scope, capabilityValue, p,
+				context.Background(), scope, secrets, p,
 			)
 		})
 	}
@@ -412,7 +412,7 @@ func runConcurrentKafkaScopedMaterialization(
 func TestMaterializeScopedSecretsConcurrentAdmissionIsSingleAndRetryable(t *testing.T) {
 	t.Run("fresh success", func(t *testing.T) {
 		const raw = "$ENV://KAFKA_CONCURRENT_FRESH"
-		capabilityValue, scope, broker, closeAttempt := newKafkaProxyScopedSecretHarness(
+		secrets, scope, broker, closeAttempt := newKafkaProxyScopedSecretHarness(
 			t, 61, "kafka-concurrent-fresh", map[string]string{raw: "fresh-password"},
 		)
 		defer closeAttempt()
@@ -420,7 +420,7 @@ func TestMaterializeScopedSecretsConcurrentAdmissionIsSingleAndRetryable(t *test
 		if err := p.Init(); err != nil {
 			t.Fatal(err)
 		}
-		for index, err := range runConcurrentKafkaScopedMaterialization(p, scope, capabilityValue) {
+		for index, err := range runConcurrentKafkaScopedMaterialization(p, scope, secrets) {
 			if err != nil {
 				t.Fatalf("concurrent materialization %d error = %v", index, err)
 			}
@@ -433,7 +433,7 @@ func TestMaterializeScopedSecretsConcurrentAdmissionIsSingleAndRetryable(t *test
 
 	t.Run("failure then retry", func(t *testing.T) {
 		const raw = "$secret://vault/kafka-concurrent"
-		capabilityValue, scope, broker, closeAttempt := newKafkaProxyScopedSecretHarness(
+		secrets, scope, broker, closeAttempt := newKafkaProxyScopedSecretHarness(
 			t, 62, "kafka-concurrent-retry", map[string]string{raw: "concurrent-password"},
 		)
 		defer closeAttempt()
@@ -444,7 +444,7 @@ func TestMaterializeScopedSecretsConcurrentAdmissionIsSingleAndRetryable(t *test
 
 		broker.fail[raw] = errors.New("private resolver failure")
 		if err := base.MaterializeScopedPluginSecrets(
-			context.Background(), scope, capabilityValue, p,
+			context.Background(), scope, secrets, p,
 		); err == nil {
 			t.Fatal("initial materialization failure = nil")
 		}
@@ -454,7 +454,7 @@ func TestMaterializeScopedSecretsConcurrentAdmissionIsSingleAndRetryable(t *test
 		broker.mu.Lock()
 		delete(broker.fail, raw)
 		broker.mu.Unlock()
-		for index, err := range runConcurrentKafkaScopedMaterialization(p, scope, capabilityValue) {
+		for index, err := range runConcurrentKafkaScopedMaterialization(p, scope, secrets) {
 			if err != nil {
 				t.Fatalf("concurrent retry %d error = %v", index, err)
 			}
@@ -482,12 +482,6 @@ type kafkaProxyScopedSecretBroker struct {
 	calls  []kafkaProxyScopedSecretCall
 }
 
-func (*kafkaProxyScopedSecretBroker) AuthorizeCandidate(
-	context.Context, secret.AttemptID, generation.ApplyTicket, generation.PublicationSet,
-) error {
-	return nil
-}
-
 func (broker *kafkaProxyScopedSecretBroker) ResolveScoped(
 	ctx context.Context, scope secret.Scope, raw string,
 ) (string, error) {
@@ -506,13 +500,9 @@ func (broker *kafkaProxyScopedSecretBroker) ResolveScoped(
 	return raw, nil
 }
 
-func (*kafkaProxyScopedSecretBroker) RevokeAttempt(context.Context, secret.AttemptID) error {
-	return nil
-}
-
 func newKafkaProxyScopedSecretHarness(
 	t *testing.T, revision uint64, resourceID string, values map[string]string, keyring ...string,
-) (secret.GenerationCapability, secret.Scope, *kafkaProxyScopedSecretBroker, func()) {
+) (secret.GenerationSecrets, secret.Scope, *kafkaProxyScopedSecretBroker, func()) {
 	t.Helper()
 	key := generation.ResourceKey{Kind: "routes", ID: resourceID}
 	snapshot, err := generation.NewSnapshot(revision, []generation.Resource{{
@@ -532,9 +522,6 @@ func newKafkaProxyScopedSecretHarness(
 			Key: key, Disposition: generation.DispositionPublished, Code: "kafka-proxy-test",
 		}},
 	}
-	ticket := generation.ApplyTicket{
-		DesiredRevision: revision, RequiredDomains: []generation.Domain{generation.DomainHTTP},
-	}
 	set := generation.PublicationSet{
 		DesiredRevision: revision,
 		Domains: map[generation.Domain]generation.PublicationCandidate{
@@ -553,25 +540,21 @@ func newKafkaProxyScopedSecretHarness(
 		values: values,
 		fail:   make(map[string]error),
 	}
-	registration, err := testutil.NewSecretMaterializerWithKeyring(broker, catalog, keyring).
-		RegisterCandidate(context.Background(), ticket, set)
+	materialization, err := testutil.NewSecretMaterializerWithKeyring(broker, catalog, keyring).
+		PrepareGeneration(context.Background(), set)
 	if err != nil {
 		t.Fatal(err)
 	}
-	capabilityValue, err := secret.NewGenerationCapability(registration, revision)
-	if err != nil {
-		t.Fatal(err)
-	}
+	secrets := materialization.Secrets()
 	scope := secret.Scope{
 		Generation: revision,
-		Attempt:    registration.AttemptID(),
 		Domain:     generation.DomainHTTP,
 		Plugin:     name,
 		Resource:   key,
 		Source:     capability.SecretPluginConfig,
 	}
-	return capabilityValue, scope, broker, func() {
-		if err := registration.Close(context.Background()); err != nil {
+	return secrets, scope, broker, func() {
+		if err := materialization.Close(context.Background()); err != nil {
 			t.Fatalf("close scoped secret registration: %v", err)
 		}
 	}
@@ -605,7 +588,7 @@ func TestMaterializeScopedSecretsOwnsKafkaProxySASLPassword(t *testing.T) {
 	}
 	for index, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			capabilityValue, scope, broker, closeAttempt := newKafkaProxyScopedSecretHarness(
+			secrets, scope, broker, closeAttempt := newKafkaProxyScopedSecretHarness(
 				t, uint64(index+1), "kafka-route", map[string]string{tt.raw: tt.resolved},
 				"0123456789abcdef",
 			)
@@ -615,7 +598,7 @@ func TestMaterializeScopedSecretsOwnsKafkaProxySASLPassword(t *testing.T) {
 				t.Fatal(err)
 			}
 			if err := base.MaterializeScopedPluginSecrets(
-				context.Background(), scope, capabilityValue, p,
+				context.Background(), scope, secrets, p,
 			); err != nil {
 				t.Fatal(err)
 			}
@@ -658,7 +641,7 @@ func TestMaterializeScopedSecretsOwnsKafkaProxySASLPassword(t *testing.T) {
 	}
 
 	t.Run("nil SASL", func(t *testing.T) {
-		capabilityValue, scope, broker, closeAttempt := newKafkaProxyScopedSecretHarness(
+		secrets, scope, broker, closeAttempt := newKafkaProxyScopedSecretHarness(
 			t, 20, "kafka-no-sasl", nil,
 		)
 		defer closeAttempt()
@@ -667,7 +650,7 @@ func TestMaterializeScopedSecretsOwnsKafkaProxySASLPassword(t *testing.T) {
 			t.Fatal(err)
 		}
 		if err := base.MaterializeScopedPluginSecrets(
-			context.Background(), scope, capabilityValue, p,
+			context.Background(), scope, secrets, p,
 		); err != nil {
 			t.Fatal(err)
 		}

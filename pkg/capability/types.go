@@ -2,29 +2,16 @@ package capability
 
 type SecretDeclarationSource string
 
-type SecretMaterializationTarget string
-
 const (
 	SecretPluginConfig   SecretDeclarationSource = "plugin_config"
 	SecretPluginMetadata SecretDeclarationSource = "plugin_metadata"
 	SecretConsumerConfig SecretDeclarationSource = "consumer_config"
-
-	SecretMaterializationPlugin          SecretMaterializationTarget = "plugin"
-	SecretMaterializationCompilerDiscard SecretMaterializationTarget = "compiler_discard"
 )
 
 type SecretDeclaration struct {
-	Factory string                      `yaml:"factory"`
-	Source  SecretDeclarationSource     `yaml:"source"`
-	Field   string                      `yaml:"field"`
-	Target  SecretMaterializationTarget `yaml:"target,omitempty"`
-}
-
-func (d SecretDeclaration) EffectiveTarget() SecretMaterializationTarget {
-	if d.Target == "" {
-		return SecretMaterializationPlugin
-	}
-	return d.Target
+	Factory string                  `yaml:"factory"`
+	Source  SecretDeclarationSource `yaml:"source"`
+	Field   string                  `yaml:"field"`
 }
 
 type (

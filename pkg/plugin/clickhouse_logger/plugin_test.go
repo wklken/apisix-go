@@ -121,9 +121,9 @@ func newTestPluginWithSecrets(t *testing.T, cfg Config, values map[string]string
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	capabilityValue, scope, _, cleanup := newScopedSecretHarness(t, name, values)
+	secrets, scope, _, cleanup := newScopedSecretHarness(t, name, values)
 	t.Cleanup(cleanup)
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
@@ -216,9 +216,9 @@ func newRawTestPlugin(t *testing.T, cfg Config, metadata runtime.MetadataView) *
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	capabilityValue, scope, _, cleanup := newScopedSecretHarness(t, name, nil)
+	secrets, scope, _, cleanup := newScopedSecretHarness(t, name, nil)
 	t.Cleanup(cleanup)
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
@@ -312,9 +312,9 @@ func TestMetadataDecodeFailsBeforeClickHouseClientAndProcessorAcquisition(t *tes
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	capabilityValue, scope, _, cleanup := newScopedSecretHarness(t, name, nil)
+	secrets, scope, _, cleanup := newScopedSecretHarness(t, name, nil)
 	t.Cleanup(cleanup)
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	err := p.PostInit()

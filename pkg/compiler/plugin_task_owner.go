@@ -29,7 +29,7 @@ func pluginTaskOwnerPrefix(instance plugin.InstanceKey) (string, error) {
 
 func canonicalPluginTaskOwnerIdentity(instance plugin.InstanceKey) ([]byte, error) {
 	if strings.TrimSpace(instance.Factory) == "" ||
-		instance.Attempt == ([32]byte{}) ||
+		instance.Generation == 0 ||
 		instance.Scope < plugin.ScopeSystem || instance.Scope > plugin.ScopeConsumer ||
 		instance.Owner.Kind == "" || instance.Owner.ID == "" ||
 		instance.ConfigDigest == ([32]byte{}) {
@@ -43,7 +43,9 @@ func canonicalPluginTaskOwnerIdentity(instance plugin.InstanceKey) ([]byte, erro
 	if err := appendPluginTaskOwnerString(&canonical, instance.Factory); err != nil {
 		return nil, err
 	}
-	canonical.Write(instance.Attempt[:])
+	var generationNumber [8]byte
+	binary.BigEndian.PutUint64(generationNumber[:], instance.Generation)
+	canonical.Write(generationNumber[:])
 	canonical.WriteByte(byte(instance.Scope))
 	if err := appendPluginTaskOwnerString(&canonical, string(instance.Owner.Kind)); err != nil {
 		return nil, err

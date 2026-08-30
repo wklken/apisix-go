@@ -114,9 +114,9 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	capabilityValue, scope, _, cleanup := newScopedSecretHarness(t, 1, "test-route", nil)
+	secrets, scope, _, cleanup := newScopedSecretHarness(t, 1, "test-route", nil)
 	t.Cleanup(cleanup)
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
@@ -146,9 +146,9 @@ func newTestPluginWithMetadata(t *testing.T, cfg Config, metadata map[string]any
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	capabilityValue, scope, _, cleanup := newScopedSecretHarness(t, 1, "test-route", nil)
+	secrets, scope, _, cleanup := newScopedSecretHarness(t, 1, "test-route", nil)
 	t.Cleanup(cleanup)
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
@@ -340,9 +340,9 @@ func TestMetadataDecodeFailsBeforeLimitCountGroupRegistration(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	capabilityValue, scope, _, cleanup := newScopedSecretHarness(t, 3, "metadata-invalid", nil)
+	secrets, scope, _, cleanup := newScopedSecretHarness(t, 3, "metadata-invalid", nil)
 	t.Cleanup(cleanup)
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	err := p.PostInit()
@@ -1761,9 +1761,9 @@ func TestHandlerResolvesStringCountAndTimeWindow(t *testing.T) {
 	if err := util.Parse(config, p.Config()); err != nil {
 		t.Fatalf("Parse() error = %v", err)
 	}
-	capabilityValue, scope, _, cleanup := newScopedSecretHarness(t, 60, "string-count", nil)
+	secrets, scope, _, cleanup := newScopedSecretHarness(t, 60, "string-count", nil)
 	t.Cleanup(cleanup)
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
@@ -2120,9 +2120,9 @@ func TestHandlerResolvesStringRuleCountAndTimeWindow(t *testing.T) {
 	if err := util.Parse(config, p.Config()); err != nil {
 		t.Fatalf("Parse() error = %v", err)
 	}
-	capabilityValue, scope, _, cleanup := newScopedSecretHarness(t, 64, "string-rule", nil)
+	secrets, scope, _, cleanup := newScopedSecretHarness(t, 64, "string-rule", nil)
 	t.Cleanup(cleanup)
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
@@ -2663,9 +2663,9 @@ func TestSlidingStoreConstructorsCoverConfiguredPolicies(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			plugin := &Plugin{config: test.config}
-			capabilityValue, scope, _, cleanup := newScopedSecretHarness(t, 63, "sliding-"+test.name, nil)
+			secrets, scope, _, cleanup := newScopedSecretHarness(t, 63, "sliding-"+test.name, nil)
 			t.Cleanup(cleanup)
-			materializeScopedLimitCount(t, plugin, capabilityValue, scope)
+			materializeScopedLimitCount(t, plugin, secrets, scope)
 			if _, err := plugin.newSlidingStore(); err != nil {
 				t.Fatalf("newSlidingStore() error = %v", err)
 			}

@@ -30,12 +30,6 @@ type scopedSecretBroker struct {
 	calls  []scopedSecretCall
 }
 
-func (*scopedSecretBroker) AuthorizeCandidate(
-	context.Context, secret.AttemptID, generation.ApplyTicket, generation.PublicationSet,
-) error {
-	return nil
-}
-
 func (broker *scopedSecretBroker) ResolveScoped(
 	ctx context.Context, scope secret.Scope, raw string,
 ) (string, error) {
@@ -52,11 +46,9 @@ func (broker *scopedSecretBroker) ResolveScoped(
 	return raw, nil
 }
 
-func (*scopedSecretBroker) RevokeAttempt(context.Context, secret.AttemptID) error { return nil }
-
 func newScopedSecretHarness(
 	t *testing.T, factory string, values map[string]string,
-) (secret.GenerationCapability, secret.Scope, *scopedSecretBroker, func()) {
+) (secret.GenerationSecrets, secret.Scope, *scopedSecretBroker, func()) {
 	t.Helper()
 	return newScopedSecretHarnessAt(t, factory, 7, "r1", values)
 }
@@ -67,7 +59,7 @@ func newScopedSecretHarnessAt(
 	revision uint64,
 	resourceID string,
 	values map[string]string,
-) (secret.GenerationCapability, secret.Scope, *scopedSecretBroker, func()) {
+) (secret.GenerationSecrets, secret.Scope, *scopedSecretBroker, func()) {
 	t.Helper()
 	key := generation.ResourceKey{Kind: "routes", ID: resourceID}
 	snapshot, err := generation.NewSnapshot(revision, []generation.Resource{{
@@ -87,9 +79,6 @@ func newScopedSecretHarnessAt(
 			Key: key, Disposition: generation.DispositionPublished, Code: "leaf-test",
 		}},
 	}
-	ticket := generation.ApplyTicket{
-		DesiredRevision: revision, RequiredDomains: []generation.Domain{generation.DomainHTTP},
-	}
 	set := generation.PublicationSet{
 		DesiredRevision: revision,
 		Domains: map[generation.Domain]generation.PublicationCandidate{
@@ -105,25 +94,20 @@ func newScopedSecretHarnessAt(
 		t.Fatal(err)
 	}
 	broker := &scopedSecretBroker{values: maps.Clone(values), fail: make(map[string]error)}
-	registration, err := testutil.NewSecretMaterializer(broker, catalog).
-		RegisterCandidate(context.Background(), ticket, set)
+	materialization, err := testutil.NewSecretMaterializer(broker, catalog).PrepareGeneration(context.Background(), set)
 	if err != nil {
 		t.Fatal(err)
 	}
-	capabilityValue, err := secret.NewGenerationCapability(registration, revision)
-	if err != nil {
-		t.Fatal(err)
-	}
+	secrets := materialization.Secrets()
 	baseScope := secret.Scope{
 		Generation: revision,
-		Attempt:    registration.AttemptID(),
 		Domain:     generation.DomainHTTP,
 		Plugin:     factory,
 		Resource:   key,
 		Source:     capability.SecretPluginConfig,
 	}
-	return capabilityValue, baseScope, broker, func() {
-		if err := registration.Close(context.Background()); err != nil {
+	return secrets, baseScope, broker, func() {
+		if err := materialization.Close(context.Background()); err != nil {
 			t.Fatalf("close scoped secret registration: %v", err)
 		}
 	}
@@ -145,7 +129,7 @@ func TestScopedSecretsMaterializeClickHouseUserAndStrictPassword(t *testing.T) {
 		rawUser     = "$ENV://CLICK_HOUSE_USER"
 		rawPassword = "$secret://vault/clickhouse/password"
 	)
-	capabilityValue, scope, broker, closeAttempt := newScopedSecretHarness(t, name, map[string]string{
+	secrets, scope, broker, closeAttempt := newScopedSecretHarness(t, name, map[string]string{
 		rawUser:     "fixture-user",
 		rawPassword: "fixture-password",
 	})
@@ -156,7 +140,7 @@ func TestScopedSecretsMaterializeClickHouseUserAndStrictPassword(t *testing.T) {
 		t.Fatalf("Init() error = %v", err)
 	}
 	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, capabilityValue, p,
+		context.Background(), scope, secrets, p,
 	); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
@@ -189,7 +173,7 @@ func TestScopedSecretsResolveManagedClickHouseUser(t *testing.T) {
 		rawUser     = "$secret://vault/clickhouse/user"
 		rawPassword = "$secret://vault/clickhouse/password"
 	)
-	capabilityValue, scope, broker, closeAttempt := newScopedSecretHarness(t, name, map[string]string{
+	secrets, scope, broker, closeAttempt := newScopedSecretHarness(t, name, map[string]string{
 		rawUser:     "managed-user",
 		rawPassword: "managed-password",
 	})
@@ -212,7 +196,7 @@ func TestScopedSecretsResolveManagedClickHouseUser(t *testing.T) {
 		t.Fatalf("Init() error = %v", err)
 	}
 	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, capabilityValue, p,
+		context.Background(), scope, secrets, p,
 	); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
@@ -236,7 +220,7 @@ func TestScopedSecretsResolveManagedClickHouseUser(t *testing.T) {
 
 func TestScopedSecretsSkipEmptyClickHouseUser(t *testing.T) {
 	const rawPassword = "$secret://vault/clickhouse/password"
-	capabilityValue, scope, broker, closeAttempt := newScopedSecretHarness(t, name, map[string]string{
+	secrets, scope, broker, closeAttempt := newScopedSecretHarness(t, name, map[string]string{
 		rawPassword: "managed-password",
 	})
 	defer closeAttempt()
@@ -245,7 +229,7 @@ func TestScopedSecretsSkipEmptyClickHouseUser(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if len(broker.calls) != 1 || broker.calls[0].Scope.Field != "password" {
@@ -261,7 +245,7 @@ func TestScopedSecretsClickHousePasswordFailureIsAtomic(t *testing.T) {
 		rawUser     = "$secret://vault/clickhouse/user"
 		rawPassword = "$secret://vault/clickhouse/password"
 	)
-	capabilityValue, scope, broker, closeAttempt := newScopedSecretHarness(t, name, map[string]string{
+	secrets, scope, broker, closeAttempt := newScopedSecretHarness(t, name, map[string]string{
 		rawUser: "managed-user",
 	})
 	defer closeAttempt()
@@ -272,7 +256,7 @@ func TestScopedSecretsClickHousePasswordFailureIsAtomic(t *testing.T) {
 		t.Fatalf("Init() error = %v", err)
 	}
 	originalUser, originalPassword := p.config.User, p.config.Password
-	err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p)
+	err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p)
 	if err == nil {
 		t.Fatal("MaterializeScopedPluginSecrets() error = nil, want password failure")
 	}
@@ -306,9 +290,9 @@ func TestPostInitNeverCallsClickHouseDataEncryption(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	capabilityValue, scope, _, cleanup := newScopedSecretHarness(t, name, nil)
+	secrets, scope, _, cleanup := newScopedSecretHarness(t, name, nil)
 	t.Cleanup(cleanup)
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
@@ -352,7 +336,7 @@ func newScopedClickHousePlugin(
 		rawUser     = "$secret://vault/clickhouse/user"
 		rawPassword = "$secret://vault/clickhouse/password"
 	)
-	capabilityValue, scope, _, closeAttempt := newScopedSecretHarnessAt(
+	secrets, scope, _, closeAttempt := newScopedSecretHarnessAt(
 		t,
 		name,
 		revision,
@@ -368,7 +352,7 @@ func newScopedClickHousePlugin(
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	p.SetDependencies(

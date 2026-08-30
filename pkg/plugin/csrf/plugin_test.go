@@ -44,14 +44,14 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	capabilityValue, scope, closeAttempt := testutil.ScopedSecretHarness(
+	secrets, scope, closeAttempt := testutil.ScopedSecretHarness(
 		t,
 		name,
 		nil,
 		generation.ApplyTicket{DesiredRevision: 1, RequiredDomains: []generation.Domain{generation.DomainHTTP}},
 	)
 	t.Cleanup(closeAttempt)
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
@@ -175,12 +175,6 @@ type csrfScopedSecretBroker struct {
 	calls  []csrfScopedSecretCall
 }
 
-func (*csrfScopedSecretBroker) AuthorizeCandidate(
-	context.Context, secret.AttemptID, generation.ApplyTicket, generation.PublicationSet,
-) error {
-	return nil
-}
-
 func (broker *csrfScopedSecretBroker) ResolveScoped(
 	ctx context.Context, scope secret.Scope, raw string,
 ) (string, error) {
@@ -199,11 +193,9 @@ func (broker *csrfScopedSecretBroker) ResolveScoped(
 	return raw, nil
 }
 
-func (*csrfScopedSecretBroker) RevokeAttempt(context.Context, secret.AttemptID) error { return nil }
-
 func newCSRFScopedSecretHarness(
 	t *testing.T, revision uint64, resourceID string, raw string, resolved string, keyring ...string,
-) (secret.GenerationCapability, secret.Scope, *csrfScopedSecretBroker, func()) {
+) (secret.GenerationSecrets, secret.Scope, *csrfScopedSecretBroker, func()) {
 	t.Helper()
 	key := generation.ResourceKey{Kind: "routes", ID: resourceID}
 	snapshot, err := generation.NewSnapshot(revision, []generation.Resource{{
@@ -223,9 +215,6 @@ func newCSRFScopedSecretHarness(
 			Key: key, Disposition: generation.DispositionPublished, Code: "csrf-test",
 		}},
 	}
-	ticket := generation.ApplyTicket{
-		DesiredRevision: revision, RequiredDomains: []generation.Domain{generation.DomainHTTP},
-	}
 	set := generation.PublicationSet{
 		DesiredRevision: revision,
 		Domains: map[generation.Domain]generation.PublicationCandidate{
@@ -244,26 +233,21 @@ func newCSRFScopedSecretHarness(
 		values: map[string]string{raw: resolved},
 		fail:   make(map[string]error),
 	}
-	registration, err := testutil.NewSecretMaterializerWithKeyring(broker, catalog, keyring).
-		RegisterCandidate(context.Background(), ticket, set)
-	if err != nil {
-		t.Fatal(err)
-	}
-	capabilityValue, err := secret.NewGenerationCapability(registration, revision)
+	materialization, err := testutil.NewSecretMaterializerWithKeyring(broker, catalog, keyring).
+		PrepareGeneration(context.Background(), set)
 	if err != nil {
 		t.Fatal(err)
 	}
 	scope := secret.Scope{
 		Generation: revision,
-		Attempt:    registration.AttemptID(),
 		Domain:     generation.DomainHTTP,
 		Plugin:     name,
 		Resource:   key,
 		Source:     capability.SecretPluginConfig,
 	}
-	return capabilityValue, scope, broker, func() {
-		if err := registration.Close(context.Background()); err != nil {
-			t.Fatalf("close scoped secret registration: %v", err)
+	return materialization.Secrets(), scope, broker, func() {
+		if err := materialization.Close(context.Background()); err != nil {
+			t.Fatalf("close scoped secret materialization: %v", err)
 		}
 	}
 }
@@ -290,14 +274,14 @@ func materializeCSRFScopedPlugin(
 	t *testing.T, revision uint64, resourceID, raw, resolved string, keyring ...string,
 ) (*Plugin, *csrfScopedSecretBroker, func()) {
 	t.Helper()
-	capabilityValue, scope, broker, closeAttempt := newCSRFScopedSecretHarness(
+	secrets, scope, broker, closeAttempt := newCSRFScopedSecretHarness(
 		t, revision, resourceID, raw, resolved, keyring...,
 	)
 	p := &Plugin{config: Config{Key: raw, Name: "csrf-token"}}
 	if err := p.Init(); err != nil {
 		t.Fatal(err)
 	}
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatal(err)
 	}
 	if err := p.PostInit(); err != nil {
@@ -391,7 +375,7 @@ func TestPostInitWithoutMaterializationCannotUseKey(t *testing.T) {
 
 func TestMaterializeScopedSecretsFailureIsAtomicAndRedacted(t *testing.T) {
 	const raw = "$secret://vault/csrf-failure"
-	capabilityValue, scope, broker, closeAttempt := newCSRFScopedSecretHarness(
+	secrets, scope, broker, closeAttempt := newCSRFScopedSecretHarness(
 		t, 7, "csrf-failure", raw, "private-key",
 	)
 	defer closeAttempt()
@@ -400,7 +384,7 @@ func TestMaterializeScopedSecretsFailureIsAtomicAndRedacted(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatal(err)
 	}
-	err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p)
+	err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p)
 	if err == nil {
 		t.Fatal("MaterializeScopedPluginSecrets() error = nil")
 	}
@@ -417,7 +401,7 @@ func TestMaterializeScopedSecretsRejectsEmptyAdmittedKeyAndRetriesAtomically(t *
 	const raw = "$ENV://CSRF_EMPTY"
 	for _, resolved := range []string{"", "   "} {
 		t.Run(fmt.Sprintf("resolved-%q", resolved), func(t *testing.T) {
-			capabilityValue, scope, broker, closeAttempt := newCSRFScopedSecretHarness(
+			secrets, scope, broker, closeAttempt := newCSRFScopedSecretHarness(
 				t, 9, "csrf-empty", raw, resolved,
 			)
 			defer closeAttempt()
@@ -425,7 +409,7 @@ func TestMaterializeScopedSecretsRejectsEmptyAdmittedKeyAndRetriesAtomically(t *
 			if err := p.Init(); err != nil {
 				t.Fatal(err)
 			}
-			err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p)
+			err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p)
 			if err == nil {
 				t.Fatal("empty admitted key materialized successfully")
 			}
@@ -444,7 +428,7 @@ func TestMaterializeScopedSecretsRejectsEmptyAdmittedKeyAndRetriesAtomically(t *
 			broker.mu.Lock()
 			broker.values[raw] = "retry-key"
 			broker.mu.Unlock()
-			if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+			if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 				t.Fatalf("retry materialization error = %v", err)
 			}
 			assertCSRFSecretDescriptorFor(t, p.config.Key, "retry-key")
@@ -464,7 +448,7 @@ func TestMaterializeScopedSecretsRejectsEmptyAdmittedKeyAndRetriesAtomically(t *
 
 func TestMaterializeScopedSecretsIsIdempotent(t *testing.T) {
 	const raw = "$ENV://CSRF_IDEMPOTENT"
-	capabilityValue, scope, broker, closeAttempt := newCSRFScopedSecretHarness(
+	secrets, scope, broker, closeAttempt := newCSRFScopedSecretHarness(
 		t, 8, "csrf-idempotent", raw, "idempotent-key",
 	)
 	defer closeAttempt()
@@ -472,11 +456,11 @@ func TestMaterializeScopedSecretsIsIdempotent(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatal(err)
 	}
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatal(err)
 	}
 	descriptor := p.config.Key
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatal(err)
 	}
 	if len(broker.calls) != 1 || p.config.Key != descriptor {

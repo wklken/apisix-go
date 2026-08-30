@@ -37,12 +37,6 @@ type scopedSecretBroker struct {
 	hook   func(scopedSecretCall)
 }
 
-func (*scopedSecretBroker) AuthorizeCandidate(
-	context.Context, secret.AttemptID, generation.ApplyTicket, generation.PublicationSet,
-) error {
-	return nil
-}
-
 func (broker *scopedSecretBroker) ResolveScoped(
 	ctx context.Context, scope secret.Scope, raw string,
 ) (string, error) {
@@ -67,8 +61,6 @@ func (broker *scopedSecretBroker) ResolveScoped(
 	}
 	return raw, nil
 }
-
-func (*scopedSecretBroker) RevokeAttempt(context.Context, secret.AttemptID) error { return nil }
 
 func (broker *scopedSecretBroker) callsSnapshot() []scopedSecretCall {
 	broker.mu.Lock()
@@ -106,7 +98,7 @@ func (broker *scopedSecretBroker) setHook(hook func(scopedSecretCall)) {
 
 func newScopedSecretHarness(
 	t *testing.T, revision uint64, resourceID string, values map[string]string,
-) (secret.GenerationCapability, secret.Scope, *scopedSecretBroker, func()) {
+) (secret.GenerationSecrets, secret.Scope, *scopedSecretBroker, func()) {
 	t.Helper()
 	key := generation.ResourceKey{Kind: "routes", ID: resourceID}
 	snapshot, err := generation.NewSnapshot(revision, []generation.Resource{{
@@ -126,9 +118,6 @@ func newScopedSecretHarness(
 			Key: key, Disposition: generation.DispositionPublished, Code: "leaf-test",
 		}},
 	}
-	ticket := generation.ApplyTicket{
-		DesiredRevision: revision, RequiredDomains: []generation.Domain{generation.DomainHTTP},
-	}
 	set := generation.PublicationSet{
 		DesiredRevision: revision,
 		Domains: map[generation.Domain]generation.PublicationCandidate{
@@ -144,25 +133,20 @@ func newScopedSecretHarness(
 		t.Fatal(err)
 	}
 	broker := &scopedSecretBroker{values: maps.Clone(values), fail: make(map[string]error)}
-	registration, err := testutil.NewSecretMaterializer(broker, catalog).
-		RegisterCandidate(context.Background(), ticket, set)
+	materialization, err := testutil.NewSecretMaterializer(broker, catalog).PrepareGeneration(context.Background(), set)
 	if err != nil {
 		t.Fatal(err)
 	}
-	capabilityValue, err := secret.NewGenerationCapability(registration, revision)
-	if err != nil {
-		t.Fatal(err)
-	}
+	secrets := materialization.Secrets()
 	scope := secret.Scope{
 		Generation: revision,
-		Attempt:    registration.AttemptID(),
 		Domain:     generation.DomainHTTP,
 		Plugin:     name,
 		Resource:   key,
 		Source:     capability.SecretPluginConfig,
 	}
-	return capabilityValue, scope, broker, func() {
-		if err := registration.Close(context.Background()); err != nil {
+	return secrets, scope, broker, func() {
+		if err := materialization.Close(context.Background()); err != nil {
 			t.Fatalf("close scoped secret registration: %v", err)
 		}
 	}
@@ -173,11 +157,11 @@ func limitCountDescriptor(plaintext string) string {
 }
 
 func materializeScopedLimitCount(
-	t *testing.T, p *Plugin, capabilityValue secret.GenerationCapability, scope secret.Scope,
+	t *testing.T, p *Plugin, secrets secret.GenerationSecrets, scope secret.Scope,
 ) {
 	t.Helper()
 	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, capabilityValue, p,
+		context.Background(), scope, secrets, p,
 	); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
@@ -201,12 +185,12 @@ func assertLimitCountCalls(
 
 func TestScopedSecretsPreserveRootRedisHostDeclaration(t *testing.T) {
 	const raw = "$ENV://LIMIT_COUNT_ROOT_REDIS_HOST"
-	capabilityValue, scope, broker, closeAttempt := newScopedSecretHarness(
+	secrets, scope, broker, closeAttempt := newScopedSecretHarness(
 		t, 7, "root-host", map[string]string{raw: "redis-root.test"},
 	)
 	defer closeAttempt()
 	p := &Plugin{config: Config{Count: 1, TimeWindow: 60, Policy: "redis", RedisHost: raw}}
-	materializeScopedLimitCount(t, p, capabilityValue, scope)
+	materializeScopedLimitCount(t, p, secrets, scope)
 	assertLimitCountCalls(t, scope, broker.callsSnapshot(), []string{"redis_host"}, []string{raw})
 	want := limitCountDescriptor("redis-root.test")
 	if p.config.RedisHost != want || p.config.Redis.RedisHost != want {
@@ -216,14 +200,14 @@ func TestScopedSecretsPreserveRootRedisHostDeclaration(t *testing.T) {
 
 func TestScopedSecretsPreserveNestedRedisHostDeclaration(t *testing.T) {
 	const raw = "$secret://vault/limit-count/nested-host"
-	capabilityValue, scope, broker, closeAttempt := newScopedSecretHarness(
+	secrets, scope, broker, closeAttempt := newScopedSecretHarness(
 		t, 8, "nested-host", map[string]string{raw: "redis-nested.test"},
 	)
 	defer closeAttempt()
 	p := &Plugin{config: Config{
 		Count: 1, TimeWindow: 60, Policy: "redis", Redis: RedisConfig{RedisHost: raw},
 	}}
-	materializeScopedLimitCount(t, p, capabilityValue, scope)
+	materializeScopedLimitCount(t, p, secrets, scope)
 	assertLimitCountCalls(
 		t, scope, broker.callsSnapshot(), []string{"redis_config.redis_host"}, []string{raw},
 	)
@@ -236,13 +220,13 @@ func TestScopedSecretsPreserveNestedRedisHostDeclaration(t *testing.T) {
 func TestScopedSecretsPreserveRootClusterContainerDeclaration(t *testing.T) {
 	raws := []string{"$ENV://LIMIT_COUNT_ROOT_NODE_0", "$ENV://LIMIT_COUNT_ROOT_NODE_1"}
 	values := map[string]string{raws[0]: "redis-0.test:6379", raws[1]: "redis-1.test:6379"}
-	capabilityValue, scope, broker, closeAttempt := newScopedSecretHarness(t, 9, "root-nodes", values)
+	secrets, scope, broker, closeAttempt := newScopedSecretHarness(t, 9, "root-nodes", values)
 	defer closeAttempt()
 	p := &Plugin{config: Config{
 		Count: 1, TimeWindow: 60, Policy: "redis-cluster", RedisClusterNodes: slices.Clone(raws),
 		RedisClusterName: "cluster",
 	}}
-	materializeScopedLimitCount(t, p, capabilityValue, scope)
+	materializeScopedLimitCount(t, p, secrets, scope)
 	fields := []string{"redis_cluster_nodes", "redis_cluster_nodes"}
 	assertLimitCountCalls(t, scope, broker.callsSnapshot(), fields, raws)
 	want := []string{limitCountDescriptor(values[raws[0]]), limitCountDescriptor(values[raws[1]])}
@@ -260,14 +244,14 @@ func TestScopedSecretsPreserveRootClusterContainerDeclaration(t *testing.T) {
 func TestScopedSecretsPreserveNestedClusterContainerDeclaration(t *testing.T) {
 	raws := []string{"$secret://vault/limit-count/node-0", "$secret://vault/limit-count/node-1"}
 	values := map[string]string{raws[0]: "nested-0.test:6379", raws[1]: "nested-1.test:6379"}
-	capabilityValue, scope, broker, closeAttempt := newScopedSecretHarness(t, 10, "nested-nodes", values)
+	secrets, scope, broker, closeAttempt := newScopedSecretHarness(t, 10, "nested-nodes", values)
 	defer closeAttempt()
 	p := &Plugin{config: Config{
 		Count: 1, TimeWindow: 60, Policy: "redis-cluster", RedisCluster: RedisClusterConfig{
 			RedisClusterNodes: slices.Clone(raws), RedisClusterName: "cluster",
 		},
 	}}
-	materializeScopedLimitCount(t, p, capabilityValue, scope)
+	materializeScopedLimitCount(t, p, secrets, scope)
 	fields := []string{"redis_cluster_config.redis_cluster_nodes", "redis_cluster_config.redis_cluster_nodes"}
 	assertLimitCountCalls(t, scope, broker.callsSnapshot(), fields, raws)
 	want := []string{limitCountDescriptor(values[raws[0]]), limitCountDescriptor(values[raws[1]])}
@@ -278,12 +262,12 @@ func TestScopedSecretsPreserveNestedClusterContainerDeclaration(t *testing.T) {
 
 func TestScopedSecretsResolveManagedLimitCountKey(t *testing.T) {
 	const raw = "$secret://vault/limit-count/key"
-	capabilityValue, scope, broker, closeAttempt := newScopedSecretHarness(
+	secrets, scope, broker, closeAttempt := newScopedSecretHarness(
 		t, 11, "managed-key", map[string]string{raw: "remote_addr"},
 	)
 	defer closeAttempt()
 	p := &Plugin{config: Config{Count: 1, TimeWindow: 60, Key: raw}}
-	materializeScopedLimitCount(t, p, capabilityValue, scope)
+	materializeScopedLimitCount(t, p, secrets, scope)
 	assertLimitCountCalls(t, scope, broker.callsSnapshot(), []string{"key"}, []string{raw})
 	if p.config.Key != limitCountDescriptor("remote_addr") {
 		t.Fatalf("key descriptor = %q", p.config.Key)
@@ -291,10 +275,10 @@ func TestScopedSecretsResolveManagedLimitCountKey(t *testing.T) {
 }
 
 func TestScopedSecretsSkipEmptyLimitCountOptionalFields(t *testing.T) {
-	capabilityValue, scope, broker, closeAttempt := newScopedSecretHarness(t, 12, "empty", nil)
+	secrets, scope, broker, closeAttempt := newScopedSecretHarness(t, 12, "empty", nil)
 	defer closeAttempt()
 	p := &Plugin{config: Config{Count: 1, TimeWindow: 60}}
-	materializeScopedLimitCount(t, p, capabilityValue, scope)
+	materializeScopedLimitCount(t, p, secrets, scope)
 	if calls := broker.callsSnapshot(); len(calls) != 0 {
 		t.Fatalf("empty optional broker calls = %#v", calls)
 	}
@@ -355,14 +339,14 @@ func TestScopedSecretsLimitCountNodeFailureIsAtomic(t *testing.T) {
 	const rawKey = "$ENV://LIMIT_COUNT_RETRY_KEY"
 	raws := []string{"$ENV://LIMIT_COUNT_RETRY_NODE_0", "$ENV://LIMIT_COUNT_RETRY_NODE_1"}
 	values := map[string]string{rawKey: "remote_addr", raws[0]: "node-0.test:6379", raws[1]: "node-1.test:6379"}
-	capabilityValue, scope, broker, closeAttempt := newScopedSecretHarness(t, 13, "node-failure", values)
+	secrets, scope, broker, closeAttempt := newScopedSecretHarness(t, 13, "node-failure", values)
 	defer closeAttempt()
 	broker.setFailure(raws[1], errors.New("broker leaked "+raws[1]))
 	p := &Plugin{config: Config{
 		Count: 1, TimeWindow: 60, Key: rawKey, Policy: "redis-cluster",
 		RedisClusterNodes: slices.Clone(raws), RedisClusterName: "cluster",
 	}}
-	err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p)
+	err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p)
 	if err == nil || err.Error() != "materialize plugin secrets: credential unavailable" {
 		t.Fatalf("node failure = %v, want redacted credential unavailable", err)
 	}
@@ -382,7 +366,7 @@ func TestScopedSecretsLimitCountNodeFailureIsAtomic(t *testing.T) {
 	)
 	broker.setFailure(raws[1], nil)
 	broker.resetCalls()
-	materializeScopedLimitCount(t, p, capabilityValue, scope)
+	materializeScopedLimitCount(t, p, secrets, scope)
 	assertLimitCountCalls(
 		t, scope, broker.callsSnapshot(),
 		[]string{"key", "redis_cluster_nodes", "redis_cluster_nodes"},
@@ -394,12 +378,12 @@ func TestScopedSecretsLimitCountResolvedBlanksAreAtomicAndRetryable(t *testing.T
 	const raw = "$ENV://LIMIT_COUNT_BLANK_KEY"
 	for _, blank := range []string{"", " \t\n"} {
 		t.Run(fmt.Sprintf("blank-%q", blank), func(t *testing.T) {
-			capabilityValue, scope, broker, closeAttempt := newScopedSecretHarness(
+			secrets, scope, broker, closeAttempt := newScopedSecretHarness(
 				t, 20, "blank-"+fmt.Sprint(len(blank)), map[string]string{raw: blank},
 			)
 			defer closeAttempt()
 			p := &Plugin{config: Config{Count: 1, TimeWindow: 60, Key: raw}}
-			err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p)
+			err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p)
 			if err == nil || err.Error() != "materialize plugin secrets: credential unavailable" {
 				t.Fatalf("blank materialization error = %v", err)
 			}
@@ -408,7 +392,7 @@ func TestScopedSecretsLimitCountResolvedBlanksAreAtomicAndRetryable(t *testing.T
 			}
 			broker.setValue(raw, "remote_addr")
 			broker.resetCalls()
-			materializeScopedLimitCount(t, p, capabilityValue, scope)
+			materializeScopedLimitCount(t, p, secrets, scope)
 			assertLimitCountCalls(t, scope, broker.callsSnapshot(), []string{"key"}, []string{raw})
 		})
 	}
@@ -416,13 +400,13 @@ func TestScopedSecretsLimitCountResolvedBlanksAreAtomicAndRetryable(t *testing.T
 
 func TestScopedSecretsLimitCountLiteralsAreDescriptorOnly(t *testing.T) {
 	nodes := []string{"node-0.test:6379", "node-1.test:6379"}
-	capabilityValue, scope, _, closeAttempt := newScopedSecretHarness(t, 26, "literal-descriptors", nil)
+	secrets, scope, _, closeAttempt := newScopedSecretHarness(t, 26, "literal-descriptors", nil)
 	defer closeAttempt()
 	p := &Plugin{config: Config{
 		Count: 1, TimeWindow: 60, Key: "remote_addr", Policy: "redis-cluster",
 		RedisHost: "redis.test:6379", RedisClusterNodes: slices.Clone(nodes),
 	}}
-	materializeScopedLimitCount(t, p, capabilityValue, scope)
+	materializeScopedLimitCount(t, p, secrets, scope)
 	defer p.Stop()
 	if p.config.Key != limitCountDescriptor("remote_addr") ||
 		p.config.RedisHost != limitCountDescriptor("redis.test:6379") ||
@@ -467,7 +451,7 @@ func TestScopedSecretsLimitCountNestedAliasesWinBeforeNormalization(t *testing.T
 	)
 	rootNodes := []string{"$ENV://LIMIT_COUNT_ROOT_NODE_IGNORED"}
 	nestedNodes := []string{"$ENV://LIMIT_COUNT_NESTED_NODE"}
-	capabilityValue, scope, broker, closeAttempt := newScopedSecretHarness(
+	secrets, scope, broker, closeAttempt := newScopedSecretHarness(
 		t, 21, "nested-wins", map[string]string{
 			nestedHost: "nested-winner.test", nestedNodes[0]: "nested-node.test:6379",
 		},
@@ -478,7 +462,7 @@ func TestScopedSecretsLimitCountNestedAliasesWinBeforeNormalization(t *testing.T
 		Redis: RedisConfig{RedisHost: nestedHost}, RedisClusterNodes: rootNodes,
 		RedisCluster: RedisClusterConfig{RedisClusterNodes: nestedNodes},
 	}}
-	materializeScopedLimitCount(t, p, capabilityValue, scope)
+	materializeScopedLimitCount(t, p, secrets, scope)
 	assertLimitCountCalls(
 		t, scope, broker.callsSnapshot(),
 		[]string{"redis_config.redis_host", "redis_cluster_config.redis_cluster_nodes"},
@@ -503,7 +487,7 @@ func TestScopedSecretsLimitCountConcurrentMaterializationIsSingleFlight(t *testi
 		raw     = "$ENV://LIMIT_COUNT_SINGLEFLIGHT_KEY"
 		workers = 32
 	)
-	capabilityValue, scope, broker, closeAttempt := newScopedSecretHarness(
+	secrets, scope, broker, closeAttempt := newScopedSecretHarness(
 		t, 22, "singleflight", map[string]string{raw: "remote_addr"},
 	)
 	defer closeAttempt()
@@ -520,7 +504,7 @@ func TestScopedSecretsLimitCountConcurrentMaterializationIsSingleFlight(t *testi
 	for range workers {
 		go func() {
 			<-start
-			errs <- base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p)
+			errs <- base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p)
 		}()
 	}
 	close(start)
@@ -542,14 +526,14 @@ func prepareScopedLimitCountPlugin(
 	t *testing.T, revision uint64, resourceID string, config Config, values map[string]string,
 ) (*Plugin, func()) {
 	t.Helper()
-	capabilityValue, scope, _, closeAttempt := newScopedSecretHarness(
+	secrets, scope, _, closeAttempt := newScopedSecretHarness(
 		t, revision, resourceID, values,
 	)
 	p := &Plugin{config: config}
 	if err := p.Init(); err != nil {
 		t.Fatal(err)
 	}
-	materializeScopedLimitCount(t, p, capabilityValue, scope)
+	materializeScopedLimitCount(t, p, secrets, scope)
 	if err := p.PostInit(); err != nil {
 		closeAttempt()
 		t.Fatal(err)
@@ -686,12 +670,12 @@ func TestScopedSecretsLimitCountGenerationInstancesDoNotCrossUseKeys(t *testing.
 func TestLimitCountStopDrainsScopedCallbacksAndDestroysSecrets(t *testing.T) {
 	const plaintext = "stop-redis.test"
 	const raw = "$ENV://LIMIT_COUNT_STOP_HOST"
-	capabilityValue, scope, _, closeAttempt := newScopedSecretHarness(
+	secrets, scope, _, closeAttempt := newScopedSecretHarness(
 		t, 40, "stop-scoped", map[string]string{raw: plaintext},
 	)
 	defer closeAttempt()
 	p := &Plugin{config: Config{Count: 1, TimeWindow: 60, RedisHost: raw}}
-	materializeScopedLimitCount(t, p, capabilityValue, scope)
+	materializeScopedLimitCount(t, p, secrets, scope)
 	entered := make(chan struct{})
 	release := make(chan struct{})
 	callbackDone := make(chan error, 1)
@@ -757,7 +741,7 @@ func TestLimitCountStopDrainsScopedCallbacksAndDestroysSecrets(t *testing.T) {
 
 func TestScopedSecretsLimitCountStopDuringMaterializeCannotRevive(t *testing.T) {
 	const raw = "$ENV://LIMIT_COUNT_STOP_MATERIALIZE"
-	capabilityValue, scope, broker, closeAttempt := newScopedSecretHarness(
+	secrets, scope, broker, closeAttempt := newScopedSecretHarness(
 		t, 41, "stop-materialize", map[string]string{raw: "remote_addr"},
 	)
 	defer closeAttempt()
@@ -771,7 +755,7 @@ func TestScopedSecretsLimitCountStopDuringMaterializeCannotRevive(t *testing.T) 
 	p := &Plugin{config: Config{Count: 1, TimeWindow: 60, Key: raw}}
 	done := make(chan error, 1)
 	go func() {
-		done <- base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p)
+		done <- base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p)
 	}()
 	<-entered
 	p.Stop()
@@ -784,7 +768,7 @@ func TestScopedSecretsLimitCountStopDuringMaterializeCannotRevive(t *testing.T) 
 	}
 	calls := len(broker.callsSnapshot())
 	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, capabilityValue, p,
+		context.Background(), scope, secrets, p,
 	); err == nil {
 		t.Fatal("materialization after Stop() error = nil")
 	}
@@ -900,9 +884,9 @@ func TestLimitCountPostInitAndStopAreLifecycleSerialized(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatal(err)
 	}
-	capabilityValue, scope, _, closeAttempt := newScopedSecretHarness(t, 88, "postinit-first", nil)
+	secrets, scope, _, closeAttempt := newScopedSecretHarness(t, 88, "postinit-first", nil)
 	defer closeAttempt()
-	materializeScopedLimitCount(t, p, capabilityValue, scope)
+	materializeScopedLimitCount(t, p, secrets, scope)
 	p.credentialMu.Lock()
 	postDone := make(chan error, 1)
 	go func() { postDone <- p.PostInit() }()
@@ -955,11 +939,11 @@ func TestLimitCountStopWaitsForActualKeyConsumption(t *testing.T) {
 	p := &Plugin{config: Config{
 		Count: 1, TimeWindow: 60, Key: raw, KeyType: "constant", Policy: "local",
 	}}
-	capabilityValue, scope, _, closeAttempt := newScopedSecretHarness(
+	secrets, scope, _, closeAttempt := newScopedSecretHarness(
 		t, 90, "blocked-key", map[string]string{raw: "private-limit-key"},
 	)
 	defer closeAttempt()
-	materializeScopedLimitCount(t, p, capabilityValue, scope)
+	materializeScopedLimitCount(t, p, secrets, scope)
 	store := newBlockingLimitCountStore()
 	p.localLimiterStore = store
 	if err := p.PostInit(); err != nil {

@@ -6,7 +6,6 @@ import (
 	"sync"
 
 	"github.com/wklken/apisix-go/pkg/plugin/base"
-	"github.com/wklken/apisix-go/pkg/secret"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -18,7 +17,7 @@ var (
 
 type compositeChildPreparer struct {
 	dependencies base.Dependencies
-	attempt      secret.AttemptID
+	generation   uint64
 	scope        Scope
 	provenance   ResourceProvenance
 }
@@ -30,18 +29,18 @@ type preparedCompositeChild struct {
 
 func NewCompositeChildPreparer(
 	dependencies base.Dependencies,
-	attempt secret.AttemptID,
+	generation uint64,
 	scope Scope,
 	provenance ResourceProvenance,
 ) (base.CompositeChildPreparer, error) {
-	if attempt == (secret.AttemptID{}) || !dependencies.Secrets.Valid() ||
-		dependencies.Secrets.AttemptID() != attempt ||
+	if generation == 0 || !dependencies.Secrets.Valid() ||
+		dependencies.Secrets.Generation() != generation ||
 		!validCompositeOuterIdentity(scope, provenance) {
 		return nil, errCompositeChildInputs
 	}
 	return &compositeChildPreparer{
 		dependencies: dependencies,
-		attempt:      attempt,
+		generation:   generation,
 		scope:        scope,
 		provenance:   provenance,
 	}, nil
@@ -121,8 +120,8 @@ func (preparer *compositeChildPreparer) Prepare(
 	if err != nil {
 		return fail(err)
 	}
-	binding, err := BindAttemptResolvedPlugin(
-		preparer.attempt,
+	binding, err := BindGenerationResolvedPlugin(
+		preparer.generation,
 		descriptor,
 		child,
 		preparer.scope,

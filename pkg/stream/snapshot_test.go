@@ -15,7 +15,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin"
 	"github.com/wklken/apisix-go/pkg/plugin/mqtt_proxy"
 	"github.com/wklken/apisix-go/pkg/resource"
-	"github.com/wklken/apisix-go/pkg/secret"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -286,8 +285,8 @@ func preparedStreamMQTTBinding(
 	if err != nil {
 		t.Fatalf("ResolveDescriptorForFactory() error = %v", err)
 	}
-	binding, err := plugin.BindAttemptResolvedPlugin(
-		secret.AttemptID{1},
+	binding, err := plugin.BindGenerationResolvedPlugin(
+		1,
 		descriptor,
 		p,
 		plugin.ScopeRoute,
@@ -295,7 +294,7 @@ func preparedStreamMQTTBinding(
 		plugin.InstanceIdentityInput{PluginConfig: p.Config()},
 	)
 	if err != nil {
-		t.Fatalf("BindAttemptResolvedPlugin() error = %v", err)
+		t.Fatalf("BindGenerationResolvedPlugin() error = %v", err)
 	}
 	return binding
 }

@@ -2,9 +2,7 @@ package compiler
 
 import (
 	"context"
-	"errors"
 	"slices"
-	"strings"
 	"testing"
 
 	"github.com/wklken/apisix-go/pkg/capability"
@@ -105,68 +103,4 @@ func TestFinalFactoryOccurrencesIgnorePluginMetadataTombstones(t *testing.T) {
 	if len(got) != 0 {
 		t.Fatalf("plugin metadata tombstone occurrences = %#v, want none", got)
 	}
-}
-
-func TestValidateScopedSecretSupportDoesNotAcceptPhantomNoOps(t *testing.T) {
-	compiler := newUnsupportedPluginTargetTestCompiler(t)
-	undeclared := factoryOccurrenceSpec{
-		domain: generation.DomainHTTP, resource: generation.ResourceKey{Kind: "routes", ID: "r1"},
-		source: capability.SecretPluginConfig, factory: "request-id",
-	}
-	if err := validateScopedSecretSupport([]factoryOccurrenceSpec{undeclared}, compiler.schemas.catalog); err != nil {
-		t.Fatalf("undeclared factory support error = %v", err)
-	}
-
-	compilerDiscard := undeclared
-	compilerDiscard.factory = "basic-auth"
-	if err := validateScopedSecretSupport(
-		[]factoryOccurrenceSpec{compilerDiscard, compilerDiscard},
-		compiler.schemas.catalog,
-	); err != nil {
-		t.Fatalf("compiler-discard factory support error = %v", err)
-	}
-
-	realDeclaration := undeclared
-	realDeclaration.factory = "echo"
-	err := validateScopedSecretSupport([]factoryOccurrenceSpec{realDeclaration}, compiler.schemas.catalog)
-	if !errors.Is(err, ErrInvalidInput) || strings.Contains(err.Error(), "echo") {
-		t.Fatalf("unowned plugin-target factory error = %v, want redacted ErrInvalidInput", err)
-	}
-
-	compilerDiscard.source = capability.SecretConsumerConfig
-	if err := validateScopedSecretSupport(
-		[]factoryOccurrenceSpec{compilerDiscard},
-		compiler.schemas.catalog,
-	); err != nil {
-		t.Fatalf("consumer occurrence incorrectly required plugin scoped support: %v", err)
-	}
-}
-
-func newUnsupportedPluginTargetTestCompiler(t *testing.T) *Compiler {
-	t.Helper()
-	manifest := mustManifest(t)
-	found := false
-	for index := range manifest.Plugins {
-		pluginCapability := &manifest.Plugins[index]
-		for _, factory := range pluginCapability.Factories {
-			if factory.Key != "echo" {
-				continue
-			}
-			pluginCapability.SecretDeclarations = append(
-				pluginCapability.SecretDeclarations,
-				capability.SecretDeclaration{
-					Factory: "echo", Source: capability.SecretPluginConfig, Field: "body",
-				},
-			)
-			found = true
-		}
-	}
-	if !found {
-		t.Fatal("echo capability is unavailable for unsupported-owner fixture")
-	}
-	compiler, err := New(manifest)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return compiler
 }

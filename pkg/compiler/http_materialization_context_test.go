@@ -118,7 +118,7 @@ func TestDefaultEffectiveBindingOpsInjectCompleteHTTPRuntimeContext(t *testing.T
 		service: resource.Service{ID: "service-1"},
 	}
 	instance := &runtimeContextPlugin{}
-	operations := defaultEffectiveBindingOps().withDefaults([32]byte{1})
+	operations := defaultEffectiveBindingOps().withDefaults(1)
 	operations.applyBootstrap(instance, runtimeContext)
 	if err := operations.preMaterialize(instance); err != nil {
 		t.Fatal(err)
@@ -157,7 +157,7 @@ func TestDefaultEffectiveBindingOpsInjectConfiguredZones(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			instance := &runtimeContextPlugin{}
-			defaultEffectiveBindingOps().withDefaults([32]byte{1}).applyBootstrap(
+			defaultEffectiveBindingOps().withDefaults(1).applyBootstrap(
 				instance,
 				effectiveBindingRuntimeContext{configured: true, proxyCacheZones: test.zones},
 			)
@@ -194,7 +194,7 @@ func TestEffectiveBindingMaterializerAppliesHTTPRuntimeContextBeforePostInit(t *
 	}
 
 	var order []string
-	defaults := prepared.bindingOps.withDefaults(prepared.attempt.AttemptID())
+	defaults := prepared.bindingOps.withDefaults(prepared.preparation.Generation())
 	prepared.bindingOps.applyBootstrap = func(plugin.Plugin, effectiveBindingRuntimeContext) {
 		order = append(order, "bootstrap")
 	}
@@ -310,7 +310,7 @@ func TestRecoverableEffectiveBindingMaterializationRollsBackOnlyFailedRoute(t *t
 		[]string{"request-id", "response-rewrite"},
 		nil,
 	)
-	defaults := prepared.bindingOps.withDefaults(prepared.attempt.AttemptID())
+	defaults := prepared.bindingOps.withDefaults(prepared.preparation.Generation())
 	prepared.bindingOps.postInit = func(instance plugin.Plugin) error {
 		if instance.GetName() == "request-id" {
 			return errors.New("route-scoped post-init failure")

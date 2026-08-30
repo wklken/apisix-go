@@ -59,15 +59,6 @@ type feishuScopedSecretBroker struct {
 	calls  []feishuScopedSecretCall
 }
 
-func (*feishuScopedSecretBroker) AuthorizeCandidate(
-	context.Context,
-	secret.AttemptID,
-	generation.ApplyTicket,
-	generation.PublicationSet,
-) error {
-	return nil
-}
-
 func (broker *feishuScopedSecretBroker) ResolveScoped(
 	_ context.Context,
 	scope secret.Scope,
@@ -81,10 +72,6 @@ func (broker *feishuScopedSecretBroker) ResolveScoped(
 		return "", errors.New("missing private Feishu test value")
 	}
 	return value, nil
-}
-
-func (*feishuScopedSecretBroker) RevokeAttempt(context.Context, secret.AttemptID) error {
-	return nil
 }
 
 func (broker *feishuScopedSecretBroker) scopedCalls() []feishuScopedSecretCall {
@@ -105,7 +92,7 @@ func newFeishuScopedSecretHarness(
 	resourceID string,
 	config Config,
 	values map[string]string,
-) (secret.GenerationCapability, secret.Scope, *feishuScopedSecretBroker, func()) {
+) (secret.GenerationSecrets, secret.Scope, *feishuScopedSecretBroker, func()) {
 	t.Helper()
 	key := generation.ResourceKey{Kind: "routes", ID: resourceID}
 	document, err := json.Marshal(map[string]any{
@@ -138,11 +125,6 @@ func newFeishuScopedSecretHarness(
 			Key: key, Disposition: generation.DispositionPublished, Code: "feishu-auth-test",
 		}},
 	}
-	ticket := generation.ApplyTicket{
-		DesiredRevision: revision,
-		DesiredDigest:   snapshot.Digest(),
-		RequiredDomains: []generation.Domain{generation.DomainHTTP},
-	}
 	publication := generation.PublicationSet{
 		DesiredRevision: revision,
 		Domains: map[generation.Domain]generation.PublicationCandidate{
@@ -158,28 +140,22 @@ func newFeishuScopedSecretHarness(
 		t.Fatal(err)
 	}
 	broker := &feishuScopedSecretBroker{values: values}
-	registration, err := testutil.NewSecretMaterializer(broker, catalog).RegisterCandidate(
-		context.Background(), ticket, publication,
-	)
+	materialization, err := testutil.NewSecretMaterializer(broker, catalog).
+		PrepareGeneration(context.Background(), publication)
 	if err != nil {
 		t.Fatal(err)
 	}
-	capabilityValue, err := secret.NewGenerationCapability(registration, revision)
-	if err != nil {
-		_ = registration.Close(context.Background())
-		t.Fatal(err)
-	}
+	secrets := materialization.Secrets()
 	scope := secret.Scope{
 		Generation: revision,
-		Attempt:    registration.AttemptID(),
 		Domain:     generation.DomainHTTP,
 		Plugin:     name,
 		Resource:   key,
 		Source:     capability.SecretPluginConfig,
 	}
-	return capabilityValue, scope, broker, func() {
-		if err := registration.Close(context.Background()); err != nil {
-			t.Errorf("close Feishu scoped attempt: %v", err)
+	return secrets, scope, broker, func() {
+		if err := materialization.Close(context.Background()); err != nil {
+			t.Errorf("close Feishu scoped generation: %v", err)
 		}
 	}
 }
@@ -206,7 +182,7 @@ func TestMaterializeScopedSecretsOwnsFeishuOAuthAndSessionSecrets(t *testing.T) 
 		AuthRedirectURI: "https://gateway.example.com/callback",
 		RedirectURI:     "https://login.feishu.cn/oauth",
 	}
-	capabilityValue, scope, broker, closeAttempt := newFeishuScopedSecretHarness(
+	secrets, scope, broker, closeAttempt := newFeishuScopedSecretHarness(
 		t, 70, "feishu-scoped", config, map[string]string{
 			appSecretRaw: "resolved-app-secret", sessionRaw: "会话密钥八个字符",
 			fallbackOne: "short", fallbackTwo: "session-oldest",
@@ -218,7 +194,7 @@ func TestMaterializeScopedSecretsOwnsFeishuOAuthAndSessionSecrets(t *testing.T) 
 		t.Fatal(err)
 	}
 
-	err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p)
+	err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p)
 	if err == nil {
 		t.Fatal("third-value materialization error = nil")
 	}
@@ -240,7 +216,7 @@ func TestMaterializeScopedSecretsOwnsFeishuOAuthAndSessionSecrets(t *testing.T) 
 	}
 
 	broker.setValue(fallbackOne, "session-previous")
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatalf("retry materialization error = %v", err)
 	}
 	assertFeishuDescriptor(t, p.config.AppSecret, "resolved-app-secret")
@@ -453,13 +429,13 @@ func TestFeishuResolvedSessionSecretRuneCountBounds(t *testing.T) {
 				AuthRedirectURI: "https://gateway.example.com/callback",
 				RedirectURI:     "https://login.feishu.cn/oauth",
 			}
-			capabilityValue, scope, broker, closeAttempt := newFeishuScopedSecretHarness(
+			secrets, scope, broker, closeAttempt := newFeishuScopedSecretHarness(
 				t, uint64(80+i), "feishu-boundary", config,
 				map[string]string{"app-secret": "app-secret", raw: tt.resolved},
 			)
 			defer closeAttempt()
 			p := &Plugin{config: config}
-			err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p)
+			err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p)
 			if tt.wantErr {
 				if err == nil || p.config.Secret != raw || p.secretsPrepared {
 					t.Fatalf("resolved rune count %d result = %v, config=%#v", len([]rune(tt.resolved)), err, p.config)
@@ -485,7 +461,7 @@ func TestFeishuConcurrentScopedMaterializationIsSingleFlight(t *testing.T) {
 		AuthRedirectURI: "https://gateway.example.com/callback",
 		RedirectURI:     "https://login.feishu.cn/oauth",
 	}
-	capabilityValue, scope, broker, closeAttempt := newFeishuScopedSecretHarness(
+	secrets, scope, broker, closeAttempt := newFeishuScopedSecretHarness(
 		t, 71, "feishu-concurrent", config, map[string]string{
 			config.AppSecret: "concurrent-app", config.Secret: "concurrent-session",
 			config.SecretFallbacks[0]: "concurrent-old",
@@ -499,7 +475,7 @@ func TestFeishuConcurrentScopedMaterializationIsSingleFlight(t *testing.T) {
 	for range 24 {
 		group.Go(func() {
 			<-start
-			errs <- base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p)
+			errs <- base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p)
 		})
 	}
 	close(start)
@@ -523,7 +499,7 @@ func newScopedFeishuTestPlugin(
 	values map[string]string,
 ) (*Plugin, func()) {
 	t.Helper()
-	capabilityValue, scope, _, closeAttempt := newFeishuScopedSecretHarness(
+	secrets, scope, _, closeAttempt := newFeishuScopedSecretHarness(
 		t, revision, resourceID, config, values,
 	)
 	p := &Plugin{config: config}
@@ -531,7 +507,7 @@ func newScopedFeishuTestPlugin(
 		closeAttempt()
 		t.Fatal(err)
 	}
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		closeAttempt()
 		t.Fatal(err)
 	}
@@ -730,7 +706,7 @@ func TestFeishuStopDrainsActiveRequestAndPreventsResurrection(t *testing.T) {
 	if late.Code != http.StatusServiceUnavailable || providerCalls.Load() != 2 {
 		t.Fatalf("post-Stop status/provider calls = %d/%d, want 503/2", late.Code, providerCalls.Load())
 	}
-	capabilityValue, scope, cleanup := testutil.ScopedSecretHarness(
+	secrets, scope, cleanup := testutil.ScopedSecretHarness(
 		t,
 		name,
 		nil,
@@ -738,7 +714,7 @@ func TestFeishuStopDrainsActiveRequestAndPreventsResurrection(t *testing.T) {
 	)
 	defer cleanup()
 	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, capabilityValue, p,
+		context.Background(), scope, secrets, p,
 	); !errors.Is(err, secret.ErrCredentialUnavailable) {
 		t.Fatalf("post-Stop materialization error = %v, want credential unavailable", err)
 	}
@@ -761,9 +737,9 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	for _, raw := range cfg.SecretFallbacks {
 		values[raw] = raw
 	}
-	capabilityValue, scope, _, cleanup := newFeishuScopedSecretHarness(t, 1, "test-route", cfg, values)
+	secrets, scope, _, cleanup := newFeishuScopedSecretHarness(t, 1, "test-route", cfg, values)
 	t.Cleanup(cleanup)
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {

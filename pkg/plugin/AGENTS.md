@@ -24,7 +24,7 @@ This file inherits the repository root `AGENTS.md` and applies to the complete
   `http.ErrAbortHandler`; never relabel downstream/core panic as plugin failure.
 - Do not place raw panic values, route/resource IDs, plaintext, ciphertext, or
   secret references in errors, metrics, status, or task owner names.
-- Secret access must use manifest-declared, attempt-scoped dependencies before
+- Secret access must use manifest-declared, generation-scoped dependencies before
   `PostInit`; never read a global Store or resolve an undeclared field.
 - Residual/deadline means plugin authority is still live. Do not free a sink,
   client, sender, lease, or observer until admitted callbacks actually exit.

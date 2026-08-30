@@ -21,14 +21,12 @@ import (
 
 func newScopedWorkerTestFactory(t *testing.T) *WorkerCompilerFactory {
 	t.Helper()
-	manifest := mustManifest(t)
-	catalog, err := capability.NewSecretDeclarationCatalog(manifest)
+	catalog, err := capability.NewSecretDeclarationCatalog()
 	if err != nil {
 		t.Fatal(err)
 	}
 	factory, err := NewWorkerCompilerFactory(
-		manifest,
-		workerTestEffective(manifest),
+		workerTestEffective(),
 		testutil.NewSecretMaterializer(&countingScopedBroker{}, catalog),
 		workerTestRuntimeObservers(),
 	)

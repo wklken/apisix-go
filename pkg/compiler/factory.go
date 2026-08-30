@@ -23,7 +23,7 @@ func newGenerationFactory(
 	compiler *Compiler,
 	materializer secret.Materializer,
 ) (*generationFactory, error) {
-	if compiler == nil || compiler.manifest == nil || compiler.schemas == nil ||
+	if compiler == nil || compiler.schemas == nil ||
 		isNilInterface(materializer) {
 		return nil, fmt.Errorf("%w: generation factory dependencies are required", ErrInvalidInput)
 	}

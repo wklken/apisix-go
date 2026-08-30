@@ -102,11 +102,7 @@ var expectedConsumerFields = map[string][]string{
 }
 
 func TestSecretDeclarationCatalogParity(t *testing.T) {
-	manifest, err := capability.Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	catalog, err := capability.NewSecretDeclarationCatalog(manifest)
+	catalog, err := capability.NewSecretDeclarationCatalog()
 	if err != nil {
 		t.Fatal(err)
 	}

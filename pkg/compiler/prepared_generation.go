@@ -27,7 +27,7 @@ type PreparedGeneration struct {
 	lookup             consumerLookupView
 	tasks              *runtime.TaskRegistry
 	effective          *config.EffectiveConfig
-	manifest           *capability.Manifest
+	catalog            *capability.SecretDeclarationCatalog
 	registry           *runtime.ResourceRegistry
 	observers          WorkerRuntimeObservers
 	clusterObservers   *clusterObserverRegistry
@@ -274,7 +274,7 @@ func (prepared *PreparedGeneration) clearTerminalAuthorities() func() {
 	prepared.lookup = consumerLookupView{}
 	prepared.tasks = nil
 	prepared.effective = nil
-	prepared.manifest = nil
+	prepared.catalog = nil
 	prepared.registry = nil
 	prepared.observers = WorkerRuntimeObservers{}
 	prepared.clusterObservers = nil

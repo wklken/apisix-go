@@ -534,7 +534,7 @@ func TestEffectiveBindingMaterializerLifecycleOrderAndExactSecretScope(t *testin
 		lookup:       consumerLookupView{bindings: consumers},
 		tasks:        tasks,
 		effective:    &config.EffectiveConfig{},
-		manifest:     compiler.manifest,
+		catalog:      compiler.schemas.catalog,
 		registry:     runtime.NewResourceRegistry(),
 		materializer: materializer,
 		cleanup:      cleanup,
@@ -1598,7 +1598,7 @@ func newEffectiveBindingMaterializerFixtureWithOccurrenceSpecs(
 		lookup:           consumerLookupView{bindings: consumers},
 		tasks:            tasks,
 		effective:        &config.EffectiveConfig{},
-		manifest:         compiler.manifest,
+		catalog:          compiler.schemas.catalog,
 		registry:         registry,
 		observers:        observers,
 		clusterObservers: clusterObservers,
@@ -1762,7 +1762,7 @@ func newRealEffectiveBindingPrepared(
 	prepared := &PreparedGeneration{
 		publication: registered.publication, preparation: registered.preparation,
 		consumers: consumers, lookup: consumerLookupView{bindings: consumers}, tasks: tasks,
-		effective: &config.EffectiveConfig{}, manifest: compiler.manifest,
+		effective: &config.EffectiveConfig{}, catalog: compiler.schemas.catalog,
 		registry: runtime.NewResourceRegistry(), materializer: materializer, cleanup: cleanup,
 		bindingOps: defaultEffectiveBindingOps().withDefaults(registered.preparation.Generation()),
 	}

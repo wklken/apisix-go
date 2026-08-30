@@ -1,3 +1,4 @@
-/pkg/capability/manifest.yaml @wklken
+/pkg/capability/declarations.go @wklken
+/pkg/plugin/registry.go @wklken
 /pkg/config/types.go @wklken
 /docs/architecture/adr/ @wklken

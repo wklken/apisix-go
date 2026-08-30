@@ -138,11 +138,7 @@ func newCLSScopedSecretHarness(
 			generation.DomainHTTP: candidate,
 		},
 	}
-	manifest, err := capability.Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	catalog, err := capability.NewSecretDeclarationCatalog(manifest)
+	catalog, err := capability.NewSecretDeclarationCatalog()
 	if err != nil {
 		t.Fatal(err)
 	}

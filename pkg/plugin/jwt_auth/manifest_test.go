@@ -9,7 +9,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/wklken/apisix-go/pkg/capability"
 	"go.yaml.in/yaml/v3"
 )
 
@@ -58,11 +57,7 @@ func TestStandaloneManifestMapsOneIndependentCasePerPinnedBlock(t *testing.T) {
 	if err := yaml.Unmarshal(data, &manifest); err != nil {
 		t.Fatalf("decode %s: %v", path, err)
 	}
-	capabilityManifest, err := capability.Load()
-	if err != nil {
-		t.Fatalf("load capability manifest: %v", err)
-	}
-	wantCommit := capabilityManifest.Target.SourceCommit
+	const wantCommit = "9ef2ecab67f652d38365049613610ef649bb4ad0"
 
 	// testNumbers is nil when every pinned test 1..tests is converted with no
 	// gaps. A non-nil list names the exact pinned upstream test numbers that

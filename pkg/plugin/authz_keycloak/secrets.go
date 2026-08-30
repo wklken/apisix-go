@@ -38,7 +38,7 @@ type keycloakCredentialSnapshot struct {
 	scopedValue secret.Value
 }
 
-// MaterializeScopedSecrets resolves only the exact manifest-owned optional
+// MaterializeScopedSecrets resolves only the exact catalog-declared optional
 // client_secret field for the current generation attempt.
 func (p *Plugin) MaterializeScopedSecrets(
 	ctx context.Context, access base.ScopedSecretAccess,

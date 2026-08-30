@@ -224,7 +224,7 @@ func (p *Plugin) Config() any {
 	return &p.config
 }
 
-// MaterializeScopedSecrets admits the manifest-owned cookie secret for one
+// MaterializeScopedSecrets admits the catalog-declared cookie secret for one
 // immutable generation and exposes only its resolved-value descriptor.
 func (p *Plugin) MaterializeScopedSecrets(
 	ctx context.Context,

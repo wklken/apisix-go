@@ -8,11 +8,7 @@ import (
 // DataEncryptionService builds test encryption state from the embedded
 // manifest so test fixtures cannot drift from the runtime declaration catalog.
 func DataEncryptionService(enabled bool, keyring []string) data_encryption.Service {
-	manifest, err := capability.Load()
-	if err != nil {
-		panic(err)
-	}
-	catalog, err := capability.NewSecretDeclarationCatalog(manifest)
+	catalog, err := capability.NewSecretDeclarationCatalog()
 	if err != nil {
 		panic(err)
 	}

@@ -109,7 +109,7 @@ func (p *Plugin) PostInit() error {
 	return nil
 }
 
-// MaterializeScopedSecrets admits only the manifest-owned sasl.password for
+// MaterializeScopedSecrets admits only the catalog-declared sasl.password for
 // this generation attempt. Public config retains only a content descriptor.
 func (p *Plugin) MaterializeScopedSecrets(
 	ctx context.Context, access base.ScopedSecretAccess,

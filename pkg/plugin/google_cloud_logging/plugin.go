@@ -314,7 +314,7 @@ func (p *Plugin) Init() error {
 	return nil
 }
 
-// MaterializeScopedSecrets admits only the manifest-owned inline private key.
+// MaterializeScopedSecrets admits only the catalog-declared inline private key.
 // File-backed service-account contents remain owned by auth_file handling.
 func (p *Plugin) MaterializeScopedSecrets(
 	ctx context.Context,

@@ -234,11 +234,9 @@ func TestIsMaterializableSecretEnvelopeRequiresSupportedPrefixAndPayload(t *test
 
 func testWalkCatalog(t *testing.T, field string) *SecretDeclarationCatalog {
 	t.Helper()
-	manifest := testManifest()
-	manifest.Plugins[0].SecretDeclarations = []SecretDeclaration{{
+	return mustDeclarationCatalog(t, []SecretDeclaration{{
 		Factory: "request-id",
 		Source:  SecretPluginConfig,
 		Field:   field,
-	}}
-	return mustDeclarationCatalog(t, manifest)
+	}})
 }

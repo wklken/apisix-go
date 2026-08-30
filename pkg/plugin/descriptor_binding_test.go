@@ -57,7 +57,7 @@ func TestDescriptorBindingRejectsUndeclaredConfigPhase(t *testing.T) {
 	}
 }
 
-func TestDescriptorBindingUsesManifestPriorityInsteadOfMutablePluginPriority(t *testing.T) {
+func TestDescriptorBindingUsesInitializedPluginPriority(t *testing.T) {
 	p := New("request-id", base.Dependencies{})
 	if p == nil {
 		t.Fatal("request-id factory is not registered")
@@ -79,7 +79,7 @@ func TestDescriptorBindingUsesManifestPriorityInsteadOfMutablePluginPriority(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	if binding.Priority != binding.Descriptor.Priority || binding.Priority == p.GetPriority() {
+	if binding.Priority != binding.Descriptor.Priority || binding.Priority != p.GetPriority() {
 		t.Fatalf(
 			"binding priority = %d, descriptor = %d, mutable plugin = %d",
 			binding.Priority,
@@ -89,7 +89,7 @@ func TestDescriptorBindingUsesManifestPriorityInsteadOfMutablePluginPriority(t *
 	}
 }
 
-func TestDescriptorBindingRejectsScopeOutsideManifest(t *testing.T) {
+func TestDescriptorBindingRejectsScopeOutsideRegistry(t *testing.T) {
 	tests := []struct {
 		factory    string
 		scope      Scope
@@ -113,7 +113,7 @@ func TestDescriptorBindingRejectsScopeOutsideManifest(t *testing.T) {
 			t.Fatal(err)
 		}
 		if _, err := BindPluginChecked(test.factory, p, test.scope, test.provenance); err == nil {
-			t.Fatalf("BindPluginChecked(%q) error = nil, want manifest scope rejection", test.factory)
+			t.Fatalf("BindPluginChecked(%q) error = nil, want registry scope rejection", test.factory)
 		}
 	}
 }

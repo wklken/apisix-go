@@ -4,7 +4,6 @@ import (
 	"errors"
 	"slices"
 
-	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/generation"
 )
 
@@ -15,8 +14,7 @@ var ErrPreparedSetMismatch = errors.New("prepared publication set mismatch")
 var ErrWorkerCompilerFactoryClosed = errors.New("worker compiler factory is closed")
 
 type Compiler struct {
-	manifest *capability.Manifest
-	schemas  *schemaSet
+	schemas *schemaSet
 }
 
 type normalizedInput struct {

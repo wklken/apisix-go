@@ -5,12 +5,11 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/generation"
 )
 
-func validate(input normalizedInput, manifest *capability.Manifest) validationResult {
-	result, err := validateContext(context.Background(), input, manifest, nil)
+func validate(input normalizedInput) validationResult {
+	result, err := validateContext(context.Background(), input, nil)
 	if err != nil {
 		panic(err)
 	}
@@ -55,8 +54,7 @@ func TestValidateUsesEffectiveUpstreamPrecedenceAndFindsProtocolDependencies(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	manifest := mustManifest(t)
-	result := validate(input, manifest)
+	result := validate(input)
 	if len(result.issues) != 0 {
 		t.Fatalf("validation issues = %v", result.issues)
 	}
@@ -119,7 +117,7 @@ func TestValidateReportsMissingMalformedSecretAndDeterministicCycles(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	result := validate(input, mustManifest(t))
+	result := validate(input)
 	want := []resourceIssue{
 		{Key: generation.ResourceKey{Kind: "plugin_metadata", ID: "request-id"}, Code: "secret-reference-invalid"},
 		{Key: generation.ResourceKey{Kind: "routes", ID: "missing"}, Code: "dependency-missing"},
@@ -151,7 +149,7 @@ func TestValidateRejectsMalformedNestedStructuralReferenceIDs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result := validate(input, mustManifest(t))
+	result := validate(input)
 	want := []resourceIssue{
 		{Key: generation.ResourceKey{Kind: "plugin_configs", ID: "grpc"}, Code: "reference-invalid"},
 		{Key: generation.ResourceKey{Kind: "plugin_configs", ID: "traffic"}, Code: "reference-invalid"},
@@ -182,7 +180,7 @@ func TestValidateCanonicalizesSameCodePluginIssuesByErrorMessage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result := validate(input, mustManifest(t))
+	result := validate(input)
 	if len(result.issues) != 1 || result.issues[0].Code != "reference-invalid" ||
 		result.issues[0].Err.Error() != "grpc-transcode proto_id is invalid" {
 		t.Fatalf("canonical same-code issue = %#v", result.issues)
@@ -194,13 +192,4 @@ func assertEdges(t *testing.T, got, want []generation.ResourceKey) {
 	if !slices.Equal(got, want) {
 		t.Fatalf("edges = %v, want %v", got, want)
 	}
-}
-
-func mustManifest(t *testing.T) *capability.Manifest {
-	t.Helper()
-	manifest, err := capability.Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	return manifest
 }

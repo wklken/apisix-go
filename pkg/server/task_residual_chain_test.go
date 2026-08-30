@@ -72,11 +72,7 @@ func TestServerShutdownPreservesExactGenerationOwnersThroughRealChain(t *testing
 		clickhouse.Close()
 	})
 
-	manifest, err := capability.Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	catalog, err := capability.NewSecretDeclarationCatalog(manifest)
+	catalog, err := capability.NewSecretDeclarationCatalog()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +87,6 @@ func TestServerShutdownPreservesExactGenerationOwnersThroughRealChain(t *testing
 		},
 	}
 	factory, err := compiler.NewWorkerCompilerFactory(
-		manifest,
 		effective,
 		secret.NewMaterializer(encryption, resolver),
 		compiler.WorkerRuntimeObservers{Cluster: proxy.NopClusterObserver{}},
@@ -161,7 +156,7 @@ func TestServerShutdownPreservesExactGenerationOwnersThroughRealChain(t *testing
 		)
 	}
 
-	ownerPrefix := independentClickHouseOwnerPrefix(t, manifest, ticket, set, rawRoute)
+	ownerPrefix := independentClickHouseOwnerPrefix(t, ticket, set, rawRoute)
 	clientKey := independentClickHouseClientKey(
 		t,
 		clickhouse.URL,
@@ -293,13 +288,12 @@ func independentClickHouseClientKey(
 
 func independentClickHouseOwnerPrefix(
 	t *testing.T,
-	manifest *capability.Manifest,
 	ticket generation.ApplyTicket,
 	set generation.PublicationSet,
 	rawRoute []byte,
 ) string {
 	t.Helper()
-	descriptor, err := plugin.DescriptorForFactory(manifest, "clickhouse-logger")
+	descriptor, err := plugin.DescriptorForFactory("clickhouse-logger")
 	if err != nil {
 		t.Fatal(err)
 	}

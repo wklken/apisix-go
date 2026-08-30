@@ -101,22 +101,20 @@ func (observer *recordingRuntimeObserver) snapshot() ([]string, []clusterObserve
 }
 
 func TestWorkerCompilerFactoryRequiresRuntimeObservers(t *testing.T) {
-	manifest := mustManifest(t)
-	compiler, err := New(manifest)
+	compiler, err := New()
 	if err != nil {
 		t.Fatal(err)
 	}
 	materializer := &workerTestMaterializer{digest: compiler.schemas.catalog.Digest()}
 	if factory, err := NewWorkerCompilerFactory(
-		manifest, workerTestEffective(manifest), materializer, WorkerRuntimeObservers{},
+		workerTestEffective(), materializer, WorkerRuntimeObservers{},
 	); factory != nil || !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("missing observers = %#v/%v, want nil/ErrInvalidInput", factory, err)
 	}
 
 	var typedNil *recordingRuntimeObserver
 	if factory, err := NewWorkerCompilerFactory(
-		manifest,
-		workerTestEffective(manifest),
+		workerTestEffective(),
 		materializer,
 		WorkerRuntimeObservers{Cluster: typedNil},
 	); factory != nil || !errors.Is(err, ErrInvalidInput) {
@@ -124,8 +122,7 @@ func TestWorkerCompilerFactoryRequiresRuntimeObservers(t *testing.T) {
 	}
 
 	httpFactory, err := NewWorkerCompilerFactory(
-		manifest,
-		workerTestEffective(manifest),
+		workerTestEffective(),
 		materializer,
 		WorkerRuntimeObservers{Cluster: proxy.NopClusterObserver{}},
 	)
@@ -136,11 +133,10 @@ func TestWorkerCompilerFactoryRequiresRuntimeObservers(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	streamEffective := workerTestEffective(manifest)
+	streamEffective := workerTestEffective()
 	streamEffective.Config.Apisix.ProxyMode = "stream"
 	streamEffective.Config.Apisix.StreamProxy.Tcp = []config.TcpListen{{Addr: "127.0.0.1:9100"}}
 	if factory, err := NewWorkerCompilerFactory(
-		manifest,
 		streamEffective,
 		materializer,
 		WorkerRuntimeObservers{Cluster: proxy.NopClusterObserver{}},
@@ -148,7 +144,6 @@ func TestWorkerCompilerFactoryRequiresRuntimeObservers(t *testing.T) {
 		t.Fatalf("missing stream observer = %#v/%v, want nil/ErrInvalidInput", factory, err)
 	}
 	streamFactory, err := NewWorkerCompilerFactory(
-		manifest,
 		streamEffective,
 		materializer,
 		WorkerRuntimeObservers{

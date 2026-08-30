@@ -36,16 +36,14 @@ type serverLifecycle interface {
 }
 
 type startupFactories struct {
-	loadManifest    func() (*capability.Manifest, error)
-	loadEffective   func(string, *capability.Manifest) (*config.EffectiveConfig, error)
-	newCatalog      func(*capability.Manifest) (*capability.SecretDeclarationCatalog, error)
+	loadEffective   func(string) (*config.EffectiveConfig, error)
+	newCatalog      func() (*capability.SecretDeclarationCatalog, error)
 	newEncryption   func(*config.EffectiveConfig, *capability.SecretDeclarationCatalog) data_encryption.Service
 	configureLogger func(*config.Config) error
 	newResolver     func(data_encryption.Service) (*secret.GenerationSecretResolver, error)
 	closeResolver   func(*secret.GenerationSecretResolver, context.Context) error
 	newServer       func(
 		*config.EffectiveConfig,
-		*capability.Manifest,
 		data_encryption.Service,
 		*secret.GenerationSecretResolver,
 	) (serverLifecycle, error)
@@ -54,8 +52,7 @@ type startupFactories struct {
 
 func defaultStartupFactories() startupFactories {
 	return startupFactories{
-		loadManifest:  capability.Load,
-		loadEffective: loadEffectiveForManifest,
+		loadEffective: loadEffective,
 		newCatalog:    capability.NewSecretDeclarationCatalog,
 		newEncryption: func(
 			effective *config.EffectiveConfig,
@@ -74,11 +71,10 @@ func defaultStartupFactories() startupFactories {
 		},
 		newServer: func(
 			effective *config.EffectiveConfig,
-			manifest *capability.Manifest,
 			encryption data_encryption.Service,
 			resolver *secret.GenerationSecretResolver,
 		) (serverLifecycle, error) {
-			return server.NewServer(effective, manifest, encryption, resolver)
+			return server.NewServer(effective, encryption, resolver)
 		},
 		runServer: runServer,
 	}
@@ -86,9 +82,6 @@ func defaultStartupFactories() startupFactories {
 
 func (factories startupFactories) withDefaults() startupFactories {
 	defaults := defaultStartupFactories()
-	if factories.loadManifest == nil {
-		factories.loadManifest = defaults.loadManifest
-	}
 	if factories.loadEffective == nil {
 		factories.loadEffective = defaults.loadEffective
 	}
@@ -158,15 +151,11 @@ func startWithOptions(options rootOptions) error {
 
 func startWithOptionsWithFactories(options rootOptions, factories startupFactories) error {
 	factories = factories.withDefaults()
-	manifest, err := factories.loadManifest()
-	if err != nil {
-		return fmt.Errorf("load capability manifest: %w", err)
-	}
-	effective, err := factories.loadEffective(options.configPath, manifest)
+	effective, err := factories.loadEffective(options.configPath)
 	if err != nil {
 		return fmt.Errorf("load effective config: %w", err)
 	}
-	catalog, err := factories.newCatalog(manifest)
+	catalog, err := factories.newCatalog()
 	if err != nil {
 		return fmt.Errorf("build secret declaration catalog: %w", err)
 	}
@@ -180,7 +169,7 @@ func startWithOptionsWithFactories(options rootOptions, factories startupFactori
 		return fmt.Errorf("create generation secret resolver: %w", err)
 	}
 	logger.Info("Starting server")
-	srv, err := factories.newServer(effective, manifest, encryption, resolver)
+	srv, err := factories.newServer(effective, encryption, resolver)
 	if err != nil {
 		return fmt.Errorf("create server: %w", err)
 	}

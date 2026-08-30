@@ -21,18 +21,20 @@ Observable Apache APISIX 3.17 HTTP data-plane behavior is the product target.
 The official APISIX 3.17 source and tests define compatibility; validation
 artifacts do not participate in runtime behavior.
 
-`pkg/capability/manifest.yaml` is a temporary runtime registry source for
-factory imports, execution metadata, and secret fields. It is not a behavior,
-evidence, readiness, divergence, or platform-status ledger. The generator
-produces only the Go plugin registry:
+`pkg/plugin/registry.go` directly owns implemented factories, aliases, phases,
+scopes, and domains. Plugin names, priorities, and schemas come from each
+initialized implementation. `pkg/capability/declarations.go` independently
+owns the encrypted fields that plugins may materialize. Neither file is a
+behavior, evidence, readiness, divergence, or platform-status ledger.
 
 ```text
-pkg/capability/manifest.yaml
-  -> pkg/plugin/registry_gen.go
+plugin implementation Init() -- name, priority, schemas
+pkg/plugin/registry.go       -- constructor and execution placement
+pkg/capability/declarations.go -- encrypted fields
 ```
 
-The generated registry must not be edited directly. Registration and inventory
-counts do not prove compatibility or production readiness.
+Registration and inventory counts do not prove compatibility or production
+readiness.
 
 Plugin verification has separate owners: package tests cover plugin-local
 logic, and `t/plugin` covers candidate-only real-process behavior. Comparisons
@@ -62,7 +64,7 @@ listeners. The production construction path is:
 
 ```text
 cmd/root.go
-  -> capability and effective configuration
+  -> effective configuration and encrypted-field catalog
   -> encryption and generation-scoped secret resolver
   -> server, compiler factory, and generation engine
   -> provider initial sync and atomic publication
@@ -196,7 +198,7 @@ Protocol-specific transports remain plugin owned:
 
 ## Secret authority
 
-Secret declarations in the capability manifest are runtime authority. Each
+Secret declarations in `pkg/capability/declarations.go` are runtime authority. Each
 prepared generation gets a read-only view scoped by generation, domain, plugin
 factory, resource, source, and field.
 

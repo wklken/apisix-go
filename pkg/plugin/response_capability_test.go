@@ -13,7 +13,6 @@ import (
 	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
-	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/testutil"
@@ -651,14 +650,10 @@ func TestResponseRegistryHasExactDeclaredIdentities(t *testing.T) {
 	registryWant = append(registryWant, "grpc-transcode")
 	slices.Sort(registryWant)
 	got := make([]string, 0, len(responseFactoryRegistry))
-	manifest, err := capability.Load()
-	if err != nil {
-		t.Fatal(err)
-	}
 	for identity := range responseFactoryRegistry {
 		got = append(got, identity)
-		if _, err := DescriptorForFactory(manifest, identity); err != nil {
-			t.Fatalf("manifest descriptor missing %q: %v", identity, err)
+		if _, err := DescriptorForFactory(identity); err != nil {
+			t.Fatalf("registry descriptor missing %q: %v", identity, err)
 		}
 	}
 	slices.Sort(got)

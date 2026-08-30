@@ -4,7 +4,7 @@ This file inherits the repository root `AGENTS.md` and applies to `pkg/secret`.
 
 ## Authority and access
 
-- Declarations come from the capability manifest. Preserve full scope:
+- Declarations come from `pkg/capability/declarations.go`. Preserve full scope:
   generation, domain, factory, resource kind/id, source, and field.
 - Resolver access is limited to defensive bytes in the exact publication
   closure. Do not add Store/global config lookup.

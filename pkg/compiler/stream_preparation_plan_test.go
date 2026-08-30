@@ -75,7 +75,6 @@ func TestPlanStreamPreparationRouteDisableSuppressesInheritedPlugin(t *testing.T
 		context.Background(),
 		resources,
 		[]string{"mqtt-proxy"},
-		newTestCompiler(t).manifest,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -95,7 +94,6 @@ func TestPlanStreamPreparationRouteUpstreamIDSuppressesServiceLookup(t *testing.
 		context.Background(),
 		resources,
 		[]string{"mqtt-proxy"},
-		newTestCompiler(t).manifest,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -110,9 +108,7 @@ func TestPlanStreamPreparationDynamicPluginContract(t *testing.T) {
 		ID: "r1", Plugins: map[string]resource.PluginConfig{"mqtt-proxy": map[string]any{}},
 		Upstream: testStreamUpstream(1883),
 	})
-	compiler := newTestCompiler(t)
-
-	fallback, err := buildStreamPreparationPlan(context.Background(), base, []string{"mqtt-proxy"}, compiler.manifest)
+	fallback, err := buildStreamPreparationPlan(context.Background(), base, []string{"mqtt-proxy"})
 	if err != nil || fallback.routes[0].binding == nil {
 		t.Fatalf("static fallback plan/error = %#v / %v", fallback, err)
 	}
@@ -122,7 +118,6 @@ func TestPlanStreamPreparationDynamicPluginContract(t *testing.T) {
 		context.Background(),
 		base,
 		[]string{"mqtt-proxy"},
-		compiler.manifest,
 	); err == nil ||
 		!strings.Contains(err.Error(), "not enabled") {
 		t.Fatalf("present empty dynamic set error = %v", err)
@@ -132,7 +127,6 @@ func TestPlanStreamPreparationDynamicPluginContract(t *testing.T) {
 		context.Background(),
 		base,
 		[]string{"mqtt-proxy"},
-		compiler.manifest,
 	); err == nil ||
 		!strings.Contains(err.Error(), "not enabled") {
 		t.Fatalf("HTTP-only dynamic entry leaked into stream: %v", err)
@@ -144,7 +138,6 @@ func TestPlanStreamPreparationDynamicPluginContract(t *testing.T) {
 		context.Background(),
 		base,
 		[]string{"mqtt-proxy"},
-		compiler.manifest,
 	)
 	if err != nil || len(raw.routes) != 1 || raw.routes[0].binding != nil {
 		t.Fatalf("present empty dynamic set rejected raw TCP route: %#v / %v", raw, err)
@@ -190,7 +183,7 @@ func TestBuildStreamPreparationPlanOwnsNestedInputs(t *testing.T) {
 		Upstream: testStreamUpstream(1883),
 	})
 	plan, err := buildStreamPreparationPlan(
-		context.Background(), resources, []string{"mqtt-proxy"}, newTestCompiler(t).manifest,
+		context.Background(), resources, []string{"mqtt-proxy"},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -210,7 +203,6 @@ func TestBuildStreamPreparationPlanOwnsNestedInputs(t *testing.T) {
 }
 
 func TestPlanStreamPreparationRejectsBeforeMaterialization(t *testing.T) {
-	compiler := newTestCompiler(t)
 	tests := []struct {
 		name      string
 		resources streamResourceSet
@@ -313,7 +305,7 @@ func TestPlanStreamPreparationRejectsBeforeMaterialization(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			_, err := buildStreamPreparationPlan(
-				context.Background(), test.resources, []string{"mqtt-proxy", "request-id"}, compiler.manifest,
+				context.Background(), test.resources, []string{"mqtt-proxy", "request-id"},
 			)
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("error = %v, want containing %q", err, test.want)

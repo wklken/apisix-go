@@ -1,16 +1,13 @@
 package plugin
 
 import (
-	"errors"
 	"fmt"
 	"slices"
-	"sync"
 
-	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
 
-// Phase is one APISIX execution phase declared by the capability manifest.
+// Phase is one APISIX plugin execution phase.
 type Phase string
 
 const (
@@ -80,9 +77,9 @@ type ResolvedResponsePhases struct {
 	ExclusiveProtocol ProtocolKind
 }
 
-// Descriptor is the immutable runtime view of one manifest factory entry.
-// Phases, Priority, Scopes and InstanceScope come only from the manifest;
-// ResolveDescriptor may narrow phases for one initialized config.
+// Descriptor is the immutable runtime view of one registered plugin factory.
+// ResolveDescriptor adds facts owned by the initialized plugin and may narrow
+// phases for one initialized config.
 type Descriptor struct {
 	Factory        string
 	Implementation string
@@ -104,130 +101,33 @@ type Descriptor struct {
 	resolved              bool
 }
 
-var runtimeManifest struct {
-	once     sync.Once
-	manifest *capability.Manifest
-	err      error
-}
-
 func descriptorForRuntimeFactory(factory string, p Plugin) (Descriptor, error) {
-	runtimeManifest.once.Do(func() {
-		runtimeManifest.manifest, runtimeManifest.err = capability.Load()
-	})
-	if runtimeManifest.err != nil {
-		return Descriptor{}, fmt.Errorf("load plugin capability manifest: %w", runtimeManifest.err)
-	}
-	descriptor, err := DescriptorForFactory(runtimeManifest.manifest, factory)
+	descriptor, err := DescriptorForFactory(factory)
 	if err != nil {
 		return Descriptor{}, err
 	}
 	return ResolveDescriptor(descriptor, p)
 }
 
-// ResolveDescriptorForFactory loads the embedded manifest and resolves one
-// initialized plugin for compiler-owned materialization.
+// ResolveDescriptorForFactory resolves one initialized plugin for
+// compiler-owned materialization.
 func ResolveDescriptorForFactory(factory string, p Plugin) (Descriptor, error) {
 	return descriptorForRuntimeFactory(factory, p)
 }
 
-func DescriptorForFactory(manifest *capability.Manifest, factory string) (Descriptor, error) {
-	if manifest == nil {
-		return Descriptor{}, errors.New("plugin descriptor: manifest is required")
-	}
-	entry, ok := manifest.Plugin(factory)
+func DescriptorForFactory(factory string) (Descriptor, error) {
+	entry, ok := DefinitionForFactory(factory)
 	if !ok {
 		return Descriptor{}, fmt.Errorf("plugin descriptor: unknown factory %q", factory)
 	}
-	factoryDeclared := false
-	for _, candidate := range entry.Factories {
-		if candidate.Key == factory {
-			factoryDeclared = true
-			break
-		}
-	}
-	if !factoryDeclared {
-		return Descriptor{}, fmt.Errorf(
-			"plugin descriptor: key %q is not a factory declared by capability %q",
-			factory,
-			entry.Name,
-		)
-	}
-	phases, err := parseManifestPhases(entry.Phases)
-	if err != nil {
-		return Descriptor{}, fmt.Errorf("plugin descriptor %q: %w", factory, err)
-	}
-	scopes, err := parseManifestScopes(entry.Scopes)
-	if err != nil {
-		return Descriptor{}, fmt.Errorf("plugin descriptor %q: %w", factory, err)
-	}
-	instanceScope, err := parseInstanceScope(entry.InstanceScope)
-	if err != nil {
-		return Descriptor{}, fmt.Errorf("plugin descriptor %q: %w", factory, err)
-	}
 	return Descriptor{
 		Factory:             factory,
-		Implementation:      entry.Implementation,
-		Phases:              phases,
-		Priority:            entry.Priority,
-		Scopes:              scopes,
-		InstanceScope:       instanceScope,
-		requestStage:        requestStageForPhases(phases),
+		Phases:              entry.Phases,
+		Scopes:              entry.Scopes,
+		InstanceScope:       entry.InstanceScope,
+		requestStage:        requestStageForPhases(entry.Phases),
 		conditionalTerminal: entry.ConditionalTerminal,
 	}, nil
-}
-
-func parseManifestPhases(values []string) ([]Phase, error) {
-	phases := make([]Phase, 0, len(values))
-	for _, value := range values {
-		phase := Phase(value)
-		switch phase {
-		case PhaseRewrite, PhaseConsumerRewrite, PhaseAccess, PhaseBeforeProxy,
-			PhaseHeaderFilter, PhaseBodyFilter, PhaseLog, PhaseFinalizer, PhaseProtocol:
-		default:
-			return nil, fmt.Errorf("unknown manifest phase %q", value)
-		}
-		if slices.Contains(phases, phase) {
-			return nil, fmt.Errorf("duplicate manifest phase %q", value)
-		}
-		phases = append(phases, phase)
-	}
-	return phases, nil
-}
-
-func parseManifestScopes(values []string) ([]Scope, error) {
-	scopes := make([]Scope, 0, len(values))
-	for _, value := range values {
-		var scope Scope
-		switch value {
-		case "system":
-			scope = ScopeSystem
-		case "global_rule":
-			scope = ScopeGlobal
-		case "route", "service":
-			scope = ScopeRoute
-		case "consumer", "consumer_group":
-			scope = ScopeConsumer
-		default:
-			return nil, fmt.Errorf("unknown manifest scope %q", value)
-		}
-		if !slices.Contains(scopes, scope) {
-			scopes = append(scopes, scope)
-		}
-	}
-	return scopes, nil
-}
-
-func parseInstanceScope(value string) (InstanceScope, error) {
-	scope := InstanceScope(value)
-	switch scope {
-	case InstancePerRoute, InstancePerService, InstancePerConsumer,
-		InstancePerGlobalRule, InstanceEffectiveConfig:
-		return scope, nil
-	case "":
-		return "", nil
-	default:
-		return "", fmt.Errorf("unknown instance scope %q", value)
-	}
 }
 
 func requestStageForPhases(phases []Phase) RequestStage {
@@ -303,14 +203,8 @@ func (d Descriptor) HasResponseOwner(owner ResponseOwnerKind) bool {
 
 func (d Descriptor) ResponseCapability() ResponseCapability { return d.responseCapability }
 
-func manifestRequestStage(factory string) (RequestStage, error) {
-	runtimeManifest.once.Do(func() {
-		runtimeManifest.manifest, runtimeManifest.err = capability.Load()
-	})
-	if runtimeManifest.err != nil {
-		return RequestStageNone, runtimeManifest.err
-	}
-	descriptor, err := DescriptorForFactory(runtimeManifest.manifest, factory)
+func registeredRequestStage(factory string) (RequestStage, error) {
+	descriptor, err := DescriptorForFactory(factory)
 	if err != nil {
 		return RequestStageNone, err
 	}
@@ -321,12 +215,14 @@ func (d Descriptor) OwnsSnapshotFinalizer() bool { return d.finalizer == Finaliz
 
 // ResolveDescriptor resolves config-aware phase selection once, while a
 // binding is constructed. It never permits config to add a phase absent from
-// the capability manifest.
+// the registry.
 func ResolveDescriptor(descriptor Descriptor, p Plugin) (Descriptor, error) {
 	if p == nil {
 		return Descriptor{}, fmt.Errorf("plugin descriptor %q: plugin is nil", descriptor.Factory)
 	}
 	resolved := descriptor
+	resolved.Implementation = p.GetName()
+	resolved.Priority = p.GetPriority()
 	resolved.Phases = append([]Phase(nil), descriptor.Phases...)
 	resolved.Scopes = append([]Scope(nil), descriptor.Scopes...)
 	responseSpec, configAware := responseFactoryRegistry[descriptor.Factory]

@@ -13,7 +13,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/consumer"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/util"
@@ -62,7 +61,7 @@ func TestSchemaWitnessRejectsInvalidFactoryResults(t *testing.T) {
 	}
 }
 
-func TestSchemaWitnessCoversGeneratedFactories(t *testing.T) {
+func TestSchemaWitnessCoversRegisteredFactories(t *testing.T) {
 	keys := make([]string, 0, len(pluginRegistry))
 	for key := range pluginRegistry {
 		keys = append(keys, key)
@@ -94,7 +93,7 @@ func TestSchemaWitnessCoversGeneratedFactories(t *testing.T) {
 
 	for _, factory := range consumer.Factories() {
 		if _, ok := pluginRegistry[factory]; !ok {
-			t.Fatalf("consumer factory %q is absent from generated plugin registry", factory)
+			t.Fatalf("consumer factory %q is absent from plugin registry", factory)
 		}
 		witness, err := SchemaWitnessForFactory(factory)
 		if err != nil {
@@ -107,19 +106,14 @@ func TestSchemaWitnessCoversGeneratedFactories(t *testing.T) {
 }
 
 func TestSchemaWitnessRegisteredInitMethodsAvoidRuntimeDependencies(t *testing.T) {
-	manifest, err := capability.Load()
+	entries, err := os.ReadDir(".")
 	if err != nil {
 		t.Fatal(err)
 	}
 	packagePaths := make(map[string]struct{})
-	for _, entry := range manifest.Plugins {
-		for _, factory := range entry.Factories {
-			const prefix = "github.com/wklken/apisix-go/pkg/plugin/"
-			relative, ok := strings.CutPrefix(factory.ImportPath, prefix)
-			if !ok || relative == "" || strings.Contains(relative, "..") {
-				t.Fatalf("factory %q import path = %q", factory.Key, factory.ImportPath)
-			}
-			packagePaths[filepath.FromSlash(relative)] = struct{}{}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			packagePaths[entry.Name()] = struct{}{}
 		}
 	}
 

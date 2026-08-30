@@ -36,7 +36,7 @@ type ragCredentialSnapshot struct {
 	scopedSearchAPIKey    secret.Value
 }
 
-// MaterializeScopedSecrets resolves exactly the two manifest-owned provider
+// MaterializeScopedSecrets resolves exactly the two catalog-declared provider
 // keys for one attempt. Both values and descriptors are staged before either
 // credential becomes visible to provider requests.
 func (p *Plugin) MaterializeScopedSecrets(

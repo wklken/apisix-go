@@ -5,30 +5,17 @@ import (
 	"fmt"
 	"slices"
 
-	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/generation"
-	"go.yaml.in/yaml/v3"
 )
 
 // New constructs the side-effect-free publication compiler. Generation-local
 // runtime dependencies are created only after the final set is registered.
-func New(manifest *capability.Manifest) (*Compiler, error) {
-	if manifest == nil {
-		return nil, fmt.Errorf("%w: capability manifest is required", ErrInvalidInput)
-	}
-	encoded, err := yaml.Marshal(manifest)
-	if err != nil {
-		return nil, fmt.Errorf("%w: encode capability manifest: %v", ErrInvalidInput, err)
-	}
-	validatedManifest, err := capability.Parse(encoded)
+func New() (*Compiler, error) {
+	schemas, err := newSchemaSet()
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInvalidInput, err)
 	}
-	schemas, err := newSchemaSet(validatedManifest)
-	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrInvalidInput, err)
-	}
-	return &Compiler{manifest: validatedManifest, schemas: schemas}, nil
+	return &Compiler{schemas: schemas}, nil
 }
 
 func (compiler *Compiler) PreparePublication(
@@ -37,7 +24,7 @@ func (compiler *Compiler) PreparePublication(
 	desired generation.Snapshot,
 	previous map[generation.Domain]generation.PublishedGeneration,
 ) (generation.PublicationSet, error) {
-	if compiler == nil || compiler.manifest == nil {
+	if compiler == nil || compiler.schemas == nil {
 		return generation.PublicationSet{}, fmt.Errorf("%w: compiler is not initialized", ErrInvalidInput)
 	}
 	if ctx == nil {
@@ -71,7 +58,7 @@ func (compiler *Compiler) PreparePublication(
 			)
 		}
 	}
-	validation, err := validateContext(ctx, input, compiler.manifest, compiler.schemas)
+	validation, err := validateContext(ctx, input, compiler.schemas)
 	if err != nil {
 		return generation.PublicationSet{}, err
 	}
@@ -86,7 +73,7 @@ func (compiler *Compiler) PreparePublication(
 		issues := compactIssues(append(slices.Clone(normalizationIssues), validation.issuesForDomain(domain)...))
 		predecessor, found := previous[domain]
 		candidate, err := buildDomainCandidateContext(
-			ctx, domain, desired, input, issues, predecessor, found, compiler.manifest, compiler.schemas,
+			ctx, domain, desired, input, issues, predecessor, found, compiler.schemas,
 		)
 		if err != nil {
 			return generation.PublicationSet{}, fmt.Errorf("compile %s publication: %w", domain, err)

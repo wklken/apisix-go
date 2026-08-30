@@ -96,9 +96,6 @@ jobs:
       - name: Build
         run: make build
 
-      - name: Check generated plugin registry
-        run: make check-plugin-registry
-
       - name: Run source unit tests
         run: make test
 

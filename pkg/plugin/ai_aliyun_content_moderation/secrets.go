@@ -19,7 +19,7 @@ var errAliyunCredentialsUnavailable = errors.New(
 	"ai-aliyun-content-moderation credentials are unavailable",
 )
 
-// MaterializeScopedSecrets resolves exactly the two manifest-owned Aliyun
+// MaterializeScopedSecrets resolves exactly the two catalog-declared Aliyun
 // credentials for one immutable attempt. Values and descriptors are staged
 // before either value is installed, so a failure cannot publish partial state.
 func (p *Plugin) MaterializeScopedSecrets(

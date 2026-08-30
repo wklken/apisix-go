@@ -3,77 +3,37 @@ package plugin
 import (
 	"slices"
 	"testing"
-
-	"github.com/wklken/apisix-go/pkg/capability"
 )
 
-func TestDescriptorForFactoryUsesManifestPhasePriorityScope(t *testing.T) {
-	manifest, err := capability.Load()
+func TestDescriptorForFactoryUsesRegistryPhaseAndScope(t *testing.T) {
+	descriptor, err := DescriptorForFactory("request-id")
 	if err != nil {
 		t.Fatal(err)
 	}
-	descriptor, err := DescriptorForFactory(manifest, "request-id")
-	if err != nil {
-		t.Fatal(err)
-	}
-	entry, _ := manifest.Plugin("request-id")
-	if descriptor.Priority != entry.Priority || descriptor.Factory != "request-id" ||
+	if descriptor.Priority != 0 || descriptor.Factory != "request-id" ||
 		!slices.Equal(descriptor.Phases, []Phase{PhaseRewrite}) ||
-		!slices.Equal(entry.Scopes, []string{"global_rule", "route", "service", "consumer", "consumer_group"}) ||
 		!slices.Equal(descriptor.Scopes, []Scope{ScopeGlobal, ScopeRoute, ScopeConsumer}) {
-		t.Fatalf("descriptor = %#v, manifest = %#v", descriptor, entry)
+		t.Fatalf("descriptor = %#v", descriptor)
 	}
 
-	credentialDescriptor, err := DescriptorForFactory(manifest, "key-auth")
+	credentialDescriptor, err := DescriptorForFactory("key-auth")
 	if err != nil {
 		t.Fatal(err)
 	}
-	credentialEntry, _ := manifest.Plugin("key-auth")
-	if !slices.Equal(credentialEntry.Scopes, []string{"global_rule", "route", "service"}) ||
-		!slices.Equal(credentialDescriptor.Scopes, []Scope{ScopeGlobal, ScopeRoute}) {
-		t.Fatalf("credential descriptor = %#v, manifest = %#v", credentialDescriptor, credentialEntry)
+	if !slices.Equal(credentialDescriptor.Scopes, []Scope{ScopeGlobal, ScopeRoute}) {
+		t.Fatalf("credential descriptor = %#v", credentialDescriptor)
 	}
 }
 
-func TestDescriptorForFactoryRejectsFactoryOutsideEntry(t *testing.T) {
-	manifest, err := capability.Parse([]byte(`
-schema_version: 1
-target:
-  name: apisix-3.17
-  version: 3.17.0
-  source_commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-  image: apache/apisix:3.17.0
-plugins:
-  - name: request-id
-    implementation: request-id
-    namespace: apisix
-    domains: [http]
-    apisix_default: true
-    factories:
-      - key: alias-only
-        import_path: example.invalid/request-id
-        import_alias: request_id
-        constructor: New
-    phases: [rewrite]
-    priority: 100
-    scopes: [route]
-    instance_scope: route
-`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := DescriptorForFactory(manifest, "request-id"); err == nil {
+func TestDescriptorForFactoryRejectsUnknownFactory(t *testing.T) {
+	if _, err := DescriptorForFactory("unknown"); err == nil {
 		t.Fatal("DescriptorForFactory() error = nil")
 	}
 }
 
-func TestDescriptorConditionalTerminalUsesAuditedManifestFact(t *testing.T) {
-	manifest, err := capability.Load()
-	if err != nil {
-		t.Fatal(err)
-	}
+func TestDescriptorConditionalTerminalUsesRegistryFact(t *testing.T) {
 	for _, factory := range []string{"proxy-rewrite", "real-ip"} {
-		descriptor, descriptorErr := DescriptorForFactory(manifest, factory)
+		descriptor, descriptorErr := DescriptorForFactory(factory)
 		if descriptorErr != nil {
 			t.Fatal(descriptorErr)
 		}
@@ -82,7 +42,7 @@ func TestDescriptorConditionalTerminalUsesAuditedManifestFact(t *testing.T) {
 		}
 	}
 	for _, factory := range []string{"request-id", "limit-count"} {
-		descriptor, descriptorErr := DescriptorForFactory(manifest, factory)
+		descriptor, descriptorErr := DescriptorForFactory(factory)
 		if descriptorErr != nil {
 			t.Fatal(descriptorErr)
 		}
@@ -92,15 +52,11 @@ func TestDescriptorConditionalTerminalUsesAuditedManifestFact(t *testing.T) {
 	}
 }
 
-func TestManifestConditionalTerminalSetMatchesAudit(t *testing.T) {
-	manifest, err := capability.Load()
-	if err != nil {
-		t.Fatal(err)
-	}
+func TestRegistryConditionalTerminalSetMatchesAudit(t *testing.T) {
 	got := make([]string, 0)
-	for _, entry := range manifest.Plugins {
+	for _, entry := range Definitions() {
 		if entry.ConditionalTerminal {
-			got = append(got, entry.Name)
+			got = append(got, entry.Factory)
 		}
 	}
 	slices.Sort(got)

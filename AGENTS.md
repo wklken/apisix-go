@@ -13,18 +13,18 @@ Key runtime pieces:
 
 - `main.go` enters the Cobra CLI in `cmd/root.go`.
 - Static configuration is loaded by the presence-aware `pkg/config` loader from builtins, `conf/config-default.yaml`, an optional `-c/--config` file, APISIX file-template expansion, and APISIX 3.17 reserved environment overrides.
-- `pkg/capability/manifest.yaml` is the temporary editable source for runtime plugin factories, aliases, execution metadata, and secret declarations. It generates only the plugin registry.
+- `pkg/plugin/registry.go` directly owns implemented plugin factories, aliases, and execution metadata. `pkg/capability/declarations.go` owns encrypted-field declarations.
 - Providers submit desired snapshots to the single-writer `pkg/generation` coordinator, which owns in-memory desired and published state.
 - `pkg/compiler` plans and materializes immutable HTTP/TLS and stream snapshots. `pkg/route` and `pkg/stream` contain detached snapshot compilers; `pkg/server` atomically activates them and owns generation leases.
 - HTTP and TLS listeners come from effective configuration; the default HTTP listener is `0.0.0.0:9080`.
-- APISIX plugins live under `pkg/plugin/<plugin_name>` and are instantiated through the manifest-generated registry consumed by `pkg/plugin/init.go`.
+- APISIX plugins live under `pkg/plugin/<plugin_name>` and are instantiated through the Go registry consumed by `pkg/plugin/init.go`.
 - Proxying, load balancing, and transport behavior live under `pkg/proxy`.
 - Kafka PubSub, Dubbo/http-Dubbo, and MQTT stream handling have explicit protocol owners under `pkg/plugin` and `pkg/stream`. Stream currently supports raw TCP and at most one `mqtt-proxy` protocol binding; general stream-plugin chaining, UDP, PROXY protocol, discovery, and stream TLS remain deferred.
 
 ## Architecture Sources of Truth
 
 - [`docs/design.md`](docs/design.md) is the canonical human architecture record; unavoidable compatibility differences live in `docs/architecture/adr/`.
-- `pkg/capability/manifest.yaml` contains runtime registry facts only. Do not hand-edit the generated `pkg/plugin/registry_gen.go`.
+- `pkg/plugin/registry.go` is the editable runtime registration source. Plugin name, priority, and schemas remain owned by each implementation's `Init` method.
 - Current source and focused tests override stale prose. If a process document, design paragraph, generated projection, and code disagree, verify the current call chain and then update the owning source rather than averaging them.
 - The current runtime is a single process with an in-process `Server + GenerationEngine`. External supervisor/worker, IPC activation, listener inheritance, and worker probation/restart are not implemented runtime contracts.
 
@@ -53,7 +53,7 @@ Directory-scoped instructions inherit this file. Read the closest `AGENTS.md` be
 - A prepared generation owns its secret materialization, task registry, resource leases, and HTTP/stream snapshots. Cleanup is retryable and ordered `quiesce -> resource finalize -> secret release`; a residual or deadline retains ownership.
 - HTTP requests, hijacked connections, TLS callbacks, and stream connections pin the exact generation they use. A generation retires only after it owns no active domain and all leases drain.
 - Background work in `pkg/plugin`, `pkg/proxy`, `pkg/route`, and `pkg/stream` must use the owned runtime task APIs; the AST/type gate for raw goroutines covers exactly those roots, not the whole repository.
-- Secret materialization is allowed only through manifest-declared, exact generation/domain/resource scope. Never expose plaintext, ciphertext, or backend references in diagnostics.
+- Secret materialization is allowed only through catalog-declared, exact generation/domain/resource scope. Never expose plaintext, ciphertext, or backend references in diagnostics.
 
 ## Setup Commands
 
@@ -152,12 +152,12 @@ Correctness:
 - Prefer existing project dependencies and patterns before adding new packages.
 - Plugin package directories use snake_case, while APISIX plugin names in config use hyphenated names such as `key-auth`.
 - Plugin implementations usually embed `base.BasePlugin`, define `priority`, `name`, and `schema`, expose a config struct through `Config()`, and fill defaults in `PostInit()`.
-- When adding or renaming a plugin, update `pkg/capability/manifest.yaml` and regenerate/check `pkg/plugin/registry_gen.go`. `pkg/plugin/init.go` consumes the generated registry; it is not the registration source of truth.
-- Keep behavior and regression evidence in plugin source and focused tests. Keep only runtime registration and secret declarations in the manifest.
+- When adding or renaming a plugin, update `pkg/plugin/registry.go`. Add encrypted fields separately in `pkg/capability/declarations.go` only when the plugin actually materializes them.
+- Keep behavior and regression evidence in plugin source and focused tests. The registry contains only runtime construction and execution facts.
 
 ## APISIX Plugin Parity Scope
 
-- The official APISIX 3.17 source and tests define plugin behavior. The local manifest is a runtime registry input, not a compatibility or readiness ledger. Use `scripts/go_cache.sh run -- go run ./cmd/capability-gen -repo-root . -check` to detect registry drift.
+- The official APISIX 3.17 source and tests define plugin behavior. The Go registry is runtime input, not a compatibility or readiness ledger.
 - Do not infer compatibility or readiness from registration or inventory counts.
 - OpenResty-native, NGINX-native, and Lua-runtime-native parity is not required unless the user explicitly asks for a Go-native approximation.
 - Do not add placeholder Go implementations merely to increase inventory.

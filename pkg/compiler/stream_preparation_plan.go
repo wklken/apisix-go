@@ -9,7 +9,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/plugin"
 	"github.com/wklken/apisix-go/pkg/resource"
@@ -39,7 +38,7 @@ func (prepared *PreparedGeneration) planStreamPreparation(
 	ctx context.Context,
 	candidate generation.PublicationCandidate,
 ) (*streamPreparationPlan, error) {
-	if prepared == nil || ctx == nil || prepared.effective == nil || prepared.manifest == nil {
+	if prepared == nil || ctx == nil || prepared.effective == nil {
 		return nil, fmt.Errorf("%w: stream preparation owner is incomplete", ErrInvalidInput)
 	}
 	owned, exists := prepared.preparation.Candidate(generation.DomainStream)
@@ -54,7 +53,6 @@ func (prepared *PreparedGeneration) planStreamPreparation(
 		ctx,
 		resources,
 		prepared.effective.Config.StreamPlugins,
-		prepared.manifest,
 	)
 }
 
@@ -62,9 +60,8 @@ func buildStreamPreparationPlan(
 	ctx context.Context,
 	resources streamResourceSet,
 	staticEnabled []string,
-	manifest *capability.Manifest,
 ) (*streamPreparationPlan, error) {
-	if ctx == nil || manifest == nil {
+	if ctx == nil {
 		return nil, fmt.Errorf("%w: stream planning input is incomplete", ErrInvalidInput)
 	}
 	if err := ctx.Err(); err != nil {
@@ -89,7 +86,7 @@ func buildStreamPreparationPlan(
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		planned, err := planOneStreamRoute(supplied, resources, enabled, manifest)
+		planned, err := planOneStreamRoute(supplied, resources, enabled)
 		if err != nil {
 			return nil, err
 		}
@@ -128,7 +125,6 @@ func planOneStreamRoute(
 	supplied resource.StreamRoute,
 	resources streamResourceSet,
 	enabled plugin.EnabledSet,
-	manifest *capability.Manifest,
 ) (plannedStreamRoute, error) {
 	route, err := cloneEffectiveStreamRoute(supplied)
 	if err != nil {
@@ -227,7 +223,7 @@ func planOneStreamRoute(
 		return planned, nil
 	}
 	factory := names[0]
-	if !supportedStreamFactory(manifest, factory) || factory != "mqtt-proxy" {
+	if !supportedStreamFactory(factory) || factory != "mqtt-proxy" {
 		return plannedStreamRoute{}, fmt.Errorf(
 			"stream factory %q is not supported by the Go stream owner",
 			factory,
@@ -250,22 +246,12 @@ func planOneStreamRoute(
 	return planned, nil
 }
 
-func supportedStreamFactory(manifest *capability.Manifest, factory string) bool {
-	if manifest == nil || factory == "" {
+func supportedStreamFactory(factory string) bool {
+	if factory == "" {
 		return false
 	}
-	for _, pluginCapability := range manifest.Plugins {
-		if !slices.Contains(pluginCapability.Domains, capability.DomainStream) ||
-			!slices.Contains(pluginCapability.Phases, "protocol") {
-			continue
-		}
-		for _, candidate := range pluginCapability.Factories {
-			if candidate.Key == factory {
-				return true
-			}
-		}
-	}
-	return false
+	definition, ok := plugin.DefinitionForFactory(factory)
+	return ok && definition.Domain == plugin.DomainStream && slices.Contains(definition.Phases, plugin.PhaseProtocol)
 }
 
 func normalizeStreamPluginConfig(config resource.PluginConfig) (resource.PluginConfig, bool, error) {

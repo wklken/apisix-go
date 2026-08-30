@@ -17,9 +17,9 @@ var pluginNameAliases = map[string]string{
 }
 
 func TestNewConstructsEveryRegisteredPlugin(t *testing.T) {
-	for name, factory := range pluginRegistry {
+	for name, registered := range pluginRegistry {
 		t.Run(name, func(t *testing.T) {
-			plugin := factory()
+			plugin := registered.create()
 			if plugin == nil {
 				t.Fatal("factory returned nil")
 			}
@@ -73,7 +73,7 @@ func TestNewInjectsDependenciesIntoEachPluginInstance(t *testing.T) {
 
 func TestNewPanicsWhenRegisteredPluginCannotReceiveDependencies(t *testing.T) {
 	const name = "test-plugin-without-base"
-	pluginRegistry[name] = func() Plugin { return &pluginWithoutBase{} }
+	pluginRegistry[name] = registration{create: func() Plugin { return &pluginWithoutBase{} }}
 	t.Cleanup(func() { delete(pluginRegistry, name) })
 
 	defer func() {

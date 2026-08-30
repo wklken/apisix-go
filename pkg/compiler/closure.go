@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"slices"
 
-	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/generation"
 )
 
@@ -30,7 +29,6 @@ func buildDomainCandidateContext(
 	issues []resourceIssue,
 	previous generation.PublishedGeneration,
 	hasPrevious bool,
-	manifest *capability.Manifest,
 	schemas *schemaSet,
 ) (generation.PublicationCandidate, error) {
 	if err := ctx.Err(); err != nil {
@@ -151,7 +149,7 @@ func buildDomainCandidateContext(
 		}
 	}
 
-	if err := enforceEffectiveClosure(ctx, domain, desired.Revision(), decisions, manifest, schemas); err != nil {
+	if err := enforceEffectiveClosure(ctx, domain, desired.Revision(), decisions, schemas); err != nil {
 		return generation.PublicationCandidate{}, err
 	}
 	candidate, err := assembleCandidate(domain, desired.Revision(), decisions)
@@ -234,7 +232,6 @@ func enforceEffectiveClosure(
 	domain generation.Domain,
 	revision uint64,
 	decisions map[generation.ResourceKey]candidateDecision,
-	manifest *capability.Manifest,
 	schemas *schemaSet,
 ) error {
 	if err := ctx.Err(); err != nil {
@@ -255,7 +252,7 @@ func enforceEffectiveClosure(
 	if err != nil {
 		return err
 	}
-	validation, err := validateContext(ctx, input, manifest, schemas)
+	validation, err := validateContext(ctx, input, schemas)
 	if err != nil {
 		return err
 	}

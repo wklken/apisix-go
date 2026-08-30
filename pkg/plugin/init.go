@@ -10,11 +10,11 @@ type dependencyReceiver interface {
 
 // New returns the plugin registered for name, or nil for unknown names.
 func New(name string, deps base.Dependencies) Plugin {
-	factory, ok := pluginRegistry[name]
+	registered, ok := pluginRegistry[name]
 	if !ok {
 		return nil
 	}
-	p := factory()
+	p := registered.create()
 	receiver, ok := p.(dependencyReceiver)
 	if !ok {
 		panic("registered plugin does not embed base.BasePlugin")

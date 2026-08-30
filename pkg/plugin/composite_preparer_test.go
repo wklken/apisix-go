@@ -229,11 +229,7 @@ func newCompositeSecretHarness(t *testing.T, revision uint64, resourceID string)
 			generation.DomainHTTP: candidate,
 		},
 	}
-	manifest, err := capability.Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	catalog, err := capability.NewSecretDeclarationCatalog(manifest)
+	catalog, err := capability.NewSecretDeclarationCatalog()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -268,7 +264,9 @@ func replaceCompositeFactory(t *testing.T, factory string, create func() Plugin)
 	if !ok {
 		t.Fatalf("fixture factory %q is not registered", factory)
 	}
-	pluginRegistry[factory] = create
+	updated := original
+	updated.create = create
+	pluginRegistry[factory] = updated
 	t.Cleanup(func() { pluginRegistry[factory] = original })
 }
 
@@ -508,7 +506,7 @@ func TestCompositeChildPreparerRejectsMismatchedOrZeroAccessBeforeConstruction(t
 	constructorCalls := 0
 	replaceCompositeFactory(t, "serverless-pre-function", func() Plugin {
 		constructorCalls++
-		return original()
+		return original.create()
 	})
 	spec := base.CompositeChildSpec{
 		Factory:  "serverless-pre-function",
@@ -560,7 +558,7 @@ func TestCompositeChildPreparerRejectsSameIDForeignRegistrationBeforeConstructio
 	constructorCalls := 0
 	replaceCompositeFactory(t, "serverless-pre-function", func() Plugin {
 		constructorCalls++
-		return original()
+		return original.create()
 	})
 	prepared, err := prepareCompositeChild(
 		context.Background(),

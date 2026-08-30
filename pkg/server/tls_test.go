@@ -187,11 +187,7 @@ func newTLSHTTPLeaseFixture(
 	client *resource.SSLClient,
 ) *countedHTTPLeaseFixture {
 	t.Helper()
-	manifest, err := capability.Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	catalog, err := capability.NewSecretDeclarationCatalog(manifest)
+	catalog, err := capability.NewSecretDeclarationCatalog()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,7 +203,6 @@ func newTLSHTTPLeaseFixture(
 		delegate: testutil.NewSecretMaterializer(ownerTestResolver{}, catalog),
 	}
 	factory, err := compiler.NewWorkerCompilerFactory(
-		manifest,
 		effective,
 		materializer,
 		compiler.WorkerRuntimeObservers{Cluster: proxy.NopClusterObserver{}},

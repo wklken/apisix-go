@@ -30,6 +30,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/runtime"
 	"github.com/wklken/apisix-go/pkg/secret"
+	"github.com/wklken/apisix-go/pkg/testutil"
 )
 
 func TestEffectiveBindingMaterializerRequiresTask7OrTask8Specs(t *testing.T) {
@@ -503,7 +504,7 @@ func TestEffectiveBindingMaterializerLifecycleOrderAndExactSecretScope(t *testin
 	compiler := newTestCompiler(t)
 	trace := &materializerTrace{}
 	broker := &materializerLifecycleBroker{trace: trace}
-	materializer := secret.NewScopedMaterializer(broker, compiler.schemas.catalog)
+	materializer := testutil.NewSecretMaterializer(broker, compiler.schemas.catalog)
 	factory, err := newAttemptFactory(compiler, materializer)
 	if err != nil {
 		t.Fatal(err)
@@ -1688,11 +1689,11 @@ type materializerLifecycleBroker struct {
 func newRealEffectiveBindingPrepared(
 	t *testing.T,
 	desired generation.Snapshot,
-	broker secret.ScopedAttemptBroker,
+	broker testutil.SecretAttemptBroker,
 ) (*PreparedGeneration, FactoryOccurrence) {
 	t.Helper()
 	compiler := newTestCompiler(t)
-	materializer := secret.NewScopedMaterializer(broker, compiler.schemas.catalog)
+	materializer := testutil.NewSecretMaterializer(broker, compiler.schemas.catalog)
 	factory, err := newAttemptFactory(compiler, materializer)
 	if err != nil {
 		t.Fatal(err)

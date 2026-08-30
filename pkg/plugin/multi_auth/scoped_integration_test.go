@@ -16,6 +16,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/runtime"
 	"github.com/wklken/apisix-go/pkg/secret"
+	"github.com/wklken/apisix-go/pkg/testutil"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -111,7 +112,7 @@ func newScopedOuterHarness(
 	if err != nil {
 		t.Fatal(err)
 	}
-	registration, err := secret.NewScopedMaterializer(scopedMultiAuthBroker{}, catalog).
+	registration, err := testutil.NewSecretMaterializer(scopedMultiAuthBroker{}, catalog).
 		RegisterCandidate(context.Background(), ticket, set)
 	if err != nil {
 		t.Fatal(err)

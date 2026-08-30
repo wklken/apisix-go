@@ -447,6 +447,7 @@ func TestMaterializeScopedSecretsOwnsOpenWhiskServiceToken(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			capabilityValue, scope, broker, closeAttempt := newOpenWhiskScopedSecretHarness(
 				t, uint64(index+1), "openwhisk-materialize", test.raw, test.resolved,
+				"0123456789abcdef",
 			)
 			defer closeAttempt()
 			p := &Plugin{config: Config{
@@ -464,15 +465,22 @@ func TestMaterializeScopedSecretsOwnsOpenWhiskServiceToken(t *testing.T) {
 				t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 			}
 			calls := broker.scopedCalls()
-			if len(calls) != 1 {
-				t.Fatalf("scoped calls = %#v, want one exact service_token call", calls)
+			isReference := strings.HasPrefix(test.raw, "$secret://") ||
+				strings.HasPrefix(strings.ToUpper(test.raw), "$ENV://")
+			if !isReference && len(calls) != 0 {
+				t.Fatalf("scoped calls = %#v, want none for literal or ciphertext", calls)
 			}
-			call := calls[0]
-			if call.Raw != test.raw || call.Scope.Generation != scope.Generation ||
-				call.Scope.Attempt != scope.Attempt || call.Scope.Domain != generation.DomainHTTP ||
-				call.Scope.Plugin != name || call.Scope.Resource != scope.Resource ||
-				call.Scope.Source != capability.SecretPluginConfig || call.Scope.Field != "service_token" {
-				t.Fatalf("scoped call = %#v, want exact openwhisk.service_token authority", call)
+			if isReference {
+				if len(calls) != 1 {
+					t.Fatalf("scoped calls = %#v, want one exact service_token reference", calls)
+				}
+				call := calls[0]
+				if call.Raw != test.raw || call.Scope.Generation != scope.Generation ||
+					call.Scope.Attempt != scope.Attempt || call.Scope.Domain != generation.DomainHTTP ||
+					call.Scope.Plugin != name || call.Scope.Resource != scope.Resource ||
+					call.Scope.Source != capability.SecretPluginConfig || call.Scope.Field != "service_token" {
+					t.Fatalf("scoped call = %#v, want exact openwhisk.service_token authority", call)
+				}
 			}
 			digest := sha256.Sum256([]byte(test.resolved))
 			wantDescriptor := "plugin_config#sha256:" + hex.EncodeToString(digest[:])
@@ -1273,6 +1281,7 @@ func newOpenWhiskScopedSecretHarness(
 	resourceID string,
 	raw string,
 	resolved string,
+	keyring ...string,
 ) (secret.GenerationCapability, secret.Scope, *openWhiskScopedSecretBroker, func()) {
 	t.Helper()
 	key := generation.ResourceKey{Kind: "routes", ID: resourceID}
@@ -1323,7 +1332,7 @@ func newOpenWhiskScopedSecretHarness(
 		t.Fatal(err)
 	}
 	broker := &openWhiskScopedSecretBroker{values: map[string]string{raw: resolved}}
-	registration, err := secret.NewScopedMaterializer(broker, catalog).RegisterCandidate(
+	registration, err := testutil.NewSecretMaterializerWithKeyring(broker, catalog, keyring).RegisterCandidate(
 		context.Background(), ticket, publication,
 	)
 	if err != nil {

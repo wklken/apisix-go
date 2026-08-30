@@ -110,6 +110,7 @@ func newLagoScopedSecretHarness(
 	resourceID string,
 	config Config,
 	values map[string]string,
+	keyring ...string,
 ) (secret.GenerationCapability, secret.Scope, *lagoScopedSecretBroker, func()) {
 	t.Helper()
 	key := generation.ResourceKey{Kind: "routes", ID: resourceID}
@@ -158,7 +159,7 @@ func newLagoScopedSecretHarness(
 		values: values,
 		fail:   make(map[string]error),
 	}
-	registration, err := secret.NewScopedMaterializer(broker, catalog).RegisterCandidate(
+	registration, err := testutil.NewSecretMaterializerWithKeyring(broker, catalog, keyring).RegisterCandidate(
 		context.Background(), ticket, publication,
 	)
 	if err != nil {
@@ -201,6 +202,7 @@ func TestMaterializeScopedSecretsOwnsLagoToken(t *testing.T) {
 			config := lagoTestConfig("http://127.0.0.1:3000", test.raw)
 			capabilityValue, scope, broker, closeAttempt := newLagoScopedSecretHarness(
 				t, uint64(70+index), "lago-raw", config, map[string]string{test.raw: test.resolved},
+				"0123456789abcdef",
 			)
 			defer closeAttempt()
 			p := newRawLagoPlugin(t, config)
@@ -212,7 +214,12 @@ func TestMaterializeScopedSecretsOwnsLagoToken(t *testing.T) {
 			calls := broker.callsSnapshot()
 			wantScope := scope
 			wantScope.Field = "token"
-			if len(calls) != 1 || calls[0].Scope != wantScope || calls[0].Raw != test.raw {
+			isReference := strings.HasPrefix(test.raw, "$secret://") ||
+				strings.HasPrefix(strings.ToUpper(test.raw), "$ENV://")
+			if !isReference && len(calls) != 0 {
+				t.Fatalf("resolver calls = %#v, want none for ciphertext", calls)
+			}
+			if isReference && (len(calls) != 1 || calls[0].Scope != wantScope || calls[0].Raw != test.raw) {
 				t.Fatalf("resolver calls = %#v, want exact token scope %#v", calls, wantScope)
 			}
 			if p.config.Token != lagoTokenDescriptor(test.resolved) ||
@@ -792,6 +799,7 @@ func TestPostInitResolvesRotatedEncryptedToken(t *testing.T) {
 	}
 	capabilityValue, scope, _, cleanup := newLagoScopedSecretHarness(
 		t, 1, "lago-rotated", config, map[string]string{config.Token: "lago-token"},
+		oldKey,
 	)
 	t.Cleanup(cleanup)
 	if err := base.MaterializeScopedPluginSecrets(

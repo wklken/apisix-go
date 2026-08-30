@@ -130,7 +130,7 @@ func TestMaterializeScopedSecretsOwnsCasdoorSessionSecrets(t *testing.T) {
 		rotatedRaw:  rotatedValue,
 	}
 	capabilityValue, scope, broker, closeAttempt := newCasdoorScopedSecretHarness(
-		t, 1, "casdoor-scoped", config, values,
+		t, 1, "casdoor-scoped", config, values, "0123456789abcdef",
 	)
 	defer closeAttempt()
 	p := &Plugin{config: config}
@@ -144,11 +144,11 @@ func TestMaterializeScopedSecretsOwnsCasdoorSessionSecrets(t *testing.T) {
 	}
 
 	calls := broker.scopedCalls()
-	if len(calls) != 3 {
-		t.Fatalf("scoped calls = %#v, want current plus two fallbacks", calls)
+	if len(calls) != 2 {
+		t.Fatalf("scoped calls = %#v, want two reference fallbacks", calls)
 	}
-	wantFields := []string{"client_secret", "client_secret_fallbacks", "client_secret_fallbacks"}
-	wantRaw := []string{contextual, fallbackRaw, rotatedRaw}
+	wantFields := []string{"client_secret_fallbacks", "client_secret_fallbacks"}
+	wantRaw := []string{fallbackRaw, rotatedRaw}
 	for i, call := range calls {
 		if call.Raw != wantRaw[i] || call.Scope.Generation != scope.Generation ||
 			call.Scope.Attempt != scope.Attempt || call.Scope.Domain != generation.DomainHTTP ||
@@ -172,7 +172,7 @@ func TestMaterializeScopedSecretsOwnsCasdoorSessionSecrets(t *testing.T) {
 	failedConfig := config
 	failedConfig.ClientSecretFallbacks = append([]string(nil), config.ClientSecretFallbacks...)
 	failCapability, failScope, failBroker, closeFailure := newCasdoorScopedSecretHarness(
-		t, 2, "casdoor-failure", failedConfig, values,
+		t, 2, "casdoor-failure", failedConfig, values, "0123456789abcdef",
 	)
 	defer closeFailure()
 	failBroker.setFailure(rotatedRaw)
@@ -199,8 +199,8 @@ func TestMaterializeScopedSecretsOwnsCasdoorSessionSecrets(t *testing.T) {
 	); err != nil {
 		t.Fatalf("same-instance retry error = %v", err)
 	}
-	if got := failBroker.scopedCalls(); len(got) != 6 {
-		t.Fatalf("failure plus retry calls = %#v, want two complete ordered attempts", got)
+	if got := failBroker.scopedCalls(); len(got) != 4 {
+		t.Fatalf("failure plus retry calls = %#v, want two reference-only attempts", got)
 	}
 	if failed.config.ClientSecret != casdoorDescriptor(currentValue) ||
 		failed.config.ClientSecretFallbacks[0] != casdoorDescriptor(fallbackValue) ||
@@ -244,6 +244,7 @@ func TestCasdoorScopedSecretRawFormsUseResolvedDescriptors(t *testing.T) {
 			capabilityValue, scope, broker, closeAttempt := newCasdoorScopedSecretHarness(
 				t, uint64(10+index), "casdoor-raw-form", config,
 				map[string]string{test.raw: test.resolved},
+				"0123456789abcdef", "fedcba9876543210",
 			)
 			defer closeAttempt()
 			p := &Plugin{config: config}
@@ -252,9 +253,15 @@ func TestCasdoorScopedSecretRawFormsUseResolvedDescriptors(t *testing.T) {
 			); err != nil {
 				t.Fatal(err)
 			}
-			if calls := broker.scopedCalls(); len(calls) != 1 || calls[0].Raw != test.raw ||
-				calls[0].Scope.Field != "client_secret" {
-				t.Fatalf("scoped calls = %#v, want exact current secret", calls)
+			calls := broker.scopedCalls()
+			isReference := strings.HasPrefix(test.raw, "$secret://") ||
+				strings.HasPrefix(strings.ToUpper(test.raw), "$ENV://")
+			if isReference && (len(calls) != 1 || calls[0].Raw != test.raw ||
+				calls[0].Scope.Field != "client_secret") {
+				t.Fatalf("scoped calls = %#v, want exact current reference", calls)
+			}
+			if !isReference && len(calls) != 0 {
+				t.Fatalf("scoped calls = %#v, want no resolver call for literal or ciphertext", calls)
 			}
 			if got, want := p.config.ClientSecret, casdoorDescriptor(test.resolved); got != want {
 				t.Fatalf("descriptor = %q, want %q", got, want)
@@ -1455,6 +1462,7 @@ func newCasdoorScopedSecretHarness(
 	resourceID string,
 	config Config,
 	values map[string]string,
+	keyring ...string,
 ) (secret.GenerationCapability, secret.Scope, *casdoorScopedSecretBroker, func()) {
 	t.Helper()
 	key := generation.ResourceKey{Kind: "routes", ID: resourceID}
@@ -1510,7 +1518,7 @@ func newCasdoorScopedSecretHarness(
 		t.Fatal(err)
 	}
 	broker := &casdoorScopedSecretBroker{values: maps.Clone(values)}
-	registration, err := secret.NewScopedMaterializer(broker, catalog).RegisterCandidate(
+	registration, err := testutil.NewSecretMaterializerWithKeyring(broker, catalog, keyring).RegisterCandidate(
 		context.Background(), ticket, publication,
 	)
 	if err != nil {

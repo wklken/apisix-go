@@ -267,7 +267,7 @@ func testScopedSecretPluginBinding(
 	if err != nil {
 		t.Fatalf("build secret catalog: %v", err)
 	}
-	registration, err := secret.NewScopedMaterializer(testLiteralSecretBroker{}, catalog).
+	registration, err := testutil.NewSecretMaterializer(testLiteralSecretBroker{}, catalog).
 		RegisterCandidate(context.Background(), ticket, set)
 	if err != nil {
 		t.Fatalf("register plugin %q attempt: %v", name, err)

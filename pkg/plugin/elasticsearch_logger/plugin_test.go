@@ -140,6 +140,7 @@ func newElasticsearchScopedSecretHarness(
 	resourceID string,
 	rawConfig map[string]any,
 	values map[string]string,
+	keyring ...string,
 ) (secret.GenerationCapability, secret.Scope, *elasticsearchScopedSecretBroker, func()) {
 	t.Helper()
 	key := generation.ResourceKey{Kind: "routes", ID: resourceID}
@@ -184,7 +185,7 @@ func newElasticsearchScopedSecretHarness(
 		t.Fatal(err)
 	}
 	broker := &elasticsearchScopedSecretBroker{values: values, fail: make(map[string]error)}
-	registration, err := secret.NewScopedMaterializer(broker, catalog).
+	registration, err := testutil.NewSecretMaterializerWithKeyring(broker, catalog, keyring).
 		RegisterCandidate(context.Background(), ticket, set)
 	if err != nil {
 		t.Fatal(err)
@@ -233,13 +234,13 @@ func TestMaterializeScopedSecretsOwnsElasticsearchCredentials(t *testing.T) {
 			name:        "literal and absent optional",
 			passwordRaw: "literal-password",
 			password:    "literal-password",
-			wantCalls:   []string{"auth.password"},
+			wantCalls:   nil,
 		},
 		{
 			name:        "contextual ciphertext",
 			passwordRaw: contextual,
 			password:    "contextual-password",
-			wantCalls:   []string{"auth.password"},
+			wantCalls:   nil,
 		},
 		{
 			name:          "environment and exact Authorization",
@@ -280,6 +281,7 @@ func TestMaterializeScopedSecretsOwnsElasticsearchCredentials(t *testing.T) {
 				"es-route",
 				raw,
 				values,
+				"0123456789abcdef",
 			)
 			defer closeAttempt()
 			p := &Plugin{config: Config{

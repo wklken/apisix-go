@@ -15,6 +15,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/secret"
+	"github.com/wklken/apisix-go/pkg/testutil"
 )
 
 type requestValidationSecretCall struct {
@@ -138,7 +139,7 @@ func newRequestValidationSecretHarness(
 	broker := &requestValidationSecretBroker{
 		values: maps.Clone(values), fail: make(map[string]error),
 	}
-	registration, err := secret.NewScopedMaterializer(broker, catalog).RegisterCandidate(
+	registration, err := testutil.NewSecretMaterializer(broker, catalog).RegisterCandidate(
 		context.Background(), ticket, publication,
 	)
 	if err != nil {
@@ -213,7 +214,7 @@ func TestScopedSecretsCoverAllTerminalStringSchemaRolesWithoutResolvingMapKeys(t
 		patternRaw     = "$ENV://REQUEST_VALIDATION_SCHEMA_PATTERN"
 		formatRaw      = "$ENV://REQUEST_VALIDATION_SCHEMA_FORMAT"
 		literalRaw     = "$ENV://REQUEST_VALIDATION_SCHEMA_LITERAL"
-		defaultRaw     = "$encrypted://request-validation-schema-default"
+		defaultRaw     = "$secret://request-validation/schema-default"
 		annotationRaw  = "$ENV://REQUEST_VALIDATION_SCHEMA_ANNOTATION"
 		mapKeyEnvelope = "$ENV://REQUEST_VALIDATION_SCHEMA_MAP_KEY"
 	)

@@ -191,6 +191,7 @@ func newSLSScopedSecretHarness(
 	resourceID string,
 	config Config,
 	values map[string]string,
+	keyring ...string,
 ) (secret.GenerationCapability, secret.Scope, *slsScopedSecretBroker, func()) {
 	t.Helper()
 	key := generation.ResourceKey{Kind: "routes", ID: resourceID}
@@ -237,7 +238,7 @@ func newSLSScopedSecretHarness(
 		t.Fatal(err)
 	}
 	broker := &slsScopedSecretBroker{values: values, fail: make(map[string]error)}
-	registration, err := secret.NewScopedMaterializer(broker, catalog).RegisterCandidate(
+	registration, err := testutil.NewSecretMaterializerWithKeyring(broker, catalog, keyring).RegisterCandidate(
 		context.Background(), ticket, publication,
 	)
 	if err != nil {
@@ -287,6 +288,7 @@ func TestMaterializeScopedSecretsRetainsGenerationPrivateSLSSecret(t *testing.T)
 			capabilityValue, scope, broker, closeAttempt := newSLSScopedSecretHarness(
 				t, uint64(index+1), "sls-"+tt.name, config,
 				map[string]string{tt.raw: tt.resolved},
+				"qeddd145sfvddff3",
 			)
 			defer closeAttempt()
 			p := &Plugin{config: config}
@@ -301,7 +303,12 @@ func TestMaterializeScopedSecretsRetainsGenerationPrivateSLSSecret(t *testing.T)
 			calls := broker.callsSnapshot()
 			wantScope := scope
 			wantScope.Field = "access_key_secret"
-			if len(calls) != 1 || calls[0].Scope != wantScope || calls[0].Raw != tt.raw {
+			isReference := strings.HasPrefix(tt.raw, "$secret://") ||
+				strings.HasPrefix(strings.ToUpper(tt.raw), "$ENV://")
+			if !isReference && len(calls) != 0 {
+				t.Fatalf("secret calls = %#v, want none for ciphertext", calls)
+			}
+			if isReference && (len(calls) != 1 || calls[0].Scope != wantScope || calls[0].Raw != tt.raw) {
 				t.Fatalf("secret calls = %#v, want scope %#v raw %q", calls, wantScope, tt.raw)
 			}
 			if p.config.AccessKeySecret != slsSecretDescriptor(tt.resolved) {
@@ -334,8 +341,12 @@ func TestMaterializeScopedSecretsRetainsGenerationPrivateSLSSecret(t *testing.T)
 			if strings.Contains(message, tt.raw) || !strings.Contains(message, wantSecret) {
 				t.Fatalf("delivery message = %q, want generation-private wire credential", message)
 			}
-			if calls := broker.callsSnapshot(); len(calls) != 1 {
-				t.Fatalf("PostInit/delivery resolver calls = %#v, want admission-only call", calls)
+			wantResolverCalls := 0
+			if isReference {
+				wantResolverCalls = 1
+			}
+			if calls := broker.callsSnapshot(); len(calls) != wantResolverCalls {
+				t.Fatalf("PostInit/delivery resolver calls = %#v, want %d", calls, wantResolverCalls)
 			}
 			p.Stop()
 			if err := processor.Shutdown(context.Background()); err != nil {

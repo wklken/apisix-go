@@ -144,7 +144,7 @@ func newDingTalkScopedSecretHarness(
 		t.Fatal(err)
 	}
 	broker := &dingtalkScopedSecretBroker{values: values}
-	registration, err := secret.NewScopedMaterializer(broker, catalog).RegisterCandidate(
+	registration, err := testutil.NewSecretMaterializer(broker, catalog).RegisterCandidate(
 		context.Background(), ticket, publication,
 	)
 	if err != nil {
@@ -326,53 +326,10 @@ func TestDingTalkResolvedSessionSecretLengthBounds(t *testing.T) {
 				}
 				assertDingTalkDescriptor(t, p.config.Secret, tt.resolved)
 			}
-			if calls := broker.scopedCalls(); len(calls) != 2 || calls[0].Scope.Field != "app_secret" ||
-				calls[1].Scope.Field != "secret" {
-				t.Fatalf("boundary resolver calls = %#v, want app_secret then secret only", calls)
+			if calls := broker.scopedCalls(); len(calls) != 1 || calls[0].Scope.Field != "secret" {
+				t.Fatalf("boundary resolver calls = %#v, want secret reference only", calls)
 			}
 		})
-	}
-}
-
-func TestDingTalkLegacyMaterializationDecryptsContextualSecrets(t *testing.T) {
-	const (
-		key               = "0123456789abcdef"
-		appPlaintext      = "legacy-app-secret"
-		sessionPlaintext  = "legacy-session"
-		fallbackPlaintext = "legacy-fallback"
-	)
-	service := testutil.DataEncryptionService(true, []string{key})
-	appRaw, err := service.EncryptForContext(appPlaintext, name+".app_secret")
-	if err != nil {
-		t.Fatal(err)
-	}
-	sessionRaw, err := service.EncryptForContext(sessionPlaintext, name+".secret")
-	if err != nil {
-		t.Fatal(err)
-	}
-	fallbackRaw, err := service.EncryptForContext(fallbackPlaintext, name+".secret_fallbacks")
-	if err != nil {
-		t.Fatal(err)
-	}
-	p := &Plugin{config: Config{
-		AppKey: "app-key", AppSecret: appRaw, Secret: sessionRaw,
-		SecretFallbacks: []string{fallbackRaw},
-		RedirectURI:     "https://login.dingtalk.com/oauth2/auth",
-	}}
-	p.SetDependencies(base.Dependencies{DataEncryption: service.Resolver()})
-	capabilityValue, scope, _, cleanup := newDingTalkScopedSecretHarness(
-		t, 1, "test-route", p.config,
-		map[string]string{appRaw: appPlaintext, sessionRaw: sessionPlaintext, fallbackRaw: fallbackPlaintext},
-	)
-	t.Cleanup(cleanup)
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
-		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
-	}
-	assertDingTalkDescriptor(t, p.config.AppSecret, appPlaintext)
-	assertDingTalkDescriptor(t, p.config.Secret, sessionPlaintext)
-	assertDingTalkDescriptor(t, p.config.SecretFallbacks[0], fallbackPlaintext)
-	if p.client != nil || p.tokenCache != nil || p.oauthStateReplay != nil {
-		t.Fatal("legacy materialization caused PostInit side effects")
 	}
 }
 

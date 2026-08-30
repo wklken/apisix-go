@@ -99,10 +99,10 @@ func (broker *scopedSecretBroker) setHook(hook func(scopedSecretCall)) {
 func (*scopedSecretBroker) RevokeAttempt(context.Context, secret.AttemptID) error { return nil }
 
 func newScopedSecretHarness(
-	t *testing.T, factory string, values map[string]string,
+	t *testing.T, factory string, values map[string]string, keyring ...string,
 ) (secret.GenerationCapability, secret.Scope, *scopedSecretBroker, func()) {
 	t.Helper()
-	return newScopedSecretHarnessAt(t, factory, 7, "r1", values)
+	return newScopedSecretHarnessAt(t, factory, 7, "r1", values, keyring...)
 }
 
 func newScopedSecretHarnessAt(
@@ -111,6 +111,7 @@ func newScopedSecretHarnessAt(
 	revision uint64,
 	resourceID string,
 	values map[string]string,
+	keyring ...string,
 ) (secret.GenerationCapability, secret.Scope, *scopedSecretBroker, func()) {
 	t.Helper()
 	key := generation.ResourceKey{Kind: "routes", ID: resourceID}
@@ -149,7 +150,7 @@ func newScopedSecretHarnessAt(
 		t.Fatal(err)
 	}
 	broker := &scopedSecretBroker{values: maps.Clone(values), fail: make(map[string]error)}
-	registration, err := secret.NewScopedMaterializer(broker, catalog).
+	registration, err := testutil.NewSecretMaterializerWithKeyring(broker, catalog, keyring).
 		RegisterCandidate(context.Background(), ticket, set)
 	if err != nil {
 		t.Fatal(err)
@@ -276,15 +277,14 @@ func TestScopedSecretsMaterializeAWSComprehendCredentials(t *testing.T) {
 
 	capabilityValue, scope, broker, closeAttempt := newScopedSecretHarness(t, name, map[string]string{
 		rawAccess: "resolved-access",
-		rawSecret: "context-secret",
 		rawToken:  "resolved-token",
-	})
+	}, "0123456789abcdef")
 	defer closeAttempt()
 	p := &Plugin{config: awsScopedConfig(rawAccess, rawSecret, rawToken, moderation.URL)}
 	materializeScopedAWS(t, p, scope, capabilityValue)
 	assertAWSScopedCalls(t, scope, broker.calls,
-		[]string{"comprehend.access_key_id", "comprehend.secret_access_key", "comprehend.session_token"},
-		[]string{rawAccess, rawSecret, rawToken},
+		[]string{"comprehend.access_key_id", "comprehend.session_token"},
+		[]string{rawAccess, rawToken},
 	)
 	assertAWSDescriptors(t, p, "resolved-access", "context-secret", "resolved-token")
 	for _, sensitive := range []string{
@@ -320,18 +320,12 @@ func TestScopedSecretsSkipEmptyAWSSessionToken(t *testing.T) {
 	}))
 	t.Cleanup(moderation.Close)
 
-	capabilityValue, scope, broker, closeAttempt := newScopedSecretHarness(t, name, map[string]string{
-		"literal-access": "resolved-access",
-		"literal-secret": "resolved-secret",
-	})
+	capabilityValue, scope, broker, closeAttempt := newScopedSecretHarness(t, name, nil)
 	defer closeAttempt()
 	p := &Plugin{config: awsScopedConfig("literal-access", "literal-secret", "", moderation.URL)}
 	materializeScopedAWS(t, p, scope, capabilityValue)
-	assertAWSScopedCalls(t, scope, broker.calls,
-		[]string{"comprehend.access_key_id", "comprehend.secret_access_key"},
-		[]string{"literal-access", "literal-secret"},
-	)
-	assertAWSDescriptors(t, p, "resolved-access", "resolved-secret", "")
+	assertAWSScopedCalls(t, scope, broker.calls, nil, nil)
+	assertAWSDescriptors(t, p, "literal-access", "literal-secret", "")
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
@@ -354,18 +348,16 @@ func TestScopedSecretsResolveManagedAWSSessionToken(t *testing.T) {
 	t.Cleanup(moderation.Close)
 
 	capabilityValue, scope, broker, closeAttempt := newScopedSecretHarness(t, name, map[string]string{
-		"literal-access": "managed-access",
-		"literal-secret": "managed-secret",
-		rawToken:         "managed-token",
+		rawToken: "managed-token",
 	})
 	defer closeAttempt()
 	p := &Plugin{config: awsScopedConfig("literal-access", "literal-secret", rawToken, moderation.URL)}
 	materializeScopedAWS(t, p, scope, capabilityValue)
 	assertAWSScopedCalls(t, scope, broker.calls,
-		[]string{"comprehend.access_key_id", "comprehend.secret_access_key", "comprehend.session_token"},
-		[]string{"literal-access", "literal-secret", rawToken},
+		[]string{"comprehend.session_token"},
+		[]string{rawToken},
 	)
-	assertAWSDescriptors(t, p, "managed-access", "managed-secret", "managed-token")
+	assertAWSDescriptors(t, p, "literal-access", "literal-secret", "managed-token")
 	if strings.Contains(fmt.Sprintf("%#v", p.config), rawToken) {
 		t.Fatalf("effective config contains managed token reference: %#v", p.config)
 	}

@@ -13,6 +13,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/secret"
+	"github.com/wklken/apisix-go/pkg/testutil"
 )
 
 type discardPreparationBroker struct {
@@ -398,7 +399,7 @@ func candidateDiscardPreparationAttempt(
 	set generation.PublicationSet,
 ) (PreparationAttempt, secret.AttemptRegistration) {
 	t.Helper()
-	materializer := secret.NewScopedMaterializer(broker, compiler.schemas.catalog)
+	materializer := testutil.NewSecretMaterializer(broker, compiler.schemas.catalog)
 	registration, err := materializer.RegisterCandidate(context.Background(), ticket, set)
 	if err != nil {
 		t.Fatal(err)
@@ -418,7 +419,7 @@ func recoveryDiscardPreparationAttempt(
 		generation.DomainHTTP: publishedForDomain(generation.DomainHTTP, snapshot),
 	}
 	revisions := generation.RevisionSet{Desired: generationNumber, HTTP: snapshot.Revision()}
-	materializer := secret.NewScopedMaterializer(broker, compiler.schemas.catalog)
+	materializer := testutil.NewSecretMaterializer(broker, compiler.schemas.catalog)
 	registration, err := materializer.RegisterRecovery(context.Background(), revisions, published)
 	if err != nil {
 		t.Fatal(err)
@@ -492,4 +493,4 @@ func discardPreparationReferences(suffix string) map[string]string {
 	}
 }
 
-var _ secret.ScopedAttemptBroker = (*discardPreparationBroker)(nil)
+var _ testutil.SecretAttemptBroker = (*discardPreparationBroker)(nil)

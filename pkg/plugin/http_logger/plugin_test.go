@@ -159,6 +159,7 @@ func newHTTPLoggerScopedSecretHarness(
 	resourceID string,
 	config Config,
 	values map[string]string,
+	keyring ...string,
 ) (secret.GenerationCapability, secret.Scope, *httpLoggerScopedSecretBroker, func()) {
 	t.Helper()
 	key := generation.ResourceKey{Kind: "routes", ID: resourceID}
@@ -208,7 +209,7 @@ func newHTTPLoggerScopedSecretHarness(
 		values: values,
 		fail:   make(map[string]error),
 	}
-	registration, err := secret.NewScopedMaterializer(broker, catalog).RegisterCandidate(
+	registration, err := testutil.NewSecretMaterializerWithKeyring(broker, catalog, keyring).RegisterCandidate(
 		context.Background(), ticket, publication,
 	)
 	if err != nil {
@@ -302,6 +303,7 @@ func TestMaterializeScopedSecretsOwnsHTTPAuthorization(t *testing.T) {
 			capabilityValue, scope, broker, closeAttempt := newHTTPLoggerScopedSecretHarness(
 				t, uint64(10+index), "http-private", config,
 				map[string]string{tt.raw: tt.resolved},
+				"qeddd145sfvddff3",
 			)
 			defer closeAttempt()
 			p := newRawHTTPLoggerPlugin(t, config)
@@ -313,7 +315,12 @@ func TestMaterializeScopedSecretsOwnsHTTPAuthorization(t *testing.T) {
 			calls := broker.scopedCalls()
 			wantScope := scope
 			wantScope.Field = "auth_header"
-			if len(calls) != 1 || calls[0].Scope != wantScope || calls[0].Raw != tt.raw {
+			isReference := strings.HasPrefix(tt.raw, "$secret://") ||
+				strings.HasPrefix(strings.ToUpper(tt.raw), "$ENV://")
+			if !isReference && len(calls) != 0 {
+				t.Fatalf("auth_header calls = %#v, want none for literal or ciphertext", calls)
+			}
+			if isReference && (len(calls) != 1 || calls[0].Scope != wantScope || calls[0].Raw != tt.raw) {
 				t.Fatalf("auth_header calls = %#v, want scope %#v raw %q", calls, wantScope, tt.raw)
 			}
 			if p.config.AuthHeader == nil || *p.config.AuthHeader != httpAuthorizationDescriptor(tt.resolved) {

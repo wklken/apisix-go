@@ -167,7 +167,7 @@ func newFeishuScopedSecretHarness(
 		t.Fatal(err)
 	}
 	broker := &feishuScopedSecretBroker{values: values}
-	registration, err := secret.NewScopedMaterializer(broker, catalog).RegisterCandidate(
+	registration, err := testutil.NewSecretMaterializer(broker, catalog).RegisterCandidate(
 		context.Background(), ticket, publication,
 	)
 	if err != nil {
@@ -479,54 +479,10 @@ func TestFeishuResolvedSessionSecretRuneCountBounds(t *testing.T) {
 				}
 				assertFeishuDescriptor(t, p.config.Secret, tt.resolved)
 			}
-			if calls := broker.scopedCalls(); len(calls) != 2 || calls[0].Scope.Field != "app_secret" ||
-				calls[1].Scope.Field != "secret" {
-				t.Fatalf("boundary resolver calls = %#v, want app_secret then secret only", calls)
+			if calls := broker.scopedCalls(); len(calls) != 1 || calls[0].Scope.Field != "secret" {
+				t.Fatalf("boundary resolver calls = %#v, want secret reference only", calls)
 			}
 		})
-	}
-}
-
-func TestFeishuLegacyMaterializationDecryptsContextualSecrets(t *testing.T) {
-	const (
-		key               = "0123456789abcdef"
-		appPlaintext      = "legacy-app-secret"
-		sessionPlaintext  = "legacy-session"
-		fallbackPlaintext = "legacy-fallback"
-	)
-	service := testutil.DataEncryptionService(true, []string{key})
-	appRaw, err := service.EncryptForContext(appPlaintext, name+".app_secret")
-	if err != nil {
-		t.Fatal(err)
-	}
-	sessionRaw, err := service.EncryptForContext(sessionPlaintext, name+".secret")
-	if err != nil {
-		t.Fatal(err)
-	}
-	fallbackRaw, err := service.EncryptForContext(fallbackPlaintext, name+".secret_fallbacks")
-	if err != nil {
-		t.Fatal(err)
-	}
-	p := &Plugin{config: Config{
-		AppID: "app-id", AppSecret: appRaw, Secret: sessionRaw,
-		SecretFallbacks: []string{fallbackRaw},
-		AuthRedirectURI: "https://gateway.example.com/callback",
-		RedirectURI:     "https://login.feishu.cn/oauth",
-	}}
-	p.SetDependencies(base.Dependencies{DataEncryption: service.Resolver()})
-	capabilityValue, scope, _, cleanup := newFeishuScopedSecretHarness(t, 1, "test-route", p.config, map[string]string{
-		appRaw: appPlaintext, sessionRaw: sessionPlaintext, fallbackRaw: fallbackPlaintext,
-	})
-	t.Cleanup(cleanup)
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
-		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
-	}
-	t.Cleanup(p.Stop)
-	assertFeishuDescriptor(t, p.config.AppSecret, appPlaintext)
-	assertFeishuDescriptor(t, p.config.Secret, sessionPlaintext)
-	assertFeishuDescriptor(t, p.config.SecretFallbacks[0], fallbackPlaintext)
-	if p.client != nil || p.oauthStateReplay != nil {
-		t.Fatal("legacy materialization caused PostInit side effects")
 	}
 }
 

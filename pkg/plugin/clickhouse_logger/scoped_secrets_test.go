@@ -112,7 +112,7 @@ func newScopedSecretHarnessAt(
 		t.Fatal(err)
 	}
 	broker := &scopedSecretBroker{values: maps.Clone(values), fail: make(map[string]error)}
-	registration, err := secret.NewScopedMaterializer(broker, catalog).
+	registration, err := testutil.NewSecretMaterializer(broker, catalog).
 		RegisterCandidate(context.Background(), ticket, set)
 	if err != nil {
 		t.Fatal(err)
@@ -150,7 +150,7 @@ func clickHouseScopedConfig(user, password string) Config {
 func TestScopedSecretsMaterializeClickHouseUserAndStrictPassword(t *testing.T) {
 	const (
 		rawUser     = "$ENV://CLICK_HOUSE_USER"
-		rawPassword = "literal-password"
+		rawPassword = "$secret://vault/clickhouse/password"
 	)
 	capabilityValue, scope, broker, closeAttempt := newScopedSecretHarness(t, name, map[string]string{
 		rawUser:     "fixture-user",
@@ -194,7 +194,7 @@ func TestScopedSecretsMaterializeClickHouseUserAndStrictPassword(t *testing.T) {
 func TestScopedSecretsResolveManagedClickHouseUser(t *testing.T) {
 	const (
 		rawUser     = "$secret://vault/clickhouse/user"
-		rawPassword = "literal-password"
+		rawPassword = "$secret://vault/clickhouse/password"
 	)
 	capabilityValue, scope, broker, closeAttempt := newScopedSecretHarness(t, name, map[string]string{
 		rawUser:     "managed-user",
@@ -242,7 +242,7 @@ func TestScopedSecretsResolveManagedClickHouseUser(t *testing.T) {
 }
 
 func TestScopedSecretsSkipEmptyClickHouseUser(t *testing.T) {
-	const rawPassword = "literal-password"
+	const rawPassword = "$secret://vault/clickhouse/password"
 	capabilityValue, scope, broker, closeAttempt := newScopedSecretHarness(t, name, map[string]string{
 		rawPassword: "managed-password",
 	})
@@ -266,7 +266,7 @@ func TestScopedSecretsSkipEmptyClickHouseUser(t *testing.T) {
 func TestScopedSecretsClickHousePasswordFailureIsAtomic(t *testing.T) {
 	const (
 		rawUser     = "$secret://vault/clickhouse/user"
-		rawPassword = "literal-password"
+		rawPassword = "$secret://vault/clickhouse/password"
 	)
 	capabilityValue, scope, broker, closeAttempt := newScopedSecretHarness(t, name, map[string]string{
 		rawUser: "managed-user",
@@ -357,7 +357,7 @@ func newScopedClickHousePlugin(
 	t.Helper()
 	const (
 		rawUser     = "$secret://vault/clickhouse/user"
-		rawPassword = "literal-password"
+		rawPassword = "$secret://vault/clickhouse/password"
 	)
 	capabilityValue, scope, _, closeAttempt := newScopedSecretHarnessAt(
 		t,

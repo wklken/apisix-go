@@ -111,7 +111,7 @@ func (broker *scopedSecretBroker) setHook(hook func(scopedSecretCall)) {
 }
 
 func newScopedSecretHarness(
-	t *testing.T, revision uint64, resourceID string, values map[string]string,
+	t *testing.T, revision uint64, resourceID string, values map[string]string, keyring ...string,
 ) (secret.GenerationCapability, secret.Scope, *scopedSecretBroker, func()) {
 	t.Helper()
 	key := generation.ResourceKey{Kind: "routes", ID: resourceID}
@@ -150,7 +150,7 @@ func newScopedSecretHarness(
 		t.Fatal(err)
 	}
 	broker := &scopedSecretBroker{values: maps.Clone(values), fail: make(map[string]error)}
-	registration, err := secret.NewScopedMaterializer(broker, catalog).
+	registration, err := testutil.NewSecretMaterializerWithKeyring(broker, catalog, keyring).
 		RegisterCandidate(context.Background(), ticket, set)
 	if err != nil {
 		t.Fatal(err)
@@ -206,6 +206,12 @@ func assertScopedKeycloakCall(
 	t.Helper()
 	wantScope := scope
 	wantScope.Field = "client_secret"
+	if !strings.HasPrefix(raw, "$secret://") && !strings.HasPrefix(strings.ToUpper(raw), "$ENV://") {
+		if len(calls) != 0 {
+			t.Fatalf("broker calls = %#v, want none for literal or ciphertext", calls)
+		}
+		return
+	}
 	if len(calls) != 1 || calls[0].Scope != wantScope || calls[0].Raw != raw {
 		t.Fatalf("broker calls = %#v, want scope %#v and raw %q", calls, wantScope, raw)
 	}
@@ -361,6 +367,7 @@ func TestScopedSecretsKeycloakModesUseResolvedContentDescriptors(t *testing.T) {
 			capabilityValue, scope, broker, closeAttempt := newScopedSecretHarness(
 				t, uint64(20+index), fmt.Sprintf("mode-%d", index),
 				map[string]string{test.raw: test.plaintext},
+				"0123456789abcdef",
 			)
 			defer closeAttempt()
 			p := &Plugin{config: scopedKeycloakConfig("http://keycloak.test/token", test.raw)}

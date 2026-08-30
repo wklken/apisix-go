@@ -12,6 +12,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/secret"
+	"github.com/wklken/apisix-go/pkg/testutil"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -318,7 +319,7 @@ func TestMetadataPreparerKeepsCandidateAndRecoveryAttemptsDistinct(t *testing.T)
 	defer closeMetadataRegistration(t, candidateRegistration)
 	published := publishedForDomain(generation.DomainHTTP, recoverySnapshot)
 	revisions := generation.RevisionSet{Desired: 205, HTTP: recoverySnapshot.Revision()}
-	recoveryMaterializer := secret.NewScopedMaterializer(broker, compiler.schemas.catalog)
+	recoveryMaterializer := testutil.NewSecretMaterializer(broker, compiler.schemas.catalog)
 	recoveryRegistration, err := recoveryMaterializer.RegisterRecovery(
 		context.Background(),
 		revisions,
@@ -714,7 +715,7 @@ func registerMetadataCandidate(
 	set generation.PublicationSet,
 ) (PreparationAttempt, secret.AttemptRegistration) {
 	t.Helper()
-	materializer := secret.NewScopedMaterializer(broker, compiler.schemas.catalog)
+	materializer := testutil.NewSecretMaterializer(broker, compiler.schemas.catalog)
 	registration, err := materializer.RegisterCandidate(context.Background(), ticket, set)
 	if err != nil {
 		t.Fatal(err)
@@ -838,6 +839,6 @@ func installErrorLogMetadataSchema(t *testing.T, compiler *Compiler) {
 }
 
 var (
-	_ secret.ScopedAttemptBroker = (*metadataPreparationBroker)(nil)
-	_ secret.AttemptRegistration = (*metadataTestRegistration)(nil)
+	_ testutil.SecretAttemptBroker = (*metadataPreparationBroker)(nil)
+	_ secret.AttemptRegistration   = (*metadataTestRegistration)(nil)
 )

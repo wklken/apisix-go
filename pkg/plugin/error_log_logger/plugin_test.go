@@ -1166,7 +1166,7 @@ func newScopedPluginSecretFixture(t *testing.T, resolved map[string]string) scop
 		t.Fatalf("NewSecretDeclarationCatalog() error = %v", err)
 	}
 	broker := &errorLoggerScopedBroker{resolved: resolved}
-	materializer := secret.NewScopedMaterializer(broker, catalog)
+	materializer := testutil.NewSecretMaterializer(broker, catalog)
 	snapshot, err := generation.NewSnapshot(42, []generation.Resource{{
 		Key:   generation.ResourceKey{Kind: "routes", ID: "error-log-test"},
 		Value: []byte(`{"id":"error-log-test","plugins":{"error-log-logger":{}}}`),

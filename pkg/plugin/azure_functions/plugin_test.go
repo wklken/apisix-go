@@ -25,6 +25,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/function_upstream"
 	pluginruntime "github.com/wklken/apisix-go/pkg/runtime"
 	"github.com/wklken/apisix-go/pkg/secret"
+	"github.com/wklken/apisix-go/pkg/testutil"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -707,12 +708,13 @@ func TestAzureStopIsIdempotentAndDropsRouteValue(t *testing.T) {
 }
 
 func TestMaterializeScopedSecretsIsSingleFlight(t *testing.T) {
+	const raw = "$ENV://AZURE_SINGLEFLIGHT_ROUTE_KEY"
 	broker := &azureScopedBroker{
-		values:         map[string]string{"route-key": "resolved-route-key"},
+		values:         map[string]string{raw: "resolved-route-key"},
 		resolveStarted: make(chan struct{}),
 		resolveRelease: make(chan struct{}),
 	}
-	capabilityValue, registration, scope := registerAzureScopedRoute(t, broker, "route-key")
+	capabilityValue, registration, scope := registerAzureScopedRoute(t, broker, raw)
 	t.Cleanup(func() {
 		if err := registration.Close(context.Background()); err != nil {
 			t.Error(err)
@@ -720,7 +722,7 @@ func TestMaterializeScopedSecretsIsSingleFlight(t *testing.T) {
 	})
 	p := &Plugin{config: Config{
 		FunctionURI:   "http://function.invalid",
-		Authorization: &Authorization{APIKey: "route-key"},
+		Authorization: &Authorization{APIKey: raw},
 	}}
 
 	const workers = 16
@@ -957,7 +959,7 @@ func registerAzureScopedRouteConfigAt(
 		DesiredDigest:   snapshot.Digest(),
 		RequiredDomains: []generation.Domain{generation.DomainHTTP},
 	}
-	materializer := secret.NewScopedMaterializer(broker, catalog)
+	materializer := testutil.NewSecretMaterializer(broker, catalog)
 	registration, err := materializer.RegisterCandidate(
 		context.Background(), ticket, generation.PublicationSet{
 			DesiredRevision: snapshot.Revision(),

@@ -145,7 +145,7 @@ func newSAMLScopedSecretHarness(
 		t.Fatal(err)
 	}
 	broker := &samlScopedSecretBroker{values: values}
-	registration, err := secret.NewScopedMaterializer(broker, catalog).RegisterCandidate(
+	registration, err := testutil.NewSecretMaterializer(broker, catalog).RegisterCandidate(
 		context.Background(), ticket, publication,
 	)
 	if err != nil {
@@ -433,51 +433,6 @@ func TestSAMLRawShortCookieTextIsRejectedBySchema(t *testing.T) {
 	}
 	if err := util.Validate(rawConfig, p.GetSchema()); err == nil {
 		t.Fatal("schema accepted APISIX-invalid short session secret")
-	}
-}
-
-func TestSAMLLegacyMaterializationDecryptsContextualAndRotatedSecrets(t *testing.T) {
-	const (
-		currentKey = "0123456789abcdef"
-		oldKey     = "fedcba9876543210"
-		session    = "session-current"
-		fallback   = "session-previous"
-	)
-	config := testConfig(t)
-	privateKey := config.SPPrivateKey
-	currentService := testutil.DataEncryptionService(true, []string{currentKey})
-	oldService := testutil.DataEncryptionService(true, []string{oldKey})
-	var err error
-	config.SPPrivateKey, err = currentService.EncryptForContext(privateKey, name+".sp_private_key")
-	if err != nil {
-		t.Fatal(err)
-	}
-	config.Secret, err = currentService.EncryptForContext(session, name+".secret")
-	if err != nil {
-		t.Fatal(err)
-	}
-	oldFallback, err := oldService.EncryptForContext(fallback, name+".secret_fallbacks")
-	if err != nil {
-		t.Fatal(err)
-	}
-	config.SecretFallbacks = []string{oldFallback}
-	p := &Plugin{config: config}
-	p.SetDependencies(base.Dependencies{
-		DataEncryption: testutil.DataEncryptionService(true, []string{currentKey, oldKey}).Resolver(),
-	})
-	capabilityValue, scope, _, cleanup := newSAMLScopedSecretHarness(t, 1, "test-route", p.config, map[string]string{
-		config.SPPrivateKey: privateKey, config.Secret: session, oldFallback: fallback,
-	})
-	t.Cleanup(cleanup)
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
-		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
-	}
-	t.Cleanup(p.Stop)
-	assertSAMLDescriptor(t, p.config.SPPrivateKey, privateKey)
-	assertSAMLDescriptor(t, p.config.Secret, session)
-	assertSAMLDescriptor(t, p.config.SecretFallbacks[0], fallback)
-	if p.spIDPMetadata != nil {
-		t.Fatal("materialization built IDP metadata before PostInit")
 	}
 }
 

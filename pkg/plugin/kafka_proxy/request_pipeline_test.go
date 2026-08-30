@@ -16,6 +16,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/kafka_proxy"
 	"github.com/wklken/apisix-go/pkg/secret"
+	"github.com/wklken/apisix-go/pkg/testutil"
 )
 
 type pipelineScopedSecretBroker struct{}
@@ -93,7 +94,7 @@ func newPipelineKafkaProxy(t *testing.T, revision uint64) (*kafka_proxy.Plugin, 
 	if err != nil {
 		t.Fatal(err)
 	}
-	registration, err := secret.NewScopedMaterializer(pipelineScopedSecretBroker{}, catalog).
+	registration, err := testutil.NewSecretMaterializer(pipelineScopedSecretBroker{}, catalog).
 		RegisterCandidate(context.Background(), ticket, set)
 	if err != nil {
 		t.Fatal(err)

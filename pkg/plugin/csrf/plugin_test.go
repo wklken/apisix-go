@@ -209,7 +209,7 @@ func (broker *csrfScopedSecretBroker) ResolveScoped(
 func (*csrfScopedSecretBroker) RevokeAttempt(context.Context, secret.AttemptID) error { return nil }
 
 func newCSRFScopedSecretHarness(
-	t *testing.T, revision uint64, resourceID string, raw string, resolved string,
+	t *testing.T, revision uint64, resourceID string, raw string, resolved string, keyring ...string,
 ) (secret.GenerationCapability, secret.Scope, *csrfScopedSecretBroker, func()) {
 	t.Helper()
 	key := generation.ResourceKey{Kind: "routes", ID: resourceID}
@@ -251,7 +251,7 @@ func newCSRFScopedSecretHarness(
 		values: map[string]string{raw: resolved},
 		fail:   make(map[string]error),
 	}
-	registration, err := secret.NewScopedMaterializer(broker, catalog).
+	registration, err := testutil.NewSecretMaterializerWithKeyring(broker, catalog, keyring).
 		RegisterCandidate(context.Background(), ticket, set)
 	if err != nil {
 		t.Fatal(err)
@@ -294,11 +294,11 @@ func assertCSRFSecretDescriptorFor(t *testing.T, value, plaintext string) {
 }
 
 func materializeCSRFScopedPlugin(
-	t *testing.T, revision uint64, resourceID, raw, resolved string,
+	t *testing.T, revision uint64, resourceID, raw, resolved string, keyring ...string,
 ) (*Plugin, *csrfScopedSecretBroker, func()) {
 	t.Helper()
 	capabilityValue, scope, broker, closeAttempt := newCSRFScopedSecretHarness(
-		t, revision, resourceID, raw, resolved,
+		t, revision, resourceID, raw, resolved, keyring...,
 	)
 	p := &Plugin{config: Config{Key: raw, Name: "csrf-token"}}
 	if err := p.Init(); err != nil {
@@ -331,17 +331,24 @@ func TestMaterializeScopedSecretsOwnsCSRFKey(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			p, broker, closeAttempt := materializeCSRFScopedPlugin(
-				t, 7, "csrf-route", tt.raw, tt.resolved,
+				t, 7, "csrf-route", tt.raw, tt.resolved, "0123456789abcdef",
 			)
 			defer closeAttempt()
-			if len(broker.calls) != 1 {
-				t.Fatalf("scoped calls = %#v, want one exact key call", broker.calls)
+			isReference := strings.HasPrefix(tt.raw, "$secret://") ||
+				strings.HasPrefix(strings.ToUpper(tt.raw), "$ENV://")
+			if !isReference && len(broker.calls) != 0 {
+				t.Fatalf("scoped calls = %#v, want none for ciphertext", broker.calls)
 			}
-			call := broker.calls[0]
-			if call.Raw != tt.raw || call.Scope.Field != "key" ||
-				call.Scope.Plugin != name || call.Scope.Source != capability.SecretPluginConfig ||
-				call.Scope.Resource.ID != "csrf-route" {
-				t.Fatalf("scoped call = %#v, want exact csrf.key authority", call)
+			if isReference {
+				if len(broker.calls) != 1 {
+					t.Fatalf("scoped calls = %#v, want one exact key reference", broker.calls)
+				}
+				call := broker.calls[0]
+				if call.Raw != tt.raw || call.Scope.Field != "key" ||
+					call.Scope.Plugin != name || call.Scope.Source != capability.SecretPluginConfig ||
+					call.Scope.Resource.ID != "csrf-route" {
+					t.Fatalf("scoped call = %#v, want exact csrf.key authority", call)
+				}
 			}
 			assertCSRFSecretDescriptorFor(t, p.config.Key, tt.resolved)
 			if strings.Contains(p.config.Key, tt.raw) || strings.Contains(p.config.Key, tt.resolved) {

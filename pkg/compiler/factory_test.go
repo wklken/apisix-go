@@ -11,6 +11,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/runtime"
 	"github.com/wklken/apisix-go/pkg/secret"
+	"github.com/wklken/apisix-go/pkg/testutil"
 )
 
 type recordingAttemptMaterializer struct {
@@ -729,7 +730,7 @@ func newScopedAttemptFactoryWithCompiler(
 	t.Helper()
 	trace := &[]string{}
 	materializer := &countingMaterializer{
-		delegate: secret.NewScopedMaterializer(broker, compiler.schemas.catalog),
+		delegate: testutil.NewSecretMaterializer(broker, compiler.schemas.catalog),
 	}
 	bindings, err := runtime.NewConsumerBindings(nil, nil, nil)
 	if err != nil {

@@ -19,6 +19,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/function_upstream"
 	"github.com/wklken/apisix-go/pkg/secret"
+	"github.com/wklken/apisix-go/pkg/testutil"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -218,9 +219,14 @@ func TestMaterializeScopedSecretsSupportsLiteralAndManagedReferences(t *testing.
 				t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 			}
 			calls := broker.scopedCalls()
-			if len(calls) != 1 || calls[0].Field != "authorization.service_token" ||
-				calls[0].Source != capability.SecretPluginConfig {
-				t.Fatalf("scoped calls = %#v, want exact service token field", calls)
+			isReference := strings.HasPrefix(tt.raw, "$secret://") ||
+				strings.HasPrefix(strings.ToUpper(tt.raw), "$ENV://")
+			if !isReference && len(calls) != 0 {
+				t.Fatalf("scoped calls = %#v, want none for literal", calls)
+			}
+			if isReference && (len(calls) != 1 || calls[0].Field != "authorization.service_token" ||
+				calls[0].Source != capability.SecretPluginConfig) {
+				t.Fatalf("scoped calls = %#v, want exact service token reference", calls)
 			}
 			if strings.Contains(p.config.Authorization.ServiceToken, tt.resolved) ||
 				strings.Contains(p.config.Authorization.ServiceToken, tt.raw) ||
@@ -794,7 +800,7 @@ func registerOpenFunctionScopedRouteConfigAt(
 		DesiredDigest:   snapshot.Digest(),
 		RequiredDomains: []generation.Domain{generation.DomainHTTP},
 	}
-	registration, err := secret.NewScopedMaterializer(broker, catalog).RegisterCandidate(
+	registration, err := testutil.NewSecretMaterializer(broker, catalog).RegisterCandidate(
 		context.Background(), ticket, generation.PublicationSet{
 			DesiredRevision: snapshot.Revision(),
 			Domains: map[generation.Domain]generation.PublicationCandidate{

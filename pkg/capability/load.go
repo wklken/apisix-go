@@ -10,7 +10,6 @@ import (
 	"io"
 	"sort"
 	"strings"
-	"unicode"
 
 	"go.yaml.in/yaml/v3"
 )
@@ -77,11 +76,6 @@ func (m *Manifest) validate() error {
 		)
 	}
 
-	divergenceIDs, err := validateDivergences(m.Divergences)
-	if err != nil {
-		return err
-	}
-
 	m.pluginsByName = make(map[string]int, len(m.Plugins))
 	factoryByKey := make(map[string]int)
 	for index, plugin := range m.Plugins {
@@ -94,17 +88,6 @@ func (m *Manifest) validate() error {
 		m.pluginsByName[plugin.Name] = index
 		if err := validatePlugin(plugin); err != nil {
 			return fmt.Errorf("plugin %q: %w", plugin.Name, err)
-		}
-		for _, id := range plugin.DivergenceIDs {
-			if strings.TrimSpace(id) == "" {
-				return fmt.Errorf("plugin %q: divergence id must not be blank", plugin.Name)
-			}
-			if _, exists := divergenceIDs[id]; !exists {
-				return fmt.Errorf("plugin %q: divergence %q is absent from the top-level ledger", plugin.Name, id)
-			}
-		}
-		if duplicateStrings(plugin.DivergenceIDs) {
-			return fmt.Errorf("plugin %q: duplicate divergence id", plugin.Name)
 		}
 		for _, factory := range plugin.Factories {
 			if _, exists := factoryByKey[factory.Key]; exists {
@@ -368,28 +351,6 @@ func secretFieldPathsOverlap(left, right string) bool {
 	return true
 }
 
-func validateDivergences(divergences []Divergence) (map[string]struct{}, error) {
-	ids := make(map[string]struct{}, len(divergences))
-	for index, divergence := range divergences {
-		if strings.TrimSpace(divergence.ID) == "" {
-			return nil, fmt.Errorf("divergences[%d]: id must not be blank", index)
-		}
-		if _, exists := ids[divergence.ID]; exists {
-			return nil, fmt.Errorf("duplicate divergence id %q", divergence.ID)
-		}
-		ids[divergence.ID] = struct{}{}
-		if !validDivergenceStatus(divergence.Status) {
-			return nil, fmt.Errorf("divergence %q: unknown divergence status %q", divergence.ID, divergence.Status)
-		}
-		if divergence.Status == DivergenceAccepted {
-			if strings.TrimSpace(divergence.ADR) == "" || strings.TrimSpace(divergence.OwnerApprovalRef) == "" {
-				return nil, fmt.Errorf("accepted divergence %q requires adr and owner_approval_ref", divergence.ID)
-			}
-		}
-	}
-	return ids, nil
-}
-
 func validatePlugin(plugin PluginCapability) error {
 	if !validNamespace(plugin.Namespace) {
 		return fmt.Errorf("unknown namespace %q", plugin.Namespace)
@@ -408,30 +369,6 @@ func validatePlugin(plugin PluginCapability) error {
 		seenDomains[domain] = struct{}{}
 	}
 
-	if !validBehavior(plugin.Behavior) {
-		return fmt.Errorf("unknown behavior %q", plugin.Behavior)
-	}
-	switch plugin.Behavior {
-	case BehaviorFull:
-		if len(plugin.KnownGaps) != 0 {
-			return errors.New("full behavior must not declare known gaps")
-		}
-	case BehaviorPartial, BehaviorDeferred:
-		if len(plugin.KnownGaps) == 0 {
-			return fmt.Errorf("%s behavior requires known gaps", plugin.Behavior)
-		}
-	}
-	for _, gap := range plugin.KnownGaps {
-		if strings.TrimSpace(gap) == "" {
-			return errors.New("known gaps must not be blank")
-		}
-	}
-
-	for _, evidence := range evidenceClaims(plugin.Evidence) {
-		if err := validateEvidence(evidence.kind, evidence.claim); err != nil {
-			return err
-		}
-	}
 	for _, factory := range plugin.Factories {
 		if strings.TrimSpace(factory.Key) == "" {
 			return errors.New("factory key must not be blank")
@@ -445,147 +382,6 @@ func validatePlugin(plugin PluginCapability) error {
 	return nil
 }
 
-func validateEvidence(kind EvidenceKind, claim EvidenceClaim) error {
-	if !validEvidenceState(claim.State) {
-		return fmt.Errorf("evidence %q: unknown state %q", kind, claim.State)
-	}
-	if claim.State == EvidenceVerified {
-		if len(claim.Refs) == 0 {
-			return fmt.Errorf("evidence %q: verified claim requires refs", kind)
-		}
-		for _, ref := range claim.Refs {
-			if strings.TrimSpace(ref) == "" {
-				return fmt.Errorf("evidence %q: verified refs must not be blank", kind)
-			}
-		}
-		return nil
-	}
-	if claim.State == EvidenceNotApplicable && !concreteReason(claim.Reason) {
-		return fmt.Errorf("evidence %q: not_applicable claim requires a concrete applicability reason", kind)
-	}
-	if strings.TrimSpace(claim.Owner) == "" || strings.TrimSpace(claim.Reason) == "" {
-		return fmt.Errorf("evidence %q: non-verified claim requires owner and reason", kind)
-	}
-	return nil
-}
-
-func evidenceClaims(evidence Evidence) []struct {
-	kind  EvidenceKind
-	claim EvidenceClaim
-} {
-	return []struct {
-		kind  EvidenceKind
-		claim EvidenceClaim
-	}{
-		{EvidenceSchema, evidence.Schema},
-		{EvidenceUnit, evidence.Unit},
-		{EvidenceUpstream, evidence.Upstream},
-		{EvidenceDifferential, evidence.Differential},
-		{EvidenceRealDependency, evidence.RealDependency},
-		{EvidenceFailure, evidence.Failure},
-	}
-}
-
-func concreteReason(reason string) bool {
-	normalized := strings.ToLower(strings.TrimSpace(reason))
-	if normalized == "" {
-		return false
-	}
-
-	words := make([]string, 0, 4)
-	var word strings.Builder
-	var compact strings.Builder
-	descriptiveCount := 0
-	flushWord := func() {
-		if word.Len() == 0 {
-			return
-		}
-		words = append(words, word.String())
-		word.Reset()
-	}
-	for _, char := range normalized {
-		if unicode.IsLetter(char) || unicode.IsDigit(char) {
-			descriptiveCount++
-			compact.WriteRune(char)
-			word.WriteRune(char)
-			continue
-		}
-		flushWord()
-	}
-	flushWord()
-	if descriptiveCount < 3 || len(words) < 2 {
-		return false
-	}
-
-	for _, token := range words {
-		switch token {
-		case "tbd", "todo", "pending", "unknown", "placeholder", "unspecified", "na":
-			return false
-		}
-	}
-	if strings.Contains(normalized, "n/a") {
-		return false
-	}
-	for index := 1; index < len(words); index++ {
-		if words[index-1] == "n" && words[index] == "a" {
-			return false
-		}
-	}
-
-	informativeTokens := 0
-	for _, token := range words {
-		if genericReasonToken(token) {
-			continue
-		}
-		for _, char := range token {
-			if unicode.IsLetter(char) {
-				informativeTokens++
-				break
-			}
-		}
-	}
-	if informativeTokens < 2 {
-		return false
-	}
-
-	compactReason := compact.String()
-	switch compactReason {
-	case "tbd", "todo", "pending", "unknown", "placeholder", "unspecified", "na",
-		"none", "nil", "null", "later", "missing", "deferred", "flaky", "stale",
-		"reason", "status", "notapplicable", "notspecified", "notprovided":
-		return false
-	}
-	switch strings.Join(words, " ") {
-	case "no reason", "no status", "status reason", "not applicable", "not specified", "not provided":
-		return false
-	}
-	return true
-}
-
-func genericReasonToken(token string) bool {
-	switch token {
-	case "a", "an", "and", "applicable", "as", "at", "because", "by", "for", "from", "has", "in", "is", "n", "no":
-		return true
-	case "not", "now", "of", "on", "or", "reason", "status":
-		return true
-	case "the", "this", "to", "with", "foo", "bar", "baz", "example":
-		return true
-	default:
-		return false
-	}
-}
-
-func duplicateStrings(values []string) bool {
-	seen := make(map[string]struct{}, len(values))
-	for _, value := range values {
-		if _, exists := seen[value]; exists {
-			return true
-		}
-		seen[value] = struct{}{}
-	}
-	return false
-}
-
 func validNamespace(namespace Namespace) bool {
 	return namespace == NamespaceAPISIX || namespace == NamespaceGoV1
 }
@@ -594,46 +390,13 @@ func validDomain(domain Domain) bool {
 	return domain == DomainHTTP || domain == DomainStream
 }
 
-func validBehavior(behavior BehaviorStatus) bool {
-	return behavior == BehaviorFull || behavior == BehaviorPartial ||
-		behavior == BehaviorNotApplicable || behavior == BehaviorDeferred
-}
-
-func validEvidenceState(state EvidenceState) bool {
-	switch state {
-	case EvidenceVerified, EvidenceMissing, EvidenceDeferred, EvidenceFlaky,
-		EvidenceStale, EvidenceNotApplicable:
-		return true
-	default:
-		return false
-	}
-}
-
-func validDivergenceStatus(status DivergenceStatus) bool {
-	return status == DivergenceProposed || status == DivergenceAccepted || status == DivergenceRetired
-}
-
 func clonePlugin(plugin PluginCapability) PluginCapability {
 	plugin.Domains = append([]Domain(nil), plugin.Domains...)
 	plugin.Factories = append([]Factory(nil), plugin.Factories...)
 	plugin.Phases = append([]string(nil), plugin.Phases...)
 	plugin.Scopes = append([]string(nil), plugin.Scopes...)
-	plugin.KnownGaps = append([]string(nil), plugin.KnownGaps...)
-	plugin.Evidence = cloneEvidence(plugin.Evidence)
-	plugin.DivergenceIDs = append([]string(nil), plugin.DivergenceIDs...)
-	plugin.SupportedPlatforms = append([]string(nil), plugin.SupportedPlatforms...)
 	if plugin.SecretDeclarations != nil {
 		plugin.SecretDeclarations = append([]SecretDeclaration{}, plugin.SecretDeclarations...)
 	}
 	return plugin
-}
-
-func cloneEvidence(evidence Evidence) Evidence {
-	evidence.Schema.Refs = append([]string(nil), evidence.Schema.Refs...)
-	evidence.Unit.Refs = append([]string(nil), evidence.Unit.Refs...)
-	evidence.Upstream.Refs = append([]string(nil), evidence.Upstream.Refs...)
-	evidence.Differential.Refs = append([]string(nil), evidence.Differential.Refs...)
-	evidence.RealDependency.Refs = append([]string(nil), evidence.RealDependency.Refs...)
-	evidence.Failure.Refs = append([]string(nil), evidence.Failure.Refs...)
-	return evidence
 }

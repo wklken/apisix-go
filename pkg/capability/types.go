@@ -28,12 +28,8 @@ func (d SecretDeclaration) EffectiveTarget() SecretMaterializationTarget {
 }
 
 type (
-	Namespace        string
-	Domain           string
-	BehaviorStatus   string
-	EvidenceKind     string
-	EvidenceState    string
-	DivergenceStatus string
+	Namespace string
+	Domain    string
 )
 
 const (
@@ -41,29 +37,6 @@ const (
 	NamespaceGoV1   Namespace = "apisix-go/v1"
 	DomainHTTP      Domain    = "http"
 	DomainStream    Domain    = "stream"
-
-	BehaviorFull          BehaviorStatus = "full"
-	BehaviorPartial       BehaviorStatus = "partial"
-	BehaviorNotApplicable BehaviorStatus = "not_applicable"
-	BehaviorDeferred      BehaviorStatus = "deferred"
-
-	EvidenceSchema         EvidenceKind = "schema"
-	EvidenceUnit           EvidenceKind = "unit"
-	EvidenceUpstream       EvidenceKind = "converted_upstream"
-	EvidenceDifferential   EvidenceKind = "differential"
-	EvidenceRealDependency EvidenceKind = "real_dependency"
-	EvidenceFailure        EvidenceKind = "failure"
-
-	EvidenceVerified      EvidenceState = "verified"
-	EvidenceMissing       EvidenceState = "missing"
-	EvidenceDeferred      EvidenceState = "deferred"
-	EvidenceFlaky         EvidenceState = "flaky"
-	EvidenceStale         EvidenceState = "stale"
-	EvidenceNotApplicable EvidenceState = "not_applicable"
-
-	DivergenceProposed DivergenceStatus = "proposed"
-	DivergenceAccepted DivergenceStatus = "accepted"
-	DivergenceRetired  DivergenceStatus = "retired"
 )
 
 type Target struct {
@@ -80,22 +53,6 @@ type Factory struct {
 	Constructor string `yaml:"constructor"`
 }
 
-type EvidenceClaim struct {
-	State  EvidenceState `yaml:"state"`
-	Refs   []string      `yaml:"refs"`
-	Owner  string        `yaml:"owner"`
-	Reason string        `yaml:"reason"`
-}
-
-type Evidence struct {
-	Schema         EvidenceClaim `yaml:"schema"`
-	Unit           EvidenceClaim `yaml:"unit"`
-	Upstream       EvidenceClaim `yaml:"converted_upstream"`
-	Differential   EvidenceClaim `yaml:"differential"`
-	RealDependency EvidenceClaim `yaml:"real_dependency"`
-	Failure        EvidenceClaim `yaml:"failure"`
-}
-
 type PluginCapability struct {
 	Name                string              `yaml:"name"`
 	Implementation      string              `yaml:"implementation"`
@@ -108,12 +65,6 @@ type PluginCapability struct {
 	Scopes              []string            `yaml:"scopes"`
 	InstanceScope       string              `yaml:"instance_scope"`
 	ConditionalTerminal bool                `yaml:"conditional_terminal"`
-	Behavior            BehaviorStatus      `yaml:"behavior"`
-	BehaviorSummary     string              `yaml:"behavior_summary"`
-	KnownGaps           []string            `yaml:"known_gaps"`
-	Evidence            Evidence            `yaml:"evidence"`
-	DivergenceIDs       []string            `yaml:"divergence_ids"`
-	SupportedPlatforms  []string            `yaml:"supported_platforms"`
 	SecretDeclarations  []SecretDeclaration `yaml:"secret_declarations"`
 }
 
@@ -125,18 +76,9 @@ type SecretDeclarationCatalog struct {
 	digest       [32]byte
 }
 
-type Divergence struct {
-	ID               string           `yaml:"id"`
-	Status           DivergenceStatus `yaml:"status"`
-	Target           string           `yaml:"target"`
-	ADR              string           `yaml:"adr"`
-	OwnerApprovalRef string           `yaml:"owner_approval_ref"`
-}
-
 type Manifest struct {
 	SchemaVersion int                `yaml:"schema_version"`
 	Target        Target             `yaml:"target"`
 	Plugins       []PluginCapability `yaml:"plugins"`
-	Divergences   []Divergence       `yaml:"divergences"`
 	pluginsByName map[string]int
 }

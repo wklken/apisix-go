@@ -31,7 +31,6 @@ write_valid_artifact() {
             oracle: {source_commit: $source, image_linux_amd64_digest: $digest},
             case_counts: {
                 selected_plugins: 111,
-                capability_contract_tests: 12,
                 plugin_unit_tests: 800,
                 dependency_failure_tests: 30,
                 corpus_real_process_blocks: 3751,
@@ -48,7 +47,7 @@ write_valid_artifact() {
             },
             first_attempt: true,
             stages: [
-                "capability_contract", "generator_drift", "candidate_build", "plugin_units", "dependency_failure",
+                "generator_drift", "candidate_build", "plugin_units", "dependency_failure",
                 "corpus", "real_process", "differential"
             ] | map({name: ., status: "pass", skipped: false, attempts: 1, first_attempt: true, output_sha256: $sha}),
             differential: {

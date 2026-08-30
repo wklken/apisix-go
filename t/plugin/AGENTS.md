@@ -35,5 +35,5 @@ The detailed manifest schema and runner usage remain in `README.md`.
 ```bash
 bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && make test-plugin-harness'
 bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && scripts/go_cache.sh run -- go test ./t/plugin -run "^TestPluginIntegration/<plugin>/<case>$" -count=1 -v'
-bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && scripts/go_cache.sh run -- go test ./t/plugin -run "^(TestUpstreamCorpusAccounting|TestCorpusEvidenceMatchesCompatibilityTarget)$" -count=1'
+bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && scripts/go_cache.sh run -- go test ./t/plugin -run "^TestUpstreamCorpusAccounting$" -count=1'
 ```

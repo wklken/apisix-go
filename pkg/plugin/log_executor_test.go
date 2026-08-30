@@ -20,7 +20,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	keyauth "github.com/wklken/apisix-go/pkg/plugin/key_auth"
-	requestcontext "github.com/wklken/apisix-go/pkg/plugin/request_context"
 )
 
 type logExecutorTestPlugin struct {
@@ -1361,12 +1360,7 @@ func TestPrometheusConsumerBindingRunsWithEmptyStaticLogExecutor(t *testing.T) {
 }
 
 func TestEmptyLogExecutorSkipsRequestStateAndFinalizer(t *testing.T) {
-	requestContext := &requestcontext.Plugin{}
-	binding := bindPluginForTest("request-context", requestContext, ScopeSystem, ResourceProvenance{
-		Kind: ResourceSystem,
-		ID:   "request-context",
-	})
-	executor, err := NewLogExecutorFromBindings([]Binding{binding})
+	executor, err := NewLogExecutorFromBindings(nil)
 	if err != nil {
 		t.Fatalf("NewLogExecutorFromBindings() error = %v", err)
 	}

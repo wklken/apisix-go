@@ -46,6 +46,7 @@ type preparedServiceBindingKey struct {
 func (prepared *PreparedGeneration) prepareHTTPRoutes(
 	ctx context.Context,
 	plan *httpPreparationPlan,
+	nodeID string,
 ) (*preparedHTTPRoutes, error) {
 	if prepared == nil || ctx == nil || plan == nil || plan.plugins == nil || plan.publicAPIRegistry == nil ||
 		prepared.cleanup == nil || prepared.effective == nil || prepared.consumers == nil {
@@ -69,7 +70,7 @@ func (prepared *PreparedGeneration) prepareHTTPRoutes(
 		}
 		registryCheckpoint := plan.publicAPIRegistry.Checkpoint()
 		compiled, additions, routeErr := prepared.prepareOneHTTPRoute(
-			ctx, plan, planned, routeKey, serviceBindings,
+			ctx, plan, planned, routeKey, serviceBindings, nodeID,
 		)
 		if routeErr == nil {
 			result.routes = append(result.routes, compiled)
@@ -131,6 +132,7 @@ func (prepared *PreparedGeneration) prepareOneHTTPRoute(
 	planned routepkg.PlannedRoute,
 	routeKey generation.ResourceKey,
 	sharedServiceBindings map[preparedServiceBindingKey]plugin.Binding,
+	nodeID string,
 ) (preparedHTTPRoute, map[preparedServiceBindingKey]plugin.Binding, error) {
 	upstream, err := routepkg.PlanRouteUpstream(
 		planned.Route,
@@ -223,7 +225,7 @@ func (prepared *PreparedGeneration) prepareOneHTTPRoute(
 		Route: planned.Route, Service: planned.Service,
 		StaticBindings: staticBindings, Consumers: consumerRecords,
 		Upstream: upstream, Runtime: runtime,
-		StaticConfig: prepared.effective.Config, SSLs: plan.resources.ssls,
+		StaticConfig: prepared.effective.Config, NodeID: nodeID, SSLs: plan.resources.ssls,
 	})
 	if err != nil {
 		return preparedHTTPRoute{}, nil, err

@@ -66,18 +66,9 @@ func TestPlanHTTPPluginsPrecedenceAndExactSources(t *testing.T) {
 		"kafka-logger",
 		generation.ResourceKey{Kind: "services", ID: "s1"},
 	)
-	assertPluginPlanSource(
-		t,
-		route.System,
-		"request-context",
-		generation.ResourceKey{Kind: "system", ID: "request-context"},
-	)
-	assertPluginPlanSource(
-		t,
-		plan.System,
-		"request-context",
-		generation.ResourceKey{Kind: "system", ID: "request-context"},
-	)
+	if len(route.System) != 0 || len(plan.System) != 0 {
+		t.Fatalf("unexpected system plugin plans: route=%v global=%v", route.System, plan.System)
+	}
 	if got := pluginPlanNamed(route.Local, "proxy-rewrite").Config.(map[string]any)["host"]; got != "route.example" {
 		t.Fatalf("proxy-rewrite host = %v, want route winner", got)
 	}

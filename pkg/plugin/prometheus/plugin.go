@@ -73,7 +73,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 // RunLogPhase owns request metrics for an effective Prometheus binding. The
 // log executor invokes this callback once after response completion (including
 // APISIX-generated responses), while the main server owns the process-level
-// request-total gauge and request-context remains metrics-free.
+// request-total gauge and the route variable initializer remains metrics-free.
 func (p *Plugin) RunLogPhase(snapshot base.LogSnapshot) error {
 	if !metrics.HTTPRequestMetricsEnabled() {
 		return nil

@@ -17,6 +17,10 @@ This file inherits the repository root `AGENTS.md` and applies to `pkg/route`.
 
 ## Request lifecycle
 
+- Initialize APISIX node, route, service, and matched-route variables in the
+  route core before running any plugin phase. Accept the already-resolved node
+  identity from the compiler; do not acquire it in this detached package or
+  model this lifecycle state as a configurable plugin.
 - Do not introduce raw goroutines or `sync.WaitGroup.Go`; use the owned runtime
   APIs and join every accepted child before the handler returns.
 - Preserve plugin/core panic attribution and the exact abort sentinel. Run every

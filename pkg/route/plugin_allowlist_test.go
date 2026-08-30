@@ -26,7 +26,7 @@ func TestHTTPPluginAllowlist(t *testing.T) {
 			_, err := planPluginSources([]materializedPluginSource{{
 				name: "request-id", config: map[string]any{}, scope: plugin.ScopeRoute,
 				provenance: plugin.ResourceProvenance{Kind: test.kind, ID: test.resourceID},
-			}}, plugin.NewEnabledSet(nil), false)
+			}}, plugin.NewEnabledSet(nil))
 			if err == nil {
 				t.Fatal("planPluginSources() error = nil, want disabled-plugin rejection")
 			}
@@ -42,29 +42,9 @@ func TestHTTPPluginAllowlist(t *testing.T) {
 		plans, err := planPluginSources([]materializedPluginSource{{
 			name: "request-id", config: map[string]any{}, scope: plugin.ScopeRoute,
 			provenance: plugin.ResourceProvenance{Kind: plugin.ResourceRoute, ID: "allowlist-enabled-route"},
-		}}, plugin.NewEnabledSet([]string{"request-id"}), false)
+		}}, plugin.NewEnabledSet([]string{"request-id"}))
 		if err != nil || len(plans) != 1 {
 			t.Fatalf("planPluginSources() = (%d, %v), want enabled route plan", len(plans), err)
-		}
-	})
-
-	t.Run("strict empty still builds system request context", func(t *testing.T) {
-		plans, err := planPluginSources([]materializedPluginSource{{
-			name: "request-context", config: map[string]any{}, scope: plugin.ScopeSystem,
-			provenance: plugin.ResourceProvenance{Kind: plugin.ResourceSystem, ID: "request-context"},
-		}}, plugin.NewEnabledSet(nil), true)
-		if err != nil || len(plans) != 1 {
-			t.Fatalf("planPluginSources() = (%d, %v), want system request-context bypass", len(plans), err)
-		}
-	})
-
-	t.Run("user request context requires membership", func(t *testing.T) {
-		_, err := planPluginSources([]materializedPluginSource{{
-			name: "request-context", config: map[string]any{}, scope: plugin.ScopeRoute,
-			provenance: plugin.ResourceProvenance{Kind: plugin.ResourceRoute, ID: "allowlist-user-request-context"},
-		}}, plugin.NewEnabledSet(nil), false)
-		if !strings.Contains(err.Error(), "request-context") {
-			t.Fatalf("planPluginSources() error = %q, want request-context", err)
 		}
 	})
 
@@ -72,7 +52,7 @@ func TestHTTPPluginAllowlist(t *testing.T) {
 		_, err := planPluginSources([]materializedPluginSource{{
 			name: "request-id", config: map[string]any{"_meta": map[string]any{"disable": true}},
 			provenance: plugin.ResourceProvenance{Kind: plugin.ResourceRoute, ID: "allowlist-meta-disabled"},
-		}}, plugin.NewEnabledSet(nil), false)
+		}}, plugin.NewEnabledSet(nil))
 		if !strings.Contains(err.Error(), "request-id") {
 			t.Fatalf("planPluginSources() error = %q, want request-id", err)
 		}
@@ -87,7 +67,7 @@ func TestDisabledMCPBridge(t *testing.T) {
 			"command": "/bin/sh", "args": []any{"-c", "printf started > " + marker},
 		},
 		provenance: plugin.ResourceProvenance{Kind: plugin.ResourceRoute, ID: "allowlist-disabled-mcp"},
-	}}, plugin.NewEnabledSet(nil), false)
+	}}, plugin.NewEnabledSet(nil))
 	if err == nil {
 		t.Fatal("planPluginSources() error = nil, want disabled mcp-bridge rejection")
 	}

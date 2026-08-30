@@ -4,44 +4,55 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/observability/metrics"
 	"github.com/wklken/apisix-go/pkg/plugin"
 	"github.com/wklken/apisix-go/pkg/plugin/http_logger"
 	"github.com/wklken/apisix-go/pkg/resource"
 )
 
-func TestBuildRequestContextConfigPassesRouteMetadata(t *testing.T) {
-	cfg := buildRequestContextConfig(
-		resource.Route{
-			ID:        "route-1",
-			Uri:       "/orders/:id",
-			Hosts:     []string{"api.example.com"},
-			Name:      "route-name",
-			ServiceID: "service-1",
-		},
+func TestAPISIXRouteVarsPassRouteMetadata(t *testing.T) {
+	routeResource := resource.Route{
+		ID:        "route-1",
+		Uri:       "/orders/:id",
+		Hosts:     []string{"api.example.com"},
+		Name:      "route-name",
+		ServiceID: "service-1",
+	}
+	request, lifecycle := apisixctx.EnsureRequestLifecycle(
+		httptest.NewRequest(http.MethodGet, "/orders/42", nil),
+		time.Now(),
+	)
+	t.Cleanup(func() { apisixctx.RecycleVars(request) })
+	var got map[string]any
+	handler := initializeAPISIXVars(
+		http.HandlerFunc(func(_ http.ResponseWriter, request *http.Request) {
+			got = apisixctx.GetApisixVars(request)
+		}),
+		"node-1",
+		routeResource,
 		resource.Service{Name: "service-name"},
 	)
+	handler.ServeHTTP(httptest.NewRecorder(), request)
+	lifecycle.SetFinalRequest(request)
 
-	if cfg["$route_id"] != "route-1" {
-		t.Fatalf("$route_id = %q, want route-1", cfg["$route_id"])
+	want := map[string]string{
+		"$node_id":      "node-1",
+		"$route_id":     "route-1",
+		"$route_name":   "route-name",
+		"$matched_uri":  "/orders/:id",
+		"$matched_host": "api.example.com",
+		"$service_id":   "service-1",
+		"$service_name": "service-name",
 	}
-	if cfg["$route_name"] != "route-name" {
-		t.Fatalf("$route_name = %q, want route-name", cfg["$route_name"])
-	}
-	if cfg["$matched_uri"] != "/orders/:id" {
-		t.Fatalf("$matched_uri = %q, want /orders/:id", cfg["$matched_uri"])
-	}
-	if cfg["$matched_host"] != "api.example.com" {
-		t.Fatalf("$matched_host = %q, want api.example.com", cfg["$matched_host"])
-	}
-	if cfg["$service_id"] != "service-1" {
-		t.Fatalf("$service_id = %q, want service-1", cfg["$service_id"])
-	}
-	if cfg["$service_name"] != "service-name" {
-		t.Fatalf("$service_name = %q, want service-name", cfg["$service_name"])
+	for name, value := range want {
+		if got[name] != value {
+			t.Fatalf("%s = %#v, want %q", name, got[name], value)
+		}
 	}
 }
 

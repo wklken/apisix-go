@@ -746,7 +746,7 @@ func TestHandlerUsesRealIPFromRequestContext(t *testing.T) {
 	select {
 	case got := <-requests:
 		if clientIP := got.URL.Query().Get("clientIP"); clientIP != "192.0.2.10" {
-			t.Fatalf("clientIP = %q, want request-context real IP", clientIP)
+			t.Fatalf("clientIP = %q, want request lifecycle real IP", clientIP)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for Wolf access_check request")

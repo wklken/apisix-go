@@ -251,7 +251,7 @@ func TestPrepareHTTPRoutesQuarantinesInvalidRouteWithoutLosingPreparedCluster(t 
 		purgeRegistry:     graphql_proxy_cache.NewRegistry(),
 	}
 
-	routes, err := prepared.prepareHTTPRoutes(context.Background(), plan)
+	routes, err := prepared.prepareHTTPRoutes(context.Background(), plan, "node-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -280,7 +280,7 @@ func TestPrepareHTTPRoutesRollsBackClusterWhenLaterConsumerPreparationFails(t *t
 		purgeRegistry:     graphql_proxy_cache.NewRegistry(),
 	}
 
-	routes, err := prepared.prepareHTTPRoutes(context.Background(), plan)
+	routes, err := prepared.prepareHTTPRoutes(context.Background(), plan, "node-1")
 	if err != nil {
 		t.Fatal(err)
 	}

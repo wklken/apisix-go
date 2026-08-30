@@ -144,6 +144,11 @@ new acquisitions, not already admitted work.
 own provider state or plugin materialization. `pkg/compiler` owns side
 effects, and `pkg/server` owns activation and listener lifecycle.
 
+The compiler resolves the process node identity, then the HTTP route core
+initializes APISIX route, service, node, and matched-route variables before the
+plugin pipeline runs. These variables are request infrastructure, not a
+configurable system plugin.
+
 Background work uses the runtime task APIs. Request and connection children
 must be joined before their generation lease is released. Shared resources are
 identified by their complete kind, scope, digest, and Go type; final close is

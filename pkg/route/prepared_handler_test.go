@@ -278,14 +278,33 @@ func TestPreparedHandlerBoundaryHasNoLifecycleOrConstructionAuthority(t *testing
 	})
 }
 
+func TestAPISIXVarsInitializerHasNoNodeIDResolutionAuthority(t *testing.T) {
+	t.Parallel()
+
+	filename := filepath.Join("apisix_vars.go")
+	parsed, err := parser.ParseFile(token.NewFileSet(), filename, nil, parser.SkipObjectResolution)
+	if err != nil {
+		t.Fatalf("parse %s: %v", filename, err)
+	}
+	for _, imported := range parsed.Imports {
+		path, err := strconv.Unquote(imported.Path.Value)
+		if err != nil {
+			t.Fatalf("unquote import %s: %v", imported.Path.Value, err)
+		}
+		if strings.HasSuffix(path, "/apisix/id") {
+			t.Fatalf("APISIX vars initializer imports node ID authority %q", path)
+		}
+	}
+}
+
 func TestBuildPreparedNotFoundHandlerRunsPreparedSystemAndGlobalBindings(t *testing.T) {
 	t.Parallel()
 
 	order := make([]string, 0, 3)
 	system, err := plugin.BindPluginChecked(
-		"request-context",
+		"example-plugin",
 		&preparedHandlerTestPlugin{
-			name:     "request-context",
+			name:     "example-plugin",
 			priority: 12000,
 			handler: func(next http.Handler) http.Handler {
 				return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -295,7 +314,7 @@ func TestBuildPreparedNotFoundHandlerRunsPreparedSystemAndGlobalBindings(t *test
 			},
 		},
 		plugin.ScopeSystem,
-		plugin.ResourceProvenance{Kind: plugin.ResourceSystem, ID: "request-context"},
+		plugin.ResourceProvenance{Kind: plugin.ResourceSystem, ID: "example-plugin"},
 	)
 	if err != nil {
 		t.Fatalf("bind system plugin: %v", err)
@@ -324,7 +343,10 @@ func TestBuildPreparedNotFoundHandlerRunsPreparedSystemAndGlobalBindings(t *test
 		t.Fatalf("bind global plugin: %v", err)
 	}
 
-	handler, err := BuildPreparedNotFoundHandler([]plugin.Binding{global, system})
+	handler, err := BuildPreparedNotFoundHandler(
+		"",
+		[]plugin.Binding{global, system},
+	)
 	if err != nil {
 		t.Fatalf("BuildPreparedNotFoundHandler() error = %v", err)
 	}
@@ -366,6 +388,12 @@ func TestBuildPreparedHandlerUsesOnlyPreparedBindingsAndRuntime(t *testing.T) {
 			priority: 12015,
 			handler: func(next http.Handler) http.Handler {
 				return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+					if got := apisixctx.GetApisixVar(request, "$node_id"); got != "node-1" {
+						t.Errorf("$node_id before plugin execution = %#v, want node-1", got)
+					}
+					if got := apisixctx.GetApisixVar(request, "$route_id"); got != "prepared-route" {
+						t.Errorf("$route_id before plugin execution = %#v, want prepared-route", got)
+					}
 					request.Header.Set("X-Prepared-Binding", "ran")
 					next.ServeHTTP(writer, request)
 				})
@@ -404,6 +432,7 @@ func TestBuildPreparedHandlerUsesOnlyPreparedBindingsAndRuntime(t *testing.T) {
 		},
 		Runtime:      runtime,
 		StaticConfig: appconfig.Config{},
+		NodeID:       "node-1",
 	}
 
 	handler, err := BuildPreparedHandler(input)

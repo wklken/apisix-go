@@ -421,7 +421,6 @@ func testPlannedPluginBinding(
 			provenance,
 		),
 		plugin.NewEnabledSet([]string{name}),
-		false,
 	)
 	if err != nil {
 		t.Fatalf("plan plugin %q: %v", name, err)

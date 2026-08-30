@@ -477,7 +477,6 @@ func TestKafkaProxyMetadataBindingKeepsHandlerAcrossResponsePlanTerminal(t *test
 			provenance,
 		),
 		plugin.NewEnabledSet([]string{"kafka-proxy"}),
-		false,
 	)
 	if err != nil {
 		t.Fatalf("planPluginSources() error = %v", err)

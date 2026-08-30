@@ -544,9 +544,6 @@ func TestWorkerCompilerFactoryPrepareGenerationOwnsEffectiveConfig(t *testing.T)
 			"shared-a": shared, "shared-b": shared,
 		},
 	}
-	effective.Provenance = config.Provenance{
-		"plugin_attr.example": {Kind: config.SourceCLI, Origin: "original", Explicit: true},
-	}
 	factory, err := NewWorkerCompilerFactory(
 		manifest, effective, &workerTestMaterializer{digest: compiler.schemas.catalog.Digest()},
 		workerTestRuntimeObservers(),
@@ -557,12 +554,8 @@ func TestWorkerCompilerFactoryPrepareGenerationOwnsEffectiveConfig(t *testing.T)
 	nested := effective.Config.PluginAttr["example"]["nested"].(map[string]any)
 	nested["slice"].([]any)[0] = "mutated"
 	nested["typed"].([]string)[0] = "mutated"
-	provenance := effective.Provenance["plugin_attr.example"]
-	provenance.Origin = "mutated"
-	effective.Provenance["plugin_attr.example"] = provenance
 	ownedNested := factory.effective.Config.PluginAttr["example"]["nested"].(map[string]any)
-	if ownedNested["slice"].([]any)[0] != "original" || ownedNested["typed"].([]string)[0] != "typed" ||
-		factory.effective.Provenance["plugin_attr.example"].Origin != "original" {
+	if ownedNested["slice"].([]any)[0] != "original" || ownedNested["typed"].([]string)[0] != "typed" {
 		t.Fatalf("owned effective config aliased caller: %#v", factory.effective)
 	}
 	if factory.effective.Config.PluginAttr["example"]["shared-a"].(map[string]any)["value"].([]string)[0] !=

@@ -577,14 +577,8 @@ for gateway_container in "${gateway_containers[@]}"; do
         --publish 127.0.0.1::9080 --publish 127.0.0.1::9443 --publish 127.0.0.1::7085 \
         --user 10001:10001 \
         --env SSL_CERT_FILE=/etc/ssl/certs/etcd-ca.crt \
-        --env APISIXGO_DEPLOYMENT_ETCD_HOST=https://etcd:2379 \
-        --env APISIXGO_DEPLOYMENT_ETCD_TLS_VERIFY=true \
-        --env APISIXGO_APISIX_STATUS_IP=0.0.0.0 \
+        --env 'APISIX_DEPLOYMENT_ETCD_HOST=["https://etcd:2379"]' \
         --env HOME=/usr/local/apisix \
-        --env APISIXGO_RUNTIME_PATHS_DATA_DIR=/usr/local/apisix/data \
-        --env APISIXGO_RUNTIME_PATHS_RUNTIME_DIR=/usr/local/apisix/run \
-        --env APISIXGO_RUNTIME_PATHS_LOG_DIR=/usr/local/apisix/logs \
-        --env APISIXGO_RUNTIME_PATHS_TEMP_DIR=/usr/local/apisix/tmp \
         --env HTTP_PROXY= --env HTTPS_PROXY= --env ALL_PROXY= --env NO_PROXY= \
         --env http_proxy= --env https_proxy= --env all_proxy= --env no_proxy= \
         --volume "$candidate_config:/usr/local/apisix/conf/config-production.yaml:ro" \

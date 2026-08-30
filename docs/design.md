@@ -79,14 +79,13 @@ Static configuration uses one presence-aware order:
 built-in defaults
   -> conf/config-default.yaml
   -> optional -c/--config file
-  -> recognized APISIXGO_* variables
-  -> repeatable --set values
+  -> APISIX 3.17 reserved environment overrides
 ```
 
 Maps merge recursively and lists replace earlier lists. Absent, null, false,
-zero, and empty string remain distinct. The effective result retains provenance
-and is passed explicitly into runtime construction; it is not mutable global
-state. See [Configuration](configuration.md) for operator-facing details.
+zero, and empty string remain distinct. The effective result is passed
+explicitly into runtime construction; it is not mutable global state. See
+[Configuration](configuration.md) for operator-facing details.
 
 ## Desired-to-published transaction
 

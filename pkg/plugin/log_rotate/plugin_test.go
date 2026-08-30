@@ -716,11 +716,6 @@ func TestPostInitUsesAPISIXProcessLogSelection(t *testing.T) {
 				AccessLog: "logs/acc3.log", EnableAccessLog: false,
 			},
 		}},
-		Provenance: config.Provenance{
-			"nginx_config.http.enable_access_log": {
-				Kind: config.SourceOverrideFile, Origin: "fixture.yaml", Explicit: true,
-			},
-		},
 	}
 	p := &Plugin{}
 	p.SetDependencies(base.Dependencies{Config: effective, Tasks: owner})

@@ -69,47 +69,6 @@ deployment:
 	}
 }
 
-func TestLoadEffectiveEnvironmentOverridesMergedFiles(t *testing.T) {
-	base := writeConfigFile(t, "base.yaml", validRuntimeConfig)
-	override := writeConfigFile(t, "override.yaml", "proxy:\n  max_in_flight: 60\n")
-	cfg, err := loadEffectiveTestFiles(t, base, override, map[string]string{
-		"APISIXGO_PROXY_MAX_IN_FLIGHT": "77",
-	})
-	if err != nil {
-		t.Fatalf("LoadEffective() error = %v", err)
-	}
-	if cfg.Proxy.MaxInFlight != 77 {
-		t.Fatalf("proxy.max_in_flight = %d, want environment override 77", cfg.Proxy.MaxInFlight)
-	}
-}
-
-func TestLoadEffectiveEnvironmentOverridesFieldsAbsentFromFiles(t *testing.T) {
-	base := writeConfigFile(t, "base.yaml", validRuntimeConfig)
-	override := writeConfigFile(t, "override.yaml", "deployment:\n  etcd:\n    host: []\n    prefix: ''\n")
-	cfg, err := loadEffectiveTestFiles(t, base, override, map[string]string{
-		"APISIXGO_DEPLOYMENT_ROLE":                            "data_plane",
-		"APISIXGO_DEPLOYMENT_ROLE_DATA_PLANE_CONFIG_PROVIDER": "yaml",
-		"APISIXGO_APISIX_SSL_FALLBACK_SNI":                    "fallback.example",
-	})
-	if err != nil {
-		t.Fatalf("LoadEffective() error = %v, want absent struct fields bound from environment", err)
-	}
-	if got := cfg.Deployment.RoleDataPlane.ConfigProvider; got != "yaml" {
-		t.Fatalf("role_data_plane.config_provider = %q, want yaml", got)
-	}
-	if got := cfg.Apisix.Ssl.FallbackSNI; got != "fallback.example" {
-		t.Fatalf("apisix.ssl.fallback_sni = %q, want fallback.example", got)
-	}
-}
-
-func TestLoadEffectiveEmptyEnvironmentReplacementFailsClosed(t *testing.T) {
-	base := writeConfigFile(t, "base.yaml", validRuntimeConfig)
-	_, err := loadEffectiveTestFiles(t, base, "", map[string]string{"APISIXGO_PLUGINS": ""})
-	if err == nil || !strings.Contains(err.Error(), "plugins") {
-		t.Fatalf("LoadEffective() error = %v, want empty environment plugin replacement rejected", err)
-	}
-}
-
 func TestLoadEffectiveSelectsProviderForEffectiveRole(t *testing.T) {
 	base := writeConfigFile(t, "base.yaml", validRuntimeConfig)
 	override := writeConfigFile(t, "override.yaml", `
@@ -264,9 +223,7 @@ func TestCapabilitySummaryContainsOnlyBoundedSafeFacts(t *testing.T) {
 
 func TestProductionConfigRequiresExplicitEtcdEndpoint(t *testing.T) {
 	defaultPath, productionPath := repositoryConfigPaths(t)
-	_, err := loadEffectiveTestFiles(t, defaultPath, productionPath, map[string]string{
-		"APISIXGO_DEPLOYMENT_ETCD_HOST": "",
-	})
+	_, err := loadEffectiveTestFiles(t, defaultPath, productionPath)
 	if err == nil || !strings.Contains(err.Error(), "deployment.etcd.host") {
 		t.Fatalf("LoadEffective() error = %v, want missing production etcd endpoint rejection", err)
 	}
@@ -275,7 +232,7 @@ func TestProductionConfigRequiresExplicitEtcdEndpoint(t *testing.T) {
 func TestHTTPDataPlaneProductionConfigLoads(t *testing.T) {
 	defaultPath, productionPath := repositoryConfigPaths(t)
 	_, err := loadEffectiveTestFiles(t, defaultPath, productionPath, map[string]string{
-		"APISIXGO_DEPLOYMENT_ETCD_HOST": "https://etcd.example:2379",
+		"APISIX_DEPLOYMENT_ETCD_HOST": `["https://etcd.example:2379"]`,
 	})
 	if err != nil {
 		t.Fatalf("LoadEffective() error = %v, want production config accepted", err)
@@ -284,9 +241,7 @@ func TestHTTPDataPlaneProductionConfigLoads(t *testing.T) {
 
 func TestHTTPDataPlaneProductionConfig(t *testing.T) {
 	path := repositoryPath(t, "conf", "config-production.yaml")
-	document, err := readConfigDocument(path, FieldSource{
-		Kind: SourceOverrideFile, Origin: path, Explicit: true,
-	}, map[string]string{})
+	document, err := readConfigDocument(path, map[string]string{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -308,9 +263,6 @@ func TestHTTPDataPlaneProductionConfig(t *testing.T) {
 	}
 	if cfg.Deployment.Etcd.TLS.Verify == nil || !*cfg.Deployment.Etcd.TLS.Verify {
 		t.Fatal("production etcd TLS verification must be explicitly true")
-	}
-	if err := validateProcessAccessLogs(cfg); err != nil {
-		t.Fatalf("production process access-log config = %v", err)
 	}
 }
 
@@ -404,16 +356,6 @@ func TestUnsupportedRuntimeConfigFailsClosed(t *testing.T) {
 	}
 }
 
-func TestValidateProcessAccessLogsAllowsLogRotateOwnedSelection(t *testing.T) {
-	cfg := validRuntimeConfigForTrustedAddresses()
-	cfg.Plugins = append(cfg.Plugins, "log-rotate")
-	cfg.NginxConfig.HTTP.EnableAccessLog = true
-	cfg.NginxConfig.HTTP.AccessLog = "/var/log/apisix/access.log"
-	if err := validateProcessAccessLogs(cfg); err != nil {
-		t.Fatalf("validateProcessAccessLogs() error = %v, want log-rotate path selection accepted", err)
-	}
-}
-
 func TestProductionDockerfileContract(t *testing.T) {
 	contents, err := os.ReadFile(repositoryPath(t, "Dockerfile"))
 	if err != nil {
@@ -480,7 +422,7 @@ func loadEffectiveTestFiles(
 			DataDir: filepath.Join(pathRoot, "data"), RuntimeDir: filepath.Join(pathRoot, "run"),
 			LogDir: filepath.Join(pathRoot, "log"), TempDir: filepath.Join(pathRoot, "tmp"),
 		},
-		Environment: environment, CLIOverrides: map[string]any{},
+		Environment: environment,
 	})
 	if err != nil {
 		return nil, err

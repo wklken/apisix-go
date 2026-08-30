@@ -9,7 +9,7 @@ import (
 )
 
 func TestParseDocumentPreservesPresenceKindsAndExactNumbers(t *testing.T) {
-	source := FieldSource{Kind: SourceOverrideFile, Origin: filepath.Join("testdata", "override.yaml"), Explicit: true}
+	pathBase := filepath.Join("testdata")
 	doc, err := parseDocument([]byte(`
 absent_parent:
   present_null: null
@@ -22,7 +22,7 @@ plugin_attr:
   prometheus:
     beyond_float64: 9007199254740993
     beyond_uint64: 184467440737095516160000000000000000000
-`), source, nil)
+`), pathBase, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -30,6 +30,7 @@ plugin_attr:
 	if doc.kind != nodeMapping {
 		t.Fatalf("document kind = %d, want mapping", doc.kind)
 	}
+	assertNodePathBase(t, doc, pathBase)
 	if _, ok := doc.mapping["absent"]; ok {
 		t.Fatal("absent path became present")
 	}
@@ -82,7 +83,7 @@ func TestParseDocumentTreatsEmptyDocumentsAsEmptyMappings(t *testing.T) {
 		{name: "comment only", data: "# local overrides are intentionally empty\n  # another comment\n"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			doc, err := parseDocument([]byte(test.data), FieldSource{Kind: SourceOverrideFile}, nil)
+			doc, err := parseDocument([]byte(test.data), "", nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -92,7 +93,7 @@ func TestParseDocumentTreatsEmptyDocumentsAsEmptyMappings(t *testing.T) {
 		})
 	}
 
-	doc, err := parseDocument([]byte("null\n"), FieldSource{Kind: SourceOverrideFile}, nil)
+	doc, err := parseDocument([]byte("null\n"), "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +128,7 @@ func TestParseDocumentNormalizesYAMLNumbers(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			doc, err := parseDocument([]byte("value: "+test.raw+"\n"), FieldSource{Kind: SourceOverrideFile}, nil)
+			doc, err := parseDocument([]byte("value: "+test.raw+"\n"), "", nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -144,7 +145,7 @@ func TestParseDocumentRejectsNonFiniteNumbersWithoutValueLeakage(t *testing.T) {
 		"-.inf", "-.Inf", "-.INF", ".nan", ".NaN", ".NAN",
 	} {
 		t.Run(raw, func(t *testing.T) {
-			_, err := parseDocument([]byte("safe_field: "+raw+"\n"), FieldSource{Kind: SourceOverrideFile}, nil)
+			_, err := parseDocument([]byte("safe_field: "+raw+"\n"), "", nil)
 			if err == nil {
 				t.Fatal("parseDocument() error = nil, want non-finite rejection")
 			}
@@ -157,7 +158,7 @@ func TestParseDocumentRejectsNonFiniteNumbersWithoutValueLeakage(t *testing.T) {
 
 func TestParseDocumentRejectsDuplicateMappingKeys(t *testing.T) {
 	_, err := parseDocument([]byte("apisix:\n  enable_http2: true\n  enable_http2: false\n"),
-		FieldSource{Kind: SourceOverrideFile, Origin: "override.yaml", Explicit: true}, nil)
+		"", nil)
 	if err == nil || !strings.Contains(err.Error(), "duplicate key apisix.enable_http2") {
 		t.Fatalf("parseDocument() error = %v", err)
 	}
@@ -186,7 +187,7 @@ func TestParseDocumentRejectsExpandedMappingKeyCollisionsWithoutSecrets(t *testi
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			_, err := parseDocument([]byte(test.yaml), FieldSource{Kind: SourceOverrideFile}, test.env)
+			_, err := parseDocument([]byte(test.yaml), "", test.env)
 			if err == nil {
 				t.Fatal("parseDocument() error = nil, want expanded-key collision")
 			}
@@ -216,7 +217,7 @@ plugin_attr:
 trimmed_fallback: "${{OPTIONAL:=  fallback value  }}"
 empty_fallback: "${{EMPTY_FALLBACK:=}}"
 present_empty: "${{PRESENT_EMPTY:=not used}}"
-`), FieldSource{Kind: SourceOverrideFile, Origin: "conf/override.yaml", Explicit: true}, map[string]string{
+`), "conf", map[string]string{
 		"ETCD_HOST":     "etcd.internal",
 		"SUFFIX":        "primary",
 		"HOST":          "127.0.0.1",
@@ -245,16 +246,13 @@ present_empty: "${{PRESENT_EMPTY:=not used}}"
 	if got := doc.mapping["present_empty"].scalar; got != "" {
 		t.Fatalf("present_empty = %#v", got)
 	}
-	if got := hosts[0].source; got != (FieldSource{Kind: SourceAPISIXEnv, Origin: "ETCD_HOST", Explicit: true}) {
-		t.Fatalf("host source = %+v", got)
-	}
 }
 
 func TestParseDocumentUsesOnlySuppliedEnvironmentSnapshot(t *testing.T) {
 	const name = "APISIX_GO_C2_AMBIENT_ONLY"
 	t.Setenv(name, "ambient-secret")
 	for _, env := range []map[string]string{nil, {}} {
-		_, err := parseDocument([]byte("value: '${{"+name+"}}'\n"), FieldSource{Kind: SourceOverrideFile}, env)
+		_, err := parseDocument([]byte("value: '${{"+name+"}}'\n"), "", env)
 		want := "expand APISIX environment at value: " + name + " is not set"
 		if err == nil || err.Error() != want {
 			t.Fatalf("parseDocument() error = %v, want %q", err, want)
@@ -267,7 +265,7 @@ func TestParseDocumentUsesOnlySuppliedEnvironmentSnapshot(t *testing.T) {
 
 func TestParseDocumentReportsFirstMissingAPISIXEnvironment(t *testing.T) {
 	_, err := parseDocument([]byte("value: '${{FIRST_MISSING}}-${{SECOND_MISSING}}'\n"),
-		FieldSource{Kind: SourceOverrideFile}, map[string]string{})
+		"", map[string]string{})
 	if err == nil || err.Error() != "expand APISIX environment at value: FIRST_MISSING is not set" {
 		t.Fatalf("parseDocument() error = %v", err)
 	}
@@ -282,7 +280,7 @@ func TestParseDocumentRejectsInvalidUTF8FromAPISIXEnvironment(t *testing.T) {
 		{data: "'${{VALUE}}': safe\n", want: "expand APISIX environment at <root>: result is not valid UTF-8"},
 		{data: "value: '${{VALUE}}'\n", want: "expand APISIX environment at value: result is not valid UTF-8"},
 	} {
-		_, err := parseDocument([]byte(test.data), FieldSource{Kind: SourceOverrideFile}, map[string]string{
+		_, err := parseDocument([]byte(test.data), "", map[string]string{
 			"VALUE": invalidUTF8,
 		})
 		if err == nil || err.Error() != test.want {
@@ -314,7 +312,7 @@ hex: "${{HEX}}"
 positive_hex: "${{POSITIVE_HEX}}"
 negative_hex: "${{NEGATIVE_HEX}}"
 spaced_number: "${{SPACED_NUMBER}}"
-`), FieldSource{Kind: SourceOverrideFile}, map[string]string{
+`), "", map[string]string{
 		"TRUE_VALUE":          "true",
 		"FALSE_VALUE":         "false",
 		"LARGE":               "184467440737095516160000000000000000000",
@@ -363,48 +361,6 @@ spaced_number: "${{SPACED_NUMBER}}"
 	}
 }
 
-func TestParseDocumentTracksTemplateProvenanceAndFileBase(t *testing.T) {
-	origin := filepath.Join(t.TempDir(), "conf", "override.yaml")
-	source := FieldSource{Kind: SourceOverrideFile, Origin: origin, Explicit: true}
-	doc, err := parseDocument([]byte(`
-root:
-  "${{KEY_B}}-${{KEY_A}}":
-    plain: fixed
-    sequence:
-      - "${{VALUE_B}}-${{VALUE_A}}-${{VALUE_B}}"
-`), source, map[string]string{
-		"KEY_A": "a", "KEY_B": "b", "VALUE_A": "one", "VALUE_B": "two",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	expanded := doc.mapping["root"].mapping["b-a"]
-	if got := expanded.source; got != (FieldSource{
-		Kind: SourceAPISIXEnv, Origin: "KEY_A,KEY_B", Explicit: true,
-	}) {
-		t.Fatalf("expanded mapping source = %+v", got)
-	}
-	if got := expanded.mapping["plain"].source; got != (FieldSource{
-		Kind: SourceAPISIXEnv, Origin: "KEY_A,KEY_B", Explicit: true,
-	}) {
-		t.Fatalf("plain source = %+v", got)
-	}
-	sequence := expanded.mapping["sequence"]
-	if got := sequence.source; got != (FieldSource{
-		Kind: SourceAPISIXEnv, Origin: "KEY_A,KEY_B", Explicit: true,
-	}) {
-		t.Fatalf("sequence source = %+v", got)
-	}
-	sequenceLeaf := sequence.sequence[0]
-	if got := sequenceLeaf.source; got != (FieldSource{
-		Kind: SourceAPISIXEnv, Origin: "KEY_A,KEY_B,VALUE_A,VALUE_B", Explicit: true,
-	}) {
-		t.Fatalf("sequence source = %+v", got)
-	}
-	wantBase := filepath.Dir(origin)
-	assertNodePathBase(t, doc, wantBase)
-}
-
 func TestParseDocumentErrorsDoNotLeakSecretScalarContent(t *testing.T) {
 	const secret = "C2_SENTINEL_SECRET_SCALAR_7B4D19"
 	tests := []struct {
@@ -416,7 +372,7 @@ func TestParseDocumentErrorsDoNotLeakSecretScalarContent(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			_, err := parseDocument([]byte(test.yaml), FieldSource{Kind: SourceOverrideFile}, nil)
+			_, err := parseDocument([]byte(test.yaml), "", nil)
 			if err == nil {
 				t.Fatal("parseDocument() error = nil")
 			}
@@ -428,7 +384,7 @@ func TestParseDocumentErrorsDoNotLeakSecretScalarContent(t *testing.T) {
 }
 
 func TestParseDocumentRejectsMultipleDocuments(t *testing.T) {
-	_, err := parseDocument([]byte("first: true\n---\nsecond: true\n"), FieldSource{Kind: SourceOverrideFile}, nil)
+	_, err := parseDocument([]byte("first: true\n---\nsecond: true\n"), "", nil)
 	if err == nil || !strings.Contains(err.Error(), "multiple YAML documents") {
 		t.Fatalf("parseDocument() error = %v", err)
 	}
@@ -456,7 +412,7 @@ func TestParseDocumentRejectsAnchorsAliasesAndMergeKeys(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			_, err := parseDocument([]byte(test.yaml), FieldSource{Kind: SourceOverrideFile}, nil)
+			_, err := parseDocument([]byte(test.yaml), "", nil)
 			if err == nil {
 				t.Fatal("parseDocument() error = nil")
 			}
@@ -481,7 +437,7 @@ func TestParseDocumentAllowsLiteralDoubleAngleMappingKeys(t *testing.T) {
 		{name: "explicit string tag", yaml: "!!str <<: explicit\n", want: "explicit"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			doc, err := parseDocument([]byte(test.yaml), FieldSource{Kind: SourceOverrideFile}, nil)
+			doc, err := parseDocument([]byte(test.yaml), "", nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -495,7 +451,7 @@ func TestParseDocumentAllowsLiteralDoubleAngleMappingKeys(t *testing.T) {
 func TestReadConfigDocumentWrapsReadAndParseFailures(t *testing.T) {
 	dir := t.TempDir()
 	missing := filepath.Join(dir, "missing.yaml")
-	_, err := readConfigDocument(missing, FieldSource{Kind: SourceOverrideFile, Origin: missing}, nil)
+	_, err := readConfigDocument(missing, nil)
 	if err == nil || !strings.HasPrefix(err.Error(), "read static configuration "+missing+": ") {
 		t.Fatalf("readConfigDocument() read error = %v", err)
 	}
@@ -504,7 +460,7 @@ func TestReadConfigDocumentWrapsReadAndParseFailures(t *testing.T) {
 	if err := os.WriteFile(invalid, []byte("first: true\n---\nsecond: true\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, err = readConfigDocument(invalid, FieldSource{Kind: SourceOverrideFile, Origin: invalid}, nil)
+	_, err = readConfigDocument(invalid, nil)
 	if err == nil || !strings.HasPrefix(err.Error(), "parse static configuration "+invalid+": ") {
 		t.Fatalf("readConfigDocument() parse error = %v", err)
 	}
@@ -517,7 +473,7 @@ func TestReadConfigDocumentDoesNotReadAmbientEnvironment(t *testing.T) {
 	if err := os.WriteFile(path, []byte("value: '${{"+name+"}}'\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, err := readConfigDocument(path, FieldSource{Kind: SourceOverrideFile, Origin: path}, map[string]string{})
+	_, err := readConfigDocument(path, map[string]string{})
 	wantCause := "expand APISIX environment at value: " + name + " is not set"
 	if err == nil || !strings.HasSuffix(err.Error(), wantCause) {
 		t.Fatalf("readConfigDocument() error = %v, want suffix %q", err, wantCause)
@@ -549,26 +505,25 @@ func TestNodeToAnyReturnsFreshMapsAndSlices(t *testing.T) {
 	}
 }
 
-func TestCloneNodeDeepCopiesStateAndMetadata(t *testing.T) {
+func TestCloneNodeDeepCopiesState(t *testing.T) {
 	if cloneNode(nil) != nil {
 		t.Fatal("cloneNode(nil) != nil")
 	}
-	source := FieldSource{Kind: SourceAPISIXEnv, Origin: "A,B", Explicit: true}
 	original := &valueNode{
 		kind: nodeMapping,
 		mapping: map[string]*valueNode{
 			"items": {
 				kind: nodeSequence,
 				sequence: []*valueNode{{
-					kind: nodeScalar, scalar: json.Number("9007199254740993"), source: source, pathBase: "/config",
+					kind: nodeScalar, scalar: json.Number("9007199254740993"), pathBase: "/config",
 				}},
 			},
 		},
-		source: source, pathBase: "/config",
+		pathBase: "/config",
 	}
 	cloned := cloneNode(original)
 	leaf := cloned.mapping["items"].sequence[0]
-	if leaf.scalar != json.Number("9007199254740993") || leaf.source != source || leaf.pathBase != "/config" {
+	if leaf.scalar != json.Number("9007199254740993") || leaf.pathBase != "/config" {
 		t.Fatalf("clone lost leaf state: %#v", leaf)
 	}
 	cloned.mapping["items"].sequence[0].scalar = json.Number("1")

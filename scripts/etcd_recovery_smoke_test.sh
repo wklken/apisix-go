@@ -747,17 +747,12 @@ test_ordered_happy_path() {
     assert_at_least 'docker port ' "$log" 6
     assert_contains 'SSL_CERT_FILE' "$log"
     assert_contains 'https://etcd:2379' "$log"
-    assert_contains 'APISIXGO_DEPLOYMENT_ETCD_TLS_VERIFY=true' "$log"
+    assert_contains 'APISIX_DEPLOYMENT_ETCD_HOST=["https://etcd:2379"]' "$log"
     assert_contains '/conf/config-production.yaml:/usr/local/apisix/conf/config-production.yaml:ro' "$log"
     assert_contains 'HOME=/usr/local/apisix' "$log"
-    assert_contains 'APISIXGO_RUNTIME_PATHS_DATA_DIR=/usr/local/apisix/data' "$log"
-    assert_contains 'APISIXGO_RUNTIME_PATHS_RUNTIME_DIR=/usr/local/apisix/run' "$log"
-    assert_contains 'APISIXGO_RUNTIME_PATHS_LOG_DIR=/usr/local/apisix/logs' "$log"
-    assert_contains 'APISIXGO_RUNTIME_PATHS_TEMP_DIR=/usr/local/apisix/tmp' "$log"
     assert_contains 'HTTP_PROXY=' "$log"
     assert_contains 'HTTPS_PROXY=' "$log"
     assert_contains 'NO_PROXY=' "$log"
-    assert_contains 'APISIXGO_APISIX_STATUS_IP=0.0.0.0' "$log"
     for resource in \
         upstreams/release-upstream-v1 \
         upstreams/release-upstream-v2 \

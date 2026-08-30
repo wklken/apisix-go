@@ -30,14 +30,14 @@ type expandedTemplate struct {
 	expanded bool
 }
 
-func parseDocument(data []byte, source FieldSource, env map[string]string) (*valueNode, error) {
+func parseDocument(data []byte, pathBase string, env map[string]string) (*valueNode, error) {
 	decoder := yaml.NewDecoder(bytes.NewReader(data))
 	var document yaml.Node
 	if err := decoder.Decode(&document); err != nil {
 		if err == io.EOF {
 			return &valueNode{
 				kind: nodeMapping, mapping: map[string]*valueNode{},
-				source: source, pathBase: documentPathBase(source),
+				pathBase: pathBase,
 			}, nil
 		}
 		return nil, fmt.Errorf("decode YAML document: invalid YAML")
@@ -57,26 +57,19 @@ func parseDocument(data []byte, source FieldSource, env map[string]string) (*val
 	if err := rejectForbiddenYAML(root); err != nil {
 		return nil, err
 	}
-	return convertYAMLNode(root, "", source, documentPathBase(source), env, nil)
+	return convertYAMLNode(root, "", pathBase, env)
 }
 
-func readConfigDocument(path string, source FieldSource, env map[string]string) (*valueNode, error) {
+func readConfigDocument(path string, env map[string]string) (*valueNode, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read static configuration %s: %w", path, err)
 	}
-	document, err := parseDocument(data, source, env)
+	document, err := parseDocument(data, filepath.Dir(path), env)
 	if err != nil {
 		return nil, fmt.Errorf("parse static configuration %s: %w", path, err)
 	}
 	return document, nil
-}
-
-func documentPathBase(source FieldSource) string {
-	if source.Kind == SourceDefaultFile || source.Kind == SourceOverrideFile {
-		return filepath.Dir(source.Origin)
-	}
-	return ""
 }
 
 func rejectForbiddenYAML(root *yaml.Node) error {
@@ -149,22 +142,20 @@ func yamlKeyPath(parent string, key *yaml.Node) string {
 func convertYAMLNode(
 	node *yaml.Node,
 	path string,
-	source FieldSource,
 	pathBase string,
 	env map[string]string,
-	inheritedNames []string,
 ) (*valueNode, error) {
 	switch node.Kind {
 	case yaml.MappingNode:
-		return convertYAMLMapping(node, path, source, pathBase, env, inheritedNames)
+		return convertYAMLMapping(node, path, pathBase, env)
 	case yaml.SequenceNode:
 		converted := &valueNode{
-			kind: nodeSequence, source: sourceForTemplateNames(source, inheritedNames), pathBase: pathBase,
+			kind: nodeSequence, pathBase: pathBase,
 			sequence: make([]*valueNode, len(node.Content)),
 		}
 		for index, child := range node.Content {
 			childNode, err := convertYAMLNode(
-				child, sequenceFieldPath(path, index), source, pathBase, env, inheritedNames,
+				child, sequenceFieldPath(path, index), pathBase, env,
 			)
 			if err != nil {
 				return nil, err
@@ -173,7 +164,7 @@ func convertYAMLNode(
 		}
 		return converted, nil
 	case yaml.ScalarNode:
-		return convertYAMLScalar(node, path, source, pathBase, env, inheritedNames)
+		return convertYAMLScalar(node, path, pathBase, env)
 	default:
 		return nil, fmt.Errorf("unsupported YAML node at %s", displayFieldPath(path))
 	}
@@ -182,10 +173,8 @@ func convertYAMLNode(
 func convertYAMLMapping(
 	node *yaml.Node,
 	path string,
-	source FieldSource,
 	pathBase string,
 	env map[string]string,
-	inheritedNames []string,
 ) (*valueNode, error) {
 	if len(node.Content)%2 != 0 {
 		return nil, fmt.Errorf("invalid YAML mapping at %s", displayFieldPath(path))
@@ -206,7 +195,7 @@ func convertYAMLMapping(
 	}
 
 	converted := &valueNode{
-		kind: nodeMapping, source: sourceForTemplateNames(source, inheritedNames), pathBase: pathBase,
+		kind: nodeMapping, pathBase: pathBase,
 		mapping: make(map[string]*valueNode, len(node.Content)/2),
 	}
 	keySources := make(map[string][]string, len(node.Content)/2)
@@ -226,12 +215,11 @@ func convertYAMLMapping(
 		}
 		keySources[expandedKey.value] = expandedKey.names
 
-		childNames := unionTemplateNames(inheritedNames, expandedKey.names)
 		childPath := joinFieldPath(path, expandedKey.value)
 		if expandedKey.expanded {
 			childPath = joinFieldPath(path, "<key>")
 		}
-		child, err := convertYAMLNode(value, childPath, source, pathBase, env, childNames)
+		child, err := convertYAMLNode(value, childPath, pathBase, env)
 		if err != nil {
 			return nil, err
 		}
@@ -243,13 +231,11 @@ func convertYAMLMapping(
 func convertYAMLScalar(
 	node *yaml.Node,
 	path string,
-	source FieldSource,
 	pathBase string,
 	env map[string]string,
-	inheritedNames []string,
 ) (*valueNode, error) {
 	converted := &valueNode{
-		kind: nodeScalar, source: sourceForTemplateNames(source, inheritedNames), pathBase: pathBase,
+		kind: nodeScalar, pathBase: pathBase,
 	}
 	switch node.ShortTag() {
 	case "!!null":
@@ -293,8 +279,6 @@ func convertYAMLScalar(
 		converted.scalar = node.Value
 		return converted, nil
 	}
-	allNames := unionTemplateNames(inheritedNames, expanded.names)
-	converted.source = sourceForTemplateNames(source, allNames)
 	converted.scalar = retypeExpandedScalar(expanded.value)
 	return converted, nil
 }
@@ -618,14 +602,6 @@ func trimLeadingZeros(value string) string {
 		return "0"
 	}
 	return trimmed
-}
-
-func sourceForTemplateNames(source FieldSource, names []string) FieldSource {
-	names = sortedTemplateNames(names)
-	if len(names) == 0 {
-		return source
-	}
-	return FieldSource{Kind: SourceAPISIXEnv, Origin: strings.Join(names, ","), Explicit: true}
 }
 
 func unionTemplateNames(groups ...[]string) []string {

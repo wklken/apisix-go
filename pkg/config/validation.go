@@ -96,10 +96,6 @@ func validateRuntimeConfig(cfg *Config) error {
 			"nginx_config.http.send_timeout must be zero because Go cannot implement NGINX write-idle semantics",
 		)
 	}
-	if err := validateProcessAccessLogs(cfg); err != nil {
-		return err
-	}
-
 	provider, err := EffectiveConfigProvider(cfg)
 	if err != nil {
 		return err
@@ -141,31 +137,6 @@ func validateUnsupportedRuntimeConfig(cfg *Config) error {
 		}
 		if listener.EnableHttp3 {
 			return fmt.Errorf("apisix.ssl.listen[%d].enable_http3 is unsupported by the Go data plane", index)
-		}
-	}
-	return nil
-}
-
-func validateProcessAccessLogs(cfg *Config) error {
-	http := cfg.NginxConfig.HTTP
-	stream := cfg.NginxConfig.Stream
-	logRotateOwnsHTTPSelection := slices.Contains(cfg.Plugins, "log-rotate")
-	for _, field := range []struct {
-		name   string
-		active bool
-	}{
-		{name: "nginx_config.http.enable_access_log", active: http.EnableAccessLog && !logRotateOwnsHTTPSelection},
-		{name: "nginx_config.http.access_log", active: http.AccessLog != "" && !logRotateOwnsHTTPSelection},
-		{name: "nginx_config.http.access_log_buffer", active: http.AccessLogBuffer != 0},
-		{name: "nginx_config.http.access_log_format", active: http.AccessLogFormat != ""},
-		{name: "nginx_config.http.access_log_format_escape", active: http.AccessLogFormatEscape != ""},
-		{name: "nginx_config.stream.enable_access_log", active: stream.EnableAccessLog},
-		{name: "nginx_config.stream.access_log", active: stream.AccessLog != ""},
-		{name: "nginx_config.stream.access_log_format", active: stream.AccessLogFormat != ""},
-		{name: "nginx_config.stream.access_log_format_escape", active: stream.AccessLogFormatEscape != ""},
-	} {
-		if field.active {
-			return fmt.Errorf("%s is unsupported by the Go data plane", field.name)
 		}
 	}
 	return nil

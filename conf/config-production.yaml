@@ -1,4 +1,4 @@
-# Production image override. Supply APISIXGO_DEPLOYMENT_ETCD_HOST explicitly.
+# Production image override. Supply APISIX_DEPLOYMENT_ETCD_HOST as a JSON array.
 
 debug: false
 
@@ -18,6 +18,15 @@ apisix:
   trusted_addresses:
     - 127.0.0.1/32
     - "::1/128"
+  status:
+    ip: 0.0.0.0
+
+apisix_go:
+  runtime_paths:
+    data_dir: /usr/local/apisix/data
+    runtime_dir: /usr/local/apisix/run
+    log_dir: /usr/local/apisix/logs
+    temp_dir: /usr/local/apisix/tmp
 
 plugins:
   - acl

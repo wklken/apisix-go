@@ -12,7 +12,7 @@ This is a single Go module: `github.com/wklken/apisix-go`.
 Key runtime pieces:
 
 - `main.go` enters the Cobra CLI in `cmd/root.go`.
-- Static configuration is loaded by the presence/provenance-aware `pkg/config` loader from builtins, `conf/config-default.yaml`, an optional `-c/--config` override, recognized `APISIXGO_*` overlays, and repeatable `--set` flags.
+- Static configuration is loaded by the presence-aware `pkg/config` loader from builtins, `conf/config-default.yaml`, an optional `-c/--config` file, APISIX file-template expansion, and APISIX 3.17 reserved environment overrides.
 - `pkg/capability/manifest.yaml` is the temporary editable source for runtime plugin factories, aliases, execution metadata, and secret declarations. It generates only the plugin registry.
 - Providers submit desired snapshots to the single-writer `pkg/generation` coordinator. `pkg/store` is the bbolt durable generation journal, not a mutable runtime resource store.
 - `pkg/compiler` plans and materializes immutable HTTP/TLS and stream snapshots. `pkg/route` and `pkg/stream` contain detached snapshot compilers; `pkg/server` atomically activates them and owns generation leases.
@@ -167,7 +167,7 @@ Correctness:
 
 ## Configuration Notes
 
-- Cobra defines `--config` / `-c` and repeatable `--set`; the custom loader accepts only recognized `APISIXGO_*` overlays and preserves field presence and provenance.
+- Cobra defines `--config` / `-c`; the loader expands APISIX file templates and implements only APISIX 3.17 reserved environment overrides.
 - `deployment.role_traditional.config_provider` is currently `etcd` in `conf/config.yaml`.
 - When `server-info` is enabled with traditional etcd configuration, the server reports under `<deployment.etcd.prefix>/data_plane/server_info/<apisix-id>` using `plugin_attr.server-info.report_ttl` and renews the lease until shutdown. Data-plane mode intentionally does not write this registration record.
 - TCP stream routing is enabled through `apisix.proxy_mode` plus `apisix.stream_proxy.tcp`. Provider desired state is journaled and compiled into an immutable stream router; each accepted connection leases that exact generation.

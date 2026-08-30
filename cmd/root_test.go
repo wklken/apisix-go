@@ -102,6 +102,13 @@ func TestRootCommandDoesNotExposeObsoleteViperFlag(t *testing.T) {
 	}
 }
 
+func TestRootCommandDoesNotExposeSetFlag(t *testing.T) {
+	root := newRootCommand()
+	if flag := root.PersistentFlags().Lookup("set"); flag != nil {
+		t.Fatalf("non-APISIX set flag remains registered: %#v", flag)
+	}
+}
+
 func TestEnvironmentMapPreservesValuesAndSkipsMalformedEntries(t *testing.T) {
 	got := environmentMap([]string{"PLAIN=value", "WITH_EQUALS=a=b=c", "EMPTY=", "MALFORMED"})
 	want := map[string]string{"PLAIN": "value", "WITH_EQUALS": "a=b=c", "EMPTY": ""}
@@ -313,7 +320,7 @@ func TestStartupLoadsOneManifestForEffectiveConfigAndCompiler(t *testing.T) {
 			recorder.record("manifest")
 			return manifest, nil
 		},
-		loadEffective: func(_ string, _ []string, got *capability.Manifest) (*config.EffectiveConfig, error) {
+		loadEffective: func(_ string, got *capability.Manifest) (*config.EffectiveConfig, error) {
 			recorder.record("effective")
 			if got != manifest {
 				t.Fatalf("effective manifest = %p, want startup manifest %p", got, manifest)
@@ -430,7 +437,7 @@ func TestStartupRejectsUnrecognizedJournalBeforeServerConstruction(t *testing.T)
 	factories := startupSuccessFactories(t, recorder)
 	manifest, effective, catalog, encryption := startupInputs(t)
 	factories.loadManifest = func() (*capability.Manifest, error) { return manifest, nil }
-	factories.loadEffective = func(string, []string, *capability.Manifest) (*config.EffectiveConfig, error) {
+	factories.loadEffective = func(string, *capability.Manifest) (*config.EffectiveConfig, error) {
 		return effective, nil
 	}
 	factories.newCatalog = func(*capability.Manifest) (*capability.SecretDeclarationCatalog, error) {
@@ -524,7 +531,7 @@ func startupSuccessFactories(t *testing.T, recorder *startupCallRecorder) startu
 			recorder.record("manifest")
 			return manifest, nil
 		},
-		loadEffective: func(string, []string, *capability.Manifest) (*config.EffectiveConfig, error) {
+		loadEffective: func(string, *capability.Manifest) (*config.EffectiveConfig, error) {
 			recorder.record("effective")
 			return effective, nil
 		},

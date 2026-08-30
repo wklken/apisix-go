@@ -256,10 +256,8 @@ func (p *Plugin) loadPluginAttr() error {
 		p.config.AccessLog = httpLogs.AccessLog
 	}
 	if p.config.EnableAccessLog == nil {
-		if source, ok := effective.Provenance["nginx_config.http.enable_access_log"]; ok && source.Explicit {
-			enabled := httpLogs.EnableAccessLog
-			p.config.EnableAccessLog = &enabled
-		}
+		enabled := httpLogs.EnableAccessLog
+		p.config.EnableAccessLog = &enabled
 	}
 	return nil
 }

@@ -202,7 +202,7 @@ func TestDesiredBatchFromEtcdProviderAuthorityIdentity(t *testing.T) {
 }
 
 func TestDesiredBatchFromEtcdProviderAuthorityRequiresSnapshotTransfer(t *testing.T) {
-	journal, err := store.OpenJournal(t.TempDir()+"/journal.db", store.JournalOptions{})
+	journal, err := store.OpenJournal(t.TempDir() + "/journal.db")
 	if err != nil {
 		t.Fatal(err)
 	}

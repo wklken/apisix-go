@@ -21,15 +21,6 @@ var managedResources = []struct {
 	{kind: "upstreams", domains: []Domain{DomainHTTP, DomainStream}},
 }
 
-// ManagedResourceKinds returns every provider-managed resource kind in stable order.
-func ManagedResourceKinds() []string {
-	kinds := make([]string, len(managedResources))
-	for index, resource := range managedResources {
-		kinds[index] = resource.kind
-	}
-	return kinds
-}
-
 // IsManagedResourceKind reports whether kind belongs to the provider-managed namespace.
 func IsManagedResourceKind(kind string) bool {
 	for _, resource := range managedResources {

@@ -48,7 +48,7 @@ type startupFactories struct {
 	newResolver     func(data_encryption.Service) (*secret.GenerationSecretResolver, error)
 	closeResolver   func(*secret.GenerationSecretResolver, context.Context) error
 	mkdirAll        func(string, os.FileMode) error
-	openJournal     func(string, store.JournalOptions) (generation.Journal, error)
+	openJournal     func(string) (generation.Journal, error)
 	newServer       func(
 		*config.EffectiveConfig,
 		*capability.Manifest,
@@ -81,8 +81,8 @@ func defaultStartupFactories() startupFactories {
 			return resolver.Close(ctx)
 		},
 		mkdirAll: os.MkdirAll,
-		openJournal: func(path string, options store.JournalOptions) (generation.Journal, error) {
-			return store.OpenJournal(path, options)
+		openJournal: func(path string) (generation.Journal, error) {
+			return store.OpenJournal(path)
 		},
 		newServer: func(
 			effective *config.EffectiveConfig,
@@ -213,9 +213,7 @@ func startWithOptionsWithFactories(options rootOptions, factories startupFactori
 			factories.closeResolver(resolver, context.Background()),
 		)
 	}
-	journal, err := factories.openJournal(journalPath, store.JournalOptions{
-		LegacyResourceBuckets: generation.ManagedResourceKinds(),
-	})
+	journal, err := factories.openJournal(journalPath)
 	if err != nil {
 		return errors.Join(
 			fmt.Errorf("open generation journal: %w", err),

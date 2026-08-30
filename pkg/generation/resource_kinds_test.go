@@ -5,37 +5,10 @@ import (
 	"testing"
 )
 
-func TestManagedResourceKindsReturnsSortedDefensiveCopy(t *testing.T) {
-	want := []string{
-		"consumer_groups",
-		"consumers",
-		"global_rules",
-		"plugin_configs",
-		"plugin_metadata",
-		"plugins",
-		"protos",
-		"routes",
-		"secrets",
-		"services",
-		"ssls",
-		"stream_routes",
-		"upstreams",
-	}
-
-	first := ManagedResourceKinds()
-	if !slices.Equal(first, want) {
-		t.Fatalf("ManagedResourceKinds() = %v, want %v", first, want)
-	}
-	first[0] = "mutated"
-	if got := ManagedResourceKinds(); !slices.Equal(got, want) {
-		t.Fatalf("ManagedResourceKinds() after caller mutation = %v, want %v", got, want)
-	}
-}
-
 func TestManagedResourceKindsExactMembership(t *testing.T) {
-	for _, kind := range ManagedResourceKinds() {
-		if !IsManagedResourceKind(kind) {
-			t.Errorf("IsManagedResourceKind(%q) = false, want true", kind)
+	for _, resource := range managedResources {
+		if !IsManagedResourceKind(resource.kind) {
+			t.Errorf("IsManagedResourceKind(%q) = false, want true", resource.kind)
 		}
 	}
 	for _, kind := range []string{"", "route", "data_plane", "unknown"} {
@@ -50,7 +23,8 @@ func TestDomainsForResourceKindExactMappingAndDefensiveCopy(t *testing.T) {
 	wantStream := []Domain{DomainStream}
 	wantBoth := []Domain{DomainHTTP, DomainStream}
 
-	for _, kind := range ManagedResourceKinds() {
+	for _, resource := range managedResources {
+		kind := resource.kind
 		want := wantHTTP
 		switch kind {
 		case "stream_routes":

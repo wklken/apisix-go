@@ -132,7 +132,7 @@ func TestJournalCommitEmptyRequiredDomainsOnlyAcknowledgesDesired(t *testing.T) 
 
 func TestJournalAcknowledgementPersistsLoadsAndRejectsFurtherPublication(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "journal.db")
-	journal, err := OpenJournal(path, JournalOptions{})
+	journal, err := OpenJournal(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,7 +187,7 @@ func TestJournalAcknowledgementPersistsLoadsAndRejectsFurtherPublication(t *test
 	if err := journal.Close(); err != nil {
 		t.Fatal(err)
 	}
-	reopened, err := OpenJournal(path, JournalOptions{})
+	reopened, err := OpenJournal(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -199,66 +199,43 @@ func TestJournalAcknowledgementPersistsLoadsAndRejectsFurtherPublication(t *test
 	assertAcknowledgementsEqual(t, restarted, committed)
 }
 
-func TestJournalBackfillsMarkerlessCommittedAcknowledgement(t *testing.T) {
+func TestJournalRejectsMissingCommittedAcknowledgementWithoutMutation(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "journal.db")
-	journal, err := OpenJournal(path, JournalOptions{})
+	journal, err := OpenJournal(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ticket := applyDesiredForPublication(t, journal, "legacy-committed", generation.DomainHTTP)
+	ticket := applyDesiredForPublication(t, journal, "committed", generation.DomainHTTP)
 	token, err := journal.Stage(
 		context.Background(), ticket, publicationSet(t, ticket, generation.DomainHTTP),
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	committed, err := journal.Commit(context.Background(), token)
-	if err != nil {
+	if _, err := journal.Commit(context.Background(), token); err != nil {
 		t.Fatal(err)
 	}
 	clearCommittedAcknowledgement(t, journal, ticket.Cursor)
-	if err := journal.db.Update(func(tx *bolt.Tx) error {
-		return tx.Bucket(journalMetaBucket).Put(schemaVersionKey, encodeUint64(1))
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if err := journal.Close(); err != nil {
-		t.Fatal(err)
-	}
+	before := readFileDigest(t, path)
 
-	reopened, err := OpenJournal(path, JournalOptions{})
-	if err != nil {
-		t.Fatal(err)
+	if _, err := journal.LoadAcknowledgement(context.Background(), ticket.Cursor); !errors.Is(
+		err,
+		generation.ErrNotFound,
+	) {
+		t.Fatalf("LoadAcknowledgement() error = %v, want ErrNotFound", err)
 	}
-	loaded, err := reopened.LoadAcknowledgement(context.Background(), ticket.Cursor)
-	if err != nil {
-		t.Fatal(err)
+	if after := readFileDigest(t, path); after != before {
+		t.Fatal("missing acknowledgement was repaired")
 	}
-	assertAcknowledgementsEqual(t, loaded, committed)
-	assertCursorHasCommittedAcknowledgement(t, reopened, ticket.Cursor)
-	if err := reopened.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	restarted, err := OpenJournal(path, JournalOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = restarted.Close() })
-	loaded, err = restarted.LoadAcknowledgement(context.Background(), ticket.Cursor)
-	if err != nil {
-		t.Fatal(err)
-	}
-	assertAcknowledgementsEqual(t, loaded, committed)
 }
 
-func TestJournalKeepsMarkerlessUncommittedCursorRetryable(t *testing.T) {
+func TestJournalKeepsUncommittedCursorRetryable(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "journal.db")
-	journal, err := OpenJournal(path, JournalOptions{})
+	journal, err := OpenJournal(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	batch := desiredBatch("etcd", "legacy-uncommitted", generation.DomainHTTP)
+	batch := desiredBatch("etcd", "uncommitted", generation.DomainHTTP)
 	ticket, err := journal.ApplyDesired(context.Background(), batch)
 	if err != nil {
 		t.Fatal(err)
@@ -267,7 +244,7 @@ func TestJournalKeepsMarkerlessUncommittedCursorRetryable(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reopened, err := OpenJournal(path, JournalOptions{})
+	reopened, err := OpenJournal(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -276,7 +253,7 @@ func TestJournalKeepsMarkerlessUncommittedCursorRetryable(t *testing.T) {
 		err,
 		generation.ErrNotFound,
 	) {
-		t.Fatalf("LoadAcknowledgement(markerless uncommitted) error = %v, want ErrNotFound", err)
+		t.Fatalf("LoadAcknowledgement(uncommitted) error = %v, want ErrNotFound", err)
 	}
 	replayed, err := reopened.ApplyDesired(context.Background(), batch)
 	if err != nil {
@@ -287,51 +264,9 @@ func TestJournalKeepsMarkerlessUncommittedCursorRetryable(t *testing.T) {
 	}
 }
 
-func TestCoordinatorCompletesMarkerlessZeroDomainCursorWithSyntheticRetry(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "journal.db")
-	journal, err := OpenJournal(path, JournalOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	batch := desiredBatch("etcd/v1/test", "legacy-zero", "")
-	ticket, err := journal.ApplyDesired(context.Background(), batch)
-	if err != nil {
-		t.Fatal(err)
-	}
-	token, err := journal.Stage(context.Background(), ticket, publicationSet(t, ticket))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := journal.Commit(context.Background(), token); err != nil {
-		t.Fatal(err)
-	}
-	clearCommittedAcknowledgement(t, journal, ticket.Cursor)
-	if err := journal.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	reopened, err := OpenJournal(path, JournalOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = reopened.Close() })
-	engine := &retryPublicationEngine{t: t}
-	ack, err := generation.NewCoordinator(reopened, engine).Apply(context.Background(), batch)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if ack.Revisions != (generation.RevisionSet{Desired: ticket.DesiredRevision}) ||
-		len(ack.Decisions) != 0 || engine.prepareCalls != 1 || engine.activateCalls != 1 ||
-		engine.finalizeCalls != 1 || len(engine.ticket.RequiredDomains) != 0 {
-		t.Fatalf("ack/prepare/activate/finalize/ticket = %+v/%d/%d/%d/%+v",
-			ack, engine.prepareCalls, engine.activateCalls, engine.finalizeCalls, engine.ticket)
-	}
-	assertCursorHasCommittedAcknowledgement(t, reopened, ticket.Cursor)
-}
-
 func TestCoordinatorReopensCommittedCursorBeforeDifferentlyShapedReplay(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "journal.db")
-	journal, err := OpenJournal(path, JournalOptions{})
+	journal, err := OpenJournal(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -369,7 +304,7 @@ func TestCoordinatorReopensCommittedCursorBeforeDifferentlyShapedReplay(t *testi
 		t.Fatal(err)
 	}
 
-	reopened, err := OpenJournal(path, JournalOptions{})
+	reopened, err := OpenJournal(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -426,9 +361,9 @@ func TestCoordinatorReopensCommittedCursorBeforeDifferentlyShapedReplay(t *testi
 	}
 }
 
-func TestCoordinatorRetriesMarkerlessUncommittedCursorFromEquivalentFullSnapshot(t *testing.T) {
+func TestCoordinatorRetriesUncommittedCursorFromEquivalentFullSnapshot(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "journal.db")
-	journal, err := OpenJournal(path, JournalOptions{})
+	journal, err := OpenJournal(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -461,7 +396,7 @@ func TestCoordinatorRetriesMarkerlessUncommittedCursorFromEquivalentFullSnapshot
 		t.Fatal(err)
 	}
 
-	reopened, err := OpenJournal(path, JournalOptions{})
+	reopened, err := OpenJournal(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1340,7 +1275,7 @@ func TestJournalAbortAndMissingTokensDoNotChangeHeads(t *testing.T) {
 
 func TestJournalStageAndPublishedStateSurviveRestart(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "journal.db")
-	journal, err := OpenJournal(path, JournalOptions{})
+	journal, err := OpenJournal(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1356,7 +1291,7 @@ func TestJournalStageAndPublishedStateSurviveRestart(t *testing.T) {
 	if err := journal.Close(); err != nil {
 		t.Fatal(err)
 	}
-	reopened, err := OpenJournal(path, JournalOptions{})
+	reopened, err := OpenJournal(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1375,7 +1310,7 @@ func TestJournalStageAndPublishedStateSurviveRestart(t *testing.T) {
 	if err := reopened.Close(); err != nil {
 		t.Fatal(err)
 	}
-	reopened, err = OpenJournal(path, JournalOptions{})
+	reopened, err = OpenJournal(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1388,7 +1323,7 @@ func TestJournalStageAndPublishedStateSurviveRestart(t *testing.T) {
 
 func TestJournalStageSurvivesRestartAndAbortRemovesIt(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "journal.db")
-	journal, err := OpenJournal(path, JournalOptions{})
+	journal, err := OpenJournal(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1402,7 +1337,7 @@ func TestJournalStageSurvivesRestartAndAbortRemovesIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = journal.Close()
-	reopened, err := OpenJournal(path, JournalOptions{})
+	reopened, err := OpenJournal(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1654,7 +1589,7 @@ func TestJournalPublishedTamperingFailsClosed(t *testing.T) {
 		t.Run(string(bucket), func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "journal.db")
 			copyJournal(t, journal.db, path)
-			candidate, openErr := OpenJournal(path, JournalOptions{})
+			candidate, openErr := OpenJournal(path)
 			if openErr != nil {
 				t.Fatal(openErr)
 			}

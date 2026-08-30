@@ -317,8 +317,8 @@ func auditManagedResourceSources(sources map[string]string, requiredCalls []stri
 	}
 
 	managedKinds := make(map[string]struct{}, len(managedResources))
-	for _, kind := range ManagedResourceKinds() {
-		managedKinds[kind] = struct{}{}
+	for _, resource := range managedResources {
+		managedKinds[resource.kind] = struct{}{}
 	}
 	forbiddenFunctions := map[string]struct{}{
 		"desiredDomains":      {},
@@ -523,9 +523,9 @@ type managedPolicySet struct {
 func compositePolicyException(path, name string) (managedPolicySet, bool) {
 	if name == "standaloneBuckets" && hasPathSuffix(path, "pkg/config/standalone.go") {
 		kinds := make([]string, 0, len(managedResources)-1)
-		for _, kind := range ManagedResourceKinds() {
-			if kind != "plugins" {
-				kinds = append(kinds, kind)
+		for _, resource := range managedResources {
+			if resource.kind != "plugins" {
+				kinds = append(kinds, resource.kind)
 			}
 		}
 		return managedPolicySet{label: "exact 12-kind standalone subset", kinds: kinds}, true

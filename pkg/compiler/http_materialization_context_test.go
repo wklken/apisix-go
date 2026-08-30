@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"testing"
 
+	appconfig "github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/plugin"
 	graphql_proxy_cache "github.com/wklken/apisix-go/pkg/plugin/graphql_proxy_cache"
@@ -37,6 +38,8 @@ type runtimeContextPlugin struct {
 	runtimeAcquirer  traffic_split.RuntimeAcquirer
 	upstreamResolver traffic_split.ResourceUpstreamResolver
 	protoResolver    grpc_transcode.ProtoResolver
+	configuredZones  []appconfig.Zone
+	zonesSet         bool
 	prevalidated     bool
 }
 
@@ -59,6 +62,11 @@ func (p *runtimeContextPlugin) SetPublicAPIRegistry(registry *public_api.Registr
 
 func (p *runtimeContextPlugin) SetPurgeRegistry(registry *graphql_proxy_cache.Registry) {
 	p.purgeRegistry = registry
+}
+
+func (p *runtimeContextPlugin) SetConfiguredZones(zones []appconfig.Zone) {
+	p.configuredZones = zones
+	p.zonesSet = true
 }
 
 func (p *runtimeContextPlugin) ValidatePreMaterialization() error {
@@ -134,6 +142,39 @@ func TestDefaultEffectiveBindingOpsInjectCompleteHTTPRuntimeContext(t *testing.T
 	}
 	if instance.runtimeAcquirer == nil || instance.upstreamResolver == nil || instance.protoResolver == nil {
 		t.Fatal("HTTP plugin runtime context was not injected")
+	}
+}
+
+func TestDefaultEffectiveBindingOpsInjectConfiguredZones(t *testing.T) {
+	tests := []struct {
+		name  string
+		zones []appconfig.Zone
+	}{
+		{name: "explicit empty snapshot"},
+		{name: "configured snapshot", zones: []appconfig.Zone{{Name: "cache-one", MemorySize: "1M"}}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			instance := &runtimeContextPlugin{}
+			defaultEffectiveBindingOps().withDefaults([32]byte{1}).applyBootstrap(
+				instance,
+				effectiveBindingRuntimeContext{configured: true, proxyCacheZones: test.zones},
+			)
+
+			if !instance.zonesSet {
+				t.Fatal("generation-local proxy-cache zones were not injected")
+			}
+			if !reflect.DeepEqual(instance.configuredZones, test.zones) {
+				t.Fatalf("configured zones = %#v, want %#v", instance.configuredZones, test.zones)
+			}
+			if len(test.zones) > 0 {
+				test.zones[0].Name = "mutated"
+				if instance.configuredZones[0].Name != "cache-one" {
+					t.Fatal("injected proxy-cache zones alias the runtime context")
+				}
+			}
+		})
 	}
 }
 

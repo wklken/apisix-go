@@ -8,8 +8,8 @@ the shared cache-zone implementation used by `graphql-proxy-cache`.
 - Cache zones come from the immutable effective configuration injected into
   each generation. Validate duplicate names, sizes, absolute disk paths,
   `cache_levels`, unknown zones, and strategy mismatches before use.
-- `RefreshConfiguredZones` exists only for direct-package and test
-  compatibility. It is not the production reload owner.
+- Plugin construction must inject the generation-local zone snapshot before
+  `PostInit`; do not add a process-global configuration fallback.
 - Memory and disk zones are shared by declared zone identity and released by
   generation/plugin lifecycle. Background cleanup must use the injected task
   owner and must be joined during `Stop`.

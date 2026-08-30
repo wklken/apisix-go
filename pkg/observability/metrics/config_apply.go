@@ -117,11 +117,6 @@ func RecordConfigApplyStageFailure(stage ConfigApplyStage) {
 	setConfigApplyReadyLocked(ready)
 }
 
-// RecordConfigApplyFailure preserves the legacy provider/store stage API.
-func RecordConfigApplyFailure() {
-	RecordConfigApplyStageFailure(ConfigApplyStageProvider)
-}
-
 // RecordConfigApplyAttemptFailure records a failed provider attempt without
 // replacing the readiness state established by the last acknowledged apply.
 // Provider and stage are intentionally bounded call-site metadata rather than
@@ -248,11 +243,6 @@ func recordConfigApplyQuarantineLocked(source *int, count int) {
 		configApplyState.quarantined.Set(float64(configApplyState.quarantineCount))
 	}
 	setConfigApplyReadyLocked(ready)
-}
-
-// RecordConfigApplySuccess preserves the legacy provider/store stage API.
-func RecordConfigApplySuccess() {
-	RecordConfigApplyStageSuccess(ConfigApplyStageProvider)
 }
 
 // GetReadiness returns the internal observed/healthy state for health

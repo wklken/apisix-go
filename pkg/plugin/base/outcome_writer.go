@@ -41,8 +41,7 @@ type ResponseCapture struct {
 }
 
 // CaptureResponseOutcomeController installs one response capture controller
-// around w. The compatibility wrapper below exposes the historical callback
-// tuple while independent callers migrate to the controller API.
+// around w and returns the controller used to observe and finalize it.
 func CaptureResponseOutcomeController(w http.ResponseWriter) (http.ResponseWriter, *ResponseCapture) {
 	capture := &ResponseCapture{
 		root: w,
@@ -127,17 +126,6 @@ func (c *ResponseCapture) HTTPWireLength(r *http.Request) (size int64, known boo
 		header = root.Header().Clone()
 	}
 	return apisixlog.EstimateHTTP1ResponseLength(r, header, outcome, bodyPrefix)
-}
-
-// CaptureResponseOutcome is retained only as a direct-package compatibility
-// boundary. New production code should use CaptureResponseOutcomeController.
-func CaptureResponseOutcome(w http.ResponseWriter) (
-	wrapped http.ResponseWriter,
-	snapshot func() ctx.ResponseOutcome,
-	closeHijacked func() error,
-) {
-	wrapped, capture := CaptureResponseOutcomeController(w)
-	return wrapped, capture.Outcome, capture.CloseHijacked
 }
 
 type captureContextKey struct{}

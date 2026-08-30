@@ -58,50 +58,9 @@ type MemoryZoneStore struct {
 	once sync.Once
 }
 
-// CacheZoneDeclared reports whether a zone is present in the configured
-// proxy-cache registry. An empty registry intentionally retains compatibility
-// with local, process-only cache fallbacks.
-func CacheZoneDeclared(name string) bool {
-	return declaredCacheZone(name)
-}
-
-// ValidateCacheZone validates a plugin cache_zone against the configured
-// registry when one is present.
-func ValidateCacheZone(name string) error {
-	return validateCacheZoneRegistry(name)
-}
-
-// RefreshConfiguredZones validates and atomically publishes a complete
-// proxy-cache zone snapshot. An invalid snapshot leaves the last valid
-// configuration untouched; existing plugin instances keep their current
-// memory-zone generation until they stop.
-func RefreshConfiguredZones(zones []appconfig.Zone) error {
-	cloned := append([]appconfig.Zone(nil), zones...)
-	if _, err := validateZoneDefinitions(cloned); err != nil {
-		return err
-	}
-
-	configuredZoneRefreshMu.Lock()
-	defer configuredZoneRefreshMu.Unlock()
-	configuredZoneSnapshot = cloned
-	return nil
-}
-
-// ValidateCacheZoneStrategy validates a plugin cache_zone against the
-// configured zone's storage strategy. A configured disk_path makes a zone
-// disk-backed; a zone without one is memory-backed.
-func ValidateCacheZoneStrategy(name, strategy string) error {
-	return validateCacheZoneStrategy(configuredZones(), name, strategy)
-}
-
-// ValidateCacheZoneStrategyWithZones validates against an immutable
-// generation-local zone snapshot instead of the process compatibility
-// registry.
-func ValidateCacheZoneStrategyWithZones(zones []appconfig.Zone, name, strategy string) error {
-	return validateCacheZoneStrategy(zones, name, strategy)
-}
-
-func validateCacheZoneStrategy(zones []appconfig.Zone, name, strategy string) error {
+// ValidateCacheZoneStrategy validates against an immutable generation-local
+// zone snapshot.
+func ValidateCacheZoneStrategy(zones []appconfig.Zone, name, strategy string) error {
 	seen, err := validateZoneDefinitions(zones)
 	if err != nil {
 		return err
@@ -125,18 +84,9 @@ func validateCacheZoneStrategy(zones []appconfig.Zone, name, strategy string) er
 	return nil
 }
 
-// AcquireMemoryZoneStore acquires a reference to a named shared memory zone.
-// Call Close when the owning plugin instance stops.
-func AcquireMemoryZoneStore(name string) *MemoryZoneStore {
-	if name == "" {
-		return nil
-	}
-	return &MemoryZoneStore{zone: acquireMemoryZone(name), name: name}
-}
-
-// AcquireMemoryZoneStoreWithZones acquires a store from an immutable
-// generation-local zone snapshot.
-func AcquireMemoryZoneStoreWithZones(zones []appconfig.Zone, name string) *MemoryZoneStore {
+// AcquireMemoryZoneStore acquires a store from an immutable generation-local
+// zone snapshot.
+func AcquireMemoryZoneStore(zones []appconfig.Zone, name string) *MemoryZoneStore {
 	if name == "" {
 		return nil
 	}
@@ -335,11 +285,6 @@ var memoryZoneRegistry = struct {
 	zones: make(map[string]*memoryZone),
 }
 
-var (
-	configuredZoneRefreshMu sync.RWMutex
-	configuredZoneSnapshot  []appconfig.Zone
-)
-
 type varyIndex struct {
 	headers    []string
 	signatures []string
@@ -363,17 +308,9 @@ type DiskZoneStore struct {
 	diskSize int64
 }
 
-// NewDiskZoneStore resolves and prepares a configured disk zone. configured is
-// false when the process has no proxy-cache zone registry, preserving the
-// compatibility in-memory fallback used by local tests and development.
-func NewDiskZoneStore(name string) (*DiskZoneStore, bool, error) {
-	root, diskSize, configured, err := diskZonePath(name)
-	return newDiskZoneStore(name, root, diskSize, configured, err)
-}
-
-// NewDiskZoneStoreWithZones resolves and prepares a disk store from an
-// immutable generation-local zone snapshot.
-func NewDiskZoneStoreWithZones(zones []appconfig.Zone, name string) (*DiskZoneStore, bool, error) {
+// NewDiskZoneStore resolves and prepares a disk store from an immutable
+// generation-local zone snapshot.
+func NewDiskZoneStore(zones []appconfig.Zone, name string) (*DiskZoneStore, bool, error) {
 	root, diskSize, configured, err := diskZonePathIn(zones, name)
 	return newDiskZoneStore(name, root, diskSize, configured, err)
 }
@@ -487,10 +424,6 @@ func releaseMemoryZoneRef(name string, zone *memoryZone) {
 	memoryZoneRegistry.Unlock()
 }
 
-func declaredCacheZone(name string) bool {
-	return declaredCacheZoneIn(configuredZones(), name)
-}
-
 func declaredCacheZoneIn(zones []appconfig.Zone, name string) bool {
 	for _, zone := range zones {
 		if zone.Name == name {
@@ -498,10 +431,6 @@ func declaredCacheZoneIn(zones []appconfig.Zone, name string) bool {
 		}
 	}
 	return false
-}
-
-func acquireMemoryZone(name string) *memoryZone {
-	return acquireMemoryZoneIn(configuredZones(), name)
 }
 
 func acquireMemoryZoneIn(zones []appconfig.Zone, name string) *memoryZone {
@@ -551,28 +480,6 @@ func cacheZoneFingerprintIn(zones []appconfig.Zone, name string) string {
 		}, "\x00")
 	}
 	return ""
-}
-
-func validateCacheZoneRegistry(cacheZone string) error {
-	seen, err := validateZoneDefinitions(configuredZones())
-	if err != nil {
-		return err
-	}
-	if len(seen) == 0 {
-		return nil
-	}
-	if cacheZone != "" {
-		if _, ok := seen[cacheZone]; !ok {
-			return fmt.Errorf("proxy-cache cache_zone %q is not declared", cacheZone)
-		}
-	}
-	return nil
-}
-
-func configuredZones() []appconfig.Zone {
-	configuredZoneRefreshMu.RLock()
-	defer configuredZoneRefreshMu.RUnlock()
-	return append([]appconfig.Zone(nil), configuredZoneSnapshot...)
 }
 
 func validateZoneDefinitions(zones []appconfig.Zone) (map[string]struct{}, error) {

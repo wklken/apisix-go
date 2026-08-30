@@ -81,6 +81,7 @@ func TestCompileHTTPBindsGenerationGraphQLPurgeRegistry(t *testing.T) {
 	registry := graphql_proxy_cache.NewRegistry()
 	plugin := &graphql_proxy_cache.Plugin{}
 	plugin.Config().(*graphql_proxy_cache.Config).CacheStrategy = "memory"
+	plugin.SetConfiguredZones(nil)
 	plugin.SetDependencies(base.Dependencies{Config: &appconfig.EffectiveConfig{}})
 	plugin.SetPurgeRegistry(registry)
 	if err := plugin.Init(); err != nil {

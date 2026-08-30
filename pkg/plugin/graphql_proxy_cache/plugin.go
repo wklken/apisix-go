@@ -179,13 +179,6 @@ func (p *Plugin) SetConfiguredZones(zones []appconfig.Zone) {
 	p.zonesSet = true
 }
 
-func (p *Plugin) effectiveConfiguredZones() ([]appconfig.Zone, bool) {
-	if p.zonesSet {
-		return slices.Clone(p.configuredZones), true
-	}
-	return nil, false
-}
-
 func (p *Plugin) PostInit() error {
 	effective := p.StaticConfig()
 	if effective == nil {
@@ -208,14 +201,11 @@ func (p *Plugin) PostInit() error {
 		value := true
 		p.config.ConsumerIsolation = &value
 	}
-	zones, zonesSet := p.effectiveConfiguredZones()
-	var err error
-	if zonesSet {
-		err = proxy_cache.ValidateCacheZoneStrategyWithZones(zones, p.config.CacheZone, p.config.CacheStrategy)
-	} else {
-		err = proxy_cache.ValidateCacheZoneStrategy(p.config.CacheZone, p.config.CacheStrategy)
+	if !p.zonesSet {
+		return fmt.Errorf("configured proxy-cache zones are required")
 	}
-	if err != nil {
+	zones := slices.Clone(p.configuredZones)
+	if err := proxy_cache.ValidateCacheZoneStrategy(zones, p.config.CacheZone, p.config.CacheStrategy); err != nil {
 		return err
 	}
 	p.configFingerprintValue = p.buildConfigFingerprint()
@@ -229,22 +219,12 @@ func (p *Plugin) PostInit() error {
 		p.maxSize = effective.Config.GraphQL.MaxSize
 	}
 	if p.config.CacheStrategy == "memory" {
-		if zonesSet {
-			if len(zones) > 0 {
-				p.memoryStore = proxy_cache.AcquireMemoryZoneStoreWithZones(zones, p.config.CacheZone)
-			}
-		} else if proxy_cache.CacheZoneDeclared(p.config.CacheZone) {
-			p.memoryStore = proxy_cache.AcquireMemoryZoneStore(p.config.CacheZone)
+		if len(zones) > 0 {
+			p.memoryStore = proxy_cache.AcquireMemoryZoneStore(zones, p.config.CacheZone)
 		}
 	}
 	if p.config.CacheStrategy == "disk" {
-		var store *proxy_cache.DiskZoneStore
-		var configured bool
-		if zonesSet {
-			store, configured, err = proxy_cache.NewDiskZoneStoreWithZones(zones, p.config.CacheZone)
-		} else {
-			store, configured, err = proxy_cache.NewDiskZoneStore(p.config.CacheZone)
-		}
+		store, configured, err := proxy_cache.NewDiskZoneStore(zones, p.config.CacheZone)
 		if err != nil {
 			return err
 		}

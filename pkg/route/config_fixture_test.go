@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -64,10 +65,15 @@ func testPluginInitializationError(
 	t testing.TB,
 	name string,
 	config resource.PluginConfig,
+	zones ...[]appconfig.Zone,
 ) error {
 	t.Helper()
+	effective := testEffectiveConfig()
+	if len(zones) > 0 {
+		effective.Config.Apisix.ProxyCache.Zones = slices.Clone(zones[0])
+	}
 	instance := plugin.New(name, base.Dependencies{
-		Config:         testEffectiveConfig(),
+		Config:         effective,
 		DataEncryption: testDataEncryptionResolver(),
 	})
 	if instance == nil {
@@ -78,6 +84,9 @@ func testPluginInitializationError(
 	}
 	if err := util.Parse(config, instance.Config()); err != nil {
 		return err
+	}
+	if setter, ok := instance.(interface{ SetConfiguredZones([]appconfig.Zone) }); ok {
+		setter.SetConfiguredZones(slices.Clone(effective.Config.Apisix.ProxyCache.Zones))
 	}
 	capabilityValue, scope, cleanup := testutil.ScopedSecretHarness(
 		t,
@@ -285,6 +294,9 @@ func testScopedSecretPluginBinding(
 	if err := util.Parse(config, instance.Config()); err != nil {
 		t.Fatalf("plugin %q config error = %v", name, err)
 	}
+	if setter, ok := instance.(interface{ SetConfiguredZones([]appconfig.Zone) }); ok {
+		setter.SetConfiguredZones(nil)
+	}
 	if err := plugin.MaterializeScopedPluginSecrets(
 		context.Background(),
 		secret.Scope{
@@ -389,6 +401,13 @@ func testPluginBindingForSourceWithDependencies(
 	}
 	if err := util.Parse(config, instance.Config()); err != nil {
 		t.Fatalf("plugin %q config error = %v", name, err)
+	}
+	if setter, ok := instance.(interface{ SetConfiguredZones([]appconfig.Zone) }); ok {
+		var zones []appconfig.Zone
+		if dependencies.Config != nil {
+			zones = dependencies.Config.Config.Apisix.ProxyCache.Zones
+		}
+		setter.SetConfiguredZones(slices.Clone(zones))
 	}
 	if setter, ok := instance.(interface{ SetRouteContext(string, string) }); ok {
 		setter.SetRouteContext(routeResource.ID, serverAddr)

@@ -8,7 +8,7 @@ code and focused tests remain authoritative for implementation details.
 
 | Question | Source |
 | --- | --- |
-| What is implemented and verified for each plugin? | Generated [plugin status](plugins.md) |
+| Where is plugin behavior implemented and tested? | `pkg/plugin/<plugin>` and `t/plugin` |
 | How is static configuration loaded? | [Configuration](configuration.md) |
 | What can an APISIX HTTP user expect? | [HTTP data-plane compatibility](http-data-plane.md) |
 | How is an HTTP candidate qualified? | [HTTP candidate qualification](runbooks/http-candidate-qualification.md) |
@@ -17,24 +17,22 @@ code and focused tests remain authoritative for implementation details.
 
 ## Compatibility model
 
-Observable APISIX 3.17 behavior is the default target. Go-native extensions or
-security boundaries may differ only when they are declared and evidenced.
-Registration and inventory counts do not prove compatibility or production
-readiness.
+Observable Apache APISIX 3.17 HTTP data-plane behavior is the product target.
+The official APISIX 3.17 source and tests define compatibility; validation
+artifacts do not participate in runtime behavior.
 
-`pkg/capability/manifest.yaml` is the editable source for plugin factories,
-aliases, behavior status, evidence, gaps, divergences, platforms, and secret
-declarations. It generates the runtime registry and human status projections:
+`pkg/capability/manifest.yaml` is a temporary runtime registry source for
+factory imports, execution metadata, and secret fields. It is not a behavior,
+evidence, readiness, divergence, or platform-status ledger. The generator
+produces only the Go plugin registry:
 
 ```text
 pkg/capability/manifest.yaml
   -> pkg/plugin/registry_gen.go
-  -> docs/plugins.md
-  -> generated README summaries
 ```
 
-Generated files must not be edited directly. Validation and candidate evidence
-describe what was tested; they never change runtime behavior.
+The generated registry must not be edited directly. Registration and inventory
+counts do not prove compatibility or production readiness.
 
 Plugin verification has separate owners: package tests cover plugin-local
 logic, `t/plugin` covers candidate-only real-process behavior, and the opt-in
@@ -187,7 +185,7 @@ re-panic decision.
 
 | Area | Current boundary |
 | --- | --- |
-| HTTP | APISIX-compatible route, service, consumer, upstream, and plugin pipeline with explicit gaps in [plugin status](plugins.md). |
+| HTTP | APISIX-compatible route, service, consumer, upstream, and plugin pipeline. |
 | Frontend TLS | TLS 1.2/1.3, exact/wildcard/fallback SNI certificates, session tickets, and the configured client-CA policy. |
 | Stream | Raw TCP with immutable route snapshots and at most one `mqtt-proxy` protocol binding. |
 | Not implemented | UDP, stream TLS/mTLS, PROXY protocol, service discovery, general stream-plugin chaining, external plugin runners, WASM, XRPC, QUIC, and HTTP/3. |
@@ -234,9 +232,9 @@ and stability evidence; the repository does not publish that image. See
 
 ## Architecture decisions
 
-ADRs record intentional compatibility or security differences. Proposed ADRs
-describe implemented candidate behavior but are not accepted production
-divergences until owner approval is recorded in the manifest.
+ADRs record unavoidable compatibility differences that remain in the current
+implementation. They are architecture documentation, not runtime approval or
+qualification state.
 
 | ADR | Status | Decision |
 | --- | --- | --- |

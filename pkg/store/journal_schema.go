@@ -43,10 +43,6 @@ var (
 	}
 )
 
-type JournalOptions struct {
-	LegacyResourceBuckets []string
-}
-
 type artifactEnvelope struct {
 	Digest  [32]byte `json:"digest"`
 	Size    uint64   `json:"size"`
@@ -59,72 +55,30 @@ type snapshotWire struct {
 	Tombstones []generation.Tombstone `json:"tombstones"`
 }
 
-func OpenJournal(path string, options JournalOptions) (*Store, error) {
-	if err := validateLegacyBucketNames(options.LegacyResourceBuckets); err != nil {
-		return nil, err
-	}
+func OpenJournal(path string) (*Store, error) {
 	db, err := bolt.Open(path, 0o600, &bolt.Options{Timeout: storeOpenTimeout})
 	if err != nil {
 		return nil, fmt.Errorf("open generation journal %q: %w", path, err)
 	}
 	storage := &Store{db: db}
-	if err := storage.initializeJournal(options.LegacyResourceBuckets); err != nil {
+	if err := storage.initializeJournal(); err != nil {
 		return nil, errors.Join(err, db.Close())
 	}
 	return storage, nil
 }
 
-func (s *Store) initializeJournal(legacyBucketNames []string) error {
-	initialized, version, err := inspectJournal(s.db)
+func (s *Store) initializeJournal() error {
+	initialized, err := inspectJournal(s.db)
 	if err != nil {
 		return err
 	}
 	if initialized {
-		if version == currentJournalSchemaVersion {
-			return nil
-		}
-		return s.migrateJournal(version)
+		return nil
 	}
 	return s.db.Update(func(tx *bolt.Tx) error {
-		if err := requireNoJournalBuckets(tx); err != nil {
-			return err
+		if hasAnyBucket(tx) {
+			return generation.ErrIntegrity
 		}
-
-		legacyNames := uniqueBucketNames(legacyBucketNames)
-		resources := make([]generation.Resource, 0)
-		legacyExists := false
-		for _, name := range legacyNames {
-			bucket := tx.Bucket([]byte(name))
-			if bucket == nil {
-				continue
-			}
-			legacyExists = true
-			if err := bucket.ForEach(func(id, value []byte) error {
-				if value == nil {
-					return generation.ErrIntegrity
-				}
-				resources = append(resources, generation.Resource{
-					Key:   generation.ResourceKey{Kind: name, ID: string(bytes.Clone(id))},
-					Value: bytes.Clone(value),
-				})
-				return nil
-			}); err != nil {
-				return err
-			}
-		}
-		if !legacyExists {
-			nonempty := false
-			if err := tx.ForEach(func(_ []byte, _ *bolt.Bucket) error {
-				nonempty = true
-				return nil
-			}); err != nil {
-				return err
-			}
-			if nonempty {
-				return generation.ErrIntegrity
-			}
-		}
-
 		for _, name := range journalBuckets {
 			if _, err := tx.CreateBucket(name); err != nil {
 				return fmt.Errorf("create journal bucket %q: %w", name, err)
@@ -134,59 +88,15 @@ func (s *Store) initializeJournal(legacyBucketNames []string) error {
 		if err := meta.Put(schemaVersionKey, encodeUint64(currentJournalSchemaVersion)); err != nil {
 			return err
 		}
-		if err := meta.Put(integrityAlgorithmKey, []byte("sha256")); err != nil {
-			return err
-		}
-
-		if legacyExists {
-			snapshot, err := generation.NewSnapshot(1, resources, nil)
-			if err != nil {
-				return fmt.Errorf("build imported desired snapshot: %w", err)
-			}
-			if err := writeDesiredHeadTx(tx, snapshot); err != nil {
-				return err
-			}
-		}
-		for _, name := range legacyNames {
-			if tx.Bucket([]byte(name)) == nil {
-				continue
-			}
-			if err := tx.DeleteBucket([]byte(name)); err != nil {
-				return fmt.Errorf("delete imported legacy bucket %q: %w", name, err)
-			}
-		}
-		return nil
+		return meta.Put(integrityAlgorithmKey, []byte("sha256"))
 	})
 }
 
-func (s *Store) migrateJournal(version uint64) error {
-	if version != 1 {
-		return generation.ErrIntegrity
-	}
-	return s.db.Update(func(tx *bolt.Tx) error {
-		initialized, foundVersion, err := verifyJournalMetaCompatibleTx(tx, currentJournalSchemaVersion)
-		if err != nil {
-			return err
-		}
-		if !initialized || foundVersion != version {
-			return generation.ErrIntegrity
-		}
-		if err := validateDesiredHeadTx(tx); err != nil {
-			return err
-		}
-		return tx.Bucket(journalMetaBucket).Put(
-			schemaVersionKey,
-			encodeUint64(currentJournalSchemaVersion),
-		)
-	})
-}
-
-func inspectJournal(db *bolt.DB) (bool, uint64, error) {
+func inspectJournal(db *bolt.DB) (bool, error) {
 	initialized := false
-	var version uint64
 	err := db.View(func(tx *bolt.Tx) error {
 		var err error
-		initialized, version, err = verifyJournalMetaCompatibleTx(tx, currentJournalSchemaVersion)
+		initialized, err = verifyJournalMetaTx(tx)
 		if err != nil || !initialized {
 			return err
 		}
@@ -195,65 +105,51 @@ func inspectJournal(db *bolt.DB) (bool, uint64, error) {
 		}
 		return nil
 	})
-	return initialized, version, err
+	return initialized, err
 }
 
 func verifyJournalMetaTx(tx *bolt.Tx) (bool, error) {
-	initialized, version, err := verifyJournalMetaCompatibleTx(tx, currentJournalSchemaVersion)
-	if err != nil || !initialized {
-		return initialized, err
+	meta := tx.Bucket(journalMetaBucket)
+	if meta == nil {
+		if hasAnyBucket(tx) {
+			return false, generation.ErrIntegrity
+		}
+		return false, nil
+	}
+	version, err := decodeUint64(meta.Get(schemaVersionKey))
+	if err != nil || version == 0 {
+		return false, generation.ErrIntegrity
+	}
+	if version > currentJournalSchemaVersion {
+		return false, generation.ErrNewerSchema
 	}
 	if version != currentJournalSchemaVersion {
+		return false, generation.ErrIntegrity
+	}
+	if !bytes.Equal(meta.Get(integrityAlgorithmKey), []byte("sha256")) {
+		return false, generation.ErrIntegrity
+	}
+	for _, name := range journalBuckets {
+		if tx.Bucket(name) == nil {
+			return false, generation.ErrIntegrity
+		}
+	}
+	bucketCount := 0
+	if err := tx.ForEach(func(_ []byte, _ *bolt.Bucket) error {
+		bucketCount++
+		return nil
+	}); err != nil {
+		return false, err
+	}
+	if bucketCount != len(journalBuckets) {
 		return false, generation.ErrIntegrity
 	}
 	return true, nil
 }
 
-func verifyJournalMetaCompatibleTx(tx *bolt.Tx, maxVersion uint64) (bool, uint64, error) {
-	meta := tx.Bucket(journalMetaBucket)
-	if meta == nil {
-		if hasJournalDataBucket(tx) {
-			return false, 0, generation.ErrIntegrity
-		}
-		return false, 0, nil
-	}
-	version, err := decodeUint64(meta.Get(schemaVersionKey))
-	if err != nil || version == 0 {
-		return false, 0, generation.ErrIntegrity
-	}
-	if version > maxVersion {
-		return false, 0, generation.ErrNewerSchema
-	}
-	if version != 1 && version != currentJournalSchemaVersion {
-		return false, 0, generation.ErrIntegrity
-	}
-	if !bytes.Equal(meta.Get(integrityAlgorithmKey), []byte("sha256")) {
-		return false, 0, generation.ErrIntegrity
-	}
-	for _, name := range journalBuckets {
-		if tx.Bucket(name) == nil {
-			return false, 0, generation.ErrIntegrity
-		}
-	}
-	return true, version, nil
-}
-
-func requireNoJournalBuckets(tx *bolt.Tx) error {
-	for _, name := range journalBuckets {
-		if tx.Bucket(name) != nil {
-			return generation.ErrIntegrity
-		}
-	}
-	return nil
-}
-
-func hasJournalDataBucket(tx *bolt.Tx) bool {
-	for _, name := range journalBuckets[1:] {
-		if tx.Bucket(name) != nil {
-			return true
-		}
-	}
-	return false
+func hasAnyBucket(tx *bolt.Tx) bool {
+	name, _ := tx.Cursor().First()
+	return name != nil
 }
 
 func validateDesiredHeadTx(tx *bolt.Tx) error {
@@ -417,33 +313,6 @@ func (s *Store) Revisions(ctx context.Context) (generation.RevisionSet, error) {
 		return contextErr(ctx)
 	})
 	return revisions, err
-}
-
-func uniqueBucketNames(names []string) []string {
-	result := make([]string, 0, len(names))
-	seen := make(map[string]struct{}, len(names))
-	for _, name := range names {
-		if _, exists := seen[name]; exists {
-			continue
-		}
-		seen[name] = struct{}{}
-		result = append(result, name)
-	}
-	return result
-}
-
-func validateLegacyBucketNames(names []string) error {
-	for _, name := range names {
-		if name == "" {
-			return generation.ErrIntegrity
-		}
-		for _, reserved := range journalBuckets {
-			if name == string(reserved) {
-				return generation.ErrIntegrity
-			}
-		}
-	}
-	return nil
 }
 
 func encodeUint64(value uint64) []byte {

@@ -337,7 +337,7 @@ func TestStartupLoadsOneManifestForEffectiveConfigAndCompiler(t *testing.T) {
 			return secret.NewGenerationSecretResolver(service)
 		},
 		mkdirAll: func(string, os.FileMode) error { recorder.record("mkdir"); return nil },
-		openJournal: func(string, store.JournalOptions) (generation.Journal, error) {
+		openJournal: func(string) (generation.Journal, error) {
 			recorder.record("open-journal")
 			return journal, nil
 		},
@@ -402,7 +402,7 @@ func TestStartupJournalRecoveryFailureClosesJournalOnly(t *testing.T) {
 		},
 		close: func() error { recorder.record("journal-close"); return nil },
 	}
-	factories.openJournal = func(string, store.JournalOptions) (generation.Journal, error) {
+	factories.openJournal = func(string) (generation.Journal, error) {
 		recorder.record("open-journal")
 		return journal, nil
 	}
@@ -425,7 +425,7 @@ func TestStartupJournalRecoveryFailureClosesJournalOnly(t *testing.T) {
 	}
 }
 
-func TestStartupImportsLegacyBucketsAsDesiredOnlyBeforeProvider(t *testing.T) {
+func TestStartupRejectsUnrecognizedJournalBeforeServerConstruction(t *testing.T) {
 	recorder := &startupCallRecorder{}
 	factories := startupSuccessFactories(t, recorder)
 	manifest, effective, catalog, encryption := startupInputs(t)
@@ -455,7 +455,7 @@ func TestStartupImportsLegacyBucketsAsDesiredOnlyBeforeProvider(t *testing.T) {
 		if createErr != nil {
 			return createErr
 		}
-		return bucket.Put([]byte("legacy"), []byte(`{"id":"legacy","uri":"/legacy"}`))
+		return bucket.Put([]byte("unexpected"), []byte(`{"id":"unexpected","uri":"/unexpected"}`))
 	}); err != nil {
 		_ = db.Close()
 		t.Fatal(err)
@@ -463,47 +463,20 @@ func TestStartupImportsLegacyBucketsAsDesiredOnlyBeforeProvider(t *testing.T) {
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
-	factories.openJournal = func(gotPath string, options store.JournalOptions) (generation.Journal, error) {
+	factories.openJournal = func(gotPath string) (generation.Journal, error) {
 		recorder.record("open-journal")
-		if gotPath != path || !slices.Contains(options.LegacyResourceBuckets, "routes") {
-			t.Fatalf("OpenJournal(%q, %v), want %q with routes import", gotPath, options, path)
+		if gotPath != path {
+			t.Fatalf("OpenJournal(%q), want %q", gotPath, path)
 		}
-		return store.OpenJournal(gotPath, options)
-	}
-	factories.newServer = func(
-		_ *config.EffectiveConfig,
-		_ *capability.Manifest,
-		_ data_encryption.Service,
-		resolver *secret.GenerationSecretResolver,
-		journal generation.Journal,
-		recovery generation.RecoveryState,
-	) (serverLifecycle, error) {
-		recorder.record("new-server")
-		resources := recovery.Desired.Resources()
-		if recovery.Desired.Revision() != 1 || len(resources) != 1 ||
-			resources[0].Key != (generation.ResourceKey{Kind: "routes", ID: "legacy"}) {
-			t.Fatalf("legacy recovery desired = revision %d resources %v", recovery.Desired.Revision(), resources)
-		}
-		if len(recovery.Published) != 0 {
-			t.Fatalf("legacy import invented published recovery = %v", recovery.Published)
-		}
-		_ = resolver.Close(context.Background())
-		_ = journal.Close()
-		return &fakeServerLifecycle{
-			start:    func(context.Context) error { return nil },
-			shutdown: func(context.Context) error { return nil },
-		}, nil
-	}
-	factories.runServer = func(serverLifecycle) error {
-		recorder.record("provider")
-		return nil
+		return store.OpenJournal(gotPath)
 	}
 
-	if err := startWithOptionsWithFactories(rootOptions{}, factories); err != nil {
-		t.Fatalf("startWithOptionsWithFactories() error = %v", err)
+	err = startWithOptionsWithFactories(rootOptions{}, factories)
+	if !errors.Is(err, generation.ErrIntegrity) {
+		t.Fatalf("startWithOptionsWithFactories() error = %v, want ErrIntegrity", err)
 	}
-	if calls := recorder.snapshot(); slices.Index(calls, "new-server") > slices.Index(calls, "provider") {
-		t.Fatalf("provider ran before legacy recovery was installed: %v", calls)
+	if calls := recorder.snapshot(); slices.Contains(calls, "new-server") || slices.Contains(calls, "run-server") {
+		t.Fatalf("invalid journal reached server construction: %v", calls)
 	}
 	db, err = bolt.Open(path, 0o600, nil)
 	if err != nil {
@@ -511,8 +484,8 @@ func TestStartupImportsLegacyBucketsAsDesiredOnlyBeforeProvider(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 	if err := db.View(func(tx *bolt.Tx) error {
-		if tx.Bucket([]byte("routes")) != nil {
-			t.Fatal("legacy routes bucket remains after transactional import")
+		if tx.Bucket([]byte("routes")) == nil {
+			t.Fatal("rejected routes bucket was modified")
 		}
 		return nil
 	}); err != nil {
@@ -572,7 +545,7 @@ func startupSuccessFactories(t *testing.T, recorder *startupCallRecorder) startu
 			return resolver.Close(ctx)
 		},
 		mkdirAll: func(string, os.FileMode) error { recorder.record("mkdir"); return nil },
-		openJournal: func(string, store.JournalOptions) (generation.Journal, error) {
+		openJournal: func(string) (generation.Journal, error) {
 			recorder.record("open-journal")
 			return journal, nil
 		},

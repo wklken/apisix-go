@@ -169,7 +169,7 @@ func (s *Store) LoadAcknowledgement(
 		return generation.Acknowledgement{}, generation.ErrNotFound
 	}
 	var acknowledgement generation.Acknowledgement
-	err := s.db.Update(func(tx *bolt.Tx) error {
+	err := s.db.View(func(tx *bolt.Tx) error {
 		if err := contextErr(ctx); err != nil {
 			return err
 		}
@@ -209,14 +209,7 @@ func (s *Store) LoadAcknowledgement(
 			return generation.ErrIntegrity
 		}
 		if record.Committed == nil {
-			backfilled, found, err := backfillMarkerlessAcknowledgementTx(tx, record)
-			if err != nil {
-				return err
-			}
-			if !found {
-				return generation.ErrNotFound
-			}
-			record.Committed = &backfilled
+			return generation.ErrNotFound
 		}
 		if err := validateCommittedAcknowledgement(record); err != nil {
 			return err
@@ -256,55 +249,6 @@ func (s *Store) LoadAcknowledgement(
 	return cloneAcknowledgement(acknowledgement), nil
 }
 
-func backfillMarkerlessAcknowledgementTx(
-	tx *bolt.Tx,
-	record cursorRecord,
-) (generation.Acknowledgement, bool, error) {
-	if len(record.Ticket.RequiredDomains) == 0 {
-		return generation.Acknowledgement{}, false, nil
-	}
-	revisions, err := loadRevisionSetTx(tx)
-	if err != nil {
-		return generation.Acknowledgement{}, false, err
-	}
-	if revisions.Desired != record.Ticket.DesiredRevision {
-		return generation.Acknowledgement{}, false, generation.ErrIntegrity
-	}
-	ack := generation.Acknowledgement{
-		Cursor: record.Cursor, Revisions: revisions,
-		Decisions: make(map[generation.Domain][]generation.ResourceDecision, len(record.Ticket.RequiredDomains)),
-	}
-	exact := 0
-	for _, domain := range record.Ticket.RequiredDomains {
-		published, loadErr := loadPublishedTx(tx, domain)
-		if errors.Is(loadErr, generation.ErrNotFound) {
-			continue
-		}
-		if loadErr != nil {
-			return generation.Acknowledgement{}, false, loadErr
-		}
-		if published.Artifact.Revision < record.Ticket.DesiredRevision {
-			continue
-		}
-		if published.Artifact.Revision > record.Ticket.DesiredRevision ||
-			revisionForDomain(revisions, domain) != record.Ticket.DesiredRevision {
-			return generation.Acknowledgement{}, false, generation.ErrIntegrity
-		}
-		exact++
-		ack.Decisions[domain] = canonicalDecisions(published.Decisions)
-	}
-	if exact == 0 {
-		return generation.Acknowledgement{}, false, nil
-	}
-	if exact != len(record.Ticket.RequiredDomains) {
-		return generation.Acknowledgement{}, false, generation.ErrIntegrity
-	}
-	if err := putCommittedAcknowledgementTx(tx, record.Ticket, ack); err != nil {
-		return generation.Acknowledgement{}, false, err
-	}
-	return cloneAcknowledgement(ack), true, nil
-}
-
 func (s *Store) Commit(
 	ctx context.Context,
 	token generation.PublicationToken,
@@ -336,6 +280,9 @@ func (s *Store) Commit(
 		}
 		desired, err := loadDesiredSnapshotTx(tx, staged.Ticket.DesiredRevision)
 		if err != nil {
+			return err
+		}
+		if err := validateNewDecisionCodes(staged.Set); err != nil {
 			return err
 		}
 		if err := validatePublicationPolicyTx(tx, desired, staged.Set); err != nil {

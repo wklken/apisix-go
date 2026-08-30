@@ -1,7 +1,6 @@
 package store
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
@@ -22,7 +21,7 @@ import (
 
 func TestOpenJournalInitializesEmptyAtRevisionZero(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "journal.db")
-	journal, err := OpenJournal(path, JournalOptions{})
+	journal, err := OpenJournal(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +67,7 @@ func TestOpenJournalInitializesEmptyAtRevisionZero(t *testing.T) {
 
 func TestJournalCloseIsConcurrentAndIdempotent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "journal.db")
-	journal, err := OpenJournal(path, JournalOptions{})
+	journal, err := OpenJournal(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,14 +94,14 @@ func TestJournalCloseIsConcurrentAndIdempotent(t *testing.T) {
 
 func TestOpenJournalSamePathLockCompetitionTimesOutAndRecovers(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "journal.db")
-	owner, err := OpenJournal(path, JournalOptions{})
+	owner, err := OpenJournal(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = owner.Close() })
 
 	started := time.Now()
-	contender, err := OpenJournal(path, JournalOptions{})
+	contender, err := OpenJournal(path)
 	elapsed := time.Since(started)
 	if contender != nil {
 		_ = contender.Close()
@@ -118,7 +117,7 @@ func TestOpenJournalSamePathLockCompetitionTimesOutAndRecovers(t *testing.T) {
 	if err := owner.Close(); err != nil {
 		t.Fatalf("owner Close() error = %v", err)
 	}
-	reopened, err := OpenJournal(path, JournalOptions{})
+	reopened, err := OpenJournal(path)
 	if err != nil {
 		t.Fatalf("OpenJournal() after lock release error = %v", err)
 	}
@@ -127,117 +126,96 @@ func TestOpenJournalSamePathLockCompetitionTimesOutAndRecovers(t *testing.T) {
 	}
 }
 
-func TestOpenJournalImportsLegacyBucketsAsDesiredOnly(t *testing.T) {
-	raw := []byte{0xff, 0x00, 0x01}
-	path := seedLegacyDatabase(t, map[string]map[string][]byte{
-		"routes": {"r1": raw},
-		"audit":  {"keep": []byte("unlisted")},
-	})
-	journal, err := OpenJournal(path, JournalOptions{LegacyResourceBuckets: []string{"routes"}})
-	if err != nil {
-		t.Fatal(err)
+func TestOpenJournalRejectsUnsupportedExistingFormatsWithoutMutation(t *testing.T) {
+	tests := []struct {
+		name string
+		seed func(*testing.T) string
+	}{
+		{
+			name: "version one",
+			seed: func(t *testing.T) string {
+				t.Helper()
+				path := filepath.Join(t.TempDir(), "journal.db")
+				journal, err := OpenJournal(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := journal.Close(); err != nil {
+					t.Fatal(err)
+				}
+				withBoltUpdate(t, path, func(tx *bolt.Tx) error {
+					return tx.Bucket(journalMetaBucket).Put(schemaVersionKey, encodeUint64(1))
+				})
+				return path
+			},
+		},
+		{
+			name: "resource bucket database",
+			seed: func(t *testing.T) string {
+				t.Helper()
+				return seedUnrecognizedDatabase(t, map[string]map[string][]byte{
+					"routes": {"r1": []byte(`{"id":"r1"}`)},
+				})
+			},
+		},
+		{
+			name: "current journal with unknown bucket",
+			seed: func(t *testing.T) string {
+				t.Helper()
+				path := filepath.Join(t.TempDir(), "journal.db")
+				journal, err := OpenJournal(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := journal.Close(); err != nil {
+					t.Fatal(err)
+				}
+				withBoltUpdate(t, path, func(tx *bolt.Tx) error {
+					_, err := tx.CreateBucket([]byte("routes"))
+					return err
+				})
+				return path
+			},
+		},
 	}
-	t.Cleanup(func() { _ = journal.Close() })
-	assertRevisions(t, journal, generation.RevisionSet{Desired: 1})
 
-	snapshot := loadDesiredSnapshot(t, journal, 1)
-	if snapshot.Revision() != 1 {
-		t.Fatalf("desired revision = %d, want 1", snapshot.Revision())
-	}
-	value, ok := snapshot.Lookup(generation.ResourceKey{Kind: "routes", ID: "r1"})
-	if !ok || !bytes.Equal(value, raw) {
-		t.Fatalf("legacy value = %v, %t, want raw %v", value, ok, raw)
-	}
-	current := loadDesiredSnapshot(t, journal, 0)
-	if current.SnapshotID() != snapshot.SnapshotID() {
-		t.Fatalf("current snapshot = %q, want %q", current.SnapshotID(), snapshot.SnapshotID())
-	}
-	assertBucketMissing(t, journal.db, "routes")
-	assertBucketPresent(t, journal.db, "audit")
-	if err := journal.db.View(func(tx *bolt.Tx) error {
-		wantRevision := []byte{0, 0, 0, 0, 0, 0, 0, 1}
-		if got := tx.Bucket(desiredHeadBucket).Get(desiredHeadRevisionKey); !bytes.Equal(got, wantRevision) {
-			t.Fatalf("desired head revision = %v, want big-endian %v", got, wantRevision)
-		}
-		headArtifact := tx.Bucket(desiredHeadBucket).Get(desiredHeadArtifactKey)
-		if indexed := tx.Bucket(desiredRevisionBucket).Get(wantRevision); !bytes.Equal(indexed, headArtifact) {
-			t.Fatalf("desired revision index = %q, want head artifact %q", indexed, headArtifact)
-		}
-		if tx.Bucket(publishedHeadBucket).Stats().KeyN != 0 {
-			t.Fatal("legacy import invented a published head")
-		}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestOpenJournalImportsExistingEmptyLegacyBucketAtRevisionOne(t *testing.T) {
-	path := seedLegacyDatabase(t, map[string]map[string][]byte{"routes": {}})
-	journal, err := OpenJournal(path, JournalOptions{LegacyResourceBuckets: []string{"routes"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = journal.Close() })
-	assertRevisions(t, journal, generation.RevisionSet{Desired: 1})
-	snapshot := loadDesiredSnapshot(t, journal, 1)
-	if snapshot.Resources() != nil || snapshot.Tombstones() != nil {
-		t.Fatalf("empty legacy snapshot = %+v/%+v, want nil slices", snapshot.Resources(), snapshot.Tombstones())
-	}
-	assertBucketMissing(t, journal.db, "routes")
-}
-
-func TestOpenJournalRejectsNonemptyDatabaseWithoutListedLegacyBuckets(t *testing.T) {
-	path := seedLegacyDatabase(t, map[string]map[string][]byte{
-		"routes": {"r1": []byte(`{"id":"r1"}`)},
-	})
-	before := readFileDigest(t, path)
-	_, err := OpenJournal(path, JournalOptions{})
-	if !errors.Is(err, generation.ErrIntegrity) {
-		t.Fatalf("OpenJournal() error = %v, want ErrIntegrity", err)
-	}
-	if after := readFileDigest(t, path); after != before {
-		t.Fatal("unlisted legacy database was modified")
-	}
-	assertDatabaseLockReleased(t, path)
-}
-
-func TestOpenJournalRejectsInvalidLegacyBucketNamesWithoutMutation(t *testing.T) {
-	for _, name := range []string{"", string(journalMetaBucket), string(artifactBucket)} {
-		t.Run(name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "empty.db")
-			withBoltUpdate(t, path, func(*bolt.Tx) error { return nil })
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			path := test.seed(t)
 			before := readFileDigest(t, path)
-			_, err := OpenJournal(path, JournalOptions{LegacyResourceBuckets: []string{name}})
+			journal, err := OpenJournal(path)
+			if journal != nil {
+				_ = journal.Close()
+			}
 			if !errors.Is(err, generation.ErrIntegrity) {
 				t.Fatalf("OpenJournal() error = %v, want ErrIntegrity", err)
 			}
 			if after := readFileDigest(t, path); after != before {
-				t.Fatal("invalid legacy bucket option modified database")
+				t.Fatal("rejected database was modified")
 			}
 			assertDatabaseLockReleased(t, path)
 		})
 	}
 }
 
-func TestOpenJournalRejectsInvalidLegacyBucketNamesBeforeCreatingDatabase(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "missing.db")
-	_, err := OpenJournal(path, JournalOptions{
-		LegacyResourceBuckets: []string{string(journalMetaBucket)},
+func TestOpenJournalRejectsNonemptyUnrecognizedDatabase(t *testing.T) {
+	path := seedUnrecognizedDatabase(t, map[string]map[string][]byte{
+		"routes": {"r1": []byte(`{"id":"r1"}`)},
 	})
+	before := readFileDigest(t, path)
+	_, err := OpenJournal(path)
 	if !errors.Is(err, generation.ErrIntegrity) {
 		t.Fatalf("OpenJournal() error = %v, want ErrIntegrity", err)
 	}
-	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("invalid options created database: Stat() error = %v", err)
+	if after := readFileDigest(t, path); after != before {
+		t.Fatal("unrecognized database was modified")
 	}
+	assertDatabaseLockReleased(t, path)
 }
 
 func TestOpenJournalReopenIsIdempotent(t *testing.T) {
-	path := seedLegacyDatabase(t, map[string]map[string][]byte{
-		"routes": {"r1": []byte(`{"id":"r1"}`)},
-	})
-	first, err := OpenJournal(path, JournalOptions{LegacyResourceBuckets: []string{"routes"}})
+	path := seedDesiredJournal(t, mappingResource("r1"))
+	first, err := OpenJournal(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -246,7 +224,7 @@ func TestOpenJournalReopenIsIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	second, err := OpenJournal(path, JournalOptions{LegacyResourceBuckets: []string{"routes"}})
+	second, err := OpenJournal(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -263,99 +241,6 @@ func TestOpenJournalReopenIsIdempotent(t *testing.T) {
 		return nil
 	}); err != nil {
 		t.Fatal(err)
-	}
-}
-
-func TestOpenJournalMigratesVersionOneTransactionally(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "journal.db")
-	journal, err := OpenJournal(path, JournalOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := journal.Close(); err != nil {
-		t.Fatal(err)
-	}
-	withBoltUpdate(t, path, func(tx *bolt.Tx) error {
-		return tx.Bucket(journalMetaBucket).Put(schemaVersionKey, encodeUint64(1))
-	})
-
-	migrated, err := OpenJournal(path, JournalOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = migrated.Close() })
-	if currentJournalSchemaVersion != 2 {
-		t.Fatalf("current schema version = %d, want 2", currentJournalSchemaVersion)
-	}
-	assertJournalBuckets(t, migrated.db)
-}
-
-func TestOpenJournalVersionOneMigrationRollsBackOnCorruption(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "journal.db")
-	journal, err := OpenJournal(path, JournalOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := journal.Close(); err != nil {
-		t.Fatal(err)
-	}
-	withBoltUpdate(t, path, func(tx *bolt.Tx) error {
-		if err := tx.Bucket(journalMetaBucket).Put(schemaVersionKey, encodeUint64(1)); err != nil {
-			return err
-		}
-		return tx.Bucket(desiredHeadBucket).Put([]byte("corrupt"), []byte("value"))
-	})
-	before := readFileDigest(t, path)
-
-	_, err = OpenJournal(path, JournalOptions{})
-	if !errors.Is(err, generation.ErrIntegrity) {
-		t.Fatalf("OpenJournal() error = %v, want ErrIntegrity", err)
-	}
-	if after := readFileDigest(t, path); after != before {
-		t.Fatal("failed version-one migration modified database")
-	}
-	assertDatabaseLockReleased(t, path)
-}
-
-func TestVersionOneReaderRejectsVersionTwoBeforeMutation(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "journal.db")
-	journal, err := OpenJournal(path, JournalOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	ticket := applyDesiredForPublication(t, journal, "v2-committed", generation.DomainHTTP)
-	token, err := journal.Stage(
-		context.Background(),
-		ticket,
-		publicationSet(t, ticket, generation.DomainHTTP),
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := journal.Commit(context.Background(), token); err != nil {
-		t.Fatal(err)
-	}
-	if err := journal.Close(); err != nil {
-		t.Fatal(err)
-	}
-	before := readFileDigest(t, path)
-
-	db, err := bolt.Open(path, 0o600, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	err = db.View(func(tx *bolt.Tx) error {
-		_, _, err := verifyJournalMetaCompatibleTx(tx, 1)
-		return err
-	})
-	if closeErr := db.Close(); closeErr != nil {
-		t.Fatal(closeErr)
-	}
-	if !errors.Is(err, generation.ErrNewerSchema) {
-		t.Fatalf("version-one verification error = %v, want ErrNewerSchema", err)
-	}
-	if after := readFileDigest(t, path); after != before {
-		t.Fatal("version-one reader modified version-two database")
 	}
 }
 
@@ -397,7 +282,7 @@ func mappingResource(id string) generation.Resource {
 func TestOpenJournalRejectsUnknownNewerSchemaWithoutMutationAndReleasesLock(t *testing.T) {
 	path := seedSchemaVersion(t, currentJournalSchemaVersion+1)
 	before := readFileDigest(t, path)
-	_, err := OpenJournal(path, JournalOptions{})
+	_, err := OpenJournal(path)
 	if !errors.Is(err, generation.ErrNewerSchema) {
 		t.Fatalf("OpenJournal() error = %v, want ErrNewerSchema", err)
 	}
@@ -430,7 +315,7 @@ func TestJournalSchemaRejectsZeroAndPartialStateWithoutMutation(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			path := test.seed(t)
 			before := readFileDigest(t, path)
-			_, err := OpenJournal(path, JournalOptions{})
+			_, err := OpenJournal(path)
 			if !errors.Is(err, generation.ErrIntegrity) {
 				t.Fatalf("OpenJournal() error = %v, want ErrIntegrity", err)
 			}
@@ -444,7 +329,7 @@ func TestJournalSchemaRejectsZeroAndPartialStateWithoutMutation(t *testing.T) {
 
 func TestJournalSchemaRejectsOrphanArtifactWithoutDesiredHead(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "journal.db")
-	journal, err := OpenJournal(path, JournalOptions{})
+	journal, err := OpenJournal(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -455,7 +340,7 @@ func TestJournalSchemaRejectsOrphanArtifactWithoutDesiredHead(t *testing.T) {
 		return tx.Bucket(artifactBucket).Put([]byte("orphan"), []byte("artifact"))
 	})
 	before := readFileDigest(t, path)
-	_, err = OpenJournal(path, JournalOptions{})
+	_, err = OpenJournal(path)
 	if !errors.Is(err, generation.ErrIntegrity) {
 		t.Fatalf("OpenJournal() error = %v, want ErrIntegrity", err)
 	}
@@ -467,7 +352,7 @@ func TestJournalSchemaRejectsOrphanArtifactWithoutDesiredHead(t *testing.T) {
 
 func TestJournalSchemaRejectsUnknownDesiredHeadKey(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "journal.db")
-	journal, err := OpenJournal(path, JournalOptions{})
+	journal, err := OpenJournal(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -478,7 +363,7 @@ func TestJournalSchemaRejectsUnknownDesiredHeadKey(t *testing.T) {
 		return tx.Bucket(desiredHeadBucket).Put([]byte("junk"), []byte("value"))
 	})
 	before := readFileDigest(t, path)
-	_, err = OpenJournal(path, JournalOptions{})
+	_, err = OpenJournal(path)
 	if !errors.Is(err, generation.ErrIntegrity) {
 		t.Fatalf("OpenJournal() error = %v, want ErrIntegrity", err)
 	}
@@ -503,21 +388,12 @@ func TestJournalSchemaRejectsMalformedDesiredRevisionIndex(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			path := seedLegacyDatabase(t, map[string]map[string][]byte{
-				"routes": {"r1": []byte(`{"id":"r1"}`)},
-			})
-			journal, err := OpenJournal(path, JournalOptions{LegacyResourceBuckets: []string{"routes"}})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := journal.Close(); err != nil {
-				t.Fatal(err)
-			}
+			path := seedDesiredJournal(t, mappingResource("r1"))
 			withBoltUpdate(t, path, func(tx *bolt.Tx) error {
 				return test.tamper(tx.Bucket(desiredRevisionBucket))
 			})
 			before := readFileDigest(t, path)
-			_, err = OpenJournal(path, JournalOptions{})
+			_, err := OpenJournal(path)
 			if !errors.Is(err, generation.ErrIntegrity) {
 				t.Fatalf("OpenJournal() error = %v, want ErrIntegrity", err)
 			}
@@ -551,7 +427,7 @@ func TestJournalSchemaRejectsFutureAndMismatchedHistoricalRevisionIndex(t *testi
 				return test.tamper(tx.Bucket(desiredRevisionBucket), first, second)
 			})
 			before := readFileDigest(t, path)
-			_, err := OpenJournal(path, JournalOptions{})
+			_, err := OpenJournal(path)
 			if !errors.Is(err, generation.ErrIntegrity) {
 				t.Fatalf("OpenJournal() error = %v, want ErrIntegrity", err)
 			}
@@ -566,7 +442,7 @@ func TestJournalSchemaRejectsFutureAndMismatchedHistoricalRevisionIndex(t *testi
 func seedDesiredHistory(t *testing.T) (string, generation.Snapshot, generation.Snapshot) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "journal.db")
-	journal, err := OpenJournal(path, JournalOptions{})
+	journal, err := OpenJournal(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -644,16 +520,7 @@ func TestArtifactEnvelopeRejectsPayloadSizeDigestIDAndCanonicalTampering(t *test
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			path := seedLegacyDatabase(t, map[string]map[string][]byte{
-				"routes": {"r1": []byte(`{"id":"r1"}`)},
-			})
-			journal, err := OpenJournal(path, JournalOptions{LegacyResourceBuckets: []string{"routes"}})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := journal.Close(); err != nil {
-				t.Fatal(err)
-			}
+			path := seedDesiredJournal(t, mappingResource("r1"))
 			withBoltUpdate(t, path, func(tx *bolt.Tx) error {
 				id := string(tx.Bucket(desiredHeadBucket).Get(desiredHeadArtifactKey))
 				var envelope artifactEnvelope
@@ -664,7 +531,7 @@ func TestArtifactEnvelopeRejectsPayloadSizeDigestIDAndCanonicalTampering(t *test
 				return nil
 			})
 
-			_, err = OpenJournal(path, JournalOptions{})
+			_, err := OpenJournal(path)
 			if !errors.Is(err, generation.ErrIntegrity) {
 				t.Fatalf("OpenJournal() error = %v, want ErrIntegrity", err)
 			}
@@ -673,9 +540,9 @@ func TestArtifactEnvelopeRejectsPayloadSizeDigestIDAndCanonicalTampering(t *test
 	}
 }
 
-func seedLegacyDatabase(t *testing.T, contents map[string]map[string][]byte) string {
+func seedUnrecognizedDatabase(t *testing.T, contents map[string]map[string][]byte) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "legacy.db")
+	path := filepath.Join(t.TempDir(), "unrecognized.db")
 	withBoltUpdate(t, path, func(tx *bolt.Tx) error {
 		for name, rows := range contents {
 			bucket, err := tx.CreateBucketIfNotExists([]byte(name))
@@ -690,6 +557,28 @@ func seedLegacyDatabase(t *testing.T, contents map[string]map[string][]byte) str
 		}
 		return nil
 	})
+	return path
+}
+
+func seedDesiredJournal(t *testing.T, resources ...generation.Resource) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "journal.db")
+	journal, err := OpenJournal(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := generation.NewSnapshot(1, resources, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.db.Update(func(tx *bolt.Tx) error {
+		return writeDesiredHeadTx(tx, snapshot)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
 	return path
 }
 
@@ -775,7 +664,7 @@ func assertRevisions(t *testing.T, journal *Store, want generation.RevisionSet) 
 
 func openTestJournal(t *testing.T) *Store {
 	t.Helper()
-	journal, err := OpenJournal(filepath.Join(t.TempDir(), "journal.db"), JournalOptions{})
+	journal, err := OpenJournal(filepath.Join(t.TempDir(), "journal.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -794,30 +683,6 @@ func loadDesiredSnapshot(t *testing.T, journal *Store, revision uint64) generati
 		t.Fatal(err)
 	}
 	return snapshot
-}
-
-func assertBucketMissing(t *testing.T, db *bolt.DB, name string) {
-	t.Helper()
-	if err := db.View(func(tx *bolt.Tx) error {
-		if tx.Bucket([]byte(name)) != nil {
-			t.Fatalf("bucket %q still exists", name)
-		}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func assertBucketPresent(t *testing.T, db *bolt.DB, name string) {
-	t.Helper()
-	if err := db.View(func(tx *bolt.Tx) error {
-		if tx.Bucket([]byte(name)) == nil {
-			t.Fatalf("bucket %q is missing", name)
-		}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
 }
 
 func putEnvelope(t *testing.T, tx *bolt.Tx, id string, envelope artifactEnvelope) {

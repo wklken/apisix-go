@@ -65,7 +65,7 @@ func TestJournalRecoverEmptyAndPublishedDomains(t *testing.T) {
 
 func TestJournalRecoverAcrossRestartAndDefensiveCopies(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "journal.db")
-	journal, err := OpenJournal(path, JournalOptions{})
+	journal, err := OpenJournal(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +81,7 @@ func TestJournalRecoverAcrossRestartAndDefensiveCopies(t *testing.T) {
 	if err := journal.Close(); err != nil {
 		t.Fatal(err)
 	}
-	reopened, err := OpenJournal(path, JournalOptions{})
+	reopened, err := OpenJournal(path)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -406,7 +406,7 @@ func TestCompilerRejectsSameFutureAndStructurallyInvalidPredecessors(t *testing.
 }
 
 func TestCompilerPublicationIsAcceptedByRealJournalStage(t *testing.T) {
-	journal, err := store.OpenJournal(filepath.Join(t.TempDir(), "journal.db"), store.JournalOptions{})
+	journal, err := store.OpenJournal(filepath.Join(t.TempDir(), "journal.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

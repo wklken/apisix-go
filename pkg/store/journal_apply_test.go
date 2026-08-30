@@ -19,7 +19,7 @@ import (
 
 func TestJournalApplyDesiredPersistsPutDeleteAndHistoryAcrossRestart(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "journal.db")
-	journal, err := OpenJournal(path, JournalOptions{})
+	journal, err := OpenJournal(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +61,7 @@ func TestJournalApplyDesiredPersistsPutDeleteAndHistoryAcrossRestart(t *testing.
 		t.Fatal(err)
 	}
 
-	reopened, err := OpenJournal(path, JournalOptions{})
+	reopened, err := OpenJournal(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,7 +179,7 @@ func TestJournalApplyDesiredPreservesOrderedSameKeyLastWriteWins(t *testing.T) {
 
 func TestJournalCursorCurrentReplayIsIdempotentAcrossRestartAndIsolated(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "journal.db")
-	journal, err := OpenJournal(path, JournalOptions{})
+	journal, err := OpenJournal(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,7 +211,7 @@ func TestJournalCursorCurrentReplayIsIdempotentAcrossRestartAndIsolated(t *testi
 		t.Fatal(err)
 	}
 
-	reopened, err := OpenJournal(path, JournalOptions{})
+	reopened, err := OpenJournal(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -352,7 +352,7 @@ func TestJournalCursorReusesTicketForEquivalentResultantState(t *testing.T) {
 
 func TestJournalCursorStaleReplayAfterRestartDoesNotAdvance(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "journal.db")
-	journal, err := OpenJournal(path, JournalOptions{})
+	journal, err := OpenJournal(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -370,7 +370,7 @@ func TestJournalCursorStaleReplayAfterRestartDoesNotAdvance(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reopened, err := OpenJournal(path, JournalOptions{})
+	reopened, err := OpenJournal(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -728,7 +728,7 @@ func TestJournalCursorDistinguishesNilAndEmptyPutAndDetectsMissingOrTamperedCurr
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "journal.db")
-			candidate, err := OpenJournal(path, JournalOptions{})
+			candidate, err := OpenJournal(path)
 			if err != nil {
 				t.Fatal(err)
 			}

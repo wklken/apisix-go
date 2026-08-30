@@ -12,7 +12,8 @@ This file inherits the repository root `AGENTS.md` and applies to `pkg/store`.
 
 ## Transaction and recovery rules
 
-- Schema migration must be transactional; unknown future schema fails closed.
+- Only the exact current schema is accepted. Older, future, partial, and
+  unrecognized formats fail closed without mutation; do not add migrations.
 - `Commit` atomically updates all required domain heads, revision/decision
   state, acknowledgement, and stage removal.
 - Recovery validates global desired integrity, clears abandoned stages, and

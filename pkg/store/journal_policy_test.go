@@ -293,7 +293,7 @@ func TestJournalPolicyCommitRevalidatesPersistedStage(t *testing.T) {
 	}
 }
 
-func TestJournalPolicySchemaV1LegacyCodeRemainsReadable(t *testing.T) {
+func TestJournalPolicyRejectsInvalidPersistedDecisionCode(t *testing.T) {
 	journal := openTestJournal(t)
 	ticket := applyPolicyDesired(t, journal, "1", []byte("desired"), generation.DomainHTTP)
 	candidate := policyCandidate(
@@ -312,15 +312,14 @@ func TestJournalPolicySchemaV1LegacyCodeRemainsReadable(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := journal.Commit(context.Background(), token); err != nil {
-		t.Fatalf("Commit(schema-v1 token) error = %v", err)
+	if _, err := journal.Commit(context.Background(), token); !errors.Is(err, generation.ErrInvalidClosure) {
+		t.Fatalf("Commit() error = %v, want ErrInvalidClosure", err)
 	}
-	published, err := journal.LoadPublished(context.Background(), generation.DomainHTTP)
-	if err != nil {
-		t.Fatalf("LoadPublished(schema-v1 code) error = %v", err)
-	}
-	if got := published.Decisions[0].Code; got != "Legacy Code" {
-		t.Fatalf("published decision code = %q, want legacy code", got)
+	if _, err := journal.LoadPublished(context.Background(), generation.DomainHTTP); !errors.Is(
+		err,
+		generation.ErrNotFound,
+	) {
+		t.Fatalf("LoadPublished() error = %v, want ErrNotFound", err)
 	}
 }
 

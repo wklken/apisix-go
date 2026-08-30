@@ -58,6 +58,7 @@ func TestMaterializeScopedSecretsOwnsCASCookieSecret(t *testing.T) {
 			capabilityValue, scope, broker, closeAttempt := newCASScopedSecretHarness(
 				t, uint64(index+1), "cas-raw-form", config,
 				map[string]string{test.raw: test.resolved},
+				"0123456789abcdef",
 			)
 			defer closeAttempt()
 			p := &Plugin{config: config}
@@ -70,15 +71,22 @@ func TestMaterializeScopedSecretsOwnsCASCookieSecret(t *testing.T) {
 				t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 			}
 			calls := broker.scopedCalls()
-			if len(calls) != 1 {
-				t.Fatalf("scoped calls = %#v, want one exact cookie secret", calls)
+			isReference := strings.HasPrefix(test.raw, "$secret://") ||
+				strings.HasPrefix(strings.ToUpper(test.raw), "$ENV://")
+			if !isReference && len(calls) != 0 {
+				t.Fatalf("scoped calls = %#v, want none for literal or ciphertext", calls)
 			}
-			call := calls[0]
-			if call.Raw != test.raw || call.Scope.Generation != scope.Generation ||
-				call.Scope.Attempt != scope.Attempt || call.Scope.Domain != generation.DomainHTTP ||
-				call.Scope.Plugin != name || call.Scope.Resource != scope.Resource ||
-				call.Scope.Source != capability.SecretPluginConfig || call.Scope.Field != "cookie.secret" {
-				t.Fatalf("scoped call = %#v, want exact cookie.secret authority", call)
+			if isReference {
+				if len(calls) != 1 {
+					t.Fatalf("scoped calls = %#v, want one exact cookie reference", calls)
+				}
+				call := calls[0]
+				if call.Raw != test.raw || call.Scope.Generation != scope.Generation ||
+					call.Scope.Attempt != scope.Attempt || call.Scope.Domain != generation.DomainHTTP ||
+					call.Scope.Plugin != name || call.Scope.Resource != scope.Resource ||
+					call.Scope.Source != capability.SecretPluginConfig || call.Scope.Field != "cookie.secret" {
+					t.Fatalf("scoped call = %#v, want exact cookie.secret authority", call)
+				}
 			}
 			if got, want := p.config.Cookie.Secret, casCookieDescriptor(test.resolved); got != want {
 				t.Fatalf("cookie secret descriptor = %q, want resolved-plaintext descriptor %q", got, want)
@@ -173,35 +181,6 @@ func TestSchemaRejectsAPISIX317InvalidCASConfigurations(t *testing.T) {
 				t.Fatal("schema accepted invalid APISIX 3.17 cas-auth configuration")
 			}
 		})
-	}
-}
-
-func TestCASScopedMaterializationDecryptsContextualCookieSecret(t *testing.T) {
-	const plaintext = "legacy-context-cookie-secret-legacy-context-cookie-secret"
-	service := testutil.DataEncryptionService(true, []string{"0123456789abcdef"})
-	raw, err := service.EncryptForContext(plaintext, "cas-auth.cookie.secret")
-	if err != nil {
-		t.Fatal(err)
-	}
-	p := &Plugin{config: testCASConfig(raw)}
-	p.SetDependencies(base.Dependencies{DataEncryption: service.Resolver()})
-	capabilityValue, scope, _, cleanup := newCASScopedSecretHarness(
-		t, 1, "test-route", p.config, map[string]string{raw: plaintext},
-	)
-	t.Cleanup(cleanup)
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
-		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
-	}
-	if got, want := p.config.Cookie.Secret, casCookieDescriptor(plaintext); got != want {
-		t.Fatalf("legacy contextual descriptor = %q, want resolved plaintext %q", got, want)
-	}
-	if err := p.cookieSecret.Use(func(value string) error {
-		if value != plaintext {
-			t.Fatalf("scoped cookie secret = %q, want resolved plaintext", value)
-		}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
 	}
 }
 
@@ -1202,6 +1181,7 @@ func newCASScopedSecretHarness(
 	resourceID string,
 	config Config,
 	values map[string]string,
+	keyring ...string,
 ) (secret.GenerationCapability, secret.Scope, *casScopedSecretBroker, func()) {
 	t.Helper()
 	key := generation.ResourceKey{Kind: "routes", ID: resourceID}
@@ -1254,7 +1234,7 @@ func newCASScopedSecretHarness(
 		t.Fatal(err)
 	}
 	broker := &casScopedSecretBroker{values: values}
-	registration, err := secret.NewScopedMaterializer(broker, catalog).RegisterCandidate(
+	registration, err := testutil.NewSecretMaterializerWithKeyring(broker, catalog, keyring).RegisterCandidate(
 		context.Background(), ticket, publication,
 	)
 	if err != nil {

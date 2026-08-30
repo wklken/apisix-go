@@ -18,6 +18,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/runtime"
 	"github.com/wklken/apisix-go/pkg/secret"
+	"github.com/wklken/apisix-go/pkg/testutil"
 )
 
 const compositeSentinelSchema = `{
@@ -261,7 +262,7 @@ func newCompositeSecretHarness(t *testing.T, revision uint64, resourceID string)
 		t.Fatal(err)
 	}
 	broker := &compositeSecretBroker{value: "resolved-secret"}
-	registration, err := secret.NewScopedMaterializer(broker, catalog).
+	registration, err := testutil.NewSecretMaterializer(broker, catalog).
 		RegisterCandidate(context.Background(), ticket, set)
 	if err != nil {
 		t.Fatal(err)

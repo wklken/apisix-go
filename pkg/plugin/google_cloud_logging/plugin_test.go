@@ -95,6 +95,7 @@ func newGoogleScopedSecretHarness(
 	resourceID string,
 	rawConfig map[string]any,
 	values map[string]string,
+	keyring ...string,
 ) (secret.GenerationCapability, secret.Scope, *googleScopedSecretBroker, func()) {
 	t.Helper()
 	key := generation.ResourceKey{Kind: "routes", ID: resourceID}
@@ -144,7 +145,7 @@ func newGoogleScopedSecretHarness(
 		values: values,
 		fail:   make(map[string]error),
 	}
-	registration, err := secret.NewScopedMaterializer(broker, catalog).RegisterCandidate(
+	registration, err := testutil.NewSecretMaterializerWithKeyring(broker, catalog, keyring).RegisterCandidate(
 		context.Background(), ticket, publication,
 	)
 	if err != nil {
@@ -215,6 +216,7 @@ func TestMaterializeScopedSecretsOwnsGooglePrivateKey(t *testing.T) {
 			capabilityValue, scope, broker, closeAttempt := newGoogleScopedSecretHarness(
 				t, uint64(index+1), "google-inline", rawConfig,
 				map[string]string{tt.raw: pemKey},
+				"old-keyring-item",
 			)
 			defer closeAttempt()
 			p := newRawGooglePlugin(t, rawConfig)
@@ -224,13 +226,20 @@ func TestMaterializeScopedSecretsOwnsGooglePrivateKey(t *testing.T) {
 				t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 			}
 			calls := broker.scopedCalls()
-			if len(calls) != 1 {
-				t.Fatalf("scoped calls = %#v, want one private key", calls)
+			isReference := strings.HasPrefix(tt.raw, "$secret://") ||
+				strings.HasPrefix(strings.ToUpper(tt.raw), "$ENV://")
+			if !isReference && len(calls) != 0 {
+				t.Fatalf("scoped calls = %#v, want none for ciphertext", calls)
 			}
-			wantScope := scope
-			wantScope.Field = "auth_config.private_key"
-			if calls[0].Scope != wantScope || calls[0].Raw != tt.raw {
-				t.Fatalf("scoped call = %#v, want %#v raw %q", calls[0], wantScope, tt.raw)
+			if isReference {
+				if len(calls) != 1 {
+					t.Fatalf("scoped calls = %#v, want one private key reference", calls)
+				}
+				wantScope := scope
+				wantScope.Field = "auth_config.private_key"
+				if calls[0].Scope != wantScope || calls[0].Raw != tt.raw {
+					t.Fatalf("scoped call = %#v, want %#v raw %q", calls[0], wantScope, tt.raw)
+				}
 			}
 			if got, want := p.config.AuthConfig.PrivateKey, googlePrivateKeyDescriptor(pemKey); got != want {
 				t.Fatalf("public private_key = %q, want descriptor %q", got, want)
@@ -944,6 +953,7 @@ func TestMaterializeSecretsResolvesRotatedEncryptedPrivateKey(t *testing.T) {
 	capabilityValue, scope, _, cleanup := newGoogleScopedSecretHarness(
 		t, 1, "google-rotated", rawConfig,
 		map[string]string{config.AuthConfig.PrivateKey: pemKey},
+		oldKey,
 	)
 	t.Cleanup(cleanup)
 	if err := base.MaterializeScopedPluginSecrets(

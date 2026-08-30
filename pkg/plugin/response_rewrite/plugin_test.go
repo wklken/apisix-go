@@ -79,6 +79,7 @@ func (*responseRewriteScopedSecretBroker) RevokeAttempt(context.Context, secret.
 
 func newResponseRewriteScopedSecretHarness(
 	t *testing.T, revision uint64, resourceID string, rawConfig map[string]any, values map[string]string,
+	keyring ...string,
 ) (secret.GenerationCapability, secret.Scope, *responseRewriteScopedSecretBroker, func()) {
 	t.Helper()
 	key := generation.ResourceKey{Kind: "routes", ID: resourceID}
@@ -126,7 +127,7 @@ func newResponseRewriteScopedSecretHarness(
 		values: values,
 		fail:   make(map[string]error),
 	}
-	registration, err := secret.NewScopedMaterializer(broker, catalog).
+	registration, err := testutil.NewSecretMaterializerWithKeyring(broker, catalog, keyring).
 		RegisterCandidate(context.Background(), ticket, set)
 	if err != nil {
 		t.Fatal(err)
@@ -160,14 +161,15 @@ func assertResponseRewriteDescriptorFor(t *testing.T, value, plaintext string) {
 }
 
 func TestMaterializeScopedSecretsOwnsResponseBodies(t *testing.T) {
+	const encryptionKey = "0123456789abcdef"
 	contextualBody, err := data_encryption.EncryptForContext(
-		"contextual-body", "0123456789abcdef", "response-rewrite.body",
+		"contextual-body", encryptionKey, "response-rewrite.body",
 	)
 	if err != nil {
 		t.Fatalf("EncryptForContext(body) error = %v", err)
 	}
 	contextualSecret, err := data_encryption.EncryptForContext(
-		"strict-secret-body", "0123456789abcdef", "response-rewrite.body_secret",
+		"secret-body", encryptionKey, "response-rewrite.body_secret",
 	)
 	if err != nil {
 		t.Fatalf("EncryptForContext(body_secret) error = %v", err)
@@ -178,15 +180,25 @@ func TestMaterializeScopedSecretsOwnsResponseBodies(t *testing.T) {
 		raw        string
 		resolved   string
 		bodySecret bool
+		resolve    bool
 	}{
 		{name: "literal body", field: "body", raw: "literal-body", resolved: "literal-body"},
-		{name: "environment body", field: "body", raw: "$ENV://RESPONSE_BODY", resolved: "environment-body"},
-		{name: "resolved empty body", field: "body", raw: "$ENV://EMPTY_RESPONSE_BODY", resolved: ""},
-		{name: "managed body", field: "body", raw: "$secret://vault/response-body", resolved: "managed-body"},
+		{
+			name: "environment body", field: "body",
+			raw: "$ENV://RESPONSE_BODY", resolved: "environment-body", resolve: true,
+		},
+		{
+			name: "resolved empty body", field: "body",
+			raw: "$ENV://EMPTY_RESPONSE_BODY", resolved: "", resolve: true,
+		},
+		{
+			name: "managed body", field: "body",
+			raw: "$secret://vault/response-body", resolved: "managed-body", resolve: true,
+		},
 		{name: "contextual body", field: "body", raw: contextualBody, resolved: "contextual-body"},
 		{
-			name: "strict contextual body_secret", field: "body_secret",
-			raw: contextualSecret, resolved: "strict-secret-body", bodySecret: true,
+			name: "contextual body_secret", field: "body_secret",
+			raw: contextualSecret, resolved: "secret-body", bodySecret: true,
 		},
 	}
 	for index, tt := range tests {
@@ -194,7 +206,7 @@ func TestMaterializeScopedSecretsOwnsResponseBodies(t *testing.T) {
 			rawConfig := map[string]any{tt.field: tt.raw}
 			capabilityValue, scope, broker, closeAttempt := newResponseRewriteScopedSecretHarness(
 				t, uint64(index+1), fmt.Sprintf("response-route-%d", index), rawConfig,
-				map[string]string{tt.raw: tt.resolved},
+				map[string]string{tt.raw: tt.resolved}, encryptionKey,
 			)
 			defer closeAttempt()
 
@@ -214,13 +226,17 @@ func TestMaterializeScopedSecretsOwnsResponseBodies(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			if len(broker.calls) != 1 {
-				t.Fatalf("scoped calls = %#v, want one exact %s call", broker.calls, tt.field)
-			}
-			wantScope := scope
-			wantScope.Field = tt.field
-			if call := broker.calls[0]; call.Raw != tt.raw || call.Scope != wantScope {
-				t.Fatalf("scoped call = %#v, want raw %q and scope %#v", call, tt.raw, wantScope)
+			if tt.resolve {
+				if len(broker.calls) != 1 {
+					t.Fatalf("scoped calls = %#v, want one exact %s call", broker.calls, tt.field)
+				}
+				wantScope := scope
+				wantScope.Field = tt.field
+				if call := broker.calls[0]; call.Raw != tt.raw || call.Scope != wantScope {
+					t.Fatalf("scoped call = %#v, want raw %q and scope %#v", call, tt.raw, wantScope)
+				}
+			} else if len(broker.calls) != 0 {
+				t.Fatalf("scoped calls = %#v, want none for admitted literal or ciphertext", broker.calls)
 			}
 			cfg := p.Config().(*Config)
 			if tt.bodySecret {
@@ -312,7 +328,7 @@ func TestMaterializeScopedSecretsOwnsResponseBodies(t *testing.T) {
 		rawConfig := map[string]any{"body": "plain", "body_secret": contextualSecret}
 		capabilityValue, scope, broker, closeAttempt := newResponseRewriteScopedSecretHarness(
 			t, 21, "response-conflict", rawConfig,
-			map[string]string{"plain": "plain", contextualSecret: "strict-secret-body"},
+			map[string]string{"plain": "plain", contextualSecret: "secret-body"},
 		)
 		defer closeAttempt()
 		p := &Plugin{}

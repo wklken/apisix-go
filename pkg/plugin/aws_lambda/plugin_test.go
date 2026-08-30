@@ -128,18 +128,14 @@ func TestMaterializeScopedSecretsOwnsAWSLambdaCredentials(t *testing.T) {
 				"$secret://aws/access": "resolved-access",
 				contextual:             "resolved-contextual-secret",
 			},
-			wantFields: []string{"authorization.iam.accesskey", "authorization.iam.secretkey"},
+			wantFields: []string{"authorization.iam.accesskey"},
 		},
 		{
 			name: "all literal fields",
 			auth: &Authorization{APIKey: "literal-api", IAM: &IAM{
 				AccessKey: "literal-access", SecretKey: "literal-secret",
 			}},
-			wantFields: []string{
-				"authorization.apikey",
-				"authorization.iam.accesskey",
-				"authorization.iam.secretkey",
-			},
+			wantFields: nil,
 		},
 		{
 			name:    "missing iam member",
@@ -172,6 +168,7 @@ func TestMaterializeScopedSecretsOwnsAWSLambdaCredentials(t *testing.T) {
 			cfg := Config{FunctionURI: "http://lambda.invalid", Authorization: tt.auth}
 			capabilityValue, scope, broker, closeAttempt := newAWSLambdaScopedSecretHarness(
 				t, uint64(index+1), "aws-lambda-materialize-"+fmt.Sprint(index), cfg, tt.values,
+				"0123456789abcdef",
 			)
 			defer closeAttempt()
 			broker.failRaw = tt.failRaw
@@ -238,10 +235,10 @@ func TestMaterializeScopedSecretsRejectsResolvedAWSLambdaCredentialsAndRetries(t
 		{
 			name: "iam secret key",
 			auth: &Authorization{IAM: &IAM{
-				AccessKey: "valid-access", SecretKey: "enc:v1:empty-secret",
+				AccessKey: "valid-access", SecretKey: "$ENV://AWS_LAMBDA_EMPTY_SECRET",
 			}},
-			raw: "enc:v1:empty-secret", resolved: "", wantCalls: 2,
-			wantFields: []string{"authorization.iam.accesskey", "authorization.iam.secretkey"},
+			raw: "$ENV://AWS_LAMBDA_EMPTY_SECRET", resolved: "", wantCalls: 1,
+			wantFields: []string{"authorization.iam.secretkey"},
 		},
 	}
 	for index, tt := range tests {
@@ -912,6 +909,7 @@ func newAWSLambdaScopedSecretHarness(
 	resourceID string,
 	config Config,
 	values map[string]string,
+	keyring ...string,
 ) (secret.GenerationCapability, secret.Scope, *awsLambdaScopedSecretBroker, func()) {
 	t.Helper()
 	key := generation.ResourceKey{Kind: "routes", ID: resourceID}
@@ -957,7 +955,7 @@ func newAWSLambdaScopedSecretHarness(
 		t.Fatal(err)
 	}
 	broker := &awsLambdaScopedSecretBroker{values: values}
-	registration, err := secret.NewScopedMaterializer(broker, catalog).RegisterCandidate(
+	registration, err := testutil.NewSecretMaterializerWithKeyring(broker, catalog, keyring).RegisterCandidate(
 		context.Background(), ticket, publication,
 	)
 	if err != nil {

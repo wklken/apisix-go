@@ -120,6 +120,7 @@ func newCLSScopedSecretHarness(
 	resourceID string,
 	config Config,
 	values map[string]string,
+	keyring ...string,
 ) (secret.GenerationCapability, secret.Scope, *clsScopedSecretBroker, func()) {
 	t.Helper()
 	key := generation.ResourceKey{Kind: "routes", ID: resourceID}
@@ -165,7 +166,7 @@ func newCLSScopedSecretHarness(
 		t.Fatal(err)
 	}
 	broker := &clsScopedSecretBroker{values: values, fail: make(map[string]error)}
-	registration, err := secret.NewScopedMaterializer(broker, catalog).RegisterCandidate(
+	registration, err := testutil.NewSecretMaterializerWithKeyring(broker, catalog, keyring).RegisterCandidate(
 		context.Background(), ticket, publication,
 	)
 	if err != nil {
@@ -229,7 +230,6 @@ func TestMaterializeScopedSecretsSupportsCLSReferences(t *testing.T) {
 		name string
 		raw  string
 	}{
-		{name: "ciphertext", raw: "opaque-ciphertext"},
 		{name: "environment", raw: "$ENV://CLS_SECRET_KEY"},
 		{name: "managed", raw: "$secret://vault/cls/key"},
 	}
@@ -578,6 +578,7 @@ func TestPostInitResolvesRotatedEncryptedSecretKey(t *testing.T) {
 	}
 	capabilityValue, scope, _, cleanup := newCLSScopedSecretHarness(
 		t, 1, "rotated-secret", p.config, map[string]string{p.config.SecretKey: "cls-secret"},
+		newKey, oldKey,
 	)
 	t.Cleanup(cleanup)
 	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {

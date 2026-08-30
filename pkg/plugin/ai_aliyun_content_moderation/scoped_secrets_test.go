@@ -19,6 +19,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/secret"
+	"github.com/wklken/apisix-go/pkg/testutil"
 )
 
 type scopedSecretCall struct {
@@ -104,7 +105,7 @@ func newScopedSecretHarness(
 		t.Fatal(err)
 	}
 	broker := &scopedSecretBroker{values: maps.Clone(values), fail: make(map[string]error)}
-	registration, err := secret.NewScopedMaterializer(broker, catalog).
+	registration, err := testutil.NewSecretMaterializer(broker, catalog).
 		RegisterCandidate(context.Background(), ticket, set)
 	if err != nil {
 		t.Fatal(err)
@@ -232,8 +233,8 @@ func TestScopedSecretsResolveManagedAliyunCredential(t *testing.T) {
 	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
-	if len(broker.calls) != 2 || broker.calls[1].Raw != managed {
-		t.Fatalf("broker calls = %#v, want literal id then managed secret", broker.calls)
+	if len(broker.calls) != 1 || broker.calls[0].Raw != managed {
+		t.Fatalf("broker calls = %#v, want only managed secret", broker.calls)
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
@@ -495,18 +496,24 @@ func retainedRequestMaterial(request *http.Request) []byte {
 }
 
 func TestAliyunRequestStopBoundaryForScopedCredentials(t *testing.T) {
+	const (
+		accessKeyIDRef     = "$ENV://ALIYUN_ACCESS_KEY_ID"
+		accessKeySecretRef = "$ENV://ALIYUN_ACCESS_KEY_SECRET"
+		requestAccessKeyID = "resolved-access-id"
+		requestSecret      = "resolved-access-secret"
+	)
 	p := &Plugin{config: Config{
 		Endpoint:        "http://moderation.example",
 		RegionID:        "cn-shanghai",
-		AccessKeyID:     "access-id",
-		AccessKeySecret: "access-secret",
+		AccessKeyID:     accessKeyIDRef,
+		AccessKeySecret: accessKeySecretRef,
 	}}
 	if err := p.Init(); err != nil {
 		t.Fatal(err)
 	}
 	capabilityValue, scope, _, closeAttempt := newScopedSecretHarness(t, name, map[string]string{
-		"access-id":     "resolved-access-id",
-		"access-secret": "resolved-access-secret",
+		accessKeyIDRef:     requestAccessKeyID,
+		accessKeySecretRef: requestSecret,
 	})
 	defer closeAttempt()
 	if err := base.MaterializeScopedPluginSecrets(
@@ -519,9 +526,8 @@ func TestAliyunRequestStopBoundaryForScopedCredentials(t *testing.T) {
 	}
 	p.now = func() time.Time { return time.Unix(1, 0) }
 	p.nonce = func() string { return "nonce" }
-	requestAccessKeyID, requestAccessKeySecret := "resolved-access-id", "resolved-access-secret"
 	expectedForm, expectedSignature := expectedAliyunForm(
-		requestAccessKeyID, requestAccessKeySecret,
+		requestAccessKeyID, requestSecret,
 	)
 	transport := &blockingRoundTripper{
 		entered: make(chan struct{}),

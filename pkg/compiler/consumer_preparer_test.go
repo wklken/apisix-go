@@ -12,6 +12,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/runtime"
 	"github.com/wklken/apisix-go/pkg/secret"
+	"github.com/wklken/apisix-go/pkg/testutil"
 )
 
 type consumerPreparationBroker struct {
@@ -113,7 +114,7 @@ func newConsumerAttemptFactory(
 ) (*consumerAttemptFactory, *Compiler) {
 	t.Helper()
 	compiler := newTestCompiler(t)
-	materializer := secret.NewScopedMaterializer(broker, compiler.schemas.catalog)
+	materializer := testutil.NewSecretMaterializer(broker, compiler.schemas.catalog)
 	preparer, err := newConsumerBindingPreparer(compiler.schemas.catalog)
 	if err != nil {
 		t.Fatal(err)
@@ -530,7 +531,7 @@ func TestConsumerBindingPreparerRejectsForeignOccurrenceBeforeMaterialization(t 
 		"$ENV://BASIC_USER":     "resolved-user",
 		"$ENV://BASIC_PASSWORD": "resolved-password",
 	}}
-	materializer := secret.NewScopedMaterializer(broker, compiler.schemas.catalog)
+	materializer := testutil.NewSecretMaterializer(broker, compiler.schemas.catalog)
 	preparer, err := newConsumerBindingPreparer(compiler.schemas.catalog)
 	if err != nil {
 		t.Fatal(err)
@@ -634,6 +635,6 @@ func TestConsumerPreparerHasNoMetadataDependency(t *testing.T) {
 }
 
 var (
-	_ secret.ScopedAttemptBroker = (*consumerPreparationBroker)(nil)
-	_ ConsumerPreparer           = (*consumerBindingPreparer)(nil)
+	_ testutil.SecretAttemptBroker = (*consumerPreparationBroker)(nil)
+	_ ConsumerPreparer             = (*consumerBindingPreparer)(nil)
 )

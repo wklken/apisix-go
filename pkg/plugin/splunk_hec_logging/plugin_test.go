@@ -136,6 +136,7 @@ func newSplunkScopedSecretHarness(
 	resourceID string,
 	config Config,
 	values map[string]string,
+	keyring ...string,
 ) (secret.GenerationCapability, secret.Scope, *splunkScopedSecretBroker, func()) {
 	t.Helper()
 	key := generation.ResourceKey{Kind: "routes", ID: resourceID}
@@ -182,7 +183,7 @@ func newSplunkScopedSecretHarness(
 		t.Fatal(err)
 	}
 	broker := &splunkScopedSecretBroker{values: values, fail: make(map[string]error)}
-	registration, err := secret.NewScopedMaterializer(broker, catalog).RegisterCandidate(
+	registration, err := testutil.NewSecretMaterializerWithKeyring(broker, catalog, keyring).RegisterCandidate(
 		context.Background(), ticket, publication,
 	)
 	if err != nil {
@@ -229,6 +230,7 @@ func TestMaterializeScopedSecretsOwnsSplunkToken(t *testing.T) {
 			capabilityValue, scope, broker, closeAttempt := newSplunkScopedSecretHarness(
 				t, uint64(index+1), "splunk-"+tt.name, config,
 				map[string]string{tt.raw: tt.resolved},
+				"qeddd145sfvddff3",
 			)
 			defer closeAttempt()
 			p := &Plugin{config: config}
@@ -243,7 +245,12 @@ func TestMaterializeScopedSecretsOwnsSplunkToken(t *testing.T) {
 			calls := broker.callsSnapshot()
 			wantScope := scope
 			wantScope.Field = "endpoint.token"
-			if len(calls) != 1 || calls[0].Scope != wantScope || calls[0].Raw != tt.raw {
+			isReference := strings.HasPrefix(tt.raw, "$secret://") ||
+				strings.HasPrefix(strings.ToUpper(tt.raw), "$ENV://")
+			if !isReference && len(calls) != 0 {
+				t.Fatalf("token calls = %#v, want none for ciphertext", calls)
+			}
+			if isReference && (len(calls) != 1 || calls[0].Scope != wantScope || calls[0].Raw != tt.raw) {
 				t.Fatalf("token calls = %#v, want scope %#v raw %q", calls, wantScope, tt.raw)
 			}
 			if p.config.Endpoint.Token != splunkTokenDescriptor(tt.resolved) {
@@ -790,6 +797,7 @@ func TestPostInitResolvesRotatedEncryptedToken(t *testing.T) {
 	}
 	capabilityValue, scope, _, cleanup := newSplunkScopedSecretHarness(
 		t, 1, "rotated-token", p.config, map[string]string{p.config.Endpoint.Token: "splunk-token"},
+		newKey, oldKey,
 	)
 	t.Cleanup(cleanup)
 	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {

@@ -179,6 +179,7 @@ func newLogglyScopedSecretHarness(
 	resourceID string,
 	config Config,
 	values map[string]string,
+	keyring ...string,
 ) (secret.GenerationCapability, secret.Scope, *logglyScopedSecretBroker, func()) {
 	t.Helper()
 	key := generation.ResourceKey{Kind: "routes", ID: resourceID}
@@ -225,7 +226,7 @@ func newLogglyScopedSecretHarness(
 		t.Fatal(err)
 	}
 	broker := &logglyScopedSecretBroker{values: values, fail: make(map[string]error)}
-	registration, err := secret.NewScopedMaterializer(broker, catalog).RegisterCandidate(
+	registration, err := testutil.NewSecretMaterializerWithKeyring(broker, catalog, keyring).RegisterCandidate(
 		context.Background(), ticket, publication,
 	)
 	if err != nil {
@@ -272,6 +273,7 @@ func TestMaterializeScopedSecretsOwnsLogglyToken(t *testing.T) {
 			capabilityValue, scope, broker, closeAttempt := newLogglyScopedSecretHarness(
 				t, uint64(index+1), "loggly-"+tt.name, config,
 				map[string]string{tt.raw: tt.resolved},
+				"qeddd145sfvddff3",
 			)
 			defer closeAttempt()
 			p := &Plugin{config: config}
@@ -286,7 +288,12 @@ func TestMaterializeScopedSecretsOwnsLogglyToken(t *testing.T) {
 			calls := broker.callsSnapshot()
 			wantScope := scope
 			wantScope.Field = "customer_token"
-			if len(calls) != 1 || calls[0].Scope != wantScope || calls[0].Raw != tt.raw {
+			isReference := strings.HasPrefix(tt.raw, "$secret://") ||
+				strings.HasPrefix(strings.ToUpper(tt.raw), "$ENV://")
+			if !isReference && len(calls) != 0 {
+				t.Fatalf("token calls = %#v, want none for ciphertext", calls)
+			}
+			if isReference && (len(calls) != 1 || calls[0].Scope != wantScope || calls[0].Raw != tt.raw) {
 				t.Fatalf("token calls = %#v, want scope %#v raw %q", calls, wantScope, tt.raw)
 			}
 			if p.config.CustomerToken != logglyTokenDescriptor(tt.resolved) {
@@ -762,6 +769,7 @@ func TestPostInitResolvesRotatedEncryptedCustomerToken(t *testing.T) {
 	}
 	capabilityValue, scope, _, cleanup := newLogglyScopedSecretHarness(
 		t, 1, "rotated-token", p.config, map[string]string{p.config.CustomerToken: "loggly-token"},
+		newKey, oldKey,
 	)
 	t.Cleanup(cleanup)
 	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {

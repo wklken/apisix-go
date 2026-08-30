@@ -7,9 +7,102 @@ import (
 	"testing"
 
 	"github.com/wklken/apisix-go/pkg/capability"
+	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/secret"
 )
+
+// SecretAttemptBroker is the narrow test seam for observing attempt
+// authorization, resolution, and cleanup while exercising the production
+// secret.Materializer implementation.
+type SecretAttemptBroker interface {
+	secret.ScopedResolver
+	AuthorizeCandidate(
+		context.Context,
+		secret.AttemptID,
+		generation.ApplyTicket,
+		generation.PublicationSet,
+	) error
+	AuthorizeRecovery(
+		context.Context,
+		secret.AttemptID,
+		generation.RevisionSet,
+		map[generation.Domain]generation.PublishedGeneration,
+	) error
+	RevokeAttempt(context.Context, secret.AttemptID) error
+}
+
+type secretResolverFactory struct {
+	broker SecretAttemptBroker
+}
+
+func (factory *secretResolverFactory) OpenCandidate(
+	ctx context.Context,
+	id secret.AttemptID,
+	ticket generation.ApplyTicket,
+	set generation.PublicationSet,
+) (secret.AttemptResolver, error) {
+	if factory == nil || factory.broker == nil {
+		return nil, secret.ErrInvalidCapability
+	}
+	if err := factory.broker.AuthorizeCandidate(ctx, id, ticket, set); err != nil {
+		return nil, err
+	}
+	return &secretAttemptResolver{broker: factory.broker, id: id}, nil
+}
+
+func (factory *secretResolverFactory) OpenRecovery(
+	ctx context.Context,
+	id secret.AttemptID,
+	revisions generation.RevisionSet,
+	published map[generation.Domain]generation.PublishedGeneration,
+) (secret.AttemptResolver, error) {
+	if factory == nil || factory.broker == nil {
+		return nil, secret.ErrInvalidCapability
+	}
+	if err := factory.broker.AuthorizeRecovery(ctx, id, revisions, published); err != nil {
+		return nil, err
+	}
+	return &secretAttemptResolver{broker: factory.broker, id: id}, nil
+}
+
+type secretAttemptResolver struct {
+	broker SecretAttemptBroker
+	id     secret.AttemptID
+}
+
+func (resolver *secretAttemptResolver) ResolveScoped(
+	ctx context.Context,
+	scope secret.Scope,
+	raw string,
+) (string, error) {
+	return resolver.broker.ResolveScoped(ctx, scope, raw)
+}
+
+func (resolver *secretAttemptResolver) Close(ctx context.Context) error {
+	return resolver.broker.RevokeAttempt(ctx, resolver.id)
+}
+
+// NewSecretMaterializer adapts a test broker to the production resolver
+// factory. Registration, scope validation, declaration admission, attempt
+// ownership, and cleanup remain owned by secret.NewMaterializer.
+func NewSecretMaterializer(
+	broker SecretAttemptBroker,
+	catalog *capability.SecretDeclarationCatalog,
+) secret.Materializer {
+	return NewSecretMaterializerWithKeyring(broker, catalog, nil)
+}
+
+// NewSecretMaterializerWithKeyring creates the same configured service used by
+// production while keeping test key material at the fixture boundary.
+func NewSecretMaterializerWithKeyring(
+	broker SecretAttemptBroker,
+	catalog *capability.SecretDeclarationCatalog,
+	keyring []string,
+) secret.Materializer {
+	service := data_encryption.NewService(len(keyring) > 0, keyring, catalog)
+	return secret.NewMaterializer(service, &secretResolverFactory{broker: broker})
+}
 
 type scopedSecretBroker struct {
 	values map[string]string
@@ -91,7 +184,7 @@ func ScopedSecretHarness(
 	if err != nil {
 		t.Fatal(err)
 	}
-	registration, err := secret.NewScopedMaterializer(
+	registration, err := NewSecretMaterializer(
 		&scopedSecretBroker{values: values}, catalog,
 	).RegisterCandidate(context.Background(), ticket, set)
 	if err != nil {

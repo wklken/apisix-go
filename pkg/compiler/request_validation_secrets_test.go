@@ -14,6 +14,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/secret"
+	"github.com/wklken/apisix-go/pkg/testutil"
 )
 
 type requestValidationCompilerSecretCall struct {
@@ -89,7 +90,7 @@ func TestWorkerFactoryUsesManifestRequestValidationDeclarationWithExactOccurrenc
 	factory, err := NewWorkerCompilerFactory(
 		manifest,
 		workerTestEffective(manifest),
-		secret.NewScopedMaterializer(broker, catalog),
+		testutil.NewSecretMaterializer(broker, catalog),
 		workerTestRuntimeObservers(),
 	)
 	if err != nil {
@@ -176,7 +177,7 @@ func TestWorkerFactorySharesRequestValidationCompileLimitAcrossAttemptBindings(t
 	factory, err := NewWorkerCompilerFactory(
 		manifest,
 		workerTestEffective(manifest),
-		secret.NewScopedMaterializer(broker, catalog),
+		testutil.NewSecretMaterializer(broker, catalog),
 		workerTestRuntimeObservers(),
 	)
 	if err != nil {

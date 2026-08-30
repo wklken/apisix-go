@@ -10,6 +10,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/secret"
+	"github.com/wklken/apisix-go/pkg/testutil"
 )
 
 func TestFinalCandidateCompositeChildOccurrences(t *testing.T) {
@@ -373,7 +374,7 @@ func TestPrepareCompilerDiscardSecretsOwnsNestedMultiAuthCompatibilityFields(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	materializer := secret.NewScopedMaterializer(broker, compiler.schemas.catalog)
+	materializer := testutil.NewSecretMaterializer(broker, compiler.schemas.catalog)
 	registration, err := materializer.RegisterCandidate(context.Background(), ticket, set)
 	if err != nil {
 		t.Fatal(err)

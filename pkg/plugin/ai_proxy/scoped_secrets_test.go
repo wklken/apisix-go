@@ -15,6 +15,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/ai_auth"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/secret"
+	"github.com/wklken/apisix-go/pkg/testutil"
 )
 
 type aiProxyScopedSecretCall struct {
@@ -116,7 +117,7 @@ func newAIProxyScopedSecretHarness(
 		t.Fatal(err)
 	}
 	broker := &aiProxyScopedSecretBroker{values: values}
-	registration, err := secret.NewScopedMaterializer(broker, catalog).RegisterCandidate(
+	registration, err := testutil.NewSecretMaterializer(broker, catalog).RegisterCandidate(
 		context.Background(), ticket, publication,
 	)
 	if err != nil {
@@ -146,7 +147,7 @@ func TestMaterializeScopedSecretsOwnsAIProxyCredentials(t *testing.T) {
 	const (
 		headerRaw  = "$ENV://AI_PROXY_HEADER"
 		queryRaw   = "$secret://ai/query"
-		gcpRaw     = "$encrypted://ai/gcp"
+		gcpRaw     = "$secret://ai/gcp"
 		awsRaw     = "$ENV://AI_PROXY_AWS_SECRET"
 		sessionRaw = "$ENV://AI_PROXY_AWS_SESSION"
 	)

@@ -15,6 +15,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/workflow"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/secret"
+	"github.com/wklken/apisix-go/pkg/testutil"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -132,7 +133,7 @@ func newScopedWorkflowHarness(
 		t.Fatal(err)
 	}
 	broker := &scopedWorkflowBroker{value: value}
-	registration, err := secret.NewScopedMaterializer(broker, catalog).
+	registration, err := testutil.NewSecretMaterializer(broker, catalog).
 		RegisterCandidate(context.Background(), ticket, set)
 	if err != nil {
 		t.Fatal(err)

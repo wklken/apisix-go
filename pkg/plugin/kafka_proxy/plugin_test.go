@@ -518,7 +518,7 @@ func (*kafkaProxyScopedSecretBroker) RevokeAttempt(context.Context, secret.Attem
 }
 
 func newKafkaProxyScopedSecretHarness(
-	t *testing.T, revision uint64, resourceID string, values map[string]string,
+	t *testing.T, revision uint64, resourceID string, values map[string]string, keyring ...string,
 ) (secret.GenerationCapability, secret.Scope, *kafkaProxyScopedSecretBroker, func()) {
 	t.Helper()
 	key := generation.ResourceKey{Kind: "routes", ID: resourceID}
@@ -560,7 +560,7 @@ func newKafkaProxyScopedSecretHarness(
 		values: values,
 		fail:   make(map[string]error),
 	}
-	registration, err := secret.NewScopedMaterializer(broker, catalog).
+	registration, err := testutil.NewSecretMaterializerWithKeyring(broker, catalog, keyring).
 		RegisterCandidate(context.Background(), ticket, set)
 	if err != nil {
 		t.Fatal(err)
@@ -614,6 +614,7 @@ func TestMaterializeScopedSecretsOwnsKafkaProxySASLPassword(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			capabilityValue, scope, broker, closeAttempt := newKafkaProxyScopedSecretHarness(
 				t, uint64(index+1), "kafka-route", map[string]string{tt.raw: tt.resolved},
+				"0123456789abcdef",
 			)
 			defer closeAttempt()
 			p := &Plugin{config: Config{SASL: &SASL{Username: "user", Password: tt.raw}}}
@@ -628,14 +629,21 @@ func TestMaterializeScopedSecretsOwnsKafkaProxySASLPassword(t *testing.T) {
 			if err := p.PostInit(); err != nil {
 				t.Fatal(err)
 			}
-			if len(broker.calls) != 1 {
-				t.Fatalf("scoped calls = %#v, want one exact sasl.password call", broker.calls)
+			isReference := strings.HasPrefix(tt.raw, "$secret://") ||
+				strings.HasPrefix(strings.ToUpper(tt.raw), "$ENV://")
+			if !isReference && len(broker.calls) != 0 {
+				t.Fatalf("scoped calls = %#v, want none for literal or ciphertext", broker.calls)
 			}
-			call := broker.calls[0]
-			wantScope := scope
-			wantScope.Field = "sasl.password"
-			if call.Raw != tt.raw || call.Scope != wantScope {
-				t.Fatalf("scoped call = %#v, want exact kafka-proxy.sasl.password authority", call)
+			if isReference {
+				if len(broker.calls) != 1 {
+					t.Fatalf("scoped calls = %#v, want one exact sasl.password reference", broker.calls)
+				}
+				call := broker.calls[0]
+				wantScope := scope
+				wantScope.Field = "sasl.password"
+				if call.Raw != tt.raw || call.Scope != wantScope {
+					t.Fatalf("scoped call = %#v, want exact kafka-proxy.sasl.password authority", call)
+				}
 			}
 			assertKafkaProxySecretDescriptorFor(t, p.config.SASL.Password, tt.resolved)
 			if strings.Contains(p.config.SASL.Password, tt.raw) ||

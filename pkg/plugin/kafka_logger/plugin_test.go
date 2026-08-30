@@ -88,7 +88,7 @@ func (broker *kafkaScopedSecretBroker) callsSnapshot() []kafkaScopedSecretCall {
 }
 
 func newKafkaScopedSecretHarness(
-	t *testing.T, config Config, values map[string]string,
+	t *testing.T, config Config, values map[string]string, keyring ...string,
 ) (secret.GenerationCapability, secret.Scope, *kafkaScopedSecretBroker, func()) {
 	t.Helper()
 	key := generation.ResourceKey{Kind: "routes", ID: "kafka-scoped"}
@@ -134,7 +134,7 @@ func newKafkaScopedSecretHarness(
 		t.Fatal(err)
 	}
 	broker := &kafkaScopedSecretBroker{values: values, fail: make(map[string]error)}
-	registration, err := secret.NewScopedMaterializer(broker, catalog).RegisterCandidate(
+	registration, err := testutil.NewSecretMaterializerWithKeyring(broker, catalog, keyring).RegisterCandidate(
 		context.Background(), ticket, publication,
 	)
 	if err != nil {
@@ -1043,6 +1043,7 @@ func TestPostInitResolvesRotatedEncryptedSASLPassword(t *testing.T) {
 	}
 	capabilityValue, scope, _, cleanup := newKafkaScopedSecretHarness(
 		t, config, map[string]string{password: "kafka-secret"},
+		oldKey,
 	)
 	t.Cleanup(cleanup)
 	if err := base.MaterializeScopedPluginSecrets(

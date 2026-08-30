@@ -11,6 +11,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/secret"
+	"github.com/wklken/apisix-go/pkg/testutil"
 )
 
 type scopedSecretTestRegistration struct {
@@ -337,7 +338,7 @@ func TestCompositeChildPreparerScopedSecretHelperRecoversBrokerContextTerminatio
 				t.Fatal(err)
 			}
 			broker := &scopedCancelingBroker{mode: test.mode}
-			registration, err := secret.NewScopedMaterializer(broker, catalog).
+			registration, err := testutil.NewSecretMaterializer(broker, catalog).
 				RegisterCandidate(context.Background(), ticket, set)
 			if err != nil {
 				t.Fatal(err)

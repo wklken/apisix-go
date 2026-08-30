@@ -57,23 +57,6 @@ type ScopedResolver interface {
 	ResolveScoped(context.Context, Scope, string) (string, error)
 }
 
-type ScopedAttemptBroker interface {
-	ScopedResolver
-	AuthorizeCandidate(
-		context.Context,
-		AttemptID,
-		generation.ApplyTicket,
-		generation.PublicationSet,
-	) error
-	AuthorizeRecovery(
-		context.Context,
-		AttemptID,
-		generation.RevisionSet,
-		map[generation.Domain]generation.PublishedGeneration,
-	) error
-	RevokeAttempt(context.Context, AttemptID) error
-}
-
 type AttemptResolver interface {
 	ScopedResolver
 	Close(context.Context) error
@@ -120,12 +103,6 @@ type materializer struct {
 	registry   *attemptRegistry
 }
 
-type scopedMaterializer struct {
-	resolver ScopedAttemptBroker
-	catalog  *capability.SecretDeclarationCatalog
-	registry *attemptRegistry
-}
-
 // NewMaterializer constructs the in-process materializer. A zero-value
 // encryption service or nil resolver factory creates a fail-closed value; it
 // never creates a registration that can resolve credentials.
@@ -137,29 +114,11 @@ func NewMaterializer(encryption data_encryption.Service, resolvers AttemptResolv
 	}
 }
 
-// NewScopedMaterializer constructs the worker/scoped materializer. The
-// manifest catalog is an explicit dependency so source and field admission is
-// identical across the in-process and worker paths.
-func NewScopedMaterializer(resolver ScopedAttemptBroker, catalog *capability.SecretDeclarationCatalog) Materializer {
-	return &scopedMaterializer{
-		resolver: resolver,
-		catalog:  catalog,
-		registry: newAttemptRegistry(),
-	}
-}
-
 func (materializer *materializer) DeclarationDigest() [32]byte {
 	if materializer == nil || !materializer.encryption.Configured() {
 		return [32]byte{}
 	}
 	return materializer.encryption.DeclarationDigest()
-}
-
-func (materializer *scopedMaterializer) DeclarationDigest() [32]byte {
-	if materializer == nil || materializer.catalog == nil {
-		return [32]byte{}
-	}
-	return materializer.catalog.Digest()
 }
 
 func (materializer *materializer) RegisterCandidate(
@@ -280,104 +239,6 @@ func (materializer *materializer) resolve(
 		return resolver.ResolveScoped(ctx, scope, resolved)
 	}
 	return resolved, nil
-}
-
-func (materializer *scopedMaterializer) RegisterCandidate(
-	ctx context.Context,
-	ticket generation.ApplyTicket,
-	set generation.PublicationSet,
-) (AttemptRegistration, error) {
-	if materializer == nil || materializer.registry == nil || materializer.resolver == nil ||
-		materializer.catalog == nil {
-		return nil, ErrInvalidCapability
-	}
-	if err := validateCandidateRegistration(ticket, set); err != nil {
-		return nil, err
-	}
-	ctx = normalizeContext(ctx)
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	ownedTicket := cloneApplyTicket(ticket)
-	ownedSet := clonePublicationSet(set)
-	id, err := candidateAttemptIDChecked(ownedTicket, ownedSet)
-	if err != nil || id == (AttemptID{}) {
-		return nil, ErrInvalidCapability
-	}
-	allowed := buildCandidateClosureIndex(ownedSet)
-	if err := materializer.registry.reserve(id); err != nil {
-		return nil, err
-	}
-	if err := materializer.resolver.AuthorizeCandidate(ctx, id, ownedTicket, ownedSet); err != nil {
-		materializer.registry.release(id)
-		return nil, ErrCredentialUnavailable
-	}
-
-	resolve := func(resolveCtx context.Context, scope Scope, raw string) (string, error) {
-		if _, ok := materializer.catalog.Lookup(scope.Plugin, scope.Source, scope.Field); !ok {
-			return "", errSecretDeclarationInvalid
-		}
-		return materializer.resolver.ResolveScoped(resolveCtx, scope, raw)
-	}
-	closeAttempt := func(closeCtx context.Context) error {
-		return materializer.resolver.RevokeAttempt(closeCtx, id)
-	}
-	registration := newAttemptRegistration(
-		id,
-		ticket.DesiredRevision,
-		allowed,
-		resolve,
-		closeAttempt,
-		materializer.registry,
-	)
-	materializer.registry.activate(id)
-	return registration, nil
-}
-
-func (materializer *scopedMaterializer) RegisterRecovery(
-	ctx context.Context,
-	revisions generation.RevisionSet,
-	published map[generation.Domain]generation.PublishedGeneration,
-) (AttemptRegistration, error) {
-	if materializer == nil || materializer.registry == nil || materializer.resolver == nil ||
-		materializer.catalog == nil {
-		return nil, ErrInvalidCapability
-	}
-	if err := validateRecoveryRegistration(revisions, published); err != nil {
-		return nil, err
-	}
-	ctx = normalizeContext(ctx)
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	ownedPublished := clonePublishedGenerations(published)
-	id, err := recoveryAttemptIDChecked(revisions, ownedPublished)
-	if err != nil || id == (AttemptID{}) {
-		return nil, ErrInvalidCapability
-	}
-	allowed := buildRecoveryClosureIndex(ownedPublished)
-	if err := materializer.registry.reserve(id); err != nil {
-		return nil, err
-	}
-	if err := materializer.resolver.AuthorizeRecovery(ctx, id, revisions, ownedPublished); err != nil {
-		materializer.registry.release(id)
-		return nil, ErrCredentialUnavailable
-	}
-
-	resolve := func(resolveCtx context.Context, scope Scope, raw string) (string, error) {
-		if _, ok := materializer.catalog.Lookup(scope.Plugin, scope.Source, scope.Field); !ok {
-			return "", errSecretDeclarationInvalid
-		}
-		return materializer.resolver.ResolveScoped(resolveCtx, scope, raw)
-	}
-	closeAttempt := func(closeCtx context.Context) error {
-		return materializer.resolver.RevokeAttempt(closeCtx, id)
-	}
-	registration := newAttemptRegistration(id, revisions.Desired, allowed, resolve, closeAttempt, materializer.registry)
-	materializer.registry.activate(id)
-	return registration, nil
 }
 
 type attemptRegistration struct {

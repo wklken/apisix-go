@@ -12,6 +12,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/ai_auth"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/secret"
+	"github.com/wklken/apisix-go/pkg/testutil"
 )
 
 type aiProxyMultiScopedSecretCall struct {
@@ -98,7 +99,7 @@ func newAIProxyMultiScopedSecretHarness(
 		t.Fatal(err)
 	}
 	broker := &aiProxyMultiScopedSecretBroker{values: values}
-	registration, err := secret.NewScopedMaterializer(broker, catalog).RegisterCandidate(
+	registration, err := testutil.NewSecretMaterializer(broker, catalog).RegisterCandidate(
 		context.Background(), ticket, publication,
 	)
 	if err != nil {
@@ -128,7 +129,7 @@ func TestMaterializeScopedSecretsOwnsEveryAIProxyMultiInstance(t *testing.T) {
 	const (
 		firstHeader = "$ENV://AI_MULTI_FIRST_HEADER"
 		firstQuery  = "$secret://ai-multi/first-query"
-		secondGCP   = "$encrypted://ai-multi/gcp"
+		secondGCP   = "$secret://ai-multi/gcp"
 		secondAWS   = "$ENV://AI_MULTI_AWS_SECRET"
 		secondToken = "$ENV://AI_MULTI_AWS_SESSION"
 	)

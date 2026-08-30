@@ -16,7 +16,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/public_api"
 	"github.com/wklken/apisix-go/pkg/resource"
 	routepkg "github.com/wklken/apisix-go/pkg/route"
-	"github.com/wklken/apisix-go/pkg/secret"
+	"github.com/wklken/apisix-go/pkg/testutil"
 )
 
 func newScopedWorkerTestFactory(t *testing.T) *WorkerCompilerFactory {
@@ -29,7 +29,7 @@ func newScopedWorkerTestFactory(t *testing.T) *WorkerCompilerFactory {
 	factory, err := NewWorkerCompilerFactory(
 		manifest,
 		workerTestEffective(manifest),
-		secret.NewScopedMaterializer(&countingScopedBroker{}, catalog),
+		testutil.NewSecretMaterializer(&countingScopedBroker{}, catalog),
 		workerTestRuntimeObservers(),
 	)
 	if err != nil {

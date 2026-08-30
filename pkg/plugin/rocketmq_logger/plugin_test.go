@@ -221,6 +221,7 @@ func newRocketMQScopedSecretHarness(
 	resourceID string,
 	rawConfig map[string]any,
 	values map[string]string,
+	keyring ...string,
 ) (secret.GenerationCapability, secret.Scope, *rocketMQScopedSecretBroker) {
 	t.Helper()
 	key := generation.ResourceKey{Kind: "routes", ID: resourceID}
@@ -269,7 +270,7 @@ func newRocketMQScopedSecretHarness(
 		values: values,
 		fail:   make(map[string]error),
 	}
-	registration, err := secret.NewScopedMaterializer(broker, catalog).RegisterCandidate(
+	registration, err := testutil.NewSecretMaterializerWithKeyring(broker, catalog, keyring).RegisterCandidate(
 		context.Background(), ticket, publication,
 	)
 	if err != nil {
@@ -335,6 +336,7 @@ func TestMaterializeScopedSecretsOwnsRocketMQSecretKey(t *testing.T) {
 			capabilityValue, scope, broker := newRocketMQScopedSecretHarness(
 				t, uint64(110+index), "rocketmq-raw", rawConfig,
 				map[string]string{test.raw: test.resolved},
+				"0123456789abcdef",
 			)
 			p := newRawRocketMQPlugin(t, rawConfig)
 			if err := base.MaterializeScopedPluginSecrets(
@@ -345,7 +347,12 @@ func TestMaterializeScopedSecretsOwnsRocketMQSecretKey(t *testing.T) {
 			calls := broker.callsSnapshot()
 			wantScope := scope
 			wantScope.Field = "secret_key"
-			if len(calls) != 1 || calls[0].Scope != wantScope || calls[0].Raw != test.raw {
+			isReference := strings.HasPrefix(test.raw, "$secret://") ||
+				strings.HasPrefix(strings.ToUpper(test.raw), "$ENV://")
+			if !isReference && len(calls) != 0 {
+				t.Fatalf("resolver calls = %#v, want none for ciphertext", calls)
+			}
+			if isReference && (len(calls) != 1 || calls[0].Scope != wantScope || calls[0].Raw != test.raw) {
 				t.Fatalf("resolver calls = %#v, want exact secret_key scope %#v", calls, wantScope)
 			}
 			if p.config.SecretKey != rocketMQSecretDescriptor(test.resolved) ||
@@ -1424,6 +1431,7 @@ func materializeRocketMQForTest(
 	revision uint64,
 	resourceID string,
 	resolvedSecretKey string,
+	keyring ...string,
 ) error {
 	t.Helper()
 	rawConfig := make(map[string]any)
@@ -1439,7 +1447,7 @@ func materializeRocketMQForTest(
 		values[p.config.SecretKey] = resolvedSecretKey
 	}
 	capabilityValue, scope, _ := newRocketMQScopedSecretHarness(
-		t, revision, resourceID, rawConfig, values,
+		t, revision, resourceID, rawConfig, values, keyring...,
 	)
 	return base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p)
 }
@@ -1685,7 +1693,7 @@ func TestPostInitResolvesRotatedEncryptedSecretKey(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := materializeRocketMQForTest(t, p, 1, "rotated-secret", "rocketmq-secret"); err != nil {
+	if err := materializeRocketMQForTest(t, p, 1, "rotated-secret", "rocketmq-secret", newKey, oldKey); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {

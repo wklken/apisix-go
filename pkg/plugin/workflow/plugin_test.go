@@ -20,6 +20,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/secret"
+	"github.com/wklken/apisix-go/pkg/testutil"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -272,7 +273,7 @@ func newWorkflowScopedCapability(
 	if err != nil {
 		t.Fatal(err)
 	}
-	registration, err := secret.NewScopedMaterializer(
+	registration, err := testutil.NewSecretMaterializer(
 		&workflowScopedSecretBroker{values: values}, catalog,
 	).RegisterCandidate(context.Background(), ticket, publication)
 	if err != nil {

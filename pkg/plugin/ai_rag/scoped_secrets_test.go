@@ -110,10 +110,10 @@ func (broker *scopedSecretBroker) resetCalls() {
 }
 
 func newScopedSecretHarness(
-	t *testing.T, factory string, values map[string]string,
+	t *testing.T, factory string, values map[string]string, keyring ...string,
 ) (secret.GenerationCapability, secret.Scope, *scopedSecretBroker, func()) {
 	t.Helper()
-	return newScopedSecretHarnessAt(t, factory, 7, "r1", values)
+	return newScopedSecretHarnessAt(t, factory, 7, "r1", values, keyring...)
 }
 
 func newScopedSecretHarnessAt(
@@ -122,6 +122,7 @@ func newScopedSecretHarnessAt(
 	revision uint64,
 	resourceID string,
 	values map[string]string,
+	keyring ...string,
 ) (secret.GenerationCapability, secret.Scope, *scopedSecretBroker, func()) {
 	t.Helper()
 	key := generation.ResourceKey{Kind: "routes", ID: resourceID}
@@ -160,7 +161,7 @@ func newScopedSecretHarnessAt(
 		t.Fatal(err)
 	}
 	broker := &scopedSecretBroker{values: maps.Clone(values), fail: make(map[string]error)}
-	registration, err := secret.NewScopedMaterializer(broker, catalog).
+	registration, err := testutil.NewSecretMaterializerWithKeyring(broker, catalog, keyring).
 		RegisterCandidate(context.Background(), ticket, set)
 	if err != nil {
 		t.Fatal(err)
@@ -209,18 +210,30 @@ func assertRAGScopedCalls(
 		"embeddings_provider.azure_openai.api_key",
 		"vector_search_provider.azure_ai_search.api_key",
 	}
-	if len(calls) != len(fields) {
-		t.Fatalf("broker calls = %d, want %d: %#v", len(calls), len(fields), calls)
+	wantCalls := 0
+	for _, raw := range raws {
+		if strings.HasPrefix(raw, "$secret://") || strings.HasPrefix(strings.ToUpper(raw), "$ENV://") {
+			wantCalls++
+		}
 	}
+	if len(calls) != wantCalls {
+		t.Fatalf("broker calls = %d, want %d: %#v", len(calls), wantCalls, calls)
+	}
+	callIndex := 0
 	for index, field := range fields {
+		if !strings.HasPrefix(raws[index], "$secret://") &&
+			!strings.HasPrefix(strings.ToUpper(raws[index]), "$ENV://") {
+			continue
+		}
 		wantScope := baseScope
 		wantScope.Field = field
-		if calls[index].Scope != wantScope || calls[index].Raw != raws[index] {
+		if calls[callIndex].Scope != wantScope || calls[callIndex].Raw != raws[index] {
 			t.Fatalf(
 				"broker call[%d] = %#v, want scope %#v and raw %q",
-				index, calls[index], wantScope, raws[index],
+				callIndex, calls[callIndex], wantScope, raws[index],
 			)
 		}
+		callIndex++
 	}
 }
 
@@ -423,7 +436,7 @@ func TestScopedSecretsRAGProviderModesUseResolvedPlaintextDescriptors(t *testing
 			capabilityValue, scope, broker, closeAttempt := newScopedSecretHarness(t, name, map[string]string{
 				test.raw:  test.plaintext,
 				searchRaw: searchRaw,
-			})
+			}, "0123456789abcdef")
 			defer closeAttempt()
 			p := &Plugin{config: ragConfig(
 				"http://127.0.0.1", test.raw, "http://127.0.0.1", searchRaw,

@@ -1284,190 +1284,109 @@ func TestBatchProcessorLifecycleStateMatchesStaleAndBufferedCases(t *testing.T) 
 	})
 }
 
-func TestHandlerIncludesRequestAndResponseBody(t *testing.T) {
-	received := make(chan map[string]any, 1)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var body map[string]any
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Errorf("decode body: %v", err)
-			w.WriteHeader(http.StatusBadRequest)
-			return
-		}
-		received <- body
-		w.WriteHeader(http.StatusAccepted)
-	}))
-	t.Cleanup(server.Close)
-
-	p := newTestPlugin(t, Config{
-		URI:              server.URL,
-		BatchMaxSize:     1,
-		IncludeReqBody:   true,
-		IncludeRespBody:  true,
-		MaxReqBodyBytes:  32,
-		MaxRespBodyBytes: 32,
-	})
-
-	upstreamBody := make(chan string, 1)
-	req := httptest.NewRequest(http.MethodPost, "http://example.com/orders", strings.NewReader(`{"order":1}`))
-	rr := httptest.NewRecorder()
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			t.Fatalf("upstream read body: %v", err)
-		}
-		upstreamBody <- string(body)
-		w.WriteHeader(http.StatusCreated)
-		_, _ = w.Write([]byte(`{"ok":true}`))
-	})).ServeHTTP(rr, req)
-
-	if rr.Body.String() != `{"ok":true}` {
-		t.Fatalf("response body = %q, want upstream body preserved", rr.Body.String())
+func TestHandlerBodyCaptureMatrix(t *testing.T) {
+	tests := []struct {
+		name         string
+		requestBody  string
+		responseBody string
+		header       string
+		requestExpr  []any
+		responseExpr []any
+		wantBodies   bool
+	}{
+		{name: "unconditional", requestBody: `{"order":1}`, responseBody: `{"ok":true}`, wantBodies: true},
+		{
+			name: "expressions match", requestBody: `{"order":2}`, responseBody: `{"created":true}`,
+			header: "yes", requestExpr: []any{[]any{"http_x_log_body", "==", "yes"}},
+			responseExpr: []any{[]any{"status", "==", "201"}}, wantBodies: true,
+		},
+		{
+			name: "expressions miss", requestBody: `{"order":3}`, responseBody: `{"created":false}`,
+			header: "no", requestExpr: []any{[]any{"http_x_log_body", "==", "yes"}},
+			responseExpr: []any{[]any{"status", "==", "500"}},
+		},
 	}
-	select {
-	case body := <-upstreamBody:
-		if body != `{"order":1}` {
-			t.Fatalf("upstream request body = %q, want original body", body)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for upstream request body")
-	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			received := make(chan map[string]any, 1)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var body map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Errorf("decode body: %v", err)
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				received <- body
+				w.WriteHeader(http.StatusAccepted)
+			}))
+			t.Cleanup(server.Close)
 
-	select {
-	case body := <-received:
-		request, ok := body["request"].(map[string]any)
-		if !ok {
-			t.Fatalf("request = %#v, want object", body["request"])
-		}
-		if request["body"] != `{"order":1}` {
-			t.Fatalf("request body = %#v, want captured request body", request["body"])
-		}
-		response, ok := body["response"].(map[string]any)
-		if !ok {
-			t.Fatalf("response = %#v, want object", body["response"])
-		}
-		if response["body"] != `{"ok":true}` {
-			t.Fatalf("response body = %#v, want captured response body", response["body"])
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for http log request")
-	}
-}
+			p := newTestPlugin(t, Config{
+				URI: server.URL, BatchMaxSize: 1,
+				IncludeReqBody: true, IncludeReqBodyExpr: test.requestExpr,
+				IncludeRespBody: true, IncludeRespBodyExpr: test.responseExpr,
+				MaxReqBodyBytes: 32, MaxRespBodyBytes: 32,
+			})
+			upstreamBody := make(chan string, 1)
+			req := httptest.NewRequest(
+				http.MethodPost,
+				"http://example.com/orders",
+				strings.NewReader(test.requestBody),
+			)
+			if test.header != "" {
+				req.Header.Set("X-Log-Body", test.header)
+			}
+			rr := httptest.NewRecorder()
+			p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Fatalf("upstream read body: %v", err)
+				}
+				upstreamBody <- string(body)
+				w.WriteHeader(http.StatusCreated)
+				_, _ = w.Write([]byte(test.responseBody))
+			})).ServeHTTP(rr, req)
 
-func TestHandlerIncludesBodiesWhenExpressionsMatch(t *testing.T) {
-	received := make(chan map[string]any, 1)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var body map[string]any
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Fatalf("decode body: %v", err)
-		}
-		received <- body
-		w.WriteHeader(http.StatusAccepted)
-	}))
-	t.Cleanup(server.Close)
-
-	p := newTestPlugin(t, Config{
-		URI:                 server.URL,
-		BatchMaxSize:        1,
-		IncludeReqBody:      true,
-		IncludeReqBodyExpr:  []any{[]any{"http_x_log_body", "==", "yes"}},
-		IncludeRespBody:     true,
-		IncludeRespBodyExpr: []any{[]any{"status", "==", "201"}},
-		MaxReqBodyBytes:     32,
-		MaxRespBodyBytes:    32,
-	})
-
-	req := httptest.NewRequest(http.MethodPost, "http://example.com/orders", strings.NewReader(`{"order":2}`))
-	req.Header.Set("X-Log-Body", "yes")
-	rr := httptest.NewRecorder()
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusCreated)
-		_, _ = w.Write([]byte(`{"created":true}`))
-	})).ServeHTTP(rr, req)
-
-	select {
-	case body := <-received:
-		request, ok := body["request"].(map[string]any)
-		if !ok {
-			t.Fatalf("request = %#v, want object", body["request"])
-		}
-		if request["body"] != `{"order":2}` {
-			t.Fatalf("request body = %#v, want captured request body", request["body"])
-		}
-		response, ok := body["response"].(map[string]any)
-		if !ok {
-			t.Fatalf("response = %#v, want object", body["response"])
-		}
-		if response["body"] != `{"created":true}` {
-			t.Fatalf("response body = %#v, want captured response body", response["body"])
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for http log request")
-	}
-}
-
-func TestHandlerSkipsBodiesWhenExpressionsDoNotMatch(t *testing.T) {
-	received := make(chan map[string]any, 1)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var body map[string]any
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Fatalf("decode body: %v", err)
-		}
-		received <- body
-		w.WriteHeader(http.StatusAccepted)
-	}))
-	t.Cleanup(server.Close)
-
-	p := newTestPlugin(t, Config{
-		URI:                 server.URL,
-		BatchMaxSize:        1,
-		IncludeReqBody:      true,
-		IncludeReqBodyExpr:  []any{[]any{"http_x_log_body", "==", "yes"}},
-		IncludeRespBody:     true,
-		IncludeRespBodyExpr: []any{[]any{"status", "==", "500"}},
-		MaxReqBodyBytes:     32,
-		MaxRespBodyBytes:    32,
-	})
-
-	upstreamBody := make(chan string, 1)
-	req := httptest.NewRequest(http.MethodPost, "http://example.com/orders", strings.NewReader(`{"order":3}`))
-	req.Header.Set("X-Log-Body", "no")
-	rr := httptest.NewRecorder()
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			t.Fatalf("upstream read body: %v", err)
-		}
-		upstreamBody <- string(body)
-		w.WriteHeader(http.StatusCreated)
-		_, _ = w.Write([]byte(`{"created":false}`))
-	})).ServeHTTP(rr, req)
-
-	select {
-	case body := <-upstreamBody:
-		if body != `{"order":3}` {
-			t.Fatalf("upstream request body = %q, want original body", body)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for upstream request body")
-	}
-	select {
-	case body := <-received:
-		request, ok := body["request"].(map[string]any)
-		if !ok {
-			t.Fatalf("request = %#v, want default request object", body["request"])
-		}
-		if _, ok := request["body"]; ok {
-			t.Fatalf("request = %#v, want no logged request body", request)
-		}
-		response, ok := body["response"].(map[string]any)
-		if !ok {
-			t.Fatalf("response = %#v, want default response object", body["response"])
-		}
-		if _, ok := response["body"]; ok {
-			t.Fatalf("response = %#v, want no logged response body", response)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for http log request")
+			if rr.Body.String() != test.responseBody {
+				t.Fatalf("response body = %q, want %q", rr.Body.String(), test.responseBody)
+			}
+			select {
+			case body := <-upstreamBody:
+				if body != test.requestBody {
+					t.Fatalf("upstream request body = %q, want %q", body, test.requestBody)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("timed out waiting for upstream request body")
+			}
+			select {
+			case body := <-received:
+				request, ok := body["request"].(map[string]any)
+				if !ok {
+					t.Fatalf("request = %#v, want object", body["request"])
+				}
+				response, ok := body["response"].(map[string]any)
+				if !ok {
+					t.Fatalf("response = %#v, want object", body["response"])
+				}
+				if test.wantBodies {
+					if request["body"] != test.requestBody || response["body"] != test.responseBody {
+						t.Fatalf(
+							"logged bodies = %#v/%#v, want %q/%q",
+							request["body"],
+							response["body"],
+							test.requestBody,
+							test.responseBody,
+						)
+					}
+				} else if _, requestOK := request["body"]; requestOK {
+					t.Fatalf("request = %#v, want no logged body", request)
+				} else if _, responseOK := response["body"]; responseOK {
+					t.Fatalf("response = %#v, want no logged body", response)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("timed out waiting for http log request")
+			}
+		})
 	}
 }
 

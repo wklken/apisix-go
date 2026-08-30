@@ -14,7 +14,6 @@ type valueNode struct {
 	scalar   any
 	mapping  map[string]*valueNode
 	sequence []*valueNode
-	source   FieldSource
 	pathBase string
 }
 

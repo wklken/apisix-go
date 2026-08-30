@@ -75,12 +75,6 @@ deployment: {role: data_plane, role_data_plane: {config_provider: yaml}}
 	if got := effective.Config.Apisix.Control; got != (Control{Ip: "127.0.0.1", Port: 9090}) {
 		t.Fatalf("apisix.control = %#v, want APISIX 3.17 control listener default", got)
 	}
-	for _, field := range []string{"apisix.control.ip", "apisix.control.port"} {
-		source := effective.Provenance[field]
-		if source.Kind != SourceBuiltin || source.Explicit {
-			t.Fatalf("provenance[%q] = %#v, want implicit builtin", field, source)
-		}
-	}
 }
 
 func TestLoadEffectivePreservesExplicitControlListenerOverride(t *testing.T) {
@@ -91,12 +85,6 @@ apisix:
 `)
 	if got := effective.Config.Apisix.Control; got != (Control{Ip: "127.0.0.2", Port: 19090}) {
 		t.Fatalf("apisix.control = %#v, want explicit override", got)
-	}
-	for _, field := range []string{"apisix.control.ip", "apisix.control.port"} {
-		source := effective.Provenance[field]
-		if source.Kind == SourceBuiltin || !source.Explicit {
-			t.Fatalf("provenance[%q] = %#v, want explicit config source", field, source)
-		}
 	}
 }
 
@@ -132,7 +120,6 @@ func TestLoadEffectiveRejectsInvalidRuntimeValues(t *testing.T) {
 		},
 		{name: "empty plugin", override: "plugins: ['']", want: "plugins[0] must not be empty"},
 		{name: "duplicate plugin", override: "plugins: [request-id, request-id]", want: "duplicates"},
-		{name: "access log", override: "nginx_config: {http: {enable_access_log: true}}", want: "enable_access_log"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

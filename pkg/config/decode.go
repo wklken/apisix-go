@@ -253,7 +253,7 @@ func collectUnknownLeafPaths(node *valueNode, path string, paths *[]string) {
 	}
 	sort.Strings(keys)
 	for _, key := range keys {
-		collectUnknownLeafPaths(node.mapping[key], appendProvenanceKey(path, key), paths)
+		collectUnknownLeafPaths(node.mapping[key], appendConfigPathKey(path, key), paths)
 	}
 	for index, child := range node.sequence {
 		collectUnknownLeafPaths(child, fmt.Sprintf("%s[%d]", path, index), paths)

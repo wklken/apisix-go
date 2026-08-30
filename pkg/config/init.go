@@ -17,9 +17,7 @@ func LoadEffective(req LoadRequest) (*EffectiveConfig, error) {
 
 	defaultPath := filepath.Clean(req.DefaultPath)
 	root := builtinDefaults(req.DefaultPaths)
-	defaultDocument, err := readConfigDocument(defaultPath, FieldSource{
-		Kind: SourceDefaultFile, Origin: defaultPath, Explicit: true,
-	}, req.Environment)
+	defaultDocument, err := readConfigDocument(defaultPath, req.Environment)
 	if err != nil {
 		return nil, err
 	}
@@ -30,18 +28,13 @@ func LoadEffective(req LoadRequest) (*EffectiveConfig, error) {
 		overridePath = filepath.Clean(req.OverridePath)
 	}
 	if overridePath != "" && !sameConfigPath(defaultPath, overridePath) {
-		override, readErr := readConfigDocument(overridePath, FieldSource{
-			Kind: SourceOverrideFile, Origin: overridePath, Explicit: true,
-		}, req.Environment)
+		override, readErr := readConfigDocument(overridePath, req.Environment)
 		if readErr != nil {
 			return nil, readErr
 		}
 		root = mergeNodes(root, override)
 	}
-	if err := applyAPISIXGO(root, req.Environment); err != nil {
-		return nil, err
-	}
-	if err := applyCLIOverrides(root, req.CLIOverrides); err != nil {
+	if err := applyReservedEnvironment(root, req.Environment); err != nil {
 		return nil, err
 	}
 
@@ -53,9 +46,7 @@ func LoadEffective(req LoadRequest) (*EffectiveConfig, error) {
 	if err != nil {
 		return nil, err
 	}
-	effective := &EffectiveConfig{
-		Config: *cfg, Provenance: flattenProvenance(root), Paths: paths,
-	}
+	effective := &EffectiveConfig{Config: *cfg, Paths: paths}
 	if err := validateEffective(effective, unused); err != nil {
 		return nil, err
 	}
@@ -89,12 +80,6 @@ func resolveRuntimePaths(paths RuntimePaths, root *valueNode, req LoadRequest) (
 		base := ""
 		if node != nil {
 			base = node.pathBase
-			if node.source.Kind == SourceCLI || node.source.Kind == SourceAPISIXGOEnv {
-				base = filepath.Dir(req.DefaultPath)
-				if req.OverridePath != "" {
-					base = filepath.Dir(req.OverridePath)
-				}
-			}
 		}
 		if base == "" || !filepath.IsAbs(base) {
 			return RuntimePaths{}, fmt.Errorf(

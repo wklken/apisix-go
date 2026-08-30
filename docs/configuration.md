@@ -11,16 +11,19 @@ Configuration is merged in this order:
 1. built-in defaults;
 2. `conf/config-default.yaml`;
 3. an optional `-c/--config` file;
-4. recognized `APISIXGO_*` environment variables;
-5. repeatable `--set path=value` arguments.
+4. APISIX 3.17 reserved environment overrides.
 
-Lists replace earlier lists. Unknown APISIX fields are retained only as
-provenance and do not gain runtime behavior. Unknown `APISIXGO_*` and `--set`
-paths fail closed.
+Lists replace earlier lists. Unknown APISIX fields do not gain runtime
+behavior.
 
 `${{NAME}}` and `${{NAME:=fallback}}` expressions are expanded inside each
 file before that layer is merged. Absent, null, false, zero, and empty string
-remain distinct, and effective fields retain their source.
+remain distinct.
+
+APISIX 3.17 reserves `APISIX_DEPLOYMENT_ETCD_HOST` for replacing
+`deployment.etcd.host`. Its value must be a JSON array, for example
+`["http://etcd:2379"]`. Invalid JSON is ignored, matching APISIX 3.17. There is
+no generic environment-to-field mapping or `--set` configuration layer.
 
 ## Runtime paths
 
@@ -35,14 +38,13 @@ apisix_go:
     temp_dir: /usr/local/apisix/tmp
 ```
 
-These fields have matching `APISIXGO_RUNTIME_PATHS_*` environment variables.
-They control local files only and do not alter APISIX route or plugin behavior.
+These fields control local files only and do not alter APISIX route or plugin
+behavior.
 
 ## Validate and inspect
 
 The container reads `/usr/local/apisix/conf/config.yaml` by default.
 
-Use `apisix config test -c /path/to/config.yaml` before restart and
-`apisix config dump --effective --redacted` when inspecting the merged result.
-See [HTTP data-plane compatibility](http-data-plane.md) before replacing an
+Use `apisix config test -c /path/to/config.yaml` before restart. See
+[HTTP data-plane compatibility](http-data-plane.md) before replacing an
 existing APISIX image.

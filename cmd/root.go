@@ -31,7 +31,6 @@ var errSIGHUPReloadUnsupported = errors.New("SIGHUP reload is unsupported")
 
 type rootOptions struct {
 	configPath string
-	setValues  []string
 }
 
 type serverLifecycle interface {
@@ -41,7 +40,7 @@ type serverLifecycle interface {
 
 type startupFactories struct {
 	loadManifest    func() (*capability.Manifest, error)
-	loadEffective   func(string, []string, *capability.Manifest) (*config.EffectiveConfig, error)
+	loadEffective   func(string, *capability.Manifest) (*config.EffectiveConfig, error)
 	newCatalog      func(*capability.Manifest) (*capability.SecretDeclarationCatalog, error)
 	newEncryption   func(*config.EffectiveConfig, *capability.SecretDeclarationCatalog) data_encryption.Service
 	configureLogger func(*config.Config) error
@@ -167,7 +166,6 @@ func newRootCommand() *cobra.Command {
 		},
 	}
 	root.PersistentFlags().StringVarP(&options.configPath, "config", "c", config.DefaultConfigFile, "config file")
-	root.PersistentFlags().StringArrayVar(&options.setValues, "set", nil, "set a static configuration path to a value")
 	root.AddCommand(newVersionCommand())
 	root.AddCommand(newConfigCommand(loadEffectiveForCommand))
 	return root
@@ -183,7 +181,7 @@ func startWithOptionsWithFactories(options rootOptions, factories startupFactori
 	if err != nil {
 		return fmt.Errorf("load capability manifest: %w", err)
 	}
-	effective, err := factories.loadEffective(options.configPath, options.setValues, manifest)
+	effective, err := factories.loadEffective(options.configPath, manifest)
 	if err != nil {
 		return fmt.Errorf("load effective config: %w", err)
 	}

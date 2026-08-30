@@ -11,6 +11,7 @@ const (
 func builtinDefaults(paths RuntimePaths) *valueNode {
 	return mustNodeFromAny(map[string]any{
 		"nginx_config": map[string]any{"http": map[string]any{
+			"enable_access_log":    true,
 			"client_max_body_size": defaultClientMaxBodySize,
 			"client_body_timeout":  defaultClientBodyTimeout.String(),
 		}},
@@ -22,5 +23,5 @@ func builtinDefaults(paths RuntimePaths) *valueNode {
 			"data_dir": paths.DataDir, "runtime_dir": paths.RuntimeDir,
 			"log_dir": paths.LogDir, "temp_dir": paths.TempDir,
 		}},
-	}, FieldSource{Kind: SourceBuiltin, Origin: "apisix-go-runtime-defaults", Explicit: false})
+	}, "")
 }

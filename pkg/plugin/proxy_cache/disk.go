@@ -56,10 +56,6 @@ func (p *Plugin) cleanupPeriod() time.Duration {
 	return diskCleanupPeriod
 }
 
-func diskZonePath(name string) (string, int64, bool, error) {
-	return diskZonePathIn(configuredZones(), name)
-}
-
 func diskZonePathIn(zones []appconfig.Zone, name string) (string, int64, bool, error) {
 	for _, zone := range zones {
 		if zone.Name != name {

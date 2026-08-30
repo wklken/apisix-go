@@ -12,8 +12,8 @@ func TestConfigApplyMetricsAreNilSafeBeforeInit(t *testing.T) {
 	ConfigApplyFailures, ConfigApplyReady = nil, nil
 	t.Cleanup(func() { ConfigApplyFailures, ConfigApplyReady = oldFailures, oldReady })
 
-	RecordConfigApplyFailure()
-	RecordConfigApplySuccess()
+	RecordConfigApplyStageFailure(ConfigApplyStageProvider)
+	RecordConfigApplyStageSuccess(ConfigApplyStageProvider)
 	RecordConfigApplyStageFailure(ConfigApplyStageHTTPRoutes)
 	RecordConfigApplyStageSuccess(ConfigApplyStageProvider)
 	RecordConfigApplyStageSuccess(ConfigApplyStageHTTPRoutes)
@@ -48,7 +48,7 @@ func TestRecordConfigApplyUpdatesFailureAndReady(t *testing.T) {
 	ConfigApplyReady = prometheus.NewGauge(prometheus.GaugeOpts{Name: "test_config_apply_ready"})
 	t.Cleanup(func() { ConfigApplyFailures, ConfigApplyReady = oldFailures, oldReady })
 
-	RecordConfigApplySuccess()
+	RecordConfigApplyStageSuccess(ConfigApplyStageProvider)
 	if got := gaugeValue(t, ConfigApplyReady); got != 0 {
 		t.Fatalf("ready after provider-only success = %v, want 0", got)
 	}
@@ -56,7 +56,7 @@ func TestRecordConfigApplyUpdatesFailureAndReady(t *testing.T) {
 	if got := gaugeValue(t, ConfigApplyReady); got != 1 {
 		t.Fatalf("ready after provider and HTTP success = %v, want 1", got)
 	}
-	RecordConfigApplyFailure()
+	RecordConfigApplyStageFailure(ConfigApplyStageProvider)
 	if got := counterValue(t, ConfigApplyFailures); got != 1 {
 		t.Fatalf("failure count = %v, want 1", got)
 	}
@@ -240,7 +240,7 @@ func TestConfigApplyStagesKeepReadinessBlockedIndependently(t *testing.T) {
 	t.Cleanup(func() { ConfigApplyFailures, ConfigApplyReady = oldFailures, oldReady })
 
 	RecordConfigApplyStageFailure(ConfigApplyStageHTTPRoutes)
-	RecordConfigApplySuccess()
+	RecordConfigApplyStageSuccess(ConfigApplyStageProvider)
 	if got := gaugeValue(t, ConfigApplyReady); got != 0 {
 		t.Fatalf("ready after provider success = %v, want 0", got)
 	}

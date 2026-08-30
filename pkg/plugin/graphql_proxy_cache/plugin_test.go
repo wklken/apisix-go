@@ -15,7 +15,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/cacheutil"
-	"github.com/wklken/apisix-go/pkg/plugin/proxy_cache"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/runtime"
 	"github.com/wklken/apisix-go/pkg/util"
@@ -43,9 +42,13 @@ func (w *graphqlCacheHitCountingWriter) Write(body []byte) (int, error) {
 	return w.ResponseWriter.Write(body)
 }
 
-func newTestPlugin(t *testing.T, cfg Config) *Plugin {
+func newTestPlugin(t *testing.T, cfg Config, zones ...[]config.Zone) *Plugin {
 	t.Helper()
-	return newOwnedGraphQLCacheFixture(t, "plugin/test/graphql/helper", "", cfg).plugin
+	var configured []config.Zone
+	if len(zones) > 0 {
+		configured = zones[0]
+	}
+	return newOwnedGraphQLCacheFixtureWithZones(t, "plugin/test/graphql/helper", "", cfg, configured).plugin
 }
 
 type ownedGraphQLCacheFixture struct {
@@ -63,6 +66,17 @@ func newOwnedGraphQLCacheFixture(
 	cfg Config,
 	registries ...*Registry,
 ) *ownedGraphQLCacheFixture {
+	return newOwnedGraphQLCacheFixtureWithZones(t, prefix, routeID, cfg, nil, registries...)
+}
+
+func newOwnedGraphQLCacheFixtureWithZones(
+	t *testing.T,
+	prefix string,
+	routeID string,
+	cfg Config,
+	zones []config.Zone,
+	registries ...*Registry,
+) *ownedGraphQLCacheFixture {
 	t.Helper()
 	failures := make(chan runtime.TaskFailure, 4)
 	tasks := runtime.NewTaskRegistry(context.Background(), func(failure runtime.TaskFailure) {
@@ -73,6 +87,7 @@ func newOwnedGraphQLCacheFixture(
 		t.Fatal(err)
 	}
 	p := &Plugin{config: cfg, cleanupInterval: time.Hour}
+	p.SetConfiguredZones(zones)
 	registry := NewRegistry()
 	if len(registries) > 0 && registries[0] != nil {
 		registry = registries[0]
@@ -120,21 +135,53 @@ func TestPostInitRequiresEffectiveConfig(t *testing.T) {
 	}
 }
 
-func setConfiguredZones(t *testing.T, zones []config.Zone) {
-	t.Helper()
-	if err := proxy_cache.RefreshConfiguredZones(zones); err != nil {
-		t.Fatalf("RefreshConfiguredZones() error = %v", err)
+func TestPostInitRequiresConfiguredZones(t *testing.T) {
+	tests := []struct {
+		name        string
+		injectZones bool
+		wantErr     string
+	}{
+		{name: "missing generation snapshot", wantErr: "configured proxy-cache zones are required"},
+		{name: "empty generation snapshot", injectZones: true},
 	}
-	t.Cleanup(func() { _ = proxy_cache.RefreshConfiguredZones(nil) })
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			p := &Plugin{}
+			p.SetDependencies(base.Dependencies{Config: &config.EffectiveConfig{}})
+			if test.injectZones {
+				p.SetConfiguredZones(nil)
+			}
+			if err := p.Init(); err != nil {
+				t.Fatalf("Init() error = %v", err)
+			}
+			err := p.PostInit()
+			if test.wantErr == "" {
+				if err != nil {
+					t.Fatalf("PostInit() error = %v", err)
+				}
+				return
+			}
+			if err == nil || err.Error() != test.wantErr {
+				t.Fatalf("PostInit() error = %v, want %q", err, test.wantErr)
+			}
+		})
+	}
+}
+
+func setConfiguredZones(t *testing.T, zones []config.Zone) []config.Zone {
+	t.Helper()
+	return slices.Clone(zones)
 }
 
 func TestGraphQLDiskCleanupUsesGenerationTaskOwner(t *testing.T) {
-	setConfiguredZones(t, []config.Zone{{Name: "graphql-owned-disk", DiskPath: t.TempDir()}})
-	fixture := newOwnedGraphQLCacheFixture(
+	zones := setConfiguredZones(t, []config.Zone{{Name: "graphql-owned-disk", DiskPath: t.TempDir()}})
+	fixture := newOwnedGraphQLCacheFixtureWithZones(
 		t,
 		"plugin/test/graphql/attempt-1",
 		"",
 		Config{CacheStrategy: "disk", CacheZone: "graphql-owned-disk", CacheTTL: 60},
+		zones,
 	)
 
 	want := []string{"plugin/test/graphql/attempt-1/disk-cleanup"}
@@ -148,20 +195,22 @@ func TestGraphQLDiskCleanupUsesGenerationTaskOwner(t *testing.T) {
 }
 
 func TestGraphQLStopDoesNotRemoveReplacementRouteCache(t *testing.T) {
-	setConfiguredZones(t, []config.Zone{{Name: "graphql-replacement-disk", DiskPath: t.TempDir()}})
+	zones := setConfiguredZones(t, []config.Zone{{Name: "graphql-replacement-disk", DiskPath: t.TempDir()}})
 	registry := NewRegistry()
-	old := newOwnedGraphQLCacheFixture(
+	old := newOwnedGraphQLCacheFixtureWithZones(
 		t,
 		"plugin/test/graphql/old",
 		"replacement-route",
 		Config{CacheStrategy: "disk", CacheZone: "graphql-replacement-disk", CacheTTL: 60},
+		zones,
 		registry,
 	)
-	next := newOwnedGraphQLCacheFixture(
+	next := newOwnedGraphQLCacheFixtureWithZones(
 		t,
 		"plugin/test/graphql/new",
 		"replacement-route",
 		Config{CacheStrategy: "disk", CacheZone: "graphql-replacement-disk", CacheTTL: 60},
+		zones,
 		registry,
 	)
 	if got, want := old.tasks.Active(), []string{"plugin/test/graphql/old/disk-cleanup"}; !slices.Equal(got, want) {
@@ -223,7 +272,7 @@ func TestGraphQLPurgeRegistryDoesNotCrossGenerations(t *testing.T) {
 }
 
 func TestPostInitRollsBackGraphQLDiskStateWhenTaskAdmissionFails(t *testing.T) {
-	setConfiguredZones(t, []config.Zone{{Name: "graphql-rejected-disk", DiskPath: t.TempDir()}})
+	zones := setConfiguredZones(t, []config.Zone{{Name: "graphql-rejected-disk", DiskPath: t.TempDir()}})
 	tasks := runtime.NewTaskRegistry(context.Background(), nil)
 	if residuals, err := tasks.Stop(context.Background()); err != nil || len(residuals) != 0 {
 		t.Fatalf("TaskRegistry.Stop() = (%v, %v)", residuals, err)
@@ -235,6 +284,7 @@ func TestPostInitRollsBackGraphQLDiskStateWhenTaskAdmissionFails(t *testing.T) {
 	p := &Plugin{
 		config: Config{CacheStrategy: "disk", CacheZone: "graphql-rejected-disk", CacheTTL: 60},
 	}
+	p.SetConfiguredZones(zones)
 	p.SetDependencies(base.Dependencies{Config: &config.EffectiveConfig{}, Tasks: owner})
 	registry := NewRegistry()
 	p.SetPurgeRegistry(registry)
@@ -452,18 +502,18 @@ func TestGraphQLCachePolicyVaryTTLSetCookiePurgeAndStorageOwnershipRemain(t *tes
 }
 
 func TestConfiguredMemoryZoneSharesGraphQLEntriesAcrossInstances(t *testing.T) {
-	setConfiguredZones(t, []config.Zone{{Name: "graphql-memory-shared", MemorySize: "1M"}})
+	zones := setConfiguredZones(t, []config.Zone{{Name: "graphql-memory-shared", MemorySize: "1M"}})
 
 	firstPlugin := newTestPlugin(t, Config{
 		CacheStrategy: "memory",
 		CacheZone:     "graphql-memory-shared",
 		CacheTTL:      60,
-	})
+	}, zones)
 	secondPlugin := newTestPlugin(t, Config{
 		CacheStrategy: "memory",
 		CacheZone:     "graphql-memory-shared",
 		CacheTTL:      60,
-	})
+	}, zones)
 	calls := 0
 	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
@@ -502,13 +552,13 @@ func TestConfiguredMemoryZoneSharesGraphQLEntriesAcrossInstances(t *testing.T) {
 }
 
 func TestConfiguredMemoryZoneBoundsGraphQLEntries(t *testing.T) {
-	setConfiguredZones(t, []config.Zone{{Name: "graphql-memory-bounded", MemorySize: "320B"}})
+	zones := setConfiguredZones(t, []config.Zone{{Name: "graphql-memory-bounded", MemorySize: "320B"}})
 
 	p := newTestPlugin(t, Config{
 		CacheStrategy: "memory",
 		CacheZone:     "graphql-memory-bounded",
 		CacheTTL:      60,
-	})
+	}, zones)
 	t.Cleanup(p.Stop)
 	calls := 0
 	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -541,13 +591,13 @@ func TestConfiguredMemoryZoneBoundsGraphQLEntries(t *testing.T) {
 
 func TestConfiguredDiskZonePersistsGraphQLEntriesAcrossInstances(t *testing.T) {
 	root := t.TempDir()
-	setConfiguredZones(t, []config.Zone{{Name: "graphql-disk-shared", DiskPath: root, DiskSize: "1M"}})
+	zones := setConfiguredZones(t, []config.Zone{{Name: "graphql-disk-shared", DiskPath: root, DiskSize: "1M"}})
 
 	firstPlugin := newTestPlugin(t, Config{
 		CacheStrategy: "disk",
 		CacheZone:     "graphql-disk-shared",
 		CacheTTL:      60,
-	})
+	}, zones)
 	calls := 0
 	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
@@ -569,7 +619,7 @@ func TestConfiguredDiskZonePersistsGraphQLEntriesAcrossInstances(t *testing.T) {
 		CacheStrategy: "disk",
 		CacheZone:     "graphql-disk-shared",
 		CacheTTL:      60,
-	})
+	}, zones)
 	second := performGraphQLRequest(
 		t,
 		secondPlugin.Handler(upstream),
@@ -591,13 +641,13 @@ func TestConfiguredDiskZonePersistsGraphQLEntriesAcrossInstances(t *testing.T) {
 
 func TestConfiguredDiskZoneUsesUpstreamCacheTTL(t *testing.T) {
 	root := t.TempDir()
-	setConfiguredZones(t, []config.Zone{{Name: "graphql-disk-response-ttl", DiskPath: root}})
+	zones := setConfiguredZones(t, []config.Zone{{Name: "graphql-disk-response-ttl", DiskPath: root}})
 
 	p := newTestPlugin(t, Config{
 		CacheStrategy: "disk",
 		CacheZone:     "graphql-disk-response-ttl",
 		CacheTTL:      60,
-	})
+	}, zones)
 	base := time.Date(2026, 7, 12, 1, 2, 3, 0, time.UTC)
 	p.now = func() time.Time { return base }
 	calls := 0
@@ -641,14 +691,14 @@ func TestConfiguredDiskZoneUsesUpstreamCacheTTL(t *testing.T) {
 
 func TestConfiguredDiskZoneNeverStoresGraphQLSetCookie(t *testing.T) {
 	root := t.TempDir()
-	setConfiguredZones(t, []config.Zone{{Name: "graphql-disk-cookie", DiskPath: root}})
+	zones := setConfiguredZones(t, []config.Zone{{Name: "graphql-disk-cookie", DiskPath: root}})
 
 	p := newTestPlugin(t, Config{
 		CacheStrategy:  "disk",
 		CacheZone:      "graphql-disk-cookie",
 		CacheTTL:       60,
 		CacheSetCookie: true,
-	})
+	}, zones)
 	calls := 0
 	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
@@ -728,13 +778,13 @@ func TestHandlerDoesNotStoreGraphQLResponsesWithPrivateCacheControl(t *testing.T
 
 func TestConfiguredDiskZoneDoesNotStoreGraphQLNoStoreResponse(t *testing.T) {
 	root := t.TempDir()
-	setConfiguredZones(t, []config.Zone{{Name: "graphql-disk-no-store", DiskPath: root}})
+	zones := setConfiguredZones(t, []config.Zone{{Name: "graphql-disk-no-store", DiskPath: root}})
 
 	p := newTestPlugin(t, Config{
 		CacheStrategy: "disk",
 		CacheZone:     "graphql-disk-no-store",
 		CacheTTL:      60,
-	})
+	}, zones)
 	calls := 0
 	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
@@ -771,9 +821,10 @@ func TestConfiguredDiskZoneDoesNotStoreGraphQLNoStoreResponse(t *testing.T) {
 }
 
 func TestPostInitRejectsUnknownConfiguredGraphQLCacheZone(t *testing.T) {
-	setConfiguredZones(t, []config.Zone{{Name: "known-graphql-zone", MemorySize: "1M"}})
+	zones := setConfiguredZones(t, []config.Zone{{Name: "known-graphql-zone", MemorySize: "1M"}})
 
 	p := &Plugin{config: Config{CacheStrategy: "memory", CacheZone: "unknown-graphql-zone"}}
+	p.SetConfiguredZones(zones)
 	p.SetDependencies(base.Dependencies{Config: &config.EffectiveConfig{}})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
@@ -785,8 +836,6 @@ func TestPostInitRejectsUnknownConfiguredGraphQLCacheZone(t *testing.T) {
 
 func TestAPISIX317ConfigurationRejectionMatrix(t *testing.T) {
 	t.Run("unknown cache zone", func(t *testing.T) {
-		setConfiguredZones(t, []config.Zone{{Name: "graphql-missing", MemorySize: "1M"}})
-
 		effective := &config.EffectiveConfig{}
 		p := &Plugin{config: Config{CacheStrategy: "memory", CacheZone: "graphql-missing"}}
 		p.SetDependencies(base.Dependencies{Config: effective})
@@ -817,8 +866,6 @@ func TestAPISIX317ConfigurationRejectionMatrix(t *testing.T) {
 }
 
 func TestPostInitUsesGenerationLocalGraphQLMemoryZone(t *testing.T) {
-	setConfiguredZones(t, nil)
-
 	effective := &config.EffectiveConfig{}
 	p := &Plugin{config: Config{CacheStrategy: "memory", CacheZone: "graphql-memory-local"}}
 	p.SetDependencies(base.Dependencies{Config: effective})
@@ -836,8 +883,6 @@ func TestPostInitUsesGenerationLocalGraphQLMemoryZone(t *testing.T) {
 }
 
 func TestPostInitUsesGenerationLocalGraphQLDiskZone(t *testing.T) {
-	setConfiguredZones(t, nil)
-
 	tasks := runtime.NewTaskRegistry(context.Background(), nil)
 	owner, err := runtime.NewTaskOwner(tasks, "plugin/test/graphql/generation-local-disk", runtime.TaskPlugin)
 	if err != nil {
@@ -867,9 +912,10 @@ func TestPostInitUsesGenerationLocalGraphQLDiskZone(t *testing.T) {
 }
 
 func TestPostInitRejectsGraphQLCacheStrategyZoneMismatch(t *testing.T) {
-	setConfiguredZones(t, []config.Zone{{Name: "graphql-disk-only", DiskPath: t.TempDir()}})
+	zones := setConfiguredZones(t, []config.Zone{{Name: "graphql-disk-only", DiskPath: t.TempDir()}})
 
 	p := &Plugin{config: Config{CacheStrategy: "memory", CacheZone: "graphql-disk-only"}}
+	p.SetConfiguredZones(zones)
 	p.SetDependencies(base.Dependencies{Config: &config.EffectiveConfig{}})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
@@ -1223,6 +1269,7 @@ func TestHandlerRefreshesExpiredGraphQLCacheEntries(t *testing.T) {
 
 func TestHandlerEnforcesGlobalGraphQLMaxSize(t *testing.T) {
 	p := &Plugin{config: Config{CacheTTL: 60}}
+	p.SetConfiguredZones(nil)
 	p.SetDependencies(base.Dependencies{Config: &config.EffectiveConfig{
 		Config: config.Config{GraphQL: config.GraphQL{MaxSize: 32}},
 	}})
@@ -1293,6 +1340,7 @@ func TestCacheKeyIncludesRouteServiceAndConsumerIdentity(t *testing.T) {
 
 func TestPurgeHandlerRemovesRouteCacheEntry(t *testing.T) {
 	p := &Plugin{config: Config{CacheStrategy: "memory", CacheTTL: 60}}
+	p.SetConfiguredZones(nil)
 	registry := NewRegistry()
 	p.SetDependencies(base.Dependencies{Config: &config.EffectiveConfig{}})
 	p.SetPurgeRegistry(registry)

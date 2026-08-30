@@ -265,11 +265,6 @@ func TestPreparedLoggerOwnerStopFlushesBatches(t *testing.T) {
 
 func TestPreparedProxyCacheOwnersKeepConfiguredZoneAlive(t *testing.T) {
 	zones := []appconfig.Zone{{Name: "route-refresh-memory", MemorySize: "1M"}}
-	if err := proxy_cache.RefreshConfiguredZones(zones); err != nil {
-		t.Fatalf("RefreshConfiguredZones() error = %v", err)
-	}
-	t.Cleanup(func() { _ = proxy_cache.RefreshConfiguredZones(nil) })
-
 	firstConfig := testEffectiveConfig()
 	firstConfig.Config.Apisix.ProxyCache.Zones = zones
 	pluginConfig := map[string]any{
@@ -862,11 +857,6 @@ func TestInitPluginsStrictRejectsUnknownPlugin(t *testing.T) {
 
 func TestInitPluginsStrictRejectsProxyCacheConfigFailure(t *testing.T) {
 	zones := []appconfig.Zone{{Name: "strict-disk-only", DiskPath: t.TempDir()}}
-	if err := proxy_cache.RefreshConfiguredZones(zones); err != nil {
-		t.Fatalf("RefreshConfiguredZones() error = %v", err)
-	}
-	t.Cleanup(func() { _ = proxy_cache.RefreshConfiguredZones(nil) })
-
 	err := testPluginInitializationError(
 		t,
 		"proxy-cache",
@@ -874,6 +864,7 @@ func TestInitPluginsStrictRejectsProxyCacheConfigFailure(t *testing.T) {
 			"cache_strategy": "memory",
 			"cache_zone":     "strict-disk-only",
 		},
+		zones,
 	)
 	if err == nil {
 		t.Fatal("initPluginsStrict() error = nil, want strict proxy-cache failure")
@@ -882,8 +873,9 @@ func TestInitPluginsStrictRejectsProxyCacheConfigFailure(t *testing.T) {
 
 func TestConfiguredProxyCacheZonesRejectInvalidUnusedZone(t *testing.T) {
 	zones := []appconfig.Zone{{Name: "unused-invalid-refresh", MemorySize: "zero"}}
-	if err := proxy_cache.RefreshConfiguredZones(zones); err == nil {
-		t.Fatal("RefreshConfiguredZones() error = nil, want invalid static proxy-cache zone rejection")
+	err := testPluginInitializationError(t, "proxy-cache", map[string]any{}, zones)
+	if err == nil {
+		t.Fatal("proxy-cache PostInit() error = nil, want invalid static proxy-cache zone rejection")
 	}
 }
 

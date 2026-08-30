@@ -44,19 +44,47 @@ func TestRequestVarUsesEffectiveRemoteIP(t *testing.T) {
 }
 
 func TestPostInitUsesGenerationLocalConfiguredZones(t *testing.T) {
-	if err := RefreshConfiguredZones([]appconfig.Zone{{Name: "legacy-zone", MemorySize: "1M"}}); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = RefreshConfiguredZones(nil) })
-
 	instance := &Plugin{config: Config{CacheZone: "candidate-zone", CacheStrategy: "memory"}}
 	instance.SetConfiguredZones([]appconfig.Zone{{Name: "candidate-zone", MemorySize: "2M"}})
 	if err := instance.PostInit(); err != nil {
-		t.Fatalf("PostInit() observed legacy zone snapshot: %v", err)
+		t.Fatalf("PostInit() rejected generation-local zone snapshot: %v", err)
 	}
 	t.Cleanup(instance.Stop)
 	if instance.memoryZone == nil || instance.memoryZone.capacity != 2<<20 {
 		t.Fatalf("candidate memory zone = %#v, want generation-local 2M zone", instance.memoryZone)
+	}
+}
+
+func TestPostInitRequiresConfiguredZones(t *testing.T) {
+	tests := []struct {
+		name        string
+		injectZones bool
+		wantErr     string
+	}{
+		{name: "missing generation snapshot", wantErr: "configured proxy-cache zones are required"},
+		{name: "empty generation snapshot", injectZones: true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			p := &Plugin{}
+			if test.injectZones {
+				p.SetConfiguredZones(nil)
+			}
+			if err := p.Init(); err != nil {
+				t.Fatalf("Init() error = %v", err)
+			}
+			err := p.PostInit()
+			if test.wantErr == "" {
+				if err != nil {
+					t.Fatalf("PostInit() error = %v", err)
+				}
+				return
+			}
+			if err == nil || err.Error() != test.wantErr {
+				t.Fatalf("PostInit() error = %v, want %q", err, test.wantErr)
+			}
+		})
 	}
 }
 
@@ -75,11 +103,15 @@ func (w *cacheHitCountingWriter) Write(body []byte) (int, error) {
 	return w.ResponseWriter.Write(body)
 }
 
-func newTestPlugin(t *testing.T, cfg Config) *Plugin {
+func newTestPlugin(t *testing.T, cfg Config, zones ...[]appconfig.Zone) *Plugin {
 	t.Helper()
 
 	tasks, failures := newProxyCacheTestTasks(t)
 	p := &Plugin{config: cfg}
+	p.SetConfiguredZones(nil)
+	if len(zones) > 0 {
+		p.SetConfiguredZones(zones[0])
+	}
 	p.SetDependencies(base.Dependencies{
 		Tasks: newPluginTaskOwnerForTest(t, tasks, "plugin/test/proxy-cache/helper"),
 	})
@@ -133,12 +165,12 @@ func assertNoProxyCacheTaskFailure(t *testing.T, failures <-chan runtime.TaskFai
 	}
 }
 
-func setConfiguredZones(t *testing.T, zones []appconfig.Zone) {
+func setConfiguredZones(t *testing.T, zones []appconfig.Zone) []appconfig.Zone {
 	t.Helper()
-	if err := RefreshConfiguredZones(zones); err != nil {
-		t.Fatalf("RefreshConfiguredZones() error = %v", err)
+	if _, err := validateZoneDefinitions(zones); err != nil {
+		t.Fatalf("validateZoneDefinitions() error = %v", err)
 	}
-	t.Cleanup(func() { _ = RefreshConfiguredZones(nil) })
+	return slices.Clone(zones)
 }
 
 func TestProxyCacheHitPublishesWithoutWriterAndReturnsCacheHitStop(t *testing.T) {
@@ -363,6 +395,7 @@ func TestPostInitSetsProxyCacheDefaults(t *testing.T) {
 
 func TestPostInitPreservesExplicitConsumerIsolationFalse(t *testing.T) {
 	p := &Plugin{}
+	p.SetConfiguredZones(nil)
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -413,9 +446,9 @@ func TestHandlerCachesSuccessfulGETResponses(t *testing.T) {
 }
 
 func TestHandlerMemoryZoneRejectsOversizedResponseWithoutEvictingSmallEntry(t *testing.T) {
-	setConfiguredZones(t, []appconfig.Zone{{Name: "bounded-handler", MemorySize: "320B"}})
+	zones := setConfiguredZones(t, []appconfig.Zone{{Name: "bounded-handler", MemorySize: "320B"}})
 
-	p := newTestPlugin(t, Config{CacheStrategy: "memory", CacheZone: "bounded-handler", CacheTTL: 60})
+	p := newTestPlugin(t, Config{CacheStrategy: "memory", CacheZone: "bounded-handler", CacheTTL: 60}, zones)
 	calls := 0
 	largeBody := strings.Repeat("x", 512)
 	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -458,9 +491,9 @@ func TestHandlerMemoryZoneRejectsOversizedResponseWithoutEvictingSmallEntry(t *t
 }
 
 func TestStoreStateWithHeaderRejectsOversizedVaryOverwriteWithoutMutatingExistingEntry(t *testing.T) {
-	setConfiguredZones(t, []appconfig.Zone{{Name: "bounded-store-state", MemorySize: "320B"}})
+	zones := setConfiguredZones(t, []appconfig.Zone{{Name: "bounded-store-state", MemorySize: "320B"}})
 
-	p := newTestPlugin(t, Config{CacheStrategy: "memory", CacheZone: "bounded-store-state", CacheTTL: 60})
+	p := newTestPlugin(t, Config{CacheStrategy: "memory", CacheZone: "bounded-store-state", CacheTTL: 60}, zones)
 	requestHeader := http.Header{"X-Variant": {"one"}}
 	smallState := base.ResponseState{
 		Header: http.Header{"Vary": {"X-Variant"}, "X-Origin": {"small"}},
@@ -574,7 +607,7 @@ func TestHandlerSetsAgeOnCacheHit(t *testing.T) {
 
 func TestDiskStrategyPersistsAcrossPluginInstances(t *testing.T) {
 	root := t.TempDir()
-	setConfiguredZones(t, []appconfig.Zone{{Name: "disk-test", DiskPath: root}})
+	zones := setConfiguredZones(t, []appconfig.Zone{{Name: "disk-test", DiskPath: root}})
 
 	calls := 0
 	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -582,13 +615,13 @@ func TestDiskStrategyPersistsAcrossPluginInstances(t *testing.T) {
 		w.Header().Set("X-Origin", "upstream")
 		_, _ = w.Write([]byte("disk-response"))
 	})
-	firstPlugin := newTestPlugin(t, Config{CacheStrategy: "disk", CacheZone: "disk-test", CacheTTL: 60})
+	firstPlugin := newTestPlugin(t, Config{CacheStrategy: "disk", CacheZone: "disk-test", CacheTTL: 60}, zones)
 	first := performRequest(t, firstPlugin.Handler(upstream), http.MethodGet, "/disk", nil)
 	if first.Header().Get(cacheStatusHeader) != "MISS" {
 		t.Fatalf("first cache status = %q, want MISS", first.Header().Get(cacheStatusHeader))
 	}
 
-	secondPlugin := newTestPlugin(t, Config{CacheStrategy: "disk", CacheZone: "disk-test", CacheTTL: 60})
+	secondPlugin := newTestPlugin(t, Config{CacheStrategy: "disk", CacheZone: "disk-test", CacheTTL: 60}, zones)
 	second := performRequest(t, secondPlugin.Handler(upstream), http.MethodGet, "/disk", nil)
 	if second.Header().Get(cacheStatusHeader) != "HIT" {
 		t.Fatalf("second cache status = %q, want HIT from disk zone", second.Header().Get(cacheStatusHeader))
@@ -614,9 +647,9 @@ func TestDiskStrategyPersistsAcrossPluginInstances(t *testing.T) {
 
 func TestDiskStrategyPurgesPersistedEntry(t *testing.T) {
 	root := t.TempDir()
-	setConfiguredZones(t, []appconfig.Zone{{Name: "disk-purge", DiskPath: root}})
+	zones := setConfiguredZones(t, []appconfig.Zone{{Name: "disk-purge", DiskPath: root}})
 
-	p := newTestPlugin(t, Config{CacheStrategy: "disk", CacheZone: "disk-purge", CacheTTL: 60})
+	p := newTestPlugin(t, Config{CacheStrategy: "disk", CacheZone: "disk-purge", CacheTTL: 60}, zones)
 	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("response"))
 	}))
@@ -642,9 +675,9 @@ func TestDiskStrategyPurgesPersistedEntry(t *testing.T) {
 
 func TestDiskLookupRemovesExpiredEntry(t *testing.T) {
 	root := t.TempDir()
-	setConfiguredZones(t, []appconfig.Zone{{Name: "disk-expired", DiskPath: root}})
+	zones := setConfiguredZones(t, []appconfig.Zone{{Name: "disk-expired", DiskPath: root}})
 
-	p := newTestPlugin(t, Config{CacheStrategy: "disk", CacheZone: "disk-expired", CacheTTL: 60})
+	p := newTestPlugin(t, Config{CacheStrategy: "disk", CacheZone: "disk-expired", CacheTTL: 60}, zones)
 	req := httptest.NewRequest(http.MethodGet, "/expired", nil)
 	key := p.cacheKey(req)
 	entryPath := p.entryPath(key)
@@ -701,9 +734,9 @@ func TestForgetDiskEntryTracksReplacedEntry(t *testing.T) {
 
 func TestDiskPurgeClearsDiskEntryIndex(t *testing.T) {
 	root := t.TempDir()
-	setConfiguredZones(t, []appconfig.Zone{{Name: "disk-purge-idx", DiskPath: root}})
+	zones := setConfiguredZones(t, []appconfig.Zone{{Name: "disk-purge-idx", DiskPath: root}})
 
-	p := newTestPlugin(t, Config{CacheStrategy: "disk", CacheZone: "disk-purge-idx", CacheTTL: 60})
+	p := newTestPlugin(t, Config{CacheStrategy: "disk", CacheZone: "disk-purge-idx", CacheTTL: 60}, zones)
 	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("response"))
 	}))
@@ -722,9 +755,9 @@ func TestDiskPurgeClearsDiskEntryIndex(t *testing.T) {
 
 func TestDiskLookupExpiredClearsDiskEntryIndex(t *testing.T) {
 	root := t.TempDir()
-	setConfiguredZones(t, []appconfig.Zone{{Name: "disk-expired-idx", DiskPath: root}})
+	zones := setConfiguredZones(t, []appconfig.Zone{{Name: "disk-expired-idx", DiskPath: root}})
 
-	p := newTestPlugin(t, Config{CacheStrategy: "disk", CacheZone: "disk-expired-idx", CacheTTL: 60})
+	p := newTestPlugin(t, Config{CacheStrategy: "disk", CacheZone: "disk-expired-idx", CacheTTL: 60}, zones)
 	req := httptest.NewRequest(http.MethodGet, "/expired-idx", nil)
 	key := p.cacheKey(req)
 	path := p.entryPath(key)
@@ -751,9 +784,9 @@ func TestDiskLookupExpiredClearsDiskEntryIndex(t *testing.T) {
 
 func TestConcurrentDiskForgetKeepsIndexConsistent(t *testing.T) {
 	root := t.TempDir()
-	setConfiguredZones(t, []appconfig.Zone{{Name: "disk-race", DiskPath: root, DiskSize: "2K"}})
+	zones := setConfiguredZones(t, []appconfig.Zone{{Name: "disk-race", DiskPath: root, DiskSize: "2K"}})
 
-	p := newTestPlugin(t, Config{CacheStrategy: "disk", CacheZone: "disk-race", CacheTTL: 60})
+	p := newTestPlugin(t, Config{CacheStrategy: "disk", CacheZone: "disk-race", CacheTTL: 60}, zones)
 	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(strings.Repeat("x", 2048)))
 	}))
@@ -785,9 +818,9 @@ func TestConcurrentDiskForgetKeepsIndexConsistent(t *testing.T) {
 
 func TestDiskLookupRunsPeriodicExpirySweep(t *testing.T) {
 	root := t.TempDir()
-	setConfiguredZones(t, []appconfig.Zone{{Name: "disk-periodic", DiskPath: root}})
+	zones := setConfiguredZones(t, []appconfig.Zone{{Name: "disk-periodic", DiskPath: root}})
 
-	p := newTestPlugin(t, Config{CacheStrategy: "disk", CacheZone: "disk-periodic", CacheTTL: 60})
+	p := newTestPlugin(t, Config{CacheStrategy: "disk", CacheZone: "disk-periodic", CacheTTL: 60}, zones)
 	now := time.Now()
 	expiredReq := httptest.NewRequest(http.MethodGet, "/expired-sweep", nil)
 	expiredKey := p.cacheKey(expiredReq)
@@ -826,12 +859,13 @@ func TestDiskLookupRunsPeriodicExpirySweep(t *testing.T) {
 
 func TestDiskBackgroundExpirySweepStopsWithRegistry(t *testing.T) {
 	root := t.TempDir()
-	setConfiguredZones(t, []appconfig.Zone{{Name: "disk-background", DiskPath: root}})
+	zones := setConfiguredZones(t, []appconfig.Zone{{Name: "disk-background", DiskPath: root}})
 
 	p := &Plugin{
 		config:          Config{CacheStrategy: "disk", CacheZone: "disk-background", CacheTTL: 60},
 		cleanupInterval: 10 * time.Millisecond,
 	}
+	p.SetConfiguredZones(zones)
 	tasks, failures := newProxyCacheTestTasks(t)
 	p.SetDependencies(base.Dependencies{
 		Tasks: newPluginTaskOwnerForTest(t, tasks, "plugin/test/proxy-cache/background"),
@@ -1022,10 +1056,10 @@ func TestDiskCleanupPanicFailsOnlyProxyCacheOwner(t *testing.T) {
 }
 
 func TestMemoryZoneSharesEntriesAcrossPluginInstances(t *testing.T) {
-	setConfiguredZones(t, []appconfig.Zone{{Name: "memory-shared", MemorySize: "1M"}})
+	zones := setConfiguredZones(t, []appconfig.Zone{{Name: "memory-shared", MemorySize: "1M"}})
 
-	firstPlugin := newTestPlugin(t, Config{CacheStrategy: "memory", CacheZone: "memory-shared", CacheTTL: 60})
-	secondPlugin := newTestPlugin(t, Config{CacheStrategy: "memory", CacheZone: "memory-shared", CacheTTL: 60})
+	firstPlugin := newTestPlugin(t, Config{CacheStrategy: "memory", CacheZone: "memory-shared", CacheTTL: 60}, zones)
+	secondPlugin := newTestPlugin(t, Config{CacheStrategy: "memory", CacheZone: "memory-shared", CacheTTL: 60}, zones)
 	calls := 0
 	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
@@ -1057,9 +1091,9 @@ func TestMemoryZoneSharesEntriesAcrossPluginInstances(t *testing.T) {
 }
 
 func TestConfiguredMemoryZoneBoundsVaryEntriesAndIndex(t *testing.T) {
-	setConfiguredZones(t, []appconfig.Zone{{Name: "memory-vary-bounded", MemorySize: "520B"}})
+	zones := setConfiguredZones(t, []appconfig.Zone{{Name: "memory-vary-bounded", MemorySize: "520B"}})
 
-	p := newTestPlugin(t, Config{CacheStrategy: "memory", CacheZone: "memory-vary-bounded", CacheTTL: 60})
+	p := newTestPlugin(t, Config{CacheStrategy: "memory", CacheZone: "memory-vary-bounded", CacheTTL: 60}, zones)
 	calls := 0
 	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
@@ -1085,13 +1119,13 @@ func TestConfiguredMemoryZoneBoundsVaryEntriesAndIndex(t *testing.T) {
 }
 
 func TestMemoryZoneRefreshWithChangedDefinitionStartsNewGeneration(t *testing.T) {
-	setConfiguredZones(t, []appconfig.Zone{{Name: "memory-refresh-generation", MemorySize: "1M"}})
+	firstZones := setConfiguredZones(t, []appconfig.Zone{{Name: "memory-refresh-generation", MemorySize: "1M"}})
 
 	firstPlugin := newTestPlugin(t, Config{
 		CacheStrategy: "memory",
 		CacheZone:     "memory-refresh-generation",
 		CacheTTL:      60,
-	})
+	}, firstZones)
 
 	calls := 0
 	upstream := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -1104,16 +1138,12 @@ func TestMemoryZoneRefreshWithChangedDefinitionStartsNewGeneration(t *testing.T)
 		t.Fatalf("first cache status = %q, want MISS", first.Header().Get(cacheStatusHeader))
 	}
 
-	if err := RefreshConfiguredZones(
-		[]appconfig.Zone{{Name: "memory-refresh-generation", MemorySize: "2M"}},
-	); err != nil {
-		t.Fatalf("RefreshConfiguredZones() error = %v", err)
-	}
+	secondZones := setConfiguredZones(t, []appconfig.Zone{{Name: "memory-refresh-generation", MemorySize: "2M"}})
 	secondPlugin := newTestPlugin(t, Config{
 		CacheStrategy: "memory",
 		CacheZone:     "memory-refresh-generation",
 		CacheTTL:      60,
-	})
+	}, secondZones)
 	second := performRequest(t, secondPlugin.Handler(upstream), http.MethodGet, "/generation", nil)
 	if second.Header().Get(cacheStatusHeader) != "MISS" {
 		t.Fatalf("cache status after changed zone definition = %q, want MISS", second.Header().Get(cacheStatusHeader))
@@ -1134,28 +1164,11 @@ func TestMemoryZoneRefreshWithChangedDefinitionStartsNewGeneration(t *testing.T)
 	t.Cleanup(secondPlugin.Stop)
 }
 
-func TestRefreshConfiguredZonesRejectsInvalidSnapshotWithoutReplacingCurrent(t *testing.T) {
-	setConfiguredZones(t, []appconfig.Zone{{Name: "refresh-valid", MemorySize: "1M"}})
-
-	if err := RefreshConfiguredZones([]appconfig.Zone{{Name: "refresh-next", MemorySize: "2M"}}); err != nil {
-		t.Fatalf("RefreshConfiguredZones(valid) error = %v", err)
-	}
-	if !CacheZoneDeclared("refresh-next") || CacheZoneDeclared("refresh-valid") {
-		t.Fatal("valid refresh did not replace the configured zone snapshot")
-	}
-
-	if err := RefreshConfiguredZones([]appconfig.Zone{{Name: "refresh-invalid", MemorySize: "zero"}}); err == nil {
-		t.Fatal("RefreshConfiguredZones(invalid) error = nil, want rejection")
-	}
-	if !CacheZoneDeclared("refresh-next") || CacheZoneDeclared("refresh-invalid") {
-		t.Fatal("invalid refresh replaced the last valid configured zone snapshot")
-	}
-}
-
 func TestPostInitRejectsUnknownConfiguredZone(t *testing.T) {
-	setConfiguredZones(t, []appconfig.Zone{{Name: "known-zone", MemorySize: "1M"}})
+	zones := setConfiguredZones(t, []appconfig.Zone{{Name: "known-zone", MemorySize: "1M"}})
 
 	p := &Plugin{config: Config{CacheStrategy: "memory", CacheZone: "unknown-zone"}}
+	p.SetConfiguredZones(zones)
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -1166,9 +1179,10 @@ func TestPostInitRejectsUnknownConfiguredZone(t *testing.T) {
 
 func TestPostInitRejectsCacheStrategyZoneMismatch(t *testing.T) {
 	root := t.TempDir()
-	setConfiguredZones(t, []appconfig.Zone{{Name: "disk-only", DiskPath: root}})
+	zones := setConfiguredZones(t, []appconfig.Zone{{Name: "disk-only", DiskPath: root}})
 
 	p := &Plugin{config: Config{CacheStrategy: "memory", CacheZone: "disk-only"}}
+	p.SetConfiguredZones(zones)
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -1181,6 +1195,7 @@ func TestPostInitRejectsCacheStrategyZoneMismatch(t *testing.T) {
 
 func TestPostInitRejectsRequestMethodCacheKey(t *testing.T) {
 	p := &Plugin{config: Config{CacheKey: []string{"$request_method"}}}
+	p.SetConfiguredZones(nil)
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -1250,25 +1265,24 @@ func TestPostInitRejectsInvalidZoneRegistry(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			if err := RefreshConfiguredZones(test.zones); err == nil {
-				t.Fatal("RefreshConfiguredZones() error = nil, want invalid zone registry rejection")
+			if _, err := validateZoneDefinitions(test.zones); err == nil {
+				t.Fatal("validateZoneDefinitions() error = nil, want invalid zone registry rejection")
 			}
-			t.Cleanup(func() { _ = RefreshConfiguredZones(nil) })
 		})
 	}
 }
 
-func TestRefreshConfiguredZonesRejectsUnusedInvalidZone(t *testing.T) {
-	if err := RefreshConfiguredZones([]appconfig.Zone{{Name: "unused-invalid", MemorySize: "zero"}}); err == nil {
-		t.Fatal("RefreshConfiguredZones() error = nil, want invalid unused zone rejection")
+func TestValidateZoneDefinitionsRejectsUnusedInvalidZone(t *testing.T) {
+	if _, err := validateZoneDefinitions([]appconfig.Zone{{Name: "unused-invalid", MemorySize: "zero"}}); err == nil {
+		t.Fatal("validateZoneDefinitions() error = nil, want invalid unused zone rejection")
 	}
 }
 
 func TestPostInitReadsDiskSize(t *testing.T) {
 	root := t.TempDir()
-	setConfiguredZones(t, []appconfig.Zone{{Name: "disk-size", DiskPath: root, DiskSize: "2K"}})
+	zones := setConfiguredZones(t, []appconfig.Zone{{Name: "disk-size", DiskPath: root, DiskSize: "2K"}})
 
-	p := newTestPlugin(t, Config{CacheStrategy: "disk", CacheZone: "disk-size"})
+	p := newTestPlugin(t, Config{CacheStrategy: "disk", CacheZone: "disk-size"}, zones)
 	if p.diskSize != 2*1024 {
 		t.Fatalf("disk size = %d, want %d", p.diskSize, 2*1024)
 	}
@@ -1276,9 +1290,9 @@ func TestPostInitReadsDiskSize(t *testing.T) {
 
 func TestDiskStrategyEvictsOldestEntryWhenDiskSizeExceeded(t *testing.T) {
 	root := t.TempDir()
-	setConfiguredZones(t, []appconfig.Zone{{Name: "disk-evict", DiskPath: root, DiskSize: "12K"}})
+	zones := setConfiguredZones(t, []appconfig.Zone{{Name: "disk-evict", DiskPath: root, DiskSize: "12K"}})
 
-	p := newTestPlugin(t, Config{CacheStrategy: "disk", CacheZone: "disk-evict", CacheTTL: 60})
+	p := newTestPlugin(t, Config{CacheStrategy: "disk", CacheZone: "disk-evict", CacheTTL: 60}, zones)
 	calls := 0
 	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
@@ -1313,7 +1327,7 @@ func TestDiskStrategyEvictsOldestEntryWhenDiskSizeExceeded(t *testing.T) {
 
 func TestDiskStrategyPersistsVaryVariantsAcrossPluginInstances(t *testing.T) {
 	root := t.TempDir()
-	setConfiguredZones(t, []appconfig.Zone{{Name: "disk-vary", DiskPath: root}})
+	zones := setConfiguredZones(t, []appconfig.Zone{{Name: "disk-vary", DiskPath: root}})
 
 	calls := 0
 	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1321,7 +1335,7 @@ func TestDiskStrategyPersistsVaryVariantsAcrossPluginInstances(t *testing.T) {
 		w.Header().Set("Vary", "X-Variant")
 		_, _ = w.Write([]byte(r.Header.Get("X-Variant")))
 	})
-	firstPlugin := newTestPlugin(t, Config{CacheStrategy: "disk", CacheZone: "disk-vary", CacheTTL: 60})
+	firstPlugin := newTestPlugin(t, Config{CacheStrategy: "disk", CacheZone: "disk-vary", CacheTTL: 60}, zones)
 	first := performRequest(
 		t,
 		firstPlugin.Handler(upstream),
@@ -1333,7 +1347,7 @@ func TestDiskStrategyPersistsVaryVariantsAcrossPluginInstances(t *testing.T) {
 		t.Fatalf("first cache status = %q, want MISS", first.Header().Get(cacheStatusHeader))
 	}
 
-	secondPlugin := newTestPlugin(t, Config{CacheStrategy: "disk", CacheZone: "disk-vary", CacheTTL: 60})
+	secondPlugin := newTestPlugin(t, Config{CacheStrategy: "disk", CacheZone: "disk-vary", CacheTTL: 60}, zones)
 	second := performRequest(
 		t,
 		secondPlugin.Handler(upstream),
@@ -1452,14 +1466,14 @@ func TestHandlerHonorsNoCacheAndCacheBypass(t *testing.T) {
 
 func TestDiskCacheControlRequestDirectivesAreIgnored(t *testing.T) {
 	root := t.TempDir()
-	setConfiguredZones(t, []appconfig.Zone{{Name: "disk-cache-control", DiskPath: root}})
+	zones := setConfiguredZones(t, []appconfig.Zone{{Name: "disk-cache-control", DiskPath: root}})
 
 	p := newTestPlugin(t, Config{
 		CacheStrategy: "disk",
 		CacheZone:     "disk-cache-control",
 		CacheControl:  true,
 		CacheTTL:      60,
-	})
+	}, zones)
 	calls := 0
 	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
@@ -1482,14 +1496,14 @@ func TestDiskCacheControlRequestDirectivesAreIgnored(t *testing.T) {
 
 func TestDiskCacheSetCookieIsNeverStored(t *testing.T) {
 	root := t.TempDir()
-	setConfiguredZones(t, []appconfig.Zone{{Name: "disk-cache-cookie", DiskPath: root}})
+	zones := setConfiguredZones(t, []appconfig.Zone{{Name: "disk-cache-cookie", DiskPath: root}})
 
 	p := newTestPlugin(t, Config{
 		CacheStrategy:  "disk",
 		CacheZone:      "disk-cache-cookie",
 		CacheSetCookie: true,
 		CacheTTL:       60,
-	})
+	}, zones)
 	calls := 0
 	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
@@ -2070,12 +2084,13 @@ func TestInitRegistersPurgeHTTPMethod(t *testing.T) {
 }
 
 func TestMemoryZoneStoreSharesClonedEntriesAndReleasesLastReference(t *testing.T) {
-	if store := AcquireMemoryZoneStore(""); store != nil {
+	zones := []appconfig.Zone{{Name: "shared-store-contract", MemorySize: "1M"}}
+	if store := AcquireMemoryZoneStore(zones, ""); store != nil {
 		t.Fatal("AcquireMemoryZoneStore(empty) returned a store")
 	}
 
-	first := AcquireMemoryZoneStore("shared-store-contract")
-	second := AcquireMemoryZoneStore("shared-store-contract")
+	first := AcquireMemoryZoneStore(zones, "shared-store-contract")
+	second := AcquireMemoryZoneStore(zones, "shared-store-contract")
 	t.Cleanup(first.Close)
 	t.Cleanup(second.Close)
 
@@ -2123,7 +2138,7 @@ func TestMemoryZoneStoreSharesClonedEntriesAndReleasesLastReference(t *testing.T
 	first.Close()
 	first.Close()
 	second.Close()
-	reopened := AcquireMemoryZoneStore("shared-store-contract")
+	reopened := AcquireMemoryZoneStore(zones, "shared-store-contract")
 	t.Cleanup(reopened.Close)
 	if _, ok := reopened.Load("cache-key"); ok {
 		t.Fatal("last Close() retained the prior memory-zone generation")
@@ -2138,9 +2153,9 @@ func TestMemoryZoneStoreSharesClonedEntriesAndReleasesLastReference(t *testing.T
 }
 
 func TestMemoryZoneStoreEnforcesConfiguredCapacity(t *testing.T) {
-	setConfiguredZones(t, []appconfig.Zone{{Name: "bounded-memory-store", MemorySize: "320B"}})
+	zones := setConfiguredZones(t, []appconfig.Zone{{Name: "bounded-memory-store", MemorySize: "320B"}})
 
-	store := AcquireMemoryZoneStore("bounded-memory-store")
+	store := AcquireMemoryZoneStore(zones, "bounded-memory-store")
 	t.Cleanup(store.Close)
 	now := time.Now()
 	entry := SharedCacheEntry{
@@ -2186,9 +2201,9 @@ func TestMemoryZoneStoreEnforcesConfiguredCapacity(t *testing.T) {
 }
 
 func TestMemoryZoneStoreRejectsOversizedOverwriteWithoutMutatingExistingEntry(t *testing.T) {
-	setConfiguredZones(t, []appconfig.Zone{{Name: "bounded-memory-overwrite", MemorySize: "320B"}})
+	zones := setConfiguredZones(t, []appconfig.Zone{{Name: "bounded-memory-overwrite", MemorySize: "320B"}})
 
-	store := AcquireMemoryZoneStore("bounded-memory-overwrite")
+	store := AcquireMemoryZoneStore(zones, "bounded-memory-overwrite")
 	t.Cleanup(store.Close)
 	now := time.Now()
 	original := SharedCacheEntry{
@@ -2214,9 +2229,9 @@ func TestMemoryZoneStoreRejectsOversizedOverwriteWithoutMutatingExistingEntry(t 
 
 func TestDiskZoneStoreLifecycleRejectsCorruptAndExpiredEntries(t *testing.T) {
 	root := t.TempDir()
-	setConfiguredZones(t, []appconfig.Zone{{Name: "shared-disk-contract", DiskPath: root, DiskSize: "1m"}})
+	zones := setConfiguredZones(t, []appconfig.Zone{{Name: "shared-disk-contract", DiskPath: root, DiskSize: "1m"}})
 
-	store, configured, err := NewDiskZoneStore("shared-disk-contract")
+	store, configured, err := NewDiskZoneStore(zones, "shared-disk-contract")
 	if err != nil || !configured {
 		t.Fatalf("NewDiskZoneStore() = configured %t, error %v", configured, err)
 	}
@@ -2298,9 +2313,7 @@ func TestDiskZoneStoreLifecycleRejectsCorruptAndExpiredEntries(t *testing.T) {
 }
 
 func TestNewDiskZoneStorePreservesUnconfiguredFallback(t *testing.T) {
-	setConfiguredZones(t, nil)
-
-	store, configured, err := NewDiskZoneStore("undeclared")
+	store, configured, err := NewDiskZoneStore(nil, "undeclared")
 	if err != nil || configured || store != nil {
 		t.Fatalf("NewDiskZoneStore(unconfigured) = %#v, %t, %v", store, configured, err)
 	}

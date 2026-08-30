@@ -48,18 +48,10 @@ type Plugin struct {
 }
 
 // SetConfiguredZones supplies the generation-local proxy-cache zone snapshot
-// before PostInit. Legacy Builder instances that do not call this setter keep
-// using the process compatibility registry until Task 9 removes that adapter.
+// before PostInit.
 func (p *Plugin) SetConfiguredZones(zones []appconfig.Zone) {
 	p.configuredZones = append([]appconfig.Zone(nil), zones...)
 	p.zonesSet = true
-}
-
-func (p *Plugin) effectiveConfiguredZones() []appconfig.Zone {
-	if p.zonesSet {
-		return append([]appconfig.Zone(nil), p.configuredZones...)
-	}
-	return configuredZones()
 }
 
 const (
@@ -264,8 +256,11 @@ func (p *Plugin) PostInit() error {
 	if err := validateCacheStatuses(p.config.CacheHTTPStatus); err != nil {
 		return err
 	}
-	zones := p.effectiveConfiguredZones()
-	if err := validateCacheZoneStrategy(zones, p.config.CacheZone, p.config.CacheStrategy); err != nil {
+	if !p.zonesSet {
+		return fmt.Errorf("configured proxy-cache zones are required")
+	}
+	zones := append([]appconfig.Zone(nil), p.configuredZones...)
+	if err := ValidateCacheZoneStrategy(zones, p.config.CacheZone, p.config.CacheStrategy); err != nil {
 		return err
 	}
 	if err := validateCacheKey(p.config.CacheKey); err != nil {

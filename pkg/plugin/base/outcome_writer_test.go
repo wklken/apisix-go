@@ -106,11 +106,11 @@ func (c *closeCountingConn) Close() error {
 
 func TestCaptureResponseOutcomePreservesOptionalInterfaces(t *testing.T) {
 	minimal := &minimalResponseWriter{header: make(http.Header)}
-	wrappedMinimal, _, _ := CaptureResponseOutcome(minimal)
+	wrappedMinimal, _ := CaptureResponseOutcomeController(minimal)
 	assertOptionalInterfaces(t, minimal, wrappedMinimal)
 
 	all := newOptionalResponseWriter()
-	wrappedAll, _, _ := CaptureResponseOutcome(all)
+	wrappedAll, _ := CaptureResponseOutcomeController(all)
 	assertOptionalInterfaces(t, all, wrappedAll)
 	if httpsnoop.Unwrap(wrappedAll) != all {
 		t.Fatal("httpsnoop.Unwrap(wrapped) did not return original writer")
@@ -161,7 +161,7 @@ func TestCaptureResponseOutcomeCommitsBeforeUnderlyingPanic(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			wrapped, snapshot, _ := CaptureResponseOutcome(test.new())
+			wrapped, capture := CaptureResponseOutcomeController(test.new())
 			func() {
 				defer func() {
 					if recover() == nil {
@@ -170,7 +170,7 @@ func TestCaptureResponseOutcomeCommitsBeforeUnderlyingPanic(t *testing.T) {
 				}()
 				test.call(wrapped)
 			}()
-			got := snapshot()
+			got := capture.Outcome()
 			if !got.Committed || got.Flushed != test.wantFlushed {
 				t.Fatalf("snapshot after panic = %#v", got)
 			}
@@ -214,40 +214,41 @@ func assertOptionalInterfaces(t *testing.T, original, wrapped http.ResponseWrite
 }
 
 func TestCaptureResponseOutcomeTracksInformationalAndFinalStatus(t *testing.T) {
-	wrapped, snapshot, _ := CaptureResponseOutcome(httptest.NewRecorder())
+	wrapped, capture := CaptureResponseOutcomeController(httptest.NewRecorder())
 	wrapped.WriteHeader(http.StatusEarlyHints)
-	if got := snapshot(); got.Committed || got.Status != http.StatusOK {
+	if got := capture.Outcome(); got.Committed || got.Status != http.StatusOK {
 		t.Fatalf("after 103: %#v", got)
 	}
 	wrapped.WriteHeader(http.StatusCreated)
-	if got := snapshot(); !got.Committed || got.Status != http.StatusCreated {
+	if got := capture.Outcome(); !got.Committed || got.Status != http.StatusCreated {
 		t.Fatalf("after final status: %#v", got)
 	}
 }
 
 func TestCaptureResponseOutcomeDefaultsCompletedNoWriteToOK(t *testing.T) {
-	_, snapshot, _ := CaptureResponseOutcome(httptest.NewRecorder())
-	if got := snapshot(); got.Kind != "completed" || got.Status != http.StatusOK || got.Committed || got.Bytes != 0 {
+	_, capture := CaptureResponseOutcomeController(httptest.NewRecorder())
+	got := capture.Outcome()
+	if got.Kind != "completed" || got.Status != http.StatusOK || got.Committed || got.Bytes != 0 {
 		t.Fatalf("snapshot() = %#v", got)
 	}
 }
 
 func TestCaptureResponseOutcomeTracksImplicitOKAndBytes(t *testing.T) {
-	wrapped, snapshot, _ := CaptureResponseOutcome(httptest.NewRecorder())
+	wrapped, capture := CaptureResponseOutcomeController(httptest.NewRecorder())
 	n, err := wrapped.Write([]byte("hello"))
 	if err != nil || n != 5 {
 		t.Fatalf("Write = %d, %v", n, err)
 	}
-	if got := snapshot(); got.Status != http.StatusOK || !got.Committed || got.Bytes != 5 {
+	if got := capture.Outcome(); got.Status != http.StatusOK || !got.Committed || got.Bytes != 5 {
 		t.Fatalf("snapshot() = %#v", got)
 	}
 }
 
 func TestCaptureResponseOutcomeTracksFlushCommit(t *testing.T) {
 	underlying := newOptionalResponseWriter()
-	wrapped, snapshot, _ := CaptureResponseOutcome(underlying)
+	wrapped, capture := CaptureResponseOutcomeController(underlying)
 	wrapped.(http.Flusher).Flush()
-	if got := snapshot(); !got.Committed || !got.Flushed || got.Status != http.StatusOK {
+	if got := capture.Outcome(); !got.Committed || !got.Flushed || got.Status != http.StatusOK {
 		t.Fatalf("snapshot() = %#v", got)
 	}
 }
@@ -255,9 +256,9 @@ func TestCaptureResponseOutcomeTracksFlushCommit(t *testing.T) {
 func TestCaptureResponseOutcomeTracksOnlySuccessfulHijack(t *testing.T) {
 	failed := newOptionalResponseWriter()
 	failed.hijackErr = errors.New("hijack failed")
-	wrappedFailed, failedSnapshot, _ := CaptureResponseOutcome(failed)
+	wrappedFailed, failedCapture := CaptureResponseOutcomeController(failed)
 	_, _, _ = wrappedFailed.(http.Hijacker).Hijack()
-	if got := failedSnapshot(); got.Hijacked || got.Committed {
+	if got := failedCapture.Outcome(); got.Hijacked || got.Committed {
 		t.Fatalf("failed hijack snapshot = %#v", got)
 	}
 
@@ -266,18 +267,18 @@ func TestCaptureResponseOutcomeTracksOnlySuccessfulHijack(t *testing.T) {
 	counting := &closeCountingConn{Conn: left}
 	success := newOptionalResponseWriter()
 	success.hijackConn = counting
-	wrappedSuccess, successSnapshot, closeHijacked := CaptureResponseOutcome(success)
+	wrappedSuccess, successCapture := CaptureResponseOutcomeController(success)
 	_, _, err := wrappedSuccess.(http.Hijacker).Hijack()
 	if err != nil {
 		t.Fatalf("Hijack() error = %v", err)
 	}
-	if got := successSnapshot(); !got.Hijacked || !got.Committed {
+	if got := successCapture.Outcome(); !got.Hijacked || !got.Committed {
 		t.Fatalf("successful hijack snapshot = %#v", got)
 	}
-	if err := closeHijacked(); err != nil {
+	if err := successCapture.CloseHijacked(); err != nil {
 		t.Fatalf("closeHijacked() error = %v", err)
 	}
-	if err := closeHijacked(); err != nil {
+	if err := successCapture.CloseHijacked(); err != nil {
 		t.Fatalf("second closeHijacked() error = %v", err)
 	}
 	if counting.closes.Load() != 1 {
@@ -286,23 +287,23 @@ func TestCaptureResponseOutcomeTracksOnlySuccessfulHijack(t *testing.T) {
 }
 
 func TestCaptureResponseOutcomeTracksReadFromBytes(t *testing.T) {
-	wrapped, snapshot, _ := CaptureResponseOutcome(newOptionalResponseWriter())
+	wrapped, capture := CaptureResponseOutcomeController(newOptionalResponseWriter())
 	n, err := wrapped.(io.ReaderFrom).ReadFrom(strings.NewReader("reader"))
 	if err != nil || n != 6 {
 		t.Fatalf("ReadFrom = %d, %v", n, err)
 	}
-	if got := snapshot(); got.Bytes != 6 || !got.Committed {
+	if got := capture.Outcome(); got.Bytes != 6 || !got.Committed {
 		t.Fatalf("snapshot() = %#v", got)
 	}
 }
 
 func TestCaptureResponseOutcomeTracksWriteStringBytes(t *testing.T) {
-	wrapped, snapshot, _ := CaptureResponseOutcome(newOptionalResponseWriter())
+	wrapped, capture := CaptureResponseOutcomeController(newOptionalResponseWriter())
 	n, err := wrapped.(io.StringWriter).WriteString("string")
 	if err != nil || n != 6 {
 		t.Fatalf("WriteString = %d, %v", n, err)
 	}
-	if got := snapshot(); got.Bytes != 6 || !got.Committed {
+	if got := capture.Outcome(); got.Bytes != 6 || !got.Committed {
 		t.Fatalf("snapshot() = %#v", got)
 	}
 }
@@ -311,12 +312,12 @@ func TestCaptureResponseOutcomeTracksFlushErrorCommit(t *testing.T) {
 	wantErr := errors.New("flush failed")
 	underlying := newOptionalResponseWriter()
 	underlying.flushErr = wantErr
-	wrapped, snapshot, _ := CaptureResponseOutcome(underlying)
+	wrapped, capture := CaptureResponseOutcomeController(underlying)
 	err := wrapped.(interface{ FlushError() error }).FlushError()
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("FlushError() = %v", err)
 	}
-	if got := snapshot(); !got.Committed || !got.Flushed {
+	if got := capture.Outcome(); !got.Committed || !got.Flushed {
 		t.Fatalf("snapshot() = %#v", got)
 	}
 }

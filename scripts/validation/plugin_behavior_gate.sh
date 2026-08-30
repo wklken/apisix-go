@@ -10,7 +10,6 @@ unset http_proxy https_proxy all_proxy no_proxy ftp_proxy
 readonly suite=apisix-3.17-plugin-differential-v1
 readonly expected_source_commit=9ef2ecab67f652d38365049613610ef649bb4ad0
 readonly -a required_stages=(
-    capability_contract
     generator_drift
     candidate_build
     plugin_units
@@ -161,8 +160,8 @@ validate_artifact() {
                 (.output_sha256 | test("^[0-9a-f]{64}$"))
             )) and
             (.case_counts | keys | sort) == [
-                "capability_contract_tests", "corpus_dependency_test_blocks",
-                "corpus_excluded_post_target_blocks", "corpus_non_plugin_blocks",
+                "corpus_dependency_test_blocks", "corpus_excluded_post_target_blocks",
+                "corpus_non_plugin_blocks",
                 "corpus_package_test_blocks", "corpus_pending_blocks",
                 "corpus_platform_gap_blocks", "corpus_platform_test_blocks",
                 "corpus_post_target_regression_blocks", "corpus_real_process_blocks",
@@ -171,7 +170,6 @@ validate_artifact() {
             ] and
             (all(.case_counts[]; type == "number" and floor == . and . >= 0)) and
             .case_counts.selected_plugins > 0 and
-            .case_counts.capability_contract_tests > 0 and
             .case_counts.plugin_unit_tests > 0 and
             .case_counts.dependency_failure_tests > 0 and
             .case_counts.corpus_real_process_blocks > 0 and
@@ -364,15 +362,9 @@ run_go() {
     )
 }
 
-run_capability_contract() {
-    run_go go test ./pkg/capability ./pkg/config ./pkg/plugin \
-        -run '^(TestLoadedManifest|TestManifest|TestCapabilityManifest|TestCapabilityRegistry)' \
-        -count=1 -json
-}
-
 run_generator_drift() {
     run_go go run ./cmd/capability-gen -repo-root . -check
-    printf 'capability generator drift: PASS\n'
+    printf 'plugin registry drift: PASS\n'
 }
 
 run_candidate_build() {
@@ -403,10 +395,7 @@ run_corpus() {
         export APISIX_GO_REQUIRE_FULL_CORPUS=1
         export APISIX_SOURCE_DIR="$source_dir"
         run_go go test ./t/plugin \
-            -run '^(TestCapabilityManifestSelection|TestManifestCorpusValidates|TestSourceCoverage|TestUpstreamCorpusAccounting|TestCorpusEvidenceMatchesCompatibilityTarget|TestUpstreamCorpusCompletion)$' \
-            -count=1 -json
-        run_go go test ./t/compatibility \
-            -run '^TestDifferentialSuiteHasDurableEvidenceForEveryFactory$' \
+            -run '^(TestManifestCorpusValidates|TestSourceCoverage|TestUpstreamCorpusAccounting|TestUpstreamCorpusCompletion)$' \
             -count=1 -json
     )
 }
@@ -429,7 +418,6 @@ run_differential() {
         "$differential_script"
 }
 
-run_stage capability_contract run_capability_contract
 run_stage generator_drift run_generator_drift
 
 selected_plugins=111
@@ -441,7 +429,7 @@ run_stage corpus run_corpus
 run_stage real_process run_real_process
 run_stage differential run_differential
 
-for stage in capability_contract plugin_units dependency_failure corpus real_process; do
+for stage in plugin_units dependency_failure corpus real_process; do
     output=$evidence_dir/stages/$stage.out
     if grep -Fq '"Action":"skip"' "$output"; then
         die "stage $stage reported a skipped test"
@@ -456,7 +444,6 @@ count_passed_tests() {
     ' "$1"
 }
 
-capability_contract_tests=$(count_passed_tests "$evidence_dir/stages/capability_contract.out")
 plugin_unit_tests=$(count_passed_tests "$evidence_dir/stages/plugin_units.out")
 dependency_failure_tests=$(count_passed_tests "$evidence_dir/stages/dependency_failure.out")
 real_process_cases=$(jq -Rsc '
@@ -523,7 +510,6 @@ jq -n \
     --arg digest "$oracle_digest" \
     --arg differential_sha "$(sha256_file "$differential_artifact")" \
     --argjson selected "$selected_plugins" \
-    --argjson capability "$capability_contract_tests" \
     --argjson units "$plugin_unit_tests" \
     --argjson dependencies "$dependency_failure_tests" \
     --argjson corpus_real "$corpus_real_process_blocks" \
@@ -556,7 +542,6 @@ jq -n \
         },
         case_counts: {
             selected_plugins: $selected,
-            capability_contract_tests: $capability,
             plugin_unit_tests: $units,
             dependency_failure_tests: $dependencies,
             corpus_real_process_blocks: $corpus_real,

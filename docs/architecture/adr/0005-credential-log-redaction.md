@@ -3,9 +3,7 @@ id: ADR-0005
 title: Redact credential material from authentication diagnostics
 status: accepted
 target: apisix-3.17
-divergence_ids: [DIV-005-credential-log-redaction]
 owner: wklken
-owner_approval_ref: "six-plugin rollout owner decision, 2026-08-27"
 date: 2026-08-27
 ---
 

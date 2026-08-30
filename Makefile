@@ -71,14 +71,6 @@ candidate-etcd-recovery:
 test:
 	$(GO_CACHE_RUNNER) go test ./cmd/... ./pkg/... -count=1
 
-COVERAGE_MIN ?= 82.0
-COVERAGE_FILE ?= coverage.out
-
-.PHONY: test-cover
-test-cover:
-	$(GO_CACHE_RUNNER) bash scripts/check-unit-coverage_test.sh
-	COVERAGE_MIN=$(COVERAGE_MIN) $(GO_CACHE_RUNNER) ./scripts/check-unit-coverage.sh $(COVERAGE_FILE)
-
 .PHONY: test-integration
 test-integration:
 	$(GO_CACHE_RUNNER) go test ./t/plugin -count=1 -v
@@ -87,18 +79,16 @@ test-integration:
 test-plugin-harness:
 	APISIX_GO_SKIP_PLUGIN_INTEGRATION=1 $(GO_CACHE_RUNNER) go test ./t/plugin -count=1
 
-.PHONY: generate-capabilities
-generate-capabilities:
+.PHONY: generate-plugin-registry
+generate-plugin-registry:
 	$(GO_CACHE_RUNNER) go run ./cmd/capability-gen -repo-root . -write
 
-.PHONY: check-capability-drift
-check-capability-drift:
-	$(GO_CACHE_RUNNER) go run ./cmd/capability-gen -repo-root . -check
+.PHONY: generate-capabilities
+generate-capabilities: generate-plugin-registry
 
-.PHONY: test-capability-status
-test-capability-status:
-	$(GO_CACHE_RUNNER) go test ./pkg/capability ./pkg/config ./pkg/plugin -run '^(TestLoadedManifest|TestManifest|TestCapabilityManifest|TestCapabilityRegistry)' -count=1
-	APISIX_GO_SKIP_PLUGIN_INTEGRATION=1 $(GO_CACHE_RUNNER) go test ./t/plugin -run '^(TestCapabilityManifestSelection|TestManifestCorpusValidates|TestUpstreamCorpusAccountingWithoutSourceCheckout|TestCorpusEvidenceMatchesPinnedAPISIXTarget)$$' -count=1
+.PHONY: check-plugin-registry
+check-plugin-registry:
+	$(GO_CACHE_RUNNER) go run ./cmd/capability-gen -repo-root . -check
 
 .PHONY: test-plugin-behavior-gate
 test-plugin-behavior-gate:

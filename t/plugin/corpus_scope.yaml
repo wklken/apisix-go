@@ -1,4 +1,4 @@
-# Historical source snapshot; capability evidence freshness is evaluated against the current compatibility target.
+# Historical APISIX source snapshot used by the standalone plugin corpus.
 commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
 sources:
   - file: t/plugin/acl.t
@@ -2661,7 +2661,7 @@ sources:
     owner: opa resource-context security contract
     disposition: package_test
     evidence: pkg/plugin/opa/plugin_test.go#TestOPAResourceContextExposesOnlySafeIdentities
-    reason: accepted security divergence DIV-006 preserves policy-useful route, service, and consumer identities while refusing APISIX 3.17 credential-bearing plugin and upstream map exposure
+    reason: the documented OPA resource-context boundary preserves policy-useful route, service, and consumer identities without exposing credential-bearing plugin and upstream maps
   - file: t/plugin/opa3.t
     commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
     test_numbers: [1, 2]

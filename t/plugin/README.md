@@ -8,23 +8,17 @@ uses a fresh loopback upstream fixture.
 
 The standalone corpus is one global ledger. Its default inventory baseline is
 Apache APISIX commit `c3d7d5ec69774121f53d2e20d29d09c816795dd7`, while the
-capability manifest's current compatibility target is
+current compatibility target is
 `9ef2ecab67f652d38365049613610ef649bb4ad0`. A source file may be migrated to
 that target by setting `commit` on all of its ledger rows and updating the
 matching executable manifests; partial migration of one upstream `.t` file is
-rejected. Converted-upstream claims backed only by historical manifests remain
-stale, while claims whose referenced manifests all use the target commit may be
-promoted after their evidence gates pass. Integration selection comes from each
-capability claim's `t/plugin/*.yaml` evidence references and factory keys, not
-from `docs/plugins.md`; the checked-in catalog currently has 100 manifests,
-including the explicit supplemental `redirect2.yaml` alias. Every manifest
-contains at least one standalone scenario that activates its target plugin and
-assertions produced by the real APISIX-Go process. An intentional negative
-scenario may keep the target plugin disabled only when it declares a nonblank
-`target_plugin_exempt_reason`; the gate rejects missing, blank, or stale
-exemptions. No generated placeholder manifest is counted as coverage.
-`docs/plugins.md` is a generated status projection, never a fixture-selection
-database.
+rejected. The checked-in catalog is discovered directly from `t/plugin/*.yaml`;
+it is not selected from a separate capability or evidence ledger. Every
+manifest contains at least one standalone scenario that activates its target
+plugin and assertions produced by the real APISIX-Go process. An intentional
+negative scenario may keep the target plugin disabled only when it declares a
+nonblank `target_plugin_exempt_reason`; the gate rejects missing, blank, or
+stale exemptions. No generated placeholder manifest is counted as coverage.
 
 The schema rejects `skip` fields. A source block counts as covered only when it
 belongs to an executable standalone scenario with a request and an assertion;
@@ -63,10 +57,9 @@ optional row-level `commit` migrates the entire source file. Every executable
 manifest must use the effective commit recorded for each selected source label.
 The source-coverage gate reads exact files from Git objects, so historical and
 migrated source files can coexist without changing the Apache APISIX checkout's
-HEAD. Capability evidence separately records whether its referenced manifests
-match the current compatibility target. Every source test number from
-`1..source.tests` must occur exactly once. The validator fails on a missing,
-duplicated, out-of-range, or mixed-commit number before starting a child process.
+HEAD. Every source test number from `1..source.tests` must occur exactly once.
+The validator fails on a missing, duplicated, out-of-range, or mixed-commit
+number before starting a child process.
 
 Setup-only source blocks are grouped with the request block that exercises the
 setup. When upstream setup depends on the Admin API, Lua, or an external

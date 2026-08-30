@@ -21,7 +21,7 @@ It must pass:
 
 | Gate | Required evidence |
 | --- | --- |
-| Source | Lint, build, unit coverage, capability drift, and plugin harness. |
+| Source | Lint, build, unit tests, plugin registry drift, and plugin harness. |
 | Plugin behavior | Complete APISIX 3.17 differential evidence bound to the source commit and candidate binary SHA-256. |
 | HTTP smoke | Focused real-process authentication, rewrite, proxy-control, and rejection cases. |
 | Concurrency and dependencies | Focused race tests plus reachable Go and container vulnerability checks. |

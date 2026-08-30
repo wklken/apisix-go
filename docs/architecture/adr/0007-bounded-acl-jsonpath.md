@@ -3,9 +3,7 @@ id: ADR-0007
 title: Prefer bounded all-match ACL JSONPath evaluation
 status: proposed
 target: apisix-3.17
-divergence_ids: [DIV-007-bounded-acl-jsonpath]
 owner: wklken
-owner_approval_ref: ""
 date: 2026-08-29
 ---
 

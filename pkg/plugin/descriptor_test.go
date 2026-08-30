@@ -58,19 +58,6 @@ plugins:
     priority: 100
     scopes: [route]
     instance_scope: route
-    behavior: full
-    behavior_summary: test
-    known_gaps: []
-    evidence:
-      schema: {state: not_applicable, refs: [], owner: test, reason: not exercised by descriptor unit fixture}
-      unit: {state: not_applicable, refs: [], owner: test, reason: not exercised by descriptor unit fixture}
-      converted_upstream: {state: not_applicable, refs: [], owner: test, reason: not exercised by descriptor unit fixture}
-      differential: {state: not_applicable, refs: [], owner: test, reason: not exercised by descriptor unit fixture}
-      real_dependency: {state: not_applicable, refs: [], owner: test, reason: not exercised by descriptor unit fixture}
-      failure: {state: not_applicable, refs: [], owner: test, reason: not exercised by descriptor unit fixture}
-    divergence_ids: []
-    supported_platforms: [linux-amd64]
-divergences: []
 `))
 	if err != nil {
 		t.Fatal(err)

@@ -69,6 +69,10 @@ test -f "$makefile"
 test -f "$dockerfile"
 test -f "$production_config"
 
+for file in "$unit_workflow" "$candidate_workflow" "$makefile"; do
+    reject_pattern 'COVERAGE_MIN|make test-cover|check-unit-coverage' "$file"
+done
+
 # Publication, upgrade, and rollback are intentionally outside repository
 # qualification. Keep this negative contract so they cannot drift back into CI.
 for removed in \
@@ -96,7 +100,8 @@ require_fixed '  enable_admin: false' "$production_config"
 # Ordinary CI continues to enforce the candidate contract and generated state.
 require_job_fixed "$unit_workflow" build-and-unit 'run: bash scripts/release_gate_test.sh'
 require_job_fixed "$unit_workflow" build-and-unit 'run: make test-plugin-behavior-gate'
-require_job_fixed "$unit_workflow" build-and-unit 'run: make check-capability-drift'
+require_job_fixed "$unit_workflow" build-and-unit 'run: make check-plugin-registry'
+require_job_fixed "$unit_workflow" build-and-unit 'run: make test'
 require_job_fixed "$unit_workflow" build-and-unit 'run: make test-plugin-harness'
 
 # Local, container, and candidate builds must retain immutable build metadata.
@@ -158,6 +163,8 @@ for job in lint build-and-unit integration-smoke plugin-differential; do
     require_job_fixed "$candidate_workflow" "$job" 'resolve-source'
     require_job_fixed "$candidate_workflow" "$job" 'ref: ${{ needs.resolve-source.outputs.commit }}'
 done
+require_job_fixed "$candidate_workflow" build-and-unit 'run: make test'
+require_job_fixed "$candidate_workflow" plugin-differential 'run: make check-plugin-registry'
 require_job_fixed "$candidate_workflow" plugin-differential 'run: make validate-plugin-behavior'
 require_job_fixed "$candidate_workflow" security-release-gates 'uses: ./.github/workflows/security-release-gates.yml'
 require_job_fixed "$candidate_workflow" security-release-gates 'plugin-differential'

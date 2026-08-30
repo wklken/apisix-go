@@ -1,37 +1,29 @@
-# Capability Manifest Instructions
+# Plugin Registry Manifest Instructions
 
 This file inherits the repository root `AGENTS.md` and applies to
 `pkg/capability`.
 
 ## Authority boundary
 
-- `manifest.yaml` is the only editable capability source: pinned APISIX target,
-  factories/aliases, phases/priorities/scopes, behavior, evidence,
-  validation evidence, platforms, gaps/divergences, and secret declarations.
-- `pkg/plugin/registry_gen.go`, `docs/plugins.md`, and generated README summaries
-  are projections. Never hand-edit them to repair drift.
-- Behavior support and evidence state are independent. Do not infer production
-  readiness from a registered factory count.
-- Accepted divergence requires a manifest entry and its controlled ADR. Secret
-  source/field/target is runtime authority, not descriptive metadata.
+- `manifest.yaml` is a temporary runtime source for the pinned APISIX 3.17
+  target, factories/aliases, phases/priorities/scopes, and secret declarations.
+- It is not a behavior, evidence, readiness, divergence, platform, approval, or
+  release-status ledger.
+- `pkg/plugin/registry_gen.go` is generated from manifest factory facts. Never
+  hand-edit it to repair drift.
+- Secret source/field/target remains runtime input until the secret resolver is
+  aligned with APISIX 3.17 in a later simplification phase.
 
 ## Change rules
 
-- Keep strict YAML `KnownFields` parsing and duplicate/evidence/catalog
+- Keep strict YAML `KnownFields` parsing and duplicate/factory/catalog
   validation fail closed.
-- Add/rename a plugin or alias through the manifest factory, then regenerate all
-  projections in the same change.
-- Never weaken a missing-evidence validation failure into an inventory pass.
-- Upstream source-block accounting belongs to `t/plugin/corpus_scope.yaml`,
-  executable converted behavior to `t/plugin/*.yaml`, and differential
-  obligations to `validation/compatibility/<target>/cases.yaml`; the generic
-  opt-in runner lives in `t/compatibility`. Do not create a second
-  profile-specific corpus or hand-maintained status ledger.
-- A qualification result is current only when its source commit, oracle
-  identity, manifest/catalog digests, and exact candidate binary or image
-  identity agree and the required first-attempt evidence passes. A historical
-  report, older binary result, plan checkbox, or inventory total cannot promote
-  capability evidence.
+- Add or rename a plugin or alias through the manifest factory, then regenerate
+  the plugin registry in the same change.
+- Keep plugin behavior and regression evidence in plugin source and focused
+  tests. Keep unavoidable compatibility differences in concise ADRs.
+- Do not add behavior status, evidence claims, known-gap ledgers, divergence
+  approval state, supported-platform claims, or candidate identities here.
 
 ## Focused verification
 

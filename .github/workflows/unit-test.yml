@@ -5,7 +5,6 @@ on:
     paths:
       - '**'
       - '!**/*.md'
-      - docs/plugins.md
       - 'docs/architecture/**'
   push:
     branches:
@@ -13,7 +12,6 @@ on:
     paths:
       - '**'
       - '!**/*.md'
-      - docs/plugins.md
       - 'docs/architecture/**'
   workflow_dispatch:
 
@@ -45,14 +43,14 @@ jobs:
           version: v2.12.2
 
   build-and-unit:
-    name: Build And Unit Coverage
+    name: Build And Unit Tests
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Verify CI, capability, and candidate workflow contracts
+      - name: Verify CI and candidate workflow contracts
         run: bash scripts/release_gate_test.sh
 
       - name: Set up Go
@@ -64,14 +62,14 @@ jobs:
       - name: Verify plugin behavior gate contract
         run: make test-plugin-behavior-gate
 
-      - name: Verify generated capability and ADR drift
-        run: make check-capability-drift
+      - name: Verify generated plugin registry
+        run: make check-plugin-registry
 
       - name: Build
         run: make build
 
-      - name: Run source unit tests and coverage gate
-        run: make test-cover
+      - name: Run source unit tests
+        run: make test
 
       - name: Run plugin harness unit tests
         run: make test-plugin-harness

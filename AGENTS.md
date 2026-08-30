@@ -2,7 +2,10 @@
 
 ## Project Overview
 
-`apisix-go` is a Go implementation of the Apache APISIX data plane. Observable APISIX 3.17 compatibility is the default direction; declared, evidenced Go-native extensions may intentionally diverge. Inventory counts do not prove validation or production readiness.
+`apisix-go` is a drop-in Go replacement for the Apache APISIX 3.17 HTTP data
+plane. Observable APISIX 3.17 behavior is authoritative. Do not add
+apisix-go-specific configuration, publication, security, or qualification
+policy when APISIX already defines the behavior.
 
 This is a single Go module: `github.com/wklken/apisix-go`.
 
@@ -10,7 +13,7 @@ Key runtime pieces:
 
 - `main.go` enters the Cobra CLI in `cmd/root.go`.
 - Static configuration is loaded by the presence/provenance-aware `pkg/config` loader from builtins, `conf/config-default.yaml`, an optional `-c/--config` override, recognized `APISIXGO_*` overlays, and repeatable `--set` flags.
-- `pkg/capability/manifest.yaml` is the editable source for plugin factories, aliases, behavior/evidence status, gaps/divergences, and secret declarations. It generates the plugin registry and plugin-status documentation.
+- `pkg/capability/manifest.yaml` is the temporary editable source for runtime plugin factories, aliases, execution metadata, and secret declarations. It generates only the plugin registry.
 - Providers submit desired snapshots to the single-writer `pkg/generation` coordinator. `pkg/store` is the bbolt durable generation journal, not a mutable runtime resource store.
 - `pkg/compiler` plans and materializes immutable HTTP/TLS and stream snapshots. `pkg/route` and `pkg/stream` contain detached snapshot compilers; `pkg/server` atomically activates them and owns generation leases.
 - HTTP and TLS listeners come from effective configuration; the default HTTP listener is `0.0.0.0:9080`.
@@ -20,15 +23,15 @@ Key runtime pieces:
 
 ## Architecture Sources of Truth
 
-- [`docs/design.md`](docs/design.md) is the canonical human architecture record; accepted compatibility differences live in `docs/architecture/adr/`.
-- `pkg/capability/manifest.yaml` is the machine-readable capability truth. Do not hand-edit `pkg/plugin/registry_gen.go`, `docs/plugins.md`, or the generated README summaries.
+- [`docs/design.md`](docs/design.md) is the canonical human architecture record; unavoidable compatibility differences live in `docs/architecture/adr/`.
+- `pkg/capability/manifest.yaml` contains runtime registry facts only. Do not hand-edit the generated `pkg/plugin/registry_gen.go`.
 - Current source and focused tests override stale prose. If a process document, design paragraph, generated projection, and code disagree, verify the current call chain and then update the owning source rather than averaging them.
 - The current runtime is a single process with an in-process `Server + GenerationEngine`. External supervisor/worker, IPC activation, listener inheritance, and worker probation/restart are not implemented runtime contracts.
 
 ### Documentation lifecycle
 
 - Plans, review reports, remediation ledgers, and dated snapshots are temporary process evidence. Before closing a development stage, move each still-current fact to its durable owner and remove the process artifact.
-- Route cross-package architecture to `docs/design.md`; accepted compatibility/security decisions to an ADR; plugin behavior/evidence to `pkg/capability/manifest.yaml` and its corpus; operator procedures to maintained runbooks; future-agent invariants to the closest `AGENTS.md`.
+- Route cross-package architecture to `docs/design.md`; unavoidable compatibility differences to an ADR; plugin behavior to source and focused tests; operator procedures to maintained runbooks; future-agent invariants to the closest `AGENTS.md`.
 - Branch names, commit hashes, checked TODOs, review verdicts, and old pass counts are point-in-time evidence. Do not copy them into `AGENTS.md` or use them as current qualification proof.
 - Keep durable specialized contracts such as configuration, HTTP scope, release, and performance acceptance documents when they still govern current behavior. Filename dates alone do not determine whether a document is disposable.
 
@@ -149,17 +152,17 @@ Correctness:
 - Prefer existing project dependencies and patterns before adding new packages.
 - Plugin package directories use snake_case, while APISIX plugin names in config use hyphenated names such as `key-auth`.
 - Plugin implementations usually embed `base.BasePlugin`, define `priority`, `name`, and `schema`, expose a config struct through `Config()`, and fill defaults in `PostInit()`.
-- When adding or renaming a plugin, update `pkg/capability/manifest.yaml` and regenerate/check its projections. `pkg/plugin/init.go` consumes the generated registry; it is not the registration source of truth.
-- When feature support, evidence, a gap, divergence, or secret declaration changes, edit the manifest (and any required ADR) rather than `docs/plugins.md` or generated README blocks.
+- When adding or renaming a plugin, update `pkg/capability/manifest.yaml` and regenerate/check `pkg/plugin/registry_gen.go`. `pkg/plugin/init.go` consumes the generated registry; it is not the registration source of truth.
+- Keep behavior and regression evidence in plugin source and focused tests. Keep only runtime registration and secret declarations in the manifest.
 
 ## APISIX Plugin Parity Scope
 
-- The authoritative editable status source is `pkg/capability/manifest.yaml`; [`docs/plugins.md`](docs/plugins.md) and README summaries are generated projections. Use `scripts/go_cache.sh run -- go run ./cmd/capability-gen -repo-root . -check` to detect drift.
-- Keep behavior support, validation evidence, and production readiness separate. Do not infer one from registration or inventory counts.
+- The official APISIX 3.17 source and tests define plugin behavior. The local manifest is a runtime registry input, not a compatibility or readiness ledger. Use `scripts/go_cache.sh run -- go run ./cmd/capability-gen -repo-root . -check` to detect registry drift.
+- Do not infer compatibility or readiness from registration or inventory counts.
 - OpenResty-native, NGINX-native, and Lua-runtime-native parity is not required unless the user explicitly asks for a Go-native approximation.
-- Treat manifest-declared missing/deferred official defaults as native/runtime features that are not required for normal parity work; do not add placeholder Go implementations merely to increase inventory.
+- Do not add placeholder Go implementations merely to increase inventory.
 - `serverless-pre-function` and `serverless-post-function` have bounded compatibility implementations, but full Lua/OpenResty parity is intentionally out of scope. Do not expand them into a general Lua runtime or claim full phase/streaming fidelity.
-- For native-only features, record the unsupported status and evidence in the manifest so generated documentation stays aligned.
+- Record unavoidable native/runtime gaps in concise architecture documentation, not in runtime registry state.
 - Examples of out-of-scope native behavior include OpenResty phase timing, `ngx_lua` APIs, Lua code execution, NGINX buffering internals, shared-dict/lrucache exactness, OCSP/TLS stapling internals, and external plugin runner protocol compatibility unless separately requested.
 
 ## Configuration Notes

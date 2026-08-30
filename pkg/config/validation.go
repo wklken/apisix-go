@@ -8,9 +8,16 @@ import (
 	"strings"
 )
 
-func validateEffective(effective *EffectiveConfig, _ []string) error {
+func validateEffective(effective *EffectiveConfig, unused []string) error {
 	if effective == nil {
 		return fmt.Errorf("effective config must not be nil")
+	}
+	if len(unused) > 0 {
+		field := "fields"
+		if len(unused) == 1 {
+			field = "field"
+		}
+		return fmt.Errorf("static configuration contains %d unsupported %s", len(unused), field)
 	}
 	if err := validateRuntimePaths(effective.Paths); err != nil {
 		return err

@@ -33,7 +33,7 @@ func (prepared *PreparedGeneration) planHTTPPreparation(
 	if prepared == nil || ctx == nil || prepared.consumers == nil || prepared.effective == nil {
 		return nil, fmt.Errorf("%w: HTTP preparation owner is incomplete", ErrInvalidInput)
 	}
-	owned, exists := prepared.attempt.Candidate(generation.DomainHTTP)
+	owned, exists := prepared.preparation.Candidate(generation.DomainHTTP)
 	if !exists || !reflect.DeepEqual(owned, candidate) {
 		return nil, fmt.Errorf("%w: HTTP candidate is not owned by preparation attempt", ErrInvalidInput)
 	}

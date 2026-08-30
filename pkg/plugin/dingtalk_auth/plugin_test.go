@@ -36,15 +36,6 @@ type dingtalkScopedSecretBroker struct {
 	calls  []dingtalkScopedSecretCall
 }
 
-func (*dingtalkScopedSecretBroker) AuthorizeCandidate(
-	context.Context,
-	secret.AttemptID,
-	generation.ApplyTicket,
-	generation.PublicationSet,
-) error {
-	return nil
-}
-
 func (broker *dingtalkScopedSecretBroker) ResolveScoped(
 	_ context.Context,
 	scope secret.Scope,
@@ -58,10 +49,6 @@ func (broker *dingtalkScopedSecretBroker) ResolveScoped(
 		return "", errors.New("missing private DingTalk test value")
 	}
 	return value, nil
-}
-
-func (*dingtalkScopedSecretBroker) RevokeAttempt(context.Context, secret.AttemptID) error {
-	return nil
 }
 
 func (broker *dingtalkScopedSecretBroker) scopedCalls() []dingtalkScopedSecretCall {
@@ -82,7 +69,7 @@ func newDingTalkScopedSecretHarness(
 	resourceID string,
 	config Config,
 	values map[string]string,
-) (secret.GenerationCapability, secret.Scope, *dingtalkScopedSecretBroker, func()) {
+) (secret.GenerationSecrets, secret.Scope, *dingtalkScopedSecretBroker, func()) {
 	t.Helper()
 	key := generation.ResourceKey{Kind: "routes", ID: resourceID}
 	document, err := json.Marshal(map[string]any{
@@ -115,11 +102,6 @@ func newDingTalkScopedSecretHarness(
 			Key: key, Disposition: generation.DispositionPublished, Code: "dingtalk-auth-test",
 		}},
 	}
-	ticket := generation.ApplyTicket{
-		DesiredRevision: revision,
-		DesiredDigest:   snapshot.Digest(),
-		RequiredDomains: []generation.Domain{generation.DomainHTTP},
-	}
 	publication := generation.PublicationSet{
 		DesiredRevision: revision,
 		Domains: map[generation.Domain]generation.PublicationCandidate{
@@ -135,28 +117,22 @@ func newDingTalkScopedSecretHarness(
 		t.Fatal(err)
 	}
 	broker := &dingtalkScopedSecretBroker{values: values}
-	registration, err := testutil.NewSecretMaterializer(broker, catalog).RegisterCandidate(
-		context.Background(), ticket, publication,
-	)
+	materialization, err := testutil.NewSecretMaterializer(broker, catalog).
+		PrepareGeneration(context.Background(), publication)
 	if err != nil {
 		t.Fatal(err)
 	}
-	capabilityValue, err := secret.NewGenerationCapability(registration, revision)
-	if err != nil {
-		_ = registration.Close(context.Background())
-		t.Fatal(err)
-	}
+	secrets := materialization.Secrets()
 	scope := secret.Scope{
 		Generation: revision,
-		Attempt:    registration.AttemptID(),
 		Domain:     generation.DomainHTTP,
 		Plugin:     name,
 		Resource:   key,
 		Source:     capability.SecretPluginConfig,
 	}
-	return capabilityValue, scope, broker, func() {
-		if err := registration.Close(context.Background()); err != nil {
-			t.Errorf("close DingTalk scoped attempt: %v", err)
+	return secrets, scope, broker, func() {
+		if err := materialization.Close(context.Background()); err != nil {
+			t.Errorf("close DingTalk scoped generation: %v", err)
 		}
 	}
 }
@@ -182,7 +158,7 @@ func TestMaterializeScopedSecretsOwnsDingTalkOAuthAndSessionSecrets(t *testing.T
 		Secret: sessionRaw, SecretFallbacks: []string{fallbackOne, fallbackTwo},
 		RedirectURI: "https://login.dingtalk.com/oauth2/auth",
 	}
-	capabilityValue, scope, broker, closeAttempt := newDingTalkScopedSecretHarness(
+	secrets, scope, broker, closeAttempt := newDingTalkScopedSecretHarness(
 		t, 70, "dingtalk-scoped", config, map[string]string{
 			appSecretRaw: "resolved-app-secret", sessionRaw: "session-current",
 			fallbackOne: "short", fallbackTwo: "session-oldest",
@@ -194,7 +170,7 @@ func TestMaterializeScopedSecretsOwnsDingTalkOAuthAndSessionSecrets(t *testing.T
 		t.Fatal(err)
 	}
 
-	err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p)
+	err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p)
 	if err == nil {
 		t.Fatal("third-value materialization error = nil")
 	}
@@ -216,7 +192,7 @@ func TestMaterializeScopedSecretsOwnsDingTalkOAuthAndSessionSecrets(t *testing.T
 	}
 
 	broker.setValue(fallbackOne, "session-previous")
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatalf("retry materialization error = %v", err)
 	}
 	assertDingTalkDescriptor(t, p.config.AppSecret, "resolved-app-secret")
@@ -300,13 +276,13 @@ func TestDingTalkResolvedSessionSecretLengthBounds(t *testing.T) {
 				AppKey: "app-key", AppSecret: "app-secret", Secret: raw,
 				RedirectURI: "https://login.dingtalk.com/oauth2/auth",
 			}
-			capabilityValue, scope, broker, closeAttempt := newDingTalkScopedSecretHarness(
+			secrets, scope, broker, closeAttempt := newDingTalkScopedSecretHarness(
 				t, uint64(80+i), "dingtalk-boundary", config,
 				map[string]string{"app-secret": "app-secret", raw: tt.resolved},
 			)
 			defer closeAttempt()
 			p := &Plugin{config: config}
-			err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p)
+			err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p)
 			if tt.wantErr {
 				if err == nil || p.config.Secret != raw || p.secretsPrepared {
 					t.Fatalf("resolved length %d result = %v, config=%#v", len(tt.resolved), err, p.config)
@@ -331,7 +307,7 @@ func TestDingTalkConcurrentScopedMaterializationIsSingleFlight(t *testing.T) {
 		SecretFallbacks: []string{"$ENV://DINGTALK_CONCURRENT_OLD"},
 		RedirectURI:     "https://login.dingtalk.com/oauth2/auth",
 	}
-	capabilityValue, scope, broker, closeAttempt := newDingTalkScopedSecretHarness(
+	secrets, scope, broker, closeAttempt := newDingTalkScopedSecretHarness(
 		t, 71, "dingtalk-concurrent", config, map[string]string{
 			config.AppSecret: "concurrent-app", config.Secret: "concurrent-session",
 			config.SecretFallbacks[0]: "concurrent-old",
@@ -345,7 +321,7 @@ func TestDingTalkConcurrentScopedMaterializationIsSingleFlight(t *testing.T) {
 	for range 24 {
 		group.Go(func() {
 			<-start
-			errs <- base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p)
+			errs <- base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p)
 		})
 	}
 	close(start)
@@ -369,7 +345,7 @@ func newScopedDingTalkTestPlugin(
 	values map[string]string,
 ) (*Plugin, func()) {
 	t.Helper()
-	capabilityValue, scope, _, closeAttempt := newDingTalkScopedSecretHarness(
+	secrets, scope, _, closeAttempt := newDingTalkScopedSecretHarness(
 		t, revision, resourceID, config, values,
 	)
 	p := &Plugin{config: config}
@@ -377,7 +353,7 @@ func newScopedDingTalkTestPlugin(
 		closeAttempt()
 		t.Fatal(err)
 	}
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		closeAttempt()
 		t.Fatal(err)
 	}
@@ -583,7 +559,7 @@ func TestDingTalkStopDrainsActiveRefreshAndPreventsResurrection(t *testing.T) {
 	if late.Code != http.StatusServiceUnavailable || providerCalls.Load() != 2 {
 		t.Fatalf("post-Stop status/provider calls = %d/%d, want 503/2", late.Code, providerCalls.Load())
 	}
-	capabilityValue, scope, cleanup := testutil.ScopedSecretHarness(
+	secrets, scope, cleanup := testutil.ScopedSecretHarness(
 		t,
 		name,
 		nil,
@@ -591,7 +567,7 @@ func TestDingTalkStopDrainsActiveRefreshAndPreventsResurrection(t *testing.T) {
 	)
 	defer cleanup()
 	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, capabilityValue, p,
+		context.Background(), scope, secrets, p,
 	); !errors.Is(err, secret.ErrCredentialUnavailable) {
 		t.Fatalf("post-Stop materialization error = %v, want credential unavailable", err)
 	}
@@ -611,9 +587,9 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	for _, raw := range cfg.SecretFallbacks {
 		values[raw] = raw
 	}
-	capabilityValue, scope, _, cleanup := newDingTalkScopedSecretHarness(t, 1, "test-route", cfg, values)
+	secrets, scope, _, cleanup := newDingTalkScopedSecretHarness(t, 1, "test-route", cfg, values)
 	t.Cleanup(cleanup)
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {

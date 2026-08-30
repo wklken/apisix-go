@@ -338,8 +338,8 @@ func independentClickHouseOwnerPrefix(
 			StreamRoute: resource.StreamRoute{},
 		},
 	}, Filter: local.FilterIdentity, ErrorResponse: local.ErrorResponse}
-	instance, err := plugin.NewAttemptInstanceKey(
-		secret.CandidateAttemptID(ticket, set), descriptor, plugin.ScopeRoute,
+	instance, err := plugin.NewGenerationInstanceKey(
+		set.DesiredRevision, descriptor, plugin.ScopeRoute,
 		plugin.ResourceProvenance{Kind: plugin.ResourceRoute, ID: routeKey.ID}, identity,
 	)
 	if err != nil {
@@ -351,7 +351,9 @@ func independentClickHouseOwnerPrefix(
 	} {
 		writeOwnerString(t, &canonical, value)
 	}
-	canonical.Write(instance.Attempt[:])
+	var generationNumber [8]byte
+	binary.BigEndian.PutUint64(generationNumber[:], instance.Generation)
+	canonical.Write(generationNumber[:])
 	canonical.WriteByte(byte(instance.Scope))
 	writeOwnerString(t, &canonical, string(instance.Owner.Kind))
 	writeOwnerString(t, &canonical, instance.Owner.ID)

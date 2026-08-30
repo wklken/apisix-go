@@ -64,9 +64,9 @@ func newTestPluginWithOwner(t *testing.T, cfg Config, metadata map[string]any, p
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	capabilityValue, scope, _, cleanup := newOASScopedSecretHarness(t, nil)
+	secrets, scope, _, cleanup := newOASScopedSecretHarness(t, nil)
 	t.Cleanup(cleanup)
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
@@ -205,9 +205,9 @@ func TestOASRefreshAdmissionFailureLeavesCurrentValidator(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatal(err)
 	}
-	capabilityValue, scope, _, closeAttempt := newOASScopedSecretHarness(t, nil)
+	secrets, scope, _, closeAttempt := newOASScopedSecretHarness(t, nil)
 	t.Cleanup(closeAttempt)
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
@@ -411,9 +411,9 @@ func TestMetadataDecodeFailsBeforeInlineSpecValidation(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	capabilityValue, scope, _, cleanup := newOASScopedSecretHarness(t, nil)
+	secrets, scope, _, cleanup := newOASScopedSecretHarness(t, nil)
 	t.Cleanup(cleanup)
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	err := p.PostInit()
@@ -431,9 +431,9 @@ func TestPostInitRejectsInvalidInlineSpec(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	capabilityValue, scope, _, cleanup := newOASScopedSecretHarness(t, nil)
+	secrets, scope, _, cleanup := newOASScopedSecretHarness(t, nil)
 	t.Cleanup(cleanup)
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	err := p.PostInit()
@@ -454,9 +454,9 @@ func TestMaterializedInlineSpecCompilesWithoutExposingPlaintext(t *testing.T) {
 		t.Fatal(err)
 	}
 	rawSpec := "$ENV://" + environmentName
-	capabilityValue, scope, _, cleanup := newOASScopedSecretHarness(t, map[string]string{rawSpec: spec})
+	secrets, scope, _, cleanup := newOASScopedSecretHarness(t, map[string]string{rawSpec: spec})
 	t.Cleanup(cleanup)
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if strings.Contains(p.config.Spec, "secret-spec") {
@@ -1555,9 +1555,9 @@ func TestHandlerLazilyRejectsExternalSchemaRefCycle(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	capabilityValue, scope, _, cleanup := newOASScopedSecretHarness(t, nil)
+	secrets, scope, _, cleanup := newOASScopedSecretHarness(t, nil)
 	t.Cleanup(cleanup)
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
@@ -1603,9 +1603,9 @@ func TestHandlerLazilyRejectsMissingExternalSchemaRef(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	capabilityValue, scope, _, cleanup := newOASScopedSecretHarness(t, nil)
+	secrets, scope, _, cleanup := newOASScopedSecretHarness(t, nil)
 	t.Cleanup(cleanup)
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {

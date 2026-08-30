@@ -33,7 +33,7 @@ type ConsumerLookup interface {
 type Dependencies struct {
 	Config            *config.EffectiveConfig
 	DataEncryption    data_encryption.Resolver
-	Secrets           secret.GenerationCapability
+	Secrets           secret.GenerationSecrets
 	Metadata          runtime.MetadataView
 	Consumers         ConsumerLookup
 	Tasks             *runtime.TaskOwner
@@ -60,7 +60,7 @@ func (p *BasePlugin) DataEncryption() data_encryption.Resolver {
 	return p.dependencies.DataEncryption
 }
 
-func (p *BasePlugin) ScopedSecrets() secret.GenerationCapability {
+func (p *BasePlugin) ScopedSecrets() secret.GenerationSecrets {
 	return p.dependencies.Secrets
 }
 

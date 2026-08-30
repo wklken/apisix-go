@@ -181,18 +181,18 @@ func TestWorkerFactoryPreparesAIProxyMultiTerminalRoute(t *testing.T) {
 		return nil
 	}
 	ticket := ticketForSnapshot(desired, generation.DomainHTTP)
-	registered, err := factory.attempts.prepareCandidateAttempt(
+	registered, err := factory.generations.prepareGenerationSecrets(
 		context.Background(),
 		ticket,
 		desired,
 		nil,
 	)
 	if err != nil {
-		t.Fatalf("prepareCandidateAttempt() error = %v", err)
+		t.Fatalf("prepareGenerationSecrets() error = %v", err)
 	}
-	prepared, err := factory.transferRegisteredGeneration(context.Background(), registered, nil)
+	prepared, err := factory.transferPreparedGeneration(context.Background(), registered, nil)
 	if err != nil {
-		t.Fatalf("transferRegisteredGeneration() error = %v, completed stages = %v", err, trace)
+		t.Fatalf("transferPreparedGeneration() error = %v, completed stages = %v", err, trace)
 	}
 	if prepared.HTTP() == nil {
 		t.Fatal("prepared HTTP snapshot = nil")

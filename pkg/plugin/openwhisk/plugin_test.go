@@ -74,11 +74,11 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	capabilityValue, scope, _, cleanup := newOpenWhiskScopedSecretHarness(
+	secrets, scope, _, cleanup := newOpenWhiskScopedSecretHarness(
 		t, 1, "test-route", cfg.ServiceToken, cfg.ServiceToken,
 	)
 	t.Cleanup(cleanup)
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
@@ -445,7 +445,7 @@ func TestMaterializeScopedSecretsOwnsOpenWhiskServiceToken(t *testing.T) {
 	}
 	for index, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			capabilityValue, scope, broker, closeAttempt := newOpenWhiskScopedSecretHarness(
+			secrets, scope, broker, closeAttempt := newOpenWhiskScopedSecretHarness(
 				t, uint64(index+1), "openwhisk-materialize", test.raw, test.resolved,
 				"0123456789abcdef",
 			)
@@ -460,7 +460,7 @@ func TestMaterializeScopedSecretsOwnsOpenWhiskServiceToken(t *testing.T) {
 				t.Fatal(err)
 			}
 			if err := base.MaterializeScopedPluginSecrets(
-				context.Background(), scope, capabilityValue, p,
+				context.Background(), scope, secrets, p,
 			); err != nil {
 				t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 			}
@@ -476,7 +476,7 @@ func TestMaterializeScopedSecretsOwnsOpenWhiskServiceToken(t *testing.T) {
 				}
 				call := calls[0]
 				if call.Raw != test.raw || call.Scope.Generation != scope.Generation ||
-					call.Scope.Attempt != scope.Attempt || call.Scope.Domain != generation.DomainHTTP ||
+					call.Scope.Domain != generation.DomainHTTP ||
 					call.Scope.Plugin != name || call.Scope.Resource != scope.Resource ||
 					call.Scope.Source != capability.SecretPluginConfig || call.Scope.Field != "service_token" {
 					t.Fatalf("scoped call = %#v, want exact openwhisk.service_token authority", call)
@@ -500,7 +500,7 @@ func TestMaterializeScopedSecretsOwnsOpenWhiskServiceToken(t *testing.T) {
 	for index, resolved := range []string{"", " \t\n"} {
 		t.Run(fmt.Sprintf("reject resolved whitespace %d", index), func(t *testing.T) {
 			const raw = "$ENV://OPENWHISK_EMPTY_RETRY"
-			capabilityValue, scope, broker, closeAttempt := newOpenWhiskScopedSecretHarness(
+			secrets, scope, broker, closeAttempt := newOpenWhiskScopedSecretHarness(
 				t, uint64(20+index), "openwhisk-empty-retry", raw, resolved,
 			)
 			defer closeAttempt()
@@ -514,7 +514,7 @@ func TestMaterializeScopedSecretsOwnsOpenWhiskServiceToken(t *testing.T) {
 				t.Fatal(err)
 			}
 			err := base.MaterializeScopedPluginSecrets(
-				context.Background(), scope, capabilityValue, p,
+				context.Background(), scope, secrets, p,
 			)
 			if err == nil {
 				t.Fatal("blank resolved service_token materialized successfully")
@@ -531,7 +531,7 @@ func TestMaterializeScopedSecretsOwnsOpenWhiskServiceToken(t *testing.T) {
 			}
 			broker.setValue(raw, "retry-user:retry-pass")
 			if err := base.MaterializeScopedPluginSecrets(
-				context.Background(), scope, capabilityValue, p,
+				context.Background(), scope, secrets, p,
 			); err != nil {
 				t.Fatalf("same-instance retry error = %v", err)
 			}
@@ -541,7 +541,7 @@ func TestMaterializeScopedSecretsOwnsOpenWhiskServiceToken(t *testing.T) {
 			}
 			for _, call := range calls {
 				if call.Raw != raw || call.Scope.Generation != scope.Generation ||
-					call.Scope.Attempt != scope.Attempt || call.Scope.Domain != generation.DomainHTTP ||
+					call.Scope.Domain != generation.DomainHTTP ||
 					call.Scope.Plugin != name || call.Scope.Resource != scope.Resource ||
 					call.Scope.Source != capability.SecretPluginConfig || call.Scope.Field != "service_token" {
 					t.Fatalf("scoped call = %#v, want exact openwhisk.service_token authority", call)
@@ -558,7 +558,7 @@ func TestMaterializeScopedSecretsOwnsOpenWhiskServiceToken(t *testing.T) {
 
 func TestOpenWhiskScopedMaterializationFailureIsAtomicRedactedAndRetryable(t *testing.T) {
 	const raw = "$secret://vault/openwhisk/failure"
-	capabilityValue, scope, broker, closeAttempt := newOpenWhiskScopedSecretHarness(
+	secrets, scope, broker, closeAttempt := newOpenWhiskScopedSecretHarness(
 		t, 22, "openwhisk-failure", raw, "private-user:private-pass",
 	)
 	defer closeAttempt()
@@ -572,7 +572,7 @@ func TestOpenWhiskScopedMaterializationFailureIsAtomicRedactedAndRetryable(t *te
 	if err := p.Init(); err != nil {
 		t.Fatal(err)
 	}
-	err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p)
+	err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p)
 	if err == nil {
 		t.Fatal("MaterializeScopedPluginSecrets() error = nil")
 	}
@@ -588,7 +588,7 @@ func TestOpenWhiskScopedMaterializationFailureIsAtomicRedactedAndRetryable(t *te
 	}
 	broker.setFailure("")
 	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, capabilityValue, p,
+		context.Background(), scope, secrets, p,
 	); err != nil {
 		t.Fatalf("same-instance retry error = %v", err)
 	}
@@ -615,14 +615,14 @@ func TestOpenWhiskScopedMaterializationRejectsWrongAuthority(t *testing.T) {
 	for index, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			const raw = "$ENV://OPENWHISK_AUTHORITY"
-			capabilityValue, scope, broker, closeAttempt := newOpenWhiskScopedSecretHarness(
+			secrets, scope, broker, closeAttempt := newOpenWhiskScopedSecretHarness(
 				t, uint64(50+index), "openwhisk-authority", raw, "authority-user:authority-pass",
 			)
 			defer closeAttempt()
 			test.mutate(&scope)
 			p := &Plugin{config: Config{ServiceToken: raw}}
 			if err := base.MaterializeScopedPluginSecrets(
-				context.Background(), scope, capabilityValue, p,
+				context.Background(), scope, secrets, p,
 			); err == nil {
 				t.Fatal("wrong scoped authority materialized successfully")
 			}
@@ -648,11 +648,11 @@ func TestOpenWhiskScopedMaterializationUsesResolvedPlaintextDescriptor(t *testin
 	if err := p.Init(); err != nil {
 		t.Fatal(err)
 	}
-	capabilityValue, scope, _, cleanup := newOpenWhiskScopedSecretHarness(
+	secrets, scope, _, cleanup := newOpenWhiskScopedSecretHarness(
 		t, 1, "scoped-descriptor", raw, resolved,
 	)
 	t.Cleanup(cleanup)
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	digest := sha256.Sum256([]byte("legacy-user:legacy-pass"))
@@ -699,7 +699,7 @@ func TestOpenWhiskScopedFailedResponseRetainsNoDerivedAuthorization(t *testing.T
 		raw   = "$ENV://OPENWHISK_SCOPED_RETENTION"
 		token = "scoped-user:scoped-pass"
 	)
-	capabilityValue, scope, _, closeAttempt := newOpenWhiskScopedSecretHarness(
+	secrets, scope, _, closeAttempt := newOpenWhiskScopedSecretHarness(
 		t, 21, "openwhisk-scoped-retention", raw, token,
 	)
 	defer closeAttempt()
@@ -713,7 +713,7 @@ func TestOpenWhiskScopedFailedResponseRetainsNoDerivedAuthorization(t *testing.T
 		t.Fatal(err)
 	}
 	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, capabilityValue, p,
+		context.Background(), scope, secrets, p,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -1136,7 +1136,7 @@ func newScopedOpenWhiskPlugin(
 	resolved string,
 ) (*Plugin, func()) {
 	t.Helper()
-	capabilityValue, scope, _, closeAttempt := newOpenWhiskScopedSecretHarness(
+	secrets, scope, _, closeAttempt := newOpenWhiskScopedSecretHarness(
 		t, revision, resourceID, raw, resolved,
 	)
 	p := &Plugin{config: Config{
@@ -1150,7 +1150,7 @@ func newScopedOpenWhiskPlugin(
 		t.Fatal(err)
 	}
 	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, capabilityValue, p,
+		context.Background(), scope, secrets, p,
 	); err != nil {
 		closeAttempt()
 		t.Fatal(err)
@@ -1225,12 +1225,6 @@ type openWhiskScopedSecretBroker struct {
 	calls   []openWhiskScopedSecretCall
 }
 
-func (*openWhiskScopedSecretBroker) AuthorizeCandidate(
-	context.Context, secret.AttemptID, generation.ApplyTicket, generation.PublicationSet,
-) error {
-	return nil
-}
-
 func (broker *openWhiskScopedSecretBroker) ResolveScoped(
 	_ context.Context, scope secret.Scope, raw string,
 ) (string, error) {
@@ -1244,10 +1238,6 @@ func (broker *openWhiskScopedSecretBroker) ResolveScoped(
 		return value, nil
 	}
 	return raw, nil
-}
-
-func (*openWhiskScopedSecretBroker) RevokeAttempt(context.Context, secret.AttemptID) error {
-	return nil
 }
 
 func (broker *openWhiskScopedSecretBroker) scopedCalls() []openWhiskScopedSecretCall {
@@ -1275,7 +1265,7 @@ func newOpenWhiskScopedSecretHarness(
 	raw string,
 	resolved string,
 	keyring ...string,
-) (secret.GenerationCapability, secret.Scope, *openWhiskScopedSecretBroker, func()) {
+) (secret.GenerationSecrets, secret.Scope, *openWhiskScopedSecretBroker, func()) {
 	t.Helper()
 	key := generation.ResourceKey{Kind: "routes", ID: resourceID}
 	document, err := json.Marshal(map[string]any{
@@ -1305,11 +1295,6 @@ func newOpenWhiskScopedSecretHarness(
 			Key: key, Disposition: generation.DispositionPublished, Code: "openwhisk-test",
 		}},
 	}
-	ticket := generation.ApplyTicket{
-		DesiredRevision: revision,
-		DesiredDigest:   snapshot.Digest(),
-		RequiredDomains: []generation.Domain{generation.DomainHTTP},
-	}
 	publication := generation.PublicationSet{
 		DesiredRevision: revision,
 		Domains: map[generation.Domain]generation.PublicationCandidate{
@@ -1325,26 +1310,21 @@ func newOpenWhiskScopedSecretHarness(
 		t.Fatal(err)
 	}
 	broker := &openWhiskScopedSecretBroker{values: map[string]string{raw: resolved}}
-	registration, err := testutil.NewSecretMaterializerWithKeyring(broker, catalog, keyring).RegisterCandidate(
-		context.Background(), ticket, publication,
-	)
+	materialization, err := testutil.NewSecretMaterializerWithKeyring(broker, catalog, keyring).
+		PrepareGeneration(context.Background(), publication)
 	if err != nil {
 		t.Fatal(err)
 	}
-	capabilityValue, err := secret.NewGenerationCapability(registration, revision)
-	if err != nil {
-		t.Fatal(err)
-	}
+	secrets := materialization.Secrets()
 	scope := secret.Scope{
 		Generation: revision,
-		Attempt:    registration.AttemptID(),
 		Domain:     generation.DomainHTTP,
 		Plugin:     name,
 		Resource:   key,
 		Source:     capability.SecretPluginConfig,
 	}
-	return capabilityValue, scope, broker, func() {
-		if err := registration.Close(context.Background()); err != nil {
+	return secrets, scope, broker, func() {
+		if err := materialization.Close(context.Background()); err != nil {
 			t.Fatalf("close scoped secret registration: %v", err)
 		}
 	}

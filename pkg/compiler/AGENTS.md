@@ -17,11 +17,11 @@ This file inherits the repository root `AGENTS.md` and applies to `pkg/compiler`
 
 ## Prepared generation and cleanup
 
-- `PreparedGeneration` completely owns one attempt: publication, metadata,
-  consumers, secret authority, tasks, resources, HTTP/TLS and stream snapshots,
+- `PreparedGeneration` completely owns one runtime generation: publication,
+  metadata, consumers, secret materialization, tasks, resources, HTTP/TLS and stream snapshots,
   and cleanup ledger. Do not export lifecycle-capable handles.
 - Register cleanup immediately after acquisition. Preserve reverse-order phases:
-  quiesce -> resource finalize -> authority release.
+  quiesce -> resource finalize -> secret release.
 - Residual, cancellation, deadline, or incomplete finalization retains the
   generation and retries from the pending phase. Only terminal cleanup revokes
   views and detaches the live generation.

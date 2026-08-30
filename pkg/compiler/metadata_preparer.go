@@ -35,22 +35,22 @@ func newMetadataPreparer(schemas *schemaSet) (*metadataPreparer, error) {
 
 func (preparer *metadataPreparer) PrepareMetadata(
 	ctx context.Context,
-	attempt PreparationAttempt,
+	preparation PreparationGeneration,
 ) (runtime.MetadataView, error) {
 	if ctx == nil || preparer == nil || preparer.schemas == nil || preparer.schemas.catalog == nil ||
-		attempt.authority == nil || !attempt.capability.Valid() || attempt.Generation() == 0 ||
-		attempt.Generation() != attempt.capability.Generation() {
+		!preparation.secrets.Valid() || preparation.Generation() == 0 ||
+		preparation.Generation() != preparation.secrets.Generation() {
 		return runtime.MetadataView{}, errMetadataPreparationFailed
 	}
 	if err := ctx.Err(); err != nil {
 		return runtime.MetadataView{}, err
 	}
 
-	occurrences, err := indexMetadataOccurrences(attempt)
+	occurrences, err := indexMetadataOccurrences(preparation)
 	if err != nil {
 		return runtime.MetadataView{}, errMetadataPreparationFailed
 	}
-	candidate, exists := attempt.Candidate(generation.DomainHTTP)
+	candidate, exists := preparation.Candidate(generation.DomainHTTP)
 	if !exists {
 		if len(occurrences) != 0 {
 			return runtime.MetadataView{}, errMetadataPreparationFailed
@@ -127,7 +127,7 @@ func (preparer *metadataPreparer) PrepareMetadata(
 				if !ok {
 					return raw, errMetadataPreparationFailed
 				}
-				value, err := attempt.MaterializeSecret(ctx, occurrence, declaration.Field, reference)
+				value, err := preparation.MaterializeSecret(ctx, occurrence, declaration.Field, reference)
 				if err != nil {
 					return raw, errMetadataPreparationFailed
 				}
@@ -165,11 +165,11 @@ func (preparer *metadataPreparer) PrepareMetadata(
 }
 
 func indexMetadataOccurrences(
-	attempt PreparationAttempt,
+	preparation PreparationGeneration,
 ) (map[metadataOccurrenceKey]FactoryOccurrence, error) {
 	indexed := make(map[metadataOccurrenceKey]FactoryOccurrence)
-	for _, occurrence := range attempt.Occurrences(capability.SecretPluginMetadata) {
-		if !attempt.owns(occurrence) || occurrence.Domain() != generation.DomainHTTP ||
+	for _, occurrence := range preparation.Occurrences(capability.SecretPluginMetadata) {
+		if !preparation.owns(occurrence) || occurrence.Domain() != generation.DomainHTTP ||
 			occurrence.Resource().Kind != "plugin_metadata" ||
 			occurrence.Resource().ID != occurrence.Factory() {
 			return nil, errMetadataPreparationFailed

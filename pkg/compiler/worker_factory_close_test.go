@@ -1,7 +1,7 @@
 package compiler
 
 import (
-	"bytes"
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"errors"
@@ -22,7 +22,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/runtime"
-	"github.com/wklken/apisix-go/pkg/secret"
 )
 
 func TestWorkerCompilerFactoryClosePublicSurface(t *testing.T) {
@@ -125,7 +124,7 @@ func TestWorkerCompilerFactoryCloseUsesStableAttemptOrderAndClosesRegistryLast(t
 	factory, materializer := newWorkerTestFactory(t)
 	trace := &workerCloseTrace{}
 	type ownedGeneration struct {
-		id       secret.AttemptID
+		id       uint64
 		prepared *PreparedGeneration
 		label    string
 	}
@@ -149,12 +148,12 @@ func TestWorkerCompilerFactoryCloseUsesStableAttemptOrderAndClosesRegistryLast(t
 		if err != nil {
 			t.Fatal(err)
 		}
-		id := prepared.attempt.AttemptID()
+		id := prepared.preparation.Generation()
 		prepared.bindingOps.closeStarted = func() { trace.record(label + ":invoke") }
 		prepared.bindingOps.trace = func(stage string) { trace.record(label + ":" + stage) }
 		for releaseIndex := range prepared.cleanup.releases {
 			step := &prepared.cleanup.releases[releaseIndex]
-			if step.name != "consumer-bindings" && step.name != "attempt-registration" {
+			if step.name != "consumer-bindings" && step.name != "generation-secrets" {
 				continue
 			}
 			name := step.name
@@ -199,7 +198,7 @@ func TestWorkerCompilerFactoryCloseUsesStableAttemptOrderAndClosesRegistryLast(t
 		t.Fatal(err)
 	}
 	slices.SortFunc(owned, func(left, right ownedGeneration) int {
-		return bytes.Compare(left.id[:], right.id[:])
+		return cmp.Compare(left.id, right.id)
 	})
 	var want []string
 	for _, generationOwner := range owned {
@@ -209,7 +208,7 @@ func TestWorkerCompilerFactoryCloseUsesStableAttemptOrderAndClosesRegistryLast(t
 			generationOwner.label+":lease-release:request-id",
 			generationOwner.label+":stop:request-id",
 			generationOwner.label+":consumer-bindings",
-			generationOwner.label+":attempt-registration",
+			generationOwner.label+":generation-secrets",
 		)
 	}
 	want = append(want, "registry-close")
@@ -311,7 +310,7 @@ func TestWorkerCompilerFactoryCloseResidualRetainsGenerationAndDefersRegistry(t 
 		t.Fatalf("first factory Close = %v, residual = %#v", first, residual)
 	}
 	factory.liveMu.Lock()
-	tracked := factory.live[blocked.attempt.AttemptID()]
+	tracked := factory.live[blocked.preparation.Generation()]
 	live := len(factory.live)
 	factory.liveMu.Unlock()
 	if tracked != blocked || live != 1 {
@@ -576,7 +575,7 @@ func TestWorkerCompilerFactoryCloseRetriesOrdinaryQuiesceFailureWithoutCachingIt
 		t.Fatalf("ordinary quiesce Close = %v", first)
 	}
 	factory.liveMu.Lock()
-	tracked := factory.live[prepared.attempt.AttemptID()]
+	tracked := factory.live[prepared.preparation.Generation()]
 	factory.liveMu.Unlock()
 	if tracked != prepared || registryCloses.Load() != 0 {
 		t.Fatalf("ordinary quiesce retained tracked:%p/closes:%d", tracked, registryCloses.Load())
@@ -835,8 +834,8 @@ func TestWorkerCompilerFactoryCloseUsesLiveMapKeyWhileDetachIsBlocked(t *testing
 		owners = append(owners, prepared)
 	}
 	slices.SortFunc(owners, func(left, right *PreparedGeneration) int {
-		leftID, rightID := left.attempt.AttemptID(), right.attempt.AttemptID()
-		return bytes.Compare(leftID[:], rightID[:])
+		leftID, rightID := left.preparation.Generation(), right.preparation.Generation()
+		return cmp.Compare(leftID, rightID)
 	})
 	smaller, larger := owners[0], owners[1]
 	detachEntered := make(chan struct{})
@@ -851,7 +850,7 @@ func TestWorkerCompilerFactoryCloseUsesLiveMapKeyWhileDetachIsBlocked(t *testing
 	go func() { explicitResult <- larger.Close(context.Background()) }()
 	workerCloseWait(t, detachEntered, "explicit Close blocked detach")
 	larger.materializeMu.Lock()
-	cleared := larger.attempt.authority == nil
+	cleared := !larger.preparation.Secrets().Valid()
 	larger.materializeMu.Unlock()
 	if !cleared {
 		t.Fatal("blocked detach did not expose cleared mutable attempt")
@@ -1174,7 +1173,7 @@ func workerCloseRequestIDSpec(
 	routeID string,
 ) effectiveBindingSpec {
 	t.Helper()
-	for _, occurrence := range prepared.attempt.Occurrences(capability.SecretPluginConfig) {
+	for _, occurrence := range prepared.preparation.Occurrences(capability.SecretPluginConfig) {
 		if occurrence.Factory() != "request-id" || occurrence.Resource() != (generation.ResourceKey{
 			Kind: "routes", ID: routeID,
 		}) {

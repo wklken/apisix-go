@@ -37,14 +37,14 @@ func newTestPlugin(t *testing.T, cfg Config, now func() time.Time) *Plugin {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	capabilityValue, scope, closeAttempt := testutil.ScopedSecretHarness(
+	secrets, scope, closeAttempt := testutil.ScopedSecretHarness(
 		t,
 		name,
 		nil,
 		generation.ApplyTicket{DesiredRevision: 1, RequiredDomains: []generation.Domain{generation.DomainHTTP}},
 	)
 	t.Cleanup(closeAttempt)
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
@@ -66,12 +66,6 @@ type scopedSecretBroker struct {
 	calls  []scopedSecretCall
 }
 
-func (*scopedSecretBroker) AuthorizeCandidate(
-	context.Context, secret.AttemptID, generation.ApplyTicket, generation.PublicationSet,
-) error {
-	return nil
-}
-
 func (broker *scopedSecretBroker) ResolveScoped(
 	ctx context.Context, scope secret.Scope, raw string,
 ) (string, error) {
@@ -90,11 +84,9 @@ func (broker *scopedSecretBroker) ResolveScoped(
 	return raw, nil
 }
 
-func (*scopedSecretBroker) RevokeAttempt(context.Context, secret.AttemptID) error { return nil }
-
 func newScopedSecretHarness(
 	t *testing.T, values map[string]string,
-) (secret.GenerationCapability, secret.Scope, *scopedSecretBroker, func()) {
+) (secret.GenerationSecrets, secret.Scope, *scopedSecretBroker, func()) {
 	t.Helper()
 	const revision = uint64(7)
 	key := generation.ResourceKey{Kind: "routes", ID: "ai-rate-test"}
@@ -115,9 +107,6 @@ func newScopedSecretHarness(
 			Key: key, Disposition: generation.DispositionPublished, Code: "ai-rate-test",
 		}},
 	}
-	ticket := generation.ApplyTicket{
-		DesiredRevision: revision, RequiredDomains: []generation.Domain{generation.DomainHTTP},
-	}
 	set := generation.PublicationSet{
 		DesiredRevision: revision,
 		Domains: map[generation.Domain]generation.PublicationCandidate{
@@ -133,26 +122,21 @@ func newScopedSecretHarness(
 		t.Fatal(err)
 	}
 	broker := &scopedSecretBroker{values: maps.Clone(values), fail: make(map[string]error)}
-	registration, err := testutil.NewSecretMaterializer(broker, catalog).
-		RegisterCandidate(context.Background(), ticket, set)
-	if err != nil {
-		t.Fatal(err)
-	}
-	capabilityValue, err := secret.NewGenerationCapability(registration, revision)
+	materialization, err := testutil.NewSecretMaterializer(broker, catalog).
+		PrepareGeneration(context.Background(), set)
 	if err != nil {
 		t.Fatal(err)
 	}
 	scope := secret.Scope{
 		Generation: revision,
-		Attempt:    registration.AttemptID(),
 		Domain:     generation.DomainHTTP,
 		Plugin:     name,
 		Resource:   key,
 		Source:     capability.SecretPluginConfig,
 	}
-	return capabilityValue, scope, broker, func() {
-		if err := registration.Close(context.Background()); err != nil {
-			t.Fatalf("close scoped secret registration: %v", err)
+	return materialization.Secrets(), scope, broker, func() {
+		if err := materialization.Close(context.Background()); err != nil {
+			t.Fatalf("close scoped secret materialization: %v", err)
 		}
 	}
 }
@@ -196,7 +180,7 @@ func TestMaterializeScopedSecretsOwnsRedisAndSentinelPasswords(t *testing.T) {
 		redisRaw    = "$ENV://AI_REDIS_PASSWORD"
 		sentinelRaw = "$secret://vault/ai-sentinel-password"
 	)
-	capabilityValue, scope, broker, closeAttempt := newScopedSecretHarness(t, map[string]string{
+	secrets, scope, broker, closeAttempt := newScopedSecretHarness(t, map[string]string{
 		redisRaw:    "redis-password",
 		sentinelRaw: "sentinel-password",
 	})
@@ -214,7 +198,7 @@ func TestMaterializeScopedSecretsOwnsRedisAndSentinelPasswords(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatal(err)
 	}
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if len(broker.calls) != 2 {
@@ -228,13 +212,12 @@ func TestMaterializeScopedSecretsOwnsRedisAndSentinelPasswords(t *testing.T) {
 	}
 	for _, call := range broker.calls {
 		if call.Scope.Generation != scope.Generation ||
-			call.Scope.Attempt != scope.Attempt ||
 			call.Scope.Domain != generation.DomainHTTP ||
 			call.Scope.Plugin != name ||
 			call.Scope.Resource != scope.Resource ||
 			call.Scope.Source != capability.SecretPluginConfig {
 			t.Fatalf(
-				"scoped authority = %#v, want generation/attempt/http/%s/%#v/%s",
+				"scoped authority = %#v, want generation/http/%s/%#v/%s",
 				call.Scope, name, scope.Resource, capability.SecretPluginConfig,
 			)
 		}
@@ -276,7 +259,7 @@ func TestMaterializeScopedSecretsIsIdempotent(t *testing.T) {
 		redisRaw    = "$ENV://AI_IDEMPOTENT_REDIS_PASSWORD"
 		sentinelRaw = "$secret://vault/ai-idempotent-sentinel-password"
 	)
-	capabilityValue, scope, broker, closeAttempt := newScopedSecretHarness(t, map[string]string{
+	secrets, scope, broker, closeAttempt := newScopedSecretHarness(t, map[string]string{
 		redisRaw:    "redis-password",
 		sentinelRaw: "sentinel-password",
 	})
@@ -295,7 +278,7 @@ func TestMaterializeScopedSecretsIsIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 	for range 2 {
-		if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+		if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 			t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 		}
 	}
@@ -309,7 +292,7 @@ func TestMaterializeScopedSecretsConcurrentCallsMaterializeOnce(t *testing.T) {
 		redisRaw    = "$ENV://AI_CONCURRENT_REDIS_PASSWORD"
 		sentinelRaw = "$secret://vault/ai-concurrent-sentinel-password"
 	)
-	capabilityValue, scope, broker, closeAttempt := newScopedSecretHarness(t, map[string]string{
+	secrets, scope, broker, closeAttempt := newScopedSecretHarness(t, map[string]string{
 		redisRaw:    "redis-password",
 		sentinelRaw: "sentinel-password",
 	})
@@ -332,7 +315,7 @@ func TestMaterializeScopedSecretsConcurrentCallsMaterializeOnce(t *testing.T) {
 	var wg sync.WaitGroup
 	for range callers {
 		wg.Go(func() {
-			errs <- base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p)
+			errs <- base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p)
 		})
 	}
 	wg.Wait()
@@ -352,7 +335,7 @@ func TestPostInitPassesScopedCredentialsToFailoverConstructor(t *testing.T) {
 		redisRaw    = "$ENV://AI_CONSTRUCTOR_REDIS_PASSWORD"
 		sentinelRaw = "$secret://vault/ai-constructor-sentinel-password"
 	)
-	capabilityValue, scope, _, closeAttempt := newScopedSecretHarness(t, map[string]string{
+	secrets, scope, _, closeAttempt := newScopedSecretHarness(t, map[string]string{
 		redisRaw:    "resolved-redis-password",
 		sentinelRaw: "resolved-sentinel-password",
 	})
@@ -372,7 +355,7 @@ func TestPostInitPassesScopedCredentialsToFailoverConstructor(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatal(err)
 	}
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if len(capture.failoverOptions) != 0 {
@@ -399,7 +382,7 @@ func TestPostInitPassesScopedCredentialsToFailoverConstructor(t *testing.T) {
 
 func TestPostInitPassesScopedPasswordToRedisConstructor(t *testing.T) {
 	const raw = "$ENV://AI_REDIS_CONSTRUCTOR_PASSWORD"
-	capabilityValue, scope, _, closeAttempt := newScopedSecretHarness(t, map[string]string{
+	secrets, scope, _, closeAttempt := newScopedSecretHarness(t, map[string]string{
 		raw: "resolved-redis-password",
 	})
 	defer closeAttempt()
@@ -416,7 +399,7 @@ func TestPostInitPassesScopedPasswordToRedisConstructor(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatal(err)
 	}
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
@@ -477,7 +460,7 @@ func TestPostInitValidatesBeforeRedisConstructors(t *testing.T) {
 }
 
 func TestMaterializeScopedSecretsSkipsEmptyLocalCredentials(t *testing.T) {
-	capabilityValue, scope, broker, closeAttempt := newScopedSecretHarness(t, nil)
+	secrets, scope, broker, closeAttempt := newScopedSecretHarness(t, nil)
 	defer closeAttempt()
 
 	p := &Plugin{config: Config{
@@ -490,7 +473,7 @@ func TestMaterializeScopedSecretsSkipsEmptyLocalCredentials(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatal(err)
 	}
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if len(broker.calls) != 0 {
@@ -509,7 +492,7 @@ func TestMaterializeScopedSecretsSkipsNonEmptyLocalCredentialsWithoutParsing(t *
 		redisRaw    = "$ENV://AI_LOCAL_REDIS_PASSWORD"
 		sentinelRaw = "$secret://vault/ai-local-sentinel-password"
 	)
-	capabilityValue, scope, broker, closeAttempt := newScopedSecretHarness(t, nil)
+	secrets, scope, broker, closeAttempt := newScopedSecretHarness(t, nil)
 	defer closeAttempt()
 
 	p := &Plugin{config: Config{
@@ -522,7 +505,7 @@ func TestMaterializeScopedSecretsSkipsNonEmptyLocalCredentialsWithoutParsing(t *
 	if err := p.Init(); err != nil {
 		t.Fatal(err)
 	}
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if len(broker.calls) != 0 {
@@ -538,7 +521,7 @@ func TestMaterializeScopedSecretsIsAtomicAndRedactsFailure(t *testing.T) {
 		redisRaw    = "$ENV://AI_ATOMIC_REDIS_PASSWORD"
 		sentinelRaw = "$secret://vault/ai-atomic-sentinel-password"
 	)
-	capabilityValue, scope, broker, closeAttempt := newScopedSecretHarness(t, map[string]string{
+	secrets, scope, broker, closeAttempt := newScopedSecretHarness(t, map[string]string{
 		redisRaw: "redis-password",
 	})
 	defer closeAttempt()
@@ -556,7 +539,7 @@ func TestMaterializeScopedSecretsIsAtomicAndRedactsFailure(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatal(err)
 	}
-	err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p)
+	err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p)
 	if err == nil || err.Error() != "materialize plugin secrets: credential unavailable" {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v, want redacted credential error", err)
 	}
@@ -1352,14 +1335,14 @@ func admitAPISIX317Config(t *testing.T, raw map[string]any) (configAdmissionStag
 	if err := json.Unmarshal(payload, p.Config()); err != nil {
 		t.Fatalf("unmarshal config: %v", err)
 	}
-	capabilityValue, scope, closeAttempt := testutil.ScopedSecretHarness(
+	secrets, scope, closeAttempt := testutil.ScopedSecretHarness(
 		t,
 		name,
 		nil,
 		generation.ApplyTicket{DesiredRevision: 1, RequiredDomains: []generation.Domain{generation.DomainHTTP}},
 	)
 	t.Cleanup(closeAttempt)
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
@@ -2058,7 +2041,7 @@ func TestStopClosesClientOnceBeforeDroppingPrivateValues(t *testing.T) {
 		redisRaw    = "$ENV://AI_STOP_REDIS_PASSWORD"
 		sentinelRaw = "$secret://vault/ai-stop-sentinel-password"
 	)
-	capabilityValue, scope, _, closeAttempt := newScopedSecretHarness(t, map[string]string{
+	secrets, scope, _, closeAttempt := newScopedSecretHarness(t, map[string]string{
 		redisRaw:    "resolved-redis-password",
 		sentinelRaw: "resolved-sentinel-password",
 	})
@@ -2076,7 +2059,7 @@ func TestStopClosesClientOnceBeforeDroppingPrivateValues(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatal(err)
 	}
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	legacyRedis := "legacy-redis-password"

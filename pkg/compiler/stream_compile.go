@@ -12,7 +12,7 @@ func (prepared *PreparedGeneration) compileAndAttachStream(ctx context.Context) 
 	if prepared == nil || ctx == nil {
 		return fmt.Errorf("%w: stream compiler owner and context are required", ErrInvalidInput)
 	}
-	candidate, exists := prepared.attempt.Candidate(generation.DomainStream)
+	candidate, exists := prepared.preparation.Candidate(generation.DomainStream)
 	if !exists {
 		return nil
 	}

@@ -26,7 +26,7 @@ type requestValidationSecretState struct {
 	usesDone       chan struct{}
 	stopOnce       sync.Once
 	compileOnce    sync.Once
-	compileLimiter secret.AttemptLimiter
+	compileLimiter secret.GenerationLimiter
 	stopping       chan struct{}
 }
 
@@ -48,7 +48,7 @@ type stagedRequestValidationSecrets struct {
 	bodySchema     map[string]any
 	headerSecrets  []schemaSecret
 	bodySecrets    []schemaSecret
-	compileLimiter secret.AttemptLimiter
+	compileLimiter secret.GenerationLimiter
 }
 
 type requestValidationSchemaSnapshot struct {
@@ -70,7 +70,7 @@ func (p *Plugin) MaterializeScopedSecrets(
 	if prepared, err := p.secretPreparationState(); err != nil || prepared {
 		return err
 	}
-	var compileLimiter secret.AttemptLimiter
+	var compileLimiter secret.GenerationLimiter
 	if schemaDocumentHasSecret(p.config.HeaderSchema) || schemaDocumentHasSecret(p.config.BodySchema) {
 		var err error
 		compileLimiter, err = access.SharedLimiter(
@@ -594,7 +594,7 @@ func (p *Plugin) Stop() {
 		}
 		state.headerSecrets = nil
 		state.bodySecrets = nil
-		state.compileLimiter = secret.AttemptLimiter{}
+		state.compileLimiter = secret.GenerationLimiter{}
 		state.prepared = false
 		p.config.headerSchema = nil
 		p.config.bodySchema = nil

@@ -34,13 +34,13 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 		raw = cfg.Authorization.ServiceToken
 	}
 	broker := &openFunctionScopedBroker{values: map[string]string{raw: raw}}
-	capabilityValue, registration, scope := registerOpenFunctionScopedRoute(t, broker, raw)
+	secrets, materialization, scope := registerOpenFunctionScopedRoute(t, broker, raw)
 	t.Cleanup(func() {
-		if err := registration.Close(context.Background()); err != nil {
+		if err := materialization.Close(context.Background()); err != nil {
 			t.Error(err)
 		}
 	})
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
@@ -111,9 +111,9 @@ func TestRunRequestPhasePublishesUpstreamSource(t *testing.T) {
 func TestMaterializeScopedSecretsOwnsOpenFunctionServiceToken(t *testing.T) {
 	const raw = "$ENV://OPENFUNCTION_SERVICE_TOKEN"
 	broker := &openFunctionScopedBroker{values: map[string]string{raw: "service:test"}}
-	capabilityValue, registration, scope := registerOpenFunctionScopedRoute(t, broker, raw)
+	secrets, materialization, scope := registerOpenFunctionScopedRoute(t, broker, raw)
 	t.Cleanup(func() {
-		if err := registration.Close(context.Background()); err != nil {
+		if err := materialization.Close(context.Background()); err != nil {
 			t.Error(err)
 		}
 	})
@@ -123,7 +123,7 @@ func TestMaterializeScopedSecretsOwnsOpenFunctionServiceToken(t *testing.T) {
 		Authorization: &Authorization{ServiceToken: raw},
 	}}
 	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, capabilityValue, p,
+		context.Background(), scope, secrets, p,
 	); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
@@ -167,18 +167,18 @@ func TestMaterializeScopedSecretsSkipsAbsentAndEmptyServiceToken(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			broker := &openFunctionScopedBroker{}
-			capabilityValue, registration, scope := registerOpenFunctionScopedRouteConfigAt(
+			secrets, materialization, scope := registerOpenFunctionScopedRouteConfigAt(
 				t, broker, 1, "", tt.includeAuthorization,
 			)
 			t.Cleanup(func() {
-				if err := registration.Close(context.Background()); err != nil {
+				if err := materialization.Close(context.Background()); err != nil {
 					t.Error(err)
 				}
 			})
 
 			p := &Plugin{config: tt.config}
 			if err := base.MaterializeScopedPluginSecrets(
-				context.Background(), scope, capabilityValue, p,
+				context.Background(), scope, secrets, p,
 			); err != nil {
 				t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 			}
@@ -202,9 +202,9 @@ func TestMaterializeScopedSecretsSupportsLiteralAndManagedReferences(t *testing.
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			broker := &openFunctionScopedBroker{values: map[string]string{tt.raw: tt.resolved}}
-			capabilityValue, registration, scope := registerOpenFunctionScopedRoute(t, broker, tt.raw)
+			secrets, materialization, scope := registerOpenFunctionScopedRoute(t, broker, tt.raw)
 			t.Cleanup(func() {
-				if err := registration.Close(context.Background()); err != nil {
+				if err := materialization.Close(context.Background()); err != nil {
 					t.Error(err)
 				}
 			})
@@ -214,7 +214,7 @@ func TestMaterializeScopedSecretsSupportsLiteralAndManagedReferences(t *testing.
 				Authorization: &Authorization{ServiceToken: tt.raw},
 			}}
 			if err := base.MaterializeScopedPluginSecrets(
-				context.Background(), scope, capabilityValue, p,
+				context.Background(), scope, secrets, p,
 			); err != nil {
 				t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 			}
@@ -250,9 +250,9 @@ func TestMaterializeScopedSecretsRedactsResolutionFailure(t *testing.T) {
 		values:  map[string]string{raw: "private-service-token"},
 		failRaw: raw,
 	}
-	capabilityValue, registration, scope := registerOpenFunctionScopedRoute(t, broker, raw)
+	secrets, materialization, scope := registerOpenFunctionScopedRoute(t, broker, raw)
 	t.Cleanup(func() {
-		if err := registration.Close(context.Background()); err != nil {
+		if err := materialization.Close(context.Background()); err != nil {
 			t.Error(err)
 		}
 	})
@@ -260,7 +260,7 @@ func TestMaterializeScopedSecretsRedactsResolutionFailure(t *testing.T) {
 		FunctionURI:   "http://function.invalid",
 		Authorization: &Authorization{ServiceToken: raw},
 	}}
-	err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p)
+	err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p)
 	if err == nil {
 		t.Fatal("MaterializeScopedPluginSecrets() error = nil")
 	}
@@ -339,9 +339,9 @@ func TestOpenFunctionGenerationsDoNotShareAuthorizationOrRetirement(t *testing.T
 func TestOpenFunctionScopedProcessAndStopDoNotRaceCredentialUse(t *testing.T) {
 	const raw = "$ENV://OPENFUNCTION_CONCURRENT_SCOPED"
 	broker := &openFunctionScopedBroker{values: map[string]string{raw: "scoped-concurrent-token"}}
-	capabilityValue, registration, scope := registerOpenFunctionScopedRoute(t, broker, raw)
+	secrets, materialization, scope := registerOpenFunctionScopedRoute(t, broker, raw)
 	t.Cleanup(func() {
-		if err := registration.Close(context.Background()); err != nil {
+		if err := materialization.Close(context.Background()); err != nil {
 			t.Error(err)
 		}
 	})
@@ -349,7 +349,7 @@ func TestOpenFunctionScopedProcessAndStopDoNotRaceCredentialUse(t *testing.T) {
 		FunctionURI:   "http://function.invalid",
 		Authorization: &Authorization{ServiceToken: raw},
 	}}
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatal(err)
 	}
 
@@ -425,13 +425,13 @@ func TestOpenFunctionLegacyProcessAndStopDoNotRaceCredentialUse(t *testing.T) {
 	}
 	const raw = "legacy-concurrent-token"
 	broker := &openFunctionScopedBroker{values: map[string]string{raw: raw}}
-	capabilityValue, registration, scope := registerOpenFunctionScopedRoute(t, broker, raw)
+	secrets, materialization, scope := registerOpenFunctionScopedRoute(t, broker, raw)
 	t.Cleanup(func() {
-		if err := registration.Close(context.Background()); err != nil {
+		if err := materialization.Close(context.Background()); err != nil {
 			t.Error(err)
 		}
 	})
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatal(err)
 	}
 
@@ -503,9 +503,9 @@ func TestMaterializeScopedSecretsFailureCanRetryWithoutRetainedState(t *testing.
 		values:  map[string]string{raw: "retry-service-token"},
 		failRaw: raw,
 	}
-	capabilityValue, registration, scope := registerOpenFunctionScopedRoute(t, broker, raw)
+	secrets, materialization, scope := registerOpenFunctionScopedRoute(t, broker, raw)
 	t.Cleanup(func() {
-		if err := registration.Close(context.Background()); err != nil {
+		if err := materialization.Close(context.Background()); err != nil {
 			t.Error(err)
 		}
 	})
@@ -513,7 +513,7 @@ func TestMaterializeScopedSecretsFailureCanRetryWithoutRetainedState(t *testing.
 		FunctionURI:   "http://function.invalid",
 		Authorization: &Authorization{ServiceToken: raw},
 	}}
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err == nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err == nil {
 		t.Fatal("first MaterializeScopedPluginSecrets() error = nil")
 	}
 	if p.serviceToken != (secret.Value{}) || p.serviceTokenSet {
@@ -529,7 +529,7 @@ func TestMaterializeScopedSecretsFailureCanRetryWithoutRetainedState(t *testing.
 	broker.mu.Lock()
 	broker.failRaw = ""
 	broker.mu.Unlock()
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatalf("retry MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if !p.serviceTokenSet || p.serviceToken == (secret.Value{}) {
@@ -556,9 +556,9 @@ func TestOpenFunctionDoesNotRetainPlaintextOrBasicCredentialFields(t *testing.T)
 			prepare: func(t *testing.T) *Plugin {
 				const raw = "$ENV://OPENFUNCTION_RETENTION_TOKEN"
 				broker := &openFunctionScopedBroker{values: map[string]string{raw: token}}
-				capabilityValue, registration, scope := registerOpenFunctionScopedRoute(t, broker, raw)
+				secrets, materialization, scope := registerOpenFunctionScopedRoute(t, broker, raw)
 				t.Cleanup(func() {
-					if err := registration.Close(context.Background()); err != nil {
+					if err := materialization.Close(context.Background()); err != nil {
 						t.Error(err)
 					}
 				})
@@ -570,7 +570,7 @@ func TestOpenFunctionDoesNotRetainPlaintextOrBasicCredentialFields(t *testing.T)
 					t.Fatal(err)
 				}
 				if err := base.MaterializeScopedPluginSecrets(
-					context.Background(), scope, capabilityValue, p,
+					context.Background(), scope, secrets, p,
 				); err != nil {
 					t.Fatal(err)
 				}
@@ -681,15 +681,6 @@ type openFunctionScopedBroker struct {
 	calls   []secret.Scope
 }
 
-func (broker *openFunctionScopedBroker) AuthorizeCandidate(
-	context.Context,
-	secret.AttemptID,
-	generation.ApplyTicket,
-	generation.PublicationSet,
-) error {
-	return nil
-}
-
 func (broker *openFunctionScopedBroker) ResolveScoped(
 	_ context.Context,
 	scope secret.Scope,
@@ -707,10 +698,6 @@ func (broker *openFunctionScopedBroker) ResolveScoped(
 	return "", fmt.Errorf("missing test credential")
 }
 
-func (broker *openFunctionScopedBroker) RevokeAttempt(context.Context, secret.AttemptID) error {
-	return nil
-}
-
 func (broker *openFunctionScopedBroker) scopedCalls() []secret.Scope {
 	broker.mu.Lock()
 	defer broker.mu.Unlock()
@@ -721,7 +708,7 @@ func registerOpenFunctionScopedRoute(
 	t *testing.T,
 	broker *openFunctionScopedBroker,
 	raw string,
-) (secret.GenerationCapability, secret.AttemptRegistration, secret.Scope) {
+) (secret.GenerationSecrets, secret.GenerationMaterialization, secret.Scope) {
 	t.Helper()
 	return registerOpenFunctionScopedRouteAt(t, broker, 1, raw)
 }
@@ -731,7 +718,7 @@ func registerOpenFunctionScopedRouteAt(
 	broker *openFunctionScopedBroker,
 	revision uint64,
 	raw string,
-) (secret.GenerationCapability, secret.AttemptRegistration, secret.Scope) {
+) (secret.GenerationSecrets, secret.GenerationMaterialization, secret.Scope) {
 	t.Helper()
 	return registerOpenFunctionScopedRouteConfigAt(t, broker, revision, raw, raw != "")
 }
@@ -742,7 +729,7 @@ func registerOpenFunctionScopedRouteConfigAt(
 	revision uint64,
 	raw string,
 	includeAuthorization bool,
-) (secret.GenerationCapability, secret.AttemptRegistration, secret.Scope) {
+) (secret.GenerationSecrets, secret.GenerationMaterialization, secret.Scope) {
 	t.Helper()
 	manifest, err := capability.Load()
 	if err != nil {
@@ -786,13 +773,8 @@ func registerOpenFunctionScopedRouteConfigAt(
 			Code:        "test",
 		}},
 	}
-	ticket := generation.ApplyTicket{
-		DesiredRevision: snapshot.Revision(),
-		DesiredDigest:   snapshot.Digest(),
-		RequiredDomains: []generation.Domain{generation.DomainHTTP},
-	}
-	registration, err := testutil.NewSecretMaterializer(broker, catalog).RegisterCandidate(
-		context.Background(), ticket, generation.PublicationSet{
+	materialization, err := testutil.NewSecretMaterializer(broker, catalog).PrepareGeneration(
+		context.Background(), generation.PublicationSet{
 			DesiredRevision: snapshot.Revision(),
 			Domains: map[generation.Domain]generation.PublicationCandidate{
 				generation.DomainHTTP: candidate,
@@ -802,13 +784,9 @@ func registerOpenFunctionScopedRouteConfigAt(
 	if err != nil {
 		t.Fatal(err)
 	}
-	capabilityValue, err := secret.NewGenerationCapability(registration, snapshot.Revision())
-	if err != nil {
-		t.Fatal(err)
-	}
-	return capabilityValue, registration, secret.Scope{
+	secrets := materialization.Secrets()
+	return secrets, materialization, secret.Scope{
 		Generation: snapshot.Revision(),
-		Attempt:    registration.AttemptID(),
 		Domain:     generation.DomainHTTP,
 		Plugin:     name,
 		Resource:   key,

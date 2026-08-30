@@ -8,7 +8,6 @@ import (
 
 	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/generation"
-	"github.com/wklken/apisix-go/pkg/plugin"
 )
 
 type factoryOccurrenceSpec struct {
@@ -129,48 +128,6 @@ func sortedFactories(configs map[string]any) []string {
 	}
 	sort.Strings(factories)
 	return factories
-}
-
-func validateScopedSecretSupport(
-	occurrences []factoryOccurrenceSpec,
-	catalog *capability.SecretDeclarationCatalog,
-) error {
-	if catalog == nil {
-		return fmt.Errorf("%w: secret declaration catalog is required", ErrInvalidInput)
-	}
-	factories := make(map[string]struct{})
-	for _, occurrence := range occurrences {
-		if occurrence.source != capability.SecretPluginConfig {
-			continue
-		}
-		requiresPluginOwner := false
-		catalog.ForEach(occurrence.factory, capability.SecretPluginConfig, func(
-			declaration capability.SecretDeclaration,
-		) {
-			if declaration.EffectiveTarget() == capability.SecretMaterializationPlugin {
-				requiresPluginOwner = true
-			}
-		})
-		if requiresPluginOwner {
-			factories[occurrence.factory] = struct{}{}
-		}
-	}
-	for _, factory := range sortedFactoriesFromSet(factories) {
-		supported, err := plugin.SupportsScopedSecretMaterialization(factory)
-		if err != nil || !supported {
-			return fmt.Errorf("%w: scoped secret preparation is unavailable", ErrInvalidInput)
-		}
-	}
-	return nil
-}
-
-func sortedFactoriesFromSet(factories map[string]struct{}) []string {
-	result := make([]string, 0, len(factories))
-	for factory := range factories {
-		result = append(result, factory)
-	}
-	sort.Strings(result)
-	return result
 }
 
 func clonePublicationSetForPreparation(set generation.PublicationSet) generation.PublicationSet {

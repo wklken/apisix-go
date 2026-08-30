@@ -7,19 +7,16 @@ import (
 	"testing"
 
 	"github.com/wklken/apisix-go/pkg/plugin"
-	"github.com/wklken/apisix-go/pkg/secret"
 )
 
 func pluginTaskOwnerGoldenInstance() plugin.InstanceKey {
-	var attempt secret.AttemptID
 	var digest [32]byte
-	for index := range attempt {
-		attempt[index] = byte(index)
+	for index := range digest {
 		digest[index] = byte(index + 32)
 	}
 	return plugin.InstanceKey{
 		Factory:      "http-logger",
-		Attempt:      attempt,
+		Generation:   42,
 		Scope:        plugin.ScopeRoute,
 		Owner:        plugin.ResourceProvenance{Kind: plugin.ResourceRoute, ID: "r/1\n"},
 		ConfigDigest: digest,
@@ -27,7 +24,7 @@ func pluginTaskOwnerGoldenInstance() plugin.InstanceKey {
 }
 
 func TestPluginTaskOwnerPrefixUsesCanonicalBoundedIdentity(t *testing.T) {
-	const want = "plugin/http-logger/eebdc1a3ae6a40e8b498bb2196cfcf690391d188aa945150ad0be04271ba4ced"
+	const want = "plugin/http-logger/2bf890a628acc49afd1415d01d9466fd507b81c5bde0fcbf48501b48689196ec"
 	got, err := pluginTaskOwnerPrefix(pluginTaskOwnerGoldenInstance())
 	if err != nil || got != want {
 		t.Fatalf("pluginTaskOwnerPrefix() = (%q, %v), want (%q, nil)", got, err, want)
@@ -111,7 +108,7 @@ func TestPluginTaskOwnerPrefixIncludesEveryInstanceKeyField(t *testing.T) {
 		mutate func(*plugin.InstanceKey)
 	}{
 		{name: "factory", mutate: func(key *plugin.InstanceKey) { key.Factory = "http-logger-2" }},
-		{name: "attempt", mutate: func(key *plugin.InstanceKey) { key.Attempt[7]++ }},
+		{name: "generation", mutate: func(key *plugin.InstanceKey) { key.Generation++ }},
 		{name: "scope", mutate: func(key *plugin.InstanceKey) { key.Scope = plugin.ScopeConsumer }},
 		{name: "owner kind", mutate: func(key *plugin.InstanceKey) { key.Owner.Kind = plugin.ResourceService }},
 		{name: "owner ID", mutate: func(key *plugin.InstanceKey) { key.Owner.ID = "r/2\n" }},
@@ -163,7 +160,7 @@ func TestPluginTaskOwnerPrefixRejectsIncompleteIdentity(t *testing.T) {
 		mutate func(*plugin.InstanceKey)
 	}{
 		{name: "blank factory", mutate: func(key *plugin.InstanceKey) { key.Factory = " \t" }},
-		{name: "zero attempt", mutate: func(key *plugin.InstanceKey) { key.Attempt = secret.AttemptID{} }},
+		{name: "zero generation", mutate: func(key *plugin.InstanceKey) { key.Generation = 0 }},
 		{name: "out of range scope", mutate: func(key *plugin.InstanceKey) { key.Scope = plugin.ScopeConsumer + 1 }},
 		{name: "empty owner kind", mutate: func(key *plugin.InstanceKey) { key.Owner.Kind = "" }},
 		{name: "empty owner ID", mutate: func(key *plugin.InstanceKey) { key.Owner.ID = "" }},

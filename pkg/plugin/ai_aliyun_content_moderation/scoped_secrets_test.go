@@ -33,12 +33,6 @@ type scopedSecretBroker struct {
 	calls  []scopedSecretCall
 }
 
-func (*scopedSecretBroker) AuthorizeCandidate(
-	context.Context, secret.AttemptID, generation.ApplyTicket, generation.PublicationSet,
-) error {
-	return nil
-}
-
 func (broker *scopedSecretBroker) ResolveScoped(
 	ctx context.Context, scope secret.Scope, raw string,
 ) (string, error) {
@@ -55,11 +49,9 @@ func (broker *scopedSecretBroker) ResolveScoped(
 	return raw, nil
 }
 
-func (*scopedSecretBroker) RevokeAttempt(context.Context, secret.AttemptID) error { return nil }
-
 func newScopedSecretHarness(
 	t testing.TB, factory string, values map[string]string,
-) (secret.GenerationCapability, secret.Scope, *scopedSecretBroker, func()) {
+) (secret.GenerationSecrets, secret.Scope, *scopedSecretBroker, func()) {
 	t.Helper()
 	const revision = uint64(7)
 	key := generation.ResourceKey{Kind: "routes", ID: "r1"}
@@ -80,9 +72,6 @@ func newScopedSecretHarness(
 			Key: key, Disposition: generation.DispositionPublished, Code: "leaf-test",
 		}},
 	}
-	ticket := generation.ApplyTicket{
-		DesiredRevision: revision, RequiredDomains: []generation.Domain{generation.DomainHTTP},
-	}
 	set := generation.PublicationSet{
 		DesiredRevision: revision,
 		Domains: map[generation.Domain]generation.PublicationCandidate{
@@ -98,26 +87,21 @@ func newScopedSecretHarness(
 		t.Fatal(err)
 	}
 	broker := &scopedSecretBroker{values: maps.Clone(values), fail: make(map[string]error)}
-	registration, err := testutil.NewSecretMaterializer(broker, catalog).
-		RegisterCandidate(context.Background(), ticket, set)
-	if err != nil {
-		t.Fatal(err)
-	}
-	capabilityValue, err := secret.NewGenerationCapability(registration, revision)
+	materialization, err := testutil.NewSecretMaterializer(broker, catalog).
+		PrepareGeneration(context.Background(), set)
 	if err != nil {
 		t.Fatal(err)
 	}
 	baseScope := secret.Scope{
 		Generation: revision,
-		Attempt:    registration.AttemptID(),
 		Domain:     generation.DomainHTTP,
 		Plugin:     factory,
 		Resource:   key,
 		Source:     capability.SecretPluginConfig,
 	}
-	return capabilityValue, baseScope, broker, func() {
-		if err := registration.Close(context.Background()); err != nil {
-			t.Fatalf("close scoped secret registration: %v", err)
+	return materialization.Secrets(), baseScope, broker, func() {
+		if err := materialization.Close(context.Background()); err != nil {
+			t.Fatalf("close scoped secret materialization: %v", err)
 		}
 	}
 }
@@ -136,12 +120,12 @@ func TestScopedSecretsMaterializeAliyunCredentialsAtomically(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatal(err)
 	}
-	capabilityValue, scope, broker, closeAttempt := newScopedSecretHarness(t, name, map[string]string{
+	secrets, scope, broker, closeAttempt := newScopedSecretHarness(t, name, map[string]string{
 		idRef:     "resolved-access-id",
 		secretRef: "resolved-access-secret",
 	})
 	defer closeAttempt()
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if len(broker.calls) != 2 {
@@ -219,11 +203,11 @@ func TestScopedSecretsResolveManagedAliyunCredential(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatal(err)
 	}
-	capabilityValue, scope, broker, closeAttempt := newScopedSecretHarness(t, name, map[string]string{
+	secrets, scope, broker, closeAttempt := newScopedSecretHarness(t, name, map[string]string{
 		managed: "managed-secret",
 	})
 	defer closeAttempt()
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if len(broker.calls) != 1 || broker.calls[0].Raw != managed {
@@ -251,12 +235,12 @@ func TestScopedSecretsFailureIsAtomicAndRedacted(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatal(err)
 	}
-	capabilityValue, scope, broker, closeAttempt := newScopedSecretHarness(t, name, map[string]string{
+	secrets, scope, broker, closeAttempt := newScopedSecretHarness(t, name, map[string]string{
 		idRef: "resolved-access-id",
 	})
 	defer closeAttempt()
 	broker.fail[secretRef] = errors.New("broker failure contains secretRef")
-	err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p)
+	err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p)
 	if err == nil {
 		t.Fatal("MaterializeScopedPluginSecrets() error = nil")
 	}
@@ -280,20 +264,20 @@ func TestScopedSecretsFailureCanRetryWithoutRetainedState(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatal(err)
 	}
-	capabilityValue, scope, broker, closeAttempt := newScopedSecretHarness(t, name, map[string]string{
+	secrets, scope, broker, closeAttempt := newScopedSecretHarness(t, name, map[string]string{
 		idRef:     "resolved-access-id",
 		secretRef: "resolved-access-secret",
 	})
 	defer closeAttempt()
 	broker.fail[secretRef] = errors.New("temporary broker failure")
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err == nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err == nil {
 		t.Fatal("first MaterializeScopedPluginSecrets() error = nil")
 	}
 	if p.config.AccessKeyID != idRef || p.config.AccessKeySecret != secretRef {
 		t.Fatalf("config retained partial state after first failure: %#v", p.config)
 	}
 	broker.fail[secretRef] = nil
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatalf("retry MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if got := len(broker.calls); got != 4 {
@@ -365,9 +349,9 @@ func TestAliyunStopIsIdempotentAndConcurrentWithCredentialUse(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatal(err)
 	}
-	capabilityValue, scope, _, cleanup := newScopedSecretHarness(t, name, nil)
+	secrets, scope, _, cleanup := newScopedSecretHarness(t, name, nil)
 	defer cleanup()
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	entered := make(chan struct{})
@@ -504,13 +488,13 @@ func TestAliyunRequestStopBoundaryForScopedCredentials(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatal(err)
 	}
-	capabilityValue, scope, _, closeAttempt := newScopedSecretHarness(t, name, map[string]string{
+	secrets, scope, _, closeAttempt := newScopedSecretHarness(t, name, map[string]string{
 		accessKeyIDRef:     requestAccessKeyID,
 		accessKeySecretRef: requestSecret,
 	})
 	defer closeAttempt()
 	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, capabilityValue, p,
+		context.Background(), scope, secrets, p,
 	); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}

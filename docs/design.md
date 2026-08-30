@@ -113,19 +113,19 @@ all domains required by one commit change atomically.
 ## Compilation and generation ownership
 
 Planning completes before any plugin, secret, client, resource, task, or
-registration side effect. It selects the exact winning resource and plugin
+materialization side effect. It selects the exact winning resource and plugin
 occurrences; disabled or losing occurrences acquire nothing.
 
-A prepared generation owns one complete attempt:
+A prepared generation owns one complete runtime generation:
 
 - immutable publication and metadata;
-- consumer and secret authority;
+- consumers and generation-scoped secret materialization;
 - background task ownership and shared-resource leases;
 - HTTP/TLS and stream snapshots; and
 - the cleanup ledger.
 
 Cleanup is retryable and ordered: stop work, finalize resources, then release
-authority. A timeout or residual task retains ownership for a later retry; it
+generation secrets. A timeout or residual task retains ownership for a later retry; it
 does not permit the generation to be detached early.
 
 ## Serving and leases
@@ -197,14 +197,14 @@ Protocol-specific transports remain plugin owned:
 ## Secret authority
 
 Secret declarations in the capability manifest are runtime authority. Each
-candidate attempt gets an identity scoped by generation,
-domain, plugin factory, resource, source, and field.
+prepared generation gets a read-only view scoped by generation, domain, plugin
+factory, resource, source, and field.
 
 The resolver can read only the exact publication closure. Cross-generation,
 cross-domain, cross-resource, and undeclared access fail before backend use.
 Plaintext exists only inside `secret.Value.Use`; logs, metrics, status, errors,
 and persistent records expose only redacted identity. Cache eviction and close
-zero retained bytes, and incomplete close keeps the attempt reserved for retry.
+zero retained bytes. Closing the generation invalidates every derived view.
 
 ## Process and candidate boundary
 

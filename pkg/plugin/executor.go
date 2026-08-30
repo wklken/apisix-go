@@ -12,7 +12,6 @@ import (
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
-	"github.com/wklken/apisix-go/pkg/secret"
 )
 
 // Scope identifies the materialized source scope of a plugin binding.
@@ -1011,27 +1010,26 @@ func BindResolvedPlugin(
 	provenance ResourceProvenance,
 	identity InstanceIdentityInput,
 ) (Binding, error) {
-	return bindResolvedPlugin(secret.AttemptID{}, descriptor, p, scope, provenance, identity)
+	return bindResolvedPlugin(0, descriptor, p, scope, provenance, identity)
 }
 
-// BindAttemptResolvedPlugin constructs an attempt-owned binding. A zero
-// attempt is never a valid generation identity.
-func BindAttemptResolvedPlugin(
-	attempt secret.AttemptID,
+// BindGenerationResolvedPlugin constructs a generation-owned binding.
+func BindGenerationResolvedPlugin(
+	generation uint64,
 	descriptor Descriptor,
 	p Plugin,
 	scope Scope,
 	provenance ResourceProvenance,
 	identity InstanceIdentityInput,
 ) (Binding, error) {
-	if attempt == (secret.AttemptID{}) {
-		return Binding{}, fmt.Errorf("resolved plugin binding %q has no attempt", descriptor.Factory)
+	if generation == 0 {
+		return Binding{}, fmt.Errorf("resolved plugin binding %q has no generation", descriptor.Factory)
 	}
-	return bindResolvedPlugin(attempt, descriptor, p, scope, provenance, identity)
+	return bindResolvedPlugin(generation, descriptor, p, scope, provenance, identity)
 }
 
 func bindResolvedPlugin(
-	attempt secret.AttemptID,
+	generation uint64,
 	descriptor Descriptor,
 	p Plugin,
 	scope Scope,
@@ -1068,7 +1066,7 @@ func bindResolvedPlugin(
 			err,
 		)
 	}
-	key, err := newInstanceKey(attempt, descriptor, scope, provenance, identity)
+	key, err := newInstanceKey(generation, descriptor, scope, provenance, identity)
 	if err != nil {
 		return Binding{}, err
 	}

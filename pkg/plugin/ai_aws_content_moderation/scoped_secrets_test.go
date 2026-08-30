@@ -34,12 +34,6 @@ type scopedSecretBroker struct {
 	hook   func(scopedSecretCall)
 }
 
-func (*scopedSecretBroker) AuthorizeCandidate(
-	context.Context, secret.AttemptID, generation.ApplyTicket, generation.PublicationSet,
-) error {
-	return nil
-}
-
 func (broker *scopedSecretBroker) ResolveScoped(
 	ctx context.Context, scope secret.Scope, raw string,
 ) (string, error) {
@@ -89,11 +83,9 @@ func (broker *scopedSecretBroker) setHook(hook func(scopedSecretCall)) {
 	broker.hook = hook
 }
 
-func (*scopedSecretBroker) RevokeAttempt(context.Context, secret.AttemptID) error { return nil }
-
 func newScopedSecretHarness(
 	t *testing.T, factory string, values map[string]string, keyring ...string,
-) (secret.GenerationCapability, secret.Scope, *scopedSecretBroker, func()) {
+) (secret.GenerationSecrets, secret.Scope, *scopedSecretBroker, func()) {
 	t.Helper()
 	return newScopedSecretHarnessAt(t, factory, 7, "r1", values, keyring...)
 }
@@ -105,7 +97,7 @@ func newScopedSecretHarnessAt(
 	resourceID string,
 	values map[string]string,
 	keyring ...string,
-) (secret.GenerationCapability, secret.Scope, *scopedSecretBroker, func()) {
+) (secret.GenerationSecrets, secret.Scope, *scopedSecretBroker, func()) {
 	t.Helper()
 	key := generation.ResourceKey{Kind: "routes", ID: resourceID}
 	snapshot, err := generation.NewSnapshot(revision, []generation.Resource{{
@@ -125,9 +117,6 @@ func newScopedSecretHarnessAt(
 			Key: key, Disposition: generation.DispositionPublished, Code: "leaf-test",
 		}},
 	}
-	ticket := generation.ApplyTicket{
-		DesiredRevision: revision, RequiredDomains: []generation.Domain{generation.DomainHTTP},
-	}
 	set := generation.PublicationSet{
 		DesiredRevision: revision,
 		Domains: map[generation.Domain]generation.PublicationCandidate{
@@ -143,25 +132,21 @@ func newScopedSecretHarnessAt(
 		t.Fatal(err)
 	}
 	broker := &scopedSecretBroker{values: maps.Clone(values), fail: make(map[string]error)}
-	registration, err := testutil.NewSecretMaterializerWithKeyring(broker, catalog, keyring).
-		RegisterCandidate(context.Background(), ticket, set)
+	materialization, err := testutil.NewSecretMaterializerWithKeyring(broker, catalog, keyring).
+		PrepareGeneration(context.Background(), set)
 	if err != nil {
 		t.Fatal(err)
 	}
-	capabilityValue, err := secret.NewGenerationCapability(registration, revision)
-	if err != nil {
-		t.Fatal(err)
-	}
+	secrets := materialization.Secrets()
 	baseScope := secret.Scope{
 		Generation: revision,
-		Attempt:    registration.AttemptID(),
 		Domain:     generation.DomainHTTP,
 		Plugin:     factory,
 		Resource:   key,
 		Source:     capability.SecretPluginConfig,
 	}
-	return capabilityValue, baseScope, broker, func() {
-		if err := registration.Close(context.Background()); err != nil {
+	return secrets, baseScope, broker, func() {
+		if err := materialization.Close(context.Background()); err != nil {
 			t.Fatalf("close scoped secret registration: %v", err)
 		}
 	}
@@ -181,14 +166,14 @@ func materializeScopedAWS(
 	t *testing.T,
 	p *Plugin,
 	scope secret.Scope,
-	capabilityValue secret.GenerationCapability,
+	secrets secret.GenerationSecrets,
 ) {
 	t.Helper()
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
 	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, capabilityValue, p,
+		context.Background(), scope, secrets, p,
 	); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
@@ -268,13 +253,13 @@ func TestScopedSecretsMaterializeAWSComprehendCredentials(t *testing.T) {
 	}))
 	t.Cleanup(moderation.Close)
 
-	capabilityValue, scope, broker, closeAttempt := newScopedSecretHarness(t, name, map[string]string{
+	secrets, scope, broker, closeAttempt := newScopedSecretHarness(t, name, map[string]string{
 		rawAccess: "resolved-access",
 		rawToken:  "resolved-token",
 	}, "0123456789abcdef")
 	defer closeAttempt()
 	p := &Plugin{config: awsScopedConfig(rawAccess, rawSecret, rawToken, moderation.URL)}
-	materializeScopedAWS(t, p, scope, capabilityValue)
+	materializeScopedAWS(t, p, scope, secrets)
 	assertAWSScopedCalls(t, scope, broker.calls,
 		[]string{"comprehend.access_key_id", "comprehend.session_token"},
 		[]string{rawAccess, rawToken},
@@ -313,10 +298,10 @@ func TestScopedSecretsSkipEmptyAWSSessionToken(t *testing.T) {
 	}))
 	t.Cleanup(moderation.Close)
 
-	capabilityValue, scope, broker, closeAttempt := newScopedSecretHarness(t, name, nil)
+	secrets, scope, broker, closeAttempt := newScopedSecretHarness(t, name, nil)
 	defer closeAttempt()
 	p := &Plugin{config: awsScopedConfig("literal-access", "literal-secret", "", moderation.URL)}
-	materializeScopedAWS(t, p, scope, capabilityValue)
+	materializeScopedAWS(t, p, scope, secrets)
 	assertAWSScopedCalls(t, scope, broker.calls, nil, nil)
 	assertAWSDescriptors(t, p, "literal-access", "literal-secret", "")
 	if err := p.PostInit(); err != nil {
@@ -340,12 +325,12 @@ func TestScopedSecretsResolveManagedAWSSessionToken(t *testing.T) {
 	}))
 	t.Cleanup(moderation.Close)
 
-	capabilityValue, scope, broker, closeAttempt := newScopedSecretHarness(t, name, map[string]string{
+	secrets, scope, broker, closeAttempt := newScopedSecretHarness(t, name, map[string]string{
 		rawToken: "managed-token",
 	})
 	defer closeAttempt()
 	p := &Plugin{config: awsScopedConfig("literal-access", "literal-secret", rawToken, moderation.URL)}
-	materializeScopedAWS(t, p, scope, capabilityValue)
+	materializeScopedAWS(t, p, scope, secrets)
 	assertAWSScopedCalls(t, scope, broker.calls,
 		[]string{"comprehend.session_token"},
 		[]string{rawToken},
@@ -371,7 +356,7 @@ func TestScopedSecretsAWSFailureInstallsNothingAndSameInstanceRetries(t *testing
 		rawSecret = "$secret://vault/aws/retry-secret"
 		rawToken  = "$secret://vault/aws/retry-token"
 	)
-	capabilityValue, scope, broker, closeAttempt := newScopedSecretHarness(t, name, map[string]string{
+	secrets, scope, broker, closeAttempt := newScopedSecretHarness(t, name, map[string]string{
 		rawAccess: "retry-access",
 		rawSecret: "retry-secret",
 		rawToken:  "retry-token",
@@ -383,7 +368,7 @@ func TestScopedSecretsAWSFailureInstallsNothingAndSameInstanceRetries(t *testing
 		t.Fatalf("Init() error = %v", err)
 	}
 
-	err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p)
+	err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p)
 	if err == nil {
 		t.Fatal("MaterializeScopedPluginSecrets() error = nil, want required credential failure")
 	}
@@ -405,7 +390,7 @@ func TestScopedSecretsAWSFailureInstallsNothingAndSameInstanceRetries(t *testing
 	delete(broker.fail, rawSecret)
 	broker.calls = nil
 	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, capabilityValue, p,
+		context.Background(), scope, secrets, p,
 	); err != nil {
 		t.Fatalf("same-instance retry error = %v", err)
 	}
@@ -434,7 +419,7 @@ func newScopedAWSPlugin(
 	rawAccess := "$ENV://AWS_ACCESS_" + resourceID
 	rawSecret := "$secret://vault/aws/secret-" + resourceID
 	rawToken := "$secret://vault/aws/token-" + resourceID
-	capabilityValue, scope, _, closeAttempt := newScopedSecretHarnessAt(
+	secrets, scope, _, closeAttempt := newScopedSecretHarnessAt(
 		t, name, revision, resourceID, map[string]string{
 			rawAccess: accessKeyID,
 			rawSecret: secretAccessKey,
@@ -442,7 +427,7 @@ func newScopedAWSPlugin(
 		},
 	)
 	p := &Plugin{config: awsScopedConfig(rawAccess, rawSecret, rawToken, endpoint)}
-	materializeScopedAWS(t, p, scope, capabilityValue)
+	materializeScopedAWS(t, p, scope, secrets)
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}

@@ -45,15 +45,6 @@ type lagoScopedSecretBroker struct {
 	calls  []lagoScopedSecretCall
 }
 
-func (*lagoScopedSecretBroker) AuthorizeCandidate(
-	context.Context,
-	secret.AttemptID,
-	generation.ApplyTicket,
-	generation.PublicationSet,
-) error {
-	return nil
-}
-
 func (broker *lagoScopedSecretBroker) ResolveScoped(
 	ctx context.Context,
 	scope secret.Scope,
@@ -73,10 +64,6 @@ func (broker *lagoScopedSecretBroker) ResolveScoped(
 		return "", errors.New("missing private Lago test token")
 	}
 	return value, nil
-}
-
-func (*lagoScopedSecretBroker) RevokeAttempt(context.Context, secret.AttemptID) error {
-	return nil
 }
 
 func (broker *lagoScopedSecretBroker) setFailure(raw string, err error) {
@@ -102,7 +89,7 @@ func newLagoScopedSecretHarness(
 	config Config,
 	values map[string]string,
 	keyring ...string,
-) (secret.GenerationCapability, secret.Scope, *lagoScopedSecretBroker, func()) {
+) (secret.GenerationSecrets, secret.Scope, *lagoScopedSecretBroker, func()) {
 	t.Helper()
 	key := generation.ResourceKey{Kind: "routes", ID: resourceID}
 	document, err := json.Marshal(map[string]any{
@@ -128,10 +115,6 @@ func newLagoScopedSecretHarness(
 			Key: key, Disposition: generation.DispositionPublished, Code: "lago-scoped-test",
 		}},
 	}
-	ticket := generation.ApplyTicket{
-		DesiredRevision: revision, DesiredDigest: snapshot.Digest(),
-		RequiredDomains: []generation.Domain{generation.DomainHTTP},
-	}
 	publication := generation.PublicationSet{
 		DesiredRevision: revision,
 		Domains: map[generation.Domain]generation.PublicationCandidate{
@@ -150,24 +133,19 @@ func newLagoScopedSecretHarness(
 		values: values,
 		fail:   make(map[string]error),
 	}
-	registration, err := testutil.NewSecretMaterializerWithKeyring(broker, catalog, keyring).RegisterCandidate(
-		context.Background(), ticket, publication,
-	)
+	materialization, err := testutil.NewSecretMaterializerWithKeyring(broker, catalog, keyring).
+		PrepareGeneration(context.Background(), publication)
 	if err != nil {
 		t.Fatal(err)
 	}
-	capabilityValue, err := secret.NewGenerationCapability(registration, revision)
-	if err != nil {
-		_ = registration.Close(context.Background())
-		t.Fatal(err)
-	}
+	secrets := materialization.Secrets()
 	scope := secret.Scope{
-		Generation: revision, Attempt: registration.AttemptID(), Domain: generation.DomainHTTP,
+		Generation: revision, Domain: generation.DomainHTTP,
 		Plugin: name, Resource: key, Source: capability.SecretPluginConfig,
 	}
-	return capabilityValue, scope, broker, func() {
-		if err := registration.Close(context.Background()); err != nil {
-			t.Errorf("close Lago scoped attempt: %v", err)
+	return secrets, scope, broker, func() {
+		if err := materialization.Close(context.Background()); err != nil {
+			t.Errorf("close Lago scoped generation: %v", err)
 		}
 	}
 }
@@ -191,14 +169,14 @@ func TestMaterializeScopedSecretsOwnsLagoToken(t *testing.T) {
 	for index, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			config := lagoTestConfig("http://127.0.0.1:3000", test.raw)
-			capabilityValue, scope, broker, closeAttempt := newLagoScopedSecretHarness(
+			secrets, scope, broker, closeAttempt := newLagoScopedSecretHarness(
 				t, uint64(70+index), "lago-raw", config, map[string]string{test.raw: test.resolved},
 				"0123456789abcdef",
 			)
 			defer closeAttempt()
 			p := newRawLagoPlugin(t, config)
 			if err := base.MaterializeScopedPluginSecrets(
-				context.Background(), scope, capabilityValue, p,
+				context.Background(), scope, secrets, p,
 			); err != nil {
 				t.Fatal(err)
 			}
@@ -226,13 +204,13 @@ func TestMaterializeScopedSecretsOwnsLagoToken(t *testing.T) {
 
 	const raw = "$secret://vault/lago/retry"
 	config := lagoTestConfig("http://127.0.0.1:3000", raw)
-	capabilityValue, scope, broker, closeAttempt := newLagoScopedSecretHarness(
+	secrets, scope, broker, closeAttempt := newLagoScopedSecretHarness(
 		t, 80, "lago-retry", config, map[string]string{raw: "retry-private"},
 	)
 	defer closeAttempt()
 	broker.setFailure(raw, errors.New("resolver leaked "+raw+" retry-private"))
 	p := newRawLagoPlugin(t, config)
-	err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p)
+	err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p)
 	if err == nil || strings.Contains(err.Error(), raw) || strings.Contains(err.Error(), "retry-private") {
 		t.Fatalf("failed materialization error = %v, want redacted", err)
 	}
@@ -241,7 +219,7 @@ func TestMaterializeScopedSecretsOwnsLagoToken(t *testing.T) {
 	}
 	broker.setFailure(raw, nil)
 	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, capabilityValue, p,
+		context.Background(), scope, secrets, p,
 	); err != nil {
 		t.Fatalf("same-instance retry error = %v", err)
 	}
@@ -310,12 +288,12 @@ func TestSendBatchUsesPrivateTokenAndScrubsRetainedRequestState(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatal(err)
 	}
-	capabilityValue, scope, _, cleanup := newLagoScopedSecretHarness(
+	secrets, scope, _, cleanup := newLagoScopedSecretHarness(
 		t, 1, "lago-scrub", config, map[string]string{config.Token: config.Token},
 	)
 	t.Cleanup(cleanup)
 	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, capabilityValue, p,
+		context.Background(), scope, secrets, p,
 	); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
@@ -485,12 +463,12 @@ func TestLagoStopDrainsActiveSendAndPreventsResurrection(t *testing.T) {
 func TestLagoRejectsPrePostInitLogEnqueue(t *testing.T) {
 	config := lagoTestConfig("http://127.0.0.1:3000", "unready-private")
 	p := newRawLagoPlugin(t, config)
-	capabilityValue, scope, _, cleanup := newLagoScopedSecretHarness(
+	secrets, scope, _, cleanup := newLagoScopedSecretHarness(
 		t, 1, "lago-unready", config, map[string]string{config.Token: config.Token},
 	)
 	t.Cleanup(cleanup)
 	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, capabilityValue, p,
+		context.Background(), scope, secrets, p,
 	); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
@@ -540,12 +518,12 @@ func TestLagoStopFlushesPendingBatchBeforeCleanup(t *testing.T) {
 func TestLagoConcurrentPostInitAndStopCannotPublishRuntime(t *testing.T) {
 	config := lagoTestConfig("http://127.0.0.1:3000", "post-init-private")
 	p := newRawLagoPlugin(t, config)
-	capabilityValue, scope, _, cleanup := newLagoScopedSecretHarness(
+	secrets, scope, _, cleanup := newLagoScopedSecretHarness(
 		t, 1, "lago-concurrent", config, map[string]string{config.Token: config.Token},
 	)
 	t.Cleanup(cleanup)
 	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, capabilityValue, p,
+		context.Background(), scope, secrets, p,
 	); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
@@ -708,11 +686,11 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	capabilityValue, scope, _, cleanup := newLagoScopedSecretHarness(
+	secrets, scope, _, cleanup := newLagoScopedSecretHarness(
 		t, 1, "test-route", cfg, map[string]string{cfg.Token: cfg.Token},
 	)
 	t.Cleanup(cleanup)
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if p.TaskOwner() == nil {
@@ -788,13 +766,13 @@ func TestPostInitResolvesRotatedEncryptedToken(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	capabilityValue, scope, _, cleanup := newLagoScopedSecretHarness(
+	secrets, scope, _, cleanup := newLagoScopedSecretHarness(
 		t, 1, "lago-rotated", config, map[string]string{config.Token: "lago-token"},
 		oldKey,
 	)
 	t.Cleanup(cleanup)
 	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, capabilityValue, p,
+		context.Background(), scope, secrets, p,
 	); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}

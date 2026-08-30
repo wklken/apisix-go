@@ -13,7 +13,7 @@ func (prepared *PreparedGeneration) compileAndAttachHTTP(ctx context.Context) er
 	if prepared == nil || ctx == nil {
 		return fmt.Errorf("%w: HTTP compiler owner and context are required", ErrInvalidInput)
 	}
-	candidate, exists := prepared.attempt.Candidate(generation.DomainHTTP)
+	candidate, exists := prepared.preparation.Candidate(generation.DomainHTTP)
 	if !exists {
 		return nil
 	}

@@ -36,12 +36,6 @@ type oasScopedSecretBroker struct {
 	hook   func(oasScopedSecretCall)
 }
 
-func (*oasScopedSecretBroker) AuthorizeCandidate(
-	context.Context, secret.AttemptID, generation.ApplyTicket, generation.PublicationSet,
-) error {
-	return nil
-}
-
 func (broker *oasScopedSecretBroker) ResolveScoped(
 	ctx context.Context, scope secret.Scope, raw string,
 ) (string, error) {
@@ -73,8 +67,6 @@ func (broker *oasScopedSecretBroker) setHook(hook func(oasScopedSecretCall)) {
 	broker.hook = hook
 }
 
-func (*oasScopedSecretBroker) RevokeAttempt(context.Context, secret.AttemptID) error { return nil }
-
 func (broker *oasScopedSecretBroker) callsSnapshot() []oasScopedSecretCall {
 	broker.mu.Lock()
 	defer broker.mu.Unlock()
@@ -83,7 +75,7 @@ func (broker *oasScopedSecretBroker) callsSnapshot() []oasScopedSecretCall {
 
 func newOASScopedSecretHarness(
 	t *testing.T, values map[string]string,
-) (secret.GenerationCapability, secret.Scope, *oasScopedSecretBroker, func()) {
+) (secret.GenerationSecrets, secret.Scope, *oasScopedSecretBroker, func()) {
 	t.Helper()
 	key := generation.ResourceKey{Kind: "routes", ID: "oas-scoped"}
 	snapshot, err := generation.NewSnapshot(70, []generation.Resource{{
@@ -103,9 +95,6 @@ func newOASScopedSecretHarness(
 			Key: key, Disposition: generation.DispositionPublished, Code: "leaf-test",
 		}},
 	}
-	ticket := generation.ApplyTicket{
-		DesiredRevision: 70, RequiredDomains: []generation.Domain{generation.DomainHTTP},
-	}
 	set := generation.PublicationSet{
 		DesiredRevision: 70,
 		Domains: map[generation.Domain]generation.PublicationCandidate{
@@ -123,32 +112,28 @@ func newOASScopedSecretHarness(
 	broker := &oasScopedSecretBroker{
 		values: maps.Clone(values), fail: make(map[string]error),
 	}
-	registration, err := testutil.NewSecretMaterializer(broker, catalog).
-		RegisterCandidate(context.Background(), ticket, set)
+	materialization, err := testutil.NewSecretMaterializer(broker, catalog).PrepareGeneration(context.Background(), set)
 	if err != nil {
 		t.Fatal(err)
 	}
-	capabilityValue, err := secret.NewGenerationCapability(registration, 70)
-	if err != nil {
-		t.Fatal(err)
-	}
+	secrets := materialization.Secrets()
 	scope := secret.Scope{
-		Generation: 70, Attempt: registration.AttemptID(), Domain: generation.DomainHTTP,
+		Generation: 70, Domain: generation.DomainHTTP,
 		Plugin: name, Resource: key, Source: capability.SecretPluginConfig,
 	}
-	return capabilityValue, scope, broker, func() {
-		if err := registration.Close(context.Background()); err != nil {
+	return secrets, scope, broker, func() {
+		if err := materialization.Close(context.Background()); err != nil {
 			t.Fatalf("close scoped secret registration: %v", err)
 		}
 	}
 }
 
 func materializeScopedOASSecrets(
-	t *testing.T, p *Plugin, capabilityValue secret.GenerationCapability, scope secret.Scope,
+	t *testing.T, p *Plugin, secrets secret.GenerationSecrets, scope secret.Scope,
 ) {
 	t.Helper()
 	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, capabilityValue, p,
+		context.Background(), scope, secrets, p,
 	); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
@@ -177,12 +162,12 @@ func assertOASScopedCalls(
 func TestScopedSecretsMaterializeOASInlineSpec(t *testing.T) {
 	const raw = "$ENV://OAS_SCOPED_INLINE_SPEC"
 	spec := testSpec()
-	capabilityValue, scope, broker, closeAttempt := newOASScopedSecretHarness(
+	secrets, scope, broker, closeAttempt := newOASScopedSecretHarness(
 		t, map[string]string{raw: spec},
 	)
 	defer closeAttempt()
 	p := &Plugin{config: Config{Spec: raw}}
-	materializeScopedOASSecrets(t, p, capabilityValue, scope)
+	materializeScopedOASSecrets(t, p, secrets, scope)
 	assertOASScopedCalls(t, scope, broker.callsSnapshot(), []string{"spec"}, []string{raw})
 	if p.config.Spec != oasSecretDescriptor(spec) || strings.Contains(p.config.Spec, raw) {
 		t.Fatalf("public inline spec = %q", p.config.Spec)
@@ -229,7 +214,7 @@ func TestScopedSecretsMaterializeOASHeaderContainerDeterministically(t *testing.
 		}
 	}))
 	defer specServer.Close()
-	capabilityValue, scope, broker, closeAttempt := newOASScopedSecretHarness(t, map[string]string{
+	secrets, scope, broker, closeAttempt := newOASScopedSecretHarness(t, map[string]string{
 		rawAuth: "Bearer resolved", rawZ: "z-resolved",
 	})
 	defer closeAttempt()
@@ -238,7 +223,7 @@ func TestScopedSecretsMaterializeOASHeaderContainerDeterministically(t *testing.
 		VerboseErrors:         true,
 		SpecURLRequestHeaders: map[string]string{"X-Z": rawZ, "Authorization": rawAuth},
 	}}
-	materializeScopedOASSecrets(t, p, capabilityValue, scope)
+	materializeScopedOASSecrets(t, p, secrets, scope)
 	assertOASScopedCalls(
 		t, scope, broker.callsSnapshot(),
 		[]string{"spec_url_request_headers", "spec_url_request_headers"},
@@ -277,7 +262,7 @@ func TestScopedSecretsResolveManagedOASHeader(t *testing.T) {
 		_, _ = w.Write([]byte(testSpec()))
 	}))
 	defer server.Close()
-	capabilityValue, scope, broker, closeAttempt := newOASScopedSecretHarness(
+	secrets, scope, broker, closeAttempt := newOASScopedSecretHarness(
 		t, map[string]string{managed: "Bearer managed"},
 	)
 	defer closeAttempt()
@@ -285,7 +270,7 @@ func TestScopedSecretsResolveManagedOASHeader(t *testing.T) {
 		SpecURL: server.URL, SpecURLAllowedAddresses: []string{"127.0.0.1"},
 		SpecURLRequestHeaders: map[string]string{"Authorization": managed},
 	}}
-	materializeScopedOASSecrets(t, p, capabilityValue, scope)
+	materializeScopedOASSecrets(t, p, secrets, scope)
 	assertOASScopedCalls(
 		t, scope, broker.callsSnapshot(), []string{"spec_url_request_headers"}, []string{managed},
 	)
@@ -307,7 +292,7 @@ func TestScopedSecretsOASHeaderFailureIsAtomic(t *testing.T) {
 		rawA    = "$ENV://OAS_ATOMIC_A"
 		rawZ    = "$ENV://OAS_ATOMIC_Z"
 	)
-	capabilityValue, scope, broker, closeAttempt := newOASScopedSecretHarness(t, map[string]string{
+	secrets, scope, broker, closeAttempt := newOASScopedSecretHarness(t, map[string]string{
 		rawSpec: testSpec(), rawA: "a-value", rawZ: "z-value",
 	})
 	defer closeAttempt()
@@ -315,7 +300,7 @@ func TestScopedSecretsOASHeaderFailureIsAtomic(t *testing.T) {
 	p := &Plugin{config: Config{
 		Spec: rawSpec, SpecURLRequestHeaders: map[string]string{"Z": rawZ, "A": rawA},
 	}}
-	err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p)
+	err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p)
 	if !errors.Is(err, secret.ErrCredentialUnavailable) {
 		t.Fatalf("materialization error = %v, want ErrCredentialUnavailable", err)
 	}
@@ -333,7 +318,7 @@ func TestScopedSecretsOASHeaderFailureIsAtomic(t *testing.T) {
 	delete(broker.fail, rawZ)
 	broker.calls = nil
 	broker.mu.Unlock()
-	materializeScopedOASSecrets(t, p, capabilityValue, scope)
+	materializeScopedOASSecrets(t, p, secrets, scope)
 	assertOASScopedCalls(
 		t, scope, broker.callsSnapshot(),
 		[]string{"spec", "spec_url_request_headers", "spec_url_request_headers"},
@@ -369,12 +354,12 @@ func TestPostInitDoesNotSelfMaterializeOASSecrets(t *testing.T) {
 
 func TestOASStopDropsScopedSecrets(t *testing.T) {
 	const raw = "$ENV://OAS_STOP_INLINE_SPEC"
-	capabilityValue, scope, _, closeAttempt := newOASScopedSecretHarness(
+	secrets, scope, _, closeAttempt := newOASScopedSecretHarness(
 		t, map[string]string{raw: testSpec()},
 	)
 	defer closeAttempt()
 	p := &Plugin{config: Config{Spec: raw}}
-	materializeScopedOASSecrets(t, p, capabilityValue, scope)
+	materializeScopedOASSecrets(t, p, secrets, scope)
 	if err := p.PostInit(); err != nil {
 		t.Fatal(err)
 	}
@@ -414,11 +399,11 @@ func TestOASStopWaitsForScopedHeaderFetch(t *testing.T) {
 		SpecURL: server.URL, SpecURLAllowedAddresses: []string{"127.0.0.1"},
 		SpecURLRequestHeaders: map[string]string{"Authorization": raw},
 	}}
-	capabilityValue, scope, _, closeAttempt := newOASScopedSecretHarness(
+	secrets, scope, _, closeAttempt := newOASScopedSecretHarness(
 		t, map[string]string{raw: "Bearer blocked"},
 	)
 	defer closeAttempt()
-	materializeScopedOASSecrets(t, p, capabilityValue, scope)
+	materializeScopedOASSecrets(t, p, secrets, scope)
 	if err := p.PostInit(); err != nil {
 		t.Fatal(err)
 	}
@@ -483,11 +468,11 @@ func TestOASStopCancelsOwnedFetchBeforeDroppingSecrets(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatal(err)
 	}
-	capabilityValue, scope, _, closeAttempt := newOASScopedSecretHarness(
+	secrets, scope, _, closeAttempt := newOASScopedSecretHarness(
 		t, map[string]string{raw: "Bearer generation-owned"},
 	)
 	t.Cleanup(closeAttempt)
-	materializeScopedOASSecrets(t, p, capabilityValue, scope)
+	materializeScopedOASSecrets(t, p, secrets, scope)
 	if err := p.PostInit(); err != nil {
 		t.Fatal(err)
 	}
@@ -569,7 +554,7 @@ func TestOASStopCancelsOwnedFetchBeforeDroppingSecrets(t *testing.T) {
 
 func TestScopedSecretsOASStopDuringMaterializeCannotRevive(t *testing.T) {
 	const raw = "$ENV://OAS_STOP_DURING_MATERIALIZE"
-	capabilityValue, scope, broker, closeAttempt := newOASScopedSecretHarness(
+	secrets, scope, broker, closeAttempt := newOASScopedSecretHarness(
 		t, map[string]string{raw: testSpec()},
 	)
 	defer closeAttempt()
@@ -586,7 +571,7 @@ func TestScopedSecretsOASStopDuringMaterializeCannotRevive(t *testing.T) {
 	materializeDone := make(chan error, 1)
 	go func() {
 		materializeDone <- base.MaterializeScopedPluginSecrets(
-			context.Background(), scope, capabilityValue, p,
+			context.Background(), scope, secrets, p,
 		)
 	}()
 	<-entered
@@ -603,7 +588,7 @@ func TestScopedSecretsOASStopDuringMaterializeCannotRevive(t *testing.T) {
 	}
 	calls := len(broker.callsSnapshot())
 	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, capabilityValue, p,
+		context.Background(), scope, secrets, p,
 	); !errors.Is(err, secret.ErrCredentialUnavailable) {
 		t.Fatalf("second materialization error = %v", err)
 	}
@@ -614,7 +599,7 @@ func TestScopedSecretsOASStopDuringMaterializeCannotRevive(t *testing.T) {
 
 func TestScopedSecretsOASConcurrentMaterializationIsSingleFlight(t *testing.T) {
 	const raw = "$ENV://OAS_SINGLEFLIGHT_SPEC"
-	capabilityValue, scope, broker, closeAttempt := newOASScopedSecretHarness(
+	secrets, scope, broker, closeAttempt := newOASScopedSecretHarness(
 		t, map[string]string{raw: testSpec()},
 	)
 	defer closeAttempt()
@@ -631,12 +616,12 @@ func TestScopedSecretsOASConcurrentMaterializationIsSingleFlight(t *testing.T) {
 	errs := make(chan error, 16)
 	var wait sync.WaitGroup
 	wait.Go(func() {
-		errs <- base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p)
+		errs <- base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p)
 	})
 	<-entered
 	for range 15 {
 		wait.Go(func() {
-			errs <- base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p)
+			errs <- base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p)
 		})
 	}
 	close(release)

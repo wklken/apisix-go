@@ -28,6 +28,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/proxy"
 	"github.com/wklken/apisix-go/pkg/resource"
+	"github.com/wklken/apisix-go/pkg/testutil"
 )
 
 const frontendTLS12Cipher = "ECDHE-RSA-AES128-GCM-SHA256"
@@ -202,7 +203,9 @@ func newTLSHTTPLeaseFixture(
 			}},
 		},
 	}
-	materializer := &ownerTestMaterializer{digest: catalog.Digest()}
+	materializer := &ownerTestMaterializer{
+		delegate: testutil.NewSecretMaterializer(ownerTestResolver{}, catalog),
+	}
 	factory, err := compiler.NewWorkerCompilerFactory(
 		manifest,
 		effective,

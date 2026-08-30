@@ -58,7 +58,7 @@ func TestEffectiveBindingMaterializerRejectsRawOccurrenceEnumeration(t *testing.
 			generation.DomainStream: preparedGenerationPublicationSet(t).Domains[generation.DomainStream],
 		},
 	)
-	if got := prepared.attempt.Occurrences(capability.SecretPluginConfig); len(got) != 1 {
+	if got := prepared.preparation.Occurrences(capability.SecretPluginConfig); len(got) != 1 {
 		t.Fatalf("plugin-config occurrences = %#v, want one authority record", got)
 	}
 
@@ -87,26 +87,6 @@ func TestEffectiveBindingMaterializerRejectsSourceAuthorityMismatch(t *testing.T
 	if fixture.constructed.Load() != 0 || fixture.registry.Len() != 0 {
 		t.Fatalf(
 			"source mismatch reached construction: constructed=%d leases=%d",
-			fixture.constructed.Load(),
-			fixture.registry.Len(),
-		)
-	}
-}
-
-func TestEffectiveBindingMaterializerRejectsCrossAttemptOrRelabeledSpec(t *testing.T) {
-	prepared, fixture := newEffectiveBindingMaterializerFixture(t, []string{"request-id"}, nil)
-	foreign, foreignFixture := newEffectiveBindingMaterializerFixture(t, []string{"request-id"}, nil)
-	t.Cleanup(func() { _ = foreign.Close(context.Background()) })
-	spec := fixture.pluginSpec("request-id", "route-1")
-	spec.source.occurrence = foreignFixture.occurrences["request-id"]
-
-	bindings, err := prepared.materializeEffectiveBindings(context.Background(), []effectiveBindingSpec{spec})
-	if !errors.Is(err, errEffectiveBindingMaterializationFailed) || bindings != nil {
-		t.Fatalf("cross-attempt source = (%#v, %v), want no bindings and redacted error", bindings, err)
-	}
-	if fixture.constructed.Load() != 0 || fixture.registry.Len() != 0 {
-		t.Fatalf(
-			"cross-attempt source reached construction: constructed=%d leases=%d",
 			fixture.constructed.Load(),
 			fixture.registry.Len(),
 		)
@@ -157,7 +137,7 @@ func TestEffectiveBindingMaterializerPreparedConsumerWithoutSecretFieldsDoesNotM
 			kind:       effectiveBindingPreparedConsumer,
 			resource:   consumerKey,
 			source:     capability.SecretConsumerConfig,
-			occurrence: prepared.attempt.Occurrences(capability.SecretConsumerConfig)[0],
+			occurrence: prepared.preparation.Occurrences(capability.SecretConsumerConfig)[0],
 		},
 		factory:    "request-id",
 		config:     consumerConfig,
@@ -203,7 +183,7 @@ func TestEffectiveBindingMaterializerPreparesNonCredentialConsumerPlugin(t *test
 		source: effectiveBindingSource{
 			kind: effectiveBindingPreparedConsumer, resource: consumerKey,
 			source:     capability.SecretConsumerConfig,
-			occurrence: prepared.attempt.Occurrences(capability.SecretConsumerConfig)[0],
+			occurrence: prepared.preparation.Occurrences(capability.SecretConsumerConfig)[0],
 		},
 		factory:    "limit-count",
 		config:     consumerConfig,
@@ -435,7 +415,7 @@ func TestEffectiveBindingMaterializerInjectsExactDependenciesBeforeOuterConstruc
 	defaultNew := prepared.bindingOps.newFactoryInstance
 	prepared.bindingOps.newFactoryInstance = func(factory string, dependencies base.Dependencies) (plugin.FactoryInstance, error) {
 		if dependencies.Config != prepared.effective ||
-			!dependencies.Secrets.SameAuthority(prepared.attempt.capability) ||
+			!dependencies.Secrets.SameGeneration(prepared.preparation.secrets) ||
 			!reflect.DeepEqual(dependencies.Metadata, prepared.metadata.ForFactory(factory)) ||
 			dependencies.Consumers == nil ||
 			dependencies.Tasks == nil ||
@@ -505,7 +485,7 @@ func TestEffectiveBindingMaterializerLifecycleOrderAndExactSecretScope(t *testin
 	trace := &materializerTrace{}
 	broker := &materializerLifecycleBroker{trace: trace}
 	materializer := testutil.NewSecretMaterializer(broker, compiler.schemas.catalog)
-	factory, err := newAttemptFactory(compiler, materializer)
+	factory, err := newGenerationFactory(compiler, materializer)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -519,7 +499,7 @@ func TestEffectiveBindingMaterializerLifecycleOrderAndExactSecretScope(t *testin
 		}`),
 	}, nil)
 	ticket := ticketForSnapshot(desired, generation.DomainHTTP)
-	registered, err := factory.prepareCandidateAttempt(context.Background(), ticket, desired, nil)
+	registered, err := factory.prepareGenerationSecrets(context.Background(), ticket, desired, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -549,7 +529,7 @@ func TestEffectiveBindingMaterializerLifecycleOrderAndExactSecretScope(t *testin
 	}
 	prepared := &PreparedGeneration{
 		publication:  registered.publication,
-		attempt:      registered.attempt,
+		preparation:  registered.preparation,
 		consumers:    consumers,
 		lookup:       consumerLookupView{bindings: consumers},
 		tasks:        tasks,
@@ -558,10 +538,10 @@ func TestEffectiveBindingMaterializerLifecycleOrderAndExactSecretScope(t *testin
 		registry:     runtime.NewResourceRegistry(),
 		materializer: materializer,
 		cleanup:      cleanup,
-		bindingOps:   defaultEffectiveBindingOps().withDefaults(registered.attempt.AttemptID()),
+		bindingOps:   defaultEffectiveBindingOps().withDefaults(registered.preparation.Generation()),
 	}
 	t.Cleanup(func() { _ = prepared.Close(context.Background()) })
-	occurrence := registered.attempt.Occurrences(capability.SecretPluginConfig)[0]
+	occurrence := registered.preparation.Occurrences(capability.SecretPluginConfig)[0]
 	spec := effectiveBindingSpec{
 		domain:         generation.DomainHTTP,
 		executionOwner: generation.ResourceKey{Kind: "routes", ID: "route-source"},
@@ -660,8 +640,8 @@ func TestEffectiveBindingMaterializerLifecycleOrderAndExactSecretScope(t *testin
 		t.Fatalf("lifecycle trace = %v, want %v", got, want)
 	}
 	scope, raw, calls := broker.lastCall()
-	if calls != 1 || raw != "$ENV://HTTP_LOGGER_AUTH" || scope.Attempt != prepared.attempt.AttemptID() ||
-		scope.Generation != prepared.attempt.Generation() || scope.Domain != generation.DomainHTTP ||
+	if calls != 1 || raw != "$ENV://HTTP_LOGGER_AUTH" || scope.Generation != prepared.preparation.Generation() ||
+		scope.Generation != prepared.preparation.Generation() || scope.Domain != generation.DomainHTTP ||
 		scope.Plugin != "http-logger" || scope.Resource != occurrence.Resource() ||
 		scope.Source != capability.SecretPluginConfig || scope.Field != "auth_header" {
 		t.Fatalf("scoped secret call = (%#v, %q, %d), want exact occurrence authority", scope, raw, calls)
@@ -731,7 +711,7 @@ func TestEffectiveBindingMaterializerConsumerGroupUsesPluginConfigSecretScope(t 
 	}
 	scope, raw, calls := broker.lastCall()
 	if calls != 1 || raw != "$ENV://GROUP_HTTP_LOGGER_AUTH" ||
-		scope.Attempt != prepared.attempt.AttemptID() || scope.Generation != prepared.attempt.Generation() ||
+		scope.Generation != prepared.preparation.Generation() || scope.Generation != prepared.preparation.Generation() ||
 		scope.Domain != generation.DomainHTTP || scope.Plugin != "http-logger" ||
 		scope.Resource != occurrence.Resource() || scope.Source != capability.SecretPluginConfig ||
 		scope.Field != "auth_header" {
@@ -867,7 +847,7 @@ func TestEffectiveBindingMaterializerSharesPerGlobalRuleInstanceAcrossRoutes(t *
 
 func TestEffectiveBindingMaterializerDefensivelyOwnsAllMutableInputs(t *testing.T) {
 	prepared, fixture := newEffectiveBindingMaterializerFixture(t, []string{"request-id"}, nil)
-	prepared.bindingOps = prepared.bindingOps.withDefaults(prepared.attempt.AttemptID())
+	prepared.bindingOps = prepared.bindingOps.withDefaults(prepared.preparation.Generation())
 	configValue := map[string]any{"header_name": "X-Original"}
 	filterValue := map[string]any{"nested": []any{"filter-original"}}
 	errorValue := map[string]any{"nested": []any{"error-original"}}
@@ -1053,7 +1033,7 @@ func TestEffectiveBindingMaterializerRejectsNonJSONMutableValues(t *testing.T) {
 	}
 }
 
-func TestEffectiveBindingMaterializerIndependentAttemptsDoNotShare(t *testing.T) {
+func TestEffectiveBindingMaterializerIndependentGenerationsDoNotShare(t *testing.T) {
 	first, firstFixture := newEffectiveBindingMaterializerFixture(t, []string{"request-id"}, nil)
 	second, secondFixture := newEffectiveBindingMaterializerFixture(t, []string{"request-id"}, nil)
 	firstSpec := firstFixture.pluginSpec("request-id", "route-1")
@@ -1067,15 +1047,15 @@ func TestEffectiveBindingMaterializerIndependentAttemptsDoNotShare(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if firstBindings[0].InstanceKey.Attempt == secondBindings[0].InstanceKey.Attempt {
-		t.Fatalf("independent identities shared attempt: %+v", firstBindings[0].InstanceKey)
+	if firstBindings[0].InstanceKey.Generation == secondBindings[0].InstanceKey.Generation {
+		t.Fatalf("independent identities shared generation: %+v", firstBindings[0].InstanceKey)
 	}
 }
 
 func TestEffectiveBindingResourceKeyIncludesSourceAndUsesStructuredEncoding(t *testing.T) {
-	attempt := secret.AttemptID{1, 2, 3}
+	attempt := uint64(1)
 	baseInstance := plugin.InstanceKey{
-		Factory: "request-id", Attempt: attempt, Scope: plugin.ScopeRoute,
+		Factory: "request-id", Generation: attempt, Scope: plugin.ScopeRoute,
 		Owner:        plugin.ResourceProvenance{Kind: plugin.ResourceRoute, ID: "owner"},
 		ConfigDigest: sha256.Sum256([]byte("same config/context/filter/error")),
 	}
@@ -1202,7 +1182,7 @@ func TestEffectiveBindingMaterializerCancellationAfterFactoryUsesGenerationClean
 	var stoppedBeforeTaskExit atomic.Bool
 	var transactionInheritedCancellation atomic.Bool
 	var transactionLostValue atomic.Bool
-	prepared.bindingOps = prepared.bindingOps.withDefaults(prepared.attempt.AttemptID())
+	prepared.bindingOps = prepared.bindingOps.withDefaults(prepared.preparation.Generation())
 	defaultAcquire := prepared.bindingOps.acquire
 	prepared.bindingOps.acquire = func(
 		transactionCtx context.Context,
@@ -1470,7 +1450,7 @@ func TestEffectiveBindingMaterializerSurfacesStayCompilerPrivate(t *testing.T) {
 }
 
 type materializerTestRegistration struct {
-	id               secret.AttemptID
+	delegate         secret.GenerationMaterialization
 	materializeCalls atomic.Int64
 	closed           atomic.Int64
 }
@@ -1491,22 +1471,22 @@ func (plugin *materializerGenerationTaskQuiescer) QuiesceGenerationTasks() {
 	plugin.trace.record("plugin-quiesce")
 }
 
-func (registration *materializerTestRegistration) AttemptID() secret.AttemptID {
-	return registration.id
+func (registration *materializerTestRegistration) Secrets() secret.GenerationSecrets {
+	return registration.delegate.Secrets()
 }
 
-func (registration *materializerTestRegistration) Materialize(
-	context.Context,
-	secret.Scope,
-	string,
-) (secret.Value, error) {
+func (registration *materializerTestRegistration) ResolveScoped(
+	_ context.Context,
+	_ secret.Scope,
+	raw string,
+) (string, error) {
 	registration.materializeCalls.Add(1)
-	return secret.Value{}, nil
+	return raw, nil
 }
 
-func (registration *materializerTestRegistration) Close(context.Context) error {
+func (registration *materializerTestRegistration) Close(ctx context.Context) error {
 	registration.closed.Add(1)
-	return nil
+	return registration.delegate.Close(ctx)
 }
 
 type effectiveBindingMaterializerFixture struct {
@@ -1564,17 +1544,23 @@ func newEffectiveBindingMaterializerFixtureWithOccurrenceSpecs(
 ) (*PreparedGeneration, *effectiveBindingMaterializerFixture) {
 	t.Helper()
 	compiler := newTestCompiler(t)
-	registration := &materializerTestRegistration{id: secret.AttemptID{byte(materializerFixtureAttempt.Add(1))}}
-	capabilityValue, err := secret.NewGenerationCapability(registration, uint64(registration.id[0])+100)
+	generationNumber := uint64(materializerFixtureAttempt.Add(1)) + 100
+	registration := &materializerTestRegistration{}
+	secretSet := effectiveBindingTestSecretPublication(t, generationNumber, occurrenceSpecs)
+	var err error
+	registration.delegate, err = testutil.NewSecretMaterializer(
+		registration, compiler.schemas.catalog,
+	).PrepareGeneration(context.Background(), secretSet)
 	if err != nil {
 		t.Fatal(err)
 	}
+	secrets := registration.Secrets()
 	candidateSet := map[generation.Domain]generation.PublicationCandidate{}
 	if len(candidates) != 0 && candidates[0] != nil {
 		candidateSet = candidates[0]
 	}
-	attempt, err := newPreparationAttempt(
-		capabilityValue.Generation(), candidateSet, capabilityValue, occurrenceSpecs,
+	attempt, err := newPreparationGeneration(
+		secrets.Generation(), candidateSet, secrets, occurrenceSpecs,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -1607,7 +1593,7 @@ func newEffectiveBindingMaterializerFixtureWithOccurrenceSpecs(
 	}
 	prepared := &PreparedGeneration{
 		publication:      generation.PublicationSet{DesiredRevision: attempt.Generation(), Domains: candidateSet},
-		attempt:          attempt,
+		preparation:      attempt,
 		consumers:        consumers,
 		lookup:           consumerLookupView{bindings: consumers},
 		tasks:            tasks,
@@ -1633,6 +1619,52 @@ func newEffectiveBindingMaterializerFixtureWithOccurrenceSpecs(
 	}
 	t.Cleanup(func() { _ = prepared.Close(context.Background()) })
 	return prepared, fixture
+}
+
+func effectiveBindingTestSecretPublication(
+	t *testing.T,
+	revision uint64,
+	occurrences []factoryOccurrenceSpec,
+) generation.PublicationSet {
+	t.Helper()
+	resources := make([]generation.Resource, 0, len(occurrences)+1)
+	seen := make(map[generation.ResourceKey]struct{})
+	for _, occurrence := range occurrences {
+		if _, exists := seen[occurrence.resource]; exists {
+			continue
+		}
+		seen[occurrence.resource] = struct{}{}
+		resources = append(resources, generation.Resource{Key: occurrence.resource, Value: []byte(`{}`)})
+	}
+	if len(resources) == 0 {
+		resources = append(resources, generation.Resource{
+			Key: generation.ResourceKey{Kind: "routes", ID: "materializer-fixture"}, Value: []byte(`{}`),
+		})
+	}
+	snapshot, err := generation.NewSnapshot(revision, resources, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	closure := make([]generation.ResourceKey, 0, len(resources))
+	decisions := make([]generation.ResourceDecision, 0, len(resources))
+	for _, resource := range resources {
+		closure = append(closure, resource.Key)
+		decisions = append(decisions, generation.ResourceDecision{
+			Key: resource.Key, Disposition: generation.DispositionPublished, Code: "test",
+		})
+	}
+	return generation.PublicationSet{
+		DesiredRevision: revision,
+		Domains: map[generation.Domain]generation.PublicationCandidate{
+			generation.DomainHTTP: {
+				Artifact: generation.GenerationArtifact{
+					Domain: generation.DomainHTTP, Revision: revision,
+					Digest: snapshot.Digest(), Snapshot: snapshot.SnapshotID(),
+				},
+				Snapshot: snapshot, Closure: closure, Decisions: decisions,
+			},
+		},
+	}
 }
 
 func (fixture *effectiveBindingMaterializerFixture) pluginSpec(factory, routeID string) effectiveBindingSpec {
@@ -1689,17 +1721,17 @@ type materializerLifecycleBroker struct {
 func newRealEffectiveBindingPrepared(
 	t *testing.T,
 	desired generation.Snapshot,
-	broker testutil.SecretAttemptBroker,
+	broker testutil.SecretResolver,
 ) (*PreparedGeneration, FactoryOccurrence) {
 	t.Helper()
 	compiler := newTestCompiler(t)
 	materializer := testutil.NewSecretMaterializer(broker, compiler.schemas.catalog)
-	factory, err := newAttemptFactory(compiler, materializer)
+	factory, err := newGenerationFactory(compiler, materializer)
 	if err != nil {
 		t.Fatal(err)
 	}
 	ticket := ticketForSnapshot(desired, generation.DomainHTTP)
-	registered, err := factory.prepareCandidateAttempt(context.Background(), ticket, desired, nil)
+	registered, err := factory.prepareGenerationSecrets(context.Background(), ticket, desired, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1728,27 +1760,18 @@ func newRealEffectiveBindingPrepared(
 		t.Fatal(err)
 	}
 	prepared := &PreparedGeneration{
-		publication: registered.publication, attempt: registered.attempt,
+		publication: registered.publication, preparation: registered.preparation,
 		consumers: consumers, lookup: consumerLookupView{bindings: consumers}, tasks: tasks,
 		effective: &config.EffectiveConfig{}, manifest: compiler.manifest,
 		registry: runtime.NewResourceRegistry(), materializer: materializer, cleanup: cleanup,
-		bindingOps: defaultEffectiveBindingOps().withDefaults(registered.attempt.AttemptID()),
+		bindingOps: defaultEffectiveBindingOps().withDefaults(registered.preparation.Generation()),
 	}
 	t.Cleanup(func() { _ = prepared.Close(context.Background()) })
-	occurrences := registered.attempt.Occurrences(capability.SecretPluginConfig)
+	occurrences := registered.preparation.Occurrences(capability.SecretPluginConfig)
 	if len(occurrences) != 1 {
 		t.Fatalf("plugin-config occurrences = %#v, want exactly one", occurrences)
 	}
 	return prepared, occurrences[0]
-}
-
-func (*materializerLifecycleBroker) AuthorizeCandidate(
-	context.Context,
-	secret.AttemptID,
-	generation.ApplyTicket,
-	generation.PublicationSet,
-) error {
-	return nil
 }
 
 func (broker *materializerLifecycleBroker) ResolveScoped(
@@ -1763,10 +1786,6 @@ func (broker *materializerLifecycleBroker) ResolveScoped(
 	broker.mu.Unlock()
 	broker.trace.record("secret")
 	return "Bearer resolved", nil
-}
-
-func (*materializerLifecycleBroker) RevokeAttempt(context.Context, secret.AttemptID) error {
-	return nil
 }
 
 func (broker *materializerLifecycleBroker) reset() {

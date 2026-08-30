@@ -48,9 +48,9 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	for _, fallback := range cfg.ClientSecretFallbacks {
 		values[fallback] = fallback
 	}
-	capabilityValue, scope, _, cleanup := newCasdoorScopedSecretHarness(t, 1, "test-route", cfg, values)
+	secrets, scope, _, cleanup := newCasdoorScopedSecretHarness(t, 1, "test-route", cfg, values)
 	t.Cleanup(cleanup)
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
@@ -129,7 +129,7 @@ func TestMaterializeScopedSecretsOwnsCasdoorSessionSecrets(t *testing.T) {
 		fallbackRaw: fallbackValue,
 		rotatedRaw:  rotatedValue,
 	}
-	capabilityValue, scope, broker, closeAttempt := newCasdoorScopedSecretHarness(
+	secrets, scope, broker, closeAttempt := newCasdoorScopedSecretHarness(
 		t, 1, "casdoor-scoped", config, values, "0123456789abcdef",
 	)
 	defer closeAttempt()
@@ -138,7 +138,7 @@ func TestMaterializeScopedSecretsOwnsCasdoorSessionSecrets(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, capabilityValue, p,
+		context.Background(), scope, secrets, p,
 	); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
@@ -151,7 +151,7 @@ func TestMaterializeScopedSecretsOwnsCasdoorSessionSecrets(t *testing.T) {
 	wantRaw := []string{fallbackRaw, rotatedRaw}
 	for i, call := range calls {
 		if call.Raw != wantRaw[i] || call.Scope.Generation != scope.Generation ||
-			call.Scope.Attempt != scope.Attempt || call.Scope.Domain != generation.DomainHTTP ||
+			call.Scope.Domain != generation.DomainHTTP ||
 			call.Scope.Plugin != name || call.Scope.Resource != scope.Resource ||
 			call.Scope.Source != capability.SecretPluginConfig || call.Scope.Field != wantFields[i] {
 			t.Fatalf("scoped call[%d] = %#v, want exact %q container authority", i, call, wantFields[i])
@@ -241,7 +241,7 @@ func TestCasdoorScopedSecretRawFormsUseResolvedDescriptors(t *testing.T) {
 				EndpointAddr: "https://door.example.com", ClientID: "client-a",
 				ClientSecret: test.raw, CallbackURL: "https://gateway.example.com/callback",
 			}
-			capabilityValue, scope, broker, closeAttempt := newCasdoorScopedSecretHarness(
+			secrets, scope, broker, closeAttempt := newCasdoorScopedSecretHarness(
 				t, uint64(10+index), "casdoor-raw-form", config,
 				map[string]string{test.raw: test.resolved},
 				"0123456789abcdef", "fedcba9876543210",
@@ -249,7 +249,7 @@ func TestCasdoorScopedSecretRawFormsUseResolvedDescriptors(t *testing.T) {
 			defer closeAttempt()
 			p := &Plugin{config: config}
 			if err := base.MaterializeScopedPluginSecrets(
-				context.Background(), scope, capabilityValue, p,
+				context.Background(), scope, secrets, p,
 			); err != nil {
 				t.Fatal(err)
 			}
@@ -294,12 +294,12 @@ func TestCasdoorResolvedSecretLengthFailureIsAtomicAndRetryable(t *testing.T) {
 				fallbackRaw: "fallback-long-fallback-long-fallback-long",
 			}
 			values[test.shortRaw] = test.shortValue
-			capabilityValue, scope, broker, closeAttempt := newCasdoorScopedSecretHarness(
+			secrets, scope, broker, closeAttempt := newCasdoorScopedSecretHarness(
 				t, 20, "casdoor-length", config, values,
 			)
 			defer closeAttempt()
 			p := &Plugin{config: config}
-			err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p)
+			err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p)
 			if err == nil || err.Error() != "materialize plugin secrets: credential unavailable" {
 				t.Fatalf("short resolved %s error = %v, want fixed redaction", test.name, err)
 			}
@@ -313,7 +313,7 @@ func TestCasdoorResolvedSecretLengthFailureIsAtomicAndRetryable(t *testing.T) {
 			}
 			broker.setValue(test.shortRaw, "retry-secret-retry-secret-retry-secret")
 			if err := base.MaterializeScopedPluginSecrets(
-				context.Background(), scope, capabilityValue, p,
+				context.Background(), scope, secrets, p,
 			); err != nil {
 				t.Fatalf("same-instance retry error = %v", err)
 			}
@@ -336,7 +336,7 @@ func TestCasdoorConcurrentScopedMaterializationIsSingleflight(t *testing.T) {
 		config.ClientSecretFallbacks[0]: "fallback-one-singleflight-fallback-one",
 		config.ClientSecretFallbacks[1]: "fallback-two-singleflight-fallback-two",
 	}
-	capabilityValue, scope, broker, closeAttempt := newCasdoorScopedSecretHarness(
+	secrets, scope, broker, closeAttempt := newCasdoorScopedSecretHarness(
 		t, 30, "casdoor-singleflight", config, values,
 	)
 	defer closeAttempt()
@@ -348,7 +348,7 @@ func TestCasdoorConcurrentScopedMaterializationIsSingleflight(t *testing.T) {
 		group.Go(func() {
 			<-start
 			errorsOut <- base.MaterializeScopedPluginSecrets(
-				context.Background(), scope, capabilityValue, p,
+				context.Background(), scope, secrets, p,
 			)
 		})
 	}
@@ -1305,7 +1305,7 @@ func newScopedCasdoorPlugin(
 	values map[string]string,
 ) (*Plugin, func()) {
 	t.Helper()
-	capabilityValue, scope, _, closeAttempt := newCasdoorScopedSecretHarness(
+	secrets, scope, _, closeAttempt := newCasdoorScopedSecretHarness(
 		t, revision, resourceID, config, values,
 	)
 	p := &Plugin{config: config}
@@ -1316,7 +1316,7 @@ func newScopedCasdoorPlugin(
 	}
 	p.newState = func() (string, error) { return "state-1", nil }
 	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, capabilityValue, p,
+		context.Background(), scope, secrets, p,
 	); err != nil {
 		closeAttempt()
 		t.Fatal(err)
@@ -1399,15 +1399,6 @@ type casdoorScopedSecretBroker struct {
 	calls   []casdoorScopedSecretCall
 }
 
-func (*casdoorScopedSecretBroker) AuthorizeCandidate(
-	context.Context,
-	secret.AttemptID,
-	generation.ApplyTicket,
-	generation.PublicationSet,
-) error {
-	return nil
-}
-
 func (broker *casdoorScopedSecretBroker) ResolveScoped(
 	_ context.Context,
 	scope secret.Scope,
@@ -1423,10 +1414,6 @@ func (broker *casdoorScopedSecretBroker) ResolveScoped(
 		return value, nil
 	}
 	return "", errors.New("missing private Casdoor test value")
-}
-
-func (*casdoorScopedSecretBroker) RevokeAttempt(context.Context, secret.AttemptID) error {
-	return nil
 }
 
 func (broker *casdoorScopedSecretBroker) scopedCalls() []casdoorScopedSecretCall {
@@ -1454,7 +1441,7 @@ func newCasdoorScopedSecretHarness(
 	config Config,
 	values map[string]string,
 	keyring ...string,
-) (secret.GenerationCapability, secret.Scope, *casdoorScopedSecretBroker, func()) {
+) (secret.GenerationSecrets, secret.Scope, *casdoorScopedSecretBroker, func()) {
 	t.Helper()
 	key := generation.ResourceKey{Kind: "routes", ID: resourceID}
 	document, err := json.Marshal(map[string]any{
@@ -1489,11 +1476,6 @@ func newCasdoorScopedSecretHarness(
 			Key: key, Disposition: generation.DispositionPublished, Code: "authz-casdoor-test",
 		}},
 	}
-	ticket := generation.ApplyTicket{
-		DesiredRevision: revision,
-		DesiredDigest:   snapshot.Digest(),
-		RequiredDomains: []generation.Domain{generation.DomainHTTP},
-	}
 	publication := generation.PublicationSet{
 		DesiredRevision: revision,
 		Domains: map[generation.Domain]generation.PublicationCandidate{
@@ -1509,28 +1491,22 @@ func newCasdoorScopedSecretHarness(
 		t.Fatal(err)
 	}
 	broker := &casdoorScopedSecretBroker{values: maps.Clone(values)}
-	registration, err := testutil.NewSecretMaterializerWithKeyring(broker, catalog, keyring).RegisterCandidate(
-		context.Background(), ticket, publication,
-	)
+	materialization, err := testutil.NewSecretMaterializerWithKeyring(broker, catalog, keyring).
+		PrepareGeneration(context.Background(), publication)
 	if err != nil {
 		t.Fatal(err)
 	}
-	capabilityValue, err := secret.NewGenerationCapability(registration, revision)
-	if err != nil {
-		_ = registration.Close(context.Background())
-		t.Fatal(err)
-	}
+	secrets := materialization.Secrets()
 	scope := secret.Scope{
 		Generation: revision,
-		Attempt:    registration.AttemptID(),
 		Domain:     generation.DomainHTTP,
 		Plugin:     name,
 		Resource:   key,
 		Source:     capability.SecretPluginConfig,
 	}
-	return capabilityValue, scope, broker, func() {
-		if err := registration.Close(context.Background()); err != nil {
-			t.Errorf("close Casdoor scoped attempt: %v", err)
+	return secrets, scope, broker, func() {
+		if err := materialization.Close(context.Background()); err != nil {
+			t.Errorf("close Casdoor scoped generation: %v", err)
 		}
 	}
 }

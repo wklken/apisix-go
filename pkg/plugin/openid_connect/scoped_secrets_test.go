@@ -42,12 +42,6 @@ type oidcScopedSecretBroker struct {
 	hook   func(oidcScopedSecretCall)
 }
 
-func (*oidcScopedSecretBroker) AuthorizeCandidate(
-	context.Context, secret.AttemptID, generation.ApplyTicket, generation.PublicationSet,
-) error {
-	return nil
-}
-
 func (broker *oidcScopedSecretBroker) ResolveScoped(
 	ctx context.Context, scope secret.Scope, raw string,
 ) (string, error) {
@@ -79,10 +73,6 @@ func (broker *oidcScopedSecretBroker) setHook(hook func(oidcScopedSecretCall)) {
 	broker.hook = hook
 }
 
-func (*oidcScopedSecretBroker) RevokeAttempt(context.Context, secret.AttemptID) error {
-	return nil
-}
-
 func (broker *oidcScopedSecretBroker) callsSnapshot() []oidcScopedSecretCall {
 	broker.mu.Lock()
 	defer broker.mu.Unlock()
@@ -103,7 +93,7 @@ func (broker *oidcScopedSecretBroker) setValue(raw, value string) {
 
 func newOIDCScopedSecretHarness(
 	t *testing.T, revision uint64, resourceID string, values map[string]string,
-) (secret.GenerationCapability, secret.Scope, *oidcScopedSecretBroker, func()) {
+) (secret.GenerationSecrets, secret.Scope, *oidcScopedSecretBroker, func()) {
 	t.Helper()
 	key := generation.ResourceKey{Kind: "routes", ID: resourceID}
 	snapshot, err := generation.NewSnapshot(revision, []generation.Resource{{
@@ -123,9 +113,6 @@ func newOIDCScopedSecretHarness(
 			Key: key, Disposition: generation.DispositionPublished, Code: "leaf-test",
 		}},
 	}
-	ticket := generation.ApplyTicket{
-		DesiredRevision: revision, RequiredDomains: []generation.Domain{generation.DomainHTTP},
-	}
 	set := generation.PublicationSet{
 		DesiredRevision: revision,
 		Domains: map[generation.Domain]generation.PublicationCandidate{
@@ -141,25 +128,20 @@ func newOIDCScopedSecretHarness(
 		t.Fatal(err)
 	}
 	broker := &oidcScopedSecretBroker{values: maps.Clone(values), fail: make(map[string]error)}
-	registration, err := testutil.NewSecretMaterializer(broker, catalog).
-		RegisterCandidate(context.Background(), ticket, set)
+	materialization, err := testutil.NewSecretMaterializer(broker, catalog).PrepareGeneration(context.Background(), set)
 	if err != nil {
 		t.Fatal(err)
 	}
-	capabilityValue, err := secret.NewGenerationCapability(registration, revision)
-	if err != nil {
-		t.Fatal(err)
-	}
+	secrets := materialization.Secrets()
 	scope := secret.Scope{
 		Generation: revision,
-		Attempt:    registration.AttemptID(),
 		Domain:     generation.DomainHTTP,
 		Plugin:     name,
 		Resource:   key,
 		Source:     capability.SecretPluginConfig,
 	}
-	return capabilityValue, scope, broker, func() {
-		if err := registration.Close(context.Background()); err != nil {
+	return secrets, scope, broker, func() {
+		if err := materialization.Close(context.Background()); err != nil {
 			t.Fatalf("close scoped secret registration: %v", err)
 		}
 	}
@@ -170,11 +152,11 @@ func oidcDescriptor(plaintext string) string {
 }
 
 func materializeScopedOIDCSecrets(
-	t *testing.T, p *Plugin, capabilityValue secret.GenerationCapability, scope secret.Scope,
+	t *testing.T, p *Plugin, secrets secret.GenerationSecrets, scope secret.Scope,
 ) {
 	t.Helper()
 	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, capabilityValue, p,
+		context.Background(), scope, secrets, p,
 	); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
@@ -218,7 +200,7 @@ func TestScopedSecretsMaterializeAllOIDCFields(t *testing.T) {
 		raws[0]: "resolved-client-secret", raws[1]: privateKey, raws[2]: publicKey,
 		raws[3]: "resolved-session-secret", raws[4]: "resolved-redis-password",
 	}
-	capabilityValue, scope, broker, closeAttempt := newOIDCScopedSecretHarness(t, 7, "all", values)
+	secrets, scope, broker, closeAttempt := newOIDCScopedSecretHarness(t, 7, "all", values)
 	defer closeAttempt()
 	p := &Plugin{config: Config{
 		ClientID: "apisix", ClientSecret: raws[0], Discovery: "https://idp.test/discovery",
@@ -227,7 +209,7 @@ func TestScopedSecretsMaterializeAllOIDCFields(t *testing.T) {
 			Host: "redis.test", Password: raws[4],
 		}},
 	}}
-	materializeScopedOIDCSecrets(t, p, capabilityValue, scope)
+	materializeScopedOIDCSecrets(t, p, secrets, scope)
 	fields := []string{
 		"client_secret", "client_rsa_private_key", "public_key",
 		"session.secret", "session.redis.password",
@@ -252,12 +234,12 @@ func TestScopedSecretsMaterializeAllOIDCFields(t *testing.T) {
 }
 
 func TestScopedSecretsSkipAbsentOIDCFieldsForBearerOnly(t *testing.T) {
-	capabilityValue, scope, broker, closeAttempt := newOIDCScopedSecretHarness(t, 8, "bearer", nil)
+	secrets, scope, broker, closeAttempt := newOIDCScopedSecretHarness(t, 8, "bearer", nil)
 	defer closeAttempt()
 	p := &Plugin{config: Config{
 		ClientID: "apisix", Discovery: "https://idp.test/discovery", BearerOnly: true, UseJWKS: true,
 	}}
-	materializeScopedOIDCSecrets(t, p, capabilityValue, scope)
+	materializeScopedOIDCSecrets(t, p, secrets, scope)
 	if calls := broker.callsSnapshot(); len(calls) != 0 {
 		t.Fatalf("absent optional field broker calls = %#v, want none", calls)
 	}
@@ -268,7 +250,7 @@ func TestScopedSecretsResolveManagedOIDCClientSecret(t *testing.T) {
 		raw       = "$secret://vault/oidc/client-secret"
 		plaintext = "managed-client-secret"
 	)
-	capabilityValue, scope, broker, closeAttempt := newOIDCScopedSecretHarness(
+	secrets, scope, broker, closeAttempt := newOIDCScopedSecretHarness(
 		t, 9, "managed", map[string]string{raw: plaintext},
 	)
 	defer closeAttempt()
@@ -276,7 +258,7 @@ func TestScopedSecretsResolveManagedOIDCClientSecret(t *testing.T) {
 		ClientID: "apisix", ClientSecret: raw, Discovery: "https://idp.test/discovery",
 		BearerOnly: true,
 	}}
-	materializeScopedOIDCSecrets(t, p, capabilityValue, scope)
+	materializeScopedOIDCSecrets(t, p, secrets, scope)
 	assertOIDCScopedCalls(t, scope, broker.callsSnapshot(), []string{"client_secret"}, []string{raw})
 	if p.config.ClientSecret != oidcDescriptor(plaintext) {
 		t.Fatalf("client_secret descriptor = %q", p.config.ClientSecret)
@@ -299,13 +281,13 @@ func TestScopedSecretsRejectInvalidOIDCPublicKeyAtomically(t *testing.T) {
 		"$ENV://OIDC_ATOMIC_PUBLIC",
 	}
 	values := map[string]string{raws[0]: "client-plaintext", raws[1]: privateKey, raws[2]: "invalid-public-key"}
-	capabilityValue, scope, broker, closeAttempt := newOIDCScopedSecretHarness(t, 10, "atomic", values)
+	secrets, scope, broker, closeAttempt := newOIDCScopedSecretHarness(t, 10, "atomic", values)
 	defer closeAttempt()
 	p := &Plugin{config: Config{
 		ClientID: "apisix", ClientSecret: raws[0], Discovery: "https://idp.test/discovery",
 		ClientRSAPrivateKey: raws[1], PublicKey: raws[2], BearerOnly: true,
 	}}
-	err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p)
+	err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p)
 	if err == nil || err.Error() != "materialize plugin secrets: credential unavailable" {
 		t.Fatalf("invalid public key error = %v, want redacted credential failure", err)
 	}
@@ -322,7 +304,7 @@ func TestScopedSecretsRejectInvalidOIDCPublicKeyAtomically(t *testing.T) {
 	}
 	broker.setValue(raws[2], publicKey)
 	broker.resetCalls()
-	materializeScopedOIDCSecrets(t, p, capabilityValue, scope)
+	materializeScopedOIDCSecrets(t, p, secrets, scope)
 	assertOIDCScopedCalls(
 		t, scope, broker.callsSnapshot(),
 		[]string{"client_secret", "client_rsa_private_key", "public_key"}, raws,
@@ -334,7 +316,7 @@ func TestScopedSecretsOIDCConfigAndErrorsAreRedacted(t *testing.T) {
 		raw       = "$secret://vault/oidc/redacted-client"
 		plaintext = "top-secret-oidc-value"
 	)
-	capabilityValue, scope, broker, closeAttempt := newOIDCScopedSecretHarness(
+	secrets, scope, broker, closeAttempt := newOIDCScopedSecretHarness(
 		t, 11, "redacted", map[string]string{raw: plaintext},
 	)
 	defer closeAttempt()
@@ -342,7 +324,7 @@ func TestScopedSecretsOIDCConfigAndErrorsAreRedacted(t *testing.T) {
 	p := &Plugin{config: Config{
 		ClientID: "apisix", ClientSecret: raw, Discovery: "https://idp.test/discovery", BearerOnly: true,
 	}}
-	err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p)
+	err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p)
 	if err == nil || err.Error() != "materialize plugin secrets: credential unavailable" {
 		t.Fatalf("materialization error = %v, want bounded redacted error", err)
 	}
@@ -369,7 +351,7 @@ func TestScopedSecretsOIDCClientSecretAuthMethodsUseResolvedValue(t *testing.T) 
 				w.WriteHeader(http.StatusNoContent)
 			}))
 			defer server.Close()
-			capabilityValue, scope, _, closeAttempt := newOIDCScopedSecretHarness(
+			secrets, scope, _, closeAttempt := newOIDCScopedSecretHarness(
 				t, uint64(20+index), "auth-"+method, map[string]string{raw: plaintext},
 			)
 			defer closeAttempt()
@@ -377,7 +359,7 @@ func TestScopedSecretsOIDCClientSecretAuthMethodsUseResolvedValue(t *testing.T) 
 				ClientID: "apisix", ClientSecret: raw, Discovery: server.URL,
 				BearerOnly: true, TokenEndpointAuthMethod: method,
 			}}
-			materializeScopedOIDCSecrets(t, p, capabilityValue, scope)
+			materializeScopedOIDCSecrets(t, p, secrets, scope)
 			if err := p.PostInit(); err != nil {
 				t.Fatal(err)
 			}
@@ -434,7 +416,7 @@ func TestOIDCCodeExchangeAndRefreshClearRetainedClientCredentials(t *testing.T) 
 	)
 	for index, method := range []string{"client_secret_basic", "client_secret_post"} {
 		t.Run(method, func(t *testing.T) {
-			capabilityValue, scope, _, closeAttempt := newOIDCScopedSecretHarness(
+			secrets, scope, _, closeAttempt := newOIDCScopedSecretHarness(
 				t, uint64(120+index), "token-grant-"+method, map[string]string{raw: plaintext},
 			)
 			defer closeAttempt()
@@ -442,7 +424,7 @@ func TestOIDCCodeExchangeAndRefreshClearRetainedClientCredentials(t *testing.T) 
 				ClientID: "apisix", ClientSecret: raw,
 				Discovery: endpoint, BearerOnly: true, TokenEndpointAuthMethod: method,
 			}}
-			materializeScopedOIDCSecrets(t, p, capabilityValue, scope)
+			materializeScopedOIDCSecrets(t, p, secrets, scope)
 			if err := p.PostInit(); err != nil {
 				t.Fatal(err)
 			}
@@ -701,7 +683,7 @@ func TestScopedSecretsOIDCPrivateKeyJWTUsesDerivedKey(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer server.Close()
-	capabilityValue, scope, _, closeAttempt := newOIDCScopedSecretHarness(
+	secrets, scope, _, closeAttempt := newOIDCScopedSecretHarness(
 		t, 30, "private-key", map[string]string{raw: privateKeyPEM},
 	)
 	defer closeAttempt()
@@ -710,7 +692,7 @@ func TestScopedSecretsOIDCPrivateKeyJWTUsesDerivedKey(t *testing.T) {
 		ClientRSAPrivateKey: raw, TokenEndpointAuthMethod: "private_key_jwt",
 		IntrospectionEndpointAuthMethod: "private_key_jwt",
 	}}
-	materializeScopedOIDCSecrets(t, p, capabilityValue, scope)
+	materializeScopedOIDCSecrets(t, p, secrets, scope)
 	if err := p.PostInit(); err != nil {
 		t.Fatal(err)
 	}
@@ -733,7 +715,7 @@ func TestScopedSecretsOIDCStaticVerificationUsesDerivedPublicKey(t *testing.T) {
 	}
 	const raw = "$ENV://OIDC_RUNTIME_PUBLIC_KEY"
 	publicKey := publicKeyPEM(t, &privateKey.PublicKey)
-	capabilityValue, scope, _, closeAttempt := newOIDCScopedSecretHarness(
+	secrets, scope, _, closeAttempt := newOIDCScopedSecretHarness(
 		t, 31, "public-key", map[string]string{raw: publicKey},
 	)
 	defer closeAttempt()
@@ -744,7 +726,7 @@ func TestScopedSecretsOIDCStaticVerificationUsesDerivedPublicKey(t *testing.T) {
 			"valid_issuers": []any{"https://issuer.test"},
 		}},
 	}}
-	materializeScopedOIDCSecrets(t, p, capabilityValue, scope)
+	materializeScopedOIDCSecrets(t, p, secrets, scope)
 	if err := p.PostInit(); err != nil {
 		t.Fatal(err)
 	}
@@ -762,7 +744,7 @@ func TestScopedSecretsOIDCSessionSealOpenUsesDerivedKey(t *testing.T) {
 		raw       = "$ENV://OIDC_RUNTIME_SESSION_SECRET"
 		plaintext = "resolved-session-secret"
 	)
-	capabilityValue, scope, _, closeAttempt := newOIDCScopedSecretHarness(
+	secrets, scope, _, closeAttempt := newOIDCScopedSecretHarness(
 		t, 32, "session", map[string]string{raw: plaintext},
 	)
 	defer closeAttempt()
@@ -770,7 +752,7 @@ func TestScopedSecretsOIDCSessionSealOpenUsesDerivedKey(t *testing.T) {
 		ClientID: "apisix", Discovery: "https://idp.test/discovery", UsePKCE: true,
 		Session: SessionConfig{Secret: raw},
 	}}
-	materializeScopedOIDCSecrets(t, p, capabilityValue, scope)
+	materializeScopedOIDCSecrets(t, p, secrets, scope)
 	if err := p.PostInit(); err != nil {
 		t.Fatal(err)
 	}
@@ -807,7 +789,7 @@ func TestScopedSecretsOIDCRedisAndProviderUseResolvedClientSecrets(t *testing.T)
 	values := map[string]string{
 		clientRaw: clientPlaintext, sessionRaw: sessionPlain, redisRaw: redisPlaintext,
 	}
-	capabilityValue, scope, _, closeAttempt := newOIDCScopedSecretHarness(t, 33, "provider-redis", values)
+	secrets, scope, _, closeAttempt := newOIDCScopedSecretHarness(t, 33, "provider-redis", values)
 	defer closeAttempt()
 	p := &Plugin{config: Config{
 		ClientID: "apisix", ClientSecret: clientRaw, Discovery: idp.URL,
@@ -815,7 +797,7 @@ func TestScopedSecretsOIDCRedisAndProviderUseResolvedClientSecrets(t *testing.T)
 			Host: "127.0.0.1", Password: redisRaw,
 		}},
 	}}
-	materializeScopedOIDCSecrets(t, p, capabilityValue, scope)
+	materializeScopedOIDCSecrets(t, p, secrets, scope)
 	if err := p.PostInit(); err != nil {
 		t.Fatal(err)
 	}
@@ -850,14 +832,14 @@ func idpURL(r *http.Request) string {
 
 func TestOIDCStopDrainsScopedClientSecretUseAndDropsState(t *testing.T) {
 	const raw = "$ENV://OIDC_STOP_SCOPED_CLIENT"
-	capabilityValue, scope, _, closeAttempt := newOIDCScopedSecretHarness(
+	secrets, scope, _, closeAttempt := newOIDCScopedSecretHarness(
 		t, 40, "stop-scoped", map[string]string{raw: "blocked-client-secret"},
 	)
 	defer closeAttempt()
 	p := &Plugin{config: Config{
 		ClientID: "apisix", ClientSecret: raw, Discovery: "https://idp.test", BearerOnly: true,
 	}}
-	materializeScopedOIDCSecrets(t, p, capabilityValue, scope)
+	materializeScopedOIDCSecrets(t, p, secrets, scope)
 	entered := make(chan struct{})
 	release := make(chan struct{})
 	useDone := make(chan error, 1)
@@ -905,7 +887,7 @@ func TestOIDCStopDrainsScopedClientSecretUseAndDropsState(t *testing.T) {
 
 func TestOIDCStopWaitsForMaterializationAndPreventsResurrection(t *testing.T) {
 	const raw = "$ENV://OIDC_STOP_MATERIALIZE"
-	capabilityValue, scope, broker, closeAttempt := newOIDCScopedSecretHarness(
+	secrets, scope, broker, closeAttempt := newOIDCScopedSecretHarness(
 		t, 41, "stop-materialize", map[string]string{raw: "materialized-client-secret"},
 	)
 	defer closeAttempt()
@@ -924,7 +906,7 @@ func TestOIDCStopWaitsForMaterializationAndPreventsResurrection(t *testing.T) {
 	materializeDone := make(chan error, 1)
 	go func() {
 		materializeDone <- base.MaterializeScopedPluginSecrets(
-			context.Background(), scope, capabilityValue, p,
+			context.Background(), scope, secrets, p,
 		)
 	}()
 	<-entered
@@ -962,12 +944,12 @@ func TestOIDCStopWaitsForProviderConstructionAndSuppressesResult(t *testing.T) {
 		))
 	}))
 	defer server.Close()
-	capabilityValue, scope, _, closeAttempt := newOIDCScopedSecretHarness(t, 42, "stop-provider", nil)
+	secrets, scope, _, closeAttempt := newOIDCScopedSecretHarness(t, 42, "stop-provider", nil)
 	defer closeAttempt()
 	p := &Plugin{config: Config{
 		ClientID: "apisix", Discovery: server.URL, BearerOnly: true, UseJWKS: true,
 	}}
-	materializeScopedOIDCSecrets(t, p, capabilityValue, scope)
+	materializeScopedOIDCSecrets(t, p, secrets, scope)
 	if err := p.PostInit(); err != nil {
 		t.Fatal(err)
 	}
@@ -1008,9 +990,9 @@ func TestOIDCPostInitAfterStopPublishesNothing(t *testing.T) {
 	p := &Plugin{config: Config{
 		ClientID: "apisix", Discovery: "https://idp.test", BearerOnly: true, UseJWKS: true,
 	}}
-	capabilityValue, scope, _, closeAttempt := newOIDCScopedSecretHarness(t, 43, "postinit-after-stop", nil)
+	secrets, scope, _, closeAttempt := newOIDCScopedSecretHarness(t, 43, "postinit-after-stop", nil)
 	defer closeAttempt()
-	materializeScopedOIDCSecrets(t, p, capabilityValue, scope)
+	materializeScopedOIDCSecrets(t, p, secrets, scope)
 	p.Stop()
 	if err := p.PostInit(); !errors.Is(err, secret.ErrCredentialUnavailable) {
 		t.Fatalf("PostInit() after Stop error = %v", err)

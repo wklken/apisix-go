@@ -13,12 +13,11 @@ import (
 	"github.com/wklken/apisix-go/pkg/secret"
 )
 
-// ScopedSecretAccess binds every authority dimension except the declared
-// field. Plugins can select a field, while generation, attempt, domain,
-// resource, source, and factory remain owned by the preparation boundary.
+// ScopedSecretAccess binds every generation/resource dimension except the
+// declared field. Plugins can select only a field for their own factory.
 type ScopedSecretAccess struct {
-	scope      secret.Scope
-	capability secret.GenerationCapability
+	scope   secret.Scope
+	secrets secret.GenerationSecrets
 }
 
 func (access ScopedSecretAccess) Materialize(
@@ -28,7 +27,7 @@ func (access ScopedSecretAccess) Materialize(
 ) (secret.Value, error) {
 	scope := access.scope
 	scope.Field = field
-	return access.capability.Materialize(ctx, scope, raw)
+	return access.secrets.Materialize(ctx, scope, raw)
 }
 
 // Child derives access for one composite-owned child factory without changing
@@ -42,42 +41,40 @@ func (access ScopedSecretAccess) Child(factory string) (ScopedSecretAccess, erro
 	return child, nil
 }
 
-// ValidFor reports whether access and expected belong to the same valid
-// generation attempt. It reveals no underlying scope or capability fields.
-func (access ScopedSecretAccess) ValidFor(expected secret.GenerationCapability) bool {
-	if !expected.Valid() || validateScopedSecretAuthority(access.scope, access.capability) != nil {
+// ValidFor reports whether access and expected belong to the same generation.
+func (access ScopedSecretAccess) ValidFor(expected secret.GenerationSecrets) bool {
+	if !expected.Valid() || validateScopedSecretScope(access.scope, access.secrets) != nil {
 		return false
 	}
-	return access.capability.SameAuthority(expected)
+	return access.secrets.SameGeneration(expected)
 }
 
-// SharedLimiter returns an acquire-only attempt resource after validating the
-// same exact scoped authority used for secret materialization.
-func (access ScopedSecretAccess) SharedLimiter(name string, capacity int) (secret.AttemptLimiter, error) {
-	if err := validateScopedSecretAuthority(access.scope, access.capability); err != nil {
-		return secret.AttemptLimiter{}, err
+// SharedLimiter returns a generation-owned limiter after validating the same
+// scope used for secret materialization.
+func (access ScopedSecretAccess) SharedLimiter(name string, capacity int) (secret.GenerationLimiter, error) {
+	if err := validateScopedSecretScope(access.scope, access.secrets); err != nil {
+		return secret.GenerationLimiter{}, err
 	}
-	return access.capability.SharedLimiter(name, capacity)
+	return access.secrets.SharedLimiter(name, capacity)
 }
 
 type ScopedSecretMaterializer interface {
 	MaterializeScopedSecrets(context.Context, ScopedSecretAccess) error
 }
 
-// MaterializeScopedPluginSecrets runs only the attempt-bound secret phase.
-// It never falls back to the transitional process-global materializer.
+// MaterializeScopedPluginSecrets runs the generation-bound secret phase.
 func MaterializeScopedPluginSecrets(
 	ctx context.Context,
 	baseScope secret.Scope,
-	capabilityValue secret.GenerationCapability,
+	secrets secret.GenerationSecrets,
 	p any,
 ) error {
-	if err := validateScopedSecretAuthority(baseScope, capabilityValue); err != nil {
+	if err := validateScopedSecretScope(baseScope, secrets); err != nil {
 		return err
 	}
 	return materializeScopedPluginSecrets(
 		ctx,
-		ScopedSecretAccess{scope: baseScope, capability: capabilityValue},
+		ScopedSecretAccess{scope: baseScope, secrets: secrets},
 		p,
 	)
 }
@@ -90,7 +87,7 @@ func MaterializeScopedCompositeChildSecrets(
 	access ScopedSecretAccess,
 	p any,
 ) error {
-	if err := validateScopedSecretAuthority(access.scope, access.capability); err != nil {
+	if err := validateScopedSecretScope(access.scope, access.secrets); err != nil {
 		return err
 	}
 	return materializeScopedPluginSecrets(ctx, access, p)
@@ -131,14 +128,14 @@ func materializeScopedPluginSecrets(
 	return nil
 }
 
-func validateScopedSecretAuthority(
+func validateScopedSecretScope(
 	scope secret.Scope,
-	capabilityValue secret.GenerationCapability,
+	secrets secret.GenerationSecrets,
 ) error {
-	if !capabilityValue.Valid() {
+	if !secrets.Valid() {
 		return secret.ErrInvalidCapability
 	}
-	if scope.Generation != capabilityValue.Generation() || scope.Attempt != capabilityValue.AttemptID() {
+	if scope.Generation != secrets.Generation() {
 		return secret.ErrCapabilityScopeMismatch
 	}
 	if (scope.Domain != generation.DomainHTTP && scope.Domain != generation.DomainStream) ||

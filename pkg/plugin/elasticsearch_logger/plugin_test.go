@@ -99,12 +99,6 @@ type elasticsearchScopedSecretBroker struct {
 	calls  []elasticsearchScopedSecretCall
 }
 
-func (*elasticsearchScopedSecretBroker) AuthorizeCandidate(
-	context.Context, secret.AttemptID, generation.ApplyTicket, generation.PublicationSet,
-) error {
-	return nil
-}
-
 func (broker *elasticsearchScopedSecretBroker) ResolveScoped(
 	ctx context.Context, scope secret.Scope, raw string,
 ) (string, error) {
@@ -123,10 +117,6 @@ func (broker *elasticsearchScopedSecretBroker) ResolveScoped(
 	return raw, nil
 }
 
-func (*elasticsearchScopedSecretBroker) RevokeAttempt(context.Context, secret.AttemptID) error {
-	return nil
-}
-
 func newElasticsearchScopedSecretHarness(
 	t *testing.T,
 	revision uint64,
@@ -134,7 +124,7 @@ func newElasticsearchScopedSecretHarness(
 	rawConfig map[string]any,
 	values map[string]string,
 	keyring ...string,
-) (secret.GenerationCapability, secret.Scope, *elasticsearchScopedSecretBroker, func()) {
+) (secret.GenerationSecrets, secret.Scope, *elasticsearchScopedSecretBroker, func()) {
 	t.Helper()
 	key := generation.ResourceKey{Kind: "routes", ID: resourceID}
 	resourceJSON, err := json.Marshal(map[string]any{
@@ -160,9 +150,6 @@ func newElasticsearchScopedSecretHarness(
 			Key: key, Disposition: generation.DispositionPublished, Code: "elasticsearch-test",
 		}},
 	}
-	ticket := generation.ApplyTicket{
-		DesiredRevision: revision, RequiredDomains: []generation.Domain{generation.DomainHTTP},
-	}
 	set := generation.PublicationSet{
 		DesiredRevision: revision,
 		Domains: map[generation.Domain]generation.PublicationCandidate{
@@ -178,21 +165,18 @@ func newElasticsearchScopedSecretHarness(
 		t.Fatal(err)
 	}
 	broker := &elasticsearchScopedSecretBroker{values: values, fail: make(map[string]error)}
-	registration, err := testutil.NewSecretMaterializerWithKeyring(broker, catalog, keyring).
-		RegisterCandidate(context.Background(), ticket, set)
+	materialization, err := testutil.NewSecretMaterializerWithKeyring(broker, catalog, keyring).
+		PrepareGeneration(context.Background(), set)
 	if err != nil {
 		t.Fatal(err)
 	}
-	capabilityValue, err := secret.NewGenerationCapability(registration, revision)
-	if err != nil {
-		t.Fatal(err)
-	}
+	secrets := materialization.Secrets()
 	scope := secret.Scope{
-		Generation: revision, Attempt: registration.AttemptID(), Domain: generation.DomainHTTP,
+		Generation: revision, Domain: generation.DomainHTTP,
 		Plugin: name, Resource: key, Source: capability.SecretPluginConfig,
 	}
-	return capabilityValue, scope, broker, func() {
-		if err := registration.Close(context.Background()); err != nil {
+	return secrets, scope, broker, func() {
+		if err := materialization.Close(context.Background()); err != nil {
 			t.Fatalf("close scoped secret registration: %v", err)
 		}
 	}
@@ -268,7 +252,7 @@ func TestMaterializeScopedSecretsOwnsElasticsearchCredentials(t *testing.T) {
 			if tt.authorization != nil {
 				values[*tt.authorization] = tt.resolvedAuth
 			}
-			capabilityValue, scope, broker, closeAttempt := newElasticsearchScopedSecretHarness(
+			secrets, scope, broker, closeAttempt := newElasticsearchScopedSecretHarness(
 				t,
 				uint64(index+1),
 				"es-route",
@@ -289,7 +273,7 @@ func TestMaterializeScopedSecretsOwnsElasticsearchCredentials(t *testing.T) {
 			if err := p.Init(); err != nil {
 				t.Fatal(err)
 			}
-			if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+			if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 				t.Fatal(err)
 			}
 			if len(broker.calls) != len(tt.wantCalls) {
@@ -334,7 +318,7 @@ func TestMaterializeScopedSecretsFailureIsAtomicRetryableAndSingleflight(t *test
 		"auth":    map[string]any{"username": "elastic", "password": passwordRaw},
 		"headers": map[string]string{"Authorization": authorizationRaw},
 	}
-	capabilityValue, scope, broker, closeAttempt := newElasticsearchScopedSecretHarness(
+	secrets, scope, broker, closeAttempt := newElasticsearchScopedSecretHarness(
 		t, 20, "es-retry", raw, map[string]string{
 			passwordRaw: "retry-password", authorizationRaw: "Bearer retry-token",
 		},
@@ -348,7 +332,7 @@ func TestMaterializeScopedSecretsFailureIsAtomicRetryableAndSingleflight(t *test
 		t.Fatal(err)
 	}
 	broker.fail[authorizationRaw] = errors.New("private resolver failure")
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err == nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err == nil {
 		t.Fatal("first materialization error = nil")
 	}
 	if p.config.Auth.Password != passwordRaw || p.config.Headers["Authorization"] != authorizationRaw ||
@@ -375,7 +359,7 @@ func TestMaterializeScopedSecretsFailureIsAtomicRetryableAndSingleflight(t *test
 			errs[index] = base.MaterializeScopedPluginSecrets(
 				context.Background(),
 				scope,
-				capabilityValue,
+				secrets,
 				p,
 			)
 		})
@@ -424,7 +408,7 @@ func TestMaterializeScopedSecretsRejectsBlankCredentialsAndRetries(t *testing.T)
 			} else {
 				values[authorizationRaw] = "\n"
 			}
-			capabilityValue, scope, broker, closeAttempt := newElasticsearchScopedSecretHarness(
+			secrets, scope, broker, closeAttempt := newElasticsearchScopedSecretHarness(
 				t, uint64(30+index), "es-blank", raw, values,
 			)
 			defer closeAttempt()
@@ -435,7 +419,7 @@ func TestMaterializeScopedSecretsRejectsBlankCredentialsAndRetries(t *testing.T)
 			if err := p.Init(); err != nil {
 				t.Fatal(err)
 			}
-			if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err == nil {
+			if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err == nil {
 				t.Fatal("blank materialization error = nil")
 			}
 			if p.config.Auth.Password != passwordRaw ||
@@ -446,7 +430,7 @@ func TestMaterializeScopedSecretsRejectsBlankCredentialsAndRetries(t *testing.T)
 			broker.values[passwordRaw] = "password"
 			broker.values[authorizationRaw] = "Bearer token"
 			broker.mu.Unlock()
-			if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+			if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 				t.Fatalf("retry materialization error = %v", err)
 			}
 		})
@@ -690,7 +674,7 @@ func (transport *retainingElasticsearchRoundTripper) RoundTrip(
 func TestElasticsearchCredentialTransportClearsRetainedAuthorization(t *testing.T) {
 	retained := &retainingElasticsearchRoundTripper{}
 	const rawAuthorization = "$ENV://ES_TRANSPORT_AUTHORIZATION"
-	capabilityValue, scope, _, closeAttempt := newElasticsearchScopedSecretHarness(
+	secrets, scope, _, closeAttempt := newElasticsearchScopedSecretHarness(
 		t,
 		42,
 		"es-transport",
@@ -703,7 +687,7 @@ func TestElasticsearchCredentialTransportClearsRetainedAuthorization(t *testing.
 		t.Fatal(err)
 	}
 	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, capabilityValue, owner,
+		context.Background(), scope, secrets, owner,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -790,7 +774,7 @@ func TestStopDrainsActiveScopedElasticsearchSend(t *testing.T) {
 		"log_format":     map[string]any{"request_id": "$request_id"},
 		"auth":           map[string]any{"username": "elastic", "password": rawPassword},
 	}
-	capabilityValue, scope, _, closeAttempt := newElasticsearchScopedSecretHarness(
+	secrets, scope, _, closeAttempt := newElasticsearchScopedSecretHarness(
 		t, 41, "es-scoped-stop", raw, map[string]string{rawPassword: "scoped-password"},
 	)
 	defer closeAttempt()
@@ -802,7 +786,7 @@ func TestStopDrainsActiveScopedElasticsearchSend(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatal(err)
 	}
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatal(err)
 	}
 	if p.TaskOwner() == nil {
@@ -874,7 +858,7 @@ func TestPostInitCannotPublishBatchProcessorAfterStop(t *testing.T) {
 		t.Fatal(err)
 	}
 	p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
-	capabilityValue, scope, _, closeAttempt := newElasticsearchScopedSecretHarness(
+	secrets, scope, _, closeAttempt := newElasticsearchScopedSecretHarness(
 		t,
 		42,
 		"es-post-init-stop",
@@ -890,7 +874,7 @@ func TestPostInitCannotPublishBatchProcessorAfterStop(t *testing.T) {
 	)
 	defer closeAttempt()
 	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, capabilityValue, p,
+		context.Background(), scope, secrets, p,
 	); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
@@ -1000,7 +984,7 @@ func TestNewElasticsearchClientUsesOfficialBulkTransport(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatal(err)
 	}
-	capabilityValue, scope, _, closeAttempt := newElasticsearchScopedSecretHarness(
+	secrets, scope, _, closeAttempt := newElasticsearchScopedSecretHarness(
 		t,
 		43,
 		"es-official-transport",
@@ -1009,7 +993,7 @@ func TestNewElasticsearchClientUsesOfficialBulkTransport(t *testing.T) {
 	)
 	defer closeAttempt()
 	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, capabilityValue, p,
+		context.Background(), scope, secrets, p,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -1154,14 +1138,14 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	capabilityValue, scope, closeAttempt := testutil.ScopedSecretHarness(
+	secrets, scope, closeAttempt := testutil.ScopedSecretHarness(
 		t,
 		name,
 		nil,
 		generation.ApplyTicket{DesiredRevision: 1, RequiredDomains: []generation.Domain{generation.DomainHTTP}},
 	)
 	t.Cleanup(closeAttempt)
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if p.TaskOwner() == nil {

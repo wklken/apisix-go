@@ -133,14 +133,14 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	capabilityValue, scope, closeAttempt := testutil.ScopedSecretHarness(
+	secrets, scope, closeAttempt := testutil.ScopedSecretHarness(
 		t,
 		name,
 		nil,
 		generation.ApplyTicket{DesiredRevision: 1, RequiredDomains: []generation.Domain{generation.DomainHTTP}},
 	)
 	t.Cleanup(closeAttempt)
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if p.TaskOwner() == nil {
@@ -1152,7 +1152,7 @@ func TestMaterializeScopedSecretsFailureIsAtomicAndRedacted(t *testing.T) {
 type scopedPluginSecretFixture struct {
 	broker     *errorLoggerScopedBroker
 	scope      secret.Scope
-	capability secret.GenerationCapability
+	capability secret.GenerationSecrets
 }
 
 func newScopedPluginSecretFixture(t *testing.T, resolved map[string]string) scopedPluginSecretFixture {
@@ -1174,11 +1174,6 @@ func newScopedPluginSecretFixture(t *testing.T, resolved map[string]string) scop
 	if err != nil {
 		t.Fatalf("generation.NewSnapshot() error = %v", err)
 	}
-	ticket := generation.ApplyTicket{
-		DesiredRevision: 42,
-		DesiredDigest:   snapshot.Digest(),
-		RequiredDomains: []generation.Domain{generation.DomainHTTP},
-	}
 	candidate := generation.PublicationCandidate{
 		Artifact: generation.GenerationArtifact{
 			Domain:   generation.DomainHTTP,
@@ -1196,50 +1191,37 @@ func newScopedPluginSecretFixture(t *testing.T, resolved map[string]string) scop
 			Code:        "test-published",
 		}},
 	}
-	registration, err := materializer.RegisterCandidate(context.Background(), ticket, generation.PublicationSet{
+	materialization, err := materializer.PrepareGeneration(context.Background(), generation.PublicationSet{
 		DesiredRevision: 42,
 		Domains: map[generation.Domain]generation.PublicationCandidate{
 			generation.DomainHTTP: candidate,
 		},
 	})
 	if err != nil {
-		t.Fatalf("RegisterCandidate() error = %v", err)
+		t.Fatalf("PrepareGeneration() error = %v", err)
 	}
 	t.Cleanup(func() {
-		if err := registration.Close(context.Background()); err != nil {
+		if err := materialization.Close(context.Background()); err != nil {
 			t.Errorf("close scoped registration: %v", err)
 		}
 	})
-	capabilityValue, err := secret.NewGenerationCapability(registration, 42)
-	if err != nil {
-		t.Fatalf("NewGenerationCapability() error = %v", err)
-	}
+	secrets := materialization.Secrets()
 	return scopedPluginSecretFixture{
 		broker: broker,
 		scope: secret.Scope{
 			Generation: 42,
-			Attempt:    capabilityValue.AttemptID(),
 			Domain:     generation.DomainHTTP,
 			Plugin:     name,
 			Resource:   generation.ResourceKey{Kind: "routes", ID: "error-log-test"},
 			Source:     capability.SecretPluginConfig,
 		},
-		capability: capabilityValue,
+		capability: secrets,
 	}
 }
 
 type errorLoggerScopedBroker struct {
 	resolved map[string]string
 	scopes   []secret.Scope
-}
-
-func (*errorLoggerScopedBroker) AuthorizeCandidate(
-	context.Context,
-	secret.AttemptID,
-	generation.ApplyTicket,
-	generation.PublicationSet,
-) error {
-	return nil
 }
 
 func (broker *errorLoggerScopedBroker) ResolveScoped(
@@ -1253,10 +1235,6 @@ func (broker *errorLoggerScopedBroker) ResolveScoped(
 		return "", fmt.Errorf("missing test credential")
 	}
 	return resolved, nil
-}
-
-func (*errorLoggerScopedBroker) RevokeAttempt(context.Context, secret.AttemptID) error {
-	return nil
 }
 
 func TestSendToTCPReturnsWithinWriteDeadline(t *testing.T) {

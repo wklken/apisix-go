@@ -111,12 +111,6 @@ type httpLoggerScopedSecretBroker struct {
 	calls  []httpLoggerScopedSecretCall
 }
 
-func (*httpLoggerScopedSecretBroker) AuthorizeCandidate(
-	context.Context, secret.AttemptID, generation.ApplyTicket, generation.PublicationSet,
-) error {
-	return nil
-}
-
 func (broker *httpLoggerScopedSecretBroker) ResolveScoped(
 	ctx context.Context, scope secret.Scope, raw string,
 ) (string, error) {
@@ -136,10 +130,6 @@ func (broker *httpLoggerScopedSecretBroker) ResolveScoped(
 	return value, nil
 }
 
-func (*httpLoggerScopedSecretBroker) RevokeAttempt(context.Context, secret.AttemptID) error {
-	return nil
-}
-
 func (broker *httpLoggerScopedSecretBroker) scopedCalls() []httpLoggerScopedSecretCall {
 	broker.mu.Lock()
 	defer broker.mu.Unlock()
@@ -153,7 +143,7 @@ func newHTTPLoggerScopedSecretHarness(
 	config Config,
 	values map[string]string,
 	keyring ...string,
-) (secret.GenerationCapability, secret.Scope, *httpLoggerScopedSecretBroker, func()) {
+) (secret.GenerationSecrets, secret.Scope, *httpLoggerScopedSecretBroker, func()) {
 	t.Helper()
 	key := generation.ResourceKey{Kind: "routes", ID: resourceID}
 	document, err := json.Marshal(map[string]any{
@@ -179,11 +169,6 @@ func newHTTPLoggerScopedSecretHarness(
 			Key: key, Disposition: generation.DispositionPublished, Code: "http-logger-test",
 		}},
 	}
-	ticket := generation.ApplyTicket{
-		DesiredRevision: revision,
-		DesiredDigest:   snapshot.Digest(),
-		RequiredDomains: []generation.Domain{generation.DomainHTTP},
-	}
 	publication := generation.PublicationSet{
 		DesiredRevision: revision,
 		Domains: map[generation.Domain]generation.PublicationCandidate{
@@ -202,28 +187,22 @@ func newHTTPLoggerScopedSecretHarness(
 		values: values,
 		fail:   make(map[string]error),
 	}
-	registration, err := testutil.NewSecretMaterializerWithKeyring(broker, catalog, keyring).RegisterCandidate(
-		context.Background(), ticket, publication,
-	)
+	materialization, err := testutil.NewSecretMaterializerWithKeyring(broker, catalog, keyring).
+		PrepareGeneration(context.Background(), publication)
 	if err != nil {
 		t.Fatal(err)
 	}
-	capabilityValue, err := secret.NewGenerationCapability(registration, revision)
-	if err != nil {
-		_ = registration.Close(context.Background())
-		t.Fatal(err)
-	}
+	secrets := materialization.Secrets()
 	scope := secret.Scope{
 		Generation: revision,
-		Attempt:    registration.AttemptID(),
 		Domain:     generation.DomainHTTP,
 		Plugin:     name,
 		Resource:   key,
 		Source:     capability.SecretPluginConfig,
 	}
-	return capabilityValue, scope, broker, func() {
-		if err := registration.Close(context.Background()); err != nil {
-			t.Errorf("close HTTP logger scoped attempt: %v", err)
+	return secrets, scope, broker, func() {
+		if err := materialization.Close(context.Background()); err != nil {
+			t.Errorf("close HTTP logger scoped generation: %v", err)
 		}
 	}
 }
@@ -250,13 +229,13 @@ func TestMaterializeScopedSecretsOwnsHTTPAuthorization(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			config := Config{URI: "http://127.0.0.1/logs", AuthHeader: authHeader}
-			capabilityValue, scope, broker, closeAttempt := newHTTPLoggerScopedSecretHarness(
+			secrets, scope, broker, closeAttempt := newHTTPLoggerScopedSecretHarness(
 				t, uint64(index+1), "http-optional", config, nil,
 			)
 			defer closeAttempt()
 			p := newRawHTTPLoggerPlugin(t, config)
 			if err := base.MaterializeScopedPluginSecrets(
-				context.Background(), scope, capabilityValue, p,
+				context.Background(), scope, secrets, p,
 			); err != nil {
 				t.Fatal(err)
 			}
@@ -293,7 +272,7 @@ func TestMaterializeScopedSecretsOwnsHTTPAuthorization(t *testing.T) {
 			t.Cleanup(server.Close)
 			raw := tt.raw
 			config := Config{URI: server.URL, AuthHeader: &raw, BatchMaxSize: 1}
-			capabilityValue, scope, broker, closeAttempt := newHTTPLoggerScopedSecretHarness(
+			secrets, scope, broker, closeAttempt := newHTTPLoggerScopedSecretHarness(
 				t, uint64(10+index), "http-private", config,
 				map[string]string{tt.raw: tt.resolved},
 				"qeddd145sfvddff3",
@@ -301,7 +280,7 @@ func TestMaterializeScopedSecretsOwnsHTTPAuthorization(t *testing.T) {
 			defer closeAttempt()
 			p := newRawHTTPLoggerPlugin(t, config)
 			if err := base.MaterializeScopedPluginSecrets(
-				context.Background(), scope, capabilityValue, p,
+				context.Background(), scope, secrets, p,
 			); err != nil {
 				t.Fatal(err)
 			}
@@ -365,13 +344,13 @@ func TestMaterializeScopedSecretsOwnsHTTPAuthorization(t *testing.T) {
 
 	const failedRaw = "$secret://vault/http-logger/failure"
 	failedConfig := Config{URI: "http://127.0.0.1/logs", AuthHeader: new(failedRaw)}
-	capabilityValue, scope, broker, closeAttempt := newHTTPLoggerScopedSecretHarness(
+	secrets, scope, broker, closeAttempt := newHTTPLoggerScopedSecretHarness(
 		t, 30, "http-retry", failedConfig, map[string]string{failedRaw: "Bearer recovered"},
 	)
 	defer closeAttempt()
 	broker.fail[failedRaw] = errors.New("resolver leaked " + failedRaw)
 	p := newRawHTTPLoggerPlugin(t, failedConfig)
-	err = base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p)
+	err = base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p)
 	if err == nil || !strings.Contains(err.Error(), "credential unavailable") ||
 		strings.Contains(err.Error(), failedRaw) {
 		t.Fatalf("first materialization error = %v, want redacted unavailable", err)
@@ -384,7 +363,7 @@ func TestMaterializeScopedSecretsOwnsHTTPAuthorization(t *testing.T) {
 	delete(broker.fail, failedRaw)
 	broker.mu.Unlock()
 	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, capabilityValue, p,
+		context.Background(), scope, secrets, p,
 	); err != nil {
 		t.Fatalf("same-instance retry error = %v", err)
 	}
@@ -473,12 +452,12 @@ func TestHTTPLoggerInstancesShareNeutralClientWithoutAuthorizationBleed(t *testi
 
 	newScoped := func(revision uint64, resourceID, raw, resolved string) (*Plugin, func()) {
 		config := Config{URI: server.URL, AuthHeader: new(raw), BatchMaxSize: 1}
-		capabilityValue, scope, _, closeAttempt := newHTTPLoggerScopedSecretHarness(
+		secrets, scope, _, closeAttempt := newHTTPLoggerScopedSecretHarness(
 			t, revision, resourceID, config, map[string]string{raw: resolved},
 		)
 		p := newRawHTTPLoggerPlugin(t, config)
 		if err := base.MaterializeScopedPluginSecrets(
-			context.Background(), scope, capabilityValue, p,
+			context.Background(), scope, secrets, p,
 		); err != nil {
 			t.Fatal(err)
 		}
@@ -553,12 +532,12 @@ func TestSendBatchScrubsRetainedAuthorizationAndBodyState(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatal(err)
 	}
-	capabilityValue, scope, _, cleanup := newHTTPLoggerScopedSecretHarness(
+	secrets, scope, _, cleanup := newHTTPLoggerScopedSecretHarness(
 		t, 1, "http-scrub", p.config, map[string]string{authorization: authorization},
 	)
 	t.Cleanup(cleanup)
 	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, capabilityValue, p,
+		context.Background(), scope, secrets, p,
 	); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
@@ -616,13 +595,13 @@ func TestStopDrainsActiveSendAndDropsPrivateAuthorization(t *testing.T) {
 
 	raw := "$secret://http/active"
 	config := Config{URI: server.URL, AuthHeader: &raw, BatchMaxSize: 1}
-	capabilityValue, scope, _, closeAttempt := newHTTPLoggerScopedSecretHarness(
+	secrets, scope, _, closeAttempt := newHTTPLoggerScopedSecretHarness(
 		t, 61, "http-active", config, map[string]string{raw: "Bearer active"},
 	)
 	defer closeAttempt()
 	p := newRawHTTPLoggerPlugin(t, config)
 	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, capabilityValue, p,
+		context.Background(), scope, secrets, p,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -888,9 +867,9 @@ func newTestPluginWithMetadata(t *testing.T, cfg Config, metadata runtime.Metada
 	if cfg.AuthHeader != nil {
 		values[*cfg.AuthHeader] = *cfg.AuthHeader
 	}
-	capabilityValue, scope, _, cleanup := newHTTPLoggerScopedSecretHarness(t, 1, "test-route", cfg, values)
+	secrets, scope, _, cleanup := newHTTPLoggerScopedSecretHarness(t, 1, "test-route", cfg, values)
 	t.Cleanup(cleanup)
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if p.TaskOwner() == nil {
@@ -950,14 +929,14 @@ func TestPostInitRejectsInvalidMetadataBeforeSideEffects(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	capabilityValue, scope, cleanup := testutil.ScopedSecretHarness(
+	secrets, scope, cleanup := testutil.ScopedSecretHarness(
 		t,
 		name,
 		nil,
 		generation.ApplyTicket{DesiredRevision: 1, RequiredDomains: []generation.Domain{generation.DomainHTTP}},
 	)
 	defer cleanup()
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	t.Cleanup(p.Stop)
@@ -1757,14 +1736,14 @@ func TestPostInitRejectsUnsupportedBodyExpressionOperator(t *testing.T) {
 		IncludeRespBodyExpr: []any{[]any{"bar", "<>", "foo"}},
 	})
 	p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
-	capabilityValue, scope, cleanup := testutil.ScopedSecretHarness(
+	secrets, scope, cleanup := testutil.ScopedSecretHarness(
 		t,
 		name,
 		nil,
 		generation.ApplyTicket{DesiredRevision: 1, RequiredDomains: []generation.Domain{generation.DomainHTTP}},
 	)
 	defer cleanup()
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	t.Cleanup(p.Stop)

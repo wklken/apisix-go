@@ -22,15 +22,6 @@ import (
 
 type scopedMultiAuthBroker struct{}
 
-func (scopedMultiAuthBroker) AuthorizeCandidate(
-	context.Context,
-	secret.AttemptID,
-	generation.ApplyTicket,
-	generation.PublicationSet,
-) error {
-	return nil
-}
-
 func (scopedMultiAuthBroker) ResolveScoped(
 	context.Context,
 	secret.Scope,
@@ -39,12 +30,10 @@ func (scopedMultiAuthBroker) ResolveScoped(
 	return "", errors.New("multi-auth route configs must not resolve compiler-discard or consumer credentials")
 }
 
-func (scopedMultiAuthBroker) RevokeAttempt(context.Context, secret.AttemptID) error { return nil }
-
 type scopedOuterHarness struct {
-	outer        plugin.Plugin
-	registration secret.AttemptRegistration
-	consumers    *runtime.ConsumerBindings
+	outer           plugin.Plugin
+	materialization secret.GenerationMaterialization
+	consumers       *runtime.ConsumerBindings
 }
 
 func (h scopedOuterHarness) close(t *testing.T) {
@@ -55,7 +44,7 @@ func (h scopedOuterHarness) close(t *testing.T) {
 	if h.consumers != nil {
 		h.consumers.Close()
 	}
-	if err := h.registration.Close(context.Background()); err != nil {
+	if err := h.materialization.Close(context.Background()); err != nil {
 		t.Fatalf("close registration: %v", err)
 	}
 }
@@ -86,9 +75,6 @@ func newScopedOuterHarness(
 			Key: key, Disposition: generation.DispositionPublished, Code: "multi-auth-scoped-test",
 		}},
 	}
-	ticket := generation.ApplyTicket{
-		DesiredRevision: revision, RequiredDomains: []generation.Domain{generation.DomainHTTP},
-	}
 	set := generation.PublicationSet{
 		DesiredRevision: revision,
 		Domains: map[generation.Domain]generation.PublicationCandidate{
@@ -103,15 +89,12 @@ func newScopedOuterHarness(
 	if err != nil {
 		t.Fatal(err)
 	}
-	registration, err := testutil.NewSecretMaterializer(scopedMultiAuthBroker{}, catalog).
-		RegisterCandidate(context.Background(), ticket, set)
+	materialization, err := testutil.NewSecretMaterializer(scopedMultiAuthBroker{}, catalog).
+		PrepareGeneration(context.Background(), set)
 	if err != nil {
 		t.Fatal(err)
 	}
-	capabilityValue, err := secret.NewGenerationCapability(registration, revision)
-	if err != nil {
-		t.Fatal(err)
-	}
+	secrets := materialization.Secrets()
 	metadataDocument, err := apisixjson.Marshal(map[string]any{"generation": revision})
 	if err != nil {
 		t.Fatal(err)
@@ -121,11 +104,11 @@ func newScopedOuterHarness(
 		t.Fatal(err)
 	}
 	deps := base.Dependencies{
-		Secrets: capabilityValue, Metadata: metadata, Consumers: consumers,
+		Secrets: secrets, Metadata: metadata, Consumers: consumers,
 	}
 	preparer, err := plugin.NewCompositeChildPreparer(
 		deps,
-		registration.AttemptID(),
+		secrets.Generation(),
 		plugin.ScopeRoute,
 		plugin.ResourceProvenance{Kind: plugin.ResourceRoute, ID: resourceID},
 	)
@@ -153,19 +136,18 @@ func newScopedOuterHarness(
 	}
 	scope := secret.Scope{
 		Generation: revision,
-		Attempt:    registration.AttemptID(),
 		Domain:     generation.DomainHTTP,
 		Plugin:     "multi-auth",
 		Resource:   key,
 		Source:     capability.SecretPluginConfig,
 	}
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, outer); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, outer); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := outer.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
-	return scopedOuterHarness{outer: outer, registration: registration, consumers: consumers}
+	return scopedOuterHarness{outer: outer, materialization: materialization, consumers: consumers}
 }
 
 func TestMaterializeScopedSecretsPreparesEveryAuthChildBeforePostInit(t *testing.T) {

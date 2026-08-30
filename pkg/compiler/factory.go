@@ -12,34 +12,34 @@ import (
 	"github.com/wklken/apisix-go/pkg/secret"
 )
 
-var errAttemptPreparationFailed = errors.New("generation attempt preparation failed")
+var errGenerationSecretPreparationFailed = errors.New("generation secret preparation failed")
 
-type attemptFactory struct {
+type generationFactory struct {
 	compiler     *Compiler
 	materializer secret.Materializer
 }
 
-func newAttemptFactory(
+func newGenerationFactory(
 	compiler *Compiler,
 	materializer secret.Materializer,
-) (*attemptFactory, error) {
+) (*generationFactory, error) {
 	if compiler == nil || compiler.manifest == nil || compiler.schemas == nil ||
 		isNilInterface(materializer) {
-		return nil, fmt.Errorf("%w: attempt factory dependencies are required", ErrInvalidInput)
+		return nil, fmt.Errorf("%w: generation factory dependencies are required", ErrInvalidInput)
 	}
 	if materializer.DeclarationDigest() != compiler.schemas.catalog.Digest() {
 		return nil, fmt.Errorf("%w: secret declaration catalog mismatch", ErrInvalidInput)
 	}
-	return &attemptFactory{compiler: compiler, materializer: materializer}, nil
+	return &generationFactory{compiler: compiler, materializer: materializer}, nil
 }
 
-func (factory *attemptFactory) prepareCandidateAttempt(
+func (factory *generationFactory) prepareGenerationSecrets(
 	ctx context.Context,
 	ticket generation.ApplyTicket,
 	desired generation.Snapshot,
 	previous map[generation.Domain]generation.PublishedGeneration,
-) (*registeredAttempt, error) {
-	if err := validateAttemptFactoryContext(factory, ctx); err != nil {
+) (*preparedSecretGeneration, error) {
+	if err := validateGenerationFactoryContext(factory, ctx); err != nil {
 		return nil, err
 	}
 	ownedTicket := cloneApplyTicketForPreparation(ticket)
@@ -51,82 +51,47 @@ func (factory *attemptFactory) prepareCandidateAttempt(
 	if err != nil {
 		return nil, err
 	}
-	if err := validateScopedSecretSupport(occurrences, factory.compiler.schemas.catalog); err != nil {
-		return nil, errors.Join(errAttemptPreparationFailed, err)
-	}
-	compositeChildren, err := compositeChildOccurrenceSpecsFromCandidates(
-		ctx, set.Domains, occurrences,
-	)
-	if err != nil {
-		return nil, errors.Join(errAttemptPreparationFailed, err)
-	}
-	if err := validateCompositeScopedSecretSupport(
-		compositeChildren, factory.compiler.schemas.catalog,
-	); err != nil {
-		return nil, errors.Join(errAttemptPreparationFailed, err)
-	}
 	if !publicationCanPrepare(set) {
-		return nil, errAttemptPreparationFailed
+		return nil, errGenerationSecretPreparationFailed
 	}
 	// This is deliberately adjacent to the first side effect. Everything above
-	// is pure and a forged post-refinement set cannot reach registration.
+	// is pure and a forged post-refinement set cannot reach materialization.
 	if err := generation.ValidatePublicationSet(ownedTicket, set); err != nil {
 		return nil, err
 	}
 	ownedSet := clonePublicationSetForPreparation(set)
-	registration, err := factory.materializer.RegisterCandidate(
-		ctx, cloneApplyTicketForPreparation(ownedTicket), clonePublicationSetForPreparation(ownedSet),
+	materialization, err := factory.materializer.PrepareGeneration(
+		ctx, clonePublicationSetForPreparation(ownedSet),
 	)
 	if err != nil {
-		if isNilInterface(registration) {
+		if isNilInterface(materialization) {
 			return nil, err
 		}
-		return nil, errors.Join(err, registration.Close(context.WithoutCancel(ctx)))
+		return nil, errors.Join(err, materialization.Close(context.WithoutCancel(ctx)))
 	}
-	if isNilInterface(registration) {
-		return nil, errAttemptPreparationFailed
+	if isNilInterface(materialization) {
+		return nil, errGenerationSecretPreparationFailed
 	}
-	if registration.AttemptID() != secret.CandidateAttemptID(ownedTicket, ownedSet) {
-		cleanupErr := registration.Close(context.WithoutCancel(ctx))
-		return nil, errors.Join(
-			fmt.Errorf("%w: candidate registration identity mismatch", ErrInvalidInput), cleanupErr,
-		)
+	secrets := materialization.Secrets()
+	if !secrets.Valid() || secrets.Generation() != ticket.DesiredRevision {
+		return nil, errors.Join(ErrInvalidInput, materialization.Close(context.WithoutCancel(ctx)))
 	}
-	return factory.prepareRegisteredAttempt(
-		ctx, ticket.DesiredRevision, ownedSet, occurrences, registration,
-	)
-}
-
-func (factory *attemptFactory) prepareRegisteredAttempt(
-	ctx context.Context,
-	generationNumber uint64,
-	publication generation.PublicationSet,
-	occurrences []factoryOccurrenceSpec,
-	registration secret.AttemptRegistration,
-) (*registeredAttempt, error) {
-	capabilityValue, err := secret.NewGenerationCapability(registration, generationNumber)
-	if err != nil {
-		return nil, errors.Join(errAttemptPreparationFailed, registration.Close(context.WithoutCancel(ctx)))
-	}
-	attempt, err := newPreparationAttempt(
-		generationNumber,
-		clonePreparationCandidates(publication.Domains),
-		capabilityValue,
-		occurrences,
+	preparation, err := newPreparationGeneration(
+		ticket.DesiredRevision, clonePreparationCandidates(ownedSet.Domains), secrets, occurrences,
 	)
 	if err != nil {
-		return nil, errors.Join(errAttemptPreparationFailed, registration.Close(context.WithoutCancel(ctx)))
+		return nil, errors.Join(errGenerationSecretPreparationFailed, materialization.Close(context.WithoutCancel(ctx)))
 	}
-	return &registeredAttempt{
-		attempt:      attempt,
-		publication:  clonePublicationSetForPreparation(publication),
-		registration: registration,
+	return &preparedSecretGeneration{
+		preparation:     preparation,
+		publication:     clonePublicationSetForPreparation(ownedSet),
+		materialization: materialization,
 	}, nil
 }
 
-func validateAttemptFactoryContext(factory *attemptFactory, ctx context.Context) error {
+func validateGenerationFactoryContext(factory *generationFactory, ctx context.Context) error {
 	if factory == nil || factory.compiler == nil || isNilInterface(factory.materializer) || ctx == nil {
-		return fmt.Errorf("%w: attempt factory is not initialized", ErrInvalidInput)
+		return fmt.Errorf("%w: generation factory is not initialized", ErrInvalidInput)
 	}
 	return ctx.Err()
 }
@@ -146,15 +111,15 @@ func publicationCanPrepare(set generation.PublicationSet) bool {
 	return decisions == 0
 }
 
-type registeredAttempt struct {
-	attempt      PreparationAttempt
-	publication  generation.PublicationSet
-	registration secret.AttemptRegistration
-	closeOnce    sync.Once
-	closeErr     error
+type preparedSecretGeneration struct {
+	preparation     PreparationGeneration
+	publication     generation.PublicationSet
+	materialization secret.GenerationMaterialization
+	closeOnce       sync.Once
+	closeErr        error
 }
 
-func (prepared *registeredAttempt) Close(ctx context.Context) error {
+func (prepared *preparedSecretGeneration) Close(ctx context.Context) error {
 	if prepared == nil {
 		return nil
 	}
@@ -163,8 +128,8 @@ func (prepared *registeredAttempt) Close(ctx context.Context) error {
 	}
 	cleanupCtx := context.WithoutCancel(ctx)
 	prepared.closeOnce.Do(func() {
-		if !isNilInterface(prepared.registration) {
-			prepared.closeErr = prepared.registration.Close(cleanupCtx)
+		if !isNilInterface(prepared.materialization) {
+			prepared.closeErr = prepared.materialization.Close(cleanupCtx)
 		}
 	})
 	return prepared.closeErr

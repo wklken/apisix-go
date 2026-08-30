@@ -156,15 +156,6 @@ type rocketMQScopedSecretBroker struct {
 	calls  []rocketMQScopedSecretCall
 }
 
-func (*rocketMQScopedSecretBroker) AuthorizeCandidate(
-	context.Context,
-	secret.AttemptID,
-	generation.ApplyTicket,
-	generation.PublicationSet,
-) error {
-	return nil
-}
-
 func (broker *rocketMQScopedSecretBroker) ResolveScoped(
 	ctx context.Context,
 	scope secret.Scope,
@@ -184,10 +175,6 @@ func (broker *rocketMQScopedSecretBroker) ResolveScoped(
 		return "", errors.New("missing private RocketMQ test secret")
 	}
 	return value, nil
-}
-
-func (*rocketMQScopedSecretBroker) RevokeAttempt(context.Context, secret.AttemptID) error {
-	return nil
 }
 
 func (broker *rocketMQScopedSecretBroker) setFailure(raw string, err error) {
@@ -213,7 +200,7 @@ func newRocketMQScopedSecretHarness(
 	rawConfig map[string]any,
 	values map[string]string,
 	keyring ...string,
-) (secret.GenerationCapability, secret.Scope, *rocketMQScopedSecretBroker) {
+) (secret.GenerationSecrets, secret.Scope, *rocketMQScopedSecretBroker) {
 	t.Helper()
 	key := generation.ResourceKey{Kind: "routes", ID: resourceID}
 	document, err := json.Marshal(map[string]any{
@@ -239,10 +226,6 @@ func newRocketMQScopedSecretHarness(
 			Key: key, Disposition: generation.DispositionPublished, Code: "rocketmq-scoped-test",
 		}},
 	}
-	ticket := generation.ApplyTicket{
-		DesiredRevision: revision, DesiredDigest: snapshot.Digest(),
-		RequiredDomains: []generation.Domain{generation.DomainHTTP},
-	}
 	publication := generation.PublicationSet{
 		DesiredRevision: revision,
 		Domains: map[generation.Domain]generation.PublicationCandidate{
@@ -261,26 +244,22 @@ func newRocketMQScopedSecretHarness(
 		values: values,
 		fail:   make(map[string]error),
 	}
-	registration, err := testutil.NewSecretMaterializerWithKeyring(broker, catalog, keyring).RegisterCandidate(
-		context.Background(), ticket, publication,
-	)
+	materialization, err := testutil.NewSecretMaterializerWithKeyring(broker, catalog, keyring).
+		PrepareGeneration(context.Background(), publication)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		if err := registration.Close(context.Background()); err != nil {
-			t.Errorf("close RocketMQ scoped attempt: %v", err)
+		if err := materialization.Close(context.Background()); err != nil {
+			t.Errorf("close RocketMQ scoped generation: %v", err)
 		}
 	})
-	capabilityValue, err := secret.NewGenerationCapability(registration, revision)
-	if err != nil {
-		t.Fatal(err)
-	}
+	secrets := materialization.Secrets()
 	scope := secret.Scope{
-		Generation: revision, Attempt: registration.AttemptID(), Domain: generation.DomainHTTP,
+		Generation: revision, Domain: generation.DomainHTTP,
 		Plugin: name, Resource: key, Source: capability.SecretPluginConfig,
 	}
-	return capabilityValue, scope, broker
+	return secrets, scope, broker
 }
 
 func rocketMQRawConfig(secretKey string, useTLS bool) map[string]any {
@@ -324,14 +303,14 @@ func TestMaterializeScopedSecretsOwnsRocketMQSecretKey(t *testing.T) {
 	for index, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			rawConfig := rocketMQRawConfig(test.raw, false)
-			capabilityValue, scope, broker := newRocketMQScopedSecretHarness(
+			secrets, scope, broker := newRocketMQScopedSecretHarness(
 				t, uint64(110+index), "rocketmq-raw", rawConfig,
 				map[string]string{test.raw: test.resolved},
 				"0123456789abcdef",
 			)
 			p := newRawRocketMQPlugin(t, rawConfig)
 			if err := base.MaterializeScopedPluginSecrets(
-				context.Background(), scope, capabilityValue, p,
+				context.Background(), scope, secrets, p,
 			); err != nil {
 				t.Fatal(err)
 			}
@@ -442,38 +421,38 @@ func TestMaterializeScopedSecretsAllowsTLSAndOwnsSecret(t *testing.T) {
 	if !tlsPlugin.secretsPrepared || !tlsPlugin.secretKeySet || !tlsPlugin.config.UseTLS ||
 		tlsPlugin.config.SecretKey != rocketMQSecretDescriptor("tls-private") ||
 		tlsPlugin.sender != nil || tlsPlugin.BatchProcessor != nil {
-		t.Fatal("TLS materialization did not install only the attempt-owned secret state")
+		t.Fatal("TLS materialization did not install only the generation-owned secret state")
 	}
 }
 
-type attemptOwnedRocketMQSender struct {
+type generationOwnedRocketMQSender struct {
 	captureSender
 	mu            sync.Mutex
 	secretKey     string
 	shutdownCalls int
 }
 
-func (sender *attemptOwnedRocketMQSender) Shutdown() error {
+func (sender *generationOwnedRocketMQSender) Shutdown() error {
 	sender.mu.Lock()
 	defer sender.mu.Unlock()
 	sender.shutdownCalls++
 	return nil
 }
 
-func (sender *attemptOwnedRocketMQSender) shutdownCount() int {
+func (sender *generationOwnedRocketMQSender) shutdownCount() int {
 	sender.mu.Lock()
 	defer sender.mu.Unlock()
 	return sender.shutdownCalls
 }
 
-func TestRocketMQSendersAndPrivateConfigClonesAreAttemptOwned(t *testing.T) {
+func TestRocketMQSendersAndPrivateConfigClonesAreGenerationOwned(t *testing.T) {
 	const raw = "$secret://vault/rocketmq/generation-secret"
 	newGeneration := func(
 		revision uint64,
 		private string,
-	) (*Plugin, *attemptOwnedRocketMQSender, *Config, *apisixruntime.TaskRegistry) {
+	) (*Plugin, *generationOwnedRocketMQSender, *Config, *apisixruntime.TaskRegistry) {
 		rawConfig := rocketMQRawConfig(raw, false)
-		capabilityValue, scope, _ := newRocketMQScopedSecretHarness(
+		secrets, scope, _ := newRocketMQScopedSecretHarness(
 			t, revision, fmt.Sprintf("rocketmq-generation-%d", revision), rawConfig,
 			map[string]string{raw: private},
 		)
@@ -483,17 +462,17 @@ func TestRocketMQSendersAndPrivateConfigClonesAreAttemptOwned(t *testing.T) {
 		)
 		p.SetDependencies(base.Dependencies{Tasks: owner})
 		var retained *Config
-		var sender *attemptOwnedRocketMQSender
+		var sender *generationOwnedRocketMQSender
 		p.senderFactory = func(config *Config) (rocketmqSender, error) {
 			if config.SecretKey != private {
 				t.Fatalf("private sender config secret_key = %q, want %q", config.SecretKey, private)
 			}
 			retained = config
-			sender = &attemptOwnedRocketMQSender{secretKey: config.SecretKey}
+			sender = &generationOwnedRocketMQSender{secretKey: config.SecretKey}
 			return sender, nil
 		}
 		if err := base.MaterializeScopedPluginSecrets(
-			context.Background(), scope, capabilityValue, p,
+			context.Background(), scope, secrets, p,
 		); err != nil {
 			t.Fatal(err)
 		}
@@ -506,10 +485,10 @@ func TestRocketMQSendersAndPrivateConfigClonesAreAttemptOwned(t *testing.T) {
 	first, firstSender, firstClone, firstTasks := newGeneration(130, "generation-first")
 	second, secondSender, secondClone, secondTasks := newGeneration(131, "generation-second")
 	if firstSender == secondSender {
-		t.Fatal("two attempts shared a credential-bearing RocketMQ sender")
+		t.Fatal("two generations shared a credential-bearing RocketMQ sender")
 	}
 	if firstSender.secretKey != "generation-first" || secondSender.secretKey != "generation-second" {
-		t.Fatalf("attempt sender secrets = %q/%q", firstSender.secretKey, secondSender.secretKey)
+		t.Fatalf("generation sender secrets = %q/%q", firstSender.secretKey, secondSender.secretKey)
 	}
 	if first.config.SecretKey != rocketMQSecretDescriptor("generation-first") ||
 		second.config.SecretKey != rocketMQSecretDescriptor("generation-second") {
@@ -1169,7 +1148,7 @@ func TestRocketMQConcurrentPostInitAndStopCannotPublishSender(t *testing.T) {
 	}
 	factoryEntered := make(chan struct{})
 	releaseFactory := make(chan struct{})
-	sender := &attemptOwnedRocketMQSender{}
+	sender := &generationOwnedRocketMQSender{}
 	p.senderFactory = func(config *Config) (rocketmqSender, error) {
 		if config.SecretKey != "post-init-private" {
 			t.Fatalf("private sender config secret_key = %q", config.SecretKey)
@@ -1404,8 +1383,8 @@ func newTestPluginWithMetadata(
 		t.Fatalf("json.Unmarshal() error = %v", err)
 	}
 	values := map[string]string{cfg.SecretKey: cfg.SecretKey}
-	capabilityValue, scope, _ := newRocketMQScopedSecretHarness(t, 1, "test-route", rawConfig, values)
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	secrets, scope, _ := newRocketMQScopedSecretHarness(t, 1, "test-route", rawConfig, values)
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
@@ -1437,10 +1416,10 @@ func materializeRocketMQForTest(
 	if p.config.SecretKey != "" {
 		values[p.config.SecretKey] = resolvedSecretKey
 	}
-	capabilityValue, scope, _ := newRocketMQScopedSecretHarness(
+	secrets, scope, _ := newRocketMQScopedSecretHarness(
 		t, revision, resourceID, rawConfig, values, keyring...,
 	)
-	return base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p)
+	return base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p)
 }
 
 func mustMetadataView(t *testing.T, metadata map[string]any) apisixruntime.MetadataView {

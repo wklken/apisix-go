@@ -6,12 +6,11 @@ import (
 	"fmt"
 
 	"github.com/wklken/apisix-go/pkg/json"
-	"github.com/wklken/apisix-go/pkg/secret"
 )
 
 type InstanceKey struct {
 	Factory      string
-	Attempt      secret.AttemptID
+	Generation   uint64
 	Scope        Scope
 	Owner        ResourceProvenance
 	ConfigDigest [32]byte
@@ -33,24 +32,24 @@ func NewInstanceKey(
 	owner ResourceProvenance,
 	identity InstanceIdentityInput,
 ) (InstanceKey, error) {
-	return newInstanceKey(secret.AttemptID{}, descriptor, scope, owner, identity)
+	return newInstanceKey(0, descriptor, scope, owner, identity)
 }
 
-func NewAttemptInstanceKey(
-	attempt secret.AttemptID,
+func NewGenerationInstanceKey(
+	generation uint64,
 	descriptor Descriptor,
 	scope Scope,
 	owner ResourceProvenance,
 	identity InstanceIdentityInput,
 ) (InstanceKey, error) {
-	if attempt == (secret.AttemptID{}) {
-		return InstanceKey{}, fmt.Errorf("plugin instance key: attempt is required")
+	if generation == 0 {
+		return InstanceKey{}, fmt.Errorf("plugin instance key: generation is required")
 	}
-	return newInstanceKey(attempt, descriptor, scope, owner, identity)
+	return newInstanceKey(generation, descriptor, scope, owner, identity)
 }
 
 func newInstanceKey(
-	attempt secret.AttemptID,
+	generation uint64,
 	descriptor Descriptor,
 	scope Scope,
 	owner ResourceProvenance,
@@ -69,7 +68,7 @@ func newInstanceKey(
 	}
 	return InstanceKey{
 		Factory:      descriptor.Factory,
-		Attempt:      attempt,
+		Generation:   generation,
 		Scope:        scope,
 		Owner:        owner,
 		ConfigDigest: sha256.Sum256(encoded),
@@ -77,11 +76,11 @@ func newInstanceKey(
 }
 
 func (k InstanceKey) String() string {
-	if k.Attempt != (secret.AttemptID{}) {
+	if k.Generation != 0 {
 		return fmt.Sprintf(
-			"%s/%s/%d/%s/%s/%s",
+			"%s/%d/%d/%s/%s/%s",
 			k.Factory,
-			hex.EncodeToString(k.Attempt[:]),
+			k.Generation,
 			k.Scope,
 			k.Owner.Kind,
 			k.Owner.ID,

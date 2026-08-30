@@ -27,15 +27,6 @@ import (
 
 type testLiteralSecretBroker struct{}
 
-func (testLiteralSecretBroker) AuthorizeCandidate(
-	context.Context,
-	secret.AttemptID,
-	generation.ApplyTicket,
-	generation.PublicationSet,
-) error {
-	return nil
-}
-
 func (testLiteralSecretBroker) ResolveScoped(
 	ctx context.Context,
 	_ secret.Scope,
@@ -45,10 +36,6 @@ func (testLiteralSecretBroker) ResolveScoped(
 		return "", err
 	}
 	return raw, nil
-}
-
-func (testLiteralSecretBroker) RevokeAttempt(context.Context, secret.AttemptID) error {
-	return nil
 }
 
 func testPluginInitializationError(
@@ -78,7 +65,7 @@ func testPluginInitializationError(
 	if setter, ok := instance.(interface{ SetConfiguredZones([]appconfig.Zone) }); ok {
 		setter.SetConfiguredZones(slices.Clone(effective.Config.Apisix.ProxyCache.Zones))
 	}
-	capabilityValue, scope, cleanup := testutil.ScopedSecretHarness(
+	secrets, scope, cleanup := testutil.ScopedSecretHarness(
 		t,
 		name,
 		nil,
@@ -86,7 +73,7 @@ func testPluginInitializationError(
 	)
 	defer cleanup()
 	if err := plugin.MaterializeScopedPluginSecrets(
-		context.Background(), scope, capabilityValue, instance,
+		context.Background(), scope, secrets, instance,
 	); err != nil {
 		return err
 	}
@@ -229,10 +216,6 @@ func testScopedSecretPluginBinding(
 	if err != nil {
 		t.Fatalf("build plugin %q snapshot: %v", name, err)
 	}
-	ticket := generation.ApplyTicket{
-		DesiredRevision: revision,
-		RequiredDomains: []generation.Domain{generation.DomainHTTP},
-	}
 	set := generation.PublicationSet{
 		DesiredRevision: revision,
 		Domains: map[generation.Domain]generation.PublicationCandidate{
@@ -257,23 +240,20 @@ func testScopedSecretPluginBinding(
 	if err != nil {
 		t.Fatalf("build secret catalog: %v", err)
 	}
-	registration, err := testutil.NewSecretMaterializer(testLiteralSecretBroker{}, catalog).
-		RegisterCandidate(context.Background(), ticket, set)
+	materialization, err := testutil.NewSecretMaterializer(testLiteralSecretBroker{}, catalog).
+		PrepareGeneration(context.Background(), set)
 	if err != nil {
-		t.Fatalf("register plugin %q attempt: %v", name, err)
+		t.Fatalf("prepare plugin %q generation: %v", name, err)
 	}
 	t.Cleanup(func() {
-		if err := registration.Close(context.Background()); err != nil {
-			t.Errorf("close plugin %q attempt: %v", name, err)
+		if err := materialization.Close(context.Background()); err != nil {
+			t.Errorf("close plugin %q generation: %v", name, err)
 		}
 	})
-	capabilityValue, err := secret.NewGenerationCapability(registration, revision)
-	if err != nil {
-		t.Fatalf("build plugin %q capability: %v", name, err)
-	}
+	secrets := materialization.Secrets()
 	instance := plugin.New(name, base.Dependencies{
 		Config:  testEffectiveConfig(),
-		Secrets: capabilityValue,
+		Secrets: secrets,
 	})
 	if instance == nil {
 		t.Fatalf("plugin %q is not supported", name)
@@ -291,13 +271,12 @@ func testScopedSecretPluginBinding(
 		context.Background(),
 		secret.Scope{
 			Generation: revision,
-			Attempt:    registration.AttemptID(),
 			Domain:     generation.DomainHTTP,
 			Plugin:     name,
 			Resource:   key,
 			Source:     capability.SecretPluginConfig,
 		},
-		capabilityValue,
+		secrets,
 		instance,
 	); err != nil {
 		t.Fatalf("plugin %q secret preparation error = %v", name, err)

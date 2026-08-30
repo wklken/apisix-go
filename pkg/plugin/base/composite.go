@@ -10,14 +10,14 @@ type CompositeChildSpec struct {
 	Position string
 }
 
-// PreparedCompositeChild owns one initialized, attempt-bound child.
+// PreparedCompositeChild owns one initialized, generation-bound child.
 type PreparedCompositeChild interface {
 	Factory() string
 	Instance() any
 	Close()
 }
 
-// CompositeChildPreparer constructs attempt-owned children without exposing
+// CompositeChildPreparer constructs generation-owned children without exposing
 // registry, descriptor, or binding internals to composite plugin packages.
 type CompositeChildPreparer interface {
 	Prepare(context.Context, ScopedSecretAccess, CompositeChildSpec) (PreparedCompositeChild, error)

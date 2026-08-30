@@ -35,12 +35,6 @@ type scopedSecretBroker struct {
 	hook   func(scopedSecretCall)
 }
 
-func (*scopedSecretBroker) AuthorizeCandidate(
-	context.Context, secret.AttemptID, generation.ApplyTicket, generation.PublicationSet,
-) error {
-	return nil
-}
-
 func (broker *scopedSecretBroker) ResolveScoped(
 	ctx context.Context, scope secret.Scope, raw string,
 ) (string, error) {
@@ -66,6 +60,12 @@ func (broker *scopedSecretBroker) ResolveScoped(
 	return raw, nil
 }
 
+func (broker *scopedSecretBroker) callsSnapshot() []scopedSecretCall {
+	broker.mu.Lock()
+	defer broker.mu.Unlock()
+	return append([]scopedSecretCall(nil), broker.calls...)
+}
+
 func (broker *scopedSecretBroker) setValue(raw, value string) {
 	broker.mu.Lock()
 	defer broker.mu.Unlock()
@@ -76,14 +76,6 @@ func (broker *scopedSecretBroker) setHook(hook func(scopedSecretCall)) {
 	broker.mu.Lock()
 	defer broker.mu.Unlock()
 	broker.hook = hook
-}
-
-func (*scopedSecretBroker) RevokeAttempt(context.Context, secret.AttemptID) error { return nil }
-
-func (broker *scopedSecretBroker) callsSnapshot() []scopedSecretCall {
-	broker.mu.Lock()
-	defer broker.mu.Unlock()
-	return append([]scopedSecretCall(nil), broker.calls...)
 }
 
 func (broker *scopedSecretBroker) setFailure(raw string, err error) {
@@ -104,7 +96,7 @@ func (broker *scopedSecretBroker) resetCalls() {
 
 func newScopedSecretHarness(
 	t *testing.T, factory string, values map[string]string, keyring ...string,
-) (secret.GenerationCapability, secret.Scope, *scopedSecretBroker, func()) {
+) (secret.GenerationSecrets, secret.Scope, *scopedSecretBroker, func()) {
 	t.Helper()
 	return newScopedSecretHarnessAt(t, factory, 7, "r1", values, keyring...)
 }
@@ -116,7 +108,7 @@ func newScopedSecretHarnessAt(
 	resourceID string,
 	values map[string]string,
 	keyring ...string,
-) (secret.GenerationCapability, secret.Scope, *scopedSecretBroker, func()) {
+) (secret.GenerationSecrets, secret.Scope, *scopedSecretBroker, func()) {
 	t.Helper()
 	key := generation.ResourceKey{Kind: "routes", ID: resourceID}
 	snapshot, err := generation.NewSnapshot(revision, []generation.Resource{{
@@ -136,9 +128,6 @@ func newScopedSecretHarnessAt(
 			Key: key, Disposition: generation.DispositionPublished, Code: "leaf-test",
 		}},
 	}
-	ticket := generation.ApplyTicket{
-		DesiredRevision: revision, RequiredDomains: []generation.Domain{generation.DomainHTTP},
-	}
 	set := generation.PublicationSet{
 		DesiredRevision: revision,
 		Domains: map[generation.Domain]generation.PublicationCandidate{
@@ -154,25 +143,21 @@ func newScopedSecretHarnessAt(
 		t.Fatal(err)
 	}
 	broker := &scopedSecretBroker{values: maps.Clone(values), fail: make(map[string]error)}
-	registration, err := testutil.NewSecretMaterializerWithKeyring(broker, catalog, keyring).
-		RegisterCandidate(context.Background(), ticket, set)
+	materialization, err := testutil.NewSecretMaterializerWithKeyring(broker, catalog, keyring).
+		PrepareGeneration(context.Background(), set)
 	if err != nil {
 		t.Fatal(err)
 	}
-	capabilityValue, err := secret.NewGenerationCapability(registration, revision)
-	if err != nil {
-		t.Fatal(err)
-	}
+	secrets := materialization.Secrets()
 	baseScope := secret.Scope{
 		Generation: revision,
-		Attempt:    registration.AttemptID(),
 		Domain:     generation.DomainHTTP,
 		Plugin:     factory,
 		Resource:   key,
 		Source:     capability.SecretPluginConfig,
 	}
-	return capabilityValue, baseScope, broker, func() {
-		if err := registration.Close(context.Background()); err != nil {
+	return secrets, baseScope, broker, func() {
+		if err := materialization.Close(context.Background()); err != nil {
 			t.Fatalf("close scoped secret registration: %v", err)
 		}
 	}
@@ -264,7 +249,7 @@ func TestScopedSecretsMaterializeRAGProviderKeys(t *testing.T) {
 	}))
 	t.Cleanup(search.Close)
 
-	capabilityValue, scope, broker, closeAttempt := newScopedSecretHarness(t, name, map[string]string{
+	secrets, scope, broker, closeAttempt := newScopedSecretHarness(t, name, map[string]string{
 		embeddingRaw: embeddingKey,
 		searchRaw:    searchKey,
 	})
@@ -274,7 +259,7 @@ func TestScopedSecretsMaterializeRAGProviderKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, capabilityValue, p,
+		context.Background(), scope, secrets, p,
 	); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
@@ -305,7 +290,7 @@ func TestScopedSecretsMaterializeRAGProviderKeys(t *testing.T) {
 
 func TestScopedSecretsResolveManagedRAGSearchKey(t *testing.T) {
 	const managed = "$secret://vault/ai-rag/search-key"
-	capabilityValue, scope, broker, closeAttempt := newScopedSecretHarness(t, name, map[string]string{
+	secrets, scope, broker, closeAttempt := newScopedSecretHarness(t, name, map[string]string{
 		"literal-embedding": "literal-embedding",
 		managed:             "managed-search",
 	})
@@ -317,7 +302,7 @@ func TestScopedSecretsResolveManagedRAGSearchKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, capabilityValue, p,
+		context.Background(), scope, secrets, p,
 	); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
@@ -339,7 +324,7 @@ func TestScopedSecretsRAGSecondKeyFailureIsAtomic(t *testing.T) {
 		embeddingRaw = "$ENV://RAG_RETRY_EMBEDDING_KEY"
 		searchRaw    = "$secret://vault/ai-rag/retry-search-key"
 	)
-	capabilityValue, scope, broker, closeAttempt := newScopedSecretHarness(t, name, map[string]string{
+	secrets, scope, broker, closeAttempt := newScopedSecretHarness(t, name, map[string]string{
 		embeddingRaw: "retry-embedding",
 		searchRaw:    "retry-search",
 	})
@@ -350,7 +335,7 @@ func TestScopedSecretsRAGSecondKeyFailureIsAtomic(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p)
+	err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p)
 	if err == nil {
 		t.Fatal("MaterializeScopedPluginSecrets() error = nil, want second-key failure")
 	}
@@ -370,7 +355,7 @@ func TestScopedSecretsRAGSecondKeyFailureIsAtomic(t *testing.T) {
 	broker.setFailure(searchRaw, nil)
 	broker.resetCalls()
 	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, capabilityValue, p,
+		context.Background(), scope, secrets, p,
 	); err != nil {
 		t.Fatalf("same-instance retry error = %v", err)
 	}
@@ -426,7 +411,7 @@ func TestScopedSecretsRAGProviderModesUseResolvedPlaintextDescriptors(t *testing
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			const searchRaw = "literal-search"
-			capabilityValue, scope, broker, closeAttempt := newScopedSecretHarness(t, name, map[string]string{
+			secrets, scope, broker, closeAttempt := newScopedSecretHarness(t, name, map[string]string{
 				test.raw:  test.plaintext,
 				searchRaw: searchRaw,
 			}, "0123456789abcdef")
@@ -438,7 +423,7 @@ func TestScopedSecretsRAGProviderModesUseResolvedPlaintextDescriptors(t *testing
 				t.Fatal(err)
 			}
 			if err := base.MaterializeScopedPluginSecrets(
-				context.Background(), scope, capabilityValue, p,
+				context.Background(), scope, secrets, p,
 			); err != nil {
 				t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 			}
@@ -477,7 +462,7 @@ func TestScopedSecretsRAGRejectResolvedBlankKeysAndRetry(t *testing.T) {
 				searchRaw:    "valid-search",
 			}
 			values[test.invalidRaw] = test.blank
-			capabilityValue, scope, broker, closeAttempt := newScopedSecretHarness(t, name, values)
+			secrets, scope, broker, closeAttempt := newScopedSecretHarness(t, name, values)
 			defer closeAttempt()
 			p := &Plugin{config: ragConfig(
 				"http://127.0.0.1", embeddingRaw, "http://127.0.0.1", searchRaw,
@@ -486,7 +471,7 @@ func TestScopedSecretsRAGRejectResolvedBlankKeysAndRetry(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p)
+			err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p)
 			if err == nil || err.Error() != "materialize plugin secrets: credential unavailable" {
 				t.Fatalf("blank resolved key error = %v, want redacted credential unavailable", err)
 			}
@@ -501,7 +486,7 @@ func TestScopedSecretsRAGRejectResolvedBlankKeysAndRetry(t *testing.T) {
 			broker.setValue(test.invalidRaw, "retry-valid")
 			broker.resetCalls()
 			if err := base.MaterializeScopedPluginSecrets(
-				context.Background(), scope, capabilityValue, p,
+				context.Background(), scope, secrets, p,
 			); err != nil {
 				t.Fatalf("same-instance retry error = %v", err)
 			}
@@ -527,7 +512,7 @@ func TestScopedSecretsRAGConcurrentMaterializationIsSingleFlight(t *testing.T) {
 		searchRaw    = "$ENV://RAG_SINGLEFLIGHT_SEARCH"
 		workers      = 32
 	)
-	capabilityValue, scope, broker, closeAttempt := newScopedSecretHarness(t, name, map[string]string{
+	secrets, scope, broker, closeAttempt := newScopedSecretHarness(t, name, map[string]string{
 		embeddingRaw: "singleflight-embedding",
 		searchRaw:    "singleflight-search",
 	})
@@ -556,7 +541,7 @@ func TestScopedSecretsRAGConcurrentMaterializationIsSingleFlight(t *testing.T) {
 			ready.Done()
 			<-start
 			errs <- base.MaterializeScopedPluginSecrets(
-				context.Background(), scope, capabilityValue, p,
+				context.Background(), scope, secrets, p,
 			)
 		}()
 	}
@@ -581,7 +566,7 @@ func TestScopedSecretsRAGStopDuringMaterializeCannotReviveState(t *testing.T) {
 		embeddingRaw = "$ENV://RAG_STOP_RACE_EMBEDDING"
 		searchRaw    = "$ENV://RAG_STOP_RACE_SEARCH"
 	)
-	capabilityValue, scope, broker, closeAttempt := newScopedSecretHarness(t, name, map[string]string{
+	secrets, scope, broker, closeAttempt := newScopedSecretHarness(t, name, map[string]string{
 		embeddingRaw: "stop-race-embedding",
 		searchRaw:    "stop-race-search",
 	})
@@ -604,7 +589,7 @@ func TestScopedSecretsRAGStopDuringMaterializeCannotReviveState(t *testing.T) {
 	materializeDone := make(chan error, 1)
 	go func() {
 		materializeDone <- base.MaterializeScopedPluginSecrets(
-			context.Background(), scope, capabilityValue, p,
+			context.Background(), scope, secrets, p,
 		)
 	}()
 	select {
@@ -624,7 +609,7 @@ func TestScopedSecretsRAGStopDuringMaterializeCannotReviveState(t *testing.T) {
 	}
 	callCount := len(broker.callsSnapshot())
 	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, capabilityValue, p,
+		context.Background(), scope, secrets, p,
 	); err == nil {
 		t.Fatal("scoped materialization after Stop() error = nil")
 	}
@@ -645,7 +630,7 @@ func prepareScopedRAGPlugin(
 	t.Helper()
 	embeddingRaw := "$ENV://RAG_" + resourceID + "_EMBEDDING"
 	searchRaw := "$secret://vault/ai-rag/" + resourceID + "-search"
-	capabilityValue, scope, _, closeAttempt := newScopedSecretHarnessAt(
+	secrets, scope, _, closeAttempt := newScopedSecretHarnessAt(
 		t, name, revision, resourceID, map[string]string{
 			embeddingRaw: embeddingKey,
 			searchRaw:    searchKey,
@@ -656,7 +641,7 @@ func prepareScopedRAGPlugin(
 		t.Fatal(err)
 	}
 	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, capabilityValue, p,
+		context.Background(), scope, secrets, p,
 	); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}

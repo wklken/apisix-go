@@ -178,7 +178,7 @@ func validateDetachedMQTTBinding(
 		)
 	}
 	key := binding.InstanceKey
-	if key.Factory != factory || key.Attempt == (plugin.InstanceKey{}.Attempt) ||
+	if key.Factory != factory || key.Generation == 0 ||
 		key.Scope != binding.Scope || key.Owner != binding.Provenance {
 		return nil, fmt.Errorf(
 			"stream route %q protocol binding instance owner does not match its materialized provenance",

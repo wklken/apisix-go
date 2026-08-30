@@ -12,17 +12,14 @@ import (
 	"github.com/wklken/apisix-go/pkg/secret"
 )
 
-type attemptAuthority struct{ marker byte }
-
-// FactoryOccurrence binds a published factory instance to one attempt-owned
-// domain and resource. Values can be copied but cannot be forged for another
-// PreparationAttempt because the authority token is package-private.
+// FactoryOccurrence binds a published factory instance to one generation,
+// domain, and resource. Its fields stay compiler-private.
 type FactoryOccurrence struct {
-	authority *attemptAuthority
-	domain    generation.Domain
-	resource  generation.ResourceKey
-	source    capability.SecretDeclarationSource
-	factory   string
+	owner    secret.GenerationSecrets
+	domain   generation.Domain
+	resource generation.ResourceKey
+	source   capability.SecretDeclarationSource
+	factory  string
 }
 
 func (occurrence FactoryOccurrence) Domain() generation.Domain { return occurrence.domain }
@@ -35,64 +32,66 @@ func (occurrence FactoryOccurrence) Source() capability.SecretDeclarationSource 
 
 func (occurrence FactoryOccurrence) Factory() string { return occurrence.factory }
 
-// PreparationAttempt exposes only attempt-bound access. Registration and
-// consumer lifecycle ownership remain with the factory transaction.
-type PreparationAttempt struct {
-	authority   *attemptAuthority
-	generation  uint64
-	capability  secret.GenerationCapability
-	candidates  map[generation.Domain]generation.PublicationCandidate
-	occurrences []FactoryOccurrence
+// PreparationGeneration owns the immutable publication candidates, exact
+// plugin occurrences, and generation-local secret view used during compile.
+type PreparationGeneration struct {
+	generation    uint64
+	secrets       secret.GenerationSecrets
+	candidates    map[generation.Domain]generation.PublicationCandidate
+	occurrences   []FactoryOccurrence
+	occurrenceSet map[factoryOccurrenceSpec]struct{}
 }
 
-func newPreparationAttempt(
+func newPreparationGeneration(
 	generationNumber uint64,
 	candidates map[generation.Domain]generation.PublicationCandidate,
-	capabilityValue secret.GenerationCapability,
+	secrets secret.GenerationSecrets,
 	specs []factoryOccurrenceSpec,
-) (PreparationAttempt, error) {
-	if generationNumber == 0 || !capabilityValue.Valid() || capabilityValue.Generation() != generationNumber {
-		return PreparationAttempt{}, fmt.Errorf("%w: preparation capability is invalid", ErrInvalidInput)
+) (PreparationGeneration, error) {
+	if generationNumber == 0 || !secrets.Valid() || secrets.Generation() != generationNumber {
+		return PreparationGeneration{}, fmt.Errorf("%w: preparation capability is invalid", ErrInvalidInput)
 	}
-	authority := &attemptAuthority{marker: 1}
-	attempt := PreparationAttempt{
-		authority:  authority,
+	preparation := PreparationGeneration{
 		generation: generationNumber,
-		capability: capabilityValue,
+		secrets:    secrets,
 		candidates: clonePreparationCandidates(candidates),
 	}
-	attempt.occurrences = make([]FactoryOccurrence, 0, len(specs))
+	preparation.occurrences = make([]FactoryOccurrence, 0, len(specs))
+	preparation.occurrenceSet = make(map[factoryOccurrenceSpec]struct{}, len(specs))
 	for _, spec := range specs {
 		if !validOccurrenceSpec(spec) {
-			return PreparationAttempt{}, fmt.Errorf("%w: factory occurrence is invalid", ErrInvalidInput)
+			return PreparationGeneration{}, fmt.Errorf("%w: factory occurrence is invalid", ErrInvalidInput)
 		}
-		attempt.occurrences = append(attempt.occurrences, FactoryOccurrence{
-			authority: authority,
-			domain:    spec.domain, resource: spec.resource, source: spec.source, factory: spec.factory,
+		preparation.occurrences = append(preparation.occurrences, FactoryOccurrence{
+			owner: secrets, domain: spec.domain, resource: spec.resource,
+			source: spec.source, factory: spec.factory,
 		})
+		preparation.occurrenceSet[spec] = struct{}{}
 	}
-	return attempt, nil
+	return preparation, nil
 }
 
-func (attempt PreparationAttempt) Generation() uint64 { return attempt.generation }
+func (preparation PreparationGeneration) Generation() uint64 { return preparation.generation }
 
-func (attempt PreparationAttempt) AttemptID() secret.AttemptID { return attempt.capability.AttemptID() }
+func (preparation PreparationGeneration) Secrets() secret.GenerationSecrets {
+	return preparation.secrets
+}
 
-func (attempt PreparationAttempt) Candidate(
+func (preparation PreparationGeneration) Candidate(
 	domain generation.Domain,
 ) (generation.PublicationCandidate, bool) {
-	candidate, exists := attempt.candidates[domain]
+	candidate, exists := preparation.candidates[domain]
 	if !exists {
 		return generation.PublicationCandidate{}, false
 	}
 	return clonePublicationCandidateForPreparation(candidate), true
 }
 
-func (attempt PreparationAttempt) Occurrences(
+func (preparation PreparationGeneration) Occurrences(
 	source capability.SecretDeclarationSource,
 ) []FactoryOccurrence {
 	result := make([]FactoryOccurrence, 0)
-	for _, occurrence := range attempt.occurrences {
+	for _, occurrence := range preparation.occurrences {
 		if occurrence.source == source {
 			result = append(result, occurrence)
 		}
@@ -100,84 +99,65 @@ func (attempt PreparationAttempt) Occurrences(
 	return result
 }
 
-func (attempt PreparationAttempt) MaterializeSecret(
+func (preparation PreparationGeneration) MaterializeSecret(
 	ctx context.Context,
 	occurrence FactoryOccurrence,
 	field string,
 	raw string,
 ) (secret.Value, error) {
-	if ctx == nil || field == "" || !attempt.owns(occurrence) {
-		return secret.Value{}, fmt.Errorf("%w: secret occurrence authority is invalid", ErrInvalidInput)
+	if ctx == nil || field == "" || !preparation.owns(occurrence) {
+		return secret.Value{}, fmt.Errorf("%w: secret occurrence is invalid", ErrInvalidInput)
 	}
 	scope := secret.Scope{
-		Generation: attempt.generation,
-		Attempt:    attempt.AttemptID(),
+		Generation: preparation.generation,
 		Domain:     occurrence.domain,
 		Plugin:     occurrence.factory,
 		Resource:   occurrence.resource,
 		Source:     occurrence.source,
 		Field:      field,
 	}
-	return attempt.capability.Materialize(ctx, scope, raw)
+	return preparation.secrets.Materialize(ctx, scope, raw)
 }
 
-func (attempt PreparationAttempt) materializeCompositeSecret(
-	ctx context.Context,
-	occurrence compositeChildOccurrence,
-	field string,
-	raw string,
-) (secret.Value, error) {
-	if ctx == nil || field == "" || occurrence.factory == "" ||
-		!attempt.owns(occurrence.outer) ||
-		occurrence.outer.source != capability.SecretPluginConfig {
-		return secret.Value{}, fmt.Errorf("%w: composite secret occurrence authority is invalid", ErrInvalidInput)
-	}
-	return attempt.capability.Materialize(ctx, secret.Scope{
-		Generation: attempt.generation,
-		Attempt:    attempt.AttemptID(),
-		Domain:     occurrence.outer.domain,
-		Plugin:     occurrence.factory,
-		Resource:   occurrence.outer.resource,
-		Source:     occurrence.outer.source,
-		Field:      field,
-	}, raw)
-}
-
-func (attempt PreparationAttempt) PrepareScopedPluginSecrets(
+func (preparation PreparationGeneration) PrepareScopedPluginSecrets(
 	ctx context.Context,
 	occurrence FactoryOccurrence,
 	bound plugin.FactoryInstance,
 ) error {
 	instance := bound.Plugin()
-	if ctx == nil || isNilInterface(instance) || !attempt.owns(occurrence) ||
+	if ctx == nil || isNilInterface(instance) || !preparation.owns(occurrence) ||
 		(occurrence.source != capability.SecretPluginConfig &&
 			occurrence.source != capability.SecretConsumerConfig) {
-		return fmt.Errorf("%w: scoped plugin occurrence authority is invalid", ErrInvalidInput)
+		return fmt.Errorf("%w: scoped plugin occurrence is invalid", ErrInvalidInput)
 	}
 	if bound.Factory() != occurrence.factory {
 		return fmt.Errorf("%w: scoped plugin factory identity is invalid", ErrInvalidInput)
 	}
 	return plugin.MaterializeScopedPluginSecrets(ctx, secret.Scope{
-		Generation: attempt.generation,
-		Attempt:    attempt.AttemptID(),
+		Generation: preparation.generation,
 		Domain:     occurrence.domain,
 		Plugin:     occurrence.factory,
 		Resource:   occurrence.resource,
 		Source:     occurrence.source,
-	}, attempt.capability, instance)
+	}, preparation.secrets, instance)
 }
 
-func (attempt PreparationAttempt) owns(occurrence FactoryOccurrence) bool {
-	return attempt.authority != nil && occurrence.authority == attempt.authority &&
-		validOccurrence(occurrence) && attempt.capability.Valid() &&
-		attempt.capability.Generation() == attempt.generation
+func (preparation PreparationGeneration) owns(occurrence FactoryOccurrence) bool {
+	_, declared := preparation.occurrenceSet[occurrence.spec()]
+	return validOccurrence(occurrence) && preparation.secrets.Valid() &&
+		preparation.secrets.Generation() == preparation.generation &&
+		occurrence.owner.SameGeneration(preparation.secrets) && declared
 }
 
 func validOccurrence(occurrence FactoryOccurrence) bool {
-	return occurrence.authority != nil && validOccurrenceSpec(factoryOccurrenceSpec{
+	return validOccurrenceSpec(occurrence.spec())
+}
+
+func (occurrence FactoryOccurrence) spec() factoryOccurrenceSpec {
+	return factoryOccurrenceSpec{
 		domain: occurrence.domain, resource: occurrence.resource,
 		source: occurrence.source, factory: occurrence.factory,
-	})
+	}
 }
 
 func validOccurrenceSpec(spec factoryOccurrenceSpec) bool {
@@ -209,9 +189,9 @@ func clonePreparationCandidates(
 }
 
 type MetadataPreparer interface {
-	PrepareMetadata(context.Context, PreparationAttempt) (runtime.MetadataView, error)
+	PrepareMetadata(context.Context, PreparationGeneration) (runtime.MetadataView, error)
 }
 
 type ConsumerPreparer interface {
-	PrepareConsumers(context.Context, PreparationAttempt) (*runtime.ConsumerBindings, error)
+	PrepareConsumers(context.Context, PreparationGeneration) (*runtime.ConsumerBindings, error)
 }

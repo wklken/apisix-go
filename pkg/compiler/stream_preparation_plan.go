@@ -42,7 +42,7 @@ func (prepared *PreparedGeneration) planStreamPreparation(
 	if prepared == nil || ctx == nil || prepared.effective == nil || prepared.manifest == nil {
 		return nil, fmt.Errorf("%w: stream preparation owner is incomplete", ErrInvalidInput)
 	}
-	owned, exists := prepared.attempt.Candidate(generation.DomainStream)
+	owned, exists := prepared.preparation.Candidate(generation.DomainStream)
 	if !exists || !reflect.DeepEqual(owned, candidate) {
 		return nil, fmt.Errorf("%w: stream candidate is not owned by preparation attempt", ErrInvalidInput)
 	}

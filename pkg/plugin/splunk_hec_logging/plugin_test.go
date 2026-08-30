@@ -88,12 +88,6 @@ type splunkScopedSecretBroker struct {
 	calls  []splunkScopedSecretCall
 }
 
-func (*splunkScopedSecretBroker) AuthorizeCandidate(
-	context.Context, secret.AttemptID, generation.ApplyTicket, generation.PublicationSet,
-) error {
-	return nil
-}
-
 func (broker *splunkScopedSecretBroker) ResolveScoped(
 	ctx context.Context, scope secret.Scope, raw string,
 ) (string, error) {
@@ -113,10 +107,6 @@ func (broker *splunkScopedSecretBroker) ResolveScoped(
 	return value, nil
 }
 
-func (*splunkScopedSecretBroker) RevokeAttempt(context.Context, secret.AttemptID) error {
-	return nil
-}
-
 func (broker *splunkScopedSecretBroker) callsSnapshot() []splunkScopedSecretCall {
 	broker.mu.Lock()
 	defer broker.mu.Unlock()
@@ -130,7 +120,7 @@ func newSplunkScopedSecretHarness(
 	config Config,
 	values map[string]string,
 	keyring ...string,
-) (secret.GenerationCapability, secret.Scope, *splunkScopedSecretBroker, func()) {
+) (secret.GenerationSecrets, secret.Scope, *splunkScopedSecretBroker, func()) {
 	t.Helper()
 	key := generation.ResourceKey{Kind: "routes", ID: resourceID}
 	document, err := json.Marshal(map[string]any{
@@ -156,11 +146,6 @@ func newSplunkScopedSecretHarness(
 			Key: key, Disposition: generation.DispositionPublished, Code: "splunk-test",
 		}},
 	}
-	ticket := generation.ApplyTicket{
-		DesiredRevision: revision,
-		DesiredDigest:   snapshot.Digest(),
-		RequiredDomains: []generation.Domain{generation.DomainHTTP},
-	}
 	publication := generation.PublicationSet{
 		DesiredRevision: revision,
 		Domains: map[generation.Domain]generation.PublicationCandidate{
@@ -176,28 +161,22 @@ func newSplunkScopedSecretHarness(
 		t.Fatal(err)
 	}
 	broker := &splunkScopedSecretBroker{values: values, fail: make(map[string]error)}
-	registration, err := testutil.NewSecretMaterializerWithKeyring(broker, catalog, keyring).RegisterCandidate(
-		context.Background(), ticket, publication,
-	)
+	materialization, err := testutil.NewSecretMaterializerWithKeyring(broker, catalog, keyring).
+		PrepareGeneration(context.Background(), publication)
 	if err != nil {
 		t.Fatal(err)
 	}
-	capabilityValue, err := secret.NewGenerationCapability(registration, revision)
-	if err != nil {
-		_ = registration.Close(context.Background())
-		t.Fatal(err)
-	}
+	secrets := materialization.Secrets()
 	scope := secret.Scope{
 		Generation: revision,
-		Attempt:    registration.AttemptID(),
 		Domain:     generation.DomainHTTP,
 		Plugin:     name,
 		Resource:   key,
 		Source:     capability.SecretPluginConfig,
 	}
-	return capabilityValue, scope, broker, func() {
-		if err := registration.Close(context.Background()); err != nil {
-			t.Errorf("close Splunk scoped attempt: %v", err)
+	return secrets, scope, broker, func() {
+		if err := materialization.Close(context.Background()); err != nil {
+			t.Errorf("close Splunk scoped generation: %v", err)
 		}
 	}
 }
@@ -220,7 +199,7 @@ func TestMaterializeScopedSecretsOwnsSplunkToken(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			config := Config{Endpoint: Endpoint{URI: "http://127.0.0.1:8088", Token: tt.raw}}
-			capabilityValue, scope, broker, closeAttempt := newSplunkScopedSecretHarness(
+			secrets, scope, broker, closeAttempt := newSplunkScopedSecretHarness(
 				t, uint64(index+1), "splunk-"+tt.name, config,
 				map[string]string{tt.raw: tt.resolved},
 				"qeddd145sfvddff3",
@@ -231,7 +210,7 @@ func TestMaterializeScopedSecretsOwnsSplunkToken(t *testing.T) {
 				t.Fatal(err)
 			}
 			if err := base.MaterializeScopedPluginSecrets(
-				context.Background(), scope, capabilityValue, p,
+				context.Background(), scope, secrets, p,
 			); err != nil {
 				t.Fatal(err)
 			}
@@ -258,7 +237,7 @@ func TestMaterializeScopedSecretsOwnsSplunkToken(t *testing.T) {
 
 	const raw = "$secret://vault/splunk/retry"
 	config := Config{Endpoint: Endpoint{URI: "http://127.0.0.1:8088", Token: raw}}
-	capabilityValue, scope, broker, closeAttempt := newSplunkScopedSecretHarness(
+	secrets, scope, broker, closeAttempt := newSplunkScopedSecretHarness(
 		t, 10, "splunk-retry", config, map[string]string{raw: "recovered-private"},
 	)
 	defer closeAttempt()
@@ -267,7 +246,7 @@ func TestMaterializeScopedSecretsOwnsSplunkToken(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatal(err)
 	}
-	err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p)
+	err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p)
 	if !errors.Is(err, secret.ErrCredentialUnavailable) || strings.Contains(err.Error(), raw) {
 		t.Fatalf("first materialization error = %v, want redacted unavailable", err)
 	}
@@ -278,7 +257,7 @@ func TestMaterializeScopedSecretsOwnsSplunkToken(t *testing.T) {
 	delete(broker.fail, raw)
 	broker.mu.Unlock()
 	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, capabilityValue, p,
+		context.Background(), scope, secrets, p,
 	); err != nil {
 		t.Fatalf("same-instance retry error = %v", err)
 	}
@@ -291,7 +270,7 @@ func TestMaterializeScopedSecretsOwnsSplunkToken(t *testing.T) {
 func TestSplunkScopedTokenMaterializationIsSingleFlight(t *testing.T) {
 	const raw = "$ENV://SPLUNK_SINGLEFLIGHT_TOKEN"
 	config := Config{Endpoint: Endpoint{URI: "http://127.0.0.1:8088", Token: raw}}
-	capabilityValue, scope, broker, closeAttempt := newSplunkScopedSecretHarness(
+	secrets, scope, broker, closeAttempt := newSplunkScopedSecretHarness(
 		t, 20, "splunk-singleflight", config, map[string]string{raw: "singleflight-private"},
 	)
 	defer closeAttempt()
@@ -306,7 +285,7 @@ func TestSplunkScopedTokenMaterializationIsSingleFlight(t *testing.T) {
 		group.Go(func() {
 			<-start
 			errs <- base.MaterializeScopedPluginSecrets(
-				context.Background(), scope, capabilityValue, p,
+				context.Background(), scope, secrets, p,
 			)
 		})
 	}
@@ -343,7 +322,7 @@ func TestSplunkGenerationsShareNeutralClientWithoutAuthorizationLeak(t *testing.
 	}
 	newScoped := func(revision uint64, resourceID, raw, resolved string) (*Plugin, func()) {
 		pluginConfig := config(raw)
-		capabilityValue, scope, _, closeAttempt := newSplunkScopedSecretHarness(
+		secrets, scope, _, closeAttempt := newSplunkScopedSecretHarness(
 			t, revision, resourceID, pluginConfig, map[string]string{raw: resolved},
 		)
 		p := &Plugin{config: pluginConfig}
@@ -353,7 +332,7 @@ func TestSplunkGenerationsShareNeutralClientWithoutAuthorizationLeak(t *testing.
 			t.Fatal(err)
 		}
 		if err := base.MaterializeScopedPluginSecrets(
-			context.Background(), scope, capabilityValue, p,
+			context.Background(), scope, secrets, p,
 		); err != nil {
 			closeAttempt()
 			t.Fatal(err)
@@ -467,11 +446,11 @@ func TestSplunkRejectsPrePostInitLogEnqueue(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatal(err)
 	}
-	capabilityValue, scope, _, cleanup := newSplunkScopedSecretHarness(
+	secrets, scope, _, cleanup := newSplunkScopedSecretHarness(
 		t, 1, "pre-post-init", p.config, map[string]string{p.config.Endpoint.Token: p.config.Endpoint.Token},
 	)
 	t.Cleanup(cleanup)
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatal(err)
 	}
 	before := len(p.FireChan)
@@ -724,11 +703,11 @@ func newTestPluginWithMetadata(t *testing.T, cfg Config, metadata map[string]any
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	capabilityValue, scope, _, cleanup := newSplunkScopedSecretHarness(
+	secrets, scope, _, cleanup := newSplunkScopedSecretHarness(
 		t, 1, "test-route", cfg, map[string]string{cfg.Endpoint.Token: cfg.Endpoint.Token},
 	)
 	t.Cleanup(cleanup)
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
@@ -788,12 +767,12 @@ func TestPostInitResolvesRotatedEncryptedToken(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	capabilityValue, scope, _, cleanup := newSplunkScopedSecretHarness(
+	secrets, scope, _, cleanup := newSplunkScopedSecretHarness(
 		t, 1, "rotated-token", p.config, map[string]string{p.config.Endpoint.Token: "splunk-token"},
 		newKey, oldKey,
 	)
 	t.Cleanup(cleanup)
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
@@ -914,11 +893,11 @@ func TestMetadataDecodeFailsBeforeSplunkClientAndProcessorAcquisition(t *testing
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	capabilityValue, scope, _, cleanup := newSplunkScopedSecretHarness(
+	secrets, scope, _, cleanup := newSplunkScopedSecretHarness(
 		t, 1, "invalid-metadata", p.config, map[string]string{p.config.Endpoint.Token: p.config.Endpoint.Token},
 	)
 	t.Cleanup(cleanup)
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	err := p.PostInit()

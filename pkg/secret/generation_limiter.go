@@ -5,62 +5,62 @@ import (
 	"sync"
 )
 
-type attemptResourceSet struct {
+type generationResourceSet struct {
 	mu       sync.Mutex
-	limiters map[string]*attemptLimiterState
+	limiters map[string]*generationLimiterState
 	stopping chan struct{}
 	stopOnce sync.Once
 }
 
-func newAttemptResourceSet() *attemptResourceSet {
-	return &attemptResourceSet{
-		limiters: make(map[string]*attemptLimiterState),
+func newGenerationResourceSet() *generationResourceSet {
+	return &generationResourceSet{
+		limiters: make(map[string]*generationLimiterState),
 		stopping: make(chan struct{}),
 	}
 }
 
-func (resources *attemptResourceSet) limiter(name string, capacity int) (AttemptLimiter, error) {
+func (resources *generationResourceSet) limiter(name string, capacity int) (GenerationLimiter, error) {
 	if resources == nil || name == "" || capacity <= 0 {
-		return AttemptLimiter{}, ErrInvalidCapability
+		return GenerationLimiter{}, ErrInvalidCapability
 	}
 	resources.mu.Lock()
 	defer resources.mu.Unlock()
 	if limiter, ok := resources.limiters[name]; ok {
 		if cap(limiter.slots) != capacity {
-			return AttemptLimiter{}, ErrInvalidCapability
+			return GenerationLimiter{}, ErrInvalidCapability
 		}
-		return AttemptLimiter{state: limiter, attemptStopping: resources.stopping}, nil
+		return GenerationLimiter{state: limiter, generationStopping: resources.stopping}, nil
 	}
-	limiter := &attemptLimiterState{slots: make(chan struct{}, capacity)}
+	limiter := &generationLimiterState{slots: make(chan struct{}, capacity)}
 	resources.limiters[name] = limiter
-	return AttemptLimiter{state: limiter, attemptStopping: resources.stopping}, nil
+	return GenerationLimiter{state: limiter, generationStopping: resources.stopping}, nil
 }
 
-func (resources *attemptResourceSet) stop() {
+func (resources *generationResourceSet) stop() {
 	if resources == nil {
 		return
 	}
 	resources.stopOnce.Do(func() { close(resources.stopping) })
 }
 
-type attemptLimiterState struct {
+type generationLimiterState struct {
 	slots chan struct{}
 }
 
-// AttemptLimiter bounds one named operation across every binding that shares
-// the same generation attempt. It grants no attempt-close authority.
-type AttemptLimiter struct {
-	state           *attemptLimiterState
-	attemptStopping <-chan struct{}
+// GenerationLimiter bounds one named operation across every binding that shares
+// the same runtime generation. It grants no attempt-close authority.
+type GenerationLimiter struct {
+	state              *generationLimiterState
+	generationStopping <-chan struct{}
 }
 
-func (limiter AttemptLimiter) Valid() bool {
-	return limiter.state != nil && limiter.state.slots != nil && limiter.attemptStopping != nil
+func (limiter GenerationLimiter) Valid() bool {
+	return limiter.state != nil && limiter.state.slots != nil && limiter.generationStopping != nil
 }
 
-// Acquire reserves one attempt-wide slot. A canceled request never receives a
+// Acquire reserves one generation-wide slot. A canceled request never receives a
 // slot, including when cancellation and capacity become ready together.
-func (limiter AttemptLimiter) Acquire(
+func (limiter GenerationLimiter) Acquire(
 	ctx context.Context,
 	bindingStopping <-chan struct{},
 ) (func(), error) {
@@ -76,7 +76,7 @@ func (limiter AttemptLimiter) Acquire(
 	default:
 	}
 	select {
-	case <-limiter.attemptStopping:
+	case <-limiter.generationStopping:
 		return nil, ErrCredentialUnavailable
 	default:
 	}
@@ -87,7 +87,7 @@ func (limiter AttemptLimiter) Acquire(
 		return nil, ctx.Err()
 	case <-bindingStopping:
 		return nil, ErrCredentialUnavailable
-	case <-limiter.attemptStopping:
+	case <-limiter.generationStopping:
 		return nil, ErrCredentialUnavailable
 	}
 
@@ -103,7 +103,7 @@ func (limiter AttemptLimiter) Acquire(
 	default:
 	}
 	select {
-	case <-limiter.attemptStopping:
+	case <-limiter.generationStopping:
 		release()
 		return nil, ErrCredentialUnavailable
 	default:

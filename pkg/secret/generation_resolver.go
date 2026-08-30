@@ -4,10 +4,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"crypto/subtle"
 	"errors"
 	"io"
-	"maps"
 	"net/http"
 	"net/url"
 	"os"
@@ -31,27 +29,24 @@ const (
 	generationDefaultVaultTimeout      = 5 * time.Second
 )
 
-// GenerationSecretResolver owns all in-process secret attempts for immutable
-// candidate publications. It deliberately has no provider-state or
-// snapshot lookup dependency: every resource byte is supplied by the caller's
-// validated publication closure.
+// GenerationSecretResolver owns external-reference views for immutable runtime
+// generations. It has no provider-state or snapshot lookup dependency: every
+// resource byte is supplied by the compiler's validated publication closure.
 type GenerationSecretResolver struct {
 	mu         sync.Mutex
 	encryption data_encryption.Service
 	client     *http.Client
-	attempts   map[AttemptID]*generationSecretAttempt
-	draining   map[AttemptID]*generationSecretAttempt
+	views      map[*generationSecretView]struct{}
 	closed     bool
 	closeOnce  sync.Once
 	closeErr   error
 }
 
-type generationSecretAttempt struct {
+type generationSecretView struct {
 	resolver   *GenerationSecretResolver
-	id         AttemptID
 	generation uint64
 	resources  map[generation.Domain]map[generation.ResourceKey][]byte
-	cache      generationAttemptSecretCache
+	cache      generationSecretCache
 
 	gate      sync.RWMutex
 	closed    atomic.Bool
@@ -59,18 +54,18 @@ type generationSecretAttempt struct {
 	closeErr  error
 }
 
-type generationAttemptSecretCacheKey [32]byte
+type generationSecretCacheKey [32]byte
 
-type generationAttemptSecretCacheEntry struct {
+type generationSecretCacheEntry struct {
 	value     []byte
 	expiresAt time.Time
 	sequence  uint64
 	timer     *time.Timer
 }
 
-type generationAttemptSecretCache struct {
+type generationSecretCache struct {
 	mu       sync.Mutex
-	entries  map[generationAttemptSecretCacheKey]generationAttemptSecretCacheEntry
+	entries  map[generationSecretCacheKey]generationSecretCacheEntry
 	sequence uint64
 }
 
@@ -83,13 +78,13 @@ type generationVaultSecretConfig struct {
 }
 
 var (
-	_ AttemptResolverFactory = (*GenerationSecretResolver)(nil)
-	_ AttemptResolver        = (*generationSecretAttempt)(nil)
+	_ GenerationResolverFactory = (*GenerationSecretResolver)(nil)
+	_ GenerationResolver        = (*generationSecretView)(nil)
 )
 
 // NewGenerationSecretResolver constructs the immutable-generation resolver.
 // The resolver owns its HTTP client and closes its idle connections after all
-// attempts have released their retained bytes.
+// generation views have released their retained bytes.
 func NewGenerationSecretResolver(
 	encryption data_encryption.Service,
 ) (*GenerationSecretResolver, error) {
@@ -115,17 +110,15 @@ func newGenerationSecretResolver(
 	return &GenerationSecretResolver{
 		encryption: encryption,
 		client:     client,
-		attempts:   make(map[AttemptID]*generationSecretAttempt),
-		draining:   make(map[AttemptID]*generationSecretAttempt),
+		views:      make(map[*generationSecretView]struct{}),
 	}, nil
 }
 
-func (resolver *GenerationSecretResolver) OpenCandidate(
+func (resolver *GenerationSecretResolver) OpenGeneration(
 	ctx context.Context,
-	id AttemptID,
-	ticket generation.ApplyTicket,
+	generationNumber uint64,
 	set generation.PublicationSet,
-) (AttemptResolver, error) {
+) (GenerationResolver, error) {
 	if resolver == nil || !resolver.encryption.Configured() {
 		return nil, ErrInvalidCapability
 	}
@@ -133,15 +126,11 @@ func (resolver *GenerationSecretResolver) OpenCandidate(
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if err := generation.ValidatePublicationSet(ticket, set); err != nil {
+	if generationNumber == 0 || set.DesiredRevision != generationNumber ||
+		validateGenerationPublication(set) != nil {
 		return nil, ErrInvalidCapability
 	}
-	ownedTicket := cloneApplyTicket(ticket)
 	ownedSet := clonePublicationSet(set)
-	want := CandidateAttemptID(ownedTicket, ownedSet)
-	if !equalGenerationAttemptID(id, want) {
-		return nil, ErrInvalidCapability
-	}
 	resources := make(map[generation.Domain]map[generation.ResourceKey][]byte, len(ownedSet.Domains))
 	for domain, candidate := range ownedSet.Domains {
 		indexed, err := indexGenerationCandidateResources(candidate)
@@ -151,23 +140,22 @@ func (resolver *GenerationSecretResolver) OpenCandidate(
 		}
 		resources[domain] = indexed
 	}
-	attempt := &generationSecretAttempt{
+	view := &generationSecretView{
 		resolver:   resolver,
-		id:         id,
-		generation: ownedTicket.DesiredRevision,
+		generation: generationNumber,
 		resources:  resources,
-		cache:      newGenerationAttemptSecretCache(),
+		cache:      newGenerationSecretCache(),
 	}
-	if err := resolver.registerGenerationAttempt(ctx, attempt); err != nil {
-		attempt.clearOwnedBytes()
+	if err := resolver.registerGenerationView(ctx, view); err != nil {
+		view.clearOwnedBytes()
 		return nil, err
 	}
-	return attempt, nil
+	return view, nil
 }
 
-func (resolver *GenerationSecretResolver) registerGenerationAttempt(
+func (resolver *GenerationSecretResolver) registerGenerationView(
 	ctx context.Context,
-	attempt *generationSecretAttempt,
+	view *generationSecretView,
 ) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -177,18 +165,8 @@ func (resolver *GenerationSecretResolver) registerGenerationAttempt(
 	if resolver.closed {
 		return ErrCredentialUnavailable
 	}
-	if _, exists := resolver.attempts[attempt.id]; exists {
-		return ErrAttemptAlreadyRegistered
-	}
-	if _, exists := resolver.draining[attempt.id]; exists {
-		return ErrAttemptAlreadyRegistered
-	}
-	resolver.attempts[attempt.id] = attempt
+	resolver.views[view] = struct{}{}
 	return nil
-}
-
-func equalGenerationAttemptID(left, right AttemptID) bool {
-	return subtle.ConstantTimeCompare(left[:], right[:]) == 1 && right != (AttemptID{})
 }
 
 func indexGenerationCandidateResources(
@@ -231,12 +209,12 @@ func clearGenerationResourceIndex(
 	}
 }
 
-func (attempt *generationSecretAttempt) ResolveScoped(
+func (view *generationSecretView) ResolveReference(
 	ctx context.Context,
 	scope Scope,
-	raw string,
+	reference string,
 ) (string, error) {
-	if attempt == nil || attempt.resolver == nil {
+	if view == nil || view.resolver == nil {
 		return "", ErrInvalidCapability
 	}
 	ctx = normalizeContext(ctx)
@@ -246,51 +224,27 @@ func (attempt *generationSecretAttempt) ResolveScoped(
 	if err := validateScope(scope); err != nil {
 		return "", err
 	}
-	attempt.resolver.mu.Lock()
-	current := attempt.resolver.attempts[scope.Attempt]
-	attempt.resolver.mu.Unlock()
-	if current != attempt {
-		if attempt.closed.Load() {
+	view.resolver.mu.Lock()
+	_, active := view.resolver.views[view]
+	view.resolver.mu.Unlock()
+	if !active {
+		if view.closed.Load() {
 			return "", ErrCredentialUnavailable
 		}
 		return "", ErrCapabilityScopeMismatch
 	}
-	attempt.gate.RLock()
-	defer attempt.gate.RUnlock()
-	if attempt.closed.Load() || attempt.generation != scope.Generation {
+	view.gate.RLock()
+	defer view.gate.RUnlock()
+	if view.closed.Load() || view.generation != scope.Generation {
 		return "", ErrCapabilityScopeMismatch
 	}
-	domainResources := attempt.resources[scope.Domain]
+	domainResources := view.resources[scope.Domain]
 	if _, ok := domainResources[scope.Resource]; !ok {
 		return "", ErrCapabilityScopeMismatch
 	}
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	if _, err := attempt.resolver.encryption.ValidateDeclaration(scope.Plugin, scope.Source, scope.Field); err != nil {
-		return "", ErrInvalidScope
-	}
-	if isReference(raw) {
-		return attempt.resolveReference(ctx, scope.Domain, raw)
-	}
-	resolved, err := attempt.resolver.encryption.ResolveDeclared(scope.Plugin, scope.Source, scope.Field, raw)
-	if err != nil {
-		if contextErr := ctx.Err(); contextErr != nil {
-			return "", contextErr
-		}
-		return "", ErrCredentialUnavailable
-	}
-	if isReference(resolved) {
-		return attempt.resolveReference(ctx, scope.Domain, resolved)
-	}
-	return resolved, nil
-}
-
-func (attempt *generationSecretAttempt) resolveReference(
-	ctx context.Context,
-	domain generation.Domain,
-	reference string,
-) (string, error) {
 	if hasGenerationEnvironmentPrefix(reference) {
 		return resolveGenerationEnvironmentSecret(ctx, reference)
 	}
@@ -306,11 +260,11 @@ func (attempt *generationSecretAttempt) resolveReference(
 		return "", ErrCredentialUnavailable
 	}
 	resourceKey := generation.ResourceKey{Kind: "secrets", ID: "vault/" + parts[1]}
-	configBytes, ok := attempt.resources[domain][resourceKey]
+	configBytes, ok := view.resources[scope.Domain][resourceKey]
 	if !ok {
 		return "", ErrCapabilityScopeMismatch
 	}
-	return attempt.resolveVault(ctx, resourceKey.ID, parts[2], configBytes)
+	return view.resolveVault(ctx, resourceKey.ID, parts[2], configBytes)
 }
 
 func resolveGenerationEnvironmentSecret(ctx context.Context, reference string) (string, error) {
@@ -366,7 +320,7 @@ func hasGenerationEnvironmentPrefix(value string) bool {
 		strings.EqualFold(value[:len(generationEnvironmentSecretPrefix)], generationEnvironmentSecretPrefix)
 }
 
-func (attempt *generationSecretAttempt) resolveVault(
+func (view *generationSecretView) resolveVault(
 	ctx context.Context,
 	id string,
 	key string,
@@ -388,8 +342,8 @@ func (attempt *generationSecretAttempt) resolveVault(
 		}
 		token = resolved
 	}
-	cacheKey := newGenerationAttemptSecretCacheKey(configBytes, token, id, key)
-	if cached, ok := attempt.cache.get(cacheKey, time.Now()); ok {
+	cacheKey := newGenerationSecretCacheKey(configBytes, token, id, key)
+	if cached, ok := view.cache.get(cacheKey, time.Now()); ok {
 		if err := ctx.Err(); err != nil {
 			return "", err
 		}
@@ -421,7 +375,7 @@ func (attempt *generationSecretAttempt) resolveVault(
 	if config.Namespace != "" {
 		request.Header.Set("X-Vault-Namespace", config.Namespace)
 	}
-	response, err := attempt.resolver.client.Do(request)
+	response, err := view.resolver.client.Do(request)
 	if err != nil {
 		if contextErr := requestCtx.Err(); contextErr != nil {
 			return "", contextErr
@@ -465,17 +419,17 @@ func (attempt *generationSecretAttempt) resolveVault(
 	if err := requestCtx.Err(); err != nil {
 		return "", err
 	}
-	attempt.cache.set(cacheKey, value, generationVaultSecretCacheTTL, time.Now())
+	view.cache.set(cacheKey, value, generationVaultSecretCacheTTL, time.Now())
 	return value, nil
 }
 
-func newGenerationAttemptSecretCache() generationAttemptSecretCache {
-	return generationAttemptSecretCache{
-		entries: make(map[generationAttemptSecretCacheKey]generationAttemptSecretCacheEntry),
+func newGenerationSecretCache() generationSecretCache {
+	return generationSecretCache{
+		entries: make(map[generationSecretCacheKey]generationSecretCacheEntry),
 	}
 }
 
-func newGenerationAttemptSecretCacheKey(config []byte, token, id, key string) generationAttemptSecretCacheKey {
+func newGenerationSecretCacheKey(config []byte, token, id, key string) generationSecretCacheKey {
 	hasher := sha256.New()
 	for _, digest := range [][32]byte{
 		sha256.Sum256(config),
@@ -485,13 +439,13 @@ func newGenerationAttemptSecretCacheKey(config []byte, token, id, key string) ge
 	} {
 		_, _ = hasher.Write(digest[:])
 	}
-	var result generationAttemptSecretCacheKey
+	var result generationSecretCacheKey
 	copy(result[:], hasher.Sum(nil))
 	return result
 }
 
-func (cache *generationAttemptSecretCache) get(
-	key generationAttemptSecretCacheKey,
+func (cache *generationSecretCache) get(
+	key generationSecretCacheKey,
 	now time.Time,
 ) (string, bool) {
 	cache.mu.Lock()
@@ -511,8 +465,8 @@ func (cache *generationAttemptSecretCache) get(
 	return string(bytes.Clone(entry.value)), true
 }
 
-func (cache *generationAttemptSecretCache) set(
-	key generationAttemptSecretCacheKey,
+func (cache *generationSecretCache) set(
+	key generationSecretCacheKey,
 	value string,
 	ttl time.Duration,
 	now time.Time,
@@ -523,7 +477,7 @@ func (cache *generationAttemptSecretCache) set(
 		return
 	}
 	if cache.entries == nil {
-		cache.entries = make(map[generationAttemptSecretCacheKey]generationAttemptSecretCacheEntry)
+		cache.entries = make(map[generationSecretCacheKey]generationSecretCacheEntry)
 	}
 	for existingKey, entry := range cache.entries {
 		if !now.Before(entry.expiresAt) {
@@ -542,7 +496,7 @@ func (cache *generationAttemptSecretCache) set(
 	}
 	cache.sequence++
 	sequence := cache.sequence
-	entry := generationAttemptSecretCacheEntry{
+	entry := generationSecretCacheEntry{
 		value:     []byte(value),
 		expiresAt: now.Add(ttl),
 		sequence:  sequence,
@@ -550,7 +504,7 @@ func (cache *generationAttemptSecretCache) set(
 	entry.timer = time.AfterFunc(ttl, func() { cache.expire(key, sequence) })
 	cache.entries[key] = entry
 	for len(cache.entries) > generationVaultSecretCacheCapacity {
-		var oldestKey generationAttemptSecretCacheKey
+		var oldestKey generationSecretCacheKey
 		oldestSequence := ^uint64(0)
 		for candidateKey, candidateEntry := range cache.entries {
 			if candidateEntry.sequence < oldestSequence {
@@ -567,8 +521,8 @@ func (cache *generationAttemptSecretCache) set(
 	}
 }
 
-func (cache *generationAttemptSecretCache) expire(
-	key generationAttemptSecretCacheKey,
+func (cache *generationSecretCache) expire(
+	key generationSecretCacheKey,
 	sequence uint64,
 ) {
 	cache.mu.Lock()
@@ -581,7 +535,7 @@ func (cache *generationAttemptSecretCache) expire(
 	delete(cache.entries, key)
 }
 
-func (cache *generationAttemptSecretCache) clear() {
+func (cache *generationSecretCache) clear() {
 	cache.mu.Lock()
 	defer cache.mu.Unlock()
 	for key, entry := range cache.entries {
@@ -594,49 +548,38 @@ func (cache *generationAttemptSecretCache) clear() {
 	cache.entries = nil
 }
 
-func (attempt *generationSecretAttempt) Close(ctx context.Context) error {
-	if attempt == nil || attempt.resolver == nil {
+func (view *generationSecretView) Close(ctx context.Context) error {
+	if view == nil || view.resolver == nil {
 		return ErrInvalidCapability
 	}
-	attempt.closeOnce.Do(func() {
-		attempt.closeErr = attempt.resolver.closeGenerationAttempt(attempt, ctx)
+	view.closeOnce.Do(func() {
+		view.closeErr = view.resolver.closeGenerationView(view, ctx)
 	})
-	return attempt.closeErr
+	return view.closeErr
 }
 
-func (resolver *GenerationSecretResolver) closeGenerationAttempt(
-	attempt *generationSecretAttempt,
+func (resolver *GenerationSecretResolver) closeGenerationView(
+	view *generationSecretView,
 	ctx context.Context,
 ) error {
 	resolver.mu.Lock()
-	if current, ok := resolver.attempts[attempt.id]; ok && current == attempt {
-		delete(resolver.attempts, attempt.id)
-	}
-	if current, ok := resolver.draining[attempt.id]; !ok || current == attempt {
-		resolver.draining[attempt.id] = attempt
-	}
+	delete(resolver.views, view)
 	resolver.mu.Unlock()
 
-	attempt.closed.Store(true)
-	attempt.gate.Lock()
-	attempt.clearOwnedBytes()
-	attempt.gate.Unlock()
-
-	resolver.mu.Lock()
-	if current, ok := resolver.draining[attempt.id]; ok && current == attempt {
-		delete(resolver.draining, attempt.id)
-	}
-	resolver.mu.Unlock()
+	view.closed.Store(true)
+	view.gate.Lock()
+	view.clearOwnedBytes()
+	view.gate.Unlock()
 	return nil
 }
 
-func (attempt *generationSecretAttempt) clearOwnedBytes() {
-	for domain, resources := range attempt.resources {
+func (view *generationSecretView) clearOwnedBytes() {
+	for domain, resources := range view.resources {
 		clearGenerationResourceMap(resources)
-		delete(attempt.resources, domain)
+		delete(view.resources, domain)
 	}
-	attempt.resources = nil
-	attempt.cache.clear()
+	view.resources = nil
+	view.cache.clear()
 }
 
 func clearGenerationResourceMap(resources map[generation.ResourceKey][]byte) {
@@ -653,19 +596,17 @@ func (resolver *GenerationSecretResolver) Close(ctx context.Context) error {
 	resolver.closeOnce.Do(func() {
 		resolver.mu.Lock()
 		resolver.closed = true
-		attempts := make(map[AttemptID]*generationSecretAttempt, len(resolver.attempts)+len(resolver.draining))
-		for id, attempt := range resolver.attempts {
-			attempts[id] = attempt
-			resolver.draining[id] = attempt
-			delete(resolver.attempts, id)
+		views := make([]*generationSecretView, 0, len(resolver.views))
+		for view := range resolver.views {
+			views = append(views, view)
+			delete(resolver.views, view)
 		}
-		maps.Copy(attempts, resolver.draining)
 		resolver.mu.Unlock()
 
 		cleanupCtx := context.WithoutCancel(normalizeContext(ctx))
 		var cleanupErrors []error
-		for _, attempt := range attempts {
-			if err := attempt.Close(cleanupCtx); err != nil {
+		for _, view := range views {
+			if err := view.Close(cleanupCtx); err != nil {
 				cleanupErrors = append(cleanupErrors, err)
 			}
 		}

@@ -2,6 +2,7 @@ package compiler
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -22,7 +23,7 @@ import (
 var (
 	errWorkerGenerationPreparationFailed  = errors.New("worker generation preparation failed")
 	errWorkerGenerationCleanupFailed      = errors.New("worker generation cleanup failed")
-	errWorkerRegistrationCleanupFailed    = errors.New("worker attempt registration cleanup failed")
+	errWorkerSecretCleanupFailed          = errors.New("worker generation secret cleanup failed")
 	errWorkerCompilerFactoryCleanupFailed = errors.New("worker compiler factory cleanup failed")
 )
 
@@ -37,7 +38,7 @@ type WorkerCompilerFactory struct {
 	compiler           *Compiler
 	effective          *config.EffectiveConfig
 	materializer       secret.Materializer
-	attempts           *attemptFactory
+	generations        *generationFactory
 	consumers          ConsumerPreparer
 	metadata           MetadataPreparer
 	registry           *runtime.ResourceRegistry
@@ -50,7 +51,7 @@ type WorkerCompilerFactory struct {
 	closed bool
 
 	liveMu sync.Mutex
-	live   map[secret.AttemptID]*PreparedGeneration
+	live   map[uint64]*PreparedGeneration
 
 	closeMu       sync.Mutex
 	closeAttempt  *workerFactoryCloseAttempt
@@ -96,7 +97,7 @@ func NewWorkerCompilerFactory(
 	if err != nil {
 		return nil, err
 	}
-	attempts, err := newAttemptFactory(compiler, materializer)
+	generations, err := newGenerationFactory(compiler, materializer)
 	if err != nil {
 		return nil, err
 	}
@@ -110,11 +111,11 @@ func NewWorkerCompilerFactory(
 	}
 	return &WorkerCompilerFactory{
 		compiler: compiler, effective: ownedEffective, materializer: materializer,
-		attempts: attempts, consumers: consumers, metadata: metadata,
+		generations: generations, consumers: consumers, metadata: metadata,
 		registry: runtime.NewResourceRegistry(), observers: observers,
 		clusterObservers: clusterObservers, bindingOps: defaultEffectiveBindingOps(),
 		trustedClientCAPEM: trustedClientCAPEM,
-		live:               make(map[secret.AttemptID]*PreparedGeneration),
+		live:               make(map[uint64]*PreparedGeneration),
 	}, nil
 }
 
@@ -154,15 +155,15 @@ func (factory *WorkerCompilerFactory) PrepareGeneration(
 		return nil, workerGenerationFailure(err, nil)
 	}
 
-	registered, err := factory.attempts.prepareCandidateAttempt(ctx, ticket, desired, previous)
+	registered, err := factory.generations.prepareGenerationSecrets(ctx, ticket, desired, previous)
 	if err != nil {
 		return nil, workerGenerationFailure(err, nil)
 	}
-	return factory.transferRegisteredGeneration(ctx, registered, onFailure)
+	return factory.transferPreparedGeneration(ctx, registered, onFailure)
 }
 
 // Close terminally stops every live generation before closing the shared
-// resource registry. Incomplete attempts retain ownership for a later retry.
+// resource registry. Incomplete cleanup retains ownership for a later retry.
 func (factory *WorkerCompilerFactory) Close(ctx context.Context) error {
 	if factory == nil {
 		return nil
@@ -233,27 +234,27 @@ func (factory *WorkerCompilerFactory) Close(ctx context.Context) error {
 }
 
 func (factory *WorkerCompilerFactory) liveGenerations() []struct {
-	attemptID secret.AttemptID
-	prepared  *PreparedGeneration
+	generation uint64
+	prepared   *PreparedGeneration
 } {
 	factory.liveMu.Lock()
 	live := make([]struct {
-		attemptID secret.AttemptID
-		prepared  *PreparedGeneration
+		generation uint64
+		prepared   *PreparedGeneration
 	}, 0, len(factory.live))
-	for attemptID, prepared := range factory.live {
+	for generationNumber, prepared := range factory.live {
 		live = append(live, struct {
-			attemptID secret.AttemptID
-			prepared  *PreparedGeneration
-		}{attemptID: attemptID, prepared: prepared})
+			generation uint64
+			prepared   *PreparedGeneration
+		}{generation: generationNumber, prepared: prepared})
 	}
 	factory.liveMu.Unlock()
 	slices.SortFunc(live, func(left, right struct {
-		attemptID secret.AttemptID
-		prepared  *PreparedGeneration
+		generation uint64
+		prepared   *PreparedGeneration
 	},
 	) int {
-		return bytes.Compare(left.attemptID[:], right.attemptID[:])
+		return cmp.Compare(left.generation, right.generation)
 	})
 	return live
 }
@@ -329,10 +330,10 @@ func workerRetryableCleanupResult(err error) error {
 	return errors.Join(causes...)
 }
 
-// transferRegisteredGeneration is the single candidate ownership transfer.
-func (factory *WorkerCompilerFactory) transferRegisteredGeneration(
+// transferPreparedGeneration is the single candidate ownership transfer.
+func (factory *WorkerCompilerFactory) transferPreparedGeneration(
 	ctx context.Context,
-	registered *registeredAttempt,
+	registered *preparedSecretGeneration,
 	onFailure func(runtime.TaskFailure),
 ) (*PreparedGeneration, error) {
 	cleanup := &cleanupStack{}
@@ -347,19 +348,19 @@ func (factory *WorkerCompilerFactory) transferRegisteredGeneration(
 		return nil, workerGenerationFailure(primary, cleanupErr)
 	}
 
-	if registered == nil || registered.attempt.authority == nil ||
-		!registered.attempt.capability.Valid() || registered.attempt.Generation() == 0 {
+	if registered == nil || !registered.preparation.secrets.Valid() ||
+		registered.preparation.Generation() == 0 {
 		return fail(ErrInvalidInput)
 	}
-	if err := cleanup.Own(cleanupRelease, "attempt-registration", func(closeCtx context.Context) error {
+	if err := cleanup.Own(cleanupRelease, "generation-secrets", func(closeCtx context.Context) error {
 		if err := registered.Close(closeCtx); err != nil {
-			return errWorkerRegistrationCleanupFailed
+			return errWorkerSecretCleanupFailed
 		}
 		return nil
 	}); err != nil {
 		return fail(err)
 	}
-	if err := factory.runCheckpoint("attempt-and-capability-ready", workerFactoryCheckpointState{}); err != nil {
+	if err := factory.runCheckpoint("generation-secrets-ready", workerFactoryCheckpointState{}); err != nil {
 		return fail(err)
 	}
 	if err := ctx.Err(); err != nil {
@@ -384,7 +385,7 @@ func (factory *WorkerCompilerFactory) transferRegisteredGeneration(
 		return fail(err)
 	}
 
-	bindings, consumerErr := factory.consumers.PrepareConsumers(ctx, registered.attempt)
+	bindings, consumerErr := factory.consumers.PrepareConsumers(ctx, registered.preparation)
 	if bindings != nil {
 		if err := cleanup.Own(cleanupRelease, "consumer-bindings", func(context.Context) error {
 			bindings.Close()
@@ -408,7 +409,7 @@ func (factory *WorkerCompilerFactory) transferRegisteredGeneration(
 		return fail(err)
 	}
 
-	metadata, err := factory.metadata.PrepareMetadata(ctx, registered.attempt)
+	metadata, err := factory.metadata.PrepareMetadata(ctx, registered.preparation)
 	if err != nil {
 		return fail(err)
 	}
@@ -426,20 +427,20 @@ func (factory *WorkerCompilerFactory) transferRegisteredGeneration(
 		return fail(err)
 	}
 
-	attemptID := registered.attempt.AttemptID()
+	generationNumber := registered.preparation.Generation()
 	prepared = &PreparedGeneration{
 		publication: clonePublicationSetForPreparation(registered.publication),
-		attempt:     registered.attempt, metadata: metadata, consumers: bindings,
+		preparation: registered.preparation, metadata: metadata, consumers: bindings,
 		lookup: consumerLookupView{bindings: bindings}, tasks: tasks,
 		effective: factory.effective, manifest: factory.compiler.manifest,
 		registry: factory.registry, materializer: factory.materializer, cleanup: cleanup,
 		observers:          factory.observers,
 		clusterObservers:   factory.clusterObservers,
 		taskFailure:        onFailure,
-		bindingOps:         factory.bindingOps.withDefaults(attemptID),
+		bindingOps:         factory.bindingOps.withDefaults(generationNumber),
 		trustedClientCAPEM: bytes.Clone(factory.trustedClientCAPEM),
 	}
-	if err := factory.runCheckpoint("bind-private-materializer-authority", state); err != nil {
+	if err := factory.runCheckpoint("bind-generation-secrets", state); err != nil {
 		return fail(err)
 	}
 	if err := ctx.Err(); err != nil {
@@ -466,15 +467,15 @@ func (factory *WorkerCompilerFactory) transferRegisteredGeneration(
 
 	prepared.detach = func() {
 		factory.liveMu.Lock()
-		if factory.live[attemptID] == prepared {
-			delete(factory.live, attemptID)
+		if factory.live[generationNumber] == prepared {
+			delete(factory.live, generationNumber)
 		}
 		factory.liveMu.Unlock()
 	}
 	factory.liveMu.Lock()
-	_, collision := factory.live[attemptID]
+	_, collision := factory.live[generationNumber]
 	if !collision {
-		factory.live[attemptID] = prepared
+		factory.live[generationNumber] = prepared
 	}
 	factory.liveMu.Unlock()
 	if collision {

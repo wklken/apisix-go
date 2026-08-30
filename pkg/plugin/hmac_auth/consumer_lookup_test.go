@@ -82,7 +82,7 @@ func TestHMACConsumerLookupUsesResolvedSecretForCanonicalBodyValidation(t *testi
 	})
 	p.SetDependencies(base.Dependencies{Consumers: lookup})
 	date := time.Now().UTC().Format(http.TimeFormat)
-	body := "attempt-owned-body"
+	body := "generation-owned-body"
 	digest := bodyDigest(body)
 	authorization := signatureHeader(
 		t, keyID, "resolved-hmac-secret", "hmac-sha256", []string{"date", "digest"},

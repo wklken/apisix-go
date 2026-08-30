@@ -26,7 +26,7 @@ type ScopedSecretMaterializer = base.ScopedSecretMaterializer
 func MaterializeScopedPluginSecrets(
 	ctx context.Context,
 	baseScope secret.Scope,
-	capability secret.GenerationCapability,
+	capability secret.GenerationSecrets,
 	p Plugin,
 ) error {
 	return base.MaterializeScopedPluginSecrets(ctx, baseScope, capability, p)

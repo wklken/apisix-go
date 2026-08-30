@@ -38,7 +38,7 @@ func (instance FactoryInstance) Factory() string { return instance.factory }
 func (instance FactoryInstance) Plugin() Plugin { return instance.instance }
 
 // SupportsScopedSecretMaterialization reports whether the registered factory
-// implements the attempt-scoped secret contract. The factory is constructed
+// implements the generation-scoped secret contract. The factory is constructed
 // only for a type assertion; no plugin lifecycle or materialization method is
 // invoked.
 func SupportsScopedSecretMaterialization(factory string) (bool, error) {

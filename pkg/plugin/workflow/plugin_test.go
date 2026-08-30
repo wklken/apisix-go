@@ -184,15 +184,6 @@ type workflowScopedSecretBroker struct {
 	values map[string]string
 }
 
-func (*workflowScopedSecretBroker) AuthorizeCandidate(
-	context.Context,
-	secret.AttemptID,
-	generation.ApplyTicket,
-	generation.PublicationSet,
-) error {
-	return nil
-}
-
 func (broker *workflowScopedSecretBroker) ResolveScoped(
 	_ context.Context,
 	_ secret.Scope,
@@ -204,17 +195,13 @@ func (broker *workflowScopedSecretBroker) ResolveScoped(
 	return "remote_addr", nil
 }
 
-func (*workflowScopedSecretBroker) RevokeAttempt(context.Context, secret.AttemptID) error {
-	return nil
-}
-
 func newWorkflowScopedCapability(
 	t *testing.T,
 	revision uint64,
 	resourceID string,
 	config Config,
 	valueMaps ...map[string]string,
-) (secret.GenerationCapability, secret.Scope, func()) {
+) (secret.GenerationSecrets, secret.Scope, func()) {
 	t.Helper()
 	values := map[string]string{}
 	if len(valueMaps) > 0 {
@@ -245,11 +232,6 @@ func newWorkflowScopedCapability(
 			Key: key, Disposition: generation.DispositionPublished, Code: "workflow-test",
 		}},
 	}
-	ticket := generation.ApplyTicket{
-		DesiredRevision: revision,
-		DesiredDigest:   snapshot.Digest(),
-		RequiredDomains: []generation.Domain{generation.DomainHTTP},
-	}
 	publication := generation.PublicationSet{
 		DesiredRevision: revision,
 		Domains: map[generation.Domain]generation.PublicationCandidate{
@@ -264,28 +246,23 @@ func newWorkflowScopedCapability(
 	if err != nil {
 		t.Fatal(err)
 	}
-	registration, err := testutil.NewSecretMaterializer(
+	materialization, err := testutil.NewSecretMaterializer(
 		&workflowScopedSecretBroker{values: values}, catalog,
-	).RegisterCandidate(context.Background(), ticket, publication)
+	).PrepareGeneration(context.Background(), publication)
 	if err != nil {
 		t.Fatal(err)
 	}
-	capabilityValue, err := secret.NewGenerationCapability(registration, revision)
-	if err != nil {
-		_ = registration.Close(context.Background())
-		t.Fatal(err)
-	}
+	secrets := materialization.Secrets()
 	scope := secret.Scope{
 		Generation: revision,
-		Attempt:    registration.AttemptID(),
 		Domain:     generation.DomainHTTP,
 		Plugin:     "workflow",
 		Resource:   key,
 		Source:     capability.SecretPluginConfig,
 	}
-	return capabilityValue, scope, func() {
-		if err := registration.Close(context.Background()); err != nil {
-			t.Errorf("close workflow scoped attempt: %v", err)
+	return secrets, scope, func() {
+		if err := materialization.Close(context.Background()); err != nil {
+			t.Errorf("close workflow scoped generation: %v", err)
 		}
 	}
 }
@@ -299,9 +276,9 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	}
 	preparer := &scriptedWorkflowPreparer{t: t, failAt: -1, scoped: true}
 	p.SetDependencies(base.Dependencies{CompositeChildren: preparer})
-	capabilityValue, scope, cleanup := newWorkflowScopedCapability(t, 1, "test-route", cfg)
+	secrets, scope, cleanup := newWorkflowScopedCapability(t, 1, "test-route", cfg)
 	t.Cleanup(cleanup)
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
@@ -843,9 +820,9 @@ func newScopedWorkflowWithPreparer(
 		scripted.scoped = true
 	}
 	p.SetDependencies(base.Dependencies{CompositeChildren: preparer})
-	capabilityValue, scope, cleanup := newWorkflowScopedCapability(t, 1, "workflow-route", p.config)
+	secrets, scope, cleanup := newWorkflowScopedCapability(t, 1, "workflow-route", p.config)
 	t.Cleanup(cleanup)
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatalf("MaterializeScopedSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
@@ -1000,9 +977,9 @@ func TestScopedWorkflowActiveHandlerDefersResourceContextToNextGeneration(t *tes
 		t.Fatal(err)
 	}
 	p.SetDependencies(base.Dependencies{CompositeChildren: preparer})
-	capabilityValue, scope, cleanup := newWorkflowScopedCapability(t, 1, "active-handler", p.config)
+	secrets, scope, cleanup := newWorkflowScopedCapability(t, 1, "active-handler", p.config)
 	t.Cleanup(cleanup)
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatal(err)
 	}
 	p.SetResourceContext(resource.Route{ID: "route-current"}, resource.Service{})
@@ -1023,7 +1000,7 @@ func TestScopedWorkflowActiveHandlerDefersResourceContextToNextGeneration(t *tes
 	close(release)
 	<-requestDone
 
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatal(err)
 	}
 	if err := p.PostInit(); err != nil {
@@ -1416,9 +1393,9 @@ func TestScopedWorkflowHandlerAllowsSynchronousLifecycleReentryAndDefersReverseC
 		t.Fatal(err)
 	}
 	p.SetDependencies(base.Dependencies{CompositeChildren: preparer})
-	capabilityValue, scope, cleanup := newWorkflowScopedCapability(t, 1, "handler-reentry", p.config)
+	secrets, scope, cleanup := newWorkflowScopedCapability(t, 1, "handler-reentry", p.config)
 	t.Cleanup(cleanup)
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatal(err)
 	}
 	if err := p.PostInit(); err != nil {
@@ -1573,12 +1550,12 @@ func TestMaterializeSecretsOwnsNestedLimitCountReferenceBeforePostInit(t *testin
 	}
 	preparer := &scriptedWorkflowPreparer{t: t, failAt: -1, scoped: true}
 	p.SetDependencies(base.Dependencies{CompositeChildren: preparer})
-	capabilityValue, scope, cleanup := newWorkflowScopedCapability(
+	secrets, scope, cleanup := newWorkflowScopedCapability(
 		t, 1, "nested-limit-count", p.config,
 		map[string]string{"$ENV://WORKFLOW_LIMIT_COUNT_KEY": "remote_addr"},
 	)
 	t.Cleanup(cleanup)
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	key, _ := p.config.Rules[0].Actions[0].Config["key"].(string)
@@ -1641,12 +1618,12 @@ func TestNestedLimitCountValidatesRedisClusterReferenceBeforeDescriptorRewrite(t
 	}
 	preparer := &scriptedWorkflowPreparer{t: t, failAt: -1, scoped: true}
 	p.SetDependencies(base.Dependencies{CompositeChildren: preparer})
-	capabilityValue, scope, cleanup := newWorkflowScopedCapability(
+	secrets, scope, cleanup := newWorkflowScopedCapability(
 		t, 1, "nested-redis-cluster", p.config,
 		map[string]string{"$ENV://WORKFLOW_REDIS_CLUSTER_NODE": "127.0.0.1:6379"},
 	)
 	t.Cleanup(cleanup)
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	nodes, ok := p.config.Rules[0].Actions[0].Config["redis_cluster_nodes"].([]any)

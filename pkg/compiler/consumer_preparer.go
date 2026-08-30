@@ -38,22 +38,22 @@ func newConsumerBindingPreparer(
 
 func (preparer *consumerBindingPreparer) PrepareConsumers(
 	ctx context.Context,
-	attempt PreparationAttempt,
+	preparation PreparationGeneration,
 ) (*runtime.ConsumerBindings, error) {
 	if ctx == nil || preparer == nil || preparer.catalog == nil ||
-		attempt.authority == nil || !attempt.capability.Valid() ||
-		attempt.Generation() == 0 || attempt.Generation() != attempt.capability.Generation() {
+		!preparation.secrets.Valid() ||
+		preparation.Generation() == 0 || preparation.Generation() != preparation.secrets.Generation() {
 		return nil, errConsumerPreparationFailed
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 
-	occurrences, err := indexConsumerOccurrences(attempt)
+	occurrences, err := indexConsumerOccurrences(preparation)
 	if err != nil {
 		return nil, errConsumerPreparationFailed
 	}
-	candidate, exists := attempt.Candidate(generation.DomainHTTP)
+	candidate, exists := preparation.Candidate(generation.DomainHTTP)
 	if !exists {
 		if len(occurrences) != 0 {
 			return nil, errConsumerPreparationFailed
@@ -92,7 +92,7 @@ func (preparer *consumerBindingPreparer) PrepareConsumers(
 		case "consumers":
 			consumerRecord, bindings, used, prepareErr := preparer.prepareConsumer(
 				ctx,
-				attempt,
+				preparation,
 				normalized,
 				occurrences,
 			)
@@ -126,7 +126,7 @@ func (preparer *consumerBindingPreparer) PrepareConsumers(
 
 func (preparer *consumerBindingPreparer) prepareConsumer(
 	ctx context.Context,
-	attempt PreparationAttempt,
+	preparation PreparationGeneration,
 	normalized normalizedResource,
 	occurrences map[consumerOccurrenceKey]FactoryOccurrence,
 ) (runtime.ConsumerRecord, []runtime.ConsumerCredentialBinding, []consumerOccurrenceKey, error) {
@@ -152,7 +152,7 @@ func (preparer *consumerBindingPreparer) prepareConsumer(
 				if !ok {
 					return raw, nil
 				}
-				resolved, err := attempt.MaterializeSecret(ctx, occurrence, declaration.Field, reference)
+				resolved, err := preparation.MaterializeSecret(ctx, occurrence, declaration.Field, reference)
 				if err != nil {
 					return raw, errConsumerPreparationFailed
 				}
@@ -190,10 +190,10 @@ func (preparer *consumerBindingPreparer) prepareConsumer(
 }
 
 func indexConsumerOccurrences(
-	attempt PreparationAttempt,
+	preparation PreparationGeneration,
 ) (map[consumerOccurrenceKey]FactoryOccurrence, error) {
 	indexed := make(map[consumerOccurrenceKey]FactoryOccurrence)
-	for _, occurrence := range attempt.Occurrences(capability.SecretConsumerConfig) {
+	for _, occurrence := range preparation.Occurrences(capability.SecretConsumerConfig) {
 		if occurrence.Domain() != generation.DomainHTTP || occurrence.Resource().Kind != "consumers" {
 			return nil, errConsumerPreparationFailed
 		}

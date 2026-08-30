@@ -29,12 +29,6 @@ type requestValidationCompilerSecretBroker struct {
 	revokes int
 }
 
-func (*requestValidationCompilerSecretBroker) AuthorizeCandidate(
-	context.Context, secret.AttemptID, generation.ApplyTicket, generation.PublicationSet,
-) error {
-	return nil
-}
-
 func (broker *requestValidationCompilerSecretBroker) ResolveScoped(
 	_ context.Context, scope secret.Scope, raw string,
 ) (string, error) {
@@ -46,15 +40,6 @@ func (broker *requestValidationCompilerSecretBroker) ResolveScoped(
 		return "", fmt.Errorf("request-validation compiler fixture secret is unavailable")
 	}
 	return value, nil
-}
-
-func (broker *requestValidationCompilerSecretBroker) RevokeAttempt(
-	context.Context, secret.AttemptID,
-) error {
-	broker.mu.Lock()
-	defer broker.mu.Unlock()
-	broker.revokes++
-	return nil
 }
 
 func (broker *requestValidationCompilerSecretBroker) snapshot() (
@@ -127,7 +112,6 @@ func TestWorkerFactoryUsesManifestRequestValidationDeclarationWithExactOccurrenc
 	calls, revokes := broker.snapshot()
 	wantScope := secret.Scope{
 		Generation: revision,
-		Attempt:    prepared.attempt.AttemptID(),
 		Domain:     generation.DomainHTTP,
 		Plugin:     "request-validation",
 		Resource:   generation.ResourceKey{Kind: "routes", ID: routeID},
@@ -219,7 +203,7 @@ func TestWorkerFactorySharesRequestValidationCompileLimitAcrossAttemptBindings(t
 			t.Errorf("first prepared Close() error = %v", err)
 		}
 	}()
-	limiter, err := first.attempt.capability.SharedLimiter(
+	limiter, err := first.preparation.secrets.SharedLimiter(
 		"request-validation/sensitive-schema-compile", 4,
 	)
 	if err != nil {

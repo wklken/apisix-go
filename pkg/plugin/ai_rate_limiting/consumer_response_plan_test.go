@@ -22,7 +22,7 @@ func TestConsumerScopedPluginJoinsResponsePlanAfterAuthentication(t *testing.T) 
 	if err := rateLimiter.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	capabilityValue, scope, cleanup := testutil.ScopedSecretHarness(
+	secrets, scope, cleanup := testutil.ScopedSecretHarness(
 		t,
 		"ai-rate-limiting",
 		nil,
@@ -30,7 +30,7 @@ func TestConsumerScopedPluginJoinsResponsePlanAfterAuthentication(t *testing.T) 
 	)
 	defer cleanup()
 	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, capabilityValue, rateLimiter,
+		context.Background(), scope, secrets, rateLimiter,
 	); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}

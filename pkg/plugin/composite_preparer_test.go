@@ -158,15 +158,6 @@ type compositeSecretBroker struct {
 	calls []compositeSecretCall
 }
 
-func (*compositeSecretBroker) AuthorizeCandidate(
-	context.Context,
-	secret.AttemptID,
-	generation.ApplyTicket,
-	generation.PublicationSet,
-) error {
-	return nil
-}
-
 func (broker *compositeSecretBroker) ResolveScoped(
 	ctx context.Context,
 	scope secret.Scope,
@@ -183,8 +174,6 @@ func (broker *compositeSecretBroker) ResolveScoped(
 	}
 	return broker.value, nil
 }
-
-func (*compositeSecretBroker) RevokeAttempt(context.Context, secret.AttemptID) error { return nil }
 
 func (broker *compositeSecretBroker) snapshotCalls() []compositeSecretCall {
 	broker.mu.Lock()
@@ -207,9 +196,9 @@ func (compositeConsumerLookup) ConsumerGroupByID(string) (resource.ConsumerGroup
 }
 
 type compositeSecretHarness struct {
-	capability secret.GenerationCapability
+	capability secret.GenerationSecrets
 	scope      secret.Scope
-	attempt    secret.AttemptID
+	attempt    uint64
 	broker     *compositeSecretBroker
 	close      func()
 }
@@ -234,10 +223,6 @@ func newCompositeSecretHarness(t *testing.T, revision uint64, resourceID string)
 			Key: key, Disposition: generation.DispositionPublished, Code: "composite-test",
 		}},
 	}
-	ticket := generation.ApplyTicket{
-		DesiredRevision: revision,
-		RequiredDomains: []generation.Domain{generation.DomainHTTP},
-	}
 	set := generation.PublicationSet{
 		DesiredRevision: revision,
 		Domains: map[generation.Domain]generation.PublicationCandidate{
@@ -253,29 +238,24 @@ func newCompositeSecretHarness(t *testing.T, revision uint64, resourceID string)
 		t.Fatal(err)
 	}
 	broker := &compositeSecretBroker{value: "resolved-secret"}
-	registration, err := testutil.NewSecretMaterializer(broker, catalog).
-		RegisterCandidate(context.Background(), ticket, set)
+	materialization, err := testutil.NewSecretMaterializer(broker, catalog).PrepareGeneration(context.Background(), set)
 	if err != nil {
 		t.Fatal(err)
 	}
-	capabilityValue, err := secret.NewGenerationCapability(registration, revision)
-	if err != nil {
-		t.Fatal(err)
-	}
+	secrets := materialization.Secrets()
 	return compositeSecretHarness{
-		capability: capabilityValue,
+		capability: secrets,
 		scope: secret.Scope{
 			Generation: revision,
-			Attempt:    registration.AttemptID(),
 			Domain:     generation.DomainHTTP,
 			Plugin:     "workflow",
 			Resource:   key,
 			Source:     capability.SecretPluginConfig,
 		},
-		attempt: registration.AttemptID(),
+		attempt: secrets.Generation(),
 		broker:  broker,
 		close: func() {
-			if closeErr := registration.Close(context.Background()); closeErr != nil {
+			if closeErr := materialization.Close(context.Background()); closeErr != nil {
 				t.Fatalf("close composite secret registration: %v", closeErr)
 			}
 		},
@@ -369,7 +349,7 @@ func TestCompositeChildPreparerPreservesOuterAuthorityAndDependencies(t *testing
 	}
 	binding := prepared.(*preparedCompositeChild).binding
 	if binding.Scope != ScopeRoute || binding.Provenance != effectiveOwner ||
-		binding.InstanceKey.Attempt != harness.attempt {
+		binding.InstanceKey.Generation != harness.attempt {
 		t.Fatalf("binding identity = %+v, want effective route/service and outer attempt", binding)
 	}
 	if child.StaticConfig() != staticConfig || !child.DataEncryption().Configured() ||
@@ -379,8 +359,8 @@ func TestCompositeChildPreparerPreservesOuterAuthorityAndDependencies(t *testing
 	if child.CompositeChildPreparer() != nil {
 		t.Fatal("leaf child retained recursive CompositeChildren dependency")
 	}
-	if !child.ScopedSecrets().Valid() || child.ScopedSecrets().AttemptID() != harness.attempt {
-		t.Fatal("child did not retain the outer generation secret capability")
+	if !child.ScopedSecrets().Valid() || child.ScopedSecrets().Generation() != harness.attempt {
+		t.Fatal("child did not retain the outer generation secrets")
 	}
 	var metadataDocument map[string]any
 	found, err := child.MetadataView().Decode("http-logger", &metadataDocument)
@@ -392,7 +372,7 @@ func TestCompositeChildPreparerPreservesOuterAuthorityAndDependencies(t *testing
 		t.Fatalf("secret calls = %d, want 1", len(calls))
 	}
 	gotScope := calls[0].scope
-	if gotScope.Generation != harness.scope.Generation || gotScope.Attempt != harness.scope.Attempt ||
+	if gotScope.Generation != harness.scope.Generation ||
 		gotScope.Domain != generation.DomainHTTP || gotScope.Resource != harness.scope.Resource ||
 		gotScope.Source != capability.SecretPluginConfig || gotScope.Plugin != "http-logger" ||
 		gotScope.Field != "auth_header" || calls[0].raw != raw {
@@ -609,22 +589,22 @@ func TestCompositeChildPreparerRejectsSameIDForeignRegistrationBeforeConstructio
 	}
 }
 
-func TestCompositeChildPreparerConstructorRejectsCapabilityAttemptMismatch(t *testing.T) {
+func TestCompositeChildPreparerConstructorRejectsGenerationMismatch(t *testing.T) {
 	harness := newCompositeSecretHarness(t, 79, "route-constructor")
 	defer harness.close()
 	owner := ResourceProvenance{Kind: ResourceRoute, ID: "route-effective"}
 	for name, test := range map[string]struct {
 		deps    base.Dependencies
-		attempt secret.AttemptID
+		attempt uint64
 	}{
 		"zero capability": {
 			deps: base.Dependencies{}, attempt: harness.attempt,
 		},
-		"zero attempt": {
-			deps: base.Dependencies{Secrets: harness.capability}, attempt: secret.AttemptID{},
+		"zero generation": {
+			deps: base.Dependencies{Secrets: harness.capability}, attempt: 0,
 		},
-		"different attempt": {
-			deps: base.Dependencies{Secrets: harness.capability}, attempt: secret.AttemptID{255},
+		"different generation": {
+			deps: base.Dependencies{Secrets: harness.capability}, attempt: 255,
 		},
 	} {
 		t.Run(name, func(t *testing.T) {

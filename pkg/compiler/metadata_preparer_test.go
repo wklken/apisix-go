@@ -17,23 +17,12 @@ import (
 )
 
 type metadataPreparationBroker struct {
-	resolveCalls            int
-	candidateAuthorizations int
-	scopes                  []secret.Scope
-	raws                    []string
-	resolved                string
-	resolvedByRaw           map[string]string
-	resolveErr              error
-}
-
-func (broker *metadataPreparationBroker) AuthorizeCandidate(
-	context.Context,
-	secret.AttemptID,
-	generation.ApplyTicket,
-	generation.PublicationSet,
-) error {
-	broker.candidateAuthorizations++
-	return nil
+	resolveCalls  int
+	scopes        []secret.Scope
+	raws          []string
+	resolved      string
+	resolvedByRaw map[string]string
+	resolveErr    error
 }
 
 func (broker *metadataPreparationBroker) ResolveScoped(
@@ -54,10 +43,6 @@ func (broker *metadataPreparationBroker) ResolveScoped(
 		return resolved, nil
 	}
 	return "resolved:" + raw, nil
-}
-
-func (broker *metadataPreparationBroker) RevokeAttempt(context.Context, secret.AttemptID) error {
-	return nil
 }
 
 func TestMetadataPreparerUsesExactFinalPublishedDocuments(t *testing.T) {
@@ -118,37 +103,27 @@ func TestMetadataPreparerRejectsMissingDuplicateOrForeignOccurrence(t *testing.T
 		t.Fatal(err)
 	}
 
-	tests := map[string]func(PreparationAttempt) PreparationAttempt{
-		"missing": func(attempt PreparationAttempt) PreparationAttempt {
-			attempt.occurrences = nil
-			return attempt
+	tests := map[string]func(PreparationGeneration) PreparationGeneration{
+		"missing": func(preparation PreparationGeneration) PreparationGeneration {
+			preparation.occurrences = nil
+			return preparation
 		},
-		"duplicate": func(attempt PreparationAttempt) PreparationAttempt {
-			occurrence := attempt.Occurrences(capability.SecretPluginMetadata)[0]
-			attempt.occurrences = append(attempt.occurrences, occurrence)
-			return attempt
+		"duplicate": func(preparation PreparationGeneration) PreparationGeneration {
+			occurrence := preparation.Occurrences(capability.SecretPluginMetadata)[0]
+			preparation.occurrences = append(preparation.occurrences, occurrence)
+			return preparation
 		},
-		"same authority extra": func(attempt PreparationAttempt) PreparationAttempt {
-			occurrence := attempt.Occurrences(capability.SecretPluginMetadata)[0]
-			occurrence.resource = generation.ResourceKey{Kind: "plugin_metadata", ID: "retired"}
-			occurrence.factory = "retired"
-			if !attempt.owns(occurrence) {
-				t.Fatal("same-authority extra occurrence lost attempt ownership")
-			}
-			attempt.occurrences = append(attempt.occurrences, occurrence)
-			return attempt
-		},
-		"foreign resource": func(attempt PreparationAttempt) PreparationAttempt {
-			occurrence := attempt.Occurrences(capability.SecretPluginMetadata)[0]
+		"foreign resource": func(preparation PreparationGeneration) PreparationGeneration {
+			occurrence := preparation.Occurrences(capability.SecretPluginMetadata)[0]
 			occurrence.resource.ID = "foreign"
-			attempt.occurrences = []FactoryOccurrence{occurrence}
-			return attempt
+			preparation.occurrences = []FactoryOccurrence{occurrence}
+			return preparation
 		},
-		"stream tamper": func(attempt PreparationAttempt) PreparationAttempt {
-			occurrence := attempt.Occurrences(capability.SecretPluginMetadata)[0]
+		"stream tamper": func(preparation PreparationGeneration) PreparationGeneration {
+			occurrence := preparation.Occurrences(capability.SecretPluginMetadata)[0]
 			occurrence.domain = generation.DomainStream
-			attempt.occurrences = []FactoryOccurrence{occurrence}
-			return attempt
+			preparation.occurrences = []FactoryOccurrence{occurrence}
+			return preparation
 		},
 	}
 	for name, mutate := range tests {
@@ -171,34 +146,6 @@ func TestMetadataPreparerRejectsMissingDuplicateOrForeignOccurrence(t *testing.T
 			}
 		})
 	}
-
-	t.Run("cross attempt", func(t *testing.T) {
-		firstBroker := &metadataPreparationBroker{}
-		first, firstRegistration := registerMetadataCandidate(t, compiler, firstBroker, ticket, set)
-		defer closeMetadataRegistration(t, firstRegistration)
-		secondBroker := &metadataPreparationBroker{}
-		second, secondRegistration := registerMetadataCandidate(
-			t,
-			compiler,
-			secondBroker,
-			ticketForSnapshot(snapshot, generation.DomainHTTP),
-			set,
-		)
-		defer closeMetadataRegistration(t, secondRegistration)
-		second.occurrences = []FactoryOccurrence{first.Occurrences(capability.SecretPluginMetadata)[0]}
-		if _, err := preparer.PrepareMetadata(
-			context.Background(),
-			second,
-		); !errors.Is(
-			err,
-			errMetadataPreparationFailed,
-		) {
-			t.Fatalf("cross-attempt PrepareMetadata() error = %v, want stable preparation failure", err)
-		}
-		if secondBroker.resolveCalls != 0 {
-			t.Fatalf("cross-attempt resolver calls = %d, want zero", secondBroker.resolveCalls)
-		}
-	})
 }
 
 func TestMetadataPreparerReturnsEmptyViewForStreamOnlyAttempt(t *testing.T) {
@@ -207,8 +154,8 @@ func TestMetadataPreparerReturnsEmptyViewForStreamOnlyAttempt(t *testing.T) {
 		resourceValue("stream_routes", "stream-1", `{"id":"stream-1"}`),
 	}, nil)
 	streamCandidate := publishedForDomain(generation.DomainStream, snapshot)
-	registration := &metadataTestRegistration{id: secret.AttemptID{3}}
-	attempt := newMetadataPreparationAttempt(
+	registration := &metadataTestRegistration{}
+	attempt := newMetadataPreparationGeneration(
 		t,
 		compiler,
 		snapshot.Revision(),
@@ -280,7 +227,7 @@ func TestMetadataPreparerMaterializesAzureMetadataWithExactOccurrence(t *testing
 		)
 	}
 	scope := broker.scopes[0]
-	if scope.Generation != snapshot.Revision() || scope.Attempt != attempt.AttemptID() ||
+	if scope.Generation != snapshot.Revision() || scope.Generation != attempt.Generation() ||
 		scope.Domain != generation.DomainHTTP ||
 		scope.Resource != (generation.ResourceKey{Kind: "plugin_metadata", ID: "azure-functions"}) ||
 		scope.Plugin != "azure-functions" || scope.Source != capability.SecretPluginMetadata ||
@@ -297,10 +244,9 @@ func TestMetadataPreparerMaterializationFailureIsRedacted(t *testing.T) {
 	}, nil)
 	ticket, set := metadataPublicationSet(snapshot)
 	registration := &metadataTestRegistration{
-		id:             secret.AttemptID{4},
 		materializeErr: fmt.Errorf("resolver exposed VAULT_PATH_DO_NOT_LEAK and plaintext-should-not-leak"),
 	}
-	attempt := newMetadataPreparationAttempt(t, compiler, snapshot.Revision(), set.Domains, registration)
+	attempt := newMetadataPreparationGeneration(t, compiler, snapshot.Revision(), set.Domains, registration)
 	t.Cleanup(func() { closeMetadataRegistration(t, registration) })
 	preparer, err := newMetadataPreparer(compiler.schemas)
 	if err != nil {
@@ -351,8 +297,8 @@ func TestMetadataPreparerReturnsEmptyViewForNoPublishedMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	registration := &metadataTestRegistration{id: secret.AttemptID{5}}
-	attempt := newMetadataPreparationAttempt(t, compiler, snapshot.Revision(), set.Domains, registration)
+	registration := &metadataTestRegistration{}
+	attempt := newMetadataPreparationGeneration(t, compiler, snapshot.Revision(), set.Domains, registration)
 	t.Cleanup(func() { closeMetadataRegistration(t, registration) })
 	preparer, err := newMetadataPreparer(compiler.schemas)
 	if err != nil {
@@ -415,8 +361,8 @@ func TestMetadataPreparerRejectsNonStringDeclaredTerminalsBeforeResolver(t *test
 	} {
 		t.Run(document, func(t *testing.T) {
 			snapshot := metadataSnapshot(t, 109, document)
-			registration := &metadataTestRegistration{id: secret.AttemptID{6}}
-			attempt := newMetadataPreparationAttempt(
+			registration := &metadataTestRegistration{}
+			attempt := newMetadataPreparationGeneration(
 				t,
 				compiler,
 				snapshot.Revision(),
@@ -508,7 +454,7 @@ func TestMetadataPreparerMaterializesErrorLogWildcardMetadataForArrayAndMap(t *t
 				t.Fatalf("materialization scopes = %#v, want %d calls", broker.scopes, len(tt.rawRefs))
 			}
 			for _, scope := range broker.scopes {
-				if scope.Generation != snapshot.Revision() || scope.Attempt != attempt.AttemptID() ||
+				if scope.Generation != snapshot.Revision() || scope.Generation != attempt.Generation() ||
 					scope.Domain != generation.DomainHTTP ||
 					scope.Resource != (generation.ResourceKey{Kind: "plugin_metadata", ID: "error-log-logger"}) ||
 					scope.Plugin != "error-log-logger" || scope.Source != capability.SecretPluginMetadata ||
@@ -538,8 +484,8 @@ func TestMetadataPreparerKeepsMissingAndIntermediateMetadataPathsAsNoOp(t *testi
 		t.Run(name, func(t *testing.T) {
 			snapshot := errorLogMetadataSnapshot(t, 120, document)
 			_, set := metadataPublicationSet(snapshot)
-			registration := &metadataTestRegistration{id: secret.AttemptID{7}}
-			attempt := newMetadataPreparationAttempt(t, compiler, snapshot.Revision(), set.Domains, registration)
+			registration := &metadataTestRegistration{}
+			attempt := newMetadataPreparationGeneration(t, compiler, snapshot.Revision(), set.Domains, registration)
 			defer closeMetadataRegistration(t, registration)
 			view, err := preparer.PrepareMetadata(context.Background(), attempt)
 			if err != nil {
@@ -574,8 +520,8 @@ func TestMetadataPreparerRejectsErrorLogWildcardContainersBeforeResolver(t *test
 		t.Run(name, func(t *testing.T) {
 			snapshot := errorLogMetadataSnapshot(t, 130, document)
 			_, set := metadataPublicationSet(snapshot)
-			registration := &metadataTestRegistration{id: secret.AttemptID{8}}
-			attempt := newMetadataPreparationAttempt(t, compiler, snapshot.Revision(), set.Domains, registration)
+			registration := &metadataTestRegistration{}
+			attempt := newMetadataPreparationGeneration(t, compiler, snapshot.Revision(), set.Domains, registration)
 			defer closeMetadataRegistration(t, registration)
 			if _, err := preparer.PrepareMetadata(
 				context.Background(),
@@ -594,26 +540,30 @@ func TestMetadataPreparerRejectsErrorLogWildcardContainersBeforeResolver(t *test
 }
 
 type metadataTestRegistration struct {
-	id               secret.AttemptID
+	owner            secret.GenerationMaterialization
 	materializeCalls int
 	materializeErr   error
 }
 
-func (registration *metadataTestRegistration) AttemptID() secret.AttemptID { return registration.id }
-
-func (registration *metadataTestRegistration) Materialize(
+func (registration *metadataTestRegistration) ResolveScoped(
 	_ context.Context,
 	_ secret.Scope,
-	_ string,
-) (secret.Value, error) {
+	raw string,
+) (string, error) {
 	registration.materializeCalls++
 	if registration.materializeErr != nil {
-		return secret.Value{}, registration.materializeErr
+		return "", registration.materializeErr
 	}
-	return secret.Value{}, nil
+	return raw, nil
 }
 
-func (*metadataTestRegistration) Close(context.Context) error { return nil }
+func (registration *metadataTestRegistration) Secrets() secret.GenerationSecrets {
+	return registration.owner.Secrets()
+}
+
+func (registration *metadataTestRegistration) Close(ctx context.Context) error {
+	return registration.owner.Close(ctx)
+}
 
 func registerMetadataCandidate(
 	t *testing.T,
@@ -621,14 +571,14 @@ func registerMetadataCandidate(
 	broker *metadataPreparationBroker,
 	ticket generation.ApplyTicket,
 	set generation.PublicationSet,
-) (PreparationAttempt, secret.AttemptRegistration) {
+) (PreparationGeneration, secret.GenerationMaterialization) {
 	t.Helper()
 	materializer := testutil.NewSecretMaterializer(broker, compiler.schemas.catalog)
-	registration, err := materializer.RegisterCandidate(context.Background(), ticket, set)
+	registration, err := materializer.PrepareGeneration(context.Background(), set)
 	if err != nil {
 		t.Fatal(err)
 	}
-	attempt := newMetadataPreparationAttempt(t, compiler, set.DesiredRevision, set.Domains, registration)
+	attempt := newMetadataPreparationGeneration(t, compiler, set.DesiredRevision, set.Domains, registration)
 	return attempt, registration
 }
 
@@ -644,30 +594,36 @@ func metadataPublicationSet(snapshot generation.Snapshot) (generation.ApplyTicke
 	}
 }
 
-func newMetadataPreparationAttempt(
+func newMetadataPreparationGeneration(
 	t *testing.T,
 	compiler *Compiler,
 	generationNumber uint64,
 	candidates map[generation.Domain]generation.PublicationCandidate,
-	registration secret.AttemptRegistration,
-) PreparationAttempt {
+	registration secret.GenerationMaterialization,
+) PreparationGeneration {
 	t.Helper()
 	specs, err := factoryOccurrencesFromCandidates(context.Background(), candidates, compiler.schemas)
 	if err != nil {
 		t.Fatal(err)
 	}
-	capabilityValue, err := secret.NewGenerationCapability(registration, generationNumber)
-	if err != nil {
-		t.Fatal(err)
+	set := generation.PublicationSet{DesiredRevision: generationNumber, Domains: candidates}
+	if testRegistration, ok := registration.(*metadataTestRegistration); ok {
+		testRegistration.owner, err = testutil.NewSecretMaterializer(
+			testRegistration, compiler.schemas.catalog,
+		).PrepareGeneration(context.Background(), set)
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
-	attempt, err := newPreparationAttempt(generationNumber, candidates, capabilityValue, specs)
+	secrets := registration.Secrets()
+	attempt, err := newPreparationGeneration(generationNumber, candidates, secrets, specs)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return attempt
 }
 
-func closeMetadataRegistration(t *testing.T, registration secret.AttemptRegistration) {
+func closeMetadataRegistration(t *testing.T, registration secret.GenerationMaterialization) {
 	t.Helper()
 	if registration != nil {
 		if err := registration.Close(context.Background()); err != nil {
@@ -747,6 +703,6 @@ func installErrorLogMetadataSchema(t *testing.T, compiler *Compiler) {
 }
 
 var (
-	_ testutil.SecretAttemptBroker = (*metadataPreparationBroker)(nil)
-	_ secret.AttemptRegistration   = (*metadataTestRegistration)(nil)
+	_ testutil.SecretResolver          = (*metadataPreparationBroker)(nil)
+	_ secret.GenerationMaterialization = (*metadataTestRegistration)(nil)
 )

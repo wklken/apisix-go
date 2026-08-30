@@ -446,7 +446,7 @@ func TestPreparedGenerationPublicAPIExposesNoRuntimeHandles(t *testing.T) {
 	bannedNames := map[string]struct{}{
 		"PreparedBindingView": {}, "BindingView": {}, "PluginBinding": {},
 		"Bindings": {}, "Plugins": {}, "Leases": {}, "Resources": {}, "Tasks": {},
-		"AttemptRegistration": {}, "GenerationCapability": {}, "Materializer": {},
+		"GenerationMaterialization": {}, "GenerationSecrets": {}, "Materializer": {},
 		"TaskRegistry": {}, "ResourceRegistry": {}, "ResourceLease": {},
 		"ConsumerBindings": {}, "Plugin": {}, "Binding": {}, "FactoryInstance": {},
 		"Store": {}, "Resolver": {},

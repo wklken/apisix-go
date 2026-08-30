@@ -25,12 +25,6 @@ type aiProxyMultiScopedSecretBroker struct {
 	calls  []aiProxyMultiScopedSecretCall
 }
 
-func (*aiProxyMultiScopedSecretBroker) AuthorizeCandidate(
-	context.Context, secret.AttemptID, generation.ApplyTicket, generation.PublicationSet,
-) error {
-	return nil
-}
-
 func (broker *aiProxyMultiScopedSecretBroker) ResolveScoped(
 	ctx context.Context, scope secret.Scope, raw string,
 ) (string, error) {
@@ -45,13 +39,9 @@ func (broker *aiProxyMultiScopedSecretBroker) ResolveScoped(
 	return value, nil
 }
 
-func (*aiProxyMultiScopedSecretBroker) RevokeAttempt(context.Context, secret.AttemptID) error {
-	return nil
-}
-
 func newAIProxyMultiScopedSecretHarness(
 	t *testing.T, values map[string]string,
-) (secret.GenerationCapability, secret.Scope, *aiProxyMultiScopedSecretBroker, func()) {
+) (secret.GenerationSecrets, secret.Scope, *aiProxyMultiScopedSecretBroker, func()) {
 	t.Helper()
 	const revision = uint64(122)
 	key := generation.ResourceKey{Kind: "routes", ID: "ai-proxy-multi-scoped"}
@@ -72,9 +62,6 @@ func newAIProxyMultiScopedSecretHarness(
 			Key: key, Disposition: generation.DispositionPublished, Code: "ai-proxy-multi-scoped-test",
 		}},
 	}
-	ticket := generation.ApplyTicket{
-		DesiredRevision: revision, RequiredDomains: []generation.Domain{generation.DomainHTTP},
-	}
 	publication := generation.PublicationSet{
 		DesiredRevision: revision,
 		Domains: map[generation.Domain]generation.PublicationCandidate{
@@ -90,24 +77,19 @@ func newAIProxyMultiScopedSecretHarness(
 		t.Fatal(err)
 	}
 	broker := &aiProxyMultiScopedSecretBroker{values: values}
-	registration, err := testutil.NewSecretMaterializer(broker, catalog).RegisterCandidate(
-		context.Background(), ticket, publication,
-	)
+	materialization, err := testutil.NewSecretMaterializer(broker, catalog).
+		PrepareGeneration(context.Background(), publication)
 	if err != nil {
 		t.Fatal(err)
 	}
-	capabilityValue, err := secret.NewGenerationCapability(registration, revision)
-	if err != nil {
-		_ = registration.Close(context.Background())
-		t.Fatal(err)
-	}
+	secrets := materialization.Secrets()
 	scope := secret.Scope{
-		Generation: revision, Attempt: registration.AttemptID(), Domain: generation.DomainHTTP,
+		Generation: revision, Domain: generation.DomainHTTP,
 		Plugin: name, Resource: key, Source: capability.SecretPluginConfig,
 	}
-	return capabilityValue, scope, broker, func() {
-		if err := registration.Close(context.Background()); err != nil {
-			t.Errorf("close scoped AI proxy multi attempt: %v", err)
+	return secrets, scope, broker, func() {
+		if err := materialization.Close(context.Background()); err != nil {
+			t.Errorf("close scoped AI proxy multi generation: %v", err)
 		}
 	}
 }
@@ -129,7 +111,7 @@ func TestMaterializeScopedSecretsOwnsEveryAIProxyMultiInstance(t *testing.T) {
 		secondGCP: `{"client_email":"multi@example.com"}`,
 		secondAWS: "multi-aws-secret", secondToken: "multi-session",
 	}
-	capabilityValue, scope, broker, closeAttempt := newAIProxyMultiScopedSecretHarness(t, values)
+	secrets, scope, broker, closeAttempt := newAIProxyMultiScopedSecretHarness(t, values)
 	defer closeAttempt()
 	p := &Plugin{config: Config{Instances: []Instance{
 		{Auth: Auth{
@@ -147,7 +129,7 @@ func TestMaterializeScopedSecretsOwnsEveryAIProxyMultiInstance(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, capabilityValue, p,
+		context.Background(), scope, secrets, p,
 	); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}

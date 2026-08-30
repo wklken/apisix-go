@@ -50,10 +50,10 @@ Directory-scoped instructions inherit this file. Read the closest `AGENTS.md` be
 - The only production publication path is provider -> `generation.Coordinator` -> compiler -> `GenerationEngine`. Do not restore mutable route builders or provider-owned activation.
 - Publication order is `apply desired in memory -> compile/prepare -> atomic active-bundle swap -> commit coordinator state -> return acknowledgement to provider`. Publication failure preserves the exact predecessor and does not advance coordinator state.
 - First-generation invalid state fails closed. `last-good` requires an exact same-domain published predecessor; a tombstone is deletion and never falls back.
-- A prepared generation owns its secret attempt, task registry, resource leases, and HTTP/stream snapshots. Cleanup is retryable and ordered `quiesce -> resource finalize -> authority release`; a residual or deadline retains ownership.
+- A prepared generation owns its secret materialization, task registry, resource leases, and HTTP/stream snapshots. Cleanup is retryable and ordered `quiesce -> resource finalize -> secret release`; a residual or deadline retains ownership.
 - HTTP requests, hijacked connections, TLS callbacks, and stream connections pin the exact generation they use. A generation retires only after it owns no active domain and all leases drain.
 - Background work in `pkg/plugin`, `pkg/proxy`, `pkg/route`, and `pkg/stream` must use the owned runtime task APIs; the AST/type gate for raw goroutines covers exactly those roots, not the whole repository.
-- Secret materialization is allowed only through manifest-declared, exact generation/attempt/domain/resource authority. Never expose plaintext, ciphertext, or backend references in diagnostics.
+- Secret materialization is allowed only through manifest-declared, exact generation/domain/resource scope. Never expose plaintext, ciphertext, or backend references in diagnostics.
 
 ## Setup Commands
 

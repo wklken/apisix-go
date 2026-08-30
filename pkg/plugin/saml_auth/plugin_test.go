@@ -44,15 +44,6 @@ type samlScopedSecretBroker struct {
 	calls  []samlScopedSecretCall
 }
 
-func (*samlScopedSecretBroker) AuthorizeCandidate(
-	context.Context,
-	secret.AttemptID,
-	generation.ApplyTicket,
-	generation.PublicationSet,
-) error {
-	return nil
-}
-
 func (broker *samlScopedSecretBroker) ResolveScoped(
 	_ context.Context,
 	scope secret.Scope,
@@ -66,10 +57,6 @@ func (broker *samlScopedSecretBroker) ResolveScoped(
 		return "", errors.New("missing private SAML test value")
 	}
 	return value, nil
-}
-
-func (*samlScopedSecretBroker) RevokeAttempt(context.Context, secret.AttemptID) error {
-	return nil
 }
 
 func (broker *samlScopedSecretBroker) setValue(raw, value string) {
@@ -90,7 +77,7 @@ func newSAMLScopedSecretHarness(
 	resourceID string,
 	config Config,
 	values map[string]string,
-) (secret.GenerationCapability, secret.Scope, *samlScopedSecretBroker, func()) {
+) (secret.GenerationSecrets, secret.Scope, *samlScopedSecretBroker, func()) {
 	t.Helper()
 	key := generation.ResourceKey{Kind: "routes", ID: resourceID}
 	document, err := json.Marshal(map[string]any{
@@ -116,11 +103,6 @@ func newSAMLScopedSecretHarness(
 			Key: key, Disposition: generation.DispositionPublished, Code: "saml-auth-test",
 		}},
 	}
-	ticket := generation.ApplyTicket{
-		DesiredRevision: revision,
-		DesiredDigest:   snapshot.Digest(),
-		RequiredDomains: []generation.Domain{generation.DomainHTTP},
-	}
 	publication := generation.PublicationSet{
 		DesiredRevision: revision,
 		Domains: map[generation.Domain]generation.PublicationCandidate{
@@ -136,28 +118,22 @@ func newSAMLScopedSecretHarness(
 		t.Fatal(err)
 	}
 	broker := &samlScopedSecretBroker{values: values}
-	registration, err := testutil.NewSecretMaterializer(broker, catalog).RegisterCandidate(
-		context.Background(), ticket, publication,
-	)
+	materialization, err := testutil.NewSecretMaterializer(broker, catalog).
+		PrepareGeneration(context.Background(), publication)
 	if err != nil {
 		t.Fatal(err)
 	}
-	capabilityValue, err := secret.NewGenerationCapability(registration, revision)
-	if err != nil {
-		_ = registration.Close(context.Background())
-		t.Fatal(err)
-	}
+	secrets := materialization.Secrets()
 	scope := secret.Scope{
 		Generation: revision,
-		Attempt:    registration.AttemptID(),
 		Domain:     generation.DomainHTTP,
 		Plugin:     name,
 		Resource:   key,
 		Source:     capability.SecretPluginConfig,
 	}
-	return capabilityValue, scope, broker, func() {
-		if err := registration.Close(context.Background()); err != nil {
-			t.Errorf("close SAML scoped attempt: %v", err)
+	return secrets, scope, broker, func() {
+		if err := materialization.Close(context.Background()); err != nil {
+			t.Errorf("close SAML scoped generation: %v", err)
 		}
 	}
 }
@@ -241,7 +217,7 @@ func TestMaterializeScopedSecretsOwnsSAMLPrivateAndSessionKeys(t *testing.T) {
 	config.SPPrivateKey = privateRaw
 	config.Secret = sessionRaw
 	config.SecretFallbacks = []string{fallbackOne, fallbackTwo}
-	capabilityValue, scope, broker, closeAttempt := newSAMLScopedSecretHarness(
+	secrets, scope, broker, closeAttempt := newSAMLScopedSecretHarness(
 		t, 90, "saml-scoped", config, map[string]string{
 			privateRaw: "not-a-private-key", sessionRaw: "session-current",
 			fallbackOne: "short", fallbackTwo: "session-oldest",
@@ -253,7 +229,7 @@ func TestMaterializeScopedSecretsOwnsSAMLPrivateAndSessionKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p)
+	err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p)
 	if err == nil || strings.Contains(err.Error(), privateRaw) || strings.Contains(err.Error(), "not-a-private-key") {
 		t.Fatalf("invalid resolved PEM error = %v, want redacted failure", err)
 	}
@@ -263,7 +239,7 @@ func TestMaterializeScopedSecretsOwnsSAMLPrivateAndSessionKeys(t *testing.T) {
 	}
 
 	broker.setValue(privateRaw, validPrivateKey)
-	err = base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p)
+	err = base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p)
 	if err == nil || strings.Contains(err.Error(), fallbackOne) || strings.Contains(err.Error(), "short") {
 		t.Fatalf("invalid third value error = %v, want redacted failure", err)
 	}
@@ -272,7 +248,7 @@ func TestMaterializeScopedSecretsOwnsSAMLPrivateAndSessionKeys(t *testing.T) {
 	}
 
 	broker.setValue(fallbackOne, "session-previous")
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatalf("same-instance retry error = %v", err)
 	}
 	assertSAMLDescriptor(t, p.config.SPPrivateKey, validPrivateKey)
@@ -321,7 +297,7 @@ func TestMaterializeScopedSecretsConcurrentCallsInstallOnce(t *testing.T) {
 	config.SPPrivateKey = "$ENV://SAML_CONCURRENT_PRIVATE_KEY"
 	config.Secret = "$ENV://SAML_CONCURRENT_SESSION"
 	config.SecretFallbacks = []string{"$ENV://SAML_CONCURRENT_FALLBACK"}
-	capabilityValue, scope, broker, closeAttempt := newSAMLScopedSecretHarness(
+	secrets, scope, broker, closeAttempt := newSAMLScopedSecretHarness(
 		t, 91, "saml-concurrent", config, map[string]string{
 			config.SPPrivateKey:       privateKey,
 			config.Secret:             "session-current",
@@ -341,7 +317,7 @@ func TestMaterializeScopedSecretsConcurrentCallsInstallOnce(t *testing.T) {
 		wg.Go(func() {
 			<-start
 			errs <- base.MaterializeScopedPluginSecrets(
-				context.Background(), scope, capabilityValue, p,
+				context.Background(), scope, secrets, p,
 			)
 		})
 	}
@@ -380,7 +356,7 @@ func TestSAMLResolvedSessionSecretRuneBoundaries(t *testing.T) {
 			config.SPPrivateKey = "$ENV://SAML_BOUNDARY_PRIVATE_KEY"
 			config.Secret = "$ENV://SAML_BOUNDARY_SESSION"
 			resolved := strings.Repeat("界", test.count)
-			capabilityValue, scope, _, closeAttempt := newSAMLScopedSecretHarness(
+			secrets, scope, _, closeAttempt := newSAMLScopedSecretHarness(
 				t, uint64(100+index), "saml-boundary", config, map[string]string{
 					config.SPPrivateKey: privateKey,
 					config.Secret:       resolved,
@@ -389,7 +365,7 @@ func TestSAMLResolvedSessionSecretRuneBoundaries(t *testing.T) {
 			defer closeAttempt()
 			p := &Plugin{config: config}
 			err := base.MaterializeScopedPluginSecrets(
-				context.Background(), scope, capabilityValue, p,
+				context.Background(), scope, secrets, p,
 			)
 			if test.wantErr {
 				if err == nil || p.secretsPrepared || p.config.Secret != config.Secret {
@@ -434,11 +410,11 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	capabilityValue, scope, _, cleanup := newSAMLScopedSecretHarness(
+	secrets, scope, _, cleanup := newSAMLScopedSecretHarness(
 		t, 1, "test-route", cfg, samlTestSecretValues(cfg),
 	)
 	t.Cleanup(cleanup)
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
@@ -1111,11 +1087,11 @@ func TestMaterializeSecretsRejectsInvalidSPKeyPair(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	capabilityValue, scope, _, cleanup := newSAMLScopedSecretHarness(
+	secrets, scope, _, cleanup := newSAMLScopedSecretHarness(
 		t, 1, "invalid-key", cfg, samlTestSecretValues(cfg),
 	)
 	t.Cleanup(cleanup)
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err == nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err == nil {
 		t.Fatal("MaterializeScopedPluginSecrets() error = nil, want invalid SP key pair rejection")
 	}
 }

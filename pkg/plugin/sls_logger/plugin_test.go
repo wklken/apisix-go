@@ -143,12 +143,6 @@ type slsScopedSecretBroker struct {
 	calls  []slsScopedSecretCall
 }
 
-func (*slsScopedSecretBroker) AuthorizeCandidate(
-	context.Context, secret.AttemptID, generation.ApplyTicket, generation.PublicationSet,
-) error {
-	return nil
-}
-
 func (broker *slsScopedSecretBroker) ResolveScoped(
 	ctx context.Context, scope secret.Scope, raw string,
 ) (string, error) {
@@ -168,10 +162,6 @@ func (broker *slsScopedSecretBroker) ResolveScoped(
 	return value, nil
 }
 
-func (*slsScopedSecretBroker) RevokeAttempt(context.Context, secret.AttemptID) error {
-	return nil
-}
-
 func (broker *slsScopedSecretBroker) callsSnapshot() []slsScopedSecretCall {
 	broker.mu.Lock()
 	defer broker.mu.Unlock()
@@ -185,7 +175,7 @@ func newSLSScopedSecretHarness(
 	config Config,
 	values map[string]string,
 	keyring ...string,
-) (secret.GenerationCapability, secret.Scope, *slsScopedSecretBroker, func()) {
+) (secret.GenerationSecrets, secret.Scope, *slsScopedSecretBroker, func()) {
 	t.Helper()
 	key := generation.ResourceKey{Kind: "routes", ID: resourceID}
 	document, err := json.Marshal(map[string]any{
@@ -211,11 +201,6 @@ func newSLSScopedSecretHarness(
 			Key: key, Disposition: generation.DispositionPublished, Code: "sls-test",
 		}},
 	}
-	ticket := generation.ApplyTicket{
-		DesiredRevision: revision,
-		DesiredDigest:   snapshot.Digest(),
-		RequiredDomains: []generation.Domain{generation.DomainHTTP},
-	}
 	publication := generation.PublicationSet{
 		DesiredRevision: revision,
 		Domains: map[generation.Domain]generation.PublicationCandidate{
@@ -231,28 +216,22 @@ func newSLSScopedSecretHarness(
 		t.Fatal(err)
 	}
 	broker := &slsScopedSecretBroker{values: values, fail: make(map[string]error)}
-	registration, err := testutil.NewSecretMaterializerWithKeyring(broker, catalog, keyring).RegisterCandidate(
-		context.Background(), ticket, publication,
-	)
+	materialization, err := testutil.NewSecretMaterializerWithKeyring(broker, catalog, keyring).
+		PrepareGeneration(context.Background(), publication)
 	if err != nil {
 		t.Fatal(err)
 	}
-	capabilityValue, err := secret.NewGenerationCapability(registration, revision)
-	if err != nil {
-		_ = registration.Close(context.Background())
-		t.Fatal(err)
-	}
+	secrets := materialization.Secrets()
 	scope := secret.Scope{
 		Generation: revision,
-		Attempt:    registration.AttemptID(),
 		Domain:     generation.DomainHTTP,
 		Plugin:     name,
 		Resource:   key,
 		Source:     capability.SecretPluginConfig,
 	}
-	return capabilityValue, scope, broker, func() {
-		if err := registration.Close(context.Background()); err != nil {
-			t.Errorf("close SLS scoped attempt: %v", err)
+	return secrets, scope, broker, func() {
+		if err := materialization.Close(context.Background()); err != nil {
+			t.Errorf("close SLS scoped generation: %v", err)
 		}
 	}
 }
@@ -278,7 +257,7 @@ func TestMaterializeScopedSecretsRetainsGenerationPrivateSLSSecret(t *testing.T)
 				Host: "127.0.0.1", Port: 10009, Project: "project-a", Logstore: "store-a",
 				AccessKeyID: "id", AccessKeySecret: tt.raw,
 			}
-			capabilityValue, scope, broker, closeAttempt := newSLSScopedSecretHarness(
+			secrets, scope, broker, closeAttempt := newSLSScopedSecretHarness(
 				t, uint64(index+1), "sls-"+tt.name, config,
 				map[string]string{tt.raw: tt.resolved},
 				"qeddd145sfvddff3",
@@ -289,7 +268,7 @@ func TestMaterializeScopedSecretsRetainsGenerationPrivateSLSSecret(t *testing.T)
 				t.Fatal(err)
 			}
 			if err := base.MaterializeScopedPluginSecrets(
-				context.Background(), scope, capabilityValue, p,
+				context.Background(), scope, secrets, p,
 			); err != nil {
 				t.Fatal(err)
 			}
@@ -353,7 +332,7 @@ func TestMaterializeScopedSecretsRetainsGenerationPrivateSLSSecret(t *testing.T)
 
 	const failedRaw = "$secret://vault/sls/failure-private"
 	config := Config{AccessKeySecret: failedRaw}
-	capabilityValue, scope, broker, closeAttempt := newSLSScopedSecretHarness(
+	secrets, scope, broker, closeAttempt := newSLSScopedSecretHarness(
 		t, 10, "sls-retry", config, map[string]string{failedRaw: "recovered-private"},
 	)
 	defer closeAttempt()
@@ -362,7 +341,7 @@ func TestMaterializeScopedSecretsRetainsGenerationPrivateSLSSecret(t *testing.T)
 	if err := p.Init(); err != nil {
 		t.Fatal(err)
 	}
-	err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p)
+	err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p)
 	if !errors.Is(err, secret.ErrCredentialUnavailable) || strings.Contains(err.Error(), failedRaw) {
 		t.Fatalf("first materialization error = %v, want redacted unavailable", err)
 	}
@@ -373,7 +352,7 @@ func TestMaterializeScopedSecretsRetainsGenerationPrivateSLSSecret(t *testing.T)
 	delete(broker.fail, failedRaw)
 	broker.mu.Unlock()
 	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, capabilityValue, p,
+		context.Background(), scope, secrets, p,
 	); err != nil {
 		t.Fatalf("same-instance retry error = %v", err)
 	}
@@ -385,7 +364,7 @@ func TestMaterializeScopedSecretsRetainsGenerationPrivateSLSSecret(t *testing.T)
 func TestSLSScopedMaterializationIsSingleFlightAndRejectsBlankResolvedSecret(t *testing.T) {
 	const raw = "$ENV://SLS_SINGLEFLIGHT_ACCESS_KEY_SECRET"
 	config := Config{AccessKeySecret: raw}
-	capabilityValue, scope, broker, closeAttempt := newSLSScopedSecretHarness(
+	secrets, scope, broker, closeAttempt := newSLSScopedSecretHarness(
 		t, 20, "sls-singleflight", config, map[string]string{raw: " \t\n "},
 	)
 	defer closeAttempt()
@@ -393,7 +372,7 @@ func TestSLSScopedMaterializationIsSingleFlightAndRejectsBlankResolvedSecret(t *
 	if err := p.Init(); err != nil {
 		t.Fatal(err)
 	}
-	err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p)
+	err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p)
 	if !errors.Is(err, secret.ErrCredentialUnavailable) {
 		t.Fatalf("blank materialization error = %v, want unavailable", err)
 	}
@@ -412,7 +391,7 @@ func TestSLSScopedMaterializationIsSingleFlightAndRejectsBlankResolvedSecret(t *
 		group.Go(func() {
 			<-start
 			errs <- base.MaterializeScopedPluginSecrets(
-				context.Background(), scope, capabilityValue, p,
+				context.Background(), scope, secrets, p,
 			)
 		})
 	}
@@ -480,14 +459,14 @@ func newTestPluginWithMetadataAndStaticConfig(
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	capabilityValue, scope, closeAttempt := testutil.ScopedSecretHarness(
+	secrets, scope, closeAttempt := testutil.ScopedSecretHarness(
 		t,
 		name,
 		nil,
 		generation.ApplyTicket{DesiredRevision: 1, RequiredDomains: []generation.Domain{generation.DomainHTTP}},
 	)
 	t.Cleanup(closeAttempt)
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if p.TaskOwner() == nil {
@@ -1329,14 +1308,14 @@ func TestMetadataDecodeFailsBeforeSLSProcessorAcquisition(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	capabilityValue, scope, cleanup := testutil.ScopedSecretHarness(
+	secrets, scope, cleanup := testutil.ScopedSecretHarness(
 		t,
 		name,
 		nil,
 		generation.ApplyTicket{DesiredRevision: 1, RequiredDomains: []generation.Domain{generation.DomainHTTP}},
 	)
 	defer cleanup()
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	t.Cleanup(p.Stop)

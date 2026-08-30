@@ -21,6 +21,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/runtime"
 	"github.com/wklken/apisix-go/pkg/secret"
+	"github.com/wklken/apisix-go/pkg/testutil"
 )
 
 type workerTestConsumerPreparer struct {
@@ -30,7 +31,7 @@ type workerTestConsumerPreparer struct {
 
 func (p workerTestConsumerPreparer) PrepareConsumers(
 	context.Context,
-	PreparationAttempt,
+	PreparationGeneration,
 ) (*runtime.ConsumerBindings, error) {
 	return p.bindings, p.err
 }
@@ -42,7 +43,7 @@ type workerTestMetadataPreparer struct {
 
 func (p workerTestMetadataPreparer) PrepareMetadata(
 	context.Context,
-	PreparationAttempt,
+	PreparationGeneration,
 ) (runtime.MetadataView, error) {
 	return p.view, p.err
 }
@@ -63,12 +64,12 @@ func TestWorkerCompilerFactoryPrepareGenerationTransfersBaseOwners(t *testing.T)
 		t.Fatal(err)
 	}
 	wantTrace := []string{
-		"register-final-publication-set",
-		"attempt-and-capability-ready",
+		"prepare-generation-secrets",
+		"generation-secrets-ready",
 		"create-task-registry",
 		"prepare-consumers",
 		"prepare-metadata",
-		"bind-private-materializer-authority",
+		"bind-generation-secrets",
 		"compile-http-snapshot",
 		"compile-stream-snapshot",
 		"transfer-prepared-generation",
@@ -76,8 +77,8 @@ func TestWorkerCompilerFactoryPrepareGenerationTransfersBaseOwners(t *testing.T)
 	if !slices.Equal(trace, wantTrace) {
 		t.Fatalf("prepare trace = %v, want %v", trace, wantTrace)
 	}
-	if prepared.attempt.AttemptID() != materializer.registration.id {
-		t.Fatal("prepared attempt differs from the registered attempt")
+	if prepared.preparation.Generation() != materializer.registration.generation {
+		t.Fatal("prepared generation differs from the materialized generation")
 	}
 	if prepared.tasks == nil || prepared.consumers == nil || prepared.lookup.bindings == nil ||
 		prepared.materializer != materializer || prepared.registry != factory.registry ||
@@ -286,11 +287,11 @@ func TestWorkerCompilerFactoryPrepareGenerationPublicationFailureHasNoOwners(t *
 
 func TestWorkerCompilerFactoryPrepareGenerationCancellationWindows(t *testing.T) {
 	stages := []string{
-		"attempt-and-capability-ready",
+		"generation-secrets-ready",
 		"create-task-registry",
 		"prepare-consumers",
 		"prepare-metadata",
-		"bind-private-materializer-authority",
+		"bind-generation-secrets",
 		"compile-http-snapshot",
 		"compile-stream-snapshot",
 	}
@@ -661,7 +662,10 @@ func TestWorkerCompilerFactoryPrepareGenerationUsesRealAliasAndCatalog(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	materializer := &workerTestMaterializer{digest: compiler.schemas.catalog.Digest()}
+	materializer := &workerTestMaterializer{
+		digest:   compiler.schemas.catalog.Digest(),
+		delegate: testutil.NewSecretMaterializer(&workerTestRegistration{}, compiler.schemas.catalog),
+	}
 	factory, err := NewWorkerCompilerFactory(
 		manifest, workerTestEffective(manifest), materializer, workerTestRuntimeObservers(),
 	)
@@ -773,7 +777,7 @@ func TestWorkerCompilerFactoryPrepareGenerationConcurrentOwners(t *testing.T) {
 		prepared = append(prepared, result)
 	}
 	if len(prepared) != 2 || prepared[0].tasks == prepared[1].tasks ||
-		prepared[0].attempt.AttemptID() == prepared[1].attempt.AttemptID() ||
+		prepared[0].preparation.Generation() == prepared[1].preparation.Generation() ||
 		prepared[0].cleanup == prepared[1].cleanup || prepared[0].consumers == prepared[1].consumers ||
 		prepared[0].registry != prepared[1].registry || prepared[0].registry != factory.registry {
 		t.Fatalf("concurrent owner identities are not isolated: %#v", prepared)
@@ -823,7 +827,7 @@ func TestWorkerCompilerFactoryPrepareGenerationRejectsLiveAttemptCollision(t *te
 		t.Fatalf("collision successes/failures = %d/%d, want 1/1", successes, failures)
 	}
 	factory.liveMu.Lock()
-	tracked := factory.live[successful.attempt.AttemptID()]
+	tracked := factory.live[successful.preparation.Generation()]
 	factory.liveMu.Unlock()
 	if tracked != successful {
 		t.Fatal("collision replaced the previously tracked live owner")
@@ -853,7 +857,8 @@ func TestWorkerCompilerFactoryPrepareGenerationRejectsLiveAttemptCollision(t *te
 type workerTestContextKey struct{}
 
 type workerTestRegistration struct {
-	id          secret.AttemptID
+	generation  uint64
+	delegate    secret.GenerationMaterialization
 	closeCtxErr error
 	closeValue  any
 	closed      int
@@ -861,14 +866,16 @@ type workerTestRegistration struct {
 	onClose     func()
 }
 
-func (r *workerTestRegistration) AttemptID() secret.AttemptID { return r.id }
+func (r *workerTestRegistration) Secrets() secret.GenerationSecrets {
+	return r.delegate.Secrets()
+}
 
-func (*workerTestRegistration) Materialize(
+func (*workerTestRegistration) ResolveScoped(
 	context.Context,
 	secret.Scope,
 	string,
-) (secret.Value, error) {
-	return secret.Value{}, errors.New("unexpected materialization")
+) (string, error) {
+	return "", errors.New("unexpected materialization")
 }
 
 func (r *workerTestRegistration) Close(ctx context.Context) error {
@@ -878,12 +885,16 @@ func (r *workerTestRegistration) Close(ctx context.Context) error {
 	if r.onClose != nil {
 		r.onClose()
 	}
+	if r.delegate != nil {
+		_ = r.delegate.Close(ctx)
+	}
 	return r.closeErr
 }
 
 type workerTestMaterializer struct {
 	mu            sync.Mutex
 	digest        [32]byte
+	delegate      secret.Materializer
 	registration  *workerTestRegistration
 	registrations []*workerTestRegistration
 	registered    generation.PublicationSet
@@ -893,19 +904,26 @@ type workerTestMaterializer struct {
 	registerErr   error
 }
 
-func (m *workerTestMaterializer) RegisterCandidate(
-	_ context.Context,
-	ticket generation.ApplyTicket,
+func (m *workerTestMaterializer) PrepareGeneration(
+	ctx context.Context,
 	set generation.PublicationSet,
-) (secret.AttemptRegistration, error) {
+) (secret.GenerationMaterialization, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.registered = clonePublicationSetForPreparation(set)
 	if m.trace != nil {
-		m.trace("register-final-publication-set")
+		m.trace("prepare-generation-secrets")
+	}
+	if m.delegate == nil {
+		return nil, secret.ErrInvalidCapability
+	}
+	delegate, err := m.delegate.PrepareGeneration(ctx, set)
+	if err != nil {
+		return nil, err
 	}
 	m.registration = &workerTestRegistration{
-		id: secret.CandidateAttemptID(ticket, set), closeErr: m.closeErr, onClose: m.onClose,
+		generation: set.DesiredRevision, delegate: delegate,
+		closeErr: m.closeErr, onClose: m.onClose,
 	}
 	m.registrations = append(m.registrations, m.registration)
 	return m.registration, m.registerErr
@@ -915,7 +933,13 @@ func (m *workerTestMaterializer) DeclarationDigest() [32]byte {
 	if m == nil {
 		return [32]byte{}
 	}
-	return m.digest
+	if m.digest != ([32]byte{}) {
+		return m.digest
+	}
+	if m.delegate == nil {
+		return [32]byte{}
+	}
+	return m.delegate.DeclarationDigest()
 }
 
 func (m *workerTestMaterializer) registrationsSnapshot() []*workerTestRegistration {
@@ -931,7 +955,10 @@ func newWorkerTestFactory(t *testing.T) (*WorkerCompilerFactory, *workerTestMate
 	if err != nil {
 		t.Fatal(err)
 	}
-	materializer := &workerTestMaterializer{digest: compiler.schemas.catalog.Digest()}
+	materializer := &workerTestMaterializer{
+		digest:   compiler.schemas.catalog.Digest(),
+		delegate: testutil.NewSecretMaterializer(&workerTestRegistration{}, compiler.schemas.catalog),
+	}
 	factory, err := NewWorkerCompilerFactory(
 		manifest, workerTestEffective(manifest), materializer, workerTestRuntimeObservers(),
 	)

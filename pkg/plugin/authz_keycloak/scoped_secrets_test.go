@@ -36,12 +36,6 @@ type scopedSecretBroker struct {
 	hook   func(scopedSecretCall)
 }
 
-func (*scopedSecretBroker) AuthorizeCandidate(
-	context.Context, secret.AttemptID, generation.ApplyTicket, generation.PublicationSet,
-) error {
-	return nil
-}
-
 func (broker *scopedSecretBroker) ResolveScoped(
 	ctx context.Context, scope secret.Scope, raw string,
 ) (string, error) {
@@ -66,8 +60,6 @@ func (broker *scopedSecretBroker) ResolveScoped(
 	}
 	return raw, nil
 }
-
-func (*scopedSecretBroker) RevokeAttempt(context.Context, secret.AttemptID) error { return nil }
 
 func (broker *scopedSecretBroker) callsSnapshot() []scopedSecretCall {
 	broker.mu.Lock()
@@ -105,7 +97,7 @@ func (broker *scopedSecretBroker) setHook(hook func(scopedSecretCall)) {
 
 func newScopedSecretHarness(
 	t *testing.T, revision uint64, resourceID string, values map[string]string, keyring ...string,
-) (secret.GenerationCapability, secret.Scope, *scopedSecretBroker, func()) {
+) (secret.GenerationSecrets, secret.Scope, *scopedSecretBroker, func()) {
 	t.Helper()
 	key := generation.ResourceKey{Kind: "routes", ID: resourceID}
 	snapshot, err := generation.NewSnapshot(revision, []generation.Resource{{
@@ -125,9 +117,6 @@ func newScopedSecretHarness(
 			Key: key, Disposition: generation.DispositionPublished, Code: "leaf-test",
 		}},
 	}
-	ticket := generation.ApplyTicket{
-		DesiredRevision: revision, RequiredDomains: []generation.Domain{generation.DomainHTTP},
-	}
 	set := generation.PublicationSet{
 		DesiredRevision: revision,
 		Domains: map[generation.Domain]generation.PublicationCandidate{
@@ -143,25 +132,21 @@ func newScopedSecretHarness(
 		t.Fatal(err)
 	}
 	broker := &scopedSecretBroker{values: maps.Clone(values), fail: make(map[string]error)}
-	registration, err := testutil.NewSecretMaterializerWithKeyring(broker, catalog, keyring).
-		RegisterCandidate(context.Background(), ticket, set)
+	materialization, err := testutil.NewSecretMaterializerWithKeyring(broker, catalog, keyring).
+		PrepareGeneration(context.Background(), set)
 	if err != nil {
 		t.Fatal(err)
 	}
-	capabilityValue, err := secret.NewGenerationCapability(registration, revision)
-	if err != nil {
-		t.Fatal(err)
-	}
+	secrets := materialization.Secrets()
 	baseScope := secret.Scope{
 		Generation: revision,
-		Attempt:    registration.AttemptID(),
 		Domain:     generation.DomainHTTP,
 		Plugin:     name,
 		Resource:   key,
 		Source:     capability.SecretPluginConfig,
 	}
-	return capabilityValue, baseScope, broker, func() {
-		if err := registration.Close(context.Background()); err != nil {
+	return secrets, baseScope, broker, func() {
+		if err := materialization.Close(context.Background()); err != nil {
 			t.Fatalf("close scoped secret registration: %v", err)
 		}
 	}
@@ -182,12 +167,12 @@ func scopedKeycloakDescriptor(plaintext string) string {
 func materializeScopedKeycloak(
 	t *testing.T,
 	p *Plugin,
-	capabilityValue secret.GenerationCapability,
+	secrets secret.GenerationSecrets,
 	scope secret.Scope,
 ) {
 	t.Helper()
 	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, capabilityValue, p,
+		context.Background(), scope, secrets, p,
 	); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
@@ -227,7 +212,7 @@ func TestScopedSecretsMaterializeKeycloakClientSecret(t *testing.T) {
 	}))
 	t.Cleanup(keycloak.Close)
 
-	capabilityValue, scope, broker, closeAttempt := newScopedSecretHarness(
+	secrets, scope, broker, closeAttempt := newScopedSecretHarness(
 		t, 7, "materialize", map[string]string{raw: plaintext},
 	)
 	defer closeAttempt()
@@ -235,7 +220,7 @@ func TestScopedSecretsMaterializeKeycloakClientSecret(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatal(err)
 	}
-	materializeScopedKeycloak(t, p, capabilityValue, scope)
+	materializeScopedKeycloak(t, p, secrets, scope)
 	if got := p.config.ClientSecret; got != scopedKeycloakDescriptor(plaintext) {
 		t.Fatalf("client_secret descriptor = %q, want resolved content descriptor", got)
 	}
@@ -258,13 +243,13 @@ func TestScopedSecretsMaterializeKeycloakClientSecret(t *testing.T) {
 }
 
 func TestScopedSecretsSkipEmptyKeycloakClientSecret(t *testing.T) {
-	capabilityValue, scope, broker, closeAttempt := newScopedSecretHarness(t, 8, "empty", nil)
+	secrets, scope, broker, closeAttempt := newScopedSecretHarness(t, 8, "empty", nil)
 	defer closeAttempt()
 	p := &Plugin{config: scopedKeycloakConfig("http://keycloak.test/token", "")}
 	if err := p.Init(); err != nil {
 		t.Fatal(err)
 	}
-	materializeScopedKeycloak(t, p, capabilityValue, scope)
+	materializeScopedKeycloak(t, p, secrets, scope)
 	if calls := broker.callsSnapshot(); len(calls) != 0 {
 		t.Fatalf("empty optional client secret broker calls = %#v, want none", calls)
 	}
@@ -291,7 +276,7 @@ func TestScopedSecretsResolveManagedKeycloakClientSecret(t *testing.T) {
 		raw       = "$secret://vault/keycloak/client-secret"
 		plaintext = "managed-client-secret"
 	)
-	capabilityValue, scope, broker, closeAttempt := newScopedSecretHarness(
+	secrets, scope, broker, closeAttempt := newScopedSecretHarness(
 		t, 9, "managed", map[string]string{raw: plaintext},
 	)
 	defer closeAttempt()
@@ -299,7 +284,7 @@ func TestScopedSecretsResolveManagedKeycloakClientSecret(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatal(err)
 	}
-	materializeScopedKeycloak(t, p, capabilityValue, scope)
+	materializeScopedKeycloak(t, p, secrets, scope)
 	assertScopedKeycloakCall(t, scope, broker.callsSnapshot(), raw)
 	if p.config.ClientSecret != scopedKeycloakDescriptor(plaintext) {
 		t.Fatalf("managed descriptor = %q", p.config.ClientSecret)
@@ -318,14 +303,14 @@ func TestScopedKeycloakCacheIdentityUsesDigestNotCredential(t *testing.T) {
 	const raw = "$ENV://AUTHZ_KEYCLOAK_CACHE_IDENTITY"
 	keys := make([]string, 0, 2)
 	for index, plaintext := range []string{"cache-secret-a", "cache-secret-b"} {
-		capabilityValue, scope, _, closeAttempt := newScopedSecretHarness(
+		secrets, scope, _, closeAttempt := newScopedSecretHarness(
 			t, uint64(10+index), fmt.Sprintf("cache-%d", index), map[string]string{raw: plaintext},
 		)
 		p := &Plugin{config: scopedKeycloakConfig("http://keycloak.test/token", raw)}
 		if err := p.Init(); err != nil {
 			t.Fatal(err)
 		}
-		materializeScopedKeycloak(t, p, capabilityValue, scope)
+		materializeScopedKeycloak(t, p, secrets, scope)
 		key := p.serviceAccountCacheKey("http://keycloak.test/token")
 		for _, sensitive := range []string{raw, plaintext, p.config.ClientSecret} {
 			if strings.Contains(key, sensitive) {
@@ -357,7 +342,7 @@ func TestScopedSecretsKeycloakModesUseResolvedContentDescriptors(t *testing.T) {
 		{name: "managed", raw: "$secret://vault/keycloak/mode-secret", plaintext: "managed-client-secret"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			capabilityValue, scope, broker, closeAttempt := newScopedSecretHarness(
+			secrets, scope, broker, closeAttempt := newScopedSecretHarness(
 				t, uint64(20+index), fmt.Sprintf("mode-%d", index),
 				map[string]string{test.raw: test.plaintext},
 				"0123456789abcdef",
@@ -367,7 +352,7 @@ func TestScopedSecretsKeycloakModesUseResolvedContentDescriptors(t *testing.T) {
 			if err := p.Init(); err != nil {
 				t.Fatal(err)
 			}
-			materializeScopedKeycloak(t, p, capabilityValue, scope)
+			materializeScopedKeycloak(t, p, secrets, scope)
 			assertScopedKeycloakCall(t, scope, broker.callsSnapshot(), test.raw)
 			if got := p.config.ClientSecret; got != scopedKeycloakDescriptor(test.plaintext) {
 				t.Fatalf("descriptor = %q, want resolved content digest", got)
@@ -393,7 +378,7 @@ func TestScopedSecretsKeycloakFailureAndBlankAreAtomicAndRetryable(t *testing.T)
 		{name: "resolved whitespace", value: " \t\n"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			capabilityValue, scope, broker, closeAttempt := newScopedSecretHarness(
+			secrets, scope, broker, closeAttempt := newScopedSecretHarness(
 				t, 30, "retry-"+strings.ReplaceAll(test.name, " ", "-"), map[string]string{raw: test.value},
 			)
 			defer closeAttempt()
@@ -404,7 +389,7 @@ func TestScopedSecretsKeycloakFailureAndBlankAreAtomicAndRetryable(t *testing.T)
 			if err := p.Init(); err != nil {
 				t.Fatal(err)
 			}
-			err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p)
+			err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p)
 			if err == nil || err.Error() != "materialize plugin secrets: credential unavailable" {
 				t.Fatalf("first materialization error = %v, want redacted credential unavailable", err)
 			}
@@ -419,7 +404,7 @@ func TestScopedSecretsKeycloakFailureAndBlankAreAtomicAndRetryable(t *testing.T)
 			broker.setFailure(raw, nil)
 			broker.setValue(raw, "retry-client-secret")
 			broker.resetCalls()
-			materializeScopedKeycloak(t, p, capabilityValue, scope)
+			materializeScopedKeycloak(t, p, secrets, scope)
 			assertScopedKeycloakCall(t, scope, broker.callsSnapshot(), raw)
 			if p.config.ClientSecret != scopedKeycloakDescriptor("retry-client-secret") {
 				t.Fatalf("retry descriptor = %q", p.config.ClientSecret)
@@ -433,7 +418,7 @@ func TestScopedSecretsKeycloakConcurrentMaterializationIsSingleFlight(t *testing
 		raw     = "$ENV://KEYCLOAK_SINGLEFLIGHT_SECRET"
 		workers = 32
 	)
-	capabilityValue, scope, broker, closeAttempt := newScopedSecretHarness(
+	secrets, scope, broker, closeAttempt := newScopedSecretHarness(
 		t, 40, "singleflight", map[string]string{raw: "singleflight-client-secret"},
 	)
 	defer closeAttempt()
@@ -456,7 +441,7 @@ func TestScopedSecretsKeycloakConcurrentMaterializationIsSingleFlight(t *testing
 		go func() {
 			ready.Done()
 			<-start
-			errs <- base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p)
+			errs <- base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p)
 		}()
 	}
 	ready.Wait()
@@ -507,14 +492,14 @@ func TestKeycloakGenerationInstancesDoNotCrossUseClientSecrets(t *testing.T) {
 	closures := make([]func(), 0, 2)
 	for index, plaintext := range []string{"generation-n-secret", "generation-n-plus-one-secret"} {
 		raw := fmt.Sprintf("$ENV://KEYCLOAK_GENERATION_%d", index)
-		capabilityValue, scope, _, closeAttempt := newScopedSecretHarness(
+		secrets, scope, _, closeAttempt := newScopedSecretHarness(
 			t, uint64(50+index), fmt.Sprintf("generation-%d", index), map[string]string{raw: plaintext},
 		)
 		p := &Plugin{config: scopedKeycloakConfig(keycloak.URL, raw)}
 		if err := p.Init(); err != nil {
 			t.Fatal(err)
 		}
-		materializeScopedKeycloak(t, p, capabilityValue, scope)
+		materializeScopedKeycloak(t, p, secrets, scope)
 		if err := p.PostInit(); err != nil {
 			t.Fatal(err)
 		}
@@ -592,10 +577,10 @@ func prepareKeycloakStopPlugin(t *testing.T, endpoint, clientSecret string) (*Pl
 	}
 	raw := "$ENV://KEYCLOAK_STOP_SCOPED"
 	p.config.ClientSecret = raw
-	capabilityValue, scope, _, closeScopedAttempt := newScopedSecretHarness(
+	secrets, scope, _, closeScopedAttempt := newScopedSecretHarness(
 		t, 60, "stop-scoped", map[string]string{raw: clientSecret},
 	)
-	materializeScopedKeycloak(t, p, capabilityValue, scope)
+	materializeScopedKeycloak(t, p, secrets, scope)
 	if err := p.PostInit(); err != nil {
 		closeScopedAttempt()
 		t.Fatal(err)
@@ -761,7 +746,7 @@ func TestKeycloakTokenFormsStayInsideCredentialCallbackAndStopBarrier(t *testing
 
 func TestScopedSecretsKeycloakStopDuringMaterializeCannotRevive(t *testing.T) {
 	const raw = "$ENV://KEYCLOAK_STOP_DURING_MATERIALIZE"
-	capabilityValue, scope, broker, closeAttempt := newScopedSecretHarness(
+	secrets, scope, broker, closeAttempt := newScopedSecretHarness(
 		t, 70, "stop-materialize", map[string]string{raw: "late-client-secret"},
 	)
 	defer closeAttempt()
@@ -778,7 +763,7 @@ func TestScopedSecretsKeycloakStopDuringMaterializeCannotRevive(t *testing.T) {
 	}
 	done := make(chan error, 1)
 	go func() {
-		done <- base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p)
+		done <- base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p)
 	}()
 	select {
 	case <-entered:
@@ -795,7 +780,7 @@ func TestScopedSecretsKeycloakStopDuringMaterializeCannotRevive(t *testing.T) {
 	}
 	callCount := len(broker.callsSnapshot())
 	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, capabilityValue, p,
+		context.Background(), scope, secrets, p,
 	); err == nil {
 		t.Fatal("materialization after Stop() error = nil")
 	}

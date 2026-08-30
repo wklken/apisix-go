@@ -41,14 +41,14 @@ func BenchmarkStaticConfigPath(b *testing.B) {
 	if err := p.Init(); err != nil {
 		b.Fatalf("Init() error = %v", err)
 	}
-	capabilityValue, scope, closeAttempt := testutil.ScopedSecretHarness(
+	secrets, scope, closeAttempt := testutil.ScopedSecretHarness(
 		b,
 		name,
 		nil,
 		generation.ApplyTicket{DesiredRevision: 1, RequiredDomains: []generation.Domain{generation.DomainHTTP}},
 	)
 	b.Cleanup(closeAttempt)
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		b.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {

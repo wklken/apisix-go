@@ -11,88 +11,63 @@ import (
 	"github.com/wklken/apisix-go/pkg/secret"
 )
 
-// SecretAttemptBroker is the narrow test seam for observing attempt
-// authorization, resolution, and cleanup while exercising the production
-// secret.Materializer implementation.
-type SecretAttemptBroker interface {
-	secret.ScopedResolver
-	AuthorizeCandidate(
-		context.Context,
-		secret.AttemptID,
-		generation.ApplyTicket,
-		generation.PublicationSet,
-	) error
-	RevokeAttempt(context.Context, secret.AttemptID) error
+// SecretResolver is the narrow test seam for external reference resolution.
+type SecretResolver interface {
+	ResolveScoped(context.Context, secret.Scope, string) (string, error)
 }
 
 type secretResolverFactory struct {
-	broker SecretAttemptBroker
+	resolver SecretResolver
 }
 
-func (factory *secretResolverFactory) OpenCandidate(
-	ctx context.Context,
-	id secret.AttemptID,
-	ticket generation.ApplyTicket,
-	set generation.PublicationSet,
-) (secret.AttemptResolver, error) {
-	if factory == nil || factory.broker == nil {
+func (factory *secretResolverFactory) OpenGeneration(
+	_ context.Context,
+	_ uint64,
+	_ generation.PublicationSet,
+) (secret.GenerationResolver, error) {
+	if factory == nil || factory.resolver == nil {
 		return nil, secret.ErrInvalidCapability
 	}
-	if err := factory.broker.AuthorizeCandidate(ctx, id, ticket, set); err != nil {
-		return nil, err
-	}
-	return &secretAttemptResolver{broker: factory.broker, id: id}, nil
+	return &generationResolver{resolver: factory.resolver}, nil
 }
 
-type secretAttemptResolver struct {
-	broker SecretAttemptBroker
-	id     secret.AttemptID
+type generationResolver struct {
+	resolver SecretResolver
 }
 
-func (resolver *secretAttemptResolver) ResolveScoped(
+func (resolver *generationResolver) ResolveReference(
 	ctx context.Context,
 	scope secret.Scope,
 	raw string,
 ) (string, error) {
-	return resolver.broker.ResolveScoped(ctx, scope, raw)
+	return resolver.resolver.ResolveScoped(ctx, scope, raw)
 }
 
-func (resolver *secretAttemptResolver) Close(ctx context.Context) error {
-	return resolver.broker.RevokeAttempt(ctx, resolver.id)
-}
+func (*generationResolver) Close(context.Context) error { return nil }
 
 // NewSecretMaterializer adapts a test broker to the production resolver
-// factory. Registration, scope validation, declaration admission, attempt
-// ownership, and cleanup remain owned by secret.NewMaterializer.
+// factory. Scope validation, declaration admission, and generation cleanup
+// remain owned by secret.NewMaterializer.
 func NewSecretMaterializer(
-	broker SecretAttemptBroker,
+	resolver SecretResolver,
 	catalog *capability.SecretDeclarationCatalog,
 ) secret.Materializer {
-	return NewSecretMaterializerWithKeyring(broker, catalog, nil)
+	return NewSecretMaterializerWithKeyring(resolver, catalog, nil)
 }
 
 // NewSecretMaterializerWithKeyring creates the same configured service used by
 // production while keeping test key material at the fixture boundary.
 func NewSecretMaterializerWithKeyring(
-	broker SecretAttemptBroker,
+	resolver SecretResolver,
 	catalog *capability.SecretDeclarationCatalog,
 	keyring []string,
 ) secret.Materializer {
 	service := data_encryption.NewService(len(keyring) > 0, keyring, catalog)
-	return secret.NewMaterializer(service, &secretResolverFactory{broker: broker})
+	return secret.NewMaterializer(service, &secretResolverFactory{resolver: resolver})
 }
 
 type scopedSecretBroker struct {
 	values map[string]string
-}
-
-func (*scopedSecretBroker) AuthorizeCandidate(
-	context.Context,
-	secret.AttemptID,
-	generation.ApplyTicket,
-	generation.PublicationSet,
-) error {
-	return nil
 }
 
 func (broker *scopedSecretBroker) ResolveScoped(
@@ -109,16 +84,14 @@ func (broker *scopedSecretBroker) ResolveScoped(
 	return raw, nil
 }
 
-func (*scopedSecretBroker) RevokeAttempt(context.Context, secret.AttemptID) error { return nil }
-
-// ScopedSecretHarness creates one HTTP route attempt for package and benchmark
+// ScopedSecretHarness creates one HTTP route generation for package and benchmark
 // tests that only need ordinary literal-or-mapped secret admission.
 func ScopedSecretHarness(
 	t testing.TB,
 	factory string,
 	values map[string]string,
 	ticket generation.ApplyTicket,
-) (secret.GenerationCapability, secret.Scope, func()) {
+) (secret.GenerationSecrets, secret.Scope, func()) {
 	t.Helper()
 	revision := ticket.DesiredRevision
 	resourceKey := generation.ResourceKey{Kind: "routes", ID: fmt.Sprintf("scoped-secret-%d", revision)}
@@ -153,26 +126,22 @@ func ScopedSecretHarness(
 	if err != nil {
 		t.Fatal(err)
 	}
-	registration, err := NewSecretMaterializer(
+	materialization, err := NewSecretMaterializer(
 		&scopedSecretBroker{values: values}, catalog,
-	).RegisterCandidate(context.Background(), ticket, set)
+	).PrepareGeneration(context.Background(), set)
 	if err != nil {
 		t.Fatal(err)
 	}
-	capabilityValue, err := secret.NewGenerationCapability(registration, revision)
-	if err != nil {
-		t.Fatal(err)
-	}
+	secrets := materialization.Secrets()
 	scope := secret.Scope{
 		Generation: revision,
-		Attempt:    registration.AttemptID(),
 		Domain:     generation.DomainHTTP,
 		Plugin:     factory,
 		Resource:   resourceKey,
 		Source:     capability.SecretPluginConfig,
 	}
-	return capabilityValue, scope, func() {
-		if closeErr := registration.Close(context.Background()); closeErr != nil {
+	return secrets, scope, func() {
+		if closeErr := materialization.Close(context.Background()); closeErr != nil {
 			t.Fatalf("close scoped secret fixture: %v", closeErr)
 		}
 	}

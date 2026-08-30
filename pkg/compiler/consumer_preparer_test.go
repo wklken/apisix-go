@@ -18,48 +18,38 @@ import (
 type consumerPreparationBroker struct {
 	resolved map[string]string
 	scopes   []secret.Scope
-	revoked  []secret.AttemptID
 }
 
 type consumerAttemptFactory struct {
-	registration *attemptFactory
+	registration *generationFactory
 	consumers    *consumerBindingPreparer
 }
 
 type preparedConsumerAttempt struct {
-	*registeredAttempt
+	*preparedSecretGeneration
 	consumers *runtime.ConsumerBindings
 }
 
-func (factory *consumerAttemptFactory) prepareCandidateAttempt(
+func (factory *consumerAttemptFactory) prepareGenerationSecrets(
 	ctx context.Context,
 	ticket generation.ApplyTicket,
 	desired generation.Snapshot,
 	previous map[generation.Domain]generation.PublishedGeneration,
 ) (*preparedConsumerAttempt, error) {
-	registered, err := factory.registration.prepareCandidateAttempt(ctx, ticket, desired, previous)
+	registered, err := factory.registration.prepareGenerationSecrets(ctx, ticket, desired, previous)
 	if err != nil {
 		return nil, err
 	}
-	consumers, err := factory.consumers.PrepareConsumers(ctx, registered.attempt)
+	consumers, err := factory.consumers.PrepareConsumers(ctx, registered.preparation)
 	if err != nil {
 		return nil, errors.Join(err, registered.Close(context.WithoutCancel(ctx)))
 	}
-	return &preparedConsumerAttempt{registeredAttempt: registered, consumers: consumers}, nil
+	return &preparedConsumerAttempt{preparedSecretGeneration: registered, consumers: consumers}, nil
 }
 
 func (prepared *preparedConsumerAttempt) Close(ctx context.Context) error {
 	prepared.consumers.Close()
-	return prepared.registeredAttempt.Close(ctx)
-}
-
-func (*consumerPreparationBroker) AuthorizeCandidate(
-	context.Context,
-	secret.AttemptID,
-	generation.ApplyTicket,
-	generation.PublicationSet,
-) error {
-	return nil
+	return prepared.preparedSecretGeneration.Close(ctx)
 }
 
 func (broker *consumerPreparationBroker) ResolveScoped(
@@ -75,14 +65,6 @@ func (broker *consumerPreparationBroker) ResolveScoped(
 	return resolved, nil
 }
 
-func (broker *consumerPreparationBroker) RevokeAttempt(
-	_ context.Context,
-	attempt secret.AttemptID,
-) error {
-	broker.revoked = append(broker.revoked, attempt)
-	return nil
-}
-
 func newConsumerAttemptFactory(
 	t *testing.T,
 	broker *consumerPreparationBroker,
@@ -94,7 +76,7 @@ func newConsumerAttemptFactory(
 	if err != nil {
 		t.Fatal(err)
 	}
-	factory, err := newAttemptFactory(compiler, materializer)
+	factory, err := newGenerationFactory(compiler, materializer)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +99,7 @@ func TestConsumerBindingPreparerMaterializesExactFinalConsumerOccurrences(t *tes
 	}, nil)
 	ticket := ticketForSnapshot(desired, generation.DomainHTTP)
 
-	prepared, err := factory.prepareCandidateAttempt(context.Background(), ticket, desired, nil)
+	prepared, err := factory.prepareGenerationSecrets(context.Background(), ticket, desired, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +122,7 @@ func TestConsumerBindingPreparerMaterializesExactFinalConsumerOccurrences(t *tes
 	}
 	fields := make(map[string]bool, len(broker.scopes))
 	for _, scope := range broker.scopes {
-		if scope.Generation != 51 || scope.Attempt != prepared.attempt.AttemptID() ||
+		if scope.Generation != 51 || scope.Generation != prepared.preparation.Generation() ||
 			scope.Domain != generation.DomainHTTP || scope.Plugin != "basic-auth" ||
 			scope.Resource != (generation.ResourceKey{Kind: "consumers", ID: "consumer-1"}) ||
 			scope.Source != capability.SecretConsumerConfig {
@@ -157,9 +139,6 @@ func TestConsumerBindingPreparerMaterializesExactFinalConsumerOccurrences(t *tes
 	}
 	if _, ok := prepared.consumers.ConsumerByPluginKey("basic-auth", "resolved-user"); ok {
 		t.Fatal("closed consumer bindings still expose credentials")
-	}
-	if len(broker.revoked) != 1 || broker.revoked[0] != prepared.attempt.AttemptID() {
-		t.Fatalf("revoked attempts = %x", broker.revoked)
 	}
 	raw, ok := desired.Lookup(generation.ResourceKey{Kind: "consumers", ID: "consumer-1"})
 	if !ok || !strings.Contains(string(raw), "$ENV://BASIC_USER") {
@@ -189,7 +168,7 @@ func TestConsumerBindingPreparerReturnsEmptyBindingsForStreamOnlyAndConsumerTomb
 		t.Run(name, func(t *testing.T) {
 			broker := &consumerPreparationBroker{}
 			factory, _ := newConsumerAttemptFactory(t, broker)
-			prepared, err := factory.prepareCandidateAttempt(
+			prepared, err := factory.prepareGenerationSecrets(
 				context.Background(), ticketForSnapshot(test.desired, test.domain), test.desired, nil,
 			)
 			if err != nil {
@@ -220,7 +199,7 @@ func TestConsumerBindingPreparerSkipsMissingOptionalDeclaredFields(t *testing.T)
 			`{"username":"jwt-consumer","plugins":{"jwt-auth":{"key":"$ENV://JWT_KEY","exp":60}}}`,
 		),
 	}, nil)
-	prepared, err := factory.prepareCandidateAttempt(
+	prepared, err := factory.prepareGenerationSecrets(
 		context.Background(), ticketForSnapshot(desired, generation.DomainHTTP), desired, nil,
 	)
 	if err != nil {
@@ -247,7 +226,7 @@ func TestConsumerBindingPreparerIndexesNonCredentialConsumerPlugin(t *testing.T)
 			`{"username":"rate-limited-consumer","plugins":{"limit-count":{"count":4,"time_window":60}}}`,
 		),
 	}, nil)
-	prepared, err := factory.prepareCandidateAttempt(
+	prepared, err := factory.prepareGenerationSecrets(
 		context.Background(), ticketForSnapshot(desired, generation.DomainHTTP), desired, nil,
 	)
 	if err != nil {
@@ -282,7 +261,7 @@ func TestConsumerBindingPreparerPreservesEmptyResolvedLookupCompatibility(t *tes
 			`{"username":"empty-user-consumer","plugins":{"basic-auth":{"username":"$ENV://EMPTY_USER","password":"$ENV://PASSWORD"}}}`,
 		),
 	}, nil)
-	prepared, err := factory.prepareCandidateAttempt(
+	prepared, err := factory.prepareGenerationSecrets(
 		context.Background(), ticketForSnapshot(desired, generation.DomainHTTP), desired, nil,
 	)
 	if err != nil {
@@ -317,7 +296,7 @@ func TestConsumerBindingPreparerRejectsDuplicateResolvedLookupWithoutCredentialL
 			`{"username":"consumer-two","plugins":{"basic-auth":{"username":"$ENV://USER_TWO","password":"$ENV://PASS_TWO"}}}`,
 		),
 	}, nil)
-	_, err := factory.prepareCandidateAttempt(
+	_, err := factory.prepareGenerationSecrets(
 		context.Background(), ticketForSnapshot(desired, generation.DomainHTTP), desired, nil,
 	)
 	if err == nil {
@@ -330,9 +309,6 @@ func TestConsumerBindingPreparerRejectsDuplicateResolvedLookupWithoutCredentialL
 		if strings.Contains(err.Error(), sensitive) {
 			t.Fatalf("duplicate error leaked %q: %v", sensitive, err)
 		}
-	}
-	if len(broker.revoked) != 1 {
-		t.Fatalf("failed attempt revocations = %x, want one", broker.revoked)
 	}
 }
 
@@ -368,7 +344,7 @@ func TestConsumerBindingPreparerFailedCandidatePreservesLastGoodGeneration(t *te
 	}
 
 	lastGoodSnapshot := consumerSnapshot(61, oldUserRef, oldPasswordRef)
-	lastGood, err := factory.prepareCandidateAttempt(
+	lastGood, err := factory.prepareGenerationSecrets(
 		context.Background(),
 		ticketForSnapshot(lastGoodSnapshot, generation.DomainHTTP),
 		lastGoodSnapshot,
@@ -390,7 +366,7 @@ func TestConsumerBindingPreparerFailedCandidatePreservesLastGoodGeneration(t *te
 	previous := map[generation.Domain]generation.PublishedGeneration{
 		generation.DomainHTTP: publishedForDomain(generation.DomainHTTP, lastGoodSnapshot),
 	}
-	if failed, prepareErr := factory.prepareCandidateAttempt(
+	if failed, prepareErr := factory.prepareGenerationSecrets(
 		context.Background(),
 		ticketForSnapshot(failedSnapshot, generation.DomainHTTP),
 		failedSnapshot,
@@ -409,7 +385,7 @@ func TestConsumerBindingPreparerFailedCandidatePreservesLastGoodGeneration(t *te
 	broker.resolved[newUserRef] = newResolvedUser
 	broker.resolved[newPasswordRef] = "next-password"
 	recoveredSnapshot := consumerSnapshot(63, newUserRef, newPasswordRef)
-	recovered, err := factory.prepareCandidateAttempt(
+	recovered, err := factory.prepareGenerationSecrets(
 		context.Background(),
 		ticketForSnapshot(recoveredSnapshot, generation.DomainHTTP),
 		recoveredSnapshot,
@@ -457,7 +433,7 @@ func TestConsumerBindingPreparerKeepsOverlappingGenerationsIndependent(t *testin
 				),
 			),
 		}, nil)
-		prepared, err := factory.prepareCandidateAttempt(
+		prepared, err := factory.prepareGenerationSecrets(
 			context.Background(), ticketForSnapshot(desired, generation.DomainHTTP), desired, nil,
 		)
 		if err != nil {
@@ -533,15 +509,12 @@ func TestConsumerBindingPreparerRejectsForeignOccurrenceBeforeMaterialization(t 
 		source:   capability.SecretConsumerConfig,
 		factory:  "basic-auth",
 	})
-	registration, err := materializer.RegisterCandidate(context.Background(), ticket, set)
+	materialization, err := materializer.PrepareGeneration(context.Background(), set)
 	if err != nil {
 		t.Fatal(err)
 	}
-	capabilityValue, err := secret.NewGenerationCapability(registration, desired.Revision())
-	if err != nil {
-		t.Fatal(err)
-	}
-	attempt, err := newPreparationAttempt(desired.Revision(), set.Domains, capabilityValue, specs)
+	secrets := materialization.Secrets()
+	attempt, err := newPreparationGeneration(desired.Revision(), set.Domains, secrets, specs)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -551,7 +524,7 @@ func TestConsumerBindingPreparerRejectsForeignOccurrenceBeforeMaterialization(t 
 	if len(broker.scopes) != 0 {
 		t.Fatalf("foreign occurrence reached materialization: %#v", broker.scopes)
 	}
-	if err := registration.Close(context.Background()); err != nil {
+	if err := materialization.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -561,10 +534,10 @@ func TestConsumerPreparerHasNoMetadataDependency(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _ = preparer.PrepareConsumers(context.Background(), PreparationAttempt{})
+	_, _ = preparer.PrepareConsumers(context.Background(), PreparationGeneration{})
 }
 
 var (
-	_ testutil.SecretAttemptBroker = (*consumerPreparationBroker)(nil)
-	_ ConsumerPreparer             = (*consumerBindingPreparer)(nil)
+	_ testutil.SecretResolver = (*consumerPreparationBroker)(nil)
+	_ ConsumerPreparer        = (*consumerBindingPreparer)(nil)
 )

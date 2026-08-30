@@ -21,12 +21,6 @@ import (
 
 type pipelineScopedSecretBroker struct{}
 
-func (pipelineScopedSecretBroker) AuthorizeCandidate(
-	context.Context, secret.AttemptID, generation.ApplyTicket, generation.PublicationSet,
-) error {
-	return nil
-}
-
 func (pipelineScopedSecretBroker) ResolveScoped(
 	ctx context.Context, _ secret.Scope, raw string,
 ) (string, error) {
@@ -37,10 +31,6 @@ func (pipelineScopedSecretBroker) ResolveScoped(
 		return "", errors.New("unexpected raw value")
 	}
 	return "pipeline-password", nil
-}
-
-func (pipelineScopedSecretBroker) RevokeAttempt(context.Context, secret.AttemptID) error {
-	return nil
 }
 
 func newPipelineKafkaProxy(t *testing.T, revision uint64) (*kafka_proxy.Plugin, func()) {
@@ -59,9 +49,6 @@ func newPipelineKafkaProxy(t *testing.T, revision uint64) (*kafka_proxy.Plugin, 
 	}}, nil)
 	if err != nil {
 		t.Fatal(err)
-	}
-	ticket := generation.ApplyTicket{
-		DesiredRevision: revision, RequiredDomains: []generation.Domain{generation.DomainHTTP},
 	}
 	set := generation.PublicationSet{
 		DesiredRevision: revision,
@@ -87,25 +74,21 @@ func newPipelineKafkaProxy(t *testing.T, revision uint64) (*kafka_proxy.Plugin, 
 	if err != nil {
 		t.Fatal(err)
 	}
-	registration, err := testutil.NewSecretMaterializer(pipelineScopedSecretBroker{}, catalog).
-		RegisterCandidate(context.Background(), ticket, set)
+	materialization, err := testutil.NewSecretMaterializer(pipelineScopedSecretBroker{}, catalog).
+		PrepareGeneration(context.Background(), set)
 	if err != nil {
 		t.Fatal(err)
 	}
-	capabilityValue, err := secret.NewGenerationCapability(registration, revision)
-	if err != nil {
-		t.Fatal(err)
-	}
+	secrets := materialization.Secrets()
 	scope := secret.Scope{
 		Generation: revision,
-		Attempt:    registration.AttemptID(),
 		Domain:     generation.DomainHTTP,
 		Plugin:     "kafka-proxy",
 		Resource:   key,
 		Source:     capability.SecretPluginConfig,
 	}
 	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, capabilityValue, p,
+		context.Background(), scope, secrets, p,
 	); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
@@ -113,7 +96,7 @@ func newPipelineKafkaProxy(t *testing.T, revision uint64) (*kafka_proxy.Plugin, 
 		t.Fatalf("PostInit() error = %v", err)
 	}
 	return p, func() {
-		if err := registration.Close(context.Background()); err != nil {
+		if err := materialization.Close(context.Background()); err != nil {
 			t.Fatalf("close scoped secret registration: %v", err)
 		}
 	}

@@ -24,17 +24,10 @@ type requestValidationSecretCall struct {
 }
 
 type requestValidationSecretBroker struct {
-	mu      sync.Mutex
-	values  map[string]string
-	fail    map[string]error
-	calls   []requestValidationSecretCall
-	revokes int
-}
-
-func (*requestValidationSecretBroker) AuthorizeCandidate(
-	context.Context, secret.AttemptID, generation.ApplyTicket, generation.PublicationSet,
-) error {
-	return nil
+	mu     sync.Mutex
+	values map[string]string
+	fail   map[string]error
+	calls  []requestValidationSecretCall
 }
 
 func (broker *requestValidationSecretBroker) ResolveScoped(
@@ -56,13 +49,6 @@ func (broker *requestValidationSecretBroker) ResolveScoped(
 	return value, nil
 }
 
-func (broker *requestValidationSecretBroker) RevokeAttempt(context.Context, secret.AttemptID) error {
-	broker.mu.Lock()
-	defer broker.mu.Unlock()
-	broker.revokes++
-	return nil
-}
-
 func (broker *requestValidationSecretBroker) callsSnapshot() []requestValidationSecretCall {
 	broker.mu.Lock()
 	defer broker.mu.Unlock()
@@ -79,15 +65,9 @@ func (broker *requestValidationSecretBroker) setFailure(raw string, err error) {
 	broker.fail[raw] = err
 }
 
-func (broker *requestValidationSecretBroker) revokeCount() int {
-	broker.mu.Lock()
-	defer broker.mu.Unlock()
-	return broker.revokes
-}
-
 func newRequestValidationSecretHarness(
 	t *testing.T, revision uint64, values map[string]string,
-) (secret.GenerationCapability, secret.Scope, *requestValidationSecretBroker, func()) {
+) (secret.GenerationSecrets, secret.Scope, *requestValidationSecretBroker, func()) {
 	t.Helper()
 	resourceKey := generation.ResourceKey{
 		Kind: "routes", ID: fmt.Sprintf("request-validation-scoped-%d", revision),
@@ -110,9 +90,6 @@ func newRequestValidationSecretHarness(
 			Code: "request-validation-scoped-test",
 		}},
 	}
-	ticket := generation.ApplyTicket{
-		DesiredRevision: revision, RequiredDomains: []generation.Domain{generation.DomainHTTP},
-	}
 	publication := generation.PublicationSet{
 		DesiredRevision: revision,
 		Domains: map[generation.Domain]generation.PublicationCandidate{
@@ -130,24 +107,19 @@ func newRequestValidationSecretHarness(
 	broker := &requestValidationSecretBroker{
 		values: maps.Clone(values), fail: make(map[string]error),
 	}
-	registration, err := testutil.NewSecretMaterializer(broker, catalog).RegisterCandidate(
-		context.Background(), ticket, publication,
-	)
+	materialization, err := testutil.NewSecretMaterializer(broker, catalog).
+		PrepareGeneration(context.Background(), publication)
 	if err != nil {
 		t.Fatal(err)
 	}
-	capabilityValue, err := secret.NewGenerationCapability(registration, revision)
-	if err != nil {
-		_ = registration.Close(context.Background())
-		t.Fatal(err)
-	}
+	secrets := materialization.Secrets()
 	scope := secret.Scope{
-		Generation: revision, Attempt: registration.AttemptID(), Domain: generation.DomainHTTP,
+		Generation: revision, Domain: generation.DomainHTTP,
 		Plugin: name, Resource: resourceKey, Source: capability.SecretPluginConfig,
 	}
-	return capabilityValue, scope, broker, func() {
-		if err := registration.Close(context.Background()); err != nil {
-			t.Errorf("close scoped request-validation attempt: %v", err)
+	return secrets, scope, broker, func() {
+		if err := materialization.Close(context.Background()); err != nil {
+			t.Errorf("close scoped request-validation generation: %v", err)
 		}
 	}
 }
@@ -157,7 +129,7 @@ func TestSecretBackedSchemaDoesNotEscapeUseIntoGenerationCompiledState(t *testin
 		raw       = "$ENV://REQUEST_VALIDATION_EPHEMERAL_COMPILE"
 		plaintext = "generation-private-value"
 	)
-	capabilityValue, scope, _, closeAttempt := newRequestValidationSecretHarness(
+	secrets, scope, _, closeAttempt := newRequestValidationSecretHarness(
 		t, 307, map[string]string{raw: plaintext},
 	)
 	defer closeAttempt()
@@ -170,7 +142,7 @@ func TestSecretBackedSchemaDoesNotEscapeUseIntoGenerationCompiledState(t *testin
 		t.Fatal(err)
 	}
 	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, capabilityValue, p,
+		context.Background(), scope, secrets, p,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -219,7 +191,7 @@ func TestScopedSecretsCoverAllTerminalStringSchemaRolesWithoutResolvingMapKeys(t
 		defaultRaw:    "default-private-value",
 		annotationRaw: "annotation-private-value",
 	}
-	capabilityValue, scope, broker, closeAttempt := newRequestValidationSecretHarness(t, 308, values)
+	secrets, scope, broker, closeAttempt := newRequestValidationSecretHarness(t, 308, values)
 	defer closeAttempt()
 	p := &Plugin{config: Config{BodySchema: map[string]any{
 		"type": "object",
@@ -242,7 +214,7 @@ func TestScopedSecretsCoverAllTerminalStringSchemaRolesWithoutResolvingMapKeys(t
 		t.Fatal(err)
 	}
 	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, capabilityValue, p,
+		context.Background(), scope, secrets, p,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -284,7 +256,7 @@ func TestScopedSecretsMaterializeRecursiveHeaderAndBodySchemaValues(t *testing.T
 		header    = "private-header-value"
 		body      = "private-body-value"
 	)
-	capabilityValue, scope, broker, closeAttempt := newRequestValidationSecretHarness(
+	secrets, scope, broker, closeAttempt := newRequestValidationSecretHarness(
 		t, 301, map[string]string{headerRaw: header, bodyRaw: body},
 	)
 	defer closeAttempt()
@@ -309,7 +281,7 @@ func TestScopedSecretsMaterializeRecursiveHeaderAndBodySchemaValues(t *testing.T
 		t.Fatal(err)
 	}
 	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, capabilityValue, p,
+		context.Background(), scope, secrets, p,
 	); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
@@ -381,7 +353,7 @@ func TestScopedSecretFailureIsAtomicAndRetryable(t *testing.T) {
 		header    = "retry-private-header"
 		body      = "retry-private-body"
 	)
-	capabilityValue, scope, broker, closeAttempt := newRequestValidationSecretHarness(
+	secrets, scope, broker, closeAttempt := newRequestValidationSecretHarness(
 		t, 302, map[string]string{headerRaw: header, bodyRaw: body},
 	)
 	defer closeAttempt()
@@ -397,7 +369,7 @@ func TestScopedSecretFailureIsAtomicAndRetryable(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatal(err)
 	}
-	err := base.MaterializeScopedPluginSecrets(context.Background(), scope, capabilityValue, p)
+	err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p)
 	if !errors.Is(err, secret.ErrCredentialUnavailable) {
 		t.Fatalf("first materialization error = %v", err)
 	}
@@ -437,7 +409,7 @@ func TestScopedSecretFailureIsAtomicAndRetryable(t *testing.T) {
 
 	broker.setFailure(bodyRaw, nil)
 	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, capabilityValue, p,
+		context.Background(), scope, secrets, p,
 	); err != nil {
 		t.Fatalf("retry materialization error = %v", err)
 	}
@@ -453,12 +425,12 @@ func TestScopedSecretFailureIsAtomicAndRetryable(t *testing.T) {
 	p.Stop()
 }
 
-func TestScopedSecretsRotateWithGenerationAuthority(t *testing.T) {
+func TestScopedSecretsRotateAcrossGenerations(t *testing.T) {
 	const raw = "$ENV://REQUEST_VALIDATION_ROTATED_VALUE"
 	prepare := func(
 		revision uint64, plaintext string,
-	) (*Plugin, *requestValidationSecretBroker, func()) {
-		capabilityValue, scope, broker, closeAttempt := newRequestValidationSecretHarness(
+	) (*Plugin, secret.GenerationSecrets, func()) {
+		secrets, scope, _, closeGeneration := newRequestValidationSecretHarness(
 			t, revision, map[string]string{raw: plaintext},
 		)
 		p := &Plugin{config: Config{BodySchema: map[string]any{
@@ -470,17 +442,17 @@ func TestScopedSecretsRotateWithGenerationAuthority(t *testing.T) {
 			t.Fatal(err)
 		}
 		if err := base.MaterializeScopedPluginSecrets(
-			context.Background(), scope, capabilityValue, p,
+			context.Background(), scope, secrets, p,
 		); err != nil {
 			t.Fatalf("generation %d materialization: %v", revision, err)
 		}
 		if err := p.PostInit(); err != nil {
 			t.Fatalf("generation %d PostInit: %v", revision, err)
 		}
-		return p, broker, closeAttempt
+		return p, secrets, closeGeneration
 	}
-	first, firstBroker, closeFirst := prepare(303, "first-generation-private")
-	second, secondBroker, closeSecond := prepare(304, "second-generation-private")
+	first, firstSecrets, closeFirst := prepare(303, "first-generation-private")
+	second, secondSecrets, closeSecond := prepare(304, "second-generation-private")
 	defer func() {
 		second.Stop()
 		closeSecond()
@@ -501,12 +473,12 @@ func TestScopedSecretsRotateWithGenerationAuthority(t *testing.T) {
 
 	first.Stop()
 	closeFirst()
-	if firstBroker.revokeCount() != 1 {
-		t.Fatalf("first generation revokes = %d, want 1", firstBroker.revokeCount())
+	if firstSecrets.Valid() {
+		t.Fatal("first generation secrets remained valid after close")
 	}
 	assertBody(second, "second-generation-private", http.StatusNoContent)
-	if secondBroker.revokeCount() != 0 {
-		t.Fatalf("second generation revoked while active: %d", secondBroker.revokeCount())
+	if !secondSecrets.Valid() {
+		t.Fatal("second generation secrets became invalid while active")
 	}
 }
 
@@ -515,7 +487,7 @@ func TestStopDrainsActiveValidationAndRetiresSecrets(t *testing.T) {
 		raw       = "$ENV://REQUEST_VALIDATION_STOP_VALUE"
 		plaintext = "stop-private-value"
 	)
-	capabilityValue, scope, broker, closeAttempt := newRequestValidationSecretHarness(
+	secrets, scope, _, closeGeneration := newRequestValidationSecretHarness(
 		t, 305, map[string]string{raw: plaintext},
 	)
 	p := &Plugin{config: Config{HeaderSchema: map[string]any{
@@ -527,7 +499,7 @@ func TestStopDrainsActiveValidationAndRetiresSecrets(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, capabilityValue, p,
+		context.Background(), scope, secrets, p,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -594,9 +566,9 @@ func TestStopDrainsActiveValidationAndRetiresSecrets(t *testing.T) {
 	if postStop.Code != http.StatusServiceUnavailable || strings.Contains(postStop.Body.String(), plaintext) {
 		t.Fatalf("post-Stop response = %d/%q", postStop.Code, postStop.Body.String())
 	}
-	closeAttempt()
-	if broker.revokeCount() != 1 {
-		t.Fatalf("attempt revokes = %d, want 1", broker.revokeCount())
+	closeGeneration()
+	if secrets.Valid() {
+		t.Fatal("generation secrets remained valid after close")
 	}
 	p.Stop()
 }
@@ -606,7 +578,7 @@ func TestResolvedInvalidSchemaFailsClosedWithoutPlaintextDiagnostic(t *testing.T
 		raw       = "$secret://vault/request-validation/invalid-type"
 		plaintext = "private-invalid-schema-type"
 	)
-	capabilityValue, scope, _, closeAttempt := newRequestValidationSecretHarness(
+	secrets, scope, _, closeAttempt := newRequestValidationSecretHarness(
 		t, 306, map[string]string{raw: plaintext},
 	)
 	defer closeAttempt()
@@ -615,7 +587,7 @@ func TestResolvedInvalidSchemaFailsClosedWithoutPlaintextDiagnostic(t *testing.T
 		t.Fatal(err)
 	}
 	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, capabilityValue, p,
+		context.Background(), scope, secrets, p,
 	); err != nil {
 		t.Fatal(err)
 	}

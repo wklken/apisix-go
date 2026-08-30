@@ -389,7 +389,7 @@ func TestFixtureFamilyManifestPreservesPinnedErrorBehavior(t *testing.T) {
 			outputCode: http.StatusInternalServerError, outputBody: "fixture not found",
 		},
 		// ai-proxy-fixture.t TEST 12 (path traversal) is blocked_runtime in
-		// corpus_scope.yaml: it only exercises the Apache APISIX Lua fixture
+		// This source block only exercises the Apache APISIX Lua fixture
 		// helper and has no production ai-proxy request surface.
 	}
 

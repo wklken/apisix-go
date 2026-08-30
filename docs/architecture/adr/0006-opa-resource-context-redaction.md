@@ -35,5 +35,5 @@ route, service, consumer, upstream, and TLS secrets.
 
 Retirement requires a pinned APISIX target that no longer exposes complete
 resource configuration, or an owner-approved replacement contract with explicit
-secret classification, least-privilege projection, migration, differential,
+secret classification, least-privilege projection, migration, regression,
 and rollback evidence.

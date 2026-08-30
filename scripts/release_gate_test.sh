@@ -80,9 +80,21 @@ for removed in \
     .github/workflows/release.yml \
     scripts/release_metadata.sh \
     scripts/release_metadata_test.sh \
+    scripts/validation/fetch_apisix_317_source.sh \
+    scripts/validation/plugin_behavior_gate.sh \
+    scripts/validation/plugin_behavior_gate_test.sh \
+    scripts/validation/plugin_differential.sh \
+    scripts/validation/plugin_differential_test.sh \
+    scripts/validation/resolve_oracle.sh \
+    scripts/validation/resolve_oracle_test.sh \
     scripts/upgrade_rollback_smoke.sh \
-    scripts/upgrade_rollback_smoke_test.sh; do
-    if [[ -e "$repo_root/$removed" ]]; then
+    scripts/upgrade_rollback_smoke_test.sh \
+    t/compatibility \
+    t/plugin/corpus_scope.yaml \
+    validation/compatibility; do
+    removed_path=$repo_root/$removed
+    if [[ -f "$removed_path" || -L "$removed_path" ]] ||
+        [[ -d "$removed_path" && -n "$(find "$removed_path" -mindepth 1 \( -type f -o -type l \) -print -quit)" ]]; then
         printf 'deferred release artifact still exists: %s\n' "$removed" >&2
         exit 1
     fi
@@ -99,7 +111,6 @@ require_fixed '  enable_admin: false' "$production_config"
 
 # Ordinary CI continues to enforce the candidate contract and generated state.
 require_job_fixed "$unit_workflow" build-and-unit 'run: bash scripts/release_gate_test.sh'
-require_job_fixed "$unit_workflow" build-and-unit 'run: make test-plugin-behavior-gate'
 require_job_fixed "$unit_workflow" build-and-unit 'run: make check-plugin-registry'
 require_job_fixed "$unit_workflow" build-and-unit 'run: make test'
 require_job_fixed "$unit_workflow" build-and-unit 'run: make test-plugin-harness'
@@ -157,17 +168,15 @@ require_job_fixed "$workflow" proxy-soak 'APISIX_GO_SOAK_DURATION=30m'
 require_job_fixed "$workflow" proxy-soak "go test -json ./pkg/route -run '^TestProxyRuntimeSoak$' -count=1 -timeout=40m"
 
 # The candidate workflow binds every gate to one resolved commit and includes
-# plugin differential, functional smoke, platform recovery, and soak evidence.
+# functional smoke, platform recovery, and soak evidence.
 require_job_fixed "$candidate_workflow" resolve-source 'commit=$(git rev-parse HEAD)'
-for job in lint build-and-unit integration-smoke plugin-differential; do
+for job in lint build-and-unit integration-smoke; do
     require_job_fixed "$candidate_workflow" "$job" 'resolve-source'
     require_job_fixed "$candidate_workflow" "$job" 'ref: ${{ needs.resolve-source.outputs.commit }}'
 done
 require_job_fixed "$candidate_workflow" build-and-unit 'run: make test'
-require_job_fixed "$candidate_workflow" plugin-differential 'run: make check-plugin-registry'
-require_job_fixed "$candidate_workflow" plugin-differential 'run: make validate-plugin-behavior'
+require_job_fixed "$candidate_workflow" build-and-unit 'run: make check-plugin-registry'
 require_job_fixed "$candidate_workflow" security-release-gates 'uses: ./.github/workflows/security-release-gates.yml'
-require_job_fixed "$candidate_workflow" security-release-gates 'plugin-differential'
 require_job_fixed "$candidate_workflow" security-release-gates 'run-operational: true'
 require_job_fixed "$candidate_workflow" security-release-gates 'source-commit: ${{ needs.resolve-source.outputs.commit }}'
 

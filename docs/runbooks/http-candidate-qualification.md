@@ -22,7 +22,6 @@ It must pass:
 | Gate | Required evidence |
 | --- | --- |
 | Source | Lint, build, unit tests, plugin registry drift, and plugin harness. |
-| Plugin behavior | Complete APISIX 3.17 differential evidence bound to the source commit and candidate binary SHA-256. |
 | HTTP smoke | Focused real-process authentication, rewrite, proxy-control, and rejection cases. |
 | Concurrency and dependencies | Focused race tests plus reachable Go and container vulnerability checks. |
 | Container | Linux amd64 build, non-root proxy smoke, graceful shutdown, SBOM, and immutable local image identity. |
@@ -59,7 +58,7 @@ Record the candidate as one of:
 A passing candidate supports only this claim:
 
 > The documented HTTP data plane is functionally and runtime-stability verified
-> for the recorded source revision, candidate identity, plugin evidence, and
+> for the recorded source revision, candidate identity, tested plugin behavior, and
 > dependency boundaries.
 
 It is not a repository-wide or environment-specific production-readiness claim.

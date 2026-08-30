@@ -22,8 +22,7 @@ APISIX-Go-specific migration selector is required.
   implemented APISIX 3.17 HTTP plugins.
 - Durable journal recovery, immutable generation activation, graceful
   termination, and serviceability-based readiness.
-- The same runtime behavior for unit, integration, differential, and candidate
-  validation.
+- The same runtime behavior for unit, integration, and candidate validation.
 
 ## Excluded scope
 
@@ -35,15 +34,14 @@ APISIX-Go-specific migration selector is required.
 
 ## Qualification claim
 
-Plugin behavior is tested by plugin unit tests, standalone real-process cases,
-and the opt-in APISIX 3.17 differential suite. Platform recovery and runtime
-stability are qualified separately by the
+Plugin behavior is tested by plugin unit tests and standalone real-process
+cases. Platform recovery and runtime stability are qualified separately by the
 [HTTP candidate qualification](runbooks/http-candidate-qualification.md).
 
 A green release-candidate run supports only this bounded claim:
 
 > The documented HTTP data plane is functionally and runtime-stability verified
-> for the recorded source revision, candidate identity, plugin evidence, and
+> for the recorded source revision, candidate identity, tested plugin behavior, and
 > dependency boundaries.
 
 It is not a repository-wide or environment-specific production-readiness claim.

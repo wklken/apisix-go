@@ -6,19 +6,14 @@ CLI in a fresh child process, writes temporary `conf/config.yaml` and
 `conf/apisix.yaml` files, creates its own temporary `apisix-go-store.db`, and
 uses a fresh loopback upstream fixture.
 
-The standalone corpus is one global ledger. Its default inventory baseline is
-Apache APISIX commit `c3d7d5ec69774121f53d2e20d29d09c816795dd7`, while the
-current compatibility target is
-`9ef2ecab67f652d38365049613610ef649bb4ad0`. A source file may be migrated to
-that target by setting `commit` on all of its ledger rows and updating the
-matching executable manifests; partial migration of one upstream `.t` file is
-rejected. The checked-in catalog is discovered directly from `t/plugin/*.yaml`;
-it is not selected from a separate capability or evidence ledger. Every
-manifest contains at least one standalone scenario that activates its target
-plugin and assertions produced by the real APISIX-Go process. An intentional
-negative scenario may keep the target plugin disabled only when it declares a
-nonblank `target_plugin_exempt_reason`; the gate rejects missing, blank, or
-stale exemptions. No generated placeholder manifest is counted as coverage.
+The checked-in catalog is discovered directly from `t/plugin/*.yaml`. Each
+manifest is an independent behavior test, not one row in a global compatibility
+or upstream-source ledger. Every manifest contains at least one standalone
+scenario that activates its target plugin and assertions produced by the real
+APISIX-Go process. An intentional negative scenario may keep the target plugin
+disabled only when it declares a nonblank `target_plugin_exempt_reason`; the
+harness rejects missing, blank, or stale exemptions. No generated placeholder
+manifest is counted as a behavior test.
 
 The schema rejects `skip` fields. A source block counts as covered only when it
 belongs to an executable standalone scenario with a request and an assertion;
@@ -50,16 +45,12 @@ The package has no build tag, so `go test ./... -count=1` also runs it.
 
 ## Manifest contract
 
-Each `<plugin>.yaml` declares its source repository, effective source commit,
-source file, total number of upstream `TEST` blocks, and a list of local cases.
-The corpus ledger's top-level `commit` is the default for every source row; an
-optional row-level `commit` migrates the entire source file. Every executable
-manifest must use the effective commit recorded for each selected source label.
-The source-coverage gate reads exact files from Git objects, so historical and
-migrated source files can coexist without changing the Apache APISIX checkout's
-HEAD. Every source test number from `1..source.tests` must occur exactly once.
-The validator fails on a missing, duplicated, out-of-range, or mixed-commit
-number before starting a child process.
+Each `<plugin>.yaml` contains local cases and may retain the upstream repository,
+commit, file, and `TEST` labels from which those cases were derived. That source
+metadata is local traceability only; the repository does not maintain a second
+global accounting database or fetch upstream source during the ordinary
+harness. Within one manifest, the validator still rejects missing, duplicated,
+out-of-range, or mixed-commit source labels before starting a child process.
 
 Setup-only source blocks are grouped with the request block that exercises the
 setup. When upstream setup depends on the Admin API, Lua, or an external
@@ -124,9 +115,8 @@ headers, and fixture bodies. `absent` is valid only for headers.
 
 ## Adding a plugin
 
-1. Pin the exact upstream repository commit and count every `=== TEST` block. If
-   the source file already exists in `corpus_scope.yaml`, migrate all rows for
-   that file to the same commit in one change.
+1. When converting an upstream case, record its exact repository commit and
+   source labels in the new manifest.
 2. Create `t/plugin/<plugin>.yaml`; pair setup blocks with their behavior block.
 3. Convert all blocks into executable standalone scenarios; `skip` fields and
    placeholder cases are rejected.
@@ -134,7 +124,7 @@ headers, and fixture bodies. `absent` is valid only for headers.
    assertions for response plugins.
 5. Run the focused manifest. If it exposes a parity bug, add a focused failing
    unit test at the owning package before changing production code.
-6. Run `make test-integration` and the repository verification gates.
+6. Run the focused case, then `make test-plugin-harness`.
 
 The upstream expectation is authoritative. Do not weaken an assertion to match
 an incompatible current implementation.

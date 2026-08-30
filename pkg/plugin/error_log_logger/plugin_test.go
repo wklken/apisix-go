@@ -1157,11 +1157,7 @@ type scopedPluginSecretFixture struct {
 
 func newScopedPluginSecretFixture(t *testing.T, resolved map[string]string) scopedPluginSecretFixture {
 	t.Helper()
-	manifest, err := capability.Load()
-	if err != nil {
-		t.Fatalf("capability.Load() error = %v", err)
-	}
-	catalog, err := capability.NewSecretDeclarationCatalog(manifest)
+	catalog, err := capability.NewSecretDeclarationCatalog()
 	if err != nil {
 		t.Fatalf("NewSecretDeclarationCatalog() error = %v", err)
 	}

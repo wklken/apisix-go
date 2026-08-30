@@ -226,11 +226,7 @@ func TestGenerationEngineTLSAndHTTPPublishTogether(t *testing.T) {
 
 func newGenerationContractFixture(t *testing.T, frontendTLS bool) *generationContractFixture {
 	t.Helper()
-	manifest, err := capability.Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	catalog, err := capability.NewSecretDeclarationCatalog(manifest)
+	catalog, err := capability.NewSecretDeclarationCatalog()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -251,7 +247,6 @@ func newGenerationContractFixture(t *testing.T, frontendTLS bool) *generationCon
 		}
 	}
 	factory, err := compiler.NewWorkerCompilerFactory(
-		manifest,
 		effective,
 		secret.NewMaterializer(encryption, resolver),
 		compiler.WorkerRuntimeObservers{

@@ -19,11 +19,11 @@ type SchemaWitness struct {
 // expose its schemas. It deliberately bypasses New so runtime dependencies are
 // never installed and no post-initialization lifecycle can run.
 func SchemaWitnessForFactory(factory string) (SchemaWitness, error) {
-	create, ok := pluginRegistry[factory]
+	registered, ok := pluginRegistry[factory]
 	if !ok {
 		return SchemaWitness{}, fmt.Errorf("schema witness: factory %q is not registered", factory)
 	}
-	return schemaWitnessFromFactory(factory, create)
+	return schemaWitnessFromFactory(factory, registered.create)
 }
 
 func schemaWitnessFromFactory(factory string, create func() Plugin) (SchemaWitness, error) {

@@ -7,7 +7,6 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/generation"
 )
 
@@ -18,11 +17,10 @@ func buildDomainCandidate(
 	issues []resourceIssue,
 	previous generation.PublishedGeneration,
 	hasPrevious bool,
-	manifest *capability.Manifest,
 	schemas *schemaSet,
 ) (generation.PublicationCandidate, error) {
 	return buildDomainCandidateContext(
-		context.Background(), domain, desired, input, issues, previous, hasPrevious, manifest, schemas,
+		context.Background(), domain, desired, input, issues, previous, hasPrevious, schemas,
 	)
 }
 
@@ -666,7 +664,7 @@ func compileDomain(
 		t.Fatal(err)
 	}
 	compiler := newTestCompiler(t)
-	validation, err := validateContext(context.Background(), input, compiler.manifest, compiler.schemas)
+	validation, err := validateContext(context.Background(), input, compiler.schemas)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -678,7 +676,6 @@ func compileDomain(
 		issues,
 		previous,
 		found,
-		compiler.manifest,
 		compiler.schemas,
 	)
 	if err != nil {

@@ -303,7 +303,7 @@ func (prepared *PreparedGeneration) validateEffectiveBindingSpecs(
 	specs []effectiveBindingSpec,
 ) ([]validatedEffectiveBindingSpec, error) {
 	if len(specs) == 0 || !prepared.preparation.secrets.Valid() ||
-		prepared.preparation.Generation() == 0 || prepared.manifest == nil ||
+		prepared.preparation.Generation() == 0 || prepared.catalog == nil ||
 		prepared.registry == nil || prepared.cleanup == nil || prepared.tasks == nil ||
 		prepared.effective == nil || prepared.consumers == nil {
 		return nil, fmt.Errorf("%w: effective binding owner is incomplete", ErrInvalidInput)
@@ -333,15 +333,15 @@ func (prepared *PreparedGeneration) validateEffectiveBindingSpec(
 		return validatedEffectiveBindingSpec{}, fmt.Errorf("%w: effective binding identity is invalid", ErrInvalidInput)
 	}
 
-	entry, exists := prepared.manifest.Plugin(supplied.factory)
-	if !exists || !manifestFactorySupportsDomain(entry, supplied.factory, supplied.domain) {
+	definition, exists := plugin.DefinitionForFactory(supplied.factory)
+	if !exists || !factorySupportsDomain(definition, supplied.domain) {
 		return validatedEffectiveBindingSpec{}, fmt.Errorf("%w: factory is incompatible with domain", ErrInvalidInput)
 	}
-	descriptor, err := plugin.DescriptorForFactory(prepared.manifest, supplied.factory)
+	descriptor, err := plugin.DescriptorForFactory(supplied.factory)
 	if err != nil || !slices.Contains(descriptor.Scopes, supplied.scope) {
 		return validatedEffectiveBindingSpec{}, fmt.Errorf("%w: factory is incompatible with scope", ErrInvalidInput)
 	}
-	if err := prepared.validateEffectiveBindingSource(supplied, entry); err != nil {
+	if err := prepared.validateEffectiveBindingSource(supplied); err != nil {
 		return validatedEffectiveBindingSpec{}, err
 	}
 
@@ -421,7 +421,6 @@ func (prepared *PreparedGeneration) validateEffectiveBindingSpec(
 
 func (prepared *PreparedGeneration) validateEffectiveBindingSource(
 	spec effectiveBindingSpec,
-	entry capability.PluginCapability,
 ) error {
 	source := spec.source
 	switch source.kind {
@@ -915,19 +914,18 @@ func validEffectiveExecutionOwner(domain generation.Domain, owner generation.Res
 	return slices.Contains(generation.DomainsForResourceKind(owner.Kind), domain)
 }
 
-func manifestFactorySupportsDomain(
-	entry capability.PluginCapability,
-	factory string,
+func factorySupportsDomain(
+	definition plugin.Definition,
 	domain generation.Domain,
 ) bool {
-	declared := slices.ContainsFunc(entry.Factories, func(candidate capability.Factory) bool {
-		return candidate.Key == factory
-	})
-	want := capability.DomainHTTP
-	if domain == generation.DomainStream {
-		want = capability.DomainStream
+	switch domain {
+	case generation.DomainHTTP:
+		return definition.Domain == plugin.DomainHTTP
+	case generation.DomainStream:
+		return definition.Domain == plugin.DomainStream
+	default:
+		return false
 	}
-	return declared && slices.Contains(entry.Domains, want)
 }
 
 func (prepared *PreparedGeneration) hasBindingConfigFactoryOccurrence(
@@ -948,16 +946,14 @@ func (prepared *PreparedGeneration) hasBindingConfigFactoryOccurrence(
 }
 
 func (prepared *PreparedGeneration) declaresConsumerScopedSecrets(factory string) bool {
-	if prepared == nil || prepared.manifest == nil || factory == "" {
+	if prepared == nil || prepared.catalog == nil || factory == "" {
 		return false
 	}
-	entry, exists := prepared.manifest.Plugin(factory)
-	if !exists {
-		return false
-	}
-	return slices.ContainsFunc(entry.SecretDeclarations, func(declaration capability.SecretDeclaration) bool {
-		return declaration.Source == capability.SecretConsumerConfig
+	declared := false
+	prepared.catalog.ForEach(factory, capability.SecretConsumerConfig, func(capability.SecretDeclaration) {
+		declared = true
 	})
+	return declared
 }
 
 func cloneEffectiveBindingContext(

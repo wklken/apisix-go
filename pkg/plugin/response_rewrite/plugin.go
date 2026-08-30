@@ -313,7 +313,7 @@ func (p *Plugin) ValidatePreMaterialization() error {
 	return nil
 }
 
-// MaterializeScopedSecrets admits the selected manifest-owned response body
+// MaterializeScopedSecrets admits the selected catalog-declared response body
 // for this immutable attempt. Config retains only its content descriptor.
 func (p *Plugin) MaterializeScopedSecrets(
 	ctx context.Context, access base.ScopedSecretAccess,

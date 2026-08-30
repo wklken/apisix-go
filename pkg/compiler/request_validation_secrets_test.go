@@ -57,15 +57,13 @@ func TestWorkerFactoryUsesManifestRequestValidationDeclarationWithExactOccurrenc
 		raw       = "$ENV://REQUEST_VALIDATION_COMPILER_SCOPE"
 		plaintext = "compiler-scoped-private-value"
 	)
-	manifest := mustManifest(t)
-	catalog, err := capability.NewSecretDeclarationCatalog(manifest)
+	catalog, err := capability.NewSecretDeclarationCatalog()
 	if err != nil {
 		t.Fatal(err)
 	}
 	broker := &requestValidationCompilerSecretBroker{values: map[string]string{raw: plaintext}}
 	factory, err := NewWorkerCompilerFactory(
-		manifest,
-		workerTestEffective(manifest),
+		workerTestEffective(),
 		testutil.NewSecretMaterializer(broker, catalog),
 		workerTestRuntimeObservers(),
 	)
@@ -143,15 +141,13 @@ func TestWorkerFactorySharesRequestValidationCompileLimitAcrossAttemptBindings(t
 		raw       = "$ENV://REQUEST_VALIDATION_COMPILER_SHARED_LIMIT"
 		plaintext = "compiler-shared-private-value"
 	)
-	manifest := mustManifest(t)
-	catalog, err := capability.NewSecretDeclarationCatalog(manifest)
+	catalog, err := capability.NewSecretDeclarationCatalog()
 	if err != nil {
 		t.Fatal(err)
 	}
 	broker := &requestValidationCompilerSecretBroker{values: map[string]string{raw: plaintext}}
 	factory, err := NewWorkerCompilerFactory(
-		manifest,
-		workerTestEffective(manifest),
+		workerTestEffective(),
 		testutil.NewSecretMaterializer(broker, catalog),
 		workerTestRuntimeObservers(),
 	)

@@ -9,7 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/wklken/apisix-go/pkg/capability"
+	pluginregistry "github.com/wklken/apisix-go/pkg/plugin"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"go.yaml.in/yaml/v3"
 )
 
@@ -435,17 +436,25 @@ func TestTargetPluginExemptionRejectedWhenScenarioActivatesTarget(t *testing.T) 
 
 func targetPluginActivationNames(t *testing.T, pluginName string) []string {
 	t.Helper()
-	capabilities, err := capability.Load()
-	if err != nil {
-		t.Fatalf("load capability manifest: %v", err)
+	target := pluginregistry.New(pluginName, base.Dependencies{})
+	if target == nil {
+		t.Fatalf("registered plugin %q is missing", pluginName)
 	}
-	plugin, found := capabilities.Plugin(pluginName)
-	if !found {
-		t.Fatalf("capability plugin %q is missing", pluginName)
+	if err := target.Init(); err != nil {
+		t.Fatalf("initialize registered plugin %q: %v", pluginName, err)
 	}
-	names := []string{pluginName}
-	for _, factory := range plugin.Factories {
-		names = append(names, factory.Key)
+	names := make([]string, 0, 2)
+	for _, definition := range pluginregistry.Definitions() {
+		instance := pluginregistry.New(definition.Factory, base.Dependencies{})
+		if instance == nil {
+			t.Fatalf("registered factory %q has no constructor", definition.Factory)
+		}
+		if err := instance.Init(); err != nil {
+			t.Fatalf("initialize registered factory %q: %v", definition.Factory, err)
+		}
+		if instance.GetName() == target.GetName() {
+			names = append(names, definition.Factory)
+		}
 	}
 	names = append(names, manifestTargetPluginGroups[pluginName]...)
 	sort.Strings(names)

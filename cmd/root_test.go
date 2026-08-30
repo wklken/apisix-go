@@ -290,26 +290,16 @@ func (r *startupCallRecorder) snapshot() []string {
 	return slices.Clone(r.calls)
 }
 
-func TestStartupLoadsOneManifestForEffectiveConfigAndCompiler(t *testing.T) {
+func TestStartupBuildsConfigCatalogAndServerInOrder(t *testing.T) {
 	recorder := &startupCallRecorder{}
-	manifest, effective, catalog, encryption := startupInputs(t)
+	effective, catalog, encryption := startupInputs(t)
 	factories := startupFactories{
-		loadManifest: func() (*capability.Manifest, error) {
-			recorder.record("manifest")
-			return manifest, nil
-		},
-		loadEffective: func(_ string, got *capability.Manifest) (*config.EffectiveConfig, error) {
+		loadEffective: func(string) (*config.EffectiveConfig, error) {
 			recorder.record("effective")
-			if got != manifest {
-				t.Fatalf("effective manifest = %p, want startup manifest %p", got, manifest)
-			}
 			return effective, nil
 		},
-		newCatalog: func(got *capability.Manifest) (*capability.SecretDeclarationCatalog, error) {
+		newCatalog: func() (*capability.SecretDeclarationCatalog, error) {
 			recorder.record("catalog")
-			if got != manifest {
-				t.Fatalf("catalog manifest = %p, want startup manifest %p", got, manifest)
-			}
 			return catalog, nil
 		},
 		newEncryption: func(*config.EffectiveConfig, *capability.SecretDeclarationCatalog) data_encryption.Service {
@@ -323,12 +313,11 @@ func TestStartupLoadsOneManifestForEffectiveConfigAndCompiler(t *testing.T) {
 		},
 		newServer: func(
 			gotEffective *config.EffectiveConfig,
-			gotManifest *capability.Manifest,
 			_ data_encryption.Service,
 			resolver *secret.GenerationSecretResolver,
 		) (serverLifecycle, error) {
 			recorder.record("new-server")
-			if gotEffective != effective || gotManifest != manifest {
+			if gotEffective != effective {
 				t.Fatalf("NewServer dependencies do not preserve startup identities")
 			}
 			_ = resolver.Close(context.Background())
@@ -344,7 +333,7 @@ func TestStartupLoadsOneManifestForEffectiveConfigAndCompiler(t *testing.T) {
 		t.Fatalf("startWithOptionsWithFactories() error = %v", err)
 	}
 	want := []string{
-		"manifest", "effective", "catalog", "encryption", "logger", "resolver",
+		"effective", "catalog", "encryption", "logger", "resolver",
 		"new-server", "run-server",
 	}
 	if got := recorder.snapshot(); !slices.Equal(got, want) {
@@ -354,16 +343,12 @@ func TestStartupLoadsOneManifestForEffectiveConfigAndCompiler(t *testing.T) {
 
 func startupInputs(
 	t *testing.T,
-) (*capability.Manifest, *config.EffectiveConfig, *capability.SecretDeclarationCatalog, data_encryption.Service) {
+) (*config.EffectiveConfig, *capability.SecretDeclarationCatalog, data_encryption.Service) {
 	t.Helper()
-	manifest, err := capability.Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	catalog, err := capability.NewSecretDeclarationCatalog(manifest)
+	catalog, err := capability.NewSecretDeclarationCatalog()
 	if err != nil {
 		t.Fatal(err)
 	}
 	effective := &config.EffectiveConfig{}
-	return manifest, effective, catalog, data_encryption.NewService(false, nil, catalog)
+	return effective, catalog, data_encryption.NewService(false, nil, catalog)
 }

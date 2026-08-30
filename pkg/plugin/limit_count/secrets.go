@@ -176,7 +176,7 @@ func (p *Plugin) MaterializeScopedSecrets(
 }
 
 // PrepareConsumerConfig admits a consumer-scoped configuration that has no
-// manifest-declared secret fields. Such a configuration keeps its literal
+// catalog-declared secret fields. Such a configuration keeps its literal
 // values in the plugin config and still enters the same credential lifecycle
 // as a scoped materialization. Secret envelopes are rejected instead of being
 // allowed to bypass generation-scoped materialization.

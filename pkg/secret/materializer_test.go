@@ -97,7 +97,7 @@ func TestMaterializerPreparesGenerationAndMaterializesDeclaredFields(t *testing.
 		t.Run(test.name, func(t *testing.T) {
 			value, err := secrets.Materialize(context.Background(), testScope(
 				9, generation.DomainHTTP, "http-logger", resource,
-				capability.SecretPluginConfig, "token",
+				capability.SecretPluginConfig, "auth_header",
 			), test.raw)
 			if err != nil {
 				t.Fatal(err)
@@ -107,7 +107,7 @@ func TestMaterializerPreparesGenerationAndMaterializesDeclaredFields(t *testing.
 			}
 		})
 	}
-	if len(calls) != 1 || calls[0].Resource != resource || calls[0].Field != "token" {
+	if len(calls) != 1 || calls[0].Resource != resource || calls[0].Field != "auth_header" {
 		t.Fatalf("resolver scopes = %#v", calls)
 	}
 	factory.mu.Lock()
@@ -223,7 +223,7 @@ func TestGenerationMaterializationCloseWaitsForUseAndRevokesView(t *testing.T) {
 		t.Fatal(err)
 	}
 	secrets := owner.Secrets()
-	scope := testScope(9, generation.DomainHTTP, "http-logger", resource, capability.SecretPluginConfig, "token")
+	scope := testScope(9, generation.DomainHTTP, "http-logger", resource, capability.SecretPluginConfig, "auth_header")
 	resolveDone := make(chan error, 1)
 	go func() {
 		_, resolveErr := secrets.Materialize(context.Background(), scope, "$ENV://TOKEN")
@@ -279,7 +279,7 @@ func TestGenerationMaterializationRedactsResolverFailures(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = owner.Secrets().Materialize(context.Background(), testScope(
-		9, generation.DomainHTTP, "http-logger", resource, capability.SecretPluginConfig, "token",
+		9, generation.DomainHTTP, "http-logger", resource, capability.SecretPluginConfig, "auth_header",
 	), "$secret://credential-value")
 	if !errors.Is(err, ErrCredentialUnavailable) || err.Error() != ErrCredentialUnavailable.Error() {
 		t.Fatalf("materialize error = %v", err)
@@ -336,17 +336,7 @@ func TestValueUse(t *testing.T) {
 
 func testCatalog(t *testing.T) *capability.SecretDeclarationCatalog {
 	t.Helper()
-	manifest := &capability.Manifest{Plugins: []capability.PluginCapability{{
-		Name:      "test-secrets",
-		Factories: []capability.Factory{{Key: "http-logger"}, {Key: "key-auth"}, {Key: "metadata-plugin"}},
-		SecretDeclarations: []capability.SecretDeclaration{
-			{Factory: "http-logger", Source: capability.SecretPluginConfig, Field: "token"},
-			{Factory: "key-auth", Source: capability.SecretPluginConfig, Field: "key"},
-			{Factory: "key-auth", Source: capability.SecretConsumerConfig, Field: "key"},
-			{Factory: "metadata-plugin", Source: capability.SecretPluginMetadata, Field: "token"},
-		},
-	}}}
-	catalog, err := capability.NewSecretDeclarationCatalog(manifest)
+	catalog, err := capability.NewSecretDeclarationCatalog()
 	if err != nil {
 		t.Fatal(err)
 	}

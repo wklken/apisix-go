@@ -33,61 +33,56 @@ type schemaSet struct {
 	catalog   *capability.SecretDeclarationCatalog
 }
 
-func newSchemaSet(manifest *capability.Manifest) (*schemaSet, error) {
-	catalog, err := capability.NewSecretDeclarationCatalog(manifest)
+func newSchemaSet() (*schemaSet, error) {
+	catalog, err := capability.NewSecretDeclarationCatalog()
 	if err != nil {
 		return nil, fmt.Errorf("secret declaration catalog: %w", err)
 	}
 
-	factoryCount := 0
-	for _, pluginCapability := range manifest.Plugins {
-		factoryCount += len(pluginCapability.Factories)
-	}
+	definitions := plugin.Definitions()
 	set := &schemaSet{
-		factories: make(map[string]factorySchemas, factoryCount),
+		factories: make(map[string]factorySchemas, len(definitions)),
 		catalog:   catalog,
 	}
-	for _, pluginCapability := range manifest.Plugins {
-		domains := schemaGenerationDomains(pluginCapability.Domains)
-		for _, factory := range pluginCapability.Factories {
-			if _, exists := set.factories[factory.Key]; exists {
-				return nil, fmt.Errorf("factory %q has duplicate schema ownership", factory.Key)
-			}
-			witness, err := plugin.SchemaWitnessForFactory(factory.Key)
-			if err != nil {
-				return nil, fmt.Errorf("factory %q schema witness is unavailable", factory.Key)
-			}
-			if witness.Factory != factory.Key {
-				return nil, fmt.Errorf("factory %q schema witness does not match", factory.Key)
-			}
-			config, err := compileFactorySchema(factory.Key, "config", witness.Config, true)
-			if err != nil {
-				return nil, err
-			}
-			metadata, err := compileFactorySchema(factory.Key, "metadata", witness.Metadata, false)
-			if err != nil {
-				return nil, err
-			}
+	for _, definition := range definitions {
+		factory := definition.Factory
+		if _, exists := set.factories[factory]; exists {
+			return nil, fmt.Errorf("factory %q has duplicate schema ownership", factory)
+		}
+		witness, err := plugin.SchemaWitnessForFactory(factory)
+		if err != nil {
+			return nil, fmt.Errorf("factory %q schema witness is unavailable", factory)
+		}
+		if witness.Factory != factory {
+			return nil, fmt.Errorf("factory %q schema witness does not match", factory)
+		}
+		config, err := compileFactorySchema(factory, "config", witness.Config, true)
+		if err != nil {
+			return nil, err
+		}
+		metadata, err := compileFactorySchema(factory, "metadata", witness.Metadata, false)
+		if err != nil {
+			return nil, err
+		}
 
-			consumerWitness, hasConsumerWitness := consumer.SchemaWitnessForFactory(factory.Key)
-			if hasConsumerWitness != witness.HasConsumer {
-				return nil, fmt.Errorf("factory %q consumer schema capability does not match", factory.Key)
+		consumerWitness, hasConsumerWitness := consumer.SchemaWitnessForFactory(factory)
+		if hasConsumerWitness != witness.HasConsumer {
+			return nil, fmt.Errorf("factory %q consumer schema capability does not match", factory)
+		}
+		var consumerSchema *util.CompiledSchema
+		if witness.HasConsumer {
+			if consumerWitness.Factory != factory {
+				return nil, fmt.Errorf("factory %q consumer schema witness does not match", factory)
 			}
-			var consumerSchema *util.CompiledSchema
-			if witness.HasConsumer {
-				if consumerWitness.Factory != factory.Key {
-					return nil, fmt.Errorf("factory %q consumer schema witness does not match", factory.Key)
-				}
-				consumerSchema, err = compileFactorySchema(factory.Key, "consumer", consumerWitness.Schema, true)
-				if err != nil {
-					return nil, err
-				}
+			consumerSchema, err = compileFactorySchema(factory, "consumer", consumerWitness.Schema, true)
+			if err != nil {
+				return nil, err
 			}
-			set.factories[factory.Key] = factorySchemas{
-				config: config, metadata: metadata, consumer: consumerSchema,
-				consumerAllowed: slices.Contains(pluginCapability.Scopes, "consumer"),
-				domains:         domains,
-			}
+		}
+		set.factories[factory] = factorySchemas{
+			config: config, metadata: metadata, consumer: consumerSchema,
+			consumerAllowed: slices.Contains(definition.Scopes, plugin.ScopeConsumer),
+			domains:         schemaGenerationDomains(definition.Domain),
 		}
 	}
 	return set, nil
@@ -112,18 +107,15 @@ func compileFactorySchema(
 	return compiled, nil
 }
 
-func schemaGenerationDomains(domains []capability.Domain) []generation.Domain {
-	result := make([]generation.Domain, 0, len(domains))
-	for _, domain := range domains {
-		switch domain {
-		case capability.DomainHTTP:
-			result = append(result, generation.DomainHTTP)
-		case capability.DomainStream:
-			result = append(result, generation.DomainStream)
-		}
+func schemaGenerationDomains(domain plugin.Domain) []generation.Domain {
+	switch domain {
+	case plugin.DomainHTTP:
+		return []generation.Domain{generation.DomainHTTP}
+	case plugin.DomainStream:
+		return []generation.Domain{generation.DomainStream}
+	default:
+		return nil
 	}
-	slices.Sort(result)
-	return slices.Compact(result)
 }
 
 func validateRawSchemas(

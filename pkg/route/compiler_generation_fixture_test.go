@@ -752,11 +752,7 @@ func newRouteGenerationFactory(
 	configure func(*config.Config),
 ) *routeGenerationFactory {
 	t.Helper()
-	manifest, err := capability.Load()
-	if err != nil {
-		t.Fatalf("load capability manifest: %v", err)
-	}
-	catalog, err := capability.NewSecretDeclarationCatalog(manifest)
+	catalog, err := capability.NewSecretDeclarationCatalog()
 	if err != nil {
 		t.Fatalf("build secret catalog: %v", err)
 	}
@@ -771,7 +767,6 @@ func newRouteGenerationFactory(
 	}
 	effective := &config.EffectiveConfig{Config: staticConfig}
 	factory, err := compiler.NewWorkerCompilerFactory(
-		manifest,
 		effective,
 		secret.NewMaterializer(encryption, resolver),
 		compiler.WorkerRuntimeObservers{Cluster: proxy.NopClusterObserver{}},

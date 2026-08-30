@@ -45,11 +45,11 @@ func SupportsScopedSecretMaterialization(factory string) (bool, error) {
 	if factory == "" {
 		return false, errScopedSecretFactoryRequired
 	}
-	create, ok := pluginRegistry[factory]
+	registered, ok := pluginRegistry[factory]
 	if !ok {
 		return false, errScopedSecretFactoryUnavailable
 	}
-	return scopedSecretMaterializationSupportFromFactory(factory, create)
+	return scopedSecretMaterializationSupportFromFactory(factory, registered.create)
 }
 
 func scopedSecretMaterializationSupportFromFactory(factory string, create func() Plugin) (bool, error) {

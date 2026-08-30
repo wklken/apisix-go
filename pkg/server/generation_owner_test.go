@@ -405,11 +405,7 @@ func newTestGenerationOwner(
 	streamEnabled bool,
 ) generationOwnerFixture {
 	t.Helper()
-	manifest, err := capability.Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	catalog, err := capability.NewSecretDeclarationCatalog(manifest)
+	catalog, err := capability.NewSecretDeclarationCatalog()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -418,7 +414,6 @@ func newTestGenerationOwner(
 	}
 	effective := &config.EffectiveConfig{}
 	factory, err := compiler.NewWorkerCompilerFactory(
-		manifest,
 		effective,
 		materializer,
 		compiler.WorkerRuntimeObservers{

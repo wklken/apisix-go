@@ -74,17 +74,6 @@ test-integration:
 test-plugin-harness:
 	APISIX_GO_SKIP_PLUGIN_INTEGRATION=1 $(GO_CACHE_RUNNER) go test ./t/plugin -count=1
 
-.PHONY: generate-plugin-registry
-generate-plugin-registry:
-	$(GO_CACHE_RUNNER) go run ./cmd/capability-gen -repo-root . -write
-
-.PHONY: generate-capabilities
-generate-capabilities: generate-plugin-registry
-
-.PHONY: check-plugin-registry
-check-plugin-registry:
-	$(GO_CACHE_RUNNER) go run ./cmd/capability-gen -repo-root . -check
-
 PLUGIN_SMOKE_CASE ?=
 
 .PHONY: test-plugin-smoke

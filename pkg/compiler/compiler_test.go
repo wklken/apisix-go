@@ -9,7 +9,6 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/generation"
 )
 
@@ -169,15 +168,6 @@ func TestFinalizePublicationRejectsForgedPostRefinementSet(t *testing.T) {
 	}
 	if got.DesiredRevision != 0 || len(got.Domains) != 0 {
 		t.Fatalf("finalize forged publication returned partial set: %#v", got)
-	}
-}
-
-func TestCompilerNewRequiresValidatedManifest(t *testing.T) {
-	if _, err := New(nil); !errors.Is(err, ErrInvalidInput) {
-		t.Fatalf("nil manifest error = %v, want ErrInvalidInput", err)
-	}
-	if _, err := New(&capability.Manifest{}); !errors.Is(err, ErrInvalidInput) {
-		t.Fatalf("unvalidated manifest error = %v, want ErrInvalidInput", err)
 	}
 }
 
@@ -405,7 +395,7 @@ func TestCompilerRejectsSameFutureAndStructurallyInvalidPredecessors(t *testing.
 
 func newTestCompiler(t *testing.T) *Compiler {
 	t.Helper()
-	compiler, err := New(mustManifest(t))
+	compiler, err := New()
 	if err != nil {
 		t.Fatal(err)
 	}

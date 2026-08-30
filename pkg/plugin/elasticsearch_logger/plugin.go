@@ -285,7 +285,7 @@ func (p *Plugin) Init() error {
 	return nil
 }
 
-// MaterializeScopedSecrets admits only the two exact manifest-owned fields.
+// MaterializeScopedSecrets admits only the two exact catalog-declared fields.
 // Public config retains content descriptors while plaintext remains private.
 func (p *Plugin) MaterializeScopedSecrets(
 	ctx context.Context, access base.ScopedSecretAccess,

@@ -12,7 +12,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/runtime"
@@ -70,12 +69,11 @@ type workerFactoryCloseAttempt struct {
 // NewWorkerCompilerFactory constructs the candidate-generation compiler and
 // validates every immutable authority before allocating lifecycle owners.
 func NewWorkerCompilerFactory(
-	manifest *capability.Manifest,
 	effective *config.EffectiveConfig,
 	materializer secret.Materializer,
 	observers WorkerRuntimeObservers,
 ) (*WorkerCompilerFactory, error) {
-	if manifest == nil || effective == nil || isNilInterface(materializer) {
+	if effective == nil || isNilInterface(materializer) {
 		return nil, fmt.Errorf("%w: worker compiler dependencies are required", ErrInvalidInput)
 	}
 	if err := validateWorkerRuntimeObservers(effective, observers); err != nil {
@@ -85,7 +83,7 @@ func NewWorkerCompilerFactory(
 	if err != nil {
 		return nil, err
 	}
-	compiler, err := New(manifest)
+	compiler, err := New()
 	if err != nil {
 		return nil, err
 	}
@@ -432,7 +430,7 @@ func (factory *WorkerCompilerFactory) transferPreparedGeneration(
 		publication: clonePublicationSetForPreparation(registered.publication),
 		preparation: registered.preparation, metadata: metadata, consumers: bindings,
 		lookup: consumerLookupView{bindings: bindings}, tasks: tasks,
-		effective: factory.effective, manifest: factory.compiler.manifest,
+		effective: factory.effective, catalog: factory.compiler.schemas.catalog,
 		registry: factory.registry, materializer: factory.materializer, cleanup: cleanup,
 		observers:          factory.observers,
 		clusterObservers:   factory.clusterObservers,

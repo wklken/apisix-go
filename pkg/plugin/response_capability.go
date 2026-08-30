@@ -25,7 +25,7 @@ const (
 )
 
 // ResponseCapability is the build-time structural declaration for response
-// callbacks within phases allowed by the capability manifest.
+// callbacks within phases allowed by the plugin registry.
 type ResponseCapability struct {
 	HeaderFilter           bool
 	BufferedBodyFilter     bool
@@ -605,7 +605,7 @@ func responseFactoryAllowsDescriptor(factoryKey string, descriptor base.BindingP
 		return false
 	}
 	if descriptor.RequestStage == "" {
-		stage, err = manifestRequestStage(factoryKey)
+		stage, err = registeredRequestStage(factoryKey)
 		if err != nil {
 			return false
 		}

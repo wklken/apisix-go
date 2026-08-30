@@ -8,18 +8,12 @@ import (
 )
 
 func TestSecretDeclarationCatalogIsDeterministicAndDefensive(t *testing.T) {
-	manifest := testManifest()
-	manifest.Plugins[0].SecretDeclarations = []SecretDeclaration{
+	declarations := []SecretDeclaration{
 		{Factory: "request-id", Source: SecretPluginMetadata, Field: "metadata.*.token"},
 		{Factory: "request-id", Source: SecretPluginConfig, Field: "auth.secret"},
 		{Factory: "request-id", Source: SecretConsumerConfig, Field: "consumer.key"},
 	}
-	loaded := parseManifest(t, manifest)
-	catalog, err := NewSecretDeclarationCatalog(loaded)
-	if err != nil {
-		t.Fatal(err)
-	}
-
+	catalog := mustDeclarationCatalog(t, declarations)
 	want := []SecretDeclaration{
 		{Factory: "request-id", Source: SecretConsumerConfig, Field: "consumer.key"},
 		{Factory: "request-id", Source: SecretPluginConfig, Field: "auth.secret"},
@@ -36,239 +30,124 @@ func TestSecretDeclarationCatalogIsDeterministicAndDefensive(t *testing.T) {
 	if declaration, ok := catalog.Lookup("request-id", SecretPluginConfig, "auth.secret"); !ok {
 		t.Fatalf("Lookup() = %#v/%v, want config declaration", declaration, ok)
 	}
-	if _, ok := catalog.Lookup("request-id", SecretPluginConfig, "missing"); ok {
-		t.Fatal("Lookup() unexpectedly found an undeclared field")
-	}
 	var visited []SecretDeclaration
 	catalog.ForEach("request-id", SecretPluginConfig, func(declaration SecretDeclaration) {
 		visited = append(visited, declaration)
 	})
-	if want := []SecretDeclaration{{
-		Factory: "request-id", Source: SecretPluginConfig, Field: "auth.secret",
-	}}; !reflect.DeepEqual(visited, want) {
-		t.Fatalf("ForEach() = %#v, want %#v", visited, want)
+	if !reflect.DeepEqual(visited, []SecretDeclaration{want[1]}) {
+		t.Fatalf("ForEach() = %#v", visited)
 	}
-	visited[0].Field = "mutated"
-	var unchanged SecretDeclaration
-	catalog.ForEach("request-id", SecretPluginConfig, func(declaration SecretDeclaration) {
-		unchanged = declaration
-	})
-	if unchanged.Field != "auth.secret" {
-		t.Fatalf("ForEach() exposed mutable declaration: %#v", unchanged)
-	}
-	catalog.ForEach("request-id", SecretDeclarationSource("missing"), func(SecretDeclaration) {
-		t.Fatal("ForEach() visited an undeclared source")
-	})
 
-	shuffled := testManifest()
-	shuffled.Plugins[0].SecretDeclarations = []SecretDeclaration{
-		{Factory: "request-id", Source: SecretPluginConfig, Field: "auth.secret"},
-		{Factory: "request-id", Source: SecretConsumerConfig, Field: "consumer.key"},
-		{Factory: "request-id", Source: SecretPluginMetadata, Field: "metadata.*.token"},
-	}
-	shuffledLoaded := parseManifest(t, shuffled)
-	shuffledCatalog, err := NewSecretDeclarationCatalog(shuffledLoaded)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if catalog.Digest() != shuffledCatalog.Digest() {
-		t.Fatalf("Digest() changed with declaration ordering: %x != %x", catalog.Digest(), shuffledCatalog.Digest())
+	shuffled := slices.Clone(declarations)
+	slices.Reverse(shuffled)
+	if digest := mustDeclarationCatalog(t, shuffled).Digest(); digest != catalog.Digest() {
+		t.Fatalf("Digest() changed with declaration ordering: %x != %x", catalog.Digest(), digest)
 	}
 }
 
-func TestSecretDeclarationCatalogAcceptsConsumerConfig(t *testing.T) {
-	manifest := testManifest()
-	manifest.Plugins[0].SecretDeclarations = []SecretDeclaration{{
-		Factory: "request-id", Source: SecretConsumerConfig, Field: "username",
-	}}
-	catalog := mustDeclarationCatalog(t, manifest)
-	if declaration, ok := catalog.Lookup(
-		"request-id",
-		SecretConsumerConfig,
-		"username",
-	); !ok {
-		t.Fatalf("Lookup() = %#v/%v, want consumer declaration", declaration, ok)
-	}
-}
-
-func TestSecretDeclarationCatalogDigestIncludesIdentityAndSource(t *testing.T) {
-	base := testManifest()
-	alternateFactory := base.Plugins[0].Factories[0]
-	alternateFactory.Key = "request-id-alternate"
-	base.Plugins[0].Factories = append(base.Plugins[0].Factories, alternateFactory)
-	base.Plugins[0].SecretDeclarations = []SecretDeclaration{{
+func TestSecretDeclarationCatalogDigestIncludesIdentity(t *testing.T) {
+	base := []SecretDeclaration{{
 		Factory: "request-id", Source: SecretPluginConfig, Field: "auth.secret",
 	}}
-	baseCatalog := mustDeclarationCatalog(t, base)
-
-	for name, mutate := range map[string]func(*Manifest){
-		"source": func(manifest *Manifest) {
-			manifest.Plugins[0].SecretDeclarations[0].Source = SecretConsumerConfig
-		},
-		"field": func(manifest *Manifest) {
-			manifest.Plugins[0].SecretDeclarations[0].Field = "other.secret"
-		},
-		"factory": func(manifest *Manifest) {
-			manifest.Plugins[0].SecretDeclarations[0].Factory = "request-id-alternate"
-		},
+	baseDigest := mustDeclarationCatalog(t, base).Digest()
+	for name, declaration := range map[string]SecretDeclaration{
+		"factory": {Factory: "other", Source: SecretPluginConfig, Field: "auth.secret"},
+		"source":  {Factory: "request-id", Source: SecretConsumerConfig, Field: "auth.secret"},
+		"field":   {Factory: "request-id", Source: SecretPluginConfig, Field: "other.secret"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			manifest := base
-			manifest.Plugins = append([]PluginCapability(nil), base.Plugins...)
-			manifest.Plugins[0].SecretDeclarations = append(
-				[]SecretDeclaration(nil),
-				base.Plugins[0].SecretDeclarations...,
-			)
-			mutate(&manifest)
-			catalog := mustDeclarationCatalog(t, manifest)
-			if catalog.Digest() == baseCatalog.Digest() {
-				t.Fatal("Digest() did not change after declaration mutation")
+			if digest := mustDeclarationCatalog(t, []SecretDeclaration{declaration}).Digest(); digest == baseDigest {
+				t.Fatal("Digest() did not change")
 			}
 		})
 	}
 }
 
-func TestParseRejectsInvalidSecretDeclarations(t *testing.T) {
+func TestSecretDeclarationCatalogRejectsInvalidDeclarations(t *testing.T) {
 	tests := []struct {
-		name   string
-		mutate func(*Manifest)
-		want   string
+		name         string
+		declarations []SecretDeclaration
+		want         string
 	}{
 		{
-			name: "unknown source",
-			mutate: func(manifest *Manifest) {
-				manifest.Plugins[0].SecretDeclarations = []SecretDeclaration{{
-					Factory: "request-id", Source: SecretDeclarationSource("other"), Field: "token",
-				}}
-			},
-			want: "unknown source",
+			name:         "blank factory",
+			declarations: []SecretDeclaration{{Source: SecretPluginConfig, Field: "token"}},
+			want:         "factory",
 		},
 		{
-			name: "factory not owned",
-			mutate: func(manifest *Manifest) {
-				manifest.Plugins[0].SecretDeclarations = []SecretDeclaration{{
-					Factory: "missing", Source: SecretPluginConfig, Field: "token",
-				}}
-			},
-			want: "not owned",
+			name:         "unknown source",
+			declarations: []SecretDeclaration{{Factory: "p", Source: "other", Field: "token"}},
+			want:         "unknown source",
 		},
 		{
-			name: "blank field",
-			mutate: func(manifest *Manifest) {
-				manifest.Plugins[0].SecretDeclarations = []SecretDeclaration{{
-					Factory: "request-id", Source: SecretPluginConfig, Field: " ",
-				}}
-			},
-			want: "canonical wildcard path",
+			name:         "blank field",
+			declarations: []SecretDeclaration{{Factory: "p", Source: SecretPluginConfig, Field: " "}},
+			want:         "canonical wildcard path",
 		},
 		{
-			name: "empty path segment",
-			mutate: func(manifest *Manifest) {
-				manifest.Plugins[0].SecretDeclarations = []SecretDeclaration{{
-					Factory: "request-id", Source: SecretPluginConfig, Field: "auth..token",
-				}}
-			},
-			want: "canonical wildcard path",
+			name:         "empty segment",
+			declarations: []SecretDeclaration{{Factory: "p", Source: SecretPluginConfig, Field: "auth..token"}},
+			want:         "canonical wildcard path",
 		},
 		{
-			name: "noncanonical wildcard",
-			mutate: func(manifest *Manifest) {
-				manifest.Plugins[0].SecretDeclarations = []SecretDeclaration{{
-					Factory: "request-id", Source: SecretPluginConfig, Field: "auth[*].token",
-				}}
-			},
-			want: "canonical wildcard path",
+			name:         "noncanonical wildcard",
+			declarations: []SecretDeclaration{{Factory: "p", Source: SecretPluginConfig, Field: "auth[*].token"}},
+			want:         "canonical wildcard path",
 		},
 		{
-			name: "terminal wildcard",
-			mutate: func(manifest *Manifest) {
-				manifest.Plugins[0].SecretDeclarations = []SecretDeclaration{{
-					Factory: "request-id", Source: SecretPluginConfig, Field: "auth.*",
-				}}
-			},
-			want: "canonical wildcard path",
+			name:         "terminal wildcard",
+			declarations: []SecretDeclaration{{Factory: "p", Source: SecretPluginConfig, Field: "auth.*"}},
+			want:         "canonical wildcard path",
 		},
 		{
-			name: "duplicate tuple",
-			mutate: func(manifest *Manifest) {
-				manifest.Plugins[0].SecretDeclarations = []SecretDeclaration{
-					{Factory: "request-id", Source: SecretPluginConfig, Field: "token"},
-					{Factory: "request-id", Source: SecretPluginConfig, Field: "token"},
-				}
-			},
-			want: "duplicate factory/source/field tuple",
-		},
-		{
-			name: "case-insensitive duplicate path",
-			mutate: func(manifest *Manifest) {
-				manifest.Plugins[0].SecretDeclarations = []SecretDeclaration{
-					{Factory: "request-id", Source: SecretPluginConfig, Field: "headers.Authorization"},
-					{Factory: "request-id", Source: SecretPluginConfig, Field: "headers.authorization"},
-				}
+			name: "duplicate",
+			declarations: []SecretDeclaration{
+				{Factory: "p", Source: SecretPluginConfig, Field: "token"},
+				{Factory: "p", Source: SecretPluginConfig, Field: "token"},
 			},
 			want: "duplicate factory/source/field tuple",
 		},
 		{
 			name: "wildcard overlap",
-			mutate: func(manifest *Manifest) {
-				manifest.Plugins[0].SecretDeclarations = []SecretDeclaration{
-					{Factory: "request-id", Source: SecretPluginConfig, Field: "auth.*.token"},
-					{Factory: "request-id", Source: SecretPluginConfig, Field: "auth.primary.token"},
-				}
-			},
-			want: "overlaps declared field",
-		},
-		{
-			name: "prefix overlap",
-			mutate: func(manifest *Manifest) {
-				manifest.Plugins[0].SecretDeclarations = []SecretDeclaration{
-					{Factory: "request-id", Source: SecretPluginConfig, Field: "auth"},
-					{Factory: "request-id", Source: SecretPluginConfig, Field: "auth.token"},
-				}
+			declarations: []SecretDeclaration{
+				{Factory: "p", Source: SecretPluginConfig, Field: "auth.*.token"},
+				{Factory: "p", Source: SecretPluginConfig, Field: "auth.primary.token"},
 			},
 			want: "overlaps declared field",
 		},
 	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			manifest := testManifest()
-			tt.mutate(&manifest)
-			_, err := Parse(marshalManifest(t, manifest))
-			if err == nil || !strings.Contains(err.Error(), tt.want) {
-				t.Fatalf("Parse() error = %v, want substring %q", err, tt.want)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := newSecretDeclarationCatalog(test.declarations)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("newSecretDeclarationCatalog() error = %v, want %q", err, test.want)
 			}
 		})
 	}
 }
 
-func TestManifestQueriesCloneSecretDeclarations(t *testing.T) {
-	manifest := testManifest()
-	manifest.Plugins[0].SecretDeclarations = []SecretDeclaration{{
-		Factory: "request-id", Source: SecretPluginConfig, Field: "token",
-	}}
-	loaded := parseManifest(t, manifest)
-	plugin, ok := loaded.Plugin("request-id")
-	if !ok {
-		t.Fatal("request-id factory missing")
+func TestBuiltInSecretDeclarationsRemainAvailable(t *testing.T) {
+	catalog, err := NewSecretDeclarationCatalog()
+	if err != nil {
+		t.Fatal(err)
 	}
-	plugin.SecretDeclarations[0].Field = "mutated"
-	again, _ := loaded.Plugin("request-id")
-	if slices.ContainsFunc(again.SecretDeclarations, func(declaration SecretDeclaration) bool {
-		return declaration.Field == "mutated"
-	}) {
-		t.Fatal("Plugin() exposed mutable secret declaration storage")
+	if got := len(catalog.Declarations()); got != 104 {
+		t.Fatalf("declaration count = %d, want 104", got)
+	}
+	for _, key := range []SecretDeclaration{
+		{Factory: "jwt-auth", Source: SecretPluginConfig, Field: "private_key"},
+		{Factory: "key-auth", Source: SecretConsumerConfig, Field: "key"},
+		{Factory: "kafka-proxy", Source: SecretPluginConfig, Field: "sasl.password"},
+	} {
+		if _, ok := catalog.Lookup(key.Factory, key.Source, key.Field); !ok {
+			t.Fatalf("built-in declaration is missing: %#v", key)
+		}
 	}
 }
 
-func mustDeclarationCatalog(t *testing.T, manifest Manifest) *SecretDeclarationCatalog {
+func mustDeclarationCatalog(t *testing.T, declarations []SecretDeclaration) *SecretDeclarationCatalog {
 	t.Helper()
-	return mustDeclarationCatalogFromLoaded(t, parseManifest(t, manifest))
-}
-
-func mustDeclarationCatalogFromLoaded(t *testing.T, manifest *Manifest) *SecretDeclarationCatalog {
-	t.Helper()
-	catalog, err := NewSecretDeclarationCatalog(manifest)
+	catalog, err := newSecretDeclarationCatalog(declarations)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -111,7 +111,6 @@ func TestNewServerRejectsNilEffectiveConfigBeforeCreatingRuntimeFiles(t *testing
 
 	server, err := NewServer(
 		nil,
-		nil,
 		testutil.DataEncryptionService(false, nil),
 		nil,
 	)
@@ -1169,7 +1168,7 @@ func (*newServerTestEngine) acquireStream() (streamGenerationLease, bool) {
 func (*newServerTestEngine) refreshStreamMetrics() {}
 
 func TestNewServerFactoryFailureClosesResolverWithoutDoubleClose(t *testing.T) {
-	manifest, effective, encryption, resolver := newServerInputs(t)
+	effective, encryption, resolver := newServerInputs(t)
 	factoryErr := errors.New("factory failed")
 	var calls []string
 	factories := newServerFactories{
@@ -1181,7 +1180,6 @@ func TestNewServerFactoryFailureClosesResolverWithoutDoubleClose(t *testing.T) {
 			}, nil
 		},
 		newFactory: func(
-			*capability.Manifest,
 			*config.EffectiveConfig,
 			secret.Materializer,
 			compiler.WorkerRuntimeObservers,
@@ -1196,7 +1194,7 @@ func TestNewServerFactoryFailureClosesResolverWithoutDoubleClose(t *testing.T) {
 	}
 
 	server, err := newServerWithFactories(
-		effective, manifest, encryption, resolver, factories,
+		effective, encryption, resolver, factories,
 	)
 	if server != nil || !errors.Is(err, factoryErr) {
 		t.Fatalf("newServerWithFactories() = (%#v, %v), want factory failure", server, err)
@@ -1208,7 +1206,7 @@ func TestNewServerFactoryFailureClosesResolverWithoutDoubleClose(t *testing.T) {
 }
 
 func TestNewServerRejectsNilDependencyBeforeTakingOwnership(t *testing.T) {
-	manifest, effective, encryption, resolver := newServerInputs(t)
+	effective, encryption, resolver := newServerInputs(t)
 	closeResolver := func(*secret.GenerationSecretResolver, context.Context) error {
 		t.Fatal("invalid dependency validation closed resolver")
 		return nil
@@ -1223,20 +1221,17 @@ func TestNewServerRejectsNilDependencyBeforeTakingOwnership(t *testing.T) {
 	tests := []struct {
 		name       string
 		effective  *config.EffectiveConfig
-		manifest   *capability.Manifest
 		encryption data_encryption.Service
 		resolver   *secret.GenerationSecretResolver
 	}{
-		{name: "effective", manifest: manifest, encryption: encryption, resolver: resolver},
-		{name: "manifest", effective: effective, encryption: encryption, resolver: resolver},
-		{name: "encryption", effective: effective, manifest: manifest, resolver: resolver},
-		{name: "resolver", effective: effective, manifest: manifest, encryption: encryption},
+		{name: "effective", encryption: encryption, resolver: resolver},
+		{name: "encryption", effective: effective, resolver: resolver},
+		{name: "resolver", effective: effective, encryption: encryption},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			server, err := newServerWithFactories(
 				test.effective,
-				test.manifest,
 				test.encryption,
 				test.resolver,
 				factories,
@@ -1253,13 +1248,9 @@ func TestNewServerRejectsNilDependencyBeforeTakingOwnership(t *testing.T) {
 
 func newServerInputs(
 	t *testing.T,
-) (*capability.Manifest, *config.EffectiveConfig, data_encryption.Service, *secret.GenerationSecretResolver) {
+) (*config.EffectiveConfig, data_encryption.Service, *secret.GenerationSecretResolver) {
 	t.Helper()
-	manifest, err := capability.Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	catalog, err := capability.NewSecretDeclarationCatalog(manifest)
+	catalog, err := capability.NewSecretDeclarationCatalog()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1269,7 +1260,7 @@ func newServerInputs(
 		t.Fatal(err)
 	}
 	effective := &config.EffectiveConfig{}
-	return manifest, effective, encryption, resolver
+	return effective, encryption, resolver
 }
 
 type lifecycleTestProducer struct {

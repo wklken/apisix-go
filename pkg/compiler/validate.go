@@ -6,14 +6,13 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/generation"
+	"github.com/wklken/apisix-go/pkg/plugin"
 )
 
 func validateContext(
 	ctx context.Context,
 	input normalizedInput,
-	manifest *capability.Manifest,
 	schemas *schemaSet,
 ) (validationResult, error) {
 	result := validationResult{
@@ -30,9 +29,9 @@ func validateContext(
 			continue
 		}
 		addStructuralEdges(&result.graph, input, resource)
-		validatePluginNames(resource, manifest, &result.issues)
+		validatePluginNames(resource, &result.issues)
 		validateRawSchemas(resource, schemas, &result.issues, result.issuesByDomain)
-		addDocumentEdges(&result.graph, resource, manifest, &result.issues, result.issuesByDomain)
+		addDocumentEdges(&result.graph, resource, &result.issues, result.issuesByDomain)
 	}
 	baseIssues := slices.Clone(result.issues)
 	result.issues = nil
@@ -147,12 +146,12 @@ func addEffectiveUpstreamEdges(graph *dependencyGraph, input normalizedInput, re
 	graph.add(key, generation.ResourceKey{Kind: "upstreams", ID: service.view.upstreamID})
 }
 
-func validatePluginNames(resource normalizedResource, manifest *capability.Manifest, issues *[]resourceIssue) {
+func validatePluginNames(resource normalizedResource, issues *[]resourceIssue) {
 	for name := range resource.view.plugins {
-		if _, exists := manifest.Plugin(name); !exists {
+		if _, exists := plugin.DefinitionForFactory(name); !exists {
 			*issues = append(
 				*issues,
-				newIssue(resource.key, "plugin-unsupported", "plugin is absent from capability manifest"),
+				newIssue(resource.key, "plugin-unsupported", "plugin is absent from the registry"),
 			)
 			return
 		}
@@ -162,7 +161,6 @@ func validatePluginNames(resource normalizedResource, manifest *capability.Manif
 func addDocumentEdges(
 	graph *dependencyGraph,
 	resource normalizedResource,
-	manifest *capability.Manifest,
 	issues *[]resourceIssue,
 	issuesByDomain map[generation.Domain][]resourceIssue,
 ) {
@@ -189,7 +187,7 @@ func addDocumentEdges(
 		addUpstreamTLSReference(graph, resource.key, object, nil, issues)
 	}
 	for name, config := range resource.view.plugins {
-		domains := pluginDependencyDomains(manifest, name)
+		domains := pluginDependencyDomains(name)
 		if len(domains) == 0 {
 			continue
 		}
@@ -261,22 +259,19 @@ func walkNonPluginDocument(document any, pluginsAreRuntimeMap bool, visitString 
 	}
 }
 
-func pluginDependencyDomains(manifest *capability.Manifest, name string) []generation.Domain {
-	plugin, exists := manifest.Plugin(name)
+func pluginDependencyDomains(name string) []generation.Domain {
+	definition, exists := plugin.DefinitionForFactory(name)
 	if !exists {
-		return []generation.Domain{}
+		return nil
 	}
-	domains := make([]generation.Domain, 0, len(plugin.Domains))
-	for _, domain := range plugin.Domains {
-		switch domain {
-		case capability.DomainHTTP:
-			domains = append(domains, generation.DomainHTTP)
-		case capability.DomainStream:
-			domains = append(domains, generation.DomainStream)
-		}
+	switch definition.Domain {
+	case plugin.DomainHTTP:
+		return []generation.Domain{generation.DomainHTTP}
+	case plugin.DomainStream:
+		return []generation.Domain{generation.DomainStream}
+	default:
+		return nil
 	}
-	slices.Sort(domains)
-	return slices.Compact(domains)
 }
 
 func addUpstreamTLSReference(

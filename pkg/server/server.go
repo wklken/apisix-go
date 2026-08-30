@@ -18,7 +18,6 @@ import (
 	"github.com/felixge/httpsnoop"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
-	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/compiler"
 	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/data_encryption"
@@ -185,7 +184,6 @@ type generationEngineOwner interface {
 type newServerFactories struct {
 	initObservability func(string) (func(context.Context) error, error)
 	newFactory        func(
-		*capability.Manifest,
 		*config.EffectiveConfig,
 		secret.Materializer,
 		compiler.WorkerRuntimeObservers,
@@ -354,13 +352,11 @@ const (
 
 func NewServer(
 	effective *config.EffectiveConfig,
-	manifest *capability.Manifest,
 	encryption data_encryption.Service,
 	resolver *secret.GenerationSecretResolver,
 ) (*Server, error) {
 	return newServerWithFactories(
 		effective,
-		manifest,
 		encryption,
 		resolver,
 		defaultNewServerFactories(),
@@ -369,12 +365,11 @@ func NewServer(
 
 func newServerWithFactories(
 	effective *config.EffectiveConfig,
-	manifest *capability.Manifest,
 	encryption data_encryption.Service,
 	resolver *secret.GenerationSecretResolver,
 	factories newServerFactories,
 ) (*Server, error) {
-	if err := validateNewServerDependencies(effective, manifest, encryption, resolver); err != nil {
+	if err := validateNewServerDependencies(effective, encryption, resolver); err != nil {
 		return nil, err
 	}
 	factories = factories.withDefaults()
@@ -411,7 +406,6 @@ func newServerWithFactories(
 		observers.Stream = logStreamResult
 	}
 	factory, err := factories.newFactory(
-		manifest,
 		effective,
 		secret.NewMaterializer(encryption, resolver),
 		observers,
@@ -461,15 +455,12 @@ func newServerWithFactories(
 
 func validateNewServerDependencies(
 	effective *config.EffectiveConfig,
-	manifest *capability.Manifest,
 	encryption data_encryption.Service,
 	resolver *secret.GenerationSecretResolver,
 ) error {
 	switch {
 	case effective == nil:
 		return errors.New("effective config is required")
-	case manifest == nil:
-		return errors.New("capability manifest is required")
 	case !encryption.Configured():
 		return errors.New("data encryption service is required")
 	case resolver == nil:

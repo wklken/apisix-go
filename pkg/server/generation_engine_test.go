@@ -32,11 +32,7 @@ type generationEngineFixture struct {
 
 func newGenerationEngineFixture(t *testing.T) *generationEngineFixture {
 	t.Helper()
-	manifest, err := capability.Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	catalog, err := capability.NewSecretDeclarationCatalog(manifest)
+	catalog, err := capability.NewSecretDeclarationCatalog()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,7 +42,6 @@ func newGenerationEngineFixture(t *testing.T) *generationEngineFixture {
 		t.Fatal(err)
 	}
 	factory, err := compiler.NewWorkerCompilerFactory(
-		manifest,
 		&config.EffectiveConfig{},
 		secret.NewMaterializer(encryption, resolver),
 		compiler.WorkerRuntimeObservers{

@@ -12,32 +12,25 @@ import (
 )
 
 func loadEffectiveForCommand(configPath string) (*config.EffectiveConfig, error) {
-	_, effective, _, err := loadEffectiveForStartup(configPath)
+	effective, _, err := loadEffectiveForStartup(configPath)
 	return effective, err
 }
 
 func loadEffectiveForStartup(configPath string) (
-	*capability.Manifest, *config.EffectiveConfig, *capability.SecretDeclarationCatalog, error,
+	*config.EffectiveConfig, *capability.SecretDeclarationCatalog, error,
 ) {
-	manifest, err := capability.Load()
+	effective, err := loadEffective(configPath)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("load capability manifest: %w", err)
+		return nil, nil, err
 	}
-	effective, err := loadEffectiveForManifest(configPath, manifest)
+	catalog, err := capability.NewSecretDeclarationCatalog()
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, fmt.Errorf("build secret declaration catalog: %w", err)
 	}
-	catalog, err := capability.NewSecretDeclarationCatalog(manifest)
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("build secret declaration catalog: %w", err)
-	}
-	return manifest, effective, catalog, nil
+	return effective, catalog, nil
 }
 
-func loadEffectiveForManifest(
-	configPath string,
-	_ *capability.Manifest,
-) (*config.EffectiveConfig, error) {
+func loadEffective(configPath string) (*config.EffectiveConfig, error) {
 	paths, err := config.DefaultRuntimePaths()
 	if err != nil {
 		return nil, fmt.Errorf("resolve default runtime paths: %w", err)

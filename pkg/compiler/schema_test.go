@@ -2,7 +2,7 @@ package compiler
 
 import (
 	"context"
-	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -13,39 +13,38 @@ import (
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
-func TestSchemaSetCoversManifestFactories(t *testing.T) {
+func TestSchemaSetCoversRegisteredFactories(t *testing.T) {
 	compiler := newTestCompiler(t)
 	wantFactories := 0
-	for _, pluginCapability := range compiler.manifest.Plugins {
-		for _, factory := range pluginCapability.Factories {
-			wantFactories++
-			entry, ok := compiler.schemas.factories[factory.Key]
-			if !ok {
-				t.Fatalf("schema set is missing factory %q", factory.Key)
-			}
-			witness, err := plugin.SchemaWitnessForFactory(factory.Key)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if witness.Config != "" && entry.config == nil {
-				t.Fatalf("factory %q config schema was not compiled", factory.Key)
-			}
-			if witness.Metadata != "" && entry.metadata == nil {
-				t.Fatalf("factory %q metadata schema was not compiled", factory.Key)
-			}
-			if witness.HasConsumer != (entry.consumer != nil) {
-				t.Fatalf(
-					"factory %q consumer schema presence = %v, want %v",
-					factory.Key,
-					entry.consumer != nil,
-					witness.HasConsumer,
-				)
-			}
-			again := compiler.schemas.factories[factory.Key]
-			if again.config != entry.config || again.metadata != entry.metadata ||
-				again.consumer != entry.consumer {
-				t.Fatalf("factory %q schema lookup did not reuse compiled witnesses", factory.Key)
-			}
+	for _, definition := range plugin.Definitions() {
+		factory := definition.Factory
+		wantFactories++
+		entry, ok := compiler.schemas.factories[factory]
+		if !ok {
+			t.Fatalf("schema set is missing factory %q", factory)
+		}
+		witness, err := plugin.SchemaWitnessForFactory(factory)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if witness.Config != "" && entry.config == nil {
+			t.Fatalf("factory %q config schema was not compiled", factory)
+		}
+		if witness.Metadata != "" && entry.metadata == nil {
+			t.Fatalf("factory %q metadata schema was not compiled", factory)
+		}
+		if witness.HasConsumer != (entry.consumer != nil) {
+			t.Fatalf(
+				"factory %q consumer schema presence = %v, want %v",
+				factory,
+				entry.consumer != nil,
+				witness.HasConsumer,
+			)
+		}
+		again := compiler.schemas.factories[factory]
+		if again.config != entry.config || again.metadata != entry.metadata ||
+			again.consumer != entry.consumer {
+			t.Fatalf("factory %q schema lookup did not reuse compiled witnesses", factory)
 		}
 	}
 	if got := len(compiler.schemas.factories); got != wantFactories {
@@ -53,21 +52,6 @@ func TestSchemaSetCoversManifestFactories(t *testing.T) {
 	}
 	if compiler.schemas.catalog == nil {
 		t.Fatal("schema set secret declaration catalog is nil")
-	}
-}
-
-func TestCompilerNewRejectsUnregisteredManifestFactory(t *testing.T) {
-	manifest := mustManifest(t)
-	for index := range manifest.Plugins {
-		if manifest.Plugins[index].Name == "proxy-control" {
-			manifest.Plugins[index].Name = "unregistered-schema-factory"
-			manifest.Plugins[index].Factories[0].Key = "unregistered-schema-factory"
-			break
-		}
-	}
-	_, err := New(manifest)
-	if !errors.Is(err, ErrInvalidInput) || !strings.Contains(err.Error(), "unregistered-schema-factory") {
-		t.Fatalf("unregistered factory error = %v, want redacted ErrInvalidInput", err)
 	}
 }
 
@@ -133,7 +117,7 @@ func TestRawSchemaAdmissionRejectsInvalidPluginMetadataAndConsumerConfigs(t *tes
 				t.Fatal(err)
 			}
 			beforeRaw := string(input.resources[test.resource.Key].raw)
-			result, err := validateContext(context.Background(), input, compiler.manifest, compiler.schemas)
+			result, err := validateContext(context.Background(), input, compiler.schemas)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -235,41 +219,36 @@ func TestRawConsumerSchemaAdmitsOnlyDeclaredMaterializableEnvelopes(t *testing.T
 }
 
 func TestSchemaAcceptsDeclaredEnvelopeForEverySource(t *testing.T) {
-	compiled, err := util.CompileSchema(`{
-		"type":"object",
-		"required":["token"],
-		"properties":{"token":{"type":"string","enum":["resolved"]}}
-	}`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, source := range []capability.SecretDeclarationSource{
-		capability.SecretPluginConfig,
-		capability.SecretPluginMetadata,
-		capability.SecretConsumerConfig,
+	for _, test := range []struct {
+		factory string
+		source  capability.SecretDeclarationSource
+		field   string
+	}{
+		{factory: "jwt-auth", source: capability.SecretPluginConfig, field: "private_key"},
+		{factory: "azure-functions", source: capability.SecretPluginMetadata, field: "master_apikey"},
+		{factory: "key-auth", source: capability.SecretConsumerConfig, field: "key"},
 	} {
-		t.Run(string(source), func(t *testing.T) {
-			manifest := mustManifest(t)
-			for index := range manifest.Plugins {
-				if manifest.Plugins[index].Name == "request-id" {
-					manifest.Plugins[index].SecretDeclarations = []capability.SecretDeclaration{{
-						Factory: "request-id", Source: source, Field: "token",
-					}}
-					break
-				}
+		t.Run(string(test.source), func(t *testing.T) {
+			compiled, err := util.CompileSchema(fmt.Sprintf(
+				`{"type":"object","required":[%q],"properties":{%q:{"type":"string","enum":["resolved"]}}}`,
+				test.field,
+				test.field,
+			))
+			if err != nil {
+				t.Fatal(err)
 			}
-			catalog, err := capability.NewSecretDeclarationCatalog(manifest)
+			catalog, err := capability.NewSecretDeclarationCatalog()
 			if err != nil {
 				t.Fatal(err)
 			}
 			if !schemaAccepts(
 				compiled,
 				catalog,
-				"request-id",
-				source,
-				map[string]any{"token": "$ENV://TOKEN"},
+				test.factory,
+				test.source,
+				map[string]any{test.field: "$ENV://TOKEN"},
 			) {
-				t.Fatalf("declared %s envelope was rejected", source)
+				t.Fatalf("declared %s envelope was rejected", test.source)
 			}
 		})
 	}

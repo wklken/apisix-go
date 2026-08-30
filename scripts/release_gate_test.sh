@@ -109,15 +109,13 @@ require_fixed '    config_provider: etcd' "$production_config"
 require_fixed '  proxy_mode: http' "$production_config"
 require_fixed '  enable_admin: false' "$production_config"
 
-# Ordinary CI continues to enforce the candidate contract and generated state.
+# Ordinary CI continues to enforce the candidate contract.
 require_job_fixed "$unit_workflow" build-and-unit 'run: bash scripts/release_gate_test.sh'
-require_job_fixed "$unit_workflow" build-and-unit 'run: make check-plugin-registry'
 require_job_fixed "$unit_workflow" build-and-unit 'run: make test'
 require_job_fixed "$unit_workflow" build-and-unit 'run: make test-plugin-harness'
 
 # Local, container, and candidate builds must retain immutable build metadata.
 require_fixed 'GO_CACHE_RUNNER ?= bash scripts/go_cache.sh run --' "$makefile"
-require_fixed '$(GO_CACHE_RUNNER) go run ./cmd/capability-gen -repo-root . -check' "$makefile"
 require_fixed '# syntax=docker/dockerfile:1.7' "$dockerfile"
 require_fixed 'ARG COMMIT=none' "$dockerfile"
 require_fixed 'github.com/wklken/apisix-go/pkg/version.Commit=${COMMIT}' "$dockerfile"
@@ -172,7 +170,6 @@ for job in lint build-and-unit integration-smoke; do
     require_job_fixed "$candidate_workflow" "$job" 'ref: ${{ needs.resolve-source.outputs.commit }}'
 done
 require_job_fixed "$candidate_workflow" build-and-unit 'run: make test'
-require_job_fixed "$candidate_workflow" build-and-unit 'run: make check-plugin-registry'
 require_job_fixed "$candidate_workflow" security-release-gates 'uses: ./.github/workflows/security-release-gates.yml'
 require_job_fixed "$candidate_workflow" security-release-gates 'run-operational: true'
 require_job_fixed "$candidate_workflow" security-release-gates 'source-commit: ${{ needs.resolve-source.outputs.commit }}'

@@ -30,7 +30,7 @@ func NewService(enabled bool, keyring []string, catalog *capability.SecretDeclar
 }
 
 // Configured distinguishes an explicitly disabled service from a zero service
-// that has no manifest-owned declaration catalog.
+// that has no encrypted-field declaration catalog.
 func (s Service) Configured() bool {
 	return s.catalog != nil
 }
@@ -84,7 +84,7 @@ func (s Service) ValidateDeclaration(
 	return declaration, nil
 }
 
-// ResolveDeclared validates the manifest-owned declaration, then follows the
+// ResolveDeclared validates the catalog declaration, then follows the
 // APISIX encrypt_fields policy: try each key and preserve the original value
 // when none can decrypt it. The raw value is intentionally absent from errors
 // so undeclared fields cannot leak credentials through diagnostics.

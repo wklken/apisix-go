@@ -18,6 +18,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/generation"
+	"github.com/wklken/apisix-go/pkg/plugin"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/runtime"
 	"github.com/wklken/apisix-go/pkg/secret"
@@ -82,7 +83,7 @@ func TestWorkerCompilerFactoryPrepareGenerationTransfersBaseOwners(t *testing.T)
 	}
 	if prepared.tasks == nil || prepared.consumers == nil || prepared.lookup.bindings == nil ||
 		prepared.materializer != materializer || prepared.registry != factory.registry ||
-		prepared.cleanup == nil || prepared.manifest != factory.compiler.manifest {
+		prepared.cleanup == nil || prepared.catalog != factory.compiler.schemas.catalog {
 		t.Fatalf("prepared generation did not receive exact base owners: %#v", prepared)
 	}
 	factory.liveMu.Lock()
@@ -395,12 +396,11 @@ func TestWorkerCompilerFactoryPrepareGenerationCycleSubprocess(t *testing.T) {
 	if kind == "" {
 		t.Skip("cycle subprocess helper")
 	}
-	manifest := mustManifest(t)
-	compiler, err := New(manifest)
+	compiler, err := New()
 	if err != nil {
 		t.Fatal(err)
 	}
-	effective := workerTestEffective(manifest)
+	effective := workerTestEffective()
 	switch kind {
 	case "map":
 		cycle := map[string]any{}
@@ -419,7 +419,7 @@ func TestWorkerCompilerFactoryPrepareGenerationCycleSubprocess(t *testing.T) {
 		t.Fatalf("unknown cycle kind %q", kind)
 	}
 	factory, err := NewWorkerCompilerFactory(
-		manifest, effective, &workerTestMaterializer{digest: compiler.schemas.catalog.Digest()},
+		effective, &workerTestMaterializer{digest: compiler.schemas.catalog.Digest()},
 		workerTestRuntimeObservers(),
 	)
 	if factory != nil || !errors.Is(err, ErrInvalidInput) {
@@ -532,12 +532,11 @@ func TestWorkerCompilerFactoryPrepareGenerationRedactsProviderAndCleanupErrors(t
 }
 
 func TestWorkerCompilerFactoryPrepareGenerationOwnsEffectiveConfig(t *testing.T) {
-	manifest := mustManifest(t)
-	compiler, err := New(manifest)
+	compiler, err := New()
 	if err != nil {
 		t.Fatal(err)
 	}
-	effective := workerTestEffective(manifest)
+	effective := workerTestEffective()
 	shared := map[string]any{"value": []string{"shared"}}
 	effective.Config.PluginAttr = map[string]map[string]any{
 		"example": {
@@ -546,7 +545,7 @@ func TestWorkerCompilerFactoryPrepareGenerationOwnsEffectiveConfig(t *testing.T)
 		},
 	}
 	factory, err := NewWorkerCompilerFactory(
-		manifest, effective, &workerTestMaterializer{digest: compiler.schemas.catalog.Digest()},
+		effective, &workerTestMaterializer{digest: compiler.schemas.catalog.Digest()},
 		workerTestRuntimeObservers(),
 	)
 	if err != nil {
@@ -564,10 +563,10 @@ func TestWorkerCompilerFactoryPrepareGenerationOwnsEffectiveConfig(t *testing.T)
 		t.Fatal("acyclic shared alias was rejected or changed concrete type")
 	}
 
-	opaque := workerTestEffective(manifest)
+	opaque := workerTestEffective()
 	opaque.Config.PluginAttr = map[string]map[string]any{"bad": {"callback": func() {}}}
 	if got, err := NewWorkerCompilerFactory(
-		manifest, opaque, &workerTestMaterializer{digest: compiler.schemas.catalog.Digest()},
+		opaque, &workerTestMaterializer{digest: compiler.schemas.catalog.Digest()},
 		workerTestRuntimeObservers(),
 	); got != nil || !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("opaque mutable effective value = %#v/%v", got, err)
@@ -575,8 +574,7 @@ func TestWorkerCompilerFactoryPrepareGenerationOwnsEffectiveConfig(t *testing.T)
 }
 
 func TestWorkerCompilerFactoryPrepareGenerationConstructorValidation(t *testing.T) {
-	manifest := mustManifest(t)
-	compiler, err := New(manifest)
+	compiler, err := New()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -584,26 +582,24 @@ func TestWorkerCompilerFactoryPrepareGenerationConstructorValidation(t *testing.
 	var typedNil *workerTestMaterializer
 	tests := []struct {
 		name         string
-		manifest     *capability.Manifest
 		effective    *config.EffectiveConfig
 		materializer secret.Materializer
 	}{
-		{name: "nil manifest", effective: workerTestEffective(manifest), materializer: valid},
-		{name: "nil effective", manifest: manifest, materializer: valid},
-		{name: "nil materializer", manifest: manifest, effective: workerTestEffective(manifest)},
+		{name: "nil effective", materializer: valid},
+		{name: "nil materializer", effective: workerTestEffective()},
 		{
-			name: "typed nil materializer", manifest: manifest,
-			effective: workerTestEffective(manifest), materializer: typedNil,
+			name:      "typed nil materializer",
+			effective: workerTestEffective(), materializer: typedNil,
 		},
 		{
-			name: "digest mismatch", manifest: manifest,
-			effective: workerTestEffective(manifest), materializer: &workerTestMaterializer{},
+			name:      "digest mismatch",
+			effective: workerTestEffective(), materializer: &workerTestMaterializer{},
 		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			factory, err := NewWorkerCompilerFactory(
-				test.manifest, test.effective, test.materializer, workerTestRuntimeObservers(),
+				test.effective, test.materializer, workerTestRuntimeObservers(),
 			)
 			if factory != nil || !errors.Is(err, ErrInvalidInput) {
 				t.Fatalf("constructor = %#v/%v, want nil/ErrInvalidInput", factory, err)
@@ -613,15 +609,13 @@ func TestWorkerCompilerFactoryPrepareGenerationConstructorValidation(t *testing.
 }
 
 func TestNewWorkerCompilerFactoryIgnoresUnreadableTrustedClientCAWhenTLSDisabled(t *testing.T) {
-	manifest := mustManifest(t)
-	compiler, err := New(manifest)
+	compiler, err := New()
 	if err != nil {
 		t.Fatal(err)
 	}
-	effective := workerTestEffective(manifest)
+	effective := workerTestEffective()
 	effective.Config.Apisix.Ssl.SslTrustedCertificate = t.TempDir() + "/missing-ca.pem"
 	factory, err := NewWorkerCompilerFactory(
-		manifest,
 		effective,
 		&workerTestMaterializer{digest: compiler.schemas.catalog.Digest()},
 		workerTestRuntimeObservers(),
@@ -635,18 +629,16 @@ func TestNewWorkerCompilerFactoryIgnoresUnreadableTrustedClientCAWhenTLSDisabled
 }
 
 func TestNewWorkerCompilerFactoryFailsClosedOnUnreadableEnabledTLSClientCA(t *testing.T) {
-	manifest := mustManifest(t)
-	compiler, err := New(manifest)
+	compiler, err := New()
 	if err != nil {
 		t.Fatal(err)
 	}
-	effective := workerTestEffective(manifest)
+	effective := workerTestEffective()
 	effective.Config.Apisix.Ssl = config.Ssl{
 		Enable: true, Listen: []config.Listen{{Port: 9443}},
 		SslTrustedCertificate: t.TempDir() + "/missing-ca.pem",
 	}
 	factory, err := NewWorkerCompilerFactory(
-		manifest,
 		effective,
 		&workerTestMaterializer{digest: compiler.schemas.catalog.Digest()},
 		workerTestRuntimeObservers(),
@@ -657,8 +649,7 @@ func TestNewWorkerCompilerFactoryFailsClosedOnUnreadableEnabledTLSClientCA(t *te
 }
 
 func TestWorkerCompilerFactoryPrepareGenerationUsesRealAliasAndCatalog(t *testing.T) {
-	manifest := mustManifest(t)
-	compiler, err := New(manifest)
+	compiler, err := New()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -667,15 +658,15 @@ func TestWorkerCompilerFactoryPrepareGenerationUsesRealAliasAndCatalog(t *testin
 		delegate: testutil.NewSecretMaterializer(&workerTestRegistration{}, compiler.schemas.catalog),
 	}
 	factory, err := NewWorkerCompilerFactory(
-		manifest, workerTestEffective(manifest), materializer, workerTestRuntimeObservers(),
+		workerTestEffective(), materializer, workerTestRuntimeObservers(),
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, hasOTel := factory.compiler.manifest.Plugin("otel")
-	_, hasOpenTelemetry := factory.compiler.manifest.Plugin("opentelemetry")
+	_, hasOTel := plugin.DefinitionForFactory("otel")
+	_, hasOpenTelemetry := plugin.DefinitionForFactory("opentelemetry")
 	if !hasOTel || !hasOpenTelemetry {
-		t.Fatal("validated factory manifest lost the accepted otel alias")
+		t.Fatal("plugin registry lost the accepted otel alias")
 	}
 
 	desired := mustGenerationSnapshot(t, 820, []generation.Resource{
@@ -950,8 +941,7 @@ func (m *workerTestMaterializer) registrationsSnapshot() []*workerTestRegistrati
 
 func newWorkerTestFactory(t *testing.T) (*WorkerCompilerFactory, *workerTestMaterializer) {
 	t.Helper()
-	manifest := mustManifest(t)
-	compiler, err := New(manifest)
+	compiler, err := New()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -960,7 +950,7 @@ func newWorkerTestFactory(t *testing.T) (*WorkerCompilerFactory, *workerTestMate
 		delegate: testutil.NewSecretMaterializer(&workerTestRegistration{}, compiler.schemas.catalog),
 	}
 	factory, err := NewWorkerCompilerFactory(
-		manifest, workerTestEffective(manifest), materializer, workerTestRuntimeObservers(),
+		workerTestEffective(), materializer, workerTestRuntimeObservers(),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -972,7 +962,7 @@ func containsWorkerTestError(err error, text string) bool {
 	return err != nil && strings.Contains(err.Error(), text)
 }
 
-func workerTestEffective(_ *capability.Manifest) *config.EffectiveConfig {
+func workerTestEffective() *config.EffectiveConfig {
 	return &config.EffectiveConfig{}
 }
 

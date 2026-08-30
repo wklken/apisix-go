@@ -48,13 +48,6 @@ func (*oidcScopedSecretBroker) AuthorizeCandidate(
 	return nil
 }
 
-func (*oidcScopedSecretBroker) AuthorizeRecovery(
-	context.Context, secret.AttemptID, generation.RevisionSet,
-	map[generation.Domain]generation.PublishedGeneration,
-) error {
-	return errors.New("recovery is not used by this leaf fixture")
-}
-
 func (broker *oidcScopedSecretBroker) ResolveScoped(
 	ctx context.Context, scope secret.Scope, raw string,
 ) (string, error) {

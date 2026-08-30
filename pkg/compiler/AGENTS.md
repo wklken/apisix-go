@@ -9,7 +9,7 @@ This file inherits the repository root `AGENTS.md` and applies to `pkg/compiler`
   resource, task, or plugin side effect.
 - Plan exact winning occurrences first. Disabled/losing occurrences must not be
   materialized or acquire resources.
-- Candidate and recovery compilation use the same ownership-transfer path.
+- Candidate compilation has one ownership-transfer path.
 - Inject immutable dependencies and the exact plugin `TaskOwner` before
   `PostInit` or any other plugin side effect.
 - Do not reintroduce Store reads, mutable route builders, or a second production

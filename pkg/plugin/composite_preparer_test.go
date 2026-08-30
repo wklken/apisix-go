@@ -167,15 +167,6 @@ func (*compositeSecretBroker) AuthorizeCandidate(
 	return nil
 }
 
-func (*compositeSecretBroker) AuthorizeRecovery(
-	context.Context,
-	secret.AttemptID,
-	generation.RevisionSet,
-	map[generation.Domain]generation.PublishedGeneration,
-) error {
-	return errors.New("recovery is not used by composite preparer tests")
-}
-
 func (broker *compositeSecretBroker) ResolveScoped(
 	ctx context.Context,
 	scope secret.Scope,

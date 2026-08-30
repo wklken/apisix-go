@@ -35,15 +35,6 @@ func (*requestValidationCompilerSecretBroker) AuthorizeCandidate(
 	return nil
 }
 
-func (*requestValidationCompilerSecretBroker) AuthorizeRecovery(
-	context.Context,
-	secret.AttemptID,
-	generation.RevisionSet,
-	map[generation.Domain]generation.PublishedGeneration,
-) error {
-	return nil
-}
-
 func (broker *requestValidationCompilerSecretBroker) ResolveScoped(
 	_ context.Context, scope secret.Scope, raw string,
 ) (string, error) {

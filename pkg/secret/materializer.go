@@ -69,12 +69,6 @@ type AttemptResolverFactory interface {
 		generation.ApplyTicket,
 		generation.PublicationSet,
 	) (AttemptResolver, error)
-	OpenRecovery(
-		context.Context,
-		AttemptID,
-		generation.RevisionSet,
-		map[generation.Domain]generation.PublishedGeneration,
-	) (AttemptResolver, error)
 }
 
 type AttemptRegistration interface {
@@ -88,11 +82,6 @@ type Materializer interface {
 		context.Context,
 		generation.ApplyTicket,
 		generation.PublicationSet,
-	) (AttemptRegistration, error)
-	RegisterRecovery(
-		context.Context,
-		generation.RevisionSet,
-		map[generation.Domain]generation.PublishedGeneration,
 	) (AttemptRegistration, error)
 	DeclarationDigest() [32]byte
 }
@@ -159,55 +148,6 @@ func (materializer *materializer) RegisterCandidate(
 	registration := newAttemptRegistration(
 		id,
 		ticket.DesiredRevision,
-		allowed,
-		func(resolveCtx context.Context, scope Scope, raw string) (string, error) {
-			return materializer.resolve(resolver, resolveCtx, scope, raw)
-		},
-		resolver.Close,
-		materializer.registry,
-	)
-	materializer.registry.activate(id)
-	return registration, nil
-}
-
-func (materializer *materializer) RegisterRecovery(
-	ctx context.Context,
-	revisions generation.RevisionSet,
-	published map[generation.Domain]generation.PublishedGeneration,
-) (AttemptRegistration, error) {
-	if materializer == nil ||
-		materializer.registry == nil ||
-		!materializer.encryption.Configured() ||
-		materializer.resolvers == nil {
-		return nil, ErrInvalidCapability
-	}
-	if err := validateRecoveryRegistration(revisions, published); err != nil {
-		return nil, err
-	}
-	ctx = normalizeContext(ctx)
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	ownedRevisions := revisions
-	ownedPublished := clonePublishedGenerations(published)
-	id, err := recoveryAttemptIDChecked(ownedRevisions, ownedPublished)
-	if err != nil || id == (AttemptID{}) {
-		return nil, ErrInvalidCapability
-	}
-	allowed := buildRecoveryClosureIndex(ownedPublished)
-	if err := materializer.registry.reserve(id); err != nil {
-		return nil, err
-	}
-	resolver, openErr := materializer.resolvers.OpenRecovery(ctx, id, ownedRevisions, ownedPublished)
-	if openErr != nil || resolver == nil {
-		cleanupOpenedAttempt(materializer.registry, id, resolver, ctx)
-		return nil, ErrCredentialUnavailable
-	}
-
-	registration := newAttemptRegistration(
-		id,
-		revisions.Desired,
 		allowed,
 		func(resolveCtx context.Context, scope Scope, raw string) (string, error) {
 			return materializer.resolve(resolver, resolveCtx, scope, raw)
@@ -427,16 +367,6 @@ func validateCandidateRegistration(ticket generation.ApplyTicket, set generation
 	return nil
 }
 
-func validateRecoveryRegistration(
-	revisions generation.RevisionSet,
-	published map[generation.Domain]generation.PublishedGeneration,
-) error {
-	if len(published) == 0 || generation.ValidateRecoverySet(revisions, published) != nil {
-		return ErrInvalidCapability
-	}
-	return nil
-}
-
 type closureIndex map[generation.Domain]map[generation.ResourceKey]struct{}
 
 func (index closureIndex) Contains(domain generation.Domain, resource generation.ResourceKey) bool {
@@ -458,24 +388,6 @@ func buildCandidateClosureIndex(set generation.PublicationSet) closureIndex {
 				continue
 			}
 			if _, present := candidate.Snapshot.Lookup(decision.Key); present {
-				resources[decision.Key] = struct{}{}
-			}
-		}
-		index[domain] = resources
-	}
-	return index
-}
-
-func buildRecoveryClosureIndex(published map[generation.Domain]generation.PublishedGeneration) closureIndex {
-	index := make(closureIndex, len(published))
-	for domain, value := range published {
-		resources := make(map[generation.ResourceKey]struct{})
-		for _, decision := range value.Decisions {
-			if decision.Disposition != generation.DispositionPublished &&
-				decision.Disposition != generation.DispositionLastGood {
-				continue
-			}
-			if _, present := value.Snapshot.Lookup(decision.Key); present {
 				resources[decision.Key] = struct{}{}
 			}
 		}
@@ -594,19 +506,4 @@ func clonePublicationCandidate(candidate generation.PublicationCandidate) genera
 		Closure:   append([]generation.ResourceKey(nil), candidate.Closure...),
 		Decisions: append([]generation.ResourceDecision(nil), candidate.Decisions...),
 	}
-}
-
-func clonePublishedGenerations(
-	published map[generation.Domain]generation.PublishedGeneration,
-) map[generation.Domain]generation.PublishedGeneration {
-	owned := make(map[generation.Domain]generation.PublishedGeneration, len(published))
-	for domain, value := range published {
-		owned[domain] = generation.PublishedGeneration{
-			Artifact:  value.Artifact,
-			Snapshot:  value.Snapshot.Clone(),
-			Closure:   append([]generation.ResourceKey(nil), value.Closure...),
-			Decisions: append([]generation.ResourceDecision(nil), value.Decisions...),
-		}
-	}
-	return owned
 }

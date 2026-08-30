@@ -2,7 +2,6 @@ package testutil
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"testing"
 
@@ -23,12 +22,6 @@ type SecretAttemptBroker interface {
 		generation.ApplyTicket,
 		generation.PublicationSet,
 	) error
-	AuthorizeRecovery(
-		context.Context,
-		secret.AttemptID,
-		generation.RevisionSet,
-		map[generation.Domain]generation.PublishedGeneration,
-	) error
 	RevokeAttempt(context.Context, secret.AttemptID) error
 }
 
@@ -46,21 +39,6 @@ func (factory *secretResolverFactory) OpenCandidate(
 		return nil, secret.ErrInvalidCapability
 	}
 	if err := factory.broker.AuthorizeCandidate(ctx, id, ticket, set); err != nil {
-		return nil, err
-	}
-	return &secretAttemptResolver{broker: factory.broker, id: id}, nil
-}
-
-func (factory *secretResolverFactory) OpenRecovery(
-	ctx context.Context,
-	id secret.AttemptID,
-	revisions generation.RevisionSet,
-	published map[generation.Domain]generation.PublishedGeneration,
-) (secret.AttemptResolver, error) {
-	if factory == nil || factory.broker == nil {
-		return nil, secret.ErrInvalidCapability
-	}
-	if err := factory.broker.AuthorizeRecovery(ctx, id, revisions, published); err != nil {
 		return nil, err
 	}
 	return &secretAttemptResolver{broker: factory.broker, id: id}, nil
@@ -115,15 +93,6 @@ func (*scopedSecretBroker) AuthorizeCandidate(
 	generation.PublicationSet,
 ) error {
 	return nil
-}
-
-func (*scopedSecretBroker) AuthorizeRecovery(
-	context.Context,
-	secret.AttemptID,
-	generation.RevisionSet,
-	map[generation.Domain]generation.PublishedGeneration,
-) error {
-	return errors.New("recovery is not used by scoped secret test fixtures")
 }
 
 func (broker *scopedSecretBroker) ResolveScoped(

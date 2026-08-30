@@ -1053,7 +1053,7 @@ func TestEffectiveBindingMaterializerRejectsNonJSONMutableValues(t *testing.T) {
 	}
 }
 
-func TestEffectiveBindingMaterializerCandidateAndRecoveryAttemptsDoNotShare(t *testing.T) {
+func TestEffectiveBindingMaterializerIndependentAttemptsDoNotShare(t *testing.T) {
 	first, firstFixture := newEffectiveBindingMaterializerFixture(t, []string{"request-id"}, nil)
 	second, secondFixture := newEffectiveBindingMaterializerFixture(t, []string{"request-id"}, nil)
 	firstSpec := firstFixture.pluginSpec("request-id", "route-1")
@@ -1068,7 +1068,7 @@ func TestEffectiveBindingMaterializerCandidateAndRecoveryAttemptsDoNotShare(t *t
 		t.Fatal(err)
 	}
 	if firstBindings[0].InstanceKey.Attempt == secondBindings[0].InstanceKey.Attempt {
-		t.Fatalf("candidate/recovery identities shared attempt: %+v", firstBindings[0].InstanceKey)
+		t.Fatalf("independent identities shared attempt: %+v", firstBindings[0].InstanceKey)
 	}
 }
 
@@ -1747,15 +1747,6 @@ func (*materializerLifecycleBroker) AuthorizeCandidate(
 	secret.AttemptID,
 	generation.ApplyTicket,
 	generation.PublicationSet,
-) error {
-	return nil
-}
-
-func (*materializerLifecycleBroker) AuthorizeRecovery(
-	context.Context,
-	secret.AttemptID,
-	generation.RevisionSet,
-	map[generation.Domain]generation.PublishedGeneration,
 ) error {
 	return nil
 }

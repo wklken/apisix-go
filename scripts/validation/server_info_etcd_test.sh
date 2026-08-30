@@ -106,7 +106,6 @@ deployment:
     timeout: 3
 apisix_go:
   runtime_paths:
-    data_dir: /tmp/apisix-go/data
     log_dir: /tmp/apisix-go/log
     runtime_dir: /tmp/apisix-go/run
     temp_dir: /tmp/apisix-go/tmp

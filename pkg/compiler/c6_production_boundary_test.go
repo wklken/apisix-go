@@ -19,7 +19,7 @@ const (
 	c6ModulePath     = "github.com/wklken/apisix-go"
 	c6GenerationPath = c6ModulePath + "/pkg/generation"
 
-	c6ApplyTicketOwner = "pkg/store/journal_apply.go"
+	c6ApplyTicketOwner = "pkg/generation/desired_state.go"
 )
 
 var c6ProductionRoots = []string{
@@ -40,15 +40,8 @@ type c6TicketConstruction struct {
 }
 
 var c6AllowedTicketConstructions = map[c6TicketConstruction]int{
-	{c6ApplyTicketOwner, "(*Store).ApplyDesired", "zero-value composite"}:                         3,
-	{c6ApplyTicketOwner, "(*Store).ApplyDesired", "composite literal"}:                            1,
-	{c6ApplyTicketOwner, "(*Store).ApplyDesired", "zero-value declaration"}:                       1,
-	{c6ApplyTicketOwner, "loadCursorTx", "zero-value composite"}:                                  3,
-	{c6ApplyTicketOwner, "applyTicketFromWire", "composite literal"}:                              1,
-	{c6ApplyTicketOwner, "decodeCursorRecord", "aggregate zero-value composite"}:                  10,
-	{c6ApplyTicketOwner, "loadCursorRecordForTicketTx", "aggregate zero-value composite"}:         4,
-	{"pkg/store/journal_publish.go", "loadStagedPublicationTx", "aggregate zero-value composite"}: 3,
-	{"pkg/store/journal_publish.go", "decodeStagedPublication", "aggregate zero-value composite"}: 7,
+	{c6ApplyTicketOwner, "(desiredState).candidate", "aggregate zero-value composite"}: 6,
+	{c6ApplyTicketOwner, "(desiredState).candidate", "composite literal"}:              1,
 }
 
 func TestC6ProductionBoundaryGuardRejectsForbiddenFixture(t *testing.T) {

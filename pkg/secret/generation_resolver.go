@@ -32,7 +32,7 @@ const (
 )
 
 // GenerationSecretResolver owns all in-process secret attempts for immutable
-// candidate and recovery publications. It deliberately has no Store or
+// candidate publications. It deliberately has no provider-state or
 // snapshot lookup dependency: every resource byte is supplied by the caller's
 // validated publication closure.
 type GenerationSecretResolver struct {
@@ -165,50 +165,6 @@ func (resolver *GenerationSecretResolver) OpenCandidate(
 	return attempt, nil
 }
 
-func (resolver *GenerationSecretResolver) OpenRecovery(
-	ctx context.Context,
-	id AttemptID,
-	revisions generation.RevisionSet,
-	published map[generation.Domain]generation.PublishedGeneration,
-) (AttemptResolver, error) {
-	if resolver == nil || !resolver.encryption.Configured() {
-		return nil, ErrInvalidCapability
-	}
-	ctx = normalizeContext(ctx)
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	if err := generation.ValidateRecoverySet(revisions, published); err != nil {
-		return nil, ErrInvalidCapability
-	}
-	ownedPublished := clonePublishedGenerations(published)
-	want := RecoveryAttemptID(revisions, ownedPublished)
-	if !equalGenerationAttemptID(id, want) {
-		return nil, ErrInvalidCapability
-	}
-	resources := make(map[generation.Domain]map[generation.ResourceKey][]byte, len(ownedPublished))
-	for domain, value := range ownedPublished {
-		indexed, err := indexGenerationPublishedResources(value)
-		if err != nil {
-			clearGenerationResourceIndex(resources)
-			return nil, ErrInvalidCapability
-		}
-		resources[domain] = indexed
-	}
-	attempt := &generationSecretAttempt{
-		resolver:   resolver,
-		id:         id,
-		generation: revisions.Desired,
-		resources:  resources,
-		cache:      newGenerationAttemptSecretCache(),
-	}
-	if err := resolver.registerGenerationAttempt(ctx, attempt); err != nil {
-		attempt.clearOwnedBytes()
-		return nil, err
-	}
-	return attempt, nil
-}
-
 func (resolver *GenerationSecretResolver) registerGenerationAttempt(
 	ctx context.Context,
 	attempt *generationSecretAttempt,
@@ -239,12 +195,6 @@ func indexGenerationCandidateResources(
 	candidate generation.PublicationCandidate,
 ) (map[generation.ResourceKey][]byte, error) {
 	return indexGenerationResources(candidate.Snapshot, candidate.Decisions)
-}
-
-func indexGenerationPublishedResources(
-	published generation.PublishedGeneration,
-) (map[generation.ResourceKey][]byte, error) {
-	return indexGenerationResources(published.Snapshot, published.Decisions)
 }
 
 func indexGenerationResources(

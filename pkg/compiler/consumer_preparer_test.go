@@ -48,22 +48,6 @@ func (factory *consumerAttemptFactory) prepareCandidateAttempt(
 	return &preparedConsumerAttempt{registeredAttempt: registered, consumers: consumers}, nil
 }
 
-func (factory *consumerAttemptFactory) prepareRecoveryAttempt(
-	ctx context.Context,
-	revisions generation.RevisionSet,
-	committed map[generation.Domain]generation.PublishedGeneration,
-) (*preparedConsumerAttempt, error) {
-	registered, err := factory.registration.prepareRecoveryAttempt(ctx, revisions, committed)
-	if err != nil {
-		return nil, err
-	}
-	consumers, err := factory.consumers.PrepareConsumers(ctx, registered.attempt)
-	if err != nil {
-		return nil, errors.Join(err, registered.Close(context.WithoutCancel(ctx)))
-	}
-	return &preparedConsumerAttempt{registeredAttempt: registered, consumers: consumers}, nil
-}
-
 func (prepared *preparedConsumerAttempt) Close(ctx context.Context) error {
 	prepared.consumers.Close()
 	return prepared.registeredAttempt.Close(ctx)
@@ -74,15 +58,6 @@ func (*consumerPreparationBroker) AuthorizeCandidate(
 	secret.AttemptID,
 	generation.ApplyTicket,
 	generation.PublicationSet,
-) error {
-	return nil
-}
-
-func (*consumerPreparationBroker) AuthorizeRecovery(
-	context.Context,
-	secret.AttemptID,
-	generation.RevisionSet,
-	map[generation.Domain]generation.PublishedGeneration,
 ) error {
 	return nil
 }
@@ -577,51 +552,6 @@ func TestConsumerBindingPreparerRejectsForeignOccurrenceBeforeMaterialization(t 
 		t.Fatalf("foreign occurrence reached materialization: %#v", broker.scopes)
 	}
 	if err := registration.Close(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestConsumerBindingPreparerUsesExactCommittedHTTPRecovery(t *testing.T) {
-	broker := &consumerPreparationBroker{resolved: map[string]string{
-		"$ENV://RECOVERY_USER": "recovered-user",
-		"$ENV://RECOVERY_PASS": "recovered-password",
-	}}
-	factory, _ := newConsumerAttemptFactory(t, broker)
-	httpSnapshot := mustGenerationSnapshot(t, 5, []generation.Resource{
-		resourceValue(
-			"consumers",
-			"recovered-consumer",
-			`{"username":"recovered-consumer","plugins":{"basic-auth":{"username":"$ENV://RECOVERY_USER","password":"$ENV://RECOVERY_PASS"}}}`,
-		),
-	}, nil)
-	streamSnapshot := mustGenerationSnapshot(t, 6, []generation.Resource{
-		resourceValue("stream_routes", "stream-route", `{"id":"stream-route"}`),
-	}, nil)
-	committed := map[generation.Domain]generation.PublishedGeneration{
-		generation.DomainHTTP:   publishedForDomain(generation.DomainHTTP, httpSnapshot),
-		generation.DomainStream: publishedForDomain(generation.DomainStream, streamSnapshot),
-	}
-	prepared, err := factory.prepareRecoveryAttempt(
-		context.Background(),
-		generation.RevisionSet{Desired: 60, HTTP: 5, Stream: 6},
-		committed,
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := prepared.consumers.ConsumerByPluginKey("basic-auth", "recovered-user"); !ok {
-		t.Fatal("committed HTTP consumer is missing from recovery bindings")
-	}
-	if len(broker.scopes) != 2 {
-		t.Fatalf("recovery materialization scopes = %#v", broker.scopes)
-	}
-	for _, scope := range broker.scopes {
-		if scope.Generation != 60 || scope.Domain != generation.DomainHTTP ||
-			scope.Resource != (generation.ResourceKey{Kind: "consumers", ID: "recovered-consumer"}) {
-			t.Fatalf("recovery scope = %#v", scope)
-		}
-	}
-	if err := prepared.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 }

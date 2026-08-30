@@ -105,9 +105,6 @@ func TestServerShutdownPreservesExactGenerationOwnersThroughRealChain(t *testing
 		t.Fatal(err)
 	}
 	server.engine = engine
-	if err := engine.InstallRecovery(context.Background(), generation.RecoveryState{}); err != nil {
-		t.Fatal(err)
-	}
 
 	pluginConfig := map[string]any{
 		"endpoint_addr":       clickhouse.URL,
@@ -149,15 +146,10 @@ func TestServerShutdownPreservesExactGenerationOwnersThroughRealChain(t *testing
 		},
 		RequiredDomains: []generation.Domain{generation.DomainHTTP},
 	}
-	set, err := engine.Prepare(context.Background(), ticket, desired, nil)
+	set, err := engine.Publish(context.Background(), ticket, desired, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	token := generation.PublicationToken("task8-server-chain")
-	if err := engine.Activate(context.Background(), token, set); err != nil {
-		t.Fatal(err)
-	}
-	engine.FinalizeActivation(context.Background(), token, set)
 	active := engine.active.Load().http
 	if active == nil || active.prepared == nil {
 		t.Fatal("activated HTTP generation is unavailable")

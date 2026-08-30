@@ -133,7 +133,7 @@ reject_pattern '^  (pull_request|push):' <(printf '%s\n' "$header")
 # Exactly these jobs own reusable candidate evidence. A separate packaging or
 # publication job would be a scope regression.
 actual_jobs=$(sed -n '/^jobs:$/,$p' "$workflow" | awk '/^  [A-Za-z0-9_-]+:$/ { sub(/^  /, ""); sub(/:$/, ""); print }')
-expected_jobs=$'validate-inputs\nrace-and-vulnerability\ncontainer-evidence\netcd-recovery\nproxy-soak'
+expected_jobs=$'validate-inputs\nrace-and-vulnerability\ncontainer-evidence\nproxy-soak'
 if [[ "$actual_jobs" != "$expected_jobs" ]]; then
     printf 'candidate gate jobs differ\nwant:\n%s\ngot:\n%s\n' "$expected_jobs" "$actual_jobs" >&2
     exit 1
@@ -141,7 +141,7 @@ fi
 
 require_job_fixed "$workflow" validate-inputs 'SOURCE_COMMIT: ${{ inputs.source-commit || github.sha }}'
 require_job_fixed "$workflow" validate-inputs 'source commit must be an immutable 40-hex SHA'
-require_job_fixed "$workflow" race-and-vulnerability 'go test -race ./pkg/config ./cmd ./pkg/server ./pkg/route ./pkg/proxy ./pkg/store ./pkg/etcd ./pkg/stream -count=1'
+require_job_fixed "$workflow" race-and-vulnerability 'go test -race ./pkg/config ./cmd ./pkg/server ./pkg/route ./pkg/proxy ./pkg/etcd ./pkg/stream -count=1'
 require_job_fixed "$workflow" race-and-vulnerability 'govulncheck@v1.7.0 . ./cmd/... ./pkg/...'
 
 require_job_fixed "$workflow" container-evidence 'EXPECTED_SOURCE_COMMIT: ${{ inputs.source-commit || github.sha }}'
@@ -156,19 +156,16 @@ require_job_fixed "$workflow" container-evidence 'docker save "$APISIX_IMAGE" | 
 require_job_fixed "$workflow" container-evidence 'candidate-image-${{ github.run_id }}'
 reject_job_pattern "$workflow" container-evidence 'scripts/release_metadata.sh'
 
-for job in etcd-recovery proxy-soak; do
+for job in proxy-soak; do
     require_job_fixed "$workflow" "$job" 'if: ${{ inputs.run-operational }}'
     require_job_fixed "$workflow" "$job" 'race-and-vulnerability'
     require_job_fixed "$workflow" "$job" 'container-evidence'
 done
-require_job_fixed "$workflow" etcd-recovery 'name: candidate-image-${{ github.run_id }}'
-require_job_fixed "$workflow" etcd-recovery 'sha256sum -c apisix-image.tar.gz.sha256'
-require_job_fixed "$workflow" etcd-recovery 'bash scripts/etcd_recovery_smoke.sh "$APISIX_IMAGE"'
 require_job_fixed "$workflow" proxy-soak 'APISIX_GO_SOAK_DURATION=30m'
 require_job_fixed "$workflow" proxy-soak "go test -json ./pkg/route -run '^TestProxyRuntimeSoak$' -count=1 -timeout=40m"
 
 # The candidate workflow binds every gate to one resolved commit and includes
-# functional smoke, platform recovery, and soak evidence.
+# functional smoke and soak evidence.
 require_job_fixed "$candidate_workflow" resolve-source 'commit=$(git rev-parse HEAD)'
 for job in lint build-and-unit integration-smoke; do
     require_job_fixed "$candidate_workflow" "$job" 'resolve-source'

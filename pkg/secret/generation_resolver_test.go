@@ -118,15 +118,6 @@ func resolverScope(fixture generationResolverFixture, id AttemptID) Scope {
 	return scope
 }
 
-func resolverPublished(
-	fixture generationResolverFixture,
-) map[generation.Domain]generation.PublishedGeneration {
-	domain := fixture.scope.Domain
-	return map[generation.Domain]generation.PublishedGeneration{
-		domain: generation.PublishedGeneration(fixture.set.Domains[domain]),
-	}
-}
-
 func vaultConfigBytesForResolver(t *testing.T, uri, token string) []byte {
 	return vaultConfigBytesForResolverTimeout(t, uri, token, 2)
 }
@@ -289,30 +280,6 @@ func TestGenerationSecretResolverOpenCandidateRequiresExactIDAndClosure(t *testi
 	}
 }
 
-func TestGenerationSecretResolverOpenRecoveryRejectsDesiredOnlyOrMismatchedPublished(t *testing.T) {
-	resolver := newGenerationSecretResolverForTest(t)
-	fixture := newGenerationResolverFixture(t, generation.DomainHTTP, 4, []byte("published"), nil)
-	id := RecoveryAttemptID(generation.RevisionSet{Desired: 9, HTTP: 4}, resolverPublished(fixture))
-	if _, err := resolver.OpenRecovery(
-		context.Background(),
-		id,
-		generation.RevisionSet{Desired: 9},
-		map[generation.Domain]generation.PublishedGeneration{},
-	); !errors.Is(err, ErrInvalidCapability) {
-		t.Fatalf("desired-only recovery error = %v, want ErrInvalidCapability", err)
-	}
-	wrong := resolverPublished(fixture)
-	wrong[generation.DomainHTTP] = generation.PublishedGeneration(wrong[generation.DomainHTTP])
-	wrongHTTP := wrong[generation.DomainHTTP]
-	wrongHTTP.Artifact.Revision++
-	wrong[generation.DomainHTTP] = wrongHTTP
-	if _, err := resolver.OpenRecovery(
-		context.Background(), id, generation.RevisionSet{Desired: 9, HTTP: 4}, wrong,
-	); !errors.Is(err, ErrInvalidCapability) {
-		t.Fatalf("mismatched published error = %v, want ErrInvalidCapability", err)
-	}
-}
-
 func TestGenerationSecretResolverClonesCandidateInputsAndIndexesOnlyPublishedClosure(t *testing.T) {
 	resolver := newGenerationSecretResolverForTest(t)
 	fixture := newGenerationResolverFixture(t, generation.DomainHTTP, 9, []byte("route"), nil)
@@ -342,119 +309,6 @@ func TestGenerationSecretResolverClonesCandidateInputsAndIndexesOnlyPublishedClo
 		ErrCapabilityScopeMismatch,
 	) {
 		t.Fatalf("non-closure scope error = %v, want ErrCapabilityScopeMismatch", err)
-	}
-}
-
-func TestRecoverySecretResolverUsesPublishedClosureNotDesired(t *testing.T) {
-	var candidateRequests atomic.Int32
-	candidateServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		candidateRequests.Add(1)
-		_, _ = w.Write([]byte(`{"data":{"password":"candidate-A"}}`))
-	}))
-	defer candidateServer.Close()
-	var recoveryRequests atomic.Int32
-	recoveryServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		recoveryRequests.Add(1)
-		_, _ = w.Write([]byte(`{"data":{"password":"published-B"}}`))
-	}))
-	defer recoveryServer.Close()
-
-	resolver := newGenerationSecretResolverForTest(t)
-	candidateFixture := newGenerationResolverFixture(
-		t, generation.DomainHTTP, 42, []byte("candidate"),
-		vaultConfigBytesForResolver(t, candidateServer.URL, "candidate-token"),
-	)
-	recoveryFixture := newGenerationResolverFixture(
-		t, generation.DomainHTTP, 40, []byte("published"),
-		vaultConfigBytesForResolver(t, recoveryServer.URL, "published-token"),
-	)
-	revisions := generation.RevisionSet{Desired: 42, HTTP: 40}
-	recoveryID := RecoveryAttemptID(revisions, resolverPublished(recoveryFixture))
-	recovery, err := resolver.OpenRecovery(
-		context.Background(), recoveryID, revisions, resolverPublished(recoveryFixture),
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	candidateID := CandidateAttemptID(candidateFixture.ticket, candidateFixture.set)
-	candidate, err := resolver.OpenCandidate(
-		context.Background(), candidateID, candidateFixture.ticket, candidateFixture.set,
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if recoveryID == candidateID {
-		t.Fatal("candidate and recovery IDs aliased")
-	}
-	reference := "$secret://vault/test1/foo/password"
-	recoveryScope := resolverScope(recoveryFixture, recoveryID)
-	recoveryScope.Generation = revisions.Desired
-	recoveryValue, err := recovery.ResolveScoped(context.Background(), recoveryScope, reference)
-	if err != nil || recoveryValue != "published-B" {
-		t.Fatalf("recovery value = %q/%v, want published-B", recoveryValue, err)
-	}
-	candidateValue, err := candidate.ResolveScoped(
-		context.Background(),
-		resolverScope(candidateFixture, candidateID),
-		reference,
-	)
-	if err != nil || candidateValue != "candidate-A" {
-		t.Fatalf("candidate value = %q/%v, want candidate-A", candidateValue, err)
-	}
-	if candidateRequests.Load() != 1 || recoveryRequests.Load() != 1 {
-		t.Fatalf(
-			"backend requests = candidate:%d recovery:%d, want 1/1",
-			candidateRequests.Load(),
-			recoveryRequests.Load(),
-		)
-	}
-	if _, err := recovery.ResolveScoped(
-		context.Background(),
-		resolverScope(candidateFixture, candidateID),
-		reference,
-	); !errors.Is(
-		err,
-		ErrCapabilityScopeMismatch,
-	) {
-		t.Fatalf("candidate scope on recovery error = %v, want ErrCapabilityScopeMismatch", err)
-	}
-	if _, err := candidate.ResolveScoped(
-		context.Background(),
-		recoveryScope,
-		reference,
-	); !errors.Is(
-		err,
-		ErrCapabilityScopeMismatch,
-	) {
-		t.Fatalf("recovery scope on candidate error = %v, want ErrCapabilityScopeMismatch", err)
-	}
-}
-
-func TestGenerationSecretResolverAllowsCandidateAndRecoveryAtSameDesiredRevision(t *testing.T) {
-	resolver := newGenerationSecretResolverForTest(t)
-	candidateFixture := newGenerationResolverFixture(t, generation.DomainHTTP, 42, []byte("candidate"), nil)
-	recoveryFixture := newGenerationResolverFixture(t, generation.DomainHTTP, 40, []byte("published"), nil)
-	revisions := generation.RevisionSet{Desired: 42, HTTP: 40}
-	recoveryID := RecoveryAttemptID(revisions, resolverPublished(recoveryFixture))
-	if _, err := resolver.OpenRecovery(
-		context.Background(),
-		recoveryID,
-		revisions,
-		resolverPublished(recoveryFixture),
-	); err != nil {
-		t.Fatal(err)
-	}
-	candidateID := CandidateAttemptID(candidateFixture.ticket, candidateFixture.set)
-	if _, err := resolver.OpenCandidate(
-		context.Background(),
-		candidateID,
-		candidateFixture.ticket,
-		candidateFixture.set,
-	); err != nil {
-		t.Fatal(err)
-	}
-	if recoveryID == candidateID {
-		t.Fatal("candidate and recovery IDs aliased")
 	}
 }
 

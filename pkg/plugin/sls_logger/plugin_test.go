@@ -149,13 +149,6 @@ func (*slsScopedSecretBroker) AuthorizeCandidate(
 	return nil
 }
 
-func (*slsScopedSecretBroker) AuthorizeRecovery(
-	context.Context, secret.AttemptID, generation.RevisionSet,
-	map[generation.Domain]generation.PublishedGeneration,
-) error {
-	return errors.New("recovery is not used by this SLS fixture")
-}
-
 func (broker *slsScopedSecretBroker) ResolveScoped(
 	ctx context.Context, scope secret.Scope, raw string,
 ) (string, error) {

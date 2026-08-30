@@ -20,7 +20,7 @@ APISIX-Go-specific migration selector is required.
 
 - HTTP routes, services, consumers, upstreams, frontend TLS, WebSocket, and
   implemented APISIX 3.17 HTTP plugins.
-- Durable journal recovery, immutable generation activation, graceful
+- Initial provider synchronization, immutable generation activation, graceful
   termination, and serviceability-based readiness.
 - The same runtime behavior for unit, integration, and candidate validation.
 
@@ -35,7 +35,7 @@ APISIX-Go-specific migration selector is required.
 ## Qualification claim
 
 Plugin behavior is tested by plugin unit tests and standalone real-process
-cases. Platform recovery and runtime stability are qualified separately by the
+cases. Runtime stability is qualified separately by the
 [HTTP candidate qualification](runbooks/http-candidate-qualification.md).
 
 A green release-candidate run supports only this bounded claim:

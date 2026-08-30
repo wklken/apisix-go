@@ -63,7 +63,6 @@ func resolveRuntimePaths(paths RuntimePaths, root *valueNode, req LoadRequest) (
 		path  string
 		value *string
 	}{
-		{name: "data_dir", path: "apisix_go.runtime_paths.data_dir", value: &paths.DataDir},
 		{name: "runtime_dir", path: "apisix_go.runtime_paths.runtime_dir", value: &paths.RuntimeDir},
 		{name: "log_dir", path: "apisix_go.runtime_paths.log_dir", value: &paths.LogDir},
 		{name: "temp_dir", path: "apisix_go.runtime_paths.temp_dir", value: &paths.TempDir},

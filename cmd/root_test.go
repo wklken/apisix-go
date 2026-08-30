@@ -18,12 +18,9 @@ import (
 	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/data_encryption"
-	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/secret"
-	"github.com/wklken/apisix-go/pkg/store"
 	"github.com/wklken/apisix-go/pkg/version"
-	bolt "go.etcd.io/bbolt"
 )
 
 type fakeServerLifecycle struct {
@@ -293,28 +290,9 @@ func (r *startupCallRecorder) snapshot() []string {
 	return slices.Clone(r.calls)
 }
 
-type startupTestJournal struct {
-	generation.Journal
-	recover func(context.Context) (generation.RecoveryState, error)
-	close   func() error
-}
-
-func (j *startupTestJournal) Recover(ctx context.Context) (generation.RecoveryState, error) {
-	return j.recover(ctx)
-}
-
-func (j *startupTestJournal) Close() error { return j.close() }
-
 func TestStartupLoadsOneManifestForEffectiveConfigAndCompiler(t *testing.T) {
 	recorder := &startupCallRecorder{}
 	manifest, effective, catalog, encryption := startupInputs(t)
-	journal := &startupTestJournal{
-		recover: func(context.Context) (generation.RecoveryState, error) {
-			recorder.record("recover")
-			return generation.RecoveryState{}, nil
-		},
-		close: func() error { recorder.record("journal-close"); return nil },
-	}
 	factories := startupFactories{
 		loadManifest: func() (*capability.Manifest, error) {
 			recorder.record("manifest")
@@ -343,25 +321,17 @@ func TestStartupLoadsOneManifestForEffectiveConfigAndCompiler(t *testing.T) {
 			recorder.record("resolver")
 			return secret.NewGenerationSecretResolver(service)
 		},
-		mkdirAll: func(string, os.FileMode) error { recorder.record("mkdir"); return nil },
-		openJournal: func(string) (generation.Journal, error) {
-			recorder.record("open-journal")
-			return journal, nil
-		},
 		newServer: func(
 			gotEffective *config.EffectiveConfig,
 			gotManifest *capability.Manifest,
 			_ data_encryption.Service,
 			resolver *secret.GenerationSecretResolver,
-			gotJournal generation.Journal,
-			_ generation.RecoveryState,
 		) (serverLifecycle, error) {
 			recorder.record("new-server")
-			if gotEffective != effective || gotManifest != manifest || gotJournal != journal {
+			if gotEffective != effective || gotManifest != manifest {
 				t.Fatalf("NewServer dependencies do not preserve startup identities")
 			}
 			_ = resolver.Close(context.Background())
-			_ = gotJournal.Close()
 			return &fakeServerLifecycle{
 				start:    func(context.Context) error { return nil },
 				shutdown: func(context.Context) error { return nil },
@@ -375,128 +345,10 @@ func TestStartupLoadsOneManifestForEffectiveConfigAndCompiler(t *testing.T) {
 	}
 	want := []string{
 		"manifest", "effective", "catalog", "encryption", "logger", "resolver",
-		"mkdir", "open-journal", "recover", "new-server", "journal-close", "run-server",
+		"new-server", "run-server",
 	}
 	if got := recorder.snapshot(); !slices.Equal(got, want) {
 		t.Fatalf("startup calls = %v, want %v", got, want)
-	}
-}
-
-func TestStartupOpensAndRecoversJournalBeforeServerConstruction(t *testing.T) {
-	recorder := &startupCallRecorder{}
-	factories := startupSuccessFactories(t, recorder)
-	if err := startWithOptionsWithFactories(rootOptions{}, factories); err != nil {
-		t.Fatalf("startWithOptionsWithFactories() error = %v", err)
-	}
-	calls := recorder.snapshot()
-	openIndex := slices.Index(calls, "open-journal")
-	recoverIndex := slices.Index(calls, "recover")
-	serverIndex := slices.Index(calls, "new-server")
-	runIndex := slices.Index(calls, "run-server")
-	if openIndex >= recoverIndex || recoverIndex >= serverIndex || serverIndex >= runIndex {
-		t.Fatalf("startup ownership order = %v", calls)
-	}
-}
-
-func TestStartupJournalRecoveryFailureClosesJournalOnly(t *testing.T) {
-	recorder := &startupCallRecorder{}
-	recoveryErr := errors.New("recovery failed")
-	factories := startupSuccessFactories(t, recorder)
-	journal := &startupTestJournal{
-		recover: func(context.Context) (generation.RecoveryState, error) {
-			recorder.record("recover")
-			return generation.RecoveryState{}, recoveryErr
-		},
-		close: func() error { recorder.record("journal-close"); return nil },
-	}
-	factories.openJournal = func(string) (generation.Journal, error) {
-		recorder.record("open-journal")
-		return journal, nil
-	}
-	factories.closeResolver = func(resolver *secret.GenerationSecretResolver, ctx context.Context) error {
-		recorder.record("resolver-close")
-		return resolver.Close(ctx)
-	}
-
-	err := startWithOptionsWithFactories(rootOptions{}, factories)
-	if !errors.Is(err, recoveryErr) {
-		t.Fatalf("startWithOptionsWithFactories() error = %v, want %v", err, recoveryErr)
-	}
-	calls := recorder.snapshot()
-	if slices.Contains(calls, "new-server") || slices.Contains(calls, "run-server") {
-		t.Fatalf("recovery failure transferred ownership or served: %v", calls)
-	}
-	wantTail := []string{"recover", "journal-close", "resolver-close"}
-	if len(calls) < len(wantTail) || !slices.Equal(calls[len(calls)-len(wantTail):], wantTail) {
-		t.Fatalf("recovery cleanup tail = %v, want %v", calls, wantTail)
-	}
-}
-
-func TestStartupRejectsUnrecognizedJournalBeforeServerConstruction(t *testing.T) {
-	recorder := &startupCallRecorder{}
-	factories := startupSuccessFactories(t, recorder)
-	manifest, effective, catalog, encryption := startupInputs(t)
-	factories.loadManifest = func() (*capability.Manifest, error) { return manifest, nil }
-	factories.loadEffective = func(string, *capability.Manifest) (*config.EffectiveConfig, error) {
-		return effective, nil
-	}
-	factories.newCatalog = func(*capability.Manifest) (*capability.SecretDeclarationCatalog, error) {
-		return catalog, nil
-	}
-	factories.newEncryption = func(
-		*config.EffectiveConfig,
-		*capability.SecretDeclarationCatalog,
-	) data_encryption.Service {
-		return encryption
-	}
-	path := config.JournalPath(effective)
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	db, err := bolt.Open(path, 0o600, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Update(func(tx *bolt.Tx) error {
-		bucket, createErr := tx.CreateBucket([]byte("routes"))
-		if createErr != nil {
-			return createErr
-		}
-		return bucket.Put([]byte("unexpected"), []byte(`{"id":"unexpected","uri":"/unexpected"}`))
-	}); err != nil {
-		_ = db.Close()
-		t.Fatal(err)
-	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
-	factories.openJournal = func(gotPath string) (generation.Journal, error) {
-		recorder.record("open-journal")
-		if gotPath != path {
-			t.Fatalf("OpenJournal(%q), want %q", gotPath, path)
-		}
-		return store.OpenJournal(gotPath)
-	}
-
-	err = startWithOptionsWithFactories(rootOptions{}, factories)
-	if !errors.Is(err, generation.ErrIntegrity) {
-		t.Fatalf("startWithOptionsWithFactories() error = %v, want ErrIntegrity", err)
-	}
-	if calls := recorder.snapshot(); slices.Contains(calls, "new-server") || slices.Contains(calls, "run-server") {
-		t.Fatalf("invalid journal reached server construction: %v", calls)
-	}
-	db, err = bolt.Open(path, 0o600, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = db.Close() }()
-	if err := db.View(func(tx *bolt.Tx) error {
-		if tx.Bucket([]byte("routes")) == nil {
-			t.Fatal("rejected routes bucket was modified")
-		}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
 	}
 }
 
@@ -512,66 +364,6 @@ func startupInputs(
 	if err != nil {
 		t.Fatal(err)
 	}
-	effective := &config.EffectiveConfig{Paths: config.RuntimePaths{DataDir: t.TempDir()}}
+	effective := &config.EffectiveConfig{}
 	return manifest, effective, catalog, data_encryption.NewService(false, nil, catalog)
-}
-
-func startupSuccessFactories(t *testing.T, recorder *startupCallRecorder) startupFactories {
-	t.Helper()
-	manifest, effective, catalog, encryption := startupInputs(t)
-	journal := &startupTestJournal{
-		recover: func(context.Context) (generation.RecoveryState, error) {
-			recorder.record("recover")
-			return generation.RecoveryState{}, nil
-		},
-		close: func() error { recorder.record("journal-close"); return nil },
-	}
-	return startupFactories{
-		loadManifest: func() (*capability.Manifest, error) {
-			recorder.record("manifest")
-			return manifest, nil
-		},
-		loadEffective: func(string, *capability.Manifest) (*config.EffectiveConfig, error) {
-			recorder.record("effective")
-			return effective, nil
-		},
-		newCatalog: func(*capability.Manifest) (*capability.SecretDeclarationCatalog, error) {
-			recorder.record("catalog")
-			return catalog, nil
-		},
-		newEncryption: func(*config.EffectiveConfig, *capability.SecretDeclarationCatalog) data_encryption.Service {
-			recorder.record("encryption")
-			return encryption
-		},
-		configureLogger: func(*config.Config) error { recorder.record("logger"); return nil },
-		newResolver: func(service data_encryption.Service) (*secret.GenerationSecretResolver, error) {
-			recorder.record("resolver")
-			return secret.NewGenerationSecretResolver(service)
-		},
-		closeResolver: func(resolver *secret.GenerationSecretResolver, ctx context.Context) error {
-			return resolver.Close(ctx)
-		},
-		mkdirAll: func(string, os.FileMode) error { recorder.record("mkdir"); return nil },
-		openJournal: func(string) (generation.Journal, error) {
-			recorder.record("open-journal")
-			return journal, nil
-		},
-		newServer: func(
-			_ *config.EffectiveConfig,
-			_ *capability.Manifest,
-			_ data_encryption.Service,
-			resolver *secret.GenerationSecretResolver,
-			journal generation.Journal,
-			_ generation.RecoveryState,
-		) (serverLifecycle, error) {
-			recorder.record("new-server")
-			_ = resolver.Close(context.Background())
-			_ = journal.Close()
-			return &fakeServerLifecycle{
-				start:    func(context.Context) error { return nil },
-				shutdown: func(context.Context) error { return nil },
-			}, nil
-		},
-		runServer: func(serverLifecycle) error { recorder.record("run-server"); return nil },
-	}
 }

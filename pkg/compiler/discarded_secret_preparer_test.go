@@ -33,15 +33,6 @@ func (*discardPreparationBroker) AuthorizeCandidate(
 	return nil
 }
 
-func (*discardPreparationBroker) AuthorizeRecovery(
-	context.Context,
-	secret.AttemptID,
-	generation.RevisionSet,
-	map[generation.Domain]generation.PublishedGeneration,
-) error {
-	return nil
-}
-
 func (broker *discardPreparationBroker) ResolveScoped(
 	_ context.Context,
 	scope secret.Scope,
@@ -98,7 +89,7 @@ func TestPrepareCompilerDiscardSecretsUsesExactRawFinalOccurrences(t *testing.T)
 			name:       "recovery",
 			generation: 62,
 			register: func(broker *discardPreparationBroker) (PreparationAttempt, secret.AttemptRegistration) {
-				return recoveryDiscardPreparationAttempt(t, compiler, broker, 62, desired)
+				return snapshotDiscardPreparationAttempt(t, compiler, broker, 62, desired)
 			},
 		},
 	}
@@ -202,7 +193,7 @@ func TestPrepareCompilerDiscardSecretsRejectsNonStringAndRedactsFailure(t *testi
 			snapshot := mustGenerationSnapshot(t, 63, []generation.Resource{
 				resourceValue("routes", "discard-route", tt.raw),
 			}, nil)
-			attempt, registration := recoveryDiscardPreparationAttempt(t, compiler, broker, 64, snapshot)
+			attempt, registration := snapshotDiscardPreparationAttempt(t, compiler, broker, 64, snapshot)
 			t.Cleanup(func() {
 				if err := registration.Close(context.Background()); err != nil {
 					t.Error(err)
@@ -247,14 +238,14 @@ func TestPrepareCompilerDiscardSecretsIsAtomicAcrossAttempts(t *testing.T) {
 		),
 	}, nil)
 
-	attemptN, registrationN := recoveryDiscardPreparationAttempt(t, compiler, broker, 73, first)
+	attemptN, registrationN := snapshotDiscardPreparationAttempt(t, compiler, broker, 73, first)
 	if err := prepareCompilerDiscardSecrets(context.Background(), attemptN, compiler.schemas.catalog); err != nil {
 		t.Fatal(err)
 	}
 	if err := registrationN.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	attemptN1, registrationN1 := recoveryDiscardPreparationAttempt(t, compiler, broker, 74, second)
+	attemptN1, registrationN1 := snapshotDiscardPreparationAttempt(t, compiler, broker, 74, second)
 	t.Cleanup(func() {
 		if err := registrationN1.Close(context.Background()); err != nil {
 			t.Error(err)
@@ -272,7 +263,7 @@ func TestPrepareCompilerDiscardSecretsIsAtomicAcrossAttempts(t *testing.T) {
 	}
 
 	sourceBroker := &discardPreparationBroker{}
-	sourceAttempt, sourceRegistration := recoveryDiscardPreparationAttempt(t, compiler, sourceBroker, 75, second)
+	sourceAttempt, sourceRegistration := snapshotDiscardPreparationAttempt(t, compiler, sourceBroker, 75, second)
 	t.Cleanup(func() {
 		if err := sourceRegistration.Close(context.Background()); err != nil {
 			t.Error(err)
@@ -290,7 +281,7 @@ func TestPrepareCompilerDiscardSecretsIsAtomicAcrossAttempts(t *testing.T) {
 		t.Fatal("source preparation attempt did not expose the discard occurrence")
 	}
 	targetBroker := &discardPreparationBroker{}
-	targetAttempt, targetRegistration := recoveryDiscardPreparationAttempt(t, compiler, targetBroker, 76, second)
+	targetAttempt, targetRegistration := snapshotDiscardPreparationAttempt(t, compiler, targetBroker, 76, second)
 	t.Cleanup(func() {
 		if err := targetRegistration.Close(context.Background()); err != nil {
 			t.Error(err)
@@ -376,7 +367,7 @@ func TestPrepareCompilerDiscardSecretsMatchesTerminalKeysCaseInsensitively(t *te
 			`{"id":"discard-route","plugins":{"basic-auth":{"PASSWORD":"$ENV://CASE_INSENSITIVE"}}}`,
 		),
 	}, nil)
-	attempt, registration := recoveryDiscardPreparationAttempt(t, compiler, broker, 79, snapshot)
+	attempt, registration := snapshotDiscardPreparationAttempt(t, compiler, broker, 79, snapshot)
 	t.Cleanup(func() {
 		if err := registration.Close(context.Background()); err != nil {
 			t.Error(err)
@@ -407,7 +398,7 @@ func candidateDiscardPreparationAttempt(
 	return newDiscardPreparationAttempt(t, set.DesiredRevision, set.Domains, registration, compiler)
 }
 
-func recoveryDiscardPreparationAttempt(
+func snapshotDiscardPreparationAttempt(
 	t *testing.T,
 	compiler *Compiler,
 	broker *discardPreparationBroker,
@@ -415,19 +406,25 @@ func recoveryDiscardPreparationAttempt(
 	snapshot generation.Snapshot,
 ) (PreparationAttempt, secret.AttemptRegistration) {
 	t.Helper()
-	published := map[generation.Domain]generation.PublishedGeneration{
-		generation.DomainHTTP: publishedForDomain(generation.DomainHTTP, snapshot),
-	}
-	revisions := generation.RevisionSet{Desired: generationNumber, HTTP: snapshot.Revision()}
-	materializer := testutil.NewSecretMaterializer(broker, compiler.schemas.catalog)
-	registration, err := materializer.RegisterRecovery(context.Background(), revisions, published)
+	owned, err := generation.NewSnapshot(generationNumber, snapshot.Resources(), snapshot.Tombstones())
 	if err != nil {
 		t.Fatal(err)
 	}
-	candidates := map[generation.Domain]generation.PublicationCandidate{
-		generation.DomainHTTP: generation.PublicationCandidate(published[generation.DomainHTTP]),
+	published := publishedForDomain(generation.DomainHTTP, owned)
+	set := generation.PublicationSet{
+		DesiredRevision: generationNumber,
+		Domains: map[generation.Domain]generation.PublicationCandidate{
+			generation.DomainHTTP: generation.PublicationCandidate(published),
+		},
 	}
-	return newDiscardPreparationAttempt(t, generationNumber, candidates, registration, compiler)
+	materializer := testutil.NewSecretMaterializer(broker, compiler.schemas.catalog)
+	registration, err := materializer.RegisterCandidate(
+		context.Background(), ticketForSnapshot(owned, generation.DomainHTTP), set,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return newDiscardPreparationAttempt(t, generationNumber, set.Domains, registration, compiler)
 }
 
 func newDiscardPreparationAttempt(

@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"reflect"
-	"slices"
 	"sync"
 	"sync/atomic"
 
@@ -17,42 +15,7 @@ import (
 
 var _ generation.PublicationEngine = (*GenerationEngine)(nil)
 
-var (
-	errGenerationEngineClosed             = errors.New("generation engine is closed")
-	errGenerationRecoveryNotInstalled     = errors.New("generation recovery is not installed")
-	errGenerationRecoveryAlreadyInstalled = errors.New("generation recovery is already installed")
-)
-
-type preparedKey struct {
-	Desired uint64
-	HTTP    [32]byte
-	Stream  [32]byte
-}
-
-type discardAttempt struct {
-	done     chan struct{}
-	err      error
-	waiters  int
-	terminal bool
-}
-
-type pendingRecord struct {
-	key       preparedKey
-	set       generation.PublicationSet
-	owner     *generationOwner
-	synthetic bool
-	discard   *discardAttempt
-}
-
-type activationRecord struct {
-	token     generation.PublicationToken
-	key       preparedKey
-	set       generation.PublicationSet
-	previous  *activeBundle
-	candidate *activeBundle
-	owner     *generationOwner
-	restored  bool
-}
+var errGenerationEngineClosed = errors.New("generation engine is closed")
 
 type retirementRecord struct {
 	owner  *generationOwner
@@ -62,35 +25,22 @@ type retirementRecord struct {
 	err    error
 }
 
-type generationEngineClosePhase uint8
-
-const (
-	engineCloseInitial generationEngineClosePhase = iota
-	engineCloseOwnersCaptured
-	engineClosePendingDone
-	engineCloseRetirementDone
-	engineCloseFactoryDone
-)
-
 type generationEngineCloseAttempt struct {
 	done chan struct{}
 	err  error
 }
 
-// GenerationEngine owns immutable prepared generations from compilation
-// through atomic protocol publication and eventual lease-aware retirement.
+// GenerationEngine compiles immutable runtime generations, publishes one
+// atomic HTTP/stream bundle, and retires replaced owners after their leases
+// drain.
 type GenerationEngine struct {
 	server  *Server
 	factory *compiler.WorkerCompilerFactory
 
-	mu                sync.Mutex
-	closed            bool
-	recoveryInstalled bool
-	initialized       bool
-	pending           map[preparedKey]*pendingRecord
-	activations       map[generation.PublicationToken]*activationRecord
-	fences            map[generation.Domain]generation.PublicationCandidate
-	active            atomic.Pointer[activeBundle]
+	mu         sync.Mutex
+	closed     bool
+	active     atomic.Pointer[activeBundle]
+	checkpoint func(string) error
 
 	retireMu      sync.Mutex
 	retireQueue   []*retirementRecord
@@ -111,14 +61,13 @@ type GenerationEngine struct {
 	streamMetricOwners map[*generationOwner][]string
 	streamMetricRefs   map[string]uint64
 
-	checkpoint func(string) error
-
-	closeMu      sync.Mutex
-	closeAttempt *generationEngineCloseAttempt
-	closePhase   generationEngineClosePhase
-	closePending map[preparedKey]*pendingRecord
-	closeErrors  []error
-	closeErr     error
+	closeMu             sync.Mutex
+	closeAttempt        *generationEngineCloseAttempt
+	closeStarted        bool
+	closeRetirementDone bool
+	closeFactoryDone    bool
+	closeErrors         []error
+	closeErr            error
 }
 
 func NewGenerationEngine(
@@ -131,9 +80,6 @@ func NewGenerationEngine(
 	engine := &GenerationEngine{
 		server:             server,
 		factory:            factory,
-		pending:            make(map[preparedKey]*pendingRecord),
-		activations:        make(map[generation.PublicationToken]*activationRecord),
-		fences:             make(map[generation.Domain]generation.PublicationCandidate),
 		retireKnown:        make(map[*generationOwner]struct{}),
 		retireActive:       make(map[*generationOwner]*retirementRecord),
 		retireLatest:       make(map[*generationOwner]error),
@@ -152,7 +98,10 @@ func NewGenerationEngine(
 	return engine, nil
 }
 
-func (engine *GenerationEngine) Prepare(
+// Publish compiles a detached candidate and atomically replaces only the
+// requested protocol domains. Compilation failure leaves the active bundle
+// unchanged.
+func (engine *GenerationEngine) Publish(
 	ctx context.Context,
 	ticket generation.ApplyTicket,
 	desired generation.Snapshot,
@@ -168,282 +117,276 @@ func (engine *GenerationEngine) Prepare(
 		desired.Digest() != ticket.DesiredDigest {
 		return generation.PublicationSet{}, generation.ErrIntegrity
 	}
-	set := generation.PublicationSet{
-		DesiredRevision: ticket.DesiredRevision,
-		Domains:         make(map[generation.Domain]generation.PublicationCandidate),
+	engine.mu.Lock()
+	if engine.closed {
+		engine.mu.Unlock()
+		return generation.PublicationSet{}, errGenerationEngineClosed
 	}
+	engine.mu.Unlock()
+
 	if len(ticket.RequiredDomains) == 0 {
-		if err := generation.ValidatePublicationSet(ticket, set); err != nil {
-			return generation.PublicationSet{}, err
+		set := generation.PublicationSet{
+			DesiredRevision: ticket.DesiredRevision,
+			Domains:         map[generation.Domain]generation.PublicationCandidate{},
 		}
-		key, err := preparedKeyFromSet(set)
-		if err != nil {
+		if err := generation.ValidatePublicationSet(ticket, set); err != nil {
 			return generation.PublicationSet{}, err
 		}
 		engine.mu.Lock()
 		defer engine.mu.Unlock()
-		if err := engine.requireReadyLocked(); err != nil {
-			return generation.PublicationSet{}, err
+		if engine.closed {
+			return generation.PublicationSet{}, errGenerationEngineClosed
 		}
-		if engine.preparedKeyInUseLocked(key) {
-			return generation.PublicationSet{}, compiler.ErrPreparedSetMismatch
-		}
-		engine.pending[key] = &pendingRecord{
-			key: key, set: cloneEnginePublicationSetValue(set), synthetic: true,
-		}
-		return cloneEnginePublicationSetValue(set), nil
+		return set, nil
 	}
 
-	engine.mu.Lock()
-	if err := engine.requireReadyLocked(); err != nil {
-		engine.mu.Unlock()
-		return generation.PublicationSet{}, err
-	}
-	engine.mu.Unlock()
-
-	prepared, err := engine.factory.PrepareGeneration(ctx, ticket, desired, previous, engine.onTaskFailure)
+	prepared, err := engine.factory.PrepareGeneration(
+		ctx, ticket, desired, previous, engine.onTaskFailure,
+	)
 	if err != nil {
 		return generation.PublicationSet{}, err
 	}
-	set = prepared.PublicationSet()
+	set := prepared.PublicationSet()
 	cleanup := func(primary error) (generation.PublicationSet, error) {
-		cleanupErr := prepared.DiscardPrepared(context.WithoutCancel(ctx), set)
-		return generation.PublicationSet{}, errors.Join(primary, cleanupErr)
+		return generation.PublicationSet{}, errors.Join(
+			primary,
+			prepared.DiscardPrepared(context.WithoutCancel(ctx), set),
+		)
 	}
 	if err := generation.ValidatePublicationSet(ticket, set); err != nil {
 		return cleanup(err)
 	}
-	key, err := preparedKeyFromSet(set)
+	domains, err := ownerDomainsFromSet(set)
 	if err != nil {
 		return cleanup(err)
 	}
 	owner := newGenerationOwner(prepared)
-	engine.mu.Lock()
-	if err := engine.requireReadyLocked(); err != nil {
-		engine.mu.Unlock()
-		return cleanup(err)
+	if domains&ownerDomainHTTP != 0 && prepared.HTTP() == nil {
+		return cleanup(generation.ErrIntegrity)
 	}
-	if engine.preparedKeyInUseLocked(key) {
-		engine.mu.Unlock()
-		return cleanup(compiler.ErrPreparedSetMismatch)
+	if domains&ownerDomainStream != 0 && prepared.Stream() == nil {
+		return cleanup(generation.ErrIntegrity)
 	}
-	engine.pending[key] = &pendingRecord{
-		key: key, set: cloneEnginePublicationSetValue(set), owner: owner,
-	}
-	engine.mu.Unlock()
-	return cloneEnginePublicationSetValue(set), nil
-}
 
-func (engine *GenerationEngine) DiscardPrepared(
-	ctx context.Context,
-	set generation.PublicationSet,
-) error {
-	if engine == nil || ctx == nil {
-		return compiler.ErrPreparedSetMismatch
-	}
-	key, err := preparedKeyFromSet(set)
-	if err != nil {
-		return compiler.ErrPreparedSetMismatch
-	}
 	engine.mu.Lock()
-	record := engine.pending[key]
-	if record == nil || !reflect.DeepEqual(record.set, set) {
+	if engine.closed {
 		engine.mu.Unlock()
-		return compiler.ErrPreparedSetMismatch
+		return cleanup(errGenerationEngineClosed)
 	}
-	if err := ctx.Err(); err != nil {
+	predecessor := engine.active.Load()
+	if predecessor == nil {
 		engine.mu.Unlock()
-		return err
+		return cleanup(generation.ErrIntegrity)
 	}
-	if attempt := record.discard; attempt != nil {
-		select {
-		case <-attempt.done:
-			if attempt.terminal {
-				attempt.waiters++
-				engine.mu.Unlock()
-				return engine.waitDiscardAttempt(ctx, record, attempt, true)
-			}
-		default:
-			attempt.waiters++
+	candidate := predecessor.withDomains(owner, domains)
+	owner.activateDomains(domains)
+	engine.active.Store(&candidate)
+	if engine.checkpoint != nil {
+		if err := engine.checkpoint("candidate-bundle-published"); err != nil {
+			engine.active.Store(predecessor)
+			owner.deactivateDomains(domains)
 			engine.mu.Unlock()
-			engine.runCheckpoint("discard-waiter-registered")
-			return engine.waitDiscardAttempt(ctx, record, attempt, true)
+			return cleanup(err)
 		}
 	}
-	attempt := &discardAttempt{done: make(chan struct{}), waiters: 1}
-	record.discard = attempt
-	engine.mu.Unlock()
-	engine.runCheckpoint("discard-attempt-started")
-
-	var discardErr error
-	if record.owner != nil {
-		discardErr = record.owner.prepared.DiscardPrepared(ctx, record.set)
+	if domains&ownerDomainStream != 0 {
+		engine.registerStreamMetricOwner(owner)
 	}
-	engine.mu.Lock()
-	attempt.err = discardErr
-	attempt.terminal = !generationEngineCleanupIncomplete(discardErr)
-	close(attempt.done)
+	retire := replacedOwners(predecessor, owner, domains)
+	for replaced, replacedDomains := range retire {
+		if replaced.deactivateDomains(replacedDomains) {
+			engine.enqueueRetirementLocked(replaced, context.WithoutCancel(ctx))
+		}
+	}
 	engine.mu.Unlock()
-	return engine.consumeDiscardAttempt(record, attempt)
+	engine.wakeRetirement()
+	return cloneEnginePublicationSet(set), nil
 }
 
-func (engine *GenerationEngine) waitDiscardAttempt(
+func replacedOwners(
+	previous *activeBundle,
+	candidate *generationOwner,
+	domains ownerDomain,
+) map[*generationOwner]ownerDomain {
+	replaced := make(map[*generationOwner]ownerDomain, 2)
+	if domains&ownerDomainHTTP != 0 && previous.http != nil && previous.http != candidate {
+		replaced[previous.http] |= ownerDomainHTTP
+	}
+	if domains&ownerDomainStream != 0 && previous.stream != nil && previous.stream != candidate {
+		replaced[previous.stream] |= ownerDomainStream
+	}
+	return replaced
+}
+
+func ownerDomainsFromSet(set generation.PublicationSet) (ownerDomain, error) {
+	var domains ownerDomain
+	for domain := range set.Domains {
+		switch domain {
+		case generation.DomainHTTP:
+			domains |= ownerDomainHTTP
+		case generation.DomainStream:
+			domains |= ownerDomainStream
+		default:
+			return 0, generation.ErrIntegrity
+		}
+	}
+	return domains, nil
+}
+
+func cloneEnginePublicationSet(set generation.PublicationSet) generation.PublicationSet {
+	clone := generation.PublicationSet{
+		DesiredRevision: set.DesiredRevision,
+		Domains:         make(map[generation.Domain]generation.PublicationCandidate, len(set.Domains)),
+	}
+	for domain, candidate := range set.Domains {
+		candidate.Snapshot = candidate.Snapshot.Clone()
+		candidate.Closure = append([]generation.ResourceKey(nil), candidate.Closure...)
+		candidate.Decisions = append([]generation.ResourceDecision(nil), candidate.Decisions...)
+		clone.Domains[domain] = candidate
+	}
+	return clone
+}
+
+func (*GenerationEngine) onTaskFailure(runtime.TaskFailure) {}
+
+func (engine *GenerationEngine) Close(ctx context.Context) error {
+	if engine == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	engine.closeMu.Lock()
+	if engine.closeFactoryDone {
+		err := engine.closeErr
+		engine.closeMu.Unlock()
+		return err
+	}
+	if engine.closeAttempt != nil {
+		attempt := engine.closeAttempt
+		engine.closeMu.Unlock()
+		return waitGenerationEngineCloseAttempt(ctx, attempt)
+	}
+	attempt := &generationEngineCloseAttempt{done: make(chan struct{})}
+	engine.closeAttempt = attempt
+	engine.closeMu.Unlock()
+
+	attemptErr := engine.runCloseAttempt(ctx)
+	engine.closeMu.Lock()
+	attempt.err = attemptErr
+	if engine.closeFactoryDone {
+		engine.closeErr = attemptErr
+	}
+	if engine.closeAttempt == attempt {
+		engine.closeAttempt = nil
+	}
+	close(attempt.done)
+	engine.closeMu.Unlock()
+	return attemptErr
+}
+
+func (engine *GenerationEngine) runCloseAttempt(ctx context.Context) error {
+	engine.closeMu.Lock()
+	started := engine.closeStarted
+	engine.closeMu.Unlock()
+	if !started {
+		engine.captureCloseOwner(ctx)
+	}
+	engine.closeMu.Lock()
+	retirementDone := engine.closeRetirementDone
+	engine.closeMu.Unlock()
+	if !retirementDone {
+		if err := engine.closeRetirementOwners(ctx); err != nil {
+			return engine.closeAttemptResult(err)
+		}
+		engine.closeMu.Lock()
+		engine.closeRetirementDone = true
+		engine.closeMu.Unlock()
+	}
+	engine.closeMu.Lock()
+	factoryDone := engine.closeFactoryDone
+	engine.closeMu.Unlock()
+	if !factoryDone {
+		engine.runCheckpoint("factory-close")
+		factoryErr := engine.factory.Close(ctx)
+		if generationEngineCleanupIncomplete(factoryErr) {
+			return engine.closeAttemptResult(factoryErr)
+		}
+		engine.appendCloseError(factoryErr)
+		engine.closeMu.Lock()
+		engine.closeFactoryDone = true
+		engine.closeMu.Unlock()
+	}
+	return engine.closeAttemptResult(nil)
+}
+
+func (engine *GenerationEngine) captureCloseOwner(ctx context.Context) {
+	engine.mu.Lock()
+	engine.closed = true
+	bundle := engine.active.Load()
+	engine.active.Store(&activeBundle{})
+	owners := make(map[*generationOwner]struct{}, 2)
+	if bundle != nil && bundle.http != nil {
+		owners[bundle.http] = struct{}{}
+	}
+	if bundle != nil && bundle.stream != nil {
+		owners[bundle.stream] = struct{}{}
+	}
+	for owner := range owners {
+		owner.mu.Lock()
+		domains := owner.activeDomains
+		owner.mu.Unlock()
+		if domains != 0 {
+			owner.deactivateDomains(domains)
+		}
+		engine.enqueueRetirementLocked(owner, ctx)
+	}
+	engine.mu.Unlock()
+	engine.closeMu.Lock()
+	engine.closeStarted = true
+	engine.closeMu.Unlock()
+	engine.wakeRetirement()
+}
+
+func waitGenerationEngineCloseAttempt(
 	ctx context.Context,
-	record *pendingRecord,
-	attempt *discardAttempt,
-	joined bool,
+	attempt *generationEngineCloseAttempt,
 ) error {
 	select {
 	case <-attempt.done:
-		if joined {
-			engine.runCheckpoint("discard-waiter-observed")
-		}
-		return engine.consumeDiscardAttempt(record, attempt)
+		return attempt.err
+	default:
+	}
+	select {
+	case <-attempt.done:
+		return attempt.err
 	case <-ctx.Done():
 		select {
 		case <-attempt.done:
-			if joined {
-				engine.runCheckpoint("discard-waiter-observed")
-			}
-			return engine.consumeDiscardAttempt(record, attempt)
+			return attempt.err
 		default:
-		}
-		engine.mu.Lock()
-		attempt.waiters--
-		if attempt.waiters == 0 && attempt.terminal && record.discard == attempt {
-			delete(engine.pending, record.key)
-		}
-		engine.mu.Unlock()
-		return ctx.Err()
-	}
-}
-
-func (engine *GenerationEngine) consumeDiscardAttempt(
-	record *pendingRecord,
-	attempt *discardAttempt,
-) error {
-	engine.mu.Lock()
-	attempt.waiters--
-	if attempt.waiters == 0 && attempt.terminal && record.discard == attempt {
-		delete(engine.pending, record.key)
-	}
-	err := attempt.err
-	engine.mu.Unlock()
-	return err
-}
-
-func (engine *GenerationEngine) runCheckpoint(stage string) {
-	engine.mu.Lock()
-	checkpoint := engine.checkpoint
-	engine.mu.Unlock()
-	if checkpoint != nil {
-		_ = checkpoint(stage)
-	}
-}
-
-func (engine *GenerationEngine) Activate(
-	ctx context.Context,
-	token generation.PublicationToken,
-	set generation.PublicationSet,
-) error {
-	if engine == nil || ctx == nil || token == "" {
-		return compiler.ErrPreparedSetMismatch
-	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	key, err := preparedKeyFromSet(set)
-	if err != nil {
-		return compiler.ErrPreparedSetMismatch
-	}
-	engine.mu.Lock()
-	defer engine.mu.Unlock()
-	if err := engine.requireReadyLocked(); err != nil {
-		return err
-	}
-	if _, exists := engine.activations[token]; exists {
-		return compiler.ErrPreparedSetMismatch
-	}
-	record := engine.pending[key]
-	if record == nil || record.discard != nil || !reflect.DeepEqual(record.set, set) {
-		return compiler.ErrPreparedSetMismatch
-	}
-	previous := engine.active.Load()
-	if previous == nil {
-		return generation.ErrIntegrity
-	}
-	candidate := &activeBundle{http: previous.http, stream: previous.stream}
-	domains, err := ownerDomainsFromSet(set)
-	if err != nil {
-		return err
-	}
-	if record.owner != nil {
-		if domains&ownerDomainHTTP != 0 && record.owner.prepared.HTTP() == nil {
-			return generation.ErrIntegrity
-		}
-		if domains&ownerDomainStream != 0 && record.owner.prepared.Stream() == nil {
-			return generation.ErrIntegrity
-		}
-		record.owner.activateDomains(domains)
-		if domains&ownerDomainStream != 0 {
-			engine.registerStreamMetricOwner(record.owner)
-		}
-		next := candidate.withDomains(record.owner, domains)
-		candidate = &next
-	}
-	delete(engine.pending, key)
-	activation := &activationRecord{
-		token: token, key: key, set: cloneEnginePublicationSetValue(set), previous: previous,
-		candidate: candidate, owner: record.owner,
-	}
-	engine.activations[token] = activation
-	if record.owner == nil {
-		return nil
-	}
-	engine.active.Store(candidate)
-	if engine.checkpoint != nil {
-		if err := engine.checkpoint("candidate-bundle-published"); err != nil {
-			engine.active.Store(previous)
-			record.owner.deactivateDomains(domains)
-			activation.restored = true
-			return err
+			return ctx.Err()
 		}
 	}
-	return nil
 }
 
-func (engine *GenerationEngine) RollbackActivation(
-	ctx context.Context,
-	token generation.PublicationToken,
-	set generation.PublicationSet,
-) error {
-	return engine.rollbackActivation(ctx, token, set)
+func (engine *GenerationEngine) appendCloseError(err error) {
+	if err == nil {
+		return
+	}
+	engine.closeMu.Lock()
+	engine.closeErrors = append(engine.closeErrors, err)
+	engine.closeMu.Unlock()
 }
 
-func (engine *GenerationEngine) FinalizeActivation(
-	ctx context.Context,
-	token generation.PublicationToken,
-	set generation.PublicationSet,
-) {
-	engine.finalizeActivation(ctx, token, set)
-}
-
-func (engine *GenerationEngine) ConfirmActive(
-	ctx context.Context,
-	set generation.PublicationSet,
-) error {
-	return engine.confirmActive(ctx, set)
-}
-
-func (engine *GenerationEngine) InstallRecovery(
-	ctx context.Context,
-	state generation.RecoveryState,
-) error {
-	return engine.installRecovery(ctx, state)
-}
-
-func (engine *GenerationEngine) Close(ctx context.Context) error {
-	return engine.close(ctx)
+func (engine *GenerationEngine) closeAttemptResult(transient error) error {
+	engine.closeMu.Lock()
+	errs := append([]error(nil), engine.closeErrors...)
+	engine.closeMu.Unlock()
+	if transient != nil {
+		errs = append(errs, transient)
+	}
+	return errors.Join(errs...)
 }
 
 func (engine *GenerationEngine) acquireHTTP() (httpGenerationLease, bool) {
@@ -452,7 +395,7 @@ func (engine *GenerationEngine) acquireHTTP() (httpGenerationLease, bool) {
 	}
 	for {
 		engine.mu.Lock()
-		if engine.closed || !engine.recoveryInstalled {
+		if engine.closed {
 			engine.mu.Unlock()
 			return httpGenerationLease{}, false
 		}
@@ -480,7 +423,7 @@ func (engine *GenerationEngine) acquireStream() (streamGenerationLease, bool) {
 	}
 	for {
 		engine.mu.Lock()
-		if engine.closed || !engine.recoveryInstalled {
+		if engine.closed {
 			engine.mu.Unlock()
 			return streamGenerationLease{}, false
 		}
@@ -511,526 +454,13 @@ func (engine *GenerationEngine) refreshStreamMetrics() {
 	engine.publishStreamMetricsLocked()
 }
 
-func preparedKeyFromSet(set generation.PublicationSet) (preparedKey, error) {
-	if set.DesiredRevision == 0 || len(set.Domains) > 2 {
-		return preparedKey{}, generation.ErrIntegrity
-	}
-	key := preparedKey{Desired: set.DesiredRevision}
-	for domain, candidate := range set.Domains {
-		if err := generation.ValidatePublicationCandidate(domain, set.DesiredRevision, candidate); err != nil {
-			return preparedKey{}, err
-		}
-		switch domain {
-		case generation.DomainHTTP:
-			key.HTTP = candidate.Artifact.Digest
-		case generation.DomainStream:
-			key.Stream = candidate.Artifact.Digest
-		default:
-			return preparedKey{}, generation.ErrIntegrity
-		}
-	}
-	return key, nil
-}
-
-func ownerDomainsFromSet(set generation.PublicationSet) (ownerDomain, error) {
-	var domains ownerDomain
-	for domain := range set.Domains {
-		switch domain {
-		case generation.DomainHTTP:
-			domains |= ownerDomainHTTP
-		case generation.DomainStream:
-			domains |= ownerDomainStream
-		default:
-			return 0, generation.ErrIntegrity
-		}
-	}
-	return domains, nil
-}
-
-func cloneEnginePublicationSetValue(set generation.PublicationSet) generation.PublicationSet {
-	cloned := generation.PublicationSet{
-		DesiredRevision: set.DesiredRevision,
-		Domains:         make(map[generation.Domain]generation.PublicationCandidate, len(set.Domains)),
-	}
-	for domain, candidate := range set.Domains {
-		candidate.Snapshot = candidate.Snapshot.Clone()
-		candidate.Closure = slices.Clone(candidate.Closure)
-		candidate.Decisions = slices.Clone(candidate.Decisions)
-		cloned.Domains[domain] = candidate
-	}
-	return cloned
-}
-
-func (engine *GenerationEngine) requireReadyLocked() error {
-	if engine.closed {
-		return errGenerationEngineClosed
-	}
-	if !engine.recoveryInstalled {
-		return errGenerationRecoveryNotInstalled
-	}
-	return nil
-}
-
-func (engine *GenerationEngine) preparedKeyInUseLocked(key preparedKey) bool {
-	if _, exists := engine.pending[key]; exists {
-		return true
-	}
-	for _, record := range engine.activations {
-		if record.key == key {
-			return true
-		}
-	}
-	return false
-}
-
-func (*GenerationEngine) onTaskFailure(runtime.TaskFailure) {}
-
-func (engine *GenerationEngine) rollbackActivation(
-	ctx context.Context,
-	token generation.PublicationToken,
-	set generation.PublicationSet,
-) error {
-	if engine == nil {
-		return compiler.ErrPreparedSetMismatch
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
+func (engine *GenerationEngine) runCheckpoint(stage string) {
 	engine.mu.Lock()
-	record := engine.activations[token]
-	if record == nil || !reflect.DeepEqual(record.set, set) {
-		engine.mu.Unlock()
-		panic("generation activation token and publication set diverged")
-	}
-	delete(engine.activations, token)
-	if record.owner == nil {
-		engine.mu.Unlock()
-		return nil
-	}
-	engine.active.Store(record.previous)
-	if !record.restored {
-		domains, err := ownerDomainsFromSet(record.set)
-		if err != nil {
-			engine.mu.Unlock()
-			panic("generation activation contained invalid domains")
-		}
-		record.owner.deactivateDomains(domains)
-	}
-	engine.enqueueRetirementLocked(record.owner, context.WithoutCancel(ctx))
+	checkpoint := engine.checkpoint
 	engine.mu.Unlock()
-	engine.wakeRetirement()
-	select {
-	case <-record.owner.closeDone:
-		return record.owner.closeErr
-	case <-ctx.Done():
-		return ctx.Err()
+	if checkpoint != nil {
+		_ = checkpoint(stage)
 	}
-}
-
-func (engine *GenerationEngine) finalizeActivation(
-	ctx context.Context,
-	token generation.PublicationToken,
-	set generation.PublicationSet,
-) {
-	if engine == nil {
-		panic("finalize nil generation engine")
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	engine.mu.Lock()
-	record := engine.activations[token]
-	if record == nil || !reflect.DeepEqual(record.set, set) || record.restored {
-		engine.mu.Unlock()
-		panic("finalize generation activation invariant violated")
-	}
-	delete(engine.activations, token)
-	if record.owner == nil {
-		engine.initialized = true
-		engine.mu.Unlock()
-		return
-	}
-	retire := make(map[*generationOwner]ownerDomain)
-	for domain, candidate := range record.set.Domains {
-		engine.fences[domain] = cloneEngineCandidate(candidate)
-		var predecessor *generationOwner
-		var mask ownerDomain
-		switch domain {
-		case generation.DomainHTTP:
-			predecessor = record.previous.http
-			mask = ownerDomainHTTP
-		case generation.DomainStream:
-			predecessor = record.previous.stream
-			mask = ownerDomainStream
-		default:
-			engine.mu.Unlock()
-			panic("finalize generation activation domain invariant violated")
-		}
-		if predecessor != nil && predecessor != record.owner {
-			retire[predecessor] |= mask
-		}
-	}
-	for owner, domains := range retire {
-		if owner.deactivateDomains(domains) {
-			engine.enqueueRetirementLocked(owner, context.WithoutCancel(ctx))
-		}
-	}
-	engine.initialized = true
-	engine.mu.Unlock()
-	engine.wakeRetirement()
-}
-
-func (engine *GenerationEngine) confirmActive(
-	ctx context.Context,
-	set generation.PublicationSet,
-) error {
-	if engine == nil || ctx == nil {
-		return generation.ErrActiveGenerationMismatch
-	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if _, err := preparedKeyFromSet(set); err != nil {
-		return generation.ErrActiveGenerationMismatch
-	}
-	engine.mu.Lock()
-	defer engine.mu.Unlock()
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if engine.closed || !engine.recoveryInstalled {
-		return generation.ErrActiveGenerationMismatch
-	}
-	if len(set.Domains) == 0 {
-		if engine.initialized {
-			return nil
-		}
-		return generation.ErrActiveGenerationMismatch
-	}
-	for domain, candidate := range set.Domains {
-		if !reflect.DeepEqual(engine.fences[domain], candidate) {
-			return generation.ErrActiveGenerationMismatch
-		}
-	}
-	return nil
-}
-
-func (engine *GenerationEngine) installRecovery(
-	ctx context.Context,
-	state generation.RecoveryState,
-) error {
-	if engine == nil || ctx == nil {
-		return compiler.ErrInvalidInput
-	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	engine.mu.Lock()
-	if engine.closed || engine.recoveryInstalled || engine.initialized ||
-		len(engine.pending) != 0 || len(engine.activations) != 0 ||
-		engine.active.Load().http != nil || engine.active.Load().stream != nil {
-		engine.mu.Unlock()
-		return errGenerationRecoveryAlreadyInstalled
-	}
-	if exactEmptyRecoveryState(state) {
-		engine.recoveryInstalled = true
-		engine.mu.Unlock()
-		return nil
-	}
-	engine.mu.Unlock()
-	if err := generation.ValidateRecoverySet(state.Revisions, state.Published); err != nil {
-		return err
-	}
-	if len(state.Published) == 0 {
-		engine.mu.Lock()
-		if engine.closed || engine.recoveryInstalled {
-			engine.mu.Unlock()
-			return errGenerationRecoveryAlreadyInstalled
-		}
-		engine.recoveryInstalled = true
-		engine.initialized = true
-		engine.mu.Unlock()
-		return nil
-	}
-	prepared, err := engine.factory.PrepareRecovery(ctx, state.Revisions, state.Published, engine.onTaskFailure)
-	if err != nil {
-		return err
-	}
-	expectedSet := recoveryPublicationSet(state.Revisions, state.Published)
-	if !reflect.DeepEqual(prepared.PublicationSet(), expectedSet) {
-		return errors.Join(generation.ErrIntegrity, prepared.Close(context.WithoutCancel(ctx)))
-	}
-	owner := newGenerationOwner(prepared)
-	var domains ownerDomain
-	bundle := &activeBundle{}
-	fences := make(map[generation.Domain]generation.PublicationCandidate, len(state.Published))
-	for domain, published := range state.Published {
-		candidate := generation.PublicationCandidate(published)
-		fences[domain] = cloneEngineCandidate(candidate)
-		switch domain {
-		case generation.DomainHTTP:
-			if prepared.HTTP() == nil {
-				return errors.Join(generation.ErrIntegrity, prepared.Close(context.WithoutCancel(ctx)))
-			}
-			domains |= ownerDomainHTTP
-			bundle.http = owner
-		case generation.DomainStream:
-			if prepared.Stream() == nil {
-				return errors.Join(generation.ErrIntegrity, prepared.Close(context.WithoutCancel(ctx)))
-			}
-			domains |= ownerDomainStream
-			bundle.stream = owner
-		default:
-			return errors.Join(generation.ErrIntegrity, prepared.Close(context.WithoutCancel(ctx)))
-		}
-	}
-	owner.activateDomains(domains)
-	engine.mu.Lock()
-	if engine.closed || engine.recoveryInstalled {
-		engine.mu.Unlock()
-		owner.deactivateDomains(domains)
-		closeErr := owner.closePrepared(context.WithoutCancel(ctx))
-		return errors.Join(errGenerationRecoveryAlreadyInstalled, closeErr)
-	}
-	if domains&ownerDomainStream != 0 {
-		engine.registerStreamMetricOwner(owner)
-	}
-	engine.active.Store(bundle)
-	engine.fences = fences
-	engine.recoveryInstalled = true
-	engine.initialized = true
-	engine.mu.Unlock()
-	return nil
-}
-
-func (engine *GenerationEngine) close(ctx context.Context) error {
-	if engine == nil {
-		return nil
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	engine.closeMu.Lock()
-	if engine.closePhase == engineCloseFactoryDone {
-		closeErr := engine.closeErr
-		engine.closeMu.Unlock()
-		return closeErr
-	}
-	if engine.closeAttempt != nil {
-		attempt := engine.closeAttempt
-		engine.closeMu.Unlock()
-		return waitGenerationEngineCloseAttempt(ctx, attempt)
-	}
-	attempt := &generationEngineCloseAttempt{done: make(chan struct{})}
-	engine.closeAttempt = attempt
-	engine.closeMu.Unlock()
-
-	attemptErr := engine.runCloseAttempt(ctx)
-	engine.closeMu.Lock()
-	attempt.err = attemptErr
-	if engine.closePhase == engineCloseFactoryDone {
-		engine.closeErr = attemptErr
-	}
-	if engine.closeAttempt == attempt {
-		engine.closeAttempt = nil
-	}
-	close(attempt.done)
-	engine.closeMu.Unlock()
-	return attemptErr
-}
-
-func (engine *GenerationEngine) runCloseAttempt(ctx context.Context) error {
-	if engine.closePhaseValue() == engineCloseInitial {
-		engine.captureCloseOwners(ctx)
-	}
-	if engine.closePhaseValue() == engineCloseOwnersCaptured {
-		if err := engine.closePendingOwners(ctx); err != nil {
-			return engine.closeAttemptResult(err)
-		}
-		engine.setClosePhase(engineClosePendingDone)
-	}
-	if engine.closePhaseValue() == engineClosePendingDone {
-		if err := engine.closeRetirementOwners(ctx); err != nil {
-			return engine.closeAttemptResult(err)
-		}
-		engine.setClosePhase(engineCloseRetirementDone)
-	}
-	if engine.closePhaseValue() == engineCloseRetirementDone {
-		engine.runCheckpoint("factory-close")
-		factoryErr := engine.factory.Close(ctx)
-		if generationEngineCleanupIncomplete(factoryErr) {
-			return engine.closeAttemptResult(factoryErr)
-		}
-		engine.appendCloseError(factoryErr)
-		engine.setClosePhase(engineCloseFactoryDone)
-	}
-	return engine.closeAttemptResult(nil)
-}
-
-func (engine *GenerationEngine) captureCloseOwners(ctx context.Context) {
-	engine.mu.Lock()
-	engine.closed = true
-	bundle := engine.active.Load()
-	engine.active.Store(&activeBundle{})
-	pending := engine.pending
-	engine.pending = make(map[preparedKey]*pendingRecord)
-	owners := make(map[*generationOwner]struct{})
-	for _, record := range engine.activations {
-		if record.owner != nil {
-			owners[record.owner] = struct{}{}
-		}
-		if record.previous != nil {
-			if record.previous.http != nil {
-				owners[record.previous.http] = struct{}{}
-			}
-			if record.previous.stream != nil {
-				owners[record.previous.stream] = struct{}{}
-			}
-		}
-	}
-	if bundle != nil && bundle.http != nil {
-		owners[bundle.http] = struct{}{}
-	}
-	if bundle != nil && bundle.stream != nil {
-		owners[bundle.stream] = struct{}{}
-	}
-	engine.activations = make(map[generation.PublicationToken]*activationRecord)
-	for owner := range owners {
-		owner.mu.Lock()
-		domains := owner.activeDomains
-		owner.mu.Unlock()
-		if domains != 0 {
-			owner.deactivateDomains(domains)
-		}
-		engine.enqueueRetirementLocked(owner, ctx)
-	}
-	engine.mu.Unlock()
-	engine.closeMu.Lock()
-	engine.closePending = pending
-	engine.closePhase = engineCloseOwnersCaptured
-	engine.closeMu.Unlock()
-	engine.wakeRetirement()
-}
-
-func (engine *GenerationEngine) closePendingOwners(ctx context.Context) error {
-	engine.closeMu.Lock()
-	records := make([]*pendingRecord, 0, len(engine.closePending))
-	for _, record := range engine.closePending {
-		records = append(records, record)
-	}
-	engine.closeMu.Unlock()
-	slices.SortFunc(records, func(left, right *pendingRecord) int {
-		if left.key.Desired < right.key.Desired {
-			return -1
-		}
-		if left.key.Desired > right.key.Desired {
-			return 1
-		}
-		if compared := slices.Compare(left.key.HTTP[:], right.key.HTTP[:]); compared != 0 {
-			return compared
-		}
-		return slices.Compare(left.key.Stream[:], right.key.Stream[:])
-	})
-	var incomplete []error
-	for _, record := range records {
-		err := engine.closePendingRecord(ctx, record)
-		if generationEngineCleanupIncomplete(err) {
-			incomplete = append(incomplete, err)
-			continue
-		}
-		engine.appendCloseError(err)
-		engine.closeMu.Lock()
-		if engine.closePending[record.key] == record {
-			delete(engine.closePending, record.key)
-		}
-		engine.closeMu.Unlock()
-	}
-	return errors.Join(incomplete...)
-}
-
-func (engine *GenerationEngine) closePendingRecord(ctx context.Context, record *pendingRecord) error {
-	engine.mu.Lock()
-	if attempt := record.discard; attempt != nil {
-		select {
-		case <-attempt.done:
-			if !attempt.terminal {
-				break
-			}
-			attempt.waiters++
-			engine.mu.Unlock()
-			return engine.waitDiscardAttempt(ctx, record, attempt, false)
-		default:
-			attempt.waiters++
-			engine.mu.Unlock()
-			return engine.waitDiscardAttempt(ctx, record, attempt, false)
-		}
-	}
-	attempt := &discardAttempt{done: make(chan struct{}), waiters: 1}
-	record.discard = attempt
-	engine.mu.Unlock()
-	var discardErr error
-	if record.owner != nil {
-		discardErr = record.owner.prepared.DiscardPrepared(ctx, record.set)
-	}
-	engine.mu.Lock()
-	attempt.err = discardErr
-	attempt.terminal = !generationEngineCleanupIncomplete(discardErr)
-	close(attempt.done)
-	engine.mu.Unlock()
-	return engine.consumeDiscardAttempt(record, attempt)
-}
-
-func waitGenerationEngineCloseAttempt(
-	ctx context.Context,
-	attempt *generationEngineCloseAttempt,
-) error {
-	select {
-	case <-attempt.done:
-		return attempt.err
-	default:
-	}
-	select {
-	case <-attempt.done:
-		return attempt.err
-	case <-ctx.Done():
-		select {
-		case <-attempt.done:
-			return attempt.err
-		default:
-			return ctx.Err()
-		}
-	}
-}
-
-func (engine *GenerationEngine) closePhaseValue() generationEngineClosePhase {
-	engine.closeMu.Lock()
-	defer engine.closeMu.Unlock()
-	return engine.closePhase
-}
-
-func (engine *GenerationEngine) setClosePhase(phase generationEngineClosePhase) {
-	engine.closeMu.Lock()
-	engine.closePhase = phase
-	engine.closeMu.Unlock()
-}
-
-func (engine *GenerationEngine) appendCloseError(err error) {
-	if err == nil {
-		return
-	}
-	engine.closeMu.Lock()
-	defer engine.closeMu.Unlock()
-	engine.closeErrors = append(engine.closeErrors, err)
-}
-
-func (engine *GenerationEngine) closeAttemptResult(transient error) error {
-	engine.closeMu.Lock()
-	errs := slices.Clone(engine.closeErrors)
-	engine.closeMu.Unlock()
-	if transient != nil {
-		errs = append(errs, transient)
-	}
-	return errors.Join(errs...)
 }
 
 func (engine *GenerationEngine) enqueueRetirementLocked(owner *generationOwner, ctx context.Context) {
@@ -1192,7 +622,7 @@ func (engine *GenerationEngine) closeRetirementOwners(ctx context.Context) error
 	}
 	engine.clearStreamMetrics()
 	engine.retireMu.Lock()
-	terminalErrors := slices.Clone(engine.retireErrors)
+	terminalErrors := append([]error(nil), engine.retireErrors...)
 	engine.retireErrors = nil
 	engine.retireMu.Unlock()
 	for _, terminalErr := range terminalErrors {
@@ -1336,32 +766,6 @@ func (engine *GenerationEngine) clearStreamMetrics() {
 	clear(engine.streamMetricOwners)
 	clear(engine.streamMetricRefs)
 	metrics.SetStreamRoutes(nil)
-}
-
-func exactEmptyRecoveryState(state generation.RecoveryState) bool {
-	return state.Revisions == (generation.RevisionSet{}) && state.Desired.Revision() == 0 &&
-		len(state.Published) == 0 && len(state.Failures) == 0
-}
-
-func cloneEngineCandidate(candidate generation.PublicationCandidate) generation.PublicationCandidate {
-	candidate.Snapshot = candidate.Snapshot.Clone()
-	candidate.Closure = slices.Clone(candidate.Closure)
-	candidate.Decisions = slices.Clone(candidate.Decisions)
-	return candidate
-}
-
-func recoveryPublicationSet(
-	revisions generation.RevisionSet,
-	published map[generation.Domain]generation.PublishedGeneration,
-) generation.PublicationSet {
-	set := generation.PublicationSet{
-		DesiredRevision: revisions.Desired,
-		Domains:         make(map[generation.Domain]generation.PublicationCandidate, len(published)),
-	}
-	for domain, value := range published {
-		set.Domains[domain] = cloneEngineCandidate(generation.PublicationCandidate(value))
-	}
-	return set
 }
 
 func bindGenerationEngine(server *Server, engine *GenerationEngine) error {

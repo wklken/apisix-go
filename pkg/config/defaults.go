@@ -20,8 +20,8 @@ func builtinDefaults(paths RuntimePaths) *valueNode {
 			"control": map[string]any{"ip": "127.0.0.1", "port": 9090},
 		},
 		"apisix_go": map[string]any{"runtime_paths": map[string]any{
-			"data_dir": paths.DataDir, "runtime_dir": paths.RuntimeDir,
-			"log_dir": paths.LogDir, "temp_dir": paths.TempDir,
+			"runtime_dir": paths.RuntimeDir,
+			"log_dir":     paths.LogDir, "temp_dir": paths.TempDir,
 		}},
 	}, "")
 }

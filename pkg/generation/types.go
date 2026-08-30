@@ -102,8 +102,6 @@ type PublicationSet struct {
 	Domains         map[Domain]PublicationCandidate
 }
 
-type PublicationToken string
-
 type PublishedGeneration struct {
 	Artifact  GenerationArtifact
 	Snapshot  Snapshot
@@ -115,19 +113,4 @@ type Acknowledgement struct {
 	Cursor    ProviderCursor
 	Revisions RevisionSet
 	Decisions map[Domain][]ResourceDecision
-	// CommittedReplay is transient delivery metadata set only when Coordinator
-	// returns an acknowledgement already committed for the requested cursor.
-	CommittedReplay bool
-}
-
-type RecoveryFailure struct {
-	Domain Domain
-	Code   string
-}
-
-type RecoveryState struct {
-	Revisions RevisionSet
-	Desired   Snapshot
-	Published map[Domain]PublishedGeneration
-	Failures  []RecoveryFailure
 }

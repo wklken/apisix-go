@@ -14,7 +14,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/observability/metrics"
-	"github.com/wklken/apisix-go/pkg/store"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/mvccpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
@@ -202,12 +201,7 @@ func TestDesiredBatchFromEtcdProviderAuthorityIdentity(t *testing.T) {
 }
 
 func TestDesiredBatchFromEtcdProviderAuthorityRequiresSnapshotTransfer(t *testing.T) {
-	journal, err := store.OpenJournal(t.TempDir() + "/journal.db")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = journal.Close() })
-	coordinator := generation.NewCoordinator(journal, &etcdCoordinatorTestEngine{})
+	coordinator := generation.NewCoordinator(&etcdCoordinatorTestEngine{})
 
 	clusterA, err := desiredBatchFromEtcdWatch(
 		"/apisix", etcdWatchPut(0xaaa, 71, 71, "/apisix/routes/r1"),
@@ -245,7 +239,7 @@ func TestDesiredBatchFromEtcdProviderAuthorityRequiresSnapshotTransfer(t *testin
 
 type etcdCoordinatorTestEngine struct{}
 
-func (*etcdCoordinatorTestEngine) Prepare(
+func (*etcdCoordinatorTestEngine) Publish(
 	_ context.Context,
 	ticket generation.ApplyTicket,
 	desired generation.Snapshot,
@@ -293,37 +287,6 @@ func (*etcdCoordinatorTestEngine) Prepare(
 		}
 	}
 	return set, nil
-}
-
-func (*etcdCoordinatorTestEngine) DiscardPrepared(context.Context, generation.PublicationSet) error {
-	return nil
-}
-
-func (*etcdCoordinatorTestEngine) Activate(
-	context.Context,
-	generation.PublicationToken,
-	generation.PublicationSet,
-) error {
-	return nil
-}
-
-func (*etcdCoordinatorTestEngine) RollbackActivation(
-	context.Context,
-	generation.PublicationToken,
-	generation.PublicationSet,
-) error {
-	return nil
-}
-
-func (*etcdCoordinatorTestEngine) FinalizeActivation(
-	context.Context,
-	generation.PublicationToken,
-	generation.PublicationSet,
-) {
-}
-
-func (*etcdCoordinatorTestEngine) ConfirmActive(context.Context, generation.PublicationSet) error {
-	return nil
 }
 
 func TestConfigClientSnapshotAppliesCanonicalDesiredBatch(t *testing.T) {
@@ -389,7 +352,7 @@ func TestConfigClientFailedApplyRetainsCursorKnownKeysDecisionsAndQuarantine(t *
 		metrics.ConfigApplyReady, metrics.ConfigApplyQuarantined = oldReady, oldQuarantine
 		metrics.EtcdRevision, metrics.EtcdModifyIndexes = oldRevision, oldModifyIndexes
 	})
-	wantErr := errors.New("journal failed")
+	wantErr := errors.New("publication failed")
 	applier := &recordingDesiredApplier{apply: func(
 		context.Context,
 		generation.DesiredBatch,
@@ -455,54 +418,6 @@ func TestConfigClientSameCursorReplayUsesCommittedAcknowledgement(t *testing.T) 
 	}
 	if got := len(applier.recordedBatches()); got != 2 {
 		t.Fatalf("Apply calls = %d, want 2 including committed replay", got)
-	}
-}
-
-func TestConfigClientCommittedSnapshotReplayUsesAcknowledgedDomains(t *testing.T) {
-	for name, committedReplay := range map[string]bool{
-		"committed replay":                 true,
-		"unmarked partial acknowledgement": false,
-	} {
-		t.Run(name, func(t *testing.T) {
-			applier := &recordingDesiredApplier{apply: func(
-				_ context.Context,
-				batch generation.DesiredBatch,
-			) (generation.Acknowledgement, error) {
-				return generation.Acknowledgement{
-					Cursor:          batch.Cursor,
-					Revisions:       generation.RevisionSet{Desired: 4, HTTP: 4, Stream: 2},
-					CommittedReplay: committedReplay,
-					Decisions: map[generation.Domain][]generation.ResourceDecision{
-						generation.DomainHTTP: {{
-							Key:         generation.ResourceKey{Kind: "routes", ID: "current"},
-							Disposition: generation.DispositionPublished,
-							Code:        "committed-http-publication",
-						}},
-					},
-				}, nil
-			}}
-			client := newEtcdTestConfigClient(applier)
-			err := client.applySnapshot(context.Background(), &clientv3.GetResponse{
-				Header: &etcdserverpb.ResponseHeader{ClusterId: 1, Revision: 12},
-				Kvs: []*mvccpb.KeyValue{{
-					Key: []byte("/apisix/routes/current"), Value: []byte(`{"id":"current"}`), ModRevision: 10,
-				}},
-			})
-			if !committedReplay {
-				if err == nil {
-					t.Fatal("applySnapshot() error = nil, want partial acknowledgement rejection")
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("applySnapshot() committed replay: %v", err)
-			}
-			if client.revisions != (generation.RevisionSet{Desired: 4, HTTP: 4, Stream: 2}) ||
-				!slices.Equal(client.domains, []generation.Domain{generation.DomainHTTP}) ||
-				client.lastRevision != 12 {
-				t.Fatalf("committed replay state = %+v", client.snapshotAcknowledgedState())
-			}
-		})
 	}
 }
 

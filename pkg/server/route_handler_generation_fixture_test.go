@@ -3,7 +3,6 @@ package server
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net"
 	"net/http/httptest"
 	"strconv"
@@ -71,12 +70,6 @@ func newCompiledHTTPGenerationFixture(
 		_ = resolver.Close(context.Background())
 		t.Fatal(err)
 	}
-	if err := engine.InstallRecovery(context.Background(), generation.RecoveryState{}); err != nil {
-		_ = engine.Close(context.Background())
-		_ = resolver.Close(context.Background())
-		t.Fatal(err)
-	}
-
 	desired, err := generation.NewSnapshot(revision, resources, nil)
 	if err != nil {
 		_ = engine.Close(context.Background())
@@ -91,19 +84,12 @@ func newCompiledHTTPGenerationFixture(
 		},
 		RequiredDomains: []generation.Domain{generation.DomainHTTP},
 	}
-	set, err := engine.Prepare(context.Background(), ticket, desired, nil)
+	_, err = engine.Publish(context.Background(), ticket, desired, nil)
 	if err != nil {
 		_ = engine.Close(context.Background())
 		_ = resolver.Close(context.Background())
 		t.Fatal(err)
 	}
-	token := generation.PublicationToken(fmt.Sprintf("route-handler-test-%d", revision))
-	if err := engine.Activate(context.Background(), token, set); err != nil {
-		_ = engine.Close(context.Background())
-		_ = resolver.Close(context.Background())
-		t.Fatal(err)
-	}
-	engine.FinalizeActivation(context.Background(), token, set)
 
 	fixture := &compiledHTTPGenerationFixture{engine: engine, resolver: resolver}
 	fixture.routes = newGenerationRouteHandler(fixture.acquire)

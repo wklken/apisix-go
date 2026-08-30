@@ -1,9 +1,6 @@
 package generation
 
-import (
-	"errors"
-	"testing"
-)
+import "testing"
 
 func TestValidatePublicationCandidateAcceptsCompleteClosure(t *testing.T) {
 	snapshot := publicationValidationSnapshot(t, 7)
@@ -47,42 +44,6 @@ func TestValidatePublicationCandidateRejectsForgedIdentity(t *testing.T) {
 			}
 			if err := ValidatePublicationCandidate(domain, revision, candidate); err != ErrIntegrity {
 				t.Fatalf("ValidatePublicationCandidate() error = %v, want %v", err, ErrIntegrity)
-			}
-		})
-	}
-}
-
-func TestValidatePublishedGenerationDelegatesCandidateValidation(t *testing.T) {
-	snapshot := publicationValidationSnapshot(t, 7)
-	candidate := publicationValidationCandidate(snapshot, DomainHTTP)
-	published := PublishedGeneration(candidate)
-	if err := ValidatePublishedGeneration(DomainHTTP, 7, published); err != nil {
-		t.Fatalf("ValidatePublishedGeneration() error = %v", err)
-	}
-	cases := map[string]struct {
-		domain   Domain
-		revision uint64
-		mutate   func(*PublishedGeneration)
-	}{
-		"unknown domain": {domain: "unknown", revision: 7},
-		"zero revision":  {domain: DomainHTTP, revision: 0},
-		"artifact domain": {
-			domain: DomainHTTP, revision: 7,
-			mutate: func(value *PublishedGeneration) { value.Artifact.Domain = DomainStream },
-		},
-		"artifact revision": {
-			domain: DomainHTTP, revision: 7,
-			mutate: func(value *PublishedGeneration) { value.Artifact.Revision++ },
-		},
-	}
-	for name, test := range cases {
-		t.Run(name, func(t *testing.T) {
-			value := published
-			if test.mutate != nil {
-				test.mutate(&value)
-			}
-			if err := ValidatePublishedGeneration(test.domain, test.revision, value); err != ErrIntegrity {
-				t.Fatalf("ValidatePublishedGeneration() error = %v, want %v", err, ErrIntegrity)
 			}
 		})
 	}
@@ -216,58 +177,6 @@ func TestValidatePublicationSetAcceptsEachRequiredDomain(t *testing.T) {
 	}
 	if err := ValidatePublicationSet(ticket, set); err != nil {
 		t.Fatalf("ValidatePublicationSet() error = %v", err)
-	}
-}
-
-func TestValidateRecoverySetRequiresExactDomainCoverage(t *testing.T) {
-	http := PublishedGeneration(publicationValidationCandidate(publicationValidationSnapshot(t, 5), DomainHTTP))
-	stream := PublishedGeneration(
-		publicationValidationCandidate(publicationValidationStreamSnapshot(t, 7), DomainStream),
-	)
-	validRevisions := RevisionSet{Desired: 9, HTTP: 5, Stream: 7}
-	validPublished := map[Domain]PublishedGeneration{DomainHTTP: http, DomainStream: stream}
-	if err := ValidateRecoverySet(validRevisions, validPublished); err != nil {
-		t.Fatalf("ValidateRecoverySet() error = %v", err)
-	}
-	if err := ValidateRecoverySet(RevisionSet{Desired: 9}, nil); err != nil {
-		t.Fatalf("ValidateRecoverySet(empty recovery) error = %v", err)
-	}
-
-	tests := map[string]struct {
-		revisions RevisionSet
-		published map[Domain]PublishedGeneration
-	}{
-		"zero desired": {
-			revisions: RevisionSet{HTTP: 5},
-			published: map[Domain]PublishedGeneration{DomainHTTP: http},
-		},
-		"missing stream": {
-			revisions: validRevisions,
-			published: map[Domain]PublishedGeneration{DomainHTTP: http},
-		},
-		"extra stream": {
-			revisions: RevisionSet{Desired: 9, HTTP: 5},
-			published: validPublished,
-		},
-		"unknown domain": {
-			revisions: RevisionSet{Desired: 9, HTTP: 5},
-			published: map[Domain]PublishedGeneration{DomainHTTP: http, "unknown": stream},
-		},
-		"future http": {
-			revisions: RevisionSet{Desired: 4, HTTP: 5},
-			published: map[Domain]PublishedGeneration{DomainHTTP: http},
-		},
-		"revision mismatch": {
-			revisions: RevisionSet{Desired: 9, HTTP: 6},
-			published: map[Domain]PublishedGeneration{DomainHTTP: http},
-		},
-	}
-	for name, test := range tests {
-		t.Run(name, func(t *testing.T) {
-			if err := ValidateRecoverySet(test.revisions, test.published); !errors.Is(err, ErrIntegrity) {
-				t.Fatalf("ValidateRecoverySet() error = %v, want ErrIntegrity", err)
-			}
-		})
 	}
 }
 

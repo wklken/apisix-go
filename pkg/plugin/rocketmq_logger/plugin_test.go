@@ -165,15 +165,6 @@ func (*rocketMQScopedSecretBroker) AuthorizeCandidate(
 	return nil
 }
 
-func (*rocketMQScopedSecretBroker) AuthorizeRecovery(
-	context.Context,
-	secret.AttemptID,
-	generation.RevisionSet,
-	map[generation.Domain]generation.PublishedGeneration,
-) error {
-	return errors.New("recovery is not used by this RocketMQ fixture")
-}
-
 func (broker *rocketMQScopedSecretBroker) ResolveScoped(
 	ctx context.Context,
 	scope secret.Scope,

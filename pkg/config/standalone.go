@@ -224,20 +224,18 @@ func (w *StandaloneFileWatcher) Start() error {
 }
 
 // StartAndReconcile registers the watcher before reading the file so changes
-// cannot land in a registration gap. A transient read/apply failure is logged
-// and retried by the next filesystem event.
+// cannot land in a registration gap. The initial reconciliation must succeed
+// before the data plane starts serving traffic; later watcher failures are
+// logged and retried by the next filesystem event.
 func (w *StandaloneFileWatcher) StartAndReconcile() error {
 	if err := w.Start(); err != nil {
 		return err
 	}
-	if err := w.reconcile(); err != nil {
-		logger.Errorf("reconcile standalone config %q after watcher registration failed: %s", w.path, err)
-	}
-	return nil
+	return w.reconcile()
 }
 
 // Stop cancels and joins the watcher and every in-flight Apply. It does not
-// close the coordinator or journal and replays the first stop result.
+// close the coordinator and replays the first stop result.
 func (w *StandaloneFileWatcher) Stop() error {
 	w.stopOnce.Do(func() {
 		w.lifecycleMu.Lock()

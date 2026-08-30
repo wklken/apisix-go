@@ -97,69 +97,6 @@ func (factory *attemptFactory) prepareCandidateAttempt(
 	)
 }
 
-func (factory *attemptFactory) prepareRecoveryAttempt(
-	ctx context.Context,
-	revisions generation.RevisionSet,
-	committed map[generation.Domain]generation.PublishedGeneration,
-) (*registeredAttempt, error) {
-	if err := validateAttemptFactoryContext(factory, ctx); err != nil {
-		return nil, err
-	}
-	verified, err := validateRecovery(
-		ctx, revisions, committed, factory.compiler.manifest, factory.compiler.schemas,
-	)
-	if err != nil {
-		return nil, err
-	}
-	candidates := make(map[generation.Domain]generation.PublicationCandidate, len(verified))
-	for domain, published := range verified {
-		candidates[domain] = generation.PublicationCandidate(published)
-	}
-	occurrences, err := factoryOccurrencesFromCandidates(ctx, candidates, factory.compiler.schemas)
-	if err != nil {
-		return nil, err
-	}
-	if err := validateScopedSecretSupport(occurrences, factory.compiler.schemas.catalog); err != nil {
-		return nil, errors.Join(errAttemptPreparationFailed, err)
-	}
-	compositeChildren, err := compositeChildOccurrenceSpecsFromCandidates(
-		ctx, candidates, occurrences,
-	)
-	if err != nil {
-		return nil, errors.Join(errAttemptPreparationFailed, err)
-	}
-	if err := validateCompositeScopedSecretSupport(
-		compositeChildren, factory.compiler.schemas.catalog,
-	); err != nil {
-		return nil, errors.Join(errAttemptPreparationFailed, err)
-	}
-	registration, err := factory.materializer.RegisterRecovery(
-		ctx, revisions, cloneRecoveryPublicationsForPreparation(verified),
-	)
-	if err != nil {
-		if isNilInterface(registration) {
-			return nil, err
-		}
-		return nil, errors.Join(err, registration.Close(context.WithoutCancel(ctx)))
-	}
-	if isNilInterface(registration) {
-		return nil, errAttemptPreparationFailed
-	}
-	if registration.AttemptID() != secret.RecoveryAttemptID(revisions, verified) {
-		cleanupErr := registration.Close(context.WithoutCancel(ctx))
-		return nil, errors.Join(
-			fmt.Errorf("%w: recovery registration identity mismatch", ErrInvalidInput), cleanupErr,
-		)
-	}
-	return factory.prepareRegisteredAttempt(
-		ctx,
-		revisions.Desired,
-		generation.PublicationSet{DesiredRevision: revisions.Desired, Domains: candidates},
-		occurrences,
-		registration,
-	)
-}
-
 func (factory *attemptFactory) prepareRegisteredAttempt(
 	ctx context.Context,
 	generationNumber uint64,
@@ -244,16 +181,6 @@ func isNilInterface(value any) bool {
 	default:
 		return false
 	}
-}
-
-func cloneRecoveryPublicationsForPreparation(
-	published map[generation.Domain]generation.PublishedGeneration,
-) map[generation.Domain]generation.PublishedGeneration {
-	clone := make(map[generation.Domain]generation.PublishedGeneration, len(published))
-	for domain, value := range published {
-		clone[domain] = clonePublishedGenerationForRecovery(value)
-	}
-	return clone
 }
 
 func cloneApplyTicketForPreparation(ticket generation.ApplyTicket) generation.ApplyTicket {

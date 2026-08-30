@@ -2,7 +2,6 @@ package route
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -35,15 +34,6 @@ func (testLiteralSecretBroker) AuthorizeCandidate(
 	generation.PublicationSet,
 ) error {
 	return nil
-}
-
-func (testLiteralSecretBroker) AuthorizeRecovery(
-	context.Context,
-	secret.AttemptID,
-	generation.RevisionSet,
-	map[generation.Domain]generation.PublishedGeneration,
-) error {
-	return errors.New("recovery is not used by route plugin fixtures")
 }
 
 func (testLiteralSecretBroker) ResolveScoped(
@@ -505,8 +495,8 @@ func testEffectiveConfig() *appconfig.EffectiveConfig {
 	return &appconfig.EffectiveConfig{
 		Config: static,
 		Paths: appconfig.RuntimePaths{
-			DataDir: filepath.Join(root, "data"), RuntimeDir: filepath.Join(root, "run"),
-			LogDir: filepath.Join(root, "log"), TempDir: filepath.Join(root, "tmp"),
+			RuntimeDir: filepath.Join(root, "run"),
+			LogDir:     filepath.Join(root, "log"), TempDir: filepath.Join(root, "tmp"),
 		},
 	}
 }

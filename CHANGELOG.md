@@ -4,7 +4,6 @@
 - [x] reverse proxy => [httputil/reverseproxy](https://go.dev/src/net/http/httputil/reverseproxy.go) 2024-03-08
 - [x] bpool  => [bpool](http://github.com/oxtoacart/bpool)
 - [x] etcd fetch all + watch => [etcd/client/v3](https://pkg.go.dev/go.etcd.io/etcd/client/v3) 2024-03-08
-- [x] local kv storage  => [bbolt](https://github.com/etcd-io/bbolt) 2024-03-08
 - [x] loadbalance weighted rr => [weighted](http://github.com/smallnest/weighted) 2024-03-08
 - [x] plugin model 2024-03-09
 - [x] plugin chain => [alice](https://github.com/justinas/alice) 2024-03-09

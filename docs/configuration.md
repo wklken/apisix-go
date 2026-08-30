@@ -32,7 +32,6 @@ Only apisix-go process paths use the `apisix_go` extension:
 ```yaml
 apisix_go:
   runtime_paths:
-    data_dir: /usr/local/apisix/data
     runtime_dir: /usr/local/apisix/run
     log_dir: /usr/local/apisix/logs
     temp_dir: /usr/local/apisix/tmp

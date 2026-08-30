@@ -64,8 +64,7 @@ func TestPersistentConfigFlagWorksBeforeAndAfterSubcommand(t *testing.T) {
 func TestConfigCommandTestValidatesWithoutStartingServer(t *testing.T) {
 	workingDirectory := isolatedCommandRoot(t)
 	before := snapshotWorkingDirectory(t, workingDirectory)
-	dataDir := filepath.Join(t.TempDir(), "must-stay-absent")
-	path := writeCommandConfig(t, validCommandConfigWithDataDir(dataDir))
+	path := writeCommandConfig(t, "apisix:\n  id: config-test\n")
 	root := newRootCommand()
 	var stdout bytes.Buffer
 	root.SetOut(&stdout)
@@ -76,7 +75,7 @@ func TestConfigCommandTestValidatesWithoutStartingServer(t *testing.T) {
 	if got := stdout.String(); got != "configuration is valid\n" {
 		t.Fatalf("stdout = %q", got)
 	}
-	assertNoInspectionArtifacts(t, workingDirectory, dataDir)
+	assertNoInspectionArtifacts(t, workingDirectory)
 	assertSnapshotUnchanged(t, before, snapshotWorkingDirectory(t, workingDirectory))
 }
 
@@ -175,12 +174,10 @@ func findRepositoryRoot(t *testing.T) string {
 	}
 }
 
-func assertNoInspectionArtifacts(t *testing.T, workingDirectory, dataDir string) {
+func assertNoInspectionArtifacts(t *testing.T, workingDirectory string) {
 	t.Helper()
 	for _, path := range []string{
-		filepath.Join(workingDirectory, "apisix-go-store.db"),
 		filepath.Join(workingDirectory, "conf", "apisix.uid"),
-		dataDir,
 	} {
 		if _, err := os.Stat(path); !errors.Is(err, fs.ErrNotExist) {
 			t.Fatalf("inspection created artifact %q: %v", path, err)
@@ -217,8 +214,4 @@ func assertSnapshotUnchanged(t *testing.T, before, after map[string]string) {
 	if !reflect.DeepEqual(before, after) {
 		t.Fatalf("inspection changed working directory: before=%v after=%v", before, after)
 	}
-}
-
-func validCommandConfigWithDataDir(dataDir string) string {
-	return fmt.Sprintf("apisix_go:\n  runtime_paths:\n    data_dir: %q\n", dataDir)
 }

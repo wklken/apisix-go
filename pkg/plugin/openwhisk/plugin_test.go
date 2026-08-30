@@ -1231,13 +1231,6 @@ func (*openWhiskScopedSecretBroker) AuthorizeCandidate(
 	return nil
 }
 
-func (*openWhiskScopedSecretBroker) AuthorizeRecovery(
-	context.Context, secret.AttemptID, generation.RevisionSet,
-	map[generation.Domain]generation.PublishedGeneration,
-) error {
-	return nil
-}
-
 func (broker *openWhiskScopedSecretBroker) ResolveScoped(
 	_ context.Context, scope secret.Scope, raw string,
 ) (string, error) {

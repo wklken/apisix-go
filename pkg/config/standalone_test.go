@@ -21,7 +21,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/observability/metrics"
-	"github.com/wklken/apisix-go/pkg/store"
 	"github.com/wklken/apisix-go/pkg/testutil"
 )
 
@@ -827,13 +826,8 @@ func TestStandaloneWatcherAcceptsImplicitDeleteDecisionFromAcknowledgedState(t *
 	}
 }
 
-func TestStandaloneWatcherReplaysDurableImplicitDeleteAfterRestart(t *testing.T) {
-	journal, err := store.OpenJournal(filepath.Join(t.TempDir(), "journal.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = journal.Close() })
-	coordinator := generation.NewCoordinator(journal, standaloneDurableReplayEngine{})
+func TestStandaloneWatcherReplaysImplicitDeleteForSameCursor(t *testing.T) {
+	coordinator := generation.NewCoordinator(standaloneReplayEngine{})
 
 	first := desiredBatchFromStandalone(standaloneSnapshot{"services": {
 		"a": []byte(`{"id":"a","upstream_id":"u1"}`),
@@ -854,7 +848,7 @@ func TestStandaloneWatcherReplaysDurableImplicitDeleteAfterRestart(t *testing.T)
 		if !slices.Contains(committed.Decisions[domain], generation.ResourceDecision{
 			Key:         deleted,
 			Disposition: generation.DispositionDeleted,
-			Code:        "standalone-durable-deleted",
+			Code:        "standalone-replay-deleted",
 		}) {
 			t.Fatalf("committed %s decisions = %+v, want Deleted(services/a)", domain, committed.Decisions[domain])
 		}
@@ -881,9 +875,9 @@ func TestStandaloneWatcherReplaysDurableImplicitDeleteAfterRestart(t *testing.T)
 	}
 }
 
-type standaloneDurableReplayEngine struct{}
+type standaloneReplayEngine struct{}
 
-func (standaloneDurableReplayEngine) Prepare(
+func (standaloneReplayEngine) Publish(
 	_ context.Context,
 	ticket generation.ApplyTicket,
 	desired generation.Snapshot,
@@ -894,13 +888,13 @@ func (standaloneDurableReplayEngine) Prepare(
 	for _, resource := range desired.Resources() {
 		closure = append(closure, resource.Key)
 		decisions = append(decisions, generation.ResourceDecision{
-			Key: resource.Key, Disposition: generation.DispositionPublished, Code: "standalone-durable-published",
+			Key: resource.Key, Disposition: generation.DispositionPublished, Code: "standalone-replay-published",
 		})
 	}
 	for _, tombstone := range desired.Tombstones() {
 		closure = append(closure, tombstone.Key)
 		decisions = append(decisions, generation.ResourceDecision{
-			Key: tombstone.Key, Disposition: generation.DispositionDeleted, Code: "standalone-durable-deleted",
+			Key: tombstone.Key, Disposition: generation.DispositionDeleted, Code: "standalone-replay-deleted",
 		})
 	}
 	set := generation.PublicationSet{
@@ -919,40 +913,6 @@ func (standaloneDurableReplayEngine) Prepare(
 		}
 	}
 	return set, nil
-}
-
-func (standaloneDurableReplayEngine) DiscardPrepared(context.Context, generation.PublicationSet) error {
-	return nil
-}
-
-func (standaloneDurableReplayEngine) Activate(
-	context.Context,
-	generation.PublicationToken,
-	generation.PublicationSet,
-) error {
-	return nil
-}
-
-func (standaloneDurableReplayEngine) RollbackActivation(
-	context.Context,
-	generation.PublicationToken,
-	generation.PublicationSet,
-) error {
-	return nil
-}
-
-func (standaloneDurableReplayEngine) FinalizeActivation(
-	context.Context,
-	generation.PublicationToken,
-	generation.PublicationSet,
-) {
-}
-
-func (standaloneDurableReplayEngine) ConfirmActive(
-	context.Context,
-	generation.PublicationSet,
-) error {
-	return nil
 }
 
 func TestStandaloneWatcherRejectsRevisionRegression(t *testing.T) {
@@ -1018,7 +978,7 @@ func TestStandaloneStartAndReconcileClosesRegistrationGap(t *testing.T) {
 	}
 }
 
-func TestStandaloneStartAndReconcileKeepsWatchingAfterTransientParseFailure(t *testing.T) {
+func TestStandaloneStartAndReconcileReturnsInitialParseFailure(t *testing.T) {
 	path := writeStandaloneTestConfig(t, "routes:\n  - id: r1\n")
 	applied := make(chan struct{}, 1)
 	applier := standaloneApplierFunc(func(
@@ -1035,8 +995,8 @@ func TestStandaloneStartAndReconcileKeepsWatchingAfterTransientParseFailure(t *t
 		testStandaloneDataEncryption(t, false, nil),
 	)
 	t.Cleanup(func() { _ = watcher.Stop() })
-	if err := watcher.StartAndReconcile(); err != nil {
-		t.Fatalf("StartAndReconcile() error = %v", err)
+	if err := watcher.StartAndReconcile(); err == nil {
+		t.Fatal("StartAndReconcile() error = nil for invalid initial config")
 	}
 	select {
 	case <-applied:

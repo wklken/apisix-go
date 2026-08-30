@@ -55,8 +55,8 @@ func TestWorkerCompilerFactoryClosePublicSurface(t *testing.T) {
 	}
 }
 
-func TestWorkerCompilerFactoryCloseRejectsCandidateAndRecoveryDuringCleanup(t *testing.T) {
-	factory, materializer := newWorkerRecoveryTestFactory(t)
+func TestWorkerCompilerFactoryCloseRejectsCandidateDuringCleanup(t *testing.T) {
+	factory, materializer := newWorkerTestFactory(t)
 	desired := mustGenerationSnapshot(t, 9001, nil, nil)
 	prepared, err := factory.PrepareGeneration(
 		context.Background(), ticketForSnapshot(desired, generation.DomainHTTP), desired, nil, nil,
@@ -108,25 +108,9 @@ func TestWorkerCompilerFactoryCloseRejectsCandidateAndRecoveryDuringCleanup(t *t
 			candidateErr,
 		)
 	}
-	expired, cancelDeadline := context.WithDeadline(context.Background(), time.Unix(1, 0))
-	defer cancelDeadline()
-	revisions, committed := workerRecoveryCommitted(t)
-	got, recoveryErr := factory.PrepareRecovery(expired, revisions, committed, nil)
-	if got != nil || recoveryErr != ErrWorkerCompilerFactoryClosed {
-		t.Fatalf(
-			"recovery after closed mark = %#v/%v, want exact closed sentinel",
-			got,
-			recoveryErr,
-		)
-	}
-	candidateCalls, recoveryCalls := materializer.callCounts()
-	if candidateCalls != 1 || recoveryCalls != 0 || checkpoints.Load() != 0 {
-		t.Fatalf(
-			"post-close side effects candidate/recovery/checkpoint = %d/%d/%d",
-			candidateCalls,
-			recoveryCalls,
-			checkpoints.Load(),
-		)
+	if len(materializer.registrationsSnapshot()) != 1 || checkpoints.Load() != 0 {
+		t.Fatalf("post-close side effects registrations/checkpoint = %d/%d",
+			len(materializer.registrationsSnapshot()), checkpoints.Load())
 	}
 	close(allowCleanup)
 	if err := workerCloseWait(t, closeResult, "factory Close"); err != nil {
@@ -138,7 +122,7 @@ func TestWorkerCompilerFactoryCloseRejectsCandidateAndRecoveryDuringCleanup(t *t
 }
 
 func TestWorkerCompilerFactoryCloseUsesStableAttemptOrderAndClosesRegistryLast(t *testing.T) {
-	factory, materializer := newWorkerRecoveryTestFactory(t)
+	factory, materializer := newWorkerTestFactory(t)
 	trace := &workerCloseTrace{}
 	type ownedGeneration struct {
 		id       secret.AttemptID
@@ -191,7 +175,7 @@ func TestWorkerCompilerFactoryCloseUsesStableAttemptOrderAndClosesRegistryLast(t
 		); err != nil {
 			t.Fatal(err)
 		}
-		materializeWorkerRecoveryRequestID(t, prepared, routeID)
+		materializeWorkerCloseRequestID(t, prepared, routeID)
 		owned = append(owned, ownedGeneration{id: id, prepared: prepared, label: label})
 	}
 
@@ -267,7 +251,7 @@ func TestWorkerCompilerFactoryCloseUsesStableAttemptOrderAndClosesRegistryLast(t
 }
 
 func TestWorkerCompilerFactoryCloseResidualRetainsGenerationAndDefersRegistry(t *testing.T) {
-	factory, _ := newWorkerRecoveryTestFactory(t)
+	factory, _ := newWorkerTestFactory(t)
 	blockedDesired := mustGenerationSnapshot(t, 9013, nil, nil)
 	blocked, err := factory.PrepareGeneration(
 		context.Background(),
@@ -369,7 +353,7 @@ func TestWorkerCompilerFactoryCloseResidualRetainsGenerationAndDefersRegistry(t 
 }
 
 func TestWorkerCompilerFactoryGenerationTaskQuiescerJoinsSafeMarkerAndExactCarrier(t *testing.T) {
-	factory, _ := newWorkerRecoveryTestFactory(t)
+	factory, _ := newWorkerTestFactory(t)
 	const owner = "plugin/test/factory-generation-task"
 	started := make(chan struct{})
 	release := make(chan struct{})
@@ -421,7 +405,7 @@ func TestWorkerCompilerFactoryGenerationTaskQuiescerJoinsSafeMarkerAndExactCarri
 }
 
 func TestWorkerCompilerFactoryCloseRetryPreservesIndependentTerminalErrors(t *testing.T) {
-	factory, materializer := newWorkerRecoveryTestFactory(t)
+	factory, materializer := newWorkerTestFactory(t)
 	terminalDesired := mustGenerationSnapshot(t, 9016, nil, nil)
 	terminal, err := factory.PrepareGeneration(
 		context.Background(),
@@ -494,7 +478,7 @@ func TestWorkerCompilerFactoryCloseRetryPreservesIndependentTerminalErrors(t *te
 }
 
 func TestWorkerCompilerFactoryConcurrentRetryHasOneAttemptLeader(t *testing.T) {
-	factory, materializer := newWorkerRecoveryTestFactory(t)
+	factory, materializer := newWorkerTestFactory(t)
 	desired := mustGenerationSnapshot(t, 9018, nil, nil)
 	prepared, err := factory.PrepareGeneration(
 		context.Background(), ticketForSnapshot(desired, generation.DomainHTTP), desired, nil, nil,
@@ -566,7 +550,7 @@ func TestWorkerCompilerFactoryConcurrentRetryHasOneAttemptLeader(t *testing.T) {
 }
 
 func TestWorkerCompilerFactoryCloseRetriesOrdinaryQuiesceFailureWithoutCachingIt(t *testing.T) {
-	factory, _ := newWorkerRecoveryTestFactory(t)
+	factory, _ := newWorkerTestFactory(t)
 	desired := mustGenerationSnapshot(t, 9019, nil, nil)
 	prepared, err := factory.PrepareGeneration(
 		context.Background(), ticketForSnapshot(desired, generation.DomainHTTP), desired, nil, nil,
@@ -643,7 +627,7 @@ func workerFactoryCloseSentinel(
 }
 
 func TestWorkerCompilerFactoryCloseWaitsForAdmittedPreparation(t *testing.T) {
-	factory, materializer := newWorkerRecoveryTestFactory(t)
+	factory, materializer := newWorkerTestFactory(t)
 	checkpointEntered := make(chan struct{})
 	allowCheckpoint := make(chan struct{})
 	cleanupEntered := make(chan struct{})
@@ -706,7 +690,7 @@ func TestWorkerCompilerFactoryCloseWaitsForAdmittedPreparation(t *testing.T) {
 }
 
 func TestWorkerCompilerFactoryCloseWaitsForAdmittedMaterialization(t *testing.T) {
-	factory, _ := newWorkerRecoveryTestFactory(t)
+	factory, _ := newWorkerTestFactory(t)
 	const routeID = "factory-close-materialization"
 	desired := mustGenerationSnapshot(t, 9031, []generation.Resource{
 		resourceValue(
@@ -801,7 +785,7 @@ func TestWorkerCompilerFactoryCloseWaitsForAdmittedMaterialization(t *testing.T)
 }
 
 func TestWorkerCompilerFactoryConcurrentCloseDiscardAndFactoryCloseRunOnce(t *testing.T) {
-	factory, materializer := newWorkerRecoveryTestFactory(t)
+	factory, materializer := newWorkerTestFactory(t)
 	desired := mustGenerationSnapshot(t, 9041, nil, nil)
 	prepared, err := factory.PrepareGeneration(
 		context.Background(), ticketForSnapshot(desired, generation.DomainHTTP), desired, nil, nil,
@@ -834,7 +818,7 @@ func TestWorkerCompilerFactoryConcurrentCloseDiscardAndFactoryCloseRunOnce(t *te
 }
 
 func TestWorkerCompilerFactoryCloseUsesLiveMapKeyWhileDetachIsBlocked(t *testing.T) {
-	factory, _ := newWorkerRecoveryTestFactory(t)
+	factory, _ := newWorkerTestFactory(t)
 	owners := make([]*PreparedGeneration, 0, 2)
 	for _, revision := range []uint64{9051, 9052} {
 		desired := mustGenerationSnapshot(t, revision, nil, nil)
@@ -898,7 +882,7 @@ func TestWorkerCompilerFactoryCloseUsesLiveMapKeyWhileDetachIsBlocked(t *testing
 }
 
 func TestWorkerCompilerFactoryConcurrentCloseCachesSafeResultAndContext(t *testing.T) {
-	factory, materializer := newWorkerRecoveryTestFactory(t)
+	factory, materializer := newWorkerTestFactory(t)
 	providerErr := &workerTestSecretError{text: "factory-close-registration-secret"}
 	materializer.closeErr = providerErr
 	desired := mustGenerationSnapshot(t, 9061, nil, nil)
@@ -992,7 +976,7 @@ func TestWorkerCompilerFactoryConcurrentCloseCachesSafeResultAndContext(t *testi
 }
 
 func TestWorkerCompilerFactoryCloseAllowsEventOnlyFailureCallback(t *testing.T) {
-	factory, _ := newWorkerRecoveryTestFactory(t)
+	factory, _ := newWorkerTestFactory(t)
 	failures := make(chan runtime.TaskFailure, 1)
 	factory.checkpoint = func(stage string, state workerFactoryCheckpointState) error {
 		if stage != "create-task-registry" {
@@ -1027,7 +1011,7 @@ func TestWorkerCompilerFactoryCloseAllowsEventOnlyFailureCallback(t *testing.T) 
 
 func TestWorkerCompilerFactoryCloseRedactsPreparedAndFactoryCleanupErrors(t *testing.T) {
 	t.Run("direct prepared close and discard", func(t *testing.T) {
-		factory, materializer := newWorkerRecoveryTestFactory(t)
+		factory, materializer := newWorkerTestFactory(t)
 		registrationErr := &workerTestSecretError{text: "prepared-registration-secret"}
 		resourceErr := &workerTestSecretError{text: "prepared-resource-secret"}
 		materializer.closeErr = registrationErr
@@ -1058,7 +1042,7 @@ func TestWorkerCompilerFactoryCloseRedactsPreparedAndFactoryCleanupErrors(t *tes
 			_ = defaultRelease(lease, ctx)
 			return resourceErr
 		}
-		materializeWorkerRecoveryRequestID(t, prepared, routeID)
+		materializeWorkerCloseRequestID(t, prepared, routeID)
 		set := prepared.PublicationSet()
 		closeErr := prepared.Close(context.Background())
 		if closeErr != errPreparedGenerationCleanupFailed {
@@ -1074,7 +1058,7 @@ func TestWorkerCompilerFactoryCloseRedactsPreparedAndFactoryCleanupErrors(t *tes
 	})
 
 	t.Run("factory generation and registry cleanup", func(t *testing.T) {
-		factory, materializer := newWorkerRecoveryTestFactory(t)
+		factory, materializer := newWorkerTestFactory(t)
 		registrationErr := &workerTestSecretError{text: "factory-registration-secret"}
 		resourceErr := &workerTestSecretError{text: "factory-resource-secret"}
 		registryErr := &workerTestSecretError{text: "factory-registry-secret"}
@@ -1106,7 +1090,7 @@ func TestWorkerCompilerFactoryCloseRedactsPreparedAndFactoryCleanupErrors(t *tes
 			_ = defaultRelease(lease, ctx)
 			return resourceErr
 		}
-		materializeWorkerRecoveryRequestID(t, prepared, routeID)
+		materializeWorkerCloseRequestID(t, prepared, routeID)
 		_, err = runtime.Acquire(
 			context.Background(), factory.registry,
 			runtime.ResourceKey{
@@ -1132,7 +1116,7 @@ func TestWorkerCompilerFactoryCloseRedactsPreparedAndFactoryCleanupErrors(t *tes
 }
 
 func TestWorkerCompilerFactoryCloseRedactsMixedRegistryResidual(t *testing.T) {
-	factory, _ := newWorkerRecoveryTestFactory(t)
+	factory, _ := newWorkerTestFactory(t)
 	secretErr := &workerTestSecretError{text: "mixed-registry-secret"}
 	tasks := runtime.NewTaskRegistry(context.Background(), nil)
 	started := make(chan struct{})
@@ -1218,6 +1202,25 @@ func workerCloseRequestIDSpec(
 	}
 	t.Fatal("prepared generation has no exact request-id occurrence")
 	return effectiveBindingSpec{}
+}
+
+func materializeWorkerCloseRequestID(
+	t *testing.T,
+	prepared *PreparedGeneration,
+	routeID string,
+) plugin.Binding {
+	t.Helper()
+	bindings, err := prepared.materializeEffectiveBindings(
+		context.Background(),
+		[]effectiveBindingSpec{workerCloseRequestIDSpec(t, prepared, routeID)},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bindings) != 1 {
+		t.Fatalf("materialized bindings = %d, want 1", len(bindings))
+	}
+	return bindings[0]
 }
 
 type workerCloseTrace struct {

@@ -10,7 +10,7 @@ import (
 func TestSecretDeclarationCatalogIsDeterministicAndDefensive(t *testing.T) {
 	manifest := testManifest()
 	manifest.Plugins[0].SecretDeclarations = []SecretDeclaration{
-		{Factory: "request-id", Source: SecretPluginMetadata, Field: "metadata.*.token", Strict: true},
+		{Factory: "request-id", Source: SecretPluginMetadata, Field: "metadata.*.token"},
 		{Factory: "request-id", Source: SecretPluginConfig, Field: "auth.secret"},
 		{Factory: "request-id", Source: SecretConsumerConfig, Field: "consumer.key"},
 	}
@@ -23,7 +23,7 @@ func TestSecretDeclarationCatalogIsDeterministicAndDefensive(t *testing.T) {
 	want := []SecretDeclaration{
 		{Factory: "request-id", Source: SecretConsumerConfig, Field: "consumer.key"},
 		{Factory: "request-id", Source: SecretPluginConfig, Field: "auth.secret"},
-		{Factory: "request-id", Source: SecretPluginMetadata, Field: "metadata.*.token", Strict: true},
+		{Factory: "request-id", Source: SecretPluginMetadata, Field: "metadata.*.token"},
 	}
 	if got := catalog.Declarations(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("Declarations() = %#v, want %#v", got, want)
@@ -33,8 +33,8 @@ func TestSecretDeclarationCatalogIsDeterministicAndDefensive(t *testing.T) {
 	if declarations := catalog.Declarations(); !reflect.DeepEqual(declarations, want) {
 		t.Fatalf("Declarations() exposed mutable storage: %#v", declarations)
 	}
-	if declaration, ok := catalog.Lookup("request-id", SecretPluginConfig, "auth.secret"); !ok || declaration.Strict {
-		t.Fatalf("Lookup() = %#v/%v, want optional config declaration", declaration, ok)
+	if declaration, ok := catalog.Lookup("request-id", SecretPluginConfig, "auth.secret"); !ok {
+		t.Fatalf("Lookup() = %#v/%v, want config declaration", declaration, ok)
 	}
 	if _, ok := catalog.Lookup("request-id", SecretPluginConfig, "missing"); ok {
 		t.Fatal("Lookup() unexpectedly found an undeclared field")
@@ -64,7 +64,7 @@ func TestSecretDeclarationCatalogIsDeterministicAndDefensive(t *testing.T) {
 	shuffled.Plugins[0].SecretDeclarations = []SecretDeclaration{
 		{Factory: "request-id", Source: SecretPluginConfig, Field: "auth.secret"},
 		{Factory: "request-id", Source: SecretConsumerConfig, Field: "consumer.key"},
-		{Factory: "request-id", Source: SecretPluginMetadata, Field: "metadata.*.token", Strict: true},
+		{Factory: "request-id", Source: SecretPluginMetadata, Field: "metadata.*.token"},
 	}
 	shuffledLoaded := parseManifest(t, shuffled)
 	shuffledCatalog, err := NewSecretDeclarationCatalog(shuffledLoaded)
@@ -86,12 +86,12 @@ func TestSecretDeclarationCatalogAcceptsConsumerConfig(t *testing.T) {
 		"request-id",
 		SecretConsumerConfig,
 		"username",
-	); !ok || declaration.Strict {
-		t.Fatalf("Lookup() = %#v/%v, want optional consumer declaration", declaration, ok)
+	); !ok {
+		t.Fatalf("Lookup() = %#v/%v, want consumer declaration", declaration, ok)
 	}
 }
 
-func TestSecretDeclarationCatalogDigestIncludesPolicyAndSource(t *testing.T) {
+func TestSecretDeclarationCatalogDigestIncludesIdentityAndSource(t *testing.T) {
 	base := testManifest()
 	alternateFactory := base.Plugins[0].Factories[0]
 	alternateFactory.Key = "request-id-alternate"
@@ -102,9 +102,6 @@ func TestSecretDeclarationCatalogDigestIncludesPolicyAndSource(t *testing.T) {
 	baseCatalog := mustDeclarationCatalog(t, base)
 
 	for name, mutate := range map[string]func(*Manifest){
-		"strict": func(manifest *Manifest) {
-			manifest.Plugins[0].SecretDeclarations[0].Strict = true
-		},
 		"source": func(manifest *Manifest) {
 			manifest.Plugins[0].SecretDeclarations[0].Source = SecretConsumerConfig
 		},
@@ -299,16 +296,6 @@ func TestParseRejectsInvalidSecretDeclarations(t *testing.T) {
 			want: "duplicate factory/source/field tuple",
 		},
 		{
-			name: "conflicting policy",
-			mutate: func(manifest *Manifest) {
-				manifest.Plugins[0].SecretDeclarations = []SecretDeclaration{
-					{Factory: "request-id", Source: SecretPluginConfig, Field: "token"},
-					{Factory: "request-id", Source: SecretPluginConfig, Field: "token", Strict: true},
-				}
-			},
-			want: "conflicting strict policy",
-		},
-		{
 			name: "case-insensitive duplicate path",
 			mutate: func(manifest *Manifest) {
 				manifest.Plugins[0].SecretDeclarations = []SecretDeclaration{
@@ -337,16 +324,6 @@ func TestParseRejectsInvalidSecretDeclarations(t *testing.T) {
 				}
 			},
 			want: "overlaps declared field",
-		},
-		{
-			name: "overlap with conflicting policy",
-			mutate: func(manifest *Manifest) {
-				manifest.Plugins[0].SecretDeclarations = []SecretDeclaration{
-					{Factory: "request-id", Source: SecretPluginConfig, Field: "auth.*.token"},
-					{Factory: "request-id", Source: SecretPluginConfig, Field: "auth.primary.token", Strict: true},
-				}
-			},
-			want: "conflicting strict policy",
 		},
 	}
 

@@ -195,9 +195,6 @@ func NewSecretDeclarationCatalog(manifest *Manifest) (*SecretDeclarationCatalog,
 					!secretFieldPathsOverlap(previous.Field, declaration.Field) {
 					continue
 				}
-				if previous.Strict != declaration.Strict {
-					return nil, conflictingSecretPolicyError(plugin.Name, declarationIndex, declaration)
-				}
 				if strings.EqualFold(previous.Field, declaration.Field) {
 					return nil, fmt.Errorf(
 						"plugin %q declaration %d: duplicate factory/source/field tuple",
@@ -229,10 +226,7 @@ func NewSecretDeclarationCatalog(manifest *Manifest) (*SecretDeclarationCatalog,
 		if left.Field != right.Field {
 			return left.Field < right.Field
 		}
-		if left.EffectiveTarget() != right.EffectiveTarget() {
-			return left.EffectiveTarget() < right.EffectiveTarget()
-		}
-		return !left.Strict && right.Strict
+		return left.EffectiveTarget() < right.EffectiveTarget()
 	})
 
 	canonical := encodeSecretDeclarations(declarations)
@@ -304,18 +298,13 @@ type secretDeclarationKey struct {
 
 func encodeSecretDeclarations(declarations []SecretDeclaration) []byte {
 	var encoded bytes.Buffer
-	encoded.WriteString("apisix-go/secret-declarations/v2")
+	encoded.WriteString("apisix-go/secret-declarations/v3")
 	writeCanonicalUint64(&encoded, uint64(len(declarations)))
 	for _, declaration := range declarations {
 		writeCanonicalString(&encoded, declaration.Factory)
 		writeCanonicalString(&encoded, string(declaration.Source))
 		writeCanonicalString(&encoded, declaration.Field)
 		writeCanonicalString(&encoded, string(declaration.EffectiveTarget()))
-		if declaration.Strict {
-			encoded.WriteByte(1)
-		} else {
-			encoded.WriteByte(0)
-		}
 	}
 	return encoded.Bytes()
 }
@@ -337,21 +326,6 @@ func validSecretDeclarationSource(source SecretDeclarationSource) bool {
 
 func validSecretMaterializationTarget(target SecretMaterializationTarget) bool {
 	return target == SecretMaterializationPlugin || target == SecretMaterializationCompilerDiscard
-}
-
-func conflictingSecretPolicyError(
-	pluginName string,
-	declarationIndex int,
-	declaration SecretDeclaration,
-) error {
-	return fmt.Errorf(
-		"plugin %q declaration %d: conflicting strict policy for %s/%s/%s",
-		pluginName,
-		declarationIndex,
-		declaration.Factory,
-		declaration.Source,
-		declaration.Field,
-	)
 }
 
 func canonicalSecretFieldPath(field string) bool {

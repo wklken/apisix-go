@@ -96,7 +96,7 @@ func encryptLeaf(value any, keyring []string, context string) (any, error) {
 				}
 				return typed, nil
 			}
-			plaintext, err := decryptLegacy(ciphertext, keyring)
+			plaintext, err := decryptCBC(ciphertext, keyring)
 			if err != nil {
 				return nil, fmt.Errorf("%w: %v", ErrInvalidCiphertext, err)
 			}
@@ -144,9 +144,6 @@ func decryptPluginConfigsWithResolver(
 			capability.SecretPluginConfig,
 			pluginConfig,
 			func(declaration capability.SecretDeclaration, _ string, value any) (any, error) {
-				if declaration.Strict {
-					return value, nil
-				}
 				return decryptLeaf(value, resolver, name+"."+declaration.Field), nil
 			},
 		)
@@ -177,9 +174,6 @@ func DecryptPluginConfigWithResolver(
 		capability.SecretPluginConfig,
 		pluginConfig,
 		func(declaration capability.SecretDeclaration, _ string, value any) (any, error) {
-			if declaration.Strict {
-				return value, nil
-			}
 			return decryptLeaf(value, resolver, pluginName+"."+declaration.Field), nil
 		},
 	)
@@ -203,9 +197,6 @@ func DecryptPluginMetadata(
 		capability.SecretPluginMetadata,
 		metadata,
 		func(declaration capability.SecretDeclaration, _ string, value any) (any, error) {
-			if declaration.Strict {
-				return value, nil
-			}
 			return decryptLeaf(value, resolver, name+"."+declaration.Field), nil
 		},
 	)
@@ -219,8 +210,8 @@ func decryptLeaf(value any, resolver Resolver, context string) any {
 	return value
 }
 
-// Decrypt preserves the public compatibility API for legacy CBC and values
-// produced by Encrypt. Registered field-bound v2 values must use
+// Decrypt reads APISIX CBC values and values produced by Encrypt. Registered
+// field-bound v2 values must use
 // Resolver.ResolveForContext so their AAD cannot be bypassed.
 func Decrypt(encoded string, keyring []string) (string, error) {
 	return decryptEncoded(encoded, keyring, "")
@@ -231,7 +222,7 @@ func decryptEncoded(encoded string, keyring []string, context string) (string, e
 	if strings.HasPrefix(encoded, v2CiphertextPrefix) {
 		return decryptV2(encoded, keyring, context)
 	}
-	return decryptLegacy(encoded, keyring)
+	return decryptCBC(encoded, keyring)
 }
 
 func decryptV2(encoded string, keyring []string, context string) (string, error) {
@@ -263,7 +254,7 @@ func decryptV2(encoded string, keyring []string, context string) (string, error)
 	return "", fmt.Errorf("decrypt data encryption field")
 }
 
-func decryptLegacy(encoded string, keyring []string) (string, error) {
+func decryptCBC(encoded string, keyring []string) (string, error) {
 	ciphertext, err := base64.StdEncoding.DecodeString(encoded)
 	if err != nil {
 		return "", err

@@ -13,7 +13,7 @@ This file inherits the repository root `AGENTS.md` and applies to
 - Behavior support and evidence state are independent. Do not infer production
   readiness from a registered factory count.
 - Accepted divergence requires a manifest entry and its controlled ADR. Secret
-  source/field/strictness/target is runtime authority, not descriptive metadata.
+  source/field/target is runtime authority, not descriptive metadata.
 
 ## Change rules
 

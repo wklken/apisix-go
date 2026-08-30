@@ -325,11 +325,9 @@ plugins:
       - factory: "azure-functions"
         source: "plugin_config"
         field: "authorization.apikey"
-        strict: false
       - factory: "azure-functions"
         source: "plugin_metadata"
         field: "master_apikey"
-        strict: false
     implementation: "azure-functions"
     namespace: "apisix"
     domains: ["http"]
@@ -361,7 +359,6 @@ plugins:
       - factory: "openfunction"
         source: "plugin_config"
         field: "authorization.service_token"
-        strict: false
     implementation: "openfunction"
     namespace: "apisix"
     domains: ["http"]
@@ -393,7 +390,6 @@ plugins:
       - factory: "openwhisk"
         source: "plugin_config"
         field: "service_token"
-        strict: false
     implementation: "openwhisk"
     namespace: "apisix"
     domains: ["http"]
@@ -425,15 +421,12 @@ plugins:
       - factory: "aws-lambda"
         source: "plugin_config"
         field: "authorization.apikey"
-        strict: false
       - factory: "aws-lambda"
         source: "plugin_config"
         field: "authorization.iam.accesskey"
-        strict: false
       - factory: "aws-lambda"
         source: "plugin_config"
         field: "authorization.iam.secretkey"
-        strict: false
     implementation: "aws-lambda"
     namespace: "apisix"
     domains: ["http"]
@@ -575,11 +568,9 @@ plugins:
       - factory: "response-rewrite"
         source: "plugin_config"
         field: "body"
-        strict: false
       - factory: "response-rewrite"
         source: "plugin_config"
         field: "body_secret"
-        strict: true
     implementation: "response-rewrite"
     namespace: "apisix"
     domains: ["http"]
@@ -797,12 +788,10 @@ plugins:
       - factory: "key-auth"
         source: "plugin_config"
         field: "key"
-        strict: false
         target: "compiler_discard"
       - factory: "key-auth"
         source: "consumer_config"
         field: "key"
-        strict: false
     implementation: "key-auth"
     namespace: "apisix"
     domains: ["http"]
@@ -834,33 +823,26 @@ plugins:
       - factory: "jwt-auth"
         source: "plugin_config"
         field: "secret"
-        strict: false
         target: "compiler_discard"
       - factory: "jwt-auth"
         source: "plugin_config"
         field: "private_key"
-        strict: false
         target: "compiler_discard"
       - factory: "jwt-auth"
         source: "consumer_config"
         field: "key"
-        strict: false
       - factory: "jwt-auth"
         source: "consumer_config"
         field: "secret"
-        strict: false
       - factory: "jwt-auth"
         source: "consumer_config"
         field: "public_key"
-        strict: false
       - factory: "jwt-auth"
         source: "consumer_config"
         field: "private_key"
-        strict: false
       - factory: "jwt-auth"
         source: "consumer_config"
         field: "algorithm"
-        strict: false
     implementation: "jwt-auth"
     namespace: "apisix"
     domains: ["http"]
@@ -892,21 +874,17 @@ plugins:
       - factory: "jwe-decrypt"
         source: "plugin_config"
         field: "key"
-        strict: false
         target: "compiler_discard"
       - factory: "jwe-decrypt"
         source: "plugin_config"
         field: "secret"
-        strict: false
         target: "compiler_discard"
       - factory: "jwe-decrypt"
         source: "consumer_config"
         field: "key"
-        strict: false
       - factory: "jwe-decrypt"
         source: "consumer_config"
         field: "secret"
-        strict: false
     implementation: "jwe-decrypt"
     namespace: "apisix"
     domains: ["http"]
@@ -938,16 +916,13 @@ plugins:
       - factory: "basic-auth"
         source: "plugin_config"
         field: "password"
-        strict: false
         target: "compiler_discard"
       - factory: "basic-auth"
         source: "consumer_config"
         field: "username"
-        strict: false
       - factory: "basic-auth"
         source: "consumer_config"
         field: "password"
-        strict: false
     implementation: "basic-auth"
     namespace: "apisix"
     domains: ["http"]
@@ -979,7 +954,6 @@ plugins:
       - factory: "authz-keycloak"
         source: "plugin_config"
         field: "client_secret"
-        strict: false
     implementation: "authz-keycloak"
     namespace: "apisix"
     domains: ["http"]
@@ -1011,11 +985,9 @@ plugins:
       - factory: "authz-casdoor"
         source: "plugin_config"
         field: "client_secret"
-        strict: false
       - factory: "authz-casdoor"
         source: "plugin_config"
         field: "client_secret_fallbacks"
-        strict: false
     implementation: "authz-casdoor"
     namespace: "apisix"
     domains: ["http"]
@@ -1047,15 +1019,12 @@ plugins:
       - factory: "dingtalk-auth"
         source: "plugin_config"
         field: "app_secret"
-        strict: false
       - factory: "dingtalk-auth"
         source: "plugin_config"
         field: "secret"
-        strict: false
       - factory: "dingtalk-auth"
         source: "plugin_config"
         field: "secret_fallbacks"
-        strict: false
     implementation: "dingtalk-auth"
     namespace: "apisix"
     domains: ["http"]
@@ -1087,15 +1056,12 @@ plugins:
       - factory: "feishu-auth"
         source: "plugin_config"
         field: "app_secret"
-        strict: false
       - factory: "feishu-auth"
         source: "plugin_config"
         field: "secret"
-        strict: false
       - factory: "feishu-auth"
         source: "plugin_config"
         field: "secret_fallbacks"
-        strict: false
     implementation: "feishu-auth"
     namespace: "apisix"
     domains: ["http"]
@@ -1127,15 +1093,12 @@ plugins:
       - factory: "saml-auth"
         source: "plugin_config"
         field: "sp_private_key"
-        strict: false
       - factory: "saml-auth"
         source: "plugin_config"
         field: "secret"
-        strict: false
       - factory: "saml-auth"
         source: "plugin_config"
         field: "secret_fallbacks"
-        strict: false
     implementation: "saml-auth"
     namespace: "apisix"
     domains: ["http"]
@@ -1167,19 +1130,15 @@ plugins:
       - factory: "wolf-rbac"
         source: "consumer_config"
         field: "appid"
-        strict: false
       - factory: "wolf-rbac"
         source: "consumer_config"
         field: "header_prefix"
-        strict: false
       - factory: "wolf-rbac"
         source: "consumer_config"
         field: "server"
-        strict: false
       - factory: "wolf-rbac"
         source: "consumer_config"
         field: "wolf_url"
-        strict: false
     implementation: "wolf-rbac"
     namespace: "apisix"
     domains: ["http"]
@@ -1211,23 +1170,18 @@ plugins:
       - factory: "openid-connect"
         source: "plugin_config"
         field: "client_secret"
-        strict: false
       - factory: "openid-connect"
         source: "plugin_config"
         field: "client_rsa_private_key"
-        strict: false
       - factory: "openid-connect"
         source: "plugin_config"
         field: "public_key"
-        strict: false
       - factory: "openid-connect"
         source: "plugin_config"
         field: "session.secret"
-        strict: false
       - factory: "openid-connect"
         source: "plugin_config"
         field: "session.redis.password"
-        strict: false
     implementation: "openid-connect"
     namespace: "apisix"
     domains: ["http"]
@@ -1259,7 +1213,6 @@ plugins:
       - factory: "cas-auth"
         source: "plugin_config"
         field: "cookie.secret"
-        strict: false
     implementation: "cas-auth"
     namespace: "apisix"
     domains: ["http"]
@@ -1291,16 +1244,13 @@ plugins:
       - factory: "hmac-auth"
         source: "plugin_config"
         field: "secret"
-        strict: false
         target: "compiler_discard"
       - factory: "hmac-auth"
         source: "consumer_config"
         field: "key_id"
-        strict: false
       - factory: "hmac-auth"
         source: "consumer_config"
         field: "secret_key"
-        strict: false
     implementation: "hmac-auth"
     namespace: "apisix"
     domains: ["http"]
@@ -1359,12 +1309,10 @@ plugins:
       - factory: "ldap-auth"
         source: "plugin_config"
         field: "user_dn"
-        strict: false
         target: "compiler_discard"
       - factory: "ldap-auth"
         source: "consumer_config"
         field: "user_dn"
-        strict: false
     implementation: "ldap-auth"
     namespace: "apisix"
     domains: ["http"]
@@ -1666,7 +1614,6 @@ plugins:
       - factory: "csrf"
         source: "plugin_config"
         field: "key"
-        strict: true
     implementation: "csrf"
     namespace: "apisix"
     domains: ["http"]
@@ -1804,11 +1751,9 @@ plugins:
       - factory: "oas-validator"
         source: "plugin_config"
         field: "spec"
-        strict: false
       - factory: "oas-validator"
         source: "plugin_config"
         field: "spec_url_request_headers"
-        strict: false
     implementation: "oas-validator"
     namespace: "apisix"
     domains: ["http"]
@@ -1894,23 +1839,18 @@ plugins:
       - factory: "limit-count"
         source: "plugin_config"
         field: "key"
-        strict: false
       - factory: "limit-count"
         source: "plugin_config"
         field: "redis_host"
-        strict: false
       - factory: "limit-count"
         source: "plugin_config"
         field: "redis_config.redis_host"
-        strict: false
       - factory: "limit-count"
         source: "plugin_config"
         field: "redis_cluster_nodes"
-        strict: false
       - factory: "limit-count"
         source: "plugin_config"
         field: "redis_cluster_config.redis_cluster_nodes"
-        strict: false
     implementation: "limit-count"
     namespace: "apisix"
     domains: ["http"]
@@ -2023,11 +1963,9 @@ plugins:
       - factory: "request-validation"
         source: "plugin_config"
         field: "header_schema"
-        strict: false
       - factory: "request-validation"
         source: "plugin_config"
         field: "body_schema"
-        strict: false
     implementation: "request-validation"
     namespace: "apisix"
     domains: ["http"]
@@ -2085,7 +2023,6 @@ plugins:
       - factory: "kafka-proxy"
         source: "plugin_config"
         field: "sasl.password"
-        strict: true
     implementation: "kafka-proxy"
     namespace: "apisix"
     domains: ["http"]
@@ -2541,7 +2478,6 @@ plugins:
       - factory: "http-logger"
         source: "plugin_config"
         field: "auth_header"
-        strict: true
     implementation: "http-logger"
     namespace: "apisix"
     domains: ["http"]
@@ -2624,7 +2560,6 @@ plugins:
       - factory: "kafka-logger"
         source: "plugin_config"
         field: "brokers.*.sasl_config.password"
-        strict: true
     implementation: "kafka-logger"
     namespace: "apisix"
     domains: ["http"]
@@ -2655,7 +2590,6 @@ plugins:
       - factory: "rocketmq-logger"
         source: "plugin_config"
         field: "secret_key"
-        strict: true
     implementation: "rocketmq-logger"
     namespace: "apisix"
     domains: ["http"]
@@ -2715,11 +2649,9 @@ plugins:
       - factory: "clickhouse-logger"
         source: "plugin_config"
         field: "password"
-        strict: true
       - factory: "clickhouse-logger"
         source: "plugin_config"
         field: "user"
-        strict: false
     implementation: "clickhouse-logger"
     namespace: "apisix"
     domains: ["http"]
@@ -2802,19 +2734,15 @@ plugins:
       - factory: "error-log-logger"
         source: "plugin_config"
         field: "clickhouse.password"
-        strict: true
       - factory: "error-log-logger"
         source: "plugin_config"
         field: "kafka.brokers.*.sasl_config.password"
-        strict: true
       - factory: "error-log-logger"
         source: "plugin_metadata"
         field: "clickhouse.password"
-        strict: true
       - factory: "error-log-logger"
         source: "plugin_metadata"
         field: "kafka.brokers.*.sasl_config.password"
-        strict: true
     implementation: "error-log-logger"
     namespace: "apisix"
     domains: ["http"]
@@ -2845,7 +2773,6 @@ plugins:
       - factory: "sls-logger"
         source: "plugin_config"
         field: "access_key_secret"
-        strict: true
     implementation: "sls-logger"
     namespace: "apisix"
     domains: ["http"]
@@ -2876,7 +2803,6 @@ plugins:
       - factory: "google-cloud-logging"
         source: "plugin_config"
         field: "auth_config.private_key"
-        strict: true
     implementation: "google-cloud-logging"
     namespace: "apisix"
     domains: ["http"]
@@ -2907,7 +2833,6 @@ plugins:
       - factory: "splunk-hec-logging"
         source: "plugin_config"
         field: "endpoint.token"
-        strict: true
     implementation: "splunk-hec-logging"
     namespace: "apisix"
     domains: ["http"]
@@ -2964,7 +2889,6 @@ plugins:
       - factory: "loggly"
         source: "plugin_config"
         field: "customer_token"
-        strict: true
     implementation: "loggly"
     namespace: "apisix"
     domains: ["http"]
@@ -2995,11 +2919,9 @@ plugins:
       - factory: "elasticsearch-logger"
         source: "plugin_config"
         field: "auth.password"
-        strict: true
       - factory: "elasticsearch-logger"
         source: "plugin_config"
         field: "headers.Authorization"
-        strict: false
     implementation: "elasticsearch-logger"
     namespace: "apisix"
     domains: ["http"]
@@ -3030,7 +2952,6 @@ plugins:
       - factory: "tencent-cloud-cls"
         source: "plugin_config"
         field: "secret_key"
-        strict: true
     implementation: "tencent-cloud-cls"
     namespace: "apisix"
     domains: ["http"]
@@ -3087,7 +3008,6 @@ plugins:
       - factory: "lago"
         source: "plugin_config"
         field: "token"
-        strict: true
     implementation: "lago"
     namespace: "apisix"
     domains: ["http"]
@@ -3144,11 +3064,9 @@ plugins:
       - factory: "ai-aliyun-content-moderation"
         source: "plugin_config"
         field: "access_key_secret"
-        strict: false
       - factory: "ai-aliyun-content-moderation"
         source: "plugin_config"
         field: "access_key_id"
-        strict: false
     implementation: "ai-aliyun-content-moderation"
     namespace: "apisix"
     domains: ["http"]
@@ -3180,15 +3098,12 @@ plugins:
       - factory: "ai-aws-content-moderation"
         source: "plugin_config"
         field: "comprehend.secret_access_key"
-        strict: false
       - factory: "ai-aws-content-moderation"
         source: "plugin_config"
         field: "comprehend.access_key_id"
-        strict: false
       - factory: "ai-aws-content-moderation"
         source: "plugin_config"
         field: "comprehend.session_token"
-        strict: false
     implementation: "ai-aws-content-moderation"
     namespace: "apisix"
     domains: ["http"]
@@ -3220,11 +3135,9 @@ plugins:
       - factory: "ai-rag"
         source: "plugin_config"
         field: "embeddings_provider.azure_openai.api_key"
-        strict: false
       - factory: "ai-rag"
         source: "plugin_config"
         field: "vector_search_provider.azure_ai_search.api_key"
-        strict: false
     implementation: "ai-rag"
     namespace: "apisix"
     domains: ["http"]
@@ -3337,23 +3250,18 @@ plugins:
       - factory: "ai-request-rewrite"
         source: "plugin_config"
         field: "auth.header"
-        strict: false
       - factory: "ai-request-rewrite"
         source: "plugin_config"
         field: "auth.query"
-        strict: false
       - factory: "ai-request-rewrite"
         source: "plugin_config"
         field: "auth.gcp.service_account_json"
-        strict: false
       - factory: "ai-request-rewrite"
         source: "plugin_config"
         field: "auth.aws.secret_access_key"
-        strict: false
       - factory: "ai-request-rewrite"
         source: "plugin_config"
         field: "auth.aws.session_token"
-        strict: false
     implementation: "ai-request-rewrite"
     namespace: "apisix"
     domains: ["http"]
@@ -3385,11 +3293,9 @@ plugins:
       - factory: "ai-rate-limiting"
         source: "plugin_config"
         field: "redis_password"
-        strict: true
       - factory: "ai-rate-limiting"
         source: "plugin_config"
         field: "sentinel_password"
-        strict: true
     implementation: "ai-rate-limiting"
     namespace: "apisix"
     domains: ["http"]
@@ -3421,23 +3327,18 @@ plugins:
       - factory: "ai-proxy"
         source: "plugin_config"
         field: "auth.header"
-        strict: false
       - factory: "ai-proxy"
         source: "plugin_config"
         field: "auth.query"
-        strict: false
       - factory: "ai-proxy"
         source: "plugin_config"
         field: "auth.gcp.service_account_json"
-        strict: false
       - factory: "ai-proxy"
         source: "plugin_config"
         field: "auth.aws.secret_access_key"
-        strict: false
       - factory: "ai-proxy"
         source: "plugin_config"
         field: "auth.aws.session_token"
-        strict: false
     implementation: "ai-proxy"
     namespace: "apisix"
     domains: ["http"]
@@ -3469,23 +3370,18 @@ plugins:
       - factory: "ai-proxy-multi"
         source: "plugin_config"
         field: "instances.*.auth.header"
-        strict: false
       - factory: "ai-proxy-multi"
         source: "plugin_config"
         field: "instances.*.auth.query"
-        strict: false
       - factory: "ai-proxy-multi"
         source: "plugin_config"
         field: "instances.*.auth.gcp.service_account_json"
-        strict: false
       - factory: "ai-proxy-multi"
         source: "plugin_config"
         field: "instances.*.auth.aws.secret_access_key"
-        strict: false
       - factory: "ai-proxy-multi"
         source: "plugin_config"
         field: "instances.*.auth.aws.session_token"
-        strict: false
     implementation: "ai-proxy-multi"
     namespace: "apisix"
     domains: ["http"]

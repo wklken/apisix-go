@@ -155,7 +155,7 @@ func newUnsupportedPluginTargetTestCompiler(t *testing.T) *Compiler {
 			pluginCapability.SecretDeclarations = append(
 				pluginCapability.SecretDeclarations,
 				capability.SecretDeclaration{
-					Factory: "echo", Source: capability.SecretPluginConfig, Field: "body", Strict: false,
+					Factory: "echo", Source: capability.SecretPluginConfig, Field: "body",
 				},
 			)
 			found = true

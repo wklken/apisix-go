@@ -2,13 +2,12 @@ package data_encryption
 
 import (
 	"reflect"
-	"slices"
 	"testing"
 
 	"github.com/wklken/apisix-go/pkg/capability"
 )
 
-type legacyDeclarationKey struct {
+type declarationKey struct {
 	factory string
 	field   string
 }
@@ -87,31 +86,8 @@ var expectedPluginFields = map[string][]string{
 	"request-validation": {"body_schema", "header_schema"},
 }
 
-var expectedStrictPluginFields = map[string][]string{
-	"ai-rate-limiting":     {"redis_password", "sentinel_password"},
-	"clickhouse-logger":    {"password"},
-	"csrf":                 {"key"},
-	"elasticsearch-logger": {"auth.password"},
-	"error-log-logger":     {"clickhouse.password", "kafka.brokers.*.sasl_config.password"},
-	"google-cloud-logging": {"auth_config.private_key"},
-	"http-logger":          {"auth_header"},
-	"kafka-logger":         {"brokers.*.sasl_config.password"},
-	"kafka-proxy":          {"sasl.password"},
-	"lago":                 {"token"},
-	"loggly":               {"customer_token"},
-	"rocketmq-logger":      {"secret_key"},
-	"response-rewrite":     {"body_secret"},
-	"sls-logger":           {"access_key_secret"},
-	"splunk-hec-logging":   {"endpoint.token"},
-	"tencent-cloud-cls":    {"secret_key"},
-}
-
 var expectedPluginMetadataFields = map[string][]string{
 	"azure-functions":  {"master_apikey"},
-	"error-log-logger": {"clickhouse.password", "kafka.brokers.*.sasl_config.password"},
-}
-
-var expectedStrictPluginMetadataFields = map[string][]string{
 	"error-log-logger": {"clickhouse.password", "kafka.brokers.*.sasl_config.password"},
 }
 
@@ -135,77 +111,38 @@ func TestSecretDeclarationCatalogParity(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	wantConfig := make(map[legacyDeclarationKey]struct{})
-	wantOptionalConfig := make(map[legacyDeclarationKey]struct{})
-	wantStrictConfig := make(map[legacyDeclarationKey]struct{})
+	wantConfig := make(map[declarationKey]struct{})
 	for factory, fields := range expectedPluginFields {
 		for _, field := range fields {
-			key := legacyDeclarationKey{factory: factory, field: field}
-			wantConfig[key] = struct{}{}
-			if !slices.Contains(expectedStrictPluginFields[factory], field) {
-				wantOptionalConfig[key] = struct{}{}
-			}
-		}
-	}
-	for factory, fields := range expectedStrictPluginFields {
-		for _, field := range fields {
-			wantStrictConfig[legacyDeclarationKey{factory: factory, field: field}] = struct{}{}
+			wantConfig[declarationKey{factory: factory, field: field}] = struct{}{}
 		}
 	}
 
-	wantMetadata := make(map[legacyDeclarationKey]struct{})
-	wantOptionalMetadata := make(map[legacyDeclarationKey]struct{})
-	wantStrictMetadata := make(map[legacyDeclarationKey]struct{})
+	wantMetadata := make(map[declarationKey]struct{})
 	for factory, fields := range expectedPluginMetadataFields {
 		for _, field := range fields {
-			key := legacyDeclarationKey{factory: factory, field: field}
-			wantMetadata[key] = struct{}{}
-			if !slices.Contains(expectedStrictPluginMetadataFields[factory], field) {
-				wantOptionalMetadata[key] = struct{}{}
-			}
-		}
-	}
-	for factory, fields := range expectedStrictPluginMetadataFields {
-		for _, field := range fields {
-			wantStrictMetadata[legacyDeclarationKey{factory: factory, field: field}] = struct{}{}
+			wantMetadata[declarationKey{factory: factory, field: field}] = struct{}{}
 		}
 	}
 
-	gotConfig := make(map[legacyDeclarationKey]struct{})
-	gotOptionalConfig := make(map[legacyDeclarationKey]struct{})
-	gotStrictConfig := make(map[legacyDeclarationKey]struct{})
-	gotMetadata := make(map[legacyDeclarationKey]struct{})
-	gotOptionalMetadata := make(map[legacyDeclarationKey]struct{})
-	gotStrictMetadata := make(map[legacyDeclarationKey]struct{})
-	wantConsumer := make(map[legacyDeclarationKey]struct{})
+	gotConfig := make(map[declarationKey]struct{})
+	gotMetadata := make(map[declarationKey]struct{})
+	wantConsumer := make(map[declarationKey]struct{})
 	for factory, fields := range expectedConsumerFields {
 		for _, field := range fields {
-			wantConsumer[legacyDeclarationKey{factory: factory, field: field}] = struct{}{}
+			wantConsumer[declarationKey{factory: factory, field: field}] = struct{}{}
 		}
 	}
-	gotConsumer := make(map[legacyDeclarationKey]struct{})
+	gotConsumer := make(map[declarationKey]struct{})
 	for _, declaration := range catalog.Declarations() {
-		key := legacyDeclarationKey{factory: declaration.Factory, field: declaration.Field}
+		key := declarationKey{factory: declaration.Factory, field: declaration.Field}
 		switch declaration.Source {
 		case capability.SecretPluginConfig:
 			gotConfig[key] = struct{}{}
-			if declaration.Strict {
-				gotStrictConfig[key] = struct{}{}
-			} else {
-				gotOptionalConfig[key] = struct{}{}
-			}
 		case capability.SecretPluginMetadata:
 			gotMetadata[key] = struct{}{}
-			if declaration.Strict {
-				gotStrictMetadata[key] = struct{}{}
-			} else {
-				gotOptionalMetadata[key] = struct{}{}
-			}
 		case capability.SecretConsumerConfig:
 			gotConsumer[key] = struct{}{}
-			if declaration.Strict {
-				t.Errorf("consumer declaration %s/%s unexpectedly uses strict at-rest policy", key.factory, key.field)
-			}
 		default:
 			t.Fatalf("catalog contains unknown declaration source %q", declaration.Source)
 		}
@@ -213,15 +150,11 @@ func TestSecretDeclarationCatalogParity(t *testing.T) {
 
 	checks := []struct {
 		name string
-		got  map[legacyDeclarationKey]struct{}
-		want map[legacyDeclarationKey]struct{}
+		got  map[declarationKey]struct{}
+		want map[declarationKey]struct{}
 	}{
 		{name: "config", got: gotConfig, want: wantConfig},
-		{name: "config optional", got: gotOptionalConfig, want: wantOptionalConfig},
-		{name: "config strict", got: gotStrictConfig, want: wantStrictConfig},
 		{name: "metadata", got: gotMetadata, want: wantMetadata},
-		{name: "metadata optional", got: gotOptionalMetadata, want: wantOptionalMetadata},
-		{name: "metadata strict", got: gotStrictMetadata, want: wantStrictMetadata},
 		{name: "consumer", got: gotConsumer, want: wantConsumer},
 	}
 	for _, check := range checks {

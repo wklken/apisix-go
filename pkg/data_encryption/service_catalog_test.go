@@ -1,7 +1,6 @@
 package data_encryption
 
 import (
-	"errors"
 	"strings"
 	"testing"
 
@@ -170,51 +169,40 @@ func TestServiceRejectsUnknownDeclarationBeforeResolving(t *testing.T) {
 	}
 }
 
-func TestServiceResolveDeclaredPreservesStrictAndOptionalPolicy(t *testing.T) {
+func TestServiceResolveDeclaredUsesAPISIXFallbackPolicy(t *testing.T) {
 	const key = "qeddd145sfvddff3"
 	service := NewService(true, []string{key}, testDeclarationCatalog(t))
 
-	ciphertext, err := EncryptForContext("optional-secret", key, "key-auth.key")
+	ciphertext, err := EncryptForContext("secret", key, "error-log-logger.clickhouse.password")
 	if err != nil {
 		t.Fatal(err)
-	}
-	if got, err := service.ResolveDeclared("key-auth", capability.SecretPluginConfig, "key", ciphertext); err != nil ||
-		got != "optional-secret" {
-		t.Fatalf("optional ResolveDeclared() = %q/%v, want optional-secret", got, err)
-	}
-	if got, err := service.ResolveDeclared(
-		"key-auth",
-		capability.SecretPluginConfig,
-		"key",
-		"legacy-plaintext",
-	); err != nil ||
-		got != "legacy-plaintext" {
-		t.Fatalf("optional plaintext ResolveDeclared() = %q/%v, want legacy-plaintext", got, err)
 	}
 
-	strictCiphertext, err := EncryptForContext("strict-secret", key, "error-log-logger.clickhouse.password")
-	if err != nil {
-		t.Fatal(err)
+	tests := []struct {
+		name  string
+		value string
+		want  string
+	}{
+		{name: "decrypts with configured key", value: ciphertext, want: "secret"},
+		{name: "preserves plaintext", value: "plaintext", want: "plaintext"},
+		{
+			name:  "preserves ciphertext when no key can decrypt it",
+			value: "$encrypted://v2:not-valid-ciphertext",
+			want:  "$encrypted://v2:not-valid-ciphertext",
+		},
 	}
-	if got, err := service.ResolveDeclared(
-		"error-log-logger",
-		capability.SecretPluginConfig,
-		"clickhouse.password",
-		strictCiphertext,
-	); err != nil ||
-		got != "strict-secret" {
-		t.Fatalf("strict ResolveDeclared() = %q/%v, want strict-secret", got, err)
-	}
-	if _, err := service.ResolveDeclared(
-		"error-log-logger",
-		capability.SecretPluginConfig,
-		"clickhouse.password",
-		"legacy-plaintext",
-	); !errors.Is(
-		err,
-		ErrInvalidCiphertext,
-	) {
-		t.Fatalf("strict plaintext ResolveDeclared() error = %v, want ErrInvalidCiphertext", err)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, resolveErr := service.ResolveDeclared(
+				"error-log-logger",
+				capability.SecretPluginConfig,
+				"clickhouse.password",
+				test.value,
+			)
+			if resolveErr != nil || got != test.want {
+				t.Fatalf("ResolveDeclared() = %q/%v, want %q/nil", got, resolveErr, test.want)
+			}
+		})
 	}
 }
 

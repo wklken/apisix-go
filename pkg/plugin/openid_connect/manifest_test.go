@@ -59,7 +59,7 @@ func TestStandaloneManifestMapsOneIndependentCasePerPinnedBlock(t *testing.T) {
 	// testNumbers lists the exact upstream test numbers that were converted for a
 	// source file, in manifest order. Leave nil for sources where every test 1..tests
 	// was converted contiguously; set it explicitly when specific test numbers were
-	// blocked (see t/plugin/corpus_scope.yaml) and therefore have gaps.
+	// not converted into standalone cases and therefore have gaps.
 	wantSources := []struct {
 		file        string
 		tests       int

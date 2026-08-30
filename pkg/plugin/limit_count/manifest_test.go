@@ -379,7 +379,7 @@ func TestStandaloneManifestMapsEveryPinnedBlockInOrder(t *testing.T) {
 	// sequence holds, per source file, the ordered list of upstream test
 	// numbers this manifest maps to independent cases. Most files map every
 	// test 1..Tests contiguously; a source may instead declare an explicit
-	// test_numbers list (skipping numbers blocked in corpus_scope.yaml, e.g.
+	// test_numbers list (skipping source numbers not converted into standalone cases, e.g.
 	// limit-count.t test 23 is blocked_design and intentionally absent).
 	sequence := make(map[string][]int, len(wantSources))
 	cursor := make(map[string]int, len(wantSources))

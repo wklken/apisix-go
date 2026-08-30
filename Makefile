@@ -90,14 +90,6 @@ generate-capabilities: generate-plugin-registry
 check-plugin-registry:
 	$(GO_CACHE_RUNNER) go run ./cmd/capability-gen -repo-root . -check
 
-.PHONY: test-plugin-behavior-gate
-test-plugin-behavior-gate:
-	bash scripts/validation/plugin_behavior_gate_test.sh
-
-.PHONY: validate-plugin-behavior
-validate-plugin-behavior:
-	bash scripts/validation/plugin_behavior_gate.sh
-
 PLUGIN_SMOKE_CASE ?=
 
 .PHONY: test-plugin-smoke

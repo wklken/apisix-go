@@ -1,9 +1,0 @@
-# Reviewed transport-only normalization for the APISIX 3.17 differential
-# oracle. Semantic response fields are intentionally not configurable here.
-schema_version: 1
-headers:
-  canonicalize_names: true
-  ignore: [Date, Server]
-  strip_hop_by_hop: true
-  content_length_if_body_equal: true
-fixture_endpoint_mapping: true

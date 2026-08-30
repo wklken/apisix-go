@@ -106,7 +106,7 @@ func TestManifestMapsEveryPinnedBlockToIndependentRealProcessCase(t *testing.T) 
 	// spans with sni_radixtree_match/http_router_match/resolve_dns
 	// children). The Go opentelemetry plugin emits a single request-scoped
 	// span per request and has no phase-span instrumentation, so both
-	// numbers are blocked_design in corpus_scope.yaml instead of converted.
+	// numbers are not converted into standalone cases.
 	wantSources := []struct {
 		commit         string
 		file           string

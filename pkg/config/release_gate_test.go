@@ -108,6 +108,73 @@ func TestLoadEffectiveAllowsEmptyHTTPPluginList(t *testing.T) {
 	}
 }
 
+func TestLoadEffectiveIgnoresHarmlessOfficialStaticFields(t *testing.T) {
+	base := writeConfigFile(t, "base.yaml", validRuntimeConfig)
+	override := writeConfigFile(t, "override.yaml", `
+nginx_config:
+  envs: [TEST_ENV]
+  http:
+    client_header_timeout: 17s
+`)
+
+	cfg, err := loadEffectiveTestFiles(t, base, override)
+	if err != nil {
+		t.Fatalf("LoadEffective() error = %v", err)
+	}
+	if got := cfg.NginxConfig.HTTP.ClientHeaderTimeout; got != 17*time.Second {
+		t.Fatalf("client_header_timeout = %s, want 17s", got)
+	}
+}
+
+func TestLoadEffectiveStillRejectsUnsupportedSubsystems(t *testing.T) {
+	tests := []struct {
+		name     string
+		override string
+		want     string
+	}{
+		{name: "admin API", override: "apisix: {enable_admin: true}\n", want: "apisix.enable_admin"},
+		{name: "discovery", override: "discovery: {dns: {servers: [127.0.0.1]}}\n", want: "discovery"},
+		{name: "external plugin", override: "ext-plugin: {cmd: [/usr/local/bin/plugin]}\n", want: "ext-plugin.cmd"},
+		{
+			name: "WASM",
+			override: `
+wasm:
+  plugins:
+    - name: logger
+      file: logger.wasm
+      priority: 1
+      http_request_phase: access
+`,
+			want: "wasm.plugins",
+		},
+		{name: "XRPC", override: "xrpc: {protocols: [{name: pingpong}]}\n", want: "xrpc.protocols"},
+		{
+			name:     "QUIC",
+			override: "apisix: {ssl: {listen: [{ip: 127.0.0.1, port: 9443, enable_quic: true}]}}\n",
+			want:     "enable_quic",
+		},
+		{
+			name:     "HTTP3",
+			override: "apisix: {ssl: {listen: [{ip: 127.0.0.1, port: 9443, enable_http3: true}]}}\n",
+			want:     "enable_http3",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			base := writeConfigFile(t, "base.yaml", validRuntimeConfig)
+			override := writeConfigFile(t, "override.yaml", test.override)
+			_, err := loadEffectiveTestFiles(t, base, override)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("LoadEffective() error = %v, want %q", err, test.want)
+			}
+			if strings.Contains(err.Error(), "static configuration contains") {
+				t.Fatalf("LoadEffective() error = %q, want explicit unsupported-subsystem rejection", err)
+			}
+		})
+	}
+}
+
 func TestEffectiveConfigProviderRejectsUnsupportedRolePairs(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -250,12 +317,9 @@ func TestHTTPDataPlaneProductionConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg, unused, err := decodeConfig(document)
+	cfg, err := decodeConfig(document)
 	if err != nil {
 		t.Fatal(err)
-	}
-	if len(unused) != 0 {
-		t.Fatalf("production config has unknown fields: %v", unused)
 	}
 	if cfg.Deployment.Role != "data_plane" || cfg.Deployment.RoleDataPlane.ConfigProvider != "etcd" {
 		t.Fatalf("production deployment = %#v, want data_plane/etcd", cfg.Deployment)

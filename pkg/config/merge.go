@@ -10,10 +10,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/json"
 )
 
-var (
-	jsonNumberPattern     = regexp.MustCompile(`^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?$`)
-	safeConfigPathSegment = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_-]*$`)
-)
+var jsonNumberPattern = regexp.MustCompile(`^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?$`)
 
 func mergeNodes(lower, upper *valueNode) *valueNode {
 	if lower == nil {
@@ -32,23 +29,6 @@ func mergeNodes(lower, upper *valueNode) *valueNode {
 		merged.mapping[key] = mergeNodes(merged.mapping[key], incoming)
 	}
 	return merged
-}
-
-func appendConfigPathKey(parent, key string) string {
-	if !utf8.ValidString(key) {
-		panic("encode configuration mapping key: invalid UTF-8")
-	}
-	if safeConfigPathSegment.MatchString(key) {
-		if parent == "" {
-			return key
-		}
-		return parent + "." + key
-	}
-	encoded, err := json.Marshal(key)
-	if err != nil {
-		panic("encode configuration mapping key")
-	}
-	return parent + "[" + string(encoded) + "]"
 }
 
 func nodeFromAny(value any, pathBase string) (*valueNode, error) {

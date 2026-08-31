@@ -95,6 +95,19 @@ deployment:
 	}
 }
 
+func TestLoadEffectiveAllowsEmptyHTTPPluginList(t *testing.T) {
+	base := writeConfigFile(t, "base.yaml", validRuntimeConfig)
+	override := writeConfigFile(t, "override.yaml", "plugins: []\n")
+
+	cfg, err := loadEffectiveTestFiles(t, base, override)
+	if err != nil {
+		t.Fatalf("LoadEffective() error = %v", err)
+	}
+	if cfg.Plugins == nil || len(cfg.Plugins) != 0 {
+		t.Fatalf("plugins = %#v, want explicit empty list", cfg.Plugins)
+	}
+}
+
 func TestEffectiveConfigProviderRejectsUnsupportedRolePairs(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -131,7 +144,6 @@ func TestLoadEffectiveRejectsIncompleteRuntimeBeforePublication(t *testing.T) {
 		override string
 		want     string
 	}{
-		{name: "empty plugins", override: "plugins: []\n", want: "plugins"},
 		{name: "empty listeners", override: "apisix:\n  node_listen: []\n", want: "node_listen"},
 		{name: "invalid listener", override: "apisix:\n  node_listen: [{port: 70000}]\n", want: "node_listen"},
 		{

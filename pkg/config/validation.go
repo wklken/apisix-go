@@ -25,9 +25,6 @@ func validateRuntimeConfig(cfg *Config) error {
 	if err := validateHTTPPluginAllowlist(cfg.Plugins); err != nil {
 		return err
 	}
-	if len(cfg.Plugins) == 0 {
-		return fmt.Errorf("plugins must contain at least one HTTP plugin")
-	}
 	if len(cfg.Apisix.NodeListen) == 0 {
 		return fmt.Errorf("apisix.node_listen must contain at least one listener")
 	}

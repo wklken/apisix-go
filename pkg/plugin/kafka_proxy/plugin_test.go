@@ -325,9 +325,7 @@ func TestKafkaProxyStopWaitsForScopedSASLTerminal(t *testing.T) {
 	entered := make(chan struct{})
 	release := make(chan struct{})
 	requestDone := make(chan struct{})
-	stopAttempted := make(chan struct{}, 2)
 	stopDone := make(chan struct{}, 2)
-	p.stopBeforeLock = func() { stopAttempted <- struct{}{} }
 
 	go func() {
 		p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -354,12 +352,15 @@ func TestKafkaProxyStopWaitsForScopedSASLTerminal(t *testing.T) {
 			stopDone <- struct{}{}
 		}()
 	}
-	for range 2 {
-		select {
-		case <-stopAttempted:
-		case <-time.After(time.Second):
-			t.Fatal("timed out waiting for Stop write-lock attempt")
+	deadline := time.Now().Add(time.Second)
+	for p.secretMu.TryRLock() {
+		p.secretMu.RUnlock()
+		if time.Now().After(deadline) {
+			close(release)
+			<-requestDone
+			t.Fatal("timed out waiting for Stop() to wait on the credential write lock")
 		}
+		time.Sleep(time.Millisecond)
 	}
 	select {
 	case <-stopDone:

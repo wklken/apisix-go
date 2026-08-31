@@ -223,7 +223,7 @@ func TestConsumerBindingPreparerIndexesNonCredentialConsumerPlugin(t *testing.T)
 		resourceValue(
 			"consumers",
 			"rate-limited-consumer",
-			`{"username":"rate-limited-consumer","plugins":{"limit-count":{"count":4,"time_window":60}}}`,
+			`{"id":"forged-id","username":"rate-limited-consumer","consumer_name":"forged-name","auth_conf":{"key":"forged"},"credential_id":"forged-credential","custom_id":"forged-custom","plugins":{"limit-count":{"count":4,"time_window":60}}}`,
 		),
 	}, nil)
 	prepared, err := factory.prepareGenerationSecrets(
@@ -235,6 +235,10 @@ func TestConsumerBindingPreparerIndexesNonCredentialConsumerPlugin(t *testing.T)
 	consumer, ok := prepared.consumers.ConsumerByID("rate-limited-consumer")
 	if !ok {
 		t.Fatal("consumer with a non-credential plugin was not indexed")
+	}
+	if consumer.ID != "rate-limited-consumer" || consumer.ConsumerName != "" ||
+		consumer.AuthConf != nil || consumer.CredentialID != "" || consumer.CustomID != "" {
+		t.Fatalf("prepared consumer retained payload-controlled runtime identity: %#v", consumer)
 	}
 	config, ok := consumer.Plugins["limit-count"].(map[string]any)
 	if !ok || fmt.Sprint(config["count"]) != "4" || fmt.Sprint(config["time_window"]) != "60" {

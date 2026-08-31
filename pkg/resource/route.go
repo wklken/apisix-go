@@ -259,6 +259,7 @@ type Route struct {
 	hostsSet      bool
 	remoteAddrSet bool
 	websocketSet  bool
+	originalJSON  json.RawMessage
 }
 
 func (r *Route) UnmarshalJSON(data []byte) error {
@@ -293,7 +294,13 @@ func (r *Route) UnmarshalJSON(data []byte) error {
 	} else {
 		r.Status = 0
 	}
+	r.originalJSON = append(r.originalJSON[:0], data...)
 	return nil
+}
+
+// OriginalJSON returns a detached copy of the source resource document.
+func (r Route) OriginalJSON() json.RawMessage {
+	return append(json.RawMessage(nil), r.originalJSON...)
 }
 
 func (r Route) StatusConfigured() bool {
@@ -355,6 +362,23 @@ type Service struct {
 	CreateTime      int64           `json:"create_time,omitempty"`
 	UpdateTime      int64           `json:"update_time,omitempty"`
 	Script          json.RawMessage `json:"script,omitempty"`
+	originalJSON    json.RawMessage
+}
+
+func (s *Service) UnmarshalJSON(data []byte) error {
+	type serviceJSON Service
+	var decoded serviceJSON
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*s = Service(decoded)
+	s.originalJSON = append(s.originalJSON[:0], data...)
+	return nil
+}
+
+// OriginalJSON returns a detached copy of the source resource document.
+func (s Service) OriginalJSON() json.RawMessage {
+	return append(json.RawMessage(nil), s.originalJSON...)
 }
 
 // {"username":"foo","plugins":{"basic-auth":{"_meta":{"disable":false},"password":"bar","username":"foo"}},"create_time":1712331168,"update_time":1712331168}

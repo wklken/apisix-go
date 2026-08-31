@@ -203,18 +203,18 @@ func TestAttachConsumerWithSourceDerivesOfficialRuntimeFieldsAndHeaders(t *testi
 	req.Header.Set("X-Consumer-Custom-ID", "spoofed-custom")
 
 	consumer := resource.Consumer{
-		ID:            "consumer-id",
+		ID:            "forged-id",
 		Username:      "bob",
 		GroupID:       "gold",
+		ConsumerName:  "forged-name",
 		Plugins:       map[string]resource.PluginConfig{"jwt-auth": map[string]any{"key": "jwt-key"}},
 		Labels:        map[string]any{"custom_id": "custom-from-label"},
 		ModifiedIndex: 42,
-		CredentialID:  "credential-id",
 	}
 	attached := AttachConsumerWithSource(req, consumer, "jwt-auth")
 
-	if attached.ID != "consumer-id" || attached.ConsumerName != "consumer-id" ||
-		attached.ModifiedIndex != 42 || attached.CredentialID != "credential-id" ||
+	if attached.ID != "bob" || attached.ConsumerName != "bob" ||
+		attached.ModifiedIndex != 42 || attached.CredentialID != "" ||
 		attached.CustomID != "custom-from-label" {
 		t.Fatalf("attached consumer runtime fields = %#v", attached)
 	}
@@ -222,14 +222,14 @@ func TestAttachConsumerWithSourceDerivesOfficialRuntimeFieldsAndHeaders(t *testi
 	if !ok || authConfig["key"] != "jwt-key" {
 		t.Fatalf("attached auth config = %#v, want source plugin config", attached.AuthConf)
 	}
-	if got := GetApisixVar(req, "$consumer_name"); got != "consumer-id" {
-		t.Fatalf("$consumer_name = %#v, want consumer-id", got)
+	if got := GetApisixVar(req, "$consumer_name"); got != "bob" {
+		t.Fatalf("$consumer_name = %#v, want bob", got)
 	}
 	if got := req.Header.Get("X-Consumer-Username"); got != "bob" {
 		t.Fatalf("X-Consumer-Username = %q, want bob", got)
 	}
-	if got := req.Header.Get("X-Credential-Identifier"); got != "credential-id" {
-		t.Fatalf("X-Credential-Identifier = %q, want credential-id", got)
+	if got := req.Header.Get("X-Credential-Identifier"); got != "" {
+		t.Fatalf("X-Credential-Identifier = %q, want empty", got)
 	}
 	if got := req.Header.Get("X-Consumer-Custom-ID"); got != "custom-from-label" {
 		t.Fatalf("X-Consumer-Custom-ID = %q, want custom-from-label", got)

@@ -13,6 +13,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/wklken/apisix-go/pkg/generation"
+	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/observability/metrics"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/mvccpb"
@@ -149,6 +150,77 @@ func TestDesiredBatchFromEtcdSnapshotReplacesManagedNamespace(t *testing.T) {
 	value[0] = 'x'
 	if string(batch.Mutations[0].Value) != `{"id":"r1"}` {
 		t.Fatal("snapshot mutation aliases etcd response value")
+	}
+}
+
+func TestDesiredBatchFromEtcdSnapshotCanonicalizesConsumerRuntimeMetadata(t *testing.T) {
+	batch, err := desiredBatchFromEtcdSnapshot("apisix", &clientv3.GetResponse{
+		Header: &etcdserverpb.ResponseHeader{ClusterId: 0xabc, Revision: 71},
+		Kvs: []*mvccpb.KeyValue{
+			{
+				Key: []byte("/apisix/consumers/alice"),
+				Value: []byte(`{
+					"id":"forged-id",
+					"username":"alice",
+					"consumer_name":"forged-name",
+					"credential_id":"forged-credential",
+					"plugins":{"jwt-auth":{"exp":9007199254740993}}
+				}`),
+				ModRevision: 69,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var consumer map[string]any
+	if err := json.Unmarshal(batch.Mutations[0].Value, &consumer); err != nil {
+		t.Fatal(err)
+	}
+	if consumer["id"] != "alice" || consumer["modifiedIndex"] != float64(69) {
+		t.Fatalf("consumer metadata = %#v, want canonical id and etcd modifiedIndex", consumer)
+	}
+	for _, field := range []string{"consumer_name", "auth_conf", "credential_id", "custom_id"} {
+		if _, exists := consumer[field]; exists {
+			t.Fatalf("consumer metadata retained payload-controlled %s: %#v", field, consumer)
+		}
+	}
+	var topLevel map[string]json.RawMessage
+	if err := json.Unmarshal(batch.Mutations[0].Value, &topLevel); err != nil {
+		t.Fatal(err)
+	}
+	var plugins map[string]json.RawMessage
+	if err := json.Unmarshal(topLevel["plugins"], &plugins); err != nil {
+		t.Fatal(err)
+	}
+	var jwtAuth map[string]json.RawMessage
+	if err := json.Unmarshal(plugins["jwt-auth"], &jwtAuth); err != nil {
+		t.Fatal(err)
+	}
+	if got := string(jwtAuth["exp"]); got != "9007199254740993" {
+		t.Fatalf("jwt-auth.exp = %s, want exact large integer", got)
+	}
+
+	watchBatch, err := desiredBatchFromEtcdWatch("apisix", clientv3.WatchResponse{
+		Header: etcdserverpb.ResponseHeader{ClusterId: 0xabc, Revision: 72},
+		Events: []*clientv3.Event{{
+			Type: mvccpb.PUT,
+			Kv: &mvccpb.KeyValue{
+				Key:         []byte("/apisix/consumers/alice"),
+				Value:       []byte(`{"username":"alice","plugins":{}}`),
+				ModRevision: 72,
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	consumer = nil
+	if err := json.Unmarshal(watchBatch.Mutations[0].Value, &consumer); err != nil {
+		t.Fatal(err)
+	}
+	if consumer["id"] != "alice" || consumer["modifiedIndex"] != float64(72) {
+		t.Fatalf("watch consumer metadata = %#v, want canonical id and etcd modifiedIndex", consumer)
 	}
 }
 

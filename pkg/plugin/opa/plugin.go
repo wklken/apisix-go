@@ -405,13 +405,30 @@ func authorizationConsumer(r *http.Request) (resource.Consumer, bool) {
 }
 
 func serializeResourceForOPA(value any) (map[string]any, bool) {
-	body, err := json.Marshal(value)
-	if err != nil {
-		return nil, false
+	var body []byte
+	if original, ok := value.(interface{ OriginalJSON() json.RawMessage }); ok {
+		body = original.OriginalJSON()
+	}
+	if len(body) == 0 {
+		var err error
+		body, err = json.Marshal(value)
+		if err != nil {
+			return nil, false
+		}
 	}
 	var copy map[string]any
 	if err := json.Unmarshal(body, &copy); err != nil {
 		return nil, false
+	}
+	switch resource := value.(type) {
+	case resource.Route:
+		if resource.ID != "" {
+			copy["id"] = resource.ID
+		}
+	case resource.Service:
+		if resource.ID != "" {
+			copy["id"] = resource.ID
+		}
 	}
 	delete(copy, "upstream")
 	return copy, true

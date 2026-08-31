@@ -612,12 +612,8 @@ func AttachConsumer(r *http.Request, consumer resource.Consumer) {
 // request variables.
 func AttachConsumerWithSource(r *http.Request, consumer resource.Consumer, source string) resource.Consumer {
 	consumer = cloneConsumer(consumer)
-	if consumer.ID == "" {
-		consumer.ID = consumer.Username
-	}
-	if consumer.ConsumerName == "" {
-		consumer.ConsumerName = consumer.ID
-	}
+	consumer.ID = consumer.Username
+	consumer.ConsumerName = consumer.ID
 	if source != "" {
 		consumer.AuthConf = nil
 		if config, ok := consumer.Plugins[source]; ok {

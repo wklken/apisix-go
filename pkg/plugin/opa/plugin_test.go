@@ -228,23 +228,19 @@ func TestBuildOPARequestIncludesCompleteConsumer(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "http://gateway.test/get", nil)
 	req = apisixctx.WithApisixVars(req, nil)
 	attachedConsumer := resource.Consumer{
-		ID:            "consumer-1",
+		ID:            "test-user",
 		Username:      "test-user",
 		Desc:          "test consumer",
 		CreateTime:    1001,
 		UpdateTime:    1002,
 		GroupID:       "group-1",
-		ConsumerName:  "test-credential",
-		AuthConf:      map[string]any{"key": "auth-config"},
 		ModifiedIndex: 1003,
-		CredentialID:  "credential-1",
-		CustomID:      "custom-1",
 		Plugins: map[string]resource.PluginConfig{
 			"key-auth": map[string]any{"key": "consumer-plugin-secret"},
 		},
 		Labels: map[string]any{"team": "edge", "custom_id": "custom-1"},
 	}
-	apisixctx.AttachConsumer(req, attachedConsumer)
+	apisixctx.AttachConsumerWithSource(req, attachedConsumer, "key-auth")
 
 	body, err := json.Marshal(p.buildOPARequest(req))
 	if err != nil {
@@ -256,16 +252,19 @@ func TestBuildOPARequestIncludesCompleteConsumer(t *testing.T) {
 	}
 	consumer := decoded["input"].(map[string]any)["consumer"].(map[string]any)
 	labels, ok := consumer["labels"].(map[string]any)
-	if consumer["id"] != "consumer-1" || consumer["username"] != "test-user" ||
+	if consumer["id"] != "test-user" || consumer["username"] != "test-user" ||
 		consumer["desc"] != "test consumer" || consumer["create_time"] != float64(1001) ||
 		consumer["update_time"] != float64(1002) || consumer["group_id"] != "group-1" ||
-		consumer["consumer_name"] != "test-credential" || consumer["modifiedIndex"] != float64(1003) ||
-		consumer["credential_id"] != "credential-1" || consumer["custom_id"] != "custom-1" ||
+		consumer["consumer_name"] != "test-user" || consumer["modifiedIndex"] != float64(1003) ||
+		consumer["custom_id"] != "custom-1" ||
 		!ok || labels["team"] != "edge" {
 		t.Fatalf("consumer = %#v, want complete consumer", consumer)
 	}
+	if _, exists := consumer["credential_id"]; exists {
+		t.Fatalf("consumer = %#v, want credential_id omitted for embedded consumer auth", consumer)
+	}
 	authConf, ok := consumer["auth_conf"].(map[string]any)
-	if !ok || authConf["key"] != "auth-config" {
+	if !ok || authConf["key"] != "consumer-plugin-secret" {
 		t.Fatalf("consumer auth_conf = %#v, want complete runtime context", consumer["auth_conf"])
 	}
 	plugins, ok := consumer["plugins"].(map[string]any)
@@ -286,35 +285,25 @@ func TestOPAResourceContextIncludesCompleteResourcesWithoutUpstream(t *testing.T
 		WithService:  true,
 		WithConsumer: true,
 	})
-	p.SetResourceContext(
-		resource.Route{
-			ID:   "route-1",
-			Name: "orders-route",
-			Uri:  "/orders/*",
-			Plugins: map[string]resource.PluginConfig{
-				"key-auth": map[string]any{"key": "route-plugin-secret"},
-			},
-			Upstream: resource.Upstream{
-				Name: "route-upstream-secret",
-				TLS:  &resource.UpstreamTLS{ClientKey: "route-client-key-secret"},
-			},
-		},
-		resource.Service{
-			ID:         "service-1",
-			Name:       "orders-service",
-			Labels:     map[string]any{"team": "edge"},
-			CreateTime: 2001,
-			UpdateTime: 2002,
-			Script:     json.RawMessage(`"return true"`),
-			Plugins: map[string]resource.PluginConfig{
-				"basic-auth": map[string]any{"password": "service-plugin-secret"},
-			},
-			Upstream: resource.Upstream{
-				Name: "service-upstream-secret",
-				TLS:  &resource.UpstreamTLS{ClientKey: "service-client-key-secret"},
-			},
-		},
-	)
+	var routeResource resource.Route
+	if err := json.Unmarshal([]byte(`{
+		"id":"route-1","name":"orders-route","uri":"/orders/*",
+		"priority":0,"enable_websocket":false,
+		"plugins":{"key-auth":{"key":"route-plugin-secret"}},
+		"upstream":{"nodes":{"127.0.0.1:9080":1},"name":"route-upstream-secret","tls":{"client_key":"route-client-key-secret"}}
+	}`), &routeResource); err != nil {
+		t.Fatal(err)
+	}
+	var serviceResource resource.Service
+	if err := json.Unmarshal([]byte(`{
+		"id":"service-1","name":"orders-service","labels":{"team":"edge"},
+		"create_time":2001,"update_time":2002,"script":"return true","enable_websocket":false,
+		"plugins":{"basic-auth":{"password":"service-plugin-secret"}},
+		"upstream":{"nodes":{"127.0.0.1:9080":1},"name":"service-upstream-secret","tls":{"client_key":"service-client-key-secret"}}
+	}`), &serviceResource); err != nil {
+		t.Fatal(err)
+	}
+	p.SetResourceContext(routeResource, serviceResource)
 	req := httptest.NewRequest(http.MethodGet, "http://gateway.test/orders/1", nil)
 	req = apisixctx.WithApisixVars(req, nil)
 	attachedConsumer := resource.Consumer{
@@ -343,6 +332,15 @@ func TestOPAResourceContextIncludesCompleteResourcesWithoutUpstream(t *testing.T
 	if _, ok := route["upstream"]; ok {
 		t.Fatalf("route = %#v, want upstream omitted", route)
 	}
+	if _, ok := route["timeout"]; ok {
+		t.Fatalf("route = %#v, want absent timeout to remain absent", route)
+	}
+	if priority, ok := route["priority"]; !ok || priority != float64(0) {
+		t.Fatalf("route priority = %#v, want explicit zero preserved", route["priority"])
+	}
+	if websocket, ok := route["enable_websocket"]; !ok || websocket != false {
+		t.Fatalf("route enable_websocket = %#v, want explicit false preserved", route["enable_websocket"])
+	}
 	routePlugins, ok := route["plugins"].(map[string]any)
 	if !ok {
 		t.Fatalf("route = %#v, want plugin configuration", route)
@@ -368,6 +366,9 @@ func TestOPAResourceContextIncludesCompleteResourcesWithoutUpstream(t *testing.T
 	}
 	if _, ok := service["upstream"]; ok {
 		t.Fatalf("service = %#v, want upstream omitted", service)
+	}
+	if websocket, ok := service["enable_websocket"]; !ok || websocket != false {
+		t.Fatalf("service enable_websocket = %#v, want explicit false preserved", service["enable_websocket"])
 	}
 	servicePlugins, ok := service["plugins"].(map[string]any)
 	if !ok {

@@ -596,6 +596,28 @@ func TestRouteAndServiceUnmarshalWebsocketIntent(t *testing.T) {
 	}
 }
 
+func TestRouteAndServiceOriginalJSONReturnsDetachedSource(t *testing.T) {
+	var route Route
+	if err := json.Unmarshal([]byte(`{"id":"route-1","priority":0,"enable_websocket":false}`), &route); err != nil {
+		t.Fatal(err)
+	}
+	var service Service
+	if err := json.Unmarshal([]byte(`{"id":"service-1","enable_websocket":false}`), &service); err != nil {
+		t.Fatal(err)
+	}
+
+	routeJSON := route.OriginalJSON()
+	serviceJSON := service.OriginalJSON()
+	routeJSON[0] = '['
+	serviceJSON[0] = '['
+	if got := string(route.OriginalJSON()); got != `{"id":"route-1","priority":0,"enable_websocket":false}` {
+		t.Fatalf("route original JSON = %q", got)
+	}
+	if got := string(service.OriginalJSON()); got != `{"id":"service-1","enable_websocket":false}` {
+		t.Fatalf("service original JSON = %q", got)
+	}
+}
+
 func TestStreamRouteUnmarshalServiceID(t *testing.T) {
 	var route StreamRoute
 	if err := json.Unmarshal([]byte(`{"id":"stream-route","service_id":"stream-service"}`), &route); err != nil {

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/generation"
+	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/observability/metrics"
 	"go.etcd.io/etcd/api/v3/mvccpb"
@@ -350,7 +351,11 @@ func desiredMutationFromEtcdEvent(
 	switch event.Type {
 	case mvccpb.PUT:
 		mutation.Type = generation.MutationPut
-		mutation.Value = cloneEtcdValue(event.Kv.Value)
+		value, err := canonicalEtcdResourceValue(bucket, id, event.Kv.ModRevision, event.Kv.Value)
+		if err != nil {
+			return generation.Mutation{}, nil, false, err
+		}
+		mutation.Value = value
 	case mvccpb.DELETE:
 		mutation.Type = generation.MutationDelete
 	default:
@@ -380,10 +385,14 @@ func desiredBatchFromEtcdSnapshot(prefix string, response *clientv3.GetResponse)
 		if !managed {
 			continue
 		}
+		value, err := canonicalEtcdResourceValue(bucket, id, kv.ModRevision, kv.Value)
+		if err != nil {
+			return generation.DesiredBatch{}, err
+		}
 		mutations = append(mutations, generation.Mutation{
 			Type:  generation.MutationPut,
 			Key:   generation.ResourceKey{Kind: bucket, ID: id},
-			Value: cloneEtcdValue(kv.Value),
+			Value: value,
 		})
 	}
 
@@ -396,6 +405,40 @@ func desiredBatchFromEtcdSnapshot(prefix string, response *clientv3.GetResponse)
 		Mutations:       mutations,
 		RequiredDomains: []generation.Domain{generation.DomainHTTP, generation.DomainStream},
 	}, nil
+}
+
+func canonicalEtcdResourceValue(bucket, id string, modifiedIndex int64, value []byte) ([]byte, error) {
+	if bucket != "consumers" {
+		return cloneEtcdValue(value), nil
+	}
+	if modifiedIndex <= 0 {
+		return nil, errors.New("etcd consumer requires a positive modified revision")
+	}
+	var document map[string]json.RawMessage
+	if err := json.Unmarshal(value, &document); err != nil {
+		return nil, fmt.Errorf("decode etcd consumer %q: %w", id, err)
+	}
+	if document == nil {
+		return nil, fmt.Errorf("decode etcd consumer %q: object is required", id)
+	}
+	canonicalID, err := json.Marshal(id)
+	if err != nil {
+		return nil, fmt.Errorf("encode etcd consumer id %q: %w", id, err)
+	}
+	canonicalModifiedIndex, err := json.Marshal(modifiedIndex)
+	if err != nil {
+		return nil, fmt.Errorf("encode etcd consumer modified revision %q: %w", id, err)
+	}
+	document["id"] = canonicalID
+	document["modifiedIndex"] = canonicalModifiedIndex
+	for _, field := range []string{"consumer_name", "auth_conf", "credential_id", "custom_id"} {
+		delete(document, field)
+	}
+	encoded, err := json.Marshal(document)
+	if err != nil {
+		return nil, fmt.Errorf("encode etcd consumer %q: %w", id, err)
+	}
+	return encoded, nil
 }
 
 func desiredBatchFromEtcdWatch(prefix string, response clientv3.WatchResponse) (generation.DesiredBatch, error) {

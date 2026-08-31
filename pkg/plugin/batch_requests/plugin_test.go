@@ -38,29 +38,44 @@ func TestMetadataSchemaRejectsNonpositiveLimits(t *testing.T) {
 	if p.GetMetadataSchema() == "" {
 		t.Fatal("metadata schema is empty")
 	}
+	var metadataSchemaDocument struct {
+		Properties map[string]json.RawMessage `json:"properties"`
+	}
+	if err := json.Unmarshal([]byte(p.GetMetadataSchema()), &metadataSchemaDocument); err != nil {
+		t.Fatalf("decode metadata schema: %v", err)
+	}
+	if _, ok := metadataSchemaDocument.Properties["max_body_size"]; !ok {
+		t.Fatal("metadata schema is missing max_body_size")
+	}
+	if _, ok := metadataSchemaDocument.Properties["max_pipeline_items"]; !ok {
+		t.Fatal("metadata schema is missing max_pipeline_items")
+	}
+	if got := len(metadataSchemaDocument.Properties); got != 2 {
+		t.Fatalf("metadata property count = %d, want only max_body_size and max_pipeline_items", got)
+	}
 
 	for _, metadata := range []map[string]any{
 		{"max_body_size": 0},
 		{"max_pipeline_items": 0},
-		{"max_concurrency": 0},
-		{"max_response_body_size": 0},
-		{"max_timeout": 60001},
 	} {
 		if err := util.Validate(metadata, p.GetMetadataSchema()); err == nil {
 			t.Fatalf("metadata %#v validated, want positive-limit rejection", metadata)
 		}
 	}
-	if got := applyLimitDefaults(Limits{}).MaxTimeout; got != defaultMaxTimeout {
+	if got := applyLimitDefaults(Limits{}).maxTimeout; got != defaultMaxTimeout {
 		t.Fatalf("default max timeout = %d, want %d", got, defaultMaxTimeout)
 	}
-	if got := applyLimitDefaults(Limits{MaxTimeout: hardMaxTimeout + 1}).MaxTimeout; got != hardMaxTimeout {
+	if got := applyLimitDefaults(Limits{}).MaxPipelineItems; got != 1000 {
+		t.Fatalf("default max pipeline items = %d, want APISIX default 1000", got)
+	}
+	if got := applyLimitDefaults(Limits{maxTimeout: hardMaxTimeout + 1}).maxTimeout; got != hardMaxTimeout {
 		t.Fatalf("capped max timeout = %d, want %d", got, hardMaxTimeout)
 	}
 }
 
 func TestHandlerRejectsNestedBatchBeforeConcurrencyLease(t *testing.T) {
 	mux := http.NewServeMux()
-	handler := NewHandlerWithLimits(mux, Limits{MaxConcurrency: 1})
+	handler := NewHandlerWithLimits(mux, Limits{maxConcurrency: 1})
 	// The handler is intentionally mounted at a non-default URI. The marker
 	// must follow the dispatched request rather than rely on DefaultURI.
 	mux.Handle("/custom/batch", handler)
@@ -103,7 +118,7 @@ func TestHandlerEnforcesTimeoutBounds(t *testing.T) {
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})
-	handler := NewHandlerWithLimits(dispatcher, Limits{MaxTimeout: maxTimeout})
+	handler := NewHandlerWithLimits(dispatcher, Limits{maxTimeout: maxTimeout})
 
 	for _, body := range []string{
 		`{"pipeline":[{"path":"/omitted"}]}`,
@@ -131,7 +146,7 @@ func TestHandlerEnforcesTimeoutBounds(t *testing.T) {
 }
 
 func TestHandlerRejectsTimeoutAboveConfiguredMaximum(t *testing.T) {
-	handler := NewHandlerWithLimits(http.NotFoundHandler(), Limits{MaxTimeout: 25})
+	handler := NewHandlerWithLimits(http.NotFoundHandler(), Limits{maxTimeout: 25})
 	for _, timeout := range []string{"26", "99999999999999999999999999999999"} {
 		res := httptest.NewRecorder()
 		handler.ServeHTTP(res, httptest.NewRequest(http.MethodPost, DefaultURI,
@@ -289,7 +304,7 @@ func TestHandlerBoundsCancellationIgnoringWorkers(t *testing.T) {
 		<-release
 		active.Add(-1)
 	})
-	handler := NewHandlerWithLimits(dispatcher, Limits{MaxConcurrency: 2})
+	handler := NewHandlerWithLimits(dispatcher, Limits{maxConcurrency: 2})
 	req := httptest.NewRequest(http.MethodPost, DefaultURI, strings.NewReader(`{
 		"timeout": 20,
 		"pipeline": [{"path":"/1"},{"path":"/2"},{"path":"/3"},{"path":"/4"}]
@@ -332,7 +347,7 @@ func TestHandlerBoundsPipelineResponseBody(t *testing.T) {
 	dispatcher := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, "123456")
 	})
-	handler := NewHandlerWithLimits(dispatcher, Limits{MaxResponseBodySize: 5})
+	handler := NewHandlerWithLimits(dispatcher, Limits{maxResponseBodySize: 5})
 	req := httptest.NewRequest(http.MethodPost, DefaultURI, strings.NewReader(`{
 		"pipeline": [{"path":"/large"},{"path":"/large-again"}]
 	}`))
@@ -455,7 +470,7 @@ func TestHandlerRetainsPipelineResponseAtExactLimit(t *testing.T) {
 		w.Header().Set("X-Exact", "yes")
 		_, _ = io.WriteString(w, "12345")
 	})
-	handler := NewHandlerWithLimits(dispatcher, Limits{MaxResponseBodySize: 5})
+	handler := NewHandlerWithLimits(dispatcher, Limits{maxResponseBodySize: 5})
 	request := httptest.NewRequest(
 		http.MethodPost,
 		DefaultURI,
@@ -470,23 +485,15 @@ func TestHandlerRetainsPipelineResponseAtExactLimit(t *testing.T) {
 	}
 }
 
-func TestHandlerDefaultsToTwentyPipelineItems(t *testing.T) {
-	items := make([]PipelineRequest, 21)
-	for index := range items {
-		items[index].Path = fmt.Sprintf("/%d", index)
-	}
-	body, err := json.Marshal(Request{Pipeline: items})
-	if err != nil {
-		t.Fatalf("marshal request: %v", err)
-	}
+func TestHandlerDefaultsToAPISIXPipelineLimit(t *testing.T) {
 	response := httptest.NewRecorder()
 	NewHandlerWithLimits(http.NewServeMux(), Limits{}).ServeHTTP(
 		response,
-		httptest.NewRequest(http.MethodPost, DefaultURI, bytes.NewReader(body)),
+		newBatchRequest(t, defaultMaxPipelineItems+1),
 	)
 
 	if response.Code != http.StatusBadRequest ||
-		!strings.Contains(response.Body.String(), "21 exceeds the maximum of 20") {
+		!strings.Contains(response.Body.String(), "1001 exceeds the maximum of 1000") {
 		t.Fatalf("status=%d body=%q, want default item-limit rejection", response.Code, response.Body.String())
 	}
 }
@@ -720,73 +727,6 @@ func TestPreparedGenerationsRetainBatchRequestLimits(t *testing.T) {
 	}
 	if got := calls.Load(); got != 2 {
 		t.Fatalf("dispatcher calls after N+1 three-item request = %d, want unchanged at 2", got)
-	}
-}
-
-func TestNewHandlerFromMetadataBindsMaxConcurrency(t *testing.T) {
-	view, err := runtime.NewMetadataView(map[string][]byte{
-		name: []byte(`{"max_concurrency":1}`),
-	})
-	if err != nil {
-		t.Fatalf("NewMetadataView() error = %v", err)
-	}
-
-	var calls atomic.Int32
-	firstEntered := make(chan struct{})
-	releaseFirst := make(chan struct{})
-	dispatcher := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		if calls.Add(1) == 1 {
-			close(firstEntered)
-			<-releaseFirst
-		}
-		w.WriteHeader(http.StatusNoContent)
-	})
-	handler, err := NewHandlerFromMetadata(dispatcher, view)
-	if err != nil {
-		t.Fatalf("NewHandlerFromMetadata() error = %v", err)
-	}
-
-	first := httptest.NewRequest(
-		http.MethodPost,
-		DefaultURI,
-		strings.NewReader(`{"timeout":1000,"pipeline":[{"path":"/first"}]}`),
-	)
-	firstResponse := httptest.NewRecorder()
-	firstServed := make(chan struct{})
-	go func() {
-		handler.ServeHTTP(firstResponse, first)
-		close(firstServed)
-	}()
-	select {
-	case <-firstEntered:
-	case <-time.After(time.Second):
-		t.Fatal("first dispatcher call did not enter")
-	}
-
-	second := httptest.NewRequest(
-		http.MethodPost,
-		DefaultURI,
-		strings.NewReader(`{"timeout":10,"pipeline":[{"path":"/second"}]}`),
-	)
-	secondResponse := httptest.NewRecorder()
-	handler.ServeHTTP(secondResponse, second)
-	secondResults := decodeAllPipelineResponses(t, secondResponse.Body.String())
-	if len(secondResults) != 1 || secondResults[0].Status != http.StatusGatewayTimeout {
-		t.Fatalf("second pipeline responses = %#v, want one timeout", secondResults)
-	}
-	if got := calls.Load(); got != 1 {
-		t.Fatalf("dispatcher calls = %d, want second request excluded by the one-worker limit", got)
-	}
-
-	close(releaseFirst)
-	select {
-	case <-firstServed:
-	case <-time.After(time.Second):
-		t.Fatal("first batch request did not finish after releasing its worker")
-	}
-	firstResults := decodeAllPipelineResponses(t, firstResponse.Body.String())
-	if len(firstResults) != 1 || firstResults[0].Status != http.StatusNoContent {
-		t.Fatalf("first pipeline responses = %#v, want one 204", firstResults)
 	}
 }
 
@@ -1344,8 +1284,8 @@ func TestDispatchPipelineRequestInvalidTargetReturnsBadRequest(t *testing.T) {
 
 	limits := applyLimitDefaults(Limits{})
 	tasks := runtime.NewRequestTaskGroup(outer.Context(), "request/batch-requests/test")
-	result, timedOut, err := newBatchDispatcher(dispatcher, limits.MaxConcurrency).dispatch(
-		outer, Request{}, item, time.Second, limits.MaxResponseBodySize, tasks,
+	result, timedOut, err := newBatchDispatcher(dispatcher, limits.maxConcurrency).dispatch(
+		outer, Request{}, item, time.Second, limits.maxResponseBodySize, tasks,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -1377,8 +1317,8 @@ func TestDispatchPipelineRequestTimeoutWhenHandlerIgnoringCancellation(t *testin
 	start := time.Now()
 	limits := applyLimitDefaults(Limits{})
 	tasks := runtime.NewRequestTaskGroup(outer.Context(), "request/batch-requests/test")
-	result, timedOut, err := newBatchDispatcher(dispatcher, limits.MaxConcurrency).dispatch(
-		outer, Request{}, item, 20*time.Millisecond, limits.MaxResponseBodySize, tasks,
+	result, timedOut, err := newBatchDispatcher(dispatcher, limits.maxConcurrency).dispatch(
+		outer, Request{}, item, 20*time.Millisecond, limits.maxResponseBodySize, tasks,
 	)
 	elapsed := time.Since(start)
 	if err != nil {

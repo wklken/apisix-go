@@ -33,7 +33,7 @@ const (
 	DefaultURI              = "/apisix/batch-requests"
 	defaultMaxBodySize      = 1024 * 1024
 	defaultMaxResponseSize  = 4 * 1024 * 1024
-	defaultMaxPipelineItems = 20
+	defaultMaxPipelineItems = 1000
 	defaultMaxConcurrency   = 8
 	defaultMaxTimeout       = 30000
 	hardMaxTimeout          = 60000
@@ -53,23 +53,7 @@ const metadataSchema = `
     "max_pipeline_items": {
       "type": "integer",
       "exclusiveMinimum": 0,
-      "default": 20
-    },
-    "max_concurrency": {
-      "type": "integer",
-      "exclusiveMinimum": 0,
-      "default": 8
-    },
-    "max_response_body_size": {
-      "type": "integer",
-      "exclusiveMinimum": 0,
-      "default": 4194304
-    },
-    "max_timeout": {
-      "type": "integer",
-      "minimum": 1,
-      "maximum": 60000,
-      "default": 30000
+      "default": 1000
     }
   }
 }
@@ -78,11 +62,12 @@ const metadataSchema = `
 type Config struct{}
 
 type Limits struct {
-	MaxBodySize         int64 `json:"max_body_size,omitempty"`
-	MaxResponseBodySize int64 `json:"max_response_body_size,omitempty"`
-	MaxPipelineItems    int   `json:"max_pipeline_items,omitempty"`
-	MaxConcurrency      int   `json:"max_concurrency,omitempty"`
-	MaxTimeout          int   `json:"max_timeout,omitempty"`
+	MaxBodySize      int64 `json:"max_body_size,omitempty"`
+	MaxPipelineItems int   `json:"max_pipeline_items,omitempty"`
+
+	maxResponseBodySize int64
+	maxConcurrency      int
+	maxTimeout          int
 }
 
 type Request struct {
@@ -196,7 +181,7 @@ func NewHandlerFromMetadata(dispatcher http.Handler, view runtime.MetadataView) 
 
 func NewHandlerWithLimits(dispatcher http.Handler, limits Limits) http.Handler {
 	limits = applyLimitDefaults(limits)
-	batchDispatcher := newBatchDispatcher(dispatcher, limits.MaxConcurrency)
+	batchDispatcher := newBatchDispatcher(dispatcher, limits.maxConcurrency)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		serveBatchRequest(batchDispatcher, limits, w, r)
 	})
@@ -274,18 +259,18 @@ func handleBatchRequest(
 		return nil, http.StatusBadRequest, fmt.Errorf("bad request body: %w", err)
 	}
 
-	timeoutMilliseconds := limits.MaxTimeout
+	timeoutMilliseconds := limits.maxTimeout
 	if req.Timeout != nil {
 		timeoutMilliseconds = *req.Timeout
 	}
-	// applyLimitDefaults caps MaxTimeout at hardMaxTimeout, so this conversion
+	// applyLimitDefaults caps maxTimeout at hardMaxTimeout, so this conversion
 	// cannot overflow time.Duration.
 	timeout := time.Duration(timeoutMilliseconds) * time.Millisecond
 
 	responses := make([]PipelineResponse, 0, len(req.Pipeline))
 	for _, item := range req.Pipeline {
 		result, timedOut, err := dispatcher.dispatch(
-			r, req, item, timeout, limits.MaxResponseBodySize, tasks,
+			r, req, item, timeout, limits.maxResponseBodySize, tasks,
 		)
 		if err != nil {
 			if waitErr := tasks.Wait(); waitErr != nil {
@@ -367,8 +352,8 @@ func validateRequest(req Request, limits Limits) error {
 		if *req.Timeout < 1 {
 			return fmt.Errorf("timeout must be at least 1 millisecond")
 		}
-		if *req.Timeout > limits.MaxTimeout {
-			return fmt.Errorf("timeout must not exceed %d milliseconds", limits.MaxTimeout)
+		if *req.Timeout > limits.maxTimeout {
+			return fmt.Errorf("timeout must not exceed %d milliseconds", limits.maxTimeout)
 		}
 	}
 	if len(req.Pipeline) == 0 {
@@ -410,17 +395,17 @@ func applyLimitDefaults(limits Limits) Limits {
 	if limits.MaxPipelineItems <= 0 {
 		limits.MaxPipelineItems = defaultMaxPipelineItems
 	}
-	if limits.MaxResponseBodySize <= 0 {
-		limits.MaxResponseBodySize = defaultMaxResponseSize
+	if limits.maxResponseBodySize <= 0 {
+		limits.maxResponseBodySize = defaultMaxResponseSize
 	}
-	if limits.MaxConcurrency <= 0 {
-		limits.MaxConcurrency = defaultMaxConcurrency
+	if limits.maxConcurrency <= 0 {
+		limits.maxConcurrency = defaultMaxConcurrency
 	}
-	if limits.MaxTimeout <= 0 {
-		limits.MaxTimeout = defaultMaxTimeout
+	if limits.maxTimeout <= 0 {
+		limits.maxTimeout = defaultMaxTimeout
 	}
-	if limits.MaxTimeout > hardMaxTimeout {
-		limits.MaxTimeout = hardMaxTimeout
+	if limits.maxTimeout > hardMaxTimeout {
+		limits.maxTimeout = hardMaxTimeout
 	}
 	return limits
 }

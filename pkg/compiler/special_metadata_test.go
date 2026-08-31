@@ -80,8 +80,8 @@ func TestSpecialMetadataLastGoodAndFailClosedStayInCompiler(t *testing.T) {
 		{
 			name:    "batch-requests",
 			factory: "batch-requests",
-			invalid: `{"max_concurrency":0}`,
-			valid:   `{"max_concurrency":8,"max_timeout":30000}`,
+			invalid: `{"max_pipeline_items":0}`,
+			valid:   `{"max_pipeline_items":8}`,
 		},
 		{name: "error-log-logger", factory: "error-log-logger", invalid: `{"level":"WARN"}`, valid: `{}`},
 		{

@@ -1,13 +1,5 @@
-source:
-  repository: https://github.com/apache/apisix
-  commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-  file: t/plugin/authz-casbin.t
-  tests: 21
-
 cases:
   - name: file-schema-sanity
-    source:
-      tests: [1]
     files:
       - path: authz-casbin/model.conf
         body: &model |-
@@ -58,8 +50,6 @@ cases:
           body: {equals: hello world}
 
   - name: missing-username-schema-diagnostic
-    source:
-      tests: [2]
     config:
       routes:
         - id: authz-casbin-missing-username
@@ -83,8 +73,6 @@ cases:
           logs: {matches: 'validate plugin authz-casbin config:.*username'}
 
   - name: metadata-policy-lifecycle
-    source:
-      tests: [3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
     config:
       plugin_metadata:
         - id: authz-casbin
@@ -207,8 +195,6 @@ cases:
           body: {equals: hello world}
 
   - name: model-and-policy-files
-    source:
-      tests: [13, 14, 15]
     files:
       - path: authz-casbin/model.conf
         body: *model
@@ -250,8 +236,6 @@ cases:
           body: {matches: 'Access Denied'}
 
   - name: inline-model-and-policy
-    source:
-      tests: [16, 17, 18]
     config:
       routes:
         - id: authz-casbin-inline
@@ -288,8 +272,6 @@ cases:
           body: {matches: 'Access Denied'}
 
   - name: disabled-plugin-passes-through
-    source:
-      tests: [19]
     config:
       routes:
         - id: authz-casbin-disabled
@@ -314,8 +296,6 @@ cases:
           body: {equals: hello world}
 
   - name: route-local-policy-shapes-and-cache-sequence
-    source:
-      tests: [20, 21]
     config:
       routes:
         - id: authz-casbin-policy-shape-1

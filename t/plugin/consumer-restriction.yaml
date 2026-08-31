@@ -1,9 +1,5 @@
-sources:
-  - {repository: https://github.com/apache/apisix, commit: 9ef2ecab67f652d38365049613610ef649bb4ad0, file: t/plugin/consumer-restriction.t, tests: 53}
-  - {repository: https://github.com/apache/apisix, commit: 9ef2ecab67f652d38365049613610ef649bb4ad0, file: t/plugin/consumer-restriction2.t, tests: 18}
 cases:
   - name: schema-default-whitelist
-    source: {file: t/plugin/consumer-restriction.t, tests: [1]}
     config:
       consumers:
         - {username: jack1, plugins: {basic-auth: {username: jack2019, password: '123456'}}}
@@ -21,7 +17,6 @@ cases:
       - {name: jack2-is-accepted, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMjA6MTIzNDU2'}}, output: {status: 200, body: {equals: hello world}}}
 
   - name: schema-accepts-blacklist-whitelist-and-methods
-    source: {file: t/plugin/consumer-restriction.t, tests: [2]}
     config:
       consumers:
         - {username: jack1, plugins: {basic-auth: {username: jack2019, password: '123456'}}}
@@ -39,7 +34,6 @@ cases:
       - {name: blacklist-wins, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMjA6MTIzNDU2'}}, output: {status: 403, body: {equals: '{"message":"The consumer_name is forbidden."}'}}}
 
   - name: basic-auth-whitelist
-    source: {file: t/plugin/consumer-restriction.t, tests: [3, 4, 5, 6, 7, 8]}
     config:
       consumers:
         - {username: jack1, plugins: {basic-auth: {username: jack2019, password: '123456'}}}
@@ -56,7 +50,6 @@ cases:
       - {name: jack2-is-rejected, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMjA6MTIzNDU2'}}, output: {status: 403, body: {equals: '{"message":"The consumer_name is forbidden."}'}}}
 
   - name: basic-auth-blacklist
-    source: {file: t/plugin/consumer-restriction.t, tests: [9, 10, 11, 12]}
     config:
       consumers:
         - {username: jack1, plugins: {basic-auth: {username: jack2019, password: '123456'}}}
@@ -73,7 +66,6 @@ cases:
       - {name: jack2-is-allowed, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMjA6MTIzNDU2'}}, output: {status: 200, body: {equals: hello world}}}
 
   - name: whitelist-without-authentication
-    source: {file: t/plugin/consumer-restriction.t, tests: [13, 14, 15, 16]}
     config:
       routes:
         - id: consumer-restriction-unauthenticated-whitelist
@@ -87,7 +79,6 @@ cases:
       - {name: jack2-header-does-not-authenticate, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMjA6MTIzNDU2'}}, output: {status: 401, body: {equals: '{"message":"The request is rejected, please check the consumer_name for this request"}'}}}
 
   - name: blacklist-without-authentication
-    source: {file: t/plugin/consumer-restriction.t, tests: [17, 18, 19, 20]}
     config:
       routes:
         - id: consumer-restriction-unauthenticated-blacklist
@@ -101,7 +92,6 @@ cases:
       - {name: jack2-header-does-not-authenticate, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMjA6MTIzNDU2'}}, output: {status: 401, body: {equals: '{"message":"The request is rejected, please check the consumer_name for this request"}'}}}
 
   - name: allowed-by-methods-rejects-get
-    source: {file: t/plugin/consumer-restriction.t, tests: [21, 22]}
     config:
       consumers: [{username: jack1, plugins: {basic-auth: {username: jack2019, password: '123456'}}}]
       routes:
@@ -114,7 +104,6 @@ cases:
       - {name: get-is-rejected, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMTk6MTIzNDU2'}}, output: {status: 403, body: {equals: '{"message":"The consumer_name is forbidden."}'}}}
 
   - name: allowed-by-methods-permits-get
-    source: {file: t/plugin/consumer-restriction.t, tests: [23, 24]}
     config:
       consumers: [{username: jack1, plugins: {basic-auth: {username: jack2019, password: '123456'}}}]
       routes:
@@ -127,7 +116,6 @@ cases:
       - {name: get-is-allowed, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMTk6MTIzNDU2'}}, output: {status: 200, body: {equals: hello world}}}
 
   - name: blacklist-precedes-allowed-by-methods
-    source: {file: t/plugin/consumer-restriction.t, tests: [25, 26, 27]}
     config:
       consumers:
         - {username: jack1, plugins: {basic-auth: {username: jack2019, password: '123456'}}}
@@ -143,7 +131,6 @@ cases:
       - {name: jack2-is-allowed, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMjA6MTIzNDU2'}}, output: {status: 200, body: {equals: hello world}}}
 
   - name: whitelist-precedes-allowed-by-methods
-    source: {file: t/plugin/consumer-restriction.t, tests: [28, 29, 30]}
     config:
       consumers:
         - {username: jack1, plugins: {basic-auth: {username: jack2019, password: '123456'}}}
@@ -159,7 +146,6 @@ cases:
       - {name: jack2-is-rejected, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMjA6MTIzNDU2'}}, output: {status: 403, body: {equals: '{"message":"The consumer_name is forbidden."}'}}}
 
   - name: removal-disables-consumer-restriction
-    source: {file: t/plugin/consumer-restriction.t, tests: [31, 32, 33, 34]}
     config:
       consumers:
         - {username: jack1, plugins: {basic-auth: {username: jack2019, password: '123456'}}}
@@ -189,7 +175,6 @@ cases:
       - {name: jack2-is-allowed-after-removal, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMjA6MTIzNDU2'}}, output: {status: 200, body: {equals: hello world}}}
 
   - name: consumer-plugin-whitelists-service-id
-    source: {file: t/plugin/consumer-restriction.t, tests: [35, 36, 37, 38]}
     config:
       consumers:
         - username: jack
@@ -218,7 +203,6 @@ cases:
         output: {status: 200, body: {equals: hello world}}
 
   - name: consumer-plugin-rejects-unlisted-service-id
-    source: {file: t/plugin/consumer-restriction.t, tests: [39, 40, 41]}
     config:
       consumers:
         - username: jack
@@ -247,7 +231,6 @@ cases:
         output: {status: 401, body: {equals: '{"message":"The service_id is forbidden."}'}}
 
   - name: consumer-plugin-blacklists-matching-service-id
-    source: {file: t/plugin/consumer-restriction.t, tests: [42, 43, 44]}
     config:
       consumers:
         - username: jack
@@ -276,7 +259,6 @@ cases:
         output: {status: 401, body: {equals: '{"message":"The service_id is forbidden."}'}}
 
   - name: consumer-plugin-allows-unlisted-service-id
-    source: {file: t/plugin/consumer-restriction.t, tests: [45, 46]}
     config:
       consumers:
         - username: jack
@@ -305,7 +287,6 @@ cases:
         output: {status: 200, body: {equals: hello world}}
 
   - name: consumer-plugin-route-id-update-and-cleans-up-resources
-    source: {file: t/plugin/consumer-restriction.t, tests: [47, 48, 49, 50, 51, 52, 53]}
     config:
       consumers:
         - username: jack
@@ -371,7 +352,6 @@ cases:
         output: {status: 401, body: {equals: '{"message":"The route_id is forbidden."}'}}
 
   - name: consumer-group-whitelist
-    source: {file: t/plugin/consumer-restriction2.t, tests: [1, 2, 3, 4, 5, 6, 7, 8, 9]}
     config:
       consumer_groups:
         - {id: group1, plugins: {}}
@@ -392,7 +372,6 @@ cases:
       - {name: group2-is-rejected, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMjA6MTIzNDU2'}}, output: {status: 403, body: {equals: '{"message":"The consumer_group_id is forbidden."}'}}}
 
   - name: consumer-group-blacklist
-    source: {file: t/plugin/consumer-restriction2.t, tests: [10, 11, 12, 13, 14]}
     config:
       consumer_groups:
         - {id: group1, plugins: {}}
@@ -414,7 +393,6 @@ cases:
       - {name: consumer-without-group-is-rejected, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMjE6MTIzNDU2'}}, output: {status: 401, body: {equals: '{"message":"The request is rejected, please check the consumer_group_id for this request"}'}}}
 
   - name: service-id-blacklist-without-identity
-    source: {file: t/plugin/consumer-restriction2.t, tests: [15, 16]}
     config:
       routes:
         - id: consumer-restriction-service-blacklist-no-identity
@@ -426,7 +404,6 @@ cases:
       - {name: missing-service-id-is-rejected, input: {method: GET, path: /hello}, output: {status: 401, body: {equals: '{"message":"The request is rejected, please check the service_id for this request"}'}}}
 
   - name: service-id-whitelist-without-identity
-    source: {file: t/plugin/consumer-restriction2.t, tests: [17, 18]}
     config:
       routes:
         - id: consumer-restriction-service-whitelist-no-identity

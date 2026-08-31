@@ -1,14 +1,5 @@
-sources:
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/sls-logger.t
-    tests: 17
-
 cases:
   - name: official-schema-is-accepted-and-delivers
-    source:
-      file: t/plugin/sls-logger.t
-      tests: [1]
     config:
       routes:
         - id: sls-schema-valid
@@ -45,9 +36,6 @@ cases:
         wait: 1s
 
   - name: missing-access-key-secret-is-rejected
-    source:
-      file: t/plugin/sls-logger.t
-      tests: [2]
     config:
       routes:
         - id: sls-missing-secret
@@ -76,9 +64,6 @@ cases:
           logs: {matches: "validate plugin sls-logger config:.*missing properties: 'access_key_secret'"}
 
   - name: string-timeout-is-rejected
-    source:
-      file: t/plugin/sls-logger.t
-      tests: [3]
     config:
       routes:
         - id: sls-string-timeout
@@ -109,9 +94,6 @@ cases:
           logs: {matches: 'validate plugin sls-logger config:.*timeout.*expected integer.*got string'}
 
   - name: route-plugin-configuration-is-live
-    source:
-      file: t/plugin/sls-logger.t
-      tests: [4]
     config:
       routes:
         - id: sls-route-setup
@@ -147,9 +129,6 @@ cases:
         wait: 1s
 
   - name: access-request-produces-default-log
-    source:
-      file: t/plugin/sls-logger.t
-      tests: [5]
     config:
       routes:
         - id: sls-access
@@ -183,9 +162,6 @@ cases:
         wait: 1s
 
   - name: batch-combines-rfc5424-frames-in-order
-    source:
-      file: t/plugin/sls-logger.t
-      tests: [6]
     config:
       routes:
         - id: sls-combine
@@ -232,9 +208,6 @@ cases:
         wait: 1s
 
   - name: rfc5424-log-carries-subsecond-timestamp
-    source:
-      file: t/plugin/sls-logger.t
-      tests: [7]
     config:
       routes:
         - id: sls-millisecond
@@ -269,9 +242,6 @@ cases:
         wait: 1s
 
   - name: metadata-log-format-setup-is-effective
-    source:
-      file: t/plugin/sls-logger.t
-      tests: [8]
     config:
       plugin_metadata:
         - id: sls-logger
@@ -308,9 +278,6 @@ cases:
         wait: 1s
 
   - name: metadata-log-format-is-used-on-access
-    source:
-      file: t/plugin/sls-logger.t
-      tests: [9]
     config:
       plugin_metadata:
         - id: sls-logger
@@ -348,9 +315,6 @@ cases:
         wait: 1s
 
   - name: deleting-route-removes-live-plugin-chain
-    source:
-      file: t/plugin/sls-logger.t
-      tests: [10]
     config:
       routes:
         - id: sls-route-delete
@@ -417,9 +381,6 @@ cases:
         wait: 1s
 
   - name: access-key-secret-is-encrypted-at-rest
-    source:
-      file: t/plugin/sls-logger.t
-      tests: [11]
     runtime:
       apisix:
         data_encryption:
@@ -460,9 +421,6 @@ cases:
         output: {status: 200, body: {equals: encrypted}}
         wait: 1s
   - name: route-log-format-configuration-is-effective
-    source:
-      file: t/plugin/sls-logger.t
-      tests: [12]
     config:
       routes:
         - id: sls-route-format-setup
@@ -497,9 +455,6 @@ cases:
         wait: 1s
 
   - name: route-log-format-is-used-on-access
-    source:
-      file: t/plugin/sls-logger.t
-      tests: [13]
     config:
       routes:
         - id: sls-route-format-access
@@ -535,9 +490,6 @@ cases:
         wait: 1s
 
   - name: request-body-is-collected
-    source:
-      file: t/plugin/sls-logger.t
-      tests: [14]
     config:
       routes:
         - id: sls-request-body
@@ -576,9 +528,6 @@ cases:
         wait: 1s
 
   - name: response-body-is-collected
-    source:
-      file: t/plugin/sls-logger.t
-      tests: [15]
     config:
       routes:
         - id: sls-response-body
@@ -617,9 +566,6 @@ cases:
         wait: 1s
 
   - name: invalid-plugin-metadata-is-rejected
-    source:
-      file: t/plugin/sls-logger.t
-      tests: [16]
     config:
       plugin_metadata:
         - id: sls-logger
@@ -653,9 +599,6 @@ cases:
           logs: {matches: 'validate plugin sls-logger metadata:.*log_format.*expected object'}
 
   - name: correct-plugin-metadata-is-accepted
-    source:
-      file: t/plugin/sls-logger.t
-      tests: [17]
     config:
       plugin_metadata:
         - id: sls-logger

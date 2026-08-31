@@ -1,21 +1,5 @@
-sources:
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/log-rotate.t
-    tests: 4
-    test_numbers: [1, 2, 3, 5]
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/log-rotate2.t
-    tests: 5
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/log-rotate3.t
-    tests: 6
-
 cases:
   - name: interval-rotates-access-and-error-logs
-    source: {file: t/plugin/log-rotate.t, tests: [1]}
     runtime:
       plugins: [log-rotate, file-logger]
       plugin_attr:
@@ -55,7 +39,6 @@ cases:
         body: {equals: ""}
 
   - name: current-log-remains-before-interval
-    source: {file: t/plugin/log-rotate.t, tests: [2]}
     runtime:
       plugins: [log-rotate, file-logger]
       plugin_attr:
@@ -85,7 +68,6 @@ cases:
         body: {matches: '(?s)^current marker\n.*"path":"/current".*$'}
 
   - name: concurrent-requests-share-one-rotator
-    source: {file: t/plugin/log-rotate.t, tests: [3]}
     runtime:
       plugins: [log-rotate, file-logger]
       plugin_attr:
@@ -126,7 +108,6 @@ cases:
         body: {equals: ""}
 
   - name: uncompressed-history-does-not-change-without-a-tick
-    source: {file: t/plugin/log-rotate.t, tests: [5]}
     runtime:
       plugins: [log-rotate, file-logger]
       plugin_attr:
@@ -160,7 +141,6 @@ cases:
         body: {matches: '(?s)^current access\n.*"path":"/stable".*$'}
 
   - name: interval-rotation-compresses-history
-    source: {file: t/plugin/log-rotate2.t, tests: [1]}
     runtime:
       plugins: [log-rotate, file-logger]
       plugin_attr:
@@ -200,7 +180,6 @@ cases:
         body: {equals: ""}
 
   - name: compression-enabled-current-log-remains-writable
-    source: {file: t/plugin/log-rotate2.t, tests: [2]}
     runtime:
       plugins: [log-rotate, file-logger]
       plugin_attr:
@@ -230,7 +209,6 @@ cases:
         body: {matches: '(?s)^compressed-mode current marker\n.*"path":"/compress-current".*$'}
 
   - name: existing-compressed-history-remains-stable
-    source: {file: t/plugin/log-rotate2.t, tests: [3]}
     runtime:
       plugins: [log-rotate, file-logger]
       plugin_attr:
@@ -267,7 +245,6 @@ cases:
         body: {matches: '"path":"/compress-stable"'}
 
   - name: first-rotation-time-aligns-with-hour-boundary
-    source: {file: t/plugin/log-rotate2.t, tests: [4]}
     runtime:
       plugins: [log-rotate, file-logger]
       plugin_attr:
@@ -297,7 +274,6 @@ cases:
         body: {matches: '(?s)^not yet at aligned boundary\n.*"path":"/align".*$'}
 
   - name: max-kept-prunes-compressed-history
-    source: {file: t/plugin/log-rotate2.t, tests: [5]}
     runtime:
       plugins: [log-rotate, file-logger]
       plugin_attr:
@@ -333,7 +309,6 @@ cases:
         body: {matches: '"path":"/compress-prune"'}
 
   - name: max-size-rotates-only-file-over-threshold
-    source: {file: t/plugin/log-rotate3.t, tests: [1]}
     runtime:
       plugins: [log-rotate, file-logger]
       plugin_attr:
@@ -366,7 +341,6 @@ cases:
         body: {equals: ""}
 
   - name: max-size-current-log-below-threshold
-    source: {file: t/plugin/log-rotate3.t, tests: [2]}
     runtime:
       plugins: [log-rotate, file-logger]
       plugin_attr:
@@ -399,7 +373,6 @@ cases:
         body: {equals: "small\n"}
 
   - name: max-size-history-file-remains-stable
-    source: {file: t/plugin/log-rotate3.t, tests: [3]}
     runtime:
       plugins: [log-rotate, file-logger]
       plugin_attr:
@@ -432,7 +405,6 @@ cases:
         body: {matches: '"path":"/max-size-stable"'}
 
   - name: custom-log-names-compress-and-prune
-    source: {file: t/plugin/log-rotate3.t, tests: [4]}
     runtime:
       plugins: [log-rotate, file-logger]
       nginx_config:
@@ -475,7 +447,6 @@ cases:
         body: {equals: ""}
 
   - name: max-kept-zero-retains-only-current-log-files
-    source: {file: t/plugin/log-rotate3.t, tests: [5]}
     runtime:
       plugins: [log-rotate, file-logger]
       nginx_config:
@@ -514,7 +485,6 @@ cases:
         body: {equals: ""}
 
   - name: disabled-access-log-is-not-rotated
-    source: {file: t/plugin/log-rotate3.t, tests: [6]}
     runtime:
       plugins: [log-rotate, file-logger]
       nginx_config:

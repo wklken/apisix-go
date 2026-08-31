@@ -1,13 +1,5 @@
-source:
-  repository: https://github.com/apache/apisix
-  commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-  file: t/plugin/proxy-control.t
-  tests: 4
-
 cases:
   - name: request-buffering-disabled
-    source:
-      tests: [1, 2]
     config:
       routes:
         - id: proxy-control-disabled
@@ -40,8 +32,6 @@ cases:
         equals: hello world
 
   - name: request-buffering-enabled
-    source:
-      tests: [3, 4]
     config:
       routes:
         - id: proxy-control-enabled

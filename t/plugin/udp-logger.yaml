@@ -1,8 +1,5 @@
 cases:
     - name: valid-route-emits-udp-log
-      source:
-        file: t/plugin/udp-logger.t
-        tests: [1, 4, 5]
       config:
         routes:
             - id: udp-logger-valid-route
@@ -65,9 +62,6 @@ cases:
           wait: 1s
 
     - name: missing-host-is-rejected
-      source:
-        file: t/plugin/udp-logger.t
-        tests: [2]
       config:
         routes:
             - id: udp-logger-missing-host
@@ -84,9 +78,6 @@ cases:
         status: 404
 
     - name: string-timeout-is-rejected
-      source:
-        file: t/plugin/udp-logger.t
-        tests: [3]
       config:
         routes:
             - id: udp-logger-string-timeout
@@ -105,9 +96,6 @@ cases:
         status: 404
 
     - name: failed-udp-send-keeps-proxy-response
-      source:
-        file: t/plugin/udp-logger.t
-        tests: [6]
       config:
         routes:
             - id: udp-logger-unreachable-sink
@@ -141,9 +129,6 @@ cases:
           wait: 1s
 
     - name: live-update-switches-udp-destination
-      source:
-        file: t/plugin/udp-logger.t
-        tests: [7]
       config:
         routes:
             - id: udp-logger-live-update
@@ -275,9 +260,6 @@ cases:
           wait: 1s
 
     - name: metadata-string-log-format-is-rejected
-      source:
-        file: t/plugin/udp-logger.t
-        tests: [8]
       config:
         plugin_metadata:
             - id: udp-logger
@@ -298,9 +280,6 @@ cases:
         status: 404
 
     - name: metadata-custom-log-format-is-delivered
-      source:
-        file: t/plugin/udp-logger.t
-        tests: [9, 10]
       config:
         plugin_metadata:
             - id: udp-logger
@@ -354,9 +333,6 @@ cases:
           wait: 1s
 
     - name: changed-metadata-log-format-is-delivered
-      source:
-        file: t/plugin/udp-logger.t
-        tests: [11, 12]
       config:
         plugin_metadata:
             - id: udp-logger
@@ -410,9 +386,6 @@ cases:
           wait: 1s
 
     - name: include-request-body-is-logged-and-forwarded
-      source:
-        file: t/plugin/udp-logger.t
-        tests: [13]
       config:
         routes:
             - id: udp-logger-request-body
@@ -485,9 +458,6 @@ cases:
           wait: 1s
 
     - name: include-response-body-is-logged-and-preserved
-      source:
-        file: t/plugin/udp-logger.t
-        tests: [14]
       config:
         routes:
             - id: udp-logger-response-body
@@ -558,8 +528,3 @@ cases:
                 equals: "hello world\n"
             status: 200
           wait: 1s
-sources:
-    - repository: https://github.com/apache/apisix
-      commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-      file: t/plugin/udp-logger.t
-      tests: 14

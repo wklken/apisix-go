@@ -1,21 +1,5 @@
-sources:
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/batch-requests-grpc.t
-    tests: 5
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/batch-requests.t
-    tests: 29
-    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 24, 25, 26, 27, 28, 29, 30]
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/batch-requests2.t
-    tests: 11
-
 cases:
   - name: public-api-and-request-merging
-    source: {file: t/plugin/batch-requests.t, tests: [1, 2]}
     runtime: {plugins: [batch-requests]}
     config:
       routes:
@@ -92,7 +76,6 @@ cases:
             matches: '"status":200.*"body":"B".*"status":201.*"body":"C".*"status":202.*"body":"D"'
 
   - name: request-schema-validation
-    source: {file: t/plugin/batch-requests.t, tests: [3, 4, 8, 9, 10, 11, 12, 13, 14, 24, 26, 29]}
     runtime: {plugins: [batch-requests]}
     config: {routes: []}
     steps:
@@ -137,7 +120,6 @@ cases:
         output: {status: 400, body: {matches: 'pipeline\[0\]\.path is required'}}
 
   - name: different-response-times
-    source: {file: t/plugin/batch-requests.t, tests: [5]}
     runtime: {plugins: [batch-requests]}
     config:
       routes:
@@ -159,7 +141,6 @@ cases:
           body: {matches: '"status":200.*"status":201.*"status":202'}
 
   - name: last-request-timeout
-    source: {file: t/plugin/batch-requests.t, tests: [6]}
     runtime: {plugins: [batch-requests]}
     config:
       routes:
@@ -195,7 +176,6 @@ cases:
           body: {matches: '^\[\{"status":504,"reason":"Gateway Timeout".*"body":"intentional"\},\{"status":204,"reason":"No Content".*\}\]\n?$'}
 
   - name: first-request-timeout-stops-pipeline
-    source: {file: t/plugin/batch-requests.t, tests: [7]}
     runtime: {plugins: [batch-requests]}
     config:
       routes:
@@ -219,7 +199,6 @@ cases:
           body: {matches: '^\[\{"status":504,"reason":"upstream timeout"\}\]\n?$'}
 
   - name: streamed-client-body-and-header-copy
-    source: {file: t/plugin/batch-requests.t, tests: [15, 16]}
     runtime: {plugins: [batch-requests]}
     config:
       routes:
@@ -285,7 +264,6 @@ cases:
           body: {matches: 'request-cookies-b.*request-header-b.*request-cookies-c.*request-header-c.*request-cookies-d.*request-header-d'}
 
   - name: default-body-limit
-    source: {file: t/plugin/batch-requests.t, tests: [17, 18]}
     runtime: {plugins: [batch-requests]}
     config: {routes: []}
     steps:
@@ -306,7 +284,6 @@ cases:
         output: *too_large
 
   - name: metadata-body-limit
-    source: {file: t/plugin/batch-requests.t, tests: [19, 20, 21, 22]}
     runtime: {plugins: [batch-requests]}
     config:
       plugin_metadata: [{id: batch-requests, max_body_size: 2048}]
@@ -346,7 +323,6 @@ cases:
         output: {status: 200, body: {matches: '"status":200.*"Base-Header":"base".*"X-Header1":"hello".*"X-Header2":"world".*"body":"A"'}}
 
   - name: pipeline-request-body
-    source: {file: t/plugin/batch-requests.t, tests: [25]}
     runtime: {plugins: [batch-requests]}
     config:
       routes:
@@ -366,7 +342,6 @@ cases:
         output: {status: 200, body: {matches: '"status":200.*"body":"hello"'}}
 
   - name: metadata-pipeline-limit
-    source: {file: t/plugin/batch-requests.t, tests: [27, 28]}
     runtime: {plugins: [batch-requests]}
     config:
       plugin_metadata: [{id: batch-requests, max_pipeline_items: 2}]
@@ -380,7 +355,6 @@ cases:
         output: {status: 400, body: {matches: 'too many pipeline requests, 3 exceeds the maximum of 2'}}
 
   - name: empty-metadata-restores-defaults
-    source: {file: t/plugin/batch-requests.t, tests: [30]}
     runtime: {plugins: [batch-requests]}
     config:
       plugin_metadata: [{id: batch-requests}]
@@ -389,7 +363,6 @@ cases:
     output: {status: 200, body: {matches: '"status":404'}}
 
   - name: custom-uri-replaces-default
-    source: {file: t/plugin/batch-requests2.t, tests: [1, 2]}
     runtime:
       plugins: [batch-requests]
       plugin_attr: {batch-requests: {uri: /foo/bar}}
@@ -401,7 +374,6 @@ cases:
     output: {status: 404}
 
   - name: custom-uri-serves-batches
-    source: {file: t/plugin/batch-requests2.t, tests: [3, 4]}
     runtime:
       plugins: [batch-requests]
       plugin_attr: {batch-requests: {uri: /foo/bar}}
@@ -423,7 +395,6 @@ cases:
         output: {status: 200, body: {matches: '"status":200.*"status":201.*"status":202'}}
 
   - name: unrelated-plugin-attr-keeps-default
-    source: {file: t/plugin/batch-requests2.t, tests: [5]}
     runtime:
       plugins: [batch-requests]
       plugin_attr: {x: {uri: /foo/bar}}
@@ -432,7 +403,6 @@ cases:
     output: {status: 200, body: {matches: '"status":404'}}
 
   - name: missing-uri-attr-keeps-default
-    source: {file: t/plugin/batch-requests2.t, tests: [6]}
     runtime:
       plugins: [batch-requests]
       plugin_attr: {batch-requests: {xyz: /foo/bar}}
@@ -441,7 +411,6 @@ cases:
     output: {status: 200, body: {matches: '"status":404'}}
 
   - name: real-ip-header-is-authoritative
-    source: {file: t/plugin/batch-requests2.t, tests: [7, 8, 9]}
     runtime: {plugins: [batch-requests]}
     config:
       routes:
@@ -473,7 +442,6 @@ cases:
         output: *real_ip_output
 
   - name: batch-response-content-type
-    source: {file: t/plugin/batch-requests2.t, tests: [10]}
     runtime: {plugins: [batch-requests]}
     config: {routes: []}
     input: {method: POST, path: /apisix/batch-requests, body: '{"pipeline":[{"path":"/missing","method":"PUT"}]}'}
@@ -483,7 +451,6 @@ cases:
       body: {matches: '"status":404'}
 
   - name: timed-out-subresponse-count
-    source: {file: t/plugin/batch-requests2.t, tests: [11]}
     runtime: {plugins: [batch-requests]}
     config:
       routes:
@@ -503,7 +470,6 @@ cases:
           body: {matches: '^\[\{"status":200.*"body":"ok"\},\{"status":504,"reason":"upstream timeout"\}\]\n?$'}
 
   - name: grpc-transcode-direct-and-batch
-    source: {file: t/plugin/batch-requests-grpc.t, tests: [1, 2, 3, 4, 5]}
     runtime: {plugins: [batch-requests, grpc-transcode]}
     config:
       protos:

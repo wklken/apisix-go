@@ -1,13 +1,5 @@
-source:
-  repository: https://github.com/apache/apisix
-  commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-  file: t/plugin/example.t
-  tests: 13
-
 cases:
   - name: valid-schema
-    source:
-      tests: [1, 10, 11]
     config:
       routes:
         - id: example-valid-schema
@@ -33,8 +25,6 @@ cases:
         equals: done
 
   - name: missing-required-property
-    source:
-      tests: [2]
     config:
       routes:
         - id: example-missing-i
@@ -53,8 +43,6 @@ cases:
         matches: "build route example-missing-i fail:.*missing properties: 'i'"
 
   - name: reject-number-below-minimum
-    source:
-      tests: [3]
     config:
       routes:
         - id: example-negative-i
@@ -74,8 +62,6 @@ cases:
         matches: 'build route example-negative-i fail:.*must be >= 0 but found -1'
 
   - name: reject-wrong-string-type
-    source:
-      tests: [4]
     config:
       routes:
         - id: example-wrong-string
@@ -95,8 +81,6 @@ cases:
         matches: 'build route example-wrong-string fail:.*expected string'
 
   - name: reject-empty-array
-    source:
-      tests: [5]
     config:
       routes:
         - id: example-empty-array
@@ -116,8 +100,6 @@ cases:
         matches: 'build route example-empty-array fail:.*minimum 1 items required'
 
   - name: load-and-filter-configured-plugin
-    source:
-      tests: [6, 7]
     runtime:
       plugins: [example-plugin]
     config:
@@ -136,8 +118,6 @@ cases:
     output: *success
 
   - name: route-and-body-filter-phases
-    source:
-      tests: [8, 9, 12, 13]
     runtime:
       plugins: [example-plugin]
     config:

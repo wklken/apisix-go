@@ -1,12 +1,5 @@
-source:
-  repository: https://github.com/apache/apisix
-  commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-  file: t/plugin/tencent-cloud-cls.t
-  tests: 22
-
 cases:
   - name: schema-valid-configuration
-    source: {file: t/plugin/tencent-cloud-cls.t, tests: [1]}
     config:
       routes:
         - id: cls-schema-valid
@@ -38,7 +31,6 @@ cases:
       - {name: valid-schema-installs-and-delivers, input: {path: /schema-valid}, output: {status: 200, body: {equals: done}}, wait: 1s}
 
   - name: schema-requires-secret-key
-    source: {file: t/plugin/tencent-cloud-cls.t, tests: [2]}
     config:
       routes:
         - id: cls-schema-missing-secret
@@ -56,7 +48,6 @@ cases:
       logs: {matches: 'validate plugin tencent-cloud-cls config:.*missing properties:.*secret_key'}
 
   - name: incorrect-server-route-configuration
-    source: {file: t/plugin/tencent-cloud-cls.t, tests: [3]}
     config:
       routes:
         - id: cls-incorrect-server-setup
@@ -89,7 +80,6 @@ cases:
         wait: 1s
 
   - name: incorrect-server-request
-    source: {file: t/plugin/tencent-cloud-cls.t, tests: [4]}
     config:
       routes:
         - id: cls-incorrect-server-request
@@ -122,7 +112,6 @@ cases:
         wait: 1s
 
   - name: add-plugin-route-configuration
-    source: {file: t/plugin/tencent-cloud-cls.t, tests: [5]}
     config:
       routes:
         - id: cls-add-plugin
@@ -145,7 +134,6 @@ cases:
       - {name: standalone-resource-enables-plugin, input: {path: /opentracing}, output: {status: 200, body: {equals: opentracing}}, wait: 1s}
 
   - name: access-local-cls-server
-    source: {file: t/plugin/tencent-cloud-cls.t, tests: [6]}
     config:
       routes:
         - id: cls-local-server
@@ -168,7 +156,6 @@ cases:
       - {name: request-is-proxied-and-log-is-delivered, input: {path: /opentracing}, output: {status: 200, body: {equals: opentracing}}, wait: 1s}
 
   - name: verify-single-log-request
-    source: {file: t/plugin/tencent-cloud-cls.t, tests: [7]}
     config:
       routes:
         - id: cls-single-log
@@ -196,7 +183,6 @@ cases:
       - {name: one-request-produces-one-cls-batch, input: {path: /opentracing}, output: {status: 200, body: {equals: opentracing}}, wait: 1s}
 
   - name: verify-cls-api-request
-    source: {file: t/plugin/tencent-cloud-cls.t, tests: [8]}
     config:
       routes:
         - id: cls-api-request
@@ -229,7 +215,6 @@ cases:
       - {name: cls-api-receives-protobuf-log-group, input: {path: /opentracing}, output: {status: 200, body: {equals: opentracing}}, wait: 1s}
 
   - name: plugin-metadata-log-format
-    source: {file: t/plugin/tencent-cloud-cls.t, tests: [9]}
     config:
       plugin_metadata:
         - id: tencent-cloud-cls
@@ -254,7 +239,6 @@ cases:
       - {name: standalone-metadata-is-consumed, input: {path: /opentracing}, output: {status: 200, body: {equals: opentracing}}, wait: 1s}
 
   - name: log-uses-metadata-format
-    source: {file: t/plugin/tencent-cloud-cls.t, tests: [10]}
     config:
       plugin_metadata:
         - id: tencent-cloud-cls
@@ -279,7 +263,6 @@ cases:
       - {name: metadata-fields-are-serialized, input: {path: /opentracing}, output: {status: 200, body: {equals: opentracing}}, wait: 1s}
 
   - name: delete-existing-route
-    source: {file: t/plugin/tencent-cloud-cls.t, tests: [11]}
     config:
       routes:
         - id: cls-delete-route
@@ -325,7 +308,6 @@ cases:
         output: {status: 404}
 
   - name: secret-key-is-encrypted-at-rest
-    source: {file: t/plugin/tencent-cloud-cls.t, tests: [12]}
     runtime:
       apisix:
         data_encryption:
@@ -359,7 +341,6 @@ cases:
     steps:
       - {name: encrypted-secret-is-decrypted-at-plugin-boundary, input: {path: /encrypted}, output: {status: 200, body: {equals: encrypted-ok}}, wait: 1s}
   - name: route-level-log-format
-    source: {file: t/plugin/tencent-cloud-cls.t, tests: [13]}
     config:
       routes:
         - id: cls-route-format
@@ -382,7 +363,6 @@ cases:
       - {name: route-log-format-is-accepted, input: {path: /opentracing}, output: {status: 200, body: {equals: opentracing}}, wait: 1s}
 
   - name: log-uses-route-format
-    source: {file: t/plugin/tencent-cloud-cls.t, tests: [14]}
     config:
       routes:
         - id: cls-route-format-values
@@ -405,7 +385,6 @@ cases:
       - {name: route-format-values-are-serialized, input: {path: /opentracing}, output: {status: 200, body: {equals: opentracing}}, wait: 1s}
 
   - name: resolver-failure-route-configuration
-    source: {file: t/plugin/tencent-cloud-cls.t, tests: [15]}
     config:
       routes:
         - id: cls-resolver-setup
@@ -435,7 +414,6 @@ cases:
         wait: 1s
 
   - name: resolver-failure-request
-    source: {file: t/plugin/tencent-cloud-cls.t, tests: [16]}
     config:
       routes:
         - id: cls-resolver-request
@@ -465,7 +443,6 @@ cases:
         wait: 1s
 
   - name: include-request-body-expression-match
-    source: {file: t/plugin/tencent-cloud-cls.t, tests: [17]}
     config:
       routes:
         - id: cls-request-body-match
@@ -490,7 +467,6 @@ cases:
       - {name: matching-expression-includes-request-body, input: {method: POST, path: '/opentracing?bar=bar', body: body-data}, output: {status: 200, body: {equals: opentracing}}, wait: 1s}
 
   - name: include-request-body-expression-mismatch
-    source: {file: t/plugin/tencent-cloud-cls.t, tests: [18]}
     config:
       routes:
         - id: cls-request-body-mismatch
@@ -515,7 +491,6 @@ cases:
       - {name: mismatching-expression-omits-request-body, input: {method: POST, path: '/opentracing?foo=bar', body: body-data}, output: {status: 200, body: {equals: opentracing}}, wait: 1s}
 
   - name: include-response-body-expression-match
-    source: {file: t/plugin/tencent-cloud-cls.t, tests: [19]}
     config:
       routes:
         - id: cls-response-body-match
@@ -540,7 +515,6 @@ cases:
       - {name: matching-expression-includes-response-body, input: {path: '/opentracing?bar=bar'}, output: {status: 200, body: {equals: opentracing}}, wait: 1s}
 
   - name: include-response-body-expression-mismatch
-    source: {file: t/plugin/tencent-cloud-cls.t, tests: [20]}
     config:
       routes:
         - id: cls-response-body-mismatch
@@ -565,7 +539,6 @@ cases:
       - {name: mismatching-expression-omits-response-body, input: {path: '/opentracing?foo=bar'}, output: {status: 200, body: {equals: opentracing}}, wait: 1s}
 
   - name: https-cls-route-configuration
-    source: {file: t/plugin/tencent-cloud-cls.t, tests: [21]}
     config:
       routes:
         - id: cls-https-setup
@@ -589,7 +562,6 @@ cases:
       - {name: https-configuration-delivers-over-tls, input: {path: /opentracing}, output: {status: 200, body: {equals: opentracing}}, wait: 1s}
 
   - name: access-https-cls-endpoint
-    source: {file: t/plugin/tencent-cloud-cls.t, tests: [22]}
     config:
       routes:
         - id: cls-https-request

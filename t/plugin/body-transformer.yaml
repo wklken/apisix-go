@@ -1,24 +1,5 @@
-sources:
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/body-transformer.t
-    tests: 18
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/body-transformer-multipart.t
-    tests: 2
-    test_numbers: [1, 2]
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/body-transformer2.t
-    tests: 1
-    test_numbers: [3]
-
 cases:
   - name: soap-json-proxy
-    source:
-      file: t/plugin/body-transformer.t
-      tests: [1]
     config:
       routes:
         - id: body-transformer-soap
@@ -82,9 +63,6 @@ cases:
         equals: '{"status":"200","currency":"EUR","population":46704314,"capital":"Madrid","name":"Spain"}'
 
   - name: json-to-json
-    source:
-      file: t/plugin/body-transformer.t
-      tests: [2]
     config:
       routes:
         - id: body-transformer-json
@@ -120,9 +98,6 @@ cases:
         equals: ok
 
   - name: wrong-xml-input-format
-    source:
-      file: t/plugin/body-transformer.t
-      tests: [3]
     config:
       routes:
         - id: body-transformer-wrong-xml
@@ -153,9 +128,6 @@ cases:
         matches: 'Error Parsing XML'
 
   - name: invalid-template-reference
-    source:
-      file: t/plugin/body-transformer.t
-      tests: [4]
     config:
       routes:
         - id: body-transformer-invalid-reference
@@ -183,9 +155,6 @@ cases:
         matches: "transform\\(\\): request template rendering:.*attempt to call global 'name' \\(a string value\\)"
 
   - name: request-from-query
-    source:
-      file: t/plugin/body-transformer.t
-      tests: [5]
     config:
       routes:
         - id: body-transformer-query
@@ -216,9 +185,6 @@ cases:
     output: *ok_output
 
   - name: html-escape
-    source:
-      file: t/plugin/body-transformer.t
-      tests: [6]
     variants:
       - name: escaped-expression
         config:
@@ -278,9 +244,6 @@ cases:
           status: 200
 
   - name: yaml-body
-    source:
-      file: t/plugin/body-transformer.t
-      tests: [7]
     config:
       routes:
         - id: body-transformer-yaml
@@ -314,9 +277,6 @@ cases:
     output: *ok_output
 
   - name: escape-json
-    source:
-      file: t/plugin/body-transformer.t
-      tests: [8]
     config:
       routes:
         - id: body-transformer-escape-json
@@ -347,9 +307,6 @@ cases:
     output: *ok_output
 
   - name: escape-xml
-    source:
-      file: t/plugin/body-transformer.t
-      tests: [9]
     config:
       routes:
         - id: body-transformer-escape-xml
@@ -380,9 +337,6 @@ cases:
     output: *ok_output
 
   - name: proxy-cache-cooperation
-    source:
-      file: t/plugin/body-transformer.t
-      tests: [10]
     config:
       routes:
         - id: body-transformer-cache
@@ -456,9 +410,6 @@ cases:
             equals: '{"result": "hello"}'
 
   - name: raw-response-body
-    source:
-      file: t/plugin/body-transformer.t
-      tests: [11]
     config:
       routes:
         - id: body-transformer-raw-response
@@ -487,9 +438,6 @@ cases:
         equals: '{"raw_body": "{\"result\": \"hello world\"}", "result": "hello world"}'
 
   - name: empty-xml-value
-    source:
-      file: t/plugin/body-transformer.t
-      tests: [12]
     config:
       routes:
         - id: body-transformer-empty-xml
@@ -517,9 +465,6 @@ cases:
         equals: '{"KOVKood":""}'
 
   - name: form-to-json
-    source:
-      file: t/plugin/body-transformer.t
-      tests: [13]
     config: &expression_config
       routes:
         - id: body-transformer-expression
@@ -544,9 +489,6 @@ cases:
     output: *ok_output
 
   - name: query-to-json
-    source:
-      file: t/plugin/body-transformer.t
-      tests: [14]
     config: *expression_config
     input:
       path: /foobar?name=hello&age=20
@@ -562,9 +504,6 @@ cases:
     output: *ok_output
 
   - name: base64-url-encoded-template
-    source:
-      file: t/plugin/body-transformer.t
-      tests: [15]
     config:
       routes:
         - id: body-transformer-base64
@@ -594,9 +533,6 @@ cases:
     output: *ok_output
 
   - name: plain-body-expression
-    source:
-      file: t/plugin/body-transformer.t
-      tests: [16]
     config:
       routes:
         - id: body-transformer-plain
@@ -629,9 +565,6 @@ cases:
         not_matches: no input format to parse
 
   - name: malformed-multipart
-    source:
-      file: t/plugin/body-transformer.t
-      tests: [17]
     config:
       routes:
         - id: body-transformer-malformed-multipart
@@ -661,9 +594,6 @@ cases:
         not_matches: '"level":"error"'
 
   - name: reserved-template-helpers
-    source:
-      file: t/plugin/body-transformer.t
-      tests: [18]
     config:
       routes:
         - id: body-transformer-reserved-helpers
@@ -699,8 +629,6 @@ cases:
         not_matches: '"level":"error"'
 
   - name: namespaced-xml-tree
-    source:
-      local_reason: post-target namespace-normalization regression; absent from the APISIX 3.17 compatibility commit
     config:
       routes:
         - id: body-transformer-namespaced-tree
@@ -739,8 +667,6 @@ cases:
             not_matches: '"(soapenv|ns2):'
 
   - name: namespace-layout-sweep
-    source:
-      local_reason: post-target namespace-layout regression; absent from the APISIX 3.17 compatibility commit
     config:
       routes:
         - id: body-transformer-namespace-sweep
@@ -795,9 +721,6 @@ cases:
             matches: '"f1z{{ITERATION}}":"v1".*"f32zzzz{{ITERATION}}":"v32"'
 
   - name: multipart-request-to-json
-    source:
-      file: t/plugin/body-transformer-multipart.t
-      tests: [1]
     config:
       routes:
         - id: body-transformer-multipart-request
@@ -841,9 +764,6 @@ cases:
         equals: ok
 
   - name: multipart-response-to-json
-    source:
-      file: t/plugin/body-transformer-multipart.t
-      tests: [2]
     config:
       routes:
         - id: body-transformer-multipart-response
@@ -884,9 +804,6 @@ cases:
         equals: '{"foo":"Larry world","bar":20}'
 
   - name: key-auth-failure-preserves-body-transformer-config
-    source:
-      file: t/plugin/body-transformer2.t
-      tests: [3]
     config:
       routes:
         - id: body-transformer-key-auth

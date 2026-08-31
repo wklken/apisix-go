@@ -1,16 +1,5 @@
-sources:
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/loki-logger.t
-    tests: 15
-    test_numbers: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/loki-logger2.t
-    tests: 1
 cases:
   - name: default-delivery-and-default-record
-    source: {file: t/plugin/loki-logger.t, tests: [2, 3, 4]}
     config:
       routes:
         - id: loki-default
@@ -37,7 +26,6 @@ cases:
     steps:
       - {name: real-upstream-and-loki-delivery, input: {path: /default, headers: {Test-Header: only-for-test#1}}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
   - name: static-label-delivery
-    source: {file: t/plugin/loki-logger.t, tests: [5, 6, 7]}
     config:
       routes:
         - id: loki-static-label
@@ -64,7 +52,6 @@ cases:
     steps:
       - {name: labelled-request-reaches-real-upstream, input: {path: /static-label, headers: {Test-Header: only-for-test#2}}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
   - name: tenant-isolation
-    source: {file: t/plugin/loki-logger.t, tests: [8, 9, 10, 11]}
     config:
       routes:
         - id: loki-tenant-one
@@ -107,7 +94,6 @@ cases:
       - {name: tenant-one-never-reaches-tenant-two-sink, input: {path: /tenant-one, headers: {Test-Header: only-for-test#1}}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
       - {name: tenant-two-is-exactly-delivered, input: {path: /tenant-two, headers: {Test-Header: only-for-test#3}}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
   - name: remote-address-label
-    source: {file: t/plugin/loki-logger.t, tests: [12, 13, 14]}
     config:
       routes:
         - id: loki-remote-label
@@ -124,7 +110,6 @@ cases:
     steps:
       - {name: remote-address-is-resolved-per-request, input: {path: /remote-label}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
   - name: custom-endpoint-and-authorization
-    source: {file: t/plugin/loki-logger.t, tests: [15, 16]}
     config:
       routes:
         - id: loki-custom-endpoint
@@ -138,7 +123,6 @@ cases:
     steps:
       - {name: logger-delivery-does-not-change-upstream-response, input: {path: /custom-endpoint}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
   - name: metadata-pending-entry-overflow
-    source: {file: t/plugin/loki-logger2.t, tests: [1]}
     config:
       plugin_metadata:
         - id: loki-logger

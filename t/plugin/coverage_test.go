@@ -11,14 +11,11 @@ import (
 
 	pluginregistry "github.com/wklken/apisix-go/pkg/plugin"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
-	"go.yaml.in/yaml/v3"
 )
 
 var manifestTargetPluginGroups = map[string][]string{
 	"ai-proxy": {"ai-proxy-multi"},
 }
-
-const pinnedAPISIX317Commit = "9ef2ecab67f652d38365049613610ef649bb4ad0"
 
 func manifestYAMLFiles() ([]string, error) {
 	return filepath.Glob("*.yaml")
@@ -37,162 +34,10 @@ func TestManifestCorpusValidates(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read %s: %v", file, err)
 		}
-		manifest, err := loadManifest(file, data)
-		if err != nil {
+		if _, err := loadManifest(file, data); err != nil {
 			t.Fatalf("load %s: %v", file, err)
 		}
-		for _, source := range manifestSources(manifest) {
-			if source.Commit != pinnedAPISIX317Commit {
-				t.Errorf(
-					"%s source %q commit = %q, want APISIX 3.17.0 %s",
-					file,
-					source.File,
-					source.Commit,
-					pinnedAPISIX317Commit,
-				)
-			}
-		}
 	}
-}
-
-func TestSAMLManifestHasIndependentSingletonCases(t *testing.T) {
-	data, err := os.ReadFile("saml-auth.yaml")
-	if err != nil {
-		t.Fatalf("read saml-auth.yaml: %v", err)
-	}
-	if strings.Contains(string(data), "<<:") {
-		t.Fatal("saml-auth.yaml uses YAML merge aliases instead of independent cases")
-	}
-	manifest, err := loadManifest("saml-auth.yaml", data)
-	if err != nil {
-		t.Fatalf("load saml-auth.yaml: %v", err)
-	}
-	wantByFile, wantCases := selectedSourceTestsByFile(manifest)
-	if got := len(manifest.Cases); got != wantCases {
-		t.Fatalf("SAML cases = %d, want %d independent selected source cases", got, wantCases)
-	}
-	gotByFile := make(map[string][]int, len(wantByFile))
-	for _, testCase := range manifest.Cases {
-		if len(testCase.Source.Tests) != 1 {
-			t.Fatalf(
-				"case %q source tests = %v, want one source block",
-				testCase.Name,
-				testCase.Source.Tests,
-			)
-		}
-		if _, ok := wantByFile[testCase.Source.File]; !ok {
-			t.Fatalf("case %q has unexpected source %q", testCase.Name, testCase.Source.File)
-		}
-		gotByFile[testCase.Source.File] = append(gotByFile[testCase.Source.File], testCase.Source.Tests[0])
-	}
-	for file, want := range wantByFile {
-		got := gotByFile[file]
-		sort.Ints(got)
-		want = slices.Clone(want)
-		sort.Ints(want)
-		if !slices.Equal(got, want) {
-			t.Fatalf("%s tests = %v, want selected tests %v", file, got, want)
-		}
-	}
-}
-
-func selectedSourceTestsByFile(manifest *Manifest) (map[string][]int, int) {
-	testsByFile := make(map[string][]int)
-	total := 0
-	for _, source := range manifestSources(manifest) {
-		numbers := sourceTestNumbers(source)
-		testsByFile[source.File] = append(testsByFile[source.File], numbers...)
-		total += len(numbers)
-	}
-	return testsByFile, total
-}
-
-func TestAIRateLimitingManifestMapsExactlyOnePinnedBlockPerBehavioralCase(t *testing.T) {
-	const manifestFile = "ai-rate-limiting.yaml"
-	data, err := os.ReadFile(manifestFile)
-	if err != nil {
-		t.Fatalf("read %s: %v", manifestFile, err)
-	}
-	if strings.Contains(string(data), "<<:") {
-		t.Fatalf("%s contains YAML merge keys", manifestFile)
-	}
-	var document yaml.Node
-	if err := yaml.Unmarshal(data, &document); err != nil {
-		t.Fatalf("decode %s syntax tree: %v", manifestFile, err)
-	}
-	if node := firstYAMLAnchorOrAlias(&document); node != nil {
-		t.Fatalf("%s contains YAML anchor or alias %q", manifestFile, node.Value)
-	}
-	manifest, err := loadManifest(manifestFile, data)
-	if err != nil {
-		t.Fatalf("load %s: %v", manifestFile, err)
-	}
-	wantByFile, wantCases := selectedSourceTestsByFile(manifest)
-	if got := len(manifest.Cases); got != wantCases {
-		t.Fatalf(
-			"%s top-level cases = %d, want exactly %d selected pinned behavioral cases",
-			manifestFile,
-			got,
-			wantCases,
-		)
-	}
-
-	next := make(map[string]int, len(wantByFile))
-	for i, testCase := range manifest.Cases {
-		if len(testCase.Source.Tests) != 1 {
-			t.Fatalf(
-				"%s case %d %q maps %d source blocks, want exactly one",
-				manifestFile,
-				i+1,
-				testCase.Name,
-				len(testCase.Source.Tests),
-			)
-		}
-		wantTests, ok := wantByFile[testCase.Source.File]
-		if !ok {
-			t.Fatalf("%s case %d has unexpected source %q", manifestFile, i+1, testCase.Source.File)
-		}
-		nextIndex := next[testCase.Source.File]
-		if nextIndex >= len(wantTests) {
-			t.Fatalf("%s case %d duplicates exhausted source %q", manifestFile, i+1, testCase.Source.File)
-		}
-		want := wantTests[nextIndex]
-		if got := testCase.Source.Tests[0]; got != want {
-			t.Fatalf(
-				"%s case %d %q maps source test %d, want next source test %d",
-				manifestFile,
-				i+1,
-				testCase.Name,
-				got,
-				want,
-			)
-		}
-		next[testCase.Source.File]++
-	}
-	for file, want := range wantByFile {
-		if got := next[file]; got != len(want) {
-			t.Fatalf("%s mapped %d selected tests, want %d", file, got, len(want))
-		}
-	}
-}
-
-func firstYAMLAnchorOrAlias(node *yaml.Node) *yaml.Node {
-	if node.Anchor != "" || node.Kind == yaml.AliasNode {
-		return node
-	}
-	for _, child := range node.Content {
-		if found := firstYAMLAnchorOrAlias(child); found != nil {
-			return found
-		}
-	}
-	return nil
-}
-
-func manifestSources(manifest *Manifest) []SourceSpec {
-	if len(manifest.Sources) > 0 {
-		return manifest.Sources
-	}
-	return []SourceSpec{manifest.Source}
 }
 
 func TestManifestExercisesTargetPlugin(t *testing.T) {

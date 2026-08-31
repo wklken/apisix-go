@@ -1,20 +1,5 @@
-sources:
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/google-cloud-logging.t
-    tests: 25
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/google-cloud-logging2.t
-    tests: 7
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/google-cloud-logging3.t
-    tests: 1
-
 cases:
   - name: full-configuration-with-auth-file
-    source: {file: t/plugin/google-cloud-logging.t, tests: [1]}
     files:
       - path: auth.json
         body: |
@@ -49,7 +34,6 @@ cases:
       - {name: full-auth-file-delivers, input: {path: /hello}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
 
   - name: full-configuration-with-auth-config
-    source: {file: t/plugin/google-cloud-logging.t, tests: [2]}
     config:
       routes:
         - id: gcl-auth-config-full
@@ -102,7 +86,6 @@ cases:
       - {name: full-auth-config-delivers, input: {path: /hello}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
 
   - name: basic-configuration-with-auth-file
-    source: {file: t/plugin/google-cloud-logging.t, tests: [3]}
     files:
       - path: auth.json
         body: |
@@ -132,7 +115,6 @@ cases:
       - {name: basic-auth-file-uses-defaults, input: {path: /hello}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
 
   - name: basic-configuration-with-auth-config
-    source: {file: t/plugin/google-cloud-logging.t, tests: [4]}
     config:
       routes:
         - id: gcl-auth-config-basic
@@ -179,7 +161,6 @@ cases:
       - {name: basic-auth-config-uses-defaults, input: {path: /hello}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
 
   - name: missing-auth-configuration-is-rejected
-    source: {file: t/plugin/google-cloud-logging.t, tests: [5]}
     config:
       routes:
         - id: gcl-missing-auth
@@ -200,7 +181,6 @@ cases:
           logs: {matches: 'build route gcl-missing-auth fail:.*google-cloud-logging.*(auth_config|auth_file|matches none|one schema)'}
 
   - name: identity-authentication-failure-setup
-    source: {file: t/plugin/google-cloud-logging.t, tests: [6]}
     config:
       routes:
         - id: gcl-identity-failure-setup
@@ -232,7 +212,6 @@ cases:
         wait: 1s
 
   - name: identity-authentication-failure-request
-    source: {file: t/plugin/google-cloud-logging.t, tests: [7]}
     config:
       routes:
         - id: gcl-identity-failure-request
@@ -260,7 +239,6 @@ cases:
         wait: 1s
 
   - name: insufficient-scope-setup
-    source: {file: t/plugin/google-cloud-logging.t, tests: [8]}
     config:
       routes:
         - id: gcl-scope-denial-setup
@@ -295,7 +273,6 @@ cases:
         wait: 1s
 
   - name: insufficient-scope-request
-    source: {file: t/plugin/google-cloud-logging.t, tests: [9]}
     config:
       routes:
         - id: gcl-scope-denial-request
@@ -328,7 +305,6 @@ cases:
         wait: 1s
 
   - name: successful-write-setup
-    source: {file: t/plugin/google-cloud-logging.t, tests: [10]}
     config:
       routes:
         - id: gcl-success-setup
@@ -355,7 +331,6 @@ cases:
       - {name: setup-case-writes-entry, input: {path: /hello}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
 
   - name: successful-write-request
-    source: {file: t/plugin/google-cloud-logging.t, tests: [11]}
     config:
       routes:
         - id: gcl-success-request
@@ -384,7 +359,6 @@ cases:
       - {name: request-writes-signed-entry, input: {path: /hello}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
 
   - name: custom-token-type-setup
-    source: {file: t/plugin/google-cloud-logging.t, tests: [12]}
     config:
       routes:
         - id: gcl-custom-token-setup
@@ -411,7 +385,6 @@ cases:
       - {name: setup-case-uses-custom-token-type, input: {path: /hello}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
 
   - name: custom-token-type-request
-    source: {file: t/plugin/google-cloud-logging.t, tests: [13]}
     config:
       routes:
         - id: gcl-custom-token-request
@@ -438,7 +411,6 @@ cases:
       - {name: request-uses-custom-token-type, input: {path: /hello}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
 
   - name: custom-token-type-mismatch-setup
-    source: {file: t/plugin/google-cloud-logging.t, tests: [14]}
     config:
       routes:
         - id: gcl-custom-token-mismatch-setup
@@ -469,7 +441,6 @@ cases:
         wait: 1s
 
   - name: custom-token-type-mismatch-request
-    source: {file: t/plugin/google-cloud-logging.t, tests: [15]}
     config:
       routes:
         - id: gcl-custom-token-mismatch-request
@@ -500,7 +471,6 @@ cases:
         wait: 1s
 
   - name: auth-file-success-setup
-    source: {file: t/plugin/google-cloud-logging.t, tests: [16]}
     files:
       - path: auth.json
         body: |
@@ -522,7 +492,6 @@ cases:
       - {name: setup-loads-file-and-writes, input: {path: /hello}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
 
   - name: auth-file-success-request
-    source: {file: t/plugin/google-cloud-logging.t, tests: [17]}
     files:
       - path: auth.json
         body: |
@@ -544,7 +513,6 @@ cases:
       - {name: request-uses-auth-file, input: {path: /hello}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
 
   - name: missing-auth-file-setup
-    source: {file: t/plugin/google-cloud-logging.t, tests: [18]}
     config:
       routes:
         - id: gcl-missing-file-setup
@@ -561,7 +529,6 @@ cases:
         wait: 1s
 
   - name: missing-auth-file-request
-    source: {file: t/plugin/google-cloud-logging.t, tests: [19]}
     config:
       routes:
         - id: gcl-missing-file-request
@@ -578,7 +545,6 @@ cases:
         wait: 1s
 
   - name: trusted-https-auth-file-setup
-    source: {file: t/plugin/google-cloud-logging.t, tests: [20]}
     environment: {SSL_CERT_FILE: '{{FIXTURE.sink.CA_FILE}}'}
     files:
       - path: auth.json
@@ -605,7 +571,6 @@ cases:
       - {name: trusted-ca-setup-writes-over-https, input: {path: /hello}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
 
   - name: trusted-https-auth-file-request
-    source: {file: t/plugin/google-cloud-logging.t, tests: [21]}
     environment: {SSL_CERT_FILE: '{{FIXTURE.sink.CA_FILE}}'}
     files:
       - path: auth.json
@@ -632,7 +597,6 @@ cases:
       - {name: trusted-ca-request-completes, input: {path: /hello}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
 
   - name: untrusted-https-auth-file-setup
-    source: {file: t/plugin/google-cloud-logging.t, tests: [22]}
     environment_unset: [SSL_CERT_FILE]
     files:
       - path: auth.json
@@ -655,7 +619,6 @@ cases:
         wait: 1s
 
   - name: untrusted-https-auth-file-request
-    source: {file: t/plugin/google-cloud-logging.t, tests: [23]}
     environment_unset: [SSL_CERT_FILE]
     files:
       - path: auth.json
@@ -678,7 +641,6 @@ cases:
         wait: 1s
 
   - name: insecure-https-auth-file-setup
-    source: {file: t/plugin/google-cloud-logging.t, tests: [24]}
     files:
       - path: auth.json
         body: |
@@ -700,7 +662,6 @@ cases:
       - {name: setup-disables-certificate-verification, input: {path: /hello}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
 
   - name: insecure-https-auth-file-request
-    source: {file: t/plugin/google-cloud-logging.t, tests: [25]}
     files:
       - path: auth.json
         body: |
@@ -722,7 +683,6 @@ cases:
       - {name: request-completes-with-verification-disabled, input: {path: /hello}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
 
   - name: default-batch-queue-parameters
-    source: {file: t/plugin/google-cloud-logging2.t, tests: [1]}
     files:
       - path: auth.json
         body: |
@@ -746,7 +706,6 @@ cases:
       - {name: default-inactive-timeout-flushes, input: {path: /hello}, output: {status: 200, body: {equals: hello world}}, wait: 6s}
 
   - name: private-key-is-encrypted-at-rest
-    source: {file: t/plugin/google-cloud-logging2.t, tests: [2]}
     runtime:
       apisix:
         data_encryption:
@@ -777,7 +736,6 @@ cases:
     steps:
       - {name: runtime-decrypts-private-key-and-signs, input: {path: /hello}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
   - name: metadata-custom-log-format-setup
-    source: {file: t/plugin/google-cloud-logging2.t, tests: [3]}
     config:
       plugin_metadata:
         - id: google-cloud-logging
@@ -808,7 +766,6 @@ cases:
       - {name: setup-case-uses-metadata-format, input: {path: /hello, headers: {Host: metadata.example}}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
 
   - name: metadata-custom-log-format-request
-    source: {file: t/plugin/google-cloud-logging2.t, tests: [4]}
     config:
       plugin_metadata:
         - id: google-cloud-logging
@@ -837,7 +794,6 @@ cases:
       - {name: request-delivers-metadata-format, input: {path: /hello, headers: {Host: metadata-request.example}}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
 
   - name: invalid-metadata-log-format-is-rejected
-    source: {file: t/plugin/google-cloud-logging2.t, tests: [5]}
     config:
       plugin_metadata:
         - id: google-cloud-logging
@@ -859,7 +815,6 @@ cases:
           logs: {matches: 'validate plugin google-cloud-logging metadata:.*log_format.*expected object'}
 
   - name: route-custom-log-format-setup
-    source: {file: t/plugin/google-cloud-logging2.t, tests: [6]}
     config:
       routes:
         - id: gcl-route-format-setup
@@ -886,7 +841,6 @@ cases:
       - {name: setup-case-uses-route-format, input: {path: /hello, headers: {Host: route-setup.example}}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
 
   - name: route-custom-log-format-request
-    source: {file: t/plugin/google-cloud-logging2.t, tests: [7]}
     config:
       routes:
         - id: gcl-route-format-request
@@ -913,7 +867,6 @@ cases:
       - {name: request-delivers-route-format, input: {path: /hello, headers: {Host: route-request.example}}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
 
   - name: pending-entry-overflow-drops-excess
-    source: {file: t/plugin/google-cloud-logging3.t, tests: [1]}
     config:
       plugin_metadata:
         - id: google-cloud-logging

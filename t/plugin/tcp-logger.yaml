@@ -1,8 +1,5 @@
 cases:
   - name: valid-route-emits-source-compatible-tcp-log
-    source:
-      file: t/plugin/tcp-logger.t
-      tests: [1, 4, 5]
     config:
       routes:
         - id: tcp-logger-valid-route
@@ -64,9 +61,6 @@ cases:
         wait: 1s
 
   - name: missing-host-is-rejected
-    source:
-      file: t/plugin/tcp-logger.t
-      tests: [2]
     config:
       routes:
         - id: tcp-logger-missing-host
@@ -83,9 +77,6 @@ cases:
       status: 404
 
   - name: string-timeout-is-rejected
-    source:
-      file: t/plugin/tcp-logger.t
-      tests: [3]
     config:
       routes:
         - id: tcp-logger-string-timeout
@@ -106,9 +97,6 @@ cases:
       status: 404
 
   - name: deterministic-connect-failure-retries-and-keeps-response
-    source:
-      file: t/plugin/tcp-logger.t
-      tests: [6]
     config:
       routes:
         - id: tcp-logger-unreachable-sink
@@ -154,9 +142,6 @@ cases:
           status: 200
 
   - name: live-update-switches-tcp-destination
-    source:
-      file: t/plugin/tcp-logger.t
-      tests: [7]
     config:
       routes:
         - id: tcp-logger-live-update
@@ -252,9 +237,6 @@ cases:
         wait: 1s
 
   - name: metadata-string-log-format-is-rejected
-    source:
-      file: t/plugin/tcp-logger.t
-      tests: [8]
     config:
       plugin_metadata:
         - id: tcp-logger
@@ -275,9 +257,6 @@ cases:
       status: 404
 
   - name: metadata-add-and-clear-rebuilds-existing-route
-    source:
-      file: t/plugin/tcp-logger.t
-      tests: [9, 10, 11]
     config:
       services:
         - id: tcp-logger-service
@@ -447,9 +426,6 @@ cases:
         wait: 1s
 
   - name: route-log-format-overrides-metadata
-    source:
-      file: t/plugin/tcp-logger.t
-      tests: [12, 13]
     config:
       plugin_metadata:
         - id: tcp-logger
@@ -502,9 +478,6 @@ cases:
         wait: 1s
 
   - name: true-tls-tcp-delivery
-    source:
-      file: t/plugin/tcp-logger.t
-      tests: [14, 15]
     config:
       routes:
         - id: tcp-logger-tls
@@ -550,9 +523,6 @@ cases:
         wait: 1s
 
   - name: request-body-inclusion-expression-and-truncation
-    source:
-      file: t/plugin/tcp-logger.t
-      tests: [16]
     variants:
       - name: source-request-body-is-logged-and-forwarded-over-tls
         config:
@@ -655,9 +625,6 @@ cases:
             wait: 1s
 
   - name: response-body-inclusion-expression-and-truncation
-    source:
-      file: t/plugin/tcp-logger.t
-      tests: [17]
     variants:
       - name: source-response-body-is-logged-and-preserved-over-tls
         config:
@@ -754,9 +721,3 @@ cases:
               body: {equals: '123456789'}
               status: 201
             wait: 1s
-
-sources:
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/tcp-logger.t
-    tests: 17

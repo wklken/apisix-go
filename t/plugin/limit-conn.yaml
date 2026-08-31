@@ -1,31 +1,5 @@
-sources:
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/limit-conn-redis-cluster.t
-    tests: 10
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/limit-conn-redis.t
-    tests: 26
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/limit-conn-variable.t
-    tests: 18
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/limit-conn.t
-    tests: 34
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/limit-conn2.t
-    tests: 13
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/limit-conn3.t
-    tests: 3
 cases:
   - name: limit-conn-redis-cluster-01-valid-schema
-    source: {file: t/plugin/limit-conn-redis-cluster.t, tests: [1]}
     runtime: &redis_cluster_runtime {plugins: [limit-conn]}
     config:
       routes:
@@ -59,7 +33,6 @@ cases:
       - {name: valid-redis-cluster-schema-proxies, input: {method: GET, path: /limit_conn}, output: {status: 200, body: {equals: passed}}}
 
   - name: limit-conn-redis-cluster-02-add-high-capacity-route
-    source: {file: t/plugin/limit-conn-redis-cluster.t, tests: [2]}
     runtime: *redis_cluster_runtime
     config:
       routes:
@@ -86,7 +59,6 @@ cases:
       - {name: configured-cluster-route-proxies, input: {method: GET, path: /limit_conn}, output: {status: 200, body: {equals: passed}}}
 
   - name: limit-conn-redis-cluster-03-ten-within-capacity
-    source: {file: t/plugin/limit-conn-redis-cluster.t, tests: [3]}
     runtime: *redis_cluster_runtime
     config:
       routes:
@@ -98,7 +70,6 @@ cases:
       - {name: all-ten-accepted, repeat: 10, concurrency: 10, input: {method: GET, path: /limit_conn}, output: {status_counts: {200: 10}}}
 
   - name: limit-conn-redis-cluster-04-update-to-three-capacity
-    source: {file: t/plugin/limit-conn-redis-cluster.t, tests: [4]}
     runtime: *redis_cluster_runtime
     config:
       routes:
@@ -124,7 +95,6 @@ cases:
       - {name: updated-cluster-route-proxies, input: {method: GET, path: /limit_conn}, output: {status: 200, body: {equals: passed}}}
 
   - name: limit-conn-redis-cluster-05-three-accepted-seven-rejected
-    source: {file: t/plugin/limit-conn-redis-cluster.t, tests: [5]}
     runtime: *redis_cluster_runtime
     config:
       routes:
@@ -136,7 +106,6 @@ cases:
       - {name: cluster-capacity-is-three, repeat: 10, concurrency: 10, input: {method: GET, path: /limit_conn}, output: {status_counts: {200: 3, 503: 7}}}
 
   - name: limit-conn-redis-cluster-06-update-to-six-capacity
-    source: {file: t/plugin/limit-conn-redis-cluster.t, tests: [6]}
     runtime: *redis_cluster_runtime
     config:
       routes:
@@ -162,7 +131,6 @@ cases:
       - {name: updated-six-capacity-route-proxies, input: {method: GET, path: /limit_conn}, output: {status: 200, body: {equals: passed}}}
 
   - name: limit-conn-redis-cluster-07-six-accepted-four-rejected
-    source: {file: t/plugin/limit-conn-redis-cluster.t, tests: [7]}
     runtime: *redis_cluster_runtime
     config:
       routes:
@@ -174,7 +142,6 @@ cases:
       - {name: cluster-capacity-is-six, repeat: 10, concurrency: 10, input: {method: GET, path: /limit_conn}, output: {status_counts: {200: 6, 503: 4}}}
 
   - name: limit-conn-redis-cluster-08-tls-with-verification-disabled
-    source: {file: t/plugin/limit-conn-redis-cluster.t, tests: [8]}
     runtime: *redis_cluster_runtime
     config:
       routes:
@@ -206,7 +173,6 @@ cases:
       - {name: tls-cluster-route-proxies-with-verification-disabled, input: {method: GET, path: /limit_conn}, output: {status: 200, body: {equals: passed}}}
 
   - name: limit-conn-redis-cluster-09-tls-six-accepted-four-rejected
-    source: {file: t/plugin/limit-conn-redis-cluster.t, tests: [9]}
     runtime: *redis_cluster_runtime
     config:
       routes:
@@ -218,7 +184,6 @@ cases:
       - {name: tls-cluster-capacity-is-six, repeat: 10, concurrency: 10, input: {method: GET, path: /limit_conn}, output: {status_counts: {200: 6, 503: 4}}}
 
   - name: limit-conn-redis-cluster-10-keepalive-diagnostic
-    source: {file: t/plugin/limit-conn-redis-cluster.t, tests: [10]}
     runtime: {plugins: [limit-conn], nginx_config: {error_log_level: debug}}
     config:
       routes:
@@ -254,7 +219,6 @@ cases:
           body: {equals: passed}
           logs: {matches: '(?s)redis connection reused times: 0.*redis connection reused times: 1'}
   - name: limit-conn-redis-01-valid-schema
-    source: {file: t/plugin/limit-conn-redis.t, tests: [1]}
     runtime: &redis_limit_runtime {plugins: [limit-conn]}
     config:
       routes:
@@ -285,7 +249,6 @@ cases:
       - {name: valid-redis-schema-proxies, input: {method: GET, path: /limit_conn}, output: {status: 200, body: {equals: passed}}}
 
   - name: limit-conn-redis-02-add-high-capacity-route
-    source: {file: t/plugin/limit-conn-redis.t, tests: [2]}
     runtime: *redis_limit_runtime
     config:
       routes:
@@ -309,7 +272,6 @@ cases:
       - {name: configured-route-proxies, input: {method: GET, path: /limit_conn}, output: {status: 200, body: {equals: passed}}}
 
   - name: limit-conn-redis-03-ten-within-capacity
-    source: {file: t/plugin/limit-conn-redis.t, tests: [3]}
     runtime: *redis_limit_runtime
     config:
       routes:
@@ -321,7 +283,6 @@ cases:
       - {name: all-ten-accepted, repeat: 10, concurrency: 10, input: {method: GET, path: /limit_conn}, output: {status_counts: {200: 10}}}
 
   - name: limit-conn-redis-04-update-to-three-capacity
-    source: {file: t/plugin/limit-conn-redis.t, tests: [4]}
     runtime: *redis_limit_runtime
     config:
       routes:
@@ -345,7 +306,6 @@ cases:
       - {name: updated-route-proxies, input: {method: GET, path: /limit_conn}, output: {status: 200, body: {equals: passed}}}
 
   - name: limit-conn-redis-05-three-accepted-seven-rejected
-    source: {file: t/plugin/limit-conn-redis.t, tests: [5]}
     runtime: *redis_limit_runtime
     config:
       routes:
@@ -357,7 +317,6 @@ cases:
       - {name: redis-capacity-is-three, repeat: 10, concurrency: 10, input: {method: GET, path: /limit_conn}, output: {status_counts: {200: 3, 503: 7}}}
 
   - name: limit-conn-redis-06-update-to-six-capacity
-    source: {file: t/plugin/limit-conn-redis.t, tests: [6]}
     runtime: *redis_limit_runtime
     config:
       routes:
@@ -381,7 +340,6 @@ cases:
       - {name: updated-route-proxies, input: {method: GET, path: /limit_conn}, output: {status: 200, body: {equals: passed}}}
 
   - name: limit-conn-redis-07-six-accepted-four-rejected
-    source: {file: t/plugin/limit-conn-redis.t, tests: [7]}
     runtime: *redis_limit_runtime
     config:
       routes:
@@ -393,7 +351,6 @@ cases:
       - {name: redis-capacity-is-six, repeat: 10, concurrency: 10, input: {method: GET, path: /limit_conn}, output: {status_counts: {200: 6, 503: 4}}}
 
   - name: limit-conn-redis-08-username-password
-    source: {file: t/plugin/limit-conn-redis.t, tests: [8]}
     runtime: *redis_limit_runtime
     config:
       routes:
@@ -421,7 +378,6 @@ cases:
       - {name: authenticated-redis-route-proxies, input: {method: GET, path: /limit_conn}, output: {status: 200, body: {equals: passed}}}
 
   - name: limit-conn-redis-09-authenticated-six-accepted-four-rejected
-    source: {file: t/plugin/limit-conn-redis.t, tests: [9]}
     runtime: *redis_limit_runtime
     config:
       routes:
@@ -433,7 +389,6 @@ cases:
       - {name: authenticated-capacity-is-six, repeat: 10, concurrency: 10, input: {method: GET, path: /limit_conn}, output: {status_counts: {200: 6, 503: 4}}}
 
   - name: limit-conn-redis-10-wrong-password-config
-    source: {file: t/plugin/limit-conn-redis.t, tests: [10]}
     runtime: *redis_limit_runtime
     config:
       routes:
@@ -465,7 +420,6 @@ cases:
         output: {status: 500, logs: {matches: 'failed to limit conn: .*WRONGPASS invalid username-password pair or user is disabled'}}
 
   - name: limit-conn-redis-11-wrong-password-request
-    source: {file: t/plugin/limit-conn-redis.t, tests: [11]}
     runtime: *redis_limit_runtime
     config:
       routes:
@@ -479,7 +433,6 @@ cases:
         output: {status: 500, logs: {matches: 'failed to limit conn: .*WRONGPASS invalid username-password pair or user is disabled'}}
 
   - name: limit-conn-redis-12-missing-redis-host
-    source: {file: t/plugin/limit-conn-redis.t, tests: [12]}
     runtime: *redis_limit_runtime
     config:
       routes:
@@ -491,7 +444,6 @@ cases:
     output: {status: 404, logs: {matches: 'build route limit-conn-redis-12 fail:.*limit-conn.*(then|redis_host)'}}
 
   - name: limit-conn-redis-13-plugin-disabled
-    source: {file: t/plugin/limit-conn-redis.t, tests: [13]}
     runtime: *redis_limit_runtime
     config:
       routes:
@@ -502,7 +454,6 @@ cases:
       - {name: disabled-plugin-does-not-intercept, input: {method: GET, path: /limit_conn}, output: {status: 200, body: {equals: passed}}}
 
   - name: limit-conn-redis-14-disabled-plugin-does-not-limit
-    source: {file: t/plugin/limit-conn-redis.t, tests: [14]}
     runtime: *redis_limit_runtime
     config:
       routes:
@@ -513,7 +464,6 @@ cases:
       - {name: all-ten-accepted, repeat: 10, concurrency: 10, input: {method: GET, path: /limit_conn}, output: {status_counts: {200: 10}}}
 
   - name: limit-conn-redis-15-server-address-key
-    source: {file: t/plugin/limit-conn-redis.t, tests: [15]}
     runtime: *redis_limit_runtime
     config:
       routes:
@@ -537,7 +487,6 @@ cases:
       - {name: server-address-key-proxies, input: {method: GET, path: /limit_conn}, output: {status: 200, body: {equals: passed}}}
 
   - name: limit-conn-redis-16-real-ip-header-key
-    source: {file: t/plugin/limit-conn-redis.t, tests: [16]}
     runtime: *redis_limit_runtime
     config:
       routes:
@@ -561,7 +510,6 @@ cases:
       - {name: real-ip-key-proxies, input: {method: GET, path: /limit_conn, headers: {X-Real-IP: 10.10.10.1}}, output: {status: 200, body: {equals: passed}}}
 
   - name: limit-conn-redis-17-real-ip-six-accepted-four-rejected
-    source: {file: t/plugin/limit-conn-redis.t, tests: [17]}
     runtime: *redis_limit_runtime
     config:
       routes:
@@ -573,7 +521,6 @@ cases:
       - {name: real-ip-capacity-is-six, repeat: 10, concurrency: 10, input: {method: GET, path: /limit_conn, headers: {X-Real-IP: 10.10.10.1}}, output: {status_counts: {200: 6, 503: 4}, logs: {matches: 'limit key: 10\.10\.10\.1route'}}}
 
   - name: limit-conn-redis-18-forwarded-for-header-key
-    source: {file: t/plugin/limit-conn-redis.t, tests: [18]}
     runtime: *redis_limit_runtime
     config:
       routes:
@@ -597,7 +544,6 @@ cases:
       - {name: forwarded-for-key-proxies, input: {method: GET, path: /limit_conn, headers: {X-Forwarded-For: 10.10.10.2}}, output: {status: 200, body: {equals: passed}}}
 
   - name: limit-conn-redis-19-forwarded-for-six-accepted-four-rejected
-    source: {file: t/plugin/limit-conn-redis.t, tests: [19]}
     runtime: *redis_limit_runtime
     config:
       routes:
@@ -609,7 +555,6 @@ cases:
       - {name: forwarded-for-capacity-is-six, repeat: 10, concurrency: 10, input: {method: GET, path: /limit_conn, headers: {X-Forwarded-For: 10.10.10.2}}, output: {status_counts: {200: 6, 503: 4}, logs: {matches: 'limit key: 10\.10\.10\.2route'}}}
 
   - name: limit-conn-redis-20-default-rejected-code
-    source: {file: t/plugin/limit-conn-redis.t, tests: [20]}
     runtime: *redis_limit_runtime
     config:
       routes:
@@ -632,7 +577,6 @@ cases:
       - {name: omitted-rejected-code-is-accepted, input: {method: GET, path: /limit_conn}, output: {status: 200, body: {equals: passed}}}
 
   - name: limit-conn-redis-21-five-accepted-five-rejected
-    source: {file: t/plugin/limit-conn-redis.t, tests: [21]}
     runtime: *redis_limit_runtime
     config:
       routes:
@@ -644,7 +588,6 @@ cases:
       - {name: default-rejection-is-503, repeat: 10, concurrency: 10, input: {method: GET, path: /limit_conn}, output: {status_counts: {200: 5, 503: 5}}}
 
   - name: limit-conn-redis-22-global-rule
-    source: {file: t/plugin/limit-conn-redis.t, tests: [22]}
     runtime: *redis_limit_runtime
     config:
       global_rules:
@@ -667,7 +610,6 @@ cases:
       - {name: global-rule-and-route-accept-request, input: {method: GET, path: /limit_conn}, output: {status: 200, body: {equals: passed}}}
 
   - name: limit-conn-redis-23-global-rule-three-accepted-seven-rejected
-    source: {file: t/plugin/limit-conn-redis.t, tests: [23]}
     runtime: *redis_limit_runtime
     config:
       global_rules:
@@ -681,7 +623,6 @@ cases:
       - {name: global-rule-capacity-is-three, repeat: 10, concurrency: 10, input: {method: GET, path: /limit_conn}, output: {status_counts: {200: 3, 503: 7}}}
 
   - name: limit-conn-redis-24-global-rule-deleted
-    source: {file: t/plugin/limit-conn-redis.t, tests: [24]}
     runtime: *redis_limit_runtime
     config:
       routes:
@@ -693,7 +634,6 @@ cases:
       - {name: route-remains-after-global-delete, input: {method: GET, path: /limit_conn}, output: {status: 200, body: {equals: passed}}}
 
   - name: limit-conn-redis-25-route-limit-after-global-delete
-    source: {file: t/plugin/limit-conn-redis.t, tests: [25]}
     runtime: *redis_limit_runtime
     config:
       routes:
@@ -705,7 +645,6 @@ cases:
       - {name: route-capacity-is-five, repeat: 10, concurrency: 10, input: {method: GET, path: /limit_conn}, output: {status_counts: {200: 5, 503: 5}}}
 
   - name: limit-conn-redis-26-connection-reuse-diagnostic
-    source: {file: t/plugin/limit-conn-redis.t, tests: [26]}
     runtime: {plugins: [limit-conn], nginx_config: {error_log_level: debug}}
     config:
       routes:
@@ -722,7 +661,6 @@ cases:
           body: {equals: passed}
           logs: {matches: '(?s)redis connection reused times: 0.*redis connection reused times: 1'}
   - name: limit-conn-variable-01-default-expression-route
-    source: {file: t/plugin/limit-conn-variable.t, tests: [1]}
     runtime: &limit_conn_runtime
       plugins: [limit-conn]
     config:
@@ -755,7 +693,6 @@ cases:
           body: {equals: passed}
 
   - name: limit-conn-variable-02-default-conn-and-burst
-    source: {file: t/plugin/limit-conn-variable.t, tests: [2]}
     runtime: *limit_conn_runtime
     config:
       routes:
@@ -787,7 +724,6 @@ cases:
           body: {equals: passed}
 
   - name: limit-conn-variable-03-header-conn-default-burst
-    source: {file: t/plugin/limit-conn-variable.t, tests: [3]}
     runtime: *limit_conn_runtime
     config:
       routes:
@@ -821,7 +757,6 @@ cases:
           body: {equals: passed}
 
   - name: limit-conn-variable-04-header-conn-and-burst
-    source: {file: t/plugin/limit-conn-variable.t, tests: [4]}
     runtime: *limit_conn_runtime
     config:
       routes:
@@ -853,7 +788,6 @@ cases:
           body: {equals: passed}
 
   - name: limit-conn-variable-05-conn-burst-and-rules-are-exclusive
-    source: {file: t/plugin/limit-conn-variable.t, tests: [5]}
     runtime: *limit_conn_runtime
     config:
       routes:
@@ -883,7 +817,6 @@ cases:
             matches: 'build route limit-conn-variable-05 fail:.*limit-conn.*(value should match only one schema|valid against schemas at indexes 0 and 1)'
 
   - name: limit-conn-variable-06-rules-route
-    source: {file: t/plugin/limit-conn-variable.t, tests: [6]}
     runtime: *limit_conn_runtime
     config:
       routes:
@@ -911,7 +844,6 @@ cases:
           body: {equals: passed}
 
   - name: limit-conn-variable-07-user-rule
-    source: {file: t/plugin/limit-conn-variable.t, tests: [7]}
     runtime: *limit_conn_runtime
     config:
       routes:
@@ -943,7 +875,6 @@ cases:
           body: {equals: passed}
 
   - name: limit-conn-variable-08-project-rule-defaults
-    source: {file: t/plugin/limit-conn-variable.t, tests: [8]}
     runtime: *limit_conn_runtime
     config:
       routes:
@@ -977,7 +908,6 @@ cases:
           body: {equals: passed}
 
   - name: limit-conn-variable-09-project-rule-overrides
-    source: {file: t/plugin/limit-conn-variable.t, tests: [9]}
     runtime: *limit_conn_runtime
     config:
       routes:
@@ -1013,7 +943,6 @@ cases:
           body: {equals: passed}
 
   - name: limit-conn-variable-10-no-rule-matches
-    source: {file: t/plugin/limit-conn-variable.t, tests: [10]}
     runtime: *limit_conn_runtime
     config:
       routes:
@@ -1037,7 +966,6 @@ cases:
           logs: {matches: 'failed to get limit conn rules'}
 
   - name: limit-conn-variable-11-restore-default-expression-route
-    source: {file: t/plugin/limit-conn-variable.t, tests: [11]}
     runtime: *limit_conn_runtime
     config:
       routes:
@@ -1060,7 +988,6 @@ cases:
           body: {equals: passed}
 
   - name: limit-conn-variable-12-zero-conn
-    source: {file: t/plugin/limit-conn-variable.t, tests: [12]}
     runtime: *limit_conn_runtime
     config:
       routes:
@@ -1082,7 +1009,6 @@ cases:
           logs: {matches: 'resolved value must be a positive number'}
 
   - name: limit-conn-variable-13-negative-conn
-    source: {file: t/plugin/limit-conn-variable.t, tests: [13]}
     runtime: *limit_conn_runtime
     config:
       routes:
@@ -1104,7 +1030,6 @@ cases:
           logs: {matches: 'resolved value must be a positive number'}
 
   - name: limit-conn-variable-14-fractional-conn
-    source: {file: t/plugin/limit-conn-variable.t, tests: [14]}
     runtime: *limit_conn_runtime
     config:
       routes:
@@ -1126,7 +1051,6 @@ cases:
           logs: {matches: 'resolved value must be an integer'}
 
   - name: limit-conn-variable-15-fractional-burst
-    source: {file: t/plugin/limit-conn-variable.t, tests: [15]}
     runtime: *limit_conn_runtime
     config:
       routes:
@@ -1148,7 +1072,6 @@ cases:
           logs: {matches: 'resolved value must be an integer'}
 
   - name: limit-conn-variable-16-conn-above-safe-integer
-    source: {file: t/plugin/limit-conn-variable.t, tests: [16]}
     runtime: *limit_conn_runtime
     config:
       routes:
@@ -1170,7 +1093,6 @@ cases:
           logs: {matches: 'resolved value exceeds safe integer range'}
 
   - name: limit-conn-variable-17-zero-burst
-    source: {file: t/plugin/limit-conn-variable.t, tests: [17]}
     runtime: *limit_conn_runtime
     config:
       routes:
@@ -1194,7 +1116,6 @@ cases:
           logs: {not_matches: 'resolved value must be'}
 
   - name: limit-conn-variable-18-negative-burst
-    source: {file: t/plugin/limit-conn-variable.t, tests: [18]}
     runtime: *limit_conn_runtime
     config:
       routes:
@@ -1215,7 +1136,6 @@ cases:
           status: 500
           logs: {matches: 'resolved value must be a non-negative number'}
   - name: limit-conn-01-valid-schema
-    source: {file: t/plugin/limit-conn.t, tests: [1]}
     runtime: *limit_conn_runtime
     config:
       routes:
@@ -1241,7 +1161,6 @@ cases:
         output: {status: 200, body: {equals: passed}}
 
   - name: limit-conn-02-missing-burst-schema-rejection
-    source: {file: t/plugin/limit-conn.t, tests: [2]}
     runtime: *limit_conn_runtime
     config:
       routes:
@@ -1255,7 +1174,6 @@ cases:
       logs: {matches: 'build route limit-conn-02 fail:.*limit-conn.*oneOf'}
 
   - name: limit-conn-03-add-high-capacity-route
-    source: {file: t/plugin/limit-conn.t, tests: [3]}
     runtime: *limit_conn_runtime
     config:
       routes:
@@ -1281,7 +1199,6 @@ cases:
         output: {status: 200, body: {equals: passed}}
 
   - name: limit-conn-04-ten-within-capacity
-    source: {file: t/plugin/limit-conn.t, tests: [4]}
     runtime: *limit_conn_runtime
     config:
       routes:
@@ -1303,7 +1220,6 @@ cases:
         output: {status_counts: {200: 10}}
 
   - name: limit-conn-05-update-to-three-capacity
-    source: {file: t/plugin/limit-conn.t, tests: [5]}
     runtime: *limit_conn_runtime
     config:
       routes:
@@ -1329,7 +1245,6 @@ cases:
         output: {status: 200, body: {equals: passed}}
 
   - name: limit-conn-06-three-accepted-seven-rejected
-    source: {file: t/plugin/limit-conn.t, tests: [6]}
     runtime: *limit_conn_runtime
     config:
       routes:
@@ -1351,7 +1266,6 @@ cases:
         output: {status_counts: {200: 3, 503: 7}}
 
   - name: limit-conn-07-update-to-six-capacity
-    source: {file: t/plugin/limit-conn.t, tests: [7]}
     runtime: *limit_conn_runtime
     config:
       routes:
@@ -1377,7 +1291,6 @@ cases:
         output: {status: 200, body: {equals: passed}}
 
   - name: limit-conn-08-six-accepted-four-rejected
-    source: {file: t/plugin/limit-conn.t, tests: [8]}
     runtime: *limit_conn_runtime
     config:
       routes:
@@ -1399,7 +1312,6 @@ cases:
         output: {status_counts: {200: 6, 503: 4}}
 
   - name: limit-conn-09-route-missing-conn
-    source: {file: t/plugin/limit-conn.t, tests: [9]}
     runtime: *limit_conn_runtime
     config:
       routes:
@@ -1413,7 +1325,6 @@ cases:
       logs: {matches: 'build route limit-conn-09 fail:.*limit-conn.*oneOf'}
 
   - name: limit-conn-10-route-negative-conn
-    source: {file: t/plugin/limit-conn.t, tests: [10]}
     runtime: *limit_conn_runtime
     config:
       routes:
@@ -1427,7 +1338,6 @@ cases:
       logs: {matches: 'build route limit-conn-10 fail:.*limit-conn.*conn.*oneOf'}
 
   - name: limit-conn-11-service-missing-conn
-    source: {file: t/plugin/limit-conn.t, tests: [11]}
     runtime: *limit_conn_runtime
     config:
       services:
@@ -1442,7 +1352,6 @@ cases:
       logs: {matches: 'build route limit-conn-11 fail:.*limit-conn.*oneOf'}
 
   - name: limit-conn-12-service-negative-conn
-    source: {file: t/plugin/limit-conn.t, tests: [12]}
     runtime: *limit_conn_runtime
     config:
       services:
@@ -1457,7 +1366,6 @@ cases:
       logs: {matches: 'build route limit-conn-12 fail:.*limit-conn.*conn.*oneOf'}
 
   - name: limit-conn-13-plugin-disabled
-    source: {file: t/plugin/limit-conn.t, tests: [13]}
     runtime: *limit_conn_runtime
     config:
       routes:
@@ -1476,7 +1384,6 @@ cases:
         output: {status: 200, body: {equals: passed}}
 
   - name: limit-conn-14-disabled-plugin-does-not-limit
-    source: {file: t/plugin/limit-conn.t, tests: [14]}
     runtime: *limit_conn_runtime
     config:
       routes:
@@ -1497,7 +1404,6 @@ cases:
         output: {status_counts: {200: 10}}
 
   - name: limit-conn-15-server-address-key
-    source: {file: t/plugin/limit-conn.t, tests: [15]}
     runtime: *limit_conn_runtime
     config:
       routes:
@@ -1518,7 +1424,6 @@ cases:
         output: {status: 200, body: {equals: passed}}
 
   - name: limit-conn-16-real-ip-header-key
-    source: {file: t/plugin/limit-conn.t, tests: [16]}
     runtime: *limit_conn_runtime
     config:
       routes:
@@ -1544,7 +1449,6 @@ cases:
         output: {status: 200, body: {equals: passed}}
 
   - name: limit-conn-17-real-ip-six-accepted-four-rejected
-    source: {file: t/plugin/limit-conn.t, tests: [17]}
     runtime: *limit_conn_runtime
     config:
       routes:
@@ -1566,7 +1470,6 @@ cases:
         output: {status_counts: {200: 6, 503: 4}, logs: {matches: 'limit key: 10\.10\.10\.1route'}}
 
   - name: limit-conn-18-forwarded-for-header-key
-    source: {file: t/plugin/limit-conn.t, tests: [18]}
     runtime: *limit_conn_runtime
     config:
       routes:
@@ -1592,7 +1495,6 @@ cases:
         output: {status: 200, body: {equals: passed}}
 
   - name: limit-conn-19-forwarded-for-six-accepted-four-rejected
-    source: {file: t/plugin/limit-conn.t, tests: [19]}
     runtime: *limit_conn_runtime
     config:
       routes:
@@ -1614,7 +1516,6 @@ cases:
         output: {status_counts: {200: 6, 503: 4}, logs: {matches: 'limit key: 10\.10\.10\.2route'}}
 
   - name: limit-conn-20-default-rejected-code
-    source: {file: t/plugin/limit-conn.t, tests: [20]}
     runtime: *limit_conn_runtime
     config:
       routes:
@@ -1635,7 +1536,6 @@ cases:
         output: {status: 200, body: {equals: passed}}
 
   - name: limit-conn-21-global-rule
-    source: {file: t/plugin/limit-conn.t, tests: [21]}
     runtime: *limit_conn_runtime
     config:
       global_rules:
@@ -1662,7 +1562,6 @@ cases:
         output: {status: 200, body: {equals: passed}}
 
   - name: limit-conn-22-global-rule-three-accepted-seven-rejected
-    source: {file: t/plugin/limit-conn.t, tests: [22]}
     runtime: *limit_conn_runtime
     config:
       global_rules:
@@ -1686,7 +1585,6 @@ cases:
         output: {status_counts: {200: 3, 503: 7}}
 
   - name: limit-conn-23-global-rule-deleted
-    source: {file: t/plugin/limit-conn.t, tests: [23]}
     runtime: *limit_conn_runtime
     config:
       routes:
@@ -1705,7 +1603,6 @@ cases:
         output: {status: 200, body: {equals: passed}}
 
   - name: limit-conn-24-no-global-rule-does-not-limit
-    source: {file: t/plugin/limit-conn.t, tests: [24]}
     runtime: *limit_conn_runtime
     config:
       routes:
@@ -1726,7 +1623,6 @@ cases:
         output: {status_counts: {200: 10}}
 
   - name: limit-conn-25-invalid-schema-values
-    source: {file: t/plugin/limit-conn.t, tests: [25]}
     variants:
       - name: zero-conn-route-is-not-activated
         runtime: *limit_conn_runtime
@@ -1754,7 +1650,6 @@ cases:
           logs: {matches: 'build route limit-conn-25-zero-delay fail:.*limit-conn.*default_conn_delay.*exclusiveMinimum'}
 
   - name: limit-conn-26-create-key-auth-consumer
-    source: {file: t/plugin/limit-conn.t, tests: [26]}
     runtime: &limit_conn_key_auth_runtime
       plugins: [key-auth, limit-conn]
     config:
@@ -1787,7 +1682,6 @@ cases:
         output: {status: 200, body: {equals: passed}}
 
   - name: limit-conn-27-key-auth-route
-    source: {file: t/plugin/limit-conn.t, tests: [27]}
     runtime: *limit_conn_key_auth_runtime
     config:
       consumers: *consumer_jack
@@ -1810,7 +1704,6 @@ cases:
         output: {status: 200, body: {equals: passed}}
 
   - name: limit-conn-28-consumer-ten-within-capacity
-    source: {file: t/plugin/limit-conn.t, tests: [28]}
     runtime: *limit_conn_key_auth_runtime
     config:
       consumers: *consumer_jack
@@ -1835,7 +1728,6 @@ cases:
         output: {status_counts: {200: 10}, logs: {matches: 'limit key: consumer_jackroute'}}
 
   - name: limit-conn-29-update-consumer-capacity
-    source: {file: t/plugin/limit-conn.t, tests: [29]}
     runtime: *limit_conn_key_auth_runtime
     config:
       consumers: *consumer_jack
@@ -1863,7 +1755,6 @@ cases:
         output: {status: 200, body: {equals: passed}}
 
   - name: limit-conn-30-consumer-three-accepted-seven-rejected
-    source: {file: t/plugin/limit-conn.t, tests: [30]}
     runtime: *limit_conn_key_auth_runtime
     config:
       consumers: *consumer_jack
@@ -1888,7 +1779,6 @@ cases:
         output: {status_counts: {200: 3, 503: 7}, logs: {matches: 'limit key: consumer_jackroute'}}
 
   - name: limit-conn-31-consumer-key-missing-burst
-    source: {file: t/plugin/limit-conn.t, tests: [31]}
     runtime: *limit_conn_runtime
     config:
       routes:
@@ -1902,7 +1792,6 @@ cases:
       logs: {matches: 'build route limit-conn-31 fail:.*limit-conn.*oneOf'}
 
   - name: limit-conn-32-allow-degradation
-    source: {file: t/plugin/limit-conn.t, tests: [32]}
     runtime: *limit_conn_runtime
     config:
       routes:
@@ -1932,7 +1821,6 @@ cases:
         output: {status: 200, body: {equals: passed}}
 
   - name: limit-conn-33-pipelined-requests-are-not-limited
-    source: {file: t/plugin/limit-conn.t, tests: [33]}
     runtime: *limit_conn_runtime
     config:
       routes:
@@ -1953,7 +1841,6 @@ cases:
         output: {status: 200, body: {equals: passed}}
 
   - name: limit-conn-34-invalid-allow-degradation
-    source: {file: t/plugin/limit-conn.t, tests: [34]}
     runtime: *limit_conn_runtime
     config:
       routes:
@@ -1966,7 +1853,6 @@ cases:
       status: 404
       logs: {matches: 'build route limit-conn-34 fail:.*limit-conn.*allow_degradation.*boolean'}
   - name: limit-conn2-01-route-uses-retrying-upstream-resource
-    source: {file: t/plugin/limit-conn2.t, tests: [1]}
     runtime: &limit_conn2_runtime {plugins: [limit-conn]}
     config:
       upstreams:
@@ -2003,7 +1889,6 @@ cases:
         output: {status: 200, body: {equals: retry passed}}
 
   - name: limit-conn2-02-request-latency-is-recorded
-    source: {file: t/plugin/limit-conn2.t, tests: [2]}
     runtime: {plugins: [limit-conn], nginx_config: {error_log_level: debug}}
     config:
       upstreams:
@@ -2031,7 +1916,6 @@ cases:
           logs: {matches: 'request latency is 0\.1'}
 
   - name: limit-conn2-03-global-and-route-plugins-are-installed
-    source: {file: t/plugin/limit-conn2.t, tests: [3]}
     runtime: *limit_conn2_runtime
     config:
       global_rules:
@@ -2054,7 +1938,6 @@ cases:
         output: {status: 200, body: {equals: hello world}}
 
   - name: limit-conn2-04-global-and-route-record-latency
-    source: {file: t/plugin/limit-conn2.t, tests: [4]}
     runtime: {plugins: [limit-conn], nginx_config: {error_log_level: debug}}
     config:
       global_rules:
@@ -2073,7 +1956,6 @@ cases:
           logs: {matches: '(?s)request latency is .*request latency is '}
 
   - name: limit-conn2-05-only-default-delay-is-configured
-    source: {file: t/plugin/limit-conn2.t, tests: [5]}
     runtime: *limit_conn2_runtime
     config:
       routes:
@@ -2100,7 +1982,6 @@ cases:
         output: {status: 200, body: {equals: hello world}}
 
   - name: limit-conn2-06-only-default-delay-omits-measured-latency
-    source: {file: t/plugin/limit-conn2.t, tests: [6]}
     runtime: {plugins: [limit-conn], nginx_config: {error_log_level: debug}}
     config:
       routes:
@@ -2120,7 +2001,6 @@ cases:
           logs: {matches: 'request latency is nil'}
 
   - name: limit-conn2-07-rejected-message-must-be-string
-    source: {file: t/plugin/limit-conn2.t, tests: [7]}
     runtime: *limit_conn2_runtime
     config:
       routes:
@@ -2139,7 +2019,6 @@ cases:
           logs: {matches: 'build route limit-conn2-07 fail:.*limit-conn.*rejected_msg.*string.*boolean'}
 
   - name: limit-conn2-08-rejected-message-must-not-be-empty
-    source: {file: t/plugin/limit-conn2.t, tests: [8]}
     runtime: *limit_conn2_runtime
     config:
       routes:
@@ -2158,7 +2037,6 @@ cases:
           logs: {matches: 'build route limit-conn2-08 fail:.*limit-conn.*rejected_msg.*short|build route limit-conn2-08 fail:.*limit-conn.*rejected_msg.*length'}
 
   - name: limit-conn2-09-var-combination-key-is-accepted
-    source: {file: t/plugin/limit-conn2.t, tests: [9]}
     runtime: *limit_conn2_runtime
     config:
       routes:
@@ -2185,7 +2063,6 @@ cases:
         output: {status: 200, body: {equals: passed}}
 
   - name: limit-conn2-10-distinct-header-keys-do-not-share-capacity
-    source: {file: t/plugin/limit-conn2.t, tests: [10]}
     runtime: *limit_conn2_runtime
     config:
       routes:
@@ -2200,7 +2077,6 @@ cases:
         output: {status_counts: {200: 2}}
 
   - name: limit-conn2-11-missing-combination-key-falls-back-to-client-ip
-    source: {file: t/plugin/limit-conn2.t, tests: [11]}
     runtime: *limit_conn2_runtime
     config:
       routes:
@@ -2217,7 +2093,6 @@ cases:
           logs: {matches: 'The value of the configured key is empty, use client IP instead'}
 
   - name: limit-conn2-12-literal-var-combination-key-is-accepted
-    source: {file: t/plugin/limit-conn2.t, tests: [12]}
     runtime: *limit_conn2_runtime
     config:
       routes:
@@ -2243,7 +2118,6 @@ cases:
           logs: {matches: 'The value of the configured key is empty, use client IP instead'}
 
   - name: limit-conn2-13-invalid-combination-key-falls-back-to-client-ip
-    source: {file: t/plugin/limit-conn2.t, tests: [13]}
     runtime: *limit_conn2_runtime
     config:
       routes:
@@ -2259,7 +2133,6 @@ cases:
           status_counts: {200: 1, 503: 4}
           logs: {matches: 'The value of the configured key is empty, use client IP instead'}
   - name: limit-conn3-01-route-accepts-var-combination-key
-    source: {file: t/plugin/limit-conn3.t, tests: [1]}
     config:
       routes:
         - id: limit-conn3-route
@@ -2288,7 +2161,6 @@ cases:
         output: {status: 200, body: {equals: hello world}}
 
   - name: limit-conn3-02-frontend-tls-sni-serves-route
-    source: {file: t/plugin/limit-conn3.t, tests: [2]}
     frontend_tls: {sni: www.test.com}
     config:
       routes:
@@ -2318,7 +2190,6 @@ cases:
         output: {status: 200, body: {equals: hello world}}
 
   - name: limit-conn3-03-http2-parallel-streams-share-connection-limit
-    source: {file: t/plugin/limit-conn3.t, tests: [3]}
     frontend_tls: {sni: www.test.com}
     config:
       routes:

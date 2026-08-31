@@ -1,16 +1,5 @@
-sources:
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/fault-injection.t
-    tests: 39
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/fault-injection2.t
-    tests: 7
-
 cases:
   - name: invalid-abort-status
-    source: {file: t/plugin/fault-injection.t, tests: [1]}
     runtime: {plugins: [fault-injection]}
     config:
       routes:
@@ -24,7 +13,6 @@ cases:
     output: {status: 404, logs: {matches: 'http_status.*minimum'}}
 
   - name: invalid-abort-without-status
-    source: {file: t/plugin/fault-injection.t, tests: [2]}
     runtime: {plugins: [fault-injection]}
     config:
       routes:
@@ -36,7 +24,6 @@ cases:
     output: {status: 404, logs: {matches: fault-injection}}
 
   - name: invalid-empty-config
-    source: {file: t/plugin/fault-injection.t, tests: [3]}
     runtime: {plugins: [fault-injection]}
     config:
       routes:
@@ -48,7 +35,6 @@ cases:
     output: {status: 404, logs: {matches: fault-injection}}
 
   - name: invalid-delay-without-duration
-    source: {file: t/plugin/fault-injection.t, tests: [4]}
     runtime: {plugins: [fault-injection]}
     config:
       routes:
@@ -60,7 +46,6 @@ cases:
     output: {status: 404, logs: {matches: fault-injection}}
 
   - name: invalid-delay-string
-    source: {file: t/plugin/fault-injection.t, tests: [5]}
     runtime: {plugins: [fault-injection]}
     config:
       routes:
@@ -72,7 +57,6 @@ cases:
     output: {status: 404, logs: {matches: fault-injection}}
 
   - name: invalid-delay-double-dot
-    source: {file: t/plugin/fault-injection.t, tests: [6]}
     runtime: {plugins: [fault-injection]}
     config:
       routes:
@@ -84,7 +68,6 @@ cases:
     output: {status: 404, logs: {matches: fault-injection}}
 
   - name: invalid-delay-whitespace
-    source: {file: t/plugin/fault-injection.t, tests: [7]}
     runtime: {plugins: [fault-injection]}
     config:
       routes:
@@ -96,7 +79,6 @@ cases:
     output: {status: 404, logs: {matches: fault-injection}}
 
   - name: invalid-delay-vars
-    source: {file: t/plugin/fault-injection.t, tests: [8]}
     runtime: {plugins: [fault-injection]}
     config:
       routes:
@@ -110,7 +92,6 @@ cases:
     output: {status: 404, logs: {matches: 'vars.*expected array'}}
 
   - name: invalid-abort-vars
-    source: {file: t/plugin/fault-injection.t, tests: [9]}
     runtime: {plugins: [fault-injection]}
     config:
       routes:
@@ -124,7 +105,6 @@ cases:
     output: {status: 404, logs: {matches: 'vars.*expected array'}}
 
   - name: delay
-    source: {file: t/plugin/fault-injection.t, tests: [10, 11]}
     runtime: {plugins: [fault-injection]}
     config:
       routes:
@@ -153,7 +133,6 @@ cases:
         output: {status: 200, body: {equals: "hello world"}, elapsed_at_least: 40ms, elapsed_less_than: 750ms}
 
   - name: abort-status-200
-    source: {file: t/plugin/fault-injection.t, tests: [12, 13]}
     runtime: {plugins: [fault-injection]}
     config:
       routes:
@@ -167,7 +146,6 @@ cases:
     output: {status: 200, body: {equals: "Fault Injection!\n"}}
 
   - name: abort-status-405
-    source: {file: t/plugin/fault-injection.t, tests: [14, 15]}
     runtime: {plugins: [fault-injection]}
     config:
       routes:
@@ -181,7 +159,6 @@ cases:
     output: {status: 405, body: {equals: "Fault Injection!\n"}}
 
   - name: abort-before-redirect
-    source: {file: t/plugin/fault-injection.t, tests: [16, 17]}
     runtime: {plugins: [fault-injection, redirect]}
     config:
       routes:
@@ -196,7 +173,6 @@ cases:
     output: {status: 200, body: {equals: "Fault Injection!\n"}}
 
   - name: zero-abort-allows-redirect
-    source: {file: t/plugin/fault-injection.t, tests: [18, 19]}
     runtime: {plugins: [fault-injection, redirect]}
     config:
       routes:
@@ -213,7 +189,6 @@ cases:
       headers: {Location: {equals: /hello/world}}
 
   - name: zero-delay
-    source: {file: t/plugin/fault-injection.t, tests: [20, 21]}
     runtime: {plugins: [fault-injection]}
     config:
       routes:
@@ -233,7 +208,6 @@ cases:
         output: {status: 200, body: {equals: "hello1 world"}, elapsed_less_than: 500ms}
 
   - name: body-variable
-    source: {file: t/plugin/fault-injection.t, tests: [22, 23]}
     runtime: {plugins: [fault-injection]}
     config:
       routes:
@@ -247,7 +221,6 @@ cases:
     output: {status: 200, body: {equals: "client addr: 127.0.0.1\n"}}
 
   - name: abort-without-body
-    source: {file: t/plugin/fault-injection.t, tests: [24, 25]}
     runtime: {plugins: [fault-injection]}
     config:
       routes:
@@ -259,7 +232,6 @@ cases:
     output: {status: 200, body: {equals: ""}}
 
   - name: valid-vars-schema
-    source: {file: t/plugin/fault-injection.t, tests: [26]}
     runtime: {plugins: [fault-injection]}
     config:
       routes:
@@ -286,7 +258,6 @@ cases:
         output: {status: 200, body: {equals: "hello world"}}
 
   - name: invalid-vars-schema
-    source: {file: t/plugin/fault-injection.t, tests: [27]}
     runtime: {plugins: [fault-injection]}
     config:
       routes:
@@ -302,7 +273,6 @@ cases:
     output: {status: 404, logs: {matches: 'abort vars validation failed.*wrapped inside brackets'}}
 
   - name: abort-vars
-    source: {file: t/plugin/fault-injection.t, tests: [28, 29, 30, 31, 32, 33]}
     runtime: {plugins: [fault-injection]}
     config:
       routes:
@@ -341,7 +311,6 @@ cases:
         output: {status: 200, body: {equals: "hello world"}}
 
   - name: delay-vars
-    source: {file: t/plugin/fault-injection.t, tests: [34, 35, 36]}
     runtime: {plugins: [fault-injection]}
     config:
       routes:
@@ -370,7 +339,6 @@ cases:
         output: {status: 200, body: {equals: "hello world"}, elapsed_less_than: 500ms}
 
   - name: abort-and-delay-vars
-    source: {file: t/plugin/fault-injection.t, tests: [37, 38, 39]}
     runtime: {plugins: [fault-injection]}
     config:
       routes:
@@ -401,7 +369,6 @@ cases:
         output: {status: 200, body: {equals: "hello world"}, elapsed_at_least: 1800ms}
 
   - name: negated-vars
-    source: {file: t/plugin/fault-injection2.t, tests: [1, 2, 3]}
     runtime: {plugins: [fault-injection]}
     config:
       routes:
@@ -429,7 +396,6 @@ cases:
         output: {status: 200, body: {equals: "hello world"}}
 
   - name: injected-headers
-    source: {file: t/plugin/fault-injection2.t, tests: [4, 5]}
     runtime: {plugins: [fault-injection]}
     config:
       routes:
@@ -447,7 +413,6 @@ cases:
       headers: {h1: {equals: v1}, h2: {equals: "2"}, h3: {equals: /hello}}
 
   - name: body-variable-json
-    source: {file: t/plugin/fault-injection2.t, tests: [6, 7]}
     runtime: {plugins: [fault-injection]}
     config:
       routes:

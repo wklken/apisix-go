@@ -1,13 +1,5 @@
-source:
-  repository: https://github.com/apache/apisix
-  commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-  file: t/plugin/error-page.t
-  tests: 20
-
 cases:
   - name: missing-metadata-keeps-original-error
-    source:
-      tests: [1, 2, 3]
     runtime: &runtime
       plugins: [error-page, serverless-post-function]
     config:
@@ -48,8 +40,6 @@ cases:
         matches: openresty
 
   - name: custom-pages
-    source:
-      tests: [4, 5, 6, 7, 8, 9]
     runtime: *runtime
     config:
       routes:
@@ -137,8 +127,6 @@ cases:
             matches: openresty
 
   - name: empty-metadata-body-falls-back
-    source:
-      tests: [10, 11]
     runtime: *runtime
     config:
       routes:
@@ -166,8 +154,6 @@ cases:
         matches: openresty
 
   - name: deleted-metadata-keeps-original-error
-    source:
-      tests: [12, 13]
     runtime: *runtime
     config:
       routes:
@@ -194,8 +180,6 @@ cases:
         matches: openresty
 
   - name: custom-content-type
-    source:
-      tests: [14, 15]
     runtime: *runtime
     config:
       routes:
@@ -228,8 +212,6 @@ cases:
         equals: '{"code": 500, "message": "Internal Server Error"}'
 
   - name: upstream-error-is-not-intercepted
-    source:
-      tests: [16, 17, 18]
     runtime:
       plugins: [error-page]
     config:
@@ -260,8 +242,6 @@ cases:
         equals: real upstream 500 error
 
   - name: proxy-error-is-intercepted
-    source:
-      tests: [19, 20]
     runtime:
       plugins: [error-page]
     config:

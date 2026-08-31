@@ -1,33 +1,5 @@
-sources:
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/hmac-auth.t
-    tests: 40
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/hmac-auth2.t
-    tests: 2
-    test_numbers: [1, 5]
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/hmac-auth3.t
-    tests: 8
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/hmac-auth4.t
-    tests: 5
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/hmac-auth-anonymous-consumer.t
-    tests: 6
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/hmac-auth-realm.t
-    tests: 6
-
 cases:
   - name: valid-consumer-schema
-    source: {file: t/plugin/hmac-auth.t, tests: [1]}
     config:
       consumers:
         - username: jack
@@ -54,7 +26,6 @@ cases:
         output: {status: 200, body: {equals: hello world}, logs: {not_matches: '\bmy-secret-key\b'}}
 
   - name: invalid-consumer-snapshots-retain-last-good
-    source: {file: t/plugin/hmac-auth.t, tests: [2, 3, 4, 5, 26]}
     config: &hmac_last_good
       consumers:
         - username: jack
@@ -162,7 +133,6 @@ cases:
         output: {status: 204, logs: {matches: "hmac-auth consumer configuration:.*missing properties: '(key_id|secret_key)'"}}
 
   - name: authorization-parsing-and-lookup
-    source: {file: t/plugin/hmac-auth.t, tests: [6, 7, 8, 9, 10]}
     config:
       consumers:
         - username: jack
@@ -205,7 +175,6 @@ cases:
         output: {status: 401, body: {equals: '{"message":"client request can''t be validated"}'}, logs: {matches: 'Invalid algorithm'}}
 
   - name: clock-and-date-validation
-    source: {file: t/plugin/hmac-auth.t, tests: [11, 12, 13]}
     config:
       consumers:
         - username: jack
@@ -240,7 +209,6 @@ cases:
         output: {status: 401, body: {equals: '{"message":"client request can''t be validated"}'}, logs: {matches: 'Invalid GMT format time'}}
 
   - name: valid-signature-with-custom-headers
-    source: {file: t/plugin/hmac-auth.t, tests: [14]}
     config:
       consumers:
         - username: jack
@@ -282,7 +250,6 @@ cases:
         output: {status: 200, body: {equals: hello world}}
 
   - name: clock-skew-schema-rejection
-    source: {file: t/plugin/hmac-auth.t, tests: [15]}
     config:
       consumers:
         - username: jack
@@ -316,7 +283,6 @@ cases:
         output: {status: 204, logs: {matches: 'build route hmac-clock-skew-zero fail:.*hmac-auth.*clock_skew.*1'}}
 
   - name: invalid-signature-with-large-clock-window
-    source: {file: t/plugin/hmac-auth.t, tests: [16, 17, 18]}
     config:
       consumers:
         - username: jack
@@ -342,7 +308,6 @@ cases:
         output: {status: 401, body: {equals: '{"message":"client request can''t be validated"}'}, logs: {matches: 'Invalid signature'}}
 
   - name: one-second-clock-skew
-    source: {file: t/plugin/hmac-auth.t, tests: [19, 20]}
     config:
       consumers:
         - username: jack
@@ -370,7 +335,6 @@ cases:
         output: {status: 401, body: {equals: '{"message":"client request can''t be validated"}'}, logs: {not_matches: 'my-secret-key'}}
 
   - name: default-clock-skew-put
-    source: {file: t/plugin/hmac-auth.t, tests: [21, 22]}
     config:
       consumers:
         - username: jack
@@ -400,7 +364,6 @@ cases:
         output: {status: 200, body: {equals: passed}, logs: {not_matches: '\bmy-secret-key\b'}}
 
   - name: required-signed-headers
-    source: {file: t/plugin/hmac-auth.t, tests: [23, 24, 25]}
     config:
       consumers:
         - username: jack
@@ -435,7 +398,6 @@ cases:
         output: {status: 200, body: {equals: hello world}}
 
   - name: empty-allowed-algorithms-rejected
-    source: {file: t/plugin/hmac-auth.t, tests: [27]}
     config:
       consumers:
         - username: jack
@@ -469,7 +431,6 @@ cases:
         output: {status: 204, logs: {matches: 'build route hmac-empty-algorithms fail:.*hmac-auth.*allowed_algorithms.*minimum 1 items required'}}
 
   - name: hide-credentials
-    source: {file: t/plugin/hmac-auth.t, tests: [28, 29]}
     config:
       consumers:
         - username: jack
@@ -495,7 +456,6 @@ cases:
         output: {status: 200, body: {equals: passed}, logs: {not_matches: '\bmy-secret-key\b'}}
 
   - name: signed-header-cardinality
-    source: {file: t/plugin/hmac-auth.t, tests: [30, 31, 32]}
     config:
       consumers:
         - username: jack
@@ -533,7 +493,6 @@ cases:
         output: {status: 401, body: {equals: '{"message":"client request can''t be validated"}'}, logs: {matches: 'Invalid signature'}}
 
   - name: restricted-algorithm
-    source: {file: t/plugin/hmac-auth.t, tests: [33, 34]}
     config:
       consumers:
         - username: jack
@@ -556,7 +515,6 @@ cases:
         output: {status: 401, body: {equals: '{"message":"client request can''t be validated"}'}, logs: {matches: 'Invalid algorithm'}}
 
   - name: default-date-signed-header
-    source: {file: t/plugin/hmac-auth.t, tests: [35, 36, 37]}
     config:
       consumers:
         - username: jack
@@ -584,7 +542,6 @@ cases:
         output: {status: 200, body: {equals: hello world}}
 
   - name: replay-date-substitution
-    source: {file: t/plugin/hmac-auth.t, tests: [38]}
     config:
       consumers:
         - username: jack
@@ -616,7 +573,6 @@ cases:
         output: {status: 401, body: {equals: '{"message":"client request can''t be validated"}'}, logs: {matches: 'Invalid signature'}}
 
   - name: opt-out-default-signed-headers
-    source: {file: t/plugin/hmac-auth.t, tests: [39, 40]}
     config:
       consumers:
         - username: jack
@@ -639,7 +595,6 @@ cases:
         output: {status: 200, body: {equals: hello world}}
 
   - name: default-route-schema
-    source: {file: t/plugin/hmac-auth2.t, tests: [1]}
     config:
       routes:
         - id: hmac-default-route-schema
@@ -652,8 +607,6 @@ cases:
       body: {equals: '{"message":"client request can''t be validated: missing Authorization header"}'}
 
   - name: consumer-schema-selection
-    source:
-      local_reason: verifies Go consumer-schema authentication; APISIX source test 3 exercises the Admin Schema API instead
     config:
       consumers:
         - username: jack
@@ -674,8 +627,6 @@ cases:
         output: {status: 200, body: {equals: passed}}
 
   - name: unknown-schema-type-falls-back-to-route-schema
-    source:
-      local_reason: verifies the Go route-schema fallback; APISIX source test 4 exercises the Admin Schema API instead
     config:
       routes:
         - id: hmac-unknown-schema-type
@@ -685,7 +636,6 @@ cases:
     output: {status: 401, headers: {WWW-Authenticate: {equals: 'hmac realm="hmac"'}}}
 
   - name: route-schema-enables-plugin
-    source: {file: t/plugin/hmac-auth2.t, tests: [5]}
     config:
       consumers:
         - username: jack
@@ -706,7 +656,6 @@ cases:
         output: {status: 200, body: {equals: passed}}
 
   - name: request-body-digest
-    source: {file: t/plugin/hmac-auth3.t, tests: [1, 2, 3, 4, 5]}
     config:
       consumers:
         - username: robin
@@ -752,7 +701,6 @@ cases:
         output: {status: 200, body: {equals: passed}}
 
   - name: request-body-size-limit
-    source: {file: t/plugin/hmac-auth3.t, tests: [6, 7]}
     config:
       consumers:
         - username: robin
@@ -779,7 +727,6 @@ cases:
         output: {status: 413, body: {equals: '{"message":"request body too large"}'}, logs: {matches: 'request body too large'}}
 
   - name: request-body-within-limit
-    source: {file: t/plugin/hmac-auth3.t, tests: [8]}
     config:
       consumers:
         - username: robin
@@ -806,7 +753,6 @@ cases:
         output: {status: 200, body: {equals: passed}}
 
   - name: vault-secret-reference-lazy-retry
-    source: {file: t/plugin/hmac-auth4.t, tests: [1, 2, 3]}
     config:
       secrets:
         - id: vault/test1
@@ -847,7 +793,6 @@ cases:
         output: {status: 200, body: {equals: passed}, logs: {not_matches: '\bmy-secret-key\b'}}
 
   - name: vault-token-environment-reference
-    source: {file: t/plugin/hmac-auth4.t, tests: [4, 5]}
     environment: {VAULT_TOKEN: root}
     config:
       secrets:
@@ -881,7 +826,6 @@ cases:
         output: {status: 200, body: {equals: passed}, logs: {not_matches: '\bmy-secret-key\b'}}
 
   - name: normal-consumer-limit-chain
-    source: {file: t/plugin/hmac-auth-anonymous-consumer.t, tests: [1, 2]}
     config:
       consumers:
         - username: jack
@@ -915,7 +859,6 @@ cases:
         output: {status: 503}
 
   - name: anonymous-consumer-limit-chain
-    source: {file: t/plugin/hmac-auth-anonymous-consumer.t, tests: [3, 4]}
     config:
       consumers:
         - username: jack
@@ -944,7 +887,6 @@ cases:
         output: {status: 503}
 
   - name: missing-anonymous-consumer
-    source: {file: t/plugin/hmac-auth-anonymous-consumer.t, tests: [5, 6]}
     config:
       routes:
         - id: hmac-missing-anonymous
@@ -958,7 +900,6 @@ cases:
       logs: {matches: 'failed to get anonymous consumer not-found-anonymous'}
 
   - name: default-realm
-    source: {file: t/plugin/hmac-auth-realm.t, tests: [1, 2]}
     config:
       routes:
         - id: hmac-default-realm
@@ -968,7 +909,6 @@ cases:
     output: {status: 401, headers: {WWW-Authenticate: {equals: 'hmac realm="hmac"'}}}
 
   - name: custom-realm
-    source: {file: t/plugin/hmac-auth-realm.t, tests: [3, 4]}
     config:
       routes:
         - id: hmac-custom-realm
@@ -978,7 +918,6 @@ cases:
     output: {status: 401, headers: {WWW-Authenticate: {equals: 'hmac realm="my-hmac-realm"'}}}
 
   - name: missing-anonymous-consumer-returns-default-realm
-    source: {file: t/plugin/hmac-auth-realm.t, tests: [5, 6]}
     config:
       routes:
         - id: hmac-realm-missing-anonymous

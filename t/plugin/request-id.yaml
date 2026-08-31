@@ -1,23 +1,6 @@
-sources:
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/request-id.t
-    tests: 27
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/request-id2.t
-    tests: 4
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/request-id3.t
-    tests: 5
-
 cases:
   - name: default-uuid-v4
     wait_for_generation: true
-    source:
-      file: t/plugin/request-id.t
-      tests: [1, 3, 4, 5, 23]
     config:
       routes:
         - id: request-id-default
@@ -40,9 +23,6 @@ cases:
           unique_headers: [X-Request-Id]
 
   - name: reject-wrong-include-in-response-type
-    source:
-      file: t/plugin/request-id.t
-      tests: [2]
     config:
       routes:
         - id: request-id-wrong-include-type
@@ -59,9 +39,6 @@ cases:
         matches: 'build route request-id-wrong-include-type fail:.*expected boolean'
 
   - name: custom-header-name
-    source:
-      file: t/plugin/request-id.t
-      tests: [6, 7]
     config:
       routes:
         - id: request-id-custom-header
@@ -81,9 +58,6 @@ cases:
           absent: true
 
   - name: exclude-from-response
-    source:
-      file: t/plugin/request-id.t
-      tests: [8, 9]
     config:
       routes:
         - id: request-id-hidden-response
@@ -101,9 +75,6 @@ cases:
           absent: true
 
   - name: global-and-route-request-ids-differ
-    source:
-      file: t/plugin/request-id.t
-      tests: [10, 11]
     config:
       global_rules:
         - id: request-id-global
@@ -129,9 +100,6 @@ cases:
         - [X-Request-Id, Custom-Header-Name]
 
   - name: reject-unsupported-algorithms
-    source:
-      file: t/plugin/request-id.t
-      tests: [12, 18]
     variants:
       - name: bad-algorithm
         config:
@@ -165,9 +133,6 @@ cases:
             matches: 'build route request-id-uuid-v5 fail:.*enum'
 
   - name: echo-client-request-id
-    source:
-      file: t/plugin/request-id.t
-      tests: [13, 14]
     config:
       routes:
         - id: request-id-client-value
@@ -187,9 +152,6 @@ cases:
           equals: "123"
 
   - name: nanoid-generation
-    source:
-      file: t/plugin/request-id.t
-      tests: [15, 16]
     config:
       routes:
         - id: request-id-nanoid
@@ -213,9 +175,6 @@ cases:
           unique_headers: [X-Request-Id]
 
   - name: uuid-v7-generation
-    source:
-      file: t/plugin/request-id.t
-      tests: [17, 19, 20, 21, 22, 24, 26, 27]
     config:
       routes:
         - id: request-id-uuid-v7
@@ -249,9 +208,6 @@ cases:
           unique_headers: [X-Request-Id]
 
   - name: uuid-v7-custom-header
-    source:
-      file: t/plugin/request-id.t
-      tests: [25]
     config:
       routes:
         - id: request-id-uuid-v7-custom-header
@@ -270,9 +226,6 @@ cases:
           matches: '^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
 
   - name: custom-range-id
-    source:
-      file: t/plugin/request-id2.t
-      tests: [1]
     config:
       routes:
         - id: request-id-custom-range
@@ -293,9 +246,6 @@ cases:
           matches: '^[a-g]{20}$'
 
   - name: default-range-id
-    source:
-      file: t/plugin/request-id2.t
-      tests: [2, 3, 4]
     config:
       routes:
         - id: request-id-default-range
@@ -317,9 +267,6 @@ cases:
           unique_headers: [X-Request-Id]
 
   - name: ksuid-generation
-    source:
-      file: t/plugin/request-id3.t
-      tests: [1, 2, 3]
     config:
       routes:
         - id: request-id-ksuid
@@ -341,9 +288,6 @@ cases:
           unique_headers: [X-Request-Id]
 
   - name: client-id-on-upstream-failure
-    source:
-      file: t/plugin/request-id3.t
-      tests: [4, 5]
     config:
       routes:
         - id: request-id-upstream-failure

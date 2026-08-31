@@ -1,14 +1,5 @@
-source:
-  repository: https://github.com/apache/apisix
-  commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-  file: t/plugin/echo.t
-  tests: 9
-  test_numbers: [1, 3, 4, 5, 6, 8, 9, 10, 11]
-
 cases:
   - name: schema-sanity
-    source:
-      tests: [1]
     config:
       routes:
         - id: echo-schema-sanity
@@ -34,8 +25,6 @@ cases:
         equals: body beforebody to attachbody after
 
   - name: replace-body-and-add-headers
-    source:
-      tests: [3, 4]
     config:
       routes:
         - id: echo-replace-body-and-headers
@@ -63,8 +52,6 @@ cases:
         equals: before the body modification hello upstream after the body modification.
 
   - name: prepend-body-without-replacement
-    source:
-      tests: [5, 6]
     config:
       routes:
         - id: echo-prepend-body
@@ -87,8 +74,6 @@ cases:
         equals: before the body modification hello world
 
   - name: replace-chunked-body
-    source:
-      tests: [8, 9]
     config:
       routes:
         - id: echo-replace-chunked-body
@@ -109,8 +94,6 @@ cases:
         equals: hello upstream
 
   - name: wrap-chunked-body
-    source:
-      tests: [10, 11]
     config:
       routes:
         - id: echo-wrap-chunked-body

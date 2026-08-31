@@ -1,15 +1,5 @@
-sources:
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/skywalking-logger.t
-    tests: 14
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/skywalking-logger2.t
-    tests: 1
 cases:
   - name: minimal-schema-and-defaults
-    source: {file: t/plugin/skywalking-logger.t, tests: [1]}
     config:
       routes:
         - id: skywalking-minimal
@@ -36,7 +26,6 @@ cases:
       - {name: minimal-config-delivers-after-default-timeout, input: {path: /minimal}, output: {status: 200, body: {equals: minimal-ok}}, wait: 6s}
 
   - name: full-schema-configuration
-    source: {file: t/plugin/skywalking-logger.t, tests: [2]}
     config:
       routes:
         - id: skywalking-full
@@ -70,7 +59,6 @@ cases:
       - {name: full-config-delivers-after-inactive-timeout, input: {path: /full}, output: {status: 200, body: {equals: full-ok}}, wait: 3s}
 
   - name: missing-endpoint-is-rejected
-    source: {file: t/plugin/skywalking-logger.t, tests: [3]}
     config:
       routes:
         - id: skywalking-missing-endpoint
@@ -90,7 +78,6 @@ cases:
       logs: {matches: 'endpoint_addr.*required|required.*endpoint_addr'}
 
   - name: real-delivery-and-hostname-instance
-    source: {file: t/plugin/skywalking-logger.t, tests: [4, 5, 12]}
     config:
       routes:
         - id: skywalking-opentracing
@@ -124,7 +111,6 @@ cases:
       - {name: request-succeeds-and-envelope-is-delivered, input: {path: /opentracing}, output: {status: 200, body: {equals: opentracing}}, wait: 1s}
 
   - name: valid-sw8-trace-context
-    source: {file: t/plugin/skywalking-logger.t, tests: [6]}
     config:
       routes:
         - id: skywalking-valid-trace
@@ -157,7 +143,6 @@ cases:
         wait: 1s
 
   - name: malformed-sw8-is-omitted-and-diagnosed
-    source: {file: t/plugin/skywalking-logger.t, tests: [7]}
     config:
       routes:
         - id: skywalking-invalid-trace
@@ -193,7 +178,6 @@ cases:
         wait: 1s
 
   - name: metadata-log-format
-    source: {file: t/plugin/skywalking-logger.t, tests: [8, 9]}
     config:
       plugin_metadata:
         - id: skywalking-logger
@@ -226,7 +210,6 @@ cases:
       - {name: metadata-fields-resolve-in-nested-json, input: {path: /metadata-format, headers: {Host: localhost}}, output: {status: 200, body: {equals: metadata-ok}}, wait: 1s}
 
   - name: route-log-format-precedes-metadata
-    source: {file: t/plugin/skywalking-logger.t, tests: [10, 11]}
     config:
       plugin_metadata:
         - id: skywalking-logger
@@ -262,7 +245,6 @@ cases:
       - {name: route-format-wins-exactly, input: {path: /route-format, headers: {Host: localhost}}, output: {status: 200, body: {equals: route-format-ok}}, wait: 1s}
 
   - name: request-body-is-preserved-and-logged
-    source: {file: t/plugin/skywalking-logger.t, tests: [13]}
     config:
       routes:
         - id: skywalking-request-body
@@ -294,7 +276,6 @@ cases:
       - {name: original-request-reaches-upstream-and-log, input: {method: POST, path: /request-body, body: '{"sample_payload":"hello"}'}, output: {status: 200, body: {equals: "opentracing\n"}}, wait: 1s}
 
   - name: response-body-is-preserved-and-logged
-    source: {file: t/plugin/skywalking-logger.t, tests: [14]}
     config:
       routes:
         - id: skywalking-response-body
@@ -326,7 +307,6 @@ cases:
       - {name: exact-response-is-returned-and-logged, input: {method: POST, path: /response-body, body: '{"sample_payload":"hello"}'}, output: {status: 200, body: {equals: "opentracing\n"}}, wait: 1s}
 
   - name: pending-entry-overflow-is-bounded
-    source: {file: t/plugin/skywalking-logger2.t, tests: [1]}
     config:
       plugin_metadata:
         - id: skywalking-logger

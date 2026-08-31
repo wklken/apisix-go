@@ -1,18 +1,5 @@
-sources:
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/traffic-label.t
-    tests: 20
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/traffic-label2.t
-    tests: 18
-
 cases:
   - name: reject-unsupported-action
-    source:
-      file: t/plugin/traffic-label.t
-      tests: [1]
     runtime:
       plugins: [traffic-label, proxy-rewrite]
     config:
@@ -39,9 +26,6 @@ cases:
         matches: add_headers
 
   - name: reject-multiple-operators
-    source:
-      file: t/plugin/traffic-label.t
-      tests: [2]
     runtime:
       plugins: [traffic-label, proxy-rewrite]
     config:
@@ -68,9 +52,6 @@ cases:
         matches: mixed logical operators
 
   - name: override-request-header
-    source:
-      file: t/plugin/traffic-label.t
-      tests: [3, 4, 5]
     runtime:
       plugins: [traffic-label, proxy-rewrite]
     config:
@@ -136,9 +117,6 @@ cases:
               equals: "100"
 
   - name: add-request-headers
-    source:
-      file: t/plugin/traffic-label.t
-      tests: [6, 7]
     runtime:
       plugins: [traffic-label, proxy-rewrite]
     config:
@@ -190,9 +168,6 @@ cases:
               equals: json
 
   - name: and-match
-    source:
-      file: t/plugin/traffic-label.t
-      tests: [8, 9, 10]
     runtime:
       plugins: [traffic-label, proxy-rewrite]
     config:
@@ -258,9 +233,6 @@ cases:
               equals: "100"
 
   - name: or-match
-    source:
-      file: t/plugin/traffic-label.t
-      tests: [11, 12]
     runtime:
       plugins: [traffic-label, proxy-rewrite]
     config:
@@ -306,9 +278,6 @@ cases:
               equals: "100"
 
   - name: reject-fractional-weight
-    source:
-      file: t/plugin/traffic-label.t
-      tests: [13]
     runtime:
       plugins: [traffic-label, proxy-rewrite]
     config:
@@ -336,9 +305,6 @@ cases:
         matches: weight.*integer
 
   - name: ipmatch-mismatch
-    source:
-      file: t/plugin/traffic-label.t
-      tests: [14, 15]
     runtime:
       plugins: [traffic-label, proxy-rewrite]
     config:
@@ -384,9 +350,6 @@ cases:
               equals: "200"
 
   - name: ipmatch-match
-    source:
-      file: t/plugin/traffic-label.t
-      tests: [16, 17]
     runtime:
       plugins: [traffic-label, proxy-rewrite]
     config:
@@ -432,9 +395,6 @@ cases:
               equals: "100"
 
   - name: nested-match
-    source:
-      file: t/plugin/traffic-label.t
-      tests: [18, 19, 20]
     runtime:
       plugins: [traffic-label, proxy-rewrite]
     config:
@@ -500,9 +460,6 @@ cases:
               equals: "100"
 
   - name: proxy-rewrite-combination
-    source:
-      file: t/plugin/traffic-label2.t
-      tests: [1, 2, 3, 4, 5]
     runtime:
       plugins: [traffic-label, proxy-rewrite]
     config:
@@ -606,9 +563,6 @@ cases:
               equals: "200"
 
   - name: default-match
-    source:
-      file: t/plugin/traffic-label2.t
-      tests: [6, 7]
     runtime:
       plugins: [traffic-label, proxy-rewrite]
     config:
@@ -653,9 +607,6 @@ cases:
               equals: "100"
 
   - name: multiple-headers
-    source:
-      file: t/plugin/traffic-label2.t
-      tests: [8, 9]
     runtime:
       plugins: [traffic-label, proxy-rewrite]
     config:
@@ -734,9 +685,6 @@ cases:
               equals: id2
 
   - name: multiple-actions
-    source:
-      file: t/plugin/traffic-label2.t
-      tests: [10, 11]
     variants:
       - name: source-actions
         runtime:
@@ -783,9 +731,6 @@ cases:
               body:
                 equals: hello world
   - name: no-action
-    source:
-      file: t/plugin/traffic-label2.t
-      tests: [12, 13]
     runtime:
       plugins: [traffic-label, proxy-rewrite]
     config:
@@ -830,9 +775,6 @@ cases:
               equals: "200"
 
   - name: multiple-rules
-    source:
-      file: t/plugin/traffic-label2.t
-      tests: [14, 15, 16]
     runtime:
       plugins: [traffic-label, proxy-rewrite]
     config:
@@ -902,9 +844,6 @@ cases:
               equals: "300"
 
   - name: reject-missing-rules
-    source:
-      file: t/plugin/traffic-label2.t
-      tests: [17]
     runtime:
       plugins: [traffic-label, proxy-rewrite]
     config:
@@ -926,9 +865,6 @@ cases:
         matches: rules.*required
 
   - name: reject-empty-rules
-    source:
-      file: t/plugin/traffic-label2.t
-      tests: [18]
     runtime:
       plugins: [traffic-label, proxy-rewrite]
     config:

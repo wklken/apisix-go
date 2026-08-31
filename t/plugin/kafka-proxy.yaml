@@ -1,13 +1,5 @@
-source:
-  repository: https://github.com/apache/apisix
-  commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-  file: t/plugin/kafka-proxy.t
-  tests: 2
-
 cases:
   - name: schema
-    source:
-      tests: [1]
     variants:
       - name: empty-config
         config:
@@ -70,8 +62,6 @@ cases:
         output: *schema_error
 
   - name: encrypted-sasl-password
-    source:
-      tests: [2]
     runtime:
       apisix:
         data_encryption:

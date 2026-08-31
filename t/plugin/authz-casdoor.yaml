@@ -1,13 +1,5 @@
-source:
-  repository: https://github.com/apache/apisix
-  commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-  file: t/plugin/authz-casdoor.t
-  tests: 12
-
 cases:
   - name: schema
-    source:
-      tests: [1]
     variants:
       - name: valid
         config:
@@ -70,8 +62,6 @@ cases:
         output: *schema_rejection
 
   - name: authorize-redirect
-    source:
-      tests: [2, 3]
     config:
       routes:
         - id: authz-casdoor-redirect
@@ -97,8 +87,6 @@ cases:
               matches: '^authz_casdoor_session_[0-9a-f]{64}='
 
   - name: fake-casdoor-and-login
-    source:
-      tests: [4, 5, 6]
     config:
       routes:
         - id: authz-casdoor-fake-token
@@ -181,8 +169,6 @@ cases:
             equals: logged in
 
   - name: callback-without-session
-    source:
-      tests: [7]
     config:
       routes:
         - id: authz-casdoor-no-session
@@ -203,8 +189,6 @@ cases:
             matches: 'no session found'
 
   - name: invalid-state
-    source:
-      tests: [8]
     config:
       routes:
         - id: authz-casdoor-invalid-state
@@ -232,8 +216,6 @@ cases:
             matches: 'invalid state'
 
   - name: invalid-access-token
-    source:
-      tests: [9]
     config:
       routes:
         - id: authz-casdoor-invalid-token
@@ -269,8 +251,6 @@ cases:
             matches: 'failed when accessing token: invalid access_token'
 
   - name: encrypted-client-secret
-    source:
-      tests: [10]
     runtime:
       apisix:
         data_encryption:
@@ -307,8 +287,6 @@ cases:
         output:
           status: 302
   - name: session-cookie-scoped-per-client-id
-    source:
-      tests: [11, 12]
     config:
       routes:
         - id: authz-casdoor-low
@@ -373,8 +351,6 @@ cases:
               matches: '^authz_casdoor_session_fe7ae8841c6c2f181cd899c271cb6a136d295d716c139b3a2f8a8d5f45e586f7='
 
   - name: session-expiry
-    source:
-      local_reason: post-target Casdoor session-expiry regression; absent from the APISIX 3.17 compatibility commit
     config:
       routes:
         - id: authz-casdoor-short-expiry

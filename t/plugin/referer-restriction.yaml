@@ -1,13 +1,5 @@
-source:
-  repository: https://github.com/apache/apisix
-  commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-  file: t/plugin/referer-restriction.t
-  tests: 13
-
 cases:
   - name: whitelist-wildcard
-    source:
-      tests: [1, 2]
     config:
       routes:
         - id: referer-whitelist-wildcard
@@ -33,8 +25,6 @@ cases:
         equals: hello world
 
   - name: whitelist-exact
-    source:
-      tests: [3]
     config:
       routes:
         - id: referer-whitelist-exact
@@ -49,8 +39,6 @@ cases:
     output: *hello_output
 
   - name: whitelist-rejects-subdomain
-    source:
-      tests: [4]
     config:
       routes:
         - id: referer-whitelist-rejects-subdomain
@@ -66,8 +54,6 @@ cases:
       status: 403
 
   - name: whitelist-rejects-missing
-    source:
-      tests: [5]
     config:
       routes:
         - id: referer-whitelist-rejects-missing
@@ -81,8 +67,6 @@ cases:
       status: 403
 
   - name: bypass-missing
-    source:
-      tests: [6, 7]
     config:
       routes:
         - id: referer-bypass-missing
@@ -98,8 +82,6 @@ cases:
     output: *hello_output
 
   - name: malformed-referer-is-missing
-    source:
-      tests: [8]
     config:
       routes:
         - id: referer-malformed-is-missing
@@ -114,8 +96,6 @@ cases:
     output: *hello_output
 
   - name: reject-invalid-host-patterns
-    source:
-      tests: [9]
     variants:
       - name: embedded-wildcard
         config:
@@ -141,8 +121,6 @@ cases:
             matches: 'build route referer-invalid-tilde-pattern fail:.*referer-restriction'
 
   - name: blacklist-reject-message
-    source:
-      tests: [10, 11]
     config:
       routes:
         - id: referer-blacklist-message
@@ -163,8 +141,6 @@ cases:
         equals: '{"message":"Your referer host is deny"}'
 
   - name: blacklist-allows-other-host
-    source:
-      tests: [12]
     config:
       routes:
         - id: referer-blacklist-allows-other-host
@@ -179,8 +155,6 @@ cases:
     output: *hello_output
 
   - name: reject-whitelist-and-blacklist
-    source:
-      tests: [13]
     config:
       routes:
         - id: referer-reject-mutually-exclusive-lists

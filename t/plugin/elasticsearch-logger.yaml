@@ -1,18 +1,5 @@
-sources:
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/elasticsearch-logger.t
-    tests: 24
-    test_numbers: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26]
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/elasticsearch-logger2.t
-    tests: 8
-    test_numbers: [1, 2, 3, 5, 6, 7, 8, 9]
-
 cases:
   - name: unauthenticated-route-setup
-    source: {file: t/plugin/elasticsearch-logger.t, tests: [2]}
     config:
       routes:
         - id: unauthenticated-setup
@@ -32,7 +19,6 @@ cases:
       - {name: configured-route-writes-real-bulk-log, input: {path: /hello}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
 
   - name: unauthenticated-successful-write
-    source: {file: t/plugin/elasticsearch-logger.t, tests: [3]}
     config:
       routes:
         - id: unauthenticated-success
@@ -52,7 +38,6 @@ cases:
       - {name: proxy-response-and-bulk-write-succeed, input: {path: /hello}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
 
   - name: basic-auth-route-setup
-    source: {file: t/plugin/elasticsearch-logger.t, tests: [4]}
     config:
       routes:
         - id: auth-setup
@@ -78,7 +63,6 @@ cases:
       - {name: configured-auth-is-used-at-the-sink, input: {path: /hello}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
 
   - name: basic-auth-success
-    source: {file: t/plugin/elasticsearch-logger.t, tests: [5]}
     config:
       routes:
         - id: auth-success
@@ -98,7 +82,6 @@ cases:
       - {name: authenticated-write-succeeds, input: {path: /hello}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
 
   - name: no-auth-rejection-setup
-    source: {file: t/plugin/elasticsearch-logger.t, tests: [6]}
     config:
       routes:
         - id: no-auth-rejection-setup
@@ -121,7 +104,6 @@ cases:
         wait: 1s
 
   - name: no-auth-rejection
-    source: {file: t/plugin/elasticsearch-logger.t, tests: [7]}
     config:
       routes:
         - id: no-auth-rejection
@@ -144,7 +126,6 @@ cases:
         wait: 1s
 
   - name: bad-auth-rejection-setup
-    source: {file: t/plugin/elasticsearch-logger.t, tests: [8]}
     config:
       routes:
         - id: bad-auth-rejection-setup
@@ -167,7 +148,6 @@ cases:
         wait: 1s
 
   - name: bad-auth-rejection
-    source: {file: t/plugin/elasticsearch-logger.t, tests: [9]}
     config:
       routes:
         - id: bad-auth-rejection
@@ -190,7 +170,6 @@ cases:
         wait: 1s
 
   - name: plugin-metadata-log-format-setup
-    source: {file: t/plugin/elasticsearch-logger.t, tests: [10]}
     config:
       plugin_metadata:
         - id: elasticsearch-logger
@@ -213,7 +192,6 @@ cases:
       - {name: metadata-format-is-live, input: {path: /hello, headers: {Host: metadata.example}}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
 
   - name: plugin-metadata-log-format
-    source: {file: t/plugin/elasticsearch-logger.t, tests: [11]}
     config:
       plugin_metadata:
         - id: elasticsearch-logger
@@ -236,7 +214,6 @@ cases:
       - {name: custom-metadata-document-is-written, input: {path: /hello, headers: {Host: metadata.example}}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
 
   - name: auth-password-encrypted-at-rest
-    source: {file: t/plugin/elasticsearch-logger.t, tests: [12]}
     runtime:
       apisix:
         data_encryption:
@@ -267,7 +244,6 @@ cases:
       - {name: runtime-uses-decrypted-password, input: {path: /hello}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
 
   - name: multi-endpoint-route-setup
-    source: {file: t/plugin/elasticsearch-logger.t, tests: [13]}
     config:
       routes:
         - id: multi-endpoint-setup
@@ -292,7 +268,6 @@ cases:
       - {name: one-configured-endpoint-receives-real-write, input: {path: /hello}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
 
   - name: route-log-format-setup
-    source: {file: t/plugin/elasticsearch-logger.t, tests: [15]}
     config:
       plugin_metadata:
         - id: elasticsearch-logger
@@ -315,7 +290,6 @@ cases:
       - {name: route-format-overrides-metadata, input: {path: /hello, headers: {Host: route.example}}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
 
   - name: route-log-format
-    source: {file: t/plugin/elasticsearch-logger.t, tests: [16]}
     config:
       plugin_metadata:
         - id: elasticsearch-logger
@@ -338,7 +312,6 @@ cases:
       - {name: route-format-document-is-written, input: {path: /hello, headers: {Host: route.example}}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
 
   - name: elasticsearch-8-ignores-type-setup
-    source: {file: t/plugin/elasticsearch-logger.t, tests: [17]}
     config:
       routes:
         - id: es8-type-setup
@@ -358,7 +331,6 @@ cases:
       - {name: configured-type-is-not-emitted-for-es8, input: {path: /hello}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
 
   - name: elasticsearch-8-ignores-type
-    source: {file: t/plugin/elasticsearch-logger.t, tests: [18]}
     config:
       routes:
         - id: es8-type-hit
@@ -378,7 +350,6 @@ cases:
       - {name: es8-write-has-no-type-metadata, input: {path: /hello}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
 
   - name: request-body-capture
-    source: {file: t/plugin/elasticsearch-logger.t, tests: [19]}
     config:
       routes:
         - id: request-body
@@ -398,7 +369,6 @@ cases:
       - {name: request-body-is-preserved-and-logged, input: {method: POST, path: /hello, body: '{"sample_payload":"hello"}'}, output: {status: 200, body: {equals: "hello world\n"}}, wait: 1s}
 
   - name: response-body-capture
-    source: {file: t/plugin/elasticsearch-logger.t, tests: [20]}
     config:
       routes:
         - id: response-body
@@ -418,7 +388,6 @@ cases:
       - {name: response-body-is-returned-and-logged, input: {method: POST, path: /hello, body: '{"sample_payload":"hello"}'}, output: {status: 200, body: {equals: "hello world\n"}}, wait: 1s}
 
   - name: elasticsearch-9-route-setup
-    source: {file: t/plugin/elasticsearch-logger.t, tests: [21]}
     config:
       routes:
         - id: es9-setup
@@ -438,7 +407,6 @@ cases:
       - {name: es9-compatible-write-is-configured, input: {path: /hello}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
 
   - name: elasticsearch-9-success
-    source: {file: t/plugin/elasticsearch-logger.t, tests: [22]}
     config:
       routes:
         - id: es9-success
@@ -458,7 +426,6 @@ cases:
       - {name: es9-write-succeeds-without-type, input: {path: /hello}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
 
   - name: elasticsearch-7-route-setup
-    source: {file: t/plugin/elasticsearch-logger.t, tests: [23]}
     config:
       routes:
         - id: es7-setup
@@ -478,7 +445,6 @@ cases:
       - {name: es7-compatible-write-is-configured, input: {path: /hello}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
 
   - name: elasticsearch-7-success
-    source: {file: t/plugin/elasticsearch-logger.t, tests: [24]}
     config:
       routes:
         - id: es7-success
@@ -498,7 +464,6 @@ cases:
       - {name: es7-write-succeeds-without-type, input: {path: /hello}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
 
   - name: elasticsearch-6-route-setup
-    source: {file: t/plugin/elasticsearch-logger.t, tests: [25]}
     config:
       routes:
         - id: es6-setup
@@ -518,7 +483,6 @@ cases:
       - {name: es6-compatible-write-is-configured, input: {path: /hello}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
 
   - name: elasticsearch-6-success
-    source: {file: t/plugin/elasticsearch-logger.t, tests: [26]}
     config:
       routes:
         - id: es6-success
@@ -538,7 +502,6 @@ cases:
       - {name: es6-write-emits-required-doc-type, input: {path: /hello}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
 
   - name: max-pending-entries-drop
-    source: {file: t/plugin/elasticsearch-logger2.t, tests: [1]}
     config:
       routes:
         - id: es-logger-pending
@@ -584,7 +547,6 @@ cases:
         wait: 2s
 
   - name: header-auth-sent
-    source: {file: t/plugin/elasticsearch-logger2.t, tests: [2, 3]}
     config:
       routes:
         - id: es-logger-header-auth
@@ -618,7 +580,6 @@ cases:
         output: {status: 200, body: {equals: hello world}}
 
   - name: date-variable-index
-    source: {file: t/plugin/elasticsearch-logger2.t, tests: [5]}
     config:
       routes:
         - id: es-logger-date-index
@@ -651,7 +612,6 @@ cases:
         output: {status: 200, body: {equals: hello world}}
 
   - name: apisix-variable-index
-    source: {file: t/plugin/elasticsearch-logger2.t, tests: [6]}
     config:
       routes:
         - id: es-logger-host-index
@@ -684,7 +644,6 @@ cases:
         output: {status: 200, body: {equals: hello world}}
 
   - name: combined-variable-index
-    source: {file: t/plugin/elasticsearch-logger2.t, tests: [7]}
     config:
       routes:
         - id: es-logger-combined-index
@@ -717,7 +676,6 @@ cases:
         output: {status: 200, body: {equals: hello world}}
 
   - name: template-not-mutated-across-requests
-    source: {file: t/plugin/elasticsearch-logger2.t, tests: [8]}
     config:
       routes:
         - id: es-logger-no-mutation
@@ -757,7 +715,6 @@ cases:
         output: {status: 200, body: {equals: hello world}}
 
   - name: dollar-brace-variable-no-time-replacement
-    source: {file: t/plugin/elasticsearch-logger2.t, tests: [9]}
     config:
       routes:
         - id: es-logger-dollar-brace

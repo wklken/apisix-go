@@ -1,12 +1,5 @@
-sources:
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/datadog.t
-    tests: 11
-    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
 cases:
   - name: metadata-schema-endpoint-is-accepted-and-used
-    source: {file: t/plugin/datadog.t, tests: [1]}
     config:
       plugin_metadata:
         - id: datadog
@@ -37,7 +30,6 @@ cases:
         input: {method: GET, path: /opentracing}
         output: {status: 200, body: {equals: opentracing}}
   - name: metadata-and-route-config-activate-real-delivery
-    source: {file: t/plugin/datadog.t, tests: [2]}
     config:
       plugin_metadata:
         - id: datadog
@@ -67,7 +59,6 @@ cases:
         output: {status: 200, body: {equals: opentracing}}
 
   - name: one-request-emits-six-ordered-coalesced-metrics
-    source: {file: t/plugin/datadog.t, tests: [3]}
     config:
       plugin_metadata:
         - {id: datadog, host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}'}
@@ -94,7 +85,6 @@ cases:
         output: {status: 200, body: {equals: opentracing}}
 
   - name: two-requests-produce-two-complete-independent-metric-sets
-    source: {file: t/plugin/datadog.t, tests: [4]}
     config:
       plugin_metadata:
         - {id: datadog, host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}'}
@@ -129,7 +119,6 @@ cases:
         output: {status: 200, body: {equals: opentracing}}
 
   - name: custom-metric-namespace
-    source: {file: t/plugin/datadog.t, tests: [5]}
     config:
       plugin_metadata:
         - id: datadog
@@ -159,7 +148,6 @@ cases:
         output: {status: 200, body: {equals: opentracing}}
 
   - name: custom-constant-tags
-    source: {file: t/plugin/datadog.t, tests: [6]}
     config:
       plugin_metadata:
         - id: datadog
@@ -189,7 +177,6 @@ cases:
         output: {status: 200, body: {equals: opentracing}}
 
   - name: missing-route-name-falls-back-to-route-id
-    source: {file: t/plugin/datadog.t, tests: [7]}
     config:
       plugin_metadata:
         - id: datadog
@@ -218,7 +205,6 @@ cases:
         output: {status: 200, body: {equals: opentracing}}
 
   - name: named-route-and-service-emit-both-names
-    source: {file: t/plugin/datadog.t, tests: [8]}
     config:
       plugin_metadata:
         - id: datadog
@@ -249,7 +235,6 @@ cases:
         output: {status: 200, body: {equals: opentracing}}
 
   - name: prefer-name-false-emits-route-and-service-ids
-    source: {file: t/plugin/datadog.t, tests: [9]}
     config:
       plugin_metadata:
         - id: datadog
@@ -279,7 +264,6 @@ cases:
         output: {status: 200, body: {equals: opentracing}}
 
   - name: authenticated-consumer-name-is-emitted
-    source: {file: t/plugin/datadog.t, tests: [10]}
     config:
       plugin_metadata:
         - {id: datadog, host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}'}
@@ -316,7 +300,6 @@ cases:
           logs: {not_matches: '\buser0\b'}
 
   - name: embedded-wildcard-path-and-method-tags-use-original-route-pattern
-    source: {file: t/plugin/datadog.t, tests: [11]}
     config:
       plugin_metadata:
         - {id: datadog, host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}'}

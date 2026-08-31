@@ -17,15 +17,12 @@ disabled only when it declares a nonblank `target_plugin_exempt_reason`; the
 harness rejects missing, blank, or stale exemptions. No generated placeholder
 manifest is counted as a behavior test.
 
-The schema rejects `skip` fields. A source block counts as covered only when it
-belongs to an executable standalone scenario with a request and an assertion;
-placeholder reasons such as "requires setup or an external dependency" are not
-accepted as coverage. The semantic corpus gate also rejects generic fixture
-proxies that never configure the named plugin. Cases that need a local
-dependency use a fixture declared in the same manifest; they are not represented
-as skips. Network fixtures cover TCP, TLS-over-TCP, UDP, gRPC, Redis, Kafka,
-Dubbo, and LDAP protocol surfaces, and `{{WORK_DIR}}` keeps file assertions
-inside the per-case temporary directory.
+The schema rejects `skip` fields and upstream source-accounting fields. Generic
+fixture proxies that never configure the named plugin do not count as behavior
+tests. Cases that need a local dependency use a fixture declared in the same
+manifest; they are not represented as skips. Network fixtures cover TCP,
+TLS-over-TCP, UDP, gRPC, Redis, Kafka, Dubbo, and LDAP protocol surfaces, and
+`{{WORK_DIR}}` keeps file assertions inside the per-case temporary directory.
 
 ## Run
 
@@ -47,21 +44,15 @@ The package has no build tag, so `go test ./... -count=1` also runs it.
 
 ## Manifest contract
 
-Each `<plugin>.yaml` contains local cases and may retain the upstream repository,
-commit, file, and `TEST` labels from which those cases were derived. That source
-metadata is local traceability only; the repository does not maintain a second
-global accounting database or fetch upstream source during the ordinary
-harness. Within one manifest, the validator still rejects missing, duplicated,
-out-of-range, or mixed-commit source labels before starting a child process.
-
-Setup-only source blocks are grouped with the request block that exercises the
-setup. When upstream setup depends on the Admin API, Lua, or an external
-service, the manifest provides an equivalent standalone resource or local
-fixture so the behavior remains executable.
+Each `<plugin>.yaml` contains only executable APISIX-Go scenarios. Repository,
+commit, upstream filename, and `TEST` numbering are qualification history rather
+than integration-test inputs and are deliberately excluded from this contract.
+When an upstream setup depends on the Admin API, Lua, or an external service,
+the manifest provides an equivalent standalone resource or local fixture so the
+behavior remains executable.
 
 An HTTP case contains:
 
-- `source.tests`: source `TEST` numbers represented by the case;
 - optional `target_plugin_exempt_reason`: required only for an intentional
   negative case that does not activate the manifest's target plugin; variants
   declare this independently rather than on their parent case;
@@ -117,11 +108,11 @@ headers, and fixture bodies. `absent` is valid only for headers.
 
 ## Adding a plugin
 
-1. When converting an upstream case, record its exact repository commit and
-   source labels in the new manifest.
-2. Create `t/plugin/<plugin>.yaml`; pair setup blocks with their behavior block.
-3. Convert all blocks into executable standalone scenarios; `skip` fields and
-   placeholder cases are rejected.
+1. Create `t/plugin/<plugin>.yaml`; pair setup blocks with their behavior block.
+2. Convert relevant behavior into executable standalone scenarios; upstream
+   repository, commit, filename, and `TEST` numbering do not belong in the
+   manifest.
+3. Do not add `skip` fields or placeholder cases; both are rejected.
 4. Prefer fixture request assertions for request-mutating plugins and response
    assertions for response plugins.
 5. Run the focused manifest. If it exposes a parity bug, add a focused failing

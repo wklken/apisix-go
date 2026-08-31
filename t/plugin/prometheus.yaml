@@ -1,41 +1,5 @@
-sources:
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/prometheus-ai-proxy.t
-    tests: 2
-    test_numbers: [9, 10]
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/prometheus-ai-proxy2.t
-    tests: 3
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/prometheus-metric-expire.t
-    tests: 1
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/prometheus.t
-    tests: 23
-    test_numbers: [1, 2, 4, 5, 6, 9, 10, 11, 12, 13, 14, 15, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 40]
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/prometheus2.t
-    tests: 19
-    test_numbers: [1, 2, 3, 4, 5, 6, 7, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49]
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/prometheus3.t
-    tests: 3
-    test_numbers: [5, 6, 7]
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/prometheus4.t
-    tests: 9
-    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 14]
-
 cases:
   - name: invalid-prefer-name
-    source: {local_reason: strict Go plugin schema rejects a non-boolean prefer_name value}
     config:
       routes:
         - id: prometheus-invalid
@@ -51,7 +15,6 @@ cases:
 
   - name: profile-metrics-scrape
     wait_for_generation: true
-    source: {file: t/plugin/prometheus.t, tests: [1, 2, 4, 5, 6, 9, 10, 11]}
     config:
       routes:
         - id: prometheus-profile-metrics
@@ -101,7 +64,6 @@ cases:
           body: {matches: 'apisix_http_latency_count\{[^\n]*route="prometheus-profile"[^\n]*type="request"[^\n]*\} 10'}
   - name: bounded-route-service-labels
     wait_for_generation: true
-    source: {file: t/plugin/prometheus2.t, tests: [38, 39, 40]}
     config:
       services:
         - id: prometheus-service-id
@@ -134,7 +96,6 @@ cases:
             matches: 'apisix_http_status\{[^\n]*route="prometheus-route-name"[^\n]*service="prometheus-service-name"[^\n]*\} 1'
 
   - name: http-series-overflow
-    source: {local_reason: Go-native bounded-cardinality regression coverage beyond APISIX 3.17}
     wait_for_generation: true
     runtime:
       plugin_attr:
@@ -174,7 +135,6 @@ cases:
 
   - name: ai-proxy-active-connections
     wait_for_generation: true
-    source: {file: t/plugin/prometheus-ai-proxy.t, tests: [9, 10]}
     config:
       routes:
         - id: prometheus-ai-active-metrics
@@ -224,7 +184,6 @@ cases:
 
   - name: regular-request-omits-llm-series
     wait_for_generation: true
-    source: {file: t/plugin/prometheus-ai-proxy2.t, tests: [1, 2, 3]}
     config:
       routes:
         - id: prometheus-regular-metrics
@@ -245,7 +204,6 @@ cases:
 
   - name: request-metric-expiration
     wait_for_generation: true
-    source: {file: t/plugin/prometheus-metric-expire.t, tests: [1]}
     runtime:
       plugin_attr:
         prometheus:
@@ -283,7 +241,6 @@ cases:
 
   - name: service-bound-metrics
     wait_for_generation: true
-    source: {file: t/plugin/prometheus.t, tests: [12, 13, 14, 15]}
     config:
       services:
         - id: prometheus-source-service
@@ -305,7 +262,6 @@ cases:
 
   - name: early-response-metrics
     wait_for_generation: true
-    source: {file: t/plugin/prometheus.t, tests: [17, 18]}
     config:
       routes:
         - id: prometheus-early-metrics
@@ -325,7 +281,6 @@ cases:
 
   - name: global-rule-request-metrics
     wait_for_generation: true
-    source: {file: t/plugin/prometheus.t, tests: [19, 20, 21, 22]}
     config:
       global_rules:
         - id: prometheus-global
@@ -351,7 +306,6 @@ cases:
 
   - name: service-latency-buckets
     wait_for_generation: true
-    source: {file: t/plugin/prometheus.t, tests: [23, 24, 25, 26]}
     config:
       services:
         - id: "3"
@@ -379,7 +333,6 @@ cases:
         output: {status: 200, body: {matches: 'apisix_http_latency_bucket\{[^\n]*service="3"[^\n]*type="apisix"[^\n]*le="500"[^\n]*\} 3'}}
 
   - name: node-info-from-prometheus-source
-    source: {file: t/plugin/prometheus.t, tests: [40]}
     config:
       routes:
         - id: prometheus-node-info-metrics
@@ -392,7 +345,6 @@ cases:
 
   - name: consumer-labels
     wait_for_generation: true
-    source: {file: t/plugin/prometheus2.t, tests: [1, 2, 3, 4, 5, 6, 7]}
     config:
       consumers:
         - username: jack
@@ -426,7 +378,6 @@ cases:
 
   - name: route-name-with-service-id-fallback
     wait_for_generation: true
-    source: {file: t/plugin/prometheus2.t, tests: [41, 42, 43]}
     config:
       services:
         - id: prometheus-unnamed-service
@@ -451,7 +402,6 @@ cases:
 
   - name: route-id-with-service-name
     wait_for_generation: true
-    source: {file: t/plugin/prometheus2.t, tests: [44, 45, 46]}
     config:
       services:
         - id: prometheus-named-service-id
@@ -476,7 +426,6 @@ cases:
 
   - name: source-retains-service-name-after-route-name-removal
     wait_for_generation: true
-    source: {file: t/plugin/prometheus2.t, tests: [47, 48, 49]}
     config:
       services:
         - id: prometheus-retained-service-id
@@ -501,7 +450,6 @@ cases:
 
   - name: route-binding-wins-over-global-binding
     wait_for_generation: true
-    source: {file: t/plugin/prometheus3.t, tests: [5, 6, 7]}
     config:
       global_rules:
         - id: prometheus-no-double-global
@@ -525,7 +473,6 @@ cases:
 
   - name: configured-request-extra-labels
     wait_for_generation: true
-    source: {file: t/plugin/prometheus4.t, tests: [1, 2, 3, 4]}
     runtime:
       plugin_attr:
         prometheus:
@@ -554,7 +501,6 @@ cases:
 
   - name: configured-latency-buckets
     wait_for_generation: true
-    source: {file: t/plugin/prometheus4.t, tests: [7, 8]}
     runtime:
       plugin_attr:
         prometheus:
@@ -584,7 +530,6 @@ cases:
 
   - name: missing-extra-label-variable-is-empty
     wait_for_generation: true
-    source: {file: t/plugin/prometheus4.t, tests: [5, 6]}
     runtime:
       plugin_attr:
         prometheus:
@@ -611,7 +556,6 @@ cases:
         output: {status: 200, body: {matches: 'apisix_http_status\{[^\n]*dummy=""[^\n]*route="prometheus-missing-label"[^\n]*\} 1'}}
 
   - name: node-info-from-prometheus4-source
-    source: {file: t/plugin/prometheus4.t, tests: [14]}
     config:
       routes:
         - id: prometheus4-node-info-metrics

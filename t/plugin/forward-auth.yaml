@@ -1,23 +1,5 @@
-sources:
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/forward-auth.t
-    tests: 18
-    test_numbers: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/forward-auth2.t
-    tests: 5
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/forward-auth3.t
-    tests: 2
-
 cases:
   - name: get-auth-header-contract
-    source:
-      file: t/plugin/forward-auth.t
-      tests: [2, 3, 4, 5, 6, 7, 8]
     config:
       routes:
         - id: forward-auth-hello
@@ -100,9 +82,6 @@ cases:
           headers: {Location: {absent: true}}
 
   - name: post-auth-allow-and-deny
-    source:
-      file: t/plugin/forward-auth.t
-      tests: [9, 10]
     config:
       routes:
         - id: forward-auth-post
@@ -139,9 +118,6 @@ cases:
           headers: {Location: {equals: 'http://example.com/auth'}}
 
   - name: unavailable-auth-fails-closed
-    source:
-      file: t/plugin/forward-auth.t
-      tests: [11]
     config:
       routes:
         - id: forward-auth-closed
@@ -166,9 +142,6 @@ cases:
           logs: {matches: 'failed to process forward auth, err:.*EOF'}
 
   - name: unavailable-auth-allows-degradation
-    source:
-      file: t/plugin/forward-auth.t
-      tests: [12]
     config:
       routes:
         - id: forward-auth-degradation
@@ -191,9 +164,6 @@ cases:
         output: {status: 200, body: {equals: hello world}}
 
   - name: custom-error-status
-    source:
-      file: t/plugin/forward-auth.t
-      tests: [13]
     config:
       routes:
         - id: forward-auth-custom-error
@@ -206,9 +176,6 @@ cases:
       logs: {matches: 'failed to process forward auth, err:.*connect'}
 
   - name: json-post-argument-extra-header
-    source:
-      file: t/plugin/forward-auth.t
-      tests: [14]
     config:
       routes:
         - id: forward-auth-post-arg
@@ -244,9 +211,6 @@ cases:
         output: {status: 200, body: {json_equals: '{"x-user-id":"i-am-an-user"}'}}
 
   - name: fixed-extra-header
-    source:
-      file: t/plugin/forward-auth.t
-      tests: [15]
     config:
       routes:
         - id: forward-auth-fixed-extra-header
@@ -273,9 +237,6 @@ cases:
         output: {status: 200, body: {json_equals: '{"x-user-id":"i-am-an-user"}'}}
 
   - name: crlf-extra-header-is-rejected
-    source:
-      file: t/plugin/forward-auth.t
-      tests: [16]
     config:
       routes:
         - id: forward-auth-crlf
@@ -298,9 +259,6 @@ cases:
           logs: {matches: 'failed to process forward auth, err:.*invalid header field value'}
 
   - name: oversized-post-is-rejected-before-auth
-    source:
-      file: t/plugin/forward-auth.t
-      tests: [17, 18]
     config:
       routes:
         - id: forward-auth-body-limit
@@ -325,9 +283,6 @@ cases:
           logs: {matches: 'failed to read request body: request body too large'}
 
   - name: post-within-body-limit
-    source:
-      file: t/plugin/forward-auth.t
-      tests: [19]
     config:
       routes:
         - id: forward-auth-within-limit
@@ -354,9 +309,6 @@ cases:
         output: {status: 200, body: {equals: i-am-an-user}}
 
   - name: request-method-framing-matrix
-    source:
-      file: t/plugin/forward-auth2.t
-      tests: [1, 2, 3, 4, 5]
     config:
       routes:
         - id: forward-auth-method-get
@@ -424,9 +376,6 @@ cases:
         output: {status: 200, body: {equals: ok}}
 
   - name: missing-auth-response-header-clears-client-value
-    source:
-      file: t/plugin/forward-auth3.t
-      tests: [1, 2]
     config:
       routes:
         - id: forward-auth-clear-injected

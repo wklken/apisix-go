@@ -1,13 +1,5 @@
-source:
-  repository: https://github.com/apache/apisix
-  commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-  file: t/plugin/mocking.t
-  tests: 22
-
 cases:
   - name: response-example
-    source:
-      tests: [1, 2]
     config:
       routes:
         - id: mocking-example
@@ -29,8 +21,6 @@ cases:
         equals: hello world
 
   - name: string-schema
-    source:
-      tests: [3, 4]
     config:
       routes:
         - id: mocking-string-schema
@@ -53,8 +43,6 @@ cases:
         equals: '{"field1":"hello"}'
 
   - name: integer-schema
-    source:
-      tests: [5, 6]
     config:
       routes:
         - id: mocking-integer-schema
@@ -77,8 +65,6 @@ cases:
         equals: '{"field1":4}'
 
   - name: number-schema
-    source:
-      tests: [7, 8]
     config:
       routes:
         - id: mocking-number-schema
@@ -101,8 +87,6 @@ cases:
         equals: '{"field1":5.5}'
 
   - name: boolean-schema
-    source:
-      tests: [9, 10]
     config:
       routes:
         - id: mocking-boolean-schema
@@ -125,8 +109,6 @@ cases:
         equals: '{"field1":true}'
 
   - name: object-schema
-    source:
-      tests: [11, 12]
     config:
       routes:
         - id: mocking-object-schema
@@ -148,8 +130,6 @@ cases:
         equals: '{"field1":{}}'
 
   - name: response-content-type
-    source:
-      tests: [13, 14]
     config:
       routes:
         - id: mocking-content-type
@@ -168,8 +148,6 @@ cases:
           equals: application/json
 
   - name: remote-address-variable
-    source:
-      tests: [15, 16]
     config:
       routes:
         - id: mocking-remote-address
@@ -187,8 +165,6 @@ cases:
         equals: remote_addr:127.0.0.1
 
   - name: unknown-variable
-    source:
-      tests: [17, 18]
     config:
       routes:
         - id: mocking-unknown-variable
@@ -206,8 +182,6 @@ cases:
         equals: 'empty_var:'
 
   - name: response-headers
-    source:
-      tests: [19, 20]
     config:
       routes:
         - id: mocking-response-headers
@@ -228,8 +202,6 @@ cases:
           equals: "yes"
 
   - name: response-header-route-variable
-    source:
-      tests: [21, 22]
     config:
       routes:
         - id: "1"

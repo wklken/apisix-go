@@ -1,19 +1,5 @@
-sources:
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/acl.t
-    tests: 44
-    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46]
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/acl2.t
-    tests: 4
-
 cases:
   - name: allow-consumers-by-org
-    source:
-      file: t/plugin/acl.t
-      tests: [1, 2, 3, 4, 5, 6]
     runtime: &consumer_runtime
       plugins: [acl, basic-auth]
     config:
@@ -78,9 +64,6 @@ cases:
         output: *hello_output
 
   - name: allow-consumer-by-project
-    source:
-      file: t/plugin/acl.t
-      tests: [7, 8, 9]
     runtime: *consumer_runtime
     config:
       routes:
@@ -112,9 +95,6 @@ cases:
             matches: 'The consumer is forbidden\.'
 
   - name: deny-consumer-by-project-with-custom-message
-    source:
-      file: t/plugin/acl.t
-      tests: [10, 11, 12]
     runtime: *consumer_runtime
     config:
       routes:
@@ -147,9 +127,6 @@ cases:
         output: *hello_output
 
   - name: deny-consumers-by-multiple-project-values
-    source:
-      file: t/plugin/acl.t
-      tests: [13, 14, 15]
     runtime: *consumer_runtime
     config:
       routes:
@@ -178,9 +155,6 @@ cases:
         output: *acl_forbidden
 
   - name: preserve-comma-in-label-value
-    source:
-      file: t/plugin/acl.t
-      tests: [16, 17, 18]
     runtime: *consumer_runtime
     config:
       routes:
@@ -209,9 +183,6 @@ cases:
         output: *hello_output
 
   - name: external-user-query-values
-    source:
-      file: t/plugin/acl.t
-      tests: [19, 20, 21, 22]
     runtime: &external_runtime
       plugins: [acl, serverless-pre-function]
     config:
@@ -251,9 +222,6 @@ cases:
         output: *acl_forbidden
 
   - name: external-user-table-parser
-    source:
-      file: t/plugin/acl.t
-      tests: [23, 24]
     runtime: *external_runtime
     config:
       routes:
@@ -285,9 +253,6 @@ cases:
     output: *hello_output
 
   - name: external-user-segmented-text-parser
-    source:
-      file: t/plugin/acl.t
-      tests: [25, 26]
     runtime: *external_runtime
     config:
       routes:
@@ -314,9 +279,6 @@ cases:
     output: *hello_output
 
   - name: external-user-json-parser
-    source:
-      file: t/plugin/acl.t
-      tests: [27, 28]
     runtime: *external_runtime
     config:
       routes:
@@ -342,9 +304,6 @@ cases:
     output: *hello_output
 
   - name: segmented-text-invalid-separator-does-not-match
-    source:
-      file: t/plugin/acl.t
-      tests: [29, 30]
     runtime: *external_runtime
     config:
       routes:
@@ -371,8 +330,6 @@ cases:
     output: *acl_forbidden
 
   - name: external-user-multiple-jsonpath-values
-    source:
-      local_reason: follows the post-3.17 APISIX fix that parses every JSONPath match instead of preserving the 3.17 first-match limitation
     runtime: *external_runtime
     config:
       routes:
@@ -399,9 +356,6 @@ cases:
     output: *hello_output
 
   - name: jsonpath-without-parser
-    source:
-      file: t/plugin/acl.t
-      tests: [33, 34]
     runtime: *external_runtime
     config:
       routes:
@@ -425,9 +379,6 @@ cases:
     output: *acl_forbidden
 
   - name: invalid-separator-pattern
-    source:
-      file: t/plugin/acl.t
-      tests: [35, 36]
     runtime: *external_runtime
     config:
       routes:
@@ -459,9 +410,6 @@ cases:
         matches: 'failed to split labels \[cloud,infra\]'
 
   - name: table-parser-rejects-string
-    source:
-      file: t/plugin/acl.t
-      tests: [37, 38]
     runtime: *external_runtime
     config:
       routes:
@@ -492,9 +440,6 @@ cases:
         matches: 'the parser is specified as table, but the type of value is not table: string'
 
   - name: json-parser-rejects-table
-    source:
-      file: t/plugin/acl.t
-      tests: [39, 40]
     runtime: *external_runtime
     config:
       routes:
@@ -525,9 +470,6 @@ cases:
         matches: 'the parser is specified as json array, but the value type is not string'
 
   - name: json-parser-requires-array-prefix
-    source:
-      file: t/plugin/acl.t
-      tests: [41, 42]
     runtime: *external_runtime
     config:
       routes:
@@ -558,9 +500,6 @@ cases:
         matches: "the parser is specified as json array, but the value do not has prefix '\\['"
 
   - name: json-parser-rejects-invalid-json
-    source:
-      file: t/plugin/acl.t
-      tests: [43, 44]
     runtime: *external_runtime
     config:
       routes:
@@ -591,9 +530,6 @@ cases:
         matches: 'failed to decode labels \[\[cloud\] as array, err:'
 
   - name: default-parser-single-value
-    source:
-      file: t/plugin/acl.t
-      tests: [45, 46]
     runtime: *external_runtime
     config:
       routes:
@@ -622,8 +558,6 @@ cases:
         matches: 'the string value can not parsed by json or segmented_text'
 
   - name: multi-match-parser-deny
-    source:
-      local_reason: regression coverage for the post-3.17 APISIX multi-match parser fix
     runtime: *external_runtime
     config:
       routes:
@@ -649,8 +583,6 @@ cases:
     output: *acl_forbidden
 
   - name: mixed-type-multi-match-parser-deny
-    source:
-      local_reason: regression coverage for post-3.17 string-only parser dispatch across mixed JSONPath matches
     runtime: *external_runtime
     config:
       routes:
@@ -676,8 +608,6 @@ cases:
     output: *acl_forbidden
 
   - name: external-user-jsonpath-filter
-    source:
-      local_reason: validates lua-jsonpath 1.0-1 static filter evaluation through the real plugin compile and request path
     runtime: *external_runtime
     config:
       routes:
@@ -701,8 +631,6 @@ cases:
     output: *acl_forbidden
 
   - name: external-user-jsonpath-non-finite-fail-closed
-    source:
-      local_reason: verifies non-finite numeric coercion fails closed through the real compile and request path
     runtime: *external_runtime
     config:
       routes:
@@ -726,9 +654,6 @@ cases:
     output: *acl_forbidden
 
   - name: comma-delimited-consumer-labels
-    source:
-      file: t/plugin/acl2.t
-      tests: [1, 2, 3, 4]
     runtime: *consumer_runtime
     config:
       routes:

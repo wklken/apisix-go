@@ -1,22 +1,5 @@
-sources:
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/response-rewrite.t
-    tests: 27
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/response-rewrite2.t
-    tests: 25
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/response-rewrite3.t
-    tests: 22
-
 cases:
   - name: schema-sanity
-    source:
-      file: t/plugin/response-rewrite.t
-      tests: [1]
     config:
       routes:
         - id: response-rewrite-schema-sanity
@@ -45,9 +28,6 @@ cases:
         equals: Hello world
 
   - name: reject-invalid-status
-    source:
-      file: t/plugin/response-rewrite.t
-      tests: [2]
     config:
       routes:
         - id: response-rewrite-reject-invalid-status
@@ -62,9 +42,6 @@ cases:
         matches: 'build route response-rewrite-reject-invalid-status fail:.*status_code.*598'
 
   - name: reject-invalid-config
-    source:
-      file: t/plugin/response-rewrite.t
-      tests: [3]
     config:
       routes:
         - id: response-rewrite-reject-invalid-config
@@ -81,9 +58,6 @@ cases:
         matches: 'build route response-rewrite-reject-invalid-config fail:.*body.*expected string'
 
   - name: rewrite-headers-and-body
-    source:
-      file: t/plugin/response-rewrite.t
-      tests: [4, 5]
     config:
       routes:
         - id: response-rewrite-headers-and-body
@@ -117,9 +91,6 @@ cases:
         equals: "new body\n"
 
   - name: rewrite-body-preserve-headers
-    source:
-      file: t/plugin/response-rewrite.t
-      tests: [6, 7]
     config:
       routes:
         - id: response-rewrite-body-preserve-headers
@@ -160,9 +131,6 @@ cases:
         equals: "new body2\n"
 
   - name: rewrite-location-and-status
-    source:
-      file: t/plugin/response-rewrite.t
-      tests: [8, 9]
     config:
       routes:
         - id: response-rewrite-location-and-status
@@ -183,9 +151,6 @@ cases:
           equals: https://www.iresty.com
 
   - name: empty-header-value
-    source:
-      file: t/plugin/response-rewrite.t
-      tests: [10]
     config:
       routes:
         - id: response-rewrite-reject-empty-header-field
@@ -202,9 +167,6 @@ cases:
         matches: 'build route response-rewrite-reject-empty-header-field fail:.*headers.*(pattern|additional)'
 
   - name: reject-array-header-value
-    source:
-      file: t/plugin/response-rewrite.t
-      tests: [11]
     config:
       routes:
         - id: response-rewrite-reject-array-header-value
@@ -221,9 +183,6 @@ cases:
         matches: 'build route response-rewrite-reject-array-header-value fail:.*X-Name.*(string|number)'
 
   - name: base64-body
-    source:
-      file: t/plugin/response-rewrite.t
-      tests: [12, 13]
     config:
       routes:
         - id: response-rewrite-base64-body
@@ -242,9 +201,6 @@ cases:
         equals: "Hello\n"
 
   - name: reject-invalid-base64
-    source:
-      file: t/plugin/response-rewrite.t
-      tests: [14]
     config:
       routes:
         - id: response-rewrite-reject-invalid-base64
@@ -260,9 +216,6 @@ cases:
         matches: 'build route response-rewrite-reject-invalid-base64 fail:.*body is not valid base64'
 
   - name: admin-etcd-clean-serialization
-    source:
-      file: t/plugin/response-rewrite.t
-      tests: [15]
     config:
       routes:
         - id: response-rewrite-clean-standalone-config
@@ -290,9 +243,6 @@ cases:
       body:
         equals: "new body\n"
   - name: valid-status-expression
-    source:
-      file: t/plugin/response-rewrite.t
-      tests: [16]
     config:
       routes:
         - id: response-rewrite-valid-status-expression
@@ -312,9 +262,6 @@ cases:
         equals: matched
 
   - name: reject-invalid-expression
-    source:
-      file: t/plugin/response-rewrite.t
-      tests: [17]
     config:
       routes:
         - id: response-rewrite-reject-invalid-expression
@@ -330,9 +277,6 @@ cases:
         matches: 'build route response-rewrite-reject-invalid-expression fail:.*vars validation failed'
 
   - name: matching-status-expression
-    source:
-      file: t/plugin/response-rewrite.t
-      tests: [18, 19]
     config:
       routes:
         - id: response-rewrite-matching-status-expression
@@ -356,9 +300,6 @@ cases:
         equals: "new body3\n"
 
   - name: nonmatching-status-expression
-    source:
-      file: t/plugin/response-rewrite.t
-      tests: [20]
     config:
       routes:
         - id: response-rewrite-nonmatching-status-expression
@@ -382,9 +323,6 @@ cases:
         equals: hello world
 
   - name: empty-base64-body
-    source:
-      file: t/plugin/response-rewrite.t
-      tests: [21]
     config:
       routes:
         - id: response-rewrite-reject-empty-base64-body
@@ -400,9 +338,6 @@ cases:
         matches: 'build route response-rewrite-reject-empty-base64-body fail:.*body_base64 requires a non-empty body'
 
   - name: nil-base64-body
-    source:
-      file: t/plugin/response-rewrite.t
-      tests: [22]
     config:
       routes:
         - id: response-rewrite-reject-nil-base64-body
@@ -417,9 +352,6 @@ cases:
         matches: 'build route response-rewrite-reject-nil-base64-body fail:.*body_base64 requires a non-empty body'
 
   - name: response-header-variables
-    source:
-      file: t/plugin/response-rewrite.t
-      tests: [23, 24]
     config:
       routes:
         - id: response-rewrite-header-variables
@@ -444,9 +376,6 @@ cases:
         equals: upstream
 
   - name: empty-body
-    source:
-      file: t/plugin/response-rewrite.t
-      tests: [25, 26]
     config:
       routes:
         - id: response-rewrite-empty-body
@@ -464,9 +393,6 @@ cases:
         equals: ""
 
   - name: add-header-without-colon
-    source:
-      file: t/plugin/response-rewrite.t
-      tests: [27]
     config:
       routes:
         - id: response-rewrite-add-header
@@ -489,9 +415,6 @@ cases:
         equals: upstream
 
   - name: filter-schema-sanity
-    source:
-      file: t/plugin/response-rewrite2.t
-      tests: [1, 2]
     variants:
       - name: valid-filters
         config:
@@ -555,9 +478,6 @@ cases:
             matches: 'build route response-rewrite-empty-filters fail:.*properties/filters/minItems: minimum 1 items required'
 
   - name: filter-rejects-missing-replace
-    source:
-      file: t/plugin/response-rewrite2.t
-      tests: [3]
     config:
       routes:
         - id: response-rewrite-missing-replace
@@ -576,9 +496,6 @@ cases:
         matches: 'build route response-rewrite-missing-replace.*missing properties: .replace.'
 
   - name: filter-rejects-invalid-scope
-    source:
-      file: t/plugin/response-rewrite2.t
-      tests: [4]
     config:
       routes:
         - id: response-rewrite-invalid-scope
@@ -600,9 +517,6 @@ cases:
         matches: 'build route response-rewrite-invalid-scope.*scope.*enum'
 
   - name: filter-rejects-empty-regex
-    source:
-      file: t/plugin/response-rewrite2.t
-      tests: [5]
     config:
       routes:
         - id: response-rewrite-empty-regex
@@ -622,9 +536,6 @@ cases:
         matches: 'build route response-rewrite-empty-regex.*response-rewrite'
 
   - name: filter-rejects-invalid-options
-    source:
-      file: t/plugin/response-rewrite2.t
-      tests: [6]
     config:
       routes:
         - id: response-rewrite-invalid-options
@@ -645,9 +556,6 @@ cases:
         matches: 'build route response-rewrite-invalid-options.*response-rewrite'
 
   - name: filters-vars-match
-    source:
-      file: t/plugin/response-rewrite2.t
-      tests: [7, 8]
     config:
       routes:
         - id: response-rewrite-filters-vars
@@ -672,9 +580,6 @@ cases:
         equals: test world
 
   - name: filter-global-substitute
-    source:
-      file: t/plugin/response-rewrite2.t
-      tests: [9, 10]
     config:
       routes:
         - id: response-rewrite-global
@@ -700,9 +605,6 @@ cases:
         equals: hetto wortd
 
   - name: filter-replace-empty
-    source:
-      file: t/plugin/response-rewrite2.t
-      tests: [11, 12]
     config:
       routes:
         - id: response-rewrite-replace-empty
@@ -727,9 +629,6 @@ cases:
         equals: ' world'
 
   - name: filter-replace-words
-    source:
-      file: t/plugin/response-rewrite2.t
-      tests: [13, 14]
     config:
       routes:
         - id: response-rewrite-replace-words
@@ -754,9 +653,6 @@ cases:
         equals: hello *
 
   - name: multiple-filters
-    source:
-      file: t/plugin/response-rewrite2.t
-      tests: [15, 16]
     config:
       routes:
         - id: response-rewrite-multiple-filters
@@ -783,9 +679,6 @@ cases:
         equals: HETLO world
 
   - name: filter-no-match
-    source:
-      file: t/plugin/response-rewrite2.t
-      tests: [17, 18]
     config:
       routes:
         - id: response-rewrite-no-match
@@ -810,9 +703,6 @@ cases:
         equals: hello world
 
   - name: headers-add
-    source:
-      file: t/plugin/response-rewrite2.t
-      tests: [20, 21]
     config:
       routes:
         - id: response-rewrite-headers-add
@@ -839,9 +729,6 @@ cases:
         equals: hello world
 
   - name: headers-set
-    source:
-      file: t/plugin/response-rewrite2.t
-      tests: [22, 23]
     config:
       routes:
         - id: response-rewrite-headers-set
@@ -869,9 +756,6 @@ cases:
         equals: hello world
 
   - name: headers-remove
-    source:
-      file: t/plugin/response-rewrite2.t
-      tests: [24, 25]
     config:
       routes:
         - id: response-rewrite-headers-remove
@@ -904,9 +788,6 @@ cases:
         equals: hello world
 
   - name: headers-schema-rejection
-    source:
-      file: t/plugin/response-rewrite2.t
-      tests: [19]
     config:
       routes:
         - id: response-rewrite-headers-schema
@@ -926,9 +807,6 @@ cases:
         matches: 'build route response-rewrite-headers-schema.*headers.*add.*pattern'
 
   - name: gzip-upstream-preserved
-    source:
-      file: t/plugin/response-rewrite3.t
-      tests: [1, 2]
     config:
       routes:
         - id: response-rewrite-gzip-pass
@@ -960,9 +838,6 @@ cases:
         equals: "hello world\n"
 
   - name: gzip-body-rewrite
-    source:
-      file: t/plugin/response-rewrite3.t
-      tests: [3, 4]
     config:
       routes:
         - id: response-rewrite-gzip-body
@@ -996,9 +871,6 @@ cases:
         equals: "new body\n"
 
   - name: gzip-filter-decode
-    source:
-      file: t/plugin/response-rewrite3.t
-      tests: [5, 6]
     config:
       routes:
         - id: response-rewrite-gzip-filter
@@ -1034,9 +906,6 @@ cases:
         equals: "test world\n"
 
   - name: deflate-body-rewrite
-    source:
-      file: t/plugin/response-rewrite3.t
-      tests: [7, 8]
     config:
       routes:
         - id: response-rewrite-deflate-body
@@ -1071,9 +940,6 @@ cases:
         equals: "new body\n"
 
   - name: deflate-filter-warning
-    source:
-      file: t/plugin/response-rewrite3.t
-      tests: [9, 10]
     config:
       routes:
         - id: response-rewrite-deflate-filter
@@ -1110,9 +976,6 @@ cases:
         matches: 'filters may not work as expected due to unsupported compression encoding type: deflate'
 
   - name: gzip-headers-only
-    source:
-      file: t/plugin/response-rewrite3.t
-      tests: [11, 12]
     config:
       routes:
         - id: response-rewrite-gzip-headers
@@ -1156,9 +1019,6 @@ cases:
         equals: "hello world\n"
 
   - name: deflate-headers-only
-    source:
-      file: t/plugin/response-rewrite3.t
-      tests: [13, 14]
     config:
       routes:
         - id: response-rewrite-deflate-headers
@@ -1203,9 +1063,6 @@ cases:
         equals: old body
 
   - name: brotli-upstream-preserved
-    source:
-      file: t/plugin/response-rewrite3.t
-      tests: [15, 16]
     config:
       routes:
         - id: response-rewrite-brotli-pass
@@ -1237,9 +1094,6 @@ cases:
         equals: "hello world hello world hello world\n"
 
   - name: brotli-body-rewrite
-    source:
-      file: t/plugin/response-rewrite3.t
-      tests: [17, 18]
     config:
       routes:
         - id: response-rewrite-brotli-body
@@ -1273,9 +1127,6 @@ cases:
         equals: "new body\n"
 
   - name: brotli-filter-decode
-    source:
-      file: t/plugin/response-rewrite3.t
-      tests: [19, 20]
     config:
       routes:
         - id: response-rewrite-brotli-filter
@@ -1311,9 +1162,6 @@ cases:
         equals: "test world hello world hello world\n"
 
   - name: brotli-headers-only
-    source:
-      file: t/plugin/response-rewrite3.t
-      tests: [21, 22]
     config:
       routes:
         - id: response-rewrite-brotli-headers

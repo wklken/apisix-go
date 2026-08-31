@@ -1,24 +1,5 @@
-sources:
-    - repository: https://github.com/apache/apisix
-      commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-      file: t/plugin/rocketmq-logger-log-format.t
-      tests: 5
-    - repository: https://github.com/apache/apisix
-      commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-      file: t/plugin/rocketmq-logger.t
-      tests: 16
-      test_numbers: [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
-    - repository: https://github.com/apache/apisix
-      commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-      file: t/plugin/rocketmq-logger2.t
-      tests: 15
-      test_numbers: [1, 2, 3, 4, 5, 6, 7, 10, 11, 12, 13, 14, 15, 16, 17]
 cases:
     - name: metadata-log-format-is-accepted
-      source:
-        file: t/plugin/rocketmq-logger-log-format.t
-        tests:
-            - 1
       config:
         plugin_metadata:
             - id: rocketmq-logger
@@ -84,10 +65,6 @@ cases:
             status: 200
           wait: 200ms
     - name: metadata-log-format-route-with-single-entry-batch
-      source:
-        file: t/plugin/rocketmq-logger-log-format.t
-        tests:
-            - 2
       config:
         plugin_metadata:
             - id: rocketmq-logger
@@ -153,10 +130,6 @@ cases:
             status: 200
           wait: 200ms
     - name: metadata-log-format-publishes-host
-      source:
-        file: t/plugin/rocketmq-logger-log-format.t
-        tests:
-            - 3
       config:
         plugin_metadata:
             - id: rocketmq-logger
@@ -222,10 +195,6 @@ cases:
             status: 200
           wait: 200ms
     - name: route-log-format-overrides-plugin-metadata
-      source:
-        file: t/plugin/rocketmq-logger-log-format.t
-        tests:
-            - 4
       config:
         routes:
             - id: rocketmq-004
@@ -287,10 +256,6 @@ cases:
             status: 200
           wait: 200ms
     - name: route-log-format-publishes-client-address
-      source:
-        file: t/plugin/rocketmq-logger-log-format.t
-        tests:
-            - 5
       config:
         routes:
             - id: rocketmq-005
@@ -352,10 +317,6 @@ cases:
             status: 200
           wait: 200ms
     - name: route-configuration-publishes-message
-      source:
-        file: t/plugin/rocketmq-logger.t
-        tests:
-            - 4
       config:
         routes:
             - id: rocketmq-009
@@ -412,10 +373,6 @@ cases:
             status: 200
           wait: 200ms
     - name: route-access-publishes-message
-      source:
-        file: t/plugin/rocketmq-logger.t
-        tests:
-            - 5
       config:
         routes:
             - id: rocketmq-010
@@ -472,10 +429,6 @@ cases:
             status: 200
           wait: 200ms
     - name: unavailable-nameserver-does-not-break-proxy-response
-      source:
-        file: t/plugin/rocketmq-logger.t
-        tests:
-            - 6
       config:
         routes:
             - id: rocketmq-011
@@ -527,10 +480,6 @@ cases:
             status: 200
           wait: 1s
     - name: origin-format-with-request-body-config
-      source:
-        file: t/plugin/rocketmq-logger.t
-        tests:
-            - 7
       config:
         routes:
             - id: rocketmq-012
@@ -590,10 +539,6 @@ cases:
             status: 200
           wait: 200ms
     - name: origin-format-publishes-request-body
-      source:
-        file: t/plugin/rocketmq-logger.t
-        tests:
-            - 8
       config:
         routes:
             - id: rocketmq-013
@@ -653,10 +598,6 @@ cases:
             status: 200
           wait: 200ms
     - name: origin-format-without-request-body-config
-      source:
-        file: t/plugin/rocketmq-logger.t
-        tests:
-            - 9
       config:
         routes:
             - id: rocketmq-014
@@ -716,10 +657,6 @@ cases:
             status: 200
           wait: 200ms
     - name: origin-format-omits-request-body
-      source:
-        file: t/plugin/rocketmq-logger.t
-        tests:
-            - 10
       config:
         routes:
             - id: rocketmq-015
@@ -779,10 +716,6 @@ cases:
             status: 200
           wait: 200ms
     - name: default-format-configuration-publishes-json
-      source:
-        file: t/plugin/rocketmq-logger.t
-        tests:
-            - 11
       config:
         routes:
             - id: rocketmq-016
@@ -840,10 +773,6 @@ cases:
             status: 200
           wait: 200ms
     - name: default-format-publishes-upstream-field
-      source:
-        file: t/plugin/rocketmq-logger.t
-        tests:
-            - 12
       config:
         routes:
             - id: rocketmq-017
@@ -901,10 +830,6 @@ cases:
             status: 200
           wait: 200ms
     - name: key-field-is-optional-in-route-config
-      source:
-        file: t/plugin/rocketmq-logger.t
-        tests:
-            - 13
       config:
         routes:
             - id: rocketmq-018
@@ -960,10 +885,6 @@ cases:
             status: 200
           wait: 200ms
     - name: missing-key-publishes-message-without-key
-      source:
-        file: t/plugin/rocketmq-logger.t
-        tests:
-            - 14
       config:
         routes:
             - id: rocketmq-019
@@ -1019,10 +940,6 @@ cases:
             status: 200
           wait: 200ms
     - name: default-format-allows-missing-key
-      source:
-        file: t/plugin/rocketmq-logger.t
-        tests:
-            - 15
       config:
         routes:
             - id: rocketmq-020
@@ -1078,10 +995,6 @@ cases:
             status: 200
           wait: 200ms
     - name: default-format-missing-key-publishes-json
-      source:
-        file: t/plugin/rocketmq-logger.t
-        tests:
-            - 16
       config:
         routes:
             - id: rocketmq-021
@@ -1137,10 +1050,6 @@ cases:
             status: 200
           wait: 200ms
     - name: three-partition-topic-configuration-publishes
-      source:
-        file: t/plugin/rocketmq-logger.t
-        tests:
-            - 17
       config:
         routes:
             - id: rocketmq-022
@@ -1197,10 +1106,6 @@ cases:
             status: 200
           wait: 200ms
     - name: sync-publisher-uses-three-distinct-partitions
-      source:
-        file: t/plugin/rocketmq-logger.t
-        tests:
-            - 18
       config:
         routes:
             - id: rocketmq-023
@@ -1261,10 +1166,6 @@ cases:
             status: 200
           wait: 200ms
     - name: async-publisher-uses-three-distinct-partitions
-      source:
-        file: t/plugin/rocketmq-logger.t
-        tests:
-            - 19
       config:
         routes:
             - id: rocketmq-024
@@ -1325,10 +1226,6 @@ cases:
             status: 200
           wait: 200ms
     - name: nameserver-update-creates-a-new-producer
-      source:
-        file: t/plugin/rocketmq-logger2.t
-        tests:
-            - 1
       config:
         routes:
             - id: rocketmq-025
@@ -1434,10 +1331,6 @@ cases:
             status: 200
           wait: 200ms
     - name: missing-topic-is-reported-without-breaking-proxy
-      source:
-        file: t/plugin/rocketmq-logger2.t
-        tests:
-            - 2
       config:
         routes:
             - id: rocketmq-026
@@ -1490,10 +1383,6 @@ cases:
             status: 200
           wait: 1s
     - name: nameserver-address-supports-real-publish
-      source:
-        file: t/plugin/rocketmq-logger2.t
-        tests:
-            - 3
       config:
         routes:
             - id: rocketmq-027
@@ -1550,10 +1439,6 @@ cases:
             status: 200
           wait: 200ms
     - name: absent-plugin-metadata-uses-default-log-format
-      source:
-        file: t/plugin/rocketmq-logger2.t
-        tests:
-            - 4
       config:
         routes:
             - id: rocketmq-028
@@ -1610,10 +1495,6 @@ cases:
             status: 200
           wait: 200ms
     - name: request-body-expression-config-is-accepted
-      source:
-        file: t/plugin/rocketmq-logger2.t
-        tests:
-            - 5
       config:
         routes:
             - id: rocketmq-029
@@ -1676,10 +1557,6 @@ cases:
             status: 200
           wait: 200ms
     - name: matching-request-body-expression-includes-body
-      source:
-        file: t/plugin/rocketmq-logger2.t
-        tests:
-            - 6
       config:
         routes:
             - id: rocketmq-030
@@ -1742,10 +1619,6 @@ cases:
             status: 200
           wait: 200ms
     - name: nonmatching-request-body-expression-omits-body
-      source:
-        file: t/plugin/rocketmq-logger2.t
-        tests:
-            - 7
       config:
         routes:
             - id: rocketmq-031
@@ -1808,10 +1681,6 @@ cases:
             status: 200
           wait: 200ms
     - name: response-body-expression-config-is-accepted
-      source:
-        file: t/plugin/rocketmq-logger2.t
-        tests:
-            - 10
       config:
         routes:
             - id: rocketmq-034
@@ -1874,10 +1743,6 @@ cases:
             status: 200
           wait: 200ms
     - name: matching-response-body-expression-includes-body
-      source:
-        file: t/plugin/rocketmq-logger2.t
-        tests:
-            - 11
       config:
         routes:
             - id: rocketmq-035
@@ -1940,10 +1805,6 @@ cases:
             status: 200
           wait: 200ms
     - name: nonmatching-response-body-expression-omits-body
-      source:
-        file: t/plugin/rocketmq-logger2.t
-        tests:
-            - 12
       config:
         routes:
             - id: rocketmq-036
@@ -2006,10 +1867,6 @@ cases:
             status: 200
           wait: 200ms
     - name: gzip-response-body-logging-config
-      source:
-        file: t/plugin/rocketmq-logger2.t
-        tests:
-            - 13
       config:
         routes:
             - id: rocketmq-037
@@ -2072,10 +1929,6 @@ cases:
             status: 200
           wait: 200ms
     - name: gzip-response-is-logged-after-decompression
-      source:
-        file: t/plugin/rocketmq-logger2.t
-        tests:
-            - 14
       config:
         routes:
             - id: rocketmq-038
@@ -2138,10 +1991,6 @@ cases:
             status: 200
           wait: 200ms
     - name: brotli-response-body-logging-config
-      source:
-        file: t/plugin/rocketmq-logger2.t
-        tests:
-            - 15
       config:
         routes:
             - id: rocketmq-039
@@ -2204,10 +2053,6 @@ cases:
             status: 200
           wait: 200ms
     - name: brotli-response-is-logged-after-decompression
-      source:
-        file: t/plugin/rocketmq-logger2.t
-        tests:
-            - 16
       config:
         routes:
             - id: rocketmq-040
@@ -2270,10 +2115,6 @@ cases:
             status: 200
           wait: 200ms
     - name: nested-request-and-response-expressions-are-accepted
-      source:
-        file: t/plugin/rocketmq-logger2.t
-        tests:
-            - 17
       config:
         routes:
             - id: rocketmq-041

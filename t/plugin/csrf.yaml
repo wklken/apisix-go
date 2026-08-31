@@ -1,13 +1,5 @@
-source:
-  repository: https://github.com/apache/apisix
-  commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-  file: t/plugin/csrf.t
-  tests: 15
-
 cases:
   - name: valid-schema-and-cookie
-    source:
-      tests: [1, 2, 3]
     config:
       routes:
         - id: csrf-valid
@@ -35,8 +27,6 @@ cases:
         equals: hello world
 
   - name: missing-header-and-cookie
-    source:
-      tests: [4]
     config:
       routes:
         - id: csrf-missing-token
@@ -56,8 +46,6 @@ cases:
         matches: '"error_msg":"no csrf token in headers"'
 
   - name: header-without-cookie
-    source:
-      tests: [5]
     config:
       routes:
         - id: csrf-header-only
@@ -78,8 +66,6 @@ cases:
         matches: '"error_msg":"no csrf cookie"'
 
   - name: cookie-without-header
-    source:
-      tests: [6]
     config:
       routes:
         - id: csrf-cookie-only
@@ -100,8 +86,6 @@ cases:
         matches: '"error_msg":"no csrf token in headers"'
 
   - name: header-cookie-mismatch
-    source:
-      tests: [7]
     config:
       routes:
         - id: csrf-mismatch
@@ -123,8 +107,6 @@ cases:
         matches: '"error_msg":"csrf token mismatch"'
 
   - name: invalid-signature
-    source:
-      tests: [8]
     config:
       routes:
         - id: csrf-invalid-signature
@@ -149,8 +131,6 @@ cases:
         matches: Invalid signatures
 
   - name: valid-signed-token
-    source:
-      tests: [9]
     config:
       routes:
         - id: csrf-valid-token
@@ -170,8 +150,6 @@ cases:
     output: *success_with_cookie
 
   - name: reject-expired-static-token
-    source:
-      tests: [10, 11]
     config:
       routes:
         - id: csrf-expired-static
@@ -194,8 +172,6 @@ cases:
         matches: token has expired
 
   - name: dynamically-issued-token-expires
-    source:
-      tests: [12]
     config:
       routes:
         - id: csrf-dynamic-expiry
@@ -237,8 +213,6 @@ cases:
             matches: token has expired
 
   - name: zero-expiry-never-expires
-    source:
-      tests: [13, 14]
     config:
       routes:
         - id: csrf-zero-expiry
@@ -277,8 +251,6 @@ cases:
             equals: hello world
 
   - name: encrypted-key
-    source:
-      tests: [15]
     runtime:
       apisix:
         data_encryption:

@@ -23,8 +23,9 @@ type Plugin struct {
 }
 
 const (
-	priority = 1060
-	name     = "ai-rag"
+	priority               = 1060
+	name                   = "ai-rag"
+	providerRequestTimeout = 60 * time.Second
 )
 
 const schema = `
@@ -74,12 +75,6 @@ const schema = `
     "ssl_verify": {
       "type": "boolean",
       "default": true
-    },
-    "timeout": {
-      "type": "integer",
-      "minimum": 1,
-      "maximum": 60000,
-      "default": 30000
     }
   },
   "required": ["embeddings_provider", "vector_search_provider"]
@@ -89,7 +84,6 @@ const schema = `
 type Config struct {
 	EmbeddingsProvider   EmbeddingsProvider   `json:"embeddings_provider"`
 	VectorSearchProvider VectorSearchProvider `json:"vector_search_provider"`
-	Timeout              int                  `json:"timeout,omitempty"`
 	SSLVerify            *bool                `json:"ssl_verify,omitempty"`
 }
 
@@ -118,17 +112,13 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
-	if p.config.Timeout == 0 {
-		p.config.Timeout = 30000
-	}
 	if p.config.SSLVerify == nil {
 		sslVerify := true
 		p.config.SSLVerify = &sslVerify
 	}
-	client := &http.Client{
-		Transport: p.transport(),
-		Timeout:   time.Duration(p.config.Timeout) * time.Millisecond,
-	}
+	// APISIX inherits 60-second OpenResty socket timeouts. Go uses one total
+	// bound so a stalled provider cannot retain generation credentials forever.
+	client := &http.Client{Transport: p.transport(), Timeout: providerRequestTimeout}
 	return p.installRAGClient(client)
 }
 

@@ -5,54 +5,10 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/exec"
-	"strings"
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
 )
-
-func TestPrometheusMetricConfigHTTPSeriesLimit(t *testing.T) {
-	tests := []struct {
-		name    string
-		raw     any
-		want    int
-		wantErr bool
-	}{
-		{name: "default", want: defaultMaxMetricSeries},
-		{name: "minimum", raw: minMetricSeries, want: minMetricSeries},
-		{name: "maximum", raw: maxMetricSeries, want: maxMetricSeries},
-		{name: "int64", raw: int64(250), want: 250},
-		{name: "invalid string", raw: "1000", wantErr: true},
-		{name: "invalid bool", raw: true, wantErr: true},
-		{name: "invalid fractional", raw: 100.5, wantErr: true},
-		{name: "below minimum", raw: minMetricSeries - 1, wantErr: true},
-		{name: "above maximum", raw: maxMetricSeries + 1, wantErr: true},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			attr := map[string]any{}
-			if test.raw != nil {
-				attr["max_http_series"] = test.raw
-			}
-			cfg, err := newPrometheusMetricConfig(attr)
-			if test.wantErr {
-				if err == nil {
-					t.Fatal("newPrometheusMetricConfig() error = nil")
-				}
-				if !strings.Contains(err.Error(), "plugin_attr.prometheus.max_http_series") {
-					t.Fatalf("error = %v, want full config field", err)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("newPrometheusMetricConfig() error = %v", err)
-			}
-			if cfg.MaxHTTPSeries != test.want {
-				t.Fatalf("MaxHTTPSeries = %d, want %d", cfg.MaxHTTPSeries, test.want)
-			}
-		})
-	}
-}
 
 func TestMetricSeriesOverflowMetricsUseFamilyLabels(t *testing.T) {
 	registry := prometheus.NewRegistry()
@@ -117,10 +73,10 @@ func TestRecordHTTPRequestNormalizesStatusExtraLabels(t *testing.T) {
 	}
 }
 
-func TestInitRetainsInvalidSeriesLimitErrorWithoutPublishingMetrics(t *testing.T) {
+func TestInitRetainsInvalidConfigErrorWithoutPublishingMetrics(t *testing.T) {
 	const childEnv = "APISIX_GO_INVALID_PROMETHEUS_INIT_CHILD"
 	if os.Getenv(childEnv) == "1" {
-		attr := map[string]any{"max_http_series": "not-an-integer"}
+		attr := map[string]any{"metric_prefix": 42}
 		firstErr := Init(attr)
 		secondErr := Init(attr)
 		if firstErr == nil || secondErr == nil || firstErr.Error() != secondErr.Error() {
@@ -132,7 +88,7 @@ func TestInitRetainsInvalidSeriesLimitErrorWithoutPublishingMetrics(t *testing.T
 		}
 		return
 	}
-	command := exec.Command(os.Args[0], "-test.run", "^TestInitRetainsInvalidSeriesLimitErrorWithoutPublishingMetrics$")
+	command := exec.Command(os.Args[0], "-test.run", "^TestInitRetainsInvalidConfigErrorWithoutPublishingMetrics$")
 	command.Env = append(os.Environ(), childEnv+"=1")
 	output, err := command.CombinedOutput()
 	if err != nil {

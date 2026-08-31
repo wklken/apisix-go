@@ -66,54 +66,8 @@ func TestPrometheusMetricConfigDefaults(t *testing.T) {
 	if !reflect.DeepEqual(cfg.LLMBuckets, defaultLatencyBuckets) {
 		t.Fatalf("LLMBuckets = %v, want %v", cfg.LLMBuckets, defaultLatencyBuckets)
 	}
-	if cfg.MaxLLMSeries != defaultMaxMetricSeries {
-		t.Fatalf("MaxLLMSeries = %d, want %d", cfg.MaxLLMSeries, defaultMaxMetricSeries)
-	}
 	if len(cfg.Expires) != 0 {
 		t.Fatalf("Expires = %#v, want disabled defaults", cfg.Expires)
-	}
-}
-
-func TestPrometheusMetricConfigLLMSeriesLimit(t *testing.T) {
-	tests := []struct {
-		name    string
-		raw     any
-		want    int
-		wantErr bool
-	}{
-		{name: "default", want: defaultMaxMetricSeries},
-		{name: "minimum", raw: minMetricSeries, want: minMetricSeries},
-		{name: "maximum", raw: maxMetricSeries, want: maxMetricSeries},
-		{name: "int64", raw: int64(250), want: 250},
-		{name: "invalid string", raw: "1000", wantErr: true},
-		{name: "invalid bool", raw: true, wantErr: true},
-		{name: "invalid fractional", raw: 100.5, wantErr: true},
-		{name: "below minimum", raw: minMetricSeries - 1, wantErr: true},
-		{name: "above maximum", raw: maxMetricSeries + 1, wantErr: true},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			attr := map[string]any{}
-			if test.raw != nil {
-				attr["max_llm_series"] = test.raw
-			}
-			cfg, err := newPrometheusMetricConfig(attr)
-			if test.wantErr {
-				if err == nil {
-					t.Fatal("newPrometheusMetricConfig() error = nil")
-				}
-				if !strings.Contains(err.Error(), "plugin_attr.prometheus.max_llm_series") {
-					t.Fatalf("error = %v, want full config field", err)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("newPrometheusMetricConfig() error = %v", err)
-			}
-			if cfg.MaxLLMSeries != test.want {
-				t.Fatalf("MaxLLMSeries = %d, want %d", cfg.MaxLLMSeries, test.want)
-			}
-		})
 	}
 }
 

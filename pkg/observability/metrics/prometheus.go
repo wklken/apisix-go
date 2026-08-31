@@ -78,8 +78,6 @@ const (
 	upstreamStatusMetric   = "upstream_status"
 	streamConnectionMetric = "stream_connection_total"
 	defaultMaxMetricSeries = 10000
-	minMetricSeries        = 100
-	maxMetricSeries        = 100000
 )
 
 var expirableMetricNames = [...]string{
@@ -414,7 +412,7 @@ func initMetrics(attr map[string]any) error {
 	)
 	streamRoutes.Lock()
 	streamRoutes.ids = nil
-	streamRoutes.limit = metricConfig.MaxHTTPSeries
+	streamRoutes.limit = defaultMaxMetricSeries
 	streamRoutes.overflow = false
 	streamRoutes.Unlock()
 
@@ -564,56 +562,56 @@ func initMetrics(attr map[string]any) error {
 	httpSeriesOverflow = newHTTPMetricSeriesOverflow(metricConfig.MetricPrefix)
 	llmSeriesOverflow = newLLMMetricSeriesOverflow(metricConfig.MetricPrefix)
 	httpStatusSeries = newMetricSeriesTracker(
-		metricConfig.MaxHTTPSeries,
+		defaultMaxMetricSeries,
 		len(httpStatusLabels),
 		metricConfig.Expires[httpStatusMetric],
 		httpSeriesOverflow.WithLabelValues(httpStatusMetric),
 		HttpStatus.DeleteLabelValues,
 	)
 	httpLatencySeries = newMetricSeriesTracker(
-		metricConfig.MaxHTTPSeries,
+		defaultMaxMetricSeries,
 		len(httpLatencyLabels),
 		metricConfig.Expires[httpLatencyMetric],
 		httpSeriesOverflow.WithLabelValues(httpLatencyMetric),
 		HttpLatency.DeleteLabelValues,
 	)
 	bandwidthSeries = newMetricSeriesTracker(
-		metricConfig.MaxHTTPSeries,
+		defaultMaxMetricSeries,
 		len(bandwidthLabels),
 		metricConfig.Expires[bandwidthMetric],
 		httpSeriesOverflow.WithLabelValues(bandwidthMetric),
 		Bandwidth.DeleteLabelValues,
 	)
 	llmLatencySeries = newMetricSeriesTracker(
-		metricConfig.MaxLLMSeries,
+		defaultMaxMetricSeries,
 		len(llmLatencyLabels),
 		metricConfig.Expires[llmLatencyMetric],
 		llmSeriesOverflow.WithLabelValues(llmLatencyMetric),
 		LLMLatency.DeleteLabelValues,
 	)
 	llmPromptSeries = newMetricSeriesTracker(
-		metricConfig.MaxLLMSeries,
+		defaultMaxMetricSeries,
 		len(llmPromptLabels),
 		metricConfig.Expires[llmPromptMetric],
 		llmSeriesOverflow.WithLabelValues(llmPromptMetric),
 		LLMPromptTokens.DeleteLabelValues,
 	)
 	llmCompletionSeries = newMetricSeriesTracker(
-		metricConfig.MaxLLMSeries,
+		defaultMaxMetricSeries,
 		len(llmCompletionLabels),
 		metricConfig.Expires[llmCompleteMetric],
 		llmSeriesOverflow.WithLabelValues(llmCompleteMetric),
 		LLMCompletionTokens.DeleteLabelValues,
 	)
 	llmActiveSeries = newMetricSeriesTracker(
-		metricConfig.MaxLLMSeries,
+		defaultMaxMetricSeries,
 		len(llmActiveLabels),
 		metricConfig.Expires[llmActiveMetric],
 		llmSeriesOverflow.WithLabelValues(llmActiveMetric),
 		LLMActiveConnections.DeleteLabelValues,
 	)
 	upstreamStatusSeries = newMetricSeriesTracker(
-		metricConfig.MaxHTTPSeries,
+		defaultMaxMetricSeries,
 		3,
 		metricConfig.Expires[upstreamStatusMetric],
 		httpSeriesOverflow.WithLabelValues(upstreamStatusMetric),
@@ -1004,41 +1002,22 @@ func SetBatchProcessEntries(name string, routeID string, serverAddr string, coun
 }
 
 type prometheusMetricConfig struct {
-	MetricPrefix  string
-	Buckets       []float64
-	LLMBuckets    []float64
-	ExtraLabels   map[string][]prometheusExtraLabel
-	MaxHTTPSeries int
-	MaxLLMSeries  int
-	Expires       map[string]time.Duration
+	MetricPrefix string
+	Buckets      []float64
+	LLMBuckets   []float64
+	ExtraLabels  map[string][]prometheusExtraLabel
+	Expires      map[string]time.Duration
 }
 
 func newPrometheusMetricConfig(attr map[string]any) (prometheusMetricConfig, error) {
 	cfg := prometheusMetricConfig{
-		MetricPrefix:  "apisix_",
-		Buckets:       append([]float64(nil), defaultLatencyBuckets...),
-		LLMBuckets:    append([]float64(nil), defaultLatencyBuckets...),
-		MaxHTTPSeries: defaultMaxMetricSeries,
-		MaxLLMSeries:  defaultMaxMetricSeries,
+		MetricPrefix: "apisix_",
+		Buckets:      append([]float64(nil), defaultLatencyBuckets...),
+		LLMBuckets:   append([]float64(nil), defaultLatencyBuckets...),
 	}
 	if attr == nil {
 		return cfg, nil
 	}
-	if raw, ok := attr["max_http_series"]; ok {
-		limit, err := parseSeriesLimit(raw, "plugin_attr.prometheus.max_http_series")
-		if err != nil {
-			return cfg, err
-		}
-		cfg.MaxHTTPSeries = limit
-	}
-	if raw, ok := attr["max_llm_series"]; ok {
-		limit, err := parseSeriesLimit(raw, "plugin_attr.prometheus.max_llm_series")
-		if err != nil {
-			return cfg, err
-		}
-		cfg.MaxLLMSeries = limit
-	}
-
 	if raw, ok := attr["metric_prefix"]; ok {
 		v, ok := raw.(string)
 		if !ok || v == "" {
@@ -1081,29 +1060,6 @@ func newPrometheusMetricConfig(attr map[string]any) (prometheusMetricConfig, err
 	}
 	cfg.Expires = expires
 	return cfg, nil
-}
-
-func parseSeriesLimit(raw any, fieldName string) (int, error) {
-	value, ok := strictInt64(raw)
-	if !ok {
-		return 0, fmt.Errorf(
-			"%s must be an integer between %d and %d, got %T",
-			fieldName,
-			minMetricSeries,
-			maxMetricSeries,
-			raw,
-		)
-	}
-	if value < minMetricSeries || value > maxMetricSeries {
-		return 0, fmt.Errorf(
-			"%s must be between %d and %d, got %d",
-			fieldName,
-			minMetricSeries,
-			maxMetricSeries,
-			value,
-		)
-	}
-	return int(value), nil
 }
 
 func parseMetricExpires(raw any) (map[string]time.Duration, error) {

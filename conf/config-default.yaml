@@ -470,8 +470,6 @@ plugin_attr:          # Plugin attributes
     export_addr:                            # Set the address for the Prometheus export server.
       ip: 127.0.0.1                         # Literal IPv4/IPv6 address; hostnames are rejected.
       port: 9091                            # Integer from 1 through 65535.
-    # max_http_series: 10000                # Maximum exact tuples in each HTTP/upstream/stream metric family.
-    # max_llm_series: 10000                 # Maximum exact tuples in each LLM metric family.
     # metrics:    # Create extra labels from nginx variables: https://nginx.org/en/docs/varindex.html
     #  http_status:
     #    expire: 0                          # Idle expiration in seconds; 0 disables expiration.

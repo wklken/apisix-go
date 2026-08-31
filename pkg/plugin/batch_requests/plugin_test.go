@@ -408,6 +408,27 @@ func TestHandlerBoundsAggregatePipelineResponseBodies(t *testing.T) {
 	}
 }
 
+func TestHandlerBoundsAggregatePipelineResponseHeaders(t *testing.T) {
+	dispatcher := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-Large", "12345")
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := NewHandlerWithLimits(dispatcher, Limits{maxResponseBodySize: 1})
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, newBatchRequest(t, 2))
+
+	responses := decodeAllPipelineResponses(t, res.Body.String())
+	if len(responses) != 2 {
+		t.Fatalf("responses = %d, want 2", len(responses))
+	}
+	if responses[0].Status != http.StatusOK || responses[0].Headers["X-Large"] != "12345" {
+		t.Fatalf("response[0] = %#v, want retained 200 response", responses[0])
+	}
+	if got := responses[1]; got.Status != http.StatusBadGateway || len(got.Headers) != 0 {
+		t.Fatalf("response[1] = %#v, want aggregate-limit 502 without headers", got)
+	}
+}
+
 func TestHandlerConvertsAbortHandlerToBadGateway(t *testing.T) {
 	handler := NewHandlerWithLimits(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		panic(http.ErrAbortHandler)

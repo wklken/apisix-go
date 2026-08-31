@@ -269,9 +269,9 @@ func handleBatchRequest(
 	timeout := time.Duration(timeoutMilliseconds) * time.Millisecond
 
 	responses := make([]PipelineResponse, 0, len(req.Pipeline))
-	remainingResponseBodyBytes := limits.maxResponseBodySize * maxBufferedResponses
+	remainingResponseBytes := limits.maxResponseBodySize * maxBufferedResponses
 	for _, item := range req.Pipeline {
-		maxResponseBodySize := min(limits.maxResponseBodySize, remainingResponseBodyBytes)
+		maxResponseBodySize := min(limits.maxResponseBodySize, remainingResponseBytes)
 		result, timedOut, err := dispatcher.dispatch(
 			r, req, item, timeout, maxResponseBodySize, tasks,
 		)
@@ -286,13 +286,37 @@ func handleBatchRequest(
 				return nil, http.StatusInternalServerError, waitErr
 			}
 		}
-		remainingResponseBodyBytes -= int64(len(result.response.Body))
+		retainedBytes := retainedPipelineResponseSize(result.response)
+		if retainedBytes > remainingResponseBytes {
+			result.response = PipelineResponse{
+				Status: http.StatusBadGateway,
+				Reason: http.StatusText(http.StatusBadGateway),
+			}
+		} else {
+			remainingResponseBytes -= retainedBytes
+		}
 		responses = append(responses, result.response)
 		if timedOut {
 			break
 		}
 	}
 	return responses, http.StatusOK, nil
+}
+
+func retainedPipelineResponseSize(response PipelineResponse) int64 {
+	size := int64(len(response.Body))
+	for key, value := range response.Headers {
+		size += int64(len(key))
+		switch typed := value.(type) {
+		case string:
+			size += int64(len(typed))
+		case []string:
+			for _, item := range typed {
+				size += int64(len(item))
+			}
+		}
+	}
+	return size
 }
 
 func validateDecodedRequestTypes(decoded any) (bool, error) {

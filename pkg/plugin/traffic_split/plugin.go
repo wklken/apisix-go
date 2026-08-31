@@ -121,19 +121,13 @@ const schema = `
           }
         }
       }
-    },
-    "max_body_size": {
-      "type": "integer",
-      "exclusiveMinimum": 0,
-      "default": 1048576
     }
   }
 }
 `
 
 type Config struct {
-	Rules       []Rule `json:"rules,omitempty"`
-	MaxBodySize int    `json:"max_body_size,omitempty"`
+	Rules []Rule `json:"rules,omitempty"`
 }
 
 type Rule struct {
@@ -357,9 +351,6 @@ func (p *Plugin) PostInit() error {
 		p.runtimeAcquirerSet = false
 		p.upstreamResolver = nil
 	}()
-	if p.config.MaxBodySize <= 0 {
-		p.config.MaxBodySize = base.DefaultRequestBodyMaxBytes
-	}
 	p.rules = p.rules[:0]
 	for ruleIndex, rule := range p.config.Rules {
 		targetWeights := map[string]int{}
@@ -526,13 +517,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
 		override, err := p.nextOverride(r)
 		if err != nil {
-			status := http.StatusInternalServerError
-			message := err.Error()
-			if base.IsBodyTooLarge(err) {
-				status = http.StatusRequestEntityTooLarge
-				message = http.StatusText(status)
-			}
-			http.Error(w, message, status)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		if override == nil {
@@ -896,7 +881,7 @@ func (p *Plugin) requestPostArgs(r *http.Request) (url.Values, error) {
 	if err != nil || contentType != "application/x-www-form-urlencoded" {
 		return nil, nil
 	}
-	body, err := base.ReadRequestBodyLimited(r, p.config.MaxBodySize)
+	body, err := base.ReadRequestBody(r)
 	if err != nil {
 		return nil, err
 	}

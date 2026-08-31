@@ -54,11 +54,6 @@ const schema = `
         "type": "string"
       },
       "minItems": 0
-    },
-    "max_body_size": {
-      "type": "integer",
-      "exclusiveMinimum": 0,
-      "default": 1048576
     }
   },
   "required": ["command"]
@@ -66,10 +61,9 @@ const schema = `
 `
 
 type Config struct {
-	BaseURI     string   `json:"base_uri,omitempty"`
-	Command     string   `json:"command"`
-	Args        []string `json:"args,omitempty"`
-	MaxBodySize int      `json:"max_body_size,omitempty"`
+	BaseURI string   `json:"base_uri,omitempty"`
+	Command string   `json:"command"`
+	Args    []string `json:"args,omitempty"`
 }
 
 type session struct {
@@ -117,9 +111,6 @@ func (p *Plugin) PostInit() error {
 	}
 	if p.pingInterval <= 0 {
 		p.pingInterval = 30 * time.Second
-	}
-	if p.config.MaxBodySize <= 0 {
-		p.config.MaxBodySize = base.DefaultRequestBodyMaxBytes
 	}
 
 	return nil
@@ -231,11 +222,7 @@ func (p *Plugin) handleSSE(w http.ResponseWriter, r *http.Request) {
 
 func (p *Plugin) handleMessage(w http.ResponseWriter, r *http.Request) {
 	apisixctx.RegisterSensitiveQueryName(r, "sessionId")
-	body, err := base.ReadRequestBodyLimited(r, p.config.MaxBodySize)
-	if base.IsBodyTooLarge(err) {
-		w.WriteHeader(http.StatusRequestEntityTooLarge)
-		return
-	}
+	body, err := base.ReadRequestBody(r)
 	if err != nil || len(body) == 0 {
 		w.WriteHeader(http.StatusBadRequest)
 		return

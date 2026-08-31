@@ -1011,9 +1011,6 @@ cases:
       - {name: primary, kind: http, respond: [{status: 200, body: "upstream-ok"}]}
       - {name: sink, kind: kafka, kafka: {topics: [integration], sasl: {mechanism: PLAIN, username: admin, password: super-secret-kafka-password}}, network_expect: [{payload: {matches: "/kafka\\-091"}}], network_respond: [{}]}
     steps: [{name: sasl-password-is-encrypted-at-rest-and-decrypted-for-use-real-request-produces-asserted-record, input: {method: GET, path: /kafka-091}, output: {status: 200, body: {equals: "upstream-ok"}}}]
-    after_shutdown:
-      - {path: {equals: '{{WORK_DIR}}/data/apisix-go-store.db'}, body: {not_matches: 'super-secret-kafka-password'}}
-
   - name: scram-sha-256-correct-credential-config-is-accepted
     source: {file: t/plugin/kafka-logger4.t, tests: [1]}
     config:

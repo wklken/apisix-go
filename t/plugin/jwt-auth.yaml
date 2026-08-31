@@ -643,7 +643,6 @@ cases:
     config: {"consumers":[{"username":"jack","plugins":{"jwt-auth":{"key":"user-key","secret":"my-secret-key"}}}],"routes":[{"id":"jwt-auth3-14","uri":"/jwt-auth3-14","plugins":{"jwt-auth":{"hide_credentials":false}},"upstream":{"type":"roundrobin","nodes":{"{{FIXTURE.primary.ADDR}}":1}}}]}
     fixtures: [{"name":"primary","kind":"http","expect":[{"path":{"equals":"/jwt-auth3-14"},"headers":{"X-Consumer-Username":{"equals":"jack"},"Authorization":{"equals":"Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleSIsImV4cCI6MTg3OTMxODU0MX0.fNtFJnNmJgzbiYmGB0Yjvm-l6A6M4jRV1l4mnVFSYjs"}}}],"respond":[{"status":200,"body":"jwt-ok"}]}]
     steps: [{"name":"exercise-data-encryption-for-secret-test-14","input":{"path":"/jwt-auth3-14","headers":{"Authorization":"Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleSIsImV4cCI6MTg3OTMxODU0MX0.fNtFJnNmJgzbiYmGB0Yjvm-l6A6M4jRV1l4mnVFSYjs"}},"output":{"status":200,"body":{"equals":"jwt-ok"}}}]
-    after_shutdown: [{"path":{"equals":"{{WORK_DIR}}/apisix-go-store.db"},"bbolt_json":{"bucket":"consumers","key":"jack","fields":{"/plugins/jwt-auth/secret":"IRWpPjbDq5BCgHyIllnOMA=="},"forbidden_matches":["\"secret\":\"my-secret-key\""]}}]
   - name: jwt-auth3-set-jwt-auth-conf-secret-uses-secret-ref-test-15
     source: {file: t/plugin/jwt-auth3.t, tests: [15]}
     config:

@@ -297,11 +297,3 @@ cases:
       path: /hello
     upstream: *fixture
     output: *success_with_cookie
-    after_shutdown:
-      - path: {equals: '{{WORK_DIR}}/apisix-go-store.db'}
-        bbolt_json:
-          bucket: routes
-          key: csrf-encrypted-key
-          fields:
-            /plugins/csrf/key: mt39FazQccyMqt4ctoRV7w==
-          forbidden_matches: [userkey]

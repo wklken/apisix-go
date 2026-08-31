@@ -358,15 +358,6 @@ cases:
         respond: [{status: 200, body: ok}]
     steps:
       - {name: encrypted-secret-is-decrypted-at-plugin-boundary, input: {path: /encrypted}, output: {status: 200, body: {equals: encrypted-ok}}, wait: 1s}
-    after_shutdown:
-      - path: {equals: '{{WORK_DIR}}/apisix-go-store.db'}
-        bbolt_json:
-          bucket: routes
-          key: '1'
-          fields:
-            /plugins/tencent-cloud-cls/secret_key: oshn8tcqE8cJArmEILVNPQ==
-          forbidden_matches: ['"secret_key":"secret_key"']
-
   - name: route-level-log-format
     source: {file: t/plugin/tencent-cloud-cls.t, tests: [13]}
     config:

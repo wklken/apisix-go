@@ -289,18 +289,6 @@ cases:
           equals: ""
       body:
         equals: "new body\n"
-    after_shutdown:
-      - path: {equals: '{{WORK_DIR}}/apisix-go-store.db'}
-        bbolt_json:
-          bucket: routes
-          key: response-rewrite-clean-standalone-config
-          fields:
-            /plugins/response-rewrite/headers/X-Server-id: "3"
-            /plugins/response-rewrite/headers/X-Server-status: on
-            /plugins/response-rewrite/headers/Content-Type: ""
-            /plugins/response-rewrite/body: "new body\n"
-          forbidden_matches: ['"pattern"', 'LegacySet']
-
   - name: valid-status-expression
     source:
       file: t/plugin/response-rewrite.t

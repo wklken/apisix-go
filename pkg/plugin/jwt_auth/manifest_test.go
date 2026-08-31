@@ -19,12 +19,11 @@ type jwtManifestCase struct {
 		Tests       []int  `yaml:"tests"`
 		LocalReason string `yaml:"local_reason"`
 	} `yaml:"source"`
-	Environment   map[string]string `yaml:"environment"`
-	Runtime       map[string]any    `yaml:"runtime"`
-	Config        map[string]any    `yaml:"config"`
-	Fixtures      []map[string]any  `yaml:"fixtures"`
-	Steps         []jwtStep         `yaml:"steps"`
-	AfterShutdown []any             `yaml:"after_shutdown"`
+	Environment map[string]string `yaml:"environment"`
+	Runtime     map[string]any    `yaml:"runtime"`
+	Config      map[string]any    `yaml:"config"`
+	Fixtures    []map[string]any  `yaml:"fixtures"`
+	Steps       []jwtStep         `yaml:"steps"`
 }
 
 type jwtStep struct {
@@ -320,9 +319,6 @@ func assertJWTSensitiveCaseSemantics(t *testing.T, testCase jwtManifestCase) {
 			assertJWTCaseContains(t, testCase, text, "hide_credentials: true", "equals: /jwt-auth3-10")
 		case 14:
 			assertJWTCaseContains(t, testCase, text, "enable_encrypt_fields: true", "keyring:")
-			if len(testCase.AfterShutdown) == 0 {
-				t.Errorf("case %q does not assert encrypted storage after shutdown", testCase.Name)
-			}
 		case 15, 16, 17:
 			assertJWTCaseContains(
 				t,

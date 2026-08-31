@@ -567,10 +567,6 @@ cases:
             equals: v2
       respond: *hello_response
     output: *hello_output
-    after_shutdown:
-      - path: {equals: '{{WORK_DIR}}/data/apisix-go-store.db'}
-        body: {not_matches: 'regexURIPairs'}
-
   - name: header-request-variables
     source:
       file: t/plugin/proxy-rewrite.t

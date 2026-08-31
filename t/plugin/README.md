@@ -3,8 +3,8 @@
 This directory converts pinned Apache APISIX `t/plugin/*.t` behavior into
 declarative APISIX-Go standalone tests. Each executable case starts the real
 CLI in a fresh child process, writes temporary `conf/config.yaml` and
-`conf/apisix.yaml` files, creates its own temporary `apisix-go-store.db`, and
-uses a fresh loopback upstream fixture.
+`conf/apisix.yaml` files, creates isolated runtime directories, and uses a fresh
+loopback upstream fixture.
 
 The checked-in catalog is discovered directly from `t/plugin/*.yaml`. Each
 manifest is an independent behavior test, not one row in a global compatibility

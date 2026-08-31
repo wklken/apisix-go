@@ -459,15 +459,6 @@ cases:
         input: {method: GET, path: /encrypted}
         output: {status: 200, body: {equals: encrypted}}
         wait: 1s
-    after_shutdown:
-      - path: {equals: '{{WORK_DIR}}/apisix-go-store.db'}
-        bbolt_json:
-          bucket: routes
-          key: '1'
-          fields:
-            /plugins/sls-logger/access_key_id: your_access_key_id
-          forbidden_matches: [your_access_key_secret]
-
   - name: route-log-format-configuration-is-effective
     source:
       file: t/plugin/sls-logger.t

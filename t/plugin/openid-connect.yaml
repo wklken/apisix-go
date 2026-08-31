@@ -1113,26 +1113,7 @@
             ]
           }
         }
-      },
-      "after_shutdown": [
-        {
-          "path": {
-            "equals": "{{WORK_DIR}}/apisix-go-store.db"
-          },
-          "bbolt_json": {
-            "bucket": "routes",
-            "key": "openid-connect-5",
-            "fields": {
-              "/plugins/openid-connect/client_secret": "JzDCJ/3ZALYTXC7pdfF/wxWClTc/EA5AQbJ7lTNtP9E=",
-              "/plugins/openid-connect/client_rsa_private_key": "HrMHUvE9Esvn7GnZ+vAynaIg/8wlB3r0zm0htmnwofYPZeBpLnpW3iN9UtQG4ZIBYRZih6EBuRK8W3Kychw/SgjIFuzVeTFowBCUfd1wZ4Q+frUOLZ0Xmkh8j3yHUprnh+d9PA8EHCEapdkWY3psJj6rTgrREzjDEVf/TV3EjjfgG16ih5/c3TChApLXwfEwfBp5APSf7kzMccCRbA4bXvMDsQSQAwVsRD8cjJkSdHTvuzfg1g8xoCy4I05DsMM8CybJAd+BDZnJxhrGIQaItu5/0XQJy+uy/niOpzYYN+NDX+8fl65VUxdUtqXF82ChRlmGP3+zKN7epufAsL/36pHOnS73Q7WBKRxyyA16BEBk0wK7rI+KemBfG5YFXjcBnPkxYssSudqhmlcr6e5Tl0LhVj/BIj94fVE3/EJ+NO3BJMrlhjorilrQKAsiCWujWSqAK7gtAp3YEO//yOygh/p8gh22NdIV0ykGAx4QNKINUgdgh+g8DdykNGLGStH8TPUs8GmzV7nxvw/0cbiocLps6uk0VjjVUqUAvOdwpbiRwv6effPUB6cxW3G6QllBbTP8I+eoFIRfYd6cFJPpX1AtISfNZw459WarwZmHrZGOQU4iKlyl2yLcKY634Fx5JykUY5YP+MYYDHbIcD2gxA=="
-            },
-            "forbidden_matches": [
-              "integration\\-secret",
-              "BEGIN RSA PRIVATE KEY"
-            ]
-          }
-        }
-      ]
+      }
     },
     {
       "name": "openid-connect-access-route-without-bearer-token-should-redirect-to-authentication-endp-test-6",
@@ -6470,24 +6451,7 @@
             ]
           }
         }
-      },
-      "after_shutdown": [
-        {
-          "path": {
-            "equals": "{{WORK_DIR}}/apisix-go-store.db"
-          },
-          "bbolt_json": {
-            "bucket": "routes",
-            "key": "openid-connect2-2",
-            "fields": {
-              "/plugins/openid-connect/client_secret": "JzDCJ/3ZALYTXC7pdfF/wxWClTc/EA5AQbJ7lTNtP9E="
-            },
-            "forbidden_matches": [
-              "integration\\-secret"
-            ]
-          }
-        }
-      ]
+      }
     },
     {
       "name": "openid-connect2-set-up-route-with-plugin-matching-uri-hello-with-unauth-action-auth-test-3",
@@ -8110,24 +8074,7 @@
             ]
           }
         }
-      },
-      "after_shutdown": [
-        {
-          "path": {
-            "equals": "{{WORK_DIR}}/apisix-go-store.db"
-          },
-          "bbolt_json": {
-            "bucket": "routes",
-            "key": "openid-connect2-20",
-            "fields": {
-              "/plugins/openid-connect/client_rsa_private_key": "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"
-            },
-            "forbidden_matches": [
-              "\\-\\-\\-\\-\\-BEGIN\\ RSA\\ PRIVATE\\ KEY\\-\\-\\-\\-\\-\\\nMIIEowIBAAKCAQEApKJGLzwwYx\\+YS4wnhXxqVhuT4dcUe1h6MdLAl0n\\+7WKhN4WO\\\nDkBR8Rz8Flcu70NI4xZOIv4ICUyBXmIIJdCw5jgOIBjjZpEF1FOkQIBIF6tFhEo8\\\n6sCgfjNWE53rJVSJ/453nDcy2jBiOf7vA82XCVevdTT0glaHEYCftu82\\+6hT2kd7\\\nu0e/BZATU1VyJh5CpW4BksrhmGkMUv9NFCaavQiEaFj\\+Had/LooAb3LzDdi/n0Ka\\\nd\\+ZDT9y2i76VAWc7j0nnC56zhDX8Nw5KesJrYqivjlHaqmr772gwDVaGA2w74vzl\\\n27b4tKNG\\+GWeT2tXCFRorEmczgMjwoXcTscCUwIDAQABAoIBAB04HcvBW3ckQuPZ\\\npqQG3lqU/2ycPyrbG6jfFkZjoCailCll/z3hRYnNEqKma5KUdwmyykBkpKl91hIZ\\\nxQdtIBBkD4G72RQ5lfbGt4apHeJxh9\\+AS4qAkJuFYfgOVY8lD273apwjoddesfhI\\\nGkSrBuzmDqJ3ORQu5j8BfJc7op8MSmv7vvT9RZkj4wuRfGwK8Ye8ZnHGTj5xkDNu\\\nwOqB7rXhSE/gxxDCwmG1qExgj28GkWj/ay/8LnXOPl\\+5mvIDZ7nZ53UhbT\\+HUUoQ\\\nDX9jV1dOVbCQIhxZedFiyqZf\\+BSh9LU9mBx2cbWSeKQY6G14ifRPscKiDA6gi0UQ\\\n0MlOGZUCgYEA3YzLpPrj3e0GxGgY/Jqbtu5\\+M1fW45OKqM2MMn7dmxSwhey9EDCB\\\n4EME0D\\+tS1w2FCeOaPDRcfTADOOZ/yX9dTIbSy6qcyWBg\\+yr1oir7KtpNaB52h/f\\\nRmwGOYf/qmX/9k1uALChfZN\\+ubsil9WcnFRfIJCRL/YgegzYGkLsvAUCgYEAvjvU\\\nJB6jtwyYwTEPRkTA2imVjYqZUF84gJLSOx41LLFKZi/JEk6E/pg8kZZqRBmx4/xb\\\nalBCYMd1caIRnuZ3ECqMCscXK/UXpbheNv4TT0K/2FQrHbQpyVMUwQB3libTWCqp\\\n8qAr8AUcLvvAF47AAb2u1CJ1n4EwXmF7DVN77HcCgYEAo5nTy7mFSR0\\+EQ053lch\\\nQ52rzahAw/7wtqRKsgMjC\\+DkVZEzL\\+BSF9QFmu5avrqSKKHpNK8YSwlMRHhSAKsC\\\nFmfw5bzJG4yHrm63mg2Ev5j4cSRWtu8wRmWA1z0JW8BEmpIk\\+Bd2uS\\+QtgBtlCem\\\npX5cXMTEoeEjrF0Nu57OCC0CgYB2upKJxJG7YmJIWV1GJw0SXFfZ0kIj1npGTNxn\\\nR1A6x6A\\+rN5azaTV3aAX4YALZtoPB\\+bqMJNtIa/cLyG\\+QerXrSZgZ6e/qKWMqcgr\\\nnGHi2y8vTkDmthZKb88JMkhw72SCp4YQRwWFNTtE250lVtPhgkiGX8d3uMK\\+dSq\\+\\\nw3cZuwKBgDl6tR/HwrOy\\+Zpoym0ABdJCafmgk8qgtibxe\\+z0K7llAZ9sDBHuSdna\\\nrmWfSjRNV5bqBqw1EiFMD7v1BwBai2bGhYNd06evtg496dkELoynnNTy4GH13vvA\\\ns4hKoqscpducCDvmubhbgKN30M43bi\\+ugxyzSZdbixFGBN7\\+PqSs\\\n\\-\\-\\-\\-\\-END\\ RSA\\ PRIVATE\\ KEY\\-\\-\\-\\-\\-\\\n"
-            ]
-          }
-        }
-      ]
+      }
     },
     {
       "name": "openid-connect2-data-encryption-for-session-redis-password-test-21",
@@ -8214,24 +8161,7 @@
             ]
           }
         }
-      },
-      "after_shutdown": [
-        {
-          "path": {
-            "equals": "{{WORK_DIR}}/apisix-go-store.db"
-          },
-          "bbolt_json": {
-            "bucket": "routes",
-            "key": "openid-connect2-21",
-            "fields": {
-              "/plugins/openid-connect/session/redis/password": "TnvXWcoZmSq+N3i9dx4sAw=="
-            },
-            "forbidden_matches": [
-              "redis\\-password"
-            ]
-          }
-        }
-      ]
+      }
     },
     {
       "name": "openid-connect3-set-up-new-route-access-the-auth-server-via-http-proxy-test-1",

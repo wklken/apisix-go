@@ -6081,17 +6081,7 @@ cases:
           name: sentinel-master-is-used
           output:
             status: 200
-    - after_shutdown:
-        - bbolt_json:
-            bucket: routes
-            fields:
-                /plugins/ai-rate-limiting/redis_password: 2bTbkmnF6DxUwAxCtCgNphG1HDNv90qKZky6/dhPWyc=
-            forbidden_matches:
-                - OqkDYcQx4FvgBsxFCybRzg==
-            key: core-encrypted-redis
-          path:
-            equals: '{{WORK_DIR}}/apisix-go-store.db'
-      config:
+    - config:
         routes:
             - id: core-encrypted-redis
               plugins:

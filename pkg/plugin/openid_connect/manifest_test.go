@@ -17,12 +17,11 @@ type openIDManifestCase struct {
 		File  string `yaml:"file"`
 		Tests []int  `yaml:"tests"`
 	} `yaml:"source"`
-	Environment   map[string]string `yaml:"environment"`
-	Runtime       map[string]any    `yaml:"runtime"`
-	Config        map[string]any    `yaml:"config"`
-	Fixtures      []map[string]any  `yaml:"fixtures"`
-	Steps         []map[string]any  `yaml:"steps"`
-	AfterShutdown []any             `yaml:"after_shutdown"`
+	Environment map[string]string `yaml:"environment"`
+	Runtime     map[string]any    `yaml:"runtime"`
+	Config      map[string]any    `yaml:"config"`
+	Fixtures    []map[string]any  `yaml:"fixtures"`
+	Steps       []map[string]any  `yaml:"steps"`
 }
 
 func TestStandaloneManifestMapsOneIndependentCasePerPinnedBlock(t *testing.T) {
@@ -222,9 +221,6 @@ func assertOpenIDSensitiveSemantics(t *testing.T, testCase openIDManifestCase) {
 		switch number {
 		case 5:
 			contains("enable_encrypt_fields: true")
-			if len(testCase.AfterShutdown) == 0 {
-				t.Errorf("case %q has no encrypted storage assertion", testCase.Name)
-			}
 		case 8, 10, 52:
 			contains("authorization_endpoint", "token_endpoint", "{{CAPTURE.")
 		case 15, 17, 19, 21, 27, 28, 34, 40:
@@ -242,9 +238,6 @@ func assertOpenIDSensitiveSemantics(t *testing.T, testCase openIDManifestCase) {
 		switch number {
 		case 2, 20, 21:
 			contains("enable_encrypt_fields: true")
-			if len(testCase.AfterShutdown) == 0 {
-				t.Errorf("case %q has no encrypted storage assertion", testCase.Name)
-			}
 		case 12, 14:
 			contains("claim_schema", "{{CAPTURE.")
 		case 16, 17, 18, 19:

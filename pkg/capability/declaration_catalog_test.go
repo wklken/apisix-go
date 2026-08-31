@@ -131,8 +131,8 @@ func TestBuiltInSecretDeclarationsRemainAvailable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := len(catalog.Declarations()); got != 104 {
-		t.Fatalf("declaration count = %d, want 104", got)
+	if got := len(catalog.Declarations()); got != 103 {
+		t.Fatalf("declaration count = %d, want 103", got)
 	}
 	for _, key := range []SecretDeclaration{
 		{Factory: "jwt-auth", Source: SecretPluginConfig, Field: "private_key"},

@@ -44,11 +44,9 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 		t.Fatalf("Init() error = %v", err)
 	}
 	p.newState = func() (string, error) { return "state-1", nil }
-	values := map[string]string{cfg.ClientSecret: cfg.ClientSecret}
-	for _, fallback := range cfg.ClientSecretFallbacks {
-		values[fallback] = fallback
-	}
-	secrets, scope, _, cleanup := newCasdoorScopedSecretHarness(t, 1, "test-route", cfg, values)
+	secrets, scope, _, cleanup := newCasdoorScopedSecretHarness(
+		t, 1, "test-route", cfg, map[string]string{cfg.ClientSecret: cfg.ClientSecret},
+	)
 	t.Cleanup(cleanup)
 	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
@@ -100,37 +98,19 @@ func TestPostInitWarnsOnlyForInsecureURLs(t *testing.T) {
 	}
 }
 
-// TestMaterializeScopedSecretsOwnsCasdoorSessionSecrets catches installing the
-// primary before the last fallback succeeds, hashing raw references instead of
-// resolved plaintext, and resolving fallback elements with indexed authority
-// or in a different order than configuration.
-func TestMaterializeScopedSecretsOwnsCasdoorSessionSecrets(t *testing.T) {
-	const (
-		currentValue  = "current-secret-current-secret-current-secret"
-		fallbackValue = "fallback-one-fallback-one-fallback-one"
-		rotatedValue  = "rotated-two-rotated-two-rotated-two"
-	)
+func TestMaterializeScopedSecretsOwnsCasdoorClientSecret(t *testing.T) {
+	const currentValue = "current-secret-current-secret-current-secret"
 	contextual, err := testutil.DataEncryptionService(true, []string{"0123456789abcdef"}).
 		EncryptForContext(currentValue, "authz-casdoor.client_secret")
 	if err != nil {
 		t.Fatalf("EncryptForContext() error = %v", err)
 	}
-	fallbackRaw := "$ENV://CASDOOR_FALLBACK_ONE"
-	rotatedRaw := "$secret://vault/casdoor/client-secret?version=2"
 	config := Config{
-		EndpointAddr:          "https://door.example.com",
-		ClientID:              "client-a",
-		ClientSecret:          contextual,
-		ClientSecretFallbacks: []string{fallbackRaw, rotatedRaw},
-		CallbackURL:           "https://gateway.example.com/callback",
-	}
-	values := map[string]string{
-		contextual:  currentValue,
-		fallbackRaw: fallbackValue,
-		rotatedRaw:  rotatedValue,
+		EndpointAddr: "https://door.example.com", ClientID: "client-a",
+		ClientSecret: contextual, CallbackURL: "https://gateway.example.com/callback",
 	}
 	secrets, scope, broker, closeAttempt := newCasdoorScopedSecretHarness(
-		t, 1, "casdoor-scoped", config, values, "0123456789abcdef",
+		t, 1, "casdoor-scoped", config, map[string]string{contextual: currentValue}, "0123456789abcdef",
 	)
 	defer closeAttempt()
 	p := &Plugin{config: config}
@@ -143,55 +123,38 @@ func TestMaterializeScopedSecretsOwnsCasdoorSessionSecrets(t *testing.T) {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 
-	calls := broker.scopedCalls()
-	if len(calls) != 2 {
-		t.Fatalf("scoped calls = %#v, want two reference fallbacks", calls)
-	}
-	wantFields := []string{"client_secret_fallbacks", "client_secret_fallbacks"}
-	wantRaw := []string{fallbackRaw, rotatedRaw}
-	for i, call := range calls {
-		if call.Raw != wantRaw[i] || call.Scope.Generation != scope.Generation ||
-			call.Scope.Domain != generation.DomainHTTP ||
-			call.Scope.Plugin != name || call.Scope.Resource != scope.Resource ||
-			call.Scope.Source != capability.SecretPluginConfig || call.Scope.Field != wantFields[i] {
-			t.Fatalf("scoped call[%d] = %#v, want exact %q container authority", i, call, wantFields[i])
-		}
+	if calls := broker.scopedCalls(); len(calls) != 0 {
+		t.Fatalf("scoped calls = %#v, want contextual ciphertext resolved without broker", calls)
 	}
 	if got, want := p.config.ClientSecret, casdoorDescriptor(currentValue); got != want {
 		t.Fatalf("client_secret descriptor = %q, want resolved-plaintext descriptor %q", got, want)
-	}
-	for i, resolved := range []string{fallbackValue, rotatedValue} {
-		if got, want := p.config.ClientSecretFallbacks[i], casdoorDescriptor(resolved); got != want {
-			t.Fatalf("fallback descriptor[%d] = %q, want %q", i, got, want)
-		}
 	}
 	if p.client != nil {
 		t.Fatal("scoped materialization constructed an HTTP client before PostInit")
 	}
 
+	const failedRaw = "$secret://vault/casdoor/client-secret?version=2"
 	failedConfig := config
-	failedConfig.ClientSecretFallbacks = append([]string(nil), config.ClientSecretFallbacks...)
+	failedConfig.ClientSecret = failedRaw
 	failCapability, failScope, failBroker, closeFailure := newCasdoorScopedSecretHarness(
-		t, 2, "casdoor-failure", failedConfig, values, "0123456789abcdef",
+		t, 2, "casdoor-failure", failedConfig, map[string]string{failedRaw: currentValue}, "0123456789abcdef",
 	)
 	defer closeFailure()
-	failBroker.setFailure(rotatedRaw)
+	failBroker.setFailure(failedRaw)
 	failed := &Plugin{config: failedConfig}
 	if err := failed.Init(); err != nil {
 		t.Fatal(err)
 	}
 	err = base.MaterializeScopedPluginSecrets(context.Background(), failScope, failCapability, failed)
 	if err == nil || err.Error() != "materialize plugin secrets: credential unavailable" {
-		t.Fatalf("Nth fallback materialization error = %v, want fixed redaction", err)
+		t.Fatalf("client secret materialization error = %v, want fixed redaction", err)
 	}
-	if strings.Contains(err.Error(), rotatedRaw) || strings.Contains(err.Error(), rotatedValue) {
-		t.Fatalf("Nth fallback error leaked secret details: %v", err)
+	if strings.Contains(err.Error(), failedRaw) || strings.Contains(err.Error(), currentValue) {
+		t.Fatalf("client secret error leaked secret details: %v", err)
 	}
-	if failed.config.ClientSecret != failedConfig.ClientSecret ||
-		fmt.Sprint(failed.config.ClientSecretFallbacks) != fmt.Sprint(failedConfig.ClientSecretFallbacks) ||
-		failed.clientSecretSet || failed.clientSecret != (secret.Value{}) ||
-		len(failed.clientSecretFallbacks) != 0 || failed.secretsPrepared || failed.client != nil {
-		t.Fatalf("Nth fallback failure retained partial state: %#v", failed)
+	if failed.config.ClientSecret != failedConfig.ClientSecret || failed.clientSecretSet ||
+		failed.clientSecret != (secret.Value{}) || failed.secretsPrepared || failed.client != nil {
+		t.Fatalf("client secret failure retained partial state: %#v", failed)
 	}
 	failBroker.setFailure("")
 	if err := base.MaterializeScopedPluginSecrets(
@@ -199,12 +162,10 @@ func TestMaterializeScopedSecretsOwnsCasdoorSessionSecrets(t *testing.T) {
 	); err != nil {
 		t.Fatalf("same-instance retry error = %v", err)
 	}
-	if got := failBroker.scopedCalls(); len(got) != 4 {
-		t.Fatalf("failure plus retry calls = %#v, want two reference-only attempts", got)
+	if got := failBroker.scopedCalls(); len(got) != 2 {
+		t.Fatalf("failure plus retry calls = %#v, want two primary-secret attempts", got)
 	}
-	if failed.config.ClientSecret != casdoorDescriptor(currentValue) ||
-		failed.config.ClientSecretFallbacks[0] != casdoorDescriptor(fallbackValue) ||
-		failed.config.ClientSecretFallbacks[1] != casdoorDescriptor(rotatedValue) {
+	if failed.config.ClientSecret != casdoorDescriptor(currentValue) {
 		t.Fatalf("retry installed wrong descriptors: %#v", failed.config)
 	}
 }
@@ -270,71 +231,15 @@ func TestCasdoorScopedSecretRawFormsUseResolvedDescriptors(t *testing.T) {
 	}
 }
 
-func TestCasdoorResolvedSecretLengthFailureIsAtomicAndRetryable(t *testing.T) {
-	const (
-		currentRaw  = "$ENV://CASDOOR_LENGTH_CURRENT"
-		fallbackRaw = "$secret://vault/casdoor/length-fallback"
-	)
-	for _, test := range []struct {
-		name       string
-		shortRaw   string
-		shortValue string
-	}{
-		{name: "current", shortRaw: currentRaw, shortValue: "too-short-current"},
-		{name: "fallback", shortRaw: fallbackRaw, shortValue: "too-short-fallback"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			config := Config{
-				EndpointAddr: "https://door.example.com", ClientID: "client-a",
-				ClientSecret: currentRaw, ClientSecretFallbacks: []string{fallbackRaw},
-				CallbackURL: "https://gateway.example.com/callback",
-			}
-			values := map[string]string{
-				currentRaw:  "current-long-current-long-current-long",
-				fallbackRaw: "fallback-long-fallback-long-fallback-long",
-			}
-			values[test.shortRaw] = test.shortValue
-			secrets, scope, broker, closeAttempt := newCasdoorScopedSecretHarness(
-				t, 20, "casdoor-length", config, values,
-			)
-			defer closeAttempt()
-			p := &Plugin{config: config}
-			err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p)
-			if err == nil || err.Error() != "materialize plugin secrets: credential unavailable" {
-				t.Fatalf("short resolved %s error = %v, want fixed redaction", test.name, err)
-			}
-			if strings.Contains(err.Error(), test.shortRaw) || strings.Contains(err.Error(), test.shortValue) {
-				t.Fatalf("length failure leaked raw or resolved secret: %v", err)
-			}
-			if p.config.ClientSecret != config.ClientSecret ||
-				fmt.Sprint(p.config.ClientSecretFallbacks) != fmt.Sprint(config.ClientSecretFallbacks) ||
-				p.secretsPrepared || p.clientSecretSet || len(p.clientSecretFallbacks) != 0 {
-				t.Fatalf("length failure retained partial state: %#v", p)
-			}
-			broker.setValue(test.shortRaw, "retry-secret-retry-secret-retry-secret")
-			if err := base.MaterializeScopedPluginSecrets(
-				context.Background(), scope, secrets, p,
-			); err != nil {
-				t.Fatalf("same-instance retry error = %v", err)
-			}
-		})
-	}
-}
-
 func TestCasdoorConcurrentScopedMaterializationIsSingleflight(t *testing.T) {
 	config := Config{
-		EndpointAddr: "https://door.example.com", ClientID: "client-a",
+		EndpointAddr: "https://door.example.com",
+		ClientID:     "client-a",
 		ClientSecret: "$ENV://CASDOOR_SINGLEFLIGHT_CURRENT",
-		ClientSecretFallbacks: []string{
-			"$secret://vault/casdoor/singleflight-one",
-			"$secret://vault/casdoor/singleflight-two",
-		},
-		CallbackURL: "https://gateway.example.com/callback",
+		CallbackURL:  "https://gateway.example.com/callback",
 	}
 	values := map[string]string{
-		config.ClientSecret:             "current-singleflight-current-singleflight",
-		config.ClientSecretFallbacks[0]: "fallback-one-singleflight-fallback-one",
-		config.ClientSecretFallbacks[1]: "fallback-two-singleflight-fallback-two",
+		config.ClientSecret: "current-singleflight-current-singleflight",
 	}
 	secrets, scope, broker, closeAttempt := newCasdoorScopedSecretHarness(
 		t, 30, "casdoor-singleflight", config, values,
@@ -360,8 +265,8 @@ func TestCasdoorConcurrentScopedMaterializationIsSingleflight(t *testing.T) {
 			t.Fatalf("concurrent materialization error = %v", err)
 		}
 	}
-	if calls := broker.scopedCalls(); len(calls) != 3 {
-		t.Fatalf("concurrent resolver calls = %#v, want one ordered materialization", calls)
+	if calls := broker.scopedCalls(); len(calls) != 1 {
+		t.Fatalf("concurrent resolver calls = %#v, want one materialization", calls)
 	}
 }
 
@@ -409,60 +314,6 @@ func TestCasdoorOAuthRequestDoesNotRetainClientSecretBody(t *testing.T) {
 		t.Fatalf("public client_secret = %q, want descriptor", p.config.ClientSecret)
 	}
 	p.Stop()
-}
-
-func TestCasdoorScopedGenerationsKeepSessionFallbacksIsolated(t *testing.T) {
-	const (
-		secretN       = "generation-n-generation-n-generation-n"
-		secretN1      = "generation-n1-generation-n1-generation-n1"
-		secretForeign = "generation-x-generation-x-generation-x"
-	)
-	newConfig := func(current string, fallbacks ...string) Config {
-		return Config{
-			EndpointAddr: "https://door.example.com", ClientID: "client-a",
-			ClientSecret: current, ClientSecretFallbacks: fallbacks,
-			CallbackURL: "https://gateway.example.com/callback",
-		}
-	}
-	pN, closeN := newScopedCasdoorPlugin(
-		t, 40, "same-route", newConfig("$ENV://CASDOOR_N"),
-		map[string]string{"$ENV://CASDOOR_N": secretN},
-	)
-	defer closeN()
-	pN1, closeN1 := newScopedCasdoorPlugin(
-		t, 41, "same-route", newConfig("$ENV://CASDOOR_N1", "$secret://vault/casdoor/n"),
-		map[string]string{
-			"$ENV://CASDOOR_N1":         secretN1,
-			"$secret://vault/casdoor/n": secretN,
-		},
-	)
-	defer closeN1()
-	foreign, closeForeign := newScopedCasdoorPlugin(
-		t, 42, "same-route", newConfig("$ENV://CASDOOR_FOREIGN"),
-		map[string]string{"$ENV://CASDOOR_FOREIGN": secretForeign},
-	)
-	defer closeForeign()
-
-	cookieN := sealCasdoorTestSession(t, pN, "token-n")
-	assertCasdoorSessionAccepted(t, pN, cookieN, true)
-	assertCasdoorSessionAccepted(t, pN1, cookieN, true)
-	assertCasdoorSessionAccepted(t, foreign, cookieN, false)
-	cookieN1 := sealCasdoorTestSession(t, pN1, "token-n1")
-	assertCasdoorSessionAccepted(t, pN, cookieN1, false)
-	assertCasdoorSessionAccepted(t, pN1, cookieN1, true)
-
-	pN.Stop()
-	assertCasdoorSessionAccepted(t, pN1, cookieN, true)
-	assertCasdoorSessionAccepted(t, pN1, cookieN1, true)
-	retired := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "https://gateway.example.com/orders", nil)
-	req.AddCookie(cookieN)
-	pN.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-		t.Fatal("retired N accepted a session")
-	})).ServeHTTP(retired, req)
-	if retired.Code != http.StatusServiceUnavailable {
-		t.Fatalf("retired N status = %d, want 503", retired.Code)
-	}
 }
 
 func TestCasdoorCallbackAndStopKeepScopedSecretUseAttemptOwned(t *testing.T) {
@@ -559,7 +410,7 @@ func TestCasdoorCallbackAndStopKeepScopedSecretUseAttemptOwned(t *testing.T) {
 		}
 	}
 	if !p.retired || p.client != nil || p.secretsPrepared || p.clientSecretSet ||
-		p.clientSecret != (secret.Value{}) || len(p.clientSecretFallbacks) != 0 {
+		p.clientSecret != (secret.Value{}) {
 		t.Fatalf("Stop retained scoped callback state: %#v", p)
 	}
 }
@@ -992,7 +843,6 @@ func TestCasdoorSessionSurvivesClientSecretRotation(t *testing.T) {
 
 	rotatedConfig := oldConfig
 	rotatedConfig.ClientSecret = testNewClientSecret
-	rotatedConfig.ClientSecretFallbacks = []string{testOldClientSecret}
 	rotatedPlugin := newTestPlugin(t, rotatedConfig)
 	callbackReq := httptest.NewRequest(
 		http.MethodGet,
@@ -1013,7 +863,7 @@ func TestCasdoorSessionSurvivesClientSecretRotation(t *testing.T) {
 	if rotatedCookie == nil {
 		t.Fatal("rotated session cookie was not set")
 	}
-	withoutFallback := newTestPlugin(t, Config{
+	oldSecretPlugin := newTestPlugin(t, Config{
 		EndpointAddr: casdoor.URL,
 		ClientID:     "client-a",
 		ClientSecret: testOldClientSecret,
@@ -1022,11 +872,17 @@ func TestCasdoorSessionSurvivesClientSecretRotation(t *testing.T) {
 	protectedReq := httptest.NewRequest(http.MethodGet, "http://gateway.example.com/orders/2", nil)
 	protectedReq.AddCookie(rotatedCookie)
 	protectedRR := httptest.NewRecorder()
-	withoutFallback.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-		t.Fatal("cookie written with new primary must not open with old key")
+	called := false
+	oldSecretPlugin.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusNoContent)
 	})).ServeHTTP(protectedRR, protectedReq)
-	if protectedRR.Code != http.StatusFound {
-		t.Fatalf("old-only plugin status = %d, want authorization redirect", protectedRR.Code)
+	if !called || protectedRR.Code != http.StatusNoContent {
+		t.Fatalf(
+			"old-secret plugin after rotation = called:%t status:%d, want accepted session",
+			called,
+			protectedRR.Code,
+		)
 	}
 }
 
@@ -1211,7 +1067,7 @@ func TestInvalidTokenResponseReturnsServiceUnavailable(t *testing.T) {
 	}
 }
 
-func TestSessionCookieSecureByDefault(t *testing.T) {
+func TestSessionCookieUsesRestySessionDefaults(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		EndpointAddr: "https://door.example.com",
 		ClientID:     "client-a",
@@ -1228,59 +1084,49 @@ func TestSessionCookieSecureByDefault(t *testing.T) {
 	if cookie == nil {
 		t.Fatal("session cookie was not set")
 	}
-	if !cookie.Secure || !cookie.HttpOnly || cookie.SameSite != http.SameSiteLaxMode {
+	if cookie.Secure || !cookie.HttpOnly || cookie.SameSite != http.SameSiteLaxMode ||
+		cookie.Path != "/" || cookie.MaxAge != 0 {
 		t.Fatalf(
-			"cookie attributes = secure:%t httpOnly:%t sameSite:%v",
+			"cookie attributes = secure:%t httpOnly:%t sameSite:%v path:%q maxAge:%d",
 			cookie.Secure,
 			cookie.HttpOnly,
 			cookie.SameSite,
+			cookie.Path,
+			cookie.MaxAge,
 		)
 	}
 }
 
-func TestSessionCookieHonorsCookieControls(t *testing.T) {
-	cookieSecure := false
-	p := newTestPlugin(t, Config{
-		EndpointAddr:   "https://door.example.com",
-		ClientID:       "client-a",
-		ClientSecret:   testClientSecret,
-		CallbackURL:    "https://gateway.example.com/callback",
-		CookieSecure:   &cookieSecure,
-		CookieSameSite: "Strict",
-	})
-
-	rr := httptest.NewRecorder()
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Fatal("next handler should not be called")
-	})).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "http://gateway.example.com/orders", nil))
-
-	cookie := findSessionCookie(rr.Result().Cookies())
-	if cookie == nil {
-		t.Fatal("session cookie was not set")
-	}
-	if cookie.Secure || cookie.SameSite != http.SameSiteStrictMode {
-		t.Fatalf("cookie attributes = secure:%t sameSite:%v", cookie.Secure, cookie.SameSite)
-	}
-}
-
-func TestSchemaRequiresSecureCookieForSameSiteNone(t *testing.T) {
+func TestSchemaMatchesAPISIXPublicFields(t *testing.T) {
 	p := &Plugin{}
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
+	var document struct {
+		Properties map[string]any `json:"properties"`
+	}
+	if err := json.Unmarshal([]byte(p.GetSchema()), &document); err != nil {
+		t.Fatalf("decode schema: %v", err)
+	}
+	wantFields := map[string]struct{}{
+		"endpoint_addr": {}, "client_id": {}, "client_secret": {}, "callback_url": {},
+	}
+	if len(document.Properties) != len(wantFields) {
+		t.Fatalf("schema properties = %v, want only APISIX fields", document.Properties)
+	}
+	for field := range wantFields {
+		if _, ok := document.Properties[field]; !ok {
+			t.Fatalf("schema is missing APISIX field %q", field)
+		}
+	}
 	config := map[string]any{
-		"endpoint_addr":    "https://door.example.com",
-		"client_id":        "client-a",
-		"client_secret":    testClientSecret,
-		"callback_url":     "https://gateway.example.com/callback",
-		"cookie_same_site": "None",
+		"endpoint_addr": "https://door.example.com",
+		"client_id":     "client-a",
+		"client_secret": "short",
+		"callback_url":  "https://gateway.example.com/callback",
 	}
-	if err := util.Validate(config, p.GetSchema()); err == nil {
-		t.Fatal("schema accepted SameSite=None without cookie_secure=true")
-	}
-	config["cookie_secure"] = true
 	if err := util.Validate(config, p.GetSchema()); err != nil {
-		t.Fatalf("schema rejected secure SameSite=None cookie: %v", err)
+		t.Fatalf("schema rejected APISIX-valid short client_secret: %v", err)
 	}
 }
 
@@ -1322,46 +1168,6 @@ func newScopedCasdoorPlugin(
 		t.Fatal(err)
 	}
 	return p, closeAttempt
-}
-
-func sealCasdoorTestSession(t *testing.T, p *Plugin, accessToken string) *http.Cookie {
-	t.Helper()
-	rr := httptest.NewRecorder()
-	p.lifecycleMu.RLock()
-	err := p.setSessionCookieLocked(rr, sessionData{
-		AccessToken: accessToken,
-		ClientID:    p.config.ClientID,
-	}, time.Hour)
-	p.lifecycleMu.RUnlock()
-	if err != nil {
-		t.Fatalf("setSessionCookieLocked() error = %v", err)
-	}
-	cookie := findSessionCookie(rr.Result().Cookies())
-	if cookie == nil {
-		t.Fatal("test session cookie was not set")
-	}
-	return cookie
-}
-
-func assertCasdoorSessionAccepted(t *testing.T, p *Plugin, cookie *http.Cookie, want bool) {
-	t.Helper()
-	req := httptest.NewRequest(http.MethodGet, "https://gateway.example.com/orders", nil)
-	req.AddCookie(cookie)
-	rr := httptest.NewRecorder()
-	called := false
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		called = true
-		w.WriteHeader(http.StatusNoContent)
-	})).ServeHTTP(rr, req)
-	if called != want {
-		t.Fatalf("session accepted = %t, want %t (status %d)", called, want, rr.Code)
-	}
-	if want && rr.Code != http.StatusNoContent {
-		t.Fatalf("accepted session status = %d, want 204", rr.Code)
-	}
-	if !want && rr.Code != http.StatusFound {
-		t.Fatalf("rejected session status = %d, want authorization redirect", rr.Code)
-	}
 }
 
 type retainingCasdoorTransport struct {
@@ -1424,12 +1230,6 @@ func (broker *casdoorScopedSecretBroker) setFailure(raw string) {
 	broker.failRaw = raw
 }
 
-func (broker *casdoorScopedSecretBroker) setValue(raw, value string) {
-	broker.mu.Lock()
-	defer broker.mu.Unlock()
-	broker.values[raw] = value
-}
-
 func newCasdoorScopedSecretHarness(
 	t *testing.T,
 	revision uint64,
@@ -1443,11 +1243,10 @@ func newCasdoorScopedSecretHarness(
 	document, err := json.Marshal(map[string]any{
 		"id": resourceID,
 		"plugins": map[string]any{name: map[string]any{
-			"endpoint_addr":           config.EndpointAddr,
-			"client_id":               config.ClientID,
-			"client_secret":           config.ClientSecret,
-			"client_secret_fallbacks": config.ClientSecretFallbacks,
-			"callback_url":            config.CallbackURL,
+			"endpoint_addr": config.EndpointAddr,
+			"client_id":     config.ClientID,
+			"client_secret": config.ClientSecret,
+			"callback_url":  config.CallbackURL,
 		}},
 	})
 	if err != nil {

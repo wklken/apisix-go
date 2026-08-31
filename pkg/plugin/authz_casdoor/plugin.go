@@ -13,7 +13,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/capability"
@@ -33,19 +32,19 @@ type Plugin struct {
 	newState func() (string, error)
 	now      func() time.Time
 
-	lifecycleMu           sync.RWMutex
-	clientSecret          secret.Value
-	clientSecretSet       bool
-	clientSecretFallbacks []secret.Value
-	secretsPrepared       bool
-	retired               bool
+	lifecycleMu     sync.RWMutex
+	clientSecret    secret.Value
+	clientSecretSet bool
+	secretsPrepared bool
+	retired         bool
 }
 
 const (
-	priority               = 2559
-	name                   = "authz-casdoor"
-	minSessionSecretLength = 32
+	priority = 2559
+	name     = "authz-casdoor"
 )
+
+var processSessionSecret, processSessionSecretErr = newProcessSessionSecret()
 
 const schema = `
 {
@@ -61,52 +60,20 @@ const schema = `
     "client_secret": {
 	  "type": "string"
     },
-	"client_secret_fallbacks": {
-	  "type": "array",
-	  "items": {"type": "string"}
-	},
     "callback_url": {
       "type": "string",
       "pattern": "^[^%?]+[^/]$"
-    },
-    "cookie_secure": {
-      "type": "boolean",
-      "default": true
-    },
-    "cookie_same_site": {
-      "type": "string",
-      "enum": ["Default", "Lax", "Strict", "None"],
-      "default": "Lax"
     }
   },
-  "allOf": [
-    {
-      "anyOf": [
-        {
-          "not": {
-            "properties": {"cookie_same_site": {"enum": ["None"]}},
-            "required": ["cookie_same_site"]
-          }
-        },
-        {
-          "properties": {"cookie_secure": {"enum": [true]}},
-          "required": ["cookie_secure"]
-        }
-      ]
-    }
-  ],
   "required": ["callback_url", "endpoint_addr", "client_id", "client_secret"]
 }
 `
 
 type Config struct {
-	EndpointAddr          string   `json:"endpoint_addr"`
-	ClientID              string   `json:"client_id"`
-	ClientSecret          string   `json:"client_secret"`
-	ClientSecretFallbacks []string `json:"client_secret_fallbacks,omitempty"`
-	CallbackURL           string   `json:"callback_url"`
-	CookieSecure          *bool    `json:"cookie_secure,omitempty"`
-	CookieSameSite        string   `json:"cookie_same_site,omitempty"`
+	EndpointAddr string `json:"endpoint_addr"`
+	ClientID     string `json:"client_id"`
+	ClientSecret string `json:"client_secret"`
+	CallbackURL  string `json:"callback_url"`
 }
 
 type sessionData struct {
@@ -141,12 +108,8 @@ func (p *Plugin) PostInit() error {
 	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(p.config.CallbackURL)), "http://") {
 		logger.Warn("Using authz-casdoor callback_url with no TLS is a security risk")
 	}
-	if p.config.CookieSecure == nil {
-		cookieSecure := true
-		p.config.CookieSecure = &cookieSecure
-	}
-	if p.config.CookieSameSite == "" {
-		p.config.CookieSameSite = "Lax"
+	if processSessionSecretErr != nil {
+		return fmt.Errorf("generate authz-casdoor session key: %w", processSessionSecretErr)
 	}
 	if p.client == nil {
 		p.client = &http.Client{Transport: httpclient.NewTransport(), Timeout: 10 * time.Second}
@@ -164,10 +127,10 @@ func (p *Plugin) Config() any {
 	return &p.config
 }
 
-// MaterializeScopedSecrets admits the current Casdoor client/session secret
-// and every configured rotation fallback for one immutable generation. All
-// owners and public descriptors are installed only after the last value has
-// resolved and passed the session-key length contract.
+// MaterializeScopedSecrets admits the Casdoor OAuth client secret for one
+// immutable generation. Session encryption uses a process-local random key,
+// matching lua-resty-session's default rather than coupling browser sessions
+// to OAuth credential rotation.
 func (p *Plugin) MaterializeScopedSecrets(
 	ctx context.Context,
 	access base.ScopedSecretAccess,
@@ -181,69 +144,19 @@ func (p *Plugin) MaterializeScopedSecrets(
 		return nil
 	}
 
-	current, currentDescriptor, err := materializeScopedCasdoorSecret(
-		ctx, access, "client_secret", p.config.ClientSecret,
-	)
+	current, err := access.Materialize(ctx, "client_secret", p.config.ClientSecret)
 	if err != nil {
 		return secret.ErrCredentialUnavailable
 	}
-	fallbacks := make([]secret.Value, len(p.config.ClientSecretFallbacks))
-	fallbackDescriptors := make([]string, len(p.config.ClientSecretFallbacks))
-	installed := false
-	defer func() {
-		if installed {
-			return
-		}
-		current = secret.Value{}
-		for i := range fallbacks {
-			fallbacks[i] = secret.Value{}
-		}
-	}()
-	for i, raw := range p.config.ClientSecretFallbacks {
-		fallback, descriptor, materializeErr := materializeScopedCasdoorSecret(
-			ctx, access, "client_secret_fallbacks", raw,
-		)
-		if materializeErr != nil {
-			return secret.ErrCredentialUnavailable
-		}
-		fallbacks[i] = fallback
-		fallbackDescriptors[i] = descriptor
+	descriptor, err := current.Descriptor(capability.SecretPluginConfig)
+	if err != nil {
+		return secret.ErrCredentialUnavailable
 	}
 
 	p.clientSecret = current
 	p.clientSecretSet = true
-	p.clientSecretFallbacks = fallbacks
-	p.config.ClientSecret = currentDescriptor
-	p.config.ClientSecretFallbacks = fallbackDescriptors
+	p.config.ClientSecret = descriptor.String()
 	p.secretsPrepared = true
-	installed = true
-	return nil
-}
-
-func materializeScopedCasdoorSecret(
-	ctx context.Context,
-	access base.ScopedSecretAccess,
-	field string,
-	raw string,
-) (secret.Value, string, error) {
-	value, err := access.Materialize(ctx, field, raw)
-	if err != nil {
-		return secret.Value{}, "", secret.ErrCredentialUnavailable
-	}
-	if err := value.Use(validateCasdoorSessionSecret); err != nil {
-		return secret.Value{}, "", secret.ErrCredentialUnavailable
-	}
-	descriptor, err := value.Descriptor(capability.SecretPluginConfig)
-	if err != nil {
-		return secret.Value{}, "", secret.ErrCredentialUnavailable
-	}
-	return value, descriptor.String(), nil
-}
-
-func validateCasdoorSessionSecret(plaintext string) error {
-	if utf8.RuneCountInString(plaintext) < minSessionSecretLength {
-		return secret.ErrCredentialUnavailable
-	}
 	return nil
 }
 
@@ -428,18 +341,13 @@ func (p *Plugin) fetchAccessTokenLocked(r *http.Request, code string) (string, i
 
 func (p *Plugin) openSessionLocked(r *http.Request) (sessionData, error) {
 	value := cookieValue(r, p.cookieName())
-	var payload []byte
-	err := p.useSessionSecretsLocked(func(current string, fallbacks []string) error {
-		var openErr error
-		payload, openErr = base.OpenOAuthSession(
-			value,
-			current,
-			fallbacks,
-			p.sessionFingerprint(),
-			p.now(),
-		)
-		return openErr
-	})
+	payload, err := base.OpenOAuthSession(
+		value,
+		string(processSessionSecret[:]),
+		nil,
+		p.sessionFingerprint(),
+		p.now(),
+	)
 	if err != nil {
 		return sessionData{}, err
 	}
@@ -456,18 +364,13 @@ func (p *Plugin) setSessionCookieLocked(w http.ResponseWriter, session sessionDa
 		return err
 	}
 	now := p.now()
-	var value string
-	err = p.useClientSecretLocked(func(current string) error {
-		var sealErr error
-		value, sealErr = base.SealOAuthSession(
-			payload,
-			current,
-			p.sessionFingerprint(),
-			now,
-			now.Add(lifetime),
-		)
-		return sealErr
-	})
+	value, err := base.SealOAuthSession(
+		payload,
+		string(processSessionSecret[:]),
+		p.sessionFingerprint(),
+		now,
+		now.Add(lifetime),
+	)
 	if err != nil {
 		return err
 	}
@@ -476,9 +379,7 @@ func (p *Plugin) setSessionCookieLocked(w http.ResponseWriter, session sessionDa
 		Value:    value,
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   *p.config.CookieSecure,
-		SameSite: base.CookieSameSite(p.config.CookieSameSite),
-		MaxAge:   int(lifetime.Seconds()),
+		SameSite: http.SameSiteLaxMode,
 	})
 	return nil
 }
@@ -491,42 +392,6 @@ func (p *Plugin) useClientSecretLocked(use func(string) error) error {
 		return p.clientSecret.Use(use)
 	}
 	return secret.ErrCredentialUnavailable
-}
-
-func (p *Plugin) useSessionSecretsLocked(use func(string, []string) error) error {
-	if use == nil || p.retired || !p.secretsPrepared {
-		return secret.ErrCredentialUnavailable
-	}
-	if p.clientSecretSet {
-		return p.clientSecret.Use(func(current string) error {
-			fallbacks := make([]string, len(p.clientSecretFallbacks))
-			defer func() {
-				for i := range fallbacks {
-					fallbacks[i] = ""
-				}
-			}()
-			return useScopedCasdoorFallbacks(p.clientSecretFallbacks, fallbacks, 0, func() error {
-				return use(current, fallbacks)
-			})
-		})
-	}
-	return secret.ErrCredentialUnavailable
-}
-
-func useScopedCasdoorFallbacks(
-	values []secret.Value,
-	plaintext []string,
-	index int,
-	use func() error,
-) error {
-	if index == len(values) {
-		return use()
-	}
-	return values[index].Use(func(value string) error {
-		plaintext[index] = value
-		defer func() { plaintext[index] = "" }()
-		return useScopedCasdoorFallbacks(values, plaintext, index+1, use)
-	})
 }
 
 // Stop waits for in-flight authentication/session callbacks, closes the
@@ -544,10 +409,6 @@ func (p *Plugin) Stop() {
 	}
 	p.clientSecret = secret.Value{}
 	p.clientSecretSet = false
-	for i := range p.clientSecretFallbacks {
-		p.clientSecretFallbacks[i] = secret.Value{}
-	}
-	p.clientSecretFallbacks = nil
 	p.secretsPrepared = false
 }
 
@@ -569,6 +430,12 @@ func cookieValue(r *http.Request, name string) string {
 		return ""
 	}
 	return cookie.Value
+}
+
+func newProcessSessionSecret() ([32]byte, error) {
+	var value [32]byte
+	_, err := io.ReadFull(rand.Reader, value[:])
+	return value, err
 }
 
 func randomState(reader io.Reader) (string, error) {

@@ -34,7 +34,7 @@ var expectedPluginFields = map[string][]string{
 	},
 	"ai-rate-limiting": {"redis_password", "sentinel_password"},
 	"authz-keycloak":   {"client_secret"},
-	"authz-casdoor":    {"client_secret", "client_secret_fallbacks"},
+	"authz-casdoor":    {"client_secret"},
 	"aws-lambda": {
 		"authorization.apikey",
 		"authorization.iam.accesskey",

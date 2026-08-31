@@ -30,14 +30,17 @@ const (
 	priority = 4010
 	name     = "batch-requests"
 
-	DefaultURI              = "/apisix/batch-requests"
-	defaultMaxBodySize      = 1024 * 1024
-	defaultMaxResponseSize  = 4 * 1024 * 1024
-	defaultMaxPipelineItems = 1000
-	defaultMaxConcurrency   = 8
-	defaultMaxTimeout       = 30000
-	hardMaxTimeout          = 60000
-	maxBufferedResponses    = 20
+	DefaultURI               = "/apisix/batch-requests"
+	defaultMaxBodySize       = 1024 * 1024
+	defaultMaxResponseSize   = 4 * 1024 * 1024
+	defaultMaxPipelineItems  = 1000
+	defaultMaxConcurrency    = 8
+	defaultMaxTimeout        = 30000
+	hardMaxTimeout           = 60000
+	maxBufferedResponses     = 20
+	retainedHeaderEntrySize  = 64
+	retainedSliceHeaderSize  = 24
+	retainedStringHeaderSize = 16
 )
 
 const schema = `{"type":"object"}`
@@ -306,13 +309,14 @@ func handleBatchRequest(
 func retainedPipelineResponseSize(response PipelineResponse) int64 {
 	size := int64(len(response.Body))
 	for key, value := range response.Headers {
-		size += int64(len(key))
+		size += retainedHeaderEntrySize + int64(len(key))
 		switch typed := value.(type) {
 		case string:
-			size += int64(len(typed))
+			size += retainedStringHeaderSize + int64(len(typed))
 		case []string:
+			size += retainedSliceHeaderSize
 			for _, item := range typed {
-				size += int64(len(item))
+				size += retainedStringHeaderSize + int64(len(item))
 			}
 		}
 	}

@@ -122,16 +122,15 @@ func TestCombinedCompressionRejectsBrotliCapFallbackWhenIdentityForbidden(t *tes
 	for _, declared := range []bool{false, true} {
 		for _, outer := range []string{"brotli", "gzip"} {
 			t.Run(outer+"/declared="+strconv.FormatBool(declared), func(t *testing.T) {
-				limit := int64(8)
 				br := newBrotli(t)
-				br.Config().(*brotli.Config).MaxResponseSize = &limit
 				gz := newGzip(t)
+				body := bytes.Repeat([]byte("x"), 10*1024*1024+1)
 				upstream := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 					w.Header().Set("Content-Type", "text/plain")
 					if declared {
-						w.Header().Set("Content-Length", "32")
+						w.Header().Set("Content-Length", strconv.Itoa(len(body)))
 					}
-					_, _ = w.Write(bytes.Repeat([]byte("x"), 32))
+					_, _ = w.Write(body)
 				})
 				var handler http.Handler
 				if outer == "brotli" {
@@ -155,10 +154,8 @@ func TestCombinedCompressionPreservesAcceptedPreEncodedBrotliAboveCap(t *testing
 	for _, declared := range []bool{false, true} {
 		for _, outer := range []string{"brotli", "gzip"} {
 			t.Run(outer+"/declared="+strconv.FormatBool(declared), func(t *testing.T) {
-				limit := int64(8)
-				body := bytes.Repeat([]byte("encoded"), 8)
+				body := bytes.Repeat([]byte("e"), 10*1024*1024+1)
 				br := newBrotli(t)
-				br.Config().(*brotli.Config).MaxResponseSize = &limit
 				gz := newGzip(t)
 				upstream := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 					w.Header().Set("Content-Type", "text/plain")

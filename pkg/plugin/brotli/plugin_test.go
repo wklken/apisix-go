@@ -620,14 +620,14 @@ func TestWriterOptionsApplyCompressionLevelAndWindow(t *testing.T) {
 
 func TestBrotliResponseAboveLimitReturnsControlledError(t *testing.T) {
 	limit := int64(1024)
-	p := newTestPlugin(t, Config{MaxResponseSize: &limit})
+	p := newTestPlugin(t, Config{maxResponseSize: limit})
 
 	recorder := base.NewBufferedResponseWriter()
 	recorder.Header().Set("Content-Type", "text/html")
 	_, _ = recorder.Write(bytes.Repeat([]byte("a"), 2048))
 
 	if err := p.compressResponse(recorder); err == nil {
-		t.Fatal("compressResponse() error = nil for a response above max_response_size")
+		t.Fatal("compressResponse() error = nil for a response above the internal limit")
 	}
 	if recorder.Header().Get("Content-Encoding") == "br" {
 		t.Fatal("oversized response was compressed")
@@ -640,7 +640,7 @@ func TestBrotliResponseAboveLimitReturnsControlledError(t *testing.T) {
 func TestBrotliHandlerPassesOversizedResponseThrough(t *testing.T) {
 	limit := int64(1024)
 	body := bytes.Repeat([]byte("payload"), 300)
-	p := newTestPlugin(t, Config{MaxResponseSize: &limit})
+	p := newTestPlugin(t, Config{maxResponseSize: limit})
 	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
@@ -693,7 +693,7 @@ func TestBrotliHandlerPreservesContentLengthForUncompressedResponse(t *testing.T
 func TestBrotliCompressesBelowLimit(t *testing.T) {
 	limit := int64(1024)
 	body := []byte("compressible payload")
-	p := newTestPlugin(t, Config{MaxResponseSize: &limit})
+	p := newTestPlugin(t, Config{maxResponseSize: limit})
 	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		_, _ = w.Write(body)
@@ -715,7 +715,7 @@ func TestBrotliCompressesBelowLimit(t *testing.T) {
 func TestBrotliPassThroughOversizedDeclaredRetainsContentLength(t *testing.T) {
 	limit := int64(1024)
 	body := bytes.Repeat([]byte("payload"), 512)
-	p := newTestPlugin(t, Config{MaxResponseSize: &limit})
+	p := newTestPlugin(t, Config{maxResponseSize: limit})
 	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		w.Header().Set("Content-Length", "4096")
@@ -741,7 +741,7 @@ func TestBrotliPassThroughOversizedDeclaredRetainsContentLength(t *testing.T) {
 func TestBrotliPassThroughOversizedUnknownLength(t *testing.T) {
 	limit := int64(1024)
 	body := bytes.Repeat([]byte("payload"), 512)
-	p := newTestPlugin(t, Config{MaxResponseSize: &limit})
+	p := newTestPlugin(t, Config{maxResponseSize: limit})
 	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		_, _ = w.Write(body)

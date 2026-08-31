@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"github.com/wklken/apisix-go/pkg/generation"
+	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/resource"
 )
 
 func TestDecodeHTTPResourceSetUsesOnlyPublishedCandidate(t *testing.T) {
@@ -13,7 +15,11 @@ func TestDecodeHTTPResourceSetUsesOnlyPublishedCandidate(t *testing.T) {
 
 	snapshot, err := generation.NewSnapshot(17, []generation.Resource{
 		resourceValue("routes", "r1", `{"id":"r1","uri":"/before","service_id":"s1"}`),
-		resourceValue("services", "s1", `{"id":"s1","upstream_id":"u1"}`),
+		resourceValue(
+			"services",
+			"s1",
+			`{"id":"s1","upstream_id":"u1","labels":{"team":"edge","nested":{"enabled":true}},"create_time":101,"update_time":102,"script":"return true"}`,
+		),
 		resourceValue("upstreams", "u1", `{"id":"u1","nodes":{"127.0.0.1:9080":1}}`),
 		resourceValue("plugin_configs", "pc1", `{"id":"pc1","plugins":{"request-id":{}}}`),
 		resourceValue("protos", "root.proto", `{"id":"root.proto","content":"syntax = proto3;"}`),
@@ -38,6 +44,13 @@ func TestDecodeHTTPResourceSetUsesOnlyPublishedCandidate(t *testing.T) {
 	if resources.services["s1"].UpstreamID != "u1" || len(resources.upstreams["u1"].Nodes) != 1 {
 		t.Fatalf("decoded dependency closure = %#v / %#v", resources.services, resources.upstreams)
 	}
+	service := resources.services["s1"]
+	if service.Labels["team"] != "edge" ||
+		service.Labels["nested"].(map[string]any)["enabled"] != true ||
+		service.CreateTime != 101 || service.UpdateTime != 102 ||
+		string(service.Script) != `"return true"` {
+		t.Fatalf("decoded service context = %#v, want labels/timestamps/script", service)
+	}
 	if len(resources.pluginConfigs) != 1 || len(resources.globalRules) != 1 || len(resources.ssls) != 1 {
 		t.Fatalf("decoded HTTP resources are incomplete: %#v", resources)
 	}
@@ -50,6 +63,31 @@ func TestDecodeHTTPResourceSetUsesOnlyPublishedCandidate(t *testing.T) {
 	if !slices.Equal(resources.consumerIDs, []string{"alice"}) ||
 		!slices.Equal(resources.consumerGroupIDs, []string{"staff"}) {
 		t.Fatalf("consumer identities = %v/%v", resources.consumerIDs, resources.consumerGroupIDs)
+	}
+}
+
+func TestCloneEffectiveServiceOwnsLabelsAndScript(t *testing.T) {
+	t.Parallel()
+
+	source := resource.Service{
+		ID: "s1",
+		Labels: map[string]any{
+			"nested": map[string]any{"value": "source"},
+		},
+		Script: json.RawMessage(`"return true"`),
+	}
+	cloned, err := cloneEffectiveService(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cloned.Labels["nested"].(map[string]any)["value"] = "mutated"
+	cloned.Script[0] = '['
+
+	if source.Labels["nested"].(map[string]any)["value"] != "source" {
+		t.Fatalf("source service labels mutated: %#v", source.Labels)
+	}
+	if string(source.Script) != `"return true"` {
+		t.Fatalf("source service script mutated: %s", source.Script)
 	}
 }
 

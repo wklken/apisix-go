@@ -226,7 +226,7 @@ func freezePreparedConsumerResolver(
 		}
 		consumer := clonePlanningConsumer(record.Consumer)
 		request = apisixctx.WithApisixVars(request, nil)
-		apisixctx.AttachConsumer(request, consumer)
+		consumer = apisixctx.AttachConsumerWithSource(request, consumer, state.Source)
 		overrides := make(map[string]struct{}, len(record.Bindings))
 		for _, binding := range record.Bindings {
 			name := binding.Descriptor.Factory

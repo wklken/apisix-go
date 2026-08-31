@@ -311,7 +311,7 @@ cases:
                 path:
                   equals: /v1/data/with_route
                 body:
-                  matches: '"route":\{[^}]*"id":"opa-valid-route-name".*"name":"valid"'
+                  matches: '"route":\{"id":"opa-valid-route-name","name":"valid","plugins":\{"opa":\{[^{}]*\}\},"uri":"/hello"\}'
             respond:
               - status: 200
                 body: '{"result":{"allow":true}}'

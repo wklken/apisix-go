@@ -214,6 +214,7 @@ func buildConsumerCredentialIndex(
 func cloneBoundConsumer(consumer resource.Consumer) resource.Consumer {
 	consumer.Plugins = cloneBoundPluginConfigs(consumer.Plugins)
 	consumer.Labels = cloneBoundStringAnyMap(consumer.Labels)
+	consumer.AuthConf = cloneBoundValue(consumer.AuthConf)
 	return consumer
 }
 

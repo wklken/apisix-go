@@ -254,8 +254,9 @@ func TestHandlerAuthenticatesLDAPUserAndAttachesConsumer(t *testing.T) {
 		if !ok {
 			t.Fatalf("consumer = %T, want resource.Consumer", ctx.GetApisixVar(r, "$consumer"))
 		}
-		if config := consumer.Plugins["ldap-auth"]; config != nil {
-			t.Fatalf("consumer ldap-auth config = %#v, want redacted", config)
+		config, ok := consumer.Plugins["ldap-auth"].(map[string]any)
+		if !ok || config["user_dn"] != "cn=alice,dc=example,dc=org" {
+			t.Fatalf("consumer ldap-auth config = %#v, want complete config", config)
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})).ServeHTTP(rr, req)

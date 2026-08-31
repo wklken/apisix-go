@@ -185,6 +185,11 @@ func (preparer *consumerBindingPreparer) prepareConsumer(
 		consumer.Username != normalized.key.ID {
 		return runtime.ConsumerRecord{}, nil, nil, errConsumerPreparationFailed
 	}
+	consumer.ID = normalized.key.ID
+	consumer.ConsumerName = ""
+	consumer.AuthConf = nil
+	consumer.CredentialID = ""
+	consumer.CustomID = ""
 	consumer.ConfigDigest = sha256.Sum256(normalized.raw)
 	return runtime.ConsumerRecord{ID: normalized.key.ID, Consumer: consumer}, bindings, used, nil
 }

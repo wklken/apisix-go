@@ -259,6 +259,7 @@ type Route struct {
 	hostsSet      bool
 	remoteAddrSet bool
 	websocketSet  bool
+	originalJSON  json.RawMessage
 }
 
 func (r *Route) UnmarshalJSON(data []byte) error {
@@ -293,7 +294,13 @@ func (r *Route) UnmarshalJSON(data []byte) error {
 	} else {
 		r.Status = 0
 	}
+	r.originalJSON = append(r.originalJSON[:0], data...)
 	return nil
+}
+
+// OriginalJSON returns a detached copy of the source resource document.
+func (r Route) OriginalJSON() json.RawMessage {
+	return append(json.RawMessage(nil), r.originalJSON...)
 }
 
 func (r Route) StatusConfigured() bool {
@@ -347,19 +354,49 @@ type Service struct {
 	UpstreamID string                  `json:"upstream_id,omitempty"`
 	Upstream   Upstream                `json:"upstream"`
 
-	Name            string   `json:"name,omitempty"`
-	Desc            string   `json:"desc,omitempty"`
-	EnableWebsocket bool     `json:"enable_websocket,omitempty"`
-	Hosts           []string `json:"hosts,omitempty"`
+	Name            string          `json:"name,omitempty"`
+	Desc            string          `json:"desc,omitempty"`
+	Labels          map[string]any  `json:"labels,omitempty"`
+	EnableWebsocket bool            `json:"enable_websocket,omitempty"`
+	Hosts           []string        `json:"hosts,omitempty"`
+	CreateTime      int64           `json:"create_time,omitempty"`
+	UpdateTime      int64           `json:"update_time,omitempty"`
+	Script          json.RawMessage `json:"script,omitempty"`
+	originalJSON    json.RawMessage
+}
+
+func (s *Service) UnmarshalJSON(data []byte) error {
+	type serviceJSON Service
+	var decoded serviceJSON
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*s = Service(decoded)
+	s.originalJSON = append(s.originalJSON[:0], data...)
+	return nil
+}
+
+// OriginalJSON returns a detached copy of the source resource document.
+func (s Service) OriginalJSON() json.RawMessage {
+	return append(json.RawMessage(nil), s.originalJSON...)
 }
 
 // {"username":"foo","plugins":{"basic-auth":{"_meta":{"disable":false},"password":"bar","username":"foo"}},"create_time":1712331168,"update_time":1712331168}
 type Consumer struct {
-	Username     string                  `json:"username"`
-	GroupID      string                  `json:"group_id,omitempty"`
-	Plugins      map[string]PluginConfig `json:"plugins" yaml:"plugins"`
-	Labels       map[string]any          `json:"labels,omitempty"`
-	ConfigDigest [32]byte                `json:"-" yaml:"-"`
+	ID            string                  `json:"id,omitempty"`
+	Username      string                  `json:"username"`
+	Desc          string                  `json:"desc,omitempty"`
+	GroupID       string                  `json:"group_id,omitempty"`
+	ConsumerName  string                  `json:"consumer_name,omitempty"`
+	AuthConf      PluginConfig            `json:"auth_conf,omitempty"`
+	Plugins       map[string]PluginConfig `json:"plugins" yaml:"plugins"`
+	Labels        map[string]any          `json:"labels,omitempty"`
+	CreateTime    int64                   `json:"create_time,omitempty"`
+	UpdateTime    int64                   `json:"update_time,omitempty"`
+	ModifiedIndex int64                   `json:"modifiedIndex,omitempty"`
+	CredentialID  string                  `json:"credential_id,omitempty"`
+	CustomID      string                  `json:"custom_id,omitempty"`
+	ConfigDigest  [32]byte                `json:"-" yaml:"-"`
 }
 
 type ConsumerGroup struct {

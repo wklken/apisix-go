@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"maps"
 	"net/http"
 	"net/url"
 	"reflect"
@@ -226,6 +225,7 @@ func cloneConsumer(consumer resource.Consumer) resource.Consumer {
 	if consumer.Labels != nil {
 		consumer.Labels = cloneConsumerAnyMap(consumer.Labels)
 	}
+	consumer.AuthConf = cloneConsumerValue(consumer.AuthConf)
 	return consumer
 }
 
@@ -604,11 +604,42 @@ func RegisterApisixVar(r *http.Request, key string, val any) {
 }
 
 func AttachConsumer(r *http.Request, consumer resource.Consumer) {
-	RegisterApisixVar(r, "$consumer", redactedConsumerView(consumer))
-	RegisterApisixVar(r, "$consumer_name", consumer.Username)
+	AttachConsumerWithSource(r, consumer, "")
+}
+
+// AttachConsumerWithSource prepares and attaches the complete consumer selected
+// by authentication. The returned value is the detached consumer stored in the
+// request variables.
+func AttachConsumerWithSource(r *http.Request, consumer resource.Consumer, source string) resource.Consumer {
+	consumer = cloneConsumer(consumer)
+	consumer.ID = consumer.Username
+	consumer.ConsumerName = consumer.ID
+	if source != "" {
+		consumer.AuthConf = nil
+		if config, ok := consumer.Plugins[source]; ok {
+			consumer.AuthConf = cloneConsumerValue(config)
+		}
+	}
+	consumer.CustomID = ""
+	if customID, ok := consumer.Labels["custom_id"].(string); ok {
+		consumer.CustomID = customID
+	}
+
+	RegisterApisixVar(r, "$consumer", consumer)
+	RegisterApisixVar(r, "$consumer_name", consumer.ConsumerName)
 	RegisterApisixVar(r, "$consumer_group_id", consumer.GroupID)
-	r.Header.Set("X-Consumer-Username", consumer.Username)
-	// reference: https://github.com/apache/apisix/blob/master/apisix/consumer.lua#L84C1-L89C4
+	setConsumerHeader(r, "X-Consumer-Username", consumer.Username)
+	setConsumerHeader(r, "X-Credential-Identifier", consumer.CredentialID)
+	setConsumerHeader(r, "X-Consumer-Custom-ID", consumer.CustomID)
+	return consumer
+}
+
+func setConsumerHeader(r *http.Request, name, value string) {
+	if value == "" {
+		r.Header.Del(name)
+		return
+	}
+	r.Header.Set(name, value)
 }
 
 func AttachConsumerFromAuthenticationState(r *http.Request) {
@@ -616,28 +647,7 @@ func AttachConsumerFromAuthenticationState(r *http.Request) {
 	if !ok {
 		return
 	}
-	AttachConsumer(r, state.Consumer())
-}
-
-func redactedConsumerView(consumer resource.Consumer) resource.Consumer {
-	var plugins map[string]resource.PluginConfig
-	if consumer.Plugins != nil {
-		plugins = make(map[string]resource.PluginConfig, len(consumer.Plugins))
-		for name := range consumer.Plugins {
-			plugins[name] = nil
-		}
-	}
-	var labels map[string]any
-	if consumer.Labels != nil {
-		labels = make(map[string]any, len(consumer.Labels))
-		maps.Copy(labels, consumer.Labels)
-	}
-	return resource.Consumer{
-		Username: consumer.Username,
-		GroupID:  consumer.GroupID,
-		Plugins:  plugins,
-		Labels:   labels,
-	}
+	AttachConsumerWithSource(r, state.Consumer(), state.Source)
 }
 
 func RecycleVars(r *http.Request) {

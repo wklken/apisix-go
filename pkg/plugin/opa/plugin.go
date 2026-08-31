@@ -110,12 +110,12 @@ type opaRequest struct {
 }
 
 type opaInput struct {
-	Type     string                      `json:"type"`
-	Request  opaHTTPRequest              `json:"request"`
-	Vars     map[string]any              `json:"var"`
-	Route    *base.AuthorizationResource `json:"route,omitempty"`
-	Service  *base.AuthorizationResource `json:"service,omitempty"`
-	Consumer any                         `json:"consumer,omitempty"`
+	Type     string         `json:"type"`
+	Request  opaHTTPRequest `json:"request"`
+	Vars     map[string]any `json:"var"`
+	Route    any            `json:"route,omitempty"`
+	Service  any            `json:"service,omitempty"`
+	Consumer any            `json:"consumer,omitempty"`
 }
 
 type opaHTTPRequest struct {
@@ -126,11 +126,6 @@ type opaHTTPRequest struct {
 	Path    string         `json:"path"`
 	Headers map[string]any `json:"headers"`
 	Query   map[string]any `json:"query"`
-}
-
-type opaConsumer struct {
-	Username string `json:"username"`
-	GroupID  string `json:"group_id,omitempty"`
 }
 
 type opaResponse struct {
@@ -303,15 +298,13 @@ func (p *Plugin) buildOPARequest(r *http.Request) opaRequest {
 		}
 	}
 	if p.config.WithRoute {
-		if resourcePresent(facts.Route) {
-			resource := facts.Route
-			input.Route = &resource
+		if route, ok := p.opaRouteResource(r); ok {
+			input.Route = route
 		}
 	}
 	if p.config.WithService {
-		if resourcePresent(facts.Service) {
-			resource := facts.Service
-			input.Service = &resource
+		if service, ok := p.opaServiceResource(r); ok {
+			input.Service = service
 		}
 	}
 
@@ -326,12 +319,34 @@ func (p *Plugin) opaRoute(r *http.Request) base.AuthorizationResource {
 	return localRoute(r)
 }
 
+func (p *Plugin) opaRouteResource(r *http.Request) (map[string]any, bool) {
+	if resourcePresent(base.AuthorizationResource{ID: p.route.ID, Name: p.route.Name, URI: p.route.Uri}) {
+		return serializeResourceForOPA(p.route)
+	}
+	route := localRoute(r)
+	if !resourcePresent(route) {
+		return nil, false
+	}
+	return serializeResourceForOPA(route)
+}
+
 func (p *Plugin) opaService(r *http.Request) base.AuthorizationResource {
 	service := base.AuthorizationResource{ID: p.service.ID, Name: p.service.Name}
 	if resourcePresent(service) {
 		return service
 	}
 	return localService(r)
+}
+
+func (p *Plugin) opaServiceResource(r *http.Request) (map[string]any, bool) {
+	if resourcePresent(base.AuthorizationResource{ID: p.service.ID, Name: p.service.Name}) {
+		return serializeResourceForOPA(p.service)
+	}
+	service := localService(r)
+	if !resourcePresent(service) {
+		return nil, false
+	}
+	return serializeResourceForOPA(service)
 }
 
 func localRoute(r *http.Request) base.AuthorizationResource {
@@ -375,18 +390,48 @@ func resourcePresent(resource base.AuthorizationResource) bool {
 	return resource.ID != "" || resource.Name != "" || resource.URI != ""
 }
 
-func authorizationConsumer(r *http.Request) (opaConsumer, bool) {
+func authorizationConsumer(r *http.Request) (resource.Consumer, bool) {
 	switch consumer := ctx.GetApisixVar(r, "$consumer").(type) {
 	case resource.Consumer:
-		return opaConsumer{Username: consumer.Username, GroupID: consumer.GroupID}, true
+		return consumer, true
 	case *resource.Consumer:
 		if consumer == nil {
-			return opaConsumer{}, false
+			return resource.Consumer{}, false
 		}
-		return opaConsumer{Username: consumer.Username, GroupID: consumer.GroupID}, true
+		return *consumer, true
 	default:
-		return opaConsumer{}, false
+		return resource.Consumer{}, false
 	}
+}
+
+func serializeResourceForOPA(value any) (map[string]any, bool) {
+	var body []byte
+	if original, ok := value.(interface{ OriginalJSON() json.RawMessage }); ok {
+		body = original.OriginalJSON()
+	}
+	if len(body) == 0 {
+		var err error
+		body, err = json.Marshal(value)
+		if err != nil {
+			return nil, false
+		}
+	}
+	var copy map[string]any
+	if err := json.Unmarshal(body, &copy); err != nil {
+		return nil, false
+	}
+	switch resource := value.(type) {
+	case resource.Route:
+		if resource.ID != "" {
+			copy["id"] = resource.ID
+		}
+	case resource.Service:
+		if resource.ID != "" {
+			copy["id"] = resource.ID
+		}
+	}
+	delete(copy, "upstream")
+	return copy, true
 }
 
 func (p *Plugin) endpoint() string {

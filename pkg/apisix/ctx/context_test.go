@@ -162,7 +162,7 @@ func TestAttachConsumerSetsUpstreamUsernameHeader(t *testing.T) {
 	}
 }
 
-func TestAttachConsumerRedactsPluginCredentialsFromRequestVars(t *testing.T) {
+func TestAttachConsumerPreservesCompleteConsumerInRequestVars(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
 	req = WithApisixVars(req, map[string]string{})
 
@@ -181,10 +181,18 @@ func TestAttachConsumerRedactsPluginCredentialsFromRequestVars(t *testing.T) {
 		t.Fatalf("$consumer = %T, want resource.Consumer", GetApisixVar(req, "$consumer"))
 	}
 	if consumer.Username != "bob" || consumer.GroupID != "gold" || consumer.Labels["team"] != "edge" {
-		t.Fatalf("redacted consumer identity = %#v, want identity and labels preserved", consumer)
+		t.Fatalf("consumer identity = %#v, want identity and labels preserved", consumer)
 	}
-	if len(consumer.Plugins) != 2 || consumer.Plugins["basic-auth"] != nil || consumer.Plugins["rate-limit"] != nil {
-		t.Fatalf("redacted consumer plugins = %#v, want names without configuration", consumer.Plugins)
+	if len(consumer.Plugins) != 2 {
+		t.Fatalf("consumer plugins = %#v, want complete plugin configuration", consumer.Plugins)
+	}
+	basicAuth, ok := consumer.Plugins["basic-auth"].(map[string]any)
+	if !ok || basicAuth["username"] != "bob" || basicAuth["password"] != "secret" {
+		t.Fatalf("basic-auth plugin = %#v, want complete configuration", consumer.Plugins["basic-auth"])
+	}
+	rateLimit, ok := consumer.Plugins["rate-limit"].(map[string]any)
+	if !ok || rateLimit["count"] != 10 {
+		t.Fatalf("rate-limit plugin = %#v, want complete configuration", consumer.Plugins["rate-limit"])
 	}
 }
 

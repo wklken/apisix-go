@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"maps"
 	"net/http"
 	"net/url"
 	"reflect"
@@ -604,7 +603,7 @@ func RegisterApisixVar(r *http.Request, key string, val any) {
 }
 
 func AttachConsumer(r *http.Request, consumer resource.Consumer) {
-	RegisterApisixVar(r, "$consumer", redactedConsumerView(consumer))
+	RegisterApisixVar(r, "$consumer", consumer)
 	RegisterApisixVar(r, "$consumer_name", consumer.Username)
 	RegisterApisixVar(r, "$consumer_group_id", consumer.GroupID)
 	r.Header.Set("X-Consumer-Username", consumer.Username)
@@ -617,27 +616,6 @@ func AttachConsumerFromAuthenticationState(r *http.Request) {
 		return
 	}
 	AttachConsumer(r, state.Consumer())
-}
-
-func redactedConsumerView(consumer resource.Consumer) resource.Consumer {
-	var plugins map[string]resource.PluginConfig
-	if consumer.Plugins != nil {
-		plugins = make(map[string]resource.PluginConfig, len(consumer.Plugins))
-		for name := range consumer.Plugins {
-			plugins[name] = nil
-		}
-	}
-	var labels map[string]any
-	if consumer.Labels != nil {
-		labels = make(map[string]any, len(consumer.Labels))
-		maps.Copy(labels, consumer.Labels)
-	}
-	return resource.Consumer{
-		Username: consumer.Username,
-		GroupID:  consumer.GroupID,
-		Plugins:  plugins,
-		Labels:   labels,
-	}
 }
 
 func RecycleVars(r *http.Request) {

@@ -223,17 +223,19 @@ func TestBuildOPARequestUsesAPISIXHTTPShape(t *testing.T) {
 	}
 }
 
-func TestBuildOPARequestIncludesSafeConsumerIdentity(t *testing.T) {
+func TestBuildOPARequestIncludesCompleteConsumer(t *testing.T) {
 	p := newTestPlugin(t, Config{Host: "http://opa.test", Policy: "authz", WithConsumer: true})
 	req := httptest.NewRequest(http.MethodGet, "http://gateway.test/get", nil)
 	req = apisixctx.WithApisixVars(req, nil)
-	apisixctx.AttachConsumer(req, resource.Consumer{
+	attachedConsumer := resource.Consumer{
 		Username: "test-user",
 		GroupID:  "group-1",
 		Plugins: map[string]resource.PluginConfig{
 			"key-auth": map[string]any{"key": "consumer-plugin-secret"},
 		},
-	})
+		Labels: map[string]any{"team": "edge"},
+	}
+	apisixctx.AttachConsumer(req, attachedConsumer)
 
 	body, err := json.Marshal(p.buildOPARequest(req))
 	if err != nil {
@@ -244,18 +246,21 @@ func TestBuildOPARequestIncludesSafeConsumerIdentity(t *testing.T) {
 		t.Fatalf("unmarshal OPA request: %v", err)
 	}
 	consumer := decoded["input"].(map[string]any)["consumer"].(map[string]any)
-	if consumer["username"] != "test-user" || consumer["group_id"] != "group-1" {
-		t.Fatalf("consumer = %#v, want safe identity", consumer)
+	labels, ok := consumer["labels"].(map[string]any)
+	if consumer["username"] != "test-user" || consumer["group_id"] != "group-1" || !ok || labels["team"] != "edge" {
+		t.Fatalf("consumer = %#v, want complete consumer", consumer)
 	}
-	if _, ok := consumer["plugins"]; ok {
-		t.Fatalf("consumer = %#v, must not expose plugins", consumer)
+	plugins, ok := consumer["plugins"].(map[string]any)
+	if !ok {
+		t.Fatalf("consumer = %#v, want plugin configuration", consumer)
 	}
-	if strings.Contains(string(body), "consumer-plugin-secret") {
-		t.Fatalf("consumer plugin secret leaked in OPA input: %s", body)
+	keyAuth, ok := plugins["key-auth"].(map[string]any)
+	if !ok || keyAuth["key"] != "consumer-plugin-secret" {
+		t.Fatalf("consumer plugins = %#v, want complete configuration", plugins)
 	}
 }
 
-func TestOPAResourceContextExposesOnlySafeIdentities(t *testing.T) {
+func TestOPAResourceContextIncludesCompleteResourcesWithoutUpstream(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		Host:         "http://opa.test",
 		Policy:       "authz",
@@ -290,13 +295,15 @@ func TestOPAResourceContextExposesOnlySafeIdentities(t *testing.T) {
 	)
 	req := httptest.NewRequest(http.MethodGet, "http://gateway.test/orders/1", nil)
 	req = apisixctx.WithApisixVars(req, nil)
-	apisixctx.AttachConsumer(req, resource.Consumer{
+	attachedConsumer := resource.Consumer{
 		Username: "test-user",
 		GroupID:  "group-1",
 		Plugins: map[string]resource.PluginConfig{
 			"key-auth": map[string]any{"key": "consumer-plugin-secret"},
 		},
-	})
+		Labels: map[string]any{"team": "edge"},
+	}
+	apisixctx.AttachConsumer(req, attachedConsumer)
 
 	body, err := json.Marshal(p.buildOPARequest(req))
 	if err != nil {
@@ -308,29 +315,57 @@ func TestOPAResourceContextExposesOnlySafeIdentities(t *testing.T) {
 	}
 	input := decoded["input"].(map[string]any)
 	route := input["route"].(map[string]any)
-	if route["id"] != "route-1" || route["name"] != "orders-route" || route["uri"] != "/orders/*" || len(route) != 3 {
-		t.Fatalf("route = %#v, want id/name/uri only", route)
+	if route["id"] != "route-1" || route["name"] != "orders-route" || route["uri"] != "/orders/*" {
+		t.Fatalf("route = %#v, want complete route context", route)
+	}
+	if _, ok := route["upstream"]; ok {
+		t.Fatalf("route = %#v, want upstream omitted", route)
+	}
+	routePlugins, ok := route["plugins"].(map[string]any)
+	if !ok {
+		t.Fatalf("route = %#v, want plugin configuration", route)
+	}
+	keyAuth, ok := routePlugins["key-auth"].(map[string]any)
+	if !ok || keyAuth["key"] != "route-plugin-secret" {
+		t.Fatalf("route plugins = %#v, want complete configuration", routePlugins)
 	}
 	service := input["service"].(map[string]any)
-	if service["id"] != "service-1" || service["name"] != "orders-service" || len(service) != 2 {
-		t.Fatalf("service = %#v, want id/name only", service)
+	if service["id"] != "service-1" || service["name"] != "orders-service" {
+		t.Fatalf("service = %#v, want complete service context", service)
+	}
+	if _, ok := service["upstream"]; ok {
+		t.Fatalf("service = %#v, want upstream omitted", service)
+	}
+	servicePlugins, ok := service["plugins"].(map[string]any)
+	if !ok {
+		t.Fatalf("service = %#v, want plugin configuration", service)
+	}
+	basicAuth, ok := servicePlugins["basic-auth"].(map[string]any)
+	if !ok || basicAuth["password"] != "service-plugin-secret" {
+		t.Fatalf("service plugins = %#v, want complete configuration", servicePlugins)
 	}
 	consumer := input["consumer"].(map[string]any)
-	if consumer["username"] != "test-user" || consumer["group_id"] != "group-1" || len(consumer) != 2 {
-		t.Fatalf("consumer = %#v, want username/group_id only", consumer)
+	labels, ok := consumer["labels"].(map[string]any)
+	if consumer["username"] != "test-user" || consumer["group_id"] != "group-1" || !ok || labels["team"] != "edge" {
+		t.Fatalf("consumer = %#v, want complete consumer", consumer)
 	}
-	for _, secret := range []string{
-		"route-plugin-secret",
-		"route-upstream-secret",
-		"route-client-key-secret",
-		"service-plugin-secret",
-		"service-upstream-secret",
-		"service-client-key-secret",
-		"consumer-plugin-secret",
-	} {
-		if strings.Contains(string(body), secret) {
-			t.Fatalf("resource secret %q leaked in OPA input: %s", secret, body)
-		}
+	consumerPlugins, ok := consumer["plugins"].(map[string]any)
+	if !ok {
+		t.Fatalf("consumer = %#v, want plugin configuration", consumer)
+	}
+	keyAuth, ok = consumerPlugins["key-auth"].(map[string]any)
+	if !ok || keyAuth["key"] != "consumer-plugin-secret" {
+		t.Fatalf("consumer plugins = %#v, want complete configuration", consumerPlugins)
+	}
+	if p.route.Upstream.Name != "route-upstream-secret" || p.service.Upstream.Name != "service-upstream-secret" {
+		t.Fatalf(
+			"resource context mutated: route upstream=%q, service upstream=%q",
+			p.route.Upstream.Name,
+			p.service.Upstream.Name,
+		)
+	}
+	if attachedConsumer.Plugins["key-auth"].(map[string]any)["key"] != "consumer-plugin-secret" {
+		t.Fatalf("attached consumer mutated: %#v", attachedConsumer)
 	}
 }
 
@@ -529,7 +564,7 @@ func TestHandlerIncludesRouteAndServiceContextWhenConfigured(t *testing.T) {
 	}
 }
 
-func TestHandlerIncludesSafeRouteAndServiceResourcesWhenAvailable(t *testing.T) {
+func TestHandlerIncludesCompleteRouteAndServiceResourcesWithoutUpstream(t *testing.T) {
 	opa := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rawBody, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -541,17 +576,34 @@ func TestHandlerIncludesSafeRouteAndServiceResourcesWhenAvailable(t *testing.T) 
 		}
 		input := body["input"].(map[string]any)
 		route := input["route"].(map[string]any)
-		if route["id"] != "route-1" || route["uri"] != "/orders/*" || route["name"] != "orders" || len(route) != 3 {
-			t.Fatalf("input.route = %#v, want safe route resource", route)
+		if route["id"] != "route-1" || route["uri"] != "/orders/*" || route["name"] != "orders" {
+			t.Fatalf("input.route = %#v, want complete route resource", route)
+		}
+		if _, ok := route["upstream"]; ok {
+			t.Fatalf("input.route = %#v, want upstream omitted", route)
 		}
 		service := input["service"].(map[string]any)
-		if service["id"] != "service-1" || service["name"] != "orders" || len(service) != 2 {
-			t.Fatalf("input.service = %#v, want safe service resource", service)
+		if service["id"] != "service-1" || service["name"] != "orders" {
+			t.Fatalf("input.service = %#v, want complete service resource", service)
 		}
-		for _, secret := range []string{"route-upstream-secret", "service-upstream-secret", "upstream-secret"} {
-			if strings.Contains(string(rawBody), secret) {
-				t.Fatalf("resource secret %q leaked in OPA input: %s", secret, rawBody)
-			}
+		if _, ok := service["upstream"]; ok {
+			t.Fatalf("input.service = %#v, want upstream omitted", service)
+		}
+		routePlugins, ok := route["plugins"].(map[string]any)
+		if !ok {
+			t.Fatalf("input.route = %#v, want plugin configuration", route)
+		}
+		keyAuth, ok := routePlugins["key-auth"].(map[string]any)
+		if !ok || keyAuth["key"] != "route-plugin-secret" {
+			t.Fatalf("input.route plugins = %#v, want complete configuration", routePlugins)
+		}
+		servicePlugins, ok := service["plugins"].(map[string]any)
+		if !ok {
+			t.Fatalf("input.service = %#v, want plugin configuration", service)
+		}
+		basicAuth, ok := servicePlugins["basic-auth"].(map[string]any)
+		if !ok || basicAuth["password"] != "service-plugin-secret" {
+			t.Fatalf("input.service plugins = %#v, want complete configuration", servicePlugins)
 		}
 		_, _ = w.Write([]byte(`{"result":{"allow":true}}`))
 	}))
@@ -564,6 +616,9 @@ func TestHandlerIncludesSafeRouteAndServiceResourcesWhenAvailable(t *testing.T) 
 			Name:     "orders",
 			Uri:      "/orders/*",
 			Priority: 10,
+			Plugins: map[string]resource.PluginConfig{
+				"key-auth": map[string]any{"key": "route-plugin-secret"},
+			},
 			Upstream: resource.Upstream{
 				Name: "upstream-secret",
 				TLS:  &resource.UpstreamTLS{ClientKey: "route-upstream-secret"},
@@ -573,6 +628,9 @@ func TestHandlerIncludesSafeRouteAndServiceResourcesWhenAvailable(t *testing.T) 
 			ID:              "service-1",
 			Name:            "orders",
 			EnableWebsocket: true,
+			Plugins: map[string]resource.PluginConfig{
+				"basic-auth": map[string]any{"password": "service-plugin-secret"},
+			},
 			Upstream: resource.Upstream{
 				Name: "service-upstream-secret",
 				TLS:  &resource.UpstreamTLS{ClientKey: "service-upstream-secret"},

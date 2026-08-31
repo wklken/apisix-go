@@ -29,10 +29,8 @@ type Plugin struct {
 	base.BasePlugin
 	config Config
 
-	client            *http.Client
-	opts              sessionOptions
-	logoutTrustedNets []*net.IPNet
-
+	client          *http.Client
+	opts            sessionOptions
 	lifecycleMu     sync.RWMutex
 	cookieSecret    secret.Value
 	cookieSecretSet bool
@@ -65,13 +63,6 @@ const schema = `
     "logout_uri": {
       "type": "string"
     },
-    "logout_trusted_addresses": {
-      "type": "array",
-      "items": {
-        "type": "string",
-        "minLength": 1
-      }
-    },
     "cookie": {
       "type": "object",
       "properties": {
@@ -96,11 +87,10 @@ const schema = `
 `
 
 type Config struct {
-	IDPURI                 string       `json:"idp_uri"`
-	CASCallbackURI         string       `json:"cas_callback_uri"`
-	LogoutURI              string       `json:"logout_uri"`
-	LogoutTrustedAddresses []string     `json:"logout_trusted_addresses,omitempty"`
-	Cookie                 CookieConfig `json:"cookie"`
+	IDPURI         string       `json:"idp_uri"`
+	CASCallbackURI string       `json:"cas_callback_uri"`
+	LogoutURI      string       `json:"logout_uri"`
+	Cookie         CookieConfig `json:"cookie"`
 }
 
 type CookieConfig struct {
@@ -185,19 +175,6 @@ func (p *Plugin) PostInit() error {
 	defer p.lifecycleMu.Unlock()
 	if p.retired || !p.secretsPrepared {
 		return secret.ErrCredentialUnavailable
-	}
-	p.logoutTrustedNets = nil
-	for _, address := range p.config.LogoutTrustedAddresses {
-		_, network, err := net.ParseCIDR(address)
-		if err != nil {
-			return fmt.Errorf("invalid logout_trusted_addresses entry %q: %w", address, err)
-		}
-		p.logoutTrustedNets = append(p.logoutTrustedNets, network)
-	}
-	if len(p.logoutTrustedNets) == 0 {
-		logger.Warn(
-			"cas-auth back-channel logout is disabled: configure logout_trusted_addresses with trusted IdP CIDRs",
-		)
 	}
 	if p.config.Cookie.Secure == nil {
 		secure := true
@@ -302,11 +279,6 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		}
 
 		if r.Method == http.MethodPost && r.URL.Path == base.CallbackPath(p.config.CASCallbackURI) {
-			if !p.trustedLogoutPeer(r) {
-				http.Error(w, util.BuildMessageResponse("untrusted logout request from IdP"), http.StatusForbidden)
-				p.lifecycleMu.RUnlock()
-				return
-			}
 			if p.handleIDPLogout(r) {
 				w.WriteHeader(http.StatusOK)
 				p.lifecycleMu.RUnlock()
@@ -423,26 +395,6 @@ func (p *Plugin) handleIDPLogout(r *http.Request) bool {
 			}
 		}
 	}
-}
-
-func (p *Plugin) trustedLogoutPeer(r *http.Request) bool {
-	if len(p.logoutTrustedNets) == 0 {
-		return false
-	}
-	host := r.RemoteAddr
-	if parsedHost, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
-		host = parsedHost
-	}
-	ip := net.ParseIP(strings.Trim(host, "[]"))
-	if ip == nil {
-		return false
-	}
-	for _, network := range p.logoutTrustedNets {
-		if network.Contains(ip) {
-			return true
-		}
-	}
-	return false
 }
 
 func (p *Plugin) firstAccess(w http.ResponseWriter, r *http.Request) {

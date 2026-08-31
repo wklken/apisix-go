@@ -433,21 +433,34 @@ func readBodyForTest(t *testing.T, r *http.Request) []byte {
 	return body
 }
 
-func TestPostInitDefaultsTimeoutTo30000(t *testing.T) {
+func TestSchemaDoesNotExposeLocalTimeout(t *testing.T) {
+	var document map[string]any
+	if err := json.Unmarshal([]byte(schema), &document); err != nil {
+		t.Fatal(err)
+	}
+	properties := document["properties"].(map[string]any)
+	if _, ok := properties["timeout"]; ok {
+		t.Fatal("schema exposes apisix-go-only timeout")
+	}
+}
+
+func TestPostInitUsesInternalProviderTimeout(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		EmbeddingsProvider: EmbeddingsProvider{AzureOpenAI: AzureProvider{Endpoint: "http://e", APIKey: "k"}},
 		VectorSearchProvider: VectorSearchProvider{
 			AzureAISearch: AzureProvider{Endpoint: "http://s", APIKey: "k"},
 		},
 	})
-	if got := p.config.Timeout; got != 30000 {
-		t.Fatalf("config.Timeout = %d, want default 30000", got)
+	if p.client == nil || p.client.Timeout != providerRequestTimeout {
+		t.Fatalf("client timeout = %v, want internal bound %v", p.client.Timeout, providerRequestTimeout)
 	}
 }
 
-func TestHandlerTimeoutBoundsBlockedEmbeddingProvider(t *testing.T) {
+func TestHandlerCancellationStopsBlockedEmbeddingProvider(t *testing.T) {
+	started := make(chan struct{})
 	release := make(chan struct{})
 	blocked := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(started)
 		select {
 		case <-r.Context().Done():
 		case <-release:
@@ -459,7 +472,6 @@ func TestHandlerTimeoutBoundsBlockedEmbeddingProvider(t *testing.T) {
 	}()
 
 	p := newTestPlugin(t, Config{
-		Timeout: 20,
 		EmbeddingsProvider: EmbeddingsProvider{AzureOpenAI: AzureProvider{
 			Endpoint: blocked.URL,
 			APIKey:   "k",
@@ -476,15 +488,28 @@ func TestHandlerTimeoutBoundsBlockedEmbeddingProvider(t *testing.T) {
 	    "vector_search": {"fields":"contentVector"}
 	  }
 	}`))
+	ctx, cancel := context.WithCancel(req.Context())
+	req = req.WithContext(ctx)
 	rr := httptest.NewRecorder()
-	started := time.Now()
+	done := make(chan struct{})
 
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Fatal("next handler should not be called when embedding provider hangs")
-	})).ServeHTTP(rr, req)
+	go func() {
+		defer close(done)
+		p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			t.Error("next handler should not be called when embedding provider hangs")
+		})).ServeHTTP(rr, req)
+	}()
 
-	if elapsed := time.Since(started); elapsed > 200*time.Millisecond {
-		t.Fatalf("handler took %s, want provider timeout within 200ms", elapsed)
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("embedding provider request did not start")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("handler did not stop after request cancellation")
 	}
 	if rr.Code != http.StatusInternalServerError {
 		t.Fatalf("response code = %d, want 500", rr.Code)

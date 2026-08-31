@@ -6,11 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
-	"net/netip"
 	"net/url"
-	"slices"
 	"strings"
 	"time"
 
@@ -20,7 +17,6 @@ import (
 const (
 	maxOASExternalRefs = 64
 	maxOASRefDepth     = 16
-	maxOASRedirects    = 3
 )
 
 type documentFetcher func(context.Context, *url.URL) ([]byte, error)
@@ -164,136 +160,21 @@ func documentURL(value *url.URL) string {
 	return cloned.String()
 }
 
-type addressPolicy struct {
-	hosts     map[string]struct{}
-	addresses map[netip.Addr]struct{}
-	prefixes  []netip.Prefix
-}
-
-func newAddressPolicy(entries []string) (*addressPolicy, error) {
-	policy := &addressPolicy{
-		hosts:     make(map[string]struct{}),
-		addresses: make(map[netip.Addr]struct{}),
-	}
-	for _, entry := range entries {
-		entry = strings.TrimSpace(entry)
-		if entry == "" {
-			return nil, errors.New("spec_url_allowed_addresses contains an empty entry")
-		}
-		if prefix, err := netip.ParsePrefix(entry); err == nil {
-			policy.prefixes = append(policy.prefixes, prefix)
-			continue
-		}
-		if address, err := netip.ParseAddr(entry); err == nil {
-			policy.addresses[address.Unmap()] = struct{}{}
-			continue
-		}
-		policy.hosts[normalizeHostname(entry)] = struct{}{}
-	}
-	return policy, nil
-}
-
-func (p *addressPolicy) hostAllowed(host string) bool {
-	_, ok := p.hosts[normalizeHostname(host)]
-	return ok
-}
-
-func (p *addressPolicy) addressAllowed(address netip.Addr) bool {
-	address = address.Unmap()
-	if _, ok := p.addresses[address]; ok {
-		return true
-	}
-	for _, prefix := range p.prefixes {
-		if prefix.Contains(address) {
-			return true
-		}
-	}
-	return false
-}
-
-func normalizeHostname(host string) string {
-	return strings.ToLower(strings.TrimSuffix(host, "."))
-}
-
-func (p *addressPolicy) validateAddress(host string, address netip.Addr) error {
-	address = address.Unmap()
-	if p.hostAllowed(host) || p.addressAllowed(address) {
-		return nil
-	}
-	if blockedDocumentAddress(address) {
-		return fmt.Errorf("openapi document address %s is not allowed", address)
-	}
-	return nil
-}
-
-func blockedDocumentAddress(address netip.Addr) bool {
-	address = address.Unmap()
-	cgnat := netip.MustParsePrefix("100.64.0.0/10")
-	metadata := []netip.Addr{
-		netip.MustParseAddr("100.100.100.200"),
-		netip.MustParseAddr("fd00:ec2::254"),
-	}
-	if !address.IsValid() || address.IsUnspecified() || address.IsLoopback() || address.IsPrivate() ||
-		address.IsLinkLocalUnicast() || address.IsLinkLocalMulticast() || address.IsMulticast() ||
-		cgnat.Contains(address) {
-		return true
-	}
-	return slices.Contains(metadata, address)
-}
-
 func newDocumentHTTPClient(
-	root *url.URL,
-	allowed []string,
-	headers map[string]string,
 	sslVerify bool,
 	timeoutMilliseconds int,
-) (*http.Client, error) {
-	policy, err := newAddressPolicy(allowed)
-	if err != nil {
-		return nil, err
-	}
-	dialer := &net.Dialer{Timeout: time.Duration(timeoutMilliseconds) * time.Millisecond}
+) *http.Client {
 	transport := &http.Transport{
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: !sslVerify},
-		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
-			host, port, err := net.SplitHostPort(address)
-			if err != nil {
-				return nil, err
-			}
-			addresses, err := net.DefaultResolver.LookupNetIP(ctx, "ip", host)
-			if err != nil {
-				return nil, err
-			}
-			if len(addresses) == 0 {
-				return nil, fmt.Errorf("openapi document host %q resolved to no addresses", host)
-			}
-			for _, candidate := range addresses {
-				if err := policy.validateAddress(host, candidate); err != nil {
-					return nil, err
-				}
-			}
-			return dialer.DialContext(ctx, network, net.JoinHostPort(addresses[0].String(), port))
-		},
 	}
 	client := &http.Client{
 		Timeout:   time.Duration(timeoutMilliseconds) * time.Millisecond,
 		Transport: transport,
 	}
-	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-		if len(via) > maxOASRedirects {
-			return fmt.Errorf("openapi document fetch exceeds %d redirects", maxOASRedirects)
-		}
-		if err := validateDocumentURL(req.URL); err != nil {
-			return err
-		}
-		if !sameOrigin(req.URL, root) {
-			for name := range headers {
-				req.Header.Del(name)
-			}
-		}
-		return nil
+	client.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
 	}
-	return client, nil
+	return client
 }
 
 func fetchDocument(

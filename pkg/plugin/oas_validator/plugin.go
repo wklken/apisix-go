@@ -57,14 +57,6 @@ const schema = `
         "type": "string"
       }
     },
-    "spec_url_allowed_addresses": {
-      "type": "array",
-      "items": {
-        "type": "string",
-        "minLength": 1
-      },
-      "uniqueItems": true
-    },
     "ssl_verify": {
       "type": "boolean",
       "default": false
@@ -133,7 +125,6 @@ type Config struct {
 	Spec                        string            `json:"spec,omitempty"`
 	SpecURL                     string            `json:"spec_url,omitempty"`
 	SpecURLRequestHeaders       map[string]string `json:"spec_url_request_headers,omitempty"`
-	SpecURLAllowedAddresses     []string          `json:"spec_url_allowed_addresses,omitempty"`
 	SSLVerify                   bool              `json:"ssl_verify,omitempty"`
 	Timeout                     int               `json:"timeout,omitempty"`
 	VerboseErrors               bool              `json:"verbose_errors,omitempty"`
@@ -348,16 +339,7 @@ func (p *Plugin) compileValidator(ctx context.Context) (*compiledSpec, error) {
 	}
 	var compiled *compiledSpec
 	err = p.withRequestHeaders(func(headers map[string]string) error {
-		client, err := newDocumentHTTPClient(
-			baseURL,
-			p.config.SpecURLAllowedAddresses,
-			headers,
-			p.config.SSLVerify,
-			p.config.Timeout,
-		)
-		if err != nil {
-			return err
-		}
+		client := newDocumentHTTPClient(p.config.SSLVerify, p.config.Timeout)
 		compile := func(spec []byte) error {
 			compiled, err = compileSpec(ctx, spec, baseURL, client, headers)
 			if err == nil {

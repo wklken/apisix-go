@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"net/netip"
 	"net/url"
 	"strings"
 	"sync/atomic"
@@ -103,89 +102,40 @@ func TestDocumentGraphRejectsYAMLAliases(t *testing.T) {
 	}
 }
 
-func TestDocumentHTTPClientRejectsPrivateAddressesUnlessAllowed(t *testing.T) {
+func TestDocumentHTTPClientAllowsLoopback(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{}`))
 	}))
 	defer server.Close()
 	root := mustParseURL(t, server.URL+"/openapi.json")
 
-	client, err := newDocumentHTTPClient(root, nil, nil, true, 1000)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := fetchDocument(context.Background(), client, root, nil, root); err == nil {
-		t.Fatal("loopback spec URL accepted without allowlist")
-	}
-
-	client, err = newDocumentHTTPClient(root, []string{"127.0.0.1"}, nil, true, 1000)
-	if err != nil {
-		t.Fatal(err)
-	}
+	client := newDocumentHTTPClient(true, 1000)
 	if _, err := fetchDocument(context.Background(), client, root, nil, root); err != nil {
-		t.Fatalf("allowlisted loopback spec URL rejected: %v", err)
+		t.Fatalf("loopback spec URL rejected: %v", err)
 	}
 }
 
-func TestBlockedDocumentAddressCoversPrivateAndMetadataRanges(t *testing.T) {
-	for _, address := range []string{
-		"10.0.0.1",
-		"100.64.0.1",
-		"100.100.100.200",
-		"169.254.169.254",
-		"::1",
-		"fd00:ec2::254",
-	} {
-		if !blockedDocumentAddress(netip.MustParseAddr(address)) {
-			t.Errorf("blockedDocumentAddress(%s) = false", address)
-		}
-	}
-	if blockedDocumentAddress(netip.MustParseAddr("93.184.216.34")) {
-		t.Fatal("public address was blocked")
-	}
-}
-
-func TestDocumentHTTPClientBoundsRedirectsAndStripsCrossOriginHeaders(t *testing.T) {
-	var leaked atomic.Bool
+func TestDocumentHTTPClientDoesNotFollowRedirects(t *testing.T) {
+	var followed atomic.Bool
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "" || r.Header.Get("X-Spec-Secret") != "" {
-			leaked.Store(true)
-		}
+		followed.Store(true)
 		_, _ = w.Write([]byte(`{}`))
 	}))
 	defer target.Close()
 
-	redirects := atomic.Int32{}
 	rootServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer root" {
-			t.Errorf("root Authorization = %q", r.Header.Get("Authorization"))
-		}
-		if r.URL.Path == "/root" {
-			http.Redirect(w, r, target.URL+"/external", http.StatusFound)
-			return
-		}
-		redirects.Add(1)
-		http.Redirect(w, r, fmt.Sprintf("/loop?n=%d", redirects.Load()), http.StatusFound)
+		http.Redirect(w, r, target.URL+"/external", http.StatusFound)
 	}))
 	defer rootServer.Close()
 
 	root := mustParseURL(t, rootServer.URL+"/root")
-	headers := map[string]string{"Authorization": "Bearer root", "X-Spec-Secret": "secret"}
-	allowed := []string{"127.0.0.1"}
-	client, err := newDocumentHTTPClient(root, allowed, headers, true, 1000)
-	if err != nil {
-		t.Fatal(err)
+	client := newDocumentHTTPClient(true, 1000)
+	if _, err := fetchDocument(context.Background(), client, root, nil, root); err == nil ||
+		!strings.Contains(err.Error(), "status 302") {
+		t.Fatalf("redirect fetch error = %v, want status 302", err)
 	}
-	if _, err := fetchDocument(context.Background(), client, root, headers, root); err != nil {
-		t.Fatalf("cross-origin redirect failed: %v", err)
-	}
-	if leaked.Load() {
-		t.Fatal("configured root headers leaked across origin")
-	}
-
-	loop := mustParseURL(t, rootServer.URL+"/loop")
-	if _, err := fetchDocument(context.Background(), client, loop, headers, root); err == nil {
-		t.Fatal("more than three redirects accepted")
+	if followed.Load() {
+		t.Fatal("openapi document redirect was followed")
 	}
 }
 

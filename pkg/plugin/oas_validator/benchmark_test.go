@@ -39,8 +39,7 @@ func BenchmarkValidatorRefresh(b *testing.B) {
 			b.Cleanup(server.Close)
 
 			p := &Plugin{config: Config{
-				SpecURL:                 server.URL,
-				SpecURLAllowedAddresses: []string{"127.0.0.1"},
+				SpecURL: server.URL,
 			}}
 			b.Cleanup(func() {
 				if scenario.due && fetches.Load() < 2 {

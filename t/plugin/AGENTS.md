@@ -8,6 +8,9 @@ The detailed manifest schema and runner usage remain in `README.md`.
 - Each `<plugin>.yaml` manifest owns its executable standalone cases and any
   source metadata retained for local traceability. There is no global upstream
   source-block ledger or checked-in oracle suite.
+- The integration corpus is scoped to pinned APISIX 3.17.0 behavior. Do not add
+  later-version upstream regression inventories to these manifests; keep local
+  regressions in the owning plugin unit tests.
 - Plugin-name or config-key presence is not coverage. A claimed case must
   activate and observe the target plugin on its declared route; an intentional
   negative case requires the exact `target_plugin_exempt_reason` contract.

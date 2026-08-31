@@ -5,12 +5,6 @@ sources:
     tests: 4
     test_numbers: [1, 2, 3, 5]
   - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/log-rotate.t
-    tests: 1
-    test_numbers: [6]
-    regression_only: true
-  - repository: https://github.com/apache/apisix
     commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
     file: t/plugin/log-rotate2.t
     tests: 5
@@ -164,49 +158,6 @@ cases:
         body: {equals: "stable uncompressed archive\n"}
       - path: {equals: '{{WORK_DIR}}/logs/access.log'}
         body: {matches: '(?s)^current access\n.*"path":"/stable".*$'}
-
-  - name: missing-access-log-is-reopened-after-error-log-rotation
-    source: {file: t/plugin/log-rotate.t, tests: [6]}
-    runtime:
-      plugins: [log-rotate, file-logger]
-      plugin_attr:
-        log-rotate: {interval: 1, max_kept: 3, max_size: -1, enable_compression: false}
-    files:
-      - {path: logs/access.log, body: "pre-rotation access\n"}
-      - {path: logs/error.log, body: "pre-rotation error\n"}
-    config:
-      plugin_metadata:
-        - id: file-logger
-          log_format: {path: $uri}
-      routes:
-        - id: log-rotate-missing-access
-          uri: /missing-access
-          plugins:
-            file-logger: {path: '{{WORK_DIR}}/logs/access.log'}
-          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
-    fixtures:
-      - name: primary
-        kind: http
-        expect: [{path: {equals: /missing-access}}]
-        count: {at_least: 2, at_most: 2}
-        respond: [{status: 200, body: "hello world\n"}]
-    steps:
-      - name: open-file-logger-before-rotation
-        input: {path: /missing-access}
-        output: {status: 200, body: {equals: "hello world\n"}}
-      - name: rotate-when-access-path-is-missing
-        actions:
-          - remove: '{{WORK_DIR}}/logs/access.log'
-          - wait: 1100ms
-        input: {path: /missing-access}
-        output: {status: 200, body: {equals: "hello world\n"}}
-    after_shutdown:
-      - path: {equals: '{{WORK_DIR}}/logs/access.log'}
-        body: {matches: '^\{[^\n]*"path":"/missing-access"[^\n]*\}\n$'}
-      - path: {equals: '{{WORK_DIR}}/logs/access.log'}
-        body: {not_matches: 'pre-rotation access'}
-      - path: {equals: '{{WORK_DIR}}/logs/error.log'}
-        body: {equals: ""}
 
   - name: interval-rotation-compresses-history
     source: {file: t/plugin/log-rotate2.t, tests: [1]}

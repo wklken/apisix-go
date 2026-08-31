@@ -1,7 +1,9 @@
 # Standalone Plugin Integration Tests
 
-This directory converts pinned Apache APISIX `t/plugin/*.t` behavior into
-declarative APISIX-Go standalone tests. Each executable case starts the real
+This directory converts the pinned APISIX 3.17.0 `t/plugin/*.t` behavior into
+declarative APISIX-Go standalone tests. Later-version upstream regression
+blocks belong in focused plugin unit tests or a separately authorized future
+compatibility target, not this corpus. Each executable case starts the real
 CLI in a fresh child process, writes temporary `conf/config.yaml` and
 `conf/apisix.yaml` files, creates isolated runtime directories, and uses a fresh
 loopback upstream fixture.

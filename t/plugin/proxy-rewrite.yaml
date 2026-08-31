@@ -4,12 +4,6 @@ sources:
     file: t/plugin/proxy-rewrite.t
     tests: 44
   - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/proxy-rewrite.t
-    tests: 13
-    test_numbers: [45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57]
-    regression_only: true
-  - repository: https://github.com/apache/apisix
     commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
     file: t/plugin/proxy-rewrite2.t
     tests: 6
@@ -19,13 +13,6 @@ sources:
     file: t/plugin/proxy-rewrite3.t
     tests: 39
     test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41]
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/proxy-rewrite3.t
-    tests: 2
-    test_numbers: [42, 43]
-    regression_only: true
-
 cases:
   - name: schema-sanity
     source:
@@ -82,7 +69,6 @@ cases:
           equals: apisix.iresty.com
       respond: *hello_response
     output: *hello_output
-
   - name: update-plugin
     source:
       file: t/plugin/proxy-rewrite.t
@@ -698,159 +684,6 @@ cases:
           equals: /uri
         host:
           equals: test.com:6443
-      respond: *hello_response
-    output: *hello_output
-
-  - name: unsafe-uri-with-query
-    source:
-      file: t/plugin/proxy-rewrite.t
-      tests: [45, 46]
-    config:
-      routes:
-        - id: proxy-rewrite-unsafe-uri-with-query
-          uri: /hello
-          plugins:
-            proxy-rewrite:
-              uri: /plugin_proxy_rewrite_args
-              use_real_request_uri_unsafe: true
-          upstream: *fixture_route
-    input:
-      path: /hello?q=apisix&a=iresty
-    upstream:
-      expect:
-        path:
-          equals: /plugin_proxy_rewrite_args?q=apisix&a=iresty
-      respond: *hello_response
-    output: *hello_output
-
-  - name: unsafe-uri-empty-query
-    source:
-      file: t/plugin/proxy-rewrite.t
-      tests: [47, 48]
-    config:
-      routes:
-        - id: proxy-rewrite-unsafe-uri-empty-query
-          uri: /hello
-          plugins:
-            proxy-rewrite:
-              uri: /plugin_proxy_rewrite_args
-              use_real_request_uri_unsafe: true
-          upstream: *fixture_route
-    input:
-      path: /hello
-    upstream:
-      expect:
-        path:
-          equals: /plugin_proxy_rewrite_args
-      respond: *hello_response
-    output: *hello_output
-
-  - name: unsafe-configured-uri-query-merge
-    source:
-      file: t/plugin/proxy-rewrite.t
-      tests: [49, 50]
-    config:
-      routes:
-        - id: proxy-rewrite-unsafe-query-merge
-          uri: /hello
-          plugins:
-            proxy-rewrite:
-              uri: /plugin_proxy_rewrite_args?x=1
-              use_real_request_uri_unsafe: true
-          upstream: *fixture_route
-    input:
-      path: /hello?q=apisix
-    upstream:
-      expect:
-        path:
-          equals: /plugin_proxy_rewrite_args?x=1&q=apisix
-      respond: *hello_response
-    output: *hello_output
-
-  - name: unsafe-real-request-uri
-    source:
-      file: t/plugin/proxy-rewrite.t
-      tests: [51, 52]
-    config:
-      routes:
-        - id: proxy-rewrite-unsafe-real-request-uri
-          uri: /plugin_proxy_rewrite_args
-          plugins:
-            proxy-rewrite:
-              use_real_request_uri_unsafe: true
-          upstream: *fixture_route
-    input:
-      path: /plugin_proxy_rewrite_args?q=apisix
-    upstream:
-      expect:
-        path:
-          equals: /plugin_proxy_rewrite_args?q=apisix
-      respond: *hello_response
-    output: *hello_output
-
-  - name: unsafe-special-query
-    source:
-      file: t/plugin/proxy-rewrite.t
-      tests: [53, 54]
-    config:
-      routes:
-        - id: proxy-rewrite-unsafe-special-query
-          uri: /hello
-          plugins:
-            proxy-rewrite:
-              uri: /print_uri_detailed
-              use_real_request_uri_unsafe: true
-          upstream: *fixture_route
-    input:
-      path: /hello?name=a%20b&x=%E4%B8%AD
-    upstream:
-      expect:
-        path:
-          equals: /print_uri_detailed?name=a%20b&x=%E4%B8%AD
-      respond: *hello_response
-    output: *hello_output
-
-  - name: unsafe-multiple-question-marks
-    source:
-      file: t/plugin/proxy-rewrite.t
-      tests: [55]
-    config:
-      routes:
-        - id: proxy-rewrite-unsafe-multiple-question-marks
-          uri: /hello
-          plugins:
-            proxy-rewrite:
-              uri: /print_uri_detailed
-              use_real_request_uri_unsafe: true
-          upstream: *fixture_route
-    input:
-      path: /hello?a=1?b=2
-    upstream:
-      expect:
-        path:
-          equals: /print_uri_detailed?a=1?b=2
-      respond: *hello_response
-    output: *hello_output
-
-  - name: safe-configured-uri-query
-    source:
-      file: t/plugin/proxy-rewrite.t
-      tests: [56, 57]
-    config:
-      routes:
-        - id: proxy-rewrite-safe-configured-uri-query
-          uri: /hello
-          plugins:
-            proxy-rewrite:
-              uri: /print_uri_detailed
-              use_real_request_uri_unsafe: false
-          upstream: *fixture_route
-    input:
-      path: /hello?name=a%20b&x=1
-    upstream:
-      expect:
-        path:
-          equals: /print_uri_detailed?name=a%20b&x=1
       respond: *hello_response
     output: *hello_output
 
@@ -1480,26 +1313,5 @@ cases:
       expect:
         path:
           equals: /hello?unsafe_variable=%ED%85%8C%EC%8A%A4%ED%8A%B8
-      respond: *hello_response
-    output: *hello_output
-
-  - name: unsafe-uri-normalized
-    source:
-      file: t/plugin/proxy-rewrite3.t
-      tests: [42, 43]
-    config:
-      routes:
-        - id: proxy-rewrite-unsafe-normalized
-          uri: /print_uri_detailed
-          plugins:
-            proxy-rewrite:
-              use_real_request_uri_unsafe: false
-          upstream: *fixture_route
-    input:
-      path: /print%5Furi%5Fdetailed
-    upstream:
-      expect:
-        path:
-          equals: /print_uri_detailed
       respond: *hello_response
     output: *hello_output

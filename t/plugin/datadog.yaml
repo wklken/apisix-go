@@ -4,13 +4,6 @@ sources:
     file: t/plugin/datadog.t
     tests: 11
     test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/datadog.t
-    tests: 1
-    test_numbers: [13]
-    regression_only: true
-
 cases:
   - name: metadata-schema-endpoint-is-accepted-and-used
     source: {file: t/plugin/datadog.t, tests: [1]}
@@ -43,7 +36,6 @@ cases:
       - name: metadata-endpoint-drives-real-delivery
         input: {method: GET, path: /opentracing}
         output: {status: 200, body: {equals: opentracing}}
-
   - name: metadata-and-route-config-activate-real-delivery
     source: {file: t/plugin/datadog.t, tests: [2]}
     config:
@@ -356,56 +348,4 @@ cases:
     steps:
       - name: wildcard-route-matches-rewrites-and-tags-original-pattern
         input: {method: GET, path: '/articles/12345/comments?foo=bar'}
-        output: {status: 200, body: {equals: opentracing}}
-
-  - name: oversized-payload-falls-back-to-six-ordered-single-metric-datagrams
-    source: {file: t/plugin/datadog.t, tests: [13]}
-    config:
-      plugin_metadata:
-        - {id: datadog, host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}'}
-      routes:
-        - id: datadog-oversized
-          name: datadog
-          uri: /opentracing
-          plugins:
-            datadog:
-              batch_max_size: 1
-              max_retry_count: 0
-              retry_delay: 0
-              constant_tags:
-                - aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-                - bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-                - cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
-                - dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
-                - eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
-                - ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
-                - gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg
-                - hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh
-                - iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii
-                - jjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjj
-          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
-    fixtures:
-      - name: primary
-        kind: http
-        expect: [{path: {equals: /opentracing}}]
-        respond: [{status: 200, body: opentracing}]
-      - name: sink
-        kind: udp
-        network_expect:
-          - payload: {matches: '^apisix\.request\.counter:1\|c\|#source:apisix,a{200},b{200},c{200},d{200},e{200},f{200},g{200},h{200},i{200},j{200},route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'}
-          - payload: {matches: '^apisix\.request\.latency:[0-9]+\|h\|#source:apisix,a{200},b{200},c{200},d{200},e{200},f{200},g{200},h{200},i{200},j{200},route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'}
-          - payload: {matches: '^apisix\.upstream\.latency:[0-9]+\|h\|#source:apisix,a{200},b{200},c{200},d{200},e{200},f{200},g{200},h{200},i{200},j{200},route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'}
-          - payload: {matches: '^apisix\.apisix\.latency:[0-9]+\|h\|#source:apisix,a{200},b{200},c{200},d{200},e{200},f{200},g{200},h{200},i{200},j{200},route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'}
-          - payload: {matches: '^apisix\.ingress\.size:0\|ms\|#source:apisix,a{200},b{200},c{200},d{200},e{200},f{200},g{200},h{200},i{200},j{200},route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'}
-          - payload: {matches: '^apisix\.egress\.size:11\|ms\|#source:apisix,a{200},b{200},c{200},d{200},e{200},f{200},g{200},h{200},i{200},j{200},route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'}
-        network_respond:
-          - {payload: ''}
-          - {payload: ''}
-          - {payload: ''}
-          - {payload: ''}
-          - {payload: ''}
-          - {payload: ''}
-    steps:
-      - name: every-oversized-metric-has-its-own-ordered-datagram
-        input: {method: GET, path: /opentracing}
         output: {status: 200, body: {equals: opentracing}}

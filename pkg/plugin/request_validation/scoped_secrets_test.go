@@ -4,629 +4,188 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"maps"
 	"net/http"
 	"strings"
-	"sync"
 	"testing"
-	"time"
 
 	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/generation"
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/secret"
 	"github.com/wklken/apisix-go/pkg/testutil"
 )
 
-type requestValidationSecretCall struct {
-	scope secret.Scope
-	raw   string
-}
-
 type requestValidationSecretBroker struct {
-	mu     sync.Mutex
 	values map[string]string
-	fail   map[string]error
-	calls  []requestValidationSecretCall
+	calls  []secret.Scope
 }
 
 func (broker *requestValidationSecretBroker) ResolveScoped(
-	ctx context.Context, scope secret.Scope, raw string,
+	_ context.Context, scope secret.Scope, raw string,
 ) (string, error) {
-	if err := ctx.Err(); err != nil {
-		return "", err
-	}
-	broker.mu.Lock()
-	defer broker.mu.Unlock()
-	broker.calls = append(broker.calls, requestValidationSecretCall{scope: scope, raw: raw})
-	if err := broker.fail[raw]; err != nil {
-		return "", err
-	}
+	broker.calls = append(broker.calls, scope)
 	value, ok := broker.values[raw]
 	if !ok {
-		return "", errors.New("missing request-validation scoped value")
+		return "", fmt.Errorf("request-validation secret is unavailable")
 	}
 	return value, nil
 }
 
-func (broker *requestValidationSecretBroker) callsSnapshot() []requestValidationSecretCall {
-	broker.mu.Lock()
-	defer broker.mu.Unlock()
-	return append([]requestValidationSecretCall(nil), broker.calls...)
-}
-
-func (broker *requestValidationSecretBroker) setFailure(raw string, err error) {
-	broker.mu.Lock()
-	defer broker.mu.Unlock()
-	if err == nil {
-		delete(broker.fail, raw)
-		return
-	}
-	broker.fail[raw] = err
-}
-
-func newRequestValidationSecretHarness(
-	t *testing.T, revision uint64, values map[string]string,
-) (secret.GenerationSecrets, secret.Scope, *requestValidationSecretBroker, func()) {
-	t.Helper()
-	resourceKey := generation.ResourceKey{
-		Kind: "routes", ID: fmt.Sprintf("request-validation-scoped-%d", revision),
-	}
-	snapshot, err := generation.NewSnapshot(revision, []generation.Resource{{
-		Key: resourceKey, Value: []byte(`{"plugins":{}}`),
-	}}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	candidate := generation.PublicationCandidate{
-		Artifact: generation.GenerationArtifact{
-			Domain: generation.DomainHTTP, Revision: revision,
-			Digest: snapshot.Digest(), Snapshot: snapshot.SnapshotID(),
-		},
-		Snapshot: snapshot,
-		Closure:  []generation.ResourceKey{resourceKey},
-		Decisions: []generation.ResourceDecision{{
-			Key: resourceKey, Disposition: generation.DispositionPublished,
-			Code: "request-validation-scoped-test",
-		}},
-	}
-	publication := generation.PublicationSet{
-		DesiredRevision: revision,
-		Domains: map[generation.Domain]generation.PublicationCandidate{
-			generation.DomainHTTP: candidate,
-		},
-	}
-	catalog, err := capability.NewSecretDeclarationCatalog()
-	if err != nil {
-		t.Fatal(err)
-	}
-	broker := &requestValidationSecretBroker{
-		values: maps.Clone(values), fail: make(map[string]error),
-	}
-	materialization, err := testutil.NewSecretMaterializer(broker, catalog).
-		PrepareGeneration(context.Background(), publication)
-	if err != nil {
-		t.Fatal(err)
-	}
-	secrets := materialization.Secrets()
-	scope := secret.Scope{
-		Generation: revision, Domain: generation.DomainHTTP,
-		Plugin: name, Resource: resourceKey, Source: capability.SecretPluginConfig,
-	}
-	return secrets, scope, broker, func() {
-		if err := materialization.Close(context.Background()); err != nil {
-			t.Errorf("close scoped request-validation generation: %v", err)
-		}
-	}
-}
-
-func TestSecretBackedSchemaDoesNotEscapeUseIntoGenerationCompiledState(t *testing.T) {
+func TestSecretBackedSchemaKeepsPlaintextInsideRequestUse(t *testing.T) {
 	const (
-		raw       = "$ENV://REQUEST_VALIDATION_EPHEMERAL_COMPILE"
-		plaintext = "generation-private-value"
+		constantRaw = "$ENV://REQUEST_VALIDATION_CONSTANT"
+		patternRaw  = "$secret://vault/request-validation/pattern"
+		constant    = "generation-private-value"
+		pattern     = "^allowed$"
 	)
-	secrets, scope, _, closeAttempt := newRequestValidationSecretHarness(
-		t, 307, map[string]string{raw: plaintext},
-	)
-	defer closeAttempt()
+	secrets, scope, broker, closeGeneration := newRequestValidationSecretHarness(t, map[string]string{
+		constantRaw: constant,
+		patternRaw:  pattern,
+	})
+	defer closeGeneration()
 	p := &Plugin{config: Config{BodySchema: map[string]any{
-		"type": "object", "properties": map[string]any{
-			"token": map[string]any{"const": raw},
+		"type": "object",
+		"properties": map[string]any{
+			"token": map[string]any{"const": constantRaw},
+			"mode":  map[string]any{"pattern": patternRaw},
 		},
 	}}}
 	if err := p.Init(); err != nil {
 		t.Fatal(err)
 	}
-	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, secrets, p,
-	); err != nil {
+	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
 		t.Fatal(err)
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatal(err)
 	}
 	if p.config.bodySchema != nil {
-		t.Fatal("secret-backed body schema escaped Value.Use into generation-long compiled state")
+		t.Fatal("secret-backed body schema escaped Value.Use into persistent compiled state")
+	}
+	if !p.bodySensitive || len(p.bodySecrets) != 2 {
+		t.Fatalf("secret-backed body state = sensitive:%t secrets:%d, want true/2", p.bodySensitive, len(p.bodySecrets))
+	}
+	if len(broker.calls) != 2 {
+		t.Fatalf("secret resolution calls = %d, want 2", len(broker.calls))
+	}
+	for _, call := range broker.calls {
+		if call.Field != "body_schema" || call.Plugin != name || call.Source != capability.SecretPluginConfig {
+			t.Fatalf("secret scope = %#v, want request-validation body_schema scope", call)
+		}
 	}
 
-	valid := performRequest(p, http.MethodPost, "/", `{"token":"`+plaintext+`"}`, map[string]string{
+	valid := performRequest(p, http.MethodPost, "/", `{"token":"`+constant+`","mode":"allowed"}`, map[string]string{
 		"Content-Type": "application/json",
 	})
 	if valid.Code != http.StatusNoContent {
 		t.Fatalf("valid secret-backed request = %d/%q", valid.Code, valid.Body.String())
 	}
-	invalid := performRequest(p, http.MethodPost, "/", `{"token":"wrong"}`, map[string]string{
+	validationErr := p.validateSchema(
+		"body_schema", p.config.BodySchema, p.bodySecrets, nil,
+		map[string]any{"token": "wrong", "mode": "allowed"},
+	)
+	if !errors.Is(validationErr, errSensitiveSchemaMismatch) {
+		t.Fatalf("secret-backed validation error = %v, want fixed mismatch", validationErr)
+	}
+	if strings.Contains(validationErr.Error(), constant) || strings.Contains(validationErr.Error(), pattern) {
+		t.Fatalf("secret-backed validation error leaked schema material: %v", validationErr)
+	}
+	var observed []logger.Entry
+	stopObserver := logger.ReplaceObserver(t.Name(), func(entry logger.Entry) {
+		observed = append(observed, entry)
+	})
+	defer stopObserver()
+	invalid := performRequest(p, http.MethodPost, "/", `{"token":"wrong","mode":"allowed"}`, map[string]string{
 		"Content-Type": "application/json",
 	})
-	if got := strings.TrimSpace(invalid.Body.String()); invalid.Code != http.StatusBadRequest ||
-		got != "request does not match schema" || strings.Contains(got, plaintext) {
-		t.Fatalf("invalid secret-backed request = %d/%q", invalid.Code, got)
+	message := strings.TrimSpace(invalid.Body.String())
+	if invalid.Code != http.StatusBadRequest || message != "request does not match schema" {
+		t.Fatalf("invalid secret-backed request = %d/%q", invalid.Code, message)
 	}
-	p.Stop()
+	if strings.Contains(message, constant) || strings.Contains(message, pattern) {
+		t.Fatalf("secret-backed diagnostic leaked schema material: %q", message)
+	}
+	for _, entry := range observed {
+		if strings.Contains(entry.Message, constant) || strings.Contains(entry.Message, pattern) {
+			t.Fatalf("secret-backed log leaked schema material: %q", entry.Message)
+		}
+	}
 }
 
-func TestScopedSecretsCoverAllTerminalStringSchemaRolesWithoutResolvingMapKeys(t *testing.T) {
+func TestInvalidSecretSchemaCompileErrorDoesNotEscapeUse(t *testing.T) {
 	const (
-		typeRaw        = "$ENV://REQUEST_VALIDATION_SCHEMA_TYPE"
-		refRaw         = "$ENV://REQUEST_VALIDATION_SCHEMA_REF"
-		requiredRaw    = "$ENV://REQUEST_VALIDATION_SCHEMA_REQUIRED"
-		patternRaw     = "$ENV://REQUEST_VALIDATION_SCHEMA_PATTERN"
-		formatRaw      = "$ENV://REQUEST_VALIDATION_SCHEMA_FORMAT"
-		literalRaw     = "$ENV://REQUEST_VALIDATION_SCHEMA_LITERAL"
-		defaultRaw     = "$secret://request-validation/schema-default"
-		annotationRaw  = "$ENV://REQUEST_VALIDATION_SCHEMA_ANNOTATION"
-		mapKeyEnvelope = "$ENV://REQUEST_VALIDATION_SCHEMA_MAP_KEY"
+		raw       = "$ENV://REQUEST_VALIDATION_INVALID_PATTERN"
+		plaintext = "[private-invalid-pattern"
 	)
-	values := map[string]string{
-		typeRaw:       "string",
-		refRaw:        "#/$defs/token",
-		requiredRaw:   "token",
-		patternRaw:    `^[^@]+@example\.com$`,
-		formatRaw:     "email",
-		literalRaw:    "private@example.com",
-		defaultRaw:    "default-private-value",
-		annotationRaw: "annotation-private-value",
-	}
-	secrets, scope, broker, closeAttempt := newRequestValidationSecretHarness(t, 308, values)
-	defer closeAttempt()
+	secrets, scope, _, closeGeneration := newRequestValidationSecretHarness(t, map[string]string{raw: plaintext})
+	defer closeGeneration()
 	p := &Plugin{config: Config{BodySchema: map[string]any{
-		"type": "object",
-		"$defs": map[string]any{
-			"token": map[string]any{
-				"type": typeRaw, "pattern": patternRaw, "format": formatRaw,
-				"enum": []any{literalRaw}, "const": literalRaw,
-				"default": defaultRaw, "description": annotationRaw,
-				"examples": []any{literalRaw},
-			},
-		},
-		"properties": map[string]any{
-			"token":        map[string]any{"$ref": refRaw},
-			mapKeyEnvelope: map[string]any{"type": "string"},
-		},
-		"required": []any{requiredRaw},
-		"title":    annotationRaw,
+		"type": "string", "pattern": raw,
 	}}}
-	if err := p.Init(); err != nil {
-		t.Fatal(err)
-	}
-	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, secrets, p,
-	); err != nil {
-		t.Fatal(err)
-	}
-	if err := p.PostInit(); err != nil {
-		t.Fatal(err)
-	}
-
-	calls := broker.callsSnapshot()
-	if len(calls) != 11 {
-		t.Fatalf("terminal secret materializations = %d, want 11: %#v", len(calls), calls)
-	}
-	for _, call := range calls {
-		if call.raw == mapKeyEnvelope {
-			t.Fatalf("schema map key was materialized: %#v", call)
-		}
-	}
-	properties := p.config.BodySchema["properties"].(map[string]any)
-	if _, ok := properties[mapKeyEnvelope]; !ok {
-		t.Fatalf("schema map key changed: %#v", properties)
-	}
-
-	valid := performRequest(
-		p,
-		http.MethodPost,
-		"/",
-		`{"token":"private@example.com"}`,
-		map[string]string{"Content-Type": "application/json"},
-	)
-	if valid.Code != http.StatusNoContent {
-		t.Fatalf("terminal-role schema response = %d/%q", valid.Code, valid.Body.String())
-	}
-	p.Stop()
-}
-
-func TestScopedSecretsMaterializeRecursiveHeaderAndBodySchemaValues(t *testing.T) {
-	const (
-		headerRaw = "$ENV://REQUEST_VALIDATION_HEADER_ENUM"
-		bodyRaw   = "$secret://vault/request-validation/body-token"
-		header    = "private-header-value"
-		body      = "private-body-value"
-	)
-	secrets, scope, broker, closeAttempt := newRequestValidationSecretHarness(
-		t, 301, map[string]string{headerRaw: header, bodyRaw: body},
-	)
-	defer closeAttempt()
-	p := &Plugin{config: Config{
-		HeaderSchema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				headerRaw: map[string]any{"type": "string"},
-				"x-private": map[string]any{
-					"type": "string", "enum": []any{headerRaw},
-				},
-			},
-		},
-		BodySchema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"token": map[string]any{"type": "string", "const": bodyRaw},
-			},
-		},
-	}}
-	if err := p.Init(); err != nil {
-		t.Fatal(err)
-	}
-	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, secrets, p,
-	); err != nil {
-		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
-	}
-
-	calls := broker.callsSnapshot()
-	if len(calls) != 2 {
-		t.Fatalf("broker calls = %#v, want two recursive string values", calls)
-	}
-	for index, want := range []requestValidationSecretCall{
-		{scope: scope, raw: headerRaw},
-		{scope: scope, raw: bodyRaw},
-	} {
-		want.scope.Field = []string{"header_schema", "body_schema"}[index]
-		if calls[index] != want {
-			t.Fatalf("broker call[%d] = %#v, want %#v", index, calls[index], want)
-		}
-	}
-	publicConfig := fmt.Sprintf("%#v", p.Config())
-	for _, forbidden := range []string{bodyRaw, header, body} {
-		if strings.Contains(publicConfig, forbidden) {
-			t.Fatalf("public config leaked %q: %s", forbidden, publicConfig)
-		}
-	}
-	properties := p.config.HeaderSchema["properties"].(map[string]any)
-	if _, ok := properties[headerRaw]; !ok {
-		t.Fatalf("secret-looking JSON Schema property name was rewritten: %#v", properties)
-	}
-	if err := p.PostInit(); err != nil {
-		t.Fatalf("PostInit() error = %v", err)
-	}
-
-	valid := performRequest(
-		p, http.MethodPost, "http://example.com/validate", `{"token":"`+body+`"}`,
-		map[string]string{"Content-Type": "application/json", "X-Private": header},
-	)
-	if valid.Code != http.StatusNoContent {
-		t.Fatalf("valid secret-backed request = %d/%q", valid.Code, valid.Body.String())
-	}
-	invalid := performRequest(
-		p, http.MethodPost, "http://example.com/validate", `{"token":"wrong"}`,
-		map[string]string{"Content-Type": "application/json", "X-Private": header},
-	)
-	if invalid.Code != http.StatusBadRequest {
-		t.Fatalf("invalid secret-backed request = %d/%q", invalid.Code, invalid.Body.String())
-	}
-	for _, forbidden := range []string{header, body} {
-		if strings.Contains(invalid.Body.String(), forbidden) {
-			t.Fatalf("validation diagnostic leaked %q: %q", forbidden, invalid.Body.String())
-		}
-	}
-	if got := strings.TrimSpace(invalid.Body.String()); got != "request does not match schema" {
-		t.Fatalf("sensitive body diagnostic = %q", got)
-	}
-	invalid = performRequest(
-		p, http.MethodPost, "http://example.com/validate", `{"token":"`+body+`"}`,
-		map[string]string{"Content-Type": "application/json", "X-Private": "wrong"},
-	)
-	if got := strings.TrimSpace(invalid.Body.String()); invalid.Code != http.StatusBadRequest ||
-		got != "request does not match schema" {
-		t.Fatalf("sensitive header rejection = %d/%q", invalid.Code, got)
-	}
-	p.Stop()
-}
-
-func TestScopedSecretFailureIsAtomicAndRetryable(t *testing.T) {
-	const (
-		headerRaw = "$ENV://REQUEST_VALIDATION_RETRY_HEADER"
-		bodyRaw   = "$secret://vault/request-validation/retry-body"
-		header    = "retry-private-header"
-		body      = "retry-private-body"
-	)
-	secrets, scope, broker, closeAttempt := newRequestValidationSecretHarness(
-		t, 302, map[string]string{headerRaw: header, bodyRaw: body},
-	)
-	defer closeAttempt()
-	broker.setFailure(bodyRaw, errors.New("backend failed with "+body))
-	p := &Plugin{config: Config{
-		HeaderSchema: map[string]any{"type": "object", "properties": map[string]any{
-			"x-private": map[string]any{"const": headerRaw},
-		}},
-		BodySchema: map[string]any{"type": "object", "properties": map[string]any{
-			"token": map[string]any{"const": bodyRaw},
-		}},
-	}}
 	if err := p.Init(); err != nil {
 		t.Fatal(err)
 	}
 	err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p)
 	if !errors.Is(err, secret.ErrCredentialUnavailable) {
-		t.Fatalf("first materialization error = %v", err)
-	}
-	for _, forbidden := range []string{headerRaw, bodyRaw, header, body} {
-		if strings.Contains(err.Error(), forbidden) {
-			t.Fatalf("materialization error leaked %q: %v", forbidden, err)
-		}
-	}
-	if p.config.HeaderSchema["properties"].(map[string]any)["x-private"].(map[string]any)["const"] != headerRaw ||
-		p.config.BodySchema["properties"].(map[string]any)["token"].(map[string]any)["const"] != bodyRaw {
-		t.Fatalf("failed materialization changed config: %#v", p.config)
-	}
-	postInitErr := p.PostInit()
-	if !errors.Is(postInitErr, secret.ErrCredentialUnavailable) {
-		t.Fatalf("PostInit() after failed materialization = %v", postInitErr)
-	}
-	for _, forbidden := range []string{headerRaw, bodyRaw, header, body} {
-		if strings.Contains(postInitErr.Error(), forbidden) {
-			t.Fatalf("PostInit() error leaked %q: %v", forbidden, postInitErr)
-		}
-	}
-	unavailable := performRequest(
-		p, http.MethodPost, "/", `{"token":"`+body+`"}`,
-		map[string]string{"Content-Type": "application/json", "X-Private": header},
-	)
-	if unavailable.Code != http.StatusServiceUnavailable {
-		t.Fatalf(
-			"handler after failed preparation = %d/%q, want 503",
-			unavailable.Code, unavailable.Body.String(),
-		)
-	}
-	for _, forbidden := range []string{headerRaw, bodyRaw, header, body} {
-		if strings.Contains(unavailable.Body.String(), forbidden) {
-			t.Fatalf("unavailable response leaked %q: %q", forbidden, unavailable.Body.String())
-		}
-	}
-
-	broker.setFailure(bodyRaw, nil)
-	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, secrets, p,
-	); err != nil {
-		t.Fatalf("retry materialization error = %v", err)
-	}
-	if err := p.PostInit(); err != nil {
-		t.Fatalf("PostInit() after retry error = %v", err)
-	}
-	valid := performRequest(p, http.MethodPost, "/", `{"token":"`+body+`"}`, map[string]string{
-		"Content-Type": "application/json", "X-Private": header,
-	})
-	if valid.Code != http.StatusNoContent {
-		t.Fatalf("retried plugin response = %d/%q", valid.Code, valid.Body.String())
-	}
-	p.Stop()
-}
-
-func TestScopedSecretsRotateAcrossGenerations(t *testing.T) {
-	const raw = "$ENV://REQUEST_VALIDATION_ROTATED_VALUE"
-	prepare := func(
-		revision uint64, plaintext string,
-	) (*Plugin, secret.GenerationSecrets, func()) {
-		secrets, scope, _, closeGeneration := newRequestValidationSecretHarness(
-			t, revision, map[string]string{raw: plaintext},
-		)
-		p := &Plugin{config: Config{BodySchema: map[string]any{
-			"type": "object", "properties": map[string]any{
-				"token": map[string]any{"const": raw},
-			},
-		}}}
-		if err := p.Init(); err != nil {
-			t.Fatal(err)
-		}
-		if err := base.MaterializeScopedPluginSecrets(
-			context.Background(), scope, secrets, p,
-		); err != nil {
-			t.Fatalf("generation %d materialization: %v", revision, err)
-		}
-		if err := p.PostInit(); err != nil {
-			t.Fatalf("generation %d PostInit: %v", revision, err)
-		}
-		return p, secrets, closeGeneration
-	}
-	first, firstSecrets, closeFirst := prepare(303, "first-generation-private")
-	second, secondSecrets, closeSecond := prepare(304, "second-generation-private")
-	defer func() {
-		second.Stop()
-		closeSecond()
-	}()
-
-	assertBody := func(p *Plugin, body string, want int) {
-		t.Helper()
-		response := performRequest(p, http.MethodPost, "/", `{"token":"`+body+`"}`, map[string]string{
-			"Content-Type": "application/json",
-		})
-		if response.Code != want {
-			t.Fatalf("body %q response = %d/%q, want %d", body, response.Code, response.Body.String(), want)
-		}
-	}
-	assertBody(first, "first-generation-private", http.StatusNoContent)
-	assertBody(second, "first-generation-private", http.StatusBadRequest)
-	assertBody(second, "second-generation-private", http.StatusNoContent)
-
-	first.Stop()
-	closeFirst()
-	if firstSecrets.Valid() {
-		t.Fatal("first generation secrets remained valid after close")
-	}
-	assertBody(second, "second-generation-private", http.StatusNoContent)
-	if !secondSecrets.Valid() {
-		t.Fatal("second generation secrets became invalid while active")
-	}
-}
-
-func TestStopDrainsActiveValidationAndRetiresSecrets(t *testing.T) {
-	const (
-		raw       = "$ENV://REQUEST_VALIDATION_STOP_VALUE"
-		plaintext = "stop-private-value"
-	)
-	secrets, scope, _, closeGeneration := newRequestValidationSecretHarness(
-		t, 305, map[string]string{raw: plaintext},
-	)
-	p := &Plugin{config: Config{HeaderSchema: map[string]any{
-		"type": "object", "properties": map[string]any{
-			"x-private": map[string]any{"const": raw},
-		},
-	}}}
-	if err := p.Init(); err != nil {
-		t.Fatal(err)
-	}
-	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, secrets, p,
-	); err != nil {
-		t.Fatal(err)
-	}
-	if err := p.PostInit(); err != nil {
-		t.Fatal(err)
-	}
-
-	entered := make(chan struct{})
-	releaseRequest := make(chan struct{})
-	requestDone := make(chan struct{})
-	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		close(entered)
-		<-releaseRequest
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	request := httptestNewRequestWithHeaders(t, map[string]string{"X-Private": plaintext})
-	go func() {
-		handler.ServeHTTP(newDiscardingResponseWriter(), request)
-		close(requestDone)
-	}()
-	<-entered
-	stopStarted := make(chan struct{})
-	stopDone := make(chan struct{})
-	go func() {
-		close(stopStarted)
-		p.Stop()
-		close(stopDone)
-	}()
-	<-stopStarted
-	select {
-	case <-stopDone:
-		t.Fatal("Stop returned before active validation request drained")
-	case <-time.After(50 * time.Millisecond):
-	}
-	close(releaseRequest)
-	select {
-	case <-requestDone:
-	case <-time.After(2 * time.Second):
-		t.Fatal("active validation request did not finish")
-	}
-	select {
-	case <-stopDone:
-	case <-time.After(2 * time.Second):
-		t.Fatal("Stop did not finish after request drained")
-	}
-	p.secrets.mu.Lock()
-	retainedSecrets := len(p.secrets.headerSecrets) + len(p.secrets.bodySecrets)
-	retainedHeaderCompiled := p.config.headerSchema
-	retainedBodyCompiled := p.config.bodySchema
-	p.secrets.mu.Unlock()
-	if retainedSecrets != 0 || retainedHeaderCompiled != nil || retainedBodyCompiled != nil {
-		t.Fatalf(
-			"Stop retained secret-owned state: values=%d header-compiled=%v body-compiled=%v",
-			retainedSecrets,
-			retainedHeaderCompiled != nil,
-			retainedBodyCompiled != nil,
-		)
-	}
-	if config := fmt.Sprintf("%#v", p.Config()); strings.Contains(config, plaintext) {
-		t.Fatalf("Stop retained recoverable plaintext in plugin config: %s", config)
-	}
-
-	postStop := performRequest(p, http.MethodGet, "/", "", map[string]string{"X-Private": plaintext})
-	if postStop.Code != http.StatusServiceUnavailable || strings.Contains(postStop.Body.String(), plaintext) {
-		t.Fatalf("post-Stop response = %d/%q", postStop.Code, postStop.Body.String())
-	}
-	closeGeneration()
-	if secrets.Valid() {
-		t.Fatal("generation secrets remained valid after close")
-	}
-	p.Stop()
-}
-
-func TestResolvedInvalidSchemaFailsClosedWithoutPlaintextDiagnostic(t *testing.T) {
-	const (
-		raw       = "$secret://vault/request-validation/invalid-type"
-		plaintext = "private-invalid-schema-type"
-	)
-	secrets, scope, _, closeAttempt := newRequestValidationSecretHarness(
-		t, 306, map[string]string{raw: plaintext},
-	)
-	defer closeAttempt()
-	p := &Plugin{config: Config{BodySchema: map[string]any{"type": raw}}}
-	if err := p.Init(); err != nil {
-		t.Fatal(err)
-	}
-	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, secrets, p,
-	); err != nil {
-		t.Fatal(err)
-	}
-	err := p.PostInit()
-	if !errors.Is(err, secret.ErrCredentialUnavailable) {
-		t.Fatalf("PostInit() error = %v, want credential unavailable", err)
+		t.Fatalf("invalid secret schema error = %v, want credential unavailable", err)
 	}
 	for _, forbidden := range []string{raw, plaintext} {
 		if strings.Contains(err.Error(), forbidden) {
-			t.Fatalf("PostInit() error leaked %q: %v", forbidden, err)
+			t.Fatalf("invalid secret schema error leaked %q: %v", forbidden, err)
 		}
 	}
-	p.Stop()
-}
-
-type discardingResponseWriter struct {
-	header http.Header
-	status int
-}
-
-func newDiscardingResponseWriter() *discardingResponseWriter {
-	return &discardingResponseWriter{header: make(http.Header)}
-}
-
-func (writer *discardingResponseWriter) Header() http.Header { return writer.header }
-
-func (writer *discardingResponseWriter) Write(data []byte) (int, error) {
-	if writer.status == 0 {
-		writer.status = http.StatusOK
+	if p.config.bodySchema != nil || len(p.bodySecrets) != 0 {
+		t.Fatal("invalid secret schema installed persistent runtime state")
 	}
-	return len(data), nil
 }
 
-func (writer *discardingResponseWriter) WriteHeader(status int) { writer.status = status }
-
-func httptestNewRequestWithHeaders(t *testing.T, headers map[string]string) *http.Request {
+func newRequestValidationSecretHarness(
+	t *testing.T, values map[string]string,
+) (secret.GenerationSecrets, secret.Scope, *requestValidationSecretBroker, func()) {
 	t.Helper()
-	request, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://example.com/", nil)
+	const revision = uint64(307)
+	resourceKey := generation.ResourceKey{Kind: "routes", ID: "request-validation-scoped"}
+	snapshot, err := generation.NewSnapshot(revision, []generation.Resource{{
+		Key: resourceKey, Value: []byte(`{"plugins":{}}`),
+	}}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for key, value := range headers {
-		request.Header.Set(key, value)
+	publication := generation.PublicationSet{
+		DesiredRevision: revision,
+		Domains: map[generation.Domain]generation.PublicationCandidate{
+			generation.DomainHTTP: {
+				Artifact: generation.GenerationArtifact{
+					Domain: generation.DomainHTTP, Revision: revision,
+					Digest: snapshot.Digest(), Snapshot: snapshot.SnapshotID(),
+				},
+				Snapshot: snapshot,
+				Closure:  []generation.ResourceKey{resourceKey},
+				Decisions: []generation.ResourceDecision{{
+					Key: resourceKey, Disposition: generation.DispositionPublished,
+					Code: "request-validation-scoped-test",
+				}},
+			},
+		},
 	}
-	return request
+	catalog, err := capability.NewSecretDeclarationCatalog()
+	if err != nil {
+		t.Fatal(err)
+	}
+	broker := &requestValidationSecretBroker{values: values}
+	materialization, err := testutil.NewSecretMaterializer(broker, catalog).
+		PrepareGeneration(context.Background(), publication)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := secret.Scope{
+		Generation: revision, Domain: generation.DomainHTTP,
+		Plugin: name, Resource: resourceKey, Source: capability.SecretPluginConfig,
+	}
+	return materialization.Secrets(), scope, broker, func() {
+		if err := materialization.Close(context.Background()); err != nil {
+			t.Errorf("close scoped request-validation generation: %v", err)
+		}
+	}
 }

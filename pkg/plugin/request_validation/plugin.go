@@ -2,7 +2,6 @@ package request_validation
 
 import (
 	"bytes"
-	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -17,14 +16,16 @@ import (
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
-	"github.com/wklken/apisix-go/pkg/secret"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
 type Plugin struct {
 	base.BasePlugin
-	config  Config
-	secrets requestValidationSecretState
+	config          Config
+	headerSensitive bool
+	bodySensitive   bool
+	headerSecrets   []schemaSecret
+	bodySecrets     []schemaSecret
 }
 
 const (
@@ -32,6 +33,8 @@ const (
 	priority = 2800
 	name     = "request-validation"
 )
+
+var errSensitiveSchemaMismatch = errors.New("request does not match schema")
 
 const schema = `
 {
@@ -81,7 +84,6 @@ func (p *Plugin) Init() error {
 	p.Name = name
 	p.Priority = priority
 	p.Schema = schema
-	p.secrets.initializeCompileGate()
 
 	return nil
 }
@@ -91,74 +93,37 @@ func (p *Plugin) PostInit() error {
 		p.config.RejectedCode = 400
 	}
 
-	var headerSchema, bodySchema *util.CompiledSchema
-	err := p.withSchemaDocuments(context.Background(), func(
-		headerDocument, bodyDocument map[string]any,
-		headerSensitive, bodySensitive bool,
-	) error {
-		var err error
-		headerSchema, err = prepareRequestValidationSchema(
-			"header_schema", headerDocument, headerSensitive,
-		)
+	if p.config.HeaderSchema != nil && p.config.headerSchema == nil && !p.headerSensitive {
+		compiled, err := compileRequestValidationSchema("header_schema", p.config.HeaderSchema)
 		if err != nil {
 			return err
 		}
-		bodySchema, err = prepareRequestValidationSchema(
-			"body_schema", bodyDocument, bodySensitive,
-		)
-		return err
-	})
-	if err != nil {
-		return err
+		p.config.headerSchema = compiled
 	}
-	return p.installCompiledSchemas(headerSchema, bodySchema)
-}
-
-func prepareRequestValidationSchema(
-	field string, document map[string]any, sensitive bool,
-) (*util.CompiledSchema, error) {
-	compiled, err := compileRequestValidationSchema(field, document, sensitive)
-	if err != nil || sensitive {
-		// A compiled schema may retain literals in constants, enums, regexps,
-		// references, annotations, and prebuilt diagnostic strings. Secret-backed
-		// schemas are compiled only to verify admission and never installed.
-		return nil, err
+	if p.config.BodySchema != nil && p.config.bodySchema == nil && !p.bodySensitive {
+		compiled, err := compileRequestValidationSchema("body_schema", p.config.BodySchema)
+		if err != nil {
+			return err
+		}
+		p.config.bodySchema = compiled
 	}
-	return compiled, nil
+	return nil
 }
 
 func compileRequestValidationSchema(
-	field string, document map[string]any, sensitive bool,
+	field string, document map[string]any,
 ) (*util.CompiledSchema, error) {
 	if document == nil {
 		return nil, nil
 	}
-	if err := validateRequestValidationSchemaDocument(document, false); err != nil {
-		if sensitive {
-			return nil, secret.ErrCredentialUnavailable
-		}
-		return nil, fmt.Errorf("invalid %s: %w", field, err)
-	}
 	normalized := normalizeAPISIXSchema(document)
-	if err := validateRequestValidationSchemaDocument(normalized, false); err != nil {
-		if sensitive {
-			return nil, secret.ErrCredentialUnavailable
-		}
-		return nil, fmt.Errorf("invalid %s: %w", field, err)
-	}
 	encoded, err := json.Marshal(normalized)
 	if err != nil {
-		if sensitive {
-			return nil, secret.ErrCredentialUnavailable
-		}
 		return nil, fmt.Errorf("failed to marshal %s: %w", field, err)
 	}
 	defer clear(encoded)
-	compiled, err := util.CompileSchema(util.BytesToString(encoded))
+	compiled, err := util.CompileSchemaWithoutExternalReferences(util.BytesToString(encoded))
 	if err != nil {
-		if sensitive {
-			return nil, secret.ErrCredentialUnavailable
-		}
 		return nil, fmt.Errorf("invalid %s: %w", field, err)
 	}
 	return compiled, nil
@@ -170,39 +135,23 @@ func (p *Plugin) Config() any {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
-		schemas, release, err := p.acquireValidationSchemas()
-		if err != nil {
-			http.Error(w, "request validation unavailable", http.StatusServiceUnavailable)
-			return
-		}
-		defer release()
-
-		if schemas.headerSchema != nil {
-			err := p.validateRequestValidationSchema(
-				r.Context(),
-				"header_schema",
-				schemas.headerSchema,
-				schemas.headerSecrets,
-				schemas.headerCompiled,
-				requestHeaders(r),
-			)
-			if requestValidationUnavailable(err) {
-				http.Error(w, "request validation unavailable", http.StatusServiceUnavailable)
-				return
-			}
-			if err != nil {
-				message := schemaValidationDiagnostic(err, schemas.headerSensitive)
+		if p.config.HeaderSchema != nil {
+			if err := p.validateSchema(
+				"header_schema", p.config.HeaderSchema, p.headerSecrets,
+				p.config.headerSchema, requestHeaders(r),
+			); err != nil {
+				message := schemaValidationDiagnostic(err, p.headerSensitive)
 				logger.Error("req schema validation failed: " + message)
 				writeSchemaRejection(
 					w,
-					p.schemaRejectedMessage(err, schemas.headerSensitive),
+					p.schemaRejectedMessage(err, p.headerSensitive),
 					p.config.RejectedCode,
 				)
 				return
 			}
 		}
 
-		if schemas.bodySchema != nil {
+		if p.config.BodySchema != nil {
 			body, err := ctx.ReadRequestBody(r)
 			if err != nil {
 				err = fmt.Errorf("failed to read request body: %w", err)
@@ -225,24 +174,16 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 				return
 			}
 
-			err = p.validateRequestValidationSchema(
-				r.Context(),
-				"body_schema",
-				schemas.bodySchema,
-				schemas.bodySecrets,
-				schemas.bodyCompiled,
-				bodyData,
+			err = p.validateSchema(
+				"body_schema", p.config.BodySchema, p.bodySecrets,
+				p.config.bodySchema, bodyData,
 			)
-			if requestValidationUnavailable(err) {
-				http.Error(w, "request validation unavailable", http.StatusServiceUnavailable)
-				return
-			}
 			if err != nil {
-				message := schemaValidationDiagnostic(err, schemas.bodySensitive)
+				message := schemaValidationDiagnostic(err, p.bodySensitive)
 				logger.Error("req schema validation failed: " + message)
 				writeSchemaRejection(
 					w,
-					p.schemaRejectedMessage(err, schemas.bodySensitive),
+					p.schemaRejectedMessage(err, p.bodySensitive),
 					p.config.RejectedCode,
 				)
 				return
@@ -263,16 +204,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(fn)
 }
 
-var errSensitiveSchemaMismatch = errors.New("request does not match schema")
-
-func requestValidationUnavailable(err error) bool {
-	return errors.Is(err, secret.ErrCredentialUnavailable) ||
-		errors.Is(err, context.Canceled) ||
-		errors.Is(err, context.DeadlineExceeded)
-}
-
-func (p *Plugin) validateRequestValidationSchema(
-	ctx context.Context,
+func (p *Plugin) validateSchema(
 	field string,
 	document map[string]any,
 	secrets []schemaSecret,
@@ -280,32 +212,20 @@ func (p *Plugin) validateRequestValidationSchema(
 	instance any,
 ) error {
 	if len(secrets) == 0 {
-		if compiled == nil {
-			return secret.ErrCredentialUnavailable
-		}
 		return compiled.Validate(instance)
 	}
-	// Resolve every terminal secret, compile, and validate within the innermost
-	// Value.Use callback. Only the redacted result crosses that boundary.
-	releaseCompile, err := p.secrets.acquireSensitiveCompile(ctx)
-	if err != nil {
-		return err
-	}
-	defer releaseCompile()
-	return withResolvedSchemaDocument(
-		document,
-		secrets,
-		func(resolved map[string]any) error {
-			ephemeral, err := compileRequestValidationSchema(field, resolved, true)
-			if err != nil {
-				return err
-			}
-			if err := ephemeral.Validate(instance); err != nil {
-				return errSensitiveSchemaMismatch
-			}
-			return nil
-		},
-	)
+	resolved := cloneSchemaDocument(document)
+	defer clearSchemaValue(resolved)
+	return withResolvedSchemaSecrets(resolved, secrets, 0, func() error {
+		ephemeral, err := compileRequestValidationSchema(field, resolved)
+		if err != nil {
+			return errSensitiveSchemaMismatch
+		}
+		if err := ephemeral.Validate(instance); err != nil {
+			return errSensitiveSchemaMismatch
+		}
+		return nil
+	})
 }
 
 func (p *Plugin) rejectedMessage(err error) string {

@@ -241,5 +241,4 @@ qualification state.
 | [0004](architecture/adr/0004-runtime-safety-boundaries.md) | accepted | Bound ambiguous stream routing and embedded Lua execution. |
 | [0005](architecture/adr/0005-credential-log-redaction.md) | accepted | Redact credential material from authentication logs. |
 | [0007](architecture/adr/0007-bounded-acl-jsonpath.md) | proposed | Bound ACL JSONPath evaluation and evaluate every match. |
-| [0008](architecture/adr/0008-request-validation-secret-schema-safety.md) | proposed | Bound secret-backed schema compilation and lifetime. |
 | [0010](architecture/adr/0010-bounded-ai-proxy-multi-dns.md) | proposed | Bound DNS and active-health work for `ai-proxy-multi`. |

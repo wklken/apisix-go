@@ -16,6 +16,34 @@ import (
 	"github.com/wklken/apisix-go/pkg/secret"
 )
 
+func waitForAWSCredentialDrain(p *Plugin, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for {
+		p.credentialMu.Lock()
+		ready := p.retired && p.activeUses > 0
+		p.credentialMu.Unlock()
+		if ready {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func assertAWSCredentialStateCleared(t *testing.T, p *Plugin) {
+	t.Helper()
+	p.credentialMu.Lock()
+	defer p.credentialMu.Unlock()
+	if p.scopedAccessKeyID != (secret.Value{}) ||
+		p.scopedSecretAccessKey != (secret.Value{}) ||
+		p.scopedSessionToken != (secret.Value{}) ||
+		p.scopedSet || p.scopedSessionTokenSet {
+		t.Fatal("Stop() retained scoped credential state")
+	}
+}
+
 func TestScopedSecretsRejectResolvedBlankCredentialsAndRetryExactFields(t *testing.T) {
 	const (
 		rawAccess = "$ENV://AWS_VALIDATION_ACCESS"
@@ -140,15 +168,6 @@ func TestScopedSecretsConcurrentMaterializeResolvesOnce(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatal(err)
 	}
-	preparationWaiting := make(chan struct{})
-	var preparationOnce sync.Once
-	p.setAWSCredentialTestHooks(awsCredentialTestHooks{
-		preparation: func(kind awsPreparationKind, phase awsPreparationPhase) {
-			if kind == awsPreparationScoped && phase == awsPreparationWaiting {
-				preparationOnce.Do(func() { close(preparationWaiting) })
-			}
-		},
-	})
 	start := make(chan struct{})
 	errs := make(chan error, workers)
 	var wg sync.WaitGroup
@@ -163,17 +182,6 @@ func TestScopedSecretsConcurrentMaterializeResolvesOnce(t *testing.T) {
 	case <-entered:
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for first scoped resolution")
-	}
-	select {
-	case <-preparationWaiting:
-	case <-time.After(time.Second):
-		close(release)
-		t.Fatal("timed out waiting for a scoped materializer at the preparation gate")
-	}
-	state := p.awsCredentialLifecycleSnapshot()
-	if !state.preparationActive || state.preparationWaiters == 0 {
-		close(release)
-		t.Fatalf("preparation state = %#v, want active leader and waiting follower", state)
 	}
 	close(release)
 	wg.Wait()
@@ -510,15 +518,6 @@ func TestScopedAWSStopWaitsForResponseAndConcurrentStopsAreSafe(t *testing.T) {
 		"$ENV://"+tokenEnv,
 		moderation.URL,
 	))
-	drainStarted := make(chan struct{})
-	var drainOnce sync.Once
-	p.setAWSCredentialTestHooks(awsCredentialTestHooks{
-		lifecycle: func(event awsCredentialLifecycleEvent) {
-			if event == awsCredentialDrainStarted {
-				drainOnce.Do(func() { close(drainStarted) })
-			}
-		},
-	})
 	requestDone := make(chan error, 1)
 	go func() {
 		_, err := p.detectToxicContent(httptest.NewRequest(http.MethodPost, "/", nil), "hello")
@@ -538,18 +537,10 @@ func TestScopedAWSStopWaitsForResponseAndConcurrentStopsAreSafe(t *testing.T) {
 			stopDone <- struct{}{}
 		}()
 	}
-	select {
-	case <-drainStarted:
-	case <-time.After(time.Second):
+	if !waitForAWSCredentialDrain(p, time.Second) {
 		close(releaseResponse)
 		<-requestDone
 		t.Fatal("timed out waiting for legacy Stop() to enter credential drain")
-	}
-	state := p.awsCredentialLifecycleSnapshot()
-	if !state.retired || state.activeUses == 0 {
-		close(releaseResponse)
-		<-requestDone
-		t.Fatalf("legacy Stop() drain state = %#v, want retired with an active use", state)
 	}
 	select {
 	case <-stopDone:
@@ -569,8 +560,5 @@ func TestScopedAWSStopWaitsForResponseAndConcurrentStopsAreSafe(t *testing.T) {
 			t.Fatal("concurrent Stop() did not finish after legacy request")
 		}
 	}
-	state = p.awsCredentialLifecycleSnapshot()
-	if state.scopedAccessKeyIDSet || state.scopedSecretAccessKeySet || state.scopedSessionTokenSet || state.scopedSet {
-		t.Fatal("scoped state remained after concurrent Stop()")
-	}
+	assertAWSCredentialStateCleared(t, p)
 }

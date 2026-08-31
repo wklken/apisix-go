@@ -31,25 +31,26 @@ import (
 )
 
 type redisFixture struct {
-	kind      string
-	spec      FixtureSpec
-	listener  net.Listener
-	caPath    string
-	expect    []NetworkAssertion
-	received  chan []byte
-	errors    chan error
-	done      chan struct{}
-	closeOnce sync.Once
-	stateMu   sync.Mutex
-	values    map[string]string
-	integers  map[string]int64
-	hashes    map[string]map[string]string
-	expiries  map[string]time.Time
-	expirySet map[string]int
-	auth      []RedisAuthAssertion
-	scripts   map[string]string
-	scriptSeq int
-	wg        sync.WaitGroup
+	kind             string
+	spec             FixtureSpec
+	listener         net.Listener
+	caPath           string
+	expect           []NetworkAssertion
+	received         chan []byte
+	errors           chan error
+	done             chan struct{}
+	closeOnce        sync.Once
+	stateMu          sync.Mutex
+	values           map[string]string
+	integers         map[string]int64
+	hashes           map[string]map[string]string
+	limitConnMembers map[string]map[string]int64
+	expiries         map[string]time.Time
+	expirySet        map[string]int
+	auth             []RedisAuthAssertion
+	scripts          map[string]string
+	scriptSeq        int
+	wg               sync.WaitGroup
 }
 
 func startRedisFixture(spec FixtureSpec) (namedFixture, error) {
@@ -102,20 +103,21 @@ func startRedisFixture(spec FixtureSpec) (namedFixture, error) {
 		receivedCapacity = 128
 	}
 	fixture := &redisFixture{
-		kind:      spec.Kind,
-		spec:      spec,
-		listener:  listener,
-		caPath:    caPath,
-		expect:    spec.NetworkExpect,
-		received:  make(chan []byte, receivedCapacity),
-		errors:    make(chan error, len(spec.NetworkExpect)+1),
-		done:      make(chan struct{}),
-		values:    make(map[string]string),
-		integers:  make(map[string]int64),
-		hashes:    make(map[string]map[string]string),
-		expiries:  make(map[string]time.Time),
-		expirySet: make(map[string]int),
-		scripts:   make(map[string]string),
+		kind:             spec.Kind,
+		spec:             spec,
+		listener:         listener,
+		caPath:           caPath,
+		expect:           spec.NetworkExpect,
+		received:         make(chan []byte, receivedCapacity),
+		errors:           make(chan error, len(spec.NetworkExpect)+1),
+		done:             make(chan struct{}),
+		values:           make(map[string]string),
+		integers:         make(map[string]int64),
+		hashes:           make(map[string]map[string]string),
+		limitConnMembers: make(map[string]map[string]int64),
+		expiries:         make(map[string]time.Time),
+		expirySet:        make(map[string]int),
+		scripts:          make(map[string]string),
 	}
 	fixture.wg.Add(1)
 	go fixture.serve()
@@ -340,6 +342,7 @@ func (f *redisFixture) writeResponse(writer io.Writer, command []string) error {
 				delete(f.integers, key)
 				removed++
 			}
+			delete(f.limitConnMembers, key)
 			delete(f.expiries, key)
 			delete(f.expirySet, key)
 		}
@@ -463,11 +466,13 @@ func (f *redisFixture) writeEvalResponse(writer io.Writer, command []string) err
 		script = f.scripts[script]
 		f.stateMu.Unlock()
 	}
-	if strings.Contains(script, "redis.call(\"INCR\"") &&
-		strings.Contains(script, "redis.call(\"DECR\"") {
+	if strings.Contains(script, `redis.call("ZREMRANGEBYSCORE"`) &&
+		strings.Contains(script, `redis.call("ZADD"`) &&
+		strings.Contains(script, `redis.call("ZCARD"`) {
 		return f.writeLimitConnIncoming(writer, command)
 	}
-	if strings.Contains(script, `local current = redis.call("DECR"`) &&
+	if strings.Contains(script, `redis.call("ZREM"`) &&
+		strings.Contains(script, `redis.call("ZCARD"`) &&
 		strings.Contains(script, `redis.call("DEL"`) {
 		return f.writeLimitConnLeaving(writer, command)
 	}
@@ -532,7 +537,7 @@ func (f *redisFixture) writeEvalResponse(writer io.Writer, command []string) err
 }
 
 func (f *redisFixture) writeLimitConnIncoming(writer io.Writer, command []string) error {
-	if len(command) < 8 {
+	if len(command) < 10 {
 		return writeRESPError(writer, "wrong number of arguments for limit-conn incoming")
 	}
 	conn, err := strconv.ParseInt(command[4], 10, 64)
@@ -551,28 +556,42 @@ func (f *redisFixture) writeLimitConnIncoming(writer io.Writer, command []string
 	if err != nil || ttlMilliseconds <= 0 {
 		return writeRESPError(writer, "limit-conn TTL is not a positive integer")
 	}
+	nowMilliseconds, err := strconv.ParseInt(command[8], 10, 64)
+	if err != nil || nowMilliseconds <= 0 {
+		return writeRESPError(writer, "limit-conn now is not a positive integer")
+	}
+	member := command[9]
+	if member == "" {
+		return writeRESPError(writer, "limit-conn member is empty")
+	}
 
 	key := command[3]
-	now := time.Now()
 	f.stateMu.Lock()
-	if expiry, ok := f.expiries[key]; ok && !now.Before(expiry) {
-		delete(f.integers, key)
-		delete(f.values, key)
+	members := f.limitConnMembers[key]
+	if members == nil {
+		members = make(map[string]int64)
 	}
-	f.integers[key]++
-	current := f.integers[key]
-	f.expiries[key] = now.Add(time.Duration(ttlMilliseconds) * time.Millisecond)
-	f.expirySet[key]++
-	if current > conn+burst {
-		f.integers[key]--
-		if f.integers[key] <= 0 {
-			delete(f.integers, key)
-			delete(f.values, key)
-			delete(f.expiries, key)
+	for existingMember, deadline := range members {
+		if deadline <= nowMilliseconds {
+			delete(members, existingMember)
 		}
+	}
+	current := int64(len(members))
+	if current >= conn+burst {
+		f.syncLimitConnMembers(key, members)
 		f.stateMu.Unlock()
 		return writeRESPIntegerArray(writer, 0, 0)
 	}
+	if _, exists := members[member]; exists {
+		f.syncLimitConnMembers(key, members)
+		f.stateMu.Unlock()
+		return writeRESPIntegerArray(writer, 0, 0)
+	}
+	members[member] = nowMilliseconds + ttlMilliseconds
+	current++
+	f.syncLimitConnMembers(key, members)
+	f.expiries[key] = time.UnixMilli(nowMilliseconds + ttlMilliseconds)
+	f.expirySet[key]++
 	f.stateMu.Unlock()
 
 	delayMilliseconds := int64(0)
@@ -583,20 +602,34 @@ func (f *redisFixture) writeLimitConnIncoming(writer io.Writer, command []string
 }
 
 func (f *redisFixture) writeLimitConnLeaving(writer io.Writer, command []string) error {
-	if len(command) < 4 {
+	if len(command) < 5 {
 		return writeRESPError(writer, "wrong number of arguments for limit-conn leaving")
 	}
 	key := command[3]
+	member := command[4]
 	f.stateMu.Lock()
-	f.integers[key]--
-	current := f.integers[key]
-	if current <= 0 {
+	members := f.limitConnMembers[key]
+	removed := int64(0)
+	if _, exists := members[member]; exists {
+		delete(members, member)
+		removed = 1
+	}
+	f.syncLimitConnMembers(key, members)
+	f.stateMu.Unlock()
+	return writeRESPInteger(writer, removed)
+}
+
+func (f *redisFixture) syncLimitConnMembers(key string, members map[string]int64) {
+	if len(members) == 0 {
+		delete(f.limitConnMembers, key)
 		delete(f.integers, key)
 		delete(f.values, key)
 		delete(f.expiries, key)
+		return
 	}
-	f.stateMu.Unlock()
-	return writeRESPInteger(writer, current)
+	f.limitConnMembers[key] = members
+	f.integers[key] = int64(len(members))
+	delete(f.values, key)
 }
 
 func (f *redisFixture) writeUluleLimiterPeek(writer io.Writer, command []string) error {
@@ -1860,39 +1893,25 @@ func TestRedisFixtureEmulatesLimitConnScripts(t *testing.T) {
 	client := redis.NewClient(&redis.Options{Addr: fixture.address()})
 	t.Cleanup(func() { _ = client.Close() })
 	incomingScript := `
-local current = redis.call("INCR", KEYS[1])
-redis.call("PEXPIRE", KEYS[1], ARGV[4])
-
-local conn = tonumber(ARGV[1])
-local burst = tonumber(ARGV[2])
-local default_delay = tonumber(ARGV[3])
-local limit = conn + burst
-
-if current > limit then
-  local after_decr = redis.call("DECR", KEYS[1])
-  if after_decr <= 0 then
-    redis.call("DEL", KEYS[1])
-  end
+redis.call("ZREMRANGEBYSCORE", KEYS[1], "-inf", ARGV[5])
+local current = redis.call("ZCARD", KEYS[1])
+if current >= tonumber(ARGV[1]) + tonumber(ARGV[2]) then
   return {0, 0}
 end
-
-local delay = 0
-if current > conn then
-  local multiplier = math.floor((current - 1) / conn)
-  delay = multiplier * default_delay
-end
-
-return {1, math.floor(delay * 1000)}
+redis.call("ZADD", KEYS[1], "NX", tonumber(ARGV[5]) + tonumber(ARGV[4]), ARGV[6])
+redis.call("PEXPIRE", KEYS[1], ARGV[4])
+return {1, current == 0 and 0 or 250}
 `
 	leavingScript := `
-local current = redis.call("DECR", KEYS[1])
-if current <= 0 then
+local removed = redis.call("ZREM", KEYS[1], ARGV[1])
+if redis.call("ZCARD", KEYS[1]) == 0 then
   redis.call("DEL", KEYS[1])
 end
-return current
+return removed
 `
 	key := "plugin-limit-conn:route:route-1:client"
-	incoming := func() []any {
+	baseNow := time.Now().UnixMilli()
+	incoming := func(member string, now int64) []any {
 		t.Helper()
 		result, err := client.Eval(
 			context.Background(),
@@ -1902,6 +1921,8 @@ return current
 			1,
 			0.25,
 			5000,
+			now,
+			member,
 		).Slice()
 		if err != nil {
 			t.Fatalf("evaluate limit-conn incoming: %v", err)
@@ -1909,22 +1930,33 @@ return current
 		return result
 	}
 
-	if got := incoming(); !equalRedisIntegers(got, 1, 0) {
+	if got := incoming("member-1", baseNow); !equalRedisIntegers(got, 1, 0) {
 		t.Fatalf("first incoming = %#v, want [1 0]", got)
 	}
-	if got := incoming(); !equalRedisIntegers(got, 1, 250) {
+	if got := incoming("member-1", baseNow); !equalRedisIntegers(got, 0, 0) {
+		t.Fatalf("duplicate-member incoming = %#v, want [0 0]", got)
+	}
+	if got := incoming("member-2", baseNow); !equalRedisIntegers(got, 1, 250) {
 		t.Fatalf("burst incoming = %#v, want [1 250]", got)
 	}
-	if got := incoming(); !equalRedisIntegers(got, 0, 0) {
+	if got := incoming("member-3", baseNow); !equalRedisIntegers(got, 0, 0) {
 		t.Fatalf("rejected incoming = %#v, want [0 0]", got)
 	}
 	fixture.assert(t, spec)
 
-	if got, err := client.Eval(context.Background(), leavingScript, []string{key}).Int64(); err != nil || got != 1 {
+	missingLeaving := client.Eval(context.Background(), leavingScript, []string{key}, "missing-member")
+	if got, err := missingLeaving.Int64(); err != nil || got != 0 {
+		t.Fatalf("missing-member leaving = %d, %v; want 0", got, err)
+	}
+	fixture.assert(t, spec)
+
+	firstLeaving := client.Eval(context.Background(), leavingScript, []string{key}, "member-1")
+	if got, err := firstLeaving.Int64(); err != nil || got != 1 {
 		t.Fatalf("first leaving = %d, %v; want 1", got, err)
 	}
-	if got, err := client.Eval(context.Background(), leavingScript, []string{key}).Int64(); err != nil || got != 0 {
-		t.Fatalf("second leaving = %d, %v; want 0", got, err)
+	secondLeaving := client.Eval(context.Background(), leavingScript, []string{key}, "member-2")
+	if got, err := secondLeaving.Int64(); err != nil || got != 1 {
+		t.Fatalf("second leaving = %d, %v; want 1", got, err)
 	}
 	fixture.assert(t, FixtureSpec{
 		Name: "redis-limit-conn",
@@ -1934,6 +1966,13 @@ return current
 			Values:                  map[string]string{},
 		},
 	})
+
+	if got := incoming("expired-member", baseNow); !equalRedisIntegers(got, 1, 0) {
+		t.Fatalf("expiring incoming = %#v, want [1 0]", got)
+	}
+	if got := incoming("fresh-member", baseNow+6000); !equalRedisIntegers(got, 1, 0) {
+		t.Fatalf("post-expiry incoming = %#v, want [1 0]", got)
+	}
 }
 
 func TestRedisFixtureEmulatesLimitReqScript(t *testing.T) {
@@ -2204,27 +2243,60 @@ func TestRedisClusterTLSFixtureExposesCAAndPreservesStatefulEval(t *testing.T) {
 		},
 	})
 	defer func() { _ = client.Close() }()
-	script := `
-local current = redis.call("INCR", KEYS[1])
-if current > tonumber(ARGV[1]) + tonumber(ARGV[2]) then
-  redis.call("DECR", KEYS[1])
+	incomingScript := `
+redis.call("ZREMRANGEBYSCORE", KEYS[1], "-inf", ARGV[5])
+local current = redis.call("ZCARD", KEYS[1])
+if current >= tonumber(ARGV[1]) + tonumber(ARGV[2]) then
+  return {0, 0}
 end
-return current
+redis.call("ZADD", KEYS[1], "NX", tonumber(ARGV[5]) + tonumber(ARGV[4]), ARGV[6])
+redis.call("PEXPIRE", KEYS[1], ARGV[4])
+return {1, 0}
 `
-	result, err := client.Eval(
-		context.Background(),
-		script,
-		[]string{"route:route-1:client"},
-		2,
-		1,
-		0.1,
-		3600_000,
-	).Slice()
-	if err != nil {
-		t.Fatalf("TLS cluster limit-conn Eval() error = %v", err)
+	key := "route:route-1:client"
+	evalIncoming := func(member string) []any {
+		t.Helper()
+		result, evalErr := client.Eval(
+			context.Background(),
+			incomingScript,
+			[]string{key},
+			1,
+			0,
+			0.1,
+			3600_000,
+			time.Now().UnixMilli(),
+			member,
+		).Slice()
+		if evalErr != nil {
+			t.Fatalf("TLS cluster limit-conn incoming Eval() error = %v", evalErr)
+		}
+		return result
 	}
-	if !equalRedisIntegers(result, 1, 0) {
-		t.Fatalf("TLS cluster limit-conn result = %#v, want [1 0]", result)
+	if result := evalIncoming("member-1"); !equalRedisIntegers(result, 1, 0) {
+		t.Fatalf("first TLS cluster limit-conn result = %#v, want [1 0]", result)
+	}
+	if result := evalIncoming("member-2"); !equalRedisIntegers(result, 0, 0) {
+		t.Fatalf("second TLS cluster limit-conn result = %#v, want [0 0]", result)
+	}
+
+	leavingScript := `
+local removed = redis.call("ZREM", KEYS[1], ARGV[1])
+if redis.call("ZCARD", KEYS[1]) == 0 then
+  redis.call("DEL", KEYS[1])
+end
+return removed
+`
+	removed, err := client.Eval(
+		context.Background(),
+		leavingScript,
+		[]string{key},
+		"member-1",
+	).Int64()
+	if err != nil || removed != 1 {
+		t.Fatalf("TLS cluster limit-conn leaving Eval() = %d, %v; want 1", removed, err)
+	}
+	if result := evalIncoming("member-3"); !equalRedisIntegers(result, 1, 0) {
+		t.Fatalf("post-release TLS cluster limit-conn result = %#v, want [1 0]", result)
 	}
 }
 

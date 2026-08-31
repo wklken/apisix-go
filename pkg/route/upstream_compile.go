@@ -70,7 +70,6 @@ func planTrafficSplitClusterWithSSLResolver(
 		cloneCompileRoute(routeResource),
 		resourceUpstream,
 		resolveSSL,
-		staticConfig,
 	)
 	if err != nil {
 		return proxy.ClusterConfig{}, err
@@ -185,7 +184,7 @@ func PlanRouteUpstream(
 		return plan, nil
 	}
 	transport, err := buildTransportOptionWithSSLResolver(
-		cloneCompileRoute(routeResource), resolved, plannedSSLResolver(ssls), staticConfig,
+		cloneCompileRoute(routeResource), resolved, plannedSSLResolver(ssls),
 	)
 	if err != nil {
 		return UpstreamPlan{}, err

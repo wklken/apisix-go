@@ -113,12 +113,41 @@ func testPreparedProxyHandler(
 	)
 }
 
+func testPreparedProxyHandlerWithMaxInFlight(
+	t testing.TB,
+	routeResource resource.Route,
+	service resource.Service,
+	effective *appconfig.EffectiveConfig,
+	maxInFlight int,
+	bindings ...plugin.Binding,
+) http.Handler {
+	t.Helper()
+	return testPreparedProxyHandlerWithConsumersAndMaxInFlight(
+		t, routeResource, service, effective, nil, maxInFlight, bindings...,
+	)
+}
+
 func testPreparedProxyHandlerWithConsumers(
 	t testing.TB,
 	routeResource resource.Route,
 	service resource.Service,
 	effective *appconfig.EffectiveConfig,
 	consumers map[string]PreparedConsumerRecord,
+	bindings ...plugin.Binding,
+) http.Handler {
+	t.Helper()
+	return testPreparedProxyHandlerWithConsumersAndMaxInFlight(
+		t, routeResource, service, effective, consumers, 0, bindings...,
+	)
+}
+
+func testPreparedProxyHandlerWithConsumersAndMaxInFlight(
+	t testing.TB,
+	routeResource resource.Route,
+	service resource.Service,
+	effective *appconfig.EffectiveConfig,
+	consumers map[string]PreparedConsumerRecord,
+	maxInFlight int,
 	bindings ...plugin.Binding,
 ) http.Handler {
 	t.Helper()
@@ -131,6 +160,9 @@ func testPreparedProxyHandlerWithConsumers(
 	}
 	if plan.ClusterConfig == nil {
 		t.Fatal("PlanRouteUpstream() cluster config = nil")
+	}
+	if maxInFlight > 0 {
+		plan.ClusterConfig.MaxInFlight = maxInFlight
 	}
 	cluster, err := pxy.NewCluster(*plan.ClusterConfig, pxy.NopClusterObserver{})
 	if err != nil {
@@ -453,10 +485,6 @@ func testEffectiveConfig() *appconfig.EffectiveConfig {
 			ClientMaxBodySize: 10 * 1024 * 1024,
 			ClientBodyTimeout: 60 * time.Second,
 		}},
-		Proxy: appconfig.Proxy{
-			MaxIdleConns: 1024, MaxIdleConnsPerHost: 256,
-			MaxConnsPerHost: 512, MaxInFlight: 1024,
-		},
 		Plugins: []string{"request-id"},
 		Deployment: appconfig.Deployment{
 			Role:          "data_plane",

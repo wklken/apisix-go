@@ -491,9 +491,6 @@ func TestWebsocketUpgradeIgnoresDynamicConsumerResponseBinding(t *testing.T) {
 }
 
 func TestWebsocketUpgradeAdmissionRejectsSecondTunnelAcrossNodes(t *testing.T) {
-	effective := testEffectiveConfig()
-	effective.Config.Proxy.MaxInFlight = 1
-
 	release := make(chan struct{})
 	connected := make(chan struct{})
 	var upgradeCalls atomic.Int32
@@ -521,14 +518,14 @@ func TestWebsocketUpgradeAdmissionRejectsSecondTunnelAcrossNodes(t *testing.T) {
 		backendOne.Close()
 		backendTwo.Close()
 	})
-	handler := buildWebsocketHandlerWithConfig(t, resource.Route{
+	handler := testPreparedProxyHandlerWithMaxInFlight(t, resource.Route{
 		ID:              "websocket-admission-route",
 		EnableWebsocket: true,
 		Upstream: resource.Upstream{
 			Scheme: "http",
 			Nodes:  []resource.Node{websocketNode(t, backendOne), websocketNode(t, backendTwo)},
 		},
-	}, effective)
+	}, resource.Service{}, testEffectiveConfig(), 1)
 	gateway := httptest.NewServer(handler)
 	t.Cleanup(gateway.Close)
 

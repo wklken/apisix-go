@@ -79,8 +79,6 @@ func CapabilitySummary(cfg *Config) map[string]any {
 		"plugin_count":          len(cfg.Plugins),
 		"stream_plugin_count":   len(cfg.StreamPlugins),
 		"etcd_endpoint_count":   len(cfg.Deployment.Etcd.Host),
-		"proxy_limits_configured": cfg.Proxy.MaxIdleConns > 0 &&
-			cfg.Proxy.MaxIdleConnsPerHost > 0 && cfg.Proxy.MaxConnsPerHost > 0 && cfg.Proxy.MaxInFlight > 0,
 	}
 }
 

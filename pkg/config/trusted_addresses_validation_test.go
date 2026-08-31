@@ -26,7 +26,6 @@ func validRuntimeConfigForTrustedAddresses() *Config {
 	return &Config{
 		Plugins: []string{"request-id"},
 		Apisix:  Apisix{NodeListen: []NodeListen{{Ip: "127.0.0.1", Port: 9080}}},
-		Proxy:   Proxy{MaxIdleConns: 1, MaxIdleConnsPerHost: 1, MaxConnsPerHost: 1, MaxInFlight: 1},
 		NginxConfig: NginxConfig{HTTP: NginxHTTP{
 			ClientMaxBodySize: 1,
 			ClientBodyTimeout: 1,

@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 const validRuntimeConfig = `
@@ -18,11 +19,10 @@ apisix:
       enable_http2: false
 plugins: [request-id, gzip]
 stream_plugins: [mqtt-proxy]
-proxy:
-  max_idle_conns: 100
-  max_idle_conns_per_host: 20
-  max_conns_per_host: 50
-  max_in_flight: 40
+nginx_config:
+  http:
+    client_max_body_size: 1024
+    client_body_timeout: 60s
 deployment:
   role: traditional
   role_traditional:
@@ -41,8 +41,9 @@ apisix:
       port: 9081
       enable_http2: true
 plugins: [gzip]
-proxy:
-  max_in_flight: 60
+nginx_config:
+  http:
+    client_body_timeout: 30s
 deployment:
   etcd:
     prefix: /custom
@@ -61,8 +62,9 @@ deployment:
 	if !cfg.Apisix.NodeListen[0].EnableHttp2 {
 		t.Fatal("nested override did not enable HTTP/2")
 	}
-	if cfg.Proxy.MaxIdleConns != 100 || cfg.Proxy.MaxInFlight != 60 {
-		t.Fatalf("proxy merge = idle:%d in-flight:%d, want 100/60", cfg.Proxy.MaxIdleConns, cfg.Proxy.MaxInFlight)
+	if cfg.NginxConfig.HTTP.ClientMaxBodySize != 1024 || cfg.NginxConfig.HTTP.ClientBodyTimeout != 30*time.Second {
+		t.Fatalf("nginx http merge = body-size:%d timeout:%s, want 1024/30s",
+			cfg.NginxConfig.HTTP.ClientMaxBodySize, cfg.NginxConfig.HTTP.ClientBodyTimeout)
 	}
 	if cfg.Deployment.Etcd.Prefix != "/custom" || len(cfg.Deployment.Etcd.Host) != 1 {
 		t.Fatalf("etcd merge = %#v, want retained host and overridden prefix", cfg.Deployment.Etcd)
@@ -144,14 +146,6 @@ func TestLoadEffectiveRejectsIncompleteRuntimeBeforePublication(t *testing.T) {
 			override: "deployment:\n  etcd:\n    prefix: \"\"\n",
 			want:     "deployment.etcd.prefix",
 		},
-		{name: "zero max idle", override: "proxy:\n  max_idle_conns: 0\n", want: "proxy.max_idle_conns"},
-		{
-			name:     "zero per host",
-			override: "proxy:\n  max_idle_conns_per_host: 0\n",
-			want:     "proxy.max_idle_conns_per_host",
-		},
-		{name: "zero connections", override: "proxy:\n  max_conns_per_host: 0\n", want: "proxy.max_conns_per_host"},
-		{name: "zero in flight", override: "proxy:\n  max_in_flight: 0\n", want: "proxy.max_in_flight"},
 	}
 
 	for _, test := range tests {
@@ -178,7 +172,6 @@ func TestCapabilitySummaryContainsOnlyBoundedSafeFacts(t *testing.T) {
 		},
 		Plugins:       []string{"request-id", "gzip"},
 		StreamPlugins: []string{"mqtt-proxy"},
-		Proxy:         Proxy{MaxIdleConns: 1, MaxIdleConnsPerHost: 1, MaxConnsPerHost: 1, MaxInFlight: 1},
 		Deployment: Deployment{
 			Role:            "traditional",
 			RoleTraditional: RoleTraditionalConfig{ConfigProvider: "etcd"},

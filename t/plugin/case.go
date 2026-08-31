@@ -31,12 +31,11 @@ type Manifest struct {
 }
 
 type SourceSpec struct {
-	Repository     string `yaml:"repository"`
-	Commit         string `yaml:"commit"`
-	File           string `yaml:"file"`
-	Tests          int    `yaml:"tests"`
-	TestNumbers    []int  `yaml:"test_numbers,omitempty"`
-	RegressionOnly bool   `yaml:"regression_only,omitempty"`
+	Repository  string `yaml:"repository"`
+	Commit      string `yaml:"commit"`
+	File        string `yaml:"file"`
+	Tests       int    `yaml:"tests"`
+	TestNumbers []int  `yaml:"test_numbers,omitempty"`
 }
 
 type Case struct {

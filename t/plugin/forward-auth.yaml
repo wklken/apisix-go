@@ -5,12 +5,6 @@ sources:
     tests: 18
     test_numbers: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
   - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/forward-auth.t
-    tests: 2
-    test_numbers: [20, 21]
-    regression_only: true
-  - repository: https://github.com/apache/apisix
     commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
     file: t/plugin/forward-auth2.t
     tests: 5
@@ -358,41 +352,6 @@ cases:
       - name: body-within-limit-is-authorized
         input: {method: POST, path: /withinlimit, body: '{"authorization":"555"}'}
         output: {status: 200, body: {equals: i-am-an-user}}
-
-  - name: chunked-post-is-buffered-and-reframed
-    source:
-      file: t/plugin/forward-auth.t
-      tests: [20, 21]
-    config:
-      routes:
-        - id: forward-auth-chunked
-          uri: /pingframe
-          plugins:
-            forward-auth:
-              uri: 'http://{{FIXTURE.auth.ADDR}}/auth-frame'
-              request_method: POST
-              upstream_headers: [X-Auth-Saw-Te]
-          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
-    fixtures:
-      - name: auth
-        kind: tcp
-        network_expect:
-          - payload: {matches: '(?s)^POST /auth-frame HTTP/1\.1\r\n(?:[^\r\n]*\r\n)*Content-Length: 5\r\n(?:[^\r\n]*\r\n)*\r\nhello$'}
-            forbidden_matches:
-              - '(?im)^Transfer-Encoding:'
-              - '(?im)^Expect:'
-        network_respond:
-          - payload: "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-            close: true
-      - name: primary
-        kind: http
-        expect:
-          - {method: POST, path: {equals: /pingframe}, headers: {X-Auth-Saw-Te: {absent: true}}, body: {equals: hello}}
-        respond: [{status: 200, body: hello world}]
-    steps:
-      - name: chunked-client-body-becomes-content-length-auth-body
-        input: {method: POST, path: /pingframe, body: hello, chunked: true}
-        output: {status: 200, body: {equals: hello world}}
 
   - name: request-method-framing-matrix
     source:

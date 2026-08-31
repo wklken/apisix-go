@@ -4,13 +4,6 @@ sources:
     file: t/plugin/loggly.t
     tests: 19
     test_numbers: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/loggly.t
-    tests: 1
-    test_numbers: [22]
-    regression_only: true
-
 cases:
   - name: route-resource-enables-loggly
     source: {file: t/plugin/loggly.t, tests: [2]}
@@ -439,56 +432,3 @@ cases:
         network_respond: [{payload: ''}]
     steps:
       - {name: request-uses-route-format, input: {path: '/opentracing?foo=bar', headers: {Host: localhost}}, output: {status: 200, body: {equals: opentracing}}, wait: 1s}
-
-  - name: buffered-http-configs-retain-own-token-and-tags
-    source: {file: t/plugin/loggly.t, tests: [22]}
-    config:
-      routes:
-        - id: '1'
-          host: 127.0.0.1
-          uri: /route_a
-          plugins:
-            loggly:
-              customer_token: token-a
-              tags: [aaa]
-              host: '{{FIXTURE.firstSink.URL}}/loggly'
-              protocol: http
-              inactive_timeout: 1
-              log_format: {route: a}
-          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
-        - id: '2'
-          host: 127.0.0.1
-          uri: /route_b
-          plugins:
-            loggly:
-              customer_token: token-b
-              tags: [bbb]
-              host: '{{FIXTURE.secondSink.URL}}/loggly'
-              protocol: http
-              inactive_timeout: 1
-              log_format: {route: b}
-          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
-    fixtures:
-      - name: primary
-        kind: http
-        expect: [{path: {equals: /route_a}}, {path: {equals: /route_b}}]
-        respond: [{status: 200, body: a}, {status: 200, body: b}]
-      - name: firstSink
-        kind: http
-        expect:
-          - method: POST
-            path: {equals: /loggly/bulk/token-a/tag/bulk}
-            headers: {X-LOGGLY-TAG: {equals: aaa}}
-            body: {json_equals: '{"route":"a","route_id":"1"}'}
-        respond: [{status: 200, body: ok}]
-      - name: secondSink
-        kind: http
-        expect:
-          - method: POST
-            path: {equals: /loggly/bulk/token-b/tag/bulk}
-            headers: {X-LOGGLY-TAG: {equals: bbb}}
-            body: {json_equals: '{"route":"b","route_id":"2"}'}
-        respond: [{status: 200, body: ok}]
-    steps:
-      - {name: buffer-route-a, input: {path: /route_a, headers: {Host: 127.0.0.1}}, output: {status: 200, body: {equals: a}}}
-      - {name: buffer-route-b, input: {path: /route_b, headers: {Host: 127.0.0.1}}, output: {status: 200, body: {equals: b}}, wait: 2s}

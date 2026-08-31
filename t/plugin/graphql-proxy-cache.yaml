@@ -12,13 +12,6 @@ sources:
     commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
     file: t/plugin/graphql-proxy-cache/memory.t
     tests: 15
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/graphql-proxy-cache/memory.t
-    tests: 1
-    test_numbers: [16]
-    regression_only: true
-
 cases:
   - name: disk-default-zone-accepts-route-test-1
     source: {file: t/plugin/graphql-proxy-cache/disk.t, tests: [1]}
@@ -679,7 +672,6 @@ cases:
       - name: route-b-second-request-hits
         input: {method: POST, path: /graphql-b, headers: {Content-Type: application/json}, body: '{"query":"{ hello }"}'}
         output: {status: 200, headers: {Apisix-Cache-Status: {equals: HIT}}}
-
   - name: memory-host-identities-do-not-collide-test-15
     source: {file: t/plugin/graphql-proxy-cache/memory.t, tests: [15]}
     runtime: {apisix: {proxy_cache: {zones: [{name: gql-memory-hosts, memory_size: 10m}]}}}
@@ -701,46 +693,3 @@ cases:
       - name: host-b-second-request-hits
         input: {method: POST, path: /graphql, headers: {Host: b.example.test, Content-Type: application/json}, body: '{"query":"{ hello }"}'}
         output: {status: 200, headers: {Apisix-Cache-Status: {equals: HIT}}}
-
-  - name: memory-vary-variants-are-purged-together-test-16
-    source: {file: t/plugin/graphql-proxy-cache/memory.t, tests: [16]}
-    runtime: {plugins: [graphql-proxy-cache, prometheus], apisix: {proxy_cache: {zones: [{name: gql-memory-vary, memory_size: 10m}]}}}
-    config:
-      routes:
-        - {id: gql-vary-route, uri: /graphql, plugins: {graphql-proxy-cache: {cache_strategy: memory, cache_zone: gql-memory-vary, cache_ttl: 60}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}
-    fixtures:
-      - name: origin
-        kind: http
-        expect_requests: 4
-        expect:
-          - {path: {equals: /graphql}, headers: {X-Variant: {equals: a}}}
-          - {path: {equals: /graphql}, headers: {X-Variant: {equals: b}}}
-          - {path: {equals: /graphql}, headers: {X-Variant: {equals: a}}}
-          - {path: {equals: /graphql}, headers: {X-Variant: {equals: b}}}
-        respond:
-          - {status: 200, headers: {Vary: X-Variant}, body: '{"data":{"variant":"a1"}}'}
-          - {status: 200, headers: {Vary: X-Variant}, body: '{"data":{"variant":"b1"}}'}
-          - {status: 200, headers: {Vary: X-Variant}, body: '{"data":{"variant":"a2"}}'}
-          - {status: 200, headers: {Vary: X-Variant}, body: '{"data":{"variant":"b2"}}'}
-    steps:
-      - name: variant-a-first-request-misses-and-captures-base-key
-        input: {method: POST, path: /graphql, headers: {X-Variant: a, Content-Type: application/json}, body: '{"query":"{ hello }"}'}
-        output: {status: 200, body: {equals: '{"data":{"variant":"a1"}}'}, headers: {Apisix-Cache-Status: {equals: MISS}, Vary: {equals: X-Variant}}, captures: {vary_key: {header: APISIX-Cache-Key, matches: '^(.+)$'}}}
-      - name: variant-a-second-request-hits-own-entry
-        input: {method: POST, path: /graphql, headers: {X-Variant: a, Content-Type: application/json}, body: '{"query":"{ hello }"}'}
-        output: {status: 200, body: {equals: '{"data":{"variant":"a1"}}'}, headers: {Apisix-Cache-Status: {equals: HIT}}}
-      - name: variant-b-first-request-misses-separately
-        input: {method: POST, path: /graphql, headers: {X-Variant: b, Content-Type: application/json}, body: '{"query":"{ hello }"}'}
-        output: {status: 200, body: {equals: '{"data":{"variant":"b1"}}'}, headers: {Apisix-Cache-Status: {equals: MISS}}}
-      - name: variant-b-second-request-hits-own-entry
-        input: {method: POST, path: /graphql, headers: {X-Variant: b, Content-Type: application/json}, body: '{"query":"{ hello }"}'}
-        output: {status: 200, body: {equals: '{"data":{"variant":"b1"}}'}, headers: {Apisix-Cache-Status: {equals: HIT}}}
-      - name: purge-base-key-removes-every-vary-variant
-        input: {method: PURGE, path: '/apisix/plugin/graphql-proxy-cache/memory/gql-vary-route/{{CAPTURE.vary_key}}'}
-        output: {status: 200}
-      - name: variant-a-misses-after-purge
-        input: {method: POST, path: /graphql, headers: {X-Variant: a, Content-Type: application/json}, body: '{"query":"{ hello }"}'}
-        output: {status: 200, body: {equals: '{"data":{"variant":"a2"}}'}, headers: {Apisix-Cache-Status: {equals: MISS}}}
-      - name: variant-b-misses-after-purge
-        input: {method: POST, path: /graphql, headers: {X-Variant: b, Content-Type: application/json}, body: '{"query":"{ hello }"}'}
-        output: {status: 200, body: {equals: '{"data":{"variant":"b2"}}'}, headers: {Apisix-Cache-Status: {equals: MISS}}}

@@ -18,6 +18,8 @@ var manifestTargetPluginGroups = map[string][]string{
 	"ai-proxy": {"ai-proxy-multi"},
 }
 
+const pinnedAPISIX317Commit = "9ef2ecab67f652d38365049613610ef649bb4ad0"
+
 func manifestYAMLFiles() ([]string, error) {
 	return filepath.Glob("*.yaml")
 }
@@ -35,8 +37,20 @@ func TestManifestCorpusValidates(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read %s: %v", file, err)
 		}
-		if _, err := loadManifest(file, data); err != nil {
+		manifest, err := loadManifest(file, data)
+		if err != nil {
 			t.Fatalf("load %s: %v", file, err)
+		}
+		for _, source := range manifestSources(manifest) {
+			if source.Commit != pinnedAPISIX317Commit {
+				t.Errorf(
+					"%s source %q commit = %q, want APISIX 3.17.0 %s",
+					file,
+					source.File,
+					source.Commit,
+					pinnedAPISIX317Commit,
+				)
+			}
 		}
 	}
 }

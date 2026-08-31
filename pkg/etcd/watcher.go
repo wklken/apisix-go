@@ -89,16 +89,6 @@ type ClientOptions struct {
 	TLS                 *tls.Config
 }
 
-func NewConfigClient(
-	endpoints []string,
-	username string,
-	password string,
-	prefix string,
-	applier generation.DesiredApplier,
-) (*ConfigClient, error) {
-	return NewConfigClientWithOptions(endpoints, username, password, prefix, applier, ClientOptions{})
-}
-
 func NewConfigClientWithOptions(
 	endpoints []string,
 	username string,

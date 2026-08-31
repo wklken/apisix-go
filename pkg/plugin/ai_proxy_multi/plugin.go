@@ -71,7 +71,6 @@ type Plugin struct {
 	stoppedHealth   atomic.Bool
 	wakeHealth      chan struct{}
 	snapshot        atomic.Pointer[healthSnapshot]
-	probeForTest    func(context.Context, int) healthProbeResult
 
 	streamOutcomeRecorded func()
 }

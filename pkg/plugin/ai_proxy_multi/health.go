@@ -484,9 +484,7 @@ func (p *Plugin) refreshHealthPass(ctx context.Context) bool {
 							marker.result = healthProbeResult{err: errHealthProbePanicked}
 						}
 					}()
-					if p.probeForTest != nil {
-						marker.result = p.probeForTest(passCtx, probe.index)
-					} else if probe.node != nil {
+					if probe.node != nil {
 						marker.result = p.probeResolvedNode(passCtx, probe.index, probe.node)
 					} else {
 						marker.result = p.probeInstance(passCtx, probe.index)

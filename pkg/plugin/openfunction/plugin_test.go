@@ -336,7 +336,7 @@ func TestOpenFunctionGenerationsDoNotShareAuthorizationOrRetirement(t *testing.T
 	}
 }
 
-func TestOpenFunctionScopedProcessAndStopDoNotRaceCredentialUse(t *testing.T) {
+func TestOpenFunctionScopedTokenUseAndStopDoNotRace(t *testing.T) {
 	const raw = "$ENV://OPENFUNCTION_CONCURRENT_SCOPED"
 	broker := &openFunctionScopedBroker{values: map[string]string{raw: "scoped-concurrent-token"}}
 	secrets, materialization, scope := registerOpenFunctionScopedRoute(t, broker, raw)
@@ -354,23 +354,21 @@ func TestOpenFunctionScopedProcessAndStopDoNotRaceCredentialUse(t *testing.T) {
 	}
 
 	requestStarted := make(chan struct{})
-	stopStarted := make(chan struct{})
 	allowRequest := make(chan struct{})
-	var stopEvent sync.Once
-	p.testLifecycleHook = func(event string) {
-		switch event {
-		case lifecycleBeforeAuthorizationUse:
+	type tokenResult struct {
+		value string
+		err   error
+	}
+	requestDone := make(chan tokenResult, 1)
+	go func() {
+		var result tokenResult
+		result.err = p.useServiceToken(func(value string) error {
 			close(requestStarted)
 			<-allowRequest
-		case lifecycleAfterUpstreamStop:
-			stopEvent.Do(func() { close(stopStarted) })
-		}
-	}
-	requestDone := make(chan *http.Request, 1)
-	go func() {
-		req := httptest.NewRequest(http.MethodGet, "http://example.com/openfunction", nil)
-		p.processRequest(req, function_upstream.Config{})
-		requestDone <- req
+			result.value = value
+			return nil
+		})
+		requestDone <- result
 	}()
 	select {
 	case <-requestStarted:
@@ -382,10 +380,13 @@ func TestOpenFunctionScopedProcessAndStopDoNotRaceCredentialUse(t *testing.T) {
 		p.Stop()
 		close(stopDone)
 	}()
-	select {
-	case <-stopStarted:
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for Stop to begin")
+	deadline := time.Now().Add(time.Second)
+	for p.serviceTokenMu.TryRLock() {
+		p.serviceTokenMu.RUnlock()
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for Stop to wait on the service-token write gate")
+		}
+		time.Sleep(time.Millisecond)
 	}
 	select {
 	case <-stopDone:
@@ -393,9 +394,9 @@ func TestOpenFunctionScopedProcessAndStopDoNotRaceCredentialUse(t *testing.T) {
 	default:
 	}
 	close(allowRequest)
-	var req *http.Request
+	var result tokenResult
 	select {
-	case req = <-requestDone:
+	case result = <-requestDone:
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for scoped request")
 	}
@@ -404,8 +405,8 @@ func TestOpenFunctionScopedProcessAndStopDoNotRaceCredentialUse(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for scoped Stop")
 	}
-	if got := req.Header.Get("Authorization"); got != "Basic c2NvcGVkLWNvbmN1cnJlbnQtdG9rZW4=" {
-		t.Fatalf("scoped Authorization = %q, want request credential", got)
+	if result.err != nil || result.value != "scoped-concurrent-token" {
+		t.Fatalf("scoped token use = (%q, %v), want admitted request credential", result.value, result.err)
 	}
 	p.Stop()
 	retired := httptest.NewRequest(http.MethodGet, "http://example.com/openfunction", nil)
@@ -415,7 +416,7 @@ func TestOpenFunctionScopedProcessAndStopDoNotRaceCredentialUse(t *testing.T) {
 	}
 }
 
-func TestOpenFunctionLegacyProcessAndStopDoNotRaceCredentialUse(t *testing.T) {
+func TestOpenFunctionLiteralTokenUseAndStopDoNotRace(t *testing.T) {
 	p := &Plugin{config: Config{
 		FunctionURI:   "http://function.invalid",
 		Authorization: &Authorization{ServiceToken: "legacy-concurrent-token"},
@@ -436,23 +437,21 @@ func TestOpenFunctionLegacyProcessAndStopDoNotRaceCredentialUse(t *testing.T) {
 	}
 
 	requestStarted := make(chan struct{})
-	stopStarted := make(chan struct{})
 	allowRequest := make(chan struct{})
-	var stopEvent sync.Once
-	p.testLifecycleHook = func(event string) {
-		switch event {
-		case lifecycleBeforeAuthorizationUse:
+	type tokenResult struct {
+		value string
+		err   error
+	}
+	requestDone := make(chan tokenResult, 1)
+	go func() {
+		var result tokenResult
+		result.err = p.useServiceToken(func(value string) error {
 			close(requestStarted)
 			<-allowRequest
-		case lifecycleAfterUpstreamStop:
-			stopEvent.Do(func() { close(stopStarted) })
-		}
-	}
-	requestDone := make(chan *http.Request, 1)
-	go func() {
-		req := httptest.NewRequest(http.MethodGet, "http://example.com/openfunction", nil)
-		p.processRequest(req, function_upstream.Config{})
-		requestDone <- req
+			result.value = value
+			return nil
+		})
+		requestDone <- result
 	}()
 	select {
 	case <-requestStarted:
@@ -464,10 +463,13 @@ func TestOpenFunctionLegacyProcessAndStopDoNotRaceCredentialUse(t *testing.T) {
 		p.Stop()
 		close(stopDone)
 	}()
-	select {
-	case <-stopStarted:
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for Stop to begin")
+	deadline := time.Now().Add(time.Second)
+	for p.serviceTokenMu.TryRLock() {
+		p.serviceTokenMu.RUnlock()
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for Stop to wait on the service-token write gate")
+		}
+		time.Sleep(time.Millisecond)
 	}
 	select {
 	case <-stopDone:
@@ -475,9 +477,9 @@ func TestOpenFunctionLegacyProcessAndStopDoNotRaceCredentialUse(t *testing.T) {
 	default:
 	}
 	close(allowRequest)
-	var req *http.Request
+	var result tokenResult
 	select {
-	case req = <-requestDone:
+	case result = <-requestDone:
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for legacy request")
 	}
@@ -486,8 +488,8 @@ func TestOpenFunctionLegacyProcessAndStopDoNotRaceCredentialUse(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for legacy Stop")
 	}
-	if got := req.Header.Get("Authorization"); got != "Basic bGVnYWN5LWNvbmN1cnJlbnQtdG9rZW4=" {
-		t.Fatalf("legacy Authorization = %q, want request credential", got)
+	if result.err != nil || result.value != "legacy-concurrent-token" {
+		t.Fatalf("literal token use = (%q, %v), want admitted request credential", result.value, result.err)
 	}
 	p.Stop()
 	retired := httptest.NewRequest(http.MethodGet, "http://example.com/openfunction", nil)

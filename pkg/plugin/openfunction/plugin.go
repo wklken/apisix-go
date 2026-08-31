@@ -19,18 +19,11 @@ type Plugin struct {
 	serviceTokenMu  sync.RWMutex
 	serviceToken    secret.Value
 	serviceTokenSet bool
-
-	// testLifecycleHook is a package-local synchronization seam for lifecycle
-	// tests; it is nil in production.
-	testLifecycleHook func(string)
 }
 
 const (
 	priority = -1902
 	name     = "openfunction"
-
-	lifecycleBeforeAuthorizationUse = "before-authorization-use"
-	lifecycleAfterUpstreamStop      = "after-upstream-stop"
 )
 
 const schema = `
@@ -152,33 +145,31 @@ func (p *Plugin) MaterializeScopedSecrets(
 }
 
 func (p *Plugin) processRequest(r *http.Request, _ function_upstream.Config) {
+	_ = p.useServiceToken(func(value string) error {
+		if value != "" {
+			r.Header.Set(
+				"Authorization",
+				"Basic "+base64.StdEncoding.EncodeToString([]byte(value)),
+			)
+		}
+		return nil
+	})
+}
+
+func (p *Plugin) useServiceToken(use func(string) error) error {
 	p.serviceTokenMu.RLock()
 	defer p.serviceTokenMu.RUnlock()
 
-	if p.serviceTokenSet {
-		if hook := p.testLifecycleHook; hook != nil {
-			hook(lifecycleBeforeAuthorizationUse)
-		}
-		_ = p.serviceToken.Use(func(value string) error {
-			if value != "" {
-				r.Header.Set(
-					"Authorization",
-					"Basic "+base64.StdEncoding.EncodeToString([]byte(value)),
-				)
-			}
-			return nil
-		})
-		return
+	if use == nil || !p.serviceTokenSet {
+		return secret.ErrCredentialUnavailable
 	}
+	return p.serviceToken.Use(use)
 }
 
 func (p *Plugin) Stop() {
 	// Release the shared upstream client before releasing credentials that may
 	// still be needed by in-flight request processors.
 	p.Plugin.Stop()
-	if hook := p.testLifecycleHook; hook != nil {
-		hook(lifecycleAfterUpstreamStop)
-	}
 
 	p.serviceTokenMu.Lock()
 	defer p.serviceTokenMu.Unlock()

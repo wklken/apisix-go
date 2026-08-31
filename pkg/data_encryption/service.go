@@ -3,7 +3,6 @@ package data_encryption
 import (
 	"errors"
 	"fmt"
-	"slices"
 
 	"github.com/wklken/apisix-go/pkg/capability"
 )
@@ -54,14 +53,6 @@ func (s Service) DeclarationDigest() [32]byte {
 		return [32]byte{}
 	}
 	return s.catalog.Digest()
-}
-
-// SameConfiguration reports whether two services have identical runtime
-// semantics. Keyring order is significant because the first key encrypts new
-// values and the complete order controls rotation reads.
-func (s Service) SameConfiguration(other Service) bool {
-	return s.enabled == other.enabled && slices.Equal(s.keyring, other.keyring) &&
-		s.DeclarationDigest() == other.DeclarationDigest()
 }
 
 func (s Service) ValidateDeclaration(

@@ -141,10 +141,10 @@ func TestUnresolvedDomainIsNotProbedThroughSystemResolver(t *testing.T) {
 	p.publishResolvedNodeSnapshotLocked()
 	p.initHealthStates()
 	var probes atomic.Int32
-	p.probeForTest = func(context.Context, int) healthProbeResult {
+	p.healthClients[0].Transport = multiStreamRoundTripFunc(func(request *http.Request) (*http.Response, error) {
 		probes.Add(1)
-		return healthProbeResult{status: http.StatusOK}
-	}
+		return healthProbeHTTPResponse(request, http.StatusOK), nil
+	})
 	t.Cleanup(func() {
 		stopTestRegistry(t, tasks)
 		p.Stop()
@@ -306,14 +306,14 @@ func TestResolvedHealthPassUsesBoundedWorkerTasks(t *testing.T) {
 	p.initHealthStates()
 	release := make(chan struct{})
 	var releaseOnce sync.Once
-	p.probeForTest = func(ctx context.Context, _ int) healthProbeResult {
+	setResolvedNodeHealthTransport(p, multiStreamRoundTripFunc(func(request *http.Request) (*http.Response, error) {
 		select {
 		case <-release:
-			return healthProbeResult{status: http.StatusOK}
-		case <-ctx.Done():
-			return healthProbeResult{err: ctx.Err()}
+			return healthProbeHTTPResponse(request, http.StatusOK), nil
+		case <-request.Context().Done():
+			return nil, request.Context().Err()
 		}
-	}
+	}))
 	done := make(chan bool, 1)
 	finished := false
 	go func() { done <- p.refreshHealthPass(context.Background()) }()
@@ -791,7 +791,7 @@ func TestResolvedHealthProbesRespectInstanceConcurrency(t *testing.T) {
 	})
 	var active, maximum atomic.Int32
 	release := make(chan struct{})
-	p.probeForTest = func(ctx context.Context, _ int) healthProbeResult {
+	setResolvedNodeHealthTransport(p, multiStreamRoundTripFunc(func(request *http.Request) (*http.Response, error) {
 		current := active.Add(1)
 		defer active.Add(-1)
 		for {
@@ -802,11 +802,11 @@ func TestResolvedHealthProbesRespectInstanceConcurrency(t *testing.T) {
 		}
 		select {
 		case <-release:
-			return healthProbeResult{status: http.StatusOK}
-		case <-ctx.Done():
-			return healthProbeResult{err: ctx.Err()}
+			return healthProbeHTTPResponse(request, http.StatusOK), nil
+		case <-request.Context().Done():
+			return nil, request.Context().Err()
 		}
-	}
+	}))
 	done := make(chan bool, 1)
 	go func() { done <- p.refreshHealthPass(context.Background()) }()
 	deadline := time.Now().Add(2 * time.Second)
@@ -839,7 +839,7 @@ func TestResolvedHealthProbePanicReleasesInstanceSlotAndNextPassContinues(t *tes
 	})
 	var calls atomic.Int32
 	secondStarted := make(chan struct{})
-	p.probeForTest = func(context.Context, int) healthProbeResult {
+	setResolvedNodeHealthTransport(p, multiStreamRoundTripFunc(func(request *http.Request) (*http.Response, error) {
 		call := calls.Add(1)
 		if call == 1 {
 			panic("test probe panic")
@@ -847,8 +847,8 @@ func TestResolvedHealthProbePanicReleasesInstanceSlotAndNextPassContinues(t *tes
 		if call == 2 {
 			close(secondStarted)
 		}
-		return healthProbeResult{status: http.StatusOK}
-	}
+		return healthProbeHTTPResponse(request, http.StatusOK), nil
+	}))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan bool, 1)
@@ -893,11 +893,11 @@ func TestResolvedHealthProbeWaitersExitOnContextCancellation(t *testing.T) {
 	})
 	var started sync.Once
 	probeStarted := make(chan struct{})
-	p.probeForTest = func(ctx context.Context, _ int) healthProbeResult {
+	setResolvedNodeHealthTransport(p, multiStreamRoundTripFunc(func(request *http.Request) (*http.Response, error) {
 		started.Do(func() { close(probeStarted) })
-		<-ctx.Done()
-		return healthProbeResult{err: ctx.Err()}
-	}
+		<-request.Context().Done()
+		return nil, request.Context().Err()
+	}))
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan bool, 1)
 	go func() { done <- p.refreshHealthPass(ctx) }()
@@ -914,6 +914,14 @@ func TestResolvedHealthProbeWaitersExitOnContextCancellation(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("probe waiters did not exit after owner context cancellation")
+	}
+}
+
+func setResolvedNodeHealthTransport(p *Plugin, transport http.RoundTripper) {
+	for index := range p.config.Instances {
+		for _, node := range p.resolvedNodes(index) {
+			node.healthClient.Transport = transport
+		}
 	}
 }
 

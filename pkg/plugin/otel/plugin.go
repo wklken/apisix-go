@@ -31,9 +31,8 @@ import (
 
 const (
 	// version  = "0.1"
-	priority  = 12009
-	name      = "opentelemetry"
-	aliasName = "otel"
+	priority = 12009
+	name     = "opentelemetry"
 )
 
 const schema = `
@@ -245,9 +244,7 @@ func (p *Plugin) PostInit() error {
 	if p.config.Sampler.Options.Root.Name == "" {
 		p.config.Sampler.Options.Root.Name = "always_off"
 	}
-	metadata, configured, err := loadEnabledMetadata(
-		p.MetadataView(), effective.Config.PluginAttr, effective.Config.Plugins,
-	)
+	metadata, configured, err := loadMetadata(p.MetadataView(), effective.Config.PluginAttr)
 	if err != nil {
 		return err
 	}

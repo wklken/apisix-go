@@ -588,7 +588,7 @@ func TestLoadMetadataRetainsRuntimeJSONNumbersInResourceAttributes(t *testing.T)
 	}
 }
 
-func TestLoadMetadataPrecedenceAndAliases(t *testing.T) {
+func TestLoadMetadataPrecedence(t *testing.T) {
 	attr := func(traceSource, address string) map[string]any {
 		return map[string]any{
 			"trace_id_source": traceSource,
@@ -638,49 +638,9 @@ func TestLoadMetadataPrecedenceAndAliases(t *testing.T) {
 			wantHeader:     "attr-canonical",
 		},
 		{
-			name:           "alias attr",
-			pluginAttr:     map[string]map[string]any{"otel": attr("attr-alias", "attr-alias:4318")},
-			wantSource:     "attr-alias",
-			wantAddress:    "attr-alias:4318",
-			wantTimeout:    7,
-			wantConfigured: true,
-			wantResource:   "attr-alias",
-			wantHeader:     "attr-alias",
-		},
-		{
-			name: "canonical attr wins over alias attr",
-			pluginAttr: map[string]map[string]any{
-				name:   attr("attr-canonical", "attr-canonical:4318"),
-				"otel": attr("attr-alias", "attr-alias:4318"),
-			},
-			wantSource:     "attr-canonical",
-			wantAddress:    "attr-canonical:4318",
-			wantTimeout:    7,
-			wantConfigured: true,
-			wantResource:   "attr-canonical",
-			wantHeader:     "attr-canonical",
-		},
-		{
-			name:           "alias metadata wins over canonical attr",
-			view:           map[string]string{"otel": metadataDocument("metadata-alias", "metadata-alias:4318")},
+			name:           "canonical metadata wins over canonical attr",
+			view:           map[string]string{name: metadataDocument("metadata-canonical", "metadata-canonical:4318")},
 			pluginAttr:     map[string]map[string]any{name: attr("attr-canonical", "attr-canonical:4318")},
-			wantSource:     "metadata-alias",
-			wantAddress:    "metadata-alias:4318",
-			wantTimeout:    9,
-			wantConfigured: true,
-			wantResource:   "metadata-alias",
-			wantHeader:     "metadata-alias",
-		},
-		{
-			name: "canonical metadata wins over alias metadata",
-			view: map[string]string{
-				"otel": metadataDocument("metadata-alias", "metadata-alias:4318"),
-				name:   metadataDocument("metadata-canonical", "metadata-canonical:4318"),
-			},
-			pluginAttr: map[string]map[string]any{
-				name:   attr("attr-canonical", "attr-canonical:4318"),
-				"otel": attr("attr-alias", "attr-alias:4318"),
-			},
 			wantSource:     "metadata-canonical",
 			wantAddress:    "metadata-canonical:4318",
 			wantTimeout:    9,
@@ -691,7 +651,7 @@ func TestLoadMetadataPrecedenceAndAliases(t *testing.T) {
 		{
 			name: "metadata replaces rather than merges attrs",
 			view: map[string]string{
-				"otel": `{"trace_id_source":"metadata-only"}`,
+				name: `{"trace_id_source":"metadata-only"}`,
 			},
 			pluginAttr:     map[string]map[string]any{name: attr("attr-canonical", "attr-canonical:4318")},
 			wantSource:     "metadata-only",
@@ -742,7 +702,7 @@ func TestLoadMetadataPrecedenceAndAliases(t *testing.T) {
 	)
 	if _, _, err := loadMetadata(
 		canonicalInvalid,
-		map[string]map[string]any{"otel": attr("alias", "alias:4318")},
+		map[string]map[string]any{name: attr("fallback", "fallback:4318")},
 	); err == nil {
 		t.Fatal("loadMetadata() error = nil for invalid canonical metadata")
 	}
@@ -752,15 +712,8 @@ func TestLoadMetadataPrecedenceAndAliases(t *testing.T) {
 		pluginAttr map[string]map[string]any
 	}{
 		{
-			name: "canonical nil blocks alias",
-			pluginAttr: map[string]map[string]any{
-				name:   nil,
-				"otel": attr("alias", "alias:4318"),
-			},
-		},
-		{
-			name:       "alias nil blocks defaults",
-			pluginAttr: map[string]map[string]any{"otel": nil},
+			name:       "canonical nil blocks defaults",
+			pluginAttr: map[string]map[string]any{name: nil},
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -773,70 +726,6 @@ func TestLoadMetadataPrecedenceAndAliases(t *testing.T) {
 				metadata.Collector.RequestHeaders != nil || metadata.SetNgxVar ||
 				metadata.BatchSpanProcessor != (BatchSpanProcessorConfig{}) {
 				t.Fatalf("loadMetadata() = (%#v, %v, %v), want fail-closed zero metadata", metadata, configured, err)
-			}
-		})
-	}
-}
-
-func TestPostInitPluginAttributeAliasFollowsAllowlistIdentity(t *testing.T) {
-	for _, test := range []struct {
-		name       string
-		plugins    []string
-		wantSource string
-		wantAddr   string
-	}{
-		{
-			name:       "alias-only allowlist uses alias attributes",
-			plugins:    []string{aliasName},
-			wantSource: "random",
-			wantAddr:   "127.0.0.1:24318",
-		},
-		{
-			name:       "canonical-only allowlist uses canonical attributes",
-			plugins:    []string{name},
-			wantSource: "x-request-id",
-			wantAddr:   "127.0.0.1:4318",
-		},
-		{
-			name:       "canonical keeps priority when both names are allowed",
-			plugins:    []string{aliasName, name},
-			wantSource: "x-request-id",
-			wantAddr:   "127.0.0.1:4318",
-		},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			effective := &config.EffectiveConfig{Config: config.Config{
-				Plugins: test.plugins,
-				PluginAttr: map[string]map[string]any{
-					name: {
-						"trace_id_source": "x-request-id",
-						"collector":       map[string]any{"address": "127.0.0.1:4318"},
-					},
-					aliasName: {
-						"trace_id_source": "random",
-						"collector":       map[string]any{"address": "127.0.0.1:24318"},
-					},
-				},
-			}}
-
-			p := &Plugin{}
-			p.SetDependencies(base.Dependencies{Config: effective})
-			if err := p.Init(); err != nil {
-				t.Fatalf("Init() error = %v", err)
-			}
-			if err := p.PostInit(); err != nil {
-				t.Fatalf("PostInit() error = %v", err)
-			}
-			t.Cleanup(p.Stop)
-
-			if p.metadata.TraceIDSource != test.wantSource || p.metadata.Collector.Address != test.wantAddr {
-				t.Fatalf(
-					"metadata source/address = %q/%q, want %q/%q",
-					p.metadata.TraceIDSource,
-					p.metadata.Collector.Address,
-					test.wantSource,
-					test.wantAddr,
-				)
 			}
 		})
 	}

@@ -854,14 +854,6 @@ var pluginRegistry = map[string]registration{
 		conditionalTerminal: false,
 		domain:              DomainHTTP,
 	},
-	"otel": {
-		create:              func() Plugin { return &otel.Plugin{} },
-		phases:              phaseRewrite | phaseFinalizer,
-		scopes:              scopeGlobal | scopeRoute | scopeConsumer,
-		instanceScope:       InstanceEffectiveConfig,
-		conditionalTerminal: false,
-		domain:              DomainHTTP,
-	},
 	"prometheus": {
 		create:              func() Plugin { return &prometheus.Plugin{} },
 		phases:              phaseLog,

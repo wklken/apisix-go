@@ -9,12 +9,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
 
-// pluginNameAliases maps registry keys to the plugin names they register,
-// which differ for historical compatibility.
-var pluginNameAliases = map[string]string{
-	"otel": "opentelemetry",
-}
-
 func TestNewConstructsEveryRegisteredPlugin(t *testing.T) {
 	for name, registered := range pluginRegistry {
 		t.Run(name, func(t *testing.T) {
@@ -25,19 +19,15 @@ func TestNewConstructsEveryRegisteredPlugin(t *testing.T) {
 			if err := plugin.Init(); err != nil {
 				t.Fatalf("Init() error = %v", err)
 			}
-			want := name
-			if renamed, ok := pluginNameAliases[name]; ok {
-				want = renamed
-			}
-			if got := plugin.GetName(); got != want {
-				t.Fatalf("GetName() = %q, want %q", got, want)
+			if got := plugin.GetName(); got != name {
+				t.Fatalf("GetName() = %q, want %q", got, name)
 			}
 		})
 	}
 }
 
 func TestNewRejectsUnknownNames(t *testing.T) {
-	for _, name := range []string{"", "unknown-plugin", "unknown-plugin-misspelled"} {
+	for _, name := range []string{"", "otel", "unknown-plugin", "unknown-plugin-misspelled"} {
 		if got := New(name, base.Dependencies{}); got != nil {
 			t.Fatalf("New(%q) = %v, want nil", name, got)
 		}
@@ -98,21 +88,16 @@ func TestNewReturnsRegisteredPlugin(t *testing.T) {
 	}
 }
 
-func TestNewPreservesHistoricalFactoryAliases(t *testing.T) {
-	for factory, wantName := range map[string]string{
-		"otel":          "opentelemetry",
-		"opentelemetry": "opentelemetry",
-	} {
-		plugin := New(factory, base.Dependencies{})
-		if plugin == nil {
-			t.Fatalf("New(%q) = nil, want registered alias", factory)
-		}
-		if err := plugin.Init(); err != nil {
-			t.Fatalf("New(%q).Init() error = %v", factory, err)
-		}
-		if got := plugin.GetName(); got != wantName {
-			t.Fatalf("New(%q).GetName() = %q, want %q", factory, got, wantName)
-		}
+func TestNewPreservesCanonicalOpenTelemetryFactory(t *testing.T) {
+	plugin := New("opentelemetry", base.Dependencies{})
+	if plugin == nil {
+		t.Fatal("New(\"opentelemetry\") = nil, want registered factory")
+	}
+	if err := plugin.Init(); err != nil {
+		t.Fatalf("New(\"opentelemetry\").Init() error = %v", err)
+	}
+	if got := plugin.GetName(); got != "opentelemetry" {
+		t.Fatalf("New(\"opentelemetry\").GetName() = %q, want opentelemetry", got)
 	}
 }
 

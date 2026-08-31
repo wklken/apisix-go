@@ -172,12 +172,8 @@ func TestRegistryMatchesPluginOwnedRuntimeFacts(t *testing.T) {
 		if err := instance.Init(); err != nil {
 			t.Fatalf("%s Init: %v", key, err)
 		}
-		wantName := key
-		if alias, ok := pluginNameAliases[key]; ok {
-			wantName = alias
-		}
-		if instance.GetName() != wantName {
-			t.Fatalf("%s implementation name = %q, want %q", key, instance.GetName(), wantName)
+		if instance.GetName() != key {
+			t.Fatalf("%s implementation name = %q, want %q", key, instance.GetName(), key)
 		}
 
 		descriptor, err := DescriptorForFactory(key)

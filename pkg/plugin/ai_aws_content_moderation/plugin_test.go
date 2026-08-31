@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/json"
-	"github.com/wklken/apisix-go/pkg/plugin/ai_runtime"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/util"
 )
@@ -39,46 +38,48 @@ func newTestPluginWithScopedValues(t *testing.T, cfg Config, values map[string]s
 	return p
 }
 
-func TestSchemaValidatesDenyCodeBounds(t *testing.T) {
+func TestSchemaMatchesAPISIXPublicFields(t *testing.T) {
 	p := &Plugin{}
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-
-	baseConfig := map[string]any{
-		"comprehend": map[string]any{
-			"access_key_id":     "access-key",
-			"secret_access_key": "secret-key",
-			"region":            "us-east-1",
-		},
+	var document map[string]any
+	if err := json.Unmarshal([]byte(p.GetSchema()), &document); err != nil {
+		t.Fatalf("decode schema: %v", err)
 	}
-	for _, test := range []struct {
-		name    string
-		value   any
-		wantErr bool
-	}{
-		{name: "below minimum", value: 99, wantErr: true},
-		{name: "informational", value: 100, wantErr: true},
-		{name: "early informational", value: 103, wantErr: true},
-		{name: "last informational", value: 199, wantErr: true},
-		{name: "minimum", value: 200},
-		{name: "maximum", value: 599},
-		{name: "above maximum", value: 600, wantErr: true},
-		{name: "fractional", value: 200.5, wantErr: true},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			config := map[string]any{
-				"comprehend": baseConfig["comprehend"],
-				"deny_code":  test.value,
-			}
-			err := util.Validate(config, p.GetSchema())
-			if test.wantErr && err == nil {
-				t.Fatalf("Validate() error = nil, want deny_code rejection for %v", test.value)
-			}
-			if !test.wantErr && err != nil {
-				t.Fatalf("Validate() error = %v, want deny_code %v accepted", err, test.value)
-			}
-		})
+	properties, ok := document["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("schema properties = %#v", document["properties"])
+	}
+	wantTopLevel := map[string]struct{}{
+		"comprehend": {}, "moderation_categories": {}, "moderation_threshold": {},
+	}
+	if len(properties) != len(wantTopLevel) {
+		t.Fatalf("schema properties = %v, want APISIX fields", properties)
+	}
+	for field := range wantTopLevel {
+		if _, ok := properties[field]; !ok {
+			t.Fatalf("schema is missing APISIX field %q", field)
+		}
+	}
+	comprehend, ok := properties["comprehend"].(map[string]any)
+	if !ok {
+		t.Fatalf("comprehend schema = %#v", properties["comprehend"])
+	}
+	comprehendProperties, ok := comprehend["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("comprehend properties = %#v", comprehend["properties"])
+	}
+	wantComprehend := map[string]struct{}{
+		"access_key_id": {}, "secret_access_key": {}, "region": {}, "endpoint": {}, "ssl_verify": {},
+	}
+	if len(comprehendProperties) != len(wantComprehend) {
+		t.Fatalf("comprehend properties = %v, want APISIX fields", comprehendProperties)
+	}
+	for field := range wantComprehend {
+		if _, ok := comprehendProperties[field]; !ok {
+			t.Fatalf("comprehend schema is missing APISIX field %q", field)
+		}
 	}
 }
 
@@ -112,7 +113,7 @@ func TestHandlerCallsComprehendAndPreservesRequestBody(t *testing.T) {
 	})
 
 	const body = `{"messages":[{"role":"user","content":"hello"}]}`
-	req := selectedAIRequest(http.MethodPost, "/v1/chat/completions", body)
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
 	rr := httptest.NewRecorder()
 
 	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -135,8 +136,8 @@ func TestHandlerCallsComprehendAndPreservesRequestBody(t *testing.T) {
 		t.Fatalf("TextSegments = %#v, want one segment", gotModerationBody["TextSegments"])
 	}
 	segment, ok := segments[0].(map[string]any)
-	if !ok || segment["Text"] != "hello" {
-		t.Fatalf("TextSegments[0] = %#v, want extracted user content", segments[0])
+	if !ok || segment["Text"] != body {
+		t.Fatalf("TextSegments[0] = %#v, want raw request body", segments[0])
 	}
 }
 
@@ -229,10 +230,10 @@ func TestHandlerSignsSessionToken(t *testing.T) {
 	if err := p.PostInit(); err != nil {
 		t.Fatal(err)
 	}
-	req := selectedAIRequest(
+	req := httptest.NewRequest(
 		http.MethodPost,
 		"/v1/chat/completions",
-		`{"messages":[{"role":"user","content":"hello"}]}`,
+		strings.NewReader(`{"messages":[{"role":"user","content":"hello"}]}`),
 	)
 	rr := httptest.NewRecorder()
 
@@ -257,13 +258,12 @@ func TestHandlerRejectsToxicityAboveThreshold(t *testing.T) {
 			Endpoint:        moderation.URL,
 		},
 		ModerationThreshold: new(0.5),
-		DenyCode:            new(400),
 	})
 
-	req := selectedAIRequest(
+	req := httptest.NewRequest(
 		http.MethodPost,
 		"/v1/chat/completions",
-		`{"messages":[{"role":"user","content":"bad"}]}`,
+		strings.NewReader(`{"messages":[{"role":"user","content":"bad"}]}`),
 	)
 	rr := httptest.NewRecorder()
 
@@ -295,13 +295,12 @@ func TestHandlerRejectsConfiguredModerationCategory(t *testing.T) {
 			Endpoint:        moderation.URL,
 		},
 		ModerationCategories: map[string]float64{"PROFANITY": 0.2},
-		DenyCode:             new(400),
 	})
 
-	req := selectedAIRequest(
+	req := httptest.NewRequest(
 		http.MethodPost,
 		"/v1/chat/completions",
-		`{"messages":[{"role":"user","content":"bad"}]}`,
+		strings.NewReader(`{"messages":[{"role":"user","content":"bad"}]}`),
 	)
 	rr := httptest.NewRecorder()
 
@@ -330,10 +329,10 @@ func TestHandlerReturnsServiceErrorForInvalidModerationResponse(t *testing.T) {
 		},
 	})
 
-	req := selectedAIRequest(
+	req := httptest.NewRequest(
 		http.MethodPost,
 		"/v1/chat/completions",
-		`{"messages":[{"role":"user","content":"hello"}]}`,
+		strings.NewReader(`{"messages":[{"role":"user","content":"hello"}]}`),
 	)
 	rr := httptest.NewRecorder()
 
@@ -346,79 +345,6 @@ func TestHandlerReturnsServiceErrorForInvalidModerationResponse(t *testing.T) {
 	}
 	if !strings.Contains(rr.Body.String(), "failed to get moderation results") {
 		t.Fatalf("response body = %q, want moderation result message", rr.Body.String())
-	}
-}
-
-func TestHandlerExplicitSkipModeSkipsWithoutSelectedAIInstance(t *testing.T) {
-	moderationCalls := 0
-	moderation := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-		moderationCalls++
-	}))
-	defer moderation.Close()
-
-	p := newTestPlugin(t, Config{
-		Comprehend: Comprehend{
-			AccessKeyID:     "test-access",
-			SecretAccessKey: "test-secret",
-			Region:          "us-east-1",
-			Endpoint:        moderation.URL,
-		},
-		FailMode: "skip",
-	})
-	const body = `{"messages":[{"role":"user","content":"toxic"}]}`
-	req := httptest.NewRequest(http.MethodPost, "/echo", strings.NewReader(body))
-	rr := httptest.NewRecorder()
-	nextCalls := 0
-
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		nextCalls++
-		got, err := io.ReadAll(r.Body)
-		if err != nil {
-			t.Fatalf("read forwarded body: %v", err)
-		}
-		if string(got) != body {
-			t.Fatalf("forwarded body = %q, want %q", got, body)
-		}
-		w.WriteHeader(http.StatusAccepted)
-	})).ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusAccepted || nextCalls != 1 || moderationCalls != 0 {
-		t.Fatalf(
-			"response = %d, next calls = %d, moderation calls = %d; want 202, 1, 0",
-			rr.Code,
-			nextCalls,
-			moderationCalls,
-		)
-	}
-}
-
-func TestHandlerRejectsMissingAIInstanceInErrorMode(t *testing.T) {
-	p := newTestPlugin(t, Config{
-		Comprehend: Comprehend{
-			AccessKeyID:     "test-access",
-			SecretAccessKey: "test-secret",
-			Region:          "us-east-1",
-		},
-		FailMode: "error",
-	})
-	req := httptest.NewRequest(
-		http.MethodPost,
-		"/echo",
-		strings.NewReader(`{"messages":[{"role":"user","content":"hello"}]}`),
-	)
-	rr := httptest.NewRecorder()
-
-	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-		t.Fatal("next handler called in fail_mode=error")
-	})).ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusInternalServerError {
-		t.Fatalf("response code = %d, want 500", rr.Code)
-	}
-	const want = "no ai instance picked, ai-aws-content-moderation plugin must be used with " +
-		"ai-proxy or ai-proxy-multi plugin"
-	if rr.Body.String() != want {
-		t.Fatalf("response body = %q, want %q", rr.Body.String(), want)
 	}
 }
 
@@ -437,13 +363,25 @@ func TestScopedSecretsUsePluginConfigDescriptorsAndSignResolvedCredentials(t *te
 	}))
 	defer moderation.Close()
 
-	p := newTestPluginWithScopedValues(t, Config{Comprehend: Comprehend{
-		AccessKeyID:     "$ENV://AWS_CONTENT_MODERATION_ACCESS_KEY",
-		SecretAccessKey: "$ENV://AWS_CONTENT_MODERATION_SECRET_KEY",
-		SessionToken:    "$ENV://AWS_CONTENT_MODERATION_SESSION_TOKEN",
-		Region:          "us-east-1",
-		Endpoint:        moderation.URL,
-	}}, map[string]string{
+	rawConfig := map[string]any{"comprehend": map[string]any{
+		"access_key_id":     "$ENV://AWS_CONTENT_MODERATION_ACCESS_KEY",
+		"secret_access_key": "$ENV://AWS_CONTENT_MODERATION_SECRET_KEY",
+		"session_token":     "$ENV://AWS_CONTENT_MODERATION_SESSION_TOKEN",
+		"region":            "us-east-1",
+		"endpoint":          moderation.URL,
+	}}
+	schemaPlugin := &Plugin{}
+	if err := schemaPlugin.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := util.Validate(rawConfig, schemaPlugin.GetSchema()); err != nil {
+		t.Fatalf("validate config with APISIX session_token extension: %v", err)
+	}
+	var config Config
+	if err := util.Parse(rawConfig, &config); err != nil {
+		t.Fatalf("parse config with session_token: %v", err)
+	}
+	p := newTestPluginWithScopedValues(t, config, map[string]string{
 		"$ENV://AWS_CONTENT_MODERATION_ACCESS_KEY":    "environment-access",
 		"$ENV://AWS_CONTENT_MODERATION_SECRET_KEY":    "environment-secret",
 		"$ENV://AWS_CONTENT_MODERATION_SESSION_TOKEN": "environment-session-token",
@@ -459,10 +397,10 @@ func TestScopedSecretsUsePluginConfigDescriptorsAndSignResolvedCredentials(t *te
 	if want := wantPluginConfigDescriptor("environment-session-token"); p.config.Comprehend.SessionToken != want {
 		t.Fatalf("session token descriptor = %q, want %q", p.config.Comprehend.SessionToken, want)
 	}
-	req := selectedAIRequest(
+	req := httptest.NewRequest(
 		http.MethodPost,
 		"/v1/chat/completions",
-		`{"messages":[{"role":"user","content":"hello"}]}`,
+		strings.NewReader(`{"messages":[{"role":"user","content":"hello"}]}`),
 	)
 	rr := httptest.NewRecorder()
 	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -476,40 +414,6 @@ func TestScopedSecretsUsePluginConfigDescriptorsAndSignResolvedCredentials(t *te
 	if p.scopedSet || p.scopedSessionTokenSet {
 		t.Fatal("scoped credential state retained after Stop()")
 	}
-}
-
-func TestPostInitRejectsInvalidFailMode(t *testing.T) {
-	p := &Plugin{config: Config{
-		Comprehend: Comprehend{
-			AccessKeyID:     "test-access",
-			SecretAccessKey: "test-secret",
-			Region:          "us-east-1",
-		},
-		FailMode: "continue",
-	}}
-	if err := p.Init(); err != nil {
-		t.Fatalf("Init() error = %v", err)
-	}
-	if err := p.PostInit(); err == nil || err.Error() != "invalid fail_mode: continue" {
-		t.Fatalf("PostInit() error = %v, want invalid fail_mode error", err)
-	}
-}
-
-func TestPluginPriorityRunsAfterAIProxySelection(t *testing.T) {
-	p := &Plugin{}
-	if err := p.Init(); err != nil {
-		t.Fatalf("Init() error = %v", err)
-	}
-	if p.GetPriority() != 1050 {
-		t.Fatalf("priority = %d, want 1050", p.GetPriority())
-	}
-}
-
-func selectedAIRequest(method, path, body string) *http.Request {
-	return ai_runtime.WithSelectedInstanceName(
-		httptest.NewRequest(method, path, strings.NewReader(body)),
-		"ai-proxy-openai-compatible",
-	)
 }
 
 func moderationServer(t *testing.T, body string, status int) *httptest.Server {

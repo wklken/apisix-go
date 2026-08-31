@@ -18,8 +18,8 @@ lifecycle, and real protocol or logger fixtures.
 
 Cases are declarative `<plugin>.yaml` manifests. Each one must activate and
 observe its target plugin, or declare the narrow reason an intentional negative
-case does not. Source labels retained in a manifest are local traceability, not
-a repository-wide coverage ledger.
+case does not. Manifests contain only executable scenario data; upstream source
+labels and metadata are not manifest inputs or coverage accounting.
 
 When official APISIX 3.17 behavior is unclear, compare the implementation with
 the official source and tests during development. Any discovered difference

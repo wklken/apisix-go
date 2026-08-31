@@ -50,6 +50,31 @@ func newLimitedRequest(t *testing.T, body io.ReadCloser, contentLength int64) *h
 	return request
 }
 
+func TestConfiguredHTTPHandlerAllowsUnlimitedBodyWhenLimitIsZero(t *testing.T) {
+	const contentLength = 10*1024*1024 + 1
+	called := false
+	handler := newConfiguredHTTPHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		if _, err := io.ReadAll(r.Body); err != nil {
+			t.Fatalf("read unlimited request body: %v", err)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}), &config.Config{})
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(
+		response,
+		newLimitedRequest(t, io.NopCloser(strings.NewReader("body")), contentLength),
+	)
+
+	if !called {
+		t.Fatal("downstream handler was not called with unlimited request body configuration")
+	}
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", response.Code)
+	}
+}
+
 func TestRequestBodyLimitRejectsKnownOversizedContentLength(t *testing.T) {
 	body := &closeTrackingBody{Reader: strings.NewReader("abcd")}
 	nextCalled := false

@@ -32,7 +32,8 @@ type Plugin struct {
 	h2cClient *http.Client
 	// baseURL is the parsed mirror host, reused per request; requests copy
 	// it instead of reparsing the static configuration.
-	baseURL *url.URL
+	baseURL     *url.URL
+	maxBodySize int
 
 	lookupNetIP     func(context.Context, string, string) ([]netip.Addr, error)
 	resolverTimeout time.Duration
@@ -75,15 +76,6 @@ const schema = `
       "minimum": 0.00001,
       "maximum": 1,
       "default": 1
-    },
-    "max_body_size": {
-      "type": "integer",
-      "exclusiveMinimum": 0,
-      "default": 1048576
-    },
-    "keep_sensitive_headers": {
-      "type": "boolean",
-      "default": false
     }
   },
   "required": ["host"]
@@ -93,12 +85,10 @@ const schema = `
 var errProxyMirrorRequestLifecycle = errors.New("proxy-mirror request lifecycle is required")
 
 type Config struct {
-	Host                 string  `json:"host"`
-	Path                 string  `json:"path,omitempty"`
-	PathConcatMode       string  `json:"path_concat_mode,omitempty"`
-	SampleRatio          float64 `json:"sample_ratio,omitempty"`
-	MaxBodySize          int     `json:"max_body_size,omitempty"`
-	KeepSensitiveHeaders bool    `json:"keep_sensitive_headers,omitempty"`
+	Host           string  `json:"host"`
+	Path           string  `json:"path,omitempty"`
+	PathConcatMode string  `json:"path_concat_mode,omitempty"`
+	SampleRatio    float64 `json:"sample_ratio,omitempty"`
 }
 
 func (p *Plugin) Init() error {
@@ -116,8 +106,8 @@ func (p *Plugin) PostInit() error {
 	if p.config.SampleRatio == 0 {
 		p.config.SampleRatio = 1
 	}
-	if p.config.MaxBodySize <= 0 {
-		p.config.MaxBodySize = base.DefaultRequestBodyMaxBytes
+	if p.maxBodySize <= 0 {
+		p.maxBodySize = base.DefaultRequestBodyMaxBytes
 	}
 	if p.resolverTimeout <= 0 {
 		p.resolverTimeout = mirrorTimeout
@@ -244,7 +234,7 @@ func (p *Plugin) mirrorFinalizedRequest(r *http.Request) error {
 	if !p.admitMirror() {
 		return nil
 	}
-	body, err := base.ReadRequestBodyLimited(r, p.config.MaxBodySize)
+	body, err := base.ReadRequestBodyLimited(r, p.maxBodySize)
 	if err != nil {
 		p.releaseMirrorAdmission()
 		return fmt.Errorf("proxy-mirror read request body: %w", err)
@@ -323,13 +313,13 @@ func (p *Plugin) buildMirrorRequest(r *http.Request, body []byte) (*http.Request
 	if err != nil {
 		return nil, err
 	}
-	mirrorReq.Header = cloneMirrorHeaders(r.Header, p.config.KeepSensitiveHeaders)
+	mirrorReq.Header = cloneMirrorHeaders(r.Header)
 	mirrorReq.Host = r.Host
 
 	return mirrorReq, nil
 }
 
-func cloneMirrorHeaders(source http.Header, keepSensitive bool) http.Header {
+func cloneMirrorHeaders(source http.Header) http.Header {
 	result := source.Clone()
 	connectionTokens := make([]string, 0)
 	for name, values := range source {
@@ -343,7 +333,7 @@ func cloneMirrorHeaders(source http.Header, keepSensitive bool) http.Header {
 				}
 			}
 		}
-		if isMirrorHopByHopHeader(lowerName) || (!keepSensitive && isMirrorSensitiveHeader(lowerName)) {
+		if isMirrorHopByHopHeader(lowerName) {
 			deleteHeader(result, name)
 		}
 	}
@@ -361,20 +351,6 @@ func isMirrorHopByHopHeader(name string) bool {
 	default:
 		return false
 	}
-}
-
-func isMirrorSensitiveHeader(name string) bool {
-	return name == "authorization" ||
-		name == "proxy-authorization" ||
-		name == "cookie" ||
-		name == "set-cookie" ||
-		name == "api-key" ||
-		name == "apikey" ||
-		name == "x-api-key" ||
-		name == "x-functions-key" ||
-		name == "x-goog-api-key" ||
-		name == "x-rbac-token" ||
-		strings.HasPrefix(name, "x-amz-")
 }
 
 func deleteHeader(headers http.Header, name string) {

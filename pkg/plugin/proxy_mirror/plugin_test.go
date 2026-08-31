@@ -477,7 +477,7 @@ func TestConfiguredResolverTimeoutBoundsLookup(t *testing.T) {
 	}
 }
 
-func TestMirrorStripsHopByHopAndSensitiveHeadersByDefault(t *testing.T) {
+func TestMirrorPreservesRequestHeadersExceptHopByHop(t *testing.T) {
 	mirror, seen := newMirrorServer(t)
 	defer mirror.Close()
 
@@ -517,9 +517,18 @@ func TestMirrorStripsHopByHopAndSensitiveHeadersByDefault(t *testing.T) {
 	})).ServeHTTP(rr, req)
 
 	mirrored := waitForMirror(t, seen)
+	for name, want := range map[string]string{
+		"Authorization": "Bearer secret", "Proxy-Authorization": "Basic secret",
+		"Cookie": "session=secret", "Set-Cookie": "session=secret", "Api-Key": "secret",
+		"apikey": "secret", "X-API-KEY": "secret", "X-Rbac-Token": "secret",
+		"X-Functions-Key": "secret", "X-Goog-Api-Key": "secret", "X-Amz-Signature": "secret",
+		"X-Trace": "keep",
+	} {
+		if got := mirrored.Header.Get(name); got != want {
+			t.Errorf("mirrored %s = %q, want %q", name, got, want)
+		}
+	}
 	for _, name := range []string{
-		"Authorization", "Proxy-Authorization", "Cookie", "Set-Cookie", "Api-Key", "apikey", "X-API-KEY",
-		"X-Rbac-Token", "X-Functions-Key", "X-Goog-Api-Key", "X-Amz-Signature",
 		"Connection", "X-Connection-Token", "Proxy-Connection",
 		"Keep-Alive", "TE", "Trailer", "Transfer-Encoding", "Upgrade", "Content-Length", "Host",
 	} {
@@ -527,53 +536,11 @@ func TestMirrorStripsHopByHopAndSensitiveHeadersByDefault(t *testing.T) {
 			t.Errorf("mirrored %s = %q, want stripped", name, got)
 		}
 	}
-	if got := mirrored.Header.Get("X-Trace"); got != "keep" {
-		t.Fatalf("mirrored X-Trace = %q, want keep", got)
-	}
-}
-
-func TestMirrorKeepsSensitiveHeadersWhenExplicitlyEnabled(t *testing.T) {
-	mirror, seen := newMirrorServer(t)
-	defer mirror.Close()
-
-	p := newTestPlugin(t, Config{Host: mirror.URL, KeepSensitiveHeaders: true})
-	req, lifecycle := withMirrorLifecycle(httptest.NewRequest(http.MethodGet, "http://example.com/original", nil))
-	t.Cleanup(func() { lifecycle.FinalizeResult() })
-	req.Header.Set("Authorization", "Bearer secret")
-	req.Header.Set("Cookie", "session=secret")
-	req.Header.Set("X-API-KEY", "secret")
-	req.Header.Set("X-Amz-Signature", "signature")
-	req.Header.Set("Connection", "X-Connection-Token")
-	req.Header.Set("X-Connection-Token", "remove")
-	rr := httptest.NewRecorder()
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if err := apisixctx.RunBeforeProxyHooks(r); err != nil {
-			t.Fatalf("run before-proxy hook: %v", err)
-		}
-		w.WriteHeader(http.StatusNoContent)
-	})).ServeHTTP(rr, req)
-
-	mirrored := waitForMirror(t, seen)
-	for _, test := range []struct {
-		name string
-		want string
-	}{
-		{name: "Authorization", want: "Bearer secret"},
-		{name: "Cookie", want: "session=secret"},
-		{name: "X-API-KEY", want: "secret"},
-		{name: "X-Amz-Signature", want: "signature"},
-	} {
-		if got := mirrored.Header.Get(test.name); got != test.want {
-			t.Errorf("mirrored %s = %q, want %q", test.name, got, test.want)
-		}
-	}
-	if got := mirrored.Header.Get("X-Connection-Token"); got != "" {
-		t.Errorf("mirrored X-Connection-Token = %q, want stripped", got)
-	}
 }
 
 func TestBeforeProxyRejectsOversizedMirrorBodyBeforePrimaryUpstream(t *testing.T) {
-	p := newTestPlugin(t, Config{Host: "http://mirror.example.com", MaxBodySize: 5})
+	p := newTestPlugin(t, Config{Host: "http://mirror.example.com"})
+	p.maxBodySize = 5
 	req, lifecycle := withMirrorLifecycle(httptest.NewRequest(
 		http.MethodPost,
 		"http://example.com/original",

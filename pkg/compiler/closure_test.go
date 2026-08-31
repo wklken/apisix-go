@@ -57,7 +57,7 @@ func TestDispositionUsesExplicitPredecessorPresenceAndPreservesLastGoodBytes(t *
 		t,
 		candidate,
 		generation.ResourceKey{Kind: "upstreams", ID: "bad-u"},
-		generation.DispositionQuarantined,
+		generation.DispositionFailClosed,
 		"decode-invalid",
 	)
 	assertDecision(
@@ -73,6 +73,72 @@ func TestDispositionUsesExplicitPredecessorPresenceAndPreservesLastGoodBytes(t *
 	}
 	if _, ok := candidate.Snapshot.Lookup(generation.ResourceKey{Kind: "routes", ID: "first-invalid"}); ok {
 		t.Fatal("fail-closed route leaked into candidate")
+	}
+}
+
+func TestDispositionUsesLastGoodForInvalidIncrementalManagedResources(t *testing.T) {
+	tests := []struct {
+		name        string
+		domain      generation.Domain
+		kind        string
+		id          string
+		predecessor string
+		invalid     string
+	}{
+		{
+			name: "route", domain: generation.DomainHTTP, kind: "routes", id: "route",
+			predecessor: `{"id":"route"}`, invalid: `{"id":"wrong"}`,
+		},
+		{
+			name: "service", domain: generation.DomainHTTP, kind: "services", id: "service",
+			predecessor: `{"id":"service"}`, invalid: `{"id":"wrong"}`,
+		},
+		{
+			name: "upstream", domain: generation.DomainHTTP, kind: "upstreams", id: "upstream",
+			predecessor: `{"id":"upstream"}`, invalid: `{"id":"wrong"}`,
+		},
+		{
+			name: "consumer", domain: generation.DomainHTTP, kind: "consumers", id: "alice",
+			predecessor: `{"username":"alice"}`, invalid: `{"username":"wrong"}`,
+		},
+		{
+			name: "SSL", domain: generation.DomainHTTP, kind: "ssls", id: "ssl",
+			predecessor: `{"id":"ssl"}`, invalid: `{"id":"wrong"}`,
+		},
+		{
+			name: "stream route", domain: generation.DomainStream, kind: "stream_routes", id: "stream",
+			predecessor: `{"id":"stream"}`, invalid: `{"id":"wrong"}`,
+		},
+		{
+			name: "proto", domain: generation.DomainHTTP, kind: "protos", id: "proto",
+			predecessor: `{"id":"proto"}`, invalid: `{"id":"wrong"}`,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			key := generation.ResourceKey{Kind: test.kind, ID: test.id}
+			predecessor := []byte(test.predecessor)
+			previousSnapshot := mustGenerationSnapshot(t, 4, []generation.Resource{{
+				Key: key, Value: predecessor,
+			}}, nil)
+			desired := mustGenerationSnapshot(t, 11, []generation.Resource{{
+				Key: key, Value: []byte(test.invalid),
+			}}, nil)
+
+			candidate := compileDomain(
+				t,
+				test.domain,
+				desired,
+				publishedForDomain(test.domain, previousSnapshot),
+				true,
+			)
+			assertDecision(t, candidate, key, generation.DispositionLastGood, "id-mismatch")
+			got, found := candidate.Snapshot.Lookup(key)
+			if !found || !bytes.Equal(got, predecessor) {
+				t.Fatalf("last-good %s = %q/%v, want exact %q", key, got, found, predecessor)
+			}
+		})
 	}
 }
 

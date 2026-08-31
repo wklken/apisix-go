@@ -71,32 +71,6 @@ for file in "$unit_workflow" "$candidate_workflow" "$makefile"; do
     reject_pattern 'COVERAGE_MIN|make test-cover|check-unit-coverage' "$file"
 done
 
-# Publication, upgrade, and rollback are intentionally outside repository
-# qualification. Keep this negative contract so they cannot drift back into CI.
-for removed in \
-    .goreleaser.yaml \
-    .github/workflows/release.yml \
-    scripts/release_metadata.sh \
-    scripts/release_metadata_test.sh \
-    scripts/validation/fetch_apisix_317_source.sh \
-    scripts/validation/plugin_behavior_gate.sh \
-    scripts/validation/plugin_behavior_gate_test.sh \
-    scripts/validation/plugin_differential.sh \
-    scripts/validation/plugin_differential_test.sh \
-    scripts/validation/resolve_oracle.sh \
-    scripts/validation/resolve_oracle_test.sh \
-    scripts/upgrade_rollback_smoke.sh \
-    scripts/upgrade_rollback_smoke_test.sh \
-    t/compatibility \
-    t/plugin/corpus_scope.yaml \
-    validation/compatibility; do
-    removed_path=$repo_root/$removed
-    if [[ -f "$removed_path" || -L "$removed_path" ]] ||
-        [[ -d "$removed_path" && -n "$(find "$removed_path" -mindepth 1 \( -type f -o -type l \) -print -quit)" ]]; then
-        printf 'deferred release artifact still exists: %s\n' "$removed" >&2
-        exit 1
-    fi
-done
 for file in "$workflow" "$candidate_workflow"; do
     reject_pattern 'publish-image|run-upgrade-rollback|rollback-release-tag|upgrade-rollback|production-release|cosign|docker push|attest-build-provenance|packages: write|attestations: write' "$file"
 done

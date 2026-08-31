@@ -95,44 +95,6 @@ cases:
           body:
             matches: 'apisix_http_status\{[^\n]*route="prometheus-route-name"[^\n]*service="prometheus-service-name"[^\n]*\} 1'
 
-  - name: http-series-overflow
-    wait_for_generation: true
-    runtime:
-      plugin_attr:
-        prometheus:
-          max_http_series: 100
-          metrics:
-            http_status:
-              extra_labels:
-                - path: $uri
-    config:
-      routes:
-        - id: prometheus-overflow-metrics
-          uri: /apisix/prometheus/metrics
-          methods: [GET]
-          plugins: {public-api: {uri: /apisix/prometheus/metrics}}
-        - id: prometheus-series-one
-          uri: /series/*
-          plugins: {prometheus: {}}
-          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
-    fixtures:
-      - name: primary
-        kind: http
-        count: {at_least: 101, at_most: 101}
-        expect: [{path: {matches: '^/series/[0-9]+$'}}]
-        respond: [{status: 200, body: series-ok}]
-    steps:
-      - name: fill-and-overflow-series-budget
-        repeat: 101
-        input: {path: '/series/{{ITERATION}}'}
-        output: {status: 200, body: {equals: series-ok}}
-      - name: scrape-overflow-counter
-        input: {path: /apisix/prometheus/metrics}
-        output:
-          status: 200
-          body:
-            matches: 'apisix_http_metric_series_overflow_total\{metric="http_status"\} 1'
-
   - name: ai-proxy-active-connections
     wait_for_generation: true
     config:

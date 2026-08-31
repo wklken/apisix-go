@@ -38,7 +38,7 @@ func TestPrometheusInitErrorsPropagateToServerCallers(t *testing.T) {
 		effective := &config.EffectiveConfig{Config: config.Config{
 			Plugins: []string{"prometheus"},
 			PluginAttr: map[string]map[string]any{
-				"prometheus": {"max_http_series": "not-an-integer"},
+				"prometheus": {"metric_prefix": 42},
 			},
 		}}
 		if err := (&Server{staticConfig: effective}).startPrometheusExportServer(); err == nil ||

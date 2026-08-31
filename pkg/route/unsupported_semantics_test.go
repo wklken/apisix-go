@@ -2,7 +2,6 @@ package route
 
 import (
 	"context"
-	"os"
 	"strings"
 	"testing"
 
@@ -156,15 +155,5 @@ func TestPlanRouteUpstreamAcceptsKafka(t *testing.T) {
 	)
 	if err != nil {
 		t.Fatalf("PlanRouteUpstream() error = %v, want Kafka owner available", err)
-	}
-}
-
-func TestDefaultConfigOmitsPlaceholderAIPlugin(t *testing.T) {
-	data, err := os.ReadFile("../../conf/config-default.yaml")
-	if err != nil {
-		t.Fatalf("ReadFile(config-default.yaml) error = %v", err)
-	}
-	if strings.Contains(string(data), "- ai ") {
-		t.Fatal("default config still enables the unsupported ai plugin")
 	}
 }

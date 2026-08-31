@@ -4,7 +4,6 @@ import (
 	"sort"
 
 	acl "github.com/wklken/apisix-go/pkg/plugin/acl"
-	ai "github.com/wklken/apisix-go/pkg/plugin/ai"
 	ai_aliyun_content_moderation "github.com/wklken/apisix-go/pkg/plugin/ai_aliyun_content_moderation"
 	ai_aws_content_moderation "github.com/wklken/apisix-go/pkg/plugin/ai_aws_content_moderation"
 	ai_prompt_decorator "github.com/wklken/apisix-go/pkg/plugin/ai_prompt_decorator"
@@ -1035,14 +1034,6 @@ var pluginRegistry = map[string]registration{
 		create:              func() Plugin { return &lago.Plugin{} },
 		phases:              phaseLog,
 		scopes:              scopeGlobal | scopeRoute | scopeConsumer,
-		instanceScope:       InstanceEffectiveConfig,
-		conditionalTerminal: false,
-		domain:              DomainHTTP,
-	},
-	"ai": {
-		create:              func() Plugin { return &ai.Plugin{} },
-		phases:              0,
-		scopes:              scopeSystem,
 		instanceScope:       InstanceEffectiveConfig,
 		conditionalTerminal: false,
 		domain:              DomainHTTP,

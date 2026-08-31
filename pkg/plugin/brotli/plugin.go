@@ -81,12 +81,6 @@ const schema = `
     },
     "vary": {
       "type": "boolean"
-    },
-    "max_response_size": {
-      "type": "integer",
-      "minimum": 0,
-      "default": 10485760,
-      "description": "Maximum response body size in bytes accepted for compression; larger responses pass through uncompressed. 0 disables the bound."
     }
   }
 }
@@ -108,38 +102,34 @@ type Config struct {
 	HTTPVersion *float64 `json:"http_version,omitempty"`
 	Vary        *bool    `json:"vary,omitempty"`
 
-	// MaxResponseSize caps the response body accepted for compression.
-	MaxResponseSize *int64 `json:"max_response_size,omitempty"`
-
-	contentTypes map[string]struct{}
-	wildcardType bool
-	httpVersion  string
+	contentTypes    map[string]struct{}
+	wildcardType    bool
+	httpVersion     string
+	maxResponseSize int64
 }
 
 func (c *Config) UnmarshalJSON(data []byte) error {
 	var raw struct {
-		Types           json.RawMessage `json:"types"`
-		MinLength       *int            `json:"min_length"`
-		Mode            *int            `json:"mode"`
-		CompLevel       *int            `json:"comp_level"`
-		LGWin           *int            `json:"lgwin"`
-		LGBlock         *int            `json:"lgblock"`
-		HTTPVersion     *float64        `json:"http_version"`
-		Vary            *bool           `json:"vary"`
-		MaxResponseSize *int64          `json:"max_response_size"`
+		Types       json.RawMessage `json:"types"`
+		MinLength   *int            `json:"min_length"`
+		Mode        *int            `json:"mode"`
+		CompLevel   *int            `json:"comp_level"`
+		LGWin       *int            `json:"lgwin"`
+		LGBlock     *int            `json:"lgblock"`
+		HTTPVersion *float64        `json:"http_version"`
+		Vary        *bool           `json:"vary"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
 	*c = Config{
-		MinLength:       raw.MinLength,
-		Mode:            raw.Mode,
-		CompLevel:       raw.CompLevel,
-		LGWin:           raw.LGWin,
-		LGBlock:         raw.LGBlock,
-		HTTPVersion:     raw.HTTPVersion,
-		Vary:            raw.Vary,
-		MaxResponseSize: raw.MaxResponseSize,
+		MinLength:   raw.MinLength,
+		Mode:        raw.Mode,
+		CompLevel:   raw.CompLevel,
+		LGWin:       raw.LGWin,
+		LGBlock:     raw.LGBlock,
+		HTTPVersion: raw.HTTPVersion,
+		Vary:        raw.Vary,
 	}
 	if len(raw.Types) == 0 || string(raw.Types) == "null" {
 		return nil
@@ -187,9 +177,8 @@ func (p *Plugin) PostInit() error {
 		value := 1.1
 		p.config.HTTPVersion = &value
 	}
-	if p.config.MaxResponseSize == nil {
-		value := int64(defaultMaxResponseSize)
-		p.config.MaxResponseSize = &value
+	if p.config.maxResponseSize <= 0 {
+		p.config.maxResponseSize = defaultMaxResponseSize
 	}
 	p.config.httpVersion = fmt.Sprintf("%g", *p.config.HTTPVersion)
 	p.config.contentTypes = make(map[string]struct{}, len(p.config.Types))
@@ -357,7 +346,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			Vary:     p.config.Vary != nil && *p.config.Vary,
 			Eligible: eligible,
 		})
-		bw := newBoundedResponseWriter(w, *p.config.MaxResponseSize)
+		bw := newBoundedResponseWriter(w, p.config.maxResponseSize)
 		bw.requestMethod = r.Method
 		bw.state = state
 		next.ServeHTTP(bw, r)
@@ -626,15 +615,15 @@ func headerValue(header http.Header, name string) string {
 }
 
 // compressResponse replaces the buffered body with its brotli encoding. It
-// returns a controlled error when the body exceeds max_response_size so
+// returns a controlled error when the body exceeds the internal limit so
 // oversized responses pass through uncompressed instead of growing without
 // bound; below the cap headers and compression behavior are preserved.
 func (p *Plugin) compressResponse(resp *base.BufferedResponseWriter) error {
-	limit := *p.config.MaxResponseSize
+	limit := p.config.maxResponseSize
 	body := resp.Body()
 	if limit > 0 && int64(len(body)) > limit {
 		return fmt.Errorf(
-			"response body of %d bytes exceeds max_response_size %d",
+			"response body of %d bytes exceeds internal limit %d",
 			len(body),
 			limit,
 		)

@@ -74,7 +74,7 @@ func TestRawSchemaAdmissionRejectsInvalidPluginMetadataAndConsumerConfigs(t *tes
 		{
 			name: "plugin metadata",
 			resource: resourceValue(
-				"plugin_metadata", "batch-requests", `{"max_timeout":0,"opaque":"secret-metadata-value"}`,
+				"plugin_metadata", "batch-requests", `{"max_pipeline_items":0,"opaque":"secret-metadata-value"}`,
 			),
 			wantCode: "plugin-metadata-schema-invalid", wantMessage: "plugin metadata schema validation failed",
 			secret: "secret-metadata-value",

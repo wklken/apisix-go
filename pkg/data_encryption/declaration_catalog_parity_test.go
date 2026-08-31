@@ -68,7 +68,7 @@ var expectedPluginFields = map[string][]string{
 	"google-cloud-logging": {"auth_config.private_key"},
 	"lago":                 {"token"},
 	"loggly":               {"customer_token"},
-	"response-rewrite":     {"body", "body_secret"},
+	"response-rewrite":     {"body"},
 	"rocketmq-logger":      {"secret_key"},
 	"saml-auth":            {"sp_private_key", "secret", "secret_fallbacks"},
 	"sls-logger":           {"access_key_secret"},

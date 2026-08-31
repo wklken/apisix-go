@@ -140,19 +140,12 @@ func TestMaterializeScopedSecretsOwnsResponseBodies(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EncryptForContext(body) error = %v", err)
 	}
-	contextualSecret, err := data_encryption.EncryptForContext(
-		"secret-body", encryptionKey, "response-rewrite.body_secret",
-	)
-	if err != nil {
-		t.Fatalf("EncryptForContext(body_secret) error = %v", err)
-	}
 	tests := []struct {
-		name       string
-		field      string
-		raw        string
-		resolved   string
-		bodySecret bool
-		resolve    bool
+		name     string
+		field    string
+		raw      string
+		resolved string
+		resolve  bool
 	}{
 		{name: "literal body", field: "body", raw: "literal-body", resolved: "literal-body"},
 		{
@@ -168,10 +161,6 @@ func TestMaterializeScopedSecretsOwnsResponseBodies(t *testing.T) {
 			raw: "$secret://vault/response-body", resolved: "managed-body", resolve: true,
 		},
 		{name: "contextual body", field: "body", raw: contextualBody, resolved: "contextual-body"},
-		{
-			name: "contextual body_secret", field: "body_secret",
-			raw: contextualSecret, resolved: "secret-body", bodySecret: true,
-		},
 	}
 	for index, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -211,23 +200,10 @@ func TestMaterializeScopedSecretsOwnsResponseBodies(t *testing.T) {
 				t.Fatalf("scoped calls = %#v, want none for admitted literal or ciphertext", broker.calls)
 			}
 			cfg := p.Config().(*Config)
-			if tt.bodySecret {
-				if cfg.Body != nil {
-					t.Fatalf("public body = %q, want nil instead of resolved body_secret", *cfg.Body)
-				}
-				if cfg.BodySecret == nil {
-					t.Fatal("public body_secret = nil, want descriptor")
-				}
-				assertResponseRewriteDescriptorFor(t, *cfg.BodySecret, tt.resolved)
-			} else {
-				if cfg.Body == nil {
-					t.Fatal("public body = nil, want descriptor")
-				}
-				assertResponseRewriteDescriptorFor(t, *cfg.Body, tt.resolved)
-				if cfg.BodySecret != nil {
-					t.Fatalf("public body_secret = %q, want nil", *cfg.BodySecret)
-				}
+			if cfg.Body == nil {
+				t.Fatal("public body = nil, want descriptor")
 			}
+			assertResponseRewriteDescriptorFor(t, *cfg.Body, tt.resolved)
 
 			req := httptest.NewRequest(http.MethodGet, "/rewrite", nil)
 			response := httptest.NewRecorder()
@@ -293,38 +269,6 @@ func TestMaterializeScopedSecretsOwnsResponseBodies(t *testing.T) {
 		})
 		if response.Body.Len() != 0 {
 			t.Fatalf("empty body response = %q, want empty replacement", response.Body.String())
-		}
-	})
-
-	t.Run("body and body_secret conflict before resolver", func(t *testing.T) {
-		rawConfig := map[string]any{"body": "plain", "body_secret": contextualSecret}
-		secrets, scope, broker, closeAttempt := newResponseRewriteScopedSecretHarness(
-			t, 21, "response-conflict", rawConfig,
-			map[string]string{"plain": "plain", contextualSecret: "secret-body"},
-		)
-		defer closeAttempt()
-		p := &Plugin{}
-		if err := p.Init(); err != nil {
-			t.Fatal(err)
-		}
-		if err := util.Parse(rawConfig, p.Config()); err != nil {
-			t.Fatal(err)
-		}
-		validator, ok := any(p).(interface{ ValidatePreMaterialization() error })
-		if !ok {
-			t.Fatal("response-rewrite does not implement pre-materialization validation")
-		}
-		if err := validator.ValidatePreMaterialization(); err == nil ||
-			err.Error() != "response-rewrite body and body_secret cannot be configured together" {
-			t.Fatalf("ValidatePreMaterialization() error = %v, want body/body_secret conflict", err)
-		}
-		if err := base.MaterializeScopedPluginSecrets(
-			context.Background(), scope, secrets, p,
-		); err == nil {
-			t.Fatal("MaterializeScopedPluginSecrets() error = nil, want conflict rejection")
-		}
-		if len(broker.calls) != 0 {
-			t.Fatalf("conflict resolver calls = %#v, want zero", broker.calls)
 		}
 	})
 }
@@ -814,13 +758,6 @@ func TestResponseRewriteExclusionsRemainBuffered(t *testing.T) {
 		},
 		{name: "body", cfg: Config{Headers: Headers{Set: map[string]string{"X-Mode": "body"}}, Body: new("rewritten")}},
 		{
-			name: "body_secret",
-			cfg: Config{
-				Headers:    Headers{Set: map[string]string{"X-Mode": "body_secret"}},
-				BodySecret: new("ciphertext"),
-			},
-		},
-		{
 			name: "filters",
 			cfg: Config{
 				Headers: Headers{Set: map[string]string{"X-Mode": "filters"}},
@@ -895,40 +832,6 @@ func TestHandlerDecodesBase64Body(t *testing.T) {
 
 	if got := res.Body.String(); got != "hello" {
 		t.Fatalf("body = %q, want hello", got)
-	}
-}
-
-func TestPostInitRejectsMixedBodySecretConfiguration(t *testing.T) {
-	tests := []struct {
-		name string
-		cfg  Config
-	}{
-		{
-			name: "body",
-			cfg: Config{
-				Body:       new("plain"),
-				BodySecret: new("secret"),
-			},
-		},
-		{
-			name: "filters",
-			cfg: Config{
-				BodySecret: new("secret"),
-				Filters:    []Filter{{Regex: "secret", Replace: "redacted"}},
-			},
-		},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			p := &Plugin{config: test.cfg}
-			p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
-			if err := p.Init(); err != nil {
-				t.Fatalf("Init() error = %v", err)
-			}
-			if err := p.ValidatePreMaterialization(); err == nil {
-				t.Fatal("ValidatePreMaterialization() error = nil, want mixed body_secret rejection")
-			}
-		})
 	}
 }
 

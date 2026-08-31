@@ -97,11 +97,6 @@ const schema = `
 	    "body": {
 	      "type": "string"
 	    },
-	    "body_secret": {
-	      "type": "string",
-	      "minLength": 1,
-	      "description": "Go extension: explicitly opted-in APISIX data-encryption ciphertext"
-	    },
     "body_base64": {
       "type": "boolean",
       "default": false
@@ -155,7 +150,6 @@ const schema = `
 type Config struct {
 	Headers    Headers  `json:"headers"`
 	Body       *string  `json:"body,omitempty"`
-	BodySecret *string  `json:"body_secret,omitempty"`
 	BodyBase64 *bool    `json:"body_base64,omitempty"`
 	StatusCode int      `json:"status_code,omitempty"`
 	Vars       []any    `json:"vars,omitempty"`
@@ -301,12 +295,6 @@ func (p *Plugin) PostInit() error {
 }
 
 func (p *Plugin) ValidatePreMaterialization() error {
-	if p.config.Body != nil && p.config.BodySecret != nil {
-		return fmt.Errorf("response-rewrite body and body_secret cannot be configured together")
-	}
-	if p.config.BodySecret != nil && len(p.config.Filters) > 0 {
-		return fmt.Errorf("response-rewrite body_secret and filters cannot be configured together")
-	}
 	if p.config.Body != nil && len(p.config.Filters) > 0 {
 		return fmt.Errorf("response-rewrite body and filters cannot be configured together")
 	}
@@ -346,7 +334,8 @@ func (p *Plugin) MaterializeScopedSecrets(
 	if err != nil {
 		return fmt.Errorf("%s %s: %w", name, field, secret.ErrCredentialUnavailable)
 	}
-	p.installBody(field, descriptor.String())
+	descriptorValue := descriptor.String()
+	p.config.Body = &descriptorValue
 	p.body = &value
 	return nil
 }
@@ -355,24 +344,10 @@ func (p *Plugin) selectedBody() (field, raw string, present bool, err error) {
 	if err := p.ValidatePreMaterialization(); err != nil {
 		return "", "", false, err
 	}
-	if p.config.BodySecret != nil {
-		if *p.config.BodySecret == "" {
-			return "", "", false, fmt.Errorf("response-rewrite body_secret must not be empty")
-		}
-		return "body_secret", *p.config.BodySecret, true, nil
-	}
 	if p.config.Body != nil {
 		return "body", *p.config.Body, true, nil
 	}
 	return "", "", false, nil
-}
-
-func (p *Plugin) installBody(field, descriptor string) {
-	if field == "body_secret" {
-		p.config.BodySecret = &descriptor
-		return
-	}
-	p.config.Body = &descriptor
 }
 
 func (p *Plugin) validateEffectiveBody(body string) error {
@@ -459,7 +434,7 @@ func (*Plugin) SelectResponseMode(r *http.Request) base.RequestResponseMode {
 
 func (p Config) pureHeaderOnly() bool {
 	return !p.Headers.empty() && p.StatusCode == 0 && len(p.Vars) == 0 &&
-		p.Body == nil && p.BodySecret == nil && len(p.Filters) == 0 &&
+		p.Body == nil && len(p.Filters) == 0 &&
 		!p.Headers.hasBodyLengthVariable()
 }
 
@@ -551,7 +526,7 @@ func (p *Plugin) rewrite(r *http.Request, resp *base.BufferedResponseWriter) err
 		resp.SetStatusCode(p.config.StatusCode)
 	}
 	responseEncoding := ""
-	if p.config.Body != nil || p.config.BodySecret != nil || len(p.config.Filters) > 0 {
+	if p.config.Body != nil || len(p.config.Filters) > 0 {
 		responseEncoding = resp.Header().Get("Content-Encoding")
 		clearHeadersAsBodyModified(resp.Header())
 	}

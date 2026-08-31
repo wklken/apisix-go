@@ -14,13 +14,8 @@ import (
 var errAWSCredentialsUnavailable = errors.New("ai-aws-content-moderation credentials are unavailable")
 
 type awsCredentialState struct {
-	preparationMu      sync.Mutex
-	preparationCond    *sync.Cond
-	preparationActive  bool
-	preparationWaiters int
-	credentialMu       sync.Mutex
-	testHooksMu        sync.Mutex
-	testHooks          awsCredentialTestHooks
+	preparationMu sync.Mutex
+	credentialMu  sync.Mutex
 
 	scopedAccessKeyID     secret.Value
 	scopedSecretAccessKey secret.Value
@@ -30,42 +25,6 @@ type awsCredentialState struct {
 
 	activeUses int
 	usesDone   chan struct{}
-	retired    bool
-}
-
-type awsPreparationKind uint8
-
-const (
-	awsPreparationScoped awsPreparationKind = iota
-)
-
-type awsPreparationPhase uint8
-
-const (
-	awsPreparationWaiting awsPreparationPhase = iota
-	awsPreparationAcquired
-)
-
-type awsCredentialLifecycleEvent uint8
-
-const awsCredentialDrainStarted awsCredentialLifecycleEvent = iota
-
-type awsCredentialTestHooks struct {
-	preparation func(awsPreparationKind, awsPreparationPhase)
-	lifecycle   func(awsCredentialLifecycleEvent)
-}
-
-type awsCredentialLifecycleSnapshot struct {
-	preparationActive  bool
-	preparationWaiters int
-
-	scopedAccessKeyIDSet     bool
-	scopedSecretAccessKeySet bool
-	scopedSessionTokenSet    bool
-	scopedSet                bool
-	scopedSessionTokenRawSet bool
-
-	activeUses int
 	retired    bool
 }
 
@@ -79,8 +38,8 @@ type awsCredentialSnapshot struct {
 func (p *Plugin) MaterializeScopedSecrets(
 	ctx context.Context, access base.ScopedSecretAccess,
 ) error {
-	p.beginAWSPreparation(awsPreparationScoped)
-	defer p.endAWSPreparation()
+	p.preparationMu.Lock()
+	defer p.preparationMu.Unlock()
 	if prepared, err := p.preparationState(); err != nil || prepared {
 		return err
 	}
@@ -139,77 +98,6 @@ func (p *Plugin) MaterializeScopedSecrets(
 	}
 	p.credentialMu.Unlock()
 	return nil
-}
-
-func (p *Plugin) beginAWSPreparation(kind awsPreparationKind) {
-	p.preparationMu.Lock()
-	if p.preparationCond == nil {
-		p.preparationCond = sync.NewCond(&p.preparationMu)
-	}
-	if p.preparationActive {
-		p.preparationWaiters++
-		p.preparationMu.Unlock()
-		p.notifyAWSPreparation(kind, awsPreparationWaiting)
-		p.preparationMu.Lock()
-		for p.preparationActive {
-			p.preparationCond.Wait()
-		}
-		p.preparationWaiters--
-	}
-	p.preparationActive = true
-	p.preparationMu.Unlock()
-	p.notifyAWSPreparation(kind, awsPreparationAcquired)
-}
-
-func (p *Plugin) endAWSPreparation() {
-	p.preparationMu.Lock()
-	p.preparationActive = false
-	p.preparationCond.Broadcast()
-	p.preparationMu.Unlock()
-}
-
-func (p *Plugin) setAWSCredentialTestHooks(hooks awsCredentialTestHooks) {
-	p.testHooksMu.Lock()
-	p.testHooks = hooks
-	p.testHooksMu.Unlock()
-}
-
-func (p *Plugin) notifyAWSPreparation(kind awsPreparationKind, phase awsPreparationPhase) {
-	p.testHooksMu.Lock()
-	hook := p.testHooks.preparation
-	p.testHooksMu.Unlock()
-	if hook != nil {
-		hook(kind, phase)
-	}
-}
-
-func (p *Plugin) notifyAWSCredentialLifecycle(event awsCredentialLifecycleEvent) {
-	p.testHooksMu.Lock()
-	hook := p.testHooks.lifecycle
-	p.testHooksMu.Unlock()
-	if hook != nil {
-		hook(event)
-	}
-}
-
-func (p *Plugin) awsCredentialLifecycleSnapshot() awsCredentialLifecycleSnapshot {
-	p.preparationMu.Lock()
-	snapshot := awsCredentialLifecycleSnapshot{
-		preparationActive:  p.preparationActive,
-		preparationWaiters: p.preparationWaiters,
-	}
-	p.preparationMu.Unlock()
-
-	p.credentialMu.Lock()
-	snapshot.scopedAccessKeyIDSet = p.scopedAccessKeyID != (secret.Value{})
-	snapshot.scopedSecretAccessKeySet = p.scopedSecretAccessKey != (secret.Value{})
-	snapshot.scopedSessionTokenSet = p.scopedSessionToken != (secret.Value{})
-	snapshot.scopedSet = p.scopedSet
-	snapshot.scopedSessionTokenRawSet = p.scopedSessionTokenSet
-	snapshot.activeUses = p.activeUses
-	snapshot.retired = p.retired
-	p.credentialMu.Unlock()
-	return snapshot
 }
 
 func (p *Plugin) preparationState() (bool, error) {
@@ -294,7 +182,6 @@ func (p *Plugin) Stop() {
 	p.retired = true
 	wait := p.usesDone
 	p.credentialMu.Unlock()
-	p.notifyAWSCredentialLifecycle(awsCredentialDrainStarted)
 	if wait != nil {
 		<-wait
 	}

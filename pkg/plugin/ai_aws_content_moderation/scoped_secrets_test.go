@@ -516,15 +516,6 @@ func TestScopedSecretsAWSStopWaitsForResponseAndIsIdempotent(t *testing.T) {
 		t, moderation.URL, 21, "stop-barrier", "stop-access", "stop-secret", "stop-token",
 	)
 	defer closeAttempt()
-	drainStarted := make(chan struct{})
-	var drainOnce sync.Once
-	p.setAWSCredentialTestHooks(awsCredentialTestHooks{
-		lifecycle: func(event awsCredentialLifecycleEvent) {
-			if event == awsCredentialDrainStarted {
-				drainOnce.Do(func() { close(drainStarted) })
-			}
-		},
-	})
 	requestDone := make(chan error, 1)
 	go func() {
 		_, err := p.detectToxicContent(httptest.NewRequest(http.MethodPost, "/", nil), "hello")
@@ -544,18 +535,10 @@ func TestScopedSecretsAWSStopWaitsForResponseAndIsIdempotent(t *testing.T) {
 			stopDone <- struct{}{}
 		}()
 	}
-	select {
-	case <-drainStarted:
-	case <-time.After(time.Second):
+	if !waitForAWSCredentialDrain(p, time.Second) {
 		close(releaseResponse)
 		<-requestDone
 		t.Fatal("timed out waiting for Stop() to enter credential drain")
-	}
-	state := p.awsCredentialLifecycleSnapshot()
-	if !state.retired || state.activeUses == 0 {
-		close(releaseResponse)
-		<-requestDone
-		t.Fatalf("Stop() drain state = %#v, want retired with an active use", state)
 	}
 	select {
 	case <-stopDone:
@@ -575,18 +558,7 @@ func TestScopedSecretsAWSStopWaitsForResponseAndIsIdempotent(t *testing.T) {
 			t.Fatal("concurrent Stop() did not return after the response completed")
 		}
 	}
-	state = p.awsCredentialLifecycleSnapshot()
-	if state.scopedAccessKeyIDSet ||
-		state.scopedSecretAccessKeySet ||
-		state.scopedSessionTokenSet {
-		t.Fatal("Stop() retained scoped credential values")
-	}
-	if state.scopedSet || state.scopedSessionTokenRawSet {
-		t.Fatalf(
-			"Stop() retained scoped mode flags: credentials=%v session_token=%v",
-			state.scopedSet, state.scopedSessionTokenRawSet,
-		)
-	}
+	assertAWSCredentialStateCleared(t, p)
 
 	p.Stop()
 	_, err := p.detectToxicContent(httptest.NewRequest(http.MethodPost, "/", nil), "after stop")

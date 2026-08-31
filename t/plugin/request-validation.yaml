@@ -1,335 +1,52 @@
 cases:
-  - name: body-schema-requires-bytes-and-accepts-present-values
+  - name: validates-headers-and-normalizes-body-before-proxy
     config:
       routes:
-        - id: request-validation-empty-body-schema
-          uri: /empty-body-schema
-          plugins: {request-validation: {body_schema: {}}}
+        - id: request-validation
+          uri: /request-validation
+          plugins:
+            request-validation:
+              header_schema:
+                type: object
+                required: [X-Role]
+                properties:
+                  X-Role: {type: string, enum: [admin]}
+              body_schema:
+                type: object
+                required: [payload]
+                properties:
+                  payload: {type: string, pattern: '^good$'}
+              rejected_code: 422
+              rejected_msg: custom rejection
           upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
     fixtures:
       - name: primary
         kind: http
         expect:
-          - {body: {equals: '{"anything":true}'}}
-          - {body: {equals: 'null'}}
+          - headers:
+              X-Role: {equals: admin}
+            body: {equals: '{"payload":"good"}'}
         respond:
           - {status: 200, body: ok}
-          - {status: 200, body: ok}
     steps:
-      - name: present-object-is-valid
-        input: {method: POST, path: /empty-body-schema, headers: {Content-Type: application/json}, body: '{"anything":true}'}
+      - name: missing-header-is-rejected
+        input:
+          method: POST
+          path: /request-validation
+          headers: {Content-Type: application/json}
+          body: '{"payload":"good"}'
+        output: {status: 422, body: {equals: custom rejection}}
+      - name: invalid-body-is-rejected
+        input:
+          method: POST
+          path: /request-validation
+          headers: {Content-Type: application/json, X-Role: admin}
+          body: '{"payload":"bad"}'
+        output: {status: 422, body: {equals: custom rejection}}
+      - name: duplicate-body-key-is-normalized-before-proxy
+        input:
+          method: POST
+          path: /request-validation
+          headers: {Content-Type: application/json, X-Role: admin}
+          body: '{"payload":"bad","payload":"good"}'
         output: {status: 200, body: {equals: ok}}
-      - name: missing-body-rejected
-        input: {method: POST, path: /empty-body-schema, headers: {Content-Type: application/json}}
-        output: {status: 400, body: {matches: 'request body is required'}}
-      - name: whitespace-body-rejected
-        input: {method: POST, path: /empty-body-schema, headers: {Content-Type: application/json}, body: '   '}
-        output: {status: 400, body: {matches: 'request body is required'}}
-      - name: json-null-is-evaluated-by-schema
-        input: {method: POST, path: /empty-body-schema, headers: {Content-Type: application/json}, body: 'null'}
-        output: {status: 200, body: {equals: ok}}
-
-  - name: missing-header-and-body-schema-is-rejected
-    config:
-      routes:
-        - id: request-validation-missing-schema
-          uri: /missing-schema
-          plugins: {request-validation: {}}
-          upstream: {type: roundrobin, nodes: {127.0.0.1:1980: 1}}
-    input: {method: GET, path: /missing-schema}
-    output: {status: 404, logs: {matches: request-validation}}
-
-  - name: body-schema-all-combinations
-    config:
-      routes:
-        - id: request-validation-body-combinations
-          uri: /opentracing
-          plugins:
-            request-validation:
-              body_schema:
-                type: object
-                required: [required_payload]
-                properties:
-                  required_payload: {type: string}
-                  boolean_payload: {type: boolean}
-                  timeouts: {type: integer, minimum: 1, maximum: 254, default: 3}
-                  req_headers: {type: array, minItems: 1, items: {type: string}}
-          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
-    fixtures: [{name: primary, kind: http, expect: [{body: {matches: 'required_payload.*hello'}}], respond: [{status: 200, body: hello world}]}]
-    steps:
-      - {name: required-payload-missing, input: {method: POST, path: /opentracing, headers: {Content-Type: application/json}, body: '{"boolean-payload":true}'}, output: {status: 400, body: {matches: required_payload}}}
-      - {name: required-payload-added, input: {method: POST, path: /opentracing, headers: {Content-Type: application/json}, body: '{"boolean-payload":true,"required_payload":"hello"}'}, output: {status: 200, body: {equals: hello world}}}
-
-  - name: header-schema-all-combinations
-    config:
-      routes:
-        - id: request-validation-header-combinations
-          uri: /header-combinations
-          plugins:
-            request-validation:
-              header_schema:
-                type: object
-                required: [required_payload]
-                properties:
-                  required_payload: {type: string}
-                  boolean_payload: {type: boolean}
-                  timeouts: {type: integer, minimum: 1, maximum: 254, default: 3}
-                  req_headers: {type: array, minItems: 1, items: {type: string}}
-          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
-    fixtures: [{name: primary, kind: http, respond: [{status: 200, body: hello world}]}]
-    steps:
-      - {name: required-header-missing, input: {method: GET, path: /header-combinations, headers: {Content-Type: application/json}}, output: {status: 400, body: {matches: required_payload}}}
-      - {name: required-header-present, input: {method: GET, path: /header-combinations, headers: {Content-Type: application/json, required_payload: test payload}}, output: {status: 200, body: {equals: hello world}}}
-
-  - name: full-body-schema-config-is-active
-    config:
-      routes:
-        - id: request-validation-body-full
-          uri: /body-full
-          plugins:
-            request-validation:
-              body_schema:
-                type: object
-                required: [required_payload]
-                properties:
-                  required_payload: {type: string}
-                  boolean_payload: {type: boolean}
-                  timeouts: {type: integer, minimum: 1, maximum: 254, default: 3}
-                  req_headers: {type: array, minItems: 1, items: {type: string}}
-          upstream: {type: roundrobin, nodes: {'{{UPSTREAM_ADDR}}': 1}}
-    input: {method: POST, path: /body-full, headers: {Content-Type: application/json}, body: '{"required_payload":"payload","boolean_payload":true,"timeouts":3,"req_headers":["X-Test"]}'}
-    upstream: {respond: {status: 200, body: ok}}
-    output: {status: 200, body: {equals: ok}}
-
-  - name: body-schema-object
-    config: {routes: [{id: request-validation-body-object, uri: /body-object, plugins: {request-validation: {body_schema: {type: object}}}, upstream: {type: roundrobin, nodes: {'{{UPSTREAM_ADDR}}': 1}}}]}
-    input: {method: POST, path: /body-object, headers: {Content-Type: application/json}, body: '{}'}
-    upstream: {respond: {status: 200, body: ok}}
-    output: {status: 200, body: {equals: ok}}
-
-  - name: body-schema-array
-    config: {routes: [{id: request-validation-body-array, uri: /body-array, plugins: {request-validation: {body_schema: {type: array}}}, upstream: {type: roundrobin, nodes: {'{{UPSTREAM_ADDR}}': 1}}}]}
-    input: {method: POST, path: /body-array, headers: {Content-Type: application/json}, body: '[]'}
-    upstream: {respond: {status: 200, body: ok}}
-    output: {status: 200, body: {equals: ok}}
-
-  - name: body-schema-string
-    config: {routes: [{id: request-validation-body-string, uri: /body-string, plugins: {request-validation: {body_schema: {type: string}}}, upstream: {type: roundrobin, nodes: {'{{UPSTREAM_ADDR}}': 1}}}]}
-    input: {method: POST, path: /body-string, headers: {Content-Type: application/json}, body: '"hello"'}
-    upstream: {expect: {body: {equals: '"hello"'}}, respond: {status: 200, body: ok}}
-    output: {status: 200, body: {equals: ok}}
-
-  - name: body-schema-number
-    config: {routes: [{id: request-validation-body-number, uri: /body-number, plugins: {request-validation: {body_schema: {type: number}}}, upstream: {type: roundrobin, nodes: {'{{UPSTREAM_ADDR}}': 1}}}]}
-    input: {method: POST, path: /body-number, headers: {Content-Type: application/json}, body: '3.5'}
-    upstream: {respond: {status: 200, body: ok}}
-    output: {status: 200, body: {equals: ok}}
-
-  - name: body-schema-integer
-    config: {routes: [{id: request-validation-body-integer, uri: /body-integer, plugins: {request-validation: {body_schema: {type: integer}}}, upstream: {type: roundrobin, nodes: {'{{UPSTREAM_ADDR}}': 1}}}]}
-    input: {method: POST, path: /body-integer, headers: {Content-Type: application/json}, body: '3'}
-    upstream: {respond: {status: 200, body: ok}}
-    output: {status: 200, body: {equals: ok}}
-
-  - name: body-schema-table
-    config: {routes: [{id: request-validation-body-table, uri: /body-table, plugins: {request-validation: {body_schema: {type: table}}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.upstream.ADDR}}': 1}}}]}
-    fixtures:
-      - name: upstream
-        kind: http
-        respond: [{status: 200, body: ok}, {status: 200, body: ok}]
-    steps:
-      - name: object-is-a-lua-table
-        input: {method: POST, path: /body-table, headers: {Content-Type: application/json}, body: '{"table":"value"}'}
-        output: {status: 200, body: {equals: ok}}
-      - name: array-is-a-lua-table
-        input: {method: POST, path: /body-table, headers: {Content-Type: application/json}, body: '["value"]'}
-        output: {status: 200, body: {equals: ok}}
-
-  - name: body-schema-function
-    config: {routes: [{id: request-validation-body-function, uri: /body-function, plugins: {request-validation: {body_schema: {type: function}}}, upstream: {type: roundrobin, nodes: {'{{UPSTREAM_ADDR}}': 1}}}]}
-    input: {method: POST, path: /body-function, headers: {Content-Type: application/json}, body: '{}'}
-    upstream: {respond: {status: 200, body: unexpected}}
-    output: {status: 400}
-
-  - name: body-schema-invalid-type
-    config: {routes: [{id: request-validation-body-invalid-type, uri: /body-invalid-type, plugins: {request-validation: {body_schema: {type: test}}}, upstream: {type: roundrobin, nodes: {127.0.0.1:1980: 1}}}]}
-    input: {method: GET, path: /body-invalid-type}
-    output: {status: 404, logs: {matches: 'invalid body_schema'}}
-
-  - name: body-schema-invalid-enum
-    config: {routes: [{id: request-validation-body-invalid-enum, uri: /body-invalid-enum, plugins: {request-validation: {body_schema: {type: string, properties: {test: {type: string, enum: test-enum}}}}}, upstream: {type: roundrobin, nodes: {127.0.0.1:1980: 1}}}]}
-    input: {method: GET, path: /body-invalid-enum}
-    output: {status: 404, logs: {matches: 'invalid body_schema'}}
-
-  - name: body-schema-enum-config
-    config: {routes: [{id: request-validation-body-enum, uri: /body-enum, plugins: {request-validation: {body_schema: {type: string, properties: {test: {type: string, enum: [a, b, c]}}}}}, upstream: {type: roundrobin, nodes: {'{{UPSTREAM_ADDR}}': 1}}}]}
-    input: {method: POST, path: /body-enum, headers: {Content-Type: application/json}, body: '"text"'}
-    upstream: {respond: {status: 200, body: ok}}
-    output: {status: 200, body: {equals: ok}}
-
-  - name: body-schema-invalid-required
-    config: {routes: [{id: request-validation-body-invalid-required, uri: /body-invalid-required, plugins: {request-validation: {body_schema: {type: object, properties: {test: {type: string, enum: [a, b, c]}}, required: test-required}}}, upstream: {type: roundrobin, nodes: {127.0.0.1:1980: 1}}}]}
-    input: {method: GET, path: /body-invalid-required}
-    output: {status: 404, logs: {matches: 'invalid body_schema'}}
-
-  - name: body-schema-required
-    config:
-      routes:
-        - id: request-validation-body-required
-          uri: /body-required
-          plugins:
-            request-validation:
-              body_schema:
-                type: object
-                properties: {test: {type: string, enum: [a, b, c]}}
-                required: [test]
-          upstream: {type: roundrobin, nodes: {'{{UPSTREAM_ADDR}}': 1}}
-    input: {method: POST, path: /body-required, headers: {Content-Type: application/json}, body: '{"test":"a"}'}
-    upstream: {respond: {status: 200, body: ok}}
-    output: {status: 200, body: {equals: ok}}
-
-  - name: full-header-schema-config-is-active
-    config:
-      routes:
-        - id: request-validation-header-full
-          uri: /header-full
-          plugins:
-            request-validation:
-              header_schema:
-                type: object
-                required: [required_payload]
-                properties:
-                  required_payload: {type: string}
-                  boolean_payload: {type: boolean}
-                  timeouts: {type: integer, minimum: 1, maximum: 254, default: 3}
-                  req_headers: {type: array, minItems: 1, items: {type: string}}
-          upstream: {type: roundrobin, nodes: {'{{UPSTREAM_ADDR}}': 1}}
-    input: {method: GET, path: /header-full, headers: {required_payload: payload}}
-    upstream: {respond: {status: 200, body: ok}}
-    output: {status: 200, body: {equals: ok}}
-
-  - name: header-schema-object
-    config: {routes: [{id: request-validation-header-object, uri: /header-object, plugins: {request-validation: {header_schema: {type: object}}}, upstream: {type: roundrobin, nodes: {'{{UPSTREAM_ADDR}}': 1}}}]}
-    input: {method: GET, path: /header-object}
-    upstream: {respond: {status: 200, body: ok}}
-    output: {status: 200, body: {equals: ok}}
-
-  - name: header-schema-array
-    config: {routes: [{id: request-validation-header-array, uri: /header-array, plugins: {request-validation: {header_schema: {type: array}}}, upstream: {type: roundrobin, nodes: {'{{UPSTREAM_ADDR}}': 1}}}]}
-    input: {method: GET, path: /header-array}
-    upstream: {respond: {status: 200, body: unexpected}}
-    output: {status: 400}
-
-  - name: header-schema-string
-    config: {routes: [{id: request-validation-header-string, uri: /header-string, plugins: {request-validation: {header_schema: {type: string}}}, upstream: {type: roundrobin, nodes: {'{{UPSTREAM_ADDR}}': 1}}}]}
-    input: {method: GET, path: /header-string}
-    upstream: {respond: {status: 200, body: unexpected}}
-    output: {status: 400}
-
-  - name: header-schema-number
-    config: {routes: [{id: request-validation-header-number, uri: /header-number, plugins: {request-validation: {header_schema: {type: number}}}, upstream: {type: roundrobin, nodes: {'{{UPSTREAM_ADDR}}': 1}}}]}
-    input: {method: GET, path: /header-number}
-    upstream: {respond: {status: 200, body: unexpected}}
-    output: {status: 400}
-
-  - name: header-schema-integer
-    config: {routes: [{id: request-validation-header-integer, uri: /header-integer, plugins: {request-validation: {header_schema: {type: integer}}}, upstream: {type: roundrobin, nodes: {'{{UPSTREAM_ADDR}}': 1}}}]}
-    input: {method: GET, path: /header-integer}
-    upstream: {respond: {status: 200, body: unexpected}}
-    output: {status: 400}
-
-  - name: header-schema-table
-    config: {routes: [{id: request-validation-header-table, uri: /header-table, plugins: {request-validation: {header_schema: {type: table}}}, upstream: {type: roundrobin, nodes: {'{{UPSTREAM_ADDR}}': 1}}}]}
-    input: {method: GET, path: /header-table}
-    upstream: {respond: {status: 200, body: ok}}
-    output: {status: 200, body: {equals: ok}}
-
-  - name: header-schema-function
-    config: {routes: [{id: request-validation-header-function, uri: /header-function, plugins: {request-validation: {header_schema: {type: function}}}, upstream: {type: roundrobin, nodes: {'{{UPSTREAM_ADDR}}': 1}}}]}
-    input: {method: GET, path: /header-function}
-    upstream: {respond: {status: 200, body: unexpected}}
-    output: {status: 400}
-
-  - name: header-schema-invalid-type
-    config: {routes: [{id: request-validation-header-invalid-type, uri: /header-invalid-type, plugins: {request-validation: {header_schema: {type: test}}}, upstream: {type: roundrobin, nodes: {127.0.0.1:1980: 1}}}]}
-    input: {method: GET, path: /header-invalid-type}
-    output: {status: 404, logs: {matches: 'invalid header_schema'}}
-
-  - name: header-schema-invalid-enum
-    config: {routes: [{id: request-validation-header-invalid-enum, uri: /header-invalid-enum, plugins: {request-validation: {header_schema: {type: string, properties: {test: {type: string, enum: test-enum}}}}}, upstream: {type: roundrobin, nodes: {127.0.0.1:1980: 1}}}]}
-    input: {method: GET, path: /header-invalid-enum}
-    output: {status: 404, logs: {matches: 'invalid header_schema'}}
-
-  - name: header-schema-enum-config
-    config: {routes: [{id: request-validation-header-enum, uri: /header-enum, plugins: {request-validation: {header_schema: {type: string, properties: {test: {type: string, enum: [a, b, c]}}}}}, upstream: {type: roundrobin, nodes: {'{{UPSTREAM_ADDR}}': 1}}}]}
-    input: {method: GET, path: /header-enum, headers: {test: a}}
-    upstream: {respond: {status: 200, body: unexpected}}
-    output: {status: 400}
-
-  - name: header-schema-invalid-required
-    config: {routes: [{id: request-validation-header-invalid-required, uri: /header-invalid-required, plugins: {request-validation: {header_schema: {type: object, properties: {test: {type: string, enum: [a, b, c]}}, required: test-required}}}, upstream: {type: roundrobin, nodes: {127.0.0.1:1980: 1}}}]}
-    input: {method: GET, path: /header-invalid-required}
-    output: {status: 404, logs: {matches: 'invalid header_schema'}}
-
-  - name: header-schema-required
-    config: {routes: [{id: request-validation-header-required, uri: /header-required, plugins: {request-validation: {header_schema: {type: object, properties: {test: {type: string, enum: [a, b, c]}}, required: [test]}}}, upstream: {type: roundrobin, nodes: {'{{UPSTREAM_ADDR}}': 1}}}]}
-    input: {method: GET, path: /header-required, headers: {test: a}}
-    upstream: {respond: {status: 200, body: ok}}
-    output: {status: 200, body: {equals: ok}}
-
-  - name: header-required-custom-message
-    config: {routes: [{id: request-validation-header-custom, uri: /header-custom, plugins: {request-validation: {header_schema: {type: object, properties: {test: {type: string, enum: [a, b, c]}}, required: [test]}, rejected_msg: customize reject message for header_schema.required}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}]}
-    fixtures: [{name: primary, kind: http, respond: [{status: 200, body: hello world}]}]
-    steps:
-      - {name: empty-header-is-rejected, input: {method: GET, path: /header-custom}, output: {status: 400, body: {matches: '^customize reject message for header_schema.required\n$'}}}
-      - {name: bad-header-is-rejected, input: {method: GET, path: /header-custom, headers: {test: abc}}, output: {status: 400, body: {matches: '^customize reject message for header_schema.required\n$'}}}
-      - {name: valid-header-is-accepted, input: {method: GET, path: /header-custom, headers: {test: a}}, output: {status: 200, body: {equals: hello world}}}
-
-  - name: body-required-custom-message
-    config: {routes: [{id: request-validation-body-custom, uri: /body-custom, plugins: {request-validation: {body_schema: {type: object, properties: {test: {type: string, enum: [a, b, c]}}, required: [test]}, rejected_msg: customize reject message for body_schema.required}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}]}
-    fixtures: [{name: primary, kind: http, respond: [{status: 200, body: hello world}]}]
-    steps:
-      - {name: empty-body-is-rejected, input: {method: GET, path: /body-custom}, output: {status: 400, body: {matches: '^customize reject message for body_schema.required\n$'}}}
-      - {name: bad-body-is-rejected, input: {method: POST, path: /body-custom, headers: {Content-Type: application/json}, body: '{"test":"abc"}'}, output: {status: 400, body: {matches: '^customize reject message for body_schema.required\n$'}}}
-      - {name: valid-body-is-accepted, input: {method: POST, path: /body-custom, headers: {Content-Type: application/json}, body: '{"test":"a"}'}, output: {status: 200, body: {equals: hello world}}}
-
-  - name: header-custom-message-too-long
-    config: {routes: [{id: request-validation-header-long-message, uri: /header-long-message, plugins: {request-validation: {header_schema: {type: object, properties: {test: {type: string, enum: [a, b, c]}}, required: [test]}, rejected_msg: 'customize reject message customize reject message customize reject message customize reject message customize reject message customize reject message customize reject message customize reject message customize reject message customize reject message customize reject message'}}, upstream: {type: roundrobin, nodes: {127.0.0.1:1980: 1}}}]}
-    input: {method: GET, path: /header-long-message}
-    output: {status: 404, logs: {matches: request-validation}}
-
-  - name: custom-message-without-schema-is-rejected
-    config: {routes: [{id: request-validation-message-only, uri: /message-only, plugins: {request-validation: {rejected_msg: customize reject message}}, upstream: {type: roundrobin, nodes: {127.0.0.1:1980: 1}}}]}
-    input: {method: GET, path: /message-only}
-    output: {status: 404, logs: {matches: request-validation}}
-
-  - name: body-required-custom-code
-    config: {routes: [{id: request-validation-body-custom-code, uri: /body-custom-code, plugins: {request-validation: {body_schema: {type: object, properties: {test: {type: string, enum: [a, b, c]}}, required: [test]}, rejected_code: 505}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}]}
-    fixtures: [{name: primary, kind: http, respond: [{status: 200, body: hello world}]}]
-    steps:
-      - {name: empty-body-uses-custom-code, input: {method: GET, path: /body-custom-code}, output: {status: 505}}
-      - {name: invalid-body-uses-custom-code, input: {method: POST, path: /body-custom-code, headers: {Content-Type: application/json}, body: '{"test":"abc"}'}, output: {status: 505}}
-      - {name: valid-body-passes, input: {method: POST, path: /body-custom-code, headers: {Content-Type: application/json}, body: '{"test":"a"}'}, output: {status: 200, body: {equals: hello world}}}
-
-  - name: header-custom-code-out-of-range
-    config: {routes: [{id: request-validation-header-invalid-code, uri: /header-invalid-code, plugins: {request-validation: {header_schema: {type: object, properties: {test: {type: string, enum: [a, b, c]}}, required: [test]}, rejected_code: 10000}}, upstream: {type: roundrobin, nodes: {127.0.0.1:1980: 1}}}]}
-    input: {method: GET, path: /header-invalid-code}
-    output: {status: 404, logs: {matches: request-validation}}
-
-  - name: custom-code-without-schema-is-rejected
-    config: {routes: [{id: request-validation-code-only, uri: /code-only, plugins: {request-validation: {rejected_code: 505}}, upstream: {type: roundrobin, nodes: {127.0.0.1:1980: 1}}}]}
-    input: {method: GET, path: /code-only}
-    output: {status: 404, logs: {matches: request-validation}}
-
-  - name: urlencoded-body-and-charset
-    config: {routes: [{id: request-validation-urlencoded, uri: /echo, plugins: {request-validation: {body_schema: {type: object, required: [required_payload], properties: {required_payload: {type: string}}}}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}]}
-    fixtures: [{name: primary, kind: http, expect: [{body: {matches: '^(a=b&){101}required_payload=101-hello$'}}, {body: {matches: '^(a=b&){101}required_payload=101-hello$'}}], respond: [{status: 200, echo_request_body: true}, {status: 200, echo_request_body: true}]}]
-    steps:
-      - {name: urlencoded-body, input: {method: POST, path: /echo, headers: {Content-Type: application/x-www-form-urlencoded}, body_repeat: {value: 'a=b&', count: 101, suffix: required_payload=101-hello}}, output: {status: 200, body: {matches: 101-hello}}}
-      - {name: urlencoded-body-with-charset, input: {method: POST, path: /echo, headers: {Content-Type: 'application/x-www-form-urlencoded; charset=utf-8'}, body_repeat: {value: 'a=b&', count: 101, suffix: required_payload=101-hello}}, output: {status: 200, body: {matches: 101-hello}}}
-
-  - name: duplicate-json-key-is-normalized
-    config: {routes: [{id: request-validation-duplicate-key, uri: /duplicate-key, plugins: {request-validation: {body_schema: {type: object, properties: {k: {pattern: '^good$'}}}}}, upstream: {type: roundrobin, nodes: {'{{UPSTREAM_ADDR}}': 1}}}]}
-    input: {method: POST, path: /duplicate-key, headers: {Content-Type: application/json}, body: '{"k":"bad","k":"good"}'}
-    upstream: {expect: {body: {equals: '{"k":"good"}'}}, respond: {status: 200, echo_request_body: true}}
-    output: {status: 200, body: {equals: '{"k":"good"}'}}

@@ -244,5 +244,4 @@ qualification state.
 | [0006](architecture/adr/0006-opa-resource-context-redaction.md) | accepted | Limit OPA resource context to non-secret identity fields. |
 | [0007](architecture/adr/0007-bounded-acl-jsonpath.md) | proposed | Bound ACL JSONPath evaluation and evaluate every match. |
 | [0008](architecture/adr/0008-request-validation-secret-schema-safety.md) | proposed | Bound secret-backed schema compilation and lifetime. |
-| [0009](architecture/adr/0009-rocketmq-client-safety.md) | proposed | Patch the pinned RocketMQ client for cancellation and lifecycle safety. |
 | [0010](architecture/adr/0010-bounded-ai-proxy-multi-dns.md) | proposed | Bound DNS and active-health work for `ai-proxy-multi`. |

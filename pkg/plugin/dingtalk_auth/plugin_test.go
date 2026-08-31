@@ -1051,7 +1051,12 @@ func TestRemovedCookiePolicyFieldsHaveNoEffect(t *testing.T) {
 		"state":   stateCookie,
 	} {
 		if cookie.Secure || cookie.SameSite != http.SameSiteLaxMode {
-			t.Errorf("%s cookie attributes = secure:%t sameSite:%v, want secure:false sameSite:Lax", name, cookie.Secure, cookie.SameSite)
+			t.Errorf(
+				"%s cookie attributes = secure:%t sameSite:%v, want secure:false sameSite:Lax",
+				name,
+				cookie.Secure,
+				cookie.SameSite,
+			)
 		}
 	}
 }

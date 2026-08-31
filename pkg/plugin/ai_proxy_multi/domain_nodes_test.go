@@ -193,7 +193,7 @@ func TestExecutionTargetSkipsUnresolvedHigherPriorityInstance(t *testing.T) {
 	}
 }
 
-func TestDomainResolutionRejectsAddressSetAboveBound(t *testing.T) {
+func TestDomainResolutionAcceptsEveryUniqueAddress(t *testing.T) {
 	addresses := make([]netip.Addr, 65)
 	for index := range addresses {
 		addresses[index] = netip.AddrFrom16([16]byte{0x20, 0x01, 0x0d, 0xb8, byte(index >> 8), byte(index)})
@@ -207,75 +207,15 @@ func TestDomainResolutionRejectsAddressSetAboveBound(t *testing.T) {
 	}
 	p.initResolverDefaults()
 
-	if err := p.refreshResolvedNodes(context.Background(), true); err == nil {
-		t.Fatal("refreshResolvedNodes() accepted 65 addresses")
-	}
-	if nodes := p.resolvedNodes(0); len(nodes) != 0 {
-		t.Fatalf("resolved nodes = %d, want fail-closed empty set", len(nodes))
-	}
-}
-
-func TestDomainResolutionUsesBoundedParallelWorkers(t *testing.T) {
-	instances := make([]Instance, 8)
-	for index := range instances {
-		instances[index] = Instance{
-			Name: "domain-" + strconv.Itoa(index), Provider: "openai-compatible", Weight: 1,
-			Override: Override{Endpoint: "https://llm-" + strconv.Itoa(index) + ".internal/v1"},
-		}
-	}
-	tasks, owner, _ := newAIHealthTestTasks(t)
-	release := make(chan struct{})
-	var releaseOnce sync.Once
-	var active, maximum atomic.Int32
-	p := &Plugin{config: Config{Instances: instances}}
-	p.lookupNetIP = func(ctx context.Context, _, _ string) ([]netip.Addr, error) {
-		current := active.Add(1)
-		defer active.Add(-1)
-		for {
-			seen := maximum.Load()
-			if current <= seen || maximum.CompareAndSwap(seen, current) {
-				break
-			}
-		}
-		select {
-		case <-release:
-			return []netip.Addr{netip.MustParseAddr("192.0.2.1")}, nil
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		}
-	}
-	if err := p.Init(); err != nil {
-		t.Fatalf("Init() error = %v", err)
-	}
-	p.SetDependencies(base.Dependencies{Tasks: owner})
-	done := make(chan error, 1)
-	finished := false
-	go func() { done <- p.refreshResolvedNodes(context.Background(), true) }()
-	t.Cleanup(func() {
-		releaseOnce.Do(func() { close(release) })
-		if !finished {
-			<-done
-		}
-		stopTestRegistry(t, tasks)
-		p.Stop()
-	})
-
-	deadline := time.Now().Add(200 * time.Millisecond)
-	for maximum.Load() < 4 && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
-	}
-	if got := maximum.Load(); got != 4 {
-		t.Fatalf("concurrent DNS lookups = %d, want fixed worker count 4", got)
-	}
-	releaseOnce.Do(func() { close(release) })
-	err := <-done
-	finished = true
-	if err != nil {
+	if err := p.refreshResolvedNodes(context.Background(), true); err != nil {
 		t.Fatalf("refreshResolvedNodes() error = %v", err)
 	}
+	if nodes := p.resolvedNodes(0); len(nodes) != len(addresses) {
+		t.Fatalf("resolved nodes = %d, want every %d unique addresses", len(nodes), len(addresses))
+	}
 }
 
-func TestResolvedHealthPassUsesBoundedWorkerTasks(t *testing.T) {
+func TestResolvedHealthPassHonorsConfiguredConcurrencyAboveFormerLocalCap(t *testing.T) {
 	addresses := make([]netip.Addr, 64)
 	for index := range addresses {
 		addresses[index] = netip.MustParseAddr("2001:db8::" + strconv.FormatInt(int64(index+1), 16))
@@ -326,17 +266,17 @@ func TestResolvedHealthPassUsesBoundedWorkerTasks(t *testing.T) {
 		p.Stop()
 	})
 	deadline := time.Now().Add(time.Second)
-	for len(tasks.Active()) < 32 && time.Now().Before(deadline) {
+	for len(tasks.Active()) < 64 && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
 	}
-	if active := tasks.Active(); len(active) != 32 {
-		t.Fatalf("active health worker tasks = %d (%v), want fixed cap 32", len(active), active)
+	if active := tasks.Active(); len(active) != 64 {
+		t.Fatalf("active health worker tasks = %d (%v), want configured concurrency 64", len(active), active)
 	}
 	releaseOnce.Do(func() { close(release) })
 	complete := <-done
 	finished = true
 	if !complete {
-		t.Fatal("refreshHealthPass() = false, want complete bounded pass")
+		t.Fatal("refreshHealthPass() = false, want complete pass")
 	}
 }
 

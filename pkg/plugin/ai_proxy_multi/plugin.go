@@ -689,7 +689,7 @@ func (p *Plugin) PostInit() error {
 	p.initResolverDefaults()
 	// Publish domain requirements without doing network I/O during generation
 	// preparation. The owned health task resolves them and requests stay
-	// fail-closed until a bounded node set is available.
+	// fail-closed until a node set is available.
 	p.initializeResolvedNodeMetadata()
 	p.initHealthStates()
 	if len(p.health) > 0 || p.hasDomainEndpoints() {

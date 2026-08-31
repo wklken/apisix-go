@@ -32,7 +32,7 @@ RUN apk upgrade --no-cache \
 
 WORKDIR /usr/local/apisix
 
-COPY --chown=apisix:apisix conf/config.yaml conf/config-default.yaml conf/config-production.yaml /usr/local/apisix/conf/
+COPY --chown=apisix:apisix conf/config.yaml conf/config-default.yaml /usr/local/apisix/conf/
 
 COPY --from=builder /apisix /usr/bin/apisix
 

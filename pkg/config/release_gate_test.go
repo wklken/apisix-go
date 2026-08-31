@@ -293,48 +293,6 @@ func TestCapabilitySummaryContainsOnlyBoundedSafeFacts(t *testing.T) {
 	}
 }
 
-func TestProductionConfigRequiresExplicitEtcdEndpoint(t *testing.T) {
-	defaultPath, productionPath := repositoryConfigPaths(t)
-	_, err := loadEffectiveTestFiles(t, defaultPath, productionPath)
-	if err == nil || !strings.Contains(err.Error(), "deployment.etcd.host") {
-		t.Fatalf("LoadEffective() error = %v, want missing production etcd endpoint rejection", err)
-	}
-}
-
-func TestHTTPDataPlaneProductionConfigLoads(t *testing.T) {
-	defaultPath, productionPath := repositoryConfigPaths(t)
-	_, err := loadEffectiveTestFiles(t, defaultPath, productionPath, map[string]string{
-		"APISIX_DEPLOYMENT_ETCD_HOST": `["https://etcd.example:2379"]`,
-	})
-	if err != nil {
-		t.Fatalf("LoadEffective() error = %v, want production config accepted", err)
-	}
-}
-
-func TestHTTPDataPlaneProductionConfig(t *testing.T) {
-	path := repositoryPath(t, "conf", "config-production.yaml")
-	document, err := readConfigDocument(path, map[string]string{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := decodeConfig(document)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.Deployment.Role != "data_plane" || cfg.Deployment.RoleDataPlane.ConfigProvider != "etcd" {
-		t.Fatalf("production deployment = %#v, want data_plane/etcd", cfg.Deployment)
-	}
-	if cfg.Apisix.ProxyMode != "http" || cfg.Apisix.EnableAdmin ||
-		len(cfg.Apisix.StreamProxy.Tcp) != 0 || len(cfg.Apisix.StreamProxy.Udp) != 0 ||
-		len(cfg.StreamPlugins) != 0 {
-		t.Fatalf("production HTTP-only shape is invalid: apisix=%#v stream_plugins=%v",
-			cfg.Apisix, cfg.StreamPlugins)
-	}
-	if cfg.Deployment.Etcd.TLS.Verify == nil || !*cfg.Deployment.Etcd.TLS.Verify {
-		t.Fatal("production etcd TLS verification must be explicitly true")
-	}
-}
-
 func TestDefaultConfigDisablesAdmin(t *testing.T) {
 	defaultPath := repositoryPath(t, "conf", "config-default.yaml")
 	cfg, err := loadEffectiveTestFiles(t, defaultPath, "")
@@ -432,8 +390,7 @@ func TestProductionDockerfileContract(t *testing.T) {
 	}
 	dockerfile := string(contents)
 	for _, want := range []string{
-		"COPY --chown=apisix:apisix conf/config.yaml conf/config-default.yaml " +
-			"conf/config-production.yaml /usr/local/apisix/conf/",
+		"COPY --chown=apisix:apisix conf/config.yaml conf/config-default.yaml /usr/local/apisix/conf/",
 		"apk add --no-cache ca-certificates",
 		"USER 10001:10001",
 		"CMD [\"-c\", \"/usr/local/apisix/conf/config.yaml\"]",
@@ -447,11 +404,6 @@ func TestProductionDockerfileContract(t *testing.T) {
 			t.Errorf("Dockerfile unexpectedly contains %q", reject)
 		}
 	}
-}
-
-func repositoryConfigPaths(t *testing.T) (string, string) {
-	t.Helper()
-	return repositoryPath(t, "conf", "config-default.yaml"), repositoryPath(t, "conf", "config-production.yaml")
 }
 
 func repositoryPath(t *testing.T, parts ...string) string {

@@ -224,10 +224,9 @@ connection draining, and graceful termination. There is no internal
 supervisor/worker or listener-inheritance protocol.
 
 The container runs as UID/GID `10001:10001` and defaults to
-`/usr/local/apisix/conf/config.yaml`. `conf/config-production.yaml` is an
-explicit production example used by operational validation. Candidate
-qualification builds an ephemeral Linux amd64 image for container and
-stability evidence; the repository does not publish that image. See
+`/usr/local/apisix/conf/config.yaml`. Candidate qualification builds an
+ephemeral Linux amd64 image for container and stability evidence; the
+repository does not publish that image. See
 [HTTP candidate qualification](runbooks/http-candidate-qualification.md).
 
 ## Architecture decisions

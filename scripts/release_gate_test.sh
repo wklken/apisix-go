@@ -7,7 +7,6 @@ dockerfile="$repo_root/Dockerfile"
 workflow="$repo_root/.github/workflows/security-release-gates.yml"
 unit_workflow="$repo_root/.github/workflows/unit-test.yml"
 candidate_workflow="$repo_root/.github/workflows/release-candidate.yml"
-production_config="$repo_root/conf/config-production.yaml"
 
 require_fixed() {
     local text=$1
@@ -67,7 +66,6 @@ test -f "$candidate_workflow"
 test -f "$unit_workflow"
 test -f "$makefile"
 test -f "$dockerfile"
-test -f "$production_config"
 
 for file in "$unit_workflow" "$candidate_workflow" "$makefile"; do
     reject_pattern 'COVERAGE_MIN|make test-cover|check-unit-coverage' "$file"
@@ -102,12 +100,6 @@ done
 for file in "$workflow" "$candidate_workflow"; do
     reject_pattern 'publish-image|run-upgrade-rollback|rollback-release-tag|upgrade-rollback|production-release|cosign|docker push|attest-build-provenance|packages: write|attestations: write' "$file"
 done
-
-# The qualified runtime slice remains HTTP data-plane + etcd, without admin.
-require_fixed '  role: data_plane' "$production_config"
-require_fixed '    config_provider: etcd' "$production_config"
-require_fixed '  proxy_mode: http' "$production_config"
-require_fixed '  enable_admin: false' "$production_config"
 
 # Ordinary CI continues to enforce the candidate contract.
 require_job_fixed "$unit_workflow" build-and-unit 'run: bash scripts/release_gate_test.sh'

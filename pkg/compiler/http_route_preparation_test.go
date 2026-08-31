@@ -145,9 +145,7 @@ func TestWorkerFactoryCompilesGlobalGRPCTranscodeWithGenerationProtoImports(t *t
 		context.Background(),
 		ticketForSnapshot(desired, generation.DomainHTTP),
 		desired,
-		nil,
-		nil,
-	)
+		nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -188,7 +186,7 @@ func TestWorkerFactoryPreparesAIProxyMultiTerminalRoute(t *testing.T) {
 	if err != nil {
 		t.Fatalf("prepareGenerationSecrets() error = %v", err)
 	}
-	prepared, err := factory.transferPreparedGeneration(context.Background(), registered, nil)
+	prepared, err := factory.transferPreparedGeneration(context.Background(), registered)
 	if err != nil {
 		t.Fatalf("transferPreparedGeneration() error = %v, completed stages = %v", err, trace)
 	}
@@ -220,9 +218,7 @@ func TestWorkerFactoryPreparesAIProxyWithResponseRewrite(t *testing.T) {
 		context.Background(),
 		ticketForSnapshot(desired, generation.DomainHTTP),
 		desired,
-		nil,
-		nil,
-	)
+		nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -315,8 +311,7 @@ func TestWorkerFactoryKeepsRouteWithRedisLimitCountConsumer(t *testing.T) {
 "plugins":{"key-auth":{}},"upstream":{"nodes":{"127.0.0.1:9080":1},"type":"roundrobin"}}`),
 	}, nil)
 	prepared, err := factory.PrepareGeneration(
-		context.Background(), ticketForSnapshot(desired, generation.DomainHTTP), desired, nil, nil,
-	)
+		context.Background(), ticketForSnapshot(desired, generation.DomainHTTP), desired, nil)
 	if err != nil {
 		t.Fatalf("PrepareGeneration() error = %v", err)
 	}

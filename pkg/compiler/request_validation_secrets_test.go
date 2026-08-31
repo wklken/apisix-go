@@ -95,9 +95,7 @@ func TestWorkerFactoryUsesManifestRequestValidationDeclarationWithExactOccurrenc
 		context.Background(),
 		ticketForSnapshot(desired, generation.DomainHTTP),
 		desired,
-		nil,
-		nil,
-	)
+		nil)
 	if err != nil {
 		t.Fatalf("PrepareGeneration() error = %v", err)
 	}
@@ -184,9 +182,7 @@ func TestWorkerFactorySharesRequestValidationCompileLimitAcrossAttemptBindings(t
 			context.Background(),
 			ticketForSnapshot(desired, generation.DomainHTTP),
 			desired,
-			nil,
-			nil,
-		)
+			nil)
 		if err != nil {
 			t.Fatalf("PrepareGeneration(%d) error = %v", revision, err)
 		}

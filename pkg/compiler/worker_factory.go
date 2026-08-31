@@ -139,7 +139,6 @@ func (factory *WorkerCompilerFactory) PrepareGeneration(
 	ticket generation.ApplyTicket,
 	desired generation.Snapshot,
 	previous map[generation.Domain]generation.PublishedGeneration,
-	onFailure func(runtime.TaskFailure),
 ) (*PreparedGeneration, error) {
 	if factory == nil || ctx == nil {
 		return nil, fmt.Errorf("%w: worker compiler factory and context are required", ErrInvalidInput)
@@ -157,7 +156,7 @@ func (factory *WorkerCompilerFactory) PrepareGeneration(
 	if err != nil {
 		return nil, workerGenerationFailure(err, nil)
 	}
-	return factory.transferPreparedGeneration(ctx, registered, onFailure)
+	return factory.transferPreparedGeneration(ctx, registered)
 }
 
 // Close terminally stops every live generation before closing the shared
@@ -332,7 +331,6 @@ func workerRetryableCleanupResult(err error) error {
 func (factory *WorkerCompilerFactory) transferPreparedGeneration(
 	ctx context.Context,
 	registered *preparedSecretGeneration,
-	onFailure func(runtime.TaskFailure),
 ) (*PreparedGeneration, error) {
 	cleanup := &cleanupStack{}
 	var prepared *PreparedGeneration
@@ -365,7 +363,7 @@ func (factory *WorkerCompilerFactory) transferPreparedGeneration(
 		return fail(err)
 	}
 
-	tasks := runtime.NewTaskRegistry(context.WithoutCancel(ctx), onFailure)
+	tasks := runtime.NewTaskRegistry(context.WithoutCancel(ctx), nil)
 	if err := cleanup.Own(cleanupQuiesce, "generation-tasks", func(stopCtx context.Context) error {
 		residuals, stopErr := tasks.Stop(stopCtx)
 		if stopErr != nil || len(residuals) != 0 {
@@ -434,7 +432,6 @@ func (factory *WorkerCompilerFactory) transferPreparedGeneration(
 		registry: factory.registry, materializer: factory.materializer, cleanup: cleanup,
 		observers:          factory.observers,
 		clusterObservers:   factory.clusterObservers,
-		taskFailure:        onFailure,
 		bindingOps:         factory.bindingOps.withDefaults(generationNumber),
 		trustedClientCAPEM: bytes.Clone(factory.trustedClientCAPEM),
 	}

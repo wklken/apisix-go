@@ -21,7 +21,7 @@ It must pass:
 
 | Gate | Required evidence |
 | --- | --- |
-| Source | Lint, build, unit tests, plugin registry drift, and plugin harness. |
+| Source | Lint, build, unit tests, plugin registry contract tests, and plugin harness. |
 | HTTP smoke | Focused real-process authentication, rewrite, proxy-control, and rejection cases. |
 | Concurrency and dependencies | Focused race tests plus reachable Go and container vulnerability checks. |
 | Container | Linux amd64 build, non-root proxy smoke, graceful shutdown, SBOM, and immutable local image identity. |

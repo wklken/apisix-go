@@ -518,14 +518,21 @@ func TestAliyunRequestStopBoundaryForScopedCredentials(t *testing.T) {
 		close(requestDone)
 	}()
 	<-transport.entered
-	stopAttempted := make(chan struct{})
-	p.stopStarted = func() { close(stopAttempted) }
 	stopDone := make(chan struct{})
 	go func() {
 		p.Stop()
 		close(stopDone)
 	}()
-	<-stopAttempted
+	deadline := time.Now().Add(time.Second)
+	for p.secretMu.TryRLock() {
+		p.secretMu.RUnlock()
+		if time.Now().After(deadline) {
+			close(transport.release)
+			<-requestDone
+			t.Fatal("timed out waiting for Stop() to wait on the credential write lock")
+		}
+		time.Sleep(time.Millisecond)
+	}
 	if transport.request.GetBody != nil {
 		t.Fatal("request retained GetBody after signed request construction")
 	}

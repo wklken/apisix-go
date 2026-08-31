@@ -37,6 +37,7 @@ const (
 	defaultMaxConcurrency   = 8
 	defaultMaxTimeout       = 30000
 	hardMaxTimeout          = 60000
+	maxBufferedResponses    = 20
 )
 
 const schema = `{"type":"object"}`
@@ -268,9 +269,11 @@ func handleBatchRequest(
 	timeout := time.Duration(timeoutMilliseconds) * time.Millisecond
 
 	responses := make([]PipelineResponse, 0, len(req.Pipeline))
+	remainingResponseBodyBytes := limits.maxResponseBodySize * maxBufferedResponses
 	for _, item := range req.Pipeline {
+		maxResponseBodySize := min(limits.maxResponseBodySize, remainingResponseBodyBytes)
 		result, timedOut, err := dispatcher.dispatch(
-			r, req, item, timeout, limits.maxResponseBodySize, tasks,
+			r, req, item, timeout, maxResponseBodySize, tasks,
 		)
 		if err != nil {
 			if waitErr := tasks.Wait(); waitErr != nil {
@@ -283,6 +286,7 @@ func handleBatchRequest(
 				return nil, http.StatusInternalServerError, waitErr
 			}
 		}
+		remainingResponseBodyBytes -= int64(len(result.response.Body))
 		responses = append(responses, result.response)
 		if timedOut {
 			break

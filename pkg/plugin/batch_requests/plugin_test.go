@@ -73,6 +73,28 @@ func TestMetadataSchemaRejectsNonpositiveLimits(t *testing.T) {
 	}
 }
 
+func TestLegacyMetadataFieldsCannotChangeInternalLimits(t *testing.T) {
+	view, err := runtime.NewMetadataView(map[string][]byte{
+		name: []byte(`{"max_concurrency":1,"max_response_body_size":1,"max_timeout":1}`),
+	})
+	if err != nil {
+		t.Fatalf("NewMetadataView() error = %v", err)
+	}
+	var limits Limits
+	if _, err := view.Decode(name, &limits); err != nil {
+		t.Fatalf("Decode() error = %v", err)
+	}
+	limits = applyLimitDefaults(limits)
+	if limits.maxConcurrency != 8 || limits.maxResponseBodySize != 4*1024*1024 || limits.maxTimeout != 30000 {
+		t.Fatalf(
+			"internal limits = concurrency %d, response bytes %d, timeout %d; want fixed defaults",
+			limits.maxConcurrency,
+			limits.maxResponseBodySize,
+			limits.maxTimeout,
+		)
+	}
+}
+
 func TestHandlerRejectsNestedBatchBeforeConcurrencyLease(t *testing.T) {
 	mux := http.NewServeMux()
 	handler := NewHandlerWithLimits(mux, Limits{maxConcurrency: 1})
@@ -361,6 +383,28 @@ func TestHandlerBoundsPipelineResponseBody(t *testing.T) {
 	}
 	if responses[0].Body != "" || responses[1].Body != "" {
 		t.Fatalf("oversized bodies retained: %#v", responses)
+	}
+}
+
+func TestHandlerBoundsAggregatePipelineResponseBodies(t *testing.T) {
+	dispatcher := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "12345")
+	})
+	handler := NewHandlerWithLimits(dispatcher, Limits{maxResponseBodySize: 5})
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, newBatchRequest(t, 21))
+
+	responses := decodeAllPipelineResponses(t, res.Body.String())
+	if len(responses) != 21 {
+		t.Fatalf("responses = %d, want 21", len(responses))
+	}
+	for i, response := range responses[:20] {
+		if response.Status != http.StatusOK || response.Body != "12345" {
+			t.Fatalf("response[%d] = %#v, want retained 200 response", i, response)
+		}
+	}
+	if got := responses[20]; got.Status != http.StatusBadGateway || got.Body != "" {
+		t.Fatalf("response[20] = %#v, want aggregate-limit 502 without body", got)
 	}
 }
 

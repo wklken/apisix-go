@@ -1,14 +1,5 @@
-source:
-  repository: https://github.com/apache/apisix
-  commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-  file: t/plugin/client-control.t
-  tests: 6
-  test_numbers: [1, 2, 3, 4, 6, 7]
-
 cases:
   - name: route-body-limit
-    source:
-      tests: [1, 2, 3, 4]
     config:
       routes:
         - id: client-control-five-bytes
@@ -60,8 +51,6 @@ cases:
             equals: done
 
   - name: zero-disables-limit
-    source:
-      tests: [6, 7]
     config:
       routes:
         - id: client-control-unlimited

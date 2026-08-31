@@ -2,12 +2,6 @@
   "cases": [
     {
       "name": "openid-connect-identity-headers-set-up-route-with-unauth-action-pass-so-unauthenticated-requests-pass-th-test-1",
-      "source": {
-        "file": "t/plugin/openid-connect-identity-headers.t",
-        "tests": [
-          1
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -91,12 +85,6 @@
     },
     {
       "name": "openid-connect-identity-headers-access-route-without-authentication-client-supplied-x-userinfo-x-id-toke-test-2",
-      "source": {
-        "file": "t/plugin/openid-connect-identity-headers.t",
-        "tests": [
-          2
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -180,12 +168,6 @@
     },
     {
       "name": "openid-connect-identity-headers-update-route-to-bearer-only-with-embedded-rs256-public-key-test-3",
-      "source": {
-        "file": "t/plugin/openid-connect-identity-headers.t",
-        "tests": [
-          3
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -267,12 +249,6 @@
     },
     {
       "name": "openid-connect-identity-headers-access-route-with-valid-bearer-token-and-a-client-supplied-x-access-toke-test-4",
-      "source": {
-        "file": "t/plugin/openid-connect-identity-headers.t",
-        "tests": [
-          4
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -354,12 +330,6 @@
     },
     {
       "name": "openid-connect-redis-check-schema-with-valid-redis-session-configuration-test-1",
-      "source": {
-        "file": "t/plugin/openid-connect-redis.t",
-        "tests": [
-          1
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -449,12 +419,6 @@
     },
     {
       "name": "openid-connect-redis-check-schema-with-invalid-redis-session-configuration-port-string-test-2",
-      "source": {
-        "file": "t/plugin/openid-connect-redis.t",
-        "tests": [
-          2
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -515,12 +479,6 @@
     },
     {
       "name": "openid-connect-redis-verify-session-sharing-across-routes-with-redis-simulate-refresh-scenari-test-3",
-      "source": {
-        "file": "t/plugin/openid-connect-redis.t",
-        "tests": [
-          3
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -706,12 +664,6 @@
     },
     {
       "name": "openid-connect-redis-check-schema-with-missing-redis-configuration-when-storage-is-redis-test-4",
-      "source": {
-        "file": "t/plugin/openid-connect-redis.t",
-        "tests": [
-          4
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -768,12 +720,6 @@
     },
     {
       "name": "openid-connect-sanity-check-with-minimal-valid-configuration-test-1",
-      "source": {
-        "file": "t/plugin/openid-connect.t",
-        "tests": [
-          1
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -842,12 +788,6 @@
     },
     {
       "name": "openid-connect-missing-client-id-test-2",
-      "source": {
-        "file": "t/plugin/openid-connect.t",
-        "tests": [
-          2
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -899,12 +839,6 @@
     },
     {
       "name": "openid-connect-wrong-type-for-client-id-test-3",
-      "source": {
-        "file": "t/plugin/openid-connect.t",
-        "tests": [
-          3
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -957,12 +891,6 @@
     },
     {
       "name": "openid-connect-set-up-new-route-with-plugin-matching-uri-hello-test-4",
-      "source": {
-        "file": "t/plugin/openid-connect.t",
-        "tests": [
-          4
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -1038,12 +966,6 @@
     },
     {
       "name": "openid-connect-verify-encrypted-field-test-5",
-      "source": {
-        "file": "t/plugin/openid-connect.t",
-        "tests": [
-          5
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -1117,12 +1039,6 @@
     },
     {
       "name": "openid-connect-access-route-without-bearer-token-should-redirect-to-authentication-endp-test-6",
-      "source": {
-        "file": "t/plugin/openid-connect.t",
-        "tests": [
-          6
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -1198,12 +1114,6 @@
     },
     {
       "name": "openid-connect-modify-route-to-match-catch-all-uri-and-point-plugin-to-local-keycloak-i-test-7",
-      "source": {
-        "file": "t/plugin/openid-connect.t",
-        "tests": [
-          7
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -1279,12 +1189,6 @@
     },
     {
       "name": "openid-connect-access-route-without-bearer-token-and-go-through-the-full-oidc-relying-p-test-8",
-      "source": {
-        "file": "t/plugin/openid-connect.t",
-        "tests": [
-          8
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -1442,12 +1346,6 @@
     },
     {
       "name": "openid-connect-re-configure-plugin-with-respect-to-headers-that-get-sent-to-upstream-test-9",
-      "source": {
-        "file": "t/plugin/openid-connect.t",
-        "tests": [
-          9
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -1523,12 +1421,6 @@
     },
     {
       "name": "openid-connect-access-route-without-bearer-token-and-go-through-the-full-oidc-relying-p-test-10",
-      "source": {
-        "file": "t/plugin/openid-connect.t",
-        "tests": [
-          10
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -1693,12 +1585,6 @@
     },
     {
       "name": "openid-connect-update-plugin-with-bearer-only-true-test-11",
-      "source": {
-        "file": "t/plugin/openid-connect.t",
-        "tests": [
-          11
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -1767,12 +1653,6 @@
     },
     {
       "name": "openid-connect-access-route-without-bearer-token-should-return-401-unauthorized-test-12",
-      "source": {
-        "file": "t/plugin/openid-connect.t",
-        "tests": [
-          12
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -1841,12 +1721,6 @@
     },
     {
       "name": "openid-connect-access-route-with-invalid-authorization-header-value-should-return-400-b-test-13",
-      "source": {
-        "file": "t/plugin/openid-connect.t",
-        "tests": [
-          13
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -1912,12 +1786,6 @@
     },
     {
       "name": "openid-connect-update-plugin-with-id-provider-public-key-so-tokens-can-be-validated-loc-test-14",
-      "source": {
-        "file": "t/plugin/openid-connect.t",
-        "tests": [
-          14
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -1990,12 +1858,6 @@
     },
     {
       "name": "openid-connect-access-route-with-valid-token-test-15",
-      "source": {
-        "file": "t/plugin/openid-connect.t",
-        "tests": [
-          15
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -2068,12 +1930,6 @@
     },
     {
       "name": "openid-connect-update-route-uri-to-uri-where-upstream-endpoint-returns-request-headers-test-16",
-      "source": {
-        "file": "t/plugin/openid-connect.t",
-        "tests": [
-          16
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -2146,12 +2002,6 @@
     },
     {
       "name": "openid-connect-access-route-with-valid-token-in-authorization-header-upstream-should-ad-test-17",
-      "source": {
-        "file": "t/plugin/openid-connect.t",
-        "tests": [
-          17
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -2224,12 +2074,6 @@
     },
     {
       "name": "openid-connect-update-plugin-to-only-use-authorization-header-test-18",
-      "source": {
-        "file": "t/plugin/openid-connect.t",
-        "tests": [
-          18
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -2304,12 +2148,6 @@
     },
     {
       "name": "openid-connect-access-route-with-valid-token-in-authorization-header-upstream-should-no-test-19",
-      "source": {
-        "file": "t/plugin/openid-connect.t",
-        "tests": [
-          19
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -2384,12 +2222,6 @@
     },
     {
       "name": "openid-connect-switch-route-uri-back-to-hello-test-20",
-      "source": {
-        "file": "t/plugin/openid-connect.t",
-        "tests": [
-          20
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -2465,12 +2297,6 @@
     },
     {
       "name": "openid-connect-access-route-with-invalid-token-should-return-401-test-21",
-      "source": {
-        "file": "t/plugin/openid-connect.t",
-        "tests": [
-          21
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -2536,12 +2362,6 @@
     },
     {
       "name": "openid-connect-update-route-with-keycloak-introspection-endpoint-and-public-key-removed-test-22",
-      "source": {
-        "file": "t/plugin/openid-connect.t",
-        "tests": [
-          22
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -2629,12 +2449,6 @@
     },
     {
       "name": "openid-connect-obtain-valid-token-and-access-route-with-it-test-23",
-      "source": {
-        "file": "t/plugin/openid-connect.t",
-        "tests": [
-          23
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -2722,12 +2536,6 @@
     },
     {
       "name": "openid-connect-access-route-with-an-invalid-token-test-24",
-      "source": {
-        "file": "t/plugin/openid-connect.t",
-        "tests": [
-          24
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -2803,12 +2611,6 @@
     },
     {
       "name": "openid-connect-check-defaults-test-25",
-      "source": {
-        "file": "t/plugin/openid-connect.t",
-        "tests": [
-          25
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -2877,12 +2679,6 @@
     },
     {
       "name": "openid-connect-update-plugin-with-id-provider-jwks-endpoint-for-token-verification-test-26",
-      "source": {
-        "file": "t/plugin/openid-connect.t",
-        "tests": [
-          26
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -2970,12 +2766,6 @@
     },
     {
       "name": "openid-connect-obtain-valid-token-and-access-route-with-it-test-27",
-      "source": {
-        "file": "t/plugin/openid-connect.t",
-        "tests": [
-          27
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -3063,12 +2853,6 @@
     },
     {
       "name": "openid-connect-access-route-with-an-invalid-token-test-28",
-      "source": {
-        "file": "t/plugin/openid-connect.t",
-        "tests": [
-          28
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -3149,12 +2933,6 @@
     },
     {
       "name": "openid-connect-modify-route-to-match-catch-all-uri-and-add-post-logout-redirect-uri-opt-test-29",
-      "source": {
-        "file": "t/plugin/openid-connect.t",
-        "tests": [
-          29
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -3230,12 +3008,6 @@
     },
     {
       "name": "openid-connect-access-route-without-bearer-token-and-request-logout-to-redirect-to-post-test-30",
-      "source": {
-        "file": "t/plugin/openid-connect.t",
-        "tests": [
-          30
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -3375,12 +3147,6 @@
     },
     {
       "name": "openid-connect-switch-route-uri-back-to-hello-and-enable-pkce-test-31",
-      "source": {
-        "file": "t/plugin/openid-connect.t",
-        "tests": [
-          31
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -3457,12 +3223,6 @@
     },
     {
       "name": "openid-connect-access-route-without-bearer-token-should-redirect-to-authentication-endp-test-32",
-      "source": {
-        "file": "t/plugin/openid-connect.t",
-        "tests": [
-          32
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -3539,12 +3299,6 @@
     },
     {
       "name": "openid-connect-set-use-jwks-and-set-userinfo-header-to-validate-x-userinfo-in-request-h-test-33",
-      "source": {
-        "file": "t/plugin/openid-connect.t",
-        "tests": [
-          33
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -3632,12 +3386,6 @@
     },
     {
       "name": "openid-connect-access-route-to-validate-x-userinfo-in-request-header-test-34",
-      "source": {
-        "file": "t/plugin/openid-connect.t",
-        "tests": [
-          34
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -3731,12 +3479,6 @@
     },
     {
       "name": "openid-connect-set-up-new-route-with-plugin-matching-uri-test-35",
-      "source": {
-        "file": "t/plugin/openid-connect.t",
-        "tests": [
-          35
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -3812,12 +3554,6 @@
     },
     {
       "name": "openid-connect-redirect-to-post-logout-redirect-uri-when-provider-has-no-end-session-en-test-36",
-      "source": {
-        "file": "t/plugin/openid-connect.t",
-        "tests": [
-          36
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -3895,12 +3631,6 @@
     },
     {
       "name": "openid-connect-set-up-new-route-with-plugin-matching-uri-test-37",
-      "source": {
-        "file": "t/plugin/openid-connect.t",
-        "tests": [
-          37
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -3976,12 +3706,6 @@
     },
     {
       "name": "openid-connect-redirect-to-end-session-endpoint-with-post-logout-redirect-uri-when-prov-test-38",
-      "source": {
-        "file": "t/plugin/openid-connect.t",
-        "tests": [
-          38
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -4059,12 +3783,6 @@
     },
     {
       "name": "openid-connect-update-plugin-config-to-use-jwk-and-bear-only-false-test-39",
-      "source": {
-        "file": "t/plugin/openid-connect.t",
-        "tests": [
-          39
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -4141,12 +3859,6 @@
     },
     {
       "name": "openid-connect-test-that-jwt-with-bearer-only-false-still-allows-a-valid-authorization-test-40",
-      "source": {
-        "file": "t/plugin/openid-connect.t",
-        "tests": [
-          40
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -4223,12 +3935,6 @@
     },
     {
       "name": "openid-connect-missing-session-secret-test-41",
-      "source": {
-        "file": "t/plugin/openid-connect.t",
-        "tests": [
-          41
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -4280,12 +3986,6 @@
     },
     {
       "name": "openid-connect-client-secret-is-optional-when-bearer-only-true-and-public-key-is-set-test-42",
-      "source": {
-        "file": "t/plugin/openid-connect.t",
-        "tests": [
-          42
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -4358,12 +4058,6 @@
     },
     {
       "name": "openid-connect-client-secret-is-optional-when-bearer-only-true-and-use-jwks-true-test-43",
-      "source": {
-        "file": "t/plugin/openid-connect.t",
-        "tests": [
-          43
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -4451,12 +4145,6 @@
     },
     {
       "name": "openid-connect-client-secret-is-required-when-bearer-only-true-but-neither-public-key-n-test-44",
-      "source": {
-        "file": "t/plugin/openid-connect.t",
-        "tests": [
-          44
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -4508,12 +4196,6 @@
     },
     {
       "name": "openid-connect-client-secret-is-optional-when-token-endpoint-auth-method-private-key-jw-test-45",
-      "source": {
-        "file": "t/plugin/openid-connect.t",
-        "tests": [
-          45
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -4591,12 +4273,6 @@
     },
     {
       "name": "openid-connect-client-secret-is-optional-when-use-pkce-true-non-bearer-pkce-flow-test-46",
-      "source": {
-        "file": "t/plugin/openid-connect.t",
-        "tests": [
-          46
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -4673,12 +4349,6 @@
     },
     {
       "name": "openid-connect-client-secret-is-still-required-for-non-bearer-session-flow-without-spec-test-47",
-      "source": {
-        "file": "t/plugin/openid-connect.t",
-        "tests": [
-          47
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -4732,12 +4402,6 @@
     },
     {
       "name": "openid-connect-client-secret-is-optional-when-bearer-only-true-and-introspection-endpoi-test-48",
-      "source": {
-        "file": "t/plugin/openid-connect.t",
-        "tests": [
-          48
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -4802,12 +4466,6 @@
     },
     {
       "name": "openid-connect-client-secret-stays-required-for-bearer-introspection-even-with-token-en-test-49",
-      "source": {
-        "file": "t/plugin/openid-connect.t",
-        "tests": [
-          49
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -4861,12 +4519,6 @@
     },
     {
       "name": "openid-connect-client-secret-stays-required-for-non-bearer-session-flow-with-a-bearer-o-test-50",
-      "source": {
-        "file": "t/plugin/openid-connect.t",
-        "tests": [
-          50
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -4922,12 +4574,6 @@
     },
     {
       "name": "openid-connect-configure-plugin-with-a-custom-session-cookie-name-test-51",
-      "source": {
-        "file": "t/plugin/openid-connect.t",
-        "tests": [
-          51
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -5004,12 +4650,6 @@
     },
     {
       "name": "openid-connect-full-oidc-login-issues-the-session-cookie-under-the-configured-cookie-na-test-52",
-      "source": {
-        "file": "t/plugin/openid-connect.t",
-        "tests": [
-          52
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -5171,12 +4811,6 @@
     },
     {
       "name": "openid-connect-configure-plugin-with-a-short-session-absolute-timeout-test-53",
-      "source": {
-        "file": "t/plugin/openid-connect.t",
-        "tests": [
-          53
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -5253,12 +4887,6 @@
     },
     {
       "name": "openid-connect-session-is-rejected-once-absolute-timeout-elapses-re-initiating-authenti-test-54",
-      "source": {
-        "file": "t/plugin/openid-connect.t",
-        "tests": [
-          54
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -5432,12 +5060,6 @@
     },
     {
       "name": "openid-connect10-valid-session-with-flat-cookie-name-cookie-path-absolute-timeout-test-1",
-      "source": {
-        "file": "t/plugin/openid-connect10.t",
-        "tests": [
-          1
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -5516,12 +5138,6 @@
     },
     {
       "name": "openid-connect10-valid-session-with-flat-cookie-secure-cookie-same-site-idling-rolling-ti-test-2",
-      "source": {
-        "file": "t/plugin/openid-connect10.t",
-        "tests": [
-          2
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -5601,12 +5217,6 @@
     },
     {
       "name": "openid-connect10-backward-compatible-session-cookie-lifetime-still-accepted-test-3",
-      "source": {
-        "file": "t/plugin/openid-connect10.t",
-        "tests": [
-          3
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -5685,12 +5295,6 @@
     },
     {
       "name": "openid-connect10-build-session-opts-passes-flat-keys-through-untouched-test-4",
-      "source": {
-        "file": "t/plugin/openid-connect10.t",
-        "tests": [
-          4
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -5769,12 +5373,6 @@
     },
     {
       "name": "openid-connect10-build-session-opts-maps-deprecated-cookie-lifetime-to-absolute-timeout-test-5",
-      "source": {
-        "file": "t/plugin/openid-connect10.t",
-        "tests": [
-          5
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -5853,12 +5451,6 @@
     },
     {
       "name": "openid-connect10-build-session-opts-works-when-cookie-field-is-absent-test-7",
-      "source": {
-        "file": "t/plugin/openid-connect10.t",
-        "tests": [
-          7
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -5935,12 +5527,6 @@
     },
     {
       "name": "openid-connect10-invalid-type-for-cookie-lifetime-string-instead-of-integer-test-8",
-      "source": {
-        "file": "t/plugin/openid-connect10.t",
-        "tests": [
-          8
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -5999,12 +5585,6 @@
     },
     {
       "name": "openid-connect10-valid-session-with-redis-storage-and-flat-cookie-options-test-9",
-      "source": {
-        "file": "t/plugin/openid-connect10.t",
-        "tests": [
-          9
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -6094,12 +5674,6 @@
     },
     {
       "name": "openid-connect10-absolute-timeout-wins-when-both-it-and-cookie-lifetime-are-set-test-10",
-      "source": {
-        "file": "t/plugin/openid-connect10.t",
-        "tests": [
-          10
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -6179,12 +5753,6 @@
     },
     {
       "name": "openid-connect10-unknown-key-directly-under-session-is-rejected-test-11",
-      "source": {
-        "file": "t/plugin/openid-connect10.t",
-        "tests": [
-          11
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -6241,12 +5809,6 @@
     },
     {
       "name": "openid-connect10-invalid-cookie-same-site-value-is-rejected-test-12",
-      "source": {
-        "file": "t/plugin/openid-connect10.t",
-        "tests": [
-          12
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -6303,12 +5865,6 @@
     },
     {
       "name": "openid-connect2-sanity-test-1",
-      "source": {
-        "file": "t/plugin/openid-connect2.t",
-        "tests": [
-          1
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -6377,12 +5933,6 @@
     },
     {
       "name": "openid-connect2-data-encryption-for-client-secret-test-2",
-      "source": {
-        "file": "t/plugin/openid-connect2.t",
-        "tests": [
-          2
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -6455,12 +6005,6 @@
     },
     {
       "name": "openid-connect2-set-up-route-with-plugin-matching-uri-hello-with-unauth-action-auth-test-3",
-      "source": {
-        "file": "t/plugin/openid-connect2.t",
-        "tests": [
-          3
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -6536,12 +6080,6 @@
     },
     {
       "name": "openid-connect2-access-route-without-bearer-token-should-redirect-to-authentication-endp-test-4",
-      "source": {
-        "file": "t/plugin/openid-connect2.t",
-        "tests": [
-          4
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -6617,12 +6155,6 @@
     },
     {
       "name": "openid-connect2-set-up-route-with-plugin-matching-uri-hello-with-unauth-action-deny-test-5",
-      "source": {
-        "file": "t/plugin/openid-connect2.t",
-        "tests": [
-          5
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -6687,12 +6219,6 @@
     },
     {
       "name": "openid-connect2-access-route-without-bearer-token-should-return-unauthorized-test-6",
-      "source": {
-        "file": "t/plugin/openid-connect2.t",
-        "tests": [
-          6
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -6757,12 +6283,6 @@
     },
     {
       "name": "openid-connect2-set-up-route-with-plugin-matching-uri-hello-with-unauth-action-pass-test-7",
-      "source": {
-        "file": "t/plugin/openid-connect2.t",
-        "tests": [
-          7
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -6826,12 +6346,6 @@
     },
     {
       "name": "openid-connect2-access-route-without-bearer-token-should-return-ok-test-8",
-      "source": {
-        "file": "t/plugin/openid-connect2.t",
-        "tests": [
-          8
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -6895,12 +6409,6 @@
     },
     {
       "name": "openid-connect2-set-up-route-with-plugin-matching-uri-hello-with-redirect-uri-use-defaul-test-9",
-      "source": {
-        "file": "t/plugin/openid-connect2.t",
-        "tests": [
-          9
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -6976,12 +6484,6 @@
     },
     {
       "name": "openid-connect2-the-value-of-redirect-uri-should-be-appended-to-apisix-redirect-in-the-o-test-10",
-      "source": {
-        "file": "t/plugin/openid-connect2.t",
-        "tests": [
-          10
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -7057,12 +6559,6 @@
     },
     {
       "name": "openid-connect2-set-up-route-with-plugin-matching-uri-and-point-plugin-to-local-keycloak-test-11",
-      "source": {
-        "file": "t/plugin/openid-connect2.t",
-        "tests": [
-          11
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -7191,12 +6687,6 @@
     },
     {
       "name": "openid-connect2-access-route-without-bearer-token-and-go-through-the-full-oidc-relying-p-test-12",
-      "source": {
-        "file": "t/plugin/openid-connect2.t",
-        "tests": [
-          12
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -7325,12 +6815,6 @@
     },
     {
       "name": "openid-connect2-set-up-route-with-plugin-matching-uri-and-point-plugin-to-local-keycloak-test-13",
-      "source": {
-        "file": "t/plugin/openid-connect2.t",
-        "tests": [
-          13
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -7451,12 +6935,6 @@
     },
     {
       "name": "openid-connect2-access-route-without-bearer-token-and-go-through-the-full-oidc-relying-p-test-14",
-      "source": {
-        "file": "t/plugin/openid-connect2.t",
-        "tests": [
-          14
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -7577,12 +7055,6 @@
     },
     {
       "name": "openid-connect2-set-up-route-with-plugin-matching-uri-and-point-plugin-to-local-keycloak-test-15",
-      "source": {
-        "file": "t/plugin/openid-connect2.t",
-        "tests": [
-          15
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -7641,12 +7113,6 @@
     },
     {
       "name": "openid-connect2-untrusted-source-with-forged-x-forwarded-host-should-use-http-host-inste-test-16",
-      "source": {
-        "file": "t/plugin/openid-connect2.t",
-        "tests": [
-          16
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -7727,12 +7193,6 @@
     },
     {
       "name": "openid-connect2-trusted-source-with-x-forwarded-host-should-use-x-forwarded-host-test-17",
-      "source": {
-        "file": "t/plugin/openid-connect2.t",
-        "tests": [
-          17
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -7820,12 +7280,6 @@
     },
     {
       "name": "openid-connect2-trusted-source-with-forwarded-header-takes-priority-over-x-forwarded-hos-test-18",
-      "source": {
-        "file": "t/plugin/openid-connect2.t",
-        "tests": [
-          18
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -7913,12 +7367,6 @@
     },
     {
       "name": "openid-connect2-untrusted-source-with-forged-forwarded-header-should-be-ignored-test-19",
-      "source": {
-        "file": "t/plugin/openid-connect2.t",
-        "tests": [
-          19
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -7999,12 +7447,6 @@
     },
     {
       "name": "openid-connect2-data-encryption-for-client-rsa-private-key-test-20",
-      "source": {
-        "file": "t/plugin/openid-connect2.t",
-        "tests": [
-          20
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -8078,12 +7520,6 @@
     },
     {
       "name": "openid-connect2-data-encryption-for-session-redis-password-test-21",
-      "source": {
-        "file": "t/plugin/openid-connect2.t",
-        "tests": [
-          21
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -8165,12 +7601,6 @@
     },
     {
       "name": "openid-connect3-set-up-new-route-access-the-auth-server-via-http-proxy-test-1",
-      "source": {
-        "file": "t/plugin/openid-connect3.t",
-        "tests": [
-          1
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -8252,12 +7682,6 @@
     },
     {
       "name": "openid-connect3-access-route-without-bearer-token-should-redirect-to-authentication-endp-test-2",
-      "source": {
-        "file": "t/plugin/openid-connect3.t",
-        "tests": [
-          2
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -8339,12 +7763,6 @@
     },
     {
       "name": "openid-connect3-set-up-route-with-plugin-matching-uri-hello-with-redirect-uri-use-defaul-test-3",
-      "source": {
-        "file": "t/plugin/openid-connect3.t",
-        "tests": [
-          3
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -8423,12 +7841,6 @@
     },
     {
       "name": "openid-connect3-the-value-of-redirect-uri-should-be-appended-to-apisix-redirect-in-the-o-test-4",
-      "source": {
-        "file": "t/plugin/openid-connect3.t",
-        "tests": [
-          4
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -8507,12 +7919,6 @@
     },
     {
       "name": "openid-connect3-auto-generated-redirect-uri-preserves-non-default-port-from-host-header-test-5",
-      "source": {
-        "file": "t/plugin/openid-connect3.t",
-        "tests": [
-          5
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -8591,12 +7997,6 @@
     },
     {
       "name": "openid-connect3-auto-generated-redirect-uri-omits-port-when-host-header-lacks-explicit-p-test-6",
-      "source": {
-        "file": "t/plugin/openid-connect3.t",
-        "tests": [
-          6
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -8675,12 +8075,6 @@
     },
     {
       "name": "openid-connect4-set-up-new-route-access-the-auth-server-with-header-test-test-1",
-      "source": {
-        "file": "t/plugin/openid-connect4.t",
-        "tests": [
-          1
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -8760,12 +8154,6 @@
     },
     {
       "name": "openid-connect4-check-the-uri-of-the-authorization-endpoint-for-passed-headers-test-2",
-      "source": {
-        "file": "t/plugin/openid-connect4.t",
-        "tests": [
-          2
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -8845,12 +8233,6 @@
     },
     {
       "name": "openid-connect4-set-an-unsupported-scope-in-the-required-scopes-field-test-3",
-      "source": {
-        "file": "t/plugin/openid-connect4.t",
-        "tests": [
-          3
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -8929,12 +8311,6 @@
     },
     {
       "name": "openid-connect4-access-route-test-4",
-      "source": {
-        "file": "t/plugin/openid-connect4.t",
-        "tests": [
-          4
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -9013,12 +8389,6 @@
     },
     {
       "name": "openid-connect4-set-a-supported-scope-in-the-required-scopes-field-test-5",
-      "source": {
-        "file": "t/plugin/openid-connect4.t",
-        "tests": [
-          5
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -9109,12 +8479,6 @@
     },
     {
       "name": "openid-connect4-access-route-test-6",
-      "source": {
-        "file": "t/plugin/openid-connect4.t",
-        "tests": [
-          6
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -9205,12 +8569,6 @@
     },
     {
       "name": "openid-connect6-check-configuration-of-cookie-test-1",
-      "source": {
-        "file": "t/plugin/openid-connect6.t",
-        "tests": [
-          1
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -9290,12 +8648,6 @@
     },
     {
       "name": "openid-connect6-set-up-new-route-access-the-auth-server-test-2",
-      "source": {
-        "file": "t/plugin/openid-connect6.t",
-        "tests": [
-          2
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -9453,12 +8805,6 @@
     },
     {
       "name": "openid-connect6-call-to-route-to-get-session-test-3",
-      "source": {
-        "file": "t/plugin/openid-connect6.t",
-        "tests": [
-          3
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -9616,12 +8962,6 @@
     },
     {
       "name": "openid-connect6-update-route-with-keycloak-introspection-endpoint-and-introspection-addo-test-4",
-      "source": {
-        "file": "t/plugin/openid-connect6.t",
-        "tests": [
-          4
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -9718,12 +9058,6 @@
     },
     {
       "name": "openid-connect6-obtain-valid-token-and-access-route-with-it-introspection-work-as-expect-test-5",
-      "source": {
-        "file": "t/plugin/openid-connect6.t",
-        "tests": [
-          5
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -9820,12 +9154,6 @@
     },
     {
       "name": "openid-connect6-access-route-with-an-invalid-token-should-fail-test-6",
-      "source": {
-        "file": "t/plugin/openid-connect6.t",
-        "tests": [
-          6
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -9910,12 +9238,6 @@
     },
     {
       "name": "openid-connect6-update-route-with-fake-keycloak-introspection-endpoint-and-introspection-test-7",
-      "source": {
-        "file": "t/plugin/openid-connect6.t",
-        "tests": [
-          7
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -10017,12 +9339,6 @@
     },
     {
       "name": "openid-connect6-check-http-headers-from-fake-introspection-endpoint-test-8",
-      "source": {
-        "file": "t/plugin/openid-connect6.t",
-        "tests": [
-          8
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -10124,12 +9440,6 @@
     },
     {
       "name": "openid-connect7-create-route-jwt-local-audience-required-test-1",
-      "source": {
-        "file": "t/plugin/openid-connect7.t",
-        "tests": [
-          1
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -10205,12 +9515,6 @@
     },
     {
       "name": "openid-connect7-access-route-with-a-valid-token-with-audience-test-2",
-      "source": {
-        "file": "t/plugin/openid-connect7.t",
-        "tests": [
-          2
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -10286,12 +9590,6 @@
     },
     {
       "name": "openid-connect7-update-route-jwt-local-audience-required-custom-claim-test-3",
-      "source": {
-        "file": "t/plugin/openid-connect7.t",
-        "tests": [
-          3
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -10356,12 +9654,6 @@
     },
     {
       "name": "openid-connect7-access-route-with-an-invalid-token-without-audience-test-4",
-      "source": {
-        "file": "t/plugin/openid-connect7.t",
-        "tests": [
-          4
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -10429,12 +9721,6 @@
     },
     {
       "name": "openid-connect7-update-route-jwt-local-audience-required-custom-claim-test-5",
-      "source": {
-        "file": "t/plugin/openid-connect7.t",
-        "tests": [
-          5
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -10511,12 +9797,6 @@
     },
     {
       "name": "openid-connect7-access-route-with-an-valid-token-with-custom-audience-claim-test-6",
-      "source": {
-        "file": "t/plugin/openid-connect7.t",
-        "tests": [
-          6
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -10593,12 +9873,6 @@
     },
     {
       "name": "openid-connect7-update-route-jwt-local-audience-required-match-client-id-test-7",
-      "source": {
-        "file": "t/plugin/openid-connect7.t",
-        "tests": [
-          7
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -10675,12 +9949,6 @@
     },
     {
       "name": "openid-connect7-access-route-with-an-valid-token-with-client-id-as-audience-test-8",
-      "source": {
-        "file": "t/plugin/openid-connect7.t",
-        "tests": [
-          8
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -10757,12 +10025,6 @@
     },
     {
       "name": "openid-connect7-update-route-jwt-local-audience-required-match-client-id-test-9",
-      "source": {
-        "file": "t/plugin/openid-connect7.t",
-        "tests": [
-          9
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -10830,12 +10092,6 @@
     },
     {
       "name": "openid-connect7-access-route-with-an-invalid-token-without-client-id-as-audience-test-10",
-      "source": {
-        "file": "t/plugin/openid-connect7.t",
-        "tests": [
-          10
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -10903,12 +10159,6 @@
     },
     {
       "name": "openid-connect8-set-up-new-route-with-wrong-valid-issuers-test-1",
-      "source": {
-        "file": "t/plugin/openid-connect8.t",
-        "tests": [
-          1
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -10967,12 +10217,6 @@
     },
     {
       "name": "openid-connect8-set-up-new-route-with-valid-valid-issuers-test-2",
-      "source": {
-        "file": "t/plugin/openid-connect8.t",
-        "tests": [
-          2
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -11045,12 +10289,6 @@
     },
     {
       "name": "openid-connect8-update-plugin-with-id-provider-jwks-endpoint-for-token-verification-with-test-3",
-      "source": {
-        "file": "t/plugin/openid-connect8.t",
-        "tests": [
-          3
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -11123,12 +10361,6 @@
     },
     {
       "name": "openid-connect8-verification-fails-because-issuer-not-in-valid-issuer-test-4",
-      "source": {
-        "file": "t/plugin/openid-connect8.t",
-        "tests": [
-          4
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -11194,12 +10426,6 @@
     },
     {
       "name": "openid-connect8-update-plugin-with-id-provider-jwks-endpoint-for-token-verification-with-test-5",
-      "source": {
-        "file": "t/plugin/openid-connect8.t",
-        "tests": [
-          5
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -11272,12 +10498,6 @@
     },
     {
       "name": "openid-connect8-obtain-valid-token-and-access-route-with-it-test-6",
-      "source": {
-        "file": "t/plugin/openid-connect8.t",
-        "tests": [
-          6
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -11372,12 +10592,6 @@
     },
     {
       "name": "openid-connect8-update-plugin-with-id-provider-jwks-endpoint-for-token-verification-with-test-7",
-      "source": {
-        "file": "t/plugin/openid-connect8.t",
-        "tests": [
-          7
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -11465,12 +10679,6 @@
     },
     {
       "name": "openid-connect8-obtain-valid-token-and-access-route-with-it-use-valid-issuer-from-discov-test-8",
-      "source": {
-        "file": "t/plugin/openid-connect8.t",
-        "tests": [
-          8
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -11558,12 +10766,6 @@
     },
     {
       "name": "openid-connect9-configure-oidc-plugin-with-small-public-key-using-environment-variable-test-1",
-      "source": {
-        "file": "t/plugin/openid-connect9.t",
-        "tests": [
-          1
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -11639,12 +10841,6 @@
     },
     {
       "name": "openid-connect9-store-secret-into-vault-test-2",
-      "source": {
-        "file": "t/plugin/openid-connect9.t",
-        "tests": [
-          2
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -11748,12 +10944,6 @@
     },
     {
       "name": "openid-connect9-configure-oidc-plugin-with-small-public-key-using-vault-test-3",
-      "source": {
-        "file": "t/plugin/openid-connect9.t",
-        "tests": [
-          3
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -11857,12 +11047,6 @@
     },
     {
       "name": "openid-connect9-configure-oidc-plugin-with-small-public-key-using-vault-and-request-with-test-4",
-      "source": {
-        "file": "t/plugin/openid-connect9.t",
-        "tests": [
-          4
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -11966,12 +11150,6 @@
     },
     {
       "name": "openid-connect9-configure-route-with-bearer-only-public-key-claim-schema-that-requires-a-test-5",
-      "source": {
-        "file": "t/plugin/openid-connect9.t",
-        "tests": [
-          5
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -12048,12 +11226,6 @@
     },
     {
       "name": "openid-connect9-bearer-path-claim-schema-rejection-returns-401-with-www-authenticate-hea-test-6",
-      "source": {
-        "file": "t/plugin/openid-connect9.t",
-        "tests": [
-          6
-        ]
-      },
       "config": {
         "routes": [
           {
@@ -12127,87 +11299,6 @@
           }
         }
       ]
-    }
-  ],
-  "sources": [
-    {
-      "repository": "https://github.com/apache/apisix",
-      "commit": "9ef2ecab67f652d38365049613610ef649bb4ad0",
-      "file": "t/plugin/openid-connect-identity-headers.t",
-      "tests": 4
-    },
-    {
-      "repository": "https://github.com/apache/apisix",
-      "commit": "9ef2ecab67f652d38365049613610ef649bb4ad0",
-      "file": "t/plugin/openid-connect-redis.t",
-      "tests": 4
-    },
-    {
-      "repository": "https://github.com/apache/apisix",
-      "commit": "9ef2ecab67f652d38365049613610ef649bb4ad0",
-      "file": "t/plugin/openid-connect.t",
-      "tests": 54
-    },
-    {
-      "repository": "https://github.com/apache/apisix",
-      "commit": "9ef2ecab67f652d38365049613610ef649bb4ad0",
-      "file": "t/plugin/openid-connect10.t",
-      "tests": 11,
-      "test_numbers": [
-        1,
-        2,
-        3,
-        4,
-        5,
-        7,
-        8,
-        9,
-        10,
-        11,
-        12
-      ]
-    },
-    {
-      "repository": "https://github.com/apache/apisix",
-      "commit": "9ef2ecab67f652d38365049613610ef649bb4ad0",
-      "file": "t/plugin/openid-connect2.t",
-      "tests": 21
-    },
-    {
-      "repository": "https://github.com/apache/apisix",
-      "commit": "9ef2ecab67f652d38365049613610ef649bb4ad0",
-      "file": "t/plugin/openid-connect3.t",
-      "tests": 6
-    },
-    {
-      "repository": "https://github.com/apache/apisix",
-      "commit": "9ef2ecab67f652d38365049613610ef649bb4ad0",
-      "file": "t/plugin/openid-connect4.t",
-      "tests": 6
-    },
-    {
-      "repository": "https://github.com/apache/apisix",
-      "commit": "9ef2ecab67f652d38365049613610ef649bb4ad0",
-      "file": "t/plugin/openid-connect6.t",
-      "tests": 8
-    },
-    {
-      "repository": "https://github.com/apache/apisix",
-      "commit": "9ef2ecab67f652d38365049613610ef649bb4ad0",
-      "file": "t/plugin/openid-connect7.t",
-      "tests": 10
-    },
-    {
-      "repository": "https://github.com/apache/apisix",
-      "commit": "9ef2ecab67f652d38365049613610ef649bb4ad0",
-      "file": "t/plugin/openid-connect8.t",
-      "tests": 8
-    },
-    {
-      "repository": "https://github.com/apache/apisix",
-      "commit": "9ef2ecab67f652d38365049613610ef649bb4ad0",
-      "file": "t/plugin/openid-connect9.t",
-      "tests": 6
     }
   ]
 }

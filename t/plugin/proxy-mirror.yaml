@@ -1,8 +1,5 @@
 cases:
   - name: invalid-host-schema
-    source:
-      file: t/plugin/proxy-mirror.t
-      tests: [1, 2, 3, 5]
     variants:
       - name: unsupported-scheme
         config:
@@ -54,9 +51,6 @@ cases:
           logs: {matches: "validate plugin proxy-mirror config"}
 
   - name: accepted-host-and-protocol-schema
-    source:
-      file: t/plugin/proxy-mirror.t
-      tests: [4, 22, 30, 31]
     variants:
       - name: http-without-port
         config:
@@ -138,9 +132,6 @@ cases:
         steps: *accepted_primary_step
 
   - name: normal-mirror-delivery
-    source:
-      file: t/plugin/proxy-mirror.t
-      tests: [6, 7]
     config:
       routes:
         - id: normal-mirror
@@ -164,9 +155,6 @@ cases:
         wait: 100ms
 
   - name: preserve-request-host-headers-query-and-body
-    source:
-      file: t/plugin/proxy-mirror.t
-      tests: [8, 9]
     config:
       routes:
         - id: preserve-request
@@ -214,9 +202,6 @@ cases:
         wait: 100ms
 
   - name: mirror-http11
-    source:
-      file: t/plugin/proxy-mirror.t
-      tests: [10, 11]
     config:
       routes:
         - id: mirror-http11
@@ -245,9 +230,6 @@ cases:
         wait: 100ms
 
   - name: live-route-deletion
-    source:
-      file: t/plugin/proxy-mirror.t
-      tests: [12]
     config:
       routes:
         - id: deletable-mirror
@@ -286,9 +268,6 @@ cases:
         output: {status: 404}
 
   - name: invalid-sample-ratio
-    source:
-      file: t/plugin/proxy-mirror.t
-      tests: [13]
     config:
       routes:
         - id: invalid-ratio
@@ -302,9 +281,6 @@ cases:
       logs: {matches: "sample_ratio.*must be <= 1"}
 
   - name: sample-ratio-one
-    source:
-      file: t/plugin/proxy-mirror.t
-      tests: [14, 15]
     config:
       routes:
         - id: ratio-one
@@ -328,9 +304,6 @@ cases:
         wait: 100ms
 
   - name: concurrent-sample-ratio-half
-    source:
-      file: t/plugin/proxy-mirror.t
-      tests: [16, 17]
     config:
       routes:
         - id: ratio-half
@@ -357,9 +330,6 @@ cases:
         output: {status: 200, body: {equals: "hello world\n"}}
 
   - name: replacement-path
-    source:
-      file: t/plugin/proxy-mirror.t
-      tests: [18, 19, 20]
     config:
       routes:
         - id: replacement-path
@@ -395,9 +365,6 @@ cases:
         wait: 100ms
 
   - name: invalid-custom-paths
-    source:
-      file: t/plugin/proxy-mirror.t
-      tests: [21]
     variants:
       - name: missing-leading-slash
         config:
@@ -421,9 +388,6 @@ cases:
         output: {status: 404, logs: {matches: "'/path'.*does not match pattern"}}
 
   - name: hostname-dns-delivery
-    source:
-      file: t/plugin/proxy-mirror.t
-      tests: [23, 24]
     config:
       routes:
         - id: dns-delivery
@@ -449,9 +413,6 @@ cases:
         wait: 100ms
 
   - name: dns-failure-does-not-break-primary
-    source:
-      file: t/plugin/proxy-mirror.t
-      tests: [25, 26]
     config:
       routes:
         - id: dns-failure
@@ -474,9 +435,6 @@ cases:
         wait: 6s
 
   - name: prefix-path
-    source:
-      file: t/plugin/proxy-mirror.t
-      tests: [27, 28, 29]
     config:
       routes:
         - id: prefix-path
@@ -515,9 +473,6 @@ cases:
         wait: 100ms
 
   - name: proxy-rewrite-priority-ordering
-    source:
-      file: t/plugin/proxy-mirror2.t
-      tests: [1, 2, 3]
     config:
       routes:
         - id: rewrite-before-mirror
@@ -559,9 +514,6 @@ cases:
         wait: 100ms
 
   - name: unary-h2c-grpc-mirror
-    source:
-      file: t/plugin/proxy-mirror3.t
-      tests: [1]
     config:
       routes:
         - id: unary-grpc-mirror
@@ -609,9 +561,6 @@ cases:
         wait: 100ms
 
   - name: grpc-web-finalized-mirror
-    source:
-      file: t/plugin/proxy-mirror3.t
-      tests: [2]
     config:
       routes:
         - id: grpc-web-mirror
@@ -656,17 +605,3 @@ cases:
           body_base64: AAAAAAgKBmFwaXNpeA==
         output: {status: 200}
         wait: 100ms
-
-sources:
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/proxy-mirror.t
-    tests: 31
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/proxy-mirror2.t
-    tests: 3
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/proxy-mirror3.t
-    tests: 2

@@ -1,28 +1,5 @@
-sources:
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/authz-keycloak.t
-    tests: 18
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/authz-keycloak2.t
-    tests: 19
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/authz-keycloak3.t
-    tests: 3
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/authz-keycloak4.t
-    tests: 4
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/authz-keycloak5.t
-    tests: 1
-
 cases:
   - name: schema-valid-configurations-execute-real-authorization
-    source: {file: t/plugin/authz-keycloak.t, tests: [1, 2, 3, 4, 5]}
     variants:
       - name: minimal-explicit-token-endpoint
         config:
@@ -186,7 +163,6 @@ cases:
           - {name: authorize-with-full-schema-options, input: *teacher_hello, output: *hello_output}
 
   - name: schema-requires-token-or-discovery
-    source: {file: t/plugin/authz-keycloak.t, tests: [6]}
     config:
       routes:
         - id: keycloak-missing-token-and-discovery
@@ -203,7 +179,6 @@ cases:
           logs: {matches: 'keycloak-missing-token-and-discovery.*authz-keycloak.*(discovery|token_endpoint)'}
 
   - name: schema-requires-client-id
-    source: {file: t/plugin/authz-keycloak.t, tests: [7]}
     config:
       routes:
         - id: keycloak-missing-client-id
@@ -220,7 +195,6 @@ cases:
           logs: {matches: 'keycloak-missing-client-id.*authz-keycloak.*missing properties:.*client_id'}
 
   - name: lazy-schema-requires-registration-or-discovery
-    source: {file: t/plugin/authz-keycloak.t, tests: [8]}
     config:
       routes:
         - id: keycloak-lazy-missing-registration
@@ -241,7 +215,6 @@ cases:
           logs: {matches: 'keycloak-lazy-missing-registration.*authz-keycloak.*lazy_load_paths.*value must be false'}
 
   - name: tls-verification-defaults-to-enabled
-    source: {file: t/plugin/authz-keycloak.t, tests: [9, 10]}
     variants:
       - name: untrusted-certificate-fails-before-http-handler
         environment_unset: [SSL_CERT_FILE]
@@ -296,7 +269,6 @@ cases:
               logs: {not_matches: 'teacher-token'}
 
   - name: ssl-verification-disabled-preserves-provider-denial
-    source: {file: t/plugin/authz-keycloak.t, tests: [11, 12]}
     config:
       routes:
         - id: keycloak-insecure-tls
@@ -326,7 +298,6 @@ cases:
           logs: {not_matches: 'teacher-token'}
 
   - name: enforcing-empty-permissions-denies-without-provider
-    source: {file: t/plugin/authz-keycloak.t, tests: [13, 14]}
     config:
       routes:
         - id: keycloak-enforcing-empty
@@ -347,7 +318,6 @@ cases:
           body: {equals: '{"error":"access_denied","error_description":"not_authorized"}'}
 
   - name: enforcing-empty-permissions-redirects
-    source: {file: t/plugin/authz-keycloak.t, tests: [15, 16]}
     config:
       routes:
         - id: keycloak-enforcing-empty-redirect
@@ -369,7 +339,6 @@ cases:
           headers: {Location: {equals: http://127.0.0.1/test}}
 
   - name: password-grant-proxies-provider-token-response
-    source: {file: t/plugin/authz-keycloak.t, tests: [17]}
     config:
       routes:
         - id: keycloak-password-grant
@@ -410,7 +379,6 @@ cases:
           logs: {not_matches: 'keycloak-secret|access-token|refresh-token|123456'}
 
   - name: password-grant-requires-both-user-credentials
-    source: {file: t/plugin/authz-keycloak.t, tests: [18]}
     config:
       routes:
         - id: keycloak-password-grant-validation
@@ -446,7 +414,6 @@ cases:
           body: {json_equals: '{"message":"password is missing."}'}
 
   - name: static-permission-allows-valid-token-and-preserves-invalid-token
-    source: {file: t/plugin/authz-keycloak2.t, tests: [1, 2, 3]}
     config:
       routes:
         - id: keycloak-static-view
@@ -478,7 +445,6 @@ cases:
         output: {status: 401, body: {equals: '{"error":"invalid_token"}'}}
 
   - name: discovery-is-requested-once-and-cached
-    source: {file: t/plugin/authz-keycloak2.t, tests: [4, 5, 6]}
     config:
       routes:
         - id: keycloak-discovered-view
@@ -510,7 +476,6 @@ cases:
         output: {status: 401, body: {equals: '{"error":"invalid_token"}'}}
 
   - name: static-delete-permission-denies-student
-    source: {file: t/plugin/authz-keycloak2.t, tests: [7, 8]}
     config:
       routes:
         - id: keycloak-static-delete
@@ -540,7 +505,6 @@ cases:
           body: {equals: '{"error":"access_denied","error_description":"not_authorized"}'}
 
   - name: lazy-resource-and-method-scope-matrix-has-no-state-leakage
-    source: {file: t/plugin/authz-keycloak2.t, tests: [9, 10, 11, 12, 13, 14, 15]}
     config:
       routes:
         - id: keycloak-lazy-method-scope
@@ -644,7 +608,6 @@ cases:
         name: student-get-after-delete-does-not-inherit-delete-scope
 
   - name: discovery-without-registration-endpoint-fails-closed
-    source: {file: t/plugin/authz-keycloak2.t, tests: [16, 17]}
     config:
       routes:
         - id: keycloak-discovery-missing-registration
@@ -675,7 +638,6 @@ cases:
           logs: {not_matches: 'student-token|keycloak-secret|service-token'}
 
   - name: lazy-resource-lookup-strips-query-and-upstream-preserves-it
-    source: {file: t/plugin/authz-keycloak2.t, tests: [18, 19]}
     config:
       routes:
         - id: keycloak-lazy-query
@@ -715,7 +677,6 @@ cases:
         output: {status: 200, body: {equals: query preserved}}
 
   - name: provider-denial-is-converted-to-configured-redirect
-    source: {file: t/plugin/authz-keycloak3.t, tests: [1, 2]}
     config:
       routes:
         - id: keycloak-provider-denial-redirect
@@ -744,7 +705,6 @@ cases:
           headers: {Location: {equals: http://127.0.0.1/test}}
 
   - name: encrypted-client-secret-is-decrypted-only-at-plugin-boundary
-    source: {file: t/plugin/authz-keycloak3.t, tests: [3]}
     runtime:
       apisix:
         data_encryption:
@@ -780,7 +740,6 @@ cases:
           logs:
             not_matches: 'd1ec69e9-55d2-4109-a3ea-befa071579d5|Fz1juZEEvh9PPXOmWFdMMJkREt3ZSzEVWcUZPxNP6achk3fosEvn37oN0qH4YgKB|encrypted-case-access|encrypted-case-refresh'
   - name: vault-secret-resource-supplies-password-grant-client-secret
-    source: {file: t/plugin/authz-keycloak4.t, tests: [1, 2]}
     config:
       secrets:
         - id: vault/test1
@@ -826,7 +785,6 @@ cases:
           logs: {not_matches: 'vault-keycloak-secret|vault-access|vault-refresh'}
 
   - name: environment-secret-supplies-password-grant-client-secret
-    source: {file: t/plugin/authz-keycloak4.t, tests: [3]}
     environment: {AUTHZ_KEYCLOAK_CLIENT_SECRET: environment-keycloak-secret}
     config:
       routes:
@@ -858,7 +816,6 @@ cases:
           logs: {not_matches: 'environment-keycloak-secret|environment-access|environment-refresh'}
 
   - name: missing-environment-secret-fails-route-build-redacted
-    source: {file: t/plugin/authz-keycloak4.t, tests: [4]}
     environment_unset: [AUTHZ_KEYCLOAK_INVALID_SECRET]
     config:
       routes:
@@ -888,7 +845,6 @@ cases:
           logs: {not_matches: 'environment-keycloak-secret|vault-keycloak-secret'}
 
   - name: method-scope-does-not-accumulate-across-identical-requests
-    source: {file: t/plugin/authz-keycloak5.t, tests: [1]}
     config:
       routes:
         - id: keycloak-method-scope-repeat

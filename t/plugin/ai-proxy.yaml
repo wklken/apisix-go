@@ -1,6 +1,5 @@
 cases:
     - name: anthropic-converts-simple-text-message
-      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [1, 2]}
       config:
         routes:
             - id: ai-proxy-anthropic-simple
@@ -42,7 +41,6 @@ cases:
             body: {matches: '(?s)"type":"text".*"stop_reason":"end_turn".*"type":"message"'}
 
     - name: anthropic-system-prompt-as-string
-      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [3]}
       config:
         routes:
             - id: ai-proxy-anthropic-system-string
@@ -82,7 +80,6 @@ cases:
             body: {matches: '"type":"message"'}
 
     - name: anthropic-system-content-blocks-with-cache-control
-      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [4]}
       config:
         routes:
             - id: ai-proxy-anthropic-system-blocks
@@ -122,7 +119,6 @@ cases:
             body: {matches: '"type":"message"'}
 
     - name: anthropic-tool-use-in-assistant-message
-      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [5]}
       config:
         routes:
             - id: ai-proxy-anthropic-tool-use-history
@@ -162,7 +158,6 @@ cases:
             body: {matches: '"type":"message"'}
 
     - name: anthropic-response-with-tool-calls
-      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [6]}
       config:
         routes:
             - id: ai-proxy-anthropic-tool-response
@@ -201,7 +196,6 @@ cases:
             body: {matches: '(?s)"id":"call_abc123".*"name":"get_weather".*"type":"tool_use".*"stop_reason":"tool_use"'}
 
     - name: anthropic-response-with-reasoning-content
-      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [7, 8]}
       config:
         routes:
             - id: ai-proxy-anthropic-reasoning
@@ -240,7 +234,6 @@ cases:
             body: {matches: '(?s)"signature":"".*"thinking":"Let me think step by step".*"type":"thinking".*"text":"The answer is 42"'}
 
     - name: anthropic-response-error-passthrough
-      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [9]}
       config:
         routes:
             - id: ai-proxy-anthropic-error
@@ -279,7 +272,6 @@ cases:
             body: {matches: '(?s)"message":"model does not exist".*"type":"invalid_request_error".*"type":"error"'}
 
     - name: anthropic-multiple-tool-calls-with-text
-      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [10]}
       config:
         routes:
             - id: ai-proxy-anthropic-multi-tools
@@ -318,7 +310,6 @@ cases:
             body: {matches: '(?s)("type":"text".*Let me check both.*"type":"tool_use".*get_weather.*get_time)|("text":"Let me check both".*"type":"text".*get_weather.*get_time)'}
 
     - name: anthropic-null-details-and-message-fields
-      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [11]}
       config:
         routes:
             - id: ai-proxy-anthropic-null
@@ -357,7 +348,6 @@ cases:
             body: {matches: '(?s)"input_tokens":10.*"output_tokens":5'}
 
     - name: anthropic-null-usage-request
-      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [12]}
       config:
         routes:
             - id: ai-proxy-anthropic-null-usage
@@ -393,7 +383,6 @@ cases:
             body: {matches: '"input_tokens":0'}
 
     - name: anthropic-null-message-fields
-      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [13]}
       config:
         routes:
             - id: ai-proxy-anthropic-null-message
@@ -429,7 +418,6 @@ cases:
             body: {matches: '"type":"text"'}
 
     - name: anthropic-null-function-in-tool-calls
-      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [14]}
       config:
         routes:
             - id: ai-proxy-anthropic-null-function
@@ -465,7 +453,6 @@ cases:
             body: {matches: '"type":"tool_use"'}
 
     - name: anthropic-whitelist-body-fields
-      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [15]}
       config:
         routes:
             - id: ai-proxy-anthropic-whitelist
@@ -505,7 +492,6 @@ cases:
             body: {matches: '"type":"message"|"content":\[\{"text":"ok","type":"text"\}\]'}
 
     - name: anthropic-tool-choice-conversion
-      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [16, 17]}
       config:
         routes:
             - id: ai-proxy-anthropic-tool-choice
@@ -545,7 +531,6 @@ cases:
             body: {matches: '"content":\[\{"text":"ok","type":"text"\}\]'}
 
     - name: anthropic-thinking-budget-thresholds
-      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [18]}
       config:
         routes:
             - id: ai-proxy-anthropic-thinking
@@ -585,7 +570,6 @@ cases:
             body: {matches: '"content":\[\{"text":"ok","type":"text"\}\]'}
 
     - name: anthropic-image-content-block
-      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [19]}
       config:
         routes:
             - id: ai-proxy-anthropic-image
@@ -625,7 +609,6 @@ cases:
             body: {matches: '"content":\[\{"text":"ok","type":"text"\}\]'}
 
     - name: anthropic-document-content-block
-      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [20]}
       config:
         routes:
             - id: ai-proxy-anthropic-document
@@ -665,7 +648,6 @@ cases:
             body: {matches: '"content":\[\{"text":"ok","type":"text"\}\]'}
 
     - name: anthropic-tool-result-array-content
-      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [21]}
       config:
         routes:
             - id: ai-proxy-anthropic-tool-result
@@ -705,7 +687,6 @@ cases:
             body: {matches: '"content":\[\{"text":"ok","type":"text"\}\]'}
 
     - name: anthropic-empty-tools-omitted
-      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [22]}
       config:
         routes:
             - id: ai-proxy-anthropic-empty-tools
@@ -744,7 +725,6 @@ cases:
             status: 200
             body: {matches: '"content":\[\{"text":"ok","type":"text"\}\]'}
     - name: anthropic-response-format-json-schema
-      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [23]}
       config:
         routes:
             - id: ai-proxy-anthropic-format-json-schema
@@ -785,7 +765,6 @@ cases:
 
 
     - name: anthropic-json-object-output-format
-      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [24]}
       config:
         routes:
             - id: ai-proxy-anthropic-object-output-format
@@ -826,7 +805,6 @@ cases:
 
 
     - name: anthropic-tool-cache-control-stripped
-      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [25]}
       config:
         routes:
             - id: ai-proxy-anthropic-cache-control-stripped
@@ -867,7 +845,6 @@ cases:
 
 
     - name: anthropic-tool-use-empty-input
-      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [26]}
       config:
         routes:
             - id: ai-proxy-anthropic-use-empty-input
@@ -908,7 +885,6 @@ cases:
 
 
     - name: anthropic-header-conversion
-      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [27]}
       config:
         routes:
             - id: ai-proxy-anthropic-conversion
@@ -949,7 +925,6 @@ cases:
 
 
     - name: anthropic-header-preserves-existing-auth
-      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [28]}
       config:
         routes:
             - id: ai-proxy-anthropic-preserves-existing-auth
@@ -990,7 +965,6 @@ cases:
 
 
     - name: anthropic-billing-header-cch-stripped
-      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [29]}
       config:
         routes:
             - id: ai-proxy-anthropic-header-cch-stripped
@@ -1031,7 +1005,6 @@ cases:
 
 
     - name: anthropic-streaming-reasoning-to-thinking
-      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [30]}
       config:
         routes:
             - id: ai-proxy-anthropic-reasoning-to-thinking
@@ -1078,7 +1051,6 @@ cases:
 
 
     - name: anthropic-streaming-null-finish-reason
-      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [31]}
       config:
         routes:
             - id: ai-proxy-anthropic-null-finish-reason
@@ -1124,7 +1096,6 @@ cases:
 
 
     - name: anthropic-streaming-usage-deferred
-      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [32]}
       config:
         routes:
             - id: ai-proxy-anthropic-usage-deferred
@@ -1171,7 +1142,6 @@ cases:
 
 
     - name: anthropic-streaming-dynamic-block-index
-      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [33]}
       config:
         routes:
             - id: ai-proxy-anthropic-dynamic-block-index
@@ -1218,7 +1188,6 @@ cases:
 
 
     - name: anthropic-streaming-ignores-after-stop
-      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [34]}
       config:
         routes:
             - id: ai-proxy-anthropic-ignores-after-stop
@@ -1265,7 +1234,6 @@ cases:
 
 
     - name: anthropic-multiple-tool-results
-      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [35]}
       config:
         routes:
             - id: ai-proxy-anthropic-tool-results
@@ -1306,7 +1274,6 @@ cases:
 
 
     - name: anthropic-text-with-tool-results
-      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [36]}
       config:
         routes:
             - id: ai-proxy-anthropic-with-tool-results
@@ -1347,7 +1314,6 @@ cases:
 
 
     - name: anthropic-mixed-text-tool-use
-      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [37]}
       config:
         routes:
             - id: ai-proxy-anthropic-text-tool-use
@@ -1388,7 +1354,6 @@ cases:
 
 
     - name: anthropic-stop-sequences
-      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [38]}
       config:
         routes:
             - id: ai-proxy-anthropic-sequences
@@ -1429,7 +1394,6 @@ cases:
 
 
     - name: anthropic-image-url-source
-      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [39]}
       config:
         routes:
             - id: ai-proxy-anthropic-url-source
@@ -1470,7 +1434,6 @@ cases:
 
 
     - name: anthropic-stream-options-include-usage
-      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [40]}
       config:
         routes:
             - id: ai-proxy-anthropic-options-include-usage
@@ -1516,7 +1479,6 @@ cases:
 
 
     - name: anthropic-cache-control-stripped-all
-      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [41]}
       config:
         routes:
             - id: ai-proxy-anthropic-control-stripped-all
@@ -1557,7 +1519,6 @@ cases:
 
 
     - name: anthropic-metadata-user-id
-      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [42]}
       config:
         routes:
             - id: ai-proxy-anthropic-user-id
@@ -1598,7 +1559,6 @@ cases:
 
 
     - name: anthropic-builtin-tools-skipped
-      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [43]}
       config:
         routes:
             - id: ai-proxy-anthropic-tools-skipped
@@ -1639,7 +1599,6 @@ cases:
 
 
     - name: anthropic-ping-sse-passthrough
-      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [44]}
       config:
         routes:
             - id: ai-proxy-anthropic-sse-passthrough
@@ -1686,7 +1645,6 @@ cases:
 
 
     - name: anthropic-service-tier
-      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [46]}
       config:
         routes:
             - id: ai-proxy-anthropic-tier
@@ -1727,7 +1685,6 @@ cases:
 
 
     - name: anthropic-tool-name-sanitization
-      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [45]}
       config:
         routes:
             - id: ai-proxy-anthropic-tool-sanitize
@@ -1767,9 +1724,6 @@ cases:
             body: {matches: '"content":\[\{"text":"ok","type":"text"\}\]'}
 
     - name: azure-openai-chat-request
-      source:
-        file: t/plugin/ai-proxy-azure-openai.t
-        tests: [1, 2]
       config:
         routes:
           - id: ai-proxy-azure-openai-chat
@@ -1820,9 +1774,6 @@ cases:
               json_equals: '{"choices":[{"message":{"content":"1 + 1 = 2.","role":"assistant"}}]}'
 
     - name: azure-openai-streaming-sse
-      source:
-        file: t/plugin/ai-proxy-azure-openai.t
-        tests: [3, 4]
       config:
         routes:
           - id: ai-proxy-azure-openai-stream
@@ -1886,7 +1837,6 @@ cases:
               - {matches: '^data: .*"finish_reason":"stop".*\n\n$'}
               - {equals: "data: [DONE]\n\n"}
     - name: bedrock-single-converse-request
-      source: {file: t/plugin/ai-proxy-bedrock-single.t, tests: [1, 2]}
       config:
         routes:
             - id: ai-proxy-bedrock-single-converse
@@ -1929,7 +1879,6 @@ cases:
             body: {matches: '"text":"Hello!"'}
 
     - name: bedrock-single-system-prompt
-      source: {file: t/plugin/ai-proxy-bedrock-single.t, tests: [3]}
       config:
         routes:
             - id: ai-proxy-bedrock-single-system
@@ -1971,7 +1920,6 @@ cases:
             body: {matches: '"text":"Hello!"'}
 
     - name: bedrock-single-token-usage-in-response
-      source: {file: t/plugin/ai-proxy-bedrock-single.t, tests: [4]}
       config:
         routes:
             - id: ai-proxy-bedrock-single-usage
@@ -2010,7 +1958,6 @@ cases:
             body: {matches: '"inputTokens":13'}
 
     - name: bedrock-single-unsupported-protocol-rejected
-      source: {file: t/plugin/ai-proxy-bedrock-single.t, tests: [6, 7]}
       config:
         routes:
             - id: ai-proxy-bedrock-single-unsupported
@@ -2046,7 +1993,6 @@ cases:
             body: {matches: 'does not support openai-chat protocol'}
 
     - name: bedrock-single-arn-model-url-encoding
-      source: {file: t/plugin/ai-proxy-bedrock-single.t, tests: [8, 9]}
       config:
         routes:
             - id: ai-proxy-bedrock-single-arn
@@ -2087,7 +2033,6 @@ cases:
             body: {matches: '"text":"Hello!"'}
 
     - name: bedrock-single-session-token-propagation
-      source: {file: t/plugin/ai-proxy-bedrock-single.t, tests: [10, 11]}
       config:
         routes:
             - id: ai-proxy-bedrock-single-session
@@ -2129,7 +2074,6 @@ cases:
             body: {matches: 'session_token_seen=FwoGZXIvYXdzEXAMPLESESSIONTOKEN'}
 
     - name: bedrock-single-default-endpoint-schema
-      source: {file: t/plugin/ai-proxy-bedrock-single.t, tests: [12]}
       config:
         routes:
             - id: ai-proxy-bedrock-single-default
@@ -2152,7 +2096,6 @@ cases:
           output: {status: 400, logs: {not_matches: 'build route ai-proxy-bedrock-single-default fail'}}
 
     - name: bedrock-single-body-model-path
-      source: {file: t/plugin/ai-proxy-bedrock-single.t, tests: [13, 14]}
       config:
         routes:
             - id: ai-proxy-bedrock-single-body-model
@@ -2189,7 +2132,6 @@ cases:
             body: {matches: '"text":"Hello!"'}
 
     - name: bedrock-single-missing-model-rejected
-      source: {file: t/plugin/ai-proxy-bedrock-single.t, tests: [15]}
       config:
         routes:
             - id: ai-proxy-bedrock-single-missing-model
@@ -2223,7 +2165,6 @@ cases:
             body: {matches: 'could not resolve upstream path'}
 
     - name: bedrock-single-stream-eventstream
-      source: {file: t/plugin/ai-proxy-bedrock-single.t, tests: [16, 17]}
       config:
         routes:
             - id: ai-proxy-bedrock-single-stream
@@ -2273,7 +2214,6 @@ cases:
             body: {matches: '(?s)messageStart.*contentBlockDelta.*Hello.*messageStop.*metadata'}
 
     - name: bedrock-single-nonstream-on-stream-route
-      source: {file: t/plugin/ai-proxy-bedrock-single.t, tests: [18]}
       config:
         routes:
             - id: ai-proxy-bedrock-single-nonstream
@@ -2311,7 +2251,6 @@ cases:
             status: 200
             body: {matches: '"text":"Hello!"'}
     - name: bedrock-multi-converse-request
-      source: {file: t/plugin/ai-proxy-bedrock.t, tests: [1, 2]}
       config:
         routes:
             - id: ai-proxy-bedrock-multi-converse
@@ -2355,7 +2294,6 @@ cases:
             body: {matches: '"text":"Hello!"'}
 
     - name: bedrock-multi-system-prompt
-      source: {file: t/plugin/ai-proxy-bedrock.t, tests: [3]}
       config:
         routes:
             - id: ai-proxy-bedrock-multi-system
@@ -2398,7 +2336,6 @@ cases:
             body: {matches: '"text":"Hello!"'}
 
     - name: bedrock-multi-token-usage
-      source: {file: t/plugin/ai-proxy-bedrock.t, tests: [4]}
       config:
         routes:
             - id: ai-proxy-bedrock-multi-usage
@@ -2440,7 +2377,6 @@ cases:
             body: {matches: '"inputTokens":13'}
 
     - name: bedrock-multi-unsupported-protocol-rejected
-      source: {file: t/plugin/ai-proxy-bedrock.t, tests: [6, 7]}
       config:
         routes:
             - id: ai-proxy-bedrock-multi-unsupported
@@ -2479,7 +2415,6 @@ cases:
             body: {matches: 'does not support openai-chat protocol'}
 
     - name: bedrock-multi-arn-model-url-encoding
-      source: {file: t/plugin/ai-proxy-bedrock.t, tests: [8, 9]}
       config:
         routes:
             - id: ai-proxy-bedrock-multi-arn
@@ -2523,7 +2458,6 @@ cases:
             body: {matches: '"text":"Hello!"'}
 
     - name: bedrock-multi-session-token-propagation
-      source: {file: t/plugin/ai-proxy-bedrock.t, tests: [10, 11]}
       config:
         routes:
             - id: ai-proxy-bedrock-multi-session
@@ -2568,7 +2502,6 @@ cases:
             body: {matches: 'session_token_seen=FwoGZXIvYXdzEXAMPLESESSIONTOKEN'}
 
     - name: bedrock-multi-default-endpoint-schema
-      source: {file: t/plugin/ai-proxy-bedrock.t, tests: [12]}
       config:
         routes:
             - id: ai-proxy-bedrock-multi-default
@@ -2594,7 +2527,6 @@ cases:
           output: {status: 400, logs: {not_matches: 'build route ai-proxy-bedrock-multi-default fail'}}
 
     - name: bedrock-multi-route-without-model-passes-schema
-      source: {file: t/plugin/ai-proxy-bedrock.t, tests: [13]}
       config:
         routes:
             - id: ai-proxy-bedrock-multi-body-model
@@ -2634,7 +2566,6 @@ cases:
             body: {matches: '"text":"Hello!"'}
 
     - name: bedrock-multi-body-model-path
-      source: {file: t/plugin/ai-proxy-bedrock.t, tests: [14, 15]}
       config:
         routes:
             - id: ai-proxy-bedrock-multi-body-only
@@ -2674,7 +2605,6 @@ cases:
             body: {matches: '"text":"Hello!"'}
 
     - name: bedrock-multi-missing-model-rejected
-      source: {file: t/plugin/ai-proxy-bedrock.t, tests: [16]}
       config:
         routes:
             - id: ai-proxy-bedrock-multi-missing-model
@@ -2711,7 +2641,6 @@ cases:
             body: {matches: 'could not resolve upstream path'}
 
     - name: bedrock-multi-stream-eventstream
-      source: {file: t/plugin/ai-proxy-bedrock.t, tests: [17, 18]}
       config:
         routes:
             - id: ai-proxy-bedrock-multi-stream
@@ -2764,7 +2693,6 @@ cases:
             body: {matches: '(?s)messageStart.*contentBlockDelta.*Hello.*messageStop.*metadata'}
 
     - name: bedrock-multi-stream-aggregates-usage
-      source: {file: t/plugin/ai-proxy-bedrock.t, tests: [19]}
       config:
         routes:
             - id: ai-proxy-bedrock-multi-stream-usage
@@ -2816,7 +2744,6 @@ cases:
             body: {matches: '(?s)messageStart.*contentBlockDelta.*Hello.*messageStop.*metadata.*inputTokens.*outputTokens'}
 
     - name: bedrock-multi-nonstream-on-stream-route
-      source: {file: t/plugin/ai-proxy-bedrock.t, tests: [20]}
       config:
         routes:
             - id: ai-proxy-bedrock-multi-nonstream
@@ -2857,7 +2784,6 @@ cases:
             status: 200
             body: {matches: '"text":"Hello!"'}
     - name: client-disconnect-aborts-upstream-read
-      source: {file: t/plugin/ai-proxy-client-disconnect.t, tests: [1, 2]}
       config:
         routes:
             - id: ai-proxy-client-disconnect
@@ -2902,7 +2828,6 @@ cases:
             logs: {matches: 'client disconnected during AI streaming'}
 
     - name: client-disconnect-with-async-flush-aborts-upstream
-      source: {file: t/plugin/ai-proxy-client-disconnect.t, tests: [3, 4]}
       config:
         routes:
             - id: ai-proxy-client-disconnect-async-flush
@@ -2947,7 +2872,6 @@ cases:
             status: 200
             logs: {matches: 'client disconnected during AI streaming'}
     - name: fixture-openai-chat-json
-      source: {file: t/plugin/ai-proxy-fixture.t, tests: [1, 2]}
       config:
         routes:
             - id: ai-proxy-fixture-chat
@@ -2989,7 +2913,6 @@ cases:
             body: {matches: '"content":"1 \+ 1 = 2\."'}
 
     - name: fixture-openai-streaming-sse
-      source: {file: t/plugin/ai-proxy-fixture.t, tests: [3]}
       config:
         routes:
             - id: ai-proxy-fixture-stream
@@ -3035,7 +2958,6 @@ cases:
             body: {matches: 'data: \[DONE\]'}
 
     - name: fixture-missing-fixture-header-falls-back-to-auth
-      source: {file: t/plugin/ai-proxy-fixture.t, tests: [4]}
       config:
         routes:
             - id: ai-proxy-fixture-missing
@@ -3076,7 +2998,6 @@ cases:
             body: {equals: Unauthorized}
 
     - name: fixture-anthropic-messages
-      source: {file: t/plugin/ai-proxy-fixture.t, tests: [6, 7]}
       config:
         routes:
             - id: ai-proxy-fixture-anthropic
@@ -3118,7 +3039,6 @@ cases:
             body: {matches: '"stop_reason":"end_turn"'}
 
     - name: fixture-anthropic-streaming
-      source: {file: t/plugin/ai-proxy-fixture.t, tests: [8]}
       config:
         routes:
             - id: ai-proxy-fixture-anthropic-stream
@@ -3163,7 +3083,6 @@ cases:
             body: {matches: '(?s)event: message_start.*event: message_stop'}
 
     - name: fixture-deepseek-usage-null
-      source: {file: t/plugin/ai-proxy-fixture.t, tests: [9]}
       config:
         routes:
             - id: ai-proxy-fixture-deepseek
@@ -3208,7 +3127,6 @@ cases:
             body: {matches: 'deepseek-chat'}
 
     - name: fixture-model-template-substitution
-      source: {file: t/plugin/ai-proxy-fixture.t, tests: [10]}
       config:
         routes:
             - id: ai-proxy-fixture-model-echo
@@ -3248,7 +3166,6 @@ cases:
             body: {matches: '"model":"gpt-4o"'}
 
     - name: fixture-embeddings
-      source: {file: t/plugin/ai-proxy-fixture.t, tests: [13]}
       config:
         routes:
             - id: ai-proxy-fixture-embeddings
@@ -3288,7 +3205,6 @@ cases:
             body: {matches: '"object":"list"'}
 
     - name: fixture-tool-calling
-      source: {file: t/plugin/ai-proxy-fixture.t, tests: [14]}
       config:
         routes:
             - id: ai-proxy-fixture-tools
@@ -3327,7 +3243,6 @@ cases:
             body: {matches: '"tool_calls"'}
 
     - name: fixture-nonexistent-fixture-fails-closed
-      source: {file: t/plugin/ai-proxy-fixture.t, tests: [5]}
       config:
         routes:
             - id: ai-proxy-fixture-nonexistent
@@ -3366,7 +3281,6 @@ cases:
             body: {equals: fixture not found}
 
     - name: fixture-custom-status-code
-      source: {file: t/plugin/ai-proxy-fixture.t, tests: [11]}
       config:
         routes:
             - id: ai-proxy-fixture-custom-status
@@ -3404,7 +3318,6 @@ cases:
             status: 429
 
     - name: flush-zero-route-is-runnable
-      source: {file: t/plugin/ai-proxy-flush.t, tests: [1]}
       config:
         routes:
           - id: ai-proxy-flush-zero-route
@@ -3453,7 +3366,6 @@ cases:
               - {equals: "data: [DONE]\n\n"}
 
     - name: flush-zero-forwards-each-sse-frame-before-eof
-      source: {file: t/plugin/ai-proxy-flush.t, tests: [2]}
       config:
         routes:
           - id: ai-proxy-flush-zero
@@ -3502,7 +3414,6 @@ cases:
               - {equals: "data: [DONE]\n\n"}
 
     - name: periodic-flush-route-is-runnable
-      source: {file: t/plugin/ai-proxy-flush.t, tests: [3]}
       config:
         routes:
           - id: ai-proxy-periodic-flush-route
@@ -3551,7 +3462,6 @@ cases:
               - {equals: "data: [DONE]\n\n"}
 
     - name: periodic-flush-forwards-sse-frames-before-eof
-      source: {file: t/plugin/ai-proxy-flush.t, tests: [4]}
       config:
         routes:
           - id: ai-proxy-periodic-flush
@@ -3600,7 +3510,6 @@ cases:
               - {equals: "data: [DONE]\n\n"}
 
     - name: zero-streaming-flush-interval-is-accepted
-      source: {file: t/plugin/ai-proxy-flush.t, tests: [6]}
       config:
         routes:
           - id: ai-proxy-zero-flush-accepted
@@ -3649,7 +3558,6 @@ cases:
               - {equals: "data: [DONE]\n\n"}
 
     - name: omitted-streaming-flush-interval-uses-streaming-default
-      source: {file: t/plugin/ai-proxy-flush.t, tests: [7]}
       config:
         routes:
           - id: ai-proxy-default-flush-interval
@@ -3696,9 +3604,6 @@ cases:
               - {matches: '^data: .*"finish_reason":"stop".*\n\n$'}
               - {equals: "data: [DONE]\n\n"}
     - name: gemini-chat-request
-      source:
-        file: t/plugin/ai-proxy-gemini.t
-        tests: [1, 2]
       config:
         routes:
           - id: ai-proxy-gemini-chat
@@ -3749,9 +3654,6 @@ cases:
               json_equals: '{"choices":[{"message":{"content":"1 + 1 = 2.","role":"assistant"}}]}'
 
     - name: gemini-streaming-sse
-      source:
-        file: t/plugin/ai-proxy-gemini.t
-        tests: [3, 4]
       config:
         routes:
           - id: ai-proxy-gemini-stream
@@ -3816,9 +3718,6 @@ cases:
               - {equals: "data: [DONE]\n\n"}
 
     - name: openrouter-chat-request
-      source:
-        file: t/plugin/ai-proxy-openrouter.t
-        tests: [1, 2]
       config:
         routes:
           - id: ai-proxy-openrouter-chat
@@ -3869,9 +3768,6 @@ cases:
               json_equals: '{"choices":[{"message":{"content":"1 + 1 = 2.","role":"assistant"}}]}'
 
     - name: openrouter-streaming-sse
-      source:
-        file: t/plugin/ai-proxy-openrouter.t
-        tests: [3, 4]
       config:
         routes:
           - id: ai-proxy-openrouter-stream
@@ -3935,7 +3831,6 @@ cases:
               - {matches: '^data: .*"finish_reason":"stop".*\n\n$'}
               - {equals: "data: [DONE]\n\n"}
     - name: openai-passthrough-images-generation
-      source: {file: t/plugin/ai-proxy-passthrough.t, tests: [1, 2]}
       config:
         routes:
           - id: ai-proxy-passthrough-images
@@ -3964,7 +3859,6 @@ cases:
           output: {status: 200, body: {matches: 'baby sea otter'}}
 
     - name: openai-passthrough-detected-after-chat
-      source: {file: t/plugin/ai-proxy-passthrough.t, tests: [3, 4]}
       config:
         routes:
           - id: ai-proxy-passthrough-chat-priority
@@ -3991,7 +3885,6 @@ cases:
           output: {status: 200, body: {matches: '1 \+ 1 = 2\.'}}
 
     - name: openai-passthrough-explicit-endpoint-path
-      source: {file: t/plugin/ai-proxy-passthrough.t, tests: [5, 6]}
       config:
         routes:
           - id: ai-proxy-passthrough-explicit-path
@@ -4017,7 +3910,6 @@ cases:
           output: {status: 200, body: {matches: '1 \+ 1 = 2\.'}}
 
     - name: openai-passthrough-model-override
-      source: {file: t/plugin/ai-proxy-passthrough.t, tests: [7, 8]}
       config:
         routes:
           - id: ai-proxy-passthrough-model
@@ -4044,7 +3936,6 @@ cases:
           output: {status: 200, body: {json_equals: '{"model":"dall-e-3-override","prompt":"test","n":1}'}}
 
     - name: openai-passthrough-protocol-detection
-      source: {file: t/plugin/ai-proxy-passthrough.t, tests: [9]}
       config:
         routes:
           - id: ai-proxy-passthrough-detection
@@ -4087,7 +3978,6 @@ cases:
           output: {status: 400, body: {matches: 'unsupported AI request protocol'}}
 
     - name: protocol-conversion-detects-anthropic-uri
-      source: {file: t/plugin/ai-proxy-protocol-conversion.t, tests: [1]}
       config:
         routes:
           - id: protocol-conversion-detect-anthropic
@@ -4113,7 +4003,6 @@ cases:
           output: {status: 200, body: {matches: '"text":"case-1-detected"'}}
 
     - name: protocol-conversion-converts-anthropic-nonstream
-      source: {file: t/plugin/ai-proxy-protocol-conversion.t, tests: [2]}
       config:
         routes:
           - id: protocol-conversion-anthropic-nonstream
@@ -4141,7 +4030,6 @@ cases:
           output: {status: 200, body: {matches: '"text":"1 \+ 1 = 2\."'}}
 
     - name: protocol-conversion-rejects-missing-messages
-      source: {file: t/plugin/ai-proxy-protocol-conversion.t, tests: [3]}
       config:
         routes:
           - id: protocol-conversion-missing-messages
@@ -4162,7 +4050,6 @@ cases:
           output: {status: 400, body: {matches: 'missing messages'}}
 
     - name: protocol-conversion-rejects-malformed-json
-      source: {file: t/plugin/ai-proxy-protocol-conversion.t, tests: [4]}
       config:
         routes:
           - id: protocol-conversion-malformed-json
@@ -4183,7 +4070,6 @@ cases:
           output: {status: 400, body: {matches: 'could not parse JSON request body'}}
 
     - name: protocol-conversion-rejects-nonarray-messages
-      source: {file: t/plugin/ai-proxy-protocol-conversion.t, tests: [5]}
       config:
         routes:
           - id: protocol-conversion-nonarray-messages
@@ -4204,7 +4090,6 @@ cases:
           output: {status: 400, body: {matches: 'missing messages'}}
 
     - name: protocol-conversion-rejects-empty-messages
-      source: {file: t/plugin/ai-proxy-protocol-conversion.t, tests: [6]}
       config:
         routes:
           - id: protocol-conversion-empty-messages
@@ -4225,7 +4110,6 @@ cases:
           output: {status: 400, body: {matches: 'missing messages'}}
 
     - name: protocol-conversion-configures-anthropic-stream-route
-      source: {file: t/plugin/ai-proxy-protocol-conversion.t, tests: [7]}
       config:
         routes:
           - id: protocol-conversion-stream-route
@@ -4251,7 +4135,6 @@ cases:
           output: {status: 200, body: {matches: '(?s)event: message_start.*"text":"route ready".*event: message_stop'}}
 
     - name: protocol-conversion-converts-openai-sse-to-anthropic
-      source: {file: t/plugin/ai-proxy-protocol-conversion.t, tests: [8]}
       config:
         routes:
           - id: protocol-conversion-stream
@@ -4286,7 +4169,6 @@ cases:
               - {matches: '^event: message_stop\n'}
 
     - name: protocol-conversion-configures-system-prompt-route
-      source: {file: t/plugin/ai-proxy-protocol-conversion.t, tests: [9]}
       config:
         routes:
           - id: protocol-conversion-system-route
@@ -4310,7 +4192,6 @@ cases:
           output: {status: 200, body: {matches: '"text":"system route ready"'}}
 
     - name: protocol-conversion-moves-system-prompt-first
-      source: {file: t/plugin/ai-proxy-protocol-conversion.t, tests: [10]}
       config:
         routes:
           - id: protocol-conversion-system-prompt
@@ -4334,7 +4215,6 @@ cases:
           output: {status: 200, body: {matches: '"text":"system prompt ok"'}}
 
     - name: protocol-conversion-configures-tool-route
-      source: {file: t/plugin/ai-proxy-protocol-conversion.t, tests: [11]}
       config:
         routes:
           - id: protocol-conversion-tool-route
@@ -4358,7 +4238,6 @@ cases:
           output: {status: 200, body: {json_equals: '{"content":[{"id":"call_abc123","input":{"location":"Paris"},"name":"get_weather","type":"tool_use"}],"id":"chatcmpl-tool","model":"gpt-4o","role":"assistant","stop_reason":"tool_use","type":"message","usage":{"input_tokens":20,"output_tokens":10}}'}}
 
     - name: protocol-conversion-roundtrips-tool-calling
-      source: {file: t/plugin/ai-proxy-protocol-conversion.t, tests: [12]}
       config:
         routes:
           - id: protocol-conversion-tools
@@ -4382,7 +4261,6 @@ cases:
           output: {status: 200, body: {json_equals: '{"content":[{"id":"call_abc123","input":{"location":"Paris"},"name":"get_weather","type":"tool_use"}],"id":"chatcmpl-tool","model":"gpt-4o","role":"assistant","stop_reason":"tool_use","type":"message","usage":{"input_tokens":20,"output_tokens":10}}'}}
 
     - name: protocol-conversion-configures-null-finish-stream
-      source: {file: t/plugin/ai-proxy-protocol-conversion.t, tests: [13]}
       config:
         routes:
           - id: protocol-conversion-null-finish-route
@@ -4407,7 +4285,6 @@ cases:
           output: {status: 200, body: {matches: '(?s)"text":"!".*event: message_stop'}}
 
     - name: protocol-conversion-null-finish-emits-one-stop
-      source: {file: t/plugin/ai-proxy-protocol-conversion.t, tests: [14]}
       config:
         routes:
           - id: protocol-conversion-null-finish
@@ -4441,7 +4318,6 @@ cases:
               - {matches: '^event: message_stop\n'}
 
     - name: protocol-conversion-configures-double-finish-stream
-      source: {file: t/plugin/ai-proxy-protocol-conversion.t, tests: [15]}
       config:
         routes:
           - id: protocol-conversion-double-finish-route
@@ -4466,7 +4342,6 @@ cases:
           output: {status: 200, body: {matches: '(?s)"text":"Hi".*"text":"!".*event: message_stop'}}
 
     - name: protocol-conversion-deduplicates-double-finish
-      source: {file: t/plugin/ai-proxy-protocol-conversion.t, tests: [16]}
       config:
         routes:
           - id: protocol-conversion-double-finish
@@ -4500,7 +4375,6 @@ cases:
               - {matches: '^event: message_stop\n'}
 
     - name: protocol-conversion-configures-deepseek-null-usage-stream
-      source: {file: t/plugin/ai-proxy-protocol-conversion.t, tests: [17]}
       config:
         routes:
           - id: protocol-conversion-deepseek-route
@@ -4525,7 +4399,6 @@ cases:
           output: {status: 200, body: {matches: '(?s)"text":"Hi".*"text":"!".*event: message_stop'}}
 
     - name: protocol-conversion-ignores-null-usage
-      source: {file: t/plugin/ai-proxy-protocol-conversion.t, tests: [18]}
       config:
         routes:
           - id: protocol-conversion-deepseek-null-usage
@@ -4559,7 +4432,6 @@ cases:
               - {matches: '^event: message_stop\n'}
 
     - name: protocol-conversion-configures-role-content-first-chunk
-      source: {file: t/plugin/ai-proxy-protocol-conversion.t, tests: [19]}
       config:
         routes:
           - id: protocol-conversion-role-content-route
@@ -4584,7 +4456,6 @@ cases:
           output: {status: 200, body: {matches: '(?s)"text":"hello".*"text":" world".*event: message_stop'}}
 
     - name: protocol-conversion-preserves-first-role-content
-      source: {file: t/plugin/ai-proxy-protocol-conversion.t, tests: [20]}
       config:
         routes:
           - id: protocol-conversion-first-role-content
@@ -4618,7 +4489,6 @@ cases:
               - {matches: '^event: message_stop\n'}
 
     - name: protocol-conversion-emits-blank-line-sse-terminators
-      source: {file: t/plugin/ai-proxy-protocol-conversion.t, tests: [21]}
       config:
         routes:
           - id: protocol-conversion-sse-terminators
@@ -4651,7 +4521,6 @@ cases:
               - {matches: '(?s)^event: message_stop\ndata: .*\n\n$'}
 
     - name: protocol-conversion-ignores-empty-sse-data
-      source: {file: t/plugin/ai-proxy-protocol-conversion.t, tests: [22]}
       config:
         routes:
           - id: protocol-conversion-empty-sse-data
@@ -4685,7 +4554,6 @@ cases:
               - {matches: '^event: message_stop\n'}
 
     - name: protocol-conversion-preserves-sse-edge-payloads
-      source: {file: t/plugin/ai-proxy-protocol-conversion.t, tests: [23]}
       config:
         routes:
           - id: protocol-conversion-sse-edge-payloads
@@ -4725,7 +4593,6 @@ cases:
               - {matches: '^event: message_stop\n'}
 
     - name: protocol-conversion-configures-usage-only-final-chunk
-      source: {file: t/plugin/ai-proxy-protocol-conversion.t, tests: [24]}
       config:
         routes:
           - id: protocol-conversion-usage-final-route
@@ -4750,7 +4617,6 @@ cases:
           output: {status: 200, body: {matches: '(?s)"input_tokens":10.*"output_tokens":5.*event: message_stop'}}
 
     - name: protocol-conversion-emits-usage-after-stop-chunk
-      source: {file: t/plugin/ai-proxy-protocol-conversion.t, tests: [25]}
       config:
         routes:
           - id: protocol-conversion-usage-final
@@ -4784,7 +4650,6 @@ cases:
               - {matches: '^event: message_stop\n'}
 
     - name: protocol-conversion-surfaces-stream-error-at-warning
-      source: {file: t/plugin/ai-proxy-protocol-conversion.t, tests: [26]}
       config:
         routes:
           - id: protocol-conversion-stream-error
@@ -4812,7 +4677,6 @@ cases:
             logs: {matches: '(?i)warn.*overloaded_error.*Overloaded'}
 
     - name: protocol-conversion-configures-mismatched-endpoint
-      source: {file: t/plugin/ai-proxy-protocol-conversion.t, tests: [27]}
       config:
         routes:
           - id: protocol-conversion-mismatch-route
@@ -4838,7 +4702,6 @@ cases:
           output: {status: 200, body: {matches: '(?s)"text":"route valid".*event: message_stop'}}
 
     - name: protocol-conversion-rejects-mismatched-stream-format
-      source: {file: t/plugin/ai-proxy-protocol-conversion.t, tests: [28]}
       config:
         routes:
           - id: protocol-conversion-mismatch
@@ -4866,7 +4729,6 @@ cases:
             body: {matches: 'streaming response completed without producing any output'}
             logs: {matches: 'streaming response completed without producing any output'}
     - name: request-body-override-single-preserves-original-body
-      source: {file: t/plugin/ai-proxy-request-body-override.t, tests: [3]}
       config:
         routes:
           - id: request-body-override-single-original
@@ -4892,7 +4754,6 @@ cases:
           output: {status: 200, body: {json_equals: '{"choices":[{"message":{"role":"assistant","content":"case-3-original"}}]}'}}
 
     - name: request-body-override-multi-preserves-original-body
-      source: {file: t/plugin/ai-proxy-request-body-override.t, tests: [4]}
       config:
         routes:
           - id: request-body-override-multi-original
@@ -4921,7 +4782,6 @@ cases:
           output: {status: 200, body: {json_equals: '{"choices":[{"message":{"role":"assistant","content":"case-4-original"}}]}'}}
 
     - name: request-body-override-rewrite-does-not-reuse-raw-body
-      source: {file: t/plugin/ai-proxy-request-body-override.t, tests: [5]}
       config:
         routes:
           - id: request-body-override-no-stale-raw
@@ -4951,7 +4811,6 @@ cases:
           output: {status: 200, body: {json_equals: '{"choices":[{"message":{"role":"assistant","content":"case-5-rewritten"}}]}'}}
 
     - name: request-body-override-openai-maps-max-completion-tokens
-      source: {file: t/plugin/ai-proxy-request-body-override.t, tests: [6]}
       config:
         routes:
           - id: request-body-override-openai-llm-option
@@ -4979,7 +4838,6 @@ cases:
           output: {status: 200, body: {json_equals: '{"choices":[{"message":{"role":"assistant","content":"case-6-max-completion"}}]}'}}
 
     - name: request-body-override-compatible-keeps-max-tokens
-      source: {file: t/plugin/ai-proxy-request-body-override.t, tests: [7]}
       config:
         routes:
           - id: request-body-override-compatible-llm-option
@@ -5007,7 +4865,6 @@ cases:
           output: {status: 200, body: {json_equals: '{"choices":[{"message":{"role":"assistant","content":"case-7-max-tokens"}}]}'}}
 
     - name: request-body-override-responses-maps-max-output-tokens
-      source: {file: t/plugin/ai-proxy-request-body-override.t, tests: [8]}
       config:
         routes:
           - id: request-body-override-responses-llm-option
@@ -5035,7 +4892,6 @@ cases:
           output: {status: 200, body: {json_equals: '{"id":"response-8","object":"response","model":"echo","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}'}}
 
     - name: request-body-override-multi-maps-instance-llm-option
-      source: {file: t/plugin/ai-proxy-request-body-override.t, tests: [9]}
       config:
         routes:
           - id: request-body-override-multi-llm-option
@@ -5066,7 +4922,6 @@ cases:
           output: {status: 200, body: {json_equals: '{"choices":[{"message":{"role":"assistant","content":"case-9-multi-llm-option"}}]}'}}
 
     - name: request-body-override-llm-option-overwrites-client-value
-      source: {file: t/plugin/ai-proxy-request-body-override.t, tests: [10]}
       config:
         routes:
           - id: request-body-override-llm-option-force
@@ -5094,7 +4949,6 @@ cases:
           output: {status: 200, body: {json_equals: '{"choices":[{"message":{"role":"assistant","content":"case-10-llm-option-wins"}}]}'}}
 
     - name: request-body-override-writes-openai-chat-fields
-      source: {file: t/plugin/ai-proxy-request-body-override.t, tests: [11]}
       config:
         routes:
           - id: request-body-override-openai-chat-fields
@@ -5124,7 +4978,6 @@ cases:
           output: {status: 200, body: {json_equals: '{"choices":[{"message":{"role":"assistant","content":"case-11-body-fields"}}]}'}}
 
     - name: request-body-override-nonforce-deep-merges-stream-options
-      source: {file: t/plugin/ai-proxy-request-body-override.t, tests: [12]}
       config:
         routes:
           - id: request-body-override-stream-options
@@ -5158,7 +5011,6 @@ cases:
           output: {status: 200, body: {matches: 'case-12'}}
 
     - name: request-body-override-force-replaces-array-values
-      source: {file: t/plugin/ai-proxy-request-body-override.t, tests: [13]}
       config:
         routes:
           - id: request-body-override-array
@@ -5188,7 +5040,6 @@ cases:
           output: {status: 200, body: {json_equals: '{"choices":[{"message":{"role":"assistant","content":"case-13-array-replaced"}}]}'}}
 
     - name: request-body-override-ignores-nonmatching-protocol
-      source: {file: t/plugin/ai-proxy-request-body-override.t, tests: [14]}
       config:
         routes:
           - id: request-body-override-nonmatching-protocol
@@ -5217,7 +5068,6 @@ cases:
           output: {status: 200, body: {json_equals: '{"choices":[{"message":{"role":"assistant","content":"case-14-ignored"}}]}'}}
 
     - name: request-body-override-default-keeps-client-value
-      source: {file: t/plugin/ai-proxy-request-body-override.t, tests: [15]}
       config:
         routes:
           - id: request-body-override-client-priority
@@ -5246,7 +5096,6 @@ cases:
           output: {status: 200, body: {json_equals: '{"choices":[{"message":{"role":"assistant","content":"case-15-client-wins"}}]}'}}
 
     - name: request-body-override-force-overwrites-client-value
-      source: {file: t/plugin/ai-proxy-request-body-override.t, tests: [16]}
       config:
         routes:
           - id: request-body-override-force-priority
@@ -5276,7 +5125,6 @@ cases:
           output: {status: 200, body: {json_equals: '{"choices":[{"message":{"role":"assistant","content":"case-16-override-wins"}}]}'}}
 
     - name: request-body-override-applies-after-protocol-conversion
-      source: {file: t/plugin/ai-proxy-request-body-override.t, tests: [17]}
       config:
         routes:
           - id: request-body-override-converted-protocol
@@ -5307,7 +5155,6 @@ cases:
           output: {status: 200, body: {matches: '"text":"case-17-converted"'}}
 
     - name: request-body-override-multi-applies-instance-body
-      source: {file: t/plugin/ai-proxy-request-body-override.t, tests: [18]}
       config:
         routes:
           - id: request-body-override-multi-body
@@ -5340,7 +5187,6 @@ cases:
           output: {status: 200, body: {json_equals: '{"choices":[{"message":{"role":"assistant","content":"case-18-multi-body"}}]}'}}
 
     - name: request-body-override-wins-after-llm-options
-      source: {file: t/plugin/ai-proxy-request-body-override.t, tests: [19]}
       config:
         routes:
           - id: request-body-override-order
@@ -5370,7 +5216,6 @@ cases:
           input: {method: POST, path: /request-body-override-order, headers: {Content-Type: application/json}, body: '{"messages":[{"role":"user","content":"hi"}]}'}
           output: {status: 200, body: {json_equals: '{"choices":[{"message":{"role":"assistant","content":"case-19-request-body-wins"}}]}'}}
     - name: stream-limits-duration-aborts-runaway-stream
-      source: {file: t/plugin/ai-proxy-stream-limits.t, tests: [1, 2]}
       config:
         routes:
             - id: ai-proxy-stream-duration-limit
@@ -5416,7 +5261,6 @@ cases:
             logs: {matches: 'aborting AI stream: max_stream_duration_ms exceeded'}
 
     - name: stream-limits-bytes-aborts-runaway-stream
-      source: {file: t/plugin/ai-proxy-stream-limits.t, tests: [3, 4]}
       config:
         routes:
             - id: ai-proxy-stream-bytes-limit
@@ -5462,7 +5306,6 @@ cases:
             logs: {matches: 'max_response_bytes exceeded'}
 
     - name: stream-limits-nonstreaming-oversized-content-length
-      source: {file: t/plugin/ai-proxy-stream-limits.t, tests: [5, 6]}
       config:
         routes:
             - id: ai-proxy-nonstreaming-cl-limit
@@ -5503,7 +5346,6 @@ cases:
             logs: {matches: 'aborting AI response: Content-Length 100000 exceeds max_response_bytes 1024'}
 
     - name: stream-limits-chunked-oversized-body
-      source: {file: t/plugin/ai-proxy-stream-limits.t, tests: [8, 9]}
       config:
         routes:
             - id: ai-proxy-chunked-limit
@@ -5546,7 +5388,6 @@ cases:
             logs: {matches: 'aborting AI response: body size exceeds max_response_bytes 1024'}
 
     - name: stream-limits-request-body-size-rejects-413
-      source: {file: t/plugin/ai-proxy-stream-limits.t, tests: [10, 11]}
       config:
         routes:
             - id: ai-proxy-req-body-limit
@@ -5579,7 +5420,6 @@ cases:
             status: 413
             logs: {matches: 'request body exceeds max_req_body_size'}
     - name: upstream-variable-route-is-runnable
-      source: {file: t/plugin/ai-proxy-upstream-vars.t, tests: [1]}
       config:
         routes:
           - id: ai-proxy-upstream-vars-route
@@ -5636,7 +5476,6 @@ cases:
               X-Upstream-Response-Length: {matches: '^[1-9][0-9]*$'}
 
     - name: nonstream-request-populates-upstream-address-status-and-time
-      source: {file: t/plugin/ai-proxy-upstream-vars.t, tests: [2]}
       config:
         routes:
           - id: ai-proxy-upstream-vars-nonstream
@@ -5687,7 +5526,6 @@ cases:
               X-Upstream-Response-Time: {matches: '^[0-9]+(\.[0-9]+)?$'}
 
     - name: streaming-request-populates-upstream-address-status-and-time
-      source: {file: t/plugin/ai-proxy-upstream-vars.t, tests: [3]}
       files: [{path: upstream-vars-stream.log, body: ''}]
       config:
         routes:
@@ -5750,7 +5588,6 @@ cases:
           body: {matches: '"upstream_response_time":"[0-9]+\.[0-9]+"'}
 
     - name: upstream-uri-and-host-identify-provider-target
-      source: {file: t/plugin/ai-proxy-upstream-vars.t, tests: [4]}
       config:
         routes:
           - id: ai-proxy-upstream-vars-target
@@ -5799,7 +5636,6 @@ cases:
               X-Upstream-Host: {equals: 127.0.0.1}
 
     - name: upstream-response-length-route-is-runnable
-      source: {file: t/plugin/ai-proxy-upstream-vars.t, tests: [5]}
       config:
         routes:
           - id: ai-proxy-upstream-vars-length-route
@@ -5846,7 +5682,6 @@ cases:
               X-Upstream-Response-Length: {matches: '^[1-9][0-9]*$'}
 
     - name: nonstream-response-has-nonzero-upstream-response-length
-      source: {file: t/plugin/ai-proxy-upstream-vars.t, tests: [6]}
       config:
         routes:
           - id: ai-proxy-upstream-vars-nonstream-length
@@ -5893,7 +5728,6 @@ cases:
               X-Upstream-Response-Length: {matches: '^[1-9][0-9]*$'}
 
     - name: streaming-response-has-nonzero-upstream-response-length
-      source: {file: t/plugin/ai-proxy-upstream-vars.t, tests: [7]}
       files: [{path: upstream-vars-stream-length.log, body: ''}]
       config:
         routes:
@@ -5945,7 +5779,6 @@ cases:
         - path: {equals: '{{WORK_DIR}}/upstream-vars-stream-length.log'}
           body: {matches: '"upstream_response_length":[1-9][0-9]*'}
     - name: vertex-ai-header-auth-chat
-      source: {file: t/plugin/ai-proxy-vertex-ai.t, tests: [1, 2]}
       config:
         routes:
             - id: ai-proxy-vertex-header-auth
@@ -5989,7 +5822,6 @@ cases:
             body: {matches: '"content":"1 \+ 1 = 2\."'}
 
     - name: vertex-ai-embeddings-values
-      source: {file: t/plugin/ai-proxy-vertex-ai.t, tests: [3]}
       config:
         routes:
             - id: ai-proxy-vertex-embeddings-values
@@ -6033,7 +5865,6 @@ cases:
             body: {matches: '"embedding":\[0\.0123,-0\.0456,0\.0789,0\.0012\]'}
 
     - name: vertex-ai-embeddings-token-count
-      source: {file: t/plugin/ai-proxy-vertex-ai.t, tests: [4]}
       config:
         routes:
             - id: ai-proxy-vertex-embeddings-tokens
@@ -6074,7 +5905,6 @@ cases:
             body: {matches: '"total_tokens":7'}
 
     - name: vertex-ai-health-check-routes-to-healthy-instance
-      source: {file: t/plugin/ai-proxy-vertex-ai.t, tests: [10, 11]}
       config:
         routes:
             - id: ai-proxy-vertex-health-check
@@ -6144,7 +5974,6 @@ cases:
             body: {matches: '"content":"1 \+ 1 = 2\."'}
 
     - name: vertex-ai-predict-path-uses-body-model
-      source: {file: t/plugin/ai-proxy-vertex-ai.t, tests: [12]}
       config:
         routes:
             - id: ai-proxy-vertex-predict-path
@@ -6185,9 +6014,6 @@ cases:
             status: 200
             body: {matches: '"object":"list"'}
     - name: openai-compatible-chat-request
-      source:
-        file: t/plugin/ai-proxy.openai-compatible.t
-        tests: [1, 2]
       config:
         routes:
           - id: ai-proxy-openai-compatible-chat
@@ -6235,9 +6061,6 @@ cases:
               json_equals: '{"choices":[{"message":{"content":"1 + 1 = 2.","role":"assistant"}}]}'
 
     - name: openai-compatible-override-path
-      source:
-        file: t/plugin/ai-proxy.openai-compatible.t
-        tests: [3]
       config:
         routes:
           - id: ai-proxy-openai-compatible-path
@@ -6283,9 +6106,6 @@ cases:
             body: {equals: path override works}
 
     - name: openai-compatible-streaming-sse
-      source:
-        file: t/plugin/ai-proxy.openai-compatible.t
-        tests: [4, 5]
       config:
         routes:
           - id: ai-proxy-openai-compatible-stream
@@ -6346,7 +6166,6 @@ cases:
               - {matches: '^data: .*"finish_reason":"stop".*\n\n$'}
               - {equals: "data: [DONE]\n\n"}
     - name: openai-wrong-provider-auth
-      source: {file: t/plugin/ai-proxy.t, tests: [3, 4]}
       config:
         routes:
           - id: ai-proxy-wrong-auth
@@ -6374,7 +6193,6 @@ cases:
           output: {status: 401, body: {equals: Unauthorized}}
 
     - name: openai-chat-validation-and-method-normalization
-      source: {file: t/plugin/ai-proxy.t, tests: [5, 6, 7, 8, 9, 10]}
       config:
         routes:
           - id: ai-proxy-chat-validation
@@ -6419,7 +6237,6 @@ cases:
           output: {status: 400, body: {equals: '{"message":"unsupported content-type: application/x-www-form-urlencoded, only application/json is supported"}'}}
 
     - name: openai-model-options-merge
-      source: {file: t/plugin/ai-proxy.t, tests: [11]}
       config:
         routes:
           - id: ai-proxy-options
@@ -6446,7 +6263,6 @@ cases:
           output: {status: 200, body: {equals: options works}}
 
     - name: openai-full-endpoint-path-override
-      source: {file: t/plugin/ai-proxy.t, tests: [12]}
       config:
         routes:
           - id: ai-proxy-path
@@ -6474,7 +6290,6 @@ cases:
           output: {status: 200, body: {equals: path override works}}
 
     - name: openai-chat-stream
-      source: {file: t/plugin/ai-proxy.t, tests: [13, 14]}
       config:
         routes:
           - id: ai-proxy-chat-stream
@@ -6515,7 +6330,6 @@ cases:
               - {equals: "data: [DONE]\n\n"}
 
     - name: openai-embeddings
-      source: {file: t/plugin/ai-proxy.t, tests: [15, 16]}
       config:
         routes:
           - id: ai-proxy-embeddings
@@ -6542,7 +6356,6 @@ cases:
           output: {status: 200, body: {matches: '"model":"text-embedding-ada-002"'}}
 
     - name: openai-explicit-http-endpoint
-      source: {file: t/plugin/ai-proxy.t, tests: [17, 18]}
       config:
         routes:
           - id: ai-proxy-http-endpoint
@@ -6567,7 +6380,6 @@ cases:
           output: {status: 200, body: {json_equals: '{"ok":true}'}}
 
     - name: openai-client-header-forwarding
-      source: {file: t/plugin/ai-proxy.t, tests: [19, 20]}
       config:
         routes:
           - id: ai-proxy-header-forwarding
@@ -6596,7 +6408,6 @@ cases:
           output: {status: 200, body: {json_equals: '{"test-type":"header_forwarding"}'}}
 
     - name: openai-request-id-auth-precedence-and-encoding
-      source: {file: t/plugin/ai-proxy.t, tests: [21, 22, 23, 24]}
       config:
         routes:
           - id: ai-proxy-request-headers
@@ -6648,7 +6459,6 @@ cases:
           output: {status: 200, body: {not_matches: 'accept-encoding":"gzip'}}
 
     - name: openai-responses-and-chat-protocol-routing
-      source: {file: t/plugin/ai-proxy.t, tests: [25, 26, 27, 28, 29]}
       config:
         routes:
           - id: ai-proxy-responses
@@ -6700,7 +6510,6 @@ cases:
           output: {status: 200, body: {matches: '"content":"1 \+ 1 = 2\."'}}
 
     - name: openai-fragmented-sse-usage
-      source: {file: t/plugin/ai-proxy.t, tests: [30, 31]}
       files: [{path: fragmented-usage.log, body: ''}]
       config:
         routes:
@@ -6749,7 +6558,6 @@ cases:
                 fields: {/request_type: ai_stream, /prompt_tokens: '5', /completion_tokens: '3'}
 
     - name: openai-multiple-sse-events-one-chunk
-      source: {file: t/plugin/ai-proxy.t, tests: [32]}
       files: [{path: multi-event-usage.log, body: ''}]
       config:
         routes:
@@ -6795,7 +6603,6 @@ cases:
                 fields: {/request_type: ai_stream, /prompt_tokens: '7', /completion_tokens: '2'}
 
     - name: openai-responses-nonstream-usage-context
-      source: {file: t/plugin/ai-proxy.t, tests: [33, 34]}
       files: [{path: responses-usage.log, body: ''}]
       config:
         routes:
@@ -6849,7 +6656,6 @@ cases:
                   /token_usage/total_tokens: '16'
 
     - name: openai-responses-streaming-usage-context
-      source: {file: t/plugin/ai-proxy.t, tests: [35, 36]}
       files: [{path: responses-stream-usage.log, body: ''}]
       config:
         routes:
@@ -6912,7 +6718,6 @@ cases:
                   /token_usage/total_tokens: '7'
 
     - name: openai-auth-query-is-not-mutated
-      source: {file: t/plugin/ai-proxy.t, tests: [37]}
       config:
         routes:
           - id: ai-proxy-auth-query
@@ -6944,7 +6749,6 @@ cases:
           output: {status: 200}
 
     - name: openai-wrong-query-auth
-      source: {file: t/plugin/ai-proxy2.t, tests: [1, 2]}
       config:
         routes:
           - id: ai-proxy-wrong-query-auth
@@ -6970,7 +6774,6 @@ cases:
           output: {status: 401, body: {equals: Unauthorized}}
 
     - name: openai-correct-query-auth
-      source: {file: t/plugin/ai-proxy2.t, tests: [3, 4]}
       config:
         routes:
           - id: ai-proxy-correct-query-auth
@@ -6997,7 +6800,6 @@ cases:
           output: {status: 200, body: {matches: '"content":"1 \+ 1 = 2\."'}}
 
     - name: openai-override-endpoint-query-preservation
-      source: {file: t/plugin/ai-proxy2.t, tests: [7, 8]}
       config:
         routes:
           - id: ai-proxy-endpoint-query
@@ -7023,7 +6825,6 @@ cases:
           input: {method: POST, path: /anything, headers: {Content-Type: application/json}, body: '{"messages":[{"role":"system","content":"You are a mathematician"},{"role":"user","content":"What is 1+1?"}]}'}
           output: {status: 200, body: {matches: '"content":"query params preserved"'}}
     - name: llm-vars-nonstreaming-write-basic-tokens
-      source: {file: t/plugin/ai-proxy3.t, tests: [1, 2]}
       config:
         routes:
             - id: ai-proxy3-basic
@@ -7065,7 +6866,6 @@ cases:
               X-LLM-Completion-Tokens: {equals: '8'}
 
     - name: llm-vars-null-content-response
-      source: {file: t/plugin/ai-proxy3.t, tests: [3, 4]}
       config:
         routes:
             - id: ai-proxy3-null-content
@@ -7097,7 +6897,6 @@ cases:
             body: {matches: '"role":"assistant"'}
 
     - name: llm-vars-streaming-aggregates-tokens
-      source: {file: t/plugin/ai-proxy3.t, tests: [5, 6]}
       config:
         routes:
             - id: ai-proxy3-streaming-vars
@@ -7153,7 +6952,6 @@ cases:
               X-LLM-Completion-Tokens: {equals: '20'}
 
     - name: kafka-log-summaries-and-payloads
-      source: {file: t/plugin/ai-proxy-kafka-log.t, tests: [1, 2]}
       config:
         routes:
             - id: ai-proxy-kafka-summaries-payloads
@@ -7218,7 +7016,6 @@ cases:
             status: 200
 
     - name: kafka-log-summaries-no-payload
-      source: {file: t/plugin/ai-proxy-kafka-log.t, tests: [3, 4]}
       config:
         routes:
             - id: ai-proxy-kafka-summaries-only
@@ -7275,7 +7072,6 @@ cases:
             status: 200
 
     - name: kafka-log-no-summary-no-payload
-      source: {file: t/plugin/ai-proxy-kafka-log.t, tests: [5, 6]}
       config:
         routes:
             - id: ai-proxy-kafka-no-logging
@@ -7331,7 +7127,6 @@ cases:
             status: 200
 
     - name: kafka-log-ai-proxy-multi-stream
-      source: {file: t/plugin/ai-proxy-kafka-log.t, tests: [7, 8]}
       config:
         routes:
             - id: ai-proxy-multi-kafka-stream
@@ -7393,7 +7188,6 @@ cases:
             body: {matches: '(?s)data:.*some.*content.*data: \[DONE\]'}
 
     - name: ai-proxy-multi-retry-max-retries
-      source: {file: t/plugin/ai-proxy-multi-retry.t, tests: [1, 2]}
       config:
         routes:
             - id: ai-proxy-multi-retry-max-retries
@@ -7446,7 +7240,6 @@ cases:
             body: {matches: 'fast internal error'}
 
     - name: ai-proxy-multi-retry-fast-failure
-      source: {file: t/plugin/ai-proxy-multi-retry.t, tests: [3, 4]}
       config:
         routes:
             - id: ai-proxy-multi-retry-fast-failure
@@ -7498,7 +7291,6 @@ cases:
           output: {status: 200, body: {equals: success}}
 
     - name: ai-proxy-multi-retry-slow-failure
-      source: {file: t/plugin/ai-proxy-multi-retry.t, tests: [5, 6]}
       config:
         routes:
             - id: ai-proxy-multi-retry-slow-failure
@@ -7548,7 +7340,6 @@ cases:
             body: {matches: 'slow internal error'}
 
     - name: ai-proxy-multi-openai-compatible
-      source: {file: t/plugin/ai-proxy-multi.openai-compatible.t, tests: [1, 2]}
       config:
         routes:
             - id: ai-proxy-multi-openai-compatible
@@ -7585,7 +7376,6 @@ cases:
             body: {matches: '"content":"1 \+ 1 = 2\."'}
 
     - name: ai-proxy-multi-openai-compatible-stream
-      source: {file: t/plugin/ai-proxy-multi.openai-compatible.t, tests: [3, 4]}
       config:
         routes:
             - id: ai-proxy-multi-openai-compatible-stream
@@ -7637,7 +7427,6 @@ cases:
               - {equals: "data: [DONE]\n\n"}
 
     - name: ai-proxy-multi-openai-wrong-query-auth
-      source: {file: t/plugin/ai-proxy-multi2.t, tests: [1, 2]}
       config:
         routes:
           - id: ai-proxy-multi-wrong-query-auth
@@ -7666,7 +7455,6 @@ cases:
           output: {status: 401, body: {equals: Unauthorized}}
 
     - name: ai-proxy-multi-openai-correct-query-auth
-      source: {file: t/plugin/ai-proxy-multi2.t, tests: [3, 4]}
       config:
         routes:
           - id: ai-proxy-multi-correct-query-auth
@@ -7696,7 +7484,6 @@ cases:
           output: {status: 200, body: {matches: '"content":"1 \+ 1 = 2\."'}}
 
     - name: ai-proxy-multi-openai-override-endpoint-query-preservation
-      source: {file: t/plugin/ai-proxy-multi2.t, tests: [7, 8]}
       config:
         routes:
           - id: ai-proxy-multi-endpoint-query
@@ -7726,7 +7513,6 @@ cases:
           output: {status: 200, body: {matches: '"content":"query params preserved"'}}
 
     - name: ai-proxy-multi-openai-wrong-provider-auth
-      source: {file: t/plugin/ai-proxy-multi.t, tests: [3, 4]}
       config:
         routes:
           - id: ai-proxy-multi-wrong-auth
@@ -7756,7 +7542,6 @@ cases:
           output: {status: 401, body: {equals: Unauthorized}}
 
     - name: ai-proxy-multi-openai-chat-validation-and-method-normalization
-      source: {file: t/plugin/ai-proxy-multi.t, tests: [5, 6, 7, 8, 9, 10]}
       config:
         routes:
           - id: ai-proxy-multi-chat-validation
@@ -7804,7 +7589,6 @@ cases:
           output: {status: 400, body: {equals: '{"message":"unsupported content-type: application/x-www-form-urlencoded, only application/json is supported"}'}}
 
     - name: ai-proxy-multi-openai-model-options-merge
-      source: {file: t/plugin/ai-proxy-multi.t, tests: [11]}
       config:
         routes:
           - id: ai-proxy-multi-options
@@ -7834,7 +7618,6 @@ cases:
           output: {status: 200, body: {equals: options works}}
 
     - name: ai-proxy-multi-openai-full-endpoint-path-override
-      source: {file: t/plugin/ai-proxy-multi.t, tests: [12]}
       config:
         routes:
           - id: ai-proxy-multi-path
@@ -7864,7 +7647,6 @@ cases:
           output: {status: 200, body: {equals: path override works}}
 
     - name: ai-proxy-multi-openai-chat-stream
-      source: {file: t/plugin/ai-proxy-multi.t, tests: [13, 14]}
       config:
         routes:
           - id: ai-proxy-multi-chat-stream
@@ -7910,113 +7692,3 @@ cases:
               - {matches: 'content.*content'}
               - {matches: 'finish_reason.*stop'}
               - {equals: "data: [DONE]\n\n"}
-
-sources:
-    - repository: https://github.com/apache/apisix
-      commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-      file: t/plugin/ai-proxy-anthropic.t
-      tests: 46
-    - repository: https://github.com/apache/apisix
-      commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-      file: t/plugin/ai-proxy-azure-openai.t
-      tests: 4
-    - repository: https://github.com/apache/apisix
-      commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-      file: t/plugin/ai-proxy-bedrock-single.t
-      tests: 17
-      test_numbers: [1, 2, 3, 4, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
-    - repository: https://github.com/apache/apisix
-      commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-      file: t/plugin/ai-proxy-bedrock.t
-      tests: 19
-      test_numbers: [1, 2, 3, 4, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
-    - repository: https://github.com/apache/apisix
-      commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-      file: t/plugin/ai-proxy-client-disconnect.t
-      tests: 4
-    - repository: https://github.com/apache/apisix
-      commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-      file: t/plugin/ai-proxy-fixture.t
-      tests: 13
-      test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14]
-    - repository: https://github.com/apache/apisix
-      commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-      file: t/plugin/ai-proxy-flush.t
-      tests: 6
-      test_numbers: [1, 2, 3, 4, 6, 7]
-    - repository: https://github.com/apache/apisix
-      commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-      file: t/plugin/ai-proxy-gemini.t
-      tests: 4
-    - repository: https://github.com/apache/apisix
-      commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-      file: t/plugin/ai-proxy-openrouter.t
-      tests: 4
-    - repository: https://github.com/apache/apisix
-      commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-      file: t/plugin/ai-proxy-passthrough.t
-      tests: 9
-    - repository: https://github.com/apache/apisix
-      commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-      file: t/plugin/ai-proxy-protocol-conversion.t
-      tests: 28
-    - repository: https://github.com/apache/apisix
-      commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-      file: t/plugin/ai-proxy-request-body-override.t
-      tests: 17
-      test_numbers: [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
-    - repository: https://github.com/apache/apisix
-      commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-      file: t/plugin/ai-proxy-stream-limits.t
-      tests: 10
-      test_numbers: [1, 2, 3, 4, 5, 6, 8, 9, 10, 11]
-    - repository: https://github.com/apache/apisix
-      commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-      file: t/plugin/ai-proxy-upstream-vars.t
-      tests: 7
-    - repository: https://github.com/apache/apisix
-      commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-      file: t/plugin/ai-proxy-vertex-ai.t
-      tests: 7
-      test_numbers: [1, 2, 3, 4, 10, 11, 12]
-    - repository: https://github.com/apache/apisix
-      commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-      file: t/plugin/ai-proxy.openai-compatible.t
-      tests: 5
-    - repository: https://github.com/apache/apisix
-      commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-      file: t/plugin/ai-proxy.t
-      tests: 35
-      test_numbers: [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37]
-    - repository: https://github.com/apache/apisix
-      commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-      file: t/plugin/ai-proxy2.t
-      tests: 6
-      test_numbers: [1, 2, 3, 4, 7, 8]
-    - repository: https://github.com/apache/apisix
-      commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-      file: t/plugin/ai-proxy3.t
-      tests: 6
-    - repository: https://github.com/apache/apisix
-      commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-      file: t/plugin/ai-proxy-kafka-log.t
-      tests: 8
-      test_numbers: [1, 2, 3, 4, 5, 6, 7, 8]
-    - repository: https://github.com/apache/apisix
-      commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-      file: t/plugin/ai-proxy-multi-retry.t
-      tests: 6
-    - repository: https://github.com/apache/apisix
-      commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-      file: t/plugin/ai-proxy-multi.openai-compatible.t
-      tests: 4
-    - repository: https://github.com/apache/apisix
-      commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-      file: t/plugin/ai-proxy-multi2.t
-      tests: 6
-      test_numbers: [1, 2, 3, 4, 7, 8]
-    - repository: https://github.com/apache/apisix
-      commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-      file: t/plugin/ai-proxy-multi.t
-      tests: 12
-      test_numbers: [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]

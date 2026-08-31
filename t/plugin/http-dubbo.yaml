@@ -1,12 +1,5 @@
-sources:
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/http-dubbo.t
-    tests: 5
-
 cases:
   - name: pojo-serialized-request-and-response
-    source: {file: t/plugin/http-dubbo.t, tests: [1]}
     config:
       routes:
         - id: http-dubbo-pojo
@@ -39,7 +32,6 @@ cases:
           body: {equals: '{"aBoolean":true,"aByte":1,"aDouble":1.1,"aFloat":1.2,"aInt":2,"aLong":3,"aShort":4,"aString":"aa","acharacter":"a","stringMap":{"key":"value"},"strings":["aa","bb"]}'}
 
   - name: pojo-array-serialized-request-and-response
-    source: {file: t/plugin/http-dubbo.t, tests: [2]}
     config:
       routes:
         - id: http-dubbo-pojos
@@ -72,7 +64,6 @@ cases:
           body: {equals: '[{"aBoolean":true,"aByte":1,"aDouble":1.1,"aFloat":1.2,"aInt":2,"aLong":3,"aShort":4,"aString":"aa","acharacter":"a","stringMap":{"key":"value"},"strings":["aa","bb"]}]'}
 
   - name: connect-timeout-returns-bad-gateway
-    source: {file: t/plugin/http-dubbo.t, tests: [3]}
     config:
       routes:
         - id: http-dubbo-timeout
@@ -96,7 +87,6 @@ cases:
       logs: {matches: failed to connect to upstream}
 
   - name: void-response
-    source: {file: t/plugin/http-dubbo.t, tests: [4]}
     config:
       routes:
         - id: http-dubbo-void
@@ -123,7 +113,6 @@ cases:
         output: {status: 200, body: {equals: ''}}
 
   - name: upstream-failure-returns-internal-server-error
-    source: {file: t/plugin/http-dubbo.t, tests: [5]}
     config:
       routes:
         - id: http-dubbo-failure

@@ -1,17 +1,5 @@
-sources:
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/wolf-rbac.t
-    tests: 42
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/security-warning2.t
-    tests: 2
-    test_numbers: [19, 20]
-
 cases:
   - name: schema-defaults
-    source: {file: t/plugin/wolf-rbac.t, tests: [1]}
     runtime: {plugins: [wolf-rbac]}
     config:
       routes:
@@ -25,7 +13,6 @@ cases:
       logs: {matches: 'Using wolf-rbac server with no TLS is a security risk'}
 
   - name: schema-rejections
-    source: {file: t/plugin/wolf-rbac.t, tests: [2, 40]}
     variants:
       - name: appid-must-be-string
         runtime: {plugins: [wolf-rbac]}
@@ -51,7 +38,6 @@ cases:
           logs: {matches: 'validate plugin wolf-rbac config:.*ssl_verify.*expected boolean.*got string'}
 
   - name: public-login-apis
-    source: {file: t/plugin/wolf-rbac.t, tests: [3, 4, 5, 6, 7, 8, 9, 10, 11, 12]}
     runtime: {plugins: [public-api, wolf-rbac]}
     config:
       consumers:
@@ -193,7 +179,6 @@ cases:
           logs: {not_matches: 'wrong-password|123456|wolf-rbac-token'}
 
   - name: permission-tokens-and-user-headers
-    source: {file: t/plugin/wolf-rbac.t, tests: [13, 14, 15, 16, 17, 18, 19, 20, 26]}
     runtime: {plugins: [wolf-rbac]}
     config:
       consumers:
@@ -312,7 +297,6 @@ cases:
           logs: {not_matches: 'wolf-rbac-token|V1#wolf-rbac-app'}
 
   - name: public-user-info
-    source: {file: t/plugin/wolf-rbac.t, tests: [21, 22, 23]}
     runtime: {plugins: [public-api, wolf-rbac]}
     config:
       consumers:
@@ -355,7 +339,6 @@ cases:
           body: {json_equals: '{"user_info":{"nickname":"administrator","username":"admin","id":"100"}}'}
 
   - name: password-change-bodies
-    source: {file: t/plugin/wolf-rbac.t, tests: [24, 25, 27, 28]}
     runtime: {plugins: [public-api, wolf-rbac]}
     config:
       consumers:
@@ -436,7 +419,6 @@ cases:
           logs: {not_matches: '123456|abcdef|wolf-rbac-token'}
 
   - name: permission-retry-and-error-mapping
-    source: {file: t/plugin/wolf-rbac.t, tests: [29, 30]}
     runtime: {plugins: [wolf-rbac]}
     config:
       consumers:
@@ -486,7 +468,6 @@ cases:
           logs: {matches: 'status:401, reason:ERR_TOKEN_INVALID'}
 
   - name: vault-appid-reference
-    source: {file: t/plugin/wolf-rbac.t, tests: [31, 32, 33]}
     runtime: {plugins: [public-api, wolf-rbac]}
     config:
       secrets:
@@ -542,7 +523,6 @@ cases:
           body: {json_equals: '{"rbac_token":"V1#wolf-rbac-app#wolf-rbac-token","user_info":{"nickname":"administrator","username":"admin","id":"100"}}'}
 
   - name: vault-token-environment-reference
-    source: {file: t/plugin/wolf-rbac.t, tests: [34, 35]}
     runtime: {plugins: [public-api, wolf-rbac]}
     environment: {VAULT_TOKEN: root}
     config:
@@ -568,7 +548,6 @@ cases:
     steps: *secret_login_steps
 
   - name: consumer-replacement-and-echo-rewrite
-    source: {file: t/plugin/wolf-rbac.t, tests: [36, 37]}
     runtime: {plugins: [wolf-rbac, echo]}
     config:
       consumers:
@@ -640,7 +619,6 @@ cases:
           logs: {not_matches: 'consumer merge echo plugins|wolf-rbac-token|V1#wolf-rbac-app'}
 
   - name: ssl-verification
-    source: {file: t/plugin/wolf-rbac.t, tests: [38, 39]}
     variants:
       - name: ssl-verify-false-allows-self-signed-provider
         runtime: {plugins: [public-api, wolf-rbac]}
@@ -708,7 +686,6 @@ cases:
               logs: {matches: 'request to wolf-server failed:.*(x509|certificate)'}
 
   - name: trusted-and-untrusted-real-ip
-    source: {file: t/plugin/wolf-rbac.t, tests: [41, 42]}
     variants:
       - name: trusted-real-ip-is-forwarded
         runtime: {plugins: [real-ip, wolf-rbac]}
@@ -780,7 +757,6 @@ cases:
             output: *allowed_output
 
   - name: http-server-security-warning
-    source: {file: t/plugin/security-warning2.t, tests: [19]}
     runtime: {plugins: [wolf-rbac]}
     config:
       routes:
@@ -794,7 +770,6 @@ cases:
       logs: {matches: 'Using wolf-rbac server with no TLS is a security risk'}
 
   - name: https-server-no-security-warning
-    source: {file: t/plugin/security-warning2.t, tests: [20]}
     runtime: {plugins: [wolf-rbac]}
     config:
       routes:

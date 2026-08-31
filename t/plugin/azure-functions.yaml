@@ -1,13 +1,5 @@
-source:
-  repository: https://github.com/apache/apisix
-  commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-  file: t/plugin/azure-functions.t
-  tests: 14
-
 cases:
   - name: schema
-    source:
-      tests: [1, 2]
     variants:
       - name: valid
         config:
@@ -45,8 +37,6 @@ cases:
             matches: 'build route azure-functions-missing-uri fail:.*azure-functions'
 
   - name: invoke-and-http2-response
-    source:
-      tests: [3, 4, 5, 6]
     frontend_tls:
       sni: azure-functions.test
     config:
@@ -123,8 +113,6 @@ cases:
             equals: ""
 
   - name: configured-api-key
-    source:
-      tests: [7]
     config:
       routes:
         - id: azure-functions-configured-key
@@ -152,8 +140,6 @@ cases:
         equals: "Authz-Header - test_key\n"
 
   - name: client-api-key-wins
-    source:
-      tests: [8]
     config:
       routes:
         - id: azure-functions-client-key
@@ -181,8 +167,6 @@ cases:
         equals: "Authz-Header - must_not_be_overrided\n"
 
   - name: metadata-master-key
-    source:
-      tests: [9]
     config:
       routes:
         - id: azure-functions-metadata-key
@@ -209,8 +193,6 @@ cases:
         equals: "Authz-Header - metadata_key\n"
 
   - name: wildcard-path-forwarding
-    source:
-      tests: [10, 11, 12, 13]
     config:
       routes:
         - id: azure-functions-paths
@@ -271,8 +253,6 @@ cases:
             equals: "invocation /api successful\n"
 
   - name: final-route-setup
-    source:
-      tests: [14]
     config:
       routes:
         - id: azure-functions-final-route

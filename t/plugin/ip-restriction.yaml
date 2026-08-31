@@ -1,13 +1,5 @@
-source:
-  repository: https://github.com/apache/apisix
-  commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-  file: t/plugin/ip-restriction.t
-  tests: 35
-
 cases:
   - name: schema
-    source:
-      tests: [1, 2, 3, 4, 5, 6, 19, 24, 31, 32, 35]
     variants:
       - name: valid-ipv4-defaults
         runtime: &ip_runtime
@@ -148,8 +140,6 @@ cases:
         output: *schema_rejected
 
   - name: whitelist
-    source:
-      tests: [7, 8, 9, 10, 11]
     runtime: &real_ip_runtime
       plugins: [real-ip, ip-restriction]
     config:
@@ -211,8 +201,6 @@ cases:
         output: *default_denied
 
   - name: blacklist
-    source:
-      tests: [12, 13, 14, 15, 16]
     runtime: *real_ip_runtime
     config:
       routes:
@@ -259,8 +247,6 @@ cases:
         output: *hello_output
 
   - name: disabled-plugin
-    source:
-      tests: [17, 18, 25]
     runtime: *real_ip_runtime
     config:
       routes:
@@ -305,8 +291,6 @@ cases:
         output: *hello_output
 
   - name: ipv6-blacklist
-    source:
-      tests: [20, 21, 22, 23]
     runtime: *real_ip_runtime
     config:
       routes:
@@ -345,8 +329,6 @@ cases:
         output: *default_denied
 
   - name: blacklist-custom-message
-    source:
-      tests: [26, 27, 28]
     runtime: *real_ip_runtime
     config:
       routes:
@@ -381,8 +363,6 @@ cases:
         output: *custom_denied
 
   - name: whitelist-custom-message
-    source:
-      tests: [29, 30]
     runtime: *real_ip_runtime
     config:
       routes:
@@ -404,8 +384,6 @@ cases:
         output: *custom_denied
 
   - name: custom-response-code
-    source:
-      tests: [33, 34]
     runtime: *real_ip_runtime
     config:
       routes:

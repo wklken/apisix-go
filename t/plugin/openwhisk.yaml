@@ -1,14 +1,5 @@
-source:
-  repository: https://github.com/apache/apisix
-  commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-  file: t/plugin/openwhisk.t
-  tests: 9
-  test_numbers: [6, 7, 9, 11, 13, 15, 17, 19, 21]
-
 cases:
   - name: encrypted-test-params
-    source:
-      tests: [6, 7, 9]
     runtime:
       apisix:
         data_encryption:
@@ -79,8 +70,6 @@ cases:
           body:
             equals: '{"hello":"world"}'
   - name: non-existent-action
-    source:
-      tests: [11]
     config:
       routes:
         - id: openwhisk-not-found
@@ -111,8 +100,6 @@ cases:
         matches: '"error":"The requested resource does not exist\."'
 
   - name: unavailable-api-host
-    source:
-      tests: [13]
     config:
       routes:
         - id: openwhisk-unavailable
@@ -137,8 +124,6 @@ cases:
         matches: 'failed to process openwhisk action, err:'
 
   - name: packaged-action
-    source:
-      tests: [15]
     config:
       routes:
         - id: openwhisk-packaged
@@ -166,8 +151,6 @@ cases:
         equals: '{"hello":"world"}'
 
   - name: action-status-code
-    source:
-      tests: [17]
     config:
       routes:
         - id: openwhisk-status
@@ -191,8 +174,6 @@ cases:
       status: 407
 
   - name: action-headers
-    source:
-      tests: [19]
     config:
       routes:
         - id: openwhisk-headers
@@ -219,8 +200,6 @@ cases:
           equals: header
 
   - name: action-body
-    source:
-      tests: [21]
     config:
       routes:
         - id: openwhisk-body

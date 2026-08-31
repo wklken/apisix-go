@@ -1,22 +1,5 @@
-sources:
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/chaitin-waf.t
-    tests: 15
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/chaitin-waf-reject.t
-    tests: 4
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/chaitin-waf-timeout.t
-    tests: 2
-
 cases:
   - name: metadata-rejects-empty-nodes
-    source:
-      file: t/plugin/chaitin-waf.t
-      tests: [1]
     config:
       routes:
         - id: chaitin-waf-empty-nodes
@@ -34,9 +17,6 @@ cases:
         matches: 'validate plugin chaitin-waf metadata:.*nodes.*minimum 1'
 
   - name: metadata-requires-node-host
-    source:
-      file: t/plugin/chaitin-waf.t
-      tests: [2]
     config:
       routes:
         - id: chaitin-waf-missing-host
@@ -55,9 +35,6 @@ cases:
         matches: 'validate plugin chaitin-waf metadata:.*host.*required'
 
   - name: default-pass
-    source:
-      file: t/plugin/chaitin-waf.t
-      tests: [3, 4]
     config: &pass_config
       routes:
         - id: chaitin-waf-pass
@@ -112,9 +89,6 @@ cases:
             equals: hello world
 
   - name: conditional-match
-    source:
-      file: t/plugin/chaitin-waf.t
-      tests: [5, 6, 7]
     config:
       routes:
         - id: chaitin-waf-match
@@ -154,9 +128,6 @@ cases:
         output: *pass_output
 
   - name: mode-off
-    source:
-      file: t/plugin/chaitin-waf.t
-      tests: [8, 9]
     config:
       routes:
         - id: chaitin-waf-off
@@ -192,9 +163,6 @@ cases:
             equals: hello world
 
   - name: real-client-ip-disabled
-    source:
-      file: t/plugin/chaitin-waf.t
-      tests: [10, 11, 12]
     config:
       routes:
         - id: chaitin-waf-real-client-ip-disabled
@@ -241,9 +209,6 @@ cases:
         output: *pass_output
 
   - name: real-client-ip-from-trusted-forwarded-for
-    source:
-      file: t/plugin/chaitin-waf.t
-      tests: [13, 14]
     runtime:
       apisix:
         trusted_addresses: [127.0.0.0/8]
@@ -280,9 +245,6 @@ cases:
         output: *pass_output
 
   - name: spoofed-forwarded-for-from-untrusted-peer
-    source:
-      file: t/plugin/chaitin-waf.t
-      tests: [15]
     runtime:
       apisix:
         trusted_addresses: [192.0.2.1/32]
@@ -317,9 +279,6 @@ cases:
         output: *pass_output
 
   - name: block-mode-reject
-    source:
-      file: t/plugin/chaitin-waf-reject.t
-      tests: [1, 2]
     config:
       routes:
         - id: chaitin-waf-reject
@@ -365,9 +324,6 @@ cases:
             matches: '^\{.*"event_id":\s*"b3c6ce574dc24f09a01f634a39dca83b".*\}\s*$'
 
   - name: monitor-mode-reject-passes-through
-    source:
-      file: t/plugin/chaitin-waf-reject.t
-      tests: [3, 4]
     config:
       routes:
         - id: chaitin-waf-monitor
@@ -415,9 +371,6 @@ cases:
             equals: hello world
 
   - name: read-timeout-falls-back
-    source:
-      file: t/plugin/chaitin-waf-timeout.t
-      tests: [1, 2]
     config:
       routes:
         - id: chaitin-waf-timeout

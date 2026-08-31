@@ -1,13 +1,5 @@
-source:
-  repository: https://github.com/apache/apisix
-  commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-  file: t/plugin/dingtalk-auth.t
-  tests: 14
-
 cases:
   - name: schema
-    source:
-      tests: [1, 2, 3]
     variants:
       - name: valid
         config:
@@ -70,8 +62,6 @@ cases:
         output: *schema_rejection
 
   - name: redirect-without-code
-    source:
-      tests: [4, 5]
     config:
       routes:
         - id: dingtalk-auth-redirect
@@ -98,8 +88,6 @@ cases:
               equals: /login
 
   - name: invalid-code
-    source:
-      tests: [6]
     config:
       routes:
         - id: dingtalk-auth-invalid-code
@@ -144,8 +132,6 @@ cases:
             equals: '{"message":"Invalid authorization code"}'
 
   - name: valid-query-code
-    source:
-      tests: [7]
     config: &default_route
       routes:
         - id: dingtalk-auth-query
@@ -193,8 +179,6 @@ cases:
               matches: '^dingtalk_session='
 
   - name: valid-header-code
-    source:
-      tests: [8]
     config:
       routes:
         - id: dingtalk-auth-header
@@ -230,8 +214,6 @@ cases:
             equals: hello world
 
   - name: session-reuse
-    source:
-      tests: [9]
     config: *default_route
     fixtures:
       - name: dingtalk
@@ -283,8 +265,6 @@ cases:
               equals: /login
 
   - name: session-expiry
-    source:
-      tests: [10]
     config: *default_route
     fixtures:
       - name: dingtalk
@@ -326,8 +306,6 @@ cases:
               equals: /login
 
   - name: custom-query
-    source:
-      tests: [11, 12]
     config: &custom_route
       routes:
         - id: dingtalk-auth-custom
@@ -372,8 +350,6 @@ cases:
             equals: hello world
 
   - name: custom-header
-    source:
-      tests: [13]
     config: *custom_route
     fixtures:
       - name: dingtalk
@@ -410,8 +386,6 @@ cases:
             equals: hello world
 
   - name: forged-userinfo
-    source:
-      tests: [14]
     config:
       routes:
         - id: dingtalk-auth-forged-login

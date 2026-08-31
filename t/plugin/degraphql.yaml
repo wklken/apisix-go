@@ -1,13 +1,5 @@
-source:
-  repository: https://github.com/apache/apisix
-  commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-  file: t/plugin/degraphql.t
-  tests: 15
-
 cases:
   - name: post-query-without-variables
-    source:
-      tests: [1]
     config:
       routes:
         - id: degraphql-query-list
@@ -47,8 +39,6 @@ cases:
         equals: *list_response
 
   - name: post-one-variable
-    source:
-      tests: [2, 3]
     config:
       routes:
         - id: degraphql-one-variable
@@ -90,8 +80,6 @@ cases:
         equals: *josh_response
 
   - name: post-multiple-variables-and-errors
-    source:
-      tests: [4, 5, 6, 7, 8]
     config:
       routes:
         - id: degraphql-multiple-variables
@@ -176,8 +164,6 @@ cases:
             equals: *niek_response
 
   - name: reject-invalid-schema
-    source:
-      tests: [9]
     variants:
       - name: missing-query
         config:
@@ -237,8 +223,6 @@ cases:
             matches: 'build route degraphql-multiple-operations fail:.*operation_name is required'
 
   - name: named-operation
-    source:
-      tests: [10, 11]
     config:
       routes:
         - id: degraphql-named-operation
@@ -269,8 +253,6 @@ cases:
         equals: *josh_response
 
   - name: get-with-variables
-    source:
-      tests: [12, 13]
     config:
       routes:
         - id: degraphql-get-variables
@@ -296,8 +278,6 @@ cases:
         equals: *niek_response
 
   - name: get-without-variables
-    source:
-      tests: [14, 15]
     config:
       routes:
         - id: degraphql-get-list

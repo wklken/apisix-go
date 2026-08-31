@@ -1,13 +1,5 @@
-source:
-  repository: https://github.com/apache/apisix
-  commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-  file: t/plugin/public-api.t
-  tests: 8
-
 cases:
   - name: schema
-    source:
-      tests: [1]
     variants:
       - name: valid-uri
         runtime:
@@ -47,8 +39,6 @@ cases:
             matches: 'build route public-api-invalid-schema fail:.*expected string'
 
   - name: direct-and-missing-public-apis
-    source:
-      tests: [2, 3, 4, 5]
     runtime:
       plugins: [public-api, wolf-rbac]
     config:
@@ -86,8 +76,6 @@ cases:
           status: 404
 
   - name: key-auth-protected-public-api
-    source:
-      tests: [6, 7, 8]
     runtime:
       plugins: [public-api, wolf-rbac, key-auth]
     config:

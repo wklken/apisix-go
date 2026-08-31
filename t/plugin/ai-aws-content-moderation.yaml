@@ -1,20 +1,5 @@
-sources:
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/ai-aws-content-moderation-secrets.t
-    tests: 5
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/ai-aws-content-moderation.t
-    tests: 12
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/ai-aws-content-moderation2.t
-    tests: 2
-
 cases:
   - name: vault-credentials-resolve-and-sign-raw-request
-    source: {file: t/plugin/ai-aws-content-moderation-secrets.t, tests: [1, 2, 3]}
     config:
       secrets:
         - id: vault/test1
@@ -68,7 +53,6 @@ cases:
         output: {status: 200, body: {equals: good_request}, logs: {not_matches: 'vault-secret|vault-access'}}
 
   - name: environment-credentials-resolve-and-sign-raw-request
-    source: {file: t/plugin/ai-aws-content-moderation-secrets.t, tests: [4, 5]}
     environment:
       AWS_MODERATION_ACCESS_KEY: environment-access
       AWS_MODERATION_SECRET_KEY: environment-secret
@@ -102,7 +86,6 @@ cases:
         output: {status: 200, body: {equals: good_request}, logs: {not_matches: 'environment-secret|environment-access'}}
 
   - name: raw-body-default-moderation
-    source: {file: t/plugin/ai-aws-content-moderation.t, tests: [1, 2, 3]}
     config:
       routes:
         - &default_route
@@ -135,7 +118,6 @@ cases:
         output: {status: 200, body: {equals: good_request}}
 
   - name: raw-body-profanity-threshold-point-five
-    source: {file: t/plugin/ai-aws-content-moderation.t, tests: [4, 5, 6, 7]}
     config:
       routes:
         - id: aws-moderation-profanity-half
@@ -169,7 +151,6 @@ cases:
         output: {status: 200, body: {equals: good_request}}
 
   - name: raw-body-profanity-threshold-point-seven
-    source: {file: t/plugin/ai-aws-content-moderation.t, tests: [8, 9, 10, 11, 12]}
     config:
       routes:
         - id: aws-moderation-profanity-seven
@@ -208,7 +189,6 @@ cases:
         output: {status: 200, body: {equals: good_request}}
 
   - name: unreachable-comprehend-fails-closed
-    source: {file: t/plugin/ai-aws-content-moderation2.t, tests: [1, 2]}
     config:
       routes:
         - <<: *default_route

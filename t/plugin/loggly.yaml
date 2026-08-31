@@ -1,12 +1,5 @@
-sources:
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/loggly.t
-    tests: 19
-    test_numbers: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
 cases:
   - name: route-resource-enables-loggly
-    source: {file: t/plugin/loggly.t, tests: [2]}
     config:
       plugin_metadata:
         - {id: loggly, host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}'}
@@ -27,7 +20,6 @@ cases:
       - {name: standalone-route-proxies-and-logs, input: {path: /opentracing}, output: {status: 200, body: {equals: opentracing}}, wait: 1s}
 
   - name: metadata-host-and-port-drive-real-udp-delivery
-    source: {file: t/plugin/loggly.t, tests: [3]}
     config:
       plugin_metadata:
         - {id: loggly, host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}'}
@@ -47,7 +39,6 @@ cases:
       - {name: metadata-transport-is-used, input: {path: /metadata}, output: {status: 200, body: {equals: passed}}, wait: 1s}
 
   - name: two-requests-emit-two-complete-rfc5424-datagrams
-    source: {file: t/plugin/loggly.t, tests: [4]}
     config:
       plugin_metadata:
         - {id: loggly, host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}'}
@@ -72,7 +63,6 @@ cases:
       - {name: second-request, input: {path: /opentracing}, output: {status: 200, body: {equals: opentracing}}, wait: 1s}
 
   - name: tags-are-encoded-in-rfc5424-structured-data
-    source: {file: t/plugin/loggly.t, tests: [5]}
     config:
       plugin_metadata:
         - {id: loggly, host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}'}
@@ -92,7 +82,6 @@ cases:
       - {name: exact-tags, input: {path: /opentracing}, output: {status: 200, body: {equals: opentracing}}, wait: 1s}
 
   - name: crit-severity-produces-prival-ten
-    source: {file: t/plugin/loggly.t, tests: [6]}
     config:
       plugin_metadata:
         - {id: loggly, host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}'}
@@ -112,7 +101,6 @@ cases:
       - {name: exact-prival, input: {path: /opentracing}, output: {status: 200, body: {equals: opentracing}}, wait: 1s}
 
   - name: default-full-access-log-payload
-    source: {file: t/plugin/loggly.t, tests: [7]}
     config:
       plugin_metadata:
         - {id: loggly, host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}'}
@@ -134,7 +122,6 @@ cases:
       - {name: full-default-log, input: {path: /opentracing, headers: {Host: 127.0.0.1}}, output: {status: 200, body: {equals: opentracing}}, wait: 1s}
 
   - name: response-body-is-included
-    source: {file: t/plugin/loggly.t, tests: [8]}
     config:
       plugin_metadata:
         - {id: loggly, host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}'}
@@ -154,7 +141,6 @@ cases:
       - {name: response-and-log-preserve-body, input: {path: /opentracing}, output: {status: 200, body: {equals: "opentracing\n"}}, wait: 1s}
 
   - name: response-body-expression-hit
-    source: {file: t/plugin/loggly.t, tests: [9]}
     config:
       plugin_metadata:
         - {id: loggly, host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}'}
@@ -179,7 +165,6 @@ cases:
       - {name: matching-query-includes-response-body, input: {path: '/opentracing?bar=bar'}, output: {status: 200, body: {equals: "opentracing\n"}}, wait: 1s}
 
   - name: response-body-expression-miss
-    source: {file: t/plugin/loggly.t, tests: [10]}
     config:
       plugin_metadata:
         - {id: loggly, host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}'}
@@ -205,7 +190,6 @@ cases:
       - {name: nonmatching-query-omits-response-body, input: {path: '/opentracing?foo=bar'}, output: {status: 200, body: {equals: "opentracing\n"}}, wait: 1s}
 
   - name: request-body-is-included-and-preserved-upstream
-    source: {file: t/plugin/loggly.t, tests: [11]}
     config:
       plugin_metadata:
         - {id: loggly, host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}'}
@@ -225,7 +209,6 @@ cases:
       - {name: request-body-reaches-both-upstream-and-log, input: {method: POST, path: /opentracing, body: body-data}, output: {status: 200, body: {equals: opentracing}}, wait: 1s}
 
   - name: request-body-expression-hit
-    source: {file: t/plugin/loggly.t, tests: [12]}
     config:
       plugin_metadata:
         - {id: loggly, host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}'}
@@ -250,7 +233,6 @@ cases:
       - {name: matching-query-includes-request-body, input: {method: POST, path: '/opentracing?bar=bar', body: body-data}, output: {status: 200, body: {equals: opentracing}}, wait: 1s}
 
   - name: request-body-expression-miss
-    source: {file: t/plugin/loggly.t, tests: [13]}
     config:
       plugin_metadata:
         - {id: loggly, host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}'}
@@ -276,7 +258,6 @@ cases:
       - {name: nonmatching-query-omits-request-body, input: {method: POST, path: '/opentracing?foo=bar', body: body-data}, output: {status: 200, body: {equals: opentracing}}, wait: 1s}
 
   - name: metadata-log-format-replaces-default-payload
-    source: {file: t/plugin/loggly.t, tests: [14]}
     config:
       plugin_metadata:
         - id: loggly
@@ -300,7 +281,6 @@ cases:
       - {name: metadata-format-is-used, input: {path: '/opentracing?foo=bar', headers: {Host: 127.0.0.1}}, output: {status: 200, body: {equals: opentracing}}, wait: 1s}
 
   - name: http-bulk-endpoint-body-and-tags
-    source: {file: t/plugin/loggly.t, tests: [15]}
     config:
       plugin_metadata:
         - {id: loggly, host: '{{FIXTURE.sink.URL}}/loggly', protocol: http, log_format: {route_id: '$route_id'}}
@@ -323,7 +303,6 @@ cases:
       - {name: exact-http-bulk-request, input: {path: /opentracing}, output: {status: 200, body: {equals: opentracing}}, wait: 1s}
 
   - name: severity-map-and-metadata-setup-is-live
-    source: {file: t/plugin/loggly.t, tests: [16]}
     config:
       plugin_metadata:
         - {id: loggly, host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}', log_format: {route_id: '$route_id'}}
@@ -347,7 +326,6 @@ cases:
       - {name: setup-resource-proxies-and-logs, input: {path: /loggly/setup}, output: {status: 200, body: {equals: setup}}, wait: 1s}
 
   - name: status-410-maps-to-alert-prival-nine
-    source: {file: t/plugin/loggly.t, tests: [17]}
     config:
       plugin_metadata:
         - {id: loggly, host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}', log_format: {route_id: '$route_id'}}
@@ -367,7 +345,6 @@ cases:
       - {name: alert-prival, input: {path: /loggly/410}, output: {status: 410, body: {equals: "expired link\n"}}, wait: 1s}
 
   - name: status-503-maps-to-err-prival-eleven
-    source: {file: t/plugin/loggly.t, tests: [18]}
     config:
       plugin_metadata:
         - {id: loggly, host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}', log_format: {route_id: '$route_id'}}
@@ -387,7 +364,6 @@ cases:
       - {name: err-prival, input: {path: /loggly/503}, output: {status: 503, body: {equals: "service temporarily unavailable\n"}}, wait: 1s}
 
   - name: route-log-format-is-accepted-and-overrides-metadata
-    source: {file: t/plugin/loggly.t, tests: [19]}
     config:
       plugin_metadata:
         - {id: loggly, host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}', log_format: {metadata_only: hidden}}
@@ -413,7 +389,6 @@ cases:
       - {name: route-format-is-live, input: {path: /opentracing, headers: {Host: 127.0.0.1}}, output: {status: 200, body: {equals: opentracing}}, wait: 1s}
 
   - name: route-log-format-hit
-    source: {file: t/plugin/loggly.t, tests: [20]}
     config:
       plugin_metadata:
         - {id: loggly, host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}', log_format: {client: metadata-client}}

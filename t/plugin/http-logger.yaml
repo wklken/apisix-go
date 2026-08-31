@@ -1,15 +1,5 @@
-sources:
-  - {repository: https://github.com/apache/apisix, commit: 9ef2ecab67f652d38365049613610ef649bb4ad0, file: t/plugin/http-logger-json.t, tests: 8}
-  - {repository: https://github.com/apache/apisix, commit: 9ef2ecab67f652d38365049613610ef649bb4ad0, file: t/plugin/http-logger-large-body.t, tests: 27, test_numbers: [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29]}
-  - {repository: https://github.com/apache/apisix, commit: 9ef2ecab67f652d38365049613610ef649bb4ad0, file: t/plugin/http-logger-log-format.t, tests: 18, test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 13, 14, 15, 16, 17, 18, 19, 20, 21]}
-  - {repository: https://github.com/apache/apisix, commit: 9ef2ecab67f652d38365049613610ef649bb4ad0, file: t/plugin/http-logger-new-line.t, tests: 4, test_numbers: [3, 5, 7, 9]}
-  - {repository: https://github.com/apache/apisix, commit: 9ef2ecab67f652d38365049613610ef649bb4ad0, file: t/plugin/http-logger.t, tests: 12, test_numbers: [5, 7, 9, 11, 13, 15, 17, 21, 23, 25, 27, 29]}
-  - {repository: https://github.com/apache/apisix, commit: 9ef2ecab67f652d38365049613610ef649bb4ad0, file: t/plugin/http-logger2.t, tests: 15}
-  - {repository: https://github.com/apache/apisix, commit: 9ef2ecab67f652d38365049613610ef649bb4ad0, file: t/plugin/http-logger3.t, tests: 1, test_numbers: [1]}
-
 cases:
   - name: request-and-response-body-selection
-    source: {file: t/plugin/http-logger-json.t, tests: [1, 2, 3, 4, 5, 6, 7, 8]}
     variants:
       - name: request-body
         config:
@@ -117,7 +107,6 @@ cases:
           - {name: nonmatching-request-expression, input: {method: POST, path: '/request-expression-miss?bar=no', body: request-body}, output: {status: 200, body: {equals: ok}}}
 
   - name: body-truncation-matrix
-    source: {file: t/plugin/http-logger-large-body.t, tests: [3, 4, 5, 6, 7, 8, 9, 10]}
     variants:
       - name: request-only
         config:
@@ -173,7 +162,6 @@ cases:
           - {name: neither-captured, input: {method: POST, path: /truncate-neither, body: abcdef}, output: {status: 200, body: {equals: abcdef}}}
 
   - name: large-and-empty-body-caps
-    source: {file: t/plugin/http-logger-large-body.t, tests: [11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]}
     variants:
       - name: both-large
         config:
@@ -255,7 +243,6 @@ cases:
           - {name: empty-request-does-not-add-body, input: {path: '/empty-request?ab=cd'}, output: {status: 200, body: {equals: ok}}}
 
   - name: metadata-and-route-log-format
-    source: {file: t/plugin/http-logger-large-body.t, tests: [23, 24, 25]}
     config:
       plugin_metadata:
         - id: http-logger
@@ -284,7 +271,6 @@ cases:
       - {name: route-format-overrides-and-captures, input: {method: POST, path: /route-format, body: abcdef}, output: {status: 200, body: {equals: ok}}}
 
   - name: newline-body-truncation-batches
-    source: {file: t/plugin/http-logger-large-body.t, tests: [26, 27, 28, 29]}
     variants:
       - name: request-batch
         config:
@@ -314,7 +300,6 @@ cases:
           - {name: two-response-bodies-form-one-newline-batch, repeat: 2, input: {path: /newline-response}, output: {status: 200, body: {equals: hello world}}}
 
   - name: metadata-log-format-and-json-newline-shapes
-    source: {file: t/plugin/http-logger-log-format.t, tests: [1, 2, 3, 4, 5, 6, 7, 8, 9]}
     variants:
       - name: newline-single
         config:
@@ -372,7 +357,6 @@ cases:
           - {name: json-array-of-two, repeat: 2, input: {path: /json-two}, output: {status: 200, body: {equals: ok}}}
 
   - name: default-log-includes-authenticated-consumer
-    source: {file: t/plugin/http-logger-log-format.t, tests: [13]}
     config:
       consumers:
         - username: jack
@@ -393,7 +377,6 @@ cases:
       - {name: authenticated-consumer-is-logged, input: {path: /consumer-log, headers: {apikey: auth-one}}, output: {status: 200, body: {equals: ok}}}
 
   - name: expression-custom-override-and-nested-log-format
-    source: {file: t/plugin/http-logger-log-format.t, tests: [14, 15, 16, 17, 18, 19, 20]}
     config:
       plugin_metadata:
         - {id: http-logger, log_format: {host: $host, labels: $a6_route_labels, client_ip: $remote_addr}}
@@ -460,7 +443,6 @@ cases:
       - {name: nested-log-format-resolves-final-status, input: {path: '/nested-log-format?ab=cd', headers: {Host: nested.example.com, User-Agent: http-logger-nested}}, output: {status: 200, body: {equals: ok}}}
 
   - name: depth-five-log-format-truncation
-    source: {file: t/plugin/http-logger-log-format.t, tests: [21]}
     config:
       routes:
         - id: depth-five
@@ -478,7 +460,6 @@ cases:
       - {name: depth-five-object-is-empty, input: {path: /depth-five}, output: {status: 200, body: {equals: ok}, logs: {matches: 'log_format nesting exceeds max depth 5, truncating'}}}
 
   - name: newline-batch-timing
-    source: {file: t/plugin/http-logger-new-line.t, tests: [3, 5, 7]}
     variants:
       - name: batch-one
         config:
@@ -534,7 +515,6 @@ cases:
           - {name: partial-batch-flushes-on-inactivity, input: {path: /newline-inactive}, output: {status: 200, body: {equals: ok}}, wait: 3s}
 
   - name: global-rule-http-logging
-    source: {file: t/plugin/http-logger-new-line.t, tests: [9]}
     config:
       global_rules:
         - id: global-http-logger
@@ -551,7 +531,6 @@ cases:
       - {name: global-rule-logs-five-unmatched-requests, repeat: 5, input: {path: /unmatched}, output: {status: 404}}
 
   - name: schema-and-complete-configuration
-    source: {local_reason: exercises the accepted APISIX 3.17 fields through delivery after the exact schema matrix is covered by the package test}
     config:
       routes:
         - id: complete-http-logger
@@ -585,7 +564,6 @@ cases:
       - {name: full-schema-config-delivers, input: {method: POST, path: '/complete?log=yes', body: complete-request}, output: {status: 200, body: {equals: complete-response}}}
 
   - name: normal-delivery-local-and-external-equivalent
-    source: {file: t/plugin/http-logger.t, tests: [5, 7]}
     config:
       routes:
         - id: normal-http-delivery
@@ -607,7 +585,6 @@ cases:
       - {name: second-endpoint-http-post-delivery, input: {path: /external-delivery}, output: {status: 200, body: {equals: hello world}}}
 
   - name: tls-and-ssl-verify-matrix
-    source: {file: t/plugin/http-logger.t, tests: [9, 11, 21, 23]}
     variants:
       - name: https-to-plaintext-fails
         config:
@@ -663,7 +640,6 @@ cases:
           - {name: true-rejects-self-signed, input: {path: /tls-explicit-true}, output: {status: 200, body: {equals: ok}, logs: {matches: 'certificate|unknown authority'}}}
 
   - name: batching-and-connection-failure
-    source: {file: t/plugin/http-logger.t, tests: [13, 15]}
     variants:
       - name: batch-two
         config:
@@ -692,7 +668,6 @@ cases:
           - {name: request-is-not-blocked-by-log-delivery-failure, input: {path: /connection-refused}, output: {status: 200, body: {equals: ok}, logs: {matches: 'connection refused|error while sending data'}}}
 
   - name: live-route-config-update-flushes-old-and-uses-new-sink
-    source: {file: t/plugin/http-logger.t, tests: [17]}
     config:
       routes:
         - id: live-update
@@ -722,7 +697,6 @@ cases:
         output: {status: 200, body: {equals: ok}}
 
   - name: response-body-and-file-logger-interaction
-    source: {file: t/plugin/http-logger.t, tests: [25, 27, 29]}
     variants:
       - name: route-http-includes-response
         config:
@@ -782,7 +756,6 @@ cases:
               - {path: {equals: '{{WORK_DIR}}/route-access.log'}, body: {matches: '"source":"route-file".*"response":\{"body":"hello response"\}|"response":\{"body":"hello response"\}.*"source":"route-file"'}}
 
   - name: current-stale-and-buffered-processor-lifecycle
-    source: {file: t/plugin/http-logger2.t, tests: [1, 2, 3, 4, 5]}
     variants:
       - name: current-processor-survives-half-second-and-idle-worker-cleanup
         config:
@@ -821,7 +794,6 @@ cases:
           - {name: second-entry-flushes-the-preserved-buffer, input: {path: /buffered-processor-lifecycle}, output: {status: 200, body: {equals: ok}}}
 
   - name: full-request-response-body-route
-    source: {file: t/plugin/http-logger2.t, tests: [6, 7]}
     config:
       routes:
         - id: full-bodies
@@ -836,7 +808,6 @@ cases:
       - {name: request-and-response-are-present-in-default-log, input: {method: POST, path: /full-bodies, body: test-http-logger-request}, output: {status: 200, body: {equals: test-http-logger-response}}}
 
   - name: gzip-and-brotli-response-body-decoding
-    source: {file: t/plugin/http-logger2.t, tests: [8, 9, 10, 11]}
     variants:
       - name: gzip
         config:
@@ -868,7 +839,6 @@ cases:
           - {name: brotli-wire-body-is-decoded-for-log, input: {path: /brotli-response-log, headers: {Accept-Encoding: br}}, output: {status: 200, brotli_body: {equals: brotli hello world}}}
 
   - name: authorization-default-and-root-path
-    source: {file: t/plugin/http-logger2.t, tests: [12, 13, 14, 15]}
     variants:
       - name: authorization-absent
         config:
@@ -898,7 +868,6 @@ cases:
           - {name: empty-uri-path-posts-to-root, input: {path: /root-path}, output: {status: 200, body: {equals: ok}}}
 
   - name: max-pending-overflow
-    source: {file: t/plugin/http-logger3.t, tests: [1]}
     config:
       plugin_metadata:
         - {id: http-logger, max_pending_entries: 1, log_format: {generation: first}}

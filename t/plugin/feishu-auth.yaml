@@ -1,13 +1,5 @@
-source:
-  repository: https://github.com/apache/apisix
-  commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-  file: t/plugin/feishu-auth.t
-  tests: 14
-
 cases:
   - name: configure-and-redirect-without-code
-    source:
-      tests: [1, 2]
     config:
       routes:
         - &default_route
@@ -53,8 +45,6 @@ cases:
               equals: /echo
 
   - name: invalid-query-code
-    source:
-      tests: [3]
     config:
       routes:
         - *default_route
@@ -85,8 +75,6 @@ cases:
             json_equals: '{"message":"Invalid authorization code"}'
 
   - name: valid-query-code
-    source:
-      tests: [4]
     config:
       routes:
         - *default_route
@@ -143,8 +131,6 @@ cases:
               matches: '^feishu_session='
 
   - name: invalid-default-header-code
-    source:
-      tests: [5]
     config:
       routes:
         - *default_route
@@ -169,8 +155,6 @@ cases:
             json_equals: '{"message":"Invalid authorization code"}'
 
   - name: valid-default-header-code
-    source:
-      tests: [6]
     config:
       routes:
         - *default_route
@@ -203,8 +187,6 @@ cases:
             equals: hello world
 
   - name: signed-session-cookie-reuse
-    source:
-      tests: [7]
     config:
       routes:
         - *default_route
@@ -261,8 +243,6 @@ cases:
               equals: /echo
 
   - name: signed-session-cookie-expiry
-    source:
-      tests: [8]
     config:
       routes:
         - *default_route
@@ -321,8 +301,6 @@ cases:
               equals: /echo
 
   - name: custom-code-locations
-    source:
-      tests: [9, 10, 11]
     config:
       routes:
         - id: feishu-auth-custom-code
@@ -393,8 +371,6 @@ cases:
             equals: hello world
 
   - name: session-secret-rotation
-    source:
-      tests: [12]
     config:
       routes:
         - id: feishu-auth-secret-v1
@@ -521,8 +497,6 @@ cases:
               equals: /echo
 
   - name: forged-userinfo-is-cleared
-    source:
-      tests: [13]
     config:
       routes:
         - id: feishu-auth-userinfo-on
@@ -620,8 +594,6 @@ cases:
             equals: none
 
   - name: encrypted-secret-fallback-standalone-runtime
-    source:
-      tests: [14]
     runtime:
       apisix:
         data_encryption:

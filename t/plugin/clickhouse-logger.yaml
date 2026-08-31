@@ -1,20 +1,5 @@
-sources:
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/clickhouse-logger.t
-    tests: 10
-    test_numbers: [1, 2, 5, 6, 7, 8, 9, 10, 11, 12]
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/clickhouse-logger2.t
-    tests: 8
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/clickhouse-logger3.t
-    tests: 3
 cases:
   - name: full-configuration
-    source: {file: t/plugin/clickhouse-logger.t, tests: [1]}
     config:
       routes:
         - id: clickhouse-full
@@ -52,7 +37,6 @@ cases:
     steps:
       - {name: deliver-full-log, input: {path: /full}, output: {status: 200, body: {equals: full-ok}}, wait: 1s}
   - name: basic-configuration-defaults
-    source: {file: t/plugin/clickhouse-logger.t, tests: [2]}
     config:
       routes:
         - id: clickhouse-basic
@@ -81,7 +65,6 @@ cases:
     steps:
       - {name: deliver-basic-log, input: {path: /basic}, output: {status: 200, body: {equals: basic-ok}}, wait: 1s}
   - name: multi-endpoint-real-delivery
-    source: {file: t/plugin/clickhouse-logger.t, tests: [5, 6, 7, 8]}
     config:
       routes:
         - id: clickhouse-multi
@@ -136,7 +119,6 @@ cases:
         input: {path: /multi}
         output: {status: 200, body: {equals: multi-ok}}
   - name: single-endpoint-real-delivery
-    source: {file: t/plugin/clickhouse-logger.t, tests: [9, 10, 11]}
     config:
       routes:
         - id: clickhouse-single
@@ -161,7 +143,6 @@ cases:
     steps:
       - {name: single-route-hit-and-log, input: {path: /single}, output: {status: 200, body: {equals: single-ok}}, wait: 1s}
   - name: pending-entry-overflow-drops-third-entry
-    source: {file: t/plugin/clickhouse-logger.t, tests: [12]}
     config:
       plugin_metadata:
         - id: clickhouse-logger
@@ -197,7 +178,6 @@ cases:
         input: {path: /overflow}
         output: {status: 200, body: {equals: overflow-ok}, logs: {matches: 'max pending entries limit exceeded'}}
   - name: response-body-collection
-    source: {file: t/plugin/clickhouse-logger2.t, tests: [1, 2]}
     variants:
       - name: enabled
         config:
@@ -226,7 +206,6 @@ cases:
         steps:
           - {name: response-body-is-absent-by-default, input: {path: /response-disabled}, output: {status: 200, body: {equals: hello-response}}, wait: 1s}
   - name: response-body-expression-matches
-    source: {file: t/plugin/clickhouse-logger2.t, tests: [3]}
     config:
       routes:
         - id: clickhouse-response-expression
@@ -240,7 +219,6 @@ cases:
     steps:
       - {name: expression-captures-response, input: {path: '/response-expression?foo=bar'}, output: {status: 200, body: {equals: hello-response}}, wait: 1s}
   - name: response-body-expression-skips
-    source: {file: t/plugin/clickhouse-logger2.t, tests: [4]}
     config:
       routes:
         - id: clickhouse-response-skip
@@ -254,7 +232,6 @@ cases:
     steps:
       - {name: expression-skips-response, input: {path: '/response-skip?foo=unknown'}, output: {status: 200, body: {equals: hello-response}}, wait: 1s}
   - name: request-body-enabled-default
-    source: {file: t/plugin/clickhouse-logger2.t, tests: [5, 6]}
     config:
       routes:
         - id: clickhouse-request-enabled
@@ -268,7 +245,6 @@ cases:
     steps:
       - {name: default-request-body-is-delivered, input: {method: POST, path: '/request-enabled?foo=bar', body: '{"sample":"hello"}'}, output: {status: 200, body: {equals: hello-request}}, wait: 1s}
   - name: request-body-expression-matches
-    source: {file: t/plugin/clickhouse-logger2.t, tests: [7]}
     config:
       routes:
         - id: clickhouse-request-expression
@@ -282,7 +258,6 @@ cases:
     steps:
       - {name: expression-captures-request, input: {method: POST, path: '/request-expression?foo=bar', body: '{"sample":"hello"}'}, output: {status: 200, body: {equals: hello-request}}, wait: 1s}
   - name: request-body-expression-skips
-    source: {file: t/plugin/clickhouse-logger2.t, tests: [8]}
     config:
       routes:
         - id: clickhouse-request-skip
@@ -296,7 +271,6 @@ cases:
     steps:
       - {name: expression-skips-request, input: {method: POST, path: '/request-skip?foo=unknown', body: '{"sample":"hello"}'}, output: {status: 200, body: {equals: hello-request}}, wait: 1s}
   - name: user-resolves-from-environment
-    source: {file: t/plugin/clickhouse-logger3.t, tests: [1, 2, 3]}
     environment: {CLICK_HOUSE_USER: environment-user}
     config:
       routes:

@@ -25,22 +25,11 @@ import (
 )
 
 type Manifest struct {
-	Source  SourceSpec   `yaml:"source,omitempty"`
-	Sources []SourceSpec `yaml:"sources,omitempty"`
-	Cases   []Case       `yaml:"cases"`
-}
-
-type SourceSpec struct {
-	Repository  string `yaml:"repository"`
-	Commit      string `yaml:"commit"`
-	File        string `yaml:"file"`
-	Tests       int    `yaml:"tests"`
-	TestNumbers []int  `yaml:"test_numbers,omitempty"`
+	Cases []Case `yaml:"cases"`
 }
 
 type Case struct {
 	Name                     string          `yaml:"name"`
-	Source                   CaseSource      `yaml:"source"`
 	TargetPluginExemptReason string          `yaml:"target_plugin_exempt_reason,omitempty"`
 	Serial                   bool            `yaml:"serial,omitempty"`
 	WaitForGeneration        bool            `yaml:"wait_for_generation,omitempty"`
@@ -327,12 +316,6 @@ type FileJSONRecordAssertion struct {
 	Fields map[string]string `yaml:"fields"`
 }
 
-type CaseSource struct {
-	File        string `yaml:"file,omitempty"`
-	Tests       []int  `yaml:"tests,omitempty"`
-	LocalReason string `yaml:"local_reason,omitempty"`
-}
-
 type HTTPInput struct {
 	Method               string              `yaml:"method,omitempty"`
 	Scheme               string              `yaml:"scheme,omitempty"`
@@ -539,78 +522,11 @@ func loadManifest(name string, data []byte) (*Manifest, error) {
 }
 
 func (m *Manifest) validate() error {
-	singularConfigured := m.Source.Repository != "" || m.Source.Commit != "" ||
-		m.Source.File != "" || m.Source.Tests != 0
-	if singularConfigured && len(m.Sources) > 0 {
-		return errors.New("exactly one of source or sources is required")
-	}
-
-	multiSourceForm := len(m.Sources) > 0
-	sources := m.Sources
-	if singularConfigured {
-		sources = []SourceSpec{m.Source}
-	}
-	if len(sources) == 0 {
-		return errors.New("at least one source is required")
-	}
-
-	type sourceIdentity struct {
-		file   string
-		commit string
-	}
-	sourceByFile := make(map[string][]SourceSpec, len(sources))
-	sourceByIdentity := make(map[sourceIdentity]SourceSpec, len(sources))
-	for i, source := range sources {
-		if strings.TrimSpace(source.Repository) == "" {
-			return fmt.Errorf("source %d repository is required", i+1)
-		}
-		if strings.TrimSpace(source.Commit) == "" {
-			return fmt.Errorf("source %d commit is required", i+1)
-		}
-		if strings.TrimSpace(source.File) == "" {
-			return fmt.Errorf("source %d file is required", i+1)
-		}
-		if source.Tests <= 0 {
-			return fmt.Errorf("source %q tests must be positive", source.File)
-		}
-		if len(source.TestNumbers) > 0 {
-			if len(source.TestNumbers) != source.Tests {
-				return fmt.Errorf("source %q test_numbers must contain %d entries", source.File, source.Tests)
-			}
-			seen := make(map[int]bool, len(source.TestNumbers))
-			for _, number := range source.TestNumbers {
-				if number <= 0 || seen[number] {
-					return fmt.Errorf("source %q test_numbers must be unique and positive", source.File)
-				}
-				seen[number] = true
-			}
-		}
-		identity := sourceIdentity{file: source.File, commit: source.Commit}
-		if _, ok := sourceByIdentity[identity]; ok {
-			return fmt.Errorf("source file %q at commit %s is duplicated", source.File, source.Commit)
-		}
-		for _, existing := range sourceByFile[source.File] {
-			for _, number := range sourceTestNumbers(existing) {
-				if sourceHasTest(source, number) {
-					return fmt.Errorf(
-						"source test %d in %s is ambiguous across commits %s and %s",
-						number,
-						source.File,
-						existing.Commit,
-						source.Commit,
-					)
-				}
-			}
-		}
-		sourceByFile[source.File] = append(sourceByFile[source.File], source)
-		sourceByIdentity[identity] = source
-	}
 	if len(m.Cases) == 0 {
 		return errors.New("at least one case is required")
 	}
 
 	names := make(map[string]struct{}, len(m.Cases))
-	mapped := make(map[sourceIdentity]map[int]string, len(sources))
 	for i := range m.Cases {
 		current := &m.Cases[i]
 		name := strings.TrimSpace(current.Name)
@@ -621,103 +537,11 @@ func (m *Manifest) validate() error {
 			return fmt.Errorf("case name %q is duplicated", name)
 		}
 		names[name] = struct{}{}
-		localReason := strings.TrimSpace(current.Source.LocalReason)
-		if localReason != "" {
-			if len(current.Source.Tests) > 0 || strings.TrimSpace(current.Source.File) != "" {
-				return fmt.Errorf("case %q local source must not declare file or tests", name)
-			}
-			current.Source.LocalReason = localReason
-			if err := current.validate(); err != nil {
-				return fmt.Errorf("case %q: %w", name, err)
-			}
-			continue
-		}
-		if len(current.Source.Tests) == 0 {
-			return fmt.Errorf("case %q source tests are required", name)
-		}
-		file := strings.TrimSpace(current.Source.File)
-		if file == "" {
-			if len(sourceByFile) != 1 {
-				return fmt.Errorf("case %q source file is required when multiple sources are configured", name)
-			}
-			for candidate := range sourceByFile {
-				file = candidate
-			}
-			current.Source.File = file
-		}
-		candidates, ok := sourceByFile[file]
-		if !ok {
-			return fmt.Errorf("case %q references unknown source file %q", name, file)
-		}
-		for _, number := range current.Source.Tests {
-			var matches []SourceSpec
-			for _, candidate := range candidates {
-				if sourceHasTest(candidate, number) {
-					matches = append(matches, candidate)
-				}
-			}
-			if len(matches) == 0 {
-				if !multiSourceForm {
-					return fmt.Errorf("case %q source test %d is outside 1..%d", name, number, sources[0].Tests)
-				}
-				return fmt.Errorf("case %q source test %d is not declared for %s", name, number, file)
-			}
-			if len(matches) > 1 {
-				return fmt.Errorf("case %q source test %d in %s is ambiguous across commits", name, number, file)
-			}
-			identity := sourceIdentity{file: file, commit: matches[0].Commit}
-			if mapped[identity] == nil {
-				mapped[identity] = make(map[int]string, matches[0].Tests)
-			}
-			if previous, ok := mapped[identity][number]; ok {
-				if !multiSourceForm {
-					return fmt.Errorf("source test %d is mapped more than once by %q and %q", number, previous, name)
-				}
-				return fmt.Errorf(
-					"source test %d in %s is mapped more than once by %q and %q",
-					number,
-					file,
-					previous,
-					name,
-				)
-			}
-			mapped[identity][number] = name
-		}
 		if err := current.validate(); err != nil {
 			return fmt.Errorf("case %q: %w", name, err)
 		}
 	}
-	for _, source := range sources {
-		identity := sourceIdentity{file: source.File, commit: source.Commit}
-		numbers := sourceTestNumbers(source)
-		for _, number := range numbers {
-			if _, ok := mapped[identity][number]; !ok {
-				if !multiSourceForm {
-					return fmt.Errorf("missing source test %d", number)
-				}
-				return fmt.Errorf("missing source test %d in %s", number, source.File)
-			}
-		}
-	}
 	return nil
-}
-
-func sourceTestNumbers(source SourceSpec) []int {
-	if len(source.TestNumbers) > 0 {
-		return source.TestNumbers
-	}
-	numbers := make([]int, source.Tests)
-	for i := range numbers {
-		numbers[i] = i + 1
-	}
-	return numbers
-}
-
-func sourceHasTest(source SourceSpec, number int) bool {
-	if len(source.TestNumbers) == 0 {
-		return number >= 1 && number <= source.Tests
-	}
-	return slices.Contains(source.TestNumbers, number)
 }
 
 func (c *Case) validate() error {

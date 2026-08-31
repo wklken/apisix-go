@@ -1,13 +1,5 @@
-source:
-  repository: https://github.com/apache/apisix
-  commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-  file: t/plugin/api-breaker.t
-  tests: 20
-
 cases:
   - name: schema-defaults
-    source:
-      tests: [1, 2, 3, 4]
     variants:
       - name: explicit-valid-config
         runtime: &runtime
@@ -149,8 +141,6 @@ cases:
             output: *default_break_output
 
   - name: reject-invalid-schema
-    source:
-      tests: [5, 6, 7, 8, 20]
     variants:
       - name: break-response-code-below-minimum
         runtime: *runtime
@@ -222,8 +212,6 @@ cases:
         output: *invalid_output
 
   - name: configured-statuses-open-breaker
-    source:
-      tests: [9, 10]
     runtime: *runtime
     config:
       routes:
@@ -271,8 +259,6 @@ cases:
         output: *configured_break_output
 
   - name: healthy-successes-clear-failures
-    source:
-      tests: [11]
     runtime: *runtime
     config:
       routes:
@@ -324,8 +310,6 @@ cases:
         output: *error_output
 
   - name: half-open-success-recovery
-    source:
-      tests: [12, 16]
     runtime: *runtime
     config:
       routes:
@@ -397,8 +381,6 @@ cases:
         output: *configured_break_output
 
   - name: half-open-failure-reopens
-    source:
-      tests: [17]
     runtime: *runtime
     config:
       routes:
@@ -448,8 +430,6 @@ cases:
         output: *default_break_output
 
   - name: custom-break-response
-    source:
-      tests: [13, 14, 15]
     variants:
       - name: default-unhealthy-status
         runtime: *runtime
@@ -528,8 +508,6 @@ cases:
                 equals: '{"message":"breaker opened."}'
 
   - name: exponential-backoff-is-capped
-    source:
-      tests: [18, 19]
     runtime: *runtime
     config:
       routes:

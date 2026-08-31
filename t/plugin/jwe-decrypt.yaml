@@ -1,13 +1,5 @@
-source:
-  repository: https://github.com/apache/apisix
-  commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-  file: t/plugin/jwe-decrypt.t
-  tests: 23
-
 cases:
   - name: valid-consumer-schema-sanity
-    source:
-      tests: [1]
     config:
       consumers: &raw_consumers
         - username: jack
@@ -38,8 +30,6 @@ cases:
           body: {equals: hello world}
 
   - name: consumer-key-type-diagnostic
-    source:
-      tests: [2]
     config:
       consumers:
         - username: jack
@@ -51,8 +41,6 @@ cases:
       logs: {matches: 'jwe-decrypt consumer key must be a string'}
 
   - name: consumer-secret-type-diagnostic
-    source:
-      tests: [3]
     config:
       consumers:
         - username: jack
@@ -64,8 +52,6 @@ cases:
       logs: {matches: 'jwe-decrypt consumer secret must be a string'}
 
   - name: raw-secret-length-diagnostic
-    source:
-      tests: [4]
     config:
       consumers:
         - username: jack
@@ -77,8 +63,6 @@ cases:
       logs: {matches: 'the secret length should be 32 chars'}
 
   - name: base64-secret-length-diagnostic
-    source:
-      tests: [5]
     config:
       consumers:
         - username: jack
@@ -91,8 +75,6 @@ cases:
       logs: {matches: 'the secret length after base64 decode should be 32 chars'}
 
   - name: standalone-consumer-created
-    source:
-      tests: [6]
     config:
       consumers: *raw_consumers
       routes:
@@ -115,8 +97,6 @@ cases:
           body: {equals: hello world}
 
   - name: encrypted-consumer-fields
-    source:
-      tests: [7]
     runtime:
       apisix:
         data_encryption:
@@ -148,8 +128,6 @@ cases:
           status: 200
           body: {equals: hello world}
   - name: protected-route-enabled
-    source:
-      tests: [8]
     config:
       consumers: *raw_consumers
       routes:
@@ -169,8 +147,6 @@ cases:
           body: {matches: 'missing JWE token in request'}
 
   - name: missing-token
-    source:
-      tests: [9]
     config:
       consumers: *raw_consumers
       routes:
@@ -184,8 +160,6 @@ cases:
       body: {matches: 'missing JWE token in request'}
 
   - name: malformed-token
-    source:
-      tests: [10]
     config:
       consumers: *raw_consumers
       routes:
@@ -202,8 +176,6 @@ cases:
       body: {matches: 'JWE token invalid'}
 
   - name: bearer-token
-    source:
-      tests: [11]
     config:
       consumers: *raw_consumers
       routes:
@@ -226,8 +198,6 @@ cases:
           body: {equals: hello world}
 
   - name: raw-token
-    source:
-      tests: [12]
     config:
       consumers: *raw_consumers
       routes:
@@ -250,8 +220,6 @@ cases:
           body: {equals: hello world}
 
   - name: lowercase-bearer-token
-    source:
-      tests: [13]
     config:
       consumers: *raw_consumers
       routes:
@@ -274,8 +242,6 @@ cases:
           body: {equals: hello world}
 
   - name: invalid-lowercase-bearer-token
-    source:
-      tests: [14]
     config:
       consumers: *raw_consumers
       routes:
@@ -292,8 +258,6 @@ cases:
       body: {matches: 'JWE token invalid'}
 
   - name: consumer-replacement-lifecycle
-    source:
-      tests: [15]
     config:
       consumers: *raw_consumers
       routes:
@@ -389,8 +353,6 @@ cases:
           status: 204
 
   - name: base64-consumer-created
-    source:
-      tests: [16]
     config:
       consumers: &base64_consumers
         - username: jack
@@ -419,8 +381,6 @@ cases:
           body: {equals: hello world}
 
   - name: base64-protected-route-enabled
-    source:
-      tests: [17]
     config:
       consumers: *base64_consumers
       routes:
@@ -434,8 +394,6 @@ cases:
       body: {matches: 'missing JWE token in request'}
 
   - name: base64-bearer-token
-    source:
-      tests: [18]
     config:
       consumers: *base64_consumers
       routes:
@@ -458,8 +416,6 @@ cases:
           body: {equals: hello world}
 
   - name: base64-raw-token
-    source:
-      tests: [19]
     config:
       consumers: *base64_consumers
       routes:
@@ -482,8 +438,6 @@ cases:
           body: {equals: hello world}
 
   - name: decrypted-header-route-enabled
-    source:
-      tests: [20]
     config:
       consumers: *base64_consumers
       routes:
@@ -497,8 +451,6 @@ cases:
       body: {matches: 'missing JWE token in request'}
 
   - name: decrypted-header-forwarded
-    source:
-      tests: [21]
     config:
       consumers: *base64_consumers
       routes:
@@ -528,8 +480,6 @@ cases:
           body: {equals: hello world}
 
   - name: decryption-failure-route-enabled
-    source:
-      tests: [22]
     config:
       consumers: &failure_consumers
         - username: jwe-fail-user
@@ -548,8 +498,6 @@ cases:
       body: {matches: 'missing JWE token in request'}
 
   - name: undecryptable-ciphertext
-    source:
-      tests: [23]
     config:
       consumers: *failure_consumers
       routes:

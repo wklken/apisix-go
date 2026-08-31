@@ -1,13 +1,5 @@
-source:
-  repository: https://github.com/apache/apisix
-  commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-  file: t/plugin/node-status.t
-  tests: 5
-
 cases:
   - name: default-node-status
-    source:
-      tests: [1, 2, 3, 4]
     runtime:
       plugins: [node-status]
     config:
@@ -28,8 +20,6 @@ cases:
           status: 404
 
   - name: configured-node-id
-    source:
-      tests: [5]
     runtime:
       apisix:
         id: user-set-apisix-instance-id-A

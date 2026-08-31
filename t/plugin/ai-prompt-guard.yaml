@@ -1,12 +1,5 @@
-sources:
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/ai-prompt-guard.t
-    tests: 29
 cases:
   - name: invalid-regex-is-rejected
-    source:
-      tests: [1]
     config:
       routes:
         - id: ai-prompt-guard-invalid-regex
@@ -21,8 +14,6 @@ cases:
       status: 404
 
   - name: allow-and-deny-check-all-roles
-    source:
-      tests: [2, 3, 4]
     config:
       routes:
         - &allow_deny_route
@@ -72,8 +63,6 @@ cases:
           body: {equals: '{"message":"Request doesn''t match allow patterns"}'}
 
   - name: deny-check-all-roles
-    source:
-      tests: [5, 6, 7]
     config:
       routes:
         - id: ai-prompt-guard-deny-all-roles
@@ -93,8 +82,6 @@ cases:
         input: {method: POST, path: /hello, headers: {Content-Type: application/json}, body: '{"messages":[{"role":"system","content":"badword"}]}' }
         output: {status: 400, body: {equals: '{"message":"Request contains prohibited content"}'}}
   - name: allow-defaults-to-user-role
-    source:
-      tests: [8, 9, 10]
     config:
       routes:
         - id: ai-prompt-guard-allow-user
@@ -117,8 +104,6 @@ cases:
         output: {status: 400, body: {equals: '{"message":"Request doesn''t match allow patterns"}'}}
 
   - name: history-option-controls-chat-history
-    source:
-      tests: [11, 12, 13, 14]
     variants:
       - name: all-history-is-scanned
         config:
@@ -156,8 +141,6 @@ cases:
             output: {status: 200, headers: {X-Fixture: {equals: primary}}, body: {equals: upstream ok}}
 
   - name: anchored-deny-pattern
-    source:
-      tests: [15, 16]
     config:
       routes:
         - id: ai-prompt-guard-anchored-deny
@@ -175,8 +158,6 @@ cases:
         output: {status: 400, body: {equals: '{"message":"Request contains prohibited content"}'}}
 
   - name: responses-deny-patterns
-    source:
-      tests: [17, 18, 19, 20, 21]
     config:
       routes:
         - id: ai-prompt-guard-responses-deny
@@ -205,8 +186,6 @@ cases:
         output: {status: 400, body: {equals: '{"message":"Request contains prohibited content"}'}}
 
   - name: responses-allow-pattern
-    source:
-      tests: [22, 23, 24]
     config:
       routes:
         - id: ai-prompt-guard-responses-allow
@@ -229,8 +208,6 @@ cases:
         output: {status: 400, body: {equals: '{"message":"Request doesn''t match allow patterns"}'}}
 
   - name: responses-defaults-to-user-input
-    source:
-      tests: [25, 26, 27]
     config:
       routes:
         - id: ai-prompt-guard-responses-user
@@ -253,8 +230,6 @@ cases:
         output: {status: 400, body: {equals: '{"message":"Request contains prohibited content"}'}}
 
   - name: chat-regression-after-responses-support
-    source:
-      tests: [28, 29]
     config:
       routes:
         - id: ai-prompt-guard-chat-regression

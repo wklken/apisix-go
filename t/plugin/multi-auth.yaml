@@ -1,16 +1,5 @@
-sources:
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/multi-auth.t
-    tests: 22
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/multi-auth2.t
-    tests: 16
-
 cases:
   - name: configured-basic-key-and-jwt-alternatives
-    source: {file: t/plugin/multi-auth.t, tests: [1, 2, 3, 4, 5, 6, 7]}
     config:
       consumers:
         - username: foo
@@ -67,7 +56,6 @@ cases:
         output: {status: 200, body: {equals: ordered alternative}, logs: {not_matches: '\bbar\b'}}
 
   - name: invalid-first-auth-plugin-config
-    source: {file: t/plugin/multi-auth.t, tests: [8]}
     config:
       routes:
         - id: multi-auth-invalid-first
@@ -84,7 +72,6 @@ cases:
       logs: {matches: 'build route multi-auth-invalid-first fail:.*basic-auth.*hide_credentials.*expected boolean'}
 
   - name: invalid-second-auth-plugin-config
-    source: {file: t/plugin/multi-auth.t, tests: [9]}
     config:
       routes:
         - id: multi-auth-invalid-second
@@ -101,7 +88,6 @@ cases:
       logs: {matches: 'build route multi-auth-invalid-second fail:.*multi-auth.*expected \{ character'}
 
   - name: invalid-third-auth-plugin-config
-    source: {file: t/plugin/multi-auth.t, tests: [10]}
     config:
       routes:
         - id: multi-auth-invalid-third
@@ -118,7 +104,6 @@ cases:
       logs: {matches: 'build route multi-auth-invalid-third fail:.*jwt-auth.*header.*expected string'}
 
   - name: default-auth-configs-preserve-alternative-semantics
-    source: {file: t/plugin/multi-auth.t, tests: [11, 12, 13, 14, 15, 16]}
     config:
       consumers:
         - username: foo
@@ -159,7 +144,6 @@ cases:
         output: {status: 401, body: {equals: '{"message":"Authorization Failed"}'}}
 
   - name: auth-plugin-cardinality-reloads-retain-last-good-route
-    source: {file: t/plugin/multi-auth.t, tests: [17, 18]}
     config: &multi_auth_last_good
       consumers:
         - username: foo
@@ -241,7 +225,6 @@ cases:
         output: {status: 204, logs: {matches: 'multi-auth.*exactly one auth plugin'}}
 
   - name: jwt-locations-and-real-config-reload
-    source: {file: t/plugin/multi-auth.t, tests: [19, 20, 21]}
     config:
       consumers:
         - username: jack
@@ -313,7 +296,6 @@ cases:
         output: {status: 404}
 
   - name: status-only-auth-failure-does-not-crash
-    source: {file: t/plugin/multi-auth.t, tests: [22]}
     config:
       routes:
         - id: multi-auth-status-only-failure
@@ -327,7 +309,6 @@ cases:
       logs: {not_matches: '(?i)(panic|nil pointer|runtime error)'}
 
   - name: four-auth-order-and-failure-diagnostics
-    source: {file: t/plugin/multi-auth2.t, tests: [1, 2, 3, 5, 7, 8, 9]}
     config:
       consumers:
         - username: foo
@@ -384,7 +365,6 @@ cases:
         output: {status: 401, body: {equals: '{"message":"Authorization Failed"}'}}
 
   - name: four-auth-successes-consumer-chain-and-body-isolation
-    source: {file: t/plugin/multi-auth2.t, tests: [4, 6]}
     config:
       consumers:
         - username: foo
@@ -457,7 +437,6 @@ cases:
           logs: {not_matches: '(failed to authenticate the request|Invalid authorization header format|client request can''t be validated|request body too large|hmac-secret)'}
 
   - name: jwt-consumer-token-failures
-    source: {file: t/plugin/multi-auth2.t, tests: [10, 11, 12, 13]}
     config: &multi_auth_jwt_matrix
       consumers:
         - username: jack
@@ -492,7 +471,6 @@ cases:
           logs: {matches: 'jwt-auth failed to authenticate the request'}
 
   - name: valid-jwt-success-has-no-failure-diagnostic
-    source: {file: t/plugin/multi-auth2.t, tests: [14]}
     config:
       consumers:
         - username: jack
@@ -520,7 +498,6 @@ cases:
         output: {status: 200, body: {equals: hello world}, logs: {not_matches: '(failed to authenticate the request|Invalid authorization header format|client request can''t be validated|request body too large|my-secret-key)'}}
 
   - name: missing-anonymous-consumers-fail-closed
-    source: {file: t/plugin/multi-auth2.t, tests: [15, 16]}
     config:
       routes:
         - id: multi-auth-missing-anonymous

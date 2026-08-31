@@ -1,21 +1,6 @@
-sources:
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/basic-auth.t
-    tests: 30
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/basic-auth-anonymous-consumer.t
-    tests: 7
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/basic-auth-realm.t
-    tests: 6
-
 cases:
   - name: valid-consumer-schema
     wait_for_generation: true
-    source: {file: t/plugin/basic-auth.t, tests: [1]}
     config:
       consumers:
         - username: foo
@@ -38,7 +23,6 @@ cases:
           logs: {not_matches: '\bbar\b'}
 
   - name: consumer-username-type-diagnostic
-    source: {file: t/plugin/basic-auth.t, tests: [2]}
     config:
       consumers:
         - username: foo
@@ -54,7 +38,6 @@ cases:
         output: {status: 404, logs: {not_matches: '\bbar\b'}}
 
   - name: consumer-and-route-created
-    source: {file: t/plugin/basic-auth.t, tests: [3, 4]}
     config:
       consumers:
         - username: foo
@@ -78,7 +61,6 @@ cases:
 
   - name: credential-validation
     wait_for_generation: true
-    source: {file: t/plugin/basic-auth.t, tests: [5, 6, 7, 9, 10]}
     config:
       consumers:
         - username: foo
@@ -137,7 +119,6 @@ cases:
 
   - name: missing-password-diagnostic
     wait_for_generation: true
-    source: {file: t/plugin/basic-auth.t, tests: [8]}
     config:
       consumers:
         - username: foo
@@ -161,7 +142,6 @@ cases:
           logs: {not_matches: '\bbar\b'}
 
   - name: valid-authorization-confidentiality
-    source: {file: t/plugin/basic-auth.t, tests: [11]}
     config:
       consumers:
         - username: foo
@@ -186,7 +166,6 @@ cases:
         output: {status: 200, body: {equals: hello world}, logs: {not_matches: '\bbar\b'}}
 
   - name: invalid-consumer-snapshots-retain-last-good
-    source: {file: t/plugin/basic-auth.t, tests: [12, 13, 14]}
     config: &last_good_config
       consumers:
         - username: foo
@@ -270,7 +249,6 @@ cases:
         output: {status: 401, body: {equals: '{"message":"Invalid user authorization"}'}}
 
   - name: default-route-schema
-    source: {file: t/plugin/basic-auth.t, tests: [15]}
     config:
       routes:
         - id: basic-auth-default-schema
@@ -282,7 +260,6 @@ cases:
       headers: {WWW-Authenticate: {equals: 'Basic realm="basic"'}}
 
   - name: consumer-schema-selection
-    source: {file: t/plugin/basic-auth.t, tests: [16]}
     config:
       consumers:
         - username: foo
@@ -302,7 +279,6 @@ cases:
         output: {status: 200, body: {equals: hello world}}
 
   - name: unknown-schema-type-uses-route-schema
-    source: {file: t/plugin/basic-auth.t, tests: [17]}
     config:
       routes:
         - id: basic-auth-unknown-schema-type
@@ -314,7 +290,6 @@ cases:
       headers: {WWW-Authenticate: {equals: 'Basic realm="basic"'}}
 
   - name: hide-credentials
-    source: {file: t/plugin/basic-auth.t, tests: [18, 19]}
     config:
       consumers:
         - username: foo
@@ -337,7 +312,6 @@ cases:
         output: {status: 200, body: {equals: hello world}, logs: {not_matches: '\bbar\b'}}
 
   - name: preserve-credentials
-    source: {file: t/plugin/basic-auth.t, tests: [20, 21]}
     config:
       consumers:
         - username: foo
@@ -360,7 +334,6 @@ cases:
         output: {status: 200, body: {equals: hello world}, logs: {not_matches: '\bbar\b'}}
 
   - name: vault-password-reference
-    source: {file: t/plugin/basic-auth.t, tests: [22, 23, 24]}
     config:
       secrets:
         - id: vault/test1
@@ -408,7 +381,6 @@ cases:
         output: {status: 200, body: {equals: hello world}}
 
   - name: vault-token-environment-reference
-    source: {file: t/plugin/basic-auth.t, tests: [25, 26]}
     environment: {VAULT_TOKEN: root}
     config:
       secrets:
@@ -448,7 +420,6 @@ cases:
         output: {status: 200, body: {equals: hello world}}
 
   - name: basic-scheme-case-folding
-    source: {file: t/plugin/basic-auth.t, tests: [27, 28, 29, 30]}
     config:
       consumers:
         - username: foo
@@ -482,7 +453,6 @@ cases:
 
   - name: normal-consumer-limit-chain
     wait_for_generation: true
-    source: {file: t/plugin/basic-auth-anonymous-consumer.t, tests: [1, 2, 3]}
     config:
       consumers:
         - username: jack
@@ -523,7 +493,6 @@ cases:
         output: {status: 503}
 
   - name: anonymous-consumer-limit-chain
-    source: {file: t/plugin/basic-auth-anonymous-consumer.t, tests: [4, 5]}
     config:
       consumers:
         - username: jack
@@ -557,7 +526,6 @@ cases:
         output: {status: 503}
 
   - name: missing-anonymous-consumer
-    source: {file: t/plugin/basic-auth-anonymous-consumer.t, tests: [6, 7]}
     config:
       routes:
         - id: basic-auth-missing-anonymous
@@ -570,7 +538,6 @@ cases:
       logs: {matches: 'failed to get anonymous consumer not-found-anonymous'}
 
   - name: default-realm
-    source: {file: t/plugin/basic-auth-realm.t, tests: [1, 2]}
     config:
       routes:
         - id: basic-auth-default-realm
@@ -582,7 +549,6 @@ cases:
       headers: {WWW-Authenticate: {equals: 'Basic realm="basic"'}}
 
   - name: custom-realm
-    source: {file: t/plugin/basic-auth-realm.t, tests: [3, 4]}
     config:
       routes:
         - id: basic-auth-custom-realm
@@ -594,7 +560,6 @@ cases:
       headers: {WWW-Authenticate: {equals: 'Basic realm="secure-zone"'}}
 
   - name: missing-anonymous-consumer-returns-default-realm
-    source: {file: t/plugin/basic-auth-realm.t, tests: [5, 6]}
     config:
       routes:
         - id: basic-auth-realm-missing-anonymous

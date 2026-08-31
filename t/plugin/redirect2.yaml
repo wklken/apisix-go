@@ -1,13 +1,5 @@
-source:
-  repository: https://github.com/apache/apisix
-  commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-  file: t/plugin/redirect2.t
-  tests: 3
-
 cases:
   - name: regex-uri-append-query-string
-    source:
-      tests: [1, 2]
     config:
       routes:
         - id: redirect2-regex-uri-append-query-string
@@ -25,8 +17,6 @@ cases:
           equals: http://test.com/hello?q=apisix&o=apache
 
   - name: old-append-query-string-configuration
-    source:
-      tests: [3]
     runtime:
       plugin_attr:
         redirect:

@@ -1,24 +1,5 @@
-sources:
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/opa.t
-    tests: 12
-    test_numbers: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/opa2.t
-    tests: 8
-    test_numbers: [5, 6, 7, 8, 9, 10, 11, 12]
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/opa3.t
-    tests: 2
-
 cases:
   - name: policy-decisions
-    source:
-      file: t/plugin/opa.t
-      tests: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
     config:
       routes:
         - id: opa-policy-decisions
@@ -185,9 +166,6 @@ cases:
             equals: '{"code":40001,"desc":"Give you a object reason"}'
 
   - name: send-headers-upstream
-    source:
-      file: t/plugin/opa.t
-      tests: [12, 13]
     config:
       routes:
         - id: opa-send-headers
@@ -233,9 +211,6 @@ cases:
               equals: none
 
   - name: missing-service-and-consumer-context
-    source:
-      file: t/plugin/opa2.t
-      tests: [5, 6]
     config:
       upstreams:
         - id: u1
@@ -279,9 +254,6 @@ cases:
         output: *forbidden
 
   - name: object-reason-with-empty-array
-    source:
-      file: t/plugin/opa2.t
-      tests: [7, 8]
     config:
       routes:
         - id: opa-empty-array
@@ -318,9 +290,6 @@ cases:
             equals: '{"info":[]}'
 
   - name: route-context-policy
-    source:
-      file: t/plugin/opa2.t
-      tests: [9, 10, 11, 12]
     variants:
       - name: valid-route-name
         config:
@@ -396,9 +365,6 @@ cases:
             output: *forbidden
 
   - name: clear-client-header-when-opa-omits-it
-    source:
-      file: t/plugin/opa3.t
-      tests: [1, 2]
     config:
       routes:
         - id: opa-clear-client-header

@@ -1,21 +1,5 @@
-sources:
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/file-logger-reopen.t
-    tests: 3
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/file-logger.t
-    tests: 13
-    test_numbers: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/file-logger2.t
-    tests: 15
-
 cases:
   - name: cached-file-stays-unlinked
-    source: {file: t/plugin/file-logger-reopen.t, tests: [1, 2]}
     config:
       plugin_metadata:
         - id: file-logger
@@ -57,7 +41,6 @@ cases:
             absent: true
 
   - name: sigusr1-reopens-cached-file
-    source: {file: t/plugin/file-logger-reopen.t, tests: [3]}
     config:
       plugin_metadata:
         - id: file-logger
@@ -115,7 +98,6 @@ cases:
             absent: true
 
   - name: metadata-format-and-cached-file-write
-    source: {file: t/plugin/file-logger.t, tests: [2, 3, 4]}
     config:
       plugin_metadata:
         - id: file-logger
@@ -151,7 +133,6 @@ cases:
           matches: '(?s)^(?:\{[^\n]*"route_id":"file-metadata-format"[^\n]*\}\n){2}$'
 
   - name: missing-parent-open-error
-    source: {file: t/plugin/file-logger.t, tests: [5]}
     config:
       routes:
         - id: file-open-error
@@ -178,7 +159,6 @@ cases:
         absent: true
 
   - name: route-log-format-without-metadata
-    source: {file: t/plugin/file-logger.t, tests: [6, 7]}
     config:
       routes:
         - id: file-route-format-no-metadata
@@ -207,7 +187,6 @@ cases:
         body: {matches: '^\{[^\n]*"route_id":"file-route-format-no-metadata"[^\n]*\}\n$'}
 
   - name: route-log-format-wins-over-metadata
-    source: {file: t/plugin/file-logger.t, tests: [8, 9]}
     config:
       plugin_metadata:
         - id: file-logger
@@ -239,7 +218,6 @@ cases:
         body: {matches: '^\{[^\n]*"route_id":"file-route-format-with-metadata"[^\n]*\}\n$'}
 
   - name: nested-format-and-depth-limit
-    source: {file: t/plugin/file-logger.t, tests: [10, 11, 12]}
     config:
       routes:
         - id: file-nested-format
@@ -302,7 +280,6 @@ cases:
           matches: '"a":\{"b":\{"c":\{"d":\{"e":\{\}\}\}\}\}'
 
   - name: metadata-path-is-used
-    source: {file: t/plugin/file-logger.t, tests: [13, 14]}
     config:
       plugin_metadata:
         - id: file-logger
@@ -328,7 +305,6 @@ cases:
         body: {matches: '"route_id":"file-metadata-path"'}
 
   - name: response-body-capture
-    source: {file: t/plugin/file-logger2.t, tests: [1, 2]}
     config:
       routes:
         - id: file-response-body
@@ -353,7 +329,6 @@ cases:
         body: {matches: '"body":"hello world\\n"'}
 
   - name: response-body-expression
-    source: {file: t/plugin/file-logger2.t, tests: [3, 4]}
     config:
       routes:
         - id: file-response-expression
@@ -404,7 +379,6 @@ cases:
         body: {not_matches: 'hello world'}
 
   - name: metadata-resp-body-variable
-    source: {file: t/plugin/file-logger2.t, tests: [5, 6, 7]}
     config:
       plugin_metadata:
         - id: file-logger
@@ -438,7 +412,6 @@ cases:
         body: {matches: '"route_id":"file-metadata-resp-body"'}
 
   - name: request-match-controls-file-write
-    source: {file: t/plugin/file-logger2.t, tests: [8, 9, 10]}
     config:
       routes:
         - id: file-request-match
@@ -476,7 +449,6 @@ cases:
             absent: true
 
   - name: request-body-capture
-    source: {file: t/plugin/file-logger2.t, tests: [11, 12]}
     config:
       routes:
         - id: file-request-body
@@ -503,7 +475,6 @@ cases:
         body: {matches: '"body":"body-data"'}
 
   - name: request-body-expression
-    source: {file: t/plugin/file-logger2.t, tests: [13, 14]}
     config:
       routes:
         - id: file-request-expression
@@ -540,7 +511,6 @@ cases:
         body: {not_matches: '\n[^\n]*"body":'}
 
   - name: gzip-response-logs-uncompressed-body
-    source: {file: t/plugin/file-logger2.t, tests: [15]}
     config:
       routes:
         - id: file-gzip-response

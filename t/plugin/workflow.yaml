@@ -1,17 +1,5 @@
-sources:
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/workflow.t
-    tests: 18
-    test_numbers: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15, 16, 17, 18, 19, 20]
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/workflow2.t
-    tests: 7
-    test_numbers: [1, 2, 3, 4, 5, 6, 7]
 cases:
   - name: return-route-created
-    source: {file: t/plugin/workflow.t, tests: [2]}
     config:
       routes:
         - id: workflow-return-created
@@ -27,7 +15,6 @@ cases:
         output: {status: 403, body: {equals: '{"error_msg":"rejected by workflow"}'}}
 
   - name: return-route-request
-    source: {file: t/plugin/workflow.t, tests: [3]}
     config:
       routes:
         - id: workflow-return-request
@@ -43,7 +30,6 @@ cases:
         output: {status: 403, body: {equals: '{"error_msg":"rejected by workflow"}'}}
 
   - name: and-condition-route-created
-    source: {file: t/plugin/workflow.t, tests: [4]}
     config:
       routes:
         - id: workflow-and-created
@@ -62,7 +48,6 @@ cases:
         output: {status: 403, body: {equals: '{"error_msg":"rejected by workflow"}'}}
 
   - name: and-condition-falls-through
-    source: {file: t/plugin/workflow.t, tests: [5]}
     config:
       routes:
         - id: workflow-and-fallthrough
@@ -84,7 +69,6 @@ cases:
         output: {status: 200, body: {equals: hello-world}}
 
   - name: and-condition-matches
-    source: {file: t/plugin/workflow.t, tests: [6]}
     config:
       routes:
         - id: workflow-and-match
@@ -103,7 +87,6 @@ cases:
         output: {status: 403, body: {equals: '{"error_msg":"rejected by workflow"}'}}
 
   - name: two-uri-rules-created
-    source: {file: t/plugin/workflow.t, tests: [7]}
     config:
       routes:
         - id: workflow-two-uri-created
@@ -122,7 +105,6 @@ cases:
         output: {status: 401, body: {equals: '{"error_msg":"rejected by workflow"}'}}
 
   - name: first-uri-rule-matches
-    source: {file: t/plugin/workflow.t, tests: [8]}
     config:
       routes:
         - id: workflow-first-uri
@@ -141,7 +123,6 @@ cases:
         output: {status: 403, body: {equals: '{"error_msg":"rejected by workflow"}'}}
 
   - name: second-uri-rule-matches
-    source: {file: t/plugin/workflow.t, tests: [9]}
     config:
       routes:
         - id: workflow-second-uri
@@ -160,7 +141,6 @@ cases:
         output: {status: 401, body: {equals: '{"error_msg":"rejected by workflow"}'}}
 
   - name: ordered-rules-created
-    source: {file: t/plugin/workflow.t, tests: [10]}
     config:
       routes:
         - id: workflow-order-created
@@ -179,7 +159,6 @@ cases:
         output: {status: 403, body: {equals: '{"error_msg":"rejected by workflow"}'}}
 
   - name: first-matching-rule-wins
-    source: {file: t/plugin/workflow.t, tests: [11]}
     config:
       routes:
         - id: workflow-order-first
@@ -198,7 +177,6 @@ cases:
         output: {status: 403, body: {equals: '{"error_msg":"rejected by workflow"}'}}
 
   - name: second-rule-after-first-miss
-    source: {file: t/plugin/workflow.t, tests: [12]}
     config:
       routes:
         - id: workflow-order-second
@@ -217,7 +195,6 @@ cases:
         output: {status: 401, body: {equals: '{"error_msg":"rejected by workflow"}'}}
 
   - name: all-rules-miss
-    source: {file: t/plugin/workflow.t, tests: [13]}
     config:
       routes:
         - id: workflow-order-miss
@@ -239,7 +216,6 @@ cases:
         output: {status: 200, body: {equals: hello-world}}
 
   - name: single-limit-count-route-created
-    source: {file: t/plugin/workflow.t, tests: [15]}
     config:
       routes:
         - id: workflow-limit-created
@@ -260,7 +236,6 @@ cases:
         output: {status: 200, body: {equals: limit-ready}}
 
   - name: single-limit-count-threshold
-    source: {file: t/plugin/workflow.t, tests: [16]}
     config:
       routes:
         - id: workflow-limit-threshold
@@ -285,7 +260,6 @@ cases:
       - {name: fourth-request-is-rejected, input: {path: /hello}, output: {status: 503}}
 
   - name: two-independent-limit-count-rules-created
-    source: {file: t/plugin/workflow.t, tests: [17]}
     config:
       routes:
         - id: workflow-two-limits-created
@@ -308,7 +282,6 @@ cases:
       - {name: second-rule-allows, input: {path: /hello1}, output: {status: 200, body: {equals: independent}}}
 
   - name: two-independent-limit-count-thresholds
-    source: {file: t/plugin/workflow.t, tests: [18]}
     config:
       routes:
         - id: workflow-two-limit-thresholds
@@ -341,7 +314,6 @@ cases:
       - {name: hello1-fourth-rejected, input: {path: /hello1}, output: {status: 503}}
 
   - name: or-condition-route-created
-    source: {file: t/plugin/workflow.t, tests: [19]}
     config:
       routes:
         - id: workflow-or-created
@@ -360,7 +332,6 @@ cases:
         output: {status: 403, body: {equals: '{"error_msg":"rejected by workflow"}'}}
 
   - name: or-condition-request
-    source: {file: t/plugin/workflow.t, tests: [20]}
     config:
       routes:
         - id: workflow-or-request
@@ -379,7 +350,6 @@ cases:
         output: {status: 403, body: {equals: '{"error_msg":"rejected by workflow"}'}}
 
   - name: mixed-return-and-count-rules-created
-    source: {file: t/plugin/workflow2.t, tests: [1]}
     config:
       routes:
         - id: workflow2-mixed-created
@@ -400,7 +370,6 @@ cases:
       - {name: count-rule-is-created, input: {path: /hello1}, output: {status: 200, body: {equals: mixed-ready}}}
 
   - name: mixed-return-and-count-behavior
-    source: {file: t/plugin/workflow2.t, tests: [2]}
     config:
       routes:
         - id: workflow2-mixed-behavior
@@ -422,7 +391,6 @@ cases:
       - {name: count-rule-second-rejects, input: {path: /hello1}, output: {status: 503}}
 
   - name: two-count-rules-created
-    source: {file: t/plugin/workflow2.t, tests: [3]}
     config:
       routes:
         - id: workflow2-two-count-created
@@ -445,7 +413,6 @@ cases:
       - {name: second-created-rule-allows, input: {path: /hello1}, output: {status: 200}}
 
   - name: two-count-rules-first-two-each
-    source: {file: t/plugin/workflow2.t, tests: [4]}
     config:
       routes:
         - id: workflow2-two-count-first
@@ -471,7 +438,6 @@ cases:
       - {name: hello-second-allowed, input: {path: /hello}, output: {status: 200}}
       - {name: hello1-second-allowed, input: {path: /hello1}, output: {status: 200}}
   - name: two-count-rules-reach-independent-thresholds
-    source: {file: t/plugin/workflow2.t, tests: [5]}
     config:
       routes:
         - id: workflow2-two-count-next
@@ -504,7 +470,6 @@ cases:
       - {name: hello1-fourth-is-rejected, input: {path: /hello1}, output: {status: 503}}
 
   - name: unequal-count-rules-created
-    source: {file: t/plugin/workflow2.t, tests: [6]}
     config:
       routes:
         - id: workflow2-unequal-created
@@ -527,7 +492,6 @@ cases:
       - {name: count-two-rule-allows-first, input: {path: /hello1}, output: {status: 200}}
 
   - name: unequal-count-rule-thresholds
-    source: {file: t/plugin/workflow2.t, tests: [7]}
     config:
       routes:
         - id: workflow2-unequal-thresholds

@@ -1,13 +1,5 @@
-source:
-  repository: https://github.com/apache/apisix
-  commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-  file: t/plugin/openfunction.t
-  tests: 15
-
 cases:
   - name: schema
-    source:
-      tests: [1, 2, 3]
     variants:
       - name: valid
         config:
@@ -53,8 +45,6 @@ cases:
         output: *schema_error
 
   - name: get-function
-    source:
-      tests: [4, 5]
     config:
       routes:
         - id: openfunction-get
@@ -78,8 +68,6 @@ cases:
         equals: "Hello, function-sample!\n"
 
   - name: post-body
-    source:
-      tests: [6, 7]
     config:
       routes:
         - id: openfunction-body
@@ -107,8 +95,6 @@ cases:
         equals: "Hello, test!\n"
 
   - name: service-token
-    source:
-      tests: [8, 9]
     config:
       routes:
         - id: openfunction-service-token
@@ -135,8 +121,6 @@ cases:
         equals: '[Basic dGVzdDp0ZXN0]'
 
   - name: client-authorization
-    source:
-      tests: [10, 11]
     config:
       routes:
         - id: openfunction-client-token
@@ -163,8 +147,6 @@ cases:
         equals: '[user-token-xxx]'
 
   - name: function-not-found
-    source:
-      tests: [12, 13]
     config:
       routes:
         - id: openfunction-not-found
@@ -193,8 +175,6 @@ cases:
         matches: not found
 
   - name: wildcard-path-forwarding
-    source:
-      tests: [14, 15]
     config:
       routes:
         - id: openfunction-path

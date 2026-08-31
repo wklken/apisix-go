@@ -724,8 +724,7 @@ func TestRenderRuntimeConfigDerivesStandalonePlugins(t *testing.T) {
 func TestHarnessRunsStandaloneRoute(t *testing.T) {
 	body := "ok"
 	caseSpec := Case{
-		Name:   "smoke",
-		Source: CaseSource{Tests: []int{1}},
+		Name: "smoke",
 		Config: map[string]any{
 			"routes": []any{
 				map[string]any{
@@ -756,8 +755,7 @@ func TestHarnessRunsRequestSequence(t *testing.T) {
 	rejectedMessage := "too many requests"
 	rejectedBody := `{"error_msg":"too many requests"}`
 	caseSpec := Case{
-		Name:   "sequence",
-		Source: CaseSource{Tests: []int{1}},
+		Name: "sequence",
 		Config: map[string]any{
 			"routes": []any{
 				map[string]any{
@@ -808,8 +806,7 @@ func TestHarnessRunsRequestSequence(t *testing.T) {
 func TestHarnessFixtureEchoesRequestBody(t *testing.T) {
 	body := "echo me"
 	caseSpec := Case{
-		Name:   "fixture-echo",
-		Source: CaseSource{Tests: []int{1}},
+		Name: "fixture-echo",
 		Config: map[string]any{
 			"routes": []any{
 				map[string]any{
@@ -858,8 +855,7 @@ func TestHarnessExpandsIterationPlaceholders(t *testing.T) {
 	firstIteration := "1"
 	secondIteration := "2"
 	caseSpec := Case{
-		Name:   "iteration-placeholders",
-		Source: CaseSource{Tests: []int{1}},
+		Name: "iteration-placeholders",
 		Config: map[string]any{
 			"routes": []any{
 				map[string]any{
@@ -923,8 +919,7 @@ func TestHarnessExpandsIterationPlaceholders(t *testing.T) {
 func TestHarnessDoesNotBlockUnassertedFixtureCaptures(t *testing.T) {
 	body := "body"
 	caseSpec := Case{
-		Name:   "unasserted-fixture-captures",
-		Source: CaseSource{Tests: []int{1}},
+		Name: "unasserted-fixture-captures",
 		Config: map[string]any{
 			"routes": []any{
 				map[string]any{
@@ -961,8 +956,7 @@ func TestHarnessDoesNotBlockUnassertedFixtureCaptures(t *testing.T) {
 
 func TestHarnessRepeatsStepsAndChecksGeneratedHeaders(t *testing.T) {
 	caseSpec := Case{
-		Name:   "repeat-generated-headers",
-		Source: CaseSource{Tests: []int{1}},
+		Name: "repeat-generated-headers",
 		Config: map[string]any{
 			"routes": []any{
 				map[string]any{
@@ -998,8 +992,7 @@ func TestHarnessRepeatsStepsAndChecksGeneratedHeaders(t *testing.T) {
 func TestHarnessReusesResponseCookiesInLaterSteps(t *testing.T) {
 	cookiePattern := `apisix-csrf-token=[^;]+`
 	caseSpec := Case{
-		Name:   "response-cookie-sequence",
-		Source: CaseSource{Tests: []int{1}},
+		Name: "response-cookie-sequence",
 		Config: map[string]any{
 			"routes": []any{
 				map[string]any{
@@ -1058,8 +1051,7 @@ func TestHarnessCanOmitStoredCookies(t *testing.T) {
 	cookiePattern := `session=stored`
 	absent := true
 	caseSpec := Case{
-		Name:   "omit-response-cookie",
-		Source: CaseSource{Tests: []int{1}},
+		Name: "omit-response-cookie",
 		Config: map[string]any{
 			"routes": []any{
 				map[string]any{
@@ -1112,8 +1104,7 @@ func TestHarnessCapturesResponseHeaderForLaterStep(t *testing.T) {
 	secondPath := "/callback?state=dynamic-state"
 	done := "done"
 	caseSpec := Case{
-		Name:   "response-header-capture",
-		Source: CaseSource{Tests: []int{1}},
+		Name: "response-header-capture",
 		Config: map[string]any{
 			"routes": []any{
 				map[string]any{
@@ -1165,8 +1156,7 @@ func TestHarnessCapturesResponseHeaderForLaterStep(t *testing.T) {
 func TestHarnessSendsRepeatedRequestHeaders(t *testing.T) {
 	body := "ok"
 	caseSpec := Case{
-		Name:   "repeated-request-headers",
-		Source: CaseSource{Tests: []int{1}},
+		Name: "repeated-request-headers",
 		Config: map[string]any{
 			"routes": []any{
 				map[string]any{
@@ -1200,8 +1190,7 @@ func TestHarnessSendsRepeatedRequestHeaders(t *testing.T) {
 func TestHarnessGeneratesRepeatedChunkedBody(t *testing.T) {
 	body := "headAAAAAAtail"
 	caseSpec := Case{
-		Name:   "repeated-chunked-body",
-		Source: CaseSource{Tests: []int{1}},
+		Name: "repeated-chunked-body",
 		Config: map[string]any{
 			"routes": []any{
 				map[string]any{
@@ -1234,8 +1223,7 @@ func TestHarnessRunsNamedFixtures(t *testing.T) {
 	primaryBody := "primary"
 	auditBody := "audit"
 	caseSpec := Case{
-		Name:   "named-fixtures",
-		Source: CaseSource{Tests: []int{1}},
+		Name: "named-fixtures",
 		Config: map[string]any{
 			"routes": []any{
 				map[string]any{
@@ -1355,7 +1343,6 @@ func TestHarnessPassesCaseEnvironmentOnlyToConfiguredChild(t *testing.T) {
 
 	caseSpec := Case{
 		Name:        "case-environment",
-		Source:      CaseSource{Tests: []int{1}},
 		Environment: Environment{environmentVariable: "fixture-user"},
 		Config: map[string]any{
 			"consumers": []any{map[string]any{
@@ -1470,8 +1457,7 @@ func TestChildEnvironmentRemovesInheritedValuesWithoutChangingParent(t *testing.
 func TestHarnessRunsChunkedFixture(t *testing.T) {
 	body := "hello world"
 	caseSpec := Case{
-		Name:   "chunked",
-		Source: CaseSource{Tests: []int{1}},
+		Name: "chunked",
 		Config: map[string]any{
 			"routes": []any{
 				map[string]any{
@@ -1540,8 +1526,7 @@ func TestHarnessDisconnectsClient(t *testing.T) {
 func TestHarnessAssertsConcurrentStatusCounts(t *testing.T) {
 	path := "/concurrent-statuses"
 	caseSpec := Case{
-		Name:   "concurrent-status-counts",
-		Source: CaseSource{Tests: []int{1}},
+		Name: "concurrent-status-counts",
 		Config: map[string]any{
 			"routes": []any{
 				map[string]any{
@@ -1589,8 +1574,7 @@ func TestHarnessAssertsConcurrentStatusCounts(t *testing.T) {
 func TestHarnessHoldsInflightRequestsWhileRunningProbes(t *testing.T) {
 	path := "/held-limit-conn"
 	caseSpec := Case{
-		Name:   "held-limit-conn",
-		Source: CaseSource{Tests: []int{1}},
+		Name: "held-limit-conn",
 		Config: map[string]any{
 			"routes": []any{
 				map[string]any{
@@ -1667,8 +1651,7 @@ func TestHarnessAssertsFlushedChunks(t *testing.T) {
 	second := "data: second\n\n"
 	done := "data: [DONE]\n\n"
 	caseSpec := Case{
-		Name:   "flushed-chunks",
-		Source: CaseSource{Tests: []int{1}},
+		Name: "flushed-chunks",
 		Config: map[string]any{
 			"routes": []any{
 				map[string]any{
@@ -1814,8 +1797,7 @@ func decodeHarnessAWSEventStream(body []byte) ([]string, error) {
 func TestHarnessSupportsHTTP10AndGzipBody(t *testing.T) {
 	body := "01234567890123456789"
 	caseSpec := Case{
-		Name:   "http-version-gzip",
-		Source: CaseSource{Tests: []int{1}},
+		Name: "http-version-gzip",
 		Config: map[string]any{
 			"routes": []any{
 				map[string]any{
@@ -1878,8 +1860,7 @@ func TestHarnessSupportsHTTP10AndGzipBody(t *testing.T) {
 func TestHarnessSupportsBrotliBody(t *testing.T) {
 	body := "01234567890123456789"
 	caseSpec := Case{
-		Name:   "brotli-body",
-		Source: CaseSource{Tests: []int{1}},
+		Name: "brotli-body",
 		Config: map[string]any{
 			"routes": []any{
 				map[string]any{
@@ -1927,8 +1908,7 @@ func TestHarnessSupportsBrotliBody(t *testing.T) {
 
 func TestHarnessSupportsElapsedAssertions(t *testing.T) {
 	caseSpec := Case{
-		Name:   "elapsed-assertions",
-		Source: CaseSource{Tests: []int{1}},
+		Name: "elapsed-assertions",
 		Config: map[string]any{
 			"routes": []any{
 				map[string]any{

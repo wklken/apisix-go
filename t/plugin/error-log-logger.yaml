@@ -1,12 +1,5 @@
-sources:
-  - {repository: https://github.com/apache/apisix, commit: 9ef2ecab67f652d38365049613610ef649bb4ad0, file: t/plugin/error-log-logger-clickhouse.t, tests: 8, test_numbers: [1, 2, 3, 4, 5, 6, 7, 9]}
-  - {repository: https://github.com/apache/apisix, commit: 9ef2ecab67f652d38365049613610ef649bb4ad0, file: t/plugin/error-log-logger-kafka.t, tests: 6, test_numbers: [1, 2, 3, 4, 5, 6]}
-  - {repository: https://github.com/apache/apisix, commit: 9ef2ecab67f652d38365049613610ef649bb4ad0, file: t/plugin/error-log-logger-skywalking.t, tests: 8}
-  - {repository: https://github.com/apache/apisix, commit: 9ef2ecab67f652d38365049613610ef649bb4ad0, file: t/plugin/error-log-logger.t, tests: 13, test_numbers: [1, 2, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14, 15]}
-
 cases:
   - name: clickhouse-schema-accepts-complete-metadata
-    source: {file: t/plugin/error-log-logger-clickhouse.t, tests: [1]}
     runtime: {plugins: [error-log-logger]}
     config:
       plugin_metadata:
@@ -21,7 +14,6 @@ cases:
       - {name: valid-clickhouse-metadata-delivers-a-real-warning, input: {path: /warn, headers: {Authorization: 'Basic aca_a'}}, output: {status: 401}, wait: 300ms}
 
   - name: clickhouse-unreachable-endpoint-reports-batch-failure
-    source: {file: t/plugin/error-log-logger-clickhouse.t, tests: [2]}
     runtime: {plugins: [error-log-logger]}
     config:
       plugin_metadata:
@@ -34,7 +26,6 @@ cases:
         wait: 500ms
 
   - name: clickhouse-metadata-initialization-delivers-error
-    source: {file: t/plugin/error-log-logger-clickhouse.t, tests: [3]}
     runtime: {plugins: [error-log-logger]}
     config:
       plugin_metadata:
@@ -49,7 +40,6 @@ cases:
       - {name: initialized-clickhouse-owner-delivers-error, input: {path: /error}, output: {status: 401}, wait: 300ms}
 
   - name: clickhouse-warning-level-is-delivered
-    source: {file: t/plugin/error-log-logger-clickhouse.t, tests: [4]}
     runtime: {plugins: [error-log-logger]}
     config:
       plugin_metadata:
@@ -61,7 +51,6 @@ cases:
       - {name: warning-crosses-clickhouse-boundary, input: {path: /warn, headers: {Authorization: 'Basic aca_a'}}, output: {status: 401}, wait: 300ms}
 
   - name: clickhouse-consecutive-warnings-are-not-lost
-    source: {file: t/plugin/error-log-logger-clickhouse.t, tests: [5]}
     runtime: {plugins: [error-log-logger]}
     config:
       plugin_metadata:
@@ -79,7 +68,6 @@ cases:
       - {name: second-warning-is-delivered, input: {path: /warn, headers: {Authorization: 'Basic bad_two'}}, output: {status: 401}, wait: 300ms}
 
   - name: clickhouse-default-warn-threshold-filters-info
-    source: {file: t/plugin/error-log-logger-clickhouse.t, tests: [6]}
     runtime: {plugins: [error-log-logger]}
     config:
       plugin_metadata:
@@ -96,7 +84,6 @@ cases:
       - {name: warning-control-proves-clickhouse-sink-is-live, input: {path: /warn, headers: {Authorization: 'Basic filter_control'}}, output: {status: 401}, wait: 300ms}
 
   - name: clickhouse-metadata-deletion-stops-delivery
-    source: {file: t/plugin/error-log-logger-clickhouse.t, tests: [7]}
     runtime: {plugins: [error-log-logger]}
     config:
       plugin_metadata:
@@ -120,7 +107,6 @@ cases:
         wait: 300ms
 
   - name: clickhouse-runtime-uses-decrypted-password
-    source: {file: t/plugin/error-log-logger-clickhouse.t, tests: [9]}
     runtime:
       plugins: [error-log-logger]
       apisix: {data_encryption: {enable_encrypt_fields: true, keyring: [edd1c9f0985e76a2]}}
@@ -134,7 +120,6 @@ cases:
       - {name: clickhouse-authentication-receives-plaintext-secret, input: {path: /warn, headers: {Authorization: 'Basic decrypted_password'}}, output: {status: 401}, wait: 300ms}
 
   - name: kafka-schema-accepts-broker-and-topic
-    source: {file: t/plugin/error-log-logger-kafka.t, tests: [1]}
     runtime: {plugins: [error-log-logger]}
     config:
       plugin_metadata:
@@ -146,7 +131,6 @@ cases:
       - {name: valid-kafka-metadata-delivers-real-record, input: {path: /error}, output: {status: 401, logs: {not_matches: 'logger batch processor'}}, wait: 300ms}
 
   - name: kafka-no-auth-broker-delivers-error
-    source: {file: t/plugin/error-log-logger-kafka.t, tests: [2]}
     runtime: {plugins: [error-log-logger]}
     config:
       plugin_metadata:
@@ -158,7 +142,6 @@ cases:
       - {name: unauthenticated-kafka-broker-accepts-error-record, input: {path: /error}, output: {status: 401}, wait: 300ms}
 
   - name: kafka-error-level-is-delivered
-    source: {file: t/plugin/error-log-logger-kafka.t, tests: [3]}
     runtime: {plugins: [error-log-logger]}
     config:
       plugin_metadata:
@@ -170,7 +153,6 @@ cases:
       - {name: error-crosses-kafka-protocol-boundary, input: {path: /error}, output: {status: 401}, wait: 300ms}
 
   - name: kafka-error-threshold-filters-warning
-    source: {file: t/plugin/error-log-logger-kafka.t, tests: [4]}
     runtime: {plugins: [error-log-logger]}
     config:
       plugin_metadata:
@@ -185,7 +167,6 @@ cases:
       - {name: error-control-proves-kafka-sink-is-live, input: {path: /error}, output: {status: 401}, wait: 300ms}
 
   - name: kafka-plain-sasl-auth-delivers-error
-    source: {file: t/plugin/error-log-logger-kafka.t, tests: [5]}
     runtime: {plugins: [error-log-logger]}
     config:
       plugin_metadata:
@@ -203,7 +184,6 @@ cases:
       - {name: plain-sasl-session-produces-error-record, input: {path: /error}, output: {status: 401}, wait: 300ms}
 
   - name: kafka-metadata-deletion-stops-delivery
-    source: {file: t/plugin/error-log-logger-kafka.t, tests: [6]}
     runtime: {plugins: [error-log-logger]}
     config:
       plugin_metadata:
@@ -227,7 +207,6 @@ cases:
         wait: 300ms
 
   - name: skywalking-schema-accepts-endpoint
-    source: {file: t/plugin/error-log-logger-skywalking.t, tests: [1]}
     runtime: {plugins: [error-log-logger]}
     config:
       plugin_metadata:
@@ -239,7 +218,6 @@ cases:
       - {name: valid-skywalking-metadata-delivers-log-envelope, input: {path: /warn, headers: {Authorization: 'Basic aca_a'}}, output: {status: 401}, wait: 300ms}
 
   - name: skywalking-unreachable-endpoint-reports-batch-failure
-    source: {file: t/plugin/error-log-logger-skywalking.t, tests: [2]}
     runtime: {plugins: [error-log-logger]}
     config:
       plugin_metadata:
@@ -252,7 +230,6 @@ cases:
         wait: 500ms
 
   - name: skywalking-metadata-initialization-delivers-error
-    source: {file: t/plugin/error-log-logger-skywalking.t, tests: [3]}
     runtime: {plugins: [error-log-logger]}
     config:
       plugin_metadata:
@@ -264,7 +241,6 @@ cases:
       - {name: initialized-skywalking-owner-delivers-error, input: {path: /error}, output: {status: 401}, wait: 300ms}
 
   - name: skywalking-warning-level-is-delivered
-    source: {file: t/plugin/error-log-logger-skywalking.t, tests: [4]}
     runtime: {plugins: [error-log-logger]}
     config:
       plugin_metadata:
@@ -276,7 +252,6 @@ cases:
       - {name: warning-crosses-skywalking-http-boundary, input: {path: /warn, headers: {Authorization: 'Basic skywalking_warning'}}, output: {status: 401}, wait: 300ms}
 
   - name: skywalking-batches-error-and-warning
-    source: {file: t/plugin/error-log-logger-skywalking.t, tests: [5]}
     runtime: {plugins: [error-log-logger]}
     config:
       plugin_metadata:
@@ -291,7 +266,6 @@ cases:
       - {name: second-warning-flushes-two-entry-batch, input: {path: /warn, headers: {Authorization: 'Basic batch_warning'}}, output: {status: 401}, wait: 300ms}
 
   - name: skywalking-default-warn-threshold-filters-info
-    source: {file: t/plugin/error-log-logger-skywalking.t, tests: [6]}
     runtime: {plugins: [error-log-logger]}
     config:
       plugin_metadata:
@@ -308,7 +282,6 @@ cases:
       - {name: warning-control-proves-skywalking-sink-is-live, input: {path: /warn, headers: {Authorization: 'Basic skywalking_filter_control'}}, output: {status: 401}, wait: 300ms}
 
   - name: skywalking-metadata-deletion-stops-delivery
-    source: {file: t/plugin/error-log-logger-skywalking.t, tests: [7]}
     runtime: {plugins: [error-log-logger]}
     config:
       plugin_metadata:
@@ -332,7 +305,6 @@ cases:
         wait: 300ms
 
   - name: skywalking-hostname-instance-is-expanded
-    source: {file: t/plugin/error-log-logger-skywalking.t, tests: [8]}
     runtime: {plugins: [error-log-logger]}
     config:
       plugin_metadata:
@@ -344,7 +316,6 @@ cases:
       - {name: runtime-hostname-replaces-placeholder-in-envelope, input: {path: /warn, headers: {Authorization: 'Basic hostname_warning'}}, output: {status: 401}, wait: 300ms}
 
   - name: global-plugin-not-enabled-does-not-observe-errors
-    source: {file: t/plugin/error-log-logger.t, tests: [1]}
     target_plugin_exempt_reason: intentional negative case keeps error-log-logger disabled
     runtime: {plugins: [basic-auth]}
     config:
@@ -356,7 +327,6 @@ cases:
       - {name: warning-remains-local-when-global-plugin-is-disabled, input: {path: /warn, headers: {Authorization: 'Basic disabled_warning'}}, output: {status: 401, logs: {not_matches: 'logger batch processor \[error-log-logger\]'}}, wait: 300ms}
 
   - name: enabled-plugin-without-metadata-reports-configuration-error
-    source: {file: t/plugin/error-log-logger.t, tests: [2]}
     runtime: {plugins: [error-log-logger]}
     config:
       routes: [{id: missing-metadata-warning, uri: /warn, plugins: {error-log-logger: {}, basic-auth: {}}}]
@@ -364,7 +334,6 @@ cases:
       - {name: missing-metadata-is-visible-in-real-process-logs, input: {path: /warn, headers: {Authorization: 'Basic missing_metadata'}}, output: {status: 401, logs: {matches: 'please set the correct plugin_metadata for error-log-logger'}}}
 
   - name: tcp-unreachable-endpoint-reports-batch-failure
-    source: {file: t/plugin/error-log-logger.t, tests: [4]}
     runtime: {plugins: [error-log-logger]}
     config:
       plugin_metadata: [{id: error-log-logger, tcp: {host: 127.0.0.1, port: 1}, batch_max_size: 1, max_retry_count: 0, timeout: 1}]
@@ -373,7 +342,6 @@ cases:
       - {name: unreachable-tcp-sink-keeps-request-isolated, input: {path: /warn, headers: {Authorization: 'Basic tcp_unreachable'}}, output: {status: 401, logs: {matches: 'logger batch processor \[error-log-logger\].*(dial tcp|connection refused)'}}, wait: 500ms}
 
   - name: tcp-warning-level-is-delivered
-    source: {file: t/plugin/error-log-logger.t, tests: [5]}
     runtime: {plugins: [error-log-logger]}
     config:
       plugin_metadata: [{id: error-log-logger, tcp: {host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}'}, batch_max_size: 1}]
@@ -384,7 +352,6 @@ cases:
       - {name: warning-crosses-real-tcp-boundary, input: {path: /warn, headers: {Authorization: 'Basic tcp_warning'}}, output: {status: 401}, wait: 300ms}
 
   - name: tcp-error-level-is-delivered
-    source: {file: t/plugin/error-log-logger.t, tests: [6]}
     runtime: {plugins: [error-log-logger]}
     config:
       plugin_metadata: [{id: error-log-logger, tcp: {host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}'}, batch_max_size: 1}]
@@ -395,7 +362,6 @@ cases:
       - {name: error-crosses-real-tcp-boundary, input: {path: /error}, output: {status: 401}, wait: 300ms}
 
   - name: tcp-default-warn-threshold-filters-info
-    source: {file: t/plugin/error-log-logger.t, tests: [7]}
     runtime: {plugins: [error-log-logger]}
     config:
       plugin_metadata: [{id: error-log-logger, tcp: {host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}'}, batch_max_size: 1}]
@@ -411,7 +377,6 @@ cases:
       - {name: warning-control-proves-tcp-sink-is-live, input: {path: /warn, headers: {Authorization: 'Basic tcp_filter_control'}}, output: {status: 401}, wait: 300ms}
 
   - name: tcp-metadata-deletion-clears-observer
-    source: {file: t/plugin/error-log-logger.t, tests: [8]}
     runtime: {plugins: [error-log-logger]}
     config:
       plugin_metadata: [{id: error-log-logger, tcp: {host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}'}, batch_max_size: 1}]
@@ -434,7 +399,6 @@ cases:
         wait: 300ms
 
   - name: route-local-config-cannot-replace-global-metadata
-    source: {file: t/plugin/error-log-logger.t, tests: [9]}
     runtime: {plugins: [error-log-logger]}
     config:
       routes:
@@ -447,7 +411,6 @@ cases:
       - {name: reload-contract-still-requires-plugin-metadata, input: {path: /warn, headers: {Authorization: 'Basic route_local'}}, output: {status: 401, logs: {matches: 'please set the correct plugin_metadata for error-log-logger'}}}
 
   - name: metadata-replacement-does-not-leak-to-stale-owner
-    source: {file: t/plugin/error-log-logger.t, tests: [10]}
     runtime: {plugins: [error-log-logger]}
     config:
       plugin_metadata: [{id: error-log-logger, tcp: {host: '{{FIXTURE.old.HOST}}', port: '{{FIXTURE.old.PORT}}'}, batch_max_size: 1}]
@@ -471,7 +434,6 @@ cases:
         wait: 300ms
 
   - name: legacy-top-level-tcp-schema-delivers-warning
-    source: {file: t/plugin/error-log-logger.t, tests: [12]}
     runtime: {plugins: [error-log-logger]}
     config:
       plugin_metadata: [{id: error-log-logger, host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}', batch_max_size: 1}]
@@ -482,7 +444,6 @@ cases:
       - {name: legacy-tcp-fields-deliver-warning, input: {path: /warn, headers: {Authorization: 'Basic legacy_warning'}}, output: {status: 401}, wait: 300ms}
 
   - name: legacy-top-level-tcp-schema-delivers-error
-    source: {file: t/plugin/error-log-logger.t, tests: [13]}
     runtime: {plugins: [error-log-logger]}
     config:
       plugin_metadata: [{id: error-log-logger, host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}', batch_max_size: 1}]
@@ -493,7 +454,6 @@ cases:
       - {name: legacy-tcp-fields-deliver-error, input: {path: /error}, output: {status: 401}, wait: 300ms}
 
   - name: legacy-top-level-tcp-schema-filters-info
-    source: {file: t/plugin/error-log-logger.t, tests: [14]}
     runtime: {plugins: [error-log-logger]}
     config:
       plugin_metadata: [{id: error-log-logger, host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}', batch_max_size: 1}]
@@ -509,7 +469,6 @@ cases:
       - {name: legacy-warning-control-proves-sink-is-live, input: {path: /warn, headers: {Authorization: 'Basic legacy_filter_control'}}, output: {status: 401}, wait: 300ms}
 
   - name: legacy-top-level-metadata-deletion-clears-owner
-    source: {file: t/plugin/error-log-logger.t, tests: [15]}
     runtime: {plugins: [error-log-logger]}
     config:
       plugin_metadata: [{id: error-log-logger, host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}', batch_max_size: 1}]

@@ -1,13 +1,5 @@
-source:
-  repository: https://github.com/apache/apisix
-  commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-  file: t/plugin/uri-blocker.t
-  tests: 22
-
 cases:
   - name: reject-invalid-regular-expression
-    source:
-      tests: [1]
     config:
       routes:
         - id: uri-blocker-invalid-regex
@@ -23,8 +15,6 @@ cases:
         matches: 'build route uri-blocker-invalid-regex fail:.*compile block_rules:.*missing closing.*[.][+][(]'
 
   - name: accept-multiple-valid-rules
-    source:
-      tests: [2]
     config:
       routes:
         - id: uri-blocker-valid-rules
@@ -48,8 +38,6 @@ cases:
         equals: hello world
 
   - name: reject-one-invalid-rule
-    source:
-      tests: [3]
     config:
       routes:
         - id: uri-blocker-one-invalid-rule
@@ -65,8 +53,6 @@ cases:
         matches: 'build route uri-blocker-one-invalid-rule fail:.*compile block_rules:.*missing closing.*[\^]a[|][\^]b[(]'
 
   - name: one-rule-blocks-query
-    source:
-      tests: [4, 5]
     config:
       routes:
         - id: uri-blocker-one-rule-block
@@ -85,8 +71,6 @@ cases:
         matches: 'concat block_rules: aa'
 
   - name: one-rule-allows-other-query
-    source:
-      tests: [6]
     config:
       routes:
         - id: uri-blocker-one-rule-allow
@@ -102,8 +86,6 @@ cases:
         matches: 'concat block_rules: aa'
 
   - name: multiple-rules-block-bb-value
-    source:
-      tests: [7, 8]
     config:
       routes:
         - id: uri-blocker-multiple-rules-bb-value
@@ -121,8 +103,6 @@ cases:
         matches: 'concat block_rules: aa[|]bb[|]c.*,'
 
   - name: multiple-rules-block-bb-key
-    source:
-      tests: [9]
     config:
       routes:
         - id: uri-blocker-multiple-rules-bb-key
@@ -137,8 +117,6 @@ cases:
       logs: *multiple_rules_log
 
   - name: multiple-rules-block-numeric-pattern
-    source:
-      tests: [10]
     config:
       routes:
         - id: uri-blocker-multiple-rules-numeric
@@ -152,8 +130,6 @@ cases:
       status: 403
 
   - name: multiple-rules-allow-nonmatch
-    source:
-      tests: [11]
     config:
       routes:
         - id: uri-blocker-multiple-rules-allow
@@ -166,8 +142,6 @@ cases:
     output: *hello_output
 
   - name: sql-select-blocked
-    source:
-      tests: [12, 13]
     config:
       routes:
         - id: uri-blocker-sql-select
@@ -185,8 +159,6 @@ cases:
         matches: 'concat block_rules: select\.\+\(from\|limit\)\|\(\?:\(union\(\.\*\?\)select\)\),'
 
   - name: sql-union-select-blocked
-    source:
-      tests: [14]
     config:
       routes:
         - id: uri-blocker-sql-union
@@ -200,8 +172,6 @@ cases:
       status: 403
 
   - name: sql-rules-allow-nonmatch
-    source:
-      tests: [15]
     config:
       routes:
         - id: uri-blocker-sql-allow
@@ -214,8 +184,6 @@ cases:
     output: *hello_output
 
   - name: reject-invalid-message
-    source:
-      tests: [16]
     variants:
       - name: empty
         config:
@@ -249,8 +217,6 @@ cases:
             matches: 'build route uri-blocker-boolean-message fail:.*rejected_msg.*expected string'
 
   - name: custom-rejected-message
-    source:
-      tests: [17, 18]
     config:
       routes:
         - id: uri-blocker-custom-message
@@ -269,8 +235,6 @@ cases:
         equals: '{"error_msg":"access is not allowed"}'
 
   - name: case-insensitive
-    source:
-      tests: [19, 20]
     config:
       routes:
         - id: uri-blocker-case-insensitive
@@ -290,8 +254,6 @@ cases:
         equals: '{"error_msg":"access is not allowed"}'
 
   - name: normalized-path-cannot-bypass-anchor
-    source:
-      tests: [21, 22]
     runtime:
       apisix:
         normalize_uri_like_servlet: true

@@ -1,6 +1,5 @@
 cases:
   - name: minimal-openai-configuration
-    source: {file: t/plugin/ai-request-rewrite.t, tests: [1]}
     environment: {HTTPS_PROXY: '{{FIXTURE.provider-proxy.URL}}', NO_PROXY: ''}
     config:
       routes:
@@ -26,7 +25,6 @@ cases:
         output: {status: 500, body: {matches: 'failed to request LLM'}}
 
   - name: missing-prompt-is-rejected
-    source: {file: t/plugin/ai-request-rewrite.t, tests: [2]}
     config:
       routes:
         - id: ai-request-rewrite-missing-prompt
@@ -42,7 +40,6 @@ cases:
         output: {status: 404, logs: {matches: 'build route ai-request-rewrite-missing-prompt fail:.*ai-request-rewrite.*prompt'}}
 
   - name: missing-auth-is-rejected
-    source: {file: t/plugin/ai-request-rewrite.t, tests: [3]}
     config:
       routes:
         - id: ai-request-rewrite-missing-auth
@@ -56,7 +53,6 @@ cases:
         output: {status: 404, logs: {matches: 'build route ai-request-rewrite-missing-auth fail:.*ai-request-rewrite.*auth'}}
 
   - name: missing-provider-is-rejected
-    source: {file: t/plugin/ai-request-rewrite.t, tests: [4]}
     config:
       routes:
         - id: ai-request-rewrite-missing-provider
@@ -72,7 +68,6 @@ cases:
         output: {status: 404, logs: {matches: 'build route ai-request-rewrite-missing-provider fail:.*ai-request-rewrite.*provider'}}
 
   - name: invalid-provider-is-rejected
-    source: {file: t/plugin/ai-request-rewrite.t, tests: [5]}
     config:
       routes:
         - id: ai-request-rewrite-invalid-provider
@@ -89,7 +84,6 @@ cases:
         output: {status: 404, logs: {matches: 'build route ai-request-rewrite-invalid-provider fail:.*ai-request-rewrite.*provider'}}
 
   - name: default-deepseek-provider-configuration
-    source: {file: t/plugin/ai-request-rewrite.t, tests: [6]}
     environment: {HTTPS_PROXY: '{{FIXTURE.provider-proxy.URL}}', NO_PROXY: ''}
     config:
       routes:
@@ -115,7 +109,6 @@ cases:
         output: {status: 500, body: {matches: 'failed to request LLM'}}
 
   - name: openai-compatible-provider-rewrites-through-override
-    source: {file: t/plugin/ai-request-rewrite.t, tests: [7]}
     config:
       routes:
         - id: ai-request-rewrite-compatible
@@ -136,7 +129,6 @@ cases:
         output: {status: 400, body: {json_equals: '{"message":"missing request body"}'}}
 
   - name: override-endpoint-path-is-used
-    source: {file: t/plugin/ai-request-rewrite.t, tests: [8]}
     config:
       routes:
         - id: ai-request-rewrite-override-path
@@ -172,7 +164,6 @@ cases:
         output: {status: 200, headers: {Content-Type: {equals: text/plain}}, body: {equals: passed}}
 
   - name: wrong-header-auth-is-mapped-to-server-error
-    source: {file: t/plugin/ai-request-rewrite.t, tests: [9]}
     config:
       routes:
         - id: ai-request-rewrite-wrong-header
@@ -209,7 +200,6 @@ cases:
           logs: {matches: 'LLM service returned error status: 401'}
 
   - name: query-auth-is-propagated
-    source: {file: t/plugin/ai-request-rewrite.t, tests: [10]}
     config:
       routes:
         - id: ai-request-rewrite-query-auth
@@ -245,7 +235,6 @@ cases:
         output: {status: 200, headers: {Content-Type: {equals: text/plain}}, body: {equals: passed}}
 
   - name: prompt-is-sent-to-the-llm
-    source: {file: t/plugin/ai-request-rewrite.t, tests: [12]}
     config:
       routes:
         - id: ai-request-rewrite-prompt
@@ -281,7 +270,6 @@ cases:
         output: {status: 200, headers: {Content-Type: {equals: text/plain}}, body: {equals: passed}}
 
   - name: wrong-query-auth-is-mapped-to-server-error
-    source: {file: t/plugin/ai-request-rewrite.t, tests: [11]}
     config:
       routes:
         - id: ai-request-rewrite-wrong-query
@@ -318,7 +306,6 @@ cases:
           logs: {matches: 'LLM service returned error status: 401'}
 
   - name: provider-errors-preserve-options
-    source: {file: t/plugin/ai-request-rewrite.t, tests: [13, 14]}
     variants:
       - name: bad-request
         config:
@@ -394,7 +381,6 @@ cases:
               logs: {matches: 'LLM service returned error status: 500'}
 
   - name: default-aimlapi-provider-configuration
-    source: {file: t/plugin/ai-request-rewrite.t, tests: [15]}
     environment: {HTTPS_PROXY: '{{FIXTURE.provider-proxy.URL}}', NO_PROXY: ''}
     config:
       routes:
@@ -420,7 +406,6 @@ cases:
         output: {status: 500, body: {matches: 'failed to request LLM'}}
 
   - name: options-are-sent-to-the-llm
-    source: {file: t/plugin/ai-request-rewrite2.t, tests: [1]}
     config:
       routes:
         - id: ai-request-rewrite-options
@@ -457,7 +442,6 @@ cases:
         output: {status: 200, headers: {Content-Type: {equals: text/plain}}, body: {equals: passed}}
 
   - name: compatible-provider-requires-override-endpoint
-    source: {file: t/plugin/ai-request-rewrite2.t, tests: [2]}
     config:
       routes:
         - id: ai-request-rewrite-compatible-no-override
@@ -474,7 +458,6 @@ cases:
         output: {status: 404, logs: {matches: 'build route ai-request-rewrite-compatible-no-override fail:.*ai-request-rewrite.*override.endpoint'}}
 
   - name: override-endpoint-query-is-preserved
-    source: {file: t/plugin/ai-request-rewrite2.t, tests: [3]}
     config:
       routes:
         - id: ai-request-rewrite-override-query
@@ -504,7 +487,6 @@ cases:
         output: {status: 500, body: {matches: 'failed to decode LLM response'}}
 
   - name: missing-request-body-is-rejected
-    source: {file: t/plugin/ai-request-rewrite2.t, tests: [4]}
     config:
       routes:
         - id: ai-request-rewrite-missing-body
@@ -529,13 +511,3 @@ cases:
           headers: {Content-Type: {equals: 'application/json; charset=UTF-8'}}
           body: {json_equals: '{"message":"missing request body"}'}
           logs: {matches: 'missing request body'}
-
-sources:
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/ai-request-rewrite.t
-    tests: 15
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/ai-request-rewrite2.t
-    tests: 4

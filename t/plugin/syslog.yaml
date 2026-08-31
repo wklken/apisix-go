@@ -1,15 +1,5 @@
-sources:
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/syslog.t
-    tests: 18
-    test_numbers: [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]
-
 cases:
   - name: default-access-log-over-real-stream-transports
-    source:
-      file: t/plugin/syslog.t
-      tests: [4, 5]
     variants:
       - name: plain-tcp
         config:
@@ -105,9 +95,6 @@ cases:
             wait: 1s
 
   - name: explicit-flush-concatenates-buffered-rfc5424-frames-in-order
-    source:
-      file: t/plugin/syslog.t
-      tests: [6]
     config:
       routes:
         - id: syslog-ordered-batch
@@ -169,9 +156,6 @@ cases:
         output: {status: 204}
 
   - name: flush-limit-case-emits-latency
-    source:
-      file: t/plugin/syslog.t
-      tests: [7, 8]
     config:
       routes:
         - id: syslog-flush-limit
@@ -207,9 +191,6 @@ cases:
         wait: 1s
 
   - name: live-route-update-switches-destination
-    source:
-      file: t/plugin/syslog.t
-      tests: [9]
     config:
       routes:
         - id: syslog-live-update
@@ -283,9 +264,6 @@ cases:
         wait: 1s
 
   - name: metadata-set-update-and-clear-rebuilds-route
-    source:
-      file: t/plugin/syslog.t
-      tests: [10, 11, 12, 13]
     config:
       plugin_metadata:
         - id: syslog
@@ -421,9 +399,6 @@ cases:
         wait: 1s
 
   - name: route-log-format-overrides-metadata
-    source:
-      file: t/plugin/syslog.t
-      tests: [14, 15, 16]
     config:
       plugin_metadata:
         - id: syslog
@@ -518,9 +493,6 @@ cases:
         wait: 1s
 
   - name: udp-delivery-includes-upstream
-    source:
-      file: t/plugin/syslog.t
-      tests: [17, 18, 19]
     config:
       routes:
         - id: syslog-udp
@@ -560,9 +532,6 @@ cases:
         wait: 1s
 
   - name: request-body-is-logged-and-forwarded
-    source:
-      file: t/plugin/syslog.t
-      tests: [20]
     config:
       routes:
         - id: syslog-request-body
@@ -607,9 +576,6 @@ cases:
         wait: 1s
 
   - name: response-body-is-logged-and-preserved
-    source:
-      file: t/plugin/syslog.t
-      tests: [21]
     config:
       routes:
         - id: syslog-response-body

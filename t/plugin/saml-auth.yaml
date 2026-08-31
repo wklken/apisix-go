@@ -1,8 +1,5 @@
 cases:
     - name: saml-auth-redirect-login
-      source:
-          file: t/plugin/saml-auth.t
-          tests: [8]
       config:
           routes:
               - id: saml-auth-redirect-login
@@ -108,9 +105,6 @@ cases:
                 body: {equals: saml upstream}
 
     - name: saml-auth-rejects-invalid-state-correlation-and-signature
-      source:
-          file: t/plugin/saml-auth.t
-          tests: [9]
       config:
           routes:
               - id: saml-auth-logout-and-callback
@@ -223,9 +217,6 @@ cases:
                 body: {matches: saml authentication failed}
 
     - name: saml-auth-redirect-sp1-login-and-logout
-      source:
-          file: t/plugin/saml-auth.t
-          tests: [11]
       config:
           routes:
               - id: saml-auth-redirect-sp1-login-and-logout
@@ -319,9 +310,6 @@ cases:
                     Location: {matches: '^https://idp\.example\.test/sso\?.*SAMLRequest=.*'}
 
     - name: saml-auth-redirect-add-sp1-route
-      source:
-          file: t/plugin/saml-auth.t
-          tests: [10]
       config:
           routes:
               - id: saml-auth-redirect-setup-sp1
@@ -359,9 +347,6 @@ cases:
                     name_id: setup@example.com
 
     - name: saml-auth-redirect-login-fails-for-wrong-callback
-      source:
-          file: t/plugin/saml-auth.t
-          tests: [15]
       config:
           routes:
               - id: saml-auth-redirect-wrong-callback-uri
@@ -427,9 +412,6 @@ cases:
                     Location: {matches: '^https://idp\.example\.test/sso\?.*SAMLRequest=.*'}
 
     - name: saml-auth-redirect-add-wrong-callback-route
-      source:
-          file: t/plugin/saml-auth.t
-          tests: [14]
       config:
           routes:
               - id: saml-auth-redirect-setup-wrong-callback
@@ -467,9 +449,6 @@ cases:
                     name_id: setup@example.com
 
     - name: saml-auth-redirect-two-sp-single-logout
-      source:
-          file: t/plugin/saml-auth.t
-          tests: [13]
       config:
           routes:
               - id: saml-auth-redirect-sp1
@@ -726,9 +705,6 @@ cases:
                     Location: {matches: '^https://idp\.example\.test/sso\?.*SAMLRequest=.*'}
 
     - name: saml-auth-redirect-add-sp2-route
-      source:
-          file: t/plugin/saml-auth.t
-          tests: [12]
       config:
           routes:
               - id: saml-auth-redirect-setup-sp1
@@ -798,10 +774,3 @@ cases:
                     sp_certificate: *saml_cert
                     expected_sp_issuer: sp2
                     name_id: setup@example.com
-
-sources:
-    - repository: https://github.com/apache/apisix
-      commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-      file: t/plugin/saml-auth.t
-      tests: 8
-      test_numbers: [8, 9, 10, 11, 12, 13, 14, 15]

@@ -1,13 +1,5 @@
-source:
-  repository: https://github.com/apache/apisix
-  commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-  file: t/plugin/data-mask.t
-  tests: 16
-
 cases:
   - name: mask-query-log-fields
-    source:
-      tests: [1, 2]
     config:
       routes:
         - id: data-mask-query
@@ -46,8 +38,6 @@ cases:
         equals: done
 
   - name: mask-header-log-fields
-    source:
-      tests: [3, 4]
     config:
       routes:
         - id: data-mask-header
@@ -87,8 +77,6 @@ cases:
     output: *done_output
 
   - name: mask-urlencoded-body-log-field
-    source:
-      tests: [5, 6]
     config:
       routes:
         - id: data-mask-urlencoded
@@ -124,8 +112,6 @@ cases:
     output: *done_output
 
   - name: mask-json-body-log-field
-    source:
-      tests: [7, 8]
     config:
       routes:
         - id: data-mask-json
@@ -161,8 +147,6 @@ cases:
     output: *done_output
 
   - name: global-rule-missing-body
-    source:
-      tests: [9, 10]
     config:
       global_rules:
         - id: data-mask-global
@@ -191,8 +175,6 @@ cases:
         equals: "404 page not found\n"
 
   - name: default-max-request-post-args
-    source:
-      tests: [11, 12]
     config:
       routes:
         - id: data-mask-default-max-args
@@ -219,8 +201,6 @@ cases:
     output: *done_output
 
   - name: custom-max-request-post-args
-    source:
-      tests: [13, 14]
     config:
       routes:
         - id: data-mask-custom-max-args
@@ -248,8 +228,6 @@ cases:
     output: *done_output
 
   - name: multi-value-query-regex
-    source:
-      local_reason: post-target multi-value query masking regression; absent from the APISIX 3.17 compatibility commit
     config:
       routes:
         - id: data-mask-multi-value-query
@@ -273,8 +251,6 @@ cases:
     output: *done_output
 
   - name: non-string-json-regex
-    source:
-      local_reason: post-target non-string JSON masking regression; absent from the APISIX 3.17 compatibility commit
     config:
       routes:
         - id: data-mask-non-string-json
@@ -306,8 +282,6 @@ cases:
     output: *done_output
 
   - name: access-log-request-line
-    source:
-      tests: [15, 16]
     config:
       routes:
         - id: data-mask-access-log

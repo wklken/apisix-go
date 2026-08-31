@@ -1,6 +1,5 @@
 cases:
   - name: failed-hec-auth-retries-without-blocking-upstream
-    source: {file: t/plugin/splunk-hec-logging.t, tests: [2, 3]}
     config:
       routes:
         - id: splunk-failed-auth
@@ -22,7 +21,6 @@ cases:
         wait: 1s
 
   - name: successful-hec-envelope
-    source: {file: t/plugin/splunk-hec-logging.t, tests: [4, 5]}
     config:
       plugin_metadata:
         - id: splunk-hec-logging
@@ -49,7 +47,6 @@ cases:
     steps: [{name: client-upstream-and-hec-envelope-succeed, input: {path: /success}, output: {status: 200, body: {equals: hello world}}, wait: 1s}]
 
   - name: metadata-custom-format-message-one
-    source: {file: t/plugin/splunk-hec-logging.t, tests: [7, 8]}
     config:
       plugin_metadata:
         - id: splunk-hec-logging
@@ -66,7 +63,6 @@ cases:
     steps: [{name: metadata-format-reaches-hec, input: {path: /message-one}, output: {status: 200, body: {equals: message-one-ok}}, wait: 1s}]
 
   - name: metadata-custom-format-message-two
-    source: {file: t/plugin/splunk-hec-logging.t, tests: [9, 10]}
     config:
       plugin_metadata:
         - id: splunk-hec-logging
@@ -82,7 +78,6 @@ cases:
     steps: [{name: source-owned-format-reaches-hec, input: {path: /message-two}, output: {status: 200, body: {equals: message-two-ok}}, wait: 1s}]
 
   - name: batch-three-concatenated-events
-    source: {file: t/plugin/splunk-hec-logging.t, tests: [11, 12]}
     config:
       plugin_metadata: [{id: splunk-hec-logging, log_format: {message_3: test batched data}}]
       routes:
@@ -99,7 +94,6 @@ cases:
       - {name: third-entry-flushes-one-concatenated-request, input: {path: /batch}, output: {status: 200, body: {equals: batch-ok}}, wait: 1s}
 
   - name: keepalive-timeout-delivers
-    source: {file: t/plugin/splunk-hec-logging.t, tests: [13]}
     config:
       routes:
         - id: splunk-keepalive
@@ -112,7 +106,6 @@ cases:
     steps: [{name: keepalive-config-delivers, input: {path: /keepalive}, output: {status: 200, body: {equals: keepalive-ok}}, wait: 1s}]
 
   - name: max-pending-entries-drops-overflow
-    source: {file: t/plugin/splunk-hec-logging2.t, tests: [1]}
     config:
       plugin_metadata: [{id: splunk-hec-logging, log_format: {case: pending-overflow}, max_pending_entries: 1}]
       routes:
@@ -125,13 +118,3 @@ cases:
       - {name: sink, kind: http, expect: [{method: POST, path: {equals: /services/collector}, headers: {Authorization: {equals: 'Splunk overflow-token'}}}], respond: [{delay: 2s, status: 200}]}
     steps:
       - {name: overflow-while-delivery-is-blocked, repeat: 3, input: {path: /overflow}, output: {status: 200, body: {equals: overflow-ok}, logs: {matches: 'max pending entries limit exceeded for logger batch processor \[splunk-hec-logging\], pending \[1\], max_pending_entries \[1\]'}}}
-sources:
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/splunk-hec-logging.t
-    tests: 11
-    test_numbers: [2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 13]
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/splunk-hec-logging2.t
-    tests: 1

@@ -1,14 +1,5 @@
-source:
-  repository: https://github.com/apache/apisix
-  commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-  file: t/plugin/attach-consumer-label.t
-  tests: 11
-  test_numbers: [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
-
 cases:
   - name: access-without-auth
-    source:
-      tests: [6, 7]
     config:
       routes:
         - id: attach-label-without-auth
@@ -40,8 +31,6 @@ cases:
         equals: done
 
   - name: authenticated-consumer-labels
-    source:
-      tests: [5, 8, 9]
     config:
       routes:
         - id: attach-label-authenticated
@@ -82,8 +71,6 @@ cases:
     output: *done_output
 
   - name: authenticated-consumer-without-labels
-    source:
-      tests: [10, 11]
     config:
       routes:
         - id: attach-label-consumer-without-labels
@@ -117,8 +104,6 @@ cases:
     output: *done_output
 
   - name: global-rule-labels
-    source:
-      tests: [12, 13, 14, 15]
     config:
       routes:
         - id: attach-label-global-rule-route

@@ -1,19 +1,5 @@
-sources:
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/cas-auth.t
-    tests: 20
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/security-warning.t
-    tests: 2
-    test_numbers: [5, 6]
-
 cases:
   - name: login-session-and-local-logout
-    source:
-      file: t/plugin/cas-auth.t
-      tests: [1, 2]
     config:
       routes:
         - id: cas-sp1
@@ -71,9 +57,6 @@ cases:
         output: {status: 302, headers: {Location: {matches: '^http://127\.0\.0\.1:[0-9]+/login\?'}}}
 
   - name: two-service-providers-and-single-logout
-    source:
-      file: t/plugin/cas-auth.t
-      tests: [3, 4]
     config:
       routes:
         - id: cas-sp1-multi
@@ -170,9 +153,6 @@ cases:
         output: {status: 302, headers: {Location: {matches: '/login\?service=.*%2Fsp2%2Fcas_callback$'}}}
 
   - name: schema-contract
-    source:
-      file: t/plugin/cas-auth.t
-      tests: [5, 6, 7, 8]
     variants:
       - name: missing-secret
         config:
@@ -223,9 +203,6 @@ cases:
           headers: {Set-Cookie: {matches: '^CAS_REQUEST_URI=.*; Secure; SameSite=None$'}}
 
   - name: signed-state-safety-and-tamper-detection
-    source:
-      file: t/plugin/cas-auth.t
-      tests: [9, 10]
     config:
       routes:
         - id: cas-signed-state
@@ -291,9 +268,6 @@ cases:
       - {name: safe-relative-target-reaches-upstream, input: {path: '/foo?bar=baz'}, output: {status: 200, body: {equals: safe-ok}}}
 
   - name: callback-path-and-service-derivation
-    source:
-      file: t/plugin/cas-auth.t
-      tests: [11, 12, 13]
     variants:
       - name: relative-callback-uses-listener-port-not-forged-host-port
         config:
@@ -350,9 +324,6 @@ cases:
             output: {status: 302, headers: {Location: {equals: /start}}}
 
   - name: callback-initiation-cookie-gate
-    source:
-      file: t/plugin/cas-auth.t
-      tests: [14, 15, 16]
     config:
       routes:
         - id: cas-callback-gate
@@ -401,9 +372,6 @@ cases:
         output: {status: 302, headers: {Location: {matches: '/login\?service='}}}
 
   - name: session-config-isolation
-    source:
-      file: t/plugin/cas-auth.t
-      tests: [17, 18]
     config:
       routes:
         - id: cas-scope-a
@@ -471,9 +439,6 @@ cases:
         output: {status: 302, headers: {Location: {matches: '/login\?service=.*%2Fscope-b%2Fcas_callback_alt$'}}}
 
   - name: malformed-single-logout
-    source:
-      file: t/plugin/cas-auth.t
-      tests: [19, 20]
     config:
       routes:
         - id: cas-slo
@@ -495,9 +460,6 @@ cases:
         input: {method: POST, path: /cas_callback, body: '<samlp:SessionIndex>ST-broken'}
         output: {status: 400}
   - name: idp-uri-security-warning
-    source:
-      file: t/plugin/security-warning.t
-      tests: [5, 6]
     variants:
       - name: http-idp-warns
         config:

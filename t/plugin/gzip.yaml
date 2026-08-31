@@ -1,14 +1,5 @@
-source:
-  repository: https://github.com/apache/apisix
-  commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-  file: t/plugin/gzip.t
-  tests: 18
-  test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
-
 cases:
   - name: default-compression
-    source:
-      tests: [1, 2]
     config:
       routes:
         - id: gzip-default
@@ -47,8 +38,6 @@ cases:
         equals: *short_body
 
   - name: buffer-schema-variants
-    source:
-      tests: [3]
     variants:
       - name: defaults
         config:
@@ -108,8 +97,6 @@ cases:
         output: *compressed_short_body
 
   - name: compression-levels
-    source:
-      tests: [4, 5]
     config:
       routes:
         - id: gzip-level-1
@@ -173,8 +160,6 @@ cases:
             equals: *repeated_body
 
   - name: minimum-length
-    source:
-      tests: [6, 7]
     config:
       routes:
         - id: gzip-minimum-length
@@ -195,8 +180,6 @@ cases:
         equals: *short_body
 
   - name: http-version
-    source:
-      tests: [8, 9, 10]
     config:
       routes:
         - id: gzip-http-version
@@ -243,8 +226,6 @@ cases:
         output: *compressed_short_body
 
   - name: configured-types
-    source:
-      tests: [11, 12, 13, 14]
     config:
       routes:
         - id: gzip-configured-types
@@ -293,8 +274,6 @@ cases:
         output: *compressed_short_body
 
   - name: wildcard-types
-    source:
-      tests: [15, 16]
     config:
       routes:
         - id: gzip-wildcard-types
@@ -313,8 +292,6 @@ cases:
     output: *compressed_short_body
 
   - name: vary-header
-    source:
-      tests: [17, 18]
     config:
       routes:
         - id: gzip-vary

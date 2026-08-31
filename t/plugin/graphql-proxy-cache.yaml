@@ -1,20 +1,5 @@
-sources:
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/graphql-proxy-cache/disk.t
-    tests: 11
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/graphql-proxy-cache/graphql.t
-    tests: 19
-    test_numbers: [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/graphql-proxy-cache/memory.t
-    tests: 15
 cases:
   - name: disk-default-zone-accepts-route-test-1
-    source: {file: t/plugin/graphql-proxy-cache/disk.t, tests: [1]}
     runtime: {apisix: {proxy_cache: {zones: [{name: disk_cache_one, disk_path: '{{WORK_DIR}}/cache/disk-one', disk_size: 10m}]}}}
     config:
       routes:
@@ -27,7 +12,6 @@ cases:
         output: {status: 200, body: {equals: '{"data":{"kind":"default-disk"}}'}, headers: {Apisix-Cache-Status: {equals: MISS}}}
 
   - name: disk-post-json-query-misses-test-2
-    source: {file: t/plugin/graphql-proxy-cache/disk.t, tests: [2]}
     runtime: {apisix: {proxy_cache: {zones: [{name: gql-disk-2, disk_path: '{{WORK_DIR}}/cache/disk-2', disk_size: 10m}]}}}
     config:
       routes:
@@ -40,7 +24,6 @@ cases:
         output: {status: 200, body: {equals: '{"data":{"kind":"post-json"}}'}, headers: {Apisix-Cache-Status: {equals: MISS}}}
 
   - name: disk-post-json-query-hits-test-3
-    source: {file: t/plugin/graphql-proxy-cache/disk.t, tests: [3]}
     runtime: {apisix: {proxy_cache: {zones: [{name: gql-disk-3, disk_path: '{{WORK_DIR}}/cache/disk-3', disk_size: 10m}]}}}
     config:
       routes:
@@ -56,7 +39,6 @@ cases:
         output: {status: 200, body: {equals: '{"data":{"kind":"post-json-hit"}}'}, headers: {Apisix-Cache-Status: {equals: HIT}}}
 
   - name: disk-get-query-misses-test-4
-    source: {file: t/plugin/graphql-proxy-cache/disk.t, tests: [4]}
     runtime: {apisix: {proxy_cache: {zones: [{name: gql-disk-4, disk_path: '{{WORK_DIR}}/cache/disk-4', disk_size: 10m}]}}}
     config:
       routes:
@@ -69,7 +51,6 @@ cases:
         output: {status: 200, headers: {Apisix-Cache-Status: {equals: MISS}}}
 
   - name: disk-get-query-hits-test-5
-    source: {file: t/plugin/graphql-proxy-cache/disk.t, tests: [5]}
     runtime: {apisix: {proxy_cache: {zones: [{name: gql-disk-5, disk_path: '{{WORK_DIR}}/cache/disk-5', disk_size: 10m}]}}}
     config:
       routes:
@@ -85,7 +66,6 @@ cases:
         output: {status: 200, body: {equals: '{"data":{"kind":"get-hit"}}'}, headers: {Apisix-Cache-Status: {equals: HIT}}}
 
   - name: disk-get-variables-miss-on-distinct-key-test-6
-    source: {file: t/plugin/graphql-proxy-cache/disk.t, tests: [6]}
     runtime: {apisix: {proxy_cache: {zones: [{name: gql-disk-6, disk_path: '{{WORK_DIR}}/cache/disk-6', disk_size: 10m}]}}}
     config:
       routes:
@@ -101,7 +81,6 @@ cases:
         output: {status: 200, body: {equals: '{"data":{"kind":"variables"}}'}, headers: {Apisix-Cache-Status: {equals: MISS}}}
 
   - name: disk-get-variables-hit-test-7
-    source: {file: t/plugin/graphql-proxy-cache/disk.t, tests: [7]}
     runtime: {apisix: {proxy_cache: {zones: [{name: gql-disk-7, disk_path: '{{WORK_DIR}}/cache/disk-7', disk_size: 10m}]}}}
     config:
       routes:
@@ -117,7 +96,6 @@ cases:
         output: {status: 200, body: {equals: '{"data":{"kind":"get-vars-hit"}}'}, headers: {Apisix-Cache-Status: {equals: HIT}}}
 
   - name: disk-post-variables-miss-on-body-key-test-8
-    source: {file: t/plugin/graphql-proxy-cache/disk.t, tests: [8]}
     runtime: {apisix: {proxy_cache: {zones: [{name: gql-disk-8, disk_path: '{{WORK_DIR}}/cache/disk-8', disk_size: 10m}]}}}
     config:
       routes:
@@ -133,7 +111,6 @@ cases:
         output: {status: 200, body: {equals: '{"data":{"kind":"post-vars"}}'}, headers: {Apisix-Cache-Status: {equals: MISS}}}
 
   - name: disk-post-variables-hit-test-9
-    source: {file: t/plugin/graphql-proxy-cache/disk.t, tests: [9]}
     runtime: {apisix: {proxy_cache: {zones: [{name: gql-disk-9, disk_path: '{{WORK_DIR}}/cache/disk-9', disk_size: 10m}]}}}
     config:
       routes:
@@ -149,7 +126,6 @@ cases:
         output: {status: 200, body: {equals: '{"data":{"kind":"post-vars-hit"}}'}, headers: {Apisix-Cache-Status: {equals: HIT}}}
 
   - name: disk-application-graphql-body-misses-test-10
-    source: {file: t/plugin/graphql-proxy-cache/disk.t, tests: [10]}
     runtime: {apisix: {proxy_cache: {zones: [{name: gql-disk-10, disk_path: '{{WORK_DIR}}/cache/disk-10', disk_size: 10m}]}}}
     config:
       routes:
@@ -162,7 +138,6 @@ cases:
         output: {status: 200, headers: {Apisix-Cache-Status: {equals: MISS}}}
 
   - name: disk-application-graphql-body-hits-test-11
-    source: {file: t/plugin/graphql-proxy-cache/disk.t, tests: [11]}
     runtime: {apisix: {proxy_cache: {zones: [{name: gql-disk-11, disk_path: '{{WORK_DIR}}/cache/disk-11', disk_size: 10m}]}}}
     config:
       routes:
@@ -178,7 +153,6 @@ cases:
         output: {status: 200, body: {equals: '{"data":{"kind":"raw-hit"}}'}, headers: {Apisix-Cache-Status: {equals: HIT}}}
 
   - name: graphql-default-config-serves-query-test-3
-    source: {file: t/plugin/graphql-proxy-cache/graphql.t, tests: [3]}
     runtime: {apisix: {proxy_cache: {zones: [{name: disk_cache_one, disk_path: '{{WORK_DIR}}/cache/graphql-default', disk_size: 10m}]}}}
     config:
       routes:
@@ -191,7 +165,6 @@ cases:
         output: {status: 200, headers: {Apisix-Cache-Status: {equals: MISS}}}
 
   - name: graphql-head-method-is-rejected-test-4
-    source: {file: t/plugin/graphql-proxy-cache/graphql.t, tests: [4]}
     runtime: {apisix: {proxy_cache: {zones: [{name: gql-memory-4, memory_size: 10m}]}}}
     config:
       routes:
@@ -204,7 +177,6 @@ cases:
         output: {status: 405}
 
   - name: graphql-get-without-args-is-rejected-test-5
-    source: {file: t/plugin/graphql-proxy-cache/graphql.t, tests: [5]}
     runtime: {apisix: {proxy_cache: {zones: [{name: gql-memory-5, memory_size: 10m}]}}}
     config:
       routes:
@@ -217,7 +189,6 @@ cases:
         output: {status: 400, body: {matches: "can't get graphql request body"}}
 
   - name: graphql-oversize-get-is-rejected-test-6
-    source: {file: t/plugin/graphql-proxy-cache/graphql.t, tests: [6]}
     runtime: {graphql: {max_size: 20}, apisix: {proxy_cache: {zones: [{name: gql-memory-6, memory_size: 10m}]}}}
     config:
       routes:
@@ -230,7 +201,6 @@ cases:
         output: {status: 400, body: {matches: "can't get graphql request body"}}
 
   - name: graphql-get-empty-query-is-rejected-test-7
-    source: {file: t/plugin/graphql-proxy-cache/graphql.t, tests: [7]}
     runtime: {apisix: {proxy_cache: {zones: [{name: gql-memory-7, memory_size: 10m}]}}}
     config:
       routes:
@@ -243,7 +213,6 @@ cases:
         output: {status: 400, body: {matches: 'args\[query\] is nil'}}
 
   - name: graphql-post-empty-body-is-rejected-test-8
-    source: {file: t/plugin/graphql-proxy-cache/graphql.t, tests: [8]}
     runtime: {apisix: {proxy_cache: {zones: [{name: gql-memory-8, memory_size: 10m}]}}}
     config:
       routes:
@@ -256,7 +225,6 @@ cases:
         output: {status: 400, body: {matches: "can't get graphql request body"}}
 
   - name: graphql-wrong-content-type-is-rejected-test-9
-    source: {file: t/plugin/graphql-proxy-cache/graphql.t, tests: [9]}
     runtime: {apisix: {proxy_cache: {zones: [{name: gql-memory-9, memory_size: 10m}]}}}
     config:
       routes:
@@ -269,7 +237,6 @@ cases:
         output: {status: 400, body: {matches: 'error content-type: text/plain'}}
 
   - name: graphql-malformed-json-is-rejected-test-10
-    source: {file: t/plugin/graphql-proxy-cache/graphql.t, tests: [10]}
     runtime: {apisix: {proxy_cache: {zones: [{name: gql-memory-10, memory_size: 10m}]}}}
     config:
       routes:
@@ -282,7 +249,6 @@ cases:
         output: {status: 400, body: {matches: 'invalid graphql request'}}
 
   - name: graphql-json-without-query-is-rejected-test-11
-    source: {file: t/plugin/graphql-proxy-cache/graphql.t, tests: [11]}
     runtime: {apisix: {proxy_cache: {zones: [{name: gql-memory-11, memory_size: 10m}]}}}
     config:
       routes:
@@ -295,7 +261,6 @@ cases:
         output: {status: 400, body: {matches: 'json body\[query\] is nil'}}
 
   - name: graphql-invalid-operation-prefix-is-rejected-test-12
-    source: {file: t/plugin/graphql-proxy-cache/graphql.t, tests: [12]}
     runtime: {apisix: {proxy_cache: {zones: [{name: gql-memory-12, memory_size: 10m}]}}}
     config:
       routes:
@@ -308,7 +273,6 @@ cases:
         output: {status: 400, body: {matches: 'failed to parse graphql query'}}
 
   - name: graphql-malformed-selection-is-rejected-test-13
-    source: {file: t/plugin/graphql-proxy-cache/graphql.t, tests: [13]}
     runtime: {apisix: {proxy_cache: {zones: [{name: gql-memory-13, memory_size: 10m}]}}}
     config:
       routes:
@@ -321,7 +285,6 @@ cases:
         output: {status: 400, body: {matches: 'failed to parse graphql query'}}
 
   - name: graphql-empty-document-is-rejected-test-14
-    source: {file: t/plugin/graphql-proxy-cache/graphql.t, tests: [14]}
     runtime: {apisix: {proxy_cache: {zones: [{name: gql-memory-14, memory_size: 10m}]}}}
     config:
       routes:
@@ -334,7 +297,6 @@ cases:
         output: {status: 400, body: {matches: 'Invalid graphql request: empty graphql query'}}
 
   - name: graphql-document-containing-mutation-bypasses-test-15
-    source: {file: t/plugin/graphql-proxy-cache/graphql.t, tests: [15]}
     runtime: {apisix: {proxy_cache: {zones: [{name: gql-memory-15, memory_size: 10m}]}}}
     config:
       routes:
@@ -347,7 +309,6 @@ cases:
         output: {status: 200, body: {equals: '{"data":{"mutated":true}}'}, headers: {Apisix-Cache-Status: {equals: BYPASS}}}
 
   - name: graphql-memory-purge-removes-entry-test-16
-    source: {file: t/plugin/graphql-proxy-cache/graphql.t, tests: [16]}
     runtime: {plugins: [graphql-proxy-cache, prometheus], apisix: {proxy_cache: {zones: [{name: gql-purge-memory, memory_size: 10m}]}}}
     config:
       routes:
@@ -369,7 +330,6 @@ cases:
         output: {status: 200, body: {equals: '{"data":{"version":2}}'}, headers: {Apisix-Cache-Status: {equals: MISS}}}
 
   - name: graphql-disk-purge-removes-entry-test-17
-    source: {file: t/plugin/graphql-proxy-cache/graphql.t, tests: [17]}
     runtime: {plugins: [graphql-proxy-cache, prometheus], apisix: {proxy_cache: {zones: [{name: gql-purge-disk, disk_path: '{{WORK_DIR}}/cache/purge-disk', disk_size: 10m}]}}}
     config:
       routes:
@@ -391,7 +351,6 @@ cases:
         output: {status: 200, body: {equals: '{"data":{"version":2}}'}, headers: {Apisix-Cache-Status: {equals: MISS}}}
 
   - name: graphql-purge-unknown-route-is-not-found-test-18
-    source: {file: t/plugin/graphql-proxy-cache/graphql.t, tests: [18]}
     runtime: {plugins: [graphql-proxy-cache, prometheus], apisix: {proxy_cache: {zones: [{name: gql-purge-18, memory_size: 10m}]}}}
     config:
       routes:
@@ -404,7 +363,6 @@ cases:
         output: {status: 404}
 
   - name: graphql-disk-purge-unknown-key-is-not-found-test-19
-    source: {file: t/plugin/graphql-proxy-cache/graphql.t, tests: [19]}
     runtime: {plugins: [graphql-proxy-cache, prometheus], apisix: {proxy_cache: {zones: [{name: gql-purge-19, disk_path: '{{WORK_DIR}}/cache/purge-19', disk_size: 10m}]}}}
     config:
       routes:
@@ -417,7 +375,6 @@ cases:
         output: {status: 404}
 
   - name: graphql-purge-invalid-strategy-is-bad-request-test-20
-    source: {file: t/plugin/graphql-proxy-cache/graphql.t, tests: [20]}
     runtime: {plugins: [graphql-proxy-cache, prometheus], apisix: {proxy_cache: {zones: [{name: gql-purge-20, memory_size: 10m}]}}}
     config:
       routes:
@@ -430,7 +387,6 @@ cases:
         output: {status: 400}
 
   - name: graphql-purge-strategy-mismatch-is-bad-request-test-21
-    source: {file: t/plugin/graphql-proxy-cache/graphql.t, tests: [21]}
     runtime: {plugins: [graphql-proxy-cache, prometheus], apisix: {proxy_cache: {zones: [{name: gql-purge-21, disk_path: '{{WORK_DIR}}/cache/purge-21', disk_size: 10m}]}}}
     config:
       routes:
@@ -443,7 +399,6 @@ cases:
         output: {status: 400}
 
   - name: memory-zone-route-accepts-cache-config-test-1
-    source: {file: t/plugin/graphql-proxy-cache/memory.t, tests: [1]}
     runtime: {apisix: {proxy_cache: {zones: [{name: gql-memory-1, memory_size: 10m}]}}}
     config:
       routes:
@@ -456,7 +411,6 @@ cases:
         output: {status: 200, headers: {Apisix-Cache-Status: {equals: MISS}}}
 
   - name: memory-post-json-query-misses-test-2
-    source: {file: t/plugin/graphql-proxy-cache/memory.t, tests: [2]}
     runtime: {apisix: {proxy_cache: {zones: [{name: gql-memory-2, memory_size: 10m}]}}}
     config:
       routes:
@@ -469,7 +423,6 @@ cases:
         output: {status: 200, headers: {Apisix-Cache-Status: {equals: MISS}}}
 
   - name: memory-post-json-query-hits-test-3
-    source: {file: t/plugin/graphql-proxy-cache/memory.t, tests: [3]}
     runtime: {apisix: {proxy_cache: {zones: [{name: gql-memory-3, memory_size: 10m}]}}}
     config:
       routes:
@@ -485,7 +438,6 @@ cases:
         output: {status: 200, body: {equals: '{"data":{"kind":"memory-post-hit"}}'}, headers: {Apisix-Cache-Status: {equals: HIT}}}
 
   - name: memory-get-query-misses-test-4
-    source: {file: t/plugin/graphql-proxy-cache/memory.t, tests: [4]}
     runtime: {apisix: {proxy_cache: {zones: [{name: gql-memory-4a, memory_size: 10m}]}}}
     config:
       routes:
@@ -498,7 +450,6 @@ cases:
         output: {status: 200, headers: {Apisix-Cache-Status: {equals: MISS}}}
 
   - name: memory-get-query-hits-test-5
-    source: {file: t/plugin/graphql-proxy-cache/memory.t, tests: [5]}
     runtime: {apisix: {proxy_cache: {zones: [{name: gql-memory-5a, memory_size: 10m}]}}}
     config:
       routes:
@@ -514,7 +465,6 @@ cases:
         output: {status: 200, body: {equals: '{"data":{"kind":"memory-get-hit"}}'}, headers: {Apisix-Cache-Status: {equals: HIT}}}
 
   - name: memory-get-variables-miss-on-distinct-key-test-6
-    source: {file: t/plugin/graphql-proxy-cache/memory.t, tests: [6]}
     runtime: {apisix: {proxy_cache: {zones: [{name: gql-memory-6a, memory_size: 10m}]}}}
     config:
       routes:
@@ -530,7 +480,6 @@ cases:
         output: {status: 200, body: {equals: '{"data":{"kind":"memory-vars"}}'}, headers: {Apisix-Cache-Status: {equals: MISS}}}
 
   - name: memory-get-variables-hit-test-7
-    source: {file: t/plugin/graphql-proxy-cache/memory.t, tests: [7]}
     runtime: {apisix: {proxy_cache: {zones: [{name: gql-memory-7a, memory_size: 10m}]}}}
     config:
       routes:
@@ -546,7 +495,6 @@ cases:
         output: {status: 200, body: {equals: '{"data":{"kind":"memory-get-vars-hit"}}'}, headers: {Apisix-Cache-Status: {equals: HIT}}}
 
   - name: memory-post-variables-miss-on-body-key-test-8
-    source: {file: t/plugin/graphql-proxy-cache/memory.t, tests: [8]}
     runtime: {apisix: {proxy_cache: {zones: [{name: gql-memory-8a, memory_size: 10m}]}}}
     config:
       routes:
@@ -562,7 +510,6 @@ cases:
         output: {status: 200, body: {equals: '{"data":{"kind":"memory-post-vars"}}'}, headers: {Apisix-Cache-Status: {equals: MISS}}}
 
   - name: memory-post-variables-hit-test-9
-    source: {file: t/plugin/graphql-proxy-cache/memory.t, tests: [9]}
     runtime: {apisix: {proxy_cache: {zones: [{name: gql-memory-9a, memory_size: 10m}]}}}
     config:
       routes:
@@ -578,7 +525,6 @@ cases:
         output: {status: 200, body: {equals: '{"data":{"kind":"memory-post-vars-hit"}}'}, headers: {Apisix-Cache-Status: {equals: HIT}}}
 
   - name: memory-application-graphql-body-misses-test-10
-    source: {file: t/plugin/graphql-proxy-cache/memory.t, tests: [10]}
     runtime: {apisix: {proxy_cache: {zones: [{name: gql-memory-10a, memory_size: 10m}]}}}
     config:
       routes:
@@ -591,7 +537,6 @@ cases:
         output: {status: 200, headers: {Apisix-Cache-Status: {equals: MISS}}}
 
   - name: memory-application-graphql-body-hits-test-11
-    source: {file: t/plugin/graphql-proxy-cache/memory.t, tests: [11]}
     runtime: {apisix: {proxy_cache: {zones: [{name: gql-memory-11a, memory_size: 10m}]}}}
     config:
       routes:
@@ -607,7 +552,6 @@ cases:
         output: {status: 200, body: {equals: '{"data":{"kind":"memory-raw-hit"}}'}, headers: {Apisix-Cache-Status: {equals: HIT}}}
 
   - name: memory-consumers-have-isolated-entries-test-12
-    source: {file: t/plugin/graphql-proxy-cache/memory.t, tests: [12]}
     runtime: {apisix: {proxy_cache: {zones: [{name: gql-memory-consumers, memory_size: 10m}]}}}
     config:
       consumers:
@@ -632,7 +576,6 @@ cases:
         output: {status: 200, body: {equals: '{"data":{"consumer":"bob"}}'}, headers: {Apisix-Cache-Status: {equals: HIT}}}
 
   - name: memory-disabled-consumer-isolation-shares-entry-test-13
-    source: {file: t/plugin/graphql-proxy-cache/memory.t, tests: [13]}
     runtime: {apisix: {proxy_cache: {zones: [{name: gql-memory-shared-consumers, memory_size: 10m}]}}}
     config:
       consumers:
@@ -651,7 +594,6 @@ cases:
         output: {status: 200, body: {equals: '{"data":{"consumer":"shared"}}'}, headers: {Apisix-Cache-Status: {equals: HIT}}}
 
   - name: memory-route-identities-do-not-collide-test-14
-    source: {file: t/plugin/graphql-proxy-cache/memory.t, tests: [14]}
     runtime: {apisix: {proxy_cache: {zones: [{name: gql-memory-routes, memory_size: 10m}]}}}
     config:
       routes:
@@ -673,7 +615,6 @@ cases:
         input: {method: POST, path: /graphql-b, headers: {Content-Type: application/json}, body: '{"query":"{ hello }"}'}
         output: {status: 200, headers: {Apisix-Cache-Status: {equals: HIT}}}
   - name: memory-host-identities-do-not-collide-test-15
-    source: {file: t/plugin/graphql-proxy-cache/memory.t, tests: [15]}
     runtime: {apisix: {proxy_cache: {zones: [{name: gql-memory-hosts, memory_size: 10m}]}}}
     config:
       routes:

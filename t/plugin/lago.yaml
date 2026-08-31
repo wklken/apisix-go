@@ -1,13 +1,5 @@
-source:
-  repository: https://github.com/apache/apisix
-  commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-  file: t/plugin/lago.t
-  tests: 2
-
 cases:
   - name: schema
-    source:
-      tests: [1]
     variants:
       - name: valid-required-fields
         runtime: &lago_runtime
@@ -131,8 +123,6 @@ cases:
         output: *schema_rejected
 
   - name: authenticated-usage-events
-    source:
-      tests: [2]
     runtime:
       plugins: [lago, key-auth]
     config:

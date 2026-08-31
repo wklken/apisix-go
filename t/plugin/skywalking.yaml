@@ -1,16 +1,5 @@
-sources:
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/skywalking.t
-    tests: 15
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/skywalking2.t
-    tests: 2
-
 cases:
   - name: route-plugin-defaults-inject-sw8
-    source: {file: t/plugin/skywalking.t, tests: [1]}
     runtime:
       plugins: [skywalking]
       plugin_attr:
@@ -46,7 +35,6 @@ cases:
         wait: 1100ms
 
   - name: request-emits-entry-segment
-    source: {file: t/plugin/skywalking.t, tests: [2]}
     runtime:
       plugins: [skywalking]
       plugin_attr:
@@ -83,7 +71,6 @@ cases:
         wait: 1100ms
 
   - name: tiny-sample-ratio-configures-route
-    source: {file: t/plugin/skywalking.t, tests: [3]}
     runtime:
       plugins: [skywalking]
       plugin_attr:
@@ -114,7 +101,6 @@ cases:
         wait: 1100ms
 
   - name: tiny-sample-ratio-skips-trace
-    source: {file: t/plugin/skywalking.t, tests: [4]}
     runtime:
       plugins: [skywalking]
       plugin_attr:
@@ -145,7 +131,6 @@ cases:
         wait: 1100ms
 
   - name: disabled-route-configuration-is-accepted
-    source: {file: t/plugin/skywalking.t, tests: [5]}
     runtime:
       plugins: [skywalking]
       plugin_attr:
@@ -177,7 +162,6 @@ cases:
         wait: 1100ms
 
   - name: disabled-route-does-not-trace
-    source: {file: t/plugin/skywalking.t, tests: [6]}
     runtime:
       plugins: [skywalking]
       plugin_attr:
@@ -212,7 +196,6 @@ cases:
         wait: 1100ms
 
   - name: full-sampling-enables-tracing
-    source: {file: t/plugin/skywalking.t, tests: [7]}
     runtime:
       plugins: [skywalking]
       plugin_attr:
@@ -249,7 +232,6 @@ cases:
         wait: 1100ms
 
   - name: segment-report-includes-http-tags
-    source: {file: t/plugin/skywalking.t, tests: [8]}
     runtime:
       plugins: [skywalking]
       plugin_attr:
@@ -285,7 +267,6 @@ cases:
         wait: 1100ms
 
   - name: route-overrides-global-with-single-trace
-    source: {file: t/plugin/skywalking.t, tests: [9]}
     runtime:
       plugins: [skywalking]
       plugin_attr:
@@ -324,7 +305,6 @@ cases:
         wait: 1100ms
 
   - name: both-levels-run-tracer-once
-    source: {file: t/plugin/skywalking.t, tests: [10]}
     runtime:
       plugins: [skywalking]
       plugin_attr:
@@ -362,7 +342,6 @@ cases:
         wait: 1100ms
 
   - name: disabled-route-falls-back-to-global-rule
-    source: {file: t/plugin/skywalking.t, tests: [11]}
     runtime:
       plugins: [skywalking]
       plugin_attr:
@@ -402,7 +381,6 @@ cases:
         wait: 1100ms
 
   - name: global-fallback-runs-once
-    source: {file: t/plugin/skywalking.t, tests: [12]}
     runtime:
       plugins: [skywalking]
       plugin_attr:
@@ -441,7 +419,6 @@ cases:
         wait: 1100ms
 
   - name: deleted-global-rule-leaves-route-disabled
-    source: {file: t/plugin/skywalking.t, tests: [13]}
     runtime:
       plugins: [skywalking]
       plugin_attr:
@@ -473,7 +450,6 @@ cases:
         wait: 1100ms
 
   - name: authenticated-request-traces-through-key-auth
-    source: {file: t/plugin/skywalking.t, tests: [14]}
     runtime:
       plugins: [skywalking, key-auth]
       plugin_attr:
@@ -515,7 +491,6 @@ cases:
         wait: 1100ms
 
   - name: rejected-auth-request-is-traced
-    source: {file: t/plugin/skywalking.t, tests: [15]}
     runtime:
       plugins: [skywalking, key-auth]
       plugin_attr:
@@ -555,7 +530,6 @@ cases:
         wait: 1100ms
 
   - name: single-runtime-instance-starts-one-reporter
-    source: {file: t/plugin/skywalking2.t, tests: [1]}
     runtime:
       plugins: [skywalking]
       plugin_attr:
@@ -591,7 +565,6 @@ cases:
         wait: 1100ms
 
   - name: concurrent-requests-share-one-batch-timer
-    source: {file: t/plugin/skywalking2.t, tests: [2]}
     runtime:
       plugins: [skywalking]
       plugin_attr:

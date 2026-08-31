@@ -1,12 +1,5 @@
-sources:
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/ai-prompt-decorator.t
-    tests: 17
-
 cases:
   - name: prepend-only-chat
-    source: {file: t/plugin/ai-prompt-decorator.t, tests: [1, 2]}
     config:
       routes:
         - id: ai-prompt-decorator-prepend-only
@@ -39,7 +32,6 @@ cases:
         output: {status: 200, body: {equals: hello world}}
 
   - name: append-only-chat
-    source: {file: t/plugin/ai-prompt-decorator.t, tests: [3, 4]}
     config:
       routes:
         - id: ai-prompt-decorator-append-only
@@ -72,7 +64,6 @@ cases:
         output: {status: 200, body: {equals: hello world}}
 
   - name: prepend-and-append-chat
-    source: {file: t/plugin/ai-prompt-decorator.t, tests: [5, 6]}
     config:
       routes:
         - id: ai-prompt-decorator-both-chat
@@ -104,7 +95,6 @@ cases:
         output: {status: 200, body: {equals: hello world}}
 
   - name: prepend-does-not-accumulate
-    source: {file: t/plugin/ai-prompt-decorator.t, tests: [7]}
     config:
       routes:
         - id: ai-prompt-decorator-no-accumulation
@@ -149,7 +139,6 @@ cases:
         output: {status: 200, body: {equals: hello world}}
 
   - name: reject-empty-decoration
-    source: {file: t/plugin/ai-prompt-decorator.t, tests: [8]}
     config:
       routes:
         - id: ai-prompt-decorator-empty
@@ -164,7 +153,6 @@ cases:
       logs: {matches: 'build route ai-prompt-decorator-empty fail:.*ai-prompt-decorator'}
 
   - name: responses-prepend
-    source: {file: t/plugin/ai-prompt-decorator.t, tests: [9, 10, 11]}
     config:
       routes:
         - id: ai-prompt-decorator-responses-prepend
@@ -209,7 +197,6 @@ cases:
         output: {status: 200, body: {equals: hello world}}
 
   - name: responses-append
-    source: {file: t/plugin/ai-prompt-decorator.t, tests: [12, 13, 14]}
     config:
       routes:
         - id: ai-prompt-decorator-responses-append
@@ -254,7 +241,6 @@ cases:
         output: {status: 200, body: {equals: hello world}}
 
   - name: responses-prepend-and-append
-    source: {file: t/plugin/ai-prompt-decorator.t, tests: [15, 16]}
     config:
       routes:
         - id: ai-prompt-decorator-responses-both
@@ -286,7 +272,6 @@ cases:
         output: {status: 200, body: {equals: hello world}}
 
   - name: chat-regression-after-responses
-    source: {file: t/plugin/ai-prompt-decorator.t, tests: [17]}
     config:
       routes:
         - id: ai-prompt-decorator-chat-regression

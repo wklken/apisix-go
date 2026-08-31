@@ -1,13 +1,5 @@
-source:
-  repository: https://github.com/apache/apisix
-  commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-  file: t/plugin/aws-lambda.t
-  tests: 8
-
 cases:
   - name: iam-schema
-    source:
-      tests: [1, 2]
     variants:
       - name: valid
         config:
@@ -50,8 +42,6 @@ cases:
             matches: 'worker generation preparation failed'
 
   - name: invoke-endpoint
-    source:
-      tests: [3, 4]
     config:
       routes:
         - id: aws-lambda-endpoint
@@ -81,8 +71,6 @@ cases:
         equals: "aws lambda invoked\n"
 
   - name: api-key-header
-    source:
-      tests: [5]
     config:
       routes:
         - id: aws-lambda-api-key
@@ -108,8 +96,6 @@ cases:
         equals: "Authz-Header - test_key\n"
 
   - name: iam-signing
-    source:
-      tests: [6]
     config:
       routes:
         - id: aws-lambda-iam-signing
@@ -136,8 +122,6 @@ cases:
     output: *invoked
 
   - name: encrypted-credentials
-    source:
-      tests: [7, 8]
     variants:
       - name: api-key
         runtime: &encrypted_runtime
@@ -190,8 +174,6 @@ cases:
             body: invoked
         output: *invoked
   - name: canonical-query-signing
-    source:
-      local_reason: post-target canonical query-signing regression; absent from the APISIX 3.17 compatibility commit
     config:
       routes:
         - id: aws-lambda-canonical-query

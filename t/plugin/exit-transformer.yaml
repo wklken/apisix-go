@@ -1,13 +1,5 @@
-source:
-  repository: https://github.com/apache/apisix
-  commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-  file: t/plugin/exit-transformer.t
-  tests: 20
-
 cases:
   - name: reject-invalid-function-syntax
-    source:
-      tests: [1]
     runtime: &runtime
       plugins: [exit-transformer, key-auth, limit-count]
     config:
@@ -26,8 +18,6 @@ cases:
         matches: 'build route exit-transformer-invalid-syntax fail:.*unexpected symbol'
 
   - name: remap-not-found-status
-    source:
-      tests: [2, 3]
     runtime: *runtime
     config:
       global_rules:
@@ -42,8 +32,6 @@ cases:
       status: 405
 
   - name: remap-auth-failure
-    source:
-      tests: [4, 5, 6, 7, 8]
     runtime: *runtime
     config:
       routes:
@@ -95,8 +83,6 @@ cases:
             equals: '{"message":"Invalid API key in request"}'
 
   - name: remap-rate-limit-status-and-body
-    source:
-      tests: [9, 10, 11]
     runtime: *runtime
     config:
       routes:
@@ -146,8 +132,6 @@ cases:
         output: *transformed_limit_output
 
   - name: invalid-function-is-contained
-    source:
-      tests: [12, 13]
     runtime: *runtime
     config:
       global_rules:
@@ -164,8 +148,6 @@ cases:
         matches: 'attempt to call local ''code'' \(a number value\)'
 
   - name: condition-on-request-content-type
-    source:
-      tests: [14, 15, 16]
     runtime: *runtime
     config:
       global_rules:
@@ -209,8 +191,6 @@ cases:
             matches: 'exit transformer running inside if check'
 
   - name: transform-auth-body-as-table
-    source:
-      tests: [17, 18, 19, 20]
     runtime: *runtime
     config:
       routes:

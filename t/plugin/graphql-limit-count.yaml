@@ -1,11 +1,5 @@
-sources:
-  - repository: https://github.com/apache/apisix
-    commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
-    file: t/plugin/graphql-limit-count.t
-    tests: 26
 cases:
   - name: graphql-limit-count-local-route-count-four-test-1
-    source: {file: t/plugin/graphql-limit-count.t, tests: [1]}
     config:
       routes:
         - id: graphql-limit-count-test-1
@@ -21,7 +15,6 @@ cases:
         output: {status: 200, body: {equals: graphql upstream}, headers: {X-RateLimit-Limit: {equals: "4"}, X-RateLimit-Remaining: {equals: "3"}}}
 
   - name: graphql-limit-count-depth-four-exhausts-local-quota-test-2
-    source: {file: t/plugin/graphql-limit-count.t, tests: [2]}
     config:
       routes:
         - id: graphql-limit-count-test-2
@@ -40,7 +33,6 @@ cases:
         output: {status: 503, body: {matches: Limit exceeded}, headers: {X-RateLimit-Remaining: {equals: "0"}}}
 
   - name: graphql-limit-count-head-method-is-rejected-test-3
-    source: {file: t/plugin/graphql-limit-count.t, tests: [3]}
     config:
       routes:
         - id: graphql-limit-count-test-3
@@ -56,7 +48,6 @@ cases:
         output: {status: 405}
 
   - name: graphql-limit-count-empty-post-body-is-rejected-test-4
-    source: {file: t/plugin/graphql-limit-count.t, tests: [4]}
     config:
       routes:
         - id: graphql-limit-count-test-4
@@ -72,7 +63,6 @@ cases:
         output: {status: 400, body: {matches: "can't get graphql request body"}}
 
   - name: graphql-limit-count-wrong-content-type-is-rejected-test-5
-    source: {file: t/plugin/graphql-limit-count.t, tests: [5]}
     config:
       routes:
         - id: graphql-limit-count-test-5
@@ -88,7 +78,6 @@ cases:
         output: {status: 400, body: {matches: "invalid graphql request, error content-type"}}
 
   - name: graphql-limit-count-malformed-json-is-rejected-test-6
-    source: {file: t/plugin/graphql-limit-count.t, tests: [6]}
     config:
       routes:
         - id: graphql-limit-count-test-6
@@ -104,7 +93,6 @@ cases:
         output: {status: 400, body: {matches: invalid graphql request}}
 
   - name: graphql-limit-count-json-without-query-is-rejected-test-7
-    source: {file: t/plugin/graphql-limit-count.t, tests: [7]}
     config:
       routes:
         - id: graphql-limit-count-test-7
@@ -120,7 +108,6 @@ cases:
         output: {status: 400, body: {matches: 'json body\[query\] is nil'}}
 
   - name: graphql-limit-count-unparsable-application-graphql-is-rejected-test-8
-    source: {file: t/plugin/graphql-limit-count.t, tests: [8]}
     config:
       routes:
         - id: graphql-limit-count-test-8
@@ -136,7 +123,6 @@ cases:
         output: {status: 400, body: {matches: "failed to parse graphql query"}}
 
   - name: graphql-limit-count-application-graphql-route-test-9
-    source: {file: t/plugin/graphql-limit-count.t, tests: [9]}
     config:
       routes:
         - id: graphql-limit-count-test-9
@@ -152,7 +138,6 @@ cases:
         output: {status: 200, body: {equals: graphql upstream}, headers: {X-RateLimit-Remaining: {equals: "8"}}}
 
   - name: graphql-limit-count-application-graphql-consumes-depth-test-10
-    source: {file: t/plugin/graphql-limit-count.t, tests: [10]}
     config:
       routes:
         - id: graphql-limit-count-test-10
@@ -168,7 +153,6 @@ cases:
         output: {status: 200, body: {equals: graphql upstream}, headers: {X-RateLimit-Remaining: {equals: "8"}}}
 
   - name: graphql-limit-count-json-charset-is-accepted-test-11
-    source: {file: t/plugin/graphql-limit-count.t, tests: [11]}
     config:
       routes:
         - id: graphql-limit-count-test-11
@@ -184,7 +168,6 @@ cases:
         output: {status: 200, body: {equals: graphql upstream}}
 
   - name: graphql-limit-count-syntax-error-is-rejected-test-12
-    source: {file: t/plugin/graphql-limit-count.t, tests: [12]}
     config:
       routes:
         - id: graphql-limit-count-test-12
@@ -200,7 +183,6 @@ cases:
         output: {status: 400, body: {matches: "failed to parse graphql query"}}
 
   - name: graphql-limit-count-empty-query-is-rejected-test-13
-    source: {file: t/plugin/graphql-limit-count.t, tests: [13]}
     config:
       routes:
         - id: graphql-limit-count-test-13
@@ -216,7 +198,6 @@ cases:
         output: {status: 400, body: {matches: "empty graphql query"}}
 
   - name: graphql-limit-count-redis-route-test-14
-    source: {file: t/plugin/graphql-limit-count.t, tests: [14]}
     config:
       routes:
         - id: graphql-limit-count-test-14
@@ -233,7 +214,6 @@ cases:
         output: {status: 200, body: {equals: graphql upstream}, headers: {X-RateLimit-Remaining: {equals: "4"}}}
 
   - name: graphql-limit-count-redis-depth-four-cost-test-15
-    source: {file: t/plugin/graphql-limit-count.t, tests: [15]}
     config:
       routes:
         - id: graphql-limit-count-test-15
@@ -250,7 +230,6 @@ cases:
         output: {status: 200, body: {equals: graphql upstream}, headers: {X-RateLimit-Remaining: {equals: "1"}}}
 
   - name: graphql-limit-count-redis-cluster-route-test-16
-    source: {file: t/plugin/graphql-limit-count.t, tests: [16]}
     config:
       routes:
         - id: graphql-limit-count-test-16
@@ -267,7 +246,6 @@ cases:
         output: {status: 200, body: {equals: graphql upstream}, headers: {X-RateLimit-Remaining: {equals: "4"}}}
 
   - name: graphql-limit-count-redis-cluster-depth-four-cost-test-17
-    source: {file: t/plugin/graphql-limit-count.t, tests: [17]}
     config:
       routes:
         - id: graphql-limit-count-test-17
@@ -284,7 +262,6 @@ cases:
         output: {status: 200, body: {equals: graphql upstream}, headers: {X-RateLimit-Remaining: {equals: "1"}}}
 
   - name: graphql-limit-count-fragment-route-test-18
-    source: {file: t/plugin/graphql-limit-count.t, tests: [18]}
     config:
       routes:
         - id: graphql-limit-count-test-18
@@ -300,7 +277,6 @@ cases:
         output: {status: 200, body: {equals: graphql upstream}, headers: {X-RateLimit-Remaining: {equals: "16"}}}
 
   - name: graphql-limit-count-fragment-spread-depth-four-test-19
-    source: {file: t/plugin/graphql-limit-count.t, tests: [19]}
     config:
       routes:
         - id: graphql-limit-count-test-19
@@ -316,7 +292,6 @@ cases:
         output: {status: 200, body: {equals: graphql upstream}, headers: {X-RateLimit-Remaining: {equals: "16"}}}
 
   - name: graphql-limit-count-inline-fragment-route-test-20
-    source: {file: t/plugin/graphql-limit-count.t, tests: [20]}
     config:
       routes:
         - id: graphql-limit-count-test-20
@@ -332,7 +307,6 @@ cases:
         output: {status: 200, body: {equals: graphql upstream}, headers: {X-RateLimit-Remaining: {equals: "16"}}}
 
   - name: graphql-limit-count-inline-fragment-depth-four-test-21
-    source: {file: t/plugin/graphql-limit-count.t, tests: [21]}
     config:
       routes:
         - id: graphql-limit-count-test-21
@@ -348,7 +322,6 @@ cases:
         output: {status: 200, body: {equals: graphql upstream}, headers: {X-RateLimit-Remaining: {equals: "16"}}}
 
   - name: graphql-limit-count-fragment-cycle-is-bounded-test-22
-    source: {file: t/plugin/graphql-limit-count.t, tests: [22]}
     config:
       routes:
         - id: graphql-limit-count-test-22
@@ -364,7 +337,6 @@ cases:
         output: {status: 200, body: {equals: graphql upstream}, headers: {X-RateLimit-Remaining: {matches: '^[0-9]+$'}}}
 
   - name: graphql-limit-count-max-size-route-test-23
-    source: {file: t/plugin/graphql-limit-count.t, tests: [23]}
     runtime: {graphql: {max_size: 100}}
     config:
       routes:
@@ -381,7 +353,6 @@ cases:
         output: {status: 200, body: {equals: graphql upstream}}
 
   - name: graphql-limit-count-body-over-max-size-is-rejected-test-24
-    source: {file: t/plugin/graphql-limit-count.t, tests: [24]}
     runtime: {graphql: {max_size: 100}}
     config:
       routes:
@@ -398,7 +369,6 @@ cases:
         output: {status: 400, body: {matches: "can't get graphql request body"}}
 
   - name: graphql-limit-count-chained-fragment-route-test-25
-    source: {file: t/plugin/graphql-limit-count.t, tests: [25]}
     config:
       routes:
         - id: graphql-limit-count-test-25
@@ -414,7 +384,6 @@ cases:
         output: {status: 200, body: {equals: graphql upstream}, headers: {X-RateLimit-Remaining: {equals: "15"}}}
 
   - name: graphql-limit-count-chained-fragments-expand-two-levels-test-26
-    source: {file: t/plugin/graphql-limit-count.t, tests: [26]}
     config:
       routes:
         - id: graphql-limit-count-test-26

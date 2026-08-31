@@ -21,17 +21,48 @@ func TestLoadManifestRejectsUnknownField(t *testing.T) {
 	}
 }
 
-func TestManifestAcceptsTargetPluginExemptionField(t *testing.T) {
+func TestLoadManifestAcceptsExecutableCaseWithoutSourceMetadata(t *testing.T) {
+	data := []byte(`cases:
+  - name: complete
+    config:
+      routes: []
+    input:
+      path: /hello
+    output:
+      status: 200
+`)
+
+	if _, err := loadManifest("behavior-only.yaml", data); err != nil {
+		t.Fatalf("loadManifest() error = %v, want behavior-only manifest accepted", err)
+	}
+}
+
+func TestLoadManifestRejectsSourceMetadata(t *testing.T) {
 	data := []byte(`source:
   repository: https://github.com/apache/apisix
   commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
   file: t/plugin/example.t
-  tests: 2
+  tests: 1
 cases:
+  - name: complete
+    config:
+      routes: []
+    input:
+      path: /hello
+    output:
+      status: 200
+`)
+
+	_, err := loadManifest("stale-source.yaml", data)
+	if err == nil || !strings.Contains(err.Error(), "field source not found") {
+		t.Fatalf("loadManifest() error = %v, want stale source metadata rejected", err)
+	}
+}
+
+func TestManifestAcceptsTargetPluginExemptionField(t *testing.T) {
+	data := []byte(`cases:
   - name: exempted
     target_plugin_exempt_reason: intentional negative coverage case
-    source:
-      tests: [1]
     config:
       routes: []
     input:
@@ -39,8 +70,6 @@ cases:
     output:
       status: 404
   - name: variants
-    source:
-      tests: [2]
     variants:
       - name: exempted-variant
         target_plugin_exempt_reason: variant does not activate target
@@ -104,16 +133,9 @@ func TestManifestRejectsParentTargetPluginExemptionWithVariants(t *testing.T) {
 }
 
 func TestManifestAcceptsCaseLevelSerialFlag(t *testing.T) {
-	data := []byte(`source:
-  repository: https://github.com/apache/apisix
-  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-  file: t/plugin/example.t
-  tests: 2
-cases:
+	data := []byte(`cases:
   - name: fixed-port
     serial: true
-    source:
-      tests: [1]
     config:
       routes: []
     input:
@@ -121,8 +143,6 @@ cases:
     output:
       status: 200
   - name: ordinary
-    source:
-      tests: [2]
     config:
       routes: []
     input:
@@ -144,15 +164,8 @@ cases:
 }
 
 func TestManifestRejectsSerialOnVariant(t *testing.T) {
-	data := []byte(`source:
-  repository: https://github.com/apache/apisix
-  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-  file: t/plugin/example.t
-  tests: 1
-cases:
+	data := []byte(`cases:
   - name: fixed-port
-    source:
-      tests: [1]
     variants:
       - name: child
         serial: true
@@ -169,27 +182,7 @@ cases:
 	}
 }
 
-func TestManifestRejectsMissingSourceNumber(t *testing.T) {
-	manifest := validManifest()
-	manifest.Cases[0].Source.Tests = []int{1, 3}
-
-	err := manifest.validate()
-	if err == nil || !strings.Contains(err.Error(), "missing source test 2") {
-		t.Fatalf("validate() error = %v, want missing source test 2", err)
-	}
-}
-
-func TestManifestRejectsDuplicateSourceNumber(t *testing.T) {
-	manifest := validManifest()
-	manifest.Cases[0].Source.Tests = []int{1, 2, 2, 3}
-
-	err := manifest.validate()
-	if err == nil || !strings.Contains(err.Error(), "source test 2 is mapped more than once") {
-		t.Fatalf("validate() error = %v, want duplicate source test 2", err)
-	}
-}
-
-func TestManifestAcceptsCompleteSourceCoverage(t *testing.T) {
+func TestManifestAcceptsValidBehaviorCase(t *testing.T) {
 	manifest := validManifest()
 	if err := manifest.validate(); err != nil {
 		t.Fatalf("validate() error = %v", err)
@@ -243,14 +236,8 @@ func TestManifestRejectsConcurrentStepWithBodyCaptures(t *testing.T) {
 }
 
 func TestManifestAcceptsConcurrentStatusCounts(t *testing.T) {
-	data := []byte(`sources:
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/example.t
-    tests: 1
-cases:
+	data := []byte(`cases:
   - name: concurrent-status-counts
-    source: {tests: [1]}
     config: {routes: []}
     fixtures:
       - name: origin
@@ -300,14 +287,8 @@ func TestManifestRejectsTopLevelStatusCountsWithSteps(t *testing.T) {
 }
 
 func TestManifestAcceptsHeldUpstreamProbes(t *testing.T) {
-	data := []byte(`sources:
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/example.t
-    tests: 1
-cases:
+	data := []byte(`cases:
   - name: held-upstream
-    source: {tests: [1]}
     config: {routes: []}
     fixtures:
       - name: origin
@@ -361,15 +342,8 @@ func TestConfigProbeRejectsBodyCaptures(t *testing.T) {
 }
 
 func TestManifestAcceptsNetworkJSONFields(t *testing.T) {
-	const manifestYAML = `source:
-  repository: https://github.com/apache/apisix
-  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-  file: t/plugin/example.t
-  tests: 1
-cases:
+	const manifestYAML = `cases:
   - name: udp-json-fields
-    source:
-      tests: [1]
     config:
       routes: []
     fixtures:
@@ -395,15 +369,8 @@ cases:
 }
 
 func TestManifestAcceptsRFC5424JSONFields(t *testing.T) {
-	const manifestYAML = `source:
-  repository: https://github.com/apache/apisix
-  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-  file: t/plugin/example.t
-  tests: 1
-cases:
+	const manifestYAML = `cases:
   - name: syslog-rfc5424-json-fields
-    source:
-      tests: [1]
     config:
       routes: []
     fixtures:
@@ -429,15 +396,8 @@ cases:
 }
 
 func TestManifestAcceptsNetworkJSONRFC3339(t *testing.T) {
-	const manifestYAML = `source:
-  repository: https://github.com/apache/apisix
-  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-  file: t/plugin/example.t
-  tests: 1
-cases:
+	const manifestYAML = `cases:
   - name: udp-json-rfc3339
-    source:
-      tests: [1]
     config:
       routes: []
     fixtures:
@@ -1093,14 +1053,8 @@ func TestManifestRejectsInvalidRedisValueKeyMatcher(t *testing.T) {
 }
 
 func TestManifestAcceptsRedisHashAssertions(t *testing.T) {
-	data := []byte(`sources:
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/example.t
-    tests: 1
-cases:
+	data := []byte(`cases:
   - name: redis-hash
-    source: {tests: [1]}
     config: {routes: []}
     fixtures:
       - name: redis
@@ -1205,118 +1159,27 @@ func TestManifestAcceptsZeroPacketUDPFixture(t *testing.T) {
 	}
 }
 
-func TestManifestMultipleSources(t *testing.T) {
-	body := "ok"
-	manifest := &Manifest{
-		Sources: []SourceSpec{
-			{
-				Repository: "https://github.com/apache/apisix",
-				Commit:     "c3d7d5ec69774121f53d2e20d29d09c816795dd7",
-				File:       "t/plugin/example.t",
-				Tests:      1,
-			},
-			{
-				Repository: "https://github.com/apache/apisix",
-				Commit:     "c3d7d5ec69774121f53d2e20d29d09c816795dd7",
-				File:       "t/plugin/example2.t",
-				Tests:      1,
-			},
-		},
-		Cases: []Case{
-			{
-				Name:   "first",
-				Source: CaseSource{File: "t/plugin/example.t", Tests: []int{1}},
-				Config: map[string]any{"routes": []any{}},
-				Input:  HTTPInput{Path: "/first"},
-				Output: HTTPOutput{Status: 200, Body: &Matcher{Equals: &body}},
-			},
-			{
-				Name:   "second",
-				Source: CaseSource{File: "t/plugin/example2.t", Tests: []int{1}},
-				Config: map[string]any{"routes": []any{}},
-				Input:  HTTPInput{Path: "/second"},
-				Output: HTTPOutput{Status: 200, Body: &Matcher{Equals: &body}},
-			},
-		},
-	}
-
-	if err := manifest.validate(); err != nil {
-		t.Fatalf("validate() error = %v", err)
-	}
-}
-
-func TestManifestAcceptsExplicitLocalBehaviorCaseWithoutUpstreamClaim(t *testing.T) {
-	data := []byte(`source:
-  repository: https://github.com/apache/apisix
-  commit: 1111111111111111111111111111111111111111
-  file: t/plugin/example.t
-  tests: 1
-cases:
+func TestManifestAcceptsMultipleBehaviorCases(t *testing.T) {
+	data := []byte(`cases:
   - name: converted-upstream
-    source: {tests: [1]}
     config: {routes: []}
     input: {path: /converted}
     output: {status: 200}
   - name: local-regression
-    source:
-      local_reason: guards a Go-specific regression and makes no upstream coverage claim
     config: {routes: []}
     input: {path: /local}
     output: {status: 200}
 `)
 
-	_, err := loadManifest("local-case.yaml", data)
+	_, err := loadManifest("multiple-cases.yaml", data)
 	if err != nil {
-		t.Fatalf("loadManifest() error = %v, want explicit local case accepted", err)
+		t.Fatalf("loadManifest() error = %v, want multiple behavior cases accepted", err)
 	}
 }
 
-func TestManifestRejectsMissingSourceFile(t *testing.T) {
-	manifest := validManifest()
-	manifest.Sources = []SourceSpec{
-		manifest.Source,
-		{
-			Repository: manifest.Source.Repository,
-			Commit:     manifest.Source.Commit,
-			File:       "t/plugin/example2.t",
-			Tests:      1,
-		},
-	}
-	manifest.Source = SourceSpec{}
-
-	err := manifest.validate()
-	if err == nil || !strings.Contains(err.Error(), "source file is required when multiple sources are configured") {
-		t.Fatalf("validate() error = %v, want missing source file rejection", err)
-	}
-}
-
-func TestManifestRejectsDuplicateSourceNumberAcrossCases(t *testing.T) {
-	manifest := validManifest()
-	manifest.Sources = []SourceSpec{manifest.Source}
-	manifest.Source = SourceSpec{}
-	manifest.Cases[0].Source.File = "t/plugin/example.t"
-	manifest.Cases[0].Source.Tests = []int{1, 2, 3}
-	duplicate := manifest.Cases[0]
-	duplicate.Name = "duplicate"
-	duplicate.Source.Tests = []int{2}
-	manifest.Cases = append(manifest.Cases, duplicate)
-
-	err := manifest.validate()
-	if err == nil || !strings.Contains(err.Error(), "source test 2 in t/plugin/example.t is mapped more than once") {
-		t.Fatalf("validate() error = %v, want duplicate source test rejection", err)
-	}
-}
-
-func TestManifestAcceptsMultipleStandaloneVariantsForOneSourceCase(t *testing.T) {
-	data := []byte(`source:
-  repository: https://github.com/apache/apisix
-  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-  file: t/plugin/example.t
-  tests: 1
-cases:
+func TestManifestAcceptsMultipleStandaloneVariants(t *testing.T) {
+	data := []byte(`cases:
   - name: invalid-values
-    source:
-      tests: [1]
     variants:
       - name: first
         config:
@@ -1342,15 +1205,8 @@ cases:
 }
 
 func TestManifestAcceptsCaseAndVariantEnvironment(t *testing.T) {
-	data := []byte(`source:
-  repository: https://github.com/apache/apisix
-  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-  file: t/plugin/example.t
-  tests: 2
-cases:
+	data := []byte(`cases:
   - name: case-environment
-    source:
-      tests: [1]
     environment:
       CLICK_HOUSE_USER: fixture-user
     config:
@@ -1359,8 +1215,6 @@ cases:
       logs:
         matches: ready
   - name: variant-environment
-    source:
-      tests: [2]
     variants:
       - name: child
         environment:
@@ -1378,15 +1232,8 @@ cases:
 }
 
 func TestManifestAcceptsCaseAndVariantEnvironmentUnset(t *testing.T) {
-	data := []byte(`source:
-  repository: https://github.com/apache/apisix
-  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-  file: t/plugin/example.t
-  tests: 2
-cases:
+	data := []byte(`cases:
   - name: case-environment-unset
-    source:
-      tests: [1]
     environment_unset:
       - SSL_CERT_FILE
     config:
@@ -1395,8 +1242,6 @@ cases:
       logs:
         matches: ready
   - name: variant-environment-unset
-    source:
-      tests: [2]
     variants:
       - name: child
         environment_unset:
@@ -1491,15 +1336,8 @@ func TestManifestRejectsInvalidEnvironment(t *testing.T) {
 }
 
 func TestManifestRejectsCaseEnvironmentWithVariants(t *testing.T) {
-	data := []byte(`source:
-  repository: https://github.com/apache/apisix
-  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-  file: t/plugin/example.t
-  tests: 1
-cases:
+	data := []byte(`cases:
   - name: mixed-environment
-    source:
-      tests: [1]
     environment:
       CLICK_HOUSE_USER: fixture-user
     variants:
@@ -1517,15 +1355,8 @@ cases:
 }
 
 func TestManifestAcceptsHTTPFixtureResponseDelay(t *testing.T) {
-	data := []byte(`source:
-  repository: https://github.com/apache/apisix
-  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-  file: t/plugin/example.t
-  tests: 1
-cases:
+	data := []byte(`cases:
   - name: delayed-sink
-    source:
-      tests: [1]
     config:
       routes: []
     fixtures:
@@ -1548,15 +1379,8 @@ cases:
 }
 
 func TestManifestAcceptsExplicitEmptyGRPCMessage(t *testing.T) {
-	data := []byte(`source:
-  repository: https://github.com/apache/apisix
-  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-  file: t/plugin/example.t
-  tests: 1
-cases:
+	data := []byte(`cases:
   - name: empty-grpc-message
-    source:
-      tests: [1]
     config:
       routes: []
     fixtures:
@@ -1582,15 +1406,8 @@ cases:
 }
 
 func TestManifestRejectsOmittedGRPCMessage(t *testing.T) {
-	data := []byte(`source:
-  repository: https://github.com/apache/apisix
-  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-  file: t/plugin/example.t
-  tests: 1
-cases:
+	data := []byte(`cases:
   - name: missing-grpc-message
-    source:
-      tests: [1]
     config:
       routes: []
     fixtures:
@@ -1656,15 +1473,8 @@ func TestManifestRejectsInvalidHTTPFixtureResponseDelay(t *testing.T) {
 }
 
 func TestManifestAcceptsStepsAndNamedFixtures(t *testing.T) {
-	data := []byte(`source:
-  repository: https://github.com/apache/apisix
-  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-  file: t/plugin/example.t
-  tests: 1
-cases:
+	data := []byte(`cases:
   - name: sequence
-    source:
-      tests: [1]
     config:
       routes: []
     fixtures:
@@ -1692,15 +1502,8 @@ cases:
 }
 
 func TestManifestAcceptsFixtureRequestBodyEcho(t *testing.T) {
-	data := []byte(`source:
-  repository: https://github.com/apache/apisix
-  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-  file: t/plugin/example.t
-  tests: 1
-cases:
+	data := []byte(`cases:
   - name: echo
-    source:
-      tests: [1]
     config:
       routes: []
     fixtures:
@@ -1723,15 +1526,8 @@ cases:
 }
 
 func TestManifestAcceptsScenarioFilesAndStandaloneConfigUpdate(t *testing.T) {
-	data := []byte(`source:
-  repository: https://github.com/apache/apisix
-  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-  file: t/plugin/example.t
-  tests: 1
-cases:
+	data := []byte(`cases:
   - name: reload
-    source:
-      tests: [1]
     config:
       routes: []
     files:
@@ -1769,14 +1565,8 @@ cases:
 }
 
 func TestManifestAcceptsPerInputGenerationWait(t *testing.T) {
-	data := []byte(`source:
-  repository: https://github.com/apache/apisix
-  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-  file: t/plugin/example.t
-  tests: 1
-cases:
+	data := []byte(`cases:
   - name: startup
-    source: {tests: [1]}
     config: {routes: []}
     input: {path: /hello, generation_timeout: 5s}
     output: {status: 200}
@@ -1943,15 +1733,8 @@ func TestManifestRejectsVariantsMixedWithTopLevelFiles(t *testing.T) {
 }
 
 func TestManifestAcceptsHTTP2InputWithFrontendTLS(t *testing.T) {
-	data := []byte(`source:
-  repository: https://github.com/apache/apisix
-  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-  file: t/plugin/example.t
-  tests: 1
-cases:
+	data := []byte(`cases:
   - name: http2
-    source:
-      tests: [1]
     config:
       routes: []
     frontend_tls:
@@ -2271,14 +2054,8 @@ func marshalOTLPFixture(t *testing.T, traceIDs ...[]byte) string {
 
 func TestMatcherSupportsSemanticJSON(t *testing.T) {
 	manifest, err := loadManifest("json.yaml", []byte(`
-sources:
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/example.t
-    tests: 1
 cases:
   - name: json-body
-    source: {file: t/plugin/example.t, tests: [1]}
     config: {routes: []}
     fixtures:
       - name: primary
@@ -2596,16 +2373,9 @@ func TestMergeRuntimeConfigPreservesNestedOverrides(t *testing.T) {
 func validManifest() *Manifest {
 	body := "ok"
 	return &Manifest{
-		Source: SourceSpec{
-			Repository: "https://github.com/apache/apisix",
-			Commit:     "c3d7d5ec69774121f53d2e20d29d09c816795dd7",
-			File:       "t/plugin/example.t",
-			Tests:      3,
-		},
 		Cases: []Case{
 			{
 				Name:   "complete",
-				Source: CaseSource{Tests: []int{1, 2, 3}},
 				Config: map[string]any{"routes": []any{}},
 				Input:  HTTPInput{Path: "/hello"},
 				Output: HTTPOutput{Status: 200, Body: &Matcher{Equals: &body}},
@@ -2614,15 +2384,8 @@ func validManifest() *Manifest {
 	}
 }
 
-const validManifestYAML = `source:
-  repository: https://github.com/apache/apisix
-  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-  file: t/plugin/example.t
-  tests: 1
-cases:
+const validManifestYAML = `cases:
   - name: complete
-    source:
-      tests: [1]
     config:
       routes: []
     input:

@@ -1002,8 +1002,7 @@ func TestHTTPSConnectFixtureCapturesOuterAndTunneledRequest(t *testing.T) {
 func TestHarnessRunsTCPFixture(t *testing.T) {
 	payloadPattern := `(?s)^GET /tcp HTTP/1\.[01]\r\n.*\r\n\r\n$`
 	caseSpec := Case{
-		Name:   "tcp-fixture",
-		Source: CaseSource{Tests: []int{1}},
+		Name: "tcp-fixture",
 		Config: map[string]any{
 			"routes": []any{map[string]any{
 				"id":  "tcp-fixture",

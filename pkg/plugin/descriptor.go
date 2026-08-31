@@ -149,9 +149,7 @@ func requestStageForPhases(phases []Phase) RequestStage {
 
 func parseRequestStage(stage string) (RequestStage, error) {
 	switch stage {
-	case "", "legacy":
-		return RequestStageLegacy, nil
-	case "none":
+	case "", "none":
 		return RequestStageNone, nil
 	case "rewrite":
 		return RequestStageRewrite, nil
@@ -162,7 +160,7 @@ func parseRequestStage(stage string) (RequestStage, error) {
 	case "before_proxy":
 		return RequestStageBeforeProxy, nil
 	default:
-		return RequestStageLegacy, fmt.Errorf("unsupported request stage %q", stage)
+		return RequestStageNone, fmt.Errorf("unsupported request stage %q", stage)
 	}
 }
 

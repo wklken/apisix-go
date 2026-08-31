@@ -31,6 +31,30 @@ func TestDescriptorForFactoryRejectsUnknownFactory(t *testing.T) {
 	}
 }
 
+func TestRegistryRequestStagesDoNotUseLegacyFallback(t *testing.T) {
+	for _, definition := range Definitions() {
+		descriptor, err := DescriptorForFactory(definition.Factory)
+		if err != nil {
+			t.Fatalf("DescriptorForFactory(%q): %v", definition.Factory, err)
+		}
+		switch descriptor.RequestStage() {
+		case RequestStageNone,
+			RequestStageRewrite,
+			RequestStageConsumerRewrite,
+			RequestStageAccess,
+			RequestStageBeforeProxy:
+		default:
+			t.Errorf("factory %q has unsupported request stage %d", definition.Factory, descriptor.RequestStage())
+		}
+	}
+}
+
+func TestParseRequestStageRejectsLegacy(t *testing.T) {
+	if _, err := parseRequestStage("legacy"); err == nil {
+		t.Fatal("parseRequestStage(legacy) error = nil")
+	}
+}
+
 func TestDescriptorConditionalTerminalUsesRegistryFact(t *testing.T) {
 	for _, factory := range []string{"proxy-rewrite", "real-ip"} {
 		descriptor, descriptorErr := DescriptorForFactory(factory)

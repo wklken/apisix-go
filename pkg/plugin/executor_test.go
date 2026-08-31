@@ -8,7 +8,6 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -26,33 +25,15 @@ func executorRequest(t *testing.T) (*http.Request, *apisixctx.RequestLifecycle) 
 	return request, lifecycle
 }
 
-type executorLegacyPlugin struct {
+type executorPlugin struct {
 	base.BasePlugin
 	handler func(http.Handler) http.Handler
 }
 
-type constructionCountingPlugin struct {
-	base.BasePlugin
-	constructed atomic.Int64
-	served      atomic.Int64
-}
-
-func (p *constructionCountingPlugin) Init() error     { return nil }
-func (p *constructionCountingPlugin) PostInit() error { return nil }
-func (p *constructionCountingPlugin) Config() any     { return nil }
-
-func (p *constructionCountingPlugin) Handler(next http.Handler) http.Handler {
-	p.constructed.Add(1)
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		p.served.Add(1)
-		next.ServeHTTP(w, r)
-	})
-}
-
-func (p *executorLegacyPlugin) Init() error     { return nil }
-func (p *executorLegacyPlugin) PostInit() error { return nil }
-func (p *executorLegacyPlugin) Config() any     { return nil }
-func (p *executorLegacyPlugin) Handler(next http.Handler) http.Handler {
+func (p *executorPlugin) Init() error     { return nil }
+func (p *executorPlugin) PostInit() error { return nil }
+func (p *executorPlugin) Config() any     { return nil }
+func (p *executorPlugin) Handler(next http.Handler) http.Handler {
 	if p.handler != nil {
 		return p.handler(next)
 	}
@@ -60,7 +41,7 @@ func (p *executorLegacyPlugin) Handler(next http.Handler) http.Handler {
 }
 
 type executorRequestPlugin struct {
-	executorLegacyPlugin
+	executorPlugin
 	phase func(http.ResponseWriter, *http.Request) base.RequestPhaseResult
 }
 
@@ -71,12 +52,12 @@ func (p *executorRequestPlugin) RunRequestPhase(
 	return p.phase(w, r)
 }
 
-func newExecutorLegacyPlugin(
+func newExecutorPlugin(
 	name string,
 	priority int,
 	handler func(http.Handler) http.Handler,
-) *executorLegacyPlugin {
-	plugin := &executorLegacyPlugin{handler: handler}
+) *executorPlugin {
+	plugin := &executorPlugin{handler: handler}
 	plugin.Name = name
 	plugin.SetPriority(priority)
 	return plugin
@@ -98,6 +79,13 @@ func pipelineBinding(name string, p Plugin, scope Scope, priority int) Binding {
 		setter.SetPriority(priority)
 	}
 	binding := bindPluginForTest(name, p, scope, ResourceProvenance{Kind: ResourceRoute, ID: name})
+	if !binding.Descriptor.resolved {
+		if descriptor, err := DescriptorForFactory(name); err == nil {
+			descriptor.Priority = priority
+			descriptor.resolved = true
+			binding.Descriptor = descriptor
+		}
+	}
 	binding.Priority = priority
 	return binding
 }
@@ -222,7 +210,7 @@ func TestRequestPipelineRunsSystemAccessBeforeGlobalAndMergedAccess(t *testing.T
 	}
 }
 
-func TestRequestPipelineAuthStopSkipsResolverAndLegacy(t *testing.T) {
+func TestRequestPipelineAuthStopSkipsResolverAndTerminal(t *testing.T) {
 	order := []string{}
 	auth := newExecutorRequestPlugin(
 		"auth",
@@ -232,16 +220,9 @@ func TestRequestPipelineAuthStopSkipsResolverAndLegacy(t *testing.T) {
 			return base.StopRequest(r)
 		},
 	)
-	legacy := newExecutorLegacyPlugin("legacy", 1, func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			order = append(order, "legacy")
-			next.ServeHTTP(w, r)
-		})
-	})
 	resolverCalls := 0
 	pipeline := NewRequestPipeline([]Binding{
 		pipelineBinding("jwt-auth", auth, ScopeRoute, 1),
-		pipelineBinding("unknown", legacy, ScopeRoute, 1),
 	}, func(*http.Request) (ConsumerResolution, error) {
 		resolverCalls++
 		return ConsumerResolution{Resolved: true}, nil
@@ -260,17 +241,8 @@ func TestRequestPipelineAuthStopSkipsResolverAndLegacy(t *testing.T) {
 	}
 }
 
-func TestRequestPipelineResolverErrorSkipsLegacyAndReturnsGeneric500(t *testing.T) {
-	legacyCalls := 0
-	legacy := newExecutorLegacyPlugin("legacy", 1, func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			legacyCalls++
-			next.ServeHTTP(w, r)
-		})
-	})
-	pipeline := NewRequestPipeline([]Binding{
-		pipelineBinding("unknown", legacy, ScopeRoute, 1),
-	}, func(*http.Request) (ConsumerResolution, error) {
+func TestRequestPipelineResolverErrorReturnsGeneric500(t *testing.T) {
+	pipeline := NewRequestPipeline(nil, func(*http.Request) (ConsumerResolution, error) {
 		return ConsumerResolution{}, fmt.Errorf("missing group: store unavailable")
 	})
 	response := httptest.NewRecorder()
@@ -286,9 +258,6 @@ func TestRequestPipelineResolverErrorSkipsLegacyAndReturnsGeneric500(t *testing.
 			response.Code,
 			response.Body.String(),
 		)
-	}
-	if legacyCalls != 0 {
-		t.Fatalf("legacy calls = %d, want 0", legacyCalls)
 	}
 }
 
@@ -306,39 +275,6 @@ func TestRequestPipelineResolvesExactlyOnceWithoutAuthentication(t *testing.T) {
 		)
 	if resolverCalls != 1 || terminalCalls != 1 {
 		t.Fatalf("resolver/terminal calls = %d/%d, want 1/1", resolverCalls, terminalCalls)
-	}
-}
-
-func TestRequestPipelinePrebuildsStaticHandler(t *testing.T) {
-	plugin := &constructionCountingPlugin{}
-	plugin.Name = "construction-counting"
-	binding := bindPluginForTest(
-		"construction-counting",
-		plugin,
-		ScopeRoute,
-		ResourceProvenance{Kind: ResourceRoute, ID: "static"},
-	)
-	terminalCalls := 0
-	pipeline := NewRequestPipeline([]Binding{binding}, func(r *http.Request) (ConsumerResolution, error) {
-		return ConsumerResolution{Request: r, Resolved: false}, nil
-	})
-	handler := pipeline.Then(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-		terminalCalls++
-	}))
-	for range 2 {
-		handler.ServeHTTP(
-			httptest.NewRecorder(),
-			httptest.NewRequest(http.MethodGet, "/", nil),
-		)
-	}
-	if got := plugin.constructed.Load(); got != 1 {
-		t.Fatalf("handler constructions = %d, want 1", got)
-	}
-	if got := plugin.served.Load(); got != 2 {
-		t.Fatalf("handler requests = %d, want 2", got)
-	}
-	if terminalCalls != 2 {
-		t.Fatalf("terminal calls = %d, want 2", terminalCalls)
 	}
 }
 
@@ -380,49 +316,6 @@ func TestRequestPipelineStaticHookPerRequest(t *testing.T) {
 				terminalRequests[index],
 				replacements[index],
 			)
-		}
-	}
-}
-
-func TestRequestPipelineResolvedEmptyUsesDynamicPath(t *testing.T) {
-	plugin := &constructionCountingPlugin{}
-	plugin.Name = "construction-counting"
-	binding := bindPluginForTest(
-		"construction-counting",
-		plugin,
-		ScopeRoute,
-		ResourceProvenance{Kind: ResourceRoute, ID: "static"},
-	)
-	var terminalRequests []*http.Request
-	pipeline := NewRequestPipeline([]Binding{binding}, func(r *http.Request) (ConsumerResolution, error) {
-		return ConsumerResolution{Request: r, Resolved: true}, nil
-	})
-	handler := pipeline.ThenWithPostResolutionHook(
-		http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
-			terminalRequests = append(terminalRequests, r)
-		}),
-		func(r *http.Request, _ EffectiveBindingSet) (*http.Request, error) {
-			return r.WithContext(context.WithValue(r.Context(), executorTraceKey{}, "replacement")), nil
-		},
-	)
-	for range 2 {
-		handler.ServeHTTP(
-			httptest.NewRecorder(),
-			httptest.NewRequest(http.MethodGet, "/", nil),
-		)
-	}
-	if got := plugin.constructed.Load(); got != 3 {
-		t.Fatalf("handler constructions = %d, want static build plus two dynamic builds", got)
-	}
-	if got := plugin.served.Load(); got != 2 {
-		t.Fatalf("handler requests = %d, want 2", got)
-	}
-	if len(terminalRequests) != 2 {
-		t.Fatalf("terminal requests = %d, want 2", len(terminalRequests))
-	}
-	for index, request := range terminalRequests {
-		if got := request.Context().Value(executorTraceKey{}); got != "replacement" {
-			t.Fatalf("terminal request %d context value = %v, want replacement", index, got)
 		}
 	}
 }
@@ -502,66 +395,6 @@ func TestRequestPipelineMergedAccessUsesEffectivePriorityAcrossScopes(t *testing
 	want := []string{"route-access", "consumer-access", "terminal"}
 	if !reflect.DeepEqual(order, want) {
 		t.Fatalf("merged access order = %v, want %v", order, want)
-	}
-}
-
-func TestRequestPipelineDeferredLegacyUsesEffectiveWinnersOnly(t *testing.T) {
-	order := []string{}
-	legacy := func(name string) *executorLegacyPlugin {
-		return newExecutorLegacyPlugin(name, 1, func(next http.Handler) http.Handler {
-			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				order = append(order, name)
-				next.ServeHTTP(w, r)
-			})
-		})
-	}
-	routeLoser := legacy("route-loser")
-	consumerWinner := legacy("consumer-winner")
-	pipeline := NewRequestPipeline(
-		[]Binding{pipelineBinding("same-name", routeLoser, ScopeRoute, 1)},
-		func(r *http.Request) (ConsumerResolution, error) {
-			return ConsumerResolution{
-				Request:  r,
-				Resolved: true,
-				Bindings: []Binding{pipelineBinding("same-name", consumerWinner, ScopeConsumer, 1)},
-			}, nil
-		},
-	)
-	pipeline.Then(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) { order = append(order, "terminal") })).
-		ServeHTTP(
-			httptest.NewRecorder(),
-			httptest.NewRequest(http.MethodGet, "/", nil),
-		)
-	if got, want := order, []string{"consumer-winner", "terminal"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("effective legacy order = %v, want %v", got, want)
-	}
-}
-
-func TestRequestPipelineDeferredLegacyPreservesPriorityAndUnwind(t *testing.T) {
-	order := []string{}
-	legacy := func(name string, priority int) *executorLegacyPlugin {
-		return newExecutorLegacyPlugin(name, priority, func(next http.Handler) http.Handler {
-			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				order = append(order, name+"-enter")
-				next.ServeHTTP(w, r)
-				order = append(order, name+"-exit")
-			})
-		})
-	}
-	pipeline := NewRequestPipeline([]Binding{
-		pipelineBinding("global-legacy", legacy("global", 300), ScopeGlobal, 300),
-		pipelineBinding("route-legacy", legacy("route", 100), ScopeRoute, 100),
-	}, func(r *http.Request) (ConsumerResolution, error) {
-		return ConsumerResolution{Request: r, Resolved: true}, nil
-	})
-	pipeline.Then(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) { order = append(order, "terminal") })).
-		ServeHTTP(
-			httptest.NewRecorder(),
-			httptest.NewRequest(http.MethodGet, "/", nil),
-		)
-	want := []string{"global-enter", "route-enter", "terminal", "route-exit", "global-exit"}
-	if !reflect.DeepEqual(order, want) {
-		t.Fatalf("legacy priority/unwind = %v, want %v", order, want)
 	}
 }
 
@@ -658,60 +491,10 @@ func TestRequestPipelineAttributesRequestPhasePanics(t *testing.T) {
 	}
 }
 
-func TestLegacyMiddlewareAttributesEntryAndUnwindPanicsAndBuildsOnce(t *testing.T) {
-	tests := []struct {
-		name    string
-		handler func(http.Handler, any) http.Handler
-	}{
-		{
-			name: "entry",
-			handler: func(_ http.Handler, anyValue any) http.Handler {
-				return http.HandlerFunc(func(http.ResponseWriter, *http.Request) { panic(anyValue) })
-			},
-		},
-		{
-			name: "unwind",
-			handler: func(next http.Handler, anyValue any) http.Handler {
-				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					next.ServeHTTP(w, r)
-					panic(anyValue)
-				})
-			},
-		},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			want := &struct{ stage string }{stage: test.name}
-			constructions := 0
-			legacy := newExecutorLegacyPlugin("legacy", 1, func(next http.Handler) http.Handler {
-				constructions++
-				return test.handler(next, want)
-			})
-			handler := NewRequestPipeline([]Binding{
-				pipelineBinding("legacy-boundary", legacy, ScopeRoute, 1),
-			}, nil).Then(http.NotFoundHandler())
-			for range 2 {
-				recovered := recoverHandlerPanic(t, handler)
-				panicErr, ok := recovered.(*PanicError)
-				if !ok {
-					t.Fatalf("panic = %T, want *PanicError", recovered)
-				}
-				if panicErr.Factory != "legacy-boundary" || panicErr.Phase != "" ||
-					panicErr.Value != want || len(panicErr.Stack) == 0 {
-					t.Fatalf("panic metadata = %#v", panicErr)
-				}
-			}
-			if constructions != 1 {
-				t.Fatalf("Handler() constructions = %d, want 1", constructions)
-			}
-		})
-	}
-}
-
 func TestRequestPipelineStaticCORSPanicIsAttributedAndHandlerBuildsOnce(t *testing.T) {
 	want := &struct{ callback string }{callback: "cors filter"}
 	constructions := 0
-	cors := newExecutorLegacyPlugin("cors", 4000, func(http.Handler) http.Handler {
+	cors := newExecutorPlugin("cors", 4000, func(http.Handler) http.Handler {
 		constructions++
 		return http.HandlerFunc(func(http.ResponseWriter, *http.Request) { panic(want) })
 	})

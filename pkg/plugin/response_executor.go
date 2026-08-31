@@ -820,18 +820,6 @@ func validateBoundedConflicts(
 				binding.Provenance.ID,
 			)
 		}
-		if (binding.Descriptor.Factory == "serverless-pre-function" || binding.Descriptor.Factory == "serverless-post-function") &&
-			binding.Descriptor.requestStage == RequestStageLegacy {
-			return fmt.Errorf(
-				"bounded response identity=%q resource=%s/%s conflicts with %q log phase resource=%s/%s",
-				plan[0].factoryKey,
-				plan[0].Provenance.Kind,
-				plan[0].Provenance.ID,
-				binding.Descriptor.Factory,
-				binding.Provenance.Kind,
-				binding.Provenance.ID,
-			)
-		}
 	}
 	return nil
 }

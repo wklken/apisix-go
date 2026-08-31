@@ -1330,8 +1330,7 @@ func newMetadataRequestAndBufferedPluginWithDescriptor(
 	if responseMask&metadataResponseStore != 0 && !hasStore {
 		return nil, fmt.Errorf("factory %q declares final response store without callback", factoryName)
 	}
-	if phase, ok := p.(base.RequestPhasePlugin); ok &&
-		requestStage != plugin.RequestStageNone && requestStage != plugin.RequestStageLegacy {
+	if phase, ok := p.(base.RequestPhasePlugin); ok && requestStage != plugin.RequestStageNone {
 		requestPlugin := metadataRequestPlugin{
 			Plugin:        basePlugin.Plugin,
 			phase:         phase,

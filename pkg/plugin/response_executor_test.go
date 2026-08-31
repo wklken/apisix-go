@@ -1212,23 +1212,6 @@ func TestBufferedResponseCancellationAbortsBeforeOverflowFallback(t *testing.T) 
 	)
 }
 
-func TestBufferedResponseRejectsServerlessLogConflict(t *testing.T) {
-	bounded := newResponseTestPlugin("body-transformer", 2, responseTestConfig{stage: "none", body: true})
-	serverlessLog := newResponseTestPlugin("serverless-log", 1, responseTestConfig{stage: "legacy"})
-	bindings := []Binding{
-		checkedResponseBinding(t, "body-transformer", bounded, ScopeRoute, "route"),
-		checkedResponseBinding(t, "serverless-pre-function", serverlessLog, ScopeRoute, "route"),
-	}
-	_, err := NewBufferedResponseExecutor(
-		bindings,
-		TerminalDescriptor{Owner: TerminalOwnerOrdinaryProxy},
-		base.BufferedResponseConfig{MaxBytes: base.DefaultBufferedResponseMaxBytes},
-	)
-	if err == nil || !strings.Contains(err.Error(), "log phase") {
-		t.Fatalf("NewBufferedResponseExecutor() error = %v, want serverless log conflict", err)
-	}
-}
-
 func TestBufferedResponseBoundedConflictRegistryIsFailClosed(t *testing.T) {
 	bounded := newResponseTestPlugin("body-transformer", 2, responseTestConfig{stage: "none", body: true})
 	boundedBinding := checkedResponseBinding(t, "body-transformer", bounded, ScopeRoute, "route")
@@ -1249,7 +1232,7 @@ func TestBufferedResponseBoundedConflictRegistryIsFailClosed(t *testing.T) {
 	})
 
 	t.Run("effective identity", func(t *testing.T) {
-		streaming := newExecutorLegacyPlugin("proxy-buffering", 1, nil)
+		streaming := newExecutorPlugin("proxy-buffering", 1, nil)
 		streamingBinding, err := BindPluginChecked(
 			"proxy-buffering",
 			streaming,

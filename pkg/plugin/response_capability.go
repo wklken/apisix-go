@@ -621,7 +621,7 @@ func responseFactoryAllowsDescriptor(factoryKey string, descriptor base.BindingP
 			return stage == RequestStageNone && descriptor.Header != descriptor.BufferedBody
 		}
 		return stage == RequestStageRewrite || stage == RequestStageAccess ||
-			stage == RequestStageBeforeProxy || stage == RequestStageLegacy ||
+			stage == RequestStageBeforeProxy ||
 			stage == RequestStageNone && descriptor.Log
 	}
 	return true

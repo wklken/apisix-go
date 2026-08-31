@@ -3,7 +3,6 @@ package route
 import (
 	"net/http"
 	"net/http/httptest"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -69,35 +68,11 @@ var (
 	_ base.RequestPhasePlugin = (*requestPhaseMetadataPlugin)(nil)
 )
 
-type requestPhaseMetadataLegacyPlugin struct {
-	name     string
-	priority int
-	order    *[]string
-}
-
-func (p *requestPhaseMetadataLegacyPlugin) Init() error               { return nil }
-func (p *requestPhaseMetadataLegacyPlugin) PostInit() error           { return nil }
-func (p *requestPhaseMetadataLegacyPlugin) Config() any               { return nil }
-func (p *requestPhaseMetadataLegacyPlugin) GetSchema() string         { return "" }
-func (p *requestPhaseMetadataLegacyPlugin) GetMetadataSchema() string { return "" }
-func (p *requestPhaseMetadataLegacyPlugin) GetPriority() int          { return p.priority }
-func (p *requestPhaseMetadataLegacyPlugin) GetName() string           { return p.name }
-
-func (p *requestPhaseMetadataLegacyPlugin) Handler(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		*p.order = append(*p.order, p.name+":enter")
-		next.ServeHTTP(w, r)
-		*p.order = append(*p.order, p.name+":exit")
-	})
-}
-
-var _ plugin.Plugin = (*requestPhaseMetadataLegacyPlugin)(nil)
-
 func TestRequestPhaseMetadataContract(t *testing.T) {
 	t.Run("filter false skips explicit phase and continues", func(t *testing.T) {
 		phaseCalls := 0
 		terminalCalls := 0
-		p := &requestPhaseMetadataPlugin{name: "filtered", phaseCalls: &phaseCalls}
+		p := &requestPhaseMetadataPlugin{name: "request-id", phaseCalls: &phaseCalls}
 		filter, err := pluginexpr.Compile([]any{[]any{"arg_enabled", "==", "yes"}})
 		if err != nil {
 			t.Fatalf("compile filter: %v", err)
@@ -126,7 +101,7 @@ func TestRequestPhaseMetadataContract(t *testing.T) {
 	t.Run("filter true executes explicit phase", func(t *testing.T) {
 		phaseCalls := 0
 		terminalCalls := 0
-		p := &requestPhaseMetadataPlugin{name: "filtered", phaseCalls: &phaseCalls}
+		p := &requestPhaseMetadataPlugin{name: "request-id", phaseCalls: &phaseCalls}
 		filter, err := pluginexpr.Compile([]any{[]any{"arg_enabled", "==", "yes"}})
 		if err != nil {
 			t.Fatalf("compile filter: %v", err)
@@ -148,50 +123,11 @@ func TestRequestPhaseMetadataContract(t *testing.T) {
 		}
 	})
 
-	t.Run("priority crosses a legacy plugin", func(t *testing.T) {
-		order := []string{}
-		high := &requestPhaseMetadataPlugin{name: "explicit-high", priority: 300, order: &order}
-		legacy := &requestPhaseMetadataLegacyPlugin{name: "legacy", priority: 200, order: &order}
-		low := &requestPhaseMetadataPlugin{name: "explicit-low", priority: 100, order: &order}
-		handler := assembleRouteExecutor(
-			[]plugin.Binding{
-				bindPluginForTest(
-					"synthetic-high",
-					high,
-					plugin.ScopeRoute,
-					plugin.ResourceProvenance{Kind: plugin.ResourceRoute, ID: "route-high"},
-				),
-				bindPluginForTest(
-					"synthetic-legacy",
-					legacy,
-					plugin.ScopeRoute,
-					plugin.ResourceProvenance{Kind: plugin.ResourceRoute, ID: "route-legacy"},
-				),
-				bindPluginForTest(
-					"synthetic-low",
-					low,
-					plugin.ScopeRoute,
-					plugin.ResourceProvenance{Kind: plugin.ResourceRoute, ID: "route-low"},
-				),
-			},
-			nil,
-			nil,
-		).Then(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			order = append(order, "terminal")
-			w.WriteHeader(http.StatusNoContent)
-		}))
-		handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
-		want := []string{"explicit-high:phase", "legacy:enter", "explicit-low:phase", "terminal", "legacy:exit"}
-		if !reflect.DeepEqual(order, want) {
-			t.Fatalf("order = %#v, want %#v", order, want)
-		}
-	})
-
 	t.Run("error response replaces only explicit phase writes", func(t *testing.T) {
 		phaseCalls := 0
 		terminalCalls := 0
 		p := &requestPhaseMetadataPlugin{
-			name:       "explicit-error",
+			name:       "request-id",
 			phaseCalls: &phaseCalls,
 			status:     http.StatusUnauthorized,
 			stop:       true,
@@ -221,11 +157,11 @@ func TestRequestPhaseMetadataContract(t *testing.T) {
 	t.Run("consumer override runs consumer phase once", func(t *testing.T) {
 		routeCalls := 0
 		consumerCalls := 0
-		routePlugin := &requestPhaseMetadataPlugin{name: "synthetic-auth", priority: 200, phaseCalls: &routeCalls}
-		consumerPlugin := &requestPhaseMetadataPlugin{name: "synthetic-auth", priority: 100, phaseCalls: &consumerCalls}
+		routePlugin := &requestPhaseMetadataPlugin{name: "request-id", priority: 200, phaseCalls: &routeCalls}
+		consumerPlugin := &requestPhaseMetadataPlugin{name: "request-id", priority: 100, phaseCalls: &consumerCalls}
 		pipeline := plugin.NewRequestPipeline(
 			[]plugin.Binding{bindPluginForTest(
-				"synthetic-auth",
+				"request-id",
 				routePlugin,
 				plugin.ScopeRoute,
 				plugin.ResourceProvenance{Kind: plugin.ResourceRoute, ID: "route"},
@@ -235,7 +171,7 @@ func TestRequestPhaseMetadataContract(t *testing.T) {
 					Request:  r,
 					Resolved: true,
 					Bindings: []plugin.Binding{bindPluginForTest(
-						"synthetic-auth",
+						"request-id",
 						consumerPlugin,
 						plugin.ScopeConsumer,
 						plugin.ResourceProvenance{Kind: plugin.ResourceConsumer, ID: "consumer"},

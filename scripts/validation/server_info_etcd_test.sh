@@ -104,11 +104,6 @@ deployment:
       - http://etcd:2379
     prefix: /apisix
     timeout: 3
-apisix_go:
-  runtime_paths:
-    log_dir: /tmp/apisix-go/log
-    runtime_dir: /tmp/apisix-go/run
-    temp_dir: /tmp/apisix-go/tmp
 EOF
 
 container create --name "$gateway_name" --network "$network_name" \

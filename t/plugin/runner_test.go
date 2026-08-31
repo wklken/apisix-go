@@ -605,27 +605,6 @@ func (*generationReadinessBody) Close() error {
 	return nil
 }
 
-func TestIsolatedRuntimeOverridesOwnsAllMutablePaths(t *testing.T) {
-	original := map[string]any{"plugins": []any{"key-auth"}}
-	workDir := t.TempDir()
-	overrides, err := isolatedRuntimeOverrides(original, workDir)
-	if err != nil {
-		t.Fatalf("isolatedRuntimeOverrides() error = %v", err)
-	}
-	if _, exists := original["apisix_go"]; exists {
-		t.Fatal("isolatedRuntimeOverrides() mutated its input")
-	}
-	paths := overrides["apisix_go"].(map[string]any)["runtime_paths"].(map[string]any)
-	for name, suffix := range map[string]string{
-		"runtime_dir": "run", "log_dir": "log", "temp_dir": "tmp",
-	} {
-		want := filepath.Join(workDir, suffix)
-		if got := paths[name]; got != want {
-			t.Fatalf("runtime path %s = %v, want %s", name, got, want)
-		}
-	}
-}
-
 func TestRenderRuntimeConfigPreservesRequiredPlugins(t *testing.T) {
 	rendered, err := renderRuntimeConfig(19080, map[string]any{
 		"plugins": []any{"node-status"},
@@ -2830,6 +2809,7 @@ func startAPISIX(workDir string, environment Environment, environmentUnset []str
 	maps.Copy(childEnvironmentOverrides, environment)
 	childEnvironmentOverrides[helperProcessEnv] = "1"
 	childEnvironmentOverrides[integrationFallbackRootsEnv] = "0"
+	childEnvironmentOverrides["TMPDIR"] = workDir
 	if godebugFallbackRootsEnabled(environment["GODEBUG"]) && environment["SSL_CERT_FILE"] != "" {
 		childEnvironmentOverrides[integrationFallbackRootsEnv] = "1"
 	}
@@ -3153,18 +3133,6 @@ func renderRuntimeConfigForStandalone(
 	return renderRuntimeConfig(port, overrides)
 }
 
-func isolatedRuntimeOverrides(overrides map[string]any, workDir string) (map[string]any, error) {
-	isolated, err := cloneConfigMap(overrides)
-	if err != nil {
-		return nil, fmt.Errorf("clone isolated runtime config: %w", err)
-	}
-	paths := ensureMap(ensureMap(isolated, "apisix_go"), "runtime_paths")
-	paths["runtime_dir"] = filepath.Join(workDir, "run")
-	paths["log_dir"] = filepath.Join(workDir, "log")
-	paths["temp_dir"] = filepath.Join(workDir, "tmp")
-	return isolated, nil
-}
-
 func collectStandalonePluginNames(config map[string]any, pluginNames map[string]struct{}) {
 	resourceKinds := [...]string{
 		"routes",
@@ -3351,9 +3319,9 @@ func runCaseInternal(t *testing.T, spec Case, waitForGeneration bool) {
 			t.Fatalf("prepare frontend TLS: %v", err)
 		}
 	}
-	runtimeOverrides, err = isolatedRuntimeOverrides(runtimeOverrides, workDir)
+	runtimeOverrides, err = cloneConfigMap(runtimeOverrides)
 	if err != nil {
-		t.Fatalf("isolate runtime paths: %v", err)
+		t.Fatalf("clone runtime config: %v", err)
 	}
 	ensureMap(runtimeOverrides, "apisix")["status"] = map[string]any{
 		"ip": "127.0.0.1", "port": statusPort,

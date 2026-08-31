@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"os"
-	"path/filepath"
 	"slices"
 	"testing"
 	"time"
@@ -465,13 +463,8 @@ func testEffectiveConfig() *appconfig.EffectiveConfig {
 			RoleDataPlane: appconfig.RoleConfig{ConfigProvider: "yaml"},
 		},
 	}
-	root := filepath.Join(os.TempDir(), "apisix-go-route-test")
 	return &appconfig.EffectiveConfig{
 		Config: static,
-		Paths: appconfig.RuntimePaths{
-			RuntimeDir: filepath.Join(root, "run"),
-			LogDir:     filepath.Join(root, "log"), TempDir: filepath.Join(root, "tmp"),
-		},
 	}
 }
 

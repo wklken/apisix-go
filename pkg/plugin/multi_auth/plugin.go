@@ -95,10 +95,6 @@ type requestBodyIsolation interface {
 	BodyIsolation() (enabled bool, max int64)
 }
 
-type requestBodyIsolationTempDir interface {
-	BodyIsolationTempDir() string
-}
-
 type configuredAuth struct {
 	name   string
 	plugin authPlugin
@@ -637,15 +633,10 @@ func (a configuredAuth) isolateRequestBody(original *http.Request, probe *http.R
 	if !enabled || original.Body == nil {
 		return nil
 	}
-	tempDir := ""
-	if configured, ok := a.plugin.Config().(requestBodyIsolationTempDir); ok {
-		tempDir = configured.BodyIsolationTempDir()
-	}
 	snapshot, err := base.EnsureRequestBodySnapshot(
 		original,
 		limit,
 		base.DefaultRequestBodySnapshotMemoryLimit,
-		tempDir,
 	)
 	state := &probeBodyState{snapshot: snapshot}
 	if err != nil {

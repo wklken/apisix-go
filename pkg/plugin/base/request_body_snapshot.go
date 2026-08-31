@@ -34,7 +34,6 @@ func EnsureRequestBodySnapshot(
 	request *http.Request,
 	maxSize int64,
 	memoryLimit int64,
-	tempDir string,
 ) (*RequestBodySnapshot, error) {
 	if request == nil {
 		return nil, errors.New("request body snapshot: request is required")
@@ -55,7 +54,7 @@ func EnsureRequestBodySnapshot(
 	if maxSize <= 0 || memoryLimit <= 0 {
 		return nil, errors.New("request body snapshot: positive limits are required")
 	}
-	snapshot, err := captureRequestBodySnapshot(request.Body, maxSize, memoryLimit, tempDir)
+	snapshot, err := captureRequestBodySnapshot(request.Body, maxSize, memoryLimit)
 	if err != nil {
 		return nil, err
 	}
@@ -76,7 +75,6 @@ func captureRequestBodySnapshot(
 	body io.ReadCloser,
 	maxSize int64,
 	memoryLimit int64,
-	tempDir string,
 ) (*RequestBodySnapshot, error) {
 	if body == nil || body == http.NoBody {
 		return &RequestBodySnapshot{digest: sha256.Sum256(nil)}, nil
@@ -106,7 +104,7 @@ func captureRequestBodySnapshot(
 			}
 			_, _ = hash.Write(buffer[:read])
 			if file == nil && total > memoryLimit {
-				file, err = os.CreateTemp(tempDir, "apisix-go-request-body-*")
+				file, err = os.CreateTemp("", "apisix-go-request-body-*")
 				if err != nil {
 					cleanup()
 					return nil, fmt.Errorf("request body snapshot: create spill file: %w", err)

@@ -5,14 +5,17 @@ import (
 	"io"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
 
 func TestRequestBodySnapshotStreamsHashesSpillsReplaysAndRemoves(t *testing.T) {
+	tempDir := t.TempDir()
+	t.Setenv("TMPDIR", tempDir)
 	payload := strings.Repeat("snapshot-body-", 256)
 	request := httptest.NewRequest("POST", "http://example.com", strings.NewReader(payload))
-	snapshot, err := EnsureRequestBodySnapshot(request, int64(len(payload)+1), 128, t.TempDir())
+	snapshot, err := EnsureRequestBodySnapshot(request, int64(len(payload)+1), 128)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -21,6 +24,9 @@ func TestRequestBodySnapshotStreamsHashesSpillsReplaysAndRemoves(t *testing.T) {
 	}
 	if snapshot.path == "" {
 		t.Fatal("snapshot did not spill above memory threshold")
+	}
+	if got := filepath.Dir(snapshot.path); got != tempDir {
+		t.Fatalf("snapshot directory = %q, want TMPDIR %q", got, tempDir)
 	}
 	info, err := os.Stat(snapshot.path)
 	if err != nil {
@@ -50,17 +56,18 @@ func TestRequestBodySnapshotStreamsHashesSpillsReplaysAndRemoves(t *testing.T) {
 }
 
 func TestRequestBodySnapshotRejectsLimitAndReusesOneCapture(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
 	request := httptest.NewRequest("POST", "http://example.com", strings.NewReader("payload"))
-	if _, err := EnsureRequestBodySnapshot(request, 3, 2, t.TempDir()); err != ErrRequestBodyTooLarge {
+	if _, err := EnsureRequestBodySnapshot(request, 3, 2); err != ErrRequestBodyTooLarge {
 		t.Fatalf("EnsureRequestBodySnapshot() error = %v, want body too large", err)
 	}
 
 	request = httptest.NewRequest("POST", "http://example.com", strings.NewReader("payload"))
-	first, err := EnsureRequestBodySnapshot(request, 16, 16, t.TempDir())
+	first, err := EnsureRequestBodySnapshot(request, 16, 16)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := EnsureRequestBodySnapshot(request, 16, 16, t.TempDir())
+	second, err := EnsureRequestBodySnapshot(request, 16, 16)
 	if err != nil || first != second {
 		t.Fatalf("second snapshot = %p/%v, want reused %p", second, err, first)
 	}

@@ -67,8 +67,6 @@ apisix:
   status:
     ip: 0.0.0.0
     port: 7085
-apisix_go:
-  runtime_paths:
 plugins: [request-id]
 deployment:
   role: data_plane

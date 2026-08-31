@@ -16,7 +16,7 @@ func LoadEffective(req LoadRequest) (*EffectiveConfig, error) {
 	}
 
 	defaultPath := filepath.Clean(req.DefaultPath)
-	root := builtinDefaults(req.DefaultPaths)
+	root := builtinDefaults()
 	defaultDocument, err := readConfigDocument(defaultPath, req.Environment)
 	if err != nil {
 		return nil, err
@@ -38,15 +38,11 @@ func LoadEffective(req LoadRequest) (*EffectiveConfig, error) {
 		return nil, err
 	}
 
-	cfg, paths, unused, err := decodeConfig(root)
+	cfg, unused, err := decodeConfig(root)
 	if err != nil {
 		return nil, err
 	}
-	paths, err = resolveRuntimePaths(paths, root, req)
-	if err != nil {
-		return nil, err
-	}
-	effective := &EffectiveConfig{Config: *cfg, Paths: paths}
+	effective := &EffectiveConfig{Config: *cfg}
 	if err := validateEffective(effective, unused); err != nil {
 		return nil, err
 	}
@@ -55,39 +51,6 @@ func LoadEffective(req LoadRequest) (*EffectiveConfig, error) {
 
 func sameConfigPath(first, second string) bool {
 	return filepath.Clean(first) == filepath.Clean(second)
-}
-
-func resolveRuntimePaths(paths RuntimePaths, root *valueNode, req LoadRequest) (RuntimePaths, error) {
-	values := []struct {
-		name  string
-		path  string
-		value *string
-	}{
-		{name: "runtime_dir", path: "apisix_go.runtime_paths.runtime_dir", value: &paths.RuntimeDir},
-		{name: "log_dir", path: "apisix_go.runtime_paths.log_dir", value: &paths.LogDir},
-		{name: "temp_dir", path: "apisix_go.runtime_paths.temp_dir", value: &paths.TempDir},
-	}
-	for _, item := range values {
-		if *item.value == "" {
-			continue
-		}
-		if filepath.IsAbs(*item.value) {
-			*item.value = filepath.Clean(*item.value)
-			continue
-		}
-		node := lookupStaticNode(root, item.path)
-		base := ""
-		if node != nil {
-			base = node.pathBase
-		}
-		if base == "" || !filepath.IsAbs(base) {
-			return RuntimePaths{}, fmt.Errorf(
-				"resolve runtime path %s: relative value requires an absolute owning file directory", item.name,
-			)
-		}
-		*item.value = filepath.Clean(filepath.Join(base, *item.value))
-	}
-	return paths, nil
 }
 
 func CapabilitySummary(cfg *Config) map[string]any {

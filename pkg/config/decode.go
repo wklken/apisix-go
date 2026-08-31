@@ -14,50 +14,31 @@ import (
 	"github.com/wklken/apisix-go/pkg/json"
 )
 
-type staticExtensions struct {
-	RuntimePaths RuntimePaths `mapstructure:"runtime_paths"`
-}
-
-func decodeConfig(root *valueNode) (*Config, RuntimePaths, []string, error) {
+func decodeConfig(root *valueNode) (*Config, []string, error) {
 	if root == nil || root.kind != nodeMapping {
-		return nil, RuntimePaths{}, nil, fmt.Errorf("configuration root must be a mapping")
+		return nil, nil, fmt.Errorf("configuration root must be a mapping")
 	}
 	raw, ok := nodeToAny(root).(map[string]any)
 	if !ok {
-		return nil, RuntimePaths{}, nil, fmt.Errorf("configuration root must be a mapping")
-	}
-	mainRaw := make(map[string]any, len(raw))
-	for key, value := range raw {
-		if key != "apisix_go" {
-			mainRaw[key] = value
-		}
+		return nil, nil, fmt.Errorf("configuration root must be a mapping")
 	}
 
 	var cfg Config
-	mainUnused, err := decodeMapstructure(mainRaw, &cfg)
+	unused, err := decodeMapstructure(raw, &cfg)
 	if err != nil {
-		return nil, RuntimePaths{}, nil, fmt.Errorf("decode static configuration: %w", err)
+		return nil, nil, fmt.Errorf("decode static configuration: %w", err)
 	}
-	if rawPlugins, exists := mainRaw["plugins"]; exists {
+	if rawPlugins, exists := raw["plugins"]; exists {
 		plugins, valid := decodeHTTPPluginAllowlist(rawPlugins)
 		if !valid {
-			return nil, RuntimePaths{}, nil, fmt.Errorf("decode static configuration: plugins must be a string list")
+			return nil, nil, fmt.Errorf("decode static configuration: plugins must be a string list")
 		}
 		cfg.Plugins = plugins
 	}
-	var extension staticExtensions
-	extensionUnused, err := decodeMapstructure(raw["apisix_go"], &extension)
-	if err != nil {
-		return nil, RuntimePaths{}, nil, fmt.Errorf("decode apisix_go static configuration: %w", err)
-	}
-	for index := range extensionUnused {
-		extensionUnused[index] = "apisix_go." + extensionUnused[index]
-	}
-	unused := append(mainUnused, extensionUnused...)
 	unused = expandUnusedPaths(root, unused)
 	sort.Strings(unused)
 	unused = slices.Compact(unused)
-	return &cfg, extension.RuntimePaths, unused, nil
+	return &cfg, unused, nil
 }
 
 func decodeMapstructure(input any, result any) ([]string, error) {

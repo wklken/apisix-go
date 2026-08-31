@@ -21,7 +21,6 @@ import (
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
-	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/runtime"
 	"github.com/wklken/apisix-go/pkg/util"
 )
@@ -286,18 +285,8 @@ func TestMessageEndpointRejectsUnknownSession(t *testing.T) {
 	}
 }
 
-func TestMessageEndpointAcceptsBodyLargerThanDefaultWithoutLocalLimit(t *testing.T) {
-	p := &Plugin{config: Config{Command: "cat"}}
-	if err := p.Init(); err != nil {
-		t.Fatalf("Init() error = %v", err)
-	}
-	if err := util.Parse(map[string]any{"max_body_size": 5}, p.Config()); err != nil {
-		t.Fatalf("Parse() error = %v", err)
-	}
-	if err := p.PostInit(); err != nil {
-		t.Fatalf("PostInit() error = %v", err)
-	}
-	t.Cleanup(p.closeAll)
+func TestMessageEndpointAcceptsLargeBodyWithoutLocalLimit(t *testing.T) {
+	p := newTestPlugin(t, Config{Command: "cat"})
 
 	stdin := &captureWriteCloser{}
 	sess := &session{
@@ -313,7 +302,7 @@ func TestMessageEndpointAcceptsBodyLargerThanDefaultWithoutLocalLimit(t *testing
 	p.sessions[sess.id] = sess
 	p.mu.Unlock()
 
-	body := strings.Repeat("x", base.DefaultRequestBodyMaxBytes+1)
+	body := strings.Repeat("x", 1<<20+1)
 	req := httptest.NewRequest(http.MethodPost, "/message?sessionId=session", strings.NewReader(body))
 	response := httptest.NewRecorder()
 	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {

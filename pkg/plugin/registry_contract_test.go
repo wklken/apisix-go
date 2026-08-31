@@ -119,15 +119,10 @@ var apisix317DefaultHTTPPlugins = []string{
 }
 
 func TestDefaultHTTPPluginsMatchAPISIX317ImplementedFactories(t *testing.T) {
-	registeredAI, ok := pluginRegistry["ai"]
-	if !ok || registeredAI.domain != DomainHTTP {
-		t.Fatal("temporary ai exclusion is stale; remove it from this contract")
-	}
-
 	want := make([]string, 0, len(apisix317DefaultHTTPPlugins))
 	for _, name := range apisix317DefaultHTTPPlugins {
 		registered, implemented := pluginRegistry[name]
-		if !implemented || registered.domain != DomainHTTP || name == "ai" {
+		if !implemented || registered.domain != DomainHTTP {
 			continue
 		}
 		want = append(want, name)

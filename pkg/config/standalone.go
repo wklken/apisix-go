@@ -372,8 +372,7 @@ func (w *StandaloneFileWatcher) commitAcknowledgement(
 	w.knownKeys = nextKeys
 	w.quarantine = nextQuarantine
 	metrics.RecordConfigApplyAcknowledgement(
-		slices.Contains(batch.RequiredDomains, generation.DomainHTTP),
-		slices.Contains(batch.RequiredDomains, generation.DomainStream),
+		ack.Decisions,
 		len(nextQuarantine),
 	)
 	return nil

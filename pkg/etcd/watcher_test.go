@@ -372,7 +372,7 @@ func TestConfigClientFailedApplyRetainsCursorKnownKeysDecisionsAndQuarantine(t *
 			Disposition: generation.DispositionLastGood, Code: "old-last-good",
 		}},
 	}
-	metrics.RecordConfigApplyQuarantine(1)
+	metrics.RecordConfigApplyAcknowledgement(client.decisions, 1)
 	metrics.RecordEtcdAppliedRevision(7)
 	metrics.RecordEtcdModifyIndex("/apisix/routes/old", 7)
 	wantState := client.snapshotAcknowledgedState()
@@ -686,7 +686,7 @@ func TestConfigClientAcknowledgementRejectsImpossibleRevisionTransitions(t *test
 			client.decisions = map[generation.Domain][]generation.ResourceDecision{
 				generation.DomainHTTP: nil, generation.DomainStream: nil,
 			}
-			metrics.RecordConfigApplyAcknowledgement(true, true, 0)
+			metrics.RecordConfigApplyAcknowledgement(client.decisions, 0)
 			metrics.RecordEtcdAppliedRevision(10)
 			wantState := client.snapshotAcknowledgedState()
 			wantReady := metricGaugeValue(t, metrics.ConfigApplyReady)

@@ -361,6 +361,31 @@ func TestStandaloneWatcherAcknowledgementAtomicallyAdvancesRequiredReadiness(t *
 	}
 }
 
+func TestStandaloneWatcherRejectedOnlyAcknowledgementDoesNotEstablishReadiness(t *testing.T) {
+	resetStandaloneConfigApplyMetrics(t, true)
+	path := writeStandaloneTestConfig(t, "routes:\n  - id: r1\n    uri: /one\n#END\n")
+	applier := &recordingStandaloneApplier{apply: func(
+		_ context.Context,
+		batch generation.DesiredBatch,
+	) (generation.Acknowledgement, error) {
+		return standaloneAcknowledgement(batch, 1, map[generation.ResourceKey]generation.ResourceDisposition{
+			{Kind: "routes", ID: "r1"}: generation.DispositionFailClosed,
+		}), nil
+	}}
+	watcher := NewStandaloneFileWatcher(
+		path,
+		standaloneProviderYAML,
+		applier,
+		testStandaloneDataEncryption(t, false, nil),
+	)
+	if err := watcher.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	if metrics.GetReadiness().ConfigApplyReady {
+		t.Fatal("rejected-only first acknowledgement established readiness")
+	}
+}
+
 func TestStandaloneWatcherInvalidAcknowledgementPreservesLastReadyState(t *testing.T) {
 	resetStandaloneConfigApplyMetrics(t, true)
 	path := writeStandaloneTestConfig(t, "routes:\n  - id: r1\n    uri: /one\n#END\n")

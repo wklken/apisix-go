@@ -16,10 +16,9 @@ type Plugin struct {
 	base.BasePlugin
 	config Config
 
-	secretMu       sync.RWMutex
-	saslPassword   *secret.Value
-	stopped        bool
-	stopBeforeLock func()
+	secretMu     sync.RWMutex
+	saslPassword *secret.Value
+	stopped      bool
 }
 
 const (
@@ -193,9 +192,6 @@ func (p *Plugin) prepareRequest(
 }
 
 func (p *Plugin) Stop() {
-	if p.stopBeforeLock != nil {
-		p.stopBeforeLock()
-	}
 	p.secretMu.Lock()
 	defer p.secretMu.Unlock()
 	if p.stopped {

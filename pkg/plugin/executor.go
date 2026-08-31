@@ -28,12 +28,11 @@ const (
 type RequestStage uint8
 
 const (
-	RequestStageLegacy RequestStage = iota
+	RequestStageNone RequestStage = iota
 	RequestStageRewrite
 	RequestStageConsumerRewrite
 	RequestStageAccess
 	RequestStageBeforeProxy
-	RequestStageNone
 )
 
 // ResourceKind identifies the source resource that materialized a binding.
@@ -657,17 +656,6 @@ func (p RequestPipeline) buildPostResolutionHandler(
 	handler = wrapScopedRequestStage(handler, bindings, RequestStageConsumerRewrite, ScopeGlobal)
 	handler = wrapScopedRequestStage(handler, bindings, RequestStageRewrite, ScopeConsumer)
 	handler = wrapScopedRequestStage(handler, bindings, RequestStageRewrite, ScopeRoute)
-	legacy := legacyRemainderBindings(bindings)
-	if len(legacy) > 0 {
-		legacyHandler := wrapLegacyBindings(handler, legacy)
-		transformCount := 0
-		for _, binding := range legacy {
-			if binding.Plugin != nil && isResponseTransformPlugin(binding.Plugin.GetName()) {
-				transformCount++
-			}
-		}
-		handler = base.WithTransformPipeline(transformCount)(legacyHandler)
-	}
 	return handler
 }
 
@@ -849,21 +837,6 @@ func isRuntimePluginPhase(phase Phase) bool {
 	default:
 		return false
 	}
-}
-
-func legacyRemainderBindings(bindings []Binding) []Binding {
-	legacy := make([]Binding, 0, len(bindings))
-	for _, binding := range bindings {
-		if binding.Plugin == nil || binding.Descriptor.requestStage != RequestStageLegacy {
-			continue
-		}
-		if binding.Descriptor.authenticatesConsumer {
-			continue
-		}
-		legacy = append(legacy, binding)
-	}
-	slices.SortStableFunc(legacy, compareBindings)
-	return legacy
 }
 
 func mergeEffectiveBindingSet(static, resolved []Binding) EffectiveBindingSet {
@@ -1080,27 +1053,6 @@ func bindResolvedPlugin(
 		logPolicy:    logPolicy,
 		logPolicySet: true,
 	}, nil
-}
-
-func wrapLegacyBindings(handler http.Handler, bindings []Binding) http.Handler {
-	for _, current := range slices.Backward(bindings) {
-		if current.Plugin == nil {
-			continue
-		}
-		handler = requestStageHandler(current, handler)
-	}
-	return handler
-}
-
-func isResponseTransformPlugin(name string) bool {
-	switch name {
-	case "proxy-cache", "echo", "response-rewrite", "serverless-pre-function", "serverless-post-function",
-		"brotli", "ai-rate-limiting", "grpc-transcode", "exit-transformer", "body-transformer",
-		"error-page", "graphql-proxy-cache":
-		return true
-	default:
-		return false
-	}
 }
 
 func terminalHandler(terminal http.Handler) http.Handler {

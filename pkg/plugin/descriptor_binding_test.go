@@ -169,7 +169,7 @@ func TestDescriptorBindingAcceptsExistingMaterializationScopes(t *testing.T) {
 type descriptorBindingTraceKey struct{}
 
 func TestDescriptorStageRunsHandlerAndPropagatesReplacementRequest(t *testing.T) {
-	p := newExecutorLegacyPlugin("real_ip", 1, func(next http.Handler) http.Handler {
+	p := newExecutorPlugin("real_ip", 1, func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			next.ServeHTTP(w, r.WithContext(context.WithValue(
 				r.Context(),

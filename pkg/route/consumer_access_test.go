@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -216,81 +215,6 @@ func TestAuthenticatedRouteOverwritesForgedConsumerHeader(t *testing.T) {
 	}
 }
 
-func TestPlan14V2DeferredLegacyEffectiveWinnerRunsOnce(t *testing.T) {
-	order := []string{}
-	route := consumerAccessLegacy("route", 100, &order)
-	consumer := consumerAccessLegacy("consumer", 50, &order)
-	pipeline := plugin.NewRequestPipeline(
-		[]plugin.Binding{
-			bindPluginForTest(
-				"same-name",
-				route,
-				plugin.ScopeRoute,
-				plugin.ResourceProvenance{Kind: plugin.ResourceRoute, ID: "route"},
-			),
-		},
-		func(r *http.Request) (plugin.ConsumerResolution, error) {
-			return plugin.ConsumerResolution{
-				Request:  r,
-				Resolved: true,
-				Bindings: []plugin.Binding{
-					bindPluginForTest(
-						"same-name",
-						consumer,
-						plugin.ScopeConsumer,
-						plugin.ResourceProvenance{Kind: plugin.ResourceConsumer, ID: "consumer"},
-					),
-				},
-			}, nil
-		},
-	)
-	pipeline.Then(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) { order = append(order, "terminal") })).
-		ServeHTTP(
-			httptest.NewRecorder(),
-			httptest.NewRequest(http.MethodGet, "/", nil),
-		)
-	if got, want := order, []string{"consumer", "terminal"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("effective deferred legacy order = %#v, want %#v", got, want)
-	}
-}
-
-func TestPlan14V2DeferredLegacyDoesNotObserveAuthFailure(t *testing.T) {
-	order := []string{}
-	auth := consumerAccessPhase("jwt-auth", func(_ http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
-		order = append(order, "auth")
-		return base.StopRequest(r)
-	})
-	legacy := consumerAccessLegacy("legacy", 10, &order)
-	pipeline := plugin.NewRequestPipeline(
-		[]plugin.Binding{
-			bindPluginForTest(
-				"jwt-auth",
-				auth,
-				plugin.ScopeRoute,
-				plugin.ResourceProvenance{Kind: plugin.ResourceRoute, ID: "auth"},
-			),
-			bindPluginForTest(
-				"legacy",
-				legacy,
-				plugin.ScopeRoute,
-				plugin.ResourceProvenance{Kind: plugin.ResourceRoute, ID: "legacy"},
-			),
-		},
-		func(*http.Request) (plugin.ConsumerResolution, error) {
-			t.Fatal("resolver called after auth failure")
-			return plugin.ConsumerResolution{}, nil
-		},
-	)
-	pipeline.Then(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) { order = append(order, "terminal") })).
-		ServeHTTP(
-			httptest.NewRecorder(),
-			httptest.NewRequest(http.MethodGet, "/", nil),
-		)
-	if got, want := order, []string{"auth"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("auth failure order = %#v, want %#v", got, want)
-	}
-}
-
 func TestPlan14V2BeforeProxyAndFinalizeRunOnce(t *testing.T) {
 	hookCalls := 0
 	request := httptest.NewRequest(http.MethodGet, "/before", nil)
@@ -448,51 +372,3 @@ func testPreparedConsumerHandler(
 	}
 	return handler
 }
-
-type consumerAccessLegacyPlugin struct {
-	name     string
-	priority int
-	order    *[]string
-}
-
-func (p *consumerAccessLegacyPlugin) Init() error               { return nil }
-func (p *consumerAccessLegacyPlugin) PostInit() error           { return nil }
-func (p *consumerAccessLegacyPlugin) Config() any               { return nil }
-func (p *consumerAccessLegacyPlugin) GetSchema() string         { return "" }
-func (p *consumerAccessLegacyPlugin) GetMetadataSchema() string { return "" }
-func (p *consumerAccessLegacyPlugin) GetPriority() int          { return p.priority }
-func (p *consumerAccessLegacyPlugin) GetName() string           { return p.name }
-func (p *consumerAccessLegacyPlugin) Handler(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		*p.order = append(*p.order, p.name)
-		next.ServeHTTP(w, r)
-	})
-}
-
-func consumerAccessLegacy(name string, priority int, order *[]string) plugin.Plugin {
-	return &consumerAccessLegacyPlugin{name: name, priority: priority, order: order}
-}
-
-type consumerAccessPhasePlugin struct {
-	consumerAccessLegacyPlugin
-	phase func(http.ResponseWriter, *http.Request) base.RequestPhaseResult
-}
-
-func (p *consumerAccessPhasePlugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
-	return p.phase(w, r)
-}
-
-func consumerAccessPhase(
-	name string,
-	phase func(http.ResponseWriter, *http.Request) base.RequestPhaseResult,
-) plugin.Plugin {
-	return &consumerAccessPhasePlugin{
-		consumerAccessLegacyPlugin: consumerAccessLegacyPlugin{name: name, priority: 100},
-		phase:                      phase,
-	}
-}
-
-var (
-	_ plugin.Plugin           = (*consumerAccessLegacyPlugin)(nil)
-	_ base.RequestPhasePlugin = (*consumerAccessPhasePlugin)(nil)
-)

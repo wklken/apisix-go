@@ -354,39 +354,6 @@ func TestScopedRewriteFilterAndErrorResponse(t *testing.T) {
 	}
 }
 
-func TestScopedRewriteEarlyStopSkipsLegacyAndUpstream(t *testing.T) {
-	order := []string{}
-	executor := assembleRouteExecutor(
-		[]plugin.Binding{
-			bindScopedTestPlugin(
-				"request-id",
-				&scopedRewriteTestPlugin{name: "stop", priority: 1, order: &order, stop: true},
-				plugin.ScopeRoute,
-				plugin.ResourceProvenance{Kind: plugin.ResourceRoute, ID: "route-stop"},
-			),
-			bindScopedTestPlugin(
-				"response-rewrite",
-				&recordingPlugin{name: "legacy", priority: 200, order: &order},
-				plugin.ScopeRoute,
-				plugin.ResourceProvenance{Kind: plugin.ResourceRoute, ID: "route-legacy"},
-			),
-		},
-		nil,
-		nil,
-	)
-	response := httptest.NewRecorder()
-	executor.Then(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		order = append(order, "upstream")
-		w.WriteHeader(http.StatusNoContent)
-	})).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/stop", nil))
-	if response.Code != http.StatusTeapot {
-		t.Fatalf("status = %d, want 418", response.Code)
-	}
-	if !reflect.DeepEqual(order, []string{"legacy", "stop"}) {
-		t.Fatalf("execution order = %#v, want [legacy stop]", order)
-	}
-}
-
 func TestScopedRewriteGlobalNotFoundRunsSystemAndGlobalOnly(t *testing.T) {
 	order := []string{}
 	handler := assembleRouteExecutor(

@@ -71,36 +71,6 @@ func TestBeforeProxyHookRunsOnceAfterTransformsAndBeforeFallback(t *testing.T) {
 	}
 }
 
-func TestRouteRequestPipelineRunsGlobalBeforeRouteLegacyPlugins(t *testing.T) {
-	order := []string{}
-	local := []pluginpkg.Binding{bindPluginForTest(
-		"local-auth",
-		&recordingPlugin{name: "local-auth", priority: 2500, order: &order},
-		pluginpkg.ScopeRoute,
-		pluginpkg.ResourceProvenance{Kind: pluginpkg.ResourceRoute, ID: "route-order"},
-	)}
-	global := []pluginpkg.Binding{bindPluginForTest(
-		"global-label",
-		&recordingPlugin{name: "global-label", priority: 2399, order: &order},
-		pluginpkg.ScopeGlobal,
-		pluginpkg.ResourceProvenance{Kind: pluginpkg.ResourceGlobalRule, ID: "global-order"},
-	)}
-	handler := assembleRouteExecutor(local, global, nil).Then(http.HandlerFunc(
-		func(w http.ResponseWriter, _ *http.Request) {
-			order = append(order, "upstream")
-			w.WriteHeader(http.StatusNoContent)
-		},
-	))
-
-	response := performRouteTestRequest(t, handler, "/priority")
-	if response.Code != http.StatusNoContent {
-		t.Fatalf("status = %d, want %d", response.Code, http.StatusNoContent)
-	}
-	if got := strings.Join(order, ","); got != "global-label,local-auth,upstream" {
-		t.Fatalf("execution order = %q, want global-label,local-auth,upstream", got)
-	}
-}
-
 func TestBuildGlobalNotFoundHandlerRunsGlobalPlugins(t *testing.T) {
 	globalRule := resource.GlobalRule{
 		ID: "global-transform",

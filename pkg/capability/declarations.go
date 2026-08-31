@@ -28,7 +28,6 @@ var secretDeclarations = []SecretDeclaration{
 	{Factory: "basic-auth", Source: SecretConsumerConfig, Field: "password"},
 	{Factory: "authz-keycloak", Source: SecretPluginConfig, Field: "client_secret"},
 	{Factory: "authz-casdoor", Source: SecretPluginConfig, Field: "client_secret"},
-	{Factory: "authz-casdoor", Source: SecretPluginConfig, Field: "client_secret_fallbacks"},
 	{Factory: "dingtalk-auth", Source: SecretPluginConfig, Field: "app_secret"},
 	{Factory: "dingtalk-auth", Source: SecretPluginConfig, Field: "secret"},
 	{Factory: "dingtalk-auth", Source: SecretPluginConfig, Field: "secret_fallbacks"},

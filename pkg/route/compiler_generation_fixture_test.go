@@ -173,9 +173,8 @@ func TestPreparedGenerationRejectsDisabledNestedPlugins(t *testing.T) {
 	}
 }
 
-func TestPreparedGenerationResolvesCasdoorSecretsBeforePluginValidation(t *testing.T) {
-	t.Setenv("CAS_CURRENT", "route-current-route-current-route-current")
-	t.Setenv("CAS_FALLBACK", "route-fallback-route-fallback-route-fallback")
+func TestPreparedGenerationMaterializesCasdoorClientSecret(t *testing.T) {
+	t.Setenv("CAS_CURRENT", "short")
 	prepared := compileRouteGeneration(t, []generation.Resource{{
 		Key: generation.ResourceKey{Kind: "routes", ID: "casdoor-short-references"},
 		Value: []byte(`{
@@ -184,7 +183,6 @@ func TestPreparedGenerationResolvesCasdoorSecretsBeforePluginValidation(t *testi
 				"endpoint_addr":"https://door.example.com",
 				"client_id":"compiler-client",
 				"client_secret":"$ENV://CAS_CURRENT",
-				"client_secret_fallbacks":["$ENV://CAS_FALLBACK"],
 				"callback_url":"https://gateway.example.com/callback"
 			}}
 		}`),
@@ -200,96 +198,11 @@ func TestPreparedGenerationResolvesCasdoorSecretsBeforePluginValidation(t *testi
 		t.Fatalf("Casdoor route status = %d, want authorization redirect", response.Code)
 	}
 	if response.Header().Get("Set-Cookie") == "" {
-		t.Fatal("Casdoor route did not seal a session cookie with the resolved secret")
+		t.Fatal("Casdoor route did not seal a session cookie")
 	}
 }
 
-func TestPreparedGenerationCasdoorResolvedLengthFailureIsQuarantinedAndRetryable(t *testing.T) {
-	const (
-		currentReference  = "$ENV://CAS_CURRENT"
-		fallbackReference = "$ENV://CAS_FALLBACK"
-		validCurrent      = "route-current-route-current-route-current"
-		validFallback     = "route-fallback-route-fallback-route-fallback"
-	)
-	for _, test := range []struct {
-		name     string
-		shortEnv string
-	}{
-		{name: "current", shortEnv: "CAS_CURRENT"},
-		{name: "fallback", shortEnv: "CAS_FALLBACK"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				w.WriteHeader(http.StatusNoContent)
-			}))
-			t.Cleanup(backend.Close)
-			t.Setenv("CAS_CURRENT", validCurrent)
-			t.Setenv("CAS_FALLBACK", validFallback)
-			t.Setenv(test.shortEnv, "short-private-value")
-			resources := []generation.Resource{
-				{
-					Key: generation.ResourceKey{Kind: "routes", ID: "casdoor-short-" + test.name},
-					Value: fmt.Appendf(nil, `{
-						"id":"casdoor-short-%s","uri":"/casdoor-short-%s",
-						"plugins":{"authz-casdoor":{
-							"endpoint_addr":"https://door.example.com","client_id":"compiler-client",
-							"client_secret":%q,"client_secret_fallbacks":[%q],
-							"callback_url":"https://gateway.example.com/callback"
-						}}
-					}`, test.name, test.name, currentReference, fallbackReference),
-				},
-				{
-					Key: generation.ResourceKey{Kind: "routes", ID: "casdoor-valid-sibling"},
-					Value: fmt.Appendf(nil, `{
-						"id":"casdoor-valid-sibling","uri":"/casdoor-valid-sibling",
-						"upstream":{"nodes":{%q:1}}
-					}`, strings.TrimPrefix(backend.URL, "http://")),
-				},
-			}
-			configure := func(cfg *config.Config) { cfg.Plugins = []string{"authz-casdoor"} }
-			harness := newRouteGenerationFactory(t, configure)
-			prepared, err := harness.Prepare(t, resources, generation.DomainHTTP)
-			if err != nil {
-				t.Fatalf("invalid Casdoor route failed the whole generation: %v", err)
-			}
-			quarantined := prepared.HTTP().Quarantined()
-			if len(quarantined) != 1 || quarantined[0].ID != "casdoor-short-"+test.name {
-				t.Fatalf("quarantined = %#v, want failed Casdoor route", quarantined)
-			}
-			sibling := httptest.NewRecorder()
-			prepared.HTTP().Handler().ServeHTTP(
-				sibling,
-				httptest.NewRequest(http.MethodGet, "http://gateway.test/casdoor-valid-sibling", nil),
-			)
-			if sibling.Code != http.StatusNoContent {
-				t.Fatalf("valid sibling status = %d, want %d", sibling.Code, http.StatusNoContent)
-			}
-
-			t.Setenv(test.shortEnv, "retry-secret-retry-secret-retry-secret")
-			retry, err := harness.Prepare(t, resources, generation.DomainHTTP)
-			if err != nil {
-				t.Fatalf("retry corrected Casdoor generation: %v", err)
-			}
-			if got := retry.HTTP().Quarantined(); len(got) != 0 {
-				t.Fatalf("retry quarantine = %#v, want none", got)
-			}
-			response := httptest.NewRecorder()
-			retry.HTTP().Handler().ServeHTTP(
-				response,
-				httptest.NewRequest(http.MethodGet, "http://gateway.test/casdoor-short-"+test.name, nil),
-			)
-			if response.Code != http.StatusFound {
-				t.Fatalf("retry status = %d, want authorization redirect", response.Code)
-			}
-		})
-	}
-}
-
-func TestPreparedGenerationCasdoorShortLiteralIsQuarantined(t *testing.T) {
-	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	t.Cleanup(backend.Close)
+func TestPreparedGenerationCasdoorShortLiteralIsAccepted(t *testing.T) {
 	prepared, err := prepareRouteGeneration(t, []generation.Resource{
 		{
 			Key: generation.ResourceKey{Kind: "routes", ID: "casdoor-short-literal"},
@@ -302,28 +215,20 @@ func TestPreparedGenerationCasdoorShortLiteralIsQuarantined(t *testing.T) {
 				}}
 			}`),
 		},
-		{
-			Key: generation.ResourceKey{Kind: "routes", ID: "casdoor-short-literal-sibling"},
-			Value: fmt.Appendf(nil, `{
-				"id":"casdoor-short-literal-sibling","uri":"/casdoor-short-literal-sibling",
-				"upstream":{"nodes":{%q:1}}
-			}`, strings.TrimPrefix(backend.URL, "http://")),
-		},
 	}, func(cfg *config.Config) { cfg.Plugins = []string{"authz-casdoor"} })
 	if err != nil {
 		t.Fatalf("short literal failed the whole generation: %v", err)
 	}
-	quarantined := prepared.HTTP().Quarantined()
-	if len(quarantined) != 1 || quarantined[0].ID != "casdoor-short-literal" {
-		t.Fatalf("quarantined = %#v, want short-literal Casdoor route", quarantined)
+	if quarantined := prepared.HTTP().Quarantined(); len(quarantined) != 0 {
+		t.Fatalf("quarantined = %#v, want APISIX-valid short client_secret", quarantined)
 	}
-	sibling := httptest.NewRecorder()
+	response := httptest.NewRecorder()
 	prepared.HTTP().Handler().ServeHTTP(
-		sibling,
-		httptest.NewRequest(http.MethodGet, "http://gateway.test/casdoor-short-literal-sibling", nil),
+		response,
+		httptest.NewRequest(http.MethodGet, "http://gateway.test/casdoor-short-literal", nil),
 	)
-	if sibling.Code != http.StatusNoContent {
-		t.Fatalf("short-literal sibling status = %d, want %d", sibling.Code, http.StatusNoContent)
+	if response.Code != http.StatusFound {
+		t.Fatalf("short-literal route status = %d, want authorization redirect", response.Code)
 	}
 }
 

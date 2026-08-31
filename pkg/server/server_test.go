@@ -751,6 +751,17 @@ func TestStatusEndpointsUseSeparateHandlerAndIgnoreEtcdLoss(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("/status/ready after config apply = %d, want %d", response.Code, http.StatusOK)
 	}
+	metrics.RecordConfigApplyAcknowledgement(map[generation.Domain][]generation.ResourceDecision{
+		generation.DomainHTTP: {{
+			Key:         generation.ResourceKey{Kind: "routes", ID: "last-good"},
+			Disposition: generation.DispositionLastGood,
+		}},
+	}, 1)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/status/ready", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("/status/ready with quarantine = %d, want serviceable %d", response.Code, http.StatusOK)
+	}
 
 	metrics.RecordEtcdReachable(false)
 	response = httptest.NewRecorder()

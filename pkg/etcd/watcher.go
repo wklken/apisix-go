@@ -1052,8 +1052,7 @@ func (c *ConfigClient) applyCandidate(ctx context.Context, candidate etcdProvide
 	}
 	metrics.RecordEtcdAppliedRevision(providerRevision)
 	metrics.RecordConfigApplyAcknowledgement(
-		slices.Contains(c.domains, generation.DomainHTTP),
-		slices.Contains(c.domains, generation.DomainStream),
+		ack.Decisions,
 		len(nextQuarantine),
 	)
 	return nil

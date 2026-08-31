@@ -5,7 +5,18 @@ import (
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/wklken/apisix-go/pkg/generation"
 )
+
+func serviceableConfigApplyAcknowledgement(
+	domains ...generation.Domain,
+) map[generation.Domain][]generation.ResourceDecision {
+	decisions := make(map[generation.Domain][]generation.ResourceDecision, len(domains))
+	for _, domain := range domains {
+		decisions[domain] = nil
+	}
+	return decisions
+}
 
 func TestConfigApplyMetricsAreNilSafeBeforeInit(t *testing.T) {
 	oldFailures, oldReady := ConfigApplyFailures, ConfigApplyReady
@@ -90,7 +101,7 @@ func TestRecordConfigApplyAttemptFailureIncrementsOnlyCounter(t *testing.T) {
 	}
 }
 
-func TestRecordConfigApplyAcknowledgementInstallsStagesAndQuarantineTogether(t *testing.T) {
+func TestRecordConfigApplyAcknowledgementKeepsQuarantineDiagnostic(t *testing.T) {
 	oldFailures, oldReady, oldQuarantine := ConfigApplyFailures, ConfigApplyReady, ConfigApplyQuarantined
 	ConfigApplyFailures = prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "test_config_apply_ack_failures_total",
@@ -107,25 +118,122 @@ func TestRecordConfigApplyAcknowledgementInstallsStagesAndQuarantineTogether(t *
 	})
 
 	SetConfigApplyStreamRequired(true)
-	RecordConfigApplyAcknowledgement(true, true, 0)
+	decisions := serviceableConfigApplyAcknowledgement(generation.DomainHTTP, generation.DomainStream)
+	RecordConfigApplyAcknowledgement(decisions, 0)
 	if !GetReadiness().ConfigApplyReady {
 		t.Fatal("acknowledged provider/http/stream publication is not ready")
 	}
 
-	RecordConfigApplyAcknowledgement(true, true, 2)
-	if GetReadiness().ConfigApplyReady {
-		t.Fatal("acknowledged quarantine remained ready")
+	RecordConfigApplyAcknowledgement(decisions, 2)
+	if !GetReadiness().ConfigApplyReady {
+		t.Fatal("acknowledged serviceable generation became unready because of quarantine")
 	}
 	if got := gaugeValue(t, ConfigApplyQuarantined); got != 2 {
 		t.Fatalf("quarantine count = %v, want 2", got)
 	}
 
-	RecordConfigApplyAcknowledgement(true, true, 0)
+	RecordConfigApplyAcknowledgement(decisions, 0)
 	if !GetReadiness().ConfigApplyReady {
-		t.Fatal("cleared acknowledged quarantine did not restore readiness")
+		t.Fatal("cleared acknowledged quarantine changed readiness")
 	}
 	if got := counterValue(t, ConfigApplyFailures); got != 0 {
 		t.Fatalf("acknowledgements changed failure count to %v", got)
+	}
+}
+
+func TestAcknowledgedDomainServiceable(t *testing.T) {
+	httpKey := generation.ResourceKey{Kind: "routes", ID: "route"}
+	tests := []struct {
+		name      string
+		decisions map[generation.Domain][]generation.ResourceDecision
+		want      bool
+	}{
+		{name: "absent domain", decisions: nil},
+		{
+			name:      "empty valid domain",
+			decisions: serviceableConfigApplyAcknowledgement(generation.DomainHTTP),
+			want:      true,
+		},
+		{
+			name: "fail closed only",
+			decisions: map[generation.Domain][]generation.ResourceDecision{generation.DomainHTTP: {{
+				Key: httpKey, Disposition: generation.DispositionFailClosed,
+			}}},
+		},
+		{
+			name: "quarantined only",
+			decisions: map[generation.Domain][]generation.ResourceDecision{generation.DomainHTTP: {{
+				Key: httpKey, Disposition: generation.DispositionQuarantined,
+			}}},
+		},
+		{
+			name: "published",
+			decisions: map[generation.Domain][]generation.ResourceDecision{generation.DomainHTTP: {{
+				Key: httpKey, Disposition: generation.DispositionPublished,
+			}}},
+			want: true,
+		},
+		{
+			name: "last good",
+			decisions: map[generation.Domain][]generation.ResourceDecision{generation.DomainHTTP: {{
+				Key: httpKey, Disposition: generation.DispositionLastGood,
+			}}},
+			want: true,
+		},
+		{
+			name: "deleted",
+			decisions: map[generation.Domain][]generation.ResourceDecision{generation.DomainHTTP: {{
+				Key: httpKey, Disposition: generation.DispositionDeleted,
+			}}},
+			want: true,
+		},
+		{
+			name: "mixed rejected and published",
+			decisions: map[generation.Domain][]generation.ResourceDecision{generation.DomainHTTP: {
+				{Key: httpKey, Disposition: generation.DispositionFailClosed},
+				{Key: generation.ResourceKey{Kind: "routes", ID: "kept"}, Disposition: generation.DispositionPublished},
+			}},
+			want: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := acknowledgedDomainServiceable(test.decisions, generation.DomainHTTP); got != test.want {
+				t.Fatalf("acknowledgedDomainServiceable() = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestRecordConfigApplyAcknowledgementRequiresServiceableFirstPublication(t *testing.T) {
+	oldFailures, oldReady, oldQuarantine := ConfigApplyFailures, ConfigApplyReady, ConfigApplyQuarantined
+	ConfigApplyFailures = prometheus.NewCounter(prometheus.CounterOpts{Name: "test_first_ack_failures_total"})
+	ConfigApplyReady = prometheus.NewGauge(prometheus.GaugeOpts{Name: "test_first_ack_ready"})
+	ConfigApplyQuarantined = prometheus.NewGauge(prometheus.GaugeOpts{Name: "test_first_ack_quarantine"})
+	t.Cleanup(func() {
+		ConfigApplyFailures, ConfigApplyReady, ConfigApplyQuarantined = oldFailures, oldReady, oldQuarantine
+	})
+
+	rejected := map[generation.Domain][]generation.ResourceDecision{generation.DomainHTTP: {{
+		Key:         generation.ResourceKey{Kind: "routes", ID: "invalid"},
+		Disposition: generation.DispositionFailClosed,
+	}}}
+	RecordConfigApplyAcknowledgement(rejected, 1)
+	if GetReadiness().ConfigApplyReady {
+		t.Fatal("rejected-only first acknowledgement established readiness")
+	}
+	if got := gaugeValue(t, ConfigApplyQuarantined); got != 1 {
+		t.Fatalf("quarantine count = %v, want 1", got)
+	}
+
+	RecordConfigApplyAcknowledgement(serviceableConfigApplyAcknowledgement(generation.DomainHTTP), 0)
+	if !GetReadiness().ConfigApplyReady {
+		t.Fatal("valid empty acknowledgement did not establish readiness")
+	}
+	RecordConfigApplyAcknowledgement(rejected, 1)
+	if !GetReadiness().ConfigApplyReady {
+		t.Fatal("later rejected-only acknowledgement erased serviceable readiness")
 	}
 }
 
@@ -345,43 +453,6 @@ func TestGetReadinessResetsWhenConfigMetricsAreReplaced(t *testing.T) {
 	}
 }
 
-func TestConfigApplyQuarantineBlocksReadinessUntilCleared(t *testing.T) {
-	oldFailures, oldReady, oldQuarantine := ConfigApplyFailures, ConfigApplyReady, ConfigApplyQuarantined
-	ConfigApplyFailures = prometheus.NewCounter(
-		prometheus.CounterOpts{Name: "test_quarantine_readiness_failures_total"},
-	)
-	ConfigApplyReady = prometheus.NewGauge(prometheus.GaugeOpts{Name: "test_quarantine_readiness_ready"})
-	ConfigApplyQuarantined = prometheus.NewGauge(prometheus.GaugeOpts{Name: "test_quarantine_readiness_count"})
-	t.Cleanup(func() {
-		ConfigApplyFailures, ConfigApplyReady, ConfigApplyQuarantined = oldFailures, oldReady, oldQuarantine
-	})
-
-	RecordConfigApplyStageSuccess(ConfigApplyStageProvider)
-	RecordConfigApplyStageSuccess(ConfigApplyStageHTTPRoutes)
-	if got := gaugeValue(t, ConfigApplyReady); got != 1 {
-		t.Fatalf("ready before quarantine = %v, want 1", got)
-	}
-
-	RecordConfigApplyQuarantine(2)
-	if got := gaugeValue(t, ConfigApplyQuarantined); got != 2 {
-		t.Fatalf("quarantine count = %v, want 2", got)
-	}
-	if got := gaugeValue(t, ConfigApplyReady); got != 0 {
-		t.Fatalf("ready with quarantine = %v, want 0", got)
-	}
-	if GetReadiness().ConfigApplyReady {
-		t.Fatal("GetReadiness() remained ready while resources were quarantined")
-	}
-
-	RecordConfigApplyQuarantine(0)
-	if got := gaugeValue(t, ConfigApplyQuarantined); got != 0 {
-		t.Fatalf("quarantine count after clear = %v, want 0", got)
-	}
-	if got := gaugeValue(t, ConfigApplyReady); got != 1 {
-		t.Fatalf("ready after quarantine clear = %v, want 1", got)
-	}
-}
-
 func TestConfigApplyQuarantineMetricHasNoLabels(t *testing.T) {
 	registry := prometheus.NewRegistry()
 	gauge := newConfigApplyQuarantineMetric(registry, "apisix_")
@@ -399,38 +470,5 @@ func TestConfigApplyQuarantineMetricHasNoLabels(t *testing.T) {
 	}
 	if labels := families[0].GetMetric()[0].GetLabel(); len(labels) != 0 {
 		t.Fatalf("quarantine metric labels = %v, want none", labels)
-	}
-}
-
-func TestConfigApplyQuarantineAggregatesProviderAndStoreSources(t *testing.T) {
-	oldFailures, oldReady, oldQuarantine := ConfigApplyFailures, ConfigApplyReady, ConfigApplyQuarantined
-	ConfigApplyFailures = prometheus.NewCounter(prometheus.CounterOpts{Name: "test_quarantine_sources_failures_total"})
-	ConfigApplyReady = prometheus.NewGauge(prometheus.GaugeOpts{Name: "test_quarantine_sources_ready"})
-	ConfigApplyQuarantined = prometheus.NewGauge(prometheus.GaugeOpts{Name: "test_quarantine_sources_count"})
-	t.Cleanup(func() {
-		ConfigApplyFailures, ConfigApplyReady, ConfigApplyQuarantined = oldFailures, oldReady, oldQuarantine
-	})
-
-	RecordConfigApplyStageSuccess(ConfigApplyStageProvider)
-	RecordConfigApplyStageSuccess(ConfigApplyStageHTTPRoutes)
-	RecordConfigApplyQuarantine(2)
-	RecordConfigApplyStoreQuarantine(3)
-	if got := gaugeValue(t, ConfigApplyQuarantined); got != 5 {
-		t.Fatalf("aggregated quarantine count = %v, want 5", got)
-	}
-	if GetReadiness().ConfigApplyReady {
-		t.Fatal("readiness = true while provider and store quarantine remain")
-	}
-
-	RecordConfigApplyQuarantine(0)
-	if got := gaugeValue(t, ConfigApplyQuarantined); got != 3 {
-		t.Fatalf("count after provider quarantine clear = %v, want 3", got)
-	}
-	RecordConfigApplyStoreQuarantine(0)
-	if got := gaugeValue(t, ConfigApplyQuarantined); got != 0 {
-		t.Fatalf("count after store quarantine clear = %v, want 0", got)
-	}
-	if !GetReadiness().ConfigApplyReady {
-		t.Fatal("readiness = false after both quarantine sources clear")
 	}
 }

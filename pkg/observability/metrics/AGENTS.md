@@ -7,8 +7,10 @@ This file inherits the repository root `AGENTS.md` and applies to
 
 - Readiness is internal bounded state; never infer it by scraping Prometheus.
 - `config_apply_ready` requires provider observed+healthy and successful HTTP
-  stage, plus successful stream stage only when stream is configured. Any
-  quarantine blocks readiness.
+  stage, plus successful stream stage only when stream is configured.
+  Quarantine is diagnostic only. A first acknowledgement containing only
+  rejected dispositions does not establish stage readiness; later quarantine
+  does not erase an already serviceable acknowledgement.
 - The separate status listener exposes `/status` for process liveness and
   `/status/ready` for committed serviceable configuration. Provider
   reachability remains separate: last-good stays ready during an etcd outage.

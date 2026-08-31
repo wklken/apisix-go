@@ -4,6 +4,7 @@ import (
 	"sync"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/wklken/apisix-go/pkg/generation"
 )
 
 const (
@@ -56,8 +57,6 @@ var configApplyState struct {
 	ready              prometheus.Gauge
 	etcdReachable      prometheus.Gauge
 	quarantined        prometheus.Gauge
-	providerQuarantine int
-	storeQuarantine    int
 	quarantineCount    int
 }
 
@@ -133,10 +132,14 @@ func RecordConfigApplyAttemptFailure(provider, stage string) {
 }
 
 // RecordConfigApplyAcknowledgement installs provider, publication-stage, and
-// quarantine readiness from one durable acknowledgement while holding the
-// readiness state lock once. Domains not represented by the acknowledgement
-// retain their prior state.
-func RecordConfigApplyAcknowledgement(httpApplied, streamApplied bool, quarantine int) {
+// quarantine diagnostics from one durable acknowledgement while holding the
+// readiness state lock once. A domain establishes readiness only when its
+// decisions describe a serviceable publication; rejected-only acknowledgements
+// retain any previously acknowledged stage state.
+func RecordConfigApplyAcknowledgement(
+	decisions map[generation.Domain][]generation.ResourceDecision,
+	quarantine int,
+) {
 	if quarantine < 0 {
 		quarantine = 0
 	}
@@ -147,22 +150,43 @@ func RecordConfigApplyAcknowledgement(httpApplied, streamApplied bool, quarantin
 	configApplyState.providerBlocked = false
 	configApplyState.providerObserved = true
 	configApplyState.providerHealthy = true
-	if httpApplied {
+	if acknowledgedDomainServiceable(decisions, generation.DomainHTTP) {
 		configApplyState.httpRoutesBlocked = false
 		configApplyState.httpRoutesObserved = true
 		configApplyState.httpRoutesHealthy = true
 	}
-	if streamApplied {
+	if acknowledgedDomainServiceable(decisions, generation.DomainStream) {
 		configApplyState.streamBlocked = false
 		configApplyState.streamObserved = true
 		configApplyState.streamHealthy = true
 	}
-	configApplyState.providerQuarantine = quarantine
-	configApplyState.quarantineCount = configApplyState.providerQuarantine + configApplyState.storeQuarantine
+	configApplyState.quarantineCount = quarantine
 	if configApplyState.quarantined != nil {
 		configApplyState.quarantined.Set(float64(configApplyState.quarantineCount))
 	}
 	setConfigApplyReadyLocked(ready)
+}
+
+func acknowledgedDomainServiceable(
+	decisions map[generation.Domain][]generation.ResourceDecision,
+	domain generation.Domain,
+) bool {
+	domainDecisions, acknowledged := decisions[domain]
+	if !acknowledged {
+		return false
+	}
+	if len(domainDecisions) == 0 {
+		return true
+	}
+	for _, decision := range domainDecisions {
+		switch decision.Disposition {
+		case generation.DispositionPublished,
+			generation.DispositionLastGood,
+			generation.DispositionDeleted:
+			return true
+		}
+	}
+	return false
 }
 
 // RecordConfigApplyStageSuccess clears only the supplied stage's blocker and
@@ -209,42 +233,6 @@ func SetConfigApplyStreamRequired(required bool) {
 	setConfigApplyReadyLocked(ready)
 }
 
-// RecordConfigApplyQuarantine updates the provider-side count of invalid
-// resources retained at their last-good state. The count is deliberately
-// exported as a no-label gauge so arbitrary etcd keys cannot create metric
-// series. Store-side legacy quarantine is tracked independently through
-// RecordConfigApplyStoreQuarantine.
-func RecordConfigApplyQuarantine(count int) {
-	configApplyState.Lock()
-	defer configApplyState.Unlock()
-	recordConfigApplyQuarantineLocked(&configApplyState.providerQuarantine, count)
-}
-
-// RecordConfigApplyStoreQuarantine updates the store-side count of malformed
-// legacy route/global-rule rows skipped from a published snapshot. It is kept
-// separate from the provider count so one source cannot clear the other.
-func RecordConfigApplyStoreQuarantine(count int) {
-	if count < 0 {
-		count = 0
-	}
-	configApplyState.Lock()
-	defer configApplyState.Unlock()
-	recordConfigApplyQuarantineLocked(&configApplyState.storeQuarantine, count)
-}
-
-func recordConfigApplyQuarantineLocked(source *int, count int) {
-	if count < 0 {
-		count = 0
-	}
-	_, ready := syncConfigApplyMetricsLocked()
-	*source = count
-	configApplyState.quarantineCount = configApplyState.providerQuarantine + configApplyState.storeQuarantine
-	if configApplyState.quarantined != nil {
-		configApplyState.quarantined.Set(float64(configApplyState.quarantineCount))
-	}
-	setConfigApplyReadyLocked(ready)
-}
-
 // GetReadiness returns the internal observed/healthy state for health
 // endpoints. It deliberately does not read values back from Prometheus
 // collectors, so replacing a collector resets the corresponding state.
@@ -275,8 +263,6 @@ func syncConfigApplyMetricsLocked() (prometheus.Counter, prometheus.Gauge) {
 		configApplyState.httpRoutesHealthy = false
 		configApplyState.streamObserved = false
 		configApplyState.streamHealthy = false
-		configApplyState.providerQuarantine = 0
-		configApplyState.storeQuarantine = 0
 		configApplyState.quarantineCount = 0
 		configApplyState.failures = failures
 		configApplyState.ready = ready
@@ -286,8 +272,7 @@ func syncConfigApplyMetricsLocked() (prometheus.Counter, prometheus.Gauge) {
 }
 
 func configApplyReadyLocked() bool {
-	if configApplyState.quarantineCount != 0 ||
-		configApplyState.providerBlocked || !configApplyState.providerObserved ||
+	if configApplyState.providerBlocked || !configApplyState.providerObserved ||
 		!configApplyState.providerHealthy || configApplyState.httpRoutesBlocked ||
 		!configApplyState.httpRoutesObserved || !configApplyState.httpRoutesHealthy {
 		return false

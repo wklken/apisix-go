@@ -175,7 +175,6 @@ func TestBuildTransportOptionWithSSLResolverSupportsIDAndRejectsControls(t *test
 		resource.Route{},
 		base,
 		resolver,
-		&testEffectiveConfig().Config,
 	); err != nil {
 		t.Fatalf("ID-based client certificate: %v", err)
 	}
@@ -231,7 +230,6 @@ func TestBuildTransportOptionWithSSLResolverSupportsIDAndRejectsControls(t *test
 				resource.Route{},
 				test.upstream,
 				resolve,
-				&testEffectiveConfig().Config,
 			)
 			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
 				t.Fatalf("buildTransportOptionWithSSLResolver() error = %v, want substring %q", err, test.wantErr)

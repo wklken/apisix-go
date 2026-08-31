@@ -125,7 +125,6 @@ func buildTransportOptionWithSSLResolver(
 	routeResource resource.Route,
 	upstream resource.Upstream,
 	resolveSSL sslResolver,
-	staticConfig *appconfig.Config,
 ) (proxy.TransportOption, error) {
 	if upstreamHasClientCertificate(upstream) && !upstreamUsesTLS(upstream) {
 		return proxy.TransportOption{}, fmt.Errorf(
@@ -150,13 +149,6 @@ func buildTransportOptionWithSSLResolver(
 		}
 	}
 
-	if staticConfig != nil {
-		proxyConfig := staticConfig.Proxy
-		optionBuilder = optionBuilder.
-			WithMaxIdleConnections(proxyConfig.MaxIdleConns).
-			WithMaxIdleConnectionsPerHost(proxyConfig.MaxIdleConnsPerHost).
-			WithMaxConnectionsPerHost(proxyConfig.MaxConnsPerHost)
-	}
 	return optionBuilder.Build(), nil
 }
 
@@ -172,7 +164,7 @@ func buildClusterConfigWithSSLResolver(
 	staticConfig *appconfig.Config,
 	priorities ...map[string]int,
 ) (proxy.ClusterConfig, error) {
-	transport, err := buildTransportOptionWithSSLResolver(routeResource, upstream, resolveSSL, staticConfig)
+	transport, err := buildTransportOptionWithSSLResolver(routeResource, upstream, resolveSSL)
 	if err != nil {
 		return proxy.ClusterConfig{}, err
 	}
@@ -189,14 +181,6 @@ func buildClusterConfigWithTransport(
 ) (proxy.ClusterConfig, error) {
 	timeouts := resolveUpstreamTimeouts(routeResource.Timeout, upstream.Timeout)
 
-	maxInFlight := proxy.DefaultMaxInFlight
-	if staticConfig != nil {
-		proxyConfig := staticConfig.Proxy
-		if proxyConfig.MaxInFlight > 0 {
-			maxInFlight = proxyConfig.MaxInFlight
-		}
-	}
-
 	checks := upstream.Checks
 	if staticConfig != nil && staticConfig.Apisix.DisableUpstreamHealthcheck {
 		checks = withoutActiveChecks(checks)
@@ -212,7 +196,7 @@ func buildClusterConfigWithTransport(
 		ReadTimeout:       timeouts.read,
 		Retries:           httpRetryCount(upstream),
 		RetriesConfigured: upstream.RetriesConfigured(),
-		MaxInFlight:       maxInFlight,
+		MaxInFlight:       proxy.DefaultMaxInFlight,
 		HTTP2Cleartext:    strings.EqualFold(upstream.Scheme, "grpc"),
 	}
 	if config.Name == "" {

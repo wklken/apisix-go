@@ -12,10 +12,6 @@ type Config struct {
 	Apisix      Apisix      `mapstructure:"apisix"`
 	NginxConfig NginxConfig `mapstructure:"nginx_config"`
 
-	// NGINX-only directives are retained for config compatibility; the Go server
-	// applies the HTTP timeout settings that have direct net/http equivalents.
-	Proxy Proxy `mapstructure:"proxy"`
-
 	Discovery     Discovery `mapstructure:"discovery" secret:"container"`
 	GraphQL       GraphQL   `mapstructure:"graphql"`
 	ExtPlugin     ExtPlugin `mapstructure:"ext-plugin"`
@@ -158,38 +154,6 @@ type LRUCache struct {
 type Status struct {
 	IP   string `mapstructure:"ip"`
 	Port int    `mapstructure:"port"`
-}
-
-// section: proxy
-type Proxy struct {
-	// keepalive_timeout: 60s
-	// client_header_timeout: 60s
-	DialerTimeout   int `mapstructure:"dialer_timeout"`
-	DialerKeepAlive int `mapstructure:"dialer_keep_alive"`
-
-	IdleConnTimeout       int `mapstructure:"idle_conn_timeout"`
-	TLSHandshakeTimeout   int `mapstructure:"tls_handshake_timeout"`
-	ExpectContinueTimeout int `mapstructure:"expect_continue_timeout"`
-	ResponseHeaderTimeout int `mapstructure:"response_header_timeout"`
-	MaxIdleConns          int `mapstructure:"max_idle_conns"`
-	MaxIdleConnsPerHost   int `mapstructure:"max_idle_conns_per_host"`
-	MaxConnsPerHost       int `mapstructure:"max_conns_per_host"`
-	MaxInFlight           int `mapstructure:"max_in_flight"`
-
-	// TODO:
-	// keepalive_timeout
-	// client_header_timeout
-	// client_body_timeout
-	// send_timeout
-	// client_max_body_size
-	// underscores_in_headers
-	// real_ip_header
-	// real_ip_recursive
-	// real_ip_from
-	// proxy_ssl_server_name
-	// charset
-	// upstream.keepalive / keepalive_requests / keepalive_timeout
-	// variables_hash_max_size
 }
 
 type NginxConfig struct {

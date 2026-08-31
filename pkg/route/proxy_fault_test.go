@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/resource"
 )
 
@@ -88,14 +87,21 @@ func (fault *faultUpstream) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // handler. readTimeout seconds bounds both the response-header wait and body
 // inactivity; retries applies to transport failures.
 func buildFaultHandler(t *testing.T, targetURL string, readTimeout, retries int) http.Handler {
-	return buildFaultHandlerWithConfig(t, targetURL, readTimeout, retries, testEffectiveConfig())
+	t.Helper()
+	upstream := resource.Upstream{
+		Scheme:  "http",
+		Nodes:   []resource.Node{upstreamNode(t, targetURL)},
+		Retries: retries,
+		Timeout: resource.Timeout{Read: readTimeout},
+	}
+	return testPreparedProxyHandler(t, resource.Route{Upstream: upstream}, resource.Service{}, testEffectiveConfig())
 }
 
-func buildFaultHandlerWithConfig(
+func buildFaultHandlerWithMaxInFlight(
 	t *testing.T,
 	targetURL string,
 	readTimeout, retries int,
-	effective *config.EffectiveConfig,
+	maxInFlight int,
 ) http.Handler {
 	t.Helper()
 	upstream := resource.Upstream{
@@ -104,7 +110,9 @@ func buildFaultHandlerWithConfig(
 		Retries: retries,
 		Timeout: resource.Timeout{Read: readTimeout},
 	}
-	return testPreparedProxyHandler(t, resource.Route{Upstream: upstream}, resource.Service{}, effective)
+	return testPreparedProxyHandlerWithMaxInFlight(
+		t, resource.Route{Upstream: upstream}, resource.Service{}, testEffectiveConfig(), maxInFlight,
+	)
 }
 
 func TestProxyFaultHandling(t *testing.T) {
@@ -223,9 +231,6 @@ func TestProxyFaultHandling(t *testing.T) {
 }
 
 func TestProxyFaultOverloadRecovers(t *testing.T) {
-	effective := testEffectiveConfig()
-	effective.Config.Proxy.MaxInFlight = 1
-
 	release := make(chan struct{})
 	var firstHeldOnce sync.Once
 	firstHeld := make(chan struct{})
@@ -241,7 +246,7 @@ func TestProxyFaultOverloadRecovers(t *testing.T) {
 	}))
 	defer upstreamServer.Close()
 
-	handler := buildFaultHandlerWithConfig(t, upstreamServer.URL, 0, 0, effective)
+	handler := buildFaultHandlerWithMaxInFlight(t, upstreamServer.URL, 0, 0, 1)
 
 	// First request: the upstream commits 200 and stalls its body, so the
 	// response copy holds the single admission token open. The fixture closes

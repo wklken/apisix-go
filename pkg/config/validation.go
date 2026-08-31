@@ -52,19 +52,6 @@ func validateRuntimeConfig(cfg *Config) error {
 	if cfg.Apisix.EnableControl && net.ParseIP(cfg.Apisix.Control.Ip) == nil {
 		return fmt.Errorf("apisix.control.ip must be a valid IP address")
 	}
-	for _, limit := range []struct {
-		field string
-		value int
-	}{
-		{field: "proxy.max_idle_conns", value: cfg.Proxy.MaxIdleConns},
-		{field: "proxy.max_idle_conns_per_host", value: cfg.Proxy.MaxIdleConnsPerHost},
-		{field: "proxy.max_conns_per_host", value: cfg.Proxy.MaxConnsPerHost},
-		{field: "proxy.max_in_flight", value: cfg.Proxy.MaxInFlight},
-	} {
-		if limit.value <= 0 {
-			return fmt.Errorf("%s must be positive", limit.field)
-		}
-	}
 	for index, address := range cfg.Apisix.TrustedAddresses {
 		address = strings.TrimSpace(address)
 		if address == "" || net.ParseIP(address) != nil {

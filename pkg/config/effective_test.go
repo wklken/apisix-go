@@ -7,18 +7,19 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLoadEffectiveUsesFileLayersAndIgnoresAPISIXGOOverlays(t *testing.T) {
-	req := loadRequestFixture(t, "proxy: {max_in_flight: 20}\n")
-	req.Environment = map[string]string{"APISIXGO_PROXY_MAX_IN_FLIGHT": "30"}
+	req := loadRequestFixture(t, "nginx_config: {http: {client_body_timeout: 20s}}\n")
+	req.Environment = map[string]string{"APISIXGO_NGINX_CLIENT_BODY_TIMEOUT": "30s"}
 
 	effective, err := LoadEffective(req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if effective.Config.Proxy.MaxInFlight != 20 {
-		t.Fatalf("max_in_flight = %d, want file value 20", effective.Config.Proxy.MaxInFlight)
+	if got := effective.Config.NginxConfig.HTTP.ClientBodyTimeout; got != 20*time.Second {
+		t.Fatalf("client_body_timeout = %s, want file value 20s", got)
 	}
 }
 
@@ -157,7 +158,10 @@ func TestLoadEffectiveValidationErrorsDoNotExposeExpandedOrOverrideValues(t *tes
 			name:     "APISIX numeric overflow",
 			sentinel: "999999999999999999999999999",
 			apply: func(req *LoadRequest) {
-				if err := writeTestConfig(req.OverridePath, "proxy: {max_in_flight: '${{LIMIT}}'}\n"); err != nil {
+				if err := writeTestConfig(
+					req.OverridePath,
+					"nginx_config: {http: {client_max_body_size: '${{LIMIT}}'}}\n",
+				); err != nil {
 					t.Fatal(err)
 				}
 				req.Environment["LIMIT"] = "999999999999999999999999999"
@@ -275,7 +279,6 @@ func loadRequestFixture(t *testing.T, override string) LoadRequest {
 	defaults := filepath.Join(root, "default.yaml")
 	if err := writeTestConfig(defaults, `
 apisix: {node_listen: [{port: 9080}]}
-proxy: {max_idle_conns: 10, max_idle_conns_per_host: 10, max_conns_per_host: 10, max_in_flight: 10}
 nginx_config: {http: {client_max_body_size: 1024, client_body_timeout: 60s}}
 plugins: [request-id]
 deployment: {role: data_plane, role_data_plane: {config_provider: yaml}}

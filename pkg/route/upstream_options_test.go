@@ -5,6 +5,7 @@ import (
 	"time"
 
 	appconfig "github.com/wklken/apisix-go/pkg/config"
+	"github.com/wklken/apisix-go/pkg/proxy"
 	"github.com/wklken/apisix-go/pkg/resource"
 )
 
@@ -92,6 +93,49 @@ func TestBuildClusterConfigSelectsCleartextHTTP2OnlyForGRPC(t *testing.T) {
 			}
 			if config.HTTP2Cleartext != test.want {
 				t.Fatalf("HTTP2Cleartext = %t, want %t", config.HTTP2Cleartext, test.want)
+			}
+		})
+	}
+}
+
+func TestBuildClusterConfigUsesInternalCapacityDefaults(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		staticConfig *appconfig.Config
+	}{
+		{name: "no static config"},
+		{name: "ordinary static config", staticConfig: &appconfig.Config{
+			Apisix: appconfig.Apisix{ProxyMode: "http"},
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			config, err := buildClusterConfigWithSSLResolver(
+				resource.Route{},
+				resource.Upstream{Scheme: "http"},
+				map[string]int{"http://127.0.0.1:8080": 1},
+				nil,
+				test.staticConfig,
+			)
+			if err != nil {
+				t.Fatalf("buildClusterConfigWithSSLResolver() error = %v", err)
+			}
+			transport := proxy.NewTransport(config.Transport)
+			t.Cleanup(transport.CloseIdleConnections)
+			if transport.MaxIdleConns != proxy.DefaultMaxIdleConns ||
+				transport.MaxIdleConnsPerHost != proxy.DefaultMaxIdleConnsPerHost ||
+				transport.MaxConnsPerHost != proxy.DefaultMaxConnsPerHost {
+				t.Fatalf(
+					"transport capacities = %d/%d/%d, want %d/%d/%d",
+					transport.MaxIdleConns,
+					transport.MaxIdleConnsPerHost,
+					transport.MaxConnsPerHost,
+					proxy.DefaultMaxIdleConns,
+					proxy.DefaultMaxIdleConnsPerHost,
+					proxy.DefaultMaxConnsPerHost,
+				)
+			}
+			if config.MaxInFlight != proxy.DefaultMaxInFlight {
+				t.Fatalf("MaxInFlight = %d, want %d", config.MaxInFlight, proxy.DefaultMaxInFlight)
 			}
 		})
 	}

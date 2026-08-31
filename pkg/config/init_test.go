@@ -18,7 +18,6 @@ apisix:
   ssl: {ssl_protocols: TLSv1.2 TLSv1.3}
   lru: {secret: {ttl: 300, count: 512, neg_ttl: 60, neg_count: 512}}
   events: {module: lua-resty-events}
-proxy: {max_idle_conns: 2048, max_idle_conns_per_host: 256, max_conns_per_host: 512, max_in_flight: 768}
 nginx_config:
   worker_shutdown_timeout: 240s
   http:
@@ -53,7 +52,6 @@ func TestLoadEffectiveAppliesSafeRequestBodyDefaultsWhenOmitted(t *testing.T) {
 	req := loadRequestFixture(t, "")
 	if err := writeTestConfig(req.DefaultPath, `
 apisix: {node_listen: [{port: 9080}]}
-proxy: {max_idle_conns: 10, max_idle_conns_per_host: 10, max_conns_per_host: 10, max_in_flight: 10}
 plugins: [request-id]
 deployment: {role: data_plane, role_data_plane: {config_provider: yaml}}
 `); err != nil {
@@ -101,7 +99,6 @@ func TestLoadEffectiveRejectsInvalidRuntimeValues(t *testing.T) {
 			override: "nginx_config: {http: {client_body_timeout: 0s}}",
 			want:     "client_body_timeout",
 		},
-		{name: "negative proxy", override: "proxy: {max_in_flight: -1}", want: "proxy.max_in_flight"},
 		{name: "status port", override: "apisix: {status: {ip: 127.0.0.1, port: 0}}", want: "apisix.status.port"},
 		{
 			name:     "status IP",

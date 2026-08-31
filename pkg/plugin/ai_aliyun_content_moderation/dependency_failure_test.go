@@ -15,7 +15,7 @@ func (cancellationRoundTripper) RoundTrip(request *http.Request) (*http.Response
 	return nil, request.Context().Err()
 }
 
-func TestModerationDependencyTimeoutFailsClosed(t *testing.T) {
+func TestModerationDependencyTimeoutPassesThrough(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		Endpoint:        "http://aliyun.invalid",
 		RegionID:        "cn-shanghai",
@@ -32,17 +32,16 @@ func TestModerationDependencyTimeoutFailsClosed(t *testing.T) {
 	)
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
-	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-		t.Fatal("timed-out moderation request reached downstream")
+	nextCalls := 0
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		nextCalls++
+		w.WriteHeader(http.StatusAccepted)
 	})).ServeHTTP(response, request)
 
-	if response.Code != http.StatusServiceUnavailable {
-		t.Fatalf("timeout status = %d, want 503", response.Code)
+	if response.Code != http.StatusAccepted || nextCalls != 1 {
+		t.Fatalf("timeout response = %d, next calls = %d; want 202 and one next", response.Code, nextCalls)
 	}
 	if p.client.Timeout != 5*time.Millisecond {
 		t.Fatalf("client timeout = %s, want 5ms", p.client.Timeout)
-	}
-	if !strings.Contains(response.Body.String(), "service unavailable") {
-		t.Fatalf("timeout body = %q, want redacted dependency failure", response.Body.String())
 	}
 }

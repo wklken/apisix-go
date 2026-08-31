@@ -23,8 +23,7 @@ import (
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/httpclient"
 	"github.com/wklken/apisix-go/pkg/json"
-	"github.com/wklken/apisix-go/pkg/observability/metrics"
-	"github.com/wklken/apisix-go/pkg/plugin/ai_common"
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_protocols"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_runtime"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -37,7 +36,6 @@ type Plugin struct {
 	client                *http.Client
 	now                   func() time.Time
 	nonce                 func() string
-	failMode              ai_common.SafetyFailMode
 	scopedAccessKeyID     secret.Value
 	scopedAccessKeySecret secret.Value
 	scopedCredentialsSet  bool
@@ -151,11 +149,6 @@ const schema = `
     "ssl_verify": {
       "type": "boolean",
       "default": true
-    },
-    "fail_mode": {
-      "type": "string",
-      "enum": ["error", "warn", "skip"],
-      "default": "error"
     }
   },
   "required": ["endpoint", "region_id", "access_key_id", "access_key_secret"]
@@ -184,7 +177,6 @@ type Config struct {
 	Keepalive                *bool   `json:"keepalive,omitempty"`
 	KeepaliveTimeout         int     `json:"keepalive_timeout,omitempty"`
 	SSLVerify                *bool   `json:"ssl_verify,omitempty"`
-	FailMode                 string  `json:"fail_mode,omitempty"`
 }
 
 type serviceParameters struct {
@@ -216,42 +208,15 @@ type moderationResult struct {
 	RiskLevel string
 }
 
-type moderationError struct {
-	Class ai_common.SafetyFailureClass
-	Err   error
-}
-
-func (e *moderationError) Error() string {
-	if e == nil || e.Err == nil {
-		return "Aliyun moderation check failed"
-	}
-	return e.Err.Error()
-}
-
-func (e *moderationError) Unwrap() error {
-	if e == nil {
-		return nil
-	}
-	return e.Err
-}
-
-func (e *moderationError) Classify() string {
-	if e == nil {
-		return ""
-	}
-	return string(e.Class)
-}
-
 const (
-	requestInvalidPayloadMessage   = "Request body is not valid JSON"
-	requestUnknownProtocolMessage  = "Request format not recognized by ai-aliyun-content-moderation"
-	requestReadFailureMessage      = "Unable to read request body"
-	requestContentTypeMessage      = "Unsupported request content type"
-	moderationUnavailableMessage   = "AI content moderation service unavailable"
-	upstreamInvalidResponseMessage = "Upstream response is not valid AI JSON"
-	missingAIInstanceMessage       = "no ai instance picked, ai-aliyun-content-moderation plugin must be used with " +
+	requestInvalidPayloadMessage  = "Request body is not valid JSON"
+	requestUnknownProtocolMessage = "Request format not recognized by ai-aliyun-content-moderation"
+	requestReadFailureMessage     = "Unable to read request body"
+	missingAIInstanceMessage      = "no ai instance picked, ai-aliyun-content-moderation plugin must be used with " +
 		"ai-proxy or ai-proxy-multi plugin"
 )
+
+var errUnknownRequestProtocol = errors.New("request protocol not recognized")
 
 func (p *Plugin) Config() any {
 	return &p.config
@@ -268,12 +233,6 @@ func (p *Plugin) PostInit() error {
 	if !p.credentialsReady() {
 		return errAliyunCredentialsUnavailable
 	}
-	mode, err := ai_common.ParseSafetyFailMode(p.config.FailMode)
-	if err != nil {
-		return err
-	}
-	p.failMode = mode
-	p.config.FailMode = string(mode)
 	if p.config.StreamCheckMode == "" {
 		p.config.StreamCheckMode = "final_packet"
 	}
@@ -322,11 +281,6 @@ func (p *Plugin) PostInit() error {
 		sslVerify := true
 		p.config.SSLVerify = &sslVerify
 	}
-	if p.failMode == ai_common.SafetyFailError && p.config.CheckResponse && p.config.StreamCheckMode == "realtime" {
-		return errors.New(
-			"ai-aliyun-content-moderation: fail_mode=error is incompatible with realtime response moderation",
-		)
-	}
 	if p.now == nil {
 		p.now = time.Now
 	}
@@ -358,63 +312,31 @@ func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.Re
 	r = r.WithContext(context.WithValue(r.Context(), moderationSessionKey{}, p.nonce()))
 	body, err := base.ReadRequestBody(r)
 	if err != nil {
-		if p.handleRequestFailure(w, r, ai_common.SafetyInvalidPayload, requestReadFailureMessage) {
-			return base.ContinueRequest(r)
-		}
+		base.WriteJSONMessage(w, http.StatusBadRequest, requestReadFailureMessage)
 		return base.StopRequestWithSource(r, apisixctx.ResponseSourceEarlyStop)
 	}
 	if checkRequest {
 		if err := validateJSONContentType(r); err != nil {
-			if p.handleRequestFailure(w, r, ai_common.SafetyInvalidPayload, requestContentTypeMessage) {
-				return base.ContinueRequest(r)
-			}
+			base.WriteJSONMessage(w, http.StatusBadRequest, err.Error())
 			return base.StopRequestWithSource(r, apisixctx.ResponseSourceEarlyStop)
 		}
 	}
 	bodyTab, protocol, content, err := extractRequestContent(r.URL.Path, body)
 	if err != nil && checkRequest {
-		class := requestFailureClass(err)
-		message := requestInvalidPayloadMessage
-		if class == ai_common.SafetyUnknownProtocol {
-			message = requestUnknownProtocolMessage
-		}
-		if p.handleRequestFailure(w, r, class, message) {
-			return base.ContinueRequest(r)
-		}
+		writeRequestContentError(w, err)
 		return base.StopRequestWithSource(r, apisixctx.ResponseSourceEarlyStop)
 	}
 	if err != nil {
 		return base.ContinueRequest(r)
 	}
 	if checkRequest {
-		if strings.TrimSpace(content) == "" {
-			recordOutcome(
-				ai_common.SafetyPhaseRequest,
-				ai_common.SafetyOutcomeAllow,
-				string(ai_common.SafetyReasonClean),
-			)
-		} else {
-			result, moderationErr := p.moderateContent(
+		if strings.TrimSpace(content) != "" {
+			result := p.moderateContent(
 				r, content, p.config.RequestCheckLengthLimit, p.config.RequestCheckService,
 			)
-			if moderationErr != nil {
-				if !p.handleRequestFailure(w, r, moderationFailureClass(moderationErr), moderationUnavailableMessage) {
-					return base.StopRequestWithSource(r, apisixctx.ResponseSourceEarlyStop)
-				}
-			} else if result.Denied {
-				recordOutcome(
-					ai_common.SafetyPhaseRequest,
-					ai_common.SafetyOutcomeDeny,
-					string(ai_common.SafetyReasonRiskThreshold),
-				)
+			if result.Denied {
 				writeProtocolDeny(w, p.config.DenyCode, protocol, bodyTab, result.Message)
 				return base.StopRequestWithSource(r, apisixctx.ResponseSourceEarlyStop)
-			} else {
-				recordOutcome(
-					ai_common.SafetyPhaseRequest,
-					ai_common.SafetyOutcomeAllow,
-					string(ai_common.SafetyReasonClean),
-				)
 			}
 		}
 	}
@@ -490,108 +412,12 @@ func (*Config) DescribeResponseMode() (base.ResponseModeDescriptor, error) {
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
-	fn := func(w http.ResponseWriter, r *http.Request) {
-		if rejectMissingAIInstance(w, r) {
-			return
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		result := p.RunRequestPhase(w, r)
+		if result.Decision == base.RequestContinue {
+			next.ServeHTTP(w, result.Request)
 		}
-		checkRequest := p.config.CheckRequest == nil || *p.config.CheckRequest
-		if !checkRequest && !p.config.CheckResponse {
-			next.ServeHTTP(w, r)
-			return
-		}
-		r = r.WithContext(context.WithValue(r.Context(), moderationSessionKey{}, p.nonce()))
-
-		body, err := base.ReadRequestBody(r)
-		if err != nil {
-			if p.handleRequestFailure(w, r, ai_common.SafetyInvalidPayload, requestReadFailureMessage) {
-				next.ServeHTTP(w, r)
-			}
-			return
-		}
-
-		if checkRequest {
-			if err := validateJSONContentType(r); err != nil {
-				if p.handleRequestFailure(w, r, ai_common.SafetyInvalidPayload, requestContentTypeMessage) {
-					next.ServeHTTP(w, r)
-				}
-				return
-			}
-		}
-
-		bodyTab, protocol, content, err := extractRequestContent(r.URL.Path, body)
-		if err != nil && checkRequest {
-			class := requestFailureClass(err)
-			message := requestInvalidPayloadMessage
-			if class == ai_common.SafetyUnknownProtocol {
-				message = requestUnknownProtocolMessage
-			}
-			if p.handleRequestFailure(w, r, class, message) {
-				next.ServeHTTP(w, r)
-			}
-			return
-		}
-		if err != nil {
-			next.ServeHTTP(w, r)
-			return
-		}
-
-		if checkRequest {
-			if strings.TrimSpace(content) == "" {
-				recordOutcome(
-					ai_common.SafetyPhaseRequest,
-					ai_common.SafetyOutcomeAllow,
-					string(ai_common.SafetyReasonClean),
-				)
-			} else {
-				result, err := p.moderateContent(
-					r,
-					content,
-					p.config.RequestCheckLengthLimit,
-					p.config.RequestCheckService,
-				)
-				if err != nil {
-					if !p.handleRequestFailure(
-						w,
-						r,
-						moderationFailureClass(err),
-						moderationUnavailableMessage,
-					) {
-						return
-					}
-				} else if result.Denied {
-					recordOutcome(
-						ai_common.SafetyPhaseRequest,
-						ai_common.SafetyOutcomeDeny,
-						string(ai_common.SafetyReasonRiskThreshold),
-					)
-					writeProtocolDeny(w, p.config.DenyCode, protocol, bodyTab, result.Message)
-					return
-				} else {
-					recordOutcome(
-						ai_common.SafetyPhaseRequest,
-						ai_common.SafetyOutcomeAllow,
-						string(ai_common.SafetyReasonClean),
-					)
-				}
-			}
-		}
-
-		if !p.config.CheckResponse {
-			next.ServeHTTP(w, r)
-			return
-		}
-		if ai_protocols.IsStreaming(protocol, bodyTab) && p.config.StreamCheckMode == "realtime" {
-			streamWriter := newRealtimeResponseWriter(w, r, p, protocol, bodyTab)
-			next.ServeHTTP(streamWriter, r)
-			streamWriter.Close()
-			return
-		}
-
-		response := newCapturedResponse()
-		next.ServeHTTP(response, r)
-		p.writeModeratedResponse(w, r, response, protocol, bodyTab)
-	}
-	return http.HandlerFunc(fn)
+	})
 }
 
 func rejectMissingAIInstance(w http.ResponseWriter, r *http.Request) bool {
@@ -607,59 +433,12 @@ func rejectMissingAIInstance(w http.ResponseWriter, r *http.Request) bool {
 	return true
 }
 
-type requestContentError struct {
-	class ai_common.SafetyFailureClass
-	err   error
-}
-
-func (e *requestContentError) Error() string {
-	if e == nil || e.err == nil {
-		return "invalid AI request content"
+func writeRequestContentError(w http.ResponseWriter, err error) {
+	if errors.Is(err, errUnknownRequestProtocol) {
+		base.WriteJSONMessage(w, http.StatusInternalServerError, requestUnknownProtocolMessage)
+		return
 	}
-	return e.err.Error()
-}
-
-func (e *requestContentError) Unwrap() error {
-	if e == nil {
-		return nil
-	}
-	return e.err
-}
-
-func requestFailureClass(err error) ai_common.SafetyFailureClass {
-	var contentErr *requestContentError
-	if errors.As(err, &contentErr) && contentErr.class != "" {
-		return contentErr.class
-	}
-	return ai_common.SafetyInvalidPayload
-}
-
-func moderationFailureClass(err error) ai_common.SafetyFailureClass {
-	var moderationErr *moderationError
-	if errors.As(err, &moderationErr) && moderationErr.Class != "" {
-		return moderationErr.Class
-	}
-	return ai_common.SafetyBackendUnavailable
-}
-
-func (p *Plugin) handleRequestFailure(
-	w http.ResponseWriter,
-	r *http.Request,
-	class ai_common.SafetyFailureClass,
-	message string,
-) bool {
-	decision := ai_common.DecideSafetyFailure(p.failMode, class)
-	recordOutcome(ai_common.SafetyPhaseRequest, decision.Outcome, string(class))
-	if decision.Action == ai_common.SafetyContinue {
-		ai_common.LogSafetyDegradation(r, name, p.failMode, ai_common.SafetyPhaseRequest, class)
-		return true
-	}
-	base.WriteJSONMessage(w, decision.Status, message)
-	return false
-}
-
-func recordOutcome(phase ai_common.SafetyPhase, outcome ai_common.SafetyOutcome, reason string) {
-	metrics.RecordAISafetyOutcome(name, string(phase), string(outcome), reason)
+	base.WriteJSONMessage(w, http.StatusBadRequest, requestInvalidPayloadMessage)
 }
 
 func validateJSONContentType(r *http.Request) error {
@@ -808,27 +587,15 @@ func (w *realtimeResponseWriter) moderate() bool {
 	content := w.content.String()
 	w.content.Reset()
 	w.contentRunes = 0
-	result, err := w.plugin.moderateContent(
+	result := w.plugin.moderateContent(
 		w.request,
 		content,
 		w.plugin.config.ResponseCheckLengthLimit,
 		w.plugin.config.ResponseCheckService,
 	)
-	if err != nil {
-		class := moderationFailureClass(err)
-		recordOutcome(ai_common.SafetyPhaseResponse, ai_common.SafetyOutcomeDegraded, string(class))
-		ai_common.LogSafetyDegradation(w.request, name, w.plugin.failMode, ai_common.SafetyPhaseResponse, class)
-		return false
-	}
 	if !result.Denied {
-		recordOutcome(ai_common.SafetyPhaseResponse, ai_common.SafetyOutcomeAllow, string(ai_common.SafetyReasonClean))
 		return false
 	}
-	recordOutcome(
-		ai_common.SafetyPhaseResponse,
-		ai_common.SafetyOutcomeDeny,
-		string(ai_common.SafetyReasonRiskThreshold),
-	)
 
 	model, _ := w.requestBody["model"].(string)
 	encoded, _, err := ai_protocols.BuildDenyWireResponse(w.protocol, model, result.Message, true)
@@ -865,57 +632,24 @@ func (p *Plugin) writeModeratedResponse(
 
 	var body map[string]any
 	if err := json.Unmarshal(response.body.Bytes(), &body); err != nil {
-		p.handleBufferedResponseFailure(
-			w,
-			r,
-			response,
-			ai_common.SafetyUpstreamInvalidResponse,
-			upstreamInvalidResponseMessage,
-		)
-		return
-	}
-	if !validResponseEnvelope(protocol, body) {
-		p.handleBufferedResponseFailure(
-			w,
-			r,
-			response,
-			ai_common.SafetyUpstreamInvalidResponse,
-			upstreamInvalidResponseMessage,
-		)
+		writeCapturedResponse(w, response, response.body.Bytes())
 		return
 	}
 	content := ai_protocols.ExtractResponseText(protocol, body)
 	if strings.TrimSpace(content) == "" {
-		recordOutcome(ai_common.SafetyPhaseResponse, ai_common.SafetyOutcomeAllow, string(ai_common.SafetyReasonClean))
 		writeCapturedResponse(w, response, response.body.Bytes())
 		return
 	}
-	result, err := p.moderateContent(
+	result := p.moderateContent(
 		r,
 		content,
 		p.config.ResponseCheckLengthLimit,
 		p.config.ResponseCheckService,
 	)
-	if err != nil {
-		p.handleBufferedResponseFailure(
-			w,
-			r,
-			response,
-			moderationFailureClass(err),
-			moderationUnavailableMessage,
-		)
-		return
-	}
 	if !result.Denied {
-		recordOutcome(ai_common.SafetyPhaseResponse, ai_common.SafetyOutcomeAllow, string(ai_common.SafetyReasonClean))
 		writeCapturedResponse(w, response, response.body.Bytes())
 		return
 	}
-	recordOutcome(
-		ai_common.SafetyPhaseResponse,
-		ai_common.SafetyOutcomeDeny,
-		string(ai_common.SafetyReasonRiskThreshold),
-	)
 
 	copyResponseHeaders(w.Header(), response.header)
 	w.Header().Del("Content-Length")
@@ -937,43 +671,17 @@ func (p *Plugin) writeModeratedStream(
 	requestBody map[string]any,
 ) {
 	content := extractSSEText(protocol, response.body.Bytes())
-	if !validStreamingEnvelope(protocol, response.body.Bytes()) {
-		p.handleBufferedResponseFailure(
-			w,
-			r,
-			response,
-			ai_common.SafetyUpstreamInvalidResponse,
-			upstreamInvalidResponseMessage,
-		)
-		return
-	}
 	if strings.TrimSpace(content) == "" {
-		recordOutcome(ai_common.SafetyPhaseResponse, ai_common.SafetyOutcomeAllow, string(ai_common.SafetyReasonClean))
 		writeCapturedResponse(w, response, response.body.Bytes())
 		return
 	}
-	result, err := p.moderateContent(
+	result := p.moderateContent(
 		r,
 		content,
 		p.config.ResponseCheckLengthLimit,
 		p.config.ResponseCheckService,
 	)
-	if err != nil {
-		p.handleBufferedResponseFailure(
-			w,
-			r,
-			response,
-			moderationFailureClass(err),
-			moderationUnavailableMessage,
-		)
-		return
-	}
 	if p.config.StreamCheckMode == "final_packet" {
-		reason := ai_common.SafetyReasonClean
-		if result.Denied {
-			reason = ai_common.SafetyReasonRiskThreshold
-		}
-		recordOutcome(ai_common.SafetyPhaseResponse, ai_common.SafetyOutcomeAllow, string(reason))
 		body := response.body.Bytes()
 		if result.RiskLevel != "" {
 			body = addRiskLevelToFinalSSEPacket(body, result.RiskLevel)
@@ -982,178 +690,12 @@ func (p *Plugin) writeModeratedStream(
 		return
 	}
 	if result.Denied {
-		recordOutcome(
-			ai_common.SafetyPhaseResponse,
-			ai_common.SafetyOutcomeDeny,
-			string(ai_common.SafetyReasonRiskThreshold),
-		)
 		copyResponseHeaders(w.Header(), response.header)
 		w.Header().Del("Content-Length")
 		writeProtocolDeny(w, p.config.DenyCode, protocol, requestBody, result.Message)
 		return
 	}
-	recordOutcome(ai_common.SafetyPhaseResponse, ai_common.SafetyOutcomeAllow, string(ai_common.SafetyReasonClean))
 	writeCapturedResponse(w, response, response.body.Bytes())
-}
-
-func (p *Plugin) handleBufferedResponseFailure(
-	w http.ResponseWriter,
-	r *http.Request,
-	response *capturedResponse,
-	class ai_common.SafetyFailureClass,
-	message string,
-) {
-	decision := ai_common.DecideSafetyFailure(p.failMode, class)
-	recordOutcome(ai_common.SafetyPhaseResponse, decision.Outcome, string(class))
-	if decision.Action == ai_common.SafetyContinue {
-		ai_common.LogSafetyDegradation(r, name, p.failMode, ai_common.SafetyPhaseResponse, class)
-		writeCapturedResponse(w, response, response.body.Bytes())
-		return
-	}
-	base.WriteJSONMessage(w, decision.Status, message)
-}
-
-func validResponseEnvelope(protocol ai_protocols.Protocol, body map[string]any) bool {
-	if body == nil {
-		return false
-	}
-	switch protocol {
-	case ai_protocols.OpenAIChat:
-		choices, ok := body["choices"].([]any)
-		return ok && validChatChoices(choices)
-	case ai_protocols.OpenAIResponses:
-		output, ok := body["output"].([]any)
-		return ok && validObjectArray(output)
-	case ai_protocols.OpenAIEmbeddings:
-		data, ok := body["data"].([]any)
-		return ok && validObjectArray(data)
-	case ai_protocols.AnthropicMessages:
-		content, ok := body["content"].([]any)
-		return ok && validObjectArray(content)
-	case ai_protocols.BedrockConverse:
-		output, ok := body["output"].(map[string]any)
-		if !ok {
-			return false
-		}
-		message, ok := output["message"].(map[string]any)
-		if !ok {
-			return false
-		}
-		content, ok := message["content"].([]any)
-		return ok && validObjectArray(content)
-	case ai_protocols.Passthrough:
-		return true
-	default:
-		return false
-	}
-}
-
-func validChatChoices(choices []any) bool {
-	for _, rawChoice := range choices {
-		choice, ok := rawChoice.(map[string]any)
-		if !ok {
-			return false
-		}
-		message, ok := choice["message"].(map[string]any)
-		if !ok {
-			return false
-		}
-		content, hasContent := message["content"]
-		if hasContent && content != nil {
-			switch value := content.(type) {
-			case string:
-			case []any:
-				if !validObjectArray(value) {
-					return false
-				}
-			default:
-				return false
-			}
-		}
-		if !hasContent || content == nil {
-			if toolCalls, hasToolCalls := message["tool_calls"].([]any); hasToolCalls {
-				if !validObjectArray(toolCalls) {
-					return false
-				}
-				continue
-			}
-			if _, hasFunctionCall := message["function_call"].(map[string]any); hasFunctionCall {
-				continue
-			}
-			if _, hasRefusal := message["refusal"].(string); !hasRefusal {
-				return false
-			}
-		}
-	}
-	return true
-}
-
-func validObjectArray(values []any) bool {
-	for _, value := range values {
-		if _, ok := value.(map[string]any); !ok {
-			return false
-		}
-	}
-	return true
-}
-
-func validStreamingEnvelope(protocol ai_protocols.Protocol, body []byte) bool {
-	if len(bytes.TrimSpace(body)) == 0 {
-		return false
-	}
-	validData := false
-	for line := range strings.SplitSeq(string(body), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, ":") || strings.HasPrefix(line, "event:") ||
-			strings.HasPrefix(line, "id:") || strings.HasPrefix(line, "retry:") {
-			continue
-		}
-		data, ok := strings.CutPrefix(line, "data:")
-		if !ok {
-			return false
-		}
-		data = strings.TrimSpace(data)
-		if data == "" {
-			continue
-		}
-		validData = true
-		if data == "[DONE]" {
-			continue
-		}
-		var event map[string]any
-		if json.Unmarshal([]byte(data), &event) != nil || event == nil {
-			return false
-		}
-		if !validStreamingEvent(protocol, event) {
-			return false
-		}
-	}
-	return validData
-}
-
-func validStreamingEvent(protocol ai_protocols.Protocol, event map[string]any) bool {
-	switch protocol {
-	case ai_protocols.OpenAIChat:
-		choices, ok := event["choices"].([]any)
-		if !ok {
-			return false
-		}
-		for _, rawChoice := range choices {
-			choice, ok := rawChoice.(map[string]any)
-			if !ok {
-				return false
-			}
-			if _, ok := choice["delta"].(map[string]any); !ok {
-				return false
-			}
-		}
-		return true
-	case ai_protocols.OpenAIResponses, ai_protocols.AnthropicMessages:
-		eventType, ok := event["type"].(string)
-		return ok && eventType != ""
-	default:
-		return false
-	}
 }
 
 func extractSSEText(protocol ai_protocols.Protocol, body []byte) string {
@@ -1220,9 +762,9 @@ func (p *Plugin) moderateContent(
 	content string,
 	lengthLimit int,
 	serviceName string,
-) (moderationResult, error) {
+) moderationResult {
 	if strings.TrimSpace(content) == "" {
-		return moderationResult{}, nil
+		return moderationResult{}
 	}
 	runes := []rune(content)
 	if lengthLimit <= 0 {
@@ -1238,7 +780,8 @@ func (p *Plugin) moderateContent(
 		end := min(start+lengthLimit, len(runes))
 		hit, message, riskLevel, err := p.checkSingleContent(r, sessionID, string(runes[start:end]), serviceName)
 		if err != nil {
-			return moderationResult{}, err
+			logger.Error("failed to check content: " + err.Error())
+			continue
 		}
 		lastRiskLevel = riskLevel
 		if riskLevel != "" && apisixctx.GetRequestVars(r) != nil {
@@ -1251,11 +794,11 @@ func (p *Plugin) moderateContent(
 			if message == "" {
 				message = "Your request violate our content policy."
 			}
-			return moderationResult{Denied: true, Message: message, RiskLevel: riskLevel}, nil
+			return moderationResult{Denied: true, Message: message, RiskLevel: riskLevel}
 		}
 	}
 
-	return moderationResult{RiskLevel: lastRiskLevel}, nil
+	return moderationResult{RiskLevel: lastRiskLevel}
 }
 
 func (p *Plugin) checkSingleContent(
@@ -1268,30 +811,18 @@ func (p *Plugin) checkSingleContent(
 		r.Context(), sessionID, content, serviceName,
 	)
 	if err != nil {
-		return false, "", "", &moderationError{
-			Class: ai_common.SafetyBackendUnavailable,
-			Err:   errors.New("aliyun moderation transport unavailable"),
-		}
+		return false, "", "", errors.New("aliyun moderation transport unavailable")
 	}
-	if statusCode < http.StatusOK || statusCode >= http.StatusMultipleChoices {
-		return false, "", "", &moderationError{
-			Class: ai_common.SafetyBackendUnavailable,
-			Err:   fmt.Errorf("aliyun moderation service returned status %d", statusCode),
-		}
+	if statusCode != http.StatusOK {
+		return false, "", "", fmt.Errorf("aliyun moderation service returned status %d", statusCode)
 	}
 
 	var response aliyunResponse
 	if err := json.Unmarshal(rawBody, &response); err != nil {
-		return false, "", "", &moderationError{
-			Class: ai_common.SafetyBackendInvalidResponse,
-			Err:   errors.New("malformed Aliyun moderation response"),
-		}
+		return false, "", "", errors.New("malformed Aliyun moderation response")
 	}
-	if response.Data == nil || response.Data.RiskLevel == "" || riskLevelToInt(response.Data.RiskLevel) < 0 {
-		return false, "", "", &moderationError{
-			Class: ai_common.SafetyBackendInvalidResponse,
-			Err:   errors.New("aliyun moderation response has no valid risk level"),
-		}
+	if response.Data == nil || response.Data.RiskLevel == "" {
+		return false, "", "", errors.New("aliyun moderation response has no risk level")
 	}
 	if riskLevelToInt(response.Data.RiskLevel) < riskLevelToInt(p.config.RiskLevelBar) {
 		return false, "", response.Data.RiskLevel, nil
@@ -1338,31 +869,19 @@ func extractRequestContent(
 	body []byte,
 ) (map[string]any, ai_protocols.Protocol, string, error) {
 	if len(bytes.TrimSpace(body)) == 0 {
-		return nil, ai_protocols.Protocol{}, "", &requestContentError{
-			class: ai_common.SafetyInvalidPayload,
-			err:   errors.New("missing request body"),
-		}
+		return nil, ai_protocols.Protocol{}, "", errors.New("missing request body")
 	}
 
 	var data map[string]any
 	if err := json.Unmarshal(body, &data); err != nil {
-		return nil, ai_protocols.Protocol{}, "", &requestContentError{
-			class: ai_common.SafetyInvalidPayload,
-			err:   errors.New("could not parse JSON request body"),
-		}
+		return nil, ai_protocols.Protocol{}, "", errors.New("could not parse JSON request body")
 	}
 	protocol, err := ai_protocols.Detect(requestPath, data)
 	if err != nil {
-		return nil, ai_protocols.Protocol{}, "", &requestContentError{
-			class: ai_common.SafetyUnknownProtocol,
-			err:   errors.New("request protocol not recognized"),
-		}
+		return nil, ai_protocols.Protocol{}, "", errUnknownRequestProtocol
 	}
 	if protocol == ai_protocols.Passthrough {
-		return nil, ai_protocols.Protocol{}, "", &requestContentError{
-			class: ai_common.SafetyUnknownProtocol,
-			err:   errors.New("request protocol passthrough is not inspectable"),
-		}
+		return data, protocol, "", nil
 	}
 	return data, protocol, strings.Join(ai_protocols.ExtractRequestContent(protocol, data), " "), nil
 }

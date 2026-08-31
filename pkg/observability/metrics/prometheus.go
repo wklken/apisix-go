@@ -49,7 +49,6 @@ var (
 	LLMPromptTokens       *prometheus.CounterVec
 	LLMCompletionTokens   *prometheus.CounterVec
 	LLMActiveConnections  *prometheus.GaugeVec
-	AISafetyOutcomes      *prometheus.CounterVec
 	ProxyInFlight         *prometheus.GaugeVec
 	ProxyRejected         *prometheus.CounterVec
 	ProxyRetry            *prometheus.CounterVec
@@ -528,7 +527,6 @@ func initMetrics(attr map[string]any) error {
 		}, llmActiveLabels,
 	)
 
-	AISafetyOutcomes = newAISafetyOutcomeVector(nil, metricConfig.MetricPrefix)
 	aiStreamOutcomes = newAIStreamOutcomeVector(nil, metricConfig.MetricPrefix)
 	functionUpstreamFailures = newFunctionUpstreamFailureVector(nil, metricConfig.MetricPrefix)
 
@@ -659,7 +657,6 @@ func initMetrics(attr map[string]any) error {
 		LLMPromptTokens,
 		LLMCompletionTokens,
 		LLMActiveConnections,
-		AISafetyOutcomes,
 		aiStreamOutcomes,
 		functionUpstreamFailures,
 		ProxyInFlight,
@@ -1304,7 +1301,7 @@ func configuredMetricSuffixes() []string {
 		"nginx_http_current_connections", "http_requests_total", "etcd_reachable", "node_info",
 		"etcd_revision", "etcd_modify_indexes", "upstream_status", streamConnectionMetric,
 		httpStatusMetric, httpLatencyMetric, bandwidthMetric, llmLatencyMetric, llmPromptMetric,
-		llmCompleteMetric, "batch_process_entries", llmActiveMetric, "ai_safety_outcomes_total",
+		llmCompleteMetric, "batch_process_entries", llmActiveMetric,
 		"ai_stream_outcomes_total", "function_upstream_failures_total", proxyInFlightMetric,
 		proxyRejectedMetric, proxyRetryMetric, proxyHealthMetric, requestPanicsMetric,
 		configApplyFailuresMetric, configApplyReadyMetric, "http_metric_series_overflow_total",

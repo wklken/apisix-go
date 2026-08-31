@@ -113,8 +113,19 @@ func TestLoadEffectiveIgnoresHarmlessOfficialStaticFields(t *testing.T) {
 	override := writeConfigFile(t, "override.yaml", `
 nginx_config:
   envs: [TEST_ENV]
+  worker_processes: 1
+  main_configuration_snippet: "ignored"
   http:
+    access_log_format: "$request"
+    real_ip_header: X-Forwarded-For
     client_header_timeout: 17s
+apisix:
+  enable_dev_mode: true
+  router: {http: radixtree_uri}
+  proxy_protocol: {listen_http_port: 8080}
+  proxy_cache: {cache_ttl: 5s}
+deployment:
+  admin: {admin_key: [{key: ignored}]}
 `)
 
 	cfg, err := loadEffectiveTestFiles(t, base, override)
@@ -260,7 +271,6 @@ func TestCapabilitySummaryContainsOnlyBoundedSafeFacts(t *testing.T) {
 				Password: "etcd-password",
 				TLS:      EtcdTLS{Cert: "certificate", Key: "private-key"},
 			},
-			Admin: Admin{AdminKey: []AdminKey{{Key: "admin-token"}}},
 		},
 	}
 
@@ -271,7 +281,7 @@ func TestCapabilitySummaryContainsOnlyBoundedSafeFacts(t *testing.T) {
 	}
 	for _, secret := range []string{
 		"secret.internal", "tls.internal", "stream.internal", "admin", "password",
-		"/secret", "0123456789abcdef", "certificate", "private-key", "admin-token", "etcd-password",
+		"/secret", "0123456789abcdef", "certificate", "private-key", "etcd-password",
 	} {
 		if strings.Contains(string(encoded), secret) {
 			t.Fatalf("capability summary leaked %q: %s", secret, encoded)
@@ -335,14 +345,14 @@ func TestUnsupportedRuntimeConfigFailsClosed(t *testing.T) {
 			name:  "WASM plugin",
 			field: "wasm.plugins",
 			mutate: func(cfg *Config) {
-				cfg.Wasm.Plugins = []WasmPlugin{{Name: "logger", File: "logger.wasm"}}
+				cfg.Wasm.Plugins = []WasmPlugin{{}}
 			},
 		},
 		{
 			name:  "XRPC protocol",
 			field: "xrpc.protocols",
 			mutate: func(cfg *Config) {
-				cfg.XRPC.Protocols = []XRPCProtocol{{Name: "pingpong"}}
+				cfg.XRPC.Protocols = []XRPCProtocol{{}}
 			},
 		},
 		{

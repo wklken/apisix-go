@@ -15,12 +15,6 @@ type candidateDecision struct {
 	tombstone *generation.Tombstone
 }
 
-var securitySensitiveKinds = map[string]struct{}{
-	"routes": {}, "services": {}, "global_rules": {}, "plugin_configs": {},
-	"plugin_metadata": {}, "plugins": {}, "ssls": {}, "secrets": {},
-	"consumers": {}, "consumer_groups": {}, "stream_routes": {},
-}
-
 func buildDomainCandidateContext(
 	ctx context.Context,
 	domain generation.Domain,
@@ -93,20 +87,20 @@ func buildDomainCandidateContext(
 			}
 			continue
 		}
-		if issue.Code == "dependency-missing" {
-			if _, sensitive := securitySensitiveKinds[key.Kind]; sensitive && hasPrevious {
-				if value, found := previous.Snapshot.Lookup(key); found {
-					decisions[key] = candidateDecision{
-						decision: generation.ResourceDecision{
-							Key:         key,
-							Disposition: generation.DispositionLastGood,
-							Code:        issue.Code,
-						},
-						value: value,
-					}
-					continue
+		if hasPrevious {
+			if value, found := previous.Snapshot.Lookup(key); found {
+				decisions[key] = candidateDecision{
+					decision: generation.ResourceDecision{
+						Key:         key,
+						Disposition: generation.DispositionLastGood,
+						Code:        issue.Code,
+					},
+					value: value,
 				}
+				continue
 			}
+		}
+		if issue.Code == "dependency-missing" {
 			decisions[key] = candidateDecision{
 				decision: generation.ResourceDecision{
 					Key:         key,
@@ -117,33 +111,10 @@ func buildDomainCandidateContext(
 			}
 			continue
 		}
-		if _, sensitive := securitySensitiveKinds[key.Kind]; sensitive {
-			if hasPrevious {
-				if value, found := previous.Snapshot.Lookup(key); found {
-					decisions[key] = candidateDecision{
-						decision: generation.ResourceDecision{
-							Key:         key,
-							Disposition: generation.DispositionLastGood,
-							Code:        issue.Code,
-						},
-						value: value,
-					}
-					continue
-				}
-			}
-			decisions[key] = candidateDecision{
-				decision: generation.ResourceDecision{
-					Key:         key,
-					Disposition: generation.DispositionFailClosed,
-					Code:        issue.Code,
-				},
-			}
-			continue
-		}
 		decisions[key] = candidateDecision{
 			decision: generation.ResourceDecision{
 				Key:         key,
-				Disposition: generation.DispositionQuarantined,
+				Disposition: generation.DispositionFailClosed,
 				Code:        issue.Code,
 			},
 		}

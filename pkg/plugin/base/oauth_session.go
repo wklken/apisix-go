@@ -220,18 +220,3 @@ func CodeFromRequest(r *http.Request, headerName, queryName string) string {
 	}
 	return r.URL.Query().Get(queryName)
 }
-
-// CookieSameSite maps an OAuth session cookie_same_site setting to its
-// net/http constant, defaulting to Lax for empty or unknown values.
-func CookieSameSite(value string) http.SameSite {
-	switch value {
-	case "Strict":
-		return http.SameSiteStrictMode
-	case "None":
-		return http.SameSiteNoneMode
-	case "Default":
-		return http.SameSiteDefaultMode
-	default:
-		return http.SameSiteLaxMode
-	}
-}

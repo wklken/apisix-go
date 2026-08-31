@@ -101,7 +101,6 @@ type Config struct {
 
 	validationBodyLimit int64
 	captureBodyLimit    int64
-	requestBodyTempDir  string
 }
 
 type consumerConfig struct {
@@ -116,8 +115,6 @@ type consumerConfig struct {
 func (c *Config) BodyIsolation() (bool, int64) {
 	return c.ValidateRequestBody, c.captureBodyLimit
 }
-
-func (c *Config) BodyIsolationTempDir() string { return c.requestBodyTempDir }
 
 type signatureParams struct {
 	KeyID      string
@@ -156,7 +153,6 @@ func (p *Plugin) PostInit() error {
 			p.config.captureBodyLimit = ingressLimit
 			p.config.validationBodyLimit = min(p.config.validationBodyLimit, ingressLimit)
 		}
-		p.config.requestBodyTempDir = effective.Paths.TempDir
 	}
 	if p.config.HideCredentials == nil {
 		hideCredentials := false
@@ -358,7 +354,6 @@ func (p *Plugin) validateBodyDigest(r *http.Request, digestHeader string) error 
 		r,
 		p.config.captureBodyLimit,
 		base.DefaultRequestBodySnapshotMemoryLimit,
-		p.config.requestBodyTempDir,
 	)
 	if err != nil {
 		if errors.Is(err, base.ErrRequestBodyTooLarge) {

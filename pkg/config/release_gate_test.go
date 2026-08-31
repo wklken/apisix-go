@@ -245,7 +245,7 @@ func TestHTTPDataPlaneProductionConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg, _, unused, err := decodeConfig(document)
+	cfg, unused, err := decodeConfig(document)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -415,13 +415,8 @@ func loadEffectiveTestFiles(
 	if len(environments) != 0 && environments[0] != nil {
 		environment = environments[0]
 	}
-	pathRoot := t.TempDir()
 	effective, err := LoadEffective(LoadRequest{
 		DefaultPath: defaultPath, OverridePath: overridePath,
-		DefaultPaths: RuntimePaths{
-			RuntimeDir: filepath.Join(pathRoot, "run"),
-			LogDir:     filepath.Join(pathRoot, "log"), TempDir: filepath.Join(pathRoot, "tmp"),
-		},
 		Environment: environment,
 	})
 	if err != nil {

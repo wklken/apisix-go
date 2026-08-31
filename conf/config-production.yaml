@@ -21,12 +21,6 @@ apisix:
   status:
     ip: 0.0.0.0
 
-apisix_go:
-  runtime_paths:
-    runtime_dir: /usr/local/apisix/run
-    log_dir: /usr/local/apisix/logs
-    temp_dir: /usr/local/apisix/tmp
-
 plugins:
   - acl
   - ai-aliyun-content-moderation

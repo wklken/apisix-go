@@ -92,18 +92,6 @@ func TestLoadEffectivePreservesExactUntypedNumber(t *testing.T) {
 	}
 }
 
-func TestLoadEffectiveResolvesRelativeRuntimePathAgainstOwningFile(t *testing.T) {
-	req := loadRequestFixture(t, `apisix_go: {runtime_paths: {runtime_dir: relative-run}}`)
-	effective, err := LoadEffective(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := filepath.Join(filepath.Dir(req.OverridePath), "relative-run")
-	if effective.Paths.RuntimeDir != want {
-		t.Fatalf("runtime_dir = %q, want %q", effective.Paths.RuntimeDir, want)
-	}
-}
-
 func TestLoadEffectiveRejectsUnknownFields(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -119,11 +107,6 @@ func TestLoadEffectiveRejectsUnknownFields(t *testing.T) {
 			name:     "unknown nested fields",
 			override: "apisix: {node_listen: [{port: 9080, first_unknown: a, second_unknown: b}]}\n",
 			want:     "static configuration contains 2 unsupported fields",
-		},
-		{
-			name:     "unknown runtime extension field",
-			override: "apisix_go: {runtime_paths: {unknown_path: must-not-appear}}\n",
-			want:     "static configuration contains 1 unsupported field",
 		},
 	}
 
@@ -305,10 +288,6 @@ deployment: {role: data_plane, role_data_plane: {config_provider: yaml}}
 	}
 	return LoadRequest{
 		DefaultPath: defaults, OverridePath: overridePath,
-		DefaultPaths: RuntimePaths{
-			RuntimeDir: filepath.Join(root, "run"),
-			LogDir:     filepath.Join(root, "log"), TempDir: filepath.Join(root, "tmp"),
-		},
 		Environment: map[string]string{},
 	}
 }

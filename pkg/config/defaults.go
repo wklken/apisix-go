@@ -8,7 +8,7 @@ const (
 	defaultClientBodyTimeout = 60 * time.Second
 )
 
-func builtinDefaults(paths RuntimePaths) *valueNode {
+func builtinDefaults() *valueNode {
 	return mustNodeFromAny(map[string]any{
 		"nginx_config": map[string]any{"http": map[string]any{
 			"enable_access_log":    true,
@@ -19,9 +19,5 @@ func builtinDefaults(paths RuntimePaths) *valueNode {
 			"status":  map[string]any{"ip": "127.0.0.1", "port": 7085},
 			"control": map[string]any{"ip": "127.0.0.1", "port": 9090},
 		},
-		"apisix_go": map[string]any{"runtime_paths": map[string]any{
-			"runtime_dir": paths.RuntimeDir,
-			"log_dir":     paths.LogDir, "temp_dir": paths.TempDir,
-		}},
 	}, "")
 }

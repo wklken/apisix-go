@@ -31,10 +31,6 @@ func loadEffectiveForStartup(configPath string) (
 }
 
 func loadEffective(configPath string) (*config.EffectiveConfig, error) {
-	paths, err := config.DefaultRuntimePaths()
-	if err != nil {
-		return nil, fmt.Errorf("resolve default runtime paths: %w", err)
-	}
 	defaultPath, err := filepath.Abs(config.DefaultConfigFile)
 	if err != nil {
 		return nil, fmt.Errorf("resolve default config path: %w", err)
@@ -52,7 +48,6 @@ func loadEffective(configPath string) (*config.EffectiveConfig, error) {
 	return config.LoadEffective(config.LoadRequest{
 		DefaultPath:  defaultPath,
 		OverridePath: overridePath,
-		DefaultPaths: paths,
 		Environment:  environmentMap(os.Environ()),
 	})
 }

@@ -1,8 +1,6 @@
 # Configuration
 
-APISIX-Go reads Apache APISIX static configuration. APISIX-Go-only fields
-control local process behavior; they do not select different route or plugin
-semantics.
+APISIX-Go reads Apache APISIX static configuration.
 
 ## Load order
 
@@ -24,21 +22,6 @@ APISIX 3.17 reserves `APISIX_DEPLOYMENT_ETCD_HOST` for replacing
 `deployment.etcd.host`. Its value must be a JSON array, for example
 `["http://etcd:2379"]`. Invalid JSON is ignored, matching APISIX 3.17. There is
 no generic environment-to-field mapping or `--set` configuration layer.
-
-## Runtime paths
-
-Only apisix-go process paths use the `apisix_go` extension:
-
-```yaml
-apisix_go:
-  runtime_paths:
-    runtime_dir: /usr/local/apisix/run
-    log_dir: /usr/local/apisix/logs
-    temp_dir: /usr/local/apisix/tmp
-```
-
-These fields control local files only and do not alter APISIX route or plugin
-behavior.
 
 ## Validate and inspect
 

@@ -9,7 +9,6 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"slices"
 	"strings"
 	"sync"
@@ -43,14 +42,6 @@ var oasTestTaskStates sync.Map
 
 func newTestPluginWithOwner(t *testing.T, cfg Config, metadata map[string]any, prefix string) *Plugin {
 	t.Helper()
-	if cfg.SpecURL != "" && len(cfg.SpecURLAllowedAddresses) == 0 {
-		parsed, err := url.Parse(cfg.SpecURL)
-		if err != nil {
-			t.Fatalf("parse spec URL: %v", err)
-		}
-		cfg.SpecURLAllowedAddresses = []string{parsed.Hostname()}
-	}
-
 	failures := make(chan runtime.TaskFailure, 4)
 	tasks := runtime.NewTaskRegistry(context.Background(), func(failure runtime.TaskFailure) {
 		failures <- failure
@@ -198,9 +189,7 @@ func TestOASRefreshAdmissionFailureLeavesCurrentValidator(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p := &Plugin{config: Config{
-		SpecURL: server.URL, SpecURLAllowedAddresses: []string{"127.0.0.1"},
-	}}
+	p := &Plugin{config: Config{SpecURL: server.URL}}
 	p.SetDependencies(base.Dependencies{Metadata: runtime.MetadataView{}, Tasks: owner})
 	if err := p.Init(); err != nil {
 		t.Fatal(err)
@@ -1448,9 +1437,8 @@ func TestHandlerResolvesExternalSchemaRef(t *testing.T) {
 		1,
 	)
 	p := newTestPlugin(t, Config{
-		Spec:                    spec,
-		SpecURLAllowedAddresses: []string{"127.0.0.1"},
-		VerboseErrors:           true,
+		Spec:          spec,
+		VerboseErrors: true,
 	})
 
 	req := httptest.NewRequest(http.MethodPost, "/pets", strings.NewReader(`{"age":3}`))
@@ -1551,7 +1539,7 @@ func TestHandlerLazilyRejectsExternalSchemaRefCycle(t *testing.T) {
     }
   }
 }`
-	p := &Plugin{config: Config{Spec: spec, SpecURLAllowedAddresses: []string{"127.0.0.1"}}}
+	p := &Plugin{config: Config{Spec: spec}}
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -1599,7 +1587,7 @@ func TestHandlerLazilyRejectsMissingExternalSchemaRef(t *testing.T) {
 		externalServer.URL+"/missing.json#/components/schemas/Pet",
 		1,
 	)
-	p := &Plugin{config: Config{Spec: spec, SpecURLAllowedAddresses: []string{"127.0.0.1"}}}
+	p := &Plugin{config: Config{Spec: spec}}
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}

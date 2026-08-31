@@ -215,7 +215,7 @@ func TestScopedSecretsMaterializeOASHeaderContainerDeterministically(t *testing.
 	})
 	defer closeAttempt()
 	p := &Plugin{config: Config{
-		SpecURL: specServer.URL + "/openapi.json", SpecURLAllowedAddresses: []string{"127.0.0.1"},
+		SpecURL:               specServer.URL + "/openapi.json",
 		VerboseErrors:         true,
 		SpecURLRequestHeaders: map[string]string{"X-Z": rawZ, "Authorization": rawAuth},
 	}}
@@ -263,7 +263,7 @@ func TestScopedSecretsResolveManagedOASHeader(t *testing.T) {
 	)
 	defer closeAttempt()
 	p := &Plugin{config: Config{
-		SpecURL: server.URL, SpecURLAllowedAddresses: []string{"127.0.0.1"},
+		SpecURL:               server.URL,
 		SpecURLRequestHeaders: map[string]string{"Authorization": managed},
 	}}
 	materializeScopedOASSecrets(t, p, secrets, scope)
@@ -392,7 +392,7 @@ func TestOASStopWaitsForScopedHeaderFetch(t *testing.T) {
 	}))
 	defer server.Close()
 	p := &Plugin{config: Config{
-		SpecURL: server.URL, SpecURLAllowedAddresses: []string{"127.0.0.1"},
+		SpecURL:               server.URL,
 		SpecURLRequestHeaders: map[string]string{"Authorization": raw},
 	}}
 	secrets, scope, _, closeAttempt := newOASScopedSecretHarness(
@@ -456,7 +456,6 @@ func TestOASStopCancelsOwnedFetchBeforeDroppingSecrets(t *testing.T) {
 	}
 	p := &Plugin{config: Config{
 		SpecURL:                   server.URL,
-		SpecURLAllowedAddresses:   []string{"127.0.0.1"},
 		SpecURLRequestHeaders:     map[string]string{"Authorization": raw},
 		SkipRequestBodyValidation: true,
 	}}
@@ -654,9 +653,7 @@ func TestOASStopWaitsForNoSecretCompileAndSuppressesOldResult(t *testing.T) {
 		_, _ = w.Write([]byte(testSpec()))
 	}))
 	defer server.Close()
-	p := &Plugin{config: Config{
-		SpecURL: server.URL, SpecURLAllowedAddresses: []string{"127.0.0.1"},
-	}}
+	p := &Plugin{config: Config{SpecURL: server.URL}}
 	if err := p.PostInit(); err != nil {
 		t.Fatal(err)
 	}
@@ -760,9 +757,7 @@ func TestOASStopWaitsForNoSecretHandlerValidation(t *testing.T) {
 		_, _ = w.Write([]byte(testSpec()))
 	}))
 	defer server.Close()
-	p := &Plugin{config: Config{
-		SpecURL: server.URL, SpecURLAllowedAddresses: []string{"127.0.0.1"},
-	}}
+	p := &Plugin{config: Config{SpecURL: server.URL}}
 	if err := p.PostInit(); err != nil {
 		t.Fatal(err)
 	}

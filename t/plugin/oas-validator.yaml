@@ -426,7 +426,7 @@ cases:
       - name: spec
         kind: http
         expect: [{method: GET, path: {equals: /spec.json}}]
-        respond: [{status: 200, headers: {Content-Type: application/json}, body: *oas30}]
+        respond: [{status: 200, headers: {Content-Type: application/json}, body: &oas30-http '{"openapi":"3.0.2","info":{"title":"test","version":"1.0.0"},"servers":[{"url":"/api/v3"}],"paths":{"/pet":{"post":{"requestBody":{"required":true,"content":{"application/json":{"schema":{"type":"object","required":["name","photoUrls"]}}}},"responses":{"200":{"description":"OK"}}}}}}'}]
       - name: primary
         kind: http
         expect: [{method: POST, path: {equals: /api/v3/pet}, headers: {Content-Type: {equals: application/json}}, body: {equals: '{"id": 10, "name": "doggie", "category": {"id": 1, "name": "Dogs"}, "photoUrls": ["string"], "tags": [{"id": 1, "name": "tag1"}], "status": "available"}'}}]
@@ -497,7 +497,7 @@ cases:
       - name: spec
         kind: http
         expect: [{method: GET, path: {equals: /spec-with-auth.json}, headers: {X-Token: {equals: my-secret-token}}}]
-        respond: [{status: 200, headers: {Content-Type: application/json}, body: *oas30}]
+        respond: [{status: 200, headers: {Content-Type: application/json}, body: *oas30-http}]
       - name: primary
         kind: http
         expect: [{method: POST, path: {equals: /api/v3/pet}, headers: {Content-Type: {equals: application/json}}, body: {equals: '{"id": 10, "name": "doggie", "category": {"id": 1, "name": "Dogs"}, "photoUrls": ["string"], "tags": [{"id": 1, "name": "tag1"}], "status": "available"}'}}]
@@ -538,8 +538,8 @@ cases:
           - {method: GET, path: {equals: /cached-spec.json}}
           - {method: GET, path: {equals: /cached-spec.json}}
         respond:
-          - {status: 200, headers: {Content-Type: application/json}, body: *oas30}
-          - {status: 200, headers: {Content-Type: application/json}, body: *oas30}
+          - {status: 200, headers: {Content-Type: application/json}, body: *oas30-http}
+          - {status: 200, headers: {Content-Type: application/json}, body: *oas30-http}
       - name: primary
         kind: http
         expect:

@@ -78,11 +78,6 @@ const schema = `
 		"type": "boolean",
 		"default": false
 	  },
-	  "allow_private_network": {
-		"description": "allow private-network preflight requests",
-		"type": "boolean",
-		"default": false
-	  },
 	  "allow_origins_by_regex": {
 		"description": "you can use regex to allow specific origins when no credentials, for example use [.*\\.test.com$] to allow a.test.com and b.test.com",
 		"type": "array",
@@ -139,13 +134,12 @@ const metadataSchema = `
 }`
 
 type Config struct {
-	AllowOrigins        string `json:"allow_origins"`
-	AllowMethods        string `json:"allow_methods"`
-	AllowHeaders        string `json:"allow_headers"`
-	ExposeHeaders       string `json:"expose_headers"`
-	MaxAge              int    `json:"max_age"`
-	AllowCredential     bool   `json:"allow_credential"`
-	AllowPrivateNetwork bool   `json:"allow_private_network"`
+	AllowOrigins    string `json:"allow_origins"`
+	AllowMethods    string `json:"allow_methods"`
+	AllowHeaders    string `json:"allow_headers"`
+	ExposeHeaders   string `json:"expose_headers"`
+	MaxAge          int    `json:"max_age"`
+	AllowCredential bool   `json:"allow_credential"`
 
 	AllowOriginsByRegex []string `json:"allow_origins_by_regex"`
 	// FIXME: not supported yet
@@ -275,16 +269,12 @@ func (p *Plugin) RunStreamingHeaderFilter(r *http.Request, state *base.Streaming
 	if timingOrigin, ok := p.timingAllowOrigin(origin); ok {
 		state.Header.Set("Timing-Allow-Origin", timingOrigin)
 	}
-	if p.config.AllowPrivateNetwork && r != nil && r.Method == http.MethodOptions &&
-		strings.EqualFold(r.Header.Get("Access-Control-Request-Private-Network"), "true") {
-		state.Header.Set("Access-Control-Allow-Private-Network", "true")
-	}
 	return nil
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	// rs/cors owns the CORS engine: origin/method/header matching, preflight
-	// handling, Vary, credentials, private-network, max-age and the 200 status
+	// handling, Vary, credentials, max-age and the 200 status
 	// for successful preflight OPTIONS requests.
 	corsNext := next
 	if p.config.AllowOrigins == "*" {
@@ -309,10 +299,6 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		}
 		if origin, ok := p.timingAllowOrigin(responseWriter.origin); ok {
 			responseWriter.Header().Set("Timing-Allow-Origin", origin)
-		}
-		if p.config.AllowPrivateNetwork && r.Method == http.MethodOptions &&
-			strings.EqualFold(r.Header.Get("Access-Control-Request-Private-Network"), "true") {
-			responseWriter.Header().Set("Access-Control-Allow-Private-Network", "true")
 		}
 		if r.Method == http.MethodOptions && r.Header.Get("Access-Control-Request-Method") == "" {
 			// APISIX exits all OPTIONS requests with 200, even non-preflight ones.

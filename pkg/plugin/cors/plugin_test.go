@@ -585,30 +585,6 @@ func TestHandlerReflectsDoubleStarRequestHeaders(t *testing.T) {
 	}
 }
 
-func TestHandlerAllowsPrivateNetworkPreflight(t *testing.T) {
-	p := newTestPlugin(t, Config{
-		AllowOrigins:        "https://client.example",
-		AllowMethods:        http.MethodGet,
-		AllowPrivateNetwork: true,
-	})
-	req := httptest.NewRequest(http.MethodOptions, "http://example.com/get", nil)
-	req.Header.Set("Origin", "https://client.example")
-	req.Header.Set("Access-Control-Request-Method", http.MethodGet)
-	req.Header.Set("Access-Control-Request-Private-Network", "true")
-	rr := httptest.NewRecorder()
-
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Fatal("private-network preflight should not reach upstream handler")
-	})).ServeHTTP(rr, req)
-
-	if got := rr.Header().Get("Access-Control-Allow-Private-Network"); got != "true" {
-		t.Fatalf("Access-Control-Allow-Private-Network = %q, want true", got)
-	}
-	if got := rr.Code; got != http.StatusOK {
-		t.Fatalf("response code = %d, want %d", got, http.StatusOK)
-	}
-}
-
 func TestHandlerPreservesOptionalResponseWriterInterfaces(t *testing.T) {
 	p := newTestPlugin(t, Config{})
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)

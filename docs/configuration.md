@@ -32,3 +32,14 @@ The container reads `/usr/local/apisix/conf/config.yaml` by default.
 Use `apisix config test -c /path/to/config.yaml` before restart. See
 [HTTP data-plane compatibility](http-data-plane.md) before replacing an
 existing APISIX image.
+
+## SIGHUP reload
+
+`SIGHUP` re-reads the same default file, optional `-c/--config` file, and
+reserved environment overrides used at startup. The only setting that may
+change in process is `nginx_config.error_log_level`.
+
+An unreadable or invalid configuration, an unsupported log level, or a change
+to any other decoded static setting is rejected. The running listeners,
+provider, active generation, and current log level remain unchanged. Validate
+and restart the process to apply every other static configuration change.

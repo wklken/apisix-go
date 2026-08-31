@@ -59,7 +59,9 @@ trap cleanup EXIT INT TERM
 
 temp_dir=$(mktemp -d "${TMPDIR:-/tmp}/apisix-container-smoke.XXXXXX")
 slow_response_file="$temp_dir/slow-response.txt"
-cat >"$temp_dir/config.yaml" <<'YAML'
+write_gateway_config() {
+    local error_log_level=$1
+    cat >"$temp_dir/config.yaml" <<YAML
 apisix:
   node_listen:
     - ip: 0.0.0.0
@@ -67,12 +69,16 @@ apisix:
   status:
     ip: 0.0.0.0
     port: 7085
+nginx_config:
+  error_log_level: ${error_log_level}
 plugins: [request-id]
 deployment:
   role: data_plane
   role_data_plane:
     config_provider: yaml
 YAML
+}
+write_gateway_config info
 
 if [[ ${APISIX_SKIP_BUILD:-0} != 1 ]]; then
     docker build \
@@ -171,6 +177,28 @@ if [[ $(docker exec "$gateway" id -u) != 10001 ]]; then
 fi
 if [[ $(docker exec "$gateway" id -g) != 10001 ]]; then
     printf 'gateway is not running as GID 10001\n' >&2
+    exit 1
+fi
+
+write_gateway_config debug
+docker kill --signal HUP "$gateway" >/dev/null
+reload_deadline=$((SECONDS + 15))
+until docker logs "$gateway" 2>&1 | grep -Fq 'SIGHUP configuration reload completed'; do
+    if [[ $(docker inspect --format '{{.State.Running}}' "$gateway") != true ]]; then
+        docker logs "$gateway" >&2
+        printf 'gateway exited during SIGHUP reload\n' >&2
+        exit 1
+    fi
+    if (( SECONDS >= reload_deadline )); then
+        docker logs "$gateway" >&2
+        printf 'gateway did not complete SIGHUP reload before timeout\n' >&2
+        exit 1
+    fi
+    sleep 0.1
+done
+reload_response=$(curl --fail --silent --show-error "http://${published}/smoke")
+if [[ "$reload_response" != apisix-container-smoke ]]; then
+    printf 'post-SIGHUP response = %q, want apisix-container-smoke\n' "$reload_response" >&2
     exit 1
 fi
 

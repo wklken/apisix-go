@@ -963,22 +963,18 @@ func TestOpenWhiskScopedRequestsBlockStopUntilUpstreamRetires(t *testing.T) {
 				t.Fatalf("upstream Authorization = %q, want %q", gotAuthorization, test.want)
 			}
 
-			stopStarted := make(chan struct{})
-			var stopStartedOnce sync.Once
-			p.testLifecycleHook = func(event string) {
-				if event == lifecycleBeforeStopWait {
-					stopStartedOnce.Do(func() { close(stopStarted) })
-				}
-			}
 			stopDone := make(chan struct{})
 			go func() {
 				p.Stop()
 				close(stopDone)
 			}()
-			select {
-			case <-stopStarted:
-			case <-time.After(time.Second):
-				t.Fatal("timed out waiting for Stop to reach retirement gate")
+			deadline := time.Now().Add(time.Second)
+			for p.lifecycleMu.TryRLock() {
+				p.lifecycleMu.RUnlock()
+				if time.Now().After(deadline) {
+					t.Fatal("timed out waiting for Stop to wait on the lifecycle write gate")
+				}
+				time.Sleep(time.Millisecond)
 			}
 			select {
 			case <-stopDone:

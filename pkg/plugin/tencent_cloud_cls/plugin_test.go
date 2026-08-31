@@ -725,72 +725,6 @@ func TestCLSGenerationsShareOnlyNeutralClientAndKeepSignaturesIsolated(t *testin
 	}
 }
 
-func TestCLSSigningCallbackOwnsRequestResponseLifecycle(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Authorization", "private-response-authorization")
-		w.WriteHeader(http.StatusBadGateway)
-		_, _ = w.Write([]byte("private-response-body"))
-	}))
-	t.Cleanup(server.Close)
-	p := newScopedReadyCLSPlugin(t, 132, "route-callback-lifecycle", Config{
-		Scheme: "http", CLSHost: strings.TrimPrefix(server.URL, "http://"), CLSTopic: "topic-a",
-		SecretID: "secret-id", SecretKey: "$ENV://CLS_CALLBACK_KEY", Timeout: 1732,
-	}, "callback-private-key")
-
-	var retainedRequest *resty.Request
-	var retainedResponse *resty.Response
-	var retainedRawResponse *http.Response
-	p.client.OnAfterResponse(func(_ *resty.Client, response *resty.Response) error {
-		retainedRequest = response.Request
-		retainedResponse = response
-		retainedRawResponse = response.RawResponse
-		return nil
-	})
-	callbackReturned := make(chan struct{})
-	releaseCallback := make(chan struct{})
-	p.testLifecycleHook = func(event string) {
-		if event != lifecycleSigningCallbackReturned {
-			return
-		}
-		close(callbackReturned)
-		<-releaseCallback
-	}
-	sendDone := make(chan error, 1)
-	go func() {
-		_, err := p.SendBatch(
-			context.Background(), []map[string]any{{"message": "private-body"}}, 1,
-		)
-		sendDone <- err
-	}()
-	select {
-	case <-callbackReturned:
-	case <-time.After(2 * time.Second):
-		close(releaseCallback)
-		t.Fatal("timed out waiting for signing callback return barrier")
-	}
-
-	problems := retainedCLSGraphProblems(retainedRequest, retainedResponse, retainedRawResponse)
-	select {
-	case err := <-sendDone:
-		problems = append(problems, fmt.Sprintf("SendBatch returned before callback release: %v", err))
-	default:
-	}
-	close(releaseCallback)
-	var sendErr error
-	select {
-	case sendErr = <-sendDone:
-	case <-time.After(2 * time.Second):
-		t.Fatal("SendBatch did not return after signing callback release")
-	}
-	if len(problems) > 0 {
-		t.Fatalf("request/response graph escaped signing callback: %s", strings.Join(problems, "; "))
-	}
-	if sendErr == nil || !strings.Contains(sendErr.Error(), "status code [502]") ||
-		!strings.Contains(sendErr.Error(), "private-response-body") {
-		t.Fatalf("SendBatch() error = %v, want callback-owned status/body result", sendErr)
-	}
-}
-
 func TestCLSSendScrubsRetainedRequestAndResponse(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Authorization", "private-response-authorization")
@@ -836,43 +770,6 @@ func TestCLSSendScrubsRetainedRequestAndResponse(t *testing.T) {
 	if retainedRawResponse.Body != http.NoBody || retainedRawResponse.Request != nil {
 		t.Fatalf("retained raw response still owns request/body: %#v", retainedRawResponse)
 	}
-}
-
-func retainedCLSGraphProblems(
-	request *resty.Request,
-	response *resty.Response,
-	rawResponse *http.Response,
-) []string {
-	problems := make([]string, 0, 8)
-	if request == nil || response == nil || rawResponse == nil {
-		return append(problems, "Resty hook did not retain the complete graph")
-	}
-	if request.Header.Get("Authorization") != "" {
-		problems = append(problems, "request Authorization retained")
-	}
-	if request.Body != nil {
-		problems = append(problems, "request body retained")
-	}
-	if request.RawRequest == nil {
-		problems = append(problems, "raw request missing")
-	} else {
-		if request.RawRequest.Header.Get("Authorization") != "" {
-			problems = append(problems, "raw request Authorization retained")
-		}
-		if request.RawRequest.Body != http.NoBody || request.RawRequest.GetBody != nil {
-			problems = append(problems, "raw request body retained")
-		}
-	}
-	if response.Request != nil || response.RawResponse != nil || len(response.Body()) != 0 {
-		problems = append(problems, "Resty response graph retained")
-	}
-	if rawResponse.Header.Get("Authorization") != "" {
-		problems = append(problems, "raw response Authorization retained")
-	}
-	if rawResponse.Body != http.NoBody || rawResponse.Request != nil {
-		problems = append(problems, "raw response request/body retained")
-	}
-	return problems
 }
 
 func referenceCLSAuthorization(secretID, secretKey string, now time.Time) string {

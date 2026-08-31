@@ -526,20 +526,16 @@ func TestCasdoorCallbackAndStopKeepScopedSecretUseAttemptOwned(t *testing.T) {
 		t.Fatal("timed out waiting for OAuth callback request")
 	}
 
-	stopStarted := make(chan struct{})
-	var stopStartedOnce sync.Once
-	p.testLifecycleHook = func(event string) {
-		if event == lifecycleBeforeStopWait {
-			stopStartedOnce.Do(func() { close(stopStarted) })
-		}
-	}
 	stopDone := make(chan struct{}, 2)
 	go func() { p.Stop(); stopDone <- struct{}{} }()
 	go func() { p.Stop(); stopDone <- struct{}{} }()
-	select {
-	case <-stopStarted:
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for Stop retirement gate")
+	deadline := time.Now().Add(time.Second)
+	for p.lifecycleMu.TryRLock() {
+		p.lifecycleMu.RUnlock()
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for Stop to wait on the lifecycle write gate")
+		}
+		time.Sleep(time.Millisecond)
 	}
 	select {
 	case <-stopDone:

@@ -2232,19 +2232,17 @@ func newBlockingHealthPlugin(
 	var startOnce, cancelOnce, releaseOnce sync.Once
 	releaseProbe := func() { releaseOnce.Do(func() { close(release) }) }
 	t.Cleanup(releaseProbe)
-	p.probeForTest = func(ctx context.Context, index int) healthProbeResult {
-		if index != 0 {
-			return healthyProbeResult(index)
-		}
+	p.healthClients[0].Transport = multiStreamRoundTripFunc(func(request *http.Request) (*http.Response, error) {
 		startOnce.Do(func() { close(probeStarted) })
 		select {
-		case <-ctx.Done():
+		case <-request.Context().Done():
 			cancelOnce.Do(func() { close(probeCanceled) })
 			<-release
+			return nil, request.Context().Err()
 		case <-release:
 		}
-		return healthyProbeResult(index)
-	}
+		return healthProbeHTTPResponse(request, http.StatusOK), nil
+	})
 	return p, probeStarted, probeCanceled, releaseProbe
 }
 
@@ -2261,8 +2259,13 @@ func newTwoProbeHealthPlugin(t *testing.T, tasks *runtime.TaskRegistry, owner *r
 	return p
 }
 
-func healthyProbeResult(_ int) healthProbeResult {
-	return healthProbeResult{status: http.StatusOK}
+func healthProbeHTTPResponse(request *http.Request, status int) *http.Response {
+	return &http.Response{
+		StatusCode: status,
+		Header:     make(http.Header),
+		Body:       http.NoBody,
+		Request:    request,
+	}
 }
 
 func stopTestRegistry(t *testing.T, tasks *runtime.TaskRegistry) {
@@ -2363,19 +2366,22 @@ func TestAIHealthProbePanicDoesNotFailOwnedLoop(t *testing.T) {
 	p := newTwoProbeHealthPlugin(t, tasks, owner)
 	recoveredCycle := make(chan struct{})
 	var firstCalls atomic.Int32
-	p.probeForTest = func(_ context.Context, index int) healthProbeResult {
-		if index == 0 {
-			if firstCalls.Add(1) == 1 {
-				panic("probe-panic")
-			}
-			select {
-			case <-recoveredCycle:
-			default:
-				close(recoveredCycle)
-			}
-		}
-		return healthyProbeResult(index)
+	for _, client := range p.healthClients {
+		client.Transport = multiStreamRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+			return healthProbeHTTPResponse(request, http.StatusOK), nil
+		})
 	}
+	p.healthClients[0].Transport = multiStreamRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if firstCalls.Add(1) == 1 {
+			panic("probe-panic")
+		}
+		select {
+		case <-recoveredCycle:
+		default:
+			close(recoveredCycle)
+		}
+		return healthProbeHTTPResponse(request, http.StatusOK), nil
+	})
 	p.wakeHealthRefresh()
 	select {
 	case <-recoveredCycle:
@@ -2394,10 +2400,10 @@ func TestAIHealthLoopProbesAgainAtIdleDeadline(t *testing.T) {
 	p := newAIHealthPlugin(t, tasks, owner, healthProbeConfig("http://192.0.2.10"))
 	p.health[0].nextCheck = time.Now().Add(-time.Second)
 	probes := make(chan struct{}, 3)
-	p.probeForTest = func(context.Context, int) healthProbeResult {
+	p.healthClients[0].Transport = multiStreamRoundTripFunc(func(request *http.Request) (*http.Response, error) {
 		probes <- struct{}{}
-		return healthProbeResult{status: http.StatusOK}
-	}
+		return healthProbeHTTPResponse(request, http.StatusOK), nil
+	})
 
 	p.wakeHealthRefresh()
 	for probe := 1; probe <= 2; probe++ {
@@ -2419,10 +2425,10 @@ func TestPluginStopCancelsOwnedPeriodicHealthLoop(t *testing.T) {
 	p := newAIHealthPlugin(t, tasks, owner, healthProbeConfig("http://192.0.2.10"))
 	p.health[0].nextCheck = time.Now().Add(-time.Second)
 	probed := make(chan struct{}, 1)
-	p.probeForTest = func(context.Context, int) healthProbeResult {
+	p.healthClients[0].Transport = multiStreamRoundTripFunc(func(request *http.Request) (*http.Response, error) {
 		probed <- struct{}{}
-		return healthProbeResult{status: http.StatusOK}
-	}
+		return healthProbeHTTPResponse(request, http.StatusOK), nil
+	})
 	p.wakeHealthRefresh()
 	select {
 	case <-probed:

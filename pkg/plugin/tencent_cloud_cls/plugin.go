@@ -52,10 +52,6 @@ type Plugin struct {
 	secretKey       secret.Value
 	secretKeySet    bool
 	secretsPrepared bool
-
-	// testLifecycleHook is a package-local synchronization seam for lifecycle
-	// tests; it is nil in production.
-	testLifecycleHook func(string)
 }
 
 const (
@@ -66,8 +62,6 @@ const (
 	clsAPIPath         = "/structuredlog"
 	authExpireSeconds  = 60
 	defaultHTTPTimeout = 10 * time.Second
-
-	lifecycleSigningCallbackReturned = "signing-callback-returned"
 
 	maxSingleValueSize   = 1 * 1024 * 1024
 	maxLogGroupValueSize = 5 * 1024 * 1024
@@ -609,18 +603,11 @@ func (p *Plugin) useSigningConfigLocked(use func(*Config) error) error {
 	}
 	privateConfig := Config{SecretID: p.config.SecretID}
 	defer func() { privateConfig = Config{} }()
-	usePrivateConfig := func() error {
-		err := use(&privateConfig)
-		if hook := p.testLifecycleHook; hook != nil {
-			hook(lifecycleSigningCallbackReturned)
-		}
-		return err
-	}
 	if p.secretKeySet {
 		return p.secretKey.Use(func(value string) error {
 			privateConfig.SecretKey = value
 			defer func() { privateConfig.SecretKey = "" }()
-			return usePrivateConfig()
+			return use(&privateConfig)
 		})
 	}
 	return secret.ErrCredentialUnavailable

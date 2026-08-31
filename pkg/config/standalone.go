@@ -92,12 +92,6 @@ func StandaloneConfigFile(provider string) string {
 	}
 }
 
-// StandaloneBuckets returns the buckets owned by the standalone configuration
-// file. The returned slice is independent from the package-level definition.
-func StandaloneBuckets() []string {
-	return append([]string(nil), standaloneBuckets...)
-}
-
 // desiredBatchFromStandalone translates an already-normalized standalone file
 // snapshot. The cursor binds the translation contract to the exact canonical
 // mutation bytes.
@@ -581,10 +575,6 @@ func validStandaloneDisposition(disposition generation.ResourceDisposition) bool
 
 func (w *StandaloneFileWatcher) closeDone() {
 	w.doneOnce.Do(func() { close(w.done) })
-}
-
-func standaloneProviderFromPath(path string) string {
-	return strings.TrimPrefix(strings.ToLower(filepath.Ext(path)), ".")
 }
 
 func readStandaloneSnapshot(

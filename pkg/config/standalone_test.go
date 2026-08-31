@@ -167,12 +167,12 @@ func assertStandaloneCatalogPanic(t *testing.T, call func()) {
 }
 
 func TestStandaloneBucketsExcludeSingletonPlugins(t *testing.T) {
-	buckets := StandaloneBuckets()
+	buckets := standaloneBuckets
 	if len(buckets) != 12 {
-		t.Fatalf("len(StandaloneBuckets()) = %d, want 12", len(buckets))
+		t.Fatalf("len(standaloneBuckets) = %d, want 12", len(buckets))
 	}
 	if slices.Contains(buckets, "plugins") {
-		t.Fatalf("StandaloneBuckets() = %v, want singleton plugins excluded", buckets)
+		t.Fatalf("standaloneBuckets = %v, want singleton plugins excluded", buckets)
 	}
 	for _, bucket := range buckets {
 		if !generation.IsManagedResourceKind(bucket) {
@@ -1126,21 +1126,6 @@ func TestStandaloneConfigFile(t *testing.T) {
 	} {
 		if got := StandaloneConfigFile(test.provider); got != test.want {
 			t.Errorf("StandaloneConfigFile(%q) = %q, want %q", test.provider, got, test.want)
-		}
-	}
-}
-
-func TestStandaloneProviderFromPath(t *testing.T) {
-	for _, test := range []struct {
-		path string
-		want string
-	}{
-		{path: "conf/apisix.yaml", want: "yaml"},
-		{path: "conf/apisix.JSON", want: "json"},
-		{path: "conf/apisix", want: ""},
-	} {
-		if got := standaloneProviderFromPath(test.path); got != test.want {
-			t.Errorf("standaloneProviderFromPath(%q) = %q, want %q", test.path, got, test.want)
 		}
 	}
 }

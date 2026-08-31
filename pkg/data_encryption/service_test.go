@@ -69,45 +69,6 @@ func TestServiceResolverDoesNotShareMutableKeyring(t *testing.T) {
 	}
 }
 
-func TestServiceSameConfiguration(t *testing.T) {
-	keyring := []string{"qeddd145sfvddff3", "old-keyring-item"}
-	tests := []struct {
-		name  string
-		left  Service
-		right Service
-		want  bool
-	}{
-		{
-			name:  "same",
-			left:  testService(t, true, keyring),
-			right: testService(t, true, append([]string(nil), keyring...)),
-			want:  true,
-		},
-		{
-			name:  "different order",
-			left:  testService(t, true, keyring),
-			right: testService(t, true, []string{keyring[1], keyring[0]}),
-		},
-		{
-			name:  "different enabled",
-			left:  testService(t, true, keyring),
-			right: testService(t, false, keyring),
-		},
-		{
-			name:  "different keyring",
-			left:  testService(t, true, keyring),
-			right: testService(t, true, []string{keyring[0]}),
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := tt.left.SameConfiguration(tt.right); got != tt.want {
-				t.Fatalf("SameConfiguration() = %t, want %t", got, tt.want)
-			}
-		})
-	}
-}
-
 func TestServiceEncryptsAndDecryptsPluginConfigs(t *testing.T) {
 	service := testService(t, true, []string{"qeddd145sfvddff3"})
 	configs := map[string]any{

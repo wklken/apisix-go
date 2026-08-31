@@ -34,17 +34,11 @@ type Plugin struct {
 	serviceToken    secret.Value
 	serviceTokenSet bool
 	retired         bool
-
-	// testLifecycleHook is a package-local synchronization seam for lifecycle
-	// tests; it is nil in production.
-	testLifecycleHook func(string)
 }
 
 const (
 	priority = -1901
 	name     = "openwhisk"
-
-	lifecycleBeforeStopWait = "before-stop-wait"
 )
 
 const schema = `
@@ -323,9 +317,6 @@ func (p *Plugin) useServiceTokenLocked(use func(string) error) error {
 // Stop first waits for every request holding the lifecycle read gate, then
 // retires the neutral client before releasing the private credential owners.
 func (p *Plugin) Stop() {
-	if hook := p.testLifecycleHook; hook != nil {
-		hook(lifecycleBeforeStopWait)
-	}
 	p.lifecycleMu.Lock()
 	defer p.lifecycleMu.Unlock()
 	if p.retired {

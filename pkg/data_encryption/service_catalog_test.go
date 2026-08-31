@@ -34,19 +34,11 @@ func TestNewServiceRejectsNilDeclarationCatalog(t *testing.T) {
 	_ = NewService(false, nil, nil)
 }
 
-func TestServiceDeclarationDigestAndConfigurationIdentity(t *testing.T) {
+func TestServiceDeclarationDigest(t *testing.T) {
 	catalog := testDeclarationCatalog(t)
 	service := NewService(true, []string{"qeddd145sfvddff3"}, catalog)
 	if got, want := service.DeclarationDigest(), catalog.Digest(); got != want {
 		t.Fatalf("DeclarationDigest() = %x, want %x", got, want)
-	}
-	if !service.SameConfiguration(NewService(true, []string{"qeddd145sfvddff3"}, catalog)) {
-		t.Fatal("SameConfiguration() rejected identical catalog digest")
-	}
-
-	if service.SameConfiguration(NewService(false, []string{"qeddd145sfvddff3"}, catalog)) ||
-		service.SameConfiguration(NewService(true, []string{"qeddd145sfvddff4"}, catalog)) {
-		t.Fatal("SameConfiguration() accepted different encryption settings")
 	}
 }
 

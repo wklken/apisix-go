@@ -39,18 +39,12 @@ type Plugin struct {
 	clientSecretFallbacks []secret.Value
 	secretsPrepared       bool
 	retired               bool
-
-	// testLifecycleHook is a package-local synchronization seam for lifecycle
-	// tests; it is nil in production.
-	testLifecycleHook func(string)
 }
 
 const (
 	priority               = 2559
 	name                   = "authz-casdoor"
 	minSessionSecretLength = 32
-
-	lifecycleBeforeStopWait = "before-stop-wait"
 )
 
 const schema = `
@@ -538,9 +532,6 @@ func useScopedCasdoorFallbacks(
 // Stop waits for in-flight authentication/session callbacks, closes the
 // generation-neutral client, then retires scoped secret owners.
 func (p *Plugin) Stop() {
-	if hook := p.testLifecycleHook; hook != nil {
-		hook(lifecycleBeforeStopWait)
-	}
 	p.lifecycleMu.Lock()
 	defer p.lifecycleMu.Unlock()
 	if p.retired {

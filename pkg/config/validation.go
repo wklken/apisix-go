@@ -61,8 +61,8 @@ func validateRuntimeConfig(cfg *Config) error {
 			return fmt.Errorf("apisix.trusted_addresses[%d] must be a valid CIDR or IP address", index)
 		}
 	}
-	if cfg.NginxConfig.HTTP.ClientMaxBodySize <= 0 {
-		return fmt.Errorf("nginx_config.http.client_max_body_size must be positive")
+	if cfg.NginxConfig.HTTP.ClientMaxBodySize < 0 {
+		return fmt.Errorf("nginx_config.http.client_max_body_size must be non-negative")
 	}
 	if cfg.NginxConfig.HTTP.ClientBodyTimeout <= 0 {
 		return fmt.Errorf("nginx_config.http.client_body_timeout must be positive")

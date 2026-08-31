@@ -48,7 +48,7 @@ plugin_attr: {prometheus: {export_addr: {ip: 127.0.0.1, port: 9091}}}
 	}
 }
 
-func TestLoadEffectiveAppliesSafeRequestBodyDefaultsWhenOmitted(t *testing.T) {
+func TestLoadEffectiveAppliesAPISIXRequestBodyDefaultsWhenOmitted(t *testing.T) {
 	req := loadRequestFixture(t, "")
 	if err := writeTestConfig(req.DefaultPath, `
 apisix: {node_listen: [{port: 9080}]}
@@ -61,7 +61,7 @@ deployment: {role: data_plane, role_data_plane: {config_provider: yaml}}
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := effective.Config.NginxConfig.HTTP.ClientMaxBodySize; got != 10*1024*1024 {
+	if got := effective.Config.NginxConfig.HTTP.ClientMaxBodySize; got != 0 {
 		t.Fatalf("client_max_body_size = %d", got)
 	}
 	if got := effective.Config.NginxConfig.HTTP.ClientBodyTimeout; got != 60*time.Second {
@@ -72,6 +72,17 @@ deployment: {role: data_plane, role_data_plane: {config_provider: yaml}}
 	}
 	if got := effective.Config.Apisix.Control; got != (Control{Ip: "127.0.0.1", Port: 9090}) {
 		t.Fatalf("apisix.control = %#v, want APISIX 3.17 control listener default", got)
+	}
+}
+
+func TestLoadEffectiveAllowsUnlimitedClientBodySize(t *testing.T) {
+	effective := loadEffectiveFixture(t, `
+nginx_config:
+  http:
+    client_max_body_size: 0
+`)
+	if got := effective.Config.NginxConfig.HTTP.ClientMaxBodySize; got != 0 {
+		t.Fatalf("client_max_body_size = %d, want unlimited 0", got)
 	}
 }
 
@@ -93,7 +104,11 @@ func TestLoadEffectiveRejectsInvalidRuntimeValues(t *testing.T) {
 		want     string
 	}{
 		{name: "send timeout", override: "nginx_config: {http: {send_timeout: 1s}}", want: "send_timeout"},
-		{name: "body size", override: "nginx_config: {http: {client_max_body_size: 0}}", want: "client_max_body_size"},
+		{
+			name:     "negative body size",
+			override: "nginx_config: {http: {client_max_body_size: -1}}",
+			want:     "client_max_body_size",
+		},
 		{
 			name:     "body timeout",
 			override: "nginx_config: {http: {client_body_timeout: 0s}}",

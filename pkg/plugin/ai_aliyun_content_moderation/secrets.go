@@ -166,9 +166,6 @@ func (p *Plugin) sendModerationRequest(
 
 func (p *Plugin) Stop() {
 	p.stopOnce.Do(func() {
-		if p.stopStarted != nil {
-			p.stopStarted()
-		}
 		p.secretMu.Lock()
 		p.stopped = true
 		p.scopedAccessKeyID = secret.Value{}

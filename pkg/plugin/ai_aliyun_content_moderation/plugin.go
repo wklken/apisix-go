@@ -42,7 +42,6 @@ type Plugin struct {
 	secretMu              sync.RWMutex
 	stopOnce              sync.Once
 	stopped               bool
-	stopStarted           func()
 
 	streamNow func() time.Time
 }

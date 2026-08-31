@@ -82,32 +82,11 @@ func TestDecryptPluginConfigWithResolverLookupResults(t *testing.T) {
 	})
 }
 
-func TestDecryptPluginConfigsDecryptsAIRateLimitingPasswords(t *testing.T) {
-	key := "qeddd145sfvddff3"
-	configs := map[string]any{"ai-rate-limiting": map[string]any{
-		"redis_password":    encryptForTest(t, key, "redis-secret"),
-		"sentinel_password": encryptForTest(t, key, "sentinel-secret"),
-	}}
-
-	DecryptPluginConfigs(configs, []string{key}, mustTestDeclarationCatalog())
-	for field, want := range map[string]string{
-		"redis_password":    "redis-secret",
-		"sentinel_password": "sentinel-secret",
-	} {
-		if got := configs["ai-rate-limiting"].(map[string]any)[field]; got != want {
-			t.Errorf("ai-rate-limiting.%s = %v, want %q", field, got, want)
-		}
-	}
-}
-
 func TestEncryptPluginConfigsEncryptsRegisteredFieldsAtRest(t *testing.T) {
 	key := "edd1c9f0985e76a2"
 	ciphertextShapedPlaintext := "OqkDYcQx4FvgBsxFCybRzg=="
 	configs := map[string]any{
-		"ai-rate-limiting": map[string]any{
-			"redis_password":    ciphertextShapedPlaintext,
-			"sentinel_password": "sentinel-secret",
-		},
+		"key-auth":   map[string]any{"key": ciphertextShapedPlaintext},
 		"basic-auth": map[string]any{"password": "basic-secret"},
 		"loggly":     map[string]any{"customer_token": "loggly-secret"},
 	}
@@ -115,22 +94,13 @@ func TestEncryptPluginConfigsEncryptsRegisteredFieldsAtRest(t *testing.T) {
 	if err := EncryptPluginConfigs(configs, []string{key}, mustTestDeclarationCatalog()); err != nil {
 		t.Fatalf("EncryptPluginConfigs() error = %v", err)
 	}
-	config := configs["ai-rate-limiting"].(map[string]any)
-	for field, plaintext := range map[string]string{
-		"redis_password":    ciphertextShapedPlaintext,
-		"sentinel_password": "sentinel-secret",
-	} {
-		ciphertext, ok := config[field].(string)
-		if !ok || ciphertext == plaintext {
-			t.Fatalf("%s = %v, want ciphertext", field, config[field])
-		}
-		decrypted, err := NewResolver(
-			true,
-			[]string{key},
-		).ResolveForContext(ciphertext, "ai-rate-limiting."+field)
-		if err != nil || decrypted != plaintext {
-			t.Fatalf("Decrypt(%s) = (%q, %v), want %q", field, decrypted, err, plaintext)
-		}
+	ciphertext, ok := configs["key-auth"].(map[string]any)["key"].(string)
+	if !ok || ciphertext == ciphertextShapedPlaintext {
+		t.Fatalf("key-auth.key = %v, want ciphertext", configs["key-auth"].(map[string]any)["key"])
+	}
+	decrypted, err := NewResolver(true, []string{key}).ResolveForContext(ciphertext, "key-auth.key")
+	if err != nil || decrypted != ciphertextShapedPlaintext {
+		t.Fatalf("Decrypt(key-auth.key) = (%q, %v), want %q", decrypted, err, ciphertextShapedPlaintext)
 	}
 	for pluginName, field := range map[string]string{
 		"basic-auth": "password",
@@ -236,7 +206,7 @@ func TestEncryptPluginConfigsEncryptsElasticsearchAuthorizationHeaderAtRest(t *t
 func TestEncryptRegisteredFieldRejectsInvalidExplicitCiphertext(t *testing.T) {
 	key := "qeddd145sfvddff3"
 	configs := map[string]any{
-		"ai-rate-limiting": map[string]any{"redis_password": "$encrypted://not-base64"},
+		"key-auth": map[string]any{"key": "$encrypted://not-base64"},
 	}
 	if err := EncryptPluginConfigs(configs, []string{key}, mustTestDeclarationCatalog()); err == nil {
 		t.Fatal("EncryptPluginConfigs() accepted invalid explicit ciphertext")

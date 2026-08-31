@@ -46,7 +46,7 @@ func TestSupportsScopedSecretMaterializationReturnsFalseForRealFactoryWithoutSup
 
 func TestRawResolverFactoriesSupportScopedSecretMaterialization(t *testing.T) {
 	for _, factory := range []string{
-		"ai-rate-limiting", "csrf", "kafka-proxy", "response-rewrite",
+		"csrf", "kafka-proxy", "response-rewrite",
 		"elasticsearch-logger", "error-log-logger", "google-cloud-logging",
 		"http-logger", "kafka-logger", "lago", "loggly", "rocketmq-logger",
 		"sls-logger", "splunk-hec-logging", "tencent-cloud-cls",

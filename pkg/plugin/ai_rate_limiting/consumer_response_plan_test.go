@@ -1,18 +1,14 @@
 package ai_rate_limiting_test
 
 import (
-	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
-	"github.com/wklken/apisix-go/pkg/generation"
 	pluginpkg "github.com/wklken/apisix-go/pkg/plugin"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_rate_limiting"
-	"github.com/wklken/apisix-go/pkg/plugin/base"
-	"github.com/wklken/apisix-go/pkg/testutil"
 )
 
 func TestConsumerScopedPluginJoinsResponsePlanAfterAuthentication(t *testing.T) {
@@ -21,18 +17,6 @@ func TestConsumerScopedPluginJoinsResponsePlanAfterAuthentication(t *testing.T) 
 	*config = ai_rate_limiting.Config{Limit: 30, TimeWindow: 60}
 	if err := rateLimiter.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
-	}
-	secrets, scope, cleanup := testutil.ScopedSecretHarness(
-		t,
-		"ai-rate-limiting",
-		nil,
-		generation.ApplyTicket{DesiredRevision: 1, RequiredDomains: []generation.Domain{generation.DomainHTTP}},
-	)
-	defer cleanup()
-	if err := base.MaterializeScopedPluginSecrets(
-		context.Background(), scope, secrets, rateLimiter,
-	); err != nil {
-		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := rateLimiter.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)

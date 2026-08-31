@@ -92,8 +92,6 @@ var secretDeclarations = []SecretDeclaration{
 	{Factory: "ai-request-rewrite", Source: SecretPluginConfig, Field: "auth.gcp.service_account_json"},
 	{Factory: "ai-request-rewrite", Source: SecretPluginConfig, Field: "auth.aws.secret_access_key"},
 	{Factory: "ai-request-rewrite", Source: SecretPluginConfig, Field: "auth.aws.session_token"},
-	{Factory: "ai-rate-limiting", Source: SecretPluginConfig, Field: "redis_password"},
-	{Factory: "ai-rate-limiting", Source: SecretPluginConfig, Field: "sentinel_password"},
 	{Factory: "ai-proxy", Source: SecretPluginConfig, Field: "auth.header"},
 	{Factory: "ai-proxy", Source: SecretPluginConfig, Field: "auth.query"},
 	{Factory: "ai-proxy", Source: SecretPluginConfig, Field: "auth.gcp.service_account_json"},

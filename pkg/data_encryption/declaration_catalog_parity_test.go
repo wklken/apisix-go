@@ -32,9 +32,8 @@ var expectedPluginFields = map[string][]string{
 		"auth.header", "auth.query", "auth.gcp.service_account_json", "auth.aws.secret_access_key",
 		"auth.aws.session_token",
 	},
-	"ai-rate-limiting": {"redis_password", "sentinel_password"},
-	"authz-keycloak":   {"client_secret"},
-	"authz-casdoor":    {"client_secret"},
+	"authz-keycloak": {"client_secret"},
+	"authz-casdoor":  {"client_secret"},
 	"aws-lambda": {
 		"authorization.apikey",
 		"authorization.iam.accesskey",

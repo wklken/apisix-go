@@ -9,7 +9,6 @@ var secretDeclarations = []SecretDeclaration{
 	{Factory: "aws-lambda", Source: SecretPluginConfig, Field: "authorization.iam.accesskey"},
 	{Factory: "aws-lambda", Source: SecretPluginConfig, Field: "authorization.iam.secretkey"},
 	{Factory: "response-rewrite", Source: SecretPluginConfig, Field: "body"},
-	{Factory: "response-rewrite", Source: SecretPluginConfig, Field: "body_secret"},
 	{Factory: "key-auth", Source: SecretPluginConfig, Field: "key"},
 	{Factory: "key-auth", Source: SecretConsumerConfig, Field: "key"},
 	{Factory: "jwt-auth", Source: SecretPluginConfig, Field: "secret"},

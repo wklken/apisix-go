@@ -166,16 +166,23 @@ func TestRunServerReturnsNilForTerminationSignals(t *testing.T) {
 				},
 				shutdown: func(context.Context) error { return nil },
 			}
-			signals := make(chan os.Signal, 1)
+			reloadSignals := make(chan os.Signal, 1)
+			terminationSignals := make(chan os.Signal, 1)
 			result := make(chan error, 1)
-			go func() { result <- runServerWithSignals(lifecycle, signals) }()
+			reloadCalls := 0
+			go func() {
+				result <- runServerWithSignals(lifecycle, reloadSignals, terminationSignals, func() error {
+					reloadCalls++
+					return nil
+				})
+			}()
 
 			select {
 			case <-started:
 			case <-time.After(time.Second):
 				t.Fatal("runServerWithSignals() did not start the server")
 			}
-			signals <- signal
+			terminationSignals <- signal
 
 			select {
 			case err := <-result:
@@ -190,11 +197,14 @@ func TestRunServerReturnsNilForTerminationSignals(t *testing.T) {
 			case <-time.After(time.Second):
 				t.Fatal("Shutdown() was not called")
 			}
+			if reloadCalls != 0 {
+				t.Fatalf("reload calls = %d, want 0", reloadCalls)
+			}
 		})
 	}
 }
 
-func TestRunServerReturnsUnsupportedReloadErrorAfterSIGHUP(t *testing.T) {
+func TestRunServerReloadsTwiceWithoutShuttingDown(t *testing.T) {
 	started := make(chan struct{})
 	shutdown := make(chan struct{})
 	lifecycle := &fakeServerLifecycle{
@@ -206,28 +216,103 @@ func TestRunServerReturnsUnsupportedReloadErrorAfterSIGHUP(t *testing.T) {
 		},
 		shutdown: func(context.Context) error { return nil },
 	}
-	signals := make(chan os.Signal, 1)
+	reloadSignals := make(chan os.Signal, 1)
+	terminationSignals := make(chan os.Signal, 1)
 	result := make(chan error, 1)
-	go func() { result <- runServerWithSignals(lifecycle, signals) }()
+	reloaded := make(chan struct{}, 2)
+	go func() {
+		result <- runServerWithSignals(lifecycle, reloadSignals, terminationSignals, func() error {
+			reloaded <- struct{}{}
+			return nil
+		})
+	}()
 	select {
 	case <-started:
 	case <-time.After(time.Second):
 		t.Fatal("runServerWithSignals() did not start the server")
 	}
-	signals <- syscall.SIGHUP
-
-	select {
-	case err := <-result:
-		if !errors.Is(err, errSIGHUPReloadUnsupported) {
-			t.Fatalf("runServerWithSignals() error = %v, want %v", err, errSIGHUPReloadUnsupported)
+	for range 2 {
+		reloadSignals <- syscall.SIGHUP
+		select {
+		case <-reloaded:
+		case <-time.After(time.Second):
+			t.Fatal("SIGHUP reload was not called")
 		}
-	case <-time.After(time.Second):
-		t.Fatal("runServerWithSignals() did not return after SIGHUP")
 	}
 	select {
 	case <-shutdown:
+		t.Fatal("Shutdown() was called for SIGHUP")
+	default:
+	}
+	select {
+	case err := <-result:
+		t.Fatalf("runServerWithSignals() returned after SIGHUP: %v", err)
+	default:
+	}
+
+	terminationSignals <- syscall.SIGTERM
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatalf("runServerWithSignals() error = %v, want nil", err)
+		}
 	case <-time.After(time.Second):
-		t.Fatal("Shutdown() was not called for SIGHUP")
+		t.Fatal("runServerWithSignals() did not return after SIGTERM")
+	}
+}
+
+func TestRunServerContinuesAfterSIGHUPReloadError(t *testing.T) {
+	started := make(chan struct{})
+	shutdown := make(chan struct{})
+	lifecycle := &fakeServerLifecycle{
+		startDone:    started,
+		shutdownDone: shutdown,
+		start: func(ctx context.Context) error {
+			<-ctx.Done()
+			return ctx.Err()
+		},
+		shutdown: func(context.Context) error { return nil },
+	}
+	reloadSignals := make(chan os.Signal, 1)
+	terminationSignals := make(chan os.Signal, 1)
+	result := make(chan error, 1)
+	reloaded := make(chan struct{}, 1)
+	go func() {
+		result <- runServerWithSignals(lifecycle, reloadSignals, terminationSignals, func() error {
+			reloaded <- struct{}{}
+			return errors.New("invalid reloaded config")
+		})
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("runServerWithSignals() did not start the server")
+	}
+	reloadSignals <- syscall.SIGHUP
+	select {
+	case <-reloaded:
+	case <-time.After(time.Second):
+		t.Fatal("SIGHUP reload was not called")
+	}
+	select {
+	case <-shutdown:
+		t.Fatal("Shutdown() was called after failed SIGHUP reload")
+	default:
+	}
+	select {
+	case err := <-result:
+		t.Fatalf("runServerWithSignals() returned after failed SIGHUP reload: %v", err)
+	default:
+	}
+
+	terminationSignals <- syscall.SIGINT
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatalf("runServerWithSignals() error = %v, want nil", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("runServerWithSignals() did not return after SIGINT")
 	}
 }
 
@@ -242,26 +327,266 @@ func TestRunServerReturnsShutdownError(t *testing.T) {
 		},
 		shutdown: func(context.Context) error { return shutdownErr },
 	}
-	signals := make(chan os.Signal, 1)
+	reloadSignals := make(chan os.Signal, 1)
+	terminationSignals := make(chan os.Signal, 1)
 	result := make(chan error, 1)
-	go func() { result <- runServerWithSignals(lifecycle, signals) }()
+	go func() {
+		result <- runServerWithSignals(lifecycle, reloadSignals, terminationSignals, func() error {
+			return errors.New("unexpected reload for termination signal")
+		})
+	}()
 	select {
 	case <-started:
 	case <-time.After(time.Second):
 		t.Fatal("runServerWithSignals() did not start the server")
 	}
-	signals <- syscall.SIGHUP
+	terminationSignals <- syscall.SIGTERM
 
 	select {
 	case err := <-result:
 		if !errors.Is(err, shutdownErr) {
 			t.Fatalf("runServerWithSignals() error = %v, want shutdown error %v", err, shutdownErr)
 		}
-		if errors.Is(err, errSIGHUPReloadUnsupported) {
-			t.Fatalf("runServerWithSignals() error = %v, want shutdown failure instead of reload sentinel", err)
-		}
 	case <-time.After(time.Second):
 		t.Fatal("runServerWithSignals() did not return after shutdown failure")
+	}
+}
+
+func TestRunServerHandlesTerminationWhileReloadIsBlocked(t *testing.T) {
+	started := make(chan struct{})
+	shutdown := make(chan struct{})
+	lifecycle := &fakeServerLifecycle{
+		startDone:    started,
+		shutdownDone: shutdown,
+		start: func(ctx context.Context) error {
+			<-ctx.Done()
+			return ctx.Err()
+		},
+		shutdown: func(context.Context) error { return nil },
+	}
+	reloadSignals := make(chan os.Signal, 1)
+	terminationSignals := make(chan os.Signal, 1)
+	result := make(chan error, 1)
+	reloadStarted := make(chan struct{})
+	releaseReload := make(chan struct{})
+	go func() {
+		result <- runServerWithSignals(lifecycle, reloadSignals, terminationSignals, func() error {
+			close(reloadStarted)
+			<-releaseReload
+			return nil
+		})
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("runServerWithSignals() did not start the server")
+	}
+	reloadSignals <- syscall.SIGHUP
+	select {
+	case <-reloadStarted:
+	case <-time.After(time.Second):
+		t.Fatal("SIGHUP reload did not start")
+	}
+
+	// Saturate the reload notification path while the active reload is blocked.
+	// Termination must still be consumed from its independent signal channel.
+	reloadSignals <- syscall.SIGHUP
+	terminationSignals <- syscall.SIGTERM
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatalf("runServerWithSignals() error = %v, want nil", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("runServerWithSignals() did not terminate while reload was blocked")
+	}
+	select {
+	case <-shutdown:
+	case <-time.After(time.Second):
+		t.Fatal("Shutdown() was not called while reload was blocked")
+	}
+	close(releaseReload)
+}
+
+func TestRunServerCoalescesAdditionalSIGHUPs(t *testing.T) {
+	started := make(chan struct{})
+	lifecycle := &fakeServerLifecycle{
+		startDone: started,
+		start: func(ctx context.Context) error {
+			<-ctx.Done()
+			return ctx.Err()
+		},
+		shutdown: func(context.Context) error { return nil },
+	}
+	reloadSignals := make(chan os.Signal, 1)
+	terminationSignals := make(chan os.Signal, 1)
+	result := make(chan error, 1)
+	reloadStarted := make(chan int, 3)
+	releaseReload := make(chan struct{}, 2)
+	reloadCalls := 0
+	go func() {
+		result <- runServerWithSignals(lifecycle, reloadSignals, terminationSignals, func() error {
+			reloadCalls++
+			reloadStarted <- reloadCalls
+			<-releaseReload
+			return nil
+		})
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("runServerWithSignals() did not start the server")
+	}
+	reloadSignals <- syscall.SIGHUP
+	select {
+	case call := <-reloadStarted:
+		if call != 1 {
+			t.Fatalf("first reload call = %d, want 1", call)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("first SIGHUP reload did not start")
+	}
+
+	reloadSignals <- syscall.SIGHUP
+	deadline := time.After(time.Second)
+sendThird:
+	for {
+		select {
+		case reloadSignals <- syscall.SIGHUP:
+			break sendThird
+		case <-deadline:
+			t.Fatal("second SIGHUP was not consumed while reload was active")
+		}
+	}
+	releaseReload <- struct{}{}
+	select {
+	case call := <-reloadStarted:
+		if call != 2 {
+			t.Fatalf("pending reload call = %d, want 2", call)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("coalesced pending reload did not start")
+	}
+	releaseReload <- struct{}{}
+
+	select {
+	case call := <-reloadStarted:
+		t.Fatalf("additional SIGHUP burst started reload call %d, want exactly 2", call)
+	case <-time.After(100 * time.Millisecond):
+	}
+	terminationSignals <- syscall.SIGTERM
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatalf("runServerWithSignals() error = %v, want nil", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("runServerWithSignals() did not return after SIGTERM")
+	}
+}
+
+func TestLoggerReloaderAppliesOnlyErrorLogLevel(t *testing.T) {
+	current := config.Config{
+		Apisix:      config.Apisix{ID: "node-a"},
+		NginxConfig: config.NginxConfig{ErrorLogLevel: "info"},
+	}
+	next := current
+	next.NginxConfig.ErrorLogLevel = "debug"
+	loadCalls := 0
+	configureCalls := 0
+	reload := newLoggerReloader(
+		"config.yaml",
+		current,
+		func(path string) (*config.EffectiveConfig, error) {
+			loadCalls++
+			if path != "config.yaml" {
+				t.Fatalf("reload path = %q, want config.yaml", path)
+			}
+			return &config.EffectiveConfig{Config: next}, nil
+		},
+		func(cfg *config.Config) error {
+			configureCalls++
+			if cfg.NginxConfig.ErrorLogLevel != "debug" {
+				t.Fatalf("configured level = %q, want debug", cfg.NginxConfig.ErrorLogLevel)
+			}
+			return nil
+		},
+	)
+
+	if err := reload(); err != nil {
+		t.Fatalf("first reload error = %v", err)
+	}
+	if err := reload(); err != nil {
+		t.Fatalf("no-op reload error = %v", err)
+	}
+	if loadCalls != 2 || configureCalls != 1 {
+		t.Fatalf("reload calls = load %d, configure %d; want 2 and 1", loadCalls, configureCalls)
+	}
+}
+
+func TestLoggerReloaderRejectsInvalidOrStaticChangesWithoutChangingLevel(t *testing.T) {
+	t.Cleanup(func() { _ = logger.ConfigureLevel("info") })
+	if err := logger.ConfigureLevel("debug"); err != nil {
+		t.Fatal(err)
+	}
+	current := config.Config{
+		Apisix:      config.Apisix{ID: "node-a"},
+		NginxConfig: config.NginxConfig{ErrorLogLevel: "debug"},
+	}
+
+	t.Run("load error", func(t *testing.T) {
+		reload := newLoggerReloader(
+			"config.yaml",
+			current,
+			func(string) (*config.EffectiveConfig, error) { return nil, errors.New("read failed") },
+			configureLogger,
+		)
+		if err := reload(); err == nil || !strings.Contains(err.Error(), "reload effective config") {
+			t.Fatalf("reload error = %v, want load context", err)
+		}
+	})
+
+	t.Run("static change", func(t *testing.T) {
+		next := current
+		next.Apisix.ID = "node-b"
+		next.NginxConfig.ErrorLogLevel = "info"
+		configureCalls := 0
+		reload := newLoggerReloader(
+			"config.yaml",
+			current,
+			func(string) (*config.EffectiveConfig, error) {
+				return &config.EffectiveConfig{Config: next}, nil
+			},
+			func(*config.Config) error { configureCalls++; return nil },
+		)
+		if err := reload(); err == nil || !strings.Contains(err.Error(), "static configuration") {
+			t.Fatalf("reload error = %v, want static-change rejection", err)
+		}
+		if configureCalls != 0 {
+			t.Fatalf("configure calls = %d, want 0", configureCalls)
+		}
+	})
+
+	t.Run("invalid level", func(t *testing.T) {
+		next := current
+		next.NginxConfig.ErrorLogLevel = "bogus"
+		reload := newLoggerReloader(
+			"config.yaml",
+			current,
+			func(string) (*config.EffectiveConfig, error) {
+				return &config.EffectiveConfig{Config: next}, nil
+			},
+			configureLogger,
+		)
+		if err := reload(); err == nil || !strings.Contains(err.Error(), "configure logger") {
+			t.Fatalf("reload error = %v, want logger context", err)
+		}
+	})
+
+	if !logger.DebugEnabled() {
+		t.Fatal("failed reload changed the current debug level")
 	}
 }
 
@@ -326,7 +651,13 @@ func TestStartupBuildsConfigCatalogAndServerInOrder(t *testing.T) {
 				shutdown: func(context.Context) error { return nil },
 			}, nil
 		},
-		runServer: func(serverLifecycle) error { recorder.record("run-server"); return nil },
+		runServer: func(_ serverLifecycle, reload reloadFunc) error {
+			recorder.record("run-server")
+			if reload == nil {
+				t.Fatal("runServer reload callback is nil")
+			}
+			return nil
+		},
 	}
 
 	if err := startWithOptionsWithFactories(rootOptions{}, factories); err != nil {

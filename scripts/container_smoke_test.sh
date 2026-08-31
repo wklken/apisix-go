@@ -79,6 +79,11 @@ require_pattern '/status/ready' "$smoke"
 require_pattern 'proxy_deadline=' "$smoke"
 require_pattern 'docker exec.*id -u' "$smoke"
 require_pattern 'docker exec.*id -g' "$smoke"
+require_pattern 'write_gateway_config info' "$smoke"
+require_pattern 'write_gateway_config debug' "$smoke"
+require_pattern 'docker kill.*HUP' "$smoke"
+require_pattern 'SIGHUP configuration reload completed' "$smoke"
+require_pattern 'post-SIGHUP response' "$smoke"
 require_pattern 'slow_request_pid=\$!' "$smoke"
 require_pattern 'active_request_deadline=' "$smoke"
 require_pattern '/tmp/request-active' "$smoke"
@@ -89,6 +94,10 @@ require_pattern 'apisix-container-slow' "$smoke"
 require_pattern 'shutdown_deadline=' "$smoke"
 require_pattern 'docker wait' "$smoke"
 assert_order "$smoke" \
+    'write_gateway_config info' \
+    'write_gateway_config debug' \
+    'docker kill --signal HUP "$gateway"' \
+    'reload_response=$(curl --fail --silent --show-error "http://${published}/smoke")' \
     'until docker exec "$upstream" test -f /tmp/request-active; do' \
     'docker kill --signal TERM "$gateway"' \
     'docker exec "$upstream" touch /tmp/release-request' \

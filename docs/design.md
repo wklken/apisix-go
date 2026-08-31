@@ -189,8 +189,10 @@ re-panic decision.
 | Not implemented | UDP, stream TLS/mTLS, PROXY protocol, service discovery, general stream-plugin chaining, external plugin runners, WASM, XRPC, QUIC, and HTTP/3. |
 
 WebSocket upgrades require `enable_websocket: true` and retain their HTTP
-generation until the connection closes. `SIGHUP` is not an in-process reload
-mechanism; provider updates use atomic in-memory publication.
+generation until the connection closes. `SIGHUP` re-reads static configuration
+but may change only `nginx_config.error_log_level`; invalid input or any other
+static difference leaves the process unchanged. Provider updates use atomic
+in-memory publication.
 
 Protocol-specific transports remain plugin owned:
 

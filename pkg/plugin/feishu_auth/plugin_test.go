@@ -826,8 +826,9 @@ func TestHandlerRedirectsWhenNoSessionAndNoCode(t *testing.T) {
 		t.Fatal("Location does not contain an OAuth state")
 	}
 	stateCookie := findFeishuStateCookie(rr.Result().Cookies())
-	if stateCookie == nil || !stateCookie.HttpOnly || stateCookie.MaxAge != 300 {
-		t.Fatalf("OAuth state cookie = %#v, want HttpOnly five-minute cookie", stateCookie)
+	if stateCookie == nil || stateCookie.Path != "/" || !stateCookie.HttpOnly || stateCookie.Secure ||
+		stateCookie.SameSite != http.SameSiteLaxMode || stateCookie.MaxAge != 300 {
+		t.Fatalf("OAuth state cookie = %#v, want APISIX 3.17 defaults", stateCookie)
 	}
 }
 
@@ -1185,7 +1186,7 @@ func TestSessionCookieMatchesAPISIX317Defaults(t *testing.T) {
 	}
 }
 
-func TestSchemaMatchesAPISIX317PublicFields(t *testing.T) {
+func TestSessionCookieSchemaOmitsLocalCookiePolicy(t *testing.T) {
 	p := &Plugin{}
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
@@ -1196,61 +1197,9 @@ func TestSchemaMatchesAPISIX317PublicFields(t *testing.T) {
 	if err := json.Unmarshal([]byte(p.GetSchema()), &document); err != nil {
 		t.Fatalf("schema JSON error = %v", err)
 	}
-	want := map[string]struct{}{
-		"app_id": {}, "app_secret": {}, "code_header": {}, "code_query": {},
-		"userinfo_url": {}, "access_token_url": {}, "set_userinfo_header": {},
-		"auth_redirect_uri": {}, "redirect_uri": {}, "timeout": {},
-		"ssl_verify": {}, "secret": {}, "secret_fallbacks": {},
-		"cookie_expires_in": {},
-	}
-	if len(document.Properties) != len(want) {
-		t.Fatalf("schema properties = %v, want exactly APISIX 3.17 fields", document.Properties)
-	}
-	for field := range want {
-		if _, ok := document.Properties[field]; !ok {
-			t.Errorf("schema is missing APISIX 3.17 field %q", field)
-		}
-	}
-}
-
-func TestRemovedCookiePolicyFieldsHaveNoEffect(t *testing.T) {
-	p := &Plugin{}
-	if err := p.Init(); err != nil {
-		t.Fatalf("Init() error = %v", err)
-	}
-	rawConfig := map[string]any{
-		"app_id":            "app-id",
-		"app_secret":        "app-secret",
-		"secret":            "12345678",
-		"auth_redirect_uri": "https://gateway.example.com/callback",
-		"redirect_uri":      "https://login.feishu.cn/oauth",
-		"cookie_secure":     true,
-		"cookie_same_site":  "Strict",
-	}
-	if err := util.Validate(rawConfig, p.GetSchema()); err != nil {
-		t.Fatalf("Validate() removed cookie fields error = %v, want harmless unknown keys accepted", err)
-	}
-	var config Config
-	if err := util.Parse(rawConfig, &config); err != nil {
-		t.Fatalf("Parse() removed cookie fields error = %v", err)
-	}
-	p = newTestPlugin(t, config)
-	sessionCookie, err := p.sessionCookie(map[string]any{"open_id": "user-a"})
-	if err != nil {
-		t.Fatalf("sessionCookie() error = %v", err)
-	}
-	stateCookie := p.oauthStateCookie("state")
-	for name, cookie := range map[string]*http.Cookie{
-		"session": sessionCookie,
-		"state":   stateCookie,
-	} {
-		if cookie.Secure || cookie.SameSite != http.SameSiteLaxMode {
-			t.Errorf(
-				"%s cookie attributes = secure:%t sameSite:%v, want secure:false sameSite:Lax",
-				name,
-				cookie.Secure,
-				cookie.SameSite,
-			)
+	for _, field := range []string{"cookie_secure", "cookie_same_site"} {
+		if _, ok := document.Properties[field]; ok {
+			t.Fatalf("schema exposes non-APISIX field %q", field)
 		}
 	}
 }

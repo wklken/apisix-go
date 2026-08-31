@@ -256,7 +256,7 @@ func TestAIContentModerationSelectsBoundedOrStreamingResponsePlanPerRequest(t *t
 					"endpoint": moderation.URL, "region_id": "cn-shanghai",
 					"access_key_id": "key", "access_key_secret": "secret",
 					"check_request": false, "check_response": true,
-					"stream_check_mode": tc.streamCheckMode, "fail_mode": "warn",
+					"stream_check_mode": tc.streamCheckMode,
 				}, routeResource),
 			)
 			request := httptest.NewRequest(

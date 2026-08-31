@@ -91,14 +91,15 @@ cases:
           upstream: *primary_upstream
     fixtures:
       - <<: *primary_fixture
-        expect:
-          - method: POST
-            path: {equals: /hello}
-            body: {matches: '"role":"system".*badword'}
+        expect_requests: 0
+        expect: []
     steps:
       - name: system-message-is-not-checked
         input: {method: POST, path: /hello, headers: {Content-Type: application/json}, body: '{"messages":[{"role":"system","content":"badword"}]}' }
-        output: {status: 200, headers: {X-Fixture: {equals: primary}}, body: {equals: upstream ok}}
+        output: {status: 200, body: {equals: ''}}
+      - name: empty-message-list-does-not-reach-upstream
+        input: {method: POST, path: /hello, headers: {Content-Type: application/json}, body: '{"messages":[]}' }
+        output: {status: 200, body: {equals: ''}}
       - name: user-message-must-match-allow-pattern
         input: {method: POST, path: /hello, headers: {Content-Type: application/json}, body: '{"messages":[{"role":"user","content":"badword"}]}' }
         output: {status: 400, body: {equals: '{"message":"Request doesn''t match allow patterns"}'}}

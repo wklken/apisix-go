@@ -1,16 +1,13 @@
 package ai_prompt_guard
 
 import (
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
-	"github.com/prometheus/client_golang/prometheus"
-	dto "github.com/prometheus/client_model/go"
-	"github.com/wklken/apisix-go/pkg/observability/metrics"
-	"github.com/wklken/apisix-go/pkg/plugin/ai_common"
+	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/plugin/ai_protocols"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -27,111 +24,171 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	return p
 }
 
-func TestPostInitDefaultsFailModeToError(t *testing.T) {
-	p := newTestPlugin(t, Config{})
-	if p.config.FailMode != string(ai_common.SafetyFailError) {
-		t.Fatalf("config.FailMode = %q, want %q", p.config.FailMode, ai_common.SafetyFailError)
+func TestSchemaMatchesAPISIXPublicFields(t *testing.T) {
+	var document struct {
+		Properties map[string]json.RawMessage `json:"properties"`
 	}
-	if p.failMode != ai_common.SafetyFailError {
-		t.Fatalf("failMode = %q, want %q", p.failMode, ai_common.SafetyFailError)
+	if err := json.Unmarshal([]byte(schema), &document); err != nil {
+		t.Fatalf("decode schema: %v", err)
+	}
+
+	want := []string{
+		"match_all_roles",
+		"match_all_conversation_history",
+		"allow_patterns",
+		"deny_patterns",
+	}
+	if len(document.Properties) != len(want) {
+		t.Fatalf("schema properties = %v, want exactly %v", document.Properties, want)
+	}
+	for _, name := range want {
+		if _, ok := document.Properties[name]; !ok {
+			t.Errorf("schema is missing property %q", name)
+		}
 	}
 }
 
-func TestHandlerAppliesFailModeToUninspectableRequest(t *testing.T) {
-	const body = `not-json`
+func TestHandlerRejectsEmptyRequestBody(t *testing.T) {
+	p := newTestPlugin(t, Config{})
+	req := httptest.NewRequest(http.MethodPost, "/anything", http.NoBody)
+	rr := httptest.NewRecorder()
+	nextCalls := 0
+
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		nextCalls++
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("response code = %d, want 400", rr.Code)
+	}
+	if got := strings.TrimSpace(rr.Body.String()); got != `{"message":"Empty request body"}` {
+		t.Fatalf("response body = %q, want empty body message", got)
+	}
+	if nextCalls != 0 {
+		t.Fatalf("next calls = %d, want 0", nextCalls)
+	}
+}
+
+func TestHandlerReturnsJSONDecodeError(t *testing.T) {
+	const body = " \n\t"
+	p := newTestPlugin(t, Config{})
+	req := httptest.NewRequest(http.MethodPost, "/anything", strings.NewReader(body))
+	rr := httptest.NewRecorder()
+
+	var decoded map[string]any
+	decodeErr := json.Unmarshal([]byte(body), &decoded)
+	if decodeErr == nil {
+		t.Fatal("test body unexpectedly decoded as JSON")
+	}
+
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next handler was called for invalid JSON")
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("response code = %d, want 400", rr.Code)
+	}
+	wantBody, err := json.Marshal(map[string]string{"message": decodeErr.Error()})
+	if err != nil {
+		t.Fatalf("marshal expected body: %v", err)
+	}
+	if got := strings.TrimSpace(rr.Body.String()); got != string(wantBody) {
+		t.Fatalf("response body = %q, want actual decoder error %q", got, wantBody)
+	}
+}
+
+func TestHandlerReturnsEmpty200WhenNoMessages(t *testing.T) {
 	tests := []struct {
-		name        string
-		failMode    string
-		path        string
-		body        string
-		wantStatus  int
-		wantNext    int
-		wantBody    string
-		wantMessage string
+		name string
+		path string
+		body string
 	}{
 		{
-			name:        "invalid JSON default error",
-			body:        body,
-			wantStatus:  http.StatusBadRequest,
-			wantMessage: "Request body is not valid JSON",
+			name: "unknown protocol",
+			path: "/anything",
+			body: `{"prompt":"hello"}`,
 		},
 		{
-			name:       "invalid JSON warn",
-			failMode:   "warn",
-			body:       body,
-			wantStatus: http.StatusNoContent,
-			wantNext:   1,
-			wantBody:   body,
+			name: "detect error",
+			path: "/anything",
+			body: `{}`,
 		},
 		{
-			name:       "invalid JSON skip",
-			failMode:   "skip",
-			body:       body,
-			wantStatus: http.StatusNoContent,
-			wantNext:   1,
-			wantBody:   body,
+			name: "empty messages",
+			path: "/v1/chat/completions",
+			body: `{"messages":[]}`,
 		},
 		{
-			name:        "passthrough default error",
-			path:        "/anything",
-			body:        `{"prompt":"hello"}`,
-			wantStatus:  http.StatusBadRequest,
-			wantMessage: "Request format not recognized by ai-prompt-guard",
-		},
-		{
-			name:       "passthrough warn restores body",
-			failMode:   "warn",
-			path:       "/anything",
-			body:       `{"prompt":"hello"}`,
-			wantStatus: http.StatusNoContent,
-			wantNext:   1,
-			wantBody:   `{"prompt":"hello"}`,
-		},
-		{
-			name:        "empty recognized messages default error",
-			path:        "/v1/chat/completions",
-			body:        `{"messages":[]}`,
-			wantStatus:  http.StatusBadRequest,
-			wantMessage: "No inspectable AI prompt content",
-		},
-		{
-			name:       "filtered history skip restores body",
-			failMode:   "skip",
-			path:       "/v1/chat/completions",
-			body:       `{"messages":[{"role":"assistant","content":"assistant only"}]}`,
-			wantStatus: http.StatusNoContent,
-			wantNext:   1,
-			wantBody:   `{"messages":[{"role":"assistant","content":"assistant only"}]}`,
-		},
-		{
-			name:       "empty joined content warn",
-			failMode:   "warn",
-			path:       "/v1/chat/completions",
-			body:       `{"messages":[{"role":"user","content":""}]}`,
-			wantStatus: http.StatusNoContent,
-			wantNext:   1,
-			wantBody:   `{"messages":[{"role":"user","content":""}]}`,
+			name: "system only",
+			path: "/v1/chat/completions",
+			body: `{"messages":[{"role":"system","content":"system policy"}]}`,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			p := newTestPlugin(t, Config{FailMode: tt.failMode})
-			path := tt.path
-			if path == "" {
-				path = "/anything"
-			}
-			req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(tt.body))
+			p := newTestPlugin(t, Config{})
+			req := httptest.NewRequest(http.MethodPost, tt.path, strings.NewReader(tt.body))
 			rr := httptest.NewRecorder()
 			nextCalls := 0
-			var gotBody string
-			p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+
+			p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 				nextCalls++
-				content, err := io.ReadAll(r.Body)
-				if err != nil {
-					t.Fatalf("read downstream body: %v", err)
-				}
-				gotBody = string(content)
+			})).ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusOK {
+				t.Fatalf("response code = %d, want 200", rr.Code)
+			}
+			if rr.Body.Len() != 0 {
+				t.Fatalf("response body = %q, want empty body", rr.Body.String())
+			}
+			if nextCalls != 0 {
+				t.Fatalf("next calls = %d, want 0", nextCalls)
+			}
+		})
+	}
+}
+
+func TestHandlerChecksEmptyContentPatterns(t *testing.T) {
+	tests := []struct {
+		name       string
+		config     Config
+		wantStatus int
+		wantBody   string
+		wantNext   int
+	}{
+		{
+			name:       "allow empty content",
+			config:     Config{AllowPatterns: []string{`^$`}},
+			wantStatus: http.StatusNoContent,
+			wantNext:   1,
+		},
+		{
+			name:       "empty content without patterns",
+			wantStatus: http.StatusNoContent,
+			wantNext:   1,
+		},
+		{
+			name:       "deny empty content",
+			config:     Config{DenyPatterns: []string{`^$`}},
+			wantStatus: http.StatusBadRequest,
+			wantBody:   "Request contains prohibited content",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := newTestPlugin(t, tt.config)
+			req := httptest.NewRequest(
+				http.MethodPost,
+				"/v1/chat/completions",
+				strings.NewReader(`{"messages":[{"role":"user","content":""}]}`),
+			)
+			rr := httptest.NewRecorder()
+			nextCalls := 0
+
+			p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				nextCalls++
 				w.WriteHeader(http.StatusNoContent)
 			})).ServeHTTP(rr, req)
 
@@ -141,106 +198,45 @@ func TestHandlerAppliesFailModeToUninspectableRequest(t *testing.T) {
 			if nextCalls != tt.wantNext {
 				t.Fatalf("next calls = %d, want %d", nextCalls, tt.wantNext)
 			}
-			if tt.wantBody != "" && gotBody != tt.wantBody {
-				t.Fatalf("downstream body = %q, want %q", gotBody, tt.wantBody)
-			}
-			if tt.wantMessage != "" && !strings.Contains(rr.Body.String(), tt.wantMessage) {
-				t.Fatalf("response body = %q, want message %q", rr.Body.String(), tt.wantMessage)
+			if tt.wantBody != "" && !strings.Contains(rr.Body.String(), tt.wantBody) {
+				t.Fatalf("response body = %q, want message %q", rr.Body.String(), tt.wantBody)
 			}
 		})
 	}
 }
 
-func TestHandlerRecordsPromptGuardAllowAndDenyOutcomes(t *testing.T) {
-	vector := prometheus.NewCounterVec(
-		prometheus.CounterOpts{Name: "test_ai_prompt_guard_outcomes_total"},
-		[]string{"plugin", "phase", "outcome", "reason"},
+func TestHandlerPreservesFinalEmptyContentAfterMultimodalMessage(t *testing.T) {
+	p := newTestPlugin(t, Config{DenyPatterns: []string{`^$`}})
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/v1/chat/completions",
+		strings.NewReader(
+			`{"messages":[{"role":"user","content":[{"type":"text","text":"safe"}]},{"role":"user","content":""}]}`,
+		),
 	)
-	previous := metrics.AISafetyOutcomes
-	metrics.AISafetyOutcomes = vector
-	t.Cleanup(func() { metrics.AISafetyOutcomes = previous })
+	rr := httptest.NewRecorder()
 
-	tests := []struct {
-		name   string
-		config Config
-		path   string
-		body   string
-		status int
-		labels [4]string
-	}{
-		{
-			name:   "clean",
-			body:   chatBody("safe"),
-			status: http.StatusNoContent,
-			labels: [4]string{"ai-prompt-guard", "request", "allow", "clean"},
-		},
-		{
-			name:   "allow pattern miss",
-			config: Config{AllowPatterns: []string{`^allowed$`}},
-			body:   chatBody("blocked"),
-			status: http.StatusBadRequest,
-			labels: [4]string{"ai-prompt-guard", "request", "deny", "allow_pattern_miss"},
-		},
-		{
-			name:   "deny pattern match",
-			config: Config{DenyPatterns: []string{`secret`}},
-			body:   chatBody("secret"),
-			status: http.StatusBadRequest,
-			labels: [4]string{"ai-prompt-guard", "request", "deny", "deny_pattern_match"},
-		},
-		{
-			name:   "invalid JSON error",
-			body:   `not-json`,
-			status: http.StatusBadRequest,
-			labels: [4]string{"ai-prompt-guard", "request", "error", "invalid_payload"},
-		},
-		{
-			name:   "passthrough warn degraded",
-			config: Config{FailMode: "warn"},
-			path:   "/anything",
-			body:   `{"prompt":"hello"}`,
-			status: http.StatusNoContent,
-			labels: [4]string{"ai-prompt-guard", "request", "degraded", "unknown_protocol"},
-		},
-		{
-			name:   "empty content skip degraded",
-			config: Config{FailMode: "skip"},
-			path:   "/v1/chat/completions",
-			body:   `{"messages":[]}`,
-			status: http.StatusNoContent,
-			labels: [4]string{"ai-prompt-guard", "request", "degraded", "empty_content"},
-		},
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next handler was called for denied empty final message")
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("response code = %d, want 400", rr.Code)
 	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			p := newTestPlugin(t, tt.config)
-			rr := httptest.NewRecorder()
-			path := tt.path
-			if path == "" {
-				path = "/v1/chat/completions"
-			}
-			req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(tt.body))
-			p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.WriteHeader(http.StatusNoContent)
-			})).ServeHTTP(rr, req)
-			if rr.Code != tt.status {
-				t.Fatalf("response code = %d, want %d", rr.Code, tt.status)
-			}
-			if got := promptGuardCounterValue(t, vector.WithLabelValues(tt.labels[:]...)); got != 1 {
-				t.Fatalf("metric %v = %v, want 1", tt.labels, got)
-			}
-		})
+	if !strings.Contains(rr.Body.String(), "Request contains prohibited content") {
+		t.Fatalf("response body = %q, want deny message", rr.Body.String())
 	}
 }
 
-func promptGuardCounterValue(t *testing.T, counter prometheus.Counter) float64 {
-	t.Helper()
-	metric := &dto.Metric{}
-	if err := counter.Write(metric); err != nil {
-		t.Fatalf("write counter metric: %v", err)
+func TestJoinContentPreservesEmptyMessages(t *testing.T) {
+	messages := []ai_protocols.Message{
+		{Role: "user", Content: "a"},
+		{Role: "user", Content: ""},
+		{Role: "user", Content: "b"},
 	}
-	return metric.GetCounter().GetValue()
+	if got, want := joinContent(messages), "a  b"; got != want {
+		t.Fatalf("joinContent() = %q, want %q", got, want)
+	}
 }
 
 func TestHandlerChecksAllowBeforeDenyPatterns(t *testing.T) {
@@ -279,7 +275,7 @@ func TestHandlerChecksAllowBeforeDenyPatterns(t *testing.T) {
 			req := httptest.NewRequest(http.MethodPost, "/anything", strings.NewReader(tt.body))
 			rr := httptest.NewRecorder()
 
-			p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(http.StatusNoContent)
 			})).ServeHTTP(rr, req)
 
@@ -287,7 +283,7 @@ func TestHandlerChecksAllowBeforeDenyPatterns(t *testing.T) {
 				t.Fatalf("response code = %d, want %d", rr.Code, tt.wantStatus)
 			}
 			if tt.wantBody != "" && !strings.Contains(rr.Body.String(), tt.wantBody) {
-				t.Fatalf("response body = %q, want %q", rr.Body.String(), tt.wantBody)
+				t.Fatalf("response body = %q, want message %q", rr.Body.String(), tt.wantBody)
 			}
 		})
 	}
@@ -297,15 +293,15 @@ func TestHandlerDefaultsToLastUserMessageOnly(t *testing.T) {
 	p := newTestPlugin(t, Config{DenyPatterns: []string{`secret`}})
 
 	req := httptest.NewRequest(http.MethodPost, "/anything", strings.NewReader(`{
-	  "messages": [
-	    {"role":"system","content":"secret system policy"},
-	    {"role":"user","content":"secret older message"},
-	    {"role":"user","content":"safe final question"}
-	  ]
-	}`))
+  "messages": [
+    {"role":"system","content":"secret system policy"},
+    {"role":"user","content":"secret older message"},
+    {"role":"user","content":"safe final question"}
+  ]
+}`))
 	rr := httptest.NewRecorder()
 
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusAccepted)
 	})).ServeHTTP(rr, req)
 
@@ -314,7 +310,7 @@ func TestHandlerDefaultsToLastUserMessageOnly(t *testing.T) {
 	}
 }
 
-func TestHandlerDefaultsToUserRoleAndAllowsSystemOnlyRequest(t *testing.T) {
+func TestHandlerDefaultsToUserRoleAndTerminatesSystemOnlyRequest(t *testing.T) {
 	p := newTestPlugin(t, Config{AllowPatterns: []string{`goodword`}})
 
 	req := httptest.NewRequest(
@@ -325,16 +321,19 @@ func TestHandlerDefaultsToUserRoleAndAllowsSystemOnlyRequest(t *testing.T) {
 	rr := httptest.NewRecorder()
 	nextCalls := 0
 
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		nextCalls++
 		w.WriteHeader(http.StatusAccepted)
 	})).ServeHTTP(rr, req)
 
-	if rr.Code != http.StatusAccepted {
-		t.Fatalf("response code = %d, want 202", rr.Code)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("response code = %d, want 200", rr.Code)
 	}
-	if nextCalls != 1 {
-		t.Fatalf("next calls = %d, want 1", nextCalls)
+	if rr.Body.Len() != 0 {
+		t.Fatalf("response body = %q, want empty body", rr.Body.String())
+	}
+	if nextCalls != 0 {
+		t.Fatalf("next calls = %d, want 0", nextCalls)
 	}
 }
 
@@ -346,14 +345,14 @@ func TestHandlerCanCheckAllRolesAndHistory(t *testing.T) {
 	})
 
 	req := httptest.NewRequest(http.MethodPost, "/anything", strings.NewReader(`{
-	  "messages": [
-	    {"role":"system","content":"secret system policy"},
-	    {"role":"user","content":"safe final question"}
-	  ]
-	}`))
+  "messages": [
+    {"role":"system","content":"secret system policy"},
+    {"role":"user","content":"safe final question"}
+  ]
+}`))
 	rr := httptest.NewRecorder()
 
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		t.Fatal("next handler was called for denied prompt")
 	})).ServeHTTP(rr, req)
 
@@ -369,12 +368,12 @@ func TestHandlerChecksResponsesInputWithoutLastMessageFiltering(t *testing.T) {
 	p := newTestPlugin(t, Config{DenyPatterns: []string{`secret`}})
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{
-	  "instructions": "secret system policy",
-	  "input": ["safe first input", "secret user input"]
-	}`))
+  "instructions": "secret system policy",
+  "input": ["safe first input", "secret user input"]
+}`))
 	rr := httptest.NewRecorder()
 
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		t.Fatal("next handler was called for denied Responses input")
 	})).ServeHTTP(rr, req)
 
@@ -427,97 +426,13 @@ func TestHandlerDeniesExtractableProtocolsWithAPISIXMessage(t *testing.T) {
 			if rr.Code != http.StatusBadRequest {
 				t.Fatalf("response code = %d, want 400", rr.Code)
 			}
-			if got := rr.Body.String(); got != "{\"message\":\"Request contains prohibited content\"}\n" {
+			if got := rr.Body.String(); got != "{\"message\":\"Request contains prohibited content\"}" {
 				t.Fatalf("response body = %q, want APISIX 3.17 message body", got)
 			}
 			if got := rr.Header().Get("Content-Type"); got != "text/plain; charset=utf-8" {
 				t.Fatalf("Content-Type = %q, want APISIX 3.17 response type", got)
 			}
 		})
-	}
-}
-
-func TestHandlerRejectsUnrecognizedJSONWhenFailModeIsError(t *testing.T) {
-	p := newTestPlugin(t, Config{DenyPatterns: []string{`secret`}, FailMode: "error"})
-	req := httptest.NewRequest(http.MethodPost, "/anything", strings.NewReader(`{"foo":"bar"}`))
-	req.Header.Set("Content-Type", "application/json")
-	rr := httptest.NewRecorder()
-
-	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-		t.Fatal("next handler was called for unrecognized JSON in error mode")
-	})).ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusBadRequest {
-		t.Fatalf("response code = %d, want 400", rr.Code)
-	}
-	if got := strings.TrimSpace(
-		rr.Body.String(),
-	); got != `{"message":"Request format not recognized by ai-prompt-guard"}` {
-		t.Fatalf("response body = %q, want fail_mode error message", got)
-	}
-}
-
-func TestHandlerDeniesStructuredResponsesInputText(t *testing.T) {
-	p := newTestPlugin(t, Config{MatchAllRoles: true, DenyPatterns: []string{`secret`}})
-	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{
-		"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"secret"}]}]
-	}`))
-	rr := httptest.NewRecorder()
-
-	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-		t.Fatal("next handler was called for denied structured Responses input")
-	})).ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusBadRequest {
-		t.Fatalf("response code = %d, want 400", rr.Code)
-	}
-}
-
-func TestHandlerAppliesFailModeToInvalidJSONBody(t *testing.T) {
-	tests := []struct {
-		name       string
-		failMode   string
-		wantStatus int
-		wantNext   bool
-	}{
-		{name: "default error", wantStatus: http.StatusBadRequest},
-		{name: "warn", failMode: "warn", wantStatus: http.StatusNoContent, wantNext: true},
-		{name: "error", failMode: "error", wantStatus: http.StatusBadRequest},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			p := newTestPlugin(t, Config{DenyPatterns: []string{`secret`}, FailMode: tt.failMode})
-			req := httptest.NewRequest(http.MethodPost, "/anything", strings.NewReader(`not-json`))
-			rr := httptest.NewRecorder()
-			nextCalled := false
-
-			p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				nextCalled = true
-				w.WriteHeader(http.StatusNoContent)
-			})).ServeHTTP(rr, req)
-
-			if rr.Code != tt.wantStatus {
-				t.Fatalf("response code = %d, want %d", rr.Code, tt.wantStatus)
-			}
-			if nextCalled != tt.wantNext {
-				t.Fatalf("next called = %v, want %v", nextCalled, tt.wantNext)
-			}
-		})
-	}
-}
-
-func TestHandlerLeavesUnsupportedJSONUncheckedInWarnMode(t *testing.T) {
-	p := newTestPlugin(t, Config{DenyPatterns: []string{`secret`}, FailMode: "warn"})
-	req := httptest.NewRequest(http.MethodPost, "/anything", strings.NewReader(`{"foo":"bar"}`))
-	rr := httptest.NewRecorder()
-
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	})).ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusNoContent {
-		t.Fatalf("response code = %d, want 204", rr.Code)
 	}
 }
 

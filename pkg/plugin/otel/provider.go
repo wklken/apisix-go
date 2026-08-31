@@ -69,13 +69,6 @@ func loadMetadata(
 	}
 
 	metadata = Metadata{}
-	if found, decodeErr := view.Decode(aliasName, &metadata); found || decodeErr != nil {
-		if decodeErr != nil {
-			return Metadata{}, false, fmt.Errorf("decode OpenTelemetry metadata alias: %w", decodeErr)
-		}
-		return applyMetadataDefaults(metadata), true, nil
-	}
-
 	if attr, ok := pluginAttr[name]; ok {
 		if attr == nil {
 			return Metadata{}, false, fmt.Errorf("OpenTelemetry plugin attributes %q must be an object", name)
@@ -85,39 +78,8 @@ func loadMetadata(
 		}
 		return applyMetadataDefaults(metadata), true, nil
 	}
-	if attr, ok := pluginAttr[aliasName]; ok {
-		if attr == nil {
-			return Metadata{}, false, fmt.Errorf("OpenTelemetry plugin attributes %q must be an object", aliasName)
-		}
-		if parseErr := util.Parse(attr, &metadata); parseErr != nil {
-			return Metadata{}, false, fmt.Errorf("decode OpenTelemetry plugin attribute alias: %w", parseErr)
-		}
-		return applyMetadataDefaults(metadata), true, nil
-	}
 
 	return applyMetadataDefaults(metadata), false, nil
-}
-
-func loadEnabledMetadata(
-	view runtime.MetadataView,
-	pluginAttr map[string]map[string]any,
-	enabledPlugins []string,
-) (Metadata, bool, error) {
-	aliasEnabled := false
-	for _, pluginName := range enabledPlugins {
-		switch pluginName {
-		case name:
-			return loadMetadata(view, pluginAttr)
-		case aliasName:
-			aliasEnabled = true
-		}
-	}
-	if aliasEnabled {
-		if aliasAttr, ok := pluginAttr[aliasName]; ok {
-			return loadMetadata(view, map[string]map[string]any{aliasName: aliasAttr})
-		}
-	}
-	return loadMetadata(view, pluginAttr)
 }
 
 func applyMetadataDefaults(metadata Metadata) Metadata {

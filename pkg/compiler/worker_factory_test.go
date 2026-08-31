@@ -18,7 +18,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/generation"
-	"github.com/wklken/apisix-go/pkg/plugin"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/runtime"
 	"github.com/wklken/apisix-go/pkg/secret"
@@ -646,7 +645,7 @@ func TestNewWorkerCompilerFactoryFailsClosedOnUnreadableEnabledTLSClientCA(t *te
 	}
 }
 
-func TestWorkerCompilerFactoryPrepareGenerationUsesRealAliasAndCatalog(t *testing.T) {
+func TestWorkerCompilerFactoryPrepareGenerationUsesRealCatalog(t *testing.T) {
 	compiler, err := New()
 	if err != nil {
 		t.Fatal(err)
@@ -661,14 +660,8 @@ func TestWorkerCompilerFactoryPrepareGenerationUsesRealAliasAndCatalog(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, hasOTel := plugin.DefinitionForFactory("otel")
-	_, hasOpenTelemetry := plugin.DefinitionForFactory("opentelemetry")
-	if !hasOTel || !hasOpenTelemetry {
-		t.Fatal("plugin registry lost the accepted otel alias")
-	}
-
 	desired := mustGenerationSnapshot(t, 820, []generation.Resource{
-		resourceValue("plugin_metadata", "otel", `{"trace_id_source":"random"}`),
+		resourceValue("plugin_metadata", "opentelemetry", `{"trace_id_source":"random"}`),
 	}, nil)
 	prepared, err := factory.PrepareGeneration(
 		context.Background(), ticketForSnapshot(desired, generation.DomainHTTP), desired, nil)
@@ -676,11 +669,8 @@ func TestWorkerCompilerFactoryPrepareGenerationUsesRealAliasAndCatalog(t *testin
 		t.Fatal(err)
 	}
 	var metadata map[string]any
-	if ok, decodeErr := prepared.MetadataView().Decode("otel", &metadata); decodeErr != nil || !ok {
-		t.Fatalf("otel metadata = %#v/%v/%v", metadata, ok, decodeErr)
-	}
-	if ok, decodeErr := prepared.MetadataView().Decode("opentelemetry", &metadata); decodeErr != nil || ok {
-		t.Fatalf("opentelemetry metadata unexpectedly produced = %v/%v", ok, decodeErr)
+	if ok, decodeErr := prepared.MetadataView().Decode("opentelemetry", &metadata); decodeErr != nil || !ok {
+		t.Fatalf("opentelemetry metadata = %#v/%v/%v", metadata, ok, decodeErr)
 	}
 	if err := prepared.Close(context.Background()); err != nil {
 		t.Fatal(err)

@@ -88,14 +88,6 @@ func TestManifestExercisesTargetPlugin(t *testing.T) {
 			want:   true,
 		},
 		{
-			name: "canonical factory alias",
-			manifest: &Manifest{Cases: []Case{{Config: map[string]any{
-				"routes": []any{map[string]any{"plugins": map[string]any{"otel": map[string]any{}}}},
-			}}}},
-			plugin: "opentelemetry",
-			want:   true,
-		},
-		{
 			name: "step config plugin",
 			manifest: &Manifest{Cases: []Case{{
 				Config: map[string]any{

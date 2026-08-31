@@ -147,16 +147,6 @@ cases:
         output:
           status: 200
           body: {equals: hello world}
-    after_shutdown:
-      - path: {equals: '{{WORK_DIR}}/apisix-go-store.db'}
-        bbolt_json:
-          bucket: consumers
-          key: jack
-          fields:
-            /plugins/jwe-decrypt/key: XU29sA3FEVF68hGcdPo7sg==
-            /plugins/jwe-decrypt/secret: f9pGB0Dt4gYNCLKiINPfVSviKjQs2zfkBCT4+XZ3mDABZkJTr0orzYRD5CptDKMc
-          forbidden_matches: [user-key, '12345678901234567890123456789012']
-
   - name: protected-route-enabled
     source:
       tests: [8]

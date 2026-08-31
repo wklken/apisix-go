@@ -52,7 +52,6 @@ require (
 	github.com/vektah/gqlparser/v2 v2.5.36
 	github.com/xdg-go/scram v1.1.2
 	github.com/yuin/gopher-lua v1.1.2
-	go.etcd.io/bbolt v1.5.0
 	go.etcd.io/etcd/api/v3 v3.6.14
 	go.etcd.io/etcd/client/v3 v3.6.14
 	go.opentelemetry.io/otel v1.44.0

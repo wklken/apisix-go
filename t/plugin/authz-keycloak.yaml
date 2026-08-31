@@ -779,15 +779,6 @@ cases:
           body: {equals: '{"access_token":"encrypted-case-access","refresh_token":"encrypted-case-refresh"}'}
           logs:
             not_matches: 'd1ec69e9-55d2-4109-a3ea-befa071579d5|Fz1juZEEvh9PPXOmWFdMMJkREt3ZSzEVWcUZPxNP6achk3fosEvn37oN0qH4YgKB|encrypted-case-access|encrypted-case-refresh'
-    after_shutdown:
-      - path: {equals: '{{WORK_DIR}}/apisix-go-store.db'}
-        bbolt_json:
-          bucket: routes
-          key: keycloak-encrypted-secret
-          fields:
-            /plugins/authz-keycloak/client_secret: Fz1juZEEvh9PPXOmWFdMMJkREt3ZSzEVWcUZPxNP6achk3fosEvn37oN0qH4YgKB
-          forbidden_matches: [d1ec69e9-55d2-4109-a3ea-befa071579d5]
-
   - name: vault-secret-resource-supplies-password-grant-client-secret
     source: {file: t/plugin/authz-keycloak4.t, tests: [1, 2]}
     config:

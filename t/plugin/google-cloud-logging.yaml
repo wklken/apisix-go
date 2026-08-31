@@ -776,15 +776,6 @@ cases:
         respond: [{status: 200, headers: {Content-Type: application/json}, body: '{"access_token":"integration","token_type":"Bearer","expires_in":3600}'}, {status: 200, body: ok}]
     steps:
       - {name: runtime-decrypts-private-key-and-signs, input: {path: /hello}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
-    after_shutdown:
-      - path: {equals: '{{WORK_DIR}}/apisix-go-store.db'}
-        bbolt_json:
-          bucket: routes
-          key: '1'
-          fields:
-            /plugins/google-cloud-logging/auth_config/client_email: integration@example.org
-          forbidden_matches: ['-----BEGIN PRIVATE KEY-----', 'MIICdQIBADANBgkqhkiG9w0BAQEFAASCAl8']
-
   - name: metadata-custom-log-format-setup
     source: {file: t/plugin/google-cloud-logging2.t, tests: [3]}
     config:

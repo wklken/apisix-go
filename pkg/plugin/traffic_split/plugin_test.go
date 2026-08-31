@@ -10,7 +10,6 @@ import (
 	"testing"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
-	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/util"
 )
@@ -581,77 +580,45 @@ func TestHandlerSkipsWhenNoMatchVarsPass(t *testing.T) {
 }
 
 func TestHandlerMatchesFormPostArgumentWithoutConsumingBody(t *testing.T) {
-	p := newTestPlugin(t, Config{Rules: []Rule{{
-		Match: []Match{{Vars: []any{[]any{"post_arg_id", "==", "1"}}}},
-		WeightedUpstreams: []WeightedUpstream{{
-			Upstream: &Upstream{
-				Nodes: []Node{{Host: "form.example.com", Port: 80, Weight: 1}},
-			},
-		}},
-	}}})
+	tests := []struct {
+		name string
+		form string
+	}{
+		{name: "small", form: "id=1&name=jack"},
+		{name: "large", form: "id=1&name=" + strings.Repeat("x", 1<<20)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			p := newTestPlugin(t, Config{Rules: []Rule{{
+				Match: []Match{{Vars: []any{[]any{"post_arg_id", "==", "1"}}}},
+				WeightedUpstreams: []WeightedUpstream{{
+					Upstream: &Upstream{
+						Nodes: []Node{{Host: "form.example.com", Port: 80, Weight: 1}},
+					},
+				}},
+			}}})
 
-	const form = "id=1&name=jack"
-	req := httptest.NewRequest(http.MethodPost, "http://example.com/form", strings.NewReader(form))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
-	var override *Override
-	var body string
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		override = GetOverride(r)
-		data, err := io.ReadAll(r.Body)
-		if err != nil {
-			t.Fatalf("read downstream request body: %v", err)
-		}
-		body = string(data)
-		w.WriteHeader(http.StatusNoContent)
-	})).ServeHTTP(httptest.NewRecorder(), req)
+			req := httptest.NewRequest(http.MethodPost, "http://example.com/form", strings.NewReader(test.form))
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
+			var override *Override
+			var body string
+			p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				override = GetOverride(r)
+				data, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Fatalf("read downstream request body: %v", err)
+				}
+				body = string(data)
+				w.WriteHeader(http.StatusNoContent)
+			})).ServeHTTP(httptest.NewRecorder(), req)
 
-	if override == nil || override.Host != "form.example.com:80" {
-		t.Fatalf("override = %#v, want form.example.com:80", override)
-	}
-	if body != form {
-		t.Fatalf("downstream request body = %q, want %q", body, form)
-	}
-}
-
-func TestHandlerMatchesFormPostArgumentLargerThanDefaultWithoutLocalLimit(t *testing.T) {
-	p := &Plugin{config: Config{Rules: []Rule{{
-		Match: []Match{{Vars: []any{[]any{"post_arg_id", "==", "1"}}}},
-		WeightedUpstreams: []WeightedUpstream{{
-			Upstream: &Upstream{Nodes: []Node{{Host: "form.example.com", Port: 80, Weight: 1}}},
-		}},
-	}}}}
-	p.SetUpstreamResolver(testUpstreamResolver)
-	if err := p.Init(); err != nil {
-		t.Fatalf("Init() error = %v", err)
-	}
-	if err := util.Parse(map[string]any{"max_body_size": 5}, p.Config()); err != nil {
-		t.Fatalf("Parse() error = %v", err)
-	}
-	if err := p.PostInit(); err != nil {
-		t.Fatalf("PostInit() error = %v", err)
-	}
-
-	form := "id=1&name=" + strings.Repeat("x", base.DefaultRequestBodyMaxBytes)
-	req := httptest.NewRequest(http.MethodPost, "http://example.com/form", strings.NewReader(form))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	called := false
-	var downstreamBody string
-	response := httptest.NewRecorder()
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		called = true
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			t.Fatalf("read downstream request body: %v", err)
-		}
-		downstreamBody = string(body)
-		w.WriteHeader(http.StatusNoContent)
-	})).ServeHTTP(response, req)
-
-	if response.Code != http.StatusNoContent || !called {
-		t.Fatalf("status=%d called=%t, want downstream success", response.Code, called)
-	}
-	if downstreamBody != form {
-		t.Fatalf("downstream request body = %d bytes, want %d bytes", len(downstreamBody), len(form))
+			if override == nil || override.Host != "form.example.com:80" {
+				t.Fatalf("override = %#v, want form.example.com:80", override)
+			}
+			if body != test.form {
+				t.Fatalf("downstream request body = %d bytes, want %d bytes", len(body), len(test.form))
+			}
+		})
 	}
 }
 

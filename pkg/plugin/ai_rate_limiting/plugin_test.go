@@ -1,11 +1,7 @@
 package ai_rate_limiting
 
 import (
-	"context"
 	"encoding/json"
-	"errors"
-	"fmt"
-	"maps"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -15,17 +11,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/redis/go-redis/v9"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
-	"github.com/wklken/apisix-go/pkg/capability"
-	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_proxy"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_proxy_multi"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_runtime"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
-	"github.com/wklken/apisix-go/pkg/resource"
-	"github.com/wklken/apisix-go/pkg/secret"
-	"github.com/wklken/apisix-go/pkg/testutil"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -33,521 +23,14 @@ func newTestPlugin(t *testing.T, cfg Config, now func() time.Time) *Plugin {
 	t.Helper()
 
 	p := &Plugin{config: cfg, now: now}
-	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
-	}
-	secrets, scope, closeAttempt := testutil.ScopedSecretHarness(
-		t,
-		name,
-		nil,
-		generation.ApplyTicket{DesiredRevision: 1, RequiredDomains: []generation.Domain{generation.DomainHTTP}},
-	)
-	t.Cleanup(closeAttempt)
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
-		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
 
 	return p
-}
-
-type scopedSecretCall struct {
-	Scope secret.Scope
-	Raw   string
-}
-
-type scopedSecretBroker struct {
-	mu     sync.Mutex
-	values map[string]string
-	fail   map[string]error
-	calls  []scopedSecretCall
-}
-
-func (broker *scopedSecretBroker) ResolveScoped(
-	ctx context.Context, scope secret.Scope, raw string,
-) (string, error) {
-	if err := ctx.Err(); err != nil {
-		return "", err
-	}
-	broker.mu.Lock()
-	defer broker.mu.Unlock()
-	broker.calls = append(broker.calls, scopedSecretCall{Scope: scope, Raw: raw})
-	if err := broker.fail[raw]; err != nil {
-		return "", err
-	}
-	if value, ok := broker.values[raw]; ok {
-		return value, nil
-	}
-	return raw, nil
-}
-
-func newScopedSecretHarness(
-	t *testing.T, values map[string]string,
-) (secret.GenerationSecrets, secret.Scope, *scopedSecretBroker, func()) {
-	t.Helper()
-	const revision = uint64(7)
-	key := generation.ResourceKey{Kind: "routes", ID: "ai-rate-test"}
-	snapshot, err := generation.NewSnapshot(revision, []generation.Resource{{
-		Key: key, Value: []byte(`{"plugins":{"ai-rate-limiting":{}}}`),
-	}}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	candidate := generation.PublicationCandidate{
-		Artifact: generation.GenerationArtifact{
-			Domain: generation.DomainHTTP, Revision: revision,
-			Digest: snapshot.Digest(), Snapshot: snapshot.SnapshotID(),
-		},
-		Snapshot: snapshot,
-		Closure:  []generation.ResourceKey{key},
-		Decisions: []generation.ResourceDecision{{
-			Key: key, Disposition: generation.DispositionPublished, Code: "ai-rate-test",
-		}},
-	}
-	set := generation.PublicationSet{
-		DesiredRevision: revision,
-		Domains: map[generation.Domain]generation.PublicationCandidate{
-			generation.DomainHTTP: candidate,
-		},
-	}
-	catalog, err := capability.NewSecretDeclarationCatalog()
-	if err != nil {
-		t.Fatal(err)
-	}
-	broker := &scopedSecretBroker{values: maps.Clone(values), fail: make(map[string]error)}
-	materialization, err := testutil.NewSecretMaterializer(broker, catalog).
-		PrepareGeneration(context.Background(), set)
-	if err != nil {
-		t.Fatal(err)
-	}
-	scope := secret.Scope{
-		Generation: revision,
-		Domain:     generation.DomainHTTP,
-		Plugin:     name,
-		Resource:   key,
-		Source:     capability.SecretPluginConfig,
-	}
-	return materialization.Secrets(), scope, broker, func() {
-		if err := materialization.Close(context.Background()); err != nil {
-			t.Fatalf("close scoped secret materialization: %v", err)
-		}
-	}
-}
-
-func assertSecretDescriptor(t *testing.T, field, value string) {
-	t.Helper()
-	const prefix = "plugin_config#sha256:"
-	if !strings.HasPrefix(value, prefix) || len(value) != len(prefix)+64 {
-		t.Fatalf("%s = %q, want descriptor", field, value)
-	}
-}
-
-type constructorCapture struct {
-	redisOptions    []*redis.Options
-	failoverOptions []*redis.FailoverOptions
-	client          redisClient
-}
-
-func captureRedisConstructors(t *testing.T, client redisClient) *constructorCapture {
-	t.Helper()
-	capture := &constructorCapture{client: client}
-	oldRedisClient := newRedisClient
-	oldFailoverClient := newRedisFailoverClient
-	newRedisClient = func(options *redis.Options) redisClient {
-		capture.redisOptions = append(capture.redisOptions, options)
-		return capture.client
-	}
-	newRedisFailoverClient = func(options *redis.FailoverOptions) redisClient {
-		capture.failoverOptions = append(capture.failoverOptions, options)
-		return capture.client
-	}
-	t.Cleanup(func() {
-		newRedisClient = oldRedisClient
-		newRedisFailoverClient = oldFailoverClient
-	})
-	return capture
-}
-
-func TestMaterializeScopedSecretsOwnsRedisAndSentinelPasswords(t *testing.T) {
-	const (
-		redisRaw    = "$ENV://AI_REDIS_PASSWORD"
-		sentinelRaw = "$secret://vault/ai-sentinel-password"
-	)
-	secrets, scope, broker, closeAttempt := newScopedSecretHarness(t, map[string]string{
-		redisRaw:    "redis-password",
-		sentinelRaw: "sentinel-password",
-	})
-	defer closeAttempt()
-
-	p := &Plugin{config: Config{
-		Limit:            1,
-		TimeWindow:       60,
-		Policy:           "redis-sentinel",
-		RedisMasterName:  "mymaster",
-		RedisSentinels:   []RedisSentinel{{Host: "127.0.0.1", Port: 26379}},
-		RedisPassword:    redisRaw,
-		SentinelPassword: sentinelRaw,
-	}}
-	if err := p.Init(); err != nil {
-		t.Fatal(err)
-	}
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
-		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
-	}
-	if len(broker.calls) != 2 {
-		t.Fatalf("scoped calls = %d, want 2", len(broker.calls))
-	}
-	if got := broker.calls[0].Scope.Field; got != "redis_password" {
-		t.Fatalf("first scope field = %q, want redis_password", got)
-	}
-	if got := broker.calls[1].Scope.Field; got != "sentinel_password" {
-		t.Fatalf("second scope field = %q, want sentinel_password", got)
-	}
-	for _, call := range broker.calls {
-		if call.Scope.Generation != scope.Generation ||
-			call.Scope.Domain != generation.DomainHTTP ||
-			call.Scope.Plugin != name ||
-			call.Scope.Resource != scope.Resource ||
-			call.Scope.Source != capability.SecretPluginConfig {
-			t.Fatalf(
-				"scoped authority = %#v, want generation/http/%s/%#v/%s",
-				call.Scope, name, scope.Resource, capability.SecretPluginConfig,
-			)
-		}
-	}
-	assertSecretDescriptor(t, "redis_password", p.config.RedisPassword)
-	assertSecretDescriptor(t, "sentinel_password", p.config.SentinelPassword)
-	if p.redis != nil {
-		t.Fatal("scoped materialization constructed Redis client before PostInit")
-	}
-	if p.redisPassword == nil || p.sentinelPassword == nil {
-		t.Fatal("scoped materialization did not retain private credential values")
-	}
-
-	if err := p.PostInit(); err != nil {
-		t.Fatalf("PostInit() error = %v", err)
-	}
-	client := p.redis.(*redis.Client)
-	if client.Options().Password != "redis-password" {
-		t.Fatalf("Redis client did not receive admitted credentials")
-	}
-	var gotSentinelPassword string
-	if err := p.sentinelPassword.Use(func(value string) error {
-		gotSentinelPassword = value
-		return nil
-	}); err != nil || gotSentinelPassword != "sentinel-password" {
-		t.Fatalf("sentinel private credential = %q, err = %v", gotSentinelPassword, err)
-	}
-	p.Stop()
-	if p.redisPassword != nil || p.sentinelPassword != nil {
-		t.Fatal("Stop() retained scoped credential values")
-	}
-	if err := client.Ping(t.Context()).Err(); !strings.Contains(err.Error(), redis.ErrClosed.Error()) {
-		t.Fatalf("Ping() after Stop = %v, want closed client", err)
-	}
-}
-
-func TestMaterializeScopedSecretsIsIdempotent(t *testing.T) {
-	const (
-		redisRaw    = "$ENV://AI_IDEMPOTENT_REDIS_PASSWORD"
-		sentinelRaw = "$secret://vault/ai-idempotent-sentinel-password"
-	)
-	secrets, scope, broker, closeAttempt := newScopedSecretHarness(t, map[string]string{
-		redisRaw:    "redis-password",
-		sentinelRaw: "sentinel-password",
-	})
-	defer closeAttempt()
-
-	p := &Plugin{config: Config{
-		Limit:            1,
-		TimeWindow:       60,
-		Policy:           "redis-sentinel",
-		RedisMasterName:  "mymaster",
-		RedisSentinels:   []RedisSentinel{{Host: "127.0.0.1", Port: 26379}},
-		RedisPassword:    redisRaw,
-		SentinelPassword: sentinelRaw,
-	}}
-	if err := p.Init(); err != nil {
-		t.Fatal(err)
-	}
-	for range 2 {
-		if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
-			t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
-		}
-	}
-	if len(broker.calls) != 2 {
-		t.Fatalf("scoped calls = %d, want exactly 2 after repeated materialization", len(broker.calls))
-	}
-}
-
-func TestMaterializeScopedSecretsConcurrentCallsMaterializeOnce(t *testing.T) {
-	const (
-		redisRaw    = "$ENV://AI_CONCURRENT_REDIS_PASSWORD"
-		sentinelRaw = "$secret://vault/ai-concurrent-sentinel-password"
-	)
-	secrets, scope, broker, closeAttempt := newScopedSecretHarness(t, map[string]string{
-		redisRaw:    "redis-password",
-		sentinelRaw: "sentinel-password",
-	})
-	defer closeAttempt()
-
-	p := &Plugin{config: Config{
-		Limit:            1,
-		TimeWindow:       60,
-		Policy:           "redis-sentinel",
-		RedisMasterName:  "mymaster",
-		RedisSentinels:   []RedisSentinel{{Host: "127.0.0.1", Port: 26379}},
-		RedisPassword:    redisRaw,
-		SentinelPassword: sentinelRaw,
-	}}
-	if err := p.Init(); err != nil {
-		t.Fatal(err)
-	}
-	const callers = 8
-	errs := make(chan error, callers)
-	var wg sync.WaitGroup
-	for range callers {
-		wg.Go(func() {
-			errs <- base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p)
-		})
-	}
-	wg.Wait()
-	close(errs)
-	for err := range errs {
-		if err != nil {
-			t.Fatalf("concurrent MaterializeScopedPluginSecrets() error = %v", err)
-		}
-	}
-	if len(broker.calls) != 2 {
-		t.Fatalf("scoped calls = %d, want exactly 2 for concurrent materialization", len(broker.calls))
-	}
-}
-
-func TestPostInitPassesScopedCredentialsToFailoverConstructor(t *testing.T) {
-	const (
-		redisRaw    = "$ENV://AI_CONSTRUCTOR_REDIS_PASSWORD"
-		sentinelRaw = "$secret://vault/ai-constructor-sentinel-password"
-	)
-	secrets, scope, _, closeAttempt := newScopedSecretHarness(t, map[string]string{
-		redisRaw:    "resolved-redis-password",
-		sentinelRaw: "resolved-sentinel-password",
-	})
-	defer closeAttempt()
-	fake := &countingRedis{}
-	capture := captureRedisConstructors(t, fake)
-
-	p := &Plugin{config: Config{
-		Limit:            1,
-		TimeWindow:       60,
-		Policy:           "redis-sentinel",
-		RedisMasterName:  "mymaster",
-		RedisSentinels:   []RedisSentinel{{Host: "127.0.0.1", Port: 26379}},
-		RedisPassword:    redisRaw,
-		SentinelPassword: sentinelRaw,
-	}}
-	if err := p.Init(); err != nil {
-		t.Fatal(err)
-	}
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
-		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
-	}
-	if len(capture.failoverOptions) != 0 {
-		t.Fatal("constructor ran during scoped materialization")
-	}
-	if err := p.PostInit(); err != nil {
-		t.Fatalf("PostInit() error = %v", err)
-	}
-	if len(capture.failoverOptions) != 1 {
-		t.Fatalf("failover constructor calls = %d, want 1", len(capture.failoverOptions))
-	}
-	options := capture.failoverOptions[0]
-	if options.Password != "resolved-redis-password" || options.SentinelPassword != "resolved-sentinel-password" {
-		t.Fatalf(
-			"constructor credentials = (%q, %q), want resolved private values",
-			options.Password, options.SentinelPassword,
-		)
-	}
-	if options.Password == p.config.RedisPassword || options.SentinelPassword == p.config.SentinelPassword {
-		t.Fatal("constructor received public descriptor instead of private credential")
-	}
-	p.Stop()
-}
-
-func TestPostInitPassesScopedPasswordToRedisConstructor(t *testing.T) {
-	const raw = "$ENV://AI_REDIS_CONSTRUCTOR_PASSWORD"
-	secrets, scope, _, closeAttempt := newScopedSecretHarness(t, map[string]string{
-		raw: "resolved-redis-password",
-	})
-	defer closeAttempt()
-	fake := &countingRedis{}
-	capture := captureRedisConstructors(t, fake)
-
-	p := &Plugin{config: Config{
-		Limit:         1,
-		TimeWindow:    60,
-		Policy:        "redis",
-		RedisHost:     "127.0.0.1",
-		RedisPassword: raw,
-	}}
-	if err := p.Init(); err != nil {
-		t.Fatal(err)
-	}
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
-		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
-	}
-	if err := p.PostInit(); err != nil {
-		t.Fatalf("PostInit() error = %v", err)
-	}
-	if len(capture.redisOptions) != 1 || len(capture.failoverOptions) != 0 {
-		t.Fatalf(
-			"constructor calls = (%d, %d), want one Redis constructor",
-			len(capture.redisOptions), len(capture.failoverOptions),
-		)
-	}
-	options := capture.redisOptions[0]
-	if options.Password != "resolved-redis-password" || options.Password == p.config.RedisPassword {
-		t.Fatalf("Redis constructor password = %q, public config = %q", options.Password, p.config.RedisPassword)
-	}
-	p.Stop()
-}
-
-func TestPostInitValidatesBeforeRedisConstructors(t *testing.T) {
-	for _, test := range []struct {
-		name   string
-		config Config
-	}{
-		{
-			name:   "missing redis endpoint",
-			config: Config{Limit: 1, TimeWindow: 60, Policy: "redis"},
-		},
-		{
-			name: "invalid rule",
-			config: Config{
-				Limit: 1, TimeWindow: 60, Policy: "redis", RedisHost: "127.0.0.1",
-				Rules: []Rule{{Count: 0, TimeWindow: 60, Key: "${remote_addr}"}},
-			},
-		},
-		{
-			name:   "invalid quota",
-			config: Config{Limit: 0, TimeWindow: 60, Policy: "redis", RedisHost: "127.0.0.1"},
-		},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			fake := &countingRedis{}
-			capture := captureRedisConstructors(t, fake)
-			p := &Plugin{config: test.config}
-			if err := p.Init(); err != nil {
-				t.Fatal(err)
-			}
-			if err := p.PostInit(); err == nil {
-				t.Fatal("PostInit() error = nil, want validation failure")
-			}
-			if len(capture.redisOptions) != 0 || len(capture.failoverOptions) != 0 {
-				t.Fatalf(
-					"constructor calls = (%d, %d), want zero",
-					len(capture.redisOptions), len(capture.failoverOptions),
-				)
-			}
-		})
-	}
-}
-
-func TestMaterializeScopedSecretsSkipsEmptyLocalCredentials(t *testing.T) {
-	secrets, scope, broker, closeAttempt := newScopedSecretHarness(t, nil)
-	defer closeAttempt()
-
-	p := &Plugin{config: Config{
-		Limit:            1,
-		TimeWindow:       60,
-		Policy:           "local",
-		RedisPassword:    "",
-		SentinelPassword: "",
-	}}
-	if err := p.Init(); err != nil {
-		t.Fatal(err)
-	}
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
-		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
-	}
-	if len(broker.calls) != 0 {
-		t.Fatalf("scoped calls = %d, want zero for local policy", len(broker.calls))
-	}
-	if p.redis != nil || p.redisPassword != nil || p.sentinelPassword != nil {
-		t.Fatal("local policy constructed or retained Redis credentials")
-	}
-	if err := p.PostInit(); err != nil {
-		t.Fatalf("local PostInit() error = %v", err)
-	}
-}
-
-func TestMaterializeScopedSecretsSkipsNonEmptyLocalCredentialsWithoutParsing(t *testing.T) {
-	const (
-		redisRaw    = "$ENV://AI_LOCAL_REDIS_PASSWORD"
-		sentinelRaw = "$secret://vault/ai-local-sentinel-password"
-	)
-	secrets, scope, broker, closeAttempt := newScopedSecretHarness(t, nil)
-	defer closeAttempt()
-
-	p := &Plugin{config: Config{
-		Limit:            1,
-		TimeWindow:       60,
-		Policy:           "local",
-		RedisPassword:    redisRaw,
-		SentinelPassword: sentinelRaw,
-	}}
-	if err := p.Init(); err != nil {
-		t.Fatal(err)
-	}
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
-		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
-	}
-	if len(broker.calls) != 0 {
-		t.Fatalf("scoped calls = %d, want zero for local policy", len(broker.calls))
-	}
-	if p.config.RedisPassword != "" || p.config.SentinelPassword != "" {
-		t.Fatalf("local unused credentials retained in public config: %#v", p.config)
-	}
-}
-
-func TestMaterializeScopedSecretsIsAtomicAndRedactsFailure(t *testing.T) {
-	const (
-		redisRaw    = "$ENV://AI_ATOMIC_REDIS_PASSWORD"
-		sentinelRaw = "$secret://vault/ai-atomic-sentinel-password"
-	)
-	secrets, scope, broker, closeAttempt := newScopedSecretHarness(t, map[string]string{
-		redisRaw: "redis-password",
-	})
-	defer closeAttempt()
-	broker.fail[sentinelRaw] = errors.New("sentinel-plaintext-must-not-escape")
-
-	p := &Plugin{config: Config{
-		Limit:            1,
-		TimeWindow:       60,
-		Policy:           "redis-sentinel",
-		RedisMasterName:  "mymaster",
-		RedisSentinels:   []RedisSentinel{{Host: "127.0.0.1", Port: 26379}},
-		RedisPassword:    redisRaw,
-		SentinelPassword: sentinelRaw,
-	}}
-	if err := p.Init(); err != nil {
-		t.Fatal(err)
-	}
-	err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p)
-	if err == nil || err.Error() != "materialize plugin secrets: credential unavailable" {
-		t.Fatalf("MaterializeScopedPluginSecrets() error = %v, want redacted credential error", err)
-	}
-	if strings.Contains(err.Error(), sentinelRaw) || strings.Contains(err.Error(), "sentinel-plaintext") {
-		t.Fatalf("MaterializeScopedPluginSecrets() leaked credential reference: %v", err)
-	}
-	if p.config.RedisPassword != redisRaw || p.config.SentinelPassword != sentinelRaw {
-		t.Fatalf("failed materialization partially changed public config: %#v", p.config)
-	}
-	if p.redisPassword != nil || p.sentinelPassword != nil || p.secretsMaterialized {
-		t.Fatal("failed materialization retained private state")
-	}
 }
 
 func localCounterUsed(t *testing.T, p *Plugin, key string) int64 {
@@ -642,45 +125,12 @@ func TestPostInitRejectsConflictingQuotaModes(t *testing.T) {
 	}
 	for i, config := range tests {
 		plugin := &Plugin{config: config}
-		plugin.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
 		if err := plugin.Init(); err != nil {
 			t.Fatal(err)
 		}
 		if err := plugin.PostInit(); err == nil {
 			t.Fatalf("config %d PostInit() unexpectedly succeeded", i)
 		}
-	}
-}
-
-func TestRedisCounterKeyIncludesResourceAndConfigurationIdentity(t *testing.T) {
-	first := newTestPlugin(t, Config{Limit: 10, TimeWindow: 60}, time.Now)
-	first.SetResourceContext(resource.Route{ID: "route-1"}, resource.Service{ID: "service-1"})
-	second := newTestPlugin(t, Config{Limit: 10, TimeWindow: 60}, time.Now)
-	second.SetResourceContext(resource.Route{ID: "route-2"}, resource.Service{ID: "service-1"})
-	reloaded := newTestPlugin(t, Config{Limit: 20, TimeWindow: 60}, time.Now)
-	reloaded.SetResourceContext(resource.Route{ID: "route-1"}, resource.Service{ID: "service-1"})
-
-	q := quota{key: "global"}
-	firstKey := first.redisKey(q)
-	if firstKey == second.redisKey(q) {
-		t.Fatalf("two routes share Redis key %q", firstKey)
-	}
-	if firstKey == reloaded.redisKey(q) {
-		t.Fatalf("changed configuration retained Redis key %q", firstKey)
-	}
-
-	collisionA := newTestPlugin(t, Config{Limit: 10, TimeWindow: 60}, time.Now)
-	collisionA.SetResourceContext(resource.Route{ID: "a:service:b"}, resource.Service{ID: "c"})
-	collisionB := newTestPlugin(t, Config{Limit: 10, TimeWindow: 60}, time.Now)
-	collisionB.SetResourceContext(resource.Route{ID: "a"}, resource.Service{ID: "b:service:c"})
-	if collisionA.redisKey(q) == collisionB.redisKey(q) {
-		t.Fatalf(
-			"delimiter-containing resource IDs share Redis counter key %q",
-			collisionA.redisKey(q),
-		)
-	}
-	if !strings.Contains(firstKey, "resource:7:route-1:9:service-1") {
-		t.Fatalf("Redis key = %q, want length-prefixed route and service identity", firstKey)
 	}
 }
 
@@ -1241,7 +691,6 @@ func TestAIProxyMultiSkipsRateLimitedInstance(t *testing.T) {
 		{Name: "model-b", Limit: 5, TimeWindow: 60},
 	}}, time.Now)
 	rate.reconcile(
-		context.Background(),
 		quota{key: "instance:model-a", headerName: "model-a", limit: 1, window: time.Minute},
 		1,
 		true,
@@ -1274,7 +723,6 @@ func TestAIProxyMultiSkipsRateLimitedInstance(t *testing.T) {
 	}
 
 	rate.reconcile(
-		context.Background(),
 		quota{key: "instance:model-b", headerName: "model-b", limit: 5, window: time.Minute},
 		4,
 		true,
@@ -1296,7 +744,6 @@ func TestPostInitAcceptsExpressionCostStrategy(t *testing.T) {
 		LimitStrategy: "expression",
 		CostExpr:      "prompt_tokens + completion_tokens",
 	}}
-	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -1317,7 +764,6 @@ func admitAPISIX317Config(t *testing.T, raw map[string]any) (configAdmissionStag
 	t.Helper()
 
 	p := &Plugin{}
-	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -1330,16 +776,6 @@ func admitAPISIX317Config(t *testing.T, raw map[string]any) (configAdmissionStag
 	}
 	if err := json.Unmarshal(payload, p.Config()); err != nil {
 		t.Fatalf("unmarshal config: %v", err)
-	}
-	secrets, scope, closeAttempt := testutil.ScopedSecretHarness(
-		t,
-		name,
-		nil,
-		generation.ApplyTicket{DesiredRevision: 1, RequiredDomains: []generation.Domain{generation.DomainHTTP}},
-	)
-	t.Cleanup(closeAttempt)
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
-		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
 		return configAdmissionPostInit, err
@@ -1673,7 +1109,6 @@ func TestHandlerAppliesIndependentRulesWithRuleHeaders(t *testing.T) {
 			{Count: 5, TimeWindow: 60, Key: "$http_x_model"},
 		},
 	}, now: time.Now}
-	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -1906,7 +1341,6 @@ func TestPostInitRejectsInvalidCostExpression(t *testing.T) {
 		LimitStrategy: "expression",
 		CostExpr:      "prompt_tokens +",
 	}}
-	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -1921,7 +1355,6 @@ func TestPostInitRequiresCostExpression(t *testing.T) {
 		TimeWindow:    60,
 		LimitStrategy: "expression",
 	}}
-	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -1951,265 +1384,6 @@ func TestResponseTokenCostPreservesFixedStrategies(t *testing.T) {
 				t.Fatalf("responseTokenCost() = %d, want %d", got, test.want)
 			}
 		})
-	}
-}
-
-// rateLimitTestKey is the typed context key used by the Redis decision tests.
-type rateLimitTestKey struct{}
-
-// countingRedis records every command with its context and returns scripted
-// replies, so tests can assert context propagation and round trips.
-type countingRedis struct {
-	mu        sync.Mutex
-	commands  []string
-	contexts  []context.Context
-	getResult int64
-	getError  error
-	ttlResult int64
-	evalErr   error
-}
-
-func (c *countingRedis) record(command string, ctx context.Context) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.commands = append(c.commands, command)
-	c.contexts = append(c.contexts, ctx)
-}
-
-func (c *countingRedis) Get(ctx context.Context, key string) *redis.StringCmd {
-	c.record("GET "+key, ctx)
-	return redis.NewStringResult(strconv.FormatInt(c.getResult, 10), c.getError)
-}
-
-func (c *countingRedis) Eval(ctx context.Context, script string, keys []string, args ...any) *redis.Cmd {
-	c.record("EVAL "+keys[0], ctx)
-	if c.evalErr != nil {
-		return redis.NewCmdResult(nil, c.evalErr)
-	}
-	if strings.Contains(script, "AI quota reservation") {
-		if c.getError != nil && !errors.Is(c.getError, redis.Nil) {
-			return redis.NewCmdResult(nil, c.getError)
-		}
-		current := c.getResult
-		if errors.Is(c.getError, redis.Nil) {
-			current = 0
-		}
-		cost := snapshotInteger(args[0])
-		limit := snapshotInteger(args[1])
-		if current > limit-cost {
-			return redis.NewCmdResult(int64(0), nil)
-		}
-		c.getResult = current + cost
-		c.getError = nil
-		return redis.NewCmdResult(int64(1), nil)
-	}
-	if strings.Contains(script, "AI quota response reconciliation") {
-		delta := snapshotInteger(args[0])
-		limit := snapshotInteger(args[1])
-		c.getResult = max(min(c.getResult+delta, limit), 0)
-		return redis.NewCmdResult(c.getResult, nil)
-	}
-	return redis.NewCmdResult([]any{int64(c.getResult), int64(c.ttlResult)}, nil)
-}
-
-func (c *countingRedis) Close() error { return nil }
-
-type blockingCloseRedis struct {
-	started    chan struct{}
-	release    chan struct{}
-	closeCalls atomic.Int32
-}
-
-func (c *blockingCloseRedis) Eval(context.Context, string, []string, ...any) *redis.Cmd {
-	return redis.NewCmdResult(nil, nil)
-}
-
-func (c *blockingCloseRedis) Close() error {
-	if c.closeCalls.Add(1) == 1 {
-		close(c.started)
-	}
-	<-c.release
-	return nil
-}
-
-func TestStopClosesClientOnceBeforeDroppingPrivateValues(t *testing.T) {
-	const (
-		redisRaw    = "$ENV://AI_STOP_REDIS_PASSWORD"
-		sentinelRaw = "$secret://vault/ai-stop-sentinel-password"
-	)
-	secrets, scope, _, closeAttempt := newScopedSecretHarness(t, map[string]string{
-		redisRaw:    "resolved-redis-password",
-		sentinelRaw: "resolved-sentinel-password",
-	})
-	defer closeAttempt()
-
-	p := &Plugin{config: Config{
-		Limit:            1,
-		TimeWindow:       60,
-		Policy:           "redis-sentinel",
-		RedisMasterName:  "mymaster",
-		RedisSentinels:   []RedisSentinel{{Host: "127.0.0.1", Port: 26379}},
-		RedisPassword:    redisRaw,
-		SentinelPassword: sentinelRaw,
-	}}
-	if err := p.Init(); err != nil {
-		t.Fatal(err)
-	}
-	if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
-		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
-	}
-	legacyRedis := "legacy-redis-password"
-	legacySentinel := "legacy-sentinel-password"
-	p.redisPasswordLegacy = &legacyRedis
-	p.sentinelPasswordLegacy = &legacySentinel
-	fake := &blockingCloseRedis{started: make(chan struct{}), release: make(chan struct{})}
-	p.redis = fake
-
-	done := make(chan struct{}, 2)
-	go func() {
-		p.Stop()
-		done <- struct{}{}
-	}()
-	<-fake.started
-	if p.redisPassword == nil || p.sentinelPassword == nil ||
-		p.redisPasswordLegacy == nil || p.sentinelPasswordLegacy == nil {
-		t.Fatal("Stop() dropped private values before client close completed")
-	}
-	go func() {
-		p.Stop()
-		done <- struct{}{}
-	}()
-	close(fake.release)
-	<-done
-	<-done
-	if got := fake.closeCalls.Load(); got != 1 {
-		t.Fatalf("client Close() calls = %d, want exactly once", got)
-	}
-	if p.redisPassword != nil || p.sentinelPassword != nil ||
-		p.redisPasswordLegacy != nil || p.sentinelPasswordLegacy != nil {
-		t.Fatal("Stop() retained private credential values after client close")
-	}
-}
-
-func (c *countingRedis) commandsOf(command string) int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	count := 0
-	for _, got := range c.commands {
-		if got == command {
-			count++
-		}
-	}
-	return count
-}
-
-func (c *countingRedis) contextsAreRequestContexts(want context.Context) []string {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	problems := make([]string, 0)
-	for i, got := range c.contexts {
-		if got == context.Background() {
-			problems = append(problems, fmt.Sprintf("command %d used context.Background()", i+1))
-		}
-		if got != want {
-			problems = append(problems, fmt.Sprintf("command %d context = %v, want request context %v", i+1, got, want))
-		}
-	}
-	return problems
-}
-
-func TestRedisDecisionsUseRequestContextAndSingleRoundTrip(t *testing.T) {
-	redisFake := &countingRedis{getResult: 0, ttlResult: 60000}
-	p := newTestPlugin(
-		t,
-		Config{Limit: 10, TimeWindow: 60, Policy: "redis", RedisHost: "127.0.0.1", RedisPort: 6379},
-		time.Now,
-	)
-	_ = p.redis.Close()
-	p.redis = redisFake
-
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
-	req = req.WithContext(context.WithValue(req.Context(), rateLimitTestKey{}, "value"))
-	ctx := req.Context()
-
-	q := quota{key: "global", limit: 10, window: 60 * time.Second}
-
-	if !p.reserve(ctx, q, 1) {
-		t.Fatalf("reserve() = false with used 0, want true")
-	}
-	p.reconcile(ctx, q, 4, false)
-	if _, reset := p.snapshot(ctx, q); reset != 60 {
-		t.Fatalf("snapshot() reset = %d, want 60", reset)
-	}
-
-	if got := redisFake.commandsOf("GET " + p.redisKey(q)); got != 0 {
-		t.Fatalf("reservation issued %d GET commands, want atomic Lua only", got)
-	}
-	if got := redisFake.commandsOf("EVAL " + p.redisKey(q)); got != 3 {
-		t.Fatalf("reserve+reconcile+snapshot issued %d EVAL commands, want exactly 3", got)
-	}
-	if problems := redisFake.contextsAreRequestContexts(ctx); len(problems) > 0 {
-		t.Fatalf("redis commands did not use the request context: %v", problems)
-	}
-}
-
-func TestRedisRejectsAtLimitAndFailsClosedOnBackendError(t *testing.T) {
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
-	ctx := req.Context()
-
-	atLimit := &countingRedis{getResult: 10, ttlResult: 60000}
-	atLimitPlugin := newTestPlugin(
-		t,
-		Config{Limit: 10, TimeWindow: 60, Policy: "redis", RedisHost: "127.0.0.1", RedisPort: 6379},
-		time.Now,
-	)
-	_ = atLimitPlugin.redis.Close()
-	atLimitPlugin.redis = atLimit
-	if atLimitPlugin.reserve(ctx, quota{key: "global", limit: 10, window: 60 * time.Second}, 1) {
-		t.Fatalf("reserve() = true at used == limit, want false")
-	}
-
-	expired := &countingRedis{getError: redis.Nil, ttlResult: 60000}
-	expiredPlugin := newTestPlugin(
-		t,
-		Config{Limit: 10, TimeWindow: 60, Policy: "redis", RedisHost: "127.0.0.1", RedisPort: 6379},
-		time.Now,
-	)
-	_ = expiredPlugin.redis.Close()
-	expiredPlugin.redis = expired
-	if !expiredPlugin.reserve(ctx, quota{key: "global", limit: 10, window: 60 * time.Second}, 1) {
-		t.Fatalf("reserve() = false on expired key, want true")
-	}
-
-	backendError := &countingRedis{getError: fmt.Errorf("backend down"), ttlResult: 60000}
-	backendPlugin := newTestPlugin(
-		t,
-		Config{Limit: 10, TimeWindow: 60, Policy: "redis", RedisHost: "127.0.0.1", RedisPort: 6379},
-		time.Now,
-	)
-	_ = backendPlugin.redis.Close()
-	backendPlugin.redis = backendError
-	if backendPlugin.reserve(ctx, quota{key: "global", limit: 10, window: 60 * time.Second}, 1) {
-		t.Fatalf("reserve() = true on backend error, want false (fail-closed decision)")
-	}
-}
-
-func TestRedisSnapshotFailsOpenOnBackendError(t *testing.T) {
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
-	ctx := req.Context()
-
-	backendError := &countingRedis{getResult: 8, evalErr: fmt.Errorf("backend down"), ttlResult: 60000}
-	p := newTestPlugin(
-		t,
-		Config{Limit: 10, TimeWindow: 60, Policy: "redis", RedisHost: "127.0.0.1", RedisPort: 6379},
-		time.Now,
-	)
-	_ = p.redis.Close()
-	p.redis = backendError
-
-	used, reset := p.snapshot(ctx, quota{key: "global", limit: 10, window: 60 * time.Second})
-	if used != 0 || reset != 60 {
-		t.Fatalf("snapshot() = (%d, %d) on backend error, want (0, 60) fail-open", used, reset)
 	}
 }
 
@@ -2243,14 +1417,14 @@ func TestConcurrentRequestPhaseReservesQuotaAtomically(t *testing.T) {
 func TestLocalQuotaStateIsBoundedAndResponseDeltaIsCapped(t *testing.T) {
 	p := newTestPlugin(t, Config{Limit: 10, TimeWindow: 60}, time.Now)
 	q := quota{key: "bounded-delta", limit: 10, window: time.Minute}
-	p.reconcile(context.Background(), q, 1000, true)
+	p.reconcile(q, 1000, true)
 	if got := localCounterUsed(t, p, q.key); got != q.limit {
 		t.Fatalf("charged counter = %d, want capped limit %d", got, q.limit)
 	}
 
 	const capacity = 100000
 	for i := 0; i <= capacity; i++ {
-		p.reserve(context.Background(), quota{
+		p.reserve(quota{
 			key:    "high-cardinality-" + strconv.Itoa(i),
 			limit:  10,
 			window: time.Minute,

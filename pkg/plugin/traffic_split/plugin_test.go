@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/util"
 )
@@ -27,6 +28,25 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	}
 
 	return p
+}
+
+func TestSchemaMatchesAPISIX317Fields(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	var document struct {
+		Properties map[string]json.RawMessage `json:"properties"`
+	}
+	if err := json.Unmarshal([]byte(p.GetSchema()), &document); err != nil {
+		t.Fatalf("decode schema: %v", err)
+	}
+	if len(document.Properties) != 1 {
+		t.Fatalf("schema properties = %v, want only APISIX 3.17 fields", document.Properties)
+	}
+	if _, ok := document.Properties["rules"]; !ok {
+		t.Fatalf("schema is missing APISIX 3.17 field %q", "rules")
+	}
 }
 
 func TestOverrideFromNodeRemapsGRPCSchemesAndDefaultPorts(t *testing.T) {
@@ -593,21 +613,45 @@ func TestHandlerMatchesFormPostArgumentWithoutConsumingBody(t *testing.T) {
 	}
 }
 
-func TestHandlerRejectsOversizedFormPostArgument(t *testing.T) {
-	p := newTestPlugin(t, Config{MaxBodySize: 5, Rules: []Rule{{
+func TestHandlerMatchesFormPostArgumentLargerThanDefaultWithoutLocalLimit(t *testing.T) {
+	p := &Plugin{config: Config{Rules: []Rule{{
 		Match: []Match{{Vars: []any{[]any{"post_arg_id", "==", "1"}}}},
 		WeightedUpstreams: []WeightedUpstream{{
 			Upstream: &Upstream{Nodes: []Node{{Host: "form.example.com", Port: 80, Weight: 1}}},
 		}},
-	}}})
-	req := httptest.NewRequest(http.MethodPost, "http://example.com/form", strings.NewReader("id=1&name=jack"))
+	}}}}
+	p.SetUpstreamResolver(testUpstreamResolver)
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := util.Parse(map[string]any{"max_body_size": 5}, p.Config()); err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+
+	form := "id=1&name=" + strings.Repeat("x", base.DefaultRequestBodyMaxBytes)
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/form", strings.NewReader(form))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	called := false
+	var downstreamBody string
 	response := httptest.NewRecorder()
-	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true })).ServeHTTP(response, req)
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read downstream request body: %v", err)
+		}
+		downstreamBody = string(body)
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(response, req)
 
-	if response.Code != http.StatusRequestEntityTooLarge || called {
-		t.Fatalf("status=%d called=%t, want 413 before downstream", response.Code, called)
+	if response.Code != http.StatusNoContent || !called {
+		t.Fatalf("status=%d called=%t, want downstream success", response.Code, called)
+	}
+	if downstreamBody != form {
+		t.Fatalf("downstream request body = %d bytes, want %d bytes", len(downstreamBody), len(form))
 	}
 }
 

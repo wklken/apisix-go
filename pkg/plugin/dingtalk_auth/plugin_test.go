@@ -999,16 +999,14 @@ func TestSessionCookieSchemaOmitsLocalCookiePolicy(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	var parsed map[string]any
-	if err := json.Unmarshal([]byte(p.GetSchema()), &parsed); err != nil {
+	var document struct {
+		Properties map[string]json.RawMessage `json:"properties"`
+	}
+	if err := json.Unmarshal([]byte(p.GetSchema()), &document); err != nil {
 		t.Fatalf("schema JSON error = %v", err)
 	}
-	properties, ok := parsed["properties"].(map[string]any)
-	if !ok {
-		t.Fatal("schema properties are missing")
-	}
 	for _, field := range []string{"cookie_secure", "cookie_same_site"} {
-		if _, ok := properties[field]; ok {
+		if _, ok := document.Properties[field]; ok {
 			t.Fatalf("schema exposes non-APISIX field %q", field)
 		}
 	}

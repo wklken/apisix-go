@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -53,10 +54,10 @@ func TestComprehendDependencyFailureMatrix(t *testing.T) {
 				p.client.Timeout = 5 * time.Millisecond
 			}
 
-			request := selectedAIRequest(
+			request := httptest.NewRequest(
 				http.MethodPost,
 				"/v1/chat/completions",
-				`{"messages":[{"role":"user","content":"hello"}]}`,
+				strings.NewReader(`{"messages":[{"role":"user","content":"hello"}]}`),
 			)
 			response := httptest.NewRecorder()
 			p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {

@@ -624,8 +624,9 @@ func TestHandlerRedirectsWhenNoSessionAndNoCode(t *testing.T) {
 		t.Fatal("Location does not contain an OAuth state")
 	}
 	stateCookie := findDingTalkStateCookie(rr.Result().Cookies())
-	if stateCookie == nil || !stateCookie.HttpOnly || stateCookie.MaxAge != 300 {
-		t.Fatalf("OAuth state cookie = %#v, want HttpOnly five-minute cookie", stateCookie)
+	if stateCookie == nil || stateCookie.Path != "/" || !stateCookie.HttpOnly || stateCookie.Secure ||
+		stateCookie.SameSite != http.SameSiteLaxMode || stateCookie.MaxAge != 300 {
+		t.Fatalf("OAuth state cookie = %#v, want APISIX 3.17 defaults", stateCookie)
 	}
 }
 
@@ -993,7 +994,7 @@ func TestSessionCookieMatchesAPISIX317Defaults(t *testing.T) {
 	}
 }
 
-func TestSessionCookieSchemaMatchesAPISIX317SecureDefault(t *testing.T) {
+func TestSessionCookieSchemaOmitsLocalCookiePolicy(t *testing.T) {
 	p := &Plugin{}
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
@@ -1006,34 +1007,10 @@ func TestSessionCookieSchemaMatchesAPISIX317SecureDefault(t *testing.T) {
 	if !ok {
 		t.Fatal("schema properties are missing")
 	}
-	cookieSecure, ok := properties["cookie_secure"].(map[string]any)
-	if !ok {
-		t.Fatal("cookie_secure schema is missing")
-	}
-	if value, ok := cookieSecure["default"].(bool); !ok || value {
-		t.Fatalf("cookie_secure schema default = %#v, want false", cookieSecure["default"])
-	}
-}
-
-func TestSessionCookieHonorsCookieControls(t *testing.T) {
-	cookieSecure := true
-	p := newTestPlugin(t, Config{
-		AppKey:         "app-key",
-		AppSecret:      "app-secret",
-		Secret:         "12345678",
-		RedirectURI:    "https://login.dingtalk.com/oauth2/auth",
-		CookieSecure:   &cookieSecure,
-		CookieSameSite: "Strict",
-	})
-	cookie, err := p.sessionCookie(map[string]any{"userid": "user-a"})
-	if err != nil {
-		t.Fatalf("sessionCookie() error = %v", err)
-	}
-	if !cookie.Secure || cookie.SameSite != http.SameSiteStrictMode || cookie.MaxAge != 0 {
-		t.Fatalf(
-			"cookie attributes = secure:%t sameSite:%v maxAge:%d",
-			cookie.Secure, cookie.SameSite, cookie.MaxAge,
-		)
+	for _, field := range []string{"cookie_secure", "cookie_same_site"} {
+		if _, ok := properties[field]; ok {
+			t.Fatalf("schema exposes non-APISIX field %q", field)
+		}
 	}
 }
 
@@ -1160,27 +1137,6 @@ func assertDingTalkSessionRejected(t *testing.T, p *Plugin, cookie *http.Cookie)
 	request.AddCookie(cookie)
 	if userinfo, ok := p.userInfoFromSession(request); ok {
 		t.Fatalf("userInfoFromSession() accepted invalid cookie: %#v", userinfo)
-	}
-}
-
-func TestSchemaRequiresSecureCookieForSameSiteNone(t *testing.T) {
-	p := &Plugin{}
-	if err := p.Init(); err != nil {
-		t.Fatalf("Init() error = %v", err)
-	}
-	config := map[string]any{
-		"app_key":          "app-key",
-		"app_secret":       "app-secret",
-		"secret":           "12345678",
-		"redirect_uri":     "https://login.dingtalk.com/oauth2/auth",
-		"cookie_same_site": "None",
-	}
-	if err := util.Validate(config, p.GetSchema()); err == nil {
-		t.Fatal("schema accepted SameSite=None without cookie_secure=true")
-	}
-	config["cookie_secure"] = true
-	if err := util.Validate(config, p.GetSchema()); err != nil {
-		t.Fatalf("schema rejected secure SameSite=None cookie: %v", err)
 	}
 }
 

@@ -812,9 +812,7 @@ func (harness *routeGenerationFactory) Prepare(
 			RequiredDomains: domains,
 		},
 		desired,
-		nil,
-		nil,
-	)
+		nil)
 	if err != nil {
 		return nil, err
 	}

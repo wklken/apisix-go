@@ -455,7 +455,7 @@ func newTestGenerationOwner(
 		Cursor:          generation.ProviderCursor{Provider: "generation-owner-test", Revision: "1"},
 		RequiredDomains: slices.Clone(domains),
 	}
-	prepared, err := factory.PrepareGeneration(context.Background(), ticket, desired, nil, nil)
+	prepared, err := factory.PrepareGeneration(context.Background(), ticket, desired, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

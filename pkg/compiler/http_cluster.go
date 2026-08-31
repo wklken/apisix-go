@@ -65,7 +65,7 @@ func (prepared *PreparedGeneration) acquireHTTPCluster(
 		func(context.Context) (*proxy.Cluster, func(context.Context) error, error) {
 			targets := slices.Collect(maps.Keys(owned.Targets))
 			observerLease := prepared.clusterObservers.acquire(owned.Name, targets)
-			resourceTasks := runtime.NewTaskRegistry(context.Background(), prepared.taskFailure)
+			resourceTasks := runtime.NewTaskRegistry(context.Background(), nil)
 			owner, ownerErr := runtime.NewTaskOwner(
 				resourceTasks,
 				"core/proxy-cluster/"+hex.EncodeToString(digest[:]),

@@ -44,9 +44,7 @@ func TestPreparedHTTPAPIBreakerSharesStateAcrossRoutes(t *testing.T) {
 		context.Background(),
 		ticketForSnapshot(snapshot, generation.DomainHTTP),
 		snapshot,
-		nil,
-		nil,
-	)
+		nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,9 +146,7 @@ func TestPreparedHTTPAPIBreakerStateSurvivesGenerationHandoff(t *testing.T) {
 			context.Background(),
 			ticketForSnapshot(desired, generation.DomainHTTP),
 			desired,
-			nil,
-			nil,
-		)
+			nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -199,9 +195,7 @@ func prepareAPIBreakerGeneration(
 		context.Background(),
 		ticketForSnapshot(snapshot, generation.DomainHTTP),
 		snapshot,
-		nil,
-		nil,
-	)
+		nil)
 	if err != nil {
 		t.Fatal(err)
 	}

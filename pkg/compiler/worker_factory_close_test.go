@@ -58,8 +58,7 @@ func TestWorkerCompilerFactoryCloseRejectsCandidateDuringCleanup(t *testing.T) {
 	factory, materializer := newWorkerTestFactory(t)
 	desired := mustGenerationSnapshot(t, 9001, nil, nil)
 	prepared, err := factory.PrepareGeneration(
-		context.Background(), ticketForSnapshot(desired, generation.DomainHTTP), desired, nil, nil,
-	)
+		context.Background(), ticketForSnapshot(desired, generation.DomainHTTP), desired, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,9 +96,8 @@ func TestWorkerCompilerFactoryCloseRejectsCandidateDuringCleanup(t *testing.T) {
 		canceled,
 		ticketForSnapshot(rejectedDesired, generation.DomainHTTP),
 		rejectedDesired,
-		nil,
-		nil,
-	)
+		nil)
+
 	if got != nil || candidateErr != ErrWorkerCompilerFactoryClosed {
 		t.Fatalf(
 			"candidate after closed mark = %#v/%v, want exact closed sentinel",
@@ -142,9 +140,7 @@ func TestWorkerCompilerFactoryCloseUsesStableAttemptOrderAndClosesRegistryLast(t
 			context.Background(),
 			ticketForSnapshot(desired, generation.DomainHTTP),
 			desired,
-			nil,
-			nil,
-		)
+			nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -256,9 +252,7 @@ func TestWorkerCompilerFactoryCloseResidualRetainsGenerationAndDefersRegistry(t 
 		context.Background(),
 		ticketForSnapshot(blockedDesired, generation.DomainHTTP),
 		blockedDesired,
-		nil,
-		nil,
-	)
+		nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -267,9 +261,7 @@ func TestWorkerCompilerFactoryCloseResidualRetainsGenerationAndDefersRegistry(t 
 		context.Background(),
 		ticketForSnapshot(terminalDesired, generation.DomainHTTP),
 		terminalDesired,
-		nil,
-		nil,
-	)
+		nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -371,8 +363,7 @@ func TestWorkerCompilerFactoryGenerationTaskQuiescerJoinsSafeMarkerAndExactCarri
 	}
 	desired := mustGenerationSnapshot(t, 9015, nil, nil)
 	if _, err := factory.PrepareGeneration(
-		context.Background(), ticketForSnapshot(desired, generation.DomainHTTP), desired, nil, nil,
-	); err != nil {
+		context.Background(), ticketForSnapshot(desired, generation.DomainHTTP), desired, nil); err != nil {
 		t.Fatal(err)
 	}
 	<-started
@@ -410,9 +401,7 @@ func TestWorkerCompilerFactoryCloseRetryPreservesIndependentTerminalErrors(t *te
 		context.Background(),
 		ticketForSnapshot(terminalDesired, generation.DomainHTTP),
 		terminalDesired,
-		nil,
-		nil,
-	)
+		nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -421,9 +410,7 @@ func TestWorkerCompilerFactoryCloseRetryPreservesIndependentTerminalErrors(t *te
 		context.Background(),
 		ticketForSnapshot(blockedDesired, generation.DomainHTTP),
 		blockedDesired,
-		nil,
-		nil,
-	)
+		nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -480,8 +467,7 @@ func TestWorkerCompilerFactoryConcurrentRetryHasOneAttemptLeader(t *testing.T) {
 	factory, materializer := newWorkerTestFactory(t)
 	desired := mustGenerationSnapshot(t, 9018, nil, nil)
 	prepared, err := factory.PrepareGeneration(
-		context.Background(), ticketForSnapshot(desired, generation.DomainHTTP), desired, nil, nil,
-	)
+		context.Background(), ticketForSnapshot(desired, generation.DomainHTTP), desired, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -552,8 +538,7 @@ func TestWorkerCompilerFactoryCloseRetriesOrdinaryQuiesceFailureWithoutCachingIt
 	factory, _ := newWorkerTestFactory(t)
 	desired := mustGenerationSnapshot(t, 9019, nil, nil)
 	prepared, err := factory.PrepareGeneration(
-		context.Background(), ticketForSnapshot(desired, generation.DomainHTTP), desired, nil, nil,
-	)
+		context.Background(), ticketForSnapshot(desired, generation.DomainHTTP), desired, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -649,9 +634,8 @@ func TestWorkerCompilerFactoryCloseWaitsForAdmittedPreparation(t *testing.T) {
 			context.Background(),
 			ticketForSnapshot(desired, generation.DomainHTTP),
 			desired,
-			nil,
-			nil,
-		)
+			nil)
+
 		prepareResult <- preparationResult{prepared: prepared, err: err}
 	}()
 	workerCloseWait(t, checkpointEntered, "final preparation checkpoint")
@@ -699,8 +683,7 @@ func TestWorkerCompilerFactoryCloseWaitsForAdmittedMaterialization(t *testing.T)
 		),
 	}, nil)
 	prepared, err := factory.PrepareGeneration(
-		context.Background(), ticketForSnapshot(desired, generation.DomainHTTP), desired, nil, nil,
-	)
+		context.Background(), ticketForSnapshot(desired, generation.DomainHTTP), desired, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -787,8 +770,7 @@ func TestWorkerCompilerFactoryConcurrentCloseDiscardAndFactoryCloseRunOnce(t *te
 	factory, materializer := newWorkerTestFactory(t)
 	desired := mustGenerationSnapshot(t, 9041, nil, nil)
 	prepared, err := factory.PrepareGeneration(
-		context.Background(), ticketForSnapshot(desired, generation.DomainHTTP), desired, nil, nil,
-	)
+		context.Background(), ticketForSnapshot(desired, generation.DomainHTTP), desired, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -825,9 +807,7 @@ func TestWorkerCompilerFactoryCloseUsesLiveMapKeyWhileDetachIsBlocked(t *testing
 			context.Background(),
 			ticketForSnapshot(desired, generation.DomainHTTP),
 			desired,
-			nil,
-			nil,
-		)
+			nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -886,8 +866,7 @@ func TestWorkerCompilerFactoryConcurrentCloseCachesSafeResultAndContext(t *testi
 	materializer.closeErr = providerErr
 	desired := mustGenerationSnapshot(t, 9061, nil, nil)
 	_, err := factory.PrepareGeneration(
-		context.Background(), ticketForSnapshot(desired, generation.DomainHTTP), desired, nil, nil,
-	)
+		context.Background(), ticketForSnapshot(desired, generation.DomainHTTP), desired, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -974,40 +953,6 @@ func TestWorkerCompilerFactoryConcurrentCloseCachesSafeResultAndContext(t *testi
 	}
 }
 
-func TestWorkerCompilerFactoryCloseAllowsEventOnlyFailureCallback(t *testing.T) {
-	factory, _ := newWorkerTestFactory(t)
-	failures := make(chan runtime.TaskFailure, 1)
-	factory.checkpoint = func(stage string, state workerFactoryCheckpointState) error {
-		if stage != "create-task-registry" {
-			return nil
-		}
-		return state.tasks.Go(
-			runtime.TaskSpec{Owner: "factory-close/event-only", Criticality: runtime.TaskCore},
-			func(ctx context.Context) error {
-				<-ctx.Done()
-				return errors.New("event-only task failure")
-			},
-		)
-	}
-	desired := mustGenerationSnapshot(t, 9071, nil, nil)
-	_, err := factory.PrepareGeneration(
-		context.Background(), ticketForSnapshot(desired, generation.DomainHTTP), desired, nil,
-		func(failure runtime.TaskFailure) { failures <- failure },
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	closeResult := make(chan error, 1)
-	go func() { closeResult <- factory.Close(context.Background()) }()
-	failure := workerCloseWait(t, failures, "event-only task failure")
-	if failure.Owner != "factory-close/event-only" || failure.Err == nil {
-		t.Fatalf("failure event = %#v", failure)
-	}
-	if err := workerCloseWait(t, closeResult, "Close after event-only callback"); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func TestWorkerCompilerFactoryCloseRedactsPreparedAndFactoryCleanupErrors(t *testing.T) {
 	t.Run("direct prepared close and discard", func(t *testing.T) {
 		factory, materializer := newWorkerTestFactory(t)
@@ -1026,9 +971,7 @@ func TestWorkerCompilerFactoryCloseRedactsPreparedAndFactoryCleanupErrors(t *tes
 			context.Background(),
 			ticketForSnapshot(desired, generation.DomainHTTP),
 			desired,
-			nil,
-			nil,
-		)
+			nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1074,9 +1017,7 @@ func TestWorkerCompilerFactoryCloseRedactsPreparedAndFactoryCleanupErrors(t *tes
 			context.Background(),
 			ticketForSnapshot(desired, generation.DomainHTTP),
 			desired,
-			nil,
-			nil,
-		)
+			nil)
 		if err != nil {
 			t.Fatal(err)
 		}

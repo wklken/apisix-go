@@ -245,7 +245,7 @@ func newTLSHTTPLeaseFixture(
 		Cursor:          generation.ProviderCursor{Provider: "generation-tls-test", Revision: "1"},
 		RequiredDomains: []generation.Domain{generation.DomainHTTP},
 	}
-	prepared, err := factory.PrepareGeneration(context.Background(), ticket, desired, nil, nil)
+	prepared, err := factory.PrepareGeneration(context.Background(), ticket, desired, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

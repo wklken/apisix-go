@@ -240,8 +240,6 @@ func TestHTTPClusterActiveHealthDoesNotRetainPrepareContext(t *testing.T) {
 	}))
 	defer upstream.Close()
 	prepared, fixture := newEffectiveBindingMaterializerFixture(t, nil, nil)
-	failures := make(chan runtime.TaskFailure, 1)
-	prepared.taskFailure = func(failure runtime.TaskFailure) { failures <- failure }
 	traceCalls := make(chan struct{}, 1)
 	trace := &httptrace.ClientTrace{GetConn: func(string) {
 		select {
@@ -277,11 +275,6 @@ func TestHTTPClusterActiveHealthDoesNotRetainPrepareContext(t *testing.T) {
 	}
 	if !cluster.Closed() || fixture.registry.Len() != 0 {
 		t.Fatalf("terminal close cluster/registry = %t/%d", cluster.Closed(), fixture.registry.Len())
-	}
-	select {
-	case failure := <-failures:
-		t.Fatalf("unexpected resource task failure = %#v", failure)
-	default:
 	}
 }
 

@@ -140,9 +140,7 @@ func (engine *GenerationEngine) Publish(
 		return set, nil
 	}
 
-	prepared, err := engine.factory.PrepareGeneration(
-		ctx, ticket, desired, previous, engine.onTaskFailure,
-	)
+	prepared, err := engine.factory.PrepareGeneration(ctx, ticket, desired, previous)
 	if err != nil {
 		return generation.PublicationSet{}, err
 	}
@@ -246,8 +244,6 @@ func cloneEnginePublicationSet(set generation.PublicationSet) generation.Publica
 	}
 	return clone
 }
-
-func (*GenerationEngine) onTaskFailure(runtime.TaskFailure) {}
 
 func (engine *GenerationEngine) Close(ctx context.Context) error {
 	if engine == nil {

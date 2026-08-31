@@ -38,12 +38,12 @@ func LoadEffective(req LoadRequest) (*EffectiveConfig, error) {
 		return nil, err
 	}
 
-	cfg, unused, err := decodeConfig(root)
+	cfg, err := decodeConfig(root)
 	if err != nil {
 		return nil, err
 	}
 	effective := &EffectiveConfig{Config: *cfg}
-	if err := validateEffective(effective, unused); err != nil {
+	if err := validateEffective(effective); err != nil {
 		return nil, err
 	}
 	return effective, nil

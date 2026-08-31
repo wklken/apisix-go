@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"net"
 	"reflect"
-	"slices"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -14,53 +12,47 @@ import (
 	"github.com/wklken/apisix-go/pkg/json"
 )
 
-func decodeConfig(root *valueNode) (*Config, []string, error) {
+func decodeConfig(root *valueNode) (*Config, error) {
 	if root == nil || root.kind != nodeMapping {
-		return nil, nil, fmt.Errorf("configuration root must be a mapping")
+		return nil, fmt.Errorf("configuration root must be a mapping")
 	}
 	raw, ok := nodeToAny(root).(map[string]any)
 	if !ok {
-		return nil, nil, fmt.Errorf("configuration root must be a mapping")
+		return nil, fmt.Errorf("configuration root must be a mapping")
 	}
 
 	var cfg Config
-	unused, err := decodeMapstructure(raw, &cfg)
-	if err != nil {
-		return nil, nil, fmt.Errorf("decode static configuration: %w", err)
+	if err := decodeMapstructure(raw, &cfg); err != nil {
+		return nil, fmt.Errorf("decode static configuration: %w", err)
 	}
 	if rawPlugins, exists := raw["plugins"]; exists {
 		plugins, valid := decodeHTTPPluginAllowlist(rawPlugins)
 		if !valid {
-			return nil, nil, fmt.Errorf("decode static configuration: plugins must be a string list")
+			return nil, fmt.Errorf("decode static configuration: plugins must be a string list")
 		}
 		cfg.Plugins = plugins
 	}
-	unused = expandUnusedPaths(root, unused)
-	sort.Strings(unused)
-	unused = slices.Compact(unused)
-	return &cfg, unused, nil
+	return &cfg, nil
 }
 
-func decodeMapstructure(input any, result any) ([]string, error) {
+func decodeMapstructure(input any, result any) error {
 	if input == nil {
-		return nil, nil
+		return nil
 	}
-	metadata := new(mapstructure.Metadata)
 	decoder, err := mapstructure.NewDecoder(&mapstructure.DecoderConfig{
 		DecodeHook:       mapstructure.ComposeDecodeHookFunc(jsonNumberDecodeHook, configDecodeHook),
 		WeaklyTypedInput: true,
-		Metadata:         metadata,
 		Result:           result,
 		TagName:          "mapstructure",
 		ZeroFields:       true,
 	})
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if err := decoder.Decode(input); err != nil {
-		return nil, err
+		return err
 	}
-	return append([]string(nil), metadata.Unused...), nil
+	return nil
 }
 
 func jsonNumberDecodeHook(from reflect.Type, to reflect.Type, data any) (any, error) {
@@ -204,50 +196,4 @@ func decodeListenAddressString(address string) (port int, host string, ok bool, 
 		return 0, "", true, fmt.Errorf("listener port must be a decimal integer")
 	}
 	return port, parsedHost, true, nil
-}
-
-func expandUnusedPaths(root *valueNode, unused []string) []string {
-	expanded := make([]string, 0, len(unused))
-	for _, path := range unused {
-		node := lookupStaticNode(root, path)
-		if node == nil {
-			expanded = append(expanded, path)
-			continue
-		}
-		collectUnknownLeafPaths(node, path, &expanded)
-	}
-	return expanded
-}
-
-func collectUnknownLeafPaths(node *valueNode, path string, paths *[]string) {
-	if node == nil {
-		*paths = append(*paths, path)
-		return
-	}
-	if len(node.mapping) == 0 && len(node.sequence) == 0 {
-		*paths = append(*paths, path)
-		return
-	}
-	keys := make([]string, 0, len(node.mapping))
-	for key := range node.mapping {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	for _, key := range keys {
-		collectUnknownLeafPaths(node.mapping[key], appendConfigPathKey(path, key), paths)
-	}
-	for index, child := range node.sequence {
-		collectUnknownLeafPaths(child, fmt.Sprintf("%s[%d]", path, index), paths)
-	}
-}
-
-func lookupStaticNode(root *valueNode, path string) *valueNode {
-	current := root
-	for segment := range strings.SplitSeq(path, ".") {
-		if current == nil || current.kind != nodeMapping {
-			return nil
-		}
-		current = current.mapping[segment]
-	}
-	return current
 }

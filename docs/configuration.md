@@ -11,8 +11,10 @@ Configuration is merged in this order:
 3. an optional `-c/--config` file;
 4. APISIX 3.17 reserved environment overrides.
 
-Lists replace earlier lists. Unknown APISIX fields do not gain runtime
-behavior.
+Lists replace earlier lists. APISIX 3.17 static fields without a Go data-plane
+equivalent are ignored and do not gain runtime behavior. Configurations that
+actively enable an unsupported admin API, discovery, external plugin, WASM,
+XRPC, QUIC, or HTTP/3 subsystem still fail validation.
 
 `${{NAME}}` and `${{NAME:=fallback}}` expressions are expanded inside each
 file before that layer is merged. Absent, null, false, zero, and empty string

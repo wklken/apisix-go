@@ -93,37 +93,6 @@ func TestLoadEffectivePreservesExactUntypedNumber(t *testing.T) {
 	}
 }
 
-func TestLoadEffectiveRejectsUnknownFields(t *testing.T) {
-	tests := []struct {
-		name     string
-		override string
-		want     string
-	}{
-		{
-			name:     "unknown root field",
-			override: "unknown_section: {token: must-not-appear}\n",
-			want:     "static configuration contains 1 unsupported field",
-		},
-		{
-			name:     "unknown nested fields",
-			override: "apisix: {node_listen: [{port: 9080, first_unknown: a, second_unknown: b}]}\n",
-			want:     "static configuration contains 2 unsupported fields",
-		},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			_, err := LoadEffective(loadRequestFixture(t, test.override))
-			if err == nil || err.Error() != test.want {
-				t.Fatalf("LoadEffective() error = %v, want %q", err, test.want)
-			}
-			if strings.Contains(err.Error(), "must-not-appear") || strings.Contains(err.Error(), "unknown") {
-				t.Fatalf("LoadEffective() error exposed an unsupported path or value: %q", err)
-			}
-		})
-	}
-}
-
 func TestLoadEffectiveValidationErrorsDoNotExposeExpandedOrOverrideValues(t *testing.T) {
 	const secret = "must-not-appear-runtime-secret"
 	tests := []struct {

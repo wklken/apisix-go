@@ -58,22 +58,6 @@ func TestMergeNodesDoesNotAliasInputsOrResults(t *testing.T) {
 	}
 }
 
-func TestAppendConfigPathKeyDistinguishesLiteralAndNestedKeys(t *testing.T) {
-	for key, want := range map[string]string{
-		"safe-key": "safe-key",
-		"tenant.a": `["tenant.a"]`,
-		"items[0]": `["items[0]"]`,
-		"":         `[""]`,
-	} {
-		if got := appendConfigPathKey("", key); got != want {
-			t.Fatalf("appendConfigPathKey(%q) = %q, want %q", key, got, want)
-		}
-	}
-	if got := appendConfigPathKey("root", "child"); got != "root.child" {
-		t.Fatalf("nested path = %q", got)
-	}
-}
-
 func TestNodeFromAnyPreservesSupportedValuesAndPathBase(t *testing.T) {
 	tests := []struct {
 		name string

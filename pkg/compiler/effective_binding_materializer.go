@@ -1095,7 +1095,12 @@ func cloneEffectiveService(source resource.Service) (resource.Service, error) {
 	if err != nil {
 		return resource.Service{}, err
 	}
+	cloned.Labels, err = cloneEffectiveStringAnyMap(source.Labels)
+	if err != nil {
+		return resource.Service{}, err
+	}
 	cloned.Hosts = slices.Clone(source.Hosts)
+	cloned.Script = slices.Clone(source.Script)
 	cloned.Upstream, err = cloneEffectiveUpstream(source.Upstream)
 	if err != nil {
 		return resource.Service{}, err

@@ -346,7 +346,9 @@ func sourceGenerationKey(provenance plugin.ResourceProvenance) generation.Resour
 
 func clonePlanningService(source resource.Service) resource.Service {
 	source.Plugins = cloneCompilePluginConfigs(source.Plugins)
+	source.Labels = cloneCompileAnyMap(source.Labels)
 	source.Hosts = append([]string(nil), source.Hosts...)
+	source.Script = slices.Clone(source.Script)
 	source.Upstream = cloneCompileUpstream(source.Upstream)
 	return source
 }
@@ -354,6 +356,7 @@ func clonePlanningService(source resource.Service) resource.Service {
 func clonePlanningConsumer(source resource.Consumer) resource.Consumer {
 	source.Plugins = cloneCompilePluginConfigs(source.Plugins)
 	source.Labels = cloneCompileAnyMap(source.Labels)
+	source.AuthConf = cloneCompileValue(source.AuthConf)
 	return source
 }
 

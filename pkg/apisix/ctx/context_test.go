@@ -196,6 +196,66 @@ func TestAttachConsumerPreservesCompleteConsumerInRequestVars(t *testing.T) {
 	}
 }
 
+func TestAttachConsumerWithSourceDerivesOfficialRuntimeFieldsAndHeaders(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	req = WithApisixVars(req, map[string]string{})
+	req.Header.Set("X-Credential-Identifier", "spoofed-credential")
+	req.Header.Set("X-Consumer-Custom-ID", "spoofed-custom")
+
+	consumer := resource.Consumer{
+		ID:            "consumer-id",
+		Username:      "bob",
+		GroupID:       "gold",
+		Plugins:       map[string]resource.PluginConfig{"jwt-auth": map[string]any{"key": "jwt-key"}},
+		Labels:        map[string]any{"custom_id": "custom-from-label"},
+		ModifiedIndex: 42,
+		CredentialID:  "credential-id",
+	}
+	attached := AttachConsumerWithSource(req, consumer, "jwt-auth")
+
+	if attached.ID != "consumer-id" || attached.ConsumerName != "consumer-id" ||
+		attached.ModifiedIndex != 42 || attached.CredentialID != "credential-id" ||
+		attached.CustomID != "custom-from-label" {
+		t.Fatalf("attached consumer runtime fields = %#v", attached)
+	}
+	authConfig, ok := attached.AuthConf.(map[string]any)
+	if !ok || authConfig["key"] != "jwt-key" {
+		t.Fatalf("attached auth config = %#v, want source plugin config", attached.AuthConf)
+	}
+	if got := GetApisixVar(req, "$consumer_name"); got != "consumer-id" {
+		t.Fatalf("$consumer_name = %#v, want consumer-id", got)
+	}
+	if got := req.Header.Get("X-Consumer-Username"); got != "bob" {
+		t.Fatalf("X-Consumer-Username = %q, want bob", got)
+	}
+	if got := req.Header.Get("X-Credential-Identifier"); got != "credential-id" {
+		t.Fatalf("X-Credential-Identifier = %q, want credential-id", got)
+	}
+	if got := req.Header.Get("X-Consumer-Custom-ID"); got != "custom-from-label" {
+		t.Fatalf("X-Consumer-Custom-ID = %q, want custom-from-label", got)
+	}
+
+	consumer.Plugins["jwt-auth"].(map[string]any)["key"] = "mutated"
+	consumer.Labels["custom_id"] = "mutated"
+	if attached.AuthConf.(map[string]any)["key"] != "jwt-key" || attached.CustomID != "custom-from-label" {
+		t.Fatalf("attached consumer shares source values: %#v", attached)
+	}
+
+	empty := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	empty = WithApisixVars(empty, map[string]string{})
+	empty.Header.Set("X-Consumer-Username", "spoofed-user")
+	empty.Header.Set("X-Credential-Identifier", "spoofed-credential")
+	empty.Header.Set("X-Consumer-Custom-ID", "spoofed-custom")
+	AttachConsumerWithSource(empty, resource.Consumer{}, "missing-source")
+	for _, name := range []string{
+		"X-Consumer-Username", "X-Credential-Identifier", "X-Consumer-Custom-ID",
+	} {
+		if values, exists := empty.Header[name]; exists && len(values) != 0 {
+			t.Fatalf("%s = %#v, want deleted empty header", name, values)
+		}
+	}
+}
+
 func TestRegisterApisixVarWithoutStateDoesNotPanic(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/", nil)
 	RegisterApisixVar(req, "$route_id", "route-1")
@@ -392,6 +452,9 @@ func TestAuthenticationStateFromReturnsIndependentCopies(t *testing.T) {
 	consumer := resource.Consumer{
 		Username: "alice",
 		GroupID:  "group-a",
+		AuthConf: map[string]any{
+			"claims": map[string]any{"roles": []any{"reader"}},
+		},
 		Plugins: map[string]resource.PluginConfig{
 			"jwt-auth": map[string]any{
 				"claims": map[string]any{
@@ -408,6 +471,7 @@ func TestAuthenticationStateFromReturnsIndependentCopies(t *testing.T) {
 	request := WithAuthenticationState(httptest.NewRequest(http.MethodGet, "/", nil), state)
 	stateCopy := state.Consumer()
 	stateCopy.Plugins["jwt-auth"].(map[string]any)["claims"].(map[string]any)["roles"].([]any)[0] = "mutated-state-copy"
+	stateCopy.AuthConf.(map[string]any)["claims"].(map[string]any)["roles"].([]any)[0] = "mutated-state-copy"
 
 	got, ok := AuthenticationStateFrom(request)
 	if !ok {
@@ -422,6 +486,9 @@ func TestAuthenticationStateFromReturnsIndependentCopies(t *testing.T) {
 	}
 	if gotZone := consumer.Labels["zones"].([]string)[0]; gotZone != "a" {
 		t.Fatalf("original label slice value = %q, want a", gotZone)
+	}
+	if gotRole := consumer.AuthConf.(map[string]any)["claims"].(map[string]any)["roles"].([]any)[0]; gotRole != "reader" {
+		t.Fatalf("original auth config value = %q, want reader", gotRole)
 	}
 
 	consumer.Plugins["jwt-auth"].(map[string]any)["claims"].(map[string]any)["roles"].([]any)[0] = "changed-after-store"

@@ -228,12 +228,21 @@ func TestBuildOPARequestIncludesCompleteConsumer(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "http://gateway.test/get", nil)
 	req = apisixctx.WithApisixVars(req, nil)
 	attachedConsumer := resource.Consumer{
-		Username: "test-user",
-		GroupID:  "group-1",
+		ID:            "consumer-1",
+		Username:      "test-user",
+		Desc:          "test consumer",
+		CreateTime:    1001,
+		UpdateTime:    1002,
+		GroupID:       "group-1",
+		ConsumerName:  "test-credential",
+		AuthConf:      map[string]any{"key": "auth-config"},
+		ModifiedIndex: 1003,
+		CredentialID:  "credential-1",
+		CustomID:      "custom-1",
 		Plugins: map[string]resource.PluginConfig{
 			"key-auth": map[string]any{"key": "consumer-plugin-secret"},
 		},
-		Labels: map[string]any{"team": "edge"},
+		Labels: map[string]any{"team": "edge", "custom_id": "custom-1"},
 	}
 	apisixctx.AttachConsumer(req, attachedConsumer)
 
@@ -247,8 +256,17 @@ func TestBuildOPARequestIncludesCompleteConsumer(t *testing.T) {
 	}
 	consumer := decoded["input"].(map[string]any)["consumer"].(map[string]any)
 	labels, ok := consumer["labels"].(map[string]any)
-	if consumer["username"] != "test-user" || consumer["group_id"] != "group-1" || !ok || labels["team"] != "edge" {
+	if consumer["id"] != "consumer-1" || consumer["username"] != "test-user" ||
+		consumer["desc"] != "test consumer" || consumer["create_time"] != float64(1001) ||
+		consumer["update_time"] != float64(1002) || consumer["group_id"] != "group-1" ||
+		consumer["consumer_name"] != "test-credential" || consumer["modifiedIndex"] != float64(1003) ||
+		consumer["credential_id"] != "credential-1" || consumer["custom_id"] != "custom-1" ||
+		!ok || labels["team"] != "edge" {
 		t.Fatalf("consumer = %#v, want complete consumer", consumer)
+	}
+	authConf, ok := consumer["auth_conf"].(map[string]any)
+	if !ok || authConf["key"] != "auth-config" {
+		t.Fatalf("consumer auth_conf = %#v, want complete runtime context", consumer["auth_conf"])
 	}
 	plugins, ok := consumer["plugins"].(map[string]any)
 	if !ok {
@@ -282,8 +300,12 @@ func TestOPAResourceContextIncludesCompleteResourcesWithoutUpstream(t *testing.T
 			},
 		},
 		resource.Service{
-			ID:   "service-1",
-			Name: "orders-service",
+			ID:         "service-1",
+			Name:       "orders-service",
+			Labels:     map[string]any{"team": "edge"},
+			CreateTime: 2001,
+			UpdateTime: 2002,
+			Script:     json.RawMessage(`"return true"`),
 			Plugins: map[string]resource.PluginConfig{
 				"basic-auth": map[string]any{"password": "service-plugin-secret"},
 			},
@@ -301,7 +323,7 @@ func TestOPAResourceContextIncludesCompleteResourcesWithoutUpstream(t *testing.T
 		Plugins: map[string]resource.PluginConfig{
 			"key-auth": map[string]any{"key": "consumer-plugin-secret"},
 		},
-		Labels: map[string]any{"team": "edge"},
+		Labels: map[string]any{"team": "edge", "custom_id": "custom-1"},
 	}
 	apisixctx.AttachConsumer(req, attachedConsumer)
 
@@ -332,6 +354,17 @@ func TestOPAResourceContextIncludesCompleteResourcesWithoutUpstream(t *testing.T
 	service := input["service"].(map[string]any)
 	if service["id"] != "service-1" || service["name"] != "orders-service" {
 		t.Fatalf("service = %#v, want complete service context", service)
+	}
+	if service["create_time"] != float64(2001) || service["update_time"] != float64(2002) {
+		t.Fatalf("service timestamps = %#v, want complete service context", service)
+	}
+	serviceLabels, ok := service["labels"].(map[string]any)
+	if !ok || serviceLabels["team"] != "edge" {
+		t.Fatalf("service labels = %#v, want complete service context", service["labels"])
+	}
+	serviceScript, ok := service["script"].(string)
+	if !ok || serviceScript != "return true" {
+		t.Fatalf("service script = %#v, want complete service context", service["script"])
 	}
 	if _, ok := service["upstream"]; ok {
 		t.Fatalf("service = %#v, want upstream omitted", service)

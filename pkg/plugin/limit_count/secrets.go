@@ -90,18 +90,11 @@ func selectLimitCountSecretFields(config Config) (
 		key = secretFieldSelection{field: "key", raw: config.Key}
 	}
 	host := secretFieldSelection{}
-	if config.Redis.RedisHost != "" {
-		host = secretFieldSelection{field: "redis_config.redis_host", raw: config.Redis.RedisHost}
-	} else if config.RedisHost != "" {
+	if config.RedisHost != "" {
 		host = secretFieldSelection{field: "redis_host", raw: config.RedisHost}
 	}
 	nodes := secretFieldSelection{}
-	if len(config.RedisCluster.RedisClusterNodes) > 0 {
-		nodes = secretFieldSelection{
-			field: "redis_cluster_config.redis_cluster_nodes",
-			raw:   strings.Join(config.RedisCluster.RedisClusterNodes, "\x00"),
-		}
-	} else if len(config.RedisClusterNodes) > 0 {
+	if len(config.RedisClusterNodes) > 0 {
 		nodes = secretFieldSelection{
 			field: "redis_cluster_nodes",
 			raw:   strings.Join(config.RedisClusterNodes, "\x00"),
@@ -110,19 +103,8 @@ func selectLimitCountSecretFields(config Config) (
 	return key, host, nodes
 }
 
-func selectedLimitCountNodes(config Config, selection secretFieldSelection) []string {
-	switch selection.field {
-	case "redis_cluster_config.redis_cluster_nodes":
-		return append([]string(nil), config.RedisCluster.RedisClusterNodes...)
-	case "redis_cluster_nodes":
-		return append([]string(nil), config.RedisClusterNodes...)
-	default:
-		return nil
-	}
-}
-
-// MaterializeScopedSecrets resolves the selected aliases using their exact
-// admitted manifest declarations before any root-to-nested normalization.
+// MaterializeScopedSecrets resolves the catalog-declared fields before plugin
+// initialization replaces their public values with content descriptors.
 func (p *Plugin) MaterializeScopedSecrets(
 	ctx context.Context, access base.ScopedSecretAccess,
 ) error {
@@ -132,7 +114,7 @@ func (p *Plugin) MaterializeScopedSecrets(
 		return err
 	}
 	keySelection, hostSelection, nodesSelection := selectLimitCountSecretFields(p.config)
-	nodes := selectedLimitCountNodes(p.config, nodesSelection)
+	nodes := append([]string(nil), p.config.RedisClusterNodes...)
 	staged := stagedLimitCountSecrets{
 		keySelection: keySelection, hostSelection: hostSelection, nodesSelection: nodesSelection,
 	}
@@ -248,26 +230,10 @@ func (p *Plugin) installLimitCountSecrets(staged stagedLimitCountSecrets) error 
 		p.config.Key = staged.keyDescriptor
 	}
 	if staged.hostDescriptor != "" {
-		if staged.hostSelection.field == "redis_host" {
-			p.config.RedisHost = staged.hostDescriptor
-			p.applyRootRedisConfig()
-		} else {
-			p.config.Redis.RedisHost = staged.hostDescriptor
-			if p.config.RedisHost != "" {
-				p.config.RedisHost = staged.hostDescriptor
-			}
-		}
+		p.config.RedisHost = staged.hostDescriptor
 	}
 	if len(staged.nodeDescriptors) > 0 {
-		if staged.nodesSelection.field == "redis_cluster_nodes" {
-			p.config.RedisClusterNodes = append([]string(nil), staged.nodeDescriptors...)
-			p.applyRootRedisClusterConfig()
-		} else {
-			p.config.RedisCluster.RedisClusterNodes = append([]string(nil), staged.nodeDescriptors...)
-			if len(p.config.RedisClusterNodes) > 0 {
-				p.config.RedisClusterNodes = append([]string(nil), staged.nodeDescriptors...)
-			}
-		}
+		p.config.RedisClusterNodes = append([]string(nil), staged.nodeDescriptors...)
 	}
 	return nil
 }
@@ -425,7 +391,7 @@ func (p *Plugin) withLimitCountRedisHost(use func(string) error) error {
 	}
 	defer release()
 	if !snapshot.redisHostPresent {
-		return use(p.config.Redis.RedisHost)
+		return use(p.config.RedisHost)
 	}
 	return snapshot.scopedRedisHost.Use(use)
 }
@@ -437,7 +403,7 @@ func (p *Plugin) withLimitCountRedisNodes(use func([]string) error) error {
 	}
 	defer release()
 	if !snapshot.redisNodesPresent {
-		return use(append([]string(nil), p.config.RedisCluster.RedisClusterNodes...))
+		return use(append([]string(nil), p.config.RedisClusterNodes...))
 	}
 	nodes := make([]string, len(snapshot.scopedRedisClusterNodes))
 	var useNode func(int) error

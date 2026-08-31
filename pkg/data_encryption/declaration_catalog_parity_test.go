@@ -77,9 +77,7 @@ var expectedPluginFields = map[string][]string{
 	"limit-count": {
 		"key",
 		"redis_host",
-		"redis_config.redis_host",
 		"redis_cluster_nodes",
-		"redis_cluster_config.redis_cluster_nodes",
 	},
 	"oas-validator":      {"spec", "spec_url_request_headers"},
 	"request-validation": {"body_schema", "header_schema"},

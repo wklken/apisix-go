@@ -189,27 +189,8 @@ func TestScopedSecretsPreserveRootRedisHostDeclaration(t *testing.T) {
 	materializeScopedLimitCount(t, p, secrets, scope)
 	assertLimitCountCalls(t, scope, broker.callsSnapshot(), []string{"redis_host"}, []string{raw})
 	want := limitCountDescriptor("redis-root.test")
-	if p.config.RedisHost != want || p.config.Redis.RedisHost != want {
-		t.Fatalf("root/mirror host = %q/%q, want %q", p.config.RedisHost, p.config.Redis.RedisHost, want)
-	}
-}
-
-func TestScopedSecretsPreserveNestedRedisHostDeclaration(t *testing.T) {
-	const raw = "$secret://vault/limit-count/nested-host"
-	secrets, scope, broker, closeAttempt := newScopedSecretHarness(
-		t, 8, "nested-host", map[string]string{raw: "redis-nested.test"},
-	)
-	defer closeAttempt()
-	p := &Plugin{config: Config{
-		Count: 1, TimeWindow: 60, Policy: "redis", Redis: RedisConfig{RedisHost: raw},
-	}}
-	materializeScopedLimitCount(t, p, secrets, scope)
-	assertLimitCountCalls(
-		t, scope, broker.callsSnapshot(), []string{"redis_config.redis_host"}, []string{raw},
-	)
-	want := limitCountDescriptor("redis-nested.test")
-	if p.config.Redis.RedisHost != want || p.config.RedisHost != "" {
-		t.Fatalf("nested/root host = %q/%q, want %q/empty", p.config.Redis.RedisHost, p.config.RedisHost, want)
+	if p.config.RedisHost != want {
+		t.Fatalf("RedisHost = %q, want %q", p.config.RedisHost, want)
 	}
 }
 
@@ -226,33 +207,8 @@ func TestScopedSecretsPreserveRootClusterContainerDeclaration(t *testing.T) {
 	fields := []string{"redis_cluster_nodes", "redis_cluster_nodes"}
 	assertLimitCountCalls(t, scope, broker.callsSnapshot(), fields, raws)
 	want := []string{limitCountDescriptor(values[raws[0]]), limitCountDescriptor(values[raws[1]])}
-	if !slices.Equal(p.config.RedisClusterNodes, want) ||
-		!slices.Equal(p.config.RedisCluster.RedisClusterNodes, want) {
-		t.Fatalf(
-			"root/mirror nodes = %#v/%#v, want %#v",
-			p.config.RedisClusterNodes,
-			p.config.RedisCluster.RedisClusterNodes,
-			want,
-		)
-	}
-}
-
-func TestScopedSecretsPreserveNestedClusterContainerDeclaration(t *testing.T) {
-	raws := []string{"$secret://vault/limit-count/node-0", "$secret://vault/limit-count/node-1"}
-	values := map[string]string{raws[0]: "nested-0.test:6379", raws[1]: "nested-1.test:6379"}
-	secrets, scope, broker, closeAttempt := newScopedSecretHarness(t, 10, "nested-nodes", values)
-	defer closeAttempt()
-	p := &Plugin{config: Config{
-		Count: 1, TimeWindow: 60, Policy: "redis-cluster", RedisCluster: RedisClusterConfig{
-			RedisClusterNodes: slices.Clone(raws), RedisClusterName: "cluster",
-		},
-	}}
-	materializeScopedLimitCount(t, p, secrets, scope)
-	fields := []string{"redis_cluster_config.redis_cluster_nodes", "redis_cluster_config.redis_cluster_nodes"}
-	assertLimitCountCalls(t, scope, broker.callsSnapshot(), fields, raws)
-	want := []string{limitCountDescriptor(values[raws[0]]), limitCountDescriptor(values[raws[1]])}
-	if !slices.Equal(p.config.RedisCluster.RedisClusterNodes, want) || len(p.config.RedisClusterNodes) != 0 {
-		t.Fatalf("nested/root nodes = %#v/%#v", p.config.RedisCluster.RedisClusterNodes, p.config.RedisClusterNodes)
+	if !slices.Equal(p.config.RedisClusterNodes, want) {
+		t.Fatalf("RedisClusterNodes = %#v, want %#v", p.config.RedisClusterNodes, want)
 	}
 }
 
@@ -351,8 +307,7 @@ func TestScopedSecretsLimitCountNodeFailureIsAtomic(t *testing.T) {
 			t.Fatalf("error %q contains %q", err, sensitive)
 		}
 	}
-	if p.config.Key != rawKey || !slices.Equal(p.config.RedisClusterNodes, raws) ||
-		len(p.config.RedisCluster.RedisClusterNodes) != 0 {
+	if p.config.Key != rawKey || !slices.Equal(p.config.RedisClusterNodes, raws) {
 		t.Fatalf("failed materialization changed config: %#v", p.config)
 	}
 	assertLimitCountCalls(
@@ -405,13 +360,11 @@ func TestScopedSecretsLimitCountLiteralsAreDescriptorOnly(t *testing.T) {
 	materializeScopedLimitCount(t, p, secrets, scope)
 	defer p.Stop()
 	if p.config.Key != limitCountDescriptor("remote_addr") ||
-		p.config.RedisHost != limitCountDescriptor("redis.test:6379") ||
-		p.config.Redis.RedisHost != limitCountDescriptor("redis.test:6379") {
+		p.config.RedisHost != limitCountDescriptor("redis.test:6379") {
 		t.Fatalf("literal key/host remained public: %#v", p.config)
 	}
 	wantNodes := []string{limitCountDescriptor(nodes[0]), limitCountDescriptor(nodes[1])}
-	if !slices.Equal(p.config.RedisClusterNodes, wantNodes) ||
-		!slices.Equal(p.config.RedisCluster.RedisClusterNodes, wantNodes) {
+	if !slices.Equal(p.config.RedisClusterNodes, wantNodes) {
 		t.Fatalf("literal cluster nodes remained public: %#v", p.config)
 	}
 	if err := p.withLimitCountKey(func(value string) error {
@@ -437,44 +390,6 @@ func TestScopedSecretsLimitCountLiteralsAreDescriptorOnly(t *testing.T) {
 		return nil
 	}); err != nil {
 		t.Fatal(err)
-	}
-}
-
-func TestScopedSecretsLimitCountNestedAliasesWinBeforeNormalization(t *testing.T) {
-	const (
-		rootHost   = "$ENV://LIMIT_COUNT_ROOT_HOST_IGNORED"
-		nestedHost = "$ENV://LIMIT_COUNT_NESTED_WINNER"
-	)
-	rootNodes := []string{"$ENV://LIMIT_COUNT_ROOT_NODE_IGNORED"}
-	nestedNodes := []string{"$ENV://LIMIT_COUNT_NESTED_NODE"}
-	secrets, scope, broker, closeAttempt := newScopedSecretHarness(
-		t, 21, "nested-wins", map[string]string{
-			nestedHost: "nested-winner.test", nestedNodes[0]: "nested-node.test:6379",
-		},
-	)
-	defer closeAttempt()
-	p := &Plugin{config: Config{
-		Count: 1, TimeWindow: 60, RedisHost: rootHost,
-		Redis: RedisConfig{RedisHost: nestedHost}, RedisClusterNodes: rootNodes,
-		RedisCluster: RedisClusterConfig{RedisClusterNodes: nestedNodes},
-	}}
-	materializeScopedLimitCount(t, p, secrets, scope)
-	assertLimitCountCalls(
-		t, scope, broker.callsSnapshot(),
-		[]string{"redis_config.redis_host", "redis_cluster_config.redis_cluster_nodes"},
-		[]string{nestedHost, nestedNodes[0]},
-	)
-	if p.redisHostField != "redis_config.redis_host" ||
-		p.redisNodesField != "redis_cluster_config.redis_cluster_nodes" {
-		t.Fatalf("private provenance = %q/%q", p.redisHostField, p.redisNodesField)
-	}
-	if p.config.RedisHost != limitCountDescriptor("nested-winner.test") ||
-		!slices.Equal(p.config.RedisClusterNodes, []string{limitCountDescriptor("nested-node.test:6379")}) {
-		t.Fatalf(
-			"ignored root aliases were not normalized safely: %q/%#v",
-			p.config.RedisHost,
-			p.config.RedisClusterNodes,
-		)
 	}
 }
 

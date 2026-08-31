@@ -204,8 +204,8 @@ func TestPostInitAcceptsRootRedisPolicyFields(t *testing.T) {
 		RedisKeepalivePool:    80,
 	})
 
-	if p.config.Redis.RedisHost != limitCountDescriptor("127.0.0.1") {
-		t.Fatalf("Redis.RedisHost = %q, want content descriptor", p.config.Redis.RedisHost)
+	if p.config.RedisHost != limitCountDescriptor("127.0.0.1") {
+		t.Fatalf("RedisHost = %q, want content descriptor", p.config.RedisHost)
 	}
 	if err := p.withLimitCountRedisHost(func(host string) error {
 		if host != "127.0.0.1" {
@@ -215,24 +215,78 @@ func TestPostInitAcceptsRootRedisPolicyFields(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if p.config.Redis.RedisPort != 6380 {
-		t.Fatalf("Redis.RedisPort = %d, want 6380", p.config.Redis.RedisPort)
+	if p.config.RedisPort != 6380 {
+		t.Fatalf("RedisPort = %d, want 6380", p.config.RedisPort)
 	}
-	if p.config.Redis.RedisUsername != "default" {
-		t.Fatalf("Redis.RedisUsername = %q, want default", p.config.Redis.RedisUsername)
+	if p.config.RedisUsername != "default" {
+		t.Fatalf("RedisUsername = %q, want default", p.config.RedisUsername)
 	}
-	if p.config.Redis.RedisPassword != "secret" {
-		t.Fatalf("Redis.RedisPassword = %q, want secret", p.config.Redis.RedisPassword)
+	if p.config.RedisPassword != "secret" {
+		t.Fatalf("RedisPassword = %q, want secret", p.config.RedisPassword)
 	}
-	if p.config.Redis.RedisDatabase != 2 {
-		t.Fatalf("Redis.RedisDatabase = %d, want 2", p.config.Redis.RedisDatabase)
+	if p.config.RedisDatabase != 2 {
+		t.Fatalf("RedisDatabase = %d, want 2", p.config.RedisDatabase)
 	}
-	if p.config.Redis.RedisTimeout != 1500 {
-		t.Fatalf("Redis.RedisTimeout = %d, want 1500", p.config.Redis.RedisTimeout)
+	if p.config.RedisTimeout != 1500 {
+		t.Fatalf("RedisTimeout = %d, want 1500", p.config.RedisTimeout)
 	}
 	options := p.redisConnConfig().Options()
 	if options.PoolSize != 80 || options.ConnMaxIdleTime != 12*time.Second {
 		t.Fatalf("Redis pool = %d, idle timeout = %s; want 80 and 12s", options.PoolSize, options.ConnMaxIdleTime)
+	}
+}
+
+func TestPostInitAppliesRedisBackendDefaultsToRootFields(t *testing.T) {
+	tests := []struct {
+		name   string
+		config Config
+		check  func(*testing.T, Config)
+	}{
+		{
+			name: "redis",
+			config: Config{
+				Count: "$http_x_limit", TimeWindow: 60, Policy: "redis", RedisHost: "127.0.0.1",
+			},
+			check: func(t *testing.T, config Config) {
+				t.Helper()
+				if config.RedisPort != 6379 || config.RedisTimeout != 1000 ||
+					config.RedisKeepaliveTimeout != 10000 || config.RedisKeepalivePool != 100 {
+					t.Fatalf("Redis defaults = port %d timeout %d keepalive %d/%d", config.RedisPort,
+						config.RedisTimeout, config.RedisKeepaliveTimeout, config.RedisKeepalivePool)
+				}
+				if config.RedisSSL == nil || *config.RedisSSL ||
+					config.RedisSSLVerify == nil || *config.RedisSSLVerify {
+					t.Fatalf("Redis TLS defaults = %#v/%#v, want false/false", config.RedisSSL, config.RedisSSLVerify)
+				}
+			},
+		},
+		{
+			name: "redis cluster",
+			config: Config{
+				Count: "$http_x_limit", TimeWindow: 60, Policy: "redis-cluster",
+				RedisClusterNodes: []string{"127.0.0.1:7000"}, RedisClusterName: "fixture-cluster",
+			},
+			check: func(t *testing.T, config Config) {
+				t.Helper()
+				if config.RedisTimeout != 1000 || config.RedisKeepaliveTimeout != 10000 ||
+					config.RedisKeepalivePool != 100 {
+					t.Fatalf("Redis cluster defaults = timeout %d keepalive %d/%d", config.RedisTimeout,
+						config.RedisKeepaliveTimeout, config.RedisKeepalivePool)
+				}
+				if config.RedisClusterSSL == nil || *config.RedisClusterSSL ||
+					config.RedisClusterSSLVerify == nil || *config.RedisClusterSSLVerify {
+					t.Fatalf("Redis cluster TLS defaults = %#v/%#v, want false/false",
+						config.RedisClusterSSL, config.RedisClusterSSLVerify)
+				}
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			p := newTestPlugin(t, test.config)
+			test.check(t, p.config)
+		})
 	}
 }
 
@@ -368,25 +422,6 @@ func TestSchemaRequiresRedisHostForRedisPolicy(t *testing.T) {
 	}
 	if err := util.Validate(config, p.GetSchema()); err == nil {
 		t.Fatal("schema accepted redis policy without redis_host")
-	}
-}
-
-func TestSchemaAcceptsNestedRedisConfigHost(t *testing.T) {
-	p := &Plugin{}
-	if err := p.Init(); err != nil {
-		t.Fatalf("Init() error = %v", err)
-	}
-
-	config := map[string]any{
-		"count":       1,
-		"time_window": 60,
-		"policy":      "redis",
-		"redis_config": map[string]any{
-			"redis_host": "127.0.0.1",
-		},
-	}
-	if err := util.Validate(config, p.GetSchema()); err != nil {
-		t.Fatalf("schema rejected nested redis_config.redis_host: %v", err)
 	}
 }
 
@@ -700,11 +735,8 @@ func TestScopedSecretsRedactRedisHostAndBuildResolvedClient(t *testing.T) {
 		RedisHost:  raw,
 	}, map[string]string{raw: "127.0.0.2"})
 	defer cleanup()
-	if p.config.Redis.RedisHost != limitCountDescriptor("127.0.0.2") {
-		t.Fatalf("Redis host = %q, want resolved content descriptor", p.config.Redis.RedisHost)
-	}
-	if p.config.RedisHost != p.config.Redis.RedisHost {
-		t.Fatalf("root Redis host = %q, want canonical descriptor %q", p.config.RedisHost, p.config.Redis.RedisHost)
+	if p.config.RedisHost != limitCountDescriptor("127.0.0.2") {
+		t.Fatalf("Redis host = %q, want resolved content descriptor", p.config.RedisHost)
 	}
 	client, err := p.redisBackendClient()
 	if err != nil {
@@ -733,20 +765,13 @@ func TestScopedSecretsRedactRedisClusterNodesAndBuildResolvedClient(t *testing.T
 	}, map[string]string{raws[0]: "127.0.0.1:5000", raws[1]: "127.0.0.1:5001"})
 	defer cleanup()
 	for i, resolved := range []string{"127.0.0.1:5000", "127.0.0.1:5001"} {
-		if p.config.RedisCluster.RedisClusterNodes[i] != limitCountDescriptor(resolved) {
+		if p.config.RedisClusterNodes[i] != limitCountDescriptor(resolved) {
 			t.Fatalf(
 				"Redis cluster node %d = %q, want resolved content descriptor",
 				i,
-				p.config.RedisCluster.RedisClusterNodes[i],
+				p.config.RedisClusterNodes[i],
 			)
 		}
-	}
-	if !slices.Equal(p.config.RedisClusterNodes, p.config.RedisCluster.RedisClusterNodes) {
-		t.Fatalf(
-			"root Redis cluster nodes = %#v, want canonical descriptors %#v",
-			p.config.RedisClusterNodes,
-			p.config.RedisCluster.RedisClusterNodes,
-		)
 	}
 	client, err := p.redisBackendClient()
 	if err != nil {
@@ -2379,14 +2404,6 @@ func TestResolveLimitValueExpressions(t *testing.T) {
 	}
 }
 
-func TestRedisConfigStringRoundTrips(t *testing.T) {
-	config := RedisConfig{RedisHost: "redis.example.test", RedisPort: 6379}
-	serialized := config.String()
-	if !strings.Contains(serialized, "redis.example.test") {
-		t.Fatalf("String() = %q, want serialized config", serialized)
-	}
-}
-
 func TestRedisSlidingWindowCheckAndIncrementDecodesProtocolResponse(t *testing.T) {
 	client := &fakeSlidingRedisClient{
 		getResult: redis.NewStringResult("", redis.Nil),
@@ -2641,16 +2658,18 @@ func TestSlidingStoreConstructorsCoverConfiguredPolicies(t *testing.T) {
 		{name: "local", config: Config{Policy: "local"}},
 		{
 			name: "redis",
-			config: Config{Policy: "redis", Redis: RedisConfig{
-				RedisHost: "127.0.0.1", RedisPort: 6379, RedisSSL: &falseValue, RedisSSLVerify: &falseValue,
-			}},
+			config: Config{
+				Policy: "redis", RedisHost: "127.0.0.1", RedisPort: 6379,
+				RedisSSL: &falseValue, RedisSSLVerify: &falseValue,
+			},
 		},
 		{
 			name: "redis cluster",
-			config: Config{Policy: "redis-cluster", RedisCluster: RedisClusterConfig{
-				RedisClusterName: "coverage-cluster", RedisClusterNodes: []string{"127.0.0.1:7000"},
-				RedisClusterSSL: &falseValue, RedisClusterSSLVerify: &falseValue,
-			}},
+			config: Config{
+				Policy: "redis-cluster", RedisClusterName: "coverage-cluster",
+				RedisClusterNodes: []string{"127.0.0.1:7000"},
+				RedisClusterSSL:   &falseValue, RedisClusterSSLVerify: &falseValue,
+			},
 		},
 		{
 			name: "redis sentinel",
@@ -2772,6 +2791,7 @@ func (c *testDelayedSyncRedisClient) ScriptLoad(
 
 func testDelayedSyncerRedisAdmissionRollback(t *testing.T, windowType string, port int) {
 	t.Helper()
+	disabled := false
 	failures := make(chan runtime.TaskFailure, 1)
 	tasks := runtime.NewTaskRegistry(context.Background(), func(failure runtime.TaskFailure) {
 		failures <- failure
@@ -2779,16 +2799,15 @@ func testDelayedSyncerRedisAdmissionRollback(t *testing.T, windowType string, po
 	owner := newPluginTaskOwnerForTest(t, tasks, "plugin/test/limit-count/redis-rollback")
 
 	plugin := &Plugin{config: Config{
-		Policy:       "redis",
-		WindowType:   windowType,
-		SyncInterval: 0.1,
-		RedisHost:    "127.0.0.1",
-		RedisPort:    port,
-		RedisTimeout: 1,
+		Policy:         "redis",
+		WindowType:     windowType,
+		SyncInterval:   0.1,
+		RedisHost:      "127.0.0.1",
+		RedisPort:      port,
+		RedisTimeout:   1,
+		RedisSSL:       &disabled,
+		RedisSSLVerify: &disabled,
 	}}
-	plugin.config.Redis.RedisHost = plugin.config.RedisHost
-	plugin.config.Redis.RedisPort = plugin.config.RedisPort
-	plugin.config.Redis.RedisTimeout = plugin.config.RedisTimeout
 	plugin.credentialMu.Lock()
 	plugin.scopedSet = true
 	plugin.credentialMu.Unlock()
@@ -2891,10 +2910,20 @@ func testDelayedSyncerRedisAdmissionRollback(t *testing.T, windowType string, po
 
 func limitCountRedisClientKeyForTest(plugin *Plugin) string {
 	_, hostDigest, _ := plugin.limitCountCredentialDigests()
-	identity := plugin.config.Redis
-	identity.RedisHost = fmt.Sprintf("sha256:%x", hostDigest)
 	configUID := shared.NewConfigUID()
-	configUID.Add(plugin.config.Policy, identity.String())
+	configUID.Add(
+		plugin.config.Policy,
+		fmt.Sprintf("sha256:%x", hostDigest),
+		plugin.config.RedisPort,
+		plugin.config.RedisUsername,
+		plugin.config.RedisPassword,
+		plugin.config.RedisDatabase,
+		plugin.config.RedisTimeout,
+		*plugin.config.RedisSSL,
+		*plugin.config.RedisSSLVerify,
+		plugin.config.RedisKeepaliveTimeout,
+		plugin.config.RedisKeepalivePool,
+	)
 	return shared.ClientKey(name, configUID)
 }
 

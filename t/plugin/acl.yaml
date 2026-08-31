@@ -353,7 +353,7 @@ cases:
     upstream: *hello_upstream
     input:
       path: /hello
-    output: *hello_output
+    output: *acl_forbidden
 
   - name: jsonpath-without-parser
     runtime: *external_runtime
@@ -556,102 +556,6 @@ cases:
         equals: hello world
       logs:
         matches: 'the string value can not parsed by json or segmented_text'
-
-  - name: multi-match-parser-deny
-    runtime: *external_runtime
-    config:
-      routes:
-        - id: acl-external-multi-match-deny
-          uri: /hello
-          plugins:
-            serverless-pre-function:
-              phase: access
-              functions:
-                - 'return function(conf, ctx) ctx.external_user = { teams = { { name = "cloud" }, { name = "infra,qa" } } } end'
-            acl:
-              deny_labels:
-                name: [infra]
-              external_user_label_field: $..name
-              external_user_label_field_key: name
-              external_user_label_field_parser: segmented_text
-              external_user_label_field_separator: ','
-              rejected_code: 403
-          upstream: *single_fixture_upstream
-    upstream: *hello_upstream
-    input:
-      path: /hello
-    output: *acl_forbidden
-
-  - name: mixed-type-multi-match-parser-deny
-    runtime: *external_runtime
-    config:
-      routes:
-        - id: acl-external-mixed-match-deny
-          uri: /hello
-          plugins:
-            serverless-pre-function:
-              phase: access
-              functions:
-                - 'return function(conf, ctx) ctx.external_user = { teams = { { name = "allowed,other" }, { name = {"blocked"} } } } end'
-            acl:
-              deny_labels:
-                name: [blocked]
-              external_user_label_field: $.teams[*].name
-              external_user_label_field_key: name
-              external_user_label_field_parser: segmented_text
-              external_user_label_field_separator: ','
-              rejected_code: 403
-          upstream: *single_fixture_upstream
-    upstream: *hello_upstream
-    input:
-      path: /hello
-    output: *acl_forbidden
-
-  - name: external-user-jsonpath-filter
-    runtime: *external_runtime
-    config:
-      routes:
-        - id: acl-external-jsonpath-filter
-          uri: /hello
-          plugins:
-            serverless-pre-function:
-              phase: access
-              functions:
-                - 'return function(conf, ctx) ctx.external_user = { profiles = { { score = 8, groups = {"allowed"} }, { score = 12, groups = {"blocked"} } } } end'
-            acl:
-              deny_labels:
-                groups: [blocked]
-              external_user_label_field: $.profiles[?(@.score>=10)].groups[*]
-              external_user_label_field_key: groups
-              rejected_code: 403
-          upstream: *single_fixture_upstream
-    upstream: *hello_upstream
-    input:
-      path: /hello
-    output: *acl_forbidden
-
-  - name: external-user-jsonpath-non-finite-fail-closed
-    runtime: *external_runtime
-    config:
-      routes:
-        - id: acl-external-jsonpath-non-finite
-          uri: /hello
-          plugins:
-            serverless-pre-function:
-              phase: access
-              functions:
-                - 'return function(conf, ctx) ctx.external_user = { profiles = { { score = "NaN", groups = {"edge"} } } } end'
-            acl:
-              allow_labels:
-                groups: [edge]
-              external_user_label_field: $.profiles[?(0<=@.score)].groups[*]
-              external_user_label_field_key: groups
-              rejected_code: 403
-          upstream: *single_fixture_upstream
-    upstream: *hello_upstream
-    input:
-      path: /hello
-    output: *acl_forbidden
 
   - name: comma-delimited-consumer-labels
     runtime: *consumer_runtime

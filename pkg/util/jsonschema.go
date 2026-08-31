@@ -1,7 +1,10 @@
 package util
 
 import (
+	"errors"
 	"fmt"
+	"io"
+	"strings"
 
 	"github.com/santhosh-tekuri/jsonschema/v5"
 )
@@ -16,6 +19,23 @@ type CompiledSchema struct {
 // initialization time, not per request.
 func CompileSchema(schema string) (*CompiledSchema, error) {
 	sch, err := jsonschema.CompileString("schema.json", schema)
+	if err != nil {
+		return nil, fmt.Errorf("compile json schema fail: %w", err)
+	}
+	return &CompiledSchema{schema: sch}, nil
+}
+
+// CompileSchemaWithoutExternalReferences compiles an in-memory schema without
+// allowing referenced documents to be loaded from the filesystem or network.
+func CompileSchemaWithoutExternalReferences(schema string) (*CompiledSchema, error) {
+	compiler := jsonschema.NewCompiler()
+	compiler.LoadURL = func(string) (io.ReadCloser, error) {
+		return nil, errors.New("external schema references are unavailable")
+	}
+	if err := compiler.AddResource("schema.json", strings.NewReader(schema)); err != nil {
+		return nil, fmt.Errorf("compile json schema fail: %w", err)
+	}
+	sch, err := compiler.Compile("schema.json")
 	if err != nil {
 		return nil, fmt.Errorf("compile json schema fail: %w", err)
 	}

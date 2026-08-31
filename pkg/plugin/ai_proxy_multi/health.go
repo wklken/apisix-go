@@ -80,10 +80,7 @@ type healthProbeCompletion struct {
 	completed bool
 }
 
-const (
-	maxHealthProbeWorkers = 32
-	healthPassRetryDelay  = time.Second
-)
+const healthPassRetryDelay = time.Second
 
 var errHealthProbePanicked = errors.New("health probe panicked")
 
@@ -435,74 +432,87 @@ func (p *Plugin) refreshHealthPass(ctx context.Context) bool {
 	defer cancel()
 	results := make(chan healthProbeCompletion, len(due))
 	completed := make([]healthProbeCompletion, 0, len(due))
-	workerCount := min(len(due), maxHealthProbeWorkers)
-	workerDone := make(chan struct{}, workerCount)
-	jobs := make(chan dueProbe, len(due))
+	dueByInstance := make([][]dueProbe, len(p.config.Instances))
+	workerCount := 0
 	for _, probe := range due {
-		jobs <- probe
+		dueByInstance[probe.index] = append(dueByInstance[probe.index], probe)
 	}
-	close(jobs)
+	for index, probes := range dueByInstance {
+		if len(probes) == 0 {
+			continue
+		}
+		limit := p.config.Instances[index].Checks.Active.Concurrency
+		if limit <= 0 {
+			limit = 1
+		}
+		workerCount += min(len(probes), limit)
+	}
+	workerDone := make(chan struct{}, workerCount)
 	admittedWorkers := 0
 	completePass := true
 	owner := p.TaskOwner()
 	if owner == nil {
 		return false
 	}
-	probeSlots := make(map[int]chan struct{}, len(p.health))
-	for index := range p.health {
+	workerIndex := 0
+workerAdmission:
+	for index, probes := range dueByInstance {
+		if len(probes) == 0 {
+			continue
+		}
 		limit := p.config.Instances[index].Checks.Active.Concurrency
 		if limit <= 0 {
 			limit = 1
 		}
-		probeSlots[index] = make(chan struct{}, limit)
-	}
-	for workerIndex := range workerCount {
-		component := fmt.Sprintf("health-probe-worker-%d", workerIndex)
-		err := owner.Go(component, func(context.Context) error {
-			defer func() { workerDone <- struct{}{} }()
-			for {
-				var probe dueProbe
-				var ok bool
-				select {
-				case <-passCtx.Done():
-					return nil
-				case probe, ok = <-jobs:
-					if !ok {
+		jobs := make(chan dueProbe, len(probes))
+		for _, probe := range probes {
+			jobs <- probe
+		}
+		close(jobs)
+		for range min(len(probes), limit) {
+			component := fmt.Sprintf("health-probe-worker-%d", workerIndex)
+			workerIndex++
+			jobQueue := jobs
+			err := owner.Go(component, func(context.Context) error {
+				defer func() { workerDone <- struct{}{} }()
+				for {
+					var probe dueProbe
+					var ok bool
+					select {
+					case <-passCtx.Done():
 						return nil
+					case probe, ok = <-jobQueue:
+						if !ok {
+							return nil
+						}
 					}
-				}
-				marker := healthProbeCompletion{index: probe.index, node: probe.node}
-				select {
-				case probeSlots[probe.index] <- struct{}{}:
-				case <-passCtx.Done():
-					return nil
-				}
-				func() {
-					defer func() { <-probeSlots[probe.index] }()
-					defer func() {
-						if recover() != nil {
-							marker.result = healthProbeResult{err: errHealthProbePanicked}
+					marker := healthProbeCompletion{index: probe.index, node: probe.node}
+					func() {
+						defer func() {
+							if recover() != nil {
+								marker.result = healthProbeResult{err: errHealthProbePanicked}
+							}
+						}()
+						if probe.node != nil {
+							marker.result = p.probeResolvedNode(passCtx, probe.index, probe.node)
+						} else {
+							marker.result = p.probeInstance(passCtx, probe.index)
 						}
 					}()
-					if probe.node != nil {
-						marker.result = p.probeResolvedNode(passCtx, probe.index, probe.node)
-					} else {
-						marker.result = p.probeInstance(passCtx, probe.index)
+					if passCtx.Err() != nil {
+						return nil
 					}
-				}()
-				if passCtx.Err() != nil {
-					return nil
+					marker.completed = true
+					results <- marker
 				}
-				marker.completed = true
-				results <- marker
+			})
+			if err != nil {
+				completePass = false
+				cancel()
+				break workerAdmission
 			}
-		})
-		if err != nil {
-			completePass = false
-			cancel()
-			break
+			admittedWorkers++
 		}
-		admittedWorkers++
 	}
 	for range admittedWorkers {
 		<-workerDone

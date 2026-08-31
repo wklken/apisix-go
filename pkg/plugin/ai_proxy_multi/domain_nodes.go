@@ -25,11 +25,6 @@ import (
 
 type lookupNetIPFunc func(context.Context, string, string) ([]netip.Addr, error)
 
-const (
-	maxResolvedAddressesPerInstance = 64
-	maxDNSLookupWorkers             = 4
-)
-
 type nodeResolutionJob struct {
 	index    int
 	instance Instance
@@ -223,21 +218,6 @@ func (p *Plugin) refreshResolvedNodes(ctx context.Context, force bool) error {
 		}
 		metadataChanged = p.setNodeResolveErrorLocked(index, nil) || metadataChanged
 		addresses = sortedUniqueAddresses(addresses)
-		if len(addresses) > maxResolvedAddressesPerInstance {
-			err = fmt.Errorf(
-				"resolved address count %d exceeds limit %d",
-				len(addresses),
-				maxResolvedAddressesPerInstance,
-			)
-			metadataChanged = p.setNodeResolveErrorLocked(index, err) || metadataChanged
-			if len(p.nodeSets[index]) == 0 {
-				refreshErrors = append(
-					refreshErrors,
-					fmt.Errorf("resolve instance %q endpoint: %w", instance.Name, err),
-				)
-			}
-			continue
-		}
 		oldByIP := make(map[netip.Addr]*resolvedNode, len(p.nodeSets[index]))
 		for _, node := range p.nodeSets[index] {
 			oldByIP[node.ip] = node
@@ -272,69 +252,20 @@ func (p *Plugin) refreshResolvedNodes(ctx context.Context, force bool) error {
 }
 
 func (p *Plugin) resolveNodeJobs(ctx context.Context, jobs []nodeResolutionJob) ([]nodeResolutionResult, bool) {
-	if len(jobs) == 0 {
-		return nil, true
-	}
-	resolve := func(resolveCtx context.Context, job nodeResolutionJob) nodeResolutionResult {
-		lookupCtx, cancel := context.WithTimeout(resolveCtx, p.resolverTimeout)
+	results := make([]nodeResolutionResult, 0, len(jobs))
+	for _, job := range jobs {
+		if ctx.Err() != nil {
+			return results, false
+		}
+		lookupCtx, cancel := context.WithTimeout(ctx, p.resolverTimeout)
 		addresses, err := p.lookupNetIP(lookupCtx, "ip", job.endpoint.Hostname())
 		cancel()
-		return nodeResolutionResult{job: job, addresses: addresses, err: err}
-	}
-	owner := p.TaskOwner()
-	if owner == nil || len(jobs) == 1 {
-		results := make([]nodeResolutionResult, 0, len(jobs))
-		for _, job := range jobs {
-			results = append(results, resolve(ctx, job))
+		results = append(results, nodeResolutionResult{job: job, addresses: addresses, err: err})
+		if ctx.Err() != nil {
+			return results, false
 		}
-		return results, true
 	}
-
-	passCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	workerCount := min(len(jobs), maxDNSLookupWorkers)
-	jobQueue := make(chan nodeResolutionJob, len(jobs))
-	for _, job := range jobs {
-		jobQueue <- job
-	}
-	close(jobQueue)
-	results := make(chan nodeResolutionResult, len(jobs))
-	workerDone := make(chan struct{}, workerCount)
-	admitted := 0
-	complete := true
-	for workerIndex := range workerCount {
-		component := fmt.Sprintf("dns-resolve-worker-%d", workerIndex)
-		err := owner.Go(component, func(context.Context) error {
-			defer func() { workerDone <- struct{}{} }()
-			for {
-				select {
-				case <-passCtx.Done():
-					return nil
-				case job, ok := <-jobQueue:
-					if !ok {
-						return nil
-					}
-					result := resolve(passCtx, job)
-					results <- result
-				}
-			}
-		})
-		if err != nil {
-			complete = false
-			cancel()
-			break
-		}
-		admitted++
-	}
-	for range admitted {
-		<-workerDone
-	}
-	close(results)
-	collected := make([]nodeResolutionResult, 0, len(jobs))
-	for result := range results {
-		collected = append(collected, result)
-	}
-	return collected, complete && len(collected) == len(jobs)
+	return results, true
 }
 
 func (p *Plugin) initializeResolvedNodeMetadata() {

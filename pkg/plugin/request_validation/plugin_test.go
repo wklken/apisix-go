@@ -229,6 +229,20 @@ func TestPostInitRejectsInvalidNestedSchema(t *testing.T) {
 	}
 }
 
+func TestPostInitDoesNotApplyLocalSchemaBudgets(t *testing.T) {
+	p := &Plugin{config: Config{BodySchema: map[string]any{
+		"type":        "string",
+		"description": strings.Repeat("x", 256*1024+1),
+	}}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v, want APISIX schema admitted without local size budget", err)
+	}
+}
+
 func TestHandlerValidatesRepeatedHeaderValuesAsArray(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		HeaderSchema: map[string]any{

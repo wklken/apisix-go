@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -20,6 +21,7 @@ import (
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/runtime"
 	"github.com/wklken/apisix-go/pkg/util"
 )
@@ -28,10 +30,31 @@ type failingReader struct{}
 
 func (failingReader) Read([]byte) (int, error) { return 0, errors.New("random unavailable") }
 
+type captureWriteCloser struct {
+	bytes.Buffer
+}
+
+func (*captureWriteCloser) Close() error { return nil }
+
 func TestSchemaMatchesAPISIX317SanityMatrix(t *testing.T) {
 	p := &Plugin{}
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
+	}
+	var document struct {
+		Properties map[string]json.RawMessage `json:"properties"`
+	}
+	if err := json.Unmarshal([]byte(p.GetSchema()), &document); err != nil {
+		t.Fatalf("decode schema: %v", err)
+	}
+	wantFields := map[string]struct{}{"base_uri": {}, "command": {}, "args": {}}
+	if len(document.Properties) != len(wantFields) {
+		t.Fatalf("schema properties = %v, want only APISIX 3.17 fields", document.Properties)
+	}
+	for field := range wantFields {
+		if _, ok := document.Properties[field]; !ok {
+			t.Fatalf("schema is missing APISIX 3.17 field %q", field)
+		}
 	}
 
 	tests := []struct {
@@ -263,16 +286,52 @@ func TestMessageEndpointRejectsUnknownSession(t *testing.T) {
 	}
 }
 
-func TestMessageEndpointRejectsOversizedBody(t *testing.T) {
-	p := newTestPlugin(t, Config{Command: "cat", MaxBodySize: 5})
-	req := httptest.NewRequest(http.MethodPost, "/message?sessionId=missing", strings.NewReader("123456"))
+func TestMessageEndpointAcceptsBodyLargerThanDefaultWithoutLocalLimit(t *testing.T) {
+	p := &Plugin{config: Config{Command: "cat"}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := util.Parse(map[string]any{"max_body_size": 5}, p.Config()); err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+	t.Cleanup(p.closeAll)
+
+	stdin := &captureWriteCloser{}
+	sess := &session{
+		id:        "session",
+		stdin:     stdin,
+		cancel:    func() {},
+		events:    make(chan sseEvent),
+		done:      make(chan struct{}),
+		tasks:     runtime.NewRequestTaskGroup(context.Background(), "test/mcp-bridge"),
+		closeDone: make(chan struct{}),
+	}
+	p.mu.Lock()
+	p.sessions[sess.id] = sess
+	p.mu.Unlock()
+
+	body := strings.Repeat("x", base.DefaultRequestBodyMaxBytes+1)
+	req := httptest.NewRequest(http.MethodPost, "/message?sessionId=session", strings.NewReader(body))
 	response := httptest.NewRecorder()
 	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		t.Fatal("next handler should not be called")
 	})).ServeHTTP(response, req)
 
-	if response.Code != http.StatusRequestEntityTooLarge {
-		t.Fatalf("status = %d, want 413", response.Code)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202", response.Code)
+	}
+	if got := stdin.String(); got != body+"\n" {
+		t.Fatalf("session stdin = %d bytes, want %d bytes", len(got), len(body)+1)
+	}
+	restored, err := io.ReadAll(req.Body)
+	if err != nil {
+		t.Fatalf("read restored request body: %v", err)
+	}
+	if string(restored) != body {
+		t.Fatalf("restored request body = %d bytes, want %d bytes", len(restored), len(body))
 	}
 }
 

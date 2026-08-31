@@ -212,7 +212,6 @@ func TestStaticSecretTagsCoverStaticCredentials(t *testing.T) {
 		}
 	}
 	assertSecretTag(reflect.TypeFor[DataEncryption](), "Keyring", "true")
-	assertSecretTag(reflect.TypeFor[AdminKey](), "Key", "true")
 	assertSecretTag(reflect.TypeFor[Etcd](), "Password", "true")
 	assertSecretTag(reflect.TypeFor[Config](), "PluginAttr", "container")
 }

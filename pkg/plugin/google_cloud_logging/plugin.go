@@ -22,7 +22,6 @@ import (
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/json"
-	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_auth"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
@@ -647,12 +646,6 @@ func googleCloudTLSConfig(verify bool) (*tls.Config, string, error) {
 	config.RootCAs = roots
 	trustHash := sha256.Sum256(certificate)
 	return config, fmt.Sprintf("verified:file:%x", trustHash), nil
-}
-
-func (p *Plugin) Send(log map[string]any) {
-	if _, err := p.SendBatch(context.Background(), []map[string]any{log}, 1); err != nil {
-		logger.Errorf("%s", err)
-	}
 }
 
 func (p *Plugin) SendBatch(ctx context.Context, entries []map[string]any, _ int) (int, error) {

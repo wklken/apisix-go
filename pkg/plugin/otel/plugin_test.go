@@ -1119,6 +1119,14 @@ func TestTraceRequestPhaseExtractsRemoteParentAndSkipsHealthCheck(t *testing.T) 
 	if result.Request == nil {
 		t.Fatal("RunRequestPhase() returned nil request")
 	}
+	propagated := result.Request.Header.Get("traceparent")
+	parts := strings.Split(propagated, "-")
+	if len(parts) != 4 || parts[1] != "4bf92f3577b34da6a3ce929d0e0e4736" {
+		t.Fatalf("propagated traceparent = %q, want inherited trace ID", propagated)
+	}
+	if parts[2] == "00f067aa0ba902b7" {
+		t.Fatalf("propagated traceparent = %q, want current server span ID", propagated)
+	}
 
 	healthRequest, healthLifecycle := apisixctx.EnsureRequestLifecycle(
 		httptest.NewRequest(http.MethodGet, "http://gateway.test/healthz", nil), time.Now(),

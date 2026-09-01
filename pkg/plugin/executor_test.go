@@ -797,6 +797,136 @@ func TestAuthAndResolverStopsDoNotInvokePostResolutionHook(t *testing.T) {
 	})
 }
 
+func TestRouteOpenTelemetryRunsBeforeAuthenticationExactlyOnce(t *testing.T) {
+	tests := []struct {
+		name       string
+		authResult base.RequestDecision
+		wantOrder  []string
+	}{
+		{
+			name:       "authentication continues",
+			authResult: base.RequestContinue,
+			wantOrder:  []string{"opentelemetry", "auth", "terminal"},
+		},
+		{
+			name:       "authentication stops",
+			authResult: base.RequestStop,
+			wantOrder:  []string{"opentelemetry", "auth"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			order := []string{}
+			tracing := newExecutorRequestPlugin(
+				"opentelemetry",
+				12009,
+				func(_ http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+					order = append(order, "opentelemetry")
+					return base.ContinueRequest(r)
+				},
+			)
+			auth := newExecutorRequestPlugin(
+				"key-auth",
+				2500,
+				func(_ http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+					order = append(order, "auth")
+					if tt.authResult == base.RequestStop {
+						return base.StopRequest(r)
+					}
+					return base.ContinueRequest(r)
+				},
+			)
+			handler := NewRequestPipeline([]Binding{
+				pipelineBinding("opentelemetry", tracing, ScopeRoute, 12009),
+				pipelineBinding("key-auth", auth, ScopeRoute, 2500),
+			}, nil).Then(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				order = append(order, "terminal")
+			}))
+
+			handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
+			if !reflect.DeepEqual(order, tt.wantOrder) {
+				t.Fatalf("order = %v, want %v", order, tt.wantOrder)
+			}
+		})
+	}
+}
+
+func TestConsumerOpenTelemetryRunsOnlyWhenRouteDidNotAlreadyTrace(t *testing.T) {
+	tests := []struct {
+		name       string
+		staticOTel bool
+		wantOrder  []string
+	}{
+		{
+			name:      "consumer only runs after authentication",
+			wantOrder: []string{"auth", "consumer-opentelemetry", "terminal"},
+		},
+		{
+			name:       "route instance already traced before authentication",
+			staticOTel: true,
+			wantOrder:  []string{"route-opentelemetry", "auth", "terminal"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			order := []string{}
+			bindings := []Binding{
+				pipelineBinding(
+					"key-auth",
+					newExecutorRequestPlugin(
+						"key-auth",
+						2500,
+						func(_ http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+							order = append(order, "auth")
+							return base.ContinueRequest(r)
+						},
+					),
+					ScopeRoute,
+					2500,
+				),
+			}
+			if tt.staticOTel {
+				bindings = append(bindings, pipelineBinding(
+					"opentelemetry",
+					newExecutorRequestPlugin(
+						"opentelemetry",
+						12009,
+						func(_ http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+							order = append(order, "route-opentelemetry")
+							return base.ContinueRequest(r)
+						},
+					),
+					ScopeRoute,
+					12009,
+				))
+			}
+			consumerOTel := pipelineBinding(
+				"opentelemetry",
+				newExecutorRequestPlugin(
+					"opentelemetry",
+					12009,
+					func(_ http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+						order = append(order, "consumer-opentelemetry")
+						return base.ContinueRequest(r)
+					},
+				),
+				ScopeConsumer,
+				12009,
+			)
+			handler := NewRequestPipeline(bindings, func(r *http.Request) (ConsumerResolution, error) {
+				return ConsumerResolution{Request: r, Bindings: []Binding{consumerOTel}, Resolved: true}, nil
+			}).Then(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				order = append(order, "terminal")
+			}))
+
+			handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
+			if !reflect.DeepEqual(order, tt.wantOrder) {
+				t.Fatalf("order = %v, want %v", order, tt.wantOrder)
+			}
+		})
+	}
+}
+
 func TestEffectiveBindingSetClonePreservesPrivateFactoryStageScopeProvenance(t *testing.T) {
 	global := pipelineBinding("proxy-cache", newExecutorRequestPlugin("global", 2, nil), ScopeGlobal, 2)
 	merged := pipelineBinding("body-transformer", newExecutorRequestPlugin("merged", 1, nil), ScopeRoute, 1)

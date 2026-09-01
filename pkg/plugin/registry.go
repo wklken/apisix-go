@@ -151,6 +151,7 @@ type registration struct {
 	phases              phaseMask
 	scopes              scopeMask
 	instanceScope       InstanceScope
+	preAuthentication   bool
 	conditionalTerminal bool
 	domain              Domain
 }
@@ -162,6 +163,7 @@ type Definition struct {
 	Phases              []Phase
 	Scopes              []Scope
 	InstanceScope       InstanceScope
+	PreAuthentication   bool
 	ConditionalTerminal bool
 }
 
@@ -192,6 +194,7 @@ func DefinitionForFactory(factory string) (Definition, bool) {
 		Phases:              registered.phases.values(),
 		Scopes:              registered.scopes.values(),
 		InstanceScope:       registered.instanceScope,
+		PreAuthentication:   registered.preAuthentication,
 		ConditionalTerminal: registered.conditionalTerminal,
 	}, true
 }
@@ -851,6 +854,7 @@ var pluginRegistry = map[string]registration{
 		phases:              phaseRewrite | phaseFinalizer,
 		scopes:              scopeGlobal | scopeRoute | scopeConsumer,
 		instanceScope:       InstanceEffectiveConfig,
+		preAuthentication:   true,
 		conditionalTerminal: false,
 		domain:              DomainHTTP,
 	},

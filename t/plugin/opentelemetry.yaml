@@ -121,7 +121,10 @@ cases:
               uri: /propagated-parent-trace-id-is-preserved
       fixtures:
         - expect:
-            - method: GET
+            - headers:
+                traceparent:
+                    not_matches: ^$|^00-00000000000000000000000000000001-0000000000000001-01$
+              method: GET
               path:
                 equals: /propagated-parent-trace-id-is-preserved
           expect_requests: 1
@@ -528,3 +531,95 @@ cases:
             status: 200
           repeat: 2
           wait: 0s
+    - config:
+        routes:
+            - id: otel-auth-rejection-still-exports-route-span
+              name: auth-rejection-still-exports-route-span
+              plugins:
+                key-auth: {}
+                opentelemetry:
+                    sampler:
+                        name: always_on
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /auth-rejection-still-exports-route-span
+      fixtures:
+        - expect_requests: 0
+          kind: http
+          name: primary
+          respond:
+            - status: 200
+        - expect:
+            - headers:
+                Content-Type:
+                    matches: ^application/x-protobuf
+              method: POST
+              otlp_traces:
+                span_count: 1
+                spans:
+                    - attributes:
+                        apisix.route_id:
+                            equals: otel-auth-rejection-still-exports-route-span
+                            type: string
+                        apisix.route_name:
+                            equals: auth-rejection-still-exports-route-span
+                            type: string
+                        http.method:
+                            equals: GET
+                            type: string
+                        http.route:
+                            equals: /auth-rejection-still-exports-route-span
+                            type: string
+                        http.status_code:
+                            equals: "401"
+                            type: int
+                      kind: server
+                      name:
+                        equals: GET /auth-rejection-still-exports-route-span
+                      resource_attributes:
+                        service.name:
+                            equals: APISIX
+                            type: string
+                      scope:
+                        matches: opentelemetry
+                      span_id:
+                        matches: ^[0-9a-f]{16}$
+                      trace_id:
+                        matches: ^[0-9a-f]{32}$
+                unique_trace_ids: false
+              path:
+                equals: /v1/traces
+          expect_requests: 1
+          kind: http
+          name: collector
+          respond:
+            - headers:
+                Content-Type: application/x-protobuf
+              status: 200
+      name: auth-rejection-still-exports-route-span
+      runtime:
+        plugin_attr:
+            opentelemetry:
+                batch_span_processor:
+                    max_export_batch_size: 1
+                collector:
+                    address: '{{FIXTURE.collector.URL}}/v1/traces'
+                    request_timeout: 3
+                resource:
+                    service.name: APISIX
+                trace_id_source: random
+        plugins:
+            - opentelemetry
+            - key-auth
+      steps:
+        - input:
+            method: GET
+            path: /auth-rejection-still-exports-route-span
+          name: missing-api-key
+          output:
+            body:
+                equals: "{\"message\":\"Missing API key in request\"}\n"
+            status: 401
+          wait: 100ms

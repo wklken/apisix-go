@@ -13,10 +13,10 @@ import (
 
 const validRuntimeConfig = `
 apisix:
+  enable_http2: false
   node_listen:
     - ip: 127.0.0.1
       port: 9080
-      enable_http2: false
 plugins: [request-id, gzip]
 stream_plugins: [mqtt-proxy]
 nginx_config:
@@ -38,14 +38,25 @@ func TestAPISIX317SSLListenOmitsEnableQuicAlias(t *testing.T) {
 	}
 }
 
+func TestAPISIX317ListenerTypesOmitPortLevelHTTP2(t *testing.T) {
+	for name, listenerType := range map[string]reflect.Type{
+		"HTTP":  reflect.TypeFor[NodeListen](),
+		"HTTPS": reflect.TypeFor[Listen](),
+	} {
+		if _, ok := listenerType.FieldByName("EnableHttp2"); ok {
+			t.Fatalf("%s listener exposes deprecated port-level enable_http2", name)
+		}
+	}
+}
+
 func TestLoadEffectiveMergesNestedOverrideAndReplacesLists(t *testing.T) {
 	base := writeConfigFile(t, "base.yaml", validRuntimeConfig)
 	override := writeConfigFile(t, "override.yaml", `
 apisix:
+  enable_http2: true
   node_listen:
     - ip: 127.0.0.2
       port: 9081
-      enable_http2: true
 plugins: [gzip]
 nginx_config:
   http:
@@ -65,7 +76,7 @@ deployment:
 	if got, want := cfg.Apisix.ListenAddresses(), []string{"127.0.0.2:9081"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("listeners = %#v, want replacement %#v", got, want)
 	}
-	if !cfg.Apisix.NodeListen[0].EnableHttp2 {
+	if !cfg.Apisix.EnableHttp2 {
 		t.Fatal("nested override did not enable HTTP/2")
 	}
 	if cfg.NginxConfig.HTTP.ClientMaxBodySize != 1024 || cfg.NginxConfig.HTTP.ClientBodyTimeout != 30*time.Second {
@@ -255,7 +266,8 @@ func TestCapabilitySummaryContainsOnlyBoundedSafeFacts(t *testing.T) {
 	cfg := &Config{
 		Debug: true,
 		Apisix: Apisix{
-			NodeListen:     []NodeListen{{Ip: "secret.internal", Port: 9080, EnableHttp2: true}},
+			EnableHttp2:    true,
+			NodeListen:     []NodeListen{{Ip: "secret.internal", Port: 9080}},
 			Ssl:            Ssl{Enable: true, Listen: []Listen{{Ip: "tls.internal", Port: 9443}}},
 			StreamProxy:    StreamProxy{Tcp: []TcpListen{{Addr: "stream.internal:9100"}}, Udp: []string{"9200"}},
 			ProxyMode:      "http&stream",
@@ -304,7 +316,7 @@ func TestCapabilitySummaryContainsOnlyBoundedSafeFacts(t *testing.T) {
 	}
 }
 
-func TestDefaultConfigDisablesAdmin(t *testing.T) {
+func TestDefaultConfigUsesStartupSafeAPISIX317Settings(t *testing.T) {
 	defaultPath := repositoryPath(t, "conf", "config-default.yaml")
 	cfg, err := loadEffectiveTestFiles(t, defaultPath, "")
 	if err != nil {
@@ -312,6 +324,9 @@ func TestDefaultConfigDisablesAdmin(t *testing.T) {
 	}
 	if cfg.Apisix.EnableAdmin {
 		t.Fatal("default config admin API is enabled, want startup-safe disabled default")
+	}
+	if !cfg.Apisix.EnableHttp2 {
+		t.Fatal("default config does not use global APISIX 3.17 HTTP/2 setting")
 	}
 }
 

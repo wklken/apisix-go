@@ -903,10 +903,10 @@ func TestConfiguredTLSListenAddresses(t *testing.T) {
 	}
 }
 
-func TestConfiguredHTTPServerAndFrontendTLSAdvertiseHTTP2(t *testing.T) {
-	cfg := &config.Config{Apisix: config.Apisix{Ssl: config.Ssl{
+func TestConfiguredHTTPServerAndFrontendTLSUseGlobalHTTP2(t *testing.T) {
+	cfg := &config.Config{Apisix: config.Apisix{EnableHttp2: true, Ssl: config.Ssl{
 		Enable:       true,
-		Listen:       []config.Listen{{Port: 9443, EnableHttp2: true}},
+		Listen:       []config.Listen{{Port: 9443}},
 		SslProtocols: "TLSv1.2 TLSv1.3",
 		SslCiphers:   "ECDHE-RSA-AES128-GCM-SHA256",
 	}}}
@@ -915,8 +915,8 @@ func TestConfiguredHTTPServerAndFrontendTLSAdvertiseHTTP2(t *testing.T) {
 	if _, ok := server.TLSNextProto["h2"]; !ok {
 		t.Fatal("configured HTTP server does not install an HTTP/2 handler")
 	}
-	if server.Protocols.UnencryptedHTTP2() {
-		t.Fatal("TLS-only HTTP/2 configuration enabled plaintext h2c")
+	if !server.Protocols.UnencryptedHTTP2() {
+		t.Fatal("global HTTP/2 configuration did not enable h2c")
 	}
 
 	tlsConfig := mustGenerationFrontendTLSConfig(t, cfg)
@@ -924,20 +924,12 @@ func TestConfiguredHTTPServerAndFrontendTLSAdvertiseHTTP2(t *testing.T) {
 		t.Fatalf("frontend TLS protocols = %v, want h2", tlsConfig.NextProtos)
 	}
 
-	cfg.Apisix.Ssl.Listen[0].EnableHttp2 = false
+	cfg.Apisix.EnableHttp2 = false
 	if protocols := mustGenerationFrontendTLSConfig(t, cfg).NextProtos; slices.Contains(protocols, "h2") {
 		t.Fatalf("disabled frontend TLS protocols = %v, must not advertise h2", protocols)
 	}
-}
-
-func TestConfiguredHTTPServerEnablesH2COnlyForPlaintextListener(t *testing.T) {
-	cfg := &config.Config{Apisix: config.Apisix{NodeListen: []config.NodeListen{{
-		Port: 9080, EnableHttp2: true,
-	}}}}
-
-	server := newConfiguredHTTPServer(http.NotFoundHandler(), cfg)
-	if !server.Protocols.UnencryptedHTTP2() {
-		t.Fatal("explicit plaintext HTTP/2 listener did not enable h2c")
+	if disabled := newConfiguredHTTPServer(http.NotFoundHandler(), cfg); disabled.Protocols.UnencryptedHTTP2() {
+		t.Fatal("disabled global HTTP/2 configuration enabled h2c")
 	}
 }
 
@@ -1022,9 +1014,6 @@ func TestFrontendHTTP2DefaultsWithoutConfig(t *testing.T) {
 	if frontendHTTP2Enabled(nil) {
 		t.Fatal("frontendHTTP2Enabled() = true without config")
 	}
-	if frontendPlainHTTP2Enabled(nil) {
-		t.Fatal("frontendPlainHTTP2Enabled() = true without config")
-	}
 	if got := configuredTLSListenAddresses(nil); got != nil {
 		t.Fatalf("configuredTLSListenAddresses() = %#v, want nil without config", got)
 	}
@@ -1032,9 +1021,6 @@ func TestFrontendHTTP2DefaultsWithoutConfig(t *testing.T) {
 	cfg := &config.Config{}
 	if frontendHTTP2Enabled(cfg) {
 		t.Fatal("frontendHTTP2Enabled() = true with default config")
-	}
-	if frontendPlainHTTP2Enabled(cfg) {
-		t.Fatal("frontendPlainHTTP2Enabled() = true with default config")
 	}
 }
 

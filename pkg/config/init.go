@@ -37,6 +37,9 @@ func LoadEffective(req LoadRequest) (*EffectiveConfig, error) {
 	if err := applyReservedEnvironment(root, req.Environment); err != nil {
 		return nil, err
 	}
+	if err := validateDeprecatedPortLevelHTTP2(root); err != nil {
+		return nil, err
+	}
 
 	cfg, err := decodeConfig(root)
 	if err != nil {
@@ -57,10 +60,6 @@ func CapabilitySummary(cfg *Config) map[string]any {
 	if cfg == nil {
 		return nil
 	}
-	http2Enabled := cfg.Apisix.EnableHttp2
-	for _, listener := range cfg.Apisix.NodeListen {
-		http2Enabled = http2Enabled || listener.EnableHttp2
-	}
 	provider, err := EffectiveConfigProvider(cfg)
 	if err != nil {
 		provider = "unknown"
@@ -73,7 +72,7 @@ func CapabilitySummary(cfg *Config) map[string]any {
 		"http_listener_count":   len(cfg.Apisix.NodeListen),
 		"https_listener_count":  len(cfg.Apisix.Ssl.Listen),
 		"stream_listener_count": streamListeners,
-		"http2_enabled":         http2Enabled,
+		"http2_enabled":         cfg.Apisix.EnableHttp2,
 		"tls_enabled":           cfg.Apisix.Ssl.Enable && len(cfg.Apisix.Ssl.Listen) > 0,
 		"stream_enabled":        streamListeners > 0,
 		"plugin_count":          len(cfg.Plugins),

@@ -11,7 +11,7 @@ import (
 func TestDecodeConfigSupportsOfficialConfigShapes(t *testing.T) {
 	effective := loadEffectiveFixture(t, `
 apisix:
-  node_listen: [9080, {ip: 127.0.0.2, port: 9081, enable_http2: true}]
+  node_listen: [9080, {ip: 127.0.0.2, port: 9081}]
   enable_http2: true
   proxy_cache: {cache_ttl: 10s}
   stream_proxy: {tcp: ["9100"], udp: [9200, "127.0.0.1:9201"]}
@@ -138,6 +138,56 @@ func TestLoadEffectiveRejectsInvalidRuntimeValues(t *testing.T) {
 			_, err := LoadEffective(loadRequestFixture(t, test.override))
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("LoadEffective() error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestLoadEffectiveRejectsDeprecatedPortLevelHTTP2(t *testing.T) {
+	tests := []struct {
+		name     string
+		override string
+		want     string
+	}{
+		{
+			name:     "HTTP listener",
+			override: "apisix: {node_listen: [{port: 9080, enable_http2: false}]}",
+			want:     "apisix.node_listen[0].enable_http2 is deprecated; use apisix.enable_http2",
+		},
+		{
+			name:     "HTTPS listener",
+			override: "apisix: {ssl: {listen: [{port: 9443, enable_http2: false}]}}",
+			want:     "apisix.ssl.listen[0].enable_http2 is deprecated; use apisix.enable_http2",
+		},
+		{
+			name:     "singleton HTTP listener mapping",
+			override: "apisix: {node_listen: {port: 9080, enable_http2: false}}",
+			want:     "apisix.node_listen[0].enable_http2 is deprecated; use apisix.enable_http2",
+		},
+		{
+			name:     "singleton HTTPS listener mapping",
+			override: "apisix: {ssl: {listen: {port: 9443, enable_http2: false}}}",
+			want:     "apisix.ssl.listen[0].enable_http2 is deprecated; use apisix.enable_http2",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := LoadEffective(loadRequestFixture(t, test.override))
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("LoadEffective() error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestLoadEffectiveAllowsNullPortLevelHTTP2(t *testing.T) {
+	for name, override := range map[string]string{
+		"HTTP listener":  "apisix: {node_listen: [{port: 9080, enable_http2: null}]}",
+		"HTTPS listener": "apisix: {ssl: {listen: [{port: 9443, enable_http2: null}]}}",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := LoadEffective(loadRequestFixture(t, override)); err != nil {
+				t.Fatalf("LoadEffective() error = %v, want null to match an omitted field", err)
 			}
 		})
 	}

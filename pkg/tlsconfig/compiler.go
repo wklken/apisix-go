@@ -168,9 +168,6 @@ func frontendSettings(cfg *config.Config) compiledSettings {
 		trustedCertificate: strings.TrimSpace(ssl.SslTrustedCertificate),
 		http2:              cfg.Apisix.EnableHttp2,
 	}
-	for _, listener := range ssl.Listen {
-		settings.http2 = settings.http2 || listener.EnableHttp2
-	}
 	return settings
 }
 

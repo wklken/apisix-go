@@ -14,6 +14,49 @@ func validateEffective(effective *EffectiveConfig) error {
 	return validateRuntimeConfig(&effective.Config)
 }
 
+func validateDeprecatedPortLevelHTTP2(root *valueNode) error {
+	if root == nil || root.kind != nodeMapping {
+		return nil
+	}
+	apisix := root.mapping["apisix"]
+	if apisix == nil || apisix.kind != nodeMapping {
+		return nil
+	}
+	if err := validateDeprecatedListenerHTTP2(apisix.mapping["node_listen"], "apisix.node_listen"); err != nil {
+		return err
+	}
+	ssl := apisix.mapping["ssl"]
+	if ssl == nil || ssl.kind != nodeMapping {
+		return nil
+	}
+	return validateDeprecatedListenerHTTP2(ssl.mapping["listen"], "apisix.ssl.listen")
+}
+
+func validateDeprecatedListenerHTTP2(listeners *valueNode, field string) error {
+	if listeners == nil {
+		return nil
+	}
+	items := listeners.sequence
+	if listeners.kind == nodeMapping {
+		items = []*valueNode{listeners}
+	} else if listeners.kind != nodeSequence {
+		return nil
+	}
+	for index, listener := range items {
+		if listener == nil || listener.kind != nodeMapping {
+			continue
+		}
+		if value, exists := listener.mapping["enable_http2"]; exists && value.kind != nodeNull {
+			return fmt.Errorf(
+				"%s[%d].enable_http2 is deprecated; use apisix.enable_http2",
+				field,
+				index,
+			)
+		}
+	}
+	return nil
+}
+
 func validateRuntimeConfig(cfg *Config) error {
 	if err := validateHTTPPluginAllowlist(cfg.Plugins); err != nil {
 		return err

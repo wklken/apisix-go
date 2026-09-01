@@ -3633,7 +3633,7 @@ func runCaseInternal(t *testing.T, spec Case, waitForGeneration bool) {
 		if fixtureAssertionAfterShutdown(fixtureSpec) {
 			continue
 		}
-		assertNamedFixture(t, namedFixtures[fixtureSpec.Name], fixtureSpec)
+		namedFixtures[fixtureSpec.Name].assert(t, fixtureSpec)
 	}
 
 	transport.CloseIdleConnections()
@@ -3646,7 +3646,7 @@ func runCaseInternal(t *testing.T, spec Case, waitForGeneration bool) {
 		if !fixtureAssertionAfterShutdown(fixtureSpec) {
 			continue
 		}
-		assertNamedFixture(t, namedFixtures[fixtureSpec.Name], fixtureSpec)
+		namedFixtures[fixtureSpec.Name].assert(t, fixtureSpec)
 	}
 	assertAfterShutdown(t, spec.AfterShutdown, replacements)
 	logs, err := process.logs()
@@ -3775,36 +3775,6 @@ func samlResponseActions(actions []CaseAction) []CaseAction {
 
 func fixtureAssertionAfterShutdown(spec FixtureSpec) bool {
 	return len(spec.NetworkExpect) > 0 || isExactZeroUDPFixture(spec) || isExactHTTPFixture(spec)
-}
-
-func assertNamedFixture(t *testing.T, fixture namedFixture, spec FixtureSpec) {
-	t.Helper()
-	waitFixtureSettle(spec)
-	fixture.assert(t, spec)
-}
-
-func waitFixtureSettle(spec FixtureSpec) {
-	if spec.Settle <= 0 {
-		return
-	}
-	time.Sleep(spec.Settle)
-}
-
-func TestFixtureSettleWaitsBeforeAssert(t *testing.T) {
-	t.Parallel()
-
-	unsetStart := time.Now()
-	waitFixtureSettle(FixtureSpec{})
-	if elapsed := time.Since(unsetStart); elapsed > 20*time.Millisecond {
-		t.Fatalf("unset settle waited %s, want no extra delay", elapsed)
-	}
-
-	const settle = 40 * time.Millisecond
-	setStart := time.Now()
-	waitFixtureSettle(FixtureSpec{Settle: settle})
-	if elapsed := time.Since(setStart); elapsed < settle {
-		t.Fatalf("settle wait = %s, want at least %s", elapsed, settle)
-	}
 }
 
 func TestFixtureAssertionAfterShutdown(t *testing.T) {

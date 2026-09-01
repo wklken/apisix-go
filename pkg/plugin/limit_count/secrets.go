@@ -2,7 +2,6 @@ package limit_count
 
 import (
 	"context"
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"reflect"
@@ -41,10 +40,6 @@ type limitCountSecretState struct {
 	redisNodesPresent bool
 	scopedSet         bool
 
-	keyDigest        [sha256.Size]byte
-	redisHostDigest  [sha256.Size]byte
-	redisNodeDigests [][sha256.Size]byte
-
 	keyField        string
 	redisHostField  string
 	redisNodesField string
@@ -76,10 +71,6 @@ type stagedLimitCountSecrets struct {
 	keyDescriptor   string
 	hostDescriptor  string
 	nodeDescriptors []string
-
-	keyDigest   [sha256.Size]byte
-	hostDigest  [sha256.Size]byte
-	nodeDigests [][sha256.Size]byte
 }
 
 func selectLimitCountSecretFields(config Config) (
@@ -124,7 +115,7 @@ func (p *Plugin) MaterializeScopedSecrets(
 		if err != nil || !validLimitCountScopedValue(staged.scopedKey) {
 			return errors.New("resolve limit-count key: credential unavailable")
 		}
-		staged.keyDigest, staged.keyDescriptor, err = scopedLimitCountDescriptor(staged.scopedKey)
+		staged.keyDescriptor, err = scopedLimitCountDescriptor(staged.scopedKey)
 		if err != nil {
 			return errLimitCountCredentialsUnavailable
 		}
@@ -134,20 +125,19 @@ func (p *Plugin) MaterializeScopedSecrets(
 		if err != nil || !validLimitCountScopedValue(staged.scopedHost) {
 			return errors.New("resolve limit-count Redis host: credential unavailable")
 		}
-		staged.hostDigest, staged.hostDescriptor, err = scopedLimitCountDescriptor(staged.scopedHost)
+		staged.hostDescriptor, err = scopedLimitCountDescriptor(staged.scopedHost)
 		if err != nil {
 			return errLimitCountCredentialsUnavailable
 		}
 	}
 	staged.scopedNodes = make([]secret.Value, len(nodes))
 	staged.nodeDescriptors = make([]string, len(nodes))
-	staged.nodeDigests = make([][sha256.Size]byte, len(nodes))
 	for index, raw := range nodes {
 		staged.scopedNodes[index], err = access.Materialize(ctx, nodesSelection.field, raw)
 		if err != nil || !validLimitCountScopedValue(staged.scopedNodes[index]) {
 			return fmt.Errorf("resolve limit-count Redis cluster node %d: credential unavailable", index)
 		}
-		staged.nodeDigests[index], staged.nodeDescriptors[index], err = scopedLimitCountDescriptor(
+		staged.nodeDescriptors[index], err = scopedLimitCountDescriptor(
 			staged.scopedNodes[index],
 		)
 		if err != nil {
@@ -219,9 +209,6 @@ func (p *Plugin) installLimitCountSecrets(staged stagedLimitCountSecrets) error 
 	p.redisHostPresent = staged.hostSelection.raw != ""
 	p.redisNodesPresent = staged.nodesSelection.field != ""
 	p.scopedSet = true
-	p.keyDigest = staged.keyDigest
-	p.redisHostDigest = staged.hostDigest
-	p.redisNodeDigests = staged.nodeDigests
 	p.keyField = staged.keySelection.field
 	p.redisHostField = staged.hostSelection.field
 	p.redisNodesField = staged.nodesSelection.field
@@ -251,9 +238,6 @@ func (p *Plugin) installLimitCountLiteralSecrets() error {
 	p.redisHostPresent = false
 	p.redisNodesPresent = false
 	p.scopedSet = true
-	p.keyDigest = [sha256.Size]byte{}
-	p.redisHostDigest = [sha256.Size]byte{}
-	p.redisNodeDigests = nil
 	p.keyField = ""
 	p.redisHostField = ""
 	p.redisNodesField = ""
@@ -336,12 +320,12 @@ func validLimitCountScopedValue(value secret.Value) bool {
 
 func scopedLimitCountDescriptor(
 	value secret.Value,
-) ([sha256.Size]byte, string, error) {
+) (string, error) {
 	descriptor, err := value.Descriptor(capability.SecretPluginConfig)
 	if err != nil {
-		return [sha256.Size]byte{}, "", err
+		return "", err
 	}
-	return descriptor.Digest(), descriptor.String(), nil
+	return descriptor.String(), nil
 }
 
 func (p *Plugin) acquireLimitCountSecrets() (limitCountSecretSnapshot, func(), error) {
@@ -418,12 +402,4 @@ func (p *Plugin) withLimitCountRedisNodes(use func([]string) error) error {
 		})
 	}
 	return useNode(0)
-}
-
-func (p *Plugin) limitCountCredentialDigests() (
-	[sha256.Size]byte, [sha256.Size]byte, [][sha256.Size]byte,
-) {
-	p.credentialMu.Lock()
-	defer p.credentialMu.Unlock()
-	return p.keyDigest, p.redisHostDigest, append([][sha256.Size]byte(nil), p.redisNodeDigests...)
 }

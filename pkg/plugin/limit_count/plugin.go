@@ -1,6 +1,7 @@
 package limit_count
 
 import (
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"math"
@@ -758,11 +759,11 @@ func (p *Plugin) redisBackendClientLocked() (redis.UniversalClient, error) {
 		return p.backendClient, nil
 	}
 
-	_, hostDigest, nodeDigests := p.limitCountCredentialDigests()
 	switch p.config.Policy {
 	case "redis":
 		var client redis.UniversalClient
 		err := p.withLimitCountRedisHost(func(host string) error {
+			hostDigest := sha256.Sum256([]byte(host))
 			configUID := shared.NewConfigUID()
 			configUID.Add(
 				p.config.Policy,
@@ -790,8 +791,9 @@ func (p *Plugin) redisBackendClientLocked() (redis.UniversalClient, error) {
 	case "redis-cluster":
 		var client redis.UniversalClient
 		err := p.withLimitCountRedisNodes(func(nodes []string) error {
-			identityNodes := make([]string, len(nodeDigests))
-			for index, digest := range nodeDigests {
+			identityNodes := make([]string, len(nodes))
+			for index, node := range nodes {
+				digest := sha256.Sum256([]byte(node))
 				identityNodes[index] = fmt.Sprintf("sha256:%x", digest)
 			}
 			configUID := shared.NewConfigUID()
@@ -1566,9 +1568,6 @@ func (p *Plugin) stopLimitCount() {
 	p.redisHostPresent = false
 	p.redisNodesPresent = false
 	p.scopedSet = false
-	p.keyDigest = [32]byte{}
-	p.redisHostDigest = [32]byte{}
-	p.redisNodeDigests = nil
 	p.keyField = ""
 	p.redisHostField = ""
 	p.redisNodesField = ""

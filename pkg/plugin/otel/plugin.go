@@ -586,6 +586,21 @@ func (p *Plugin) RunRequestPhase(_ http.ResponseWriter, r *http.Request) base.Re
 	state := &spanState{span: span, started: started}
 	r = r.WithContext(context.WithValue(spanContext, spanStateContextKey{}, state))
 	propagator.Inject(r.Context(), propagation.HeaderCarrier(r.Header))
+	if p.metadata.SetNgxVar {
+		current := span.SpanContext()
+		apisixctx.RegisterRequestVar(
+			r,
+			"$opentelemetry_context_traceparent",
+			fmt.Sprintf(
+				"00-%s-%s-%02x",
+				current.TraceID(),
+				current.SpanID(),
+				byte(current.TraceFlags()),
+			),
+		)
+		apisixctx.RegisterRequestVar(r, "$opentelemetry_trace_id", current.TraceID().String())
+		apisixctx.RegisterRequestVar(r, "$opentelemetry_span_id", current.SpanID().String())
+	}
 	attrs := append(p.requestSpanAttributes(r), captureHTTPSpanAttributes(r)...)
 	if len(attrs) > 0 {
 		span.SetAttributes(attrs...)

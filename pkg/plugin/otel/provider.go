@@ -158,9 +158,6 @@ func batchSpanProcessorOptions(config BatchSpanProcessorConfig) []sdktrace.Batch
 }
 
 func validateMetadata(metadata Metadata) error {
-	if metadata.SetNgxVar {
-		return unsupportedMetadataError{message: "opentelemetry set_ngx_var is unsupported by the Go data plane"}
-	}
 	if metadata.BatchSpanProcessor.InactiveTimeout < 0 {
 		return unsupportedMetadataError{
 			message: "opentelemetry batch_span_processor.inactive_timeout is unsupported by the Go data plane",

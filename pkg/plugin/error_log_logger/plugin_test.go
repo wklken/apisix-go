@@ -1608,7 +1608,7 @@ func TestNewKafkaWriterUsesMessageTopicOnly(t *testing.T) {
 	}
 }
 
-func TestSendUsesBatchProcessor(t *testing.T) {
+func TestStartObservingUsesBatchProcessor(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen tcp: %v", err)
@@ -1639,18 +1639,20 @@ func TestSendUsesBatchProcessor(t *testing.T) {
 		InactiveTimeout: 60,
 	})
 
-	p.Send(map[string]any{"message": "one"})
+	p.startupWarningsSent = true
+	p.StartObserving()
+	logger.Info("one")
 	select {
 	case got := <-received:
 		t.Fatalf("received payload before batch was full: %q", got)
 	case <-time.After(50 * time.Millisecond):
 	}
 
-	p.Send(map[string]any{"message": "two"})
+	logger.Info("two")
 
 	select {
 	case got := <-received:
-		if !strings.Contains(got, `"message":"one"`) || !strings.Contains(got, `"message":"two"`) {
+		if !strings.Contains(got, "[info] one") || !strings.Contains(got, "[info] two") {
 			t.Fatalf("tcp payload = %q, want both batched log entries", got)
 		}
 		if lines := strings.Count(strings.TrimSpace(got), "\n") + 1; lines != 2 {
@@ -1794,7 +1796,7 @@ func TestStartObservingFiltersBeforeBatching(t *testing.T) {
 	}
 }
 
-func TestSendRetriesFailedBatch(t *testing.T) {
+func TestStartObservingRetriesFailedBatch(t *testing.T) {
 	var attempts atomic.Int32
 	done := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1817,7 +1819,9 @@ func TestSendRetriesFailedBatch(t *testing.T) {
 		InactiveTimeout: 60,
 	})
 
-	p.Send(map[string]any{"message": "retry me"})
+	p.startupWarningsSent = true
+	p.StartObserving()
+	logger.Info("retry me")
 
 	select {
 	case <-done:

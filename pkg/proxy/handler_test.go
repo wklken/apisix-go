@@ -85,7 +85,8 @@ func TestRetryTransportRetriesTransportErrorsWithNextTargets(t *testing.T) {
 	if got := apisixctx.GetRequestVar(request, "$retry_count"); got != 2 {
 		t.Fatalf("retry count = %#v, want 2", got)
 	}
-	snapshot := apisixlog.BuildSnapshot(request, apisixlog.ResponseSnapshot{}, apisixctx.ResponseOutcome{},
+	snapshot := apisixlog.BuildSnapshotFromOwnedInputs(request, apisixlog.ResponseSnapshot{}, nil, false,
+		apisixctx.ResponseOutcome{},
 		apisixctx.ResponseSourceUpstream, time.Now(), time.Now())
 	if got := snapshot.Request.RequestVars["$retry_count"]; got != 2 {
 		t.Fatalf("detached retry count = %#v, want 2", got)

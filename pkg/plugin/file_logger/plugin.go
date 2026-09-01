@@ -3,20 +3,14 @@ package file_logger
 import (
 	"context"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"os"
 	"sync"
 	"time"
 
-	"github.com/felixge/httpsnoop"
-	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
-	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
-	"go.uber.org/zap"
-	"go.uber.org/zap/zapcore"
 )
 
 const (
@@ -117,8 +111,6 @@ type Plugin struct {
 	base.BasePlugin
 	config Config
 
-	logger    *zap.Logger
-	writer    *bufferedFileWriteSyncer
 	lease     *fileWriterLease
 	processor *fileLoggerProcessor
 
@@ -139,17 +131,6 @@ type Config struct {
 	MaxReqBodyBytes     int               `json:"max_req_body_bytes,omitempty"`
 	MaxRespBodyBytes    int               `json:"max_resp_body_bytes,omitempty"`
 	Match               []any             `json:"match,omitempty"`
-}
-
-type requestSnapshot struct {
-	host       string
-	remoteAddr string
-	method     string
-	uri        string
-	headers    http.Header
-	query      map[string][]string
-	size       int64
-	scheme     string
 }
 
 func (p *Plugin) Config() any {
@@ -208,26 +189,17 @@ func (p *Plugin) PostInit() error {
 		}
 	}
 
-	cfg := zap.NewProductionConfig()
-	cfg.DisableCaller = true
-	cfg.Level = zap.NewAtomicLevelAt(zap.InfoLevel)
-	encoder := zapcore.NewJSONEncoder(cfg.EncoderConfig)
 	lease, err := sharedFileWriters.acquire(p.config.Path)
 	if err != nil {
 		return err
 	}
-	writer := lease.writer
-	pluginLogger := zap.New(zapcore.NewCore(encoder, writer, cfg.Level))
-	processor, err := newFileLoggerProcessor(p.TaskOwner(), writer)
+	processor, err := newFileLoggerProcessor(p.TaskOwner(), lease.writer)
 	if err != nil {
-		_ = pluginLogger.Sync()
 		lease.release()
 		return err
 	}
 	processor.snapshotFields = p.buildSnapshotFields
 	p.lease = lease
-	p.writer = writer
-	p.logger = pluginLogger
 	p.processor = processor
 	return nil
 }
@@ -249,9 +221,6 @@ func normalizeMatch(match []any) []any {
 func (p *Plugin) Stop() {
 	p.stopOnce.Do(func() {
 		cleanup := func() {
-			if p.logger != nil {
-				_ = p.logger.Sync()
-			}
 			if p.lease != nil {
 				p.lease.release()
 			}
@@ -269,67 +238,7 @@ func (p *Plugin) QuiesceGenerationTasks() {
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		started := time.Now()
-		request := captureRequest(r)
-		var requestBody string
-		if p.config.IncludeReqBody && base.ExprMatched(r, p.config.IncludeReqBodyExpr, 0) {
-			body, err := base.ReadSharedRequestBody(r, p.config.MaxReqBodyBytes)
-			if err == nil && body != "" {
-				requestBody = body
-			}
-		}
-
-		writer := w
-		var recorder *base.SharedResponseRecorder
-		if p.config.IncludeRespBody {
-			recorder = base.GetOrCreateSharedResponseRecorderWithLimit(w, r, p.config.MaxRespBodyBytes)
-			writer = recorder
-		}
-
-		metrics := httpsnoop.CaptureMetrics(next, writer, r)
-		if !p.match(r) {
-			return
-		}
-
-		includeResponseBody := recorder != nil && recorder.HasBody() &&
-			base.ExprMatched(r, p.config.IncludeRespBodyExpr, metrics.Code)
-		var capturedResponseBody string
-		if includeResponseBody {
-			capturedResponseBody = recorder.BodyDecoded(
-				p.config.MaxRespBodyBytes,
-				w.Header().Get("Content-Encoding"),
-			)
-			apisixctx.RegisterRequestVar(r, "$resp_body", capturedResponseBody)
-		}
-		logFields := p.buildLogFields(r, request, w.Header(), metrics, started)
-		if requestBody != "" {
-			base.NestedLogMap(logFields, "request")["body"] = requestBody
-		}
-		if includeResponseBody {
-			base.NestedLogMap(logFields, "response")["body"] = capturedResponseBody
-		}
-
-		p.enqueueHandler(logFields)
-	})
-}
-
-// enqueueHandler keeps the legacy direct Handler compatibility path
-// observable to callers that read the file immediately after ServeHTTP. The
-// detached log phase remains fully non-blocking and uses the file logger
-// processor directly.
-func (p *Plugin) enqueueHandler(fields map[string]any) {
-	if p.processor == nil {
-		return
-	}
-	ack, err := p.processor.pushFieldsAndBarrier(fields)
-	if err != nil {
-		return
-	}
-	select {
-	case <-ack:
-	case <-time.After(500 * time.Millisecond):
-	}
+	return next
 }
 
 func (p *Plugin) LogCapturePolicy() base.LogCapturePolicy {
@@ -434,31 +343,10 @@ func fileSnapshotValue(
 	}
 }
 
-func (p *Plugin) sendBatch(_ context.Context, entries []map[string]any, _ int) (int, error) {
-	if p.writer == nil {
-		return 0, fmt.Errorf("file logger is not initialized")
-	}
-	encoder := newFileLoggerEncoder()
-	var batch []byte
-	for _, entry := range entries {
-		line, err := encoder.encode(entry)
-		if err != nil {
-			return 0, err
-		}
-		batch = append(batch, line.Bytes()...)
-		line.Free()
-	}
-	if len(batch) == 0 {
-		return 0, nil
-	}
-	written, err := p.writer.Write(batch)
-	if err == nil && written != len(batch) {
-		err = io.ErrShortWrite
-	}
-	if err != nil {
-		return 0, err
-	}
-	return 0, nil
+func fileRequestHeaders(headers http.Header, host string) map[string]any {
+	collapsed := base.CollapseAccessLogHeaderValues(headers)
+	collapsed["host"] = host
+	return collapsed
 }
 
 func snapshotDefaultLogFields(snapshot base.LogSnapshot) map[string]any {
@@ -528,161 +416,6 @@ func resolvedSnapshotUpstream(snapshot base.LogSnapshot) string {
 
 var fileLoggerLookupIP = net.DefaultResolver.LookupIPAddr
 
-func captureRequest(r *http.Request) requestSnapshot {
-	scheme := "http"
-	if r.TLS != nil {
-		scheme = "https"
-	}
-	if forwarded := r.Header.Get("X-Forwarded-Proto"); forwarded != "" {
-		scheme = forwarded
-	}
-	return requestSnapshot{
-		host:       base.RemoteIP(r.Host),
-		remoteAddr: base.RemoteIP(r.RemoteAddr),
-		method:     r.Method,
-		uri:        r.URL.RequestURI(),
-		headers:    r.Header.Clone(),
-		query:      map[string][]string(r.URL.Query()),
-		size:       max(r.ContentLength, 0),
-		scheme:     scheme,
-	}
-}
-
-func (p *Plugin) buildLogFields(
-	r *http.Request,
-	request requestSnapshot,
-	responseHeaders http.Header,
-	metrics httpsnoop.Metrics,
-	started time.Time,
-) map[string]any {
-	if p.logFormat != nil {
-		fields := resolveLogFormat(p.logFormat, r, request, metrics.Code)
-		if routeID := base.RequestVar(r, "$route_id", metrics.Code); routeID != "" {
-			fields["route_id"] = routeID
-		}
-		if serviceID := base.RequestVar(r, "$service_id", metrics.Code); serviceID != "" {
-			fields["service_id"] = serviceID
-		}
-		return fields
-	}
-
-	fields := defaultLogFields(r, request, responseHeaders, metrics, started)
-	for key, value := range p.logFormatExtra {
-		if _, exists := fields[key]; !exists {
-			fields[key] = resolveLogValue(value, r, request, metrics.Code)
-		}
-	}
-	return fields
-}
-
-func defaultLogFields(
-	r *http.Request,
-	request requestSnapshot,
-	responseHeaders http.Header,
-	metrics httpsnoop.Metrics,
-	started time.Time,
-) map[string]any {
-	hostname := base.Hostname()
-	if hostname == "" {
-		hostname = "unknown"
-	}
-	latency := float64(time.Since(started).Microseconds()) / 1000
-	fields := map[string]any{
-		"request": map[string]any{
-			"url":         request.scheme + "://" + request.host + request.uri,
-			"uri":         request.uri,
-			"method":      request.method,
-			"headers":     fileRequestHeaders(request.headers, r.Host),
-			"querystring": base.CollapseHeaderValues(http.Header(request.query)),
-			"size":        request.size,
-		},
-		"response": map[string]any{
-			"status":  metrics.Code,
-			"headers": base.CollapseAccessLogHeaderValues(responseHeaders),
-			"size":    metrics.Written,
-		},
-		"server": map[string]any{
-			"hostname": hostname,
-			"version":  fileLoggerVersion,
-		},
-		"service_id":     base.RequestVar(r, "$service_id", metrics.Code),
-		"route_id":       base.RequestVar(r, "$route_id", metrics.Code),
-		"client_ip":      request.remoteAddr,
-		"start_time":     float64(started.UnixNano()) / float64(time.Millisecond),
-		"latency":        latency,
-		"apisix_latency": latency,
-	}
-	if fields["route_id"] == "" {
-		fields["route_id"] = "no-matched"
-	}
-	if upstream := resolvedUpstream(r); upstream != "" {
-		fields["upstream"] = upstream
-	}
-	if consumerName := base.RequestVar(r, "$consumer_name", metrics.Code); consumerName != "" {
-		fields["consumer"] = map[string]any{"username": consumerName}
-	}
-	return fields
-}
-
-func resolveLogFormat(
-	format map[string]any,
-	r *http.Request,
-	request requestSnapshot,
-	status int,
-) map[string]any {
-	return base.ResolveLogFormat(format, func(value string) any {
-		return resolveLogValue(value, r, request, status)
-	})
-}
-
-func resolveLogValue(value string, r *http.Request, request requestSnapshot, status int) any {
-	switch value {
-	case "$host":
-		return request.host
-	case "$remote_addr":
-		return request.remoteAddr
-	case "$status":
-		return status
-	case "$request":
-		return request.method + " " + request.uri + " " + r.Proto
-	case "$resp_body":
-		return apisixctx.GetRequestVar(r, "$resp_body")
-	case "$upstream_unresolved_host":
-		return base.RequestVar(r, "$balancer_ip", status)
-	default:
-		return apisixlog.GetField(r, value)
-	}
-}
-
-func fileRequestHeaders(headers http.Header, host string) map[string]any {
-	collapsed := base.CollapseAccessLogHeaderValues(headers)
-	collapsed["host"] = host
-	return collapsed
-}
-
-func resolvedUpstream(r *http.Request) string {
-	host := base.RequestVar(r, "$balancer_ip", 0)
-	if host == "" {
-		return ""
-	}
-	if net.ParseIP(host) == nil {
-		addresses, err := net.LookupIP(host)
-		if err == nil {
-			for _, address := range addresses {
-				if ipv4 := address.To4(); ipv4 != nil {
-					host = ipv4.String()
-					break
-				}
-			}
-		}
-	}
-	port := base.RequestVar(r, "$balancer_port", 0)
-	if port == "" {
-		return host
-	}
-	return net.JoinHostPort(host, port)
-}
-
 type appendFileWriteSyncer struct {
 	path string
 	mu   sync.Mutex
@@ -725,8 +458,4 @@ func (w *appendFileWriteSyncer) Reopen() error {
 
 func (w *appendFileWriteSyncer) Close() error {
 	return w.Reopen()
-}
-
-func (p *Plugin) match(r *http.Request) bool {
-	return base.ExprMatched(r, p.config.Match, 0)
 }

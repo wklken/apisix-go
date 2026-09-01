@@ -13,13 +13,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/felixge/httpsnoop"
 	"github.com/go-resty/resty/v2"
-	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
-	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/json"
-	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
 	"github.com/wklken/apisix-go/pkg/secret"
@@ -362,29 +358,6 @@ func (p *Plugin) Stop() {
 	}
 }
 
-func (p *Plugin) Handler(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		request := captureRequest(r)
-		metrics := httpsnoop.CaptureMetrics(next, w, r)
-
-		var logFields map[string]any
-		if p.LogFormat != nil {
-			logFields = base.ResolveStringLogFormat(p.LogFormat, func(value string) any {
-				return p.resolveLogFormatValue(r, value, request.host, request.remoteAddr)
-			})
-			base.ApplyRequestMatchedRouteFields(logFields, r, p.RouteID)
-		} else {
-			logFields = buildDefaultEvent(request, w.Header(), r, metrics)
-			for key, value := range p.logFormatExtra {
-				if _, exists := logFields[key]; !exists {
-					logFields[key] = p.resolveLogFormatValue(r, value, request.host, request.remoteAddr)
-				}
-			}
-		}
-		_ = p.enqueueSplunkIfRunning(logFields)
-	})
-}
-
 func (p *Plugin) LogCapturePolicy() base.LogCapturePolicy {
 	policy := p.BaseLoggerPlugin.LogCapturePolicy()
 	formatted := base.LogCapturePolicyForFormats(
@@ -417,7 +390,11 @@ func (p *Plugin) RunLogPhase(snapshot base.LogSnapshot) error {
 		fields = splunkSnapshotDefaultEvent(snapshot)
 		for key, value := range p.logFormatExtra {
 			if _, exists := fields[key]; !exists {
-				fields[key] = base.SnapshotValue(snapshot, value)
+				if value == "$upstream_unresolved_host" {
+					fields[key] = base.SnapshotValue(snapshot, "$balancer_ip")
+				} else {
+					fields[key] = base.SnapshotValue(snapshot, value)
+				}
 			}
 		}
 	}
@@ -467,94 +444,6 @@ func splunkSnapshotDefaultEvent(snapshot base.LogSnapshot) map[string]any {
 		"response_size":    snapshot.Outcome.Bytes,
 		"latency":          latency,
 		"upstream":         upstream,
-	}
-}
-
-type requestSnapshot struct {
-	url        string
-	method     string
-	headers    http.Header
-	query      map[string][]string
-	size       int64
-	host       string
-	remoteAddr string
-}
-
-func captureRequest(r *http.Request) requestSnapshot {
-	size := max(r.ContentLength, 0)
-	host := base.RemoteIP(r.Host)
-	return requestSnapshot{
-		url:        base.RequestVar(r, "$scheme", 0) + "://" + r.Host + r.URL.RequestURI(),
-		method:     r.Method,
-		headers:    r.Header.Clone(),
-		query:      map[string][]string(r.URL.Query()),
-		size:       size,
-		host:       host,
-		remoteAddr: base.RemoteIP(r.RemoteAddr),
-	}
-}
-
-func buildDefaultEvent(
-	request requestSnapshot,
-	responseHeaders http.Header,
-	r *http.Request,
-	metrics httpsnoop.Metrics,
-) map[string]any {
-	return map[string]any{
-		"request_url":      request.url,
-		"request_method":   request.method,
-		"request_headers":  base.CollapseAccessLogHeaderValues(request.headers),
-		"request_query":    request.query,
-		"request_size":     request.size,
-		"response_headers": base.CollapseAccessLogHeaderValues(responseHeaders),
-		"response_status":  metrics.Code,
-		"response_size":    metrics.Written,
-		"latency":          metrics.Duration.Milliseconds(),
-		"upstream":         upstreamAddress(r),
-	}
-}
-
-func upstreamAddress(r *http.Request) string {
-	host := apisixVarString(r, "$balancer_ip")
-	if host == "" {
-		return ""
-	}
-	port := apisixVarString(r, "$balancer_port")
-	if port == "" {
-		return host
-	}
-	return net.JoinHostPort(host, port)
-}
-
-func apisixVarString(r *http.Request, key string) string {
-	value := apisixctx.GetApisixVar(r, key)
-	if value == nil {
-		return ""
-	}
-	return fmt.Sprint(value)
-}
-
-func (p *Plugin) resolveLogFormatValue(
-	r *http.Request,
-	value string,
-	originalHost string,
-	originalRemoteAddr string,
-) any {
-	switch value {
-	case "$host":
-		return originalHost
-	case "$remote_addr":
-		return originalRemoteAddr
-	case "$upstream_unresolved_host":
-		return apisixctx.GetApisixVar(r, "$balancer_ip")
-	default:
-		return apisixlog.GetField(r, value)
-	}
-}
-
-func (p *Plugin) Send(log map[string]any) {
-	if _, err := p.SendBatch(context.Background(), []map[string]any{log}, 1); err != nil {
-		logger.Errorf("%s", err)
 	}
 }
 

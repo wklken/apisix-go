@@ -10,11 +10,10 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
-	"io"
 	"math/big"
 	"net"
 	"net/http"
-	"net/http/httptest"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -263,12 +262,14 @@ func TestEncodeBatchPreservesTCPMarshalErrorContext(t *testing.T) {
 	}
 }
 
-func TestSendWritesTCPMessage(t *testing.T) {
+func TestSendBatchWritesTCPMessage(t *testing.T) {
 	addr, received := startTCPServer(t)
 	host, port := splitAddr(t, addr)
 
 	p := newTestPlugin(t, Config{Host: host, Port: mustAtoi(t, port), Timeout: 1000})
-	p.Send(map[string]any{"path": "/orders"})
+	if _, err := p.SendBatch(context.Background(), []map[string]any{{"path": "/orders"}}, 1); err != nil {
+		t.Fatalf("SendBatch() error = %v", err)
+	}
 
 	select {
 	case message := <-received:
@@ -280,7 +281,7 @@ func TestSendWritesTCPMessage(t *testing.T) {
 	}
 }
 
-func TestSendWritesTLSMessageWithServerName(t *testing.T) {
+func TestSendBatchWritesTLSMessageWithServerName(t *testing.T) {
 	addr, received, serverNames := startTLSServer(t)
 	host, port := splitAddr(t, addr)
 	serverName := "logs.example.test"
@@ -297,7 +298,9 @@ func TestSendWritesTLSMessageWithServerName(t *testing.T) {
 		t.Fatalf("Parse() error = %v", err)
 	}
 	p := newTestPlugin(t, config)
-	p.Send(map[string]any{"path": "/secure"})
+	if _, err := p.SendBatch(context.Background(), []map[string]any{{"path": "/secure"}}, 1); err != nil {
+		t.Fatalf("SendBatch() error = %v", err)
+	}
 
 	select {
 	case message := <-received:
@@ -402,7 +405,7 @@ func TestPostInitPreservesExplicitZeroRetryDelay(t *testing.T) {
 	}
 }
 
-func TestHandlerBatchesTCPLogs(t *testing.T) {
+func TestRunLogPhaseBatchesTCPLogs(t *testing.T) {
 	addr, received := startTCPServer(t)
 	host, port := splitAddr(t, addr)
 
@@ -415,17 +418,14 @@ func TestHandlerBatchesTCPLogs(t *testing.T) {
 		BufferDuration:  60,
 	})
 
-	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	handler.ServeHTTP(
-		httptest.NewRecorder(),
-		httptest.NewRequest(http.MethodGet, "http://example.com/one", nil),
-	)
-	handler.ServeHTTP(
-		httptest.NewRecorder(),
-		httptest.NewRequest(http.MethodGet, "http://example.com/two", nil),
-	)
+	for _, path := range []string{"/one", "/two"} {
+		if err := p.RunLogPhase(base.LogSnapshot{
+			Request: apisixlog.RequestLogSnapshot{Method: http.MethodGet, URI: path},
+			Outcome: apisixctx.ResponseOutcome{Status: http.StatusNoContent},
+		}); err != nil {
+			t.Fatalf("RunLogPhase(%q) error = %v", path, err)
+		}
+	}
 
 	select {
 	case message := <-received:
@@ -441,7 +441,7 @@ func TestHandlerBatchesTCPLogs(t *testing.T) {
 	}
 }
 
-func TestHandlerDefaultLogMatchesAPISIXFullLogShape(t *testing.T) {
+func TestRunLogPhaseDefaultLogMatchesAPISIXFullLogShape(t *testing.T) {
 	addr, received := startTCPServer(t)
 	host, port := splitAddr(t, addr)
 
@@ -453,23 +453,26 @@ func TestHandlerDefaultLogMatchesAPISIXFullLogShape(t *testing.T) {
 	})
 	p.SetRouteContext("route-default", "127.0.0.1:9080")
 
-	req := httptest.NewRequest(http.MethodGet, "http://gateway.example/orders?ID=1", nil)
-	req.Host = "gateway.example"
-	req.RemoteAddr = "192.0.2.10:54321"
-	req.Header.Set("X-Request", "request-value")
-	req = apisixctx.WithApisixVars(req, map[string]string{})
-	req = apisixctx.WithRequestVars(req)
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		apisixctx.RegisterApisixVar(r, "$balancer_ip", "198.51.100.20")
-		apisixctx.RegisterApisixVar(r, "$balancer_port", "1980")
-		apisixctx.RegisterApisixVar(r, "$service_id", "service-default")
-		apisixctx.RegisterApisixVar(r, "$consumer_name", "alice")
-		apisixctx.RegisterRequestVar(r, "$status", http.StatusCreated)
-		apisixctx.RegisterRequestVar(r, "$upstream_latency", int64(7))
-		w.Header().Set("X-Upstream", "response-value")
-		w.WriteHeader(http.StatusCreated)
-		_, _ = w.Write([]byte("created"))
-	})).ServeHTTP(httptest.NewRecorder(), req)
+	started := time.Unix(100, 0)
+	if err := p.RunLogPhase(base.LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{
+			Method: http.MethodGet, URI: "/orders?ID=1", Host: "gateway.example",
+			RemoteAddr: "192.0.2.10:54321", ContentLength: 8,
+			Header: http.Header{"Host": {"gateway.example"}, "X-Request": {"request-value"}},
+			Query:  url.Values{"ID": {"1"}},
+			APISIXVars: map[string]any{
+				"$balancer_ip": "198.51.100.20", "$balancer_port": "1980",
+				"$service_id": "service-default",
+			},
+			RequestVars: map[string]any{"$upstream_latency": int64(7)},
+			Consumer:    apisixlog.SafeConsumerLogIdentity{Username: "alice"},
+		},
+		Response: apisixlog.ResponseLogSnapshot{Header: http.Header{"X-Upstream": {"response-value"}}},
+		Outcome:  apisixctx.ResponseOutcome{Status: http.StatusCreated, Bytes: 7},
+		Started:  started, Finished: started.Add(time.Second),
+	}); err != nil {
+		t.Fatalf("RunLogPhase() error = %v", err)
+	}
 
 	payload := waitForTCPPayload(t, received)
 	assertNestedField(t, payload, "request", "url", "http://gateway.example:9080/orders?ID=1")
@@ -538,7 +541,7 @@ func TestHandlerDefaultLogMatchesAPISIXFullLogShape(t *testing.T) {
 	}
 }
 
-func TestHandlerResolvesCustomFormatAfterDownstream(t *testing.T) {
+func TestRunLogPhaseResolvesCustomFormatAfterDownstream(t *testing.T) {
 	addr, received := startTCPServer(t)
 	host, port := splitAddr(t, addr)
 
@@ -555,15 +558,19 @@ func TestHandlerResolvesCustomFormatAfterDownstream(t *testing.T) {
 		},
 	})
 	p.SetRouteContext("resolved-route", "127.0.0.1:9080")
-	req := httptest.NewRequest(http.MethodGet, "http://gateway.example/hello", nil)
-	req = apisixctx.WithApisixVars(req, map[string]string{})
-	req = apisixctx.WithRequestVars(req)
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		apisixctx.RegisterApisixVar(r, "$consumer_name", "downstream-consumer")
-		apisixctx.RegisterApisixVar(r, "$service_id", "resolved-service")
-		apisixctx.RegisterRequestVar(r, "$status", http.StatusCreated)
-		w.WriteHeader(http.StatusCreated)
-	})).ServeHTTP(httptest.NewRecorder(), req)
+	if err := p.RunLogPhase(base.LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{
+			Method: http.MethodGet, URI: "/hello",
+			APISIXVars: map[string]any{
+				"$consumer_name": "downstream-consumer",
+				"$service_id":    "resolved-service",
+			},
+			Consumer: apisixlog.SafeConsumerLogIdentity{Username: "downstream-consumer"},
+		},
+		Outcome: apisixctx.ResponseOutcome{Status: http.StatusCreated},
+	}); err != nil {
+		t.Fatalf("RunLogPhase() error = %v", err)
+	}
 
 	payload := waitForTCPPayload(t, received)
 	if payload["status"] != float64(http.StatusCreated) {
@@ -580,7 +587,7 @@ func TestHandlerResolvesCustomFormatAfterDownstream(t *testing.T) {
 	}
 }
 
-func TestHandlerResolvesNestedCustomFormat(t *testing.T) {
+func TestRunLogPhaseResolvesNestedCustomFormat(t *testing.T) {
 	addr, received := startTCPServer(t)
 	host, port := splitAddr(t, addr)
 
@@ -606,15 +613,15 @@ func TestHandlerResolvesNestedCustomFormat(t *testing.T) {
 	}
 
 	p := newTestPlugin(t, cfg)
-	req := httptest.NewRequest(http.MethodGet, "http://gateway.example/hello", nil)
-	req.Host = "gateway.example"
-	req.RemoteAddr = "192.0.2.12:54321"
-	req = apisixctx.WithApisixVars(req, map[string]string{})
-	req = apisixctx.WithRequestVars(req)
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		apisixctx.RegisterRequestVar(r, "$status", http.StatusCreated)
-		w.WriteHeader(http.StatusCreated)
-	})).ServeHTTP(httptest.NewRecorder(), req)
+	if err := p.RunLogPhase(base.LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{
+			Method: http.MethodGet, URI: "/hello", Host: "gateway.example",
+			RemoteAddr: "192.0.2.12:54321",
+		},
+		Outcome: apisixctx.ResponseOutcome{Status: http.StatusCreated},
+	}); err != nil {
+		t.Fatalf("RunLogPhase() error = %v", err)
+	}
 
 	payload := waitForTCPPayload(t, received)
 	assertNestedField(t, payload, "request", "host", "gateway.example")
@@ -623,7 +630,7 @@ func TestHandlerResolvesNestedCustomFormat(t *testing.T) {
 	assertNestedField(t, payload, "response", "status", float64(http.StatusCreated))
 }
 
-func TestHandlerTruncatesCustomFormatAfterDepthFive(t *testing.T) {
+func TestRunLogPhaseTruncatesCustomFormatAfterDepthFive(t *testing.T) {
 	addr, received := startTCPServer(t)
 	host, port := splitAddr(t, addr)
 
@@ -655,13 +662,14 @@ func TestHandlerTruncatesCustomFormatAfterDepthFive(t *testing.T) {
 			},
 		},
 	})
-	req := httptest.NewRequest(http.MethodGet, "http://gateway.example/hello", nil)
-	req.Host = "gateway.example"
-	req = apisixctx.WithApisixVars(req, map[string]string{})
-	req = apisixctx.WithRequestVars(req)
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	})).ServeHTTP(httptest.NewRecorder(), req)
+	if err := p.RunLogPhase(base.LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{
+			Method: http.MethodGet, URI: "/hello", Host: "gateway.example",
+		},
+		Outcome: apisixctx.ResponseOutcome{Status: http.StatusNoContent},
+	}); err != nil {
+		t.Fatalf("RunLogPhase() error = %v", err)
+	}
 
 	payload := waitForTCPPayload(t, received)
 	within := payload["within"].(map[string]any)["a"].(map[string]any)["b"].(map[string]any)["c"].(map[string]any)
@@ -674,7 +682,7 @@ func TestHandlerTruncatesCustomFormatAfterDepthFive(t *testing.T) {
 	}
 }
 
-func TestHandlerCustomFormatOmitsAbsentServiceID(t *testing.T) {
+func TestRunLogPhaseCustomFormatOmitsAbsentServiceID(t *testing.T) {
 	addr, received := startTCPServer(t)
 	host, port := splitAddr(t, addr)
 
@@ -689,12 +697,12 @@ func TestHandlerCustomFormatOmitsAbsentServiceID(t *testing.T) {
 		},
 	})
 	p.SetRouteContext("route-without-service", "127.0.0.1:9080")
-	req := httptest.NewRequest(http.MethodGet, "http://gateway.example/hello", nil)
-	req = apisixctx.WithApisixVars(req, map[string]string{})
-	req = apisixctx.WithRequestVars(req)
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	})).ServeHTTP(httptest.NewRecorder(), req)
+	if err := p.RunLogPhase(base.LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{Method: http.MethodGet, URI: "/hello"},
+		Outcome: apisixctx.ResponseOutcome{Status: http.StatusNoContent},
+	}); err != nil {
+		t.Fatalf("RunLogPhase() error = %v", err)
+	}
 
 	payload := waitForTCPPayload(t, received)
 	if _, ok := payload["service_id"]; ok {
@@ -717,7 +725,7 @@ func TestSendBodyConnectionErrorIncludesDestination(t *testing.T) {
 	}
 }
 
-func TestHandlerBodyCaptureMatrix(t *testing.T) {
+func TestRunLogPhaseBodyCaptureMatrix(t *testing.T) {
 	tests := []struct {
 		name, requestBody, responseBody, header string
 		requestExpr, responseExpr               []any
@@ -754,28 +762,19 @@ func TestHandlerBodyCaptureMatrix(t *testing.T) {
 				MaxReqBodyBytes: 32, MaxRespBodyBytes: 32,
 			})
 
-			req := httptest.NewRequest(
-				http.MethodPost,
-				"http://example.com/orders",
-				strings.NewReader(test.requestBody),
-			)
+			header := http.Header{}
 			if test.header != "" {
-				req.Header.Set("X-Log-Body", test.header)
+				header.Set("X-Log-Body", test.header)
 			}
-			rr := httptest.NewRecorder()
-			p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				body, err := io.ReadAll(r.Body)
-				if err != nil {
-					t.Fatalf("upstream read body: %v", err)
-				}
-				if string(body) != test.requestBody {
-					t.Fatalf("upstream request body = %q, want %q", body, test.requestBody)
-				}
-				w.WriteHeader(http.StatusCreated)
-				_, _ = w.Write([]byte(test.responseBody))
-			})).ServeHTTP(rr, req)
-			if rr.Body.String() != test.responseBody {
-				t.Fatalf("response body = %q, want %q", rr.Body.String(), test.responseBody)
+			if err := p.RunLogPhase(base.LogSnapshot{
+				Request: apisixlog.RequestLogSnapshot{
+					Method: http.MethodPost, URI: "/orders", Header: header,
+					Body: []byte(test.requestBody),
+				},
+				Response: apisixlog.ResponseLogSnapshot{Body: []byte(test.responseBody)},
+				Outcome:  apisixctx.ResponseOutcome{Status: http.StatusCreated},
+			}); err != nil {
+				t.Fatalf("RunLogPhase() error = %v", err)
 			}
 
 			select {
@@ -1368,26 +1367,5 @@ func assertNestedNonnegativeNumber(t *testing.T, payload map[string]any, object,
 	value, ok := nested[field].(float64)
 	if !ok || value < 0 {
 		t.Fatalf("%s.%s = %#v, want nonnegative number", object, field, nested[field])
-	}
-}
-
-func TestSendMarshalErrorNamesTCPLogger(t *testing.T) {
-	entries := make(chan logger.Entry, 1)
-	stop := logger.ReplaceObserver(t.Name(), func(entry logger.Entry) {
-		if entry.Level == "ERROR" {
-			entries <- entry
-		}
-	})
-	t.Cleanup(stop)
-
-	(&Plugin{}).Send(map[string]any{"unsupported": make(chan int)})
-
-	select {
-	case entry := <-entries:
-		if !strings.Contains(entry.Message, "in tcp-logger") {
-			t.Fatalf("marshal error message = %q, want tcp-logger", entry.Message)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for tcp-logger marshal error")
 	}
 }

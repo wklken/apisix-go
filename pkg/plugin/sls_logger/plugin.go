@@ -5,7 +5,6 @@ import (
 	"crypto/tls"
 	"fmt"
 	"net"
-	"net/http"
 	"os"
 	"strconv"
 	"strings"
@@ -13,15 +12,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/felixge/httpsnoop"
 	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/json"
-	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
 	"github.com/wklken/apisix-go/pkg/secret"
-
-	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 )
 
 type Plugin struct {
@@ -327,45 +322,6 @@ func (p *Plugin) PostInit() error {
 	return nil
 }
 
-func (p *Plugin) Handler(next http.Handler) http.Handler {
-	fn := func(w http.ResponseWriter, r *http.Request) {
-		var requestBody string
-		if p.config.IncludeReqBody && base.ExprMatched(r, p.config.IncludeReqBodyExpr, 0) {
-			body, err := base.ReadSharedRequestBody(r, p.config.MaxReqBodyBytes)
-			if err == nil && body != "" {
-				requestBody = body
-			}
-		}
-
-		writer := w
-		var recorder *base.SharedResponseRecorder
-		if p.config.IncludeRespBody {
-			recorder = base.GetOrCreateSharedResponseRecorderWithLimit(w, r, p.config.MaxRespBodyBytes)
-			writer = recorder
-		}
-
-		metrics := httpsnoop.CaptureMetrics(next, writer, r)
-		status := metrics.Code
-
-		var logFields map[string]any
-		if len(p.LogFormat) > 0 {
-			logFields = apisixlog.GetFields(r, p.LogFormat)
-		} else {
-			logFields = defaultAccessLogFields(r, status, w.Header())
-		}
-		logFields["route_id"] = p.RouteID
-		if requestBody != "" {
-			base.NestedLogMap(logFields, "request")["body"] = requestBody
-		}
-		if recorder != nil && recorder.HasBody() && base.ExprMatched(r, p.config.IncludeRespBodyExpr, status) {
-			base.NestedLogMap(logFields, "response")["body"] = recorder.BodyTruncated(p.config.MaxRespBodyBytes)
-		}
-
-		_ = p.enqueueSLSIfRunning(logFields, base.HostWithoutPort(r.Host))
-	}
-	return http.HandlerFunc(fn)
-}
-
 func (p *Plugin) RunLogPhase(snapshot base.LogSnapshot) error {
 	var fields map[string]any
 	if len(p.LogFormat) > 0 {
@@ -429,43 +385,6 @@ func snapshotURI(snapshot base.LogSnapshot) string {
 		return snapshot.Request.URI
 	}
 	return "/"
-}
-
-func defaultAccessLogFields(r *http.Request, status int, responseHeaders http.Header) map[string]any {
-	requestHeaders := base.CollapseAccessLogHeaderValues(r.Header)
-	requestHeaders["host"] = r.Host
-	return map[string]any{
-		"client_ip": base.RemoteIP(r.RemoteAddr),
-		"request": map[string]any{
-			"method":      r.Method,
-			"uri":         r.URL.RequestURI(),
-			"headers":     requestHeaders,
-			"querystring": queryFields(r),
-		},
-		"response": map[string]any{
-			"status":  status,
-			"headers": base.CollapseAccessLogHeaderValues(responseHeaders),
-		},
-	}
-}
-
-func queryFields(r *http.Request) map[string]any {
-	query := r.URL.Query()
-	fields := make(map[string]any, len(query))
-	for name, values := range query {
-		if len(values) == 1 {
-			fields[name] = values[0]
-		} else {
-			fields[name] = append([]string(nil), values...)
-		}
-	}
-	return fields
-}
-
-func (p *Plugin) Send(log map[string]any) {
-	if _, err := p.SendBatch(context.Background(), []map[string]any{log}, 1); err != nil {
-		logger.Errorf("%s", err)
-	}
 }
 
 func (p *Plugin) SendBatch(ctx context.Context, entries []map[string]any, batchMaxSize int) (int, error) {
@@ -610,17 +529,6 @@ func watchConnectionCancellation(ctx context.Context, conn net.Conn) func() {
 		}
 		<-done
 	}
-}
-
-func (p *Plugin) buildMessage(log map[string]any) string {
-	var message string
-	p.lifecycleMu.RLock()
-	defer p.lifecycleMu.RUnlock()
-	_ = p.useAccessKeySecret(func(accessKeySecret string) error {
-		message = p.buildMessageWithSecret(log, accessKeySecret)
-		return nil
-	})
-	return message
 }
 
 func (p *Plugin) buildMessageWithSecret(log map[string]any, accessKeySecret string) string {

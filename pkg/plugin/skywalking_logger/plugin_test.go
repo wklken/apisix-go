@@ -1,10 +1,9 @@
 package skywalking_logger
 
 import (
-	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -12,6 +11,7 @@ import (
 	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/runtime"
@@ -250,7 +250,7 @@ func TestBuildEntryUsesSkyWalkingLogShape(t *testing.T) {
 	}
 }
 
-func TestHandlerBodyCaptureMatrix(t *testing.T) {
+func TestRunLogPhaseBodyCaptureMatrix(t *testing.T) {
 	tests := []struct {
 		name, requestBody, responseBody, header string
 		requestExpr, responseExpr               [][]any
@@ -303,30 +303,19 @@ func TestHandlerBodyCaptureMatrix(t *testing.T) {
 				MaxReqBodyBytes:     32,
 				MaxRespBodyBytes:    32,
 			})
-			req := httptest.NewRequest(http.MethodPost, "/orders", bytes.NewBufferString(test.requestBody))
+			requestHeaders := make(http.Header)
 			if test.header != "" {
-				req.Header.Set("X-Log-Body", test.header)
+				requestHeaders.Set("X-Log-Body", test.header)
 			}
-			rr := httptest.NewRecorder()
-			p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				body, err := io.ReadAll(r.Body)
-				if err != nil {
-					t.Fatalf("read upstream request body: %v", err)
-				}
-				if string(body) != test.requestBody {
-					t.Fatalf("upstream body = %q, want %q", body, test.requestBody)
-				}
-				w.WriteHeader(http.StatusCreated)
-				_, _ = w.Write([]byte(test.responseBody))
-			})).ServeHTTP(rr, req)
-			if rr.Code != http.StatusCreated || rr.Body.String() != test.responseBody {
-				t.Fatalf(
-					"response = (%d, %q), want (%d, %q)",
-					rr.Code,
-					rr.Body.String(),
-					http.StatusCreated,
-					test.responseBody,
-				)
+			if err := p.RunLogPhase(base.LogSnapshot{
+				Request: apisixlog.RequestLogSnapshot{
+					Method: http.MethodPost, URI: "/orders", URL: "http://example.com/orders", Host: "example.com",
+					Header: requestHeaders, Body: []byte(test.requestBody),
+				},
+				Response: apisixlog.ResponseLogSnapshot{Body: []byte(test.responseBody)},
+				Outcome:  apisixctx.ResponseOutcome{Status: http.StatusCreated, Bytes: int64(len(test.responseBody))},
+			}); err != nil {
+				t.Fatalf("RunLogPhase() error = %v", err)
 			}
 
 			select {
@@ -437,7 +426,7 @@ func TestParseTraceContextIdentifiesMalformedSevenPartHeader(t *testing.T) {
 	}
 }
 
-func TestSendPostsSkyWalkingEntries(t *testing.T) {
+func TestSendBatchPostsSkyWalkingEntries(t *testing.T) {
 	requests := make(chan *http.Request, 1)
 	bodies := make(chan []map[string]any, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -458,7 +447,9 @@ func TestSendPostsSkyWalkingEntries(t *testing.T) {
 		Timeout:             1,
 	})
 
-	p.Send(map[string]any{"path": "/orders"})
+	if _, err := p.SendBatch(context.Background(), []map[string]any{{"path": "/orders"}}, 1); err != nil {
+		t.Fatalf("SendBatch() error = %v", err)
+	}
 
 	select {
 	case req := <-requests:
@@ -488,7 +479,7 @@ func TestSendPostsSkyWalkingEntries(t *testing.T) {
 	}
 }
 
-func TestHandlerBatchesSkyWalkingEntries(t *testing.T) {
+func TestRunLogPhaseBatchesSkyWalkingEntries(t *testing.T) {
 	bodies := make(chan []skyWalkingEntry, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body []skyWalkingEntry
@@ -508,11 +499,16 @@ func TestHandlerBatchesSkyWalkingEntries(t *testing.T) {
 		BatchMaxSize:        2,
 	})
 
-	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/first", nil))
-	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/second", nil))
+	for _, uri := range []string{"/first", "/second"} {
+		if err := p.RunLogPhase(base.LogSnapshot{
+			Request: apisixlog.RequestLogSnapshot{
+				Method: http.MethodGet, URI: uri, URL: "http://example.com" + uri, Host: "example.com",
+			},
+			Outcome: apisixctx.ResponseOutcome{Status: http.StatusOK},
+		}); err != nil {
+			t.Fatalf("RunLogPhase(%q) error = %v", uri, err)
+		}
+	}
 
 	select {
 	case body := <-bodies:
@@ -527,7 +523,7 @@ func TestHandlerBatchesSkyWalkingEntries(t *testing.T) {
 	}
 }
 
-func TestHandlerCustomFormatResolvesAPISIXValuesAndRouteIdentity(t *testing.T) {
+func TestRunLogPhaseCustomFormatResolvesAPISIXValuesAndRouteIdentity(t *testing.T) {
 	entries := make(chan []skyWalkingEntry, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body []skyWalkingEntry
@@ -552,16 +548,19 @@ func TestHandlerCustomFormatResolvesAPISIXValuesAndRouteIdentity(t *testing.T) {
 		},
 	})
 
-	req := httptest.NewRequest(http.MethodGet, "http://gateway.example/opentracing", nil)
-	req.Host = "gateway.example"
-	req.RemoteAddr = "192.0.2.10:43123"
-	req = apisixctx.WithApisixVars(req, map[string]string{
-		"$route_id":   "route-1",
-		"$service_id": "service-1",
-	})
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	})).ServeHTTP(httptest.NewRecorder(), req)
+	started := time.Unix(100, 0)
+	if err := p.RunLogPhase(base.LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{
+			Method: http.MethodGet, URI: "/opentracing", URL: "http://gateway.example/opentracing",
+			Host: "gateway.example", RemoteAddr: "192.0.2.10:43123",
+			APISIXVars: map[string]any{"$route_id": "route-1", "$service_id": "service-1"},
+		},
+		Outcome:  apisixctx.ResponseOutcome{Status: http.StatusOK},
+		Started:  started,
+		Finished: started.Add(time.Millisecond),
+	}); err != nil {
+		t.Fatalf("RunLogPhase() error = %v", err)
+	}
 
 	select {
 	case body := <-entries:

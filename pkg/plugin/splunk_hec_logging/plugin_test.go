@@ -13,12 +13,12 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/felixge/httpsnoop"
 	"github.com/go-resty/resty/v2"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
@@ -607,15 +607,6 @@ func TestDefaultEventsRedactSensitiveHeaders(t *testing.T) {
 		Outcome:  apisixctx.ResponseOutcome{Status: http.StatusOK},
 	}
 	assertSplunkHeadersSanitized(t, splunkSnapshotDefaultEvent(snapshot))
-
-	request := httptest.NewRequest(http.MethodGet, "http://gateway.example/orders", nil)
-	request.Header = requestHeaders.Clone()
-	assertSplunkHeadersSanitized(t, buildDefaultEvent(
-		captureRequest(request),
-		responseHeaders,
-		request,
-		httpsnoop.Metrics{Code: http.StatusOK},
-	))
 }
 
 func assertSplunkHeadersSanitized(t *testing.T, fields map[string]any) {
@@ -899,7 +890,7 @@ func TestMetadataDecodeFailsBeforeSplunkClientAndProcessorAcquisition(t *testing
 	}
 }
 
-func TestHandlerBuildsDefaultEventAndDoesNotClobberFieldsWithExtraFormat(t *testing.T) {
+func TestRunLogPhaseBuildsDefaultEventAndDoesNotClobberFieldsWithExtraFormat(t *testing.T) {
 	p := &Plugin{
 		logFormatExtra: map[string]string{
 			"response_status": "extra-must-not-clobber",
@@ -911,23 +902,23 @@ func TestHandlerBuildsDefaultEventAndDoesNotClobberFieldsWithExtraFormat(t *test
 	}
 	p.ready = true
 
-	req := httptest.NewRequest(
-		http.MethodPost,
-		"http://gateway.example:9443/orders?sku=one",
-		strings.NewReader("payload"),
-	)
-	req.RemoteAddr = "192.0.2.44:4567"
-	req.Header.Set("X-Request-Marker", "request-value")
-	req = apisixctx.WithApisixVars(req, map[string]string{})
-	req = apisixctx.WithRequestVars(req)
-
-	entry := captureHandlerEntry(t, p, req, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		apisixctx.RegisterApisixVar(r, "$balancer_ip", "10.0.0.8")
-		apisixctx.RegisterApisixVar(r, "$balancer_port", "9080")
-		w.Header().Set("X-Upstream-Marker", "response-value")
-		w.WriteHeader(http.StatusCreated)
-		_, _ = w.Write([]byte("ok"))
-	}))
+	entry := captureRunLogEntry(t, p, base.LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{
+			Method:        http.MethodPost,
+			URI:           "/orders?sku=one",
+			URL:           "http://gateway.example:9443/orders?sku=one",
+			Host:          "gateway.example:9443",
+			RemoteAddr:    "192.0.2.44:4567",
+			Header:        http.Header{"X-Request-Marker": {"request-value"}},
+			Query:         url.Values{"sku": {"one"}},
+			ContentLength: 7,
+			APISIXVars:    map[string]any{"$balancer_ip": "10.0.0.8", "$balancer_port": "9080"},
+		},
+		Response: apisixlog.ResponseLogSnapshot{Header: http.Header{"X-Upstream-Marker": {"response-value"}}},
+		Outcome:  apisixctx.ResponseOutcome{Status: http.StatusCreated, Bytes: 2},
+		Started:  time.Unix(10, 0),
+		Finished: time.Unix(10, 1000000),
+	})
 
 	if got := entry["request_url"]; got != "http://gateway.example:9443/orders?sku=one" {
 		t.Fatalf("request_url = %#v", got)
@@ -939,7 +930,7 @@ func TestHandlerBuildsDefaultEventAndDoesNotClobberFieldsWithExtraFormat(t *test
 	if requestHeaders["x-request-marker"] != "request-value" {
 		t.Fatalf("request_headers = %#v", entry["request_headers"])
 	}
-	requestQuery, ok := entry["request_query"].(map[string][]string)
+	requestQuery, ok := entry["request_query"].(url.Values)
 	if !ok || len(requestQuery["sku"]) != 1 || requestQuery["sku"][0] != "one" {
 		t.Fatalf("request_query = %#v", entry["request_query"])
 	}
@@ -967,7 +958,7 @@ func TestHandlerBuildsDefaultEventAndDoesNotClobberFieldsWithExtraFormat(t *test
 	}
 }
 
-func TestHandlerTreatsExplicitEmptyLogFormatAsCustomAndSuppressesExtras(t *testing.T) {
+func TestRunLogPhaseTreatsExplicitEmptyLogFormatAsCustomAndSuppressesExtras(t *testing.T) {
 	p := &Plugin{logFormatExtra: map[string]string{"upstream_host": "$upstream_unresolved_host"}}
 	if err := p.Init(); err != nil {
 		t.Fatal(err)
@@ -975,19 +966,17 @@ func TestHandlerTreatsExplicitEmptyLogFormatAsCustomAndSuppressesExtras(t *testi
 	p.LogFormat = map[string]string{}
 	p.ready = true
 
-	req := httptest.NewRequest(http.MethodGet, "http://gateway.example:9443/empty", nil)
-	req = apisixctx.WithApisixVars(req, map[string]string{})
-	entry := captureHandlerEntry(t, p, req, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		apisixctx.RegisterApisixVar(r, "$balancer_ip", "10.0.0.8")
-		w.WriteHeader(http.StatusNoContent)
-	}))
+	entry := captureRunLogEntry(t, p, base.LogSnapshot{Request: apisixlog.RequestLogSnapshot{
+		Method: http.MethodGet, URI: "/empty", URL: "http://gateway.example:9443/empty",
+		Host: "gateway.example:9443", APISIXVars: map[string]any{"$balancer_ip": "10.0.0.8"},
+	}, Outcome: apisixctx.ResponseOutcome{Status: http.StatusNoContent}})
 
 	if len(entry) != 0 {
 		t.Fatalf("entry = %#v, want explicit empty custom event", entry)
 	}
 }
 
-func TestHandlerResolvesCustomVariablesAfterUpstreamWithoutPorts(t *testing.T) {
+func TestRunLogPhaseResolvesCustomVariablesFromSnapshotWithoutPorts(t *testing.T) {
 	p := &Plugin{
 		logFormatExtra: map[string]string{"ignored_extra": "must-not-appear"},
 	}
@@ -1001,15 +990,14 @@ func TestHandlerResolvesCustomVariablesAfterUpstreamWithoutPorts(t *testing.T) {
 		"upstream_host": "$upstream_unresolved_host",
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "http://gateway.example:9443/delayed", nil)
-	req.RemoteAddr = "192.0.2.44:4567"
-	req = apisixctx.WithApisixVars(req, map[string]string{})
-	entry := captureHandlerEntry(t, p, req, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(20 * time.Millisecond)
-		apisixctx.RegisterApisixVar(r, "$balancer_ip", "10.0.0.8")
-		r.Host = "upstream.internal:9080"
-		w.WriteHeader(http.StatusNoContent)
-	}))
+	entry := captureRunLogEntry(t, p, base.LogSnapshot{Request: apisixlog.RequestLogSnapshot{
+		Method:     http.MethodGet,
+		URI:        "/delayed",
+		URL:        "http://gateway.example:9443/delayed",
+		Host:       "gateway.example:9443",
+		RemoteAddr: "192.0.2.44:4567",
+		APISIXVars: map[string]any{"$balancer_ip": "10.0.0.8"},
+	}, Outcome: apisixctx.ResponseOutcome{Status: http.StatusNoContent}})
 
 	want := map[string]any{
 		"client_ip":     "192.0.2.44",
@@ -1026,12 +1014,7 @@ func TestHandlerResolvesCustomVariablesAfterUpstreamWithoutPorts(t *testing.T) {
 	}
 }
 
-func captureHandlerEntry(
-	t *testing.T,
-	p *Plugin,
-	req *http.Request,
-	next http.Handler,
-) map[string]any {
+func captureRunLogEntry(t *testing.T, p *Plugin, snapshot base.LogSnapshot) map[string]any {
 	t.Helper()
 
 	delivered := make(chan map[string]any, 1)
@@ -1043,17 +1026,19 @@ func captureHandlerEntry(
 		return 0, nil
 	})
 	t.Cleanup(p.BatchProcessor.Stop)
-	p.Handler(next).ServeHTTP(httptest.NewRecorder(), req)
+	if err := p.RunLogPhase(snapshot); err != nil {
+		t.Fatalf("RunLogPhase() error = %v", err)
+	}
 	select {
 	case entry := <-delivered:
 		return entry
 	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for Splunk handler entry")
+		t.Fatal("timed out waiting for Splunk log-phase entry")
 		return nil
 	}
 }
 
-func TestSendPostsSplunkHECEvent(t *testing.T) {
+func TestSendBatchPostsSplunkHECEvent(t *testing.T) {
 	requests := make(chan *http.Request, 1)
 	bodies := make(chan map[string]any, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1078,7 +1063,9 @@ func TestSendPostsSplunkHECEvent(t *testing.T) {
 		SSLVerify: &sslVerify,
 	})
 
-	p.Send(map[string]any{"path": "/orders"})
+	if _, err := p.SendBatch(context.Background(), []map[string]any{{"path": "/orders"}}, 1); err != nil {
+		t.Fatalf("SendBatch() error = %v", err)
+	}
 
 	select {
 	case req := <-requests:

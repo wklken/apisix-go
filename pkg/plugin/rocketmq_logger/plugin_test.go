@@ -12,9 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
-	"net/http/httptest"
 	"runtime"
 	"strings"
 	"sync"
@@ -1421,7 +1419,7 @@ func mustMetadataView(t *testing.T, metadata map[string]any) apisixruntime.Metad
 	return view
 }
 
-func TestSendEncodesLogAndPublishesToConfiguredTopic(t *testing.T) {
+func TestSendBatchEncodesLogAndPublishesToConfiguredTopic(t *testing.T) {
 	sender := &captureSender{}
 	p := newTestPlugin(t, Config{
 		NameServerList: []string{"127.0.0.1:9876"},
@@ -1430,10 +1428,12 @@ func TestSendEncodesLogAndPublishesToConfiguredTopic(t *testing.T) {
 		Tag:            "access",
 	}, sender)
 
-	p.Send(map[string]any{
+	if _, err := p.SendBatch(context.Background(), []map[string]any{{
 		"route_id": "r1",
 		"status":   200,
-	})
+	}}, 1); err != nil {
+		t.Fatalf("SendBatch() error = %v", err)
+	}
 
 	message := sender.waitForMessage(t)
 	if message.Topic != "apisix-logs" {
@@ -1690,7 +1690,7 @@ func TestSendBatchEncodesEntriesAsSingleRocketMQMessage(t *testing.T) {
 	}
 }
 
-func TestHandlerSendsFormattedRequestLog(t *testing.T) {
+func TestRunLogPhaseSendsFormattedRequestLog(t *testing.T) {
 	sender := &captureSender{}
 	p := newTestPlugin(t, Config{
 		NameServerList: []string{"127.0.0.1:9876"},
@@ -1704,15 +1704,13 @@ func TestHandlerSendsFormattedRequestLog(t *testing.T) {
 	}, sender)
 	p.RouteID = "matched-route"
 
-	req := httptest.NewRequest(http.MethodPatch, "http://example.com/orders/1?debug=true", nil)
-	rr := httptest.NewRecorder()
-
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusAccepted)
-	})).ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusAccepted {
-		t.Fatalf("status = %d, want 202", rr.Code)
+	if err := p.RunLogPhase(base.LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{
+			Method: http.MethodPatch, URI: "/orders/1?debug=true",
+		},
+		Outcome: apisixctx.ResponseOutcome{Status: http.StatusAccepted},
+	}); err != nil {
+		t.Fatalf("RunLogPhase() error = %v", err)
 	}
 
 	message := sender.waitForMessage(t)
@@ -1820,7 +1818,7 @@ func TestMetadataDecodeFailsBeforeRocketMQSenderAndProcessorAcquisition(t *testi
 	}
 }
 
-func TestHandlerSendsDefaultAccessLogWhenNoFormatIsConfigured(t *testing.T) {
+func TestRunLogPhaseSendsDefaultAccessLogWhenNoFormatIsConfigured(t *testing.T) {
 	sender := &captureSender{}
 	p := newTestPlugin(t, Config{
 		NameServerList: []string{"127.0.0.1:9876"},
@@ -1828,12 +1826,14 @@ func TestHandlerSendsDefaultAccessLogWhenNoFormatIsConfigured(t *testing.T) {
 		BatchMaxSize:   1,
 	}, sender)
 
-	req := httptest.NewRequest(http.MethodGet, "http://example.com/orders?debug=true", nil)
-	rr := httptest.NewRecorder()
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusAccepted)
-		_, _ = w.Write([]byte("accepted"))
-	})).ServeHTTP(rr, req)
+	if err := p.RunLogPhase(base.LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{
+			Method: http.MethodGet, URI: "/orders?debug=true",
+		},
+		Outcome: apisixctx.ResponseOutcome{Status: http.StatusAccepted, Bytes: 8},
+	}); err != nil {
+		t.Fatalf("RunLogPhase() error = %v", err)
+	}
 
 	message := sender.waitForMessage(t)
 	var payload map[string]any
@@ -1850,7 +1850,7 @@ func TestHandlerSendsDefaultAccessLogWhenNoFormatIsConfigured(t *testing.T) {
 	}
 }
 
-func TestHandlerSendsOriginRequestLog(t *testing.T) {
+func TestRunLogPhaseSendsOriginRequestLog(t *testing.T) {
 	sender := &captureSender{}
 	p := newTestPlugin(t, Config{
 		MetaFormat:      "origin",
@@ -1861,23 +1861,15 @@ func TestHandlerSendsOriginRequestLog(t *testing.T) {
 		BatchMaxSize:    1,
 	}, sender)
 
-	req := httptest.NewRequest(
-		http.MethodPost,
-		"http://example.com/orders?debug=true",
-		bytes.NewBufferString(`{"order":1}`),
-	)
-	req.Header.Set("X-Tenant", "gold")
-	rr := httptest.NewRecorder()
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			t.Fatalf("read upstream request body: %v", err)
-		}
-		if string(body) != `{"order":1}` {
-			t.Fatalf("upstream body = %q, want original request body", body)
-		}
-		w.WriteHeader(http.StatusNoContent)
-	})).ServeHTTP(rr, req)
+	if err := p.RunLogPhase(base.LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{
+			Method: http.MethodPost, URI: "/orders?debug=true", Proto: "HTTP/1.1",
+			Header: http.Header{"X-Tenant": {"gold"}}, Body: []byte(`{"order":1}`),
+		},
+		Outcome: apisixctx.ResponseOutcome{Status: http.StatusNoContent},
+	}); err != nil {
+		t.Fatalf("RunLogPhase() error = %v", err)
+	}
 
 	message := sender.waitForMessage(t)
 	payload := string(message.Body)
@@ -1892,7 +1884,7 @@ func TestHandlerSendsOriginRequestLog(t *testing.T) {
 	}
 }
 
-func TestHandlerBodyCaptureMatrix(t *testing.T) {
+func TestRunLogPhaseBodyCaptureMatrix(t *testing.T) {
 	tests := []struct {
 		name, requestBody, responseBody, header string
 		requestExpr, responseExpr               [][]any
@@ -1927,34 +1919,19 @@ func TestHandlerBodyCaptureMatrix(t *testing.T) {
 				IncludeRespBody: true, IncludeRespBodyExpr: test.responseExpr,
 				MaxReqBodyBytes: 32, MaxRespBodyBytes: 32,
 			}, sender)
-			req := httptest.NewRequest(
-				http.MethodPost,
-				"http://example.com/orders",
-				bytes.NewBufferString(test.requestBody),
-			)
+			header := http.Header{}
 			if test.header != "" {
-				req.Header.Set("X-Log-Body", test.header)
+				header.Set("X-Log-Body", test.header)
 			}
-			rr := httptest.NewRecorder()
-			p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				body, err := io.ReadAll(r.Body)
-				if err != nil {
-					t.Fatalf("read upstream request body: %v", err)
-				}
-				if string(body) != test.requestBody {
-					t.Fatalf("upstream body = %q, want %q", body, test.requestBody)
-				}
-				w.WriteHeader(http.StatusCreated)
-				_, _ = w.Write([]byte(test.responseBody))
-			})).ServeHTTP(rr, req)
-			if rr.Code != http.StatusCreated || rr.Body.String() != test.responseBody {
-				t.Fatalf(
-					"response = (%d, %q), want (%d, %q)",
-					rr.Code,
-					rr.Body.String(),
-					http.StatusCreated,
-					test.responseBody,
-				)
+			if err := p.RunLogPhase(base.LogSnapshot{
+				Request: apisixlog.RequestLogSnapshot{
+					Method: http.MethodPost, URI: "/orders", Header: header,
+					Body: []byte(test.requestBody),
+				},
+				Response: apisixlog.ResponseLogSnapshot{Body: []byte(test.responseBody)},
+				Outcome:  apisixctx.ResponseOutcome{Status: http.StatusCreated},
+			}); err != nil {
+				t.Fatalf("RunLogPhase() error = %v", err)
 			}
 
 			message := sender.waitForMessage(t)
@@ -1983,7 +1960,7 @@ func TestHandlerBodyCaptureMatrix(t *testing.T) {
 	}
 }
 
-func TestHandlerLogsDecodedCompressedResponseBody(t *testing.T) {
+func TestRunLogPhaseLogsDecodedCompressedResponseBody(t *testing.T) {
 	tests := []struct {
 		name     string
 		encoding string
@@ -2035,13 +2012,16 @@ func TestHandlerLogsDecodedCompressedResponseBody(t *testing.T) {
 			t.Cleanup(func() { p.BatchProcessor.Stop() })
 
 			const body = "compressed hello world\n"
-			req := httptest.NewRequest(http.MethodGet, "http://example.com/compressed", nil)
-			rr := httptest.NewRecorder()
-			p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				w.Header().Set("Content-Encoding", test.encoding)
-				w.WriteHeader(http.StatusOK)
-				_, _ = w.Write(test.compress(t, body))
-			})).ServeHTTP(rr, req)
+			if err := p.RunLogPhase(base.LogSnapshot{
+				Request: apisixlog.RequestLogSnapshot{Method: http.MethodGet, URI: "/compressed"},
+				Response: apisixlog.ResponseLogSnapshot{
+					Header: http.Header{"Content-Encoding": {test.encoding}},
+					Body:   test.compress(t, body),
+				},
+				Outcome: apisixctx.ResponseOutcome{Status: http.StatusOK},
+			}); err != nil {
+				t.Fatalf("RunLogPhase() error = %v", err)
+			}
 
 			message := sender.waitForMessage(t)
 			var payload map[string]any

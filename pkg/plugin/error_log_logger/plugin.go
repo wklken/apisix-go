@@ -1165,23 +1165,6 @@ type skywalkingText struct {
 	Text string `json:"text"`
 }
 
-func (p *Plugin) Send(log map[string]any) {
-	body, err := json.Marshal(log)
-	if err != nil {
-		logger.Errorf("failed to marshal error log entry: %s", err)
-		return
-	}
-	if p.BatchProcessor == nil {
-		if err := p.SendLogs(context.Background(), []string{string(body)}); err != nil {
-			logger.Errorf("failed to send error log entry: %s", err)
-		}
-		return
-	}
-	if !p.BatchProcessor.Push(map[string]any{"message": string(body)}) {
-		logger.Errorf("failed to enqueue error log entry")
-	}
-}
-
 func logLine(entry map[string]any) (string, error) {
 	if line, ok := entry["message"].(string); ok {
 		return line, nil

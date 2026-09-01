@@ -12,14 +12,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/felixge/httpsnoop"
 	"github.com/wklken/apisix-go/pkg/capability"
-	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
 	"github.com/wklken/apisix-go/pkg/secret"
-
-	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 )
 
 type Plugin struct {
@@ -565,50 +561,6 @@ func clearKafkaBrokerClone(brokers []Broker) {
 	clear(brokers)
 }
 
-func (p *Plugin) Handler(next http.Handler) http.Handler {
-	fn := func(w http.ResponseWriter, r *http.Request) {
-		var requestBody string
-		if p.config.IncludeReqBody && base.ExprMatched(r, p.config.IncludeReqBodyExpr, 0) {
-			body, err := base.ReadSharedRequestBody(r, p.config.MaxReqBodyBytes)
-			if err == nil && body != "" {
-				requestBody = body
-			}
-		}
-
-		writer := w
-		var recorder *base.SharedResponseRecorder
-		if p.config.IncludeRespBody {
-			recorder = base.GetOrCreateSharedResponseRecorderWithLimit(w, r, p.config.MaxRespBodyBytes)
-			writer = recorder
-		}
-
-		metrics := httpsnoop.CaptureMetrics(next, writer, r)
-		if p.config.MetaFormat == "origin" {
-			_ = p.enqueueKafkaLogIfRunning(map[string]any{
-				originLogKey: buildOriginRequestLog(r, requestBody, p.config.IncludeReqBody),
-			})
-			return
-		}
-
-		status := metrics.Code
-		var logFields map[string]any
-		if len(p.LogFormat) > 0 {
-			logFields = apisixlog.GetFields(r, p.LogFormat)
-		} else {
-			logFields = p.defaultLogFields(r, metrics)
-		}
-		if requestBody != "" {
-			base.NestedLogMap(logFields, "request")["body"] = requestBody
-		}
-		if recorder != nil && recorder.HasBody() && base.ExprMatched(r, p.config.IncludeRespBodyExpr, status) {
-			base.NestedLogMap(logFields, "response")["body"] = recorder.BodyTruncated(p.config.MaxRespBodyBytes)
-		}
-
-		_ = p.enqueueKafkaLogIfRunning(logFields)
-	}
-	return http.HandlerFunc(fn)
-}
-
 func (p *Plugin) RunLogPhase(snapshot base.LogSnapshot) error {
 	if p.config.MetaFormat == "origin" {
 		body := ""
@@ -694,35 +646,6 @@ func snapshotURI(snapshot base.LogSnapshot) string {
 	return "/"
 }
 
-func (p *Plugin) defaultLogFields(r *http.Request, metrics httpsnoop.Metrics) map[string]any {
-	upstreamHost := base.RequestVar(r, "$balancer_ip", metrics.Code)
-	upstreamPort := base.RequestVar(r, "$balancer_port", metrics.Code)
-	upstream := upstreamHost
-	if upstreamHost != "" && upstreamPort != "" {
-		upstream = net.JoinHostPort(upstreamHost, upstreamPort)
-	}
-	return map[string]any{
-		"route_id":   p.RouteID,
-		"service_id": base.RequestVar(r, "$service_id", metrics.Code),
-		"client_ip":  base.RemoteIP(r.RemoteAddr),
-		"upstream":   upstream,
-		"request": map[string]any{
-			"method": r.Method,
-			"uri":    r.URL.RequestURI(),
-		},
-		"response": map[string]any{
-			"status": metrics.Code,
-			"size":   metrics.Written,
-		},
-	}
-}
-
-func (p *Plugin) Send(log map[string]any) {
-	if _, err := p.SendBatch(context.Background(), []map[string]any{log}, 1); err != nil {
-		logger.Errorf("%s", err)
-	}
-}
-
 func (p *Plugin) SendBatch(ctx context.Context, entries []map[string]any, batchMaxSize int) (int, error) {
 	p.lifecycleMu.RLock()
 	defer p.lifecycleMu.RUnlock()
@@ -753,23 +676,6 @@ func (p *Plugin) SendBatch(ctx context.Context, entries []map[string]any, batchM
 
 func encodeKafkaBatch(entries []map[string]any, batchMaxSize int) ([]byte, error) {
 	return base.EncodeLogBatch(entries, batchMaxSize, originLogKey)
-}
-
-func buildOriginRequestLog(r *http.Request, requestBody string, includeReqBody bool) string {
-	var b strings.Builder
-	requestURI := r.URL.RequestURI()
-	if requestURI == "" {
-		requestURI = "/"
-	}
-	_, _ = fmt.Fprintf(&b, "%s %s %s\r\n", r.Method, requestURI, r.Proto)
-
-	writeKafkaOriginHeaders(&b, r.Header, r.Host)
-
-	b.WriteString("\r\n")
-	if includeReqBody {
-		b.WriteString(requestBody)
-	}
-	return b.String()
 }
 
 func writeKafkaOriginHeaders(b *strings.Builder, source http.Header, host string) {

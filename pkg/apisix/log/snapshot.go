@@ -1,9 +1,7 @@
 package log
 
 import (
-	"bytes"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -16,7 +14,6 @@ import (
 
 const (
 	snapshotValueBudget = 1 << 20
-	snapshotBodyLimit   = 512 << 10
 )
 
 // LogSnapshot is the detached request/response view handed to log and
@@ -369,39 +366,6 @@ func snapshotAddressHost(address string) string {
 	return address
 }
 
-// BuildSnapshot copies all request and response data into one detached value.
-// Request bodies are bounded to the same hard ceiling as logger policies and
-// are restored before returning to the request pipeline.
-func BuildSnapshot(
-	r *http.Request,
-	response ResponseSnapshot,
-	outcome apisixctx.ResponseOutcome,
-	source apisixctx.ResponseSource,
-	started time.Time,
-	finished time.Time,
-) LogSnapshot {
-	var requestBody []byte
-	var requestBodyTruncated bool
-	if r != nil {
-		requestBody, requestBodyTruncated = captureRequestBody(r)
-	}
-	return BuildSnapshotFromOwnedInputs(
-		r,
-		ResponseSnapshot{
-			Header:        cloneHeader(response.Header),
-			Trailer:       cloneHeader(response.Trailer),
-			Body:          append([]byte(nil), response.Body...),
-			BodyTruncated: response.BodyTruncated,
-		},
-		requestBody,
-		requestBodyTruncated,
-		outcome,
-		source,
-		started,
-		finished,
-	)
-}
-
 // BuildSnapshotFromOwnedInputs builds a snapshot from detached response data
 // and a captured request body. The response fields and requestBody ownership
 // are transferred to the returned snapshot; callers must not mutate or reuse
@@ -561,33 +525,4 @@ func requestScheme(r *http.Request) string {
 		return "https"
 	}
 	return "http"
-}
-
-func captureRequestBody(r *http.Request) ([]byte, bool) {
-	if value, ok := apisixctx.GetRequestVar(r, apisixctx.RequestBodyKey).([]byte); ok {
-		body := append([]byte(nil), value...)
-		if len(body) > snapshotBodyLimit {
-			return body[:snapshotBodyLimit], true
-		}
-		return body, false
-	}
-	if r.Body == nil || r.Body == http.NoBody {
-		return nil, false
-	}
-	original := r.Body
-	prefix, err := io.ReadAll(io.LimitReader(original, snapshotBodyLimit+1))
-	r.Body = &snapshotReadCloser{Reader: io.MultiReader(bytes.NewReader(prefix), original), Closer: original}
-	if err != nil && len(prefix) == 0 {
-		return nil, false
-	}
-	truncated := len(prefix) > snapshotBodyLimit
-	if truncated {
-		prefix = prefix[:snapshotBodyLimit]
-	}
-	return append([]byte(nil), prefix...), truncated
-}
-
-type snapshotReadCloser struct {
-	io.Reader
-	io.Closer
 }

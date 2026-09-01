@@ -3,9 +3,7 @@ package log
 import (
 	"context"
 	"crypto/tls"
-	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -17,45 +15,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
 )
 
-func TestBuildSnapshotDetachesMutableRequestAndResponseState(t *testing.T) {
-	request := httptest.NewRequest(http.MethodPost, "https://gateway.test/orders?q=one", strings.NewReader("request"))
-	request = request.WithContext(context.WithValue(request.Context(), ctx.RequestIDKey, "request-1"))
-	request = ctx.WithApisixVars(request, map[string]string{"$route_id": "route-1", "$node_id": "node-1"})
-	ctx.RegisterApisixVar(request, "$nested", map[string]any{"key": "value"})
-	response := ResponseSnapshot{
-		Header:  http.Header{"X-Trace": {"one"}},
-		Trailer: http.Header{"X-Trailer": {"two"}},
-		Body:    []byte("response"),
-	}
-	snapshot := BuildSnapshot(request, response, ctx.ResponseOutcome{Status: 201}, ctx.ResponseSourceUpstream,
-		time.Unix(1, 0), time.Unix(2, 0))
-
-	request.Header.Set("X-Trace", "mutated")
-	request.URL.Path = "/mutated"
-	response.Header.Set("X-Trace", "mutated")
-	response.Body[0] = 'X'
-	ctx.GetApisixVars(request)["$nested"].(map[string]any)["key"] = "mutated"
-	if snapshot.Request.Header.Get("X-Trace") != "" {
-		t.Fatalf("request snapshot unexpectedly copied response header: %#v", snapshot.Request.Header)
-	}
-	if snapshot.Response.Header.Get("X-Trace") != "one" || string(snapshot.Response.Body) != "response" {
-		t.Fatalf("response snapshot changed after source mutation: %#v", snapshot.Response)
-	}
-	if got := snapshot.Request.APISIXVars["$nested"].(map[string]any)["key"]; got != "value" {
-		t.Fatalf("nested APISIX var = %#v, want value", got)
-	}
-	if snapshot.Started != time.Unix(1, 0) || snapshot.Finished != time.Unix(2, 0) {
-		t.Fatalf("snapshot timestamps = %v/%v", snapshot.Started, snapshot.Finished)
-	}
-	if snapshot.Request.ID != "request-1" || snapshot.NodeID != "node-1" {
-		t.Fatalf("snapshot correlation = request %q node %q", snapshot.Request.ID, snapshot.NodeID)
-	}
-	if snapshot.Request.Path != "/orders" {
-		t.Fatalf("snapshot path = %q, want /orders", snapshot.Request.Path)
-	}
-}
-
-func TestBuildSnapshotRedactsRegisteredQueryValuesWithoutChangingLiveRequest(t *testing.T) {
+func TestBuildSnapshotFromOwnedInputsRedactsRegisteredQueryValuesWithoutChangingLiveRequest(t *testing.T) {
 	request := httptest.NewRequest(
 		http.MethodGet,
 		"https://gateway.test/orders?keep=one&token=first&token=second&keep=two",
@@ -74,8 +34,16 @@ func TestBuildSnapshotRedactsRegisteredQueryValuesWithoutChangingLiveRequest(t *
 	ctx.RegisterApisixVar(request, "$request_uri", originalURI)
 	ctx.RegisterApisixVar(request, "$arg_token", "first")
 
-	snapshot := BuildSnapshot(request, ResponseSnapshot{}, ctx.ResponseOutcome{}, ctx.ResponseSourceUpstream,
-		time.Unix(1, 0), time.Unix(2, 0))
+	snapshot := BuildSnapshotFromOwnedInputs(
+		request,
+		ResponseSnapshot{},
+		nil,
+		false,
+		ctx.ResponseOutcome{},
+		ctx.ResponseSourceUpstream,
+		time.Unix(1, 0),
+		time.Unix(2, 0),
+	)
 	if request.URL.RequestURI() != originalURI || request.URL.RawQuery != originalRawQuery {
 		t.Fatalf("live request query changed: uri=%q raw=%q", request.URL.RequestURI(), request.URL.RawQuery)
 	}
@@ -154,6 +122,11 @@ func TestLiveLogFieldsRedactRegisteredQueryValues(t *testing.T) {
 	}
 }
 
+type snapshotPanicBody struct{}
+
+func (snapshotPanicBody) Read([]byte) (int, error) { panic("live request body read") }
+func (snapshotPanicBody) Close() error             { return nil }
+
 func TestBuildSnapshotFromOwnedInputsUsesCapturedBodyWithoutReadingRequest(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "https://gateway.test/orders?q=one", nil)
 	request.Body = snapshotPanicBody{}
@@ -183,13 +156,21 @@ func TestBuildSnapshotFromOwnedInputsUsesCapturedBodyWithoutReadingRequest(t *te
 	}
 }
 
-func TestBuildSnapshotPreservesEffectiveRealIP(t *testing.T) {
+func TestBuildSnapshotFromOwnedInputsPreservesEffectiveRealIP(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "http://gateway.test/orders", nil)
 	request.RemoteAddr = "192.0.2.10:4321"
 	request = request.WithContext(context.WithValue(request.Context(), ctx.RemoteAddrKey, "198.51.100.20"))
 	request = request.WithContext(context.WithValue(request.Context(), ctx.RemotePortKey, "8443"))
-	snapshot := BuildSnapshot(request, ResponseSnapshot{}, ctx.ResponseOutcome{}, ctx.ResponseSourceUpstream,
-		time.Now(), time.Now())
+	snapshot := BuildSnapshotFromOwnedInputs(
+		request,
+		ResponseSnapshot{},
+		nil,
+		false,
+		ctx.ResponseOutcome{},
+		ctx.ResponseSourceUpstream,
+		time.Now(),
+		time.Now(),
+	)
 	if snapshot.Request.APISIXVars["$remote_addr"] != "198.51.100.20" ||
 		snapshot.Request.APISIXVars["$remote_port"] != "8443" {
 		t.Fatalf("effective remote vars = %#v", snapshot.Request.APISIXVars)
@@ -439,56 +420,44 @@ func TestValueFromSnapshotCoversFallbackVariableSemantics(t *testing.T) {
 	}
 }
 
-type snapshotErrorBody struct{}
-
-type snapshotPanicBody struct{}
-
-func (snapshotPanicBody) Read([]byte) (int, error) { panic("live request body read") }
-func (snapshotPanicBody) Close() error             { return nil }
-
-func (snapshotErrorBody) Read([]byte) (int, error) { return 0, errors.New("read failed") }
-func (snapshotErrorBody) Close() error             { return nil }
-
-func TestBuildSnapshotHandlesBodyAndSchemeBoundaries(t *testing.T) {
-	if got := BuildSnapshot(nil, ResponseSnapshot{Body: []byte("response")}, ctx.ResponseOutcome{},
-		ctx.ResponseSourceUnknown, time.Time{}, time.Time{}); string(got.Response.Body) != "response" {
+func TestBuildSnapshotFromOwnedInputsHandlesNilAndSchemeBoundaries(t *testing.T) {
+	if got := BuildSnapshotFromOwnedInputs(
+		nil,
+		ResponseSnapshot{Body: []byte("response")},
+		nil,
+		false,
+		ctx.ResponseOutcome{},
+		ctx.ResponseSourceUnknown,
+		time.Time{},
+		time.Time{},
+	); string(got.Response.Body) != "response" {
 		t.Fatalf("nil-request snapshot = %#v", got)
 	}
 
 	request := httptest.NewRequest(http.MethodPost, "https://gateway.test/upload", nil)
-	request = ctx.WithRequestVars(request)
-	ctx.RegisterRequestVar(request, ctx.RequestBodyKey, bytesOf('x', snapshotBodyLimit+1))
 	request = ctx.WithApisixVars(request, map[string]string{
 		"$consumer_name": "alice", "$consumer_group_id": "group-1",
 	})
 	ctx.RegisterApisixVar(request, "$consumer", map[string]any{"secret": "hidden"})
-	snapshot := BuildSnapshot(request, ResponseSnapshot{}, ctx.ResponseOutcome{}, ctx.ResponseSourceUpstream,
-		time.Now(), time.Now())
-	if len(snapshot.Request.Body) != snapshotBodyLimit || !snapshot.Request.BodyTruncated {
-		t.Fatalf("context body capture = %d/truncated=%v", len(snapshot.Request.Body), snapshot.Request.BodyTruncated)
+	capturedBody := []byte("captured-request")
+	snapshot := BuildSnapshotFromOwnedInputs(
+		request,
+		ResponseSnapshot{},
+		capturedBody,
+		true,
+		ctx.ResponseOutcome{},
+		ctx.ResponseSourceUpstream,
+		time.Now(),
+		time.Now(),
+	)
+	if string(snapshot.Request.Body) != string(capturedBody) || !snapshot.Request.BodyTruncated {
+		t.Fatalf("owned body capture = %q/truncated=%v", snapshot.Request.Body, snapshot.Request.BodyTruncated)
 	}
 	if snapshot.Request.Consumer.Username != "alice" || snapshot.Request.Consumer.GroupID != "group-1" {
 		t.Fatalf("safe consumer = %#v", snapshot.Request.Consumer)
 	}
 	if _, ok := snapshot.Request.APISIXVars["$consumer"]; ok {
 		t.Fatal("unsafe consumer resource crossed snapshot boundary")
-	}
-
-	streamed := httptest.NewRequest(http.MethodPost, "http://gateway.test/upload", strings.NewReader("stream-body"))
-	streamSnapshot := BuildSnapshot(streamed, ResponseSnapshot{}, ctx.ResponseOutcome{}, ctx.ResponseSourceUpstream,
-		time.Now(), time.Now())
-	replayed, err := io.ReadAll(streamed.Body)
-	if err != nil || string(replayed) != "stream-body" || string(streamSnapshot.Request.Body) != "stream-body" {
-		t.Fatalf("stream body snapshot/replay = %q/%q/%v", streamSnapshot.Request.Body, replayed, err)
-	}
-
-	errorRequest := httptest.NewRequest(http.MethodPost, "http://gateway.test/upload", nil)
-	errorRequest.Body = snapshotErrorBody{}
-	if body, truncated := captureRequestBody(errorRequest); body != nil || truncated {
-		t.Fatalf("error body capture = %q/%v", body, truncated)
-	}
-	if _, err := io.ReadAll(errorRequest.Body); err == nil {
-		t.Fatal("erroring body was not restored")
 	}
 
 	forwarded := httptest.NewRequest(http.MethodGet, "http://gateway.test/", nil)
@@ -506,8 +475,4 @@ func TestBuildSnapshotHandlesBodyAndSchemeBoundaries(t *testing.T) {
 	if got := requestScheme(forwarded); got != "https" {
 		t.Fatalf("TLS scheme = %q", got)
 	}
-}
-
-func bytesOf(value byte, count int) []byte {
-	return []byte(strings.Repeat(string(value), count))
 }

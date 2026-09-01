@@ -29,6 +29,23 @@ type recordingFileLoggerSink struct {
 	release    chan struct{}
 }
 
+const testFileLoggerFieldsKey = "$file_logger_test_fields"
+
+func testFileLoggerSnapshot(fields map[string]any) base.LogSnapshot {
+	return base.LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{
+			APISIXVars: map[string]any{testFileLoggerFieldsKey: fields},
+		},
+	}
+}
+
+func testFileLoggerSnapshotFields(snapshot base.LogSnapshot) map[string]any {
+	if fields, ok := snapshot.Request.APISIXVars[testFileLoggerFieldsKey].(map[string]any); ok {
+		return fields
+	}
+	return map[string]any{}
+}
+
 func TestFileLoggerProcessorUsesPluginTaskOwner(t *testing.T) {
 	registry := runtime.NewTaskRegistry(context.Background(), nil)
 	owner := newFileLoggerTaskOwnerForTest(t, registry, "plugin/test/file-logger/route-1")
@@ -72,8 +89,9 @@ func TestFileLoggerProcessorPanicSealsAdmission(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("file writer task panic was not reported")
 	}
-	if err := processor.pushFields(map[string]any{"late": true}); !errors.Is(err, base.ErrLogQueueUnavailable) {
-		t.Fatalf("pushFields() after task panic error = %v, want ErrLogQueueUnavailable", err)
+	err = processor.pushSnapshot(testFileLoggerSnapshot(map[string]any{"late": true}))
+	if !errors.Is(err, base.ErrLogQueueUnavailable) {
+		t.Fatalf("pushSnapshot() after task panic error = %v, want ErrLogQueueUnavailable", err)
 	}
 	stopFileLoggerTaskRegistryForTest(t, registry)
 }
@@ -94,8 +112,9 @@ func TestFileLoggerBlockingWriteIsNamedResidualAndDefersLeaseRelease(t *testing.
 		lease.release()
 		t.Fatalf("newFileLoggerProcessor() error = %v", err)
 	}
-	if err := processor.pushFields(map[string]any{"id": 1}); err != nil {
-		t.Fatalf("pushFields() error = %v", err)
+	processor.snapshotFields = testFileLoggerSnapshotFields
+	if err := processor.pushSnapshot(testFileLoggerSnapshot(map[string]any{"id": 1})); err != nil {
+		t.Fatalf("pushSnapshot() error = %v", err)
 	}
 	ack, err := processor.pushBarrier()
 	if err != nil {
@@ -130,8 +149,9 @@ func TestFileLoggerBlockingWriteIsNamedResidualAndDefersLeaseRelease(t *testing.
 	if got := residualErr.Residuals(); !slices.Equal(got, wantResiduals) {
 		t.Fatalf("TaskResidualError.Residuals() = %v, want %v", got, wantResiduals)
 	}
-	if err := processor.pushFields(map[string]any{"late": true}); !errors.Is(err, base.ErrLogQueueUnavailable) {
-		t.Fatalf("pushFields() after registry cancellation error = %v, want ErrLogQueueUnavailable", err)
+	err = processor.pushSnapshot(testFileLoggerSnapshot(map[string]any{"late": true}))
+	if !errors.Is(err, base.ErrLogQueueUnavailable) {
+		t.Fatalf("pushSnapshot() after registry cancellation error = %v, want ErrLogQueueUnavailable", err)
 	}
 	if !writers.has(key) {
 		t.Fatal("writer lease was released before the residual task completed")
@@ -188,6 +208,7 @@ func newOwnedFileLoggerProcessorForTest(t *testing.T, sink fileLoggerSink) *file
 	if err != nil {
 		t.Fatalf("newFileLoggerProcessor() error = %v", err)
 	}
+	processor.snapshotFields = testFileLoggerSnapshotFields
 	return processor
 }
 
@@ -201,6 +222,7 @@ func newOwnedFileLoggerProcessorWithTimerForTest(
 	if err != nil {
 		t.Fatalf("newFileLoggerProcessorWithTimer() error = %v", err)
 	}
+	processor.snapshotFields = testFileLoggerSnapshotFields
 	return processor
 }
 
@@ -252,8 +274,8 @@ func TestFileLoggerProcessorAutomaticFlushErrorsReachNextBarrier(t *testing.T) {
 			enqueue: func(t *testing.T, p *fileLoggerProcessor) {
 				t.Helper()
 				for i := range fileLoggerBatchMaxEntries {
-					if err := p.pushFields(map[string]any{"id": i}); err != nil {
-						t.Fatalf("pushFields(%d) error = %v", i, err)
+					if err := p.pushSnapshot(testFileLoggerSnapshot(map[string]any{"id": i})); err != nil {
+						t.Fatalf("pushSnapshot(%d) error = %v", i, err)
 					}
 				}
 			},
@@ -265,8 +287,8 @@ func TestFileLoggerProcessorAutomaticFlushErrorsReachNextBarrier(t *testing.T) {
 				t.Helper()
 				for i := range 2 {
 					fields := map[string]any{"id": i, "payload": strings.Repeat("x", 40*1024)}
-					if err := p.pushFields(fields); err != nil {
-						t.Fatalf("pushFields(%d) error = %v", i, err)
+					if err := p.pushSnapshot(testFileLoggerSnapshot(fields)); err != nil {
+						t.Fatalf("pushSnapshot(%d) error = %v", i, err)
 					}
 				}
 			},
@@ -278,8 +300,8 @@ func TestFileLoggerProcessorAutomaticFlushErrorsReachNextBarrier(t *testing.T) {
 			enqueue: func(t *testing.T, p *fileLoggerProcessor) {
 				t.Helper()
 				fields := map[string]any{"payload": string(make([]byte, fileLoggerBatchMaxBytes))}
-				if err := p.pushFields(fields); err != nil {
-					t.Fatalf("pushFields() error = %v", err)
+				if err := p.pushSnapshot(testFileLoggerSnapshot(fields)); err != nil {
+					t.Fatalf("pushSnapshot() error = %v", err)
 				}
 			},
 			wantFailed: 1,
@@ -288,8 +310,8 @@ func TestFileLoggerProcessorAutomaticFlushErrorsReachNextBarrier(t *testing.T) {
 			name: "timer",
 			enqueue: func(t *testing.T, p *fileLoggerProcessor) {
 				t.Helper()
-				if err := p.pushFields(map[string]any{"id": 1}); err != nil {
-					t.Fatalf("pushFields() error = %v", err)
+				if err := p.pushSnapshot(testFileLoggerSnapshot(map[string]any{"id": 1})); err != nil {
+					t.Fatalf("pushSnapshot() error = %v", err)
 				}
 			},
 			wantFailed: 1,
@@ -350,11 +372,11 @@ func (s *recordingFileLoggerSink) snapshotWrites() [][]byte {
 func TestFileLoggerProcessorFlushesMultipleEntriesInOneWrite(t *testing.T) {
 	sink := &recordingFileLoggerSink{}
 	p := newOwnedFileLoggerProcessorForTest(t, sink)
-	if err := p.pushFields(map[string]any{"id": 1}); err != nil {
-		t.Fatalf("pushFields(1) error = %v", err)
+	if err := p.pushSnapshot(testFileLoggerSnapshot(map[string]any{"id": 1})); err != nil {
+		t.Fatalf("pushSnapshot(1) error = %v", err)
 	}
-	if err := p.pushFields(map[string]any{"id": 2}); err != nil {
-		t.Fatalf("pushFields(2) error = %v", err)
+	if err := p.pushSnapshot(testFileLoggerSnapshot(map[string]any{"id": 2})); err != nil {
+		t.Fatalf("pushSnapshot(2) error = %v", err)
 	}
 	ack, err := p.pushBarrier()
 	if err != nil {
@@ -393,8 +415,8 @@ func TestFileLoggerProcessorFlushesByCount(t *testing.T) {
 	p := newOwnedFileLoggerProcessorForTest(t, sink)
 	p.beforeEncode = func() {}
 	for i := range fileLoggerBatchMaxEntries {
-		if err := p.pushFields(map[string]any{"id": i}); err != nil {
-			t.Fatalf("pushFields(%d) error = %v", i, err)
+		if err := p.pushSnapshot(testFileLoggerSnapshot(map[string]any{"id": i})); err != nil {
+			t.Fatalf("pushSnapshot(%d) error = %v", i, err)
 		}
 	}
 	deadline := time.Now().Add(time.Second)
@@ -413,11 +435,13 @@ func TestFileLoggerProcessorFlushesByCount(t *testing.T) {
 func TestFileLoggerProcessorFlushesByBytesAndOversizedLineAlone(t *testing.T) {
 	sink := &recordingFileLoggerSink{}
 	p := newOwnedFileLoggerProcessorForTest(t, sink)
-	if err := p.pushFields(map[string]any{"payload": "small"}); err != nil {
-		t.Fatalf("pushFields(small) error = %v", err)
+	if err := p.pushSnapshot(testFileLoggerSnapshot(map[string]any{"payload": "small"})); err != nil {
+		t.Fatalf("pushSnapshot(small) error = %v", err)
 	}
-	if err := p.pushFields(map[string]any{"payload": string(make([]byte, fileLoggerBatchMaxBytes))}); err != nil {
-		t.Fatalf("pushFields(oversized) error = %v", err)
+	if err := p.pushSnapshot(
+		testFileLoggerSnapshot(map[string]any{"payload": string(make([]byte, fileLoggerBatchMaxBytes))}),
+	); err != nil {
+		t.Fatalf("pushSnapshot(oversized) error = %v", err)
 	}
 	p.stop()
 	writes := sink.snapshotWrites()
@@ -435,8 +459,8 @@ func TestFileLoggerProcessorFlushesByTimer(t *testing.T) {
 	sink := &recordingFileLoggerSink{}
 	p := newOwnedFileLoggerProcessorForTest(t, sink)
 	started := time.Now()
-	if err := p.pushFields(map[string]any{"id": 1}); err != nil {
-		t.Fatalf("pushFields() error = %v", err)
+	if err := p.pushSnapshot(testFileLoggerSnapshot(map[string]any{"id": 1})); err != nil {
+		t.Fatalf("pushSnapshot() error = %v", err)
 	}
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) && len(sink.snapshotWrites()) == 0 {
@@ -465,8 +489,8 @@ func TestFileLoggerProcessorArmsTimerOnlyForNonEmptyBatch(t *testing.T) {
 	if timerCreations != 0 {
 		t.Fatalf("idle timer creations = %d, want zero", timerCreations)
 	}
-	if err := p.pushFields(map[string]any{"id": 1}); err != nil {
-		t.Fatalf("pushFields() error = %v", err)
+	if err := p.pushSnapshot(testFileLoggerSnapshot(map[string]any{"id": 1})); err != nil {
+		t.Fatalf("pushSnapshot() error = %v", err)
 	}
 	ack, err := p.pushBarrier()
 	if err != nil {
@@ -487,8 +511,8 @@ func TestFileLoggerProcessorPendingWaitsForWriteCompletion(t *testing.T) {
 		release: make(chan struct{}),
 	}
 	p := newOwnedFileLoggerProcessorForTest(t, sink)
-	if err := p.pushFields(map[string]any{"id": 1}); err != nil {
-		t.Fatalf("pushFields() error = %v", err)
+	if err := p.pushSnapshot(testFileLoggerSnapshot(map[string]any{"id": 1})); err != nil {
+		t.Fatalf("pushSnapshot() error = %v", err)
 	}
 	ack, err := p.pushBarrier()
 	if err != nil {
@@ -499,14 +523,14 @@ func TestFileLoggerProcessorPendingWaitsForWriteCompletion(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("worker did not enter blocked Write")
 	}
-	if got := p.pendingCount(); got != 1 {
+	if got := p.stats().Pending; got != 1 {
 		t.Fatalf("pending while Write blocked = %d, want one", got)
 	}
 	close(sink.release)
 	if err := <-ack; err != nil {
 		t.Fatalf("barrier error = %v", err)
 	}
-	if got := p.pendingCount(); got != 0 {
+	if got := p.stats().Pending; got != 0 {
 		t.Fatalf("pending after Write = %d, want zero", got)
 	}
 	if got := p.stats().PendingBytes; got != 0 {
@@ -517,8 +541,8 @@ func TestFileLoggerProcessorPendingWaitsForWriteCompletion(t *testing.T) {
 
 func TestFileLoggerProcessorPendingClearsAfterWriteFailure(t *testing.T) {
 	p := newOwnedFileLoggerProcessorForTest(t, &recordingFileLoggerSink{writeErr: errors.New("write failed")})
-	if err := p.pushFields(map[string]any{"id": 1}); err != nil {
-		t.Fatalf("pushFields() error = %v", err)
+	if err := p.pushSnapshot(testFileLoggerSnapshot(map[string]any{"id": 1})); err != nil {
+		t.Fatalf("pushSnapshot() error = %v", err)
 	}
 	ack, err := p.pushBarrier()
 	if err != nil {
@@ -527,7 +551,7 @@ func TestFileLoggerProcessorPendingClearsAfterWriteFailure(t *testing.T) {
 	if err := <-ack; err == nil {
 		t.Fatal("barrier error = nil, want write failure")
 	}
-	if got := p.pendingCount(); got != 0 {
+	if got := p.stats().Pending; got != 0 {
 		t.Fatalf("pending after terminal write failure = %d, want zero", got)
 	}
 	if got := p.stats().PendingBytes; got != 0 {
@@ -539,7 +563,12 @@ func TestFileLoggerProcessorPendingClearsAfterWriteFailure(t *testing.T) {
 func TestFileLoggerProcessorRejectsPayloadWhenByteBudgetExceeded(t *testing.T) {
 	p := newOwnedFileLoggerProcessorForTest(t, &recordingFileLoggerSink{})
 	p.payloadByteBudget = 64
-	if err := p.pushFields(map[string]any{"payload": strings.Repeat("x", 65)}); !errors.Is(err, base.ErrLogQueueFull) {
+	if err := p.pushSnapshot(
+		testFileLoggerSnapshot(map[string]any{"payload": strings.Repeat("x", 65)}),
+	); !errors.Is(
+		err,
+		base.ErrLogQueueFull,
+	) {
 		t.Fatalf("oversized payload error = %v, want ErrLogQueueFull", err)
 	}
 	stats := p.stats()
@@ -570,7 +599,7 @@ func TestFileLoggerProcessorCountsNamedStringsAgainstByteBudget(t *testing.T) {
 	p := newOwnedFileLoggerProcessorForTest(t, &recordingFileLoggerSink{})
 	p.payloadByteBudget = 1024
 	fields := map[string]any{"payload": largeString(strings.Repeat("x", 2048))}
-	if err := p.pushFields(fields); !errors.Is(err, base.ErrLogQueueFull) {
+	if err := p.pushSnapshot(testFileLoggerSnapshot(fields)); !errors.Is(err, base.ErrLogQueueFull) {
 		t.Fatalf("oversized named string error = %v, want ErrLogQueueFull", err)
 	}
 	if stats := p.stats(); stats.Pending != 0 || stats.PendingBytes != 0 {
@@ -583,10 +612,11 @@ func TestFileLoggerProcessorReleasesPayloadBytesAndReadmits(t *testing.T) {
 	sink := &recordingFileLoggerSink{entered: make(chan struct{}, 1), release: make(chan struct{})}
 	p := newOwnedFileLoggerProcessorForTest(t, sink)
 	fields := map[string]any{"payload": strings.Repeat("x", 128)}
-	recordBytes := fileLogRecordPayloadBytes(fileLogRecord{kind: fileLogFieldsRecord, fields: fields})
+	snapshot := testFileLoggerSnapshot(fields)
+	recordBytes := fileLogRecordPayloadBytes(fileLogRecord{kind: fileLogSnapshotRecord, snapshot: snapshot})
 	p.payloadByteBudget = recordBytes
-	if err := p.pushFields(fields); err != nil {
-		t.Fatalf("first pushFields() error = %v", err)
+	if err := p.pushSnapshot(snapshot); err != nil {
+		t.Fatalf("first pushSnapshot() error = %v", err)
 	}
 	ack, err := p.pushBarrier()
 	if err != nil {
@@ -600,8 +630,8 @@ func TestFileLoggerProcessorReleasesPayloadBytesAndReadmits(t *testing.T) {
 	if got := p.stats().PendingBytes; got != recordBytes {
 		t.Fatalf("pending bytes while first delivery is blocked = %d, want %d", got, recordBytes)
 	}
-	if err := p.pushFields(fields); !errors.Is(err, base.ErrLogQueueFull) {
-		t.Fatalf("second pushFields() error = %v, want byte-budget rejection", err)
+	if err := p.pushSnapshot(snapshot); !errors.Is(err, base.ErrLogQueueFull) {
+		t.Fatalf("second pushSnapshot() error = %v, want byte-budget rejection", err)
 	}
 	if got := p.stats().PendingBytes; got != recordBytes {
 		t.Fatalf("pending bytes after rejected record = %d, want %d", got, recordBytes)
@@ -611,8 +641,8 @@ func TestFileLoggerProcessorReleasesPayloadBytesAndReadmits(t *testing.T) {
 		t.Fatalf("first barrier error = %v", err)
 	}
 	waitForFileLoggerPendingBytes(t, p, 0)
-	if err := p.pushFields(fields); err != nil {
-		t.Fatalf("readmitted pushFields() error = %v", err)
+	if err := p.pushSnapshot(snapshot); err != nil {
+		t.Fatalf("readmitted pushSnapshot() error = %v", err)
 	}
 	ack, err = p.pushBarrier()
 	if err != nil {
@@ -632,8 +662,8 @@ func TestFileLoggerProcessorEncodeFailureReleasesPayloadBytes(t *testing.T) {
 	p.encodeFields = func(map[string]any) (*buffer.Buffer, error) {
 		return nil, errors.New("file logger test encode failure")
 	}
-	if err := p.pushFields(map[string]any{"unsupported": "value"}); err != nil {
-		t.Fatalf("pushFields() error = %v", err)
+	if err := p.pushSnapshot(testFileLoggerSnapshot(map[string]any{"unsupported": "value"})); err != nil {
+		t.Fatalf("pushSnapshot() error = %v", err)
 	}
 	ack, err := p.pushBarrier()
 	if err != nil {
@@ -692,57 +722,14 @@ func TestFileLoggerProcessorRejectsFullQueueAndStoppedAdmission(t *testing.T) {
 	if got := p.stats().PendingBytes; got != 0 {
 		t.Fatalf("pending bytes after stop drain = %d, want zero", got)
 	}
-	if err := p.pushFields(map[string]any{"id": -2}); !errors.Is(err, base.ErrLogQueueUnavailable) {
+	if err := p.pushSnapshot(
+		testFileLoggerSnapshot(map[string]any{"id": -2}),
+	); !errors.Is(
+		err,
+		base.ErrLogQueueUnavailable,
+	) {
 		t.Fatalf("stopped queue error = %v, want ErrLogQueueUnavailable", err)
 	}
-}
-
-func TestFileLoggerProcessorAdmitsLegacyFieldsAndBarrierAtomically(t *testing.T) {
-	sink := &recordingFileLoggerSink{}
-	p := newOwnedFileLoggerProcessorForTest(t, sink)
-	entered := make(chan struct{})
-	release := make(chan struct{})
-	p.beforeEncode = func() {
-		select {
-		case <-entered:
-		default:
-			close(entered)
-		}
-		<-release
-	}
-	if err := p.pushSnapshot(base.LogSnapshot{}); err != nil {
-		t.Fatalf("pushSnapshot() error = %v", err)
-	}
-	select {
-	case <-entered:
-	case <-time.After(time.Second):
-		t.Fatal("worker did not block")
-	}
-	for i := range fileLoggerQueueCapacity - 1 {
-		if err := p.pushFields(map[string]any{"id": i}); err != nil {
-			t.Fatalf("pushFields(%d) error = %v", i, err)
-		}
-	}
-	ack, err := p.pushFieldsAndBarrier(map[string]any{"legacy": true})
-	if err != nil {
-		t.Fatalf("pushFieldsAndBarrier() with final queue slot error = %v", err)
-	}
-	if err := p.pushFields(map[string]any{"overflow": true}); !errors.Is(err, base.ErrLogQueueFull) {
-		t.Fatalf("overflow error = %v, want ErrLogQueueFull", err)
-	}
-	close(release)
-	select {
-	case err := <-ack:
-		if err != nil {
-			t.Fatalf("combined barrier error = %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("combined barrier did not acknowledge")
-	}
-	if got := p.stats().PendingBytes; got != 0 {
-		t.Fatalf("pending bytes after combined barrier = %d, want zero", got)
-	}
-	p.stop()
 }
 
 func TestFileLoggerRunLogPhaseQueuesSnapshotBeforeFieldConstruction(t *testing.T) {
@@ -814,7 +801,7 @@ func TestFileLoggerProcessorConcurrentPushStop(t *testing.T) {
 	for i := range 8 {
 		wg.Go(func() {
 			for j := range 100 {
-				_ = p.pushFields(map[string]any{"id": i*100 + j})
+				_ = p.pushSnapshot(testFileLoggerSnapshot(map[string]any{"id": i*100 + j}))
 			}
 		})
 	}
@@ -828,8 +815,8 @@ func TestFileLoggerProcessorConcurrentPushStop(t *testing.T) {
 func TestFileLoggerProcessorBarrierFlushesAndSyncs(t *testing.T) {
 	sink := &recordingFileLoggerSink{}
 	p := newOwnedFileLoggerProcessorForTest(t, sink)
-	if err := p.pushFields(map[string]any{"id": 1}); err != nil {
-		t.Fatalf("pushFields() error = %v", err)
+	if err := p.pushSnapshot(testFileLoggerSnapshot(map[string]any{"id": 1})); err != nil {
+		t.Fatalf("pushSnapshot() error = %v", err)
 	}
 	ack, err := p.pushBarrier()
 	if err != nil {
@@ -877,8 +864,8 @@ func TestFileLoggerProcessorStopIsIdempotentAndDrains(t *testing.T) {
 	sink := &recordingFileLoggerSink{}
 	p := newOwnedFileLoggerProcessorForTest(t, sink)
 	for i := range 3 {
-		if err := p.pushFields(map[string]any{"id": i}); err != nil {
-			t.Fatalf("pushFields(%d) error = %v", i, err)
+		if err := p.pushSnapshot(testFileLoggerSnapshot(map[string]any{"id": i})); err != nil {
+			t.Fatalf("pushSnapshot(%d) error = %v", i, err)
 		}
 	}
 	p.stop()
@@ -892,8 +879,8 @@ func TestFileLoggerProcessorTimeoutRetainsCleanupUntilWorkerFinishes(t *testing.
 	sink := &recordingFileLoggerSink{entered: make(chan struct{}, 1), release: make(chan struct{})}
 	p := newOwnedFileLoggerProcessorForTest(t, sink)
 	p.stopTimeout = 10 * time.Millisecond
-	if err := p.pushFields(map[string]any{"id": 1}); err != nil {
-		t.Fatalf("pushFields() error = %v", err)
+	if err := p.pushSnapshot(testFileLoggerSnapshot(map[string]any{"id": 1})); err != nil {
+		t.Fatalf("pushSnapshot() error = %v", err)
 	}
 	ack, err := p.pushBarrier()
 	if err != nil {

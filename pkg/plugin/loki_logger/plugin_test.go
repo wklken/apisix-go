@@ -1,12 +1,11 @@
 package loki_logger
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"reflect"
 	"strconv"
 	"strings"
@@ -79,16 +78,6 @@ func TestDefaultLogFieldsRedactSensitiveHeaders(t *testing.T) {
 		Outcome:  apisixctx.ResponseOutcome{Status: http.StatusOK},
 	}
 	assertLokiHeadersSanitized(t, lokiSnapshotDefaultFields(snapshot, time.Unix(100, 0)))
-
-	request := httptest.NewRequest(http.MethodGet, "http://gateway.example/orders", nil)
-	request.Header = requestHeaders.Clone()
-	assertLokiHeadersSanitized(t, (&Plugin{}).defaultLogFields(
-		request,
-		responseHeaders,
-		http.StatusOK,
-		0,
-		time.Now(),
-	))
 }
 
 func assertLokiHeadersSanitized(t *testing.T, fields map[string]any) {
@@ -252,12 +241,12 @@ func TestBuildPayloadUsesLokiStreamShape(t *testing.T) {
 		},
 	})
 
-	payload, err := p.buildPayload(map[string]any{
+	payload, err := p.buildBatchPayload([]map[string]any{{
 		"path":   "/orders",
 		"status": 201,
-	})
+	}})
 	if err != nil {
-		t.Fatalf("buildPayload() error = %v", err)
+		t.Fatalf("buildBatchPayload() error = %v", err)
 	}
 
 	if len(payload.Streams) != 1 {
@@ -331,7 +320,7 @@ func TestResolveLabelsLeavesMissingDynamicValuesEmpty(t *testing.T) {
 	}
 }
 
-func TestHandlerDefaultLogUsesPinnedRichShape(t *testing.T) {
+func TestRunLogPhaseDefaultLogUsesPinnedRichShape(t *testing.T) {
 	bodies := make(chan map[string]any, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
@@ -348,23 +337,36 @@ func TestHandlerDefaultLogUsesPinnedRichShape(t *testing.T) {
 		Timeout:       1000,
 		BatchMaxSize:  1,
 	})
-	r := httptest.NewRequest(http.MethodGet, "http://example.com/orders?status=open", nil)
-	r.RemoteAddr = "192.0.2.10:4321"
-	r.Header.Set("Test-Header", "only-for-test#1")
-	r = apisixctx.WithApisixVars(r, map[string]string{
-		"$route_id":      "loki-default",
-		"$service_id":    "orders-service",
-		"$consumer_name": "alice",
-		"$balancer_ip":   "192.0.2.20",
-		"$balancer_port": "8080",
-	})
-	r = apisixctx.WithRequestVars(r)
-	apisixctx.RegisterRequestVar(r, "$upstream_latency", int64(2))
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("X-Upstream", "accepted")
-		w.WriteHeader(http.StatusAccepted)
-		_, _ = w.Write([]byte("accepted"))
-	})).ServeHTTP(httptest.NewRecorder(), r)
+	started := time.Unix(100, 0)
+	snapshot := base.LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{
+			Method:        http.MethodGet,
+			URI:           "/orders?status=open",
+			URL:           "http://example.com/orders?status=open",
+			Host:          "example.com",
+			RemoteAddr:    "192.0.2.10:4321",
+			Header:        http.Header{"Test-Header": []string{"only-for-test#1"}},
+			Query:         url.Values{"status": []string{"open"}},
+			ContentLength: 0,
+			APISIXVars: map[string]any{
+				"$route_id":      "loki-default",
+				"$service_id":    "orders-service",
+				"$balancer_ip":   "192.0.2.20",
+				"$balancer_port": "8080",
+			},
+			Consumer:    apisixlog.SafeConsumerLogIdentity{Username: "alice"},
+			RequestVars: map[string]any{"$upstream_latency": int64(2)},
+		},
+		Response: apisixlog.ResponseLogSnapshot{
+			Header: http.Header{"X-Upstream": []string{"accepted"}},
+		},
+		Outcome:  apisixctx.ResponseOutcome{Status: http.StatusAccepted, Bytes: int64(len("accepted"))},
+		Started:  started,
+		Finished: started.Add(20 * time.Millisecond),
+	}
+	if err := p.RunLogPhase(snapshot); err != nil {
+		t.Fatalf("RunLogPhase() error = %v", err)
+	}
 
 	select {
 	case body := <-bodies:
@@ -434,14 +436,16 @@ func TestHandlerDefaultLogUsesPinnedRichShape(t *testing.T) {
 	}
 }
 
-func TestHandlerResolvesLabelsOutsideCustomLogFormat(t *testing.T) {
-	body := captureHandlerPayload(t, Config{
+func TestRunLogPhaseResolvesLabelsOutsideCustomLogFormat(t *testing.T) {
+	body := captureRunLogPayload(t, Config{
 		LogFormat: map[string]string{"message": "fixed"},
 		LogLabels: map[string]string{"service": "$http_x_service_name"},
-	}, func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}, func(r *http.Request) {
-		r.Header.Set("X-Service-Name", "svc-alpha")
+	}, nil, base.LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{
+			Method: http.MethodGet, URI: "/orders", URL: "http://example.com/orders", Host: "example.com",
+			Header: http.Header{"X-Service-Name": []string{"svc-alpha"}},
+		},
+		Outcome: apisixctx.ResponseOutcome{Status: http.StatusOK},
 	})
 
 	stream := extractLokiStream(t, body, 0)
@@ -454,17 +458,20 @@ func TestHandlerResolvesLabelsOutsideCustomLogFormat(t *testing.T) {
 	}
 }
 
-func TestHandlerResolvesLabelsAfterDownstream(t *testing.T) {
-	body := captureHandlerPayload(t, Config{
+func TestRunLogPhaseResolvesLabelsFromSnapshot(t *testing.T) {
+	body := captureRunLogPayload(t, Config{
 		LogFormat: map[string]string{"message": "fixed"},
 		LogLabels: map[string]string{
 			"status":   "$status",
 			"upstream": "$balancer_ip",
 		},
-	}, func(w http.ResponseWriter, r *http.Request) {
-		apisixctx.RegisterApisixVar(r, "$balancer_ip", "192.0.2.40")
-		w.WriteHeader(http.StatusCreated)
-	}, nil)
+	}, nil, base.LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{
+			Method: http.MethodGet, URI: "/orders", URL: "http://example.com/orders", Host: "example.com",
+			APISIXVars: map[string]any{"$balancer_ip": "192.0.2.40"},
+		},
+		Outcome: apisixctx.ResponseOutcome{Status: http.StatusCreated},
+	})
 
 	stream := extractLokiStream(t, body, 0)
 	labels := streamLabels(t, stream)
@@ -476,15 +483,18 @@ func TestHandlerResolvesLabelsAfterDownstream(t *testing.T) {
 	}
 }
 
-func TestHandlerPreservesReservedLookingCustomLogFields(t *testing.T) {
-	body := captureHandlerPayload(t, Config{
+func TestRunLogPhasePreservesReservedLookingCustomLogFields(t *testing.T) {
+	body := captureRunLogPayload(t, Config{
 		LogFormat: map[string]string{
 			"loki_log_time": "visible-time",
 			"loki_labels":   "visible-labels",
 		},
-	}, func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}, nil)
+	}, nil, base.LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{
+			Method: http.MethodGet, URI: "/orders", URL: "http://example.com/orders", Host: "example.com",
+		},
+		Outcome: apisixctx.ResponseOutcome{Status: http.StatusOK},
+	})
 
 	entry := extractLokiEntry(t, body)
 	if got := entry["loki_log_time"]; got != "visible-time" {
@@ -496,16 +506,18 @@ func TestHandlerPreservesReservedLookingCustomLogFields(t *testing.T) {
 }
 
 func TestLogFormatExtraDoesNotClobberRichDefaults(t *testing.T) {
-	body := captureHandlerPayloadWithPlugin(t, Config{}, func(p *Plugin) {
+	body := captureRunLogPayload(t, Config{}, func(p *Plugin) {
 		p.logFormatExtra = map[string]string{
 			"request":     "clobbered-request",
 			"route_id":    "clobbered-route",
 			"extra_field": "extra-value",
 		}
-	}, func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}, func(r *http.Request) {
-		apisixctx.RegisterApisixVar(r, "$route_id", "real-route")
+	}, base.LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{
+			Method: http.MethodGet, URI: "/orders", URL: "http://example.com/orders", Host: "example.com",
+			APISIXVars: map[string]any{"$route_id": "real-route"},
+		},
+		Outcome: apisixctx.ResponseOutcome{Status: http.StatusOK},
 	})
 
 	entry := extractLokiEntry(t, body)
@@ -521,13 +533,16 @@ func TestLogFormatExtraDoesNotClobberRichDefaults(t *testing.T) {
 	}
 }
 
-func TestHandlerCapturesRequestStartTimestampBeforeDownstream(t *testing.T) {
-	var downstreamStarted int64
-	body := captureHandlerPayload(t, Config{}, func(w http.ResponseWriter, r *http.Request) {
-		downstreamStarted = time.Now().UnixNano()
-		time.Sleep(20 * time.Millisecond)
-		w.WriteHeader(http.StatusOK)
-	}, nil)
+func TestRunLogPhasePreservesRequestStartTimestamp(t *testing.T) {
+	started := time.Unix(123, 456)
+	body := captureRunLogPayload(t, Config{}, nil, base.LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{
+			Method: http.MethodGet, URI: "/orders", URL: "http://example.com/orders", Host: "example.com",
+		},
+		Outcome:  apisixctx.ResponseOutcome{Status: http.StatusOK},
+		Started:  started,
+		Finished: started.Add(20 * time.Millisecond),
+	})
 
 	stream := extractLokiStream(t, body, 0)
 	values := streamValues(t, stream)
@@ -535,12 +550,8 @@ func TestHandlerCapturesRequestStartTimestampBeforeDownstream(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse Loki timestamp: %v", err)
 	}
-	if timestamp > downstreamStarted {
-		t.Fatalf(
-			"Loki timestamp = %d, want request start no later than downstream start %d",
-			timestamp,
-			downstreamStarted,
-		)
+	if timestamp != started.UnixNano() {
+		t.Fatalf("Loki timestamp = %d, want detached request start %d", timestamp, started.UnixNano())
 	}
 }
 
@@ -557,13 +568,13 @@ func TestBuildBatchPayloadPreservesEnvelopeAcrossBuilds(t *testing.T) {
 		},
 	}
 
-	first, err := p.buildPayload(entry)
+	first, err := p.buildBatchPayload([]map[string]any{entry})
 	if err != nil {
-		t.Fatalf("buildPayload() error = %v", err)
+		t.Fatalf("buildBatchPayload() error = %v", err)
 	}
-	second, err := p.buildPayload(entry)
+	second, err := p.buildBatchPayload([]map[string]any{entry})
 	if err != nil {
-		t.Fatalf("buildPayload() error = %v", err)
+		t.Fatalf("buildBatchPayload() error = %v", err)
 	}
 	for index, payload := range []lokiPayload{first, second} {
 		if len(payload.Streams) != 1 || payload.Streams[0].Stream["service"] != "svc-alpha" {
@@ -693,7 +704,7 @@ func TestEndpointURLSelectsFromEndpointAddrs(t *testing.T) {
 	}
 }
 
-func TestSendPostsLokiPayload(t *testing.T) {
+func TestSendBatchPostsLokiPayload(t *testing.T) {
 	requests := make(chan *http.Request, 1)
 	bodies := make(chan map[string]any, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -720,7 +731,9 @@ func TestSendPostsLokiPayload(t *testing.T) {
 		Timeout: 1000,
 	})
 
-	p.Send(map[string]any{"path": "/orders"})
+	if _, err := p.SendBatch(context.Background(), []map[string]any{{"path": "/orders"}}, 1); err != nil {
+		t.Fatalf("SendBatch() error = %v", err)
+	}
 
 	select {
 	case req := <-requests:
@@ -754,7 +767,7 @@ func TestSendPostsLokiPayload(t *testing.T) {
 	}
 }
 
-func TestHandlerBatchesLokiValues(t *testing.T) {
+func TestRunLogPhaseBatchesLokiValues(t *testing.T) {
 	bodies := make(chan map[string]any, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
@@ -775,11 +788,16 @@ func TestHandlerBatchesLokiValues(t *testing.T) {
 		},
 	})
 
-	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://example.com/first", nil))
-	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://example.com/second", nil))
+	for _, uri := range []string{"/first", "/second"} {
+		if err := p.RunLogPhase(base.LogSnapshot{
+			Request: apisixlog.RequestLogSnapshot{
+				Method: http.MethodGet, URI: uri, URL: "http://example.com" + uri, Host: "example.com",
+			},
+			Outcome: apisixctx.ResponseOutcome{Status: http.StatusOK},
+		}); err != nil {
+			t.Fatalf("RunLogPhase(%q) error = %v", uri, err)
+		}
+	}
 
 	select {
 	case body := <-bodies:
@@ -800,7 +818,7 @@ func TestHandlerBatchesLokiValues(t *testing.T) {
 	}
 }
 
-func TestHandlerBodyCaptureMatrix(t *testing.T) {
+func TestRunLogPhaseBodyCaptureMatrix(t *testing.T) {
 	tests := []struct {
 		name, requestBody, responseBody, header string
 		requestExpr, responseExpr               [][]any
@@ -836,34 +854,19 @@ func TestHandlerBodyCaptureMatrix(t *testing.T) {
 				IncludeRespBody: true, IncludeRespBodyExpr: test.responseExpr,
 				MaxReqBodyBytes: 32, MaxRespBodyBytes: 32,
 			})
-			req := httptest.NewRequest(
-				http.MethodPost,
-				"http://example.com/orders",
-				bytes.NewBufferString(test.requestBody),
-			)
+			requestHeaders := make(http.Header)
 			if test.header != "" {
-				req.Header.Set("X-Log-Body", test.header)
+				requestHeaders.Set("X-Log-Body", test.header)
 			}
-			rr := httptest.NewRecorder()
-			p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				body, err := io.ReadAll(r.Body)
-				if err != nil {
-					t.Fatalf("read upstream request body: %v", err)
-				}
-				if string(body) != test.requestBody {
-					t.Fatalf("upstream body = %q, want %q", body, test.requestBody)
-				}
-				w.WriteHeader(http.StatusCreated)
-				_, _ = w.Write([]byte(test.responseBody))
-			})).ServeHTTP(rr, req)
-			if rr.Code != http.StatusCreated || rr.Body.String() != test.responseBody {
-				t.Fatalf(
-					"response = %d/%q, want %d/%q",
-					rr.Code,
-					rr.Body.String(),
-					http.StatusCreated,
-					test.responseBody,
-				)
+			if err := p.RunLogPhase(base.LogSnapshot{
+				Request: apisixlog.RequestLogSnapshot{
+					Method: http.MethodPost, URI: "/orders", URL: "http://example.com/orders", Host: "example.com",
+					Header: requestHeaders, Body: []byte(test.requestBody),
+				},
+				Response: apisixlog.ResponseLogSnapshot{Body: []byte(test.responseBody)},
+				Outcome:  apisixctx.ResponseOutcome{Status: http.StatusCreated, Bytes: int64(len(test.responseBody))},
+			}); err != nil {
+				t.Fatalf("RunLogPhase() error = %v", err)
 			}
 
 			select {
@@ -1022,22 +1025,11 @@ func extractLokiEntry(t *testing.T, body map[string]any) map[string]any {
 	return entry
 }
 
-func captureHandlerPayload(
-	t *testing.T,
-	cfg Config,
-	next http.HandlerFunc,
-	prepare func(*http.Request),
-) map[string]any {
-	t.Helper()
-	return captureHandlerPayloadWithPlugin(t, cfg, nil, next, prepare)
-}
-
-func captureHandlerPayloadWithPlugin(
+func captureRunLogPayload(
 	t *testing.T,
 	cfg Config,
 	configure func(*Plugin),
-	next http.HandlerFunc,
-	prepare func(*http.Request),
+	snapshot base.LogSnapshot,
 ) map[string]any {
 	t.Helper()
 
@@ -1061,13 +1053,9 @@ func captureHandlerPayloadWithPlugin(
 	if configure != nil {
 		configure(p)
 	}
-	r := httptest.NewRequest(http.MethodGet, "http://example.com/orders", nil)
-	r = apisixctx.WithApisixVars(r, map[string]string{})
-	r = apisixctx.WithRequestVars(r)
-	if prepare != nil {
-		prepare(r)
+	if err := p.RunLogPhase(snapshot); err != nil {
+		t.Fatalf("RunLogPhase() error = %v", err)
 	}
-	p.Handler(next).ServeHTTP(httptest.NewRecorder(), r)
 
 	select {
 	case body := <-bodies:

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/config"
 	apisixjson "github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -465,10 +466,34 @@ func TestRotateReopensFileLoggerAfterCurrentPathIsRecreated(t *testing.T) {
 	}
 	t.Cleanup(filePlugin.Stop)
 
-	handler := filePlugin.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/before", nil))
+	writeLog := func(uri string) {
+		t.Helper()
+		if err := filePlugin.RunLogPhase(base.LogSnapshot{
+			Request: apisixlog.RequestLogSnapshot{Method: http.MethodGet, URI: uri},
+			Outcome: apisixctx.ResponseOutcome{Status: http.StatusOK},
+		}); err != nil {
+			t.Fatalf("RunLogPhase(%q) error = %v", uri, err)
+		}
+	}
+	waitForLog := func(want string) string {
+		t.Helper()
+		deadline := time.Now().Add(time.Second)
+		for {
+			if err := file_logger.FlushAndReopen(access); err != nil {
+				t.Fatalf("flush file logger: %v", err)
+			}
+			current, err := os.ReadFile(access)
+			if err == nil && strings.Contains(string(current), want) {
+				return string(current)
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("current access log = %q, want %q: %v", current, want, err)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	writeLog("/before")
+	waitForLog(`"/before"`)
 
 	rotatePlugin := newTestPlugin(t, Config{
 		AccessLog:       access,
@@ -482,15 +507,12 @@ func TestRotateReopensFileLoggerAfterCurrentPathIsRecreated(t *testing.T) {
 		t.Fatalf("Rotate() error = %v", err)
 	}
 
-	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/after", nil))
-	current, err := os.ReadFile(access)
-	if err != nil {
-		t.Fatalf("read current access log: %v", err)
-	}
-	if !strings.Contains(string(current), `"/after"`) {
+	writeLog("/after")
+	current := waitForLog(`"/after"`)
+	if !strings.Contains(current, `"/after"`) {
 		t.Fatalf("current access log = %q, want post-rotation request", current)
 	}
-	if strings.Contains(string(current), `"/before"`) {
+	if strings.Contains(current, `"/before"`) {
 		t.Fatalf("current access log = %q, want pre-rotation request only in rotated history", current)
 	}
 }

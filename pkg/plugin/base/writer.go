@@ -51,8 +51,8 @@ func WithTransformPipeline(count int) func(http.Handler) http.Handler {
 }
 
 // BufferedResponseWriter delays header and body commitment until Commit,
-// allowing the response to be inspected, rewritten and replayed. Distinct
-// from ResponseRecorder, which forwards writes immediately for observers.
+// allowing the response to be inspected, rewritten and replayed. It is
+// separate from the immediate response path used by observers.
 //
 // In pipeline mode (bodyPtr != nil) multiple BufferedResponseWriter instances
 // share the same underlying bytes.Buffer; Commit detects this and skips the

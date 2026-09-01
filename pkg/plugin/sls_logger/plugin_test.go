@@ -1,7 +1,6 @@
 package sls_logger
 
 import (
-	"bytes"
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
@@ -513,10 +512,6 @@ func TestDefaultAccessLogFieldsRedactSensitiveHeaders(t *testing.T) {
 		Outcome:  apisixctx.ResponseOutcome{Status: http.StatusOK},
 	}
 	assertSLSHeadersSanitized(t, slsSnapshotDefaultFields(snapshot))
-
-	request := httptest.NewRequest(http.MethodGet, "http://gateway.example/orders", nil)
-	request.Header = requestHeaders.Clone()
-	assertSLSHeadersSanitized(t, defaultAccessLogFields(request, http.StatusOK, responseHeaders))
 }
 
 func assertSLSHeadersSanitized(t *testing.T, fields map[string]any) {
@@ -662,9 +657,6 @@ func TestStopDrainsPendingSLSBatchAndPreventsResurrection(t *testing.T) {
 	); !errors.Is(err, secret.ErrCredentialUnavailable) {
 		t.Fatalf("post-Stop SendBatch() error = %v", err)
 	}
-	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})).ServeHTTP(
-		httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://example.com/stopped", nil),
-	)
 	if err := p.PostInit(); !errors.Is(err, secret.ErrCredentialUnavailable) {
 		t.Fatalf("post-Stop PostInit() error = %v", err)
 	}
@@ -723,10 +715,10 @@ func TestBuildMessageUsesRFC5424Shape(t *testing.T) {
 		AccessKeySecret: "secret",
 	})
 
-	message := p.buildMessage(map[string]any{
+	message := p.buildMessageWithSecret(map[string]any{
 		"path":   "/orders",
 		"status": 201,
-	})
+	}, "secret")
 
 	if !strings.HasPrefix(message, "<46>1 ") {
 		t.Fatalf("message = %q, want RFC5424 SYSLOG/INFO prefix <46>1", message)
@@ -749,7 +741,7 @@ func TestBuildMessageUsesAPISIX317MillisecondUTCTimestamp(t *testing.T) {
 		AccessKeyID: "id", AccessKeySecret: "secret",
 	})
 
-	message := p.buildMessage(map[string]any{"case": "timestamp"})
+	message := p.buildMessageWithSecret(map[string]any{"case": "timestamp"}, "secret")
 	parts := strings.SplitN(strings.TrimSuffix(message, "\n"), " ", 7)
 	if len(parts) != 7 {
 		t.Fatalf("message = %q, want RFC5424 fields", message)
@@ -764,17 +756,6 @@ func TestRequestPathsUseAPISIX317HostInRFC5424Frame(t *testing.T) {
 		name string
 		emit func(*Plugin) error
 	}{
-		{
-			name: "handler",
-			emit: func(p *Plugin) error {
-				request := httptest.NewRequest(http.MethodGet, "http://gateway.example.test/orders", nil)
-				request.Host = "gateway.example.test:8443"
-				p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-					w.WriteHeader(http.StatusNoContent)
-				})).ServeHTTP(httptest.NewRecorder(), request)
-				return nil
-			},
-		},
 		{
 			name: "detached log phase",
 			emit: func(p *Plugin) error {
@@ -814,7 +795,7 @@ func TestRequestPathsUseAPISIX317HostInRFC5424Frame(t *testing.T) {
 	}
 }
 
-func TestSendMessageAPISIXTLSVerifyDefaultsOff(t *testing.T) {
+func TestSendBatchAPISIXTLSVerifyDefaultsOff(t *testing.T) {
 	addr, received := startTLSServer(t)
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -831,7 +812,9 @@ func TestSendMessageAPISIXTLSVerifyDefaultsOff(t *testing.T) {
 		Timeout:         1000,
 	})
 
-	p.Send(map[string]any{"path": "/orders"})
+	if _, err := p.SendBatch(context.Background(), []map[string]any{{"path": "/orders"}}, 1); err != nil {
+		t.Fatalf("SendBatch() error = %v", err)
+	}
 
 	select {
 	case message := <-received:
@@ -843,7 +826,7 @@ func TestSendMessageAPISIXTLSVerifyDefaultsOff(t *testing.T) {
 	}
 }
 
-func TestSendMessageAllowsExplicitTLSVerifyOff(t *testing.T) {
+func TestSendBatchAllowsExplicitTLSVerifyOff(t *testing.T) {
 	addr, received := startTLSServer(t)
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -862,7 +845,9 @@ func TestSendMessageAllowsExplicitTLSVerifyOff(t *testing.T) {
 		Timeout:         1000,
 	})
 
-	p.Send(map[string]any{"path": "/orders"})
+	if _, err := p.SendBatch(context.Background(), []map[string]any{{"path": "/orders"}}, 1); err != nil {
+		t.Fatalf("SendBatch() error = %v", err)
+	}
 
 	select {
 	case message := <-received:
@@ -874,7 +859,7 @@ func TestSendMessageAllowsExplicitTLSVerifyOff(t *testing.T) {
 	}
 }
 
-func TestSendWritesTLSMessage(t *testing.T) {
+func TestSendBatchWritesTLSMessage(t *testing.T) {
 	addr, received := startTLSServer(t)
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -892,7 +877,9 @@ func TestSendWritesTLSMessage(t *testing.T) {
 		Timeout:         1000,
 	})
 
-	p.Send(map[string]any{"path": "/orders"})
+	if _, err := p.SendBatch(context.Background(), []map[string]any{{"path": "/orders"}}, 1); err != nil {
+		t.Fatalf("SendBatch() error = %v", err)
+	}
 
 	select {
 	case message := <-received:
@@ -907,7 +894,7 @@ func TestSendWritesTLSMessage(t *testing.T) {
 	}
 }
 
-func TestHandlerBatchesSLSMessages(t *testing.T) {
+func TestRunLogPhaseBatchesSLSMessages(t *testing.T) {
 	addr, received := startTLSServer(t)
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -926,11 +913,14 @@ func TestHandlerBatchesSLSMessages(t *testing.T) {
 		BatchMaxSize:    2,
 	})
 
-	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://example.com/first", nil))
-	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://example.com/second", nil))
+	for _, uri := range []string{"/first", "/second"} {
+		if err := p.RunLogPhase(base.LogSnapshot{
+			Request: apisixlog.RequestLogSnapshot{Method: http.MethodGet, URI: uri},
+			Outcome: apisixctx.ResponseOutcome{Status: http.StatusOK},
+		}); err != nil {
+			t.Fatalf("RunLogPhase() error = %v", err)
+		}
+	}
 
 	select {
 	case message := <-received:
@@ -945,7 +935,7 @@ func TestHandlerBatchesSLSMessages(t *testing.T) {
 	}
 }
 
-func TestHandlerBodyCaptureMatrix(t *testing.T) {
+func TestRunLogPhaseBodyCaptureMatrix(t *testing.T) {
 	tests := []struct {
 		name, requestBody, responseBody, header string
 		requestExpr, responseExpr               [][]any
@@ -985,34 +975,19 @@ func TestHandlerBodyCaptureMatrix(t *testing.T) {
 				IncludeRespBody: true, IncludeRespBodyExpr: test.responseExpr,
 				MaxReqBodyBytes: 32, MaxRespBodyBytes: 32,
 			})
-			req := httptest.NewRequest(
-				http.MethodPost,
-				"http://example.com/orders",
-				bytes.NewBufferString(test.requestBody),
-			)
+			header := http.Header{}
 			if test.header != "" {
-				req.Header.Set("X-Log-Body", test.header)
+				header.Set("X-Log-Body", test.header)
 			}
-			rr := httptest.NewRecorder()
-			p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				body, err := io.ReadAll(r.Body)
-				if err != nil {
-					t.Fatalf("read upstream request body: %v", err)
-				}
-				if string(body) != test.requestBody {
-					t.Fatalf("upstream body = %q, want %q", body, test.requestBody)
-				}
-				w.WriteHeader(http.StatusCreated)
-				_, _ = w.Write([]byte(test.responseBody))
-			})).ServeHTTP(rr, req)
-			if rr.Code != http.StatusCreated || rr.Body.String() != test.responseBody {
-				t.Fatalf(
-					"response = (%d, %q), want (%d, %q)",
-					rr.Code,
-					rr.Body.String(),
-					http.StatusCreated,
-					test.responseBody,
-				)
+			if err := p.RunLogPhase(base.LogSnapshot{
+				Request: apisixlog.RequestLogSnapshot{
+					Method: http.MethodPost, URI: "/orders", Header: header,
+					Body: []byte(test.requestBody),
+				},
+				Response: apisixlog.ResponseLogSnapshot{Body: []byte(test.responseBody)},
+				Outcome:  apisixctx.ResponseOutcome{Status: http.StatusCreated},
+			}); err != nil {
+				t.Fatalf("RunLogPhase() error = %v", err)
 			}
 
 			select {
@@ -1042,7 +1017,7 @@ func TestHandlerBodyCaptureMatrix(t *testing.T) {
 	}
 }
 
-func TestHandlerDefaultAccessLogIncludesRequestResponseAndRouteID(t *testing.T) {
+func TestRunLogPhaseDefaultAccessLogIncludesRequestResponseAndRouteID(t *testing.T) {
 	addr, received := startTLSServer(t)
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -1062,14 +1037,16 @@ func TestHandlerDefaultAccessLogIncludesRequestResponseAndRouteID(t *testing.T) 
 	})
 	p.RouteID = "route-a"
 
-	req := httptest.NewRequest(http.MethodGet, "http://example.com/orders?region=west", nil)
-	req.Header.Set("X-Request-ID", "request-a")
-	rr := httptest.NewRecorder()
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("X-Upstream", "orders")
-		w.WriteHeader(http.StatusCreated)
-		_, _ = w.Write([]byte(`{"ok":true}`))
-	})).ServeHTTP(rr, req)
+	if err := p.RunLogPhase(base.LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{
+			Method: http.MethodGet, URI: "/orders?region=west", Host: "example.com",
+			Header: http.Header{"X-Request-ID": {"request-a"}},
+		},
+		Response: apisixlog.ResponseLogSnapshot{Header: http.Header{"X-Upstream": {"orders"}}},
+		Outcome:  apisixctx.ResponseOutcome{Status: http.StatusCreated, Bytes: 11},
+	}); err != nil {
+		t.Fatalf("RunLogPhase() error = %v", err)
+	}
 
 	select {
 	case message := <-received:

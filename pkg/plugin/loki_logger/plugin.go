@@ -10,9 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/felixge/httpsnoop"
 	"github.com/go-resty/resty/v2"
-	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -362,41 +360,6 @@ func (p *Plugin) Stop() {
 	})
 }
 
-func (p *Plugin) Handler(next http.Handler) http.Handler {
-	fn := func(w http.ResponseWriter, r *http.Request) {
-		requestStart := time.Now()
-		var requestBody string
-		if p.config.IncludeReqBody && base.ExprMatched(r, p.config.IncludeReqBodyExpr, 0) {
-			body, err := base.ReadSharedRequestBody(r, p.config.MaxReqBodyBytes)
-			if err == nil && body != "" {
-				requestBody = body
-			}
-		}
-
-		writer := w
-		var recorder *base.SharedResponseRecorder
-		if p.config.IncludeRespBody {
-			recorder = base.GetOrCreateSharedResponseRecorderWithLimit(w, r, p.config.MaxRespBodyBytes)
-			writer = recorder
-		}
-
-		metrics := httpsnoop.CaptureMetrics(next, writer, r)
-		status := metrics.Code
-
-		logFields := p.logFields(r, w.Header(), status, metrics.Written, requestStart)
-		if requestBody != "" {
-			base.NestedLogMap(logFields, "request")["body"] = requestBody
-		}
-		if recorder != nil && recorder.HasBody() && base.ExprMatched(r, p.config.IncludeRespBodyExpr, status) {
-			base.NestedLogMap(logFields, "response")["body"] = recorder.BodyTruncated(p.config.MaxRespBodyBytes)
-		}
-		labels := p.resolveRequestLabels(r, status)
-
-		_ = p.EnqueueLog(wrapLokiEntry(logFields, requestStart, labels))
-	}
-	return http.HandlerFunc(fn)
-}
-
 func (p *Plugin) LogCapturePolicy() base.LogCapturePolicy {
 	policy := p.BaseLoggerPlugin.LogCapturePolicy()
 	formatted := base.LogCapturePolicyForFormats(
@@ -531,141 +494,6 @@ func snapshotURI(snapshot base.LogSnapshot) string {
 	return "/"
 }
 
-func (p *Plugin) logFields(
-	r *http.Request,
-	responseHeaders http.Header,
-	status int,
-	responseSize int64,
-	requestStart time.Time,
-) map[string]any {
-	var fields map[string]any
-	if len(p.LogFormat) > 0 {
-		fields = apisixlog.GetFields(r, p.LogFormat)
-		base.ApplyRequestMatchedRouteFields(fields, r, p.RouteID)
-	} else {
-		fields = p.defaultLogFields(r, responseHeaders, status, responseSize, requestStart)
-	}
-	for key, value := range p.logFormatExtra {
-		if _, exists := fields[key]; !exists {
-			fields[key] = p.resolveLogFormatValue(r, value)
-		}
-	}
-	return fields
-}
-
-func (p *Plugin) defaultLogFields(
-	r *http.Request,
-	responseHeaders http.Header,
-	status int,
-	responseSize int64,
-	requestStart time.Time,
-) map[string]any {
-	latency := float64(time.Since(requestStart).Microseconds()) / 1000
-	upstreamLatency := numericRequestVar(r, "$upstream_latency")
-	apisixLatency := latency - upstreamLatency
-	if apisixLatency < 0 {
-		apisixLatency = 0
-	}
-	hostname := base.Hostname()
-	if hostname == "" {
-		hostname = "unknown"
-	}
-	requestSize := max(r.ContentLength, 0)
-	fields := map[string]any{
-		"request": map[string]any{
-			"url":         fullRequestURL(r),
-			"uri":         r.URL.RequestURI(),
-			"method":      r.Method,
-			"headers":     base.CollapseAccessLogHeaderValues(r.Header),
-			"querystring": base.CollapseHeaderValues(http.Header(r.URL.Query())),
-			"size":        requestSize,
-		},
-		"response": map[string]any{
-			"status":  status,
-			"headers": base.CollapseAccessLogHeaderValues(responseHeaders),
-			"size":    responseSize,
-		},
-		"server": map[string]any{
-			"hostname": hostname,
-			"version":  serverVersion,
-		},
-		"service_id":       base.RequestVar(r, "$service_id", status),
-		"route_id":         base.RequestVar(r, "$route_id", status),
-		"client_ip":        base.RequestVar(r, "$remote_addr", status),
-		"start_time":       float64(requestStart.UnixNano()) / float64(time.Millisecond),
-		"latency":          latency,
-		"upstream_latency": upstreamLatency,
-		"apisix_latency":   apisixLatency,
-	}
-	if fields["route_id"] == "" {
-		fields["route_id"] = "no-matched"
-	}
-	if upstream := selectedUpstream(r, status); upstream != "" {
-		fields["upstream"] = upstream
-	}
-	if consumerName := base.RequestVar(r, "$consumer_name", status); consumerName != "" {
-		fields["consumer"] = map[string]any{"username": consumerName}
-	}
-	return fields
-}
-
-func fullRequestURL(r *http.Request) string {
-	scheme := "http"
-	if r.TLS != nil {
-		scheme = "https"
-	}
-	if forwarded := r.Header.Get("X-Forwarded-Proto"); forwarded != "" {
-		scheme = forwarded
-	}
-	return scheme + "://" + r.Host + r.URL.RequestURI()
-}
-
-func numericRequestVar(r *http.Request, name string) float64 {
-	value := base.RequestVar(r, name, 0)
-	result, err := strconv.ParseFloat(value, 64)
-	if err != nil {
-		return 0
-	}
-	return result
-}
-
-func selectedUpstream(r *http.Request, status int) string {
-	host := base.RequestVar(r, "$balancer_ip", status)
-	port := base.RequestVar(r, "$balancer_port", status)
-	if host == "" {
-		return ""
-	}
-	if port == "" {
-		return host
-	}
-	return host + ":" + port
-}
-
-func (p *Plugin) resolveLogFormatValue(r *http.Request, value string) any {
-	if value == "$upstream_unresolved_host" {
-		return base.RequestVar(r, "$balancer_ip", 0)
-	}
-	return apisixlog.GetField(r, value)
-}
-
-func (p *Plugin) resolveRequestLabels(r *http.Request, status int) map[string]string {
-	labels := make(map[string]string, len(p.config.LogLabels))
-	for key, value := range p.config.LogLabels {
-		if strings.HasPrefix(value, "$") {
-			labels[key] = base.RequestVar(r, value, status)
-			continue
-		}
-		labels[key] = value
-	}
-	return labels
-}
-
-func (p *Plugin) Send(log map[string]any) {
-	if _, err := p.SendBatch(context.Background(), []map[string]any{log}, 1); err != nil {
-		logger.Errorf("%s", err)
-	}
-}
-
 func (p *Plugin) SendBatch(ctx context.Context, entries []map[string]any, batchMaxSize int) (int, error) {
 	_ = batchMaxSize
 
@@ -697,10 +525,6 @@ func (p *Plugin) SendBatch(ctx context.Context, entries []map[string]any, batchM
 	}
 
 	return 0, nil
-}
-
-func (p *Plugin) buildPayload(log map[string]any) (lokiPayload, error) {
-	return p.buildBatchPayload([]map[string]any{log})
 }
 
 func (p *Plugin) buildBatchPayload(entries []map[string]any) (lokiPayload, error) {

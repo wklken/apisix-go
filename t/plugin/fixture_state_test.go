@@ -1814,13 +1814,13 @@ func TestRedisFixtureEmulatesSlidingWindowIncrementScript(t *testing.T) {
 		Redis: &RedisFixtureAssertion{
 			AllowUnassertedCommands: true,
 			Values: map[string]string{
-				"plugin-limit-count:route:delayed:user.1.counter": "5",
+				"plugin-limit-count:route:sliding:user.1.counter": "5",
 			},
 			TTLSecondsBetween: map[string]IntRange{
-				"plugin-limit-count:route:delayed:user.1.counter": {Min: 119, Max: 120},
+				"plugin-limit-count:route:sliding:user.1.counter": {Min: 119, Max: 120},
 			},
 			ExpiryInitializations: map[string]int{
-				"plugin-limit-count:route:delayed:user.1.counter": 1,
+				"plugin-limit-count:route:sliding:user.1.counter": 1,
 			},
 		},
 	}
@@ -1841,7 +1841,7 @@ if ttl < 0 then
 end
 return redis.call('incrby', KEYS[1], ARGV[1])
 `
-	key := "plugin-limit-count:route:delayed:user.1.counter"
+	key := "plugin-limit-count:route:sliding:user.1.counter"
 	first, err := client.Eval(context.Background(), script, []string{key}, 2, 120).Int64()
 	if err != nil {
 		t.Fatalf("first sliding increment: %v", err)

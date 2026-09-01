@@ -791,12 +791,8 @@ func TestManifestAcceptsWorkDirFileLifecycleActions(t *testing.T) {
 	manifest.Cases[0].Input = HTTPInput{}
 	manifest.Cases[0].Output = HTTPOutput{}
 	manifest.Cases[0].Steps = []CaseStep{{
-		Name: "rotate-and-reopen",
+		Name: "remove-and-reopen",
 		Actions: []CaseAction{
-			{Rename: &FileRenameAction{
-				From: "{{WORK_DIR}}/access.log",
-				To:   "{{WORK_DIR}}/access.log.old",
-			}},
 			{Remove: "{{WORK_DIR}}/access.log.old"},
 			{Signal: "SIGUSR1"},
 			{Wait: 10 * time.Millisecond},

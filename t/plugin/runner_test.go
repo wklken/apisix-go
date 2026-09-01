@@ -396,30 +396,20 @@ func TestWriteScenarioFilesExpandsFixturePlaceholders(t *testing.T) {
 	}
 }
 
-func TestExecuteFileLifecycleActions(t *testing.T) {
+func TestExecuteFileRemoveAction(t *testing.T) {
 	workDir := t.TempDir()
 	source := filepath.Join(workDir, "access.log")
-	rotated := filepath.Join(workDir, "access.log.old")
 	if err := os.WriteFile(source, []byte("before"), 0o600); err != nil {
 		t.Fatalf("write source log: %v", err)
 	}
 	replacements := map[string]string{"{{WORK_DIR}}": workDir}
 
-	actions := []CaseAction{
-		{Rename: &FileRenameAction{
-			From: "{{WORK_DIR}}/access.log",
-			To:   "{{WORK_DIR}}/access.log.old",
-		}},
-		{Remove: "{{WORK_DIR}}/access.log.old"},
-	}
+	actions := []CaseAction{{Remove: "{{WORK_DIR}}/access.log"}}
 	if err := executeCaseActions(actions, replacements, nil, nil); err != nil {
 		t.Fatalf("executeCaseActions() error = %v", err)
 	}
 	if _, err := os.Stat(source); !os.IsNotExist(err) {
 		t.Fatalf("source stat error = %v, want absent", err)
-	}
-	if _, err := os.Stat(rotated); !os.IsNotExist(err) {
-		t.Fatalf("rotated stat error = %v, want absent", err)
 	}
 }
 
@@ -3862,18 +3852,6 @@ func executeCaseActions(
 			}
 			if err := os.Remove(path); err != nil {
 				return fmt.Errorf("action %d remove %s: %w", i+1, path, err)
-			}
-		case action.Rename != nil:
-			from, err := resolveWorkDirActionPath(action.Rename.From, replacements)
-			if err != nil {
-				return fmt.Errorf("action %d rename from: %w", i+1, err)
-			}
-			to, err := resolveWorkDirActionPath(action.Rename.To, replacements)
-			if err != nil {
-				return fmt.Errorf("action %d rename to: %w", i+1, err)
-			}
-			if err := os.Rename(from, to); err != nil {
-				return fmt.Errorf("action %d rename %s to %s: %w", i+1, from, to, err)
 			}
 		case action.Signal != "":
 			if process == nil {

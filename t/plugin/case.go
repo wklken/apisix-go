@@ -116,16 +116,10 @@ type HeldUpstream struct {
 
 type CaseAction struct {
 	Remove       string              `yaml:"remove,omitempty"`
-	Rename       *FileRenameAction   `yaml:"rename,omitempty"`
 	Signal       string              `yaml:"signal,omitempty"`
 	Wait         time.Duration       `yaml:"wait,omitempty"`
 	SAMLResponse *SAMLResponseAction `yaml:"saml_response,omitempty"`
 	SAMLLogout   *SAMLLogoutAction   `yaml:"saml_logout,omitempty"`
-}
-
-type FileRenameAction struct {
-	From string `yaml:"from"`
-	To   string `yaml:"to"`
 }
 
 // SAMLResponseAction creates a signed, correlated HTTP-POST SAML response from
@@ -1652,9 +1646,6 @@ func validateCaseActions(actions []CaseAction) error {
 		if action.Remove != "" {
 			configured++
 		}
-		if action.Rename != nil {
-			configured++
-		}
 		if action.Signal != "" {
 			configured++
 		}
@@ -1669,7 +1660,7 @@ func validateCaseActions(actions []CaseAction) error {
 		}
 		if configured != 1 {
 			return fmt.Errorf(
-				"action %d must configure exactly one of remove, rename, signal, wait, saml_response, or saml_logout",
+				"action %d must configure exactly one of remove, signal, wait, saml_response, or saml_logout",
 				i+1,
 			)
 		}
@@ -1677,13 +1668,6 @@ func validateCaseActions(actions []CaseAction) error {
 		case action.Remove != "":
 			if err := validateWorkDirActionPath(action.Remove); err != nil {
 				return fmt.Errorf("action %d remove: %w", i+1, err)
-			}
-		case action.Rename != nil:
-			if err := validateWorkDirActionPath(action.Rename.From); err != nil {
-				return fmt.Errorf("action %d rename from: %w", i+1, err)
-			}
-			if err := validateWorkDirActionPath(action.Rename.To); err != nil {
-				return fmt.Errorf("action %d rename to: %w", i+1, err)
 			}
 		case action.Signal != "":
 			if action.Signal != "SIGUSR1" {

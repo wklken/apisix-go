@@ -611,6 +611,10 @@ func TestRenderRuntimeConfigPreservesRequiredPlugins(t *testing.T) {
 	if got, want := fmt.Sprint(plugins), "[node-status prometheus]"; got != want {
 		t.Fatalf("plugins = %s, want %s", got, want)
 	}
+	apisix := config["apisix"].(map[string]any)
+	if got, ok := apisix["enable_control"].(bool); !ok || got {
+		t.Fatalf("apisix.enable_control = %#v, want false", apisix["enable_control"])
+	}
 }
 
 func TestRenderRuntimeConfigDerivesStandalonePlugins(t *testing.T) {
@@ -687,6 +691,51 @@ func TestRenderRuntimeConfigDerivesStandalonePlugins(t *testing.T) {
 	}
 	if !reflect.DeepEqual(standalone, wantStandalone) {
 		t.Fatalf("standalone config mutated: got %#v, want %#v", standalone, wantStandalone)
+	}
+}
+
+func TestStandaloneConfigAddsHarnessRouteOnlyForConfigRejection(t *testing.T) {
+	logPattern := "field is required"
+	spec := Case{
+		Config: map[string]any{"routes": []any{map[string]any{"id": "invalid", "uri": "/invalid"}}},
+		Output: HTTPOutput{
+			Status: http.StatusNotFound,
+			Logs:   &Matcher{Matches: &logPattern},
+		},
+	}
+
+	configured, added, err := standaloneConfigWithHarnessReadyRoute(spec)
+	if err != nil {
+		t.Fatalf("standaloneConfigWithHarnessReadyRoute() error = %v", err)
+	}
+	if !added {
+		t.Fatal("standaloneConfigWithHarnessReadyRoute() did not add the config-rejection readiness route")
+	}
+	routes := configured["routes"].([]any)
+	if len(routes) != 2 {
+		t.Fatalf("routes = %#v, want target and harness readiness routes", routes)
+	}
+	if original := spec.Config["routes"].([]any); len(original) != 1 {
+		t.Fatalf("original routes mutated = %#v", original)
+	}
+
+	spec.Output.Status = 0
+	configured, added, err = standaloneConfigWithHarnessReadyRoute(spec)
+	if err != nil {
+		t.Fatalf("standaloneConfigWithHarnessReadyRoute() log-only rejection error = %v", err)
+	}
+	if !added || len(configured["routes"].([]any)) != 2 {
+		t.Fatalf("log-only rejection config = %#v, added = %t; want readiness route", configured, added)
+	}
+
+	spec.Output.Status = http.StatusNotFound
+	spec.Output.Logs = nil
+	configured, added, err = standaloneConfigWithHarnessReadyRoute(spec)
+	if err != nil {
+		t.Fatalf("standaloneConfigWithHarnessReadyRoute() ordinary 404 error = %v", err)
+	}
+	if added || len(configured["routes"].([]any)) != 1 {
+		t.Fatalf("ordinary 404 config = %#v, added = %t; want unchanged", configured, added)
 	}
 }
 
@@ -3035,6 +3084,7 @@ func renderRuntimeConfig(port int, overrides map[string]any) ([]byte, error) {
 	mergeMap(config, overrides)
 	apisix := ensureMap(config, "apisix")
 	apisix["enable_admin"] = false
+	apisix["enable_control"] = false
 	apisix["node_listen"] = []any{
 		map[string]any{"ip": "127.0.0.1", "port": port},
 	}
@@ -3196,6 +3246,29 @@ func renderStandaloneConfig(config map[string]any, replacements map[string]strin
 	return data, nil
 }
 
+func standaloneConfigWithHarnessReadyRoute(spec Case) (map[string]any, bool, error) {
+	configRejectionStatus := spec.Output.Status == 0 || spec.Output.Status == http.StatusNotFound
+	if !configRejectionStatus || spec.Output.Logs == nil || len(spec.Steps) != 0 {
+		return spec.Config, false, nil
+	}
+	config, err := cloneConfigMap(spec.Config)
+	if err != nil {
+		return nil, false, fmt.Errorf("clone config-rejection standalone config: %w", err)
+	}
+	routes, _ := config["routes"].([]any)
+	config["routes"] = append(routes, map[string]any{
+		"id":  "__apisix_go_integration_ready",
+		"uri": "/__apisix_go_integration_ready",
+		"plugins": map[string]any{
+			"mocking": map[string]any{
+				"response_status":  http.StatusNoContent,
+				"response_example": "",
+			},
+		},
+	})
+	return config, true, nil
+}
+
 func replaceFixturePlaceholders(data []byte, replacements map[string]string) ([]byte, error) {
 	for placeholder, value := range replacements {
 		if strings.HasSuffix(placeholder, ".PORT}}") {
@@ -3281,7 +3354,10 @@ func runCaseInternal(t *testing.T, spec Case, waitForGeneration bool) {
 		t.Fatalf("write scenario files: %v", err)
 	}
 	runtimeOverrides := spec.Runtime
-	standaloneResources := spec.Config
+	standaloneResources, _, err := standaloneConfigWithHarnessReadyRoute(spec)
+	if err != nil {
+		t.Fatalf("prepare standalone config: %v", err)
+	}
 	tlsPort := 0
 	enableHTTP2 := caseUsesHTTP2(spec)
 	if enableHTTP2 {

@@ -1,6 +1,10 @@
 package generation
 
-import "testing"
+import (
+	"slices"
+	"strings"
+	"testing"
+)
 
 func TestValidatePublicationCandidateAcceptsCompleteClosure(t *testing.T) {
 	snapshot := publicationValidationSnapshot(t, 7)
@@ -73,6 +77,46 @@ func TestValidatePublicationCandidateRejectsClosureAndDecisionGaps(t *testing.T)
 				t.Fatalf("ValidatePublicationCandidate() error = %v, want %v", err, ErrInvalidClosure)
 			}
 		})
+	}
+}
+
+func TestValidatePublicationCandidateRejectsUnsafeDecisionDiagnostic(t *testing.T) {
+	snapshot := publicationValidationSnapshot(t, 7)
+	cases := map[string]string{
+		"multiline":    "safe prefix\nforged log entry",
+		"control byte": "safe prefix\x00forged suffix",
+		"invalid utf8": string([]byte{0xff}),
+		"too long":     strings.Repeat("x", maxDecisionDiagnosticBytes+1),
+	}
+	for name, diagnostic := range cases {
+		t.Run(name, func(t *testing.T) {
+			candidate := publicationValidationCandidate(snapshot, DomainHTTP)
+			candidate.Decisions[2].Diagnostic = diagnostic
+			if err := ValidatePublicationCandidate(DomainHTTP, 7, candidate); err != ErrInvalidClosure {
+				t.Fatalf("ValidatePublicationCandidate() error = %v, want %v", err, ErrInvalidClosure)
+			}
+		})
+	}
+}
+
+func TestDecisionDiagnosticsReturnsSortedUniqueRejectedDiagnostics(t *testing.T) {
+	decisions := map[Domain][]ResourceDecision{
+		DomainStream: {
+			{Disposition: DispositionFailClosed, Diagnostic: "validate plugin z config"},
+		},
+		DomainHTTP: {
+			{Disposition: DispositionPublished},
+			{Disposition: DispositionLastGood, Diagnostic: "validate plugin a config"},
+			{Disposition: DispositionFailClosed, Diagnostic: "validate plugin z config"},
+		},
+	}
+	diagnostics, err := DecisionDiagnostics(decisions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"validate plugin a config", "validate plugin z config"}
+	if !slices.Equal(diagnostics, want) {
+		t.Fatalf("DecisionDiagnostics() = %#v, want %#v", diagnostics, want)
 	}
 }
 

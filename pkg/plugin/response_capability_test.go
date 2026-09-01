@@ -31,6 +31,12 @@ func (c responseModeTestConfig) DescribeResponseMode() (base.ResponseModeDescrip
 	return base.ResponseModeDescriptor{Modes: c.modes}, nil
 }
 
+type selectableResponseTestConfig struct{ responseTestConfig }
+
+func (selectableResponseTestConfig) DescribeResponseMode() (base.ResponseModeDescriptor, error) {
+	return base.ResponseModeDescriptor{Modes: base.ResponseModeBounded | base.ResponseModeStreaming}, nil
+}
+
 type responseOwnerTestPlugin struct {
 	base.BasePlugin
 	config responseModeTestConfig
@@ -42,6 +48,12 @@ type dualModeResponseTestPlugin struct {
 	selectMode    func(*http.Request) base.RequestResponseMode
 	bufferedCalls atomic.Int32
 	streamCalls   atomic.Int32
+}
+
+type selectableResponseTestPlugin struct{ *responseTestPlugin }
+
+func (*selectableResponseTestPlugin) SelectResponseMode(*http.Request) base.RequestResponseMode {
+	return base.RequestResponseModeBounded
 }
 
 func newDualModeResponseTestPlugin(mode base.RequestResponseMode) *dualModeResponseTestPlugin {
@@ -576,6 +588,34 @@ func TestResponseRewriteSelectsExactlyOneConfiguredResponseOwner(t *testing.T) {
 				t.Fatalf("metadata owners = %v, want [%v]", phases.Owners, test.wantMetadataOwner)
 			}
 		})
+	}
+}
+
+func TestResponsePlanAllowsPureHeaderRewriteWithBufferedTransformAndCache(t *testing.T) {
+	body := newResponseTestPlugin(
+		"body-transformer",
+		300,
+		responseTestConfig{stage: "none", body: true},
+	)
+	cache := newResponseTestPlugin("proxy-cache", 200, nil)
+	rewrite := &selectableResponseTestPlugin{newResponseTestPlugin(
+		"response-rewrite",
+		100,
+		selectableResponseTestConfig{responseTestConfig: responseTestConfig{
+			stage: "none", streamingHeader: true,
+		}},
+	)}
+
+	plan, err := BuildResponsePlan([]Binding{
+		checkedResponseBinding(t, "body-transformer", body, ScopeRoute, "route"),
+		checkedResponseBinding(t, "proxy-cache", cache, ScopeRoute, "route"),
+		checkedResponseBinding(t, "response-rewrite", rewrite, ScopeRoute, "route"),
+	})
+	if err != nil {
+		t.Fatalf("BuildResponsePlan() error = %v", err)
+	}
+	if len(plan.BufferedBindings()) == 0 {
+		t.Fatal("BuildResponsePlan() did not preserve bounded response ownership")
 	}
 }
 

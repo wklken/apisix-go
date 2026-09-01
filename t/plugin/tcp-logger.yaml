@@ -73,7 +73,7 @@ cases:
       path: /missing-host
     output:
       logs:
-        matches: 'validate plugin tcp-logger config:.*host.*required'
+        matches: 'validate plugin tcp-logger config:.*missing properties:.*host'
       status: 404
 
   - name: string-timeout-is-rejected

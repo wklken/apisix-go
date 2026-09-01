@@ -83,6 +83,7 @@ func (p *Plugin) PostInit() error {
 	for _, source := range p.config.Functions {
 		proto, err := compileFunction(source)
 		if err != nil {
+			logger.Errorf("exit-transformer initialization failed: %v", err)
 			return err
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), p.executionTimeout)

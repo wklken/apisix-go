@@ -843,66 +843,70 @@ func (p *Plugin) Config() any {
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
-	fn := func(w http.ResponseWriter, r *http.Request) {
-		if p.config.Rules != nil {
-			applied := 0
-			for i, rule := range p.config.Rules {
-				key, ok := p.resolveRuleKey(r, rule)
-				if !ok {
-					continue
-				}
-				key = p.consumerScopedKey(r, key)
-				logger.Debugf("limit key: %s", key)
-				count, timeWindow, err := p.resolveRuleLimit(r, rule)
-				if err != nil {
-					logger.Error(err.Error())
-					continue
-				}
-				applied++
-				lim := p.ruleLimiters[i]
-				if lim == nil {
-					var err error
-					lim, err = p.limiterFor(count, timeWindow)
-					if err != nil {
-						if *p.config.AllowDegradation {
-							continue
-						}
-						writeLimitCountBackendError(w)
-						return
-					}
-				}
-				if !p.runLimit(w, r, lim, count, key, limitbase.RuleQuotaHeaders(rule.HeaderPrefix, i)) {
-					return
-				}
-			}
-			if applied == 0 && !*p.config.AllowDegradation {
-				logger.Error("failed to get rate limit rules")
-				http.Error(w, "failed to resolve limit count rules", http.StatusInternalServerError)
-				return
-			}
-			next.ServeHTTP(w, r)
-			return
-		}
+	return base.AdaptRequestPhase(p, next)
+}
 
-		proceed := false
-		err := p.withResolvedLimitCountKey(r, func(key string) error {
-			proceed = p.consumeLimitCountKey(w, r, p.consumerScopedKey(r, key))
-			return nil
-		})
-		if err != nil {
-			if p.config.AllowDegradation != nil && *p.config.AllowDegradation {
-				next.ServeHTTP(w, r)
-				return
-			}
-			logger.Errorf("failed to resolve limit count key: %v", err)
-			http.Error(w, "failed to resolve limit count config", http.StatusInternalServerError)
-			return
-		}
-		if proceed {
-			next.ServeHTTP(w, r)
-		}
+func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+	if p.allowRequest(w, r) {
+		return base.ContinueRequest(r)
 	}
-	return http.HandlerFunc(fn)
+	return base.StopRequest(r)
+}
+
+func (p *Plugin) allowRequest(w http.ResponseWriter, r *http.Request) bool {
+	if p.config.Rules != nil {
+		applied := 0
+		for i, rule := range p.config.Rules {
+			key, ok := p.resolveRuleKey(r, rule)
+			if !ok {
+				continue
+			}
+			key = p.consumerScopedKey(r, key)
+			logger.Debugf("limit key: %s", key)
+			count, timeWindow, err := p.resolveRuleLimit(r, rule)
+			if err != nil {
+				logger.Error(err.Error())
+				continue
+			}
+			applied++
+			lim := p.ruleLimiters[i]
+			if lim == nil {
+				var err error
+				lim, err = p.limiterFor(count, timeWindow)
+				if err != nil {
+					if *p.config.AllowDegradation {
+						continue
+					}
+					writeLimitCountBackendError(w)
+					return false
+				}
+			}
+			if !p.runLimit(w, r, lim, count, key, limitbase.RuleQuotaHeaders(rule.HeaderPrefix, i)) {
+				return false
+			}
+		}
+		if applied == 0 && !*p.config.AllowDegradation {
+			logger.Error("failed to get rate limit rules")
+			http.Error(w, "failed to resolve limit count rules", http.StatusInternalServerError)
+			return false
+		}
+		return true
+	}
+
+	proceed := false
+	err := p.withResolvedLimitCountKey(r, func(key string) error {
+		proceed = p.consumeLimitCountKey(w, r, p.consumerScopedKey(r, key))
+		return nil
+	})
+	if err != nil {
+		if p.config.AllowDegradation != nil && *p.config.AllowDegradation {
+			return true
+		}
+		logger.Errorf("failed to resolve limit count key: %v", err)
+		http.Error(w, "failed to resolve limit count config", http.StatusInternalServerError)
+		return false
+	}
+	return proceed
 }
 
 func (p *Plugin) consumeLimitCountKey(w http.ResponseWriter, r *http.Request, key string) bool {

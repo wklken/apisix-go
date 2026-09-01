@@ -15,7 +15,7 @@ cases:
     output:
       status: 404
       logs:
-        matches: 'build route exit-transformer-invalid-syntax fail:.*unexpected symbol'
+        matches: 'exit-transformer initialization failed:.*unexpected symbol'
 
   - name: remap-not-found-status
     runtime: *runtime
@@ -145,7 +145,7 @@ cases:
     output:
       status: 404
       logs:
-        matches: 'attempt to call local ''code'' \(a number value\)'
+        matches: 'attempt to call (local ''code'' \(a number value\)|a non-function object)'
 
   - name: condition-on-request-content-type
     runtime: *runtime

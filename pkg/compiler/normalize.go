@@ -305,6 +305,9 @@ func sortIssues(issues []resourceIssue) {
 		if byCode := strings.Compare(left.Code, right.Code); byCode != 0 {
 			return byCode
 		}
+		if byDiagnostic := strings.Compare(left.Diagnostic, right.Diagnostic); byDiagnostic != 0 {
+			return byDiagnostic
+		}
 		leftMessage, rightMessage := "", ""
 		if left.Err != nil {
 			leftMessage = left.Err.Error()

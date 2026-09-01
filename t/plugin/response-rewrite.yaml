@@ -533,7 +533,7 @@ cases:
         body: hello world
     output:
       logs:
-        matches: 'build route response-rewrite-empty-regex.*response-rewrite'
+        matches: 'validate plugin response-rewrite config:.*/filters/0/regex:.*length must be >= 1'
 
   - name: filter-rejects-invalid-options
     config:

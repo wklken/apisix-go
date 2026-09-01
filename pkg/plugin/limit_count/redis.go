@@ -2,9 +2,6 @@ package limit_count
 
 import (
 	"context"
-	"net"
-	"strconv"
-	"time"
 
 	"github.com/redis/go-redis/v9"
 	limiter "github.com/ulule/limiter/v3"
@@ -73,11 +70,6 @@ func (s *redisDiagnosticStore) Reset(
 	return s.Store.Reset(ctx, key, rate)
 }
 
-type RedisSentinel struct {
-	Host string `json:"host"`
-	Port int    `json:"port"`
-}
-
 func (p *Plugin) redisConnConfig() base.RedisConnConfig {
 	return base.RedisConnConfig{
 		Host:             p.config.RedisHost,
@@ -90,26 +82,6 @@ func (p *Plugin) redisConnConfig() base.RedisConnConfig {
 		KeepalivePool:    p.config.RedisKeepalivePool,
 		SSL:              p.config.RedisSSL,
 		SSLVerify:        p.config.RedisSSLVerify,
-	}
-}
-
-func (p *Plugin) redisSentinelOptions() *redis.FailoverOptions {
-	addresses := make([]string, 0, len(p.config.RedisSentinels))
-	for _, sentinel := range p.config.RedisSentinels {
-		addresses = append(addresses, net.JoinHostPort(sentinel.Host, strconv.Itoa(sentinel.Port)))
-	}
-	return &redis.FailoverOptions{
-		MasterName:       p.config.RedisMasterName,
-		SentinelAddrs:    addresses,
-		Username:         p.config.RedisUsername,
-		Password:         p.config.RedisPassword,
-		SentinelUsername: p.config.SentinelUsername,
-		SentinelPassword: p.config.SentinelPassword,
-		DB:               p.config.RedisDatabase,
-		DialTimeout:      time.Duration(p.config.RedisTimeout) * time.Millisecond,
-		ReadTimeout:      time.Duration(p.config.RedisTimeout) * time.Millisecond,
-		WriteTimeout:     time.Duration(p.config.RedisTimeout) * time.Millisecond,
-		ReplicaOnly:      p.config.RedisRole == "slave",
 	}
 }
 

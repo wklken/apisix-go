@@ -171,7 +171,7 @@ const schema = `
 	  },
 	  "policy": {
 		"type": "string",
-		"enum": ["local", "redis", "redis-cluster", "redis-sentinel"],
+		"enum": ["local", "redis", "redis-cluster"],
 		"default": "local"
 	  },
 	  "window_type": {
@@ -248,22 +248,6 @@ const schema = `
 		"type": "boolean",
 		"default": false
 	  },
-	  "redis_sentinels": {
-		"type": "array",
-		"minItems": 1,
-		"items": {
-		  "type": "object",
-		  "properties": {
-			"host": {"type": "string", "minLength": 1},
-			"port": {"type": "integer", "minimum": 1}
-		  },
-		  "required": ["host", "port"]
-		}
-	  },
-	  "redis_master_name": {"type": "string", "minLength": 1},
-	  "redis_role": {"type": "string", "enum": ["master", "slave"], "default": "master"},
-	  "sentinel_username": {"type": "string"},
-	  "sentinel_password": {"type": "string"},
 	  "allow_degradation": {
 		"type": "boolean",
 		"default": false
@@ -291,13 +275,6 @@ const schema = `
 		  "required": ["policy"]
 		},
 		"then": {"required": ["redis_cluster_nodes", "redis_cluster_name"]}
-	  },
-	  {
-		"if": {
-		  "properties": {"policy": {"const": "redis-sentinel"}},
-		  "required": ["policy"]
-		},
-		"then": {"required": ["redis_sentinels", "redis_master_name"]}
 	  }
 	]
 }
@@ -321,39 +298,34 @@ const metadataSchema = `
 `
 
 type Config struct {
-	Count                 any             `json:"count"`
-	TimeWindow            any             `json:"time_window"`
-	Group                 string          `json:"group,omitempty"`
-	Cost                  *int            `json:"cost,omitempty"`
-	Key                   string          `json:"key,omitempty"`
-	KeyType               string          `json:"key_type,omitempty"`
-	RejectedCode          int             `json:"rejected_code,omitempty"`
-	RejectedMsg           string          `json:"rejected_msg,omitempty"`
-	Policy                string          `json:"policy,omitempty"`
-	AllowDegradation      *bool           `json:"allow_degradation,omitempty"`
-	ShowLimitQuotaHeader  *bool           `json:"show_limit_quota_header,omitempty"`
-	RedisHost             string          `json:"redis_host,omitempty"`
-	RedisPort             int             `json:"redis_port,omitempty"`
-	RedisUsername         string          `json:"redis_username,omitempty"`
-	RedisPassword         string          `json:"redis_password,omitempty"`
-	RedisDatabase         int             `json:"redis_database,omitempty"`
-	RedisTimeout          int             `json:"redis_timeout,omitempty"`
-	RedisSSL              *bool           `json:"redis_ssl,omitempty"`
-	RedisSSLVerify        *bool           `json:"redis_ssl_verify,omitempty"`
-	RedisKeepaliveTimeout int             `json:"redis_keepalive_timeout,omitempty"`
-	RedisKeepalivePool    int             `json:"redis_keepalive_pool,omitempty"`
-	RedisClusterNodes     []string        `json:"redis_cluster_nodes,omitempty"`
-	RedisClusterName      string          `json:"redis_cluster_name,omitempty"`
-	RedisClusterSSL       *bool           `json:"redis_cluster_ssl,omitempty"`
-	RedisClusterSSLVerify *bool           `json:"redis_cluster_ssl_verify,omitempty"`
-	RedisSentinels        []RedisSentinel `json:"redis_sentinels,omitempty"`
-	RedisMasterName       string          `json:"redis_master_name,omitempty"`
-	RedisRole             string          `json:"redis_role,omitempty"`
-	SentinelUsername      string          `json:"sentinel_username,omitempty"`
-	SentinelPassword      string          `json:"sentinel_password,omitempty"`
-	WindowType            string          `json:"window_type,omitempty"`
-	SyncInterval          float64         `json:"sync_interval,omitempty"`
-	Rules                 []Rule          `json:"rules,omitempty"`
+	Count                 any      `json:"count"`
+	TimeWindow            any      `json:"time_window"`
+	Group                 string   `json:"group,omitempty"`
+	Cost                  *int     `json:"cost,omitempty"`
+	Key                   string   `json:"key,omitempty"`
+	KeyType               string   `json:"key_type,omitempty"`
+	RejectedCode          int      `json:"rejected_code,omitempty"`
+	RejectedMsg           string   `json:"rejected_msg,omitempty"`
+	Policy                string   `json:"policy,omitempty"`
+	AllowDegradation      *bool    `json:"allow_degradation,omitempty"`
+	ShowLimitQuotaHeader  *bool    `json:"show_limit_quota_header,omitempty"`
+	RedisHost             string   `json:"redis_host,omitempty"`
+	RedisPort             int      `json:"redis_port,omitempty"`
+	RedisUsername         string   `json:"redis_username,omitempty"`
+	RedisPassword         string   `json:"redis_password,omitempty"`
+	RedisDatabase         int      `json:"redis_database,omitempty"`
+	RedisTimeout          int      `json:"redis_timeout,omitempty"`
+	RedisSSL              *bool    `json:"redis_ssl,omitempty"`
+	RedisSSLVerify        *bool    `json:"redis_ssl_verify,omitempty"`
+	RedisKeepaliveTimeout int      `json:"redis_keepalive_timeout,omitempty"`
+	RedisKeepalivePool    int      `json:"redis_keepalive_pool,omitempty"`
+	RedisClusterNodes     []string `json:"redis_cluster_nodes,omitempty"`
+	RedisClusterName      string   `json:"redis_cluster_name,omitempty"`
+	RedisClusterSSL       *bool    `json:"redis_cluster_ssl,omitempty"`
+	RedisClusterSSLVerify *bool    `json:"redis_cluster_ssl_verify,omitempty"`
+	WindowType            string   `json:"window_type,omitempty"`
+	SyncInterval          float64  `json:"sync_interval,omitempty"`
+	Rules                 []Rule   `json:"rules,omitempty"`
 
 	rejectBody string
 }
@@ -465,19 +437,6 @@ func (p *Plugin) PostInit() error {
 		}
 		if p.config.RedisKeepalivePool == 0 {
 			p.config.RedisKeepalivePool = 100
-		}
-	case "redis-sentinel":
-		if len(p.config.RedisSentinels) == 0 {
-			return fmt.Errorf("redis_sentinels is required")
-		}
-		if p.config.RedisMasterName == "" {
-			return fmt.Errorf("redis_master_name is required")
-		}
-		if p.config.RedisRole == "" {
-			p.config.RedisRole = "master"
-		}
-		if p.config.RedisTimeout == 0 {
-			p.config.RedisTimeout = 1000
 		}
 	}
 
@@ -706,7 +665,7 @@ func (p *Plugin) newLimiter(count int64, timeWindow int64) (*limiter.Limiter, er
 	switch p.config.Policy {
 	case "local":
 		store = p.localStore()
-	case "redis", "redis-cluster", "redis-sentinel":
+	case "redis", "redis-cluster":
 		var err error
 		store, err = p.fixedWindowStore()
 		if err != nil {
@@ -818,24 +777,6 @@ func (p *Plugin) redisBackendClientLocked() (redis.UniversalClient, error) {
 			return err
 		})
 		return client, err
-	case "redis-sentinel":
-		configUID := shared.NewConfigUID()
-		configUID.Add(
-			p.config.Policy,
-			p.config.RedisMasterName,
-			p.config.RedisRole,
-			p.config.RedisSentinels,
-			p.config.RedisUsername,
-			p.config.RedisPassword,
-			p.config.RedisDatabase,
-			p.config.RedisTimeout,
-			p.config.SentinelUsername,
-			p.config.SentinelPassword,
-		)
-		return p.acquireLimitCountRedisClient(
-			configUID,
-			func() (any, error) { return redis.NewFailoverClient(p.redisSentinelOptions()), nil },
-		)
 	default:
 		return nil, fmt.Errorf("policy %q has no Redis backend", p.config.Policy)
 	}
@@ -1283,7 +1224,7 @@ func (p *Plugin) newSlidingStore() (slidingWindowStore, error) {
 	switch p.config.Policy {
 	case "local":
 		return newMemorySlidingWindowStore(), nil
-	case "redis", "redis-cluster", "redis-sentinel":
+	case "redis", "redis-cluster":
 		client, err := p.redisBackendClient()
 		if err != nil {
 			return nil, err

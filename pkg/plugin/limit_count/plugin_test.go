@@ -426,54 +426,6 @@ func TestSchemaRequiresRedisHostForRedisPolicy(t *testing.T) {
 	}
 }
 
-func TestSchemaAcceptsRedisSentinelPolicy(t *testing.T) {
-	p := &Plugin{}
-	if err := p.Init(); err != nil {
-		t.Fatalf("Init() error = %v", err)
-	}
-
-	config := map[string]any{
-		"count":             1,
-		"time_window":       60,
-		"policy":            "redis-sentinel",
-		"redis_sentinels":   []any{map[string]any{"host": "127.0.0.1", "port": 26379}},
-		"redis_master_name": "mymaster",
-		"redis_role":        "master",
-	}
-	if err := util.Validate(config, p.GetSchema()); err != nil {
-		t.Fatalf("schema rejected redis-sentinel policy: %v", err)
-	}
-
-	delete(config, "redis_master_name")
-	if err := util.Validate(config, p.GetSchema()); err == nil {
-		t.Fatal("schema accepted redis-sentinel policy without redis_master_name")
-	}
-}
-
-func TestRedisSentinelSlaveRoleBuildsReplicaClientWithoutPanic(t *testing.T) {
-	p := newTestPlugin(t, Config{
-		Count:           1,
-		TimeWindow:      60,
-		Policy:          "redis-sentinel",
-		RedisSentinels:  []RedisSentinel{{Host: "127.0.0.1", Port: 26379}},
-		RedisMasterName: "mymaster",
-		RedisRole:       "slave",
-	})
-
-	options := p.redisSentinelOptions()
-	if !options.ReplicaOnly {
-		t.Fatal("ReplicaOnly = false, want slave role routed only to replicas")
-	}
-	if options.RouteByLatency {
-		t.Fatal("RouteByLatency = true, which panics with NewFailoverClient")
-	}
-
-	client := redis.NewFailoverClient(options)
-	t.Cleanup(func() {
-		_ = client.Close()
-	})
-}
-
 func TestPostInitAllowsUnavailableRedisWhenDegradationEnabled(t *testing.T) {
 	allowDegradation := true
 	p := &Plugin{config: Config{
@@ -2670,13 +2622,6 @@ func TestSlidingStoreConstructorsCoverConfiguredPolicies(t *testing.T) {
 				Policy: "redis-cluster", RedisClusterName: "coverage-cluster",
 				RedisClusterNodes: []string{"127.0.0.1:7000"},
 				RedisClusterSSL:   &falseValue, RedisClusterSSLVerify: &falseValue,
-			},
-		},
-		{
-			name: "redis sentinel",
-			config: Config{
-				Policy: "redis-sentinel", RedisMasterName: "coverage-master",
-				RedisSentinels: []RedisSentinel{{Host: "127.0.0.1", Port: 26379}},
 			},
 		},
 	}

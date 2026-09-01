@@ -1137,7 +1137,7 @@ func (f *FixtureSpec) validate() error {
 	supportedKinds := map[string]bool{
 		"http": true, "https": true, "h2c": true, "https-connect": true,
 		"tcp": true, "tls-tcp": true, "udp": true, "grpc": true,
-		"redis": true, "redis-cluster": true, "redis-sentinel": true,
+		"redis": true, "redis-cluster": true,
 		"kafka": true, "rocketmq": true, "dubbo": true, "ldap": true,
 	}
 	if !supportedKinds[f.Kind] {
@@ -1346,7 +1346,7 @@ func (f *FixtureSpec) validate() error {
 		return fmt.Errorf("%s fixture must use network_expect/network_respond", f.Kind)
 	}
 	if f.Redis != nil {
-		if f.Kind != "redis" && f.Kind != "redis-cluster" && f.Kind != "redis-sentinel" {
+		if f.Kind != "redis" && f.Kind != "redis-cluster" {
 			return fmt.Errorf("%s fixture does not support Redis assertions", f.Kind)
 		}
 		if f.Redis.TLS && f.Kind != "redis-cluster" {

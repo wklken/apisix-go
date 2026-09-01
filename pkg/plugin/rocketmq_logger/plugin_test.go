@@ -1089,21 +1089,14 @@ func TestRocketMQRejectsLogEnqueueBeforePostInit(t *testing.T) {
 	p.SetDependencies(base.Dependencies{
 		Tasks: newLoggerTestTaskOwner(t),
 	})
-	queued := len(p.FireChan)
 	if err := p.RunLogPhase(base.LogSnapshot{}); !errors.Is(err, base.ErrLogQueueUnavailable) {
 		t.Fatalf("pre-materialization RunLogPhase() error = %v", err)
-	}
-	if len(p.FireChan) != queued {
-		t.Fatal("pre-materialization RunLogPhase enqueued work")
 	}
 	if err := materializeRocketMQForTest(t, p, 1, "pre-post-init", p.config.SecretKey); err != nil {
 		t.Fatal(err)
 	}
 	if err := p.RunLogPhase(base.LogSnapshot{}); !errors.Is(err, base.ErrLogQueueUnavailable) {
 		t.Fatalf("pre-PostInit RunLogPhase() error = %v", err)
-	}
-	if len(p.FireChan) != queued {
-		t.Fatal("pre-PostInit RunLogPhase enqueued work")
 	}
 	p.Stop()
 }

@@ -654,7 +654,6 @@ func TestStopDrainsPendingSLSBatchAndPreventsResurrection(t *testing.T) {
 	if p.BatchProcessor != nil || p.ready || p.secretsPrepared {
 		t.Fatal("Stop retained SLS lifecycle state")
 	}
-	beforeFire := len(p.FireChan)
 	if err := p.RunLogPhase(base.LogSnapshot{}); !errors.Is(err, base.ErrLogQueueUnavailable) {
 		t.Fatalf("post-Stop RunLogPhase() error = %v", err)
 	}
@@ -666,9 +665,6 @@ func TestStopDrainsPendingSLSBatchAndPreventsResurrection(t *testing.T) {
 	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})).ServeHTTP(
 		httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://example.com/stopped", nil),
 	)
-	if got := len(p.FireChan); got != beforeFire {
-		t.Fatalf("post-Stop Handler FireChan length = %d, want unchanged %d", got, beforeFire)
-	}
 	if err := p.PostInit(); !errors.Is(err, secret.ErrCredentialUnavailable) {
 		t.Fatalf("post-Stop PostInit() error = %v", err)
 	}

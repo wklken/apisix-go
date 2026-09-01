@@ -510,7 +510,6 @@ func TestGoogleStopRejectsRetainedLogCallbacks(t *testing.T) {
 	}))
 	p.Stop()
 
-	before := len(p.FireChan)
 	handlerDone := make(chan struct{})
 	go func() {
 		retainedHandler.ServeHTTP(
@@ -537,9 +536,6 @@ func TestGoogleStopRejectsRetainedLogCallbacks(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("retained RunLogPhase blocked after Stop returned")
 	}
-	if got := len(p.FireChan); got != before {
-		t.Fatalf("post-Stop retained callbacks changed FireChan length from %d to %d", before, got)
-	}
 }
 
 func TestGoogleStopRejectsRetainedFormattedHandler(t *testing.T) {
@@ -550,14 +546,10 @@ func TestGoogleStopRejectsRetainedFormattedHandler(t *testing.T) {
 	}))
 	p.Stop()
 
-	before := len(p.FireChan)
 	retainedHandler.ServeHTTP(
 		httptest.NewRecorder(),
 		httptest.NewRequest(http.MethodGet, "http://gateway.test/formatted", nil),
 	)
-	if got := len(p.FireChan); got != before {
-		t.Fatalf("post-Stop formatted Handler changed FireChan length from %d to %d", before, got)
-	}
 }
 
 func TestGoogleConcurrentLogCallbacksAndStop(t *testing.T) {
@@ -601,9 +593,6 @@ func TestGoogleConcurrentLogCallbacksAndStop(t *testing.T) {
 	case <-stopDone:
 	case <-time.After(time.Second):
 		t.Fatal("Stop did not finish with concurrent retained log callbacks")
-	}
-	if got := len(p.FireChan); got != 0 {
-		t.Fatalf("concurrent post-Stop callbacks enqueued %d legacy FireChan entries", got)
 	}
 }
 

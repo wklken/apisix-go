@@ -124,12 +124,6 @@ func validateListenerSpecs(specs []config.TcpListen) error {
 		if spec.Tls {
 			return fmt.Errorf("TLS stream listeners are not supported")
 		}
-		if spec.ProxyProtocol {
-			return fmt.Errorf("stream listener PROXY protocol is not supported")
-		}
-		if spec.ProxyProtocolToUpstream {
-			return fmt.Errorf("upstream PROXY protocol is not supported")
-		}
 	}
 	return nil
 }

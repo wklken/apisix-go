@@ -70,10 +70,8 @@ type Zone struct {
 }
 
 type NodeListen struct {
-	Ip                      string `mapstructure:"ip"`
-	Port                    int    `mapstructure:"port"`
-	ProxyProtocol           bool   `mapstructure:"proxy_protocol"`
-	ProxyProtocolToUpstream bool   `mapstructure:"proxy_protocol_to_upstream"`
+	Ip   string `mapstructure:"ip"`
+	Port int    `mapstructure:"port"`
 }
 
 type StreamProxy struct {
@@ -82,10 +80,8 @@ type StreamProxy struct {
 }
 
 type TcpListen struct {
-	Addr                    string `mapstructure:"addr"`
-	Tls                     bool   `mapstructure:"tls"`
-	ProxyProtocol           bool   `mapstructure:"proxy_protocol"`
-	ProxyProtocolToUpstream bool   `mapstructure:"proxy_protocol_to_upstream"`
+	Addr string `mapstructure:"addr"`
+	Tls  bool   `mapstructure:"tls"`
 }
 
 type Ssl struct {

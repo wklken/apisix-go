@@ -890,25 +890,9 @@ func TestNewRuntimeRejectsTLSAndInvalidAddress(t *testing.T) {
 	}
 }
 
-func TestNewRuntimeRejectsEmptyListenersAndUnsupportedFlags(t *testing.T) {
-	tests := []struct {
-		name string
-		spec config.TcpListen
-	}{
-		{name: "tls", spec: config.TcpListen{Addr: "127.0.0.1:0", Tls: true}},
-		{name: "proxy protocol", spec: config.TcpListen{Addr: "127.0.0.1:0", ProxyProtocol: true}},
-		{name: "proxy protocol upstream", spec: config.TcpListen{Addr: "127.0.0.1:0", ProxyProtocolToUpstream: true}},
-	}
+func TestNewRuntimeRejectsEmptyListeners(t *testing.T) {
 	if _, err := newRuntimeForRoutes(t, context.Background(), nil, nil, nil); err == nil {
 		t.Fatal("NewRuntime() accepted an empty listener set")
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			listeners := []config.TcpListen{test.spec}
-			if _, err := newRuntimeForRoutes(t, context.Background(), listeners, nil, nil); err == nil {
-				t.Fatalf("NewRuntime() accepted unsupported %s", test.name)
-			}
-		})
 	}
 }
 

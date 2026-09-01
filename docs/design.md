@@ -237,6 +237,5 @@ qualification state.
 
 | ADR | Status | Decision |
 | --- | --- | --- |
-| [0001](architecture/adr/0001-compatibility-governance.md) | accepted | Separate APISIX compatibility from Go-native extensions. |
 | [0004](architecture/adr/0004-runtime-safety-boundaries.md) | accepted | Bound ambiguous stream routing and embedded Lua execution. |
 | [0005](architecture/adr/0005-credential-log-redaction.md) | accepted | Redact credential material from authentication logs. |

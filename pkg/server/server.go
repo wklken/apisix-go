@@ -789,8 +789,6 @@ func newConfiguredHTTPServer(handler http.Handler, cfg *config.Config) *http.Ser
 	protocols.SetHTTP1(true)
 	if frontendHTTP2Enabled(cfg) {
 		protocols.SetHTTP2(true)
-	}
-	if frontendPlainHTTP2Enabled(cfg) {
 		protocols.SetUnencryptedHTTP2(true)
 	}
 	server := &http.Server{
@@ -1788,31 +1786,5 @@ func (s *Server) serveHTTPListenerRuntime(
 }
 
 func frontendHTTP2Enabled(cfg *config.Config) bool {
-	if cfg == nil {
-		return false
-	}
-	if cfg.Apisix.EnableHttp2 {
-		return true
-	}
-	for _, listener := range cfg.Apisix.Ssl.Listen {
-		if listener.EnableHttp2 {
-			return true
-		}
-	}
-	return false
-}
-
-func frontendPlainHTTP2Enabled(cfg *config.Config) bool {
-	if cfg == nil {
-		return false
-	}
-	if cfg.Apisix.EnableHttp2 {
-		return true
-	}
-	for _, listener := range cfg.Apisix.NodeListen {
-		if listener.EnableHttp2 {
-			return true
-		}
-	}
-	return false
+	return cfg != nil && cfg.Apisix.EnableHttp2
 }

@@ -72,7 +72,6 @@ type Zone struct {
 type NodeListen struct {
 	Ip                      string `mapstructure:"ip"`
 	Port                    int    `mapstructure:"port"`
-	EnableHttp2             bool   `mapstructure:"enable_http2"`
 	ProxyProtocol           bool   `mapstructure:"proxy_protocol"`
 	ProxyProtocolToUpstream bool   `mapstructure:"proxy_protocol_to_upstream"`
 }
@@ -102,7 +101,6 @@ type Ssl struct {
 type Listen struct {
 	Ip          string `mapstructure:"ip"`
 	Port        int    `mapstructure:"port"`
-	EnableHttp2 bool   `mapstructure:"enable_http2"`
 	EnableHttp3 bool   `mapstructure:"enable_http3"`
 }
 

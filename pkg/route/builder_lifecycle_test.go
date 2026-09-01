@@ -218,8 +218,8 @@ func TestPreparedLoggerOwnerStopFlushesBatches(t *testing.T) {
 	if !ok {
 		t.Fatalf("plugin type = %T, want *http_logger.Plugin", binding.Plugin)
 	}
-	if err := httpLogger.Fire(map[string]any{"path": "/orders"}); err != nil {
-		t.Fatalf("Fire() error = %v", err)
+	if err := httpLogger.EnqueueLog(map[string]any{"path": "/orders"}); err != nil {
+		t.Fatalf("EnqueueLog() error = %v", err)
 	}
 
 	httpLogger.BatchProcessor.Stop()

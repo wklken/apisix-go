@@ -16,7 +16,6 @@ import (
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/config"
-	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/runtime"
@@ -231,8 +230,7 @@ func snapshotFormatContainsString(format map[string]string, expression string) b
 }
 
 // RunLogPhase resolves fields from a detached snapshot and enqueues them on
-// the bounded batch processor. It never falls back to Fire, whose historical
-// AsyncBlock behavior can block a request goroutine.
+// the bounded batch processor.
 func (p *BaseLoggerPlugin) RunLogPhase(snapshot LogSnapshot) error {
 	fields := p.snapshotFields(snapshot)
 	ApplySnapshotMatchedRouteFields(fields, snapshot, p.RouteID)
@@ -512,21 +510,5 @@ func (p *BaseLoggerPlugin) Handler(next http.Handler) http.Handler {
 }
 
 func (p *BaseLoggerPlugin) Fire(entry map[string]any) error {
-	if p.BatchProcessor != nil {
-		p.BatchProcessor.Push(entry)
-		return nil
-	}
-
-	select {
-	case p.FireChan <- entry: // try and put into chan, if fail will to default
-	default:
-		if p.AsyncBlock {
-			logger.Warn("the log buffered chan is full! will block")
-			p.FireChan <- entry // Blocks the goroutine because buffer is full.
-			return nil
-		}
-		logger.Warn("the log buffered chan is full! will drop")
-		// Drop message by default.
-	}
-	return nil
+	return p.EnqueueLog(entry)
 }

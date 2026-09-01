@@ -1072,6 +1072,15 @@ func TestHandlerBuildsDefaultHTTPRequestEntry(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
+	delivered := make(chan map[string]any, 1)
+	p.BatchProcessor = newOwnedBatchProcessorForTest(t, logger_batch.Config{
+		BatchMaxSize: 1, MaxPendingEntries: 1, BufferDuration: time.Hour,
+		InactiveTimeout: time.Hour, ShutdownTimeout: time.Second,
+	}, func(_ context.Context, entries []map[string]any, _ int) (int, error) {
+		delivered <- entries[0]
+		return 0, nil
+	})
+	t.Cleanup(p.BatchProcessor.Stop)
 
 	req := httptest.NewRequest(http.MethodPost, "http://example.com/orders?debug=true", strings.NewReader("payload"))
 	req.RemoteAddr = "203.0.113.10:12345"
@@ -1090,7 +1099,7 @@ func TestHandlerBuildsDefaultHTTPRequestEntry(t *testing.T) {
 
 	var fields map[string]any
 	select {
-	case fields = <-p.FireChan:
+	case fields = <-delivered:
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for google log fields")
 	}

@@ -145,11 +145,6 @@ const schema = `
 	  "group": {
 		"type": "string"
 	  },
-	  "cost": {
-		"type": "integer",
-		"minimum": 0,
-		"default": 1
-	  },
 	  "key": {
 		"type": "string",
 		"default": "remote_addr"
@@ -301,7 +296,6 @@ type Config struct {
 	Count                 any      `json:"count"`
 	TimeWindow            any      `json:"time_window"`
 	Group                 string   `json:"group,omitempty"`
-	Cost                  *int     `json:"cost,omitempty"`
 	Key                   string   `json:"key,omitempty"`
 	KeyType               string   `json:"key_type,omitempty"`
 	RejectedCode          int      `json:"rejected_code,omitempty"`
@@ -380,10 +374,6 @@ func (p *Plugin) PostInit() error {
 
 	if p.config.Policy == "" {
 		p.config.Policy = "local"
-	}
-	if p.config.Cost == nil {
-		cost := 1
-		p.config.Cost = &cost
 	}
 	if p.config.WindowType == "" {
 		p.config.WindowType = "fixed"
@@ -1295,16 +1285,7 @@ func (p *Plugin) runLimit(
 	key string,
 	headers limitbase.QuotaHeaders,
 ) bool {
-	var context limiter.Context
-	var err error
-	switch *p.config.Cost {
-	case 0:
-		context, err = lim.Peek(r.Context(), p.scopedKey(key))
-	case 1:
-		context, err = lim.Get(r.Context(), p.scopedKey(key))
-	default:
-		context, err = lim.Increment(r.Context(), p.scopedKey(key), int64(*p.config.Cost))
-	}
+	context, err := lim.Get(r.Context(), p.scopedKey(key))
 	if err != nil {
 		if *p.config.AllowDegradation {
 			return true
@@ -1376,7 +1357,7 @@ func (p *Plugin) runSlidingLimit(
 	remaining, reset, err := lim.incoming(
 		r.Context(),
 		p.scopedKey(key),
-		int64(*p.config.Cost),
+		1,
 		now,
 	)
 	if err != nil && !errors.Is(err, errSlidingWindowRejected) {
@@ -1423,7 +1404,7 @@ func (p *Plugin) runDelayedLimit(
 	remaining, reset, err := syncer.incoming(
 		r.Context(),
 		p.scopedKey(key),
-		int64(*p.config.Cost),
+		1,
 		time.Now(),
 	)
 	if err != nil && !errors.Is(err, errDelayedSyncRejected) {

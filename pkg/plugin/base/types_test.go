@@ -419,13 +419,11 @@ func TestSnapshotExpressionMatchesRebuildsDetachedRequest(t *testing.T) {
 	}
 }
 
-func TestBaseLoggerConfigurationDefaultsAndCompatibilityHandler(t *testing.T) {
-	delivered := make(chan map[string]any, 1)
+func TestBaseLoggerConfigurationDefaultsAndHandlerPassthrough(t *testing.T) {
 	processor := newBaseBatchProcessorForTest(t, logger_batch.Config{
-		Name: "compatibility-handler", BatchMaxSize: 1, MaxPendingEntries: 1,
+		Name: "handler-passthrough", BatchMaxSize: 2, MaxPendingEntries: 1,
 		BufferDuration: time.Hour, InactiveTimeout: time.Hour, ShutdownTimeout: time.Second,
-	}, func(_ context.Context, entries []map[string]any, _ int) (int, error) {
-		delivered <- entries[0]
+	}, func(_ context.Context, _ []map[string]any, _ int) (int, error) {
 		return 0, nil
 	})
 	defer processor.Stop()
@@ -441,12 +439,10 @@ func TestBaseLoggerConfigurationDefaultsAndCompatibilityHandler(t *testing.T) {
 	handler := plugin.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { nextCalled = true }))
 	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://gateway.test/", nil))
 	if !nextCalled {
-		t.Fatal("compatibility Handler did not call downstream")
+		t.Fatal("Handler did not return the downstream handler")
 	}
-	select {
-	case <-delivered:
-	case <-time.After(time.Second):
-		t.Fatal("compatibility Handler did not deliver a log entry")
+	if stats := processor.Stats(); stats.Pending != 0 || stats.Buffered != 0 || stats.Processing != 0 {
+		t.Fatalf("Handler unexpectedly enqueued a live-request log entry: %#v", stats)
 	}
 
 	defaults := BatchDefaults{MaxConcurrentDeliveries: 100}

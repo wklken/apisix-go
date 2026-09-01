@@ -5,12 +5,10 @@ import (
 	"crypto/tls"
 	"fmt"
 	"math/rand"
-	"net/http"
 	"strings"
 	"time"
 
 	"github.com/go-resty/resty/v2"
-	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -328,47 +326,6 @@ func (p *Plugin) Stop() {
 		p.scopedUserSet = false
 		p.scopedPasswordSet = false
 	})
-}
-
-func (p *Plugin) Handler(next http.Handler) http.Handler {
-	if !p.config.IncludeReqBody && !p.config.IncludeRespBody {
-		return p.BaseLoggerPlugin.Handler(next)
-	}
-
-	fn := func(w http.ResponseWriter, r *http.Request) {
-		var requestBody string
-		if p.config.IncludeReqBody && base.ExprMatched(r, p.config.IncludeReqBodyExpr, 0) {
-			body, err := base.ReadSharedRequestBody(r, p.config.MaxReqBodyBytes)
-			if err == nil && body != "" {
-				requestBody = body
-			}
-		}
-
-		writer := w
-		var recorder *base.SharedResponseRecorder
-		if p.config.IncludeRespBody {
-			recorder = base.GetOrCreateSharedResponseRecorderWithLimit(w, r, p.config.MaxRespBodyBytes)
-			writer = recorder
-		}
-
-		next.ServeHTTP(writer, r)
-		status := 0
-		if recorder != nil {
-			status = recorder.StatusCode()
-		}
-
-		logFields := apisixlog.GetFields(r, p.LogFormat)
-		base.ApplyRequestMatchedRouteFields(logFields, r, p.RouteID)
-		if requestBody != "" {
-			base.NestedLogMap(logFields, "request")["body"] = requestBody
-		}
-		if recorder != nil && recorder.HasBody() && base.ExprMatched(r, p.config.IncludeRespBodyExpr, status) {
-			base.NestedLogMap(logFields, "response")["body"] = recorder.BodyTruncated(p.config.MaxRespBodyBytes)
-		}
-
-		_ = p.EnqueueLog(logFields)
-	}
-	return http.HandlerFunc(fn)
 }
 
 func (p *Plugin) SendBatch(ctx context.Context, entries []map[string]any, batchMaxSize int) (int, error) {

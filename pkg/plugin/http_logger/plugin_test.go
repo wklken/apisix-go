@@ -1004,7 +1004,7 @@ func TestPostInitNormalizesOfficialInBodyExpression(t *testing.T) {
 	}
 }
 
-func TestSendPostsJSONLogWithAuthorizationHeader(t *testing.T) {
+func TestSendBatchPostsJSONLogWithAuthorizationHeader(t *testing.T) {
 	authHeader := "Bearer secret"
 	received := make(chan map[string]any, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1031,7 +1031,11 @@ func TestSendPostsJSONLogWithAuthorizationHeader(t *testing.T) {
 		AuthHeader: &authHeader,
 		Timeout:    3,
 	})
-	p.Send(map[string]any{"path": "/orders"})
+	if _, err := p.SendBatch(
+		context.Background(), []map[string]any{{"path": "/orders"}}, 1,
+	); err != nil {
+		t.Fatalf("SendBatch() error = %v", err)
+	}
 
 	select {
 	case body := <-received:
@@ -1059,7 +1063,7 @@ func encryptHTTPLoggerTestValue(t *testing.T, key string, value string) string {
 	return base64.StdEncoding.EncodeToString(ciphertext)
 }
 
-func TestPostInitSetsTextContentTypeForNewLineConcat(t *testing.T) {
+func TestSendBatchSetsTextContentTypeForNewLineConcat(t *testing.T) {
 	received := make(chan string, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		received <- r.Header.Get("Content-Type")
@@ -1072,7 +1076,11 @@ func TestPostInitSetsTextContentTypeForNewLineConcat(t *testing.T) {
 		ConcatMethod: "new_line",
 		Timeout:      3,
 	})
-	p.Send(map[string]any{"path": "/orders"})
+	if _, err := p.SendBatch(
+		context.Background(), []map[string]any{{"path": "/orders"}}, 1,
+	); err != nil {
+		t.Fatalf("SendBatch() error = %v", err)
+	}
 
 	select {
 	case got := <-received:

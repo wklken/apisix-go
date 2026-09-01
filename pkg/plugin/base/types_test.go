@@ -168,8 +168,8 @@ func TestBaseLoggerRunLogPhaseUsesBoundedBatchQueue(t *testing.T) {
 	if err := plugin.RunLogPhase(snapshot); err != nil {
 		t.Fatalf("first RunLogPhase() error = %v", err)
 	}
-	if err := plugin.Fire(map[string]any{"method": http.MethodPost}); !errors.Is(err, ErrLogQueueFull) {
-		t.Fatalf("Fire() error = %v, want ErrLogQueueFull", err)
+	if err := plugin.EnqueueLog(map[string]any{"method": http.MethodPost}); !errors.Is(err, ErrLogQueueFull) {
+		t.Fatalf("EnqueueLog() error = %v, want ErrLogQueueFull", err)
 	}
 }
 
@@ -335,8 +335,8 @@ func TestBaseLoggerRunLogPhaseBuildsDetachedNestedPayload(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("detached payload was not delivered")
 	}
-	if err := plugin.Fire(map[string]any{"compatibility": true}); err != nil {
-		t.Fatalf("Fire() with processor error = %v", err)
+	if err := plugin.EnqueueLog(map[string]any{"compatibility": true}); err != nil {
+		t.Fatalf("EnqueueLog() with processor error = %v", err)
 	}
 	select {
 	case <-delivered:
@@ -468,8 +468,5 @@ func TestBaseLoggerConfigurationDefaultsAndCompatibilityHandler(t *testing.T) {
 
 	if err := EnqueueLog(nil, map[string]any{}); !errors.Is(err, ErrLogQueueUnavailable) {
 		t.Fatalf("EnqueueLog(nil) error = %v", err)
-	}
-	if err := (&BaseLoggerPlugin{}).Fire(map[string]any{}); !errors.Is(err, ErrLogQueueUnavailable) {
-		t.Fatalf("Fire() without processor error = %v, want ErrLogQueueUnavailable", err)
 	}
 }

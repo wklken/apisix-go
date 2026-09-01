@@ -511,7 +511,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			base.NestedLogMap(logFields, "response")["body"] = recorder.BodyTruncated(p.config.MaxRespBodyBytes)
 		}
 		logFields[elasticsearchIndexField] = resolveIndexVars(p.config.Field.Index, r)
-		_ = p.Fire(logFields)
+		_ = p.EnqueueLog(logFields)
 	}
 	return http.HandlerFunc(fn)
 }

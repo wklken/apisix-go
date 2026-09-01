@@ -366,7 +366,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			base.NestedLogMap(logFields, "response")["body"] = recorder.BodyTruncated(p.config.MaxRespBodyBytes)
 		}
 
-		_ = p.Fire(logFields)
+		_ = p.EnqueueLog(logFields)
 	}
 	return http.HandlerFunc(fn)
 }

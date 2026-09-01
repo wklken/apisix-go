@@ -1,6 +1,7 @@
 package limitbase
 
 import (
+	"math"
 	"sync"
 	"time"
 
@@ -12,6 +13,16 @@ const defaultFixedWindowCapacity = 100000
 type fixedWindow struct {
 	remaining int64
 	expiresAt time.Time
+}
+
+type leakyBucket struct {
+	excess float64
+	last   time.Time
+}
+
+type LeakyBucketResult struct {
+	Allowed bool
+	Delay   time.Duration
 }
 
 // FixedWindowResult is the APISIX limit-count local-store result.
@@ -39,6 +50,7 @@ type State struct {
 	mu          sync.Mutex
 	now         func() time.Time
 	windows     *cacheutil.BoundedTTLMap[fixedWindow]
+	requests    *cacheutil.BoundedTTLMap[leakyBucket]
 	windowCap   int
 	connections map[string]int64
 	closed      bool
@@ -66,9 +78,41 @@ func newStateWithCapacity(now func() time.Time, capacity int) *State {
 	return &State{
 		now:         now,
 		windows:     cacheutil.NewBoundedTTLMap[fixedWindow](capacity, now),
+		requests:    cacheutil.NewBoundedTTLMap[leakyBucket](capacity, now),
 		windowCap:   capacity,
 		connections: make(map[string]int64),
 	}
+}
+
+// LeakyBucket applies the APISIX limit-req local-policy algorithm. State is
+// process-owned so an unchanged effective configuration survives immutable
+// generation replacement, like APISIX's plugin-limit-req shared dictionary.
+func (state *State) LeakyBucket(key string, rate float64, burst float64) LeakyBucketResult {
+	if state == nil || key == "" || rate <= 0 || burst < 0 {
+		return LeakyBucketResult{}
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.closed {
+		return LeakyBucketResult{}
+	}
+
+	result := LeakyBucketResult{}
+	ttl := time.Duration(math.Ceil(burst/rate)+1) * time.Second
+	state.requests.Mutate(key, func(entry leakyBucket, now time.Time) (leakyBucket, time.Duration, bool) {
+		if entry.last.IsZero() {
+			result.Allowed = true
+			return leakyBucket{last: now}, ttl, true
+		}
+		excess := math.Max(entry.excess-rate*math.Abs(now.Sub(entry.last).Seconds())+1, 0)
+		if excess > burst {
+			return entry, 0, false
+		}
+		result.Allowed = true
+		result.Delay = time.Duration(excess / rate * float64(time.Second))
+		return leakyBucket{excess: excess, last: now}, ttl, true
+	})
+	return result
 }
 
 // FixedWindow checks or commits one cost against a fixed window. A rejected
@@ -216,6 +260,7 @@ func (state *State) Close() {
 	state.mu.Lock()
 	state.closed = true
 	state.windows = cacheutil.NewBoundedTTLMap[fixedWindow](state.windowCap, state.now)
+	state.requests = cacheutil.NewBoundedTTLMap[leakyBucket](state.windowCap, state.now)
 	clear(state.connections)
 	state.mu.Unlock()
 }

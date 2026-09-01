@@ -512,8 +512,10 @@ func (f *redisFixture) writeEvalResponse(writer io.Writer, command []string) err
 		return f.writeAPISIXLimitCountIncoming(writer, command)
 	}
 	if strings.Contains(normalizedScript, `redis.call("hmget"`) &&
-		strings.Contains(normalizedScript, `redis.call("hmset"`) &&
-		strings.Contains(normalizedScript, `redis.call("pexpire"`) {
+		(strings.Contains(normalizedScript, `redis.call("hmset"`) ||
+			strings.Contains(normalizedScript, `redis.call("hset"`)) &&
+		(strings.Contains(normalizedScript, `redis.call("pexpire"`) ||
+			strings.Contains(normalizedScript, `redis.call("expire"`)) {
 		return f.writeLimitReqIncoming(writer, command)
 	}
 	if strings.Contains(normalizedScript, `redis.call("incrby"`) &&
@@ -680,20 +682,20 @@ func (f *redisFixture) writeLimitReqIncoming(writer io.Writer, command []string)
 	if len(command) < 8 {
 		return writeRESPError(writer, "wrong number of arguments for limit-req incoming")
 	}
-	nowMilliseconds, err := strconv.ParseInt(command[4], 10, 64)
-	if err != nil {
-		return writeRESPError(writer, "limit-req time is not an integer")
-	}
-	rate, err := strconv.ParseFloat(command[5], 64)
+	rate, err := strconv.ParseFloat(command[4], 64)
 	if err != nil || rate <= 0 {
 		return writeRESPError(writer, "limit-req rate is not positive")
 	}
-	burst, err := strconv.ParseFloat(command[6], 64)
+	burst, err := strconv.ParseFloat(command[5], 64)
 	if err != nil || burst < 0 {
 		return writeRESPError(writer, "limit-req burst is negative")
 	}
-	ttlMilliseconds, err := strconv.ParseInt(command[7], 10, 64)
-	if err != nil || ttlMilliseconds <= 0 {
+	nowMilliseconds, err := strconv.ParseInt(command[6], 10, 64)
+	if err != nil {
+		return writeRESPError(writer, "limit-req time is not an integer")
+	}
+	ttlSeconds, err := strconv.ParseInt(command[7], 10, 64)
+	if err != nil || ttlSeconds <= 0 {
 		return writeRESPError(writer, "limit-req TTL is not a positive integer")
 	}
 
@@ -704,33 +706,25 @@ func (f *redisFixture) writeLimitReqIncoming(writer io.Writer, command []string)
 		delete(f.hashes, key)
 	}
 	fields := f.hashes[key]
-	if fields == nil {
+	excess := float64(0)
+	if fields != nil {
+		previous, _ := strconv.ParseFloat(fields["excess"], 64)
+		last, _ := strconv.ParseInt(fields["last"], 10, 64)
+		excess = math.Max(previous-rate*math.Abs(float64(nowMilliseconds-last))/1000+1000, 0)
+		if excess > burst {
+			f.stateMu.Unlock()
+			return writeRESPArray(writer, []string{"0", strconv.FormatFloat(excess, 'f', -1, 64)})
+		}
+	} else {
 		fields = make(map[string]string)
 		f.hashes[key] = fields
 	}
-	excess, _ := strconv.ParseFloat(fields["excess"], 64)
-	last, err := strconv.ParseInt(fields["last"], 10, 64)
-	if err != nil {
-		last = nowMilliseconds
-	}
-	elapsed := math.Max(0, float64(nowMilliseconds-last)/1000)
-	excess = math.Max(0, excess-elapsed*rate) + 1
-	allowed := int64(1)
-	if maxExcess := burst + 1; excess > maxExcess {
-		excess = maxExcess
-		allowed = 0
-	}
 	fields["excess"] = strconv.FormatFloat(excess, 'f', -1, 64)
 	fields["last"] = strconv.FormatInt(nowMilliseconds, 10)
-	f.expiries[key] = wallNow.Add(time.Duration(ttlMilliseconds) * time.Millisecond)
+	f.expiries[key] = wallNow.Add(time.Duration(ttlSeconds) * time.Second)
 	f.expirySet[key]++
 	f.stateMu.Unlock()
-
-	delayMilliseconds := int64(0)
-	if allowed == 1 {
-		delayMilliseconds = int64(math.Floor(math.Max(0, (excess-1)/rate) * 1000))
-	}
-	return writeRESPIntegerArray(writer, allowed, delayMilliseconds)
+	return writeRESPArray(writer, []string{"1", strconv.FormatFloat(excess, 'f', -1, 64)})
 }
 
 func (f *redisFixture) writeGraphQLLimitCountIncoming(writer io.Writer, command []string) error {
@@ -1728,8 +1722,8 @@ return {removed, current}
 }
 
 func TestRedisFixtureEmulatesLimitReqScript(t *testing.T) {
-	key := "plugin-limit-req:route:route-1:client"
-	excess := "2"
+	key := "limit_req:/routes/route-1:123:client"
+	excess := "999"
 	last := "2000"
 	spec := FixtureSpec{
 		Name: "redis-limit-req",
@@ -1745,7 +1739,7 @@ func TestRedisFixtureEmulatesLimitReqScript(t *testing.T) {
 			TTLSecondsBetween: map[string]IntRange{
 				key: {Min: 1, Max: 2},
 			},
-			ExpiryInitializations: map[string]int{key: 4},
+			ExpiryInitializations: map[string]int{key: 3},
 		},
 	}
 	started, err := startRedisFixture(spec)
@@ -1758,32 +1752,24 @@ func TestRedisFixtureEmulatesLimitReqScript(t *testing.T) {
 	client := redis.NewClient(&redis.Options{Addr: fixture.address()})
 	t.Cleanup(func() { _ = client.Close() })
 	script := `
-local state = redis.call("HMGET", KEYS[1], "excess", "last")
-local excess = tonumber(state[1]) or 0
-local last = tonumber(state[2]) or tonumber(ARGV[1])
-local now = tonumber(ARGV[1])
-local rate = tonumber(ARGV[2])
-local burst = tonumber(ARGV[3])
-local ttl = tonumber(ARGV[4])
-
-local elapsed = math.max(0, (now - last) / 1000)
-excess = math.max(0, excess - elapsed * rate) + 1
-local max_excess = burst + 1
-local allowed = 1
-if excess > max_excess then
-  excess = max_excess
-  allowed = 0
-end
-
-redis.call("HMSET", KEYS[1], "excess", excess, "last", now)
-redis.call("PEXPIRE", KEYS[1], ttl)
-
-local delay = 0
-if allowed == 1 then
-  delay = math.max(0, (excess - 1) / rate)
-end
-
-return {allowed, math.floor(delay * 1000)}
+	local rate = tonumber(ARGV[1])
+	local burst = tonumber(ARGV[2])
+	local now = tonumber(ARGV[3])
+	local ttl = tonumber(ARGV[4])
+	local state = redis.call("HMGET", KEYS[1], "excess", "last")
+	local excess
+	if state[1] and state[2] then
+	  local elapsed = now - tonumber(state[2])
+	  excess = math.max(tonumber(state[1]) - rate * math.abs(elapsed) / 1000 + 1000, 0)
+	  if excess > burst then
+	    return {0, tostring(excess)}
+	  end
+	else
+	  excess = 0
+	end
+	redis.call("HSET", KEYS[1], "excess", excess, "last", now)
+	redis.call("EXPIRE", KEYS[1], ttl)
+	return {1, tostring(excess)}
 `
 	incoming := func(now int64) []any {
 		t.Helper()
@@ -1791,10 +1777,10 @@ return {allowed, math.floor(delay * 1000)}
 			context.Background(),
 			script,
 			[]string{key},
+			1000,
+			1000,
 			now,
-			1,
-			1,
-			2000,
+			2,
 		).Slice()
 		if err != nil {
 			t.Fatalf("evaluate limit-req incoming: %v", err)
@@ -1805,14 +1791,14 @@ return {allowed, math.floor(delay * 1000)}
 	if got := incoming(1001); !equalRedisIntegers(got, 1, 0) {
 		t.Fatalf("first incoming = %#v, want [1 0]", got)
 	}
-	if got := incoming(1000); !equalRedisIntegers(got, 1, 1000) {
-		t.Fatalf("out-of-order burst incoming = %#v, want [1 1000]", got)
+	if got := incoming(1000); !equalRedisIntegers(got, 1, 999) {
+		t.Fatalf("out-of-order burst incoming = %#v, want [1 999]", got)
 	}
-	if got := incoming(1000); !equalRedisIntegers(got, 0, 0) {
-		t.Fatalf("rejected incoming = %#v, want [0 0]", got)
+	if got := incoming(1000); !equalRedisIntegers(got, 0, 1999) {
+		t.Fatalf("rejected incoming = %#v, want [0 1999]", got)
 	}
-	if got := incoming(2000); !equalRedisIntegers(got, 1, 1000) {
-		t.Fatalf("leaked-token incoming = %#v, want [1 1000]", got)
+	if got := incoming(2000); !equalRedisIntegers(got, 1, 999) {
+		t.Fatalf("leaked-token incoming = %#v, want [1 999]", got)
 	}
 
 	fixture.assert(t, spec)
@@ -1927,11 +1913,25 @@ func equalRedisIntegers(values []any, expected ...int64) bool {
 	}
 	for i, value := range values {
 		integer, ok := value.(int64)
+		if !ok {
+			text, textOK := value.(string)
+			if textOK {
+				var err error
+				integer, err = strconv.ParseInt(text, 10, 64)
+				ok = err == nil
+			}
+		}
 		if !ok || integer != expected[i] {
 			return false
 		}
 	}
 	return true
+}
+
+func TestEqualRedisIntegersRejectsMalformedBulkString(t *testing.T) {
+	if equalRedisIntegers([]any{"not-an-integer"}, 0) {
+		t.Fatal("malformed Redis integer matched zero")
+	}
 }
 
 func TestRedisClusterFixtureSupportsUluleLimiter(t *testing.T) {

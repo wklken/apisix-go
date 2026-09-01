@@ -206,6 +206,7 @@ func (p *Plugin) SetAPISIXPluginContext(pluginContext base.APISIXPluginContext) 
 	p.lifecycleMu.Lock()
 	p.apisixContext = pluginContext.Clone()
 	p.apisixContextSet = true
+	sourceConfig := p.sourceConfigCloneLocked()
 	children := p.runtimeChildrenLocked()
 	p.lifecycleMu.Unlock()
 	for position, child := range children {
@@ -213,7 +214,11 @@ func (p *Plugin) SetAPISIXPluginContext(pluginContext base.APISIXPluginContext) 
 			SetAPISIXPluginContext(base.APISIXPluginContext) error
 		})
 		if ok {
-			if err := setter.SetAPISIXPluginContext(pluginContext.WithWorkflowVID(position.rule + 1)); err != nil {
+			childContext, err := workflowChildAPISIXContext(pluginContext, sourceConfig, position)
+			if err != nil {
+				return err
+			}
+			if err := setter.SetAPISIXPluginContext(childContext); err != nil {
 				return err
 			}
 		}
@@ -236,6 +241,7 @@ func (p *Plugin) applyRuntimeContextToChild(position actionPosition, child workf
 	state := p.rateLimitState
 	pluginContext := p.apisixContext.Clone()
 	contextSet := p.apisixContextSet
+	sourceConfig := p.sourceConfigCloneLocked()
 	p.lifecycleMu.Unlock()
 	if setter, ok := child.(interface{ SetRateLimitState(*limitbase.State) }); ok && state != nil {
 		setter.SetRateLimitState(state)
@@ -243,9 +249,36 @@ func (p *Plugin) applyRuntimeContextToChild(position actionPosition, child workf
 	if setter, ok := child.(interface {
 		SetAPISIXPluginContext(base.APISIXPluginContext) error
 	}); ok && contextSet {
-		return setter.SetAPISIXPluginContext(pluginContext.WithWorkflowVID(position.rule + 1))
+		childContext, err := workflowChildAPISIXContext(pluginContext, sourceConfig, position)
+		if err != nil {
+			return err
+		}
+		return setter.SetAPISIXPluginContext(childContext)
 	}
 	return nil
+}
+
+func workflowChildAPISIXContext(
+	pluginContext base.APISIXPluginContext,
+	sourceConfig Config,
+	position actionPosition,
+) (base.APISIXPluginContext, error) {
+	if position.rule < 0 || position.rule >= len(sourceConfig.Rules) ||
+		position.action < 0 || position.action >= len(sourceConfig.Rules[position.rule].Actions) {
+		return base.APISIXPluginContext{}, fmt.Errorf(
+			"workflow action position %d/%d is unavailable",
+			position.rule,
+			position.action,
+		)
+	}
+	childContext := pluginContext.WithWorkflowVID(position.rule + 1)
+	childContext.SourceConfig = cloneWorkflowConfig(
+		sourceConfig.Rules[position.rule].Actions[position.action].Config,
+	)
+	if metadata, ok := pluginContext.SourceConfig["_meta"]; ok {
+		childContext.SourceConfig["_meta"] = cloneWorkflowValue(metadata)
+	}
+	return childContext, nil
 }
 
 func (p *Plugin) ValidatePreMaterialization() error {

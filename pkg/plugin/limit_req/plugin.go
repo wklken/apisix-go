@@ -2,20 +2,15 @@ package limit_req
 
 import (
 	"fmt"
-	"math"
 	"net/http"
-	"strings"
-	"sync"
 	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
-	"github.com/wklken/apisix-go/pkg/plugin/cacheutil"
 	"github.com/wklken/apisix-go/pkg/plugin/limitbase"
 	"github.com/wklken/apisix-go/pkg/resource"
-	"github.com/wklken/apisix-go/pkg/shared"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -23,24 +18,12 @@ type Plugin struct {
 	base.BasePlugin
 	config Config
 
-	mu      sync.Mutex
-	buckets *cacheutil.BoundedTTLMap[*bucket]
-	now     func() time.Time
-
-	bucketTTL time.Duration
-
-	redisLimiter reqLimiter
-	routeID      string
-
-	clientRelease    func()
-	consumerStoreMu  sync.Mutex
-	consumerStoreKey string
-	consumerStore    *bucketStore
+	apisixContext  base.APISIXPluginContext
+	rateLimitState *limitbase.State
+	redisLimiter   reqLimiter
+	routeID        string
+	clientRelease  func()
 }
-
-// defaultLocalBucketsCapacity bounds the number of in-memory local-policy
-// buckets; the earliest expiring buckets are evicted once the bound is hit.
-var defaultLocalBucketsCapacity = 100000
 
 const (
 	priority = 1001
@@ -60,8 +43,7 @@ const schema = `
       "minimum": 0
     },
     "key": {
-      "type": "string",
-      "minLength": 1
+      "type": "string"
     },
     "key_type": {
       "type": "string",
@@ -205,56 +187,31 @@ type Config struct {
 	rejectBody string
 }
 
-type bucket struct {
-	excess float64
-	last   time.Time
-}
-
-type bucketStore struct {
-	mu      sync.Mutex
-	buckets *cacheutil.BoundedTTLMap[*bucket]
-}
-
 type reqLimiter interface {
 	incoming(key string, rate float64, burst float64) (time.Duration, bool, error)
 }
 
-type consumerBucketEntry struct {
-	store *bucketStore
-	refs  int
-}
-
-var consumerBucketStores = struct {
-	sync.Mutex
-	entries map[string]consumerBucketEntry
-}{entries: map[string]consumerBucketEntry{}}
-
 const redisLimitReqScript = `
-local state = redis.call("HMGET", KEYS[1], "excess", "last")
-local excess = tonumber(state[1]) or 0
-local last = tonumber(state[2]) or tonumber(ARGV[1])
-local now = tonumber(ARGV[1])
-local rate = tonumber(ARGV[2])
-local burst = tonumber(ARGV[3])
+local rate = tonumber(ARGV[1])
+local burst = tonumber(ARGV[2])
+local now = tonumber(ARGV[3])
 local ttl = tonumber(ARGV[4])
+local state = redis.call("HMGET", KEYS[1], "excess", "last")
+local excess
 
-local elapsed = math.max(0, (now - last) / 1000)
-excess = math.max(0, excess - elapsed * rate) + 1
-local max_excess = burst + 1
-local allowed = 1
-if excess > max_excess then
-  return {0, 0}
+if state[1] and state[2] then
+  local elapsed = now - tonumber(state[2])
+  excess = math.max(tonumber(state[1]) - rate * math.abs(elapsed) / 1000 + 1000, 0)
+  if excess > burst then
+    return {0, tostring(excess)}
+  end
+else
+  excess = 0
 end
 
-redis.call("HMSET", KEYS[1], "excess", excess, "last", now)
-redis.call("PEXPIRE", KEYS[1], ttl)
-
-local delay = 0
-if allowed == 1 then
-  delay = math.max(0, (excess - 1) / rate)
-end
-
-return {allowed, math.floor(delay * 1000)}
+redis.call("HSET", KEYS[1], "excess", excess, "last", now)
+redis.call("EXPIRE", KEYS[1], ttl)
+return {1, tostring(excess)}
 `
 
 func (p *Plugin) Init() error {
@@ -360,25 +317,17 @@ func (p *Plugin) PostInit() error {
 		if err != nil {
 			return fmt.Errorf("limit-req failed to marshal rejected_msg: %w", err)
 		}
-		p.config.rejectBody = util.BytesToString(body)
+		p.config.rejectBody = util.BytesToString(body) + "\n"
 	}
 
-	if p.now == nil {
-		p.now = time.Now
+	if p.rateLimitState == nil {
+		p.rateLimitState = limitbase.NewState()
 	}
-	if p.buckets == nil {
-		p.buckets = cacheutil.NewBoundedTTLMap[*bucket](
-			defaultLocalBucketsCapacity,
-			func() time.Time { return p.now() },
-		)
-	}
-	p.bucketTTL = max(time.Duration(math.Ceil((p.config.Burst+1)/p.config.Rate))*time.Second, time.Second)
 
 	return nil
 }
 
 func (p *Plugin) Stop() {
-	p.releaseConsumerBucketStore()
 	if p.clientRelease != nil {
 		p.clientRelease()
 		p.clientRelease = nil
@@ -393,7 +342,25 @@ func (p *Plugin) SetResourceContext(route resource.Route, _ resource.Service) {
 	p.routeID = route.ID
 }
 
+func (p *Plugin) SetRateLimitState(state *limitbase.State) {
+	p.rateLimitState = state
+}
+
+func (p *Plugin) SetAPISIXPluginContext(pluginContext base.APISIXPluginContext) error {
+	p.apisixContext = pluginContext.Clone()
+	return nil
+}
+
 func (p *Plugin) scopedKey(key string) string {
+	if p.apisixContext.SourceConfig != nil {
+		document := cloneLimitReqMap(p.apisixContext.SourceConfig)
+		if p.apisixContext.WorkflowVID > 0 {
+			document["_vid"] = p.apisixContext.WorkflowVID
+		}
+		if scoped, err := buildLimitReqKey(p.apisixContext, document, key); err == nil {
+			return scoped
+		}
+	}
 	if p.routeID == "" {
 		return key
 	}
@@ -414,7 +381,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 				return
 			}
 			logger.Errorf("failed to limit req: %v", err)
-			http.Error(w, "failed to limit req", http.StatusInternalServerError)
+			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 		if !allowed {
@@ -438,119 +405,26 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 }
 
 func (p *Plugin) incomingWithConsumer(key string, consumerName string) (time.Duration, bool, error) {
-	if consumerName == "" {
+	if p.apisixContext.SourceConfig != nil || consumerName == "" {
 		key = p.scopedKey(key)
 	} else {
 		key = "consumer:" + consumerName + ":" + key
 	}
+	logger.Infof("limit key: %s", key)
 	if p.config.Policy == "redis" || p.config.Policy == "redis-cluster" {
 		return p.redisLimiter.incoming(key, p.config.Rate, p.config.Burst)
 	}
 
-	mu := &p.mu
-	var buckets *cacheutil.BoundedTTLMap[*bucket]
-	if consumerName != "" {
-		store := p.consumerBucketStore()
-		mu = &store.mu
-		buckets = store.buckets
-	} else {
-		buckets = p.buckets
-	}
-	mu.Lock()
-	defer mu.Unlock()
-
-	now := p.now()
-	b, ok := buckets.Get(key)
-	if !ok {
-		b = &bucket{last: now}
-	}
-
-	elapsed := now.Sub(b.last).Seconds()
-	next := &bucket{
-		excess: math.Max(0, b.excess-elapsed*p.config.Rate) + 1,
-		last:   now,
-	}
-
-	maxExcess := p.config.Burst + 1
-	if next.excess > maxExcess {
-		return 0, false, nil
-	}
-	buckets.Set(key, next, p.bucketTTL)
-
-	delaySeconds := (next.excess - 1) / p.config.Rate
-	if delaySeconds <= 0 {
-		return 0, true, nil
-	}
-
-	return time.Duration(delaySeconds * float64(time.Second)), true, nil
-}
-
-func (p *Plugin) consumerBucketStore() *bucketStore {
-	p.consumerStoreMu.Lock()
-	defer p.consumerStoreMu.Unlock()
-	if p.consumerStore != nil {
-		return p.consumerStore
-	}
-
-	uid := shared.NewConfigUID()
-	uid.Add(p.config.Rate, p.config.Burst, p.config.Key, p.config.KeyType)
-	key := uid.String()
-	consumerBucketStores.Lock()
-	entry, ok := consumerBucketStores.entries[key]
-	if !ok {
-		entry = consumerBucketEntry{
-			store: &bucketStore{
-				buckets: cacheutil.NewBoundedTTLMap[*bucket](
-					defaultLocalBucketsCapacity,
-					func() time.Time { return p.now() },
-				),
-			},
-		}
-	}
-	entry.refs++
-	consumerBucketStores.entries[key] = entry
-	consumerBucketStores.Unlock()
-
-	p.consumerStoreKey = key
-	p.consumerStore = entry.store
-	return p.consumerStore
-}
-
-func (p *Plugin) releaseConsumerBucketStore() {
-	p.consumerStoreMu.Lock()
-	key, store := p.consumerStoreKey, p.consumerStore
-	p.consumerStoreKey = ""
-	p.consumerStore = nil
-	p.consumerStoreMu.Unlock()
-	if key == "" || store == nil {
-		return
-	}
-
-	consumerBucketStores.Lock()
-	entry, ok := consumerBucketStores.entries[key]
-	if ok && entry.store == store {
-		entry.refs--
-		if entry.refs <= 0 {
-			delete(consumerBucketStores.entries, key)
-		} else {
-			consumerBucketStores.entries[key] = entry
-		}
-	}
-	consumerBucketStores.Unlock()
+	result := p.rateLimitState.LeakyBucket(key, p.config.Rate, p.config.Burst)
+	return result.Delay, result.Allowed, nil
 }
 
 func (p *Plugin) resolveKey(r *http.Request) string {
 	var key string
 	if p.config.KeyType == "var_combination" {
-		resolved := 0
-		key = limitbase.VarPattern.ReplaceAllStringFunc(p.config.Key, func(match string) string {
-			name := strings.TrimPrefix(strings.TrimPrefix(match, "${"), "$")
-			name = strings.TrimSuffix(name, "}")
-			value := base.RequestVarFromNginx(r, name)
-			if value != "" {
-				resolved++
-			}
-			return value
+		var resolved int
+		key, resolved = limitbase.ResolveVars(p.config.Key, func(name string) string {
+			return base.RequestVarFromNginx(r, name)
 		})
 		if resolved == 0 {
 			key = ""

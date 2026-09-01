@@ -175,3 +175,26 @@ func TestVarPatternDefinitionsEqualLegacyRegexes(t *testing.T) {
 		t.Fatalf("DefaultVarPattern = %q, want %q", DefaultVarPattern.String(), legacyDefaultVarPattern.String())
 	}
 }
+
+func TestResolveVarsSupportsAPISIX317Expressions(t *testing.T) {
+	values := map[string]string{"http_x_tenant": "tenant-a", "ctx.value": "nested"}
+	lookup := func(name string) string { return values[name] }
+	tests := []struct {
+		expression string
+		want       string
+		resolved   int
+	}{
+		{"$http_x_tenant", "tenant-a", 1},
+		{"${http_x_tenant}", "tenant-a", 1},
+		{"${missing ?? anonymous}", "anonymous", 1},
+		{"${ctx.value}", "nested", 1},
+		{`\$http_x_tenant`, `\$http_x_tenant`, 0},
+		{"${missing}", "", 0},
+	}
+	for _, test := range tests {
+		got, resolved := ResolveVars(test.expression, lookup)
+		if got != test.want || resolved != test.resolved {
+			t.Errorf("ResolveVars(%q) = %q, %d; want %q, %d", test.expression, got, resolved, test.want, test.resolved)
+		}
+	}
+}

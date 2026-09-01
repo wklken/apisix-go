@@ -4,7 +4,6 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +11,8 @@ import (
 	"github.com/redis/go-redis/v9"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/logger"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/plugin/limitbase"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/util"
 )
@@ -93,6 +94,41 @@ func TestPostInitAcceptsRedisPolicyDefaults(t *testing.T) {
 	options := p.redisConnConfig().Options()
 	if options.PoolSize != 100 || options.ConnMaxIdleTime != 10*time.Second {
 		t.Fatalf("redis pool = %d, idle timeout = %s", options.PoolSize, options.ConnMaxIdleTime)
+	}
+}
+
+func TestPostInitRejectsInvalidAPISIX317Configuration(t *testing.T) {
+	tests := []struct {
+		name   string
+		config Config
+		want   string
+	}{
+		{name: "zero rate", config: Config{Burst: 0}, want: "rate must be greater than 0"},
+		{name: "negative rate", config: Config{Rate: -1, Burst: 0}, want: "rate must be greater than 0"},
+		{name: "negative burst", config: Config{Rate: 1, Burst: -1}, want: "burst must be greater than or equal to 0"},
+		{name: "Redis host", config: Config{Rate: 1, Policy: "redis"}, want: "redis_host is required"},
+		{
+			name:   "Redis cluster nodes",
+			config: Config{Rate: 1, Policy: "redis-cluster", RedisClusterName: "cluster"},
+			want:   "redis_cluster_nodes is required",
+		},
+		{
+			name:   "Redis cluster name",
+			config: Config{Rate: 1, Policy: "redis-cluster", RedisClusterNodes: []string{"127.0.0.1:6379"}},
+			want:   "redis_cluster_name is required",
+		},
+		{name: "unknown policy", config: Config{Rate: 1, Policy: "memory"}, want: "not supported policy: memory"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			plugin := &Plugin{config: test.config}
+			if err := plugin.Init(); err != nil {
+				t.Fatal(err)
+			}
+			if err := plugin.PostInit(); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("PostInit() error = %v, want %q", err, test.want)
+			}
+		})
 	}
 }
 
@@ -225,9 +261,31 @@ func TestConsumerLimiterSharesQuotaAcrossRouteInstancesAndIsolatesConsumers(t *t
 		Nodelay:      new(true),
 	}
 	first := newTestPlugin(t, config)
+	state := limitbase.NewState()
+	first.SetRateLimitState(state)
 	first.SetResourceContext(resource.Route{ID: "route-1"}, resource.Service{})
 	second := newTestPlugin(t, config)
+	second.SetRateLimitState(state)
 	second.SetResourceContext(resource.Route{ID: "route-2"}, resource.Service{})
+	context := base.APISIXPluginContext{
+		SourceResourceKey: "/consumers/shared-limit-req-consumer",
+		SourceConfig: map[string]any{
+			"rate": 1.0, "burst": 1.0, "key": "remote_addr", "rejected_code": 429,
+		},
+	}
+	if err := first.SetAPISIXPluginContext(context); err != nil {
+		t.Fatal(err)
+	}
+	if err := second.SetAPISIXPluginContext(context); err != nil {
+		t.Fatal(err)
+	}
+	isolated := newTestPlugin(t, config)
+	isolated.SetRateLimitState(state)
+	isolatedContext := context.Clone()
+	isolatedContext.SourceResourceKey = "/consumers/isolated-limit-req-consumer"
+	if err := isolated.SetAPISIXPluginContext(isolatedContext); err != nil {
+		t.Fatal(err)
+	}
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
@@ -252,57 +310,9 @@ func TestConsumerLimiterSharesQuotaAcrossRouteInstancesAndIsolatesConsumers(t *t
 	if got := request(second, "shared-limit-req-consumer").Code; got != http.StatusTooManyRequests {
 		t.Fatalf("second route response = %d, want shared quota rejection %d", got, http.StatusTooManyRequests)
 	}
-	if got := request(second, "isolated-limit-req-consumer").Code; got != http.StatusNoContent {
+	if got := request(isolated, "isolated-limit-req-consumer").Code; got != http.StatusNoContent {
 		t.Fatalf("different consumer response = %d, want isolated quota %d", got, http.StatusNoContent)
 	}
-}
-
-func TestConsumerBucketStoreReleasesLastOwner(t *testing.T) {
-	resetConsumerBucketStoresForTest()
-	t.Cleanup(resetConsumerBucketStoresForTest)
-
-	config := Config{Rate: 1, Burst: 1, Key: "remote_addr"}
-	first := newTestPlugin(t, config)
-	second := newTestPlugin(t, config)
-	if store := first.consumerBucketStore(); store == nil {
-		t.Fatal("first consumer bucket store is nil")
-	} else if store != second.consumerBucketStore() {
-		t.Fatal("identical consumer configurations did not share a bucket store")
-	}
-
-	key := first.consumerStoreKey
-	consumerBucketStores.Lock()
-	entry, ok := consumerBucketStores.entries[key]
-	consumerBucketStores.Unlock()
-	if !ok || entry.refs != 2 {
-		t.Fatalf("consumer bucket entry = %#v/%t, want refs=2", entry, ok)
-	}
-
-	neverUsed := newTestPlugin(t, config)
-	neverUsed.Stop()
-	consumerBucketStores.Lock()
-	entry, ok = consumerBucketStores.entries[key]
-	consumerBucketStores.Unlock()
-	if !ok || entry.refs != 2 {
-		t.Fatalf("entry after unused owner Stop = %#v/%t, want refs=2", entry, ok)
-	}
-
-	first.Stop()
-	consumerBucketStores.Lock()
-	entry, ok = consumerBucketStores.entries[key]
-	consumerBucketStores.Unlock()
-	if !ok || entry.refs != 1 {
-		t.Fatalf("entry after first Stop = %#v/%t, want refs=1", entry, ok)
-	}
-
-	second.Stop()
-	consumerBucketStores.Lock()
-	_, ok = consumerBucketStores.entries[key]
-	consumerBucketStores.Unlock()
-	if ok {
-		t.Fatal("entry remains after final owner Stop")
-	}
-	second.Stop()
 }
 
 func TestConsumerRedisLimiterUsesConsumerScopeInsteadOfRouteScope(t *testing.T) {
@@ -334,12 +344,6 @@ func TestConsumerRedisLimiterUsesConsumerScopeInsteadOfRouteScope(t *testing.T) 
 	if redisLimiter.key != "consumer:jack:192.0.2.40" {
 		t.Fatalf("Redis consumer key = %q, want consumer scope", redisLimiter.key)
 	}
-}
-
-func resetConsumerBucketStoresForTest() {
-	consumerBucketStores.Lock()
-	consumerBucketStores.entries = map[string]consumerBucketEntry{}
-	consumerBucketStores.Unlock()
 }
 
 func TestResolveKeyLogsFallbackToClientIP(t *testing.T) {
@@ -429,6 +433,9 @@ func TestHandlerLogsRedisLimiterError(t *testing.T) {
 	if res.Code != http.StatusInternalServerError {
 		t.Fatalf("response code = %d, want %d", res.Code, http.StatusInternalServerError)
 	}
+	if body := res.Body.String(); body != "" {
+		t.Fatalf("response body = %q, want APISIX empty 500 body", body)
+	}
 
 	select {
 	case entry := <-entries:
@@ -438,6 +445,20 @@ func TestHandlerLogsRedisLimiterError(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("Redis limiter error was not logged")
+	}
+}
+
+func TestHandlerAllowsDegradationOnRedisError(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Rate: 1, Burst: 0, Key: "remote_addr", Policy: "redis", RedisHost: "127.0.0.1",
+		AllowDegradation: new(true),
+	})
+	p.redisLimiter = &fakeRedisLimiter{err: errors.New("redis unavailable")}
+	res := performRequest(p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})), "192.0.2.42:12345")
+	if res.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want degraded upstream response %d", res.Code, http.StatusNoContent)
 	}
 }
 
@@ -492,8 +513,8 @@ func TestHandlerRejectsWhenRedisLimiterRejects(t *testing.T) {
 	if res.Code != http.StatusServiceUnavailable {
 		t.Fatalf("response code = %d, want %d", res.Code, http.StatusServiceUnavailable)
 	}
-	if got := res.Body.String(); got != `{"error_msg":"slow down"}` {
-		t.Fatalf("response body = %q, want %q", got, `{"error_msg":"slow down"}`)
+	if got := res.Body.String(); got != "{\"error_msg\":\"slow down\"}\n" {
+		t.Fatalf("response body = %q, want APISIX JSON line", got)
 	}
 }
 
@@ -542,8 +563,8 @@ func TestHandlerUsesRejectedMessage(t *testing.T) {
 	if got := rejected.Header().Get("Content-Type"); got != "application/json" {
 		t.Fatalf("content-type = %q, want application/json", got)
 	}
-	if got := rejected.Body.String(); got != `{"error_msg":"slow down"}` {
-		t.Fatalf("response body = %q, want %q", got, `{"error_msg":"slow down"}`)
+	if got := rejected.Body.String(); got != "{\"error_msg\":\"slow down\"}\n" {
+		t.Fatalf("response body = %q, want APISIX JSON line", got)
 	}
 }
 
@@ -591,105 +612,10 @@ func (f *fakeRedisLimiter) incoming(key string, rate float64, burst float64) (ti
 	return f.delay, f.allowed, f.err
 }
 
-func TestLimitReqLocalBucketsEvictOldestAndExpired(t *testing.T) {
-	original := defaultLocalBucketsCapacity
-	defaultLocalBucketsCapacity = 4
-	t.Cleanup(func() { defaultLocalBucketsCapacity = original })
-
-	base := time.Date(2026, 7, 6, 1, 2, 3, 0, time.UTC)
-	p := newTestPlugin(t, Config{Rate: 10, Burst: 20, Policy: "local"})
-	p.now = func() time.Time { return base }
-
-	for i := range 6 {
-		_, allowed, err := p.incomingWithConsumer("user-"+strconv.Itoa(i), "")
-		if err != nil {
-			t.Fatalf("incoming user-%d: %v", i, err)
-		}
-		if !allowed {
-			t.Fatalf("incoming user-%d not allowed", i)
-		}
-	}
-
-	// Active keys preserve their counters: user-2 already consumed once.
-	// Checked before touching user-0, whose re-insertion would evict the
-	// oldest remaining live bucket (user-2) at capacity.
-	delay, _, err := p.incomingWithConsumer("user-2", "")
-	if err != nil {
-		t.Fatalf("incoming user-2: %v", err)
-	}
-	if delay <= 0 {
-		t.Fatalf("active key user-2 lost its counter, delay = %v", delay)
-	}
-
-	// Capacity 4 was exceeded, so the two oldest buckets were evicted and
-	// user-0 restarts from a fresh counter.
-	delay, _, err = p.incomingWithConsumer("user-0", "")
-	if err != nil {
-		t.Fatalf("incoming user-0 after eviction: %v", err)
-	}
-	if delay != 0 {
-		t.Fatalf("evicted key user-0 delay = %v, want 0", delay)
-	}
-
-	// Advancing past the bucket TTL expires user-5 and resets its counter.
-	p.now = func() time.Time { return base.Add(time.Hour) }
-	delay, _, err = p.incomingWithConsumer("user-5", "")
-	if err != nil {
-		t.Fatalf("incoming user-5 after expiry: %v", err)
-	}
-	if delay != 0 {
-		t.Fatalf("expired key user-5 delay = %v, want 0", delay)
-	}
-}
-
-func TestLimitReqLocalRejectDoesNotAdvanceBucketState(t *testing.T) {
-	base := time.Date(2026, 8, 15, 1, 2, 3, 0, time.UTC)
-	now := base
-	p := newTestPlugin(t, Config{Rate: 2, Burst: 0, Policy: "local"})
-	p.now = func() time.Time { return now }
-
-	if _, allowed, err := p.incomingWithConsumer("stable", ""); err != nil || !allowed {
-		t.Fatalf("first admission = allowed %t, error %v; want true, nil", allowed, err)
-	}
-	now = base.Add(250 * time.Millisecond)
-	if _, allowed, err := p.incomingWithConsumer("stable", ""); err != nil || allowed {
-		t.Fatalf("rejected admission = allowed %t, error %v; want false, nil", allowed, err)
-	}
-	now = base.Add(500 * time.Millisecond)
-	if _, allowed, err := p.incomingWithConsumer("stable", ""); err != nil || !allowed {
-		t.Fatalf("recovered admission = allowed %t, error %v; want true, nil", allowed, err)
-	}
-}
-
-func TestLimitReqLocalAcceptedTrafficRefreshesBucketExpiry(t *testing.T) {
-	base := time.Date(2026, 8, 15, 1, 2, 3, 0, time.UTC)
-	now := base
-	p := newTestPlugin(t, Config{Rate: 1, Burst: 2, Policy: "local"})
-	p.now = func() time.Time { return now }
-
-	for _, offset := range []time.Duration{0, 500 * time.Millisecond, 2500 * time.Millisecond} {
-		now = base.Add(offset)
-		if _, allowed, err := p.incomingWithConsumer("active", ""); err != nil || !allowed {
-			t.Fatalf("admission at %s = allowed %t, error %v; want true, nil", offset, allowed, err)
-		}
-	}
-
-	// The original t=0 expiry is t=3s. The accepted request at t=2.5s must
-	// refresh it, so the bucket still carries excess at t=3.25s.
-	now = base.Add(3250 * time.Millisecond)
-	delay, allowed, err := p.incomingWithConsumer("active", "")
-	if err != nil || !allowed {
-		t.Fatalf("admission after original expiry = allowed %t, error %v; want true, nil", allowed, err)
-	}
-	if delay <= 0 {
-		t.Fatalf("delay after refreshed expiry = %s, want positive retained excess", delay)
-	}
-}
-
 func TestRedisLimitReqRejectReturnsBeforeStateMutation(t *testing.T) {
-	reject := strings.Index(redisLimitReqScript, "if excess > max_excess then")
-	returnRejected := strings.Index(redisLimitReqScript, "return {0, 0}")
-	writeState := strings.Index(redisLimitReqScript, `redis.call("HMSET"`)
+	reject := strings.Index(redisLimitReqScript, "if excess > burst then")
+	returnRejected := strings.Index(redisLimitReqScript, "return {0, tostring(excess)}")
+	writeState := strings.Index(redisLimitReqScript, `redis.call("HSET"`)
 	if reject < 0 || returnRejected < 0 || writeState < 0 {
 		t.Fatalf(
 			"Redis script is missing rejection or mutation contract: reject=%d return=%d write=%d",

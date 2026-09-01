@@ -9,6 +9,7 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -184,14 +185,21 @@ func (child *workflowRuntimeContextChild) SetAPISIXPluginContext(
 func TestAPISIX317WorkflowPropagatesRuleIdentityAndSharedLimiterState(t *testing.T) {
 	first := &workflowRuntimeContextChild{}
 	second := &workflowRuntimeContextChild{}
-	plugin := &Plugin{children: map[actionPosition]workflowChild{
-		{rule: 0, action: 0}: first,
-		{rule: 1, action: 0}: second,
-	}}
+	plugin := &Plugin{
+		config: Config{Rules: []Rule{
+			{Actions: []Action{{Name: "limit-req", Config: map[string]any{"rate": 1.0}}}},
+			{Actions: []Action{{Name: "limit-req", Config: map[string]any{"rate": 2.0}}}},
+		}},
+		children: map[actionPosition]workflowChild{
+			{rule: 0, action: 0}: first,
+			{rule: 1, action: 0}: second,
+		},
+	}
 	state := limitbase.NewState()
 	plugin.SetRateLimitState(state)
 	if err := plugin.SetAPISIXPluginContext(base.APISIXPluginContext{
 		ConfigType: "route", ConfigVersion: "11",
+		SourceConfig: map[string]any{"_meta": map[string]any{"priority": 1006}},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -205,6 +213,22 @@ func TestAPISIX317WorkflowPropagatesRuleIdentityAndSharedLimiterState(t *testing
 			first.pluginContext.WorkflowVID,
 			second.pluginContext.WorkflowVID,
 		)
+	}
+	for _, test := range []struct {
+		name  string
+		child *workflowRuntimeContextChild
+		rate  float64
+	}{
+		{name: "first", child: first, rate: 1},
+		{name: "second", child: second, rate: 2},
+	} {
+		want := map[string]any{
+			"rate":  test.rate,
+			"_meta": map[string]any{"priority": 1006},
+		}
+		if !reflect.DeepEqual(test.child.pluginContext.SourceConfig, want) {
+			t.Fatalf("%s child source config = %#v, want %#v", test.name, test.child.pluginContext.SourceConfig, want)
+		}
 	}
 }
 

@@ -563,7 +563,9 @@ func TestSendPostsClickHouseInsert(t *testing.T) {
 		SSLVerify:     &sslVerify,
 	})
 
-	p.Send(map[string]any{"path": "/orders"})
+	if _, err := p.SendBatch(context.Background(), []map[string]any{{"path": "/orders"}}, 1); err != nil {
+		t.Fatalf("SendBatch() error = %v", err)
+	}
 
 	select {
 	case req := <-requests:

@@ -624,6 +624,88 @@ cases:
             status: 401
           wait: 100ms
     - config:
+        routes:
+            - id: otel-partial-batch-exports-on-inactive-poll
+              name: partial-batch-exports-on-inactive-poll
+              plugins:
+                opentelemetry:
+                    sampler:
+                        name: always_on
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /partial-batch-exports-on-inactive-poll
+      fixtures:
+        - expect:
+            - method: GET
+              path:
+                equals: /partial-batch-exports-on-inactive-poll
+          expect_requests: 1
+          kind: http
+          name: primary
+          respond:
+            - body: partial-batch-ok
+              status: 200
+        - expect:
+            - headers:
+                Content-Type:
+                    matches: ^application/x-protobuf
+              method: POST
+              otlp_traces:
+                span_count: 1
+                spans:
+                    - attributes:
+                        apisix.route_id:
+                            equals: otel-partial-batch-exports-on-inactive-poll
+                            type: string
+                        http.status_code:
+                            equals: "200"
+                            type: int
+                      kind: server
+                      name:
+                        equals: GET /partial-batch-exports-on-inactive-poll
+                      resource_attributes:
+                        service.name:
+                            equals: APISIX
+                            type: string
+              path:
+                equals: /v1/traces
+          expect_requests: 1
+          kind: http
+          name: collector
+          respond:
+            - headers:
+                Content-Type: application/x-protobuf
+              status: 200
+      name: partial-batch-exports-on-inactive-poll
+      runtime:
+        plugin_attr:
+            opentelemetry:
+                batch_span_processor:
+                    batch_timeout: 0.05
+                    inactive_timeout: 0.1
+                    max_export_batch_size: 8
+                    max_queue_size: 32
+                collector:
+                    address: '{{FIXTURE.collector.URL}}/v1/traces'
+                    request_timeout: 3
+                resource:
+                    service.name: APISIX
+                trace_id_source: random
+        plugins:
+            - opentelemetry
+      steps:
+        - input:
+            method: GET
+            path: /partial-batch-exports-on-inactive-poll
+          name: enqueue-one-span-below-batch-size
+          output:
+            body:
+                equals: partial-batch-ok
+            status: 200
+          wait: 0s
+    - config:
         plugin_metadata:
             - &otel-variable-log-format
               id: http-logger

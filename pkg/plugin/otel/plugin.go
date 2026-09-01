@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -167,6 +166,7 @@ type Plugin struct {
 
 	metadata       Metadata
 	tracerProvider *sdktrace.TracerProvider
+	batchProcessor *apisixBatchSpanProcessor
 	route          resource.Route
 	service        resource.Service
 	stopOnce       sync.Once
@@ -187,11 +187,11 @@ type CollectorConfig struct {
 }
 
 type BatchSpanProcessorConfig struct {
-	DropOnQueueFull    bool    `json:"drop_on_queue_full,omitempty"`
-	MaxQueueSize       int     `json:"max_queue_size,omitempty"`
-	BatchTimeout       float64 `json:"batch_timeout,omitempty"`
-	InactiveTimeout    float64 `json:"inactive_timeout,omitempty"`
-	MaxExportBatchSize int     `json:"max_export_batch_size,omitempty"`
+	DropOnQueueFull    *bool    `json:"drop_on_queue_full,omitempty"`
+	MaxQueueSize       *int     `json:"max_queue_size,omitempty"`
+	BatchTimeout       *float64 `json:"batch_timeout,omitempty"`
+	InactiveTimeout    *float64 `json:"inactive_timeout,omitempty"`
+	MaxExportBatchSize *int     `json:"max_export_batch_size,omitempty"`
 }
 
 type Config struct {
@@ -253,14 +253,19 @@ func (p *Plugin) PostInit() error {
 	}
 	p.metadata = metadata
 
-	p.tracerProvider, err = newTracerProvider(p.config.Sampler, metadata, configured)
+	p.tracerProvider, p.batchProcessor, err = newTracerProviderWithProcessor(
+		p.config.Sampler, metadata, configured, p.TaskOwner(),
+	)
 	if err != nil {
-		if errors.Is(err, errUnsupportedMetadata) {
-			return err
-		}
 		p.tracerProvider = sdktrace.NewTracerProvider(sdktrace.WithSampler(buildSampler(p.config.Sampler)))
 	}
 	return err
+}
+
+func (p *Plugin) QuiesceGenerationTasks() {
+	if p.batchProcessor != nil {
+		p.batchProcessor.Quiesce()
+	}
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {

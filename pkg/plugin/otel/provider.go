@@ -2,7 +2,6 @@ package otel
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -18,20 +17,6 @@ import (
 	sdkresource "go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
-
-var errUnsupportedMetadata = errors.New("unsupported OpenTelemetry metadata")
-
-type unsupportedMetadataError struct {
-	message string
-}
-
-func (e unsupportedMetadataError) Error() string {
-	return e.message
-}
-
-func (e unsupportedMetadataError) Is(target error) bool {
-	return target == errUnsupportedMetadata
-}
 
 func buildSampler(conf SamplerConfig) sdktrace.Sampler {
 	switch conf.Name {
@@ -95,15 +80,12 @@ func applyMetadataDefaults(metadata Metadata) Metadata {
 	return metadata
 }
 
-func newTracerProvider(
+func newTracerProviderWithProcessor(
 	sampler SamplerConfig,
 	metadata Metadata,
 	metadataConfigured bool,
-) (*sdktrace.TracerProvider, error) {
-	if err := validateMetadata(metadata); err != nil {
-		return nil, err
-	}
-
+	tasks *runtime.TaskOwner,
+) (*sdktrace.TracerProvider, *apisixBatchSpanProcessor, error) {
 	options := []sdktrace.TracerProviderOption{
 		sdktrace.WithSampler(buildSampler(sampler)),
 		sdktrace.WithResource(otelResource(metadata.Resource)),
@@ -112,7 +94,7 @@ func newTracerProvider(
 		options = append(options, sdktrace.WithIDGenerator(requestIDGenerator{}))
 	}
 	if !metadataConfigured {
-		return sdktrace.NewTracerProvider(options...), nil
+		return sdktrace.NewTracerProvider(options...), nil, nil
 	}
 
 	exporterOptions := []otlptracehttp.Option{
@@ -124,7 +106,7 @@ func newTracerProvider(
 		collectorURL, err := url.Parse(address)
 		if err != nil || collectorURL.Host == "" ||
 			(collectorURL.Scheme != "http" && collectorURL.Scheme != "https") {
-			return nil, fmt.Errorf("invalid OpenTelemetry collector address %q", address)
+			return nil, nil, fmt.Errorf("invalid OpenTelemetry collector address %q", address)
 		}
 		exporterOptions = append(exporterOptions, otlptracehttp.WithEndpointURL(address))
 	} else {
@@ -132,38 +114,16 @@ func newTracerProvider(
 	}
 	exporter, err := otlptracehttp.New(context.Background(), exporterOptions...)
 	if err != nil {
-		return nil, fmt.Errorf("create OpenTelemetry OTLP exporter: %w", err)
+		return nil, nil, fmt.Errorf("create OpenTelemetry OTLP exporter: %w", err)
 	}
 
-	batchOptions := batchSpanProcessorOptions(metadata.BatchSpanProcessor)
-	options = append(options, sdktrace.WithBatcher(exporter, batchOptions...))
-	return sdktrace.NewTracerProvider(options...), nil
-}
-
-func batchSpanProcessorOptions(config BatchSpanProcessorConfig) []sdktrace.BatchSpanProcessorOption {
-	options := make([]sdktrace.BatchSpanProcessorOption, 0, 5)
-	if !config.DropOnQueueFull {
-		options = append(options, sdktrace.WithBlocking())
+	processor, err := newAPISIXBatchSpanProcessor(exporter, metadata.BatchSpanProcessor, tasks)
+	if err != nil {
+		_ = exporter.Shutdown(context.Background())
+		return nil, nil, err
 	}
-	if config.MaxQueueSize > 0 {
-		options = append(options, sdktrace.WithMaxQueueSize(config.MaxQueueSize))
-	}
-	if config.BatchTimeout > 0 {
-		options = append(options, sdktrace.WithBatchTimeout(time.Duration(config.BatchTimeout*float64(time.Second))))
-	}
-	if config.MaxExportBatchSize > 0 {
-		options = append(options, sdktrace.WithMaxExportBatchSize(config.MaxExportBatchSize))
-	}
-	return options
-}
-
-func validateMetadata(metadata Metadata) error {
-	if metadata.BatchSpanProcessor.InactiveTimeout < 0 {
-		return unsupportedMetadataError{
-			message: "opentelemetry batch_span_processor.inactive_timeout is unsupported by the Go data plane",
-		}
-	}
-	return nil
+	options = append(options, sdktrace.WithSpanProcessor(processor))
+	return sdktrace.NewTracerProvider(options...), processor, nil
 }
 
 func otelResource(configured map[string]any) *sdkresource.Resource {

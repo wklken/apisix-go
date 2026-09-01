@@ -59,7 +59,9 @@ func TestPostInitWarnsOnlyForInsecureCollectorAddress(t *testing.T) {
 				name: `{"collector":{"address":"` + test.scheme + `://127.0.0.1:4318"}}`,
 			})
 			p := &Plugin{}
-			p.SetDependencies(base.Dependencies{Config: &config.EffectiveConfig{}, Metadata: view})
+			p.SetDependencies(base.Dependencies{
+				Config: &config.EffectiveConfig{}, Metadata: view, Tasks: newOpenTelemetryTaskOwner(t),
+			})
 			if err := p.Init(); err != nil {
 				t.Fatalf("Init() error = %v", err)
 			}
@@ -744,7 +746,9 @@ func TestPreparedGenerationsRetainOpenTelemetryMetadata(t *testing.T) {
 	nSource[0] = 'x'
 
 	pN := &Plugin{}
-	pN.SetDependencies(base.Dependencies{Config: &config.EffectiveConfig{}, Metadata: nView})
+	pN.SetDependencies(base.Dependencies{
+		Config: &config.EffectiveConfig{}, Metadata: nView, Tasks: newOpenTelemetryTaskOwner(t),
+	})
 	if err := pN.Init(); err != nil {
 		t.Fatalf("N Init() error = %v", err)
 	}
@@ -758,7 +762,9 @@ func TestPreparedGenerationsRetainOpenTelemetryMetadata(t *testing.T) {
 		name: `{"trace_id_source":"random","resource":{"service.name":"generation-n-plus-one"},"collector":{"address":"127.0.0.1:4319","request_headers":{"Authorization":"generation-n-plus-one"}}}`,
 	})
 	pNPlusOne := &Plugin{}
-	pNPlusOne.SetDependencies(base.Dependencies{Config: &config.EffectiveConfig{}, Metadata: nPlusOneView})
+	pNPlusOne.SetDependencies(base.Dependencies{
+		Config: &config.EffectiveConfig{}, Metadata: nPlusOneView, Tasks: newOpenTelemetryTaskOwner(t),
+	})
 	if err := pNPlusOne.Init(); err != nil {
 		t.Fatalf("N+1 Init() error = %v", err)
 	}
@@ -859,9 +865,11 @@ func TestNewTracerProviderAcceptsSetNgxVar(t *testing.T) {
 		Collector: CollectorConfig{Address: collector.URL},
 	}
 
-	provider, err := newTracerProvider(SamplerConfig{Name: "always_on"}, metadata, true)
+	provider, _, err := newTracerProviderWithProcessor(
+		SamplerConfig{Name: "always_on"}, metadata, true, newOpenTelemetryTaskOwner(t),
+	)
 	if err != nil {
-		t.Fatalf("newTracerProvider() rejected APISIX 3.17 set_ngx_var: %v", err)
+		t.Fatalf("newTracerProviderWithProcessor() rejected APISIX 3.17 set_ngx_var: %v", err)
 	}
 	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
 }
@@ -874,13 +882,15 @@ func TestNewTracerProviderAcceptsAPISIX317PositiveInactiveTimeout(t *testing.T) 
 	metadata := Metadata{
 		Collector: CollectorConfig{Address: collector.URL},
 		BatchSpanProcessor: BatchSpanProcessorConfig{
-			InactiveTimeout: 0.5,
+			InactiveTimeout: new(0.5),
 		},
 	}
 
-	provider, err := newTracerProvider(SamplerConfig{Name: "always_on"}, metadata, true)
+	provider, _, err := newTracerProviderWithProcessor(
+		SamplerConfig{Name: "always_on"}, metadata, true, newOpenTelemetryTaskOwner(t),
+	)
 	if err != nil {
-		t.Fatalf("newTracerProvider() rejected APISIX 3.17 inactive_timeout=0.5: %v", err)
+		t.Fatalf("newTracerProviderWithProcessor() rejected APISIX 3.17 inactive_timeout=0.5: %v", err)
 	}
 	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
 }
@@ -932,12 +942,14 @@ func TestTracerProviderExportsOTLPHTTPWithConfiguredHeaders(t *testing.T) {
 			RequestHeaders: map[string]any{"Authorization": "token"},
 		},
 		BatchSpanProcessor: BatchSpanProcessorConfig{
-			MaxQueueSize:       8,
-			BatchTimeout:       0.01,
-			MaxExportBatchSize: 1,
+			MaxQueueSize:       new(8),
+			BatchTimeout:       new(0.01),
+			MaxExportBatchSize: new(1),
 		},
 	}
-	provider, err := newTracerProvider(SamplerConfig{Name: "always_on"}, metadata, true)
+	provider, _, err := newTracerProviderWithProcessor(
+		SamplerConfig{Name: "always_on"}, metadata, true, newOpenTelemetryTaskOwner(t),
+	)
 	if err != nil {
 		t.Fatalf("new tracer provider: %v", err)
 	}
@@ -996,7 +1008,7 @@ func TestPostInitKeepsFallbackProviderWhenCollectorIsInvalid(t *testing.T) {
 	}
 }
 
-func TestPostInitRejectsNegativeInactiveTimeoutBeforeFallbackProviderAllocation(t *testing.T) {
+func TestPostInitRejectsNegativeInactiveTimeout(t *testing.T) {
 	effective := &config.EffectiveConfig{Config: config.Config{
 		PluginAttr: map[string]map[string]any{name: {
 			"batch_span_processor": map[string]any{"inactive_timeout": -1.0},
@@ -1010,18 +1022,30 @@ func TestPostInitRejectsNegativeInactiveTimeoutBeforeFallbackProviderAllocation(
 	}
 	err := p.PostInit()
 	if err == nil {
-		t.Fatal("PostInit() error = nil, want unsupported metadata rejection")
+		t.Fatal("PostInit() error = nil, want invalid inactive_timeout rejection")
 	}
-	if !errors.Is(err, errUnsupportedMetadata) {
-		t.Fatalf("PostInit() error = %v, want unsupported metadata sentinel", err)
-	}
-	const want = "opentelemetry batch_span_processor.inactive_timeout is unsupported by the Go data plane"
+	const want = "opentelemetry inactive_timeout must be greater than 0"
 	if err.Error() != want {
 		t.Fatalf("PostInit() error = %q, want %q", err, want)
 	}
-	if p.tracerProvider != nil {
-		t.Fatal("PostInit() allocated fallback tracer provider after rejecting unsupported metadata")
+	if p.tracerProvider == nil {
+		t.Fatal("PostInit() fallback tracer provider = nil")
 	}
+}
+
+func newOpenTelemetryTaskOwner(t *testing.T) *runtime.TaskOwner {
+	t.Helper()
+	tasks := runtime.NewTaskRegistry(context.Background(), nil)
+	owner, err := runtime.NewTaskOwner(tasks, "plugin/opentelemetry/test", runtime.TaskPlugin)
+	if err != nil {
+		t.Fatalf("NewTaskOwner() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if residuals, stopErr := tasks.Stop(context.Background()); stopErr != nil || len(residuals) != 0 {
+			t.Errorf("TaskRegistry.Stop() = (%v, %v)", residuals, stopErr)
+		}
+	})
+	return owner
 }
 
 func TestTraceRequestPhaseSetsAPISIX317VariablesWhenEnabled(t *testing.T) {

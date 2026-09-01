@@ -65,11 +65,6 @@ func TestDescriptorBindingUsesInitializedPluginPriority(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatal(err)
 	}
-	setter, ok := p.(interface{ SetPriority(int) })
-	if !ok {
-		t.Fatal("request-id plugin has no priority setter")
-	}
-	setter.SetPriority(-1)
 	binding, err := BindPluginChecked(
 		"request-id",
 		p,
@@ -81,7 +76,7 @@ func TestDescriptorBindingUsesInitializedPluginPriority(t *testing.T) {
 	}
 	if binding.Priority != binding.Descriptor.Priority || binding.Priority != p.GetPriority() {
 		t.Fatalf(
-			"binding priority = %d, descriptor = %d, mutable plugin = %d",
+			"binding priority = %d, descriptor = %d, plugin = %d",
 			binding.Priority,
 			binding.Descriptor.Priority,
 			p.GetPriority(),

@@ -240,8 +240,6 @@ func (p *Plugin) Init() error {
 	p.Priority = priority
 	p.Schema = schema
 
-	p.InitLogger(p.Send)
-
 	return nil
 }
 

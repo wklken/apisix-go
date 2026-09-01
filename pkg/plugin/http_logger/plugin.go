@@ -662,19 +662,6 @@ func logFormatContains(format map[string]any, variable string) bool {
 	return false
 }
 
-func (p *Plugin) Send(log map[string]any) {
-	body, err := json.Marshal(log)
-	if err != nil {
-		logger.Errorf("failed to marshal log message: %s in http-logger", err)
-		return
-	}
-	defer clear(body)
-
-	if err := p.sendBody(context.Background(), body); err != nil {
-		logger.Errorf("%s", err)
-	}
-}
-
 func (p *Plugin) SendBatch(ctx context.Context, entries []map[string]any, batchMaxSize int) (int, error) {
 	body, err := p.encodeBatch(entries, batchMaxSize)
 	if err != nil {

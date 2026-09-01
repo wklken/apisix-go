@@ -3,15 +3,12 @@ package limit_count
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
-	"regexp"
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -22,7 +19,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
-	"github.com/wklken/apisix-go/pkg/plugin/limitbase"
 	"github.com/wklken/apisix-go/pkg/plugin/real_ip"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/runtime"
@@ -75,32 +71,6 @@ type fakeRedisPoolStatsProvider struct {
 
 func (p fakeRedisPoolStatsProvider) PoolStats() *redis.PoolStats {
 	return &redis.PoolStats{Hits: p.hits.Load()}
-}
-
-type fakeSlidingRedisClient struct {
-	getResult  *redis.StringCmd
-	evalResult *redis.Cmd
-	getKey     string
-	evalScript string
-	evalKeys   []string
-	evalArgs   []any
-}
-
-func (c *fakeSlidingRedisClient) Get(_ context.Context, key string) *redis.StringCmd {
-	c.getKey = key
-	return c.getResult
-}
-
-func (c *fakeSlidingRedisClient) Eval(
-	_ context.Context,
-	script string,
-	keys []string,
-	args ...any,
-) *redis.Cmd {
-	c.evalScript = script
-	c.evalKeys = append([]string(nil), keys...)
-	c.evalArgs = append([]any(nil), args...)
-	return c.evalResult
 }
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -1005,196 +975,6 @@ func TestFixedWindowResetSeconds(t *testing.T) {
 	}
 }
 
-func TestSlidingWindowCommitFlushesPermittedDeltaAfterLimitReached(t *testing.T) {
-	store := newMemorySlidingWindowStore()
-	limiter := newSlidingWindowLimiter(store, "plugin-limit-count", 2, 5)
-	now := time.Unix(102, 0)
-
-	remaining, _, err := limiter.incoming(context.Background(), "commit-regression", 2, now)
-	if err != nil || remaining != 0 {
-		t.Fatalf("consume quota = remaining %d, error %v; want remaining 0", remaining, err)
-	}
-	if _, _, err := limiter.incoming(
-		context.Background(),
-		"commit-regression",
-		3,
-		now,
-	); !errors.Is(
-		err,
-		errSlidingWindowRejected,
-	) {
-		t.Fatalf("over-limit incoming error = %v, want %v", err, errSlidingWindowRejected)
-	}
-	remaining, _, err = limiter.commit(context.Background(), "commit-regression", 3, now)
-	if err != nil {
-		t.Fatalf("commit() error = %v", err)
-	}
-	if remaining != -3 {
-		t.Fatalf("commit() remaining = %d, want -3", remaining)
-	}
-}
-
-func TestSlidingWindowCountersAreIsolatedByPluginName(t *testing.T) {
-	store := newMemorySlidingWindowStore()
-	limitCount := newSlidingWindowLimiter(store, "plugin-limit-count", 2, 5)
-	graphqlLimitCount := newSlidingWindowLimiter(store, "plugin-graphql-limit-count", 2, 5)
-	now := time.Unix(102, 0)
-
-	if _, _, err := limitCount.incoming(context.Background(), "same-key", 2, now); err != nil {
-		t.Fatalf("limit-count consume quota error = %v", err)
-	}
-	if _, _, err := limitCount.incoming(
-		context.Background(),
-		"same-key",
-		1,
-		now,
-	); !errors.Is(
-		err,
-		errSlidingWindowRejected,
-	) {
-		t.Fatalf("limit-count over-limit error = %v, want %v", err, errSlidingWindowRejected)
-	}
-	remaining, _, err := graphqlLimitCount.incoming(context.Background(), "same-key", 1, now)
-	if err != nil {
-		t.Fatalf("graphql-limit-count first request error = %v", err)
-	}
-	if remaining != 1 {
-		t.Fatalf("graphql-limit-count remaining = %d, want independent quota 1", remaining)
-	}
-}
-
-func TestSlidingWindowCheckAndIncrementIsAtomicAndDoesNotIncrementOnReject(t *testing.T) {
-	store := newMemorySlidingWindowStore()
-	limiter := newSlidingWindowLimiter(store, "plugin-limit-count", 2, 5)
-	now := time.Unix(102, 0)
-
-	var accepted atomic.Int64
-	var rejected atomic.Int64
-	var unexpected atomic.Int64
-	var wg sync.WaitGroup
-	for range 32 {
-		wg.Go(func() {
-			_, _, err := limiter.incoming(context.Background(), "atomic-regression", 1, now)
-			switch {
-			case err == nil:
-				accepted.Add(1)
-			case errors.Is(err, errSlidingWindowRejected):
-				rejected.Add(1)
-			default:
-				unexpected.Add(1)
-			}
-		})
-	}
-	wg.Wait()
-
-	if got := accepted.Load(); got != 2 {
-		t.Fatalf("accepted requests = %d, want exactly 2", got)
-	}
-	if got := rejected.Load(); got != 30 {
-		t.Fatalf("rejected requests = %d, want 30", got)
-	}
-	if got := unexpected.Load(); got != 0 {
-		t.Fatalf("unexpected errors = %d, want 0", got)
-	}
-	currentKey, _ := limiter.counterKeys("atomic-regression", now)
-	if got := store.count(currentKey, now); got != 2 {
-		t.Fatalf("stored current-window count = %d, want 2", got)
-	}
-}
-
-func TestSlidingWindowRejectsCostThatWouldExceedLimitWithoutIncrement(t *testing.T) {
-	store := newMemorySlidingWindowStore()
-	limiter := newSlidingWindowLimiter(store, "plugin-limit-count", 2, 5)
-	now := time.Unix(102, 0)
-
-	remaining, _, err := limiter.incoming(context.Background(), "cost-overflow", 1, now)
-	if err != nil || remaining != 1 {
-		t.Fatalf("first request = remaining %d, error %v; want remaining 1", remaining, err)
-	}
-	remaining, _, err = limiter.incoming(context.Background(), "cost-overflow", 2, now)
-	if !errors.Is(err, errSlidingWindowRejected) {
-		t.Fatalf("cost-overflow request error = %v, want %v", err, errSlidingWindowRejected)
-	}
-	if remaining != 0 {
-		t.Fatalf("cost-overflow remaining = %d, want rejection header value 0", remaining)
-	}
-	currentKey, _ := limiter.counterKeys("cost-overflow", now)
-	if got := store.count(currentKey, now); got != 1 {
-		t.Fatalf("stored current-window count = %d, want rejected cost not incremented", got)
-	}
-}
-
-func TestSlidingWindowResponseHeadersStayRoundedAcrossAcceptedAndRejectedRequests(t *testing.T) {
-	p := newTestPlugin(t, Config{
-		Count:        2,
-		TimeWindow:   5,
-		WindowType:   "sliding",
-		RejectedCode: http.StatusServiceUnavailable,
-	})
-	limiter := newSlidingWindowLimiter(newMemorySlidingWindowStore(), "plugin-limit-count", 2, 5)
-	headers := limitbase.DefaultQuotaHeaders("", "", "")
-	start := time.Unix(100, 0)
-	times := []time.Time{
-		start,
-		start.Add(time.Second),
-		start.Add(2 * time.Second),
-		start.Add(3500 * time.Millisecond),
-		start.Add(5 * time.Second),
-	}
-	statuses := []int{
-		http.StatusOK,
-		http.StatusOK,
-		http.StatusServiceUnavailable,
-		http.StatusServiceUnavailable,
-		http.StatusServiceUnavailable,
-	}
-
-	for i, now := range times {
-		response := httptest.NewRecorder()
-		request := httptest.NewRequest(http.MethodGet, "/hello", nil)
-		allowed := p.runSlidingLimit(response, request, limiter, 2, "127.0.0.1", headers, now)
-		if allowed {
-			response.WriteHeader(http.StatusOK)
-		}
-		if response.Code != statuses[i] {
-			t.Fatalf("request %d response status = %d, want %d", i+1, response.Code, statuses[i])
-		}
-		if remaining := response.Header().
-			Get(headers.Remaining); !regexp.MustCompile(`^[0-9]+$`).
-			MatchString(remaining) {
-			t.Fatalf("request %d remaining header = %q, want an integer", i+1, remaining)
-		}
-		if reset := response.Header().
-			Get(headers.Reset); !regexp.MustCompile(`^[0-9]+(?:\.[0-9]{1,2})?$`).
-			MatchString(reset) {
-			t.Fatalf("request %d reset header = %q, want at most two decimal places", i+1, reset)
-		}
-	}
-}
-
-func TestMemorySlidingWindowStoreEvictsExpiredCountersGlobally(t *testing.T) {
-	store := newMemorySlidingWindowStore()
-	now := time.Unix(100, 0)
-	for i := range 64 {
-		key := fmt.Sprintf("expired-%d", i)
-		if _, err := store.increment(context.Background(), key, 1, 2*time.Second, now); err != nil {
-			t.Fatalf("increment(%q) error = %v", key, err)
-		}
-	}
-
-	later := now.Add(3 * time.Second)
-	if _, err := store.increment(context.Background(), "live", 1, 2*time.Second, later); err != nil {
-		t.Fatalf("increment(live) error = %v", err)
-	}
-
-	if got := len(store.counters); got != 1 {
-		t.Fatalf("counter count after global expiry = %d, want only the live counter", got)
-	}
-	if got := store.count("live", later); got != 1 {
-		t.Fatalf("live counter = %d, want 1", got)
-	}
-}
-
 func TestRequestResolvedLimitsUseSharedQuotaWithoutCachingCombinations(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		Count:      "$http_x_count",
@@ -1270,22 +1050,6 @@ func TestStopReleasesRedisBackendOnce(t *testing.T) {
 	p.Stop()
 	if got := releases.Load(); got != 1 {
 		t.Fatalf("backend releases = %d, want exactly 1", got)
-	}
-}
-
-func TestMemorySlidingWindowStoreBoundsLiveCounters(t *testing.T) {
-	const capacity = 100000
-	store := newMemorySlidingWindowStore()
-	now := time.Date(2026, 8, 15, 1, 2, 3, 0, time.UTC)
-
-	for i := 0; i <= capacity; i++ {
-		key := "key-" + strconv.Itoa(i)
-		if _, err := store.increment(context.Background(), key, 1, time.Minute, now); err != nil {
-			t.Fatalf("increment %s: %v", key, err)
-		}
-	}
-	if got := len(store.counters); got > capacity {
-		t.Fatalf("live sliding-window counters = %d, want at most %d", got, capacity)
 	}
 }
 
@@ -1543,42 +1307,6 @@ func TestHandlerPublishesRateLimitingInfoForAccessLogs(t *testing.T) {
 	}
 	if !reflect.DeepEqual(info, want) {
 		t.Fatalf("$rate_limiting_info = %#v, want %#v", info, want)
-	}
-}
-
-func TestSlidingWindowPublishesRateLimitingInfoForAccessLogs(t *testing.T) {
-	p := newTestPlugin(t, Config{
-		Count:      2,
-		TimeWindow: 5,
-		WindowType: "sliding",
-		Key:        "remote_addr",
-	})
-	p.SetResourceContext(resource.Route{ID: "sliding-info"}, resource.Service{})
-	request := apisixctx.WithRequestVars(httptest.NewRequest(http.MethodGet, "/", nil))
-	request.RemoteAddr = "192.0.2.1:1234"
-	response := httptest.NewRecorder()
-	lim := newSlidingWindowLimiter(newMemorySlidingWindowStore(), "plugin-limit-count", 2, 5)
-
-	if allowed := p.runSlidingLimit(
-		response,
-		request,
-		lim,
-		2,
-		"192.0.2.1",
-		limitbase.DefaultQuotaHeaders("", "", ""),
-		time.Unix(102, 0),
-	); !allowed {
-		t.Fatal("first sliding-window request was rejected")
-	}
-
-	want := map[string]any{
-		"rate_limiting_key":       "route:sliding-info:192.0.2.1",
-		"rate_limiting_limit":     int64(2),
-		"rate_limiting_remaining": int64(1),
-		"rate_limiting_reset":     float64(3),
-	}
-	if got := apisixctx.GetRequestVar(request, "$rate_limiting_info"); !reflect.DeepEqual(got, want) {
-		t.Fatalf("$rate_limiting_info = %#v, want %#v", got, want)
 	}
 }
 
@@ -1884,189 +1612,6 @@ func TestResolveLimitValueExpressions(t *testing.T) {
 	}
 }
 
-func TestRedisSlidingWindowCheckAndIncrementDecodesProtocolResponse(t *testing.T) {
-	client := &fakeSlidingRedisClient{
-		getResult: redis.NewStringResult("", redis.Nil),
-		evalResult: redis.NewCmdResult([]any{
-			int64(1), "4", []byte("2"),
-		}, nil),
-	}
-	store := newRedisSlidingWindowStore(client)
-
-	accepted, current, previous, err := store.checkAndIncrement(
-		context.Background(),
-		"current-window",
-		"previous-window",
-		2,
-		10,
-		time.Minute,
-		30*time.Second,
-		90*time.Second,
-		time.Unix(100, 0),
-	)
-	if err != nil {
-		t.Fatalf("checkAndIncrement() error = %v", err)
-	}
-	if !accepted || current != 4 || previous != 2 {
-		t.Fatalf("checkAndIncrement() = %t/%d/%d, want true/4/2", accepted, current, previous)
-	}
-	if client.getKey != "previous-window" || !slices.Equal(client.evalKeys, []string{"current-window"}) {
-		t.Fatalf("Redis keys = %q/%v, want previous-window/[current-window]", client.getKey, client.evalKeys)
-	}
-	if client.evalScript != redisSlidingCheckAndIncrementScript {
-		t.Fatal("checkAndIncrement() used the wrong Redis script")
-	}
-	if len(client.evalArgs) != 6 || client.evalArgs[0] != int64(2) || client.evalArgs[5] != int64(0) {
-		t.Fatalf("Redis args = %#v, want cost 2 and missing previous count 0", client.evalArgs)
-	}
-}
-
-func TestRedisSlidingWindowCheckAndIncrementRejectsWithoutLosingCounts(t *testing.T) {
-	client := &fakeSlidingRedisClient{
-		getResult:  redis.NewStringResult("7", nil),
-		evalResult: redis.NewCmdResult([]any{int64(0), int64(10), int64(7)}, nil),
-	}
-	store := newRedisSlidingWindowStore(client)
-
-	accepted, current, previous, err := store.checkAndIncrement(
-		context.Background(), "current", "previous", 3, 10, time.Minute, 20*time.Second, 80*time.Second, time.Now(),
-	)
-	if err != nil {
-		t.Fatalf("checkAndIncrement() error = %v", err)
-	}
-	if accepted || current != 10 || previous != 7 {
-		t.Fatalf("checkAndIncrement() = %t/%d/%d, want false/10/7", accepted, current, previous)
-	}
-}
-
-func TestRedisSlidingWindowCheckAndIncrementFailsClosedOnBackendAndProtocolErrors(t *testing.T) {
-	backendErr := errors.New("redis unavailable")
-	tests := []struct {
-		name       string
-		getResult  *redis.StringCmd
-		evalResult *redis.Cmd
-		want       string
-	}{
-		{
-			name:       "get error",
-			getResult:  redis.NewStringResult("", backendErr),
-			evalResult: redis.NewCmdResult(nil, nil),
-			want:       "redis unavailable",
-		},
-		{
-			name:       "eval error",
-			getResult:  redis.NewStringResult("0", nil),
-			evalResult: redis.NewCmdResult(nil, backendErr),
-			want:       "redis unavailable",
-		},
-		{
-			name:       "wrong response length",
-			getResult:  redis.NewStringResult("0", nil),
-			evalResult: redis.NewCmdResult([]any{int64(1), int64(2)}, nil),
-			want:       "has 2 elements, want 3",
-		},
-		{
-			name:       "invalid accepted flag",
-			getResult:  redis.NewStringResult("0", nil),
-			evalResult: redis.NewCmdResult([]any{true, int64(2), int64(1)}, nil),
-			want:       "decode accepted flag",
-		},
-		{
-			name:       "invalid current count",
-			getResult:  redis.NewStringResult("0", nil),
-			evalResult: redis.NewCmdResult([]any{int64(1), true, int64(1)}, nil),
-			want:       "decode current count",
-		},
-		{
-			name:       "invalid previous count",
-			getResult:  redis.NewStringResult("0", nil),
-			evalResult: redis.NewCmdResult([]any{int64(1), int64(2), true}, nil),
-			want:       "decode previous count",
-		},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			store := newRedisSlidingWindowStore(&fakeSlidingRedisClient{
-				getResult:  test.getResult,
-				evalResult: test.evalResult,
-			})
-			accepted, current, previous, err := store.checkAndIncrement(
-				context.Background(),
-				"current",
-				"previous",
-				1,
-				10,
-				time.Minute,
-				30*time.Second,
-				time.Minute,
-				time.Now(),
-			)
-			if err == nil || !strings.Contains(err.Error(), test.want) {
-				t.Fatalf("checkAndIncrement() error = %v, want containing %q", err, test.want)
-			}
-			if accepted || current != 0 || previous != 0 {
-				t.Fatalf("failed check result = %t/%d/%d, want zero values", accepted, current, previous)
-			}
-		})
-	}
-}
-
-func TestRedisSlidingWindowIncrementUsesExpiryAndPropagatesErrors(t *testing.T) {
-	client := &fakeSlidingRedisClient{evalResult: redis.NewCmdResult(int64(9), nil)}
-	store := newRedisSlidingWindowStore(client)
-	count, err := store.increment(context.Background(), "window", 3, 90*time.Second, time.Now())
-	if err != nil || count != 9 {
-		t.Fatalf("increment() = %d/%v, want 9/nil", count, err)
-	}
-	if client.evalScript != redisSlidingIncrementScript || !slices.Equal(client.evalKeys, []string{"window"}) {
-		t.Fatalf("increment Redis call = %q/%v", client.evalScript, client.evalKeys)
-	}
-	if len(client.evalArgs) != 2 || client.evalArgs[0] != int64(3) || client.evalArgs[1] != int64(90) {
-		t.Fatalf("increment Redis args = %#v, want delta 3 and expiry 90", client.evalArgs)
-	}
-
-	backendErr := errors.New("redis unavailable")
-	store = newRedisSlidingWindowStore(&fakeSlidingRedisClient{evalResult: redis.NewCmdResult(nil, backendErr)})
-	if _, err := store.increment(
-		context.Background(),
-		"window",
-		1,
-		time.Minute,
-		time.Now(),
-	); !errors.Is(
-		err,
-		backendErr,
-	) {
-		t.Fatalf("increment() error = %v, want %v", err, backendErr)
-	}
-}
-
-func TestRedisIntegerAcceptsRedisWireRepresentations(t *testing.T) {
-	tests := []struct {
-		name  string
-		value any
-		want  int64
-	}{
-		{name: "integer", value: int64(7), want: 7},
-		{name: "string", value: "8", want: 8},
-		{name: "bytes", value: []byte("9"), want: 9},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			got, err := redisInteger(test.value)
-			if err != nil || got != test.want {
-				t.Fatalf("redisInteger(%T) = %d/%v, want %d/nil", test.value, got, err, test.want)
-			}
-		})
-	}
-	for _, value := range []any{"not-an-integer", []byte("also-invalid"), true} {
-		if _, err := redisInteger(value); err == nil {
-			t.Fatalf("redisInteger(%T) error = nil", value)
-		}
-	}
-}
-
 func TestLimiterFactoriesCacheStaticLimitsAndIsolateDynamicLimits(t *testing.T) {
 	fixed := &Plugin{config: Config{Policy: "local"}}
 	first, err := fixed.limiterFor(10, 60)
@@ -2096,77 +1641,6 @@ func TestLimiterFactoriesCacheStaticLimitsAndIsolateDynamicLimits(t *testing.T) 
 	}
 	if dynamicFirst == dynamicSecond {
 		t.Fatal("dynamic limiterFor() reused a limiter with request-resolved limits")
-	}
-
-	sliding := &Plugin{config: Config{Policy: "local"}}
-	slidingFirst, err := sliding.slidingLimiterFor(10, 60)
-	if err != nil {
-		t.Fatalf("slidingLimiterFor(first) error = %v", err)
-	}
-	slidingSecond, err := sliding.slidingLimiterFor(10, 60)
-	if err != nil {
-		t.Fatalf("slidingLimiterFor(second) error = %v", err)
-	}
-	slidingOther, err := sliding.slidingLimiterFor(20, 60)
-	if err != nil {
-		t.Fatalf("slidingLimiterFor(other) error = %v", err)
-	}
-	if slidingFirst != slidingSecond || slidingFirst == slidingOther {
-		t.Fatalf("static sliding limiter identities = %p, %p, %p", slidingFirst, slidingSecond, slidingOther)
-	}
-
-	dynamicSliding := &Plugin{config: Config{Policy: "local"}, dynamicLimits: true}
-	dynamicSlidingFirst, err := dynamicSliding.slidingLimiterFor(10, 60)
-	if err != nil {
-		t.Fatalf("dynamic slidingLimiterFor(first) error = %v", err)
-	}
-	dynamicSlidingSecond, err := dynamicSliding.slidingLimiterFor(10, 60)
-	if err != nil {
-		t.Fatalf("dynamic slidingLimiterFor(second) error = %v", err)
-	}
-	if dynamicSlidingFirst == dynamicSlidingSecond {
-		t.Fatal("dynamic slidingLimiterFor() reused a limiter with request-resolved limits")
-	}
-}
-
-func TestSlidingStoreConstructorsCoverConfiguredPolicies(t *testing.T) {
-	falseValue := false
-	tests := []struct {
-		name   string
-		config Config
-	}{
-		{name: "local", config: Config{Policy: "local"}},
-		{
-			name: "redis",
-			config: Config{
-				Policy: "redis", RedisHost: "127.0.0.1", RedisPort: 6379,
-				RedisSSL: &falseValue, RedisSSLVerify: &falseValue,
-			},
-		},
-		{
-			name: "redis cluster",
-			config: Config{
-				Policy: "redis-cluster", RedisClusterName: "coverage-cluster",
-				RedisClusterNodes: []string{"127.0.0.1:7000"},
-				RedisClusterSSL:   &falseValue, RedisClusterSSLVerify: &falseValue,
-			},
-		},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			plugin := &Plugin{config: test.config}
-			secrets, scope, _, cleanup := newScopedSecretHarness(t, 63, "sliding-"+test.name, nil)
-			t.Cleanup(cleanup)
-			materializeScopedLimitCount(t, plugin, secrets, scope)
-			if _, err := plugin.newSlidingStore(); err != nil {
-				t.Fatalf("newSlidingStore() error = %v", err)
-			}
-		})
-	}
-
-	plugin := &Plugin{config: Config{Policy: "unsupported"}}
-	if _, err := plugin.newSlidingStore(); err == nil {
-		t.Fatal("newSlidingStore(unsupported) error = nil")
 	}
 }
 

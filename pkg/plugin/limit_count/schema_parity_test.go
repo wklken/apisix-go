@@ -39,6 +39,22 @@ func TestAPISIX317SchemaOmitsSyncInterval(t *testing.T) {
 	}
 }
 
+func TestAPISIX317SchemaOmitsWindowType(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	var document struct {
+		Properties map[string]json.RawMessage `json:"properties"`
+	}
+	if err := json.Unmarshal([]byte(p.GetSchema()), &document); err != nil {
+		t.Fatalf("decode schema: %v", err)
+	}
+	if _, ok := document.Properties["window_type"]; ok {
+		t.Fatal("schema exposes non-APISIX window_type")
+	}
+}
+
 func TestAPISIX317SchemaRejectionMatrix(t *testing.T) {
 	p := &Plugin{}
 	if err := p.Init(); err != nil {

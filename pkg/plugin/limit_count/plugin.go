@@ -2,7 +2,6 @@ package limit_count
 
 import (
 	"crypto/sha256"
-	"errors"
 	"fmt"
 	"math"
 	"net/http"
@@ -35,9 +34,6 @@ type Plugin struct {
 	limiter           *limiter.Limiter
 	limiterMu         sync.Mutex
 	limiters          map[string]*limiter.Limiter
-	sliding           *slidingWindowLimiter
-	slidingStore      slidingWindowStore
-	slidingByKey      map[string]*slidingWindowLimiter
 	ruleLimiters      []*limiter.Limiter
 	routeID           string
 	localLimiterStore limiter.Store
@@ -165,11 +161,6 @@ const schema = `
 		"type": "string",
 		"enum": ["local", "redis", "redis-cluster"],
 		"default": "local"
-	  },
-	  "window_type": {
-		"type": "string",
-		"enum": ["fixed", "sliding"],
-		"default": "fixed"
 	  },
 	  "redis_host": {
 		"type": "string",
@@ -310,7 +301,6 @@ type Config struct {
 	RedisClusterName      string   `json:"redis_cluster_name,omitempty"`
 	RedisClusterSSL       *bool    `json:"redis_cluster_ssl,omitempty"`
 	RedisClusterSSLVerify *bool    `json:"redis_cluster_ssl_verify,omitempty"`
-	WindowType            string   `json:"window_type,omitempty"`
 	Rules                 []Rule   `json:"rules,omitempty"`
 
 	rejectBody string
@@ -366,9 +356,6 @@ func (p *Plugin) PostInit() error {
 
 	if p.config.Policy == "" {
 		p.config.Policy = "local"
-	}
-	if p.config.WindowType == "" {
-		p.config.WindowType = "fixed"
 	}
 	switch p.config.Policy {
 	case "redis":
@@ -458,15 +445,6 @@ func (p *Plugin) PostInit() error {
 		return err
 	}
 	if countStatic && timeWindowStatic {
-		if p.config.WindowType == "sliding" {
-			sliding, err := p.newSlidingLimiter(count, timeWindow)
-			if err != nil {
-				p.releaseGroup()
-				return err
-			}
-			p.sliding = sliding
-			return nil
-		}
 		if p.config.Policy == "local" {
 			lim, err := p.newLimiter(count, timeWindow)
 			if err != nil {
@@ -479,9 +457,6 @@ func (p *Plugin) PostInit() error {
 		}
 	} else {
 		p.limiters = make(map[string]*limiter.Limiter)
-		if p.config.WindowType == "sliding" {
-			p.slidingByKey = make(map[string]*slidingWindowLimiter)
-		}
 	}
 
 	return nil
@@ -885,28 +860,6 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 					return
 				}
 				applied++
-				if p.config.WindowType == "sliding" {
-					lim, err := p.slidingLimiterFor(count, timeWindow)
-					if err != nil {
-						if *p.config.AllowDegradation {
-							continue
-						}
-						http.Error(w, "failed to limit count", http.StatusInternalServerError)
-						return
-					}
-					if !p.runSlidingLimit(
-						w,
-						r,
-						lim,
-						count,
-						key,
-						limitbase.RuleQuotaHeaders(rule.HeaderPrefix, i),
-						time.Now(),
-					) {
-						return
-					}
-					continue
-				}
 				lim := p.ruleLimiters[i]
 				if lim == nil {
 					var err error
@@ -963,32 +916,6 @@ func (p *Plugin) consumeLimitCountKey(w http.ResponseWriter, r *http.Request, ke
 		http.Error(w, "failed to resolve limit count config", http.StatusInternalServerError)
 		return false
 	}
-	if p.config.WindowType == "sliding" {
-		lim, err := p.slidingLimiterFor(count, timeWindow)
-		if err != nil {
-			if *p.config.AllowDegradation {
-				return true
-			}
-			http.Error(w, "failed to limit count", http.StatusInternalServerError)
-			return false
-		}
-		if !p.runSlidingLimit(
-			w,
-			r,
-			lim,
-			count,
-			key,
-			limitbase.DefaultQuotaHeaders(
-				p.metadata.LimitHeader,
-				p.metadata.RemainingHeader,
-				p.metadata.ResetHeader,
-			),
-			time.Now(),
-		) {
-			return false
-		}
-		return true
-	}
 	lim, err := p.limiterFor(count, timeWindow)
 	if err != nil {
 		if *p.config.AllowDegradation {
@@ -1009,60 +936,6 @@ func (p *Plugin) consumeLimitCountKey(w http.ResponseWriter, r *http.Request, ke
 		return false
 	}
 	return true
-}
-
-func (p *Plugin) slidingLimiterFor(count int64, timeWindow int64) (*slidingWindowLimiter, error) {
-	if p.sliding != nil {
-		return p.sliding, nil
-	}
-
-	p.limiterMu.Lock()
-	defer p.limiterMu.Unlock()
-	if p.dynamicLimits {
-		return p.newSlidingLimiter(count, timeWindow)
-	}
-
-	key := strconv.FormatInt(count, 10) + ":" + strconv.FormatInt(timeWindow, 10)
-	if p.slidingByKey == nil {
-		p.slidingByKey = make(map[string]*slidingWindowLimiter)
-	}
-	lim, ok := p.slidingByKey[key]
-	if ok {
-		return lim, nil
-	}
-
-	lim, err := p.newSlidingLimiter(count, timeWindow)
-	if err != nil {
-		return nil, err
-	}
-	p.slidingByKey[key] = lim
-	return lim, nil
-}
-
-func (p *Plugin) newSlidingLimiter(count int64, timeWindow int64) (*slidingWindowLimiter, error) {
-	if p.slidingStore == nil {
-		store, err := p.newSlidingStore()
-		if err != nil {
-			return nil, err
-		}
-		p.slidingStore = store
-	}
-	return newSlidingWindowLimiter(p.slidingStore, "plugin-"+name, count, timeWindow), nil
-}
-
-func (p *Plugin) newSlidingStore() (slidingWindowStore, error) {
-	switch p.config.Policy {
-	case "local":
-		return newMemorySlidingWindowStore(), nil
-	case "redis", "redis-cluster":
-		client, err := p.redisBackendClient()
-		if err != nil {
-			return nil, err
-		}
-		return newRedisSlidingWindowStore(client), nil
-	default:
-		return nil, fmt.Errorf("unsupported sliding-window policy %q", p.config.Policy)
-	}
 }
 
 func (p *Plugin) limiterFor(count int64, timeWindow int64) (*limiter.Limiter, error) {
@@ -1185,54 +1058,6 @@ func (p *Plugin) recordRateLimitingInfo(
 	})
 }
 
-func (p *Plugin) runSlidingLimit(
-	w http.ResponseWriter,
-	r *http.Request,
-	lim *slidingWindowLimiter,
-	count int64,
-	key string,
-	headers limitbase.QuotaHeaders,
-	now time.Time,
-) bool {
-	remaining, reset, err := lim.incoming(
-		r.Context(),
-		p.scopedKey(key),
-		1,
-		now,
-	)
-	if err != nil && !errors.Is(err, errSlidingWindowRejected) {
-		if *p.config.AllowDegradation {
-			return true
-		}
-		http.Error(w, "failed to limit count", http.StatusInternalServerError)
-		return false
-	}
-	p.recordRateLimitingInfo(r, key, count, max(remaining, 0), reset)
-
-	if errors.Is(err, errSlidingWindowRejected) {
-		if *p.config.ShowLimitQuotaHeader {
-			w.Header().Add(headers.Limit, strconv.FormatInt(count, 10))
-			w.Header().Add(headers.Remaining, "0")
-			w.Header().Add(headers.Reset, strconv.FormatFloat(reset, 'f', -1, 64))
-		}
-		if p.config.RejectedMsg != "" {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(p.config.RejectedCode)
-			_, _ = w.Write([]byte(p.config.rejectBody))
-			return false
-		}
-		w.WriteHeader(p.config.RejectedCode)
-		return false
-	}
-
-	if *p.config.ShowLimitQuotaHeader {
-		w.Header().Add(headers.Limit, strconv.FormatInt(count, 10))
-		w.Header().Add(headers.Remaining, strconv.FormatInt(remaining, 10))
-		w.Header().Add(headers.Reset, strconv.FormatFloat(reset, 'f', -1, 64))
-	}
-	return true
-}
-
 func (p *Plugin) Stop() {
 	p.lifecycleMu.Lock()
 	defer p.lifecycleMu.Unlock()
@@ -1255,9 +1080,6 @@ func (p *Plugin) stopLimitCount() {
 	p.limiterMu.Lock()
 	p.limiter = nil
 	p.limiters = nil
-	p.sliding = nil
-	p.slidingStore = nil
-	p.slidingByKey = nil
 	p.ruleLimiters = nil
 	p.localLimiterStore = nil
 	p.dynamicLimits = false

@@ -98,9 +98,6 @@ func validateUnsupportedRuntimeConfig(cfg *Config) error {
 		}
 	}
 	for index, listener := range cfg.Apisix.Ssl.Listen {
-		if listener.EnableQuic {
-			return fmt.Errorf("apisix.ssl.listen[%d].enable_quic is unsupported by the Go data plane", index)
-		}
 		if listener.EnableHttp3 {
 			return fmt.Errorf("apisix.ssl.listen[%d].enable_http3 is unsupported by the Go data plane", index)
 		}

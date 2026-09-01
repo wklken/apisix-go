@@ -32,6 +32,12 @@ deployment:
     prefix: /apisix
 `
 
+func TestAPISIX317SSLListenOmitsEnableQuicAlias(t *testing.T) {
+	if _, ok := reflect.TypeFor[Listen]().FieldByName("EnableQuic"); ok {
+		t.Fatal("SSL listener exposes non-APISIX enable_quic alias")
+	}
+}
+
 func TestLoadEffectiveMergesNestedOverrideAndReplacesLists(t *testing.T) {
 	base := writeConfigFile(t, "base.yaml", validRuntimeConfig)
 	override := writeConfigFile(t, "override.yaml", `
@@ -159,11 +165,6 @@ wasm:
 			want: "wasm.plugins",
 		},
 		{name: "XRPC", override: "xrpc: {protocols: [{name: pingpong}]}\n", want: "xrpc.protocols"},
-		{
-			name:     "QUIC",
-			override: "apisix: {ssl: {listen: [{ip: 127.0.0.1, port: 9443, enable_quic: true}]}}\n",
-			want:     "enable_quic",
-		},
 		{
 			name:     "HTTP3",
 			override: "apisix: {ssl: {listen: [{ip: 127.0.0.1, port: 9443, enable_http3: true}]}}\n",
@@ -353,14 +354,6 @@ func TestUnsupportedRuntimeConfigFailsClosed(t *testing.T) {
 			field: "xrpc.protocols",
 			mutate: func(cfg *Config) {
 				cfg.XRPC.Protocols = []XRPCProtocol{{}}
-			},
-		},
-		{
-			name:  "QUIC",
-			field: "apisix.ssl.listen[0].enable_quic",
-			mutate: func(cfg *Config) {
-				cfg.Apisix.Ssl.Listen = []Listen{{}}
-				cfg.Apisix.Ssl.Listen[0].EnableQuic = true
 			},
 		},
 		{

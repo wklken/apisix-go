@@ -103,7 +103,6 @@ type Listen struct {
 	Ip          string `mapstructure:"ip"`
 	Port        int    `mapstructure:"port"`
 	EnableHttp2 bool   `mapstructure:"enable_http2"`
-	EnableQuic  bool   `mapstructure:"enable_quic"`
 	EnableHttp3 bool   `mapstructure:"enable_http3"`
 }
 

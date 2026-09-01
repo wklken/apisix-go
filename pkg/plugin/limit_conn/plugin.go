@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
@@ -15,8 +14,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/limitbase"
-	"github.com/wklken/apisix-go/pkg/resource"
-	"github.com/wklken/apisix-go/pkg/shared"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -24,13 +21,10 @@ type Plugin struct {
 	base.BasePlugin
 	config Config
 
-	mu        sync.Mutex
-	conns     map[string]int
-	unitDelay float64
+	rateLimitState *limitbase.State
+	apisixContext  base.APISIXPluginContext
 
 	redisLimiter connLimiter
-	routeID      string
-	limitScope   string
 
 	clientRelease func()
 }
@@ -288,42 +282,26 @@ type connLimiter interface {
 const maxSafeInteger = int64(1<<53 - 1)
 
 const redisLimitConnIncomingScript = `
-local conn = tonumber(ARGV[1])
-local burst = tonumber(ARGV[2])
-local default_delay = tonumber(ARGV[3])
-local ttl = tonumber(ARGV[4])
-local now = tonumber(ARGV[5])
-local member = ARGV[6]
-local limit = conn + burst
+local limit = tonumber(ARGV[1])
+local ttl = tonumber(ARGV[2])
+local now = tonumber(ARGV[3])
+local member = ARGV[4]
 
-redis.call("ZREMRANGEBYSCORE", KEYS[1], "-inf", now)
+redis.call("ZREMRANGEBYSCORE", KEYS[1], 0, now)
 local current = redis.call("ZCARD", KEYS[1])
 if current >= limit then
-  return {0, 0}
+  return {0, current}
 end
 
-local added = redis.call("ZADD", KEYS[1], "NX", now + ttl, member)
-if added ~= 1 then
-  return {0, 0}
-end
-current = current + 1
-redis.call("PEXPIRE", KEYS[1], ttl)
-
-local delay = 0
-if current > conn then
-  local multiplier = math.floor((current - 1) / conn)
-  delay = multiplier * default_delay
-end
-
-return {1, math.floor(delay * 1000)}
+redis.call("ZADD", KEYS[1], now + ttl, member)
+redis.call("EXPIRE", KEYS[1], ttl)
+return {1, current + 1}
 `
 
 const redisLimitConnLeavingScript = `
 local removed = redis.call("ZREM", KEYS[1], ARGV[1])
-if redis.call("ZCARD", KEYS[1]) == 0 then
-  redis.call("DEL", KEYS[1])
-end
-return removed
+local current = redis.call("ZCARD", KEYS[1])
+return {removed, current}
 `
 
 func (p *Plugin) Init() error {
@@ -429,10 +407,9 @@ func (p *Plugin) PostInit() error {
 		p.config.rejectBody = util.BytesToString(body)
 	}
 
-	if p.conns == nil {
-		p.conns = make(map[string]int)
+	if p.rateLimitState == nil {
+		p.rateLimitState = limitbase.NewState()
 	}
-	p.unitDelay = p.config.DefaultConnDelay
 
 	if len(p.config.Rules) > 0 {
 		if err := validateRules(p.config.Rules); err != nil {
@@ -445,16 +422,6 @@ func (p *Plugin) PostInit() error {
 		if _, _, err := staticLimitValue(p.config.Burst, "burst", true); err != nil {
 			return err
 		}
-	}
-
-	if p.config.Policy == "redis" || p.config.Policy == "redis-cluster" {
-		config, err := json.Marshal(p.config)
-		if err != nil {
-			return fmt.Errorf("marshal limit-conn config scope: %w", err)
-		}
-		configUID := shared.NewConfigUID()
-		configUID.Add(string(config))
-		p.limitScope = configUID.String()
 	}
 
 	return nil
@@ -471,35 +438,24 @@ func (p *Plugin) Config() any {
 	return &p.config
 }
 
-func (p *Plugin) SetResourceContext(route resource.Route, _ resource.Service) {
-	p.routeID = route.ID
+func (p *Plugin) SetRateLimitState(state *limitbase.State) {
+	p.rateLimitState = state
 }
 
-func (p *Plugin) scopedKey(key string) string {
-	if p.routeID == "" {
-		return key
-	}
-	return "route:" + p.routeID + ":" + key
-}
-
-func (p *Plugin) scopedRedisKey(key string) string {
-	key = p.scopedKey(key)
-	if p.limitScope == "" {
-		return key
-	}
-	return key + ":config:" + p.limitScope
+func (p *Plugin) SetAPISIXPluginContext(pluginContext base.APISIXPluginContext) error {
+	p.apisixContext = pluginContext.Clone()
+	return nil
 }
 
 func (p *Plugin) applyLimitKey(r *http.Request, key string) string {
-	if r != nil && apisixctx.ConsumerPluginOverrides(r, name) {
-		if consumerName, _ := apisixctx.GetApisixVar(r, "$consumer_name").(string); consumerName != "" {
-			return "consumer:" + consumerName + ":" + key
-		}
+	configType := p.apisixContext.ConfigType
+	configVersion := p.apisixContext.ConfigVersion
+	if !p.apisixContext.ConsumerOverride {
+		typeSuffix, versionSuffix := apisixctx.APISIXConfigIdentitySuffix(r)
+		configType += typeSuffix
+		configVersion += versionSuffix
 	}
-	if p.config.Policy == "redis" || p.config.Policy == "redis-cluster" {
-		return p.scopedRedisKey(key)
-	}
-	return p.scopedKey(key)
+	return key + configType + configVersion
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
@@ -837,19 +793,14 @@ func (p *Plugin) increase(
 		}, nil
 	}
 
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	current := p.conns[key] + 1
-	limit := conn + burst
-	if current > limit {
+	result := p.rateLimitState.AcquireConnection(key, int64(conn+burst))
+	if !result.Allowed {
 		return 0, false, nil, nil
 	}
 
-	p.conns[key] = current
 	release := func(latency *time.Duration) { p.decreaseLocal(key, latency) }
-	if current > conn {
-		return connectionDelay(current, conn, p.unitDelay), true, release, nil
+	if result.Current > int64(conn) {
+		return connectionDelay(int(result.Current), conn, p.config.DefaultConnDelay), true, release, nil
 	}
 
 	return 0, true, release, nil
@@ -861,23 +812,14 @@ func connectionDelay(current int, conn int, unitDelay float64) time.Duration {
 }
 
 func (p *Plugin) decreaseLocal(key string, latency *time.Duration) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
 	if p.config.OnlyUseDefaultDelay {
 		logger.Debug("request latency is nil")
 	} else if latency != nil {
 		if logger.DebugEnabled() {
 			logger.Debugf("request latency is %.1f", latency.Seconds())
 		}
-		p.unitDelay = (p.unitDelay + latency.Seconds()) / 2
 	}
-
-	current := p.conns[key]
-	if current <= 1 {
-		delete(p.conns, key)
-		return
-	}
-	p.conns[key] = current - 1
+	p.rateLimitState.ReleaseConnection(key)
 }
 
 func (p *Plugin) resolveKey(r *http.Request) string {
@@ -921,7 +863,7 @@ func requestLimitKey(r *http.Request, key string) string {
 	return base.RequestVar(r, key, 0)
 }
 
-func (p *Plugin) resolveRuleKey(r *http.Request, index int, rule Rule) (string, bool) {
+func (p *Plugin) resolveRuleKey(r *http.Request, _ int, rule Rule) (string, bool) {
 	resolved := 0
 	key := limitbase.VarPattern.ReplaceAllStringFunc(rule.Key, func(match string) string {
 		name := strings.TrimPrefix(strings.TrimPrefix(match, "${"), "$")
@@ -936,5 +878,5 @@ func (p *Plugin) resolveRuleKey(r *http.Request, index int, rule Rule) (string, 
 		return "", false
 	}
 
-	return fmt.Sprintf("rule:%d:%s", index, key), true
+	return key, true
 }

@@ -3,6 +3,7 @@ package generation
 import (
 	"bytes"
 	"crypto/sha256"
+	"maps"
 	"math"
 	"slices"
 	"unicode/utf8"
@@ -124,11 +125,19 @@ func validateDesiredBatch(batch DesiredBatch) error {
 		}
 		switch mutation.Type {
 		case MutationPut:
+			if err := validateResourceOrigin(mutation.Origin); err != nil {
+				return ErrIntegrity
+			}
 		case MutationDelete:
 			if len(mutation.Value) != 0 {
 				return ErrIntegrity
 			}
 		default:
+			return ErrIntegrity
+		}
+	}
+	for kind, version := range batch.CollectionVersions {
+		if kind == "" || version == "" || !utf8.ValidString(kind) || !utf8.ValidString(version) {
 			return ErrIntegrity
 		}
 	}
@@ -153,9 +162,10 @@ func desiredBatchDigest(batch DesiredBatch) ([32]byte, error) {
 		return [32]byte{}, err
 	}
 	type mutationWire struct {
-		Type  MutationType `json:"type"`
-		Key   ResourceKey  `json:"key"`
-		Value []byte       `json:"value"`
+		Type   MutationType    `json:"type"`
+		Key    ResourceKey     `json:"key"`
+		Origin *ResourceOrigin `json:"origin,omitempty"`
+		Value  []byte          `json:"value"`
 	}
 	mutations := make([]mutationWire, 0, len(batch.Mutations))
 	for _, mutation := range batch.Mutations {
@@ -163,16 +173,23 @@ func desiredBatchDigest(batch DesiredBatch) ([32]byte, error) {
 		if mutation.Type == MutationDelete {
 			value = nil
 		}
-		mutations = append(mutations, mutationWire{Type: mutation.Type, Key: mutation.Key, Value: value})
+		wire := mutationWire{Type: mutation.Type, Key: mutation.Key, Value: value}
+		if mutation.Origin != (ResourceOrigin{}) {
+			origin := mutation.Origin
+			wire.Origin = &origin
+		}
+		mutations = append(mutations, wire)
 	}
 	encoded, err := json.Marshal(struct {
-		Cursor          ProviderCursor `json:"cursor"`
-		ReplaceManaged  bool           `json:"replace_managed"`
-		Mutations       []mutationWire `json:"mutations"`
-		RequiredDomains []Domain       `json:"required_domains"`
+		Cursor             ProviderCursor    `json:"cursor"`
+		ReplaceManaged     bool              `json:"replace_managed"`
+		Mutations          []mutationWire    `json:"mutations"`
+		CollectionVersions map[string]string `json:"collection_versions,omitempty"`
+		RequiredDomains    []Domain          `json:"required_domains"`
 	}{
 		Cursor: batch.Cursor, ReplaceManaged: batch.ReplaceManaged,
-		Mutations: mutations, RequiredDomains: normalizeDomains(batch.RequiredDomains),
+		Mutations: mutations, CollectionVersions: cloneStringMap(batch.CollectionVersions),
+		RequiredDomains: normalizeDomains(batch.RequiredDomains),
 	})
 	if err != nil {
 		return [32]byte{}, err
@@ -182,9 +199,9 @@ func desiredBatchDigest(batch DesiredBatch) ([32]byte, error) {
 
 func applyDesiredBatch(current Snapshot, batch DesiredBatch) (Snapshot, error) {
 	nextRevision := current.Revision() + 1
-	resources := make(map[ResourceKey][]byte, len(current.Resources()))
+	resources := make(map[ResourceKey]Resource, len(current.Resources()))
 	for _, resource := range current.Resources() {
-		resources[resource.Key] = bytes.Clone(resource.Value)
+		resources[resource.Key] = resource
 	}
 	tombstones := make(map[ResourceKey]uint64, len(current.Tombstones()))
 	for _, tombstone := range current.Tombstones() {
@@ -199,7 +216,9 @@ func applyDesiredBatch(current Snapshot, batch DesiredBatch) (Snapshot, error) {
 	for _, mutation := range batch.Mutations {
 		switch mutation.Type {
 		case MutationPut:
-			resources[mutation.Key] = bytes.Clone(mutation.Value)
+			resources[mutation.Key] = Resource{
+				Key: mutation.Key, Origin: mutation.Origin, Value: bytes.Clone(mutation.Value),
+			}
 			delete(tombstones, mutation.Key)
 		case MutationDelete:
 			delete(resources, mutation.Key)
@@ -209,14 +228,19 @@ func applyDesiredBatch(current Snapshot, batch DesiredBatch) (Snapshot, error) {
 		}
 	}
 	resourceList := make([]Resource, 0, len(resources))
-	for key, value := range resources {
-		resourceList = append(resourceList, Resource{Key: key, Value: bytes.Clone(value)})
+	for _, resource := range resources {
+		resourceList = append(resourceList, resource)
 	}
 	tombstoneList := make([]Tombstone, 0, len(tombstones))
 	for key, revision := range tombstones {
 		tombstoneList = append(tombstoneList, Tombstone{Key: key, Revision: revision})
 	}
-	return NewSnapshot(nextRevision, resourceList, tombstoneList)
+	versions := current.CollectionVersions()
+	if versions == nil && len(batch.CollectionVersions) != 0 {
+		versions = make(map[string]string, len(batch.CollectionVersions))
+	}
+	maps.Copy(versions, batch.CollectionVersions)
+	return NewSnapshotWithSource(nextRevision, resourceList, tombstoneList, versions)
 }
 
 func normalizeDomains(domains []Domain) []Domain {
@@ -236,6 +260,7 @@ func cloneDesiredBatch(batch DesiredBatch) DesiredBatch {
 	for index := range clone.Mutations {
 		clone.Mutations[index].Value = bytes.Clone(batch.Mutations[index].Value)
 	}
+	clone.CollectionVersions = cloneStringMap(batch.CollectionVersions)
 	clone.RequiredDomains = slices.Clone(batch.RequiredDomains)
 	return clone
 }

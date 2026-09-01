@@ -15,7 +15,190 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/public_api"
 	"github.com/wklken/apisix-go/pkg/plugin/traffic_split"
 	"github.com/wklken/apisix-go/pkg/resource"
+	routepkg "github.com/wklken/apisix-go/pkg/route"
 )
+
+func TestAPISIXPluginContextFromHTTPBindingPlan(t *testing.T) {
+	effective := &appconfig.EffectiveConfig{Config: appconfig.Config{Deployment: appconfig.Deployment{
+		Role:            "traditional",
+		RoleTraditional: appconfig.RoleTraditionalConfig{ConfigProvider: "etcd"},
+		Etcd:            appconfig.Etcd{Prefix: "/literal/apisix/"},
+	}}}
+	tests := []struct {
+		name       string
+		provenance plugin.ResourceProvenance
+		source     generation.ResourceKey
+		wantParent string
+	}{
+		{
+			name: "route", provenance: plugin.ResourceProvenance{Kind: plugin.ResourceRoute, ID: "route-1"},
+			source: generation.ResourceKey{
+				Kind: "routes",
+				ID:   "route-1",
+			}, wantParent: "/literal/apisix//routes/route-1",
+		},
+		{
+			name: "service", provenance: plugin.ResourceProvenance{Kind: plugin.ResourceService, ID: "service-1"},
+			source: generation.ResourceKey{
+				Kind: "services",
+				ID:   "service-1",
+			}, wantParent: "/literal/apisix//services/service-1",
+		},
+		{
+			name:       "plugin config",
+			provenance: plugin.ResourceProvenance{Kind: plugin.ResourcePluginConfig, ID: "config-1"},
+			source: generation.ResourceKey{
+				Kind: "plugin_configs",
+				ID:   "config-1",
+			},
+			wantParent: "/literal/apisix//plugin_configs/config-1",
+		},
+		{
+			name: "global rule", provenance: plugin.ResourceProvenance{Kind: plugin.ResourceGlobalRule, ID: "global-1"},
+			source: generation.ResourceKey{
+				Kind: "global_rules",
+				ID:   "global-1",
+			}, wantParent: "/literal/apisix//global_rules/global-1",
+		},
+		{
+			name: "consumer", provenance: plugin.ResourceProvenance{Kind: plugin.ResourceConsumer, ID: "alice"},
+			source: generation.ResourceKey{
+				Kind: "consumers",
+				ID:   "alice",
+			}, wantParent: "/literal/apisix//consumers/alice",
+		},
+		{
+			name:       "consumer group",
+			provenance: plugin.ResourceProvenance{Kind: plugin.ResourceConsumerGroup, ID: "group-1"},
+			source: generation.ResourceKey{
+				Kind: "consumer_groups",
+				ID:   "group-1",
+			},
+			wantParent: "/literal/apisix//consumer_groups/group-1",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			context, useDefault, err := apisixPluginContextForPlan(effective, routepkg.PluginPlan{
+				Factory: "limit-count", Config: map[string]any{"count": 2},
+				SourceConfig: map[string]any{"count": 2},
+				Scope:        plugin.ScopeRoute, Provenance: test.provenance, Source: test.source,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			parent, err := context.ParentResourceKey()
+			if err != nil || parent != test.wantParent || useDefault {
+				t.Fatalf("context = (%#v, %v, %v), want parent %q", context, useDefault, err, test.wantParent)
+			}
+			context.SourceConfig["count"] = 99
+			if got := context.SourceConfig["count"]; got != 99 {
+				t.Fatalf("context source config mutation did not take effect: %v", got)
+			}
+		})
+	}
+
+	standalone := *effective
+	standalone.Config.Deployment.Role = "data_plane"
+	standalone.Config.Deployment.RoleDataPlane.ConfigProvider = "yaml"
+	context, _, err := apisixPluginContextForPlan(&standalone, routepkg.PluginPlan{
+		Factory: "limit-count", Config: map[string]any{}, SourceConfig: map[string]any{},
+		Scope:      plugin.ScopeRoute,
+		Provenance: plugin.ResourceProvenance{Kind: plugin.ResourceRoute, ID: "route-1"},
+		Source:     generation.ResourceKey{Kind: "routes", ID: "route-1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parent, err := context.ParentResourceKey(); err != nil || parent != "/routes/route-1" {
+		t.Fatalf("standalone parent = (%q, %v), want /routes/route-1", parent, err)
+	}
+}
+
+func TestAPISIXPluginContextConsumerOverride(t *testing.T) {
+	planned := routepkg.PlannedRoute{
+		Local:        []routepkg.PluginPlan{{Factory: "limit-count"}},
+		ServicePlans: []routepkg.PluginPlan{{Factory: "kafka-logger"}},
+	}
+	source := []routepkg.PluginPlan{
+		{Factory: "limit-count", SourceConfig: map[string]any{"count": 1}},
+		{Factory: "kafka-logger", SourceConfig: map[string]any{}},
+		{Factory: "request-id", SourceConfig: map[string]any{}},
+	}
+	marked := markConsumerPluginOverrides(source, planned)
+	if !marked[0].ConsumerOverride || !marked[1].ConsumerOverride || marked[2].ConsumerOverride {
+		t.Fatalf("consumer override marks = %#v", marked)
+	}
+	if source[0].ConsumerOverride || source[1].ConsumerOverride || source[2].ConsumerOverride {
+		t.Fatal("consumer override marking mutated the shared consumer plan")
+	}
+	if marked[0].SourceConfig["_skip_rewrite_in_consumer"] != true ||
+		marked[1].SourceConfig["_skip_rewrite_in_consumer"] != true ||
+		marked[2].SourceConfig["_from_consumer"] != true {
+		t.Fatalf("consumer APISIX identity markers = %#v", marked)
+	}
+	if _, exists := source[0].SourceConfig["_skip_rewrite_in_consumer"]; exists {
+		t.Fatal("consumer identity marking mutated the shared source document")
+	}
+}
+
+func TestAPISIXPluginContextUsesProviderVersions(t *testing.T) {
+	resourceWithOrigin := func(kind, id, key, modified string) generation.Resource {
+		return generation.Resource{
+			Key: generation.ResourceKey{Kind: kind, ID: id},
+			Origin: generation.ResourceOrigin{
+				Provider: "etcd/v1/cluster", ResourceKey: key, ModifiedIndex: modified,
+			},
+			Value: []byte(`{}`),
+		}
+	}
+	snapshot, err := generation.NewSnapshotWithSource(1, []generation.Resource{
+		resourceWithOrigin("routes", "r1", "/apisix/routes/r1", "11"),
+		resourceWithOrigin("plugin_configs", "pc1", "/apisix/plugin_configs/pc1", "13"),
+		resourceWithOrigin("services", "s1", "/apisix/services/s1", "17"),
+		resourceWithOrigin("consumers", "alice", "/apisix/consumers/alice", "19"),
+		resourceWithOrigin("consumer_groups", "g1", "/apisix/consumer_groups/g1", "23"),
+		resourceWithOrigin("global_rules", "global", "/apisix/global_rules/global", "29"),
+	}, nil, map[string]string{"consumers": "5", "global_rules": "7"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	effective := &appconfig.EffectiveConfig{Config: appconfig.Config{Deployment: appconfig.Deployment{
+		Role: "traditional", RoleTraditional: appconfig.RoleTraditionalConfig{ConfigProvider: "etcd"},
+	}}}
+	resourceContext := effectiveBindingResourceContext{
+		kind:    effectiveBindingContextHTTP,
+		route:   resource.Route{ID: "r1", PluginConfigID: "pc1", ServiceID: "s1"},
+		service: resource.Service{ID: "s1"},
+	}
+
+	consumer, _, err := apisixPluginContextForPreparedPlan(effective, snapshot, routepkg.PluginPlan{
+		Factory: "limit-conn", SourceConfig: map[string]any{}, Scope: plugin.ScopeConsumer,
+		Provenance: plugin.ResourceProvenance{Kind: plugin.ResourceConsumer, ID: "alice"},
+		Source:     generation.ResourceKey{Kind: "consumers", ID: "alice"}, ConsumerGroupID: "g1",
+	}, resourceContext)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parent, _ := consumer.ParentResourceKey(); parent != "/apisix/consumers/alice" ||
+		consumer.ConfigType != "route&service&consumer&consumer_group" ||
+		consumer.ConfigVersion != "11#13&17&5&23" {
+		t.Fatalf("consumer APISIX context = %#v, parent=%q", consumer, parent)
+	}
+
+	global, _, err := apisixPluginContextForPreparedPlan(effective, snapshot, routepkg.PluginPlan{
+		Factory: "limit-conn", SourceConfig: map[string]any{}, Scope: plugin.ScopeGlobal,
+		Provenance: plugin.ResourceProvenance{Kind: plugin.ResourceGlobalRule, ID: "global"},
+		Source:     generation.ResourceKey{Kind: "global_rules", ID: "global"},
+	}, resourceContext)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if global.ConfigType != "global_rule" || global.ConfigVersion != "7" {
+		t.Fatalf("global APISIX context = %#v", global)
+	}
+}
 
 type testTrafficSplitRuntimeAcquirer struct{}
 

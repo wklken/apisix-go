@@ -17,13 +17,18 @@ import (
 )
 
 type redisConnLimiter struct {
-	mu                  sync.Mutex
 	client              redis.UniversalClient
 	unitDelay           float64
 	keyTTL              time.Duration
 	onlyUseDefaultDelay bool
+	useEvalSHA          bool
 	now                 func() time.Time
 	newMemberID         func() (string, error)
+}
+
+var redisIncomingScriptState struct {
+	sync.Mutex
+	sha string
 }
 
 type redisPoolStatsProvider interface {
@@ -111,6 +116,7 @@ func (p *Plugin) newRedisConnLimiter(client redis.UniversalClient) connLimiter {
 		unitDelay:           p.config.DefaultConnDelay,
 		keyTTL:              time.Duration(p.config.RedisKeyTTL) * time.Second,
 		onlyUseDefaultDelay: p.config.OnlyUseDefaultDelay,
+		useEvalSHA:          p.config.Policy == "redis",
 		now:                 time.Now,
 		newMemberID:         randomConnMemberID,
 	}
@@ -137,9 +143,6 @@ func (p *Plugin) redisClusterConnConfig() base.RedisClusterConnConfig {
 }
 
 func (l *redisConnLimiter) incoming(key string, conn int, burst int) (time.Duration, string, bool, error) {
-	l.mu.Lock()
-	unitDelay := l.unitDelay
-	l.mu.Unlock()
 	now := l.now
 	if now == nil {
 		now = time.Now
@@ -153,17 +156,14 @@ func (l *redisConnLimiter) incoming(key string, conn int, burst int) (time.Durat
 		return 0, "", false, err
 	}
 	logRedisConnectionReuse(l.client)
-	result, err := l.client.Eval(
+	result, err := l.runIncomingScript(
 		context.Background(),
-		redisLimitConnIncomingScript,
-		[]string{"plugin-limit-conn:" + key},
-		conn,
-		burst,
-		unitDelay,
-		l.keyTTL.Milliseconds(),
-		now().UnixMilli(),
+		[]string{"limit_conn:" + key},
+		conn+burst,
+		int64(l.keyTTL/time.Second),
+		now().Unix(),
 		member,
-	).Result()
+	)
 	if err != nil {
 		return 0, "", false, err
 	}
@@ -176,15 +176,19 @@ func (l *redisConnLimiter) incoming(key string, conn int, burst int) (time.Durat
 	if !ok {
 		return 0, "", false, fmt.Errorf("unexpected redis limit-conn allowed value: %v", values[0])
 	}
-	delayMs, ok := limitbase.RedisInt(values[1])
+	current, ok := limitbase.RedisInt(values[1])
 	if !ok {
-		return 0, "", false, fmt.Errorf("unexpected redis limit-conn delay value: %v", values[1])
+		return 0, "", false, fmt.Errorf("unexpected redis limit-conn count value: %v", values[1])
 	}
 
 	if allowed != 1 {
-		member = ""
+		return 0, "", false, nil
 	}
-	return time.Duration(delayMs) * time.Millisecond, member, allowed == 1, nil
+	delay := time.Duration(0)
+	if current > int64(conn) {
+		delay = connectionDelay(int(current), conn, l.unitDelay)
+	}
+	return delay, member, true, nil
 }
 
 func (l *redisConnLimiter) leaving(key string, member string, latency *time.Duration) error {
@@ -192,14 +196,43 @@ func (l *redisConnLimiter) leaving(key string, member string, latency *time.Dura
 	err := l.client.Eval(
 		context.Background(),
 		redisLimitConnLeavingScript,
-		[]string{"plugin-limit-conn:" + key},
+		[]string{"limit_conn:" + key},
 		member,
 	).Err()
-	if err != nil || latency == nil || l.onlyUseDefaultDelay {
-		return err
+	return err
+}
+
+func (l *redisConnLimiter) runIncomingScript(
+	ctx context.Context,
+	keys []string,
+	args ...any,
+) (any, error) {
+	if !l.useEvalSHA {
+		return l.client.Eval(ctx, redisLimitConnIncomingScript, keys, args...).Result()
 	}
-	l.mu.Lock()
-	l.unitDelay = (l.unitDelay + latency.Seconds()) / 2
-	l.mu.Unlock()
-	return nil
+
+	redisIncomingScriptState.Lock()
+	sha := redisIncomingScriptState.sha
+	redisIncomingScriptState.Unlock()
+	if sha == "" {
+		loaded, err := l.client.ScriptLoad(ctx, redisLimitConnIncomingScript).Result()
+		if err != nil {
+			return nil, err
+		}
+		sha = loaded
+		redisIncomingScriptState.Lock()
+		redisIncomingScriptState.sha = sha
+		redisIncomingScriptState.Unlock()
+	}
+
+	result, err := l.client.EvalSha(ctx, sha, keys, args...).Result()
+	if err == nil || !strings.HasPrefix(strings.ToUpper(err.Error()), "NOSCRIPT") {
+		return result, err
+	}
+	redisIncomingScriptState.Lock()
+	if redisIncomingScriptState.sha == sha {
+		redisIncomingScriptState.sha = ""
+	}
+	redisIncomingScriptState.Unlock()
+	return l.client.Eval(ctx, redisLimitConnIncomingScript, keys, args...).Result()
 }

@@ -22,6 +22,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/plugin/cacheutil"
 	"github.com/wklken/apisix-go/pkg/shared"
 	"github.com/wklken/apisix-go/pkg/util"
 )
@@ -49,6 +50,9 @@ type Plugin struct {
 
 	providerMu sync.Mutex
 	provider   *providerClient
+
+	jwtVerificationCache *cacheutil.BoundedTTLMap[string]
+	introspectionCache   *cacheutil.BoundedTTLMap[string]
 }
 
 const (
@@ -58,6 +62,7 @@ const (
 	defaultSessionIdlingTimeout   = 3600
 	defaultSessionRollingTimeout  = 86400
 	defaultSessionAbsoluteTimeout = 604800
+	oidcCacheCapacity             = 256
 )
 
 const schema = `
@@ -125,9 +130,9 @@ const schema = `
         "cookie_secure": {"type": "boolean", "default": true},
         "cookie_http_only": {"type": "boolean"},
         "cookie_same_site": {"type": "string", "enum": ["Strict", "Lax", "None", "Default"]},
-        "idling_timeout": {"type": "integer", "minimum": 1},
-        "rolling_timeout": {"type": "integer", "minimum": 1},
-        "absolute_timeout": {"type": "integer", "minimum": 1},
+        "idling_timeout": {"type": "integer"},
+        "rolling_timeout": {"type": "integer"},
+        "absolute_timeout": {"type": "integer"},
         "cookie": {
           "type": "object",
           "additionalProperties": false,
@@ -153,19 +158,7 @@ const schema = `
             "keepalive_timeout": {"type": "integer", "minimum": 1000}
           }
         }
-      },
-      "allOf": [
-        {
-          "if": {
-            "properties": {"cookie_same_site": {"const": "None"}},
-            "required": ["cookie_same_site"]
-          },
-          "then": {
-            "properties": {"cookie_secure": {"const": true}},
-            "required": ["cookie_secure"]
-          }
-        }
-      ]
+      }
     },
     "proxy_opts": {
       "type": "object",
@@ -210,8 +203,7 @@ const schema = `
       "default": false
     },
     "token_signing_alg_values_expected": {
-      "type": "string",
-      "enum": ["RS256", "RS384", "RS512", "ES256", "ES384", "ES512", "PS256", "PS384", "PS512", "EdDSA"]
+      "type": "string"
     },
     "use_pkce": {
       "type": "boolean",
@@ -258,12 +250,47 @@ const schema = `
     "refresh_session_interval": {
       "type": "integer"
     },
+    "iat_slack": {
+      "type": "integer",
+      "default": 120
+    },
+    "accept_none_alg": {
+      "type": "boolean",
+      "default": false
+    },
+    "accept_unsupported_alg": {
+      "type": "boolean",
+      "default": true
+    },
+    "use_nonce": {
+      "type": "boolean",
+      "default": false
+    },
+    "jwk_expires_in": {
+      "type": "integer",
+      "default": 86400
+    },
+    "jwt_verification_cache_ignore": {
+      "type": "boolean",
+      "default": false
+    },
+    "cache_segment": {
+      "type": "string"
+    },
+    "introspection_interval": {
+      "type": "integer",
+      "default": 0
+    },
+    "introspection_expiry_claim": {
+      "type": "string"
+    },
     "revoke_tokens_on_logout": {
       "type": "boolean",
       "default": false
     },
     "introspection_addon_headers": {
       "type": "array",
+      "minItems": 1,
       "items": {
         "type": "string",
         "pattern": "^[^:]+$"
@@ -341,6 +368,15 @@ type Config struct {
 	AccessTokenExpiresIn             int            `json:"access_token_expires_in,omitempty"`
 	AccessTokenExpiresLeeway         int            `json:"access_token_expires_leeway,omitempty"`
 	RefreshSessionInterval           *int           `json:"refresh_session_interval,omitempty"`
+	IATSlack                         *int           `json:"iat_slack,omitempty"`
+	AcceptNoneAlgorithm              bool           `json:"accept_none_alg,omitempty"`
+	AcceptUnsupportedAlgorithm       *bool          `json:"accept_unsupported_alg,omitempty"`
+	UseNonce                         bool           `json:"use_nonce,omitempty"`
+	JWKExpiresIn                     *int           `json:"jwk_expires_in,omitempty"`
+	JWTVerificationCacheIgnore       bool           `json:"jwt_verification_cache_ignore,omitempty"`
+	CacheSegment                     string         `json:"cache_segment,omitempty"`
+	IntrospectionInterval            int            `json:"introspection_interval,omitempty"`
+	IntrospectionExpiryClaim         string         `json:"introspection_expiry_claim,omitempty"`
 	RevokeTokensOnLogout             bool           `json:"revoke_tokens_on_logout,omitempty"`
 	IntrospectionAddonHeaders        []string       `json:"introspection_addon_headers,omitempty"`
 	ClaimValidator                   map[string]any `json:"claim_validator,omitempty"`
@@ -442,13 +478,6 @@ func (p *Plugin) PostInit() error {
 	}
 	if p.now == nil {
 		p.now = time.Now
-	}
-	if p.config.TokenSigningAlgValuesExpected != "" &&
-		!validTokenSigningAlgorithm(p.config.TokenSigningAlgValuesExpected) {
-		return fmt.Errorf(
-			"unsupported token_signing_alg_values_expected %q",
-			p.config.TokenSigningAlgValuesExpected,
-		)
 	}
 	if p.config.Scope == "" {
 		p.config.Scope = "openid"
@@ -590,6 +619,23 @@ func (p *Plugin) PostInit() error {
 		b := true
 		p.config.RenewAccessTokenOnExpiry = &b
 	}
+	if p.config.IATSlack == nil {
+		value := 120
+		p.config.IATSlack = &value
+	}
+	if p.config.AcceptUnsupportedAlgorithm == nil {
+		value := true
+		p.config.AcceptUnsupportedAlgorithm = &value
+	}
+	if p.config.JWKExpiresIn == nil {
+		value := 86400
+		p.config.JWKExpiresIn = &value
+	}
+	if p.config.IntrospectionExpiryClaim == "" {
+		p.config.IntrospectionExpiryClaim = "exp"
+	}
+	p.jwtVerificationCache = cacheutil.NewBoundedTTLMap[string](oidcCacheCapacity, p.currentTime)
+	p.introspectionCache = cacheutil.NewBoundedTTLMap[string](oidcCacheCapacity, p.currentTime)
 	if err := p.configureProxy(); err != nil {
 		return err
 	}
@@ -623,10 +669,8 @@ func (p *Plugin) currentTime() time.Time {
 
 func validTokenSigningAlgorithm(algorithm string) bool {
 	switch algorithm {
-	case "RS256", "RS384", "RS512",
-		"ES256", "ES384", "ES512",
-		"PS256", "PS384", "PS512",
-		"EdDSA":
+	case "HS256", "HS384", "HS512",
+		"RS256", "RS384", "RS512":
 		return true
 	default:
 		return false
@@ -730,6 +774,8 @@ func (p *Plugin) Stop() {
 		}
 		p.provider = nil
 		p.providerMu.Unlock()
+		p.jwtVerificationCache = nil
+		p.introspectionCache = nil
 
 		if p.client != nil {
 			p.client.CloseIdleConnections()

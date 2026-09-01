@@ -29,16 +29,50 @@ import (
 
 // PluginPlan is one side-effect-free request to materialize a final plugin winner.
 type PluginPlan struct {
-	Factory        string
-	Config         resource.PluginConfig
-	Scope          plugin.Scope
-	Provenance     plugin.ResourceProvenance
-	Source         generation.ResourceKey
-	FilterIdentity any
-	ErrorResponse  any
-	Priority       *int
+	Factory          string
+	Config           resource.PluginConfig
+	SourceConfig     map[string]any
+	Scope            plugin.Scope
+	Provenance       plugin.ResourceProvenance
+	Source           generation.ResourceKey
+	FilterIdentity   any
+	ErrorResponse    any
+	Priority         *int
+	ConsumerOverride bool
+	ConsumerGroupID  string
+	Disabled         bool
 
-	metadata pluginMetadata
+	metadata              pluginMetadata
+	apisixDefaultPriority bool
+}
+
+// APISIXSourceConfig returns the independently owned effective plugin
+// document used by APISIX identity calculations. When one plugin in the same
+// effective set has a custom priority, APISIX writes every sibling's default
+// priority into its metadata document as well.
+func (plan PluginPlan) APISIXSourceConfig(defaultPriority int) (map[string]any, error) {
+	source := cloneCompileAnyMap(plan.SourceConfig)
+	if !plan.apisixDefaultPriority {
+		return source, nil
+	}
+	metadata := map[string]any{}
+	if raw, exists := source["_meta"]; exists {
+		var ok bool
+		metadata, ok = raw.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("APISIX plugin source metadata must be an object")
+		}
+		metadata = cloneCompileAnyMap(metadata)
+	}
+	metadata["priority"] = defaultPriority
+	source["_meta"] = metadata
+	return source, nil
+}
+
+// APISIXDefaultPriority reports whether materialization must contribute the
+// initialized plugin's official default priority to SourceConfig.
+func (plan PluginPlan) APISIXDefaultPriority() bool {
+	return plan.apisixDefaultPriority
 }
 
 // Apply installs the already-compiled metadata wrapper and priority on one materialized binding.
@@ -169,6 +203,9 @@ func PlanHTTPPlugins(ctx context.Context, input PlanningInput) (*HTTPPluginPlan,
 		if err != nil {
 			return nil, fmt.Errorf("plan consumer %q: %w", id, err)
 		}
+		for index := range plans {
+			plans[index].ConsumerGroupID = consumer.GroupID
+		}
 		result.Consumers[id] = plans
 	}
 
@@ -232,11 +269,13 @@ func planRoutePlugins(
 		pluginConfigs, routeResource.PluginConfigID,
 		service.Plugins, routeResource.ServiceID,
 	)
-	localPlans, err := planPluginSources(local, enabled)
+	customPrioritySet := effectivePluginSourcesHaveCustomPriority(local) ||
+		effectivePluginSourcesHaveCustomPriority(serviceSources)
+	localPlans, err := planPluginSources(local, enabled, customPrioritySet)
 	if err != nil {
 		return PlannedRoute{}, err
 	}
-	servicePlans, err := planPluginSources(serviceSources, enabled)
+	servicePlans, err := planPluginSources(serviceSources, enabled, customPrioritySet)
 	if err != nil {
 		return PlannedRoute{}, err
 	}
@@ -290,8 +329,16 @@ func validatePlannedRouteURIs(routeResource resource.Route) error {
 func planPluginSources(
 	sources []materializedPluginSource,
 	enabled plugin.EnabledSet,
+	forceCustomPriority ...bool,
 ) ([]PluginPlan, error) {
-	plans := make([]PluginPlan, 0, len(sources))
+	type parsedSource struct {
+		source       materializedPluginSource
+		config       resource.PluginConfig
+		sourceConfig map[string]any
+		metadata     pluginMetadata
+	}
+	parsed := make([]parsedSource, 0, len(sources))
+	tombstones := make([]PluginPlan, 0)
 	for _, source := range sources {
 		if !enabled.Contains(source.name) {
 			return nil, fmt.Errorf(
@@ -301,7 +348,16 @@ func planPluginSources(
 				source.provenance.ID,
 			)
 		}
-		config, metadata, err := parsePluginMetadata(cloneCompileValue(source.config))
+		sourceDocument, ok := cloneCompileValue(source.config).(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf(
+				"plugin %q from %s %q: source config must be an object",
+				source.name,
+				source.provenance.Kind,
+				source.provenance.ID,
+			)
+		}
+		config, metadata, err := parsePluginMetadata(cloneCompileValue(sourceDocument))
 		if err != nil {
 			return nil, fmt.Errorf(
 				"plugin %q from %s %q: %w",
@@ -312,26 +368,75 @@ func planPluginSources(
 			)
 		}
 		if metadata.disabled {
+			if source.scope == plugin.ScopeConsumer {
+				tombstones = append(tombstones, PluginPlan{
+					Factory: source.name, SourceConfig: cloneCompileAnyMap(sourceDocument),
+					Scope: source.scope, Provenance: source.provenance,
+					Source: sourceGenerationKey(source.provenance), Disabled: true,
+				})
+			}
 			continue
 		}
 		if source.name == "error-log-logger" && source.scope != plugin.ScopeSystem {
 			continue
 		}
+		parsed = append(parsed, parsedSource{
+			source: source, config: config, sourceConfig: sourceDocument, metadata: metadata,
+		})
+	}
+	customPrioritySet := len(forceCustomPriority) > 0 && forceCustomPriority[0]
+	if !customPrioritySet {
+		for _, selected := range parsed {
+			if selected.metadata.priority != nil {
+				customPrioritySet = true
+				break
+			}
+		}
+	}
+	plans := make([]PluginPlan, 0, len(parsed))
+	for _, selected := range parsed {
+		source := selected.source
+		metadata := selected.metadata
 		priority := metadata.priority
 		if priority != nil {
 			owned := *priority
 			priority = &owned
 		}
 		plans = append(plans, PluginPlan{
-			Factory: source.name, Config: cloneCompileValue(config), Scope: source.scope,
+			Factory: source.name, Config: cloneCompileValue(selected.config),
+			SourceConfig: cloneCompileAnyMap(selected.sourceConfig), Scope: source.scope,
 			Provenance: source.provenance, Source: sourceGenerationKey(source.provenance),
 			FilterIdentity: cloneCompileValue(metadata.identityFilter),
 			ErrorResponse: cloneCompileValue(
 				metadata.errorResponse,
 			), Priority: priority, metadata: metadata,
+			apisixDefaultPriority: customPrioritySet && priority == nil,
 		})
 	}
-	return plans, nil
+	return append(plans, tombstones...), nil
+}
+
+func effectivePluginSourcesHaveCustomPriority(sources []materializedPluginSource) bool {
+	for _, source := range sources {
+		if source.name == "error-log-logger" && source.scope != plugin.ScopeSystem {
+			continue
+		}
+		config, ok := source.config.(map[string]any)
+		if !ok {
+			continue
+		}
+		metadata, ok := config["_meta"].(map[string]any)
+		if !ok {
+			continue
+		}
+		if disabled, _ := metadata["disable"].(bool); disabled {
+			continue
+		}
+		if _, exists := metadata["priority"]; exists {
+			return true
+		}
+	}
+	return false
 }
 
 func sourceGenerationKey(provenance plugin.ResourceProvenance) generation.ResourceKey {

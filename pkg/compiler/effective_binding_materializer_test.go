@@ -49,6 +49,61 @@ func TestEffectiveBindingMaterializerRequiresTask7OrTask8Specs(t *testing.T) {
 	}
 }
 
+func TestEffectiveBindingMaterializerAppliesAPISIXPluginContext(t *testing.T) {
+	prepared, fixture := newEffectiveBindingMaterializerFixture(t, []string{"request-id"}, nil)
+	spec := fixture.pluginSpec("request-id", "route-1")
+	spec.apisixContext = base.APISIXPluginContext{
+		Provider: "etcd", EtcdPrefix: "/literal/apisix/",
+		SourceKind: "plugin_config", SourceID: "plugin-config-1",
+		SourceConfig: map[string]any{
+			"header_name": "X-Trace-ID",
+			"_meta":       map[string]any{"filter": []any{[]any{"uri", "==", "/"}}},
+		},
+		ConsumerOverride: true,
+	}
+	spec.apisixDefaultPriority = true
+
+	var order []string
+	var injected base.APISIXPluginContext
+	defaultDecode := prepared.bindingOps.decodeConfig
+	prepared.bindingOps.decodeConfig = func(config resource.PluginConfig, destination any) error {
+		order = append(order, "decode")
+		return defaultDecode(config, destination)
+	}
+	prepared.bindingOps.applyAPISIXContext = func(_ plugin.Plugin, context base.APISIXPluginContext) error {
+		order = append(order, "apisix-context")
+		injected = context
+		context.SourceConfig["header_name"] = "mutated by receiver"
+		return nil
+	}
+	defaultPostInit := prepared.bindingOps.postInit
+	prepared.bindingOps.postInit = func(instance plugin.Plugin) error {
+		order = append(order, "post-init")
+		return defaultPostInit(instance)
+	}
+
+	if _, err := prepared.materializeEffectiveBindings(
+		context.Background(),
+		[]effectiveBindingSpec{spec},
+	); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"decode", "apisix-context", "post-init"}; !reflect.DeepEqual(order, want) {
+		t.Fatalf("initialization order = %v, want %v", order, want)
+	}
+	if injected.Provider != "etcd" || injected.EtcdPrefix != "/literal/apisix/" ||
+		injected.SourceKind != "plugin_config" || injected.SourceID != "plugin-config-1" ||
+		!injected.ConsumerOverride {
+		t.Fatalf("injected APISIX context = %#v", injected)
+	}
+	if got := injected.SourceConfig["_meta"].(map[string]any)["priority"]; got != 12015 {
+		t.Fatalf("injected default priority = %v, want 12015", got)
+	}
+	if got := spec.apisixContext.SourceConfig["header_name"]; got != "X-Trace-ID" {
+		t.Fatalf("receiver mutation escaped injected context: source header = %v", got)
+	}
+}
+
 func TestEffectiveBindingMaterializerRejectsRawOccurrenceEnumeration(t *testing.T) {
 	prepared, fixture := newEffectiveBindingMaterializerFixture(
 		t,
@@ -581,6 +636,14 @@ func TestEffectiveBindingMaterializerLifecycleOrderAndExactSecretScope(t *testin
 		trace.record("decode")
 		return defaultDecode(config, destination)
 	}
+	defaultAPISIXContext := operations.applyAPISIXContext
+	operations.applyAPISIXContext = func(
+		instance plugin.Plugin,
+		pluginContext base.APISIXPluginContext,
+	) error {
+		trace.record("apisix-context")
+		return defaultAPISIXContext(instance, pluginContext)
+	}
 	defaultContext := operations.applyContext
 	operations.applyContext = func(instance plugin.Plugin, value effectiveBindingResourceContext) {
 		trace.record("context")
@@ -632,7 +695,7 @@ func TestEffectiveBindingMaterializerLifecycleOrderAndExactSecretScope(t *testin
 		t.Fatalf("lifecycle materialization = (%#v, %v)", bindings, err)
 	}
 	want := []string{
-		"new", "init", "schema", "decode", "secret", "context", "post-init",
+		"new", "init", "schema", "decode", "secret", "apisix-context", "context", "post-init",
 		"observer", "descriptor", "bind", "acquire",
 	}
 	if got := trace.snapshot(); !reflect.DeepEqual(got, want) {
@@ -1466,6 +1529,7 @@ func (*materializerGenerationTaskQuiescer) GetSchema() string                   
 func (*materializerGenerationTaskQuiescer) GetMetadataSchema() string              { return `{}` }
 func (*materializerGenerationTaskQuiescer) GetPriority() int                       { return 0 }
 func (*materializerGenerationTaskQuiescer) GetName() string                        { return "test-logger" }
+
 func (plugin *materializerGenerationTaskQuiescer) QuiesceGenerationTasks() {
 	plugin.trace.record("plugin-quiesce")
 }
@@ -1591,12 +1655,16 @@ func newEffectiveBindingMaterializerFixtureWithOccurrenceSpecs(
 		t.Fatal(err)
 	}
 	prepared := &PreparedGeneration{
-		publication:      generation.PublicationSet{DesiredRevision: attempt.Generation(), Domains: candidateSet},
-		preparation:      attempt,
-		consumers:        consumers,
-		lookup:           consumerLookupView{bindings: consumers},
-		tasks:            tasks,
-		effective:        &config.EffectiveConfig{},
+		publication: generation.PublicationSet{DesiredRevision: attempt.Generation(), Domains: candidateSet},
+		preparation: attempt,
+		consumers:   consumers,
+		lookup:      consumerLookupView{bindings: consumers},
+		tasks:       tasks,
+		effective: &config.EffectiveConfig{Config: config.Config{Deployment: config.Deployment{
+			Role:            "traditional",
+			RoleTraditional: config.RoleTraditionalConfig{ConfigProvider: "etcd"},
+			Etcd:            config.Etcd{Prefix: "/apisix"},
+		}}},
 		catalog:          compiler.schemas.catalog,
 		registry:         registry,
 		observers:        observers,

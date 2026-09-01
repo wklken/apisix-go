@@ -26,6 +26,10 @@ func (prepared *PreparedGeneration) compileAndAttachHTTP(ctx context.Context) er
 	if err != nil {
 		return err
 	}
+	plan.rateLimitState, err = prepared.acquireHTTPRateLimitState(ctx)
+	if err != nil {
+		return err
+	}
 	nodeID := apisixid.Get(prepared.effective.Config.Apisix.ID)
 	preparedRoutes, err := prepared.prepareHTTPRoutes(ctx, plan, nodeID)
 	if err != nil {

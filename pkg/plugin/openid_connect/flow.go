@@ -132,6 +132,15 @@ func (p *Plugin) beginAuthorization(
 		session.CodeVerifier = verifier
 		options = append(options, oauth2.S256ChallengeOption(verifier))
 	}
+	if p.config.UseNonce {
+		nonce, err := randomURLValue(32)
+		if err != nil {
+			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+			return
+		}
+		session.Nonce = nonce
+		options = append(options, oauth2.SetAuthURLParam("nonce", nonce))
+	}
 	if err := p.writeSession(w, session); err != nil {
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return
@@ -175,7 +184,7 @@ func (p *Plugin) handleCodeCallback(w http.ResponseWriter, r *http.Request, redi
 		RefreshToken:      tokens.RefreshToken,
 	}
 	newSession.ExpiresAt = p.tokenExpiresAt(now, tokens.ExpiresIn)
-	if err := p.verifyPresentIDToken(r, tokens.IDToken); err != nil {
+	if err := p.verifyPresentIDTokenWithNonce(r, tokens.IDToken, session.Nonce); err != nil {
 		p.writeInvalidToken(w, err.Error())
 		return
 	}

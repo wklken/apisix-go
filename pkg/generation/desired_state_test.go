@@ -52,3 +52,43 @@ func TestDesiredStateCommitRejectsMismatchedPublicationSet(t *testing.T) {
 		t.Fatalf("state revision after rejected commit = %d", state.snapshot.Revision())
 	}
 }
+
+func TestDesiredStateCarriesAPISIXSourceIdentity(t *testing.T) {
+	state := newDesiredState()
+	origin := ResourceOrigin{
+		Provider: "standalone", ResourceKey: "/routes/r1", ModifiedIndex: "1700000000",
+	}
+	candidate, err := state.candidate(DesiredBatch{
+		Cursor: ProviderCursor{Provider: "standalone", Revision: "digest-1"},
+		Mutations: []Mutation{{
+			Type: MutationPut, Key: ResourceKey{Kind: "routes", ID: "r1"},
+			Origin: origin, Value: []byte(`{"id":"r1"}`),
+		}},
+		CollectionVersions: map[string]string{"routes": "1700000000"},
+		RequiredDomains:    []Domain{DomainHTTP},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resources := candidate.snapshot.Resources()
+	if len(resources) != 1 || resources[0].Origin != origin {
+		t.Fatalf("candidate resource origin = %#v, want %#v", resources, origin)
+	}
+	if got, ok := candidate.snapshot.CollectionVersion("routes"); !ok || got != "1700000000" {
+		t.Fatalf("candidate routes collection version = %q, %t", got, ok)
+	}
+
+	replayWithoutSource := DesiredBatch{
+		Cursor: ProviderCursor{Provider: "standalone", Revision: "digest-1"},
+		Mutations: []Mutation{
+			{Type: MutationPut, Key: ResourceKey{Kind: "routes", ID: "r1"}, Value: []byte(`{"id":"r1"}`)},
+		},
+		RequiredDomains: []Domain{DomainHTTP},
+	}
+	state.cursor = candidate.ticket.Cursor
+	state.batchDigest = candidate.batchDigest
+	state.acknowledgement.Revisions.Desired = 1
+	if _, err := state.candidate(replayWithoutSource); !errors.Is(err, ErrCursorConflict) {
+		t.Fatalf("source identity change with same cursor error = %v, want cursor conflict", err)
+	}
+}

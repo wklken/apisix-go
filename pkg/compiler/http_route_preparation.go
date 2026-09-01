@@ -123,6 +123,7 @@ func (prepared *PreparedGeneration) httpRuntimeContextForNotFound(
 		proxyCacheZones:   slices.Clone(prepared.effective.Config.Apisix.ProxyCache.Zones),
 		protoResolver:     plan.protoResolver,
 		apiBreakerState:   plan.apiBreakerState,
+		rateLimitState:    plan.rateLimitState,
 	}, nil
 }
 
@@ -190,8 +191,19 @@ func (prepared *PreparedGeneration) prepareOneHTTPRoute(
 		if !exists {
 			return preparedHTTPRoute{}, nil, fmt.Errorf("prepared HTTP consumer %q is missing", id)
 		}
+		consumerPlans := markConsumerPluginOverrides(plan.plugins.Consumers[id], planned)
+		materializedPlans := make([]routepkg.PluginPlan, 0, len(consumerPlans))
+		overrideFactories := make([]string, 0, len(consumerPlans))
+		for _, consumerPlan := range consumerPlans {
+			overrideFactories = append(overrideFactories, consumerPlan.Factory)
+			if !consumerPlan.Disabled {
+				materializedPlans = append(materializedPlans, consumerPlan)
+			}
+		}
+		slices.Sort(overrideFactories)
+		overrideFactories = slices.Compact(overrideFactories)
 		bindings, err := prepared.materializeHTTPPluginPlans(
-			ctx, routeKey, plan.plugins.Consumers[id], resourceContext, runtimeContext, true,
+			ctx, routeKey, materializedPlans, resourceContext, runtimeContext, true,
 		)
 		if err != nil {
 			return preparedHTTPRoute{}, nil, err
@@ -208,8 +220,25 @@ func (prepared *PreparedGeneration) prepareOneHTTPRoute(
 				consumer.Username,
 			)
 		}
+		configTypeSuffix, configVersionSuffix := "", ""
+		if collectionVersion := plan.resources.collectionVersions["consumers"]; collectionVersion != "" {
+			configTypeSuffix = "&consumer"
+			configVersionSuffix = "&" + collectionVersion
+			if consumer.GroupID != "" {
+				groupOrigin := plan.resources.origins[generation.ResourceKey{
+					Kind: "consumer_groups", ID: consumer.GroupID,
+				}]
+				if groupOrigin.ModifiedIndex != "" {
+					configTypeSuffix += "&consumer_group"
+					configVersionSuffix += "&" + groupOrigin.ModifiedIndex
+				}
+			}
+		}
 		consumerRecords[consumer.Username] = routepkg.PreparedConsumerRecord{
 			Consumer: consumer, Bindings: bindings,
+			OverrideFactories:         overrideFactories,
+			APISIXConfigTypeSuffix:    configTypeSuffix,
+			APISIXConfigVersionSuffix: configVersionSuffix,
 		}
 	}
 	staticBindings := make([]plugin.Binding, 0, len(system)+len(global)+len(local))
@@ -239,6 +268,40 @@ func (prepared *PreparedGeneration) prepareOneHTTPRoute(
 		system: system, global: global, local: local, consumers: consumers,
 		handler: handler, hosts: hosts,
 	}, additions, nil
+}
+
+func markConsumerPluginOverrides(
+	consumerPlans []routepkg.PluginPlan,
+	planned routepkg.PlannedRoute,
+) []routepkg.PluginPlan {
+	staticFactories := make(map[string]struct{}, len(planned.Local)+len(planned.ServicePlans))
+	for _, plan := range planned.Local {
+		staticFactories[plan.Factory] = struct{}{}
+	}
+	for _, plan := range planned.ServicePlans {
+		staticFactories[plan.Factory] = struct{}{}
+	}
+	marked := make([]routepkg.PluginPlan, len(consumerPlans))
+	copy(marked, consumerPlans)
+	for index := range marked {
+		_, marked[index].ConsumerOverride = staticFactories[marked[index].Factory]
+		marker := "_from_consumer"
+		if marked[index].ConsumerOverride {
+			marker = "_skip_rewrite_in_consumer"
+		}
+		marked[index].SourceConfig = cloneAPISIXSourceConfigWithMarker(
+			marked[index].SourceConfig,
+			marker,
+		)
+	}
+	return marked
+}
+
+func cloneAPISIXSourceConfigWithMarker(source map[string]any, marker string) map[string]any {
+	cloned := make(map[string]any, len(source)+1)
+	maps.Copy(cloned, source)
+	cloned[marker] = true
+	return cloned
 }
 
 func (prepared *PreparedGeneration) materializeHTTPServicePlans(

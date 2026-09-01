@@ -7,9 +7,160 @@ import (
 
 	"github.com/wklken/apisix-go/pkg/generation"
 	pluginpkg "github.com/wklken/apisix-go/pkg/plugin"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/util"
 )
+
+func TestAPISIXPluginContextParentResourceKey(t *testing.T) {
+	tests := []struct {
+		name    string
+		context base.APISIXPluginContext
+		want    string
+		wantErr bool
+	}{
+		{
+			name: "standalone route",
+			context: base.APISIXPluginContext{
+				Provider: "yaml", SourceKind: "route", SourceID: "route-1",
+			},
+			want: "/routes/route-1",
+		},
+		{
+			name: "standalone plugin config",
+			context: base.APISIXPluginContext{
+				Provider: "json", SourceKind: "plugin_config", SourceID: "config-1",
+			},
+			want: "/plugin_configs/config-1",
+		},
+		{
+			name: "literal etcd prefix",
+			context: base.APISIXPluginContext{
+				Provider: "etcd", EtcdPrefix: "/tenant/apisix/",
+				SourceKind: "consumer_group", SourceID: "group-1",
+			},
+			want: "/tenant/apisix//consumer_groups/group-1",
+		},
+		{
+			name: "unknown provider",
+			context: base.APISIXPluginContext{
+				Provider: "unknown", SourceKind: "route", SourceID: "route-1",
+			},
+			wantErr: true,
+		},
+		{
+			name: "system has no APISIX parent resource",
+			context: base.APISIXPluginContext{
+				Provider: "etcd", EtcdPrefix: "/apisix", SourceKind: "system", SourceID: "plugin",
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := test.context.ParentResourceKey()
+			if test.wantErr {
+				if err == nil {
+					t.Fatalf("ParentResourceKey() = %q, want error", got)
+				}
+				return
+			}
+			if err != nil || got != test.want {
+				t.Fatalf("ParentResourceKey() = (%q, %v), want (%q, nil)", got, err, test.want)
+			}
+		})
+	}
+
+	parent := base.APISIXPluginContext{
+		Provider: "etcd", EtcdPrefix: "/apisix", SourceKind: "route", SourceID: "route-1",
+		SourceConfig: map[string]any{"nested": map[string]any{"value": "original"}},
+	}
+	child := parent.WithWorkflowVID(2)
+	child.SourceConfig["nested"].(map[string]any)["value"] = "changed"
+	if parent.WorkflowVID != 0 || child.WorkflowVID != 2 ||
+		parent.SourceConfig["nested"].(map[string]any)["value"] != "original" {
+		t.Fatalf("workflow context derivation aliased parent: parent=%#v child=%#v", parent, child)
+	}
+}
+
+func TestAPISIXPluginContextPlansPreserveSourceDocumentAndPrioritySet(t *testing.T) {
+	input := PlanningInput{
+		Routes: []resource.Route{{
+			ID: "route-1",
+			Plugins: map[string]resource.PluginConfig{
+				"request-id": map[string]any{
+					"header_name": "X-Trace-ID",
+					"_meta":       map[string]any{"priority": 99, "filter": []any{[]any{"uri", "==", "/"}}},
+				},
+				"response-rewrite": map[string]any{"status_code": 201},
+			},
+		}},
+		EnabledPlugins: []string{"request-id", "response-rewrite"},
+	}
+
+	plan, err := PlanHTTPPlugins(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requestID := pluginPlanNamed(plan.Routes[0].Local, "request-id")
+	requestSource, err := requestID.APISIXSourceConfig(12015)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requestMeta := requestSource["_meta"].(map[string]any)
+	if requestMeta["priority"] != 99 || requestSource["header_name"] != "X-Trace-ID" {
+		t.Fatalf("explicit-priority source config = %#v", requestSource)
+	}
+	if _, exists := requestID.Config.(map[string]any)["_meta"]; exists {
+		t.Fatal("runtime decode config retained _meta")
+	}
+
+	response := pluginPlanNamed(plan.Routes[0].Local, "response-rewrite")
+	responseSource, err := response.APISIXSourceConfig(899)
+	if err != nil {
+		t.Fatal(err)
+	}
+	responseMeta := responseSource["_meta"].(map[string]any)
+	if responseMeta["priority"] != 899 || responseSource["status_code"] != 201 {
+		t.Fatalf("default-priority source config = %#v", responseSource)
+	}
+
+	requestMeta["priority"] = -1
+	requestAgain, err := requestID.APISIXSourceConfig(12015)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requestAgain["_meta"].(map[string]any)["priority"] != 99 {
+		t.Fatal("returned source config aliases the immutable plugin plan")
+	}
+
+	disabled, err := PlanHTTPPlugins(context.Background(), PlanningInput{
+		Routes: []resource.Route{{
+			ID: "route-disabled-priority",
+			Plugins: map[string]resource.PluginConfig{
+				"request-id": map[string]any{
+					"_meta": map[string]any{"disable": true, "priority": 1},
+				},
+				"response-rewrite": map[string]any{"status_code": 202},
+			},
+		}},
+		EnabledPlugins: []string{"request-id", "response-rewrite"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	disabledSource, err := pluginPlanNamed(
+		disabled.Routes[0].Local,
+		"response-rewrite",
+	).APISIXSourceConfig(899)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := disabledSource["_meta"]; exists {
+		t.Fatalf("disabled custom priority affected effective plugin set: %#v", disabledSource)
+	}
+}
 
 func TestPlanHTTPPluginsPrecedenceAndExactSources(t *testing.T) {
 	input := PlanningInput{
@@ -193,6 +344,27 @@ func TestPlanHTTPPluginsDisabledWinnerDoesNotRestoreLoser(t *testing.T) {
 	}
 	if pluginPlanNamed(plan.Routes[0].Local, "proxy-rewrite") != nil {
 		t.Fatal("disabled route winner restored lower-precedence plugin_config loser")
+	}
+}
+
+func TestPlanHTTPPluginsPreservesDisabledConsumerWinnerAsTombstone(t *testing.T) {
+	plan, err := PlanHTTPPlugins(context.Background(), PlanningInput{
+		Routes: []resource.Route{{ID: "r1", Plugins: map[string]resource.PluginConfig{
+			"proxy-rewrite": map[string]any{"host": "route.example"},
+		}}},
+		Consumers: map[string]resource.Consumer{
+			"alice": {Username: "alice", Plugins: map[string]resource.PluginConfig{
+				"proxy-rewrite": map[string]any{"_meta": map[string]any{"disable": true}},
+			}},
+		},
+		EnabledPlugins: []string{"proxy-rewrite"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	consumerPlans := plan.Consumers["alice"]
+	if len(consumerPlans) != 1 || consumerPlans[0].Factory != "proxy-rewrite" || !consumerPlans[0].Disabled {
+		t.Fatalf("disabled consumer winner plans = %#v, want one tombstone", consumerPlans)
 	}
 }
 

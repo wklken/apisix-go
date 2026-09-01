@@ -15,18 +15,20 @@ import (
 )
 
 type httpResourceSet struct {
-	revision         uint64
-	routes           []resource.Route
-	services         map[string]resource.Service
-	upstreams        map[string]resource.Upstream
-	pluginConfigs    map[string]resource.PluginConfigRule
-	protos           map[string]string
-	globalRules      []resource.GlobalRule
-	ssls             map[string]resource.SSL
-	enabledPlugins   []string
-	dynamicPlugins   bool
-	consumerIDs      []string
-	consumerGroupIDs []string
+	revision           uint64
+	routes             []resource.Route
+	services           map[string]resource.Service
+	upstreams          map[string]resource.Upstream
+	pluginConfigs      map[string]resource.PluginConfigRule
+	protos             map[string]string
+	globalRules        []resource.GlobalRule
+	ssls               map[string]resource.SSL
+	enabledPlugins     []string
+	dynamicPlugins     bool
+	consumerIDs        []string
+	consumerGroupIDs   []string
+	origins            map[generation.ResourceKey]generation.ResourceOrigin
+	collectionVersions map[string]string
 }
 
 func decodeHTTPResourceSet(
@@ -51,18 +53,21 @@ func decodeHTTPResourceSet(
 		return httpResourceSet{}, fmt.Errorf("%w: HTTP candidate is not normalized", ErrInvalidInput)
 	}
 	result := httpResourceSet{
-		revision:      candidate.Artifact.Revision,
-		services:      make(map[string]resource.Service),
-		upstreams:     make(map[string]resource.Upstream),
-		pluginConfigs: make(map[string]resource.PluginConfigRule),
-		protos:        make(map[string]string),
-		ssls:          make(map[string]resource.SSL),
+		revision:           candidate.Artifact.Revision,
+		services:           make(map[string]resource.Service),
+		upstreams:          make(map[string]resource.Upstream),
+		pluginConfigs:      make(map[string]resource.PluginConfigRule),
+		protos:             make(map[string]string),
+		ssls:               make(map[string]resource.SSL),
+		origins:            make(map[generation.ResourceKey]generation.ResourceOrigin),
+		collectionVersions: input.collectionVersions,
 	}
 	for _, key := range input.keys() {
 		if err := ctx.Err(); err != nil {
 			return httpResourceSet{}, err
 		}
 		normalized := input.resources[key]
+		result.origins[key] = normalized.origin
 		switch key.Kind {
 		case "routes":
 			var value resource.Route

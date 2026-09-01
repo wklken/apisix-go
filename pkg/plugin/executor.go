@@ -83,11 +83,12 @@ type ConsumerCacheKey struct {
 }
 
 type ConsumerResolution struct {
-	Bindings []Binding
-	Request  *http.Request
-	CacheKey ConsumerCacheKey
-	Identity ConsumerIdentity
-	Resolved bool
+	Bindings          []Binding
+	OverrideFactories []string
+	Request           *http.Request
+	CacheKey          ConsumerCacheKey
+	Identity          ConsumerIdentity
+	Resolved          bool
 }
 
 type ConsumerBindingResolver func(*http.Request) (ConsumerResolution, error)
@@ -216,7 +217,7 @@ func (p RequestPipeline) ThenWithPostResolutionHook(
 	if terminal == nil {
 		terminal = http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})
 	}
-	staticEffective := mergeEffectiveBindingSet(p.bindings, nil)
+	staticEffective := mergeEffectiveBindingSet(p.bindings, nil, nil)
 	preparedStatic := preparedStaticPipeline{
 		effective: staticEffective,
 		handler:   p.buildPostResolutionHandler(staticEffective, terminal, nil),
@@ -466,7 +467,9 @@ func (p RequestPipeline) runResolved(
 		p.writeResolutionFailure(w, r, execution, err)
 		return
 	}
-	p.runMaterializedResolved(w, r, request, resolution.Bindings, terminal, hook, execution)
+	p.runMaterializedResolved(
+		w, r, request, resolution.Bindings, resolution.OverrideFactories, terminal, hook, execution,
+	)
 }
 
 func (p RequestPipeline) buildPlainResolvedHandler(
@@ -484,7 +487,9 @@ func (p RequestPipeline) buildPlainResolvedHandler(
 			p.runPreparedStatic(w, r, request, hook, prepared)
 			return
 		}
-		p.runMaterializedResolved(w, r, request, resolution.Bindings, terminal, hook, nil)
+		p.runMaterializedResolved(
+			w, r, request, resolution.Bindings, resolution.OverrideFactories, terminal, hook, nil,
+		)
 	})
 }
 
@@ -530,11 +535,12 @@ func (p RequestPipeline) runMaterializedResolved(
 	original *http.Request,
 	request *http.Request,
 	resolved []Binding,
+	overrideFactories []string,
 	terminal http.Handler,
 	hook PostResolutionHook,
 	execution *responseExecution,
 ) {
-	effective := mergeEffectiveBindingSet(p.bindings, resolved)
+	effective := mergeEffectiveBindingSet(p.bindings, resolved, overrideFactories)
 	if p.logExecutor != nil {
 		materializedLogExecutor, logErr := NewLogExecutorFromBindings(effective.all())
 		if logErr != nil {
@@ -868,16 +874,25 @@ func isRuntimePluginPhase(phase Phase) bool {
 	}
 }
 
-func mergeEffectiveBindingSet(static, resolved []Binding) EffectiveBindingSet {
+func mergeEffectiveBindingSet(static, resolved []Binding, overrideFactories []string) EffectiveBindingSet {
 	global := make([]Binding, 0, len(static)+len(resolved))
 	merged := make([]Binding, 0, len(static)+len(resolved))
 	indexes := make(map[string]int)
+	overrides := make(map[string]struct{}, len(overrideFactories))
+	for _, factory := range overrideFactories {
+		if factory != "" {
+			overrides[factory] = struct{}{}
+		}
+	}
 	for _, binding := range static {
 		if binding.Plugin == nil {
 			continue
 		}
 		if binding.Scope == ScopeSystem || binding.Scope == ScopeGlobal {
 			global = append(global, binding)
+			continue
+		}
+		if _, suppressed := overrides[binding.Descriptor.Factory]; suppressed {
 			continue
 		}
 		appendEffectiveBinding(&merged, indexes, binding)

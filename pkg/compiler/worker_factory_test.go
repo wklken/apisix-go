@@ -118,12 +118,13 @@ func TestWorkerCompilerFactoryPrepareGenerationCompilesSystemOnlyHTTPSnapshot(t 
 	factory, _ := newWorkerTestFactory(t)
 	desired := mustGenerationSnapshot(t, 802, nil, nil)
 	prepared, err := factory.PrepareGeneration(
-		context.Background(), ticketForSnapshot(desired, generation.DomainHTTP), desired, nil)
+		context.Background(), ticketForSnapshot(desired, generation.DomainHTTP), desired, nil,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := factory.registry.Len(); got != 1 {
-		t.Fatalf("resource leases after preparation = %d, want one api-breaker state", got)
+	if got := factory.registry.Len(); got != 2 {
+		t.Fatalf("resource leases after preparation = %d, want api-breaker and rate-limit states", got)
 	}
 	if prepared.ConsumerLookup() == nil || prepared.PublicationSet().DesiredRevision != desired.Revision() ||
 		prepared.HTTP() == nil || prepared.HTTP().Revision() != desired.Revision() {
@@ -146,7 +147,8 @@ func TestWorkerCompilerFactoryPrepareGenerationCompilesStreamOnlySnapshot(t *tes
 		}`),
 	}, nil)
 	prepared, err := factory.PrepareGeneration(
-		context.Background(), ticketForSnapshot(desired, generation.DomainStream), desired, nil)
+		context.Background(), ticketForSnapshot(desired, generation.DomainStream), desired, nil,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -170,7 +172,8 @@ func TestWorkerCompilerFactoryPrepareGenerationStreamFailureCleansAttachedHTTP(t
 		context.Background(),
 		ticketForSnapshot(desired, generation.DomainHTTP, generation.DomainStream),
 		desired,
-		nil)
+		nil,
+	)
 
 	if prepared != nil || err == nil {
 		t.Fatalf("stream compile failure = %#v/%v, want nil/error", prepared, err)
@@ -243,7 +246,8 @@ func TestWorkerCompilerFactoryPrepareGenerationCleansFailedDependenciesInOrder(t
 			test.set(factory, injected)
 			desired := mustGenerationSnapshot(t, 803, nil, nil)
 			prepared, err := factory.PrepareGeneration(
-				context.Background(), ticketForSnapshot(desired, generation.DomainHTTP), desired, nil)
+				context.Background(), ticketForSnapshot(desired, generation.DomainHTTP), desired, nil,
+			)
 
 			if prepared != nil || err == nil || errors.Is(err, injected) ||
 				containsWorkerTestError(err, injected.Error()) {
@@ -305,7 +309,8 @@ func TestWorkerCompilerFactoryPrepareGenerationCancellationWindows(t *testing.T)
 			}
 			desired := mustGenerationSnapshot(t, uint64(810+index), nil, nil)
 			prepared, err := factory.PrepareGeneration(
-				ctx, ticketForSnapshot(desired, generation.DomainHTTP), desired, nil)
+				ctx, ticketForSnapshot(desired, generation.DomainHTTP), desired, nil,
+			)
 
 			if prepared != nil || !errors.Is(err, context.Canceled) {
 				t.Fatalf("cancellation result = %#v/%v", prepared, err)
@@ -346,7 +351,8 @@ func TestWorkerCompilerFactoryPrepareGenerationCallerCancellationDoesNotStopTask
 	ctx, cancel := context.WithCancel(context.Background())
 	desired := mustGenerationSnapshot(t, 819, nil, nil)
 	prepared, err := factory.PrepareGeneration(
-		ctx, ticketForSnapshot(desired, generation.DomainHTTP), desired, nil)
+		ctx, ticketForSnapshot(desired, generation.DomainHTTP), desired, nil,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -456,7 +462,8 @@ func TestWorkerCompilerFactoryPrepareGenerationOwnsPartialConsumersBeforeError(t
 	}
 	desired := mustGenerationSnapshot(t, 821, nil, nil)
 	prepared, prepareErr := factory.PrepareGeneration(
-		context.Background(), ticketForSnapshot(desired, generation.DomainHTTP), desired, nil)
+		context.Background(), ticketForSnapshot(desired, generation.DomainHTTP), desired, nil,
+	)
 
 	if prepared != nil || prepareErr == nil {
 		t.Fatalf("partial consumer result = %#v/%v", prepared, prepareErr)
@@ -485,7 +492,8 @@ func TestWorkerCompilerFactoryPrepareGenerationRedactsProviderAndCleanupErrors(t
 		materializer.closeErr = cleanup
 		desired := mustGenerationSnapshot(t, 826, nil, nil)
 		_, err := factory.PrepareGeneration(
-			context.Background(), ticketForSnapshot(desired, generation.DomainHTTP), desired, nil)
+			context.Background(), ticketForSnapshot(desired, generation.DomainHTTP), desired, nil,
+		)
 
 		assertWorkerErrorRedacted(t, err, primary, cleanup)
 	})
@@ -497,7 +505,8 @@ func TestWorkerCompilerFactoryPrepareGenerationRedactsProviderAndCleanupErrors(t
 		factory.consumers = workerTestConsumerPreparer{err: primary}
 		desired := mustGenerationSnapshot(t, 823, nil, nil)
 		_, err := factory.PrepareGeneration(
-			context.Background(), ticketForSnapshot(desired, generation.DomainHTTP), desired, nil)
+			context.Background(), ticketForSnapshot(desired, generation.DomainHTTP), desired, nil,
+		)
 
 		assertWorkerErrorRedacted(t, err, primary, cleanup)
 	})
@@ -507,7 +516,8 @@ func TestWorkerCompilerFactoryPrepareGenerationRedactsProviderAndCleanupErrors(t
 		factory.metadata = workerTestMetadataPreparer{err: errors.Join(context.Canceled, secretCause)}
 		desired := mustGenerationSnapshot(t, 824, nil, nil)
 		_, err := factory.PrepareGeneration(
-			context.Background(), ticketForSnapshot(desired, generation.DomainHTTP), desired, nil)
+			context.Background(), ticketForSnapshot(desired, generation.DomainHTTP), desired, nil,
+		)
 
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("error = %v, want exact reconstructed cancellation", err)
@@ -520,7 +530,8 @@ func TestWorkerCompilerFactoryPrepareGenerationRedactsProviderAndCleanupErrors(t
 		materializer.closeErr = cleanup
 		desired := mustGenerationSnapshot(t, 825, nil, nil)
 		prepared, err := factory.PrepareGeneration(
-			context.Background(), ticketForSnapshot(desired, generation.DomainHTTP), desired, nil)
+			context.Background(), ticketForSnapshot(desired, generation.DomainHTTP), desired, nil,
+		)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -664,7 +675,8 @@ func TestWorkerCompilerFactoryPrepareGenerationUsesRealCatalog(t *testing.T) {
 		resourceValue("plugin_metadata", "opentelemetry", `{"trace_id_source":"random"}`),
 	}, nil)
 	prepared, err := factory.PrepareGeneration(
-		context.Background(), ticketForSnapshot(desired, generation.DomainHTTP), desired, nil)
+		context.Background(), ticketForSnapshot(desired, generation.DomainHTTP), desired, nil,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -736,7 +748,8 @@ func TestWorkerCompilerFactoryPrepareGenerationConcurrentOwners(t *testing.T) {
 	for _, desired := range []generation.Snapshot{desiredA, desiredB} {
 		wait.Go(func() {
 			prepared, err := factory.PrepareGeneration(
-				context.Background(), ticketForSnapshot(desired, generation.DomainHTTP), desired, nil)
+				context.Background(), ticketForSnapshot(desired, generation.DomainHTTP), desired, nil,
+			)
 
 			results <- prepared
 			errorsOut <- err
@@ -950,7 +963,11 @@ func containsWorkerTestError(err error, text string) bool {
 }
 
 func workerTestEffective() *config.EffectiveConfig {
-	return &config.EffectiveConfig{}
+	return &config.EffectiveConfig{Config: config.Config{Deployment: config.Deployment{
+		Role:            "traditional",
+		RoleTraditional: config.RoleTraditionalConfig{ConfigProvider: "etcd"},
+		Etcd:            config.Etcd{Prefix: "/apisix"},
+	}}}
 }
 
 func resourceConsumer(id string) resource.Consumer {

@@ -22,6 +22,7 @@ type sessionData struct {
 	FlowState         string `json:"flow_state,omitempty"`
 	FlowExpiresAt     int64  `json:"flow_expires_at,omitempty"`
 	OriginalURI       string `json:"original_uri,omitempty"`
+	Nonce             string `json:"nonce,omitempty"`
 	CodeVerifier      string `json:"code_verifier,omitempty"`
 	AccessToken       string `json:"access_token,omitempty"`
 	IDToken           string `json:"id_token,omitempty"`

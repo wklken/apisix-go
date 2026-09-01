@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"slices"
 	"strconv"
@@ -17,6 +18,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/limit_conn"
 	"github.com/wklken/apisix-go/pkg/plugin/limit_count"
 	"github.com/wklken/apisix-go/pkg/plugin/limit_req"
+	"github.com/wklken/apisix-go/pkg/plugin/limitbase"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/util"
 )
@@ -39,6 +41,9 @@ type Plugin struct {
 	publicConfig     atomic.Pointer[Config]
 	sourceConfig     Config
 	sourceConfigSet  bool
+	rateLimitState   *limitbase.State
+	apisixContext    base.APISIXPluginContext
+	apisixContextSet bool
 }
 
 type workflowGeneration struct {
@@ -185,6 +190,64 @@ func (p *Plugin) SetPluginEnabledChecker(checker func(string) bool) {
 	p.enabledChecker = checker
 }
 
+func (p *Plugin) SetRateLimitState(state *limitbase.State) {
+	p.lifecycleMu.Lock()
+	p.rateLimitState = state
+	children := p.runtimeChildrenLocked()
+	p.lifecycleMu.Unlock()
+	for _, child := range children {
+		if setter, ok := child.(interface{ SetRateLimitState(*limitbase.State) }); ok {
+			setter.SetRateLimitState(state)
+		}
+	}
+}
+
+func (p *Plugin) SetAPISIXPluginContext(pluginContext base.APISIXPluginContext) error {
+	p.lifecycleMu.Lock()
+	p.apisixContext = pluginContext.Clone()
+	p.apisixContextSet = true
+	children := p.runtimeChildrenLocked()
+	p.lifecycleMu.Unlock()
+	for position, child := range children {
+		setter, ok := child.(interface {
+			SetAPISIXPluginContext(base.APISIXPluginContext) error
+		})
+		if ok {
+			if err := setter.SetAPISIXPluginContext(pluginContext.WithWorkflowVID(position.rule + 1)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (p *Plugin) runtimeChildrenLocked() map[actionPosition]workflowChild {
+	source := p.children
+	if p.current != nil {
+		source = p.current.children
+	}
+	children := make(map[actionPosition]workflowChild, len(source))
+	maps.Copy(children, source)
+	return children
+}
+
+func (p *Plugin) applyRuntimeContextToChild(position actionPosition, child workflowChild) error {
+	p.lifecycleMu.Lock()
+	state := p.rateLimitState
+	pluginContext := p.apisixContext.Clone()
+	contextSet := p.apisixContextSet
+	p.lifecycleMu.Unlock()
+	if setter, ok := child.(interface{ SetRateLimitState(*limitbase.State) }); ok && state != nil {
+		setter.SetRateLimitState(state)
+	}
+	if setter, ok := child.(interface {
+		SetAPISIXPluginContext(base.APISIXPluginContext) error
+	}); ok && contextSet {
+		return setter.SetAPISIXPluginContext(pluginContext.WithWorkflowVID(position.rule + 1))
+	}
+	return nil
+}
+
 func (p *Plugin) ValidatePreMaterialization() error {
 	p.lifecycleMu.Lock()
 	config := p.sourceConfigCloneLocked()
@@ -295,6 +358,9 @@ func (p *Plugin) MaterializeScopedSecrets(
 			}
 			child, ok := preparedWorkflowChild(action.Name, prepared)
 			if !ok {
+				return errWorkflowChildPreparation
+			}
+			if err := p.applyRuntimeContextToChild(position, child); err != nil {
 				return errWorkflowChildPreparation
 			}
 			config, err := descriptorSafeActionConfig(action.Config, child.Config())

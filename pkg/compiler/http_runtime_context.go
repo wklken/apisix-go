@@ -89,6 +89,7 @@ func (prepared *PreparedGeneration) httpRuntimeContextForRoute(
 		upstreamResolver: resolver,
 		protoResolver:    plan.protoResolver,
 		apiBreakerState:  plan.apiBreakerState,
+		rateLimitState:   plan.rateLimitState,
 	}, nil
 }
 

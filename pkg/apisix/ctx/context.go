@@ -53,7 +53,30 @@ type (
 	requestHeaderProvenanceKey struct{}
 	forwardedForCandidateKey   struct{}
 	matchedRouteKey            struct{}
+	apisixConfigIdentityKey    struct{}
 )
+
+type apisixConfigIdentitySuffix struct {
+	configType    string
+	configVersion string
+}
+
+func WithAPISIXConfigIdentitySuffix(r *http.Request, configType, configVersion string) *http.Request {
+	if r == nil || configType == "" || configVersion == "" {
+		return r
+	}
+	return r.WithContext(context.WithValue(r.Context(), apisixConfigIdentityKey{}, apisixConfigIdentitySuffix{
+		configType: configType, configVersion: configVersion,
+	}))
+}
+
+func APISIXConfigIdentitySuffix(r *http.Request) (string, string) {
+	if r == nil {
+		return "", ""
+	}
+	identity, _ := r.Context().Value(apisixConfigIdentityKey{}).(apisixConfigIdentitySuffix)
+	return identity.configType, identity.configVersion
+}
 
 type matchedRoute struct {
 	uri  string

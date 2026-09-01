@@ -87,6 +87,18 @@ func pipelineBinding(name string, p Plugin, scope Scope, priority int) Binding {
 	return binding
 }
 
+func TestMergeEffectiveBindingSetConsumerTombstoneSuppressesRouteNotGlobal(t *testing.T) {
+	global := pipelineBinding("proxy-rewrite", newExecutorPlugin("global", 1, nil), ScopeGlobal, 1)
+	route := pipelineBinding("proxy-rewrite", newExecutorPlugin("route", 1, nil), ScopeRoute, 1)
+	effective := mergeEffectiveBindingSet([]Binding{global, route}, nil, []string{"proxy-rewrite"})
+	if len(effective.global) != 1 || effective.global[0].Scope != ScopeGlobal {
+		t.Fatalf("global bindings = %#v, want independent global winner", effective.global)
+	}
+	if len(effective.merged) != 0 {
+		t.Fatalf("merged bindings = %#v, want route winner suppressed", effective.merged)
+	}
+}
+
 func TestRequestPipelineRunsPlan14V2Order(t *testing.T) {
 	order := []string{}
 	mark := func(name string) func(http.ResponseWriter, *http.Request) base.RequestPhaseResult {

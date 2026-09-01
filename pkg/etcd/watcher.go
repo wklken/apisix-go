@@ -71,12 +71,13 @@ type ConfigClient struct {
 	tombstones   map[string]int64
 	// quarantine keeps the latest rejected ModRevision for each full etcd key.
 	// It is intentionally internal: metrics expose only the bounded count.
-	quarantine   map[string]int64
-	lastCursor   generation.ProviderCursor
-	lastRevision int64
-	revisions    generation.RevisionSet
-	domains      []generation.Domain
-	decisions    map[generation.Domain][]generation.ResourceDecision
+	quarantine         map[string]int64
+	lastCursor         generation.ProviderCursor
+	lastRevision       int64
+	revisions          generation.RevisionSet
+	domains            []generation.Domain
+	decisions          map[generation.Domain][]generation.ResourceDecision
+	collectionVersions map[string]uint64
 }
 
 type ClientOptions struct {
@@ -147,6 +148,7 @@ func NewConfigClientWithOptions(
 		tombstones:          make(map[string]int64),
 		quarantine:          make(map[string]int64),
 		decisions:           make(map[generation.Domain][]generation.ResourceDecision),
+		collectionVersions:  make(map[string]uint64),
 	}
 	configClient.openWatch = func(ctx context.Context, revision int64) clientv3.WatchChan {
 		opts := []clientv3.OpOption{clientv3.WithPrefix()}
@@ -376,7 +378,9 @@ func desiredBatchFromEtcdSnapshot(prefix string, response *clientv3.GetResponse)
 	}
 
 	client := ConfigClient{prefix: canonicalEtcdPrefix(prefix)}
+	provider := etcdProviderID(response.Header.ClusterId, prefix)
 	mutations := make([]generation.Mutation, 0, len(response.Kvs))
+	collectionVersions := make(map[string]string)
 	for _, kv := range response.Kvs {
 		if kv == nil {
 			return generation.DesiredBatch{}, errors.New("etcd snapshot contains a nil key-value")
@@ -385,25 +389,34 @@ func desiredBatchFromEtcdSnapshot(prefix string, response *clientv3.GetResponse)
 		if !managed {
 			continue
 		}
+		if kv.ModRevision <= 0 {
+			return generation.DesiredBatch{}, errors.New("etcd managed resource requires a positive modified revision")
+		}
 		value, err := canonicalEtcdResourceValue(bucket, id, kv.ModRevision, kv.Value)
 		if err != nil {
 			return generation.DesiredBatch{}, err
 		}
 		mutations = append(mutations, generation.Mutation{
-			Type:  generation.MutationPut,
-			Key:   generation.ResourceKey{Kind: bucket, ID: id},
+			Type: generation.MutationPut,
+			Key:  generation.ResourceKey{Kind: bucket, ID: id},
+			Origin: generation.ResourceOrigin{
+				Provider: provider, ResourceKey: string(kv.Key),
+				ModifiedIndex: strconv.FormatInt(kv.ModRevision, 10),
+			},
 			Value: value,
 		})
+		collectionVersions[bucket] = "1"
 	}
 
 	return generation.DesiredBatch{
 		Cursor: generation.ProviderCursor{
-			Provider: etcdProviderID(response.Header.ClusterId, prefix),
+			Provider: provider,
 			Revision: strconv.FormatInt(response.Header.Revision, 10),
 		},
-		ReplaceManaged:  true,
-		Mutations:       mutations,
-		RequiredDomains: []generation.Domain{generation.DomainHTTP, generation.DomainStream},
+		ReplaceManaged:     true,
+		Mutations:          mutations,
+		CollectionVersions: collectionVersions,
+		RequiredDomains:    []generation.Domain{generation.DomainHTTP, generation.DomainStream},
 	}, nil
 }
 
@@ -466,7 +479,18 @@ func desiredBatchFromEtcdWatch(prefix string, response clientv3.WatchResponse) (
 		if !managed {
 			continue
 		}
+		if mutation.Type == generation.MutationPut {
+			mutation.Origin = generation.ResourceOrigin{
+				Provider:      etcdProviderID(response.Header.ClusterId, prefix),
+				ResourceKey:   string(event.Kv.Key),
+				ModifiedIndex: strconv.FormatInt(event.Kv.ModRevision, 10),
+			}
+		}
 		batch.Mutations = append(batch.Mutations, mutation)
+		if batch.CollectionVersions == nil {
+			batch.CollectionVersions = make(map[string]string)
+		}
+		batch.CollectionVersions[mutation.Key.Kind] = "1"
 		batch.RequiredDomains = append(batch.RequiredDomains, domains...)
 	}
 
@@ -721,17 +745,41 @@ type mutationMetadata struct {
 }
 
 type etcdProviderCandidate struct {
-	batch      generation.DesiredBatch
-	knownKeys  map[string]int64
-	tombstones map[string]int64
-	authority  map[generation.ResourceKey]mutationMetadata
-	modified   map[string]int64
+	batch              generation.DesiredBatch
+	knownKeys          map[string]int64
+	tombstones         map[string]int64
+	authority          map[generation.ResourceKey]mutationMetadata
+	modified           map[string]int64
+	collectionVersions map[string]uint64
 }
 
 func cloneKnownKeys(source map[string]int64) map[string]int64 {
 	clone := make(map[string]int64, len(source))
 	maps.Copy(clone, source)
 	return clone
+}
+
+func cloneCollectionVersions(source map[string]uint64) map[string]uint64 {
+	clone := make(map[string]uint64, len(source))
+	maps.Copy(clone, source)
+	return clone
+}
+
+func (c *ConfigClient) stageCollectionVersions(batch *generation.DesiredBatch) map[string]uint64 {
+	next := cloneCollectionVersions(c.collectionVersions)
+	sameCursor := c.lastRevision > 0 && c.lastCursor == batch.Cursor
+	for kind := range batch.CollectionVersions {
+		version := next[kind]
+		if !sameCursor {
+			version++
+			if version == 0 {
+				version = 1
+			}
+			next[kind] = version
+		}
+		batch.CollectionVersions[kind] = strconv.FormatUint(version, 10)
+	}
+	return next
 }
 
 func cloneEtcdDecisions(
@@ -786,6 +834,7 @@ func (c *ConfigClient) snapshotCandidate(
 	if err != nil {
 		return etcdProviderCandidate{}, err
 	}
+	nextCollectionVersions := c.stageCollectionVersions(&batch)
 	nextKeys := make(map[string]int64, len(response.Kvs))
 	nextTombstones := cloneKnownKeys(c.tombstones)
 	authority := make(map[generation.ResourceKey]mutationMetadata, len(response.Kvs)+len(c.knownKeys))
@@ -821,7 +870,7 @@ func (c *ConfigClient) snapshotCandidate(
 	}
 	return etcdProviderCandidate{
 		batch: batch, knownKeys: nextKeys, tombstones: nextTombstones,
-		authority: authority, modified: modified,
+		authority: authority, modified: modified, collectionVersions: nextCollectionVersions,
 	}, nil
 }
 
@@ -830,6 +879,7 @@ func (c *ConfigClient) watchCandidate(response clientv3.WatchResponse) (etcdProv
 	if err != nil {
 		return etcdProviderCandidate{}, err
 	}
+	nextCollectionVersions := c.stageCollectionVersions(&batch)
 	nextKeys := cloneKnownKeys(c.knownKeys)
 	nextTombstones := cloneKnownKeys(c.tombstones)
 	authority := make(map[generation.ResourceKey]mutationMetadata, len(c.knownKeys)+len(response.Events))
@@ -864,7 +914,7 @@ func (c *ConfigClient) watchCandidate(response clientv3.WatchResponse) (etcdProv
 	}
 	return etcdProviderCandidate{
 		batch: batch, knownKeys: nextKeys, tombstones: nextTombstones,
-		authority: authority, modified: modified,
+		authority: authority, modified: modified, collectionVersions: nextCollectionVersions,
 	}, nil
 }
 
@@ -1090,6 +1140,7 @@ func (c *ConfigClient) applyCandidate(ctx context.Context, candidate etcdProvide
 	c.revisions = ack.Revisions
 	c.domains = acknowledgedEtcdDomains(ack)
 	c.decisions = cloneEtcdDecisions(ack.Decisions)
+	c.collectionVersions = cloneCollectionVersions(candidate.collectionVersions)
 	for key, revision := range candidate.modified {
 		metrics.RecordEtcdModifyIndex(key, revision)
 	}

@@ -2,14 +2,21 @@ package openid_connect
 
 import (
 	"crypto"
+	"crypto/hmac"
+	"crypto/sha256"
+	"crypto/sha512"
 	"crypto/x509"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"hash"
 	"net/http"
 	"net/url"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/wklken/apisix-go/pkg/json"
@@ -227,65 +234,344 @@ func (p *Plugin) usesLocalJWTVerification() bool {
 }
 
 func (p *Plugin) verifyPresentIDToken(r *http.Request, rawToken string) error {
+	return p.verifyPresentIDTokenWithNonce(r, rawToken, "")
+}
+
+func (p *Plugin) verifyPresentIDTokenWithNonce(r *http.Request, rawToken, nonce string) error {
 	if rawToken == "" {
 		return nil
 	}
-	claims, err := p.verifyBearerJWT(r, rawToken)
+	claims, err := p.verifyJWT(r, rawToken, true)
 	if err != nil {
 		return err
 	}
-	if !locallyVerifiedTokenActive(claims) {
-		return fmt.Errorf("JWT token claims invalid")
+	if err := p.validateIDTokenClaims(claims, nonce); err != nil {
+		return err
 	}
 	return nil
 }
 
 func (p *Plugin) verifyBearerJWT(r *http.Request, rawToken string) (map[string]any, error) {
+	return p.verifyJWT(r, rawToken, false)
+}
+
+func (p *Plugin) verifyJWT(r *http.Request, rawToken string, allowUnsupportedAlgorithm bool) (map[string]any, error) {
+	if claims, ok := p.cachedJWTVerification(rawToken); ok {
+		if err := p.validateJWTTimeClaims(claims); err != nil {
+			return nil, err
+		}
+		return claims, nil
+	}
+
 	token, err := base.ParseJWT(rawToken)
 	if err != nil {
-		return nil, fmt.Errorf("JWT token invalid")
+		// jwt/v5 intentionally rejects algorithms without a registered signing
+		// method. APISIX delegates this case to lua-resty-openidc, which can
+		// inspect and optionally ignore an unsupported algorithm. Decode the
+		// compact token only after the normal parser has rejected it.
+		token, err = parseJWTParts(rawToken)
+		if err != nil {
+			return nil, fmt.Errorf("JWT token invalid")
+		}
 	}
 	algorithm, _ := token.Header["alg"].(string)
 	if algorithm == "" {
 		return nil, fmt.Errorf("JWT token missing alg")
 	}
-	if !validTokenSigningAlgorithm(algorithm) {
-		return nil, fmt.Errorf("JWT token alg unsupported")
-	}
-	if p.config.TokenSigningAlgValuesExpected != "" && algorithm != p.config.TokenSigningAlgValuesExpected {
+	if !allowUnsupportedAlgorithm && p.config.TokenSigningAlgValuesExpected != "" &&
+		algorithm != p.config.TokenSigningAlgValuesExpected {
 		return nil, fmt.Errorf("JWT token alg mismatch")
 	}
 
-	var idToken *oidc.IDToken
-	if p.config.PublicKey != "" {
-		err = p.withOIDCPublicKey(func(publicKey crypto.PublicKey) error {
-			verifier := p.staticKeyVerifier(algorithm, publicKey)
-			idToken, err = verifier.Verify(r.Context(), rawToken)
-			return err
-		})
-		if err != nil {
-			return nil, fmt.Errorf("failed to verify jwt")
+	var claims map[string]any
+	specialAlgorithm := false
+	if algorithm == "none" {
+		if !allowUnsupportedAlgorithm || len(token.Signature) != 0 || !p.config.AcceptNoneAlgorithm {
+			return nil, fmt.Errorf("JWT token alg unsupported")
 		}
+		claims = token.Payload
+		specialAlgorithm = true
 	} else {
-		client, err := p.providerClient(r)
-		if err != nil {
-			return nil, fmt.Errorf("failed to verify jwt")
+		if allowUnsupportedAlgorithm {
+			discovery, discoveryErr := p.discoveryDoc()
+			if discoveryErr != nil {
+				return nil, fmt.Errorf("failed to verify jwt")
+			}
+			if discovery.IDTokenSigningAlgValuesSupported != nil &&
+				!slices.Contains(discovery.IDTokenSigningAlgValuesSupported, algorithm) {
+				return nil, fmt.Errorf("JWT token alg mismatch")
+			}
 		}
-		idToken, err = client.verifier.Verify(r.Context(), rawToken)
+		claims, specialAlgorithm, err = p.verifyJWTSignature(token, algorithm, allowUnsupportedAlgorithm)
 		if err != nil {
-			return nil, fmt.Errorf("failed to verify jwt")
+			return nil, err
 		}
 	}
-	claims := map[string]any{}
-	if err := idToken.Claims(&claims); err != nil {
-		return nil, fmt.Errorf("failed to parse jwt claims")
+
+	if claims == nil {
+		var idToken *oidc.IDToken
+		if p.config.PublicKey != "" {
+			err = p.withOIDCPublicKey(func(publicKey crypto.PublicKey) error {
+				verifier := p.staticKeyVerifier(algorithm, publicKey)
+				idToken, err = verifier.Verify(r.Context(), rawToken)
+				return err
+			})
+			if err != nil {
+				return nil, fmt.Errorf("failed to verify jwt")
+			}
+		} else {
+			client, err := p.providerClient(r)
+			if err != nil {
+				return nil, fmt.Errorf("failed to verify jwt")
+			}
+			idToken, err = client.verifier.Verify(r.Context(), rawToken)
+			if err != nil {
+				return nil, fmt.Errorf("failed to verify jwt")
+			}
+		}
+		claims = map[string]any{}
+		if err := idToken.Claims(&claims); err != nil {
+			return nil, fmt.Errorf("failed to parse jwt claims")
+		}
 	}
+
 	p.validateIssuer(claims)
 	if !p.localJWTAudienceValid(claims) {
 		claims["active"] = false
 	}
-
+	if err := p.validateJWTTimeClaims(claims); err != nil {
+		return nil, err
+	}
+	if !specialAlgorithm {
+		p.cacheJWTVerification(rawToken, claims)
+	}
 	return claims, nil
+}
+
+func (p *Plugin) verifyJWTSignature(
+	token base.JWTToken,
+	algorithm string,
+	allowUnsupportedAlgorithm bool,
+) (map[string]any, bool, error) {
+	if newHash, ok := hmacSigningHash(algorithm); ok {
+		err := p.withClientSecret(func(clientSecret string) error {
+			if clientSecret == "" {
+				return errors.New("OIDC client secret unavailable")
+			}
+			mac := hmac.New(newHash, []byte(clientSecret))
+			_, _ = mac.Write([]byte(token.Signing))
+			if !hmac.Equal(mac.Sum(nil), token.Signature) {
+				return errors.New("JWT token signature invalid")
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, false, fmt.Errorf("failed to verify jwt")
+		}
+		return token.Payload, false, nil
+	}
+	if !validTokenSigningAlgorithm(algorithm) {
+		if !allowUnsupportedAlgorithm ||
+			(p.config.AcceptUnsupportedAlgorithm != nil && !*p.config.AcceptUnsupportedAlgorithm) {
+			return nil, false, fmt.Errorf("JWT token alg unsupported")
+		}
+		return token.Payload, true, nil
+	}
+	return nil, false, nil
+}
+
+func hmacSigningHash(algorithm string) (func() hash.Hash, bool) {
+	switch algorithm {
+	case "HS256":
+		return sha256.New, true
+	case "HS384":
+		return sha512.New384, true
+	case "HS512":
+		return sha512.New, true
+	default:
+		return nil, false
+	}
+}
+
+func (p *Plugin) validateIDTokenClaims(claims map[string]any, nonce string) error {
+	if !locallyVerifiedTokenActive(claims) {
+		return fmt.Errorf("JWT token claims invalid")
+	}
+	if subject, ok := claims["sub"].(string); !ok || subject == "" {
+		return fmt.Errorf("JWT token claims invalid")
+	}
+	if _, ok := base.NumberClaim(claims["iat"]); !ok {
+		return fmt.Errorf("JWT token claims invalid")
+	}
+	iat, _ := base.NumberClaim(claims["iat"])
+	slack := int64(120)
+	if p.config.IATSlack != nil {
+		slack = int64(*p.config.IATSlack)
+	}
+	if iat > p.currentTime().Unix()+slack {
+		return fmt.Errorf("JWT token claims invalid")
+	}
+	if _, ok := base.NumberClaim(claims["exp"]); !ok {
+		return fmt.Errorf("JWT token claims invalid")
+	}
+	if !p.localJWTAudienceValid(claims) {
+		return fmt.Errorf("JWT token claims invalid")
+	}
+	if nonce != "" {
+		if tokenNonce, ok := claims["nonce"].(string); !ok || tokenNonce != nonce {
+			return fmt.Errorf("JWT token claims invalid")
+		}
+	}
+	return p.validateJWTTimeClaims(claims)
+}
+
+func (p *Plugin) validateJWTTimeClaims(claims map[string]any) error {
+	slack := int64(120)
+	if p.config.IATSlack != nil {
+		slack = int64(*p.config.IATSlack)
+	}
+	now := p.currentTime().Unix()
+	if exp, ok := base.NumberClaim(claims["exp"]); ok && exp+slack < now {
+		return fmt.Errorf("JWT expired")
+	}
+	if nbf, ok := base.NumberClaim(claims["nbf"]); ok && nbf > now+slack {
+		return fmt.Errorf("JWT not yet valid")
+	}
+	return nil
+}
+
+func parseJWTParts(raw string) (base.JWTToken, error) {
+	parts := strings.Split(raw, ".")
+	if len(parts) != 3 || parts[0] == "" || parts[1] == "" {
+		return base.JWTToken{}, errors.New("invalid JWT compact serialization")
+	}
+	decode := func(part string) (map[string]any, error) {
+		encoded, err := base64.RawURLEncoding.DecodeString(part)
+		if err != nil {
+			return nil, err
+		}
+		var value map[string]any
+		if err := json.Unmarshal(encoded, &value); err != nil {
+			return nil, err
+		}
+		return value, nil
+	}
+	header, err := decode(parts[0])
+	if err != nil {
+		return base.JWTToken{}, err
+	}
+	payload, err := decode(parts[1])
+	if err != nil {
+		return base.JWTToken{}, err
+	}
+	var signature []byte
+	if parts[2] != "" {
+		signature, err = base64.RawURLEncoding.DecodeString(parts[2])
+		if err != nil {
+			return base.JWTToken{}, err
+		}
+	}
+	return base.JWTToken{
+		Header:    header,
+		Payload:   payload,
+		Signing:   parts[0] + "." + parts[1],
+		Signature: signature,
+	}, nil
+}
+
+func (p *Plugin) jwtVerificationCacheKey(rawToken string) string {
+	tokenDigest := sha256.Sum256([]byte(rawToken))
+	configuration := sha256.Sum256([]byte(p.config.PublicKey + "\x00" + p.config.TokenSigningAlgValuesExpected))
+	segment := strings.ReplaceAll(p.config.CacheSegment, ",", "_")
+	return segment + "," + hex.EncodeToString(configuration[:]) + ":" + hex.EncodeToString(tokenDigest[:])
+}
+
+func (p *Plugin) cachedJWTVerification(rawToken string) (map[string]any, bool) {
+	if p.config.JWTVerificationCacheIgnore || p.jwtVerificationCache == nil {
+		return nil, false
+	}
+	encoded, ok := p.jwtVerificationCache.Get(p.jwtVerificationCacheKey(rawToken))
+	if !ok {
+		return nil, false
+	}
+	var claims map[string]any
+	if err := json.Unmarshal([]byte(encoded), &claims); err != nil {
+		p.jwtVerificationCache.Delete(p.jwtVerificationCacheKey(rawToken))
+		return nil, false
+	}
+	return claims, true
+}
+
+func (p *Plugin) cacheJWTVerification(rawToken string, claims map[string]any) {
+	if p.config.JWTVerificationCacheIgnore || p.jwtVerificationCache == nil {
+		return
+	}
+	ttl := 120 * time.Second
+	if exp, ok := base.NumberClaim(claims["exp"]); ok {
+		ttl = time.Duration(exp-p.currentTime().Unix()) * time.Second
+	}
+	if ttl <= 0 {
+		return
+	}
+	encoded, err := json.Marshal(claims)
+	if err != nil {
+		return
+	}
+	p.jwtVerificationCache.Set(p.jwtVerificationCacheKey(rawToken), string(encoded), ttl)
+}
+
+func (p *Plugin) introspectionCacheKey(endpoint, token string) string {
+	segment := strings.ReplaceAll(p.config.CacheSegment, ",", "_")
+	tokenDigest := sha256.Sum256([]byte(token))
+	configuration := sha256.Sum256(
+		[]byte(endpoint + "\x00" + p.config.ClientID + "\x00" + p.config.IntrospectionEndpointAuthMethod),
+	)
+	return segment + "," + hex.EncodeToString(configuration[:]) + ":" + hex.EncodeToString(tokenDigest[:])
+}
+
+func (p *Plugin) cachedIntrospection(endpoint, token string) (map[string]any, bool) {
+	if p.introspectionCache == nil {
+		return nil, false
+	}
+	encoded, ok := p.introspectionCache.Get(p.introspectionCacheKey(endpoint, token))
+	if !ok {
+		return nil, false
+	}
+	var claims map[string]any
+	if err := json.Unmarshal([]byte(encoded), &claims); err != nil {
+		p.introspectionCache.Delete(p.introspectionCacheKey(endpoint, token))
+		return nil, false
+	}
+	return claims, true
+}
+
+func (p *Plugin) cacheIntrospection(endpoint, token string, claims map[string]any) {
+	if p.introspectionCache == nil || !tokenActive(claims) {
+		return
+	}
+	expiry, ok := base.NumberClaim(claims[p.config.IntrospectionExpiryClaim])
+	if !ok {
+		return
+	}
+	ttl := expiry
+	if p.config.IntrospectionExpiryClaim == "exp" {
+		ttl -= p.currentTime().Unix()
+	}
+	if p.config.IntrospectionInterval > 0 && ttl > int64(p.config.IntrospectionInterval) {
+		ttl = int64(p.config.IntrospectionInterval)
+	}
+	if ttl <= 0 {
+		return
+	}
+	encoded, err := json.Marshal(claims)
+	if err != nil {
+		return
+	}
+	p.introspectionCache.Set(
+		p.introspectionCacheKey(endpoint, token),
+		string(encoded),
+		time.Duration(ttl)*time.Second,
+	)
 }
 
 // staticKeyVerifier builds a go-oidc verifier over the configured static
@@ -297,6 +583,7 @@ func (p *Plugin) staticKeyVerifier(algorithm string, publicKey crypto.PublicKey)
 	}, &oidc.Config{
 		SkipClientIDCheck:    true,
 		SkipIssuerCheck:      true,
+		SkipExpiryCheck:      true,
 		SupportedSigningAlgs: []string{algorithm},
 	})
 }
@@ -373,6 +660,9 @@ func (p *Plugin) introspect(r *http.Request, token string) (map[string]any, erro
 	if err != nil {
 		return nil, err
 	}
+	if claims, ok := p.cachedIntrospection(endpoint, token); ok {
+		return claims, nil
+	}
 
 	var claims map[string]any
 	err = p.authenticatedFormRequest(
@@ -401,6 +691,7 @@ func (p *Plugin) introspect(r *http.Request, token string) (map[string]any, erro
 	if err != nil {
 		return nil, err
 	}
+	p.cacheIntrospection(endpoint, token, claims)
 	return claims, nil
 }
 

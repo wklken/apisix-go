@@ -18,7 +18,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/limitbase"
-	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -201,7 +200,7 @@ func TestPostInitBuildsRedisClusterOptions(t *testing.T) {
 	}
 }
 
-func TestHandlerScopesRedisClusterAdmissionAndReleaseKeyByRoute(t *testing.T) {
+func TestHandlerScopesRedisClusterAdmissionAndReleaseKeyByAPISIXConfig(t *testing.T) {
 	redisLimiter := &fakeRedisConnLimiter{allowed: true}
 	p := newTestPlugin(t, Config{
 		Conn:              1,
@@ -213,7 +212,11 @@ func TestHandlerScopesRedisClusterAdmissionAndReleaseKeyByRoute(t *testing.T) {
 		RedisClusterName:  "cluster-1",
 	})
 	p.redisLimiter = redisLimiter
-	p.SetResourceContext(resource.Route{ID: "route-1"}, resource.Service{})
+	if err := p.SetAPISIXPluginContext(base.APISIXPluginContext{
+		ConfigType: "route", ConfigVersion: "11",
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	res := performRequest(p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
@@ -221,13 +224,13 @@ func TestHandlerScopesRedisClusterAdmissionAndReleaseKeyByRoute(t *testing.T) {
 	if res.Code != http.StatusNoContent {
 		t.Fatalf("response code = %d, want %d", res.Code, http.StatusNoContent)
 	}
-	wantPrefix := "route:route-1:192.0.2.70:config:"
-	if redisLimiter.key != redisLimiter.leavingKey || !strings.HasPrefix(redisLimiter.key, wantPrefix) {
+	wantKey := "192.0.2.70route11"
+	if redisLimiter.key != redisLimiter.leavingKey || redisLimiter.key != wantKey {
 		t.Fatalf(
-			"admission/release keys = %q/%q, want matching keys with prefix %q",
+			"admission/release keys = %q/%q, want %q",
 			redisLimiter.key,
 			redisLimiter.leavingKey,
-			wantPrefix,
+			wantKey,
 		)
 	}
 	if redisLimiter.left != 1 {
@@ -247,7 +250,11 @@ func TestConsumerRedisLimiterUsesConsumerScopeInsteadOfRouteScope(t *testing.T) 
 		RedisClusterName:  "cluster-1",
 	})
 	p.redisLimiter = redisLimiter
-	p.SetResourceContext(resource.Route{ID: "route-1"}, resource.Service{})
+	if err := p.SetAPISIXPluginContext(base.APISIXPluginContext{
+		ConfigType: "route&consumer", ConfigVersion: "11&5", ConsumerOverride: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/hello", nil)
 	req.RemoteAddr = "192.0.2.40:12345"
@@ -261,8 +268,8 @@ func TestConsumerRedisLimiterUsesConsumerScopeInsteadOfRouteScope(t *testing.T) 
 	if res.Code != http.StatusNoContent {
 		t.Fatalf("response code = %d, want %d", res.Code, http.StatusNoContent)
 	}
-	if redisLimiter.key != "consumer:jack:192.0.2.40" {
-		t.Fatalf("Redis consumer key = %q, want consumer scope", redisLimiter.key)
+	if redisLimiter.key != "192.0.2.40route&consumer11&5" {
+		t.Fatalf("Redis consumer key = %q, want APISIX consumer identity", redisLimiter.key)
 	}
 }
 
@@ -277,7 +284,11 @@ func TestRedisScopesDistinctLimitConfigsOnSameRoute(t *testing.T) {
 		RedisHost:        "127.0.0.1",
 	})
 	routePlugin.redisLimiter = routeLimiter
-	routePlugin.SetResourceContext(resource.Route{ID: "route-1"}, resource.Service{})
+	if err := routePlugin.SetAPISIXPluginContext(base.APISIXPluginContext{
+		ConfigType: "route", ConfigVersion: "11",
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	globalLimiter := &fakeRedisConnLimiter{allowed: true}
 	globalPlugin := newTestPlugin(t, Config{
@@ -289,7 +300,11 @@ func TestRedisScopesDistinctLimitConfigsOnSameRoute(t *testing.T) {
 		RedisHost:        "127.0.0.1",
 	})
 	globalPlugin.redisLimiter = globalLimiter
-	globalPlugin.SetResourceContext(resource.Route{ID: "route-1"}, resource.Service{})
+	if err := globalPlugin.SetAPISIXPluginContext(base.APISIXPluginContext{
+		ConfigType: "global_rule", ConfigVersion: "7",
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	if _, _, _, err := routePlugin.increase(nil, "192.0.2.70", 4, 1); err != nil {
 		t.Fatalf("route increase error = %v", err)
@@ -393,6 +408,11 @@ func TestHandlerUsesRedisLimiter(t *testing.T) {
 		RedisHost:        "127.0.0.1",
 	})
 	p.redisLimiter = redisLimiter
+	if err := p.SetAPISIXPluginContext(base.APISIXPluginContext{
+		ConfigType: "route", ConfigVersion: "11",
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	res := performRequest(p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
@@ -401,8 +421,8 @@ func TestHandlerUsesRedisLimiter(t *testing.T) {
 	if res.Code != http.StatusNoContent {
 		t.Fatalf("response code = %d, want %d; body=%s", res.Code, http.StatusNoContent, res.Body.String())
 	}
-	if !strings.HasPrefix(redisLimiter.key, "192.0.2.70:config:") {
-		t.Fatalf("redis key = %q, want config-scoped 192.0.2.70 key", redisLimiter.key)
+	if redisLimiter.key != "192.0.2.70route11" {
+		t.Fatalf("redis key = %q, want APISIX config-scoped key", redisLimiter.key)
 	}
 	if redisLimiter.left != 1 {
 		t.Fatalf("redis leaving calls = %d, want 1", redisLimiter.left)
@@ -582,7 +602,7 @@ func TestIncreaseUsesDefaultDelayWhenConfigured(t *testing.T) {
 	}
 }
 
-func TestDecreaseAdaptsUnitDelayFromDownstreamLatency(t *testing.T) {
+func TestDecreaseKeepsRequestLocalUnitDelay(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		Conn:             1,
 		Burst:            1,
@@ -604,8 +624,8 @@ func TestDecreaseAdaptsUnitDelayFromDownstreamLatency(t *testing.T) {
 	if err != nil || !allowed {
 		t.Fatalf("second adapted increase = allowed %v, error %v", allowed, err)
 	}
-	if delay != 400*time.Millisecond {
-		t.Fatalf("adapted delay = %s, want 400ms", delay)
+	if delay != 200*time.Millisecond {
+		t.Fatalf("request-local delay = %s, want 200ms", delay)
 	}
 }
 
@@ -899,8 +919,8 @@ func TestResolveRuleKeySkipsMissingVariable(t *testing.T) {
 	if !ok {
 		t.Fatal("resolveRuleKey() skipped a present project variable")
 	}
-	if key != "rule:1:apisix" {
-		t.Fatalf("resolveRuleKey() = %q, want rule:1:apisix", key)
+	if key != "apisix" {
+		t.Fatalf("resolveRuleKey() = %q, want apisix", key)
 	}
 }
 
@@ -1085,7 +1105,9 @@ func TestDecreaseLogsMeasuredAndDefaultRequestLatency(t *testing.T) {
 				Key:                 "remote_addr",
 				OnlyUseDefaultDelay: test.onlyUseDefaultDelay,
 			})
-			p.conns["client"] = 1
+			if result := p.rateLimitState.AcquireConnection("client", 1); !result.Allowed {
+				t.Fatal("failed to seed local connection state")
+			}
 
 			entries := make(chan logger.Entry, 1)
 			stop := logger.ReplaceObserver("limit-conn-latency-test", func(entry logger.Entry) {
@@ -1164,9 +1186,9 @@ func (f *scriptedConnRedisClient) PoolStats() *redis.PoolStats {
 	return &redis.PoolStats{}
 }
 
-func TestRedisConnLimiterDecodesAdmissionAndUpdatesMeasuredDelay(t *testing.T) {
+func TestRedisConnLimiterDecodesAdmissionAndKeepsRequestLocalDelay(t *testing.T) {
 	now := time.Date(2026, 8, 15, 1, 2, 3, 0, time.UTC)
-	client := &scriptedConnRedisClient{result: []any{int64(1), "250"}}
+	client := &scriptedConnRedisClient{result: []any{int64(1), "4"}}
 	limiter := &redisConnLimiter{
 		client:      client,
 		unitDelay:   2,
@@ -1179,16 +1201,16 @@ func TestRedisConnLimiterDecodesAdmissionAndUpdatesMeasuredDelay(t *testing.T) {
 	if err != nil {
 		t.Fatalf("incoming() error = %v", err)
 	}
-	if delay != 250*time.Millisecond || !allowed {
+	if delay != 2*time.Second || !allowed {
 		t.Fatalf("incoming() = delay %s, allowed %t", delay, allowed)
 	}
 	if member != "request-member" {
 		t.Fatalf("incoming member = %q, want request-member", member)
 	}
-	if len(client.keys) != 1 || client.keys[0] != "plugin-limit-conn:route-a:client-a" {
+	if len(client.keys) != 1 || client.keys[0] != "limit_conn:route-a:client-a" {
 		t.Fatalf("Eval keys = %#v", client.keys)
 	}
-	wantArgs := []any{3, 4, float64(2), int64(90_000), now.UnixMilli(), "request-member"}
+	wantArgs := []any{7, int64(90), now.Unix(), "request-member"}
 	if len(client.args) != len(wantArgs) {
 		t.Fatalf("Eval args = %#v, want %#v", client.args, wantArgs)
 	}
@@ -1203,8 +1225,8 @@ func TestRedisConnLimiterDecodesAdmissionAndUpdatesMeasuredDelay(t *testing.T) {
 	if err := limiter.leaving("route-a:client-a", member, &latency); err != nil {
 		t.Fatalf("leaving() error = %v", err)
 	}
-	if limiter.unitDelay != 3 {
-		t.Fatalf("unitDelay = %v, want averaged 3 seconds", limiter.unitDelay)
+	if limiter.unitDelay != 2 {
+		t.Fatalf("unitDelay = %v, want request-local default 2 seconds", limiter.unitDelay)
 	}
 }
 
@@ -1394,8 +1416,8 @@ func TestRequestPhaseLimitConnReleasesAfterNormalCompletion(t *testing.T) {
 	if !called {
 		t.Fatal("request phase did not reach terminal")
 	}
-	if len(p.conns) != 1 {
-		t.Fatalf("connections before finalization = %d, want 1", len(p.conns))
+	if got := p.rateLimitState.ConnectionCount("192.0.2.101"); got != 1 {
+		t.Fatalf("connections before finalization = %d, want 1", got)
 	}
 	lifecycle.SetOutcome(apisixctx.ResponseOutcome{
 		Kind:   apisixctx.RequestOutcomeCompleted,
@@ -1404,8 +1426,8 @@ func TestRequestPhaseLimitConnReleasesAfterNormalCompletion(t *testing.T) {
 	if failures := lifecycle.Finalize(); len(failures) != 0 {
 		t.Fatalf("lifecycle finalizer failures = %#v", failures)
 	}
-	if len(p.conns) != 0 {
-		t.Fatalf("connections after finalization = %d, want 0", len(p.conns))
+	if got := p.rateLimitState.ConnectionCount("192.0.2.101"); got != 0 {
+		t.Fatalf("connections after finalization = %d, want 0", got)
 	}
 	apisixctx.RecycleVars(request)
 }
@@ -1428,8 +1450,8 @@ func TestRequestPhaseLimitConnReleasesAfterDownstreamPanic(t *testing.T) {
 		})).ServeHTTP(httptest.NewRecorder(), request)
 	}()
 	lifecycle.Finalize()
-	if len(p.conns) != 0 {
-		t.Fatalf("connections after panic finalization = %d, want 0", len(p.conns))
+	if got := p.rateLimitState.ConnectionCount("192.0.2.102"); got != 0 {
+		t.Fatalf("connections after panic finalization = %d, want 0", got)
 	}
 	apisixctx.RecycleVars(request)
 }
@@ -1531,8 +1553,8 @@ func TestRequestPhaseLimitConnDegradationDoesNotRegisterRelease(t *testing.T) {
 		t.Fatal("degraded request did not reach terminal")
 	}
 	lifecycle.Finalize()
-	if len(p.conns) != 0 {
-		t.Fatalf("connections after degraded request = %d, want 0", len(p.conns))
+	if got := p.rateLimitState.ConnectionCount("tenant"); got != 0 {
+		t.Fatalf("connections after degraded request = %d, want 0", got)
 	}
 	apisixctx.RecycleVars(request)
 }
@@ -1578,7 +1600,11 @@ func TestRequestPhaseLimitConnCapturesExactAdmissionSet(t *testing.T) {
 func TestRequestPhaseLimitConnReleaseUsesAdmissionScope(t *testing.T) {
 	t.Run("local", func(t *testing.T) {
 		p := newTestPlugin(t, Config{Conn: 1, Burst: 0, DefaultConnDelay: 0.1, Key: "remote_addr"})
-		p.routeID = "route-before"
+		if err := p.SetAPISIXPluginContext(base.APISIXPluginContext{
+			ConfigType: "route", ConfigVersion: "before",
+		}); err != nil {
+			t.Fatal(err)
+		}
 		request, lifecycle := apisixctx.EnsureRequestLifecycle(
 			httptest.NewRequest(http.MethodGet, "http://gateway.test/", nil),
 			time.Now(),
@@ -1587,10 +1613,14 @@ func TestRequestPhaseLimitConnReleaseUsesAdmissionScope(t *testing.T) {
 		base.AdaptRequestPhase(p, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusNoContent)
 		})).ServeHTTP(httptest.NewRecorder(), request)
-		p.routeID = "route-after"
+		if err := p.SetAPISIXPluginContext(base.APISIXPluginContext{
+			ConfigType: "route", ConfigVersion: "after",
+		}); err != nil {
+			t.Fatal(err)
+		}
 		lifecycle.Finalize()
-		if len(p.conns) != 0 {
-			t.Fatalf("connections after route scope changed = %d, want 0", len(p.conns))
+		if got := p.rateLimitState.ConnectionCount("192.0.2.108routebefore"); got != 0 {
+			t.Fatalf("connections after config identity changed = %d, want 0", got)
 		}
 		apisixctx.RecycleVars(request)
 	})
@@ -1606,8 +1636,11 @@ func TestRequestPhaseLimitConnReleaseUsesAdmissionScope(t *testing.T) {
 			RedisHost:        "127.0.0.1",
 		})
 		p.redisLimiter = limiter
-		p.routeID = "route-before"
-		oldScope := p.limitScope
+		if err := p.SetAPISIXPluginContext(base.APISIXPluginContext{
+			ConfigType: "route", ConfigVersion: "before",
+		}); err != nil {
+			t.Fatal(err)
+		}
 		request, lifecycle := apisixctx.EnsureRequestLifecycle(
 			httptest.NewRequest(http.MethodGet, "http://gateway.test/", nil),
 			time.Now(),
@@ -1616,10 +1649,13 @@ func TestRequestPhaseLimitConnReleaseUsesAdmissionScope(t *testing.T) {
 		base.AdaptRequestPhase(p, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusNoContent)
 		})).ServeHTTP(httptest.NewRecorder(), request)
-		p.routeID = "route-after"
-		p.limitScope = "scope-after"
+		if err := p.SetAPISIXPluginContext(base.APISIXPluginContext{
+			ConfigType: "route", ConfigVersion: "after",
+		}); err != nil {
+			t.Fatal(err)
+		}
 		lifecycle.Finalize()
-		want := "route:route-before:192.0.2.109:config:" + oldScope
+		want := "192.0.2.109routebefore"
 		if len(limiter.leavingKeys) != 1 || limiter.leavingKeys[0] != want {
 			t.Fatalf("release keys = %#v, want [%q]", limiter.leavingKeys, want)
 		}
@@ -1634,7 +1670,6 @@ func TestRequestPhaseLimitConnAddFinalizerFailureRollsBackAdmission(t *testing.T
 		time.Now(),
 	)
 	request.RemoteAddr = "192.0.2.105:1234"
-	baselineDelay := p.unitDelay
 	lifecycle.Finalize()
 	called := false
 	rr := httptest.NewRecorder()
@@ -1647,11 +1682,8 @@ func TestRequestPhaseLimitConnAddFinalizerFailureRollsBackAdmission(t *testing.T
 	if rr.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want 500", rr.Code)
 	}
-	if len(p.conns) != 0 {
-		t.Fatalf("connections after failed registration = %d, want 0", len(p.conns))
-	}
-	if p.unitDelay != baselineDelay {
-		t.Fatalf("unit delay after rollback = %v, want unchanged %v", p.unitDelay, baselineDelay)
+	if got := p.rateLimitState.ConnectionCount("192.0.2.105"); got != 0 {
+		t.Fatalf("connections after failed registration = %d, want 0", got)
 	}
 	apisixctx.RecycleVars(request)
 }

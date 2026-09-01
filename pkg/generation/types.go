@@ -25,9 +25,19 @@ type ResourceKey struct {
 	ID   string `json:"id"`
 }
 
+// ResourceOrigin preserves the provider identity APISIX uses for plugin
+// configuration versioning. ResourceKey is the exact provider key; it must not
+// be reconstructed from a normalized prefix.
+type ResourceOrigin struct {
+	Provider      string `json:"provider,omitempty"`
+	ResourceKey   string `json:"resource_key,omitempty"`
+	ModifiedIndex string `json:"modified_index,omitempty"`
+}
+
 type Resource struct {
-	Key   ResourceKey `json:"key"`
-	Value []byte      `json:"value"`
+	Key    ResourceKey    `json:"key"`
+	Origin ResourceOrigin `json:"origin,omitzero"`
+	Value  []byte         `json:"value"`
 }
 
 type Tombstone struct {
@@ -36,10 +46,11 @@ type Tombstone struct {
 }
 
 type Snapshot struct {
-	revision   uint64
-	resources  []Resource
-	tombstones []Tombstone
-	digest     [32]byte
+	revision           uint64
+	resources          []Resource
+	tombstones         []Tombstone
+	collectionVersions map[string]string
+	digest             [32]byte
 }
 
 type MutationType string
@@ -50,9 +61,10 @@ const (
 )
 
 type Mutation struct {
-	Type  MutationType
-	Key   ResourceKey
-	Value []byte
+	Type   MutationType
+	Key    ResourceKey
+	Origin ResourceOrigin
+	Value  []byte
 }
 
 type ProviderCursor struct {
@@ -61,10 +73,11 @@ type ProviderCursor struct {
 }
 
 type DesiredBatch struct {
-	Cursor          ProviderCursor
-	ReplaceManaged  bool
-	Mutations       []Mutation
-	RequiredDomains []Domain
+	Cursor             ProviderCursor
+	ReplaceManaged     bool
+	Mutations          []Mutation
+	CollectionVersions map[string]string
+	RequiredDomains    []Domain
 }
 
 type ApplyTicket struct {

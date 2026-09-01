@@ -122,8 +122,8 @@ cases:
             allow_unasserted_commands: true
             ignore_negotiation: true
             value_matches:
-                '^limit-count:route:consumer-isolation-jack2-fresh-test-5:consumer:jack1:127\.0\.0\.1$': "4"
-                '^limit-count:route:consumer-isolation-jack2-fresh-test-5:consumer:jack2:127\.0\.0\.1$': "4"
+                '^plugin-limit-count/consumers/jack1:[0-9]+:127\.0\.0\.1$': "-2"
+                '^plugin-limit-count/consumers/jack2:[0-9]+:127\.0\.0\.1$': "-2"
       steps:
         - input:
             headers:
@@ -241,7 +241,7 @@ cases:
             allow_unasserted_commands: true
             ignore_negotiation: true
             value_matches:
-                '^limit-count:route:redis-cluster2-positive-reset-test-2:127\.0\.0\.1$': "3"
+                '^plugin-limit-count/routes/redis-cluster2-positive-reset-test-2:[0-9]+:127\.0\.0\.1$': "-1"
       steps:
         - input:
             method: GET

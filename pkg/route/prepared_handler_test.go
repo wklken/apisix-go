@@ -43,9 +43,10 @@ func TestBuildPreparedHandlerResolvesOnlyPreparedConsumerRecords(t *testing.T) {
 					if apisixctx.ConsumerPluginOverrides(request, "proxy-rewrite") {
 						override = "present"
 					}
+					identityType, identityVersion := apisixctx.APISIXConfigIdentitySuffix(request)
 					request.Header.Set(
 						"X-Prepared-Consumer",
-						consumerName+"|"+groupID+"|"+override,
+						consumerName+"|"+groupID+"|"+override+"|"+identityType+"|"+identityVersion,
 					)
 					next.ServeHTTP(writer, request)
 				})
@@ -61,8 +62,10 @@ func TestBuildPreparedHandlerResolvesOnlyPreparedConsumerRecords(t *testing.T) {
 	const target = "http://consumer-upstream.test:8080"
 	consumers := map[string]PreparedConsumerRecord{
 		"alice": {
-			Consumer: resource.Consumer{Username: "alice", GroupID: "prepared-group"},
-			Bindings: []plugin.Binding{consumerBinding},
+			Consumer:                  resource.Consumer{Username: "alice", GroupID: "prepared-group"},
+			Bindings:                  []plugin.Binding{consumerBinding},
+			APISIXConfigTypeSuffix:    "&consumer&consumer_group",
+			APISIXConfigVersionSuffix: "&5&23",
 		},
 	}
 	handler, err := BuildPreparedHandler(PreparedHandlerInput{
@@ -109,7 +112,7 @@ func TestBuildPreparedHandlerResolvesOnlyPreparedConsumerRecords(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body=%q", response.Code, http.StatusOK, response.Body.String())
 	}
-	if got, want := response.Body.String(), "alice|prepared-group|present|alice"; got != want {
+	if got, want := response.Body.String(), "alice|prepared-group|present|&consumer&consumer_group|&5&23|alice"; got != want {
 		t.Fatalf("body = %q, want %q", got, want)
 	}
 }

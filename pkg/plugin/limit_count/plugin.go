@@ -22,7 +22,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/util"
 
 	limiter "github.com/ulule/limiter/v3"
-	sredis "github.com/ulule/limiter/v3/drivers/store/redis"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 )
 
@@ -36,6 +35,8 @@ type Plugin struct {
 	limiters          map[string]*limiter.Limiter
 	ruleLimiters      []*limiter.Limiter
 	routeID           string
+	apisixContext     base.APISIXPluginContext
+	rateLimitState    *limitbase.State
 	localLimiterStore limiter.Store
 	fixedStore        limiter.Store
 	dynamicLimits     bool
@@ -466,7 +467,23 @@ func (p *Plugin) SetResourceContext(route resource.Route, _ resource.Service) {
 	p.routeID = route.ID
 }
 
+func (p *Plugin) SetRateLimitState(state *limitbase.State) {
+	p.rateLimitState = state
+}
+
+func (p *Plugin) SetAPISIXPluginContext(pluginContext base.APISIXPluginContext) error {
+	p.apisixContext = pluginContext.Clone()
+	return nil
+}
+
 func (p *Plugin) scopedKey(key string) string {
+	if p.hasAPISIXPluginContext() {
+		if document, err := p.effectiveLimitCountDocument(); err == nil {
+			if scoped, err := BuildLocalKey(p.apisixContext, document, key); err == nil {
+				return scoped
+			}
+		}
+	}
 	if p.config.Group != "" {
 		return "group:" + p.config.Group + ":" + key
 	}
@@ -477,6 +494,9 @@ func (p *Plugin) scopedKey(key string) string {
 }
 
 func (p *Plugin) consumerScopedKey(r *http.Request, key string) string {
+	if p.hasAPISIXPluginContext() {
+		return key
+	}
 	if !apisixctx.ConsumerPluginOverrides(r, name) {
 		return key
 	}
@@ -536,6 +556,9 @@ func (p *Plugin) releaseGroup() {
 }
 
 func (p *Plugin) localStore() limiter.Store {
+	if p.rateLimitState != nil {
+		return newLimitCountStateStore(p.rateLimitState)
+	}
 	if p.config.Group == "" {
 		if p.localLimiterStore == nil {
 			p.localLimiterStore = newLocalFixedWindowStore(time.Now, defaultLocalStoreCapacity)
@@ -627,22 +650,7 @@ func (p *Plugin) fixedWindowStore() (limiter.Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	store, err := sredis.NewStoreWithOptions(client, limiter.StoreOptions{
-		Prefix:   "limit-count",
-		MaxRetry: 3,
-	})
-	if err != nil {
-		release := p.clientRelease
-		p.clientRelease = nil
-		p.backendClient = nil
-		if release != nil {
-			release()
-		}
-		return nil, err
-	}
-	if single, ok := client.(*redis.Client); ok {
-		store = newRedisDiagnosticStore(store, single)
-	}
+	store := newRedisLimitCountStore(client, time.Now)
 	p.fixedStore = store
 	return store, nil
 }

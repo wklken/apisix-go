@@ -461,18 +461,22 @@ func (f *redisFixture) writeEvalResponse(writer io.Writer, command []string) err
 	}
 	if strings.EqualFold(command[0], "EVALSHA") {
 		f.stateMu.Lock()
-		script = f.scripts[script]
+		loaded, ok := f.scripts[script]
 		f.stateMu.Unlock()
+		if !ok {
+			return writeRESPError(writer, "NOSCRIPT No matching script. Please use EVAL.")
+		}
+		script = loaded
 	}
-	if strings.Contains(script, `redis.call("ZREMRANGEBYSCORE"`) &&
-		strings.Contains(script, `redis.call("ZADD"`) &&
-		strings.Contains(script, `redis.call("ZCARD"`) {
-		return f.writeLimitConnIncoming(writer, command)
+	normalizedScript := strings.ReplaceAll(strings.ToLower(script), "'", `"`)
+	if strings.Contains(normalizedScript, `redis.call("zremrangebyscore"`) &&
+		strings.Contains(normalizedScript, `redis.call("zadd"`) &&
+		strings.Contains(normalizedScript, `redis.call("zcard"`) {
+		return f.writeAPISIXLimitConnIncoming(writer, command)
 	}
-	if strings.Contains(script, `redis.call("ZREM"`) &&
-		strings.Contains(script, `redis.call("ZCARD"`) &&
-		strings.Contains(script, `redis.call("DEL"`) {
-		return f.writeLimitConnLeaving(writer, command)
+	if strings.Contains(normalizedScript, `redis.call("zrem"`) &&
+		strings.Contains(normalizedScript, `redis.call("zcard"`) {
+		return f.writeAPISIXLimitConnLeaving(writer, command)
 	}
 	if strings.Contains(script, `redis.call("INCRBY"`) &&
 		strings.Contains(script, `redis.call("PTTL"`) &&
@@ -502,7 +506,11 @@ func (f *redisFixture) writeEvalResponse(writer io.Writer, command []string) err
 		f.stateMu.Unlock()
 		return writeRESPArray(writer, []string{strconv.FormatInt(current, 10), strconv.FormatInt(ttl, 10)})
 	}
-	normalizedScript := strings.ReplaceAll(strings.ToLower(script), "'", `"`)
+	if strings.Contains(normalizedScript, `redis.call("ttl"`) &&
+		strings.Contains(normalizedScript, `redis.call("set"`) &&
+		strings.Contains(normalizedScript, `redis.call("incrby"`) {
+		return f.writeAPISIXLimitCountIncoming(writer, command)
+	}
 	if strings.Contains(normalizedScript, `redis.call("hmget"`) &&
 		strings.Contains(normalizedScript, `redis.call("hmset"`) &&
 		strings.Contains(normalizedScript, `redis.call("pexpire"`) {
@@ -526,31 +534,23 @@ func (f *redisFixture) writeEvalResponse(writer io.Writer, command []string) err
 	return writeRESPInteger(writer, 1)
 }
 
-func (f *redisFixture) writeLimitConnIncoming(writer io.Writer, command []string) error {
-	if len(command) < 10 {
-		return writeRESPError(writer, "wrong number of arguments for limit-conn incoming")
+func (f *redisFixture) writeAPISIXLimitConnIncoming(writer io.Writer, command []string) error {
+	if len(command) < 8 {
+		return writeRESPError(writer, "wrong number of arguments for APISIX limit-conn incoming")
 	}
-	conn, err := strconv.ParseInt(command[4], 10, 64)
-	if err != nil || conn <= 0 {
-		return writeRESPError(writer, "limit-conn conn is not a positive integer")
+	limit, err := strconv.ParseInt(command[4], 10, 64)
+	if err != nil || limit <= 0 {
+		return writeRESPError(writer, "limit-conn limit is not a positive integer")
 	}
-	burst, err := strconv.ParseInt(command[5], 10, 64)
-	if err != nil || burst < 0 {
-		return writeRESPError(writer, "limit-conn burst is not a non-negative integer")
-	}
-	defaultDelay, err := strconv.ParseFloat(command[6], 64)
-	if err != nil || defaultDelay <= 0 {
-		return writeRESPError(writer, "limit-conn default delay is not positive")
-	}
-	ttlMilliseconds, err := strconv.ParseInt(command[7], 10, 64)
-	if err != nil || ttlMilliseconds <= 0 {
+	ttl, err := strconv.ParseInt(command[5], 10, 64)
+	if err != nil || ttl <= 0 {
 		return writeRESPError(writer, "limit-conn TTL is not a positive integer")
 	}
-	nowMilliseconds, err := strconv.ParseInt(command[8], 10, 64)
-	if err != nil || nowMilliseconds <= 0 {
+	now, err := strconv.ParseInt(command[6], 10, 64)
+	if err != nil || now <= 0 {
 		return writeRESPError(writer, "limit-conn now is not a positive integer")
 	}
-	member := command[9]
+	member := command[7]
 	if member == "" {
 		return writeRESPError(writer, "limit-conn member is empty")
 	}
@@ -562,38 +562,28 @@ func (f *redisFixture) writeLimitConnIncoming(writer io.Writer, command []string
 		members = make(map[string]int64)
 	}
 	for existingMember, deadline := range members {
-		if deadline <= nowMilliseconds {
+		if deadline <= now {
 			delete(members, existingMember)
 		}
 	}
 	current := int64(len(members))
-	if current >= conn+burst {
+	if current >= limit {
 		f.syncLimitConnMembers(key, members)
 		f.stateMu.Unlock()
-		return writeRESPIntegerArray(writer, 0, 0)
+		return writeRESPIntegerArray(writer, 0, current)
 	}
-	if _, exists := members[member]; exists {
-		f.syncLimitConnMembers(key, members)
-		f.stateMu.Unlock()
-		return writeRESPIntegerArray(writer, 0, 0)
-	}
-	members[member] = nowMilliseconds + ttlMilliseconds
+	members[member] = now + ttl
 	current++
 	f.syncLimitConnMembers(key, members)
-	f.expiries[key] = time.UnixMilli(nowMilliseconds + ttlMilliseconds)
+	f.expiries[key] = time.Unix(now+ttl, 0)
 	f.expirySet[key]++
 	f.stateMu.Unlock()
-
-	delayMilliseconds := int64(0)
-	if current > conn {
-		delayMilliseconds = int64(math.Floor(float64((current-1)/conn) * defaultDelay * 1000))
-	}
-	return writeRESPIntegerArray(writer, 1, delayMilliseconds)
+	return writeRESPIntegerArray(writer, 1, current)
 }
 
-func (f *redisFixture) writeLimitConnLeaving(writer io.Writer, command []string) error {
+func (f *redisFixture) writeAPISIXLimitConnLeaving(writer io.Writer, command []string) error {
 	if len(command) < 5 {
-		return writeRESPError(writer, "wrong number of arguments for limit-conn leaving")
+		return writeRESPError(writer, "wrong number of arguments for APISIX limit-conn leaving")
 	}
 	key := command[3]
 	member := command[4]
@@ -604,9 +594,53 @@ func (f *redisFixture) writeLimitConnLeaving(writer io.Writer, command []string)
 		delete(members, member)
 		removed = 1
 	}
+	current := int64(len(members))
 	f.syncLimitConnMembers(key, members)
 	f.stateMu.Unlock()
-	return writeRESPInteger(writer, removed)
+	return writeRESPIntegerArray(writer, removed, current)
+}
+
+func (f *redisFixture) writeAPISIXLimitCountIncoming(writer io.Writer, command []string) error {
+	if len(command) < 7 {
+		return writeRESPError(writer, "wrong number of arguments for APISIX limit-count")
+	}
+	limit, err := strconv.ParseInt(command[4], 10, 64)
+	if err != nil || limit <= 0 {
+		return writeRESPError(writer, "limit-count limit is not a positive integer")
+	}
+	window, err := strconv.ParseInt(command[5], 10, 64)
+	if err != nil || window <= 0 {
+		return writeRESPError(writer, "limit-count window is not a positive integer")
+	}
+	cost, err := strconv.ParseInt(command[6], 10, 64)
+	if err != nil || cost <= 0 {
+		return writeRESPError(writer, "limit-count cost is not a positive integer")
+	}
+
+	key := command[3]
+	now := time.Now()
+	f.stateMu.Lock()
+	expiry, active := f.expiries[key]
+	active = active && now.Before(expiry)
+	remaining := limit - cost
+	if active {
+		current, ok := f.integers[key]
+		if !ok {
+			if value, exists := f.values[key]; exists {
+				current, _ = strconv.ParseInt(value, 10, 64)
+			}
+		}
+		remaining = current - cost
+	} else {
+		expiry = now.Add(time.Duration(window) * time.Second)
+		f.expiries[key] = expiry
+		f.expirySet[key]++
+	}
+	delete(f.values, key)
+	f.integers[key] = remaining
+	ttl := max(int64(math.Ceil(time.Until(expiry).Seconds())), 1)
+	f.stateMu.Unlock()
+	return writeRESPIntegerArray(writer, remaining, ttl)
 }
 
 func (f *redisFixture) syncLimitConnMembers(key string, members map[string]int64) {
@@ -1597,10 +1631,10 @@ func TestRedisFixtureEmulatesLimitConnScripts(t *testing.T) {
 		Redis: &RedisFixtureAssertion{
 			AllowUnassertedCommands: true,
 			Values: map[string]string{
-				"plugin-limit-conn:route:route-1:client": "2",
+				"limit_conn:client": "2",
 			},
 			TTLSecondsBetween: map[string]IntRange{
-				"plugin-limit-conn:route:route-1:client": {Min: 4, Max: 5},
+				"limit_conn:client": {Min: 4, Max: 5},
 			},
 		},
 	}
@@ -1614,34 +1648,34 @@ func TestRedisFixtureEmulatesLimitConnScripts(t *testing.T) {
 	client := redis.NewClient(&redis.Options{Addr: fixture.address()})
 	t.Cleanup(func() { _ = client.Close() })
 	incomingScript := `
-redis.call("ZREMRANGEBYSCORE", KEYS[1], "-inf", ARGV[5])
+local limit = tonumber(ARGV[1])
+local ttl = tonumber(ARGV[2])
+local now = tonumber(ARGV[3])
+local member = ARGV[4]
+redis.call("ZREMRANGEBYSCORE", KEYS[1], 0, now)
 local current = redis.call("ZCARD", KEYS[1])
-if current >= tonumber(ARGV[1]) + tonumber(ARGV[2]) then
-  return {0, 0}
+if current >= limit then
+  return {0, current}
 end
-redis.call("ZADD", KEYS[1], "NX", tonumber(ARGV[5]) + tonumber(ARGV[4]), ARGV[6])
-redis.call("PEXPIRE", KEYS[1], ARGV[4])
-return {1, current == 0 and 0 or 250}
+redis.call("ZADD", KEYS[1], now + ttl, member)
+redis.call("EXPIRE", KEYS[1], ttl)
+return {1, current + 1}
 `
 	leavingScript := `
 local removed = redis.call("ZREM", KEYS[1], ARGV[1])
-if redis.call("ZCARD", KEYS[1]) == 0 then
-  redis.call("DEL", KEYS[1])
-end
-return removed
+local current = redis.call("ZCARD", KEYS[1])
+return {removed, current}
 `
-	key := "plugin-limit-conn:route:route-1:client"
-	baseNow := time.Now().UnixMilli()
+	key := "limit_conn:client"
+	baseNow := time.Now().Unix()
 	incoming := func(member string, now int64) []any {
 		t.Helper()
 		result, err := client.Eval(
 			context.Background(),
 			incomingScript,
 			[]string{key},
-			1,
-			1,
-			0.25,
-			5000,
+			2,
+			5,
 			now,
 			member,
 		).Slice()
@@ -1651,33 +1685,30 @@ return removed
 		return result
 	}
 
-	if got := incoming("member-1", baseNow); !equalRedisIntegers(got, 1, 0) {
-		t.Fatalf("first incoming = %#v, want [1 0]", got)
+	if got := incoming("member-1", baseNow); !equalRedisIntegers(got, 1, 1) {
+		t.Fatalf("first incoming = %#v, want [1 1]", got)
 	}
-	if got := incoming("member-1", baseNow); !equalRedisIntegers(got, 0, 0) {
-		t.Fatalf("duplicate-member incoming = %#v, want [0 0]", got)
+	if got := incoming("member-2", baseNow); !equalRedisIntegers(got, 1, 2) {
+		t.Fatalf("second incoming = %#v, want [1 2]", got)
 	}
-	if got := incoming("member-2", baseNow); !equalRedisIntegers(got, 1, 250) {
-		t.Fatalf("burst incoming = %#v, want [1 250]", got)
-	}
-	if got := incoming("member-3", baseNow); !equalRedisIntegers(got, 0, 0) {
-		t.Fatalf("rejected incoming = %#v, want [0 0]", got)
+	if got := incoming("member-3", baseNow); !equalRedisIntegers(got, 0, 2) {
+		t.Fatalf("rejected incoming = %#v, want [0 2]", got)
 	}
 	fixture.assert(t, spec)
 
 	missingLeaving := client.Eval(context.Background(), leavingScript, []string{key}, "missing-member")
-	if got, err := missingLeaving.Int64(); err != nil || got != 0 {
-		t.Fatalf("missing-member leaving = %d, %v; want 0", got, err)
+	if got, err := missingLeaving.Slice(); err != nil || !equalRedisIntegers(got, 0, 2) {
+		t.Fatalf("missing-member leaving = %#v, %v; want [0 2]", got, err)
 	}
 	fixture.assert(t, spec)
 
 	firstLeaving := client.Eval(context.Background(), leavingScript, []string{key}, "member-1")
-	if got, err := firstLeaving.Int64(); err != nil || got != 1 {
-		t.Fatalf("first leaving = %d, %v; want 1", got, err)
+	if got, err := firstLeaving.Slice(); err != nil || !equalRedisIntegers(got, 1, 1) {
+		t.Fatalf("first leaving = %#v, %v; want [1 1]", got, err)
 	}
 	secondLeaving := client.Eval(context.Background(), leavingScript, []string{key}, "member-2")
-	if got, err := secondLeaving.Int64(); err != nil || got != 1 {
-		t.Fatalf("second leaving = %d, %v; want 1", got, err)
+	if got, err := secondLeaving.Slice(); err != nil || !equalRedisIntegers(got, 1, 0) {
+		t.Fatalf("second leaving = %#v, %v; want [1 0]", got, err)
 	}
 	fixture.assert(t, FixtureSpec{
 		Name: "redis-limit-conn",
@@ -1688,11 +1719,11 @@ return removed
 		},
 	})
 
-	if got := incoming("expired-member", baseNow); !equalRedisIntegers(got, 1, 0) {
-		t.Fatalf("expiring incoming = %#v, want [1 0]", got)
+	if got := incoming("expired-member", baseNow); !equalRedisIntegers(got, 1, 1) {
+		t.Fatalf("expiring incoming = %#v, want [1 1]", got)
 	}
-	if got := incoming("fresh-member", baseNow+6000); !equalRedisIntegers(got, 1, 0) {
-		t.Fatalf("post-expiry incoming = %#v, want [1 0]", got)
+	if got := incoming("fresh-member", baseNow+6); !equalRedisIntegers(got, 1, 1) {
+		t.Fatalf("post-expiry incoming = %#v, want [1 1]", got)
 	}
 }
 
@@ -1965,14 +1996,18 @@ func TestRedisClusterTLSFixtureExposesCAAndPreservesStatefulEval(t *testing.T) {
 	})
 	defer func() { _ = client.Close() }()
 	incomingScript := `
-redis.call("ZREMRANGEBYSCORE", KEYS[1], "-inf", ARGV[5])
+local limit = tonumber(ARGV[1])
+local ttl = tonumber(ARGV[2])
+local now = tonumber(ARGV[3])
+local member = ARGV[4]
+redis.call("ZREMRANGEBYSCORE", KEYS[1], 0, now)
 local current = redis.call("ZCARD", KEYS[1])
-if current >= tonumber(ARGV[1]) + tonumber(ARGV[2]) then
-  return {0, 0}
+if current >= limit then
+  return {0, current}
 end
-redis.call("ZADD", KEYS[1], "NX", tonumber(ARGV[5]) + tonumber(ARGV[4]), ARGV[6])
-redis.call("PEXPIRE", KEYS[1], ARGV[4])
-return {1, 0}
+redis.call("ZADD", KEYS[1], now + ttl, member)
+redis.call("EXPIRE", KEYS[1], ttl)
+return {1, current + 1}
 `
 	key := "route:route-1:client"
 	evalIncoming := func(member string) []any {
@@ -1982,10 +2017,8 @@ return {1, 0}
 			incomingScript,
 			[]string{key},
 			1,
-			0,
-			0.1,
-			3600_000,
-			time.Now().UnixMilli(),
+			3600,
+			time.Now().Unix(),
 			member,
 		).Slice()
 		if evalErr != nil {
@@ -1993,31 +2026,29 @@ return {1, 0}
 		}
 		return result
 	}
-	if result := evalIncoming("member-1"); !equalRedisIntegers(result, 1, 0) {
-		t.Fatalf("first TLS cluster limit-conn result = %#v, want [1 0]", result)
+	if result := evalIncoming("member-1"); !equalRedisIntegers(result, 1, 1) {
+		t.Fatalf("first TLS cluster limit-conn result = %#v, want [1 1]", result)
 	}
-	if result := evalIncoming("member-2"); !equalRedisIntegers(result, 0, 0) {
-		t.Fatalf("second TLS cluster limit-conn result = %#v, want [0 0]", result)
+	if result := evalIncoming("member-2"); !equalRedisIntegers(result, 0, 1) {
+		t.Fatalf("second TLS cluster limit-conn result = %#v, want [0 1]", result)
 	}
 
 	leavingScript := `
 local removed = redis.call("ZREM", KEYS[1], ARGV[1])
-if redis.call("ZCARD", KEYS[1]) == 0 then
-  redis.call("DEL", KEYS[1])
-end
-return removed
+local current = redis.call("ZCARD", KEYS[1])
+return {removed, current}
 `
 	removed, err := client.Eval(
 		context.Background(),
 		leavingScript,
 		[]string{key},
 		"member-1",
-	).Int64()
-	if err != nil || removed != 1 {
-		t.Fatalf("TLS cluster limit-conn leaving Eval() = %d, %v; want 1", removed, err)
+	).Slice()
+	if err != nil || !equalRedisIntegers(removed, 1, 0) {
+		t.Fatalf("TLS cluster limit-conn leaving Eval() = %#v, %v; want [1 0]", removed, err)
 	}
-	if result := evalIncoming("member-3"); !equalRedisIntegers(result, 1, 0) {
-		t.Fatalf("post-release TLS cluster limit-conn result = %#v, want [1 0]", result)
+	if result := evalIncoming("member-3"); !equalRedisIntegers(result, 1, 1) {
+		t.Fatalf("post-release TLS cluster limit-conn result = %#v, want [1 1]", result)
 	}
 }
 

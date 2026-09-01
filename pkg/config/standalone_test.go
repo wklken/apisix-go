@@ -6,10 +6,12 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -87,6 +89,10 @@ func cloneStandaloneTestBatch(batch generation.DesiredBatch) generation.DesiredB
 	for index, mutation := range batch.Mutations {
 		clone.Mutations[index] = mutation
 		clone.Mutations[index].Value = slices.Clone(mutation.Value)
+	}
+	if batch.CollectionVersions != nil {
+		clone.CollectionVersions = make(map[string]string, len(batch.CollectionVersions))
+		maps.Copy(clone.CollectionVersions, batch.CollectionVersions)
 	}
 	return clone
 }
@@ -192,6 +198,25 @@ func TestDesiredBatchFromStandaloneUsesContentDigestCursor(t *testing.T) {
 	if len(batch.Mutations) != 1 || batch.Mutations[0].Type != generation.MutationPut ||
 		batch.Mutations[0].Key != (generation.ResourceKey{Kind: "routes", ID: "r1"}) {
 		t.Fatalf("batch mutations = %+v", batch.Mutations)
+	}
+}
+
+func TestDesiredBatchFromStandaloneCarriesFileVersionIdentity(t *testing.T) {
+	batch := desiredBatchFromStandaloneWithSource(standaloneSnapshot{
+		"routes": {"r1": []byte(`{"id":"r1","uri":"/"}`)},
+	}, "yaml", "1700000000")
+
+	wantOrigin := generation.ResourceOrigin{
+		Provider: "yaml", ResourceKey: "/routes/r1", ModifiedIndex: "1700000000",
+	}
+	if len(batch.Mutations) != 1 || batch.Mutations[0].Origin != wantOrigin {
+		t.Fatalf("batch mutation origin = %#v, want %#v", batch.Mutations, wantOrigin)
+	}
+	if got := batch.CollectionVersions["routes"]; got != "1700000000" {
+		t.Fatalf("routes collection version = %q, want 1700000000", got)
+	}
+	if got := batch.CollectionVersions["consumers"]; got != "1700000000" {
+		t.Fatalf("consumers collection version = %q, want 1700000000", got)
 	}
 }
 
@@ -849,17 +874,23 @@ func TestStandaloneWatcherAcceptsImplicitDeleteDecisionFromAcknowledgedState(t *
 
 func TestStandaloneWatcherReplaysImplicitDeleteForSameCursor(t *testing.T) {
 	coordinator := generation.NewCoordinator(standaloneReplayEngine{})
+	path := writeStandaloneTestConfig(t, "services:\n  - id: b\n    upstream_id: u1\n#END\n")
+	fileInfo, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	collectionVersion := strconv.FormatInt(fileInfo.ModTime().Unix(), 10)
 
-	first := desiredBatchFromStandalone(standaloneSnapshot{"services": {
+	first := desiredBatchFromStandaloneWithSource(standaloneSnapshot{"services": {
 		"a": []byte(`{"id":"a","upstream_id":"u1"}`),
 		"b": []byte(`{"id":"b","upstream_id":"u1"}`),
-	}})
+	}}, standaloneProviderYAML, collectionVersion)
 	if _, err := coordinator.Apply(context.Background(), first); err != nil {
 		t.Fatalf("Apply(A+B) error = %v", err)
 	}
-	current := desiredBatchFromStandalone(standaloneSnapshot{"services": {
+	current := desiredBatchFromStandaloneWithSource(standaloneSnapshot{"services": {
 		"b": []byte(`{"id":"b","upstream_id":"u1"}`),
-	}})
+	}}, standaloneProviderYAML, collectionVersion)
 	committed, err := coordinator.Apply(context.Background(), current)
 	if err != nil {
 		t.Fatalf("Apply(B) error = %v", err)
@@ -875,7 +906,6 @@ func TestStandaloneWatcherReplaysImplicitDeleteForSameCursor(t *testing.T) {
 		}
 	}
 
-	path := writeStandaloneTestConfig(t, "services:\n  - id: b\n    upstream_id: u1\n#END\n")
 	restarted := NewStandaloneFileWatcher(
 		path,
 		standaloneProviderYAML,

@@ -43,8 +43,11 @@ type PreparedUpstreamRuntime struct {
 // Bindings are materialized before route assembly; Consumer is the trusted
 // value attached after authentication selects this record.
 type PreparedConsumerRecord struct {
-	Consumer resource.Consumer
-	Bindings []plugin.Binding
+	Consumer                  resource.Consumer
+	Bindings                  []plugin.Binding
+	OverrideFactories         []string
+	APISIXConfigTypeSuffix    string
+	APISIXConfigVersionSuffix string
 }
 
 // PreparedHandlerInput contains only owned configuration values, an already
@@ -201,8 +204,11 @@ func freezePreparedConsumerResolver(
 			return nil, fmt.Errorf("consumer %q bindings: %w", identity, err)
 		}
 		records[identity] = PreparedConsumerRecord{
-			Consumer: clonePlanningConsumer(record.Consumer),
-			Bindings: plan.StaticBindings(),
+			Consumer:                  clonePlanningConsumer(record.Consumer),
+			Bindings:                  plan.StaticBindings(),
+			OverrideFactories:         slices.Clone(record.OverrideFactories),
+			APISIXConfigTypeSuffix:    record.APISIXConfigTypeSuffix,
+			APISIXConfigVersionSuffix: record.APISIXConfigVersionSuffix,
 		}
 	}
 	serviceID := service.ID
@@ -227,7 +233,12 @@ func freezePreparedConsumerResolver(
 		consumer := clonePlanningConsumer(record.Consumer)
 		request = apisixctx.WithApisixVars(request, nil)
 		consumer = apisixctx.AttachConsumerWithSource(request, consumer, state.Source)
-		overrides := make(map[string]struct{}, len(record.Bindings))
+		overrides := make(map[string]struct{}, len(record.Bindings)+len(record.OverrideFactories))
+		for _, name := range record.OverrideFactories {
+			if name != "" {
+				overrides[name] = struct{}{}
+			}
+		}
 		for _, binding := range record.Bindings {
 			name := binding.Descriptor.Factory
 			if name == "" && binding.Plugin != nil {
@@ -238,7 +249,13 @@ func freezePreparedConsumerResolver(
 			}
 		}
 		request = apisixctx.WithConsumerPluginOverrides(request, overrides)
+		request = apisixctx.WithAPISIXConfigIdentitySuffix(
+			request,
+			record.APISIXConfigTypeSuffix,
+			record.APISIXConfigVersionSuffix,
+		)
 		resolution.Bindings = append([]plugin.Binding(nil), record.Bindings...)
+		resolution.OverrideFactories = slices.Sorted(maps.Keys(overrides))
 		resolution.Request = request
 		resolution.CacheKey = plugin.ConsumerCacheKey{
 			ConsumerID: consumer.Username,

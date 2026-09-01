@@ -666,7 +666,11 @@ func newRouteGenerationFactory(
 	if err != nil {
 		t.Fatalf("build generation secret resolver: %v", err)
 	}
-	staticConfig := config.Config{}
+	staticConfig := config.Config{Deployment: config.Deployment{
+		Role:            "traditional",
+		RoleTraditional: config.RoleTraditionalConfig{ConfigProvider: "etcd"},
+		Etcd:            config.Etcd{Prefix: "/apisix"},
+	}}
 	if configure != nil {
 		configure(&staticConfig)
 	}
@@ -717,7 +721,8 @@ func (harness *routeGenerationFactory) Prepare(
 			RequiredDomains: domains,
 		},
 		desired,
-		nil)
+		nil,
+	)
 	if err != nil {
 		return nil, err
 	}

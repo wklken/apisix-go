@@ -18,13 +18,15 @@ type Compiler struct {
 }
 
 type normalizedInput struct {
-	revision   uint64
-	resources  map[generation.ResourceKey]normalizedResource
-	tombstones map[generation.ResourceKey]generation.Tombstone
+	revision           uint64
+	resources          map[generation.ResourceKey]normalizedResource
+	tombstones         map[generation.ResourceKey]generation.Tombstone
+	collectionVersions map[string]string
 }
 
 type normalizedResource struct {
 	key      generation.ResourceKey
+	origin   generation.ResourceOrigin
 	raw      []byte
 	document any
 	view     structuralView
@@ -43,9 +45,10 @@ type structuralView struct {
 
 func newNormalizedInput(revision uint64) normalizedInput {
 	return normalizedInput{
-		revision:   revision,
-		resources:  make(map[generation.ResourceKey]normalizedResource),
-		tombstones: make(map[generation.ResourceKey]generation.Tombstone),
+		revision:           revision,
+		resources:          make(map[generation.ResourceKey]normalizedResource),
+		tombstones:         make(map[generation.ResourceKey]generation.Tombstone),
+		collectionVersions: make(map[string]string),
 	}
 }
 

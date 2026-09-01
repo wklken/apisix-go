@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -35,6 +36,100 @@ type Dependencies struct {
 	Consumers         ConsumerLookup
 	Tasks             *runtime.TaskOwner
 	CompositeChildren CompositeChildPreparer
+}
+
+// APISIXPluginContext is the compiler-owned source identity used by plugins
+// whose observable behavior depends on the APISIX resource that supplied their
+// effective configuration. Callers must derive changes from Clone or
+// WithWorkflowVID instead of sharing SourceConfig across plugin instances.
+type APISIXPluginContext struct {
+	Provider          string
+	EtcdPrefix        string
+	SourceKind        string
+	SourceID          string
+	SourceResourceKey string
+	ModifiedIndex     string
+	ConfigType        string
+	ConfigVersion     string
+	SourceConfig      map[string]any
+	WorkflowVID       int
+	ConsumerOverride  bool
+}
+
+// Clone returns an independently owned context value.
+func (pluginContext APISIXPluginContext) Clone() APISIXPluginContext {
+	cloned := pluginContext
+	cloned.SourceConfig = cloneAPISIXPluginSourceConfig(pluginContext.SourceConfig)
+	return cloned
+}
+
+// WithWorkflowVID derives the one-based APISIX workflow action identity
+// without aliasing the parent plugin document.
+func (pluginContext APISIXPluginContext) WithWorkflowVID(vid int) APISIXPluginContext {
+	cloned := pluginContext.Clone()
+	cloned.WorkflowVID = vid
+	return cloned
+}
+
+// ParentResourceKey returns the APISIX 3.17 parent resource identity. Etcd
+// prefixes are intentionally kept literal because APISIX includes the
+// configured prefix in limiter counter identity.
+func (pluginContext APISIXPluginContext) ParentResourceKey() (string, error) {
+	if pluginContext.SourceResourceKey != "" {
+		return pluginContext.SourceResourceKey, nil
+	}
+	if pluginContext.SourceID == "" {
+		return "", fmt.Errorf("APISIX plugin source ID is required")
+	}
+	buckets := map[string]string{
+		"route":          "routes",
+		"service":        "services",
+		"plugin_config":  "plugin_configs",
+		"global_rule":    "global_rules",
+		"consumer":       "consumers",
+		"consumer_group": "consumer_groups",
+	}
+	bucket, ok := buckets[pluginContext.SourceKind]
+	if !ok {
+		return "", fmt.Errorf("APISIX plugin source kind is unsupported")
+	}
+	suffix := "/" + bucket + "/" + pluginContext.SourceID
+	switch strings.ToLower(strings.TrimSpace(pluginContext.Provider)) {
+	case "etcd":
+		return pluginContext.EtcdPrefix + suffix, nil
+	case "yaml", "json", "standalone":
+		return suffix, nil
+	default:
+		return "", fmt.Errorf("APISIX plugin provider is unsupported")
+	}
+}
+
+func cloneAPISIXPluginSourceConfig(source map[string]any) map[string]any {
+	if source == nil {
+		return nil
+	}
+	cloned := make(map[string]any, len(source))
+	for key, value := range source {
+		cloned[key] = cloneAPISIXPluginSourceValue(value)
+	}
+	return cloned
+}
+
+func cloneAPISIXPluginSourceValue(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		return cloneAPISIXPluginSourceConfig(typed)
+	case []any:
+		cloned := make([]any, len(typed))
+		for index, item := range typed {
+			cloned[index] = cloneAPISIXPluginSourceValue(item)
+		}
+		return cloned
+	case []byte:
+		return append([]byte(nil), typed...)
+	default:
+		return value
+	}
 }
 
 type BasePlugin struct {

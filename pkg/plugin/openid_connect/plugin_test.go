@@ -1332,8 +1332,14 @@ func TestPostInitAppliesUpstreamCompatibleDefaults(t *testing.T) {
 		p.config.SetIDTokenHeader == nil || !*p.config.SetIDTokenHeader ||
 		p.config.SetUserinfoHeader == nil || !*p.config.SetUserinfoHeader ||
 		p.config.SetRefreshTokenHeader == nil || *p.config.SetRefreshTokenHeader ||
-		p.config.RenewAccessTokenOnExpiry == nil || !*p.config.RenewAccessTokenOnExpiry {
+		p.config.RenewAccessTokenOnExpiry == nil || !*p.config.RenewAccessTokenOnExpiry ||
+		p.config.AcceptUnsupportedAlgorithm == nil || !*p.config.AcceptUnsupportedAlgorithm {
 		t.Fatalf("OIDC boolean defaults not applied: %#v", p.config)
+	}
+	if p.config.IATSlack == nil || *p.config.IATSlack != 120 ||
+		p.config.JWKExpiresIn == nil || *p.config.JWKExpiresIn != 86400 ||
+		p.config.IntrospectionExpiryClaim != "exp" {
+		t.Fatalf("APISIX 3.17 OIDC defaults not applied: %#v", p.config)
 	}
 	if p.config.Session.Storage != "cookie" || p.config.Session.CookieName != "session" ||
 		p.config.Session.CookiePath != "/" || p.config.Session.CookieHTTPOnly == nil ||
@@ -1378,7 +1384,7 @@ func TestPostInitPreservesPositiveSessionTimeoutOverrides(t *testing.T) {
 	}
 }
 
-func TestSchemaRejectsNonPositiveSessionTimeouts(t *testing.T) {
+func TestSchemaAcceptsNonPositiveSessionTimeouts(t *testing.T) {
 	p := &Plugin{}
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
@@ -1395,8 +1401,8 @@ func TestSchemaRejectsNonPositiveSessionTimeouts(t *testing.T) {
 						field:    value,
 					},
 				}
-				if err := util.Validate(config, p.GetSchema()); err == nil {
-					t.Fatal("Validate() error = nil")
+				if err := util.Validate(config, p.GetSchema()); err != nil {
+					t.Fatalf("Validate() rejected APISIX 3.17 session timeout: %v", err)
 				}
 			})
 		}
@@ -1444,7 +1450,7 @@ func TestPostInitRejectsEmptyConfiguredAudience(t *testing.T) {
 	}
 }
 
-func TestPostInitValidatesTokenSigningAlgorithm(t *testing.T) {
+func TestPostInitAcceptsTokenSigningAlgorithmString(t *testing.T) {
 	for _, algorithm := range []string{
 		"RS256", "RS384", "RS512",
 		"ES256", "ES384", "ES512",
@@ -1470,7 +1476,7 @@ func TestPostInitValidatesTokenSigningAlgorithm(t *testing.T) {
 	}
 
 	for _, algorithm := range []string{"none", "HS256", "ES256K", "unknown"} {
-		t.Run("rejects "+algorithm, func(t *testing.T) {
+		t.Run("accepts "+algorithm, func(t *testing.T) {
 			p := &Plugin{config: Config{
 				ClientID:                      "apisix",
 				ClientSecret:                  "secret-a",
@@ -1482,8 +1488,8 @@ func TestPostInitValidatesTokenSigningAlgorithm(t *testing.T) {
 				t.Fatalf("Init() error = %v", err)
 			}
 			materializeOIDCTestPlugin(t, p)
-			if err := p.PostInit(); err == nil {
-				t.Fatal("PostInit() error = nil")
+			if err := p.PostInit(); err != nil {
+				t.Fatalf("PostInit() rejected APISIX 3.17 token signing algorithm: %v", err)
 			}
 		})
 	}
@@ -1594,7 +1600,7 @@ func TestAuthorizationSessionUsesPluginClock(t *testing.T) {
 	}
 }
 
-func TestSchemaRequiresSecureCookieForSameSiteNone(t *testing.T) {
+func TestSchemaAcceptsSameSiteNoneWithoutSecureCookie(t *testing.T) {
 	p := &Plugin{}
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
@@ -1604,12 +1610,8 @@ func TestSchemaRequiresSecureCookieForSameSiteNone(t *testing.T) {
 		"discovery": "https://idp.example.com/.well-known/openid-configuration",
 		"session":   map[string]any{"secret": "0123456789abcdef", "cookie_same_site": "None"},
 	}
-	if err := util.Validate(config, p.GetSchema()); err == nil {
-		t.Fatal("schema accepted SameSite=None without cookie_secure=true")
-	}
-	config["session"].(map[string]any)["cookie_secure"] = true
 	if err := util.Validate(config, p.GetSchema()); err != nil {
-		t.Fatalf("schema rejected secure SameSite=None cookie: %v", err)
+		t.Fatalf("schema rejected APISIX 3.17 SameSite=None configuration: %v", err)
 	}
 }
 
@@ -1632,32 +1634,32 @@ func TestSchemaRejectsUnknownSessionFields(t *testing.T) {
 	}
 }
 
-func TestSchemaRejectsUnsupportedTopLevelFields(t *testing.T) {
+func TestSchemaAcceptsAPISIX317OpenIDConnectFields(t *testing.T) {
 	p := &Plugin{}
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
 
-	for _, field := range []string{
-		"iat_slack",
-		"accept_none_alg",
-		"accept_unsupported_alg",
-		"use_nonce",
-		"jwk_expires_in",
-		"jwt_verification_cache_ignore",
-		"cache_segment",
-		"introspection_interval",
-		"introspection_expiry_claim",
+	for field, value := range map[string]any{
+		"iat_slack":                     120,
+		"accept_none_alg":               false,
+		"accept_unsupported_alg":        true,
+		"use_nonce":                     false,
+		"jwk_expires_in":                86400,
+		"jwt_verification_cache_ignore": false,
+		"cache_segment":                 "tenant-a",
+		"introspection_interval":        0,
+		"introspection_expiry_claim":    "exp",
 	} {
 		t.Run(field, func(t *testing.T) {
 			config := map[string]any{
 				"client_id":     "apisix",
 				"client_secret": "secret-a",
 				"discovery":     "http://idp.example.test/.well-known/openid-configuration",
-				field:           true,
+				field:           value,
 			}
-			if err := util.Validate(config, p.GetSchema()); err == nil {
-				t.Fatal("Validate() error = nil, want unsupported field rejection")
+			if err := util.Validate(config, p.GetSchema()); err != nil {
+				t.Fatalf("Validate() rejected APISIX 3.17 field %q: %v", field, err)
 			}
 		})
 	}

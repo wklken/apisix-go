@@ -16,6 +16,7 @@ import (
 
 func normalizeContext(ctx context.Context, snapshot generation.Snapshot) (normalizedInput, []resourceIssue, error) {
 	input := newNormalizedInput(snapshot.Revision())
+	input.collectionVersions = snapshot.CollectionVersions()
 	issues := make([]resourceIssue, 0)
 	typedIDs := make(map[string]map[string][]generation.ResourceKey)
 	for _, source := range snapshot.Resources() {
@@ -24,7 +25,7 @@ func normalizeContext(ctx context.Context, snapshot generation.Snapshot) (normal
 		}
 		key := source.Key
 		raw := bytes.Clone(source.Value)
-		resource := normalizedResource{key: key, raw: raw}
+		resource := normalizedResource{key: key, origin: source.Origin, raw: raw}
 		if !generation.IsManagedResourceKind(key.Kind) {
 			issues = append(issues, newIssue(key, "unsupported-kind", "resource kind is not managed"))
 		} else if key.Kind == "secrets" && !validSecretResourceID(key.ID) {

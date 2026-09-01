@@ -19,6 +19,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	graphql_proxy_cache "github.com/wklken/apisix-go/pkg/plugin/graphql_proxy_cache"
 	"github.com/wklken/apisix-go/pkg/plugin/grpc_transcode"
+	"github.com/wklken/apisix-go/pkg/plugin/limitbase"
 	"github.com/wklken/apisix-go/pkg/plugin/public_api"
 	"github.com/wklken/apisix-go/pkg/plugin/traffic_split"
 	"github.com/wklken/apisix-go/pkg/resource"
@@ -75,20 +76,23 @@ type effectiveBindingRuntimeContext struct {
 	upstreamResolver  traffic_split.ResourceUpstreamResolver
 	protoResolver     grpc_transcode.ProtoResolver
 	apiBreakerState   *api_breaker.State
+	rateLimitState    *limitbase.State
 }
 
 type effectiveBindingSpec struct {
-	domain          generation.Domain
-	executionOwner  generation.ResourceKey
-	source          effectiveBindingSource
-	factory         string
-	config          resource.PluginConfig
-	scope           plugin.Scope
-	provenance      plugin.ResourceProvenance
-	resourceContext effectiveBindingResourceContext
-	runtimeContext  effectiveBindingRuntimeContext
-	filterIdentity  any
-	errorIdentity   any
+	domain                generation.Domain
+	executionOwner        generation.ResourceKey
+	source                effectiveBindingSource
+	factory               string
+	config                resource.PluginConfig
+	scope                 plugin.Scope
+	provenance            plugin.ResourceProvenance
+	resourceContext       effectiveBindingResourceContext
+	runtimeContext        effectiveBindingRuntimeContext
+	filterIdentity        any
+	errorIdentity         any
+	apisixContext         base.APISIXPluginContext
+	apisixDefaultPriority bool
 }
 
 type effectiveBindingOps struct {
@@ -101,6 +105,7 @@ type effectiveBindingOps struct {
 	applyRouteContext   func(plugin.Plugin, effectiveBindingRuntimeContext, effectiveBindingResourceContext)
 	applyContext        func(plugin.Plugin, effectiveBindingResourceContext)
 	applyTrafficRuntime func(plugin.Plugin, effectiveBindingRuntimeContext)
+	applyAPISIXContext  func(plugin.Plugin, base.APISIXPluginContext) error
 	postInit            func(plugin.Plugin) error
 	startObserver       func(plugin.Plugin, *runtime.TaskOwner) error
 	resolveDescriptor   func(plugin.Descriptor, plugin.Plugin) (plugin.Descriptor, error)
@@ -386,6 +391,7 @@ func (prepared *PreparedGeneration) validateEffectiveBindingSpec(
 	ownedSpec.errorIdentity = ownedError
 	ownedSpec.resourceContext = ownedContext
 	ownedSpec.runtimeContext = ownedRuntime
+	ownedSpec.apisixContext = supplied.apisixContext.Clone()
 	identity := plugin.InstanceIdentityInput{
 		PluginConfig: effectiveBindingIdentityConfig{
 			PluginConfig: ownedConfig,
@@ -569,6 +575,24 @@ func (prepared *PreparedGeneration) acquireEffectiveBinding(
 			); err != nil {
 				return plugin.Binding{}, nil, err
 			}
+		}
+		pluginContext := selected.spec.apisixContext.Clone()
+		if selected.spec.apisixDefaultPriority {
+			metadata, _ := pluginContext.SourceConfig["_meta"].(map[string]any)
+			if metadata == nil {
+				metadata = make(map[string]any)
+			} else {
+				cloned, cloneErr := cloneEffectiveStringAnyMap(metadata)
+				if cloneErr != nil {
+					return plugin.Binding{}, nil, cloneErr
+				}
+				metadata = cloned
+			}
+			metadata["priority"] = instance.GetPriority()
+			pluginContext.SourceConfig["_meta"] = metadata
+		}
+		if err := operations.applyAPISIXContext(instance, pluginContext); err != nil {
+			return plugin.Binding{}, nil, err
 		}
 		operations.applyRouteContext(instance, selected.spec.runtimeContext, selected.spec.resourceContext)
 		operations.applyContext(instance, selected.spec.resourceContext)
@@ -771,6 +795,10 @@ func (operations effectiveBindingOps) withDefaults(generationNumber uint64) effe
 				value.apiBreakerState != nil {
 				setter.SetState(value.apiBreakerState)
 			}
+			if setter, ok := instance.(interface{ SetRateLimitState(*limitbase.State) }); ok &&
+				value.rateLimitState != nil {
+				setter.SetRateLimitState(value.rateLimitState)
+			}
 		}
 	}
 	if operations.preMaterialize == nil {
@@ -822,6 +850,20 @@ func (operations effectiveBindingOps) withDefaults(generationNumber uint64) effe
 			}); ok {
 				setter.SetResourceContext(value.route, value.service)
 			}
+		}
+	}
+	if operations.applyAPISIXContext == nil {
+		operations.applyAPISIXContext = func(
+			instance plugin.Plugin,
+			pluginContext base.APISIXPluginContext,
+		) error {
+			setter, ok := instance.(interface {
+				SetAPISIXPluginContext(base.APISIXPluginContext) error
+			})
+			if !ok {
+				return nil
+			}
+			return setter.SetAPISIXPluginContext(pluginContext.Clone())
 		}
 	}
 	if operations.postInit == nil {
@@ -1046,6 +1088,7 @@ func cloneEffectiveBindingRuntimeContext(
 		upstreamResolver:  value.upstreamResolver,
 		protoResolver:     value.protoResolver,
 		apiBreakerState:   value.apiBreakerState,
+		rateLimitState:    value.rateLimitState,
 	}, nil
 }
 

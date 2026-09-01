@@ -51,28 +51,6 @@ func (s failingLimiterStore) Increment(
 	return limiter.Context{}, s.err
 }
 
-type countingLimiterStore struct {
-	failingLimiterStore
-	hits *atomic.Uint32
-}
-
-func (s countingLimiterStore) Get(
-	context.Context,
-	string,
-	limiter.Rate,
-) (limiter.Context, error) {
-	s.hits.Add(1)
-	return limiter.Context{}, nil
-}
-
-type fakeRedisPoolStatsProvider struct {
-	hits *atomic.Uint32
-}
-
-func (p fakeRedisPoolStatsProvider) PoolStats() *redis.PoolStats {
-	return &redis.PoolStats{Hits: p.hits.Load()}
-}
-
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
 
@@ -691,45 +669,6 @@ func TestScopedSecretsRedactRedisClusterNodesAndBuildResolvedClient(t *testing.T
 	p.Stop()
 	if p.scopedSet || len(p.scopedRedisClusterNodes) != 0 {
 		t.Fatal("Stop() retained scoped Redis cluster node state")
-	}
-}
-
-func TestRedisDiagnosticStoreLogsConnectionReuseFromInitializationBaseline(t *testing.T) {
-	t.Cleanup(func() { _ = logger.ConfigureLevel("info") })
-	if err := logger.ConfigureLevel("debug"); err != nil {
-		t.Fatalf("enable debug logging: %v", err)
-	}
-	var hits atomic.Uint32
-	store := newRedisDiagnosticStore(
-		countingLimiterStore{
-			failingLimiterStore: failingLimiterStore{err: errors.New("unexpected operation")},
-			hits:                &hits,
-		},
-		fakeRedisPoolStatsProvider{hits: &hits},
-	)
-
-	logged := make([]string, 0, 2)
-	stop := logger.ReplaceObserver("limit-count-redis-reuse-test", func(entry logger.Entry) {
-		if strings.HasPrefix(entry.Message, "redis connection reused times:") {
-			logged = append(logged, entry.Message)
-		}
-	})
-	t.Cleanup(stop)
-
-	rate := limiter.Rate{Period: time.Minute, Limit: 20}
-	if _, err := store.Get(context.Background(), "test", rate); err != nil {
-		t.Fatalf("first Get() error = %v", err)
-	}
-	if _, err := store.Get(context.Background(), "test", rate); err != nil {
-		t.Fatalf("second Get() error = %v", err)
-	}
-
-	want := []string{
-		"redis connection reused times: 0",
-		"redis connection reused times: 1",
-	}
-	if !reflect.DeepEqual(logged, want) {
-		t.Fatalf("reuse logs = %v, want %v", logged, want)
 	}
 }
 

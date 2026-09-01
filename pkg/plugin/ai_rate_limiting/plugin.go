@@ -7,7 +7,6 @@ import (
 	"math"
 	"net/http"
 	"regexp"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -18,7 +17,8 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/ai_protocols"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_runtime"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
-	"github.com/wklken/apisix-go/pkg/plugin/cacheutil"
+	"github.com/wklken/apisix-go/pkg/plugin/limit_count"
+	"github.com/wklken/apisix-go/pkg/plugin/limitbase"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	v "github.com/wklken/apisix-go/pkg/apisix/variable"
@@ -28,9 +28,10 @@ type Plugin struct {
 	base.BasePlugin
 	config Config
 
-	counters *cacheutil.BoundedTTLMap[counter]
-	now      func() time.Time
-	costExpr *govaluate.EvaluableExpression
+	rateLimitState *limitbase.State
+	apisixContext  base.APISIXPluginContext
+	now            func() time.Time
+	costExpr       *govaluate.EvaluableExpression
 }
 
 const (
@@ -196,11 +197,6 @@ type quota struct {
 	window       time.Duration
 }
 
-type counter struct {
-	used  int64
-	reset time.Time
-}
-
 type quotaResponseWriter struct {
 	http.ResponseWriter
 	plugin      *Plugin
@@ -303,9 +299,18 @@ func (p *Plugin) PostInit() error {
 	if p.now == nil {
 		p.now = time.Now
 	}
-	if p.counters == nil {
-		p.counters = cacheutil.NewBoundedTTLMap[counter](100000, p.now)
+	if p.rateLimitState == nil {
+		p.rateLimitState = limitbase.NewStateWithClock(p.now)
 	}
+	return nil
+}
+
+func (p *Plugin) SetRateLimitState(state *limitbase.State) {
+	p.rateLimitState = state
+}
+
+func (p *Plugin) SetAPISIXPluginContext(pluginContext base.APISIXPluginContext) error {
+	p.apisixContext = pluginContext.Clone()
 	return nil
 }
 
@@ -364,7 +369,7 @@ func (*Plugin) SelectResponseMode(r *http.Request) base.RequestResponseMode {
 
 // WrapStreamingResponse installs request-local quota headers and completion
 // accounting. The returned writer owns exactly-once finalization; no quota
-// counters are kept on the plugin instance for a live request.
+// quota state is owned by the process-scoped limit-count engine.
 func (p *Plugin) WrapStreamingResponse(w http.ResponseWriter, r *http.Request) (http.ResponseWriter, error) {
 	state, err := p.responseQuotaState(r)
 	if err != nil {
@@ -425,11 +430,7 @@ func (s *requestQuotaState) quotasForResponse(p *Plugin, r *http.Request) []quot
 
 func (s *requestQuotaState) writeQuotaHeaders(p *Plugin, r *http.Request, header http.Header) {
 	for _, q := range s.quotasForResponse(p, r) {
-		reservationCredit := int64(0)
-		if slices.Contains(s.quotas, q) {
-			reservationCredit = 1
-		}
-		p.writeQuotaHeadersWithCredit(header, q, reservationCredit)
+		p.writeQuotaHeadersWithCredit(header, q, 0)
 	}
 }
 
@@ -446,33 +447,12 @@ func (s *requestQuotaState) chargeOnce(p *Plugin, r *http.Request, body []byte) 
 	s.mu.Unlock()
 	usedTokens := p.responseTokenCostForRequest(r, body)
 	finalQuotas := s.quotasForResponse(p, r)
-	if sameQuotaSet(s.quotas, finalQuotas) {
-		for _, q := range s.quotas {
-			p.reconcile(q, usedTokens-1, false)
-		}
-		return
-	}
-	for _, q := range s.quotas {
-		p.reconcile(q, -1, false)
-	}
 	if usedTokens <= 0 {
 		return
 	}
 	for _, q := range finalQuotas {
 		p.reconcile(q, usedTokens, true)
 	}
-}
-
-func sameQuotaSet(left []quota, right []quota) bool {
-	if len(left) != len(right) {
-		return false
-	}
-	for i := range left {
-		if left[i] != right[i] {
-			return false
-		}
-	}
-	return true
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
@@ -573,9 +553,6 @@ func (*Config) DescribeResponseMode() (base.ResponseModeDescriptor, error) {
 func (p *Plugin) reserveQuotas(quotas []quota) int {
 	for i, q := range quotas {
 		if !p.reserve(q, 1) {
-			for _, reserved := range quotas[:i] {
-				p.reconcile(reserved, -1, false)
-			}
 			return i
 		}
 	}
@@ -584,6 +561,7 @@ func (p *Plugin) reserveQuotas(quotas []quota) int {
 
 func (p *Plugin) quotasForRequest(r *http.Request) ([]quota, bool, error) {
 	if len(p.config.Rules) > 0 {
+		document := p.limitCountRulesDocument()
 		quotas := make([]quota, 0, len(p.config.Rules))
 		for i, rule := range p.config.Rules {
 			key, ok := resolveRuleKey(r, rule.Key)
@@ -607,7 +585,7 @@ func (p *Plugin) quotasForRequest(r *http.Request) ([]quota, bool, error) {
 				headerPrefix = strconv.Itoa(i + 1)
 			}
 			quotas = append(quotas, quota{
-				key:          "rule:" + strconv.Itoa(i) + ":" + key,
+				key:          p.limitCountKey(document, key, nil),
 				headerPrefix: headerPrefix,
 				limit:        limit,
 				window:       windowDuration,
@@ -622,9 +600,6 @@ func (p *Plugin) quotasForRequest(r *http.Request) ([]quota, bool, error) {
 	q, ok, err := p.quotaForRequest(r)
 	if err != nil || !ok {
 		return nil, ok, err
-	}
-	if consumerName := fmt.Sprint(apisixctx.GetApisixVar(r, "$consumer_name")); consumerName != "" {
-		q.key = "consumer:" + consumerName + ":" + q.key
 	}
 	return []quota{q}, true, nil
 }
@@ -660,7 +635,7 @@ func (p *Plugin) quotaForRequest(r *http.Request) (quota, bool, error) {
 					return quota{}, false, err
 				}
 				return quota{
-					key:        "instance:" + instance.Name,
+					key:        p.limitCountInstanceKey(instance.Name, limit, windowDuration),
 					headerName: instance.Name,
 					limit:      limit,
 					window:     windowDuration,
@@ -683,7 +658,7 @@ func (p *Plugin) quotaForRequest(r *http.Request) (quota, bool, error) {
 			return quota{}, false, err
 		}
 		return quota{
-			key:        "instance:" + instanceName,
+			key:        p.limitCountInstanceKey("ai-rate-limiting#global", limit, windowDuration),
 			headerName: instanceName,
 			limit:      limit,
 			window:     windowDuration,
@@ -706,11 +681,79 @@ func (p *Plugin) quotaForRequest(r *http.Request) (quota, bool, error) {
 		return quota{}, false, err
 	}
 	return quota{
-		key:        "global",
+		key:        p.limitCountInstanceKey("ai-rate-limiting#global", limit, windowDuration),
 		headerName: "global",
 		limit:      limit,
 		window:     windowDuration,
 	}, true, nil
+}
+
+func (p *Plugin) hasAPISIXPluginContext() bool {
+	return p.apisixContext.SourceResourceKey != "" || p.apisixContext.SourceID != ""
+}
+
+func (p *Plugin) limitCountKey(document map[string]any, key string, variant any) string {
+	if !p.hasAPISIXPluginContext() {
+		return key
+	}
+	scoped, err := limit_count.BuildLocalKeyWithVID(p.apisixContext, document, key, variant)
+	if err != nil {
+		return key
+	}
+	return scoped
+}
+
+func (p *Plugin) limitCountInstanceKey(name string, limit int64, window time.Duration) string {
+	document := p.limitCountBaseDocument()
+	document["count"] = limit
+	document["time_window"] = int64(window / time.Second)
+	document["key"] = name
+	document["limit_header"] = "X-AI-RateLimit-Limit-" + strings.TrimPrefix(name, "ai-rate-limiting#global")
+	document["remaining_header"] = "X-AI-RateLimit-Remaining-" + strings.TrimPrefix(name, "ai-rate-limiting#global")
+	document["reset_header"] = "X-AI-RateLimit-Reset-" + strings.TrimPrefix(name, "ai-rate-limiting#global")
+	legacyKey := "instance:" + name
+	if name == "ai-rate-limiting#global" {
+		legacyKey = "global"
+	}
+	if !p.hasAPISIXPluginContext() {
+		return legacyKey
+	}
+	return p.limitCountKey(document, name, name)
+}
+
+func (p *Plugin) limitCountRulesDocument() map[string]any {
+	document := p.limitCountBaseDocument()
+	encoded, err := json.Marshal(p.config.Rules)
+	if err == nil {
+		var rules []any
+		if json.Unmarshal(encoded, &rules) == nil {
+			document["rules"] = rules
+		}
+	}
+	return document
+}
+
+func (p *Plugin) limitCountBaseDocument() map[string]any {
+	document := map[string]any{
+		"policy": "local", "key_type": "constant", "allow_degradation": false,
+		"sync_interval":    -1,
+		"limit_header":     "X-AI-RateLimit-Limit",
+		"remaining_header": "X-AI-RateLimit-Remaining",
+		"reset_header":     "X-AI-RateLimit-Reset",
+	}
+	if p.config.RejectedCode != 0 {
+		document["rejected_code"] = p.config.RejectedCode
+	}
+	if p.config.RejectedMsg != "" {
+		document["rejected_msg"] = p.config.RejectedMsg
+	}
+	if p.config.ShowLimitQuotaHeader != nil {
+		document["show_limit_quota_header"] = *p.config.ShowLimitQuotaHeader
+	}
+	if metadata, ok := p.apisixContext.SourceConfig["_meta"]; ok {
+		document["_meta"] = metadata
+	}
+	return document
 }
 
 func quotaWindow(seconds int64, name string) (time.Duration, error) {
@@ -794,33 +837,17 @@ func (p *Plugin) reserve(q quota, tokens int64) bool {
 	if tokens <= 0 || tokens > q.limit {
 		return false
 	}
-	accepted := false
-	p.counters.Mutate(q.key, func(current counter, now time.Time) (counter, time.Duration, bool) {
-		if current.reset.IsZero() || !now.Before(current.reset) {
-			current = counter{reset: now.Add(q.window)}
-		}
-		if current.used > q.limit-tokens {
-			return current, 0, false
-		}
-		current.used += tokens
-		accepted = true
-		return current, max(current.reset.Sub(now), 0), true
-	})
-	return accepted
+	return p.rateLimitState.FixedWindow(q.key, q.limit, tokens, q.window, false).Allowed
 }
 
 func (p *Plugin) reconcile(q quota, delta int64, create bool) {
-	delta = max(min(delta, q.limit), -q.limit)
-	p.counters.Mutate(q.key, func(current counter, now time.Time) (counter, time.Duration, bool) {
-		if current.reset.IsZero() || !now.Before(current.reset) {
-			if !create {
-				return current, 0, false
-			}
-			current = counter{reset: now.Add(q.window)}
-		}
-		current.used = max(min(current.used+delta, q.limit), 0)
-		return current, max(current.reset.Sub(now), 0), true
-	})
+	if delta > 0 {
+		p.rateLimitState.FixedWindow(q.key, q.limit, delta, q.window, true)
+		return
+	}
+	if delta < 0 {
+		p.rateLimitState.AdjustFixedWindow(q.key, q.limit, delta, q.window, create)
+	}
 }
 
 func (p *Plugin) responseTokenCost(body []byte) int64 {
@@ -1019,17 +1046,8 @@ func (p *Plugin) writeQuotaHeadersWithCredit(
 }
 
 func (p *Plugin) snapshot(q quota) (int64, int64) {
-	used := int64(0)
-	reset := max(int64(math.Ceil(q.window.Seconds())), 0)
-	p.counters.Mutate(q.key, func(current counter, now time.Time) (counter, time.Duration, bool) {
-		if current.reset.IsZero() || !now.Before(current.reset) {
-			return current, 0, false
-		}
-		used = current.used
-		reset = max(int64(math.Ceil(current.reset.Sub(now).Seconds())), 0)
-		return current, 0, false
-	})
-	return used, reset
+	state := p.rateLimitState.FixedWindowSnapshot(q.key, q.limit, q.window)
+	return q.limit - state.Remaining, max(int64(math.Ceil(state.Reset.Seconds())), 0)
 }
 
 func (p *Plugin) reject(w http.ResponseWriter) {

@@ -180,6 +180,51 @@ func TestSnapshotDigestIsIndependentOfInputOrder(t *testing.T) {
 	}
 }
 
+func TestSnapshotPreservesAPISIXSourceIdentity(t *testing.T) {
+	origin := ResourceOrigin{
+		Provider:      "etcd",
+		ResourceKey:   "//custom///routes/r1",
+		ModifiedIndex: "42",
+	}
+	snapshot, err := NewSnapshotWithSource(4, []Resource{{
+		Key:    ResourceKey{Kind: "routes", ID: "r1"},
+		Origin: origin,
+		Value:  []byte(`{"id":"r1"}`),
+	}}, nil, map[string]string{"routes": "7", "consumers": "3"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resources := snapshot.Resources()
+	if len(resources) != 1 || resources[0].Origin != origin {
+		t.Fatalf("resource origin = %#v, want %#v", resources, origin)
+	}
+	if got, ok := snapshot.CollectionVersion("routes"); !ok || got != "7" {
+		t.Fatalf("routes collection version = %q, %t, want 7, true", got, ok)
+	}
+
+	resources[0].Origin.ResourceKey = "changed"
+	versions := snapshot.CollectionVersions()
+	versions["routes"] = "changed"
+	cloned := snapshot.Clone()
+	if cloned.Resources()[0].Origin != origin {
+		t.Fatalf("Clone() resource origin = %#v, want %#v", cloned.Resources()[0].Origin, origin)
+	}
+	if got, _ := cloned.CollectionVersion("routes"); got != "7" {
+		t.Fatalf("Clone() routes collection version = %q, want 7", got)
+	}
+
+	changed, err := NewSnapshotWithSource(4, snapshot.Resources(), nil, map[string]string{
+		"routes": "8", "consumers": "3",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Digest() == changed.Digest() {
+		t.Fatal("snapshot digest ignored APISIX collection versions")
+	}
+}
+
 func TestSnapshotDigestGoldenCanonicalJSON(t *testing.T) {
 	snapshot, err := NewSnapshot(11, []Resource{{
 		Key:   ResourceKey{Kind: "routes", ID: "r1"},

@@ -2,22 +2,19 @@ cases:
     - config:
         consumers:
             - plugins:
-                ai-rate-limiting:
-                    limit: 30
-                    time_window: 60
                 key-auth:
                     key: jack1
               username: jack1
             - plugins:
-                ai-rate-limiting:
-                    limit: 30
-                    time_window: 60
                 key-auth:
                     key: jack2
               username: jack2
         routes:
             - id: ai-rate-consumer-isolation
               plugins:
+                ai-rate-limiting:
+                    limit: 30
+                    time_window: 60
                 key-auth: {}
               upstream:
                 nodes:
@@ -26,8 +23,8 @@ cases:
               uri: /ai
       fixtures:
         - count:
-            at_least: 6
-            at_most: 6
+            at_least: 3
+            at_most: 3
           expect:
             - method: POST
               path:
@@ -39,7 +36,7 @@ cases:
               headers:
                 Content-Type: application/json
               status: 200
-      name: consumer-route-resource-is-available
+      name: route-quota-is-shared-by-authenticated-consumers
       steps:
         - input:
             body: '{"messages":[{"role":"user","content":"hello"}]}'
@@ -90,37 +87,7 @@ cases:
                 apikey: jack2
             method: POST
             path: /ai
-          name: jack2-first
-          output:
-            status: 200
-        - input:
-            body: '{"messages":[{"role":"user","content":"hello"}]}'
-            headers:
-                Content-Type: application/json
-                apikey: jack2
-            method: POST
-            path: /ai
-          name: jack2-second
-          output:
-            status: 200
-        - input:
-            body: '{"messages":[{"role":"user","content":"hello"}]}'
-            headers:
-                Content-Type: application/json
-                apikey: jack2
-            method: POST
-            path: /ai
-          name: jack2-third
-          output:
-            status: 200
-        - input:
-            body: '{"messages":[{"role":"user","content":"hello"}]}'
-            headers:
-                Content-Type: application/json
-                apikey: jack2
-            method: POST
-            path: /ai
-          name: jack2-fourth-is-rejected
+          name: jack2-first-is-rejected-by-shared-route-quota
           output:
             body:
                 matches: Service Unavailable

@@ -74,9 +74,10 @@ func newEtcdTestConfigClient(applier generation.DesiredApplier) *ConfigClient {
 		prefix: "/apisix/", applier: applier,
 		requestTimeout: time.Second, healthCheckInterval: time.Hour,
 		knownKeys: make(map[string]int64), tombstones: make(map[string]int64),
-		quarantine:  make(map[string]int64),
-		decisions:   make(map[generation.Domain][]generation.ResourceDecision),
-		lifetimeCtx: lifetimeCtx, cancelLifetime: cancelLifetime,
+		quarantine:         make(map[string]int64),
+		decisions:          make(map[generation.Domain][]generation.ResourceDecision),
+		collectionVersions: make(map[string]uint64),
+		lifetimeCtx:        lifetimeCtx, cancelLifetime: cancelLifetime,
 		reporters: make(map[*ServerInfoReporter]struct{}),
 	}
 }
@@ -150,6 +151,28 @@ func TestDesiredBatchFromEtcdSnapshotReplacesManagedNamespace(t *testing.T) {
 	value[0] = 'x'
 	if string(batch.Mutations[0].Value) != `{"id":"r1"}` {
 		t.Fatal("snapshot mutation aliases etcd response value")
+	}
+}
+
+func TestDesiredBatchFromEtcdPreservesAPISIXSourceIdentity(t *testing.T) {
+	batch, err := desiredBatchFromEtcdSnapshot("apisix", &clientv3.GetResponse{
+		Header: &etcdserverpb.ResponseHeader{ClusterId: 0xabc, Revision: 71},
+		Kvs: []*mvccpb.KeyValue{{
+			Key: []byte("/apisix/routes/r1"), Value: []byte(`{"id":"r1"}`), ModRevision: 69,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := generation.ResourceOrigin{
+		Provider:    etcdProviderID(0xabc, "apisix"),
+		ResourceKey: "/apisix/routes/r1", ModifiedIndex: "69",
+	}
+	if len(batch.Mutations) != 1 || batch.Mutations[0].Origin != want {
+		t.Fatalf("snapshot mutation origin = %#v, want %#v", batch.Mutations, want)
+	}
+	if batch.CollectionVersions["routes"] != "1" {
+		t.Fatalf("snapshot routes collection version = %q, want 1", batch.CollectionVersions["routes"])
 	}
 }
 
@@ -406,6 +429,46 @@ func TestConfigClientWatchAdvancesOnlyAfterAcknowledgement(t *testing.T) {
 	}
 	if client.lastRevision != 7 || !reflect.DeepEqual(client.knownKeys, map[string]int64{"/apisix/routes/old": 7}) {
 		t.Fatalf("state advanced before acknowledgement: %+v", client.snapshotAcknowledgedState())
+	}
+}
+
+func TestConfigClientCommitsCollectionVersionOnlyAfterAcknowledgement(t *testing.T) {
+	wantErr := errors.New("compile failed")
+	attempt := 0
+	applier := &recordingDesiredApplier{apply: func(
+		_ context.Context,
+		batch generation.DesiredBatch,
+	) (generation.Acknowledgement, error) {
+		attempt++
+		if attempt == 1 {
+			return generation.Acknowledgement{}, wantErr
+		}
+		return acknowledgedEtcdTestBatch(batch, uint64(attempt), generation.DispositionPublished), nil
+	}}
+	client := newEtcdTestConfigClient(applier)
+	response := etcdWatchPut(1, 14, 12, "/apisix/routes/new")
+	if err := client.applyWatchResponse(context.Background(), response); !errors.Is(err, wantErr) {
+		t.Fatalf("first apply error = %v, want %v", err, wantErr)
+	}
+	if len(client.collectionVersions) != 0 {
+		t.Fatalf("collection versions advanced after rejected publication: %#v", client.collectionVersions)
+	}
+	if err := client.applyWatchResponse(context.Background(), response); err != nil {
+		t.Fatal(err)
+	}
+	batches := applier.recordedBatches()
+	if batches[0].CollectionVersions["routes"] != "1" ||
+		batches[1].CollectionVersions["routes"] != "1" || client.collectionVersions["routes"] != 1 {
+		t.Fatalf("collection versions after retry = batches:%#v committed:%#v", batches, client.collectionVersions)
+	}
+	if err := client.applyWatchResponse(
+		context.Background(), etcdWatchPut(1, 15, 15, "/apisix/routes/new"),
+	); err != nil {
+		t.Fatal(err)
+	}
+	batches = applier.recordedBatches()
+	if batches[2].CollectionVersions["routes"] != "2" || client.collectionVersions["routes"] != 2 {
+		t.Fatalf("next event collection versions = batch:%#v committed:%#v", batches[2], client.collectionVersions)
 	}
 }
 

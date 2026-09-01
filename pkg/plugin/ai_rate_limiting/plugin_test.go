@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -33,13 +32,10 @@ func newTestPlugin(t *testing.T, cfg Config, now func() time.Time) *Plugin {
 	return p
 }
 
-func localCounterUsed(t *testing.T, p *Plugin, key string) int64 {
+func localCounterUsed(t *testing.T, p *Plugin, key string, limit int64) int64 {
 	t.Helper()
-	state, ok := p.counters.Get(key)
-	if !ok {
-		return 0
-	}
-	return state.used
+	state := p.rateLimitState.FixedWindowSnapshot(key, limit, time.Minute)
+	return limit - state.Remaining
 }
 
 func TestHandlerChargesTotalTokensAndRejectsNextRequest(t *testing.T) {
@@ -87,7 +83,7 @@ func TestHandlerChargesTotalTokensAndRejectsNextRequest(t *testing.T) {
 	}
 }
 
-func TestHandlerIsolatesGlobalQuotaByAuthenticatedConsumer(t *testing.T) {
+func TestHandlerSharesGlobalQuotaAcrossAuthenticatedConsumers(t *testing.T) {
 	p := newTestPlugin(t, Config{Limit: 10, TimeWindow: 60}, time.Now)
 	upstream := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"usage":{"total_tokens":10}}`))
@@ -103,14 +99,8 @@ func TestHandlerIsolatesGlobalQuotaByAuthenticatedConsumer(t *testing.T) {
 
 	jack2 := httptest.NewRecorder()
 	p.Handler(upstream).ServeHTTP(jack2, request("jack2"))
-	if jack2.Code != http.StatusOK {
-		t.Fatalf("jack2 response code = %d, want isolated quota", jack2.Code)
-	}
-
-	jack1 := httptest.NewRecorder()
-	p.Handler(upstream).ServeHTTP(jack1, request("jack1"))
-	if jack1.Code != http.StatusServiceUnavailable {
-		t.Fatalf("jack1 response code = %d, want exhausted quota", jack1.Code)
+	if jack2.Code != http.StatusServiceUnavailable {
+		t.Fatalf("jack2 response code = %d, want shared exhausted quota", jack2.Code)
 	}
 }
 
@@ -530,10 +520,10 @@ func TestAIProxyMultiFallbackPublishesOnlyFinalInstanceHeaders(t *testing.T) {
 		t.Fatalf("response status = %d, want 200", response.Code)
 	}
 	assertFinalInstanceHeaders(t, response.Header(), "model-b", "20")
-	if got := localCounterUsed(t, rate, "instance:model-b"); got != 3 {
+	if got := localCounterUsed(t, rate, "instance:model-b", 20); got != 3 {
 		t.Fatalf("model-b used tokens = %d, want 3", got)
 	}
-	if got := localCounterUsed(t, rate, "instance:model-a"); got != 0 {
+	if got := localCounterUsed(t, rate, "instance:model-a", 10); got != 0 {
 		t.Fatalf("retryable model-a used tokens = %d, want 0", got)
 	}
 }
@@ -573,10 +563,10 @@ func TestAIProxyMultiStreamingFallbackPublishesOnlyFinalInstanceHeaders(t *testi
 		t.Fatal("streaming fallback response was not flushed")
 	}
 	assertFinalInstanceHeaders(t, response.Header(), "model-b", "20")
-	if got := localCounterUsed(t, rate, "instance:model-b"); got != 6 {
+	if got := localCounterUsed(t, rate, "instance:model-b", 20); got != 6 {
 		t.Fatalf("model-b used tokens = %d, want 6", got)
 	}
-	if got := localCounterUsed(t, rate, "instance:model-a"); got != 0 {
+	if got := localCounterUsed(t, rate, "instance:model-a", 10); got != 0 {
 		t.Fatalf("retryable model-a stream used tokens = %d, want 0", got)
 	}
 }
@@ -636,7 +626,7 @@ func assertFinalInstanceHeaders(t *testing.T, header http.Header, instance, rema
 	}
 }
 
-func TestGlobalQuotaUsesSelectedInstanceCounter(t *testing.T) {
+func TestGlobalQuotaUsesSharedCounterForUnknownSelectedInstances(t *testing.T) {
 	p := newTestPlugin(t, Config{Limit: 10, TimeWindow: 60}, time.Now)
 	for _, instance := range []string{"model-a", "model-b"} {
 		request := WithPickedAIInstanceName(httptest.NewRequest(http.MethodPost, "/", nil), instance)
@@ -644,8 +634,11 @@ func TestGlobalQuotaUsesSelectedInstanceCounter(t *testing.T) {
 		if err != nil || !ok {
 			t.Fatalf("quotaForRequest(%q) = (%#v, %v, %v)", instance, q, ok, err)
 		}
-		if q.key != "instance:"+instance {
-			t.Fatalf("quota key = %q, want instance:%s", q.key, instance)
+		if q.key != "global" {
+			t.Fatalf("quota key = %q, want global", q.key)
+		}
+		if q.headerName != instance {
+			t.Fatalf("quota header name = %q, want %q", q.headerName, instance)
 		}
 	}
 }
@@ -1387,7 +1380,7 @@ func TestResponseTokenCostPreservesFixedStrategies(t *testing.T) {
 	}
 }
 
-func TestConcurrentRequestPhaseReservesQuotaAtomically(t *testing.T) {
+func TestConcurrentRequestPhaseUsesOfficialDryRun(t *testing.T) {
 	p := newTestPlugin(t, Config{Limit: 1, TimeWindow: 60}, time.Now)
 	const requests = 100
 	start := make(chan struct{})
@@ -1409,29 +1402,17 @@ func TestConcurrentRequestPhaseReservesQuotaAtomically(t *testing.T) {
 	}
 	close(start)
 	wait.Wait()
-	if got := allowed.Load(); got != 1 {
-		t.Fatalf("concurrent admissions = %d, want exactly 1", got)
+	if got := allowed.Load(); got != requests {
+		t.Fatalf("concurrent dry-run admissions = %d, want %d", got, requests)
 	}
 }
 
-func TestLocalQuotaStateIsBoundedAndResponseDeltaIsCapped(t *testing.T) {
+func TestLocalQuotaStateCommitsOfficialResponseCost(t *testing.T) {
 	p := newTestPlugin(t, Config{Limit: 10, TimeWindow: 60}, time.Now)
 	q := quota{key: "bounded-delta", limit: 10, window: time.Minute}
 	p.reconcile(q, 1000, true)
-	if got := localCounterUsed(t, p, q.key); got != q.limit {
-		t.Fatalf("charged counter = %d, want capped limit %d", got, q.limit)
-	}
-
-	const capacity = 100000
-	for i := 0; i <= capacity; i++ {
-		p.reserve(quota{
-			key:    "high-cardinality-" + strconv.Itoa(i),
-			limit:  10,
-			window: time.Minute,
-		}, 1)
-	}
-	if got := p.counters.Len(); got > capacity {
-		t.Fatalf("live AI quota counters = %d, want at most %d", got, capacity)
+	if got := localCounterUsed(t, p, q.key, q.limit); got != 1000 {
+		t.Fatalf("charged counter = %d, want official committed cost 1000", got)
 	}
 }
 

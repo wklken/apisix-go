@@ -96,6 +96,14 @@ func StandaloneConfigFile(provider string) string {
 // snapshot. The cursor binds the translation contract to the exact canonical
 // mutation bytes.
 func desiredBatchFromStandalone(snapshot standaloneSnapshot) generation.DesiredBatch {
+	return desiredBatchFromStandaloneWithSource(snapshot, "", "")
+}
+
+func desiredBatchFromStandaloneWithSource(
+	snapshot standaloneSnapshot,
+	provider string,
+	collectionVersion string,
+) generation.DesiredBatch {
 	batch := generation.DesiredBatch{
 		Cursor: generation.ProviderCursor{
 			Provider: "standalone/v1",
@@ -104,11 +112,24 @@ func desiredBatchFromStandalone(snapshot standaloneSnapshot) generation.DesiredB
 	}
 	for kind, resources := range snapshot {
 		for id, value := range resources {
-			batch.Mutations = append(batch.Mutations, generation.Mutation{
+			mutation := generation.Mutation{
 				Type:  generation.MutationPut,
 				Key:   generation.ResourceKey{Kind: kind, ID: id},
 				Value: bytes.Clone(value),
-			})
+			}
+			if provider != "" && collectionVersion != "" {
+				mutation.Origin = generation.ResourceOrigin{
+					Provider: provider, ResourceKey: "/" + kind + "/" + id,
+					ModifiedIndex: collectionVersion,
+				}
+			}
+			batch.Mutations = append(batch.Mutations, mutation)
+		}
+	}
+	if provider != "" && collectionVersion != "" {
+		batch.CollectionVersions = make(map[string]string, len(standaloneBuckets))
+		for _, kind := range standaloneBuckets {
+			batch.CollectionVersions[kind] = collectionVersion
 		}
 	}
 	sort.Slice(batch.Mutations, func(i, j int) bool {
@@ -118,6 +139,12 @@ func desiredBatchFromStandalone(snapshot standaloneSnapshot) generation.DesiredB
 		return batch.Mutations[i].Key.ID < batch.Mutations[j].Key.ID
 	})
 	digest := digestStandaloneMutations(batch.Mutations)
+	if provider != "" && collectionVersion != "" {
+		identity := append([]byte(nil), digest[:]...)
+		identity = appendStandaloneDigestString(identity, provider)
+		identity = appendStandaloneDigestString(identity, collectionVersion)
+		digest = sha256.Sum256(identity)
+	}
 	batch.Cursor.Revision = fmt.Sprintf("sha256:%x", digest)
 
 	// Replacement implicitly deletes omitted resources, so domain impact comes
@@ -309,7 +336,16 @@ func (w *StandaloneFileWatcher) reconcile() error {
 		metrics.RecordConfigApplyAttemptFailure("standalone", "translate")
 		return err
 	}
-	batch := desiredBatchFromStandalone(snapshot)
+	fileInfo, err := os.Stat(w.path)
+	if err != nil {
+		metrics.RecordConfigApplyAttemptFailure("standalone", "translate")
+		return fmt.Errorf("stat standalone config %q: %w", w.path, err)
+	}
+	batch := desiredBatchFromStandaloneWithSource(
+		snapshot,
+		w.provider,
+		fmt.Sprintf("%d", fileInfo.ModTime().Unix()),
+	)
 	if err := w.beginApply(); err != nil {
 		return err
 	}

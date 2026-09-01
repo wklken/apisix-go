@@ -18,6 +18,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/plugin/limitbase"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/secret"
 	"github.com/wklken/apisix-go/pkg/testutil"
@@ -158,6 +159,53 @@ type blockingWorkflowContextChild struct {
 	entered chan struct{}
 	release chan struct{}
 	onSet   func()
+}
+
+type workflowRuntimeContextChild struct {
+	pluginContext base.APISIXPluginContext
+	state         *limitbase.State
+}
+
+func (*workflowRuntimeContextChild) Init() error       { return nil }
+func (*workflowRuntimeContextChild) PostInit() error   { return nil }
+func (*workflowRuntimeContextChild) Config() any       { return &struct{}{} }
+func (*workflowRuntimeContextChild) GetSchema() string { return `{}` }
+func (child *workflowRuntimeContextChild) SetRateLimitState(state *limitbase.State) {
+	child.state = state
+}
+
+func (child *workflowRuntimeContextChild) SetAPISIXPluginContext(
+	pluginContext base.APISIXPluginContext,
+) error {
+	child.pluginContext = pluginContext
+	return nil
+}
+
+func TestAPISIX317WorkflowPropagatesRuleIdentityAndSharedLimiterState(t *testing.T) {
+	first := &workflowRuntimeContextChild{}
+	second := &workflowRuntimeContextChild{}
+	plugin := &Plugin{children: map[actionPosition]workflowChild{
+		{rule: 0, action: 0}: first,
+		{rule: 1, action: 0}: second,
+	}}
+	state := limitbase.NewState()
+	plugin.SetRateLimitState(state)
+	if err := plugin.SetAPISIXPluginContext(base.APISIXPluginContext{
+		ConfigType: "route", ConfigVersion: "11",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if first.state != state || second.state != state {
+		t.Fatal("workflow limiter children did not receive the process-scoped state")
+	}
+	if first.pluginContext.WorkflowVID != 1 || second.pluginContext.WorkflowVID != 2 {
+		t.Fatalf(
+			"workflow vids = %d/%d, want one-based APISIX rule indexes",
+			first.pluginContext.WorkflowVID,
+			second.pluginContext.WorkflowVID,
+		)
+	}
 }
 
 func (*blockingWorkflowContextChild) Init() error       { return nil }

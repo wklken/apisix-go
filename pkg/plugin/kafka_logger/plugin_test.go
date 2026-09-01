@@ -550,12 +550,8 @@ func TestKafkaStopDrainsActiveSendAndPreventsResurrection(t *testing.T) {
 		len(p.saslPasswords) != 0 || len(p.saslBrokerIndexes) != 0 {
 		t.Fatal("Stop retained Kafka writer, processor, or private password owners")
 	}
-	queued := len(p.FireChan)
 	if err := p.RunLogPhase(base.LogSnapshot{}); !errors.Is(err, base.ErrLogQueueUnavailable) {
 		t.Fatalf("post-Stop RunLogPhase() error = %v", err)
-	}
-	if len(p.FireChan) != queued {
-		t.Fatal("post-Stop RunLogPhase enqueued work")
 	}
 	if _, err := p.SendBatch(
 		context.Background(),

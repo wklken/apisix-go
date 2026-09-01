@@ -852,12 +852,8 @@ func TestCLSStopDrainsActiveSendAndPreventsResurrection(t *testing.T) {
 		t.Fatalf("retired state retained resources: client=%v batch=%v key=%t prepared=%t ready=%t",
 			p.client != nil, p.BatchProcessor != nil, p.secretKeySet, p.secretsPrepared, p.ready)
 	}
-	before := len(p.FireChan)
 	if err := p.RunLogPhase(base.LogSnapshot{}); !errors.Is(err, base.ErrLogQueueUnavailable) {
 		t.Fatalf("post-Stop RunLogPhase() error = %v", err)
-	}
-	if len(p.FireChan) != before {
-		t.Fatal("post-Stop log phase enqueued work")
 	}
 	if _, err := p.SendBatch(context.Background(), []map[string]any{{"late": true}}, 1); err == nil {
 		t.Fatal("SendBatch() after Stop error = nil, want fail closed")

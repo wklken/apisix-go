@@ -432,10 +432,8 @@ func TestBaseLoggerConfigurationDefaultsAndCompatibilityHandler(t *testing.T) {
 
 	plugin := &BaseLoggerPlugin{}
 	plugin.SetRouteContext("route-1", "127.0.0.1:9080")
-	plugin.InitLogger(func(map[string]any) {})
 	plugin.BatchProcessor = processor
-	if plugin.RouteID != "route-1" || plugin.ServerAddr != "127.0.0.1:9080" ||
-		plugin.FireChan == nil || !plugin.AsyncBlock || plugin.SendFunc == nil {
+	if plugin.RouteID != "route-1" || plugin.ServerAddr != "127.0.0.1:9080" {
 		t.Fatalf("logger initialization = %#v", plugin)
 	}
 

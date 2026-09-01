@@ -431,12 +431,8 @@ func TestLagoStopDrainsActiveSendAndPreventsResurrection(t *testing.T) {
 	); !errors.Is(err, secret.ErrCredentialUnavailable) {
 		t.Fatalf("post-Stop SendBatch() error = %v", err)
 	}
-	queued := len(p.FireChan)
 	if err := p.RunLogPhase(base.LogSnapshot{}); !errors.Is(err, base.ErrLogQueueUnavailable) {
 		t.Fatalf("post-Stop RunLogPhase() error = %v", err)
-	}
-	if len(p.FireChan) != queued {
-		t.Fatal("post-Stop RunLogPhase enqueued work")
 	}
 	nextCalled := false
 	handler := p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
@@ -445,9 +441,6 @@ func TestLagoStopDrainsActiveSendAndPreventsResurrection(t *testing.T) {
 	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
 	if !nextCalled {
 		t.Fatal("post-Stop handler did not call next")
-	}
-	if len(p.FireChan) != queued {
-		t.Fatal("post-Stop handler enqueued work")
 	}
 	if err := p.PostInit(); !errors.Is(err, secret.ErrCredentialUnavailable) {
 		t.Fatalf("post-Stop PostInit() error = %v", err)
@@ -467,12 +460,8 @@ func TestLagoRejectsPrePostInitLogEnqueue(t *testing.T) {
 	); err != nil {
 		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
 	}
-	before := len(p.FireChan)
 	if err := p.RunLogPhase(base.LogSnapshot{}); !errors.Is(err, base.ErrLogQueueUnavailable) {
 		t.Fatalf("pre-PostInit RunLogPhase() error = %v", err)
-	}
-	if len(p.FireChan) != before {
-		t.Fatal("pre-PostInit log phase enqueued into the unowned FireChan")
 	}
 	p.Stop()
 }

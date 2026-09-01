@@ -527,12 +527,8 @@ func TestLogglyStopDrainsActiveSendAndPreventsResurrection(t *testing.T) {
 		p.tokenSet || p.secretsPrepared || p.ready {
 		t.Fatal("Stop retained client, processor, or private token")
 	}
-	before := len(p.FireChan)
 	if err := p.RunLogPhase(base.LogSnapshot{}); !errors.Is(err, base.ErrLogQueueUnavailable) {
 		t.Fatalf("post-Stop RunLogPhase() error = %v", err)
-	}
-	if len(p.FireChan) != before {
-		t.Fatal("post-Stop log phase enqueued work")
 	}
 	if _, err := p.SendBatch(
 		context.Background(), []map[string]any{{"late": true}}, 1,

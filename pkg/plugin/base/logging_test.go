@@ -450,22 +450,6 @@ func TestExprMatchedTruthTable(t *testing.T) {
 	}
 }
 
-func TestInitLogger(t *testing.T) {
-	p := &BaseLoggerPlugin{}
-	send := func(map[string]any) {}
-	p.InitLogger(send)
-
-	if p.FireChan == nil {
-		t.Fatal("FireChan not initialized")
-	}
-	if !p.AsyncBlock {
-		t.Fatal("AsyncBlock = false, want true")
-	}
-	if p.SendFunc == nil {
-		t.Fatal("SendFunc not set")
-	}
-}
-
 func TestApplyBatchDefaults(t *testing.T) {
 	d := BatchDefaults{}
 	ApplyBatchDefaults(&d)

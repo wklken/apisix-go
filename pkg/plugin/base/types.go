@@ -93,9 +93,6 @@ const (
 type BaseLoggerPlugin struct {
 	BasePlugin
 
-	FireChan   chan map[string]any
-	AsyncBlock bool
-
 	LogFormat map[string]string
 	// SnapshotLogFormat is used by plugins whose public log format supports
 	// nested values. LogFormat remains the compatibility representation for
@@ -107,7 +104,6 @@ type BaseLoggerPlugin struct {
 	RequestBodyBytes       int
 	ResponseBodyBytes      int
 
-	SendFunc       func(log map[string]any)
 	BatchProcessor *logger_batch.Processor
 	RouteID        string
 	ServerAddr     string
@@ -391,14 +387,6 @@ func (p *BaseLoggerPlugin) SetLogCapturePolicy(
 func (p *BaseLoggerPlugin) SetSnapshotLogFormat(format, extra map[string]any) {
 	p.SnapshotLogFormat = format
 	p.SnapshotLogFormatExtra = extra
-}
-
-// InitLogger initializes the buffered fire channel, blocking policy and the
-// per-plugin Send function.
-func (p *BaseLoggerPlugin) InitLogger(send func(map[string]any)) {
-	p.FireChan = make(chan map[string]any, 1000)
-	p.AsyncBlock = true
-	p.SendFunc = send
 }
 
 // BatchDefaults carries the per-plugin batch configuration values in seconds.

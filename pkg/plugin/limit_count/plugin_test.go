@@ -2,6 +2,7 @@ package limit_count
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"net/http"
@@ -2909,7 +2910,7 @@ func testDelayedSyncerRedisAdmissionRollback(t *testing.T, windowType string, po
 }
 
 func limitCountRedisClientKeyForTest(plugin *Plugin) string {
-	_, hostDigest, _ := plugin.limitCountCredentialDigests()
+	hostDigest := sha256.Sum256([]byte(plugin.config.RedisHost))
 	configUID := shared.NewConfigUID()
 	configUID.Add(
 		plugin.config.Policy,

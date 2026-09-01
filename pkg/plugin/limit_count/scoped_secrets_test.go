@@ -272,6 +272,81 @@ func TestPrepareConsumerConfigAdmitsLiteralValues(t *testing.T) {
 	}
 }
 
+func TestPrepareConsumerConfigSeparatesLiteralRedisBackends(t *testing.T) {
+	prepare := func(t *testing.T, config Config) *Plugin {
+		t.Helper()
+		p := &Plugin{config: config}
+		if err := p.Init(); err != nil {
+			t.Fatalf("Init() error = %v", err)
+		}
+		if err := p.PrepareConsumerConfig(); err != nil {
+			t.Fatalf("PrepareConsumerConfig() error = %v", err)
+		}
+		if err := p.PostInit(); err != nil {
+			t.Fatalf("PostInit() error = %v", err)
+		}
+		t.Cleanup(p.Stop)
+		return p
+	}
+
+	t.Run("redis hosts", func(t *testing.T) {
+		hosts := []string{"literal-a.test", "literal-b.test", "literal-a.test"}
+		clients := make([]redis.UniversalClient, 0, len(hosts))
+		for _, host := range hosts {
+			p := prepare(t, Config{
+				Count: 1, TimeWindow: 60, Policy: "redis", RedisHost: host,
+			})
+			client, err := p.redisBackendClient()
+			if err != nil {
+				t.Fatal(err)
+			}
+			clients = append(clients, client)
+		}
+		if clients[0] == clients[1] {
+			t.Fatal("different literal hosts shared one Redis client")
+		}
+		if clients[0] != clients[2] {
+			t.Fatal("identical literal hosts did not share one Redis client")
+		}
+		for index, want := range []string{
+			"literal-a.test:6379", "literal-b.test:6379", "literal-a.test:6379",
+		} {
+			if got := clients[index].(*redis.Client).Options().Addr; got != want {
+				t.Fatalf("client[%d] address = %q, want %q", index, got, want)
+			}
+		}
+	})
+
+	t.Run("redis cluster nodes", func(t *testing.T) {
+		wantNodes := [][]string{
+			{"literal-a.test:6379"}, {"literal-b.test:6379"}, {"literal-a.test:6379"},
+		}
+		clients := make([]redis.UniversalClient, 0, len(wantNodes))
+		for _, nodes := range wantNodes {
+			p := prepare(t, Config{
+				Count: 1, TimeWindow: 60, Policy: "redis-cluster",
+				RedisClusterNodes: slices.Clone(nodes), RedisClusterName: "cluster",
+			})
+			client, err := p.redisBackendClient()
+			if err != nil {
+				t.Fatal(err)
+			}
+			clients = append(clients, client)
+		}
+		if clients[0] == clients[1] {
+			t.Fatal("different literal cluster nodes shared one Redis client")
+		}
+		if clients[0] != clients[2] {
+			t.Fatal("identical literal cluster nodes did not share one Redis client")
+		}
+		for index, want := range wantNodes {
+			if got := clients[index].(*redis.ClusterClient).Options().Addrs; !slices.Equal(got, want) {
+				t.Fatalf("client[%d] addresses = %#v, want %#v", index, got, want)
+			}
+		}
+	})
+}
+
 func TestPrepareConsumerConfigRejectsUnmaterializedSecret(t *testing.T) {
 	p := &Plugin{config: Config{
 		Count: 1, TimeWindow: 60, Key: "$ENV://LIMIT_COUNT_CONSUMER_KEY",
@@ -643,7 +718,7 @@ func TestLimitCountStopDrainsScopedCallbacksAndDestroysSecrets(t *testing.T) {
 	p.credentialMu.Lock()
 	retained := p.scopedKeySecret != (secret.Value{}) ||
 		p.scopedRedisHost != (secret.Value{}) || len(p.scopedRedisClusterNodes) != 0 ||
-		p.scopedSet || len(p.redisNodeDigests) != 0 || p.activeUses != 0
+		p.scopedSet || p.activeUses != 0
 	p.credentialMu.Unlock()
 	if retained {
 		t.Fatal("Stop() retained credential state")

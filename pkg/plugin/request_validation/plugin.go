@@ -28,6 +28,10 @@ type Plugin struct {
 	bodySecrets     []schemaSecret
 }
 
+type cjsonDecodeError string
+
+func (err cjsonDecodeError) Error() string { return string(err) }
+
 const (
 	// version  = "0.1"
 	priority = 2800
@@ -159,18 +163,17 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 				http.Error(w, p.rejectedMessage(err), p.config.RejectedCode)
 				return
 			}
-			if len(bytes.TrimSpace(body)) == 0 {
+			if len(body) == 0 {
 				err = fmt.Errorf("request body is required")
 				logger.Error(err.Error())
-				http.Error(w, p.rejectedMessage(err), p.config.RejectedCode)
+				writeBodyRejection(w, p.config.RejectedMsg, p.config.RejectedCode)
 				return
 			}
 
 			bodyData, bodyIsJSON, err := parseRequestBody(r, body)
 			if err != nil {
-				err = fmt.Errorf("failed to parse request body: %w", err)
-				logger.Error(err.Error())
-				http.Error(w, p.rejectedMessage(err), p.config.RejectedCode)
+				logger.Errorf("failed to parse request body: %v", err)
+				writeBodyRejection(w, p.rejectedMessage(err), p.config.RejectedCode)
 				return
 			}
 
@@ -281,6 +284,14 @@ func writeSchemaRejection(w http.ResponseWriter, message string, status int) {
 	_, _ = io.WriteString(w, message)
 }
 
+func writeBodyRejection(w http.ResponseWriter, message string, status int) {
+	if message == "" {
+		w.WriteHeader(status)
+		return
+	}
+	writeSchemaRejection(w, message, status)
+}
+
 func requestHeaders(r *http.Request) map[string]any {
 	headers := make(map[string]any, len(r.Header)*2+2)
 	for key := range r.Header {
@@ -359,9 +370,19 @@ func parseURLEncodedForm(data []byte) (map[string]any, error) {
 
 // FIXME: if this func show in another plugin, should be refactor, only do it once
 func parseJSON(data []byte) (any, error) {
-	trimmedData := strings.TrimSpace(string(data))
+	value := string(data)
+	trimmedData := strings.Trim(value, " \t\r\n")
 	if len(trimmedData) == 0 {
-		return nil, fmt.Errorf("empty JSON data")
+		return nil, cjsonDecodeError(fmt.Sprintf(
+			"Expected value but found T_END at character %d", len(data)+1,
+		))
+	}
+	first := trimmedData[0]
+	if !validJSONValueStart(first) {
+		position := len(value) - len(strings.TrimLeft(value, " \t\r\n")) + 1
+		return nil, cjsonDecodeError(fmt.Sprintf(
+			"Expected value but found invalid token at character %d", position,
+		))
 	}
 
 	var result any
@@ -378,6 +399,11 @@ func parseJSON(data []byte) (any, error) {
 		return nil, err
 	}
 	return result, nil
+}
+
+func validJSONValueStart(value byte) bool {
+	return value == '{' || value == '[' || value == '"' || value == '-' ||
+		(value >= '0' && value <= '9') || value == 't' || value == 'f' || value == 'n'
 }
 
 func normalizeAPISIXSchema(schema map[string]any) map[string]any {

@@ -73,18 +73,69 @@ const schema = `
                     {"type": "integer", "minimum": 1}
                   ]
                 },
-		"upstream": {
+                "upstream": {
                   "type": "object",
                   "properties": {
-                    "type": {"type": "string"},
-                    "scheme": {"type": "string"},
+                    "id": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 64,
+                          "pattern": "^[a-zA-Z0-9-_.]+$"
+                        },
+                        {"type": "integer", "minimum": 1}
+                      ]
+                    },
+                    "name": {"type": "string", "minLength": 1, "maxLength": 256},
+                    "desc": {"type": "string", "maxLength": 256},
+                    "labels": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "string",
+                        "pattern": "^\\S+$",
+                        "minLength": 1,
+                        "maxLength": 256
+                      }
+                    },
+                    "create_time": {"type": "integer"},
+                    "update_time": {"type": "integer"},
+                    "type": {"type": "string", "default": "roundrobin"},
+                    "scheme": {
+                      "type": "string",
+                      "enum": ["grpc", "grpcs", "http", "https", "tcp", "tls", "udp", "kafka"],
+                      "default": "http"
+                    },
                     "tls": {
                       "type": "object",
                       "properties": {
-                        "client_cert_id": {},
-                        "client_cert": {"type": "string"},
-                        "client_key": {"type": "string"},
-                        "verify": {"type": "boolean"}
+                        "client_cert_id": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 64,
+                              "pattern": "^[a-zA-Z0-9-_.]+$"
+                            },
+                            {"type": "integer", "minimum": 1}
+                          ]
+                        },
+                        "client_cert": {"type": "string", "minLength": 128, "maxLength": 65536},
+                        "client_key": {"type": "string", "minLength": 64, "maxLength": 65536},
+                        "verify": {"type": "boolean", "default": false}
+                      },
+                      "dependencies": {
+                        "client_cert": {"required": ["client_key"]},
+                        "client_key": {"required": ["client_cert"]},
+                        "client_cert_id": {"not": {"required": ["client_cert", "client_key"]}}
+                      }
+                    },
+                    "keepalive_pool": {
+                      "type": "object",
+                      "properties": {
+                        "size": {"type": "integer", "minimum": 1, "default": 320},
+                        "idle_timeout": {"type": "number", "minimum": 0, "default": 60},
+                        "requests": {"type": "integer", "minimum": 1, "default": 1000}
                       }
                     },
                     "pass_host": {
@@ -92,24 +143,160 @@ const schema = `
                       "enum": ["pass", "node", "rewrite"],
                       "default": "pass"
                     },
-					"upstream_host": {"type": "string", "minLength": 1},
-					"hash_on": {
-						"type": "string",
-						"enum": ["vars", "header", "cookie", "consumer", "vars_combinations"]
-					},
-					"key": {"type": "string"},
-					"timeout": {
-						"type": "object",
-						"properties": {
-							"connect": {"type": "integer", "minimum": 0},
-							"send": {"type": "integer", "minimum": 0},
-							"read": {"type": "integer", "minimum": 0}
-						}
-					},
-					"checks": {"type": "object"},
-					"retries": {"type": "integer", "minimum": 0},
-					"nodes": {"type": ["array", "object"]}
-                  }
+                    "upstream_host": {
+                      "type": "string",
+                      "pattern": "^\\*$|^\\*?[0-9a-zA-Z-._\\[\\]:]+$"
+                    },
+                    "hash_on": {
+                      "type": "string",
+                      "enum": ["vars", "header", "cookie", "consumer", "vars_combinations"],
+                      "default": "vars"
+                    },
+                    "key": {"type": "string"},
+                    "timeout": {
+                      "type": "object",
+                      "properties": {
+                        "connect": {"type": "number", "exclusiveMinimum": 0},
+                        "send": {"type": "number", "exclusiveMinimum": 0},
+                        "read": {"type": "number", "exclusiveMinimum": 0}
+                      },
+                      "required": ["connect", "send", "read"]
+                    },
+                    "checks": {
+                      "type": "object",
+                      "properties": {
+                        "active": {
+                          "type": "object",
+                          "properties": {
+                            "type": {"type": "string", "enum": ["http", "https", "tcp"], "default": "http"},
+                            "timeout": {"type": "number", "default": 1},
+                            "concurrency": {"type": "integer", "default": 10},
+                            "host": {
+                              "type": "string",
+                              "pattern": "^\\*$|^\\*?[0-9a-zA-Z-._\\[\\]:]+$"
+                            },
+                            "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+                            "http_path": {"type": "string", "default": "/"},
+                            "https_verify_certificate": {"type": "boolean", "default": true},
+                            "healthy": {
+                              "type": "object",
+                              "properties": {
+                                "interval": {"type": "integer", "minimum": 1, "default": 1},
+                                "http_statuses": {
+                                  "type": "array",
+                                  "minItems": 1,
+                                  "items": {"type": "integer", "minimum": 200, "maximum": 599},
+                                  "uniqueItems": true,
+                                  "default": [200, 302]
+                                },
+                                "successes": {"type": "integer", "minimum": 1, "maximum": 254, "default": 2}
+                              }
+                            },
+                            "unhealthy": {
+                              "type": "object",
+                              "properties": {
+                                "interval": {"type": "integer", "minimum": 1, "default": 1},
+                                "http_statuses": {
+                                  "type": "array",
+                                  "minItems": 1,
+                                  "items": {"type": "integer", "minimum": 200, "maximum": 599},
+                                  "uniqueItems": true,
+                                  "default": [429, 404, 500, 501, 502, 503, 504, 505]
+                                },
+                                "http_failures": {"type": "integer", "minimum": 1, "maximum": 254, "default": 5},
+                                "tcp_failures": {"type": "integer", "minimum": 1, "maximum": 254, "default": 2},
+                                "timeouts": {"type": "integer", "minimum": 1, "maximum": 254, "default": 3}
+                              }
+                            },
+                            "req_headers": {
+                              "type": "array",
+                              "minItems": 1,
+                              "items": {"type": "string", "uniqueItems": true}
+                            }
+                          }
+                        },
+                        "passive": {
+                          "type": "object",
+                          "properties": {
+                            "type": {"type": "string", "enum": ["http", "https", "tcp"], "default": "http"},
+                            "healthy": {
+                              "type": "object",
+                              "properties": {
+                                "http_statuses": {
+                                  "type": "array",
+                                  "minItems": 1,
+                                  "items": {"type": "integer", "minimum": 200, "maximum": 599},
+                                  "uniqueItems": true,
+                                  "default": [200, 201, 202, 203, 204, 205, 206, 207, 208, 226, 300, 301, 302, 303, 304, 305, 306, 307, 308]
+                                },
+                                "successes": {"type": "integer", "minimum": 0, "maximum": 254, "default": 5}
+                              }
+                            },
+                            "unhealthy": {
+                              "type": "object",
+                              "properties": {
+                                "http_statuses": {
+                                  "type": "array",
+                                  "minItems": 1,
+                                  "items": {"type": "integer", "minimum": 200, "maximum": 599},
+                                  "uniqueItems": true,
+                                  "default": [429, 500, 503]
+                                },
+                                "tcp_failures": {"type": "integer", "minimum": 0, "maximum": 254, "default": 2},
+                                "timeouts": {"type": "integer", "minimum": 0, "maximum": 254, "default": 7},
+                                "http_failures": {"type": "integer", "minimum": 0, "maximum": 254, "default": 5}
+                              }
+                            }
+                          }
+                        }
+                      },
+                      "anyOf": [
+                        {"required": ["active"]},
+                        {"required": ["active", "passive"]}
+                      ]
+                    },
+                    "retries": {"type": "integer", "minimum": 0},
+                    "retry_timeout": {"type": "number", "minimum": 0},
+                    "discovery_type": {"type": "string"},
+                    "discovery_args": {
+                      "type": "object",
+                      "properties": {
+                        "namespace_id": {"type": "string"},
+                        "group_name": {"type": "string"}
+                      }
+                    },
+                    "service_name": {"type": "string", "minLength": 1, "maxLength": 256},
+                    "nodes": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "additionalProperties": {"type": "integer", "minimum": 0}
+                        },
+                        {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "host": {
+                                "type": "string",
+                                "pattern": "^\\*$|^\\*?[0-9a-zA-Z-._\\[\\]:]+$"
+                              },
+                              "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+                              "weight": {"type": "integer", "minimum": 0},
+                              "priority": {"type": "integer", "default": 0},
+                              "metadata": {"type": "object"}
+                            },
+                            "required": ["host", "weight"]
+                          }
+                        }
+                      ]
+                    }
+                  },
+                  "oneOf": [
+                    {"required": ["nodes"]},
+                    {"required": ["service_name", "discovery_type"]}
+                  ],
+                  "additionalProperties": false
                 },
                 "weight": {
                   "type": "integer",
@@ -147,6 +334,7 @@ type WeightedUpstream struct {
 }
 
 type Upstream struct {
+	Name         string                `json:"name,omitempty"`
 	Type         string                `json:"type,omitempty"`
 	Scheme       string                `json:"scheme,omitempty"`
 	TLS          *resource.UpstreamTLS `json:"tls,omitempty"`
@@ -373,6 +561,9 @@ func (p *Plugin) PostInit() error {
 			targetID := fmt.Sprintf("traffic-split-%d-%d", ruleIndex, upstreamIndex)
 			weight := configuredWeight(weightedUpstream.Weight, weightedUpstream.weightSet)
 			upstream := weightedUpstream.Upstream
+			if upstream != nil {
+				upstream = projectInlineUpstream(upstream)
+			}
 			if upstream == nil && weightedUpstream.UpstreamID != "" {
 				var err error
 				upstream, err = p.resolveUpstreamByID(weightedUpstream.UpstreamID)
@@ -511,6 +702,23 @@ func (p *Plugin) Config() any {
 // an explicit zero.
 func (u Upstream) RetriesConfigured() bool {
 	return u.retriesSet || u.Retries != 0
+}
+
+func projectInlineUpstream(source *Upstream) *Upstream {
+	if source == nil {
+		return nil
+	}
+	return &Upstream{
+		Name:         source.Name,
+		Type:         source.Type,
+		Scheme:       source.Scheme,
+		PassHost:     source.PassHost,
+		UpstreamHost: source.UpstreamHost,
+		HashOn:       source.HashOn,
+		Key:          source.Key,
+		Timeout:      source.Timeout,
+		Nodes:        append([]Node(nil), source.Nodes...),
+	}
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
@@ -817,6 +1025,7 @@ func splitAddr(addr string) (string, int) {
 
 func upstreamFromResource(stored resource.Upstream) *Upstream {
 	upstream := &Upstream{
+		Name:         stored.Name,
 		Type:         stored.Type,
 		Scheme:       stored.Scheme,
 		TLS:          stored.TLS,

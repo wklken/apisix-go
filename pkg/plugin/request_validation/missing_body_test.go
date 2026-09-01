@@ -37,6 +37,63 @@ func TestBodySchemaRequiresBodyBeforeSchemaEvaluation(t *testing.T) {
 	}
 }
 
+func TestAPISIX317MissingAndInvalidBodiesKeepDistinctResponses(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		body     io.Reader
+		wantBody string
+	}{
+		{name: "nil body", body: nil},
+		{name: "zero bytes", body: strings.NewReader("")},
+		{
+			name: "whitespace is a JSON decode failure", body: strings.NewReader("   "),
+			wantBody: "Expected value but found T_END at character 4",
+		},
+		{
+			name: "malformed JSON", body: strings.NewReader("x"),
+			wantBody: "Expected value but found invalid token at character 1",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			p := newTestPlugin(t, Config{
+				BodySchema:   map[string]any{"type": "object"},
+				RejectedCode: http.StatusUnprocessableEntity,
+			})
+			request := httptest.NewRequest(http.MethodPost, "/", test.body)
+			request.Header.Set("Content-Type", "application/json")
+			response := httptest.NewRecorder()
+			p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				t.Fatal("invalid body reached downstream")
+			})).ServeHTTP(response, request)
+			if response.Code != http.StatusUnprocessableEntity || response.Body.String() != test.wantBody {
+				t.Fatalf(
+					"response = %d/%q, want 422/%q",
+					response.Code,
+					response.Body.String(),
+					test.wantBody,
+				)
+			}
+		})
+	}
+}
+
+func TestAPISIX317BodyDecodeFailureUsesExactRejectedMessage(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		BodySchema:   map[string]any{"type": "object"},
+		RejectedCode: http.StatusUnprocessableEntity,
+		RejectedMsg:  "invalid request body",
+	})
+	request := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("x"))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("invalid body reached downstream")
+	})).ServeHTTP(response, request)
+	if response.Code != http.StatusUnprocessableEntity || response.Body.String() != "invalid request body" {
+		t.Fatalf("response = %d/%q, want 422 with exact rejected_msg", response.Code, response.Body.String())
+	}
+}
+
 func TestRequestValidationBodyMatrixKeepsJSONNullDistinctFromMissingBody(t *testing.T) {
 	for _, test := range []struct {
 		name       string

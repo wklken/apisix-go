@@ -480,6 +480,12 @@ func TestHandlerLogsRedisLimiterError(t *testing.T) {
 	if res.Code != http.StatusInternalServerError {
 		t.Fatalf("response code = %d, want %d", res.Code, http.StatusInternalServerError)
 	}
+	if got := res.Header().Get("Content-Type"); got != "" {
+		t.Fatalf("content-type = %q, want empty", got)
+	}
+	if got := res.Body.String(); got != "" {
+		t.Fatalf("response body = %q, want empty", got)
+	}
 
 	select {
 	case entry := <-entries:
@@ -489,6 +495,53 @@ func TestHandlerLogsRedisLimiterError(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("Redis limiter error was not logged")
+	}
+}
+
+func TestPostInitDefersEmptyStringLimitsToRequest(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Conn: "", Burst: "", DefaultConnDelay: 0.1, Key: "remote_addr",
+	})
+	response := performRequest(p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("empty string limits reached upstream")
+	})), "192.0.2.82:12345")
+
+	if response.Code != http.StatusInternalServerError {
+		t.Fatalf("response code = %d, want request-time 500", response.Code)
+	}
+}
+
+func TestHandlerTreatsExplicitEmptyRulesAsConfigured(t *testing.T) {
+	for _, test := range []struct {
+		name             string
+		allowDegradation bool
+		wantStatus       int
+	}{
+		{name: "fails closed", wantStatus: http.StatusInternalServerError},
+		{name: "degrades", allowDegradation: true, wantStatus: http.StatusNoContent},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			allowDegradation := test.allowDegradation
+			var config Config
+			if err := util.Parse(map[string]any{
+				"default_conn_delay": 0.1,
+				"rules":              []any{},
+			}, &config); err != nil {
+				t.Fatalf("Parse() error = %v", err)
+			}
+			if config.Rules == nil {
+				t.Fatal("explicit rules presence was lost during parsing")
+			}
+			config.AllowDegradation = &allowDegradation
+			p := newTestPlugin(t, config)
+			response := performRequest(p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusNoContent)
+			})), "192.0.2.83:12345")
+
+			if response.Code != test.wantStatus {
+				t.Fatalf("response code = %d, want %d", response.Code, test.wantStatus)
+			}
+		})
 	}
 }
 
@@ -714,6 +767,28 @@ func TestHandlerAppliesResolvedRules(t *testing.T) {
 	if afterRelease.Code != http.StatusNoContent {
 		t.Fatalf("after release response code = %d, want %d", afterRelease.Code, http.StatusNoContent)
 	}
+}
+
+func TestIncreaseRulesSkipsInvalidRuleBeforeApplyingLaterValidRule(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		DefaultConnDelay: 0.1,
+		Rules: []Rule{
+			{Conn: "$http_x_bad_conn", Burst: 0, Key: "$http_x_bad_user"},
+			{Conn: 1, Burst: 0, Key: "$http_x_user"},
+		},
+	})
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	request.Header.Set("X-Bad-User", "invalid-rule-key")
+	request.Header.Set("X-User", "alice")
+
+	admissions, _, allowed, err := p.increaseRules(request)
+	if err != nil || !allowed {
+		t.Fatalf("increaseRules() = allowed %t, error %v", allowed, err)
+	}
+	if len(admissions) != 1 {
+		t.Fatalf("admissions = %d, want only the later valid rule", len(admissions))
+	}
+	p.decreaseAdmissions(admissions, nil)
 }
 
 func TestHandlerReturnsInternalServerErrorWhenAllRulesAreUnresolved(t *testing.T) {

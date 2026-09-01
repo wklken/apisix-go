@@ -79,8 +79,7 @@ const schema = `
 			"exclusiveMinimum": 0
 		  },
 		  {
-			"type": "string",
-			"minLength": 1
+			"type": "string"
 		  }
 		]
 	  },
@@ -91,14 +90,12 @@ const schema = `
 			"exclusiveMinimum": 0
 		  },
 		  {
-			"type": "string",
-			"minLength": 1
+			"type": "string"
 		  }
 		]
 	  },
 	  "rules": {
 		"type": "array",
-		"minItems": 1,
 		"items": {
 		  "type": "object",
 		  "properties": {
@@ -109,8 +106,7 @@ const schema = `
 				  "exclusiveMinimum": 0
 				},
 				{
-				  "type": "string",
-				  "minLength": 1
+				  "type": "string"
 				}
 			  ]
 			},
@@ -121,8 +117,7 @@ const schema = `
 				  "exclusiveMinimum": 0
 				},
 				{
-				  "type": "string",
-				  "minLength": 1
+				  "type": "string"
 				}
 			  ]
 			},
@@ -419,7 +414,7 @@ func (p *Plugin) PostInit() error {
 		body, _ := json.Marshal(map[string]string{"error_msg": p.config.RejectedMsg})
 		p.config.rejectBody = util.BytesToString(body)
 	}
-	if len(p.config.Rules) > 0 {
+	if p.config.Rules != nil {
 		if err := p.validateRules(); err != nil {
 			return err
 		}
@@ -752,7 +747,7 @@ func staticLimitValue(value any, name string) (int64, bool, error) {
 	}
 
 	if expr, ok := value.(string); ok {
-		if strings.Contains(expr, "$") {
+		if expr == "" || strings.Contains(expr, "$") {
 			return 0, false, nil
 		}
 		parsed, err := parseLimitInt(expr, name)
@@ -849,7 +844,7 @@ func (p *Plugin) Config() any {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
-		if len(p.config.Rules) > 0 {
+		if p.config.Rules != nil {
 			applied := 0
 			for i, rule := range p.config.Rules {
 				key, ok := p.resolveRuleKey(r, rule)
@@ -860,12 +855,8 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 				logger.Debugf("limit key: %s", key)
 				count, timeWindow, err := p.resolveRuleLimit(r, rule)
 				if err != nil {
-					if *p.config.AllowDegradation {
-						continue
-					}
 					logger.Error(err.Error())
-					http.Error(w, "failed to resolve limit count rules", http.StatusInternalServerError)
-					return
+					continue
 				}
 				applied++
 				lim := p.ruleLimiters[i]
@@ -876,7 +867,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 						if *p.config.AllowDegradation {
 							continue
 						}
-						http.Error(w, "failed to limit count", http.StatusInternalServerError)
+						writeLimitCountBackendError(w)
 						return
 					}
 				}
@@ -930,7 +921,7 @@ func (p *Plugin) consumeLimitCountKey(w http.ResponseWriter, r *http.Request, ke
 			return true
 		}
 		logger.Errorf("failed to limit count: %v", err)
-		http.Error(w, "failed to limit count", http.StatusInternalServerError)
+		writeLimitCountBackendError(w)
 		return false
 	}
 	if !p.runLimit(
@@ -1012,7 +1003,7 @@ func (p *Plugin) runLimit(
 			return true
 		}
 		logger.Errorf("failed to limit count: %v", err)
-		http.Error(w, "failed to limit count", http.StatusInternalServerError)
+		writeLimitCountBackendError(w)
 		return false
 	}
 	reset := fixedWindowResetSeconds(context.Reset, time.Now())
@@ -1042,6 +1033,12 @@ func (p *Plugin) runLimit(
 	}
 
 	return true
+}
+
+func writeLimitCountBackendError(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusInternalServerError)
+	_, _ = w.Write([]byte(`{"error_msg":"failed to limit count"}`))
 }
 
 func fixedWindowResetSeconds(expiration int64, now time.Time) int64 {

@@ -252,7 +252,7 @@ func TestParsedInlineUpstreamDefaultsRetriesToOtherNodes(t *testing.T) {
 	}
 }
 
-func TestParsedInlineUpstreamPreservesExplicitZeroRetries(t *testing.T) {
+func TestParsedInlineUpstreamDoesNotProjectExplicitRetries(t *testing.T) {
 	p := &Plugin{}
 	p.SetUpstreamResolver(testUpstreamResolver)
 	if err := p.Init(); err != nil {
@@ -281,8 +281,139 @@ func TestParsedInlineUpstreamPreservesExplicitZeroRetries(t *testing.T) {
 	if override == nil {
 		t.Fatal("override = nil")
 	}
-	if override.Retries != 0 {
-		t.Fatalf("override retries = %d, want explicit zero", override.Retries)
+	if override.Retries != 1 {
+		t.Fatalf("override retries = %d, want generated upstream default for one peer", override.Retries)
+	}
+}
+
+func TestAPISIX317InlineUpstreamSchemaRejectsInvalidGeneratedUpstream(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	tests := []struct {
+		name     string
+		upstream map[string]any
+	}{
+		{name: "missing nodes or discovery", upstream: map[string]any{}},
+		{
+			name: "unsupported scheme",
+			upstream: map[string]any{
+				"scheme": "smtp",
+				"nodes":  map[string]any{"127.0.0.1:8080": 1},
+			},
+		},
+		{
+			name: "unknown field",
+			upstream: map[string]any{
+				"nodes":           map[string]any{"127.0.0.1:8080": 1},
+				"local_extension": true,
+			},
+		},
+		{
+			name: "empty health checks",
+			upstream: map[string]any{
+				"checks": map[string]any{},
+				"nodes":  map[string]any{"127.0.0.1:8080": 1},
+			},
+		},
+		{
+			name: "invalid client certificate id",
+			upstream: map[string]any{
+				"nodes": map[string]any{"127.0.0.1:8080": 1},
+				"tls":   map[string]any{"client_cert_id": []any{}},
+			},
+		},
+		{
+			name: "unpaired client certificate",
+			upstream: map[string]any{
+				"nodes": map[string]any{"127.0.0.1:8080": 1},
+				"tls":   map[string]any{"client_cert": strings.Repeat("c", 128)},
+			},
+		},
+		{
+			name: "node host contains whitespace",
+			upstream: map[string]any{
+				"nodes": []any{map[string]any{"host": "bad host", "weight": 1}},
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			config := map[string]any{
+				"rules": []any{map[string]any{
+					"weighted_upstreams": []any{map[string]any{"upstream": test.upstream}},
+				}},
+			}
+			if err := util.Validate(config, p.GetSchema()); err == nil {
+				t.Fatalf("schema accepted invalid inline upstream %#v", test.upstream)
+			}
+		})
+	}
+}
+
+func TestAPISIX317InlineUpstreamSchemaAcceptsOfficialNestedFields(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	config := map[string]any{
+		"rules": []any{map[string]any{
+			"weighted_upstreams": []any{map[string]any{
+				"upstream": map[string]any{
+					"checks": map[string]any{
+						"active": map[string]any{"host": "health.example.com"},
+						"passive": map[string]any{
+							"unhealthy": map[string]any{"http_failures": 1},
+						},
+					},
+					"nodes": []any{map[string]any{
+						"host": "api.example.com", "port": 443, "weight": 1,
+					}},
+					"tls": map[string]any{
+						"client_cert": strings.Repeat("c", 128),
+						"client_key":  strings.Repeat("k", 64),
+					},
+				},
+			}},
+		}},
+	}
+	if err := util.Validate(config, p.GetSchema()); err != nil {
+		t.Fatalf("schema rejected APISIX-valid nested upstream: %v", err)
+	}
+}
+
+func TestAPISIX317InlineUpstreamProjectionDropsUncopiedFields(t *testing.T) {
+	input := &Upstream{
+		Name:         "canary",
+		Type:         "chash",
+		Scheme:       "https",
+		TLS:          &resource.UpstreamTLS{Verify: true},
+		PassHost:     "rewrite",
+		UpstreamHost: "api.example.com",
+		HashOn:       "header",
+		Key:          "X-Tenant",
+		Timeout:      resource.Timeout{Connect: 1, Send: 2, Read: 3},
+		Retries:      0,
+		retriesSet:   true,
+		Checks:       map[string]any{"passive": map[string]any{}},
+		Nodes:        []Node{{Host: "127.0.0.1", Port: 8443, Weight: 1, weightSet: true}},
+	}
+
+	projected := projectInlineUpstream(input)
+	if projected == input {
+		t.Fatal("inline projection reused the input object")
+	}
+	if projected.TLS != nil || projected.Checks != nil || projected.RetriesConfigured() {
+		t.Fatalf("inline projection retained unprojected fields: %#v", projected)
+	}
+	if projected.Name != input.Name || projected.Type != input.Type || projected.Scheme != input.Scheme ||
+		projected.PassHost != input.PassHost || projected.UpstreamHost != input.UpstreamHost ||
+		projected.HashOn != input.HashOn || projected.Key != input.Key ||
+		projected.Timeout != input.Timeout || len(projected.Nodes) != 1 {
+		t.Fatalf("inline projection lost official runtime fields: %#v", projected)
 	}
 }
 
@@ -456,7 +587,7 @@ func TestResolveHashValueSupportsVariableCombinations(t *testing.T) {
 	}
 }
 
-func TestHandlerExcludesPassivelyUnhealthyInlineUpstream(t *testing.T) {
+func TestHandlerDoesNotApplyInlinePassiveChecks(t *testing.T) {
 	p := newTestPlugin(t, Config{Rules: []Rule{{
 		WeightedUpstreams: []WeightedUpstream{{
 			Upstream: &Upstream{
@@ -477,14 +608,11 @@ func TestHandlerExcludesPassivelyUnhealthyInlineUpstream(t *testing.T) {
 	}}})
 
 	first := performRequest(t, p)
-	if first == nil || first.HealthReporter == nil || first.HealthTarget == "" {
-		t.Fatalf("first override = %#v, want passive health reporter and target", first)
+	if first == nil {
+		t.Fatal("first override = nil")
 	}
-	first.HealthReporter.ReportHTTP(first.HealthTarget, http.StatusInternalServerError)
-
-	second := performRequest(t, p)
-	if second == nil || second.Host == first.Host {
-		t.Fatalf("second override = %#v, want the other healthy node", second)
+	if first.HealthReporter != nil {
+		t.Fatalf("first override health reporter = %#v, want nil for inline checks", first.HealthReporter)
 	}
 }
 

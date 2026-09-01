@@ -559,3 +559,109 @@ cases:
                 X-RateLimit-Limit:
                     absent: true
             status: 200
+    - name: redis-backend-failure-returns-apisix-json
+      runtime:
+        plugins:
+            - limit-count
+      config:
+        routes:
+            - id: limit-count-redis-backend-failure
+              plugins:
+                limit-count:
+                    count: 2
+                    key: remote_addr
+                    policy: redis
+                    redis_host: '{{FIXTURE.redis.HOST}}'
+                    redis_password: someerrorpassword
+                    redis_port: '{{FIXTURE.redis.PORT}}'
+                    redis_username: alice
+                    time_window: 60
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /limit-count-redis-backend-failure
+      fixtures:
+        - expect_requests: 0
+          kind: http
+          name: primary
+          respond:
+            - body: unexpected
+              status: 200
+        - kind: redis
+          name: redis
+          network_respond:
+            - payload: "-WRONGPASS invalid username-password pair or user is disabled.\r\n"
+          redis:
+            allow_unasserted_commands: true
+            auth:
+                - password: someerrorpassword
+                  username: alice
+            ignore_negotiation: true
+      steps:
+        - input:
+            method: GET
+            path: /limit-count-redis-backend-failure
+          name: redis-error-is-an-apisix-json-500
+          output:
+            body:
+                json_equals: '{"error_msg":"failed to limit count"}'
+            headers:
+                Content-Type:
+                    equals: application/json
+            logs:
+                matches: 'failed to limit count: .*WRONGPASS invalid username-password pair or user is disabled'
+            status: 500
+    - name: explicit-empty-rules-use-request-time-failure-and-degradation
+      runtime:
+        plugins:
+            - limit-count
+      config:
+        routes:
+            - id: limit-count-empty-rules-fail-closed
+              plugins:
+                limit-count:
+                    rules: []
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /limit-count-empty-rules-fail-closed
+            - id: limit-count-empty-rules-degradation
+              plugins:
+                limit-count:
+                    allow_degradation: true
+                    rules: []
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /limit-count-empty-rules-degradation
+      fixtures:
+        - count:
+            at_least: 1
+            at_most: 1
+          expect:
+            - method: GET
+              path:
+                equals: /limit-count-empty-rules-degradation
+          kind: http
+          name: primary
+          respond:
+            - body: degraded
+              status: 200
+      steps:
+        - input:
+            method: GET
+            path: /limit-count-empty-rules-fail-closed
+          name: explicit-empty-rules-fail-closed-at-request-time
+          output:
+            status: 500
+        - input:
+            method: GET
+            path: /limit-count-empty-rules-degradation
+          name: explicit-empty-rules-honor-degradation
+          output:
+            body:
+                equals: degraded
+            status: 200

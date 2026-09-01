@@ -99,7 +99,7 @@ func trafficSplitResourceUpstream(
 		scheme = "http"
 	}
 	result := resource.Upstream{
-		Type: upstream.Type, Scheme: scheme, TLS: upstream.TLS,
+		Name: upstream.Name, Type: upstream.Type, Scheme: scheme, TLS: upstream.TLS,
 		Timeout: upstream.Timeout, Checks: upstream.Checks,
 		HashOn: upstream.HashOn, Key: upstream.Key,
 		PassHost: upstream.PassHost, UpstreamHost: upstream.UpstreamHost,

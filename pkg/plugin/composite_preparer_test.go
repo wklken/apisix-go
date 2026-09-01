@@ -48,12 +48,14 @@ type compositeSentinelPlugin struct {
 	materializeCalls int
 	postInitCalls    int
 	stopCalls        int
+	secrets          secret.GenerationSecrets
 }
 
 func (p *compositeSentinelPlugin) SetDependencies(deps base.Dependencies) {
 	if p.trace != nil {
 		*p.trace = append(*p.trace, "dependencies")
 	}
+	p.secrets = deps.Secrets
 	p.BasePlugin.SetDependencies(deps)
 }
 
@@ -354,7 +356,7 @@ func TestCompositeChildPreparerPreservesOuterAuthorityAndDependencies(t *testing
 	if child.CompositeChildPreparer() != nil {
 		t.Fatal("leaf child retained recursive CompositeChildren dependency")
 	}
-	if !child.ScopedSecrets().Valid() || child.ScopedSecrets().Generation() != harness.attempt {
+	if !child.secrets.Valid() || child.secrets.Generation() != harness.attempt {
 		t.Fatal("child did not retain the outer generation secrets")
 	}
 	var metadataDocument map[string]any

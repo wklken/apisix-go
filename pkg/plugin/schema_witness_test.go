@@ -118,7 +118,7 @@ func TestSchemaWitnessRegisteredInitMethodsAvoidRuntimeDependencies(t *testing.T
 	}
 
 	forbidden := map[string]struct{}{
-		"StaticConfig": {}, "ScopedSecrets": {},
+		"StaticConfig": {},
 		"MetadataView": {}, "ConsumerLookup": {}, "TaskRegistry": {}, "CompositeChildPreparer": {},
 		"PostInit": {}, "Handler": {}, "MaterializeScopedSecrets": {},
 		"MaterializeScopedPluginSecrets": {}, "NewTaskRegistry": {},
